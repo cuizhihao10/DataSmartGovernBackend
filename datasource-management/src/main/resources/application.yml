@@ -1,0 +1,40 @@
+server:
+  port: 8082
+
+spring:
+  application:
+    name: datasource-management
+  profiles:
+    active: dev
+  datasource:
+    url: jdbc:mysql://localhost:3306/datasmart_govern?useSSL=false&serverTimezone=UTC
+    username: root
+    password: password
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  kafka:
+    bootstrap-servers: localhost:9092
+  cloud:
+    nacos:
+      discovery:
+        server-addr: localhost:8848
+
+mybatis-plus:
+  mapper-locations: classpath:/mapper/*.xml
+  type-aliases-package: com.czh.datasmart.govern.datasource.entity
+  configuration:
+    map-underscore-to-camel-case: true
+
+logging:
+  level:
+    com.czh.datasmart: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized

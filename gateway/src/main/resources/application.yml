@@ -1,0 +1,55 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: datasmart-govern-gateway
+  profiles:
+    active: dev
+  cloud:
+    gateway:
+      routes:
+        - id: task-management
+          uri: lb://task-management
+          predicates:
+            - Path=/api/task/**
+        - id: datasource-management
+          uri: lb://datasource-management
+          predicates:
+            - Path=/api/datasource/**
+        - id: data-quality
+          uri: lb://data-quality
+          predicates:
+            - Path=/api/quality/**
+        - id: observability
+          uri: lb://observability
+          predicates:
+            - Path=/api/observability/**
+      discovery:
+        locator:
+          enabled: true
+  kafka:
+    bootstrap-servers: localhost:9092
+  redis:
+    host: localhost
+    port: 6379
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: http://localhost:8080/auth/realms/datasmart
+
+logging:
+  level:
+    com.czh.datasmart: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
