@@ -13,24 +13,30 @@ import java.util.NoSuchElementException;
 import java.util.stream.Collectors;
 
 /**
- * 全局异常处理器。
- * <p>
- * 这一层可以理解为“异常翻译器”：
- * Service 抛出的是 Java 异常，Controller 组织的是 HTTP 接口，
- * 而这里负责把二者连接起来，最终输出统一 JSON 响应。
- * <p>
- * 这样做最大的价值，是把错误处理从业务代码中抽离出来：
- * - Controller 不需要到处写 try/catch。
- * - Service 可以专注表达业务规则。
- * - 调用方拿到的错误结构稳定一致。
+ * @Author : Cui
+ * @Date: 2026/4/18 22:10
+ * @Description DataSmart Govern Backend - GlobalExceptionHandler.java
+ * @Version:1.0.0
+ *
+ * 任务模块全局异常处理器。
+ * 它可以理解成“协议层翻译器”：
+ * - Service 层更关心业务规则，因此通常抛出 Java 异常。
+ * - Controller 层更关心 HTTP 契约，因此最终需要返回统一 JSON。
+ * - 当前这个类负责把二者衔接起来。
+ *
+ * 这样做的价值很大：
+ * 1. Controller 可以保持干净，不需要到处写 try/catch。
+ * 2. Service 可以专注表达业务限制，而不用混杂响应拼装代码。
+ * 3. 所有错误出口最终变成统一结构，便于前端、网关和监控系统消费。
  */
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
     /**
-     * 资源不存在。
-     * 例如按 ID 查询不到任务时，应返回 404 而不是 500。
+     * 处理“资源不存在”异常。
+     * 典型场景是按任务 ID 查询，但数据库里已经不存在该任务。
+     * 这类错误应返回 404，而不是模糊地返回 500。
      */
     @ExceptionHandler(NoSuchElementException.class)
     public ResponseEntity<ApiResponse<Void>> handleNoSuchElementException(NoSuchElementException exception) {
@@ -39,8 +45,9 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * 参数不合法。
-     * 例如传入不支持的优先级值。
+     * 处理非法参数异常。
+     * 比如传入不支持的优先级、非法状态值等。
+     * 这类错误说明请求本身不满足业务或输入约束，返回 400 更合理。
      */
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ApiResponse<Void>> handleIllegalArgumentException(IllegalArgumentException exception) {
@@ -49,8 +56,9 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * 业务状态冲突。
-     * 例如“已完成的任务不能取消”，本质上不是参数错误，而是状态不允许。
+     * 处理业务状态冲突异常。
+     * 例如“已完成任务不能取消”、“非运行中任务不能标记完成”。
+     * 这类错误不是参数格式错，而是当前资源状态不允许执行该动作，因此映射为 409。
      */
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<ApiResponse<Void>> handleIllegalStateException(IllegalStateException exception) {
@@ -59,10 +67,9 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * 处理 @RequestBody 上的 Bean Validation 失败。
-     * <p>
-     * Spring 会在进入控制器方法之前先做对象字段校验，
-     * 失败时抛出 MethodArgumentNotValidException。
+     * 处理 @RequestBody 对象校验失败。
+     * 当前项目使用 Jakarta Bean Validation 对请求体做声明式校验，
+     * 当字段不满足 @NotBlank、@Min、@Max 等规则时，Spring 会在进入 Controller 之前抛出该异常。
      */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiResponse<Void>> handleMethodArgumentNotValidException(
@@ -75,7 +82,8 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * 处理简单参数的约束校验异常。
+     * 处理简单参数约束异常。
+     * 它通常来自 @RequestParam、@PathVariable 等位置的约束校验。
      */
     @ExceptionHandler(ConstraintViolationException.class)
     public ResponseEntity<ApiResponse<Void>> handleConstraintViolationException(
@@ -85,14 +93,13 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * 最终兜底异常。
-     * <p>
-     * 我们仍然保留兜底，是为了防止未知异常把堆栈直接暴露给调用方。
-     * 同时记录 error 日志，为后续 observability 模块接入做准备。
+     * 最终兜底异常处理。
+     * 如果有未知异常没有被前面的规则覆盖，这里会统一返回 500，
+     * 同时记录 error 日志，方便后续 observability 模块接入集中监控与告警。
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleException(Exception exception) {
-        log.error("Unexpected error in task-management module", exception);
+        log.error("task-management 模块发生未预期异常", exception);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(ApiResponse.error(HttpStatus.INTERNAL_SERVER_ERROR.value(), "internal server error"));
     }

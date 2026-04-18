@@ -1,3 +1,5 @@
+# Gateway 是当前阶段的统一外部入口，
+# 因而这个配置文件本质上就是平台公开路由契约的一部分。
 server:
   port: 8080
 
@@ -8,6 +10,8 @@ spring:
     active: dev
   cloud:
     gateway:
+      # 路由显式声明出来，更适合作为学习资料。
+      # 只看配置也能直接理解“哪个前缀转到哪个模块”。
       routes:
         - id: task-management
           uri: lb://task-management
@@ -27,16 +31,21 @@ spring:
             - Path=/api/observability/**
       discovery:
         locator:
+          # 打开服务发现定位器，便于后续按服务名动态发现下游服务。
           enabled: true
   kafka:
+    # Kafka 预留给网关侧事件采集、审计打点或限流扩展。
     bootstrap-servers: localhost:9092
   redis:
+    # Redis 后续可用于网关级限流、会话态和热点控制。
     host: localhost
     port: 6379
   security:
     oauth2:
       resourceserver:
         jwt:
+          # 认证服务虽然尚未完整落地，但先把 issuer 契约写清楚，
+          # 后续接入统一安全体系时更稳。
           issuer-uri: http://localhost:8080/auth/realms/datasmart
 
 logging:

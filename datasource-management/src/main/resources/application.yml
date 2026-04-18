@@ -1,25 +1,32 @@
+# 数据源治理模块独立端口运行，便于把“注册管理”和“执行消费”调试分开。
 server:
   port: 8082
 
 spring:
   application:
+    # 服务名会参与注册发现、日志标识和跨模块调用定位。
     name: datasource-management
   profiles:
     active: dev
   datasource:
+    # MySQL 存储的是数据源元数据，而不是外部系统中的业务数据本身。
     url: jdbc:mysql://localhost:3306/datasmart_govern?useSSL=false&serverTimezone=UTC
     username: root
     password: password
     driver-class-name: com.mysql.cj.jdbc.Driver
   kafka:
+    # Kafka 预留给后续数据源元数据变更通知、扫描任务触发等能力。
     bootstrap-servers: localhost:9092
   cloud:
     nacos:
       discovery:
+        # Nacos 负责服务注册与发现，便于网关和其他模块定位当前服务。
         server-addr: localhost:8848
 
 mybatis-plus:
+  # 保留 mapper-locations，便于后续接入更复杂的自定义 SQL。
   mapper-locations: classpath:/mapper/*.xml
+  # type-aliases 可以减少后续 XML 查询里的实体全限定名噪音。
   type-aliases-package: com.czh.datasmart.govern.datasource.entity
   configuration:
     map-underscore-to-camel-case: true
@@ -38,3 +45,27 @@ management:
   endpoint:
     health:
       show-details: when-authorized
+
+datasmart:
+  datasource:
+    metadata-discovery:
+      # 默认一次最多返回多少张表。
+      # 这个值主要影响“前端预览式探查”场景，避免一次把整个大库全部展开。
+      default-max-tables: 20
+      # 调用方可请求的绝对上限，防止接口被误用成全库扫描工具。
+      absolute-max-tables: 100
+      # 默认每张表最多展开多少个字段。
+      # 对超宽表而言，这个限制能明显降低响应体大小。
+      default-max-columns-per-table: 50
+      # 每张表字段展开的绝对上限。
+      absolute-max-columns-per-table: 200
+      # 样本预览默认行数。
+      default-sample-row-limit: 5
+      # 样本预览绝对上限。
+      absolute-sample-row-limit: 20
+      # 元数据查询超时秒数。
+      # 如果后续遇到大库、慢库或网络波动，这个值会直接影响探查接口的可控性。
+      jdbc-query-timeout-seconds: 5
+      # 简单缓存有效期，单位秒。
+      # 当前先使用服务内内存缓存，目标是减少短时间重复点击带来的重复探查开销。
+      cache-ttl-seconds: 60

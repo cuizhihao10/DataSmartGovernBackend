@@ -1,3 +1,4 @@
+# 可观测性模块独立运行，避免监控能力和业务模块发布节奏强绑定。
 server:
   port: 8084
 
@@ -6,11 +7,13 @@ spring:
     name: observability
   profiles:
     active: dev
+  # MySQL 预留给告警规则、订阅配置和其他监控配置持久化。
   datasource:
     url: jdbc:mysql://localhost:3306/datasmart_govern?useSSL=false&serverTimezone=UTC
     username: root
     password: password
     driver-class-name: com.mysql.cj.jdbc.Driver
+  # Kafka 后续可承载告警事件和日志流事件。
   kafka:
     bootstrap-servers: localhost:9092
   cloud:
@@ -33,6 +36,7 @@ logging:
 management:
   endpoints:
     web:
+      # Prometheus 抓取指标时依赖这个端点暴露出来。
       exposure:
         include: health,info,metrics,prometheus
   endpoint:

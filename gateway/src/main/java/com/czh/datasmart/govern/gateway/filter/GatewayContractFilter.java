@@ -11,18 +11,22 @@ import reactor.core.publisher.Mono;
 import java.util.UUID;
 
 /**
+ * @Author : Cui
+ * @Date: 2026/4/18 22:20
+ * @Description DataSmart Govern Backend - GatewayContractFilter.java
+ * @Version:1.0.0
+ *
  * 网关契约过滤器。
- * <p>
- * 这个过滤器的目标不是做复杂安全控制，而是给当前项目补一层“请求链路契约”：
- * 1. 为每个经过网关的请求补充统一 requestId，方便跨模块追踪。
- * 2. 把外部入口前缀标记成 header，帮助后端理解自己是从哪个网关契约进来的。
- * 3. 保留原始路径信息，便于后续排障和 observability 模块聚合。
- * <p>
- * 这属于一种很常见的网关职责：在业务请求真正进入各模块之前，先补全跨模块通用上下文。
+ * 它的职责不是做复杂安全控制，而是在请求进入业务模块前补齐一层跨模块上下文，
+ * 例如请求 ID、命中的网关前缀、原始路径等，为后续链路追踪和可观测性打基础。
  */
 @Component
 public class GatewayContractFilter implements GlobalFilter, Ordered {
 
+    /**
+     * 统一补充网关上下文请求头。
+     * 这样后端模块就不需要各自再重复推断“请求是怎么进来的”。
+     */
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
         ServerHttpRequest request = exchange.getRequest();
@@ -42,9 +46,9 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
     }
 
     /**
-     * 根据外部请求路径推断它命中了哪类网关前缀。
-     * <p>
-     * 当前逻辑保持非常显式，目的是让路径契约一眼可读。
+     * 根据请求路径推断它命中了哪个网关前缀。
+     * 这里刻意保持显式判断，而不是过度抽象，
+     * 目的是让学习者一眼就能把代码和 application.yml 中的路由规则对应起来。
      */
     private String resolveRoutePrefix(String path) {
         if (path.startsWith("/api/task/")) {
@@ -62,6 +66,9 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
         return "/**";
     }
 
+    /**
+     * 过滤器顺序尽量靠前，让后续过滤链都能拿到补齐后的上下文。
+     */
     @Override
     public int getOrder() {
         return -100;

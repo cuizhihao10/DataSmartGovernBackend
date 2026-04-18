@@ -11,20 +11,21 @@ import org.springframework.context.annotation.Configuration;
 import java.time.LocalDateTime;
 
 /**
+ * @Author : Cui
+ * @Date: 2026/4/18 21:55
+ * @Description DataSmart Govern Backend - MyBatisPlusConfig.java
+ * @Version:1.0.0
+ *
  * MyBatis-Plus 配置。
- * <p>
- * 这个配置类主要解决两个通用问题：
- * 1. 分页插件，让分页查询不需要手写 limit / offset SQL。
- * 2. 自动填充时间字段，让 createTime / updateTime 这类审计字段保持统一。
- * <p>
- * 这里沿用 task-management 模块的设计方式，后续其他模块也可以照这个模板继续扩展。
+ * 当前数据源模块沿用与其他模块一致的 ORM 基础能力，
+ * 让分页和时间字段自动维护都交给框架统一处理。
  */
 @Configuration
 public class MyBatisPlusConfig {
 
     /**
-     * 分页插件。
-     * 当前数据库是 MySQL，因此 DbType 显式指定为 MYSQL。
+     * 注册分页拦截器。
+     * 当前底层数据库是 MySQL，因此显式指定 MySQL 方言。
      */
     @Bean
     public MybatisPlusInterceptor mybatisPlusInterceptor() {
@@ -34,10 +35,7 @@ public class MyBatisPlusConfig {
     }
 
     /**
-     * 时间字段自动填充。
-     * <p>
-     * 这样可以避免每个 Service 方法都重复设置时间戳，
-     * 同时让审计字段保持一致的写入策略。
+     * 自动填充创建时间和更新时间。
      */
     @Bean
     public MetaObjectHandler metaObjectHandler() {

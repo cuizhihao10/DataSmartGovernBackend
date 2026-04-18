@@ -14,24 +14,39 @@ import com.czh.datasmart.govern.task.service.TaskService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 import java.util.NoSuchElementException;
 
 /**
+ * @Author : Cui
+ * @Date: 2026/4/18 22:18
+ * @Description DataSmart Govern Backend - TaskController.java
+ * @Version:1.0.0
+ *
  * 任务管理控制器。
- * <p>
- * 在典型的 Spring 分层中，Controller 负责的是“接口契约”和“请求入口管理”，
- * 而不是深度业务判断。也就是说，这一层更关注：
- * 1. URL 怎么定义。
- * 2. 请求参数怎么校验。
- * 3. 返回值如何统一。
- * 4. 哪个业务动作应该转交给 Service。
- * <p>
- * 这样设计的好处是，接口协议和业务规则可以分别演进：
- * - 想调整任务状态机，就主要改 Service。
- * - 想调整 HTTP 交互方式，就主要改 Controller。
+ * Controller 层最重要的职责不是承载复杂业务判断，而是负责“对外接口契约”：
+ * 1. 路由路径如何设计。
+ * 2. 输入参数如何校验。
+ * 3. 哪个 HTTP 动作对应哪个业务动作。
+ * 4. 返回结构如何统一。
+ *
+ * 当前任务模块采用“资源路径 + 动作子路径”的风格，例如：
+ * - POST /tasks：创建任务。
+ * - POST /tasks/{id}/start：启动任务。
+ * - POST /tasks/{id}/retry：重试任务。
+ *
+ * 这种设计比把所有动作都塞进一个 update 接口更直观，
+ * 特别适合作为学习型项目，让人一眼看懂任务生命周期有哪些显式动作。
  */
 @RestController
 @RequestMapping("/tasks")
@@ -39,16 +54,14 @@ import java.util.NoSuchElementException;
 public class TaskController {
 
     /**
-     * 控制器只依赖业务服务接口，不直接碰数据库层。
-     * 这能帮助我们维持清晰边界，避免后面接口层越写越“胖”。
+     * 控制器只依赖服务接口，不直接操作 Mapper。
+     * 这样能保持“接口层”和“业务层”的边界清晰。
      */
     private final TaskService taskService;
 
     /**
      * 创建任务。
-     * <p>
-     * 这是任务生命周期的入口。当前阶段的任务模块先把“任务登记”这件事做扎实：
-     * 保存主记录、初始化状态、记录执行日志，为后续接调度器和智能体执行流打基础。
+     * 当前动作会登记任务主记录、初始化状态，并由服务层补写第一条执行日志。
      */
     @PostMapping
     public ResponseEntity<ApiResponse<Task>> createTask(@Valid @RequestBody CreateTaskRequest request) {
@@ -60,18 +73,13 @@ public class TaskController {
                 request.getPriority(),
                 request.getMaxRetryCount()
         );
-        return ResponseEntity.ok(ApiResponse.success("task created", task));
+        return ResponseEntity.ok(ApiResponse.success("任务创建成功", task));
     }
 
     /**
      * 分页查询任务。
-     * <p>
-     * 这里用的是 MyBatis-Plus 的常见组合：
-     * - LambdaQueryWrapper：用类型安全的方式拼查询条件。
-     * - Page：封装分页参数。
-     * - page(...)：让框架自动生成分页 SQL。
-     * <p>
-     * 之所以按 createTime 倒序，是因为任务中心最常见的查看方式就是先看最新任务。
+     * 当前支持按状态和类型做基础过滤，便于后续任务中心页面快速搭建列表视图。
+     * 使用 MyBatis-Plus 的分页能力，可以减少样板 SQL。
      */
     @GetMapping
     public ResponseEntity<ApiResponse<IPage<Task>>> listTasks(
@@ -81,10 +89,10 @@ public class TaskController {
             @RequestParam(required = false) String type) {
 
         LambdaQueryWrapper<Task> wrapper = new LambdaQueryWrapper<>();
-        if (status != null) {
+        if (status != null && !status.isBlank()) {
             wrapper.eq(Task::getStatus, status);
         }
-        if (type != null) {
+        if (type != null && !type.isBlank()) {
             wrapper.eq(Task::getType, type);
         }
         wrapper.orderByDesc(Task::getCreateTime);
@@ -96,112 +104,103 @@ public class TaskController {
 
     /**
      * 查询任务详情。
+     * 这个接口主要用于查看任务主表中的当前快照。
+     * 如果需要追踪变化过程，应结合日志接口一起看。
      */
     @GetMapping("/{id}")
     public ResponseEntity<ApiResponse<Task>> getTask(@PathVariable Long id) {
         Task task = taskService.getById(id);
         if (task == null) {
-            throw new NoSuchElementException("Task not found: " + id);
+            throw new NoSuchElementException("任务不存在: " + id);
         }
         return ResponseEntity.ok(ApiResponse.success(task));
     }
 
     /**
      * 启动任务。
-     * <p>
-     * 从接口角度看，这是一个显式动作接口，而不是单纯的 update。
-     * 用 `/start` 这种动作型路径，能更直观地表达业务语义，也更方便学习和调试。
+     * 这是一个显式动作接口，语义上比“更新状态字段”更清楚。
      */
     @PostMapping("/{id}/start")
     public ResponseEntity<ApiResponse<Task>> startTask(@PathVariable Long id) {
         taskService.startTask(id);
-        return ResponseEntity.ok(ApiResponse.success("task started", taskService.getById(id)));
+        return ResponseEntity.ok(ApiResponse.success("任务已启动", taskService.getById(id)));
     }
 
     /**
      * 暂停任务。
-     * <p>
-     * 暂停能力对于长任务非常重要，因为真实的数据治理流程经常会遇到人工确认、
-     * 上游资源不足、依赖任务未就绪等情况。
+     * 长任务场景中，暂停是非常常见的管理动作，因此单独保留动作接口。
      */
     @PostMapping("/{id}/pause")
     public ResponseEntity<ApiResponse<Task>> pauseTask(@PathVariable Long id) {
         taskService.pauseTask(id);
-        return ResponseEntity.ok(ApiResponse.success("task paused", taskService.getById(id)));
+        return ResponseEntity.ok(ApiResponse.success("任务已暂停", taskService.getById(id)));
     }
 
     /**
      * 恢复任务。
+     * 用于把已暂停任务重新推回运行态。
      */
     @PostMapping("/{id}/resume")
     public ResponseEntity<ApiResponse<Task>> resumeTask(@PathVariable Long id) {
         taskService.resumeTask(id);
-        return ResponseEntity.ok(ApiResponse.success("task resumed", taskService.getById(id)));
+        return ResponseEntity.ok(ApiResponse.success("任务已恢复", taskService.getById(id)));
     }
 
     /**
      * 取消任务。
-     * <p>
-     * 与 fail 不同，cancel 更偏向主动终止动作，因此单独保留一个动作接口更清晰。
+     * 取消表达的是“主动终止”，和失败这种“被动异常终止”是两种不同业务语义。
      */
     @PostMapping("/{id}/cancel")
     public ResponseEntity<ApiResponse<Task>> cancelTask(@PathVariable Long id) {
         taskService.cancelTask(id);
-        return ResponseEntity.ok(ApiResponse.success("task cancelled", taskService.getById(id)));
+        return ResponseEntity.ok(ApiResponse.success("任务已取消", taskService.getById(id)));
     }
 
     /**
      * 重试任务。
-     * <p>
-     * 这里返回重试后的 Task 快照，让调用方能直接看到 retryCount、status 等字段的新状态。
+     * 返回重试后的任务快照，便于调用方立刻看到 retryCount、status 等字段的新状态。
      */
     @PostMapping("/{id}/retry")
     public ResponseEntity<ApiResponse<Task>> retryTask(@PathVariable Long id) {
-        return ResponseEntity.ok(ApiResponse.success("task retried", taskService.retryTask(id)));
+        return ResponseEntity.ok(ApiResponse.success("任务已重试", taskService.retryTask(id)));
     }
 
     /**
      * 更新任务进度。
-     * <p>
-     * 这个接口未来主要会被执行器、调度器或异步消费者回调。
-     * 当前先把契约固定下来，后续接 Kafka 或智能体运行时就可以直接复用。
+     * 未来这类接口通常会被执行器、调度器或异步消费者调用，因此尽早固定契约很重要。
      */
     @PutMapping("/{id}/progress")
     public ResponseEntity<ApiResponse<Task>> updateProgress(@PathVariable Long id,
                                                             @Valid @RequestBody TaskProgressRequest request) {
         taskService.updateProgress(id, request.getProgress(), request.getCheckpoint());
-        return ResponseEntity.ok(ApiResponse.success("task progress updated", taskService.getById(id)));
+        return ResponseEntity.ok(ApiResponse.success("任务进度已更新", taskService.getById(id)));
     }
 
     /**
      * 标记任务完成。
+     * 该动作通常由真正的执行逻辑在成功收尾后回调。
      */
     @PostMapping("/{id}/complete")
     public ResponseEntity<ApiResponse<Task>> completeTask(@PathVariable Long id,
                                                           @Valid @RequestBody TaskCompleteRequest request) {
         taskService.completeTask(id, request.getResult());
-        return ResponseEntity.ok(ApiResponse.success("task completed", taskService.getById(id)));
+        return ResponseEntity.ok(ApiResponse.success("任务已完成", taskService.getById(id)));
     }
 
     /**
      * 标记任务失败。
-     * <p>
-     * 当前把失败也设计成显式接口，是为了让业务终态表达得更直接，
-     * 后续真正执行器接入时也会更容易调用。
+     * 当前保留显式失败接口，有利于后续执行器统一上报异常结果。
      */
     @PostMapping("/{id}/fail")
     public ResponseEntity<ApiResponse<Task>> failTask(@PathVariable Long id,
                                                       @Valid @RequestBody TaskFailRequest request) {
         taskService.failTask(id, request.getErrorMessage());
-        return ResponseEntity.ok(ApiResponse.success("task marked as failed", taskService.getById(id)));
+        return ResponseEntity.ok(ApiResponse.success("任务已标记失败", taskService.getById(id)));
     }
 
     /**
      * 查询任务执行日志。
-     * <p>
-     * 学习这个模块时，建议把这个接口和 task 详情接口对照着看：
-     * - 详情接口看“现在是什么样”。
-     * - 日志接口看“为什么变成现在这样”。
+     * 详情接口看“当前状态”，日志接口看“状态变化过程”，二者组合才能完整理解一条任务。
      */
     @GetMapping("/{id}/logs")
     public ResponseEntity<ApiResponse<List<TaskExecutionLog>>> listExecutionLogs(@PathVariable Long id) {
@@ -210,16 +209,15 @@ public class TaskController {
 
     /**
      * 删除任务。
-     * <p>
-     * 当前阶段先用物理删除满足最基础管理需求。
-     * 如果未来要做审计保留、回收站或软删除，再在这里和 Service 层一起升级。
+     * 当前先采用物理删除满足基础管理需求；
+     * 如果后续要引入回收站、审计保留或逻辑删除，可以在服务层和表结构上进一步升级。
      */
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<Boolean>> deleteTask(@PathVariable Long id) {
         boolean success = taskService.removeById(id);
         if (!success) {
-            throw new NoSuchElementException("Task not found: " + id);
+            throw new NoSuchElementException("任务不存在: " + id);
         }
-        return ResponseEntity.ok(ApiResponse.success("task deleted", true));
+        return ResponseEntity.ok(ApiResponse.success("任务已删除", true));
     }
 }

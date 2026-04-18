@@ -1,29 +1,37 @@
+# 数据质量模块独立部署，便于让规则管理与检测报告能力独立演进。
 server:
   port: 8083
 
 spring:
   application:
+    # 服务名会参与注册发现、日志标识和跨模块调用识别。
     name: data-quality
   profiles:
     active: dev
   datasource:
+    # 规则定义和检测报告当前统一持久化到 MySQL。
     url: jdbc:mysql://localhost:3306/datasmart_govern?useSSL=false&serverTimezone=UTC
     username: root
     password: password
     driver-class-name: com.mysql.cj.jdbc.Driver
   data:
     neo4j:
+      # 当前提前接入 Neo4j，是为了后续扩展血缘分析、知识图谱式规则关联时，
+      # 不需要重新调整模块基础依赖拓扑。
       uri: bolt://localhost:7687
       username: neo4j
       password: password
   kafka:
+    # Kafka 预留给后续质量告警、治理事件分发和异步检测链路。
     bootstrap-servers: localhost:9092
   cloud:
     nacos:
       discovery:
+        # Nacos 负责服务注册与发现，支撑网关和其他模块定位当前服务。
         server-addr: localhost:8848
 
 mybatis-plus:
+  # 当前 ORM 约定尽量和其他模块保持一致，降低学习和维护切换成本。
   mapper-locations: classpath:/mapper/*.xml
   type-aliases-package: com.czh.datasmart.govern.quality.entity
   configuration:
@@ -39,6 +47,7 @@ management:
   endpoints:
     web:
       exposure:
+        # 当前先暴露最基础的健康、信息和指标端点，满足本地排障与基础监控接入。
         include: health,info,metrics
   endpoint:
     health:

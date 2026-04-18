@@ -1,3 +1,9 @@
+/**
+ * @Author : Cui
+ * @Date: 2026/4/18 21:30
+ * @Description DataSmart Govern Backend - MyBatisPlusConfig.java
+ * @Version:1.0.0
+ */
 package com.czh.datasmart.govern.quality.config;
 
 import com.baomidou.mybatisplus.annotation.DbType;
@@ -12,14 +18,20 @@ import java.time.LocalDateTime;
 
 /**
  * MyBatis-Plus 配置。
- * <p>
- * data-quality 模块和前两个模块一样，也采用统一的分页与时间字段自动填充策略。
- * 这样做的价值不只是减少样板代码，更重要的是让整个仓库形成一致的基础设施风格，
- * 方便后续你跨模块学习时迁移理解。
+ * 当前数据质量模块和其他业务模块保持一致的 ORM 基础能力，
+ * 目的是减少跨模块学习和维护时的心智切换成本。
+ *
+ * 这里主要解决两个问题：
+ * 1. 提供分页拦截器，支撑规则列表分页查询。
+ * 2. 提供时间字段自动填充，避免每次写规则或报告都重复设置时间。
  */
 @Configuration
 public class MyBatisPlusConfig {
 
+    /**
+     * 注册 MyBatis-Plus 拦截器链。
+     * 当前阶段只启用分页拦截器，已经足够覆盖规则列表等常见场景。
+     */
     @Bean
     public MybatisPlusInterceptor mybatisPlusInterceptor() {
         MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();
@@ -27,6 +39,10 @@ public class MyBatisPlusConfig {
         return interceptor;
     }
 
+    /**
+     * 自动填充创建时间和更新时间。
+     * 这些字段属于典型元数据，适合交给框架统一维护。
+     */
     @Bean
     public MetaObjectHandler metaObjectHandler() {
         return new MetaObjectHandler() {

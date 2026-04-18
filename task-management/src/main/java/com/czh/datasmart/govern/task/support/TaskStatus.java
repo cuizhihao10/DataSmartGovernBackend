@@ -1,21 +1,30 @@
 package com.czh.datasmart.govern.task.support;
 
 /**
- * 任务状态常量。
- * <p>
- * 当前先使用显式常量而不是引入复杂状态机框架，
- * 是因为现阶段更重要的是先把业务边界和学习路径表达清楚。
- * 当状态数量和迁移规则进一步复杂后，再考虑升级实现方式。
+ * @Author : Cui
+ * @Date: 2026/4/18 22:12
+ * @Description DataSmart Govern Backend - TaskStatus.java
+ * @Version:1.0.0
+ *
+ * 任务状态常量定义。
+ * 当前先采用简单常量类，而不是立刻引入完整状态机框架，
+ * 原因是现阶段更需要让状态流转规则足够直观、可读、便于学习。
+ *
+ * 当前生命周期主线大致如下：
+ * PENDING -> RUNNING -> SUCCESS / FAILED
+ * RUNNING -> PAUSED -> RUNNING
+ * PENDING / RUNNING / PAUSED -> CANCELLED
+ * FAILED / CANCELLED -> PENDING（通过 retry 重新进入下一轮）
  */
 public final class TaskStatus {
 
     /**
-     * 已创建但未开始执行。
+     * 已登记、待调度、尚未开始执行。
      */
     public static final String PENDING = "PENDING";
 
     /**
-     * 正在执行。
+     * 正在执行中。
      */
     public static final String RUNNING = "RUNNING";
 
@@ -35,7 +44,7 @@ public final class TaskStatus {
     public static final String FAILED = "FAILED";
 
     /**
-     * 被取消。
+     * 被主动取消。
      */
     public static final String CANCELLED = "CANCELLED";
 

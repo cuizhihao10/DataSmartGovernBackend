@@ -36,6 +36,11 @@
         <tag/>
         <url/>
     </scm>
+    <!--
+      统一版本管理是多模块项目的基础能力。
+      Spring Cloud、MySQL、Redis 等公共依赖集中在父工程维护，
+      可以避免各子模块自行升级后产生版本漂移和兼容性问题。
+    -->
     <properties>
         <java.version>21</java.version>
         <spring-cloud.version>2023.0.3</spring-cloud.version>
@@ -71,10 +76,14 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
-            <!-- MySQL -->
+            <!--
+              使用新的 Connector/J 坐标。
+              旧的 mysql:mysql-connector-java 已经被迁移，
+              继续使用会在构建时产生干扰性的 relocation 警告。
+            -->
             <dependency>
-                <groupId>mysql</groupId>
-                <artifactId>mysql-connector-java</artifactId>
+                <groupId>com.mysql</groupId>
+                <artifactId>mysql-connector-j</artifactId>
                 <version>${mysql.version}</version>
             </dependency>
             <!-- Redis -->
@@ -98,8 +107,7 @@
         </dependencies>
     </dependencyManagement>
     <dependencies>
-        <!-- Common dependencies can be added here if needed -->
-        <!-- Lombok for reducing boilerplate code -->
+        <!-- Lombok 放在父工程统一声明，子模块就不需要重复定义。 -->
         <dependency>
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>

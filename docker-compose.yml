@@ -1,7 +1,8 @@
 version: '3.8'
 
 services:
-  # MySQL Database
+  # MySQL 是当前已实现业务模块的核心事务库。
+  # 挂载初始化脚本可以让本地启动后直接具备可运行的基础表结构。
   mysql:
     image: mysql:8.0
     container_name: datasmart-mysql
@@ -19,7 +20,7 @@ services:
       - datasmart-network
     restart: unless-stopped
 
-  # Redis Cache
+  # Redis 预留给缓存、分布式协调和短生命周期运行态数据。
   redis:
     image: redis:7.2-alpine
     container_name: datasmart-redis
@@ -31,7 +32,7 @@ services:
       - datasmart-network
     restart: unless-stopped
 
-  # Kafka Message Queue
+  # Kafka + Zookeeper 为后续模块解耦协作提供异步事件基础设施。
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.0
     container_name: datasmart-zookeeper
@@ -62,7 +63,7 @@ services:
       - datasmart-network
     restart: unless-stopped
 
-  # Neo4j Graph Database
+  # Neo4j 预留给血缘关系、知识图谱和治理关联建模能力。
   neo4j:
     image: neo4j:5.20
     container_name: datasmart-neo4j
@@ -79,7 +80,7 @@ services:
       - datasmart-network
     restart: unless-stopped
 
-  # MinIO Object Storage
+  # MinIO 用于保存报表、文件和不适合直接放入 MySQL 的大对象。
   minio:
     image: minio/minio:latest
     container_name: datasmart-minio
@@ -96,7 +97,7 @@ services:
       - datasmart-network
     restart: unless-stopped
 
-  # Nacos Service Discovery
+  # Nacos 是微服务注册与配置中心，网关和各业务模块都会依赖它。
   nacos:
     image: nacos/nacos-server:v2.3.0
     container_name: datasmart-nacos
@@ -120,7 +121,7 @@ services:
       - datasmart-network
     restart: unless-stopped
 
-  # Prometheus Monitoring
+  # Prometheus 负责抓取并存储可观测性层暴露的指标数据。
   prometheus:
     image: prom/prometheus:latest
     container_name: datasmart-prometheus
@@ -133,7 +134,7 @@ services:
       - datasmart-network
     restart: unless-stopped
 
-  # Grafana Dashboard
+  # Grafana 用于指标可视化以及后续的告警看板展示。
   grafana:
     image: grafana/grafana:latest
     container_name: datasmart-grafana
@@ -147,7 +148,7 @@ services:
       - datasmart-network
     restart: unless-stopped
 
-  # Chroma Vector Database
+  # Chroma 为后续检索增强或语义治理助手能力预留向量存储支撑。
   chroma:
     image: chromadb/chroma:latest
     container_name: datasmart-chroma

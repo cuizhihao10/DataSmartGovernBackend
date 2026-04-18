@@ -1,3 +1,9 @@
+/**
+ * @Author : Cui
+ * @Date: 2026/4/18 21:30
+ * @Description DataSmart Govern Backend - RunQualityCheckRequest.java
+ * @Version:1.0.0
+ */
 package com.czh.datasmart.govern.quality.controller.dto;
 
 import jakarta.validation.constraints.DecimalMin;
@@ -8,25 +14,39 @@ import lombok.Data;
 import java.math.BigDecimal;
 
 /**
- * 执行质量检测请求。
- * <p>
- * 当前阶段这里不直接去扫真实数据，而是接受外部传入的观测值，
- * 用来先打通规则执行与报告生成链路。
+ * 执行质量检测请求体。
+ * 当前阶段先不直接扫描真实数据源，而是由外部传入观测值，
+ * 用来打通“规则执行 -> 报告生成”这条主链路。
+ * 后续当数据源模块和任务模块进一步联动后，再把观测值来源替换为真实计算结果。
  */
 @Data
 public class RunQualityCheckRequest {
 
-    @NotNull(message = "measured value must not be null")
-    @DecimalMin(value = "0", inclusive = true, message = "measured value must be greater than or equal to 0")
+    /**
+     * 实际观测值。
+     */
+    @NotNull(message = "实际观测值不能为空")
+    @DecimalMin(value = "0", inclusive = true, message = "实际观测值必须大于等于 0")
     private BigDecimal measuredValue;
 
-    @NotNull(message = "sample size must not be null")
-    @Min(value = 0, message = "sample size must be greater than or equal to 0")
+    /**
+     * 样本量。
+     * 用于表达本次检测基于多大范围的数据。
+     */
+    @NotNull(message = "样本量不能为空")
+    @Min(value = 0, message = "样本量必须大于等于 0")
     private Integer sampleSize;
 
-    @NotNull(message = "exception count must not be null")
-    @Min(value = 0, message = "exception count must be greater than or equal to 0")
+    /**
+     * 异常数量。
+     */
+    @NotNull(message = "异常数量不能为空")
+    @Min(value = 0, message = "异常数量必须大于等于 0")
     private Integer exceptionCount;
 
+    /**
+     * 备注信息。
+     * 可用于补充检测上下文、来源说明或人工说明。
+     */
     private String notes;
 }

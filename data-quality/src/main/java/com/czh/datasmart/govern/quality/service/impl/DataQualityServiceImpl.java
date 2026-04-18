@@ -1,3 +1,9 @@
+/**
+ * @Author : Cui
+ * @Date: 2026/4/18 21:40
+ * @Description DataSmart Govern Backend - DataQualityServiceImpl.java
+ * @Version:1.0.0
+ */
 package com.czh.datasmart.govern.quality.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
@@ -24,27 +30,36 @@ import java.util.NoSuchElementException;
 
 /**
  * 数据质量服务实现。
- * <p>
- * 当前阶段的 data-quality 模块先聚焦于“规则定义 + 规则执行结果”的最小闭环。
- * 这样做有两个明显好处：
- * 1. 不依赖真实数据源也能先把领域模型和接口契约打稳。
- * 2. 后面当 datasource-management 更成熟后，可以很自然地把真实采样值接进来。
- * <p>
- * 这里的质量检测不是空跑，而是围绕一个很真实的业务问题展开：
- * “当我们拿到某个质量指标的实际观测值时，如何根据预定义规则判断它是否合格，并留下报告？”
+ * 这个类的核心职责，不只是把规则和报告存到数据库，更重要的是把
+ * “业务上定义的质量标准”转换成一次确定性的通过/失败判断。
+ *
+ * 可以把当前实现理解为一个最小可用的数据质量引擎：
+ * 1. 管理规则定义。
+ * 2. 校验规则是否可执行。
+ * 3. 用比较运算符判断实际观测值和期望值。
+ * 4. 把本次判断沉淀成可追溯报告。
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class DataQualityServiceImpl extends ServiceImpl<QualityRuleMapper, QualityRule> implements DataQualityService {
 
+    /**
+     * 检测报告 Mapper。
+     * 规则表负责保存“标准”，报告表负责保存“执行结果”。
+     */
     private final QualityCheckReportMapper qualityCheckReportMapper;
 
+    /**
+     * 创建质量规则。
+     * 当前会完成名称去重、输入归一化、初始状态设置等动作。
+     */
     @Override
     @Transactional
     public QualityRule createRule(String name, String ruleType, String targetObject, String comparisonOperator,
                                   BigDecimal expectedValue, String severity, String description) {
         ensureRuleNameNotDuplicated(name, null);
+
         QualityRule rule = new QualityRule();
         rule.setName(name);
         rule.setRuleType(QualityRuleType.fromValue(ruleType).name());
@@ -57,10 +72,16 @@ public class DataQualityServiceImpl extends ServiceImpl<QualityRuleMapper, Quali
         rule.setCreateTime(LocalDateTime.now());
         rule.setUpdateTime(LocalDateTime.now());
         save(rule);
-        log.info("Created quality rule: {}", rule.getId());
+
+        log.info("创建质量规则成功，ruleId={}", rule.getId());
         return rule;
     }
 
+    /**
+     * 更新质量规则。
+     * 当前允许调整名称、目标、运算符、阈值、严重级别和说明，
+     * 但不允许在这里直接改 ruleType，以保持规则基础分类稳定。
+     */
     @Override
     @Transactional
     public QualityRule updateRule(Long id, String name, String targetObject, String comparisonOperator,
@@ -77,10 +98,15 @@ public class DataQualityServiceImpl extends ServiceImpl<QualityRuleMapper, Quali
         rule.setDescription(description);
         rule.setUpdateTime(LocalDateTime.now());
         updateById(rule);
-        log.info("Updated quality rule: {}", id);
+
+        log.info("更新质量规则成功，ruleId={}", id);
         return rule;
     }
 
+    /**
+     * 启用规则。
+     * 只有未删除规则才允许启用。
+     */
     @Override
     @Transactional
     public QualityRule enableRule(Long id) {
@@ -89,10 +115,15 @@ public class DataQualityServiceImpl extends ServiceImpl<QualityRuleMapper, Quali
         rule.setStatus(QualityRuleStatus.ACTIVE);
         rule.setUpdateTime(LocalDateTime.now());
         updateById(rule);
-        log.info("Enabled quality rule: {}", id);
+
+        log.info("启用质量规则成功，ruleId={}", id);
         return rule;
     }
 
+    /**
+     * 停用规则。
+     * 停用后规则仍然存在，但不再允许执行检测。
+     */
     @Override
     @Transactional
     public QualityRule disableRule(Long id) {
@@ -101,10 +132,15 @@ public class DataQualityServiceImpl extends ServiceImpl<QualityRuleMapper, Quali
         rule.setStatus(QualityRuleStatus.INACTIVE);
         rule.setUpdateTime(LocalDateTime.now());
         updateById(rule);
-        log.info("Disabled quality rule: {}", id);
+
+        log.info("停用质量规则成功，ruleId={}", id);
         return rule;
     }
 
+    /**
+     * 逻辑删除规则。
+     * 当前不做物理删除，目的是保留规则生命周期痕迹，便于未来审计与恢复设计。
+     */
     @Override
     @Transactional
     public QualityRule deleteRule(Long id) {
@@ -112,21 +148,20 @@ public class DataQualityServiceImpl extends ServiceImpl<QualityRuleMapper, Quali
         rule.setStatus(QualityRuleStatus.DELETED);
         rule.setUpdateTime(LocalDateTime.now());
         updateById(rule);
-        log.info("Deleted quality rule logically: {}", id);
+
+        log.info("逻辑删除质量规则成功，ruleId={}", id);
         return rule;
     }
 
     /**
      * 执行质量检测。
-     * <p>
-     * 当前这一步采用“规则 + 观测值”的方式生成报告，核心原理非常直接：
-     * 1. 从规则中拿到 expectedValue 和 comparisonOperator。
-     * 2. 用实际观测值 measuredValue 与期望阈值比较。
-     * 3. 生成 PASSED / FAILED 的检测结论。
-     * 4. 把结果写入质量报告表。
-     * <p>
-     * 这个模型非常适合作为未来真实检测任务的基础骨架，
-     * 因为无论实际观测值来自 SQL、流式计算还是 AI 推断，最终都还是要归结为这一步比较。
+     * 当前的核心原理是“规则 + 观测值”：
+     * 1. 读取规则并校验规则处于可执行状态。
+     * 2. 根据规则中的比较运算符，判断实际观测值与期望值的关系。
+     * 3. 生成一份报告快照，把本次判断的上下文和结果持久化。
+     *
+     * 这种设计的价值在于，不管未来观测值来自 SQL、任务执行器还是 AI 分析，
+     * 最终都能落成统一的判断逻辑和统一的报告模型。
      */
     @Override
     @Transactional
@@ -135,7 +170,7 @@ public class DataQualityServiceImpl extends ServiceImpl<QualityRuleMapper, Quali
         QualityRule rule = getRequiredRule(ruleId);
         ensureNotDeleted(rule);
         if (!QualityRuleStatus.ACTIVE.equals(rule.getStatus())) {
-            throw new IllegalStateException("Only active rules can run quality checks");
+            throw new IllegalStateException("只有启用状态的规则才能执行质量检测");
         }
 
         QualityComparisonOperator operator = QualityComparisonOperator.fromValue(rule.getComparisonOperator());
@@ -156,51 +191,77 @@ public class DataQualityServiceImpl extends ServiceImpl<QualityRuleMapper, Quali
         report.setCreateTime(LocalDateTime.now());
         qualityCheckReportMapper.insert(report);
 
-        log.info("Ran quality check, ruleId={}, reportId={}, status={}",
+        log.info("执行质量检测完成，ruleId={}, reportId={}, status={}",
                 ruleId, report.getId(), report.getCheckStatus());
         return report;
     }
 
+    /**
+     * 查询某条规则下的历史报告。
+     * 结果按创建时间倒序返回，便于优先看到最近一次检测结果。
+     */
     @Override
     public List<QualityCheckReport> listReportsByRuleId(Long ruleId) {
         getRequiredRule(ruleId);
-        return qualityCheckReportMapper.selectList(new LambdaQueryWrapper<QualityCheckReport>()
-                .eq(QualityCheckReport::getRuleId, ruleId)
+        LambdaQueryWrapper<QualityCheckReport> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(QualityCheckReport::getRuleId, ruleId)
                 .orderByDesc(QualityCheckReport::getCreateTime)
-                .orderByDesc(QualityCheckReport::getId));
+                .orderByDesc(QualityCheckReport::getId);
+        return qualityCheckReportMapper.selectList(wrapper);
     }
 
+    /**
+     * 查询必须存在的规则。
+     * 这是服务层里非常常见的收口方法，用于消除重复的“查询 + 判空”模板代码。
+     */
     private QualityRule getRequiredRule(Long id) {
         QualityRule rule = getById(id);
         if (rule == null) {
-            throw new NoSuchElementException("Quality rule not found: " + id);
+            throw new NoSuchElementException("质量规则不存在: " + id);
         }
         return rule;
     }
 
+    /**
+     * 校验规则是否已被逻辑删除。
+     * 被删除规则不应该再参与修改、启停和执行。
+     */
     private void ensureNotDeleted(QualityRule rule) {
         if (QualityRuleStatus.DELETED.equals(rule.getStatus())) {
-            throw new IllegalStateException("Quality rule has been deleted: " + rule.getId());
+            throw new IllegalStateException("质量规则已删除: " + rule.getId());
         }
     }
 
+    /**
+     * 校验规则名称是否重复。
+     * 规则名称在管理界面通常是主要识别字段，因此尽量保持唯一更利于治理和排障。
+     */
     private void ensureRuleNameNotDuplicated(String name, Long currentId) {
-        LambdaQueryWrapper<QualityRule> wrapper = new LambdaQueryWrapper<QualityRule>()
-                .eq(QualityRule::getName, name)
+        LambdaQueryWrapper<QualityRule> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(QualityRule::getName, name)
                 .ne(currentId != null, QualityRule::getId, currentId)
                 .ne(QualityRule::getStatus, QualityRuleStatus.DELETED);
         if (count(wrapper) > 0) {
-            throw new IllegalArgumentException("quality rule name already exists: " + name);
+            throw new IllegalArgumentException("质量规则名称已存在: " + name);
         }
     }
 
+    /**
+     * 构造质量检测摘要。
+     * 摘要字段的存在意义，是让报告在列表视图里就能被快速阅读，
+     * 而不需要每次都展开全部明细。
+     */
     private String buildSummary(QualityRule rule, BigDecimal measuredValue, boolean passed,
                                 Integer sampleSize, Integer exceptionCount) {
-        return "Rule [" + rule.getName() + "] on target [" + rule.getTargetObject() + "] expected "
-                + rule.getComparisonOperator() + " " + rule.getExpectedValue()
-                + ", actual=" + measuredValue
-                + ", sampleSize=" + sampleSize
-                + ", exceptionCount=" + exceptionCount
-                + ", result=" + (passed ? QualityCheckStatus.PASSED : QualityCheckStatus.FAILED);
+        return String.format(
+                "规则[%s]针对对象[%s]的检测结果为[%s]，实际值=%s，期望值=%s，样本量=%d，异常数=%d",
+                rule.getName(),
+                rule.getTargetObject(),
+                passed ? "PASSED" : "FAILED",
+                measuredValue,
+                rule.getExpectedValue(),
+                sampleSize,
+                exceptionCount
+        );
     }
 }

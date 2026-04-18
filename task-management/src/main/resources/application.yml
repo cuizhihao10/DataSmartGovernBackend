@@ -1,43 +1,58 @@
+# 每个模块保留独立端口，便于本地单独启动和调试。
+# 真正的跨服务入口在网关层，这里主要用于模块自身运行。
 server:
   port: 8081
 
 spring:
   application:
+    # 服务名会参与注册发现、日志标识和跨模块调用识别。
     name: task-management
   profiles:
     active: dev
   datasource:
+    # 任务生命周期的持久化状态保存在 MySQL 中。
+    # 当前使用本地开发库，后续生产环境应通过环境变量或配置中心注入。
     url: jdbc:mysql://localhost:3306/datasmart_govern?useSSL=false&serverTimezone=UTC
     username: root
     password: password
     driver-class-name: com.mysql.cj.jdbc.Driver
   redis:
+    # Redis 当前主要作为后续缓存、分布式协作和短期状态存储的预留依赖。
     host: localhost
     port: 6379
   kafka:
+    # Kafka 当前还未深度接入任务流转，但已经作为后续异步事件总线预留。
+    # 后续可以用来广播任务创建、状态变更、失败告警等事件。
     bootstrap-servers: localhost:9092
   cloud:
     nacos:
       discovery:
+        # Nacos 用于服务注册与发现，支撑网关和模块间调用定位。
         server-addr: localhost:8848
 
 mybatis-plus:
+  # 即使当前大多数查询依赖 MyBatis-Plus 自动生成，
+  # 仍然保留 mapper-locations，便于后续接入复杂 SQL。
   mapper-locations: classpath:/mapper/*.xml
   type-aliases-package: com.czh.datasmart.govern.task.entity
   configuration:
+    # 开启下划线到驼峰映射，降低数据库字段与 Java 字段命名转换成本。
     map-underscore-to-camel-case: true
 
 logging:
   level:
     com.czh.datasmart: INFO
   pattern:
+    # 统一控制台日志格式，便于本地调试和后续日志采集。
     console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
 
 management:
   endpoints:
     web:
       exposure:
+        # 当前先暴露最基础但最实用的健康、信息和指标端点。
         include: health,info,metrics
   endpoint:
     health:
+      # 仅在授权情况下展示细节，避免健康检查泄露过多内部信息。
       show-details: when-authorized
