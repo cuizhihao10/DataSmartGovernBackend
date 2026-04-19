@@ -7,12 +7,17 @@ import lombok.Data;
 
 /**
  * @Author : Cui
- * @Date: 2026/4/18 23:18
+ * @Date: 2026/4/19 20:28
  * @Description DataSmart Govern Backend - CreateSyncTaskRequest.java
  * @Version:1.0.0
  *
  * 创建同步任务请求。
- * 与模板不同，任务请求必须带上运行层面需要的信息，例如负责人、优先级、触发类型、超时等。
+ * 与模板不同，任务请求必须携带运行层面需要的治理信息，例如负责人、优先级、触发方式和超时限制。
+ *
+ * 这一轮额外补上了 `actorRole`，原因是：
+ * 1. 任务创建本身就是一种需要被授权的控制面动作；
+ * 2. 如果创建接口不带角色，权限治理就只能覆盖后续动作，前面的“入口动作”仍然是裸奔的；
+ * 3. 这也更符合 permission-admin 规划里“按钮/动作级权限”的产品方向。
  */
 @Data
 public class CreateSyncTaskRequest {
@@ -30,7 +35,7 @@ public class CreateSyncTaskRequest {
 
     /**
      * 是否需要审批。
-     * 当前先通过这个布尔值决定初始审批状态，后续可升级为按模板风险等级、数据级别自动判定。
+     * 当前先由调用方显式指定，后续可以演进成按模板风险等级、数据敏感级别自动决定。
      */
     @NotNull(message = "approvalRequired 不能为空")
     private Boolean approvalRequired;
@@ -63,6 +68,15 @@ public class CreateSyncTaskRequest {
 
     private String incidentNote;
 
+    /**
+     * 创建动作发起人。
+     */
     @NotNull(message = "createdBy 不能为空")
     private Long createdBy;
+
+    /**
+     * 创建动作发起人的角色。
+     */
+    @NotBlank(message = "actorRole 不能为空")
+    private String actorRole;
 }

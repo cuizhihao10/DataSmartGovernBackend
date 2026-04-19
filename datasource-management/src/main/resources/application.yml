@@ -1,4 +1,5 @@
-# 数据源治理模块独立端口运行，便于把“注册管理”和“执行消费”调试分开。
+# 数据源治理模块独立运行端口。
+# 这样可以把“数据源/同步控制面”与其他模块分开调试，更适合当前多模块学习和演进。
 server:
   port: 8082
 
@@ -9,24 +10,25 @@ spring:
   profiles:
     active: dev
   datasource:
-    # MySQL 存储的是数据源元数据，而不是外部系统中的业务数据本身。
+    # 这里连接的是平台自己的治理库，而不是外部业务系统本身。
+    # 外部业务数据源的信息会存到 datasource_config 表中，再由平台按需连接。
     url: jdbc:mysql://localhost:3306/datasmart_govern?useSSL=false&serverTimezone=UTC
     username: root
     password: password
     driver-class-name: com.mysql.cj.jdbc.Driver
   kafka:
-    # Kafka 预留给后续数据源元数据变更通知、扫描任务触发等能力。
+    # 先预留给后续元数据变更通知、同步任务事件、执行器异步回调等场景。
     bootstrap-servers: localhost:9092
   cloud:
     nacos:
       discovery:
-        # Nacos 负责服务注册与发现，便于网关和其他模块定位当前服务。
+        # 当前继续保留 Nacos 作为本地服务发现中心，便于后续由 gateway 或其他模块发现本服务。
         server-addr: localhost:8848
 
 mybatis-plus:
-  # 保留 mapper-locations，便于后续接入更复杂的自定义 SQL。
+  # 预留 XML Mapper 扩展能力，后续如果出现复杂统计、批量查询或专门调度 SQL，可以继续扩展这里。
   mapper-locations: classpath:/mapper/*.xml
-  # type-aliases 可以减少后续 XML 查询里的实体全限定名噪音。
+  # 给 XML 或结果映射提供实体别名，减少后续配置噪音。
   type-aliases-package: com.czh.datasmart.govern.datasource.entity
   configuration:
     map-underscore-to-camel-case: true
@@ -50,22 +52,76 @@ datasmart:
   datasource:
     metadata-discovery:
       # 默认一次最多返回多少张表。
-      # 这个值主要影响“前端预览式探查”场景，避免一次把整个大库全部展开。
+      # 这决定了“在线浏览型探查”的默认体验，避免前端一次把整个大库全部展开。
       default-max-tables: 20
-      # 调用方可请求的绝对上限，防止接口被误用成全库扫描工具。
+      # 调用方即使显式传参，也不能超过这个绝对上限。
       absolute-max-tables: 100
       # 默认每张表最多展开多少个字段。
-      # 对超宽表而言，这个限制能明显降低响应体大小。
       default-max-columns-per-table: 50
-      # 每张表字段展开的绝对上限。
+      # 每张表字段展开的绝对上限，防止超宽表直接把接口拖垮。
       absolute-max-columns-per-table: 200
-      # 样本预览默认行数。
+      # 默认样本预览行数。
       default-sample-row-limit: 5
-      # 样本预览绝对上限。
+      # 样本预览的绝对上限。
       absolute-sample-row-limit: 20
-      # 元数据查询超时秒数。
-      # 如果后续遇到大库、慢库或网络波动，这个值会直接影响探查接口的可控性。
+      # 元数据 JDBC 查询超时秒数。
       jdbc-query-timeout-seconds: 5
-      # 简单缓存有效期，单位秒。
-      # 当前先使用服务内内存缓存，目标是减少短时间重复点击带来的重复探查开销。
+      # 简单内存缓存有效期，单位秒。
       cache-ttl-seconds: 60
+
+    sync-executor:
+      # 执行器一次认领前最多扫描多少条候选记录。
+      # 当前实现还是“数据库粗过滤 + Java 侧排序”的第一版，所以需要显式限制扫描范围。
+      claim-scan-limit: 50
+
+      # 执行器认领任务后的默认租约时长，单位秒。
+      # 只要执行器持续发送心跳，平台就会不断刷新这个过期时间。
+      lease-duration-seconds: 120
+
+      # 显式恢复过期租约时，一次最多处理多少条任务。
+      expired-lease-recovery-batch-size: 50
+
+      # 执行器认领前是否自动先清理一轮过期租约。
+      auto-recover-expired-leases-before-claim: true
+
+      # 租约过期后是否自动重新放回队列。
+      auto-requeue-expired-leases: true
+
+      # 每个租户最多允许多少个活跃运行任务。
+      max-running-tasks-per-tenant: 4
+
+      # 每个数据源最多允许多少个活跃任务同时占用。
+      # 这里会同时约束源端和目标端。
+      max-running-tasks-per-datasource: 3
+
+      # 全局待执行队列最多允许多少条任务。
+      # 这是第一层积压保护，用来避免系统在高峰或执行器异常时无上限堆积。
+      max-queued-tasks-global: 200
+
+      # 每个租户最多允许多少条待执行任务。
+      # 这是第二层积压保护，用来防止单个租户长时间挤占整个队列空间。
+      max-queued-tasks-per-tenant: 50
+
+      # 是否开启租户维度的公平认领。
+      # 开启后会先为每个租户选一个代表候选，再在这些候选之间排序，减少大租户淹没小租户的风险。
+      enable-tenant-queue-fairness: true
+
+      # 是否允许人工直接 run 绕过队列。
+      # 当前开发阶段保留 true 方便调试；更接近生产环境时通常会收紧为 false。
+      allow-manual-run-bypass-queue: true
+
+      # 排队多长时间还没有被认领，就视为“队列老化”。
+      # 老化并不一定说明任务失败，但通常意味着执行器容量、优先级策略或上游提交节奏需要复查。
+      queued-task-aging-threshold-seconds: 900
+
+      # 一次老化巡检最多扫描多少条任务。
+      # 这里限制巡检批量大小，是为了避免高积压时一次性更新过多记录。
+      queued-task-aging-scan-limit: 100
+
+      # 全局队列预警阈值。
+      # 它通常比 max-queued-tasks-global 更小，用于在真正打满前提前暴露风险。
+      queue-alert-threshold-global: 120
+
+      # 单租户队列预警阈值。
+      # 当某个租户持续积压到这个级别时，往往意味着租户级配额、执行器能力或提交策略需要治理。
+      queue-alert-threshold-per-tenant: 20

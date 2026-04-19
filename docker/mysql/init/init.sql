@@ -101,6 +101,7 @@ CREATE TABLE IF NOT EXISTS sync_template (
     target_schema_name VARCHAR(128) COMMENT '目标端 schema 名称',
     target_object_name VARCHAR(128) NOT NULL COMMENT '目标端对象名称',
     sync_mode VARCHAR(64) NOT NULL COMMENT '同步模式，例如 FULL、CDC、BACKFILL',
+    write_strategy VARCHAR(64) NOT NULL DEFAULT 'APPEND' COMMENT '写入策略，例如 APPEND、UPSERT、INSERT_IGNORE、REPLACE、OVERWRITE',
     primary_key_field VARCHAR(128) COMMENT '主键字段，用于去重、幂等和回放策略',
     incremental_field VARCHAR(128) COMMENT '增量字段，用于时间增量或 ID 增量模式',
     field_mapping_config TEXT COMMENT '字段映射配置 JSON',
@@ -136,11 +137,15 @@ CREATE TABLE IF NOT EXISTS sync_task (
     owner_id BIGINT NOT NULL COMMENT '负责人 ID',
     last_execution_id BIGINT COMMENT '最近一次执行记录 ID',
     next_run_at DATETIME COMMENT '下一次计划运行时间',
+    queued_at DATETIME COMMENT '最近一次进入队列时间',
+    current_executor_id VARCHAR(128) COMMENT '当前认领任务的执行器实例标识',
+    dispatch_lease_expire_at DATETIME COMMENT '当前任务执行租约到期时间',
     enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用任务',
     operator_attention_required TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否需要人工关注',
     timeout_seconds INT NOT NULL COMMENT '任务超时秒数',
     max_retry_count INT NOT NULL DEFAULT 3 COMMENT '最大重试次数',
     retry_count INT NOT NULL DEFAULT 0 COMMENT '当前已重试次数',
+    queue_attempt_count INT NOT NULL DEFAULT 0 COMMENT '累计入队次数',
     latest_error_summary VARCHAR(1024) COMMENT '最近一次错误摘要',
     incident_note VARCHAR(1024) COMMENT '人工处置说明或事件备注',
     created_by BIGINT NOT NULL COMMENT '创建人 ID',
@@ -151,7 +156,9 @@ CREATE TABLE IF NOT EXISTS sync_task (
     INDEX idx_sync_task_state (tenant_id, current_state),
     INDEX idx_sync_task_owner (tenant_id, owner_id),
     INDEX idx_sync_task_approval (tenant_id, approval_state),
-    INDEX idx_sync_task_next_run (tenant_id, next_run_at)
+    INDEX idx_sync_task_next_run (tenant_id, next_run_at),
+    INDEX idx_sync_task_queue (tenant_id, current_state, queued_at),
+    INDEX idx_sync_task_executor (current_executor_id, dispatch_lease_expire_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据同步任务表';
 
 -- sync_execution 记录任务的每一次实际执行。
@@ -169,12 +176,16 @@ CREATE TABLE IF NOT EXISTS sync_execution (
     failed_record_count BIGINT DEFAULT 0 COMMENT '失败记录数',
     error_summary TEXT COMMENT '错误摘要',
     triggered_by BIGINT COMMENT '触发人 ID',
+    executor_id VARCHAR(128) COMMENT '执行器实例标识',
+    heartbeat_at DATETIME COMMENT '最近一次执行器心跳时间',
+    lease_expire_at DATETIME COMMENT '执行租约到期时间',
     trigger_reason VARCHAR(512) COMMENT '触发原因说明',
     create_time DATETIME NOT NULL COMMENT '创建时间',
     update_time DATETIME NOT NULL COMMENT '更新时间',
     INDEX idx_sync_execution_task_no (sync_task_id, execution_no),
     INDEX idx_sync_execution_state (sync_task_id, state),
-    INDEX idx_sync_execution_started_at (started_at)
+    INDEX idx_sync_execution_started_at (started_at),
+    INDEX idx_sync_execution_executor (executor_id, lease_expire_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据同步执行记录表';
 
 -- sync_checkpoint 是断点续跑、分区恢复和回放能力的基础。

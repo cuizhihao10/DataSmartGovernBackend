@@ -11,7 +11,15 @@ import lombok.Data;
  * @Version:1.0.0
  *
  * 创建同步模板请求。
- * 这个请求对象关注的是“模板定义”本身，因此不包含任务运行期的状态、执行编号等字段。
+ * 这个对象描述的是“模板定义本身”，而不是某一次运行实例。
+ * 因此这里不会出现任务状态、执行编号、运行统计等字段。
+ *
+ * 从产品建模角度看，模板请求应该重点表达：
+ * - 数据从哪里来、写到哪里去；
+ * - 采用什么同步模式；
+ * - 采用什么写入策略；
+ * - 用什么字段做增量与冲突判定；
+ * - 字段映射、过滤、分区、重试、超时等策略如何配置。
  */
 @Data
 public class CreateSyncTemplateRequest {
@@ -46,7 +54,7 @@ public class CreateSyncTemplateRequest {
 
     /**
      * 源端对象名称。
-     * 对关系型数据库来说通常是表或视图名。
+     * 对关系型数据库来说通常就是表名或视图名。
      */
     @NotBlank(message = "sourceObjectName 不能为空")
     private String sourceObjectName;
@@ -58,29 +66,40 @@ public class CreateSyncTemplateRequest {
     private Long targetDatasourceId;
 
     /**
-     * 目标端 schema 名称。
+     * 目标 schema 名称。
      */
     private String targetSchemaName;
 
     /**
-     * 目标端对象名称。
+     * 目标对象名称。
      */
     @NotBlank(message = "targetObjectName 不能为空")
     private String targetObjectName;
 
     /**
      * 同步模式。
+     * 例如 FULL、INCREMENTAL_TIME、INCREMENTAL_ID、BACKFILL。
      */
     @NotBlank(message = "syncMode 不能为空")
     private String syncMode;
 
     /**
+     * 写入策略。
+     * 如果调用方不传，服务层会自动采用更保守的默认值 APPEND。
+     * 这里不强制前端必填，是为了兼容当前仓库已有接口调用方式，
+     * 但从产品设计角度，更推荐调用方显式传值。
+     */
+    private String writeStrategy;
+
+    /**
      * 主键字段。
+     * 该字段会影响幂等写入、去重、冲突判定和 upsert 策略。
      */
     private String primaryKeyField;
 
     /**
      * 增量字段。
+     * 时间增量和 ID 增量模式下通常需要该字段。
      */
     private String incrementalField;
 
@@ -95,7 +114,7 @@ public class CreateSyncTemplateRequest {
     private String filterConfig;
 
     /**
-     * 分片/分区配置 JSON。
+     * 分片或分区配置 JSON。
      */
     private String partitionConfig;
 

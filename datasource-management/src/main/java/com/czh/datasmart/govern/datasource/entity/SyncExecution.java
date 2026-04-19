@@ -16,12 +16,12 @@ import java.time.LocalDateTime;
  * @Version:1.0.0
  *
  * 同步执行记录实体。
- * 每触发一次运行，都应该生成一条执行记录，而不是把所有统计直接覆盖回任务表。
- * 这样做可以保留完整运行历史，支持后续实现：
- * - 失败重试分析；
- * - 吞吐和成功率统计；
- * - 审计与故障复盘；
- * - 按执行编号回放和下载产物。
+ * 每触发一次运行，都应该生成一条独立执行记录，而不是把统计信息直接覆盖回任务表。
+ *
+ * 执行记录独立建模的价值在于：
+ * 1. 可以完整保留历史运行轨迹。
+ * 2. 可以支撑失败重试分析、吞吐统计和 SLA 计算。
+ * 3. 可以把检查点、错误样本、运行日志都挂到具体的一次执行上。
  */
 @Data
 @TableName("sync_execution")
@@ -39,14 +39,14 @@ public class SyncExecution {
     private Long syncTaskId;
 
     /**
-     * 同一任务下的第几次执行。
-     * 这个字段比单纯依赖 create_time 更适合面向人类阅读和问题排查。
+     * 在同一任务下的第几次执行。
+     * 这个字段比单纯依赖 create_time 更适合人类阅读和排查问题。
      */
     private Long executionNo;
 
     /**
      * 当前执行状态。
-     * 与任务主状态相似，但更偏向单次运行视角。
+     * 它与任务主状态类似，但更偏向“某一次运行实例当前处于什么阶段”。
      */
     private String state;
 
@@ -61,9 +61,8 @@ public class SyncExecution {
     private LocalDateTime finishedAt;
 
     /**
-     * 当前检查点引用。
-     * 这里保留一个摘要型字段，方便列表快速浏览；
-     * 真正可恢复的明细仍然存放在 sync_checkpoint 中。
+     * 当前检查点引用摘要。
+     * 便于在列表页快速看到任务大概跑到哪里，真正的明细仍保存在 sync_checkpoint 中。
      */
     private String checkpointRef;
 
@@ -84,6 +83,7 @@ public class SyncExecution {
 
     /**
      * 错误摘要。
+     * 当前只保留摘要信息，后续如要支持错误样本中心，可再拆出专门错误表。
      */
     private String errorSummary;
 
@@ -93,8 +93,26 @@ public class SyncExecution {
     private Long triggeredBy;
 
     /**
+     * 当前执行器实例标识。
+     * 当前阶段先记录为字符串，便于兼容将来的容器实例 ID、主机名、节点名或服务账户标识。
+     */
+    private String executorId;
+
+    /**
+     * 最近一次心跳时间。
+     * 它主要服务于执行器保活和失联检测，而不是普通用户界面展示。
+     */
+    private LocalDateTime heartbeatAt;
+
+    /**
+     * 执行租约失效时间。
+     * 平台可以借助该字段判断某次执行是否已经长时间无人续租，从而为后续的失联恢复预留依据。
+     */
+    private LocalDateTime leaseExpireAt;
+
+    /**
      * 触发原因。
-     * 例如手工运行、系统恢复、回放、补数等。
+     * 例如手工执行、系统恢复、回放、补数等。
      */
     private String triggerReason;
 

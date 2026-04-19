@@ -7,11 +7,17 @@ import lombok.Data;
 
 /**
  * @Author : Cui
- * @Date: 2026/4/18 23:18
+ * @Date: 2026/4/19 20:28
  * @Description DataSmart Govern Backend - UpdateSyncTaskRequest.java
  * @Version:1.0.0
  *
  * 更新同步任务请求。
+ * 这里更新的是任务的治理属性，而不是底层模板定义本身。
+ *
+ * 当前也显式补上 `actorRole`，让“改配任务”能进入本地权限矩阵：
+ * - 谁可以改普通任务；
+ * - 谁只能改自己负责的任务；
+ * - 谁完全不能改，只能看或审计。
  */
 @Data
 public class UpdateSyncTaskRequest {
@@ -51,6 +57,15 @@ public class UpdateSyncTaskRequest {
 
     private String incidentNote;
 
+    /**
+     * 更新动作发起人。
+     */
     @NotNull(message = "updatedBy 不能为空")
     private Long updatedBy;
+
+    /**
+     * 更新动作发起人的角色。
+     */
+    @NotBlank(message = "actorRole 不能为空")
+    private String actorRole;
 }
