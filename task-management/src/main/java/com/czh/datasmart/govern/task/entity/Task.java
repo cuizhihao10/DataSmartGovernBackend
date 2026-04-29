@@ -99,6 +99,75 @@ public class Task {
     private Integer maxRetryCount;
 
     /**
+     * 当前连续延迟回队列次数。
+     *
+     * <p>该字段专门用于 DEFERRED 背压场景，和 retryCount 不是同一个概念：
+     * - retryCount 统计业务失败后的恢复尝试；
+     * - deferCount 统计任务被执行器认领后，因为容量、配额或限流原因主动退避的次数。
+     *
+     * <p>为什么要放在任务主表：
+     * 列表页和运营后台需要快速识别“是否有任务一直被退避”，如果只从日志表实时聚合会比较重。
+     * 主表保存当前连续计数，历史细节仍然通过 task_execution_log 和 task_execution_run 追踪。
+     */
+    private Integer deferCount;
+
+    /**
+     * 最大允许连续延迟回队列次数。
+     *
+     * <p>达到上限后任务会进入 DEAD_LETTER，并设置 attentionRequired=true。
+     * 这样可以阻止任务无限自动回队列，避免容量不足时形成“认领 -> 退避 -> 再认领”的隐性循环。
+     */
+    private Integer maxDeferCount;
+
+    /**
+     * 当前执行记录 ID。
+     *
+     * <p>当任务被执行器认领后，会创建一条 task_execution_run，并把该 run ID 回写到任务主表。
+     * 这样任务详情页可以快速定位“当前正在跑的是哪一次执行”。
+     */
+    private Long currentExecutionRunId;
+
+    /**
+     * 当前执行器 ID。
+     *
+     * <p>用于展示和租约校验。执行器心跳时必须和该字段一致，避免其他实例误续租。
+     */
+    private String currentExecutorId;
+
+    /**
+     * 最近一次入队时间。
+     *
+     * <p>当前 PENDING 暂时等价于可调度队列，queuedTime 用于后续计算排队时长和队列积压。
+     */
+    private LocalDateTime queuedTime;
+
+    /**
+     * 最近一次执行器心跳时间。
+     */
+    private LocalDateTime heartbeatTime;
+
+    /**
+     * 当前执行租约过期时间。
+     *
+     * <p>如果超过这个时间没有收到心跳，系统可以判定执行器失联，并触发超时恢复。
+     */
+    private LocalDateTime leaseExpireTime;
+
+    /**
+     * 是否需要运营人员关注。
+     *
+     * <p>例如执行器心跳超时、重试次数耗尽、长时间排队，都可以把该字段置为 true。
+     */
+    private Boolean attentionRequired;
+
+    /**
+     * 任务执行超时时间，单位秒。
+     *
+     * <p>当前先用于默认租约和未来执行超时策略。不同任务类型后续可以配置不同默认值。
+     */
+    private Integer timeoutSeconds;
+
+    /**
      * 创建时间。
      * 使用 MyBatis-Plus 自动填充，减少样板代码。
      */

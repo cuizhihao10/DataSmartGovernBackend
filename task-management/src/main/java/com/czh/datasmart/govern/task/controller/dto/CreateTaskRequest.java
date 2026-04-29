@@ -62,4 +62,14 @@ public class CreateTaskRequest {
      */
     @Min(value = 0, message = "最大重试次数不能小于 0")
     private Integer maxRetryCount;
+
+    /**
+     * 最大连续延迟回队列次数。
+     *
+     * <p>该字段用于执行器背压场景，例如 worker 并发满、租户配额满或数据源配额满。
+     * 如果任务连续 defer 超过该上限，任务中心会把它放入 DEAD_LETTER 并要求运营人员关注，
+     * 而不是让它无限自动回到可认领队列。
+     */
+    @Min(value = 0, message = "最大连续延迟次数不能小于 0")
+    private Integer maxDeferCount;
 }

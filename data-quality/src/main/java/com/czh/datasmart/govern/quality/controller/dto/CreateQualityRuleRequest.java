@@ -43,6 +43,43 @@ public class CreateQualityRuleRequest {
     private String targetObject;
 
     /**
+     * 检测目标类型。
+     *
+     * <p>允许为空，服务层会默认使用 GENERIC 兼容旧接口。
+     * 如果要让规则未来具备真实扫描能力，建议填写 RELATIONAL_TABLE、RELATIONAL_FIELD、KAFKA_TOPIC、FILE_OBJECT 或 API_ENDPOINT。
+     */
+    private String targetType;
+
+    /**
+     * 数据源 ID。
+     *
+     * <p>关系型表/字段规则建议填写 datasource-management 中的数据源 ID。
+     */
+    private Long dataSourceId;
+
+    /**
+     * 数据库名称。
+     */
+    private String databaseName;
+
+    /**
+     * Schema 名称。
+     */
+    private String schemaName;
+
+    /**
+     * 表名。
+     */
+    private String tableName;
+
+    /**
+     * 字段名。
+     *
+     * <p>RELATIONAL_FIELD 类型规则建议填写，用于定位具体质量检测字段。
+     */
+    private String fieldName;
+
+    /**
      * 比较运算符。
      * 例如 GT、GTE、EQ 等，用于定义“如何判断是否合格”。
      */

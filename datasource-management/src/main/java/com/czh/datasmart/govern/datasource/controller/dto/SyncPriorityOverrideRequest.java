@@ -21,6 +21,12 @@ public class SyncPriorityOverrideRequest {
     @NotBlank(message = "actorRole 不能为空")
     private String actorRole;
 
+    /**
+     * 发起优先级覆盖动作所属租户。
+     */
+    @NotNull(message = "actorTenantId 不能为空")
+    private Long actorTenantId;
+
     @NotBlank(message = "priority 不能为空")
     private String priority;
 

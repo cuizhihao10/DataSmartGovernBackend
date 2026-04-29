@@ -138,4 +138,19 @@ public class CreateSyncTemplateRequest {
      */
     @NotNull(message = "createdBy 不能为空")
     private Long createdBy;
+
+    /**
+     * 发起创建动作的角色。
+     * 当前阶段模板领域已经开始向 permission-admin 的“资源 + 动作”模型收敛，
+     * 所以这里不再只依赖 createdBy 这个用户标识，还需要显式知道“是谁以什么身份发起了这次治理动作”。
+     */
+    @NotBlank(message = "actorRole 不能为空")
+    private String actorRole;
+
+    /**
+     * 发起创建动作的租户上下文。
+     * 模板本身是租户级治理对象，所以这里需要显式给出操作者当前是在哪个租户范围内发起这次配置动作。
+     */
+    @NotNull(message = "actorTenantId 不能为空")
+    private Long actorTenantId;
 }

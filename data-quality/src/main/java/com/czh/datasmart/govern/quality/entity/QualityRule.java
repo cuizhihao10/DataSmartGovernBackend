@@ -57,6 +57,76 @@ public class QualityRule {
     private String targetObject;
 
     /**
+     * 检测目标类型。
+     *
+     * <p>例如 GENERIC、RELATIONAL_TABLE、RELATIONAL_FIELD、KAFKA_TOPIC、FILE_OBJECT、API_ENDPOINT。
+     * 它决定后续应该使用哪类扫描策略，而不是让所有规则都共享同一种检测逻辑。
+     */
+    private String targetType;
+
+    /**
+     * 数据源 ID。
+     *
+     * <p>关系型表或字段规则通常需要绑定 datasource-management 中登记的数据源。
+     * 当前只保存引用 ID，不在质量模块内保存连接密钥，避免破坏数据源管理和密钥管理边界。
+     */
+    private Long dataSourceId;
+
+    /**
+     * 数据库名称。
+     *
+     * <p>部分连接器使用 databaseName 表示物理库，例如 MySQL；有些系统可能只使用 schemaName。
+     */
+    private String databaseName;
+
+    /**
+     * Schema 名称。
+     *
+     * <p>PostgreSQL、Oracle、Hive 等多 schema 场景会用到该字段。
+     */
+    private String schemaName;
+
+    /**
+     * 表名。
+     *
+     * <p>关系型表和字段规则会使用该字段定位具体表。
+     */
+    private String tableName;
+
+    /**
+     * 字段名。
+     *
+     * <p>字段级规则使用该字段定位具体列，例如 email、phone、amount。
+     */
+    private String fieldName;
+
+    /**
+     * 扫描策略编码。
+     *
+     * <p>由目标校验策略写入，表示后续执行器应该按哪类策略扫描该目标。
+     */
+    private String scanStrategy;
+
+    /**
+     * 目标校验状态。
+     *
+     * <p>用于判断规则目标是否已经满足当前平台扫描前提，例如 VALIDATED、INVALID、UNSUPPORTED。
+     */
+    private String targetValidationStatus;
+
+    /**
+     * 目标校验说明。
+     *
+     * <p>保存最近一次校验的人类可读说明，便于管理后台直接展示失败原因。
+     */
+    private String targetValidationMessage;
+
+    /**
+     * 目标最近校验时间。
+     */
+    private LocalDateTime targetValidatedTime;
+
+    /**
      * 比较运算符。
      * 例如 GT、GTE、EQ 等。
      */
@@ -80,9 +150,39 @@ public class QualityRule {
 
     /**
      * 规则状态。
-     * 当前使用 ACTIVE、INACTIVE、DELETED 三种状态管理生命周期。
+     * 当前使用 DRAFT、ACTIVE、INACTIVE、ARCHIVED、DELETED 管理生命周期。
      */
     private String status;
+
+    /**
+     * 规则版本号。
+     *
+     * <p>每次更新规则定义时递增。
+     * 报告会保存 ruleVersion 快照，这样即使规则后来被修改，历史报告仍能解释它基于哪一版规则生成。
+     */
+    private Integer ruleVersion;
+
+    /**
+     * 最近一次检测时间。
+     */
+    private LocalDateTime lastCheckTime;
+
+    /**
+     * 最近一次检测结果：PASSED 或 FAILED。
+     */
+    private String lastCheckStatus;
+
+    /**
+     * 最近一次检测报告 ID。
+     */
+    private Long lastReportId;
+
+    /**
+     * 归档时间。
+     *
+     * <p>归档不是删除，而是表达“这条规则已经退出当前治理流程，但历史仍保留”。
+     */
+    private LocalDateTime archivedTime;
 
     /**
      * 创建时间。

@@ -17,6 +17,10 @@ spring:
           uri: lb://task-management
           predicates:
             - Path=/api/task/**
+        - id: permission-admin
+          uri: lb://permission-admin
+          predicates:
+            - Path=/api/permission/**
         - id: datasource-management
           uri: lb://datasource-management
           predicates:
@@ -47,6 +51,205 @@ spring:
           # 认证服务虽然尚未完整落地，但先把 issuer 契约写清楚，
           # 后续接入统一安全体系时更稳。
           issuer-uri: http://localhost:8080/auth/realms/datasmart
+
+datasmart:
+  gateway:
+    context:
+      # 是否信任外部请求传入的 X-DataSmart-Tenant-Id、X-DataSmart-Actor-Id、X-DataSmart-Actor-Role 等身份上下文。
+      # 默认必须为 false，因为这些字段会直接影响后续权限、审计和租户边界；如果客户端可以随便伪造，就会产生越权风险。
+      # 本地联调或前置企业网关已经完成认证时，可以临时打开；生产环境更推荐由 JWT 解析过滤器写入这些 Header。
+      trust-incoming-platform-context: false
+      # 下游服务通过该字段知道请求来自统一网关，便于审计、日志排查和后续区分外部网关、内部网关、Agent 网关。
+      source-service: datasmart-govern-gateway
+      # 当前还未完整接入登录态和多入口识别，因此未知外部请求先标记为 OPEN_API。
+      # 后续可扩展为 WEB_UI、SCHEDULER、AGENT_TOOL_CALL、SERVICE_ACCOUNT_CALL 等更细粒度来源。
+      default-request-source: OPEN_API
+      # 兼容早期过滤器使用的 X-Request-Id。新代码应优先读取 X-DataSmart-Trace-Id。
+      legacy-request-id-header: X-Request-Id
+      # 迁移期把平台 traceId 同步写回 X-Request-Id，避免旧调试脚本、日志模板或调用方暂时读不到链路 ID。
+      mirror-trace-id-to-legacy-request-id: true
+      # 这两个 Header 只用于调试和排障，不应该作为权限判断依据。
+      route-prefix-header: X-Gateway-Route-Prefix
+      original-path-header: X-Gateway-Original-Path
+    development-identity:
+      # 开发期身份注入默认关闭。它只用于本地联调和测试环境模拟用户身份，不是生产认证方案。
+      # 为什么需要它：permission-admin 已经开始参与权限判定，但真实 JWT/IdP 还没有完整接入；
+      # 如果没有一个受控的身份输入方式，网关只能长期使用默认匿名/普通用户身份，无法验证多角色、多租户、服务账号等策略。
+      enabled: false
+      # 是否允许从 Authorization: Bearer dev:... 中读取开发令牌。
+      # 注意：只有带 dev: 前缀的 Bearer Token 才会被解析，真实 JWT 不会被当作开发身份处理。
+      allow-authorization-bearer-token: true
+      # 专用开发身份 Header。它优先于 Authorization，适合 curl/Postman/自动化测试快速切换身份。
+      # 示例：X-DataSmart-Dev-Identity: dev:1:1001:PLATFORM_ADMINISTRATOR:USER:global
+      identity-header: X-DataSmart-Dev-Identity
+      # 开发令牌格式：dev:{tenantId}:{actorId}:{actorRole}[:actorType][:workspaceId]
+      # 示例1：dev:1:1001:ORDINARY_USER
+      # 示例2：dev:1:9001:PLATFORM_ADMINISTRATOR:USER:global
+      # 示例3：dev:1:7001:SERVICE_ACCOUNT:SERVICE_ACCOUNT:sync-executor
+      token-prefix: "dev:"
+      # 令牌格式错误时建议直接返回 401，避免请求悄悄退化成默认身份，导致排查权限问题时产生误判。
+      reject-malformed-identity: true
+      # 没有显式传 actorType 时默认模拟人类用户；模拟执行器、调度器、Agent 时请在令牌中显式传入。
+      default-actor-type: USER
+      # 工作区是后续 Agent Runtime、任务执行隔离、资产目录隔离的关键上下文；当前先保留默认值。
+      default-workspace-id: default
+      # 允许开发期模拟的角色白名单。这里与 permission-admin 的推荐角色编码保持一致，但不形成编译期依赖。
+      allowed-roles:
+        - ORDINARY_USER
+        - PROJECT_OWNER
+        - OPERATOR
+        - AUDITOR
+        - TENANT_ADMINISTRATOR
+        - PLATFORM_ADMINISTRATOR
+        - SERVICE_ACCOUNT
+    authorization:
+      # 是否启用 gateway 调用 permission-admin 做路由级授权判定。
+      # 当前默认 false，是为了保证本地只启动单个业务模块时仍然可以联调。
+      # 当 permission-admin、MySQL、Nacos 都能稳定启动后，可以改为 true，进入真实授权链路。
+      enabled: false
+      # 影子模式：调用权限中心并记录允许/拒绝结果，但不真正拦截请求。
+      # 推荐从 false->true 的强制拦截之前，先使用影子模式观察一段时间，确认权限矩阵不会误杀正常流量。
+      shadow-mode: true
+      # 权限中心不可用时是否继续放行。
+      # 开发环境可以 true；生产环境建议 false，否则权限中心故障时可能扩大越权风险。
+      fail-open-on-error: true
+      # 权限中心判定接口。
+      # 当前使用本地直连地址，后续可演进为 lb://permission-admin/permissions/evaluate 或带负载均衡的 WebClient。
+      decision-endpoint: http://localhost:8085/permissions/evaluate
+      # 网关处于请求关键路径，不能无限等待权限中心；该超时既保护网关，也倒逼权限中心做缓存和性能优化。
+      timeout: 500ms
+      # JWT/IdP 还未接入时的开发期默认角色。生产环境应通过认证过滤器写入 X-DataSmart-Actor-Role。
+      default-actor-role: ORDINARY_USER
+      # 未携带租户上下文时的默认租户。0 表示使用平台默认策略，不代表真实业务租户。
+      default-tenant-id: 0
+      # 未携带操作者 ID 时使用 0，表示“当前无法追溯到具体人”。生产环境应尽量避免长期出现该值。
+      anonymous-actor-id: 0
+      # 跳过授权判定的公开路径。健康检查和网关契约说明不应依赖权限中心，否则权限中心故障时也无法排查。
+      public-path-patterns:
+        - /actuator/**
+        - /gateway/contracts/**
+      cache:
+        # 是否启用网关本地授权判定缓存。
+        # 当前默认 false：因为权限矩阵、路由策略和身份来源仍在建设期，过早缓存会影响调试和策略一致性。
+        # 当 permission-admin 策略稳定、缓存失效机制可用后，可以逐步开启以降低远程授权调用压力。
+        enabled: false
+        # 影子模式下默认不缓存。影子模式的价值是观察真实流量下 permission-admin 的判定和审计；
+        # 如果缓存命中后不再回源权限中心，观察样本会减少，不利于灰度验证权限矩阵。
+        cache-shadow-mode-decisions: false
+        # 是否缓存拒绝结果。缓存拒绝可以降低恶意探测压力，但 TTL 必须短，避免刚授权后仍被旧拒绝影响太久。
+        cache-denied-decisions: true
+        # 需要审批的判定通常代表高风险动作，例如导出、权限变更、强制终止任务；默认不缓存，优先保证实时审计。
+        cache-approval-required-decisions: false
+        # 允许结果 TTL。商业目标可向“本地缓存 P95 < 20ms，远程权限中心 P95 < 80ms”推进。
+        allow-ttl: 30s
+        # 拒绝结果 TTL。默认明显短于允许结果，减少权限变更后的旧拒绝影响窗口。
+        deny-ttl: 5s
+        # 本地缓存最大条目数，防止恶意构造大量不同路径、租户或身份导致网关内存不可控。
+        max-entries: 10000
+        management-endpoint:
+          # 本地缓存管理端点默认关闭。打开后会暴露 /gateway/authorization/cache，
+          # 用于查询缓存快照、全量清理、按租户清理；生产环境应优先使用正式管理员权限或服务账号签名。
+          enabled: false
+          # 临时管理 Header 名称。当前阶段用于保护缓存管理端点，后续应替换为 JWT 管理员权限或服务账号签名。
+          token-header-name: X-DataSmart-Gateway-Admin-Token
+          # 默认留空；只要为空，即使端点被误开启，也会拒绝所有管理请求。
+          token: ""
+      policy-events:
+        # 是否消费 permission-admin 发布的权限策略变更事件。
+        # 默认关闭：避免本地没有 Kafka 时 gateway 启动失败或不断重连。
+        # 开启后，gateway 会监听 topic 中的策略变更事件，并清理本地授权判定缓存。
+        enabled: false
+        # 权限策略变更事件 Topic，需要与 permission-admin 的 datasmart.permission.policy-events.topic 保持一致。
+        topic: datasmart.permission.policy.changed
+        # 消费者组 ID。
+        # 注意：生产多 gateway 实例如果使用同一个 groupId，Kafka 只会让部分实例收到消息；
+        # 而本地缓存失效需要所有实例都收到。生产应使用实例级 groupId，或改为 Redis/共享缓存。
+        group-id: datasmart-gateway-permission-policy-cache-invalidator
+      # 路由授权元数据：把“某个路径属于哪类资源、HTTP 方法默认对应什么业务动作”配置化。
+      # 这一步是为了摆脱过滤器代码里的硬编码推断，让后续新增 data-asset、compliance-masking、agent-runtime 等模块时，
+      # 只需要补配置或未来从 permission-admin 拉取元数据，而不是频繁修改网关核心过滤器。
+      #
+      # 当前仍是“模块前缀级”基线，不是最终的端点级权限模型。
+      # 未来更细的规则可以放在列表更靠前的位置，例如：
+      # - path-pattern: /api/task/*/retry
+      #   resource-type: TASK
+      #   default-action: RETRY
+      #
+      # 配置含义：
+      # path-pattern：支持完全匹配和 /** 后缀通配；越具体的规则越应该放前面。
+      # resource-type：传给 permission-admin 的资源类型，用于路由策略、数据范围和审计归类。
+      # default-action：当 method-actions 没有命中时的兜底动作。
+      # method-actions：HTTP 方法到平台动作的映射，当前先采用通用 REST 语义。
+      route-metadata:
+        - path-pattern: /api/datasource/**
+          resource-type: DATASOURCE
+          default-action: EXECUTE
+          description: 数据源、连接器、元数据与同步控制面。
+          method-actions:
+            GET: VIEW
+            POST: CREATE
+            PUT: UPDATE
+            PATCH: UPDATE
+            DELETE: DELETE
+
+        # 任务运营接口必须放在 /api/task/** 之前。
+        # 原理：GatewayAuthorizationFilter 会按 route-metadata 的声明顺序寻找第一条命中的规则。
+        # 如果这里缺少更具体的 /api/task/operations/**，队列健康、死信、延期和执行器租约接口就会退化成普通 TASK + VIEW。
+        # 这会导致“普通用户查看任务”的权限误覆盖“运营人员查看队列健康”的权限边界，是典型的商用权限设计漏洞。
+        - path-pattern: /api/task/operations/**
+          resource-type: TASK_OPERATION
+          default-action: EXECUTE
+          description: 任务队列、死信、延期、执行器租约等运营工作台接口。
+          method-actions:
+            GET: VIEW
+            POST: EXECUTE
+            PUT: UPDATE
+            PATCH: UPDATE
+            DELETE: DELETE
+
+        - path-pattern: /api/task/**
+          resource-type: TASK
+          default-action: EXECUTE
+          description: 全平台任务编排、调度、重试、取消和执行记录。
+          method-actions:
+            GET: VIEW
+            POST: CREATE
+            PUT: UPDATE
+            PATCH: UPDATE
+            DELETE: DELETE
+
+        - path-pattern: /api/quality/**
+          resource-type: QUALITY_RULE
+          default-action: EXECUTE
+          description: 数据质量规则、检测执行、异常明细和质量报告。
+          method-actions:
+            GET: VIEW
+            POST: CREATE
+            PUT: UPDATE
+            PATCH: UPDATE
+            DELETE: DELETE
+
+        - path-pattern: /api/permission/**
+          resource-type: SYSTEM_SETTING
+          default-action: EXECUTE
+          description: 角色、菜单、路由策略、数据范围和平台管理能力。
+          method-actions:
+            GET: VIEW
+            POST: CREATE
+            PUT: UPDATE
+            PATCH: UPDATE
+            DELETE: DELETE
+
+        - path-pattern: /api/observability/**
+          resource-type: AUDIT_LOG
+          default-action: EXECUTE
+          description: 审计、日志、指标、告警和运维视角。
+          method-actions:
+            GET: VIEW
+            POST: CREATE
+            PUT: UPDATE
+            PATCH: UPDATE
+            DELETE: DELETE
 
 logging:
   level:

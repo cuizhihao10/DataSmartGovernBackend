@@ -23,6 +23,14 @@ public class SyncActionRequest {
     private String actorRole;
 
     /**
+     * 操作者所属租户。
+     * 本字段是本地权限矩阵向 permission-admin 的“租户范围”能力收敛时补上的最小必要上下文。
+     * 后续即使接入统一权限中心，这类上下文也仍然需要在网关或认证层被解析出来并传递给业务层。
+     */
+    @NotNull(message = "actorTenantId 不能为空")
+    private Long actorTenantId;
+
+    /**
      * 附加说明。
      * 可用于记录故障处理原因、审批流说明、取消原因等。
      */

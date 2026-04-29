@@ -21,6 +21,10 @@ import com.czh.datasmart.govern.datasource.support.ActorRole;
 import com.czh.datasmart.govern.datasource.support.DataSourceStatus;
 import com.czh.datasmart.govern.datasource.support.SyncAuditAction;
 import com.czh.datasmart.govern.datasource.support.SyncMode;
+import com.czh.datasmart.govern.datasource.support.SyncPermissionAction;
+import com.czh.datasmart.govern.datasource.support.SyncPermissionContext;
+import com.czh.datasmart.govern.datasource.support.SyncPermissionEvaluator;
+import com.czh.datasmart.govern.datasource.support.SyncPermissionResource;
 import com.czh.datasmart.govern.datasource.support.SyncWriteStrategy;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -68,11 +72,19 @@ public class SyncTemplateServiceImpl extends ServiceImpl<SyncTemplateMapper, Syn
     private final DataSourceConfigMapper dataSourceConfigMapper;
     private final SyncAuditRecordMapper syncAuditRecordMapper;
     private final DataSourceManagementService dataSourceManagementService;
+    private final SyncPermissionEvaluator syncPermissionEvaluator;
     private final ObjectMapper objectMapper;
 
     @Override
     @Transactional
     public SyncTemplate createTemplate(CreateSyncTemplateRequest request) {
+        syncPermissionEvaluator.assertAllowed(SyncPermissionContext.builder()
+                        .actorId(request.getCreatedBy())
+                        .actorRole(request.getActorRole())
+                        .actorTenantId(request.getActorTenantId())
+                        .resourceTenantId(request.getTenantId())
+                        .build(),
+                SyncPermissionResource.SYNC_TEMPLATE, SyncPermissionAction.MANAGE);
         ensureTemplateNameUnique(request.getTenantId(), request.getName(), null);
         validateDatasourcePair(request.getSourceDatasourceId(), request.getTargetDatasourceId());
         SyncMode syncMode = SyncMode.fromValue(request.getSyncMode());
@@ -108,7 +120,7 @@ public class SyncTemplateServiceImpl extends ServiceImpl<SyncTemplateMapper, Syn
                 null,
                 SyncAuditAction.CREATE_TEMPLATE,
                 request.getCreatedBy(),
-                "PROJECT_OWNER",
+                request.getActorRole(),
                 buildPayload(
                         "templateId", template.getId(),
                         "templateName", template.getName(),
@@ -124,6 +136,14 @@ public class SyncTemplateServiceImpl extends ServiceImpl<SyncTemplateMapper, Syn
     @Transactional
     public SyncTemplate updateTemplate(Long id, UpdateSyncTemplateRequest request) {
         SyncTemplate template = getRequiredTemplate(id);
+        syncPermissionEvaluator.assertAllowed(SyncPermissionContext.builder()
+                        .actorId(request.getUpdatedBy())
+                        .actorRole(request.getActorRole())
+                        .actorTenantId(request.getActorTenantId())
+                        .resourceTenantId(template.getTenantId())
+                        .resourceCreatedBy(template.getCreatedBy())
+                        .build(),
+                SyncPermissionResource.SYNC_TEMPLATE, SyncPermissionAction.MANAGE);
         ensureTemplateNameUnique(template.getTenantId(), request.getName(), id);
         validateDatasourcePair(request.getSourceDatasourceId(), request.getTargetDatasourceId());
         SyncMode syncMode = SyncMode.fromValue(request.getSyncMode());
@@ -156,7 +176,7 @@ public class SyncTemplateServiceImpl extends ServiceImpl<SyncTemplateMapper, Syn
                 null,
                 SyncAuditAction.UPDATE_TEMPLATE,
                 request.getUpdatedBy(),
-                "PROJECT_OWNER",
+                request.getActorRole(),
                 buildPayload(
                         "templateId", template.getId(),
                         "templateName", template.getName(),
@@ -180,13 +200,23 @@ public class SyncTemplateServiceImpl extends ServiceImpl<SyncTemplateMapper, Syn
      */
     @Override
     @Transactional
-    public Map<String, Object> validateTemplate(Long id, Long actorId, String actorRole) {
+    public Map<String, Object> validateTemplate(Long id, Long actorId, String actorRole, Long actorTenantId) {
+        syncPermissionEvaluator.assertAllowed(actorRole,
+                SyncPermissionResource.SYNC_TEMPLATE, SyncPermissionAction.MANAGE);
         ActorRole role = ActorRole.fromValue(actorRole);
         if (!role.canManageTemplates()) {
             throw new IllegalStateException("当前角色无模板管理或智能校验权限: " + role.name());
         }
 
         SyncTemplate template = getRequiredTemplate(id);
+        syncPermissionEvaluator.assertAllowed(SyncPermissionContext.builder()
+                        .actorId(actorId)
+                        .actorRole(actorRole)
+                        .actorTenantId(actorTenantId)
+                        .resourceTenantId(template.getTenantId())
+                        .resourceCreatedBy(template.getCreatedBy())
+                        .build(),
+                SyncPermissionResource.SYNC_TEMPLATE, SyncPermissionAction.MANAGE);
         SyncWriteStrategy writeStrategy = SyncWriteStrategy.fromValue(template.getWriteStrategy());
         DataSourceConfig source = getRequiredDatasource(template.getSourceDatasourceId());
         DataSourceConfig target = getRequiredDatasource(template.getTargetDatasourceId());

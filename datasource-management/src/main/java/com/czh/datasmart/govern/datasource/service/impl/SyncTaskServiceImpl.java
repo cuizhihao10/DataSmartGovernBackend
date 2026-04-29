@@ -23,6 +23,7 @@ import com.czh.datasmart.govern.datasource.controller.dto.UpdateSyncTaskRequest;
 import com.czh.datasmart.govern.datasource.entity.SyncAuditRecord;
 import com.czh.datasmart.govern.datasource.entity.SyncCheckpoint;
 import com.czh.datasmart.govern.datasource.entity.SyncExecution;
+import com.czh.datasmart.govern.datasource.entity.SyncGovernanceAlert;
 import com.czh.datasmart.govern.datasource.entity.SyncTask;
 import com.czh.datasmart.govern.datasource.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasource.mapper.SyncAuditRecordMapper;
@@ -30,12 +31,19 @@ import com.czh.datasmart.govern.datasource.mapper.SyncCheckpointMapper;
 import com.czh.datasmart.govern.datasource.mapper.SyncExecutionMapper;
 import com.czh.datasmart.govern.datasource.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasource.mapper.SyncTemplateMapper;
+import com.czh.datasmart.govern.datasource.service.SyncGovernanceAlertService;
 import com.czh.datasmart.govern.datasource.service.SyncTaskService;
 import com.czh.datasmart.govern.datasource.support.ActorRole;
 import com.czh.datasmart.govern.datasource.support.ApprovalState;
 import com.czh.datasmart.govern.datasource.support.PriorityLevel;
 import com.czh.datasmart.govern.datasource.support.RunMode;
+import com.czh.datasmart.govern.datasource.support.SyncAlertSeverity;
+import com.czh.datasmart.govern.datasource.support.SyncAlertType;
 import com.czh.datasmart.govern.datasource.support.SyncAuditAction;
+import com.czh.datasmart.govern.datasource.support.SyncPermissionAction;
+import com.czh.datasmart.govern.datasource.support.SyncPermissionContext;
+import com.czh.datasmart.govern.datasource.support.SyncPermissionEvaluator;
+import com.czh.datasmart.govern.datasource.support.SyncPermissionResource;
 import com.czh.datasmart.govern.datasource.support.SyncTaskState;
 import com.czh.datasmart.govern.datasource.support.TriggerType;
 import lombok.RequiredArgsConstructor;
@@ -81,6 +89,8 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     private final SyncCheckpointMapper syncCheckpointMapper;
     private final SyncAuditRecordMapper syncAuditRecordMapper;
     private final SyncExecutorProperties syncExecutorProperties;
+    private final SyncPermissionEvaluator syncPermissionEvaluator;
+    private final SyncGovernanceAlertService syncGovernanceAlertService;
 
     @Override
     @Transactional
@@ -165,7 +175,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Transactional
     public SyncTask submitForApproval(Long id, SyncActionRequest request) {
         SyncTask task = getRequiredTask(id);
-        assertTaskOperationPermission(task, request.getActorId(), request.getActorRole());
+        assertTaskOperationPermission(task, request.getActorId(), request.getActorRole(), request.getActorTenantId());
         assertStateIn(task, SyncTaskState.CONFIGURED);
         if (!ApprovalState.PENDING.name().equals(task.getApprovalState())) {
             throw new IllegalStateException("当前任务不需要进入审批流");
@@ -186,6 +196,15 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     public SyncTask approve(Long id, SyncApprovalRequest request) {
         SyncTask task = getRequiredTask(id);
         assertStateIn(task, SyncTaskState.PENDING_APPROVAL);
+        syncPermissionEvaluator.assertAllowed(SyncPermissionContext.builder()
+                        .actorId(request.getActorId())
+                        .actorRole(request.getActorRole())
+                        .actorTenantId(request.getActorTenantId())
+                        .resourceTenantId(task.getTenantId())
+                        .resourceOwnerId(task.getOwnerId())
+                        .resourceCreatedBy(task.getCreatedBy())
+                        .build(),
+                SyncPermissionResource.SYNC_APPROVAL, SyncPermissionAction.APPROVE);
 
         ActorRole actorRole = ActorRole.fromValue(request.getActorRole());
         if (!actorRole.canApprove()) {
@@ -215,7 +234,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Transactional
     public SyncTask schedule(Long id, SyncScheduleRequest request) {
         SyncTask task = getRequiredTask(id);
-        assertTaskOperationPermission(task, request.getActorId(), request.getActorRole());
+        assertTaskOperationPermission(task, request.getActorId(), request.getActorRole(), request.getActorTenantId());
         assertStateIn(task, SyncTaskState.CONFIGURED, SyncTaskState.SCHEDULED);
         ensureApprovalReady(task);
         ensureTaskEnabled(task);
@@ -240,7 +259,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Transactional
     public SyncTask enqueue(Long id, SyncActionRequest request) {
         SyncTask task = getRequiredTask(id);
-        assertTaskOperationPermission(task, request.getActorId(), request.getActorRole());
+        assertTaskOperationPermission(task, request.getActorId(), request.getActorRole(), request.getActorTenantId());
         assertStateIn(task, SyncTaskState.CONFIGURED, SyncTaskState.SCHEDULED, SyncTaskState.RETRYING, SyncTaskState.PAUSED);
         ensureApprovalReady(task);
         ensureTaskEnabled(task);
@@ -259,7 +278,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Transactional
     public SyncTask run(Long id, SyncRunRequest request) {
         SyncTask task = getRequiredTask(id);
-        assertTaskOperationPermission(task, request.getActorId(), request.getActorRole());
+        assertTaskOperationPermission(task, request.getActorId(), request.getActorRole(), request.getActorTenantId());
         assertStateIn(task, SyncTaskState.CONFIGURED, SyncTaskState.SCHEDULED, SyncTaskState.QUEUED, SyncTaskState.RETRYING);
         ensureApprovalReady(task);
         ensureTaskEnabled(task);
@@ -294,6 +313,12 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Override
     @Transactional
     public SyncExecutorClaimResult claimNextQueuedTask(SyncExecutorClaimRequest request) {
+        syncPermissionEvaluator.assertAllowed(SyncPermissionContext.builder()
+                        .actorId(request.getActorId())
+                        .actorRole(request.getActorRole())
+                        .actorTenantId(request.getActorTenantId())
+                        .build(),
+                SyncPermissionResource.SYNC_EXECUTOR, SyncPermissionAction.CLAIM);
         ActorRole actorRole = ActorRole.fromValue(request.getActorRole());
         if (!actorRole.canClaimQueuedTasks()) {
             throw new IllegalStateException("当前角色无队列任务认领权限: " + actorRole.name());
@@ -342,6 +367,12 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Override
     @Transactional
     public SyncTask heartbeatExecution(SyncExecutorHeartbeatRequest request) {
+        syncPermissionEvaluator.assertAllowed(SyncPermissionContext.builder()
+                        .actorId(request.getActorId())
+                        .actorRole(request.getActorRole())
+                        .actorTenantId(request.getActorTenantId())
+                        .build(),
+                SyncPermissionResource.SYNC_EXECUTOR, SyncPermissionAction.HEARTBEAT);
         ActorRole actorRole = ActorRole.fromValue(request.getActorRole());
         if (!actorRole.canReportExecutionHeartbeat()) {
             throw new IllegalStateException("当前角色无执行器心跳上报权限: " + actorRole.name());
@@ -380,7 +411,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Transactional
     public SyncTask pause(Long id, SyncActionRequest request) {
         SyncTask task = getRequiredTask(id);
-        assertTaskOperationPermission(task, request.getActorId(), request.getActorRole());
+        assertTaskOperationPermission(task, request.getActorId(), request.getActorRole(), request.getActorTenantId());
         assertStateIn(task, SyncTaskState.RUNNING, SyncTaskState.RETRYING);
         SyncExecution execution = getLatestExecution(task);
 
@@ -403,7 +434,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Transactional
     public SyncTask resume(Long id, SyncActionRequest request) {
         SyncTask task = getRequiredTask(id);
-        assertTaskOperationPermission(task, request.getActorId(), request.getActorRole());
+        assertTaskOperationPermission(task, request.getActorId(), request.getActorRole(), request.getActorTenantId());
         assertStateIn(task, SyncTaskState.PAUSED);
         ensureQueueCapacity(task);
         markTaskQueued(task, request.getActorId(), request.getNote());
@@ -418,7 +449,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Transactional
     public SyncTask retry(Long id, SyncActionRequest request) {
         SyncTask task = getRequiredTask(id);
-        assertTaskOperationPermission(task, request.getActorId(), request.getActorRole());
+        assertTaskOperationPermission(task, request.getActorId(), request.getActorRole(), request.getActorTenantId());
         assertStateIn(task, SyncTaskState.FAILED, SyncTaskState.PARTIALLY_SUCCEEDED);
         if (task.getRetryCount() >= task.getMaxRetryCount()) {
             throw new IllegalStateException("任务已达到最大重试次数上限");
@@ -430,7 +461,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Transactional
     public SyncTask cancel(Long id, SyncActionRequest request) {
         SyncTask task = getRequiredTask(id);
-        assertTaskOperationPermission(task, request.getActorId(), request.getActorRole());
+        assertTaskOperationPermission(task, request.getActorId(), request.getActorRole(), request.getActorTenantId());
         assertStateIn(task, SyncTaskState.CONFIGURED, SyncTaskState.PENDING_APPROVAL, SyncTaskState.SCHEDULED,
                 SyncTaskState.QUEUED, SyncTaskState.RUNNING, SyncTaskState.PAUSED,
                 SyncTaskState.RETRYING, SyncTaskState.PARTIALLY_SUCCEEDED);
@@ -462,7 +493,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Transactional
     public SyncTask forceRetry(Long id, SyncActionRequest request) {
         SyncTask task = getRequiredTask(id);
-        assertAdminRole(request.getActorRole());
+        assertAdminRole(request.getActorRole(), request.getActorTenantId());
         assertStateIn(task, SyncTaskState.FAILED, SyncTaskState.CANCELLED, SyncTaskState.PARTIALLY_SUCCEEDED, SyncTaskState.PAUSED);
         return doRetry(task, request.getActorId(), request.getActorRole(), request.getNote(), SyncAuditAction.FORCE_RETRY_TASK);
     }
@@ -471,7 +502,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Transactional
     public SyncTask forceCancel(Long id, SyncActionRequest request) {
         SyncTask task = getRequiredTask(id);
-        assertAdminRole(request.getActorRole());
+        assertAdminRole(request.getActorRole(), request.getActorTenantId());
         if (SyncTaskState.ARCHIVED.name().equals(task.getCurrentState())) {
             throw new IllegalStateException("归档任务不允许再执行强制取消");
         }
@@ -504,7 +535,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Transactional
     public SyncTask overridePriority(Long id, SyncPriorityOverrideRequest request) {
         SyncTask task = getRequiredTask(id);
-        assertAdminRole(request.getActorRole());
+        assertAdminRole(request.getActorRole(), request.getActorTenantId());
 
         task.setPriority(PriorityLevel.fromValue(request.getPriority()).name());
         task.setIncidentNote(truncate(request.getNote()));
@@ -520,7 +551,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Transactional
     public SyncTask overrideTimeout(Long id, SyncTimeoutOverrideRequest request) {
         SyncTask task = getRequiredTask(id);
-        assertAdminRole(request.getActorRole());
+        assertAdminRole(request.getActorRole(), request.getActorTenantId());
 
         task.setTimeoutSeconds(request.getTimeoutSeconds());
         task.setIncidentNote(truncate(request.getNote()));
@@ -540,7 +571,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Override
     @Transactional(readOnly = true)
     public SyncQueueHealthSnapshot inspectQueueHealth(SyncActionRequest request) {
-        assertQueueHealthPermission(request.getActorRole());
+        assertQueueHealthPermission(request.getActorRole(), request.getActorTenantId());
 
         LocalDateTime now = LocalDateTime.now();
         int agingThresholdSeconds = resolveQueuedTaskAgingThresholdSeconds();
@@ -605,6 +636,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
         snapshot.setRecommendation(buildQueueHealthRecommendation(globalAlertTriggered, tenantAlertTriggered,
                 globalSaturated, tenantSaturated, agedQueuedTaskCount,
                 snapshot.getOldestQueuedDurationSeconds(), highestBacklogTenantId));
+        openQueueHealthAlerts(snapshot, request.getActorId(), request.getActorRole(), highestBacklogTenantId);
 
         SyncTask auditAnchor = oldestQueuedTask == null ? findMostRecentlyCreatedTask() : oldestQueuedTask;
         if (auditAnchor != null) {
@@ -624,7 +656,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Override
     @Transactional
     public SyncQueueAgingScanResult scanQueuedTaskAging(SyncActionRequest request) {
-        assertQueueAgingPermission(request.getActorRole());
+        assertQueueAgingPermission(request.getActorRole(), request.getActorTenantId());
 
         LocalDateTime now = LocalDateTime.now();
         int thresholdSeconds = resolveQueuedTaskAgingThresholdSeconds();
@@ -675,13 +707,16 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
         result.setOldestAgedQueuedAt(agedTasks.isEmpty() ? null : agedTasks.get(0).getQueuedAt());
         result.setTaskIds(taskIds);
         result.setAlertSuggested(agedTasks.size() >= Math.max(3, scanLimit / 5));
+        for (SyncTask task : agedTasks) {
+            openQueueAgingAlert(task, now, thresholdSeconds, request);
+        }
         return result;
     }
 
     @Override
     @Transactional
     public SyncTask reportProgress(Long id, SyncProgressRequest request) {
-        assertExecutionProgressPermission(request.getActorRole());
+        assertExecutionProgressPermission(request.getActorRole(), request.getActorId(), request.getActorTenantId(), getRequiredTask(id));
         SyncTask task = getRequiredTask(id);
         assertStateIn(task, SyncTaskState.RUNNING, SyncTaskState.RETRYING);
         SyncExecution execution = getRequiredExecution(task, request.getExecutionId());
@@ -717,7 +752,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Override
     @Transactional
     public SyncTask completeExecution(Long id, SyncCompleteRequest request) {
-        assertExecutionResultPermission(request.getActorRole());
+        assertExecutionResultPermission(request.getActorRole(), request.getActorId(), request.getActorTenantId(), getRequiredTask(id));
         SyncTask task = getRequiredTask(id);
         SyncExecution execution = getRequiredExecution(task, request.getExecutionId());
 
@@ -749,7 +784,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Override
     @Transactional
     public SyncTask failExecution(Long id, SyncFailRequest request) {
-        assertExecutionResultPermission(request.getActorRole());
+        assertExecutionResultPermission(request.getActorRole(), request.getActorId(), request.getActorTenantId(), getRequiredTask(id));
         SyncTask task = getRequiredTask(id);
         SyncExecution execution = getRequiredExecution(task, request.getExecutionId());
 
@@ -776,7 +811,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     @Transactional
     public SyncTask archive(Long id, SyncActionRequest request) {
         SyncTask task = getRequiredTask(id);
-        assertAdminRole(request.getActorRole());
+        assertAdminRole(request.getActorRole(), request.getActorTenantId());
         assertStateIn(task, SyncTaskState.SUCCEEDED, SyncTaskState.FAILED,
                 SyncTaskState.CANCELLED, SyncTaskState.PARTIALLY_SUCCEEDED);
 
@@ -1019,7 +1054,7 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
      */
     private SyncLeaseRecoveryResult recoverExpiredLeasesInternal(Long actorId, String actorRole, String note, boolean requireAdmin) {
         if (requireAdmin) {
-            assertAdminRole(actorRole);
+            assertAdminRole(actorRole, null);
         }
 
         LocalDateTime now = LocalDateTime.now();
@@ -1544,6 +1579,15 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
      * - 运营和管理员允许代建，以覆盖更真实的运营场景。
      */
     private void assertTaskCreationPermission(CreateSyncTaskRequest request) {
+        syncPermissionEvaluator.assertAllowed(SyncPermissionContext.builder()
+                        .actorId(request.getCreatedBy())
+                        .actorRole(request.getActorRole())
+                        .actorTenantId(request.getActorTenantId())
+                        .resourceTenantId(request.getTenantId())
+                        .resourceOwnerId(request.getOwnerId())
+                        .resourceCreatedBy(request.getCreatedBy())
+                        .build(),
+                SyncPermissionResource.SYNC_TASK, SyncPermissionAction.CREATE);
         ActorRole role = ActorRole.fromValue(request.getActorRole());
         if (!role.canCreateSyncTasks()) {
             throw new IllegalStateException("当前角色无创建同步任务权限: " + role.name());
@@ -1558,6 +1602,20 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
      * 当前策略按“拥有者可改自己，运营和管理员可跨任务治理”来收敛。
      */
     private void assertTaskUpdatePermission(SyncTask task, UpdateSyncTaskRequest request) {
+        SyncPermissionContext context = SyncPermissionContext.builder()
+                .actorId(request.getUpdatedBy())
+                .actorRole(request.getActorRole())
+                .actorTenantId(request.getActorTenantId())
+                .resourceTenantId(task.getTenantId())
+                .resourceOwnerId(task.getOwnerId())
+                .resourceCreatedBy(task.getCreatedBy())
+                .build();
+        if (syncPermissionEvaluator.canAccess(context,
+                SyncPermissionResource.SYNC_TASK, SyncPermissionAction.UPDATE_ANY)) {
+            return;
+        }
+        syncPermissionEvaluator.assertAllowed(context,
+                SyncPermissionResource.SYNC_TASK, SyncPermissionAction.UPDATE_OWNED);
         ActorRole role = ActorRole.fromValue(request.getActorRole());
         if (role.canOperateAnySyncTasks()) {
             return;
@@ -1576,7 +1634,21 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
      * 提交审批、调度、入队、运行、暂停、恢复、重试、取消这些动作都走这里，
      * 避免某个入口绕过本地权限矩阵。
      */
-    private void assertTaskOperationPermission(SyncTask task, Long actorId, String actorRole) {
+    private void assertTaskOperationPermission(SyncTask task, Long actorId, String actorRole, Long actorTenantId) {
+        SyncPermissionContext context = SyncPermissionContext.builder()
+                .actorId(actorId)
+                .actorRole(actorRole)
+                .actorTenantId(actorTenantId)
+                .resourceTenantId(task.getTenantId())
+                .resourceOwnerId(task.getOwnerId())
+                .resourceCreatedBy(task.getCreatedBy())
+                .build();
+        if (syncPermissionEvaluator.canAccess(context,
+                SyncPermissionResource.SYNC_TASK, SyncPermissionAction.OPERATE_ANY)) {
+            return;
+        }
+        syncPermissionEvaluator.assertAllowed(context,
+                SyncPermissionResource.SYNC_TASK, SyncPermissionAction.OPERATE_OWNED);
         ActorRole role = ActorRole.fromValue(actorRole);
         if (role.canOperateAnySyncTasks()) {
             return;
@@ -1606,7 +1678,16 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
      * 执行进度权限检查。
      * 这类接口属于执行器平面，不应该被普通项目角色随意调用。
      */
-    private void assertExecutionProgressPermission(String actorRole) {
+    private void assertExecutionProgressPermission(String actorRole, Long actorId, Long actorTenantId, SyncTask task) {
+        syncPermissionEvaluator.assertAllowed(SyncPermissionContext.builder()
+                        .actorId(actorId)
+                        .actorRole(actorRole)
+                        .actorTenantId(actorTenantId)
+                        .resourceTenantId(task.getTenantId())
+                        .resourceOwnerId(task.getOwnerId())
+                        .resourceCreatedBy(task.getCreatedBy())
+                        .build(),
+                SyncPermissionResource.SYNC_EXECUTOR, SyncPermissionAction.REPORT_PROGRESS);
         ActorRole role = ActorRole.fromValue(actorRole);
         if (!role.canReportExecutionProgress()) {
             throw new IllegalStateException("当前角色无执行进度回写权限: " + role.name());
@@ -1617,7 +1698,16 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
      * 执行结果权限检查。
      * 完成和失败回写都会改变任务主状态，因此单独保留一个检查方法，便于后续细化权限。
      */
-    private void assertExecutionResultPermission(String actorRole) {
+    private void assertExecutionResultPermission(String actorRole, Long actorId, Long actorTenantId, SyncTask task) {
+        syncPermissionEvaluator.assertAllowed(SyncPermissionContext.builder()
+                        .actorId(actorId)
+                        .actorRole(actorRole)
+                        .actorTenantId(actorTenantId)
+                        .resourceTenantId(task.getTenantId())
+                        .resourceOwnerId(task.getOwnerId())
+                        .resourceCreatedBy(task.getCreatedBy())
+                        .build(),
+                SyncPermissionResource.SYNC_EXECUTOR, SyncPermissionAction.REPORT_RESULT);
         ActorRole role = ActorRole.fromValue(actorRole);
         if (!role.canReportExecutionResult()) {
             throw new IllegalStateException("当前角色无执行结果回写权限: " + role.name());
@@ -1627,7 +1717,12 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     /**
      * 队列健康查看权限检查。
      */
-    private void assertQueueHealthPermission(String actorRole) {
+    private void assertQueueHealthPermission(String actorRole, Long actorTenantId) {
+        syncPermissionEvaluator.assertAllowed(SyncPermissionContext.builder()
+                        .actorRole(actorRole)
+                        .actorTenantId(actorTenantId)
+                        .build(),
+                SyncPermissionResource.SYNC_QUEUE, SyncPermissionAction.VIEW_QUEUE_HEALTH);
         ActorRole role = ActorRole.fromValue(actorRole);
         if (!role.canInspectQueueHealth()) {
             throw new IllegalStateException("当前角色无查看队列健康权限: " + role.name());
@@ -1637,7 +1732,12 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
     /**
      * 队列老化巡检权限检查。
      */
-    private void assertQueueAgingPermission(String actorRole) {
+    private void assertQueueAgingPermission(String actorRole, Long actorTenantId) {
+        syncPermissionEvaluator.assertAllowed(SyncPermissionContext.builder()
+                        .actorRole(actorRole)
+                        .actorTenantId(actorTenantId)
+                        .build(),
+                SyncPermissionResource.SYNC_QUEUE, SyncPermissionAction.SCAN_QUEUE_AGING);
         ActorRole role = ActorRole.fromValue(actorRole);
         if (!role.canScanQueueAging()) {
             throw new IllegalStateException("当前角色无执行队列老化巡检权限: " + role.name());
@@ -1649,6 +1749,118 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
      * 这里同时接受“负责人”和“创建人”命中，是因为很多平台任务会存在
      * “由某人创建并由自己负责”的组合场景。
      */
+    /**
+     * 队列健康巡检不应该只返回一个瞬时快照。
+     * 更接近商用治理平台的做法，是把“已经发现的风险”沉淀为可追踪的治理告警对象，
+     * 这样后续才能进行确认、派单、外送和闭环处理。
+     */
+    private void openQueueHealthAlerts(SyncQueueHealthSnapshot snapshot,
+                                       Long actorId,
+                                       String actorRole,
+                                       Long highestBacklogTenantId) {
+        if (snapshot == null || !Boolean.TRUE.equals(snapshot.getAttentionRequired())) {
+            return;
+        }
+
+        SyncAlertSeverity severity = "SATURATED".equals(snapshot.getPressureLevel())
+                ? SyncAlertSeverity.CRITICAL
+                : SyncAlertSeverity.WARNING;
+
+        if (snapshot.getGlobalQueuedCount() != null
+                && snapshot.getQueueAlertThresholdGlobal() != null
+                && snapshot.getQueueAlertThresholdGlobal() > 0
+                && snapshot.getGlobalQueuedCount() >= snapshot.getQueueAlertThresholdGlobal()) {
+            syncGovernanceAlertService.openOrRefreshAlert(
+                    null,
+                    snapshot.getOldestQueuedTaskId(),
+                    SyncAlertType.QUEUE_PRESSURE.name(),
+                    severity.name(),
+                    "QUEUE_PRESSURE:GLOBAL",
+                    "全局同步队列进入压力区间",
+                    "当前全局待执行任务数=" + snapshot.getGlobalQueuedCount()
+                            + "，预警阈值=" + snapshot.getQueueAlertThresholdGlobal()
+                            + "，压力等级=" + snapshot.getPressureLevel()
+                            + "，建议=" + snapshot.getRecommendation(),
+                    SyncPermissionResource.SYNC_QUEUE.name(),
+                    SyncAuditAction.INSPECT_QUEUE_HEALTH.name(),
+                    actorId,
+                    actorRole
+            );
+        }
+
+        if (highestBacklogTenantId != null
+                && snapshot.getHighestBacklogTenantQueuedCount() != null
+                && snapshot.getQueueAlertThresholdPerTenant() != null
+                && snapshot.getQueueAlertThresholdPerTenant() > 0
+                && snapshot.getHighestBacklogTenantQueuedCount() >= snapshot.getQueueAlertThresholdPerTenant()) {
+            syncGovernanceAlertService.openOrRefreshAlert(
+                    highestBacklogTenantId,
+                    snapshot.getOldestQueuedTaskId(),
+                    SyncAlertType.QUEUE_PRESSURE.name(),
+                    severity.name(),
+                    "QUEUE_PRESSURE:TENANT:" + highestBacklogTenantId,
+                    "租户同步队列积压偏高",
+                    "tenantId=" + highestBacklogTenantId
+                            + " 的待执行任务数=" + snapshot.getHighestBacklogTenantQueuedCount()
+                            + "，租户预警阈值=" + snapshot.getQueueAlertThresholdPerTenant()
+                            + "，建议=" + snapshot.getRecommendation(),
+                    SyncPermissionResource.SYNC_QUEUE.name(),
+                    SyncAuditAction.INSPECT_QUEUE_HEALTH.name(),
+                    actorId,
+                    actorRole
+            );
+        }
+
+        if (snapshot.getAgedQueuedTaskCount() != null && snapshot.getAgedQueuedTaskCount() > 0) {
+            syncGovernanceAlertService.openOrRefreshAlert(
+                    null,
+                    snapshot.getOldestQueuedTaskId(),
+                    SyncAlertType.QUEUE_AGING.name(),
+                    SyncAlertSeverity.WARNING.name(),
+                    "QUEUE_AGING:GLOBAL",
+                    "同步队列中存在老化任务",
+                    "当前已识别老化排队任务数=" + snapshot.getAgedQueuedTaskCount()
+                            + "，最老任务等待秒数=" + snapshot.getOldestQueuedDurationSeconds()
+                            + "，建议=" + snapshot.getRecommendation(),
+                    SyncPermissionResource.SYNC_QUEUE.name(),
+                    SyncAuditAction.INSPECT_QUEUE_HEALTH.name(),
+                    actorId,
+                    actorRole
+            );
+        }
+    }
+
+    /**
+     * 针对单个老化任务生成细粒度告警，便于后续人工定位“到底是哪一个任务持续卡住了队列”。
+     * 这种任务级告警和全局快照告警同时存在时，前者更适合落到具体工单，后者更适合做运营态势看板。
+     */
+    private SyncGovernanceAlert openQueueAgingAlert(SyncTask task,
+                                                    LocalDateTime now,
+                                                    int thresholdSeconds,
+                                                    SyncActionRequest request) {
+        Long queuedDurationSeconds = computeQueuedDurationSeconds(task, now);
+        SyncAlertSeverity severity = queuedDurationSeconds != null && queuedDurationSeconds >= thresholdSeconds * 4L
+                ? SyncAlertSeverity.CRITICAL
+                : SyncAlertSeverity.WARNING;
+        return syncGovernanceAlertService.openOrRefreshAlert(
+                task.getTenantId(),
+                task.getId(),
+                SyncAlertType.QUEUE_AGING.name(),
+                severity.name(),
+                "QUEUE_AGING:TASK:" + task.getId(),
+                "同步任务排队时间超过治理阈值",
+                "taskId=" + task.getId()
+                        + "，tenantId=" + task.getTenantId()
+                        + "，queuedDurationSeconds=" + queuedDurationSeconds
+                        + "，agingThresholdSeconds=" + thresholdSeconds
+                        + "，note=" + request.getNote(),
+                SyncPermissionResource.SYNC_QUEUE.name(),
+                SyncAuditAction.SCAN_QUEUE_AGING.name(),
+                request.getActorId(),
+                request.getActorRole()
+        );
+    }
+
     private boolean isTaskOwnedByActor(SyncTask task, Long actorId) {
         if (task == null || actorId == null) {
             return false;
@@ -1656,7 +1868,12 @@ public class SyncTaskServiceImpl extends ServiceImpl<SyncTaskMapper, SyncTask> i
         return actorId.equals(task.getOwnerId()) || actorId.equals(task.getCreatedBy());
     }
 
-    private void assertAdminRole(String actorRole) {
+    private void assertAdminRole(String actorRole, Long actorTenantId) {
+        syncPermissionEvaluator.assertAllowed(SyncPermissionContext.builder()
+                        .actorRole(actorRole)
+                        .actorTenantId(actorTenantId)
+                        .build(),
+                SyncPermissionResource.SYNC_ADMIN, SyncPermissionAction.ADMIN_OVERRIDE);
         ActorRole role = ActorRole.fromValue(actorRole);
         if (!role.canForceOverride()) {
             throw new IllegalStateException("当前角色无管理员强制控制权限: " + actorRole);

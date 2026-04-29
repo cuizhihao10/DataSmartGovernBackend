@@ -12,6 +12,11 @@
     <description>智能体网关模块 - 负责会话路由、权限校验、多渠道接入</description>
     <dependencies>
         <dependency>
+            <groupId>com.czh.datasmart</groupId>
+            <artifactId>platform-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>

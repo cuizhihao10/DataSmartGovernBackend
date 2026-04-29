@@ -52,7 +52,9 @@
         <mybatis-plus.version>3.5.5</mybatis-plus.version>
     </properties>
     <modules>
+        <module>platform-common</module>
         <module>gateway</module>
+        <module>permission-admin</module>
         <module>task-management</module>
         <module>datasource-management</module>
         <module>data-quality</module>

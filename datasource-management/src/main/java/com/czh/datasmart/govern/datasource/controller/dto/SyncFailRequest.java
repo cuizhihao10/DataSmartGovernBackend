@@ -22,6 +22,12 @@ public class SyncFailRequest {
     @NotBlank(message = "actorRole 不能为空")
     private String actorRole;
 
+    /**
+     * 失败回写动作所属租户。
+     */
+    @NotNull(message = "actorTenantId 不能为空")
+    private Long actorTenantId;
+
     @NotNull(message = "executionId 不能为空")
     private Long executionId;
 

@@ -1,11 +1,17 @@
 package com.czh.datasmart.govern.datasource.service;
 
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.czh.datasmart.govern.datasource.controller.dto.MetadataDiscoveryRequest;
+import com.czh.datasmart.govern.datasource.controller.dto.ReadOnlySqlExecutionRequest;
+import com.czh.datasmart.govern.datasource.controller.dto.ReadOnlySqlExecutionResult;
 import com.czh.datasmart.govern.datasource.entity.DataSourceCapabilityProfile;
 import com.czh.datasmart.govern.datasource.entity.DataSourceConfig;
 import com.czh.datasmart.govern.datasource.entity.DataSourceConnectionTestResult;
 import com.czh.datasmart.govern.datasource.entity.DataSourceMetadataDiscoveryResult;
+import com.czh.datasmart.govern.datasource.entity.DataSourceReadOnlySqlExecutionAudit;
+
+import java.time.LocalDateTime;
 
 /**
  * @Author : Cui
@@ -62,4 +68,30 @@ public interface DataSourceManagementService extends IService<DataSourceConfig> 
      * 当前主要面向关系型 JDBC 数据源，返回表和字段的即时探查结果。
      */
     DataSourceMetadataDiscoveryResult discoverMetadata(Long id, MetadataDiscoveryRequest request);
+
+    /**
+     * 执行受控只读 SQL。
+     *
+     * 这个能力是后续质量扫描、资产画像、异常样本定位的跨模块基础设施：
+     * 调用方提交“只读查询意图”，datasource-management 负责统一校验权限、SQL 安全、行数上限和执行超时。
+     */
+    ReadOnlySqlExecutionResult executeReadOnlySql(Long id, ReadOnlySqlExecutionRequest request);
+
+    /**
+     * 分页查询受控只读 SQL 执行审计。
+     *
+     * 这是面向运营、审计和管理员的治理接口，用于检索“谁在什么时候因为什么目的访问了哪个数据源”。
+     */
+    IPage<DataSourceReadOnlySqlExecutionAudit> pageReadOnlySqlExecutionAudits(
+            Integer current,
+            Integer size,
+            Long datasourceId,
+            String purpose,
+            String actorRole,
+            Long actorTenantId,
+            String executionStatus,
+            String sqlFingerprint,
+            LocalDateTime startTime,
+            LocalDateTime endTime,
+            String queryActorRole);
 }

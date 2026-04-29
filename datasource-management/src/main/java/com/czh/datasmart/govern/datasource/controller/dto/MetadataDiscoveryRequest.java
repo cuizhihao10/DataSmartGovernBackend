@@ -39,6 +39,14 @@ public class MetadataDiscoveryRequest {
     private String actorRole;
 
     /**
+     * 发起探查的操作者所属租户。
+     * 元数据探查虽然当前还没有完全落成数据源可见性策略，但租户上下文必须先被建模出来，
+     * 否则后续接数据源授权、租户隔离和审计中心时会缺最基本的语义载体。
+     */
+    @NotNull(message = "actorTenantId 不能为空")
+    private Long actorTenantId;
+
+    /**
      * catalog 过滤条件。
      * 某些数据库会使用 catalog 概念，某些数据库更偏向 schema，二者都预留能提升兼容性。
      */

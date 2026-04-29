@@ -24,6 +24,12 @@ public class SyncScheduleRequest {
     private String actorRole;
 
     /**
+     * 调度动作所属租户。
+     */
+    @NotNull(message = "actorTenantId 不能为空")
+    private Long actorTenantId;
+
+    /**
      * 调度策略 JSON。
      */
     @NotBlank(message = "scheduleConfig 不能为空")

@@ -22,6 +22,12 @@ public class SyncRunRequest {
     private String actorRole;
 
     /**
+     * 运行动作发起人所属租户。
+     */
+    @NotNull(message = "actorTenantId 不能为空")
+    private Long actorTenantId;
+
+    /**
      * 本次触发类型。
      * 允许在默认 triggerType 基础上临时显式覆盖，例如管理员执行一次 backfill。
      */

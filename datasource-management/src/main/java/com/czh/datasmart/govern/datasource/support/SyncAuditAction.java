@@ -2,17 +2,25 @@ package com.czh.datasmart.govern.datasource.support;
 
 /**
  * @Author : Cui
- * @Date: 2026/4/19 20:58
+ * @Date: 2026/4/24 23:18
  * @Description DataSmart Govern Backend - SyncAuditAction.java
  * @Version:1.0.0
  *
- * 同步领域审计动作枚举。
- * 审计动作单独建模的价值在于：
- * 1. 后续审计中心可以按动作类型聚合分析，而不需要去解析自由文本；
- * 2. 普通用户动作、审批动作、管理员强制动作、执行器回调动作可以被明确区分；
- * 3. 新增了队列健康查看和队列老化巡检后，平台治理类动作也能进入统一审计分类。
+ * 同步治理域审计动作枚举。
+ * 这一层的作用是把“发生了什么治理动作”沉淀成稳定枚举，而不是散落在字符串日志里。
+ *
+ * 当前重点覆盖：
+ * 1. 模板、任务、执行器、队列、告警这些同步控制面动作；
+ * 2. 权限绑定、权限变更申请、审批委托这些权限治理动作；
+ * 3. 方便后续做审计报表、行为检索、异常排障和风险复盘。
  */
 public enum SyncAuditAction {
+    SUBMIT_PERMISSION_POLICY_CHANGE_REQUEST,
+    APPROVE_PERMISSION_POLICY_CHANGE_REQUEST,
+    REJECT_PERMISSION_POLICY_CHANGE_REQUEST,
+    REPLACE_PERMISSION_POLICY_BINDINGS,
+    CREATE_PERMISSION_APPROVAL_DELEGATE_RULE,
+    DISABLE_PERMISSION_APPROVAL_DELEGATE_RULE,
     CREATE_TEMPLATE,
     UPDATE_TEMPLATE,
     VALIDATE_TEMPLATE,

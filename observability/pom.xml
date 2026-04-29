@@ -12,6 +12,11 @@
     <description>可观测性模块 - 负责全平台的指标监控、日志收集、告警通知</description>
     <dependencies>
         <dependency>
+            <groupId>com.czh.datasmart</groupId>
+            <artifactId>platform-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>

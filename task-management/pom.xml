@@ -12,6 +12,11 @@
     <description>任务管理模块 - 负责全平台任务的创建、调度、监控、复盘</description>
     <dependencies>
         <dependency>
+            <groupId>com.czh.datasmart</groupId>
+            <artifactId>platform-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>

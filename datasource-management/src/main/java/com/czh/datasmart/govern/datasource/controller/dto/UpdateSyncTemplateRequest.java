@@ -127,4 +127,18 @@ public class UpdateSyncTemplateRequest {
      */
     @NotNull(message = "updatedBy 不能为空")
     private Long updatedBy;
+
+    /**
+     * 发起更新动作的角色。
+     * 模板修改会直接影响后续任务执行语义，所以这里要求调用方显式传入角色，
+     * 便于当前模块做本地权限矩阵判断，也便于未来无缝切到统一权限中心。
+     */
+    @NotBlank(message = "actorRole 不能为空")
+    private String actorRole;
+
+    /**
+     * 发起更新动作的租户上下文。
+     */
+    @NotNull(message = "actorTenantId 不能为空")
+    private Long actorTenantId;
 }

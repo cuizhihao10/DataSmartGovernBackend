@@ -68,4 +68,10 @@ public class UpdateSyncTaskRequest {
      */
     @NotBlank(message = "actorRole 不能为空")
     private String actorRole;
+
+    /**
+     * 更新动作发起人所属租户。
+     */
+    @NotNull(message = "actorTenantId 不能为空")
+    private Long actorTenantId;
 }

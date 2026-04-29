@@ -2,6 +2,7 @@ package com.czh.datasmart.govern.datasource;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * @Author : Cui
@@ -19,6 +20,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * 3. 更适合作为企业级治理平台的基础设施能力沉淀。
  */
 @SpringBootApplication
+@EnableScheduling
 public class DataSourceManagementApplication {
 
     /**

@@ -79,4 +79,11 @@ public class CreateSyncTaskRequest {
      */
     @NotBlank(message = "actorRole 不能为空")
     private String actorRole;
+
+    /**
+     * 创建动作发起人所属租户。
+     * 这让“能不能在这个租户下建任务”这件事可以在业务层显式判断，而不是只能依赖上游口头约定。
+     */
+    @NotNull(message = "actorTenantId 不能为空")
+    private Long actorTenantId;
 }

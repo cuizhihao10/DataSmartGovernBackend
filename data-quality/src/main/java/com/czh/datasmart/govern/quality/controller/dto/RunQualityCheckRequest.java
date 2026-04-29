@@ -6,12 +6,14 @@
  */
 package com.czh.datasmart.govern.quality.controller.dto;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
 import java.math.BigDecimal;
+import java.util.List;
 
 /**
  * 执行质量检测请求体。
@@ -49,4 +51,19 @@ public class RunQualityCheckRequest {
      * 可用于补充检测上下文、来源说明或人工说明。
      */
     private String notes;
+
+    /**
+     * 异常明细列表。
+     *
+     * <p>sampleSize 和 exceptionCount 只能告诉我们“异常有多少”，但不能告诉我们“异常在哪里”。
+     * 因此这里允许调用方把代表性异常样本一起传入，服务层会在生成报告后把它们落到
+     * quality_anomaly_detail 表中。
+     *
+     * <p>当前接口仍然允许 anomalies 为空，这是一个有意保留的兼容设计：
+     * 1. 早期人工录入或外部系统只知道异常总数时，也能先生成报告；
+     * 2. 真实扫描器完成后，可以逐步把异常样本补进来；
+     * 3. 对于超大异常量场景，未来应改为异步分页写入或对象存储导出，而不是一次请求塞入海量明细。
+     */
+    @Valid
+    private List<QualityAnomalyDetailRequest> anomalies;
 }

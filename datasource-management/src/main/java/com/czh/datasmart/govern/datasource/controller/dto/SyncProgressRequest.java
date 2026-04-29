@@ -23,6 +23,13 @@ public class SyncProgressRequest {
     @NotBlank(message = "actorRole 不能为空")
     private String actorRole;
 
+    /**
+     * 当前执行回写动作所属租户。
+     * 对执行器类接口来说，租户上下文不仅用于权限，也用于后续做租户级审计和限流。
+     */
+    @NotNull(message = "actorTenantId 不能为空")
+    private Long actorTenantId;
+
     @NotNull(message = "executionId 不能为空")
     private Long executionId;
 

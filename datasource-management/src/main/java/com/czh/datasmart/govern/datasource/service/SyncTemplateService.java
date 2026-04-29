@@ -31,7 +31,7 @@ public interface SyncTemplateService extends IService<SyncTemplate> {
     /**
      * 校验模板配置是否具备进入任务层的基本条件。
      */
-    Map<String, Object> validateTemplate(Long id, Long actorId, String actorRole);
+    Map<String, Object> validateTemplate(Long id, Long actorId, String actorRole, Long actorTenantId);
 
     /**
      * 生成面向前端或运维的模板预览摘要。

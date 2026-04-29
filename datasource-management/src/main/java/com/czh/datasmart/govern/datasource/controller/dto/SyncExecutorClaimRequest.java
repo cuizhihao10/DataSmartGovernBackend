@@ -43,6 +43,13 @@ public class SyncExecutorClaimRequest {
     private String actorRole;
 
     /**
+     * 当前执行器或服务账号所属租户。
+     * 未来如果执行器做租户隔离调度，这个字段会直接参与可认领任务的范围判定。
+     */
+    @NotNull(message = "actorTenantId 不能为空")
+    private Long actorTenantId;
+
+    /**
      * 执行器实例标识。
      * 例如容器实例名、节点 ID、工作进程名等。
      */

@@ -1,0 +1,80 @@
+# permission-admin 是平台级权限与管理中心，不属于某个业务域。
+# 它的职责是沉淀角色、菜单、路由、数据范围、审批策略和审计事实，
+# 让 gateway、task-management、datasource-management、data-quality 等模块可以消费统一权限语义。
+server:
+  port: 8085
+
+spring:
+  application:
+    # 服务名会被 Nacos 和 gateway 使用，后续网关路由 lb://permission-admin 依赖该名称。
+    name: permission-admin
+  profiles:
+    active: dev
+  datasource:
+    # 权限策略属于高价值治理数据，必须持久化到 MySQL，而不能只放在内存或配置文件中。
+    # 当前仍使用本地开发库；生产环境应通过配置中心或环境变量管理连接信息。
+    url: jdbc:mysql://localhost:3306/datasmart_govern?useSSL=false&serverTimezone=UTC
+    username: root
+    password: password
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  kafka:
+    # Kafka 预留给后续权限变更事件、审计事件、权限缓存失效通知等异步能力。
+    bootstrap-servers: localhost:9092
+  cloud:
+    nacos:
+      discovery:
+        # 注册到 Nacos 后，gateway 才能通过 lb://permission-admin 做服务发现转发。
+        server-addr: localhost:8848
+
+mybatis-plus:
+  # 目前权限模块优先使用 MyBatis-Plus 的基础 CRUD 能力，保留 mapper-locations 便于后续复杂矩阵查询落 XML。
+  mapper-locations: classpath:/mapper/*.xml
+  type-aliases-package: com.czh.datasmart.govern.permission.entity
+  configuration:
+    # 数据库使用下划线字段，Java 使用驼峰字段；开启映射可以减少重复注解。
+    map-underscore-to-camel-case: true
+
+logging:
+  level:
+    com.czh.datasmart: INFO
+  pattern:
+    # 控制台日志保留模块、时间、线程和级别，便于本地联调时追踪权限判定链路。
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # 权限模块当前先暴露基础健康、信息和指标端点，后续可补充授权延迟、缓存命中率等自定义指标。
+        include: health,info,metrics
+  endpoint:
+    health:
+      # 生产环境下健康详情不应无条件公开，避免泄露数据库、Nacos 等内部依赖状态。
+      show-details: when-authorized
+
+datasmart:
+  permission:
+    policy-events:
+      # 是否发布权限策略变更事件。
+      # 默认关闭：便于本地只启动 permission-admin + MySQL 时仍能联调管理 API。
+      # 开启后，路由策略创建、更新、启停成功会向 Kafka 发布事件，gateway 可消费后清理授权缓存。
+      enabled: false
+      # 权限策略变更事件 Topic。
+      # 生产环境中应确保所有 gateway 实例都消费该 Topic，并结合消费者组策略完成多实例缓存失效。
+      topic: datasmart.permission.policy.changed
+      # 是否启用 outbox 后台投递器。
+      # enabled=true 代表策略变更会写入 outbox；dispatcher-enabled=true 才会由当前服务实例主动投递 Kafka。
+      # 如果只想先验证 outbox 入库，可以开启 enabled、关闭 dispatcher-enabled。
+      dispatcher-enabled: false
+      # 单次最多投递多少条 outbox 事件，避免一次调度占用太久。
+      dispatch-batch-size: 50
+      # 投递器固定延迟，单位毫秒。
+      dispatch-fixed-delay-ms: 5000
+      # Kafka send future 等待超时。超时后事件会进入 FAILED/DEAD 重试流程。
+      send-timeout: 3s
+      # 发送失败后的重试间隔。
+      retry-delay: 30s
+      # 单条事件最大尝试次数，超过后进入 DEAD，等待后续管理 API 或运维脚本人工处理。
+      max-attempts: 10
+      # SENDING 状态超时时间。服务在发送过程中崩溃后，投递器会把超时 SENDING 恢复为 FAILED。
+      sending-timeout: 5m

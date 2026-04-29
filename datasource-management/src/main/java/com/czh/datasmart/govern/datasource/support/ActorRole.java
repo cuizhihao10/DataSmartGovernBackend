@@ -105,6 +105,14 @@ public enum ActorRole {
             EnumSet.of(OPERATOR, TENANT_ADMINISTRATOR, PLATFORM_ADMINISTRATOR);
 
     /**
+     * 权限策略查看允许角色。
+     * 这类能力既服务于管理员，也服务于审计和运营排障场景，
+     * 因此保留“可查看但不一定可修改”的读权限角色。
+     */
+    private static final EnumSet<ActorRole> PERMISSION_POLICY_VIEW_ROLES =
+            EnumSet.of(OPERATOR, AUDITOR, TENANT_ADMINISTRATOR, PLATFORM_ADMINISTRATOR);
+
+    /**
      * 执行器与系统回调允许角色。
      * SERVICE_ACCOUNT 被纳入这里，是为了给未来真正的执行器节点留出机器身份接入空间。
      */
@@ -164,6 +172,15 @@ public enum ActorRole {
      */
     public boolean canScanQueueAging() {
         return QUEUE_AGING_SCAN_ROLES.contains(this);
+    }
+
+    /**
+     * 是否允许查看本地权限策略快照。
+     * 这里强调“查看”而不是“管理”，是为了让当前模块在还未接入统一权限中心前，
+     * 就具备一套可供运营、审计、管理员共同理解的策略观察面。
+     */
+    public boolean canViewPermissionPolicies() {
+        return PERMISSION_POLICY_VIEW_ROLES.contains(this);
     }
 
     /**

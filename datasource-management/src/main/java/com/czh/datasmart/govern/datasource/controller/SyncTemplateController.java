@@ -94,7 +94,7 @@ public class SyncTemplateController {
             @Valid @RequestBody SyncActionRequest request) {
         return ResponseEntity.ok(ApiResponse.success(
                 "模板智能校验完成",
-                syncTemplateService.validateTemplate(id, request.getActorId(), request.getActorRole())));
+                syncTemplateService.validateTemplate(id, request.getActorId(), request.getActorRole(), request.getActorTenantId())));
     }
 
     @GetMapping("/{id}/preview")

@@ -37,6 +37,123 @@ mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
 
+datasmart:
+  quality:
+    datasource-read-only-sql:
+      # 是否启用对 datasource-management 受控只读 SQL 执行接口的调用。
+      # true：质量执行器 coordinator 可以把已审查的 metric SQL / anomaly sample SQL 交给数据源模块执行；
+      # false：即使任务被认领，也不会绕过数据源模块直接连接源库，而是把任务标记为失败。
+      enabled: true
+      # datasource-management 的基础地址。
+      # 当前本地端口为 8082；生产环境建议替换为 gateway 内网地址、服务发现地址或带服务账号签名的服务间调用地址。
+      base-url: http://localhost:8082
+      # 只读 SQL 执行失败时是否 fail-open。
+      # 生产环境建议 false，避免源库不可用、鉴权失败或 SQL 执行失败时仍生成伪成功质量报告。
+      fail-open: false
+      # 调用 datasource-management 只读 SQL 执行接口时使用的角色。
+      # datasource-management 当前允许 SERVICE_ACCOUNT 走受控只读查询；后续应替换为真实服务账号认证。
+      actor-tenant-id: 0
+      actor-id: 0
+      actor-role: SERVICE_ACCOUNT
+      actor-type: SERVICE_ACCOUNT
+      source-service: data-quality
+      # metric SQL 正常只返回一行，这里仍显式限制，避免异常 SQL 返回过多结果。
+      metric-max-rows: 1
+      # metric SQL 查询超时秒数；质量指标统计可能比元数据探查稍重，但仍不应成为长时间 HTTP 查询。
+      metric-query-timeout-seconds: 30
+      # 异常样本默认最大返回行数；最终还会和扫描计划里的 anomalySampleLimit 取较小值。
+      anomaly-sample-max-rows: 100
+      # 异常样本 SQL 查询超时秒数。
+      anomaly-sample-query-timeout-seconds: 30
+
+    datasource-metadata-validation:
+      # 是否启用对 datasource-management 的远程元数据校验。
+      # false：只做结构性校验，适合本地单模块开发；
+      # true：创建/更新/启用关系型质量规则时，会调用数据源模块确认表和字段是否真实存在。
+      enabled: false
+      # datasource-management 的基础地址。
+      # 当前本地端口为 8082；生产环境可以改成网关地址、服务发现地址或内网服务域名。
+      base-url: http://localhost:8082
+      # 远程校验失败时是否放行。
+      # 本地开发建议 true，避免另一个服务未启动导致质量模块无法调试；
+      # 生产环境建议 false，避免没有确认表字段存在的规则进入 ACTIVE。
+      fail-open: true
+      # 元数据探查所使用的系统主体信息。
+      # 后续接入 permission-admin 后，应替换为真实服务账号和租户上下文。
+      actor-id: 0
+      actor-role: SYSTEM
+      actor-tenant-id: 0
+      # 质量规则目标校验只需要确认目标表和字段存在，因此默认只拉取 1 张表。
+      max-tables: 1
+      # 字段级规则需要字段清单；限制字段数可以避免超宽表返回过大响应。
+      max-columns-per-table: 500
+    task-management:
+      # 是否启用向 task-management 提交真实任务。
+      # true：/quality-rules/{id}/schedule-task 会创建 PENDING 任务；
+      # false：接口只返回未提交结果，适合只想验证扫描计划生成的本地调试。
+      enabled: true
+      # task-management 的基础地址。
+      # 当前本地端口为 8081；生产环境可以替换为网关地址、服务发现地址或内网域名。
+      base-url: http://localhost:8081
+      # 提交到任务中心的任务类型。
+      # 后续质量执行器可以通过 taskType=DATA_QUALITY_SCAN 认领这类任务。
+      task-type: DATA_QUALITY_SCAN
+      # 默认任务优先级。调用方未传 priority 时使用该值。
+      default-priority: MEDIUM
+      # 默认最大重试次数。质量扫描可能受源库抖动、网络波动影响，因此保留有限重试。
+      default-max-retry-count: 3
+      # 本地质量执行器默认实例 ID。
+      # 后续 executor coordinator 认领任务、上报心跳和回写完成/失败时会使用该值。
+      # 生产环境建议替换为 Pod 名、机器名或稳定实例编号，方便排查某个执行器是否频繁失败。
+      executor-id: data-quality-executor-local
+      # 是否启用 data-quality 内置质量执行器 coordinator。
+      # 当前默认 false：因为真实数据扫描器尚未落地，不能让服务启动或接口误操作后自动消费任务并伪造成功。
+      # 本地联调时可以临时改为 true，再手动调用 /quality-rules/executor/coordinator/run-once 验证任务闭环。
+      executor-coordinator-enabled: false
+      # 是否启用后台自动调度器。
+      # false：只保留手动 run-once / run-batch 联调入口，不会自动消费 task-management 队列；
+      # true：服务启动后按固定间隔认领并执行 DATA_QUALITY_SCAN 任务。
+      # 商业化部署建议先在测试环境开启，确认源库压力、SQL 超时、任务失败率和审计链路稳定后再进入生产。
+      executor-scheduler-enabled: false
+      # 后台调度器首次启动前等待秒数。
+      # 给服务注册、连接池、task-management 和 datasource-management 预热留出时间，减少启动瞬间的无效失败。
+      executor-scheduler-initial-delay-seconds: 30
+      # 后台调度器固定延迟秒数。
+      # 使用 fixedDelay 语义：上一轮执行完成后再等待该时间，避免长扫描时多轮调度重叠。
+      executor-scheduler-fixed-delay-seconds: 30
+      # 单轮最多认领并处理多少条质量任务。
+      # 默认 1 是保守生产策略；后续确认性能后可逐步上调，但超过一定规模应改成线程池、租户配额和数据源配额。
+      executor-scheduler-max-runs-per-tick: 1
+      # 是否启用执行器本实例并发护栏。
+      # 该护栏限制当前 data-quality 实例内正在运行的扫描数量，不替代 task-management 的队列和租约。
+      executor-concurrency-guard-enabled: true
+      # 当前实例允许同时运行的质量扫描总数。
+      # 默认 2，避免未来 run-batch 或线程池开启后瞬间把 HTTP/JDBC 资源打满。
+      executor-max-concurrent-runs-global: 2
+      # 当前实例内单租户允许同时运行的质量扫描数量。
+      # 默认 1，防止某个租户的规则批量触发后挤占全部执行资源。
+      executor-max-concurrent-runs-per-tenant: 1
+      # 当前实例内单数据源允许同时运行的质量扫描数量。
+      # 默认 1，保护客户源库；后续接入连接池隔离、慢查询熔断和源库容量评估后再逐步放宽。
+      executor-max-concurrent-runs-per-datasource: 1
+      # 执行器因并发护栏拒绝任务时，回写 task-management defer 的延迟秒数。
+      # 这不是失败重试间隔，而是容量背压间隔：任务本身没有失败，只是当前实例暂时不适合继续执行。
+      # 后续可升级为指数退避、按租户 SLA 退避或按数据源健康状态动态退避。
+      executor-throttle-defer-seconds: 30
+      # 执行器认领和心跳默认租约秒数。
+      # 租约越短，失联恢复越快但心跳压力越高；租约越长，对短暂网络抖动更友好但故障恢复更慢。
+      executor-lease-seconds: 60
+      # 服务间调用 task-management 执行器接口时透传的平台上下文。
+      # task-management 服务层会基于 ActorRole 做二次权限校验，因此这里默认使用机器身份 SERVICE_ACCOUNT。
+      executor-actor-tenant-id: 0
+      executor-actor-id: 0
+      executor-actor-role: SERVICE_ACCOUNT
+      # 服务间调用来源标识，会写入 X-DataSmart-Source-Service，便于日志、审计和链路追踪识别调用来源。
+      source-service: data-quality
+      # 调用 task-management 失败时是否 fail-open。
+      # 生产建议 false，避免误认为任务已经入队；本地联调可临时改为 true。
+      fail-open: false
+
 logging:
   level:
     com.czh.datasmart: INFO
@@ -48,6 +165,10 @@ management:
     web:
       exposure:
         # 当前先暴露最基础的健康、信息和指标端点，满足本地排障与基础监控接入。
+        # 引入 spring-boot-starter-actuator 后，可以通过 /actuator/metrics 查看质量执行器相关指标，
+        # 例如 datasmart_quality_executor_run_total、datasmart_quality_executor_scheduler_tick_total。
+        # 并发护栏触发时，还可以查看 datasmart_quality_executor_concurrency_rejected_total。
+        # 后续接入 Prometheus registry 后，再把 prometheus 端点加入这里。
         include: health,info,metrics
   endpoint:
     health:

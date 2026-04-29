@@ -34,6 +34,38 @@ public class UpdateQualityRuleRequest {
     private String targetObject;
 
     /**
+     * 检测目标类型。
+     *
+     * <p>更新目标类型会触发规则版本递增和目标重新校验。
+     */
+    private String targetType;
+
+    /**
+     * 数据源 ID。
+     */
+    private Long dataSourceId;
+
+    /**
+     * 数据库名称。
+     */
+    private String databaseName;
+
+    /**
+     * Schema 名称。
+     */
+    private String schemaName;
+
+    /**
+     * 表名。
+     */
+    private String tableName;
+
+    /**
+     * 字段名。
+     */
+    private String fieldName;
+
+    /**
      * 比较运算符。
      */
     @NotBlank(message = "比较运算符不能为空")

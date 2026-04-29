@@ -22,6 +22,12 @@ public class SyncTimeoutOverrideRequest {
     @NotBlank(message = "actorRole 不能为空")
     private String actorRole;
 
+    /**
+     * 发起超时覆盖动作所属租户。
+     */
+    @NotNull(message = "actorTenantId 不能为空")
+    private Long actorTenantId;
+
     @NotNull(message = "timeoutSeconds 不能为空")
     @Min(value = 1, message = "timeoutSeconds 必须大于 0")
     private Integer timeoutSeconds;

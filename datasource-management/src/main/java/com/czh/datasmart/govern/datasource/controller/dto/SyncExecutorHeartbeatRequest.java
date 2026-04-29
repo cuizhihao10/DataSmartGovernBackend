@@ -32,6 +32,12 @@ public class SyncExecutorHeartbeatRequest {
     private String actorRole;
 
     /**
+     * 心跳回写所属租户。
+     */
+    @NotNull(message = "actorTenantId 不能为空")
+    private Long actorTenantId;
+
+    /**
      * 执行器实例标识。
      */
     @NotBlank(message = "executorId 不能为空")
