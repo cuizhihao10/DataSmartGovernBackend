@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from datasmart_ai_runtime.api_memory_write_pagination import paginate_memory_write_candidates
 from datasmart_ai_runtime.domain.memory import (
     AgentMemoryWriteCandidateStatus,
 )
@@ -50,28 +51,53 @@ def register_memory_write_routes(app: Any, service: AgentMemoryWriteGovernanceSe
         projectId: str | None = None,
         status: str | None = None,
         limit: int = 100,
+        cursor: str | None = None,
     ) -> dict[str, Any]:
         """查询记忆写入候选列表。
 
         `tenantId/projectId` 是数据范围过滤条件。未来 gateway 应根据操作者角色把这两个字段
         强制注入或收紧，不能让普通用户自由枚举其他租户和项目。
+
+        分页说明：
+        - `limit` 是页大小，当前 API 层限制在 1-100，避免审批台误拉全量数据；
+        - `cursor` 来自上一页 `pageInfo.nextCursor`，调用方不需要解析，原样传回即可；
+        - 当前先在 API 层用稳定游标切片，后续 MySQL store 会把相同游标下沉为 SQL 条件。
         """
 
         parsed_status = _parse_status(status)
-        candidates = service.list_candidates(
-            tenant_id=tenantId,
-            project_id=projectId,
-            status=parsed_status,
-            limit=limit,
-        )
+        safe_limit = _safe_limit(limit)
+        try:
+            # 当前 store 协议还没有原生 cursor 查询，所以先读取一个受保护的窗口再做 API 层分页。
+            # 这里最多取 500 条，是为了兼容已有 store 的安全上限；真实审批台大规模翻页时，
+            # 下一阶段应把 cursor 条件下沉到 MySQL，避免 Python Runtime 承担过多列表切片压力。
+            candidates = service.list_candidates(
+                tenant_id=tenantId,
+                project_id=projectId,
+                status=parsed_status,
+                limit=500,
+            )
+            page = paginate_memory_write_candidates(candidates, limit=safe_limit, cursor=cursor)
+        except ValueError as exc:
+            raise _http_error(
+                HTTPException,
+                status_code=400,
+                error_code="MEMORY_WRITE_CURSOR_INVALID",
+                message=str(exc),
+            ) from exc
         return {
-            "candidateCount": len(candidates),
-            "candidates": tuple(candidate.to_summary() for candidate in candidates),
+            "candidateCount": len(page.items),
+            "candidates": tuple(candidate.to_summary() for candidate in page.items),
+            "pageInfo": {
+                "limit": safe_limit,
+                "hasMore": page.has_more,
+                "nextCursor": page.next_cursor,
+            },
             "filters": {
                 "tenantId": tenantId,
                 "projectId": projectId,
                 "status": parsed_status.value if parsed_status else None,
-                "limit": max(1, min(limit, 500)),
+                "limit": safe_limit,
+                "cursor": cursor,
             },
         }
 
@@ -81,7 +107,12 @@ def register_memory_write_routes(app: Any, service: AgentMemoryWriteGovernanceSe
 
         candidate = service.get(candidate_id)
         if candidate is None:
-            raise HTTPException(status_code=404, detail=f"记忆写入候选不存在: {candidate_id}")
+            raise _http_error(
+                HTTPException,
+                status_code=404,
+                error_code="MEMORY_WRITE_CANDIDATE_NOT_FOUND",
+                message=f"记忆写入候选不存在: {candidate_id}",
+            )
         return {"candidate": candidate.to_summary()}
 
     @app.post("/agent/memory/write-candidates/{candidate_id}/approve")
@@ -121,7 +152,12 @@ def register_memory_write_routes(app: Any, service: AgentMemoryWriteGovernanceSe
             return AgentMemoryWriteCandidateStatus(str(status).strip())
         except ValueError as exc:
             allowed = ", ".join(item.value for item in AgentMemoryWriteCandidateStatus)
-            raise HTTPException(status_code=400, detail=f"不支持的候选状态: {status}，可选值: {allowed}") from exc
+            raise _http_error(
+                HTTPException,
+                status_code=400,
+                error_code="MEMORY_WRITE_STATUS_INVALID",
+                message=f"不支持的候选状态: {status}，可选值: {allowed}",
+            ) from exc
 
     def _decide_candidate(
         memory_service: AgentMemoryWriteGovernanceService,
@@ -135,7 +171,12 @@ def register_memory_write_routes(app: Any, service: AgentMemoryWriteGovernanceSe
         operator_id = str(payload.get("operatorId") or payload.get("operator_id") or "").strip()
         reason = str(payload.get("reason") or "").strip()
         if not operator_id:
-            raise HTTPException(status_code=400, detail="operatorId 必填，用于审计记忆写入审批责任人。")
+            raise _http_error(
+                HTTPException,
+                status_code=400,
+                error_code="MEMORY_WRITE_OPERATOR_REQUIRED",
+                message="operatorId 必填，用于审计记忆写入审批责任人。",
+            )
         try:
             if approve:
                 return approve_memory_write_candidate(
@@ -148,9 +189,60 @@ def register_memory_write_routes(app: Any, service: AgentMemoryWriteGovernanceSe
                 memory_service,
                 candidate_id=candidate_id,
                 operator_id=operator_id,
-                reason=reason,
-            )
+                    reason=reason,
+                )
         except KeyError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
+            raise _http_error(
+                HTTPException,
+                status_code=404,
+                error_code="MEMORY_WRITE_CANDIDATE_NOT_FOUND",
+                message=str(exc),
+            ) from exc
         except ValueError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise _http_error(
+                HTTPException,
+                status_code=409,
+                error_code="MEMORY_WRITE_DECISION_CONFLICT",
+                message=str(exc),
+            ) from exc
+        except RuntimeError as exc:
+            raise _http_error(
+                HTTPException,
+                status_code=409,
+                error_code="MEMORY_WRITE_VERSION_CONFLICT",
+                message=str(exc),
+            ) from exc
+
+    def _safe_limit(limit: int) -> int:
+        """规范化审批台页大小。
+
+        列表 API 的 limit 和底层 store 的 limit 含义不同：
+        - API limit 是前端一页展示多少条，控制在 1-100；
+        - store limit 是当前临时读取窗口，控制在 500，等待后续 SQL cursor 下沉。
+        """
+
+        return max(1, min(limit, 100))
+
+    def _http_error(
+        http_exception_type: Any,
+        *,
+        status_code: int,
+        error_code: str,
+        message: str,
+    ) -> Exception:
+        """构造结构化 HTTP 错误。
+
+        早期接口直接返回字符串 detail，前端只能做文本判断。这里改成稳定结构：
+        - `errorCode`：机器可读错误码，便于前端、gateway 和日志统计；
+        - `message`：中文人读解释，便于学习、联调和运维定位；
+        - `statusCode`：保留 HTTP 语义，方便统一错误面板展示。
+        """
+
+        return http_exception_type(
+            status_code=status_code,
+            detail={
+                "errorCode": error_code,
+                "message": message,
+                "statusCode": status_code,
+            },
+        )

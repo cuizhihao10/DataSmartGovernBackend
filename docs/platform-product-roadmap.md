@@ -6397,3 +6397,22 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 补候选 API 错误语义和分页 cursor。
 2. 设计 APPROVED 候选异步写入 worker。
 3. 并行规划遗忘/归档/检索权限与智能网关模型路由能力，避免长期记忆局部无限扩展。
+
+## 4.30 AI Runtime 记忆写入候选 API 分页与错误语义（2026-05-28）
+
+本阶段补齐长期记忆候选审批台 API 的分页和结构化错误契约。候选列表现在支持 `cursor`，响应包含 `pageInfo.hasMore` 与 `pageInfo.nextCursor`；错误响应从字符串升级为包含 `errorCode/message/statusCode` 的结构化 detail。
+
+已完成：
+- 新增 `api_memory_write_pagination.py`，封装 `createdAt + candidateId` 稳定 cursor。
+- `GET /agent/memory/write-candidates` 新增 `cursor` 参数和 `pageInfo` 响应。
+- 候选不存在、非法状态、非法 cursor、缺少 operatorId、审批冲突和版本冲突都映射为稳定错误码。
+- 新增测试覆盖 cursor 翻页和结构化错误。
+
+产品意义：
+- 审批台可以持续翻页，而不是只能查看一次性列表。
+- 前端、gateway、日志和告警可以基于机器可读错误码处理问题，避免依赖中文字符串。
+- 该阶段仍是 API 契约层第一步，后续大规模深分页应把 cursor 下沉到 MySQL 查询。
+
+下一步：
+1. 长期记忆线可继续做 APPROVED 候选异步写入 worker。
+2. 或按全局节奏切回智能网关模型路由、工具/Skill 执行闭环和 Agent 工作区隔离。
