@@ -59,6 +59,10 @@ class ModelToolResultFeedbackTest(unittest.TestCase):
         self.assertEqual("call_quality_001", tool_message.tool_call_id)
         payload = json.loads(tool_message.content)
         self.assertEqual("succeeded", payload["status"])
+        self.assertEqual("minio_object", payload["outputReference"]["kind"])
+        self.assertEqual("minio://agent/run-001/quality-rules.json", payload["outputReference"]["uri"])
+        self.assertEqual("agent", payload["outputReference"]["attributes"]["bucket"])
+        self.assertEqual("run-001/quality-rules.json", payload["outputReference"]["attributes"]["objectKey"])
         self.assertEqual("***MASKED***", payload["result"]["datasourceId"])
         self.assertEqual(3, payload["result"]["ruleCount"])
 

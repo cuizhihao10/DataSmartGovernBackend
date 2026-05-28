@@ -16,6 +16,7 @@ from datasmart_ai_runtime.domain.contracts import (
     ToolRiskLevel,
 )
 from datasmart_ai_runtime.domain.intent import IntentAnalysis, IntentRiskTag
+from datasmart_ai_runtime.domain.resource_reference import AgentResourceReference
 from datasmart_ai_runtime.domain.skills import AgentSkillPlan
 from datasmart_ai_runtime.services.tool_parameter_validator import ToolParameterValidator
 
@@ -290,17 +291,26 @@ class ToolPlanner:
         return {argument_name: ToolPlanner._tool_output_reference(from_tool, path)}
 
     @staticmethod
-    def _tool_output_reference(from_tool: str, path: str) -> dict[str, str]:
+    def _tool_output_reference(from_tool: str, path: str) -> dict[str, object]:
         """构造 Java Agent Runtime 可识别的轻量输出引用对象。
 
         `referenceMode` 不是 Java 当前必需字段，但它能帮助前端、日志和后续 LLM 规划器理解：
         这个引用不是复制大 JSON，而是指向同一 Run 内前序工具的结构化输出。
+
+        同时这里追加统一 `resourceReference` 结构。这样做是兼容式演进：
+        - Java 当前解析器继续读取 `fromTool/path/referenceMode`；
+        - 新的 Python/前端/未来 Skill Runtime 可以读取 `resourceReference.kind/uri/contextPolicy`；
+        - 后续一旦 Java 解析器升级，也可以直接消费统一资源引用，而不需要再猜测字段含义。
         """
 
         return {
             "fromTool": from_tool,
             "path": path,
             "referenceMode": "LATEST_SUCCESS_IN_RUN",
+            "resourceReference": AgentResourceReference.tool_output(
+                tool_code=from_tool,
+                json_path=path,
+            ).to_payload(),
         }
 
     @staticmethod

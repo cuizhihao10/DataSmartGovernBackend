@@ -236,36 +236,33 @@ class ToolPlannerTest(unittest.TestCase):
         )
 
         quality_plan = next(plan for plan in plans if plan.tool_name == "quality.rule.suggest")
+        metadata_ref = quality_plan.arguments["metadataRef"]
         self.assertEqual(
-            {
-                "fromTool": "datasource.metadata.read",
-                "path": "metadata",
-                "referenceMode": "LATEST_SUCCESS_IN_RUN",
-            },
-            quality_plan.arguments["metadataRef"],
+            "datasource.metadata.read",
+            metadata_ref["fromTool"],
         )
+        self.assertEqual("metadata", metadata_ref["path"])
+        self.assertEqual("LATEST_SUCCESS_IN_RUN", metadata_ref["referenceMode"])
+        self.assertEqual("tool_output", metadata_ref["resourceReference"]["kind"])
+        self.assertEqual("workspace://tool-output/datasource.metadata.read?path=metadata", metadata_ref["resourceReference"]["uri"])
 
         create_draft_plan = next(plan for plan in plans if plan.tool_name == "task.create.draft")
         self.assertEqual("DATA_QUALITY_SCAN", create_draft_plan.arguments["taskType"])
+        suggestion_ref = create_draft_plan.arguments["suggestionRef"]
         self.assertEqual(
-            {
-                "fromTool": "quality.rule.suggest",
-                "path": "suggestion",
-                "referenceMode": "LATEST_SUCCESS_IN_RUN",
-            },
-            create_draft_plan.arguments["suggestionRef"],
+            "quality.rule.suggest",
+            suggestion_ref["resourceReference"]["toolCode"],
         )
+        self.assertEqual("suggestion", suggestion_ref["resourceReference"]["jsonPath"])
 
         persist_plan = next(plan for plan in plans if plan.tool_name == "task.draft.persist")
         self.assertTrue(persist_plan.requires_human_approval)
+        task_draft_ref = persist_plan.arguments["taskDraftRef"]
         self.assertEqual(
-            {
-                "fromTool": "task.create.draft",
-                "path": "taskDraft",
-                "referenceMode": "LATEST_SUCCESS_IN_RUN",
-            },
-            persist_plan.arguments["taskDraftRef"],
+            "task.create.draft",
+            task_draft_ref["resourceReference"]["toolCode"],
         )
+        self.assertEqual("taskDraft", task_draft_ref["resourceReference"]["jsonPath"])
 
 
 if __name__ == "__main__":

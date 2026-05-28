@@ -16,6 +16,7 @@ from enum import Enum
 from typing import Any, Iterable
 
 from datasmart_ai_runtime.domain.contracts import ModelMessage, ModelToolCall
+from datasmart_ai_runtime.domain.resource_reference import AgentResourceReference
 
 
 class ToolExecutionFeedbackStatus(str, Enum):
@@ -143,6 +144,7 @@ class ModelToolResultFeedbackBuilder:
             "auditId": feedback.audit_id,
             "runId": feedback.run_id,
             "outputRef": feedback.output_ref,
+            "outputReference": self._output_reference_payload(feedback),
             "errorCode": feedback.error_code,
             "errorMessage": feedback.error_message,
             "result": self._mask_result(feedback.result, feedback.sensitive_fields),
@@ -171,3 +173,16 @@ class ModelToolResultFeedbackBuilder:
         for key, value in result.items():
             masked[key] = self.MASKED_VALUE if key in sensitive else value
         return masked
+
+    @staticmethod
+    def _output_reference_payload(feedback: ToolExecutionFeedback) -> dict[str, Any] | None:
+        """把旧式 outputRef 字符串补充为统一资源引用结构。
+
+        旧字段 `outputRef` 继续保留，确保当前 Java/Python 测试和调用方不受影响；
+        新字段 `outputReference` 让后续模型上下文治理、审计台和工具输出 resolver 能识别引用类型。
+        """
+
+        if not feedback.output_ref:
+            return None
+        reference = AgentResourceReference.from_uri(feedback.output_ref)
+        return reference.to_payload()

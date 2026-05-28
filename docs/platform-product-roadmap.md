@@ -6455,3 +6455,23 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 设计工具/Skill 输出引用协议。
 2. Java 侧增加 workspace 一致性校验。
 3. 将 `cacheNamespace` 接入模型网关缓存治理。
+
+## 4.33 AI Runtime Agent 资源引用协议第一阶段（2026-05-28）
+
+本阶段新增统一 Agent 资源引用协议，用来表达工具输出、工作空间产物、长期记忆、MinIO 对象和 Java agent-runtime 审计引用。它不替换 Java 现有 `fromTool/path/outputRef`，而是在兼容旧字段的基础上增加 `resourceReference/outputReference` 结构。
+
+已完成：
+- 新增 `AgentResourceReferenceKind` 与 `AgentResourceReference`。
+- `ToolPlanner` 的前序工具输出引用新增 `resourceReference`。
+- 模型工具结果回填保留 `outputRef`，同时新增结构化 `outputReference`。
+- 新增资源引用测试，并更新工具规划与模型回填测试。
+
+产品意义：
+- 工具产物不再只是字符串，可以表达类型、URI、workspace、jsonPath 和上下文准入策略。
+- 为 `workspace://artifact/...`、`memory://candidate/...`、`minio://bucket/key` 统一 resolver 打基础。
+- 未来模型上下文过滤可以基于 `contextPolicy` 判断哪些资源只能审计、哪些可以摘要进入模型。
+
+下一步：
+1. 实现轻量资源引用 resolver，先做类型识别、workspace 校验和上下文准入判断。
+2. Java 侧逐步支持 `resourceReference` 字段。
+3. 将资源引用协议接入模型二轮上下文过滤和工具/Skill 输出产物管理。
