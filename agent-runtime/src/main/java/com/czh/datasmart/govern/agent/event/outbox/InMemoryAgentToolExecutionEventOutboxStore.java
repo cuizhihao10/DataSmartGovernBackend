@@ -157,6 +157,32 @@ public class InMemoryAgentToolExecutionEventOutboxStore implements AgentToolExec
     }
 
     @Override
+    public int recoverStalePublishing(Instant staleBefore, Instant now, String error) {
+        Instant cutoff = staleBefore == null ? Instant.now() : staleBefore;
+        Instant referenceTime = now == null ? Instant.now() : now;
+        lock.writeLock().lock();
+        try {
+            int recovered = 0;
+            for (Map.Entry<String, AgentToolExecutionEventOutboxRecord> entry : recordsByOutboxId.entrySet()) {
+                AgentToolExecutionEventOutboxRecord record = entry.getValue();
+                if (!isStalePublishing(record, cutoff)) {
+                    continue;
+                }
+                /*
+                 * stale PUBLISHING 恢复不是把事件当作“首次待投递”处理，而是转回 FAILED。
+                 * 这样可以保留 attemptCount，运维侧能看到该事件曾经被 worker 领取过；
+                 * nextRetryAt 设置为当前时间，表示它已经具备再次领取条件，下一轮 dispatcher 可以马上补偿重试。
+                 */
+                entry.setValue(record.markFailed(error, referenceTime, referenceTime));
+                recovered++;
+            }
+            return recovered;
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    @Override
     public AgentToolExecutionEventOutboxDiagnostics diagnostics() {
         lock.readLock().lock();
         try {
@@ -231,6 +257,12 @@ public class InMemoryAgentToolExecutionEventOutboxStore implements AgentToolExec
         boolean statusAllowsClaim = record.status() == AgentToolExecutionEventOutboxStatus.PENDING
                 || record.status() == AgentToolExecutionEventOutboxStatus.FAILED;
         return statusAllowsClaim && (record.nextRetryAt() == null || !record.nextRetryAt().isAfter(referenceTime));
+    }
+
+    private boolean isStalePublishing(AgentToolExecutionEventOutboxRecord record, Instant cutoff) {
+        return record.status() == AgentToolExecutionEventOutboxStatus.PUBLISHING
+                && record.updatedAt() != null
+                && !record.updatedAt().isAfter(cutoff);
     }
 
     private void appendRunIndex(AgentToolExecutionEventOutboxRecord record) {

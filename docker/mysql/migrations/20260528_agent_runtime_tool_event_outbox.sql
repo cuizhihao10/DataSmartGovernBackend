@@ -35,11 +35,12 @@ CREATE TABLE IF NOT EXISTS agent_tool_execution_event_outbox (
     published_at DATETIME(3) DEFAULT NULL COMMENT '投递成功时间',
     last_error VARCHAR(1024) DEFAULT NULL COMMENT '最近一次投递失败或阻断原因',
     create_time DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT 'outbox 记录创建时间',
-    update_time DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT 'outbox 记录更新时间',
+    update_time DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT 'outbox 记录更新时间；PUBLISHING 状态下也作为轻量领取时间，用于 dispatcher 崩溃后的 stale 恢复',
     PRIMARY KEY (id),
     UNIQUE KEY uk_agent_tool_event_outbox_outbox_id (outbox_id),
     UNIQUE KEY uk_agent_tool_event_outbox_event_id (event_id),
     KEY idx_agent_tool_event_outbox_status_retry (status, next_retry_at, id),
+    KEY idx_agent_tool_event_outbox_status_update (status, update_time, id),
     KEY idx_agent_tool_event_outbox_run_status (run_id, status, id),
     KEY idx_agent_tool_event_outbox_audit (audit_id),
     KEY idx_agent_tool_event_outbox_scope_time (tenant_id, project_id, occurred_at)

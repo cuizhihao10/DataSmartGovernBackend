@@ -89,6 +89,7 @@ public class AgentToolExecutionEventOutboxDispatcher {
     private AgentToolExecutionEventOutboxDispatchSummary doDispatchOnce() {
         Instant now = Instant.now();
         int batchSize = normalizeBatchSize();
+        int recovered = recoverStalePublishing(now);
         List<AgentToolExecutionEventOutboxRecord> candidates = outboxStore.listPublishable(batchSize, now);
         int published = 0;
         int failed = 0;
@@ -101,11 +102,25 @@ public class AgentToolExecutionEventOutboxDispatcher {
             blocked += outcome.blocked();
             skipped += outcome.skipped();
         }
-        if (!candidates.isEmpty()) {
-            log.info("Agent 工具 outbox dispatcher 本轮完成，scanned={}, published={}, failed={}, blocked={}, skipped={}",
-                    candidates.size(), published, failed, blocked, skipped);
+        if (!candidates.isEmpty() || recovered > 0) {
+            log.info("Agent 工具 outbox dispatcher 本轮完成，recovered={}, scanned={}, published={}, failed={}, blocked={}, skipped={}",
+                    recovered, candidates.size(), published, failed, blocked, skipped);
         }
-        return new AgentToolExecutionEventOutboxDispatchSummary(candidates.size(), published, failed, blocked, skipped, "");
+        return new AgentToolExecutionEventOutboxDispatchSummary(candidates.size(), published, failed, blocked, skipped, recovered, "");
+    }
+
+    private int recoverStalePublishing(Instant now) {
+        if (!properties.isDispatcherRecoverStalePublishingEnabled()) {
+            return 0;
+        }
+        long timeoutSeconds = Math.max(1, properties.getDispatcherPublishingTimeoutSeconds());
+        Instant staleBefore = now.minusSeconds(timeoutSeconds);
+        String error = "PUBLISHING 超过 " + timeoutSeconds + " 秒仍未完成，已恢复为 FAILED 等待 dispatcher 补偿重试。";
+        int recovered = outboxStore.recoverStalePublishing(staleBefore, now, error);
+        if (recovered > 0) {
+            log.warn("Agent 工具 outbox 发现 stale PUBLISHING 记录并恢复，count={}, staleBefore={}", recovered, staleBefore);
+        }
+        return recovered;
     }
 
     private DispatchOutcome dispatchRecord(AgentToolExecutionEventOutboxRecord candidate, Instant now) {
@@ -168,11 +183,12 @@ public class AgentToolExecutionEventOutboxDispatcher {
             int failed,
             int blocked,
             int skipped,
+            int recovered,
             String skippedReason
     ) {
 
         public static AgentToolExecutionEventOutboxDispatchSummary skipped(String reason) {
-            return new AgentToolExecutionEventOutboxDispatchSummary(0, 0, 0, 0, 1, reason);
+            return new AgentToolExecutionEventOutboxDispatchSummary(0, 0, 0, 0, 1, 0, reason);
         }
     }
 

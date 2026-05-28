@@ -117,6 +117,27 @@ public class AgentToolExecutionEventOutboxProperties {
     private int dispatcherMaxAttempts = 10;
 
     /**
+     * 是否启用 stale PUBLISHING 自动恢复。
+     *
+     * <p>PUBLISHING 表示某个 dispatcher worker 已经领取了事件。如果 worker 在发送 Kafka、调用审计中心、
+     * 或写回状态之前崩溃，记录就可能永久卡住。启用该开关后，dispatcher 每轮会先扫描超时 PUBLISHING，
+     * 把它们转回 FAILED 并允许补偿重试。</p>
+     *
+     * <p>真实生产中，这个能力要求下游消费者基于 eventId/outboxId 做幂等，因为恢复重试可能带来重复投递。
+     * 这是为了换取更重要的可靠性目标：业务事实已经提交后，事件不能永久丢失在半投递状态。</p>
+     */
+    private boolean dispatcherRecoverStalePublishingEnabled = true;
+
+    /**
+     * PUBLISHING 记录的超时秒数。
+     *
+     * <p>该值不能过小，否则仍在正常发送中的 worker 可能被误判为 stale，造成重复投递；
+     * 也不能过大，否则 worker 崩溃后的事件恢复太慢，前端、Python Runtime 和审计中心会长时间看不到状态变化。
+     * 默认 300 秒先面向“后台补偿可靠性”取保守值，后续压测时应结合 Kafka ack 延迟、审计中心写入耗时和最大批次大小调整。</p>
+     */
+    private long dispatcherPublishingTimeoutSeconds = 300;
+
+    /**
      * dispatcher 最大重试退避秒数。
      *
      * <p>失败重试使用 retryBackoffSeconds 作为基础值，并按尝试次数指数退避，最后不超过该上限。

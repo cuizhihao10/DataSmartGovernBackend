@@ -44,6 +44,15 @@
     <properties>
         <java.version>21</java.version>
         <!--
+          Maven Toolchains 用来解决“启动 Maven 的 JDK”和“项目实际编译/测试 JDK”不一致的问题。
+          本项目使用 record、switch expression、Spring Boot 3.5.x 等 Java 21 生态能力；
+          如果本机 mvn 默认跑在 Java 8 上，普通 <release>21</release> 仍可能在编译阶段误报语法错误。
+          通过 select-jdk-toolchain，Maven 会在 validate 阶段自动发现并选择 21.x JDK，后续 compiler、surefire
+          等支持 toolchain 的插件会使用该 JDK 执行，从而降低本地环境误配置导致的“假失败”。
+        -->
+        <maven-toolchains-plugin.version>3.2.0</maven-toolchains-plugin.version>
+        <toolchain.jdk.version>[21,22)</toolchain.jdk.version>
+        <!--
           显式固定源码与报告输出编码，避免 Windows 本地环境、Maven 默认编码
           与源码中文注释之间出现不一致，导致注释内容或文本块在构建阶段被错误解析。
         -->
@@ -125,6 +134,30 @@
         </dependency>
     </dependencies>
     <build>
+        <plugins>
+            <!--
+              在 validate 阶段选择 JDK 21 toolchain。
+              这里不硬编码 C:\Users\Cui\.jdks\... 这类个人机器路径，而是让 Maven Toolchains Plugin
+              先自动发现本机 JDK；如果团队成员或 CI 的机器无法自动发现，再按 docs/development-jdk21.md
+              配置 ~/.m2/toolchains.xml 或 JAVA21_HOME。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-toolchains-plugin</artifactId>
+                <version>${maven-toolchains-plugin.version}</version>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>select-jdk-toolchain</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <configuration>
+                    <version>${toolchain.jdk.version}</version>
+                    <discoverToolchains>true</discoverToolchains>
+                </configuration>
+            </plugin>
+        </plugins>
         <pluginManagement>
             <plugins>
                 <plugin>

@@ -156,6 +156,37 @@ class AgentToolExecutionEventOutboxDispatcherTest {
     }
 
     @Test
+    void dispatcherShouldRecoverStalePublishingRecordAndRetry() {
+        AgentToolExecutionEventOutboxProperties properties = properties();
+        properties.setDispatcherPublishingTimeoutSeconds(60);
+        InMemoryAgentToolExecutionEventOutboxStore store = new InMemoryAgentToolExecutionEventOutboxStore(10, 100);
+        store.append(outboxRecord(
+                "outbox-dispatch-stale-publishing",
+                AgentToolExecutionEventOutboxStatus.PUBLISHING,
+                1,
+                null,
+                Instant.now().minusSeconds(120)
+        ));
+        CollectingDispatchTarget target = new CollectingDispatchTarget();
+        AgentToolExecutionEventOutboxDispatcher dispatcher = new AgentToolExecutionEventOutboxDispatcher(
+                properties,
+                store,
+                List.of(target)
+        );
+
+        AgentToolExecutionEventOutboxDispatcher.AgentToolExecutionEventOutboxDispatchSummary summary =
+                dispatcher.dispatchOnce();
+
+        assertEquals(1, summary.recovered());
+        assertEquals(1, summary.scanned());
+        assertEquals(1, summary.published());
+        assertEquals(List.of("outbox-dispatch-stale-publishing"), target.dispatchedOutboxIds);
+        AgentToolExecutionEventOutboxRecord current = store.findByOutboxId("outbox-dispatch-stale-publishing").orElseThrow();
+        assertEquals(AgentToolExecutionEventOutboxStatus.PUBLISHED, current.status());
+        assertEquals(2, current.attemptCount());
+    }
+
+    @Test
     void dispatcherShouldBlockRecordWhenMaxAttemptsExceeded() {
         AgentToolExecutionEventOutboxProperties properties = properties();
         properties.setDispatcherMaxAttempts(3);
@@ -190,6 +221,14 @@ class AgentToolExecutionEventOutboxDispatcherTest {
                                                              AgentToolExecutionEventOutboxStatus status,
                                                              int attemptCount,
                                                              Instant nextRetryAt) {
+        return outboxRecord(outboxId, status, attemptCount, nextRetryAt, Instant.now());
+    }
+
+    private AgentToolExecutionEventOutboxRecord outboxRecord(String outboxId,
+                                                             AgentToolExecutionEventOutboxStatus status,
+                                                             int attemptCount,
+                                                             Instant nextRetryAt,
+                                                             Instant updatedAt) {
         Instant now = Instant.now();
         return new AgentToolExecutionEventOutboxRecord(
                 outboxId,
@@ -211,7 +250,7 @@ class AgentToolExecutionEventOutboxDispatcherTest {
                 attemptCount,
                 now,
                 now,
-                now,
+                updatedAt,
                 nextRetryAt,
                 null,
                 "",

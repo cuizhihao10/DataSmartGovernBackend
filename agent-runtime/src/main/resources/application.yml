@@ -129,6 +129,13 @@ datasmart:
         # 单条记录最大投递尝试次数；达到上限后会进入 BLOCKED，停止自动重试，避免坏消息无限占用 dispatcher。
         # 后续运维台应围绕 BLOCKED 记录提供重新入队、人工忽略、导出排查和修复后补偿等管理能力。
         dispatcher-max-attempts: 10
+        # 是否恢复长时间卡在 PUBLISHING 的记录。
+        # PUBLISHING 代表 dispatcher 已领取但尚未写回最终状态；如果 worker 崩溃，记录可能永久卡住。
+        # 启用后会把超时 PUBLISHING 转回 FAILED 并允许补偿重试；下游仍必须按 eventId/outboxId 做幂等。
+        dispatcher-recover-stale-publishing-enabled: true
+        # PUBLISHING 超时阈值。默认 300 秒偏保守，避免正常 Kafka ack 或审计中心写入较慢时被误判为 stale。
+        # 后续压测可结合 dispatcher-batch-size、Kafka 发送超时、数据库延迟和事件积压量一起调整。
+        dispatcher-publishing-timeout-seconds: 300
         # 指数退避最大秒数，避免下游故障时高频重试打爆 Kafka 或数据库。
         dispatcher-max-retry-backoff-seconds: 300
         # 没有任何投递目标时是否允许直接标记 PUBLISHED；生产环境应保持 false，防止事件凭据被误吞。

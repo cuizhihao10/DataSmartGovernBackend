@@ -6158,3 +6158,41 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 补 stale `PUBLISHING` 恢复与 worker 领取诊断，避免后台 worker 崩溃后事件永久卡住。
 2. 补 BLOCKED 人工补偿 API 与运维审计闭环，形成真实生产环境可处理的异常事件治理能力。
 3. 完成 outbox 生产保护后，控制 Java outbox 深挖范围，转向统一 sequence/cursor、长期记忆写入、模型网关 KV/prefix cache、Skill 工具市场和多 Agent 协作。
+
+## 4.22 Java agent-runtime stale PUBLISHING 恢复与 JDK 21 构建固定（2026-05-28）
+
+本阶段完成两条收口工作：一条是继续补齐 outbox dispatcher 的生产可靠性，避免 worker 崩溃后事件永久卡在 `PUBLISHING`；另一条是修复本机默认 Maven 使用 Java 8 导致 Java 21 语法误报的问题，让项目构建环境更稳定。
+
+已完成：
+- `AgentToolExecutionEventOutboxStore` 新增 `recoverStalePublishing(...)`，用于把超时未完成的 `PUBLISHING` 记录恢复为 `FAILED`，并设置 `nextRetryAt=now` 让 dispatcher 后续可以补偿重试。
+- 内存版 outbox store 实现 stale 恢复，保留 attemptCount，避免运维侧丢失“曾被 worker 领取过”的诊断事实。
+- JDBC 版 outbox store 实现基于 `update_time` 的轻量 stale 恢复，不立即强制引入 workerId/lockExpireAt 字段，降低本阶段迁移风险。
+- 新增 `JdbcAgentToolExecutionEventOutboxRecordMapper`，把 JDBC 字段映射、参数绑定和 ResultSet 还原从 Store 中拆出，避免 `JdbcAgentToolExecutionEventOutboxStore` 再次逼近 500 行。
+- dispatcher 每轮先执行 stale 恢复，再扫描可投递记录；summary 新增 `recovered` 计数，便于后续接入指标和告警。
+- outbox MySQL 建表脚本补充 `idx_agent_tool_event_outbox_status_update(status, update_time, id)`，支撑按状态和更新时间扫描 stale `PUBLISHING`。
+- 根 `pom.xml` 接入 `maven-toolchains-plugin:3.2.0`，在 `validate` 阶段自动选择 `[21,22)` JDK，避免本机 Maven 运行在 Java 8 时编译/测试误报。
+- 新增 `docs/development-jdk21.md`，说明 JDK 21 要求、Toolchains 自动发现、`~/.m2/toolchains.xml` 兜底配置和常见误区；README 增加入口说明。
+- 补充 dispatcher 测试，覆盖 stale `PUBLISHING` 被恢复后立即重新投递并成功发布的场景。
+
+设计意义：
+- stale 恢复解决的是 outbox dispatcher 的“半投递卡死”风险。商业化系统不能只考虑投递失败，还要考虑 worker 在发送过程中崩溃、进程重启、节点宕机、网络长时间挂起等不返回结果的场景。
+- 本阶段选择基于 `update_time` 作为轻量领取时间，是为了不在当前阶段扩大表结构变更和实体字段改造范围；它能先解决“永久卡住”问题，但后续多实例运维台仍应升级为显式 `workerId/lockedAt/lockExpireAt`。
+- `recovered` 计数为后续 Prometheus、运维台和告警提供了独立信号：如果 recovered 持续升高，说明 worker 崩溃、下游卡顿或 timeout 配置过小，需要专项排查。
+- Toolchains 固定让“项目需要 JDK 21”成为构建契约，而不是依赖每次手工设置 `JAVA_HOME`。这对长期协作、CI/CD 和新机器接入很重要。
+
+当前边界：
+- stale 恢复可能造成重复投递，因此下游 Kafka 消费者、WebSocket 推送、审计中心和未来长期事件库必须继续按 `eventId/outboxId` 做幂等。
+- 当前没有记录 workerId，无法在诊断页精确显示是哪台实例领取了事件；后续需要补显式租约字段和 worker 心跳。
+- 当前没有 BLOCKED 人工补偿 API，仍需要下一阶段补重新入队、忽略、导出、备注和审计闭环。
+- Toolchains 自动发现依赖本机存在可发现的 JDK 21；如果某台机器发现失败，需要按 `docs/development-jdk21.md` 配置用户级 `toolchains.xml`。
+
+验证：
+- 未手动设置 `JAVA_HOME`，直接执行 `mvn -pl agent-runtime -am test -DskipITs "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"` 通过，agent-runtime 78 个测试成功。
+- 构建日志确认 `maven-compiler-plugin` 和 `maven-surefire-plugin` 均使用 `Toolchain ... JDK[C:\Users\Cui\.jdks\temurin-21.0.10]`。
+- `mvn test -DskipITs "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"` 全仓通过，所有 Java 微服务模块均成功。
+- 关键 Java 文件行数均低于 500 行：`JdbcAgentToolExecutionEventOutboxStore.java` 401 行，`JdbcAgentToolExecutionEventOutboxRecordMapper.java` 221 行，`AgentToolExecutionEventOutboxDispatcher.java` 213 行，`InMemoryAgentToolExecutionEventOutboxStore.java` 328 行。
+
+下一步路线：
+1. 补 BLOCKED 人工补偿 API 和运维审计闭环，结束 outbox 生产保护的最后一块核心短板。
+2. 补 workerId/lockedAt/lockExpireAt 显式租约字段，作为后续多实例 dispatcher 运维台能力，而不是继续用 update_time 推断。
+3. outbox 收口后，转入统一 sequence/cursor、长期记忆、模型网关 KV/prefix cache、Skill 工具市场和多 Agent 协作，避免 Java 局部继续无限细化。

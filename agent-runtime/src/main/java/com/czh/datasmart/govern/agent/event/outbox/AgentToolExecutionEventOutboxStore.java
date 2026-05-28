@@ -80,6 +80,26 @@ public interface AgentToolExecutionEventOutboxStore {
                                                               Instant now);
 
     /**
+     * 恢复长时间停留在 PUBLISHING 的记录。
+     *
+     * <p>PUBLISHING 表示某个 dispatcher worker 已经领取了事件，但还没有写回 PUBLISHED/FAILED/BLOCKED。
+     * 在真实生产环境中，worker 可能在 Kafka 发送、网络调用或数据库更新之间崩溃，导致记录永久卡在 PUBLISHING。
+     * 该方法把 updateTime 早于 staleBefore 的 PUBLISHING 记录重新转回 FAILED，并设置 nextRetryAt=now，
+     * 让后续 dispatcher 可以再次领取。</p>
+     *
+     * <p>这类恢复天然可能带来重复投递，因此下游必须继续按 eventId/outboxId 做幂等。
+     * 这是 outbox 模式的常见取舍：宁可让可幂等事件被补偿重放，也不能让已提交业务事实永久丢失在 PUBLISHING。</p>
+     *
+     * @param staleBefore 小于等于该时间的 PUBLISHING 记录会被视为超时。
+     * @param now 恢复动作发生时间，同时作为下一次可重试时间。
+     * @param error 写入 lastError 的恢复原因，便于运维诊断。
+     * @return 本次恢复的记录数量。
+     */
+    int recoverStalePublishing(Instant staleBefore,
+                               Instant now,
+                               String error);
+
+    /**
      * 返回 outbox 诊断摘要。
      */
     AgentToolExecutionEventOutboxDiagnostics diagnostics();

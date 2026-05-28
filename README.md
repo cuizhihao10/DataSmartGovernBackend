@@ -10,6 +10,8 @@
 
 **适配风格**：OpenClaw企业级多智能体架构，贴合数据治理业务场景，明确各环节开发约束与设计要求。
 
+**构建环境说明**：本项目固定使用 JDK 21。若本机 `mvn -v` 默认显示 Java 8，请先阅读 [docs/development-jdk21.md](docs/development-jdk21.md)，项目根 `pom.xml` 已配置 Maven Toolchains 自动选择 JDK 21，避免 Java 21 语法被旧 JDK 误判失败。
+
 ---
 
 ## 文档修订记录

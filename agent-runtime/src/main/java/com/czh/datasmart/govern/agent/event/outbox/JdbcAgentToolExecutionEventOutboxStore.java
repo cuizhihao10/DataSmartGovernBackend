@@ -15,8 +15,6 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.SQLIntegrityConstraintViolationException;
-import java.sql.Timestamp;
-import java.sql.Types;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -45,27 +43,6 @@ import java.util.Optional;
 )
 public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutionEventOutboxStore {
 
-    private static final String SELECT_COLUMNS = """
-            outbox_id, event_id, event_type, schema_version, source, partition_key,
-            tenant_id, project_id, workspace_id, actor_id, session_id, run_id, audit_id, tool_code, current_state,
-            status, attempt_count, payload_json, payload_size_bytes, payload_truncated,
-            occurred_at, next_retry_at, published_at, last_error, create_time, update_time
-            """;
-
-    private static final String INSERT_SQL = """
-            INSERT INTO agent_tool_execution_event_outbox (
-                outbox_id, event_id, event_type, schema_version, source, partition_key,
-                tenant_id, project_id, workspace_id, actor_id, session_id, run_id, audit_id, tool_code, current_state,
-                status, attempt_count, payload_json, payload_size_bytes, payload_truncated,
-                occurred_at, next_retry_at, published_at, last_error, create_time, update_time
-            ) VALUES (
-                ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?
-            )
-            """;
-
     private final AgentRuntimeJdbcConnectionManager connectionManager;
     private final int maxEventsPerRun;
     private final int maxTotalRecords;
@@ -87,8 +64,9 @@ public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutio
     public boolean append(AgentToolExecutionEventOutboxRecord record) {
         try {
             return connectionManager.executeWithConnection(connection -> {
-                try (PreparedStatement statement = connection.prepareStatement(INSERT_SQL)) {
-                    bindRecord(statement, record);
+                try (PreparedStatement statement = connection.prepareStatement(
+                        JdbcAgentToolExecutionEventOutboxRecordMapper.INSERT_SQL)) {
+                    JdbcAgentToolExecutionEventOutboxRecordMapper.bindRecord(statement, record);
                     statement.executeUpdate();
                     return true;
                 }
@@ -111,7 +89,8 @@ public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutio
         if (!hasText(outboxId)) {
             return Optional.empty();
         }
-        String sql = "SELECT " + SELECT_COLUMNS + " FROM agent_tool_execution_event_outbox WHERE outbox_id = ?";
+        String sql = "SELECT " + JdbcAgentToolExecutionEventOutboxRecordMapper.SELECT_COLUMNS
+                + " FROM agent_tool_execution_event_outbox WHERE outbox_id = ?";
         try {
             return connectionManager.executeWithConnection(connection -> {
                 try (PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -120,7 +99,7 @@ public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutio
                         if (!resultSet.next()) {
                             return Optional.empty();
                         }
-                        return Optional.of(toRecord(resultSet));
+                        return Optional.of(JdbcAgentToolExecutionEventOutboxRecordMapper.toRecord(resultSet));
                     }
                 }
             });
@@ -152,7 +131,7 @@ public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutio
     @Override
     public List<AgentToolExecutionEventOutboxRecord> listPublishable(int limit, Instant now) {
         Instant referenceTime = now == null ? Instant.now() : now;
-        String sql = "SELECT " + SELECT_COLUMNS
+        String sql = "SELECT " + JdbcAgentToolExecutionEventOutboxRecordMapper.SELECT_COLUMNS
                 + " FROM agent_tool_execution_event_outbox"
                 + " WHERE status IN (?, ?)"
                 + " AND (next_retry_at IS NULL OR next_retry_at <= ?)"
@@ -215,7 +194,7 @@ public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutio
                 AgentToolExecutionEventOutboxStatus.FAILED.name(),
                 referenceTime,
                 nextRetryAt,
-                truncate(error, 1024),
+                JdbcAgentToolExecutionEventOutboxRecordMapper.truncate(error, 1024),
                 outboxId,
                 AgentToolExecutionEventOutboxStatus.PUBLISHING.name()
         ));
@@ -229,12 +208,49 @@ public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutio
         return updateThenFind(outboxId, sql, parameters(
                 AgentToolExecutionEventOutboxStatus.BLOCKED.name(),
                 referenceTime,
-                truncate(error, 1024),
+                JdbcAgentToolExecutionEventOutboxRecordMapper.truncate(error, 1024),
                 outboxId,
                 AgentToolExecutionEventOutboxStatus.PENDING.name(),
                 AgentToolExecutionEventOutboxStatus.PUBLISHING.name(),
                 AgentToolExecutionEventOutboxStatus.FAILED.name()
         ));
+    }
+
+    /**
+     * 恢复长时间卡在 PUBLISHING 的记录。
+     *
+     * <p>这里使用 update_time 作为当前阶段的轻量领取时间。markPublishing 会更新 update_time；
+     * 如果之后 worker 崩溃，没有机会写回 PUBLISHED/FAILED/BLOCKED，那么 update_time 会停留在领取时刻。
+     * 后台 dispatcher 每轮可以把早于超时阈值的 PUBLISHING 重新转回 FAILED，并把 next_retry_at 设置为当前时间，
+     * 让它重新进入可领取队列。</p>
+     *
+     * <p>这个方案不需要马上修改表结构，适合作为 4.22 的最小生产保护。
+     * 但商业化多实例运维台后续仍建议增加 workerId、lockedAt、lockExpireAt 字段，以便定位是哪台实例领取了事件，
+     * 以及用显式租约替代 update_time 推断。</p>
+     */
+    @Override
+    public int recoverStalePublishing(Instant staleBefore, Instant now, String error) {
+        Instant cutoff = staleBefore == null ? Instant.now() : staleBefore;
+        Instant referenceTime = now == null ? Instant.now() : now;
+        String sql = "UPDATE agent_tool_execution_event_outbox SET status = ?, update_time = ?, next_retry_at = ?, "
+                + "last_error = ? WHERE status = ? AND update_time <= ?";
+        try {
+            return connectionManager.executeWithConnection(connection -> {
+                try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                    JdbcAgentToolExecutionEventOutboxRecordMapper.bindParameters(statement, parameters(
+                            AgentToolExecutionEventOutboxStatus.FAILED.name(),
+                            referenceTime,
+                            referenceTime,
+                            JdbcAgentToolExecutionEventOutboxRecordMapper.truncate(error, 1024),
+                            AgentToolExecutionEventOutboxStatus.PUBLISHING.name(),
+                            cutoff
+                    ));
+                    return statement.executeUpdate();
+                }
+            });
+        } catch (RuntimeException exception) {
+            throw new IllegalStateException("恢复 stale PUBLISHING outbox 记录失败，staleBefore=" + cutoff, exception);
+        }
     }
 
     /**
@@ -282,11 +298,11 @@ public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutio
         try {
             return connectionManager.executeWithConnection(connection -> {
                 try (PreparedStatement statement = connection.prepareStatement(queryPlan.sql())) {
-                    bindParameters(statement, queryPlan.parameters());
+                    JdbcAgentToolExecutionEventOutboxRecordMapper.bindParameters(statement, queryPlan.parameters());
                     try (ResultSet resultSet = statement.executeQuery()) {
                         List<AgentToolExecutionEventOutboxRecord> records = new ArrayList<>();
                         while (resultSet.next()) {
-                            records.add(toRecord(resultSet));
+                            records.add(JdbcAgentToolExecutionEventOutboxRecordMapper.toRecord(resultSet));
                         }
                         return records;
                     }
@@ -320,7 +336,7 @@ public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutio
         try {
             return connectionManager.executeWithConnection(connection -> {
                 try (PreparedStatement statement = connection.prepareStatement(sql)) {
-                    bindParameters(statement, parameters);
+                    JdbcAgentToolExecutionEventOutboxRecordMapper.bindParameters(statement, parameters);
                     int updatedRows = statement.executeUpdate();
                     if (updatedRows == 0) {
                         return Optional.empty();
@@ -335,7 +351,7 @@ public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutio
 
     private QueryPlan buildListQuery(String runId, AgentToolExecutionEventOutboxStatus status, int limit) {
         StringBuilder sql = new StringBuilder("SELECT ")
-                .append(SELECT_COLUMNS)
+                .append(JdbcAgentToolExecutionEventOutboxRecordMapper.SELECT_COLUMNS)
                 .append(" FROM agent_tool_execution_event_outbox WHERE 1 = 1");
         List<Object> parameters = new ArrayList<>();
         if (hasText(runId)) {
@@ -349,121 +365,6 @@ public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutio
         sql.append(" ORDER BY id ASC LIMIT ?");
         parameters.add(limit);
         return new QueryPlan(sql.toString(), parameters);
-    }
-
-    private void bindRecord(PreparedStatement statement, AgentToolExecutionEventOutboxRecord record) throws SQLException {
-        int index = 1;
-        statement.setString(index++, record.outboxId());
-        statement.setString(index++, record.eventId());
-        statement.setString(index++, record.eventType());
-        statement.setString(index++, record.schemaVersion());
-        statement.setString(index++, record.source());
-        setNullableString(statement, index++, record.partitionKey());
-        setNullableLongFromString(statement, index++, record.tenantId());
-        setNullableLongFromString(statement, index++, record.projectId());
-        setNullableLongFromString(statement, index++, record.workspaceId());
-        setNullableString(statement, index++, record.actorId());
-        setNullableString(statement, index++, record.sessionId());
-        setNullableString(statement, index++, record.runId());
-        statement.setString(index++, record.auditId());
-        setNullableString(statement, index++, record.toolCode());
-        setNullableString(statement, index++, record.currentState());
-        statement.setString(index++, record.status().name());
-        statement.setInt(index++, record.attemptCount());
-        statement.setString(index++, normalizePayloadJson(record.payloadJson()));
-        statement.setInt(index++, record.payloadSizeBytes());
-        statement.setBoolean(index++, record.payloadTruncated());
-        setNullableTimestamp(statement, index++, record.occurredAt());
-        setNullableTimestamp(statement, index++, record.nextRetryAt());
-        setNullableTimestamp(statement, index++, record.publishedAt());
-        setNullableString(statement, index++, truncate(record.lastError(), 1024));
-        setNullableTimestamp(statement, index++, record.createdAt());
-        setNullableTimestamp(statement, index, record.updatedAt());
-    }
-
-    private AgentToolExecutionEventOutboxRecord toRecord(ResultSet resultSet) throws SQLException {
-        return new AgentToolExecutionEventOutboxRecord(
-                resultSet.getString("outbox_id"),
-                resultSet.getString("event_id"),
-                resultSet.getString("event_type"),
-                resultSet.getString("schema_version"),
-                resultSet.getString("source"),
-                resultSet.getString("partition_key"),
-                getNullableLongAsString(resultSet, "tenant_id"),
-                getNullableLongAsString(resultSet, "project_id"),
-                getNullableLongAsString(resultSet, "workspace_id"),
-                resultSet.getString("actor_id"),
-                resultSet.getString("session_id"),
-                resultSet.getString("run_id"),
-                resultSet.getString("audit_id"),
-                resultSet.getString("tool_code"),
-                resultSet.getString("current_state"),
-                AgentToolExecutionEventOutboxStatus.valueOf(resultSet.getString("status")),
-                resultSet.getInt("attempt_count"),
-                getInstant(resultSet, "occurred_at"),
-                getInstant(resultSet, "create_time"),
-                getInstant(resultSet, "update_time"),
-                getInstant(resultSet, "next_retry_at"),
-                getInstant(resultSet, "published_at"),
-                resultSet.getString("last_error"),
-                resultSet.getInt("payload_size_bytes"),
-                resultSet.getBoolean("payload_truncated"),
-                resultSet.getString("payload_json")
-        );
-    }
-
-    private void bindParameters(PreparedStatement statement, List<Object> parameters) throws SQLException {
-        for (int index = 0; index < parameters.size(); index++) {
-            Object parameter = parameters.get(index);
-            int jdbcIndex = index + 1;
-            if (parameter == null) {
-                statement.setNull(jdbcIndex, Types.NULL);
-            } else if (parameter instanceof Instant instant) {
-                statement.setTimestamp(jdbcIndex, Timestamp.from(instant));
-            } else if (parameter instanceof Integer integer) {
-                statement.setInt(jdbcIndex, integer);
-            } else {
-                statement.setString(jdbcIndex, parameter.toString());
-            }
-        }
-    }
-
-    private void setNullableString(PreparedStatement statement, int index, String value) throws SQLException {
-        if (value == null) {
-            statement.setNull(index, Types.VARCHAR);
-        } else {
-            statement.setString(index, value);
-        }
-    }
-
-    private void setNullableLongFromString(PreparedStatement statement, int index, String value) throws SQLException {
-        if (!hasText(value)) {
-            statement.setNull(index, Types.BIGINT);
-            return;
-        }
-        try {
-            statement.setLong(index, Long.parseLong(value));
-        } catch (NumberFormatException exception) {
-            throw new IllegalStateException("outbox 租户/项目/工作空间 ID 必须是数字，value=" + value, exception);
-        }
-    }
-
-    private void setNullableTimestamp(PreparedStatement statement, int index, Instant value) throws SQLException {
-        if (value == null) {
-            statement.setNull(index, Types.TIMESTAMP);
-        } else {
-            statement.setTimestamp(index, Timestamp.from(value));
-        }
-    }
-
-    private String getNullableLongAsString(ResultSet resultSet, String column) throws SQLException {
-        long value = resultSet.getLong(column);
-        return resultSet.wasNull() ? null : Long.toString(value);
-    }
-
-    private Instant getInstant(ResultSet resultSet, String column) throws SQLException {
-        Timestamp timestamp = resultSet.getTimestamp(column);
-        return timestamp == null ? null : timestamp.toInstant();
     }
 
     private boolean isDuplicateKey(Throwable exception) {
@@ -489,17 +390,6 @@ public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutio
 
     private int toIntSafely(long value) {
         return value > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) value;
-    }
-
-    private String normalizePayloadJson(String payloadJson) {
-        return hasText(payloadJson) ? payloadJson : "{}";
-    }
-
-    private String truncate(String value, int maxLength) {
-        if (value == null || value.length() <= maxLength) {
-            return value;
-        }
-        return value.substring(0, maxLength);
     }
 
     private boolean hasText(String value) {
