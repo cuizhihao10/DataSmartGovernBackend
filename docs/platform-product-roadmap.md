@@ -6475,3 +6475,24 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 实现轻量资源引用 resolver，先做类型识别、workspace 校验和上下文准入判断。
 2. Java 侧逐步支持 `resourceReference` 字段。
 3. 将资源引用协议接入模型二轮上下文过滤和工具/Skill 输出产物管理。
+
+## 4.34 AI Runtime Agent 资源引用治理解析器第一阶段（2026-05-28）
+
+本阶段把 4.33 的资源引用协议推进到治理解析阶段。新增的 `AgentResourceReferenceResolver` 不负责读取真实资源，而是负责在读取前完成类型、workspace 和模型上下文准入判断。
+
+已完成：
+- 新增 `AgentResourceContextPolicy`，区分 `model_full_allowed`、`model_summary_allowed`、`audit_only`、`download_only`、`forbidden_for_model`。
+- 新增 `AgentResourceReferenceResolution`，统一返回治理决策、问题码、模型上下文准入结果和后续 resolver hint。
+- 支持领域对象、dict payload 和旧式 URI 字符串三种输入。
+- 默认阻断 workspace 缺失、workspace 不一致、外部未知引用和缺失 URI 的资源。
+- 新增测试覆盖工作空间一致性、模型摘要准入、审计专用资源、外部 URI 阻断和 payload 兼容。
+
+产品意义：
+- 资源引用开始具备“可治理门禁”，而不是只有 URI 字符串。
+- 模型上下文、下载接口、审计台、长期记忆和未来 Skill Runtime 可以共用同一套准入语义。
+- 当前先固定安全边界，不急于读取 MinIO、Chroma、Neo4j 或 Java 审计结果，避免把所有读取能力耦合到一个大解析器里。
+
+下一步：
+1. 将 resolver 接入模型二轮上下文过滤，防止审计/下载专用资源进入模型。
+2. Java 侧兼容消费 `resourceReference/outputReference`。
+3. 在 workspace 校验稳定后，再落地真实 workspace artifact、MinIO、memory 和 Java audit 读取器。

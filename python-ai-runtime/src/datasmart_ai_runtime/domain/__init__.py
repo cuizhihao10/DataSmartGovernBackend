@@ -62,6 +62,7 @@ from datasmart_ai_runtime.domain.model_gateway import (
     ModelProviderHealthSnapshot,
     ModelProviderHealthStatus,
 )
+from datasmart_ai_runtime.domain.resource_reference import AgentResourceReference, AgentResourceReferenceKind
 from datasmart_ai_runtime.domain.skills import AgentSkillDescriptor, AgentSkillPlan, AgentSkillSelection
 
 __all__ = [
@@ -77,6 +78,8 @@ __all__ = [
     "AgentRuntimeEvent",
     "AgentRuntimeEventSeverity",
     "AgentRuntimeEventType",
+    "AgentResourceReference",
+    "AgentResourceReferenceKind",
     "AgentSkillDescriptor",
     "AgentSkillPlan",
     "AgentSkillSelection",

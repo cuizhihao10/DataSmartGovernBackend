@@ -171,6 +171,12 @@ from datasmart_ai_runtime.services.runtime_event_visibility import (
     RuntimeEventVisibilityPolicy,
     RuntimeEventVisibilityStats,
 )
+from datasmart_ai_runtime.services.resource_reference_resolver import (
+    AgentResourceContextPolicy,
+    AgentResourceReferenceDecision,
+    AgentResourceReferenceResolution,
+    AgentResourceReferenceResolver,
+)
 from datasmart_ai_runtime.services.skill_registry import AgentSkillRegistry
 from datasmart_ai_runtime.services.skill_registry_client import JavaAgentSkillRegistryClient
 from datasmart_ai_runtime.services.tool_parameter_validator import ToolParameterValidator
@@ -279,6 +285,10 @@ __all__ = [
     "RuntimeEventVisibilityLevel",
     "RuntimeEventVisibilityPolicy",
     "RuntimeEventVisibilityStats",
+    "AgentResourceContextPolicy",
+    "AgentResourceReferenceDecision",
+    "AgentResourceReferenceResolution",
+    "AgentResourceReferenceResolver",
     "ToolParameterValidator",
     "ToolPlanner",
     "ToolExecutionFeedback",
