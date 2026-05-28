@@ -6496,3 +6496,25 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 将 resolver 接入模型二轮上下文过滤，防止审计/下载专用资源进入模型。
 2. Java 侧兼容消费 `resourceReference/outputReference`。
 3. 在 workspace 校验稳定后，再落地真实 workspace artifact、MinIO、memory 和 Java audit 读取器。
+
+## 4.35 AI Runtime 模型工具结果回填接入资源准入过滤（2026-05-28）
+
+本阶段把资源引用 resolver 接入模型工具结果回填链路。现在 role=tool 消息在携带结构化 `result` 进入二轮模型前，会先校验输出引用的 workspace 和 `contextPolicy`。
+
+已完成：
+- `ToolExecutionFeedback` 增加 `output_workspace_key` 与 `output_context_policy`。
+- `ModelToolResultFeedbackBuilder` 在构造 role=tool 消息前调用 `AgentResourceReferenceResolver`。
+- role=tool payload 新增 `outputReferenceResolution`，用于暴露治理决策、问题码和 resolver hint。
+- `audit_only`、`download_only`、`forbidden_for_model` 或 workspace 不一致的资源会保留摘要和引用，但不会回填结构化 `result`。
+- Agent 主链模拟二轮和受控二轮编排器都会把当前 `workspaceKey` 传给 builder。
+- 补充单元测试覆盖摘要准入、审计专用阻断和 workspace 不一致阻断。
+
+产品意义：
+- 工具结果不再只依赖调用方自觉脱敏，而是在模型消息构建层统一执行资源准入。
+- 没有明确声明可进入模型的输出默认按 `audit_only` 处理，更符合企业数据治理产品的安全默认值。
+- 即使 result 被裁剪，模型仍能看到工具状态、summary、auditId、runId、outputRef 和治理说明，便于解释为什么需要审批、下载或审计查看。
+
+下一步：
+1. Java 结果查询 API 返回 workspace/contextPolicy，让真实控制面反馈也能声明资源准入策略。
+2. 将 `outputReferenceResolution` 写入 runtime event 诊断，便于前端和审计台展示阻断原因。
+3. 继续补 JSONPath/字段级过滤，而不是长期停留在“整个 result 放行或置空”的粗粒度。

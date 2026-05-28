@@ -11,12 +11,16 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Iterable
 
 from datasmart_ai_runtime.domain.contracts import ModelMessage, ModelToolCall
 from datasmart_ai_runtime.domain.resource_reference import AgentResourceReference
+from datasmart_ai_runtime.services.resource_reference_resolver import (
+    AgentResourceReferenceResolution,
+    AgentResourceReferenceResolver,
+)
 
 
 class ToolExecutionFeedbackStatus(str, Enum):
@@ -49,6 +53,8 @@ class ToolExecutionFeedback:
     - `result`：允许回填给模型的结构化结果摘要。这里不应放完整大结果、敏感样本行或原始 SQL；
     - `error_code/error_message`：失败或拒绝时的稳定错误码与说明；
     - `audit_id/run_id/output_ref`：Java 控制面事实引用，让模型和审计系统知道结果来自哪次受控执行；
+    - `output_workspace_key`：输出资源所属工作空间。二轮推理时会和当前 workspace 做一致性校验；
+    - `output_context_policy`：输出资源是否允许进入模型上下文。默认 `audit_only` 是安全默认值；
     - `sensitive_fields`：标记 result 中哪些字段不应原样进入模型；构建器会把这些字段脱敏。
     """
 
@@ -62,6 +68,8 @@ class ToolExecutionFeedback:
     audit_id: str | None = None
     run_id: str | None = None
     output_ref: str | None = None
+    output_workspace_key: str | None = None
+    output_context_policy: str = "audit_only"
     sensitive_fields: tuple[str, ...] = ()
 
 
@@ -97,16 +105,31 @@ class ModelToolResultFeedbackBuilder:
 
     MASKED_VALUE = "***MASKED***"
 
+    def __init__(self, resource_resolver: AgentResourceReferenceResolver | None = None) -> None:
+        """创建工具结果回填构建器。
+
+        `resource_resolver` 是可注入依赖，默认使用轻量治理解析器。这里不直接读取 MinIO、Java 审计表
+        或长期记忆，只在消息构建阶段做“能否进入模型上下文”的准入判断。这样做的设计意图是：
+        - 真实读取能力可以后续按资源类型拆分实现；
+        - 模型上下文安全不必等待所有读取器完成；
+        - 单元测试可以注入替身 resolver 验证边界条件。
+        """
+
+        self._resource_resolver = resource_resolver or AgentResourceReferenceResolver()
+
     def build(
         self,
         tool_calls: tuple[ModelToolCall, ...],
         feedback_items: Iterable[ToolExecutionFeedback],
+        *,
+        current_workspace_key: str | None = None,
     ) -> ToolExecutionFeedbackMessageBundle:
         """构建下一轮模型调用所需的 assistant/tool messages。
 
         参数：
         - `tool_calls`：模型上一轮提出的工具调用。构建器会把它们放回 assistant message，形成上下文；
         - `feedback_items`：Java 控制面返回的执行结果、审批等待、拒绝或失败摘要。
+        - `current_workspace_key`：当前 Agent 运行工作空间。传入后会强制校验输出引用是否属于同一 workspace。
 
         返回：
         - assistant message：携带上一轮 `tool_calls`；
@@ -126,7 +149,7 @@ class ModelToolResultFeedbackBuilder:
             feedback = feedback_by_id.get(call_id)
             if feedback is None:
                 continue
-            messages.append(self._to_tool_message(feedback))
+            messages.append(self._to_tool_message(feedback, current_workspace_key=current_workspace_key))
 
         return ToolExecutionFeedbackMessageBundle(
             messages=tuple(messages),
@@ -134,8 +157,22 @@ class ModelToolResultFeedbackBuilder:
             extra_feedback_call_ids=tuple(sorted(feedback_id_set - expected_id_set)),
         )
 
-    def _to_tool_message(self, feedback: ToolExecutionFeedback) -> ModelMessage:
-        """把单个执行反馈转换为 role=tool 的消息。"""
+    def _to_tool_message(
+        self,
+        feedback: ToolExecutionFeedback,
+        *,
+        current_workspace_key: str | None,
+    ) -> ModelMessage:
+        """把单个执行反馈转换为 role=tool 的消息。
+
+        这一步是模型上下文安全的关键闸口。Java 控制面返回的 `result` 即使已经是摘要，也不能脱离资源
+        引用策略直接进入模型：如果输出引用属于其他 workspace，或 `contextPolicy` 明确为 `audit_only`
+        / `download_only` / `forbidden_for_model`，构建器会保留摘要、审计引用和治理说明，但不会把结构化
+        `result` 放进 role=tool 消息。模型能知道“有一个受控结果存在”，却不能看到不该进入上下文的内容。
+        """
+
+        resolution = self._resource_resolution(feedback, current_workspace_key=current_workspace_key)
+        model_context_allowed = resolution.model_context_allowed if resolution else True
 
         payload = {
             "toolName": feedback.tool_name,
@@ -144,10 +181,11 @@ class ModelToolResultFeedbackBuilder:
             "auditId": feedback.audit_id,
             "runId": feedback.run_id,
             "outputRef": feedback.output_ref,
-            "outputReference": self._output_reference_payload(feedback),
+            "outputReference": resolution.reference.to_payload() if resolution else None,
+            "outputReferenceResolution": resolution.to_summary() if resolution else None,
             "errorCode": feedback.error_code,
             "errorMessage": feedback.error_message,
-            "result": self._mask_result(feedback.result, feedback.sensitive_fields),
+            "result": self._mask_result(feedback.result, feedback.sensitive_fields) if model_context_allowed else {},
         }
         return ModelMessage(
             role="tool",
@@ -174,15 +212,36 @@ class ModelToolResultFeedbackBuilder:
             masked[key] = self.MASKED_VALUE if key in sensitive else value
         return masked
 
-    @staticmethod
-    def _output_reference_payload(feedback: ToolExecutionFeedback) -> dict[str, Any] | None:
-        """把旧式 outputRef 字符串补充为统一资源引用结构。
+    def _resource_resolution(
+        self,
+        feedback: ToolExecutionFeedback,
+        *,
+        current_workspace_key: str | None,
+    ) -> AgentResourceReferenceResolution | None:
+        """把旧式 outputRef 字符串解析并执行模型上下文准入判断。
 
         旧字段 `outputRef` 继续保留，确保当前 Java/Python 测试和调用方不受影响；
         新字段 `outputReference` 让后续模型上下文治理、审计台和工具输出 resolver 能识别引用类型。
+
+        注意：历史 `outputRef` 可能没有 workspace 信息。只有调用方传入 `current_workspace_key` 时，才把
+        workspaceKey 作为必填治理条件；这让老数据迁移和本地测试仍可运行，同时让生产二轮推理路径能够
+        逐步升级为强隔离模式。
         """
 
         if not feedback.output_ref:
             return None
-        reference = AgentResourceReference.from_uri(feedback.output_ref)
-        return reference.to_payload()
+        reference = AgentResourceReference.from_uri(
+            feedback.output_ref,
+            workspace_key=feedback.output_workspace_key,
+        )
+        reference = replace(
+            reference,
+            audit_id=feedback.audit_id,
+            run_id=feedback.run_id,
+            context_policy=feedback.output_context_policy,
+        )
+        return self._resource_resolver.resolve(
+            reference,
+            current_workspace_key=current_workspace_key,
+            expected_workspace_required=bool(current_workspace_key),
+        )

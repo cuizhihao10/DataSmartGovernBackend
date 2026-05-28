@@ -45,9 +45,12 @@ class ModelToolResultFeedbackTest(unittest.TestCase):
                     audit_id="audit-001",
                     run_id="run-001",
                     output_ref="minio://agent/run-001/quality-rules.json",
+                    output_workspace_key="tenant:10:project:20",
+                    output_context_policy="model_summary_allowed",
                     sensitive_fields=("datasourceId",),
                 ),
             ),
+            current_workspace_key="tenant:10:project:20",
         )
 
         self.assertTrue(bundle.complete)
@@ -63,8 +66,77 @@ class ModelToolResultFeedbackTest(unittest.TestCase):
         self.assertEqual("minio://agent/run-001/quality-rules.json", payload["outputReference"]["uri"])
         self.assertEqual("agent", payload["outputReference"]["attributes"]["bucket"])
         self.assertEqual("run-001/quality-rules.json", payload["outputReference"]["attributes"]["objectKey"])
+        self.assertTrue(payload["outputReferenceResolution"]["modelContextAllowed"])
         self.assertEqual("***MASKED***", payload["result"]["datasourceId"])
         self.assertEqual(3, payload["result"]["ruleCount"])
+
+    def test_blocks_audit_only_output_result_from_model_context(self) -> None:
+        """审计专用输出引用不应把结构化 result 放入下一轮模型上下文。"""
+
+        tool_call = ModelToolCall(
+            call_id="call_audit_only",
+            type="function",
+            name="datasource.metadata.read",
+            arguments="{\"datasourceId\":\"ds-001\"}",
+        )
+
+        bundle = ModelToolResultFeedbackBuilder().build(
+            tool_calls=(tool_call,),
+            feedback_items=(
+                ToolExecutionFeedback(
+                    tool_call_id="call_audit_only",
+                    tool_name="datasource.metadata.read",
+                    status=ToolExecutionFeedbackStatus.SUCCEEDED,
+                    summary="工具结果已生成，但仅允许审计台查看完整结构化内容。",
+                    result={"tableCount": 12, "sampleRows": ("row-1", "row-2")},
+                    audit_id="audit-002",
+                    run_id="run-002",
+                    output_ref="agent-runtime://tool-results/call_audit_only",
+                    output_workspace_key="tenant:10:project:20",
+                    output_context_policy="audit_only",
+                ),
+            ),
+            current_workspace_key="tenant:10:project:20",
+        )
+
+        self.assertTrue(bundle.complete)
+        payload = json.loads(bundle.messages[-1].content)
+        self.assertEqual({}, payload["result"])
+        self.assertFalse(payload["outputReferenceResolution"]["modelContextAllowed"])
+        self.assertEqual("allowed", payload["outputReferenceResolution"]["decision"])
+        self.assertEqual("audit_only", payload["outputReference"]["contextPolicy"])
+
+    def test_blocks_workspace_mismatch_output_result_from_model_context(self) -> None:
+        """跨工作空间输出引用即使带有 result，也不能进入当前模型上下文。"""
+
+        tool_call = ModelToolCall(
+            call_id="call_other_workspace",
+            type="function",
+            name="quality.rule.suggest",
+            arguments="{}",
+        )
+
+        bundle = ModelToolResultFeedbackBuilder().build(
+            tool_calls=(tool_call,),
+            feedback_items=(
+                ToolExecutionFeedback(
+                    tool_call_id="call_other_workspace",
+                    tool_name="quality.rule.suggest",
+                    status=ToolExecutionFeedbackStatus.SUCCEEDED,
+                    summary="工具结果引用属于另一个 workspace，当前仅保留引用和阻断原因。",
+                    result={"ruleCount": 99},
+                    output_ref="minio://agent/other-workspace/rules.json",
+                    output_workspace_key="tenant:10:project:other",
+                    output_context_policy="model_summary_allowed",
+                ),
+            ),
+            current_workspace_key="tenant:10:project:20",
+        )
+
+        payload = json.loads(bundle.messages[-1].content)
+        self.assertEqual({}, payload["result"])
+        self.assertEqual("blocked", payload["outputReferenceResolution"]["decision"])
+        self.assertIn("WORKSPACE_KEY_MISMATCH", payload["outputReferenceResolution"]["issues"])
 
     def test_reports_missing_and_extra_feedback_ids(self) -> None:
         """缺少或多余工具结果应被显式报告，避免下一轮模型请求结构不完整。"""

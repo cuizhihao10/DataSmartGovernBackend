@@ -165,7 +165,11 @@ class AgentSecondTurnOrchestrator:
 
         tool_calls = self._tool_calls_from_plan(plan)
         feedback_items = tuple(item.to_tool_feedback() for item in control_plane_feedback.feedback_items)
-        feedback_bundle = self._feedback_builder.build(tool_calls, feedback_items)
+        feedback_bundle = self._feedback_builder.build(
+            tool_calls,
+            feedback_items,
+            current_workspace_key=self._workspace_key_from_plan(plan),
+        )
         events.record_feedback_built(
             feedback_count=len(feedback_items),
             message_count=len(feedback_bundle.messages),
@@ -243,6 +247,22 @@ class AgentSecondTurnOrchestrator:
                 )
             )
         return tuple(calls)
+
+    @staticmethod
+    def _workspace_key_from_plan(plan: AgentPlan) -> str | None:
+        """从计划中的工具治理提示读取当前工作空间。
+
+        二轮推理使用的是 Java 控制面反馈，反馈中可能携带对象存储、agent-runtime 或 memory 引用。把当前
+        workspaceKey 传给消息构建器后，构建器可以阻断跨 workspace 的资源进入模型上下文。这里从
+        ToolPlan 读取而不是从请求变量临时拼接，是为了沿用前序 `AgentWorkspaceContextBuilder` 已经统一
+        生成的隔离语义，避免不同层各自拼接 key 造成细微不一致。
+        """
+
+        for tool_plan in plan.tool_plans:
+            value = tool_plan.governance_hints.get("workspaceKey")
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return None
 
     @staticmethod
     def _build_context_messages(request: AgentRequest, plan: AgentPlan) -> tuple[ModelMessage, ...]:

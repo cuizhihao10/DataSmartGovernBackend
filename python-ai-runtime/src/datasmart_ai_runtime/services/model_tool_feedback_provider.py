@@ -97,7 +97,9 @@ class SimulatedModelToolExecutionFeedbackProvider:
             },
             audit_id=f"simulated-audit-{tool_call.call_id}",
             run_id=f"simulated-run-{tool_call.call_id}",
-            output_ref=f"simulated://agent-runtime/tool-results/{tool_call.call_id}",
+            output_ref=f"agent-runtime://tool-results/{tool_call.call_id}",
+            output_workspace_key=self._workspace_key(plan),
+            output_context_policy="model_summary_allowed",
             sensitive_fields=tuple(plan.governance_hints.get("sensitiveFields") or ()),
         )
 
@@ -114,7 +116,9 @@ class SimulatedModelToolExecutionFeedbackProvider:
             summary=f"`{plan.tool_name}` 需要人工审批，当前未执行真实业务动作。",
             audit_id=f"simulated-audit-{tool_call.call_id}",
             run_id=f"simulated-run-{tool_call.call_id}",
-            output_ref=f"simulated://agent-runtime/waiting-approval/{tool_call.call_id}",
+            output_ref=f"agent-runtime://waiting-approval/{tool_call.call_id}",
+            output_workspace_key=self._workspace_key(plan),
+            output_context_policy="audit_only",
             sensitive_fields=tuple(plan.governance_hints.get("sensitiveFields") or ()),
         )
 
@@ -132,6 +136,19 @@ class SimulatedModelToolExecutionFeedbackProvider:
             result={"missingFields": missing_fields},
             audit_id=f"simulated-audit-{tool_call.call_id}",
             run_id=f"simulated-run-{tool_call.call_id}",
-            output_ref=f"simulated://agent-runtime/rejected/{tool_call.call_id}",
+            output_ref=f"agent-runtime://rejected/{tool_call.call_id}",
+            output_workspace_key=self._workspace_key(plan),
+            output_context_policy="audit_only",
             sensitive_fields=tuple(plan.governance_hints.get("sensitiveFields") or ()),
         )
+
+    @staticmethod
+    def _workspace_key(plan: ToolPlan) -> str | None:
+        """读取 ToolPlan 中由工作空间治理层写入的 workspaceKey。
+
+        模拟反馈也要携带 workspaceKey，原因是它参与的是同一套二轮推理协议。即使当前并没有真实调用
+        Java 工具，模型上下文过滤也应该提前验证“工具结果属于当前工作空间”这一生产语义。
+        """
+
+        value = plan.governance_hints.get("workspaceKey")
+        return str(value).strip() if value is not None and str(value).strip() else None

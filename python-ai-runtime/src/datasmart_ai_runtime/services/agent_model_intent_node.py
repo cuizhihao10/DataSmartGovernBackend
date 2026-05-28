@@ -291,7 +291,11 @@ class AgentModelIntentNode:
         if not tool_calls or not model_tool_plans:
             return "", 0
         feedback_items = self._tool_execution_feedback_provider.feedback_for(tool_calls, model_tool_plans)
-        feedback_bundle = self._tool_result_feedback_builder.build(tool_calls, feedback_items)
+        feedback_bundle = self._tool_result_feedback_builder.build(
+            tool_calls,
+            feedback_items,
+            current_workspace_key=self._workspace_key_from_tool_plans(model_tool_plans),
+        )
         event_recorder.record(
             AgentRuntimeEventType.TOOL_RESULT_FEEDBACK_BUILT,
             "build_tool_result_feedback",
@@ -332,6 +336,21 @@ class AgentModelIntentNode:
             },
         )
         return result.content, len(feedback_items)
+
+    @staticmethod
+    def _workspace_key_from_tool_plans(tool_plans: tuple[ToolPlan, ...]) -> str | None:
+        """从 ToolPlan 治理提示中提取当前运行 workspaceKey。
+
+        工作空间已经在计划响应阶段写入每个 ToolPlan 的 `governance_hints`。二轮推理构造工具结果消息时
+        复用该字段，可以让 `ModelToolResultFeedbackBuilder` 校验输出资源是否越过租户/项目/会话边界。
+        如果当前计划还没有 workspaceKey，构建器会按兼容模式运行，避免阻断历史测试和渐进式迁移。
+        """
+
+        for plan in tool_plans:
+            value = plan.governance_hints.get("workspaceKey")
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return None
 
     def _aggregate_streaming_tool_calls(
         self,
