@@ -306,6 +306,14 @@ class AgentModelIntentNode:
                 "missingFeedbackCallIds": feedback_bundle.missing_feedback_call_ids,
                 "extraFeedbackCallIds": feedback_bundle.extra_feedback_call_ids,
                 "complete": feedback_bundle.complete,
+                "resourceResolutionCount": len(feedback_bundle.resource_resolution_summaries),
+                "resourceResolutionBlockedCount": self._resource_blocked_count(
+                    feedback_bundle.resource_resolution_summaries
+                ),
+                "resourceResolutionModelBlockedCount": self._resource_model_blocked_count(
+                    feedback_bundle.resource_resolution_summaries
+                ),
+                "resourceResolutions": feedback_bundle.resource_resolution_summaries,
             },
         )
         if not feedback_bundle.complete or not feedback_bundle.messages:
@@ -336,6 +344,22 @@ class AgentModelIntentNode:
             },
         )
         return result.content, len(feedback_items)
+
+    @staticmethod
+    def _resource_blocked_count(summaries: tuple[dict[str, object], ...]) -> int:
+        """统计二轮消息构建时被资源治理完全阻断的引用数量。"""
+
+        return sum(1 for item in summaries if item.get("decision") == "blocked")
+
+    @staticmethod
+    def _resource_model_blocked_count(summaries: tuple[dict[str, object], ...]) -> int:
+        """统计不允许进入模型上下文的资源数量。
+
+        这类资源不一定是错误。例如 `audit_only` 资源可以被审计台或下载接口使用，只是不应进入模型。
+        单独统计该数量，能让运维判断“模型上下文被裁剪”是安全策略生效，还是 workspace 越界等异常。
+        """
+
+        return sum(1 for item in summaries if not item.get("modelContextAllowed"))
 
     @staticmethod
     def _workspace_key_from_tool_plans(tool_plans: tuple[ToolPlan, ...]) -> str | None:

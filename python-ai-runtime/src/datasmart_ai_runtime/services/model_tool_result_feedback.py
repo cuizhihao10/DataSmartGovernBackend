@@ -81,11 +81,14 @@ class ToolExecutionFeedbackMessageBundle:
     顺序，构建器会先放一条 assistant tool_calls 历史消息，再放一组 role=tool 的结果消息。
     `missing_feedback_call_ids` 用于诊断：如果模型提出了 N 个工具调用，但只回填 N-1 个结果，某些
     OpenAI-compatible 网关会拒绝下一轮请求，因此这里提前暴露缺口。
+    `resource_resolution_summaries` 是资源准入诊断摘要。它只包含治理决策、问题码、引用类型和
+    resolverHint，不包含工具结果原文，因此可以安全写入 runtime event、前端诊断面板和审计回放。
     """
 
     messages: tuple[ModelMessage, ...] = ()
     missing_feedback_call_ids: tuple[str, ...] = ()
     extra_feedback_call_ids: tuple[str, ...] = ()
+    resource_resolution_summaries: tuple[dict[str, Any], ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -143,18 +146,26 @@ class ModelToolResultFeedbackBuilder:
         feedback_id_set = set(feedback_by_id)
 
         messages: list[ModelMessage] = []
+        resource_resolution_summaries: list[dict[str, Any]] = []
         if tool_calls:
             messages.append(ModelMessage(role="assistant", content="", tool_calls=tool_calls))
         for call_id in expected_ids:
             feedback = feedback_by_id.get(call_id)
             if feedback is None:
                 continue
-            messages.append(self._to_tool_message(feedback, current_workspace_key=current_workspace_key))
+            tool_message, resolution_summary = self._to_tool_message(
+                feedback,
+                current_workspace_key=current_workspace_key,
+            )
+            messages.append(tool_message)
+            if resolution_summary:
+                resource_resolution_summaries.append(resolution_summary)
 
         return ToolExecutionFeedbackMessageBundle(
             messages=tuple(messages),
             missing_feedback_call_ids=tuple(call_id for call_id in expected_ids if call_id not in feedback_id_set),
             extra_feedback_call_ids=tuple(sorted(feedback_id_set - expected_id_set)),
+            resource_resolution_summaries=tuple(resource_resolution_summaries),
         )
 
     def _to_tool_message(
@@ -162,7 +173,7 @@ class ModelToolResultFeedbackBuilder:
         feedback: ToolExecutionFeedback,
         *,
         current_workspace_key: str | None,
-    ) -> ModelMessage:
+    ) -> tuple[ModelMessage, dict[str, Any] | None]:
         """把单个执行反馈转换为 role=tool 的消息。
 
         这一步是模型上下文安全的关键闸口。Java 控制面返回的 `result` 即使已经是摘要，也不能脱离资源
@@ -172,6 +183,7 @@ class ModelToolResultFeedbackBuilder:
         """
 
         resolution = self._resource_resolution(feedback, current_workspace_key=current_workspace_key)
+        resolution_summary = self._resource_resolution_event_summary(feedback, resolution)
         model_context_allowed = resolution.model_context_allowed if resolution else True
 
         payload = {
@@ -187,11 +199,14 @@ class ModelToolResultFeedbackBuilder:
             "errorMessage": feedback.error_message,
             "result": self._mask_result(feedback.result, feedback.sensitive_fields) if model_context_allowed else {},
         }
-        return ModelMessage(
-            role="tool",
-            content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
-            tool_call_id=feedback.tool_call_id,
-            name=feedback.tool_name,
+        return (
+            ModelMessage(
+                role="tool",
+                content=json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                tool_call_id=feedback.tool_call_id,
+                name=feedback.tool_name,
+            ),
+            resolution_summary,
         )
 
     def _mask_result(self, result: dict[str, Any], sensitive_fields: tuple[str, ...]) -> dict[str, Any]:
@@ -245,3 +260,37 @@ class ModelToolResultFeedbackBuilder:
             current_workspace_key=current_workspace_key,
             expected_workspace_required=bool(current_workspace_key),
         )
+
+    @staticmethod
+    def _resource_resolution_event_summary(
+        feedback: ToolExecutionFeedback,
+        resolution: AgentResourceReferenceResolution | None,
+    ) -> dict[str, Any] | None:
+        """生成适合 runtime event 的资源准入诊断摘要。
+
+        role=tool 消息里会包含较完整的 `outputReferenceResolution`，但 runtime event 面向前端进度条、
+        WebSocket replay、审计检索和告警规则，不应该写入完整 payload 或工具 result。因此这里提炼出
+        最小但足够排障的字段：
+        - 哪个 toolCall / toolName；
+        - 引用类型、URI、workspaceKey 和 contextPolicy；
+        - 是否允许继续解析、是否允许进入模型上下文；
+        - 阻断问题码和后续 resolverHint。
+
+        这些字段能解释“为什么 result 为空”，同时不会把样本数据、SQL、文件内容或大对象泄露到事件流。
+        """
+
+        if resolution is None:
+            return None
+        reference = resolution.reference
+        return {
+            "toolCallId": feedback.tool_call_id,
+            "toolName": feedback.tool_name,
+            "decision": resolution.decision.value,
+            "modelContextAllowed": resolution.model_context_allowed,
+            "issues": resolution.issues,
+            "resolverHint": resolution.resolver_hint,
+            "referenceKind": reference.kind.value,
+            "referenceUri": reference.uri,
+            "workspaceKey": reference.workspace_key,
+            "contextPolicy": reference.context_policy,
+        }

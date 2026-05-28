@@ -54,6 +54,16 @@ class AgentSecondTurnOrchestratorTest(unittest.TestCase):
             AgentRuntimeEventType.MODEL_SECOND_TURN_COMPLETED,
             {event.event_type for event in result.runtime_events},
         )
+        feedback_event = next(
+            event
+            for event in result.runtime_events
+            if event.event_type == AgentRuntimeEventType.TOOL_RESULT_FEEDBACK_BUILT
+        )
+        self.assertEqual(1, feedback_event.attributes["resourceResolutionCount"])
+        self.assertEqual(0, feedback_event.attributes["resourceResolutionBlockedCount"])
+        self.assertEqual(1, feedback_event.attributes["resourceResolutionModelBlockedCount"])
+        self.assertEqual("agent_runtime", feedback_event.attributes["resourceResolutions"][0]["referenceKind"])
+        self.assertEqual("audit_only", feedback_event.attributes["resourceResolutions"][0]["contextPolicy"])
         self.assertEqual((6, 7, 8), tuple(event.sequence for event in result.runtime_events))
 
     def test_skips_without_calling_model_when_policy_blocks(self) -> None:

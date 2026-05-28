@@ -68,8 +68,14 @@ class SecondTurnEventBuilder:
         missing_feedback_call_ids: tuple[str, ...],
         extra_feedback_call_ids: tuple[str, ...],
         complete: bool,
+        resource_resolution_summaries: tuple[dict[str, Any], ...] = (),
     ) -> None:
-        """记录工具结果消息构建事件。"""
+        """记录工具结果消息构建事件。
+
+        `resource_resolution_summaries` 用来解释工具结果资源是否进入模型上下文。它只包含资源类型、
+        URI、workspace、contextPolicy、decision 和 issue code，不包含工具 result 原文。这样前端和审计
+        台可以展示“为什么 result 被裁剪”，同时不会把敏感工具输出扩散到事件流。
+        """
 
         self._record(
             AgentRuntimeEventType.TOOL_RESULT_FEEDBACK_BUILT,
@@ -82,6 +88,10 @@ class SecondTurnEventBuilder:
                 "missingFeedbackCallIds": missing_feedback_call_ids,
                 "extraFeedbackCallIds": extra_feedback_call_ids,
                 "complete": complete,
+                "resourceResolutionCount": len(resource_resolution_summaries),
+                "resourceResolutionBlockedCount": self._resource_blocked_count(resource_resolution_summaries),
+                "resourceResolutionModelBlockedCount": self._resource_model_blocked_count(resource_resolution_summaries),
+                "resourceResolutions": resource_resolution_summaries,
             },
         )
 
@@ -178,3 +188,15 @@ class SecondTurnEventBuilder:
             if event.session_id:
                 return event.session_id
         return None
+
+    @staticmethod
+    def _resource_blocked_count(summaries: tuple[dict[str, Any], ...]) -> int:
+        """统计资源引用被治理层完全阻断的数量。"""
+
+        return sum(1 for item in summaries if item.get("decision") == "blocked")
+
+    @staticmethod
+    def _resource_model_blocked_count(summaries: tuple[dict[str, Any], ...]) -> int:
+        """统计资源可审计/可下载但不允许进入模型上下文的数量。"""
+
+        return sum(1 for item in summaries if not item.get("modelContextAllowed"))

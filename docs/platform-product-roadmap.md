@@ -6518,3 +6518,24 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. Java 结果查询 API 返回 workspace/contextPolicy，让真实控制面反馈也能声明资源准入策略。
 2. 将 `outputReferenceResolution` 写入 runtime event 诊断，便于前端和审计台展示阻断原因。
 3. 继续补 JSONPath/字段级过滤，而不是长期停留在“整个 result 放行或置空”的粗粒度。
+
+## 4.36 AI Runtime 资源准入决策事件化（2026-05-29）
+
+本阶段把工具结果资源准入判断沉淀到 runtime event。前端、审计台和运维排障现在可以通过 `TOOL_RESULT_FEEDBACK_BUILT` 事件看到资源是否被阻断、是否允许进入模型上下文，以及对应 issue code。
+
+已完成：
+- `ToolExecutionFeedbackMessageBundle` 新增 `resource_resolution_summaries`。
+- `ModelToolResultFeedbackBuilder` 在构造 role=tool 消息时同步生成事件友好的资源准入摘要。
+- Agent 主链模拟二轮和受控二轮编排器都把资源准入统计写入 `TOOL_RESULT_FEEDBACK_BUILT` 事件。
+- 事件属性包含资源诊断数量、强阻断数量、模型上下文阻断数量和资源引用摘要。
+- 补充测试验证 message bundle 和 runtime event 中的资源准入诊断。
+
+产品意义：
+- “result 为什么为空”开始变成可解释事件，而不是隐藏在后端逻辑里。
+- 审计台可以区分正常策略生效的 `audit_only` 与异常性的 workspace 越界、外部 URL 阻断。
+- 事件只记录引用和治理决策，不记录工具结果原文，避免 runtime event 成为新的敏感数据扩散通道。
+
+下一步：
+1. 补字段级/JSONPath 级上下文过滤。
+2. Java 结果查询 API 返回 workspace/contextPolicy/outputReference。
+3. 为 WebSocket/Kafka replay 设计资源准入事件和 URI 脱敏规则。

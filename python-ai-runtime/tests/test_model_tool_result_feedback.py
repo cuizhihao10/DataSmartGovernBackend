@@ -67,6 +67,9 @@ class ModelToolResultFeedbackTest(unittest.TestCase):
         self.assertEqual("agent", payload["outputReference"]["attributes"]["bucket"])
         self.assertEqual("run-001/quality-rules.json", payload["outputReference"]["attributes"]["objectKey"])
         self.assertTrue(payload["outputReferenceResolution"]["modelContextAllowed"])
+        self.assertEqual(1, len(bundle.resource_resolution_summaries))
+        self.assertEqual("minio_object", bundle.resource_resolution_summaries[0]["referenceKind"])
+        self.assertTrue(bundle.resource_resolution_summaries[0]["modelContextAllowed"])
         self.assertEqual("***MASKED***", payload["result"]["datasourceId"])
         self.assertEqual(3, payload["result"]["ruleCount"])
 
@@ -105,6 +108,9 @@ class ModelToolResultFeedbackTest(unittest.TestCase):
         self.assertFalse(payload["outputReferenceResolution"]["modelContextAllowed"])
         self.assertEqual("allowed", payload["outputReferenceResolution"]["decision"])
         self.assertEqual("audit_only", payload["outputReference"]["contextPolicy"])
+        self.assertEqual(1, len(bundle.resource_resolution_summaries))
+        self.assertFalse(bundle.resource_resolution_summaries[0]["modelContextAllowed"])
+        self.assertEqual("agent_runtime", bundle.resource_resolution_summaries[0]["referenceKind"])
 
     def test_blocks_workspace_mismatch_output_result_from_model_context(self) -> None:
         """跨工作空间输出引用即使带有 result，也不能进入当前模型上下文。"""
@@ -137,6 +143,8 @@ class ModelToolResultFeedbackTest(unittest.TestCase):
         self.assertEqual({}, payload["result"])
         self.assertEqual("blocked", payload["outputReferenceResolution"]["decision"])
         self.assertIn("WORKSPACE_KEY_MISMATCH", payload["outputReferenceResolution"]["issues"])
+        self.assertEqual("blocked", bundle.resource_resolution_summaries[0]["decision"])
+        self.assertIn("WORKSPACE_KEY_MISMATCH", bundle.resource_resolution_summaries[0]["issues"])
 
     def test_reports_missing_and_extra_feedback_ids(self) -> None:
         """缺少或多余工具结果应被显式报告，避免下一轮模型请求结构不完整。"""
