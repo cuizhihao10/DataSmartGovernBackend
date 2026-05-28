@@ -6124,3 +6124,37 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. dead-letter/BLOCKED 人工补偿入口。
 3. WebSocket/审计中心 dispatch target 与统一 sequence/cursor。
 4. 事件链路稳定后，切向长期记忆、模型网关缓存治理、Skill 市场和多 Agent 协作。
+## 4.21 Java agent-runtime outbox dispatcher 领取竞态与 BLOCKED 保护（2026-05-28）
+
+本阶段继续补齐 Agent 工具执行事件的生产可靠性，但刻意控制在 dispatcher 安全边界这一小块，不再继续扩展新的工具类型或业务功能。商业化 Agent 系统里，工具执行事件不仅要“能发出去”，还要解决多实例 worker 并发扫描、坏消息无限重试、运维侧无法判断是否需要人工补偿等问题。因此本阶段重点是让 outbox dispatcher 从基础投递器升级为具备状态机保护的后台投递组件。
+
+已完成：
+- `AgentToolExecutionEventOutboxStore` 新增 `markBlocked(...)`，把“可继续自动重试的 FAILED”和“已经停止自动重试、需要人工处理的 BLOCKED”明确区分。
+- `AgentToolExecutionEventOutboxRecord` 新增实例级 `markBlocked(...)`，保留当前尝试次数，清空下一次自动重试时间，并记录阻断原因。
+- 内存版 outbox store 的 `markPublishing(...)` 改为条件领取：只有 `PENDING` 或已到达 `nextRetryAt` 的 `FAILED` 记录允许进入 `PUBLISHING`，已经处于 `PUBLISHING`、`PUBLISHED`、`BLOCKED` 的记录不会被重复领取。
+- JDBC 版 outbox store 的核心状态更新改为条件更新：`markPublishing` 只从可投递状态领取，`markPublished` 和 `markFailed` 只允许从 `PUBLISHING` 推进，`markBlocked` 允许从 `PENDING/PUBLISHING/FAILED` 进入 `BLOCKED`，但不会覆盖已经完成的 `PUBLISHED`。
+- dispatcher summary 新增 `blocked` 计数。当某条事件领取后的 `attemptCount` 超过 `dispatcherMaxAttempts` 时，不再继续写回 `FAILED` 等待重试，而是直接标记为 `BLOCKED`。
+- `application.yml` 和配置属性注释补充中文说明：最大尝试次数达到后代表自动修复价值下降，后续应由运维台提供重新入队、忽略、导出排查和修复后补偿能力。
+- 补充 dispatcher 单元测试，覆盖并发领取保护、超过最大尝试次数进入 BLOCKED、成功投递、失败重试、未到重试时间跳过和无目标保护等场景。
+
+设计意义：
+- 条件更新是多实例 dispatcher 的第一层生产保护。它不依赖额外的分布式锁组件，而是直接利用 outbox 记录自身的状态机，避免多个 worker 同时把同一条事件投递给 Kafka 或后续事件中心。
+- BLOCKED 状态把坏消息从自动重试队列中显式移出，避免契约错误、权限错误、下游配置错误或不可恢复数据错误造成 Kafka、MySQL、线程池和告警系统的资源风暴。
+- dispatcher summary 能区分 failed 和 blocked，后续接入 Prometheus、运维台或告警中心时可以采用不同处理策略：FAILED 关注自动恢复速度，BLOCKED 关注人工排障和补偿闭环。
+- 本阶段继续遵守低耦合和文件规模约束，关键 Java 文件均保持在 500 行以内，没有把新逻辑继续堆进大型 Impl。
+
+当前边界：
+- 尚未实现 stale `PUBLISHING` 超时恢复。如果 worker 在领取后崩溃，记录仍可能长时间停留在 `PUBLISHING`，下一步需要补 `lockedAt/lockExpireAt/workerId` 或基于更新时间的恢复扫描。
+- 尚未提供 BLOCKED 人工补偿 API。真实运维台还需要支持查询阻断事件、重新入队、忽略、导出排障包、追加处理备注和审计留痕。
+- 尚未引入真实 MySQL/Kafka 集成测试；当前主要通过内存 store 状态机和全仓单元测试保护语义，数据库 SQL 仍需要后续集成验证。
+- 尚未完成统一 sequence/cursor。dispatcher 安全领取解决的是“谁能投递、如何避免重复投递”，但还没有解决多来源事件严格排序、断线续传和前端去重问题。
+
+验证：
+- `mvn -pl agent-runtime -am test -DskipITs "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"` 通过，agent-runtime 77 个测试成功。
+- `mvn test -DskipITs "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"` 全仓通过，gateway、permission-admin、task-management、datasource-management、data-sync、data-quality、agent-runtime、observability 均成功。
+- 本机默认 Maven 当前会使用 Java 8，验证 Java 21 语法时需要临时设置 `JAVA_HOME=C:\Users\Cui\.jdks\temurin-21.0.10`；后续建议固定 Maven toolchain 或项目级 JDK 说明，避免误用 Java 8 造成假失败。
+
+下一步路线：
+1. 补 stale `PUBLISHING` 恢复与 worker 领取诊断，避免后台 worker 崩溃后事件永久卡住。
+2. 补 BLOCKED 人工补偿 API 与运维审计闭环，形成真实生产环境可处理的异常事件治理能力。
+3. 完成 outbox 生产保护后，控制 Java outbox 深挖范围，转向统一 sequence/cursor、长期记忆写入、模型网关 KV/prefix cache、Skill 工具市场和多 Agent 协作。

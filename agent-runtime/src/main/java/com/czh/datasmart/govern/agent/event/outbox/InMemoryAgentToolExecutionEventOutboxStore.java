@@ -130,7 +130,10 @@ public class InMemoryAgentToolExecutionEventOutboxStore implements AgentToolExec
 
     @Override
     public Optional<AgentToolExecutionEventOutboxRecord> markPublishing(String outboxId, Instant now) {
-        return replace(outboxId, record -> record.markPublishing(now == null ? Instant.now() : now));
+        Instant referenceTime = now == null ? Instant.now() : now;
+        return replaceIf(outboxId,
+                record -> isPublishable(record, referenceTime),
+                record -> record.markPublishing(referenceTime));
     }
 
     @Override
@@ -145,6 +148,12 @@ public class InMemoryAgentToolExecutionEventOutboxStore implements AgentToolExec
                                                                    Instant nextRetryAt) {
         Instant referenceTime = now == null ? Instant.now() : now;
         return replace(outboxId, record -> record.markFailed(error, referenceTime, nextRetryAt));
+    }
+
+    @Override
+    public Optional<AgentToolExecutionEventOutboxRecord> markBlocked(String outboxId, String error, Instant now) {
+        Instant referenceTime = now == null ? Instant.now() : now;
+        return replace(outboxId, record -> record.markBlocked(error, referenceTime));
     }
 
     @Override
@@ -191,10 +200,23 @@ public class InMemoryAgentToolExecutionEventOutboxStore implements AgentToolExec
 
     private Optional<AgentToolExecutionEventOutboxRecord> replace(String outboxId,
                                                                   RecordMutation mutation) {
+        return replaceIf(outboxId, ignored -> true, mutation);
+    }
+
+    /**
+     * 带条件的记录替换。
+     *
+     * <p>dispatcher 4.21 开始需要模拟数据库的“条件更新领取”语义：只有仍处于 PENDING/FAILED 且到达 retry 时间的记录，
+     * 才能被本轮 worker 领取为 PUBLISHING。这个判断放在写锁内完成，可以让内存实现也覆盖“两个 dispatcher 同时领取同一条记录”
+     * 的竞态测试场景，而不是只在 MySQL 实现里保证。</p>
+     */
+    private Optional<AgentToolExecutionEventOutboxRecord> replaceIf(String outboxId,
+                                                                    RecordPredicate predicate,
+                                                                    RecordMutation mutation) {
         lock.writeLock().lock();
         try {
             AgentToolExecutionEventOutboxRecord current = recordsByOutboxId.get(outboxId);
-            if (current == null) {
+            if (current == null || !predicate.test(current)) {
                 return Optional.empty();
             }
             AgentToolExecutionEventOutboxRecord updated = mutation.apply(current);
@@ -203,6 +225,12 @@ public class InMemoryAgentToolExecutionEventOutboxStore implements AgentToolExec
         } finally {
             lock.writeLock().unlock();
         }
+    }
+
+    private boolean isPublishable(AgentToolExecutionEventOutboxRecord record, Instant referenceTime) {
+        boolean statusAllowsClaim = record.status() == AgentToolExecutionEventOutboxStatus.PENDING
+                || record.status() == AgentToolExecutionEventOutboxStatus.FAILED;
+        return statusAllowsClaim && (record.nextRetryAt() == null || !record.nextRetryAt().isAfter(referenceTime));
     }
 
     private void appendRunIndex(AgentToolExecutionEventOutboxRecord record) {
@@ -259,5 +287,10 @@ public class InMemoryAgentToolExecutionEventOutboxStore implements AgentToolExec
     @FunctionalInterface
     private interface RecordMutation {
         AgentToolExecutionEventOutboxRecord apply(AgentToolExecutionEventOutboxRecord record);
+    }
+
+    @FunctionalInterface
+    private interface RecordPredicate {
+        boolean test(AgentToolExecutionEventOutboxRecord record);
     }
 }

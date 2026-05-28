@@ -69,6 +69,17 @@ public interface AgentToolExecutionEventOutboxStore {
                                                             Instant nextRetryAt);
 
     /**
+     * 将长期无法成功投递的事件显式转入 BLOCKED。
+     *
+     * <p>FAILED 表示“下游暂时不可用、稍后还值得自动重试”；BLOCKED 表示“继续自动重试已经没有业务价值，甚至可能制造事件风暴”。
+     * 例如 payload 契约错误、权限上下文缺失、连续超过最大尝试次数、或者投递目标配置长期错误，都应该进入 BLOCKED，
+     * 再由运维、平台管理员或后续人工补偿接口决定是否修复后重新入队。</p>
+     */
+    Optional<AgentToolExecutionEventOutboxRecord> markBlocked(String outboxId,
+                                                              String error,
+                                                              Instant now);
+
+    /**
      * 返回 outbox 诊断摘要。
      */
     AgentToolExecutionEventOutboxDiagnostics diagnostics();

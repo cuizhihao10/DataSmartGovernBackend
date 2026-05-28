@@ -110,8 +110,9 @@ public class AgentToolExecutionEventOutboxProperties {
     /**
      * 单条 outbox 记录最大投递尝试次数。
      *
-     * <p>当前 store 已有 BLOCKED 状态但尚未提供 markBlocked 接口，因此达到上限时本阶段先延长重试间隔并保留 FAILED。
-     * 后续应补 dead-letter/人工补偿入口，把长期失败记录显式转入 BLOCKED 或 DEAD_LETTER。</p>
+     * <p>达到该上限后，dispatcher 会把记录转入 BLOCKED，停止自动重试。这样可以避免某条坏消息因为契约错误、
+     * 权限上下文缺失或下游配置长期错误而不断消耗数据库、Kafka 与调度线程资源。后续运维台可以围绕 BLOCKED
+     * 记录提供重新入队、忽略、导出、人工修复等补偿入口。</p>
      */
     private int dispatcherMaxAttempts = 10;
 

@@ -128,6 +128,56 @@ class AgentToolExecutionEventOutboxDispatcherTest {
         assertTrue(target.dispatchedOutboxIds.isEmpty());
     }
 
+    @Test
+    void dispatcherShouldSkipRecordAlreadyClaimedByAnotherWorker() {
+        AgentToolExecutionEventOutboxProperties properties = properties();
+        InMemoryAgentToolExecutionEventOutboxStore store = new InMemoryAgentToolExecutionEventOutboxStore(10, 100);
+        store.append(outboxRecord("outbox-dispatch-concurrent-claim", AgentToolExecutionEventOutboxStatus.PENDING, 0, null));
+
+        /*
+         * 这里先手动把记录领取为 PUBLISHING，用来模拟“另一个应用实例已经抢先领取同一条 outbox 记录”的生产场景。
+         * 4.21 之前内存 store 和 JDBC store 的 markPublishing 都是无条件更新，第二个 worker 仍可能把同一条记录再次领取；
+         * 现在 markPublishing 会要求记录仍处于 PENDING/FAILED 且 retry 时间已到，因此 dispatcher 只能跳过这条记录。
+         */
+        assertTrue(store.markPublishing("outbox-dispatch-concurrent-claim", Instant.now()).isPresent());
+        AgentToolExecutionEventOutboxDispatcher dispatcher = new AgentToolExecutionEventOutboxDispatcher(
+                properties,
+                store,
+                List.of(new CollectingDispatchTarget())
+        );
+
+        AgentToolExecutionEventOutboxDispatcher.AgentToolExecutionEventOutboxDispatchSummary summary =
+                dispatcher.dispatchOnce();
+
+        assertEquals(0, summary.scanned());
+        AgentToolExecutionEventOutboxRecord current = store.findByOutboxId("outbox-dispatch-concurrent-claim").orElseThrow();
+        assertEquals(AgentToolExecutionEventOutboxStatus.PUBLISHING, current.status());
+        assertEquals(1, current.attemptCount());
+    }
+
+    @Test
+    void dispatcherShouldBlockRecordWhenMaxAttemptsExceeded() {
+        AgentToolExecutionEventOutboxProperties properties = properties();
+        properties.setDispatcherMaxAttempts(3);
+        InMemoryAgentToolExecutionEventOutboxStore store = new InMemoryAgentToolExecutionEventOutboxStore(10, 100);
+        store.append(outboxRecord("outbox-dispatch-blocked", AgentToolExecutionEventOutboxStatus.FAILED, 3, null));
+        AgentToolExecutionEventOutboxDispatcher dispatcher = new AgentToolExecutionEventOutboxDispatcher(
+                properties,
+                store,
+                List.of(new CollectingDispatchTarget())
+        );
+
+        AgentToolExecutionEventOutboxDispatcher.AgentToolExecutionEventOutboxDispatchSummary summary =
+                dispatcher.dispatchOnce();
+
+        assertEquals(1, summary.scanned());
+        assertEquals(1, summary.blocked());
+        AgentToolExecutionEventOutboxRecord blocked = store.findByOutboxId("outbox-dispatch-blocked").orElseThrow();
+        assertEquals(AgentToolExecutionEventOutboxStatus.BLOCKED, blocked.status());
+        assertEquals(4, blocked.attemptCount());
+        assertTrue(blocked.lastError().contains("最大投递尝试次数"));
+    }
+
     private AgentToolExecutionEventOutboxProperties properties() {
         AgentToolExecutionEventOutboxProperties properties = new AgentToolExecutionEventOutboxProperties();
         properties.setDispatcherBatchSize(10);

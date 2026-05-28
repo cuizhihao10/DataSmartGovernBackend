@@ -175,15 +175,15 @@ public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutio
     @Override
     public Optional<AgentToolExecutionEventOutboxRecord> markPublishing(String outboxId, Instant now) {
         Instant referenceTime = now == null ? Instant.now() : now;
-        String sql = """
-                UPDATE agent_tool_execution_event_outbox
-                SET status = ?, attempt_count = attempt_count + 1, update_time = ?, next_retry_at = NULL
-                WHERE outbox_id = ?
-                """;
+        String sql = "UPDATE agent_tool_execution_event_outbox SET status = ?, attempt_count = attempt_count + 1, update_time = ?, "
+                + "next_retry_at = NULL WHERE outbox_id = ? AND status IN (?, ?) AND (next_retry_at IS NULL OR next_retry_at <= ?)";
         return updateThenFind(outboxId, sql, List.of(
                 AgentToolExecutionEventOutboxStatus.PUBLISHING.name(),
                 referenceTime,
-                outboxId
+                outboxId,
+                AgentToolExecutionEventOutboxStatus.PENDING.name(),
+                AgentToolExecutionEventOutboxStatus.FAILED.name(),
+                referenceTime
         ));
     }
 
@@ -191,16 +191,14 @@ public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutio
     @Override
     public Optional<AgentToolExecutionEventOutboxRecord> markPublished(String outboxId, Instant now) {
         Instant referenceTime = now == null ? Instant.now() : now;
-        String sql = """
-                UPDATE agent_tool_execution_event_outbox
-                SET status = ?, update_time = ?, next_retry_at = NULL, published_at = ?, last_error = ''
-                WHERE outbox_id = ?
-                """;
+        String sql = "UPDATE agent_tool_execution_event_outbox SET status = ?, update_time = ?, next_retry_at = NULL, "
+                + "published_at = ?, last_error = '' WHERE outbox_id = ? AND status = ?";
         return updateThenFind(outboxId, sql, List.of(
                 AgentToolExecutionEventOutboxStatus.PUBLISHED.name(),
                 referenceTime,
                 referenceTime,
-                outboxId
+                outboxId,
+                AgentToolExecutionEventOutboxStatus.PUBLISHING.name()
         ));
     }
 
@@ -211,17 +209,31 @@ public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutio
                                                                    Instant now,
                                                                    Instant nextRetryAt) {
         Instant referenceTime = now == null ? Instant.now() : now;
-        String sql = """
-                UPDATE agent_tool_execution_event_outbox
-                SET status = ?, update_time = ?, next_retry_at = ?, last_error = ?
-                WHERE outbox_id = ?
-                """;
+        String sql = "UPDATE agent_tool_execution_event_outbox SET status = ?, update_time = ?, next_retry_at = ?, "
+                + "last_error = ? WHERE outbox_id = ? AND status = ?";
         return updateThenFind(outboxId, sql, parameters(
                 AgentToolExecutionEventOutboxStatus.FAILED.name(),
                 referenceTime,
                 nextRetryAt,
                 truncate(error, 1024),
-                outboxId
+                outboxId,
+                AgentToolExecutionEventOutboxStatus.PUBLISHING.name()
+        ));
+    }
+
+    @Override
+    public Optional<AgentToolExecutionEventOutboxRecord> markBlocked(String outboxId, String error, Instant now) {
+        Instant referenceTime = now == null ? Instant.now() : now;
+        String sql = "UPDATE agent_tool_execution_event_outbox SET status = ?, update_time = ?, next_retry_at = NULL, "
+                + "last_error = ? WHERE outbox_id = ? AND status IN (?, ?, ?)";
+        return updateThenFind(outboxId, sql, parameters(
+                AgentToolExecutionEventOutboxStatus.BLOCKED.name(),
+                referenceTime,
+                truncate(error, 1024),
+                outboxId,
+                AgentToolExecutionEventOutboxStatus.PENDING.name(),
+                AgentToolExecutionEventOutboxStatus.PUBLISHING.name(),
+                AgentToolExecutionEventOutboxStatus.FAILED.name()
         ));
     }
 

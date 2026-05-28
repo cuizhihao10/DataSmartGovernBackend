@@ -168,6 +168,16 @@ public record AgentToolExecutionEventOutboxRecord(
         return withStatus(AgentToolExecutionEventOutboxStatus.FAILED, attemptCount, now, nextRetryAt, publishedAt, error);
     }
 
+    /**
+     * 标记事件被阻断，等待人工修复或后续补偿入口处理。
+     *
+     * <p>BLOCKED 是 outbox 的“保护性终态”。它不代表业务工具执行失败，而是代表事件投递链路已经判断继续自动重试不安全。
+     * 真实商用系统里这类记录通常会进入运维台、告警中心或人工补偿队列，避免同一条坏消息无休止地占用 dispatcher 资源。</p>
+     */
+    public AgentToolExecutionEventOutboxRecord markBlocked(String error, Instant now) {
+        return withStatus(AgentToolExecutionEventOutboxStatus.BLOCKED, attemptCount, now, null, publishedAt, error);
+    }
+
     private AgentToolExecutionEventOutboxRecord withStatus(AgentToolExecutionEventOutboxStatus newStatus,
                                                           int newAttemptCount,
                                                           Instant now,

@@ -92,18 +92,20 @@ public class AgentToolExecutionEventOutboxDispatcher {
         List<AgentToolExecutionEventOutboxRecord> candidates = outboxStore.listPublishable(batchSize, now);
         int published = 0;
         int failed = 0;
+        int blocked = 0;
         int skipped = 0;
         for (AgentToolExecutionEventOutboxRecord candidate : candidates) {
             DispatchOutcome outcome = dispatchRecord(candidate, now);
             published += outcome.published();
             failed += outcome.failed();
+            blocked += outcome.blocked();
             skipped += outcome.skipped();
         }
         if (!candidates.isEmpty()) {
-            log.info("Agent 工具 outbox dispatcher 本轮完成，scanned={}, published={}, failed={}, skipped={}",
-                    candidates.size(), published, failed, skipped);
+            log.info("Agent 工具 outbox dispatcher 本轮完成，scanned={}, published={}, failed={}, blocked={}, skipped={}",
+                    candidates.size(), published, failed, blocked, skipped);
         }
-        return new AgentToolExecutionEventOutboxDispatchSummary(candidates.size(), published, failed, skipped, "");
+        return new AgentToolExecutionEventOutboxDispatchSummary(candidates.size(), published, failed, blocked, skipped, "");
     }
 
     private DispatchOutcome dispatchRecord(AgentToolExecutionEventOutboxRecord candidate, Instant now) {
@@ -117,8 +119,8 @@ public class AgentToolExecutionEventOutboxDispatcher {
 
     private DispatchOutcome dispatchPublishingRecord(AgentToolExecutionEventOutboxRecord record, Instant now) {
         if (record.attemptCount() > Math.max(1, properties.getDispatcherMaxAttempts())) {
-            markFailed(record, "超过 dispatcher 最大投递尝试次数，等待后续人工补偿或死信治理。", now);
-            return DispatchOutcome.failedOutcome();
+            markBlocked(record, "超过 dispatcher 最大投递尝试次数，已停止自动重试，等待人工补偿或死信治理。", now);
+            return DispatchOutcome.blockedOutcome();
         }
         if (dispatchTargets.isEmpty() && !properties.isDispatcherAllowNoTargetsAsPublished()) {
             markFailed(record, "dispatcher 未配置任何投递目标，不能标记为已发布。", now);
@@ -143,6 +145,12 @@ public class AgentToolExecutionEventOutboxDispatcher {
                 record.outboxId(), record.eventId(), record.attemptCount(), nextRetryAt, error);
     }
 
+    private void markBlocked(AgentToolExecutionEventOutboxRecord record, String error, Instant now) {
+        outboxStore.markBlocked(record.outboxId(), error, now);
+        log.error("Agent 工具 outbox 事件已进入 BLOCKED，outboxId={}, eventId={}, attempt={}, error={}",
+                record.outboxId(), record.eventId(), record.attemptCount(), error);
+    }
+
     private long calculateBackoffSeconds(int attemptCount) {
         long base = Math.max(1, properties.getRetryBackoffSeconds());
         int exponent = Math.max(0, Math.min(attemptCount - 1, 10));
@@ -158,27 +166,32 @@ public class AgentToolExecutionEventOutboxDispatcher {
             int scanned,
             int published,
             int failed,
+            int blocked,
             int skipped,
             String skippedReason
     ) {
 
         public static AgentToolExecutionEventOutboxDispatchSummary skipped(String reason) {
-            return new AgentToolExecutionEventOutboxDispatchSummary(0, 0, 0, 1, reason);
+            return new AgentToolExecutionEventOutboxDispatchSummary(0, 0, 0, 0, 1, reason);
         }
     }
 
-    private record DispatchOutcome(int published, int failed, int skipped) {
+    private record DispatchOutcome(int published, int failed, int blocked, int skipped) {
 
         private static DispatchOutcome publishedOutcome() {
-            return new DispatchOutcome(1, 0, 0);
+            return new DispatchOutcome(1, 0, 0, 0);
         }
 
         private static DispatchOutcome failedOutcome() {
-            return new DispatchOutcome(0, 1, 0);
+            return new DispatchOutcome(0, 1, 0, 0);
+        }
+
+        private static DispatchOutcome blockedOutcome() {
+            return new DispatchOutcome(0, 0, 1, 0);
         }
 
         private static DispatchOutcome skippedOutcome() {
-            return new DispatchOutcome(0, 0, 1);
+            return new DispatchOutcome(0, 0, 0, 1);
         }
     }
 }

@@ -126,7 +126,8 @@ datasmart:
         dispatcher-fixed-delay-ms: 5000
         # 单轮最多领取事件数；后续压测时应结合 outbox 积压、Kafka 吞吐、数据库更新成本调整。
         dispatcher-batch-size: 50
-        # 单条记录最大投递尝试次数；当前达到上限仍保留 FAILED，后续应补 dead-letter/人工补偿入口。
+        # 单条记录最大投递尝试次数；达到上限后会进入 BLOCKED，停止自动重试，避免坏消息无限占用 dispatcher。
+        # 后续运维台应围绕 BLOCKED 记录提供重新入队、人工忽略、导出排查和修复后补偿等管理能力。
         dispatcher-max-attempts: 10
         # 指数退避最大秒数，避免下游故障时高频重试打爆 Kafka 或数据库。
         dispatcher-max-retry-backoff-seconds: 300
