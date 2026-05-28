@@ -20,6 +20,7 @@ from datasmart_ai_runtime.api_events import (
     subscription_request_from_payload,
 )
 from datasmart_ai_runtime.api_plan_response import build_plan_response
+from datasmart_ai_runtime.api_memory_write import register_memory_write_routes
 from datasmart_ai_runtime.config import default_skill_registry, default_tool_registry, model_routes_from_env
 from datasmart_ai_runtime.domain.contracts import AgentRequest, ToolDefinition
 from datasmart_ai_runtime.domain.context import ContextSensitivityLevel
@@ -48,6 +49,7 @@ from datasmart_ai_runtime.services.agent_plan_ingestion_client import JavaAgentP
 from datasmart_ai_runtime.services.agent_control_plane_feedback import AgentControlPlaneFeedbackCollector
 from datasmart_ai_runtime.services.agent_loop_control_policy import AgentLoopControlPolicyEvaluator
 from datasmart_ai_runtime.services.agent_second_turn_orchestrator import AgentSecondTurnOrchestrator
+from datasmart_ai_runtime.services.memory_write_governance import AgentMemoryWriteGovernanceService
 
 
 def load_tool_registry(
@@ -328,6 +330,10 @@ def create_app() -> Any:
     session_manager = runtime_events.session_manager
     live_push_hub = runtime_events.live_push_hub
     event_publisher = runtime_events.event_publisher
+    # 记忆写入治理服务在应用生命周期内保持单例，确保 `/agent/plans` 生成的候选
+    # 能被后续查询、审批和拒绝接口读取。当前默认是内存 store，生产环境后续应替换为
+    # MySQL/Java memory-service store，并由 gateway/permission-admin 做统一鉴权。
+    memory_write_governance = AgentMemoryWriteGovernanceService()
 
     @app.get("/agent/events/diagnostics")
     def runtime_event_diagnostics() -> dict[str, Any]:
@@ -364,6 +370,7 @@ def create_app() -> Any:
             runtime_event_feedback_bridge=runtime_event_feedback_bridge,
             loop_control_evaluator=loop_control_evaluator,
             second_turn_orchestrator=second_turn_orchestrator,
+            memory_write_governance=memory_write_governance,
         )
 
     @app.post("/agent/events/replay")
@@ -458,5 +465,7 @@ def create_app() -> Any:
                 await sender_task
             with suppress(Exception):
                 await live_task
+
+    register_memory_write_routes(app, memory_write_governance)
 
     return app

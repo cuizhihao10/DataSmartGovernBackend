@@ -6306,3 +6306,34 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 设计 APPROVED 候选异步写入 Chroma/Neo4j/MinIO/MySQL 的 worker。
 3. 补记忆检索权限、遗忘策略和租户/项目/会话隔离压测。
 4. 并行推进智能网关 KV/prefix cache 治理，避免长期记忆和推理缓存边界混淆。
+
+## 4.26 AI Runtime 记忆写入候选存储与审批 API 第一阶段（2026-05-28）
+
+本阶段把 4.25 的记忆写入候选从一次响应里的临时对象推进为可跨请求查询、可审批、可替换存储的运行时资源。仍然不直接写 Chroma/Neo4j，而是先补候选 store 和 HTTP 管理入口。
+
+已完成：
+- 新增 `AgentMemoryWriteCandidateStore` 协议与线程安全内存实现。
+- `AgentMemoryWriteGovernanceService` 改为依赖可注入 store，并提供 `list_candidates(...)`。
+- 新增 `api_memory_write.py`，注册候选列表、详情、审批通过和拒绝接口。
+- `create_app()` 创建应用级记忆写入治理服务，`/agent/plans` 生成的候选可被后续 API 查询和审批。
+- 新增测试验证候选过滤、路由注册和审批接口契约，同时保持 FastAPI 为可选依赖。
+
+产品意义：
+- 长期记忆候选开始成为“可管理资源”，后续审批台、审计台和异步写入 worker 都可以围绕候选 ID 协作。
+- store 抽象让后续替换为 MySQL、Java memory-service 或审批中心时，不需要推翻治理服务。
+- API 路由独立拆分，避免 `api.py` 再次膨胀。
+
+当前边界：
+- 当前 store 仍是内存实现，多实例和重启不可恢复。
+- 当前 API 尚未接 gateway/permission-admin 鉴权，也没有审批单号、幂等 key 和操作审计表。
+- 当前没有 APPROVED 候选的异步写入 worker。
+
+验证：
+- `python -m unittest discover -s python-ai-runtime\tests` 通过，189 个 Python 测试成功。
+- Python AST 扫描通过，104 个 Python 文件解析成功。
+
+下一步路线：
+1. 接入 permission-admin 与 gateway 权限动作。
+2. 设计 MySQL 候选表和操作审计表。
+3. 实现 APPROVED 候选异步写入 Chroma/Neo4j/MinIO/MySQL。
+4. 补遗忘、归档、过期清理和索引重建能力。

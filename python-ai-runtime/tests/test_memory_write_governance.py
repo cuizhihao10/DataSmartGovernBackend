@@ -1,5 +1,6 @@
 import os
 import sys
+import types
 import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -7,6 +8,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from datasmart_ai_runtime.api import build_default_orchestrator
+from datasmart_ai_runtime.api_memory_write import register_memory_write_routes
 from datasmart_ai_runtime.api_plan_response import build_plan_response
 from datasmart_ai_runtime.domain.contracts import (
     AgentPlan,
@@ -229,6 +231,86 @@ class AgentMemoryWriteGovernanceTest(unittest.TestCase):
         event_types = {event["event_type"] for event in response["plan"]["runtime_events"]}
         self.assertIn("memory_write_candidate_proposed", event_types)
 
+    def test_service_can_list_candidates_by_scope_and_status(self) -> None:
+        """治理服务提供审批台所需的候选列表查询入口。"""
+
+        service = AgentMemoryWriteGovernanceService()
+        service.propose(
+            request=self._request(),
+            plan=self._plan(
+                ToolPlan(
+                    tool_name="quality.rule.suggest",
+                    reason="生成质量规则草案",
+                    governance_hints={"memoryWritePolicy": "episodic"},
+                )
+            ),
+        )
+        service.propose(
+            request=AgentRequest(
+                tenant_id="tenant-b",
+                project_id="project-b",
+                actor_id="analyst-b",
+                objective="另一个租户的候选不应出现在 tenant-a 查询结果中",
+            ),
+            plan=self._plan(
+                ToolPlan(
+                    tool_name="quality.rule.suggest",
+                    reason="生成质量规则草案",
+                    governance_hints={"memoryWritePolicy": "episodic"},
+                )
+            ),
+        )
+
+        candidates = service.list_candidates(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            status=AgentMemoryWriteCandidateStatus.DRAFT,
+        )
+
+        self.assertEqual(1, len(candidates))
+        self.assertEqual("tenant-a", candidates[0].tenant_id)
+
+    def test_memory_write_routes_support_list_detail_and_decision_without_fastapi_dependency(self) -> None:
+        """用 fake FastAPI 模块验证路由契约，避免默认测试环境必须安装可选 API 依赖。"""
+
+        service = AgentMemoryWriteGovernanceService()
+        report = service.propose(
+            request=self._request(),
+            plan=self._plan(
+                ToolPlan(
+                    tool_name="quality.rule.suggest",
+                    reason="生成质量规则草案",
+                    governance_hints={"memoryWritePolicy": "episodic"},
+                )
+            ),
+        )
+        app = FakeFastApiApp()
+        with fake_fastapi_module():
+            register_memory_write_routes(app, service)
+
+        list_response = app.call(
+            "GET",
+            "/agent/memory/write-candidates",
+            tenantId="tenant-a",
+            projectId="project-a",
+            status="draft",
+        )
+        detail_response = app.call(
+            "GET",
+            "/agent/memory/write-candidates/{candidate_id}",
+            report.candidates[0].candidate_id,
+        )
+        approve_response = app.call(
+            "POST",
+            "/agent/memory/write-candidates/{candidate_id}/approve",
+            report.candidates[0].candidate_id,
+            {"operatorId": "auditor-a", "reason": "候选摘要可进入项目经验库。"},
+        )
+
+        self.assertEqual(1, list_response["candidateCount"])
+        self.assertEqual(report.candidates[0].candidate_id, detail_response["candidate"]["candidateId"])
+        self.assertEqual("approved", approve_response["candidate"]["status"])
+
     @staticmethod
     def _request() -> AgentRequest:
         return AgentRequest(
@@ -272,6 +354,54 @@ class AgentMemoryWriteGovernanceTest(unittest.TestCase):
             second_turn_eligible=True,
             recommended_actions=("工具反馈已完整，可用于后续治理。",),
         )
+
+class FakeHttpException(Exception):
+    """测试用 HTTPException，模拟 FastAPI 异常对象的最小字段。"""
+
+    def __init__(self, status_code: int, detail: str) -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
+class fake_fastapi_module:
+    """临时向 sys.modules 注入 fake fastapi，避免测试依赖可选包。"""
+
+    def __enter__(self) -> None:
+        self._old = sys.modules.get("fastapi")
+        module = types.ModuleType("fastapi")
+        module.HTTPException = FakeHttpException
+        sys.modules["fastapi"] = module
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if self._old is None:
+            sys.modules.pop("fastapi", None)
+        else:
+            sys.modules["fastapi"] = self._old
+
+
+class FakeFastApiApp:
+    """捕获路由装饰器注册结果的测试桩。"""
+
+    def __init__(self) -> None:
+        self.routes: dict[tuple[str, str], object] = {}
+
+    def get(self, path: str):
+        def decorator(func):
+            self.routes[("GET", path)] = func
+            return func
+
+        return decorator
+
+    def post(self, path: str):
+        def decorator(func):
+            self.routes[("POST", path)] = func
+            return func
+
+        return decorator
+
+    def call(self, method: str, path: str, *args, **kwargs):
+        return self.routes[(method, path)](*args, **kwargs)
 
 
 if __name__ == "__main__":

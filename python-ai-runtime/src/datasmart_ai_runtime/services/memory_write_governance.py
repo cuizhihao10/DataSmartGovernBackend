@@ -37,6 +37,10 @@ from datasmart_ai_runtime.domain.memory import (
     AgentMemoryWriteProposalReport,
 )
 from datasmart_ai_runtime.services.agent_control_plane_feedback import AgentControlPlaneFeedbackSnapshot
+from datasmart_ai_runtime.services.memory_write_candidate_store import (
+    AgentMemoryWriteCandidateStore,
+    InMemoryAgentMemoryWriteCandidateStore,
+)
 from datasmart_ai_runtime.services.model_tool_result_feedback import ToolExecutionFeedbackStatus
 
 
@@ -50,12 +54,12 @@ class AgentMemoryWriteGovernanceService:
     - 不负责真实写入向量库、图数据库或对象存储；
     - 不负责绕过 Java 控制面的权限、审计和工具执行状态。
 
-    当前实现使用内存字典保存候选，目的是让 API、测试和后续 Java 接入先共享稳定领域契约。
-    生产化时应替换为 MySQL 表或 Java memory-service 审批单，并通过 outbox/Kafka 触发持久化写入。
+    当前默认使用内存 store，目的是让 API、测试和后续 Java 接入先共享稳定领域契约。
+    生产化时应注入 MySQL store 或 Java memory-service 客户端，并通过 outbox/Kafka 触发持久化写入。
     """
 
-    def __init__(self) -> None:
-        self._candidates: dict[str, AgentMemoryWriteCandidate] = {}
+    def __init__(self, store: AgentMemoryWriteCandidateStore | None = None) -> None:
+        self._store = store or InMemoryAgentMemoryWriteCandidateStore()
 
     def propose(
         self,
@@ -115,8 +119,7 @@ class AgentMemoryWriteGovernanceService:
                 tool_index=index,
                 feedback_item=feedback_item,
             )
-            self._candidates[candidate.candidate_id] = candidate
-            candidates.append(candidate)
+            candidates.append(self._store.save(candidate))
 
         return AgentMemoryWriteProposalReport(
             candidates=tuple(candidates),
@@ -141,7 +144,7 @@ class AgentMemoryWriteGovernanceService:
         if not reason:
             raise ValueError("记忆写入审批必须填写原因，便于后续审计和复盘。")
 
-        candidate = self._candidates.get(decision.candidate_id)
+        candidate = self._store.get(decision.candidate_id)
         if candidate is None:
             raise KeyError(f"记忆写入候选不存在: {decision.candidate_id}")
         if candidate.status in {
@@ -163,13 +166,28 @@ class AgentMemoryWriteGovernanceService:
             decided_by=decision.operator_id,
             decision_reason=reason,
         )
-        self._candidates[updated.candidate_id] = updated
-        return updated
+        return self._store.update(updated)
 
     def get(self, candidate_id: str) -> AgentMemoryWriteCandidate | None:
         """按候选 ID 查询当前内存中的候选状态，主要用于测试和未来 API 查询。"""
 
-        return self._candidates.get(candidate_id)
+        return self._store.get(candidate_id)
+
+    def list_candidates(
+        self,
+        *,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+        status: AgentMemoryWriteCandidateStatus | None = None,
+        limit: int = 100,
+    ) -> tuple[AgentMemoryWriteCandidate, ...]:
+        """查询候选列表。
+
+        该方法是 API 审批台和未来异步写入 worker 的读取入口。它保留 tenant/project/status
+        这些最基础的过滤条件，避免调用方绕过治理服务直接访问 store。
+        """
+
+        return self._store.list(tenant_id=tenant_id, project_id=project_id, status=status, limit=limit)
 
     def proposal_events(
         self,
