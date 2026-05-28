@@ -16,9 +16,9 @@ from dataclasses import asdict, replace
 from typing import Any
 
 from datasmart_ai_runtime.api_model_gateway import build_model_gateway_governance_response
-from datasmart_ai_runtime.domain.contracts import AgentRequest
+from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ToolPlan
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
-from datasmart_ai_runtime.services.agent_workspace import AgentWorkspaceContextBuilder
+from datasmart_ai_runtime.services.agent_workspace import AgentWorkspaceContext, AgentWorkspaceContextBuilder
 from datasmart_ai_runtime.services.runtime_event_live_push import RuntimeEventLivePushHub
 from datasmart_ai_runtime.services.runtime_event_publisher import RuntimeEventPublisher
 from datasmart_ai_runtime.services.runtime_event_store import RuntimeEventStore
@@ -59,6 +59,7 @@ def build_plan_response(
     # workspaceKey、缓存 namespace、记忆 namespace 和产物 namespace。后续工具执行、长期记忆写入、
     # prefix/KV cache 和文件输出都应围绕这些 namespace 做隔离，而不是各自临时拼 key。
     workspace_context = AgentWorkspaceContextBuilder().build(request)
+    plan = _attach_workspace_hints(plan, workspace_context)
     control_plane_ingestion = None
     control_plane_feedback = None
     runtime_event_feedback = None
@@ -154,6 +155,31 @@ def _collect_control_plane_feedback(
     if control_plane_feedback_collector is None:
         return None
     return control_plane_feedback_collector.collect(plan)
+
+
+def _attach_workspace_hints(plan: AgentPlan, workspace_context: AgentWorkspaceContext) -> AgentPlan:
+    """把工作空间治理提示写入每个 ToolPlan。
+
+    为什么不只在响应顶层返回 `agentWorkspace`：
+    - Java plan ingestion 当前逐个接收 ToolPlan，并把 `governanceHints` 写入工具审计；
+    - 后续工具执行器、输出引用解析器、长期记忆 worker 往往只处理单个工具计划或单条审计记录；
+    - 如果 workspace 只在顶层响应里，工具执行链路就必须额外回查上下文，容易产生丢失或不一致。
+
+    这里使用 `replace(...)` 生成新的不可变 dataclass 快照，既保留领域对象不可变习惯，也避免修改
+    `AgentOrchestrator` 内部生成的原始计划对象。
+    """
+
+    workspace_hints = workspace_context.to_governance_hints()
+    updated_tool_plans: list[ToolPlan] = []
+    for tool_plan in plan.tool_plans:
+        # ToolPlan 已有的治理提示优先保留；workspace 字段由响应组装层统一覆盖，确保同一次响应
+        # 中所有工具使用同一个隔离边界，避免模型生成或规则分支自行伪造 workspaceKey。
+        merged_hints = {
+            **tool_plan.governance_hints,
+            **workspace_hints,
+        }
+        updated_tool_plans.append(replace(tool_plan, governance_hints=merged_hints))
+    return replace(plan, tool_plans=tuple(updated_tool_plans))
 
 
 def _publish_plan_events(

@@ -76,6 +76,27 @@ class AgentWorkspaceContext:
             "recommendedActions": self.recommended_actions,
         }
 
+    def to_governance_hints(self) -> dict[str, Any]:
+        """转换为可写入 ToolPlan 的治理提示。
+
+        顶层 `agentWorkspace` 适合前端和网关快速读取，但真正的工具执行链路通常只拿到单个
+        `ToolPlan`。因此每个 ToolPlan 也需要携带轻量 workspace hints，让 Java 控制面、审计记录、
+        工具执行器和输出引用解析器都能在不回查顶层响应的情况下判断隔离边界。
+
+        注意这里不包含 `recommendedActions`，因为治理提示会进入审计、事件和可能的工具执行 payload。
+        为了控制体积和避免把人读说明扩散到机器协议里，只保留稳定机器字段。
+        """
+
+        return {
+            "workspaceKey": self.workspace_key,
+            "workspaceIsolationLevel": self.isolation_level.value,
+            "workspaceId": self.workspace_id,
+            "workspaceSessionId": self.session_id,
+            "cacheNamespace": self.cache_namespace,
+            "memoryNamespace": self.memory_namespace,
+            "artifactNamespace": self.artifact_namespace,
+        }
+
 
 class AgentWorkspaceContextBuilder:
     """根据 AgentRequest 构建工作空间上下文。

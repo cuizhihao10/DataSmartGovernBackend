@@ -92,6 +92,38 @@ class AgentWorkspaceContextTest(unittest.TestCase):
         self.assertIn("memoryNamespace", workspace)
         self.assertTrue(workspace["recommendedActions"])
 
+    def test_plan_response_attaches_workspace_hints_to_each_tool_plan(self) -> None:
+        """每个 ToolPlan 都应携带 workspace hints。
+
+        顶层 `agentWorkspace` 方便前端展示，但 Java 控制面和工具执行审计通常按单个 ToolPlan 工作。
+        如果工具计划里没有 workspace hints，后续执行器就无法独立判断输出文件、缓存和长期记忆的 namespace。
+        """
+
+        response = build_plan_response(
+            AgentRequest(
+                tenant_id="10",
+                project_id="20",
+                actor_id="analyst-a",
+                objective="请在会话沙箱内生成质量规则",
+                variables={
+                    "isolationLevel": "SESSION",
+                    "workspaceId": "30",
+                    "sessionId": "session-a",
+                    "datasourceId": "ds-001",
+                },
+            ),
+            build_default_orchestrator(),
+        )
+
+        tool_plans = response["plan"]["tool_plans"]
+        self.assertTrue(tool_plans)
+        for tool_plan in tool_plans:
+            hints = tool_plan["governance_hints"]
+            self.assertEqual("tenant:10:project:20:workspace:30:session:session-a", hints["workspaceKey"])
+            self.assertEqual("SESSION", hints["workspaceIsolationLevel"])
+            self.assertEqual("memory:tenant:10:project:20:workspace:30:session:session-a", hints["memoryNamespace"])
+            self.assertEqual("artifact:tenant:10:project:20:workspace:30:session:session-a", hints["artifactNamespace"])
+
 
 if __name__ == "__main__":
     unittest.main()

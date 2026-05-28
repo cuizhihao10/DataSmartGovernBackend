@@ -6436,3 +6436,22 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 将 workspace 信息写入 ToolPlan governance hints。
 2. 设计工具/Skill 输出引用规范，例如 `workspace://`、`memory://`、`minio://`。
 3. 用 workspace namespace 约束模型 prefix/KV cache 和长期记忆写入。
+
+## 4.32 AI Runtime ToolPlan 工作空间治理提示（2026-05-28）
+
+本阶段把 `agentWorkspace` 从顶层响应摘要下沉到每个 `ToolPlan.governance_hints`。这样 Java 控制面、工具审计、执行器、事件 replay、长期记忆 worker 和产物引用解析器即使只拿到单个工具计划，也能知道本次工具调用属于哪个 workspace。
+
+已完成：
+- `AgentWorkspaceContext` 新增 `to_governance_hints()`。
+- `build_plan_response(...)` 在 Java plan ingestion 前为每个 ToolPlan 写入 workspace hints。
+- 新增测试验证 ToolPlan hints 包含 `workspaceKey`、`workspaceIsolationLevel`、`memoryNamespace`、`artifactNamespace`。
+
+产品意义：
+- 工作空间从展示字段升级为执行控制面协议字段。
+- 后续工具输出、模型缓存、长期记忆和审计事件可以继承同一隔离边界。
+- 这为 `workspace://`、`memory://`、`minio://` 输出引用规范打基础。
+
+下一步：
+1. 设计工具/Skill 输出引用协议。
+2. Java 侧增加 workspace 一致性校验。
+3. 将 `cacheNamespace` 接入模型网关缓存治理。
