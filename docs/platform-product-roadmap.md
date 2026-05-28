@@ -6356,3 +6356,24 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 设计长期记忆候选 MySQL 表、操作审计表、幂等 key、版本号和审批单号。
 2. 将 Python 内存 store 替换为可持久化 store 或 Java memory-service 客户端。
 3. 在权限和持久化稳定后，再实现 APPROVED 候选异步写入 Chroma/Neo4j/MinIO/MySQL。
+
+## 4.28 AI Runtime 记忆写入候选持久化地基（2026-05-28）
+
+本阶段补齐长期记忆候选的关系型持久化契约：候选主表、操作审计表、候选版本号、幂等键和 Python DB-API store。它解决的是“审批资源不能只活在 Python 内存里”的问题，而不是立即把候选写入向量库。
+
+已完成：
+- 领域模型新增 `candidateVersion` 与 `idempotencyKey`。
+- Python 新增 `SqlAgentMemoryWriteCandidateStore`，支持候选保存、查询、列表、状态更新和决策审计。
+- MySQL 迁移脚本和初始化脚本新增 `agent_memory_write_candidate` 与 `agent_memory_write_candidate_audit`。
+- 新增 sqlite3 单元测试验证关系型 store 语义，无需引入额外依赖。
+
+产品意义：
+- 审批台、审计台、异步写入 worker 可以围绕同一候选 ID 协作。
+- 版本号为并发审批和重试保护打基础。
+- 幂等键为消息重试、Runtime 重启恢复和 Java memory-service 回调去重打基础。
+- 操作审计让批准/拒绝都成为可追溯事实，为后续合规报表和记忆质量评估做准备。
+
+下一步：
+1. 增加 Python Runtime 可选 MySQL store 启用配置和健康检查。
+2. 补 API 错误语义和分页 cursor。
+3. 设计 APPROVED 候选异步写入 worker，再分阶段接 Chroma/Neo4j/MinIO/MySQL。

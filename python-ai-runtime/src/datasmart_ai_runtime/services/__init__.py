@@ -21,6 +21,7 @@ from datasmart_ai_runtime.services.memory_write_candidate_store import (
     AgentMemoryWriteCandidateStore,
     InMemoryAgentMemoryWriteCandidateStore,
 )
+from datasmart_ai_runtime.services.memory_write_sql_store import SqlAgentMemoryWriteCandidateStore
 from datasmart_ai_runtime.services.model_provider import (
     DryRunModelProvider,
     ModelProviderRegistry,
@@ -174,6 +175,7 @@ __all__ = [
     "AgentMemoryWriteGovernanceService",
     "AgentMemoryWriteCandidateStore",
     "InMemoryAgentMemoryWriteCandidateStore",
+    "SqlAgentMemoryWriteCandidateStore",
     "DefaultContextBuilder",
     "ContextSelectionPolicy",
     "HybridContextBuilder",

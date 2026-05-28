@@ -135,6 +135,10 @@ class InMemoryAgentMemoryWriteCandidateStore:
             if candidate.candidate_id not in self._candidates:
                 raise KeyError(f"记忆写入候选不存在: {candidate.candidate_id}")
             # replace 本身不是必须的，但这里显式复制一份，表达更新后的对象是新的不可变快照。
-            stored = replace(candidate)
+            # replace 本身不是必须的，但这里显式复制一份，并把版本号向前推进。
+            # 版本号的业务意义是“候选状态快照发生过几次可审计变化”，后续 MySQL store 可以用它做乐观锁，
+            # 避免两个审批人或两个 worker 基于旧状态同时批准/拒绝同一条长期记忆候选。
+            current = self._candidates[candidate.candidate_id]
+            stored = replace(candidate, candidate_version=current.candidate_version + 1)
             self._candidates[stored.candidate_id] = stored
             return stored

@@ -294,7 +294,8 @@ class AgentMemoryWriteGovernanceService:
         run_id = getattr(feedback_item, "run_id", None)
         output_ref = getattr(feedback_item, "output_ref", None)
         summary = self._content_summary(tool_plan, feedback_item)
-        candidate_id = self._candidate_id(request, tool_plan, tool_index, audit_id, run_id)
+        idempotency_key = self._candidate_identity(request, tool_plan, tool_index, audit_id, run_id)
+        candidate_id = f"mem-candidate-{uuid5(NAMESPACE_URL, idempotency_key)}"
 
         return AgentMemoryWriteCandidate(
             candidate_id=candidate_id,
@@ -316,6 +317,7 @@ class AgentMemoryWriteGovernanceService:
             retention_days=memory_plan.retention_days,
             sensitivity_level=sensitivity_level,
             privacy_notes=memory_plan.privacy_notes,
+            idempotency_key=idempotency_key,
             attributes={
                 "riskLevel": tool_plan.risk_level.value,
                 "requiresHumanApproval": tool_plan.requires_human_approval,
@@ -423,7 +425,26 @@ class AgentMemoryWriteGovernanceService:
     ) -> str:
         """生成稳定候选 ID。"""
 
-        raw = "|".join(
+        return f"mem-candidate-{uuid5(NAMESPACE_URL, AgentMemoryWriteGovernanceService._candidate_identity(request, tool_plan, tool_index, audit_id, run_id))}"
+
+    @staticmethod
+    def _candidate_identity(
+        request: AgentRequest,
+        tool_plan: ToolPlan,
+        tool_index: int,
+        audit_id: str | None,
+        run_id: str | None,
+    ) -> str:
+        """生成候选幂等键。
+
+        幂等键和候选 ID 使用同一组业务维度，但二者职责不同：
+        - 候选 ID 是外部 API、审批台、审计表和后续写入 worker 引用的稳定资源 ID；
+        - 幂等键是持久化层识别“同一请求、同一工具、同一控制面反馈是否重复提交”的依据。
+        当前先把幂等键保存到候选对象和 MySQL 表中，后续如果引入消息队列重试、审批中心回调或 Java memory-service，
+        就可以用它避免重复生成候选和重复写入长期记忆。
+        """
+
+        return "|".join(
             (
                 request.tenant_id,
                 request.project_id,
@@ -435,7 +456,6 @@ class AgentMemoryWriteGovernanceService:
                 run_id or "",
             )
         )
-        return f"mem-candidate-{uuid5(NAMESPACE_URL, raw)}"
 
     @staticmethod
     def _session_id(request: AgentRequest) -> str | None:

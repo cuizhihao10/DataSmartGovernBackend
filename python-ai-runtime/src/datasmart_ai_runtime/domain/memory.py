@@ -220,6 +220,8 @@ class AgentMemoryWriteCandidate:
     retention_days: int = 30
     sensitivity_level: str = "internal"
     privacy_notes: tuple[str, ...] = ()
+    candidate_version: int = 1
+    idempotency_key: str | None = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     decided_at: datetime | None = None
     decided_by: str | None = None
@@ -253,6 +255,8 @@ class AgentMemoryWriteCandidate:
             "retentionDays": self.retention_days,
             "sensitivityLevel": self.sensitivity_level,
             "privacyNotes": self.privacy_notes,
+            "candidateVersion": self.candidate_version,
+            "idempotencyKey": self.idempotency_key,
             "createdAt": self.created_at.isoformat(),
             "decidedAt": self.decided_at.isoformat() if self.decided_at else None,
             "decidedBy": self.decided_by,
