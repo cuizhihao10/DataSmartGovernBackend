@@ -36,6 +36,7 @@ def build_plan_response(
     runtime_event_feedback_bridge: Any | None = None,
     loop_control_evaluator: Any | None = None,
     second_turn_orchestrator: Any | None = None,
+    memory_write_governance: Any | None = None,
 ) -> dict[str, Any]:
     """构建同步 HTTP 风格的 Agent 计划响应。
 
@@ -58,6 +59,7 @@ def build_plan_response(
     runtime_event_feedback = None
     loop_control_decision = None
     second_turn_result = None
+    memory_write_proposal = None
 
     if plan_ingestion_client is not None:
         # 控制面接入是显式副作用：只有调用方注入 client 或 API 启用环境开关时才执行。
@@ -92,6 +94,23 @@ def build_plan_response(
             if second_turn_result.runtime_events:
                 plan = replace(plan, runtime_events=plan.runtime_events + second_turn_result.runtime_events)
 
+    if memory_write_governance is not None:
+        # 记忆写入候选同样必须是显式副作用：只有调用方注入治理服务时才生成候选。
+        # 这里不直接写入 Chroma/Neo4j，而是根据 AgentMemoryPlan、ToolPlan 和可选的 Java 控制面反馈
+        # 生成“可审批的候选清单”。这种拆分能避免工具结果未经审批就沉淀为长期记忆。
+        memory_write_proposal = memory_write_governance.propose(
+            request=request,
+            plan=plan,
+            control_plane_feedback=control_plane_feedback,
+        )
+        memory_events = memory_write_governance.proposal_events(
+            request=request,
+            plan=plan,
+            report=memory_write_proposal,
+        )
+        if memory_events:
+            plan = replace(plan, runtime_events=plan.runtime_events + memory_events)
+
     _publish_plan_events(
         plan,
         event_store=event_store,
@@ -109,6 +128,8 @@ def build_plan_response(
         response["agentLoopControl"] = loop_control_decision.to_summary()
     if second_turn_result is not None:
         response["agentSecondTurn"] = second_turn_result.to_summary()
+    if memory_write_proposal is not None:
+        response["memoryWriteProposal"] = memory_write_proposal.to_summary()
     return response
 
 

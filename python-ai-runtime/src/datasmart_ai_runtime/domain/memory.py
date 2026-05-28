@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Any
 
 
 class AgentMemoryType(str, Enum):
@@ -48,6 +49,32 @@ class AgentMemoryScope(str, Enum):
     PROJECT = "project"
     TENANT = "tenant"
     GLOBAL = "global"
+
+
+class AgentMemoryWriteCandidateStatus(str, Enum):
+    """记忆写入候选的生命周期状态。
+
+    长期记忆一旦进入 Chroma、Neo4j 或未来的企业知识库，就会持续影响 Agent 后续推理。
+    因此 DataSmart 不允许“工具一执行成功就自动永久记住”。这里先把写入拆成候选状态机：
+    - `DRAFT`：平台认为可以沉淀，但还只是草稿候选，尚未真正写入长期存储；
+    - `PENDING_APPROVAL`：涉及敏感、跨范围、高风险工具或租户策略要求，必须等待人工审批；
+    - `APPROVED`：审批人确认可以进入后续持久化写入队列；
+    - `REJECTED`：审批人明确拒绝，后续不得写入长期记忆；
+    - `IGNORED`：平台策略认为本次不值得沉淀，或写入类型不在允许范围内。
+    """
+
+    DRAFT = "draft"
+    PENDING_APPROVAL = "pending_approval"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    IGNORED = "ignored"
+
+
+class AgentMemoryWriteDecisionAction(str, Enum):
+    """人工或策略对记忆写入候选做出的决策动作。"""
+
+    APPROVE = "approve"
+    REJECT = "reject"
 
 
 @dataclass(frozen=True)
@@ -153,3 +180,125 @@ class AgentMemoryPlan:
     privacy_notes: tuple[str, ...] = ()
     rationale: str = ""
     attributes: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class AgentMemoryWriteCandidate:
+    """一条“可能写入长期记忆”的候选记录。
+
+    这个对象故意不复用 `AgentMemoryRecord`。原因是候选还不是正式记忆，它需要先经过：
+    权限判断、敏感级别判断、人工审批、脱敏摘要确认、保留期确认和审计记录生成。
+
+    字段说明：
+    - `candidate_id`：候选 ID，后续审批、拒绝、审计和幂等写入都围绕该 ID 关联；
+    - `memory_type/scope`：候选希望写成哪类记忆、在哪个可见范围内复用；
+    - `status`：当前候选状态，表达是否等待审批、已批准或已拒绝；
+    - `title/content_summary`：面向审批人和调试面板的人读摘要，不应包含明文密钥、大样本数据或完整 SQL；
+    - `source_tool_name/source_status/source_audit_id`：候选来自哪个工具结果、该工具结果状态和 Java 审计引用；
+    - `approval_required`：是否必须走人工审批，便于 API 或前端直接渲染审批入口；
+    - `retention_days`：建议保留期，敏感候选通常更短；
+    - `privacy_notes`：写入前需要注意的隐私、租户隔离和脱敏说明；
+    - `attributes`：机器可读扩展字段，例如 resultKeys、runId、outputRef、riskLevel 等。
+    """
+
+    candidate_id: str
+    memory_type: AgentMemoryType
+    scope: AgentMemoryScope
+    status: AgentMemoryWriteCandidateStatus
+    tenant_id: str
+    project_id: str
+    actor_id: str
+    title: str
+    content_summary: str
+    source: str
+    source_tool_name: str = ""
+    source_status: str = ""
+    source_audit_id: str | None = None
+    source_run_id: str | None = None
+    output_ref: str | None = None
+    approval_required: bool = False
+    retention_days: int = 30
+    sensitivity_level: str = "internal"
+    privacy_notes: tuple[str, ...] = ()
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    decided_at: datetime | None = None
+    decided_by: str | None = None
+    decision_reason: str | None = None
+    attributes: dict[str, Any] = field(default_factory=dict)
+
+    def to_summary(self) -> dict[str, Any]:
+        """转换为 API 可直接返回的摘要。
+
+        这里不返回完整工具结果，只返回候选摘要和引用字段。真正的原始输出应继续留在 Java
+        审计、对象存储或工具执行结果系统里，通过 `auditId/runId/outputRef` 追溯。
+        """
+
+        return {
+            "candidateId": self.candidate_id,
+            "memoryType": self.memory_type.value,
+            "scope": self.scope.value,
+            "status": self.status.value,
+            "tenantId": self.tenant_id,
+            "projectId": self.project_id,
+            "actorId": self.actor_id,
+            "title": self.title,
+            "contentSummary": self.content_summary,
+            "source": self.source,
+            "sourceToolName": self.source_tool_name,
+            "sourceStatus": self.source_status,
+            "sourceAuditId": self.source_audit_id,
+            "sourceRunId": self.source_run_id,
+            "outputRef": self.output_ref,
+            "approvalRequired": self.approval_required,
+            "retentionDays": self.retention_days,
+            "sensitivityLevel": self.sensitivity_level,
+            "privacyNotes": self.privacy_notes,
+            "createdAt": self.created_at.isoformat(),
+            "decidedAt": self.decided_at.isoformat() if self.decided_at else None,
+            "decidedBy": self.decided_by,
+            "decisionReason": self.decision_reason,
+            "attributes": dict(self.attributes),
+        }
+
+
+@dataclass(frozen=True)
+class AgentMemoryWriteDecision:
+    """对记忆写入候选的一次审批决策。
+
+    审批决策必须记录操作者和原因。企业治理场景里，“为什么允许某条工具结果进入长期记忆”
+    与“为什么拒绝写入”一样重要，后续需要进入审计、复盘和合规证明。
+    """
+
+    candidate_id: str
+    action: AgentMemoryWriteDecisionAction
+    operator_id: str
+    reason: str
+    decided_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@dataclass(frozen=True)
+class AgentMemoryWriteProposalReport:
+    """一次 Agent 运行结束后生成的记忆写入候选报告。
+
+    报告同时包含候选和跳过原因。跳过原因不是噪音，它能帮助我们判断：
+    是工具 descriptor 没有声明 `memoryWritePolicy`，还是当前风险过高、没有可写类型、
+    缺少控制面反馈、或候选被策略主动忽略。
+    """
+
+    candidates: tuple[AgentMemoryWriteCandidate, ...] = ()
+    skipped_reasons: tuple[str, ...] = ()
+    approval_required_count: int = 0
+    writable_type_count: int = 0
+    attributes: dict[str, Any] = field(default_factory=dict)
+
+    def to_summary(self) -> dict[str, Any]:
+        """转换为 API 响应摘要，便于前端展示候选、审批入口和策略诊断。"""
+
+        return {
+            "candidateCount": len(self.candidates),
+            "approvalRequiredCount": self.approval_required_count,
+            "writableTypeCount": self.writable_type_count,
+            "skippedReasons": self.skipped_reasons,
+            "candidates": tuple(candidate.to_summary() for candidate in self.candidates),
+            "attributes": dict(self.attributes),
+        }

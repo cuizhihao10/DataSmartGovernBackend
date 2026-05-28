@@ -6274,3 +6274,35 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 推进智能网关/OpenClaw 类能力：Provider 抽象、模型降级、KV/prefix cache、成本/延迟指标。
 3. 推进 Agent 工具/Skill 市场：schema、风险等级、审批策略、执行沙箱和工具调用观测。
 4. 在事件链路稳定后，补生产级持久化事件日志和前端/gateway SDK 的 sourceCursors 自动续传。
+
+## 4.25 AI Runtime 长期记忆写入候选与审批治理第一阶段（2026-05-28）
+
+本阶段把 AI 主线从“记忆检索规划”推进到“记忆写入治理”。当前没有直接写 Chroma/Neo4j，而是先建立长期记忆写入前的候选、审批、拒绝和事件可见性闭环，避免企业数据治理场景中的敏感工具结果未经治理就进入长期上下文。
+
+已完成：
+- 新增记忆写入候选领域模型，覆盖候选状态、审批动作、候选摘要、审批决策和候选报告。
+- 新增 `AgentMemoryWriteGovernanceService`，根据 `AgentMemoryPlan`、`ToolPlan`、Java 控制面反馈生成候选。
+- 候选策略支持 DRAFT、PENDING_APPROVAL、APPROVED、REJECTED、IGNORED，当前只推进候选和决策，不直接持久化长期记忆。
+- `build_plan_response(...)` 支持显式注入记忆写入治理服务，返回 `memoryWriteProposal` 并追加 runtime events。
+- 新增 `memory_write_candidate_proposed` 与 `memory_write_decision_recorded` 事件类型。
+- 新增测试覆盖候选生成、敏感审批、跳过策略、审批/拒绝和 API 响应接入。
+
+产品意义：
+- 这是长期记忆商业化前必须具备的安全闸门。Agent 记忆不是聊天历史缓存，而是会影响未来推理、工具选择和业务建议的治理资产。
+- 先做候选审批，再接 Chroma/Neo4j，能避免把敏感字段、事故记录、导出路径、SQL 草案和审批上下文扩散到不可控记忆层。
+- 该能力后续应与 permission-admin、审计中心、数据分级分类、脱敏策略和租户记忆策略联动。
+
+当前边界：
+- 候选暂存在 Python 内存中，尚未持久化。
+- 尚未接入真实审批 API、权限动作和审批单。
+- 尚未把 APPROVED 候选写入 Chroma/Neo4j/MinIO/MySQL。
+- 尚未实现遗忘、过期清理、归档、索引重建和记忆质量评估。
+
+验证：
+- `python -m unittest discover -s python-ai-runtime\tests` 通过，187 个 Python 测试成功。
+
+下一步路线：
+1. 做记忆候选持久化与审批 API，接入 permission-admin 权限和审计。
+2. 设计 APPROVED 候选异步写入 Chroma/Neo4j/MinIO/MySQL 的 worker。
+3. 补记忆检索权限、遗忘策略和租户/项目/会话隔离压测。
+4. 并行推进智能网关 KV/prefix cache 治理，避免长期记忆和推理缓存边界混淆。

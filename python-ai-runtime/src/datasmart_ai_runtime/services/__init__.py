@@ -12,6 +12,11 @@ from datasmart_ai_runtime.services.hybrid_context_builder import ContextSelectio
 from datasmart_ai_runtime.services.intent_analyzer import RuleBasedIntentAnalyzer
 from datasmart_ai_runtime.services.memory_planner import AgentMemoryPlanner
 from datasmart_ai_runtime.services.memory_retriever import AgentMemoryRetriever, InMemoryAgentMemoryRetriever
+from datasmart_ai_runtime.services.memory_write_governance import (
+    AgentMemoryWriteGovernanceService,
+    approve_memory_write_candidate,
+    reject_memory_write_candidate,
+)
 from datasmart_ai_runtime.services.model_provider import (
     DryRunModelProvider,
     ModelProviderRegistry,
@@ -162,6 +167,7 @@ __all__ = [
     "AgentMemoryPlanner",
     "AgentMemoryRetriever",
     "InMemoryAgentMemoryRetriever",
+    "AgentMemoryWriteGovernanceService",
     "DefaultContextBuilder",
     "ContextSelectionPolicy",
     "HybridContextBuilder",
@@ -219,6 +225,7 @@ __all__ = [
     "ModelGatewayGovernanceService",
     "ModelRouteRegistry",
     "build_model_gateway_context",
+    "approve_memory_write_candidate",
     "RuntimeEventAccessContext",
     "RuntimeEventAuthorizationDecision",
     "InMemoryRuntimeEventCheckpointStore",
@@ -260,6 +267,7 @@ __all__ = [
     "frames_to_payloads",
     "model_provider_registry_from_env",
     "record_model_tool_call_planning_events",
+    "reject_memory_write_candidate",
     "runtime_event_component_diagnostics",
     "runtime_event_settings_from_env",
 ]
