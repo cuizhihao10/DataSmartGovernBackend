@@ -18,6 +18,7 @@ from typing import Any
 from datasmart_ai_runtime.api_model_gateway import build_model_gateway_governance_response
 from datasmart_ai_runtime.domain.contracts import AgentRequest
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
+from datasmart_ai_runtime.services.agent_workspace import AgentWorkspaceContextBuilder
 from datasmart_ai_runtime.services.runtime_event_live_push import RuntimeEventLivePushHub
 from datasmart_ai_runtime.services.runtime_event_publisher import RuntimeEventPublisher
 from datasmart_ai_runtime.services.runtime_event_store import RuntimeEventStore
@@ -54,6 +55,10 @@ def build_plan_response(
     """
 
     plan = orchestrator.plan(request)
+    # 工作空间上下文是 Agent 安全边界的入口。它不会创建真实资源，但会给本次计划响应附上
+    # workspaceKey、缓存 namespace、记忆 namespace 和产物 namespace。后续工具执行、长期记忆写入、
+    # prefix/KV cache 和文件输出都应围绕这些 namespace 做隔离，而不是各自临时拼 key。
+    workspace_context = AgentWorkspaceContextBuilder().build(request)
     control_plane_ingestion = None
     control_plane_feedback = None
     runtime_event_feedback = None
@@ -118,6 +123,7 @@ def build_plan_response(
         event_publisher=event_publisher,
     )
     response = _build_base_response(plan, event_transport_builder)
+    response["agentWorkspace"] = workspace_context.to_summary()
     if control_plane_ingestion is not None:
         response["controlPlaneIngestion"] = control_plane_ingestion.to_summary()
     if control_plane_feedback is not None:

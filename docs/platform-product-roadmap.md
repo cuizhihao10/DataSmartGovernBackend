@@ -6416,3 +6416,23 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 下一步：
 1. 长期记忆线可继续做 APPROVED 候选异步写入 worker。
 2. 或按全局节奏切回智能网关模型路由、工具/Skill 执行闭环和 Agent 工作区隔离。
+
+## 4.31 AI Runtime Agent 工作空间上下文第一阶段（2026-05-28）
+
+本阶段从长期记忆候选局部优化切回 Agent 平台主线，补齐 Python Runtime 的工作空间上下文。同步计划响应现在会返回 `agentWorkspace`，用于表达本次 Agent 运行属于哪个租户、项目、工作空间或会话，以及后续缓存、记忆、产物输出应使用哪些 namespace。
+
+已完成：
+- 新增 `AgentWorkspaceIsolationLevel`，支持 `PROJECT`、`WORKSPACE`、`SESSION`。
+- 新增 `AgentWorkspaceContext` 与 `AgentWorkspaceContextBuilder`。
+- `build_plan_response(...)` 返回 `agentWorkspace` 摘要，包括 `workspaceKey`、`cacheNamespace`、`memoryNamespace`、`artifactNamespace`。
+- 新增测试覆盖三种隔离等级和计划响应契约。
+
+产品意义：
+- 工作空间是工具执行、文件输出、长期记忆、模型缓存和审计追踪的共同隔离边界。
+- Python Runtime 与 Java agent-runtime 的 workspace key 语义开始对齐。
+- 当前只生成逻辑 namespace，不创建真实资源，保持实现轻量且可演进。
+
+下一步：
+1. 将 workspace 信息写入 ToolPlan governance hints。
+2. 设计工具/Skill 输出引用规范，例如 `workspace://`、`memory://`、`minio://`。
+3. 用 workspace namespace 约束模型 prefix/KV cache 和长期记忆写入。

@@ -6,6 +6,11 @@
 
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
 from datasmart_ai_runtime.services.agent_model_intent_node import AgentModelIntentNode, AgentModelIntentNodeResult
+from datasmart_ai_runtime.services.agent_workspace import (
+    AgentWorkspaceContext,
+    AgentWorkspaceContextBuilder,
+    AgentWorkspaceIsolationLevel,
+)
 from datasmart_ai_runtime.domain.contracts import ModelInvocationChunk, ModelToolCall, ModelToolCallDelta
 from datasmart_ai_runtime.services.context_builder import DefaultContextBuilder
 from datasmart_ai_runtime.services.hybrid_context_builder import ContextSelectionPolicy, HybridContextBuilder
@@ -176,6 +181,9 @@ __all__ = [
     "AgentOrchestrator",
     "AgentModelIntentNode",
     "AgentModelIntentNodeResult",
+    "AgentWorkspaceContext",
+    "AgentWorkspaceContextBuilder",
+    "AgentWorkspaceIsolationLevel",
     "AgentMemoryPlanner",
     "AgentMemoryRetriever",
     "InMemoryAgentMemoryRetriever",
