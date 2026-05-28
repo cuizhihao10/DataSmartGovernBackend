@@ -8,6 +8,8 @@ package com.czh.datasmart.govern.gateway.authorization;
 
 import lombok.Data;
 
+import java.util.List;
+
 /**
  * 网关侧权限判定结果。
  *
@@ -41,6 +43,22 @@ public class GatewayPermissionDecisionResult {
      * 数据范围级别。
      */
     private String dataScopeLevel;
+
+    /**
+     * 数据范围表达式。
+     *
+     * <p>该字段来自 permission-admin 的数据范围策略，例如 `owner_id = ${actorId}` 或 `tenant_id = ${tenantId}`。
+     * gateway 不解析表达式，只负责可信透传；真正把表达式落到 SQL 条件里的责任在业务服务。
+     */
+    private String dataScopeExpression;
+
+    /**
+     * permission-admin 已经计算出的项目授权快照。
+     *
+     * <p>网关不理解项目成员表，也不解析 `${actorProjectIds}` 占位符。
+     * 它只把权限中心返回的项目 ID 集合转换为统一 Header，交给 data-sync 等业务模块按自身字段落地。
+     */
+    private List<Long> authorizedProjectIds;
 
     /**
      * 是否需要审批。

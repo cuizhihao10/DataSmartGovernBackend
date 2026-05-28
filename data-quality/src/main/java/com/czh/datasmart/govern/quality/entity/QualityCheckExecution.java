@@ -38,6 +38,30 @@ public class QualityCheckExecution {
     private Long id;
 
     /**
+     * 租户 ID。
+     *
+     * <p>执行记录是质量检测链路的事实数据，需要继承规则的租户边界。
+     * 后续统计执行失败率、执行耗时、队列积压和租户级资源消耗时，可以不必频繁 join 规则表。</p>
+     */
+    private Long tenantId;
+
+    /**
+     * 项目 ID。
+     *
+     * <p>该字段冗余自质量规则，用于项目级执行历史、项目 SLA、项目看板和项目负责人排障。
+     * 冗余不是重复设计，而是为了让高频运营查询能直接命中执行表索引，减少跨表查询成本。</p>
+     */
+    private Long projectId;
+
+    /**
+     * 工作空间 ID。
+     *
+     * <p>该字段冗余自质量规则，用于空间级运行证据筛选。
+     * 例如同一个项目下“测试空间”的规则执行失败，不应影响“生产空间”的质量大盘判断。</p>
+     */
+    private Long workspaceId;
+
+    /**
      * 规则 ID。
      */
     private Long ruleId;

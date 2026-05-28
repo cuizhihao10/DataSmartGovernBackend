@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.service.IService;
 import com.czh.datasmart.govern.task.controller.dto.TaskActorContext;
 import com.czh.datasmart.govern.task.controller.dto.TaskExecutionClaimRequest;
 import com.czh.datasmart.govern.task.controller.dto.TaskExecutionClaimResult;
+import com.czh.datasmart.govern.task.controller.dto.TaskExecutionCallbackContext;
 import com.czh.datasmart.govern.task.controller.dto.TaskExecutionHeartbeatRequest;
 import com.czh.datasmart.govern.task.controller.dto.TaskLeaseRecoveryResult;
 import com.czh.datasmart.govern.task.controller.dto.TaskQueueInspectionRequest;
@@ -40,32 +41,52 @@ public interface TaskService extends IService<Task> {
      * 创建任务。
      */
     Task createTask(String name, String description, String type, String params, String priority,
-                    Integer maxRetryCount, Integer maxDeferCount);
+                    Integer maxRetryCount, Integer maxDeferCount, Long tenantId, Long ownerId,
+                    Long projectId, TaskActorContext actorContext);
+
+    /**
+     * 分页查询任务。
+     *
+     * <p>该方法不是简单转调 MyBatis-Plus page，而是承载 task-management 的数据范围收口：
+     * tenantId、ownerId、projectId 来自查询条件，actorContext 来自 gateway 可信 Header。
+     * 服务层会把两者叠加，保证请求参数只能缩小结果集，不能扩大操作者权限。
+     */
+    IPage<Task> listTasks(Integer current, Integer size, String status, String type,
+                          Long tenantId, Long ownerId, Long projectId, TaskActorContext actorContext);
+
+    /**
+     * 查询任务详情。
+     *
+     * <p>详情读取虽然看起来只是一次 getById，但在多租户产品中它同样属于敏感读入口：
+     * 如果详情不校验 tenant/owner/project 范围，用户就可能绕过列表过滤，直接通过 ID 猜测访问其他租户任务。
+     * 因此这里把详情查询显式提升为领域方法，由服务层统一完成“任务存在性 + 数据范围”校验。
+     */
+    Task getTaskDetail(Long taskId, TaskActorContext actorContext);
 
     /**
      * 启动任务。
      */
-    boolean startTask(Long taskId);
+    boolean startTask(Long taskId, TaskActorContext actorContext);
 
     /**
      * 暂停任务。
      */
-    boolean pauseTask(Long taskId);
+    boolean pauseTask(Long taskId, TaskActorContext actorContext);
 
     /**
      * 恢复任务。
      */
-    boolean resumeTask(Long taskId);
+    boolean resumeTask(Long taskId, TaskActorContext actorContext);
 
     /**
      * 取消任务。
      */
-    boolean cancelTask(Long taskId);
+    boolean cancelTask(Long taskId, TaskActorContext actorContext);
 
     /**
      * 重试任务。
      */
-    Task retryTask(Long taskId);
+    Task retryTask(Long taskId, TaskActorContext actorContext);
 
     /**
      * 管理员强制暂停任务。
@@ -117,7 +138,7 @@ public interface TaskService extends IService<Task> {
      * <p>把该逻辑放在 Service 层，是为了让 Controller 只负责 HTTP 契约，
      * 而查询默认状态、分页上限、排序策略等业务规则由任务领域服务统一管理。
      */
-    IPage<Task> inspectQueue(TaskQueueInspectionRequest request);
+    IPage<Task> inspectQueue(TaskQueueInspectionRequest request, TaskActorContext actorContext);
 
     /**
      * 查询任务队列运营项视图。
@@ -125,7 +146,7 @@ public interface TaskService extends IService<Task> {
      * <p>与 inspectQueue 返回原始 Task 不同，该方法会补充排队时长、延迟剩余时间、租约剩余时间、
      * 风险原因和推荐处置动作，适合运营工作台直接展示。
      */
-    IPage<TaskQueueItemView> inspectQueueItems(TaskQueueInspectionRequest request);
+    IPage<TaskQueueItemView> inspectQueueItems(TaskQueueInspectionRequest request, TaskActorContext actorContext);
 
     /**
      * 查询任务队列运营汇总。
@@ -134,22 +155,22 @@ public interface TaskService extends IService<Task> {
      * 该方法会复用运营队列过滤语义，返回状态分布、关注任务数、死信任务数、最老排队时间等指标，
      * 为后续运营大盘、告警规则和 SLA 报表提供基础数据。
      */
-    TaskQueueSummaryResponse summarizeQueue(TaskQueueInspectionRequest request);
+    TaskQueueSummaryResponse summarizeQueue(TaskQueueInspectionRequest request, TaskActorContext actorContext);
 
     /**
      * 更新任务进度。
      */
-    boolean updateProgress(Long taskId, Integer progress, String checkpoint);
+    boolean updateProgress(Long taskId, Integer progress, String checkpoint, TaskExecutionCallbackContext callbackContext);
 
     /**
      * 标记任务完成。
      */
-    boolean completeTask(Long taskId, String result);
+    boolean completeTask(Long taskId, String result, TaskExecutionCallbackContext callbackContext);
 
     /**
      * 标记任务失败。
      */
-    boolean failTask(Long taskId, String errorMessage);
+    boolean failTask(Long taskId, String errorMessage, TaskExecutionCallbackContext callbackContext);
 
     /**
      * 执行器主动延迟任务并放回可认领队列。
@@ -164,12 +185,12 @@ public interface TaskService extends IService<Task> {
      * @param delaySeconds 延迟秒数，服务层会做默认值和上下限保护。
      * @return 是否处理成功。
      */
-    boolean deferTask(Long taskId, String reason, Integer delaySeconds);
+    boolean deferTask(Long taskId, String reason, Integer delaySeconds, TaskExecutionCallbackContext callbackContext);
 
     /**
      * 查询任务执行日志。
      */
-    List<TaskExecutionLog> listExecutionLogs(Long taskId);
+    List<TaskExecutionLog> listExecutionLogs(Long taskId, TaskActorContext actorContext);
 
     /**
      * 执行器认领下一条可执行任务。
@@ -189,5 +210,13 @@ public interface TaskService extends IService<Task> {
     /**
      * 查询任务执行记录。
      */
-    List<TaskExecutionRun> listExecutionRuns(Long taskId);
+    List<TaskExecutionRun> listExecutionRuns(Long taskId, TaskActorContext actorContext);
+
+    /**
+     * 删除任务。
+     *
+     * <p>当前阶段仍保持物理删除语义以兼容既有接口，但删除前必须先通过服务层读取任务并校验数据范围。
+     * 后续如果升级为回收站、逻辑删除、归档或审批删除，只需要替换该领域方法的内部实现，Controller 契约可以保持稳定。
+     */
+    boolean deleteTask(Long taskId, TaskActorContext actorContext);
 }

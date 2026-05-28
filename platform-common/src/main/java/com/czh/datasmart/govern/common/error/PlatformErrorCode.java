@@ -32,6 +32,7 @@ public enum PlatformErrorCode {
     NOT_FOUND(10003, 404, "请求的资源不存在"),
     UNAUTHORIZED(20001, 401, "当前请求未认证"),
     FORBIDDEN(20002, 403, "当前身份没有权限执行该操作"),
+    RATE_LIMITED(20003, 429, "当前请求触发限流，请稍后重试"),
     TENANT_SCOPE_DENIED(30001, 403, "当前身份不能访问目标租户数据"),
     SENSITIVE_DATA_REQUIRES_APPROVAL(30002, 403, "敏感数据操作需要审批或更高权限"),
     BUSINESS_STATE_CONFLICT(40001, 409, "当前资源状态不允许执行该操作"),

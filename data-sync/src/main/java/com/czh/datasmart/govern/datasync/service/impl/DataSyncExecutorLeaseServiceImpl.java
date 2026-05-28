@@ -1,0 +1,297 @@
+/**
+ * @Author : Cui
+ * @Date: 2026/05/08 21:53
+ * @Description DataSmart Govern Backend - DataSyncExecutorLeaseServiceImpl.java
+ * @Version:1.0.0
+ */
+package com.czh.datasmart.govern.datasync.service.impl;
+
+import com.czh.datasmart.govern.common.error.PlatformBusinessException;
+import com.czh.datasmart.govern.common.error.PlatformErrorCode;
+import com.czh.datasmart.govern.datasync.config.DataSyncExecutorProperties;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExpiredLeaseRecoveryRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExpiredLeaseRecoveryResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionClaimRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionClaimResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionDeferRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionHeartbeatRequest;
+import com.czh.datasmart.govern.datasync.entity.SyncExecution;
+import com.czh.datasmart.govern.datasync.entity.SyncTask;
+import com.czh.datasmart.govern.datasync.mapper.SyncExecutionMapper;
+import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
+import com.czh.datasmart.govern.datasync.service.DataSyncExecutorLeaseService;
+import com.czh.datasmart.govern.datasync.service.support.SyncAuditSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncCallbackIdempotencySupport;
+import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
+import com.czh.datasmart.govern.datasync.support.SyncExecutionState;
+import com.czh.datasmart.govern.datasync.support.SyncTaskState;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.time.LocalDateTime;
+
+/**
+ * data-sync 执行器租约服务实现。
+ *
+ * <p>租约协议解决的是“谁有权执行这条 execution”的问题：
+ * 1. claim 通过数据库条件更新完成并发裁决；
+ * 2. heartbeat 只有当前 executorId 可以续租；
+ * 3. defer 允许执行器把暂时不能处理的 execution 延迟放回队列。
+ */
+@Service
+@RequiredArgsConstructor
+public class DataSyncExecutorLeaseServiceImpl implements DataSyncExecutorLeaseService {
+
+    private static final long DEFAULT_LEASE_SECONDS = 120L;
+    private static final long MAX_LEASE_SECONDS = 1800L;
+    private static final long DEFAULT_DEFER_SECONDS = 60L;
+    private static final long MAX_DEFER_SECONDS = 3600L;
+    private static final int DEFAULT_RECOVERY_LIMIT = 50;
+    private static final int MAX_RECOVERY_LIMIT = 500;
+
+    private final SyncExecutionMapper executionMapper;
+    private final SyncTaskMapper taskMapper;
+    private final SyncAuditSupport auditSupport;
+    private final DataSyncExecutorProperties executorProperties;
+    private final SyncCallbackIdempotencySupport idempotencySupport;
+
+    @Override
+    @Transactional
+    public SyncExecutionClaimResult claimNext(SyncExecutionClaimRequest request, SyncActorContext actorContext) {
+        SyncExecution candidate = executionMapper.selectNextClaimCandidate(request.getTenantId());
+        if (candidate == null) {
+            return new SyncExecutionClaimResult(false, "当前没有可认领的同步执行记录", null, null);
+        }
+        long leaseSeconds = boundedSeconds(request.getLeaseSeconds(), DEFAULT_LEASE_SECONDS, MAX_LEASE_SECONDS);
+        int updated = executionMapper.claimQueuedExecution(candidate.getId(), request.getExecutorId().trim(), leaseSeconds);
+        if (updated == 0) {
+            return new SyncExecutionClaimResult(false, "候选执行记录已被其他执行器认领，请稍后重试", null, null);
+        }
+
+        SyncExecution claimed = requireExecution(candidate.getId());
+        SyncTask task = requireTask(claimed.getSyncTaskId());
+        task.setCurrentState(SyncTaskState.RUNNING.name());
+        task.setLastExecutionId(claimed.getId());
+        task.setUpdateTime(LocalDateTime.now());
+        taskMapper.updateById(task);
+        auditSupport.saveAudit(task.getTenantId(), task.getId(), claimed.getId(), SyncAuditActionType.RUN_TASK,
+                actorContext, "claimExecution,executorId=" + request.getExecutorId() + ",leaseSeconds=" + leaseSeconds);
+        return new SyncExecutionClaimResult(true, "同步执行记录认领成功", claimed, task);
+    }
+
+    @Override
+    @Transactional
+    public SyncExecution heartbeat(Long executionId, SyncExecutionHeartbeatRequest request, SyncActorContext actorContext) {
+        SyncExecution execution = requireExecution(executionId);
+        String action = "HEARTBEAT";
+        String scopeKey = executionScope(execution);
+        if (idempotencySupport.isDuplicate(execution.getTenantId(), execution.getSyncTaskId(), execution.getId(),
+                action, scopeKey, request.getIdempotencyKey(), request.getExecutorId(),
+                "heartbeat,recordsRead=" + request.getRecordsRead() + ",recordsWritten=" + request.getRecordsWritten())) {
+            return execution;
+        }
+        long leaseSeconds = boundedSeconds(request.getLeaseSeconds(), DEFAULT_LEASE_SECONDS, MAX_LEASE_SECONDS);
+        int updated = executionMapper.heartbeatLease(
+                executionId,
+                request.getExecutorId().trim(),
+                safeLong(request.getRecordsRead()),
+                safeLong(request.getRecordsWritten()),
+                leaseSeconds);
+        if (updated == 0) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "执行心跳续租失败，可能状态不是 RUNNING 或 executorId 不匹配");
+        }
+        SyncExecution refreshed = requireExecution(executionId);
+        auditSupport.saveAudit(refreshed.getTenantId(), refreshed.getSyncTaskId(), refreshed.getId(), SyncAuditActionType.RUN_TASK,
+                actorContext, "heartbeat,executorId=" + request.getExecutorId() + ",leaseSeconds=" + leaseSeconds);
+        idempotencySupport.markSucceeded(refreshed.getTenantId(), action, scopeKey, request.getIdempotencyKey(),
+                "leaseExpireTime=" + refreshed.getLeaseExpireTime());
+        return refreshed;
+    }
+
+    @Override
+    @Transactional
+    public SyncExecution defer(Long executionId, SyncExecutionDeferRequest request, SyncActorContext actorContext) {
+        SyncExecution execution = requireExecution(executionId);
+        String action = "DEFER";
+        String scopeKey = executionScope(execution);
+        if (idempotencySupport.isDuplicate(execution.getTenantId(), execution.getSyncTaskId(), execution.getId(),
+                action, scopeKey, request.getIdempotencyKey(), request.getExecutorId(),
+                "defer,delaySeconds=" + request.getDelaySeconds() + ",reason=" + truncate(request.getReason(), 200))) {
+            return execution;
+        }
+        requireRunningExecutor(execution, request.getExecutorId());
+        long delaySeconds = boundedSeconds(request.getDelaySeconds(), DEFAULT_DEFER_SECONDS, MAX_DEFER_SECONDS);
+        String reason = defaultText(request.getReason(), "执行器主动退避，等待后续重新认领");
+        int maxDeferCount = executorProperties.effectiveMaxDeferCount();
+        int updated = executionMapper.deferRunningExecution(
+                executionId,
+                request.getExecutorId().trim(),
+                delaySeconds,
+                truncate(reason, 1000),
+                maxDeferCount);
+        if (updated == 0) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "执行退避失败，可能状态不是 RUNNING 或 executorId 不匹配");
+        }
+
+        SyncExecution deferred = requireExecution(executionId);
+        SyncTask task = requireTask(deferred.getSyncTaskId());
+        refreshTaskAfterLeaseTransition(task, deferred,
+                "超过最大退避次数 " + maxDeferCount + "，同步任务需要人工介入，最近原因：" + truncate(reason, 300));
+        auditSupport.saveAudit(task.getTenantId(), task.getId(), execution.getId(), SyncAuditActionType.RUN_TASK,
+                actorContext, "defer,delaySeconds=" + delaySeconds
+                        + ",deferCount=" + deferred.getDeferCount()
+                        + ",maxDeferCount=" + maxDeferCount
+                        + ",state=" + deferred.getExecutionState()
+                        + ",reason=" + truncate(reason, 200));
+        idempotencySupport.markSucceeded(deferred.getTenantId(), action, scopeKey, request.getIdempotencyKey(),
+                "state=" + deferred.getExecutionState() + ",deferCount=" + deferred.getDeferCount());
+        return deferred;
+    }
+
+    @Override
+    @Transactional
+    public SyncExpiredLeaseRecoveryResult recoverExpiredLeases(SyncExpiredLeaseRecoveryRequest request,
+                                                               SyncActorContext actorContext) {
+        int limit = boundedLimit(request == null ? null : request.limit());
+        Long tenantId = request == null ? null : request.tenantId();
+        boolean requeue = request == null || request.requeue() == null || request.requeue();
+        String reason = defaultText(request == null ? null : request.reason(), "执行器租约过期，系统自动恢复");
+        String action = "RECOVER_EXPIRED_LEASE";
+        String scopeKey = "RECOVERY:" + (tenantId == null ? "ALL" : tenantId);
+        String idempotencyKey = request == null ? null : request.idempotencyKey();
+        Long idempotencyTenantId = tenantId == null ? 0L : tenantId;
+        if (idempotencySupport.isDuplicate(idempotencyTenantId, null, null, action, scopeKey, idempotencyKey,
+                "SERVICE_ACCOUNT", "recoverExpiredLease,limit=" + limit + ",reason=" + truncate(reason, 200))) {
+            return new SyncExpiredLeaseRecoveryResult(0, 0, Collections.emptyList(), 0, Collections.emptyList(),
+                    "重复过期租约恢复请求已识别，本次不再重复扫描和恢复");
+        }
+        if (!requeue) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
+                    "当前版本仅支持将过期租约重新放回队列，暂不支持标记失败或人工关注模式");
+        }
+
+        List<SyncExecution> expiredExecutions = executionMapper.selectExpiredRunningLeases(tenantId, limit);
+        List<Long> recoveredIds = new ArrayList<>();
+        List<Long> attentionIds = new ArrayList<>();
+        int maxDeferCount = executorProperties.effectiveMaxDeferCount();
+        for (SyncExecution expiredExecution : expiredExecutions) {
+            int updated = executionMapper.requeueExpiredLease(expiredExecution.getId(), truncate(reason, 1000), maxDeferCount);
+            if (updated == 0) {
+                continue;
+            }
+            SyncExecution recovered = requireExecution(expiredExecution.getId());
+            SyncTask task = requireTask(recovered.getSyncTaskId());
+            refreshTaskAfterLeaseTransition(task, recovered,
+                    "过期租约恢复已达到最大退避次数 " + maxDeferCount + "，同步任务需要人工介入，最近原因：" + truncate(reason, 300));
+            auditSupport.saveAudit(task.getTenantId(), task.getId(), recovered.getId(), SyncAuditActionType.RUN_TASK,
+                    actorContext, "recoverExpiredLease,state=" + recovered.getExecutionState()
+                            + ",deferCount=" + recovered.getDeferCount()
+                            + ",maxDeferCount=" + maxDeferCount
+                            + ",reason=" + truncate(reason, 200));
+            if (SyncExecutionState.FAILED.name().equals(recovered.getExecutionState())) {
+                attentionIds.add(recovered.getId());
+            } else {
+                recoveredIds.add(recovered.getId());
+            }
+        }
+        SyncExpiredLeaseRecoveryResult result = new SyncExpiredLeaseRecoveryResult(
+                expiredExecutions.size(),
+                recoveredIds.size(),
+                recoveredIds,
+                attentionIds.size(),
+                attentionIds,
+                "过期租约恢复完成，扫描=" + expiredExecutions.size()
+                        + "，恢复回队列=" + recoveredIds.size()
+                        + "，进入人工介入=" + attentionIds.size());
+        idempotencySupport.markSucceeded(idempotencyTenantId, action, scopeKey, idempotencyKey,
+                "scanned=" + result.scanned() + ",recovered=" + result.recovered()
+                        + ",attentionRequired=" + result.attentionRequired());
+        return result;
+    }
+
+    private SyncExecution requireExecution(Long executionId) {
+        SyncExecution execution = executionMapper.selectById(executionId);
+        if (execution == null) {
+            throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND, "同步执行记录不存在: " + executionId);
+        }
+        return execution;
+    }
+
+    private SyncTask requireTask(Long taskId) {
+        SyncTask task = taskMapper.selectById(taskId);
+        if (task == null) {
+            throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND, "同步任务不存在: " + taskId);
+        }
+        return task;
+    }
+
+    private void requireRunningExecutor(SyncExecution execution, String executorId) {
+        if (!SyncExecutionState.RUNNING.name().equals(execution.getExecutionState())) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "只有 RUNNING 状态的执行记录可以 defer，当前状态=" + execution.getExecutionState());
+        }
+        if (executorId == null || executorId.isBlank() || !executorId.trim().equals(execution.getExecutorId())) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN, "executorId 不匹配，不能 defer 当前执行记录");
+        }
+    }
+
+    private String executionScope(SyncExecution execution) {
+        return execution.getSyncTaskId() + ":" + execution.getId();
+    }
+
+    /**
+     * 根据执行租约流转结果刷新任务主状态。
+     *
+     * <p>execution 和 task 的状态粒度不同：
+     * 1. execution 表达“这一次运行”的结果，可以因为超过退避上限而 FAILED；
+     * 2. task 表达“这个同步任务作为运营对象接下来该怎么处理”，超过上限时更适合进入 AWAITING_OPERATOR_ACTION。
+     *
+     * <p>这种拆分避免把所有失败都混成一个 FAILED：
+     * 普通 SQL 语法错误、字段映射错误、目标端唯一键冲突可以是业务失败；
+     * 但多次租约过期或反复 defer 更像执行环境、容量、配额或连接器稳定性问题，需要运营台显式提醒。
+     */
+    private void refreshTaskAfterLeaseTransition(SyncTask task,
+                                                 SyncExecution execution,
+                                                 String attentionReason) {
+        if (SyncExecutionState.FAILED.name().equals(execution.getExecutionState())) {
+            taskMapper.markAwaitingOperatorAction(task.getId(), execution.getId(), truncate(attentionReason, 1000));
+        } else {
+            taskMapper.markQueuedAfterLeaseTransition(task.getId(), execution.getId());
+        }
+    }
+
+    private long boundedSeconds(Long requested, long defaultValue, long maxValue) {
+        long value = requested == null || requested <= 0 ? defaultValue : requested;
+        return Math.min(value, maxValue);
+    }
+
+    private int boundedLimit(Integer requested) {
+        int value = requested == null || requested <= 0 ? DEFAULT_RECOVERY_LIMIT : requested;
+        return Math.min(value, MAX_RECOVERY_LIMIT);
+    }
+
+    private Long safeLong(Long value) {
+        return value == null ? 0L : value;
+    }
+
+    private String defaultText(String value, String defaultValue) {
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        return value.trim();
+    }
+
+    private String truncate(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength);
+    }
+}

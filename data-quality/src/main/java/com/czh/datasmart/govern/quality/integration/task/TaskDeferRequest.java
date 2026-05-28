@@ -23,6 +23,21 @@ import lombok.Data;
 public class TaskDeferRequest {
 
     /**
+     * task-management 返回的本次执行 run ID，用于证明 defer 来自当前执行尝试。
+     */
+    private Long runId;
+
+    /**
+     * data-quality 执行器实例 ID，必须与当前任务租约持有者一致。
+     */
+    private String executorId;
+
+    /**
+     * 幂等键。容量背压导致的 defer 可能被网络重试重复提交，必须使用稳定键。
+     */
+    private String idempotencyKey;
+
+    /**
      * 延迟原因。
      *
      * <p>建议包含触发退避的维度和简短说明，例如：

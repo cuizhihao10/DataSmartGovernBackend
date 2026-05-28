@@ -69,6 +69,8 @@ public class PermissionPolicyChangedEventPublisher {
                 policy.getRoleCode(),
                 policy.getHttpMethod(),
                 policy.getPathPattern(),
+                policy.getResourceType(),
+                policy.getAction(),
                 policy.getEffect(),
                 actorContext == null ? null : actorContext.actorId(),
                 actorContext == null ? null : actorContext.actorRole(),

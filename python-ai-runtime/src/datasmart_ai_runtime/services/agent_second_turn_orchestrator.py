@@ -1,0 +1,323 @@
+"""受控 Agent 二轮推理编排器。
+
+4.08 已经引入 `AgentLoopControlPolicyEvaluator`，能判断当前控制面反馈是否允许进入二轮模型推理；
+4.09 又把 API 响应组装从 `api.py` 中拆出，避免把所有 Agent 副作用都塞进 HTTP 路由层。本模块承接
+下一步：在策略明确允许时，基于 Java 控制面工具反馈构造 tool result messages，并调用模型完成二轮总结。
+
+职责边界非常重要：
+- 本模块不执行真实工具，不审批，不重试，不推进 Java 状态机；
+- 它只消费已经形成的 `AgentControlPlaneFeedbackSnapshot` 和 `AgentLoopControlDecision`；
+- 只有 `decision.allowed=True` 且 action 为 `allow_second_turn` 时才会调用模型；
+- 第二轮请求显式设置 `tool_choice="none"` 且不暴露 tools，避免当前阶段产生无限工具递归。
+
+这样做能把 DataSmart 的 Agent 主链从“能展示二轮条件”推进到“具备受控二轮推理”，同时仍然保持
+Java `agent-runtime` 作为执行、审批、审计和幂等事实源。
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from typing import Any
+
+from datasmart_ai_runtime.domain.contracts import (
+    AgentPlan,
+    AgentRequest,
+    ModelInvocationRequest,
+    ModelInvocationResult,
+    ModelMessage,
+    ModelToolCall,
+)
+from datasmart_ai_runtime.services.agent_control_plane_feedback import AgentControlPlaneFeedbackSnapshot
+from datasmart_ai_runtime.services.agent_loop_control_policy import AgentLoopControlAction, AgentLoopControlDecision
+from datasmart_ai_runtime.services.agent_second_turn_events import SecondTurnEventBuilder
+from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
+from datasmart_ai_runtime.services.model_gateway_context import build_model_gateway_context
+from datasmart_ai_runtime.services.model_provider import ModelProviderRegistry
+from datasmart_ai_runtime.services.model_tool_result_feedback import ModelToolResultFeedbackBuilder
+
+
+@dataclass(frozen=True)
+class AgentSecondTurnResult:
+    """一次受控二轮推理的结果摘要。
+
+    字段说明：
+    - `executed`：是否真正调用了模型。策略不允许、缺少路由、反馈不完整时都为 False；
+    - `allowed`：loop policy 是否允许自动推进，便于前端区分“策略拒绝”和“技术失败”；
+    - `action`：来自 loop policy 的下一步动作，例如 `allow_second_turn` 或 `require_human_takeover`；
+    - `summary`：模型二轮输出或跳过原因，可直接用于 API 摘要；
+    - `feedback_count/message_count`：用于诊断工具反馈是否已经被转换成下一轮模型消息；
+    - `missing/extra_feedback_call_ids`：用于排查 OpenAI-compatible tool result message 不完整问题；
+    - `runtime_events`：本次编排新增的事件，会被 API 响应组装器追加到 AgentPlan 事件流中。
+    """
+
+    executed: bool
+    allowed: bool
+    action: str
+    summary: str
+    reasons: tuple[str, ...] = ()
+    recommended_actions: tuple[str, ...] = ()
+    feedback_count: int = 0
+    message_count: int = 0
+    missing_feedback_call_ids: tuple[str, ...] = ()
+    extra_feedback_call_ids: tuple[str, ...] = ()
+    provider_name: str | None = None
+    model_name: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    error_code: str | None = None
+    runtime_events: tuple[AgentRuntimeEvent, ...] = field(default_factory=tuple)
+
+    def to_summary(self) -> dict[str, Any]:
+        """转换为 API 响应友好的摘要。
+
+        这里不返回第二轮完整消息列表，也不返回 tool result 原始 payload。原因是消息列表可能包含
+        工具结果、审计引用和模型上下文，应该走 runtime event 脱敏策略或审计存储，而不是裸露给普通 API。
+        """
+
+        return {
+            "executed": self.executed,
+            "allowed": self.allowed,
+            "action": self.action,
+            "summary": self.summary,
+            "reasons": self.reasons,
+            "recommendedActions": self.recommended_actions,
+            "feedbackCount": self.feedback_count,
+            "messageCount": self.message_count,
+            "missingFeedbackCallIds": self.missing_feedback_call_ids,
+            "extraFeedbackCallIds": self.extra_feedback_call_ids,
+            "providerName": self.provider_name,
+            "modelName": self.model_name,
+            "promptTokens": self.prompt_tokens,
+            "completionTokens": self.completion_tokens,
+            "errorCode": self.error_code,
+        }
+
+
+class AgentSecondTurnOrchestrator:
+    """在 loop policy 允许时执行模型二轮推理。
+
+    真实 Agent 产品的二轮推理不是“模型自己继续说两句”，而是一个受控协议：
+    1. Java 控制面先形成工具反馈事实；
+    2. Python 把反馈转换成 assistant/tool messages；
+    3. loop policy 判断预算、步数、审批和反馈完整性；
+    4. 只有通过策略闸门，才允许模型基于工具结果总结或给出下一步建议。
+    """
+
+    def __init__(
+        self,
+        model_providers: ModelProviderRegistry,
+        feedback_builder: ModelToolResultFeedbackBuilder | None = None,
+        model_gateway: ModelGatewayGovernanceService | None = None,
+    ) -> None:
+        self._model_providers = model_providers
+        self._feedback_builder = feedback_builder or ModelToolResultFeedbackBuilder()
+        self._model_gateway = model_gateway
+
+    def run(
+        self,
+        *,
+        request: AgentRequest,
+        plan: AgentPlan,
+        control_plane_feedback: AgentControlPlaneFeedbackSnapshot | None,
+        loop_control_decision: AgentLoopControlDecision | None,
+    ) -> AgentSecondTurnResult:
+        """根据控制面反馈和 loop 决策尝试执行二轮模型推理。
+
+        调用方可以放心把该方法接在 API 响应组装链路后面：如果缺少反馈、策略不允许、路由为空或
+        tool result messages 不完整，方法会返回 skipped 结果并写事件，不会抛出异常中断主响应。
+        """
+
+        events = SecondTurnEventBuilder(request=request, plan=plan)
+        if control_plane_feedback is None or loop_control_decision is None:
+            return self._skipped(
+                events,
+                allowed=False,
+                action="control_plane_feedback_unavailable",
+                summary="缺少控制面反馈或 loop 决策，当前不触发二轮模型推理。",
+                reasons=("控制面反馈快照或 loop 策略决策不存在。",),
+                recommended_actions=("等待 plan ingestion 与控制面反馈收集完成后再评估二轮推理。",),
+            )
+
+        events.record_loop_decision(loop_control_decision, control_plane_feedback)
+        if not (
+            loop_control_decision.allowed
+            and loop_control_decision.action == AgentLoopControlAction.ALLOW_SECOND_TURN
+        ):
+            return self._skipped(
+                events,
+                allowed=loop_control_decision.allowed,
+                action=loop_control_decision.action.value,
+                summary="loop 策略未允许自动二轮推理，当前仅返回控制面反馈和建议动作。",
+                reasons=loop_control_decision.reasons,
+                recommended_actions=loop_control_decision.recommended_actions,
+            )
+
+        if plan.selected_route is None:
+            return self._skipped(
+                events,
+                allowed=True,
+                action=loop_control_decision.action.value,
+                summary="当前计划没有可用模型路由，无法执行二轮推理。",
+                reasons=("模型网关没有选出可用路由。",),
+                recommended_actions=("检查模型 Provider 健康、预算额度和模型路由配置。",),
+            )
+
+        tool_calls = self._tool_calls_from_plan(plan)
+        feedback_items = tuple(item.to_tool_feedback() for item in control_plane_feedback.feedback_items)
+        feedback_bundle = self._feedback_builder.build(tool_calls, feedback_items)
+        events.record_feedback_built(
+            feedback_count=len(feedback_items),
+            message_count=len(feedback_bundle.messages),
+            missing_feedback_call_ids=feedback_bundle.missing_feedback_call_ids,
+            extra_feedback_call_ids=feedback_bundle.extra_feedback_call_ids,
+            complete=feedback_bundle.complete,
+        )
+        if not feedback_bundle.complete or not feedback_bundle.messages:
+            return self._skipped(
+                events,
+                allowed=True,
+                action=loop_control_decision.action.value,
+                summary="工具反馈消息不完整，已停止二轮推理以避免模型上下文错配。",
+                reasons=("assistant/tool result message 未满足 OpenAI-compatible 完整性要求。",),
+                recommended_actions=("检查 Java 工具反馈是否覆盖每个 modelToolCallId，并按 runId replay。",),
+                feedback_count=len(feedback_items),
+                message_count=len(feedback_bundle.messages),
+                missing_feedback_call_ids=feedback_bundle.missing_feedback_call_ids,
+                extra_feedback_call_ids=feedback_bundle.extra_feedback_call_ids,
+            )
+
+        second_turn_request = ModelInvocationRequest(
+            route=plan.selected_route,
+            messages=self._build_context_messages(request, plan) + feedback_bundle.messages,
+            trace_id=request.variables.get("traceId") or request.variables.get("trace_id") or plan.request_id,
+            available_tools=(),
+            tool_choice="none",
+        )
+        result = self._model_providers.invoke(second_turn_request)
+        self._record_usage_if_possible(request, plan, result)
+        events.record_second_turn_completed(
+            feedback_count=len(feedback_items),
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            error_code=result.error_code,
+        )
+        return AgentSecondTurnResult(
+            executed=True,
+            allowed=True,
+            action=loop_control_decision.action.value,
+            summary=result.content,
+            reasons=loop_control_decision.reasons,
+            recommended_actions=loop_control_decision.recommended_actions,
+            feedback_count=len(feedback_items),
+            message_count=len(feedback_bundle.messages),
+            missing_feedback_call_ids=feedback_bundle.missing_feedback_call_ids,
+            extra_feedback_call_ids=feedback_bundle.extra_feedback_call_ids,
+            provider_name=result.provider_name,
+            model_name=result.model_name,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            error_code=result.error_code,
+            runtime_events=events.events(),
+        )
+
+    @staticmethod
+    def _tool_calls_from_plan(plan: AgentPlan) -> tuple[ModelToolCall, ...]:
+        """从 ToolPlan 还原模型上一轮 tool_calls。
+
+        二轮回填需要 assistant(tool_calls) 历史消息。这里使用 ToolPlan 中经过平台治理后的参数，而不是
+        原始模型字符串，避免把未校验的模型幻觉参数再次放回上下文。
+        """
+
+        calls: list[ModelToolCall] = []
+        for tool_plan in plan.tool_plans:
+            call_id = tool_plan.governance_hints.get("modelToolCallId")
+            if call_id is None or not str(call_id).strip():
+                continue
+            calls.append(
+                ModelToolCall(
+                    call_id=str(call_id).strip(),
+                    name=tool_plan.tool_name,
+                    arguments=json.dumps(tool_plan.arguments, ensure_ascii=False, sort_keys=True),
+                    raw_call={"source": "agent_second_turn_orchestrator"},
+                )
+            )
+        return tuple(calls)
+
+    @staticmethod
+    def _build_context_messages(request: AgentRequest, plan: AgentPlan) -> tuple[ModelMessage, ...]:
+        """构造二轮模型上下文消息。
+
+        这里不重新暴露工具列表，也不要求模型继续规划新工具，而是让模型基于 Java 控制面反馈做解释、
+        总结和下一步建议。未来真正多步 loop 要继续调用工具时，应先回到 loop policy 重新评估。
+        """
+
+        return (
+            ModelMessage(
+                role="system",
+                content=(
+                    "你是 DataSmart Govern 的受控 Agent 二轮推理节点。"
+                    "你只能基于后续 role=tool 消息中的受控工具反馈进行总结、解释失败原因、给出下一步建议；"
+                    "不要声称执行了新的工具，不要继续提出新的工具调用。"
+                ),
+            ),
+            ModelMessage(
+                role="user",
+                content=(
+                    f"用户目标：{request.objective}\n"
+                    f"当前计划摘要：{plan.response_summary}\n"
+                    f"下一步建议：{'；'.join(plan.next_actions)}"
+                ),
+            ),
+        )
+
+    def _record_usage_if_possible(
+        self,
+        request: AgentRequest,
+        plan: AgentPlan,
+        result: ModelInvocationResult,
+    ) -> None:
+        """把二轮模型 usage 回写到模型网关治理服务。
+
+        `model_gateway` 是可选注入项。没有注入时仍然允许二轮推理完成，原因是当前项目还处于渐进式集成；
+        但生产环境建议注入共享治理服务，确保二轮 token 也进入预算、成本和告警统计。
+        """
+
+        if self._model_gateway is None:
+            return
+        self._model_gateway.record_invocation_usage(
+            build_model_gateway_context(request, plan.context_blocks),
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+        )
+
+    @staticmethod
+    def _skipped(
+        events: SecondTurnEventBuilder,
+        *,
+        allowed: bool,
+        action: str,
+        summary: str,
+        reasons: tuple[str, ...],
+        recommended_actions: tuple[str, ...],
+        feedback_count: int = 0,
+        message_count: int = 0,
+        missing_feedback_call_ids: tuple[str, ...] = (),
+        extra_feedback_call_ids: tuple[str, ...] = (),
+    ) -> AgentSecondTurnResult:
+        """生成跳过二轮的结果，并写入可见事件。"""
+
+        events.record_second_turn_skipped(action=action, reasons=reasons)
+        return AgentSecondTurnResult(
+            executed=False,
+            allowed=allowed,
+            action=action,
+            summary=summary,
+            reasons=reasons,
+            recommended_actions=recommended_actions,
+            feedback_count=feedback_count,
+            message_count=message_count,
+            missing_feedback_call_ids=missing_feedback_call_ids,
+            extra_feedback_call_ids=extra_feedback_call_ids,
+            runtime_events=events.events(),
+        )

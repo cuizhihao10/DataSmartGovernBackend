@@ -1,6 +1,7 @@
 package com.czh.datasmart.govern.task.controller.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
 /**
@@ -15,6 +16,32 @@ import lombok.Data;
  */
 @Data
 public class TaskCompleteRequest {
+
+    /**
+     * 当前执行 run ID。
+     *
+     * <p>完成回调属于终态写入，必须绑定到当前 run。
+     * 如果旧 run 在超时恢复后才迟到完成，不应再把已经被新 run 接管的任务改成 SUCCESS。
+     */
+    @NotNull(message = "执行 runId 不能为空")
+    private Long runId;
+
+    /**
+     * 执行器实例 ID。
+     *
+     * <p>必须与任务当前租约持有者一致，防止其他执行器把未持有的任务标记完成。
+     */
+    @NotBlank(message = "执行器 ID 不能为空")
+    private String executorId;
+
+    /**
+     * 幂等键。
+     *
+     * <p>完成回调常见于“任务已成功但 HTTP 响应丢失”的场景。
+     * 调用方重试时应复用该键，task-management 可以识别重复完成请求并避免重复推进状态。
+     */
+    @NotBlank(message = "幂等键不能为空")
+    private String idempotencyKey;
 
     /**
      * 任务完成结果。

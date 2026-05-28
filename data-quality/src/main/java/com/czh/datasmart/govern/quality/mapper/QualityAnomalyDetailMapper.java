@@ -63,6 +63,18 @@ public interface QualityAnomalyDetailMapper extends BaseMapper<QualityAnomalyDet
                 <if test="targetObject != null and targetObject != ''">
                     AND target_object LIKE CONCAT('%', #{targetObject}, '%')
                 </if>
+                <if test="projectId != null">
+                    AND project_id = #{projectId}
+                </if>
+                <if test="workspaceId != null">
+                    AND workspace_id = #{workspaceId}
+                </if>
+                <if test="projectScopeEnforced">
+                    AND project_id IN
+                    <foreach collection="authorizedProjectIds" item="authorizedProjectId" open="(" separator="," close=")">
+                        #{authorizedProjectId}
+                    </foreach>
+                </if>
                 <if test="startTime != null">
                     AND create_time &gt;= #{startTime}
                 </if>
@@ -92,5 +104,9 @@ public interface QualityAnomalyDetailMapper extends BaseMapper<QualityAnomalyDet
             @Param("targetObject") String targetObject,
             @Param("startTime") LocalDateTime startTime,
             @Param("endTime") LocalDateTime endTime,
-            @Param("limit") Integer limit);
+            @Param("limit") Integer limit,
+            @Param("projectId") Long projectId,
+            @Param("workspaceId") Long workspaceId,
+            @Param("authorizedProjectIds") List<Long> authorizedProjectIds,
+            @Param("projectScopeEnforced") boolean projectScopeEnforced);
 }

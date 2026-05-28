@@ -23,6 +23,7 @@ import com.czh.datasmart.govern.quality.entity.QualityAnomalyDetail;
 import com.czh.datasmart.govern.quality.entity.QualityCheckExecution;
 import com.czh.datasmart.govern.quality.entity.QualityCheckReport;
 import com.czh.datasmart.govern.quality.entity.QualityRule;
+import com.czh.datasmart.govern.quality.service.support.QualityProjectVisibility;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -40,7 +41,8 @@ public interface DataQualityService extends IService<QualityRule> {
     /**
      * 创建质量规则。
      */
-    QualityRule createRule(String name, String ruleType, String targetObject, String targetType,
+    QualityRule createRule(Long tenantId, Long projectId, Long workspaceId,
+                           String name, String ruleType, String targetObject, String targetType,
                            Long dataSourceId, String databaseName, String schemaName, String tableName,
                            String fieldName, String comparisonOperator,
                            BigDecimal expectedValue, String severity, String description);
@@ -165,14 +167,15 @@ public interface DataQualityService extends IService<QualityRule> {
     IPage<QualityCheckReport> pageReports(Integer current, Integer size, Long ruleId, String ruleType,
                                           String severity, String checkStatus, String targetObject,
                                           String triggerType, LocalDateTime startTime,
-                                          LocalDateTime endTime, Boolean failedOnly);
+                                          LocalDateTime endTime, Boolean failedOnly,
+                                          QualityProjectVisibility visibility);
 
     /**
      * 查询某份报告下的异常明细。
      *
      * <p>当前返回列表；后续如果异常量很大，应继续扩展为分页、导出和冷热存储策略。
      */
-    List<QualityAnomalyDetail> listAnomaliesByReportId(Long reportId);
+    List<QualityAnomalyDetail> listAnomaliesByReportId(Long reportId, QualityProjectVisibility visibility);
 
     /**
      * 分页查询异常明细。
@@ -183,7 +186,7 @@ public interface DataQualityService extends IService<QualityRule> {
     IPage<QualityAnomalyDetail> pageAnomalies(Integer current, Integer size, Long reportId, Long ruleId,
                                               String anomalyType, String fieldName, String severity,
                                               String targetObject, LocalDateTime startTime,
-                                              LocalDateTime endTime);
+                                              LocalDateTime endTime, QualityProjectVisibility visibility);
 
     /**
      * 聚合统计异常明细。
@@ -193,7 +196,8 @@ public interface DataQualityService extends IService<QualityRule> {
     List<QualityAnomalyAggregationItem> aggregateAnomalies(Long reportId, Long ruleId, String anomalyType,
                                                            String fieldName, String severity, String targetObject,
                                                            LocalDateTime startTime, LocalDateTime endTime,
-                                                           String groupBy, Integer limit);
+                                                           String groupBy, Integer limit,
+                                                           QualityProjectVisibility visibility);
 
     /**
      * 查询某个规则下的检测执行记录。

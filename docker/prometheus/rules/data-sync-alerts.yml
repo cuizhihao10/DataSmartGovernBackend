@@ -1,0 +1,134 @@
+# DataSmart Govern - data-sync 告警规则草案。
+#
+# 设计原则：
+# 1. 这里优先监控“系统自己修复和维护自己的能力”，也就是过期租约恢复、幂等记录清理、运行数据清理；
+# 2. 告警标签只使用固定枚举或服务名，避免 tenantId、taskId、executionId 这类高基数字段进入 Prometheus；
+# 3. 当前规则适合本地和单环境部署，生产环境可按租户规模、执行器数量、SLA 等级调整阈值；
+# 4. 规则中的中文 annotation 不是装饰，而是运维 runbook 的入口，帮助值班人员快速理解为什么告警。
+groups:
+  - name: datasmart-data-sync-availability
+    rules:
+      - alert: DataSyncServiceDown
+        expr: up{job="data-sync"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          module: data-sync
+          category: availability
+        annotations:
+          summary: "data-sync 服务 Prometheus 抓取失败"
+          description: "Prometheus 连续 2 分钟无法抓取 data-sync 的 /actuator/prometheus。请优先检查 data-sync 进程、8086 端口、Actuator Prometheus 端点、docker 网络和 Nacos 注册状态。"
+
+      - alert: DataSyncPrometheusTargetMissing
+        expr: absent(up{job="data-sync"})
+        for: 2m
+        labels:
+          severity: critical
+          module: data-sync
+          category: availability
+        annotations:
+          summary: "Prometheus 未发现 data-sync 抓取目标"
+          description: "Prometheus 中不存在 job=data-sync 的目标，通常表示 prometheus.yml 未加载、规则配置错误或 Prometheus 容器未重新加载配置。"
+
+  - name: datasmart-data-sync-recovery
+    rules:
+      - alert: DataSyncRecoverySchedulerSilent
+        expr: datasmart_data_sync_recovery_last_success_epoch_seconds > 0 and time() - datasmart_data_sync_recovery_last_success_epoch_seconds > 900
+        for: 5m
+        labels:
+          severity: warning
+          module: data-sync
+          category: recovery
+        annotations:
+          summary: "data-sync 过期租约自动恢复长时间未成功运行"
+          description: "最近一次自动恢复成功时间距离当前已超过 15 分钟。请检查 datasmart.data-sync.executor.recovery.enabled、调度线程是否阻塞、数据库连接和恢复任务日志。"
+
+      - alert: DataSyncRecoveryFailureDetected
+        expr: increase(datasmart_data_sync_recovery_failure_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          module: data-sync
+          category: recovery
+        annotations:
+          summary: "data-sync 过期租约自动恢复出现异常"
+          description: "最近 10 分钟自动恢复调度出现失败。请查看 data-sync 日志中的“过期租约自动恢复失败”，重点检查数据库、Mapper SQL、租约恢复状态流转和任务数据一致性。"
+
+      - alert: DataSyncRecoveryReentrySkipped
+        expr: increase(datasmart_data_sync_recovery_skip_total{reason="REENTRY"}[15m]) > 0
+        for: 1m
+        labels:
+          severity: info
+          module: data-sync
+          category: recovery
+        annotations:
+          summary: "data-sync 自动恢复调度发生重入跳过"
+          description: "最近 15 分钟内上一轮自动恢复尚未结束，导致新一轮被跳过。少量出现可接受；如果持续出现，说明恢复批次过大、数据库较慢或 fixed-delay 配置过短。"
+
+      - alert: DataSyncRecoveryAttentionRequired
+        expr: increase(datasmart_data_sync_recovery_execution_total{outcome="ATTENTION_REQUIRED"}[15m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          module: data-sync
+          category: recovery
+        annotations:
+          summary: "data-sync 自动恢复产生人工介入任务"
+          description: "最近 15 分钟有 execution 因过期恢复超过最大退避次数而进入人工介入。请在运营台排查连接器稳定性、目标端限流、worker 宕机或任务配置错误。"
+
+  - name: datasmart-data-sync-cleanup
+    rules:
+      - alert: DataSyncIdempotencyCleanupSilent
+        expr: datasmart_data_sync_idempotency_cleanup_last_success_epoch_seconds > 0 and time() - datasmart_data_sync_idempotency_cleanup_last_success_epoch_seconds > 1800
+        for: 5m
+        labels:
+          severity: warning
+          module: data-sync
+          category: cleanup
+        annotations:
+          summary: "data-sync 幂等记录清理长时间未成功运行"
+          description: "幂等记录清理最近成功时间超过 30 分钟未更新。请检查 datasmart.data-sync.executor.idempotency-cleanup.enabled、调度线程和 data_sync_callback_idempotency 表删除 SQL。"
+
+      - alert: DataSyncIdempotencyCleanupFailureDetected
+        expr: increase(datasmart_data_sync_idempotency_cleanup_failure_total[15m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          module: data-sync
+          category: cleanup
+        annotations:
+          summary: "data-sync 幂等记录清理失败"
+          description: "最近 15 分钟幂等记录清理调度出现异常。请检查数据库权限、idx_data_sync_callback_retention 索引、DELETE LIMIT 语法和表锁等待。"
+
+      - alert: DataSyncOperationalCleanupSilent
+        expr: datasmart_data_sync_operational_cleanup_last_success_epoch_seconds > 0 and time() - datasmart_data_sync_operational_cleanup_last_success_epoch_seconds > 3600
+        for: 10m
+        labels:
+          severity: warning
+          module: data-sync
+          category: cleanup
+        annotations:
+          summary: "data-sync 运行数据清理长时间未成功运行"
+          description: "运行数据清理最近成功时间超过 1 小时未更新。请检查 datasmart.data-sync.maintenance.operational-data-cleanup.enabled、调度线程和四类运行数据清理 SQL。"
+
+      - alert: DataSyncOperationalCleanupFailureDetected
+        expr: increase(datasmart_data_sync_operational_cleanup_failure_total[15m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          module: data-sync
+          category: cleanup
+        annotations:
+          summary: "data-sync 运行数据清理失败"
+          description: "最近 15 分钟 checkpoint、错误样本、审计记录或已关闭事故清理出现异常。请查看 data-sync 日志并确认对应 retention 索引和 SQL 条件。"
+
+      - alert: DataSyncOperationalCleanupBacklogHigh
+        expr: increase(datasmart_data_sync_operational_cleanup_deleted_total[6h]) > 20000
+        for: 10m
+        labels:
+          severity: info
+          module: data-sync
+          category: cleanup
+        annotations:
+          summary: "data-sync 运行数据清理量较高"
+          description: "最近 6 小时运行数据清理量超过 20000。可能是历史积压追赶，也可能是 checkpoint、错误样本或审计记录增长过快。请结合 data_type 标签观察具体来源，并评估是否需要冷归档或降低采样频率。"

@@ -37,6 +37,29 @@ public class QualityCheckReport {
     private Long id;
 
     /**
+     * 租户 ID。
+     *
+     * <p>报告是质量检测结果的长期审计证据，需要与规则保持相同租户边界。
+     * 后续如果做租户级质量评分、报表导出或保留周期清理，可以直接按 tenantId 处理。</p>
+     */
+    private Long tenantId;
+
+    /**
+     * 项目 ID。
+     *
+     * <p>报告列表、质量大盘和失败报告检索都属于高频查询，因此把 projectId 冗余在报告表。
+     * 这样 PROJECT 数据范围可以直接落到 `quality_check_report.project_id`，不必每次 join 规则表。</p>
+     */
+    private Long projectId;
+
+    /**
+     * 工作空间 ID。
+     *
+     * <p>用于项目内空间级质量结果筛选，例如按研发空间、测试空间、生产空间分别查看质量趋势。</p>
+     */
+    private Long workspaceId;
+
+    /**
      * 关联规则 ID。
      */
     private Long ruleId;

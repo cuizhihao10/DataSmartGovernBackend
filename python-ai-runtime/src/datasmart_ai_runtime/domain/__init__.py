@@ -1,0 +1,122 @@
+"""智能运行时领域契约。
+
+领域契约目录只放跨 API、编排器、规划器、模型路由都会使用的稳定数据结构。
+这样做的目的是让后续 FastAPI、Kafka Consumer、LangGraph 节点或离线测试都共享同一套
+对象定义，避免每个入口重复定义字段造成契约漂移。
+"""
+
+from datasmart_ai_runtime.domain.context import ContextBlock, ContextSensitivityLevel, ContextSourceType
+from datasmart_ai_runtime.domain.contracts import (
+    AgentPlan,
+    AgentRequest,
+    ModelInvocationRequest,
+    ModelInvocationResult,
+    ModelMessage,
+    ModelToolCall,
+    ModelToolCallDelta,
+    ModelCacheKeyScope,
+    ModelCostTier,
+    ModelLatencyTier,
+    ModelRoute,
+    ProviderType,
+    ToolDefinition,
+    ToolExecutionMode,
+    ToolParameterIssue,
+    ToolParameterIssueAction,
+    ToolParameterValidationResult,
+    ToolPlan,
+    ToolRiskLevel,
+    WorkloadType,
+)
+from datasmart_ai_runtime.domain.event_transport import (
+    RuntimeEventAckMode,
+    RuntimeEventChannel,
+    RuntimeEventControlMessage,
+    RuntimeEventConnectionState,
+    RuntimeEventControlMessageType,
+    RuntimeEventDeliveryMode,
+    RuntimeEventEnvelope,
+    RuntimeEventSubscriptionPlan,
+    RuntimeEventSubscriptionRequest,
+)
+from datasmart_ai_runtime.domain.events import (
+    AgentRuntimeEvent,
+    AgentRuntimeEventSeverity,
+    AgentRuntimeEventType,
+)
+from datasmart_ai_runtime.domain.intent import GovernanceDomain, IntentAnalysis, IntentRiskTag
+from datasmart_ai_runtime.domain.memory import (
+    AgentMemoryPlan,
+    AgentMemoryRecord,
+    AgentMemoryRetrievalReport,
+    AgentMemoryRetrievalResult,
+    AgentMemoryRetrievalTarget,
+    AgentMemoryScope,
+    AgentMemoryType,
+)
+from datasmart_ai_runtime.domain.model_gateway import (
+    ModelGatewayBudgetDecision,
+    ModelGatewayBudgetPolicy,
+    ModelGatewayRequestContext,
+    ModelGatewayRoutingDecision,
+    ModelProviderHealthSnapshot,
+    ModelProviderHealthStatus,
+)
+from datasmart_ai_runtime.domain.skills import AgentSkillDescriptor, AgentSkillPlan, AgentSkillSelection
+
+__all__ = [
+    "AgentPlan",
+    "AgentRequest",
+    "AgentMemoryPlan",
+    "AgentMemoryRecord",
+    "AgentMemoryRetrievalReport",
+    "AgentMemoryRetrievalResult",
+    "AgentMemoryRetrievalTarget",
+    "AgentMemoryScope",
+    "AgentMemoryType",
+    "AgentRuntimeEvent",
+    "AgentRuntimeEventSeverity",
+    "AgentRuntimeEventType",
+    "AgentSkillDescriptor",
+    "AgentSkillPlan",
+    "AgentSkillSelection",
+    "ContextBlock",
+    "ContextSensitivityLevel",
+    "ContextSourceType",
+    "GovernanceDomain",
+    "IntentAnalysis",
+    "IntentRiskTag",
+    "ModelInvocationRequest",
+    "ModelInvocationResult",
+    "ModelMessage",
+    "ModelToolCall",
+    "ModelToolCallDelta",
+    "ModelCacheKeyScope",
+    "ModelCostTier",
+    "ModelLatencyTier",
+    "ModelGatewayBudgetDecision",
+    "ModelGatewayBudgetPolicy",
+    "ModelGatewayRequestContext",
+    "ModelGatewayRoutingDecision",
+    "ModelProviderHealthSnapshot",
+    "ModelProviderHealthStatus",
+    "ModelRoute",
+    "ProviderType",
+    "RuntimeEventAckMode",
+    "RuntimeEventChannel",
+    "RuntimeEventControlMessage",
+    "RuntimeEventConnectionState",
+    "RuntimeEventControlMessageType",
+    "RuntimeEventDeliveryMode",
+    "RuntimeEventEnvelope",
+    "RuntimeEventSubscriptionPlan",
+    "RuntimeEventSubscriptionRequest",
+    "ToolDefinition",
+    "ToolExecutionMode",
+    "ToolParameterIssue",
+    "ToolParameterIssueAction",
+    "ToolParameterValidationResult",
+    "ToolPlan",
+    "ToolRiskLevel",
+    "WorkloadType",
+]

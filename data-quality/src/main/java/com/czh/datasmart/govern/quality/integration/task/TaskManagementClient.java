@@ -160,8 +160,11 @@ public class TaskManagementClient {
      * <p>质量执行器成功完成 data-quality 回调并生成质量报告后，需要再调用 task-management complete。
      * 这是跨模块一致性闭环：报告系统显示执行成功，任务中心也应该显示 SUCCESS。
      */
-    public TaskResponse completeTask(Long taskId, String result) {
+    public TaskResponse completeTask(Long taskId, Long runId, String executorId, String result) {
         TaskCompleteRequest request = new TaskCompleteRequest();
+        request.setRunId(runId);
+        request.setExecutorId(hasText(executorId) ? executorId : properties.getExecutorId());
+        request.setIdempotencyKey(callbackIdempotencyKey(taskId, runId, "COMPLETE"));
         request.setResult(result);
         try {
             RemoteApiResponse<TaskResponse> response = restClient()
@@ -195,8 +198,11 @@ public class TaskManagementClient {
      * <p>如果质量任务 payload 无效、data-quality 回调失败、扫描器不支持当前策略或源系统异常，
      * 执行器应调用该方法让 task-management 进入 FAILED，并触发后续重试、人工关注或告警。
      */
-    public TaskResponse failTask(Long taskId, String errorMessage) {
+    public TaskResponse failTask(Long taskId, Long runId, String executorId, String errorMessage) {
         TaskFailRequest request = new TaskFailRequest();
+        request.setRunId(runId);
+        request.setExecutorId(hasText(executorId) ? executorId : properties.getExecutorId());
+        request.setIdempotencyKey(callbackIdempotencyKey(taskId, runId, "FAIL"));
         request.setErrorMessage(errorMessage);
         try {
             RemoteApiResponse<TaskResponse> response = restClient()
@@ -235,8 +241,11 @@ public class TaskManagementClient {
      * - failOpen=false：defer 调用失败会抛异常，让调度器尽早暴露跨服务一致性问题；
      * - failOpen=true：本地联调时返回 null，避免 task-management 未启动导致 data-quality 完全不可调试。
      */
-    public TaskResponse deferTask(Long taskId, String reason, Integer delaySeconds) {
+    public TaskResponse deferTask(Long taskId, Long runId, String executorId, String reason, Integer delaySeconds) {
         TaskDeferRequest request = new TaskDeferRequest();
+        request.setRunId(runId);
+        request.setExecutorId(hasText(executorId) ? executorId : properties.getExecutorId());
+        request.setIdempotencyKey(callbackIdempotencyKey(taskId, runId, "DEFER"));
         request.setReason(reason);
         request.setDelaySeconds(delaySeconds);
         try {
@@ -297,5 +306,17 @@ public class TaskManagementClient {
      */
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private String callbackIdempotencyKey(Long taskId, Long runId, String action) {
+        /*
+         * 幂等键必须在同一次执行回调重试时保持稳定。
+         * 这里使用“服务名 + taskId + runId + action”的确定性组合，而不是随机 UUID，
+         * 否则调用方网络超时后再次提交会被 task-management 识别成一条全新的回调。
+         */
+        return properties.getSourceService()
+                + ":task:" + taskId
+                + ":run:" + runId
+                + ":action:" + action;
     }
 }

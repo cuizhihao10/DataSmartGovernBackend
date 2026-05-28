@@ -1,0 +1,186 @@
+import os
+import sys
+import unittest
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from datasmart_ai_runtime.api import build_event_control_response
+from datasmart_ai_runtime.domain.contracts import AgentRequest
+from datasmart_ai_runtime.domain.event_transport import RuntimeEventSubscriptionRequest
+from datasmart_ai_runtime.domain.events import (
+    AgentRuntimeEvent,
+    AgentRuntimeEventSeverity,
+    AgentRuntimeEventType,
+)
+from datasmart_ai_runtime.services.runtime_event_recorder import RuntimeEventRecorder
+from datasmart_ai_runtime.services.runtime_event_session import RuntimeEventSessionManager
+from datasmart_ai_runtime.services.runtime_event_store import InMemoryRuntimeEventStore
+from datasmart_ai_runtime.services.runtime_event_websocket import RuntimeEventWebSocketConnectionAdapter
+
+
+class RuntimeEventJavaReplayBridgeTest(unittest.TestCase):
+    def test_subscribe_replay_merges_python_local_events_and_java_tool_events(self) -> None:
+        store = InMemoryRuntimeEventStore()
+        store.append_many(self._python_events())
+        java_source = FakeJavaReplaySource()
+        manager = RuntimeEventSessionManager(
+            event_store=store,
+            external_replay_sources=(java_source,),
+        )
+
+        response = build_event_control_response(
+            {
+                "type": "subscribe",
+                "subscription": {
+                    "clientId": "browser-a",
+                    "tenantId": "tenant-a",
+                    "projectId": "project-a",
+                    "actorId": "user-a",
+                    "roles": ["operator"],
+                    "sessionId": "session-bridge",
+                    "runId": "run-bridge",
+                    "includeSnapshot": True,
+                },
+                "accessContext": {
+                    "tenantId": "tenant-a",
+                    "projectId": "project-a",
+                    "actorId": "user-a",
+                    "roles": ["operator"],
+                },
+            },
+            manager,
+        )
+
+        events = response["subscription"]["replayEnvelope"]["events"]
+        event_types = tuple(event["event_type"] for event in events)
+        java_event = events[-1]
+
+        self.assertTrue(response["accepted"])
+        self.assertIn(AgentRuntimeEventType.CONTEXT_COLLECTED, event_types)
+        self.assertIn(AgentRuntimeEventType.TOOL_EXECUTION_STATE_CHANGED, event_types)
+        self.assertEqual("java-agent-runtime-event-projection", java_event["attributes"]["_datasmartReplaySource"])
+        self.assertTrue(java_event["attributes"]["_datasmartSyntheticReplaySequence"])
+        self.assertGreater(java_event["sequence"], 0)
+        self.assertEqual("run-bridge", java_source.requests[0].run_id)
+
+    def test_external_replay_failure_does_not_reject_subscription(self) -> None:
+        manager = RuntimeEventSessionManager(external_replay_sources=(FailingReplaySource(),))
+
+        response = build_event_control_response(
+            {
+                "type": "subscribe",
+                "subscription": {
+                    "clientId": "browser-a",
+                    "tenantId": "tenant-a",
+                    "actorId": "user-a",
+                    "roles": ["operator"],
+                    "sessionId": "session-bridge",
+                    "includeSnapshot": True,
+                },
+                "accessContext": {
+                    "tenantId": "tenant-a",
+                    "actorId": "user-a",
+                    "roles": ["operator"],
+                },
+            },
+            manager,
+        )
+
+        envelope = response["subscription"]["replayEnvelope"]
+
+        self.assertTrue(response["accepted"])
+        self.assertEqual((), tuple(envelope["events"]))
+        self.assertEqual("broken-java-source", envelope["attributes"]["externalReplayErrors"][0]["source"])
+
+    def test_websocket_adapter_returns_java_replay_event_frame(self) -> None:
+        manager = RuntimeEventSessionManager(external_replay_sources=(FakeJavaReplaySource(),))
+        connection = RuntimeEventWebSocketConnectionAdapter(manager)
+
+        payloads = connection.handle_message(
+            {
+                "type": "subscribe",
+                "subscription": {
+                    "clientId": "browser-a",
+                    "tenantId": "tenant-a",
+                    "projectId": "project-a",
+                    "actorId": "user-a",
+                    "roles": ["operator"],
+                    "sessionId": "session-bridge",
+                    "runId": "run-bridge",
+                    "includeSnapshot": True,
+                },
+                "accessContext": {
+                    "tenantId": "tenant-a",
+                    "projectId": "project-a",
+                    "actorId": "user-a",
+                    "roles": ["operator"],
+                },
+            }
+        )
+
+        self.assertEqual(2, len(payloads))
+        self.assertEqual("event_envelope", payloads[1]["frameType"])
+        self.assertEqual(
+            AgentRuntimeEventType.TOOL_EXECUTION_STATE_CHANGED,
+            payloads[1]["payload"]["events"][0]["event_type"],
+        )
+
+    @staticmethod
+    def _python_events() -> tuple[AgentRuntimeEvent, ...]:
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="user-a",
+            objective="测试 Java 工具事件 replay 桥接",
+        )
+        recorder = RuntimeEventRecorder(
+            request=request,
+            request_id="request-bridge",
+            run_id="run-bridge",
+            session_id="session-bridge",
+        )
+        recorder.record(AgentRuntimeEventType.CONTEXT_COLLECTED, "build_context", "已收集上下文。")
+        return recorder.events()
+
+
+class FakeJavaReplaySource:
+    source_name = "java-agent-runtime-event-projection"
+
+    def __init__(self) -> None:
+        self.requests: list[RuntimeEventSubscriptionRequest] = []
+
+    def replay(self, request: RuntimeEventSubscriptionRequest) -> tuple[AgentRuntimeEvent, ...]:
+        self.requests.append(request)
+        return (
+            AgentRuntimeEvent(
+                event_type=AgentRuntimeEventType.TOOL_EXECUTION_STATE_CHANGED,
+                stage="tool_completed",
+                message="Java 控制面确认工具执行成功。",
+                severity=AgentRuntimeEventSeverity.INFO,
+                tenant_id=request.tenant_id,
+                project_id=request.project_id,
+                actor_id=request.actor_id,
+                request_id=request.request_id,
+                run_id=request.run_id,
+                session_id=request.session_id,
+                sequence=None,
+                attributes={
+                    "javaProjectionIdentityKey": "event-tool-001",
+                    "toolCode": "datasource.metadata.read",
+                    "currentState": "SUCCEEDED",
+                },
+            ),
+        )
+
+
+class FailingReplaySource:
+    source_name = "broken-java-source"
+
+    def replay(self, request: RuntimeEventSubscriptionRequest) -> tuple[AgentRuntimeEvent, ...]:
+        raise RuntimeError("Java 投影查询超时")
+
+
+if __name__ == "__main__":
+    unittest.main()

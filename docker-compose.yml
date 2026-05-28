@@ -129,7 +129,28 @@ services:
       - "9090:9090"
     volumes:
       - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      # 告警规则单独挂载目录，便于按模块维护 data-sync、data-quality、task-management 等规则文件。
+      - ./docker/prometheus/rules:/etc/prometheus/rules
       - prometheus_data:/prometheus
+    networks:
+      - datasmart-network
+    restart: unless-stopped
+
+  # Alertmanager 负责接收 Prometheus 触发的告警，并进行分组、抑制、静默和通知路由。
+  # 当前配置使用空接收器占位，避免本地开发误发真实通知；生产环境再替换为邮件、企业 IM 或工单 webhook。
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: datasmart-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./docker/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml
+      # 通知模板用于统一邮件、webhook、企业 IM 的标题和正文格式；当前 receiver 仍为空接收器，生产接入时复用模板。
+      - ./docker/alertmanager/templates:/etc/alertmanager/templates
+      - alertmanager_data:/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
     networks:
       - datasmart-network
     restart: unless-stopped
@@ -143,6 +164,11 @@ services:
     ports:
       - "3000:3000"
     volumes:
+      # provisioning 目录用于自动创建数据源和 dashboard provider，避免每次重建容器后手动配置。
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning
+      # dashboards 目录用于存放可导入的 JSON 面板，本轮先提供 data-sync 运维总览。
+      # 挂载到 /etc/grafana/dashboards，避免和 /var/lib/grafana 数据卷互相遮挡。
+      - ./docker/grafana/dashboards:/etc/grafana/dashboards
       - grafana_data:/var/lib/grafana
     networks:
       - datasmart-network
@@ -170,6 +196,7 @@ volumes:
   nacos_logs:
   nacos_data:
   prometheus_data:
+  alertmanager_data:
   grafana_data:
   chroma_data:
 

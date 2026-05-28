@@ -49,5 +49,15 @@
             <artifactId>lombok</artifactId>
             <version>1.18.42</version>
         </dependency>
+        <!--
+            task-management 的项目级数据范围和任务状态机都属于高价值业务规则。
+            引入测试依赖后，可以把授权 Header 解析、项目范围收口和任务操作校验固定成回归测试，
+            避免后续重构 controller/resolver/support 时把 PROJECT 范围悄悄弄丢。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

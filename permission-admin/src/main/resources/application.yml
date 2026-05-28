@@ -54,6 +54,17 @@ management:
 
 datasmart:
   permission:
+    policy-cache:
+      # permission-admin 内部权限事实缓存开关。
+      # 它缓存的是 evaluate 需要读取的路由策略和数据范围策略，不是 gateway 那一层最终 allow/deny 判定结果。
+      # 启用后可以降低高频授权判定对 MySQL 的重复读取压力；本地排障时可临时关闭。
+      enabled: true
+      # 路由策略缓存 TTL。策略变更成功后会主动清理对应租户缓存，TTL 是兜底一致性保护。
+      route-policy-ttl: 30s
+      # 数据范围策略缓存 TTL。数据范围会影响业务查询边界，因此默认保持短 TTL。
+      data-scope-policy-ttl: 30s
+      # 本地缓存最大条目数。超过上限会先清理过期条目，仍超限时执行保守全量清理，避免 JVM 内存不可控。
+      max-entries: 1000
     policy-events:
       # 是否发布权限策略变更事件。
       # 默认关闭：便于本地只启动 permission-admin + MySQL 时仍能联调管理 API。

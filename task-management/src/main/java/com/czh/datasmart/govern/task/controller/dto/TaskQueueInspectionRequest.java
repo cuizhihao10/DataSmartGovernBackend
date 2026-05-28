@@ -61,6 +61,34 @@ public class TaskQueueInspectionRequest {
     private String type;
 
     /**
+     * 租户过滤条件。
+     *
+     * <p>运维队列不是全局随便看的列表。平台管理员可以用该字段查看指定租户积压；
+     * 租户管理员、运营、审计等角色即使传入其他 tenantId，服务层也会继续叠加当前操作者租户范围，
+     * 从而保证“请求参数不能扩大权限，只能缩小查询范围”。
+     */
+    @Min(value = 0, message = "租户 ID 不能小于 0")
+    private Long tenantId;
+
+    /**
+     * 负责人过滤条件。
+     *
+     * <p>用于排查某个用户或服务账号名下是否存在大量失败、延迟、死信任务。
+     * 后续接入 notification-center 后，也可以用负责人维度计算待办和告警归属。
+     */
+    @Min(value = 0, message = "负责人 ID 不能小于 0")
+    private Long ownerId;
+
+    /**
+     * 项目过滤条件。
+     *
+     * <p>项目维度适合真实企业租户内部的二级运营：例如只查看某个数据治理项目的任务积压，
+     * 或比较不同项目的失败率、排队时长和资源消耗。
+     */
+    @Min(value = 0, message = "项目 ID 不能小于 0")
+    private Long projectId;
+
+    /**
      * 优先级过滤。
      *
      * <p>例如 HIGH、MEDIUM、LOW。真实生产排障时，HIGH 优先级任务长时间排队通常比 LOW 更需要关注。

@@ -22,6 +22,32 @@ import java.math.BigDecimal;
 public class CreateQualityRuleRequest {
 
     /**
+     * 租户 ID。
+     *
+     * <p>创建规则时显式要求传入 tenantId，是为了让质量规则从诞生开始就带有租户边界。
+     * 后续如果接入 gateway 的租户 Header，可以在 Controller 层继续校验“请求体 tenantId 与 Header tenantId 是否一致”。</p>
+     */
+    @NotNull(message = "租户 ID 不能为空")
+    private Long tenantId;
+
+    /**
+     * 项目 ID。
+     *
+     * <p>项目是当前阶段最关键的二级隔离维度。质量规则、报告、异常样本都会继承该字段，
+     * 从而支持项目级规则列表、项目级质量大盘、项目级异常工作台和项目负责人权限边界。</p>
+     */
+    @NotNull(message = "项目 ID 不能为空")
+    private Long projectId;
+
+    /**
+     * 工作空间 ID。
+     *
+     * <p>工作空间用于在项目内继续拆分研发、测试、生产或团队协作空间。
+     * 现阶段允许为空，表示只隔离到项目级；后续如果引入空间级权限，可直接复用该字段。</p>
+     */
+    private Long workspaceId;
+
+    /**
      * 规则名称。
      * 用于列表展示、搜索和管理识别，因此要求非空。
      */

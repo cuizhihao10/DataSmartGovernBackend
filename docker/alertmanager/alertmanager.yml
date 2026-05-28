@@ -1,0 +1,77 @@
+# DataSmart Govern - Alertmanager 本地路由草案。
+#
+# 这个文件先解决“Prometheus 告警触发后如何分组、抑制、按等级路由”的问题。
+# 当前不直接配置邮件、企业微信、钉钉或 PagerDuty 等真实接收器，原因是：
+# 1. 本仓库是可公开/可移交的基础工程，不应提交真实 webhook、token、邮箱密码等密钥；
+# 2. 本地开发环境如果误触发大量告警，不应该打扰真实值班群；
+# 3. 先把路由结构、告警等级和抑制关系固定下来，后续接真实渠道时只需要替换 receiver。
+#
+# 生产落地时建议：
+# - critical：发送到电话/PagerDuty/短信/核心值班群，要求分钟级响应；
+# - warning：发送到模块值班群或工单系统，要求工作时间或约定 SLA 内响应；
+# - info：进入低优先级通知或仅在 Grafana 中展示，用于观察趋势。
+global:
+  resolve_timeout: 5m
+
+templates:
+  # 通知模板单独放到 templates 目录，避免所有消息格式都挤在主配置里。
+  # receiver 当前仍为空接收器，但模板先纳入版本管理，后续接真实渠道时可以直接复用。
+  - /etc/alertmanager/templates/*.tmpl
+
+route:
+  # 按模块、告警类别、严重级别聚合，避免同一故障触发十几条告警时刷屏。
+  group_by:
+    - module
+    - category
+    - severity
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: platform-null
+  routes:
+    - matchers:
+        - severity="critical"
+      receiver: platform-critical
+      group_wait: 10s
+      repeat_interval: 30m
+      continue: false
+    - matchers:
+        - severity="warning"
+      receiver: platform-warning
+      group_wait: 30s
+      repeat_interval: 2h
+      continue: false
+    - matchers:
+        - severity="info"
+      receiver: platform-info
+      group_wait: 2m
+      repeat_interval: 12h
+      continue: false
+
+inhibit_rules:
+  # 当同一模块/类别已经出现 critical 告警时，抑制 warning 和 info，避免根因告警与衍生告警同时刷屏。
+  - source_matchers:
+      - severity="critical"
+    target_matchers:
+      - severity=~"warning|info"
+    equal:
+      - module
+      - category
+  # 当同一模块/类别已经出现 warning 告警时，抑制 info，只保留更需要处理的信号。
+  - source_matchers:
+      - severity="warning"
+    target_matchers:
+      - severity="info"
+    equal:
+      - module
+      - category
+
+receivers:
+  # 空接收器用于本地安全占位。Alertmanager 会完成分组、抑制和状态管理，但不会向外部发送通知。
+  - name: platform-null
+
+  # critical/warning/info 目前也使用空接收器占位。
+  # 后续接入真实渠道时，可以在对应 receiver 下添加 webhook_configs、email_configs 或企业 IM 配置。
+  - name: platform-critical
+  - name: platform-warning
+  - name: platform-info

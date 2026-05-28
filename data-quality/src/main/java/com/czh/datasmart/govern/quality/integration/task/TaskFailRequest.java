@@ -19,6 +19,21 @@ import lombok.Data;
 public class TaskFailRequest {
 
     /**
+     * task-management 返回的本次执行 run ID，用于避免旧 worker 迟到失败回调污染新 run。
+     */
+    private Long runId;
+
+    /**
+     * data-quality 执行器实例 ID，必须与当前任务租约持有者一致。
+     */
+    private String executorId;
+
+    /**
+     * 幂等键。失败补偿可能被重复触发，稳定键可以帮助 task-management 避免重复推进。
+     */
+    private String idempotencyKey;
+
+    /**
      * 失败原因。
      */
     private String errorMessage;

@@ -1,6 +1,7 @@
 package com.czh.datasmart.govern.task.controller.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 
 /**
@@ -14,6 +15,32 @@ import lombok.Data;
  */
 @Data
 public class TaskFailRequest {
+
+    /**
+     * 当前执行 run ID。
+     *
+     * <p>失败回调必须绑定本次 run，避免已经失去租约的旧 worker 迟到上报失败，
+     * 把新 worker 正在处理的任务错误标记为 FAILED。
+     */
+    @NotNull(message = "执行 runId 不能为空")
+    private Long runId;
+
+    /**
+     * 执行器实例 ID。
+     *
+     * <p>只有当前租约持有者才能把任务标记失败，这是执行器协议最核心的安全边界之一。
+     */
+    @NotBlank(message = "执行器 ID 不能为空")
+    private String executorId;
+
+    /**
+     * 幂等键。
+     *
+     * <p>失败回调也可能因网络超时被重复提交。要求调用方提供幂等键，
+     * 可以减少重复日志、重复告警和重复失败补偿带来的运维噪音。
+     */
+    @NotBlank(message = "幂等键不能为空")
+    private String idempotencyKey;
 
     /**
      * 失败原因说明。

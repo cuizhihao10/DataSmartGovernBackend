@@ -1,0 +1,21 @@
+[project]
+name = "datasmart-ai-runtime"
+version = "0.1.0"
+description = "DataSmart Govern Python AI Runtime for model routing, agent orchestration and tool planning."
+requires-python = ">=3.10"
+authors = [{ name = "Cui" }]
+dependencies = []
+
+[project.optional-dependencies]
+api = ["fastapi>=0.110", "uvicorn>=0.27"]
+# Kafka 发布器是生产集成能力，不放入默认依赖，避免本地学习、离线规划和单元测试被消息中间件客户端绑定。
+# 部署方如果启用 DATASMART_AI_RUNTIME_EVENT_PUBLISHER=kafka，可通过 `pip install -e python-ai-runtime[kafka]` 安装。
+kafka = ["kafka-python>=2.0"]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

@@ -39,6 +39,7 @@ import org.springframework.stereotype.Component;
 public class GatewayPermissionPolicyChangedEventConsumer {
 
     private static final long PLATFORM_TENANT_ID = 0L;
+    private static final String PROJECT_MEMBERSHIP_EVENT_PREFIX = "PROJECT_MEMBERSHIP_";
 
     private final GatewayAuthorizationDecisionCache authorizationDecisionCache;
     private final ObjectMapper objectMapper;
@@ -70,6 +71,11 @@ public class GatewayPermissionPolicyChangedEventConsumer {
      */
     private void invalidateCache(PermissionPolicyChangedEvent event) {
         String reason = "permission-policy-event:" + event.getEventType() + ":" + event.getEventId();
+        if (isProjectMembershipEvent(event)) {
+            invalidateProjectMembershipCache(event, reason);
+            return;
+        }
+
         Long tenantId = event.getTenantId();
         if (tenantId == null || PLATFORM_TENANT_ID == tenantId) {
             authorizationDecisionCache.evictAll(reason);
@@ -81,5 +87,40 @@ public class GatewayPermissionPolicyChangedEventConsumer {
         authorizationDecisionCache.evictTenant(tenantId, reason);
         log.info("已根据权限策略变更事件按租户清理网关授权缓存，eventId={}, eventType={}, tenantId={}, policyId={}",
                 event.getEventId(), event.getEventType(), tenantId, event.getPolicyId());
+    }
+
+    /**
+     * 判断是否为项目成员授权变更事件。
+     *
+     * <p>项目成员关系会改变 permission-admin 返回给 gateway 的 `authorizedProjectIds`。
+     * 这类事件不需要按路由策略维度清理，而应优先按“租户 + 被授权成员”清理缓存。
+     */
+    private boolean isProjectMembershipEvent(PermissionPolicyChangedEvent event) {
+        return event != null
+                && event.getEventType() != null
+                && event.getEventType().startsWith(PROJECT_MEMBERSHIP_EVENT_PREFIX);
+    }
+
+    /**
+     * 处理项目成员授权变更导致的缓存失效。
+     *
+     * <p>相比路由策略变更，项目成员授权变更的影响范围通常更窄：
+     * 1. 某个成员新增或移除一个项目，只影响这个成员的 PROJECT 数据范围；
+     * 2. 同租户其他成员的授权项目集合没有变化，不应该被无谓清理；
+     * 3. 如果事件字段缺失，则退化为租户或全量清理，保证安全优先。
+     */
+    private void invalidateProjectMembershipCache(PermissionPolicyChangedEvent event, String reason) {
+        Long tenantId = event.getTenantId();
+        Long memberActorId = event.getMemberActorId();
+        if (tenantId == null || PLATFORM_TENANT_ID == tenantId) {
+            authorizationDecisionCache.evictAll(reason);
+            log.info("已根据项目成员授权变更事件全量清理网关授权缓存，eventId={}, eventType={}, membershipId={}, memberActorId={}, projectId={}",
+                    event.getEventId(), event.getEventType(), event.getMembershipId(), memberActorId, event.getProjectId());
+            return;
+        }
+
+        authorizationDecisionCache.evictActor(tenantId, memberActorId, reason);
+        log.info("已根据项目成员授权变更事件按成员清理网关授权缓存，eventId={}, eventType={}, tenantId={}, membershipId={}, memberActorId={}, projectId={}",
+                event.getEventId(), event.getEventType(), tenantId, event.getMembershipId(), memberActorId, event.getProjectId());
     }
 }

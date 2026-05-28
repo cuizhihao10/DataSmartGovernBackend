@@ -1,0 +1,150 @@
+# data-sync 是数据移动域的独立微服务。
+# 它和 datasource-management 的边界不同：
+# datasource-management 负责“连接登记、元数据、连接健康”，data-sync 负责“把数据从哪里搬到哪里、如何搬、何时搬、如何恢复”。
+server:
+  port: 8086
+
+spring:
+  application:
+    # 服务名用于 Nacos 注册发现、日志标识、链路追踪和后续 gateway 路由。
+    name: data-sync
+  profiles:
+    active: dev
+  datasource:
+    # 这里连接平台治理库，不是源端或目标端业务库。
+    # 源端/目标端连接信息只保存引用 ID，具体连接配置仍由 datasource-management 管理。
+    url: jdbc:mysql://localhost:3306/datasmart_govern?useSSL=false&serverTimezone=UTC
+    username: root
+    password: password
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  kafka:
+    # 预留给同步任务状态事件、执行器调度事件、checkpoint 事件和告警事件。
+    bootstrap-servers: localhost:9092
+  cloud:
+    nacos:
+      discovery:
+        server-addr: localhost:8848
+
+mybatis-plus:
+  mapper-locations: classpath:/mapper/*.xml
+  type-aliases-package: com.czh.datasmart.govern.datasync.entity
+  configuration:
+    map-underscore-to-camel-case: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # health/info 用于基础存活检查，metrics 用于本地排障，prometheus 用于 Prometheus 周期抓取。
+        # data-sync 的自动恢复、幂等清理和运行数据清理都已经通过 Micrometer 输出指标，
+        # 因此这里必须暴露 prometheus 端点，否则 docker/prometheus 无法采集这些生产运营信号。
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+  metrics:
+    export:
+      prometheus:
+        # 显式开启 Prometheus 导出，便于从配置层理解“指标采集链路已经接通”。
+        enabled: true
+
+logging:
+  level:
+    com.czh.datasmart: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+datasmart:
+  data-sync:
+    executor:
+      # 单条 execution 允许被 defer 或过期租约恢复回队列的最大次数。
+      # 达到该阈值后，系统会停止自动 requeue，把 execution 标记为 FAILED，
+      # 同时把任务主状态标记为 AWAITING_OPERATOR_ACTION，避免故障任务无限消耗 worker。
+      # 生产环境可以按连接器稳定性、目标端限流策略、worker 数量和运维响应能力调整。
+      max-defer-count: 5
+      security:
+        # 是否启用执行器服务账号签名校验。
+        # 当前默认关闭，保证本地开发、接口联调和还没有接入真实 worker 的环境不被阻断。
+        # 商用部署时建议开启，并要求 claim/heartbeat/defer/start/checkpoint/complete/fail 等机器协议接口
+        # 携带服务账号 ID、时间戳、nonce 和 HMAC 签名，避免只依赖可伪造的 actorRole Header。
+        enabled: false
+        # 允许的签名时间窗口，单位秒。
+        # worker 与 data-sync 运行在不同机器时会存在时钟偏差，窗口过小容易误拒绝正常请求；
+        # 窗口过大则会扩大重放攻击可利用时间，因此默认 300 秒。
+        allowed-clock-skew-seconds: 300
+        # 本实例内 nonce 防重放缓存最大容量。
+        # 当前阶段是内存缓存，适合单实例或开发环境；多实例生产环境建议升级 Redis/Caffeine 集群缓存，
+        # 让同一个 nonce 被重放到其他 data-sync 实例时也能被拒绝。
+        max-nonce-cache-size: 100000
+        # HMAC 算法。默认 HmacSHA256 兼顾通用性、安全性和跨语言实现成本。
+        signature-algorithm: HmacSHA256
+        # 以下 Header 是执行器签名协议的线缆格式。
+        # worker 计算 canonical string：
+        # HTTP_METHOD + "\n" + requestPathWithQuery + "\n" + traceId + "\n" + serviceAccountId + "\n" + timestamp + "\n" + nonce
+        # 然后使用对应 secret 计算 HMAC，签名值可传 Base64 或十六进制。
+        service-account-id-header: X-DataSmart-Service-Account-Id
+        timestamp-header: X-DataSmart-Service-Account-Timestamp
+        nonce-header: X-DataSmart-Service-Account-Nonce
+        signature-header: X-DataSmart-Service-Account-Signature
+        # 服务账号密钥映射。这里留空是为了避免把生产密钥提交到仓库。
+        # 示例：
+        # secrets:
+        #   sync-executor-default: ${DATASMART_SYNC_EXECUTOR_SECRET}
+        secrets: {}
+      recovery:
+        # 是否启用过期租约自动恢复。
+        # 开启后，data-sync 会周期性扫描 RUNNING 且 lease_expire_time 已过期的 execution，
+        # 并复用手动恢复接口同一套逻辑：可恢复则重新入队，超过最大退避次数则进入人工介入。
+        enabled: true
+        # 服务启动后首次扫描延迟，避免应用刚启动、数据库连接池和服务注册尚未稳定时立即恢复。
+        initial-delay-ms: 30000
+        # 上一轮扫描完成后多久启动下一轮；使用 fixedDelay 可以避免单实例内扫描重叠。
+        fixed-delay-ms: 60000
+        # 每轮最多处理多少条过期租约；生产环境可根据 worker 数量、数据库压力和积压规模调整。
+        batch-size: 50
+        # 可选租户 ID；为空表示全平台扫描。租户专属部署时可以指定单个租户。
+        tenant-id:
+        # 自动恢复写入审计和 errorSummary 的原因摘要。
+        reason: "自动定时扫描发现执行器租约过期，系统恢复执行记录"
+      idempotency-cleanup:
+        # 是否启用执行器回调与租约动作幂等记录的后台清理。
+        # 幂等表用于保护近期重复请求，但 heartbeat、checkpoint、defer 等动作会持续写入；
+        # 长期不清理会导致唯一索引膨胀、备份变慢、重复请求裁决成本升高。
+        enabled: true
+        # 幂等记录保留天数。
+        # 默认 30 天用于覆盖常见排障窗口。高合规客户可以提升到 90/180/365；
+        # 高频执行器或存储压力较大的环境可以降低到 7/14，并通过审计表保留关键业务动作。
+        retention-days: 30
+        # 服务启动后首次清理延迟；清理任务不是主业务路径，延后启动可减少和恢复扫描、服务注册的资源竞争。
+        initial-delay-ms: 60000
+        # 上一轮清理完成后多久启动下一轮。当前默认 5 分钟，适合小批量渐进式删除。
+        fixed-delay-ms: 300000
+        # 单轮最多删除多少条历史幂等记录。
+        # 如果删除量长期等于该值，说明历史积压仍较多，可结合数据库负载临时调高或缩短 fixed-delay。
+        batch-size: 1000
+    maintenance:
+      operational-data-cleanup:
+        # 是否启用 data-sync 运行数据保留期清理。
+        # 运行数据包括 checkpoint、错误样本、审计记录、已关闭事故记录。
+        # 它们不是任务主表，但会随同步执行持续增长；开启清理可以降低数据库索引、备份和查询压力。
+        enabled: true
+        # 服务启动后首次清理延迟。
+        # 维护任务不需要抢在业务恢复之前执行，因此比租约恢复和幂等清理稍晚启动。
+        initial-delay-ms: 90000
+        # 上一轮清理完成后多久启动下一轮。默认 10 分钟，适合温和后台维护。
+        fixed-delay-ms: 600000
+        # 单轮每张表最多删除多少条。
+        # 注意这是每张表上限，不是总上限；一次调度可能分别清理 checkpoint/error/audit/incident。
+        batch-size: 500
+        # checkpoint 保留天数。
+        # checkpoint 直接影响断点续行和补跑，但过老 checkpoint 通常不再参与恢复，默认保留 30 天。
+        checkpoint-retention-days: 30
+        # 错误样本保留天数。
+        # 错误样本帮助排查坏数据、字段映射、目标库写入等问题，默认保留 90 天。
+        error-sample-retention-days: 90
+        # 审计记录保留天数。
+        # 审计记录用于回答“谁在什么时候做了什么动作”，默认保留 365 天以满足基础合规追溯。
+        audit-record-retention-days: 365
+        # 已关闭事故保留天数。
+        # 只会清理 CLOSED 且 closed_at 超过保留期的事故，OPEN/ACKNOWLEDGED/RESOLVED 永远不会被该任务清理。
+        closed-incident-retention-days: 180

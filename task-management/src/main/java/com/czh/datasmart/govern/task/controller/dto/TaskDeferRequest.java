@@ -9,6 +9,7 @@ package com.czh.datasmart.govern.task.controller.dto;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
@@ -26,6 +27,32 @@ import lombok.Data;
  */
 @Data
 public class TaskDeferRequest {
+
+    /**
+     * 当前执行 run ID。
+     *
+     * <p>defer 会结束当前 run 并把任务重新放回可认领队列，因此必须确认请求来自当前 run。
+     * 如果旧 run 的 defer 迟到，就可能错误释放新 run 的租约，造成任务重复执行。
+     */
+    @NotNull(message = "执行 runId 不能为空")
+    private Long runId;
+
+    /**
+     * 执行器实例 ID。
+     *
+     * <p>必须与任务当前租约持有者一致，防止非持有者随意把任务延迟回队列。
+     */
+    @NotBlank(message = "执行器 ID 不能为空")
+    private String executorId;
+
+    /**
+     * 幂等键。
+     *
+     * <p>容量背压场景下，执行器可能因为 HTTP 超时重复调用 defer。
+     * 幂等键用于识别同一次退避动作，避免重复增加 deferCount 或重复写入容量告警。
+     */
+    @NotBlank(message = "幂等键不能为空")
+    private String idempotencyKey;
 
     /**
      * 延迟原因。

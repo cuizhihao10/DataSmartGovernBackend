@@ -15,6 +15,7 @@ import com.czh.datasmart.govern.permission.controller.dto.PermissionOutboxQueryC
 import com.czh.datasmart.govern.permission.controller.dto.PermissionOutboxRetryRequest;
 import com.czh.datasmart.govern.permission.entity.PermissionAuditRecord;
 import com.czh.datasmart.govern.permission.entity.PermissionEventOutbox;
+import com.czh.datasmart.govern.permission.service.support.PermissionPolicyFactCache;
 
 /**
  * 权限中心运维与审计服务。
@@ -79,4 +80,24 @@ public interface PermissionOperationsService {
      */
     PlatformPageResponse<PermissionAuditRecord> pageAuditRecords(PermissionAuditQueryCriteria criteria,
                                                                  PermissionActorContext actorContext);
+
+    /**
+     * 查询 permission-admin 内部权限事实缓存快照。
+     *
+     * <p>该能力面向运维和管理员，用于观察缓存是否启用、当前条目数、命中/未命中次数和最近失效时间。
+     * 在商业化系统里，权限缓存如果不可观察，排查“为什么这个用户现在还能访问/不能访问”会非常困难。
+     */
+    PermissionPolicyFactCache.CacheSnapshot snapshotPolicyCache(PermissionActorContext actorContext);
+
+    /**
+     * 手工清理 permission-admin 内部权限事实缓存。
+     *
+     * @param tenantId 目标租户。为空表示全量清理；非平台管理员通常只能清理自己租户。
+     * @param reason 清理原因，写入日志和返回信息，方便后续审计追踪。
+     * @param actorContext 当前操作者上下文。
+     * @return 清理后的缓存快照。
+     */
+    PermissionPolicyFactCache.CacheSnapshot evictPolicyCache(Long tenantId,
+                                                             String reason,
+                                                             PermissionActorContext actorContext);
 }

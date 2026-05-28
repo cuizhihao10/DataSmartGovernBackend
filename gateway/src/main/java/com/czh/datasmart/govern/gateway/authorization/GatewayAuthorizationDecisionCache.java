@@ -15,6 +15,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -162,6 +163,41 @@ public class GatewayAuthorizationDecisionCache {
         evictionCount.addAndGet(removed);
         lastEvictionTime = Instant.now();
         log.info("已按租户清理网关本地授权缓存，tenantId={}, reason={}, evicted={}", tenantId, reason, removed);
+        return snapshot();
+    }
+
+    /**
+     * 按租户和操作者清理本地缓存。
+     *
+     * <p>项目成员授权变化通常只影响某一个 actor 的 `authorizedProjectIds`。
+     * 如果每次成员变化都清理整个租户，热点租户里的其他用户也会失去缓存命中率，造成不必要的 permission-admin 回源压力。
+     * 因此这里提供 actor 粒度失效：成员关系变了，只清理该成员在该租户下的所有路由判定缓存。
+     *
+     * <p>当 tenantId 或 actorId 缺失时，方法会退化为更保守的租户或全量清理。
+     * 这比“因为事件字段不完整而什么都不做”更安全。
+     */
+    public CacheSnapshot evictActor(Long tenantId, Long actorId, String reason) {
+        if (tenantId == null) {
+            return evictAll(reason);
+        }
+        if (actorId == null) {
+            return evictTenant(tenantId, reason);
+        }
+
+        int removed = 0;
+        Iterator<Map.Entry<CacheKey, CacheEntry>> iterator = cache.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<CacheKey, CacheEntry> entry = iterator.next();
+            CacheKey key = entry.getKey();
+            if (Objects.equals(tenantId, key.tenantId()) && Objects.equals(actorId, key.actorId())) {
+                iterator.remove();
+                removed++;
+            }
+        }
+        evictionCount.addAndGet(removed);
+        lastEvictionTime = Instant.now();
+        log.info("已按操作者清理网关本地授权缓存，tenantId={}, actorId={}, reason={}, evicted={}",
+                tenantId, actorId, reason, removed);
         return snapshot();
     }
 

@@ -31,6 +31,19 @@ public class CreateSyncTemplateRequest {
     private Long tenantId;
 
     /**
+     * 项目 ID。
+     * 模板归属项目后，项目负责人只能看到自己项目内的同步模板，也能支撑项目级同步任务看板、成本统计和审计导出。
+     */
+    @NotNull(message = "projectId 不能为空")
+    private Long projectId;
+
+    /**
+     * 工作空间 ID。
+     * 当前作为可选协作边界保留，适合表达同一项目下的研发、测试、生产或专题分析空间。
+     */
+    private Long workspaceId;
+
+    /**
      * 模板名称。
      */
     @NotBlank(message = "模板名称不能为空")

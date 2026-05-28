@@ -101,7 +101,7 @@ public class PlatformApiResponse<T> {
      * @return 标准失败响应。
      */
     public static <T> PlatformApiResponse<T> error(PlatformErrorCode errorCode, String message, String traceId) {
-        String resolvedMessage = message == null || message.isBlank() ? errorCode.getDefaultMessage() : message;
+        String resolvedMessage = message == null || message.trim().isEmpty() ? errorCode.getDefaultMessage() : message;
         return new PlatformApiResponse<>(errorCode.getCode(), errorCode.name(), resolvedMessage, null, traceId, LocalDateTime.now());
     }
 }

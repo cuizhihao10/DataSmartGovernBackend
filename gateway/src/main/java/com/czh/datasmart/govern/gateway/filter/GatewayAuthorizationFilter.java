@@ -6,32 +6,32 @@
  */
 package com.czh.datasmart.govern.gateway.filter;
 
-import com.czh.datasmart.govern.common.api.PlatformApiResponse;
+import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectHeaderSupport;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
-import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.gateway.authorization.GatewayAuthorizationDecisionCache;
+import com.czh.datasmart.govern.gateway.authorization.GatewayAuthorizationErrorWriter;
+import com.czh.datasmart.govern.gateway.authorization.GatewayInternalServiceEndpointGuard;
 import com.czh.datasmart.govern.gateway.authorization.GatewayPermissionDecisionRequest;
 import com.czh.datasmart.govern.gateway.authorization.GatewayPermissionDecisionResult;
 import com.czh.datasmart.govern.gateway.authorization.PermissionAdminDecisionClient;
 import com.czh.datasmart.govern.gateway.config.GatewayAuthorizationProperties;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.czh.datasmart.govern.gateway.monitoring.GatewayAuthorizationMetrics;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
-import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
+import org.springframework.http.server.PathContainer;
 import org.springframework.http.server.reactive.ServerHttpRequest;
-import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.stereotype.Component;
+import org.springframework.web.util.pattern.PathPatternParser;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
-import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -56,10 +56,23 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
 
+    /**
+     * 路由授权元数据的路径模式解析器。
+     *
+     * <p>网关这一侧必须和 permission-admin 使用相同级别的匹配能力，否则会出现“网关把请求解释成 A 资源，
+     * 权限中心路由策略按 B 路径命中”的认知差异。引入 PathPatternParser 后，配置可以表达端点级规则：
+     * 1. 同步事故工作台；
+     * 2. 某个同步任务下的人工介入高风险动作；
+     * 3. 某个同步任务、某次 execution 下的执行器服务账号回调。
+     */
+    private static final PathPatternParser PATH_PATTERN_PARSER = new PathPatternParser();
+
     private final GatewayAuthorizationProperties authorizationProperties;
     private final PermissionAdminDecisionClient permissionAdminDecisionClient;
     private final GatewayAuthorizationDecisionCache authorizationDecisionCache;
-    private final ObjectMapper objectMapper;
+    private final GatewayAuthorizationMetrics authorizationMetrics;
+    private final GatewayInternalServiceEndpointGuard internalServiceEndpointGuard;
+    private final GatewayAuthorizationErrorWriter authorizationErrorWriter;
 
     /**
      * 执行路由级授权。
@@ -73,27 +86,50 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
         String path = request.getPath().value();
 
         if (!authorizationProperties.isEnabled()) {
+            authorizationMetrics.recordBypass("AUTH_DISABLED");
             return chain.filter(exchange);
         }
         if (isPublicPath(path)) {
+            authorizationMetrics.recordBypass("PUBLIC_PATH");
             return chain.filter(exchange);
         }
 
         String traceId = request.getHeaders().getFirst(PlatformContextHeaders.TRACE_ID);
+        GatewayInternalServiceEndpointGuard.GuardDecision guardDecision = internalServiceEndpointGuard.evaluate(request);
+        if (guardDecision.protectedEndpoint()) {
+            if (!guardDecision.allowed()) {
+                authorizationMetrics.recordInternalEndpointGuard(guardDecision.endpointName(),
+                        guardDecision.status() == HttpStatus.TOO_MANY_REQUESTS ? "RATE_LIMITED" : "DENY");
+                log.warn("网关内部服务端点保护拒绝请求，traceId={}, endpoint={}, path={}, status={}, reason={}",
+                        traceId, guardDecision.endpointName(), path, guardDecision.status(), guardDecision.reason());
+                return authorizationErrorWriter.writeGuardDenied(exchange.getResponse(), traceId, guardDecision);
+            }
+            authorizationMetrics.recordInternalEndpointGuard(guardDecision.endpointName(), "ALLOW");
+        }
+
         GatewayPermissionDecisionRequest decisionRequest = buildDecisionRequest(request);
         Optional<GatewayPermissionDecisionResult> cachedDecision = authorizationDecisionCache.get(decisionRequest);
         if (cachedDecision.isPresent()) {
+            authorizationMetrics.recordCacheAccess(true);
             log.debug("网关授权缓存命中，traceId={}, role={}, path={}, action={}",
                     traceId, decisionRequest.getActorRole(), decisionRequest.getRequestPath(), decisionRequest.getAction());
-            return handleDecision(exchange, chain, cachedDecision.get(), decisionRequest, traceId);
+            return handleDecision(exchange, chain, cachedDecision.get(), decisionRequest, traceId, "CACHE");
         }
+        authorizationMetrics.recordCacheAccess(false);
 
+        long decisionStartedAt = System.nanoTime();
         return permissionAdminDecisionClient.evaluate(decisionRequest, traceId)
                 .flatMap(decision -> {
                     authorizationDecisionCache.put(decisionRequest, decision);
-                    return handleDecision(exchange, chain, decision, decisionRequest, traceId);
+                    authorizationMetrics.recordDecisionLatency("REMOTE",
+                            Duration.ofNanos(System.nanoTime() - decisionStartedAt));
+                    return handleDecision(exchange, chain, decision, decisionRequest, traceId, "REMOTE");
                 })
-                .onErrorResume(error -> handleDecisionError(exchange, chain, error, decisionRequest, traceId));
+                .onErrorResume(error -> {
+                    authorizationMetrics.recordDecisionLatency("REMOTE",
+                            Duration.ofNanos(System.nanoTime() - decisionStartedAt));
+                    return handleDecisionError(exchange, chain, error, decisionRequest, traceId, "REMOTE");
+                });
     }
 
     /**
@@ -106,23 +142,86 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
                                       GatewayFilterChain chain,
                                       GatewayPermissionDecisionResult decision,
                                       GatewayPermissionDecisionRequest decisionRequest,
-                                      String traceId) {
+                                      String traceId,
+                                      String decisionSource) {
         boolean allowed = Boolean.TRUE.equals(decision.getAllowed());
         if (allowed) {
+            authorizationMetrics.recordDecisionOutcome(decisionSource, "ALLOW");
             log.debug("网关权限判定通过，traceId={}, role={}, path={}, policyId={}",
                     traceId, decisionRequest.getActorRole(), decisionRequest.getRequestPath(), decision.getMatchedRoutePolicyId());
-            return chain.filter(exchange);
+            return chain.filter(exchangeWithDataScope(exchange, decision));
         }
 
         if (authorizationProperties.isShadowMode()) {
+            authorizationMetrics.recordDecisionOutcome(decisionSource, "SHADOW_DENY");
             log.warn("网关权限判定影子拒绝但继续放行，traceId={}, role={}, path={}, reason={}",
                     traceId, decisionRequest.getActorRole(), decisionRequest.getRequestPath(), decision.getReason());
             return chain.filter(exchange);
         }
 
+        authorizationMetrics.recordDecisionOutcome(decisionSource, "DENY");
         log.warn("网关权限判定拒绝访问，traceId={}, role={}, path={}, reason={}",
                 traceId, decisionRequest.getActorRole(), decisionRequest.getRequestPath(), decision.getReason());
-        return writeForbidden(exchange.getResponse(), traceId, decision.getReason());
+        return authorizationErrorWriter.writeForbidden(exchange.getResponse(), traceId, decision.getReason());
+    }
+
+    /**
+     * 把 permission-admin 的数据范围判定结果透传给下游业务服务。
+     *
+     * <p>路由授权只能回答“这个角色是否允许访问这个入口”，但真正的商业化权限还必须回答
+     * “这个角色进入列表页后最多能看到哪些数据”。permission-admin 已经在判定结果中返回
+     * dataScopeLevel、dataScopeExpression 和 approvalRequired，如果 gateway 不把这些字段继续传给业务服务，
+     * 那么权限中心的范围策略就只停留在审计记录里，无法真正约束 SQL 查询。
+     *
+     * <p>这里有意只做可信透传，不在 gateway 解析表达式：
+     * 1. gateway 不掌握每个业务表的字段、索引和关联关系；
+     * 2. 不同模块对 SELF、PROJECT、TENANT 的落地字段不同；
+     * 3. 把表达式解析下沉到业务模块，可以让 data-sync、datasource-management、data-quality 各自选择最合适的查询条件。
+     */
+    private ServerWebExchange exchangeWithDataScope(ServerWebExchange exchange,
+                                                    GatewayPermissionDecisionResult decision) {
+        ServerHttpRequest scopedRequest = exchange.getRequest()
+                .mutate()
+                .headers(headers -> {
+                    setHeaderIfPresent(headers, PlatformContextHeaders.DATA_SCOPE_LEVEL, decision.getDataScopeLevel());
+                    setHeaderIfPresent(headers, PlatformContextHeaders.DATA_SCOPE_EXPRESSION, decision.getDataScopeExpression());
+                    setAuthorizedProjectIds(headers, decision.getAuthorizedProjectIds());
+                    if (decision.getApprovalRequired() != null) {
+                        headers.set(PlatformContextHeaders.APPROVAL_REQUIRED, decision.getApprovalRequired().toString());
+                    }
+                })
+                .build();
+        return exchange.mutate().request(scopedRequest).build();
+    }
+
+    /**
+     * 设置透传 Header。
+     *
+     * <p>不透传空值可以避免业务服务误以为权限中心显式返回了空范围。
+     */
+    private void setHeaderIfPresent(HttpHeaders headers, String headerName, String value) {
+        if (value != null && !value.isBlank()) {
+            headers.set(headerName, value.trim());
+        }
+    }
+
+    /**
+     * 透传权限中心已经物化的项目授权集合。
+     *
+     * <p>这里刻意把 List<Long> 转成逗号分隔 Header，而不是让下游服务重新调用 permission-admin。
+     * 原因有三点：
+     * 1. gateway 已经处在授权判定链路上，多一次远程查询会增加每个业务服务的耦合和延迟；
+     * 2. 下游业务模块只需要知道“本次请求允许哪些项目”，不需要理解权限中心的数据结构；
+     * 3. Header 快照可以进入日志、审计和排障链路，便于解释某次 PROJECT 范围查询为什么命中了这些项目。
+     */
+    private void setAuthorizedProjectIds(HttpHeaders headers, List<Long> authorizedProjectIds) {
+        if (authorizedProjectIds == null || authorizedProjectIds.isEmpty()) {
+            return;
+        }
+        String value = PlatformAuthorizedProjectHeaderSupport.format(authorizedProjectIds);
+        if (!value.isBlank()) {
+            headers.set(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, value);
+        }
     }
 
     /**
@@ -136,16 +235,19 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
                                            GatewayFilterChain chain,
                                            Throwable error,
                                            GatewayPermissionDecisionRequest decisionRequest,
-                                           String traceId) {
+                                           String traceId,
+                                           String decisionSource) {
         if (authorizationProperties.isFailOpenOnError()) {
+            authorizationMetrics.recordDecisionOutcome(decisionSource, "ERROR_FAIL_OPEN");
             log.warn("权限中心调用异常，按 fail-open 策略继续放行，traceId={}, role={}, path={}, error={}",
                     traceId, decisionRequest.getActorRole(), decisionRequest.getRequestPath(), error.getMessage());
             return chain.filter(exchange);
         }
 
+        authorizationMetrics.recordDecisionOutcome(decisionSource, "ERROR_FAIL_CLOSED");
         log.error("权限中心调用异常，按 fail-closed 策略拒绝访问，traceId={}, role={}, path={}",
                 traceId, decisionRequest.getActorRole(), decisionRequest.getRequestPath(), error);
-        return writeForbidden(exchange.getResponse(), traceId, "权限中心暂时不可用，网关已拒绝本次访问");
+        return authorizationErrorWriter.writeForbidden(exchange.getResponse(), traceId, "权限中心暂时不可用，网关已拒绝本次访问");
     }
 
     /**
@@ -267,6 +369,9 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
         if (path.startsWith("/api/datasource/")) {
             return "DATASOURCE";
         }
+        if (path.startsWith("/api/task/task-drafts/")) {
+            return "TASK_DRAFT";
+        }
         if (path.startsWith("/api/task/")) {
             return "TASK";
         }
@@ -278,6 +383,9 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
         }
         if (path.startsWith("/api/observability/")) {
             return "AUDIT_LOG";
+        }
+        if (path.startsWith("/api/agent/")) {
+            return "AI_RUNTIME";
         }
         return "SYSTEM_SETTING";
     }
@@ -311,6 +419,14 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
      * 简单路径匹配，支持 /** 后缀通配和完全匹配。
      */
     private boolean pathMatches(String pattern, String path) {
+        try {
+            return PATH_PATTERN_PARSER.parse(pattern).matches(PathContainer.parsePath(path));
+        } catch (IllegalArgumentException ignored) {
+            /*
+             * 兼容保护：如果某条配置暂时不是合法 PathPattern，继续使用旧版匹配能力。
+             * 这样可以避免配置灰度期间因为一条坏规则导致网关授权过滤器整体异常。
+             */
+        }
         if (pattern.endsWith("/**")) {
             String prefix = pattern.substring(0, pattern.length() - 3);
             return path.equals(prefix) || path.startsWith(prefix + "/");
@@ -337,32 +453,6 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
      */
     private String valueOrDefault(String value, String defaultValue) {
         return value == null || value.isBlank() ? defaultValue : value.trim();
-    }
-
-    /**
-     * 写出 403 响应。
-     *
-     * <p>这里直接使用 PlatformApiResponse，是为了让网关拒绝和业务服务拒绝保持同一种响应形态。
-     */
-    private Mono<Void> writeForbidden(ServerHttpResponse response, String traceId, String message) {
-        response.setStatusCode(HttpStatus.FORBIDDEN);
-        response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
-        PlatformApiResponse<Void> body = PlatformApiResponse.error(PlatformErrorCode.FORBIDDEN, message, traceId);
-        byte[] bytes = serialize(body);
-        DataBuffer buffer = response.bufferFactory().wrap(bytes);
-        return response.writeWith(Mono.just(buffer));
-    }
-
-    /**
-     * 序列化响应体。
-     */
-    private byte[] serialize(PlatformApiResponse<Void> body) {
-        try {
-            return objectMapper.writeValueAsBytes(body);
-        } catch (JsonProcessingException exception) {
-            return "{\"code\":20002,\"reason\":\"FORBIDDEN\",\"message\":\"forbidden\"}"
-                    .getBytes(StandardCharsets.UTF_8);
-        }
     }
 
     /**

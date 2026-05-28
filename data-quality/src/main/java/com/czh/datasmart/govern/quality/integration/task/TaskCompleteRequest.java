@@ -19,6 +19,21 @@ import lombok.Data;
 public class TaskCompleteRequest {
 
     /**
+     * task-management 返回的本次执行 run ID，用于证明完成回调属于当前执行尝试。
+     */
+    private Long runId;
+
+    /**
+     * data-quality 执行器实例 ID，必须与 claim 时持有租约的 executorId 一致。
+     */
+    private String executorId;
+
+    /**
+     * 幂等键。data-quality 会按 taskId/runId/action 构造稳定键，便于 task-management 识别重复回调。
+     */
+    private String idempotencyKey;
+
+    /**
      * 完成结果摘要。
      *
      * <p>建议记录质量 executionId、reportId、检测结果、异常数量等信息，方便任务中心列表快速阅读。

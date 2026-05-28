@@ -55,7 +55,11 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
             PlatformContextHeaders.ACTOR_TYPE,
             PlatformContextHeaders.SOURCE_SERVICE,
             PlatformContextHeaders.WORKSPACE_ID,
-            PlatformContextHeaders.REQUEST_SOURCE
+            PlatformContextHeaders.REQUEST_SOURCE,
+            PlatformContextHeaders.DATA_SCOPE_LEVEL,
+            PlatformContextHeaders.DATA_SCOPE_EXPRESSION,
+            PlatformContextHeaders.AUTHORIZED_PROJECT_IDS,
+            PlatformContextHeaders.APPROVAL_REQUIRED
     );
 
     /**
@@ -226,11 +230,17 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
         if (path.startsWith("/api/datasource/")) {
             return "/api/datasource/**";
         }
+        if (path.startsWith("/api/sync/")) {
+            return "/api/sync/**";
+        }
         if (path.startsWith("/api/quality/")) {
             return "/api/quality/**";
         }
         if (path.startsWith("/api/observability/")) {
             return "/api/observability/**";
+        }
+        if (path.startsWith("/api/agent/")) {
+            return "/api/agent/**";
         }
         return "/**";
     }

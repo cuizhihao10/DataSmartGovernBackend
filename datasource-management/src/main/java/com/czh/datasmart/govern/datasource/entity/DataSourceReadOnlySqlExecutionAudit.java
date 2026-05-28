@@ -58,6 +58,31 @@ public class DataSourceReadOnlySqlExecutionAudit {
     private String datasourceType;
 
     /**
+     * 数据源所属租户 ID 快照。
+     *
+     * <p>这里与 actorTenantId 不同：actorTenantId 表示“谁发起访问”，datasourceTenantId 表示“被访问的数据源属于哪个租户”。
+     * 在服务账号、跨服务调度、平台管理员代操作等场景下，二者并不一定完全相同，因此审计表需要分别保存。</p>
+     */
+    private Long datasourceTenantId;
+
+    /**
+     * 数据源所属项目 ID 快照。
+     *
+     * <p>受控只读 SQL 是 datasource-management 中最敏感的能力之一，因为它真的会读取客户源库。
+     * 把 datasourceProjectId 冗余到审计表后，项目负责人、审计员和合规人员可以直接按项目检索 SQL 访问证据，
+     * 不必每次 join 当前数据源表，也不会因为数据源后续迁移项目导致历史审计语义被改写。</p>
+     */
+    private Long datasourceProjectId;
+
+    /**
+     * 数据源所属工作空间 ID 快照。
+     *
+     * <p>用于项目内部进一步区分研发、测试、生产等空间。
+     * 例如测试空间的 SQL 预览访问不应混入生产空间的合规审计报表。</p>
+     */
+    private Long datasourceWorkspaceId;
+
+    /**
      * 执行目的。
      *
      * 建议使用稳定编码，例如 QUALITY_METRIC_SCAN、QUALITY_ANOMALY_SAMPLE、DATA_ASSET_PROFILE。

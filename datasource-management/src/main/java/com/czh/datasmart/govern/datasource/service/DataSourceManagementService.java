@@ -10,6 +10,7 @@ import com.czh.datasmart.govern.datasource.entity.DataSourceConfig;
 import com.czh.datasmart.govern.datasource.entity.DataSourceConnectionTestResult;
 import com.czh.datasmart.govern.datasource.entity.DataSourceMetadataDiscoveryResult;
 import com.czh.datasmart.govern.datasource.entity.DataSourceReadOnlySqlExecutionAudit;
+import com.czh.datasmart.govern.datasource.service.support.DatasourceProjectVisibility;
 
 import java.time.LocalDateTime;
 
@@ -27,7 +28,8 @@ public interface DataSourceManagementService extends IService<DataSourceConfig> 
     /**
      * 创建数据源。
      */
-    DataSourceConfig createDataSource(String name, String type, String jdbcUrl, String username,
+    DataSourceConfig createDataSource(Long tenantId, Long projectId, Long workspaceId,
+                                      String name, String type, String jdbcUrl, String username,
                                       String password, String description);
 
     /**
@@ -89,6 +91,7 @@ public interface DataSourceManagementService extends IService<DataSourceConfig> 
             String purpose,
             String actorRole,
             Long actorTenantId,
+            DatasourceProjectVisibility visibility,
             String executionStatus,
             String sqlFingerprint,
             LocalDateTime startTime,

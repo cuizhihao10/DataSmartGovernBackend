@@ -128,6 +128,23 @@ public class GatewayAuthorizationProperties {
     private List<RouteAuthorizationMetadata> routeMetadata = defaultRouteMetadata();
 
     /**
+     * 内部服务端点保护配置。
+     *
+     * <p>有些接口虽然走 `/api/**`，但产品语义上并不应该直接开放给普通人类用户。
+     * 例如 `/api/agent/plan-ingestions` 是 Python AI Runtime 把 AgentPlan 提交给 Java 控制面的内部桥梁：
+     * 如果普通用户可以直接构造请求调用，就可能绕过“前端会话入口 -> 智能网关 -> Python Runtime -> Java 控制面”的正规链路。
+     *
+     * <p>这里先在 gateway 做第一道保护：
+     * 1. 要求调用方角色必须是服务账号；
+     * 2. 可选要求内部 Token Header；
+     * 3. 做本地固定窗口限流，避免模型异常、重试风暴或恶意调用把 agent-runtime 打满。
+     *
+     * <p>注意：这不是替代 permission-admin。
+     * gateway 本地保护负责“快速拦截明显不该进来的调用”，permission-admin 仍负责策略事实、审计记录和数据范围透传。
+     */
+    private List<InternalServiceEndpointProperties> internalServiceEndpoints = defaultInternalServiceEndpoints();
+
+    /**
      * 授权判定缓存配置。
      *
      * <p>为什么网关需要缓存权限判定？
@@ -153,13 +170,90 @@ public class GatewayAuthorizationProperties {
     private static List<RouteAuthorizationMetadata> defaultRouteMetadata() {
         List<RouteAuthorizationMetadata> defaults = new ArrayList<>();
         defaults.add(route("/api/datasource/**", "DATASOURCE", "数据源、连接器、元数据与同步控制面"));
+        defaults.add(route("/api/agent/plan-ingestions", "AI_RUNTIME",
+                "Python AI Runtime 向 Java agent-runtime 提交 AgentPlan 的内部控制面入口", Map.of("POST", "INGEST_PLAN")));
+        defaults.add(route("/api/agent/events/ws", "AI_RUNTIME",
+                "Agent Runtime 实时事件 WebSocket 订阅入口，用于订阅 run/session 进度、断线续传、ack 和 heartbeat",
+                Map.of("GET", "SUBSCRIBE")));
+        defaults.add(route("/api/agent/runtime-events/diagnostics", "AI_RUNTIME",
+                "Agent Runtime 运行时事件消费诊断接口，用于运维查看 Kafka consumer、投影窗口和拒绝原因统计",
+                Map.of("GET", "DIAGNOSE")));
+        defaults.add(route("/api/agent/runtime-events/**", "AI_RUNTIME",
+                "Agent Runtime 运行时事件投影查询接口，用于查看 run/session/request 维度的 Agent 执行事件",
+                Map.of("GET", "VIEW_EVENTS")));
+        defaults.add(route("/api/agent/**", "AI_RUNTIME",
+                "Agent Runtime 模型、工具、Skill、会话、Run、计划接入和工具审计控制面"));
+        defaults.add(route("/api/sync/sync-templates/*/validate", "SYNC_TEMPLATE",
+                "data-sync 同步模板校验接口，校验源端、目标端、字段映射和写入策略是否可运行", Map.of("POST", "VALIDATE")));
+        defaults.add(route("/api/sync/sync-tasks/*/run", "SYNC_TASK",
+                "data-sync 同步任务手动运行接口，属于显式触发执行动作", Map.of("POST", "RUN")));
+        defaults.add(route("/api/sync/sync-tasks/*/executions/*/**", "SYNC_EXECUTION",
+                "data-sync 执行器回调接口，通常由服务账号调用，需要区别于人工任务操作", Map.of("POST", "CALLBACK")));
+        defaults.add(route("/api/sync/sync-tasks/*/attention/acknowledge", "SYNC_OPERATION",
+                "data-sync 人工介入确认接手动作", Map.of("POST", "ACKNOWLEDGE")));
+        defaults.add(route("/api/sync/sync-tasks/*/attention/resolve", "SYNC_OPERATION",
+                "data-sync 人工介入解决动作", Map.of("POST", "RESOLVE")));
+        defaults.add(route("/api/sync/sync-tasks/*/attention/rerun", "SYNC_OPERATION",
+                "data-sync 人工介入后重跑动作", Map.of("POST", "RETRY")));
+        defaults.add(route("/api/sync/sync-tasks/*/attention/cancel", "SYNC_OPERATION",
+                "data-sync 人工介入取消动作", Map.of("POST", "CANCEL")));
+        defaults.add(route("/api/sync/sync-tasks/*/attention/archive", "SYNC_OPERATION",
+                "data-sync 人工介入归档动作", Map.of("POST", "ARCHIVE")));
+        defaults.add(route("/api/sync/sync-tasks/*/attention/incidents", "SYNC_OPERATION",
+                "data-sync 人工介入创建事故动作", Map.of("POST", "CREATE")));
+        defaults.add(route("/api/sync/sync-tasks/*/attention/**", "SYNC_OPERATION",
+                "data-sync 人工介入处理接口，包含确认、解决、重跑、取消、归档和创建事故等高风险动作"));
+        defaults.add(route("/api/sync/sync-incidents/*/acknowledge", "SYNC_INCIDENT",
+                "data-sync 事故确认接手动作", Map.of("POST", "ACKNOWLEDGE")));
+        defaults.add(route("/api/sync/sync-incidents/*/assign", "SYNC_INCIDENT",
+                "data-sync 事故分派负责人动作", Map.of("POST", "ASSIGN")));
+        defaults.add(route("/api/sync/sync-incidents/*/resolve", "SYNC_INCIDENT",
+                "data-sync 事故解决动作", Map.of("POST", "RESOLVE")));
+        defaults.add(route("/api/sync/sync-incidents/*/close", "SYNC_INCIDENT",
+                "data-sync 事故关闭动作", Map.of("POST", "CLOSE")));
+        defaults.add(route("/api/sync/sync-incidents/**", "SYNC_INCIDENT",
+                "data-sync 事故工作台接口，用于事故查看、接手、分派、解决和关闭"));
+        defaults.add(route("/api/sync/sync-executions/claim", "SYNC_EXECUTION",
+                "data-sync 执行器认领下一条 execution 的协议入口", Map.of("POST", "CLAIM")));
+        defaults.add(route("/api/sync/sync-executions/*/heartbeat", "SYNC_EXECUTION",
+                "data-sync 执行器续租和上报轻量进度的协议入口", Map.of("POST", "HEARTBEAT")));
+        defaults.add(route("/api/sync/sync-executions/*/defer", "SYNC_EXECUTION",
+                "data-sync 执行器因容量或窗口限制延迟回队列的协议入口", Map.of("POST", "DEFER")));
+        defaults.add(route("/api/sync/sync-executions/recover-expired-leases", "SYNC_EXECUTION",
+                "data-sync 过期租约恢复入口，属于运维恢复动作", Map.of("POST", "RECOVER")));
+        defaults.add(route("/api/sync/sync-executions/**", "SYNC_EXECUTION",
+                "data-sync 执行租约接口，用于执行器认领、心跳、延期和过期租约恢复"));
+        defaults.add(route("/api/sync/sync-templates/**", "SYNC_TEMPLATE",
+                "data-sync 同步模板接口，用于配置源端、目标端、同步模式、字段映射和写入策略"));
+        defaults.add(route("/api/sync/**", "SYNC_TASK",
+                "data-sync 同步任务接口，用于同步任务创建、查询、运行、执行历史和审计查询"));
         defaults.add(route("/api/task/operations/**", "TASK_OPERATION",
                 "任务队列、死信、延期、执行器租约等运营工作台接口，必须区别于普通任务查看接口进行授权"));
+        defaults.add(route("/api/task/task-drafts/**", "TASK_DRAFT",
+                "任务草稿、审批和转换真实任务入口；草稿不会直接进入执行队列"));
         defaults.add(route("/api/task/**", "TASK", "全平台任务编排、调度、重试、取消和执行记录"));
         defaults.add(route("/api/quality/**", "QUALITY_RULE", "数据质量规则、检测执行、异常明细和质量报告"));
         defaults.add(route("/api/permission/**", "SYSTEM_SETTING", "角色、菜单、路由策略、数据范围和平台管理能力"));
         defaults.add(route("/api/observability/**", "AUDIT_LOG", "审计、日志、指标、告警和运维视角"));
         return defaults;
+    }
+
+    /**
+     * 默认内部服务端点。
+     *
+     * <p>当前只把 AgentPlan 接入口纳入强保护。
+     * 后续如果 WebSocket replay、Kafka callback fallback、模型 usage write-back 等能力也通过 HTTP 暴露，
+     * 应继续在这里增加端点，而不是让它们依赖普通 `/api/agent/**` 通配策略。
+     */
+    private static List<InternalServiceEndpointProperties> defaultInternalServiceEndpoints() {
+        InternalServiceEndpointProperties endpoint = new InternalServiceEndpointProperties();
+        endpoint.setName("agent-plan-ingestion");
+        endpoint.setPathPattern("/api/agent/plan-ingestions");
+        endpoint.setAllowedActorRoles(List.of("SERVICE_ACCOUNT"));
+        endpoint.setRateLimitEnabled(true);
+        endpoint.setMaxRequestsPerMinute(120);
+        endpoint.setDescription("Python AI Runtime 提交 AgentPlan 到 Java 控制面的内部入口。");
+        return new ArrayList<>(List.of(endpoint));
     }
 
     /**
@@ -170,12 +264,25 @@ public class GatewayAuthorizationProperties {
      * 这不是最终商业权限模型，只是当前阶段比硬编码更清晰、更容易扩展的基线。
      */
     private static RouteAuthorizationMetadata route(String pathPattern, String resourceType, String description) {
+        return route(pathPattern, resourceType, description, defaultMethodActions());
+    }
+
+    /**
+     * 创建一条带自定义动作映射的路由元数据。
+     *
+     * <p>当一个 POST 并不表示 CREATE，而是 RUN、CALLBACK、RECOVER、ACKNOWLEDGE 等业务动作时，
+     * 必须使用这个重载显式指定 methodActions。这样 gateway 发给 permission-admin 的 action 才能反映真实业务意图。
+     */
+    private static RouteAuthorizationMetadata route(String pathPattern,
+                                                    String resourceType,
+                                                    String description,
+                                                    Map<String, String> methodActions) {
         RouteAuthorizationMetadata metadata = new RouteAuthorizationMetadata();
         metadata.setPathPattern(pathPattern);
         metadata.setResourceType(resourceType);
         metadata.setDefaultAction("EXECUTE");
         metadata.setDescription(description);
-        metadata.setMethodActions(defaultMethodActions());
+        metadata.setMethodActions(methodActions);
         return metadata;
     }
 

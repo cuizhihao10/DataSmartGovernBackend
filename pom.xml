@@ -43,6 +43,12 @@
     -->
     <properties>
         <java.version>21</java.version>
+        <!--
+          显式固定源码与报告输出编码，避免 Windows 本地环境、Maven 默认编码
+          与源码中文注释之间出现不一致，导致注释内容或文本块在构建阶段被错误解析。
+        -->
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <spring-cloud.version>2023.0.3</spring-cloud.version>
         <spring-cloud-alibaba.version>2023.0.1.2</spring-cloud-alibaba.version>
         <kafka.version>3.6.2</kafka.version>
@@ -57,7 +63,9 @@
         <module>permission-admin</module>
         <module>task-management</module>
         <module>datasource-management</module>
+        <module>data-sync</module>
         <module>data-quality</module>
+        <module>agent-runtime</module>
         <module>observability</module>
     </modules>
     <dependencyManagement>

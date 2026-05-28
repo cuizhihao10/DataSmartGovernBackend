@@ -2,9 +2,18 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+alerting:
+  alertmanagers:
+    - static_configs:
+        # Prometheus 与 Alertmanager 运行在同一个 docker-compose 网络中，
+        # 因此这里使用服务名 alertmanager 和容器内端口 9093。
+        - targets:
+            - 'alertmanager:9093'
+
 rule_files:
-  # - "first_rules.yml"
-  # - "second_rules.yml"
+  # 规则文件按模块拆分，避免所有告警混在 prometheus.yml 中。
+  # 当前先接入 data-sync 的恢复、幂等清理和运行数据清理告警。
+  - "/etc/prometheus/rules/*.yml"
 
 scrape_configs:
   - job_name: 'gateway'
@@ -25,6 +34,11 @@ scrape_configs:
   - job_name: 'data-quality'
     static_configs:
       - targets: ['host.docker.internal:8083']
+    metrics_path: '/actuator/prometheus'
+
+  - job_name: 'data-sync'
+    static_configs:
+      - targets: ['host.docker.internal:8086']
     metrics_path: '/actuator/prometheus'
 
   - job_name: 'observability'

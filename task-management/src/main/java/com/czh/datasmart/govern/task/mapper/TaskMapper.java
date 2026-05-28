@@ -43,11 +43,23 @@ public interface TaskMapper extends BaseMapper<Task> {
             <if test="taskType != null and taskType != ''">
               AND type = #{taskType}
             </if>
+            <if test="tenantId != null">
+              AND tenant_id = #{tenantId}
+            </if>
+            <if test="ownerId != null">
+              AND owner_id = #{ownerId}
+            </if>
+            <if test="projectId != null">
+              AND project_id = #{projectId}
+            </if>
             ORDER BY FIELD(priority, 'HIGH', 'MEDIUM', 'LOW'), COALESCE(queued_time, create_time) ASC, create_time ASC
             LIMIT 1
             </script>
             """)
-    Task selectNextClaimCandidate(@Param("taskType") String taskType);
+    Task selectNextClaimCandidate(@Param("taskType") String taskType,
+                                  @Param("tenantId") Long tenantId,
+                                  @Param("ownerId") Long ownerId,
+                                  @Param("projectId") Long projectId);
 
     /**
      * 执行器声明任务租约。

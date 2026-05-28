@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS task (
     name VARCHAR(255) NOT NULL COMMENT '任务名称',
     description TEXT COMMENT '任务说明，便于运营和学习理解',
     type VARCHAR(50) NOT NULL COMMENT '任务类型，用于分类、路由或策略绑定',
+    tenant_id BIGINT COMMENT '任务所属租户 ID，用于多租户数据隔离、租户级队列公平性、租户级 SLA 和审计查询；当前允许为空以兼容早期历史任务',
+    owner_id BIGINT COMMENT '任务负责人 ID，用于我的任务、失败通知、责任归属、人工待办和运营排障；服务账号任务可写入规则 owner 或系统账号',
+    project_id BIGINT COMMENT '任务所属项目 ID，用于租户内部二级隔离、项目级配额、项目级看板、项目负责人审批和成本审计',
     status VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT '当前主状态，例如 PENDING、RUNNING、DEFERRED、DEAD_LETTER、SUCCESS、FAILED、CANCELLED',
     params TEXT COMMENT '任务输入参数，通常为 JSON',
     progress INT DEFAULT 0 COMMENT '执行进度百分比，范围 0 到 100',
@@ -54,11 +57,48 @@ CREATE TABLE IF NOT EXISTS task (
     result TEXT COMMENT '执行结果或失败摘要',
     INDEX idx_task_status (status),
     INDEX idx_task_type (type),
+    INDEX idx_task_tenant_status_time (tenant_id, status, create_time),
+    INDEX idx_task_owner_status_time (owner_id, status, create_time),
+    INDEX idx_task_project_status_time (project_id, status, create_time),
     INDEX idx_task_create_time (create_time),
     INDEX idx_task_queue_claim (status, queued_time, priority, create_time),
+    INDEX idx_task_tenant_queue_claim (tenant_id, status, queued_time, priority, create_time),
     INDEX idx_task_executor_lease (current_executor_id, lease_expire_time),
     INDEX idx_task_attention (attention_required, update_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='任务聚合主表';
+
+CREATE TABLE IF NOT EXISTS task_draft (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '任务草稿主键；草稿不进入执行器认领队列',
+    name VARCHAR(255) NOT NULL COMMENT '草稿名称，转换真实任务时通常作为 task.name',
+    description TEXT COMMENT '草稿说明，描述目标、风险、审批依据和执行建议',
+    type VARCHAR(50) NOT NULL COMMENT '目标任务类型，例如 DATA_QUALITY_SCAN、DATA_SYNC、MANUAL_REVIEW',
+    tenant_id BIGINT COMMENT '草稿所属租户 ID，用于多租户隔离和审批范围收口',
+    owner_id BIGINT COMMENT '草稿负责人 ID，转换真实任务时默认写入 task.owner_id',
+    project_id BIGINT COMMENT '草稿所属项目 ID，用于 PROJECT 数据范围、项目审批和项目级队列治理',
+    status VARCHAR(32) NOT NULL DEFAULT 'DRAFT' COMMENT '草稿状态：DRAFT、PENDING_APPROVAL、APPROVED、CONVERTING、REJECTED、CONVERTED；CONVERTING 用于并发转换门闩',
+    params TEXT COMMENT '草稿参数 JSON；转换真实任务前仍需按任务类型做 schema 校验',
+    priority VARCHAR(10) DEFAULT 'MEDIUM' COMMENT '建议任务优先级，转换时写入 task.priority',
+    max_retry_count INT NOT NULL DEFAULT 3 COMMENT '建议最大重试次数，转换时写入 task.max_retry_count',
+    max_defer_count INT NOT NULL DEFAULT 20 COMMENT '建议最大连续延迟次数，转换时写入 task.max_defer_count',
+    source_type VARCHAR(32) DEFAULT 'MANUAL' COMMENT '草稿来源类型，例如 AGENT、TEMPLATE、MANUAL、API',
+    source_ref VARCHAR(255) COMMENT '来源引用，例如 Agent auditId、任务模板 ID 或外部工单号',
+    created_by BIGINT COMMENT '创建人 ID',
+    submitted_by BIGINT COMMENT '提交审批人 ID',
+    approved_by BIGINT COMMENT '审批人 ID',
+    approval_comment TEXT COMMENT '提交、审批或拒绝说明',
+    converted_task_id BIGINT COMMENT '转换得到的真实任务 ID；为空表示尚未转换',
+    create_time DATETIME NOT NULL COMMENT '创建时间',
+    update_time DATETIME NOT NULL COMMENT '最后更新时间',
+    submit_time DATETIME COMMENT '提交审批时间',
+    approval_time DATETIME COMMENT '审批时间',
+    convert_time DATETIME COMMENT '转换真实任务时间',
+    INDEX idx_task_draft_status_time (status, create_time),
+    INDEX idx_task_draft_tenant_status_time (tenant_id, status, create_time),
+    INDEX idx_task_draft_project_status_time (project_id, status, create_time),
+    INDEX idx_task_draft_owner_status_time (owner_id, status, create_time),
+    INDEX idx_task_draft_source (source_type, source_ref),
+    INDEX idx_task_draft_converted_task (converted_task_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='任务草稿表；用于 Agent/模板/人工配置生成待审批任务';
 
 CREATE TABLE IF NOT EXISTS task_execution_log (
     id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '日志主键',
@@ -96,12 +136,36 @@ CREATE TABLE IF NOT EXISTS task_execution_run (
     INDEX idx_task_execution_run_task_time (task_id, started_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='任务执行尝试记录表';
 
+CREATE TABLE IF NOT EXISTS task_callback_idempotency (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '执行器回调幂等记录主键，仅用于内部更新和排障定位',
+    task_id BIGINT NOT NULL COMMENT '关联任务 ID；幂等必须绑定具体任务，避免不同任务的相同幂等键互相影响',
+    action VARCHAR(32) NOT NULL COMMENT '回调动作编码，例如 PROGRESS、COMPLETE、FAIL、DEFER；动作参与唯一键以区分同一 run 下的不同行为',
+    idempotency_key VARCHAR(128) NOT NULL COMMENT '调用方生成的幂等键；同一次业务动作重试必须复用同一个键，新 run 或新动作必须换新键',
+    run_id BIGINT NOT NULL COMMENT '回调所属执行 run ID，用于审计并与 task.current_execution_run_id 做一致性校验',
+    executor_id VARCHAR(128) NOT NULL COMMENT '发起回调的执行器实例 ID，用于审计并与 task.current_executor_id 做租约一致性校验',
+    request_digest VARCHAR(1000) COMMENT '请求摘要；保存排障所需的短文本，不保存完整大结果或敏感参数',
+    callback_state VARCHAR(32) NOT NULL COMMENT '幂等处理状态：PROCESSING 表示处理中，SUCCEEDED 表示已成功落地，FAILED 为后续失败审计预留',
+    response_summary VARCHAR(1000) COMMENT '首次成功处理后的响应或业务结果摘要，便于重复请求复用首次处理语义',
+    error_message VARCHAR(1000) COMMENT '失败摘要；当前事务模型下失败通常回滚，该字段为后续独立失败审计预留',
+    first_seen_time DATETIME NOT NULL COMMENT '首次看到该幂等键的时间，用于定位首个请求和后续保留策略',
+    last_seen_time DATETIME NOT NULL COMMENT '最近一次看到该幂等键的时间；重复回调只刷新该字段，不再推进任务状态',
+    create_time DATETIME NOT NULL COMMENT '记录创建时间',
+    update_time DATETIME NOT NULL COMMENT '记录更新时间',
+    UNIQUE KEY uk_task_callback_idempotency (task_id, action, idempotency_key),
+    INDEX idx_task_callback_run_action (run_id, action),
+    INDEX idx_task_callback_executor_time (executor_id, last_seen_time),
+    INDEX idx_task_callback_state_time (callback_state, last_seen_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='任务执行器回调幂等记录表';
+
 -- ---------------------------------------------------------------------------
 -- datasource-management：数据源与数据同步模块
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS datasource_config (
     id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '数据源主键',
+    tenant_id BIGINT NOT NULL DEFAULT 1 COMMENT '租户 ID，用于多租户隔离、审计、配额和成本统计',
+    project_id BIGINT NOT NULL DEFAULT 1 COMMENT '项目 ID，用于 PROJECT 数据范围、项目级数据源列表和项目级权限边界',
+    workspace_id BIGINT COMMENT '工作空间 ID，用于项目内研发/测试/生产等协作空间隔离',
     name VARCHAR(128) NOT NULL COMMENT '唯一数据源名称',
     type VARCHAR(32) NOT NULL COMMENT '数据源类型，例如 MYSQL、POSTGRESQL',
     jdbc_url VARCHAR(512) NOT NULL COMMENT '连接地址',
@@ -115,12 +179,17 @@ CREATE TABLE IF NOT EXISTS datasource_config (
     last_test_time DATETIME COMMENT '最近一次连接测试时间',
     create_time DATETIME NOT NULL COMMENT '创建时间',
     update_time DATETIME NOT NULL COMMENT '最后更新时间',
-    UNIQUE KEY uk_datasource_name (name),
+    UNIQUE KEY uk_datasource_tenant_project_name (tenant_id, project_id, name),
+    INDEX idx_datasource_tenant_project (tenant_id, project_id, status),
+    INDEX idx_datasource_workspace (tenant_id, workspace_id, status),
     INDEX idx_datasource_type (type),
     INDEX idx_datasource_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据源配置表';
 
 CREATE TABLE IF NOT EXISTS datasource_readonly_sql_execution_audit (
+    datasource_tenant_id BIGINT COMMENT '被访问数据源所属租户 ID 快照；与 actor_tenant_id 分开保存，便于平台代操作和服务账号场景审计',
+    datasource_project_id BIGINT COMMENT '被访问数据源所属项目 ID 快照；用于 PROJECT 数据范围、项目级 SQL 访问审计报表和合规追溯',
+    datasource_workspace_id BIGINT COMMENT '被访问数据源所属工作空间 ID 快照；用于研发/测试/生产空间级 SQL 访问审计筛选',
     id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '受控只读 SQL 执行审计主键',
     datasource_id BIGINT NOT NULL COMMENT '被访问的数据源 ID',
     datasource_name VARCHAR(128) NOT NULL COMMENT '数据源名称快照，便于历史审计可读',
@@ -149,6 +218,8 @@ CREATE TABLE IF NOT EXISTS datasource_readonly_sql_execution_audit (
     INDEX idx_datasource_readonly_audit_purpose_time (purpose, executed_at),
     INDEX idx_datasource_readonly_audit_tenant_time (actor_tenant_id, executed_at),
     INDEX idx_datasource_readonly_audit_actor_time (actor_role, executed_at),
+    INDEX idx_datasource_readonly_audit_project_time (datasource_tenant_id, datasource_project_id, executed_at),
+    INDEX idx_datasource_readonly_audit_workspace_time (datasource_tenant_id, datasource_workspace_id, executed_at),
     INDEX idx_datasource_readonly_audit_trace_id (trace_id),
     INDEX idx_datasource_readonly_audit_status_time (execution_status, executed_at),
     INDEX idx_datasource_readonly_audit_sql_fingerprint (sql_fingerprint)
@@ -157,6 +228,8 @@ CREATE TABLE IF NOT EXISTS datasource_readonly_sql_execution_audit (
 CREATE TABLE IF NOT EXISTS sync_template (
     id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '同步模板主键',
     tenant_id BIGINT NOT NULL COMMENT '租户 ID，预留给多租户场景',
+    project_id BIGINT NOT NULL DEFAULT 1 COMMENT '项目 ID，用于租户内部项目级同步模板隔离、项目看板和项目审计',
+    workspace_id BIGINT COMMENT '工作空间 ID，用于项目内协作空间筛选和后续空间级权限',
     name VARCHAR(128) NOT NULL COMMENT '模板名称',
     description VARCHAR(512) COMMENT '模板说明',
     source_datasource_id BIGINT NOT NULL COMMENT '源端数据源 ID',
@@ -179,7 +252,9 @@ CREATE TABLE IF NOT EXISTS sync_template (
     updated_by BIGINT COMMENT '更新人 ID',
     create_time DATETIME NOT NULL COMMENT '创建时间',
     update_time DATETIME NOT NULL COMMENT '更新时间',
-    UNIQUE KEY uk_sync_template_tenant_name (tenant_id, name),
+    UNIQUE KEY uk_sync_template_tenant_project_name (tenant_id, project_id, name),
+    INDEX idx_sync_template_project_mode (tenant_id, project_id, sync_mode, enabled),
+    INDEX idx_sync_template_workspace (tenant_id, workspace_id, update_time),
     INDEX idx_sync_template_source (tenant_id, source_datasource_id),
     INDEX idx_sync_template_target (tenant_id, target_datasource_id),
     INDEX idx_sync_template_enabled (tenant_id, enabled)
@@ -188,6 +263,8 @@ CREATE TABLE IF NOT EXISTS sync_template (
 CREATE TABLE IF NOT EXISTS sync_task (
     id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '同步任务主键',
     tenant_id BIGINT NOT NULL COMMENT '租户 ID',
+    project_id BIGINT NOT NULL DEFAULT 1 COMMENT '项目 ID，通常继承自同步模板，用于项目级任务列表、调度看板和审计隔离',
+    workspace_id BIGINT COMMENT '工作空间 ID，通常继承自同步模板，用于空间级运营台筛选',
     template_id BIGINT NOT NULL COMMENT '关联同步模板 ID',
     name VARCHAR(128) NOT NULL COMMENT '任务名称',
     description VARCHAR(512) COMMENT '任务说明',
@@ -215,7 +292,9 @@ CREATE TABLE IF NOT EXISTS sync_task (
     updated_by BIGINT COMMENT '更新人 ID',
     create_time DATETIME NOT NULL COMMENT '创建时间',
     update_time DATETIME NOT NULL COMMENT '更新时间',
-    UNIQUE KEY uk_sync_task_tenant_name (tenant_id, name),
+    UNIQUE KEY uk_sync_task_tenant_project_name (tenant_id, project_id, name),
+    INDEX idx_sync_task_project_state (tenant_id, project_id, current_state),
+    INDEX idx_sync_task_workspace_state (tenant_id, workspace_id, current_state),
     INDEX idx_sync_task_state (tenant_id, current_state),
     INDEX idx_sync_task_owner (tenant_id, owner_id),
     INDEX idx_sync_task_approval (tenant_id, approval_state),
@@ -403,6 +482,231 @@ CREATE TABLE IF NOT EXISTS sync_alert_delivery_record (
     INDEX idx_sync_alert_delivery_channel_status (channel, delivery_status, create_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='同步治理告警投递记录表';
 
+-- ---------------------------------------------------------------------------
+-- data-sync：数据同步模块
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS data_sync_template (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '同步模板主键',
+    tenant_id BIGINT NOT NULL DEFAULT 0 COMMENT '租户 ID，所有同步配置必须具备租户边界',
+    project_id BIGINT COMMENT '项目 ID，用于租户内部二级隔离、项目级权限、项目级同步看板、项目级配额和成本审计',
+    workspace_id BIGINT COMMENT '工作空间 ID，用于多团队协作空间、空间级筛选和后续空间级配额',
+    name VARCHAR(128) NOT NULL COMMENT '模板名称，例如 CRM 客户表每日同步到数仓',
+    description VARCHAR(512) COMMENT '模板说明，描述业务目的、数据范围和使用注意事项',
+    source_datasource_id BIGINT NOT NULL COMMENT '源数据源 ID，引用 datasource-management 登记的数据源',
+    target_datasource_id BIGINT NOT NULL COMMENT '目标数据源 ID，引用 datasource-management 登记的数据源',
+    sync_mode VARCHAR(64) NOT NULL COMMENT '同步模式：FULL、INCREMENTAL_TIME、INCREMENTAL_ID、CDC_STREAMING、SCHEDULED_BATCH、ONE_TIME_MIGRATION、REPLAY、BACKFILL、OFFLINE_IMPORT、OFFLINE_EXPORT',
+    field_mapping_config TEXT COMMENT '字段映射配置 JSON，包含源字段、目标字段、类型转换、默认值、脱敏规则等',
+    filter_config TEXT COMMENT '过滤条件配置 JSON，例如业务日期、租户字段、状态字段过滤',
+    partition_config TEXT COMMENT '分区与并发配置 JSON，例如日期分区、ID range、hash 分片',
+    retry_policy TEXT COMMENT '重试策略 JSON，例如最大重试次数、退避间隔、可重试错误类型',
+    timeout_policy TEXT COMMENT '超时策略 JSON，例如单批读取超时、整体执行超时、目标写入超时',
+    enabled TINYINT(1) NOT NULL DEFAULT 1 COMMENT '模板是否启用，禁用后不应创建新的同步任务',
+    created_by BIGINT COMMENT '创建人 ID',
+    updated_by BIGINT COMMENT '最近更新人 ID',
+    create_time DATETIME NOT NULL COMMENT '创建时间',
+    update_time DATETIME NOT NULL COMMENT '更新时间',
+    INDEX idx_data_sync_template_tenant_mode (tenant_id, sync_mode, enabled),
+    INDEX idx_data_sync_template_project_mode (tenant_id, project_id, sync_mode, enabled),
+    INDEX idx_data_sync_template_workspace (tenant_id, workspace_id, update_time),
+    INDEX idx_data_sync_template_source (source_datasource_id),
+    INDEX idx_data_sync_template_target (target_datasource_id),
+    INDEX idx_data_sync_template_update_time (update_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据同步模板表';
+
+CREATE TABLE IF NOT EXISTS data_sync_task (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '同步任务主键',
+    tenant_id BIGINT NOT NULL DEFAULT 0 COMMENT '租户 ID，用于同步任务查询、权限、配额和审计隔离',
+    project_id BIGINT COMMENT '项目 ID，通常继承自同步模板，用于项目负责人可见性、项目级配额、项目级 SLA 和成本统计',
+    workspace_id BIGINT COMMENT '工作空间 ID，通常继承自同步模板，用于空间级运营台筛选和多团队协作',
+    template_id BIGINT NOT NULL COMMENT '关联同步模板 ID',
+    name VARCHAR(128) NOT NULL COMMENT '同步任务名称',
+    current_state VARCHAR(64) NOT NULL COMMENT '任务主状态：DRAFT、CONFIGURED、PENDING_APPROVAL、SCHEDULED、QUEUED、RUNNING、PAUSED、RETRYING、PARTIALLY_SUCCEEDED、SUCCEEDED、FAILED、AWAITING_OPERATOR_ACTION、CANCELLED、ARCHIVED',
+    approval_state VARCHAR(64) NOT NULL COMMENT '审批状态：NOT_REQUIRED、PENDING、APPROVED、REJECTED',
+    priority VARCHAR(32) NOT NULL DEFAULT 'MEDIUM' COMMENT '任务优先级：HIGH、MEDIUM、LOW',
+    schedule_config TEXT COMMENT '调度配置 JSON，例如 cron、固定间隔、维护窗口、时区和错峰策略',
+    run_mode VARCHAR(64) NOT NULL DEFAULT 'TEMPLATE' COMMENT '运行模式，例如 TEMPLATE、MANUAL、BACKFILL、REPLAY',
+    trigger_type VARCHAR(64) NOT NULL DEFAULT 'MANUAL' COMMENT '最近触发方式：MANUAL、SCHEDULED、API、SYSTEM、BACKFILL、REPLAY',
+    owner_id BIGINT COMMENT '负责人 ID，用于我的同步任务、项目运营、失败通知和 SLA 归属',
+    last_execution_id BIGINT COMMENT '最近一次同步执行记录 ID，后续接入 sync_execution 表后回写',
+    attention_required TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否需要人工介入，通常由超过最大退避次数、反复租约过期或执行环境异常触发',
+    attention_reason VARCHAR(1000) COMMENT '人工介入原因摘要，用于运营台、告警和后续工单流转',
+    description VARCHAR(512) COMMENT '任务说明',
+    create_time DATETIME NOT NULL COMMENT '创建时间',
+    update_time DATETIME NOT NULL COMMENT '更新时间',
+    INDEX idx_data_sync_task_tenant_state (tenant_id, current_state, update_time),
+    INDEX idx_data_sync_task_project_state (tenant_id, project_id, current_state, update_time),
+    INDEX idx_data_sync_task_workspace_state (tenant_id, workspace_id, current_state, update_time),
+    INDEX idx_data_sync_task_template (template_id),
+    INDEX idx_data_sync_task_owner_state (tenant_id, owner_id, current_state),
+    INDEX idx_data_sync_task_approval (tenant_id, approval_state, update_time),
+    INDEX idx_data_sync_task_trigger (trigger_type, update_time),
+    INDEX idx_data_sync_task_attention (tenant_id, attention_required, update_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据同步任务表';
+
+CREATE TABLE IF NOT EXISTS data_sync_execution (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '同步执行记录主键',
+    tenant_id BIGINT NOT NULL DEFAULT 0 COMMENT '租户 ID，冗余保存便于执行历史按租户快速过滤',
+    project_id BIGINT COMMENT '项目 ID，冗余自同步任务，用于项目级执行历史、失败率、成本和容量分析',
+    workspace_id BIGINT COMMENT '工作空间 ID，冗余自同步任务，用于空间级运行证据筛选',
+    sync_task_id BIGINT NOT NULL COMMENT '关联同步任务 ID',
+    execution_no BIGINT NOT NULL COMMENT '同一任务下第几次执行',
+    execution_state VARCHAR(64) NOT NULL COMMENT '执行状态：QUEUED、RUNNING、PAUSED、RETRYING、PARTIALLY_SUCCEEDED、SUCCEEDED、FAILED、CANCELLED',
+    trigger_type VARCHAR(64) NOT NULL COMMENT '触发方式：MANUAL、SCHEDULED、API、SYSTEM、BACKFILL、REPLAY',
+    queued_at DATETIME COMMENT '进入执行队列时间',
+    started_at DATETIME COMMENT '真实开始执行时间，由执行器认领后写入',
+    finished_at DATETIME COMMENT '执行完成时间，成功、失败或取消时写入',
+    checkpoint_ref VARCHAR(256) COMMENT '最近 checkpoint 引用，可保存 checkpoint 表主键或外部状态引用',
+    records_read BIGINT NOT NULL DEFAULT 0 COMMENT '已读取记录数',
+    records_written BIGINT NOT NULL DEFAULT 0 COMMENT '已写入记录数',
+    failed_record_count BIGINT NOT NULL DEFAULT 0 COMMENT '失败记录数',
+    error_summary VARCHAR(1000) COMMENT '错误摘要，详细错误样本进入 data_sync_error_sample',
+    triggered_by BIGINT COMMENT '触发人 ID',
+    executor_id VARCHAR(128) COMMENT '执行器实例 ID，worker 认领后写入',
+    heartbeat_time DATETIME COMMENT '最近一次执行器心跳时间，用于判断执行器是否仍然存活',
+    lease_expire_time DATETIME COMMENT '当前执行租约过期时间，超过该时间可进入恢复或重新认领流程',
+    defer_count INT NOT NULL DEFAULT 0 COMMENT '当前执行记录被延迟回队列次数，用于识别长期被退避的任务',
+    create_time DATETIME NOT NULL COMMENT '创建时间',
+    update_time DATETIME NOT NULL COMMENT '更新时间',
+    UNIQUE KEY uk_data_sync_execution_task_no (sync_task_id, execution_no),
+    INDEX idx_data_sync_execution_task_state (sync_task_id, execution_state, create_time),
+    INDEX idx_data_sync_execution_tenant_state (tenant_id, execution_state, create_time),
+    INDEX idx_data_sync_execution_project_state (tenant_id, project_id, execution_state, create_time),
+    INDEX idx_data_sync_execution_workspace_state (tenant_id, workspace_id, execution_state, create_time),
+    INDEX idx_data_sync_execution_trigger (trigger_type, create_time),
+    INDEX idx_data_sync_execution_executor (executor_id, started_at),
+    INDEX idx_data_sync_execution_lease (execution_state, lease_expire_time),
+    INDEX idx_data_sync_execution_queue (execution_state, queued_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据同步执行记录表';
+
+CREATE TABLE IF NOT EXISTS data_sync_callback_idempotency (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT 'data-sync 回调与租约动作幂等记录主键，仅用于内部更新和排障定位',
+    tenant_id BIGINT NOT NULL DEFAULT 0 COMMENT '租户 ID，避免不同租户复用相同幂等键时互相影响',
+    sync_task_id BIGINT COMMENT '关联同步任务 ID；恢复类全局动作可为空',
+    execution_id BIGINT COMMENT '关联执行记录 ID；恢复类全局动作可为空',
+    scope_key VARCHAR(128) NOT NULL COMMENT '幂等作用域，例如 taskId:executionId 或 RECOVERY:ALL；避免 MySQL 唯一索引中 NULL 字段失效',
+    action VARCHAR(64) NOT NULL COMMENT '动作编码：START、CHECKPOINT、COMPLETE、FAIL、HEARTBEAT、DEFER、RECOVER_EXPIRED_LEASE',
+    idempotency_key VARCHAR(128) NOT NULL COMMENT '调用方生成的幂等键；同一次业务动作重试必须复用同一个键',
+    executor_id VARCHAR(128) COMMENT '执行器实例 ID；系统恢复类动作可使用 SERVICE_ACCOUNT 或为空',
+    request_digest VARCHAR(1000) COMMENT '请求摘要；用于排障，不保存完整大结果、SQL、密钥或敏感样本',
+    callback_state VARCHAR(32) NOT NULL COMMENT '幂等处理状态：PROCESSING、SUCCEEDED、FAILED',
+    response_summary VARCHAR(1000) COMMENT '首次成功处理后的响应摘要，便于重复请求复用首次处理语义',
+    error_message VARCHAR(1000) COMMENT '失败摘要，当前事务模型下失败通常回滚，该字段为后续独立失败审计预留',
+    first_seen_time DATETIME NOT NULL COMMENT '首次看到该幂等键的时间',
+    last_seen_time DATETIME NOT NULL COMMENT '最近一次看到该幂等键的时间；重复请求只刷新该字段，不再推进状态',
+    create_time DATETIME NOT NULL COMMENT '创建时间',
+    update_time DATETIME NOT NULL COMMENT '更新时间',
+    UNIQUE KEY uk_data_sync_callback_idempotency (tenant_id, action, scope_key, idempotency_key),
+    INDEX idx_data_sync_callback_execution (execution_id, action, last_seen_time),
+    INDEX idx_data_sync_callback_task (sync_task_id, action, last_seen_time),
+    INDEX idx_data_sync_callback_executor (executor_id, last_seen_time),
+    INDEX idx_data_sync_callback_retention (last_seen_time, id),
+    INDEX idx_data_sync_callback_state (callback_state, last_seen_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='data-sync 执行器回调与租约动作幂等记录表';
+
+CREATE TABLE IF NOT EXISTS data_sync_checkpoint (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '同步 checkpoint 主键',
+    tenant_id BIGINT NOT NULL DEFAULT 0 COMMENT '租户 ID',
+    project_id BIGINT COMMENT '项目 ID，冗余自同步任务，用于项目级断点恢复视图和数据保留策略',
+    workspace_id BIGINT COMMENT '工作空间 ID，冗余自同步任务，用于空间级运行证据筛选',
+    sync_task_id BIGINT NOT NULL COMMENT '关联同步任务 ID',
+    execution_id BIGINT NOT NULL COMMENT '关联执行记录 ID',
+    checkpoint_type VARCHAR(64) NOT NULL COMMENT 'checkpoint 类型：TIME_FIELD、ID_RANGE、KAFKA_OFFSET、FILE_POSITION、PARTITION_WINDOW 等',
+    checkpoint_value TEXT NOT NULL COMMENT 'checkpoint 值，例如时间戳、最大 ID、Kafka offset 或 JSON 结构',
+    shard_or_partition VARCHAR(128) COMMENT '分片或分区标识，支持并行任务保存多条 checkpoint',
+    records_read BIGINT NOT NULL DEFAULT 0 COMMENT '该 checkpoint 对应已读取记录数',
+    records_written BIGINT NOT NULL DEFAULT 0 COMMENT '该 checkpoint 对应已写入记录数',
+    checkpoint_time DATETIME NOT NULL COMMENT 'checkpoint 生成时间',
+    create_time DATETIME NOT NULL COMMENT '创建时间',
+    update_time DATETIME NOT NULL COMMENT '更新时间',
+    INDEX idx_data_sync_checkpoint_task (sync_task_id, checkpoint_time),
+    INDEX idx_data_sync_checkpoint_execution (execution_id, checkpoint_time),
+    INDEX idx_data_sync_checkpoint_type (tenant_id, checkpoint_type, checkpoint_time),
+    INDEX idx_data_sync_checkpoint_project (tenant_id, project_id, checkpoint_time),
+    INDEX idx_data_sync_checkpoint_partition (sync_task_id, shard_or_partition),
+    INDEX idx_data_sync_checkpoint_retention (checkpoint_time, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据同步 checkpoint 表';
+
+CREATE TABLE IF NOT EXISTS data_sync_error_sample (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '同步错误样本主键',
+    tenant_id BIGINT NOT NULL DEFAULT 0 COMMENT '租户 ID',
+    project_id BIGINT COMMENT '项目 ID，冗余自同步任务，用于项目级错误样本筛选和质量复盘',
+    workspace_id BIGINT COMMENT '工作空间 ID，冗余自同步任务，用于空间级错误治理看板',
+    sync_task_id BIGINT NOT NULL COMMENT '关联同步任务 ID',
+    execution_id BIGINT NOT NULL COMMENT '关联执行记录 ID',
+    error_type VARCHAR(64) NOT NULL COMMENT '错误类型，例如 SOURCE_READ_ERROR、TARGET_WRITE_ERROR、TYPE_CONVERSION_ERROR',
+    error_code VARCHAR(128) COMMENT '外部系统或内部标准错误码',
+    error_message VARCHAR(1000) COMMENT '错误摘要，避免把完整堆栈塞入业务表',
+    source_record_key VARCHAR(256) COMMENT '源端记录定位，例如主键、文件行号、Kafka topic/partition/offset',
+    target_record_key VARCHAR(256) COMMENT '目标端记录定位，例如目标主键或写入批次',
+    sample_payload VARCHAR(4000) COMMENT '脱敏并截断后的样本载荷',
+    retryable TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否可重试',
+    create_time DATETIME NOT NULL COMMENT '创建时间',
+    INDEX idx_data_sync_error_task (sync_task_id, create_time),
+    INDEX idx_data_sync_error_execution (execution_id, create_time),
+    INDEX idx_data_sync_error_type (tenant_id, error_type, create_time),
+    INDEX idx_data_sync_error_project (tenant_id, project_id, error_type, create_time),
+    INDEX idx_data_sync_error_retryable (retryable, create_time),
+    INDEX idx_data_sync_error_retention (create_time, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据同步错误样本表';
+
+CREATE TABLE IF NOT EXISTS data_sync_incident_record (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '同步事故记录主键',
+    tenant_id BIGINT NOT NULL DEFAULT 0 COMMENT '租户 ID，用于事故隔离、运营台筛选和后续 SLA 统计',
+    project_id BIGINT COMMENT '项目 ID，用于项目级事故工作台、SLA 统计和项目负责人可见性控制',
+    workspace_id BIGINT COMMENT '工作空间 ID，用于空间级事故筛选和多团队运营协作',
+    sync_task_id BIGINT NOT NULL COMMENT '关联同步任务 ID',
+    execution_id BIGINT COMMENT '关联最近执行记录 ID，可为空',
+    incident_type VARCHAR(64) NOT NULL COMMENT '事故类型：EXECUTOR_UNSTABLE、CONNECTOR_FAILURE、TARGET_THROTTLED、CONFIGURATION_ERROR、DATA_CONTRACT_BROKEN 等',
+    severity VARCHAR(32) NOT NULL DEFAULT 'P3' COMMENT '事故严重级别：P1、P2、P3、P4',
+    incident_status VARCHAR(32) NOT NULL DEFAULT 'OPEN' COMMENT '事故状态：OPEN、ACKNOWLEDGED、RESOLVED、CLOSED',
+    title VARCHAR(256) NOT NULL COMMENT '事故标题，用于运营台列表、通知和工单摘要',
+    description VARCHAR(2000) COMMENT '事故描述，保存脱敏后的排障说明，不保存密钥、完整 SQL 或敏感样本',
+    operator_id BIGINT COMMENT '创建事故的操作者 ID',
+    operator_role VARCHAR(64) COMMENT '创建事故的操作者角色',
+    assigned_operator_id BIGINT COMMENT '当前事故负责人 ID，用于运营分派、SLA 跟踪和我的事故列表',
+    assigned_operator_role VARCHAR(64) COMMENT '当前事故负责人角色，后续可扩展为运营组、值班组或外部工单队列',
+    resolution_summary VARCHAR(2000) COMMENT '事故解决摘要，后续事故处理闭环时填写',
+    acknowledged_at DATETIME COMMENT '事故被确认接手的时间',
+    resolved_at DATETIME COMMENT '事故被标记解决的时间',
+    closed_at DATETIME COMMENT '事故被关闭的时间',
+    create_time DATETIME NOT NULL COMMENT '创建时间',
+    update_time DATETIME NOT NULL COMMENT '更新时间',
+    INDEX idx_data_sync_incident_task (sync_task_id, create_time),
+    INDEX idx_data_sync_incident_tenant_status (tenant_id, incident_status, severity, create_time),
+    INDEX idx_data_sync_incident_project_status (tenant_id, project_id, incident_status, severity, create_time),
+    INDEX idx_data_sync_incident_workspace_status (tenant_id, workspace_id, incident_status, create_time),
+    INDEX idx_data_sync_incident_execution (execution_id),
+    INDEX idx_data_sync_incident_operator (operator_id, create_time),
+    INDEX idx_data_sync_incident_assignee (assigned_operator_id, incident_status, create_time),
+    INDEX idx_data_sync_incident_retention (incident_status, closed_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据同步事故记录表';
+
+CREATE TABLE IF NOT EXISTS data_sync_audit_record (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '数据同步审计记录主键',
+    tenant_id BIGINT NOT NULL DEFAULT 0 COMMENT '租户 ID',
+    project_id BIGINT COMMENT '项目 ID，可为空；用于未来项目级审计报表和权限证据查询',
+    workspace_id BIGINT COMMENT '工作空间 ID，可为空；用于未来空间级审计筛选',
+    template_id BIGINT COMMENT '关联同步模板 ID，可为空；模板创建、校验、禁用等动作通常没有 sync_task_id',
+    sync_task_id BIGINT COMMENT '关联同步任务 ID，可为空，例如仅操作模板时',
+    execution_id BIGINT COMMENT '关联执行记录 ID，可为空',
+    action_type VARCHAR(64) NOT NULL COMMENT '审计动作类型，例如 CREATE_TEMPLATE、CREATE_TASK、RUN_TASK、UPDATE_CHECKPOINT',
+    actor_id BIGINT COMMENT '操作者 ID',
+    actor_role VARCHAR(64) COMMENT '操作者角色',
+    action_payload VARCHAR(2000) COMMENT '动作载荷摘要，应保存脱敏后的轻量信息',
+    result VARCHAR(32) NOT NULL COMMENT '动作结果，例如 SUCCESS、FAILED、REJECTED',
+    trace_id VARCHAR(128) COMMENT '链路追踪 ID',
+    create_time DATETIME NOT NULL COMMENT '创建时间',
+    INDEX idx_data_sync_audit_task_time (sync_task_id, create_time),
+    INDEX idx_data_sync_audit_template_time (template_id, create_time),
+    INDEX idx_data_sync_audit_execution_time (execution_id, create_time),
+    INDEX idx_data_sync_audit_tenant_action (tenant_id, action_type, create_time),
+    INDEX idx_data_sync_audit_project_action (tenant_id, project_id, action_type, create_time),
+    INDEX idx_data_sync_audit_actor (actor_id, create_time),
+    INDEX idx_data_sync_audit_trace (trace_id),
+    INDEX idx_data_sync_audit_retention (create_time, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据同步审计记录表';
+
 CREATE TABLE IF NOT EXISTS sync_permission_governance_notification (
     id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '权限治理通知主键',
     tenant_id BIGINT NOT NULL DEFAULT 0 COMMENT '通知作用域租户 ID，0 表示平台全局',
@@ -432,6 +736,9 @@ CREATE TABLE IF NOT EXISTS sync_permission_governance_notification (
 -- ---------------------------------------------------------------------------
 
 CREATE TABLE IF NOT EXISTS quality_rule (
+    tenant_id BIGINT NOT NULL DEFAULT 1 COMMENT '租户 ID，用于质量规则租户隔离、租户级配额、审计导出和规则模板共享边界',
+    project_id BIGINT NOT NULL DEFAULT 1 COMMENT '项目 ID，用于 PROJECT 数据范围、项目级质量规则列表、质量大盘和项目负责人权限边界',
+    workspace_id BIGINT COMMENT '工作空间 ID，用于项目内研发/测试/生产等协作空间隔离和空间级质量看板',
     id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '规则主键',
     name VARCHAR(128) NOT NULL COMMENT '唯一规则名称',
     rule_type VARCHAR(32) NOT NULL COMMENT '规则分类',
@@ -458,7 +765,9 @@ CREATE TABLE IF NOT EXISTS quality_rule (
     archived_time DATETIME COMMENT '归档时间',
     create_time DATETIME NOT NULL COMMENT '创建时间',
     update_time DATETIME NOT NULL COMMENT '最后更新时间',
-    UNIQUE KEY uk_quality_rule_name (name),
+    UNIQUE KEY uk_quality_rule_tenant_project_name (tenant_id, project_id, name),
+    INDEX idx_quality_rule_tenant_project_status (tenant_id, project_id, status),
+    INDEX idx_quality_rule_workspace_status (tenant_id, workspace_id, status),
     INDEX idx_quality_rule_type (rule_type),
     INDEX idx_quality_rule_target_type (target_type),
     INDEX idx_quality_rule_datasource (data_source_id),
@@ -469,6 +778,9 @@ CREATE TABLE IF NOT EXISTS quality_rule (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='质量规则表';
 
 CREATE TABLE IF NOT EXISTS quality_check_execution (
+    tenant_id BIGINT NOT NULL DEFAULT 1 COMMENT '租户 ID，冗余自质量规则，用于租户级执行失败率、耗时和资源消耗统计',
+    project_id BIGINT NOT NULL DEFAULT 1 COMMENT '项目 ID，冗余自质量规则，用于项目级执行历史、SLA、质量看板和排障隔离',
+    workspace_id BIGINT COMMENT '工作空间 ID，冗余自质量规则，用于空间级运行证据筛选',
     id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '质量检测执行记录主键',
     rule_id BIGINT NOT NULL COMMENT '关联规则 ID',
     execution_no BIGINT NOT NULL COMMENT '同一规则下第几次执行',
@@ -491,10 +803,15 @@ CREATE TABLE IF NOT EXISTS quality_check_execution (
     INDEX idx_quality_execution_state_time (execution_state, started_at),
     INDEX idx_quality_execution_task_id (task_id),
     INDEX idx_quality_execution_task_run_id (task_run_id),
+    INDEX idx_quality_execution_project_state (tenant_id, project_id, execution_state, started_at),
+    INDEX idx_quality_execution_workspace_state (tenant_id, workspace_id, execution_state, started_at),
     INDEX idx_quality_execution_executor (executor_id, started_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='质量检测执行记录表';
 
 CREATE TABLE IF NOT EXISTS quality_check_report (
+    tenant_id BIGINT NOT NULL DEFAULT 1 COMMENT '租户 ID，冗余自质量规则，用于租户级质量评分、审计导出和保留周期清理',
+    project_id BIGINT NOT NULL DEFAULT 1 COMMENT '项目 ID，冗余自质量规则，用于项目级报告检索、质量大盘、失败报告筛选和权限隔离',
+    workspace_id BIGINT COMMENT '工作空间 ID，冗余自质量规则，用于空间级质量趋势和生产/测试空间隔离',
     id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '报告主键',
     rule_id BIGINT NOT NULL COMMENT '关联规则 ID',
     execution_id BIGINT COMMENT '关联质量检测执行记录 ID',
@@ -515,6 +832,8 @@ CREATE TABLE IF NOT EXISTS quality_check_report (
     notes VARCHAR(1024) COMMENT '补充说明',
     create_time DATETIME NOT NULL COMMENT '创建时间',
     INDEX idx_quality_report_rule_id (rule_id),
+    INDEX idx_quality_report_project_status_time (tenant_id, project_id, check_status, create_time),
+    INDEX idx_quality_report_workspace_time (tenant_id, workspace_id, create_time),
     INDEX idx_quality_report_rule_type (rule_type),
     INDEX idx_quality_report_execution_id (execution_id),
     INDEX idx_quality_report_status (check_status),
@@ -525,6 +844,9 @@ CREATE TABLE IF NOT EXISTS quality_check_report (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='质量检测报告表';
 
 CREATE TABLE IF NOT EXISTS quality_anomaly_detail (
+    tenant_id BIGINT NOT NULL DEFAULT 1 COMMENT '租户 ID，冗余自质量规则/报告，用于异常样本租户隔离、脱敏导出和保留策略',
+    project_id BIGINT NOT NULL DEFAULT 1 COMMENT '项目 ID，冗余自质量规则/报告，用于异常工作台、清洗任务创建、根因分析和 PROJECT 权限过滤',
+    workspace_id BIGINT COMMENT '工作空间 ID，冗余自质量规则/报告，用于空间级异常治理和运营告警隔离',
     id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '异常明细主键',
     report_id BIGINT NOT NULL COMMENT '关联质量检测报告 ID',
     rule_id BIGINT NOT NULL COMMENT '关联质量规则 ID，冗余保存便于按规则统计异常分布',
@@ -540,6 +862,8 @@ CREATE TABLE IF NOT EXISTS quality_anomaly_detail (
     create_time DATETIME NOT NULL COMMENT '创建时间',
     INDEX idx_quality_anomaly_report_id (report_id),
     INDEX idx_quality_anomaly_rule_id (rule_id),
+    INDEX idx_quality_anomaly_project_type_time (tenant_id, project_id, anomaly_type, create_time),
+    INDEX idx_quality_anomaly_workspace_time (tenant_id, workspace_id, create_time),
     INDEX idx_quality_anomaly_type (anomaly_type),
     INDEX idx_quality_anomaly_field_name (field_name),
     INDEX idx_quality_anomaly_severity (severity),

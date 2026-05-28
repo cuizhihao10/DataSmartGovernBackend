@@ -18,6 +18,7 @@ import com.czh.datasmart.govern.permission.controller.dto.PermissionOutboxRetryR
 import com.czh.datasmart.govern.permission.entity.PermissionAuditRecord;
 import com.czh.datasmart.govern.permission.entity.PermissionEventOutbox;
 import com.czh.datasmart.govern.permission.service.PermissionOperationsService;
+import com.czh.datasmart.govern.permission.service.support.PermissionPolicyFactCache;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -169,6 +170,46 @@ public class PermissionOperationsController {
                 tenantId, actorId, actorRole, resourceType, resourceId, action, result, traceId, startTime, endTime, current, size);
         return PlatformApiResponse.success(permissionOperationsService.pageAuditRecords(criteria,
                 actorContext(actorTenantId, requestActorId, requestActorRole, requestTraceId)), requestTraceId);
+    }
+
+    /**
+     * 查询 permission-admin 内部权限事实缓存快照。
+     *
+     * <p>这个接口不是给普通业务流量使用的，而是给管理后台、运维面板和排障工具使用。
+     * 当用户反馈“权限刚改完但结果不对”时，排障人员可以先看这里：
+     * 1. 缓存是否启用；
+     * 2. 当前缓存条目数是否异常膨胀；
+     * 3. hit/miss/load 是否符合预期；
+     * 4. 最近一次失效时间是否晚于策略变更时间。
+     */
+    @GetMapping("/policy-cache")
+    public PlatformApiResponse<PermissionPolicyFactCache.CacheSnapshot> snapshotPolicyCache(
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(permissionOperationsService.snapshotPolicyCache(
+                actorContext(actorTenantId, actorId, actorRole, traceId)), traceId);
+    }
+
+    /**
+     * 手工清理 permission-admin 内部权限事实缓存。
+     *
+     * <p>tenantId 为空时，只有平台管理员可以清理全量缓存。
+     * 租户管理员和运营人员只能清理自己租户范围，避免影响其他租户授权性能。
+     */
+    @PostMapping("/policy-cache/evict")
+    public PlatformApiResponse<PermissionPolicyFactCache.CacheSnapshot> evictPolicyCache(
+            @RequestParam(required = false) Long tenantId,
+            @RequestParam(required = false) String reason,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success("权限事实缓存已清理",
+                permissionOperationsService.evictPolicyCache(tenantId, reason,
+                        actorContext(actorTenantId, actorId, actorRole, traceId)),
+                traceId);
     }
 
     /**

@@ -22,6 +22,8 @@ import com.czh.datasmart.govern.permission.entity.PermissionEventOutbox;
 import com.czh.datasmart.govern.permission.mapper.PermissionAuditRecordMapper;
 import com.czh.datasmart.govern.permission.mapper.PermissionEventOutboxMapper;
 import com.czh.datasmart.govern.permission.service.PermissionOperationsService;
+import com.czh.datasmart.govern.permission.service.support.PermissionOutboxOperationAuditSupport;
+import com.czh.datasmart.govern.permission.service.support.PermissionPolicyFactCache;
 import com.czh.datasmart.govern.permission.support.PermissionRoleCode;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -73,14 +75,6 @@ public class PermissionOperationsServiceImpl implements PermissionOperationsServ
      */
     private static final long MAX_PAGE_SIZE = 200L;
 
-    private static final String STATUS_FAILED = "FAILED";
-    private static final String STATUS_DEAD = "DEAD";
-    private static final String STATUS_IGNORED = "IGNORED";
-    private static final String RESOURCE_TYPE_OUTBOX = "PERMISSION_OUTBOX_EVENT";
-    private static final String ACTION_RETRY_OUTBOX = "RETRY_PERMISSION_OUTBOX_EVENT";
-    private static final String ACTION_IGNORE_OUTBOX = "IGNORE_PERMISSION_OUTBOX_EVENT";
-    private static final String AUDIT_RESULT_SUCCESS = "SUCCESS";
-
     /**
      * 可以查询 outbox 的角色。
      *
@@ -116,8 +110,22 @@ public class PermissionOperationsServiceImpl implements PermissionOperationsServ
             PermissionRoleCode.AUDITOR.name()
     );
 
+    /**
+     * 可以清理权限事实缓存的角色。
+     *
+     * <p>缓存清理不会直接修改权限事实，但会影响短时间内的授权延迟和数据库压力，
+     * 因此它仍然属于受控运维动作，不应开放给普通用户或服务账号。
+     */
+    private static final Set<String> CACHE_EVICT_ROLES = Set.of(
+            PermissionRoleCode.PLATFORM_ADMINISTRATOR.name(),
+            PermissionRoleCode.TENANT_ADMINISTRATOR.name(),
+            PermissionRoleCode.OPERATOR.name()
+    );
+
     private final PermissionEventOutboxMapper eventOutboxMapper;
     private final PermissionAuditRecordMapper auditRecordMapper;
+    private final PermissionPolicyFactCache policyFactCache;
+    private final PermissionOutboxOperationAuditSupport outboxOperationAuditSupport;
 
     /**
      * 分页查询 outbox 事件。
@@ -149,6 +157,42 @@ public class PermissionOperationsServiceImpl implements PermissionOperationsServ
 
         Page<PermissionEventOutbox> page = eventOutboxMapper.selectPage(page(criteria.current(), criteria.size()), wrapper);
         return PlatformPageResponse.of(page.getCurrent(), page.getSize(), page.getTotal(), page.getRecords());
+    }
+
+    /**
+     * 查询权限事实缓存快照。
+     *
+     * <p>查询缓存快照本身不改变系统状态，因此允许平台管理员、租户管理员、运营和审计角色查看。
+     * 审计人员需要看到缓存状态，是为了把某次权限判定结果和当时缓存行为关联起来。
+     */
+    @Override
+    public PermissionPolicyFactCache.CacheSnapshot snapshotPolicyCache(PermissionActorContext actorContext) {
+        String actorRole = requireRole(actorContext);
+        requireAnyRole(actorRole, AUDIT_VIEW_ROLES, "当前角色无权查看权限事实缓存状态");
+        return policyFactCache.snapshot();
+    }
+
+    /**
+     * 手工清理权限事实缓存。
+     *
+     * <p>平台管理员可以清理全量缓存；租户管理员和运营人员只能清理自己租户的缓存。
+     * 这个限制很重要：如果租户管理员可以随意清理全局缓存，在多租户高并发场景下会影响其他租户授权性能。
+     */
+    @Override
+    public PermissionPolicyFactCache.CacheSnapshot evictPolicyCache(Long tenantId,
+                                                                    String reason,
+                                                                    PermissionActorContext actorContext) {
+        String actorRole = requireRole(actorContext);
+        requireAnyRole(actorRole, CACHE_EVICT_ROLES, "当前角色无权清理权限事实缓存");
+        String normalizedReason = "manual-policy-cache-evict:"
+                + defaultText(reason, "管理员手工清理权限事实缓存");
+
+        if (PermissionRoleCode.PLATFORM_ADMINISTRATOR.name().equals(actorRole) && tenantId == null) {
+            return policyFactCache.evictAll(normalizedReason);
+        }
+
+        Long scopedTenantId = resolveScopedTenantId(tenantId, actorContext);
+        return policyFactCache.evictTenant(scopedTenantId, normalizedReason);
     }
 
     /**
@@ -190,7 +234,7 @@ public class PermissionOperationsServiceImpl implements PermissionOperationsServ
         }
 
         PermissionEventOutbox after = findOutboxEventByIdOrThrow(id);
-        saveOutboxOperationAudit(actorContext, ACTION_RETRY_OUTBOX, before, after, reason);
+        outboxOperationAuditSupport.saveRetryAudit(actorContext, before, after, reason);
         return new PermissionOutboxOperationResult(after.getEventId(), after.getStatus(), "outbox 事件已重新放回待投递队列");
     }
 
@@ -211,7 +255,7 @@ public class PermissionOperationsServiceImpl implements PermissionOperationsServ
         }
 
         PermissionEventOutbox before = findOutboxEventByIdOrThrow(id);
-        String reason = "Manual ignore: " + request.getReason().trim();
+        String reason = "Manual ignore: " + defaultText(request == null ? null : request.getReason(), "管理员人工忽略");
         int updated = eventOutboxMapper.markIgnored(id, truncate(reason, 1000));
         if (updated == 0) {
             throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
@@ -219,7 +263,7 @@ public class PermissionOperationsServiceImpl implements PermissionOperationsServ
         }
 
         PermissionEventOutbox after = findOutboxEventByIdOrThrow(id);
-        saveOutboxOperationAudit(actorContext, ACTION_IGNORE_OUTBOX, before, after, reason);
+        outboxOperationAuditSupport.saveIgnoreAudit(actorContext, before, after, reason);
         return new PermissionOutboxOperationResult(after.getEventId(), after.getStatus(), "outbox 事件已标记为 IGNORED");
     }
 
@@ -345,61 +389,6 @@ public class PermissionOperationsServiceImpl implements PermissionOperationsServ
     }
 
     /**
-     * 记录 outbox 人工操作审计。
-     *
-     * <p>这里把 before/after 状态写入 detailJson。
-     * 这样当未来有人问“为什么这条事件没有继续自动重试”或“谁把 DEAD 事件重新发送了”时，
-     * 审计中心可以直接回答，而不需要翻数据库 binlog 或应用日志。
-     */
-    private void saveOutboxOperationAudit(PermissionActorContext actorContext,
-                                          String action,
-                                          PermissionEventOutbox before,
-                                          PermissionEventOutbox after,
-                                          String reason) {
-        PermissionAuditRecord auditRecord = new PermissionAuditRecord();
-        auditRecord.setTraceId(actorContext == null ? null : actorContext.traceId());
-        auditRecord.setTenantId(after == null ? PLATFORM_TENANT_ID : normalizeTenantId(after.getTenantId()));
-        auditRecord.setActorId(actorContext == null ? null : actorContext.actorId());
-        auditRecord.setActorRole(actorContext == null ? null : normalizeCode(actorContext.actorRole()));
-        auditRecord.setResourceType(RESOURCE_TYPE_OUTBOX);
-        auditRecord.setResourceId(after == null ? null : "permission_event_outbox:" + after.getId());
-        auditRecord.setAction(action);
-        auditRecord.setResult(AUDIT_RESULT_SUCCESS);
-        auditRecord.setSummary(reason);
-        auditRecord.setDetailJson(outboxOperationDetail(before, after));
-        auditRecord.setCreateTime(LocalDateTime.now());
-        auditRecordMapper.insert(auditRecord);
-    }
-
-    /**
-     * 构造 outbox 操作审计详情。
-     */
-    private String outboxOperationDetail(PermissionEventOutbox before, PermissionEventOutbox after) {
-        return "{"
-                + "\"before\":" + outboxSnapshot(before) + ","
-                + "\"after\":" + outboxSnapshot(after)
-                + "}";
-    }
-
-    /**
-     * 构造 outbox 关键字段快照。
-     */
-    private String outboxSnapshot(PermissionEventOutbox event) {
-        if (event == null) {
-            return "null";
-        }
-        return "{"
-                + "\"id\":\"" + nullSafe(event.getId()) + "\","
-                + "\"eventId\":\"" + jsonEscape(event.getEventId()) + "\","
-                + "\"eventType\":\"" + jsonEscape(event.getEventType()) + "\","
-                + "\"tenantId\":\"" + nullSafe(event.getTenantId()) + "\","
-                + "\"status\":\"" + jsonEscape(event.getStatus()) + "\","
-                + "\"attemptCount\":\"" + nullSafe(event.getAttemptCount()) + "\","
-                + "\"lastError\":\"" + jsonEscape(event.getLastError()) + "\""
-                + "}";
-    }
-
-    /**
      * 生成分页对象并做页大小保护。
      */
     private <T> Page<T> page(Long current, Long size) {
@@ -476,20 +465,4 @@ public class PermissionOperationsServiceImpl implements PermissionOperationsServ
         return value.substring(0, maxLength);
     }
 
-    /**
-     * JSON 字符串转义。
-     */
-    private String jsonEscape(String value) {
-        if (value == null) {
-            return "";
-        }
-        return value.replace("\\", "\\\\").replace("\"", "\\\"");
-    }
-
-    /**
-     * 空值安全字符串。
-     */
-    private String nullSafe(Object value) {
-        return value == null ? "" : String.valueOf(value);
-    }
 }

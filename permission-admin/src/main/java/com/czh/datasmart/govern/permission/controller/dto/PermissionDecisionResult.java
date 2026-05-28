@@ -10,6 +10,8 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
+
 /**
  * 权限判定结果。
  *
@@ -50,6 +52,15 @@ public class PermissionDecisionResult {
      * 数据范围表达式。
      */
     private String dataScopeExpression;
+
+    /**
+     * 当前操作者在本次判定资源下可访问的项目 ID 集合。
+     *
+     * <p>当数据范围为 PROJECT 时，`dataScopeExpression` 通常会包含 `${actorProjectIds}` 占位符。
+     * 为了避免 gateway 和业务服务重复理解权限中心内部表结构，permission-admin 会在判定时把占位符背后的项目集合物化出来。
+     * 下游 data-sync 等模块只需要把该集合转换成 `project_id IN (...)` 这样的安全查询条件。
+     */
+    private List<Long> authorizedProjectIds;
 
     /**
      * 当前动作是否需要审批。

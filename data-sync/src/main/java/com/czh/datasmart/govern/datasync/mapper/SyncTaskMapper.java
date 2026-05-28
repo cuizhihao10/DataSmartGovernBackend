@@ -1,0 +1,131 @@
+/**
+ * @Author : Cui
+ * @Date: 2026/05/07 21:29
+ * @Description DataSmart Govern Backend - SyncTaskMapper.java
+ * @Version:1.0.0
+ */
+package com.czh.datasmart.govern.datasync.mapper;
+
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.czh.datasmart.govern.datasync.entity.SyncTask;
+import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Update;
+
+/**
+ * 同步任务 Mapper。
+ *
+ * <p>普通 CRUD 继续交给 MyBatis-Plus，状态机相关的“带副作用更新”放在这里显式声明。
+ * 原因是任务状态、人工介入标记和最近 executionId 是面向运营台的一组一致性字段，
+ * 不能因为实体更新策略忽略 null 而出现 attentionRequired=false 但 attentionReason 仍残留的情况。
+ */
+@Mapper
+public interface SyncTaskMapper extends BaseMapper<SyncTask> {
+
+    /**
+     * 将任务标记为重新排队。
+     *
+     * <p>这个方法通常由 defer 或过期租约恢复触发。
+     * 一旦 execution 被安全放回队列，任务就不应再展示为“需要人工介入”，因此这里显式清空 attention_reason。
+     */
+    @Update("""
+            UPDATE data_sync_task
+            SET current_state = 'QUEUED',
+                last_execution_id = #{lastExecutionId},
+                attention_required = 0,
+                attention_reason = NULL,
+                update_time = NOW()
+            WHERE id = #{taskId}
+            """)
+    int markQueuedAfterLeaseTransition(@Param("taskId") Long taskId,
+                                       @Param("lastExecutionId") Long lastExecutionId);
+
+    /**
+     * 将任务标记为需要人工介入。
+     *
+     * <p>该状态通常意味着自动执行已经不再安全或不再经济，例如超过最大退避次数、worker 反复失联、
+     * 目标端长期限流、连接器版本不兼容或同步配置存在结构性问题。
+     */
+    @Update("""
+            UPDATE data_sync_task
+            SET current_state = 'AWAITING_OPERATOR_ACTION',
+                last_execution_id = #{lastExecutionId},
+                attention_required = 1,
+                attention_reason = #{attentionReason},
+                update_time = NOW()
+            WHERE id = #{taskId}
+            """)
+    int markAwaitingOperatorAction(@Param("taskId") Long taskId,
+                                   @Param("lastExecutionId") Long lastExecutionId,
+                                   @Param("attentionReason") String attentionReason);
+
+    /**
+     * 运营人员确认已经看到人工介入任务。
+     *
+     * <p>确认动作不代表问题已经解决，因此任务仍然停留在 AWAITING_OPERATOR_ACTION。
+     * 它的价值是让团队知道“这个问题已经有人接手”，后续可扩展为 assignee、SLA 计时和通知降噪。
+     */
+    @Update("""
+            UPDATE data_sync_task
+            SET current_state = 'AWAITING_OPERATOR_ACTION',
+                attention_required = 1,
+                attention_reason = #{attentionReason},
+                update_time = NOW()
+            WHERE id = #{taskId}
+            """)
+    int markAttentionAcknowledged(@Param("taskId") Long taskId,
+                                  @Param("attentionReason") String attentionReason);
+
+    /**
+     * 运营人员确认问题已处理，任务回到可配置/可运行状态。
+     *
+     * <p>resolve 不直接创建 execution，而是清理人工介入标记并回到 CONFIGURED。
+     * 这样适合“先修配置、再由用户或调度器重新运行”的场景，避免修复动作和执行动作被强绑定。
+     */
+    @Update("""
+            UPDATE data_sync_task
+            SET current_state = 'CONFIGURED',
+                attention_required = 0,
+                attention_reason = NULL,
+                update_time = NOW()
+            WHERE id = #{taskId}
+            """)
+    int markAttentionResolved(@Param("taskId") Long taskId);
+
+    /**
+     * 人工介入后直接重跑任务。
+     *
+     * <p>该方法会清空人工介入标记，并把最新 executionId 回写到任务主表。
+     * 它与普通 runTask 的区别是：普通 runTask 不允许直接从 AWAITING_OPERATOR_ACTION 进入队列，
+     * 必须通过运营动作显式确认“已经处理过问题，可以重试”。
+     */
+    @Update("""
+            UPDATE data_sync_task
+            SET current_state = 'QUEUED',
+                trigger_type = 'MANUAL',
+                last_execution_id = #{lastExecutionId},
+                attention_required = 0,
+                attention_reason = NULL,
+                update_time = NOW()
+            WHERE id = #{taskId}
+            """)
+    int markAttentionRerunQueued(@Param("taskId") Long taskId,
+                                 @Param("lastExecutionId") Long lastExecutionId);
+
+    /**
+     * 人工介入任务关闭到终态。
+     *
+     * <p>cancel 和 archive 都会结束当前人工介入处理：
+     * CANCELLED 表示任务不再继续执行；ARCHIVED 表示任务从日常运营列表中归档。
+     */
+    @Update("""
+            UPDATE data_sync_task
+            SET current_state = #{targetState},
+                attention_required = 0,
+                attention_reason = NULL,
+                update_time = NOW()
+            WHERE id = #{taskId}
+            """)
+    int closeAttentionTask(@Param("taskId") Long taskId,
+                           @Param("targetState") String targetState);
+}

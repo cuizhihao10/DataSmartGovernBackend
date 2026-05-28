@@ -1,0 +1,57 @@
+{{/*
+DataSmart Govern Alertmanager 通知模板。
+
+设计说明：
+1. 该模板使用 Alertmanager 原生 Go template 语法；
+2. 模板不包含任何密钥、webhook 或外部系统地址，安全地随仓库版本管理；
+3. 后续邮件、企业微信、钉钉、飞书、Slack、工单系统都可以复用这些标题和正文模板；
+4. 模板内容优先暴露 module/category/severity/summary/description，帮助值班人员快速判断影响范围和处理路径。
+*/}}
+
+{{ define "datasmart.alert.title" -}}
+[{{ .Status | toUpper }}][{{ .CommonLabels.severity | toUpper }}] {{ .CommonLabels.module }}/{{ .CommonLabels.category }} {{ .CommonAnnotations.summary }}
+{{- end }}
+
+{{ define "datasmart.alert.text" -}}
+DataSmart Govern 告警通知
+
+状态: {{ .Status }}
+严重级别: {{ .CommonLabels.severity }}
+模块: {{ .CommonLabels.module }}
+类别: {{ .CommonLabels.category }}
+告警数量: {{ len .Alerts }}
+
+摘要:
+{{ .CommonAnnotations.summary }}
+
+说明:
+{{ .CommonAnnotations.description }}
+
+告警列表:
+{{ range .Alerts }}
+- 告警名: {{ .Labels.alertname }}
+  实例: {{ .Labels.instance }}
+  开始时间: {{ .StartsAt }}
+  {{- if .EndsAt }}
+  结束时间: {{ .EndsAt }}
+  {{- end }}
+{{ end }}
+
+处理建议:
+1. 先确认是否为同一 module/category 下的根因告警；
+2. 如果是 data-sync 自动恢复、清理或人工介入告警，请查看 docs/observability-data-sync-runbook.md；
+3. 如果告警持续触发，请结合 Grafana 的 DataSmart data-sync 运维总览看板确认趋势；
+4. 如果需要静默，请在 Alertmanager 中按 module/category/severity 设置有时限的 silence，并记录原因。
+{{- end }}
+
+{{ define "datasmart.webhook.payload" -}}
+{
+  "status": "{{ .Status }}",
+  "severity": "{{ .CommonLabels.severity }}",
+  "module": "{{ .CommonLabels.module }}",
+  "category": "{{ .CommonLabels.category }}",
+  "summary": "{{ .CommonAnnotations.summary }}",
+  "description": "{{ .CommonAnnotations.description }}",
+  "alertCount": {{ len .Alerts }}
+}
+{{- end }}

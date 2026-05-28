@@ -1,0 +1,43 @@
+# DataSmart Govern - Alertmanager 真实通知渠道示例。
+#
+# 重要安全说明：
+# 1. 本文件是示例，不会被 docker-compose 默认挂载，也不会被 Alertmanager 自动加载；
+# 2. 不要把真实 webhook、token、SMTP 密码、工单系统密钥写入仓库；
+# 3. 生产环境应通过环境变量、Kubernetes Secret、Docker Secret、Vault、Nacos 加密配置或部署平台密钥注入；
+# 4. 如果使用环境变量展开能力，请先确认当前 Alertmanager 版本和启动参数支持对应语法；
+# 5. 接入真实渠道前，应先在测试环境使用临时 webhook 验证告警格式、分组和抑制规则。
+#
+# 使用方式建议：
+# - 保留 docker/alertmanager/alertmanager.yml 中的 route、inhibit_rules、templates；
+# - 复制下面某个 receiver 示例到 alertmanager.yml 的 receivers 下；
+# - 将占位 URL、邮箱、token 替换为由部署系统注入的安全值；
+# - 为 critical/warning/info 分别接不同渠道，避免所有告警都打到同一个群。
+
+receivers:
+  # 示例一：通用 webhook，适合自研告警网关、工单系统、企业 IM 中转服务。
+  - name: platform-critical-webhook-example
+    webhook_configs:
+      - url: '${DATASMART_ALERTMANAGER_CRITICAL_WEBHOOK_URL}'
+        send_resolved: true
+        http_config:
+          follow_redirects: true
+
+  # 示例二：邮件通知，适合 warning 或日报类告警。
+  # SMTP 密码必须通过环境或密钥系统注入，不要明文提交。
+  - name: platform-warning-email-example
+    email_configs:
+      - to: '${DATASMART_ALERT_EMAIL_TO}'
+        from: '${DATASMART_ALERT_EMAIL_FROM}'
+        smarthost: '${DATASMART_ALERT_SMTP_HOST}'
+        auth_username: '${DATASMART_ALERT_SMTP_USERNAME}'
+        auth_password: '${DATASMART_ALERT_SMTP_PASSWORD}'
+        send_resolved: true
+        headers:
+          subject: '{{ template "datasmart.alert.title" . }}'
+        html: '{{ template "datasmart.alert.text" . }}'
+
+  # 示例三：低优先级 webhook，适合 info 告警进入低噪声机器人、日报聚合或观察频道。
+  - name: platform-info-webhook-example
+    webhook_configs:
+      - url: '${DATASMART_ALERTMANAGER_INFO_WEBHOOK_URL}'
+        send_resolved: false

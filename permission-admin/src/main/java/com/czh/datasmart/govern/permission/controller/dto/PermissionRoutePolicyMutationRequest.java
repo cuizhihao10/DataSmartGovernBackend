@@ -20,8 +20,10 @@ import lombok.Data;
  * 它决定 gateway 在请求进入各业务微服务之前，是允许、拒绝，还是未来转入审批/二次确认。
  * 因此这里对字段做显式校验，避免空路径、非法方法、非法效果等数据进入策略表。
  *
- * <p>当前第一版仍然是“路由级策略”，没有直接表达按钮级、字段级、审批级权限。
- * 后续可以在保持本 DTO 兼容的基础上扩展 resourceType、action、approvalRequired、policyVersion 等字段。
+ * <p>当前已经从“纯 URL 路由策略”演进到“URL + 业务语义策略”：
+ * resourceType 用于说明被保护的业务资源，例如 SYNC_EXECUTION；
+ * action 用于说明被保护的业务动作，例如 CALLBACK。
+ * 两者都允许为空，表示该策略是旧式路径级兜底策略。
  */
 @Data
 public class PermissionRoutePolicyMutationRequest {
@@ -72,6 +74,25 @@ public class PermissionRoutePolicyMutationRequest {
     @NotBlank(message = "不能为空")
     @Size(max = 256, message = "长度不能超过 256")
     private String pathPattern;
+
+    /**
+     * 资源类型。
+     *
+     * <p>可为空。为空时表示该策略不区分资源类型，只按角色、方法和路径匹配。
+     * 真实商业配置中，建议对高风险入口显式填写，例如：
+     * SYNC_EXECUTION、SYNC_INCIDENT、SYNC_OPERATION、TASK_OPERATION。
+     */
+    @Size(max = 64, message = "长度不能超过 64")
+    private String resourceType;
+
+    /**
+     * 业务动作。
+     *
+     * <p>可为空。为空时表示该策略不区分业务动作。
+     * 对执行器回调、人工恢复、事故关闭、审批等动作，建议显式填写 CALLBACK、RECOVER、CLOSE、APPROVE 等。
+     */
+    @Size(max = 64, message = "长度不能超过 64")
+    private String action;
 
     /**
      * 策略效果。

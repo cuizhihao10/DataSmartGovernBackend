@@ -41,6 +41,28 @@ public class TaskQueueItemView {
     private String type;
 
     /**
+     * 租户 ID。
+     *
+     * <p>运营工作台展示租户维度，是为了帮助平台管理员判断积压是否集中在某个客户租户。
+     * 对非平台角色来说，服务层已经提前做了范围收口，返回值里保留该字段主要用于前端展示和审计对齐。
+     */
+    private Long tenantId;
+
+    /**
+     * 负责人 ID。
+     *
+     * <p>任务失败、死信或长时间排队时，负责人是通知、协同处理和责任归属的第一入口。
+     */
+    private Long ownerId;
+
+    /**
+     * 项目 ID。
+     *
+     * <p>项目字段用于租户内部进一步拆分任务看板和 SLA 统计，避免大租户下所有任务混在一个队列视图里。
+     */
+    private Long projectId;
+
+    /**
      * 当前任务状态。
      */
     private String status;

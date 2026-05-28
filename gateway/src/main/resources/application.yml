@@ -17,18 +17,61 @@ spring:
           uri: lb://task-management
           predicates:
             - Path=/api/task/**
+          filters:
+            # 外部统一暴露 /api/task/**，下游 task-management 仍保持 /tasks、/tasks/operations 等模块内路径。
+            # 通过 RewritePath 统一剥离网关前缀，可以让网关契约和服务内部控制器职责解耦。
+            - RewritePath=/api/task/(?<segment>.*), /$\{segment}
         - id: permission-admin
           uri: lb://permission-admin
           predicates:
             - Path=/api/permission/**
+          filters:
+            # permission-admin 内部主路径是 /permissions/**。
+            # 当前 Controller 同时兼容 /api/permission/**，但网关侧仍推荐显式改写，避免下游长期感知外部 API 前缀。
+            - RewritePath=/api/permission/(?<segment>.*), /permissions/$\{segment}
         - id: datasource-management
           uri: lb://datasource-management
           predicates:
             - Path=/api/datasource/**
+          filters:
+            # datasource-management 内部保留 /datasources、/sync/templates 等领域路径。
+            - RewritePath=/api/datasource/(?<segment>.*), /$\{segment}
+        - id: data-sync
+          uri: lb://data-sync
+          predicates:
+            - Path=/api/sync/**
+          filters:
+            # data-sync 是独立微服务，内部 Controller 使用 /sync-tasks、/sync-templates、/sync-incidents 等路径。
+            # 外部 /api/sync/** 只属于网关公开契约，转发前必须去掉该前缀，否则请求会到达服务但无法命中 Controller。
+            - RewritePath=/api/sync/(?<segment>.*), /$\{segment}
         - id: data-quality
           uri: lb://data-quality
           predicates:
             - Path=/api/quality/**
+          filters:
+            # data-quality 内部保持 /quality-rules/**，网关统一暴露 /api/quality/**。
+            - RewritePath=/api/quality/(?<segment>.*), /$\{segment}
+        - id: python-ai-runtime-events-ws
+          # Python AI Runtime 的实时事件 WebSocket 桥接路由。
+          # 设计意图：
+          # 1. 前端只访问 Java gateway 暴露的 /api/agent/events/ws，不直接感知 Python Runtime 地址；
+          # 2. Gateway 原生 WebSocket Routing Filter 会根据 ws:// scheme 处理 Upgrade 转发，不需要我们手写 socket 代理；
+          # 3. 默认端口使用 8090，避免和 docker-compose 中 Chroma 的 8000 端口冲突；
+          # 4. 后续生产环境可以通过 DATASMART_PYTHON_AI_RUNTIME_WS_URI 切换为 wss://、内网域名或服务发现地址。
+          uri: ${DATASMART_PYTHON_AI_RUNTIME_WS_URI:ws://localhost:8090}
+          predicates:
+            - Path=/api/agent/events/ws
+          filters:
+            # Python FastAPI 内部路由是 /agent/events/ws，外部网关路径仍归入 /api/agent/** 产品入口。
+            - RewritePath=/api/agent/events/ws, /agent/events/ws
+        - id: agent-runtime
+          uri: lb://agent-runtime
+          predicates:
+            - Path=/api/agent/**
+          filters:
+            # agent-runtime 内部使用 /agent-runtime/** 表达“AI 控制面”领域路径。
+            # 外部统一使用 /api/agent/**，便于前端和未来智能网关把 Agent 能力视为平台级入口。
+            - RewritePath=/api/agent/(?<segment>.*), /agent-runtime/$\{segment}
         - id: observability
           uri: lb://observability
           predicates:
@@ -54,6 +97,33 @@ spring:
 
 datasmart:
   gateway:
+    agent-events:
+      websocket:
+        # Agent 实时事件 WebSocket 入口治理开关。
+        # 该能力只保护 /api/agent/events/ws 长连接入口，不影响普通 REST API。
+        # 商业化场景里，WebSocket 连接会持续占用 gateway、Python Runtime、事件 outbox 与前端订阅资源，
+        # 因此即使权限中心允许订阅，也仍然需要在网关层先做粗粒度容量保护。
+        enabled: true
+        # 网关对外暴露的 Agent 实时事件路径。
+        # 这里必须与 spring.cloud.gateway.routes 中的 python-ai-runtime-events-ws 路由保持一致。
+        # 后续如果拆出审计员事件流、运营大屏事件流或移动端轻量事件流，可以把该配置演进为列表。
+        path: /api/agent/events/ws
+        # 是否要求请求携带 WebSocket Upgrade 握手头。
+        # 普通 HTTP GET 误打到该路径时，如果继续转发给 Python Runtime，调用方会得到不清晰的下游协议错误；
+        # 在 gateway 早期返回 400 能让前端、测试脚本和运维排障更容易定位问题。
+        require-upgrade-header: true
+        # 单个 gateway 实例允许的最大活跃 Agent 事件连接数。
+        # 当前是单实例内存计数，不代表全局集群配额；多 gateway 实例生产部署时应升级为 Redis 租约或统一限流中心。
+        max-active-connections: 500
+        # 单个租户在当前 gateway 实例上的最大活跃连接数。
+        # 该值用于避免单个租户或异常客户脚本把共享实时事件入口占满，后续可以按租户套餐、项目规模或 SLA 动态配置。
+        max-connections-per-tenant: 100
+        # 单个操作者在当前 gateway 实例上的最大活跃连接数。
+        # 该值主要防浏览器多标签页、前端重连 bug、脚本化压测或服务账号异常重试造成的连接风暴。
+        max-connections-per-actor: 8
+        # 触发配额限制时返回给客户端的 Retry-After 秒数。
+        # 前端 WebSocket SDK 应读取该值并采用退避重连，避免 429 后立即重试进一步放大故障。
+        retry-after-seconds: 5
     context:
       # 是否信任外部请求传入的 X-DataSmart-Tenant-Id、X-DataSmart-Actor-Id、X-DataSmart-Actor-Role 等身份上下文。
       # 默认必须为 false，因为这些字段会直接影响后续权限、审计和租户边界；如果客户端可以随便伪造，就会产生越权风险。
@@ -192,6 +262,172 @@ datasmart:
             PATCH: UPDATE
             DELETE: DELETE
 
+        # data-sync 的端点需要比普通模块更细，因为同一微服务内同时包含：
+        # 模板配置、任务运行、执行器租约、执行器回调、事故工作台和人工介入运营动作。
+        # 这些动作的调用主体、风险等级、审计要求和未来审批策略都不一样。
+        - path-pattern: /api/sync/sync-templates/*/validate
+          resource-type: SYNC_TEMPLATE
+          default-action: VALIDATE
+          description: data-sync 同步模板校验接口，用于检查源端、目标端、字段映射和写入策略是否可运行。
+          method-actions:
+            POST: VALIDATE
+
+        - path-pattern: /api/sync/sync-tasks/*/run
+          resource-type: SYNC_TASK
+          default-action: RUN
+          description: data-sync 同步任务手动运行接口，属于显式触发执行动作。
+          method-actions:
+            POST: RUN
+
+        - path-pattern: /api/sync/sync-tasks/*/executions/*/**
+          resource-type: SYNC_EXECUTION
+          default-action: CALLBACK
+          description: data-sync 执行器回调协议，通常只允许服务账号或受控 worker 调用。
+          method-actions:
+            POST: CALLBACK
+
+        - path-pattern: /api/sync/sync-tasks/*/attention/acknowledge
+          resource-type: SYNC_OPERATION
+          default-action: ACKNOWLEDGE
+          description: data-sync 人工介入确认接手动作。
+          method-actions:
+            POST: ACKNOWLEDGE
+
+        - path-pattern: /api/sync/sync-tasks/*/attention/resolve
+          resource-type: SYNC_OPERATION
+          default-action: RESOLVE
+          description: data-sync 人工介入解决动作。
+          method-actions:
+            POST: RESOLVE
+
+        - path-pattern: /api/sync/sync-tasks/*/attention/rerun
+          resource-type: SYNC_OPERATION
+          default-action: RETRY
+          description: data-sync 人工介入后重跑动作。
+          method-actions:
+            POST: RETRY
+
+        - path-pattern: /api/sync/sync-tasks/*/attention/cancel
+          resource-type: SYNC_OPERATION
+          default-action: CANCEL
+          description: data-sync 人工介入取消动作。
+          method-actions:
+            POST: CANCEL
+
+        - path-pattern: /api/sync/sync-tasks/*/attention/archive
+          resource-type: SYNC_OPERATION
+          default-action: ARCHIVE
+          description: data-sync 人工介入归档动作。
+          method-actions:
+            POST: ARCHIVE
+
+        - path-pattern: /api/sync/sync-tasks/*/attention/incidents
+          resource-type: SYNC_OPERATION
+          default-action: CREATE
+          description: data-sync 人工介入创建事故动作。
+          method-actions:
+            POST: CREATE
+
+        - path-pattern: /api/sync/sync-tasks/*/attention/**
+          resource-type: SYNC_OPERATION
+          default-action: EXECUTE
+          description: data-sync 人工介入处理动作，包含确认、解决、重跑、取消、归档和创建事故。
+          method-actions:
+            POST: EXECUTE
+
+        - path-pattern: /api/sync/sync-incidents/*/acknowledge
+          resource-type: SYNC_INCIDENT
+          default-action: ACKNOWLEDGE
+          description: data-sync 事故确认接手动作。
+          method-actions:
+            POST: ACKNOWLEDGE
+
+        - path-pattern: /api/sync/sync-incidents/*/assign
+          resource-type: SYNC_INCIDENT
+          default-action: ASSIGN
+          description: data-sync 事故分派负责人动作。
+          method-actions:
+            POST: ASSIGN
+
+        - path-pattern: /api/sync/sync-incidents/*/resolve
+          resource-type: SYNC_INCIDENT
+          default-action: RESOLVE
+          description: data-sync 事故解决动作。
+          method-actions:
+            POST: RESOLVE
+
+        - path-pattern: /api/sync/sync-incidents/*/close
+          resource-type: SYNC_INCIDENT
+          default-action: CLOSE
+          description: data-sync 事故关闭动作。
+          method-actions:
+            POST: CLOSE
+
+        - path-pattern: /api/sync/sync-incidents/**
+          resource-type: SYNC_INCIDENT
+          default-action: EXECUTE
+          description: data-sync 事故工作台，支持事故查询、确认、分派、解决和关闭。
+          method-actions:
+            GET: VIEW
+            POST: EXECUTE
+
+        - path-pattern: /api/sync/sync-executions/claim
+          resource-type: SYNC_EXECUTION
+          default-action: CLAIM
+          description: data-sync 执行器认领下一条 execution 的协议入口。
+          method-actions:
+            POST: CLAIM
+
+        - path-pattern: /api/sync/sync-executions/*/heartbeat
+          resource-type: SYNC_EXECUTION
+          default-action: HEARTBEAT
+          description: data-sync 执行器续租和上报轻量进度的协议入口。
+          method-actions:
+            POST: HEARTBEAT
+
+        - path-pattern: /api/sync/sync-executions/*/defer
+          resource-type: SYNC_EXECUTION
+          default-action: DEFER
+          description: data-sync 执行器因容量或窗口限制延迟回队列的协议入口。
+          method-actions:
+            POST: DEFER
+
+        - path-pattern: /api/sync/sync-executions/recover-expired-leases
+          resource-type: SYNC_EXECUTION
+          default-action: RECOVER
+          description: data-sync 过期租约恢复入口，属于运维恢复动作。
+          method-actions:
+            POST: RECOVER
+
+        - path-pattern: /api/sync/sync-executions/**
+          resource-type: SYNC_EXECUTION
+          default-action: EXECUTE
+          description: data-sync 执行租约控制面，包含执行器认领、心跳、延期和过期租约恢复。
+          method-actions:
+            POST: EXECUTE
+
+        - path-pattern: /api/sync/sync-templates/**
+          resource-type: SYNC_TEMPLATE
+          default-action: EXECUTE
+          description: data-sync 同步模板配置面，控制源端、目标端、同步模式和写入策略。
+          method-actions:
+            GET: VIEW
+            POST: CREATE
+            PUT: UPDATE
+            PATCH: UPDATE
+            DELETE: DELETE
+
+        - path-pattern: /api/sync/**
+          resource-type: SYNC_TASK
+          default-action: EXECUTE
+          description: 数据同步模板、同步任务、运行触发、回放补数与执行治理。
+          method-actions:
+            GET: VIEW
+            POST: CREATE
+            PUT: UPDATE
+            PATCH: UPDATE
+            DELETE: DELETE
+
         # 任务运营接口必须放在 /api/task/** 之前。
         # 原理：GatewayAuthorizationFilter 会按 route-metadata 的声明顺序寻找第一条命中的规则。
         # 如果这里缺少更具体的 /api/task/operations/**，队列健康、死信、延期和执行器租约接口就会退化成普通 TASK + VIEW。
@@ -203,6 +439,17 @@ datasmart:
           method-actions:
             GET: VIEW
             POST: EXECUTE
+            PUT: UPDATE
+            PATCH: UPDATE
+            DELETE: DELETE
+
+        - path-pattern: /api/task/task-drafts/**
+          resource-type: TASK_DRAFT
+          default-action: EXECUTE
+          description: 任务草稿、审批和转换真实任务入口；草稿不会直接进入执行队列。
+          method-actions:
+            GET: VIEW
+            POST: CREATE
             PUT: UPDATE
             PATCH: UPDATE
             DELETE: DELETE
@@ -228,6 +475,136 @@ datasmart:
             PUT: UPDATE
             PATCH: UPDATE
             DELETE: DELETE
+
+        - path-pattern: /api/agent/events/ws
+          resource-type: AI_RUNTIME
+          default-action: SUBSCRIBE
+          description: Agent Runtime 实时事件 WebSocket 订阅入口，用于前端订阅 run/session 进度、断线续传、ack 和 heartbeat。
+          method-actions:
+            GET: SUBSCRIBE
+
+        # Agent Runtime 事件诊断必须比 /api/agent/runtime-events/** 更靠前。
+        # 原因：诊断接口展示的是 consumer、投影窗口、拒绝原因和处理耗时等运行状态，
+        # 它的权限语义更接近“运维诊断”，不应被普通事件查看权限覆盖。
+        - path-pattern: /api/agent/runtime-events/diagnostics
+          resource-type: AI_RUNTIME
+          default-action: DIAGNOSE
+          description: Agent Runtime 运行时事件消费诊断接口，用于运维确认 Kafka consumer、投影窗口、拒绝原因和平均处理耗时。
+          method-actions:
+            GET: DIAGNOSE
+
+        # Agent Runtime 运行时事件投影查询入口。
+        # 它不是普通的 GET VIEW：事件里可能包含工具调用、审批等待、异常原因、模型规划阶段和上下文关联 ID，
+        # 因此单独使用 VIEW_EVENTS，方便 permission-admin 后续按普通用户、项目负责人、审计员和运维人员拆分策略。
+        - path-pattern: /api/agent/runtime-events/**
+          resource-type: AI_RUNTIME
+          default-action: VIEW_EVENTS
+          description: Agent Runtime 运行时事件投影查询接口，用于查看 run/session/request 维度的 Agent 执行事件。
+          method-actions:
+            GET: VIEW_EVENTS
+
+        - path-pattern: /api/agent/models/routes
+          resource-type: AI_RUNTIME
+          default-action: VIEW
+          description: Agent Runtime 模型路由表查看接口，用于排障模型选择和 Provider 配置。
+          method-actions:
+            GET: VIEW
+
+        - path-pattern: /api/agent/models/chat
+          resource-type: AI_RUNTIME
+          default-action: EXECUTE
+          description: Agent Runtime 模型推理入口；当前为 dry-run 契约验证，后续接入真实模型 Provider。
+          method-actions:
+            POST: EXECUTE
+
+        - path-pattern: /api/agent/tools/**
+          resource-type: AI_RUNTIME
+          default-action: VIEW
+          description: Agent 工具目录只读接口，用于查看可绑定工具、风险等级、输入 schema 和下游服务映射。
+          method-actions:
+            GET: VIEW
+
+        - path-pattern: /api/agent/sessions/{sessionId}/runs/{runId}/cancel
+          resource-type: AI_RUNTIME
+          default-action: CANCEL
+          description: Agent Run 取消入口；用于用户或运营人员停止尚未完成的智能体运行。
+          method-actions:
+            POST: CANCEL
+
+        - path-pattern: /api/agent/sessions/{sessionId}/runs
+          resource-type: AI_RUNTIME
+          default-action: EXECUTE
+          description: Agent Run 创建入口；用于在既有会话内发起一次智能体规划或执行。
+          method-actions:
+            POST: EXECUTE
+
+        - path-pattern: /api/agent/sessions/{sessionId}/tools
+          resource-type: AI_RUNTIME
+          default-action: UPDATE
+          description: Agent 会话工具绑定入口；用于声明该会话可调用哪些平台工具能力。
+          method-actions:
+            POST: UPDATE
+
+        - path-pattern: /api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/{auditId}/approve
+          resource-type: AI_RUNTIME
+          default-action: APPROVE
+          description: Agent 高风险工具计划人工确认入口；只解除审批等待，不直接执行下游工具。
+          method-actions:
+            PATCH: APPROVE
+
+        - path-pattern: /api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/{auditId}/reject
+          resource-type: AI_RUNTIME
+          default-action: APPROVE
+          description: Agent 高风险工具计划人工拒绝入口；拒绝后工具计划进入 SKIPPED，后续编排器应跳过该工具。
+          method-actions:
+            PATCH: APPROVE
+
+        - path-pattern: /api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/{auditId}/execute
+          resource-type: AI_RUNTIME
+          default-action: EXECUTE
+          description: Agent 工具计划执行入口；仅允许执行已完成审批且处于 PLANNED 的工具计划。
+          method-actions:
+            PATCH: EXECUTE
+
+        - path-pattern: /api/agent/sessions/**
+          resource-type: AI_RUNTIME
+          default-action: VIEW
+          description: Agent 会话控制面；用于创建、查询会话与查看运行上下文。
+          method-actions:
+            GET: VIEW
+            POST: CREATE
+
+        - path-pattern: /api/permission/project-memberships/batch-upsert
+          resource-type: PROJECT_MEMBERSHIP
+          default-action: IMPORT
+          description: 批量导入或同步项目成员授权，风险高于单条创建，需要独立动作语义。
+          method-actions:
+            POST: IMPORT
+
+        - path-pattern: /api/permission/project-memberships/*/enable
+          resource-type: PROJECT_MEMBERSHIP
+          default-action: ENABLE
+          description: 启用项目成员授权，会让授权重新参与 PROJECT 数据范围物化。
+          method-actions:
+            POST: ENABLE
+
+        - path-pattern: /api/permission/project-memberships/*/disable
+          resource-type: PROJECT_MEMBERSHIP
+          default-action: DISABLE
+          description: 禁用项目成员授权，保留审计记录但停止下发 projectId。
+          method-actions:
+            POST: DISABLE
+
+        - path-pattern: /api/permission/project-memberships/**
+          resource-type: PROJECT_MEMBERSHIP
+          default-action: UPDATE
+          description: 项目成员授权管理；它决定 PROJECT 数据范围会把哪些 projectId 下发给业务模块。
+          method-actions:
+            GET: VIEW
+            POST: CREATE
+            PUT: UPDATE
+            PATCH: UPDATE
+            DELETE: DISABLE
 
         - path-pattern: /api/permission/**
           resource-type: SYSTEM_SETTING

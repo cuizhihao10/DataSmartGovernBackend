@@ -1,0 +1,16 @@
+# Grafana Dashboard 自动加载配置。
+#
+# Grafana 启动时会读取该 provider，并从 /etc/grafana/dashboards 加载 JSON 看板。
+# 当前先放 data-sync 的运维总览，后续可以继续按模块加入 data-quality、task-management 等看板。
+apiVersion: 1
+
+providers:
+  - name: DataSmart Dashboards
+    orgId: 1
+    folder: DataSmart Govern
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards

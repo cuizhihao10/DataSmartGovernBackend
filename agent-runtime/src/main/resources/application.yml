@@ -1,0 +1,491 @@
+server:
+  port: 8090
+
+spring:
+  application:
+    name: agent-runtime
+  cloud:
+    nacos:
+      discovery:
+        server-addr: localhost:8848
+  kafka:
+    # Kafka 是 Java 控制面与 Python AI Runtime 的异步事件骨干。
+    # 当前 runtime event consumer 默认关闭，因此本地没有 Kafka 时应用仍可启动；
+    # 当 datasmart.agent-runtime.runtime-events.kafka.enabled=true 后，该地址会被 Spring Kafka 使用。
+    bootstrap-servers: localhost:9092
+    consumer:
+      # earliest 适合本地联调：第一次启动 Java consumer 时可以读取 Python Runtime 已经发布的测试事件。
+      # 生产环境如果 topic 历史很长，应结合消费者组、保留时间和回放策略谨慎调整。
+      auto-offset-reset: earliest
+    producer:
+      # Agent 工具执行状态事件采用 JSON 字符串投递，而不是 Java 对象投递。
+      # 这样 Python Runtime、网关、审计中心和 Kafka UI 都可以直接消费/查看 payload，避免被 Java 类型头耦合。
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+datasmart:
+  agent-runtime:
+    # Agent Runtime 是 Java 侧 AI 控制面。
+    # 当前默认启用，但模型 Provider 使用 DRY_RUN，不会真实请求大模型。
+    enabled: true
+    # 单个会话最多绑定的工具数量。
+    # 商业化 Agent 不能允许一个会话无限绑定工具，否则模型规划空间、权限校验和审计解释都会失控。
+    max-tool-bindings-per-session: 20
+    # 单个会话最多保留的运行记录数量。
+    # 当前仍是内存仓储阶段，必须设置保守上限；后续接入数据库后，该值仍可作为在线上下文窗口上限。
+    max-runs-per-session: 200
+    # 单会话同时运行数量。
+    # 第一阶段保持 1，避免同一工作空间内多个 run 并发调用工具导致状态竞争。
+    max-active-runs-per-session: 1
+    # 会话默认生存时间，当前主要作为后续清理策略依据。
+    session-ttl-hours: 24
+    persistence:
+      # 工具执行审计仓储类型。
+      # memory 是当前默认值，适合本地学习、单元测试和早期联调；它不会要求 MySQL 已启动。
+      # 后续切换为 mysql 时，应配合 agent_tool_execution_audit 表、事务 outbox 和后台 dispatcher 一起灰度，
+      # 避免出现“审计状态落库了但事件未入 outbox”或“事件发布了但审计状态未提交”的双写风险。
+      audit-store: memory
+      # 工具执行事件 outbox 仓储类型。
+      # memory 是默认热窗口；mysql 会使用 agent_tool_execution_event_outbox 表持久化待投递事件。
+      # 商业化生产环境最终建议 audit-store 与 outbox-store 同时切到 mysql，并通过事务边界保证同提交。
+      outbox-store: memory
+      # 数据库持久化总开关。
+      # 当前已经具备 MySQL audit/outbox store，但默认保持 false，避免本地学习环境没有 MySQL 时启动失败。
+      # 启用数据库仓储时，必须同时设置 database-enabled=true 与 audit-store/outbox-store=mysql，
+      # 这样可以防止误配置单个字符串导致本地启动强依赖数据库。
+      database-enabled: false
+      jdbc:
+        # Agent Runtime 专用 MySQL 连接地址。
+        # 默认值仅面向本地 Docker/MySQL 约定；生产环境应通过环境变量或配置中心覆盖，
+        # 并结合数据库账号最小权限、连接超时、慢 SQL 告警和审计库备份策略。
+        url: ${DATASMART_AGENT_RUNTIME_JDBC_URL:jdbc:mysql://localhost:3306/datasmart_govern?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&rewriteBatchedStatements=true}
+        username: ${DATASMART_AGENT_RUNTIME_JDBC_USERNAME:root}
+        password: ${DATASMART_AGENT_RUNTIME_JDBC_PASSWORD:}
+        driver-class-name: com.mysql.cj.jdbc.Driver
+        pool-name: datasmart-agent-runtime-jdbc
+        # 连接池大小先保持保守，避免 Agent 工具事件高峰时把 MySQL 连接耗尽。
+        # 后续应按“并发 run 数、工具调用 QPS、outbox dispatcher 频率、数据库慢 SQL”共同压测后调整。
+        minimum-idle: 1
+        maximum-pool-size: 10
+        connection-timeout-ms: 3000
+        idle-timeout-ms: 600000
+        max-lifetime-ms: 1800000
+        # 当前审计查询接口还没有分页参数；数据库实现先设置硬上限，避免一次诊断请求扫出大量历史记录。
+        max-query-limit: 1000
+    runtime-events:
+      kafka:
+        # 默认关闭，避免本地开发环境没有 Kafka 时监听容器不断重连。
+        # 生产环境开启前，应确认 Python Runtime 已配置 DATASMART_AI_RUNTIME_EVENT_PUBLISHER=kafka，
+        # 并且 topic、消费者组、告警、死信和重放策略已经规划清楚。
+        enabled: false
+        # 与 Python Runtime 默认 DATASMART_AI_RUNTIME_EVENT_TOPIC 保持一致。
+        # 该 topic 当前承载 Agent runtime event 粒度事件，不建议长期承载高频 token streaming。
+        topic: datasmart.agent-runtime.events
+        # Java agent-runtime 控制面消费者组。
+        # observability、audit-center 如果也要消费同一 topic，应使用不同 groupId，避免互相抢分区。
+        group-id: datasmart-agent-runtime-control-plane
+        # 单个 run 的内存热窗口上限；长期审计后续应落 MySQL/ClickHouse/审计中心。
+        max-events-per-run: 1000
+        # 当前 JVM 内所有 runtime event 投影的总上限，用于防止重放或事件风暴打满内存。
+        max-total-events: 10000
+    tool-execution-events:
+      # Java 控制面向外发布“工具执行审计状态变化”的开关。
+      # 默认关闭是为了保护本地开发；生产环境打开前，应先创建 topic、配置 ACL、告警、保留时间和消费侧幂等。
+      enabled: false
+      # 该 topic 只承载工具执行状态变化，例如 PLANNED、WAITING_APPROVAL、EXECUTING、SUCCEEDED、FAILED、SKIPPED。
+      # 不建议把 token streaming、模型思考日志或网关心跳放入同一 topic，否则消费频率和保留策略会互相影响。
+      topic: datasmart.agent-runtime.tool-execution-events
+      # payload 内的事件来源，用于区分 agent-runtime、独立 tool-runner、沙箱执行器等未来发布方。
+      source: agent-runtime
+      outbox:
+        # outbox 是工具状态事件的可靠性缓冲层。
+        # 它不依赖 Kafka，即使本地没有 broker，也能先记录“事件已经由 Java 控制面生成”这一事实。
+        # 后续接入 MySQL store 和后台 dispatcher 后，应把工具状态更新与 outbox 写入放进同一个数据库事务。
+        enabled: true
+        # 单个 Agent Run 在内存 outbox 中最多保留的事件数，防止单次异常 run 产生过多状态事件挤占 JVM 内存。
+        max-events-per-run: 1000
+        # 当前 JVM 内 outbox 热窗口总上限；生产持久化后应由数据库保留策略和归档任务控制。
+        max-total-records: 10000
+        # 单条事件 payload 的最大字节数。超过该值会进入 BLOCKED 状态，而不是继续向下游扩散超大事件。
+        max-payload-bytes: 262144
+        # outbox 写入失败时是否必须阻断工具状态提交。
+        # 默认 false 用于兼容 memory 学习模式；当 audit-store=mysql + outbox-store=mysql + database-enabled=true 时，
+        # Java 代码会自动把 outbox sink 升级为必达 sink，并通过 JDBC 事务回滚审计状态。
+        # 如果压测或灰度环境需要提前验证 fail-closed 行为，也可以显式设置为 true。
+        required-for-state-commit: ${DATASMART_AGENT_RUNTIME_OUTBOX_REQUIRED_FOR_STATE_COMMIT:false}
+        # 后续 dispatcher 投递失败后的默认重试间隔；当前阶段先作为配置契约预留。
+        retry-backoff-seconds: 30
+        # 是否启用 outbox 后台投递器。
+        # 默认关闭，避免本地没有 Kafka/审计中心/WebSocket 投递目标时后台任务反复扫描。
+        # 生产推荐路线：audit-store=mysql + outbox-store=mysql + database-enabled=true + dispatcher-enabled=true，
+        # 并至少启用一个投递目标，例如 dispatcher-kafka-enabled=true。
+        dispatcher-enabled: ${DATASMART_AGENT_RUNTIME_OUTBOX_DISPATCHER_ENABLED:false}
+        # 首次调度延迟，给应用启动、连接池、Kafka producer 和服务注册留出预热时间。
+        dispatcher-initial-delay-ms: 10000
+        # 固定延迟轮询间隔。这里使用 fixedDelay，而不是 fixedRate，避免上一轮耗时较长时本 JVM 内重叠执行。
+        dispatcher-fixed-delay-ms: 5000
+        # 单轮最多领取事件数；后续压测时应结合 outbox 积压、Kafka 吞吐、数据库更新成本调整。
+        dispatcher-batch-size: 50
+        # 单条记录最大投递尝试次数；当前达到上限仍保留 FAILED，后续应补 dead-letter/人工补偿入口。
+        dispatcher-max-attempts: 10
+        # 指数退避最大秒数，避免下游故障时高频重试打爆 Kafka 或数据库。
+        dispatcher-max-retry-backoff-seconds: 300
+        # 没有任何投递目标时是否允许直接标记 PUBLISHED；生产环境应保持 false，防止事件凭据被误吞。
+        dispatcher-allow-no-targets-as-published: false
+        # 是否由 dispatcher 把 outbox payload 投递到 Kafka。
+        # 注意不要和 tool-execution-events.enabled 的直接 Kafka sink 同时打开，除非消费侧严格按 eventId 幂等去重。
+        dispatcher-kafka-enabled: ${DATASMART_AGENT_RUNTIME_OUTBOX_DISPATCHER_KAFKA_ENABLED:false}
+        # dispatcher 等待 Kafka broker ack 的超时时间；超时会进入 FAILED 并按退避重试。
+        dispatcher-kafka-send-timeout-ms: 3000
+    # 会话绑定工具时强制从工具目录继承元数据。
+    # 生产环境建议保持 true，避免调用方伪造 toolType、targetService、riskLevel 或审批要求。
+    strict-tool-registry-binding: true
+    # Agent 工具目录。
+    # 当前只注册工具元数据，不直接执行工具；真实执行会在后续工具适配器中做权限、审批、幂等和审计。
+    tool-service-base-urls:
+      # 当前使用本地直连，便于开发环境不依赖服务发现也能调通第一条工具链路。
+      # 后续生产环境可替换为 gateway 地址、Nacos 解析地址或服务网格地址。
+      datasource-management: http://localhost:8082
+      # data-quality 用于生成规则草案、扫描计划和未来质量任务工具。
+      # 这里先配置本地直连地址，让 Agent Runtime 可以调用只读/草案型工具。
+      data-quality: http://localhost:8083
+      # task-management 用于保存任务草稿、提交审批以及后续转换真实任务。
+      # 当前 `task.draft.persist` 只调用 /task-drafts 保存 DRAFT，不会直接写入 /tasks 队列。
+      task-management: http://localhost:8081
+    tool-registry:
+      datasource.metadata.read:
+        enabled: true
+        tool-code: datasource.metadata.read
+        tool-type: DATASOURCE_METADATA
+        display-name: 数据源元数据读取
+        description: 读取数据源能力画像、表结构、字段和连接健康状态，为 Agent 生成治理建议提供上下文。
+        target-service: datasource-management
+        target-endpoint: /datasources/{datasourceId}/metadata/discover
+        read-only: true
+        risk-level: LOW
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: SEMANTIC
+        cache-policy: PROJECT_SAFE
+        timeout-ms: 10000
+        max-retries: 1
+        allowed-actions:
+          - VIEW
+        input-schema:
+          - name: datasourceId
+            type: number
+            required: true
+            description: 数据源 ID，用于限定 Agent 只能读取被授权的数据源元数据。
+            example: "1001"
+            sensitive: false
+            resolution: CAN_FILL_FROM_CONTEXT
+      quality.rule.suggest:
+        enabled: true
+        tool-code: quality.rule.suggest
+        tool-type: DATA_QUALITY
+        display-name: 数据质量规则建议
+        description: 基于数据源元数据、字段语义和治理目标生成质量规则草稿；当前建议只生成草稿，不直接启用规则。
+        target-service: data-quality
+        target-endpoint: /quality-rules/suggestions
+        read-only: true
+        risk-level: MEDIUM
+        execution-mode: DRAFT_ONLY
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: PROCEDURAL
+        cache-policy: PROJECT_SAFE
+        timeout-ms: 30000
+        max-retries: 0
+        allowed-actions:
+          - VIEW
+          - GENERATE
+        input-schema:
+          - name: datasourceId
+            type: number
+            required: true
+            description: 规则建议所基于的数据源 ID。
+            example: "1001"
+            sensitive: false
+            resolution: CAN_FILL_FROM_CONTEXT
+          - name: tableName
+            type: string
+            required: false
+            description: 可选表名；为空时表示按数据源整体生成规则建议。
+            example: ods_order
+            sensitive: false
+            resolution: CAN_FILL_FROM_CONTEXT
+          - name: businessGoal
+            type: string
+            required: true
+            description: 用户希望达成的质量治理目标，例如完整性、唯一性、金额异常检测。
+            example: 检查订单主键唯一性和金额异常值
+            sensitive: false
+            resolution: USER_REQUIRED
+      task.create.draft:
+        enabled: true
+        tool-code: task.create.draft
+        tool-type: TASK_MANAGEMENT
+        display-name: 任务草稿创建
+        description: 为同步、质量检测或治理流程生成任务草稿，默认不直接调度执行，需要用户确认后再提交。
+        target-service: task-management
+        target-endpoint: /tasks
+        read-only: false
+        risk-level: HIGH
+        execution-mode: APPROVAL_REQUIRED
+        requires-approval: true
+        idempotent: false
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: SESSION_ONLY
+        timeout-ms: 15000
+        max-retries: 0
+        allowed-actions:
+          - CREATE
+        input-schema:
+          - name: taskType
+            type: string
+            required: true
+            description: 任务类型，例如 DATA_SYNC、QUALITY_CHECK、MANUAL_REVIEW。
+            example: QUALITY_CHECK
+            sensitive: false
+            resolution: USER_REQUIRED
+          - name: projectId
+            type: number
+            required: true
+            description: 任务所属项目 ID，用于保持 Agent 任务与项目权限边界一致。
+            example: "20"
+            sensitive: false
+            resolution: SYSTEM_INJECTED
+          - name: objective
+            type: string
+            required: true
+            description: 任务目标说明，会进入任务描述和审计上下文。
+            example: 对订单表执行质量检测并生成异常报告
+            sensitive: true
+            resolution: USER_REQUIRED
+      task.draft.persist:
+        enabled: true
+        tool-code: task.draft.persist
+        tool-type: TASK_MANAGEMENT
+        display-name: 任务草稿持久化
+        description: 将 Agent 已生成并经过确认的任务草稿保存到 task-management 的 task_draft 表；该工具只创建 DRAFT，不提交审批、不审批通过、不转换真实任务。
+        target-service: task-management
+        target-endpoint: /task-drafts
+        read-only: false
+        risk-level: HIGH
+        execution-mode: APPROVAL_REQUIRED
+        requires-approval: true
+        idempotent: false
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: SESSION_ONLY
+        timeout-ms: 15000
+        max-retries: 0
+        allowed-actions:
+          - CREATE
+        input-schema:
+          - name: taskDraft
+            type: object
+            required: false
+            description: 可选的完整任务草稿对象，通常来自前端确认页编辑后的结果；如果提供该字段，会优先用于持久化。
+            example: '{"name":"DATA_QUALITY_SCAN 草稿 - ods_order","type":"DATA_QUALITY_SCAN","projectId":20}'
+            sensitive: true
+            resolution: USER_REQUIRED
+          - name: taskDraftRef
+            type: object
+            required: false
+            description: 可选的显式工具输出引用，用于从同一 Run 内读取 task.create.draft 的 taskDraft 输出，推荐包含 fromTool、fromAuditId、path。
+            example: '{"fromTool":"task.create.draft","fromAuditId":"audit-task-draft","path":"taskDraft"}'
+            sensitive: false
+            resolution: CAN_FILL_FROM_CONTEXT
+          - name: sourceRef
+            type: string
+            required: false
+            description: 草稿来源引用，默认使用本次 task.draft.persist 的审计 ID；生产审批页可用它追溯是哪次 Agent 工具链生成了草稿。
+            example: audit-task-draft
+            sensitive: false
+            resolution: SYSTEM_INJECTED
+    # Agent Skill 注册表。
+    # Skill 是比工具更高一层的能力包：它描述“某类治理目标应该如何组织工具、记忆、审批和审计”。
+    # 当前先配置在 Java agent-runtime 中，让 Java 控制面成为 Skill 治理事实源；
+    # Python Runtime 可以继续保留本地默认 Skill 作为降级，但生产环境应优先消费这里的 descriptor。
+    skill-registry:
+      datasource.profiling:
+        enabled: true
+        skill-code: datasource.profiling
+        display-name: 数据源画像分析 Skill
+        description: 分析数据源结构、字段画像、主键索引和基础元数据风险，为后续质量规则和同步任务提供上下文。
+        domain: DATASOURCE
+        required-tools:
+          - datasource.metadata.read
+        required-permissions:
+          - datasource:metadata:read
+        memory-dependencies:
+          - SEMANTIC
+        risk-level: LOW
+        approval-policy: NONE
+        tenant-scoped: true
+        project-scoped: true
+        audit-required: true
+        default-memory-scope: PROJECT
+        retention-days: 30
+        trigger-keywords:
+          - 数据源
+          - 表结构
+          - metadata
+          - mysql
+          - postgresql
+        examples:
+          - 请分析这个 MySQL 数据源的表结构
+      quality.rule.design:
+        enabled: true
+        skill-code: quality.rule.design
+        display-name: 质量规则设计 Skill
+        description: 根据元数据、业务目标和历史异常生成数据质量规则草案，默认进入草案复核而不是直接启用。
+        domain: DATA_QUALITY
+        required-tools:
+          - datasource.metadata.read
+          - quality.rule.suggest
+        required-permissions:
+          - quality:rule:draft
+        memory-dependencies:
+          - SEMANTIC
+          - EPISODIC
+        risk-level: MEDIUM
+        approval-policy: DRAFT_REVIEW
+        tenant-scoped: true
+        project-scoped: true
+        audit-required: true
+        default-memory-scope: PROJECT
+        retention-days: 30
+        trigger-keywords:
+          - 质量
+          - 规则
+          - 校验
+          - 异常
+          - 清洗
+        examples:
+          - 请为客户主数据生成完整性和手机号格式校验规则
+      governed.task.creation:
+        enabled: true
+        skill-code: governed.task.creation
+        display-name: 受控任务创建 Skill
+        description: 将治理目标转换为任务草案，并进入审批、审计和任务管理链路，避免 Agent 直接执行高风险动作。
+        domain: TASK_MANAGEMENT
+        required-tools:
+          - task.create.draft
+          - task.draft.persist
+        required-permissions:
+          - task:create
+        memory-dependencies:
+          - PROCEDURAL
+          - EPISODIC
+        risk-level: HIGH
+        approval-policy: HUMAN_APPROVAL_REQUIRED
+        tenant-scoped: true
+        project-scoped: true
+        audit-required: true
+        default-memory-scope: SESSION
+        retention-days: 7
+        trigger-keywords:
+          - 创建任务
+          - 调度
+          - 执行
+          - 同步任务
+          - run
+        examples:
+          - 请创建一个同步任务并在审批后执行
+      permission.boundary.explain:
+        enabled: true
+        skill-code: permission.boundary.explain
+        display-name: 权限边界解释 Skill
+        description: 解释角色、项目范围、审批要求和越权风险，帮助用户理解为什么某些治理对象不可见或不可操作。
+        domain: PERMISSION_ADMIN
+        required-permissions:
+          - permission:policy:view
+        memory-dependencies:
+          - EPISODIC
+          - SEMANTIC
+        risk-level: MEDIUM
+        approval-policy: AUDIT_ONLY
+        tenant-scoped: true
+        project-scoped: true
+        audit-required: true
+        default-memory-scope: PROJECT
+        retention-days: 90
+        trigger-keywords:
+          - 权限
+          - 角色
+          - 审批
+          - 项目范围
+          - 越权
+        examples:
+          - 解释为什么我不能访问这个项目的质量报告
+    model-routes:
+      AGENT_REASONING:
+        enabled: true
+        provider-name: dry-run-main-reasoning
+        provider-type: DRY_RUN
+        model-name: Qwen3.5-placeholder
+        timeout-ms: 30000
+        capabilities:
+          - CHAT
+      GOVERNANCE_QA:
+        enabled: true
+        provider-name: dry-run-governance-qa
+        provider-type: DRY_RUN
+        model-name: Qwen3.5-placeholder
+        timeout-ms: 30000
+        capabilities:
+          - CHAT
+      CODE_GENERATION:
+        enabled: true
+        provider-name: dry-run-code-agent
+        provider-type: DRY_RUN
+        model-name: Qwen3.5-code-placeholder
+        timeout-ms: 45000
+        capabilities:
+          - CHAT
+          - CODE
+      EMBEDDING:
+        enabled: true
+        provider-name: dry-run-embedding
+        provider-type: DRY_RUN
+        model-name: qwen-embedding-current-placeholder
+        timeout-ms: 15000
+        capabilities:
+          - EMBEDDING
+      RERANK:
+        enabled: true
+        provider-name: dry-run-rerank
+        provider-type: DRY_RUN
+        model-name: qwen-reranker-current-placeholder
+        timeout-ms: 15000
+        capabilities:
+          - RERANK
+      MULTIMODAL_UNDERSTANDING:
+        enabled: true
+        provider-name: dry-run-multimodal
+        provider-type: DRY_RUN
+        model-name: qwen-multimodal-current-placeholder
+        timeout-ms: 60000
+        capabilities:
+          - CHAT
+          - MULTIMODAL
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+
+logging:
+  level:
+    com.czh.datasmart: INFO
