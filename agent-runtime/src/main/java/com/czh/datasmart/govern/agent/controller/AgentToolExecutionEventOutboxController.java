@@ -6,13 +6,19 @@
  */
 package com.czh.datasmart.govern.agent.controller;
 
+import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionEventOutboxOperationRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionEventOutboxOperationResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionEventOutboxQueryResponse;
 import com.czh.datasmart.govern.agent.event.outbox.AgentToolExecutionEventOutboxDiagnostics;
+import com.czh.datasmart.govern.agent.service.outbox.AgentToolExecutionEventOutboxOperationService;
 import com.czh.datasmart.govern.agent.service.outbox.AgentToolExecutionEventOutboxQueryService;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -36,6 +42,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class AgentToolExecutionEventOutboxController {
 
     private final AgentToolExecutionEventOutboxQueryService queryService;
+    private final AgentToolExecutionEventOutboxOperationService operationService;
 
     /**
      * 查询 outbox 记录列表。
@@ -65,5 +72,63 @@ public class AgentToolExecutionEventOutboxController {
     public PlatformApiResponse<AgentToolExecutionEventOutboxDiagnostics> diagnostics(
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success(queryService.diagnostics(), traceId);
+    }
+
+    /**
+     * 将失败或阻断事件重新入队。
+     *
+     * <p>该接口面向平台管理员/运维人员，不应暴露给普通 Agent 用户。
+     * 典型使用场景是：下游 Kafka topic、审计中心配置或 payload 契约已经修复，管理员希望让 dispatcher 再次自动投递。
+     * 服务层只允许 FAILED/BLOCKED 进入 PENDING，避免把仍在 PUBLISHING 的记录强行重放造成重复投递。</p>
+     */
+    @PostMapping("/{outboxId}/requeue")
+    public PlatformApiResponse<AgentToolExecutionEventOutboxOperationResponse> requeue(
+            @PathVariable("outboxId") String outboxId,
+            @RequestBody(required = false) AgentToolExecutionEventOutboxOperationRequest request,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(
+                "outbox 事件已重新入队，等待 dispatcher 补偿投递",
+                operationService.requeue(outboxId, request, actorId),
+                traceId
+        );
+    }
+
+    /**
+     * 人工忽略失败或阻断事件。
+     *
+     * <p>忽略不是投递成功，而是把事件转入 IGNORED，表示管理员已经判断该事件不再需要自动补偿。
+     * 生产环境中，该动作应由 gateway/permission-admin 限定为平台管理员或运维角色，并进入操作审计。</p>
+     */
+    @PostMapping("/{outboxId}/ignore")
+    public PlatformApiResponse<AgentToolExecutionEventOutboxOperationResponse> ignore(
+            @PathVariable("outboxId") String outboxId,
+            @RequestBody(required = false) AgentToolExecutionEventOutboxOperationRequest request,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(
+                "outbox 事件已人工忽略并归档",
+                operationService.ignore(outboxId, request, actorId),
+                traceId
+        );
+    }
+
+    /**
+     * 追加人工处理备注。
+     *
+     * <p>备注用于记录排障判断，例如“等待下游 ACL 修复”或“客户确认该历史事件无需补发”。
+     * 当前阶段备注写入 lastError 最近摘要；后续接入 outbox_operation_audit 表后，应保留完整操作历史。</p>
+     */
+    @PostMapping("/{outboxId}/notes")
+    public PlatformApiResponse<AgentToolExecutionEventOutboxOperationResponse> appendNote(
+            @PathVariable("outboxId") String outboxId,
+            @RequestBody(required = false) AgentToolExecutionEventOutboxOperationRequest request,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(
+                "outbox 事件已追加人工处理备注",
+                operationService.appendNote(outboxId, request, actorId),
+                traceId
+        );
     }
 }

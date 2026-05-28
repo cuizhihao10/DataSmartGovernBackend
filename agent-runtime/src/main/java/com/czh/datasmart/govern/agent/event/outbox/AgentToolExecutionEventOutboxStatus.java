@@ -49,5 +49,14 @@ public enum AgentToolExecutionEventOutboxStatus {
      *
      * <p>例如 payload 超过安全上限、序列化异常、事件字段缺少关键标识等，不应盲目自动重试，否则可能制造事件风暴。</p>
      */
-    BLOCKED
+    BLOCKED,
+
+    /**
+     * 已人工忽略。
+     *
+     * <p>IGNORED 表示运维或平台管理员明确判断该事件不再需要自动投递，也不需要继续占用补偿队列。
+     * 它与 PUBLISHED 不同：PUBLISHED 表示事件已经成功送达下游；IGNORED 表示事件没有送达，但经过人工判断后被归档。
+     * 真实生产环境中，该状态必须保留操作者、原因和审计记录，避免关键治理事件被静默吞掉。</p>
+     */
+    IGNORED
 }

@@ -398,6 +398,29 @@ VALUES
 (0, '运营人员查看 Agent 运行时事件', 'OPERATOR', 'GET', '/api/agent/runtime-events/**', 'AI_RUNTIME', 'VIEW_EVENTS', 'ALLOW', 136, 1, '运营人员可查看 Agent 运行事件投影，用于排查执行失败、事件缺失、工具调用异常和用户反馈问题。', NOW(), NOW()),
 (0, '运营人员诊断 Agent 运行时事件消费', 'OPERATOR', 'GET', '/api/agent/runtime-events/diagnostics', 'AI_RUNTIME', 'DIAGNOSE', 'ALLOW', 137, 1, '运营人员可查看 runtime event consumer、topic/groupId、投影窗口、拒绝原因和处理耗时，辅助定位 Kafka 消费与控制面投影问题。', NOW(), NOW());
 
+-- ---------------------------------------------------------------------------
+-- Agent Runtime 工具事件 outbox 查询与人工补偿策略
+-- ---------------------------------------------------------------------------
+-- outbox 是 Agent 工具状态事件的可靠投递缓冲区，既承载“事件是否已进入投递链路”的审计证据，
+-- 也承载 dispatcher 失败重试、阻断记录和人工补偿入口。
+-- 因此这里显式拆分：
+-- 1. VIEW_OUTBOX_EVENTS：查看 outbox 投递证据，适合审计员和运营人员；
+-- 2. DIAGNOSE：查看 outbox 状态分布和积压趋势，适合运营人员；
+-- 3. REQUEUE_OUTBOX：修复下游故障后重新入队，属于恢复动作；
+-- 4. ANNOTATE_OUTBOX：追加排障备注，便于交接和复盘；
+-- 5. IGNORE_OUTBOX：停止继续自动补偿，默认只保留给平台管理员兜底，不开放给普通运营人员。
+INSERT IGNORE INTO permission_route_policy
+(tenant_id, policy_name, role_code, http_method, path_pattern, resource_type, action, effect, priority, enabled, description, create_time, update_time)
+VALUES
+(0, '审计员查看 Agent outbox 投递记录', 'AUDITOR', 'GET', '/api/agent/tool-execution-events/outbox/**', 'AI_RUNTIME', 'VIEW_OUTBOX_EVENTS', 'ALLOW', 114, 1, '审计员可只读查看 Agent 工具状态事件 outbox，用于复核事件是否进入可靠投递链路；后续应结合租户、项目与脱敏策略继续收紧。', NOW(), NOW()),
+(0, '运营人员查看 Agent outbox 投递记录', 'OPERATOR', 'GET', '/api/agent/tool-execution-events/outbox/**', 'AI_RUNTIME', 'VIEW_OUTBOX_EVENTS', 'ALLOW', 138, 1, '运营人员可查看 Agent 工具状态事件 outbox，用于定位实时事件缺失、投递失败、payload 阻断和 dispatcher 堆积。', NOW(), NOW()),
+(0, '运营人员诊断 Agent outbox 状态分布', 'OPERATOR', 'GET', '/api/agent/tool-execution-events/outbox/diagnostics', 'AI_RUNTIME', 'DIAGNOSE', 'ALLOW', 139, 1, '运营人员可查看 pending、publishing、failed、blocked、ignored 等 outbox 状态计数，用于告警判断和容量评估。', NOW(), NOW()),
+(0, '运营人员重新入队 Agent outbox 事件', 'OPERATOR', 'POST', '/api/agent/tool-execution-events/outbox/*/requeue', 'AI_RUNTIME', 'REQUEUE_OUTBOX', 'ALLOW', 140, 1, '运营人员可在下游 topic、消费链路或 payload 契约修复后，把 FAILED/BLOCKED 事件重新置为 PENDING 等待 dispatcher 补偿投递。', NOW(), NOW()),
+(0, '运营人员备注 Agent outbox 事件', 'OPERATOR', 'POST', '/api/agent/tool-execution-events/outbox/*/notes', 'AI_RUNTIME', 'ANNOTATE_OUTBOX', 'ALLOW', 140, 1, '运营人员可追加 outbox 排障备注，记录客户确认、下游修复计划或暂缓处理原因；备注不改变投递状态。', NOW(), NOW()),
+(0, '运营人员禁止忽略 Agent outbox 事件', 'OPERATOR', 'POST', '/api/agent/tool-execution-events/outbox/*/ignore', 'AI_RUNTIME', 'IGNORE_OUTBOX', 'DENY', 900, 1, 'ignore 会把异常事件人工归档并停止自动补偿，默认不授予普通运营人员，需由平台管理员或后续审批流程执行。', NOW(), NOW()),
+(0, '审计员禁止变更 Agent outbox 事件', 'AUDITOR', 'POST', '/api/agent/tool-execution-events/outbox/**', 'AI_RUNTIME', NULL, 'DENY', 900, 1, '审计员是只读角色，只能复核 outbox 投递证据，不能执行重新入队、忽略或备注等改变排障事实的动作。', NOW(), NOW()),
+(0, '服务账号禁止人工处理 Agent outbox', 'SERVICE_ACCOUNT', 'ANY', '/api/agent/tool-execution-events/outbox/**', 'AI_RUNTIME', NULL, 'DENY', 900, 1, '服务账号用于内部协议调用，不应默认执行 outbox 人工补偿动作，避免机器身份替代人类责任链。', NOW(), NOW());
+
 -- 这些补充策略不是为了替代上面的通配策略，而是把高风险动作显式沉淀为策略事实。
 -- 管理员在权限矩阵里可以直接看到“谁能 CALLBACK、谁能 RECOVER、谁能 ACKNOWLEDGE/CLOSE”，
 -- 后续接审批流或按钮权限时也可以按 action 精确迁移。

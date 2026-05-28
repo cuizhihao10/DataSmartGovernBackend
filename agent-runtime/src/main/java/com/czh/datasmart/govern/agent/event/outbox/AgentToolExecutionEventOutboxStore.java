@@ -80,6 +80,36 @@ public interface AgentToolExecutionEventOutboxStore {
                                                               Instant now);
 
     /**
+     * 人工重新入队。
+     *
+     * <p>该方法面向运维补偿入口，用于把已经 FAILED 或 BLOCKED 的事件重新放回 PENDING。
+     * 不建议允许 PUBLISHING 直接重新入队，因为它可能仍被某个 worker 正在投递；PUBLISHING 卡死应交给
+     * {@link #recoverStalePublishing(Instant, Instant, String)} 按超时策略处理。</p>
+     */
+    Optional<AgentToolExecutionEventOutboxRecord> markRequeued(String outboxId,
+                                                               String reason,
+                                                               Instant now);
+
+    /**
+     * 人工忽略并归档。
+     *
+     * <p>IGNORED 表示平台管理员明确决定不再投递该事件。它必须和 PUBLISHED 区分开：
+     * PUBLISHED 是成功送达，IGNORED 是人工终止。后续审计中心应记录操作者、原因、traceId 和审批链路。</p>
+     */
+    Optional<AgentToolExecutionEventOutboxRecord> markIgnored(String outboxId,
+                                                              String reason,
+                                                              Instant now);
+
+    /**
+     * 追加人工处理备注。
+     *
+     * <p>当前阶段先把最近一次备注写入 lastError，用于诊断页展示；未来可扩展独立操作审计表保留完整历史。</p>
+     */
+    Optional<AgentToolExecutionEventOutboxRecord> appendOperationNote(String outboxId,
+                                                                      String note,
+                                                                      Instant now);
+
+    /**
      * 恢复长时间停留在 PUBLISHING 的记录。
      *
      * <p>PUBLISHING 表示某个 dispatcher worker 已经领取了事件，但还没有写回 PUBLISHED/FAILED/BLOCKED。

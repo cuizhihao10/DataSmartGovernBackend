@@ -483,6 +483,48 @@ datasmart:
           method-actions:
             GET: SUBSCRIBE
 
+        # Agent 工具执行事件 outbox 是 Java 控制面与实时事件流之间的可靠投递缓冲区。
+        # 查询、诊断、重新入队、忽略和备注的风险等级不同，不能全部退化为普通 GET/POST 语义：
+        # 1. GET 查询用于排障和审计复核，后续应结合数据范围、脱敏和事件保留策略继续收紧；
+        # 2. diagnostics 展示投递积压与阻断状态，属于运维诊断视角；
+        # 3. requeue 会让 dispatcher 再次投递历史事件，必须作为恢复类动作单独授权；
+        # 4. ignore 会把事件转为人工归档，不代表投递成功，必须有独立审计语义；
+        # 5. notes 用于记录排障过程，虽然不改变投递状态，但会影响后续人工判断，也需要可追溯。
+        - path-pattern: /api/agent/tool-execution-events/outbox/diagnostics
+          resource-type: AI_RUNTIME
+          default-action: DIAGNOSE
+          description: Agent 工具执行事件 outbox 诊断接口，用于查看 pending、publishing、failed、blocked 和 ignored 等状态分布。
+          method-actions:
+            GET: DIAGNOSE
+
+        - path-pattern: /api/agent/tool-execution-events/outbox/{outboxId}/requeue
+          resource-type: AI_RUNTIME
+          default-action: REQUEUE_OUTBOX
+          description: Agent 工具执行事件 outbox 人工重新入队入口；仅用于下游故障修复后恢复投递，不能按普通 CREATE 授权。
+          method-actions:
+            POST: REQUEUE_OUTBOX
+
+        - path-pattern: /api/agent/tool-execution-events/outbox/{outboxId}/ignore
+          resource-type: AI_RUNTIME
+          default-action: IGNORE_OUTBOX
+          description: Agent 工具执行事件 outbox 人工忽略入口；表示管理员确认该事件无需继续投递，必须保留独立审计语义。
+          method-actions:
+            POST: IGNORE_OUTBOX
+
+        - path-pattern: /api/agent/tool-execution-events/outbox/{outboxId}/notes
+          resource-type: AI_RUNTIME
+          default-action: ANNOTATE_OUTBOX
+          description: Agent 工具执行事件 outbox 人工备注入口；用于记录排障判断、客户确认或恢复前置条件。
+          method-actions:
+            POST: ANNOTATE_OUTBOX
+
+        - path-pattern: /api/agent/tool-execution-events/outbox/**
+          resource-type: AI_RUNTIME
+          default-action: VIEW_OUTBOX_EVENTS
+          description: Agent 工具执行事件 outbox 查询接口，用于排查工具状态事件是否进入待投递事件箱以及是否发生堆积或阻断。
+          method-actions:
+            GET: VIEW_OUTBOX_EVENTS
+
         # Agent Runtime 事件诊断必须比 /api/agent/runtime-events/** 更靠前。
         # 原因：诊断接口展示的是 consumer、投影窗口、拒绝原因和处理耗时等运行状态，
         # 它的权限语义更接近“运维诊断”，不应被普通事件查看权限覆盖。

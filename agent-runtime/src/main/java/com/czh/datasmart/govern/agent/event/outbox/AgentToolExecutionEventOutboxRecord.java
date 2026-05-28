@@ -178,6 +178,38 @@ public record AgentToolExecutionEventOutboxRecord(
         return withStatus(AgentToolExecutionEventOutboxStatus.BLOCKED, attemptCount, now, null, publishedAt, error);
     }
 
+    /**
+     * 人工重新入队。
+     *
+     * <p>该动作通常由运维台或平台管理员触发，用于把 BLOCKED/FAILED 事件重新放回 dispatcher 自动投递队列。
+     * 重新入队不会清零 attemptCount，因为历史尝试次数是重要诊断信息；如果某条事件反复被重新入队又再次 BLOCKED，
+     * 运维侧就能判断它不是偶发网络问题，而更可能是 payload 契约、权限上下文或下游配置问题。</p>
+     */
+    public AgentToolExecutionEventOutboxRecord markRequeued(String reason, Instant now) {
+        return withStatus(AgentToolExecutionEventOutboxStatus.PENDING, attemptCount, now, null, publishedAt, reason);
+    }
+
+    /**
+     * 人工忽略并归档。
+     *
+     * <p>IGNORED 是 outbox 的人工终止状态。它不能等同于 PUBLISHED，因为事件并没有真正送达下游；
+     * 但它也不应继续留在 BLOCKED/FAILED 队列里制造告警噪声。真实商业化系统中，这类动作必须经过权限控制和审计留痕。</p>
+     */
+    public AgentToolExecutionEventOutboxRecord markIgnored(String reason, Instant now) {
+        return withStatus(AgentToolExecutionEventOutboxStatus.IGNORED, attemptCount, now, null, publishedAt, reason);
+    }
+
+    /**
+     * 追加人工处理备注。
+     *
+     * <p>当前阶段还没有独立 outbox_operation_audit 表，因此先把最近一次处理说明写入 lastError。
+     * 这不是最终审计方案，但可以让运维查询页立刻看到“谁在什么时候做了什么判断”。后续补审计表时，
+     * 该方法可以保留为记录最近摘要，完整历史则落入独立表。</p>
+     */
+    public AgentToolExecutionEventOutboxRecord appendOperationNote(String note, Instant now) {
+        return withStatus(status, attemptCount, now, nextRetryAt, publishedAt, note);
+    }
+
     private AgentToolExecutionEventOutboxRecord withStatus(AgentToolExecutionEventOutboxStatus newStatus,
                                                           int newAttemptCount,
                                                           Instant now,

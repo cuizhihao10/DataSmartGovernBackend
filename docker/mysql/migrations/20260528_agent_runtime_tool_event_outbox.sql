@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS agent_tool_execution_event_outbox (
     audit_id VARCHAR(128) NOT NULL COMMENT '工具执行审计 ID，对应一次工具计划/审批/执行状态链路',
     tool_code VARCHAR(128) DEFAULT NULL COMMENT '工具编码，例如 datasource.metadata.read、task.draft.persist',
     current_state VARCHAR(64) DEFAULT NULL COMMENT '工具业务状态，例如 PLANNED、WAITING_APPROVAL、EXECUTING、SUCCEEDED、FAILED',
-    status VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT 'outbox 投递状态：PENDING/PUBLISHING/PUBLISHED/FAILED/BLOCKED',
+    status VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT 'outbox 投递状态：PENDING/PUBLISHING/PUBLISHED/FAILED/BLOCKED/IGNORED',
     attempt_count INT NOT NULL DEFAULT 0 COMMENT '投递尝试次数，dispatcher 每次领取或发送时递增',
     payload_json JSON NOT NULL COMMENT '待投递事件 payload；应使用脱敏后的工具状态事件，不应写入完整工具入参或原始输出',
     payload_size_bytes INT NOT NULL DEFAULT 0 COMMENT 'payload UTF-8 字节数，用于发现异常大事件',

@@ -6196,3 +6196,47 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 补 BLOCKED 人工补偿 API 和运维审计闭环，结束 outbox 生产保护的最后一块核心短板。
 2. 补 workerId/lockedAt/lockExpireAt 显式租约字段，作为后续多实例 dispatcher 运维台能力，而不是继续用 update_time 推断。
 3. outbox 收口后，转入统一 sequence/cursor、长期记忆、模型网关 KV/prefix cache、Skill 工具市场和多 Agent 协作，避免 Java 局部继续无限细化。
+
+## 4.23 Java agent-runtime outbox BLOCKED 人工补偿 API 与权限闭环（2026-05-28）
+
+本阶段把 Agent 工具执行事件 outbox 从“自动投递与阻断诊断”推进到“可人工恢复、可人工归档、可追加处理备注、可被权限中心独立识别”的运维闭环。它是 Java outbox 可靠性链路的阶段性收口，不再继续无边界扩展局部细节，后续主线应转向智能网关、长期记忆、模型调用治理和工具/Skill 能力。
+
+已完成：
+- outbox 状态新增 `IGNORED`，用于表达人工确认无需继续投递，避免把“人工忽略”误记为“系统投递成功”。
+- outbox record/store/service/controller 全链路新增：
+  - `requeue`：FAILED/BLOCKED -> PENDING；
+  - `ignore`：FAILED/BLOCKED -> IGNORED；
+  - `notes`：追加最近人工处理备注，不改变投递状态。
+- 新增 `AgentToolExecutionEventOutboxOperationService`，集中处理 outbox 是否存在、状态是否合法、reason 是否必填、操作者解析和结构化备注生成。
+- gateway route metadata 显式拆分 outbox 权限动作：`VIEW_OUTBOX_EVENTS`、`DIAGNOSE`、`REQUEUE_OUTBOX`、`IGNORE_OUTBOX`、`ANNOTATE_OUTBOX`。
+- permission-admin 动作枚举、初始化脚本和迁移脚本补齐 outbox 策略：
+  - AUDITOR 只读查看；
+  - OPERATOR 可查看、诊断、重新入队、追加备注；
+  - OPERATOR 默认禁止 ignore；
+  - AUDITOR 禁止写；
+  - SERVICE_ACCOUNT 禁止人工处理；
+  - 平台管理员继续通过全局策略保留 break-glass 能力。
+- 新增 outbox operation service 测试与 gateway outbox 授权语义测试，并把 gateway 测试拆分到独立文件，避免单文件超过 500 行。
+
+设计意义：
+- requeue、ignore、notes 的业务风险不同，必须拆成独立 action。这样权限中心才能区分“重放历史事件”“人工归档异常事件”“记录排障备注”，而不是只看到模糊的 POST=CREATE。
+- 默认不给 OPERATOR ignore，是为了把“停止自动补偿”这类高风险动作保留给平台管理员或未来审批流。
+- 当前阶段用 lastError 保存最近人工处理说明，先保证排障可用；下一阶段如果要做完整事故复盘，应增加 outbox_operation_audit 表。
+
+当前边界：
+- 尚未实现独立 outbox 操作审计表和审批单关联。
+- 尚未加入 idempotency key，重复提交主要依赖状态条件更新保护。
+- outbox 查询还没有按 gateway 数据范围强制过滤，暂不开放给普通用户。
+- 还没有 workerId/lockedAt/lockExpireAt 显式租约字段和真实 MySQL/Kafka 集成测试。
+
+验证：
+- `mvn -pl gateway,permission-admin,agent-runtime -am test -DskipITs "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"` 通过。
+- 拆分 gateway 测试后，`mvn -pl gateway -am test -DskipITs "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"` 通过。
+- `mvn test -DskipITs "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"` 全仓通过。
+- 关键文件均保持在 500 行以内。
+
+下一步路线：
+1. 优先进入统一 sequence/cursor，让 Python Runtime、Java outbox、gateway WebSocket、前端 replay 和审计回放共享稳定游标。
+2. 并行推进长期记忆能力：session memory、tenant/project memory、记忆写入审批、检索权限、遗忘策略。
+3. 推进智能网关/OpenClaw 类能力：模型 Provider 抽象、KV/prefix cache、工具调用治理、模型降级、成本/延迟指标。
+4. 推进 Agent 工具/Skill 市场：工具注册、schema、风险等级、审批策略、执行沙箱和可观测性。

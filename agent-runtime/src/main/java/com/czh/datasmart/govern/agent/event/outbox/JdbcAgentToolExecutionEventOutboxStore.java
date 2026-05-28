@@ -216,6 +216,49 @@ public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutio
         ));
     }
 
+    @Override
+    public Optional<AgentToolExecutionEventOutboxRecord> markRequeued(String outboxId, String reason, Instant now) {
+        Instant referenceTime = now == null ? Instant.now() : now;
+        String sql = "UPDATE agent_tool_execution_event_outbox SET status = ?, update_time = ?, next_retry_at = NULL, "
+                + "last_error = ? WHERE outbox_id = ? AND status IN (?, ?)";
+        return updateThenFind(outboxId, sql, parameters(
+                AgentToolExecutionEventOutboxStatus.PENDING.name(),
+                referenceTime,
+                JdbcAgentToolExecutionEventOutboxRecordMapper.truncate(reason, 1024),
+                outboxId,
+                AgentToolExecutionEventOutboxStatus.BLOCKED.name(),
+                AgentToolExecutionEventOutboxStatus.FAILED.name()
+        ));
+    }
+
+    @Override
+    public Optional<AgentToolExecutionEventOutboxRecord> markIgnored(String outboxId, String reason, Instant now) {
+        Instant referenceTime = now == null ? Instant.now() : now;
+        String sql = "UPDATE agent_tool_execution_event_outbox SET status = ?, update_time = ?, next_retry_at = NULL, "
+                + "last_error = ? WHERE outbox_id = ? AND status IN (?, ?)";
+        return updateThenFind(outboxId, sql, parameters(
+                AgentToolExecutionEventOutboxStatus.IGNORED.name(),
+                referenceTime,
+                JdbcAgentToolExecutionEventOutboxRecordMapper.truncate(reason, 1024),
+                outboxId,
+                AgentToolExecutionEventOutboxStatus.BLOCKED.name(),
+                AgentToolExecutionEventOutboxStatus.FAILED.name()
+        ));
+    }
+
+    @Override
+    public Optional<AgentToolExecutionEventOutboxRecord> appendOperationNote(String outboxId, String note, Instant now) {
+        Instant referenceTime = now == null ? Instant.now() : now;
+        String sql = "UPDATE agent_tool_execution_event_outbox SET update_time = ?, last_error = ? "
+                + "WHERE outbox_id = ? AND status <> ?";
+        return updateThenFind(outboxId, sql, parameters(
+                referenceTime,
+                JdbcAgentToolExecutionEventOutboxRecordMapper.truncate(note, 1024),
+                outboxId,
+                AgentToolExecutionEventOutboxStatus.PUBLISHED.name()
+        ));
+    }
+
     /**
      * 恢复长时间卡在 PUBLISHING 的记录。
      *
@@ -283,6 +326,7 @@ public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutio
                             counts.getOrDefault(AgentToolExecutionEventOutboxStatus.PUBLISHED, 0),
                             counts.getOrDefault(AgentToolExecutionEventOutboxStatus.FAILED, 0),
                             counts.getOrDefault(AgentToolExecutionEventOutboxStatus.BLOCKED, 0),
+                            counts.getOrDefault(AgentToolExecutionEventOutboxStatus.IGNORED, 0),
                             maxEventsPerRun,
                             maxTotalRecords,
                             Instant.now()

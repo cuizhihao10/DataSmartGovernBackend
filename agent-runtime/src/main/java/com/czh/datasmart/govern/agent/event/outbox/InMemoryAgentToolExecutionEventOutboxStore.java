@@ -157,6 +157,30 @@ public class InMemoryAgentToolExecutionEventOutboxStore implements AgentToolExec
     }
 
     @Override
+    public Optional<AgentToolExecutionEventOutboxRecord> markRequeued(String outboxId, String reason, Instant now) {
+        Instant referenceTime = now == null ? Instant.now() : now;
+        return replaceIf(outboxId,
+                this::canManuallyCompensate,
+                record -> record.markRequeued(reason, referenceTime));
+    }
+
+    @Override
+    public Optional<AgentToolExecutionEventOutboxRecord> markIgnored(String outboxId, String reason, Instant now) {
+        Instant referenceTime = now == null ? Instant.now() : now;
+        return replaceIf(outboxId,
+                this::canManuallyCompensate,
+                record -> record.markIgnored(reason, referenceTime));
+    }
+
+    @Override
+    public Optional<AgentToolExecutionEventOutboxRecord> appendOperationNote(String outboxId, String note, Instant now) {
+        Instant referenceTime = now == null ? Instant.now() : now;
+        return replaceIf(outboxId,
+                record -> record.status() != AgentToolExecutionEventOutboxStatus.PUBLISHED,
+                record -> record.appendOperationNote(note, referenceTime));
+    }
+
+    @Override
     public int recoverStalePublishing(Instant staleBefore, Instant now, String error) {
         Instant cutoff = staleBefore == null ? Instant.now() : staleBefore;
         Instant referenceTime = now == null ? Instant.now() : now;
@@ -194,6 +218,7 @@ public class InMemoryAgentToolExecutionEventOutboxStore implements AgentToolExec
                     count(AgentToolExecutionEventOutboxStatus.PUBLISHED),
                     count(AgentToolExecutionEventOutboxStatus.FAILED),
                     count(AgentToolExecutionEventOutboxStatus.BLOCKED),
+                    count(AgentToolExecutionEventOutboxStatus.IGNORED),
                     maxEventsPerRun,
                     maxTotalRecords,
                     Instant.now()
@@ -263,6 +288,11 @@ public class InMemoryAgentToolExecutionEventOutboxStore implements AgentToolExec
         return record.status() == AgentToolExecutionEventOutboxStatus.PUBLISHING
                 && record.updatedAt() != null
                 && !record.updatedAt().isAfter(cutoff);
+    }
+
+    private boolean canManuallyCompensate(AgentToolExecutionEventOutboxRecord record) {
+        return record.status() == AgentToolExecutionEventOutboxStatus.BLOCKED
+                || record.status() == AgentToolExecutionEventOutboxStatus.FAILED;
     }
 
     private void appendRunIndex(AgentToolExecutionEventOutboxRecord record) {

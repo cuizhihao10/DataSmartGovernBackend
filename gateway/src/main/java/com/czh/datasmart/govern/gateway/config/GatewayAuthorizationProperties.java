@@ -175,6 +175,21 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/agent/events/ws", "AI_RUNTIME",
                 "Agent Runtime 实时事件 WebSocket 订阅入口，用于订阅 run/session 进度、断线续传、ack 和 heartbeat",
                 Map.of("GET", "SUBSCRIBE")));
+        defaults.add(route("/api/agent/tool-execution-events/outbox/diagnostics", "AI_RUNTIME",
+                "Agent 工具执行事件 outbox 诊断接口，用于运维查看 pending、publishing、failed、blocked 和 ignored 等状态分布",
+                Map.of("GET", "DIAGNOSE")));
+        defaults.add(route("/api/agent/tool-execution-events/outbox/{outboxId}/requeue", "AI_RUNTIME",
+                "Agent 工具执行事件 outbox 人工重新入队入口，属于恢复类高风险运维动作，不能按普通 POST CREATE 授权",
+                Map.of("POST", "REQUEUE_OUTBOX")));
+        defaults.add(route("/api/agent/tool-execution-events/outbox/{outboxId}/ignore", "AI_RUNTIME",
+                "Agent 工具执行事件 outbox 人工忽略入口，表示管理员确认该事件无需继续自动投递，必须独立审计",
+                Map.of("POST", "IGNORE_OUTBOX")));
+        defaults.add(route("/api/agent/tool-execution-events/outbox/{outboxId}/notes", "AI_RUNTIME",
+                "Agent 工具执行事件 outbox 人工备注入口，用于记录排障判断、客户确认或恢复前置条件",
+                Map.of("POST", "ANNOTATE_OUTBOX")));
+        defaults.add(route("/api/agent/tool-execution-events/outbox/**", "AI_RUNTIME",
+                "Agent 工具执行事件 outbox 查询接口，用于排查工具状态事件是否进入待投递事件箱以及是否发生堆积或阻断",
+                Map.of("GET", "VIEW_OUTBOX_EVENTS")));
         defaults.add(route("/api/agent/runtime-events/diagnostics", "AI_RUNTIME",
                 "Agent Runtime 运行时事件消费诊断接口，用于运维查看 Kafka consumer、投影窗口和拒绝原因统计",
                 Map.of("GET", "DIAGNOSE")));

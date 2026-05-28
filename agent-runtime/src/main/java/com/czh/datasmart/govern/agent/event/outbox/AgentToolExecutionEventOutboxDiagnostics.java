@@ -22,6 +22,7 @@ public record AgentToolExecutionEventOutboxDiagnostics(
         int publishedRecords,
         int failedRecords,
         int blockedRecords,
+        int ignoredRecords,
         int maxEventsPerRun,
         int maxTotalRecords,
         Instant generatedAt
