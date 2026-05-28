@@ -6240,3 +6240,37 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 并行推进长期记忆能力：session memory、tenant/project memory、记忆写入审批、检索权限、遗忘策略。
 3. 推进智能网关/OpenClaw 类能力：模型 Provider 抽象、KV/prefix cache、工具调用治理、模型降级、成本/延迟指标。
 4. 推进 Agent 工具/Skill 市场：工具注册、schema、风险等级、审批策略、执行沙箱和可观测性。
+
+## 4.24 AI Runtime 统一 replaySequence/sourceCursors 第一阶段（2026-05-28）
+
+本阶段从 Java outbox 收口正式转向 AI 主线事件基础设施。目标是让 Python Runtime、Java 控制面投影、gateway WebSocket、前端 replay 和未来审计回放共享稳定游标语义：展示层继续使用 envelope sequence 做 ack，外部事件源则使用自己的 `sourceCursors` 做增量读取。
+
+已完成：
+- Java runtime-event projection 新增 `replaySequence`，与 producer `sequence` 明确分离。
+- Java 投影查询支持 `afterSequence`，按 replaySequence 过滤断线续传事件。
+- Python 订阅请求新增 `source_cursors/sourceCursors`，HTTP replay、WebSocket 控制消息和 Redis checkpoint 均支持该字段。
+- Python Java replay client 使用 Java source cursor 下推查询，不再把展示层 afterSequence 误传给 Java。
+- Python replay coordinator 会把外部 source 最新 cursor 写回 envelope attributes 的 `sourceCursors`，并在必要时把外部事件重映射为 envelope sequence。
+- 补充 Java 与 Python 测试，覆盖 replaySequence 暴露、source cursor 下推、HTTP/WebSocket replay 回传和 Redis checkpoint 恢复。
+
+设计意义：
+- 解决“一个全局 afterSequence 同时承担展示 ack 与多源读取 cursor”带来的漏读、重复读和顺序混乱风险。
+- 为 Codex/Claude Code 类 Agent 的长期运行、断线恢复、工具事件流、审计回放和多实例 Runtime 接管打基础。
+- 保持前端协议可扩展：后续新增长期记忆事件、模型调用事件、工具市场事件或审计中心事件时，只需接入新的 source cursor，不必推翻 replay envelope。
+
+当前边界：
+- Java replaySequence 仍是内存热窗口游标，生产级需要迁移到 MySQL、Redis Stream、Kafka compacted topic 或专用 cursor 表。
+- 尚未建设统一全局事件日志，当前仍由 Python replay coordinator 做轻量多源合并。
+- sourceCursors 需要前端/SDK 下一次 reconnect 原样带回，尚未实现 gateway/SDK 自动续传。
+
+验证：
+- `python -m unittest discover -s python-ai-runtime\tests` 通过，181 个 Python 测试成功。
+- `mvn -pl agent-runtime -am test -DskipITs "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"` 通过，agent-runtime 84 个测试成功。
+- `mvn test -DskipITs "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"` 全仓通过。
+- 关键文件均保持在 500 行以内，Maven Toolchains 继续使用 JDK 21。
+
+下一步路线：
+1. 进入长期记忆能力：记忆候选、写入审批、session/tenant/project 作用域、检索权限和遗忘策略。
+2. 推进智能网关/OpenClaw 类能力：Provider 抽象、模型降级、KV/prefix cache、成本/延迟指标。
+3. 推进 Agent 工具/Skill 市场：schema、风险等级、审批策略、执行沙箱和工具调用观测。
+4. 在事件链路稳定后，补生产级持久化事件日志和前端/gateway SDK 的 sourceCursors 自动续传。

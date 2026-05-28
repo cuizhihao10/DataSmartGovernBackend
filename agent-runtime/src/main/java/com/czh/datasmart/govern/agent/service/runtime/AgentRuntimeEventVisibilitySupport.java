@@ -184,6 +184,7 @@ public class AgentRuntimeEventVisibilitySupport {
                 record.runId(),
                 record.sessionId(),
                 record.sequence(),
+                record.replaySequence(),
                 record.createdAt(),
                 record.publishedAt(),
                 record.consumedAt(),

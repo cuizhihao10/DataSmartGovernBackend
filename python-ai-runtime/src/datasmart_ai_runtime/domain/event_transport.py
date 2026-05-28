@@ -114,6 +114,9 @@ class RuntimeEventSubscriptionRequest:
     - `run_id`：运行 ID，适合订阅某一次具体 Agent 执行；
     - `request_id`：请求 ID，适合同步计划请求后的短时事件回放；
     - `after_sequence`：客户端已处理到的最后 sequence，服务端只返回更大的事件；
+    - `source_cursors`：外部 replay source 的源级游标，例如 Java 控制面的 replaySequence。
+      它解决的是“全局展示 sequence”和“各事件源内部 cursor”不完全一致的问题：前端可以继续用
+      afterSequence 做统一 ack，同时把上一轮 envelope 返回的 sourceCursors 原样带回，服务端再按源头稳定游标增量读取；
     - `event_types`：事件类型白名单，前端可以只订阅审批/告警等关键事件；
     - `include_snapshot`：订阅建立时是否先返回当前快照，再进入实时增量。
     """
@@ -127,6 +130,7 @@ class RuntimeEventSubscriptionRequest:
     run_id: str | None = None
     request_id: str | None = None
     after_sequence: int = 0
+    source_cursors: dict[str, int] = field(default_factory=dict)
     event_types: tuple[AgentRuntimeEventType, ...] = ()
     include_snapshot: bool = True
 

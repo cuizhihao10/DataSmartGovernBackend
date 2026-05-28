@@ -163,6 +163,10 @@ class RedisRuntimeEventCheckpointStore:
                 "runId": request.run_id,
                 "requestId": request.request_id,
                 "afterSequence": request.after_sequence,
+                # sourceCursors 必须跟随 checkpoint 持久化。否则多实例恢复或 Python Runtime 重启后，
+                # 服务端只知道前端展示层 ack 到哪个 envelope sequence，却不知道 Java 投影等外部 source
+                # 已经读取到哪个源级 cursor，容易在恢复订阅时重复拉取旧控制面事件。
+                "sourceCursors": dict(request.source_cursors),
                 "eventTypes": [item.value for item in request.event_types],
                 "includeSnapshot": request.include_snapshot,
             },
@@ -189,6 +193,9 @@ class RedisRuntimeEventCheckpointStore:
             run_id=request_payload.get("runId") or request_payload.get("run_id"),
             request_id=request_payload.get("requestId") or request_payload.get("request_id"),
             after_sequence=int(request_payload.get("afterSequence", request_payload.get("after_sequence", 0))),
+            source_cursors=_source_cursors_from_payload(
+                request_payload.get("sourceCursors", request_payload.get("source_cursors", {}))
+            ),
             event_types=tuple(AgentRuntimeEventType(item) for item in request_payload.get("eventTypes", ())),
             include_snapshot=bool(request_payload.get("includeSnapshot", request_payload.get("include_snapshot", True))),
         )
@@ -202,3 +209,27 @@ class RedisRuntimeEventCheckpointStore:
             updated_at=datetime.fromisoformat(payload.get("updatedAt") or payload.get("updated_at")),
             close_reason=payload.get("closeReason") or payload.get("close_reason"),
         )
+
+
+def _source_cursors_from_payload(value: Any) -> dict[str, int]:
+    """解析 checkpoint 中保存的 source 游标。
+
+    Redis checkpoint 是重启恢复和多实例接管的关键状态。这里不直接信任 JSON 内容，
+    而是按 sourceName 非空、cursor 为正整数的规则重建游标，避免历史脏数据或手工修复数据导致
+    replay client 把负数、空 source 或不可解析值继续传给 Java 查询接口。
+    """
+
+    if not isinstance(value, dict):
+        return {}
+    cursors: dict[str, int] = {}
+    for key, cursor in value.items():
+        source_name = str(key).strip()
+        if not source_name:
+            continue
+        try:
+            normalized_cursor = int(cursor)
+        except (TypeError, ValueError):
+            continue
+        if normalized_cursor > 0:
+            cursors[source_name] = normalized_cursor
+    return cursors

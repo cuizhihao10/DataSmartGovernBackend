@@ -16,7 +16,8 @@ import java.util.List;
  * - 前端详情页通常按 runId 查询；
  * - WebSocket 断线重连问题通常按 sessionId 查询；
  * - HTTP 网关日志通常只知道 requestId；
- * - 项目负责人和审计员通常按 tenantId/projectId/actorId 过滤。</p>
+ * - 项目负责人和审计员通常按 tenantId/projectId/actorId 过滤；
+ * - WebSocket/HTTP replay 会携带 afterSequence，只查询调用方尚未确认处理过的控制面事件。</p>
  */
 public record AgentRuntimeEventProjectionQuery(
         String tenantId,
@@ -28,6 +29,7 @@ public record AgentRuntimeEventProjectionQuery(
         String eventType,
         String severity,
         Integer limit,
+        Long afterSequence,
         List<String> authorizedProjectIds
 ) {
 
@@ -47,7 +49,45 @@ public record AgentRuntimeEventProjectionQuery(
                                             String eventType,
                                             String severity,
                                             Integer limit) {
-        this(tenantId, projectId, actorId, requestId, runId, sessionId, eventType, severity, limit, null);
+        this(tenantId, projectId, actorId, requestId, runId, sessionId, eventType, severity, limit, null, null);
+    }
+
+    /**
+     * 兼容“显式 afterSequence 但没有权限项目集合”的调用方。
+     *
+     * <p>Python AI Runtime 的 Java replay client 会在断线重连时下推 Java source cursor。
+     * 该 cursor 在 Java 查询接口中表现为 afterSequence，表示只返回 replaySequence 更大的事件。</p>
+     */
+    public AgentRuntimeEventProjectionQuery(String tenantId,
+                                            String projectId,
+                                            String actorId,
+                                            String requestId,
+                                            String runId,
+                                            String sessionId,
+                                            String eventType,
+                                            String severity,
+                                            Integer limit,
+                                            Long afterSequence) {
+        this(tenantId, projectId, actorId, requestId, runId, sessionId, eventType, severity, limit, afterSequence, null);
+    }
+
+    /**
+     * 兼容数据范围收口调用方的构造方法。
+     *
+     * <p>AccessSupport 会在 gateway 数据范围解析后补充 authorizedProjectIds。
+     * 它不应该丢失查询对象中已有的 afterSequence，所以后续如果同时存在二者，应使用完整构造方法。</p>
+     */
+    public AgentRuntimeEventProjectionQuery(String tenantId,
+                                            String projectId,
+                                            String actorId,
+                                            String requestId,
+                                            String runId,
+                                            String sessionId,
+                                            String eventType,
+                                            String severity,
+                                            Integer limit,
+                                            List<String> authorizedProjectIds) {
+        this(tenantId, projectId, actorId, requestId, runId, sessionId, eventType, severity, limit, null, authorizedProjectIds);
     }
 
     /**
@@ -61,6 +101,19 @@ public record AgentRuntimeEventProjectionQuery(
             return 100;
         }
         return Math.min(limit, 1000);
+    }
+
+    /**
+     * 规范化 replay 查询起点。
+     *
+     * <p>afterSequence 表示客户端或上游 replay source 已经处理到的 Java 控制面 replaySequence。
+     * 小于 0 的值没有业务意义，这里统一归零，避免调用方传入负数导致返回超出预期的全量窗口。</p>
+     */
+    public long normalizedAfterSequence() {
+        if (afterSequence == null || afterSequence <= 0) {
+            return 0L;
+        }
+        return afterSequence;
     }
 
     /**

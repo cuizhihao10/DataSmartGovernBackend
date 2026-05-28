@@ -37,6 +37,7 @@ class JavaAgentRuntimeEventReplayClientTest(unittest.TestCase):
                         "runId": "run-001",
                         "sessionId": "session-001",
                         "sequence": None,
+                        "replaySequence": 7,
                         "createdAt": "2026-05-28T01:02:03Z",
                         "publishedAt": "2026-05-28T01:02:04Z",
                         "consumedAt": "2026-05-28T01:02:05Z",
@@ -57,8 +58,11 @@ class JavaAgentRuntimeEventReplayClientTest(unittest.TestCase):
         self.assertEqual(AgentRuntimeEventSeverity.INFO, event.severity)
         self.assertEqual("run-001", event.run_id)
         self.assertEqual("session-001", event.session_id)
-        self.assertIsNone(event.sequence)
+        self.assertEqual(7, event.sequence)
         self.assertEqual("event-tool-001", event.attributes["javaProjectionIdentityKey"])
+        self.assertIsNone(event.attributes["javaProjectionProducerSequence"])
+        self.assertEqual(7, event.attributes["javaProjectionReplaySequence"])
+        self.assertEqual(7, event.attributes["javaProjectionCursor"])
         self.assertEqual("datasource.metadata.read", event.attributes["toolCode"])
 
     def test_build_query_url_and_headers_from_subscription(self) -> None:
@@ -72,6 +76,7 @@ class JavaAgentRuntimeEventReplayClientTest(unittest.TestCase):
             session_id="session-001",
             run_id="run-001",
             after_sequence=3,
+            source_cursors={JavaAgentRuntimeEventReplayClient.source_name: 11},
             event_types=(AgentRuntimeEventType.TOOL_EXECUTION_STATE_CHANGED,),
         )
 
@@ -83,6 +88,7 @@ class JavaAgentRuntimeEventReplayClientTest(unittest.TestCase):
         self.assertIn("runId=run-001", url)
         self.assertIn("eventType=agent.tool_execution.state_changed", url)
         self.assertIn("limit=50", url)
+        self.assertIn("afterSequence=11", url)
         self.assertEqual("PROJECT_OWNER", headers["X-DataSmart-Actor-Role"])
         self.assertEqual("PROJECT", headers["X-DataSmart-Data-Scope-Level"])
         self.assertEqual("20", headers["X-DataSmart-Authorized-Project-Ids"])

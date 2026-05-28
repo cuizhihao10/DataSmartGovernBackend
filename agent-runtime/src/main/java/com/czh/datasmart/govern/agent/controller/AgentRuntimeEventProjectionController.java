@@ -53,6 +53,7 @@ public class AgentRuntimeEventProjectionController {
      * - `requestId`：从 gateway 或 HTTP 日志反查；
      * - `tenantId/projectId/actorId`：多租户、项目和操作者范围过滤；
      * - `eventType/severity`：按事件类型和严重级别过滤；
+     * - `afterSequence`：断线续传或外部 replay source 已确认的 Java 控制面游标，只返回更大的 replaySequence；
      * - `limit`：单次返回上限，默认 100，最大 1000。</p>
      */
     @GetMapping
@@ -65,6 +66,7 @@ public class AgentRuntimeEventProjectionController {
             @RequestParam(value = "sessionId", required = false) String sessionId,
             @RequestParam(value = "eventType", required = false) String eventType,
             @RequestParam(value = "severity", required = false) String severity,
+            @RequestParam(value = "afterSequence", required = false) Long afterSequence,
             @RequestParam(value = "limit", required = false) Integer limit,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) String currentTenantId,
@@ -81,7 +83,8 @@ public class AgentRuntimeEventProjectionController {
                 sessionId,
                 eventType,
                 severity,
-                limit
+                limit,
+                afterSequence
         );
         AgentRuntimeEventQueryAccessContext accessContext = accessContextResolver.resolve(
                 currentTenantId,

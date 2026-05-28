@@ -93,6 +93,12 @@ class JavaAgentRuntimeEventReplayClient:
         params: dict[str, str | int] = {
             "limit": self._default_limit,
         }
+        source_cursor = request.source_cursors.get(self.source_name)
+        if source_cursor is not None and source_cursor > 0:
+            # 这里刻意不把 request.after_sequence 直接下推给 Java。afterSequence 是前端看到的
+            # envelope 级展示序号；Java 查询接口需要的是 Java 投影自己的 replaySequence。
+            # 两套坐标混用会导致“前端已经 ack 到 50，但 Java 只写到 7”时误跳过新工具事件。
+            params["afterSequence"] = source_cursor
         self._put_if_present(params, "tenantId", request.tenant_id)
         self._put_if_present(params, "projectId", request.project_id)
         self._put_if_present(params, "actorId", request.actor_id)
@@ -157,11 +163,16 @@ class JavaAgentRuntimeEventReplayClient:
         """
 
         attributes = dict(item.get("attributes") or {})
+        producer_sequence = _optional_int(item.get("sequence"))
+        replay_sequence = _optional_int(item.get("replaySequence"))
         attributes.setdefault("javaProjectionIdentityKey", item.get("identityKey"))
         attributes.setdefault("javaProjectionSchemaVersion", item.get("schemaVersion"))
         attributes.setdefault("javaProjectionSource", item.get("source"))
         attributes.setdefault("javaProjectionPublishedAt", item.get("publishedAt"))
         attributes.setdefault("javaProjectionConsumedAt", item.get("consumedAt"))
+        attributes.setdefault("javaProjectionProducerSequence", producer_sequence)
+        attributes.setdefault("javaProjectionReplaySequence", replay_sequence)
+        attributes.setdefault("javaProjectionCursor", replay_sequence)
         return AgentRuntimeEvent(
             event_type=_event_type_from_value(item.get("eventType")),
             stage=str(item.get("stage") or "java_runtime_event"),
@@ -173,7 +184,11 @@ class JavaAgentRuntimeEventReplayClient:
             request_id=_optional_text(item.get("requestId")),
             run_id=_optional_text(item.get("runId")),
             session_id=_optional_text(item.get("sessionId")),
-            sequence=_optional_int(item.get("sequence")),
+            # AgentRuntimeEvent.sequence 在进入 replay coordinator 前临时承载“该 source 的稳定游标”。
+            # coordinator 会在需要时把它重映射为 envelope sequence，同时把原始游标写入 sourceCursors。
+            # 优先使用 Java replaySequence，是因为 producer sequence 可能为空，也可能只在某次 Python plan
+            # 内局部递增，不能直接作为跨服务断线续传的稳定依据。
+            sequence=replay_sequence if replay_sequence is not None else producer_sequence,
             attributes=attributes,
             created_at=_datetime_from_value(item.get("createdAt")),
         )

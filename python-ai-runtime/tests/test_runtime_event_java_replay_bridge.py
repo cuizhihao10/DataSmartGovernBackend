@@ -65,6 +65,48 @@ class RuntimeEventJavaReplayBridgeTest(unittest.TestCase):
         self.assertGreater(java_event["sequence"], 0)
         self.assertEqual("run-bridge", java_source.requests[0].run_id)
 
+    def test_subscribe_replay_returns_source_cursors_for_next_reconnect(self) -> None:
+        java_source = FakeJavaReplaySource(sequence=7)
+        manager = RuntimeEventSessionManager(external_replay_sources=(java_source,))
+
+        response = build_event_control_response(
+            {
+                "type": "subscribe",
+                "subscription": {
+                    "clientId": "browser-a",
+                    "tenantId": "tenant-a",
+                    "projectId": "project-a",
+                    "actorId": "user-a",
+                    "roles": ["operator"],
+                    "sessionId": "session-bridge",
+                    "runId": "run-bridge",
+                    "afterSequence": 7,
+                    "sourceCursors": {"java-agent-runtime-event-projection": 6},
+                    "includeSnapshot": True,
+                },
+                "accessContext": {
+                    "tenantId": "tenant-a",
+                    "projectId": "project-a",
+                    "actorId": "user-a",
+                    "roles": ["operator"],
+                },
+            },
+            manager,
+        )
+
+        envelope = response["subscription"]["replayEnvelope"]
+
+        self.assertTrue(response["accepted"])
+        self.assertEqual(
+            6,
+            java_source.requests[0].source_cursors["java-agent-runtime-event-projection"],
+        )
+        self.assertEqual(
+            7,
+            envelope["attributes"]["sourceCursors"]["java-agent-runtime-event-projection"],
+        )
+        self.assertEqual(7, envelope["events"][0]["attributes"]["_datasmartOriginalSequence"])
+
     def test_external_replay_failure_does_not_reject_subscription(self) -> None:
         manager = RuntimeEventSessionManager(external_replay_sources=(FailingReplaySource(),))
 
@@ -148,8 +190,9 @@ class RuntimeEventJavaReplayBridgeTest(unittest.TestCase):
 class FakeJavaReplaySource:
     source_name = "java-agent-runtime-event-projection"
 
-    def __init__(self) -> None:
+    def __init__(self, sequence: int | None = None) -> None:
         self.requests: list[RuntimeEventSubscriptionRequest] = []
+        self.sequence = sequence
 
     def replay(self, request: RuntimeEventSubscriptionRequest) -> tuple[AgentRuntimeEvent, ...]:
         self.requests.append(request)
@@ -165,7 +208,7 @@ class FakeJavaReplaySource:
                 request_id=request.request_id,
                 run_id=request.run_id,
                 session_id=request.session_id,
-                sequence=None,
+                sequence=self.sequence,
                 attributes={
                     "javaProjectionIdentityKey": "event-tool-001",
                     "toolCode": "datasource.metadata.read",

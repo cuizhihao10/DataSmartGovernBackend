@@ -309,18 +309,21 @@ class RuntimeEventSessionManager:
         local_events = self._event_store.replay(plan.request) if self._event_store else ()
         replay_collection = self._replay_coordinator.collect(local_events, plan.request)
         envelope = self._transport_builder.build_subscription_replay(replay_collection.events, plan)
-        if not replay_collection.external_errors:
+        envelope_attributes = dict(envelope.attributes)
+        if replay_collection.source_cursors:
+            # sourceCursors 是 WebSocket 断线重连的源级游标回执。afterSequence 只描述前端已经展示到
+            # 哪个 envelope sequence；sourceCursors 则描述 Java runtime-event 投影、未来 Redis Stream、
+            # Kafka compacted log 等外部 source 各自已经读到哪里。把它放进 replay envelope，前端或
+            # gateway SDK 下次 reconnect 时就可以原样带回，避免外部 source 重复扫描旧事件。
+            envelope_attributes["sourceCursors"] = replay_collection.source_cursors
+        if replay_collection.external_errors:
+            # 下面用 replace 生成 envelope 副本，在 attributes 中标记外部 replay source 的失败摘要。
+            # 这样订阅仍然 accepted，前端或诊断工具也能知道 Java 投影曾经查询失败，
+            # 而不是误以为确实没有事件。
+            envelope_attributes["externalReplayErrors"] = replay_collection.external_errors
+        if envelope_attributes == dict(envelope.attributes):
             return envelope
-        # 下面用 replace 生成 envelope 副本，在 attributes 中标记外部 replay source 的失败摘要。
-        # 这样订阅仍然 accepted，前端或诊断工具也能知道 Java 投影曾经查询失败，
-        # 而不是误以为确实没有事件。
-        return replace(
-            envelope,
-            attributes={
-                **dict(envelope.attributes),
-                "externalReplayErrors": replay_collection.external_errors,
-            },
-        )
+        return replace(envelope, attributes=envelope_attributes)
 
     def _require_record(self, subscription_id: str) -> _RuntimeEventSessionRecord:
         """按 subscriptionId 获取会话记录，不存在时抛出领域错误。"""

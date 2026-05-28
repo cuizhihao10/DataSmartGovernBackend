@@ -51,6 +51,7 @@ class RedisRuntimeEventCheckpointStoreTest(unittest.TestCase):
                 project_id="project-a",
                 actor_id="user-a",
                 session_id="session-redis",
+                source_cursors={"java-agent-runtime-event-projection": 9},
             )
         )
         first_manager.acknowledge(snapshot.plan.subscription_id, 2)
@@ -65,6 +66,7 @@ class RedisRuntimeEventCheckpointStoreTest(unittest.TestCase):
         self.assertEqual(RuntimeEventConnectionState.ACTIVE, restored.state)
         self.assertEqual(2, restored.last_ack_sequence)
         self.assertEqual((3,), tuple(event.sequence for event in restored.replay_envelope.events))
+        self.assertEqual(9, restored.plan.request.source_cursors["java-agent-runtime-event-projection"])
         self.assertEqual(3600, redis_client.ttl[next(iter(redis_client.ttl))])
 
     @staticmethod

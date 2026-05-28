@@ -52,6 +52,17 @@ public class InMemoryAgentRuntimeEventProjectionStore implements AgentRuntimeEve
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private final int maxEventsPerRun;
     private final int maxTotalEvents;
+    /**
+     * Java 控制面内存投影的稳定 replaySequence 分配器。
+     *
+     * <p>这里使用单调递增的 long，而不是复用 Python 事件里的 producer sequence。
+     * 原因是 producer sequence 可能只在某次 Python plan 内连续，Java 工具状态事件甚至可能没有 sequence。
+     * replaySequence 则表达“Java 控制面接收/投影这些事件的顺序”，用于 HTTP replay、WebSocket 断线续传和外部 source cursor。
+     *
+     * <p>当前是内存实现，JVM 重启后会从 1 重新开始；这与内存热窗口定位一致。
+     * 后续切到 MySQL/Redis Stream 时，应改由数据库自增 ID、Redis Stream ID 或专用 cursor 表生成稳定游标。</p>
+     */
+    private long nextReplaySequence = 1L;
 
     public InMemoryAgentRuntimeEventProjectionStore(AgentRuntimeEventConsumerProperties properties) {
         this.maxEventsPerRun = Math.max(1, properties.getMaxEventsPerRun());
@@ -70,8 +81,9 @@ public class InMemoryAgentRuntimeEventProjectionStore implements AgentRuntimeEve
             if (recordsByIdentityKey.containsKey(record.identityKey())) {
                 return false;
             }
-            recordsByIdentityKey.put(record.identityKey(), record);
-            appendRunIndex(record);
+            AgentRuntimeEventProjectionRecord storedRecord = assignReplaySequence(record);
+            recordsByIdentityKey.put(storedRecord.identityKey(), storedRecord);
+            appendRunIndex(storedRecord);
             trimGlobalWindow();
             return true;
         } finally {
@@ -130,6 +142,13 @@ public class InMemoryAgentRuntimeEventProjectionStore implements AgentRuntimeEve
                     .filter(record -> matches(query.sessionId(), record.sessionId()))
                     .filter(record -> matches(query.eventType(), record.eventType()))
                     .filter(record -> matches(query.severity(), record.severity()))
+                    /*
+                     * afterSequence 使用 Java 控制面分配的 replaySequence，而不是事件生产者原始 sequence。
+                     * 这样 Python replay client 可以把 Java source cursor 下推回来，避免每次 WebSocket 重连都重复读取
+                     * 已经被前端确认过的 Java 工具状态事件。
+                     */
+                    .filter(record -> record.replaySequence() != null
+                            && record.replaySequence() > query.normalizedAfterSequence())
                     .limit(query.normalizedLimit())
                     .toList();
         } finally {
@@ -152,6 +171,15 @@ public class InMemoryAgentRuntimeEventProjectionStore implements AgentRuntimeEve
             return true;
         }
         return expected.equals(actual);
+    }
+
+    private AgentRuntimeEventProjectionRecord assignReplaySequence(AgentRuntimeEventProjectionRecord record) {
+        Long existingReplaySequence = record.replaySequence();
+        if (existingReplaySequence != null && existingReplaySequence > 0) {
+            nextReplaySequence = Math.max(nextReplaySequence, existingReplaySequence + 1);
+            return record;
+        }
+        return record.withReplaySequence(nextReplaySequence++);
     }
 
     private void appendRunIndex(AgentRuntimeEventProjectionRecord record) {

@@ -90,6 +90,46 @@ class AgentRuntimeEventProjectionQueryServiceTest {
     }
 
     /**
+     * 查询接口应暴露并支持按稳定 replaySequence 增量回放。
+     *
+     * <p>producer sequence 是 Python Runtime 在某次 Agent plan 内生成的局部序号；Java 工具状态事件可能没有该字段。
+     * 因此 Java 控制面需要在投影写入时分配自己的 replaySequence，作为 Python 外部 replay source、WebSocket
+     * 断线续传和审计回放的稳定游标。该测试固定两个关键语义：
+     * 1. 响应里同时保留原始 sequence 与 Java replaySequence；
+     * 2. afterSequence 过滤的是 replaySequence，而不是 producer sequence。</p>
+     */
+    @Test
+    void queryShouldExposeAndFilterByStableReplaySequence() {
+        InMemoryAgentRuntimeEventProjectionStore store = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        AgentRuntimeEventConsumerStats stats = new AgentRuntimeEventConsumerStats();
+        AgentRuntimeEventConsumerService consumerService = new AgentRuntimeEventConsumerService(objectMapper(), store, stats);
+        consumerService.consume(runtimeEventPayload("tenant-a", "project-a", "actor-a", "run-cursor", "session-a", "request-a", 9));
+        consumerService.consume(runtimeEventPayload("tenant-a", "project-a", "actor-a", "run-cursor", "session-a", "request-a", 10));
+        AgentRuntimeEventProjectionQueryService queryService = new AgentRuntimeEventProjectionQueryService(
+                store,
+                stats,
+                properties(),
+                new AgentRuntimeEventProjectionAccessSupport(),
+                new AgentRuntimeEventVisibilitySupport()
+        );
+
+        var allEvents = queryService.query(new AgentRuntimeEventProjectionQuery(
+                null, null, null, null, "run-cursor", null, null, null, 10
+        ));
+        var replayEvents = queryService.query(new AgentRuntimeEventProjectionQuery(
+                null, null, null, null, "run-cursor", null, null, null, 10, 1L
+        ));
+
+        assertEquals(2, allEvents.totalMatched());
+        assertEquals(9L, allEvents.events().getFirst().sequence());
+        assertEquals(1L, allEvents.events().getFirst().replaySequence());
+        assertEquals(2L, allEvents.events().get(1).replaySequence());
+        assertEquals(1, replayEvents.totalMatched());
+        assertEquals(2L, replayEvents.events().getFirst().replaySequence());
+        assertEquals(10L, replayEvents.events().getFirst().sequence());
+    }
+
+    /**
      * SELF 范围下，即使请求没有显式传 actorId，也只能看到当前 actor 自己的事件。
      *
      * <p>这条测试保护“普通用户只能看自己的 Agent 执行轨迹”这个底线。Agent runtime events 往往比普通列表页更敏感，

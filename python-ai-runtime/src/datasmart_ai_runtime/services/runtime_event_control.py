@@ -254,6 +254,7 @@ def _subscription_request_from_payload(payload: dict[str, Any]) -> RuntimeEventS
         run_id=payload.get("runId") or payload.get("run_id"),
         request_id=payload.get("requestId") or payload.get("request_id"),
         after_sequence=int(payload.get("afterSequence", payload.get("after_sequence", 0))),
+        source_cursors=_source_cursors_from_payload(payload.get("sourceCursors", payload.get("source_cursors", {}))),
         event_types=event_types,
         include_snapshot=bool(payload.get("includeSnapshot", payload.get("include_snapshot", True))),
     )
@@ -281,3 +282,31 @@ def _as_tuple(value: Any) -> tuple[Any, ...]:
     if isinstance(value, str):
         return (value,)
     return (value,)
+
+
+def _source_cursors_from_payload(value: Any) -> dict[str, int]:
+    """解析 WebSocket 控制消息里的外部 source 游标。
+
+    控制消息是前端/网关实时连接链路使用的入口，不能只支持 HTTP replay 的 `sourceCursors`。
+    前端重连时会同时携带：
+    - `afterSequence`：表示展示层 envelope 已经处理到哪个序号；
+    - `sourceCursors`：表示 Java 投影、未来 Redis Stream/Kafka 回放源各自读到的稳定 cursor。
+
+    这里采用“宽进严出”策略：只有对象形态、sourceName 非空、cursor 可转为正整数时才保留。
+    这样一个坏游标不会让整个 subscribe/reconnect 失败，也不会把负数游标传给下游造成全量回放。
+    """
+
+    if not isinstance(value, dict):
+        return {}
+    cursors: dict[str, int] = {}
+    for key, cursor in value.items():
+        source_name = str(key).strip()
+        if not source_name:
+            continue
+        try:
+            normalized_cursor = int(cursor)
+        except (TypeError, ValueError):
+            continue
+        if normalized_cursor > 0:
+            cursors[source_name] = normalized_cursor
+    return cursors

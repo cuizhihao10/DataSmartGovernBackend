@@ -15,7 +15,7 @@ Python AI Runtime 当前已经有本地 `RuntimeEventStore`，用于保存模型
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Protocol
 
 from datasmart_ai_runtime.domain.event_transport import RuntimeEventSubscriptionRequest
@@ -49,10 +49,14 @@ class RuntimeEventReplayCollection:
     - `events`：本地事件与所有外部事件源合并后的候选事件；
     - `external_errors`：外部源失败摘要。失败不会阻断 subscribe/reconnect，这是为了让实时连接遵循
       fail-open 体验：Java replay 暂时不可用时，用户至少还能看到 Python 本地事件和连接状态。
+    - `source_cursors`：每个外部 source 已读取到的源级稳定 cursor，例如 Java 控制面的 replaySequence。
+      它会被写回 envelope attributes，客户端下次 reconnect 时原样带回，避免只靠全局 afterSequence
+      无法判断某个外部源读到哪里。
     """
 
     events: tuple[AgentRuntimeEvent, ...]
     external_errors: tuple[dict[str, str], ...] = ()
+    source_cursors: dict[str, int] = field(default_factory=dict)
 
 
 class RuntimeEventReplayCoordinator:
@@ -97,6 +101,7 @@ class RuntimeEventReplayCoordinator:
 
         merged_events: list[AgentRuntimeEvent] = list(local_events)
         external_errors: list[dict[str, str]] = []
+        source_cursors: dict[str, int] = dict(request.source_cursors)
         used_sequences = {event.sequence for event in local_events if event.sequence is not None}
         sequence_cursor = max(used_sequences | {max(0, request.after_sequence)})
 
@@ -120,14 +125,21 @@ class RuntimeEventReplayCoordinator:
                     ordinal=ordinal,
                     used_sequences=used_sequences,
                     sequence_cursor=sequence_cursor,
+                    global_after_sequence=request.after_sequence,
                 )
                 merged_events.append(rebound_event)
                 if rebound_event.sequence is not None:
                     used_sequences.add(rebound_event.sequence)
+                if event.sequence is not None:
+                    source_cursors[source.source_name] = max(
+                        source_cursors.get(source.source_name, 0),
+                        int(event.sequence),
+                    )
 
         return RuntimeEventReplayCollection(
             events=tuple(merged_events),
             external_errors=tuple(external_errors),
+            source_cursors=source_cursors,
         )
 
     @staticmethod
@@ -139,17 +151,27 @@ class RuntimeEventReplayCoordinator:
         ordinal: int,
         used_sequences: set[int],
         sequence_cursor: int,
+        global_after_sequence: int,
     ) -> tuple[AgentRuntimeEvent, int]:
         """给外部事件补充来源标记和临时 replay sequence。
 
-        Java 投影第一版里工具状态事件通常没有跨服务统一 sequence；如果直接把 sequence=None 的事件
-        交给 transport builder，会被 replay 过滤掉。这里生成临时 sequence 是为了让前端能先看到工具
-        状态进度。attributes 中保留原始 sequence 和 synthetic 标记，提醒后续生产化时需要统一序列。
+        外部事件现在可能带有“源级稳定 cursor”，例如 Java replaySequence。
+        但前端的 afterSequence 是 envelope 级展示序号，两者不是同一坐标系：
+        - Java source cursor 用于告诉 Java 下次从哪里继续读；
+        - envelope sequence 用于告诉前端本次 replay 里事件展示到哪里。
+
+        因此当外部事件没有 sequence、sequence 与本地事件冲突，或 sequence 不大于客户端全局 afterSequence 时，
+        这里会重新分配一个 envelope 级 sequence，同时把原始 source cursor 写入 attributes。
+        后续如果所有事件源都迁移到统一全局序列，可以把这层 rebase 逐步关闭。
         """
 
         original_sequence = event.sequence
         normalized_sequence = original_sequence
-        if normalized_sequence is None or normalized_sequence in used_sequences:
+        if (
+            normalized_sequence is None
+            or normalized_sequence in used_sequences
+            or normalized_sequence <= max(0, global_after_sequence)
+        ):
             sequence_cursor += 1
             normalized_sequence = sequence_cursor
         else:

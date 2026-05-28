@@ -26,7 +26,11 @@ from datasmart_ai_runtime.domain.event_transport import (
     RuntimeEventDeliveryMode,
     RuntimeEventSubscriptionRequest,
 )
-from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
+from datasmart_ai_runtime.domain.events import (
+    AgentRuntimeEvent,
+    AgentRuntimeEventSeverity,
+    AgentRuntimeEventType,
+)
 from datasmart_ai_runtime.domain.intent import GovernanceDomain
 from datasmart_ai_runtime.domain.memory import AgentMemoryType
 from datasmart_ai_runtime.domain.model_gateway import ModelGatewayBudgetPolicy
@@ -91,6 +95,27 @@ class FakeRuntimeEventPublisher:
     def publish(self, events) -> int:
         self.published_batches.append(len(events))
         return len(events)
+
+
+class FakeReplaySource:
+    source_name = "java-agent-runtime-event-projection"
+
+    def replay(self, request: RuntimeEventSubscriptionRequest) -> tuple[AgentRuntimeEvent, ...]:
+        return (
+            AgentRuntimeEvent(
+                event_type=AgentRuntimeEventType.TOOL_EXECUTION_STATE_CHANGED,
+                stage="tool_completed",
+                message="Java 控制面工具事件",
+                severity=AgentRuntimeEventSeverity.INFO,
+                tenant_id=request.tenant_id,
+                project_id=request.project_id,
+                actor_id=request.actor_id,
+                run_id=request.run_id,
+                session_id=request.session_id,
+                sequence=3,
+                attributes={"toolCode": "datasource.metadata.read"},
+            ),
+        )
 
 
 class ApiBootstrapTest(unittest.TestCase):
@@ -304,6 +329,35 @@ class ApiBootstrapTest(unittest.TestCase):
         self.assertEqual(1, envelope["replay_from_sequence"])
         self.assertEqual((AgentRuntimeEventType.TOOL_PLANNED,), tuple(event["event_type"] for event in envelope["events"]))
         self.assertTrue(all(event["session_id"] == "session-a" for event in envelope["events"]))
+
+    def test_event_replay_response_exposes_external_source_cursors(self) -> None:
+        subscription = RuntimeEventSubscriptionRequest(
+            client_id="client-a",
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="user-a",
+            roles=("operator",),
+            session_id="session-a",
+            run_id="run-a",
+            after_sequence=3,
+            source_cursors={"java-agent-runtime-event-projection": 2},
+        )
+
+        response = build_event_replay_response(
+            subscription,
+            external_replay_sources=(FakeReplaySource(),),
+        )
+
+        envelope = response["eventEnvelope"]
+        self.assertEqual(
+            3,
+            envelope["attributes"]["sourceCursors"]["java-agent-runtime-event-projection"],
+        )
+        self.assertEqual(
+            3,
+            envelope["events"][0]["attributes"]["_datasmartOriginalSequence"],
+        )
+        self.assertTrue(envelope["events"][0]["attributes"]["_datasmartSyntheticReplaySequence"])
 
     def test_plan_response_can_store_events_for_later_replay(self) -> None:
         orchestrator = build_default_orchestrator()

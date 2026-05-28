@@ -145,6 +145,7 @@ public class AgentRuntimeEventProjectionAccessSupport {
                 normalizeOptionalCode(original.eventType()),
                 normalizeOptionalCode(original.severity()),
                 original.limit(),
+                original.afterSequence(),
                 authorizedProjectIds
         );
     }

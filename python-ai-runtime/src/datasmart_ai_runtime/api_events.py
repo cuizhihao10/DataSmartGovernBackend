@@ -57,14 +57,16 @@ def build_event_replay_response(
     )
     transport_builder = event_transport_builder or RuntimeEventTransportBuilder()
     envelope = transport_builder.build_subscription_replay(replay_collection.events, subscription_request)
+    envelope_attributes = dict(envelope.attributes)
+    if replay_collection.source_cursors:
+        # sourceCursors 是断线续传的“源级书签”：前端继续用 afterSequence 作为展示层 ack，
+        # 同时把这里返回的 sourceCursors 原样带回，Python 才能让 Java/Redis/Kafka 等外部 source
+        # 从各自稳定游标继续读取，避免每次重连都重复拉取已经展示过的控制面事件。
+        envelope_attributes["sourceCursors"] = replay_collection.source_cursors
     if replay_collection.external_errors:
-        envelope = replace(
-            envelope,
-            attributes={
-                **dict(envelope.attributes),
-                "externalReplayErrors": replay_collection.external_errors,
-            },
-        )
+        envelope_attributes["externalReplayErrors"] = replay_collection.external_errors
+    if envelope_attributes != dict(envelope.attributes):
+        envelope = replace(envelope, attributes=envelope_attributes)
     return {
         "eventEnvelope": asdict(envelope),
     }
@@ -112,6 +114,7 @@ def subscription_request_from_payload(payload: dict[str, Any]) -> RuntimeEventSu
 
     API 层同时兼容 camelCase 与 snake_case，是为了降低前端和 Python 测试之间的字段命名摩擦。
     领域对象内部仍保持 Python 风格 snake_case，便于服务层代码阅读。
+    `sourceCursors/source_cursors` 用于断线续传时携带外部事件源自己的稳定游标，例如 Java 控制面的 replaySequence。
     """
 
     event_types = tuple(
@@ -128,6 +131,7 @@ def subscription_request_from_payload(payload: dict[str, Any]) -> RuntimeEventSu
         run_id=payload.get("runId") or payload.get("run_id"),
         request_id=payload.get("requestId") or payload.get("request_id"),
         after_sequence=int(payload.get("afterSequence", payload.get("after_sequence", 0))),
+        source_cursors=_source_cursors_from_payload(payload.get("sourceCursors", payload.get("source_cursors", {}))),
         event_types=event_types,
         include_snapshot=bool(payload.get("includeSnapshot", payload.get("include_snapshot", True))),
     )
@@ -210,3 +214,26 @@ def _as_tuple(value: Any) -> tuple[Any, ...]:
     if isinstance(value, str):
         return (value,)
     return (value,)
+
+
+def _source_cursors_from_payload(value: Any) -> dict[str, int]:
+    """解析外部 replay source 的源级游标。
+
+    前端断线重连时通常只知道自己最后 ack 的全局 afterSequence，但 Python 还需要知道每个外部 source
+    自己读到了哪里。该 helper 只接受对象形态，并把非法值丢弃，避免一个坏 cursor 影响整条 replay 链路。
+    """
+
+    if not isinstance(value, dict):
+        return {}
+    cursors: dict[str, int] = {}
+    for key, cursor in value.items():
+        source_name = str(key).strip()
+        if not source_name:
+            continue
+        try:
+            normalized_cursor = int(cursor)
+        except (TypeError, ValueError):
+            continue
+        if normalized_cursor > 0:
+            cursors[source_name] = normalized_cursor
+    return cursors
