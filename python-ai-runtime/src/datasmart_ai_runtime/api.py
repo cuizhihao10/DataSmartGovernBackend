@@ -30,6 +30,10 @@ from datasmart_ai_runtime.services.model_provider import model_provider_registry
 from datasmart_ai_runtime.services.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.memory_planner import AgentMemoryPlanner
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
+from datasmart_ai_runtime.services.memory_write_components import (
+    build_memory_write_store_runtime,
+    memory_write_store_diagnostics,
+)
 from datasmart_ai_runtime.services.runtime_event_components import (
     build_runtime_event_components,
     runtime_event_component_diagnostics,
@@ -330,10 +334,14 @@ def create_app() -> Any:
     session_manager = runtime_events.session_manager
     live_push_hub = runtime_events.live_push_hub
     event_publisher = runtime_events.event_publisher
-    # 记忆写入治理服务在应用生命周期内保持单例，确保 `/agent/plans` 生成的候选
-    # 能被后续查询、审批和拒绝接口读取。当前默认是内存 store，生产环境后续应替换为
-    # MySQL/Java memory-service store，并由 gateway/permission-admin 做统一鉴权。
-    memory_write_governance = AgentMemoryWriteGovernanceService()
+    # 记忆写入候选 store 是长期记忆写入治理的“事实暂存层”：
+    # - 默认 in-memory，保证本地学习、单元测试和离线规划不需要任何数据库；
+    # - 显式配置 sqlite/mysql 后，候选可以跨 Python Runtime 重启恢复；
+    # - 如果配置了持久化但连接失败，是否回退内存由 fail-open 控制，避免生产环境悄悄丢候选。
+    # 这里把 store 组装与治理服务拆开，是为了让治理服务只关心候选状态机和审批规则，
+    # 不把数据库驱动、DSN、连接超时等基础设施细节耦合进业务逻辑。
+    memory_write_store_runtime = build_memory_write_store_runtime()
+    memory_write_governance = AgentMemoryWriteGovernanceService(store=memory_write_store_runtime.store)
 
     @app.get("/agent/events/diagnostics")
     def runtime_event_diagnostics() -> dict[str, Any]:
@@ -349,6 +357,22 @@ def create_app() -> Any:
         """
 
         return runtime_event_component_diagnostics(runtime_events)
+
+    @app.get("/agent/memory/write-candidates/diagnostics")
+    def memory_write_candidate_store_diagnostics() -> dict[str, Any]:
+        """查询记忆写入候选 store 诊断信息。
+
+        这个接口服务于长期记忆能力的生产化排障。它不返回任何候选内容，只回答：
+        - 启动时配置的是 `in-memory`、`sqlite` 还是 `mysql`；
+        - 当前真实实现是不是持久化 store；
+        - 如果配置了 MySQL/SQLite 却回退内存，回退原因是什么；
+        - 连接字符串是否已经脱敏。
+
+        后续进入商业化部署时，该路由应像候选审批路由一样由 gateway/permission-admin 保护，
+        只允许平台管理员、运维人员或服务账号访问。
+        """
+
+        return memory_write_store_diagnostics(memory_write_store_runtime)
 
     @app.post("/agent/plans")
     def create_agent_plan(payload: dict[str, Any]) -> dict[str, Any]:

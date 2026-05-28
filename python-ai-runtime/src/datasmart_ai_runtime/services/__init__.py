@@ -21,6 +21,13 @@ from datasmart_ai_runtime.services.memory_write_candidate_store import (
     AgentMemoryWriteCandidateStore,
     InMemoryAgentMemoryWriteCandidateStore,
 )
+from datasmart_ai_runtime.services.memory_write_components import (
+    AgentMemoryWriteStoreRuntime,
+    AgentMemoryWriteStoreSettings,
+    build_memory_write_store_runtime,
+    memory_write_store_diagnostics,
+    memory_write_store_settings_from_env,
+)
 from datasmart_ai_runtime.services.memory_write_sql_store import SqlAgentMemoryWriteCandidateStore
 from datasmart_ai_runtime.services.model_provider import (
     DryRunModelProvider,
@@ -233,6 +240,8 @@ __all__ = [
     "ModelGatewayGovernanceService",
     "ModelRouteRegistry",
     "build_model_gateway_context",
+    "AgentMemoryWriteStoreRuntime",
+    "AgentMemoryWriteStoreSettings",
     "approve_memory_write_candidate",
     "RuntimeEventAccessContext",
     "RuntimeEventAuthorizationDecision",
@@ -270,10 +279,13 @@ __all__ = [
     "SimulatedModelToolExecutionFeedbackProvider",
     "build_websocket_frames_from_control_response",
     "build_default_kafka_producer",
+    "build_memory_write_store_runtime",
     "build_runtime_event_components",
     "control_message_from_payload",
     "frames_to_payloads",
     "model_provider_registry_from_env",
+    "memory_write_store_diagnostics",
+    "memory_write_store_settings_from_env",
     "record_model_tool_call_planning_events",
     "reject_memory_write_candidate",
     "runtime_event_component_diagnostics",

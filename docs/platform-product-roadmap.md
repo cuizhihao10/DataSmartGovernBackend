@@ -6377,3 +6377,23 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 增加 Python Runtime 可选 MySQL store 启用配置和健康检查。
 2. 补 API 错误语义和分页 cursor。
 3. 设计 APPROVED 候选异步写入 worker，再分阶段接 Chroma/Neo4j/MinIO/MySQL。
+
+## 4.29 AI Runtime 记忆写入候选 Store 运行时配置（2026-05-28）
+
+本阶段把长期记忆候选 SQL store 从“已有实现”推进到“Runtime 可配置启用”。Python AI Runtime 现在可以通过环境变量选择 `in-memory`、`sqlite` 或 `mysql` 作为候选 store，并通过诊断接口确认真实实现、是否持久化、是否发生 fail-open 回退。
+
+已完成：
+- 新增 `memory_write_components.py` 作为记忆候选 store 组装层，避免 `api.py` 和治理服务继续膨胀。
+- `create_app()` 已使用可配置 store 创建 `AgentMemoryWriteGovernanceService`。
+- 新增 `/agent/memory/write-candidates/diagnostics`，输出脱敏诊断信息。
+- 新增测试覆盖默认内存、SQLite 持久化语义、MySQL fail-open 回退和生产快速失败策略。
+
+产品意义：
+- 这一步让长期记忆候选具备可部署形态，而不是只在测试中验证 SQL store。
+- 开发环境继续轻量，生产环境可以选择 fail-closed，避免候选审批事实因内存回退而丢失。
+- 后续审批台、异步写入 worker 和审计台可以围绕同一持久化候选 store 继续演进。
+
+下一步：
+1. 补候选 API 错误语义和分页 cursor。
+2. 设计 APPROVED 候选异步写入 worker。
+3. 并行规划遗忘/归档/检索权限与智能网关模型路由能力，避免长期记忆局部无限扩展。
