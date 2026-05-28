@@ -190,6 +190,15 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/agent/tool-execution-events/outbox/**", "AI_RUNTIME",
                 "Agent 工具执行事件 outbox 查询接口，用于排查工具状态事件是否进入待投递事件箱以及是否发生堆积或阻断",
                 Map.of("GET", "VIEW_OUTBOX_EVENTS")));
+        defaults.add(route("/api/agent/memory/write-candidates/{candidateId}/approve", "AI_RUNTIME",
+                "Agent 长期记忆写入候选批准入口；批准后候选未来可以进入向量库、图谱库或对象存储，因此必须区别于普通 POST CREATE",
+                Map.of("POST", "APPROVE_MEMORY_WRITE")));
+        defaults.add(route("/api/agent/memory/write-candidates/{candidateId}/reject", "AI_RUNTIME",
+                "Agent 长期记忆写入候选拒绝入口；拒绝会形成治理事实和审计依据，不能退化为普通 UPDATE 或 APPROVE",
+                Map.of("POST", "REJECT_MEMORY_WRITE")));
+        defaults.add(route("/api/agent/memory/write-candidates/**", "AI_RUNTIME",
+                "Agent 长期记忆写入候选查询入口；用于审批台、审计台和运维台查看哪些工具结果准备进入长期记忆",
+                Map.of("GET", "VIEW_MEMORY_WRITE_CANDIDATES")));
         defaults.add(route("/api/agent/runtime-events/diagnostics", "AI_RUNTIME",
                 "Agent Runtime 运行时事件消费诊断接口，用于运维查看 Kafka consumer、投影窗口和拒绝原因统计",
                 Map.of("GET", "DIAGNOSE")));

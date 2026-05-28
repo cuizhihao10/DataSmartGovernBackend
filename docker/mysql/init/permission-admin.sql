@@ -421,6 +421,24 @@ VALUES
 (0, '审计员禁止变更 Agent outbox 事件', 'AUDITOR', 'POST', '/api/agent/tool-execution-events/outbox/**', 'AI_RUNTIME', NULL, 'DENY', 900, 1, '审计员是只读角色，只能复核 outbox 投递证据，不能执行重新入队、忽略或备注等改变排障事实的动作。', NOW(), NOW()),
 (0, '服务账号禁止人工处理 Agent outbox', 'SERVICE_ACCOUNT', 'ANY', '/api/agent/tool-execution-events/outbox/**', 'AI_RUNTIME', NULL, 'DENY', 900, 1, '服务账号用于内部协议调用，不应默认执行 outbox 人工补偿动作，避免机器身份替代人类责任链。', NOW(), NOW());
 
+-- Agent 长期记忆写入候选权限策略。
+-- 这里采用“查看与决策分离、人工责任链优先、机器身份默认禁止”的保守模型：
+-- 1. VIEW_MEMORY_WRITE_CANDIDATES：查看候选列表和详情，适合审计员复核、运营人员排障、项目负责人处理本项目候选；
+-- 2. APPROVE_MEMORY_WRITE：批准候选进入后续长期记忆写入 worker，风险高于普通 APPROVE，默认只给项目负责人；
+-- 3. REJECT_MEMORY_WRITE：拒绝候选进入长期记忆，虽然不会写入存储，但会形成治理事实和拒绝原因，也必须可审计；
+-- 4. SERVICE_ACCOUNT 默认禁止人工批准/拒绝，避免内部 worker 或模型链路用机器身份替代人类责任链。
+INSERT IGNORE INTO permission_route_policy
+(tenant_id, policy_name, role_code, http_method, path_pattern, resource_type, action, effect, priority, enabled, description, create_time, update_time)
+VALUES
+(0, '审计员查看 Agent 记忆写入候选', 'AUDITOR', 'GET', '/api/agent/memory/write-candidates/**', 'AI_RUNTIME', 'VIEW_MEMORY_WRITE_CANDIDATES', 'ALLOW', 115, 1, '审计员可只读查看长期记忆写入候选，用于复核哪些工具结果、治理经验或运行结论准备进入长期记忆；后续应结合脱敏和项目范围继续收紧。', NOW(), NOW()),
+(0, '运营人员查看 Agent 记忆写入候选', 'OPERATOR', 'GET', '/api/agent/memory/write-candidates/**', 'AI_RUNTIME', 'VIEW_MEMORY_WRITE_CANDIDATES', 'ALLOW', 141, 1, '运营人员可查看记忆写入候选，用于排查候选生成、审批等待、拒绝原因和后续写入 worker 阻塞问题。', NOW(), NOW()),
+(0, '项目负责人查看 Agent 记忆写入候选', 'PROJECT_OWNER', 'GET', '/api/agent/memory/write-candidates/**', 'AI_RUNTIME', 'VIEW_MEMORY_WRITE_CANDIDATES', 'ALLOW', 146, 1, '项目负责人可查看自己负责项目范围内的长期记忆候选，服务层和数据范围策略应继续限制 tenant/project/scope。', NOW(), NOW()),
+(0, '项目负责人批准 Agent 记忆写入候选', 'PROJECT_OWNER', 'POST', '/api/agent/memory/write-candidates/*/approve', 'AI_RUNTIME', 'APPROVE_MEMORY_WRITE', 'ALLOW', 146, 1, '项目负责人可批准本项目候选进入长期记忆写入流程；批准后内容未来可能被 Agent 跨会话检索和复用，因此必须保留审批理由和操作者。', NOW(), NOW()),
+(0, '项目负责人拒绝 Agent 记忆写入候选', 'PROJECT_OWNER', 'POST', '/api/agent/memory/write-candidates/*/reject', 'AI_RUNTIME', 'REJECT_MEMORY_WRITE', 'ALLOW', 146, 1, '项目负责人可拒绝敏感、越权、过期、质量不足或不适合长期沉淀的记忆候选，拒绝原因会成为后续策略优化和审计依据。', NOW(), NOW()),
+(0, '审计员禁止变更 Agent 记忆写入候选', 'AUDITOR', 'POST', '/api/agent/memory/write-candidates/**', 'AI_RUNTIME', NULL, 'DENY', 900, 1, '审计员是只读复核角色，不能批准或拒绝长期记忆候选，避免审计职责与业务决策职责混在一起。', NOW(), NOW()),
+(0, '运营人员禁止批准 Agent 记忆写入候选', 'OPERATOR', 'POST', '/api/agent/memory/write-candidates/*/approve', 'AI_RUNTIME', 'APPROVE_MEMORY_WRITE', 'DENY', 900, 1, '运营人员可以排障查看候选，但默认不批准内容进入长期记忆，避免运维权限扩大为业务知识沉淀权限。', NOW(), NOW()),
+(0, '服务账号禁止人工决策 Agent 记忆写入候选', 'SERVICE_ACCOUNT', 'ANY', '/api/agent/memory/write-candidates/**', 'AI_RUNTIME', NULL, 'DENY', 900, 1, '服务账号用于内部协议和异步 worker，不应默认执行人工批准或拒绝，避免模型链路绕过人类责任链。', NOW(), NOW());
+
 -- 这些补充策略不是为了替代上面的通配策略，而是把高风险动作显式沉淀为策略事实。
 -- 管理员在权限矩阵里可以直接看到“谁能 CALLBACK、谁能 RECOVER、谁能 ACKNOWLEDGE/CLOSE”，
 -- 后续接审批流或按钮权限时也可以按 action 精确迁移。

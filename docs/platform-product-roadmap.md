@@ -6337,3 +6337,22 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 设计 MySQL 候选表和操作审计表。
 3. 实现 APPROVED 候选异步写入 Chroma/Neo4j/MinIO/MySQL。
 4. 补遗忘、归档、过期清理和索引重建能力。
+## 4.27 AI Runtime 记忆写入候选权限治理（2026-05-28）
+
+本阶段把长期记忆写入候选从“Python Runtime 可查询资源”继续推进为“受平台权限中心保护的治理资源”。核心不是提前接入向量库，而是先确认谁能查看候选、谁能批准候选进入长期记忆、谁能拒绝候选写入，避免后续 Chroma/Neo4j/MySQL 写入 worker 被无权限调用链绕过。
+
+已完成：
+- permission-admin 动作枚举新增 `VIEW_MEMORY_WRITE_CANDIDATES`、`APPROVE_MEMORY_WRITE`、`REJECT_MEMORY_WRITE`。
+- gateway route metadata 新增记忆候选列表/详情/批准/拒绝路径，并把 approve/reject 放在通配查询规则之前，避免授权语义被泛化。
+- permission-admin 初始化 SQL 和迁移脚本新增候选权限策略，默认允许审计员/运营人员查看、项目负责人决策、服务账号禁止人工决策。
+- gateway 新增专项测试固定四类路径到权限动作的映射，避免后续重构回退成普通 `VIEW` 或 `CREATE`。
+
+产品意义：
+- 长期记忆会影响 Agent 后续检索、规划和建议，不能当成普通缓存或普通日志处理。
+- “批准写入”和“拒绝写入”都是审计事实，必须单独建模，后续才能扩展审批流、拒绝原因统计、数据分级联动和记忆质量评估。
+- 当前策略采用保守商业化默认值：查看和决策分离，人工责任链优先，机器身份不默认批准长期记忆。
+
+下一步：
+1. 设计长期记忆候选 MySQL 表、操作审计表、幂等 key、版本号和审批单号。
+2. 将 Python 内存 store 替换为可持久化 store 或 Java memory-service 客户端。
+3. 在权限和持久化稳定后，再实现 APPROVED 候选异步写入 Chroma/Neo4j/MinIO/MySQL。

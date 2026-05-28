@@ -525,6 +525,33 @@ datasmart:
           method-actions:
             GET: VIEW_OUTBOX_EVENTS
 
+        # Agent 长期记忆写入候选是“工具结果/治理经验进入长期记忆前”的审批资源。
+        # 这里必须把查看、批准、拒绝拆成不同 action，而不是复用普通 GET/POST：
+        # 1. 查看候选可能暴露工具审计 ID、候选摘要、scope、敏感字段提示和写入理由，适合审计员/运营人员只读复核；
+        # 2. 批准候选会让内容未来进入 Chroma、Neo4j、MySQL 或对象存储，影响后续 Agent 检索和规划，属于高风险治理动作；
+        # 3. 拒绝候选会形成“为什么不允许写入长期记忆”的治理事实，也需要独立审计和后续策略分析。
+        # 更具体的 approve/reject 规则必须放在通配查询规则之前，避免被 /write-candidates/** 先命中。
+        - path-pattern: /api/agent/memory/write-candidates/{candidateId}/approve
+          resource-type: AI_RUNTIME
+          default-action: APPROVE_MEMORY_WRITE
+          description: Agent 长期记忆写入候选批准入口；批准后候选未来可以进入长期记忆持久层，因此不能按普通 POST CREATE 授权。
+          method-actions:
+            POST: APPROVE_MEMORY_WRITE
+
+        - path-pattern: /api/agent/memory/write-candidates/{candidateId}/reject
+          resource-type: AI_RUNTIME
+          default-action: REJECT_MEMORY_WRITE
+          description: Agent 长期记忆写入候选拒绝入口；拒绝用于阻断敏感、过期、低质量或越权内容进入长期记忆，并形成审计事实。
+          method-actions:
+            POST: REJECT_MEMORY_WRITE
+
+        - path-pattern: /api/agent/memory/write-candidates/**
+          resource-type: AI_RUNTIME
+          default-action: VIEW_MEMORY_WRITE_CANDIDATES
+          description: Agent 长期记忆写入候选查询入口；用于审批台、审计台和运维台查看候选状态、范围、来源和治理理由。
+          method-actions:
+            GET: VIEW_MEMORY_WRITE_CANDIDATES
+
         # Agent Runtime 事件诊断必须比 /api/agent/runtime-events/** 更靠前。
         # 原因：诊断接口展示的是 consumer、投影窗口、拒绝原因和处理耗时等运行状态，
         # 它的权限语义更接近“运维诊断”，不应被普通事件查看权限覆盖。
