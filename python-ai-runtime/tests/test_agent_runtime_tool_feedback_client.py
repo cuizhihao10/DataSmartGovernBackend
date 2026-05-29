@@ -140,6 +140,72 @@ class JavaAgentRuntimeToolFeedbackClientTest(unittest.TestCase):
         self.assertEqual(ToolExecutionFeedbackStatus.SUCCEEDED, feedback[0].status)
         self.assertEqual(ToolExecutionFeedbackStatus.SKIPPED, feedback[1].status)
 
+    def test_parse_execution_policy_response(self) -> None:
+        payload = {
+            "code": 0,
+            "data": {
+                "sessionId": "session-001",
+                "runId": "run-001",
+                "runState": "PLANNING",
+                "runTerminal": False,
+                "autoExecutableCount": 1,
+                "humanActionCount": 0,
+                "blockingCount": 0,
+                "summaryReasons": ["存在可进入同步自动执行候选的工具。"],
+                "recommendedActions": ["可由自动执行器执行。"],
+                "items": [
+                    {
+                        "auditId": "atea-001",
+                        "toolCode": "datasource.metadata.read",
+                        "state": "PLANNED",
+                        "decision": "AUTO_EXECUTABLE",
+                        "autoExecutable": True,
+                        "requiresHumanAction": False,
+                        "blocksRun": False,
+                        "reasons": ["同步低风险候选。"],
+                        "recommendedActions": ["执行该工具。"],
+                    }
+                ],
+            },
+        }
+
+        policy = JavaAgentRuntimeToolFeedbackClient.parse_platform_policy_response(payload)
+
+        self.assertEqual("session-001", policy.session_id)
+        self.assertEqual(1, policy.auto_executable_count)
+        self.assertEqual("atea-001", policy.items[0].audit_id)
+        self.assertTrue(policy.items[0].auto_executable)
+
+    def test_parse_auto_execution_response(self) -> None:
+        payload = {
+            "code": 0,
+            "data": {
+                "sessionId": "session-001",
+                "runId": "run-001",
+                "dryRun": False,
+                "requestedLimit": 3,
+                "effectiveLimit": 2,
+                "executedCount": 1,
+                "failedCount": 0,
+                "skippedCount": 1,
+                "items": [
+                    {
+                        "auditId": "atea-001",
+                        "toolCode": "datasource.metadata.read",
+                        "policyDecision": "AUTO_EXECUTABLE",
+                        "action": "EXECUTED",
+                        "reason": "工具已执行成功。",
+                    }
+                ],
+            },
+        }
+
+        summary = JavaAgentRuntimeToolFeedbackClient.parse_platform_auto_execution_response(payload)
+
+        self.assertEqual(1, summary.executed_count)
+        self.assertEqual(2, summary.effective_limit)
+        self.assertEqual("EXECUTED", summary.item_actions[0]["action"])
+
 
 class JavaAgentRuntimeToolFeedbackProviderTest(unittest.TestCase):
     def test_provider_queries_java_when_control_plane_refs_exist(self) -> None:
@@ -159,6 +225,27 @@ class JavaAgentRuntimeToolFeedbackProviderTest(unittest.TestCase):
         self.assertEqual({"atea-001": "call-001"}, fake_client.batch_calls[0]["tool_call_ids_by_audit_id"])
         self.assertEqual("trace-001", fake_client.batch_calls[0]["trace_id"])
         self.assertEqual(0, len(fake_client.calls))
+
+    def test_provider_auto_executes_sync_candidates_before_batch_query_when_enabled(self) -> None:
+        fake_client = FakeFeedbackClient()
+        provider = JavaAgentRuntimeToolFeedbackProvider(
+            fake_client,
+            trace_id="trace-001",
+            auto_execute_sync_enabled=True,
+            max_auto_executions=2,
+        )
+
+        feedback_items = provider.feedback_for(
+            (ModelToolCall(call_id="call-001", name="datasource_metadata_read"),),
+            (self._tool_plan_with_refs(),),
+        )
+
+        self.assertEqual(1, len(feedback_items))
+        self.assertEqual(1, len(fake_client.policy_calls))
+        self.assertEqual(1, len(fake_client.auto_execute_calls))
+        self.assertEqual(("atea-001",), fake_client.auto_execute_calls[0]["audit_ids"])
+        self.assertEqual(2, fake_client.auto_execute_calls[0]["max_executions"])
+        self.assertFalse(fake_client.auto_execute_calls[0]["dry_run"])
 
     def test_provider_falls_back_when_refs_are_missing(self) -> None:
         fake_client = FakeFeedbackClient()
@@ -201,6 +288,67 @@ class FakeFeedbackClient:
     def __init__(self) -> None:
         self.calls = []
         self.batch_calls = []
+        self.policy_calls = []
+        self.auto_execute_calls = []
+
+    def get_run_tool_execution_policy(self, **kwargs):
+        self.policy_calls.append(kwargs)
+        return JavaAgentRuntimeToolFeedbackClient.parse_platform_policy_response(
+            {
+                "code": 0,
+                "data": {
+                    "sessionId": kwargs["session_id"],
+                    "runId": kwargs["run_id"],
+                    "runState": "PLANNING",
+                    "runTerminal": False,
+                    "autoExecutableCount": 1,
+                    "humanActionCount": 0,
+                    "blockingCount": 0,
+                    "summaryReasons": [],
+                    "recommendedActions": [],
+                    "items": [
+                        {
+                            "auditId": "atea-001",
+                            "toolCode": "datasource.metadata.read",
+                            "state": "PLANNED",
+                            "decision": "AUTO_EXECUTABLE",
+                            "autoExecutable": True,
+                            "requiresHumanAction": False,
+                            "blocksRun": False,
+                            "reasons": ["测试候选。"],
+                            "recommendedActions": [],
+                        }
+                    ],
+                },
+            }
+        )
+
+    def auto_execute_sync_tools(self, **kwargs):
+        self.auto_execute_calls.append(kwargs)
+        return JavaAgentRuntimeToolFeedbackClient.parse_platform_auto_execution_response(
+            {
+                "code": 0,
+                "data": {
+                    "sessionId": kwargs["session_id"],
+                    "runId": kwargs["run_id"],
+                    "dryRun": kwargs["dry_run"],
+                    "requestedLimit": kwargs["max_executions"] or 0,
+                    "effectiveLimit": kwargs["max_executions"] or 0,
+                    "executedCount": 1,
+                    "failedCount": 0,
+                    "skippedCount": 0,
+                    "items": [
+                        {
+                            "auditId": "atea-001",
+                            "toolCode": "datasource.metadata.read",
+                            "policyDecision": "AUTO_EXECUTABLE",
+                            "action": "EXECUTED",
+                            "reason": "测试执行成功。",
+                        }
+                    ],
+                },
+            }
+        )
 
     def list_run_tool_execution_feedback(self, **kwargs):
         self.batch_calls.append(kwargs)

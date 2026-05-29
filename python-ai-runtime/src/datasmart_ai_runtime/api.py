@@ -217,6 +217,9 @@ def build_default_orchestrator(
         tool_feedback_provider = JavaAgentRuntimeToolFeedbackProvider(
             JavaAgentRuntimeToolFeedbackClient(base_url=resolved_base_url),
             trace_id=trace_id,
+            auto_execute_sync_enabled=_truthy_env("DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_ENABLED"),
+            auto_execute_dry_run=_truthy_env("DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_DRY_RUN"),
+            max_auto_executions=_optional_positive_int_env("DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_MAX"),
         )
     return AgentOrchestrator(
         model_routes=ModelRouteRegistry(model_routes_from_env()),
@@ -256,6 +259,20 @@ def _positive_int_env(name: str, default: int) -> int:
         return default
     parsed = int(value)
     return parsed if parsed > 0 else default
+
+
+def _optional_positive_int_env(name: str) -> int | None:
+    """读取可选正整数环境变量。
+
+    该 helper 用于“Python 可以不传，让 Java 控制面按服务端配置决定”的场景。
+    例如同步自动执行最大数量：如果 Python 写死默认值，可能会覆盖 Java 侧按环境、租户或灰度配置的上限。
+    """
+
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return None
+    parsed = int(value)
+    return parsed if parsed > 0 else None
 
 
 def _build_runtime_event_replay_sources(agent_runtime_base_url: str | None) -> tuple[Any, ...]:
@@ -306,6 +323,9 @@ def create_app() -> Any:
         AgentControlPlaneFeedbackCollector(
             JavaAgentRuntimeToolFeedbackProvider(
                 JavaAgentRuntimeToolFeedbackClient(base_url=agent_runtime_base_url),
+                auto_execute_sync_enabled=_truthy_env("DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_ENABLED"),
+                auto_execute_dry_run=_truthy_env("DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_DRY_RUN"),
+                max_auto_executions=_optional_positive_int_env("DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_MAX"),
             )
         )
         if agent_runtime_base_url and _truthy_env("DATASMART_AGENT_RUNTIME_TOOL_FEEDBACK_ENABLED")

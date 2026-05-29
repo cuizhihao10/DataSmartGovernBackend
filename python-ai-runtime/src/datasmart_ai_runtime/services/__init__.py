@@ -79,7 +79,12 @@ from datasmart_ai_runtime.services.model_tool_feedback_provider import (
 )
 from datasmart_ai_runtime.services.agent_runtime_tool_feedback_client import (
     AgentRuntimeToolFeedbackClientError,
+    AgentRuntimeToolAutoExecutionSummary,
+    AgentRuntimeToolExecutionPolicy,
+    AgentRuntimeToolExecutionPolicyItem,
     JavaAgentRuntimeToolFeedbackClient,
+)
+from datasmart_ai_runtime.services.agent_runtime_tool_feedback_provider import (
     JavaAgentRuntimeToolFeedbackProvider,
 )
 from datasmart_ai_runtime.services.agent_runtime_event_replay_client import (
@@ -238,6 +243,9 @@ __all__ = [
     "ModelResultContextFilterResult",
     "ModelToolExecutionFeedbackProvider",
     "AgentRuntimeToolFeedbackClientError",
+    "AgentRuntimeToolAutoExecutionSummary",
+    "AgentRuntimeToolExecutionPolicy",
+    "AgentRuntimeToolExecutionPolicyItem",
     "AgentRuntimeEventReplayClientError",
     "AgentRuntimeEventFeedbackAugmentation",
     "AgentRuntimeEventFeedbackBridge",

@@ -6653,3 +6653,25 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 设计 `ASYNC_TASK` 到 task-management/Kafka command 的任务化执行协议。
 3. 补 ToolPlan DAG/依赖边，解决多工具执行顺序、并发组、失败跳过和补偿问题。
 4. 将自动执行入口接入 gateway/permission-admin 权限动作和租户级开关。
+
+## 4.43 Python Runtime 接入 Java 工具策略与受控同步自动执行（2026-05-29）
+
+本阶段把 Java `execution-policy` 与 `auto-execute-sync` 接入 Python 工具反馈 Provider。Python 在批量读取 Java 工具结果前，可以显式启用受控自动执行，让低风险同步工具先执行，再把结果回填给二轮模型。
+
+已完成：
+- Java feedback client 新增 policy 查询和 auto-execute-sync 调用。
+- 新增 execution contracts 模块，解析 policy 与自动执行批次摘要。
+- Provider 从 client 文件拆出，并在启用开关时执行“policy -> auto execute -> batch results”。
+- API 环境变量新增 `DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_ENABLED/DRY_RUN/MAX`。
+- 补充单测覆盖 policy 解析、自动执行响应解析和 Provider 调用顺序。
+
+产品意义：
+- Python AI Runtime 与 Java agent-runtime 的工具闭环更接近真实 Agent：不只是轮询结果，而是能在安全边界内推动低风险工具执行。
+- 自动执行默认关闭，通过环境变量灰度启用；真正执行规则仍在 Java 控制面，Python 只缩小 auditId 范围。
+- 同时完成 client/provider/contracts 拆分，避免工具反馈链路继续变成 700+ 行大文件。
+
+下一步建议：
+1. 将自动执行批次摘要写入 runtime event，增强前端可见性和审计可解释性。
+2. 启动 `ASYNC_TASK` 到 task-management/Kafka command 的任务化执行设计。
+3. 补 ToolPlan DAG，避免多工具自动执行缺少依赖与并发控制。
+4. 把自动执行开关升级为租户、项目、工具级策略，而不是长期依赖全局环境变量。

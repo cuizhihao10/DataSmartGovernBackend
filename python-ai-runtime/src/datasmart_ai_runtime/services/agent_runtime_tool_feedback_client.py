@@ -16,14 +16,17 @@ from typing import Any, Protocol
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from datasmart_ai_runtime.domain.contracts import ModelToolCall, ToolPlan
-from datasmart_ai_runtime.services.model_tool_feedback_provider import (
-    ModelToolExecutionFeedbackProvider,
-    SimulatedModelToolExecutionFeedbackProvider,
-)
 from datasmart_ai_runtime.services.model_tool_result_feedback import (
     ToolExecutionFeedback,
     ToolExecutionFeedbackStatus,
+)
+from datasmart_ai_runtime.services.agent_runtime_tool_execution_contracts import (
+    AgentRuntimeToolAutoExecutionSummary,
+    AgentRuntimeToolExecutionContractError,
+    AgentRuntimeToolExecutionPolicy,
+    AgentRuntimeToolExecutionPolicyItem,
+    parse_auto_execution_response,
+    parse_execution_policy_response,
 )
 
 
@@ -79,11 +82,15 @@ class JavaAgentRuntimeToolFeedbackClient:
         timeout_seconds: int = 3,
         result_path_template: str = "/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/{auditId}/result",
         run_results_path_template: str = "/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/results",
+        execution_policy_path_template: str = "/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/execution-policy",
+        auto_execute_sync_path_template: str = "/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/auto-execute-sync",
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
         self._result_path_template = result_path_template
         self._run_results_path_template = run_results_path_template
+        self._execution_policy_path_template = execution_policy_path_template
+        self._auto_execute_sync_path_template = auto_execute_sync_path_template
 
     def get_tool_execution_feedback(
         self,
@@ -140,6 +147,81 @@ class JavaAgentRuntimeToolFeedbackClient:
             raise AgentRuntimeToolFeedbackClientError(f"批量查询 Java Agent 工具执行结果失败：{exc}") from exc
         return self.parse_platform_batch_response(payload, tool_call_ids_by_audit_id=tool_call_ids_by_audit_id)
 
+    def get_run_tool_execution_policy(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        trace_id: str | None = None,
+    ) -> AgentRuntimeToolExecutionPolicy:
+        """查询 Java Run 级工具执行策略。
+
+        该接口只读，不会执行工具。Python 在真实执行前先读 policy，可以提前知道是否还有
+        `AUTO_EXECUTABLE` 候选、是否被审批/参数/失败阻断，避免盲目进入二轮推理。
+        """
+
+        url = self._build_execution_policy_url(session_id=session_id, run_id=run_id)
+        headers = {
+            "Accept": "application/json",
+            "X-DataSmart-Trace-Id": trace_id or "",
+            "X-DataSmart-Source-Service": "python-ai-runtime",
+        }
+        request = Request(url=url, headers={k: v for k, v in headers.items() if v}, method="GET")
+        try:
+            with urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310 - URL 来自受控配置
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:  # pragma: no cover - 网络错误在集成环境覆盖
+            raise AgentRuntimeToolFeedbackClientError(f"查询 Java Agent 工具执行策略失败：{exc}") from exc
+        try:
+            return self.parse_platform_policy_response(payload)
+        except AgentRuntimeToolExecutionContractError as exc:
+            raise AgentRuntimeToolFeedbackClientError(str(exc)) from exc
+
+    def auto_execute_sync_tools(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        audit_ids: tuple[str, ...] = (),
+        max_executions: int | None = None,
+        dry_run: bool = False,
+        trace_id: str | None = None,
+    ) -> AgentRuntimeToolAutoExecutionSummary:
+        """请求 Java 受控执行当前 Run 中的安全同步工具候选。
+
+        Python 只传递 auditId 白名单、批次数量上限和 dryRun 标记；最终是否执行仍由 Java 服务端
+        根据 policy、LOW/readOnly/idempotent/requiresApproval=false 等规则决定。这样即使 Python
+        侧 bug 传入了高风险 auditId，也不能绕过 Java 控制面。
+        """
+
+        url = self._build_auto_execute_sync_url(session_id=session_id, run_id=run_id)
+        body: dict[str, Any] = {"dryRun": dry_run}
+        if audit_ids:
+            body["auditIds"] = list(audit_ids)
+        if max_executions is not None:
+            body["maxExecutions"] = max_executions
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "X-DataSmart-Trace-Id": trace_id or "",
+            "X-DataSmart-Source-Service": "python-ai-runtime",
+        }
+        request = Request(
+            url=url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={k: v for k, v in headers.items() if v},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310 - URL 来自受控配置
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:  # pragma: no cover - 网络错误在集成环境覆盖
+            raise AgentRuntimeToolFeedbackClientError(f"请求 Java Agent 自动执行同步工具失败：{exc}") from exc
+        try:
+            return self.parse_platform_auto_execution_response(payload)
+        except AgentRuntimeToolExecutionContractError as exc:
+            raise AgentRuntimeToolFeedbackClientError(str(exc)) from exc
+
     def _build_result_url(self, *, session_id: str, run_id: str, audit_id: str) -> str:
         """构建结果查询 URL，并对路径参数做安全转义。"""
 
@@ -154,6 +236,24 @@ class JavaAgentRuntimeToolFeedbackClient:
         """构建按 Run 批量查询工具结果的 URL。"""
 
         path = self._run_results_path_template.format(
+            sessionId=quote(session_id, safe=""),
+            runId=quote(run_id, safe=""),
+        )
+        return f"{self._base_url}{path}"
+
+    def _build_execution_policy_url(self, *, session_id: str, run_id: str) -> str:
+        """构建 Run 级工具执行策略查询 URL。"""
+
+        path = self._execution_policy_path_template.format(
+            sessionId=quote(session_id, safe=""),
+            runId=quote(run_id, safe=""),
+        )
+        return f"{self._base_url}{path}"
+
+    def _build_auto_execute_sync_url(self, *, session_id: str, run_id: str) -> str:
+        """构建受控同步自动执行 URL。"""
+
+        path = self._auto_execute_sync_path_template.format(
             sessionId=quote(session_id, safe=""),
             runId=quote(run_id, safe=""),
         )
@@ -208,6 +308,27 @@ class JavaAgentRuntimeToolFeedbackClient:
                 continue
             feedback_items.append(cls._map_result(item, tool_call_id=tool_call_id))
         return tuple(feedback_items)
+
+    @classmethod
+    def parse_platform_policy_response(cls, payload: dict[str, Any]) -> AgentRuntimeToolExecutionPolicy:
+        """解析 Java `PlatformApiResponse<AgentRunToolExecutionPolicyView>`。"""
+
+        try:
+            return parse_execution_policy_response(payload)
+        except AgentRuntimeToolExecutionContractError as exc:
+            raise AgentRuntimeToolFeedbackClientError(str(exc)) from exc
+
+    @classmethod
+    def parse_platform_auto_execution_response(
+        cls,
+        payload: dict[str, Any],
+    ) -> AgentRuntimeToolAutoExecutionSummary:
+        """解析 Java `PlatformApiResponse<AgentRunToolAutoExecutionResponse>`。"""
+
+        try:
+            return parse_auto_execution_response(payload)
+        except AgentRuntimeToolExecutionContractError as exc:
+            raise AgentRuntimeToolFeedbackClientError(str(exc)) from exc
 
     @classmethod
     def _map_result(cls, data: dict[str, Any], *, tool_call_id: str) -> ToolExecutionFeedback:
@@ -345,149 +466,8 @@ class JavaAgentRuntimeToolFeedbackClient:
         }
 
 
-class JavaAgentRuntimeToolFeedbackProvider:
-    """基于 Java agent-runtime 查询结果的工具反馈 Provider。
-
-    Provider 会尝试从 `ToolPlan.governance_hints` 中读取 Java 控制面引用：
-    - `agentRuntimeSessionId` / `javaSessionId` / `sessionId`
-    - `agentRuntimeRunId` / `javaRunId` / `runId`
-    - `agentRuntimeAuditId` / `javaAuditId` / `auditId`
-
-    如果引用缺失或 Java 查询失败，会回退到模拟 Provider。这样当前 Python 主链仍可运行，而后续当
-    Java AgentPlan ingestion 把 auditId 回写到 ToolPlan 或事件中时，可以无缝切换到真实反馈。
-    """
-
-    def __init__(
-        self,
-        client: AgentRuntimeToolFeedbackClient,
-        fallback_provider: ModelToolExecutionFeedbackProvider | None = None,
-        trace_id: str | None = None,
-    ) -> None:
-        self._client = client
-        self._fallback_provider = fallback_provider or SimulatedModelToolExecutionFeedbackProvider()
-        self._trace_id = trace_id
-
-    def feedback_for(
-        self,
-        tool_calls: tuple[ModelToolCall, ...],
-        tool_plans: tuple[ToolPlan, ...],
-    ) -> tuple[ToolExecutionFeedback, ...]:
-        """优先读取 Java 真实反馈，无法读取时回退模拟反馈。"""
-
-        plan_by_call_id = {
-            str(plan.governance_hints.get("modelToolCallId")): plan
-            for plan in tool_plans
-            if plan.governance_hints.get("modelToolCallId")
-        }
-        feedback_items: list[ToolExecutionFeedback] = []
-        batch_feedback = self._try_batch_feedback(tool_calls, plan_by_call_id)
-        if batch_feedback is not None:
-            return batch_feedback
-        for tool_call in tool_calls:
-            if not tool_call.call_id:
-                continue
-            plan = plan_by_call_id.get(tool_call.call_id)
-            if plan is None:
-                continue
-            feedback_items.append(self._feedback_for_call(tool_call, plan))
-        return tuple(feedback_items)
-
-    def _try_batch_feedback(
-        self,
-        tool_calls: tuple[ModelToolCall, ...],
-        plan_by_call_id: dict[str, ToolPlan],
-    ) -> tuple[ToolExecutionFeedback, ...] | None:
-        """同一 Java Run 内优先批量查询工具反馈。
-
-        如果客户端不支持批量接口、工具计划缺少引用、工具分属不同 run，或批量查询失败，则返回 None，
-        调用方会自动回退逐个 auditId 查询。这样新能力不会破坏旧部署。
-        """
-
-        batch_method = getattr(self._client, "list_run_tool_execution_feedback", None)
-        if not callable(batch_method):
-            return None
-        refs_by_call_id: dict[str, dict[str, str]] = {}
-        for tool_call in tool_calls:
-            if not tool_call.call_id:
-                return None
-            plan = plan_by_call_id.get(tool_call.call_id)
-            if plan is None:
-                return None
-            refs = self._resolve_refs(plan)
-            if refs is None:
-                return None
-            refs_by_call_id[tool_call.call_id] = refs
-        if not refs_by_call_id:
-            return None
-        session_ids = {refs["session_id"] for refs in refs_by_call_id.values()}
-        run_ids = {refs["run_id"] for refs in refs_by_call_id.values()}
-        if len(session_ids) != 1 or len(run_ids) != 1:
-            return None
-        tool_call_ids_by_audit_id = {
-            refs["audit_id"]: call_id for call_id, refs in refs_by_call_id.items()
-        }
-        first_refs = next(iter(refs_by_call_id.values()))
-        try:
-            feedback_by_call_id = {
-                item.tool_call_id: item
-                for item in batch_method(
-                    session_id=first_refs["session_id"],
-                    run_id=first_refs["run_id"],
-                    tool_call_ids_by_audit_id=tool_call_ids_by_audit_id,
-                    trace_id=self._trace_id,
-                )
-            }
-        except AgentRuntimeToolFeedbackClientError:
-            return None
-        ordered = tuple(feedback_by_call_id[tool_call.call_id] for tool_call in tool_calls if tool_call.call_id in feedback_by_call_id)
-        return ordered if len(ordered) == len(tool_calls) else None
-
-    def _feedback_for_call(self, tool_call: ModelToolCall, plan: ToolPlan) -> ToolExecutionFeedback:
-        """读取单个工具调用的 Java 控制面反馈。"""
-
-        refs = self._resolve_refs(plan)
-        if refs is None:
-            return self._fallback(tool_call, plan)
-        try:
-            return self._client.get_tool_execution_feedback(
-                session_id=refs["session_id"],
-                run_id=refs["run_id"],
-                audit_id=refs["audit_id"],
-                tool_call_id=str(tool_call.call_id),
-                trace_id=self._trace_id or self._hint(plan, "traceId", "trace_id"),
-            )
-        except AgentRuntimeToolFeedbackClientError:
-            return self._fallback(tool_call, plan)
-
-    def _fallback(self, tool_call: ModelToolCall, plan: ToolPlan) -> ToolExecutionFeedback:
-        """对单个工具调用执行模拟回退，避免一个 Java 查询失败拖垮整轮 Agent loop。"""
-
-        feedback = self._fallback_provider.feedback_for((tool_call,), (plan,))
-        if feedback:
-            return feedback[0]
-        return ToolExecutionFeedback(
-            tool_call_id=str(tool_call.call_id),
-            tool_name=plan.tool_name,
-            status=ToolExecutionFeedbackStatus.SKIPPED,
-            summary="未找到可用的 Java 工具执行反馈，也无法生成模拟反馈。",
-        )
-
-    def _resolve_refs(self, plan: ToolPlan) -> dict[str, str] | None:
-        """从 ToolPlan 治理提示中解析 Java 控制面引用。"""
-
-        session_id = self._hint(plan, "agentRuntimeSessionId", "javaSessionId", "sessionId", "session_id")
-        run_id = self._hint(plan, "agentRuntimeRunId", "javaRunId", "runId", "run_id")
-        audit_id = self._hint(plan, "agentRuntimeAuditId", "javaAuditId", "auditId", "audit_id")
-        if not session_id or not run_id or not audit_id:
-            return None
-        return {"session_id": session_id, "run_id": run_id, "audit_id": audit_id}
-
-    @staticmethod
-    def _hint(plan: ToolPlan, *keys: str) -> str | None:
-        """按多个兼容字段名读取治理提示。"""
-
-        for key in keys:
-            value = plan.governance_hints.get(key)
-            if value is not None and str(value).strip():
-                return str(value).strip()
-        return None
+# 兼容旧导入路径：历史代码从本模块直接导入 Provider。
+# 真正实现已拆到 `agent_runtime_tool_feedback_provider.py`，避免本文件继续膨胀成“客户端 + Provider + 策略”的大文件。
+from datasmart_ai_runtime.services.agent_runtime_tool_feedback_provider import (  # noqa: E402
+    JavaAgentRuntimeToolFeedbackProvider,
+)
