@@ -78,10 +78,12 @@ class JavaAgentRuntimeToolFeedbackClient:
         base_url: str,
         timeout_seconds: int = 3,
         result_path_template: str = "/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/{auditId}/result",
+        run_results_path_template: str = "/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/results",
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
         self._result_path_template = result_path_template
+        self._run_results_path_template = run_results_path_template
 
     def get_tool_execution_feedback(
         self,
@@ -109,6 +111,35 @@ class JavaAgentRuntimeToolFeedbackClient:
             raise AgentRuntimeToolFeedbackClientError(f"查询 Java Agent 工具执行结果失败：{exc}") from exc
         return self.parse_platform_response(payload, tool_call_id=tool_call_id)
 
+    def list_run_tool_execution_feedback(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        tool_call_ids_by_audit_id: dict[str, str],
+        trace_id: str | None = None,
+    ) -> tuple[ToolExecutionFeedback, ...]:
+        """批量查询某个 Java Run 下的工具结果并映射为模型反馈。
+
+        批量接口服务多工具 Agent 的生产性能：一次 Run 可能有多个 tool_call，如果逐个 auditId 查询，
+        Python Runtime 会产生 N 次 HTTP 往返。这里按 run 一次性读取全部结果，再用 `auditId -> tool_call_id`
+        映射恢复 OpenAI-compatible tool result message 所需的关联键。
+        """
+
+        url = self._build_run_results_url(session_id=session_id, run_id=run_id)
+        headers = {
+            "Accept": "application/json",
+            "X-DataSmart-Trace-Id": trace_id or "",
+            "X-DataSmart-Source-Service": "python-ai-runtime",
+        }
+        request = Request(url=url, headers={k: v for k, v in headers.items() if v}, method="GET")
+        try:
+            with urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310 - URL 来自受控配置
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:  # pragma: no cover - 网络错误在集成环境覆盖
+            raise AgentRuntimeToolFeedbackClientError(f"批量查询 Java Agent 工具执行结果失败：{exc}") from exc
+        return self.parse_platform_batch_response(payload, tool_call_ids_by_audit_id=tool_call_ids_by_audit_id)
+
     def _build_result_url(self, *, session_id: str, run_id: str, audit_id: str) -> str:
         """构建结果查询 URL，并对路径参数做安全转义。"""
 
@@ -116,6 +147,15 @@ class JavaAgentRuntimeToolFeedbackClient:
             sessionId=quote(session_id, safe=""),
             runId=quote(run_id, safe=""),
             auditId=quote(audit_id, safe=""),
+        )
+        return f"{self._base_url}{path}"
+
+    def _build_run_results_url(self, *, session_id: str, run_id: str) -> str:
+        """构建按 Run 批量查询工具结果的 URL。"""
+
+        path = self._run_results_path_template.format(
+            sessionId=quote(session_id, safe=""),
+            runId=quote(run_id, safe=""),
         )
         return f"{self._base_url}{path}"
 
@@ -134,6 +174,40 @@ class JavaAgentRuntimeToolFeedbackClient:
         if not isinstance(data, dict):
             raise AgentRuntimeToolFeedbackClientError("Java 工具结果响应 data 必须是对象")
         return cls._map_result(data, tool_call_id=tool_call_id)
+
+    @classmethod
+    def parse_platform_batch_response(
+        cls,
+        payload: dict[str, Any],
+        *,
+        tool_call_ids_by_audit_id: dict[str, str],
+    ) -> tuple[ToolExecutionFeedback, ...]:
+        """解析 Java 批量结果响应。
+
+        Java 返回的是 `List<AgentToolExecutionResultView>`，其中每个元素包含 audit 和 output。
+        Python 还需要补 `tool_call_id`，因此调用方必须传入 auditId 到 model tool_call_id 的映射。
+        """
+
+        if payload.get("code") != 0:
+            reason = payload.get("reason", "UNKNOWN")
+            message = payload.get("message", "Java 工具结果批量接口返回失败")
+            raise AgentRuntimeToolFeedbackClientError(f"{reason}: {message}")
+        data = payload.get("data")
+        if not isinstance(data, list):
+            raise AgentRuntimeToolFeedbackClientError("Java 工具结果批量响应 data 必须是数组")
+        feedback_items: list[ToolExecutionFeedback] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            audit = item.get("audit") or {}
+            if not isinstance(audit, dict):
+                continue
+            audit_id = str(audit.get("auditId") or "")
+            tool_call_id = tool_call_ids_by_audit_id.get(audit_id)
+            if not tool_call_id:
+                continue
+            feedback_items.append(cls._map_result(item, tool_call_id=tool_call_id))
+        return tuple(feedback_items)
 
     @classmethod
     def _map_result(cls, data: dict[str, Any], *, tool_call_id: str) -> ToolExecutionFeedback:
@@ -306,6 +380,9 @@ class JavaAgentRuntimeToolFeedbackProvider:
             if plan.governance_hints.get("modelToolCallId")
         }
         feedback_items: list[ToolExecutionFeedback] = []
+        batch_feedback = self._try_batch_feedback(tool_calls, plan_by_call_id)
+        if batch_feedback is not None:
+            return batch_feedback
         for tool_call in tool_calls:
             if not tool_call.call_id:
                 continue
@@ -314,6 +391,56 @@ class JavaAgentRuntimeToolFeedbackProvider:
                 continue
             feedback_items.append(self._feedback_for_call(tool_call, plan))
         return tuple(feedback_items)
+
+    def _try_batch_feedback(
+        self,
+        tool_calls: tuple[ModelToolCall, ...],
+        plan_by_call_id: dict[str, ToolPlan],
+    ) -> tuple[ToolExecutionFeedback, ...] | None:
+        """同一 Java Run 内优先批量查询工具反馈。
+
+        如果客户端不支持批量接口、工具计划缺少引用、工具分属不同 run，或批量查询失败，则返回 None，
+        调用方会自动回退逐个 auditId 查询。这样新能力不会破坏旧部署。
+        """
+
+        batch_method = getattr(self._client, "list_run_tool_execution_feedback", None)
+        if not callable(batch_method):
+            return None
+        refs_by_call_id: dict[str, dict[str, str]] = {}
+        for tool_call in tool_calls:
+            if not tool_call.call_id:
+                return None
+            plan = plan_by_call_id.get(tool_call.call_id)
+            if plan is None:
+                return None
+            refs = self._resolve_refs(plan)
+            if refs is None:
+                return None
+            refs_by_call_id[tool_call.call_id] = refs
+        if not refs_by_call_id:
+            return None
+        session_ids = {refs["session_id"] for refs in refs_by_call_id.values()}
+        run_ids = {refs["run_id"] for refs in refs_by_call_id.values()}
+        if len(session_ids) != 1 or len(run_ids) != 1:
+            return None
+        tool_call_ids_by_audit_id = {
+            refs["audit_id"]: call_id for call_id, refs in refs_by_call_id.items()
+        }
+        first_refs = next(iter(refs_by_call_id.values()))
+        try:
+            feedback_by_call_id = {
+                item.tool_call_id: item
+                for item in batch_method(
+                    session_id=first_refs["session_id"],
+                    run_id=first_refs["run_id"],
+                    tool_call_ids_by_audit_id=tool_call_ids_by_audit_id,
+                    trace_id=self._trace_id,
+                )
+            }
+        except AgentRuntimeToolFeedbackClientError:
+            return None
+        ordered = tuple(feedback_by_call_id[tool_call.call_id] for tool_call in tool_calls if tool_call.call_id in feedback_by_call_id)
+        return ordered if len(ordered) == len(tool_calls) else None
 
     def _feedback_for_call(self, tool_call: ModelToolCall, plan: ToolPlan) -> ToolExecutionFeedback:
         """读取单个工具调用的 Java 控制面反馈。"""

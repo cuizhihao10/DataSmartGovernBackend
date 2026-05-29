@@ -6595,3 +6595,17 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 为 Provider metadata 增加受信网关开关，避免对第三方外部模型服务发送过多内部治理标签。
 2. 设计模型网关指标：缓存命中率、prefill token 节省、fallback 次数、二轮推理成本、Provider 错误率。
 3. 将重心切回 Java agent-runtime 工具执行闭环和 Skill/Tool 市场治理，避免缓存方向继续吞掉整体节奏。
+
+## 4.40 Java agent-runtime 工具结果批量反馈查询（2026-05-29）
+
+本阶段切回 Agent 工具执行闭环，补齐多工具 Agent 的控制面反馈效率。Java 新增按 run 批量查询工具执行结果的只读接口，Python Java-feedback Provider 会优先使用批量接口，失败或不兼容时回退逐个 auditId 查询。
+
+产品意义：
+- 避免 Python 二轮推理前对每个工具逐个查询 Java 控制面，降低 N+1 HTTP 请求带来的延迟和连接压力。
+- 批量查询仍然只读，不触发审批、执行或状态推进，符合 Java 控制面作为事实源的边界。
+- 新增独立 `AgentToolExecutionResultQueryService`，避免继续膨胀 `AgentSessionService`。
+
+下一步建议：
+1. 设计 run 级工具执行策略，而不是贸然自动执行所有 PLANNED 工具。
+2. 补 ToolPlan DAG/依赖边，让批量反馈能按节点、分组和依赖关系表达状态。
+3. 把批量反馈与 runtime-event replay/WebSocket 结合，减少同步轮询。

@@ -136,6 +136,28 @@ public class AgentToolExecutionService {
         return new AgentToolExecutionResultView(auditView, output);
     }
 
+    /**
+     * 批量读取某个 Run 下所有工具执行结果快照。
+     *
+     * <p>为什么需要批量接口：
+     * Python AI Runtime 在进入二轮推理前，通常要知道本轮所有 model tool_call 对应的 Java 工具状态。
+     * 如果一个 AgentPlan 规划了 5 个工具，逐个调用 `/result` 会产生 5 次 HTTP 往返；在真实生产环境中，
+     * 这会放大网关延迟、连接池压力和错误重试成本。批量查询可以让 Python 一次拿到全部状态，再在本地
+     * 做 tool_call_id 映射、等待审批判断和二轮推理决策。
+     *
+     * <p>该方法仍是只读快照：不会执行工具，不会审批，不会改变 Run 或 Audit 状态。
+     * 对于尚未成功执行的工具，`output` 会是空 Map；调用方应优先读取 `audit.state/message/errorCode`。
+     *
+     * @param sessionId Agent 会话 ID。
+     * @param runId Agent Run ID。
+     * @return 当前 Run 下所有工具审计及其已保存输出。
+     */
+    public List<AgentToolExecutionResultView> listResultsByRun(String sessionId, String runId) {
+        return auditService.listByRun(sessionId, runId).stream()
+                .map(audit -> getResult(sessionId, runId, audit.auditId()))
+                .toList();
+    }
+
     private AgentToolAdapter findAdapter(String toolCode) {
         return adapters.stream()
                 .filter(adapter -> adapter.supports(toolCode))

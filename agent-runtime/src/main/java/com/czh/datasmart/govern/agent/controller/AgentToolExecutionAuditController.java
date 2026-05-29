@@ -11,6 +11,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionDecisionR
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionResultView;
 import com.czh.datasmart.govern.agent.service.AgentSessionService;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
+import com.czh.datasmart.govern.agent.service.AgentToolExecutionResultQueryService;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import lombok.RequiredArgsConstructor;
@@ -37,6 +38,7 @@ public class AgentToolExecutionAuditController {
 
     private final AgentToolExecutionAuditService auditService;
     private final AgentSessionService sessionService;
+    private final AgentToolExecutionResultQueryService resultQueryService;
 
     /**
      * 查询某次 Agent Run 的工具执行审计记录。
@@ -126,5 +128,22 @@ public class AgentToolExecutionAuditController {
             @PathVariable("auditId") String auditId,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success(sessionService.getToolExecutionResult(sessionId, runId, auditId), traceId);
+    }
+
+    /**
+     * 批量查询某次 Run 的所有工具执行结果快照。
+     *
+     * <p>该接口面向 Python AI Runtime 的二轮推理准备阶段和前端审计页。相比逐个 auditId 查询，批量接口
+     * 可以避免多工具 Agent 产生 N+1 HTTP 请求，从而降低延迟、连接数和重试复杂度。</p>
+     *
+     * <p>接口仍然只读：不会审批、不会执行工具、不会改变任何状态。调用方应把返回结果作为“当前事实快照”，
+     * 再根据 state 判断是等待审批、等待执行、进入二轮推理，还是提示人工介入。</p>
+     */
+    @GetMapping("/{sessionId}/runs/{runId}/tool-executions/results")
+    public PlatformApiResponse<List<AgentToolExecutionResultView>> listRunToolExecutionResults(
+            @PathVariable("sessionId") String sessionId,
+            @PathVariable("runId") String runId,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(resultQueryService.listRunToolExecutionResults(sessionId, runId), traceId);
     }
 }

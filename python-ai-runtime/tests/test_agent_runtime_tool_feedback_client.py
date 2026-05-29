@@ -102,6 +102,44 @@ class JavaAgentRuntimeToolFeedbackClientTest(unittest.TestCase):
                 tool_call_id="call-error",
             )
 
+    def test_parse_batch_response_maps_audit_ids_back_to_tool_call_ids(self) -> None:
+        payload = {
+            "code": 0,
+            "data": [
+                {
+                    "audit": {
+                        "auditId": "atea-001",
+                        "sessionId": "session-001",
+                        "runId": "run-001",
+                        "toolCode": "datasource.metadata.read",
+                        "state": "SUCCEEDED",
+                        "outputSummary": "工具执行成功，输出字段: tableCount",
+                    },
+                    "output": {"tableCount": 2},
+                },
+                {
+                    "audit": {
+                        "auditId": "atea-002",
+                        "sessionId": "session-001",
+                        "runId": "run-001",
+                        "toolCode": "quality.rule.suggest",
+                        "state": "PLANNED",
+                        "message": "工具计划已生成，等待执行。",
+                    },
+                    "output": {},
+                },
+            ],
+        }
+
+        feedback = JavaAgentRuntimeToolFeedbackClient.parse_platform_batch_response(
+            payload,
+            tool_call_ids_by_audit_id={"atea-001": "call-001", "atea-002": "call-002"},
+        )
+
+        self.assertEqual(("call-001", "call-002"), tuple(item.tool_call_id for item in feedback))
+        self.assertEqual(ToolExecutionFeedbackStatus.SUCCEEDED, feedback[0].status)
+        self.assertEqual(ToolExecutionFeedbackStatus.SKIPPED, feedback[1].status)
+
 
 class JavaAgentRuntimeToolFeedbackProviderTest(unittest.TestCase):
     def test_provider_queries_java_when_control_plane_refs_exist(self) -> None:
@@ -115,10 +153,12 @@ class JavaAgentRuntimeToolFeedbackProviderTest(unittest.TestCase):
 
         self.assertEqual(1, len(feedback_items))
         self.assertEqual(ToolExecutionFeedbackStatus.SUCCEEDED, feedback_items[0].status)
-        self.assertEqual("session-001", fake_client.calls[0]["session_id"])
-        self.assertEqual("run-001", fake_client.calls[0]["run_id"])
-        self.assertEqual("atea-001", fake_client.calls[0]["audit_id"])
-        self.assertEqual("trace-001", fake_client.calls[0]["trace_id"])
+        self.assertEqual(1, len(fake_client.batch_calls))
+        self.assertEqual("session-001", fake_client.batch_calls[0]["session_id"])
+        self.assertEqual("run-001", fake_client.batch_calls[0]["run_id"])
+        self.assertEqual({"atea-001": "call-001"}, fake_client.batch_calls[0]["tool_call_ids_by_audit_id"])
+        self.assertEqual("trace-001", fake_client.batch_calls[0]["trace_id"])
+        self.assertEqual(0, len(fake_client.calls))
 
     def test_provider_falls_back_when_refs_are_missing(self) -> None:
         fake_client = FakeFeedbackClient()
@@ -160,6 +200,30 @@ class JavaAgentRuntimeToolFeedbackProviderTest(unittest.TestCase):
 class FakeFeedbackClient:
     def __init__(self) -> None:
         self.calls = []
+        self.batch_calls = []
+
+    def list_run_tool_execution_feedback(self, **kwargs):
+        self.batch_calls.append(kwargs)
+        return JavaAgentRuntimeToolFeedbackClient.parse_platform_batch_response(
+            {
+                "code": 0,
+                "data": [
+                    {
+                        "audit": {
+                            "auditId": audit_id,
+                            "sessionId": kwargs["session_id"],
+                            "runId": kwargs["run_id"],
+                            "toolCode": "datasource.metadata.read",
+                            "state": "SUCCEEDED",
+                            "outputSummary": "工具执行成功，输出字段: tableCount",
+                        },
+                        "output": {"tableCount": 2},
+                    }
+                    for audit_id in kwargs["tool_call_ids_by_audit_id"]
+                ],
+            },
+            tool_call_ids_by_audit_id=kwargs["tool_call_ids_by_audit_id"],
+        )
 
     def get_tool_execution_feedback(self, **kwargs):
         self.calls.append(kwargs)
