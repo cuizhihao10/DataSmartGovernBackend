@@ -6609,3 +6609,25 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 设计 run 级工具执行策略，而不是贸然自动执行所有 PLANNED 工具。
 2. 补 ToolPlan DAG/依赖边，让批量反馈能按节点、分组和依赖关系表达状态。
 3. 把批量反馈与 runtime-event replay/WebSocket 结合，减少同步轮询。
+
+## 4.41 Java agent-runtime Run 级工具执行策略预检（2026-05-29）
+
+本阶段补齐工具自动执行前的只读 preflight。Java 控制面现在可以按 Run 汇总每个工具的执行策略，明确哪些工具可进入同步自动执行候选，哪些等待审批、参数补全、异步执行器、失败复核或终态阻断。
+
+已完成：
+- 新增 `AgentRunToolExecutionDecision`，把工具审计状态翻译成编排器可理解的下一步决策。
+- 新增 `AgentRunToolExecutionPolicyService`，统一解释 Run 状态、工具状态、执行模式、参数校验、审批要求和幂等性。
+- 新增 `AgentRunToolExecutionPolicyView` 与 `AgentRunToolExecutionPolicyItemView`，返回 Run 级汇总和单工具原因/推荐动作。
+- 新增只读接口 `/tool-executions/execution-policy`，同时支持 `/agent-runtime/...` 与 `/api/agent/...` 双路径。
+- 新增单元测试覆盖同步候选、审批等待、参数缺失、异步工具、非幂等失败和 Run 终态阻断。
+
+产品意义：
+- 避免从“工具计划已生成”直接跳到“全部自动执行”的危险路径，先把自动化边界、人类介入点和失败策略显式化。
+- 前端、Python Runtime 和未来自动执行器可以共用同一个策略结果，减少多端重复写业务 if/else。
+- 这一步让 agent-runtime 更接近商用 Agent 控制面：不是只会调用工具，而是能解释为什么某个工具现在应该执行、等待、重试或阻断。
+
+下一步建议：
+1. 基于 policy 做受控同步自动执行器第一阶段，只执行低风险、只读、参数完整、Run 非终态的 `AUTO_EXECUTABLE` 工具。
+2. 设计 `ASYNC_TASK` 到 task-management/Kafka command 的下发协议，避免长耗时工具占用 HTTP 线程。
+3. 把策略预检接入 Python Runtime 的二轮推理准备阶段，使模型能向用户解释审批、参数和失败阻断原因。
+4. 补 ToolPlan DAG/依赖边，为多工具并发、顺序执行、失败跳过和回滚策略打基础。

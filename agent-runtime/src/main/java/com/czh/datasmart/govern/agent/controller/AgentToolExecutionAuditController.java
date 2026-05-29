@@ -9,9 +9,11 @@ package com.czh.datasmart.govern.agent.controller;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionAuditView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionDecisionRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionResultView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolExecutionPolicyView;
 import com.czh.datasmart.govern.agent.service.AgentSessionService;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionResultQueryService;
+import com.czh.datasmart.govern.agent.service.execution.AgentRunToolExecutionPolicyService;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import lombok.RequiredArgsConstructor;
@@ -39,6 +41,7 @@ public class AgentToolExecutionAuditController {
     private final AgentToolExecutionAuditService auditService;
     private final AgentSessionService sessionService;
     private final AgentToolExecutionResultQueryService resultQueryService;
+    private final AgentRunToolExecutionPolicyService executionPolicyService;
 
     /**
      * 查询某次 Agent Run 的工具执行审计记录。
@@ -54,6 +57,31 @@ public class AgentToolExecutionAuditController {
             @PathVariable("runId") String runId,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success(auditService.listByRun(sessionId, runId), traceId);
+    }
+
+    /**
+     * 查询某次 Agent Run 的工具执行策略预检。
+     *
+     * <p>该接口是“自动执行真实工具”之前的安全观察窗：它只读取当前 Run、工具审计、参数校验和执行模式，
+     * 然后告诉调用方每个工具现在应该自动执行、等待审批、补齐参数、交给异步执行器、等待结果，还是阻断整个 Run。</p>
+     *
+     * <p>为什么单独提供这个路由，而不是让前端或 Python Runtime 自己解析工具审计列表：
+     * 1. 工具审计状态只描述事实，不直接描述下一步策略；
+     * 2. 自动执行、人工审批、失败重试、异步执行等规则应该由 Java 控制面统一解释，避免多端逻辑漂移；
+     * 3. 该接口没有副作用，可以被前端频繁刷新，也可以被未来自动执行器作为执行前只读 preflight；
+     * 4. 后续接入 permission-admin、租户级策略、工具健康度、队列容量后，只需要扩展策略服务，不需要改调用方判断。</p>
+     *
+     * <p>路由含义：
+     * - sessionId：限定 Agent 会话和工作空间，避免跨会话读取策略；
+     * - runId：限定本次编排尝试，避免把历史工具计划误判为当前可执行；
+     * - execution-policy：强调返回的是“策略预检”，不是执行结果，也不会触发工具调用。</p>
+     */
+    @GetMapping("/{sessionId}/runs/{runId}/tool-executions/execution-policy")
+    public PlatformApiResponse<AgentRunToolExecutionPolicyView> getRunToolExecutionPolicy(
+            @PathVariable("sessionId") String sessionId,
+            @PathVariable("runId") String runId,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(executionPolicyService.inspectRunPolicy(sessionId, runId), traceId);
     }
 
     /**
