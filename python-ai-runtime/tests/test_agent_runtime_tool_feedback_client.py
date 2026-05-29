@@ -246,6 +246,8 @@ class JavaAgentRuntimeToolFeedbackProviderTest(unittest.TestCase):
         self.assertEqual(("atea-001",), fake_client.auto_execute_calls[0]["audit_ids"])
         self.assertEqual(2, fake_client.auto_execute_calls[0]["max_executions"])
         self.assertFalse(fake_client.auto_execute_calls[0]["dry_run"])
+        self.assertIsNotNone(provider.last_auto_execution_summary)
+        self.assertEqual(1, provider.last_auto_execution_summary.executed_count)
 
     def test_provider_falls_back_when_refs_are_missing(self) -> None:
         fake_client = FakeFeedbackClient()

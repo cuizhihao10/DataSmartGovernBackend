@@ -6675,3 +6675,25 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 启动 `ASYNC_TASK` 到 task-management/Kafka command 的任务化执行设计。
 3. 补 ToolPlan DAG，避免多工具自动执行缺少依赖与并发控制。
 4. 把自动执行开关升级为租户、项目、工具级策略，而不是长期依赖全局环境变量。
+
+## 4.44 Python Runtime 受控同步自动执行事件化（2026-05-29）
+
+本阶段把 Python 触发 Java `auto-execute-sync` 的批次摘要写入 runtime event。现在二轮事件流可以展示哪些工具被自动执行、哪些跳过、是否 dryRun、批次上限是多少，以及是否存在失败。
+
+已完成：
+- 新增事件类型 `tool_auto_execution_sync_completed`。
+- Provider 保存最近一次 Java 自动执行摘要，Collector 将摘要放入控制面反馈快照。
+- 二轮事件构建器记录自动执行批次事件，并按失败数决定 AUDIT/ERROR 严重级别。
+- 事件只记录动作摘要，不记录工具 output 原文。
+- 补充测试覆盖 Provider 摘要暴露和二轮事件生成。
+
+产品意义：
+- 自动执行从“内部副作用”升级为“可观察事实”，前端和审计台可以解释二轮推理前发生了哪些工具行动。
+- 批次事件为后续 WebSocket replay、审计回放、运营诊断和自动化策略灰度提供基础。
+- 当前仍保持模型上下文安全：事件不进入 role=tool 消息，也不携带 result 原文。
+
+下一步建议：
+1. 启动 `ASYNC_TASK` 任务化执行协议，优先对接 task-management。
+2. 补 ToolPlan DAG/依赖边，支持多工具顺序、并行和失败跳过。
+3. 将 Python runtime event 接入 Java event projection/WebSocket replay。
+4. 将自动执行策略接入 permission-admin 与租户级配置。

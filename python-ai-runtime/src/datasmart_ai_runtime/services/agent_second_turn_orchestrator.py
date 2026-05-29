@@ -142,6 +142,8 @@ class AgentSecondTurnOrchestrator:
             )
 
         events.record_loop_decision(loop_control_decision, control_plane_feedback)
+        if control_plane_feedback.auto_execution_summary is not None:
+            events.record_auto_execution_summary(control_plane_feedback.auto_execution_summary)
         if not (
             loop_control_decision.allowed
             and loop_control_decision.action == AgentLoopControlAction.ALLOW_SECOND_TURN

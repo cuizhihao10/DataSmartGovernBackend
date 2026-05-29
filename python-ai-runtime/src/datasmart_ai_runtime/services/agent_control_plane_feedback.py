@@ -132,6 +132,7 @@ class AgentControlPlaneFeedbackSnapshot:
     status_counts: dict[str, int]
     second_turn_eligible: bool
     recommended_actions: tuple[str, ...]
+    auto_execution_summary: dict[str, Any] | None = None
 
     def to_summary(self) -> dict[str, Any]:
         """转换为 API 层可展示摘要。"""
@@ -143,6 +144,7 @@ class AgentControlPlaneFeedbackSnapshot:
             "statusCounts": dict(self.status_counts),
             "secondTurnEligible": self.second_turn_eligible,
             "recommendedActions": self.recommended_actions,
+            "autoExecutionSummary": self.auto_execution_summary,
             "items": tuple(item.to_summary() for item in self.feedback_items),
         }
 
@@ -174,6 +176,7 @@ class AgentControlPlaneFeedbackCollector:
             return self._empty_snapshot()
 
         feedback_items = self._feedback_provider.feedback_for(tool_calls, plan.tool_plans)
+        auto_execution_summary = self._auto_execution_summary_from_provider()
         item_by_call_id = {
             item.tool_call_id: AgentControlPlaneFeedbackItem(
                 model_tool_call_id=item.tool_call_id,
@@ -216,7 +219,24 @@ class AgentControlPlaneFeedbackCollector:
                 status_counts=status_counts,
                 second_turn_eligible=second_turn_eligible,
             ),
+            auto_execution_summary=auto_execution_summary,
         )
+
+    def _auto_execution_summary_from_provider(self) -> dict[str, Any] | None:
+        """从反馈 Provider 读取最近一次 Java 同步自动执行摘要。
+
+        Collector 不直接依赖 `JavaAgentRuntimeToolFeedbackProvider` 类型，而是通过 duck typing 读取
+        `last_auto_execution_summary`。这样测试 fake provider、未来 Kafka Provider 或 gRPC Provider
+        都可以选择暴露同名属性，而不需要继承某个具体类。
+        """
+
+        summary = getattr(self._feedback_provider, "last_auto_execution_summary", None)
+        if summary is None:
+            return None
+        to_event_summary = getattr(summary, "to_event_summary", None)
+        if callable(to_event_summary):
+            return to_event_summary()
+        return None
 
     @staticmethod
     def _tool_calls_from_plan(plan: AgentPlan) -> tuple[ModelToolCall, ...]:
@@ -319,4 +339,5 @@ class AgentControlPlaneFeedbackCollector:
             status_counts={},
             second_turn_eligible=False,
             recommended_actions=("当前计划没有可映射到 Java auditId 的模型工具调用。",),
+            auto_execution_summary=None,
         )

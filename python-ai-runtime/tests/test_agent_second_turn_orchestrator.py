@@ -119,6 +119,29 @@ class AgentSecondTurnOrchestratorTest(unittest.TestCase):
         self.assertEqual(("call-001",), result.missing_feedback_call_ids)
         self.assertTrue(any(event.event_type == AgentRuntimeEventType.TOOL_RESULT_FEEDBACK_BUILT for event in result.runtime_events))
 
+    def test_records_auto_execution_summary_event_when_snapshot_contains_batch_summary(self) -> None:
+        provider = CapturingProviderRegistry()
+        orchestrator = AgentSecondTurnOrchestrator(provider)
+        snapshot = self._snapshot_with_auto_execution_summary()
+
+        result = orchestrator.run(
+            request=self._request(),
+            plan=self._plan(),
+            control_plane_feedback=snapshot,
+            loop_control_decision=self._allow_decision(),
+        )
+
+        auto_event = next(
+            event
+            for event in result.runtime_events
+            if event.event_type == AgentRuntimeEventType.TOOL_AUTO_EXECUTION_SYNC_COMPLETED
+        )
+        self.assertTrue(result.executed)
+        self.assertEqual(1, auto_event.attributes["executedCount"])
+        self.assertEqual(0, auto_event.attributes["failedCount"])
+        self.assertEqual("EXECUTED", auto_event.attributes["items"][0]["action"])
+        self.assertEqual((6, 7, 8, 9), tuple(event.sequence for event in result.runtime_events))
+
     @staticmethod
     def _request() -> AgentRequest:
         return AgentRequest(
@@ -185,6 +208,37 @@ class AgentSecondTurnOrchestratorTest(unittest.TestCase):
             status_counts={"succeeded": 1},
             second_turn_eligible=True,
             recommended_actions=("允许二轮推理。",),
+        )
+
+    @staticmethod
+    def _snapshot_with_auto_execution_summary() -> AgentControlPlaneFeedbackSnapshot:
+        snapshot = AgentSecondTurnOrchestratorTest._snapshot()
+        return AgentControlPlaneFeedbackSnapshot(
+            expected_tool_call_count=snapshot.expected_tool_call_count,
+            feedback_items=snapshot.feedback_items,
+            missing_tool_call_ids=snapshot.missing_tool_call_ids,
+            status_counts=snapshot.status_counts,
+            second_turn_eligible=snapshot.second_turn_eligible,
+            recommended_actions=snapshot.recommended_actions,
+            auto_execution_summary={
+                "sessionId": "session-001",
+                "runId": "agr-001",
+                "dryRun": False,
+                "requestedLimit": 2,
+                "effectiveLimit": 2,
+                "executedCount": 1,
+                "failedCount": 0,
+                "skippedCount": 0,
+                "items": (
+                    {
+                        "auditId": "atea-001",
+                        "toolCode": "datasource.metadata.read",
+                        "policyDecision": "AUTO_EXECUTABLE",
+                        "action": "EXECUTED",
+                        "reason": "测试自动执行成功。",
+                    },
+                ),
+            },
         )
 
     @staticmethod

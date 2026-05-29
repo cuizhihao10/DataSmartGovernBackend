@@ -60,6 +60,33 @@ class SecondTurnEventBuilder:
             },
         )
 
+    def record_auto_execution_summary(self, summary: dict[str, Any]) -> None:
+        """记录 Java 受控同步自动执行批次摘要。
+
+        该事件用于解释二轮推理前是否发生过自动工具行动。它只记录批次统计、dryRun、limit 和每个工具的
+        action/reason，不记录工具 output 原文，避免 runtime event 成为敏感数据的新扩散面。
+        """
+
+        failed_count = int(summary.get("failedCount") or 0)
+        executed_count = int(summary.get("executedCount") or 0)
+        self._record(
+            AgentRuntimeEventType.TOOL_AUTO_EXECUTION_SYNC_COMPLETED,
+            "sync_auto_execute_java_tools",
+            "已完成 Java 受控同步工具自动执行批次。",
+            severity=AgentRuntimeEventSeverity.ERROR if failed_count > 0 else AgentRuntimeEventSeverity.AUDIT,
+            attributes={
+                "sessionId": summary.get("sessionId"),
+                "runId": summary.get("runId"),
+                "dryRun": bool(summary.get("dryRun")),
+                "requestedLimit": summary.get("requestedLimit"),
+                "effectiveLimit": summary.get("effectiveLimit"),
+                "executedCount": executed_count,
+                "failedCount": failed_count,
+                "skippedCount": int(summary.get("skippedCount") or 0),
+                "items": tuple(summary.get("items") or ()),
+            },
+        )
+
     def record_feedback_built(
         self,
         *,

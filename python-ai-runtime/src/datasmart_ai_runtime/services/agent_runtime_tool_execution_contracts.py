@@ -56,6 +56,25 @@ class AgentRuntimeToolAutoExecutionSummary:
     skipped_count: int
     item_actions: tuple[dict[str, Any], ...]
 
+    def to_event_summary(self) -> dict[str, Any]:
+        """转换为 runtime event 友好的摘要。
+
+        事件流用于前端展示、审计回放和运维排障，不应携带工具 result 原文。
+        因此这里只保留批次统计、dryRun、limit 和每个工具的动作/原因，不包含 Java 返回的结构化 output。
+        """
+
+        return {
+            "sessionId": self.session_id,
+            "runId": self.run_id,
+            "dryRun": self.dry_run,
+            "requestedLimit": self.requested_limit,
+            "effectiveLimit": self.effective_limit,
+            "executedCount": self.executed_count,
+            "failedCount": self.failed_count,
+            "skippedCount": self.skipped_count,
+            "items": self.item_actions,
+        }
+
 
 class AgentRuntimeToolExecutionContractError(RuntimeError):
     """Java 工具执行控制契约解析错误。"""

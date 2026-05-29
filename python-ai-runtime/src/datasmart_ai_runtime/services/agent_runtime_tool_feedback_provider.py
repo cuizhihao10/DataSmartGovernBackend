@@ -12,6 +12,9 @@ from datasmart_ai_runtime.services.agent_runtime_tool_feedback_client import (
     AgentRuntimeToolFeedbackClient,
     AgentRuntimeToolFeedbackClientError,
 )
+from datasmart_ai_runtime.services.agent_runtime_tool_execution_contracts import (
+    AgentRuntimeToolAutoExecutionSummary,
+)
 from datasmart_ai_runtime.services.model_tool_feedback_provider import (
     ModelToolExecutionFeedbackProvider,
     SimulatedModelToolExecutionFeedbackProvider,
@@ -50,6 +53,7 @@ class JavaAgentRuntimeToolFeedbackProvider:
         self._auto_execute_sync_enabled = auto_execute_sync_enabled
         self._auto_execute_dry_run = auto_execute_dry_run
         self._max_auto_executions = max_auto_executions
+        self._last_auto_execution_summary: AgentRuntimeToolAutoExecutionSummary | None = None
 
     def feedback_for(
         self,
@@ -58,6 +62,7 @@ class JavaAgentRuntimeToolFeedbackProvider:
     ) -> tuple[ToolExecutionFeedback, ...]:
         """优先读取 Java 真实反馈，无法读取时回退模拟反馈。"""
 
+        self._last_auto_execution_summary = None
         plan_by_call_id = {
             str(plan.governance_hints.get("modelToolCallId")): plan
             for plan in tool_plans
@@ -75,6 +80,16 @@ class JavaAgentRuntimeToolFeedbackProvider:
                 continue
             feedback_items.append(self._feedback_for_call(tool_call, plan))
         return tuple(feedback_items)
+
+    @property
+    def last_auto_execution_summary(self) -> AgentRuntimeToolAutoExecutionSummary | None:
+        """返回最近一次 Provider 触发的 Java 同步自动执行摘要。
+
+        该属性服务 runtime event 和调试面板，不参与模型上下文构造。Provider 每次 `feedback_for(...)`
+        开始时都会清空它，避免上一次请求的自动执行摘要被错误带到下一次 Agent loop。
+        """
+
+        return self._last_auto_execution_summary
 
     def _try_auto_execute_sync_candidates(self, refs_by_call_id: dict[str, dict[str, str]]) -> None:
         """在批量结果查询前尝试触发 Java 受控同步自动执行。
@@ -105,7 +120,7 @@ class JavaAgentRuntimeToolFeedbackProvider:
             selected = tuple(audit_id for audit_id in candidate_audit_ids if audit_id in known_audit_ids)
             if not selected:
                 return
-            execute_method(
+            self._last_auto_execution_summary = execute_method(
                 session_id=first_refs["session_id"],
                 run_id=first_refs["run_id"],
                 audit_ids=selected,
