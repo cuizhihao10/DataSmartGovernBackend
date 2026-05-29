@@ -72,6 +72,63 @@ class ModelToolResultFeedbackTest(unittest.TestCase):
         self.assertTrue(bundle.resource_resolution_summaries[0]["modelContextAllowed"])
         self.assertEqual("***MASKED***", payload["result"]["datasourceId"])
         self.assertEqual(3, payload["result"]["ruleCount"])
+        self.assertEqual("full_result", payload["resultFilterReport"]["mode"])
+        self.assertIn("datasourceId", payload["resultFilterReport"]["maskedPaths"])
+        self.assertEqual(1, len(bundle.result_filter_summaries))
+        self.assertIn("datasourceId", bundle.result_filter_summaries[0]["maskedPaths"])
+
+    def test_filters_result_by_include_exclude_and_sensitive_paths(self) -> None:
+        """字段级过滤应允许安全路径进入模型，并遮蔽敏感嵌套路径。"""
+
+        tool_call = ModelToolCall(
+            call_id="call_filter_paths",
+            type="function",
+            name="datasource.metadata.read",
+            arguments="{}",
+        )
+        bundle = ModelToolResultFeedbackBuilder().build(
+            tool_calls=(tool_call,),
+            feedback_items=(
+                ToolExecutionFeedback(
+                    tool_call_id="call_filter_paths",
+                    tool_name="datasource.metadata.read",
+                    status=ToolExecutionFeedbackStatus.SUCCEEDED,
+                    summary="已读取数据源元数据摘要。",
+                    result={
+                        "metadata": {
+                            "tableCount": 2,
+                            "connectionString": "jdbc:mysql://secret-host:3306/prod",
+                        },
+                        "tables": (
+                            {"name": "user_profile", "sampleValue": "13800000000", "rowCount": 100},
+                            {"name": "order_info", "sampleValue": "order-secret", "rowCount": 200},
+                        ),
+                        "rawSql": "select * from user_profile",
+                    },
+                    output_ref="agent-runtime://tool-results/call_filter_paths",
+                    output_workspace_key="tenant:10:project:20",
+                    output_context_policy="model_summary_allowed",
+                    model_context_include_paths=(
+                        "metadata.tableCount",
+                        "tables[].name",
+                        "tables[].sampleValue",
+                    ),
+                    model_context_exclude_paths=("rawSql",),
+                    sensitive_result_paths=("tables[].sampleValue",),
+                ),
+            ),
+            current_workspace_key="tenant:10:project:20",
+        )
+
+        payload = json.loads(bundle.messages[-1].content)
+        self.assertEqual({"tableCount": 2}, payload["result"]["metadata"])
+        self.assertNotIn("connectionString", payload["result"]["metadata"])
+        self.assertEqual("user_profile", payload["result"]["tables"][0]["name"])
+        self.assertEqual("***MASKED***", payload["result"]["tables"][0]["sampleValue"])
+        self.assertNotIn("rowCount", payload["result"]["tables"][0])
+        self.assertNotIn("rawSql", payload["result"])
+        self.assertEqual("include_paths", payload["resultFilterReport"]["mode"])
+        self.assertIn("tables[].sampleValue", payload["resultFilterReport"]["maskedPaths"])
 
     def test_blocks_audit_only_output_result_from_model_context(self) -> None:
         """审计专用输出引用不应把结构化 result 放入下一轮模型上下文。"""
@@ -108,6 +165,7 @@ class ModelToolResultFeedbackTest(unittest.TestCase):
         self.assertFalse(payload["outputReferenceResolution"]["modelContextAllowed"])
         self.assertEqual("allowed", payload["outputReferenceResolution"]["decision"])
         self.assertEqual("audit_only", payload["outputReference"]["contextPolicy"])
+        self.assertEqual("resource_not_allowed_for_model", payload["resultFilterReport"]["mode"])
         self.assertEqual(1, len(bundle.resource_resolution_summaries))
         self.assertFalse(bundle.resource_resolution_summaries[0]["modelContextAllowed"])
         self.assertEqual("agent_runtime", bundle.resource_resolution_summaries[0]["referenceKind"])
@@ -143,6 +201,7 @@ class ModelToolResultFeedbackTest(unittest.TestCase):
         self.assertEqual({}, payload["result"])
         self.assertEqual("blocked", payload["outputReferenceResolution"]["decision"])
         self.assertIn("WORKSPACE_KEY_MISMATCH", payload["outputReferenceResolution"]["issues"])
+        self.assertEqual("resource_reference_blocked", payload["resultFilterReport"]["mode"])
         self.assertEqual("blocked", bundle.resource_resolution_summaries[0]["decision"])
         self.assertIn("WORKSPACE_KEY_MISMATCH", bundle.resource_resolution_summaries[0]["issues"])
 

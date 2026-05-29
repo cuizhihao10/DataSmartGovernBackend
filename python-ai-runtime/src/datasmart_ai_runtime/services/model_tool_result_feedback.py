@@ -17,6 +17,12 @@ from typing import Any, Iterable
 
 from datasmart_ai_runtime.domain.contracts import ModelMessage, ModelToolCall
 from datasmart_ai_runtime.domain.resource_reference import AgentResourceReference
+from datasmart_ai_runtime.services.model_result_context_filter import (
+    ModelResultContextFilter,
+    ModelResultContextFilterPolicy,
+    ModelResultContextFilterReport,
+    ModelResultContextFilterResult,
+)
 from datasmart_ai_runtime.services.resource_reference_resolver import (
     AgentResourceReferenceResolution,
     AgentResourceReferenceResolver,
@@ -55,7 +61,11 @@ class ToolExecutionFeedback:
     - `audit_id/run_id/output_ref`：Java 控制面事实引用，让模型和审计系统知道结果来自哪次受控执行；
     - `output_workspace_key`：输出资源所属工作空间。二轮推理时会和当前 workspace 做一致性校验；
     - `output_context_policy`：输出资源是否允许进入模型上下文。默认 `audit_only` 是安全默认值；
-    - `sensitive_fields`：标记 result 中哪些字段不应原样进入模型；构建器会把这些字段脱敏。
+    - `sensitive_fields`：历史顶层敏感字段配置，等价于顶层路径，例如 `datasourceId`；
+    - `model_context_include_paths`：允许进入模型的字段路径白名单，例如 `metadata.tableCount`；
+    - `model_context_exclude_paths`：明确禁止进入模型的字段路径黑名单；
+    - `sensitive_result_paths`：需要保留字段名但遮蔽值的字段路径，例如 `tables[].sampleValue`；
+    - `model_context_max_*`：模型上下文大小保护，避免大文本、长列表或深层嵌套撑爆 token。
     """
 
     tool_call_id: str
@@ -71,6 +81,12 @@ class ToolExecutionFeedback:
     output_workspace_key: str | None = None
     output_context_policy: str = "audit_only"
     sensitive_fields: tuple[str, ...] = ()
+    model_context_include_paths: tuple[str, ...] = ()
+    model_context_exclude_paths: tuple[str, ...] = ()
+    sensitive_result_paths: tuple[str, ...] = ()
+    model_context_max_string_length: int = 512
+    model_context_max_list_items: int = 20
+    model_context_max_depth: int = 8
 
 
 @dataclass(frozen=True)
@@ -83,12 +99,14 @@ class ToolExecutionFeedbackMessageBundle:
     OpenAI-compatible 网关会拒绝下一轮请求，因此这里提前暴露缺口。
     `resource_resolution_summaries` 是资源准入诊断摘要。它只包含治理决策、问题码、引用类型和
     resolverHint，不包含工具结果原文，因此可以安全写入 runtime event、前端诊断面板和审计回放。
+    `result_filter_summaries` 是字段级上下文过滤摘要，用来解释哪些路径被允许、遮蔽、删除或截断。
     """
 
     messages: tuple[ModelMessage, ...] = ()
     missing_feedback_call_ids: tuple[str, ...] = ()
     extra_feedback_call_ids: tuple[str, ...] = ()
     resource_resolution_summaries: tuple[dict[str, Any], ...] = ()
+    result_filter_summaries: tuple[dict[str, Any], ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -108,7 +126,11 @@ class ModelToolResultFeedbackBuilder:
 
     MASKED_VALUE = "***MASKED***"
 
-    def __init__(self, resource_resolver: AgentResourceReferenceResolver | None = None) -> None:
+    def __init__(
+        self,
+        resource_resolver: AgentResourceReferenceResolver | None = None,
+        result_context_filter: ModelResultContextFilter | None = None,
+    ) -> None:
         """创建工具结果回填构建器。
 
         `resource_resolver` 是可注入依赖，默认使用轻量治理解析器。这里不直接读取 MinIO、Java 审计表
@@ -119,6 +141,7 @@ class ModelToolResultFeedbackBuilder:
         """
 
         self._resource_resolver = resource_resolver or AgentResourceReferenceResolver()
+        self._result_context_filter = result_context_filter or ModelResultContextFilter()
 
     def build(
         self,
@@ -147,25 +170,29 @@ class ModelToolResultFeedbackBuilder:
 
         messages: list[ModelMessage] = []
         resource_resolution_summaries: list[dict[str, Any]] = []
+        result_filter_summaries: list[dict[str, Any]] = []
         if tool_calls:
             messages.append(ModelMessage(role="assistant", content="", tool_calls=tool_calls))
         for call_id in expected_ids:
             feedback = feedback_by_id.get(call_id)
             if feedback is None:
                 continue
-            tool_message, resolution_summary = self._to_tool_message(
+            tool_message, resolution_summary, result_filter_summary = self._to_tool_message(
                 feedback,
                 current_workspace_key=current_workspace_key,
             )
             messages.append(tool_message)
             if resolution_summary:
                 resource_resolution_summaries.append(resolution_summary)
+            if result_filter_summary:
+                result_filter_summaries.append(result_filter_summary)
 
         return ToolExecutionFeedbackMessageBundle(
             messages=tuple(messages),
             missing_feedback_call_ids=tuple(call_id for call_id in expected_ids if call_id not in feedback_id_set),
             extra_feedback_call_ids=tuple(sorted(feedback_id_set - expected_id_set)),
             resource_resolution_summaries=tuple(resource_resolution_summaries),
+            result_filter_summaries=tuple(result_filter_summaries),
         )
 
     def _to_tool_message(
@@ -173,7 +200,7 @@ class ModelToolResultFeedbackBuilder:
         feedback: ToolExecutionFeedback,
         *,
         current_workspace_key: str | None,
-    ) -> tuple[ModelMessage, dict[str, Any] | None]:
+    ) -> tuple[ModelMessage, dict[str, Any] | None, dict[str, Any] | None]:
         """把单个执行反馈转换为 role=tool 的消息。
 
         这一步是模型上下文安全的关键闸口。Java 控制面返回的 `result` 即使已经是摘要，也不能脱离资源
@@ -185,6 +212,11 @@ class ModelToolResultFeedbackBuilder:
         resolution = self._resource_resolution(feedback, current_workspace_key=current_workspace_key)
         resolution_summary = self._resource_resolution_event_summary(feedback, resolution)
         model_context_allowed = resolution.model_context_allowed if resolution else True
+        filtered_result = (
+            self._filter_result(feedback)
+            if model_context_allowed
+            else self._resource_blocked_filter_result(feedback, resolution)
+        )
 
         payload = {
             "toolName": feedback.tool_name,
@@ -197,7 +229,8 @@ class ModelToolResultFeedbackBuilder:
             "outputReferenceResolution": resolution.to_summary() if resolution else None,
             "errorCode": feedback.error_code,
             "errorMessage": feedback.error_message,
-            "result": self._mask_result(feedback.result, feedback.sensitive_fields) if model_context_allowed else {},
+            "result": filtered_result.result,
+            "resultFilterReport": filtered_result.report.to_summary(),
         }
         return (
             ModelMessage(
@@ -207,25 +240,48 @@ class ModelToolResultFeedbackBuilder:
                 name=feedback.tool_name,
             ),
             resolution_summary,
+            self._result_filter_event_summary(feedback, filtered_result.report),
         )
 
-    def _mask_result(self, result: dict[str, Any], sensitive_fields: tuple[str, ...]) -> dict[str, Any]:
-        """对允许回填给模型的结果摘要做字段级脱敏。
+    def _filter_result(self, feedback: ToolExecutionFeedback) -> ModelResultContextFilterResult:
+        """对允许进入模型上下文的工具结果做字段级过滤。
 
-        这里按顶层字段名脱敏，是当前最小可行策略。真实生产环境后续应升级为：
-        - 工具 schema 中的 `sensitive=true`；
-        - permission-admin 字段级策略；
-        - JSONPath 级别脱敏；
-        - 大结果只回填对象存储引用和摘要。
+        资源准入回答的是“这个资源整体是否可以进入模型”，字段过滤回答的是“资源中的哪些字段可以进入
+        模型”。两者叠加后，才能从粗粒度安全门进化到更接近商业化 Agent 的 context engineering。
         """
 
-        if not result:
-            return {}
-        sensitive = {field.strip() for field in sensitive_fields if field.strip()}
-        masked: dict[str, Any] = {}
-        for key, value in result.items():
-            masked[key] = self.MASKED_VALUE if key in sensitive else value
-        return masked
+        policy = ModelResultContextFilterPolicy(
+            include_paths=self._normalized_paths(feedback.model_context_include_paths),
+            exclude_paths=self._normalized_paths(feedback.model_context_exclude_paths),
+            sensitive_paths=self._normalized_paths(feedback.sensitive_fields + feedback.sensitive_result_paths),
+            max_string_length=max(1, feedback.model_context_max_string_length),
+            max_list_items=max(1, feedback.model_context_max_list_items),
+            max_depth=max(1, feedback.model_context_max_depth),
+        )
+        return self._result_context_filter.filter(feedback.result, policy)
+
+    @staticmethod
+    def _resource_blocked_filter_result(
+        feedback: ToolExecutionFeedback,
+        resolution: AgentResourceReferenceResolution | None,
+    ) -> ModelResultContextFilterResult:
+        """构造资源准入未通过时的字段过滤报告。
+
+        此时字段过滤并没有真正执行，因为资源级策略已经禁止结构化 result 进入模型。仍然返回报告，是为了
+        让前端和审计台能区分“字段策略裁剪”与“资源策略阻断”。
+        """
+
+        reason = "resource_not_allowed_for_model"
+        if resolution is not None and resolution.decision.value == "blocked":
+            reason = "resource_reference_blocked"
+        report = ModelResultContextFilterReport(
+            mode=reason,
+            include_paths=feedback.model_context_include_paths,
+            exclude_paths=feedback.model_context_exclude_paths,
+            sensitive_paths=feedback.sensitive_fields + feedback.sensitive_result_paths,
+            output_top_level_keys=(),
+        )
+        return ModelResultContextFilterResult(result={}, report=report)
 
     def _resource_resolution(
         self,
@@ -294,3 +350,40 @@ class ModelToolResultFeedbackBuilder:
             "workspaceKey": reference.workspace_key,
             "contextPolicy": reference.context_policy,
         }
+
+    @staticmethod
+    def _result_filter_event_summary(
+        feedback: ToolExecutionFeedback,
+        report: ModelResultContextFilterReport,
+    ) -> dict[str, Any]:
+        """生成适合 runtime event 的字段级过滤摘要。
+
+        该摘要不包含过滤后的 result，只包含路径和动作统计，便于前端解释哪些字段被遮蔽、删除或截断。
+        """
+
+        return {
+            "toolCallId": feedback.tool_call_id,
+            "toolName": feedback.tool_name,
+            "mode": report.mode,
+            "includePaths": report.include_paths,
+            "excludePaths": report.exclude_paths,
+            "sensitivePaths": report.sensitive_paths,
+            "missingPaths": report.missing_paths,
+            "maskedPaths": report.masked_paths,
+            "removedPaths": report.removed_paths,
+            "truncatedPaths": report.truncated_paths,
+            "outputTopLevelKeys": report.output_top_level_keys,
+        }
+
+    @staticmethod
+    def _normalized_paths(paths: tuple[str, ...]) -> tuple[str, ...]:
+        """清理空白路径并保持顺序去重。"""
+
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for path in paths:
+            text = str(path).strip()
+            if text and text not in seen:
+                normalized.append(text)
+                seen.add(text)
+        return tuple(normalized)

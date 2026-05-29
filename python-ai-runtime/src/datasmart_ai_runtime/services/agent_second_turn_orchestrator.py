@@ -177,6 +177,7 @@ class AgentSecondTurnOrchestrator:
             extra_feedback_call_ids=feedback_bundle.extra_feedback_call_ids,
             complete=feedback_bundle.complete,
             resource_resolution_summaries=feedback_bundle.resource_resolution_summaries,
+            result_filter_summaries=feedback_bundle.result_filter_summaries,
         )
         if not feedback_bundle.complete or not feedback_bundle.messages:
             return self._skipped(

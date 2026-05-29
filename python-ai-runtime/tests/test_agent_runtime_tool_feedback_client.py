@@ -33,7 +33,14 @@ class JavaAgentRuntimeToolFeedbackClientTest(unittest.TestCase):
                     "toolCode": "datasource.metadata.read",
                     "state": "SUCCEEDED",
                     "outputSummary": "工具执行成功，输出字段: datasourceId,tableCount",
-                    "governanceHints": {"sensitiveFields": ["datasourceId"]},
+                    "governanceHints": {
+                        "sensitiveFields": ["datasourceId"],
+                        "outputWorkspaceKey": "tenant:10:project:20",
+                        "outputContextPolicy": "model_summary_allowed",
+                        "modelContextIncludePaths": ["tableCount", "columns[].name"],
+                        "modelContextExcludePaths": ["debugPayload"],
+                        "sensitiveResultPaths": ["columns[].sampleValue"],
+                    },
                 },
                 "output": {"datasourceId": 1001, "tableCount": 8},
             },
@@ -49,6 +56,11 @@ class JavaAgentRuntimeToolFeedbackClientTest(unittest.TestCase):
         self.assertEqual(ToolExecutionFeedbackStatus.SUCCEEDED, feedback.status)
         self.assertEqual({"datasourceId": 1001, "tableCount": 8}, feedback.result)
         self.assertEqual(("datasourceId",), feedback.sensitive_fields)
+        self.assertEqual("tenant:10:project:20", feedback.output_workspace_key)
+        self.assertEqual("model_summary_allowed", feedback.output_context_policy)
+        self.assertEqual(("tableCount", "columns[].name"), feedback.model_context_include_paths)
+        self.assertEqual(("debugPayload",), feedback.model_context_exclude_paths)
+        self.assertEqual(("columns[].sampleValue",), feedback.sensitive_result_paths)
         self.assertEqual("atea-001", feedback.audit_id)
         self.assertEqual("run-001", feedback.run_id)
         self.assertEqual(

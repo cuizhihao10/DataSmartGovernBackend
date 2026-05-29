@@ -155,6 +155,8 @@ class JavaAgentRuntimeToolFeedbackClient:
         error_code = audit.get("errorCode")
         output_ref = cls._build_output_ref(audit)
         sensitive_fields = cls._sensitive_fields_from_audit(audit)
+        output_workspace_key = cls._governance_text(audit, "outputWorkspaceKey", "workspaceKey", "workspace_key")
+        output_context_policy = cls._governance_text(audit, "outputContextPolicy", "contextPolicy", "context_policy") or "audit_only"
         result = output if status == ToolExecutionFeedbackStatus.SUCCEEDED else cls._non_success_result(audit, state)
         return ToolExecutionFeedback(
             tool_call_id=tool_call_id,
@@ -165,9 +167,22 @@ class JavaAgentRuntimeToolFeedbackClient:
             audit_id=audit_id or None,
             run_id=run_id or None,
             output_ref=output_ref,
+            output_workspace_key=output_workspace_key,
+            output_context_policy=output_context_policy,
             error_code=str(error_code) if error_code else None,
             error_message=str(audit.get("message") or "") if status == ToolExecutionFeedbackStatus.FAILED else None,
             sensitive_fields=sensitive_fields,
+            model_context_include_paths=cls._governance_tuple(
+                audit,
+                "modelContextIncludePaths",
+                "model_context_include_paths",
+            ),
+            model_context_exclude_paths=cls._governance_tuple(
+                audit,
+                "modelContextExcludePaths",
+                "model_context_exclude_paths",
+            ),
+            sensitive_result_paths=cls._governance_tuple(audit, "sensitiveResultPaths", "sensitive_result_paths"),
         )
 
     @staticmethod
@@ -213,13 +228,36 @@ class JavaAgentRuntimeToolFeedbackClient:
     def _sensitive_fields_from_audit(audit: dict[str, Any]) -> tuple[str, ...]:
         """从 Java governanceHints 中读取敏感字段声明。"""
 
+        return JavaAgentRuntimeToolFeedbackClient._governance_tuple(audit, "sensitiveFields", "sensitive_fields")
+
+    @staticmethod
+    def _governance_text(audit: dict[str, Any], *keys: str) -> str | None:
+        """从 Java governanceHints 中读取单个文本配置。"""
+
+        hints = audit.get("governanceHints") or {}
+        if not isinstance(hints, dict):
+            return None
+        for key in keys:
+            value = hints.get(key)
+            if value is not None and str(value).strip():
+                return str(value).strip()
+        return None
+
+    @staticmethod
+    def _governance_tuple(audit: dict[str, Any], *keys: str) -> tuple[str, ...]:
+        """从 Java governanceHints 中读取路径列表配置。"""
+
         hints = audit.get("governanceHints") or {}
         if not isinstance(hints, dict):
             return ()
-        raw_fields = hints.get("sensitiveFields") or ()
-        if isinstance(raw_fields, str):
-            return (raw_fields,)
-        return tuple(str(item) for item in raw_fields)
+        for key in keys:
+            raw_value = hints.get(key)
+            if raw_value is None:
+                continue
+            if isinstance(raw_value, str):
+                return (raw_value,)
+            return tuple(str(item) for item in raw_value if str(item).strip())
+        return ()
 
     @staticmethod
     def _non_success_result(audit: dict[str, Any], state: str) -> dict[str, Any]:

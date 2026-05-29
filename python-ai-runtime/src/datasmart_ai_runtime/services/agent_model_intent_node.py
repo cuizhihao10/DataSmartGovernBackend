@@ -314,6 +314,17 @@ class AgentModelIntentNode:
                     feedback_bundle.resource_resolution_summaries
                 ),
                 "resourceResolutions": feedback_bundle.resource_resolution_summaries,
+                "resultFilterCount": len(feedback_bundle.result_filter_summaries),
+                "resultFilterMaskedCount": self._result_filter_path_count(
+                    feedback_bundle.result_filter_summaries, "maskedPaths"
+                ),
+                "resultFilterRemovedCount": self._result_filter_path_count(
+                    feedback_bundle.result_filter_summaries, "removedPaths"
+                ),
+                "resultFilterTruncatedCount": self._result_filter_path_count(
+                    feedback_bundle.result_filter_summaries, "truncatedPaths"
+                ),
+                "resultFilters": feedback_bundle.result_filter_summaries,
             },
         )
         if not feedback_bundle.complete or not feedback_bundle.messages:
@@ -360,6 +371,12 @@ class AgentModelIntentNode:
         """
 
         return sum(1 for item in summaries if not item.get("modelContextAllowed"))
+
+    @staticmethod
+    def _result_filter_path_count(summaries: tuple[dict[str, object], ...], key: str) -> int:
+        """统计字段级过滤报告中某类路径的数量。"""
+
+        return sum(len(item.get(key) or ()) for item in summaries)
 
     @staticmethod
     def _workspace_key_from_tool_plans(tool_plans: tuple[ToolPlan, ...]) -> str | None:

@@ -69,12 +69,14 @@ class SecondTurnEventBuilder:
         extra_feedback_call_ids: tuple[str, ...],
         complete: bool,
         resource_resolution_summaries: tuple[dict[str, Any], ...] = (),
+        result_filter_summaries: tuple[dict[str, Any], ...] = (),
     ) -> None:
         """记录工具结果消息构建事件。
 
         `resource_resolution_summaries` 用来解释工具结果资源是否进入模型上下文。它只包含资源类型、
         URI、workspace、contextPolicy、decision 和 issue code，不包含工具 result 原文。这样前端和审计
         台可以展示“为什么 result 被裁剪”，同时不会把敏感工具输出扩散到事件流。
+        `result_filter_summaries` 用来解释字段级上下文过滤，记录哪些路径被遮蔽、删除、截断或缺失。
         """
 
         self._record(
@@ -92,6 +94,11 @@ class SecondTurnEventBuilder:
                 "resourceResolutionBlockedCount": self._resource_blocked_count(resource_resolution_summaries),
                 "resourceResolutionModelBlockedCount": self._resource_model_blocked_count(resource_resolution_summaries),
                 "resourceResolutions": resource_resolution_summaries,
+                "resultFilterCount": len(result_filter_summaries),
+                "resultFilterMaskedCount": self._result_filter_path_count(result_filter_summaries, "maskedPaths"),
+                "resultFilterRemovedCount": self._result_filter_path_count(result_filter_summaries, "removedPaths"),
+                "resultFilterTruncatedCount": self._result_filter_path_count(result_filter_summaries, "truncatedPaths"),
+                "resultFilters": result_filter_summaries,
             },
         )
 
@@ -200,3 +207,9 @@ class SecondTurnEventBuilder:
         """统计资源可审计/可下载但不允许进入模型上下文的数量。"""
 
         return sum(1 for item in summaries if not item.get("modelContextAllowed"))
+
+    @staticmethod
+    def _result_filter_path_count(summaries: tuple[dict[str, Any], ...], key: str) -> int:
+        """统计字段级过滤报告中某类路径的数量。"""
+
+        return sum(len(item.get(key) or ()) for item in summaries)

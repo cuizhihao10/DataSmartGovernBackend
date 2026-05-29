@@ -100,7 +100,22 @@ class SimulatedModelToolExecutionFeedbackProvider:
             output_ref=f"agent-runtime://tool-results/{tool_call.call_id}",
             output_workspace_key=self._workspace_key(plan),
             output_context_policy="model_summary_allowed",
-            sensitive_fields=tuple(plan.governance_hints.get("sensitiveFields") or ()),
+            sensitive_fields=self._tuple_hint(plan, "sensitiveFields", "sensitive_fields"),
+            model_context_include_paths=self._tuple_hint(
+                plan,
+                "modelContextIncludePaths",
+                "model_context_include_paths",
+            ),
+            model_context_exclude_paths=self._tuple_hint(
+                plan,
+                "modelContextExcludePaths",
+                "model_context_exclude_paths",
+            ),
+            sensitive_result_paths=self._tuple_hint(
+                plan,
+                "sensitiveResultPaths",
+                "sensitive_result_paths",
+            ),
         )
 
     def _waiting_approval_feedback(self, tool_call: ModelToolCall, plan: ToolPlan) -> ToolExecutionFeedback:
@@ -119,7 +134,10 @@ class SimulatedModelToolExecutionFeedbackProvider:
             output_ref=f"agent-runtime://waiting-approval/{tool_call.call_id}",
             output_workspace_key=self._workspace_key(plan),
             output_context_policy="audit_only",
-            sensitive_fields=tuple(plan.governance_hints.get("sensitiveFields") or ()),
+            sensitive_fields=self._tuple_hint(plan, "sensitiveFields", "sensitive_fields"),
+            model_context_include_paths=self._tuple_hint(plan, "modelContextIncludePaths", "model_context_include_paths"),
+            model_context_exclude_paths=self._tuple_hint(plan, "modelContextExcludePaths", "model_context_exclude_paths"),
+            sensitive_result_paths=self._tuple_hint(plan, "sensitiveResultPaths", "sensitive_result_paths"),
         )
 
     def _parameter_rejected_feedback(self, tool_call: ModelToolCall, plan: ToolPlan) -> ToolExecutionFeedback:
@@ -139,7 +157,10 @@ class SimulatedModelToolExecutionFeedbackProvider:
             output_ref=f"agent-runtime://rejected/{tool_call.call_id}",
             output_workspace_key=self._workspace_key(plan),
             output_context_policy="audit_only",
-            sensitive_fields=tuple(plan.governance_hints.get("sensitiveFields") or ()),
+            sensitive_fields=self._tuple_hint(plan, "sensitiveFields", "sensitive_fields"),
+            model_context_include_paths=self._tuple_hint(plan, "modelContextIncludePaths", "model_context_include_paths"),
+            model_context_exclude_paths=self._tuple_hint(plan, "modelContextExcludePaths", "model_context_exclude_paths"),
+            sensitive_result_paths=self._tuple_hint(plan, "sensitiveResultPaths", "sensitive_result_paths"),
         )
 
     @staticmethod
@@ -152,3 +173,16 @@ class SimulatedModelToolExecutionFeedbackProvider:
 
         value = plan.governance_hints.get("workspaceKey")
         return str(value).strip() if value is not None and str(value).strip() else None
+
+    @staticmethod
+    def _tuple_hint(plan: ToolPlan, *keys: str) -> tuple[str, ...]:
+        """按多个兼容字段名读取路径列表治理提示。"""
+
+        for key in keys:
+            value = plan.governance_hints.get(key)
+            if value is None:
+                continue
+            if isinstance(value, str):
+                return (value,)
+            return tuple(str(item) for item in value if str(item).strip())
+        return ()

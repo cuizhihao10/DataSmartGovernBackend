@@ -64,6 +64,8 @@ class AgentSecondTurnOrchestratorTest(unittest.TestCase):
         self.assertEqual(1, feedback_event.attributes["resourceResolutionModelBlockedCount"])
         self.assertEqual("agent_runtime", feedback_event.attributes["resourceResolutions"][0]["referenceKind"])
         self.assertEqual("audit_only", feedback_event.attributes["resourceResolutions"][0]["contextPolicy"])
+        self.assertEqual(1, feedback_event.attributes["resultFilterCount"])
+        self.assertEqual("resource_not_allowed_for_model", feedback_event.attributes["resultFilters"][0]["mode"])
         self.assertEqual((6, 7, 8), tuple(event.sequence for event in result.runtime_events))
 
     def test_skips_without_calling_model_when_policy_blocks(self) -> None:

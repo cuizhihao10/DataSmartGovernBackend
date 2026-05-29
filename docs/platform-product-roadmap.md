@@ -6539,3 +6539,25 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 补字段级/JSONPath 级上下文过滤。
 2. Java 结果查询 API 返回 workspace/contextPolicy/outputReference。
 3. 为 WebSocket/Kafka replay 设计资源准入事件和 URI 脱敏规则。
+
+## 4.37 AI Runtime 工具结果字段级模型上下文过滤（2026-05-29）
+
+本阶段把工具结果上下文治理从资源级推进到字段级。现在工具 result 可以按路径白名单、黑名单、敏感遮蔽和大小限制进入模型，而不是只能整体放行或整体置空。
+
+已完成：
+- 新增 `ModelResultContextFilter`，支持顶层字段、点号嵌套路径和 `tables[].name` 这类列表通配路径。
+- `ToolExecutionFeedback` 新增 include/exclude/sensitive 路径和字符串、列表、深度限制配置。
+- `ModelToolResultFeedbackBuilder` 在资源准入通过后执行字段级过滤，role=tool payload 新增 `resultFilterReport`。
+- `TOOL_RESULT_FEEDBACK_BUILT` 事件新增字段级过滤统计与 `resultFilters` 诊断摘要。
+- 模拟反馈、控制面反馈对象和 Java 工具反馈客户端都预留字段级策略透传。
+- 新增/扩展测试覆盖路径选择、敏感遮蔽、黑名单删除、大小截断、事件诊断和 Java governanceHints 映射。
+
+产品意义：
+- 模型可以看到安全摘要字段，例如表数量、字段名、规则数量，而不会看到样本值、连接串、原始 SQL 或过长列表。
+- 字段级报告让前端和审计台能解释“哪些字段被遮蔽/删除/截断”，提升生产排障和合规审计可解释性。
+- 当前保持轻量路径子集，避免过早引入复杂 JSONPath 依赖，后续可由 permission-admin 和数据分级分类生成更完整策略。
+
+下一步：
+1. Java 结果查询 API 返回字段级上下文策略。
+2. 策略来源接入工具 schema、permission-admin 字段权限和数据分级分类。
+3. 资源/字段过滤事件接入 WebSocket/Kafka replay，并补 URI/path 脱敏规则。

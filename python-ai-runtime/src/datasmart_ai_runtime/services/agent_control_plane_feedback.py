@@ -39,6 +39,7 @@ class AgentControlPlaneFeedbackItem:
     - `status`：工具结果状态，来源于 Java feedback Provider，可能是成功、失败、等待审批或跳过；
     - `audit_id/run_id/output_ref`：Java 控制面事实引用，用于前端跳转、审计回放和后续结果查询；
     - `output_workspace_key/output_context_policy`：输出资源进入模型前的工作空间和上下文准入策略；
+    - `model_context_*_paths`：字段级上下文过滤策略，决定 result 中哪些字段进入模型、删除或遮蔽；
     - `summary`：可直接展示给用户或运维人员的中文状态摘要；
     - `error_code`：失败或拒绝时的稳定错误码，便于后续告警、重试策略和产品提示区分原因。
     """
@@ -56,6 +57,9 @@ class AgentControlPlaneFeedbackItem:
     error_code: str | None = None
     error_message: str | None = None
     sensitive_fields: tuple[str, ...] = ()
+    model_context_include_paths: tuple[str, ...] = ()
+    model_context_exclude_paths: tuple[str, ...] = ()
+    sensitive_result_paths: tuple[str, ...] = ()
 
     def to_summary(self) -> dict[str, Any]:
         """转换为 API 响应可直接序列化的字典。
@@ -76,6 +80,9 @@ class AgentControlPlaneFeedbackItem:
             "outputRef": self.output_ref,
             "outputWorkspaceKey": self.output_workspace_key,
             "outputContextPolicy": self.output_context_policy,
+            "modelContextIncludePathCount": len(self.model_context_include_paths),
+            "modelContextExcludePathCount": len(self.model_context_exclude_paths),
+            "sensitiveResultPathCount": len(self.sensitive_result_paths),
             "errorCode": self.error_code,
         }
 
@@ -101,6 +108,9 @@ class AgentControlPlaneFeedbackItem:
             output_workspace_key=self.output_workspace_key,
             output_context_policy=self.output_context_policy,
             sensitive_fields=self.sensitive_fields,
+            model_context_include_paths=self.model_context_include_paths,
+            model_context_exclude_paths=self.model_context_exclude_paths,
+            sensitive_result_paths=self.sensitive_result_paths,
         )
 
 
@@ -179,6 +189,9 @@ class AgentControlPlaneFeedbackCollector:
                 error_code=item.error_code,
                 error_message=item.error_message,
                 sensitive_fields=item.sensitive_fields,
+                model_context_include_paths=item.model_context_include_paths,
+                model_context_exclude_paths=item.model_context_exclude_paths,
+                sensitive_result_paths=item.sensitive_result_paths,
             )
             for item in feedback_items
         }
