@@ -37,6 +37,7 @@ def build_model_gateway_context(
         ModelCacheKeyScope,
         request.variables.get("cacheKeyScope") or request.variables.get("cache_key_scope"),
     )
+    session_id = request.variables.get("sessionId") or request.variables.get("session_id")
     return ModelGatewayRequestContext(
         tenant_id=request.tenant_id,
         project_id=request.project_id,
@@ -53,6 +54,10 @@ def build_model_gateway_context(
         attributes={
             "contextBlockCount": len(context_blocks),
             "estimation": "char_length_half_plus_default_completion",
+            # prefix/KV cache 的 SESSION_ONLY 范围必须绑定明确会话。
+            # 这里不把会话写进顶层字段，是为了保持模型网关上下文的稳定主契约；
+            # 具体的会话、渠道、前端页面等扩展属性统一放在 attributes 中，后续不同入口可以渐进补充。
+            "sessionId": session_id,
         },
     )
 

@@ -90,6 +90,11 @@ class AgentOrchestratorTest(unittest.TestCase):
 
         self.assertTrue(plan.runtime_events)
         self.assertTrue(all(event.session_id == "session-abc" for event in plan.runtime_events))
+        gateway_event = next(
+            event for event in plan.runtime_events if event.event_type == AgentRuntimeEventType.MODEL_GATEWAY_ROUTED
+        )
+        self.assertTrue(gateway_event.attributes["cachePlanEnabled"])
+        self.assertIn("session:session-abc", gateway_event.attributes["cachePlanNamespace"])
 
     def test_quality_rule_and_task_creation_requires_approval(self) -> None:
         orchestrator = build_default_orchestrator()

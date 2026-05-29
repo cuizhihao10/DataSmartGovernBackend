@@ -110,6 +110,49 @@ class ModelGatewayBudgetDecision:
 
 
 @dataclass(frozen=True)
+class ModelGatewayCachePlan:
+    """模型 prefix/KV cache 治理计划。
+
+    该对象不保存 prompt 内容，也不保存真实 KV cache 数据；它只描述一次模型调用应该使用怎样的缓存
+    隔离边界。真实 vLLM/SGLang/LiteLLM 网关后续可以根据这些字段生成 prefix cache key、KV cache
+    namespace 或请求标签。
+
+    字段说明：
+    - `enabled`：本次是否允许使用模型缓存；
+    - `scope`：缓存复用范围，与 `ModelCacheKeyScope` 对齐；
+    - `namespace`：缓存命名空间，必须体现租户、项目、会话或全局边界；
+    - `key_prefix`：给模型网关或推理服务使用的稳定 key 前缀，不包含敏感 prompt；
+    - `isolation_key`：用于审计和诊断的隔离键，解释缓存为什么只能在该边界内复用；
+    - `ttl_seconds`：建议缓存保留时间。当前只是策略建议，真实存储可以按网关能力决定是否采纳；
+    - `reusable_context_hint`：人读说明，解释哪些上下文适合复用；
+    - `issues`：禁用或降级原因，例如缺少 projectId、scope=no_cache。
+    """
+
+    enabled: bool
+    scope: ModelCacheKeyScope
+    namespace: str
+    key_prefix: str
+    isolation_key: str
+    ttl_seconds: int
+    reusable_context_hint: str
+    issues: tuple[str, ...] = ()
+
+    def to_summary(self) -> dict[str, object]:
+        """转换为 API、事件和审计记录可直接使用的摘要。"""
+
+        return {
+            "enabled": self.enabled,
+            "scope": self.scope.value,
+            "namespace": self.namespace,
+            "keyPrefix": self.key_prefix,
+            "isolationKey": self.isolation_key,
+            "ttlSeconds": self.ttl_seconds,
+            "reusableContextHint": self.reusable_context_hint,
+            "issues": self.issues,
+        }
+
+
+@dataclass(frozen=True)
 class ModelGatewayRoutingDecision:
     """模型网关路由决策。
 
@@ -123,5 +166,6 @@ class ModelGatewayRoutingDecision:
     selected_health: ModelProviderHealthSnapshot | None
     budget_decision: ModelGatewayBudgetDecision
     cache_key_scope: ModelCacheKeyScope
+    cache_plan: ModelGatewayCachePlan | None = None
     governance_notes: tuple[str, ...] = ()
     attributes: dict[str, object] = field(default_factory=dict)

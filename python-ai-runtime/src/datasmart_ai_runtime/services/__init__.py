@@ -116,6 +116,7 @@ from datasmart_ai_runtime.services.model_gateway import (
     InMemoryModelProviderHealthRegistry,
     ModelGatewayGovernanceService,
 )
+from datasmart_ai_runtime.services.model_gateway_cache import ModelGatewayCachePlanner
 from datasmart_ai_runtime.services.model_gateway_context import build_model_gateway_context
 from datasmart_ai_runtime.services.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.runtime_event_authorization import (
@@ -261,6 +262,7 @@ __all__ = [
     "OpenAICompatibleToolSchemaBuilder",
     "InMemoryModelBudgetLedger",
     "InMemoryModelProviderHealthRegistry",
+    "ModelGatewayCachePlanner",
     "ModelGatewayGovernanceService",
     "ModelRouteRegistry",
     "build_model_gateway_context",

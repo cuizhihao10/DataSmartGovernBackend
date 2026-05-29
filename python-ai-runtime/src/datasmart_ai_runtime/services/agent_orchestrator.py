@@ -115,6 +115,26 @@ class AgentOrchestrator:
                 "fallbackUsed": model_gateway_decision.fallback_used,
                 "budgetAllowed": model_gateway_decision.budget_decision.allowed,
                 "cacheKeyScope": model_gateway_decision.cache_key_scope.value,
+                "cachePlanEnabled": (
+                    model_gateway_decision.cache_plan.enabled
+                    if model_gateway_decision.cache_plan
+                    else False
+                ),
+                "cachePlanNamespace": (
+                    model_gateway_decision.cache_plan.namespace
+                    if model_gateway_decision.cache_plan
+                    else None
+                ),
+                "cachePlanTtlSeconds": (
+                    model_gateway_decision.cache_plan.ttl_seconds
+                    if model_gateway_decision.cache_plan
+                    else 0
+                ),
+                "cachePlanIssues": (
+                    model_gateway_decision.cache_plan.issues
+                    if model_gateway_decision.cache_plan
+                    else ()
+                ),
                 "candidateCount": len(model_gateway_decision.candidate_routes),
             },
         )

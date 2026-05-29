@@ -6561,3 +6561,23 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. Java 结果查询 API 返回字段级上下文策略。
 2. 策略来源接入工具 schema、permission-admin 字段权限和数据分级分类。
 3. 资源/字段过滤事件接入 WebSocket/Kafka replay，并补 URI/path 脱敏规则。
+
+## 4.38 AI Runtime 智能网关 prefix/KV cache 治理计划（2026-05-29）
+
+本阶段把 AI 主线从工具结果过滤切回智能模型网关，补齐 prefix/KV cache 的治理计划契约。当前实现不保存 prompt，也不直接操作真实 KV cache，而是在模型路由决策中输出 `cachePlan`，说明本次请求是否允许缓存、按哪个租户/项目/会话边界缓存、建议 TTL 是多少，以及禁用原因。
+
+已完成：
+- 新增模型网关缓存计划对象与计划器。
+- 模型网关决策、API 响应和 `MODEL_GATEWAY_ROUTED` 事件均能暴露缓存治理摘要。
+- 支持 `GLOBAL_SAFE`、`TENANT_SAFE`、`PROJECT_SAFE`、`SESSION_ONLY`、`NO_CACHE` 五类范围。
+- 会话级缓存缺少 `sessionId` 时默认禁用，避免为了命中率扩大复用边界。
+
+产品路线判断：
+- 短期应把 `cachePlan` 作为智能网关协议字段透传给 Provider 适配层，而不是立刻深挖复杂缓存存储。
+- 中期应把缓存治理与 workspace、permission-admin、数据分级分类、工具 schema 和模型上下文选择统一。
+- 长期应补缓存命中率、prefill token 节省、延迟改善、跨模型兼容性和高并发下的缓存污染防护。
+
+下一步建议：
+1. 模型网关继续做请求 metadata 透传和指标预留。
+2. 并行推进 Java agent-runtime 工具执行闭环。
+3. 启动 Skill/Tool 市场治理，避免 AI 部分只停留在模型调用与上下文过滤。

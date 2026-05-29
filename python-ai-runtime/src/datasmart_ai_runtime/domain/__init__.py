@@ -57,6 +57,7 @@ from datasmart_ai_runtime.domain.memory import (
 from datasmart_ai_runtime.domain.model_gateway import (
     ModelGatewayBudgetDecision,
     ModelGatewayBudgetPolicy,
+    ModelGatewayCachePlan,
     ModelGatewayRequestContext,
     ModelGatewayRoutingDecision,
     ModelProviderHealthSnapshot,
@@ -99,6 +100,7 @@ __all__ = [
     "ModelLatencyTier",
     "ModelGatewayBudgetDecision",
     "ModelGatewayBudgetPolicy",
+    "ModelGatewayCachePlan",
     "ModelGatewayRequestContext",
     "ModelGatewayRoutingDecision",
     "ModelProviderHealthSnapshot",

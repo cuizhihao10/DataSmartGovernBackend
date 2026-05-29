@@ -16,6 +16,7 @@ from datasmart_ai_runtime.domain.model_gateway import (
     ModelProviderHealthSnapshot,
     ModelProviderHealthStatus,
 )
+from datasmart_ai_runtime.services.model_gateway_cache import ModelGatewayCachePlanner
 from datasmart_ai_runtime.services.model_router import ModelRouteRegistry
 
 
@@ -140,10 +141,12 @@ class ModelGatewayGovernanceService:
         model_routes: ModelRouteRegistry,
         health_registry: InMemoryModelProviderHealthRegistry | None = None,
         budget_ledger: InMemoryModelBudgetLedger | None = None,
+        cache_planner: ModelGatewayCachePlanner | None = None,
     ) -> None:
         self._model_routes = model_routes
         self._health_registry = health_registry or InMemoryModelProviderHealthRegistry()
         self._budget_ledger = budget_ledger or InMemoryModelBudgetLedger()
+        self._cache_planner = cache_planner or ModelGatewayCachePlanner()
 
     def decide(self, context: ModelGatewayRequestContext) -> ModelGatewayRoutingDecision:
         """根据治理上下文选择模型路由。
@@ -160,6 +163,11 @@ class ModelGatewayGovernanceService:
         candidates = self._model_routes.candidate_routes_for(context.workload)
         cache_key_scope = context.cache_key_scope or (candidates[0].cache_key_scope if candidates else ModelCacheKeyScope.NO_CACHE)
         if not budget_decision.allowed:
+            cache_plan = self._cache_planner.plan(
+                context=context,
+                scope=cache_key_scope,
+                selected_route=None,
+            )
             return ModelGatewayRoutingDecision(
                 selected_route=None,
                 candidate_routes=candidates,
@@ -167,6 +175,7 @@ class ModelGatewayGovernanceService:
                 selected_health=None,
                 budget_decision=budget_decision,
                 cache_key_scope=cache_key_scope,
+                cache_plan=cache_plan,
                 governance_notes=(budget_decision.message,),
                 attributes={"blockedBy": "budget"},
             )
@@ -187,14 +196,27 @@ class ModelGatewayGovernanceService:
             break
 
         fallback_used = bool(selected_route and ordered_candidates and selected_route != ordered_candidates[0])
+        final_cache_scope = context.cache_key_scope or (selected_route.cache_key_scope if selected_route else cache_key_scope)
+        cache_plan = self._cache_planner.plan(
+            context=context,
+            scope=final_cache_scope,
+            selected_route=selected_route,
+        )
         notes = self._build_notes(context, selected_route, selected_health, fallback_used, unavailable_notes, budget_decision)
+        if cache_plan.enabled:
+            notes.append(
+                f"模型缓存计划已启用，namespace={cache_plan.namespace}，TTL={cache_plan.ttl_seconds} 秒。"
+            )
+        else:
+            notes.append(f"模型缓存计划未启用，原因：{', '.join(cache_plan.issues) or '未声明'}。")
         return ModelGatewayRoutingDecision(
             selected_route=selected_route,
             candidate_routes=ordered_candidates,
             fallback_used=fallback_used,
             selected_health=selected_health,
             budget_decision=budget_decision,
-            cache_key_scope=context.cache_key_scope or (selected_route.cache_key_scope if selected_route else cache_key_scope),
+            cache_key_scope=final_cache_scope,
+            cache_plan=cache_plan,
             governance_notes=tuple(notes),
             attributes={
                 "workload": context.workload.value,

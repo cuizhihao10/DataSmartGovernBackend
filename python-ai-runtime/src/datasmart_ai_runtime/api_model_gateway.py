@@ -50,6 +50,7 @@ def build_model_gateway_governance_response(
         "remainingTokens": budget.remaining_tokens,
         "budgetWarning": budget.warning,
         "cacheKeyScope": decision.cache_key_scope.value,
+        "cachePlan": decision.cache_plan.to_summary() if decision.cache_plan else None,
         "candidateCount": len(decision.candidate_routes),
         "candidateProviders": tuple(route.provider_name for route in decision.candidate_routes),
         "governanceNotes": decision.governance_notes,
@@ -68,7 +69,8 @@ def _display_summary(decision: ModelGatewayRoutingDecision) -> str:
     fallback_text = "，并使用备用模型" if decision.fallback_used else ""
     return (
         f"已选择模型 {decision.selected_route.model_name}{fallback_text}，"
-        f"缓存范围为 {decision.cache_key_scope.value}。"
+        f"缓存范围为 {decision.cache_key_scope.value}，"
+        f"缓存计划{'已启用' if decision.cache_plan and decision.cache_plan.enabled else '未启用'}。"
     )
 
 
@@ -95,4 +97,6 @@ def _recommended_actions(decision: ModelGatewayRoutingDecision) -> tuple[str, ..
         actions.append("预算接近告警阈值，建议运营侧关注模型消耗趋势。")
     if decision.cache_key_scope.value in {"session_only", "no_cache"}:
         actions.append("当前缓存范围较保守，适合敏感或会话级任务。")
+    if decision.cache_plan and not decision.cache_plan.enabled and "SESSION_ID_MISSING" in decision.cache_plan.issues:
+        actions.append("如果希望启用会话级 prefix/KV cache，请在请求变量中传入 sessionId。")
     return tuple(actions)
