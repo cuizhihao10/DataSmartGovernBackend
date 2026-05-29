@@ -33,7 +33,9 @@ from datasmart_ai_runtime.services.agent_loop_control_policy import AgentLoopCon
 from datasmart_ai_runtime.services.agent_second_turn_events import SecondTurnEventBuilder
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
 from datasmart_ai_runtime.services.model_gateway_context import build_model_gateway_context
+from datasmart_ai_runtime.domain.model_gateway import ModelGatewayRequestContext
 from datasmart_ai_runtime.services.model_provider import ModelProviderRegistry
+from datasmart_ai_runtime.services.model_provider_metadata import build_model_provider_metadata
 from datasmart_ai_runtime.services.model_tool_result_feedback import ModelToolResultFeedbackBuilder
 
 
@@ -199,6 +201,7 @@ class AgentSecondTurnOrchestrator:
             trace_id=request.variables.get("traceId") or request.variables.get("trace_id") or plan.request_id,
             available_tools=(),
             tool_choice="none",
+            provider_metadata=self._provider_metadata_from_plan(request, plan),
         )
         result = self._model_providers.invoke(second_turn_request)
         self._record_usage_if_possible(request, plan, result)
@@ -226,6 +229,31 @@ class AgentSecondTurnOrchestrator:
             error_code=result.error_code,
             runtime_events=events.events(),
         )
+
+    @staticmethod
+    def _provider_metadata_from_plan(request: AgentRequest, plan: AgentPlan) -> dict[str, object]:
+        """从已有计划恢复二轮模型调用的 Provider metadata。
+
+        受控二轮推理通常发生在 Java 工具执行完成之后，时间上晚于首次 AgentPlan 生成。此时不应重新做一次
+        路由决策，也不应丢失第一次模型网关给出的缓存治理计划。因此这里从 `plan.model_gateway_decision`
+        读取 cachePlan，并构造一个最小 `ModelGatewayRequestContext` 交给统一 metadata 构建器。
+        """
+
+        decision = plan.model_gateway_decision
+        attributes: dict[str, object] = {
+            "sessionId": request.variables.get("sessionId") or request.variables.get("session_id"),
+        }
+        if decision is not None and getattr(decision, "cache_plan", None) is not None:
+            attributes["cachePlan"] = decision.cache_plan.to_summary()
+        context = ModelGatewayRequestContext(
+            tenant_id=request.tenant_id,
+            project_id=request.project_id,
+            actor_id=request.actor_id,
+            workload=request.preferred_workload,
+            trace_id=request.variables.get("traceId") or request.variables.get("trace_id") or plan.request_id,
+            attributes=attributes,
+        )
+        return build_model_provider_metadata(context)
 
     @staticmethod
     def _tool_calls_from_plan(plan: AgentPlan) -> tuple[ModelToolCall, ...]:

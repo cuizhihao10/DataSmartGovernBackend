@@ -6581,3 +6581,17 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 模型网关继续做请求 metadata 透传和指标预留。
 2. 并行推进 Java agent-runtime 工具执行闭环。
 3. 启动 Skill/Tool 市场治理，避免 AI 部分只停留在模型调用与上下文过滤。
+
+## 4.39 AI Runtime 模型 Provider metadata 透传 cachePlan（2026-05-29）
+
+本阶段把 4.38 的 `cachePlan` 从“治理摘要”推进到“Provider 调用协议”。Agent 首轮模型意图、模拟二轮、受控二轮都会把模型网关治理 metadata 传给 Provider；OpenAI-compatible Provider 会把 metadata 写入请求体 `metadata.datasmart`，并把关键缓存字段写入 `X-DataSmart-*` Header。
+
+产品意义：
+- 智能网关现在可以在请求入口看到租户、项目、workload、session 和缓存计划。
+- 后续 LiteLLM/vLLM/SGLang/企业网关可以基于 Header 或 body metadata 做 prefix/KV cache、限流、审计和指标归因。
+- metadata 只白名单透传非敏感治理字段，不包含 prompt、工具结果、SQL、样本值或连接密钥。
+
+下一步建议：
+1. 为 Provider metadata 增加受信网关开关，避免对第三方外部模型服务发送过多内部治理标签。
+2. 设计模型网关指标：缓存命中率、prefill token 节省、fallback 次数、二轮推理成本、Provider 错误率。
+3. 将重心切回 Java agent-runtime 工具执行闭环和 Skill/Tool 市场治理，避免缓存方向继续吞掉整体节奏。

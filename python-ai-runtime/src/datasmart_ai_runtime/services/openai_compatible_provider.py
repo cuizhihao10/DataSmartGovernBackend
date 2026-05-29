@@ -205,6 +205,10 @@ class OpenAICompatibleModelProvider:
             "max_tokens": request.max_output_tokens,
             "stream": stream,
         }
+        if request.provider_metadata:
+            # OpenAI-compatible 生态里的模型网关通常允许透传 metadata，LiteLLM、企业内部网关或审计代理
+            # 可以据此做缓存、追踪、限流和成本归因。这里不放 prompt，不放工具结果，只放治理策略摘要。
+            body["metadata"] = {"datasmart": request.provider_metadata}
         tools = self._tool_schema_builder.build(
             request.available_tools,
             ModelToolSchemaExposurePolicy(strict=request.strict_tool_schema),
@@ -223,6 +227,7 @@ class OpenAICompatibleModelProvider:
             headers["OpenAI-Organization"] = self._settings.organization
         if request.trace_id:
             headers["X-DataSmart-Trace-Id"] = request.trace_id
+        self._apply_datasmart_metadata_headers(headers, request.provider_metadata)
         headers.update(self._settings.extra_headers or {})
         return Request(
             url=self._chat_completions_url(request.route.endpoint or ""),
@@ -230,6 +235,36 @@ class OpenAICompatibleModelProvider:
             headers=headers,
             method="POST",
         )
+
+    @staticmethod
+    def _apply_datasmart_metadata_headers(headers: dict[str, str], metadata: dict) -> None:
+        """把 DataSmart 治理 metadata 中最关键的字段同步为 HTTP Header。
+
+        为什么既写请求体 metadata，又写 Header：
+        - 一些 OpenAI-compatible 推理服务会忽略未知 body 字段，但企业网关/Nginx/Envoy/LiteLLM middleware
+          可以更容易读取 Header；
+        - Header 不承载完整策略，只放少量非敏感路由标签，便于网关在不解析 JSON body 的情况下执行
+          prefix/KV cache、限流或审计；
+        - 所有值都来自白名单字段，不包含 prompt、tool result、SQL、样本数据或密钥。
+        """
+
+        if not metadata:
+            return
+        cache_plan = metadata.get("cachePlan")
+        if isinstance(cache_plan, dict):
+            headers["X-DataSmart-Cache-Enabled"] = str(bool(cache_plan.get("enabled"))).lower()
+            if cache_plan.get("scope") is not None:
+                headers["X-DataSmart-Cache-Scope"] = str(cache_plan.get("scope"))
+            if cache_plan.get("namespace") is not None:
+                headers["X-DataSmart-Cache-Namespace"] = str(cache_plan.get("namespace"))
+            if cache_plan.get("keyPrefix") is not None:
+                headers["X-DataSmart-Cache-Key-Prefix"] = str(cache_plan.get("keyPrefix"))
+            if cache_plan.get("ttlSeconds") is not None:
+                headers["X-DataSmart-Cache-Ttl-Seconds"] = str(cache_plan.get("ttlSeconds"))
+        if metadata.get("tenantId") is not None:
+            headers["X-DataSmart-Tenant-Id"] = str(metadata.get("tenantId"))
+        if metadata.get("projectId") is not None:
+            headers["X-DataSmart-Project-Id"] = str(metadata.get("projectId"))
 
     @staticmethod
     def _message_to_payload(message) -> dict:

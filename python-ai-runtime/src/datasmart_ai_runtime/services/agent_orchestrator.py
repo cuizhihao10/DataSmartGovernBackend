@@ -104,6 +104,11 @@ class AgentOrchestrator:
         model_gateway_context = build_model_gateway_context(request, context_blocks)
         model_gateway_decision = self._model_gateway.decide(model_gateway_context)
         selected_route = model_gateway_decision.selected_route
+        if model_gateway_decision.cache_plan:
+            # `ModelGatewayRequestContext` 是冻结 dataclass，但 attributes 是一次请求内的扩展字典。
+            # 这里把路由决策生成的 cachePlan 回填给上下文，是为了让后续模型 Provider metadata 能统一
+            # 消费“模型网关治理结论”，而不把 AgentModelIntentNode 直接耦合到完整 RoutingDecision。
+            model_gateway_context.attributes["cachePlan"] = model_gateway_decision.cache_plan.to_summary()
         event_recorder.record(
             AgentRuntimeEventType.MODEL_GATEWAY_ROUTED,
             "route_model_gateway",

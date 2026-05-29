@@ -33,6 +33,7 @@ from datasmart_ai_runtime.domain.intent import IntentAnalysis
 from datasmart_ai_runtime.domain.model_gateway import ModelGatewayRequestContext
 from datasmart_ai_runtime.domain.skills import AgentSkillPlan
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
+from datasmart_ai_runtime.services.model_provider_metadata import build_model_provider_metadata
 from datasmart_ai_runtime.services.model_tool_feedback_provider import (
     ModelToolExecutionFeedbackProvider,
     SimulatedModelToolExecutionFeedbackProvider,
@@ -140,6 +141,7 @@ class AgentModelIntentNode:
             messages=self._build_messages(request, context_blocks),
             trace_id=request.variables.get("traceId") or request.variables.get("trace_id"),
             available_tools=available_tools,
+            provider_metadata=build_model_provider_metadata(model_gateway_context),
         )
         try:
             if self._should_use_streaming(request):
@@ -340,6 +342,7 @@ class AgentModelIntentNode:
             available_tools=(),
             tool_choice="none",
             strict_tool_schema=model_request.strict_tool_schema,
+            provider_metadata=model_request.provider_metadata,
         )
         result = self._model_providers.invoke(second_turn_request)
         self._record_model_usage(model_gateway_context, result)
@@ -409,7 +412,6 @@ class AgentModelIntentNode:
     def _combine_summaries(first_turn_summary: str, second_turn_summary: str) -> str:
         """合并第一轮和第二轮模型摘要。
 
-        第一轮摘要解释“模型为何提出工具调用”，第二轮摘要解释“工具结果回填后模型如何继续推理”。
         保留两段信息能让前端和审计回放看到完整链路，而不是只看到最终答案。
         """
 
@@ -423,7 +425,6 @@ class AgentModelIntentNode:
         """从 Provider 读取流式 chunk。
 
         这里通过 `getattr` 判断而不是强制依赖具体类型，是为了兼容测试桩和未来多 Provider 实现。
-        如果注入的 provider registry 没有 stream 方法，则抛出 AttributeError，由外层降级捕获。
         """
 
         stream_method = getattr(self._model_providers, "stream")

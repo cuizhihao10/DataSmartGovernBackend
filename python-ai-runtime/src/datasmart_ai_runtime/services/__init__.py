@@ -41,6 +41,7 @@ from datasmart_ai_runtime.services.model_provider import (
     OpenAICompatibleProviderSettings,
     model_provider_registry_from_env,
 )
+from datasmart_ai_runtime.services.model_provider_metadata import build_model_provider_metadata
 from datasmart_ai_runtime.services.model_tool_schema import (
     ModelToolSchemaExposurePolicy,
     OpenAICompatibleToolSchemaBuilder,
@@ -310,6 +311,7 @@ __all__ = [
     "build_websocket_frames_from_control_response",
     "build_default_kafka_producer",
     "build_memory_write_store_runtime",
+    "build_model_provider_metadata",
     "build_runtime_event_components",
     "control_message_from_payload",
     "frames_to_payloads",

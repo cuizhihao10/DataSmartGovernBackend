@@ -203,11 +203,15 @@ class ModelInvocationRequest:
     工具相关字段说明：
     - `available_tools`：本轮允许暴露给模型的工具定义。它必须是 Agent loop 根据租户、项目、角色、
       权限和意图裁剪后的结果，不能把全平台工具表无差别传入；
-    - `tool_choice`：OpenAI-compatible 的工具选择策略，默认 `auto`，表示模型可以自行决定输出文本
-      还是提出工具调用；传入 `None` 时 Provider 只发送 `tools`，不发送 `tool_choice`；
-    - `strict_tool_schema`：是否给 function tool 加 strict schema。部分新模型支持更严格 schema，
-      但不同 OpenAI-compatible 网关兼容程度不同，所以默认关闭，由部署环境逐步开启。
-    """
+      - `tool_choice`：OpenAI-compatible 的工具选择策略，默认 `auto`，表示模型可以自行决定输出文本
+        还是提出工具调用；传入 `None` 时 Provider 只发送 `tools`，不发送 `tool_choice`；
+      - `strict_tool_schema`：是否给 function tool 加 strict schema。部分新模型支持更严格 schema，
+        但不同 OpenAI-compatible 网关兼容程度不同，所以默认关闭，由部署环境逐步开启。
+      - `provider_metadata`：传给模型 Provider 或智能网关的治理元数据。它不应包含 prompt、工具结果、
+        样本值、连接密钥等敏感内容，只保存 trace、缓存、预算、工作负载等可审计策略字段。
+        这样 Agent 主链不用绑定 LiteLLM/vLLM/SGLang 的具体协议，Provider 适配层可以按能力把这些字段
+        转成请求体 metadata、HTTP Header、网关标签或运行指标。
+      """
 
     route: ModelRoute
     messages: tuple[ModelMessage, ...]
@@ -217,6 +221,7 @@ class ModelInvocationRequest:
     available_tools: tuple["ToolDefinition", ...] = ()
     tool_choice: str | dict[str, Any] | None = "auto"
     strict_tool_schema: bool = False
+    provider_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

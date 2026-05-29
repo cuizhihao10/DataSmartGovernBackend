@@ -44,6 +44,9 @@ class AgentSecondTurnOrchestratorTest(unittest.TestCase):
         self.assertEqual(1, len(provider.requests))
         self.assertEqual("none", provider.requests[0].tool_choice)
         self.assertEqual((), provider.requests[0].available_tools)
+        self.assertEqual("10", provider.requests[0].provider_metadata["tenantId"])
+        self.assertEqual("20", provider.requests[0].provider_metadata["projectId"])
+        self.assertEqual("session-001", provider.requests[0].provider_metadata["sessionId"])
         self.assertEqual("tool", provider.requests[0].messages[-1].role)
         self.assertEqual("call-001", provider.requests[0].messages[-1].tool_call_id)
         self.assertIn(

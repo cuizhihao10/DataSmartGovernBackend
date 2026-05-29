@@ -109,6 +109,7 @@ class AgentOrchestratorTest(unittest.TestCase):
                     "datasourceId": "ds-002",
                     "businessGoal": "客户主数据完整性与手机号格式校验",
                     "createTask": True,
+                    "sessionId": "session-metadata",
                 },
             )
         )
@@ -179,6 +180,7 @@ class AgentOrchestratorTest(unittest.TestCase):
                     "datasourceId": "ds-002",
                     "businessGoal": "客户主数据完整性与手机号格式校验",
                     "createTask": True,
+                    "sessionId": "session-metadata",
                 },
             )
         )
@@ -194,6 +196,10 @@ class AgentOrchestratorTest(unittest.TestCase):
             ),
             tuple(tool.name for tool in provider.last_request.available_tools),
         )
+        cache_plan = provider.last_request.provider_metadata["cachePlan"]
+        self.assertTrue(cache_plan["enabled"])
+        self.assertEqual("session_only", cache_plan["scope"])
+        self.assertIn("session:session-metadata", cache_plan["namespace"])
 
     def test_model_tool_calls_are_governed_recorded_and_merged_into_plan(self) -> None:
         """模型返回 tool_calls 时，应先治理和记录事件，再合并进最终工具计划。

@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+import json
 from urllib.error import HTTPError
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -80,6 +81,17 @@ class ModelProviderRegistryTest(unittest.TestCase):
                 temperature=0.1,
                 max_output_tokens=512,
                 trace_id="trace-model-001",
+                provider_metadata={
+                    "tenantId": "tenant-a",
+                    "projectId": "project-a",
+                    "cachePlan": {
+                        "enabled": True,
+                        "scope": "session_only",
+                        "namespace": "model-cache:session_only:tenant:tenant-a:project:project-a:session:s-001",
+                        "keyPrefix": "model-cache:session_only:tenant:tenant-a:project:project-a:session:s-001:route:p:m",
+                        "ttlSeconds": 1800,
+                    },
+                },
             )
         )
 
@@ -88,7 +100,14 @@ class ModelProviderRegistryTest(unittest.TestCase):
         headers = {str(key).lower(): value for key, value in captured["headers"].items()}
         self.assertEqual("Bearer sk-test", headers["authorization"])
         self.assertEqual("trace-model-001", headers["x-datasmart-trace-id"])
+        self.assertEqual("true", headers["x-datasmart-cache-enabled"])
+        self.assertEqual("session_only", headers["x-datasmart-cache-scope"])
+        self.assertEqual("1800", headers["x-datasmart-cache-ttl-seconds"])
+        self.assertEqual("tenant-a", headers["x-datasmart-tenant-id"])
         self.assertIn("\"max_tokens\": 512", captured["body"])
+        body = json.loads(captured["body"])
+        self.assertEqual("tenant-a", body["metadata"]["datasmart"]["tenantId"])
+        self.assertTrue(body["metadata"]["datasmart"]["cachePlan"]["enabled"])
         self.assertEqual("模型已经完成治理任务规划。", result.content)
         self.assertEqual(11, result.prompt_tokens)
         self.assertEqual(7, result.completion_tokens)
