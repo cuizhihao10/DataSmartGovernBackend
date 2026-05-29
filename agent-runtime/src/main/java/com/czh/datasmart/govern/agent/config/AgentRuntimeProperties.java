@@ -65,6 +65,25 @@ public class AgentRuntimeProperties {
     private Integer maxActiveRunsPerSession = 1;
 
     /**
+     * 是否启用 Run 级同步工具自动执行入口。
+     *
+     * <p>该开关只控制“受控同步自动执行器”的批量入口，不影响单个工具的人工 execute 接口。
+     * 商业化部署时可以按租户、环境或灰度策略关闭它，让系统只提供 policy 预检和人工执行。
+     * 当前默认开启，是为了本地学习和端到端联调更顺畅；真正生产环境还应叠加 gateway RBAC、
+     * permission-admin 动作权限、租户配额、工具健康熔断和审计告警。</p>
+     */
+    private Boolean syncAutoExecutionEnabled = true;
+
+    /**
+     * 单次 Run 级同步自动执行最多处理多少个工具。
+     *
+     * <p>即使所有工具都被 policy 标记为 AUTO_EXECUTABLE，也不应该在一个 HTTP 请求里无限制地全部执行。
+     * 这个上限用于防止一次 Agent 规划生成大量只读工具后挤占请求线程、连接池和下游服务容量。
+     * 后续如果需要高并发执行，应转向异步 worker、队列限流和分组调度，而不是单请求大批量同步调用。</p>
+     */
+    private Integer maxSyncAutoExecutionsPerRun = 5;
+
+    /**
      * 会话默认生存时间，单位小时。
      *
      * <p>当前版本只作为响应说明和后续清理任务依据，尚未实现后台清理。

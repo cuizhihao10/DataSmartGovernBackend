@@ -6,13 +6,16 @@
  */
 package com.czh.datasmart.govern.agent.controller;
 
+import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolAutoExecutionRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolAutoExecutionResponse;
+import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolExecutionPolicyView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionAuditView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionDecisionRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionResultView;
-import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolExecutionPolicyView;
 import com.czh.datasmart.govern.agent.service.AgentSessionService;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionResultQueryService;
+import com.czh.datasmart.govern.agent.service.execution.AgentRunToolAutoExecutionService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolExecutionPolicyService;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
@@ -20,6 +23,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -42,6 +46,7 @@ public class AgentToolExecutionAuditController {
     private final AgentSessionService sessionService;
     private final AgentToolExecutionResultQueryService resultQueryService;
     private final AgentRunToolExecutionPolicyService executionPolicyService;
+    private final AgentRunToolAutoExecutionService autoExecutionService;
 
     /**
      * 查询某次 Agent Run 的工具执行审计记录。
@@ -82,6 +87,31 @@ public class AgentToolExecutionAuditController {
             @PathVariable("runId") String runId,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success(executionPolicyService.inspectRunPolicy(sessionId, runId), traceId);
+    }
+
+    /**
+     * 受控自动执行某次 Run 中安全的同步工具候选。
+     *
+     * <p>该接口是 `execution-policy` 之后的第一阶段执行闭环，但它不是“模型想做什么就全部执行”的危险入口。
+     * 服务端会重新读取 policy，并额外要求工具满足 LOW 风险、只读、幂等、无需审批、参数完整、Run 非终态等条件。
+     * 因此调用方传入 auditIds 只能缩小执行范围，不能把高风险或写操作强行变成自动执行。</p>
+     *
+     * <p>典型使用方式：
+     * 1. 前端先调用 execution-policy 展示候选和阻断原因；
+     * 2. 用户或 Python Runtime 调用本接口，传入 `dryRun=true` 先确认本批次会处理哪些工具；
+     * 3. 确认后再调用 `dryRun=false`，服务端按 `maxExecutions` 和配置上限执行安全候选；
+     * 4. 执行完成后，调用批量 result 查询或二轮模型回填链路读取结果。</p>
+     *
+     * <p>当前版本只处理同步短耗时工具。`ASYNC_TASK` 不会在这里执行，后续应转成 task-management 任务、
+     * Kafka command 或专用 worker，避免长耗时任务阻塞 HTTP 请求线程。</p>
+     */
+    @PostMapping("/{sessionId}/runs/{runId}/tool-executions/auto-execute-sync")
+    public PlatformApiResponse<AgentRunToolAutoExecutionResponse> autoExecuteSyncToolExecutions(
+            @PathVariable("sessionId") String sessionId,
+            @PathVariable("runId") String runId,
+            @RequestBody(required = false) AgentRunToolAutoExecutionRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(autoExecutionService.executeEligibleSyncTools(sessionId, runId, request, traceId), traceId);
     }
 
     /**

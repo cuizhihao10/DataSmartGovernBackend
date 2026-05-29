@@ -6631,3 +6631,25 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 设计 `ASYNC_TASK` 到 task-management/Kafka command 的下发协议，避免长耗时工具占用 HTTP 线程。
 3. 把策略预检接入 Python Runtime 的二轮推理准备阶段，使模型能向用户解释审批、参数和失败阻断原因。
 4. 补 ToolPlan DAG/依赖边，为多工具并发、顺序执行、失败跳过和回滚策略打基础。
+
+## 4.42 Java agent-runtime 受控同步工具自动执行器（2026-05-29）
+
+本阶段在 4.41 policy preflight 之上新增第一版受控同步自动执行器。它只执行服务端二次筛选后的低风险、只读、幂等、无需审批的同步工具，并提供 dryRun、auditId 白名单和单批次数量上限。
+
+已完成：
+- `AgentRuntimeProperties` 增加 `syncAutoExecutionEnabled` 与 `maxSyncAutoExecutionsPerRun`。
+- 新增 `AgentRunToolAutoExecutionService`，先读 policy，再按 LOW/readOnly/idempotent/requiresApproval=false 进行更严格筛选。
+- 新增 `POST /tool-executions/auto-execute-sync` 路由，支持 `/agent-runtime/...` 与 `/api/agent/...` 双路径。
+- 新增自动执行请求、响应、单项结果 DTO，返回执行前 policy、每个工具动作、跳过原因和执行结果。
+- 新增测试覆盖安全候选执行、dryRun 不改状态、服务端上限、auditId 白名单和风险/审批阻断。
+
+产品意义：
+- Agent Runtime 已具备从“工具计划审计”到“策略预检”再到“低风险同步工具执行”的最小闭环。
+- 自动执行器比 policy 更保守，避免未来策略扩展后执行入口不受控扩大范围。
+- dryRun 和 maxExecutions 使前端、Python Runtime 和运营人员可以先预览再执行，符合商用系统渐进自动化原则。
+
+下一步建议：
+1. Python Runtime 接入 policy + auto-execute-sync，形成“预检、执行安全候选、批量取结果、二轮推理”的闭环。
+2. 设计 `ASYNC_TASK` 到 task-management/Kafka command 的任务化执行协议。
+3. 补 ToolPlan DAG/依赖边，解决多工具执行顺序、并发组、失败跳过和补偿问题。
+4. 将自动执行入口接入 gateway/permission-admin 权限动作和租户级开关。
