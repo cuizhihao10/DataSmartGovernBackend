@@ -7014,3 +7014,23 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 先做 Java DAG-aware 执行 preview，而不是直接自动执行所有 ready 节点。
 2. 补 permission-admin 服务间授权和工具 schema 治理。
 3. 再把 `governanceHints` 中的 DAG key 升级为强类型 schema，并接 runtime event/WebSocket 可视化。
+
+## 4.59 Agent Runtime DAG-aware 执行预览（2026-05-31）
+
+本阶段新增 `dag-execution-preview`，把 DAG ready 节点与 execution-policy、同步自动执行守卫、异步 command plan 合并成只读执行建议。它不会执行工具、不会创建任务、不会投递 Kafka。
+
+已完成：
+- 新增 DAG execution preview DTO、动作枚举和服务。
+- 新增接口 `GET /agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/dag-execution-preview`。
+- 同步 ready 节点必须满足 `LOW + readOnly + idempotent + requiresApproval=false` 才会成为同步自动执行候选。
+- 异步 ready 节点必须拥有 dispatchable command plan 才会成为异步 dispatcher 候选。
+- 其他节点会被解释为等待依赖、等待审批、等待参数、已执行中、已完成或策略阻断。
+
+产品意义：
+- 这是自动 DAG worker 前的安全观察窗，让用户、Python Runtime、前端和审计台先看懂“系统准备怎么行动”。
+- Preview 继续复用已有执行入口，不创建第三套工具执行状态机。
+
+下一步建议：
+1. 优先补 permission-admin 服务间授权，让 preview 也能解释服务账号是否有权代表 actor 推进工具。
+2. 再做 DAG-aware dry-run request，把调用方选择的 nodeIds 转换成同步 dryRun 或异步 enqueue preview。
+3. 最后再进入真实 DAG worker、并发池、租户配额、工具限流和失败补偿。
