@@ -20,6 +20,7 @@ import java.time.LocalDateTime;
  * @param reason 面向开发者的失败说明，应保持可读，但不要依赖它做程序判断。
  * @param payloadBytes payload 的 UTF-8 字节数，用于判断是否因为大消息触发保护。
  * @param dlqCandidate 当前配置下是否应作为死信候选。当前阶段仅记录，不真实写 DLQ topic。
+ * @param recordMetadata Kafka record 的低敏定位元数据，用于定位 topic、partition、offset、keyHash 和 traceId。
  * @param occurredAt 失败发生时间，使用服务本地时间即可满足本地学习和单服务诊断；跨服务追踪仍应依赖 traceId。
  */
 public record AgentAsyncTaskCommandKafkaFailureRecord(
@@ -28,6 +29,7 @@ public record AgentAsyncTaskCommandKafkaFailureRecord(
         String reason,
         int payloadBytes,
         boolean dlqCandidate,
+        AgentAsyncTaskCommandKafkaRecordMetadata recordMetadata,
         LocalDateTime occurredAt
 ) {
 }

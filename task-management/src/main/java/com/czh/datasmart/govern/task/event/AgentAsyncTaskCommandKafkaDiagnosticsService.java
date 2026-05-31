@@ -65,6 +65,21 @@ public class AgentAsyncTaskCommandKafkaDiagnosticsService {
     public synchronized void recordFailure(AgentAsyncTaskCommandKafkaFailureType type,
                                            String reason,
                                            int payloadBytes) {
+        recordFailure(type, reason, payloadBytes, AgentAsyncTaskCommandKafkaRecordMetadata.empty());
+    }
+
+    /**
+     * 记录带 Kafka record 元数据的消费失败。
+     *
+     * @param type 稳定失败类型，用于后续指标、告警和 DLQ 分类。
+     * @param reason 可读失败原因，不能包含完整 payload。
+     * @param payloadBytes payload 的 UTF-8 字节数。
+     * @param metadata Kafka record 的低敏定位元数据，帮助运维定位 topic/partition/offset。
+     */
+    public synchronized void recordFailure(AgentAsyncTaskCommandKafkaFailureType type,
+                                           String reason,
+                                           int payloadBytes,
+                                           AgentAsyncTaskCommandKafkaRecordMetadata metadata) {
         if (!properties.isDiagnosticsEnabled()) {
             return;
         }
@@ -75,6 +90,7 @@ public class AgentAsyncTaskCommandKafkaDiagnosticsService {
                 reason,
                 Math.max(0, payloadBytes),
                 dlqCandidate,
+                metadata == null ? AgentAsyncTaskCommandKafkaRecordMetadata.empty() : metadata,
                 LocalDateTime.now()
         );
         totalFailures++;

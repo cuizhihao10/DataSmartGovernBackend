@@ -56,4 +56,31 @@ class AgentAsyncTaskCommandKafkaDiagnosticsServiceTest {
         assertEquals(1L, snapshot.dlqCandidateFailures());
         assertTrue(snapshot.recentFailures().get(0).dlqCandidate());
     }
+
+    @Test
+    void failureRecordShouldKeepLowRiskKafkaLocationMetadata() {
+        AgentAsyncTaskCommandKafkaProperties properties = new AgentAsyncTaskCommandKafkaProperties();
+        AgentAsyncTaskCommandKafkaDiagnosticsService service = new AgentAsyncTaskCommandKafkaDiagnosticsService(properties);
+        AgentAsyncTaskCommandKafkaRecordMetadata metadata = new AgentAsyncTaskCommandKafkaRecordMetadata(
+                "datasmart.agent.tool.async.commands",
+                5,
+                99L,
+                "short-key-hash",
+                123456L,
+                "CREATE_TIME",
+                "trace-xyz"
+        );
+
+        service.recordFailure(AgentAsyncTaskCommandKafkaFailureType.CONSUMER_EXCEPTION,
+                "database timeout",
+                256,
+                metadata);
+
+        AgentAsyncTaskCommandKafkaFailureRecord failure = service.snapshot().recentFailures().get(0);
+        assertEquals("datasmart.agent.tool.async.commands", failure.recordMetadata().topic());
+        assertEquals(5, failure.recordMetadata().partition());
+        assertEquals(99L, failure.recordMetadata().offset());
+        assertEquals("short-key-hash", failure.recordMetadata().keyHash());
+        assertEquals("trace-xyz", failure.recordMetadata().traceId());
+    }
 }

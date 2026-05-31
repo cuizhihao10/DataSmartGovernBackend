@@ -40,6 +40,15 @@
             <groupId>org.springframework.kafka</groupId>
             <artifactId>spring-kafka</artifactId>
         </dependency>
+        <!--
+            task-management 已经在 application.yml 暴露 health/info/metrics 管理端点。
+            引入 Actuator 后，Micrometer MeterRegistry 会由 Spring Boot 自动创建，
+            Agent Kafka command、后台 worker、队列积压等指标才能真正通过 /actuator/metrics 被查询。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.alibaba.cloud</groupId>
             <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>

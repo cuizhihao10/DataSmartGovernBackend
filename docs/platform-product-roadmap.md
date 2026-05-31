@@ -6958,3 +6958,18 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 接入 Micrometer 指标和 Kafka record 元数据，补 topic/partition/offset/keyHash/traceId。
 2. 设计真实 DLQ Producer、人工重放、跳过、归档和审计流程。
 3. 并行推进 ToolPlan DAG、permission-admin 服务间授权和 data-sync.execute 参数治理，避免继续只在 listener 局部优化。
+
+## 4.56 Agent 异步命令 Kafka 指标与 record 元数据诊断（2026-05-31）
+
+本阶段把 4.55 的坏消息诊断继续推进到可运营指标与 Kafka 定位元数据。task-management 新增 Actuator 依赖、Micrometer 指标服务、Kafka record metadata 提取，并让诊断样本携带 topic、partition、offset、keyHash、timestamp 和 traceId。
+
+产品意义：
+- Agent 异步行动链路进入后台自动化后，平台不能只知道“失败了”，还要知道失败趋势、失败类型、是否产生 DLQ 候选，以及坏消息位于 Kafka 哪个分区 offset。
+- 指标只使用低基数标签，避免把 commandId、traceId、offset 写进 Prometheus 标签导致时序爆炸；单条定位交给诊断快照和日志。
+- record key 只保存短 hash，不保存 key 原文和 payload，降低诊断链路扩散敏感上下文的风险。
+- listener 仍保持传输适配层职责，不把协议校验、任务创建、重放、offset 管理塞进 listener。
+
+下一步建议：
+1. 暂停继续深挖 listener，优先启动 ToolPlan DAG 第一阶段，定义多工具依赖、并行组、失败策略和结果回填顺序。
+2. 如果继续补 task-management 稳定性，优先给 worker batch/scheduler 接 Micrometer 指标。
+3. 推进 permission-admin 服务间授权和 data-sync.execute 参数治理，为更多工具适配器扩展前先补安全边界。

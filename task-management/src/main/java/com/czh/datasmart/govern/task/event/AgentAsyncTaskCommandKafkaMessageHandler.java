@@ -16,6 +16,8 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.nio.charset.StandardCharsets;
 
 /**
@@ -40,6 +42,7 @@ public class AgentAsyncTaskCommandKafkaMessageHandler {
     private final AgentAsyncTaskCommandConsumerService consumerService;
     private final ObjectMapper objectMapper;
     private final AgentAsyncTaskCommandKafkaDiagnosticsService diagnosticsService;
+    private final AgentAsyncTaskCommandKafkaMetricsService metricsService;
 
     /**
      * 处理一条 Kafka payload。
@@ -48,18 +51,35 @@ public class AgentAsyncTaskCommandKafkaMessageHandler {
      * @return 处理摘要，供 listener 记录审计友好的日志。
      */
     public AgentAsyncTaskCommandKafkaHandleResult handle(String payload) {
+        return handle(payload, AgentAsyncTaskCommandKafkaRecordMetadata.empty());
+    }
+
+    /**
+     * 处理一条带 Kafka record 元数据的 payload。
+     *
+     * @param payload Kafka value，约定为 UTF-8 JSON 字符串。
+     * @param metadata Kafka record 的低敏定位信息，用于诊断和指标，不参与业务消费。
+     * @return 处理摘要，供 listener 记录审计友好的日志。
+     */
+    public AgentAsyncTaskCommandKafkaHandleResult handle(String payload,
+                                                        AgentAsyncTaskCommandKafkaRecordMetadata metadata) {
+        Instant startedAt = Instant.now();
         try {
             ensurePayloadAllowed(payload);
             AgentAsyncTaskCommandRequest request = objectMapper.readValue(payload, AgentAsyncTaskCommandRequest.class);
             AgentAsyncTaskCommandConsumeResponse response = consumerService.consume(request);
-            return AgentAsyncTaskCommandKafkaHandleResult.accepted(response);
+            AgentAsyncTaskCommandKafkaHandleResult result = AgentAsyncTaskCommandKafkaHandleResult.accepted(response);
+            metricsService.recordAccepted(result, metadata, Duration.between(startedAt, Instant.now()));
+            return result;
         } catch (KafkaCommandPayloadRejectedException exception) {
-            return handleRejected(exception.failureType(), exception.getMessage(), payload, exception);
+            return handleRejected(exception.failureType(), exception.getMessage(), payload, metadata, startedAt, exception);
         } catch (JsonProcessingException exception) {
             return handleRejected(
                     AgentAsyncTaskCommandKafkaFailureType.INVALID_JSON,
                     "Agent 异步命令 Kafka payload 不是合法 JSON",
                     payload,
+                    metadata,
+                    startedAt,
                     new IllegalArgumentException("Agent 异步命令 Kafka payload 不是合法 JSON", exception)
             );
         } catch (IllegalArgumentException exception) {
@@ -67,6 +87,8 @@ public class AgentAsyncTaskCommandKafkaMessageHandler {
                     AgentAsyncTaskCommandKafkaFailureType.CONSUMER_REJECTED,
                     exception.getMessage(),
                     payload,
+                    metadata,
+                    startedAt,
                     exception
             );
         } catch (RuntimeException exception) {
@@ -74,6 +96,8 @@ public class AgentAsyncTaskCommandKafkaMessageHandler {
                     AgentAsyncTaskCommandKafkaFailureType.CONSUMER_EXCEPTION,
                     exception.getMessage(),
                     payload,
+                    metadata,
+                    startedAt,
                     exception
             );
         }
@@ -110,12 +134,18 @@ public class AgentAsyncTaskCommandKafkaMessageHandler {
     private AgentAsyncTaskCommandKafkaHandleResult handleRejected(AgentAsyncTaskCommandKafkaFailureType failureType,
                                                                   String reason,
                                                                   String payload,
+                                                                  AgentAsyncTaskCommandKafkaRecordMetadata metadata,
+                                                                  Instant startedAt,
                                                                   RuntimeException exception) {
-        diagnosticsService.recordFailure(failureType, reason, payloadBytes(payload));
+        diagnosticsService.recordFailure(failureType, reason, payloadBytes(payload), metadata);
+        metricsService.recordRejected(failureType, metadata, Duration.between(startedAt, Instant.now()),
+                properties.isDlqEnabled());
         if (properties.isLogPayloadOnError()) {
-            log.warn("Agent 异步命令 Kafka 消息被拒绝，type={}, reason={}, payload={}", failureType, reason, payload);
+            log.warn("Agent 异步命令 Kafka 消息被拒绝，type={}, reason={}, metadata={}, payload={}",
+                    failureType, reason, metadata == null ? "UNKNOWN" : metadata.location(), payload);
         } else {
-            log.warn("Agent 异步命令 Kafka 消息被拒绝，type={}, reason={}", failureType, reason);
+            log.warn("Agent 异步命令 Kafka 消息被拒绝，type={}, reason={}, metadata={}",
+                    failureType, reason, metadata == null ? "UNKNOWN" : metadata.location());
         }
         if (properties.isFailOnRejectedMessage()) {
             throw exception;

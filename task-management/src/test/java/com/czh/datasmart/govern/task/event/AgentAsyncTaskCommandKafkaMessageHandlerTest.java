@@ -13,6 +13,7 @@ import com.czh.datasmart.govern.task.service.AgentAsyncTaskCommandConsumerServic
 import com.czh.datasmart.govern.task.support.AgentAsyncTaskCommandState;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -42,6 +43,8 @@ class AgentAsyncTaskCommandKafkaMessageHandlerTest {
     private AgentAsyncTaskCommandConsumerService consumerService;
     private ObjectMapper objectMapper;
     private AgentAsyncTaskCommandKafkaDiagnosticsService diagnosticsService;
+    private SimpleMeterRegistry meterRegistry;
+    private AgentAsyncTaskCommandKafkaMetricsService metricsService;
     private AgentAsyncTaskCommandKafkaMessageHandler handler;
 
     @BeforeEach
@@ -50,7 +53,10 @@ class AgentAsyncTaskCommandKafkaMessageHandlerTest {
         consumerService = mock(AgentAsyncTaskCommandConsumerService.class);
         objectMapper = new ObjectMapper();
         diagnosticsService = new AgentAsyncTaskCommandKafkaDiagnosticsService(properties);
-        handler = new AgentAsyncTaskCommandKafkaMessageHandler(properties, consumerService, objectMapper, diagnosticsService);
+        meterRegistry = new SimpleMeterRegistry();
+        metricsService = new AgentAsyncTaskCommandKafkaMetricsService(meterRegistry);
+        handler = new AgentAsyncTaskCommandKafkaMessageHandler(properties, consumerService, objectMapper,
+                diagnosticsService, metricsService);
     }
 
     @Test
@@ -72,6 +78,12 @@ class AgentAsyncTaskCommandKafkaMessageHandlerTest {
         assertFalse(result.duplicate());
         assertEquals("aatc-kafka-001", result.commandId());
         assertEquals(9100L, result.taskId());
+        assertEquals(1.0, meterRegistry.counter("datasmart_task_agent_async_command_kafka_handled_total",
+                "result", "ACCEPTED",
+                "failureType", "NONE",
+                "duplicate", "false",
+                "taskCreated", "true",
+                "topic", "UNKNOWN").count());
         verify(consumerService).consume(any(AgentAsyncTaskCommandRequest.class));
     }
 
@@ -97,6 +109,12 @@ class AgentAsyncTaskCommandKafkaMessageHandlerTest {
         AgentAsyncTaskCommandKafkaDiagnosticsSnapshot snapshot = diagnosticsService.snapshot();
         assertEquals(1L, snapshot.totalFailures());
         assertEquals(1L, snapshot.failuresByType().get(AgentAsyncTaskCommandKafkaFailureType.INVALID_JSON));
+        assertEquals(1.0, meterRegistry.counter("datasmart_task_agent_async_command_kafka_handled_total",
+                "result", "REJECTED",
+                "failureType", "INVALID_JSON",
+                "duplicate", "false",
+                "taskCreated", "false",
+                "topic", "UNKNOWN").count());
         verifyNoInteractions(consumerService);
     }
 
@@ -114,6 +132,7 @@ class AgentAsyncTaskCommandKafkaMessageHandlerTest {
         assertEquals(1L, snapshot.totalFailures());
         assertEquals(1, snapshot.recentFailures().size());
         assertEquals(AgentAsyncTaskCommandKafkaFailureType.PAYLOAD_TOO_LARGE, snapshot.recentFailures().get(0).type());
+        assertEquals("UNKNOWN", snapshot.recentFailures().get(0).recordMetadata().topic());
         verifyNoInteractions(consumerService);
     }
 

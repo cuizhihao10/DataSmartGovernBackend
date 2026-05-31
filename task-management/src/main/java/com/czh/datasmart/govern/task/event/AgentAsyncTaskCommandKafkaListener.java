@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.task.event;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
@@ -45,18 +46,21 @@ public class AgentAsyncTaskCommandKafkaListener {
             groupId = "#{@agentAsyncTaskCommandKafkaProperties.groupId}",
             autoStartup = "#{@agentAsyncTaskCommandKafkaProperties.enabled}"
     )
-    public void onAgentAsyncTaskCommand(String payload) {
+    public void onAgentAsyncTaskCommand(ConsumerRecord<String, String> record) {
+        AgentAsyncTaskCommandKafkaRecordMetadata metadata = AgentAsyncTaskCommandKafkaRecordMetadata.from(record);
         AgentAsyncTaskCommandKafkaMessageHandler.AgentAsyncTaskCommandKafkaHandleResult result =
-                messageHandler.handle(payload);
+                messageHandler.handle(record == null ? null : record.value(), metadata);
         if (!result.accepted()) {
-            log.warn("Agent 异步工具命令 Kafka 消息已跳过，reason={}", result.reason());
+            log.warn("Agent 异步工具命令 Kafka 消息已跳过，failureType={}, reason={}, metadata={}",
+                    result.failureType(), result.reason(), metadata.location());
             return;
         }
         if (result.duplicate()) {
-            log.debug("Agent 异步工具命令重复消费，commandId={}, taskId={}", result.commandId(), result.taskId());
+            log.debug("Agent 异步工具命令重复消费，commandId={}, taskId={}, metadata={}",
+                    result.commandId(), result.taskId(), metadata.location());
             return;
         }
-        log.info("Agent 异步工具命令已消费并创建任务，commandId={}, taskId={}",
-                result.commandId(), result.taskId());
+        log.info("Agent 异步工具命令已消费并创建任务，commandId={}, taskId={}, metadata={}",
+                result.commandId(), result.taskId(), metadata.location());
     }
 }
