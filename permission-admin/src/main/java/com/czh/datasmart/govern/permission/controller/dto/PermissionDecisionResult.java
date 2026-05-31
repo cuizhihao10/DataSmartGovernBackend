@@ -66,4 +66,29 @@ public class PermissionDecisionResult {
      * 当前动作是否需要审批。
      */
     private Boolean approvalRequired;
+
+    /**
+     * 本次判定命中的策略版本。
+     *
+     * <p>商业化权限系统不能只告诉调用方“允许/拒绝”，还要能在事后回答“当时是依据哪一版策略允许的”。
+     * 当前版本由路由策略主键、更新时间和效果拼接生成，不需要新增数据库字段；后续如果引入策略发布流、
+     * 灰度版本或审批发布单，可以替换为正式 policyVersion。</p>
+     */
+    private String policyVersion;
+
+    /**
+     * 是否属于服务账号委托调用。
+     *
+     * <p>true 不代表自动放行，只代表本次请求携带了“机器身份代表上游主体”的证据。权限中心仍然按照
+     * actorRole、route policy、data scope 和 approvalRequired 做最终判定。</p>
+     */
+    private Boolean delegated;
+
+    /**
+     * 委托授权证据摘要。
+     *
+     * <p>该字段面向审计、排障和后续执行闭环使用，记录 serviceAccount、representedActor、delegationReason、
+     * matchedRoutePolicyId 等关键信息。它不包含工具参数、SQL、prompt 或数据样本，避免权限响应扩散敏感内容。</p>
+     */
+    private String delegationEvidence;
 }

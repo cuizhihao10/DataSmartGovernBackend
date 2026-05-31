@@ -12,11 +12,13 @@ import com.czh.datasmart.govern.permission.entity.PermissionDataScopePolicy;
 import com.czh.datasmart.govern.permission.entity.PermissionRoutePolicy;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -32,12 +34,13 @@ import static org.mockito.Mockito.when;
 class PermissionDecisionSupportTest {
 
     private PermissionQuerySupport querySupport;
+    private PermissionAuditSupport auditSupport;
     private PermissionDecisionSupport decisionSupport;
 
     @BeforeEach
     void setUp() {
         querySupport = mock(PermissionQuerySupport.class);
-        PermissionAuditSupport auditSupport = mock(PermissionAuditSupport.class);
+        auditSupport = mock(PermissionAuditSupport.class);
         decisionSupport = new PermissionDecisionSupport(querySupport, auditSupport);
     }
 
@@ -62,6 +65,44 @@ class PermissionDecisionSupportTest {
         assertThat(result.getDataScopeLevel()).isEqualTo("TENANT");
         assertThat(result.getDataScopeExpression()).isEqualTo("tenant_id = ${tenantId}");
         assertThat(result.getReason()).contains("服务账号接入 AgentPlan");
+    }
+
+    /**
+     * 验证 SERVICE_ACCOUNT 代表真实用户执行 Agent 高风险动作时，权限中心会返回策略版本和委托证据。
+     *
+     * <p>这条用例保护 4.67 的核心商业化语义：服务账号不是超级管理员，它仍然必须命中 route policy；
+     * 但一旦它代表某个用户推进异步工具入箱，判定结果和审计记录都要能说明“谁代表谁、为什么、命中了哪条策略”。
+     * 未来接入 selected-node outbox dispatcher、审批台或审计中心时，就可以把这份 evidence 作为责任链证据。</p>
+     */
+    @Test
+    void delegatedServiceAccountShouldReturnPolicyVersionAndEvidence() {
+        PermissionDecisionRequest request = decisionRequest("SERVICE_ACCOUNT");
+        request.setRequestPath("/api/agent/sessions/session-1/runs/run-1/tool-executions/dag-selected-node-outbox/enqueue");
+        request.setAction("ENQUEUE_SELECTED_ASYNC_TOOL");
+        request.setServiceAccountActorId(900001L);
+        request.setServiceAccountCode("datasmart-agent-runtime");
+        request.setRepresentedActorId("actor-preview");
+        request.setDelegationType("SERVICE_ACCOUNT_ON_BEHALF_OF_ACTOR");
+        request.setDelegationReason("AGENT_RUNTIME_TOOL_PREVIEW:tool=data-sync.execute");
+        when(querySupport.listRoutePolicies(10L, "SERVICE_ACCOUNT"))
+                .thenReturn(List.of(selectedNodePolicy("ALLOW", 860)));
+        when(querySupport.listDataScopePolicies(10L, "SERVICE_ACCOUNT", "AI_RUNTIME"))
+                .thenReturn(List.of(dataScope("SERVICE_ACCOUNT", "AI_RUNTIME", "TENANT", "tenant_id = ${tenantId}")));
+
+        PermissionDecisionResult result = decisionSupport.evaluate(request, "trace-selected-node");
+
+        assertThat(result.getAllowed()).isTrue();
+        assertThat(result.getDelegated()).isTrue();
+        assertThat(result.getPolicyVersion()).contains("route-policy:860");
+        assertThat(result.getDelegationEvidence())
+                .contains("datasmart-agent-runtime")
+                .contains("actor-preview")
+                .contains("ENQUEUE_SELECTED_ASYNC_TOOL");
+        ArgumentCaptor<PermissionDecisionResult> resultCaptor = ArgumentCaptor.forClass(PermissionDecisionResult.class);
+        verify(auditSupport).saveDecisionAudit(org.mockito.ArgumentMatchers.eq(request),
+                org.mockito.ArgumentMatchers.eq("trace-selected-node"),
+                resultCaptor.capture());
+        assertThat(resultCaptor.getValue().getDelegationEvidence()).isEqualTo(result.getDelegationEvidence());
     }
 
     /**
@@ -108,6 +149,14 @@ class PermissionDecisionSupportTest {
         policy.setEffect(effect);
         policy.setPriority(priority);
         policy.setEnabled(true);
+        return policy;
+    }
+
+    private PermissionRoutePolicy selectedNodePolicy(String effect, int priority) {
+        PermissionRoutePolicy policy = routePolicy("SERVICE_ACCOUNT", effect, priority);
+        policy.setPolicyName("服务账号确认 DAG 选中节点异步入箱");
+        policy.setPathPattern("/api/agent/sessions/*/runs/*/tool-executions/dag-selected-node-outbox/enqueue");
+        policy.setAction("ENQUEUE_SELECTED_ASYNC_TOOL");
         return policy;
     }
 

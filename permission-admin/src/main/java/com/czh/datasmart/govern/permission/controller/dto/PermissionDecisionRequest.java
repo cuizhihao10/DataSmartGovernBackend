@@ -56,4 +56,58 @@ public class PermissionDecisionRequest {
      * 业务动作，例如 VIEW、CREATE、EXECUTE、APPROVE。
      */
     private String action;
+
+    /**
+     * 发起服务间调用的服务账号 actorId。
+     *
+     * <p>普通网关请求通常只需要 {@link #actorId}，但 Agent Runtime、Task Worker、异步调度器这类
+     * 机器身份经常会“代表某个人类用户或上游系统”执行动作。单独保留 serviceAccountActorId，可以让
+     * 审计中心区分“真正发起 HTTP 调用的机器主体”和“被代表的业务主体”，避免把所有责任都压到一个
+     * SERVICE_ACCOUNT 角色上。</p>
+     */
+    private Long serviceAccountActorId;
+
+    /**
+     * 服务账号可读编码，例如 datasmart-agent-runtime。
+     *
+     * <p>actorId 适合做数据库关联，但排障和审计复盘时更需要稳定、可读、跨环境可识别的主体编码。
+     * 后续如果接入 OAuth2 Client Credentials、mTLS SPIFFE ID 或服务网格身份，也可以把对应 clientId
+     * 映射到该字段。</p>
+     */
+    private String serviceAccountCode;
+
+    /**
+     * 被服务账号代表的上游主体。
+     *
+     * <p>Agent 工具执行中它通常是人类用户 actorId；批处理或系统补偿中也可能是上游任务、审批单或
+     * 事故工单编号。当前使用 String 是为了兼容 agent-runtime 里已有的 actorId 形态，避免过早强制
+     * 所有上游主体都必须转换为 Long。</p>
+     */
+    private String representedActorId;
+
+    /**
+     * 委托类型。
+     *
+     * <p>建议值示例：SERVICE_ACCOUNT_ON_BEHALF_OF_ACTOR、SYSTEM_COMPENSATION、SCHEDULED_JOB。
+     * permission-admin 当前不直接根据该字段放行，而是把它纳入审计证据；真正是否允许仍由角色、路由策略、
+     * 数据范围和审批要求决定。</p>
+     */
+    private String delegationType;
+
+    /**
+     * 委托原因。
+     *
+     * <p>该字段用于解释“为什么机器身份需要代表上游主体执行动作”，例如 DAG 工具预检、异步命令入箱、
+     * 任务补偿或事件回放。它会进入审计 detailJson，便于未来在审计中心按场景筛选高风险委托行为。</p>
+     */
+    private String delegationReason;
+
+    /**
+     * 调用方期望使用的策略版本，可为空。
+     *
+     * <p>当前阶段 permission-admin 会返回服务端实际命中的 policyVersion。未来如果要做“预检时命中 A 版本，
+     * 执行时必须仍是 A 版本”的强一致校验，可以让调用方把上一次拿到的版本回传到该字段，再由权限中心
+     * 判断是否过期。</p>
+     */
+    private String requestedPolicyVersion;
 }

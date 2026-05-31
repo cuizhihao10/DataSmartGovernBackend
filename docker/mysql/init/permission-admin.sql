@@ -571,3 +571,41 @@ CREATE TABLE IF NOT EXISTS agent_memory_write_candidate_audit (
     KEY idx_agent_memory_write_candidate_audit_operator (tenant_id, operator_id, create_time),
     KEY idx_agent_memory_write_candidate_audit_project (tenant_id, project_id, create_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Agent 长期记忆写入候选操作审计表';
+-- ---------------------------------------------------------------------------
+-- Agent Runtime DAG 异步工具入箱权限策略
+-- ---------------------------------------------------------------------------
+-- selected-node outbox enqueue 是推荐生产入口：调用方必须先通过 DAG dry-run，携带服务端 selectionFingerprint，
+-- 再显式确认某一批 ready 异步节点进入命令 outbox。Run 级 enqueue 粒度更粗，默认收口为平台管理员补偿入口。
+INSERT IGNORE INTO permission_route_policy
+(tenant_id, policy_name, role_code, http_method, path_pattern, resource_type, action, effect, priority, enabled, description, create_time, update_time)
+VALUES
+(0, '服务账号确认 DAG 选中节点异步入箱', 'SERVICE_ACCOUNT', 'POST',
+ '/api/agent/sessions/*/runs/*/tool-executions/dag-selected-node-outbox/enqueue',
+ 'AI_RUNTIME', 'ENQUEUE_SELECTED_ASYNC_TOOL', 'ALLOW', 860, 1,
+ '允许受信 Agent Runtime 服务账号在代表用户完成 dry-run 指纹复核后，把明确选中的异步工具节点写入命令 outbox；该策略不代表服务账号拥有任意工具执行权限，仍需下游工具二次校验和数据范围约束。',
+ NOW(), NOW()),
+(0, '项目负责人确认 DAG 选中节点异步入箱', 'PROJECT_OWNER', 'POST',
+ '/api/agent/sessions/*/runs/*/tool-executions/dag-selected-node-outbox/enqueue',
+ 'AI_RUNTIME', 'ENQUEUE_SELECTED_ASYNC_TOOL', 'ALLOW', 146, 1,
+ '项目负责人可在负责项目范围内确认已 dry-run 的异步工具节点入箱；后续应结合项目数据范围、审批单和租户配额继续收口。',
+ NOW(), NOW()),
+(0, '运营人员确认 DAG 选中节点异步入箱', 'OPERATOR', 'POST',
+ '/api/agent/sessions/*/runs/*/tool-executions/dag-selected-node-outbox/enqueue',
+ 'AI_RUNTIME', 'ENQUEUE_SELECTED_ASYNC_TOOL', 'ALLOW', 142, 1,
+ '运营人员可在排障和受控执行场景中确认 selected-node 入箱，但仍必须依赖 dry-run 指纹、批量上限和审计记录，避免绕过用户确认链路。',
+ NOW(), NOW()),
+(0, '普通用户禁止直接批量入箱整个 Agent Run', 'ORDINARY_USER', 'POST',
+ '/api/agent/sessions/*/runs/*/async-task-commands/outbox/enqueue',
+ 'AI_RUNTIME', 'ENQUEUE_RUN_ASYNC_TOOLS', 'DENY', 900, 1,
+ 'Run 级异步工具入箱粒度过粗，普通用户必须走 selected-node 确认入口，避免一次性推进未逐项确认的后台工具动作。',
+ NOW(), NOW()),
+(0, '服务账号禁止粗粒度 Run 级异步入箱默认放行', 'SERVICE_ACCOUNT', 'POST',
+ '/api/agent/sessions/*/runs/*/async-task-commands/outbox/enqueue',
+ 'AI_RUNTIME', 'ENQUEUE_RUN_ASYNC_TOOLS', 'DENY', 900, 1,
+ '服务账号默认不应使用 Run 级粗粒度入箱入口；如确需内部补偿，应通过更高优先级、更窄范围的临时策略或审批流程显式授权。',
+ NOW(), NOW()),
+(0, '平台管理员 Run 级异步入箱补偿入口', 'PLATFORM_ADMINISTRATOR', 'POST',
+ '/api/agent/sessions/*/runs/*/async-task-commands/outbox/enqueue',
+ 'AI_RUNTIME', 'ENQUEUE_RUN_ASYNC_TOOLS', 'ALLOW', 910, 1,
+ '平台管理员可在事故恢复或联调场景使用 Run 级异步入箱补偿入口；生产操作应配合审计、变更单、租户配额和回滚预案。',
+ NOW(), NOW());

@@ -16,9 +16,13 @@ import com.czh.datasmart.govern.agent.model.AgentToolExecutionMode;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
 import com.czh.datasmart.govern.agent.model.AgentToolRiskLevel;
 import com.czh.datasmart.govern.agent.model.AgentToolServiceAuthorizationDecision;
+import com.czh.datasmart.govern.agent.model.AgentToolServiceAuthorizationMode;
 import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
+import com.czh.datasmart.govern.agent.service.authorization.AgentToolServiceAuthorizationRemoteRequest;
+import com.czh.datasmart.govern.agent.service.authorization.AgentToolServiceAuthorizationRemoteResult;
 import com.czh.datasmart.govern.agent.service.authorization.AgentToolServiceAuthorizationPreviewService;
+import com.czh.datasmart.govern.agent.service.authorization.PermissionAdminServiceAuthorizationClient;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditMemoryStore;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
@@ -30,6 +34,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -101,6 +106,49 @@ class AgentRunToolDagExecutionPreviewServiceTest {
         assertEquals("datasmart-agent-runtime", item.serviceAuthorization().serviceAccountCode());
         assertEquals("actor-preview", item.serviceAuthorization().representedActorId());
         assertEquals(List.of("VIEW"), item.serviceAuthorization().requiredActions());
+    }
+
+    @Test
+    void permissionAdminPreviewShouldSendDelegationContextToPermissionAdmin() {
+        AtomicReference<AgentToolServiceAuthorizationRemoteRequest> capturedRequest = new AtomicReference<>();
+        TestFixture fixture = newFixture(properties -> {
+            properties.setEnabled(true);
+            properties.setMode(AgentToolServiceAuthorizationMode.PERMISSION_ADMIN_EVALUATE);
+        }, request -> {
+            capturedRequest.set(request);
+            return new AgentToolServiceAuthorizationRemoteResult(
+                    true,
+                    "允许服务账号代表用户预检工具动作",
+                    "ALLOW",
+                    "TENANT",
+                    List.of(),
+                    false,
+                    "route-policy:860:updatedAt:unknown:priority:860:effect:ALLOW",
+                    true,
+                    "delegationType=SERVICE_ACCOUNT_ON_BEHALF_OF_ACTOR;serviceAccount=datasmart-agent-runtime"
+            );
+        });
+        fixture.saveAudits(audit(
+                "audit-remote-auth",
+                1,
+                AgentToolExecutionState.PLANNED,
+                AgentToolExecutionMode.SYNC,
+                AgentToolRiskLevel.LOW,
+                false,
+                true,
+                true,
+                Map.of("planNodeId", "metadata-read")
+        ));
+
+        AgentRunToolDagExecutionPreviewView preview = fixture.previewService.previewRunDagExecution(SESSION_ID, RUN_ID);
+
+        AgentToolDagExecutionPreviewItemView item = item(preview, "metadata-read");
+        assertEquals(AgentToolServiceAuthorizationDecision.PERMISSION_ADMIN_ALLOWED.name(), item.serviceAuthorization().decision());
+        assertEquals("datasmart-agent-runtime", capturedRequest.get().serviceAccountCode());
+        assertEquals("actor-preview", capturedRequest.get().representedActorId());
+        assertEquals("SERVICE_ACCOUNT_ON_BEHALF_OF_ACTOR", capturedRequest.get().delegationType());
+        assertTrue(capturedRequest.get().delegationReason().contains("AGENT_RUNTIME_TOOL_PREVIEW"));
+        assertTrue(item.serviceAuthorization().delegationReason().contains("AGENT_RUNTIME_TOOL_PREVIEW"));
     }
 
     @Test
@@ -182,6 +230,11 @@ class AgentRunToolDagExecutionPreviewServiceTest {
     }
 
     private TestFixture newFixture(Consumer<AgentToolServiceAuthorizationProperties> authorizationCustomizer) {
+        return newFixture(authorizationCustomizer, request -> null);
+    }
+
+    private TestFixture newFixture(Consumer<AgentToolServiceAuthorizationProperties> authorizationCustomizer,
+                                   PermissionAdminServiceAuthorizationClient authorizationClient) {
         AgentRuntimeProperties properties = new AgentRuntimeProperties();
         AgentToolServiceAuthorizationProperties authorizationProperties = new AgentToolServiceAuthorizationProperties();
         authorizationCustomizer.accept(authorizationProperties);
@@ -204,7 +257,7 @@ class AgentRunToolDagExecutionPreviewServiceTest {
         );
         AgentToolServiceAuthorizationPreviewService authorizationPreviewService = new AgentToolServiceAuthorizationPreviewService(
                 authorizationProperties,
-                request -> null
+                authorizationClient
         );
         AgentRunToolDagExecutionPreviewService previewService = new AgentRunToolDagExecutionPreviewService(
                 properties,

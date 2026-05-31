@@ -54,6 +54,8 @@ public record AgentToolServiceAuthorizationPreviewView(
         String targetEndpoint,
         Long targetResourceId,
         List<String> requiredActions,
+        String delegationType,
+        String delegationReason,
         List<String> reasons,
         List<String> recommendedActions
 ) {

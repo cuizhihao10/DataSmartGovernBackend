@@ -58,7 +58,15 @@ public class PermissionAuditSupport {
         auditRecord.setSummary(result.getReason());
         auditRecord.setDetailJson("{\"httpMethod\":\"" + jsonEscape(request.getHttpMethod())
                 + "\",\"requestPath\":\"" + jsonEscape(request.getRequestPath())
-                + "\",\"matchedRoutePolicyId\":\"" + nullSafe(result.getMatchedRoutePolicyId()) + "\"}");
+                + "\",\"matchedRoutePolicyId\":\"" + nullSafe(result.getMatchedRoutePolicyId())
+                + "\",\"policyVersion\":\"" + jsonEscape(result.getPolicyVersion())
+                + "\",\"delegated\":\"" + nullSafe(result.getDelegated())
+                + "\",\"serviceAccountActorId\":\"" + nullSafe(request.getServiceAccountActorId())
+                + "\",\"serviceAccountCode\":\"" + jsonEscape(request.getServiceAccountCode())
+                + "\",\"representedActorId\":\"" + jsonEscape(request.getRepresentedActorId())
+                + "\",\"delegationType\":\"" + jsonEscape(request.getDelegationType())
+                + "\",\"delegationReason\":\"" + jsonEscape(request.getDelegationReason())
+                + "\",\"delegationEvidence\":\"" + jsonEscape(result.getDelegationEvidence()) + "\"}");
         auditRecord.setCreateTime(LocalDateTime.now());
         auditRecordMapper.insert(auditRecord);
     }

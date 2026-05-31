@@ -58,7 +58,13 @@ public class HttpPermissionAdminServiceAuthorizationClient implements Permission
                         request.httpMethod(),
                         request.requestPath(),
                         request.resourceType(),
-                        request.action()
+                        request.action(),
+                        request.serviceAccountActorId(),
+                        request.serviceAccountCode(),
+                        request.representedActorId(),
+                        request.delegationType(),
+                        request.delegationReason(),
+                        request.requestedPolicyVersion()
                 ))
                 .retrieve()
                 .body(PermissionDecisionEnvelope.class);
@@ -99,7 +105,10 @@ public class HttpPermissionAdminServiceAuthorizationClient implements Permission
                 data.getRouteEffect(),
                 data.getDataScopeLevel(),
                 data.getAuthorizedProjectIds() == null ? List.of() : data.getAuthorizedProjectIds(),
-                data.getApprovalRequired()
+                data.getApprovalRequired(),
+                data.getPolicyVersion(),
+                data.getDelegated(),
+                data.getDelegationEvidence()
         );
     }
 
@@ -114,7 +123,13 @@ public class HttpPermissionAdminServiceAuthorizationClient implements Permission
                                                     String httpMethod,
                                                     String requestPath,
                                                     String resourceType,
-                                                    String action) {
+                                                    String action,
+                                                    Long serviceAccountActorId,
+                                                    String serviceAccountCode,
+                                                    String representedActorId,
+                                                    String delegationType,
+                                                    String delegationReason,
+                                                    String requestedPolicyVersion) {
     }
 
     /**
@@ -142,5 +157,8 @@ public class HttpPermissionAdminServiceAuthorizationClient implements Permission
         private String dataScopeExpression;
         private List<Long> authorizedProjectIds;
         private Boolean approvalRequired;
+        private String policyVersion;
+        private Boolean delegated;
+        private String delegationEvidence;
     }
 }

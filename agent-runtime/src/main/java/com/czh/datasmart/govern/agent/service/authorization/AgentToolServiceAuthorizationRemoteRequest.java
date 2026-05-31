@@ -30,6 +30,11 @@ public record AgentToolServiceAuthorizationRemoteRequest(
         String requestPath,
         String resourceType,
         String action,
+        String serviceAccountCode,
+        String representedActorId,
+        String delegationType,
+        String delegationReason,
+        String requestedPolicyVersion,
         String traceId
 ) {
 }

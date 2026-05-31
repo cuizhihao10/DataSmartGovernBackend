@@ -124,6 +124,11 @@ public class AgentToolServiceAuthorizationPreviewService {
                     context.targetEndpoint(),
                     context.resourceType(),
                     action,
+                    properties.getServiceAccountCode(),
+                    context.representedActorId(),
+                    "SERVICE_ACCOUNT_ON_BEHALF_OF_ACTOR",
+                    delegationReason(context, action),
+                    null,
                     context.traceId()
             ));
             if (!Boolean.TRUE.equals(result.allowed())) {
@@ -134,6 +139,12 @@ public class AgentToolServiceAuthorizationPreviewService {
             }
             reasons.add("permission-admin 允许动作 " + action + "，routeEffect=" + result.routeEffect()
                     + "，dataScopeLevel=" + result.dataScopeLevel() + "。");
+            if (result.policyVersion() != null && !result.policyVersion().isBlank()) {
+                reasons.add("permission-admin 策略版本：" + result.policyVersion() + "。");
+            }
+            if (result.delegationEvidence() != null && !result.delegationEvidence().isBlank()) {
+                reasons.add("permission-admin 已记录服务账号委托证据：" + result.delegationEvidence() + "。");
+            }
             if (Boolean.TRUE.equals(result.approvalRequired())) {
                 actions.add("permission-admin 标记该动作仍需审批，真实执行器应进入审批/人工确认链路，而不是直接执行。");
             }
@@ -165,9 +176,26 @@ public class AgentToolServiceAuthorizationPreviewService {
                 context.targetEndpoint(),
                 context.targetResourceId(),
                 List.copyOf(context.requiredActions()),
+                "SERVICE_ACCOUNT_ON_BEHALF_OF_ACTOR",
+                delegationReason(context, context.requiredActions().isEmpty() ? null : context.requiredActions().get(0)),
                 List.copyOf(reasons),
                 List.copyOf(actions)
         );
+    }
+
+    /**
+     * 生成传给 permission-admin 的委托原因。
+     *
+     * <p>Agent Runtime 调用权限中心时，不应该只说“我是 SERVICE_ACCOUNT”。生产审计更关心的是：
+     * 这次机器身份为什么要代表某个用户继续推进工具动作、目标服务是谁、目标端点是什么、动作是什么。
+     * 这里把这些低敏上下文拼成原因，既方便 permission-admin 审计，又避免把工具参数或 prompt 泄漏到权限日志。</p>
+     */
+    private String delegationReason(AuthorizationContext context, String action) {
+        return "AGENT_RUNTIME_TOOL_PREVIEW"
+                + ":tool=" + context.toolCode()
+                + ":targetService=" + context.targetService()
+                + ":targetEndpoint=" + context.targetEndpoint()
+                + ":action=" + action;
     }
 
     private String httpMethodFor(String action) {

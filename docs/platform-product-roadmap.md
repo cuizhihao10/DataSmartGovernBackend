@@ -7239,3 +7239,35 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 在 permission-admin 为 `ENQUEUE_SELECTED_ASYNC_TOOL` 与 `ENQUEUE_RUN_ASYNC_TOOLS` 补策略种子，默认只向受信服务账号、审批动作和管理员补偿流开放真实入箱。
 3. 再做租户配额、工具级限流、worker 并发池和积压保护；否则批量 DAG 自动化会把下游数据同步服务压垮。
 4. 后续将 selection fingerprint 与 LangGraph checkpoint/interrupt 恢复点、runtime event timeline 和管理员补偿台关联。
+## 4.67 Permission Admin SERVICE_ACCOUNT 委托授权契约（2026-06-01）
+
+本阶段把 4.66 的 selected-node outbox 确认入箱继续向“真实商业化授权链路”推进。重点不是给服务账号更大权限，而是让 Agent Runtime 代表用户执行工具动作时，权限中心能够看见“谁代表谁、为什么执行、命中哪条策略、审计证据是什么”。
+
+已完成：
+- `permission-admin` 的 `PermissionDecisionRequest` 新增 `serviceAccountActorId`、`serviceAccountCode`、`representedActorId`、`delegationType`、`delegationReason` 和 `requestedPolicyVersion`。
+- `PermissionDecisionResult` 新增 `policyVersion`、`delegated` 和 `delegationEvidence`，让调用方和审计中心能追踪命中的策略版本与委托责任链。
+- `PermissionDecisionSupport` 在命中策略后生成轻量 `route-policy:*` 版本号，并在服务账号委托场景生成低敏 evidence；策略匹配仍然基于角色、路由、资源、动作和数据范围，不把 SERVICE_ACCOUNT 做成超级管理员。
+- `PermissionAuditSupport` 把策略版本、服务账号、被代表 actor、委托类型、委托原因和 evidence 写入审计 detailJson。
+- `agent-runtime` 远程授权请求开始传递服务账号编码、被代表 actor、委托类型和委托原因；HTTP client 解析 permission-admin 返回的策略版本与 evidence。
+- `AgentToolServiceAuthorizationPreviewView` 增加委托类型和委托原因，便于前端/审计台解释“当前预检是在代表谁推进工具动作”。
+- `permission-admin` 动作枚举新增 `ENQUEUE_SELECTED_ASYNC_TOOL` 和 `ENQUEUE_RUN_ASYNC_TOOLS`。
+- 新增 SQL 迁移 `20260601_agent_async_tool_enqueue_permission_policy.sql`，并同步初始化脚本：
+  - selected-node 入箱开放给受信 SERVICE_ACCOUNT、PROJECT_OWNER、OPERATOR；
+  - Run 级粗粒度入箱默认拒绝普通用户和服务账号，只保留 PLATFORM_ADMINISTRATOR 补偿入口。
+- 新增/扩展测试覆盖委托 evidence、策略版本、审计传递、agent-runtime 远程请求委托字段和 gateway selected-node 动作映射。
+
+产品意义：
+- Agent 工具执行从“机器账号调用权限中心”升级为“机器账号代表上游主体执行动作”的可解释授权模型，更接近 Codex/Claude Code 类 Agent 在企业环境需要的责任链。
+- selected-node 入箱与 Run 级入箱在权限矩阵里被拆开，避免真实副作用入口继续复用宽泛会话权限。
+- policyVersion 为后续“预检时命中 A 策略，执行时必须仍是 A 策略或重新确认”预留契约，不需要现在引入复杂策略发布系统。
+
+当前边界：
+- `policyVersion` 仍是路由策略轻量版本号，不是正式策略发布单，也不是数字签名。
+- `delegationEvidence` 是审计摘要，不替代审批单、确认记录、租户配额、工具限流或防重放令牌。
+- 当前还没有把 selected-node 确认事实持久化为独立审批/确认记录；后续仍需记录确认人、确认时间、dry-run fingerprint、策略版本和过期时间。
+
+下一步建议：
+1. 优先补 selected-node 确认记录持久表，把 confirmation、fingerprint、policyVersion、representedActor 和 serviceAccount 关联起来。
+2. 继续做租户配额、工具级限流、worker 并发池和 outbox 积压保护，防止 DAG 批量自动化放大下游压力。
+3. 将 policyVersion 校验接入真实执行入口：如果预检后策略变化，要求重新 dry-run/重新确认。
+4. 在进入更多工具适配器前，先补异步执行链路的配额、重试、DLQ、审计导出和管理员补偿台。

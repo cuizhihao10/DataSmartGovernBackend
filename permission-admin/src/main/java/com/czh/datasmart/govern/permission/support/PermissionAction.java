@@ -144,5 +144,20 @@ public enum PermissionAction {
      * 它不同于普通 CREATE：调用方不是创建一个业务对象，而是把模型规划、工具计划、记忆检索和模型网关治理摘要
      * 提交给 Java 控制面，形成 Run 与工具审计计划。因此它必须默认面向服务账号，并保留独立审计语义。
      */
-    INGEST_PLAN
+    INGEST_PLAN,
+    /**
+     * 确认 DAG 中已选中的异步工具节点进入命令 outbox。
+     *
+     * <p>该动作比普通 EXECUTE 更敏感：它不是“执行一个工具”，而是把经过 dry-run 指纹复核的一批节点
+     * 推进到可靠异步执行轨道。单独建模后，permission-admin 可以把它限制给 SERVICE_ACCOUNT、项目负责人
+     * 或审批后的入口，而不是被 `/api/agent/sessions/**` 的宽泛会话权限误放行。</p>
+     */
+    ENQUEUE_SELECTED_ASYNC_TOOL,
+    /**
+     * Run 级异步工具批量入箱动作。
+     *
+     * <p>该入口粒度比 selected-node 更粗，生产上更适合作为管理员补偿、内部联调或事故恢复能力。独立动作
+     * 能让权限矩阵明确标记“谁可以一次性推进整个 Run 的异步工具”，避免普通用户误触发大批量后台任务。</p>
+     */
+    ENQUEUE_RUN_ASYNC_TOOLS
 }

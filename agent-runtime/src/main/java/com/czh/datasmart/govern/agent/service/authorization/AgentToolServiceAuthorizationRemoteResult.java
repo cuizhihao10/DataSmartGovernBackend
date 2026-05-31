@@ -28,6 +28,9 @@ public record AgentToolServiceAuthorizationRemoteResult(
         String routeEffect,
         String dataScopeLevel,
         List<Long> authorizedProjectIds,
-        Boolean approvalRequired
+        Boolean approvalRequired,
+        String policyVersion,
+        Boolean delegated,
+        String delegationEvidence
 ) {
 }

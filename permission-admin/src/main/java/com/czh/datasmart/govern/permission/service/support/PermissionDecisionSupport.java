@@ -61,19 +61,21 @@ public class PermissionDecisionSupport {
     public PermissionDecisionResult evaluate(PermissionDecisionRequest request, String traceId) {
         PermissionRoutePolicy matchedRoute = findMatchedRoutePolicy(request);
         if (matchedRoute == null) {
-            PermissionDecisionResult result = denied("没有命中任何启用的路由策略，按默认拒绝处理", null, null);
+            PermissionDecisionResult result = denied("没有命中任何启用的路由策略，按默认拒绝处理", null, null, request);
             auditSupport.saveDecisionAudit(request, traceId, result);
             return result;
         }
 
         if (PermissionRouteEffect.DENY.name().equals(matchedRoute.getEffect())) {
-            PermissionDecisionResult result = denied("命中显式拒绝策略: " + matchedRoute.getPolicyName(), matchedRoute, null);
+            PermissionDecisionResult result = denied("命中显式拒绝策略: " + matchedRoute.getPolicyName(), matchedRoute, null, request);
             auditSupport.saveDecisionAudit(request, traceId, result);
             return result;
         }
 
         PermissionDataScopePolicy dataScope = findBestDataScope(request);
         List<Long> authorizedProjectIds = resolveAuthorizedProjectIds(request, dataScope);
+        String policyVersion = policyVersion(matchedRoute);
+        boolean delegated = delegated(request);
         PermissionDecisionResult result = new PermissionDecisionResult(
                 true,
                 "命中允许策略: " + matchedRoute.getPolicyName(),
@@ -82,7 +84,10 @@ public class PermissionDecisionSupport {
                 dataScope == null ? null : dataScope.getScopeLevel(),
                 dataScope == null ? null : dataScope.getScopeExpression(),
                 authorizedProjectIds,
-                dataScope != null && Boolean.TRUE.equals(dataScope.getApprovalRequired())
+                dataScope != null && Boolean.TRUE.equals(dataScope.getApprovalRequired()),
+                policyVersion,
+                delegated,
+                delegationEvidence(request, matchedRoute, policyVersion, delegated)
         );
         auditSupport.saveDecisionAudit(request, traceId, result);
         return result;
@@ -188,7 +193,10 @@ public class PermissionDecisionSupport {
 
     private PermissionDecisionResult denied(String reason,
                                             PermissionRoutePolicy routePolicy,
-                                            PermissionDataScopePolicy dataScopePolicy) {
+                                            PermissionDataScopePolicy dataScopePolicy,
+                                            PermissionDecisionRequest request) {
+        String policyVersion = policyVersion(routePolicy);
+        boolean delegated = request != null && delegated(request);
         return new PermissionDecisionResult(
                 false,
                 reason,
@@ -197,7 +205,77 @@ public class PermissionDecisionSupport {
                 dataScopePolicy == null ? null : dataScopePolicy.getScopeLevel(),
                 dataScopePolicy == null ? null : dataScopePolicy.getScopeExpression(),
                 List.of(),
-                dataScopePolicy != null && Boolean.TRUE.equals(dataScopePolicy.getApprovalRequired())
+                dataScopePolicy != null && Boolean.TRUE.equals(dataScopePolicy.getApprovalRequired()),
+                policyVersion,
+                delegated,
+                request == null ? null : delegationEvidence(request, routePolicy, policyVersion, delegated)
         );
+    }
+
+    /**
+     * 生成路由策略的轻量版本号。
+     *
+     * <p>当前项目还没有独立的“权限策略发布版本表”，因此这里把路由策略 id、更新时间、优先级和效果
+     * 拼成一个稳定摘要。它的作用不是密码学签名，而是让 Agent Runtime、gateway、审计中心能在日志里
+     * 关联“本次允许/拒绝是基于哪条策略的哪个更新时间点”。后续如果引入正式策略发布流程，可以把这里
+     * 替换为发布单版本号，而不影响 evaluate API 的字段语义。</p>
+     */
+    private String policyVersion(PermissionRoutePolicy routePolicy) {
+        if (routePolicy == null || routePolicy.getId() == null) {
+            return "route-policy:none";
+        }
+        String updatedAt = routePolicy.getUpdateTime() == null ? "unknown" : routePolicy.getUpdateTime().toString();
+        return "route-policy:" + routePolicy.getId()
+                + ":updatedAt:" + updatedAt
+                + ":priority:" + routePolicy.getPriority()
+                + ":effect:" + routePolicy.getEffect();
+    }
+
+    /**
+     * 判断本次请求是否携带了服务账号委托语义。
+     *
+     * <p>这里不会因为 delegated=true 就自动允许访问。委托字段只是把服务间调用责任链显式化，真正的放行
+     * 仍然取决于 SERVICE_ACCOUNT 角色是否命中最小权限路由策略，以及数据范围/审批要求是否满足。</p>
+     */
+    private boolean delegated(PermissionDecisionRequest request) {
+        return hasText(request.getRepresentedActorId())
+                || hasText(request.getDelegationReason())
+                || hasText(request.getServiceAccountCode())
+                || request.getServiceAccountActorId() != null;
+    }
+
+    /**
+     * 构造委托证据摘要。
+     *
+     * <p>证据只记录主体、动作、资源、策略版本等低敏信息，不写入工具参数、SQL、prompt、payload 样本或
+     * 数据行内容。这样既能满足生产审计和事故复盘，又不会让权限响应成为新的敏感数据扩散通道。</p>
+     */
+    private String delegationEvidence(PermissionDecisionRequest request,
+                                      PermissionRoutePolicy matchedRoute,
+                                      String policyVersion,
+                                      boolean delegated) {
+        if (!delegated) {
+            return null;
+        }
+        String serviceAccount = hasText(request.getServiceAccountCode())
+                ? request.getServiceAccountCode()
+                : String.valueOf(request.getServiceAccountActorId());
+        String representedActor = hasText(request.getRepresentedActorId()) ? request.getRepresentedActorId() : "unknown";
+        String delegationType = hasText(request.getDelegationType())
+                ? request.getDelegationType()
+                : "SERVICE_ACCOUNT_ON_BEHALF_OF_ACTOR";
+        String reason = hasText(request.getDelegationReason()) ? request.getDelegationReason() : "未提供委托原因";
+        return "delegationType=" + delegationType
+                + ";serviceAccount=" + serviceAccount
+                + ";representedActor=" + representedActor
+                + ";action=" + request.getAction()
+                + ";resourceType=" + request.getResourceType()
+                + ";matchedRoutePolicyId=" + (matchedRoute == null ? "" : matchedRoute.getId())
+                + ";policyVersion=" + policyVersion
+                + ";reason=" + reason;
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 }
