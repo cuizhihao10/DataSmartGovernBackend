@@ -39,6 +39,7 @@ public class AgentAsyncTaskCommandKafkaMessageHandler {
     private final AgentAsyncTaskCommandKafkaProperties properties;
     private final AgentAsyncTaskCommandConsumerService consumerService;
     private final ObjectMapper objectMapper;
+    private final AgentAsyncTaskCommandKafkaDiagnosticsService diagnosticsService;
 
     /**
      * 处理一条 Kafka payload。
@@ -52,14 +53,29 @@ public class AgentAsyncTaskCommandKafkaMessageHandler {
             AgentAsyncTaskCommandRequest request = objectMapper.readValue(payload, AgentAsyncTaskCommandRequest.class);
             AgentAsyncTaskCommandConsumeResponse response = consumerService.consume(request);
             return AgentAsyncTaskCommandKafkaHandleResult.accepted(response);
+        } catch (KafkaCommandPayloadRejectedException exception) {
+            return handleRejected(exception.failureType(), exception.getMessage(), payload, exception);
         } catch (JsonProcessingException exception) {
             return handleRejected(
+                    AgentAsyncTaskCommandKafkaFailureType.INVALID_JSON,
                     "Agent 异步命令 Kafka payload 不是合法 JSON",
                     payload,
                     new IllegalArgumentException("Agent 异步命令 Kafka payload 不是合法 JSON", exception)
             );
+        } catch (IllegalArgumentException exception) {
+            return handleRejected(
+                    AgentAsyncTaskCommandKafkaFailureType.CONSUMER_REJECTED,
+                    exception.getMessage(),
+                    payload,
+                    exception
+            );
         } catch (RuntimeException exception) {
-            return handleRejected(exception.getMessage(), payload, exception);
+            return handleRejected(
+                    AgentAsyncTaskCommandKafkaFailureType.CONSUMER_EXCEPTION,
+                    exception.getMessage(),
+                    payload,
+                    exception
+            );
         }
     }
 
@@ -71,11 +87,17 @@ public class AgentAsyncTaskCommandKafkaMessageHandler {
      */
     private void ensurePayloadAllowed(String payload) {
         if (payload == null || payload.isBlank()) {
-            throw new IllegalArgumentException("Agent 异步命令 Kafka payload 不能为空");
+            throw new KafkaCommandPayloadRejectedException(
+                    AgentAsyncTaskCommandKafkaFailureType.EMPTY_PAYLOAD,
+                    "Agent 异步命令 Kafka payload 不能为空"
+            );
         }
         int payloadBytes = payload.getBytes(StandardCharsets.UTF_8).length;
         if (payloadBytes > Math.max(1, properties.getMaxPayloadBytes())) {
-            throw new IllegalArgumentException("Agent 异步命令 Kafka payload 超过最大字节数限制: " + payloadBytes);
+            throw new KafkaCommandPayloadRejectedException(
+                    AgentAsyncTaskCommandKafkaFailureType.PAYLOAD_TOO_LARGE,
+                    "Agent 异步命令 Kafka payload 超过最大字节数限制: " + payloadBytes
+            );
         }
     }
 
@@ -85,18 +107,27 @@ public class AgentAsyncTaskCommandKafkaMessageHandler {
      * <p>在生产环境，默认重新抛出异常，让 Kafka listener 容器不要提交 offset，等待错误处理器、运维或后续 DLQ 处理。
      * 在本地联调或临时灰度环境，也可以关闭 failOnRejectedMessage，让坏消息被记录后跳过，避免单条测试消息卡住分区。</p>
      */
-    private AgentAsyncTaskCommandKafkaHandleResult handleRejected(String reason,
+    private AgentAsyncTaskCommandKafkaHandleResult handleRejected(AgentAsyncTaskCommandKafkaFailureType failureType,
+                                                                  String reason,
                                                                   String payload,
                                                                   RuntimeException exception) {
+        diagnosticsService.recordFailure(failureType, reason, payloadBytes(payload));
         if (properties.isLogPayloadOnError()) {
-            log.warn("Agent 异步命令 Kafka 消息被拒绝，reason={}, payload={}", reason, payload);
+            log.warn("Agent 异步命令 Kafka 消息被拒绝，type={}, reason={}, payload={}", failureType, reason, payload);
         } else {
-            log.warn("Agent 异步命令 Kafka 消息被拒绝，reason={}", reason);
+            log.warn("Agent 异步命令 Kafka 消息被拒绝，type={}, reason={}", failureType, reason);
         }
         if (properties.isFailOnRejectedMessage()) {
             throw exception;
         }
-        return AgentAsyncTaskCommandKafkaHandleResult.rejected(reason);
+        return AgentAsyncTaskCommandKafkaHandleResult.rejected(failureType, reason);
+    }
+
+    private int payloadBytes(String payload) {
+        if (payload == null) {
+            return 0;
+        }
+        return payload.getBytes(StandardCharsets.UTF_8).length;
     }
 
     /**
@@ -110,6 +141,7 @@ public class AgentAsyncTaskCommandKafkaMessageHandler {
             boolean taskCreated,
             String commandId,
             Long taskId,
+            AgentAsyncTaskCommandKafkaFailureType failureType,
             String reason
     ) {
 
@@ -120,12 +152,37 @@ public class AgentAsyncTaskCommandKafkaMessageHandler {
                     response.taskCreated(),
                     response.commandId(),
                     response.taskId(),
+                    null,
                     response.message()
             );
         }
 
-        private static AgentAsyncTaskCommandKafkaHandleResult rejected(String reason) {
-            return new AgentAsyncTaskCommandKafkaHandleResult(false, false, false, null, null, reason);
+        private static AgentAsyncTaskCommandKafkaHandleResult rejected(AgentAsyncTaskCommandKafkaFailureType failureType,
+                                                                      String reason) {
+            return new AgentAsyncTaskCommandKafkaHandleResult(false, false, false, null, null, failureType, reason);
+        }
+    }
+
+    /**
+     * payload 在进入 JSON 解析之前就被传输层规则拒绝时使用的内部异常。
+     *
+     * <p>单独定义异常是为了携带稳定 failureType。否则上层只能通过 message 文案猜测是空消息还是超大消息，
+     * 后续做指标和 DLQ 分类时会非常脆弱。</p>
+     */
+    private static class KafkaCommandPayloadRejectedException extends IllegalArgumentException {
+
+        private final AgentAsyncTaskCommandKafkaFailureType failureType;
+
+        private KafkaCommandPayloadRejectedException(AgentAsyncTaskCommandKafkaFailureType failureType,
+                                                     String message) {
+            super(message == null || message.isBlank()
+                    ? "Agent 异步命令 Kafka payload 被拒绝"
+                    : message);
+            this.failureType = failureType;
+        }
+
+        private AgentAsyncTaskCommandKafkaFailureType failureType() {
+            return failureType;
         }
     }
 }

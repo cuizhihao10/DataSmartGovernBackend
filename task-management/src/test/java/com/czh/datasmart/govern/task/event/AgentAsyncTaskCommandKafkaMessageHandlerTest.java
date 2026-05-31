@@ -41,6 +41,7 @@ class AgentAsyncTaskCommandKafkaMessageHandlerTest {
     private AgentAsyncTaskCommandKafkaProperties properties;
     private AgentAsyncTaskCommandConsumerService consumerService;
     private ObjectMapper objectMapper;
+    private AgentAsyncTaskCommandKafkaDiagnosticsService diagnosticsService;
     private AgentAsyncTaskCommandKafkaMessageHandler handler;
 
     @BeforeEach
@@ -48,7 +49,8 @@ class AgentAsyncTaskCommandKafkaMessageHandlerTest {
         properties = new AgentAsyncTaskCommandKafkaProperties();
         consumerService = mock(AgentAsyncTaskCommandConsumerService.class);
         objectMapper = new ObjectMapper();
-        handler = new AgentAsyncTaskCommandKafkaMessageHandler(properties, consumerService, objectMapper);
+        diagnosticsService = new AgentAsyncTaskCommandKafkaDiagnosticsService(properties);
+        handler = new AgentAsyncTaskCommandKafkaMessageHandler(properties, consumerService, objectMapper, diagnosticsService);
     }
 
     @Test
@@ -90,8 +92,45 @@ class AgentAsyncTaskCommandKafkaMessageHandlerTest {
                 handler.handle("{not-json");
 
         assertFalse(result.accepted());
+        assertEquals(AgentAsyncTaskCommandKafkaFailureType.INVALID_JSON, result.failureType());
         assertTrue(result.reason().contains("不是合法 JSON"));
+        AgentAsyncTaskCommandKafkaDiagnosticsSnapshot snapshot = diagnosticsService.snapshot();
+        assertEquals(1L, snapshot.totalFailures());
+        assertEquals(1L, snapshot.failuresByType().get(AgentAsyncTaskCommandKafkaFailureType.INVALID_JSON));
         verifyNoInteractions(consumerService);
+    }
+
+    @Test
+    void oversizedPayloadShouldBeRecordedAsDiagnosticsWhenFailFastIsDisabled() {
+        properties.setFailOnRejectedMessage(false);
+        properties.setMaxPayloadBytes(8);
+
+        AgentAsyncTaskCommandKafkaMessageHandler.AgentAsyncTaskCommandKafkaHandleResult result =
+                handler.handle("{\"too\":\"large\"}");
+
+        assertFalse(result.accepted());
+        assertEquals(AgentAsyncTaskCommandKafkaFailureType.PAYLOAD_TOO_LARGE, result.failureType());
+        AgentAsyncTaskCommandKafkaDiagnosticsSnapshot snapshot = diagnosticsService.snapshot();
+        assertEquals(1L, snapshot.totalFailures());
+        assertEquals(1, snapshot.recentFailures().size());
+        assertEquals(AgentAsyncTaskCommandKafkaFailureType.PAYLOAD_TOO_LARGE, snapshot.recentFailures().get(0).type());
+        verifyNoInteractions(consumerService);
+    }
+
+    @Test
+    void consumerValidationErrorShouldBeClassifiedAsRejectedMessage() throws JsonProcessingException {
+        properties.setFailOnRejectedMessage(false);
+        when(consumerService.consume(any(AgentAsyncTaskCommandRequest.class)))
+                .thenThrow(new IllegalArgumentException("schemaVersion 不支持"));
+
+        AgentAsyncTaskCommandKafkaMessageHandler.AgentAsyncTaskCommandKafkaHandleResult result =
+                handler.handle(objectMapper.writeValueAsString(validRequest()));
+
+        assertFalse(result.accepted());
+        assertEquals(AgentAsyncTaskCommandKafkaFailureType.CONSUMER_REJECTED, result.failureType());
+        AgentAsyncTaskCommandKafkaDiagnosticsSnapshot snapshot = diagnosticsService.snapshot();
+        assertEquals(1L, snapshot.failuresByType().get(AgentAsyncTaskCommandKafkaFailureType.CONSUMER_REJECTED));
+        verify(consumerService).consume(any(AgentAsyncTaskCommandRequest.class));
     }
 
     private AgentAsyncTaskCommandRequest validRequest() {

@@ -6943,3 +6943,18 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 接入 Micrometer 指标，记录 worker 调度轮次、任务结果计数和单轮耗时。
 3. 推进 ToolPlan DAG，避免继续只围绕单工具 worker 扩展。
 4. 接入 permission-admin 服务间授权和 data-sync.execute 参数治理。
+
+## 4.55 Agent 异步命令 Kafka 消费诊断与 DLQ 基础（2026-05-31）
+
+本阶段补齐 task-management Kafka listener 的坏消息可诊断基础。新增失败类型枚举、进程内有界诊断窗口、失败类型计数、DLQ 候选配置和内部只读诊断接口。
+
+产品意义：
+- 自动化 worker 打开前，平台必须能解释“命令为什么没有被消费”，否则坏 JSON、超大 payload、协议拒绝和未知业务异常都会混在日志里，生产排障成本很高。
+- 失败类型使用稳定枚举，为后续 Micrometer 指标、Prometheus 告警、DLQ topic 分类和运维重放台奠定统一语义。
+- 当前不直接写真实 DLQ topic，是为了避免在缺少脱敏、权限、重放幂等和审计之前制造新的副作用入口。
+- 诊断快照不保存原始 payload，继续坚持 Agent command 引用优先和敏感信息最小扩散。
+
+下一步建议：
+1. 接入 Micrometer 指标和 Kafka record 元数据，补 topic/partition/offset/keyHash/traceId。
+2. 设计真实 DLQ Producer、人工重放、跳过、归档和审计流程。
+3. 并行推进 ToolPlan DAG、permission-admin 服务间授权和 data-sync.execute 参数治理，避免继续只在 listener 局部优化。

@@ -78,6 +78,14 @@ datasmart:
         fail-on-rejected-message: ${DATASMART_TASK_AGENT_ASYNC_COMMAND_FAIL_ON_REJECTED:true}
         # 默认 false：错误日志不打印完整 payload，避免日志系统复制业务引用或误入敏感上下文。
         log-payload-on-error: ${DATASMART_TASK_AGENT_ASYNC_COMMAND_LOG_PAYLOAD_ON_ERROR:false}
+        # 是否记录进程内轻量诊断快照。它不会改变 offset 策略，只帮助定位坏消息类型和最近失败样本。
+        diagnostics-enabled: ${DATASMART_TASK_AGENT_ASYNC_COMMAND_DIAGNOSTICS_ENABLED:true}
+        # 诊断快照最多保留多少条最近失败样本。累计计数不会受该值影响，只有 recentFailures 窗口会被裁剪。
+        max-recent-failures: ${DATASMART_TASK_AGENT_ASYNC_COMMAND_MAX_RECENT_FAILURES:100}
+        # 当前阶段仅标记“是否应进入 DLQ”的候选语义，暂不真实写死信 topic，避免未设计重放/权限/脱敏前产生副作用。
+        dlq-enabled: ${DATASMART_TASK_AGENT_ASYNC_COMMAND_DLQ_ENABLED:false}
+        # 未来真实 Kafka DLQ Producer 使用的 topic。建议与主 topic 分离，便于设置独立保留期、告警和人工重放流程。
+        dlq-topic: ${DATASMART_TASK_AGENT_ASYNC_COMMAND_DLQ_TOPIC:datasmart.agent.tool.async.commands.dlq}
     agent-async-worker:
       # Agent 异步工具 worker 总开关。false 时手动 dispatch-once 和后台 scheduler 都不应真实执行任务。
       enabled: ${DATASMART_TASK_AGENT_ASYNC_WORKER_ENABLED:false}
