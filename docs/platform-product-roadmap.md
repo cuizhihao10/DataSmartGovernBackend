@@ -6995,3 +6995,22 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. DAG-aware 执行器应先只处理 LOW/readOnly/idempotent 的 ready 同步节点，避免一步到位开放全部自动行动。
 3. 在自动执行 DAG 前补 permission-admin 服务间授权、工具 schema 校验和租户/项目配额。
 4. 把 DAG 视图接入 runtime event/WebSocket，让用户和审计员能看到 Agent 为什么等待、哪些节点可并行、哪些节点被阻断。
+
+## 4.58 Python Runtime ToolPlan 显式 DAG Hints（2026-05-31）
+
+本阶段把 4.57 的 Java DAG 预检能力前移到 Python Runtime 规划阶段。Python 现在会在 `ToolPlan.governance_hints` 中写入 `planNodeId`、`dependsOn`、`parallelGroup`、`failurePolicy`、`resultAlias`、`planSequence` 和 `dagHintVersion`。
+
+已完成：
+- 新增 `ToolPlanDagAnnotator`，从工具输出引用和最小业务依赖规则生成 DAG hints。
+- `ToolPlanner` 返回规则式计划前统一补 DAG hints。
+- `AgentOrchestrator` 在模型 tool_calls 与规则计划合并后再次补 DAG hints，避免模型计划覆盖规则计划后丢失依赖。
+- Java ingestion payload 继续通过 `governanceHints` 透传，不破坏现有跨语言 DTO。
+
+产品意义：
+- Agent 规划输出从“线性工具数组”升级为“带图提示的行动计划”，后续前端、Java DAG 预检、worker 和审计台可以共享同一套节点/依赖语义。
+- 这一步仍然没有引入自动执行副作用，符合成熟 Agent 产品的路线：先解释计划，再授权执行，再做并发调度和失败补偿。
+
+下一步建议：
+1. 先做 Java DAG-aware 执行 preview，而不是直接自动执行所有 ready 节点。
+2. 补 permission-admin 服务间授权和工具 schema 治理。
+3. 再把 `governanceHints` 中的 DAG key 升级为强类型 schema，并接 runtime event/WebSocket 可视化。

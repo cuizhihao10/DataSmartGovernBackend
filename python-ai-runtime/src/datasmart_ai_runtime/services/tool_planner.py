@@ -18,6 +18,7 @@ from datasmart_ai_runtime.domain.contracts import (
 from datasmart_ai_runtime.domain.intent import IntentAnalysis, IntentRiskTag
 from datasmart_ai_runtime.domain.resource_reference import AgentResourceReference
 from datasmart_ai_runtime.domain.skills import AgentSkillPlan
+from datasmart_ai_runtime.services.tool_plan_dag import ToolPlanDagAnnotator
 from datasmart_ai_runtime.services.tool_parameter_validator import ToolParameterValidator
 
 
@@ -42,6 +43,7 @@ class ToolPlanner:
 
         self._tools = {tool.name: tool for tool in tools}
         self._parameter_validator = parameter_validator or ToolParameterValidator()
+        self._dag_annotator = ToolPlanDagAnnotator()
 
     def plan(
         self,
@@ -168,7 +170,7 @@ class ToolPlanner:
             )
             planned_tool_names.add("task.draft.persist")
 
-        return tuple(plans)
+        return self._dag_annotator.annotate(tuple(plans))
 
     def model_visible_tools(
         self,

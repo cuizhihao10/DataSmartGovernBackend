@@ -242,6 +242,9 @@ class AgentOrchestratorTest(unittest.TestCase):
         quality_plan = next(item for item in plan.tool_plans if item.tool_name == "quality.rule.suggest")
         self.assertEqual("model_tool_call", quality_plan.governance_hints["source"])
         self.assertEqual("call_quality_from_model", quality_plan.governance_hints["modelToolCallId"])
+        self.assertEqual("quality-rule-suggest", quality_plan.governance_hints["planNodeId"])
+        self.assertEqual(("datasource-metadata-read",), quality_plan.governance_hints["dependsOn"])
+        self.assertEqual(("datasource.metadata.read",), quality_plan.governance_hints["dependsOnTools"])
         self.assertEqual("模型提出的客户主数据完整性校验", quality_plan.arguments["businessGoal"])
         self.assertIn("datasource.metadata.read", tuple(item.tool_name for item in plan.tool_plans))
         self.assertIn(

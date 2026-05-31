@@ -44,6 +44,11 @@ class JavaAgentPlanIngestionClientTest(unittest.TestCase):
                 parameter_validation=ToolParameterValidationResult(can_execute=True),
                 governance_hints={
                     "modelToolCallId": "call-001",
+                    "planNodeId": "datasource-metadata-read",
+                    "dependsOn": (),
+                    "parallelGroup": "read-only-probe",
+                    "failurePolicy": "BLOCK_RUN",
+                    "resultAlias": "metadata",
                     "sensitiveFields": ("datasourceId",),
                 },
             )
@@ -64,6 +69,10 @@ class JavaAgentPlanIngestionClientTest(unittest.TestCase):
         self.assertEqual("low", tool_payload["riskLevel"])
         self.assertEqual("sync", tool_payload["executionMode"])
         self.assertEqual("call-001", tool_payload["governanceHints"]["modelToolCallId"])
+        self.assertEqual("datasource-metadata-read", tool_payload["governanceHints"]["planNodeId"])
+        self.assertEqual((), tool_payload["governanceHints"]["dependsOn"])
+        self.assertEqual("read-only-probe", tool_payload["governanceHints"]["parallelGroup"])
+        self.assertEqual("metadata", tool_payload["governanceHints"]["resultAlias"])
         self.assertEqual(("datasourceId",), tool_payload["governanceHints"]["sensitiveFields"])
 
     def test_build_payload_includes_parameter_issues_for_java_execution_guard(self) -> None:

@@ -36,6 +36,7 @@ from datasmart_ai_runtime.services.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.model_tool_feedback_provider import ModelToolExecutionFeedbackProvider
 from datasmart_ai_runtime.services.runtime_event_recorder import RuntimeEventRecorder
 from datasmart_ai_runtime.services.skill_registry import AgentSkillRegistry
+from datasmart_ai_runtime.services.tool_plan_dag import ToolPlanDagAnnotator
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 
 
@@ -70,6 +71,7 @@ class AgentOrchestrator:
         self._memory_retriever = memory_retriever or InMemoryAgentMemoryRetriever()
         self._model_gateway = model_gateway or ModelGatewayGovernanceService(model_routes)
         self._skill_registry = skill_registry
+        self._dag_annotator = ToolPlanDagAnnotator()
         self._model_intent_node = model_intent_node or AgentModelIntentNode(
             model_providers=self._model_providers,
             model_gateway=self._model_gateway,
@@ -180,7 +182,9 @@ class AgentOrchestrator:
             intent_analysis=intent_analysis,
             context_blocks=context_blocks,
         )
-        tool_plans = self._merge_tool_plans(model_intent_result.model_tool_plans, rule_tool_plans)
+        tool_plans = self._dag_annotator.annotate(
+            self._merge_tool_plans(model_intent_result.model_tool_plans, rule_tool_plans)
+        )
         event_recorder.record(
             AgentRuntimeEventType.TOOL_PLANNED,
             "plan_tools",

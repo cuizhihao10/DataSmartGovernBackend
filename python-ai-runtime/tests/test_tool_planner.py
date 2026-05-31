@@ -237,6 +237,11 @@ class ToolPlannerTest(unittest.TestCase):
 
         quality_plan = next(plan for plan in plans if plan.tool_name == "quality.rule.suggest")
         metadata_ref = quality_plan.arguments["metadataRef"]
+        self.assertEqual("quality-rule-suggest", quality_plan.governance_hints["planNodeId"])
+        self.assertEqual(("datasource-metadata-read",), quality_plan.governance_hints["dependsOn"])
+        self.assertEqual(("datasource.metadata.read",), quality_plan.governance_hints["dependsOnTools"])
+        self.assertEqual("after-datasource-metadata-read", quality_plan.governance_hints["parallelGroup"])
+        self.assertEqual("suggestion", quality_plan.governance_hints["resultAlias"])
         self.assertEqual(
             "datasource.metadata.read",
             metadata_ref["fromTool"],
@@ -247,6 +252,8 @@ class ToolPlannerTest(unittest.TestCase):
         self.assertEqual("workspace://tool-output/datasource.metadata.read?path=metadata", metadata_ref["resourceReference"]["uri"])
 
         create_draft_plan = next(plan for plan in plans if plan.tool_name == "task.create.draft")
+        self.assertEqual(("quality-rule-suggest",), create_draft_plan.governance_hints["dependsOn"])
+        self.assertEqual("taskDraft", create_draft_plan.governance_hints["resultAlias"])
         self.assertEqual("DATA_QUALITY_SCAN", create_draft_plan.arguments["taskType"])
         suggestion_ref = create_draft_plan.arguments["suggestionRef"]
         self.assertEqual(
@@ -257,6 +264,8 @@ class ToolPlannerTest(unittest.TestCase):
 
         persist_plan = next(plan for plan in plans if plan.tool_name == "task.draft.persist")
         self.assertTrue(persist_plan.requires_human_approval)
+        self.assertEqual(("task-create-draft",), persist_plan.governance_hints["dependsOn"])
+        self.assertEqual("MANUAL_REVIEW", persist_plan.governance_hints["failurePolicy"])
         task_draft_ref = persist_plan.arguments["taskDraftRef"]
         self.assertEqual(
             "task.create.draft",
