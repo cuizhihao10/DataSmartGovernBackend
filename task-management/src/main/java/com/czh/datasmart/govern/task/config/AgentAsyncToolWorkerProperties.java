@@ -35,6 +35,15 @@ public class AgentAsyncToolWorkerProperties {
     private boolean enabled = false;
 
     /**
+     * 是否启用后台定时调度器。
+     *
+     * <p>`enabled` 表示 worker 能力总开关，`schedulerEnabled` 表示是否允许应用启动后由后台线程自动触发。
+     * 两者分开是为了支持更安全的灰度路径：运维人员可以先打开 `enabled=true`，继续只通过内部 `dispatch-once`
+     * 手动验证链路；等状态回写、幂等、权限和下游容量都稳定后，再打开 `schedulerEnabled=true` 进入自动调度。</p>
+     */
+    private boolean schedulerEnabled = false;
+
+    /**
      * Agent Runtime 内部服务地址。
      *
      * <p>worker 会通过它访问 `/internal/agent-runtime/.../plan-arguments`，按 payloadReference 回读受控参数快照。
@@ -65,6 +74,31 @@ public class AgentAsyncToolWorkerProperties {
      * <p>本阶段只做预检，不使用该值；提前放入配置是为了让 worker 设计与现有 claim/heartbeat 机制对齐。</p>
      */
     private long claimLeaseSeconds = 60;
+
+    /**
+     * 后台调度器每轮固定延迟毫秒数。
+     *
+     * <p>这里使用 fixed-delay 语义，而不是 fixed-rate：
+     * fixed-delay 会等上一轮处理结束后再等待指定时间，适合执行耗时不稳定的任务 worker；
+     * fixed-rate 更适合轻量轮询，如果一轮耗时超过间隔，容易形成调度堆积。</p>
+     */
+    private long schedulerFixedDelayMs = 5000;
+
+    /**
+     * 后台调度器单轮最多处理的任务数。
+     *
+     * <p>这个上限是生产保护阀。即使队列里积压很多 Agent 工具任务，单个 task-management 实例也不应在一次调度中无限 claim，
+     * 否则会挤占普通任务执行器、打爆 data-sync 下游、或导致同租户任务长期霸占 worker。</p>
+     */
+    private int maxDispatchesPerTick = 1;
+
+    /**
+     * 当一轮调度遇到 NO_TASK 时是否立刻停止本轮。
+     *
+     * <p>默认 true。队列没有任务时继续循环没有价值，只会增加数据库 claim 查询压力。
+     * 后续如果支持多分片、多优先级队列或多个工具队列，可以把该策略演进为“当前分片无任务后切换下一分片”。</p>
+     */
+    private boolean stopBatchOnNoTask = true;
 
     /**
      * 解析后的参数载荷最大字节数。

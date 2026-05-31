@@ -5,6 +5,7 @@ import com.czh.datasmart.govern.task.config.AgentAsyncToolWorkerProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * @Author : Cui
@@ -22,6 +23,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
  * 每个模块都不是普通的 package 聚合，而是一个可独立启动、独立部署、独立演进的业务服务。
  */
 @SpringBootApplication
+@EnableScheduling
 @EnableConfigurationProperties({
         AgentAsyncTaskCommandKafkaProperties.class,
         AgentAsyncToolWorkerProperties.class

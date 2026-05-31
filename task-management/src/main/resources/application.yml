@@ -1,47 +1,42 @@
-# 每个模块保留独立端口，便于本地单独启动和调试。
-# 真正的跨服务入口在网关层，这里主要用于模块自身运行。
+# task-management 是平台任务中心服务，负责任务创建、队列认领、执行回调、租约、退避、死信和 Agent 异步工具任务承载。
+# 这里保留独立端口，方便本地单独启动和调试；真实外部访问应优先通过 gateway 路由进入。
 server:
   port: 8081
 
 spring:
   application:
-    # 服务名会参与注册发现、日志标识和跨模块调用识别。
+    # 服务名会参与注册发现、日志标识、链路追踪和跨模块调用识别。
     name: task-management
   profiles:
     active: dev
   datasource:
     # 任务生命周期的持久化状态保存在 MySQL 中。
-    # 当前使用本地开发库，后续生产环境应通过环境变量或配置中心注入。
+    # 本地默认连接开发库，生产环境应通过环境变量、Nacos 或密钥管理系统覆盖。
     url: jdbc:mysql://localhost:3306/datasmart_govern?useSSL=false&serverTimezone=UTC
     username: root
     password: password
     driver-class-name: com.mysql.cj.jdbc.Driver
   redis:
-    # Redis 当前主要作为后续缓存、分布式协作和短期状态存储的预留依赖。
+    # Redis 预留给短期状态、分布式协作、热点缓存和后续 worker 限流/租户配额。
     host: localhost
     port: 6379
   kafka:
-    # Kafka 用于承接跨服务异步任务命令、任务状态事件和后续告警事件。
-    # 当前 Agent 异步工具 command listener 默认关闭；只有显式打开业务开关后才会消费。
+    # Kafka 用于承接跨服务异步命令、任务状态事件和后续告警事件。
     bootstrap-servers: localhost:9092
     consumer:
-      # 明确使用字符串反序列化器，保持 Kafka 消息体为普通 JSON 字符串。
-      # 这样 Java、Python、命令行工具和 Kafka UI 都能直接查看 payload，
-      # 也避免 Spring Kafka JsonDeserializer 绑定 Java 类型头导致跨语言消费困难。
+      # 明确使用字符串反序列化器，使 Kafka 消息保持普通 JSON 字符串。
+      # 这样 Java、Python、命令行工具和 Kafka UI 都能直接查看 payload，避免绑定 Java 类序列化头。
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      # 早期联调时如果消费者组第一次启动，通常希望从已有 command 起点开始检查链路。
-      # 生产环境如果积压量很大，需要结合部署策略、offset 管理和灰度开关谨慎调整。
+      # 本地联调时从 earliest 开始更容易观察链路；生产环境需要结合 offset 管理和灰度策略谨慎调整。
       auto-offset-reset: earliest
   cloud:
     nacos:
       discovery:
-        # Nacos 用于服务注册与发现，支撑网关和模块间调用定位。
+        # Nacos 用于服务注册与发现，支撑 gateway 和模块间调用定位。
         server-addr: localhost:8848
 
 mybatis-plus:
-  # 即使当前大多数查询依赖 MyBatis-Plus 自动生成，
-  # 仍然保留 mapper-locations，便于后续接入复杂 SQL。
   mapper-locations: classpath:/mapper/*.xml
   type-aliases-package: com.czh.datasmart.govern.task.entity
   configuration:
@@ -59,7 +54,7 @@ management:
   endpoints:
     web:
       exposure:
-        # 当前先暴露最基础但最实用的健康、信息和指标端点。
+        # 当前先暴露基础健康、信息和指标端点。后续 Agent worker 指标接入后可继续扩展。
         include: health,info,metrics
   endpoint:
     health:
@@ -73,31 +68,38 @@ datasmart:
         # 是否启动 Agent 异步工具命令 Kafka listener。
         # 默认关闭，避免本地没有 Kafka 或 agent-runtime dispatcher 时启动后不断重连。
         enabled: ${DATASMART_TASK_AGENT_ASYNC_COMMAND_KAFKA_ENABLED:false}
-        # 必须与 agent-runtime 侧 command outbox/plan 中的 commandTopic 保持一致。
+        # 必须与 agent-runtime command outbox/plan 中的 commandTopic 保持一致。
         topic: ${DATASMART_AGENT_ASYNC_COMMAND_TOPIC:datasmart.agent.tool.async.commands}
         # task-management 消费者组。同组多实例会分摊分区，适合任务创建只处理一次的场景。
         group-id: ${DATASMART_TASK_AGENT_ASYNC_COMMAND_GROUP_ID:datasmart-task-management-agent-command-consumer}
-        # 单条消息最大字节数。正常 command 只包含 payloadReference 和治理元数据，不应携带参数值或大对象。
+        # 单条消息最大字节数。正常 command 只应包含 payloadReference 和治理元数据，不应携带参数值或大对象。
         max-payload-bytes: ${DATASMART_TASK_AGENT_ASYNC_COMMAND_MAX_PAYLOAD_BYTES:65536}
         # 默认 true：非法消息抛出异常，等待 Kafka 错误处理器或后续 DLQ 处理，避免静默丢弃生产命令。
         fail-on-rejected-message: ${DATASMART_TASK_AGENT_ASYNC_COMMAND_FAIL_ON_REJECTED:true}
-        # 默认 false：错误日志不打印完整 payload，避免日志系统复制业务引用或误入的敏感上下文。
+        # 默认 false：错误日志不打印完整 payload，避免日志系统复制业务引用或误入敏感上下文。
         log-payload-on-error: ${DATASMART_TASK_AGENT_ASYNC_COMMAND_LOG_PAYLOAD_ON_ERROR:false}
     agent-async-worker:
-      # Agent 异步工具 worker 总开关。
-      # 当前 4.51 阶段只落地 payloadReference 解析预检，尚未自动认领和执行任务，因此默认关闭。
+      # Agent 异步工具 worker 总开关。false 时手动 dispatch-once 和后台 scheduler 都不应真实执行任务。
       enabled: ${DATASMART_TASK_AGENT_ASYNC_WORKER_ENABLED:false}
-      # Agent Runtime 内部地址，worker 会通过它读取 /internal/agent-runtime/.../plan-arguments。
+      # 后台定时调度器开关。它与 enabled 分离：enabled=true 只代表 worker 能力可用，scheduler-enabled=true 才代表应用会自动循环认领任务。
+      # 生产建议先通过 dispatch-once 手动验证链路，再小流量开启自动调度。
+      scheduler-enabled: ${DATASMART_TASK_AGENT_ASYNC_WORKER_SCHEDULER_ENABLED:false}
+      # Agent Runtime 内部地址，worker 会通过它读取 /internal/agent-runtime/.../plan-arguments 并回写 async-task-status。
       # 生产环境建议改成服务发现、内网网关或配置中心地址，并叠加服务账号鉴权/mTLS。
       agent-runtime-base-url: ${DATASMART_AGENT_RUNTIME_INTERNAL_BASE_URL:http://localhost:8090}
-      # data-sync 内部服务地址。`data-sync.execute` 白名单适配器只调用固定内部幂等入口，
-      # 不会把 Agent payload 中的 targetEndpoint 当成任意 URL 执行，避免模型输出越权触发内网接口。
+      # data-sync 内部服务地址。data-sync.execute 白名单适配器只调用固定内部幂等入口，不会执行 Agent payload 中的任意 targetEndpoint。
       data-sync-base-url: ${DATASMART_DATA_SYNC_INTERNAL_BASE_URL:http://localhost:8086}
-      # worker 身份标识，后续接入 claim/heartbeat 后会进入执行租约和排障视图。
+      # worker 身份标识，会进入任务租约、回调幂等键和排障日志。
       executor-id: ${DATASMART_TASK_AGENT_ASYNC_WORKER_EXECUTOR_ID:task-management-agent-async-worker-local}
-      # 后续自动认领任务时的租约秒数；当前预检接口不主动认领任务，仅提前对齐执行器模型。
+      # 后台调度 fixed-delay 间隔，单位毫秒。使用 fixed-delay 是为了等上一轮结束后再等待，避免长任务场景产生调度堆积。
+      scheduler-fixed-delay-ms: ${DATASMART_TASK_AGENT_ASYNC_WORKER_SCHEDULER_FIXED_DELAY_MS:5000}
+      # 单轮最多执行多少次 dispatch-once。该值是本地实例级保护阀，后续还需要叠加租户级配额、工具级限流和下游容量保护。
+      max-dispatches-per-tick: ${DATASMART_TASK_AGENT_ASYNC_WORKER_MAX_DISPATCHES_PER_TICK:1}
+      # 单轮遇到 NO_TASK 是否提前停止。默认 true，避免队列为空时继续循环 claim，增加数据库压力。
+      stop-batch-on-no-task: ${DATASMART_TASK_AGENT_ASYNC_WORKER_STOP_BATCH_ON_NO_TASK:true}
+      # 自动认领任务时的租约秒数；过短会导致长工具被过早恢复，过长会拖慢故障恢复。
       claim-lease-seconds: ${DATASMART_TASK_AGENT_ASYNC_WORKER_CLAIM_LEASE_SECONDS:60}
       # 参数载荷最大字节数。Agent 工具参数应保存结构化配置和引用，不应携带大文件、样本数据或海量 SQL。
       max-resolved-payload-bytes: ${DATASMART_TASK_AGENT_ASYNC_WORKER_MAX_RESOLVED_PAYLOAD_BYTES:65536}
-      # 默认只做 dry-run 预检，不调用真实目标服务。真正执行需要工具适配器白名单、权限策略和状态回写闭环。
+      # 默认只做 dry-run 预检，不调用真实目标服务。真实执行需要白名单适配器、权限策略和状态回写闭环全部确认后再关闭。
       dry-run-only: ${DATASMART_TASK_AGENT_ASYNC_WORKER_DRY_RUN_ONLY:true}

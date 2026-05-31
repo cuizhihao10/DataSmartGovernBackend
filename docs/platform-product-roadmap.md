@@ -6927,3 +6927,19 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 补 Kafka listener DLQ、消费指标、积压告警和坏消息处理台。
 3. 推进 ToolPlan DAG，解决多工具依赖、并行、失败跳过和补偿顺序。
 4. 接入 permission-admin 服务间授权和 data-sync.execute 参数治理。
+
+## 4.54 Agent 异步工具后台 worker 调度骨架（2026-05-31）
+
+本阶段把 `dispatch-once` 扩展为默认关闭的后台 worker 调度骨架。新增 scheduler、batch service、batch result 和调度配置，支持 fixed-delay 轮询、单轮最多处理 N 条、无任务提前停止、防重入和三重安全开关。
+
+产品意义：
+- 从“人工触发一次”推进到“具备自动消费能力”，但仍默认关闭，避免本地或早期联调环境误触发真实数据同步副作用。
+- `enabled` 与 `schedulerEnabled` 分离，支持商业化灰度：先手动验证，再小流量自动调度。
+- 单轮上限和无任务停止是后续租户配额、工具限流、全局并发池和队列治理的最小落点。
+- `application.yml` 已整理为清晰中文注释，降低后续学习和运维配置理解成本。
+
+下一步建议：
+1. 补 DLQ、消费指标、积压告警和坏消息处理入口。
+2. 接入 Micrometer 指标，记录 worker 调度轮次、任务结果计数和单轮耗时。
+3. 推进 ToolPlan DAG，避免继续只围绕单工具 worker 扩展。
+4. 接入 permission-admin 服务间授权和 data-sync.execute 参数治理。
