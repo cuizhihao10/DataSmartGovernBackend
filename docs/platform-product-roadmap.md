@@ -7096,3 +7096,25 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 在 permission-admin 补 SERVICE_ACCOUNT 代表 actor 执行契约和策略种子。
 3. 再实现 selected-node outbox dispatcher，把用户或策略确认后的节点安全送入后端执行链路。
 4. 进入真实 DAG worker 前补租户配额、工具限流、并发池、checkpoint/replay、失败补偿和执行指标。
+
+## 4.63 Agent Runtime runtime event display 展示解释层（2026-05-31）
+
+本阶段先不急着上 WebSocket 通道，而是把现有 runtime event 查询响应升级为“前端/智能网关可直接展示”。每条事件现在会带 `display` 解释视图，前端无需只靠 `eventType + attributes` 自己猜标题、状态、是否需要关注和推荐动作。
+
+已完成：
+- 新增 `AgentRuntimeEventDisplayView`，承载 category、title、summary、status、requiresAttention、replayPolicy、recommendedActions、metrics 等展示字段。
+- 新增 `AgentRuntimeEventDisplaySupport`，在字段脱敏之后生成展示解释，避免展示层绕过权限策略。
+- 对 `agent.dag_execution.dry_run.completed` 做专项解释：展示同步候选、异步预案、阻断、未命中、批量上限等指标，并给出动作审批与阻断排查建议。
+- `AgentRuntimeEventProjectionView` 新增 `display` 字段，保留原始 attributes 的同时提供稳定 UI 契约。
+- 新增测试覆盖 dry-run display 的类别、状态、指标、推荐动作和 replayPolicy。
+
+产品意义：
+- 这是 WebSocket/replay 的前置契约：通道可以稍后补，但推送内容必须先能被稳定渲染。
+- 智能网关动作审批面板后续可以直接展示“Agent 建议推进什么、为什么需要关注、下一步应该做什么”。
+- display 只使用低风险摘要，不承载 SQL、prompt、payload、工具参数或样本数据，继续满足企业级 Agent 最小暴露原则。
+
+下一步建议：
+1. 做 runtime event WebSocket/replay 最小通道，支持 session/run 订阅、afterSequence 增量回放和客户端 ack cursor。
+2. 补 approval、tool execution、memory、async-task 等事件的专项 display，但不要让展示层演进吞掉权限和执行主线。
+3. 推进 permission-admin SERVICE_ACCOUNT 委托授权契约。
+4. 在 selected-node outbox dispatcher 前补 request fingerprint 和确认幂等，防止重复确认、重复入队。

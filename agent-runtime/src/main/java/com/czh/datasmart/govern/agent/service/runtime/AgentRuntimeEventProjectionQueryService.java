@@ -32,6 +32,7 @@ public class AgentRuntimeEventProjectionQueryService {
     private final AgentRuntimeEventConsumerProperties properties;
     private final AgentRuntimeEventProjectionAccessSupport accessSupport;
     private final AgentRuntimeEventVisibilitySupport visibilitySupport;
+    private final AgentRuntimeEventDisplaySupport displaySupport;
 
     /**
      * 查询 Agent runtime event 投影。
@@ -140,7 +141,8 @@ public class AgentRuntimeEventProjectionQueryService {
                 record.createdAt(),
                 record.publishedAt(),
                 record.consumedAt(),
-                record.attributes()
+                record.attributes(),
+                displaySupport.buildDisplay(record)
         );
     }
 }

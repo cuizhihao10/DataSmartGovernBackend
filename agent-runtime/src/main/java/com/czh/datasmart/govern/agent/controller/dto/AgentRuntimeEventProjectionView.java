@@ -18,6 +18,9 @@ import java.util.Map;
  *
  * <p>`sequence` 保留事件生产方原始序号；`replaySequence` 是 Java 控制面投影层分配的稳定回放游标。
  * 前端断线续传、Python 外部 replay source 和审计回放应优先使用 replaySequence 作为 Java source cursor。</p>
+ *
+ * <p>`display` 是服务端生成的展示解释层，不替代 attributes 中的机器事实。这样前端可以直接渲染时间线卡片，
+ * 但自动化客户端仍能按 eventType、stage、replaySequence 和 attributes 做稳定判断。</p>
  */
 public record AgentRuntimeEventProjectionView(
         String identityKey,
@@ -38,6 +41,7 @@ public record AgentRuntimeEventProjectionView(
         Instant createdAt,
         Instant publishedAt,
         Instant consumedAt,
-        Map<String, Object> attributes
+        Map<String, Object> attributes,
+        AgentRuntimeEventDisplayView display
 ) {
 }

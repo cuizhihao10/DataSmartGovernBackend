@@ -42,7 +42,8 @@ class AgentRuntimeEventProjectionQueryServiceTest {
                 stats,
                 properties(),
                 new AgentRuntimeEventProjectionAccessSupport(),
-                new AgentRuntimeEventVisibilitySupport()
+                new AgentRuntimeEventVisibilitySupport(),
+                new AgentRuntimeEventDisplaySupport()
         );
 
         var response = queryService.query(new AgentRuntimeEventProjectionQuery(
@@ -74,7 +75,8 @@ class AgentRuntimeEventProjectionQueryServiceTest {
                 stats,
                 properties(),
                 new AgentRuntimeEventProjectionAccessSupport(),
-                new AgentRuntimeEventVisibilitySupport()
+                new AgentRuntimeEventVisibilitySupport(),
+                new AgentRuntimeEventDisplaySupport()
         );
 
         var diagnostics = queryService.diagnostics();
@@ -110,7 +112,8 @@ class AgentRuntimeEventProjectionQueryServiceTest {
                 stats,
                 properties(),
                 new AgentRuntimeEventProjectionAccessSupport(),
-                new AgentRuntimeEventVisibilitySupport()
+                new AgentRuntimeEventVisibilitySupport(),
+                new AgentRuntimeEventDisplaySupport()
         );
 
         var allEvents = queryService.query(new AgentRuntimeEventProjectionQuery(
@@ -234,7 +237,8 @@ class AgentRuntimeEventProjectionQueryServiceTest {
                 new AgentRuntimeEventConsumerStats(),
                 properties(),
                 new AgentRuntimeEventProjectionAccessSupport(),
-                new AgentRuntimeEventVisibilitySupport()
+                new AgentRuntimeEventVisibilitySupport(),
+                new AgentRuntimeEventDisplaySupport()
         );
         AgentRuntimeEventQueryAccessContext context = new AgentRuntimeEventQueryAccessContext(
                 10L,
@@ -293,7 +297,8 @@ class AgentRuntimeEventProjectionQueryServiceTest {
                 new AgentRuntimeEventConsumerStats(),
                 properties(),
                 new AgentRuntimeEventProjectionAccessSupport(),
-                new AgentRuntimeEventVisibilitySupport()
+                new AgentRuntimeEventVisibilitySupport(),
+                new AgentRuntimeEventDisplaySupport()
         );
         AgentRuntimeEventQueryAccessContext context = new AgentRuntimeEventQueryAccessContext(
                 10L,
@@ -317,6 +322,68 @@ class AgentRuntimeEventProjectionQueryServiceTest {
                 response.events().getFirst().attributes().get(AgentRuntimeEventVisibilitySupport.VISIBILITY_LEVEL_ATTRIBUTE));
     }
 
+    /**
+     * dry-run 事件应该在查询响应中带上前端友好的 display 解释。
+     *
+     * <p>4.62 已经把 DAG dry-run 写入 runtime event；本测试保护 4.63 的产品语义：
+     * 前端、智能网关和审计台不应该只拿到一堆 attributes 后自行猜测展示方式，而应该直接看到类别、标题、状态、
+     * 是否需要关注、推荐动作和低风险指标。这样后续 WebSocket replay 只要推送同一 DTO，就能稳定渲染动作时间线。</p>
+     */
+    @Test
+    void queryShouldExposeDisplayForDagDryRunEvent() {
+        InMemoryAgentRuntimeEventProjectionStore store = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        store.append(eventRecord(
+                "dag-dry-run-display-event",
+                "agent.dag_execution.dry_run.completed",
+                "dag_execution_dry_run_completed",
+                "DAG dry-run 已生成：同步候选 1 个，异步预案 1 个，阻断 1 个，未命中 1 个。",
+                "10",
+                "20",
+                "1001",
+                Map.of(
+                        "selectedCount", 3,
+                        "syncDryRunCandidateCount", 1,
+                        "asyncEnqueuePreviewCount", 1,
+                        "blockedCount", 1,
+                        "notFoundCount", 1,
+                        "batchLimitReachedCount", 0,
+                        "items", List.of(Map.of("nodeId", "node-sync", "dryRunAction", "SYNC_AUTO_EXECUTE_DRY_RUN")),
+                        "eventPayloadPolicy", "SUMMARY_ONLY_NO_TOOL_ARGUMENTS_NO_EXECUTION_PATH"
+                )
+        ));
+        AgentRuntimeEventProjectionQueryService queryService = new AgentRuntimeEventProjectionQueryService(
+                store,
+                new AgentRuntimeEventConsumerStats(),
+                properties(),
+                new AgentRuntimeEventProjectionAccessSupport(),
+                new AgentRuntimeEventVisibilitySupport(),
+                new AgentRuntimeEventDisplaySupport()
+        );
+        AgentRuntimeEventQueryAccessContext context = new AgentRuntimeEventQueryAccessContext(
+                10L,
+                1001L,
+                "PROJECT_OWNER",
+                "trace-dry-run-display",
+                "PROJECT",
+                List.of(20L)
+        );
+
+        var response = queryService.query(new AgentRuntimeEventProjectionQuery(
+                null, null, null, null, null, null, null, null, 10
+        ), context);
+
+        var display = response.events().getFirst().display();
+        assertEquals("DAG_DRY_RUN", display.category());
+        assertEquals("DAG 执行预案已生成", display.title());
+        assertEquals("NEEDS_REVIEW", display.status());
+        assertTrue(display.requiresAttention());
+        assertTrue(display.summary().contains("同步候选 1 个"));
+        assertEquals(1, display.metrics().get("syncDryRunCandidateCount"));
+        assertEquals(1, display.metrics().get("blockedCount"));
+        assertTrue(display.recommendedActions().stream().anyMatch(action -> action.contains("阻断原因")));
+        assertEquals("APPEND_TO_TIMELINE_AND_ALLOW_ACK_CURSOR", display.replayPolicy());
+    }
+
     private ObjectMapper objectMapper() {
         return new ObjectMapper().registerModule(new JavaTimeModule());
     }
@@ -332,7 +399,8 @@ class AgentRuntimeEventProjectionQueryServiceTest {
                 stats,
                 properties(),
                 new AgentRuntimeEventProjectionAccessSupport(),
-                new AgentRuntimeEventVisibilitySupport()
+                new AgentRuntimeEventVisibilitySupport(),
+                new AgentRuntimeEventDisplaySupport()
         );
     }
 
