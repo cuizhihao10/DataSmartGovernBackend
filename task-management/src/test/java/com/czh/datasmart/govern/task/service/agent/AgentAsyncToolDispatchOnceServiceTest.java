@@ -45,10 +45,12 @@ class AgentAsyncToolDispatchOnceServiceTest {
         properties.setDryRunOnly(false);
         properties.setExecutorId("agent-worker-test");
         AgentAsyncToolExecutor executor = new FakeExecutor();
+        AgentRuntimeAsyncToolStatusClient statusClient = mock(AgentRuntimeAsyncToolStatusClient.class);
         AgentAsyncToolDispatchOnceService service = new AgentAsyncToolDispatchOnceService(
                 taskService,
                 resolver,
                 List.of(executor),
+                statusClient,
                 properties,
                 new ObjectMapper()
         );
@@ -68,6 +70,10 @@ class AgentAsyncToolDispatchOnceServiceTest {
         assertEquals(9101L, result.runId());
         assertEquals("data-sync.execute", result.toolCode());
         verify(taskService).completeTask(eq(9001L), any(String.class), any(TaskExecutionCallbackContext.class));
+        verify(statusClient).notifyStatus(any(AgentAsyncToolResolvedPayload.class), eq(9101L),
+                eq("RUNNING"), any(String.class), eq(null), any(Map.class));
+        verify(statusClient).notifyStatus(any(AgentAsyncToolResolvedPayload.class), eq(9101L),
+                eq("SUCCEEDED"), any(String.class), eq(null), any(Map.class));
     }
 
     private AgentAsyncToolResolvedPayload payload() {

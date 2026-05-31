@@ -143,6 +143,17 @@ public class AgentToolExecutionAuditService {
     }
 
     /**
+     * 读取可供服务层继续推进状态的审计记录。
+     *
+     * <p>普通查询接口只返回不可变视图，避免外部调用方绕过状态机修改审计事实。
+     * 但异步工具任务回调这类 agent-runtime 内部服务，需要在确认 session/run/audit 归属后继续推进状态，
+     * 因此这里提供一个语义明确的内部读取入口。</p>
+     */
+    public AgentToolExecutionAuditRecord requireExecutionAuditRecord(String sessionId, String runId, String auditId) {
+        return requireAudit(sessionId, runId, auditId);
+    }
+
+    /**
      * 人工确认某个高风险工具计划。
      *
      * <p>确认后，工具审计记录会从 WAITING_APPROVAL 回到 PLANNED。
@@ -212,6 +223,42 @@ public class AgentToolExecutionAuditService {
     /**
      * 标记工具执行成功。
      */
+    /**
+     * 使用调用方提供的说明将工具审计推进到 EXECUTING。
+     *
+     * <p>异步工具 worker 的 RUNNING 回调通常能说明“哪个 executor 已领取任务、任务中心 runId 是什么、是否属于重试”。
+     * 这些信息比固定文案更适合进入前端事件流和审计排障记录，所以提供该重载给内部回调服务使用。</p>
+     */
+    public AgentToolExecutionAuditRecord startExecutionWithMessage(String sessionId,
+                                                                   String runId,
+                                                                   String auditId,
+                                                                   String message) {
+        AgentToolExecutionAuditRecord record = requirePlannedExecutionAudit(sessionId, runId, auditId);
+        AgentToolExecutionState previousState = record.getState();
+        record.startExecution(message == null || message.isBlank()
+                ? "工具计划已进入 EXECUTING，正在调用受控工具适配器。"
+                : message.trim());
+        persistThenPublishStateChanged(previousState, record);
+        return record;
+    }
+
+    /**
+     * 更新 EXECUTING 状态下的执行说明。
+     *
+     * <p>task-management 的 DEFERRED 表示“本次执行暂时退避并等待后续重试”，但当前 Agent 状态枚举尚未引入 RETRYING/DEFERRED。
+     * 为了不在一个小里程碑里扩散状态机兼容改造，首版保持 EXECUTING，并通过 message 告诉前端、Python Runtime 和审计台当前处于退避等待中。</p>
+     */
+    public AgentToolExecutionAuditView updateExecutingMessage(AgentToolExecutionAuditRecord record, String message) {
+        if (record.getState() != AgentToolExecutionState.EXECUTING) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "只有 EXECUTING 状态的工具审计才能更新执行说明，state=" + record.getState().name());
+        }
+        AgentToolExecutionState previousState = record.getState();
+        record.updateExecutionMessage(message == null || message.isBlank() ? record.getMessage() : message.trim());
+        persistThenPublishStateChanged(previousState, record);
+        return toView(record);
+    }
+
     public AgentToolExecutionAuditView succeedExecution(AgentToolExecutionAuditRecord record,
                                                         String message,
                                                         String outputSummary) {

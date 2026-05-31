@@ -6912,3 +6912,18 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 - 新增 `dispatch-once` 手动调度入口，完成 claim -> payload resolver -> 白名单适配器 -> complete/defer/fail 的最小闭环。
 - 默认仍保持 `enabled=false` 与 `dryRunOnly=true`，真实执行必须显式打开，避免本地学习环境误触发下游副作用。
 - 下一步应优先做状态回写到 agent-runtime/runtime event，再补后台 worker、租户配额、心跳续租、permission-admin 服务间授权和 ToolPlan DAG。
+## 4.53 Agent 异步工具执行状态回写（2026-05-31）
+
+本阶段把 task-management worker 的执行状态回写到 agent-runtime 工具审计和 runtime event 体系。新增 `/internal/agent-runtime/.../async-task-status` 内部回调接口，并由 `AgentRuntimeAsyncToolStatusClient` 在 worker RUNNING、SUCCEEDED、FAILED、DEFERRED 节点调用。
+
+产品意义：
+- Agent 异步工具不再只是“任务中心执行了”，而是能回到 Agent 会话、前端事件流、Python 二轮推理和审计台统一可见。
+- task-management 不直接写 agent-runtime 数据库，避免微服务边界耦合；agent-runtime 继续作为工具审计事实源。
+- SUCCEEDED 回写成功后才 complete task；回写失败时任务 defer 等待补偿，避免执行结果不可见。
+- DEFERRED 首版保持 EXECUTING 并刷新 message，后续再根据前端和指标需要扩展 RETRYING/DEFERRED 状态。
+
+下一步建议：
+1. 增加后台 worker 调度骨架、并发池、心跳续租、租户配额和单工具限流。
+2. 补 Kafka listener DLQ、消费指标、积压告警和坏消息处理台。
+3. 推进 ToolPlan DAG，解决多工具依赖、并行、失败跳过和补偿顺序。
+4. 接入 permission-admin 服务间授权和 data-sync.execute 参数治理。

@@ -413,6 +413,20 @@ public class AgentToolExecutionAuditRecord {
     }
 
     /**
+     * 刷新执行中的状态说明，但不重置 executionStartTime。
+     *
+     * <p>该方法主要服务异步任务的 DEFERRED/RETRYING 类进度更新。
+     * 对 Agent 审计来说，任务仍然处于 EXECUTING，只是 worker 因下游限流、临时不可用或状态回写失败而回队列等待重试。
+     * 如果复用 startExecution(...)，会把真正开始执行的时间覆盖成最近一次退避时间，导致后续 SLA、耗时统计和事故复盘失真。</p>
+     *
+     * @param message 最新执行说明，应面向前端和审计人员可读。
+     */
+    public void updateExecutionMessage(String message) {
+        this.message = message;
+        this.updateTime = LocalDateTime.now();
+    }
+
+    /**
      * 标记工具执行成功。
      *
      * @param message 成功说明。
