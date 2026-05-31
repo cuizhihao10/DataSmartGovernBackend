@@ -6751,3 +6751,34 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 在 task-management 增加 Kafka listener 适配器，但只做传输层，继续复用当前 ConsumerService。
 3. 设计 payloadReference resolver 和任务 worker 执行协议，明确如何从 Agent audit 快照读取受控参数。
 4. 补 Agent 工具状态回写：任务创建成功、任务运行中、成功、失败、死信都应回到 agent-runtime 工具审计。
+
+## 4.47 Java agent-runtime ASYNC_TASK 命令 Outbox 与受控 Dispatcher（2026-05-31）
+
+本阶段回到 `agent-runtime`，把 4.45 的只读 command plan 转换为可恢复 outbox 记录。设计重点不是让业务线程直接调用 task-management，也不是立即把 Kafka producer 写死到服务流程里，而是先固定“命令准备下发”这一事实，再由 dispatcher 以可重试、可诊断、可人工补偿的方式投递。
+
+已完成：
+- 新增 `datasmart.agent-runtime.async-task-commands.outbox` 配置块，覆盖启用开关、内存容量、payload 大小、默认优先级、默认重试/延迟次数、dispatcher 调度、HTTP target 和 task-management consume URL。
+- 新增 `AgentAsyncTaskCommandOutboxRecord/Status/Store/Diagnostics` 与内存 store，支持 commandId/idempotencyKey 幂等、按 run 查询、状态诊断、PENDING/PUBLISHING/PUBLISHED/FAILED/BLOCKED 流转和 stale PUBLISHING 恢复。
+- 新增 `AgentRunAsyncTaskCommandOutboxService`，复用异步命令规划结果，只把 `dispatchable=true` 的 ASYNC_TASK command 写入 outbox；payload 只包含引用、参数名和治理上下文，不包含真实参数值。
+- 新增 `AgentAsyncTaskCommandOutboxDispatcher`、调度器和 HTTP 投递 target，支持手动单轮投递、失败退避、最大尝试阻断、无 target 防误吞和可选 HTTP 联调。
+- 新增 outbox 管理接口：入箱、列表查询、诊断和 `dispatch-once`，并同时支持 `/agent-runtime/...` 与 `/api/agent/...` 双路径。
+- 新增 `agent_async_task_command_outbox` MySQL 目标表和迁移脚本，为后续 JDBC store、多实例 dispatcher 和生产持久化做准备。
+- 新增定向测试覆盖安全 payload 入箱、重复入箱幂等复用、非幂等工具阻断、成功投递、目标异常失败、无 target 防误标成功和 stale publishing 恢复。
+
+产品意义：
+- outbox 与 4.46 task-management Inbox 形成双端可靠性边界：agent-runtime 负责“准备下发且可恢复”，task-management 负责“重复消费不重复创建任务”。
+- payload 使用引用优先策略，符合企业 Agent 的安全落地趋势：消息系统传播的是受控引用和治理元数据，真实参数由执行侧按权限、schema、脱敏和密钥引用重新解析。
+- dispatcher 默认关闭、HTTP target 默认关闭，避免本地学习和早期联调误触发跨服务副作用；生产应逐步进入人工触发、小流量 HTTP/Kafka、MySQL outbox、多实例租约和死信治理。
+- 规划、入箱、存储、投递、调度、HTTP target 与控制器拆分，避免继续膨胀 `AgentSessionService` 或形成超大 Impl 文件。
+
+当前边界：
+- SQL 表已经准备，但当前运行默认仍是内存 outbox，还没有 JDBC/MySQL command outbox store。
+- HTTP target 只是 Kafka producer 前的联调适配器，生产主路径仍应补 Kafka dispatch target 与 task-management Kafka listener。
+- 还没有 payloadReference resolver、异步 worker、任务状态回写、permission-admin 服务间鉴权、队列容量、死信告警和 WebSocket replay。
+
+下一步建议：
+1. 在 task-management 增加 Kafka listener 传输适配器，继续复用现有 ConsumerService。
+2. 回到 agent-runtime 实现 Kafka dispatch target 与 MySQL command outbox store。
+3. 设计 payloadReference resolver 和异步 worker 执行协议，解决受控参数读取、权限复核、密钥引用和脱敏。
+4. 补任务状态回写与 runtime event，让 TASK_CREATED、RUNNING、SUCCESS、FAILED、DEAD_LETTER 进入 Agent 工具审计和前端事件流。
+5. 及时推进 ToolPlan DAG 与 permission-admin 策略来源，避免异步投递链路继续局部深化而缺少多工具编排和租户级治理。

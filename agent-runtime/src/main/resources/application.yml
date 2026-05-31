@@ -145,6 +145,43 @@ datasmart:
         dispatcher-kafka-enabled: ${DATASMART_AGENT_RUNTIME_OUTBOX_DISPATCHER_KAFKA_ENABLED:false}
         # dispatcher 等待 Kafka broker ack 的超时时间；超时会进入 FAILED 并按退避重试。
         dispatcher-kafka-send-timeout-ms: 3000
+    async-task-commands:
+      outbox:
+        # Agent ASYNC_TASK command outbox。
+        # 它与 tool-execution-events.outbox 不同：后者投递“状态事实事件”，本 outbox 投递“创建下游任务的动作命令”。
+        # command 会触发 task-management 创建任务，因此更强调幂等、重复投递、失败重试和死信治理。
+        enabled: true
+        # 当前默认 memory，适合本地学习和单测。生产最终应切换为 MySQL command outbox，
+        # 并把“工具审计状态更新 + command outbox INSERT”放在同一事务里。
+        store: memory
+        # 与 task-management AgentAsyncTaskCommandConsumerService 支持的版本保持一致。
+        schema-version: datasmart.agent.async-task-command.v1
+        # 单条 command payload 最大字节数。command payload 只应包含引用和参数名，不应包含原始工具参数值。
+        max-payload-bytes: 65536
+        # 内存热窗口容量。生产持久化后应改由数据库保留策略、归档和清理任务控制。
+        max-commands-per-run: 500
+        max-total-records: 5000
+        # 创建 task-management 任务时的默认调度建议。
+        default-priority: MEDIUM
+        default-max-retry-count: 3
+        default-max-defer-count: 20
+        # 默认不启用后台 dispatcher，避免本地没有 task-management 或 Kafka 时误投递。
+        # 联调时可先调用 /async-task-commands/outbox/dispatch-once 手动投递一轮。
+        dispatcher-enabled: ${DATASMART_AGENT_RUNTIME_ASYNC_COMMAND_DISPATCHER_ENABLED:false}
+        dispatcher-initial-delay-ms: 10000
+        dispatcher-fixed-delay-ms: 5000
+        dispatcher-batch-size: 20
+        dispatcher-max-attempts: 8
+        retry-backoff-seconds: 30
+        dispatcher-max-retry-backoff-seconds: 300
+        dispatcher-recover-stale-publishing-enabled: true
+        dispatcher-publishing-timeout-seconds: 300
+        dispatcher-allow-no-targets-as-published: false
+        # Kafka producer 尚未落地前，HTTP target 用于把 outbox command 投递到 task-management 内部 consume 入口。
+        # 生产环境应通过内网、mTLS、服务账号令牌或网关内部路由保护该地址。
+        dispatcher-http-enabled: ${DATASMART_AGENT_RUNTIME_ASYNC_COMMAND_DISPATCHER_HTTP_ENABLED:false}
+        task-management-consume-url: ${DATASMART_TASK_MANAGEMENT_AGENT_COMMAND_CONSUME_URL:http://localhost:8081/internal/agent-async-task-commands/consume}
+        dispatcher-http-timeout-ms: 3000
     # 会话绑定工具时强制从工具目录继承元数据。
     # 生产环境建议保持 true，避免调用方伪造 toolType、targetService、riskLevel 或审批要求。
     strict-tool-registry-binding: true
