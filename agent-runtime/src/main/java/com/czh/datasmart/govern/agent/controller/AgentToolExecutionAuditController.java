@@ -166,7 +166,7 @@ public class AgentToolExecutionAuditController {
             @PathVariable("runId") String runId,
             @RequestBody(required = false) AgentRunToolDagExecutionDryRunRequest request,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
-        return PlatformApiResponse.success(toolDagExecutionDryRunService.dryRunDagExecution(sessionId, runId, request), traceId);
+        return PlatformApiResponse.success(toolDagExecutionDryRunService.dryRunDagExecution(sessionId, runId, request, traceId), traceId);
     }
 
     /**

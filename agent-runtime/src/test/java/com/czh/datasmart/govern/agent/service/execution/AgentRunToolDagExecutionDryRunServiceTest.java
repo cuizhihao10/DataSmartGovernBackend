@@ -21,6 +21,8 @@ import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditMemoryStore;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecord;
 import com.czh.datasmart.govern.agent.service.authorization.AgentToolServiceAuthorizationPreviewService;
+import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventProjectionRecord;
+import com.czh.datasmart.govern.agent.service.runtime.InMemoryAgentRuntimeEventProjectionStore;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
@@ -70,6 +72,43 @@ class AgentRunToolDagExecutionDryRunServiceTest {
         assertTrue(item.executionPath().contains("auto-execute-sync"));
         assertTrue(item.executionPath().contains("dryRun=true"));
         assertTrue(item.targetWouldTriggerSideEffect());
+    }
+
+    @Test
+    void dryRunShouldAppendRuntimeEventSummary() {
+        TestFixture fixture = newFixture();
+        fixture.saveAudits(audit(
+                "audit-sync",
+                1,
+                AgentToolExecutionState.PLANNED,
+                AgentToolExecutionMode.SYNC,
+                AgentToolRiskLevel.LOW,
+                false,
+                true,
+                true,
+                Map.of("planNodeId", "metadata-read")
+        ));
+
+        AgentRunToolDagExecutionDryRunResponse response = fixture.dryRunService.dryRunDagExecution(
+                SESSION_ID,
+                RUN_ID,
+                null,
+                "trace-dry-run-event"
+        );
+
+        List<AgentRuntimeEventProjectionRecord> events = fixture.projectionStore.listByRunId(RUN_ID);
+        assertEquals(1, events.size());
+        AgentRuntimeEventProjectionRecord event = events.getFirst();
+        assertEquals(AgentRunToolDagExecutionDryRunEventPublisher.EVENT_TYPE, event.eventType());
+        assertEquals("dag_execution_dry_run_completed", event.stage());
+        assertEquals("trace-dry-run-event", event.requestId());
+        assertEquals("10", event.tenantId());
+        assertEquals("20", event.projectId());
+        assertEquals("actor-dry-run", event.actorId());
+        assertEquals(response.selectedCount(), event.attributes().get("selectedCount"));
+        assertEquals(response.syncDryRunCandidateCount(), event.attributes().get("syncDryRunCandidateCount"));
+        assertEquals("SUMMARY_ONLY_NO_TOOL_ARGUMENTS_NO_EXECUTION_PATH", event.attributes().get("eventPayloadPolicy"));
+        assertEquals(1, ((List<?>) event.attributes().get("items")).size());
     }
 
     @Test
@@ -213,7 +252,15 @@ class AgentRunToolDagExecutionDryRunServiceTest {
                 asyncPlanningService,
                 authorizationPreviewService
         );
-        AgentRunToolDagExecutionDryRunService dryRunService = new AgentRunToolDagExecutionDryRunService(previewService);
+        InMemoryAgentRuntimeEventProjectionStore projectionStore = new InMemoryAgentRuntimeEventProjectionStore(50, 200);
+        AgentRunToolDagExecutionDryRunEventPublisher dryRunEventPublisher = new AgentRunToolDagExecutionDryRunEventPublisher(
+                projectionStore,
+                sessionStore
+        );
+        AgentRunToolDagExecutionDryRunService dryRunService = new AgentRunToolDagExecutionDryRunService(
+                previewService,
+                dryRunEventPublisher
+        );
         AgentSessionRecord session = new AgentSessionRecord(
                 SESSION_ID,
                 10L,
@@ -240,7 +287,7 @@ class AgentRunToolDagExecutionDryRunServiceTest {
                 "Run 已创建"
         ));
         sessionStore.save(session);
-        return new TestFixture(dryRunService, auditStore);
+        return new TestFixture(dryRunService, auditStore, projectionStore);
     }
 
     private AgentToolExecutionAuditRecord audit(String auditId,
@@ -284,7 +331,8 @@ class AgentRunToolDagExecutionDryRunServiceTest {
     }
 
     private record TestFixture(AgentRunToolDagExecutionDryRunService dryRunService,
-                               AgentToolExecutionAuditMemoryStore auditStore) {
+                               AgentToolExecutionAuditMemoryStore auditStore,
+                               InMemoryAgentRuntimeEventProjectionStore projectionStore) {
 
         /**
          * 保存测试审计记录。

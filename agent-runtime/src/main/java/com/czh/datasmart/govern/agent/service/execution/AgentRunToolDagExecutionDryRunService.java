@@ -55,6 +55,7 @@ public class AgentRunToolDagExecutionDryRunService {
     private static final int MAX_NODES_CAP = 100;
 
     private final AgentRunToolDagExecutionPreviewService previewService;
+    private final AgentRunToolDagExecutionDryRunEventPublisher eventPublisher;
 
     /**
      * 生成一次 DAG-aware 执行干运行结果。
@@ -72,6 +73,19 @@ public class AgentRunToolDagExecutionDryRunService {
     public AgentRunToolDagExecutionDryRunResponse dryRunDagExecution(String sessionId,
                                                                      String runId,
                                                                      AgentRunToolDagExecutionDryRunRequest request) {
+        return dryRunDagExecution(sessionId, runId, request, null);
+    }
+
+    /**
+     * 生成 dry-run 响应并发布 runtime event 摘要。
+     *
+     * <p>相比三参数方法，该重载额外接收 traceId，用于把 HTTP 请求链路与 runtime event 关联起来。
+     * 事件发布只写摘要，不写工具参数和执行路径；即使事件投影失败，也不会让本次 dry-run 变成真实执行或改变审计状态。</p>
+     */
+    public AgentRunToolDagExecutionDryRunResponse dryRunDagExecution(String sessionId,
+                                                                     String runId,
+                                                                     AgentRunToolDagExecutionDryRunRequest request,
+                                                                     String traceId) {
         AgentRunToolDagExecutionDryRunRequest safeRequest = request == null
                 ? new AgentRunToolDagExecutionDryRunRequest(List.of(), List.of(), null, false)
                 : request;
@@ -112,7 +126,7 @@ public class AgentRunToolDagExecutionDryRunService {
         }
 
         addNotFoundSelectors(requestedNodeIds, requestedAuditIds, foundNodeIds, foundAuditIds, items);
-        return new AgentRunToolDagExecutionDryRunResponse(
+        AgentRunToolDagExecutionDryRunResponse response = new AgentRunToolDagExecutionDryRunResponse(
                 sessionId,
                 runId,
                 true,
@@ -131,6 +145,8 @@ public class AgentRunToolDagExecutionDryRunService {
                 buildRecommendedActions(items),
                 List.copyOf(items)
         );
+        eventPublisher.publish(sessionId, runId, traceId, safeRequest, response);
+        return response;
     }
 
     private List<String> normalizeSelectors(List<String> selectors) {

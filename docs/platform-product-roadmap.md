@@ -7075,3 +7075,24 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 在 permission-admin 中补 SERVICE_ACCOUNT 代表执行的真实策略种子、审计动作和 `representedActorId` 契约。
 3. 进入真实 DAG worker 前补租户配额、工具级限流、并发池、worker 指标和失败补偿。
 4. 中期把 DAG dry-run 接入智能网关动作审批面板，形成“Agent 提议 -> 人/策略确认 -> 后台可恢复执行”的商业化闭环。
+
+## 4.62 Agent Runtime DAG dry-run runtime event 摘要（2026-05-31）
+
+本阶段把 4.61 的 `dag-execution-dry-run` 结果接入 runtime event 投影，让“Agent 拟执行哪些 DAG 节点、哪些节点会被阻断、批量上限是否触发”不再只存在于一次 HTTP 响应里，而是能进入后续 WebSocket、智能网关动作审批和审计回放链路。
+
+已完成：
+- 新增 `AgentRunToolDagExecutionDryRunEventPublisher`，把 dry-run 响应转换为 `agent.dag_execution.dry_run.completed` 事件。
+- `AgentToolExecutionAuditController` 会把 HTTP traceId 传入 dry-run 服务，事件投影同步保留 requestId，方便后续链路追踪。
+- 事件只保留摘要字段和节点级安全摘要，不保存工具参数、payload、完整 reasons、executionPath 或真实执行结果。
+- 新增测试覆盖 dry-run 事件写入、租户/项目/actor 可见性维度、统计字段和摘要 payload 策略。
+
+产品意义：
+- 这是智能网关动作审批面板的前置能力：用户后续可以看到“Agent 建议推进哪些节点、为什么阻断、是否需要确认”。
+- dry-run event 让 Agent 行动从“API 返回值”升级为“可回放运行时事实”，更接近真实商业化 Agent 的行动透明性要求。
+- 当前仍保持零副作用：不执行工具、不创建任务、不写 outbox、不投递 Kafka，避免在可见性能力未稳定前扩大自动执行风险。
+
+下一步建议：
+1. 补 WebSocket/replay 查询侧的 dry-run 事件展示模型，让网关与前端能直接消费行动预案。
+2. 在 permission-admin 补 SERVICE_ACCOUNT 代表 actor 执行契约和策略种子。
+3. 再实现 selected-node outbox dispatcher，把用户或策略确认后的节点安全送入后端执行链路。
+4. 进入真实 DAG worker 前补租户配额、工具限流、并发池、checkpoint/replay、失败补偿和执行指标。
