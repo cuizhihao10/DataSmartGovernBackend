@@ -6973,3 +6973,25 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 暂停继续深挖 listener，优先启动 ToolPlan DAG 第一阶段，定义多工具依赖、并行组、失败策略和结果回填顺序。
 2. 如果继续补 task-management 稳定性，优先给 worker batch/scheduler 接 Micrometer 指标。
 3. 推进 permission-admin 服务间授权和 data-sync.execute 参数治理，为更多工具适配器扩展前先补安全边界。
+
+## 4.57 Agent Runtime ToolPlan DAG 只读预检（2026-05-31）
+
+本阶段从“单工具执行链路”推进到“多工具可编排链路”的第一块地基。`agent-runtime` 新增 ToolPlan DAG 只读预检能力，把某次 Run 的工具审计记录解释成节点、依赖边、并行组、失败策略、结果别名、拓扑顺序、ready 节点和阻断原因。
+
+已完成：
+- 新增 `GET /agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/dag-plan`。
+- 新增 DAG DTO、依赖模式枚举、失败策略枚举和 `AgentRunToolPlanDagService`。
+- 没有显式依赖时自动回退 `LEGACY_SEQUENCE`，保证旧线性 ToolPlan 不被误判为全并行。
+- 有显式依赖时进入 `EXPLICIT`，支持通过 `governanceHints` 声明 `planNodeId/dependsOn/parallelGroup/failurePolicy/resultAlias`。
+- 支持拓扑排序、依赖环检测、ready/blocked 节点解释，以及 `CONTINUE_ON_FAILURE` 的最小放行语义。
+
+产品意义：
+- 这一步让 DataSmart Agent 从“模型规划几个工具”升级为“平台可以解释工具之间的执行关系”，是多工具并行、补偿、审批、结果回填和可视化进度的前置条件。
+- 只读预检保持安全边界：DAG 接口不会触发工具调用，也不会创建任务或投递 Kafka，适合作为前端、Python Runtime、审计台和未来调度器的共同观察窗。
+- 复用现有 auditId/state/policy，避免因为 DAG 引入第二套工具状态机；后续所有执行事实仍围绕工具审计记录演进。
+
+下一步建议：
+1. Python Runtime 应开始输出显式 DAG hints，后续再升级为强类型 ToolPlan DAG schema。
+2. DAG-aware 执行器应先只处理 LOW/readOnly/idempotent 的 ready 同步节点，避免一步到位开放全部自动行动。
+3. 在自动执行 DAG 前补 permission-admin 服务间授权、工具 schema 校验和租户/项目配额。
+4. 把 DAG 视图接入 runtime event/WebSocket，让用户和审计员能看到 Agent 为什么等待、哪些节点可并行、哪些节点被阻断。

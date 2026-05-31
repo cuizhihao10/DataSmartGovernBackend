@@ -9,6 +9,7 @@ package com.czh.datasmart.govern.agent.controller;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolAutoExecutionRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolAutoExecutionResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunAsyncTaskCommandPlanView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolPlanDagView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolExecutionPolicyView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionAuditView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionDecisionRequest;
@@ -18,6 +19,7 @@ import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionResultQueryService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolAutoExecutionService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunAsyncTaskCommandPlanningService;
+import com.czh.datasmart.govern.agent.service.execution.AgentRunToolPlanDagService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolExecutionPolicyService;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
@@ -50,6 +52,7 @@ public class AgentToolExecutionAuditController {
     private final AgentRunToolExecutionPolicyService executionPolicyService;
     private final AgentRunToolAutoExecutionService autoExecutionService;
     private final AgentRunAsyncTaskCommandPlanningService asyncTaskCommandPlanningService;
+    private final AgentRunToolPlanDagService toolPlanDagService;
 
     /**
      * 查询某次 Agent Run 的工具执行审计记录。
@@ -90,6 +93,26 @@ public class AgentToolExecutionAuditController {
             @PathVariable("runId") String runId,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success(executionPolicyService.inspectRunPolicy(sessionId, runId), traceId);
+    }
+
+    /**
+     * 查询某次 Agent Run 的 ToolPlan DAG 预检。
+     *
+     * <p>该接口是多工具 Agent 编排能力的第一阶段，只读、不执行、不审批、不投递 Kafka。
+     * 它把当前 Run 的工具审计记录解释成 DAG：节点、依赖边、并行组、失败策略、结果别名、拓扑顺序和 ready 节点。
+     * 后续 Python Runtime、前端和 Java worker 都可以基于这份视图理解“下一批哪些工具可以执行、哪些必须等待前置结果”。</p>
+     *
+     * <p>兼容策略：
+     * - 如果 Python ToolPlan 通过 governanceHints 提供 `planNodeId/dependsOn/parallelGroup/failurePolicy/resultAlias`，
+     *   Java 会使用显式依赖构建 DAG；
+     * - 如果没有显式依赖，Java 会按旧 toolPlans 列表顺序生成保守串行边，避免旧版本 Python Runtime 计划被误判为全并行。</p>
+     */
+    @GetMapping("/{sessionId}/runs/{runId}/tool-executions/dag-plan")
+    public PlatformApiResponse<AgentRunToolPlanDagView> getRunToolPlanDag(
+            @PathVariable("sessionId") String sessionId,
+            @PathVariable("runId") String runId,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(toolPlanDagService.inspectRunToolPlanDag(sessionId, runId), traceId);
     }
 
     /**
