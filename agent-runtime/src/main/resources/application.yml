@@ -177,7 +177,14 @@ datasmart:
         dispatcher-recover-stale-publishing-enabled: true
         dispatcher-publishing-timeout-seconds: 300
         dispatcher-allow-no-targets-as-published: false
-        # Kafka producer 尚未落地前，HTTP target 用于把 outbox command 投递到 task-management 内部 consume 入口。
+        # 是否由 command dispatcher 把 outbox payload 投递到 Kafka。
+        # 这是未来生产主路径：agent-runtime outbox -> Kafka -> task-management Inbox。
+        # 默认关闭，避免本地没有 Kafka 或 listener 未启用时误触发后台投递。
+        dispatcher-kafka-enabled: ${DATASMART_AGENT_RUNTIME_ASYNC_COMMAND_DISPATCHER_KAFKA_ENABLED:false}
+        # dispatcher 等待 Kafka broker ack 的超时时间。
+        # 超时会进入 FAILED 并按退避重试，而不是把 command 误标为已发布。
+        dispatcher-kafka-send-timeout-ms: 3000
+        # Kafka target 已落地后，HTTP target 主要作为本地联调、灰度补偿或内网临时通道。
         # 生产环境应通过内网、mTLS、服务账号令牌或网关内部路由保护该地址。
         dispatcher-http-enabled: ${DATASMART_AGENT_RUNTIME_ASYNC_COMMAND_DISPATCHER_HTTP_ENABLED:false}
         task-management-consume-url: ${DATASMART_TASK_MANAGEMENT_AGENT_COMMAND_CONSUME_URL:http://localhost:8081/internal/agent-async-task-commands/consume}

@@ -131,6 +131,27 @@ public class AgentAsyncTaskCommandOutboxProperties {
     private boolean dispatcherAllowNoTargetsAsPublished = false;
 
     /**
+     * 是否启用 Kafka 投递目标。
+     *
+     * <p>这是面向生产主路径的投递方式：dispatcher 从 command outbox 领取记录后，
+     * 将 payloadJson 写入记录自身声明的 commandTopic，由 task-management Kafka listener 消费。
+     * 默认关闭，避免本地没有 Kafka 时误触发跨服务副作用。</p>
+     *
+     * <p>注意：如果同时打开 HTTP target 和 Kafka target，同一 command 会被投递两次。
+     * task-management Inbox 依赖 commandId/idempotencyKey 能去重，但生产灰度时仍建议一次只启用一种主通道，
+     * 除非正在有意验证双通道幂等和补偿能力。</p>
+     */
+    private boolean dispatcherKafkaEnabled = false;
+
+    /**
+     * Kafka broker ack 等待超时，单位毫秒。
+     *
+     * <p>command 会触发下游创建任务，不能像普通日志一样 fire-and-forget。
+     * 这里等待 broker ack，超时或失败会抛出异常，由 dispatcher 写回 FAILED 并进入退避重试。</p>
+     */
+    private long dispatcherKafkaSendTimeoutMs = 3000;
+
+    /**
      * 是否启用 HTTP 投递目标。
      *
      * <p>这是 Kafka producer 之前的联调路径。后续如果改成 Kafka，HTTP target 可保留为运维补偿或本地调试通道。</p>

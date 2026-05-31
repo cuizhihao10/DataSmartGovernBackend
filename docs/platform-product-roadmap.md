@@ -6811,3 +6811,34 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 3. 给 task-management Kafka listener 增加 DLQ、消费指标和积压告警。
 4. 设计 payloadReference resolver 与异步 worker 执行协议。
 5. 并行推进任务状态回写与 ToolPlan DAG，补齐真实多工具 Agent 的依赖、失败和可见性语义。
+
+## 4.49 Java agent-runtime ASYNC_TASK 命令 Kafka Dispatch Target（2026-05-31）
+
+本阶段补齐 `agent-runtime` command outbox 的 Kafka 投递目标。现在异步工具任务化链路具备最小传输闭环：`command plan -> command outbox -> Kafka dispatch target -> task-management Kafka listener -> Inbox -> PENDING task`。Kafka 发送仍由 dispatcher 驱动，不进入业务线程。
+
+已完成：
+- `AgentAsyncTaskCommandOutboxProperties` 新增 `dispatcherKafkaEnabled` 与 `dispatcherKafkaSendTimeoutMs`。
+- `agent-runtime/application.yml` 增加 `dispatcher-kafka-enabled` 与 `dispatcher-kafka-send-timeout-ms` 配置，默认关闭。
+- 新增 `KafkaAgentAsyncTaskCommandDispatchTarget`：
+  - 使用 `KafkaTemplate<String, String>` 发送字符串 JSON；
+  - topic 来自 outbox record 的 `commandTopic`；
+  - key 优先使用 `partitionKey`，缺失时回退 runId/commandId；
+  - 等待 broker ack，失败或超时由 dispatcher 写回 FAILED。
+- 新增测试覆盖 Kafka 发送参数、broker ack 失败和缺少 topic 的发送前阻断。
+
+产品意义：
+- 4.47 的 command outbox 与 4.48 的 task-management Kafka listener 已经能通过 Kafka target 对接，异步工具链路从“接口与表结构就绪”推进到“消息传输通道就绪”。
+- Kafka target 作为 dispatcher 的投递适配层，不拥有业务契约，后续换传输技术、补 DLQ 或增加审计通道时不需要改 command plan 与 task-management ConsumerService。
+- 等待 broker ack 是商业化可靠性要求：命令会触发下游创建任务，不能在 broker 未确认时把 outbox 记录误标为已发布。
+
+当前边界：
+- command outbox 默认仍是内存 store，尚不具备重启恢复与多实例一致领取。
+- task-management listener 还没有 DLQ、指标和积压告警。
+- payloadReference resolver、异步 worker、任务状态回写和 ToolPlan DAG 仍未完成。
+
+下一步建议：
+1. 优先补 agent-runtime MySQL command outbox store 和数据库领取语义。
+2. 为 task-management Kafka listener 增加 DLQ、消费指标和积压告警。
+3. 设计 payloadReference resolver 与异步 worker，让任务能真实执行异步工具。
+4. 补任务状态回写到 agent-runtime 工具审计和 runtime event。
+5. 推进 ToolPlan DAG，补齐多工具依赖、并行组、失败跳过和补偿语义。
