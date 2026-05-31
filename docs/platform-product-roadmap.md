@@ -7182,3 +7182,60 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 把 Java cursor store 升级为 Redis/MySQL，并补 TTL、慢消费者诊断、ack 失败重试和多实例一致性。
 3. 让 Java runtime event 通过 Kafka 或 bridge 主动进入 Python live push hub，减少只能靠 reconnect 才补齐控制面事件的问题。
 4. 转入 selected-node outbox dispatcher 与 permission-admin SERVICE_ACCOUNT 委托授权，避免事件通道继续过度扩展。
+
+## 4.66 Agent Runtime DAG selected-node outbox 确认入箱（2026-06-01）
+
+本阶段把 DAG dry-run 与已有异步 command outbox 串成第一版真实执行治理闭环。调用方不再只能“看见异步预案”，也不需要使用会把整个 Run 全量入箱的粗粒度接口；现在可以先选择 DAG 节点、获取 dry-run 指纹，再显式确认仅将这些异步候选写入 outbox。
+
+已完成：
+- DAG dry-run 响应新增 `selectionFingerprint`：
+  - 根据 sessionId、runId、选择器、批量上限、preview/dry-run 动作、授权结论、幂等声明和稳定 commandId 计算；
+  - 不把工具参数值、executionPath、展示 reasons 或推荐文案放进摘要；
+  - dry-run runtime event 同步保留该安全指纹，便于审批与审计回放。
+- 新增 `POST /agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/dag-selected-node-outbox/enqueue`：
+  - 请求必须显式传 `nodeIds` 或 `auditIds`；
+  - 请求必须带回上一次 dry-run 的 `expectedDryRunFingerprint`；
+  - 请求必须显式传 `confirmed=true`；
+  - 请求体刻意不提供 `targetEndpoint`、`targetService`、Kafka topic 和工具参数覆盖字段。
+- 新增 `AgentRunToolDagSelectedNodeOutboxService`：
+  - 确认瞬间重新执行 dry-run；
+  - 指纹不一致时 fail-closed，要求调用方刷新预案；
+  - 只接受 `ASYNC_OUTBOX_ENQUEUE_PREVIEW` 节点；
+  - 只要批次混入同步、阻断、未命中或超限节点，就整批拒绝，避免难以理解的部分成功；
+  - 把服务端提取出的 auditId 白名单交给既有 outbox 服务，不新建第二套 command 状态机。
+- `AgentRunAsyncTaskCommandOutboxService` 新增指定 auditId 白名单入箱能力：
+  - 继续复用原有 command plan；
+  - 继续复用稳定 commandId、payload 白名单、payloadReference、容量限制和 outbox 幂等；
+  - 兼容保留旧 Run 级 enqueue，便于联调和运维补偿。
+- 新增测试覆盖：
+  - 确认后的异步节点正常入箱；
+  - 重复确认按 commandId 幂等复用；
+  - 过期指纹禁止入箱；
+  - 混入等待依赖节点时整批拒绝；
+  - 空选择器不能退化为“默认推进整个 Run”。
+- gateway 新增细粒度授权动作：
+  - selected-node 推荐入口使用 `ENQUEUE_SELECTED_ASYNC_TOOL`；
+  - 兼容 Run 级批量入口使用 `ENQUEUE_RUN_ASYNC_TOOLS`；
+  - 两条规则都放在 `/api/agent/sessions/**` 通配规则之前，避免真实入箱被误判为普通 `CREATE`；
+  - 新增独立 gateway 测试文件，避免继续膨胀已有 490 行过滤器测试类。
+- 顺手修复内存审计仓储的排序稳定性：
+  - `createTime` 相同时追加 `auditId` 次排序；
+  - 避免批量工具结果查询在全量测试或高频创建场景中出现结果顺序抖动。
+
+产品意义：
+- 这一步让 Agent 自动化从“模型生成计划”推进到“用户或策略确认某一批 ready 节点后，进入可靠后台执行轨道”。
+- 选择指纹相当于轻量乐观锁：它不替代权限中心，但能防止用户确认时看到的是 A 预案，真正入箱时服务端已经变成 B 预案。
+- 请求体不接受外部端点，避免模型、前端或攻击者把 Agent Runtime 变成任意内部 HTTP 转发器。
+- 整批失败默认值适合面向用户的动作确认；未来如果运营台需要部分成功，应设计独立管理员批处理接口，不应悄悄改变当前语义。
+
+当前边界：
+- `selectionFingerprint` 是防漂移摘要，不是数字签名，也不替代 gateway 身份认证、permission-admin 授权或审批记录。
+- 兼容保留的旧 Run 级 enqueue 仍然粒度较粗；gateway 已给它独立高风险动作，但 permission-admin 还需要把它收口为管理员/内部补偿权限。
+- 当前还没有正式的确认记录持久表、确认人/代表 actor、授权策略版本、租户配额、工具限流和 worker 并发池。
+- 当前只处理异步 outbox 节点；同步节点仍走 `auto-execute-sync` 的独立安全入口。
+
+下一步建议：
+1. 转入 permission-admin SERVICE_ACCOUNT 委托授权：补 representedActorId、serviceAccountId、delegationReason、policyVersion 和确认人审计。
+2. 在 permission-admin 为 `ENQUEUE_SELECTED_ASYNC_TOOL` 与 `ENQUEUE_RUN_ASYNC_TOOLS` 补策略种子，默认只向受信服务账号、审批动作和管理员补偿流开放真实入箱。
+3. 再做租户配额、工具级限流、worker 并发池和积压保护；否则批量 DAG 自动化会把下游数据同步服务压垮。
+4. 后续将 selection fingerprint 与 LangGraph checkpoint/interrupt 恢复点、runtime event timeline 和管理员补偿台关联。

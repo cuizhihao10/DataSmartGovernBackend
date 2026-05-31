@@ -25,9 +25,12 @@ import org.springframework.stereotype.Service;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Agent Run 异步命令 outbox 服务。
@@ -57,13 +60,53 @@ public class AgentRunAsyncTaskCommandOutboxService {
      * @return 入箱结果，包含首次写入、重复复用和阻断数量。
      */
     public AgentRunAsyncTaskCommandOutboxEnqueueResponse enqueueRunAsyncTaskCommands(String sessionId, String runId) {
+        return enqueueRunAsyncTaskCommands(sessionId, runId, null);
+    }
+
+    /**
+     * 只把指定 auditId 对应的异步命令写入 outbox。
+     *
+     * <p>该方法是 DAG selected-node dispatcher 的内部收口点。调用方不能直接提交 targetEndpoint、topic
+     * 或参数值，只能提交已经由上游 dry-run 重新验证过的 auditId 白名单。服务仍会重新生成 command plan，
+     * 再按白名单过滤，因此不会因为前端缓存了一份旧 DTO 就绕过最新审批、状态或幂等判断。</p>
+     *
+     * @param sessionId Agent 会话 ID。
+     * @param runId Agent Run ID。
+     * @param selectedAuditIds 已通过 DAG dry-run 确认的异步工具审计 ID。
+     * @return 仅统计指定审计 ID 范围的入箱结果。
+     */
+    public AgentRunAsyncTaskCommandOutboxEnqueueResponse enqueueSelectedRunAsyncTaskCommands(String sessionId,
+                                                                                              String runId,
+                                                                                              Collection<String> selectedAuditIds) {
+        Set<String> normalizedAuditIds = normalizeAuditIds(selectedAuditIds);
+        if (normalizedAuditIds.isEmpty()) {
+            throw new PlatformBusinessException(
+                    PlatformErrorCode.BAD_REQUEST,
+                    "DAG 选中节点入箱至少需要一个已经通过 dry-run 的异步工具 auditId"
+            );
+        }
+        return enqueueRunAsyncTaskCommands(sessionId, runId, normalizedAuditIds);
+    }
+
+    /**
+     * 执行 Run 级或白名单范围的异步命令入箱。
+     *
+     * <p>{@code selectedAuditIds=null} 表示兼容原有 Run 级批量入口；非空时只处理 selected-node 服务传入的
+     * 服务端白名单。两种入口共用同一套 payload 构造、容量限制和 outbox 幂等规则，避免后续维护两套投递语义。</p>
+     */
+    private AgentRunAsyncTaskCommandOutboxEnqueueResponse enqueueRunAsyncTaskCommands(String sessionId,
+                                                                                       String runId,
+                                                                                       Set<String> selectedAuditIds) {
         ensureEnabled();
         AgentRunAsyncTaskCommandPlanView plan = planningService.planRunAsyncTaskCommands(sessionId, runId);
+        List<AgentAsyncTaskCommandPlanItemView> scopedItems = plan.items().stream()
+                .filter(item -> selectedAuditIds == null || selectedAuditIds.contains(item.auditId()))
+                .toList();
         List<AgentAsyncTaskCommandOutboxRecordView> views = new ArrayList<>();
         int enqueued = 0;
         int duplicate = 0;
         int blocked = 0;
-        for (AgentAsyncTaskCommandPlanItemView item : plan.items()) {
+        for (AgentAsyncTaskCommandPlanItemView item : scopedItems) {
             if (!Boolean.TRUE.equals(item.dispatchable())) {
                 blocked++;
                 continue;
@@ -83,12 +126,12 @@ public class AgentRunAsyncTaskCommandOutboxService {
         return new AgentRunAsyncTaskCommandOutboxEnqueueResponse(
                 sessionId,
                 runId,
-                plan.totalAsyncTools(),
-                plan.dispatchableCount(),
+                scopedItems.size(),
+                (int) scopedItems.stream().filter(AgentAsyncTaskCommandPlanItemView::dispatchable).count(),
                 enqueued,
                 duplicate,
                 blocked,
-                summaryReasons(plan, enqueued, duplicate, blocked),
+                summaryReasons(plan, selectedAuditIds != null, enqueued, duplicate, blocked),
                 recommendedActions(enqueued, duplicate, blocked),
                 views
         );
@@ -190,11 +233,16 @@ public class AgentRunAsyncTaskCommandOutboxService {
     }
 
     private List<String> summaryReasons(AgentRunAsyncTaskCommandPlanView plan,
+                                        boolean selectedOnly,
                                         int enqueued,
                                         int duplicate,
                                         int blocked) {
         List<String> reasons = new ArrayList<>();
-        reasons.addAll(plan.summaryReasons());
+        if (selectedOnly) {
+            reasons.add("当前 outbox 入箱仅处理 DAG dry-run 已确认的异步 auditId 白名单，不会把同一 Run 的其他异步工具顺带入箱。");
+        } else {
+            reasons.addAll(plan.summaryReasons());
+        }
         if (enqueued > 0) {
             reasons.add("已有异步命令首次进入 outbox，等待 dispatcher 投递到 task-management。");
         }
@@ -205,6 +253,25 @@ public class AgentRunAsyncTaskCommandOutboxService {
             reasons.add("存在未满足下发条件的异步工具，未写入 outbox。");
         }
         return reasons;
+    }
+
+    /**
+     * 规范化内部 auditId 白名单。
+     *
+     * <p>虽然 selected-node 服务传入的 ID 已来自服务端 dry-run，但这里仍做去空、去重和 trim。
+     * 这种防御式校验让 outbox 服务未来被其他内部编排器复用时，也不会因为空 ID 或重复 ID 产生歧义。</p>
+     */
+    private Set<String> normalizeAuditIds(Collection<String> auditIds) {
+        if (auditIds == null || auditIds.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> normalized = new LinkedHashSet<>();
+        for (String auditId : auditIds) {
+            if (auditId != null && !auditId.isBlank()) {
+                normalized.add(auditId.trim());
+            }
+        }
+        return Set.copyOf(normalized);
     }
 
     private List<String> recommendedActions(int enqueued, int duplicate, int blocked) {

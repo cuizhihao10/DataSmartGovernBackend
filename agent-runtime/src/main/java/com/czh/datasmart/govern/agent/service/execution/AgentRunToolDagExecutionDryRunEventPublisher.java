@@ -154,6 +154,7 @@ public class AgentRunToolDagExecutionDryRunEventPublisher {
         attributes.put("requestedAuditIds", response.requestedAuditIds());
         attributes.put("requestedMaxNodes", request == null ? null : request.maxNodes());
         attributes.put("effectiveMaxNodes", response.effectiveMaxNodes());
+        attributes.put("selectionFingerprint", response.selectionFingerprint());
         attributes.put("selectedCount", response.selectedCount());
         attributes.put("syncDryRunCandidateCount", response.syncDryRunCandidateCount());
         attributes.put("asyncEnqueuePreviewCount", response.asyncEnqueuePreviewCount());

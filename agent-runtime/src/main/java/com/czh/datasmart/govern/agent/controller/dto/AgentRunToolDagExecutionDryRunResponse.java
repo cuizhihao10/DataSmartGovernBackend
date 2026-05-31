@@ -26,6 +26,7 @@ import java.util.List;
  * @param requestedAuditIds 调用方提交的审计 ID 选择器，已做去空和去重处理。
  * @param requestedMaxNodes 调用方请求的批量上限，可能为空。
  * @param effectiveMaxNodes 服务端最终采用的批量上限，会受默认值和硬上限保护。
+ * @param selectionFingerprint 服务端根据会话、Run、选择器和节点安全结论生成的稳定指纹；真实入箱时必须原样带回。
  * @param selectedCount 实际进入本次 dry-run 有效处理范围的节点数，不包含超过批量上限的节点。
  * @param syncDryRunCandidateCount 将进入同步自动执行 dry-run 二次确认的节点数。
  * @param asyncEnqueuePreviewCount 将进入异步 outbox enqueue 预案的节点数。
@@ -45,6 +46,7 @@ public record AgentRunToolDagExecutionDryRunResponse(
         List<String> requestedAuditIds,
         Integer requestedMaxNodes,
         Integer effectiveMaxNodes,
+        String selectionFingerprint,
         Integer selectedCount,
         Integer syncDryRunCandidateCount,
         Integer asyncEnqueuePreviewCount,

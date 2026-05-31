@@ -9,16 +9,20 @@ package com.czh.datasmart.govern.agent.controller;
 import com.czh.datasmart.govern.agent.controller.dto.AgentAsyncTaskCommandOutboxDispatchResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentAsyncTaskCommandOutboxQueryResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunAsyncTaskCommandOutboxEnqueueResponse;
+import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagSelectedNodeOutboxEnqueueRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagSelectedNodeOutboxEnqueueResponse;
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxDiagnostics;
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxDispatcher;
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxStore;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunAsyncTaskCommandOutboxService;
+import com.czh.datasmart.govern.agent.service.execution.AgentRunToolDagSelectedNodeOutboxService;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -39,6 +43,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class AgentAsyncTaskCommandOutboxController {
 
     private final AgentRunAsyncTaskCommandOutboxService outboxService;
+    private final AgentRunToolDagSelectedNodeOutboxService selectedNodeOutboxService;
     private final AgentAsyncTaskCommandOutboxStore outboxStore;
     private final AgentAsyncTaskCommandOutboxDispatcher dispatcher;
 
@@ -51,6 +56,28 @@ public class AgentAsyncTaskCommandOutboxController {
             @PathVariable("runId") String runId,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success(outboxService.enqueueRunAsyncTaskCommands(sessionId, runId), traceId);
+    }
+
+    /**
+     * 把已经经过 DAG dry-run 展示与显式确认的异步节点写入 outbox。
+     *
+     * <p>该路由是面向智能网关动作审批面板和 Python Agent loop 的推荐入口。相比兼容保留的 Run 级 enqueue，
+     * 它要求调用方明确传入 nodeIds/auditIds、上一次 dry-run 的选择指纹以及 {@code confirmed=true}。
+     * 服务端会重新执行 dry-run 并做整批校验，只允许仍处于异步 outbox 候选状态的节点入箱。</p>
+     *
+     * <p>安全边界：请求体没有 targetEndpoint、topic 和工具参数字段。真实跨服务路由只能由 Java 控制面
+     * 根据 auditId 重新读取，不能由模型或前端覆盖。</p>
+     */
+    @PostMapping("/sessions/{sessionId}/runs/{runId}/tool-executions/dag-selected-node-outbox/enqueue")
+    public PlatformApiResponse<AgentRunToolDagSelectedNodeOutboxEnqueueResponse> enqueueSelectedDagNodes(
+            @PathVariable("sessionId") String sessionId,
+            @PathVariable("runId") String runId,
+            @RequestBody AgentRunToolDagSelectedNodeOutboxEnqueueRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(
+                selectedNodeOutboxService.enqueueSelectedAsyncNodes(sessionId, runId, request, traceId),
+                traceId
+        );
     }
 
     /**

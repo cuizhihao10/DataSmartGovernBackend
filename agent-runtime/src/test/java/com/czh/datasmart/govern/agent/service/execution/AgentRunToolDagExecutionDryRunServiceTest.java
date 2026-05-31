@@ -107,6 +107,8 @@ class AgentRunToolDagExecutionDryRunServiceTest {
         assertEquals("actor-dry-run", event.actorId());
         assertEquals(response.selectedCount(), event.attributes().get("selectedCount"));
         assertEquals(response.syncDryRunCandidateCount(), event.attributes().get("syncDryRunCandidateCount"));
+        assertEquals(response.selectionFingerprint(), event.attributes().get("selectionFingerprint"));
+        assertTrue(response.selectionFingerprint().startsWith("dag-selection:"));
         assertEquals("SUMMARY_ONLY_NO_TOOL_ARGUMENTS_NO_EXECUTION_PATH", event.attributes().get("eventPayloadPolicy"));
         assertEquals(1, ((List<?>) event.attributes().get("items")).size());
     }
@@ -259,7 +261,8 @@ class AgentRunToolDagExecutionDryRunServiceTest {
         );
         AgentRunToolDagExecutionDryRunService dryRunService = new AgentRunToolDagExecutionDryRunService(
                 previewService,
-                dryRunEventPublisher
+                dryRunEventPublisher,
+                new AgentRunToolDagSelectionFingerprintSupport()
         );
         AgentSessionRecord session = new AgentSessionRecord(
                 SESSION_ID,

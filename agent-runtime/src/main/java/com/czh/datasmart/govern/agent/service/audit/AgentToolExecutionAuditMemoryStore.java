@@ -65,7 +65,14 @@ public class AgentToolExecutionAuditMemoryStore implements AgentToolExecutionAud
         return records.values().stream()
                 .filter(item -> sessionId == null || sessionId.equals(item.getSessionId()))
                 .filter(item -> runId == null || runId.equals(item.getRunId()))
-                .sorted(Comparator.comparing(AgentToolExecutionAuditRecord::getCreateTime))
+                /*
+                 * createTime 相同并不是异常：批量写入 ToolPlan 时，多条审计记录可能在同一个时间粒度内创建。
+                 * ConcurrentHashMap.values() 本身没有稳定遍历顺序，如果只按 createTime 排序，前端时间线、
+                 * Python 二轮结果回填和单元测试都会偶发看到节点顺序交换。auditId 是稳定唯一键，适合作为
+                 * 次排序键，让内存实现具备可复现结果；未来 MySQL 查询也应保持同样的 ORDER BY 语义。
+                 */
+                .sorted(Comparator.comparing(AgentToolExecutionAuditRecord::getCreateTime)
+                        .thenComparing(AgentToolExecutionAuditRecord::getAuditId))
                 .toList();
     }
 }

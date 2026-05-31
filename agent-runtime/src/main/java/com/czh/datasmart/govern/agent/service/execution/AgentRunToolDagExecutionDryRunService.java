@@ -56,6 +56,7 @@ public class AgentRunToolDagExecutionDryRunService {
 
     private final AgentRunToolDagExecutionPreviewService previewService;
     private final AgentRunToolDagExecutionDryRunEventPublisher eventPublisher;
+    private final AgentRunToolDagSelectionFingerprintSupport fingerprintSupport;
 
     /**
      * 生成一次 DAG-aware 执行干运行结果。
@@ -126,6 +127,14 @@ public class AgentRunToolDagExecutionDryRunService {
         }
 
         addNotFoundSelectors(requestedNodeIds, requestedAuditIds, foundNodeIds, foundAuditIds, items);
+        String selectionFingerprint = fingerprintSupport.fingerprint(
+                sessionId,
+                runId,
+                requestedNodeIds,
+                requestedAuditIds,
+                effectiveMaxNodes,
+                items
+        );
         AgentRunToolDagExecutionDryRunResponse response = new AgentRunToolDagExecutionDryRunResponse(
                 sessionId,
                 runId,
@@ -134,6 +143,7 @@ public class AgentRunToolDagExecutionDryRunService {
                 requestedAuditIds,
                 safeRequest.maxNodes(),
                 effectiveMaxNodes,
+                selectionFingerprint,
                 countSelectedWithinLimit(items),
                 count(items, AgentToolDagExecutionDryRunAction.SYNC_AUTO_EXECUTE_DRY_RUN),
                 count(items, AgentToolDagExecutionDryRunAction.ASYNC_OUTBOX_ENQUEUE_PREVIEW),

@@ -624,6 +624,24 @@ datasmart:
           method-actions:
             POST: UPDATE
 
+        # 推荐生产入口：只允许把已经经过 DAG dry-run 指纹复核的明确选中节点送入 outbox。
+        # 该动作会产生后台任务副作用，不能被 sessions/** 通配规则解释成普通 CREATE。
+        - path-pattern: /api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/dag-selected-node-outbox/enqueue
+          resource-type: AI_RUNTIME
+          default-action: ENQUEUE_SELECTED_ASYNC_TOOL
+          description: DAG 已确认选中节点异步入箱入口；服务端会重新 dry-run、校验指纹并只推进异步 ready 节点。
+          method-actions:
+            POST: ENQUEUE_SELECTED_ASYNC_TOOL
+
+        # 兼容入口：按整个 Run 扫描可下发异步草案。它适合联调、运维补偿和后续管理员操作，
+        # 但生产网关应给它更严格的策略，不能和 selected-node 推荐入口共用普通 CREATE 权限。
+        - path-pattern: /api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/async-command-outbox/enqueue
+          resource-type: AI_RUNTIME
+          default-action: ENQUEUE_RUN_ASYNC_TOOLS
+          description: 兼容 Run 级异步命令批量入箱入口；生产应收口为内部补偿或管理员动作。
+          method-actions:
+            POST: ENQUEUE_RUN_ASYNC_TOOLS
+
         - path-pattern: /api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/{auditId}/approve
           resource-type: AI_RUNTIME
           default-action: APPROVE
