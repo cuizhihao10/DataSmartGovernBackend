@@ -169,6 +169,48 @@ class RuntimeEventJavaReplayBridgeTest(unittest.TestCase):
             payloads[1]["payload"]["events"][0]["event_type"],
         )
 
+    def test_websocket_ack_writes_java_source_cursor_when_present(self) -> None:
+        java_source = FakeJavaReplaySource(sequence=7)
+        manager = RuntimeEventSessionManager(external_replay_sources=(java_source,))
+        connection = RuntimeEventWebSocketConnectionAdapter(manager)
+        subscribe_payloads = connection.handle_message(
+            {
+                "type": "subscribe",
+                "subscription": {
+                    "clientId": "browser-a",
+                    "tenantId": "tenant-a",
+                    "projectId": "project-a",
+                    "actorId": "user-a",
+                    "roles": ["operator"],
+                    "sessionId": "session-bridge",
+                    "runId": "run-bridge",
+                    "includeSnapshot": True,
+                },
+                "accessContext": {
+                    "tenantId": "tenant-a",
+                    "projectId": "project-a",
+                    "actorId": "user-a",
+                    "roles": ["operator"],
+                },
+            }
+        )
+        subscription_id = subscribe_payloads[0]["payload"]["subscription"]["subscriptionId"]
+
+        ack_payloads = connection.handle_message(
+            {
+                "type": "ack",
+                "subscriptionId": subscription_id,
+                "lastSequence": 1,
+                "sourceCursors": {"java-agent-runtime-event-projection": 7},
+            }
+        )
+
+        self.assertEqual(("browser-a", "run-bridge", "session-bridge", 7), java_source.acks[0])
+        self.assertEqual(
+            "ACK_ADVANCED",
+            ack_payloads[0]["payload"]["subscription"]["attributes"]["externalAckResults"][0]["reason"],
+        )
+
     @staticmethod
     def _python_events() -> tuple[AgentRuntimeEvent, ...]:
         request = AgentRequest(
@@ -192,6 +234,7 @@ class FakeJavaReplaySource:
 
     def __init__(self, sequence: int | None = None) -> None:
         self.requests: list[RuntimeEventSubscriptionRequest] = []
+        self.acks: list[tuple[str, str | None, str | None, int]] = []
         self.sequence = sequence
 
     def replay(self, request: RuntimeEventSubscriptionRequest) -> tuple[AgentRuntimeEvent, ...]:
@@ -216,6 +259,15 @@ class FakeJavaReplaySource:
                 },
             ),
         )
+
+    def acknowledge(self, request: RuntimeEventSubscriptionRequest, source_cursor: int) -> dict[str, object]:
+        self.acks.append((request.client_id, request.run_id, request.session_id, source_cursor))
+        return {
+            "source": self.source_name,
+            "acknowledgedReplaySequence": source_cursor,
+            "advanced": True,
+            "reason": "ACK_ADVANCED",
+        }
 
 
 class FailingReplaySource:

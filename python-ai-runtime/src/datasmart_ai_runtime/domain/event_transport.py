@@ -148,6 +148,10 @@ class RuntimeEventControlMessage:
     - `subscription_id`：服务端生成的订阅 ID，除首次 subscribe 外，大多数控制消息都应携带；
     - `request`：订阅请求，仅 `SUBSCRIBE` 必填，`RECONNECT` 也可以携带新的 afterSequence 或过滤条件；
     - `last_sequence`：客户端已处理到的最后事件序号，主要用于 ack 和 heartbeat；
+    - `source_cursors`：客户端同时确认的外部事件源游标，例如 Java 控制面的 replaySequence；
+      它与 last_sequence 的坐标系不同：last_sequence 是前端看到的 envelope 序号，source_cursors 是各
+      后端 source 自己的稳定游标。二者拆开后，WebSocket ack 才能同时服务“前端断线续传”和
+      “Java 控制面 cursor 回写”；
     - `after_sequence`：重连时显式指定从哪个 sequence 之后回放；不传时使用服务端保存的最后 ack；
     - `reason`：关闭原因或控制说明，例如用户离开页面、前端切换会话、权限撤销；
     - `attributes`：为未来扩展保留的自由字段，例如前端版本、设备 ID、网络类型、traceId。
@@ -157,6 +161,7 @@ class RuntimeEventControlMessage:
     subscription_id: str | None = None
     request: RuntimeEventSubscriptionRequest | None = None
     last_sequence: int | None = None
+    source_cursors: dict[str, int] = field(default_factory=dict)
     after_sequence: int | None = None
     reason: str | None = None
     attributes: dict[str, Any] = field(default_factory=dict)

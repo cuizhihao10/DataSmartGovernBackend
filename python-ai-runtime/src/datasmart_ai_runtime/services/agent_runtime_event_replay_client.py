@@ -7,8 +7,9 @@ DataSmart 的 Agent 主链现在同时产生两类关键事件：
 
 如果 WebSocket 断线重连或运行详情页只读取 Python 本地事件，用户就会看不到真实工具状态；如果只读取
 Java 投影，又会丢失模型为什么这样规划。该客户端把 Java
-`/agent-runtime/runtime-events` 投影查询适配成 Python 的 `RuntimeEventReplaySource`，让订阅状态机
-能够把两边事件合并进同一个 replay envelope。
+`/agent-runtime/runtime-events/replay` 与 `/agent-runtime/runtime-events/replay/acks` 适配成 Python 的
+`RuntimeEventReplaySource + RuntimeEventAckSink`，让订阅状态机能够把两边事件合并进同一个 replay
+envelope，并在客户端 ack 后把 Java replaySequence 回写给 Java 控制面。
 """
 
 from __future__ import annotations
@@ -48,7 +49,8 @@ class JavaAgentRuntimeEventReplayClient:
         self,
         base_url: str,
         timeout_seconds: int = 3,
-        replay_path: str = "/agent-runtime/runtime-events",
+        replay_path: str = "/agent-runtime/runtime-events/replay",
+        ack_path: str = "/agent-runtime/runtime-events/replay/acks",
         default_limit: int = 200,
     ) -> None:
         """初始化 Java replay 客户端。
@@ -56,13 +58,15 @@ class JavaAgentRuntimeEventReplayClient:
         参数说明：
         - `base_url`：Java `agent-runtime` 服务地址，例如 `http://localhost:8086`；
         - `timeout_seconds`：单次查询超时。WebSocket replay 属于用户交互链路，不能无限等待；
-        - `replay_path`：Java 投影查询路径，保留配置点便于 gateway 或服务前缀变化；
+        - `replay_path`：Java 4.64 增量 replay 路径，支持 clientId + ack cursor 恢复；
+        - `ack_path`：Java 4.64 ack cursor 写入路径，用于 WebSocket ack/heartbeat 回写；
         - `default_limit`：单次最多读取多少条投影事件，防止一个 run 的热窗口过大拖慢 subscribe。
         """
 
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = max(1, int(timeout_seconds))
         self._replay_path = replay_path if replay_path.startswith("/") else f"/{replay_path}"
+        self._ack_path = ack_path if ack_path.startswith("/") else f"/{ack_path}"
         self._default_limit = max(1, int(default_limit))
 
     def replay(self, request: RuntimeEventSubscriptionRequest) -> tuple[AgentRuntimeEvent, ...]:
@@ -82,6 +86,32 @@ class JavaAgentRuntimeEventReplayClient:
             raise AgentRuntimeEventReplayClientError(f"查询 Java Agent runtime event replay 失败：{exc}") from exc
         return self.parse_platform_response(payload)
 
+    def acknowledge(self, request: RuntimeEventSubscriptionRequest, source_cursor: int) -> dict[str, Any]:
+        """把 WebSocket 客户端已消费的 Java replaySequence 回写到 Java 控制面。
+
+        Python WebSocket 的 `lastSequence` 是 envelope 展示序号，而 Java 需要的是自己的
+        `replaySequence`。因此上层只有在 ack/heartbeat 消息携带 `sourceCursors` 时才会调用本方法。
+        Java 保存 cursor 后，下一次 replay 即使客户端没有显式传 `afterSequence`，也能按 clientId 恢复。
+        """
+
+        if source_cursor <= 0:
+            return {"source": self.source_name, "advanced": False, "reason": "NO_SOURCE_CURSOR"}
+        body = self._build_ack_payload(request, source_cursor)
+        headers = self._build_headers(request)
+        headers["Content-Type"] = "application/json"
+        http_request = Request(
+            url=f"{self._base_url}{self._ack_path}",
+            data=json.dumps(body).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urlopen(http_request, timeout=self._timeout_seconds) as response:  # noqa: S310 - base_url 来自受控运行配置
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception as exc:  # pragma: no cover - 网络异常由集成测试覆盖更合适
+            raise AgentRuntimeEventReplayClientError(f"回写 Java Agent runtime event ack 失败：{exc}") from exc
+        return self.parse_ack_response(payload)
+
     def _build_query_url(self, request: RuntimeEventSubscriptionRequest) -> str:
         """把订阅请求转换为 Java 查询 URL。
 
@@ -92,6 +122,7 @@ class JavaAgentRuntimeEventReplayClient:
 
         params: dict[str, str | int] = {
             "limit": self._default_limit,
+            "clientId": request.client_id,
         }
         source_cursor = request.source_cursors.get(self.source_name)
         if source_cursor is not None and source_cursor > 0:
@@ -108,6 +139,22 @@ class JavaAgentRuntimeEventReplayClient:
         if len(request.event_types) == 1:
             self._put_if_present(params, "eventType", _event_type_value(request.event_types[0]))
         return f"{self._base_url}{self._replay_path}?{urlencode(params)}"
+
+    def _build_ack_payload(self, request: RuntimeEventSubscriptionRequest, source_cursor: int) -> dict[str, Any]:
+        """构造 Java `/runtime-events/replay/acks` 请求体。
+
+        只写入 Java 需要的最小字段：clientId、runId/sessionId 和 acknowledgedReplaySequence。
+        租户、操作者和数据范围通过 Header 透传，避免在 body 与 header 之间复制两份权限上下文。
+        """
+
+        body: dict[str, Any] = {
+            "clientId": request.client_id,
+            "acknowledgedReplaySequence": source_cursor,
+            "clientObservedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        self._put_if_present(body, "runId", request.run_id)
+        self._put_if_present(body, "sessionId", request.session_id)
+        return body
 
     def _build_headers(self, request: RuntimeEventSubscriptionRequest) -> dict[str, str]:
         """构造 Java 控制面需要的平台上下文 Header。
@@ -153,6 +200,33 @@ class JavaAgentRuntimeEventReplayClient:
         if not isinstance(raw_events, list):
             raise AgentRuntimeEventReplayClientError("Java runtime-event replay 响应 data.events 必须是数组。")
         return tuple(cls._event_from_projection(item) for item in raw_events if isinstance(item, dict))
+
+    @staticmethod
+    def parse_ack_response(payload: dict[str, Any]) -> dict[str, Any]:
+        """解析 Java `PlatformApiResponse<AgentRuntimeEventReplayCursorView>`。
+
+        ack 响应用于诊断和前端确认，不参与 Python 本地 cursor 裁决。因此这里返回低风险摘要字段，
+        不把 Java 的完整响应对象原样扩散到 WebSocket 控制响应。
+        """
+
+        if payload.get("code") != 0:
+            reason = payload.get("reason", "UNKNOWN")
+            message = payload.get("message", "Java runtime-event ack 失败")
+            raise AgentRuntimeEventReplayClientError(f"{reason}: {message}")
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise AgentRuntimeEventReplayClientError("Java runtime-event ack 响应 data 必须是对象。")
+        return {
+            "source": JavaAgentRuntimeEventReplayClient.source_name,
+            "clientId": data.get("clientId"),
+            "subscriptionKey": data.get("subscriptionKey"),
+            "runId": data.get("runId"),
+            "sessionId": data.get("sessionId"),
+            "acknowledgedReplaySequence": data.get("acknowledgedReplaySequence"),
+            "previousAcknowledgedReplaySequence": data.get("previousAcknowledgedReplaySequence"),
+            "advanced": bool(data.get("advanced")),
+            "reason": data.get("reason"),
+        }
 
     @classmethod
     def _event_from_projection(cls, item: dict[str, Any]) -> AgentRuntimeEvent:

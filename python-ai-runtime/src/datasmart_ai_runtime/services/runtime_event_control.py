@@ -111,11 +111,19 @@ class RuntimeEventControlHandler:
             subscription_id = self._require_subscription_id(message)
             if message.last_sequence is None:
                 raise RuntimeEventControlMessageError("ack 控制消息必须携带 lastSequence。")
-            return self._session_manager.acknowledge(subscription_id, message.last_sequence)
+            return self._session_manager.acknowledge(
+                subscription_id,
+                message.last_sequence,
+                source_cursors=message.source_cursors,
+            )
 
         if message.message_type == RuntimeEventControlMessageType.HEARTBEAT:
             subscription_id = self._require_subscription_id(message)
-            return self._session_manager.heartbeat(subscription_id, message.last_sequence)
+            return self._session_manager.heartbeat(
+                subscription_id,
+                message.last_sequence,
+                source_cursors=message.source_cursors,
+            )
 
         if message.message_type == RuntimeEventControlMessageType.RECONNECT:
             subscription_id = self._require_subscription_id(message)
@@ -231,6 +239,7 @@ def control_message_from_payload(payload: dict[str, Any]) -> RuntimeEventControl
         subscription_id=payload.get("subscriptionId") or payload.get("subscription_id"),
         request=_subscription_request_from_payload(request_payload) if request_payload else None,
         last_sequence=_optional_int(payload.get("lastSequence", payload.get("last_sequence"))),
+        source_cursors=_source_cursors_from_payload(payload.get("sourceCursors", payload.get("source_cursors", {}))),
         after_sequence=_optional_int(payload.get("afterSequence", payload.get("after_sequence"))),
         reason=payload.get("reason"),
         attributes=dict(payload.get("attributes", {})),

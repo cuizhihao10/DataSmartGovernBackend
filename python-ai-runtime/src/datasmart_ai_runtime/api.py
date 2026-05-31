@@ -288,7 +288,10 @@ def _build_runtime_event_replay_sources(agent_runtime_base_url: str | None) -> t
         JavaAgentRuntimeEventReplayClient(
             base_url=agent_runtime_base_url,
             timeout_seconds=_positive_int_env("DATASMART_AGENT_RUNTIME_EVENT_REPLAY_TIMEOUT_SECONDS", 3),
-            replay_path=os.getenv("DATASMART_AGENT_RUNTIME_EVENT_REPLAY_PATH") or "/agent-runtime/runtime-events",
+            replay_path=os.getenv("DATASMART_AGENT_RUNTIME_EVENT_REPLAY_PATH")
+            or "/agent-runtime/runtime-events/replay",
+            ack_path=os.getenv("DATASMART_AGENT_RUNTIME_EVENT_ACK_PATH")
+            or "/agent-runtime/runtime-events/replay/acks",
             default_limit=_positive_int_env("DATASMART_AGENT_RUNTIME_EVENT_REPLAY_LIMIT", 200),
         ),
     )

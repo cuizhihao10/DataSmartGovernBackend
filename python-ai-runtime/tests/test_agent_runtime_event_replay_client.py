@@ -83,6 +83,8 @@ class JavaAgentRuntimeEventReplayClientTest(unittest.TestCase):
         url = client._build_query_url(request)
         headers = client._build_headers(request)
 
+        self.assertIn("/agent-runtime/runtime-events/replay?", url)
+        self.assertIn("clientId=browser-a", url)
         self.assertIn("tenantId=10", url)
         self.assertIn("projectId=20", url)
         self.assertIn("runId=run-001", url)
@@ -98,6 +100,50 @@ class JavaAgentRuntimeEventReplayClientTest(unittest.TestCase):
             JavaAgentRuntimeEventReplayClient.parse_platform_response(
                 {"code": 403, "reason": "TENANT_SCOPE_DENIED", "message": "无权访问"},
             )
+
+    def test_build_ack_payload_uses_java_replay_sequence_not_envelope_sequence(self) -> None:
+        client = JavaAgentRuntimeEventReplayClient("http://localhost:8086")
+        request = RuntimeEventSubscriptionRequest(
+            client_id="browser-a",
+            tenant_id="10",
+            project_id="20",
+            actor_id="1001",
+            roles=("operator",),
+            session_id="session-001",
+            run_id="run-001",
+            after_sequence=99,
+        )
+
+        payload = client._build_ack_payload(request, source_cursor=7)
+
+        self.assertEqual("browser-a", payload["clientId"])
+        self.assertEqual("run-001", payload["runId"])
+        self.assertEqual("session-001", payload["sessionId"])
+        self.assertEqual(7, payload["acknowledgedReplaySequence"])
+        self.assertIn("clientObservedAt", payload)
+
+    def test_parse_java_ack_response_returns_low_risk_summary(self) -> None:
+        result = JavaAgentRuntimeEventReplayClient.parse_ack_response(
+            {
+                "code": 0,
+                "data": {
+                    "clientId": "browser-a",
+                    "subscriptionKey": "run:run-001",
+                    "runId": "run-001",
+                    "sessionId": None,
+                    "acknowledgedReplaySequence": 7,
+                    "previousAcknowledgedReplaySequence": 3,
+                    "advanced": True,
+                    "reason": "ACK_ADVANCED",
+                },
+            }
+        )
+
+        self.assertEqual(JavaAgentRuntimeEventReplayClient.source_name, result["source"])
+        self.assertEqual(7, result["acknowledgedReplaySequence"])
+        self.assertEqual(3, result["previousAcknowledgedReplaySequence"])
+        self.assertTrue(result["advanced"])
+        self.assertEqual("ACK_ADVANCED", result["reason"])
 
 
 if __name__ == "__main__":

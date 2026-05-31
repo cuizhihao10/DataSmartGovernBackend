@@ -16,7 +16,7 @@ Python AI Runtime 当前已经有本地 `RuntimeEventStore`，用于保存模型
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Protocol
+from typing import Any, Protocol
 
 from datasmart_ai_runtime.domain.event_transport import RuntimeEventSubscriptionRequest
 from datasmart_ai_runtime.domain.events import AgentRuntimeEvent
@@ -39,6 +39,26 @@ class RuntimeEventReplaySource(Protocol):
 
         实现方应尽量在源头按 tenant/project/actor/session/run/request/eventType 做范围过滤；
         协调器仍会在构建 envelope 前再次走统一过滤和可见性策略，形成“双保险”。
+        """
+
+
+class RuntimeEventAckSink(Protocol):
+    """可选的外部 replay source ack 回写协议。
+
+    replay source 负责“从外部事件源读取到哪里”，ack sink 负责“告诉外部事件源客户端已经消费到哪里”。
+    两者拆开是为了保持兼容：Redis/Kafka/审计库等 source 可能只支持只读 replay，而 Java agent-runtime
+    现在已经提供了 `/runtime-events/replay/acks`，可以保存客户端消费 cursor。
+    """
+
+    @property
+    def source_name(self) -> str:
+        """返回事件源名称，必须与 replay envelope attributes.sourceCursors 的 key 一致。"""
+
+    def acknowledge(self, request: RuntimeEventSubscriptionRequest, source_cursor: int) -> dict[str, Any]:
+        """确认某个客户端在当前订阅范围内已消费到 source_cursor。
+
+        返回值应只包含低风险诊断字段，例如 acknowledgedSequence、reason、advanced，不应包含原始事件、
+        payload、prompt、SQL 或工具参数。
         """
 
 

@@ -174,6 +174,7 @@ from datasmart_ai_runtime.services.runtime_event_websocket import (
 )
 from datasmart_ai_runtime.services.runtime_event_recorder import RuntimeEventRecorder
 from datasmart_ai_runtime.services.runtime_event_replay_source import (
+    RuntimeEventAckSink,
     RuntimeEventReplayCollection,
     RuntimeEventReplayCoordinator,
     RuntimeEventReplaySource,
@@ -299,6 +300,7 @@ __all__ = [
     "RuntimeEventWebSocketFrame",
     "RuntimeEventWebSocketFrameType",
     "RuntimeEventRecorder",
+    "RuntimeEventAckSink",
     "RuntimeEventReplayCollection",
     "RuntimeEventReplayCoordinator",
     "RuntimeEventReplaySource",

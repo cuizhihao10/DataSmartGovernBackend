@@ -7149,3 +7149,36 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 在进入多实例前，把 cursor store 升级为 Redis/MySQL，并补 TTL、容量上限、慢消费者诊断和客户端维度指标。
 3. 再做最小 live push 协议：启动先 replay，连接中增量推送，客户端按批次 ack，断线后从 ack cursor 恢复。
 4. 同步推进 permission-admin SERVICE_ACCOUNT 委托授权与 selected-node outbox dispatcher，避免 runtime event 可见性主线无限扩展而挤压真实执行治理。
+
+## 4.65 Python Runtime WebSocket 接入 Java replay/ack cursor（2026-06-01）
+
+本阶段把 4.64 的 Java replay/ack 控制面接入 Python AI Runtime 的实时事件通道。当前仍不新增 Java WebSocket Server，而是让现有 `/agent/events/ws` 在订阅、重连、ack、heartbeat 流程中理解 Java `replaySequence`，形成“Python 智能编排事件 + Java 控制面执行事实”的统一时间线。
+
+已完成：
+- `JavaAgentRuntimeEventReplayClient` 默认 replay 路径从旧查询接口切换为 `/agent-runtime/runtime-events/replay`。
+- `JavaAgentRuntimeEventReplayClient` 新增 ack cursor 写入能力，POST 到 `/agent-runtime/runtime-events/replay/acks`。
+- replay 请求新增 `clientId` 参数，未显式传 source cursor 时可让 Java 侧按服务端 cursor 恢复。
+- 新增 `RuntimeEventAckSink` 协议，让外部 replay source 可以选择性支持 ack 回写。
+- `RuntimeEventControlMessage` 新增 `sourceCursors`，用于区分前端 envelope `lastSequence` 与 Java/Redis/Kafka 等外部 source 的稳定 cursor。
+- `RuntimeEventSessionManager` 在处理 `ack` 与 `heartbeat` 时，如果收到 `sourceCursors`，会把对应 source cursor 回写给 ack-capable source。
+- 外部 ack 失败不会回滚 Python 本地 ack，也不会拒绝 WebSocket 控制消息；失败摘要会写入订阅 `attributes.externalAckErrors`，成功摘要写入 `attributes.externalAckResults`。
+- 组件诊断 `externalReplaySources` 新增 `ackCapableSources`，运维可以看到哪些外部事件源支持消费位置回写。
+- `_build_runtime_event_replay_sources` 新增 `DATASMART_AGENT_RUNTIME_EVENT_ACK_PATH` 配置，便于 gateway 前缀、灰度环境或服务网格路径变化。
+
+产品意义：
+- WebSocket 现在不只“能收到 Java 事件”，还具备把“我已经处理到 Java replaySequence=N”回写 Java 控制面的能力。
+- 这让断线恢复从“客户端自己带 sourceCursors”推进到“客户端 ack 后 Java 也保存 cursor”，更接近真实生产中的多端、多标签页、弱网重连场景。
+- `lastSequence` 与 `sourceCursors` 拆开，是多事件源统一时间线的关键：前端只关心展示顺序，Java/Kafka/Redis 各自关心自己的稳定游标，不能混用。
+- ack 采用 fail-open 体验：Java 短暂不可用时，前端连接仍可推进本地 ack，只在诊断字段中暴露外部 ack 失败，避免把可见性链路做得过于脆弱。
+
+当前边界：
+- Java ack 仍依赖 Java 侧内存 cursor store；多实例生产前仍需 Redis/MySQL cursor store。
+- Python WebSocket 还没有把 sourceCursors 自动从上一次 replay envelope 缓存在服务端；当前仍要求客户端在 ack/heartbeat 中回传。
+- 当前没有批量 ack、ack 重试队列、慢消费者指标、客户端租约或按租户限流。
+- 当前 live push 仍是 Python 本地 hub，对 Java 控制面事件仍以 replay/reconnect 为主；后续需要 Java runtime event 主动进入 Python live hub 或共享事件总线。
+
+下一步建议：
+1. 补客户端/网关 SDK 级协议说明：subscribe/reconnect 返回 `sourceCursors`，ack/heartbeat 必须原样带回已处理的 source cursor。
+2. 把 Java cursor store 升级为 Redis/MySQL，并补 TTL、慢消费者诊断、ack 失败重试和多实例一致性。
+3. 让 Java runtime event 通过 Kafka 或 bridge 主动进入 Python live push hub，减少只能靠 reconnect 才补齐控制面事件的问题。
+4. 转入 selected-node outbox dispatcher 与 permission-admin SERVICE_ACCOUNT 委托授权，避免事件通道继续过度扩展。

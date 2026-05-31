@@ -287,9 +287,13 @@ def runtime_event_component_diagnostics(components: RuntimeEventRuntimeComponent
         "externalReplaySources": {
             "enabled": bool(components.external_replay_sources),
             "sources": tuple(source.source_name for source in components.external_replay_sources),
+            "ackCapableSources": tuple(
+                source.source_name for source in components.external_replay_sources if hasattr(source, "acknowledge")
+            ),
             "purpose": (
                 "把 Java agent-runtime 投影、未来 Kafka/审计库/对象归档等外部事件源合并进 "
-                "HTTP replay 与 WebSocket subscribe/reconnect，避免 Agent 运行详情只看到单侧事件。"
+                "HTTP replay 与 WebSocket subscribe/reconnect；其中 ackCapableSources 还会在客户端 "
+                "ack/heartbeat 携带 sourceCursors 时回写外部消费游标。"
             ),
         },
         "livePushHub": {

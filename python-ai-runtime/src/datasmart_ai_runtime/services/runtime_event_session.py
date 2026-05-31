@@ -34,6 +34,7 @@ from datasmart_ai_runtime.services.runtime_event_checkpoint_store import (
 from datasmart_ai_runtime.services.runtime_event_store import RuntimeEventStore
 from datasmart_ai_runtime.services.runtime_event_transport import RuntimeEventTransportBuilder
 from datasmart_ai_runtime.services.runtime_event_replay_source import (
+    RuntimeEventAckSink,
     RuntimeEventReplayCoordinator,
     RuntimeEventReplaySource,
 )
@@ -115,6 +116,7 @@ class RuntimeEventSessionManager:
         checkpoint_store: RuntimeEventCheckpointStore | None = None,
         transport_builder: RuntimeEventTransportBuilder | None = None,
         external_replay_sources: tuple[RuntimeEventReplaySource, ...] = (),
+        external_ack_sinks: tuple[RuntimeEventAckSink, ...] | None = None,
         heartbeat_timeout_seconds: int = 45,
         clock: RuntimeEventSessionClock | None = None,
     ) -> None:
@@ -128,6 +130,11 @@ class RuntimeEventSessionManager:
         self._checkpoint_store = checkpoint_store
         self._transport_builder = transport_builder or RuntimeEventTransportBuilder()
         self._replay_coordinator = RuntimeEventReplayCoordinator(external_replay_sources)
+        self._external_ack_sinks = tuple(
+            external_ack_sinks
+            if external_ack_sinks is not None
+            else tuple(source for source in external_replay_sources if hasattr(source, "acknowledge"))
+        )
         self._heartbeat_timeout = timedelta(seconds=max(1, heartbeat_timeout_seconds))
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._sessions: dict[str, _RuntimeEventSessionRecord] = {}
@@ -158,18 +165,29 @@ class RuntimeEventSessionManager:
         self._persist_snapshot(snapshot)
         return snapshot
 
-    def acknowledge(self, subscription_id: str, last_sequence: int) -> RuntimeEventSessionSnapshot:
+    def acknowledge(
+        self,
+        subscription_id: str,
+        last_sequence: int,
+        source_cursors: dict[str, int] | None = None,
+    ) -> RuntimeEventSessionSnapshot:
         """记录客户端 ack。
 
         ack 表示客户端已经展示、处理或持久化到某个 sequence。服务端保存最大 ack 值即可；如果客户端
         因网络重试发来更小的旧 ack，这里会忽略旧值，避免把断线续传起点倒退。
+
+        `source_cursors` 是外部事件源自己的 cursor，例如 Java 控制面的 replaySequence。Python 本地
+        ack 与外部 ack 分开处理：本地 ack 一定按最大值推进；外部 ack 失败只写入诊断属性，不回滚本地
+        连接状态，避免 Java 短暂不可用导致前端 WebSocket ack 反复失败。
         """
 
         record = self._require_open_record(subscription_id)
         snapshot = record.snapshot
         acknowledged = max(snapshot.last_ack_sequence, max(0, last_sequence))
+        plan = self._plan_with_external_ack_attributes(snapshot.plan, source_cursors)
         record.snapshot = replace(
             snapshot,
+            plan=plan,
             state=RuntimeEventConnectionState.ACTIVE,
             last_ack_sequence=acknowledged,
             last_heartbeat_at=self._now(),
@@ -179,11 +197,17 @@ class RuntimeEventSessionManager:
         self._persist_snapshot(record.snapshot)
         return record.snapshot
 
-    def heartbeat(self, subscription_id: str, last_sequence: int | None = None) -> RuntimeEventSessionSnapshot:
+    def heartbeat(
+        self,
+        subscription_id: str,
+        last_sequence: int | None = None,
+        source_cursors: dict[str, int] | None = None,
+    ) -> RuntimeEventSessionSnapshot:
         """处理客户端心跳。
 
         心跳主要用于证明连接仍然存活。为了减少前端消息数量，心跳也允许携带 lastSequence；如果携带，
-        服务端会顺手推进 ack，避免前端必须同时发送 heartbeat 和 ack 两类消息。
+        服务端会顺手推进 ack，避免前端必须同时发送 heartbeat 和 ack 两类消息。若心跳携带外部
+        `sourceCursors`，也会顺手回写 Java ack cursor，减少实时连接上的控制消息数量。
         """
 
         record = self._require_open_record(subscription_id)
@@ -192,8 +216,10 @@ class RuntimeEventSessionManager:
         if last_sequence is not None:
             acknowledged = max(acknowledged, max(0, last_sequence))
         now = self._now()
+        plan = self._plan_with_external_ack_attributes(snapshot.plan, source_cursors)
         record.snapshot = replace(
             snapshot,
+            plan=plan,
             state=RuntimeEventConnectionState.ACTIVE,
             last_ack_sequence=acknowledged,
             last_heartbeat_at=now,
@@ -324,6 +350,55 @@ class RuntimeEventSessionManager:
         if envelope_attributes == dict(envelope.attributes):
             return envelope
         return replace(envelope, attributes=envelope_attributes)
+
+    def _plan_with_external_ack_attributes(
+        self,
+        plan: RuntimeEventSubscriptionPlan,
+        source_cursors: dict[str, int] | None,
+    ) -> RuntimeEventSubscriptionPlan:
+        """按 sourceCursors 回写外部 ack，并把低风险结果写入订阅属性。
+
+        订阅属性是控制响应里已经存在的扩展位置。这里会清理上一次 ack 的结果，避免一次失败诊断在
+        后续成功 ack 后继续残留，误导前端或运维工具。
+        """
+
+        reserved_keys = {"externalAckResults", "externalAckErrors"}
+        attributes = {key: value for key, value in plan.attributes.items() if key not in reserved_keys}
+        ack_attributes = self._ack_external_sources(plan.request, source_cursors or {})
+        if not ack_attributes:
+            return replace(plan, attributes=attributes) if attributes != plan.attributes else plan
+        attributes.update(ack_attributes)
+        return replace(plan, attributes=attributes)
+
+    def _ack_external_sources(
+        self,
+        request: RuntimeEventSubscriptionRequest,
+        source_cursors: dict[str, int],
+    ) -> dict[str, tuple[dict[str, object], ...]]:
+        """把客户端确认的外部 source cursor 回写给对应 source。
+
+        当前最重要的实现是 Java agent-runtime。后续如果 Redis Stream、Kafka compacted topic 或审计库
+        也需要显式 ack，只要实现 `RuntimeEventAckSink` 即可接入这里。
+        """
+
+        if not self._external_ack_sinks or not source_cursors:
+            return {}
+        results: list[dict[str, object]] = []
+        errors: list[dict[str, object]] = []
+        for sink in self._external_ack_sinks:
+            source_cursor = source_cursors.get(sink.source_name)
+            if source_cursor is None:
+                continue
+            try:
+                results.append(dict(sink.acknowledge(request, int(source_cursor))))
+            except Exception as exc:  # pragma: no cover - 具体外部客户端异常由 source 单测覆盖
+                errors.append({"source": sink.source_name, "message": str(exc)})
+        attributes: dict[str, tuple[dict[str, object], ...]] = {}
+        if results:
+            attributes["externalAckResults"] = tuple(results)
+        if errors:
+            attributes["externalAckErrors"] = tuple(errors)
+        return attributes
 
     def _require_record(self, subscription_id: str) -> _RuntimeEventSessionRecord:
         """按 subscriptionId 获取会话记录，不存在时抛出领域错误。"""
