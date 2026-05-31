@@ -6724,3 +6724,30 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 再回到 agent-runtime 增加 outbox + Kafka dispatcher，避免数据库状态与消息投递之间出现双写不一致。
 3. 补 ToolPlan DAG/依赖边，决定异步工具之间的串行、并行、失败跳过和补偿语义。
 4. 将下发动作接入 permission-admin 与租户级自动化开关。
+
+## 4.46 Task Management Agent 异步命令消费 Inbox（2026-05-31）
+
+本阶段承接 4.45 的 Agent 异步命令草案，把任务化链路切到 `task-management` 消费侧。任务中心新增 Agent async command Inbox、消费契约和内部联调入口，能够把合法 `ASYNC_TASK` command 转换为现有任务队列中的 `PENDING` 任务，并用数据库唯一索引保证重复投递不会重复创建任务。
+
+已完成：
+- 新增 `agent_async_task_command_inbox` 表与迁移脚本，包含 commandId、idempotencyKey、auditId、session/run、租户/项目/工作空间、payloadReference、参数名快照、消费状态和 taskId。
+- 新增 `AgentAsyncTaskCommandRequest` 与 `AgentAsyncTaskCommandConsumeResponse`，固定 HTTP 联调入口和未来 Kafka payload 的共用协议。
+- 新增 `AgentAsyncTaskCommandConsumerService`，完成协议校验、Inbox 去重、任务创建和重复消费回执。
+- 新增内部接口 `POST /internal/agent-async-task-commands/consume`，用于 dispatcher 尚未接 Kafka 前的联调；未来 Kafka listener 应复用同一 Service。
+- 新增测试覆盖首次消费创建任务、重复消费复用 taskId、非法版本阻断、非受控 payloadReference 阻断和敏感字段子集校验。
+
+产品意义：
+- task-management 开始承担长耗时 Agent 工具的任务化消费职责，不再让 agent-runtime 自己维护第二套队列、租约、重试和运维干预能力。
+- commandId 与 idempotencyKey 的唯一索引让 Kafka 至少一次投递具备安全落地基础。
+- 命令、Inbox 和 task.params 只保存 `payloadReference`、参数名和敏感参数名，不复制工具参数值、密钥、SQL 或样本数据。
+
+当前边界：
+- 当前还没有真实 Kafka listener，也没有 agent-runtime outbox producer；内部 HTTP 入口只是联调适配器。
+- worker 还没有实现 payloadReference resolver，因此任务创建后只能进入队列，尚不能真实执行异步工具。
+- 未接入 permission-admin 服务间鉴权、队列容量策略、死信告警、Agent 工具状态回写和 WebSocket replay。
+
+下一步建议：
+1. 回到 agent-runtime 增加 outbox + dispatcher，把 4.45 command plan 转换为可恢复投递记录。
+2. 在 task-management 增加 Kafka listener 适配器，但只做传输层，继续复用当前 ConsumerService。
+3. 设计 payloadReference resolver 和任务 worker 执行协议，明确如何从 Agent audit 快照读取受控参数。
+4. 补 Agent 工具状态回写：任务创建成功、任务运行中、成功、失败、死信都应回到 agent-runtime 工具审计。
