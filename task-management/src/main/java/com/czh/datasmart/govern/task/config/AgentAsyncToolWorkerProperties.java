@@ -43,6 +43,15 @@ public class AgentAsyncToolWorkerProperties {
     private String agentRuntimeBaseUrl = "http://localhost:8090";
 
     /**
+     * data-sync 内部服务地址。
+     *
+     * <p>当白名单适配器执行 `data-sync.execute` 时，worker 不会调用 task payload 里的任意 targetEndpoint，
+     * 而是固定调用 data-sync 提供的内部幂等入口 `/internal/data-sync/agent/tasks/execute`。
+     * 这个地址在本地默认指向 data-sync 服务端口；生产环境应通过 Nacos、网关内网域名或服务网格地址覆盖。</p>
+     */
+    private String dataSyncBaseUrl = "http://localhost:8086";
+
+    /**
      * worker 身份标识。
      *
      * <p>后续接入真实执行器认领和心跳时，该值会进入 task.current_executor_id 和 task_execution_run.executor_id，

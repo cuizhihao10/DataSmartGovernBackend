@@ -131,7 +131,14 @@ public class SyncCallbackIdempotencySupport {
         idempotencyMapper.updateById(record);
     }
 
-    private SyncCallbackIdempotency findRecord(Long tenantId, String action, String scopeKey, String idempotencyKey) {
+    /**
+     * 查询指定幂等键的当前记录。
+     *
+     * <p>早期该方法仅作为组件内部工具方法存在；Agent 触发 data-sync 的场景需要在命中重复请求时读取首次成功响应摘要，
+     * 以便 worker 重试不会因为“响应丢失”而重新创建同步任务。这里选择暴露只读查询，而不是让上层直接访问 Mapper，
+     * 是为了继续把 action 规范化、scopeKey 裁剪和唯一键语义集中在幂等支撑组件内。</p>
+     */
+    public SyncCallbackIdempotency findRecord(Long tenantId, String action, String scopeKey, String idempotencyKey) {
         return idempotencyMapper.selectOne(new LambdaQueryWrapper<SyncCallbackIdempotency>()
                 .eq(SyncCallbackIdempotency::getTenantId, tenantId)
                 .eq(SyncCallbackIdempotency::getAction, action.trim().toUpperCase())

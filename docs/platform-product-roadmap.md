@@ -6905,3 +6905,10 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 3. 补任务状态回写到 agent-runtime 工具审计与 runtime event，使 TASK_RUNNING、TASK_SUCCEEDED、TASK_FAILED、TASK_DEAD_LETTER 能被 Python Runtime 和前端感知。
 4. 接入 permission-admin 服务间策略，校验服务账号是否可代表 actor 在 tenant/project/workspace 内执行该工具。
 5. 并行设计 ToolPlan DAG，避免异步工具只能单点执行，后续要支持依赖边、并行组、失败跳过、补偿和结果回填顺序。
+## 4.52 Agent 异步工具白名单执行与 data-sync.execute 受控适配（2026-05-31）
+
+- `data-sync` 新增 `/internal/data-sync/agent/tasks/execute`，把 Agent 触发的同步任务创建与入队包装成单个幂等业务动作。
+- `task-management` 新增 `AgentAsyncToolExecutor` 白名单抽象与 `DataSyncExecuteAgentAsyncToolAdapter`，禁止 worker 按任意 `targetEndpoint` 调用内网服务。
+- 新增 `dispatch-once` 手动调度入口，完成 claim -> payload resolver -> 白名单适配器 -> complete/defer/fail 的最小闭环。
+- 默认仍保持 `enabled=false` 与 `dryRunOnly=true`，真实执行必须显式打开，避免本地学习环境误触发下游副作用。
+- 下一步应优先做状态回写到 agent-runtime/runtime event，再补后台 worker、租户配额、心跳续租、permission-admin 服务间授权和 ToolPlan DAG。

@@ -9,6 +9,8 @@ package com.czh.datasmart.govern.task.controller;
 import com.czh.datasmart.govern.task.common.ApiResponse;
 import com.czh.datasmart.govern.task.controller.dto.TaskActorContext;
 import com.czh.datasmart.govern.task.controller.support.TaskActorContextResolver;
+import com.czh.datasmart.govern.task.service.agent.AgentAsyncToolDispatchOnceResult;
+import com.czh.datasmart.govern.task.service.agent.AgentAsyncToolDispatchOnceService;
 import com.czh.datasmart.govern.task.service.agent.AgentAsyncToolExecutionPreparationService;
 import com.czh.datasmart.govern.task.service.agent.AgentAsyncToolResolvedPayload;
 import jakarta.servlet.http.HttpServletRequest;
@@ -22,15 +24,12 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * Agent 异步工具 worker 内部控制器。
  *
- * <p>该控制器当前只提供“解析 payloadReference 并返回预检结果”的入口。
- * 它不认领任务、不调用业务工具、不把任务标记成功，也不会回写 agent-runtime。
- * 这个克制很重要：在工具适配器、权限策略和状态回写尚未完整之前，贸然自动执行会把系统变成 demo 式黑盒。</p>
+ * <p>4.51 阶段该控制器只提供 payloadReference 解析预检；4.52 阶段增加 dispatch-once 手动调度入口。
+ * 两个入口都属于内部控制面，生产环境必须限制为服务账号、内网网关或服务网格访问，不能暴露给普通用户。</p>
  *
- * <p>生产部署要求：</p>
- * <p>1. `/internal/**` 只能在内网、gateway 内部路由或服务网格中访问；</p>
- * <p>2. 调用方必须带 SERVICE_ACCOUNT、OPERATOR 或 PLATFORM_ADMINISTRATOR 角色 Header；</p>
- * <p>3. 后续真正 worker 应复用 Service 层动作，而不是依赖 HTTP 自调用；</p>
- * <p>4. 该接口返回 planArguments，调用方和日志系统都必须避免打印敏感字段值。</p>
+ * <p>设计上仍然坚持“Controller 薄、Service 厚”：Controller 只解析 Header 并返回统一响应，
+ * 任务认领、payload 校验、白名单适配器选择、下游调用、任务完成/失败/延迟回写全部放在 Service 层。
+ * 这样后续接入定时 worker、并发 worker 池或运维补偿台时，可以复用同一套业务动作。</p>
  */
 @RestController
 @RequestMapping("/internal/agent-async-tool-tasks")
@@ -38,6 +37,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class AgentAsyncToolWorkerController {
 
     private final AgentAsyncToolExecutionPreparationService preparationService;
+    private final AgentAsyncToolDispatchOnceService dispatchOnceService;
     private final TaskActorContextResolver actorContextResolver;
 
     /**
@@ -54,5 +54,19 @@ public class AgentAsyncToolWorkerController {
         TaskActorContext actorContext = actorContextResolver.resolve(request);
         AgentAsyncToolResolvedPayload payload = preparationService.preparePayload(taskId, actorContext);
         return ResponseEntity.ok(ApiResponse.success("Agent 异步工具载荷预检完成", payload));
+    }
+
+    /**
+     * 手动触发一次 Agent 异步工具 worker 调度。
+     *
+     * <p>该入口会真实认领并执行一条 `AGENT_ASYNC_TOOL` 任务，因此默认受配置开关保护：
+     * `enabled=false` 或 `dryRunOnly=true` 时都会被服务层拒绝。后续如果接入后台定时 worker，也应该复用同一个
+     * Service 方法，确保手动调试和自动调度使用相同的白名单、幂等和状态回写逻辑。</p>
+     */
+    @PostMapping("/dispatch-once")
+    public ResponseEntity<ApiResponse<AgentAsyncToolDispatchOnceResult>> dispatchOnce(HttpServletRequest request) {
+        TaskActorContext actorContext = actorContextResolver.resolve(request);
+        AgentAsyncToolDispatchOnceResult result = dispatchOnceService.dispatchOnce(actorContext);
+        return ResponseEntity.ok(ApiResponse.success("Agent 异步工具 worker 单次调度完成", result));
     }
 }
