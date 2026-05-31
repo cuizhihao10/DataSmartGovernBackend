@@ -9,6 +9,8 @@ package com.czh.datasmart.govern.agent.controller;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolAutoExecutionRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolAutoExecutionResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunAsyncTaskCommandPlanView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagExecutionDryRunRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagExecutionDryRunResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagExecutionPreviewView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolPlanDagView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolExecutionPolicyView;
@@ -20,6 +22,7 @@ import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionResultQueryService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolAutoExecutionService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunAsyncTaskCommandPlanningService;
+import com.czh.datasmart.govern.agent.service.execution.AgentRunToolDagExecutionDryRunService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolDagExecutionPreviewService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolPlanDagService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolExecutionPolicyService;
@@ -56,6 +59,7 @@ public class AgentToolExecutionAuditController {
     private final AgentRunAsyncTaskCommandPlanningService asyncTaskCommandPlanningService;
     private final AgentRunToolPlanDagService toolPlanDagService;
     private final AgentRunToolDagExecutionPreviewService toolDagExecutionPreviewService;
+    private final AgentRunToolDagExecutionDryRunService toolDagExecutionDryRunService;
 
     /**
      * 查询某次 Agent Run 的工具执行审计记录。
@@ -136,6 +140,33 @@ public class AgentToolExecutionAuditController {
             @PathVariable("runId") String runId,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success(toolDagExecutionPreviewService.previewRunDagExecution(sessionId, runId), traceId);
+    }
+
+    /**
+     * 对某次 Agent Run 的 DAG-aware 工具推进做“干运行”。
+     *
+     * <p>该接口是 `dag-execution-preview` 和真实 DAG worker 之间的第二层安全阀：
+     * - preview 负责解释全量节点当前是否 ready、是否需要审批、是否存在依赖阻断；
+     * - dry-run 负责根据调用方传入的 nodeIds/auditIds 形成一次“拟执行批次”；
+     * - 真实执行仍必须走既有受控入口，例如 `auto-execute-sync` 或后续 outbox/dispatcher。</p>
+     *
+     * <p>为什么不让前端或 Python Runtime 直接根据 preview 自己拼执行请求？
+     * 1. 执行入口选择属于 Java 控制面职责，不能散落到多个调用端，否则权限、限流和审计口径会漂移；
+     * 2. 干运行需要处理 maxNodes、未选中节点、未命中 selector、批量上限等批次语义，这些语义应由服务端统一维护；
+     * 3. 未来接入租户配额、工具级限流、worker 健康度、队列积压和 permission-admin 策略版本后，
+     *    只需要扩展该服务，不需要所有调用端同时升级。</p>
+     *
+     * <p>副作用边界：
+     * 本接口不会执行工具、不会写 outbox、不会投递 Kafka、不会创建 task-management 任务，也不会推进审计状态。
+     * 它返回的是“如果继续推进，应走哪条受控路径”的学习型与审计型说明。</p>
+     */
+    @PostMapping("/{sessionId}/runs/{runId}/tool-executions/dag-execution-dry-run")
+    public PlatformApiResponse<AgentRunToolDagExecutionDryRunResponse> dryRunToolDagExecution(
+            @PathVariable("sessionId") String sessionId,
+            @PathVariable("runId") String runId,
+            @RequestBody(required = false) AgentRunToolDagExecutionDryRunRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(toolDagExecutionDryRunService.dryRunDagExecution(sessionId, runId, request), traceId);
     }
 
     /**

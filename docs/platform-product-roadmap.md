@@ -7054,3 +7054,24 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 做 DAG-aware execution dry-run request，让调用方选择 ready nodeIds 后看到将走同步 dryRun、异步 enqueue preview，还是被权限/依赖/参数阻断。
 2. 在 permission-admin 中补 SERVICE_ACCOUNT 代表执行的策略种子和审计动作，让远端 `PERMISSION_ADMIN_EVALUATE` 真实可用。
 3. 进入真实 DAG worker 前补租户配额、工具级限流、worker 指标、失败补偿和 runtime event/WebSocket 可视化。
+## 4.61 Agent Runtime DAG-aware 执行干运行请求（2026-05-31）
+本阶段在 4.59 DAG execution preview 与 4.60 服务间授权预检之后，新增 `dag-execution-dry-run`。它允许调用方传入 `nodeIds/auditIds/maxNodes`，把一次拟推进的 DAG 节点批次翻译成“同步 auto-execute dryRun 二次确认”“异步 outbox enqueue 预案”“preview 阻断”“selector 未命中”或“批量上限暂缓”，但不执行工具、不创建任务、不写 outbox、不投递 Kafka。
+
+已完成：
+- 新增 `POST /agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/dag-execution-dry-run`，同时兼容 `/api/agent/sessions/...`。
+- 新增 dry-run 请求、响应、节点明细 DTO 与 `AgentToolDagExecutionDryRunAction` 稳定枚举。
+- 新增 `AgentRunToolDagExecutionDryRunService`，复用现有 `dag-execution-preview`，不复制 DAG/policy/async/authorization 判断逻辑。
+- 支持默认选择可执行候选，也支持调用方显式选择 nodeId/auditId。
+- 支持 `maxNodes` 批量上限、未选择节点统计、未知 selector 诊断和批量上限可见化。
+- 新增定向测试，覆盖同步候选、异步预案、阻断节点、未知 selector 和批量上限。
+
+产品意义：
+- 这是进入真实 DAG worker 前的“行动预案层”，让前端、Python Runtime、智能网关和审计台先看到 Agent 准备怎样行动。
+- dry-run 与 preview 分层后，系统可以先解释、再授权、再执行，避免类 Codex/Claude Code Agent 的工具能力变成黑盒副作用。
+- 该能力继续坚持“模型提出计划，Java 控制面治理执行入口”的边界，不允许调用方绕过服务端策略直接拼 HTTP target。
+
+下一步推荐路线：
+1. 把 dry-run 摘要写入 runtime event/WebSocket，让用户看到本次拟执行批次和阻断原因。
+2. 在 permission-admin 中补 SERVICE_ACCOUNT 代表执行的真实策略种子、审计动作和 `representedActorId` 契约。
+3. 进入真实 DAG worker 前补租户配额、工具级限流、并发池、worker 指标和失败补偿。
+4. 中期把 DAG dry-run 接入智能网关动作审批面板，形成“Agent 提议 -> 人/策略确认 -> 后台可恢复执行”的商业化闭环。
