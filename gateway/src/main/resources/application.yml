@@ -562,6 +562,16 @@ datasmart:
           method-actions:
             GET: DIAGNOSE
 
+        # runtime event replay ack 是客户端消费位置写入动作，不应退化为 VIEW_EVENTS。
+        # 后续 WebSocket 断线重连、Python Runtime 桥接和前端时间线恢复都会依赖该 cursor。
+        - path-pattern: /api/agent/runtime-events/replay/acks
+          resource-type: AI_RUNTIME
+          default-action: ACK_EVENTS
+          description: Agent Runtime 事件回放客户端 ack 游标入口，用于确认已消费到的 replaySequence。
+          method-actions:
+            GET: VIEW_EVENTS
+            POST: ACK_EVENTS
+
         # Agent Runtime 运行时事件投影查询入口。
         # 它不是普通的 GET VIEW：事件里可能包含工具调用、审批等待、异常原因、模型规划阶段和上下文关联 ID，
         # 因此单独使用 VIEW_EVENTS，方便 permission-admin 后续按普通用户、项目负责人、审计员和运维人员拆分策略。

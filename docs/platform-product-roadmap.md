@@ -7118,3 +7118,34 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 补 approval、tool execution、memory、async-task 等事件的专项 display，但不要让展示层演进吞掉权限和执行主线。
 3. 推进 permission-admin SERVICE_ACCOUNT 委托授权契约。
 4. 在 selected-node outbox dispatcher 前补 request fingerprint 和确认幂等，防止重复确认、重复入队。
+
+## 4.64 Agent Runtime runtime event replay 与 ack cursor 契约（2026-05-31）
+
+本阶段没有贸然新增 Java WebSocket Server，而是先把 runtime event 的“断线可恢复消费”控制面补齐。原因是 gateway 现阶段已经把 `/api/agent/events/ws` 路由到 Python AI Runtime，Java `agent-runtime` 更适合作为可信事件源、权限收口、脱敏展示和 cursor 记录方。这样后续无论继续由 Python 承载 WebSocket，还是迁移到 Java WebSocket，都能复用同一套 replay/ack 契约。
+
+已完成：
+- 新增 `GET /agent-runtime/runtime-events/replay`，要求至少带 `runId` 或 `sessionId`，支持 `afterSequence/clientId/limit/eventType/severity` 等查询条件。
+- 新增 `POST /agent-runtime/runtime-events/replay/acks`，用于客户端确认已消费到的最大 `replaySequence`，并保证旧 ack、重复 ack 不会让 cursor 回退。
+- 新增 `GET /agent-runtime/runtime-events/replay/acks`，用于前端恢复、Python WebSocket 桥接启动和运维排障时查询当前 cursor。
+- 新增 replay DTO、cursor record、cursor store 抽象、内存 cursor store 与 `AgentRuntimeEventReplayService`。
+- replay 未显式传 `afterSequence` 且提供 `clientId` 时，会优先使用服务端保存的 ack cursor 作为恢复点。
+- gateway 新增 `/api/agent/runtime-events/replay/acks` 路由授权元数据，POST 使用 `ACK_EVENTS`，GET 使用 `VIEW_EVENTS`，避免“消费确认写入”被误当作普通查看权限。
+- 新增 `AgentRuntimeEventReplayServiceTest` 与 gateway 授权测试，覆盖 cursor 前进、旧 ack 忽略、无边界 replay 拒绝和 ACK_EVENTS 动作命中。
+
+产品意义：
+- 这一步把 Agent 行动时间线从“可查询”推进到“可恢复消费”，是类 Codex/Claude Code 体验中断线重连、后台继续执行、前端时间线恢复和审计回放的基础。
+- ack cursor 明确区分“看过事件”和“确认消费到某个位置”，后续才能做可靠 WebSocket replay、前端断线恢复、移动端轻量时间线和运维端消费滞后诊断。
+- 强制 run/session 范围可以避免客户端无边界拉取整个热窗口事件，降低跨租户、跨项目误读和高并发拖垮控制面的风险。
+- ACK_EVENTS 独立于 VIEW_EVENTS，是商业级权限语义的一小步但很关键：查看事件是读权限，写入消费游标是状态变更，二者不应混用。
+
+当前边界：
+- 当前 cursor store 是内存实现，只适合本地学习、单实例联调和协议打样；多实例生产应迁移到 Redis 或 MySQL，并补 TTL、租户索引和容量限制。
+- 当前仍没有 Java WebSocket 主动推送，也没有 SSE；本阶段提供的是 HTTP replay/ack 控制面。
+- 当前 cursor 只记录客户端消费位置，不代表事件已持久化为强审计表，也不删除旧事件。
+- 当前没有客户端心跳、订阅租约、慢消费者清理、批量 ack、cursor 迁移或跨端同步策略。
+
+下一步建议：
+1. 优先让 Python Runtime 的 `/agent/events/ws` 桥接调用 Java replay/ack，在 WebSocket 重连时按 `replaySequence` 补齐漏掉的 Java 控制面事件。
+2. 在进入多实例前，把 cursor store 升级为 Redis/MySQL，并补 TTL、容量上限、慢消费者诊断和客户端维度指标。
+3. 再做最小 live push 协议：启动先 replay，连接中增量推送，客户端按批次 ack，断线后从 ack cursor 恢复。
+4. 同步推进 permission-admin SERVICE_ACCOUNT 委托授权与 selected-node outbox dispatcher，避免 runtime event 可见性主线无限扩展而挤压真实执行治理。

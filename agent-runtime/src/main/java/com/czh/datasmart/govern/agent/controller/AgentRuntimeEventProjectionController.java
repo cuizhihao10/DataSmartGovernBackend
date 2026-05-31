@@ -8,14 +8,20 @@ package com.czh.datasmart.govern.agent.controller;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventConsumerDiagnosticsView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventProjectionQueryResponse;
+import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventReplayAckRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventReplayCursorView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventReplayResponse;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventQueryAccessContext;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventQueryAccessContextResolver;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventProjectionQuery;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventProjectionQueryService;
+import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventReplayService;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -42,6 +48,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class AgentRuntimeEventProjectionController {
 
     private final AgentRuntimeEventProjectionQueryService queryService;
+    private final AgentRuntimeEventReplayService replayService;
     private final AgentRuntimeEventQueryAccessContextResolver accessContextResolver;
 
     /**
@@ -95,6 +102,113 @@ public class AgentRuntimeEventProjectionController {
                 authorizedProjectIds
         );
         return PlatformApiResponse.success(queryService.query(query, accessContext), traceId);
+    }
+
+    /**
+     * 按 run/session 执行 runtime event 增量回放。
+     *
+     * <p>该接口是 WebSocket 实时事件通道的 HTTP replay 底座。它与普通查询接口的区别是：
+     * 1. 必须至少传入 runId 或 sessionId，避免客户端无边界拉取全量热窗口；
+     * 2. 支持 clientId，当请求未显式传 afterSequence 时，会使用该客户端上次 ack 的 cursor；
+     * 3. 响应中返回 effectiveAfterSequence 和 cursor，方便 Python WebSocket 桥接或前端断线重连恢复。</p>
+     *
+     * <p>当前仍是 HTTP replay，不是长连接本身。这样做是刻意分层：Java 控制面先提供可信事件源、权限收口、
+     * 脱敏和 display 展示解释；WebSocket 连接管理可以继续由 Python Runtime 或后续 Java WebSocket endpoint 复用。</p>
+     */
+    @GetMapping("/replay")
+    public PlatformApiResponse<AgentRuntimeEventReplayResponse> replayEvents(
+            @RequestParam(value = "tenantId", required = false) String tenantId,
+            @RequestParam(value = "projectId", required = false) String projectId,
+            @RequestParam(value = "actorId", required = false) String actorId,
+            @RequestParam(value = "requestId", required = false) String requestId,
+            @RequestParam(value = "runId", required = false) String runId,
+            @RequestParam(value = "sessionId", required = false) String sessionId,
+            @RequestParam(value = "eventType", required = false) String eventType,
+            @RequestParam(value = "severity", required = false) String severity,
+            @RequestParam(value = "afterSequence", required = false) Long afterSequence,
+            @RequestParam(value = "clientId", required = false) String clientId,
+            @RequestParam(value = "limit", required = false) Integer limit,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) String currentTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String currentActorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String currentActorRole,
+            @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+        AgentRuntimeEventProjectionQuery query = new AgentRuntimeEventProjectionQuery(
+                tenantId,
+                projectId,
+                actorId,
+                requestId,
+                runId,
+                sessionId,
+                eventType,
+                severity,
+                limit,
+                afterSequence
+        );
+        AgentRuntimeEventQueryAccessContext accessContext = accessContextResolver.resolve(
+                currentTenantId,
+                currentActorId,
+                currentActorRole,
+                traceId,
+                dataScopeLevel,
+                authorizedProjectIds
+        );
+        return PlatformApiResponse.success(replayService.replay(query, accessContext, clientId), traceId);
+    }
+
+    /**
+     * 提交 runtime event replay ack。
+     *
+     * <p>ack 是客户端对“已经处理到某个 replaySequence”的确认，不是普通查询动作。
+     * 服务端会保证 cursor 只前进不后退，重复 ack 或旧 ack 会被识别为 `STALE_ACK_IGNORED`，避免断线重连后游标回退。</p>
+     */
+    @PostMapping("/replay/acks")
+    public PlatformApiResponse<AgentRuntimeEventReplayCursorView> acknowledgeReplayCursor(
+            @RequestBody AgentRuntimeEventReplayAckRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) String currentTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String currentActorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String currentActorRole,
+            @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+        AgentRuntimeEventQueryAccessContext accessContext = accessContextResolver.resolve(
+                currentTenantId,
+                currentActorId,
+                currentActorRole,
+                traceId,
+                dataScopeLevel,
+                authorizedProjectIds
+        );
+        return PlatformApiResponse.success(replayService.acknowledge(request, accessContext), traceId);
+    }
+
+    /**
+     * 查询某个客户端在某个 run/session 订阅范围内的 ack cursor。
+     *
+     * <p>该接口主要服务排障、前端恢复和 WebSocket 桥接层启动前探测。查询 cursor 同样要经过数据范围收口，
+     * 避免用户通过 clientId 猜测别的租户或项目的消费位置。</p>
+     */
+    @GetMapping("/replay/acks")
+    public PlatformApiResponse<AgentRuntimeEventReplayCursorView> queryReplayCursor(
+            @RequestParam(value = "clientId") String clientId,
+            @RequestParam(value = "runId", required = false) String runId,
+            @RequestParam(value = "sessionId", required = false) String sessionId,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) String currentTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String currentActorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String currentActorRole,
+            @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+        AgentRuntimeEventQueryAccessContext accessContext = accessContextResolver.resolve(
+                currentTenantId,
+                currentActorId,
+                currentActorRole,
+                traceId,
+                dataScopeLevel,
+                authorizedProjectIds
+        );
+        return PlatformApiResponse.success(replayService.cursor(clientId, runId, sessionId, accessContext), traceId);
     }
 
     /**

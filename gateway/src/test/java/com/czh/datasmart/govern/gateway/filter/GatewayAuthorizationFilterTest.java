@@ -278,6 +278,25 @@ class GatewayAuthorizationFilterTest {
         assertThat(captor.getValue().getActorRole()).isEqualTo("AUDITOR");
     }
 
+    @Test
+    void agentRuntimeEventReplayAckShouldUseAckEventsAuthorization() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = exchangeWithRole("/api/agent/runtime-events/replay/acks", "POST", "PROJECT_OWNER");
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
+
+        filter.filter(exchange, chain).block();
+
+        ArgumentCaptor<GatewayPermissionDecisionRequest> captor = forClass(GatewayPermissionDecisionRequest.class);
+        verify(decisionClient).evaluate(captor.capture(), eq("trace-test-001"));
+        assertThat(chain.called()).isTrue();
+        assertThat(captor.getValue().getResourceType()).isEqualTo("AI_RUNTIME");
+        assertThat(captor.getValue().getAction()).isEqualTo("ACK_EVENTS");
+        assertThat(captor.getValue().getActorRole()).isEqualTo("PROJECT_OWNER");
+    }
+
     /**
      * Agent 运行时事件诊断接口应使用 DIAGNOSE 动作，并且要优先于 runtime-events 通配查询规则命中。
      *

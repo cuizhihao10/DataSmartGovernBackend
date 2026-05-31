@@ -202,6 +202,9 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/agent/runtime-events/diagnostics", "AI_RUNTIME",
                 "Agent Runtime 运行时事件消费诊断接口，用于运维查看 Kafka consumer、投影窗口和拒绝原因统计",
                 Map.of("GET", "DIAGNOSE")));
+        defaults.add(route("/api/agent/runtime-events/replay/acks", "AI_RUNTIME",
+                "Agent Runtime 事件回放客户端 ack 游标入口，用于确认 WebSocket/HTTP replay 已消费到的 replaySequence",
+                Map.of("GET", "VIEW_EVENTS", "POST", "ACK_EVENTS")));
         defaults.add(route("/api/agent/runtime-events/**", "AI_RUNTIME",
                 "Agent Runtime 运行时事件投影查询接口，用于查看 run/session/request 维度的 Agent 执行事件",
                 Map.of("GET", "VIEW_EVENTS")));
