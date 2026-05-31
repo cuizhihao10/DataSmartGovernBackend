@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.agent.controller.dto;
 
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -27,6 +28,9 @@ public record AgentRunToolDagSelectedNodeOutboxEnqueueResponse(
         String sessionId,
         String runId,
         String selectionFingerprint,
+        String confirmationId,
+        Instant confirmationExpiresAt,
+        List<String> selectedAuditIds,
         Boolean confirmed,
         AgentRunToolDagExecutionDryRunResponse dryRun,
         AgentRunAsyncTaskCommandOutboxEnqueueResponse outbox,

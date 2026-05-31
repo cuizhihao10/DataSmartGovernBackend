@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.service.execution;
 
 import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
+import com.czh.datasmart.govern.agent.config.AgentRunToolDagConfirmationProperties;
 import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
 import com.czh.datasmart.govern.agent.config.AgentToolServiceAuthorizationProperties;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagExecutionDryRunRequest;
@@ -25,6 +26,8 @@ import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditMemoryStore;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecord;
 import com.czh.datasmart.govern.agent.service.authorization.AgentToolServiceAuthorizationPreviewService;
+import com.czh.datasmart.govern.agent.service.execution.confirmation.AgentRunToolDagConfirmationRecord;
+import com.czh.datasmart.govern.agent.service.execution.confirmation.InMemoryAgentRunToolDagConfirmationStore;
 import com.czh.datasmart.govern.agent.service.runtime.InMemoryAgentRuntimeEventProjectionStore;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
@@ -70,6 +73,13 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
         assertEquals(1, response.outbox().enqueuedCount());
         assertEquals(0, response.outbox().duplicateCount());
         assertEquals(dryRun.selectionFingerprint(), response.selectionFingerprint());
+        assertTrue(response.confirmationId().startsWith("dag-confirmation:"));
+        assertEquals(List.of("audit-async"), response.selectedAuditIds());
+        AgentRunToolDagConfirmationRecord confirmation = fixture.confirmationStore
+                .findByConfirmationId(response.confirmationId())
+                .orElseThrow();
+        assertEquals(dryRun.selectionFingerprint(), confirmation.selectionFingerprint());
+        assertEquals(List.of("audit-async"), confirmation.selectedAuditIds());
         AgentAsyncTaskCommandOutboxRecord record = fixture.store.list(RUN_ID, null, 10).getFirst();
         assertEquals("audit-async", record.auditId());
         assertEquals("/internal/data-sync/agent/tasks/execute", record.targetEndpoint());
@@ -90,7 +100,9 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
         assertEquals(1, first.outbox().enqueuedCount());
         assertEquals(0, second.outbox().enqueuedCount());
         assertEquals(1, second.outbox().duplicateCount());
+        assertEquals(first.confirmationId(), second.confirmationId());
         assertEquals(1, fixture.store.list(RUN_ID, null, 10).size());
+        assertEquals(1, fixture.confirmationStore.listByRun(RUN_ID, 10).size());
     }
 
     @Test
@@ -101,6 +113,7 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
         assertThrows(PlatformBusinessException.class, () ->
                 fixture.confirm(List.of("data-sync-execute"), "dag-selection:stale"));
         assertTrue(fixture.store.list(RUN_ID, null, 10).isEmpty());
+        assertTrue(fixture.confirmationStore.listByRun(RUN_ID, 10).isEmpty());
     }
 
     @Test
@@ -116,6 +129,7 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
         assertThrows(PlatformBusinessException.class, () ->
                 fixture.confirm(selectedNodes, dryRun.selectionFingerprint()));
         assertTrue(fixture.store.list(RUN_ID, null, 10).isEmpty());
+        assertTrue(fixture.confirmationStore.listByRun(RUN_ID, 10).isEmpty());
     }
 
     @Test
@@ -140,6 +154,7 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
     private TestFixture newFixture() {
         AgentRuntimeProperties runtimeProperties = new AgentRuntimeProperties();
         AgentAsyncTaskCommandOutboxProperties outboxProperties = new AgentAsyncTaskCommandOutboxProperties();
+        AgentRunToolDagConfirmationProperties confirmationProperties = new AgentRunToolDagConfirmationProperties();
         AgentToolServiceAuthorizationProperties authorizationProperties = new AgentToolServiceAuthorizationProperties();
         AgentSessionMemoryStore sessionStore = new AgentSessionMemoryStore();
         AgentToolExecutionAuditMemoryStore auditStore = new AgentToolExecutionAuditMemoryStore();
@@ -181,9 +196,13 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
                 store,
                 new ObjectMapper()
         );
+        InMemoryAgentRunToolDagConfirmationStore confirmationStore =
+                new InMemoryAgentRunToolDagConfirmationStore(10, 100);
         AgentRunToolDagSelectedNodeOutboxService service = new AgentRunToolDagSelectedNodeOutboxService(
                 dryRunService,
-                outboxService
+                outboxService,
+                confirmationStore,
+                confirmationProperties
         );
         AgentSessionRecord session = new AgentSessionRecord(
                 SESSION_ID,
@@ -211,7 +230,7 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
                 "Run 已创建"
         ));
         sessionStore.save(session);
-        return new TestFixture(service, dryRunService, store, auditStore);
+        return new TestFixture(service, dryRunService, store, confirmationStore, auditStore);
     }
 
     private AgentToolExecutionAuditRecord asyncAudit(String auditId,
@@ -288,6 +307,7 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
     private record TestFixture(AgentRunToolDagSelectedNodeOutboxService service,
                                AgentRunToolDagExecutionDryRunService dryRunService,
                                InMemoryAgentAsyncTaskCommandOutboxStore store,
+                               InMemoryAgentRunToolDagConfirmationStore confirmationStore,
                                AgentToolExecutionAuditMemoryStore auditStore) {
 
         void saveAudits(AgentToolExecutionAuditRecord... records) {

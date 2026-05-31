@@ -7,11 +7,16 @@
 package com.czh.datasmart.govern.agent.service.execution;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunAsyncTaskCommandOutboxEnqueueResponse;
+import com.czh.datasmart.govern.agent.controller.dto.AgentAsyncTaskCommandOutboxRecordView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagExecutionDryRunRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagExecutionDryRunResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagSelectedNodeOutboxEnqueueRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagSelectedNodeOutboxEnqueueResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolDagExecutionDryRunItemView;
+import com.czh.datasmart.govern.agent.config.AgentRunToolDagConfirmationProperties;
+import com.czh.datasmart.govern.agent.service.execution.confirmation.AgentRunToolDagConfirmationRecord;
+import com.czh.datasmart.govern.agent.service.execution.confirmation.AgentRunToolDagConfirmationStatus;
+import com.czh.datasmart.govern.agent.service.execution.confirmation.AgentRunToolDagConfirmationStore;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import lombok.RequiredArgsConstructor;
@@ -19,6 +24,8 @@ import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -46,6 +53,8 @@ public class AgentRunToolDagSelectedNodeOutboxService {
 
     private final AgentRunToolDagExecutionDryRunService dryRunService;
     private final AgentRunAsyncTaskCommandOutboxService outboxService;
+    private final AgentRunToolDagConfirmationStore confirmationStore;
+    private final AgentRunToolDagConfirmationProperties confirmationProperties;
 
     /**
      * 将调用方明确确认的异步 DAG 节点写入 outbox。
@@ -77,16 +86,72 @@ public class AgentRunToolDagSelectedNodeOutboxService {
         Set<String> selectedAuditIds = requireOnlyAsyncOutboxCandidates(dryRun);
         AgentRunAsyncTaskCommandOutboxEnqueueResponse outbox =
                 outboxService.enqueueSelectedRunAsyncTaskCommands(sessionId, runId, selectedAuditIds);
+        AgentRunToolDagConfirmationRecord confirmation = saveConfirmation(
+                sessionId,
+                runId,
+                request,
+                dryRun,
+                selectedAuditIds,
+                outbox,
+                traceId
+        );
         return new AgentRunToolDagSelectedNodeOutboxEnqueueResponse(
                 sessionId,
                 runId,
                 dryRun.selectionFingerprint(),
+                confirmation.confirmationId(),
+                confirmation.expiresAt(),
+                confirmation.selectedAuditIds(),
                 true,
                 dryRun,
                 outbox,
                 summaryReasons(outbox),
                 recommendedActions()
         );
+    }
+
+    /**
+     * 保存 selected-node 确认事实。
+     *
+     * <p>这里故意放在 outbox 写入之后：确认记录要表达的是“确认已导致哪些 command 进入可靠投递轨道”。
+     * 如果 outbox 入箱失败，不能先留下 CONFIRMED 记录，否则审计台会误以为下游 command 已经形成。
+     * 后续 MySQL 版本应把 outbox INSERT 与 confirmation INSERT 放进同一事务边界，进一步消除双写风险。</p>
+     */
+    private AgentRunToolDagConfirmationRecord saveConfirmation(String sessionId,
+                                                               String runId,
+                                                               AgentRunToolDagSelectedNodeOutboxEnqueueRequest request,
+                                                               AgentRunToolDagExecutionDryRunResponse dryRun,
+                                                               Set<String> selectedAuditIds,
+                                                               AgentRunAsyncTaskCommandOutboxEnqueueResponse outbox,
+                                                               String traceId) {
+        Instant now = Instant.now();
+        Instant expiresAt = now.plusSeconds(Math.max(1, confirmationProperties.getConfirmationTtlSeconds()));
+        List<AgentAsyncTaskCommandOutboxRecordView> outboxItems = outbox.items() == null ? List.of() : outbox.items();
+        AgentAsyncTaskCommandOutboxRecordView first = outboxItems.isEmpty() ? null : outboxItems.getFirst();
+        AgentRunToolDagConfirmationRecord record = new AgentRunToolDagConfirmationRecord(
+                confirmationId(sessionId, runId, dryRun.selectionFingerprint(), selectedAuditIds),
+                sessionId,
+                runId,
+                dryRun.selectionFingerprint(),
+                normalizeSelectors(request.nodeIds()),
+                selectedAuditIds.stream().sorted().toList(),
+                outboxItems.stream().map(AgentAsyncTaskCommandOutboxRecordView::outboxId).filter(this::hasText).toList(),
+                outboxItems.stream().map(AgentAsyncTaskCommandOutboxRecordView::commandId).filter(this::hasText).toList(),
+                first == null ? null : first.tenantId(),
+                first == null ? null : first.projectId(),
+                first == null ? null : first.workspaceId(),
+                first == null ? null : first.actorId(),
+                traceId,
+                true,
+                AgentRunToolDagConfirmationStatus.CONFIRMED,
+                expiresAt,
+                now,
+                now
+        );
+        if (!confirmationProperties.isEnabled()) {
+            return record;
+        }
+        return confirmationStore.saveIfAbsent(record);
     }
 
     /**
@@ -185,8 +250,49 @@ public class AgentRunToolDagSelectedNodeOutboxService {
     private List<String> recommendedActions() {
         return List.of(
                 "由 outbox dispatcher 可靠投递 command，并由 task-management Inbox 按 commandId/idempotencyKey 去重。",
-                "生产启用更高自动化级别前，继续补齐 permission-admin SERVICE_ACCOUNT 委托授权、租户配额、工具限流和并发池。"
+                "生产启用更高自动化级别前，继续补齐 permission-admin SERVICE_ACCOUNT 委托授权、租户配额、工具限流和并发池。",
+                "将确认 confirmationId 与 outbox commandId 一起写入审计时间线，便于后续查询谁确认了哪一版 dry-run 预案。"
         );
+    }
+
+    /**
+     * 生成稳定确认 ID。
+     *
+     * <p>ID 不使用随机 UUID，是为了支持确认接口幂等：同一 session、run、fingerprint 和 auditId 集合重复提交时，
+     * 应该命中同一条确认记录。这里仍然把 selectedAuditIds 排序后参与摘要，避免调用方传入顺序不同导致重复确认记录。</p>
+     */
+    private String confirmationId(String sessionId,
+                                  String runId,
+                                  String selectionFingerprint,
+                                  Set<String> selectedAuditIds) {
+        String canonical = sessionId + "\n" + runId + "\n" + selectionFingerprint + "\n"
+                + String.join("\n", selectedAuditIds.stream().sorted().toList());
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(canonical.getBytes(StandardCharsets.UTF_8));
+            return "dag-confirmation:" + toHex(hash);
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("当前 JDK 缺少 SHA-256，无法生成 DAG 确认 ID", exception);
+        }
+    }
+
+    private String toHex(byte[] bytes) {
+        StringBuilder builder = new StringBuilder(bytes.length * 2);
+        for (byte value : bytes) {
+            builder.append(String.format("%02x", value));
+        }
+        return builder.toString();
+    }
+
+    private List<String> normalizeSelectors(List<String> selectors) {
+        if (selectors == null) {
+            return List.of();
+        }
+        return selectors.stream()
+                .filter(this::hasText)
+                .map(String::trim)
+                .distinct()
+                .toList();
     }
 
     private boolean hasAnySelector(List<String> selectors) {

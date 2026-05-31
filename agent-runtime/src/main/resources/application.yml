@@ -170,6 +170,22 @@ datasmart:
         dispatcher-kafka-enabled: ${DATASMART_AGENT_RUNTIME_OUTBOX_DISPATCHER_KAFKA_ENABLED:false}
         # dispatcher 等待 Kafka broker ack 的超时时间；超时会进入 FAILED 并按退避重试。
         dispatcher-kafka-send-timeout-ms: 3000
+    tool-dag:
+      confirmations:
+        # DAG selected-node 确认记录开关。
+        # 该记录表达“调用方确认了哪一版 dry-run 预案，并由此关联了哪些 outbox command”。
+        # 它不负责执行工具，也不替代 command outbox 的投递状态机；它是面向审计、复核、补偿和争议排查的证据层。
+        enabled: true
+        # 当前默认 memory，保证本地学习、单元测试和无数据库联调时无需启动 MySQL。
+        # 生产环境后续应切换为 mysql，并配合 agent_run_tool_dag_confirmation 表实现多实例共享、服务重启恢复和审计导出。
+        store: memory
+        # 确认记录有效期。过期不代表历史事实消失，而是表示这次确认不应再被视为“可继续执行的近期确认”。
+        # 后续接入 policyVersion 执行前复核时，如果确认过期或策略版本变化，应要求重新 dry-run/重新确认。
+        confirmation-ttl-seconds: 1800
+        # memory 模式下单个 run 最多保留的确认记录数；防止异常循环确认把 JVM 内存打满。
+        max-confirmations-per-run: 200
+        # memory 模式下当前 JVM 总确认记录上限；生产 MySQL 模式应改用归档、保留周期和分页查询治理数据量。
+        max-total-records: 2000
     async-task-commands:
       outbox:
         # Agent ASYNC_TASK command outbox。

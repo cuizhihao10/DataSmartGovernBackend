@@ -7271,3 +7271,31 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 继续做租户配额、工具级限流、worker 并发池和 outbox 积压保护，防止 DAG 批量自动化放大下游压力。
 3. 将 policyVersion 校验接入真实执行入口：如果预检后策略变化，要求重新 dry-run/重新确认。
 4. 在进入更多工具适配器前，先补异步执行链路的配额、重试、DLQ、审计导出和管理员补偿台。
+## 4.68 Agent Runtime selected-node 确认记录持久化契约（2026-06-01）
+
+本阶段在 4.66 selected-node outbox 与 4.67 SERVICE_ACCOUNT 委托授权之后，补齐“确认事实”这一层证据。目标是让平台不仅知道 command 已进入 outbox，还能回答：调用方确认的是哪一版 dry-run 预案、确认了哪些节点、这些节点最终关联了哪些 outbox command、确认记录何时过期。
+
+已完成：
+- `agent-runtime` 新增 `AgentRunToolDagConfirmationRecord`、`AgentRunToolDagConfirmationStore` 与内存实现，确认记录与 command outbox 解耦，避免 selected-node 服务继续膨胀。
+- `AgentRunToolDagSelectedNodeOutboxService` 在服务端重新 dry-run、校验 fingerprint、写入 outbox 后保存确认事实。
+- 确认 ID 由 `sessionId + runId + selectionFingerprint + selectedAuditIds` 稳定派生，重复确认会复用同一条记录，避免刷新或重试制造多条伪确认审计。
+- selected-node enqueue 响应新增 `confirmationId`、`confirmationExpiresAt` 和 `selectedAuditIds`，方便前端审批卡片、Python Runtime、审计台和管理员补偿台串联证据。
+- 新增 `AgentRunToolDagConfirmationProperties` 与 `datasmart.agent-runtime.tool-dag.confirmations.*` 配置，默认 memory，预留 mysql 切换。
+- 新增 MySQL 表结构迁移 `20260601_agent_run_tool_dag_confirmation.sql`，并同步到 `docker/mysql/init/init.sql`。
+- 扩展 selected-node outbox 单元测试，覆盖确认记录写入、重复确认幂等、过期 fingerprint 不写确认、混入阻断节点不写确认。
+
+产品意义：
+- Agent 工具执行链路从“用户确认后 command 入箱”推进到“确认动作本身可审计、可幂等、可过期、可关联下游 command”。
+- 该确认记录不保存工具参数、SQL、prompt 或样本数据，只保存 ID、范围与治理上下文，延续最小敏感信息扩散原则。
+- 这为后续 policyVersion 执行前复核、管理员补偿台、WebSocket 时间线、审计导出和争议排查提供稳定锚点。
+
+当前边界：
+- 当前生产表结构已准备，但 Java store 仍只有 memory 实现；多实例共享和重启恢复需要继续补 `JdbcAgentRunToolDagConfirmationStore`。
+- 确认记录暂未保存 policyVersion、serviceAccountCode、representedActorId 和 delegationEvidence；这些字段会在下一步执行前策略复核中接入。
+- outbox 写入与 confirmation 写入当前还不是同一个 MySQL 事务；切换 JDBC store 时需要把两者收束进一致事务边界。
+
+下一步推荐路线：
+1. 补 selected-node enqueue 的 policyVersion 强校验：dry-run 预检后策略变化时要求重新 dry-run/重新确认。
+2. 补 `JdbcAgentRunToolDagConfirmationStore`，让确认事实在多实例和服务重启后可恢复。
+3. 补租户配额、工具级限流、worker 并发池和 outbox 积压保护。
+4. 在扩更多工具适配器前，先把 DLQ、补偿、审计导出和运维可见性补齐，避免自动化能力快于治理能力。
