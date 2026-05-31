@@ -26,6 +26,9 @@ import java.util.List;
  * @param humanActionCount 需要人工审批、复核或草稿确认的节点数。
  * @param blockedCount 当前被依赖、参数、终态或策略阻断的节点数。
  * @param unsupportedCount 当前没有可用执行路径的节点数。
+ * @param serviceAuthorizationEvaluatedCount 已进行服务间授权预检的节点数。
+ * @param serviceAuthorizationAllowedCount 服务间授权预检通过的节点数。
+ * @param serviceAuthorizationRejectedCount 服务间授权预检未通过或不可用的节点数。
  * @param hasExecutableCandidates 是否存在至少一个可推进候选。
  * @param summaryReasons Run 级解释。
  * @param recommendedActions Run 级推荐动作。
@@ -42,6 +45,9 @@ public record AgentRunToolDagExecutionPreviewView(
         Integer humanActionCount,
         Integer blockedCount,
         Integer unsupportedCount,
+        Integer serviceAuthorizationEvaluatedCount,
+        Integer serviceAuthorizationAllowedCount,
+        Integer serviceAuthorizationRejectedCount,
         Boolean hasExecutableCandidates,
         List<String> summaryReasons,
         List<String> recommendedActions,

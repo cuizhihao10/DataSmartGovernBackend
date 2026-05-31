@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.service.execution;
 
 import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
+import com.czh.datasmart.govern.agent.config.AgentToolServiceAuthorizationProperties;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagExecutionPreviewView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolDagExecutionPreviewItemView;
 import com.czh.datasmart.govern.agent.event.NoopAgentToolExecutionEventPublisher;
@@ -14,8 +15,10 @@ import com.czh.datasmart.govern.agent.model.AgentRunState;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionMode;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
 import com.czh.datasmart.govern.agent.model.AgentToolRiskLevel;
+import com.czh.datasmart.govern.agent.model.AgentToolServiceAuthorizationDecision;
 import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
+import com.czh.datasmart.govern.agent.service.authorization.AgentToolServiceAuthorizationPreviewService;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditMemoryStore;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
@@ -26,6 +29,7 @@ import org.junit.jupiter.api.Test;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -68,6 +72,35 @@ class AgentRunToolDagExecutionPreviewServiceTest {
         assertTrue(item.readyForExecution());
         assertTrue(item.wouldTriggerSideEffect());
         assertEquals("LOW", item.riskLevel());
+        assertEquals(0, preview.serviceAuthorizationEvaluatedCount());
+        assertEquals(AgentToolServiceAuthorizationDecision.NOT_EVALUATED.name(), item.serviceAuthorization().decision());
+    }
+
+    @Test
+    void localServiceAuthorizationPreviewShouldExplainServiceAccountContext() {
+        TestFixture fixture = newFixture(properties -> properties.setEnabled(true));
+        fixture.saveAudits(audit(
+                "audit-local-auth",
+                1,
+                AgentToolExecutionState.PLANNED,
+                AgentToolExecutionMode.SYNC,
+                AgentToolRiskLevel.LOW,
+                false,
+                true,
+                true,
+                Map.of("planNodeId", "metadata-read")
+        ));
+
+        AgentRunToolDagExecutionPreviewView preview = fixture.previewService.previewRunDagExecution(SESSION_ID, RUN_ID);
+
+        AgentToolDagExecutionPreviewItemView item = item(preview, "metadata-read");
+        assertEquals(1, preview.serviceAuthorizationEvaluatedCount());
+        assertEquals(1, preview.serviceAuthorizationAllowedCount());
+        assertEquals(AgentToolServiceAuthorizationDecision.LOCAL_PREVIEW_ALLOWED.name(), item.serviceAuthorization().decision());
+        assertTrue(item.serviceAuthorization().allowed());
+        assertEquals("datasmart-agent-runtime", item.serviceAuthorization().serviceAccountCode());
+        assertEquals("actor-preview", item.serviceAuthorization().representedActorId());
+        assertEquals(List.of("VIEW"), item.serviceAuthorization().requiredActions());
     }
 
     @Test
@@ -144,7 +177,14 @@ class AgentRunToolDagExecutionPreviewServiceTest {
     }
 
     private TestFixture newFixture() {
+        return newFixture(properties -> {
+        });
+    }
+
+    private TestFixture newFixture(Consumer<AgentToolServiceAuthorizationProperties> authorizationCustomizer) {
         AgentRuntimeProperties properties = new AgentRuntimeProperties();
+        AgentToolServiceAuthorizationProperties authorizationProperties = new AgentToolServiceAuthorizationProperties();
+        authorizationCustomizer.accept(authorizationProperties);
         AgentSessionMemoryStore sessionStore = new AgentSessionMemoryStore();
         AgentToolExecutionAuditMemoryStore auditStore = new AgentToolExecutionAuditMemoryStore();
         AgentToolExecutionAuditService auditService = new AgentToolExecutionAuditService(
@@ -162,11 +202,17 @@ class AgentRunToolDagExecutionPreviewServiceTest {
                 policyService,
                 auditService
         );
+        AgentToolServiceAuthorizationPreviewService authorizationPreviewService = new AgentToolServiceAuthorizationPreviewService(
+                authorizationProperties,
+                request -> null
+        );
         AgentRunToolDagExecutionPreviewService previewService = new AgentRunToolDagExecutionPreviewService(
                 properties,
+                auditService,
                 dagService,
                 policyService,
-                asyncPlanningService
+                asyncPlanningService,
+                authorizationPreviewService
         );
         AgentSessionRecord session = new AgentSessionRecord(
                 SESSION_ID,

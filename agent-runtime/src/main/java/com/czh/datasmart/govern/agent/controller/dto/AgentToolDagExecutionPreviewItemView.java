@@ -32,6 +32,8 @@ import java.util.List;
  * @param requiresApproval 是否要求审批。
  * @param asyncDispatchable 异步命令草案是否可下发；非异步工具为 false。
  * @param asyncCommandId 异步命令 ID；只有 ASYNC_TASK 且存在命令草案时有值。
+ * @param serviceAuthorization 服务间授权预览。它解释 SERVICE_ACCOUNT 是否具备代表 actor 推进该工具的上下文或权限依据；
+ *                             该字段不替代真实执行入口的二次授权。
  * @param blockedByNodeIds 当前 DAG 前置阻断节点。
  * @param reasons 预览判断原因。
  * @param recommendedActions 推荐下一步动作。
@@ -54,6 +56,7 @@ public record AgentToolDagExecutionPreviewItemView(
         Boolean requiresApproval,
         Boolean asyncDispatchable,
         String asyncCommandId,
+        AgentToolServiceAuthorizationPreviewView serviceAuthorization,
         List<String> blockedByNodeIds,
         List<String> reasons,
         List<String> recommendedActions

@@ -14,9 +14,14 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolExecutionPolicy
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolExecutionPolicyView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolPlanDagView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolDagExecutionPreviewItemView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionAuditView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolPlanDagNodeView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentToolServiceAuthorizationPreviewView;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionMode;
 import com.czh.datasmart.govern.agent.model.AgentToolRiskLevel;
+import com.czh.datasmart.govern.agent.model.AgentToolServiceAuthorizationDecision;
+import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
+import com.czh.datasmart.govern.agent.service.authorization.AgentToolServiceAuthorizationPreviewService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -39,9 +44,11 @@ import java.util.Map;
 public class AgentRunToolDagExecutionPreviewService {
 
     private final AgentRuntimeProperties properties;
+    private final AgentToolExecutionAuditService auditService;
     private final AgentRunToolPlanDagService dagService;
     private final AgentRunToolExecutionPolicyService policyService;
     private final AgentRunAsyncTaskCommandPlanningService asyncTaskCommandPlanningService;
+    private final AgentToolServiceAuthorizationPreviewService serviceAuthorizationPreviewService;
 
     /**
      * 生成某次 Run 的 DAG-aware 执行预览。
@@ -53,10 +60,16 @@ public class AgentRunToolDagExecutionPreviewService {
     public AgentRunToolDagExecutionPreviewView previewRunDagExecution(String sessionId, String runId) {
         AgentRunToolPlanDagView dag = dagService.inspectRunToolPlanDag(sessionId, runId);
         AgentRunToolExecutionPolicyView policy = policyService.inspectRunPolicy(sessionId, runId);
+        Map<String, AgentToolExecutionAuditView> auditByAuditId = indexAudits(auditService.listByRun(sessionId, runId));
         Map<String, AgentRunToolExecutionPolicyItemView> policyByAuditId = indexPolicyItems(policy);
         Map<String, AgentAsyncTaskCommandPlanItemView> asyncByAuditId = asyncCommandPlans(sessionId, runId);
         List<AgentToolDagExecutionPreviewItemView> items = dag.nodes().stream()
-                .map(node -> previewNode(node, policyByAuditId.get(node.auditId()), asyncByAuditId.get(node.auditId())))
+                .map(node -> previewNode(
+                        node,
+                        auditByAuditId.get(node.auditId()),
+                        policyByAuditId.get(node.auditId()),
+                        asyncByAuditId.get(node.auditId())
+                ))
                 .toList();
         return new AgentRunToolDagExecutionPreviewView(
                 sessionId,
@@ -69,6 +82,9 @@ public class AgentRunToolDagExecutionPreviewService {
                 count(items, AgentToolDagExecutionPreviewAction.WAIT_HUMAN_ACTION),
                 blockedCount(items),
                 count(items, AgentToolDagExecutionPreviewAction.UNSUPPORTED_EXECUTION_PATH),
+                serviceAuthorizationEvaluatedCount(items),
+                serviceAuthorizationAllowedCount(items),
+                serviceAuthorizationRejectedCount(items),
                 hasExecutableCandidates(items),
                 buildSummaryReasons(dag, items),
                 buildRecommendedActions(items),
@@ -77,11 +93,15 @@ public class AgentRunToolDagExecutionPreviewService {
     }
 
     private AgentToolDagExecutionPreviewItemView previewNode(AgentToolPlanDagNodeView node,
+                                                             AgentToolExecutionAuditView audit,
                                                              AgentRunToolExecutionPolicyItemView policy,
                                                              AgentAsyncTaskCommandPlanItemView asyncPlan) {
         List<String> reasons = new ArrayList<>(node.reasons());
         List<String> actions = new ArrayList<>(node.recommendedActions());
         PreviewDecision decision = decide(node, policy, asyncPlan, reasons, actions);
+        AgentToolServiceAuthorizationPreviewView serviceAuthorization =
+                serviceAuthorizationPreviewService.preview(audit, node, policy);
+        decision = enforceServiceAuthorizationIfNeeded(decision, serviceAuthorization, reasons, actions);
         return new AgentToolDagExecutionPreviewItemView(
                 node.nodeId(),
                 node.auditId(),
@@ -100,9 +120,37 @@ public class AgentRunToolDagExecutionPreviewService {
                 policy == null ? null : policy.requiresApproval(),
                 asyncPlan != null && Boolean.TRUE.equals(asyncPlan.dispatchable()),
                 asyncPlan == null ? null : asyncPlan.commandId(),
+                serviceAuthorization,
                 node.blockedByNodeIds(),
                 List.copyOf(reasons),
                 List.copyOf(actions)
+        );
+    }
+
+    /**
+     * 根据服务间授权预检结果决定是否降级执行候选。
+     *
+     * <p>默认配置下该方法不会改变 preview action，只会把授权状态展示给调用方。
+     * 当生产环境打开 enforceInPreview 后，如果某个节点原本是 sync/async 执行候选，
+     * 但服务账号授权未通过或权限中心不可用，就把它降级为 BLOCKED_BY_POLICY。
+     * 这样真实 DAG worker 可以复用 preview 结果做更保守的调度展示。</p>
+     */
+    private PreviewDecision enforceServiceAuthorizationIfNeeded(PreviewDecision decision,
+                                                                AgentToolServiceAuthorizationPreviewView serviceAuthorization,
+                                                                List<String> reasons,
+                                                                List<String> actions) {
+        if (!decision.wouldTriggerSideEffect()
+                || serviceAuthorization == null
+                || !Boolean.TRUE.equals(serviceAuthorization.enforced())
+                || Boolean.TRUE.equals(serviceAuthorization.allowed())) {
+            return decision;
+        }
+        reasons.add("服务间授权预检未通过或未完成，且当前配置要求在 preview 阶段强制阻断执行候选。");
+        actions.add("请先完成 permission-admin 服务账号授权、数据范围策略和必要审批配置，再重新生成 DAG execution preview。");
+        return new PreviewDecision(
+                AgentToolDagExecutionPreviewAction.BLOCKED_BY_POLICY,
+                "服务间授权未满足，禁止进入真实执行入口。",
+                false
         );
     }
 
@@ -229,6 +277,14 @@ public class AgentRunToolDagExecutionPreviewService {
         return indexed;
     }
 
+    private Map<String, AgentToolExecutionAuditView> indexAudits(List<AgentToolExecutionAuditView> audits) {
+        Map<String, AgentToolExecutionAuditView> indexed = new LinkedHashMap<>();
+        for (AgentToolExecutionAuditView audit : audits) {
+            indexed.put(audit.auditId(), audit);
+        }
+        return indexed;
+    }
+
     private Map<String, AgentAsyncTaskCommandPlanItemView> asyncCommandPlans(String sessionId, String runId) {
         AgentRunAsyncTaskCommandPlanView view = asyncTaskCommandPlanningService.planRunAsyncTaskCommands(sessionId, runId);
         Map<String, AgentAsyncTaskCommandPlanItemView> indexed = new LinkedHashMap<>();
@@ -256,6 +312,13 @@ public class AgentRunToolDagExecutionPreviewService {
         }
         if (blockedCount(items) > 0) {
             reasons.add("存在被依赖、审批、参数或策略阻断的节点，建议先处理阻断项而不是强行执行。");
+        }
+        if (serviceAuthorizationEvaluatedCount(items) == 0) {
+            reasons.add("服务间授权预检尚未启用或未参与判断；进入真实 DAG worker 前必须补齐 SERVICE_ACCOUNT 到 permission-admin 的动作级策略。");
+        } else if (serviceAuthorizationRejectedCount(items) > 0) {
+            reasons.add("存在服务间授权未通过或权限中心不可用的节点，真实执行时应按 fail-closed 策略阻断这些节点。");
+        } else {
+            reasons.add("已生成服务间授权预检结果；真实执行入口仍需要二次读取最新权限和工具状态，避免预览后状态漂移。");
         }
         return reasons;
     }
@@ -291,6 +354,30 @@ public class AgentRunToolDagExecutionPreviewService {
     private boolean hasExecutableCandidates(List<AgentToolDagExecutionPreviewItemView> items) {
         return count(items, AgentToolDagExecutionPreviewAction.SYNC_AUTO_EXECUTE_CANDIDATE) > 0
                 || count(items, AgentToolDagExecutionPreviewAction.ASYNC_COMMAND_DISPATCH_CANDIDATE) > 0;
+    }
+
+    private int serviceAuthorizationEvaluatedCount(List<AgentToolDagExecutionPreviewItemView> items) {
+        return (int) items.stream()
+                .filter(item -> item.serviceAuthorization() != null)
+                .filter(item -> !AgentToolServiceAuthorizationDecision.NOT_EVALUATED.name()
+                        .equals(item.serviceAuthorization().decision()))
+                .count();
+    }
+
+    private int serviceAuthorizationAllowedCount(List<AgentToolDagExecutionPreviewItemView> items) {
+        return (int) items.stream()
+                .filter(item -> item.serviceAuthorization() != null)
+                .filter(item -> Boolean.TRUE.equals(item.serviceAuthorization().allowed()))
+                .count();
+    }
+
+    private int serviceAuthorizationRejectedCount(List<AgentToolDagExecutionPreviewItemView> items) {
+        return (int) items.stream()
+                .filter(item -> item.serviceAuthorization() != null)
+                .filter(item -> !AgentToolServiceAuthorizationDecision.NOT_EVALUATED.name()
+                        .equals(item.serviceAuthorization().decision()))
+                .filter(item -> !Boolean.TRUE.equals(item.serviceAuthorization().allowed()))
+                .count();
     }
 
     private String normalize(String value) {

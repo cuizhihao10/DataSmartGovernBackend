@@ -39,6 +39,31 @@ datasmart:
     max-active-runs-per-session: 1
     # 会话默认生存时间，当前主要作为后续清理策略依据。
     session-ttl-hours: 24
+    service-authorization:
+      # Agent 工具服务间授权预检开关。
+      # 默认关闭是为了保证本地学习环境不强依赖 permission-admin；关闭时 DAG preview 会返回 NOT_EVALUATED，
+      # 明确提示“当前还没有真实授权依据”，而不是把未配置误判为允许。
+      enabled: ${DATASMART_AGENT_RUNTIME_SERVICE_AUTHORIZATION_ENABLED:false}
+      # LOCAL_PREVIEW：只检查租户、项目、actor、工具动作和服务账号上下文是否齐全。
+      # PERMISSION_ADMIN_EVALUATE：调用 permission-admin /permissions/evaluate 做真实动作级判定。
+      # 生产环境最终应切换到 PERMISSION_ADMIN_EVALUATE，并配合内网 mTLS、服务账号令牌或服务网格策略。
+      mode: ${DATASMART_AGENT_RUNTIME_SERVICE_AUTHORIZATION_MODE:LOCAL_PREVIEW}
+      # 是否让授权预检结果直接影响 DAG preview 的执行候选。
+      # 当前默认 false，先展示授权状态、不改变已有候选数量；真实 DAG worker 上线前建议改为 true，执行 fail-closed。
+      enforce-in-preview: ${DATASMART_AGENT_RUNTIME_SERVICE_AUTHORIZATION_ENFORCE_IN_PREVIEW:false}
+      # Agent Runtime 在 permission-admin 中使用的服务账号身份。
+      # actorId 先使用 Long，是为了兼容现有 PermissionDecisionRequest；serviceAccountCode 用于审计展示。
+      service-account-actor-id: ${DATASMART_AGENT_RUNTIME_SERVICE_ACCOUNT_ACTOR_ID:900001}
+      service-account-code: ${DATASMART_AGENT_RUNTIME_SERVICE_ACCOUNT_CODE:datasmart-agent-runtime}
+      service-account-role: ${DATASMART_AGENT_RUNTIME_SERVICE_ACCOUNT_ROLE:SERVICE_ACCOUNT}
+      # permission-admin evaluate 地址。
+      # 本地默认直连 8085；生产环境建议改为内部 gateway、Nacos 服务发现地址或服务网格入口。
+      permission-admin-evaluate-url: ${DATASMART_PERMISSION_ADMIN_EVALUATE_URL:http://localhost:8085/permissions/evaluate}
+      # 授权预检属于执行前关键路径，超时时间应短而明确；权限中心不可用时由 failClosed 策略处理。
+      timeout-ms: ${DATASMART_AGENT_RUNTIME_SERVICE_AUTHORIZATION_TIMEOUT_MS:1500}
+      # 远端权限中心不可用时是否按拒绝处理。
+      # 商业化生产环境建议保持 true，避免 permission-admin 故障期间 Agent 越权执行有副作用的工具。
+      fail-closed-when-remote-unavailable: ${DATASMART_AGENT_RUNTIME_SERVICE_AUTHORIZATION_FAIL_CLOSED:true}
     persistence:
       # 工具执行审计仓储类型。
       # memory 是当前默认值，适合本地学习、单元测试和早期联调；它不会要求 MySQL 已启动。

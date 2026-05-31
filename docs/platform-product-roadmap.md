@@ -7034,3 +7034,23 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 优先补 permission-admin 服务间授权，让 preview 也能解释服务账号是否有权代表 actor 推进工具。
 2. 再做 DAG-aware dry-run request，把调用方选择的 nodeIds 转换成同步 dryRun 或异步 enqueue preview。
 3. 最后再进入真实 DAG worker、并发池、租户配额、工具限流和失败补偿。
+
+## 4.60 Agent Runtime 服务间授权预检最小闭环（2026-05-31）
+
+本阶段把 4.59 的 DAG execution preview 接入服务间授权预检。重点不是立刻让 Agent 自动执行更多工具，而是让平台先能解释：Agent Runtime 的 SERVICE_ACCOUNT 是否具备代表 actor 推进某个工具节点的上下文或权限依据。
+
+已完成：
+- 新增 `datasmart.agent-runtime.service-authorization` 配置块，支持本地结构预览与 permission-admin evaluate 两种模式。
+- 新增服务间授权预览服务、permission-admin HTTP 客户端抽象和节点级 `serviceAuthorization` 视图。
+- DAG execution preview 新增授权评估统计：已评估、通过、拒绝或不可用。
+- 默认保持只读和不强制阻断；生产进入真实 DAG worker 前可打开 `enforceInPreview=true` 执行 fail-closed。
+
+产品意义：
+- Agent 工具执行开始具备“服务账号代表用户行动”的治理解释，而不是只看 DAG ready 或工具风险等级。
+- agent-runtime 不在 Maven 层依赖 permission-admin 内部 DTO，继续通过 HTTP 契约保持微服务边界。
+- 未启用授权预检时返回 `NOT_EVALUATED`，避免把“没有评估”误读成“允许执行”。
+
+下一步建议：
+1. 做 DAG-aware execution dry-run request，让调用方选择 ready nodeIds 后看到将走同步 dryRun、异步 enqueue preview，还是被权限/依赖/参数阻断。
+2. 在 permission-admin 中补 SERVICE_ACCOUNT 代表执行的策略种子和审计动作，让远端 `PERMISSION_ADMIN_EVALUATE` 真实可用。
+3. 进入真实 DAG worker 前补租户配额、工具级限流、worker 指标、失败补偿和 runtime event/WebSocket 可视化。
