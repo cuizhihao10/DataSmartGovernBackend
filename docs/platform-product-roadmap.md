@@ -6870,3 +6870,38 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 3. 补 task-management Kafka listener 的 DLQ、消费指标和积压告警。
 4. 推进 ToolPlan DAG 与失败补偿语义。
 5. 后续再增强 outbox 显式租约、分片扫描、归档和运营补偿台。
+
+## 4.51 Agent 异步工具 payloadReference Resolver 与执行预检（2026-05-31）
+
+本阶段不继续深挖 outbox 内部细节，而是把链路推进到下一段：`task-management` 创建 `AGENT_ASYNC_TOOL` 任务后，执行侧如何按 `payloadReference` 安全回读 Agent 审计参数快照。目标是先完成“可解析、可校验、可预检”，仍不直接调用任意 targetEndpoint，避免把模型计划变成未经治理的副作用。
+
+已完成：
+- `agent-runtime` 新增内部只读接口 `GET /internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/{auditId}/plan-arguments`，返回 `AgentToolPlanArgumentsPayloadView`。
+- 新增 `AgentToolPlanArgumentsPayloadService`，从工具审计快照中构造 payloadReference、payloadKind、工具目标、租户/项目/工作空间、参数名、敏感参数名、planArguments、governanceHints 与 parameterValidation。
+- `task-management` 新增 `AgentAsyncToolWorkerProperties` 配置块，明确 worker 默认关闭、dry-run only、Agent Runtime 内部地址、executorId、租约秒数和解析载荷大小上限。
+- 新增 `AgentToolAuditPayloadReference`，只允许解析 `agent-tool-audit://{sessionId}/{runId}/{auditId}/plan-arguments`，拒绝普通 URL、未知协议和未知 payloadKind。
+- 新增 `AgentRuntimePayloadReferenceClient`，通过内部 HTTP 接口读取 Agent Runtime 参数快照，并解包 `PlatformApiResponse`。
+- 新增 `AgentAsyncToolPayloadResolver`，对 task.params 安全摘要与远端参数快照做一致性校验，覆盖 session/run/audit/tool/target/tenant/project/workspace/argumentNames/sensitiveArgumentNames 与 payload 大小。
+- 新增 `AgentAsyncToolExecutionPreparationService` 与 `AgentAsyncToolWorkerController`，提供 `POST /internal/agent-async-tool-tasks/{taskId}/payload/resolve` 预检接口；调用方必须具备执行器角色权限。
+- 新增测试覆盖 Agent Runtime 参数快照解析、payload kind 阻断、payloadReference 协议解析、摘要一致性校验、工具编码错配阻断、超大参数阻断和执行准备权限编排。
+
+产品意义：
+- 异步工具链路从“命令可靠到达 task-management”推进到“任务执行前能按受控引用读取真实参数”。这是类 Codex/Claude Code Agent 的 durable action 执行前提。
+- Kafka/outbox/task 表继续不保存真实参数值，只保存引用、参数名和治理摘要；真实参数只在内部 resolver 边界按需读取，降低敏感数据在消息系统和运营表中的扩散。
+- task-management 开始具备 worker 执行前的二次校验能力。即使 Kafka command 或 task.params 被污染，resolver 也会发现与 agent-runtime 审计快照不一致并阻断。
+- 预检接口保持只读和 dry-run，不把 `targetEndpoint` 当成任意 URL 调用。这避免了早期 Agent 执行器最危险的设计误区：模型计划什么，系统就 HTTP 调什么。
+- 文件继续拆分为配置、引用解析、HTTP client、payload resolver、preparation service、controller 和 DTO，避免形成新的大 Impl。
+
+当前边界：
+- 当前只完成参数解析预检，没有自动认领任务、没有真实工具适配器执行、没有任务状态回写。
+- Agent Runtime 内部接口尚未接入服务账号签名、mTLS 或网关内网鉴权；生产化前必须补服务间访问控制。
+- resolver 当前以一致性校验为主，还没有接 permission-admin 的服务间策略判定、字段级脱敏策略、密钥引用解析或工具 schema 校验。
+- `dryRunOnly=true` 是默认安全策略；即使预检通过，也不能理解为工具已经执行。
+- data-sync、datasource-management 等目标服务仍需要专用工具适配器，不能由 worker 直接拼 targetEndpoint 调用。
+
+下一步建议：
+1. 补 Agent 异步工具执行适配器白名单，先选择 `data-sync.execute` 这类任务化目标，而不是开放任意 HTTP target。
+2. 设计 task-management worker 的认领、预检、执行、心跳、defer、fail 和 complete 流程，并复用现有任务租约能力。
+3. 补任务状态回写到 agent-runtime 工具审计与 runtime event，使 TASK_RUNNING、TASK_SUCCEEDED、TASK_FAILED、TASK_DEAD_LETTER 能被 Python Runtime 和前端感知。
+4. 接入 permission-admin 服务间策略，校验服务账号是否可代表 actor 在 tenant/project/workspace 内执行该工具。
+5. 并行设计 ToolPlan DAG，避免异步工具只能单点执行，后续要支持依赖边、并行组、失败跳过、补偿和结果回填顺序。

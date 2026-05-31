@@ -83,3 +83,18 @@ datasmart:
         fail-on-rejected-message: ${DATASMART_TASK_AGENT_ASYNC_COMMAND_FAIL_ON_REJECTED:true}
         # 默认 false：错误日志不打印完整 payload，避免日志系统复制业务引用或误入的敏感上下文。
         log-payload-on-error: ${DATASMART_TASK_AGENT_ASYNC_COMMAND_LOG_PAYLOAD_ON_ERROR:false}
+    agent-async-worker:
+      # Agent 异步工具 worker 总开关。
+      # 当前 4.51 阶段只落地 payloadReference 解析预检，尚未自动认领和执行任务，因此默认关闭。
+      enabled: ${DATASMART_TASK_AGENT_ASYNC_WORKER_ENABLED:false}
+      # Agent Runtime 内部地址，worker 会通过它读取 /internal/agent-runtime/.../plan-arguments。
+      # 生产环境建议改成服务发现、内网网关或配置中心地址，并叠加服务账号鉴权/mTLS。
+      agent-runtime-base-url: ${DATASMART_AGENT_RUNTIME_INTERNAL_BASE_URL:http://localhost:8090}
+      # worker 身份标识，后续接入 claim/heartbeat 后会进入执行租约和排障视图。
+      executor-id: ${DATASMART_TASK_AGENT_ASYNC_WORKER_EXECUTOR_ID:task-management-agent-async-worker-local}
+      # 后续自动认领任务时的租约秒数；当前预检接口不主动认领任务，仅提前对齐执行器模型。
+      claim-lease-seconds: ${DATASMART_TASK_AGENT_ASYNC_WORKER_CLAIM_LEASE_SECONDS:60}
+      # 参数载荷最大字节数。Agent 工具参数应保存结构化配置和引用，不应携带大文件、样本数据或海量 SQL。
+      max-resolved-payload-bytes: ${DATASMART_TASK_AGENT_ASYNC_WORKER_MAX_RESOLVED_PAYLOAD_BYTES:65536}
+      # 默认只做 dry-run 预检，不调用真实目标服务。真正执行需要工具适配器白名单、权限策略和状态回写闭环。
+      dry-run-only: ${DATASMART_TASK_AGENT_ASYNC_WORKER_DRY_RUN_ONLY:true}

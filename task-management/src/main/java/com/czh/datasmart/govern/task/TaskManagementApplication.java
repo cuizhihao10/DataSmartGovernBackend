@@ -1,6 +1,7 @@
 package com.czh.datasmart.govern.task;
 
 import com.czh.datasmart.govern.task.config.AgentAsyncTaskCommandKafkaProperties;
+import com.czh.datasmart.govern.task.config.AgentAsyncToolWorkerProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -22,7 +23,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
  */
 @SpringBootApplication
 @EnableConfigurationProperties({
-        AgentAsyncTaskCommandKafkaProperties.class
+        AgentAsyncTaskCommandKafkaProperties.class,
+        AgentAsyncToolWorkerProperties.class
 })
 public class TaskManagementApplication {
 
