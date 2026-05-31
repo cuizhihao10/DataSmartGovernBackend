@@ -1,7 +1,9 @@
 package com.czh.datasmart.govern.task;
 
+import com.czh.datasmart.govern.task.config.AgentAsyncTaskCommandKafkaProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 
 /**
  * @Author : Cui
@@ -19,6 +21,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * 每个模块都不是普通的 package 聚合，而是一个可独立启动、独立部署、独立演进的业务服务。
  */
 @SpringBootApplication
+@EnableConfigurationProperties({
+        AgentAsyncTaskCommandKafkaProperties.class
+})
 public class TaskManagementApplication {
 
     /**

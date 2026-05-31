@@ -6782,3 +6782,32 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 3. 设计 payloadReference resolver 和异步 worker 执行协议，解决受控参数读取、权限复核、密钥引用和脱敏。
 4. 补任务状态回写与 runtime event，让 TASK_CREATED、RUNNING、SUCCESS、FAILED、DEAD_LETTER 进入 Agent 工具审计和前端事件流。
 5. 及时推进 ToolPlan DAG 与 permission-admin 策略来源，避免异步投递链路继续局部深化而缺少多工具编排和租户级治理。
+
+## 4.48 Task Management Agent 异步命令 Kafka Listener（2026-05-31）
+
+本阶段在 `task-management` 补齐 Agent async command 的 Kafka 入口，让 4.47 的 command outbox 后续可以通过 Kafka 投递到任务中心。实现边界保持克制：Kafka listener 只做传输适配，真正的协议校验、Inbox 去重、任务创建和重复消费回执继续复用 `AgentAsyncTaskCommandConsumerService`。
+
+已完成：
+- 新增 `AgentAsyncTaskCommandKafkaProperties`，配置 listener 启用开关、topic、groupId、payload 字节上限、非法消息 fail-fast 策略和错误日志是否打印 payload。
+- `TaskManagementApplication` 启用 Kafka command 配置类。
+- `task-management/application.yml` 明确 Kafka consumer 使用字符串反序列化器，并新增 `datasmart.task-management.agent-async-commands.kafka` 配置块。
+- 新增 `AgentAsyncTaskCommandKafkaMessageHandler`，负责 payload 大小校验、JSON 解析、委托 ConsumerService 和非法消息处理策略。
+- 新增 `AgentAsyncTaskCommandKafkaListener`，使用 `@KafkaListener` 绑定 topic/groupId/autoStartup，保持传输层足够薄。
+- 新增测试覆盖合法 payload 委托、超大 payload 阻断、非法 JSON 在本地联调模式下跳过。
+
+产品意义：
+- task-management 现在有了真实 Kafka 消费入口，异步工具任务化链路从“HTTP 联调”推进到“消息传输可接入”。
+- Kafka 与 HTTP 共用同一 ConsumerService，避免未来两条入口在幂等、参数安全摘要、任务类型和重复消费语义上漂移。
+- 默认关闭 listener、默认非法消息 fail-fast，是面向生产的稳妥策略：本地不被 Kafka 依赖卡住，生产也不静默丢弃坏消息。
+
+当前边界：
+- agent-runtime 还没有 Kafka dispatch target，outbox 暂时不能自动投递到该 listener。
+- 还没有 DLQ、错误分类、消费指标、积压告警和 offset 运维面板。
+- payloadReference resolver、异步 worker 和任务状态回写仍未落地。
+
+下一步建议：
+1. 回到 agent-runtime 增加 Kafka dispatch target，把 command outbox 投递到本 listener。
+2. 补 agent-runtime MySQL command outbox store，使待投递命令具备跨实例恢复能力。
+3. 给 task-management Kafka listener 增加 DLQ、消费指标和积压告警。
+4. 设计 payloadReference resolver 与异步 worker 执行协议。
+5. 并行推进任务状态回写与 ToolPlan DAG，补齐真实多工具 Agent 的依赖、失败和可见性语义。

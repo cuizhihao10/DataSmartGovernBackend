@@ -21,9 +21,18 @@ spring:
     host: localhost
     port: 6379
   kafka:
-    # Kafka 当前还未深度接入任务流转，但已经作为后续异步事件总线预留。
-    # 后续可以用来广播任务创建、状态变更、失败告警等事件。
+    # Kafka 用于承接跨服务异步任务命令、任务状态事件和后续告警事件。
+    # 当前 Agent 异步工具 command listener 默认关闭；只有显式打开业务开关后才会消费。
     bootstrap-servers: localhost:9092
+    consumer:
+      # 明确使用字符串反序列化器，保持 Kafka 消息体为普通 JSON 字符串。
+      # 这样 Java、Python、命令行工具和 Kafka UI 都能直接查看 payload，
+      # 也避免 Spring Kafka JsonDeserializer 绑定 Java 类型头导致跨语言消费困难。
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # 早期联调时如果消费者组第一次启动，通常希望从已有 command 起点开始检查链路。
+      # 生产环境如果积压量很大，需要结合部署策略、offset 管理和灰度开关谨慎调整。
+      auto-offset-reset: earliest
   cloud:
     nacos:
       discovery:
@@ -56,3 +65,21 @@ management:
     health:
       # 仅在授权情况下展示细节，避免健康检查泄露过多内部信息。
       show-details: when-authorized
+
+datasmart:
+  task-management:
+    agent-async-commands:
+      kafka:
+        # 是否启动 Agent 异步工具命令 Kafka listener。
+        # 默认关闭，避免本地没有 Kafka 或 agent-runtime dispatcher 时启动后不断重连。
+        enabled: ${DATASMART_TASK_AGENT_ASYNC_COMMAND_KAFKA_ENABLED:false}
+        # 必须与 agent-runtime 侧 command outbox/plan 中的 commandTopic 保持一致。
+        topic: ${DATASMART_AGENT_ASYNC_COMMAND_TOPIC:datasmart.agent.tool.async.commands}
+        # task-management 消费者组。同组多实例会分摊分区，适合任务创建只处理一次的场景。
+        group-id: ${DATASMART_TASK_AGENT_ASYNC_COMMAND_GROUP_ID:datasmart-task-management-agent-command-consumer}
+        # 单条消息最大字节数。正常 command 只包含 payloadReference 和治理元数据，不应携带参数值或大对象。
+        max-payload-bytes: ${DATASMART_TASK_AGENT_ASYNC_COMMAND_MAX_PAYLOAD_BYTES:65536}
+        # 默认 true：非法消息抛出异常，等待 Kafka 错误处理器或后续 DLQ 处理，避免静默丢弃生产命令。
+        fail-on-rejected-message: ${DATASMART_TASK_AGENT_ASYNC_COMMAND_FAIL_ON_REJECTED:true}
+        # 默认 false：错误日志不打印完整 payload，避免日志系统复制业务引用或误入的敏感上下文。
+        log-payload-on-error: ${DATASMART_TASK_AGENT_ASYNC_COMMAND_LOG_PAYLOAD_ON_ERROR:false}
