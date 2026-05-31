@@ -84,6 +84,41 @@ public class AgentRuntimeProperties {
     private Integer maxSyncAutoExecutionsPerRun = 5;
 
     /**
+     * 是否启用异步工具命令草案规划。
+     *
+     * <p>该开关只控制“生成 command envelope 草案”的只读能力，不会真正向 Kafka 投递消息，也不会创建
+     * task-management 任务。之所以先做规划再做投递，是因为商业化异步执行必须先固定跨服务契约：
+     * commandId、幂等键、租户/项目/工作空间边界、目标服务、参数快照、重试语义和审计引用。
+     * 如果这些字段尚未稳定就直接接 Kafka，后续很容易出现重复任务、跨租户消费和无法回放的问题。</p>
+     */
+    private Boolean asyncTaskCommandPlanningEnabled = true;
+
+    /**
+     * Agent 异步工具命令建议投递的 Kafka topic。
+     *
+     * <p>当前只是 command plan 中的路由建议。后续真正接入 Kafka producer 后，建议继续配合：
+     * producer 幂等、事务 outbox、消费者去重表、死信队列、重放权限和 topic 级 ACL。</p>
+     */
+    private String asyncTaskCommandTopic = "datasmart.agent.tool.async.commands";
+
+    /**
+     * 异步命令建议由哪个平台模块消费并转换为可恢复任务。
+     *
+     * <p>默认使用 task-management，因为长耗时扫描、同步、导出、批量质量检测都需要任务中心提供
+     * 队列、租约、心跳、重试、暂停、恢复、死信和运营干预，而不是由 agent-runtime 自己维护第二套任务系统。</p>
+     */
+    private String asyncTaskCommandConsumerService = "task-management";
+
+    /**
+     * 是否要求异步工具声明幂等后才允许进入自动下发候选。
+     *
+     * <p>Kafka 等消息系统通常采用至少一次投递语义：网络抖动、消费者重启、超时重试都可能让同一 command
+     * 被重复消费。如果工具不是幂等的，重复执行可能造成重复同步任务、重复导出或重复写入。
+     * 当前默认保持严格模式；后续可以在 task-management 落地 command 幂等表后，再按工具级策略放宽。</p>
+     */
+    private Boolean requireIdempotentAsyncTaskCommands = true;
+
+    /**
      * 会话默认生存时间，单位小时。
      *
      * <p>当前版本只作为响应说明和后续清理任务依据，尚未实现后台清理。

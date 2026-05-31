@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.agent.controller;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolAutoExecutionRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolAutoExecutionResponse;
+import com.czh.datasmart.govern.agent.controller.dto.AgentRunAsyncTaskCommandPlanView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolExecutionPolicyView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionAuditView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionDecisionRequest;
@@ -16,6 +17,7 @@ import com.czh.datasmart.govern.agent.service.AgentSessionService;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionResultQueryService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolAutoExecutionService;
+import com.czh.datasmart.govern.agent.service.execution.AgentRunAsyncTaskCommandPlanningService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolExecutionPolicyService;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
@@ -47,6 +49,7 @@ public class AgentToolExecutionAuditController {
     private final AgentToolExecutionResultQueryService resultQueryService;
     private final AgentRunToolExecutionPolicyService executionPolicyService;
     private final AgentRunToolAutoExecutionService autoExecutionService;
+    private final AgentRunAsyncTaskCommandPlanningService asyncTaskCommandPlanningService;
 
     /**
      * 查询某次 Agent Run 的工具执行审计记录。
@@ -112,6 +115,26 @@ public class AgentToolExecutionAuditController {
             @RequestBody(required = false) AgentRunToolAutoExecutionRequest request,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success(autoExecutionService.executeEligibleSyncTools(sessionId, runId, request, traceId), traceId);
+    }
+
+    /**
+     * 查询某次 Run 的 ASYNC_TASK 异步命令草案。
+     *
+     * <p>该接口仍然是只读 preflight，不会向 Kafka 发送消息，也不会创建 task-management 任务。
+     * 它把异步工具从“只能显示 WAITING_ASYNC_EXECUTOR”推进到“已经有稳定 command envelope 草案”：
+     * 包括 commandId、幂等键、topic、消费者模块、租户/项目/工作空间、目标服务、参数名快照和阻断原因。</p>
+     *
+     * <p>为什么不直接让 agent-runtime 调用 `/tasks` 创建任务：
+     * 1. 长耗时工具需要消息队列、outbox、消费者去重、失败重放和死信，而不是同步 HTTP 嵌套调用；
+     * 2. task-management 应作为统一运营底座，管理队列、租约、心跳、重试、暂停、恢复和管理员干预；
+     * 3. 在真实投递前先固定 command 草案，能避免后续跨服务契约频繁推翻重构。</p>
+     */
+    @GetMapping("/{sessionId}/runs/{runId}/tool-executions/async-command-plans")
+    public PlatformApiResponse<AgentRunAsyncTaskCommandPlanView> getRunAsyncTaskCommandPlans(
+            @PathVariable("sessionId") String sessionId,
+            @PathVariable("runId") String runId,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(asyncTaskCommandPlanningService.planRunAsyncTaskCommands(sessionId, runId), traceId);
     }
 
     /**

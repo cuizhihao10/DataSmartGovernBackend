@@ -6697,3 +6697,30 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 补 ToolPlan DAG/依赖边，支持多工具顺序、并行和失败跳过。
 3. 将 Python runtime event 接入 Java event projection/WebSocket replay。
 4. 将自动执行策略接入 permission-admin 与租户级配置。
+
+## 4.45 Java agent-runtime ASYNC_TASK 异步命令草案规划（2026-05-31）
+
+本阶段开始把长耗时 Agent 工具从同步 HTTP 执行路径迁移到任务化路径。Java agent-runtime 新增只读异步命令 preflight：它会识别 `executionMode=ASYNC_TASK` 的工具审计，根据 Run 级策略判断是否具备下发条件，并生成稳定、可解释、可审计的 command envelope 草案。
+
+已完成：
+- `AgentRuntimeProperties` 增加异步命令规划开关、Kafka topic、建议消费者模块和严格幂等开关。
+- 新增 `AgentRunAsyncTaskCommandPlanningService`，仅对 `WAITING_ASYNC_EXECUTOR` 且满足严格幂等基线的异步工具生成可下发草案。
+- 新增 `AgentRunAsyncTaskCommandPlanView` 与 `AgentAsyncTaskCommandPlanItemView`，返回 commandId、幂等键、租户/项目/工作空间、actor、trace、目标服务、参数名快照、敏感参数名和阻断原因。
+- 新增 `GET /tool-executions/async-command-plans` 路由，同时支持 `/agent-runtime/...` 与 `/api/agent/...` 双路径。
+- 新增单元测试，覆盖稳定 commandId、敏感参数值不泄漏、非幂等工具阻断、审批不可绕过和同步工具忽略。
+
+产品意义：
+- 长耗时同步、质量扫描、导出和批量治理不应占用 Agent HTTP 线程，也不应由 agent-runtime 复制一套任务中心。
+- commandId 和幂等键先稳定下来，后续才能安全接入至少一次投递的 Kafka、outbox、消费者去重、死信和重放。
+- 查询接口不返回参数值，只返回参数名和敏感字段名。真实 dispatcher 后续必须在服务端按 auditId 重新读取受控快照并复核权限。
+
+当前边界：
+- 当前接口只做只读规划，不发送 Kafka 消息，不写 outbox，也不创建 task-management 任务。
+- 非幂等异步工具默认阻断；后续即使支持人工放行，也需要 task-management 去重表和管理员复核。
+- 尚未接入 permission-admin 动作权限、队列容量、租户配额、死信告警和 ToolPlan DAG。
+
+下一步建议：
+1. 切换到 task-management，定义异步 Agent command 消费契约与 command 幂等表。
+2. 再回到 agent-runtime 增加 outbox + Kafka dispatcher，避免数据库状态与消息投递之间出现双写不一致。
+3. 补 ToolPlan DAG/依赖边，决定异步工具之间的串行、并行、失败跳过和补偿语义。
+4. 将下发动作接入 permission-admin 与租户级自动化开关。
