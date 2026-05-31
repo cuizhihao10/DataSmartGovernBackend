@@ -16,9 +16,11 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * 而异步命令 outbox 投递的是“请 task-management 创建并执行一个任务”的动作请求。
  * 后者会触发下游副作用，因此必须更强调幂等、失败重试、死信、人工补偿和目标服务安全。</p>
  *
- * <p>当前阶段仍默认使用内存仓储与手动 dispatch。生产级路线应继续演进为：
- * 1. MySQL command outbox，与工具审计状态同事务提交；
- * 2. 后台 dispatcher 从 outbox 领取记录；
+ * <p>当前已经支持 memory 与 MySQL 两种仓储。memory 用于本地学习、单元测试和早期联调；
+ * MySQL 用于集成环境和生产环境，使待投递 command 能在服务重启、多实例部署和 dispatcher 崩溃后恢复。
+ * 生产级路线应继续演进为：
+ * 1. MySQL command outbox 与工具审计状态同事务提交；
+ * 2. 后台 dispatcher 从 outbox 条件领取记录；
  * 3. dispatcher 投递到 Kafka 或内部 task-management consume endpoint；
  * 4. task-management Inbox 用 commandId/idempotencyKey 再次去重；
  * 5. 任务状态再回写 agent-runtime 工具审计。</p>
@@ -33,7 +35,15 @@ public class AgentAsyncTaskCommandOutboxProperties {
     private boolean enabled = true;
 
     /**
-     * 仓储类型。当前支持 memory，mysql 为后续生产持久化预留。
+     * 仓储类型。
+     *
+     * <p>可选值：</p>
+     * <p>1. memory：默认值，数据只保存在当前 JVM，适合单测、本地学习和无数据库联调；</p>
+     * <p>2. mysql：写入 {@code agent_async_task_command_outbox} 表，适合集成环境、生产环境和多实例恢复。</p>
+     *
+     * <p>启用 mysql 时还必须设置 {@code datasmart.agent-runtime.persistence.database-enabled=true}，
+     * 并正确配置 {@code datasmart.agent-runtime.persistence.jdbc.*}。这样做是为了避免只改一个字符串就让本地启动
+     * 突然强依赖 MySQL。</p>
      */
     private String store = "memory";
 

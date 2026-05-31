@@ -151,8 +151,11 @@ datasmart:
         # 它与 tool-execution-events.outbox 不同：后者投递“状态事实事件”，本 outbox 投递“创建下游任务的动作命令”。
         # command 会触发 task-management 创建任务，因此更强调幂等、重复投递、失败重试和死信治理。
         enabled: true
-        # 当前默认 memory，适合本地学习和单测。生产最终应切换为 MySQL command outbox，
-        # 并把“工具审计状态更新 + command outbox INSERT”放在同一事务里。
+        # 当前默认 memory，适合本地学习和单测。
+        # 当切换为 mysql 时会使用 agent_async_task_command_outbox 表持久化待投递 command，
+        # 同时需要 datasmart.agent-runtime.persistence.database-enabled=true 和 JDBC 配置可用。
+        # 生产最终应把“工具审计状态更新 + command outbox INSERT”放在同一事务里，
+        # 使模型规划出的异步工具命令不会因为 JVM 重启、dispatcher 崩溃或多实例切换而丢失。
         store: memory
         # 与 task-management AgentAsyncTaskCommandConsumerService 支持的版本保持一致。
         schema-version: datasmart.agent.async-task-command.v1

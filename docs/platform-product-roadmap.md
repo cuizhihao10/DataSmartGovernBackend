@@ -6842,3 +6842,31 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 3. 设计 payloadReference resolver 与异步 worker，让任务能真实执行异步工具。
 4. 补任务状态回写到 agent-runtime 工具审计和 runtime event。
 5. 推进 ToolPlan DAG，补齐多工具依赖、并行组、失败跳过和补偿语义。
+
+## 4.50 Java agent-runtime ASYNC_TASK 命令 MySQL Outbox Store（2026-05-31）
+
+本阶段把 ASYNC_TASK command outbox 从默认内存热窗口升级为可切换 MySQL 仓储，使待投递 command 能在服务重启、dispatcher 崩溃和多实例部署场景下恢复。
+
+已完成：
+- 新增 `JdbcAgentAsyncTaskCommandOutboxRecordMapper`，集中维护字段清单、INSERT 参数绑定、ResultSet 还原、时间/null/Long/Boolean 处理和诊断文本截断。
+- 新增 `JdbcAgentAsyncTaskCommandOutboxStore`，支持 append 幂等、按 ID 查询、列表过滤、可投递查询、条件领取、发布成功、失败重试、阻断、stale PUBLISHING 恢复和状态诊断。
+- 扩展 `AgentRuntimeJdbcPersistenceConfiguration`，让 `async-task-commands.outbox.store=mysql` 也能触发 agent-runtime 专用 JDBC 连接池创建。
+- 更新配置说明，明确 MySQL command outbox 需要 `database-enabled=true` 与 JDBC 参数，默认仍保持 memory 以保护本地学习环境。
+- 新增 Mapper/Store 单元测试，并复跑 dispatcher 与 outbox service 定向测试。
+
+产品意义：
+- Agent 异步工具链路具备更接近商用的 durable action 基础，不再只依赖 JVM 内存保存待投递 command。
+- 数据库条件更新开始提供多实例领取语义，降低重复领取和 dispatcher 崩溃卡死风险。
+- producer outbox 与 task-management Inbox 形成双端可靠性边界，为至少一次投递、幂等消费和人工补偿奠定基础。
+
+当前边界：
+- 默认仍是 memory，生产需要显式切换为 mysql。
+- 服务层尚未把工具审计状态更新与 command outbox INSERT 完全收束到同一业务事务。
+- 还没有显式 worker 租约字段、DLQ/指标、payloadReference resolver、异步 worker、状态回写和 ToolPlan DAG。
+
+下一步建议：
+1. 启动 payloadReference resolver 与异步 worker，让任务能真实执行异步工具。
+2. 补任务状态回写到 agent-runtime 工具审计和 runtime event。
+3. 补 task-management Kafka listener 的 DLQ、消费指标和积压告警。
+4. 推进 ToolPlan DAG 与失败补偿语义。
+5. 后续再增强 outbox 显式租约、分片扫描、归档和运营补偿台。
