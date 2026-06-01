@@ -40,6 +40,7 @@ public class AgentRuntimeEventDisplaySupport {
      * 未来如果 dry-run 事件从 HTTP 服务、WebSocket 或 outbox 多个入口产生，只要事件契约不变，展示层无需依赖发布实现。</p>
      */
     private static final String DAG_DRY_RUN_EVENT_TYPE = "agent.dag_execution.dry_run.completed";
+    private static final String TOOL_EXECUTION_EVENT_TYPE = "agent.tool_execution.state_changed";
 
     private static final String REPLAY_POLICY_APPEND_AND_ACK = "APPEND_TO_TIMELINE_AND_ALLOW_ACK_CURSOR";
     private static final String REPLAY_POLICY_APPEND_ONLY = "APPEND_TO_TIMELINE";
@@ -58,7 +59,45 @@ public class AgentRuntimeEventDisplaySupport {
         if (DAG_DRY_RUN_EVENT_TYPE.equals(eventType)) {
             return buildDagDryRunDisplay(record);
         }
+        if (TOOL_EXECUTION_EVENT_TYPE.equals(eventType) && isToolGuardrailEvent(record)) {
+            return buildToolGuardrailDisplay(record);
+        }
         return buildGenericDisplay(record);
+    }
+
+    /**
+     * 生成 Agent 工具执行 guardrail 事件的展示解释。
+     *
+     * <p>这类事件来自 Java task-management worker 的执行前保护链路，例如 confirmation 回查不一致、
+     * permission-admin 拒绝、策略版本漂移、权限中心暂时不可用等。它们和普通“工具执行失败”不同：
+     * 很多时候真实副作用并没有发生，系统是在执行前主动 fail-closed 或 defer。因此前端需要明确告诉用户
+     * “这是保护机制生效”，而不是误解成下游业务接口失败。</p>
+     */
+    private AgentRuntimeEventDisplayView buildToolGuardrailDisplay(AgentRuntimeEventProjectionRecord record) {
+        Map<String, Object> attributes = safeAttributes(record);
+        String errorCode = textAttribute(attributes, "errorCode");
+        String message = record.message() == null || record.message().isBlank()
+                ? "Agent worker 执行前保护机制已触发。"
+                : record.message();
+        boolean deferred = isDeferredGuardrail(errorCode, message, record.stage());
+        Map<String, Object> metrics = new LinkedHashMap<>();
+        putIfPresent(metrics, "errorCode", errorCode);
+        putIfPresent(metrics, "toolCode", textAttribute(attributes, "toolCode"));
+        putIfPresent(metrics, "currentState", textAttribute(attributes, "currentState"));
+        putIfPresent(metrics, "targetService", textAttribute(attributes, "targetService"));
+        metrics.put("sideEffectPrevented", !deferred);
+
+        return new AgentRuntimeEventDisplayView(
+                "AGENT_TOOL_GUARDRAIL",
+                toolGuardrailTitle(errorCode, message),
+                message,
+                deferred ? "DEFERRED_WAITING_RETRY" : "BLOCKED_BEFORE_SIDE_EFFECT",
+                "guardrail",
+                true,
+                REPLAY_POLICY_APPEND_AND_ACK,
+                toolGuardrailRecommendedActions(errorCode, message),
+                Collections.unmodifiableMap(metrics)
+        );
     }
 
     private AgentRuntimeEventDisplayView buildDagDryRunDisplay(AgentRuntimeEventProjectionRecord record) {
@@ -189,6 +228,70 @@ public class AgentRuntimeEventDisplaySupport {
         return List.of("查看事件详情并确认是否需要人工处理。");
     }
 
+    private boolean isToolGuardrailEvent(AgentRuntimeEventProjectionRecord record) {
+        Map<String, Object> attributes = safeAttributes(record);
+        String errorCode = textAttribute(attributes, "errorCode");
+        String message = normalize(record.message());
+        return errorCode.startsWith("AGENT_ASYNC_TOOL_")
+                || message.contains("permission-admin")
+                || message.contains("confirmation")
+                || message.contains("执行前复核")
+                || message.contains("worker 已阻止副作用");
+    }
+
+    private String toolGuardrailTitle(String errorCode, String message) {
+        return switch (normalize(errorCode)) {
+            case "agent_async_tool_permission_denied" -> "Agent 工具被权限策略阻断";
+            case "agent_async_tool_approval_required" -> "Agent 工具仍需审批";
+            case "agent_async_tool_policy_version_drift" -> "Agent 工具策略版本已变化";
+            case "agent_async_tool_confirmation_rejected" -> "Agent 工具确认记录复核失败";
+            case "agent_async_tool_permission_unavailable" -> "权限中心暂不可用，工具等待重试";
+            case "agent_async_tool_confirmation_unavailable" -> "确认记录暂不可用，工具等待重试";
+            case "agent_async_tool_not_whitelisted" -> "Agent 工具未配置白名单适配器";
+            case "agent_async_tool_audit_state_rejected" -> "Agent 工具状态不允许执行";
+            default -> normalize(message).contains("暂时不可用")
+                    ? "Agent 工具执行前复核暂不可用"
+                    : "Agent 工具执行前保护已触发";
+        };
+    }
+
+    private List<String> toolGuardrailRecommendedActions(String errorCode, String message) {
+        String normalizedCode = normalize(errorCode);
+        String normalizedMessage = normalize(message);
+        if (normalizedCode.contains("permission_denied")) {
+            return List.of("检查 permission-admin 路由策略、服务账号委托关系和用户项目权限。");
+        }
+        if (normalizedCode.contains("approval_required")) {
+            return List.of("进入审批面板完成当前工具动作审批，审批通过后重新确认或重试。");
+        }
+        if (normalizedCode.contains("policy_version_drift")) {
+            return List.of("重新执行 dry-run/selected-node confirmation，使用最新策略版本生成新的执行证据。");
+        }
+        if (normalizedCode.contains("confirmation_rejected")) {
+            return List.of("核对 confirmationId、sessionId、runId、auditId 和 commandId 是否来自同一次 DAG 确认。");
+        }
+        if (normalizedCode.contains("permission_unavailable") || normalizedMessage.contains("permission-admin")) {
+            return List.of("等待 permission-admin 恢复后由 worker 自动重试；若持续出现，请检查服务发现、超时和权限中心健康。");
+        }
+        if (normalizedCode.contains("confirmation_unavailable") || normalizedMessage.contains("confirmation")) {
+            return List.of("等待 agent-runtime confirmation 查询恢复后由 worker 自动重试；若持续出现，请检查运行时控制面健康。");
+        }
+        if (normalizedCode.contains("not_whitelisted")) {
+            return List.of("为该 toolCode 增加受控 Java 工具适配器，并确认不会按任意 targetEndpoint 转发。");
+        }
+        return List.of("查看同一 runId 的前后事件，确认是配置、权限、审批、状态还是控制面依赖导致。");
+    }
+
+    private boolean isDeferredGuardrail(String errorCode, String message, String stage) {
+        String normalizedCode = normalize(errorCode);
+        String normalizedMessage = normalize(message);
+        String normalizedStage = normalize(stage);
+        return normalizedCode.contains("unavailable")
+                || normalizedMessage.contains("暂时不可用")
+                || normalizedMessage.contains("等待重试")
+                || "tool_executing".equals(normalizedStage);
+    }
+
     private String genericCategory(String eventType) {
         String normalized = normalize(eventType);
         if (normalized.contains("approval")) {
@@ -275,6 +378,17 @@ public class AgentRuntimeEventDisplaySupport {
             return list.size();
         }
         return 0;
+    }
+
+    private String textAttribute(Map<String, Object> attributes, String key) {
+        Object value = attributes == null ? null : attributes.get(key);
+        return value == null ? "" : Objects.toString(value, "").trim();
+    }
+
+    private void putIfPresent(Map<String, Object> values, String key, String value) {
+        if (value != null && !value.isBlank()) {
+            values.put(key, value);
+        }
     }
 
     private String normalize(String value) {

@@ -1,5 +1,12 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-01 落地补充：guardrail events must be explainable
+
+- 本阶段把 worker-side guardrail 从“能阻断”继续推进到“能解释”：权限拒绝、策略漂移、确认不可用、权限中心不可用等不再只是一段日志或泛化错误码，而是进入 Agent runtime event display。
+- 这对应 Codex、Claude Code 类 Agent 工具链路里的 action trace / failure taxonomy / explainable guardrail 思路：用户和运维需要知道工具为什么没有执行，是被安全策略阻断、等待审批、控制面不可用，还是下游业务失败。
+- DataSmart 当前采用低敏摘要：只写错误码、状态、工具编码、目标服务和建议动作，不写 prompt、SQL、token、完整工具参数或样本数据。
+- 下一步趋势落地应把同类 guardrail 事件接入指标维度：按 tenant、project、toolCode、reasonCode 聚合阻断率、退避次数、平均恢复时间和高频误配置。
+
 ## 2026-06-01 落地补充：local admission control before tool execution
 
 - 本阶段把 Agent worker-side guardrail 从“确认与权限复核”继续推进到“容量入场保护”：worker 在 claim 任务前先检查本地并发和调度节流。

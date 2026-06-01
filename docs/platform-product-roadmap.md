@@ -1,5 +1,13 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-01 追加落地进展：Agent worker guardrail runtime event display
+
+- `task-management` 新增 `AgentAsyncToolGuardrailEventSupport`，把 worker 执行前阻断从泛化 `PRECHECK_REJECTED` 细分为权限拒绝、仍需审批、策略版本漂移、确认记录复核失败、白名单缺失、确认/权限中心暂不可用等稳定错误码。
+- `dispatch-once` 在 pre-check 被阻断时会把更细错误码和低敏 guardrail 摘要回写给 `agent-runtime`；在 confirmation 或 permission-admin 暂不可用导致 defer 时，也会先回写 `DEFERRED`，让运行时间线能解释“为什么还在等待”。
+- `agent-runtime` 的 runtime event display 新增 `AGENT_TOOL_GUARDRAIL` 展示分类：前端可以直接看到“权限策略阻断”“策略版本已变化”“确认记录暂不可用”等标题、状态和推荐动作。
+- 本阶段不新增数据库表，不把 prompt、SQL、token、工具参数或样本数据写入事件，只记录安全分类、状态、工具编码、目标服务等低敏控制面信息。
+- 当前容量阻断仍发生在 claim 之前，没有 session/run/audit 上下文，暂不写入 agent-runtime 时间线；后续需要通过实例级指标或调度器事件补齐容量保护可观测性。
+
 ## 2026-06-01 追加落地进展：Agent worker 本地容量与调度节流保护
 
 - `task-management` 新增 Agent worker 入场保护：在 `claimNextTask` 之前检查本地并发和最小调度间隔，避免 worker 没有执行容量时仍把任务提前置为 `RUNNING`。

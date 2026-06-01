@@ -59,6 +59,7 @@ class AgentAsyncToolDispatchOnceServiceTest {
                 statusClient,
                 properties,
                 new AgentAsyncToolWorkerAdmissionGuardService(properties),
+                new AgentAsyncToolGuardrailEventSupport(),
                 new ObjectMapper()
         );
         Task task = new Task();
@@ -105,6 +106,7 @@ class AgentAsyncToolDispatchOnceServiceTest {
                 statusClient,
                 properties,
                 new AgentAsyncToolWorkerAdmissionGuardService(properties),
+                new AgentAsyncToolGuardrailEventSupport(),
                 new ObjectMapper()
         );
         Task task = new Task();
@@ -120,7 +122,7 @@ class AgentAsyncToolDispatchOnceServiceTest {
 
         assertEquals("FAILED", result.outcome());
         verify(statusClient).notifyStatus(any(AgentAsyncToolResolvedPayload.class), eq(9101L),
-                eq("FAILED"), any(String.class), eq("AGENT_ASYNC_TOOL_PRECHECK_REJECTED"), any(Map.class));
+                eq("FAILED"), any(String.class), eq("AGENT_ASYNC_TOOL_AUDIT_STATE_REJECTED"), any(Map.class));
         verify(taskService).failTask(eq(9001L), any(String.class), any(TaskExecutionCallbackContext.class));
         verify(executor, never()).execute(any(AgentAsyncToolResolvedPayload.class));
     }
@@ -150,6 +152,7 @@ class AgentAsyncToolDispatchOnceServiceTest {
                 statusClient,
                 properties,
                 new AgentAsyncToolWorkerAdmissionGuardService(properties),
+                new AgentAsyncToolGuardrailEventSupport(),
                 new ObjectMapper()
         );
         Task task = new Task();
@@ -164,8 +167,9 @@ class AgentAsyncToolDispatchOnceServiceTest {
         AgentAsyncToolDispatchOnceResult result = service.dispatchOnce(actorContext);
 
         assertEquals("DEFERRED", result.outcome());
+        verify(statusClient).notifyStatus(any(AgentAsyncToolResolvedPayload.class), eq(9101L),
+                eq("DEFERRED"), any(String.class), eq("AGENT_ASYNC_TOOL_CONFIRMATION_UNAVAILABLE"), any(Map.class));
         verify(taskService).deferTask(eq(9001L), any(String.class), eq(45), any(TaskExecutionCallbackContext.class));
-        verify(statusClient, never()).notifyStatus(any(AgentAsyncToolResolvedPayload.class), any(), any(), any(), any(), any());
         verify(executor, never()).execute(any(AgentAsyncToolResolvedPayload.class));
     }
 
@@ -188,6 +192,7 @@ class AgentAsyncToolDispatchOnceServiceTest {
                     mock(AgentRuntimeAsyncToolStatusClient.class),
                     properties,
                     admissionGuard,
+                    new AgentAsyncToolGuardrailEventSupport(),
                     new ObjectMapper()
             );
 

@@ -45,6 +45,7 @@ public class AgentAsyncToolDispatchOnceService {
     private final AgentRuntimeAsyncToolStatusClient statusClient;
     private final AgentAsyncToolWorkerProperties properties;
     private final AgentAsyncToolWorkerAdmissionGuardService admissionGuardService;
+    private final AgentAsyncToolGuardrailEventSupport guardrailEventSupport;
     private final ObjectMapper objectMapper;
 
     /**
@@ -81,8 +82,9 @@ public class AgentAsyncToolDispatchOnceService {
             }
             Task task = claim.task();
             Long runId = claim.executionRun() == null ? null : claim.executionRun().getId();
+            AgentAsyncToolResolvedPayload payload = null;
             try {
-                AgentAsyncToolResolvedPayload payload = payloadResolver.resolve(task, actorContext == null ? null : actorContext.traceId());
+                payload = payloadResolver.resolve(task, actorContext == null ? null : actorContext.traceId());
                 AgentAsyncToolExecutionPreCheckResult preCheck = preCheckService.preCheck(payload);
                 if (!preCheck.allowed()) {
                     return rejectBeforeExecution(task, runId, payload, actorContext, preCheck);
@@ -125,8 +127,20 @@ public class AgentAsyncToolDispatchOnceService {
                  * 执行前复核依赖不可用不是业务失败。
                  * 例如 agent-runtime confirmation 查询短暂失败、permission-admin evaluate 超时，或后续配额服务不可用时，
                  * worker 既不能绕过复核执行副作用，也不应该把任务永久 FAILED。这里选择 defer，让任务回到可重试队列，
-                 * 等控制面恢复后再次判断。
+                 * 等控制面恢复后再次判断。同时如果 payload 已经解析成功，会先向 agent-runtime 回写 DEFERRED，
+                 * 让 runtime event 时间线展示“为什么工具还在等待”，而不是让用户只看到一个长时间 EXECUTING。
                  */
+                if (payload != null) {
+                    AgentAsyncToolExecutionResult deferred = AgentAsyncToolExecutionResult.retryableFailure(
+                            exception.getMessage(),
+                            guardrailEventSupport.unavailableOutput(exception)
+                    );
+                    if (!notifyTerminalStatus(task, runId, payload, actorContext, deferred,
+                            "DEFERRED", guardrailEventSupport.unavailableErrorCode(exception))) {
+                        return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
+                                OUTCOME_DEFERRED, exception.getMessage(), deferred.output());
+                    }
+                }
                 TaskExecutionCallbackContext callbackContext = new TaskExecutionCallbackContext(
                         runId,
                         properties.getExecutorId(),
@@ -162,15 +176,16 @@ public class AgentAsyncToolDispatchOnceService {
     private AgentAsyncToolDispatchOnceResult rejectBeforeExecution(Task task,
                                                                   Long runId,
                                                                   AgentAsyncToolResolvedPayload payload,
-                                                                  TaskActorContext actorContext,
+                                                                 TaskActorContext actorContext,
                                                                   AgentAsyncToolExecutionPreCheckResult preCheck) {
         AgentAsyncToolExecutionResult rejection = AgentAsyncToolExecutionResult.fatalFailure(
                 preCheck.message(),
-                preCheck.diagnosticOutput()
+                guardrailEventSupport.preCheckOutput(preCheck)
         );
-        if (!notifyTerminalStatus(task, runId, payload, actorContext, rejection, "FAILED", preCheck.errorCode())) {
+        String errorCode = guardrailEventSupport.preCheckErrorCode(preCheck);
+        if (!notifyTerminalStatus(task, runId, payload, actorContext, rejection, "FAILED", errorCode)) {
             return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
-                    OUTCOME_DEFERRED, "执行前复核已阻断，但 agent-runtime 状态回写失败，任务已退避等待补偿。", preCheck.diagnosticOutput());
+                    OUTCOME_DEFERRED, "执行前复核已阻断，但 agent-runtime 状态回写失败，任务已退避等待补偿。", rejection.output());
         }
         TaskExecutionCallbackContext callbackContext = new TaskExecutionCallbackContext(
                 runId,
@@ -180,7 +195,7 @@ public class AgentAsyncToolDispatchOnceService {
         );
         taskService.failTask(task.getId(), preCheck.message(), callbackContext);
         return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
-                OUTCOME_FAILED, preCheck.message(), preCheck.diagnosticOutput());
+                OUTCOME_FAILED, preCheck.message(), rejection.output());
     }
 
     private TaskExecutionClaimRequest claimRequest() {
