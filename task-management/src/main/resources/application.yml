@@ -109,5 +109,12 @@ datasmart:
       claim-lease-seconds: ${DATASMART_TASK_AGENT_ASYNC_WORKER_CLAIM_LEASE_SECONDS:60}
       # 参数载荷最大字节数。Agent 工具参数应保存结构化配置和引用，不应携带大文件、样本数据或海量 SQL。
       max-resolved-payload-bytes: ${DATASMART_TASK_AGENT_ASYNC_WORKER_MAX_RESOLVED_PAYLOAD_BYTES:65536}
+      # 是否在真实工具执行前回查 agent-runtime 的 DAG selected-node 确认记录。
+      # 生产建议保持 true：worker 不能只相信本地 task.params，还要确认 commandId/auditId/policyVersions 来自已确认节点。
+      confirmation-check-enabled: ${DATASMART_TASK_AGENT_ASYNC_WORKER_CONFIRMATION_CHECK_ENABLED:true}
+      # confirmation 回查异常时是否临时放行。默认 false，控制面不可用时宁愿 defer 重试，也不要绕过确认链执行副作用。
+      confirmation-check-fail-open-on-error: ${DATASMART_TASK_AGENT_ASYNC_WORKER_CONFIRMATION_CHECK_FAIL_OPEN_ON_ERROR:false}
+      # 执行前复核依赖暂时不可用时的退避秒数。后续接入 permission-admin evaluate、配额和限流后也会复用该退避语义。
+      pre-check-unavailable-defer-seconds: ${DATASMART_TASK_AGENT_ASYNC_WORKER_PRECHECK_UNAVAILABLE_DEFER_SECONDS:30}
       # 默认只做 dry-run 预检，不调用真实目标服务。真实执行需要白名单适配器、权限策略和状态回写闭环全部确认后再关闭。
       dry-run-only: ${DATASMART_TASK_AGENT_ASYNC_WORKER_DRY_RUN_ONLY:true}

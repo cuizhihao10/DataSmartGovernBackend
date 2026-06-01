@@ -1,5 +1,12 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-01 落地补充：worker-side confirmation revalidation
+
+- 本阶段把 worker-side guardrail 从本地字段校验推进到跨服务确认回查：task-management worker 在调用真实工具适配器前，会按 `confirmationId` 查询 agent-runtime 的 DAG selected-node confirmation。
+- 这对应 Codex、Claude Code 等 Agent 工具体系中越来越重要的 action confirmation / capability lease / durable approval evidence 思路：确认不是一行日志，而是 worker 执行前可以重新读取和核对的行动凭证。
+- 当前已核对 confirmation 所属的 session/run、选中 auditId、关联 commandId、策略版本和委托证据摘要；如果控制面暂时不可用，任务退避重试，而不是执行副作用或永久失败。
+- 这仍不是完整智能网关执行治理。下一步要把 permission-admin 最新策略 evaluate、租户/项目配额、工具级限流、payloadReference 版本和运行时指标纳入同一条 preflight 链路。
+
 ## 2026-06-01 落地补充：worker-side guardrail 先于真实工具副作用
 
 - 本阶段继续把“工具执行不是函数直调，而是受控行动链路”的 Agent 产品原则落到 task-management worker。

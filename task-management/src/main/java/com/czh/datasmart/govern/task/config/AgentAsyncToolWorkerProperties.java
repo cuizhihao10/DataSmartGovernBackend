@@ -109,6 +109,39 @@ public class AgentAsyncToolWorkerProperties {
     private int maxResolvedPayloadBytes = 65536;
 
     /**
+     * 是否在 worker 执行前回查 agent-runtime 的 DAG selected-node 确认记录。
+     *
+     * <p>默认 true，因为真实商业化 Agent 平台不能只相信 task-management 本地任务字段。
+     * selected-node 入箱时，agent-runtime 已经记录了用户确认、策略版本、选中 auditId、commandId 等证据；
+     * worker 在调用真实工具前再次回查，可以防止消息被篡改、旧任务重放、错误 command 绑定到错误 audit 节点等风险。</p>
+     *
+     * <p>如果本地学习环境只想验证 payload 解析而没有启动 agent-runtime，可以临时关闭该开关。
+     * 但生产环境建议保持开启，并配合服务账号签名、内网 ACL、超时、熔断和监控告警。</p>
+     */
+    private boolean confirmationCheckEnabled = true;
+
+    /**
+     * confirmation 回查失败时是否临时放行。
+     *
+     * <p>默认 false，表示 fail-closed：当 agent-runtime 不可达、响应异常或证据无法读取时，
+     * worker 不会调用真实工具。为了避免把暂时不可用误判成永久失败，调度层会把任务 defer 回队列，
+     * 等依赖恢复后重新复核。</p>
+     *
+     * <p>只有在非常受控的灰度环境、确认其他安全门足够兜底、且下游工具副作用风险很低时，才建议短暂设为 true。
+     * 一旦设为 true，系统应通过日志和指标明确暴露“确认回查失败但放行”的次数。</p>
+     */
+    private boolean confirmationCheckFailOpenOnError = false;
+
+    /**
+     * 执行前复核依赖暂时不可用时的退避秒数。
+     *
+     * <p>该值用于 agent-runtime confirmation 查询失败、后续 permission-admin evaluate 暂时不可用、
+     * 配额/限流服务短暂故障等场景。它和任务业务失败不同：任务不是不合法，而是当前控制面无法给出安全结论，
+     * 所以 worker 应先释放租约、延迟重试，而不是直接失败或继续执行。</p>
+     */
+    private int preCheckUnavailableDeferSeconds = 30;
+
+    /**
      * 是否仅做 dry-run 预检。
      *
      * <p>当前默认 true。返回结果会明确告诉调用方“参数已解析但不会执行”。

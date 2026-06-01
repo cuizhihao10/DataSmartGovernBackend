@@ -17,6 +17,7 @@ import com.czh.datasmart.govern.task.service.TaskService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -46,11 +47,13 @@ class AgentAsyncToolDispatchOnceServiceTest {
         properties.setDryRunOnly(false);
         properties.setExecutorId("agent-worker-test");
         AgentAsyncToolExecutor executor = new FakeExecutor();
+        AgentRuntimeToolDagConfirmationClient confirmationClient = mock(AgentRuntimeToolDagConfirmationClient.class);
+        when(confirmationClient.fetchConfirmation(any(AgentAsyncToolResolvedPayload.class))).thenReturn(confirmationView());
         AgentRuntimeAsyncToolStatusClient statusClient = mock(AgentRuntimeAsyncToolStatusClient.class);
         AgentAsyncToolDispatchOnceService service = new AgentAsyncToolDispatchOnceService(
                 taskService,
                 resolver,
-                new AgentAsyncToolExecutionPreCheckService(List.of(executor)),
+                new AgentAsyncToolExecutionPreCheckService(List.of(executor), properties, confirmationClient),
                 List.of(executor),
                 statusClient,
                 properties,
@@ -88,11 +91,12 @@ class AgentAsyncToolDispatchOnceServiceTest {
         properties.setExecutorId("agent-worker-test");
         AgentAsyncToolExecutor executor = mock(AgentAsyncToolExecutor.class);
         when(executor.supports("data-sync.execute")).thenReturn(true);
+        AgentRuntimeToolDagConfirmationClient confirmationClient = mock(AgentRuntimeToolDagConfirmationClient.class);
         AgentRuntimeAsyncToolStatusClient statusClient = mock(AgentRuntimeAsyncToolStatusClient.class);
         AgentAsyncToolDispatchOnceService service = new AgentAsyncToolDispatchOnceService(
                 taskService,
                 resolver,
-                new AgentAsyncToolExecutionPreCheckService(List.of(executor)),
+                new AgentAsyncToolExecutionPreCheckService(List.of(executor), properties, confirmationClient),
                 List.of(executor),
                 statusClient,
                 properties,
@@ -113,6 +117,47 @@ class AgentAsyncToolDispatchOnceServiceTest {
         verify(statusClient).notifyStatus(any(AgentAsyncToolResolvedPayload.class), eq(9101L),
                 eq("FAILED"), any(String.class), eq("AGENT_ASYNC_TOOL_PRECHECK_REJECTED"), any(Map.class));
         verify(taskService).failTask(eq(9001L), any(String.class), any(TaskExecutionCallbackContext.class));
+        verify(executor, never()).execute(any(AgentAsyncToolResolvedPayload.class));
+    }
+
+    @Test
+    void preCheckDependencyUnavailableShouldDeferTaskWithoutExecutorSideEffect() {
+        TaskService taskService = mock(TaskService.class);
+        AgentAsyncToolPayloadResolver resolver = mock(AgentAsyncToolPayloadResolver.class);
+        AgentAsyncToolWorkerProperties properties = new AgentAsyncToolWorkerProperties();
+        properties.setEnabled(true);
+        properties.setDryRunOnly(false);
+        properties.setExecutorId("agent-worker-test");
+        properties.setPreCheckUnavailableDeferSeconds(45);
+        AgentAsyncToolExecutor executor = mock(AgentAsyncToolExecutor.class);
+        when(executor.supports("data-sync.execute")).thenReturn(true);
+        AgentRuntimeToolDagConfirmationClient confirmationClient = mock(AgentRuntimeToolDagConfirmationClient.class);
+        when(confirmationClient.fetchConfirmation(any(AgentAsyncToolResolvedPayload.class)))
+                .thenThrow(new IllegalStateException("agent-runtime unavailable"));
+        AgentRuntimeAsyncToolStatusClient statusClient = mock(AgentRuntimeAsyncToolStatusClient.class);
+        AgentAsyncToolDispatchOnceService service = new AgentAsyncToolDispatchOnceService(
+                taskService,
+                resolver,
+                new AgentAsyncToolExecutionPreCheckService(List.of(executor), properties, confirmationClient),
+                List.of(executor),
+                statusClient,
+                properties,
+                new ObjectMapper()
+        );
+        Task task = new Task();
+        task.setId(9001L);
+        TaskExecutionRun run = new TaskExecutionRun();
+        run.setId(9101L);
+        when(taskService.claimNextTask(any(TaskExecutionClaimRequest.class), any(TaskActorContext.class)))
+                .thenReturn(new TaskExecutionClaimResult(true, "claimed", task, run));
+        when(resolver.resolve(eq(task), eq("trace-worker"))).thenReturn(payload());
+        TaskActorContext actorContext = new TaskActorContext(10L, null, "SERVICE_ACCOUNT", "trace-worker", null, List.of());
+
+        AgentAsyncToolDispatchOnceResult result = service.dispatchOnce(actorContext);
+
+        assertEquals("DEFERRED", result.outcome());
+        verify(taskService).deferTask(eq(9001L), any(String.class), eq(45), any(TaskExecutionCallbackContext.class));
+        verify(statusClient, never()).notifyStatus(any(AgentAsyncToolResolvedPayload.class), any(), any(), any(), any(), any());
         verify(executor, never()).execute(any(AgentAsyncToolResolvedPayload.class));
     }
 
@@ -154,6 +199,31 @@ class AgentAsyncToolDispatchOnceServiceTest {
                 List.of("预检通过"),
                 List.of(),
                 LocalDateTime.now()
+        );
+    }
+
+    private AgentRuntimeToolDagConfirmationView confirmationView() {
+        return new AgentRuntimeToolDagConfirmationView(
+                "dag-confirmation:test-001",
+                "session-001",
+                "run-001",
+                "fingerprint-001",
+                List.of("node-001"),
+                List.of("audit-001"),
+                List.of("route-policy:860"),
+                List.of("serviceAccount=datasmart-agent-runtime;representedActor=actor-agent"),
+                List.of("outbox-001"),
+                List.of("cmd-001"),
+                10L,
+                20L,
+                30L,
+                "1001",
+                "trace-worker",
+                true,
+                "CONFIRMED",
+                Instant.now().plusSeconds(300),
+                Instant.now(),
+                Instant.now()
         );
     }
 

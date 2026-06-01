@@ -104,6 +104,22 @@ public class AgentAsyncToolDispatchOnceService {
             taskService.failTask(task.getId(), executionResult.message(), callbackContext);
             return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
                     OUTCOME_FAILED, executionResult.message(), executionResult.output());
+        } catch (AgentAsyncToolPreCheckUnavailableException exception) {
+            /*
+             * 执行前复核依赖不可用不是业务失败。
+             * 例如 agent-runtime confirmation 查询短暂失败时，worker 既不能绕过复核执行副作用，
+             * 也不应该把任务永久 FAILED。这里选择 defer，让任务回到可重试队列，等控制面恢复后再次判断。
+             */
+            TaskExecutionCallbackContext callbackContext = new TaskExecutionCallbackContext(
+                    runId,
+                    properties.getExecutorId(),
+                    "agent-async-tool:" + task.getId() + ":precheck-unavailable-deferred",
+                    actorContext
+            );
+            taskService.deferTask(task.getId(), exception.getMessage(),
+                    properties.getPreCheckUnavailableDeferSeconds(), callbackContext);
+            return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, null,
+                    OUTCOME_DEFERRED, exception.getMessage(), Map.of());
         } catch (RuntimeException exception) {
             TaskExecutionCallbackContext callbackContext = new TaskExecutionCallbackContext(
                     runId,

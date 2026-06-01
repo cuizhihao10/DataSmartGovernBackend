@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.task.service.agent;
 
+import com.czh.datasmart.govern.task.config.AgentAsyncToolWorkerProperties;
 import com.czh.datasmart.govern.task.support.TaskStatus;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -26,9 +27,10 @@ import java.util.Set;
  * 但 worker 还没有向 agent-runtime 回写 RUNNING，也没有调用任何真实工具适配器。
  * 这是副作用发生前最适合做 fail-closed 的位置。</p>
  *
- * <p>当前阶段先落地本地可验证的二次复核骨架，不直接引入远端 permission-admin 查询。
- * 这样做是为了保持批次可控：先把任务状态、工具白名单、审计状态、payloadReference 和执行证据这些
- * “本地已经掌握的事实”拦住；下一阶段再把 confirmation 反查、权限策略实时 evaluate、租户配额和工具限流接进来。</p>
+ * <p>当前阶段已经从“只校验本地字段”推进到“回查 agent-runtime confirmation”。
+ * 这一步是为了让 task-management 不只相信 Kafka command 或 task.params，而是在真实工具执行前重新确认：
+ * 当前 commandId、auditId、policyVersions 是否确实来自 agent-runtime 记录过的 selected-node 确认事实。
+ * 后续 permission-admin 实时 evaluate、租户配额、工具限流和熔断会继续挂到同一个 pre-check 链路上。</p>
  */
 @Service
 @RequiredArgsConstructor
@@ -49,6 +51,8 @@ public class AgentAsyncToolExecutionPreCheckService {
     private static final int MAX_EVIDENCE_LENGTH = 512;
 
     private final List<AgentAsyncToolExecutor> executors;
+    private final AgentAsyncToolWorkerProperties properties;
+    private final AgentRuntimeToolDagConfirmationClient confirmationClient;
 
     /**
      * 执行 worker 前置复核。
@@ -166,6 +170,98 @@ public class AgentAsyncToolExecutionPreCheckService {
             return delegationIssue;
         }
         messages.add("执行证据摘要复核通过：policyVersions 与 delegationEvidence 符合低敏短文本规则。");
+        String remoteConfirmationIssue = validateRemoteConfirmation(payload, messages, diagnostics);
+        if (remoteConfirmationIssue != null) {
+            return remoteConfirmationIssue;
+        }
+        return null;
+    }
+
+    /**
+     * 回查 agent-runtime 的原始 DAG selected-node 确认记录。
+     *
+     * <p>本地 task.params 中的 confirmationId、policyVersions 和 delegationEvidence 是 Kafka command 入箱时写入的快照。
+     * 快照本身有价值，但仍然可能因为消息重放、人工修复、错误写入或未来跨服务兼容问题而与 agent-runtime 的确认事实不一致。
+     * 因此这里用 confirmationId 回到 agent-runtime 查询低敏确认视图，并做五类一致性判断：</p>
+     *
+     * <p>1. confirmationId/sessionId/runId 必须和当前任务一致，防止跨会话或跨 Run 复用确认；</p>
+     * <p>2. 确认状态必须是 CONFIRMED，避免未来撤销、拒绝或过期记录继续执行；</p>
+     * <p>3. selectedAuditIds 必须包含当前 auditId，证明这个工具审计节点属于被确认的 DAG 节点集合；</p>
+     * <p>4. commandIds 必须包含当前 commandId，证明当前任务来自确认动作产生的 command outbox；</p>
+     * <p>5. 任务携带的 policyVersions/delegationEvidence 必须被确认记录覆盖，避免执行证据在 task-management 侧被放大或篡改。</p>
+     *
+     * <p>依赖不可用的处理也很关键：如果 agent-runtime 暂时不可达，worker 不应继续执行副作用；
+     * 但这类问题通常可恢复，所以方法会抛出 {@link AgentAsyncToolPreCheckUnavailableException}，
+     * 由调度层把任务 defer 回队列，而不是直接把任务永久失败。</p>
+     */
+    private String validateRemoteConfirmation(AgentAsyncToolResolvedPayload payload,
+                                              List<String> messages,
+                                              Map<String, Object> diagnostics) {
+        String confirmationId = optionalText(payload.confirmationId());
+        if (confirmationId == null) {
+            diagnostics.put("remoteConfirmationCheck", "skipped_without_confirmation_id");
+            return null;
+        }
+        if (!properties.isConfirmationCheckEnabled()) {
+            diagnostics.put("remoteConfirmationCheck", "disabled_by_config");
+            messages.add("agent-runtime 确认回查已被配置关闭：当前仅使用 task.params 中的本地执行证据，生产环境建议开启。");
+            return null;
+        }
+        try {
+            AgentRuntimeToolDagConfirmationView confirmation = confirmationClient.fetchConfirmation(payload);
+            diagnostics.put("remoteConfirmationCheck", "queried");
+            diagnostics.put("remoteConfirmationStatus", confirmation.status());
+            diagnostics.put("remoteSelectedAuditCount", confirmation.selectedAuditIds().size());
+            diagnostics.put("remoteCommandCount", confirmation.commandIds().size());
+            diagnostics.put("remotePolicyVersionCount", confirmation.policyVersions().size());
+            if (!sameText(confirmationId, confirmation.confirmationId())) {
+                return "agent-runtime 确认记录与当前任务 confirmationId 不一致，拒绝执行。";
+            }
+            if (!sameText(payload.sessionId(), confirmation.sessionId()) || !sameText(payload.runId(), confirmation.runId())) {
+                return "agent-runtime 确认记录与当前任务 sessionId/runId 不一致，拒绝跨上下文执行。";
+            }
+            if (!Boolean.TRUE.equals(confirmation.confirmed()) || !"CONFIRMED".equals(normalize(confirmation.status()))) {
+                return "agent-runtime 确认记录状态不是 CONFIRMED，拒绝执行，status=" + confirmation.status();
+            }
+            if (!containsNormalized(confirmation.selectedAuditIds(), payload.auditId())) {
+                return "agent-runtime 确认记录未包含当前 auditId，拒绝执行，auditId=" + payload.auditId();
+            }
+            if (!containsNormalized(confirmation.commandIds(), payload.commandId())) {
+                return "agent-runtime 确认记录未包含当前 commandId，拒绝执行，commandId=" + payload.commandId();
+            }
+            String policyCoverageIssue = validateRemoteEvidenceCoverage(
+                    "policyVersions", payload.policyVersions(), confirmation.policyVersions());
+            if (policyCoverageIssue != null) {
+                return policyCoverageIssue;
+            }
+            String delegationCoverageIssue = validateRemoteEvidenceCoverage(
+                    "delegationEvidence", payload.delegationEvidence(), confirmation.delegationEvidence());
+            if (delegationCoverageIssue != null) {
+                return delegationCoverageIssue;
+            }
+            messages.add("agent-runtime 确认回查通过：confirmationId、sessionId/runId、auditId、commandId 与低敏证据均和确认记录一致。");
+            return null;
+        } catch (RuntimeException exception) {
+            diagnostics.put("remoteConfirmationCheck", "temporarily_unavailable");
+            diagnostics.put("remoteConfirmationCheckError", safeExceptionMessage(exception));
+            if (properties.isConfirmationCheckFailOpenOnError()) {
+                messages.add("agent-runtime 确认回查失败但配置为 fail-open：worker 将继续依赖本地证据执行，生产环境应谨慎使用。");
+                return null;
+            }
+            throw new AgentAsyncToolPreCheckUnavailableException(
+                    "agent-runtime confirmation 回查暂时不可用，worker 已阻止副作用并等待重试。", exception);
+        }
+    }
+
+    private String validateRemoteEvidenceCoverage(String fieldName, List<String> taskValues, List<String> confirmationValues) {
+        Set<String> taskSet = normalizedTextSet(taskValues);
+        if (taskSet.isEmpty()) {
+            return null;
+        }
+        Set<String> confirmationSet = normalizedTextSet(confirmationValues);
+        if (!confirmationSet.containsAll(taskSet)) {
+            return "agent-runtime 确认记录未覆盖当前任务携带的 " + fieldName + "，拒绝执行。";
+        }
         return null;
     }
 
@@ -211,6 +307,40 @@ public class AgentAsyncToolExecutionPreCheckService {
                 || lower.contains("bearer ")
                 || lower.contains("password")
                 || lower.contains("prompt:");
+    }
+
+    private boolean sameText(String left, String right) {
+        String normalizedLeft = optionalText(left);
+        String normalizedRight = optionalText(right);
+        return normalizedLeft != null && normalizedLeft.equals(normalizedRight);
+    }
+
+    private boolean containsNormalized(List<String> values, String expected) {
+        String normalizedExpected = optionalText(expected);
+        return normalizedExpected != null && normalizedTextSet(values).contains(normalizedExpected);
+    }
+
+    private Set<String> normalizedTextSet(List<String> values) {
+        Set<String> normalized = new LinkedHashSet<>();
+        if (values == null) {
+            return normalized;
+        }
+        for (String value : values) {
+            String item = optionalText(value);
+            if (item != null) {
+                normalized.add(item);
+            }
+        }
+        return normalized;
+    }
+
+    private String safeExceptionMessage(RuntimeException exception) {
+        String message = exception.getMessage();
+        if (message == null || message.isBlank()) {
+            return exception.getClass().getSimpleName();
+        }
+        String trimmed = message.trim();
+        return trimmed.length() <= 300 ? trimmed : trimmed.substring(0, 300);
     }
 
     private String optionalText(String value) {

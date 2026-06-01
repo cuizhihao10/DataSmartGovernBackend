@@ -1,5 +1,13 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-01 追加落地进展：Agent worker 跨服务确认回查复核
+
+- `task-management` worker 执行前二次复核已从“只校验本地 task.params 证据”升级为“回查 agent-runtime DAG selected-node confirmation”，在真实工具副作用发生前核对 `confirmationId/sessionId/runId/auditId/commandId/policyVersions/delegationEvidence`。
+- 新增 `AgentRuntimeToolDagConfirmationClient` 与本地确认快照 DTO，保持 HTTP/JSON 服务边界，不让 task-management 编译期依赖 agent-runtime 内部实体。
+- 新增 `confirmation-check-enabled`、`confirmation-check-fail-open-on-error` 与 `pre-check-unavailable-defer-seconds` 配置，默认开启确认回查且 fail-closed；如果 agent-runtime 短暂不可用，任务会 defer 等待重试，而不是绕过复核执行副作用。
+- 这一步继续加强“智能网关/Agent Runtime/任务执行器”的商业化闭环：模型或用户确认的行动计划必须能被 worker 复核，任务创建成功不等于工具天然可执行。
+- 下一阶段应接入 `permission-admin` 服务间实时 evaluate，让 SERVICE_ACCOUNT 代表用户执行工具前重新确认租户、项目、角色、工具权限和策略版本仍然有效。
+
 ## 2026-06-01 追加落地进展：Agent worker 执行前本地二次复核骨架
 
 - `task-management` worker 在 `resolve payloadReference` 之后、回写 `RUNNING` 与调用真实工具适配器之前，新增 `AgentAsyncToolExecutionPreCheckService`，先校验任务状态、Agent 审计状态、payloadReference 类型、工具白名单和执行证据摘要。
