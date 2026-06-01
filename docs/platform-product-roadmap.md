@@ -7,6 +7,13 @@
 - confirmation 记录已保留 `policyVersions` 与 `delegationEvidence`，后续可进入审计导出、管理员补偿台和 runtime event display。
 - 这一步不扩大自动执行范围，而是让现有 DAG selected-node 入箱更接近商业化控制面：人或智能网关确认的不只是节点列表，也是某一版授权事实。
 
+## 2026-06-01 追加落地进展：Agent selected-node confirmation MySQL 仓储
+
+- `agent-runtime` 新增 `JdbcAgentRunToolDagConfirmationStore`，可在 `tool-dag.confirmations.store=mysql + persistence.database-enabled=true` 时把确认事实写入 `agent_run_tool_dag_confirmation`。
+- 仓储采用数据库唯一索引实现幂等：重复 confirmationId 会回读已有记录，而不是制造多条“看似多次确认”的审计事实。
+- JSON 字段只保存节点 ID、auditId、policyVersion、delegationEvidence、outboxId 与 commandId，不保存 prompt、SQL、工具参数或样本数据。
+- 这一步把 selected-node 确认证据从内存热窗口推进到 durable evidence，为后续审计查询 API、管理员补偿台和 worker 执行前二次复核打基础。
+
 > 本文档用于纠正项目推进过程中过度集中于 `datasource-management` 的问题。
 > 后续所有功能实现都应先对照本文档判断模块归属、产品场景、性能要求和未来迁移方向，再进入代码实现。
 

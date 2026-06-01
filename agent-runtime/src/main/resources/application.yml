@@ -75,8 +75,9 @@ datasmart:
       # 商业化生产环境最终建议 audit-store 与 outbox-store 同时切到 mysql，并通过事务边界保证同提交。
       outbox-store: memory
       # 数据库持久化总开关。
-      # 当前已经具备 MySQL audit/outbox store，但默认保持 false，避免本地学习环境没有 MySQL 时启动失败。
-      # 启用数据库仓储时，必须同时设置 database-enabled=true 与 audit-store/outbox-store=mysql，
+      # 当前已经具备 MySQL audit/outbox store、async command outbox store 与 DAG confirmation store，
+      # 但默认保持 false，避免本地学习环境没有 MySQL 时启动失败。
+      # 启用数据库仓储时，必须同时设置 database-enabled=true 与对应 store=mysql，
       # 这样可以防止误配置单个字符串导致本地启动强依赖数据库。
       database-enabled: false
       jdbc:
@@ -177,7 +178,9 @@ datasmart:
         # 它不负责执行工具，也不替代 command outbox 的投递状态机；它是面向审计、复核、补偿和争议排查的证据层。
         enabled: true
         # 当前默认 memory，保证本地学习、单元测试和无数据库联调时无需启动 MySQL。
-        # 生产环境后续应切换为 mysql，并配合 agent_run_tool_dag_confirmation 表实现多实例共享、服务重启恢复和审计导出。
+        # 生产环境可切换为 mysql，并配合 agent_run_tool_dag_confirmation 表实现多实例共享、服务重启恢复和审计导出。
+        # mysql 模式需要同时设置 datasmart.agent-runtime.persistence.database-enabled=true，
+        # 并确认 JDBC 配置、表结构迁移、备份保留和审计查询权限都已准备好。
         store: memory
         # 确认记录有效期。过期不代表历史事实消失，而是表示这次确认不应再被视为“可继续执行的近期确认”。
         # 后续接入 policyVersion 执行前复核时，如果确认过期或策略版本变化，应要求重新 dry-run/重新确认。

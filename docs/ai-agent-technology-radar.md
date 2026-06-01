@@ -7,6 +7,13 @@
 - 这对应前沿 Agent 工具执行治理中的一个核心原则：模型或人类确认的是“某个时间点的行动预案”，真实副作用发生前必须重新绑定权限、策略和审计证据。
 - 后续技术雷达应继续关注 MCP/A2A/tool-use 生态里的 tool approval、capability lease、policy snapshot、signed tool plan 等方向，并优先转化为 DataSmart 的租户安全、确认记录、worker pre-check 和可回放事件能力。
 
+## 2026-06-01 落地补充：工具确认事实需要可恢复持久化
+
+- 本阶段把 selected-node confirmation 增加 MySQL/JDBC 仓储，继续贴近前沿 Agent 产品中的 durable action、checkpoint、human-in-the-loop 和 tool trace 思路。
+- 对 Codex/Claude Code 类 Agent 来说，“用户确认过”不能只存在于一次 HTTP 响应或进程内存里；它应能在服务重启、网关重试、多实例切换和审计回放时被恢复。
+- DataSmart 当前把确认事实落成独立 evidence store，而不是直接扩大自动执行范围，这符合企业工具执行治理的路线：先可追踪、可恢复、可证明，再逐步提高自动化。
+- 后续应继续把 confirmation evidence 接入 runtime event display、审计查询 API、worker pre-check 和权限中心策略版本复核，形成端到端行动证据链。
+
 ## 2026-05-25 智能网关 WebSocket 路由校准
 
 本次在继续推进 Agent 实时事件能力时，先按项目 skill 要求校准了 Spring Cloud Gateway 的 WebSocket 转发方式。
