@@ -208,6 +208,12 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/agent/runtime-events/**", "AI_RUNTIME",
                 "Agent Runtime 运行时事件投影查询接口，用于查看 run/session/request 维度的 Agent 执行事件",
                 Map.of("GET", "VIEW_EVENTS")));
+        defaults.add(route("/api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/dag-confirmations/**", "AI_RUNTIME",
+                "Agent DAG selected-node 确认记录审计查询接口，用于查看人工确认、dry-run 指纹、策略版本和 outbox 证据",
+                Map.of("GET", "VIEW_TOOL_CONFIRMATIONS")));
+        defaults.add(route("/api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/dag-confirmations", "AI_RUNTIME",
+                "Agent DAG selected-node 确认记录审计列表接口，用于按 run 查看确认历史和授权证据",
+                Map.of("GET", "VIEW_TOOL_CONFIRMATIONS")));
         defaults.add(route("/api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/dag-selected-node-outbox/enqueue", "AI_RUNTIME",
                 "DAG 已确认选中节点异步入箱入口，只允许推进经过 dry-run 指纹复核的节点", Map.of("POST", "ENQUEUE_SELECTED_ASYNC_TOOL")));
         defaults.add(route("/api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/async-command-outbox/enqueue", "AI_RUNTIME",

@@ -633,6 +633,22 @@ datasmart:
           method-actions:
             POST: ENQUEUE_SELECTED_ASYNC_TOOL
 
+        # selected-node confirmation 查询是只读审计能力，但它展示的是“谁确认了哪版预案、哪些节点进入 outbox、
+        # 命中了哪版策略和委托证据”，比普通会话详情更敏感，因此不能被 /api/agent/** 的普通 VIEW 吞掉。
+        - path-pattern: /api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/dag-confirmations/**
+          resource-type: AI_RUNTIME
+          default-action: VIEW_TOOL_CONFIRMATIONS
+          description: DAG selected-node 确认记录详情查询接口，用于审计 human-in-the-loop 确认与 durable action 证据。
+          method-actions:
+            GET: VIEW_TOOL_CONFIRMATIONS
+
+        - path-pattern: /api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/dag-confirmations
+          resource-type: AI_RUNTIME
+          default-action: VIEW_TOOL_CONFIRMATIONS
+          description: DAG selected-node 确认记录列表查询接口，用于按 run 查看确认历史、策略版本和 outbox 关联。
+          method-actions:
+            GET: VIEW_TOOL_CONFIRMATIONS
+
         # 兼容入口：按整个 Run 扫描可下发异步草案。它适合联调、运维补偿和后续管理员操作，
         # 但生产网关应给它更严格的策略，不能和 selected-node 推荐入口共用普通 CREATE 权限。
         - path-pattern: /api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/async-command-outbox/enqueue

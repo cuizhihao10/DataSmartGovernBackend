@@ -106,6 +106,32 @@ class PermissionDecisionSupportTest {
     }
 
     /**
+     * 验证确认记录查询使用独立的 VIEW_TOOL_CONFIRMATIONS 动作。
+     *
+     * <p>confirmation 不是普通 Agent 会话详情，也不是 runtime event 时间线本身。
+     * 它是用户确认、策略版本、服务账号委托和 outbox 入箱之间的证据链，所以 permission-admin 必须能按独立动作授权。
+     */
+    @Test
+    void auditorShouldAllowViewingToolConfirmationsWithDedicatedAction() {
+        PermissionDecisionRequest request = decisionRequest("AUDITOR");
+        request.setHttpMethod("GET");
+        request.setRequestPath("/api/agent/sessions/session-1/runs/run-1/tool-executions/dag-confirmations/confirmation-1");
+        request.setResourceType("AI_RUNTIME");
+        request.setAction("VIEW_TOOL_CONFIRMATIONS");
+        when(querySupport.listRoutePolicies(10L, "AUDITOR"))
+                .thenReturn(List.of(confirmationViewPolicy("AUDITOR", "ALLOW", 114)));
+        when(querySupport.listDataScopePolicies(10L, "AUDITOR", "AI_RUNTIME"))
+                .thenReturn(List.of(dataScope("AUDITOR", "AI_RUNTIME", "TENANT", "tenant_id = ${tenantId}")));
+
+        PermissionDecisionResult result = decisionSupport.evaluate(request, "trace-confirmation-view");
+
+        assertThat(result.getAllowed()).isTrue();
+        assertThat(result.getMatchedRoutePolicyId()).isEqualTo(114L);
+        assertThat(result.getDataScopeLevel()).isEqualTo("TENANT");
+        assertThat(result.getReason()).contains("确认记录");
+    }
+
+    /**
      * 验证普通用户命中显式 DENY，不能直接伪造 Python AgentPlan。
      *
      * <p>普通用户应该通过产品会话入口表达目标，由智能网关和 Python Runtime 生成计划；
@@ -157,6 +183,15 @@ class PermissionDecisionSupportTest {
         policy.setPolicyName("服务账号确认 DAG 选中节点异步入箱");
         policy.setPathPattern("/api/agent/sessions/*/runs/*/tool-executions/dag-selected-node-outbox/enqueue");
         policy.setAction("ENQUEUE_SELECTED_ASYNC_TOOL");
+        return policy;
+    }
+
+    private PermissionRoutePolicy confirmationViewPolicy(String roleCode, String effect, int priority) {
+        PermissionRoutePolicy policy = routePolicy(roleCode, effect, priority);
+        policy.setPolicyName("审计员查看 Agent DAG 确认记录");
+        policy.setHttpMethod("GET");
+        policy.setPathPattern("/api/agent/sessions/*/runs/*/tool-executions/dag-confirmations/**");
+        policy.setAction("VIEW_TOOL_CONFIRMATIONS");
         return policy;
     }
 

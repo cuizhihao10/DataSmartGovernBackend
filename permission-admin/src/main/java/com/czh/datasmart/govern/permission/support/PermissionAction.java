@@ -69,6 +69,14 @@ public enum PermissionAction {
      */
     VIEW_EVENTS,
     /**
+     * 查看 Agent DAG selected-node 确认记录。
+     *
+     * <p>确认记录描述的是“某个用户或服务账号确认了哪一版 dry-run 预案，并把哪些异步工具节点送入 outbox”。
+     * 它和 runtime event 不完全相同：event 更偏执行时间线，confirmation 更偏 human-in-the-loop 与 durable action
+     * 的授权证据。单独建模后，审计员可以查看确认链路，普通事件查看权限则不会自动获得确认详情。</p>
+     */
+    VIEW_TOOL_CONFIRMATIONS,
+    /**
      * 诊断 Agent Runtime 运行时组件。
      *
      * <p>诊断类接口通常会暴露 consumer 是否启用、topic/groupId、投影窗口大小、拒绝原因计数和处理耗时。

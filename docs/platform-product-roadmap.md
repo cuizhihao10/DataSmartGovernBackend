@@ -7332,3 +7332,40 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 补 confirmation 审计查询 API 与 `VIEW_TOOL_CONFIRMATIONS` 类权限动作。
 2. 补租户配额、工具级限流、worker 并发池与 outbox backlog 保护。
 3. 补 worker 执行前二次复核，把权限、配额、payloadReference、任务状态和幂等键统一校验。
+
+## 4.72 Agent Runtime selected-node confirmation 只读审计查询（2026-06-01）
+
+本阶段把 4.71 的确认事实从内部持久化对象继续产品化为可查询、可授权、可审计的只读 API。重点不是新增执行入口，而是让审计员、运营人员、项目负责人和未来智能网关能够安全读取“谁确认了哪版 DAG dry-run 预案、哪些节点进入 outbox、命中了哪些策略版本与委托证据”。
+
+已完成：
+- `agent-runtime` 新增 `AgentRunToolDagConfirmationController`，提供：
+  - `GET /agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/dag-confirmations`；
+  - `GET /api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/dag-confirmations`；
+  - `GET .../dag-confirmations/{confirmationId}` 详情查询。
+- 新增 `AgentRunToolDagConfirmationQueryService`，只读查询 confirmation，不修改 outbox、不触发 worker、不重放命令。
+- 新增 `AgentRunToolDagConfirmationAccessSupport`，按 `SELF/PROJECT/TENANT/PLATFORM` 对确认记录做服务层数据范围收口。
+- 新增 `AgentRunToolDagConfirmationView` 与 `AgentRunToolDagConfirmationQueryResponse`，只暴露确认 ID、节点/audit/outbox/command ID、策略版本、委托证据和租户/项目/操作者上下文，不暴露工具参数、SQL、prompt、样本数据或原始 payload。
+- `gateway` 新增确认查询路由元数据，GET 映射为 `AI_RUNTIME + VIEW_TOOL_CONFIRMATIONS`，并放在 `/api/agent/**` 泛化规则之前。
+- `permission-admin` 动作枚举新增 `VIEW_TOOL_CONFIRMATIONS`，初始化策略为 AUDITOR、OPERATOR、PROJECT_OWNER 提供只读查看入口；项目负责人仍由 agent-runtime 按授权项目二次过滤。
+- 补充测试覆盖：
+  - 项目负责人只能看授权项目 confirmation；
+  - 普通用户只能看自己 actor 的 confirmation；
+  - confirmation detail 必须校验 sessionId/runId 一致；
+  - 越权详情查询返回权限错误；
+  - gateway 确认列表与详情均映射 `VIEW_TOOL_CONFIRMATIONS`；
+  - permission-admin 可按独立动作允许审计员查看 confirmation。
+
+产品意义：
+- selected-node durable action 现在具备“可形成、可持久、可事务、可读取、可授权”的闭环雏形。
+- confirmation 查询与 runtime event 查询分离，避免把“执行时间线查看”与“确认事实证据查看”混成一个宽泛权限。
+- 这一步为后续审计导出、管理员补偿台、worker 执行前二次复核、WebSocket 时间线跳转和智能网关审批面板打下只读证据接口。
+
+当前边界：
+- 本批只做只读查询，不做撤销、重放、忽略、归档、导出或管理员补偿。
+- 查询仍基于现有 store 接口；生产大规模审计还需要游标分页、时间范围、索引优化和导出任务。
+- 确认记录里已有 `policyVersions` 与 `delegationEvidence`，但后续仍应把执行前策略复核、配额、限流和 worker pre-check 继续接入。
+
+下一步建议：
+1. 优先补租户配额、工具级限流、worker 并发池与 outbox backlog 保护，避免 Agent DAG 批量确认后放大下游压力。
+2. 补 worker 执行前二次复核：检查 confirmation、policyVersion、delegationEvidence、payloadReference、幂等键和任务状态。
+3. 再进入审计导出与管理员补偿台：导出需要异步任务与字段脱敏，补偿台需要单独的高风险动作权限。

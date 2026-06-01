@@ -59,6 +59,20 @@ class GatewayAgentAsyncOutboxAuthorizationTest {
         );
     }
 
+    @Test
+    void selectedNodeConfirmationQueryShouldUseDedicatedViewAction() {
+        assertAuthorizationAction(
+                "/api/agent/sessions/session-1/runs/run-1/tool-executions/dag-confirmations",
+                "GET",
+                "VIEW_TOOL_CONFIRMATIONS"
+        );
+        assertAuthorizationAction(
+                "/api/agent/sessions/session-1/runs/run-1/tool-executions/dag-confirmations/confirmation-1",
+                "GET",
+                "VIEW_TOOL_CONFIRMATIONS"
+        );
+    }
+
     /**
      * 断言 POST 请求被解释成预期业务动作。
      *
@@ -66,6 +80,10 @@ class GatewayAgentAsyncOutboxAuthorizationTest {
      * 测试捕获 gateway 发给 permission-admin 的请求，确保授权语义没有被通配规则弱化。</p>
      */
     private void assertAuthorizationAction(String path, String expectedAction) {
+        assertAuthorizationAction(path, "POST", expectedAction);
+    }
+
+    private void assertAuthorizationAction(String path, String method, String expectedAction) {
         GatewayAuthorizationProperties properties = new GatewayAuthorizationProperties();
         properties.setEnabled(true);
         properties.setShadowMode(false);
@@ -80,7 +98,7 @@ class GatewayAgentAsyncOutboxAuthorizationTest {
                 new GatewayAuthorizationErrorWriter(new ObjectMapper())
         );
         MockServerWebExchange exchange = MockServerWebExchange.from(
-                MockServerHttpRequest.post(path)
+                MockServerHttpRequest.method(org.springframework.http.HttpMethod.valueOf(method), path)
                         .header(PlatformContextHeaders.TRACE_ID, "trace-agent-outbox-auth")
                         .header(PlatformContextHeaders.TENANT_ID, "10")
                         .header(PlatformContextHeaders.ACTOR_ID, "1001")

@@ -399,6 +399,46 @@ VALUES
 (0, '运营人员诊断 Agent 运行时事件消费', 'OPERATOR', 'GET', '/api/agent/runtime-events/diagnostics', 'AI_RUNTIME', 'DIAGNOSE', 'ALLOW', 137, 1, '运营人员可查看 runtime event consumer、topic/groupId、投影窗口、拒绝原因和处理耗时，辅助定位 Kafka 消费与控制面投影问题。', NOW(), NOW());
 
 -- ---------------------------------------------------------------------------
+-- Agent Runtime DAG selected-node 确认记录审计策略
+-- ---------------------------------------------------------------------------
+-- confirmation 是 human-in-the-loop 与 durable action 的证据：它记录确认人、dry-run 指纹、策略版本、
+-- 委托证据和 outbox/command 关联。它不保存工具参数或 prompt，但仍能反映高风险动作是否被确认，
+-- 因此不复用普通 VIEW，也不直接复用 VIEW_EVENTS。
+INSERT IGNORE INTO permission_route_policy
+(tenant_id, policy_name, role_code, http_method, path_pattern, resource_type, action, effect, priority, enabled, description, create_time, update_time)
+VALUES
+(0, '审计员查看 Agent DAG 确认记录', 'AUDITOR', 'GET',
+ '/api/agent/sessions/*/runs/*/tool-executions/dag-confirmations/**',
+ 'AI_RUNTIME', 'VIEW_TOOL_CONFIRMATIONS', 'ALLOW', 114, 1,
+ '审计员可查看租户范围内 selected-node 确认记录，用于复核 human-in-the-loop 确认、策略版本、委托证据和 outbox 关联；服务层仍会按租户与数据范围过滤。',
+ NOW(), NOW()),
+(0, '审计员查看 Agent DAG 确认记录列表', 'AUDITOR', 'GET',
+ '/api/agent/sessions/*/runs/*/tool-executions/dag-confirmations',
+ 'AI_RUNTIME', 'VIEW_TOOL_CONFIRMATIONS', 'ALLOW', 114, 1,
+ '审计员可按 run 查看 selected-node 确认记录列表；单独配置列表路径是为了避免不同路径匹配器对 /** 是否匹配空尾段产生差异。',
+ NOW(), NOW()),
+(0, '运营人员查看 Agent DAG 确认记录', 'OPERATOR', 'GET',
+ '/api/agent/sessions/*/runs/*/tool-executions/dag-confirmations/**',
+ 'AI_RUNTIME', 'VIEW_TOOL_CONFIRMATIONS', 'ALLOW', 138, 1,
+ '运营人员可查看 selected-node 确认记录，用于排查用户已确认但异步命令未推进、outbox 未投递或策略版本不一致等问题。',
+ NOW(), NOW()),
+(0, '运营人员查看 Agent DAG 确认记录列表', 'OPERATOR', 'GET',
+ '/api/agent/sessions/*/runs/*/tool-executions/dag-confirmations',
+ 'AI_RUNTIME', 'VIEW_TOOL_CONFIRMATIONS', 'ALLOW', 138, 1,
+ '运营人员可按 run 查看 selected-node 确认记录列表，用于排障确认历史和 outbox 关联。',
+ NOW(), NOW()),
+(0, '项目负责人查看项目内 Agent DAG 确认记录', 'PROJECT_OWNER', 'GET',
+ '/api/agent/sessions/*/runs/*/tool-executions/dag-confirmations/**',
+ 'AI_RUNTIME', 'VIEW_TOOL_CONFIRMATIONS', 'ALLOW', 147, 1,
+ '项目负责人可查看授权项目范围内 selected-node 确认记录，便于解释项目成员确认了哪些异步治理动作；agent-runtime 会继续按 authorizedProjectIds 收口。',
+ NOW(), NOW()),
+(0, '项目负责人查看项目内 Agent DAG 确认记录列表', 'PROJECT_OWNER', 'GET',
+ '/api/agent/sessions/*/runs/*/tool-executions/dag-confirmations',
+ 'AI_RUNTIME', 'VIEW_TOOL_CONFIRMATIONS', 'ALLOW', 147, 1,
+ '项目负责人可按 run 查看授权项目范围内 selected-node 确认记录列表；服务层仍按 authorizedProjectIds 做二次过滤。',
+ NOW(), NOW());
+
+-- ---------------------------------------------------------------------------
 -- Agent Runtime 工具事件 outbox 查询与人工补偿策略
 -- ---------------------------------------------------------------------------
 -- outbox 是 Agent 工具状态事件的可靠投递缓冲区，既承载“事件是否已进入投递链路”的审计证据，
