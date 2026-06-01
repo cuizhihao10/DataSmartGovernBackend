@@ -570,6 +570,8 @@ CREATE TABLE IF NOT EXISTS agent_memory_write_candidate (
     title VARCHAR(255) NOT NULL COMMENT '面向审批台展示的人类可读标题，禁止放入完整敏感数据。',
     content_summary TEXT NOT NULL COMMENT '候选内容摘要，只保存脱敏摘要和引用说明，不保存完整工具输出。',
     source VARCHAR(64) NOT NULL COMMENT '候选来源，例如 agent-runtime-tool-feedback 或 agent-plan-tool-plan。',
+    workspace_key VARCHAR(255) DEFAULT NULL COMMENT 'Agent 工作空间隔离键；同一项目内不同 workspace/session 不应共享长期记忆。',
+    memory_namespace VARCHAR(255) DEFAULT NULL COMMENT '长期记忆命名空间，通常为 memory:{workspaceKey}；正式记忆检索必须按该字段过滤。',
     source_tool_name VARCHAR(128) DEFAULT NULL COMMENT '来源工具名称，用于按工具分析哪些结果经常进入长期记忆。',
     source_status VARCHAR(64) DEFAULT NULL COMMENT '来源工具反馈状态，例如 succeeded、failed、skipped，用于排查候选生成原因。',
     source_audit_id VARCHAR(128) DEFAULT NULL COMMENT 'Java agent-runtime 工具执行审计 ID，可追溯到真实工具执行事实。',
@@ -590,6 +592,7 @@ CREATE TABLE IF NOT EXISTS agent_memory_write_candidate (
     UNIQUE KEY uk_agent_memory_write_candidate_id (candidate_id),
     UNIQUE KEY uk_agent_memory_write_candidate_idempotency (tenant_id, idempotency_key),
     KEY idx_agent_memory_write_candidate_scope_status (tenant_id, project_id, status, create_time),
+    KEY idx_agent_memory_write_candidate_workspace (tenant_id, project_id, workspace_key, status, create_time),
     KEY idx_agent_memory_write_candidate_type_scope (tenant_id, memory_type, scope, status),
     KEY idx_agent_memory_write_candidate_source (source_audit_id, source_run_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Agent 长期记忆写入候选表';

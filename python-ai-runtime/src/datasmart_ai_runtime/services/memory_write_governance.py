@@ -17,19 +17,13 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Any
-from uuid import uuid5, NAMESPACE_URL
-
-from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ToolPlan, ToolRiskLevel
+from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest
 from datasmart_ai_runtime.domain.events import (
     AgentRuntimeEvent,
     AgentRuntimeEventSeverity,
     AgentRuntimeEventType,
 )
 from datasmart_ai_runtime.domain.memory import (
-    AgentMemoryPlan,
-    AgentMemoryScope,
-    AgentMemoryType,
     AgentMemoryWriteCandidate,
     AgentMemoryWriteCandidateStatus,
     AgentMemoryWriteDecision,
@@ -41,6 +35,7 @@ from datasmart_ai_runtime.services.memory_write_candidate_store import (
     AgentMemoryWriteCandidateStore,
     InMemoryAgentMemoryWriteCandidateStore,
 )
+from datasmart_ai_runtime.services.memory_write_candidate_factory import AgentMemoryWriteCandidateFactory
 from datasmart_ai_runtime.services.model_tool_result_feedback import ToolExecutionFeedbackStatus
 
 
@@ -58,8 +53,13 @@ class AgentMemoryWriteGovernanceService:
     生产化时应注入 MySQL store 或 Java memory-service 客户端，并通过 outbox/Kafka 触发持久化写入。
     """
 
-    def __init__(self, store: AgentMemoryWriteCandidateStore | None = None) -> None:
+    def __init__(
+        self,
+        store: AgentMemoryWriteCandidateStore | None = None,
+        candidate_factory: AgentMemoryWriteCandidateFactory | None = None,
+    ) -> None:
         self._store = store or InMemoryAgentMemoryWriteCandidateStore()
+        self._candidate_factory = candidate_factory or AgentMemoryWriteCandidateFactory()
 
     def propose(
         self,
@@ -90,14 +90,14 @@ class AgentMemoryWriteGovernanceService:
             return AgentMemoryWriteProposalReport(
                 skipped_reasons=("当前 AgentMemoryPlan 没有声明可写入记忆类型，平台不会猜测性沉淀长期记忆。",),
                 writable_type_count=0,
-                attributes=self._base_attributes(request, plan, control_plane_feedback),
+                attributes=self._candidate_factory.base_attributes(request, plan, control_plane_feedback),
             )
 
-        feedback_by_tool = self._feedback_by_tool(control_plane_feedback)
+        feedback_by_tool = self._candidate_factory.feedback_by_tool(control_plane_feedback)
         candidates: list[AgentMemoryWriteCandidate] = []
         skipped: list[str] = []
         for index, tool_plan in enumerate(plan.tool_plans):
-            memory_type = self._memory_type_from_tool(tool_plan)
+            memory_type = self._candidate_factory.memory_type_from_tool(tool_plan)
             if memory_type is None:
                 skipped.append(f"{tool_plan.tool_name} 未声明 memoryWritePolicy，跳过长期记忆候选。")
                 continue
@@ -112,7 +112,7 @@ class AgentMemoryWriteGovernanceService:
                 skipped.append(f"{tool_plan.tool_name} 仍等待工具执行审批，暂不生成记忆写入候选。")
                 continue
 
-            candidate = self._candidate_from_tool(
+            candidate = self._candidate_factory.create(
                 request=request,
                 memory_plan=memory_plan,
                 tool_plan=tool_plan,
@@ -126,7 +126,7 @@ class AgentMemoryWriteGovernanceService:
             skipped_reasons=tuple(skipped),
             approval_required_count=sum(1 for item in candidates if item.approval_required),
             writable_type_count=len(writable_types),
-            attributes=self._base_attributes(request, plan, control_plane_feedback),
+            attributes=self._candidate_factory.base_attributes(request, plan, control_plane_feedback),
         )
 
     def decide(self, decision: AgentMemoryWriteDecision) -> AgentMemoryWriteCandidate:
@@ -264,223 +264,12 @@ class AgentMemoryWriteGovernanceService:
             },
         )
 
-    def _candidate_from_tool(
-        self,
-        *,
-        request: AgentRequest,
-        memory_plan: AgentMemoryPlan,
-        tool_plan: ToolPlan,
-        tool_index: int,
-        feedback_item: Any | None,
-    ) -> AgentMemoryWriteCandidate:
-        """把单个 ToolPlan/Feedback 转成记忆写入候选。
-
-        候选 ID 使用稳定 UUID5，而不是随机 UUID4。这样同一次 request、同一工具、同一 auditId
-        重复生成候选时可以得到相同 ID，未来接入幂等写入或审批重试时更容易去重。
-        """
-
-        memory_type = self._memory_type_from_tool(tool_plan) or AgentMemoryType.EPISODIC
-        source_status = str(getattr(feedback_item, "status", "") or "planned")
-        if hasattr(getattr(feedback_item, "status", None), "value"):
-            source_status = getattr(feedback_item.status, "value")
-        sensitivity_level = self._sensitivity_level(tool_plan, feedback_item)
-        approval_required = self._approval_required(memory_plan, tool_plan, sensitivity_level)
-        status = (
-            AgentMemoryWriteCandidateStatus.PENDING_APPROVAL
-            if approval_required
-            else AgentMemoryWriteCandidateStatus.DRAFT
-        )
-        audit_id = getattr(feedback_item, "audit_id", None)
-        run_id = getattr(feedback_item, "run_id", None)
-        output_ref = getattr(feedback_item, "output_ref", None)
-        summary = self._content_summary(tool_plan, feedback_item)
-        idempotency_key = self._candidate_identity(request, tool_plan, tool_index, audit_id, run_id)
-        candidate_id = f"mem-candidate-{uuid5(NAMESPACE_URL, idempotency_key)}"
-
-        return AgentMemoryWriteCandidate(
-            candidate_id=candidate_id,
-            memory_type=memory_type,
-            scope=memory_plan.default_scope,
-            status=status,
-            tenant_id=request.tenant_id,
-            project_id=request.project_id,
-            actor_id=request.actor_id,
-            title=self._title(tool_plan, source_status),
-            content_summary=summary,
-            source="agent-runtime-tool-feedback" if feedback_item is not None else "agent-plan-tool-plan",
-            source_tool_name=tool_plan.tool_name,
-            source_status=source_status,
-            source_audit_id=audit_id,
-            source_run_id=run_id,
-            output_ref=output_ref,
-            approval_required=approval_required,
-            retention_days=memory_plan.retention_days,
-            sensitivity_level=sensitivity_level,
-            privacy_notes=memory_plan.privacy_notes,
-            idempotency_key=idempotency_key,
-            attributes={
-                "riskLevel": tool_plan.risk_level.value,
-                "requiresHumanApproval": tool_plan.requires_human_approval,
-                "resultKeys": self._result_keys(feedback_item),
-                "sensitiveFields": tuple(getattr(feedback_item, "sensitive_fields", ()) or ()),
-                "governanceHintKeys": tuple(sorted(tool_plan.governance_hints.keys())),
-            },
-        )
-
-    @staticmethod
-    def _feedback_by_tool(control_plane_feedback: AgentControlPlaneFeedbackSnapshot | None) -> dict[str, Any]:
-        """按工具名索引控制面反馈。
-
-        当前一个工具名只取第一条反馈。未来如果同一工具在 DAG 中出现多次，应改为按
-        `modelToolCallId` 或 ToolPlan 节点 ID 精确关联。
-        """
-
-        if control_plane_feedback is None:
-            return {}
-        indexed: dict[str, Any] = {}
-        for item in control_plane_feedback.feedback_items:
-            indexed.setdefault(item.tool_name, item)
-        return indexed
-
-    @staticmethod
-    def _memory_type_from_tool(tool_plan: ToolPlan) -> AgentMemoryType | None:
-        """从 ToolPlan 治理 hint 中解析写入类型。"""
-
-        mapping = {
-            "semantic": AgentMemoryType.SEMANTIC,
-            "episodic": AgentMemoryType.EPISODIC,
-            "procedural": AgentMemoryType.PROCEDURAL,
-            "resource": AgentMemoryType.RESOURCE,
-            "short_term": AgentMemoryType.SHORT_TERM,
-        }
-        value = str(tool_plan.governance_hints.get("memoryWritePolicy", "none")).lower()
-        return mapping.get(value)
-
-    @staticmethod
-    def _approval_required(memory_plan: AgentMemoryPlan, tool_plan: ToolPlan, sensitivity_level: str) -> bool:
-        """判断候选是否必须人工审批。"""
-
-        high_risk = tool_plan.risk_level in {ToolRiskLevel.HIGH, ToolRiskLevel.CRITICAL}
-        sensitive = sensitivity_level not in {"public", "internal"}
-        wide_scope = memory_plan.default_scope in {AgentMemoryScope.TENANT, AgentMemoryScope.GLOBAL}
-        return bool(
-            memory_plan.approval_required_for_write
-            or tool_plan.requires_human_approval
-            or high_risk
-            or sensitive
-            or wide_scope
-        )
-
-    @staticmethod
-    def _sensitivity_level(tool_plan: ToolPlan, feedback_item: Any | None) -> str:
-        """估算候选敏感级别。
-
-        当前优先使用反馈中的 sensitive_fields 和工具治理 hint。后续应接入 permission-admin
-        字段级策略、脱敏规则、数据分级分类结果和租户级记忆策略。
-        """
-
-        sensitive_fields = tuple(getattr(feedback_item, "sensitive_fields", ()) or ())
-        if sensitive_fields:
-            return "sensitive"
-        if tool_plan.risk_level in {ToolRiskLevel.HIGH, ToolRiskLevel.CRITICAL}:
-            return "restricted"
-        return str(tool_plan.governance_hints.get("sensitivityLevel", "internal"))
-
-    @staticmethod
-    def _content_summary(tool_plan: ToolPlan, feedback_item: Any | None) -> str:
-        """构造审批人可读的候选内容摘要，避免直接暴露完整工具结果。"""
-
-        if feedback_item is None:
-            return f"工具 {tool_plan.tool_name} 已被规划，原因：{tool_plan.reason}"
-        summary = str(getattr(feedback_item, "summary", "") or "").strip()
-        if summary:
-            return summary
-        error_message = str(getattr(feedback_item, "error_message", "") or "").strip()
-        if error_message:
-            return f"工具 {tool_plan.tool_name} 返回错误摘要：{error_message}"
-        return f"工具 {tool_plan.tool_name} 已返回控制面反馈，但没有可展示摘要。"
-
-    @staticmethod
-    def _title(tool_plan: ToolPlan, source_status: str) -> str:
-        """生成候选标题，便于审批列表和调试面板展示。"""
-
-        return f"{tool_plan.tool_name} 工具结果记忆候选（{source_status}）"
-
-    @staticmethod
-    def _result_keys(feedback_item: Any | None) -> tuple[str, ...]:
-        """只暴露 result 顶层键名，不把真实值写入候选摘要。"""
-
-        result = getattr(feedback_item, "result", None)
-        if isinstance(result, dict):
-            return tuple(sorted(str(key) for key in result.keys()))
-        return ()
-
-    @staticmethod
-    def _candidate_id(
-        request: AgentRequest,
-        tool_plan: ToolPlan,
-        tool_index: int,
-        audit_id: str | None,
-        run_id: str | None,
-    ) -> str:
-        """生成稳定候选 ID。"""
-
-        return f"mem-candidate-{uuid5(NAMESPACE_URL, AgentMemoryWriteGovernanceService._candidate_identity(request, tool_plan, tool_index, audit_id, run_id))}"
-
-    @staticmethod
-    def _candidate_identity(
-        request: AgentRequest,
-        tool_plan: ToolPlan,
-        tool_index: int,
-        audit_id: str | None,
-        run_id: str | None,
-    ) -> str:
-        """生成候选幂等键。
-
-        幂等键和候选 ID 使用同一组业务维度，但二者职责不同：
-        - 候选 ID 是外部 API、审批台、审计表和后续写入 worker 引用的稳定资源 ID；
-        - 幂等键是持久化层识别“同一请求、同一工具、同一控制面反馈是否重复提交”的依据。
-        当前先把幂等键保存到候选对象和 MySQL 表中，后续如果引入消息队列重试、审批中心回调或 Java memory-service，
-        就可以用它避免重复生成候选和重复写入长期记忆。
-        """
-
-        return "|".join(
-            (
-                request.tenant_id,
-                request.project_id,
-                request.actor_id,
-                str(request.variables.get("sessionId", "")),
-                tool_plan.tool_name,
-                str(tool_index),
-                audit_id or "",
-                run_id or "",
-            )
-        )
-
     @staticmethod
     def _session_id(request: AgentRequest) -> str | None:
         """从请求变量中读取会话 ID。"""
 
         value = request.variables.get("sessionId")
         return str(value) if value is not None and str(value).strip() else None
-
-    @staticmethod
-    def _base_attributes(
-        request: AgentRequest,
-        plan: AgentPlan,
-        control_plane_feedback: AgentControlPlaneFeedbackSnapshot | None,
-    ) -> dict[str, Any]:
-        """构造报告级诊断属性。"""
-
-        return {
-            "tenantId": request.tenant_id,
-            "projectId": request.project_id,
-            "requestId": plan.request_id,
-            "toolPlanCount": len(plan.tool_plans),
-            "hasControlPlaneFeedback": control_plane_feedback is not None,
-            "feedbackCount": len(control_plane_feedback.feedback_items) if control_plane_feedback else 0,
-        }
-
 
 def approve_memory_write_candidate(
     service: AgentMemoryWriteGovernanceService,

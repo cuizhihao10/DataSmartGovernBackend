@@ -78,6 +78,8 @@ class AgentMemoryWriteGovernanceTest(unittest.TestCase):
         self.assertFalse(candidate.approval_required)
         self.assertEqual(AgentMemoryType.EPISODIC, candidate.memory_type)
         self.assertEqual(AgentMemoryScope.PROJECT, candidate.scope)
+        self.assertEqual("tenant:tenant-a:project:project-a", candidate.workspace_key)
+        self.assertEqual("memory:tenant:tenant-a:project:project-a", candidate.memory_namespace)
         self.assertEqual("audit-001", candidate.source_audit_id)
         self.assertEqual(("ruleCount", "sampleRows"), candidate.attributes["resultKeys"])
 

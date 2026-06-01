@@ -59,6 +59,8 @@ class AgentMemoryWriteSqlStoreTest(unittest.TestCase):
         self.assertIsNotNone(reloaded)
         self.assertEqual(candidate_id, reloaded.candidate_id)
         self.assertEqual(1, reloaded.candidate_version)
+        self.assertEqual("tenant:tenant-a:project:project-a", reloaded.workspace_key)
+        self.assertEqual("memory:tenant:tenant-a:project:project-a", reloaded.memory_namespace)
         self.assertTrue(reloaded.idempotency_key)
 
         approved = approve_memory_write_candidate(
@@ -122,6 +124,8 @@ class AgentMemoryWriteSqlStoreTest(unittest.TestCase):
                 title TEXT NOT NULL,
                 content_summary TEXT NOT NULL,
                 source TEXT NOT NULL,
+                workspace_key TEXT,
+                memory_namespace TEXT,
                 source_tool_name TEXT,
                 source_status TEXT,
                 source_audit_id TEXT,

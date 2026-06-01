@@ -27,6 +27,7 @@ from datasmart_ai_runtime.services.memory_store import (
     AgentMemoryStoreEntry,
 )
 from datasmart_ai_runtime.services.memory_write_candidate_store import AgentMemoryWriteCandidateStore
+from datasmart_ai_runtime.services.memory_write_workspace import AgentMemoryWorkspaceSupport
 
 
 class AgentMemoryMaterializationOutcome(str, Enum):
@@ -74,11 +75,12 @@ class AgentApprovedMemoryWriteMaterializer:
     - 只保存候选表里的 `content_summary`，不读取或复制原始 outputRef；
     - 只允许 `public/internal` 摘要进入正式 store；
     - 支持 PROJECT 和 TENANT 范围；
-    - 暂不支持 SESSION，因为候选模型还没有稳定保存 sessionId；
+    - 暂不支持 SESSION，因为 session 级长期记忆还需要更明确的生命周期、过期和会话归档策略；
     - 暂不支持 GLOBAL，因为组织级共享记忆应增加独立审批、只读策略和 prompt-injection 防护。
 
     这些限制不是功能缺失被忽略，而是商业化安全边界。后续扩大写入范围时必须配套 workspace namespace、
-    脱敏流水线、字段级策略、遗忘任务和审计导出。
+    脱敏流水线、字段级策略、遗忘任务和审计导出。当前已经强制校验 workspaceKey/memoryNamespace，
+    避免同项目不同工作空间把彼此的治理经验错误注入模型上下文。
     """
 
     SAFE_SENSITIVITY_LEVELS = {"public", "internal"}
@@ -144,6 +146,7 @@ class AgentApprovedMemoryWriteMaterializer:
             raise ValueError("正式记忆 retentionDays 必须大于 0，便于后续执行遗忘或归档。")
         if not candidate.content_summary.strip():
             raise ValueError("正式记忆必须包含低敏 contentSummary，不能写入空内容。")
+        AgentMemoryWorkspaceSupport.validate_candidate(candidate)
 
     def _entry_from_candidate(self, candidate: AgentMemoryWriteCandidate) -> AgentMemoryStoreEntry:
         """把批准候选转换为正式记忆存储信封。
@@ -155,7 +158,8 @@ class AgentApprovedMemoryWriteMaterializer:
         now = datetime.now(timezone.utc)
         idempotency_key = candidate.idempotency_key or candidate.candidate_id
         memory_id = f"memory-{uuid5(NAMESPACE_URL, idempotency_key)}"
-        namespace = self._namespace(candidate)
+        workspace = AgentMemoryWorkspaceSupport.validate_candidate(candidate)
+        namespace = self._namespace(candidate, workspace.memory_namespace)
         record = AgentMemoryRecord(
             memory_id=memory_id,
             memory_type=candidate.memory_type,
@@ -174,11 +178,15 @@ class AgentApprovedMemoryWriteMaterializer:
                 "sourceRunId": candidate.source_run_id,
                 "outputReferenceAvailable": bool(candidate.output_ref),
                 "retentionDays": candidate.retention_days,
+                "workspaceKey": workspace.workspace_key,
+                "memoryNamespace": workspace.memory_namespace,
                 "payloadPolicy": "SUMMARY_ONLY_NO_RAW_TOOL_RESULT_NO_SQL_NO_SAMPLE_DATA",
             },
         )
         return AgentMemoryStoreEntry(
             memory=record,
+            workspace_key=workspace.workspace_key,
+            memory_namespace=workspace.memory_namespace,
             namespace=namespace,
             idempotency_key=idempotency_key,
             source_candidate_id=candidate.candidate_id,
@@ -187,16 +195,18 @@ class AgentApprovedMemoryWriteMaterializer:
         )
 
     @staticmethod
-    def _namespace(candidate: AgentMemoryWriteCandidate) -> tuple[str, ...]:
+    def _namespace(candidate: AgentMemoryWriteCandidate, memory_namespace: str) -> tuple[str, ...]:
         """生成层级命名空间。
 
-        PROJECT 范围包含 tenant/project，TENANT 范围只包含 tenant。未来增加 workspace 后，应在 PROJECT
-        下继续插入 workspaceKey，防止同一项目内多个隔离工作区共享不该复用的上下文。
+        正式 store 同时保存字符串形态的 `memory_namespace` 和 tuple 形态的 `namespace`：
+        - 字符串适合 API、SQL 字段、审计日志和配置化过滤；
+        - tuple 适合未来映射到 LangGraph store、向量库 collection 分层或对象存储前缀。
+
+        即使候选 scope 是 TENANT，也仍然保留 workspace namespace。原因是企业产品中的“租户级经验”
+        也可能来自某个受控工作空间，未来是否晋升为全租户共享应由独立审批策略决定，而不是写入时自动放大。
         """
 
-        if candidate.scope == AgentMemoryScope.PROJECT:
-            return ("tenant", candidate.tenant_id, "project", candidate.project_id, "memory", candidate.memory_type.value)
-        return ("tenant", candidate.tenant_id, "memory", candidate.memory_type.value)
+        return ("memory-namespace", memory_namespace, "type", candidate.memory_type.value)
 
     @staticmethod
     def _result(
@@ -215,6 +225,8 @@ class AgentApprovedMemoryWriteMaterializer:
             attributes={
                 "memoryType": entry.memory.memory_type.value,
                 "scope": entry.memory.scope.value,
+                "workspaceKey": entry.workspace_key,
+                "memoryNamespace": entry.memory_namespace,
                 "expiresAt": entry.expires_at.isoformat(),
             },
         )

@@ -29,10 +29,15 @@ from datasmart_ai_runtime.services.memory_write_governance import (
     approve_memory_write_candidate,
     reject_memory_write_candidate,
 )
+from datasmart_ai_runtime.services.memory_write_candidate_factory import AgentMemoryWriteCandidateFactory
 from datasmart_ai_runtime.services.memory_write_materializer import (
     AgentApprovedMemoryWriteMaterializer,
     AgentMemoryMaterializationOutcome,
     AgentMemoryMaterializationResult,
+)
+from datasmart_ai_runtime.services.memory_write_workspace import (
+    AgentMemoryWorkspaceBinding,
+    AgentMemoryWorkspaceSupport,
 )
 from datasmart_ai_runtime.services.memory_write_candidate_store import (
     AgentMemoryWriteCandidateStore,
@@ -228,6 +233,9 @@ __all__ = [
     "AgentMemoryMaterializationOutcome",
     "AgentMemoryMaterializationResult",
     "AgentMemoryWriteGovernanceService",
+    "AgentMemoryWriteCandidateFactory",
+    "AgentMemoryWorkspaceBinding",
+    "AgentMemoryWorkspaceSupport",
     "AgentMemoryWriteCandidateStore",
     "InMemoryAgentMemoryWriteCandidateStore",
     "SqlAgentMemoryWriteCandidateStore",

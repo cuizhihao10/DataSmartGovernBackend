@@ -207,7 +207,8 @@ class SqlAgentMemoryWriteCandidateStore:
     def _candidate_columns() -> str:
         return (
             "candidate_id,tenant_id,project_id,actor_id,memory_type,scope,status,title,content_summary,source,"
-            "source_tool_name,source_status,source_audit_id,source_run_id,output_ref,approval_required,retention_days,"
+            "workspace_key,memory_namespace,source_tool_name,source_status,source_audit_id,source_run_id,output_ref,"
+            "approval_required,retention_days,"
             "sensitivity_level,privacy_notes_json,candidate_version,idempotency_key,created_at,decided_at,decided_by,"
             "decision_reason,attributes_json"
         )
@@ -224,6 +225,8 @@ class SqlAgentMemoryWriteCandidateStore:
             candidate.title,
             candidate.content_summary,
             candidate.source,
+            candidate.workspace_key,
+            candidate.memory_namespace,
             candidate.source_tool_name,
             candidate.source_status,
             candidate.source_audit_id,
@@ -256,6 +259,8 @@ class SqlAgentMemoryWriteCandidateStore:
             title=values["title"],
             content_summary=values["content_summary"],
             source=values["source"],
+            workspace_key=values["workspace_key"],
+            memory_namespace=values["memory_namespace"],
             source_tool_name=values["source_tool_name"] or "",
             source_status=values["source_status"] or "",
             source_audit_id=values["source_audit_id"],

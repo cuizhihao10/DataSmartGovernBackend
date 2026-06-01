@@ -13,13 +13,14 @@ from datasmart_ai_runtime.domain.memory import (
 )
 from datasmart_ai_runtime.services.memory_retriever import InMemoryAgentMemoryRetriever, _resolve_session_id
 from datasmart_ai_runtime.services.memory_store import AgentMemoryStore
+from datasmart_ai_runtime.services.memory_write_workspace import AgentMemoryWorkspaceSupport
 
 
 class StoreBackedAgentMemoryRetriever:
     """从正式记忆 store 读取有界窗口，再复用现有相关性排序的检索器。
 
     第一阶段这样设计有两个好处：
-    - store 负责 tenant/project/session 强隔离，避免先读取全量记忆再在 Python 内存过滤；
+    - store 负责 tenant/project/session 与 workspace namespace 强隔离，避免先读取全量记忆再在 Python 内存过滤；
     - 现有内存 retriever 再做一次范围过滤和关键词排序，形成防御纵深。
 
     未来 Chroma/Embedding、Neo4j 或 MySQL 全文索引接入后，相关性搜索可以下沉到 store；
@@ -37,6 +38,7 @@ class StoreBackedAgentMemoryRetriever:
         """
 
         session_id = _resolve_session_id(request)
+        workspace = AgentMemoryWorkspaceSupport.from_request(request)
         results = []
         total_retrieved = 0
         for target in memory_plan.retrieval_targets:
@@ -47,6 +49,7 @@ class StoreBackedAgentMemoryRetriever:
                 tenant_id=request.tenant_id,
                 project_id=request.project_id,
                 session_id=session_id,
+                memory_namespace=workspace.memory_namespace,
                 limit=candidate_limit,
             )
             target_report = InMemoryAgentMemoryRetriever(
@@ -69,5 +72,7 @@ class StoreBackedAgentMemoryRetriever:
             attributes={
                 "retriever": "store_backed_keyword",
                 "targetCount": len(memory_plan.retrieval_targets),
+                "workspaceKey": workspace.workspace_key,
+                "memoryNamespace": workspace.memory_namespace,
             },
         )

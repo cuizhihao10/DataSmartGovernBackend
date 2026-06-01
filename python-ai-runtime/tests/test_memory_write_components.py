@@ -168,6 +168,8 @@ class AgentMemoryWriteComponentsTest(unittest.TestCase):
                 title TEXT NOT NULL,
                 content_summary TEXT NOT NULL,
                 source TEXT NOT NULL,
+                workspace_key TEXT,
+                memory_namespace TEXT,
                 source_tool_name TEXT,
                 source_status TEXT,
                 source_audit_id TEXT,

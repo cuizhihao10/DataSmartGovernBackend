@@ -7473,3 +7473,32 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 继续补工具级并发池与 worker 执行前二次复核，尤其是 data-sync/data-quality 这类重任务工具。
 2. 将容量保护指标接入 observability：run backlog、tenant backlog、rejected enqueue、top tenants、oldest pending age。
 3. 后续再把 quota 从本地配置升级为 permission-admin/tenant-plan 管理能力，支持租户套餐、项目等级、工具成本权重和临时扩容。
+
+## 4.82 Python AI Runtime 长期记忆 workspace namespace 隔离（2026-06-02）
+
+本阶段从 Java Agent 控制面切回 AI 长期记忆主线，补齐“候选写入、正式落成、后续检索”之间的 workspace 边界。目标是让长期记忆接近 Codex/Claude Code 类 Agent 的项目/工作空间安全模型，而不是只按 tenant/project 粗粒度共享上下文。
+
+已完成：
+- 新增 `AgentMemoryWorkspaceSupport`，统一从 `AgentRequest` 和 `ToolPlan governance_hints` 生成并校验 `workspaceKey/memoryNamespace`。
+- 新增 `AgentMemoryWriteCandidateFactory`，把候选构造从治理状态机拆出，降低 `memory_write_governance.py` 耦合和后续膨胀风险。
+- `AgentMemoryWriteCandidate`、SQL store、SQLite 测试 schema、MySQL init schema 均新增 workspace 字段。
+- 新增 MySQL 前向迁移 `20260602_agent_memory_workspace_namespace.sql`，为已部署候选表补充空间字段和 workspace 查询索引。
+- `AgentApprovedMemoryWriteMaterializer` 在正式写入前强制校验候选 workspace 证据，历史空字段不猜测回填，避免旧候选进入错误长期记忆空间。
+- `AgentMemoryStoreEntry` 与 `InMemoryAgentMemoryStore.search` 支持 `memory_namespace`，`StoreBackedAgentMemoryRetriever` 按当前请求 workspace 检索。
+- 测试覆盖同项目不同 workspace 不可召回、缺少 workspace 证据阻断落成、SQL store 持久化 workspace 字段、候选生成写入 workspace 字段。
+
+产品意义：
+- `scope=PROJECT` 不再被误当作完整隔离边界；正式记忆必须同时满足 tenant/project/scope 与 workspace namespace。
+- 候选审批事实、正式记忆落成事实和检索事实使用同一份空间证据，后续审计台可以解释“这条记忆为什么只在该 workspace 可见”。
+- 这为未来 Chroma collection metadata filter、Neo4j 子图、MinIO 前缀、LangGraph store namespace 和模型缓存 namespace 统一治理打基础。
+
+当前边界：
+- 正式记忆 store 仍是内存协议实现，尚未接入 Chroma/MySQL/Neo4j 的生产级持久化适配器。
+- 本阶段没有新增 materialization receipt/outbox 表，审批状态与落成执行状态仍通过正式 store 幂等查询区分。
+- 历史候选缺少 workspace 字段时会 fail-closed，后续需要补偿工具基于原始 run/audit 重新计算并人工确认。
+
+下一步建议：
+1. 增加正式记忆 materialization receipt/outbox 表，记录候选落成批次、失败原因、重试次数、worker 实例和耗时。
+2. 把正式记忆 store 接入可替换持久化适配器：语义记忆走 Chroma metadata filter，情节/审批记忆走 MySQL，资源记忆走 MinIO 引用。
+3. 增加长期记忆召回观测指标：namespace 命中数、空召回率、过期跳过数、跨空间阻断数、候选到落成延迟。
+4. 节奏上不继续无限细化记忆局部；完成 receipt 后应切到智能网关工具治理、Agent skill 能力或真实 data-sync/data-quality worker 串联。

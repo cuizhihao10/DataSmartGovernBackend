@@ -27,6 +27,8 @@ class AgentMemoryStoreEntry:
     """一条正式长期记忆的存储信封。
 
     `AgentMemoryRecord` 描述可以进入检索链路的业务内容；本信封补充持久化与治理元数据：
+    - `workspace_key`：DataSmart Agent 工作空间隔离键，是同一项目内不同会话沙箱、专题空间和默认空间的硬边界；
+    - `memory_namespace`：模型可检索长期记忆命名空间，当前固定为 `memory:{workspaceKey}`，用于阻断跨空间误召回；
     - `namespace`：层级命名空间，未来可映射到 LangGraph store namespace、向量库 collection 或数据库分区键；
     - `idempotency_key`：防止审批回调、worker 重试或消息重复消费制造重复记忆；
     - `source_candidate_id`：保留从正式记忆回查审批候选的稳定锚点；
@@ -34,6 +36,8 @@ class AgentMemoryStoreEntry:
     """
 
     memory: AgentMemoryRecord
+    workspace_key: str
+    memory_namespace: str
     namespace: tuple[str, ...]
     idempotency_key: str
     source_candidate_id: str
@@ -74,9 +78,10 @@ class AgentMemoryStore(Protocol):
         tenant_id: str | None,
         project_id: str | None,
         session_id: str | None,
+        memory_namespace: str | None = None,
         limit: int = 100,
     ) -> tuple[AgentMemoryStoreEntry, ...]:
-        """按治理范围读取一个有界候选窗口，供上层相关性排序。"""
+        """按治理范围和可选 workspace 命名空间读取一个有界候选窗口，供上层相关性排序。"""
 
 
 class InMemoryAgentMemoryStore:
@@ -125,12 +130,14 @@ class InMemoryAgentMemoryStore:
         tenant_id: str | None,
         project_id: str | None,
         session_id: str | None,
+        memory_namespace: str | None = None,
         limit: int = 100,
     ) -> tuple[AgentMemoryStoreEntry, ...]:
-        """按范围过滤正式记忆并排除过期记录。
+        """按范围过滤正式记忆、workspace 命名空间并排除过期记录。
 
-        当前只做治理过滤和时间倒序，不做向量相似度。上层 retriever 会继续执行关键词排序；
-        未来向量 store 可以把相关性搜索下沉，但不能删除这里表达的隔离约束。
+        当前只做治理过滤、workspace namespace 过滤和时间倒序，不做向量相似度。上层 retriever
+        会继续执行关键词排序。未来向量 store 可以把相关性搜索下沉，但必须先把 `memory_namespace`
+        作为 collection、metadata filter 或分区键参与查询，不能先召回全局结果再让模型自己“忽略”。
         """
 
         safe_limit = max(1, min(limit, 500))
@@ -146,8 +153,27 @@ class InMemoryAgentMemoryStore:
                 for entry in entries
                 if entry.expires_at > now
                 and entry.memory.memory_type == memory_type
+                and _namespace_matches(entry, memory_namespace)
                 and _scope_matches(entry.memory, scope, tenant_id, project_id, session_id)
             )[:safe_limit]
+
+
+def _namespace_matches(entry: AgentMemoryStoreEntry, memory_namespace: str | None) -> bool:
+    """执行 workspace 级长期记忆隔离。
+
+    `scope=PROJECT` 只能保证租户和项目一致，但真实商业产品中，同一个项目可能存在：
+    - 默认项目空间；
+    - 某个数据源治理专项空间；
+    - 某次临时诊断 session 派生的隔离空间；
+    - 客户现场问题复盘专用空间。
+
+    如果检索时没有 `memory_namespace`，本实现选择 fail-closed：不返回任何带 workspace 绑定的记忆。
+    这样比“退化为 project 级共享”更安全，后续补偿或迁移工具可以显式决定哪些历史记忆允许被迁移。
+    """
+
+    if not memory_namespace:
+        return False
+    return entry.memory_namespace == memory_namespace
 
 
 def _scope_matches(

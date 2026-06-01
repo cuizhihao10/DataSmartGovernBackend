@@ -194,6 +194,7 @@ class AgentMemoryWriteCandidate:
     - `memory_type/scope`：候选希望写成哪类记忆、在哪个可见范围内复用；
     - `status`：当前候选状态，表达是否等待审批、已批准或已拒绝；
     - `title/content_summary`：面向审批人和调试面板的人读摘要，不应包含明文密钥、大样本数据或完整 SQL；
+    - `workspace_key/memory_namespace`：候选未来允许写入和检索的工作空间边界，防止同项目不同空间误复用；
     - `source_tool_name/source_status/source_audit_id`：候选来自哪个工具结果、该工具结果状态和 Java 审计引用；
     - `approval_required`：是否必须走人工审批，便于 API 或前端直接渲染审批入口；
     - `retention_days`：建议保留期，敏感候选通常更短；
@@ -211,6 +212,8 @@ class AgentMemoryWriteCandidate:
     title: str
     content_summary: str
     source: str
+    workspace_key: str | None = None
+    memory_namespace: str | None = None
     source_tool_name: str = ""
     source_status: str = ""
     source_audit_id: str | None = None
@@ -246,6 +249,8 @@ class AgentMemoryWriteCandidate:
             "title": self.title,
             "contentSummary": self.content_summary,
             "source": self.source,
+            "workspaceKey": self.workspace_key,
+            "memoryNamespace": self.memory_namespace,
             "sourceToolName": self.source_tool_name,
             "sourceStatus": self.source_status,
             "sourceAuditId": self.source_audit_id,
