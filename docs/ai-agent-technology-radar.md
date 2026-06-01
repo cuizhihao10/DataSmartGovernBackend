@@ -1,5 +1,12 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-01 落地补充：delegated authorization re-check before side effects
+
+- 本阶段把 Agent worker-side guardrail 继续推进到 permission-admin 实时授权复核：即使 command 已入箱、任务已创建、confirmation 已回查通过，worker 在真实工具副作用前仍要重新 evaluate。
+- 这对应企业 Agent 平台里的 delegated authorization / capability lease renewal 思路：服务账号不是永久通行证，机器身份代表用户执行工具时，需要在执行瞬间重新确认策略仍然有效。
+- DataSmart 当前把入箱动作 `ENQUEUE_SELECTED_ASYNC_TOOL` 与执行动作 `EXECUTE_CONFIRMED_ASYNC_TOOL` 拆开，避免“能确认节点入箱”被误解释为“能执行所有后续副作用”。
+- 下一步趋势落地应进入 quota/rate/concurrency guardrail：Agent 工具执行不仅要被授权，还要受租户配额、项目配额、工具级限流、下游容量与队列积压保护约束。
+
 ## 2026-06-01 落地补充：worker-side confirmation revalidation
 
 - 本阶段把 worker-side guardrail 从本地字段校验推进到跨服务确认回查：task-management worker 在调用真实工具适配器前，会按 `confirmationId` 查询 agent-runtime 的 DAG selected-node confirmation。

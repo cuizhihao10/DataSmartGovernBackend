@@ -142,6 +142,63 @@ public class AgentAsyncToolWorkerProperties {
     private int preCheckUnavailableDeferSeconds = 30;
 
     /**
+     * 是否在 worker 执行前调用 permission-admin 做实时授权复核。
+     *
+     * <p>confirmation 回查证明“这个任务来自被确认的 DAG 节点”，但它不能证明“执行时权限仍然有效”。
+     * 权限策略、项目成员关系、租户状态、审批要求都可能在入箱和执行之间变化。因此真实商业化 worker
+     * 需要在副作用发生前重新 evaluate，而不是只依赖入箱时的策略快照。</p>
+     */
+    private boolean permissionCheckEnabled = true;
+
+    /**
+     * permission-admin 不可用时是否临时放行。
+     *
+     * <p>默认 false，保持 fail-closed。权限中心不可用时继续执行工具，等同于在最需要安全门的时候绕过安全门。
+     * 因此默认策略是 defer 当前任务，等待权限中心恢复后重试。只有低风险灰度环境才建议临时开启 fail-open。</p>
+     */
+    private boolean permissionCheckFailOpenOnError = false;
+
+    /**
+     * permission-admin evaluate 接口完整地址。
+     *
+     * <p>当前使用完整 URL 是为了本地开发简单直连；生产环境可改为内部 gateway、服务发现域名、
+     * 服务网格地址或后续封装出的 OpenFeign/gRPC 客户端。该地址只用于服务间授权复核，不应暴露给外部用户。</p>
+     */
+    private String permissionAdminEvaluateUrl = "http://localhost:8085/permissions/evaluate";
+
+    /**
+     * 调用 permission-admin 的超时时间。
+     *
+     * <p>授权复核位于 worker 执行前关键路径。超时不能太长，否则一个慢权限中心会占住 worker 线程；
+     * 也不能太短，否则在网络稍有抖动时产生大量 defer。当前默认 1500ms 是本地与小规模部署的折中值。</p>
+     */
+    private long permissionAdminTimeoutMs = 1500L;
+
+    /**
+     * task-management Agent worker 在 permission-admin 中对应的服务账号 actorId。
+     *
+     * <p>这里与 agent-runtime 的服务账号分开，是为了审计上能区分：
+     * agent-runtime 负责计划、确认和入箱；task-management worker 负责最终执行副作用。
+     * 未来接入正式 IdP 后，应把该值替换成真实服务主体 ID。</p>
+     */
+    private Long permissionCheckServiceAccountActorId = 900002L;
+
+    /**
+     * task-management Agent worker 的服务账号编码。
+     *
+     * <p>该编码会进入 permission-admin 的 delegationEvidence，便于审计台显示“哪个机器主体代表哪个用户执行了工具”。</p>
+     */
+    private String permissionCheckServiceAccountCode = "datasmart-task-management-agent-worker";
+
+    /**
+     * task-management Agent worker 使用的权限角色。
+     *
+     * <p>默认使用 SERVICE_ACCOUNT，表示这是受控机器身份。不要把它配置成 OPERATOR 或 PLATFORM_ADMINISTRATOR
+     * 来绕过策略，因为那会破坏“服务账号最小权限 + 委托证据”的商业化安全模型。</p>
+     */
+    private String permissionCheckServiceAccountRole = "SERVICE_ACCOUNT";
+
+    /**
      * 是否仅做 dry-run 预检。
      *
      * <p>当前默认 true。返回结果会明确告诉调用方“参数已解析但不会执行”。

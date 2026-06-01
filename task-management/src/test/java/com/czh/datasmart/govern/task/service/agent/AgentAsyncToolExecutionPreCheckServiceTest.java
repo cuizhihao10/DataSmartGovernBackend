@@ -27,7 +27,8 @@ import static org.mockito.Mockito.when;
  *
  * <p>这些用例不调用真实 data-sync，也不发起真实 HTTP。
  * 目标是把 worker 执行前安全门固定下来：任务状态、Agent 审计状态、工具白名单、本地执行证据，
- * 以及通过 mock agent-runtime 客户端完成的 DAG selected-node confirmation 一致性回查。</p>
+ * mock agent-runtime 客户端完成的 DAG selected-node confirmation 一致性回查，
+ * 以及 mock permission-admin 客户端完成的服务账号委托授权实时复核。</p>
  */
 class AgentAsyncToolExecutionPreCheckServiceTest {
 
@@ -35,22 +36,25 @@ class AgentAsyncToolExecutionPreCheckServiceTest {
     void shouldAllowExecutablePayloadWithSelectedNodeEvidence() {
         AgentRuntimeToolDagConfirmationClient confirmationClient = mock(AgentRuntimeToolDagConfirmationClient.class);
         when(confirmationClient.fetchConfirmation(any(AgentAsyncToolResolvedPayload.class))).thenReturn(confirmationView());
-        AgentAsyncToolExecutionPreCheckService service = service(List.of(new FakeExecutor()), confirmationClient);
+        PermissionAdminAgentAsyncToolAuthorizationClient permissionClient = allowPermissionClient();
+        AgentAsyncToolExecutionPreCheckService service = service(List.of(new FakeExecutor()), confirmationClient, permissionClient);
 
         AgentAsyncToolExecutionPreCheckResult result = service.preCheck(payload("RUNNING", "PLANNED",
-                "dag-confirmation:test-001", List.of("route-policy:860")));
+                "dag-confirmation:test-001", List.of("route-policy:870")));
 
         assertTrue(result.allowed());
         assertTrue(result.validationMessages().stream().anyMatch(message -> message.contains("工具白名单复核通过")));
         assertTrue(result.validationMessages().stream().anyMatch(message -> message.contains("agent-runtime 确认回查通过")));
+        assertTrue(result.validationMessages().stream().anyMatch(message -> message.contains("permission-admin 实时授权复核通过")));
     }
 
     @Test
     void shouldRejectPayloadWithoutWhitelistExecutor() {
-        AgentAsyncToolExecutionPreCheckService service = service(List.of(), mock(AgentRuntimeToolDagConfirmationClient.class));
+        AgentAsyncToolExecutionPreCheckService service = service(List.of(), mock(AgentRuntimeToolDagConfirmationClient.class),
+                mock(PermissionAdminAgentAsyncToolAuthorizationClient.class));
 
         AgentAsyncToolExecutionPreCheckResult result = service.preCheck(payload("RUNNING", "PLANNED",
-                "dag-confirmation:test-001", List.of("route-policy:860")));
+                "dag-confirmation:test-001", List.of("route-policy:870")));
 
         assertFalse(result.allowed());
         assertTrue(result.message().contains("白名单适配器"));
@@ -59,10 +63,11 @@ class AgentAsyncToolExecutionPreCheckServiceTest {
     @Test
     void shouldRejectWaitingApprovalAuditStateBeforeSideEffect() {
         AgentAsyncToolExecutionPreCheckService service = service(List.of(new FakeExecutor()),
-                mock(AgentRuntimeToolDagConfirmationClient.class));
+                mock(AgentRuntimeToolDagConfirmationClient.class),
+                mock(PermissionAdminAgentAsyncToolAuthorizationClient.class));
 
         AgentAsyncToolExecutionPreCheckResult result = service.preCheck(payload("RUNNING", "WAITING_APPROVAL",
-                "dag-confirmation:test-001", List.of("route-policy:860")));
+                "dag-confirmation:test-001", List.of("route-policy:870")));
 
         assertFalse(result.allowed());
         assertTrue(result.message().contains("审计状态不允许"));
@@ -71,10 +76,11 @@ class AgentAsyncToolExecutionPreCheckServiceTest {
     @Test
     void shouldRejectSensitiveDelegationEvidence() {
         AgentAsyncToolExecutionPreCheckService service = service(List.of(new FakeExecutor()),
-                mock(AgentRuntimeToolDagConfirmationClient.class));
+                mock(AgentRuntimeToolDagConfirmationClient.class),
+                mock(PermissionAdminAgentAsyncToolAuthorizationClient.class));
 
         AgentAsyncToolExecutionPreCheckResult result = service.preCheck(payload("RUNNING", "PLANNED",
-                "dag-confirmation:test-001", List.of("route-policy:860"),
+                "dag-confirmation:test-001", List.of("route-policy:870"),
                 List.of("prompt: system secret")));
 
         assertFalse(result.allowed());
@@ -87,13 +93,13 @@ class AgentAsyncToolExecutionPreCheckServiceTest {
         when(confirmationClient.fetchConfirmation(any(AgentAsyncToolResolvedPayload.class))).thenReturn(confirmationView(
                 List.of("audit-001"),
                 List.of("other-command"),
-                List.of("route-policy:860"),
+                List.of("route-policy:870"),
                 List.of("serviceAccount=datasmart-agent-runtime;representedActor=actor-agent")
         ));
-        AgentAsyncToolExecutionPreCheckService service = service(List.of(new FakeExecutor()), confirmationClient);
+        AgentAsyncToolExecutionPreCheckService service = service(List.of(new FakeExecutor()), confirmationClient, allowPermissionClient());
 
         AgentAsyncToolExecutionPreCheckResult result = service.preCheck(payload("RUNNING", "PLANNED",
-                "dag-confirmation:test-001", List.of("route-policy:860")));
+                "dag-confirmation:test-001", List.of("route-policy:870")));
 
         assertFalse(result.allowed());
         assertTrue(result.message().contains("commandId"));
@@ -102,10 +108,10 @@ class AgentAsyncToolExecutionPreCheckServiceTest {
     @Test
     void shouldSkipRemoteConfirmationForCompatibilityCommandWithoutConfirmationId() {
         AgentRuntimeToolDagConfirmationClient confirmationClient = mock(AgentRuntimeToolDagConfirmationClient.class);
-        AgentAsyncToolExecutionPreCheckService service = service(List.of(new FakeExecutor()), confirmationClient);
+        AgentAsyncToolExecutionPreCheckService service = service(List.of(new FakeExecutor()), confirmationClient, allowPermissionClient());
 
         AgentAsyncToolExecutionPreCheckResult result = service.preCheck(payload("RUNNING", "PLANNED",
-                null, List.of("route-policy:860")));
+                null, List.of("route-policy:870")));
 
         assertTrue(result.allowed());
         verifyNoInteractions(confirmationClient);
@@ -116,18 +122,74 @@ class AgentAsyncToolExecutionPreCheckServiceTest {
         AgentRuntimeToolDagConfirmationClient confirmationClient = mock(AgentRuntimeToolDagConfirmationClient.class);
         when(confirmationClient.fetchConfirmation(any(AgentAsyncToolResolvedPayload.class)))
                 .thenThrow(new IllegalStateException("agent-runtime unavailable"));
-        AgentAsyncToolExecutionPreCheckService service = service(List.of(new FakeExecutor()), confirmationClient);
+        AgentAsyncToolExecutionPreCheckService service = service(List.of(new FakeExecutor()), confirmationClient, allowPermissionClient());
 
         assertThrows(AgentAsyncToolPreCheckUnavailableException.class, () -> service.preCheck(payload("RUNNING", "PLANNED",
-                "dag-confirmation:test-001", List.of("route-policy:860"))));
+                "dag-confirmation:test-001", List.of("route-policy:870"))));
+    }
+
+    @Test
+    void shouldRejectWhenPermissionAdminDeniesExecution() {
+        AgentRuntimeToolDagConfirmationClient confirmationClient = mock(AgentRuntimeToolDagConfirmationClient.class);
+        when(confirmationClient.fetchConfirmation(any(AgentAsyncToolResolvedPayload.class))).thenReturn(confirmationView());
+        PermissionAdminAgentAsyncToolAuthorizationClient permissionClient = mock(PermissionAdminAgentAsyncToolAuthorizationClient.class);
+        when(permissionClient.evaluate(any(AgentAsyncToolPermissionAuthorizationRequest.class))).thenReturn(permissionResult(
+                false,
+                "命中显式拒绝策略",
+                false,
+                "route-policy:870:updatedAt:now:priority:870:effect:DENY"
+        ));
+        AgentAsyncToolExecutionPreCheckService service = service(List.of(new FakeExecutor()), confirmationClient, permissionClient);
+
+        AgentAsyncToolExecutionPreCheckResult result = service.preCheck(payload("RUNNING", "PLANNED",
+                "dag-confirmation:test-001", List.of("route-policy:870")));
+
+        assertFalse(result.allowed());
+        assertTrue(result.message().contains("permission-admin 拒绝"));
+    }
+
+    @Test
+    void shouldRejectWhenPermissionPolicyVersionDrifts() {
+        AgentRuntimeToolDagConfirmationClient confirmationClient = mock(AgentRuntimeToolDagConfirmationClient.class);
+        when(confirmationClient.fetchConfirmation(any(AgentAsyncToolResolvedPayload.class))).thenReturn(confirmationView());
+        PermissionAdminAgentAsyncToolAuthorizationClient permissionClient = mock(PermissionAdminAgentAsyncToolAuthorizationClient.class);
+        when(permissionClient.evaluate(any(AgentAsyncToolPermissionAuthorizationRequest.class))).thenReturn(permissionResult(
+                true,
+                "命中允许策略",
+                false,
+                "route-policy:871"
+        ));
+        AgentAsyncToolExecutionPreCheckService service = service(List.of(new FakeExecutor()), confirmationClient, permissionClient);
+
+        AgentAsyncToolExecutionPreCheckResult result = service.preCheck(payload("RUNNING", "PLANNED",
+                "dag-confirmation:test-001", List.of("route-policy:870")));
+
+        assertFalse(result.allowed());
+        assertTrue(result.message().contains("策略版本"));
+    }
+
+    @Test
+    void shouldDeferByExceptionWhenPermissionAdminTemporarilyUnavailable() {
+        AgentRuntimeToolDagConfirmationClient confirmationClient = mock(AgentRuntimeToolDagConfirmationClient.class);
+        when(confirmationClient.fetchConfirmation(any(AgentAsyncToolResolvedPayload.class))).thenReturn(confirmationView());
+        PermissionAdminAgentAsyncToolAuthorizationClient permissionClient = mock(PermissionAdminAgentAsyncToolAuthorizationClient.class);
+        when(permissionClient.evaluate(any(AgentAsyncToolPermissionAuthorizationRequest.class)))
+                .thenThrow(new IllegalStateException("permission-admin unavailable"));
+        AgentAsyncToolExecutionPreCheckService service = service(List.of(new FakeExecutor()), confirmationClient, permissionClient);
+
+        assertThrows(AgentAsyncToolPreCheckUnavailableException.class, () -> service.preCheck(payload("RUNNING", "PLANNED",
+                "dag-confirmation:test-001", List.of("route-policy:870"))));
     }
 
     private AgentAsyncToolExecutionPreCheckService service(List<AgentAsyncToolExecutor> executors,
-                                                           AgentRuntimeToolDagConfirmationClient confirmationClient) {
+                                                           AgentRuntimeToolDagConfirmationClient confirmationClient,
+                                                           PermissionAdminAgentAsyncToolAuthorizationClient permissionClient) {
         AgentAsyncToolWorkerProperties properties = new AgentAsyncToolWorkerProperties();
         properties.setConfirmationCheckEnabled(true);
         properties.setConfirmationCheckFailOpenOnError(false);
-        return new AgentAsyncToolExecutionPreCheckService(executors, properties, confirmationClient);
+        properties.setPermissionCheckEnabled(true);
+        properties.setPermissionCheckFailOpenOnError(false);
+        return new AgentAsyncToolExecutionPreCheckService(executors, properties, confirmationClient, permissionClient);
     }
 
     private AgentAsyncToolResolvedPayload payload(String taskStatus,
@@ -183,7 +245,7 @@ class AgentAsyncToolExecutionPreCheckServiceTest {
         return confirmationView(
                 List.of("audit-001"),
                 List.of("cmd-001"),
-                List.of("route-policy:860"),
+                List.of("route-policy:870"),
                 List.of("serviceAccount=datasmart-agent-runtime;representedActor=actor-agent")
         );
     }
@@ -213,6 +275,35 @@ class AgentAsyncToolExecutionPreCheckServiceTest {
                 Instant.now().plusSeconds(300),
                 Instant.now(),
                 Instant.now()
+        );
+    }
+
+    private PermissionAdminAgentAsyncToolAuthorizationClient allowPermissionClient() {
+        PermissionAdminAgentAsyncToolAuthorizationClient permissionClient =
+                mock(PermissionAdminAgentAsyncToolAuthorizationClient.class);
+        when(permissionClient.evaluate(any(AgentAsyncToolPermissionAuthorizationRequest.class))).thenReturn(permissionResult(
+                true,
+                "命中允许策略",
+                false,
+                "route-policy:870"
+        ));
+        return permissionClient;
+    }
+
+    private AgentAsyncToolPermissionAuthorizationResult permissionResult(boolean allowed,
+                                                                        String reason,
+                                                                        boolean approvalRequired,
+                                                                        String policyVersion) {
+        return new AgentAsyncToolPermissionAuthorizationResult(
+                allowed,
+                reason,
+                allowed ? "ALLOW" : "DENY",
+                "TENANT",
+                List.of(),
+                approvalRequired,
+                policyVersion,
+                true,
+                "delegationType=SERVICE_ACCOUNT_ON_BEHALF_OF_ACTOR;serviceAccount=datasmart-task-management-agent-worker;representedActor=1001"
         );
     }
 

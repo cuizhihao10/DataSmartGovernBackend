@@ -49,11 +49,12 @@ class AgentAsyncToolDispatchOnceServiceTest {
         AgentAsyncToolExecutor executor = new FakeExecutor();
         AgentRuntimeToolDagConfirmationClient confirmationClient = mock(AgentRuntimeToolDagConfirmationClient.class);
         when(confirmationClient.fetchConfirmation(any(AgentAsyncToolResolvedPayload.class))).thenReturn(confirmationView());
+        PermissionAdminAgentAsyncToolAuthorizationClient permissionClient = allowPermissionClient();
         AgentRuntimeAsyncToolStatusClient statusClient = mock(AgentRuntimeAsyncToolStatusClient.class);
         AgentAsyncToolDispatchOnceService service = new AgentAsyncToolDispatchOnceService(
                 taskService,
                 resolver,
-                new AgentAsyncToolExecutionPreCheckService(List.of(executor), properties, confirmationClient),
+                new AgentAsyncToolExecutionPreCheckService(List.of(executor), properties, confirmationClient, permissionClient),
                 List.of(executor),
                 statusClient,
                 properties,
@@ -92,11 +93,13 @@ class AgentAsyncToolDispatchOnceServiceTest {
         AgentAsyncToolExecutor executor = mock(AgentAsyncToolExecutor.class);
         when(executor.supports("data-sync.execute")).thenReturn(true);
         AgentRuntimeToolDagConfirmationClient confirmationClient = mock(AgentRuntimeToolDagConfirmationClient.class);
+        PermissionAdminAgentAsyncToolAuthorizationClient permissionClient =
+                mock(PermissionAdminAgentAsyncToolAuthorizationClient.class);
         AgentRuntimeAsyncToolStatusClient statusClient = mock(AgentRuntimeAsyncToolStatusClient.class);
         AgentAsyncToolDispatchOnceService service = new AgentAsyncToolDispatchOnceService(
                 taskService,
                 resolver,
-                new AgentAsyncToolExecutionPreCheckService(List.of(executor), properties, confirmationClient),
+                new AgentAsyncToolExecutionPreCheckService(List.of(executor), properties, confirmationClient, permissionClient),
                 List.of(executor),
                 statusClient,
                 properties,
@@ -134,11 +137,13 @@ class AgentAsyncToolDispatchOnceServiceTest {
         AgentRuntimeToolDagConfirmationClient confirmationClient = mock(AgentRuntimeToolDagConfirmationClient.class);
         when(confirmationClient.fetchConfirmation(any(AgentAsyncToolResolvedPayload.class)))
                 .thenThrow(new IllegalStateException("agent-runtime unavailable"));
+        PermissionAdminAgentAsyncToolAuthorizationClient permissionClient =
+                mock(PermissionAdminAgentAsyncToolAuthorizationClient.class);
         AgentRuntimeAsyncToolStatusClient statusClient = mock(AgentRuntimeAsyncToolStatusClient.class);
         AgentAsyncToolDispatchOnceService service = new AgentAsyncToolDispatchOnceService(
                 taskService,
                 resolver,
-                new AgentAsyncToolExecutionPreCheckService(List.of(executor), properties, confirmationClient),
+                new AgentAsyncToolExecutionPreCheckService(List.of(executor), properties, confirmationClient, permissionClient),
                 List.of(executor),
                 statusClient,
                 properties,
@@ -191,7 +196,7 @@ class AgentAsyncToolDispatchOnceServiceTest {
                 24,
                 false,
                 "dag-confirmation:test-001",
-                List.of("route-policy:860"),
+                List.of("route-policy:870"),
                 List.of("serviceAccount=datasmart-agent-runtime;representedActor=actor-agent"),
                 Map.of("syncTemplateId", 6001L),
                 Map.of(),
@@ -210,7 +215,7 @@ class AgentAsyncToolDispatchOnceServiceTest {
                 "fingerprint-001",
                 List.of("node-001"),
                 List.of("audit-001"),
-                List.of("route-policy:860"),
+                List.of("route-policy:870"),
                 List.of("serviceAccount=datasmart-agent-runtime;representedActor=actor-agent"),
                 List.of("outbox-001"),
                 List.of("cmd-001"),
@@ -225,6 +230,24 @@ class AgentAsyncToolDispatchOnceServiceTest {
                 Instant.now(),
                 Instant.now()
         );
+    }
+
+    private PermissionAdminAgentAsyncToolAuthorizationClient allowPermissionClient() {
+        PermissionAdminAgentAsyncToolAuthorizationClient permissionClient =
+                mock(PermissionAdminAgentAsyncToolAuthorizationClient.class);
+        when(permissionClient.evaluate(any(AgentAsyncToolPermissionAuthorizationRequest.class)))
+                .thenReturn(new AgentAsyncToolPermissionAuthorizationResult(
+                        true,
+                        "命中允许策略",
+                        "ALLOW",
+                        "TENANT",
+                        List.of(),
+                        false,
+                        "route-policy:870",
+                        true,
+                        "delegationType=SERVICE_ACCOUNT_ON_BEHALF_OF_ACTOR;serviceAccount=datasmart-task-management-agent-worker;representedActor=1001"
+                ));
+        return permissionClient;
     }
 
     private static class FakeExecutor implements AgentAsyncToolExecutor {

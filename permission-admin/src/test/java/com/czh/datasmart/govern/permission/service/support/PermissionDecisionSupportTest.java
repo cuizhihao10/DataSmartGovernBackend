@@ -106,6 +106,40 @@ class PermissionDecisionSupportTest {
     }
 
     /**
+     * 验证 task-management worker 执行已确认异步工具时使用独立动作授权。
+     *
+     * <p>这条用例保护 4.77 的关键边界：selected-node 入箱和 worker 执行副作用不是同一个权限动作。
+     * worker 执行前应以 SERVICE_ACCOUNT 身份代表上游 actor 重新 evaluate，并拿到新的 policyVersion 与委托证据。
+     * 这样即使某个 command 已经进入任务中心，权限中心仍然可以在执行前收紧或撤销策略。</p>
+     */
+    @Test
+    void serviceAccountShouldAllowConfirmedAsyncToolWorkerExecution() {
+        PermissionDecisionRequest request = decisionRequest("SERVICE_ACCOUNT");
+        request.setHttpMethod("POST");
+        request.setRequestPath("/internal/task-management/agent-async-tools/audit-001/execute");
+        request.setAction("EXECUTE_CONFIRMED_ASYNC_TOOL");
+        request.setServiceAccountActorId(900002L);
+        request.setServiceAccountCode("datasmart-task-management-agent-worker");
+        request.setRepresentedActorId("actor-preview");
+        request.setDelegationType("SERVICE_ACCOUNT_ON_BEHALF_OF_ACTOR");
+        request.setDelegationReason("TASK_MANAGEMENT_AGENT_WORKER_EXECUTE:tool=data-sync.execute");
+        when(querySupport.listRoutePolicies(10L, "SERVICE_ACCOUNT"))
+                .thenReturn(List.of(workerExecutionPolicy("ALLOW", 870)));
+        when(querySupport.listDataScopePolicies(10L, "SERVICE_ACCOUNT", "AI_RUNTIME"))
+                .thenReturn(List.of(dataScope("SERVICE_ACCOUNT", "AI_RUNTIME", "TENANT", "tenant_id = ${tenantId}")));
+
+        PermissionDecisionResult result = decisionSupport.evaluate(request, "trace-worker-execute");
+
+        assertThat(result.getAllowed()).isTrue();
+        assertThat(result.getPolicyVersion()).contains("route-policy:870");
+        assertThat(result.getDelegated()).isTrue();
+        assertThat(result.getDelegationEvidence())
+                .contains("datasmart-task-management-agent-worker")
+                .contains("actor-preview")
+                .contains("EXECUTE_CONFIRMED_ASYNC_TOOL");
+    }
+
+    /**
      * 验证确认记录查询使用独立的 VIEW_TOOL_CONFIRMATIONS 动作。
      *
      * <p>confirmation 不是普通 Agent 会话详情，也不是 runtime event 时间线本身。
@@ -192,6 +226,14 @@ class PermissionDecisionSupportTest {
         policy.setHttpMethod("GET");
         policy.setPathPattern("/api/agent/sessions/*/runs/*/tool-executions/dag-confirmations/**");
         policy.setAction("VIEW_TOOL_CONFIRMATIONS");
+        return policy;
+    }
+
+    private PermissionRoutePolicy workerExecutionPolicy(String effect, int priority) {
+        PermissionRoutePolicy policy = routePolicy("SERVICE_ACCOUNT", effect, priority);
+        policy.setPolicyName("服务账号执行已确认 Agent 异步工具");
+        policy.setPathPattern("/internal/task-management/agent-async-tools/*/execute");
+        policy.setAction("EXECUTE_CONFIRMED_ASYNC_TOOL");
         return policy;
     }
 

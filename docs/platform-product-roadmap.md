@@ -1,5 +1,14 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-01 追加落地进展：Agent worker 接入 permission-admin 实时授权复核
+
+- `permission-admin` 新增 `EXECUTE_CONFIRMED_ASYNC_TOOL` 动作，用于区分“selected-node 入箱”和“worker 执行真实副作用”两道权限门。
+- `docker/mysql/init/permission-admin.sql` 与迁移脚本新增 worker 执行入口策略：默认允许 `SERVICE_ACCOUNT` 调用 `/internal/task-management/agent-async-tools/*/execute`，并显式拒绝普通用户与审计员直接触发执行。
+- `task-management` worker pre-check 新增 permission-admin 客户端，在 confirmation 回查之后、真实工具适配器之前发起服务账号委托授权 evaluate。
+- 授权复核会校验 allowed、approvalRequired、policyVersion；权限中心拒绝或策略版本与任务证据快照不一致时，worker 在副作用前阻断。
+- permission-admin 暂时不可用时默认 fail-closed 并 defer 任务，避免权限中心故障期间 Agent 工具越权执行。
+- 下一步建议做 worker 级配额和限流：按租户、项目、工具、下游服务容量控制并发与速率，然后再评估是否进入更大的 AI Agent 能力面，例如长期记忆执行闭环、工具能力市场或智能网关会话调度。
+
 ## 2026-06-01 追加落地进展：Agent worker 跨服务确认回查复核
 
 - `task-management` worker 执行前二次复核已从“只校验本地 task.params 证据”升级为“回查 agent-runtime DAG selected-node confirmation”，在真实工具副作用发生前核对 `confirmationId/sessionId/runId/auditId/commandId/policyVersions/delegationEvidence`。

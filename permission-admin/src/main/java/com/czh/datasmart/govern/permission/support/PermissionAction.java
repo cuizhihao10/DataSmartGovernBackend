@@ -162,6 +162,16 @@ public enum PermissionAction {
      */
     ENQUEUE_SELECTED_ASYNC_TOOL,
     /**
+     * 执行已经通过 DAG selected-node 确认并进入任务中心的异步 Agent 工具。
+     *
+     * <p>这个动作刻意不复用 {@link #ENQUEUE_SELECTED_ASYNC_TOOL}。
+     * 入箱动作回答的是“是否允许把某个已确认节点写入可靠命令队列”，而本动作回答的是
+     * “task-management worker 在副作用发生前，是否仍允许代表上游 actor 执行这个工具”。
+     * 两者拆开后，商业化环境可以分别配置策略：例如允许服务账号入箱，但在执行阶段因为策略撤销、
+     * 租户冻结、项目越权、审批过期或工具临时下线而拒绝执行。</p>
+     */
+    EXECUTE_CONFIRMED_ASYNC_TOOL,
+    /**
      * Run 级异步工具批量入箱动作。
      *
      * <p>该入口粒度比 selected-node 更粗，生产上更适合作为管理员补偿、内部联调或事故恢复能力。独立动作

@@ -30,7 +30,8 @@ import java.util.Set;
  * <p>当前阶段已经从“只校验本地字段”推进到“回查 agent-runtime confirmation”。
  * 这一步是为了让 task-management 不只相信 Kafka command 或 task.params，而是在真实工具执行前重新确认：
  * 当前 commandId、auditId、policyVersions 是否确实来自 agent-runtime 记录过的 selected-node 确认事实。
- * 后续 permission-admin 实时 evaluate、租户配额、工具限流和熔断会继续挂到同一个 pre-check 链路上。</p>
+ * 本阶段继续把 permission-admin 实时 evaluate 接入同一条链路，让 worker 在真实副作用前确认当前策略仍然允许。
+ * 后续租户配额、工具限流和熔断会继续挂到同一个 pre-check 链路上。</p>
  */
 @Service
 @RequiredArgsConstructor
@@ -47,12 +48,18 @@ public class AgentAsyncToolExecutionPreCheckService {
 
     private static final String PAYLOAD_REFERENCE_PREFIX = "agent-tool-audit://";
     private static final String PAYLOAD_KIND_PLAN_ARGUMENTS = "plan-arguments";
+    private static final String PERMISSION_RESOURCE_AI_RUNTIME = "AI_RUNTIME";
+    private static final String PERMISSION_ACTION_EXECUTE_CONFIRMED_ASYNC_TOOL = "EXECUTE_CONFIRMED_ASYNC_TOOL";
+    private static final String DELEGATION_TYPE_ON_BEHALF_OF_ACTOR = "SERVICE_ACCOUNT_ON_BEHALF_OF_ACTOR";
+    private static final String WORKER_PERMISSION_PATH_PREFIX = "/internal/task-management/agent-async-tools/";
+    private static final String WORKER_PERMISSION_PATH_SUFFIX = "/execute";
     private static final int MAX_EVIDENCE_ITEMS = 20;
     private static final int MAX_EVIDENCE_LENGTH = 512;
 
     private final List<AgentAsyncToolExecutor> executors;
     private final AgentAsyncToolWorkerProperties properties;
     private final AgentRuntimeToolDagConfirmationClient confirmationClient;
+    private final PermissionAdminAgentAsyncToolAuthorizationClient permissionAuthorizationClient;
 
     /**
      * 执行 worker 前置复核。
@@ -90,6 +97,11 @@ public class AgentAsyncToolExecutionPreCheckService {
         String evidenceIssue = validateExecutionEvidence(payload, messages, diagnostics);
         if (evidenceIssue != null) {
             return rejected(evidenceIssue, messages, diagnostics);
+        }
+
+        String permissionIssue = validatePermissionAuthorization(payload, messages, diagnostics);
+        if (permissionIssue != null) {
+            return rejected(permissionIssue, messages, diagnostics);
         }
 
         messages.add("worker 二次复核通过：任务状态、Agent 审计状态、payloadReference、工具白名单和执行证据均满足当前阶段规则。");
@@ -265,6 +277,138 @@ public class AgentAsyncToolExecutionPreCheckService {
         return null;
     }
 
+    /**
+     * 调用 permission-admin 做执行前实时授权复核。
+     *
+     * <p>confirmation 回查只能证明“任务来自某次已确认的 DAG selected-node 入箱动作”。
+     * 但企业权限策略是动态的：入箱后可能发生角色撤销、项目成员移除、策略禁用、租户冻结、审批要求变化等情况。
+     * 因此 worker 在真正调用工具适配器前，还需要向权限中心提出一个新的问题：
+     * “task-management Agent worker 这个服务账号，是否仍可代表 representedActor 执行已确认异步工具？”</p>
+     *
+     * <p>本阶段先使用统一的 `AI_RUNTIME + EXECUTE_CONFIRMED_ASYNC_TOOL` 保护 worker 执行入口。
+     * 这样可以先把副作用入口收口到权限中心；后续再逐步把 data-sync.execute、quality.rule.suggest、
+     * datasource.metadata.read 等工具拆成更细的领域资源和动作复核。</p>
+     */
+    private String validatePermissionAuthorization(AgentAsyncToolResolvedPayload payload,
+                                                   List<String> messages,
+                                                   Map<String, Object> diagnostics) {
+        diagnostics.put("permissionCheckEnabled", properties.isPermissionCheckEnabled());
+        if (!properties.isPermissionCheckEnabled()) {
+            diagnostics.put("permissionCheck", "disabled_by_config");
+            messages.add("permission-admin 实时授权复核已被配置关闭：当前仅依赖 confirmation 与本地安全门，生产环境建议开启。");
+            return null;
+        }
+        String requiredFieldIssue = validatePermissionRequiredFields(payload);
+        if (requiredFieldIssue != null) {
+            diagnostics.put("permissionCheck", "missing_required_fields");
+            return requiredFieldIssue;
+        }
+        AgentAsyncToolPermissionAuthorizationRequest request = permissionAuthorizationRequest(payload);
+        try {
+            AgentAsyncToolPermissionAuthorizationResult result = permissionAuthorizationClient.evaluate(request);
+            diagnostics.put("permissionCheck", "evaluated");
+            diagnostics.put("permissionAllowed", result.allowed());
+            diagnostics.put("permissionRouteEffect", result.routeEffect());
+            diagnostics.put("permissionDataScopeLevel", result.dataScopeLevel());
+            diagnostics.put("permissionPolicyVersion", result.policyVersion());
+            diagnostics.put("permissionApprovalRequired", result.approvalRequired());
+            if (!Boolean.TRUE.equals(result.allowed())) {
+                return "permission-admin 拒绝 Agent worker 执行已确认异步工具，reason=" + result.reason();
+            }
+            if (Boolean.TRUE.equals(result.approvalRequired())) {
+                return "permission-admin 标记当前工具执行仍需审批，worker 不允许直接执行副作用。";
+            }
+            String policyVersionIssue = validatePermissionPolicyVersion(payload, result);
+            if (policyVersionIssue != null) {
+                return policyVersionIssue;
+            }
+            messages.add("permission-admin 实时授权复核通过：SERVICE_ACCOUNT 仍可代表上游 actor 执行已确认异步工具。");
+            if (optionalText(result.policyVersion()) != null) {
+                messages.add("permission-admin 当前策略版本：" + result.policyVersion() + "。");
+            }
+            return null;
+        } catch (RuntimeException exception) {
+            diagnostics.put("permissionCheck", "temporarily_unavailable");
+            diagnostics.put("permissionCheckError", safeExceptionMessage(exception));
+            if (properties.isPermissionCheckFailOpenOnError()) {
+                messages.add("permission-admin 授权复核失败但配置为 fail-open：worker 将继续依赖 confirmation 和本地证据执行，生产环境应谨慎使用。");
+                return null;
+            }
+            throw new AgentAsyncToolPreCheckUnavailableException(
+                    "permission-admin 授权复核暂时不可用，worker 已阻止副作用并等待重试。", exception);
+        }
+    }
+
+    private String validatePermissionRequiredFields(AgentAsyncToolResolvedPayload payload) {
+        if (payload.tenantId() == null) {
+            return "permission-admin 授权复核缺少 tenantId，无法确认租户边界。";
+        }
+        if (properties.getPermissionCheckServiceAccountActorId() == null) {
+            return "permission-admin 授权复核缺少 task-management worker 服务账号 actorId。";
+        }
+        if (optionalText(properties.getPermissionCheckServiceAccountCode()) == null) {
+            return "permission-admin 授权复核缺少 task-management worker 服务账号编码。";
+        }
+        if (optionalText(properties.getPermissionCheckServiceAccountRole()) == null) {
+            return "permission-admin 授权复核缺少 task-management worker 服务账号角色。";
+        }
+        if (optionalText(payload.actorId()) == null) {
+            return "permission-admin 授权复核缺少 representedActorId，无法记录服务账号代表谁执行。";
+        }
+        return null;
+    }
+
+    private AgentAsyncToolPermissionAuthorizationRequest permissionAuthorizationRequest(AgentAsyncToolResolvedPayload payload) {
+        return new AgentAsyncToolPermissionAuthorizationRequest(
+                payload.tenantId(),
+                properties.getPermissionCheckServiceAccountActorId(),
+                properties.getPermissionCheckServiceAccountRole(),
+                workerPermissionPath(payload),
+                PERMISSION_RESOURCE_AI_RUNTIME,
+                PERMISSION_ACTION_EXECUTE_CONFIRMED_ASYNC_TOOL,
+                properties.getPermissionCheckServiceAccountCode(),
+                payload.actorId(),
+                DELEGATION_TYPE_ON_BEHALF_OF_ACTOR,
+                permissionDelegationReason(payload),
+                firstText(payload.policyVersions()),
+                payload.traceId()
+        );
+    }
+
+    /**
+     * 生成 worker 执行入口的“虚拟权限路径”。
+     *
+     * <p>该路径不是对外 HTTP API，而是 permission-admin 用来匹配策略的稳定语义路径。
+     * 这样我们可以把 `data-sync.execute`、`quality.rule.suggest` 等不同工具先统一收口到
+     * “task-management worker 执行已确认 Agent 异步工具”这一安全门，避免把每个下游内部接口都暴露成外部路由策略。</p>
+     */
+    private String workerPermissionPath(AgentAsyncToolResolvedPayload payload) {
+        String auditId = optionalText(payload.auditId());
+        return WORKER_PERMISSION_PATH_PREFIX + (auditId == null ? "unknown" : auditId) + WORKER_PERMISSION_PATH_SUFFIX;
+    }
+
+    private String permissionDelegationReason(AgentAsyncToolResolvedPayload payload) {
+        return "TASK_MANAGEMENT_AGENT_WORKER_EXECUTE"
+                + ":tool=" + payload.toolCode()
+                + ":taskId=" + payload.taskId()
+                + ":commandId=" + payload.commandId()
+                + ":auditId=" + payload.auditId();
+    }
+
+    private String validatePermissionPolicyVersion(AgentAsyncToolResolvedPayload payload,
+                                                   AgentAsyncToolPermissionAuthorizationResult result) {
+        String currentVersion = optionalText(result.policyVersion());
+        if (currentVersion == null) {
+            return "permission-admin 授权通过但未返回 policyVersion，无法形成可审计执行证据。";
+        }
+        Set<String> previousVersions = normalizedTextSet(payload.policyVersions());
+        if (!previousVersions.isEmpty() && !previousVersions.contains(currentVersion)) {
+            return "permission-admin 当前策略版本与入箱/确认阶段快照不一致，拒绝执行。current="
+                    + currentVersion + ", snapshot=" + previousVersions;
+        }
+        return null;
+    }
+
     private String validateEvidenceList(String fieldName, List<String> values) {
         List<String> normalized = values == null ? List.of() : values;
         if (normalized.size() > MAX_EVIDENCE_ITEMS) {
@@ -345,6 +489,19 @@ public class AgentAsyncToolExecutionPreCheckService {
 
     private String optionalText(String value) {
         return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private String firstText(List<String> values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            String item = optionalText(value);
+            if (item != null) {
+                return item;
+            }
+        }
+        return null;
     }
 
     private String normalize(String value) {

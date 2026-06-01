@@ -649,3 +649,27 @@ VALUES
  'AI_RUNTIME', 'ENQUEUE_RUN_ASYNC_TOOLS', 'ALLOW', 910, 1,
  '平台管理员可在事故恢复或联调场景使用 Run 级异步入箱补偿入口；生产操作应配合审计、变更单、租户配额和回滚预案。',
  NOW(), NOW());
+
+-- ---------------------------------------------------------------------------
+-- Agent Runtime / Task Management 异步工具 worker 执行前授权策略
+-- ---------------------------------------------------------------------------
+-- selected-node 入箱只证明“某个确认动作产生了任务命令”，不等于 worker 执行副作用时权限仍然有效。
+-- 因此 worker 使用独立动作 EXECUTE_CONFIRMED_ASYNC_TOOL，在执行前重新调用 permission-admin evaluate。
+INSERT IGNORE INTO permission_route_policy
+(tenant_id, policy_name, role_code, http_method, path_pattern, resource_type, action, effect, priority, enabled, description, create_time, update_time)
+VALUES
+(0, '服务账号执行已确认 Agent 异步工具', 'SERVICE_ACCOUNT', 'POST',
+ '/internal/task-management/agent-async-tools/*/execute',
+ 'AI_RUNTIME', 'EXECUTE_CONFIRMED_ASYNC_TOOL', 'ALLOW', 870, 1,
+ '允许 task-management Agent worker 在回查 confirmation、任务状态和工具白名单之后，以服务账号身份代表上游 actor 执行已确认异步工具；该策略只保护 worker 执行入口，不替代下游 data-sync/data-quality 等领域服务自己的幂等、租约和数据范围校验。',
+ NOW(), NOW()),
+(0, '普通用户禁止直接调用 Agent worker 执行入口', 'ORDINARY_USER', 'POST',
+ '/internal/task-management/agent-async-tools/*/execute',
+ 'AI_RUNTIME', 'EXECUTE_CONFIRMED_ASYNC_TOOL', 'DENY', 900, 1,
+ 'Agent worker 执行入口只能由受控任务调度链路触发，普通用户不能绕过会话、确认、任务队列和 worker 复核直接调用。',
+ NOW(), NOW()),
+(0, '审计员禁止调用 Agent worker 执行入口', 'AUDITOR', 'POST',
+ '/internal/task-management/agent-async-tools/*/execute',
+ 'AI_RUNTIME', 'EXECUTE_CONFIRMED_ASYNC_TOOL', 'DENY', 900, 1,
+ '审计员只能复核 Agent 工具确认、任务和执行证据，不能触发真实工具副作用。',
+ NOW(), NOW());

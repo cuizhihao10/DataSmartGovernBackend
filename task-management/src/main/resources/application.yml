@@ -116,5 +116,17 @@ datasmart:
       confirmation-check-fail-open-on-error: ${DATASMART_TASK_AGENT_ASYNC_WORKER_CONFIRMATION_CHECK_FAIL_OPEN_ON_ERROR:false}
       # 执行前复核依赖暂时不可用时的退避秒数。后续接入 permission-admin evaluate、配额和限流后也会复用该退避语义。
       pre-check-unavailable-defer-seconds: ${DATASMART_TASK_AGENT_ASYNC_WORKER_PRECHECK_UNAVAILABLE_DEFER_SECONDS:30}
+      # 是否在真实工具执行前调用 permission-admin 做服务账号委托授权实时复核。
+      permission-check-enabled: ${DATASMART_TASK_AGENT_ASYNC_WORKER_PERMISSION_CHECK_ENABLED:true}
+      # permission-admin 不可用时是否放行。生产建议保持 false，让任务 defer 等待权限中心恢复。
+      permission-check-fail-open-on-error: ${DATASMART_TASK_AGENT_ASYNC_WORKER_PERMISSION_CHECK_FAIL_OPEN_ON_ERROR:false}
+      # permission-admin evaluate 完整地址。生产建议替换为内部 gateway、服务发现或服务网格地址。
+      permission-admin-evaluate-url: ${DATASMART_PERMISSION_ADMIN_EVALUATE_URL:http://localhost:8085/permissions/evaluate}
+      # 授权复核 HTTP 超时，单位毫秒。超时后任务会按 pre-check-unavailable-defer-seconds 退避。
+      permission-admin-timeout-ms: ${DATASMART_TASK_AGENT_ASYNC_WORKER_PERMISSION_ADMIN_TIMEOUT_MS:1500}
+      # task-management Agent worker 服务账号身份，进入 permission-admin 委托证据和审计日志。
+      permission-check-service-account-actor-id: ${DATASMART_TASK_AGENT_ASYNC_WORKER_PERMISSION_SERVICE_ACCOUNT_ACTOR_ID:900002}
+      permission-check-service-account-code: ${DATASMART_TASK_AGENT_ASYNC_WORKER_PERMISSION_SERVICE_ACCOUNT_CODE:datasmart-task-management-agent-worker}
+      permission-check-service-account-role: ${DATASMART_TASK_AGENT_ASYNC_WORKER_PERMISSION_SERVICE_ACCOUNT_ROLE:SERVICE_ACCOUNT}
       # 默认只做 dry-run 预检，不调用真实目标服务。真实执行需要白名单适配器、权限策略和状态回写闭环全部确认后再关闭。
       dry-run-only: ${DATASMART_TASK_AGENT_ASYNC_WORKER_DRY_RUN_ONLY:true}
