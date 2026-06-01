@@ -26,6 +26,10 @@ from datasmart_ai_runtime.services.memory_store import (
     AgentMemoryStore,
     AgentMemoryStoreEntry,
 )
+from datasmart_ai_runtime.services.memory_materialization_receipt_store import (
+    AgentMemoryMaterializationReceiptStore,
+    InMemoryAgentMemoryMaterializationReceiptStore,
+)
 from datasmart_ai_runtime.services.memory_write_candidate_store import AgentMemoryWriteCandidateStore
 from datasmart_ai_runtime.services.memory_write_workspace import AgentMemoryWorkspaceSupport
 
@@ -91,9 +95,13 @@ class AgentApprovedMemoryWriteMaterializer:
         *,
         candidate_store: AgentMemoryWriteCandidateStore,
         memory_store: AgentMemoryStore,
+        receipt_store: AgentMemoryMaterializationReceiptStore | None = None,
+        worker_id: str = "python-ai-runtime-inline",
     ) -> None:
         self._candidate_store = candidate_store
         self._memory_store = memory_store
+        self._receipt_store = receipt_store or InMemoryAgentMemoryMaterializationReceiptStore()
+        self._worker_id = worker_id
 
     def materialize(self, candidate_id: str) -> AgentMemoryMaterializationResult:
         """幂等处理一条已批准候选。
@@ -105,20 +113,45 @@ class AgentApprovedMemoryWriteMaterializer:
         candidate = self._candidate_store.get(candidate_id)
         if candidate is None:
             raise KeyError(f"记忆写入候选不存在: {candidate_id}")
-        self._validate_candidate(candidate)
-        entry = self._entry_from_candidate(candidate)
-        write_result = self._memory_store.save_if_absent(entry)
-        if write_result.created:
+        workspace = AgentMemoryWorkspaceSupport.validate_candidate(candidate)
+        receipt = self._receipt_store.begin(
+            candidate_id=candidate.candidate_id,
+            tenant_id=candidate.tenant_id,
+            project_id=candidate.project_id,
+            workspace_key=workspace.workspace_key,
+            memory_namespace=workspace.memory_namespace,
+            worker_id=self._worker_id,
+        )
+        try:
+            self._validate_candidate(candidate)
+            entry = self._entry_from_candidate(candidate)
+            write_result = self._memory_store.save_if_absent(entry)
+            outcome = (
+                AgentMemoryMaterializationOutcome.MATERIALIZED
+                if write_result.created
+                else AgentMemoryMaterializationOutcome.ALREADY_MATERIALIZED
+            )
+            message = (
+                "已把批准候选的低敏摘要写入正式长期记忆 store。"
+                if write_result.created
+                else "该批准候选已经落成正式长期记忆，本次按幂等语义复用已有记录。"
+            )
+            self._receipt_store.succeed(
+                receipt_id=receipt.receipt_id,
+                memory_id=write_result.entry.memory.memory_id,
+                namespace=write_result.entry.namespace,
+                outcome=outcome.value,
+                message=message,
+            )
             return self._result(
                 write_result.entry,
-                AgentMemoryMaterializationOutcome.MATERIALIZED,
-                "已把批准候选的低敏摘要写入正式长期记忆 store。",
+                outcome,
+                message,
+                receipt_id=receipt.receipt_id,
             )
-        return self._result(
-            write_result.entry,
-            AgentMemoryMaterializationOutcome.ALREADY_MATERIALIZED,
-            "该批准候选已经落成正式长期记忆，本次按幂等语义复用已有记录。",
-        )
+        except Exception as exc:
+            self._receipt_store.fail(receipt_id=receipt.receipt_id, error_message=f"{type(exc).__name__}: {exc}")
+            raise
 
     def materialize_approved(self, *, limit: int = 100) -> tuple[AgentMemoryMaterializationResult, ...]:
         """批量处理一个有界 APPROVED 窗口。
@@ -213,6 +246,7 @@ class AgentApprovedMemoryWriteMaterializer:
         entry: AgentMemoryStoreEntry,
         outcome: AgentMemoryMaterializationOutcome,
         message: str,
+        receipt_id: str,
     ) -> AgentMemoryMaterializationResult:
         """构造低敏落成结果。"""
 
@@ -227,6 +261,7 @@ class AgentApprovedMemoryWriteMaterializer:
                 "scope": entry.memory.scope.value,
                 "workspaceKey": entry.workspace_key,
                 "memoryNamespace": entry.memory_namespace,
+                "receiptId": receipt_id,
                 "expiresAt": entry.expires_at.isoformat(),
             },
         )

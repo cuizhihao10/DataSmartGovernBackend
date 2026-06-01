@@ -23,6 +23,12 @@ from datasmart_ai_runtime.services.memory_store import (
     AgentMemoryStoreWriteResult,
     InMemoryAgentMemoryStore,
 )
+from datasmart_ai_runtime.services.memory_materialization_receipt_store import (
+    AgentMemoryMaterializationReceipt,
+    AgentMemoryMaterializationReceiptStatus,
+    AgentMemoryMaterializationReceiptStore,
+    InMemoryAgentMemoryMaterializationReceiptStore,
+)
 from datasmart_ai_runtime.services.memory_store_retriever import StoreBackedAgentMemoryRetriever
 from datasmart_ai_runtime.services.memory_write_governance import (
     AgentMemoryWriteGovernanceService,
@@ -228,6 +234,10 @@ __all__ = [
     "AgentMemoryStoreEntry",
     "AgentMemoryStoreWriteResult",
     "InMemoryAgentMemoryStore",
+    "AgentMemoryMaterializationReceipt",
+    "AgentMemoryMaterializationReceiptStatus",
+    "AgentMemoryMaterializationReceiptStore",
+    "InMemoryAgentMemoryMaterializationReceiptStore",
     "StoreBackedAgentMemoryRetriever",
     "AgentApprovedMemoryWriteMaterializer",
     "AgentMemoryMaterializationOutcome",

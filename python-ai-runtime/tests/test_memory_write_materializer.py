@@ -17,6 +17,10 @@ from datasmart_ai_runtime.domain.memory import (
 )
 from datasmart_ai_runtime.services.memory_store import InMemoryAgentMemoryStore
 from datasmart_ai_runtime.services.memory_store_retriever import StoreBackedAgentMemoryRetriever
+from datasmart_ai_runtime.services.memory_materialization_receipt_store import (
+    AgentMemoryMaterializationReceiptStatus,
+    InMemoryAgentMemoryMaterializationReceiptStore,
+)
 from datasmart_ai_runtime.services.memory_write_candidate_store import InMemoryAgentMemoryWriteCandidateStore
 from datasmart_ai_runtime.services.memory_write_materializer import (
     AgentApprovedMemoryWriteMaterializer,
@@ -34,10 +38,11 @@ class AgentApprovedMemoryWriteMaterializerTest(unittest.TestCase):
     def test_approved_summary_can_materialize_and_be_retrieved_in_same_project(self) -> None:
         """已批准的低敏项目摘要应落成正式记忆，并被同项目后续请求召回。"""
 
-        candidate_store, memory_store, materializer = self._runtime()
+        candidate_store, memory_store, materializer, receipt_store = self._runtime()
         candidate_store.save(self._candidate())
 
         result = materializer.materialize("candidate-a")
+        receipt = receipt_store.get_by_candidate_id("candidate-a")
         report = StoreBackedAgentMemoryRetriever(memory_store).retrieve(
             AgentRequest(
                 tenant_id="tenant-a",
@@ -58,6 +63,9 @@ class AgentApprovedMemoryWriteMaterializerTest(unittest.TestCase):
         )
 
         self.assertEqual(AgentMemoryMaterializationOutcome.MATERIALIZED, result.outcome)
+        self.assertEqual(result.attributes["receiptId"], receipt.receipt_id)
+        self.assertEqual(AgentMemoryMaterializationReceiptStatus.SUCCEEDED, receipt.status)
+        self.assertEqual(result.memory_id, receipt.memory_id)
         self.assertEqual(1, report.total_retrieved)
         memory = report.results[0].memories[0]
         self.assertEqual(result.memory_id, memory.memory_id)
@@ -68,7 +76,7 @@ class AgentApprovedMemoryWriteMaterializerTest(unittest.TestCase):
     def test_repeated_materialization_reuses_existing_memory(self) -> None:
         """worker 重试同一候选时必须返回幂等结果，不能制造重复记忆。"""
 
-        candidate_store, memory_store, materializer = self._runtime()
+        candidate_store, memory_store, materializer, receipt_store = self._runtime()
         candidate_store.save(self._candidate())
 
         first = materializer.materialize("candidate-a")
@@ -78,6 +86,9 @@ class AgentApprovedMemoryWriteMaterializerTest(unittest.TestCase):
         self.assertEqual(AgentMemoryMaterializationOutcome.ALREADY_MATERIALIZED, second.outcome)
         self.assertEqual(first.memory_id, second.memory_id)
         self.assertEqual(first.memory_id, memory_store.get_by_candidate_id("candidate-a").memory.memory_id)
+        receipt = receipt_store.get_by_candidate_id("candidate-a")
+        self.assertEqual(2, receipt.attempt_count)
+        self.assertEqual("already_materialized", receipt.outcome)
 
     def test_same_project_different_workspace_cannot_retrieve_materialized_memory(self) -> None:
         """同项目不同 workspace 不能共享已经落成的长期记忆。
@@ -86,7 +97,7 @@ class AgentApprovedMemoryWriteMaterializerTest(unittest.TestCase):
         workspace namespace 才能表达“本次 Agent 上下文到底属于哪个协作空间或会话沙箱”。
         """
 
-        candidate_store, memory_store, materializer = self._runtime()
+        candidate_store, memory_store, materializer, _receipt_store = self._runtime()
         candidate_store.save(
             self._candidate(
                 workspace_key="tenant:tenant-a:project:project-a:workspace:workspace-a",
@@ -120,34 +131,41 @@ class AgentApprovedMemoryWriteMaterializerTest(unittest.TestCase):
     def test_unapproved_candidate_is_blocked_before_formal_write(self) -> None:
         """DRAFT 候选即使被内部 worker 误投，也不能绕过审批直接写入正式记忆。"""
 
-        candidate_store, memory_store, materializer = self._runtime()
+        candidate_store, memory_store, materializer, receipt_store = self._runtime()
         candidate_store.save(self._candidate(status=AgentMemoryWriteCandidateStatus.DRAFT))
 
         with self.assertRaisesRegex(ValueError, "只有 approved 候选"):
             materializer.materialize("candidate-a")
 
+        receipt = receipt_store.get_by_candidate_id("candidate-a")
+        self.assertEqual(AgentMemoryMaterializationReceiptStatus.FAILED, receipt.status)
+        self.assertIn("只有 approved 候选", receipt.error_message)
         self.assertIsNone(memory_store.get_by_candidate_id("candidate-a"))
 
     def test_candidate_without_workspace_evidence_is_blocked(self) -> None:
         """历史候选缺少 workspace 证据时不能被猜测性写入正式记忆。"""
 
-        candidate_store, memory_store, materializer = self._runtime()
+        candidate_store, memory_store, materializer, receipt_store = self._runtime()
         candidate_store.save(self._candidate(workspace_key=None, memory_namespace=None))
 
         with self.assertRaisesRegex(ValueError, "缺少 workspaceKey"):
             materializer.materialize("candidate-a")
 
+        self.assertIsNone(receipt_store.get_by_candidate_id("candidate-a"))
         self.assertIsNone(memory_store.get_by_candidate_id("candidate-a"))
 
     def test_sensitive_candidate_waits_for_masking_pipeline_even_after_approval(self) -> None:
         """敏感摘要批准后仍需先接入脱敏流水线，不能直接进入可检索正文。"""
 
-        candidate_store, memory_store, materializer = self._runtime()
+        candidate_store, memory_store, materializer, receipt_store = self._runtime()
         candidate_store.save(self._candidate(sensitivity_level="sensitive"))
 
         with self.assertRaisesRegex(ValueError, "尚未接入脱敏流水线"):
             materializer.materialize("candidate-a")
 
+        receipt = receipt_store.get_by_candidate_id("candidate-a")
+        self.assertEqual(AgentMemoryMaterializationReceiptStatus.FAILED, receipt.status)
+        self.assertIn("尚未接入脱敏流水线", receipt.error_message)
         self.assertIsNone(memory_store.get_by_candidate_id("candidate-a"))
 
     @staticmethod
@@ -156,11 +174,13 @@ class AgentApprovedMemoryWriteMaterializerTest(unittest.TestCase):
 
         candidate_store = InMemoryAgentMemoryWriteCandidateStore()
         memory_store = InMemoryAgentMemoryStore()
+        receipt_store = InMemoryAgentMemoryMaterializationReceiptStore()
         materializer = AgentApprovedMemoryWriteMaterializer(
             candidate_store=candidate_store,
             memory_store=memory_store,
+            receipt_store=receipt_store,
         )
-        return candidate_store, memory_store, materializer
+        return candidate_store, memory_store, materializer, receipt_store
 
     @staticmethod
     def _candidate(

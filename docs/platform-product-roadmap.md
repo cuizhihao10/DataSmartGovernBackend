@@ -7502,3 +7502,34 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 把正式记忆 store 接入可替换持久化适配器：语义记忆走 Chroma metadata filter，情节/审批记忆走 MySQL，资源记忆走 MinIO 引用。
 3. 增加长期记忆召回观测指标：namespace 命中数、空召回率、过期跳过数、跨空间阻断数、候选到落成延迟。
 4. 节奏上不继续无限细化记忆局部；完成 receipt 后应切到智能网关工具治理、Agent skill 能力或真实 data-sync/data-quality worker 串联。
+
+## 4.83 Python AI Runtime 长期记忆 materialization receipt（2026-06-02）
+
+本阶段承接 4.82 的 workspace namespace 隔离，补齐正式记忆落成执行证据。设计重点是把“候选是否批准”和“worker 是否已经把候选落成正式记忆”拆成两类事实，避免把审批状态机膨胀成执行状态机。
+
+已完成：
+- 新增 `AgentMemoryMaterializationReceipt`、`AgentMemoryMaterializationReceiptStatus`、`AgentMemoryMaterializationReceiptStore` 与 `InMemoryAgentMemoryMaterializationReceiptStore`。
+- `AgentApprovedMemoryWriteMaterializer` 支持注入 receipt store 和 workerId：
+  - 处理开始时写入/更新 `STARTED` receipt；
+  - 正式 store 写入成功或幂等复用时写入 `SUCCEEDED`；
+  - 候选状态、敏感级别、保留期等校验失败时写入 `FAILED` 和低敏错误摘要；
+  - 缺少 workspace 证据的历史候选仍 fail-closed，且不创建 receipt，避免生成不可信空间证据。
+- MySQL 新增 `agent_memory_materialization_receipt` 初始化表和前向迁移 `20260602_agent_memory_materialization_receipt.sql`。
+- materializer 测试补充 receipt 断言：成功 receipt、重复落成 attemptCount、失败 receipt、历史 workspace 空值不创建 receipt。
+- `python-ai-runtime/README.md` 已说明长期记忆具备 materialization receipt 骨架。
+
+产品意义：
+- 审批台可以回答“谁批准了候选”，补偿台可以回答“worker 何时处理、失败几次、哪个实例处理、写成了哪条正式记忆”。
+- receipt 为后续 Kafka/outbox worker、DLQ、补偿重试、管理员诊断和指标采集提供稳定落点。
+- `attempt_count` 让平台能识别外部 store 抖动、worker 重启、消息重复消费或人工补偿造成的重复处理。
+
+当前边界：
+- receipt store 当前只有内存实现和 MySQL schema，还没有 SQL store 读写实现。
+- receipt 不是消息队列；后续仍需 outbox/inbox 或 Kafka consumer 承担异步调度。
+- 目前只记录最近一次 receipt 快照；如果未来要保存每一次尝试的完整历史，可增加 attempt 明细表。
+
+下一步建议：
+1. 不继续在 receipt 局部无限扩展，下一步优先切到智能网关工具治理或 Agent skill 能力。
+2. 若继续记忆方向，只做一小步：补 SQL receipt store 和补偿查询 API，然后立刻切换模块。
+3. 智能网关方向应聚焦模型路由、工具调用预算、workspace 上下文预算、provider fallback 和审计事件统一入口。
+4. Agent skill 方向应聚焦 skill 注册、权限准入、工具 schema 暴露策略和可审计执行，不要只做静态文件目录。
