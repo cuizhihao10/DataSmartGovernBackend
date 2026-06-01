@@ -1,5 +1,14 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-02 落地补充：guardrail metrics need bounded cardinality
+
+- 本阶段把 worker-side guardrail 从“时间线可解释”推进到“可聚合告警”：claim 前容量不足、claim 后执行复核阻断、confirmation 或 permission-admin 暂不可用退避，都进入 Micrometer 计数指标。
+- 这对应生产级 Agent 平台的 observability / admission control / action guardrail 思路：系统不仅要能解释单个工具为什么没有执行，还要能判断某类阻断是否在实例范围内持续升高。
+- DataSmart 刻意没有把 tenantId、projectId、sessionId、taskId、traceId 和原始 toolCode 直接用作指标标签。Agent 会话和工具任务增长很快，直接使用业务主键会造成 Prometheus 高基数时序，反过来损害监控平台可靠性。
+- 当前 outcome、scope、decision、reasonCode 都采用有限白名单；未知动态值归并为 `OTHER`。单条任务定位继续走 runtime event、任务审计和结构化日志。
+- 后续若要建设租户运营看板，应使用受控租户分组、工具类别、Top-N 聚合、日志分析或 exemplar 关联 trace，而不是无限扩展基础指标标签。
+- 这一批完成后，不再继续围绕 Java worker 做无止境局部优化。下一轮趋势落地应进入更大的 AI Agent 能力面，例如长期记忆写入闭环、智能网关会话调度、Skill/工具注册市场或可替换模型 provider 网关。
+
 ## 2026-06-01 落地补充：guardrail events must be explainable
 
 - 本阶段把 worker-side guardrail 从“能阻断”继续推进到“能解释”：权限拒绝、策略漂移、确认不可用、权限中心不可用等不再只是一段日志或泛化错误码，而是进入 Agent runtime event display。

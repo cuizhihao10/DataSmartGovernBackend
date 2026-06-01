@@ -46,6 +46,7 @@ public class AgentAsyncToolDispatchOnceService {
     private final AgentAsyncToolWorkerProperties properties;
     private final AgentAsyncToolWorkerAdmissionGuardService admissionGuardService;
     private final AgentAsyncToolGuardrailEventSupport guardrailEventSupport;
+    private final AgentAsyncToolWorkerMetricsService metricsService;
     private final ObjectMapper objectMapper;
 
     /**
@@ -71,14 +72,15 @@ public class AgentAsyncToolDispatchOnceService {
          */
         AgentAsyncToolWorkerAdmissionLease admission = admissionGuardService.tryAcquire(actorContext);
         if (!admission.acquired()) {
-            return new AgentAsyncToolDispatchOnceResult(false, null, null, null,
+            metricsService.recordAdmissionRejected(admission.reasonCode());
+            return dispatchResult(false, null, null, null,
                     OUTCOME_CAPACITY_LIMITED, admission.message(), admission.diagnostics());
         }
 
         try (AgentAsyncToolWorkerAdmissionLease ignored = admission) {
             TaskExecutionClaimResult claim = taskService.claimNextTask(claimRequest(), actorContext);
             if (!claim.claimed()) {
-                return new AgentAsyncToolDispatchOnceResult(false, null, null, null, OUTCOME_NO_TASK, claim.message(), Map.of());
+                return dispatchResult(false, null, null, null, OUTCOME_NO_TASK, claim.message(), Map.of());
             }
             Task task = claim.task();
             Long runId = claim.executionRun() == null ? null : claim.executionRun().getId();
@@ -91,36 +93,36 @@ public class AgentAsyncToolDispatchOnceService {
                 }
                 AgentAsyncToolExecutor executor = selectExecutor(payload.toolCode());
                 if (!notifyRunningStatus(task, runId, payload, actorContext)) {
-                    return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
+                    return dispatchResult(true, task.getId(), runId, payload.toolCode(),
                             OUTCOME_DEFERRED, "agent-runtime RUNNING 状态回写失败，任务已退避等待补偿。", Map.of());
                 }
                 AgentAsyncToolExecutionResult executionResult = executor.execute(payload);
                 TaskExecutionCallbackContext callbackContext = callbackContext(runId, payload, actorContext, executionResult);
                 if (executionResult.success()) {
                     if (!notifyTerminalStatus(task, runId, payload, actorContext, executionResult, "SUCCEEDED", null)) {
-                        return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
+                        return dispatchResult(true, task.getId(), runId, payload.toolCode(),
                                 OUTCOME_DEFERRED, "业务执行已成功，但 agent-runtime 状态回写失败，任务已退避等待补偿。", executionResult.output());
                     }
                     taskService.completeTask(task.getId(), toJson(executionResult.output()), callbackContext);
-                    return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
+                    return dispatchResult(true, task.getId(), runId, payload.toolCode(),
                             OUTCOME_COMPLETED, executionResult.message(), executionResult.output());
                 }
                 if (executionResult.retryable()) {
                     if (!notifyTerminalStatus(task, runId, payload, actorContext, executionResult, "DEFERRED", null)) {
-                        return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
+                        return dispatchResult(true, task.getId(), runId, payload.toolCode(),
                                 OUTCOME_DEFERRED, "工具临时失败且 agent-runtime 状态回写失败，任务已退避等待补偿。", executionResult.output());
                     }
                     taskService.deferTask(task.getId(), executionResult.message(), 30, callbackContext);
-                    return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
+                    return dispatchResult(true, task.getId(), runId, payload.toolCode(),
                             OUTCOME_DEFERRED, executionResult.message(), executionResult.output());
                 }
                 if (!notifyTerminalStatus(task, runId, payload, actorContext, executionResult,
                         "FAILED", "AGENT_ASYNC_TOOL_FATAL_FAILURE")) {
-                    return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
+                    return dispatchResult(true, task.getId(), runId, payload.toolCode(),
                             OUTCOME_DEFERRED, "工具失败状态尚未成功回写 agent-runtime，任务已退避等待补偿。", executionResult.output());
                 }
                 taskService.failTask(task.getId(), executionResult.message(), callbackContext);
-                return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
+                return dispatchResult(true, task.getId(), runId, payload.toolCode(),
                         OUTCOME_FAILED, executionResult.message(), executionResult.output());
             } catch (AgentAsyncToolPreCheckUnavailableException exception) {
                 /*
@@ -130,14 +132,16 @@ public class AgentAsyncToolDispatchOnceService {
                  * 等控制面恢复后再次判断。同时如果 payload 已经解析成功，会先向 agent-runtime 回写 DEFERRED，
                  * 让 runtime event 时间线展示“为什么工具还在等待”，而不是让用户只看到一个长时间 EXECUTING。
                  */
+                String unavailableErrorCode = guardrailEventSupport.unavailableErrorCode(exception);
+                metricsService.recordPreCheckUnavailable(unavailableErrorCode);
                 if (payload != null) {
                     AgentAsyncToolExecutionResult deferred = AgentAsyncToolExecutionResult.retryableFailure(
                             exception.getMessage(),
                             guardrailEventSupport.unavailableOutput(exception)
                     );
                     if (!notifyTerminalStatus(task, runId, payload, actorContext, deferred,
-                            "DEFERRED", guardrailEventSupport.unavailableErrorCode(exception))) {
-                        return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
+                            "DEFERRED", unavailableErrorCode)) {
+                        return dispatchResult(true, task.getId(), runId, payload.toolCode(),
                                 OUTCOME_DEFERRED, exception.getMessage(), deferred.output());
                     }
                 }
@@ -149,7 +153,7 @@ public class AgentAsyncToolDispatchOnceService {
                 );
                 taskService.deferTask(task.getId(), exception.getMessage(),
                         properties.getPreCheckUnavailableDeferSeconds(), callbackContext);
-                return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, null,
+                return dispatchResult(true, task.getId(), runId, null,
                         OUTCOME_DEFERRED, exception.getMessage(), Map.of());
             } catch (RuntimeException exception) {
                 TaskExecutionCallbackContext callbackContext = new TaskExecutionCallbackContext(
@@ -159,7 +163,7 @@ public class AgentAsyncToolDispatchOnceService {
                         actorContext
                 );
                 taskService.failTask(task.getId(), exception.getMessage(), callbackContext);
-                return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, null,
+                return dispatchResult(true, task.getId(), runId, null,
                         OUTCOME_FAILED, exception.getMessage(), Map.of());
             }
         }
@@ -183,8 +187,9 @@ public class AgentAsyncToolDispatchOnceService {
                 guardrailEventSupport.preCheckOutput(preCheck)
         );
         String errorCode = guardrailEventSupport.preCheckErrorCode(preCheck);
+        metricsService.recordPreCheckRejected(errorCode);
         if (!notifyTerminalStatus(task, runId, payload, actorContext, rejection, "FAILED", errorCode)) {
-            return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
+            return dispatchResult(true, task.getId(), runId, payload.toolCode(),
                     OUTCOME_DEFERRED, "执行前复核已阻断，但 agent-runtime 状态回写失败，任务已退避等待补偿。", rejection.output());
         }
         TaskExecutionCallbackContext callbackContext = new TaskExecutionCallbackContext(
@@ -194,8 +199,25 @@ public class AgentAsyncToolDispatchOnceService {
                 actorContext
         );
         taskService.failTask(task.getId(), preCheck.message(), callbackContext);
-        return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
+        return dispatchResult(true, task.getId(), runId, payload.toolCode(),
                 OUTCOME_FAILED, preCheck.message(), rejection.output());
+    }
+
+    /**
+     * 构造 dispatch-once 返回值并统一记录聚合结果指标。
+     *
+     * <p>调度流程存在任务为空、容量不足、状态回写失败、下游可重试失败和永久失败等多个出口。
+     * 将指标写入集中到这里，可以防止新增分支时漏记 outcome，也避免主流程被重复的 Micrometer 代码淹没。</p>
+     */
+    private AgentAsyncToolDispatchOnceResult dispatchResult(boolean claimed,
+                                                            Long taskId,
+                                                            Long runId,
+                                                            String toolCode,
+                                                            String outcome,
+                                                            String message,
+                                                            Map<String, Object> diagnostics) {
+        metricsService.recordDispatchOutcome(outcome);
+        return new AgentAsyncToolDispatchOnceResult(claimed, taskId, runId, toolCode, outcome, message, diagnostics);
     }
 
     private TaskExecutionClaimRequest claimRequest() {

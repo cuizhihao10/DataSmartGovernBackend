@@ -1,5 +1,14 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-02 追加落地进展：Agent worker 低基数保护指标
+
+- `task-management` 新增 `AgentAsyncToolWorkerMetricsService`，把 worker 调度结果与安全保护原因接入 Micrometer。
+- 新增 `datasmart_task_agent_async_worker_dispatch_total{outcome}`：聚合 `NO_TASK`、`CAPACITY_LIMITED`、`COMPLETED`、`DEFERRED`、`FAILED` 五类调度出口。
+- 新增 `datasmart_task_agent_async_worker_guardrail_total{scope,decision,reasonCode}`：区分 claim 前 `LOCAL_JVM` 容量保护、claim 后 `EXECUTION_PRECHECK` 安全阻断，以及 `PRECHECK_DEPENDENCY` 控制面不可用退避。
+- 标签采用显式白名单。未知 outcome 或 reasonCode 统一归并为 `OTHER`，不把 tenantId、projectId、taskId、sessionId、traceId 和原始 toolCode 直接放进 Prometheus 标签，避免高基数时序拖垮监控系统。
+- 单任务排障仍使用 runtime event、任务审计和结构化日志；未来如需租户或工具维度运营看板，应通过受控分组、Top-N 聚合或 exemplar 关联 trace 实现。
+- 这一小批是 Java worker 局部可观测性的阶段收口。下一阶段应主动切换到更大的 AI 能力面，优先评估长期记忆写入闭环、智能网关会话编排、工具注册市场或 Python model gateway/provider 抽象。
+
 ## 2026-06-01 追加落地进展：Agent worker guardrail runtime event display
 
 - `task-management` 新增 `AgentAsyncToolGuardrailEventSupport`，把 worker 执行前阻断从泛化 `PRECHECK_REJECTED` 细分为权限拒绝、仍需审批、策略版本漂移、确认记录复核失败、白名单缺失、确认/权限中心暂不可用等稳定错误码。

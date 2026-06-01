@@ -15,6 +15,7 @@ import com.czh.datasmart.govern.task.entity.Task;
 import com.czh.datasmart.govern.task.entity.TaskExecutionRun;
 import com.czh.datasmart.govern.task.service.TaskService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -60,6 +61,7 @@ class AgentAsyncToolDispatchOnceServiceTest {
                 properties,
                 new AgentAsyncToolWorkerAdmissionGuardService(properties),
                 new AgentAsyncToolGuardrailEventSupport(),
+                metricsService(),
                 new ObjectMapper()
         );
         Task task = new Task();
@@ -107,6 +109,7 @@ class AgentAsyncToolDispatchOnceServiceTest {
                 properties,
                 new AgentAsyncToolWorkerAdmissionGuardService(properties),
                 new AgentAsyncToolGuardrailEventSupport(),
+                metricsService(),
                 new ObjectMapper()
         );
         Task task = new Task();
@@ -153,6 +156,7 @@ class AgentAsyncToolDispatchOnceServiceTest {
                 properties,
                 new AgentAsyncToolWorkerAdmissionGuardService(properties),
                 new AgentAsyncToolGuardrailEventSupport(),
+                metricsService(),
                 new ObjectMapper()
         );
         Task task = new Task();
@@ -181,6 +185,7 @@ class AgentAsyncToolDispatchOnceServiceTest {
         properties.setDryRunOnly(false);
         properties.setMaxLocalConcurrentExecutions(1);
         AgentAsyncToolWorkerAdmissionGuardService admissionGuard = new AgentAsyncToolWorkerAdmissionGuardService(properties);
+        AgentAsyncToolWorkerMetricsService metricsService = mock(AgentAsyncToolWorkerMetricsService.class);
         TaskActorContext actorContext = new TaskActorContext(10L, null, "SERVICE_ACCOUNT", "trace-worker", null, List.of());
         AgentAsyncToolWorkerAdmissionLease heldLease = admissionGuard.tryAcquire(actorContext);
         try {
@@ -193,6 +198,7 @@ class AgentAsyncToolDispatchOnceServiceTest {
                     properties,
                     admissionGuard,
                     new AgentAsyncToolGuardrailEventSupport(),
+                    metricsService,
                     new ObjectMapper()
             );
 
@@ -201,9 +207,15 @@ class AgentAsyncToolDispatchOnceServiceTest {
             assertEquals("CAPACITY_LIMITED", result.outcome());
             assertEquals(false, result.claimed());
             verify(taskService, never()).claimNextTask(any(TaskExecutionClaimRequest.class), any(TaskActorContext.class));
+            verify(metricsService).recordAdmissionRejected("LOCAL_CONCURRENCY_LIMIT");
+            verify(metricsService).recordDispatchOutcome("CAPACITY_LIMITED");
         } finally {
             heldLease.close();
         }
+    }
+
+    private AgentAsyncToolWorkerMetricsService metricsService() {
+        return new AgentAsyncToolWorkerMetricsService(new SimpleMeterRegistry());
     }
 
     private AgentAsyncToolResolvedPayload payload() {
