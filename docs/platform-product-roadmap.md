@@ -7313,3 +7313,22 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 补 `JdbcAgentRunToolDagConfirmationStore`，让确认事实在多实例和服务重启后可恢复。
 3. 补租户配额、工具级限流、worker 并发池和 outbox 积压保护。
 4. 在扩更多工具适配器前，先把 DLQ、补偿、审计导出和运维可见性补齐，避免自动化能力快于治理能力。
+
+## 4.71 Agent Runtime selected-node outbox 与 confirmation 同事务边界（2026-06-01）
+
+本阶段补齐 selected-node 确认入箱的可靠性短板：当异步命令 outbox 与 DAG 确认记录都使用 MySQL 时，`agent-runtime` 会把 command outbox 写入和 confirmation 写入放进同一个 JDBC 事务边界。
+
+已完成：
+- `AgentRunToolDagSelectedNodeOutboxService` 只在 `async-task-commands.outbox.store=mysql`、`tool-dag.confirmations.store=mysql` 且 JDBC manager 存在时启用事务。
+- dry-run、指纹校验、policyVersion 校验仍在事务外完成，避免只读预检占用数据库连接。
+- outbox enqueue 与 confirmation save 共享 `AgentRuntimeJdbcConnectionManager` 的 ThreadLocal Connection，双 MySQL 模式下成功一起提交，失败一起回滚。
+- 新增轻量测试辅助 `RecordingDataSource`，验证事务边界触发而不引入真实数据库依赖。
+
+产品意义：
+- 这一步让 Agent 工具确认从“有证据可查”进一步接近“证据与命令原子形成”，减少网关重试、Python Runtime replay、服务异常或数据库短暂故障造成的双写不一致。
+- 当前仍不把 Kafka、task-management Inbox 或 worker 执行纳入同一事务；跨服务一致性后续仍依赖 outbox/inbox、幂等键、重试、DLQ 和审计补偿。
+
+下一步建议：
+1. 补 confirmation 审计查询 API 与 `VIEW_TOOL_CONFIRMATIONS` 类权限动作。
+2. 补租户配额、工具级限流、worker 并发池与 outbox backlog 保护。
+3. 补 worker 执行前二次复核，把权限、配额、payloadReference、任务状态和幂等键统一校验。

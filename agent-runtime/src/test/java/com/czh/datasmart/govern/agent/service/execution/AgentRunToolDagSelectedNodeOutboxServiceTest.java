@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.agent.service.execution;
 
 import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
 import com.czh.datasmart.govern.agent.config.AgentRunToolDagConfirmationProperties;
+import com.czh.datasmart.govern.agent.config.AgentRuntimePersistenceProperties;
 import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
 import com.czh.datasmart.govern.agent.config.AgentToolServiceAuthorizationProperties;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagExecutionDryRunRequest;
@@ -23,6 +24,7 @@ import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
 import com.czh.datasmart.govern.agent.model.AgentToolRiskLevel;
 import com.czh.datasmart.govern.agent.model.AgentToolServiceAuthorizationMode;
 import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
+import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcConnectionManager;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditMemoryStore;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecord;
@@ -42,6 +44,7 @@ import org.junit.jupiter.api.Test;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -204,6 +207,30 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
                 ));
     }
 
+    @Test
+    void mysqlOutboxAndConfirmationShouldShareJdbcTransactionBoundary() {
+        RecordingDataSource dataSource = new RecordingDataSource();
+        TestFixture fixture = newFixture(
+                authorizationProperties -> { },
+                request -> null,
+                outboxProperties -> outboxProperties.setStore("mysql"),
+                confirmationProperties -> confirmationProperties.setStore("mysql"),
+                Optional.of(new AgentRuntimeJdbcConnectionManager(dataSource.proxy(), new AgentRuntimePersistenceProperties()))
+        );
+        fixture.saveAudits(asyncAudit("audit-async", "data-sync-execute", Map.of()));
+        AgentRunToolDagExecutionDryRunResponse dryRun = fixture.dryRun(List.of("data-sync-execute"));
+
+        AgentRunToolDagSelectedNodeOutboxEnqueueResponse response = fixture.confirm(
+                List.of("data-sync-execute"),
+                dryRun.selectionFingerprint()
+        );
+
+        assertEquals(1, response.outbox().enqueuedCount());
+        assertEquals(1, dataSource.connectionRequests);
+        assertEquals(1, dataSource.commitCount);
+        assertEquals(0, dataSource.rollbackCount);
+    }
+
     private TestFixture newFixture() {
         return newFixture(authorizationProperties -> { }, request -> null);
     }
@@ -230,10 +257,26 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
 
     private TestFixture newFixture(Consumer<AgentToolServiceAuthorizationProperties> authorizationCustomizer,
                                    PermissionAdminServiceAuthorizationClient authorizationClient) {
+        return newFixture(
+                authorizationCustomizer,
+                authorizationClient,
+                outboxProperties -> { },
+                confirmationProperties -> { },
+                Optional.empty()
+        );
+    }
+
+    private TestFixture newFixture(Consumer<AgentToolServiceAuthorizationProperties> authorizationCustomizer,
+                                   PermissionAdminServiceAuthorizationClient authorizationClient,
+                                   Consumer<AgentAsyncTaskCommandOutboxProperties> outboxCustomizer,
+                                   Consumer<AgentRunToolDagConfirmationProperties> confirmationCustomizer,
+                                   Optional<AgentRuntimeJdbcConnectionManager> jdbcConnectionManager) {
         AgentRuntimeProperties runtimeProperties = new AgentRuntimeProperties();
         AgentAsyncTaskCommandOutboxProperties outboxProperties = new AgentAsyncTaskCommandOutboxProperties();
         AgentRunToolDagConfirmationProperties confirmationProperties = new AgentRunToolDagConfirmationProperties();
         AgentToolServiceAuthorizationProperties authorizationProperties = new AgentToolServiceAuthorizationProperties();
+        outboxCustomizer.accept(outboxProperties);
+        confirmationCustomizer.accept(confirmationProperties);
         authorizationCustomizer.accept(authorizationProperties);
         AgentSessionMemoryStore sessionStore = new AgentSessionMemoryStore();
         AgentToolExecutionAuditMemoryStore auditStore = new AgentToolExecutionAuditMemoryStore();
@@ -281,7 +324,9 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
                 dryRunService,
                 outboxService,
                 confirmationStore,
-                confirmationProperties
+                outboxProperties,
+                confirmationProperties,
+                jdbcConnectionManager
         );
         AgentSessionRecord session = new AgentSessionRecord(
                 SESSION_ID,

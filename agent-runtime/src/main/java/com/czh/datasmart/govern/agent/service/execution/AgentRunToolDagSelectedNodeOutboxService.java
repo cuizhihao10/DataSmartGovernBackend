@@ -13,7 +13,9 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagExecutionDry
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagSelectedNodeOutboxEnqueueRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagSelectedNodeOutboxEnqueueResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolDagExecutionDryRunItemView;
+import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
 import com.czh.datasmart.govern.agent.config.AgentRunToolDagConfirmationProperties;
+import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcConnectionManager;
 import com.czh.datasmart.govern.agent.service.execution.confirmation.AgentRunToolDagConfirmationRecord;
 import com.czh.datasmart.govern.agent.service.execution.confirmation.AgentRunToolDagConfirmationStatus;
 import com.czh.datasmart.govern.agent.service.execution.confirmation.AgentRunToolDagConfirmationStore;
@@ -30,6 +32,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -55,7 +58,9 @@ public class AgentRunToolDagSelectedNodeOutboxService {
     private final AgentRunToolDagExecutionDryRunService dryRunService;
     private final AgentRunAsyncTaskCommandOutboxService outboxService;
     private final AgentRunToolDagConfirmationStore confirmationStore;
+    private final AgentAsyncTaskCommandOutboxProperties outboxProperties;
     private final AgentRunToolDagConfirmationProperties confirmationProperties;
+    private final Optional<AgentRuntimeJdbcConnectionManager> jdbcConnectionManager;
 
     /**
      * 将调用方明确确认的异步 DAG 节点写入 outbox。
@@ -86,6 +91,50 @@ public class AgentRunToolDagSelectedNodeOutboxService {
         ensureFingerprintMatches(request.expectedDryRunFingerprint(), dryRun.selectionFingerprint());
         Set<String> selectedAuditIds = requireOnlyAsyncOutboxCandidates(dryRun);
         ensurePolicyVersionsMatch(request.expectedPolicyVersionsByAuditId(), dryRun, selectedAuditIds);
+        return persistOutboxAndConfirmation(sessionId, runId, request, traceId, dryRun, selectedAuditIds);
+    }
+
+    /**
+     * 在合适的持久化组合下，把“异步命令 outbox 写入”和“DAG 确认事实写入”收敛到同一个事务边界。
+     *
+     * <p>这里刻意只包裹真正产生副作用的两步写入，而不把前面的 dry-run、指纹校验和 policyVersion 校验也放进事务。
+     * dry-run 本质上是只读预检和事件投影，它负责让调用方理解“当前哪些节点可以被确认”，不是修改命令队列。
+     * 如果把大量预检逻辑放入事务，事务持有连接的时间会变长，在高并发 Agent 会话、批量 DAG 节点确认、网关重试等场景下更容易造成连接池压力。</p>
+     *
+     * <p>只有当 async command outbox 和 confirmation store 都明确切换到 MySQL，并且 JDBC 连接管理器已经由
+     * {@code datasmart.agent-runtime.persistence.database-enabled=true} 注册时，才启用事务。这样可以避免 memory/mysql 混合模式
+     * 给使用者造成“已经完全原子化”的错觉：如果其中一边仍是内存仓储，数据库事务只能覆盖 MySQL 那一边，不能保证整条链路原子提交。</p>
+     */
+    private AgentRunToolDagSelectedNodeOutboxEnqueueResponse persistOutboxAndConfirmation(
+            String sessionId,
+            String runId,
+            AgentRunToolDagSelectedNodeOutboxEnqueueRequest request,
+            String traceId,
+            AgentRunToolDagExecutionDryRunResponse dryRun,
+            Set<String> selectedAuditIds) {
+        Optional<AgentRuntimeJdbcConnectionManager> manager = selectedNodeDurableTransactionManager();
+        if (manager.isPresent()) {
+            return manager.get().executeInTransaction(connection ->
+                    persistOutboxAndConfirmationInCurrentBoundary(sessionId, runId, request, traceId, dryRun, selectedAuditIds)
+            );
+        }
+        return persistOutboxAndConfirmationInCurrentBoundary(sessionId, runId, request, traceId, dryRun, selectedAuditIds);
+    }
+
+    /**
+     * 执行 selected-node 确认的两次持久化写入。
+     *
+     * <p>当外层启用了 {@link AgentRuntimeJdbcConnectionManager#executeInTransaction(AgentRuntimeJdbcConnectionManager.SqlConnectionCallback)}
+     * 时，MySQL outbox store 和 MySQL confirmation store 内部的 {@code executeWithConnection(...)} 会复用同一条 ThreadLocal 连接；
+     * 当外层没有事务时，本方法仍保持原有 memory/local 行为不变。这个拆分让业务流程读起来更直接，也避免把事务判断散落到 outbox 或 confirmation 仓储里。</p>
+     */
+    private AgentRunToolDagSelectedNodeOutboxEnqueueResponse persistOutboxAndConfirmationInCurrentBoundary(
+            String sessionId,
+            String runId,
+            AgentRunToolDagSelectedNodeOutboxEnqueueRequest request,
+            String traceId,
+            AgentRunToolDagExecutionDryRunResponse dryRun,
+            Set<String> selectedAuditIds) {
         AgentRunAsyncTaskCommandOutboxEnqueueResponse outbox =
                 outboxService.enqueueSelectedRunAsyncTaskCommands(sessionId, runId, selectedAuditIds);
         AgentRunToolDagConfirmationRecord confirmation = saveConfirmation(
@@ -113,11 +162,28 @@ public class AgentRunToolDagSelectedNodeOutboxService {
     }
 
     /**
+     * 判断当前配置是否可以安全启用 selected-node durable transaction。
+     *
+     * <p>判断条件使用“两个 store 都是 mysql + JDBC manager 存在”，而不是只看 database-enabled。
+     * 这是因为数据库总开关只代表连接池可用，不代表具体业务事实已经落库。商业化系统里这类能力开关必须保守：
+     * 宁可在 memory 模式下继续保持原有行为，也不要在半持久化组合下宣称具备原子提交能力。</p>
+     */
+    private Optional<AgentRuntimeJdbcConnectionManager> selectedNodeDurableTransactionManager() {
+        if (!"mysql".equalsIgnoreCase(outboxProperties.getStore())) {
+            return Optional.empty();
+        }
+        if (!"mysql".equalsIgnoreCase(confirmationProperties.getStore())) {
+            return Optional.empty();
+        }
+        return jdbcConnectionManager;
+    }
+
+    /**
      * 保存 selected-node 确认事实。
      *
      * <p>这里故意放在 outbox 写入之后：确认记录要表达的是“确认已导致哪些 command 进入可靠投递轨道”。
      * 如果 outbox 入箱失败，不能先留下 CONFIRMED 记录，否则审计台会误以为下游 command 已经形成。
-     * 后续 MySQL 版本应把 outbox INSERT 与 confirmation INSERT 放进同一事务边界，进一步消除双写风险。</p>
+     * 当前双 MySQL 配置会由外层事务边界把 outbox INSERT 与 confirmation INSERT 一起提交，进一步收敛双写风险。</p>
      */
     private AgentRunToolDagConfirmationRecord saveConfirmation(String sessionId,
                                                                String runId,
