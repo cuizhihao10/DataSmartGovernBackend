@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 from typing import Any
 
+from datasmart_ai_runtime.api_intelligent_gateway import build_intelligent_gateway_governance_response
 from datasmart_ai_runtime.api_model_gateway import build_model_gateway_governance_response
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ToolPlan
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
@@ -125,6 +126,10 @@ def build_plan_response(
     )
     response = _build_base_response(plan, event_transport_builder)
     response["agentWorkspace"] = workspace_context.to_summary()
+    response["intelligentGatewayGovernance"] = build_intelligent_gateway_governance_response(
+        plan,
+        workspace_context,
+    )
     if control_plane_ingestion is not None:
         response["controlPlaneIngestion"] = control_plane_ingestion.to_summary()
     if control_plane_feedback is not None:

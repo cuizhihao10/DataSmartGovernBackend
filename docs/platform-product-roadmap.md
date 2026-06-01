@@ -7600,3 +7600,34 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 把工具预算策略来源抽象出来，未来接 permission-admin/tenant plan/Java gateway/Redis quota。
 3. 汇总 model route、tool budget、cache plan、memory retrieval、workspace namespace，形成智能网关统一治理摘要。
 4. 接下来可以推进 Agent skill 能力，开始做 skill 注册、权限准入和工具 schema 暴露策略。
+
+## 4.86 Python AI Runtime 智能网关统一治理摘要（2026-06-02）
+
+本阶段把前面分散在 `modelGatewayGovernance`、runtime events、`agentWorkspace`、memory plan/retrieval report 中的治理事实汇总为 `intelligentGatewayGovernance` 响应字段。目标是先稳定“智能网关治理总览”的 API 契约，让前端、Java gateway 和审计侧能用一个入口读取本轮 Agent 的模型路由、工具预算、workspace 和记忆治理状态。
+
+已完成：
+- 新增 `api_intelligent_gateway.py`：
+  - `build_intelligent_gateway_governance_response(plan, workspace_context)`；
+  - 汇总 `modelGateway`、`toolBudget`、`workspace`、`memory`、计划工具数量、工具名、展示摘要和 recommendedActions；
+  - 从 stage=`guard_model_tool_call_budget` 的 runtime event 中提取工具预算 before/after、issue codes、arguments 字节数和策略。
+- `build_plan_response` 新增 `intelligentGatewayGovernance` 顶层字段。
+- `python-ai-runtime/README.md` 已说明智能网关统一摘要能力。
+- 新增 `test_intelligent_gateway_governance.py`，覆盖：
+  - 默认计划响应包含统一治理摘要；
+  - 工具预算阻断时统一摘要可直接暴露 issue code、proposedCount、acceptedCountAfterGuard 和建议动作。
+
+产品意义：
+- API 使用方不再需要分散解析 runtime events、workspace、modelGateway 和 memory report 才能拼出治理卡片。
+- 智能网关摘要当前只做汇总，不重新做决策，避免 API 层绕过真实治理服务。
+- 统一摘要为后续 Java gateway 写审计、前端展示治理总览、运营诊断“模型可用但工具预算阻断”等场景打基础。
+
+当前边界：
+- `toolBudget` 目前依赖 runtime event stage 提取；后续可升级为独立领域对象或专用 event type。
+- 策略来源仍是静态默认策略，尚未接 permission-admin/tenant plan/Java gateway。
+- 统一摘要目前只在同步 plan response 返回，尚未持久化到 Java 控制面或事件仓库索引字段。
+
+下一步建议：
+1. 抽象工具预算策略来源：`ModelToolCallBudgetPolicyProvider`，先支持请求变量/环境变量，再接 Java 策略中心。
+2. 增加独立 runtime event type，如 `MODEL_TOOL_CALL_BUDGET_GUARDED`，让事件语义更准确。
+3. 推进 Agent skill 能力：skill 注册、权限准入、工具 schema 暴露策略和可审计执行。
+4. 后续 Java gateway 可读取 `intelligentGatewayGovernance` 并写入审计记录，但不要把决策逻辑复制到 API 层。
