@@ -80,6 +80,11 @@ from datasmart_ai_runtime.services.model_tool_call_planner import (
     ModelToolCallPlanner,
     ModelToolCallPlanningReport,
 )
+from datasmart_ai_runtime.services.model_tool_call_budget_guard import (
+    ModelToolCallBudgetGuard,
+    ModelToolCallBudgetGuardReport,
+    ModelToolCallBudgetPolicy,
+)
 from datasmart_ai_runtime.services.model_tool_call_events import (
     ModelToolCallEventRecordingSummary,
     record_model_tool_call_planning_events,
@@ -271,6 +276,9 @@ __all__ = [
     "ModelToolCallCandidate",
     "ModelToolCallDeltaAggregator",
     "ModelToolCallGovernanceIssue",
+    "ModelToolCallBudgetGuard",
+    "ModelToolCallBudgetGuardReport",
+    "ModelToolCallBudgetPolicy",
     "ModelToolCallEventRecordingSummary",
     "ModelToolCallPlanner",
     "ModelToolCallPlanningReport",

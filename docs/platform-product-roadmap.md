@@ -7533,3 +7533,40 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 若继续记忆方向，只做一小步：补 SQL receipt store 和补偿查询 API，然后立刻切换模块。
 3. 智能网关方向应聚焦模型路由、工具调用预算、workspace 上下文预算、provider fallback 和审计事件统一入口。
 4. Agent skill 方向应聚焦 skill 注册、权限准入、工具 schema 暴露策略和可审计执行，不要只做静态文件目录。
+
+## 4.84 Python AI Runtime 智能网关工具调用预算守卫（2026-06-02）
+
+本阶段按 4.83 的路线从长期记忆局部切到智能网关工具治理。目标不是一次性完成 OpenClaw 风格智能网关，而是先补“模型提出工具调用之后、平台生成可执行计划之前”的预算准入层，防止模型一次响应制造过多工具动作、过大参数体积或过多高风险副作用。
+
+已完成：
+- 新增 `ModelToolCallBudgetPolicy`：
+  - `max_proposed_tool_calls`：单轮模型工具调用候选上限；
+  - `max_auto_executable_tool_calls`：可自动继续推进的工具数量上限；
+  - `max_high_risk_tool_calls`：HIGH/CRITICAL 工具数量上限；
+  - `max_single_arguments_bytes`：单个 arguments 原文体积上限；
+  - `max_total_arguments_bytes`：本轮 arguments 总体积上限。
+- 新增 `ModelToolCallBudgetGuard`，接收 `ModelToolCallPlanningReport`，返回 guarded report，不修改原始报告。
+- 新增 `ModelToolCallBudgetGuardReport`，提供 before/after 计数、总参数体积、预算问题码和低敏 summary。
+- 预算问题统一使用 `MODEL_TOOL_CALL_BUDGET_*` 机器码，并作为 blocking issue 写回候选，复用现有 `accepted_tool_plans/rejected_candidates` 语义。
+- 新增 `test_model_tool_call_budget_guard.py`，覆盖：
+  - 自动推进工具数量超限；
+  - proposed 工具数量超限；
+  - 单个/总体 arguments 体积超限；
+  - 多个合法高风险工具同轮超限。
+- `python-ai-runtime/README.md` 已加入智能网关工具治理当前能力说明。
+
+产品意义：
+- 工具治理不再只回答“工具是否存在、参数是否为 JSON”，也开始回答“这轮工具调用是否对平台容量、审批压力、下游微服务和安全边界过重”。
+- guard 保留 original report 和 guarded report，便于未来 runtime event、审计回放和用户解释界面展示“模型原本想做什么、网关为什么阻断一部分”。
+- 这为后续按租户套餐、项目等级、角色、工具成本权重、worker backlog 动态生成工具预算策略打基础。
+
+当前边界：
+- guard 目前是独立服务，还没有自动接入 `AgentOrchestrator` 主流程。
+- 策略还是静态内存配置，没有从 permission-admin、tenant plan、Redis quota 或 Java gateway 下发。
+- guard 只处理模型工具调用预算，不替代 permission-admin 授权、Java agent-runtime 审批、outbox 容量保护或真实 worker 并发池。
+
+下一步建议：
+1. 把 guard 接入 AgentOrchestrator 的模型工具调用规划节点，并把 budget summary 写入 runtime event。
+2. 继续智能网关方向：把 model route、tool budget、workspace context budget、provider fallback 和 memory retrieval budget 统一成 gateway governance response。
+3. 不建议马上做复杂 UI 或完整网关微服务；先让 Python Runtime 固定治理契约，再由 Java gateway/permission-admin 接权限和策略。
+4. Agent skill 能力仍是下一条主线，应在工具预算接入主流程后推进 skill 注册、权限准入和 schema 暴露策略。
