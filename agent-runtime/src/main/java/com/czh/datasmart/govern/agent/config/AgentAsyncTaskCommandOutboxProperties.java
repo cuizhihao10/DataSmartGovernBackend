@@ -71,6 +71,41 @@ public class AgentAsyncTaskCommandOutboxProperties {
     private int maxTotalRecords = 5000;
 
     /**
+     * 是否启用入箱前容量保护。
+     *
+     * <p>outbox 的容量上限解决的是“仓储最多保留多少记录”，但它不等于执行保护。
+     * 如果一个租户已经堆积大量 PENDING/FAILED/PUBLISHING command，继续允许 Agent 批量确认入箱，
+     * 会把压力继续转移给 dispatcher、Kafka、task-management 和下游数据治理服务。
+     * 因此这里单独提供入箱前保护开关，用于在 command 形成之前就阻断明显会扩大积压的请求。</p>
+     */
+    private boolean capacityProtectionEnabled = true;
+
+    /**
+     * 单次 enqueue 最多允许写入的 dispatchable command 数。
+     *
+     * <p>该值保护的是“一次用户确认或一次兼容批量入口”带来的瞬时放大。
+     * 即使单个 run 总体允许保留 500 条记录，也不代表一次 HTTP 请求应该推进 500 个后台任务。</p>
+     */
+    private int maxCommandsPerEnqueue = 20;
+
+    /**
+     * 单个 run 允许存在的活跃 command 积压上限。
+     *
+     * <p>活跃积压包括 PENDING、PUBLISHING 和 FAILED：它们要么还没投递，要么正在投递，要么等待重试。
+     * PUBLISHED 表示已交给下游，BLOCKED/IGNORED 则进入人工治理，不计入自动执行压力。</p>
+     */
+    private int maxActiveCommandsPerRun = 100;
+
+    /**
+     * 单个租户允许存在的活跃 command 积压上限。
+     *
+     * <p>这是商业化多租户场景里的第一层公平性保护：一个大租户或异常 Agent loop 不应该把全平台 outbox、
+     * dispatcher 线程、Kafka 分区或 task-management worker 全部占满。后续可以把它升级为套餐级配额、Redis
+     * 分布式计数器和令牌桶；当前先在本服务内基于 outbox store 做可测试的保守保护。</p>
+     */
+    private int maxActiveCommandsPerTenant = 1000;
+
+    /**
      * 自动生成 task-management 任务时使用的默认优先级。
      */
     private String defaultPriority = "MEDIUM";

@@ -208,6 +208,19 @@ datasmart:
         # 内存热窗口容量。生产持久化后应改由数据库保留策略、归档和清理任务控制。
         max-commands-per-run: 500
         max-total-records: 5000
+        # 入箱前容量保护。该保护发生在 command outbox append 之前，用于避免 Agent DAG 批量确认继续扩大积压。
+        # 第一阶段先做本服务内可验证的 run/tenant backlog 检查；生产多实例后应继续升级为 Redis/DB 原子配额、
+        # 租户套餐、工具级并发池和 worker 侧租约控制。
+        capacity-protection-enabled: true
+        # 单次 enqueue 最多允许的可下发 command 数。selected-node 推荐入口通常应小批量推进，
+        # 不建议一次确认几十上百个后台任务；大规模补偿应走管理员补偿台和异步审批流程。
+        max-commands-per-enqueue: 20
+        # 单个 run 的活跃 command 积压上限。活跃状态包括 PENDING、PUBLISHING、FAILED。
+        # PUBLISHED 已交给下游，BLOCKED/IGNORED 已进入人工治理，不计入自动执行压力。
+        max-active-commands-per-run: 100
+        # 单个租户的活跃 command 积压上限，避免异常 Agent loop 或大租户批量操作占满全平台执行资源。
+        # 后续可按租户套餐、项目等级、工具成本和客户 SLA 分层配置。
+        max-active-commands-per-tenant: 1000
         # 创建 task-management 任务时的默认调度建议。
         default-priority: MEDIUM
         default-max-retry-count: 3

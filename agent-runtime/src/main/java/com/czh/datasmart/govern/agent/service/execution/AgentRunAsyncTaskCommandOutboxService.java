@@ -50,6 +50,7 @@ public class AgentRunAsyncTaskCommandOutboxService {
     private final AgentAsyncTaskCommandOutboxProperties properties;
     private final AgentRunAsyncTaskCommandPlanningService planningService;
     private final AgentAsyncTaskCommandOutboxStore outboxStore;
+    private final AgentAsyncTaskCommandOutboxCapacityGuard capacityGuard;
     private final ObjectMapper objectMapper;
 
     /**
@@ -102,6 +103,12 @@ public class AgentRunAsyncTaskCommandOutboxService {
         List<AgentAsyncTaskCommandPlanItemView> scopedItems = plan.items().stream()
                 .filter(item -> selectedAuditIds == null || selectedAuditIds.contains(item.auditId()))
                 .toList();
+        /*
+         * 入箱前先做容量保护，而不是等 append 后再检查。
+         * 原因是 append 成功就已经形成“待投递命令”事实，后置检查只能补救，不能阻止积压继续扩大。
+         * 这里保护 Run 级积压、租户级积压和单请求批量大小，避免 Agent DAG 自动化在高并发或重试风暴下压垮下游。
+         */
+        capacityGuard.assertCanEnqueue(runId, scopedItems);
         List<AgentAsyncTaskCommandOutboxRecordView> views = new ArrayList<>();
         int enqueued = 0;
         int duplicate = 0;

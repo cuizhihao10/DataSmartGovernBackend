@@ -18,6 +18,7 @@ import java.sql.SQLException;
 import java.sql.SQLIntegrityConstraintViolationException;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -35,15 +36,9 @@ import java.util.Optional;
  * {@code datasmart.agent-runtime.persistence.database-enabled=true} 时注册。默认 memory 模式仍保持轻量，
  * 避免本地学习、单测或没有 MySQL 的环境启动失败。</p>
  *
- * <p>状态流转约束：</p>
- * <p>1. {@code PENDING/FAILED -> PUBLISHING}：dispatcher 通过条件 UPDATE 领取，避免多实例重复领取；</p>
- * <p>2. {@code PUBLISHING -> PUBLISHED}：下游 broker/HTTP target 确认接收后写回成功；</p>
- * <p>3. {@code PUBLISHING -> FAILED}：投递失败后记录 lastError 和 nextRetryAt；</p>
- * <p>4. {@code PENDING/PUBLISHING/FAILED -> BLOCKED}：超过最大尝试、配置错误或安全策略阻断；</p>
- * <p>5. stale {@code PUBLISHING -> FAILED}：dispatcher 崩溃后由下一轮扫描恢复。</p>
- *
- * <p>当前没有引入 workerId/lockedAt/lockExpireAt 字段，而是用 status 条件更新和 update_time 作为最小可用的
- * 领取语义。后续如果进入多实例高并发投递，应扩展显式租约字段、分片扫描、死信 topic 和运维补偿台。</p>
+ * <p>状态流转通过条件 UPDATE 控制：PENDING/FAILED 可被领取为 PUBLISHING，发送成功后变为 PUBLISHED，
+ * 失败后变为 FAILED，超过重试或契约错误时进入 BLOCKED。当前用 status + update_time 作为最小租约语义，
+ * 后续多实例高并发投递时应继续扩展 workerId、lockedAt、lockExpireAt、分片扫描和死信 topic。</p>
  */
 @Component
 @ConditionalOnExpression(
@@ -68,11 +63,8 @@ public class JdbcAgentAsyncTaskCommandOutboxStore implements AgentAsyncTaskComma
     /**
      * 追加一条待投递 command。
      *
-     * <p>append 是 outbox 的入口，语义必须幂等：同一个 commandId 或 idempotencyKey 重复写入时返回 false，
-     * 让上层可以回读已有记录，而不是因为用户刷新、模型重试或接口重复调用产生多条下游任务。</p>
-     *
-     * <p>这里不在代码里主动查重再插入，因为“先查再插”在并发下仍然会竞争。正确做法是依赖 MySQL 唯一索引作为
-     * 最终仲裁，再把唯一键冲突转换成可理解的业务结果。</p>
+     * <p>append 依赖 MySQL 唯一索引保证幂等：同一个 commandId 或 idempotencyKey 重复写入时返回 false，
+     * 让上层回读已有记录，避免用户刷新、模型重试或网关重放制造多条下游任务。</p>
      */
     @Override
     public boolean append(AgentAsyncTaskCommandOutboxRecord record) {
@@ -95,7 +87,6 @@ public class JdbcAgentAsyncTaskCommandOutboxStore implements AgentAsyncTaskComma
 
     /**
      * 按 outboxId 查询单条记录。
-     *
      * <p>outboxId 是运维和补偿侧最稳定的记录 ID。dispatcher 状态更新后也会通过该 ID 回读最新记录，
      * 便于把数据库实际状态返回给上层，而不是依赖内存中的旧对象。</p>
      */
@@ -144,6 +135,34 @@ public class JdbcAgentAsyncTaskCommandOutboxStore implements AgentAsyncTaskComma
                                                         int limit) {
         QueryPlan queryPlan = buildListQuery(runId, status, normalizeLimit(limit));
         return query(queryPlan, "查询 Agent 异步命令 outbox 列表失败，runId=" + runId + ", status=" + status);
+    }
+
+    @Override
+    public long countByRunAndStatuses(String runId, Collection<AgentAsyncTaskCommandOutboxStatus> statuses) {
+        if (!hasText(runId)) {
+            return 0L;
+        }
+        return JdbcAgentAsyncTaskCommandOutboxCountSupport.countByScope(
+                connectionManager,
+                "run_id",
+                runId,
+                statuses,
+                "统计 Agent 异步命令 outbox run 积压失败，runId=" + runId
+        );
+    }
+
+    @Override
+    public long countByTenantAndStatuses(Long tenantId, Collection<AgentAsyncTaskCommandOutboxStatus> statuses) {
+        if (tenantId == null) {
+            return 0L;
+        }
+        return JdbcAgentAsyncTaskCommandOutboxCountSupport.countByScope(
+                connectionManager,
+                "tenant_id",
+                tenantId,
+                statuses,
+                "统计 Agent 异步命令 outbox 租户积压失败，tenantId=" + tenantId
+        );
     }
 
     /**

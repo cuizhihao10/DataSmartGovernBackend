@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.event.command;
 
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -32,6 +33,23 @@ public interface AgentAsyncTaskCommandOutboxStore {
     List<AgentAsyncTaskCommandOutboxRecord> list(String runId,
                                                  AgentAsyncTaskCommandOutboxStatus status,
                                                  int limit);
+
+    /**
+     * 统计某个 run 在指定状态集合下的 outbox 记录数。
+     *
+     * <p>该方法主要服务入箱前容量保护：selected-node 或 Run 级批量入口在写入新 command 前，
+     * 需要先知道当前 run 是否已经有大量 PENDING/PUBLISHING/FAILED 命令等待处理。
+     * 这里用 count 而不是 list，是为了让 MySQL 实现可以走数据库聚合，避免为了判断阈值拉回大量 payload。</p>
+     */
+    long countByRunAndStatuses(String runId, Collection<AgentAsyncTaskCommandOutboxStatus> statuses);
+
+    /**
+     * 统计某个租户在指定状态集合下的 outbox 记录数。
+     *
+     * <p>这是第一版租户级 backlog 保护的底座。后续如果接入 Redis 分布式限流或独立 quota-center，
+     * 上层 Guard 仍可保持同一个语义：在产生更多后台副作用之前，先判断租户是否已经积压过多活跃 command。</p>
+     */
+    long countByTenantAndStatuses(Long tenantId, Collection<AgentAsyncTaskCommandOutboxStatus> statuses);
 
     List<AgentAsyncTaskCommandOutboxRecord> listPublishable(int limit, Instant now);
 

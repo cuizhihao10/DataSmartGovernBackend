@@ -13,6 +13,7 @@ import org.springframework.stereotype.Component;
 import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -106,6 +107,37 @@ public class InMemoryAgentAsyncTaskCommandOutboxStore implements AgentAsyncTaskC
                     .filter(record -> status == null || record.status() == status)
                     .limit(normalizedLimit)
                     .toList();
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    @Override
+    public long countByRunAndStatuses(String runId, Collection<AgentAsyncTaskCommandOutboxStatus> statuses) {
+        lock.readLock().lock();
+        try {
+            if (!hasText(runId)) {
+                return 0L;
+            }
+            return listByRunId(runId, null, Integer.MAX_VALUE).stream()
+                    .filter(record -> statusMatches(record, statuses))
+                    .count();
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
+    @Override
+    public long countByTenantAndStatuses(Long tenantId, Collection<AgentAsyncTaskCommandOutboxStatus> statuses) {
+        lock.readLock().lock();
+        try {
+            if (tenantId == null) {
+                return 0L;
+            }
+            return recordsByOutboxId.values().stream()
+                    .filter(record -> tenantId.equals(record.tenantId()))
+                    .filter(record -> statusMatches(record, statuses))
+                    .count();
         } finally {
             lock.readLock().unlock();
         }
@@ -295,6 +327,11 @@ public class InMemoryAgentAsyncTaskCommandOutboxStore implements AgentAsyncTaskC
         return (int) recordsByOutboxId.values().stream()
                 .filter(record -> record.status() == status)
                 .count();
+    }
+
+    private boolean statusMatches(AgentAsyncTaskCommandOutboxRecord record,
+                                  Collection<AgentAsyncTaskCommandOutboxStatus> statuses) {
+        return statuses == null || statuses.isEmpty() || statuses.contains(record.status());
     }
 
     private int normalizeLimit(int limit) {

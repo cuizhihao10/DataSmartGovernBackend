@@ -11,6 +11,7 @@ import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunAsyncTaskCommandOutboxEnqueueResponse;
 import com.czh.datasmart.govern.agent.event.NoopAgentToolExecutionEventPublisher;
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxRecord;
+import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxStatus;
 import com.czh.datasmart.govern.agent.event.command.InMemoryAgentAsyncTaskCommandOutboxStore;
 import com.czh.datasmart.govern.agent.model.AgentRunState;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionMode;
@@ -23,6 +24,7 @@ import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecor
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
+import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -32,6 +34,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -106,6 +109,30 @@ class AgentRunAsyncTaskCommandOutboxServiceTest {
         assertTrue(fixture.store.list("run-outbox-001", null, 10).isEmpty());
     }
 
+    /**
+     * 租户级 backlog 过高时，应在 append 前拒绝继续入箱。
+     *
+     * <p>这条测试保护 4.73 的容量治理语义：outbox 不是无限队列。
+     * 如果同一租户已有大量 PENDING/PUBLISHING/FAILED command，再继续写入会把压力传给 dispatcher、Kafka、
+     * task-management 和下游 worker。服务层应在形成新 command 事实前直接拒绝。</p>
+     */
+    @Test
+    void enqueueShouldBeRejectedWhenTenantBacklogExceedsLimit() {
+        TestFixture fixture = newFixture();
+        fixture.properties.setMaxActiveCommandsPerTenant(1);
+        fixture.store.append(existingRecord("existing-command-001", "other-run", AgentAsyncTaskCommandOutboxStatus.PENDING));
+        fixture.saveAudits(audit(
+                "atea-outbox-capacity",
+                AgentToolExecutionState.PLANNED,
+                true,
+                Map.of()
+        ));
+
+        assertThrows(PlatformBusinessException.class,
+                () -> fixture.service.enqueueRunAsyncTaskCommands("session-outbox-001", "run-outbox-001"));
+        assertEquals(0, fixture.store.list("run-outbox-001", null, 10).size());
+    }
+
     private TestFixture newFixture() {
         AgentRuntimeProperties runtimeProperties = new AgentRuntimeProperties();
         AgentAsyncTaskCommandOutboxProperties outboxProperties = new AgentAsyncTaskCommandOutboxProperties();
@@ -130,6 +157,7 @@ class AgentRunAsyncTaskCommandOutboxServiceTest {
                 outboxProperties,
                 planningService,
                 store,
+                new AgentAsyncTaskCommandOutboxCapacityGuard(outboxProperties, store),
                 new ObjectMapper()
         );
         AgentSessionRecord session = new AgentSessionRecord(
@@ -158,7 +186,44 @@ class AgentRunAsyncTaskCommandOutboxServiceTest {
                 "Run 已创建"
         ));
         sessionStore.save(session);
-        return new TestFixture(service, store, auditStore);
+        return new TestFixture(service, store, auditStore, outboxProperties);
+    }
+
+    private AgentAsyncTaskCommandOutboxRecord existingRecord(String commandId,
+                                                             String runId,
+                                                             AgentAsyncTaskCommandOutboxStatus status) {
+        return new AgentAsyncTaskCommandOutboxRecord(
+                "async-command-outbox:" + commandId,
+                commandId,
+                "idempotency:" + commandId,
+                "datasmart.agent.async-task-command.v1",
+                "AGENT_TOOL_ASYNC_TASK_REQUESTED",
+                runId,
+                "datasmart.agent.async-task-commands",
+                "task-management",
+                "session-outbox-001",
+                runId,
+                "audit-" + commandId,
+                "data-sync.execute",
+                "data-sync",
+                "/sync-tasks",
+                10L,
+                20L,
+                30L,
+                "actor-outbox",
+                "trace-outbox",
+                "agent-tool-audit://session-outbox-001/" + runId + "/audit-" + commandId + "/plan-arguments",
+                status,
+                0,
+                java.time.Instant.now(),
+                java.time.Instant.now(),
+                null,
+                null,
+                "",
+                128,
+                false,
+                "{}"
+        );
     }
 
     private AgentToolExecutionAuditRecord audit(String auditId,
@@ -198,7 +263,8 @@ class AgentRunAsyncTaskCommandOutboxServiceTest {
 
     private record TestFixture(AgentRunAsyncTaskCommandOutboxService service,
                                InMemoryAgentAsyncTaskCommandOutboxStore store,
-                               AgentToolExecutionAuditMemoryStore auditStore) {
+                               AgentToolExecutionAuditMemoryStore auditStore,
+                               AgentAsyncTaskCommandOutboxProperties properties) {
 
         void saveAudits(AgentToolExecutionAuditRecord... records) {
             auditStore.saveAll(List.of(records));

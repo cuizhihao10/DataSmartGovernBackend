@@ -7369,3 +7369,41 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 1. 优先补租户配额、工具级限流、worker 并发池与 outbox backlog 保护，避免 Agent DAG 批量确认后放大下游压力。
 2. 补 worker 执行前二次复核：检查 confirmation、policyVersion、delegationEvidence、payloadReference、幂等键和任务状态。
 3. 再进入审计导出与管理员补偿台：导出需要异步任务与字段脱敏，补偿台需要单独的高风险动作权限。
+
+## 4.73 Agent Runtime 异步命令 outbox 入箱前容量保护（2026-06-01）
+
+本阶段承接 4.72 的“确认事实可审计读取”，开始补第一层执行压力保护。目标不是一次性做完整 quota-center，而是在 Agent 确认动作形成更多 outbox command 之前，先用可测试、可配置、低耦合的本地规则阻断明显会扩大积压的请求。
+
+已完成：
+- `AgentAsyncTaskCommandOutboxProperties` 新增容量保护配置：
+  - `capacityProtectionEnabled`；
+  - `maxCommandsPerEnqueue`；
+  - `maxActiveCommandsPerRun`；
+  - `maxActiveCommandsPerTenant`。
+- `AgentAsyncTaskCommandOutboxStore` 新增 run/tenant 维度状态计数方法：
+  - `countByRunAndStatuses`；
+  - `countByTenantAndStatuses`。
+- `InMemoryAgentAsyncTaskCommandOutboxStore` 与 `JdbcAgentAsyncTaskCommandOutboxStore` 均实现上述计数能力，避免容量保护只在本地 memory 模式有效。
+- 新增 `AgentAsyncTaskCommandOutboxCapacityGuard`：
+  - 单次 enqueue dispatchable command 数超过上限时返回 `RATE_LIMITED`；
+  - 当前 run 的 PENDING/PUBLISHING/FAILED 活跃积压超过上限时拒绝继续入箱；
+  - 当前租户的 PENDING/PUBLISHING/FAILED 活跃积压超过上限时拒绝继续入箱；
+  - 若一次候选跨多个 tenantId，直接拒绝，避免跨租户批量动作绕过公平调度。
+- `AgentRunAsyncTaskCommandOutboxService` 在 append 前调用 CapacityGuard，因此 selected-node 推荐入口和 Run 级兼容入口都复用同一套保护。
+- `application.yml` 增加中文配置说明，明确该能力是第一阶段本服务内保护，后续应升级为 Redis/DB 原子配额、套餐规则、工具级并发池和 worker 租约。
+- 测试新增租户 backlog 超限拒绝用例，并保持 selected-node outbox 与 JDBC store 相关测试通过。
+
+产品意义：
+- Agent 的 durable action 不再只是“确认后可靠入箱”，而开始具备“确认前先看执行系统是否承压”的治理能力。
+- 这能防止异常 Agent loop、用户重复确认、网关重试或大租户批量操作把 task-management、data-sync、data-quality 等下游模块压垮。
+- Guard 放在 outbox service 层，而不是 controller 层，避免将来 Python Runtime、智能网关、管理员补偿台或内部编排器绕过同一套保护。
+
+当前边界：
+- 当前是本服务内基于 outbox store 的容量保护，不是最终分布式配额系统。
+- 租户级计数依赖 outbox 记录里的 tenantId；旧数据或本地测试缺少 tenantId 时会跳过租户级保护，但 run 级和单请求保护仍生效。
+- 该能力只保护 command 入箱前，不替代 dispatcher 并发池、task-management worker 租约、Kafka 分区限流或下游工具级限流。
+
+下一步建议：
+1. 继续补工具级并发池与 worker 执行前二次复核，尤其是 data-sync/data-quality 这类重任务工具。
+2. 将容量保护指标接入 observability：run backlog、tenant backlog、rejected enqueue、top tenants、oldest pending age。
+3. 后续再把 quota 从本地配置升级为 permission-admin/tenant-plan 管理能力，支持租户套餐、项目等级、工具成本权重和临时扩容。
