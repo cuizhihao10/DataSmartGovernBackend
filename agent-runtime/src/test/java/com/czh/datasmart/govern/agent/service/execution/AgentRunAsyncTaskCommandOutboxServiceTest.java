@@ -91,6 +91,45 @@ class AgentRunAsyncTaskCommandOutboxServiceTest {
         assertEquals(1, fixture.store.list("run-outbox-001", null, 10).size());
     }
 
+    /**
+     * selected-node 入箱应把 confirmation 与授权证据写入 command payload。
+     *
+     * <p>这条测试保护 4.74 的跨服务契约：task-management 不能只收到“创建任务”命令，
+     * 还应看到该命令来自哪次 selected-node 确认、当时命中了哪些策略版本、服务账号代表谁执行。
+     * 这些字段仍然是低敏摘要，不包含工具参数值。</p>
+     */
+    @Test
+    void selectedNodeEnqueueShouldAttachExecutionEvidenceToPayload() {
+        TestFixture fixture = newFixture();
+        fixture.saveAudits(audit(
+                "atea-outbox-evidence",
+                AgentToolExecutionState.PLANNED,
+                true,
+                Map.of("datasourceId", 1001L)
+        ));
+        Map<String, AgentAsyncTaskCommandExecutionEvidence> evidence = Map.of(
+                "atea-outbox-evidence",
+                new AgentAsyncTaskCommandExecutionEvidence(
+                        "dag-confirmation:test-001",
+                        List.of("route-policy:860"),
+                        List.of("serviceAccount=datasmart-agent-runtime;representedActor=actor-outbox")
+                )
+        );
+
+        fixture.service.enqueueSelectedRunAsyncTaskCommands(
+                "session-outbox-001",
+                "run-outbox-001",
+                List.of("atea-outbox-evidence"),
+                evidence
+        );
+
+        AgentAsyncTaskCommandOutboxRecord record = fixture.store.list("run-outbox-001", null, 10).getFirst();
+        assertTrue(record.payloadJson().contains("\"confirmationId\":\"dag-confirmation:test-001\""));
+        assertTrue(record.payloadJson().contains("\"policyVersions\":[\"route-policy:860\"]"));
+        assertTrue(record.payloadJson().contains("datasmart-agent-runtime"));
+        assertFalse(record.payloadJson().contains("\"datasourceId\":1001"));
+    }
+
     @Test
     void blockedAsyncCommandShouldNotEnterOutbox() {
         TestFixture fixture = newFixture();

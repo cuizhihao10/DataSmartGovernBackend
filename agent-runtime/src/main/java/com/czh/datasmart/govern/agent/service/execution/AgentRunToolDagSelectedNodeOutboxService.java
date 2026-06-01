@@ -136,7 +136,12 @@ public class AgentRunToolDagSelectedNodeOutboxService {
             AgentRunToolDagExecutionDryRunResponse dryRun,
             Set<String> selectedAuditIds) {
         AgentRunAsyncTaskCommandOutboxEnqueueResponse outbox =
-                outboxService.enqueueSelectedRunAsyncTaskCommands(sessionId, runId, selectedAuditIds);
+                outboxService.enqueueSelectedRunAsyncTaskCommands(
+                        sessionId,
+                        runId,
+                        selectedAuditIds,
+                        executionEvidenceByAuditId(sessionId, runId, dryRun, selectedAuditIds)
+                );
         AgentRunToolDagConfirmationRecord confirmation = saveConfirmation(
                 sessionId,
                 runId,
@@ -222,6 +227,36 @@ public class AgentRunToolDagSelectedNodeOutboxService {
             return record;
         }
         return confirmationStore.saveIfAbsent(record);
+    }
+
+    private Map<String, AgentAsyncTaskCommandExecutionEvidence> executionEvidenceByAuditId(
+            String sessionId,
+            String runId,
+            AgentRunToolDagExecutionDryRunResponse dryRun,
+            Set<String> selectedAuditIds) {
+        /*
+         * 为本次 selected-node 确认生成稳定 confirmationId，并把它按 auditId 附加到每条异步 command。
+         *
+         * 设计上 confirmationId 不是随机流水号，而是由 sessionId、runId、selectionFingerprint 和选中 auditId
+         * 共同推导出来的稳定业务 ID。这样网关重试、前端重复提交或 Python Runtime replay 时，仍然能落到同一条
+         * confirmation 事实，而不会制造多份“看起来都被确认过”的审计记录。
+         *
+         * 这里按 auditId 组装 Map，是为了让 outbox service 只给真正入箱的节点写入证据。未来如果一个 DAG
+         * 同时包含低风险自动节点和高风险人工确认节点，也可以在这里自然扩展为“不同节点携带不同证据摘要”。
+         */
+        String confirmationId = confirmationId(sessionId, runId, dryRun.selectionFingerprint(), selectedAuditIds);
+        Map<String, AgentAsyncTaskCommandExecutionEvidence> evidenceByAuditId = new java.util.LinkedHashMap<>();
+        for (AgentToolDagExecutionDryRunItemView item : dryRun.items()) {
+            if (!selectedAuditIds.contains(item.auditId())) {
+                continue;
+            }
+            evidenceByAuditId.put(item.auditId(), new AgentAsyncTaskCommandExecutionEvidence(
+                    confirmationId,
+                    item.serviceAuthorizationPolicyVersions(),
+                    item.serviceAuthorizationDelegationEvidence()
+            ));
+        }
+        return Map.copyOf(evidenceByAuditId);
     }
 
     /**

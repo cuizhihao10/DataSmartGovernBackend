@@ -1,5 +1,12 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-01 追加落地进展：Agent 异步命令执行证据预检
+
+- `agent-runtime` selected-node command payload 现在会携带 `confirmationId`、`policyVersions` 和 `delegationEvidence`，把“这条任务命令来自哪次 DAG 确认、基于哪版权限策略、由哪个服务账号委托链产生”传递给 `task-management`。
+- `task-management` 在 Kafka/内部消费命令并创建任务前，会先校验 confirmationId 前缀、证据列表数量、单项长度和明显敏感片段，避免 prompt、SQL、Bearer token、密码或原始 payload 被误写入 `task.params`。
+- 这一步不是完整 worker 框架，也不是最终权限裁决；它是 worker 执行前二次复核的第一段落地能力，让任务中心不再只看到“Agent 发来了创建任务命令”，而是能保留一份低敏、可审计、可继续复核的执行证据摘要。
+- 已执行 `mvn -pl agent-runtime,task-management -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`，`task-management` 45 个测试、`agent-runtime` 155 个测试通过，共 200 个测试通过，Maven Toolchain 使用 JDK 21。
+
 ## 2026-06-01 追加落地进展：Agent selected-node 授权版本复核
 
 - `agent-runtime` selected-node 确认入箱已从“只校验 dry-run 指纹”升级为“同时校验 permission-admin policyVersion”，调用方需要按 auditId 带回上一次 dry-run 看到的授权策略版本。

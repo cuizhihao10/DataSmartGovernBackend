@@ -98,6 +98,8 @@ class AgentAsyncTaskCommandConsumerServiceTest {
                 any(TaskActorContext.class));
         assertTrue(paramsCaptor.getValue().contains("\"payloadReference\""));
         assertTrue(paramsCaptor.getValue().contains("\"credentialRef\""));
+        assertTrue(paramsCaptor.getValue().contains("\"confirmationId\":\"dag-confirmation:test-001\""));
+        assertTrue(paramsCaptor.getValue().contains("\"policyVersions\":[\"route-policy:860\"]"));
         assertFalse(paramsCaptor.getValue().contains("secret://mysql-prod"));
 
         ArgumentCaptor<AgentAsyncTaskCommandInbox> updateCaptor = ArgumentCaptor.forClass(AgentAsyncTaskCommandInbox.class);
@@ -156,6 +158,28 @@ class AgentAsyncTaskCommandConsumerServiceTest {
         verifyNoInteractions(taskService);
     }
 
+    @Test
+    void invalidConfirmationIdShouldBeRejectedBeforeInboxInsert() {
+        AgentAsyncTaskCommandRequest request = validRequest();
+        request.setConfirmationId("plain-confirmation-id");
+
+        assertThrows(IllegalArgumentException.class, () -> service.consume(request));
+
+        verifyNoInteractions(inboxMapper);
+        verifyNoInteractions(taskService);
+    }
+
+    @Test
+    void delegationEvidenceMustNotContainSensitivePayload() {
+        AgentAsyncTaskCommandRequest request = validRequest();
+        request.setDelegationEvidence(List.of("prompt: system secret"));
+
+        assertThrows(IllegalArgumentException.class, () -> service.consume(request));
+
+        verifyNoInteractions(inboxMapper);
+        verifyNoInteractions(taskService);
+    }
+
     private AgentAsyncTaskCommandRequest validRequest() {
         AgentAsyncTaskCommandRequest request = new AgentAsyncTaskCommandRequest();
         request.setSchemaVersion(AgentAsyncTaskCommandConsumerService.SUPPORTED_SCHEMA_VERSION);
@@ -176,6 +200,9 @@ class AgentAsyncTaskCommandConsumerServiceTest {
         request.setPayloadReference("agent-tool-audit://session-001/run-001/atea-001/plan-arguments");
         request.setArgumentNames(List.of("datasourceId", "credentialRef"));
         request.setSensitiveArgumentNames(List.of("credentialRef"));
+        request.setConfirmationId("dag-confirmation:test-001");
+        request.setPolicyVersions(List.of("route-policy:860"));
+        request.setDelegationEvidence(List.of("serviceAccount=datasmart-agent-runtime;representedActor=actor-agent"));
         request.setPriority("HIGH");
         request.setMaxRetryCount(3);
         request.setMaxDeferCount(20);

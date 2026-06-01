@@ -79,6 +79,21 @@ public class AgentRunAsyncTaskCommandOutboxService {
     public AgentRunAsyncTaskCommandOutboxEnqueueResponse enqueueSelectedRunAsyncTaskCommands(String sessionId,
                                                                                               String runId,
                                                                                               Collection<String> selectedAuditIds) {
+        return enqueueSelectedRunAsyncTaskCommands(sessionId, runId, selectedAuditIds, Map.of());
+    }
+
+    /**
+     * 只把指定 auditId 对应的异步命令写入 outbox，并为 selected-node 确认链路附加执行前证据。
+     *
+     * <p>该重载由 DAG selected-node confirmation 使用。它不会让调用方传入工具参数或目标地址，只允许附加
+     * confirmationId、policyVersion 和 delegationEvidence 这类低敏治理证据。task-management 后续消费 command 时，
+     * 可以先复核这份证据，再把任务交给真实 worker。</p>
+     */
+    public AgentRunAsyncTaskCommandOutboxEnqueueResponse enqueueSelectedRunAsyncTaskCommands(
+            String sessionId,
+            String runId,
+            Collection<String> selectedAuditIds,
+            Map<String, AgentAsyncTaskCommandExecutionEvidence> executionEvidenceByAuditId) {
         Set<String> normalizedAuditIds = normalizeAuditIds(selectedAuditIds);
         if (normalizedAuditIds.isEmpty()) {
             throw new PlatformBusinessException(
@@ -86,7 +101,8 @@ public class AgentRunAsyncTaskCommandOutboxService {
                     "DAG 选中节点入箱至少需要一个已经通过 dry-run 的异步工具 auditId"
             );
         }
-        return enqueueRunAsyncTaskCommands(sessionId, runId, normalizedAuditIds);
+        return enqueueRunAsyncTaskCommands(sessionId, runId, normalizedAuditIds,
+                executionEvidenceByAuditId == null ? Map.of() : executionEvidenceByAuditId);
     }
 
     /**
@@ -98,6 +114,14 @@ public class AgentRunAsyncTaskCommandOutboxService {
     private AgentRunAsyncTaskCommandOutboxEnqueueResponse enqueueRunAsyncTaskCommands(String sessionId,
                                                                                        String runId,
                                                                                        Set<String> selectedAuditIds) {
+        return enqueueRunAsyncTaskCommands(sessionId, runId, selectedAuditIds, Map.of());
+    }
+
+    private AgentRunAsyncTaskCommandOutboxEnqueueResponse enqueueRunAsyncTaskCommands(
+            String sessionId,
+            String runId,
+            Set<String> selectedAuditIds,
+            Map<String, AgentAsyncTaskCommandExecutionEvidence> executionEvidenceByAuditId) {
         ensureEnabled();
         AgentRunAsyncTaskCommandPlanView plan = planningService.planRunAsyncTaskCommands(sessionId, runId);
         List<AgentAsyncTaskCommandPlanItemView> scopedItems = plan.items().stream()
@@ -118,7 +142,7 @@ public class AgentRunAsyncTaskCommandOutboxService {
                 blocked++;
                 continue;
             }
-            AgentAsyncTaskCommandOutboxRecord record = buildRecord(plan, item);
+            AgentAsyncTaskCommandOutboxRecord record = buildRecord(plan, item, evidenceFor(item, executionEvidenceByAuditId));
             boolean appended = outboxStore.append(record);
             AgentAsyncTaskCommandOutboxRecord current = appended
                     ? record
@@ -164,10 +188,11 @@ public class AgentRunAsyncTaskCommandOutboxService {
     }
 
     private AgentAsyncTaskCommandOutboxRecord buildRecord(AgentRunAsyncTaskCommandPlanView plan,
-                                                          AgentAsyncTaskCommandPlanItemView item) {
+                                                          AgentAsyncTaskCommandPlanItemView item,
+                                                          AgentAsyncTaskCommandExecutionEvidence executionEvidence) {
         Instant now = Instant.now();
         String payloadReference = payloadReference(plan.sessionId(), plan.runId(), item.auditId());
-        String payloadJson = toJson(payload(plan, item, payloadReference));
+        String payloadJson = toJson(payload(plan, item, payloadReference, executionEvidence));
         int payloadBytes = payloadJson.getBytes(StandardCharsets.UTF_8).length;
         if (payloadBytes > Math.max(1, properties.getMaxPayloadBytes())) {
             throw new PlatformBusinessException(
@@ -209,7 +234,8 @@ public class AgentRunAsyncTaskCommandOutboxService {
      */
     private Map<String, Object> payload(AgentRunAsyncTaskCommandPlanView plan,
                                         AgentAsyncTaskCommandPlanItemView item,
-                                        String payloadReference) {
+                                        String payloadReference,
+                                        AgentAsyncTaskCommandExecutionEvidence executionEvidence) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("schemaVersion", properties.getSchemaVersion());
         payload.put("commandId", item.commandId());
@@ -229,10 +255,24 @@ public class AgentRunAsyncTaskCommandOutboxService {
         payload.put("payloadReference", payloadReference);
         payload.put("argumentNames", item.argumentNames());
         payload.put("sensitiveArgumentNames", item.sensitiveArgumentNames());
+        if (executionEvidence != null && executionEvidence.confirmationId() != null) {
+            payload.put("confirmationId", executionEvidence.confirmationId());
+            payload.put("policyVersions", executionEvidence.policyVersions());
+            payload.put("delegationEvidence", executionEvidence.delegationEvidence());
+        }
         payload.put("priority", properties.getDefaultPriority());
         payload.put("maxRetryCount", properties.getDefaultMaxRetryCount());
         payload.put("maxDeferCount", properties.getDefaultMaxDeferCount());
         return payload;
+    }
+
+    private AgentAsyncTaskCommandExecutionEvidence evidenceFor(
+            AgentAsyncTaskCommandPlanItemView item,
+            Map<String, AgentAsyncTaskCommandExecutionEvidence> executionEvidenceByAuditId) {
+        if (executionEvidenceByAuditId == null || item == null || item.auditId() == null) {
+            return AgentAsyncTaskCommandExecutionEvidence.empty();
+        }
+        return executionEvidenceByAuditId.getOrDefault(item.auditId(), AgentAsyncTaskCommandExecutionEvidence.empty());
     }
 
     private String payloadReference(String sessionId, String runId, String auditId) {

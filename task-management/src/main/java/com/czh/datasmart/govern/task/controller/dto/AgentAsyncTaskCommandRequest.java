@@ -138,6 +138,30 @@ public class AgentAsyncTaskCommandRequest {
     private List<String> sensitiveArgumentNames;
 
     /**
+     * selected-node 确认 ID。
+     *
+     * <p>该字段来自 agent-runtime confirmation 证据层，用于说明这条 command 是由哪次 human-in-the-loop
+     * 或受控策略确认动作产生的。Run 级兼容入口可能为空；生产推荐的 selected-node 入口应携带该字段。</p>
+     */
+    private String confirmationId;
+
+    /**
+     * 入箱时关联的 permission-admin 策略版本快照。
+     *
+     * <p>task-management 当前只做格式与长度校验，后续 worker 执行前应回到 permission-admin 复核策略是否仍然有效。
+     * 这里先把版本放入任务安全参数，避免下游只看到“服务账号创建了任务”，却看不到当时依据哪版策略。</p>
+     */
+    private List<String> policyVersions;
+
+    /**
+     * 服务账号委托证据摘要。
+     *
+     * <p>该字段只允许保存低敏审计摘要，不能包含工具参数、SQL、prompt 或样本数据。
+     * 消费侧会做长度和危险片段校验，避免把原始上下文误塞进 task.params。</p>
+     */
+    private List<String> delegationEvidence;
+
+    /**
      * 任务优先级。为空时使用任务中心默认值 MEDIUM。
      */
     private String priority;

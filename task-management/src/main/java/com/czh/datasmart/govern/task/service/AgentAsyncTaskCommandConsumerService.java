@@ -79,6 +79,8 @@ public class AgentAsyncTaskCommandConsumerService {
     private static final Pattern ARGUMENT_NAME_PATTERN = Pattern.compile("[A-Za-z0-9_.\\[\\]-]{1,128}");
 
     private static final int MAX_ARGUMENT_NAMES = 200;
+    private static final int MAX_EVIDENCE_ITEMS = 20;
+    private static final int MAX_EVIDENCE_LENGTH = 512;
 
     private final AgentAsyncTaskCommandInboxMapper inboxMapper;
     private final TaskService taskService;
@@ -208,6 +210,9 @@ public class AgentAsyncTaskCommandConsumerService {
         params.put("payloadReference", request.getPayloadReference());
         params.put("argumentNames", normalizeArgumentNames(request.getArgumentNames()));
         params.put("sensitiveArgumentNames", normalizeArgumentNames(request.getSensitiveArgumentNames()));
+        params.put("confirmationId", normalizeOptionalText(request.getConfirmationId()));
+        params.put("policyVersions", normalizeEvidenceList(request.getPolicyVersions(), "policyVersions"));
+        params.put("delegationEvidence", normalizeEvidenceList(request.getDelegationEvidence(), "delegationEvidence"));
         return params;
     }
 
@@ -285,6 +290,24 @@ public class AgentAsyncTaskCommandConsumerService {
         if (!new LinkedHashSet<>(argumentNames).containsAll(sensitiveNames)) {
             throw new IllegalArgumentException("sensitiveArgumentNames 必须是 argumentNames 的子集");
         }
+        validateExecutionEvidence(request);
+    }
+
+    /**
+     * 校验执行前证据字段。
+     *
+     * <p>这不是最终 worker pre-check 的全部能力，而是 task-management 消费侧的第一道契约防线：
+     * 如果 command 声明自己来自 selected-node confirmation，就必须使用稳定的 confirmationId 前缀，
+     * policyVersion 与 delegationEvidence 也只能是短文本摘要。后续真正执行工具前，还应回查 agent-runtime
+     * confirmation、permission-admin 策略版本、payloadReference 和工具状态。</p>
+     */
+    private void validateExecutionEvidence(AgentAsyncTaskCommandRequest request) {
+        String confirmationId = normalizeOptionalText(request.getConfirmationId());
+        if (confirmationId != null && !confirmationId.startsWith("dag-confirmation:")) {
+            throw new IllegalArgumentException("confirmationId 必须来自 DAG selected-node 确认记录");
+        }
+        normalizeEvidenceList(request.getPolicyVersions(), "policyVersions");
+        normalizeEvidenceList(request.getDelegationEvidence(), "delegationEvidence");
     }
 
     private List<String> normalizeArgumentNames(List<String> values) {
@@ -303,6 +326,47 @@ public class AgentAsyncTaskCommandConsumerService {
             normalized.add(name);
         }
         return new ArrayList<>(normalized);
+    }
+
+    private List<String> normalizeEvidenceList(List<String> values, String fieldName) {
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        if (values.size() > MAX_EVIDENCE_ITEMS) {
+            throw new IllegalArgumentException(fieldName + " 数量不能超过 " + MAX_EVIDENCE_ITEMS);
+        }
+        Set<String> normalized = new LinkedHashSet<>();
+        for (String value : values) {
+            String item = normalizeOptionalText(value);
+            if (item == null) {
+                continue;
+            }
+            if (item.length() > MAX_EVIDENCE_LENGTH) {
+                throw new IllegalArgumentException(fieldName + " 单项长度不能超过 " + MAX_EVIDENCE_LENGTH);
+            }
+            if (looksLikeSensitivePayload(item)) {
+                throw new IllegalArgumentException(fieldName + " 只能保存低敏审计摘要，不能包含原始 payload、SQL、prompt 或密钥片段");
+            }
+            normalized.add(item);
+        }
+        return new ArrayList<>(normalized);
+    }
+
+    private boolean looksLikeSensitivePayload(String value) {
+        String lower = value.toLowerCase();
+        return lower.contains("select ")
+                || lower.contains("insert ")
+                || lower.contains("authorization:")
+                || lower.contains("bearer ")
+                || lower.contains("password")
+                || lower.contains("prompt:");
+    }
+
+    private String normalizeOptionalText(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return value.trim();
     }
 
     private String requireText(String value, String fieldName) {

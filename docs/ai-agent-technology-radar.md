@@ -1,5 +1,12 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-01 落地补充：执行证据进入任务消费预检链路
+
+- 本阶段继续把类 Codex / Claude Code Agent 的“工具执行必须可解释、可复核、可审计”原则落到 Java 控制面，而不是贸然扩大自动执行范围。
+- `agent-runtime` 已把 selected-node confirmation 的 `confirmationId`、权限策略版本和服务账号委托摘要写入异步 command payload；`task-management` 消费命令时会先做低敏证据预检，再把安全摘要写入任务参数。
+- 这对应前沿 Agent 工具体系中的 policy snapshot、approval evidence、capability lease 和 worker-side guardrail 思路：模型提出计划，控制面确认计划，任务中心保留证据，真正 worker 执行前还要再次复核。
+- 后续雷达落地应优先推进“worker 执行前二次复核”的完整闭环：回查 agent-runtime confirmation、permission-admin 最新策略、工具 schema、payloadReference、租户配额、任务状态和幂等键，而不是让任务创建成功就等价于工具可执行。
+
 ## 2026-06-01 落地补充：工具执行确认需要绑定授权证据版本
 
 - 本阶段没有新增外部趋势扫描，而是把前期“类 Codex/Claude Code Agent 必须可审计地执行工具”的路线继续落到 Java 控制面。
