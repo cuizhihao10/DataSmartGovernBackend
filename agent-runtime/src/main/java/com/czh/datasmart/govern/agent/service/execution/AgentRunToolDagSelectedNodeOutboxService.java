@@ -29,6 +29,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -84,6 +85,7 @@ public class AgentRunToolDagSelectedNodeOutboxService {
         );
         ensureFingerprintMatches(request.expectedDryRunFingerprint(), dryRun.selectionFingerprint());
         Set<String> selectedAuditIds = requireOnlyAsyncOutboxCandidates(dryRun);
+        ensurePolicyVersionsMatch(request.expectedPolicyVersionsByAuditId(), dryRun, selectedAuditIds);
         AgentRunAsyncTaskCommandOutboxEnqueueResponse outbox =
                 outboxService.enqueueSelectedRunAsyncTaskCommands(sessionId, runId, selectedAuditIds);
         AgentRunToolDagConfirmationRecord confirmation = saveConfirmation(
@@ -135,6 +137,8 @@ public class AgentRunToolDagSelectedNodeOutboxService {
                 dryRun.selectionFingerprint(),
                 normalizeSelectors(request.nodeIds()),
                 selectedAuditIds.stream().sorted().toList(),
+                collectPolicyVersions(dryRun, selectedAuditIds),
+                collectDelegationEvidence(dryRun, selectedAuditIds),
                 outboxItems.stream().map(AgentAsyncTaskCommandOutboxRecordView::outboxId).filter(this::hasText).toList(),
                 outboxItems.stream().map(AgentAsyncTaskCommandOutboxRecordView::commandId).filter(this::hasText).toList(),
                 first == null ? null : first.tenantId(),
@@ -152,6 +156,46 @@ public class AgentRunToolDagSelectedNodeOutboxService {
             return record;
         }
         return confirmationStore.saveIfAbsent(record);
+    }
+
+    /**
+     * 校验调用方确认时携带的 permission-admin 策略版本是否仍与服务端最新 dry-run 一致。
+     *
+     * <p>selectionFingerprint 已经能覆盖策略版本变化，但它是整体预案摘要；这里再做一层按 auditId 的显式校验，
+     * 是为了让错误信息更可解释：调用方可以知道是哪一个工具审计项的授权策略版本发生变化，而不是只看到“指纹不一致”。
+     * 如果某个节点当前没有 policyVersion，说明本地预览或未启用远程授权，本方法不会强行要求版本号，避免破坏本地学习模式。</p>
+     */
+    private void ensurePolicyVersionsMatch(Map<String, String> expectedPolicyVersionsByAuditId,
+                                           AgentRunToolDagExecutionDryRunResponse dryRun,
+                                           Set<String> selectedAuditIds) {
+        Map<String, String> expected = expectedPolicyVersionsByAuditId == null ? Map.of() : expectedPolicyVersionsByAuditId;
+        for (AgentToolDagExecutionDryRunItemView item : dryRun.items()) {
+            if (!selectedAuditIds.contains(item.auditId())) {
+                continue;
+            }
+            String actualPolicyVersion = firstText(item.serviceAuthorizationPolicyVersions());
+            if (!hasText(actualPolicyVersion)) {
+                continue;
+            }
+            String expectedPolicyVersion = expected.get(item.auditId());
+            if (!hasText(expectedPolicyVersion)) {
+                throw new PlatformBusinessException(
+                        PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                        "DAG selected-node 入箱缺少 auditId=" + item.auditId()
+                                + " 的 expectedPolicyVersionsByAuditId；请重新 dry-run 并带回 permission-admin policyVersion"
+                );
+            }
+            if (!MessageDigest.isEqual(
+                    expectedPolicyVersion.getBytes(StandardCharsets.UTF_8),
+                    actualPolicyVersion.getBytes(StandardCharsets.UTF_8))) {
+                throw new PlatformBusinessException(
+                        PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                        "DAG selected-node 入箱检测到 permission-admin 策略版本变化，auditId=" + item.auditId()
+                                + "，expected=" + expectedPolicyVersion + "，actual=" + actualPolicyVersion
+                                + "；请重新 dry-run/重新确认"
+                );
+            }
+        }
     }
 
     /**
@@ -293,6 +337,37 @@ public class AgentRunToolDagSelectedNodeOutboxService {
                 .map(String::trim)
                 .distinct()
                 .toList();
+    }
+
+    private List<String> collectPolicyVersions(AgentRunToolDagExecutionDryRunResponse dryRun,
+                                               Set<String> selectedAuditIds) {
+        return dryRun.items().stream()
+                .filter(item -> selectedAuditIds.contains(item.auditId()))
+                .flatMap(item -> safeList(item.serviceAuthorizationPolicyVersions()).stream())
+                .filter(this::hasText)
+                .distinct()
+                .toList();
+    }
+
+    private List<String> collectDelegationEvidence(AgentRunToolDagExecutionDryRunResponse dryRun,
+                                                   Set<String> selectedAuditIds) {
+        return dryRun.items().stream()
+                .filter(item -> selectedAuditIds.contains(item.auditId()))
+                .flatMap(item -> safeList(item.serviceAuthorizationDelegationEvidence()).stream())
+                .filter(this::hasText)
+                .distinct()
+                .toList();
+    }
+
+    private List<String> safeList(List<String> values) {
+        return values == null ? List.of() : values;
+    }
+
+    private String firstText(List<String> values) {
+        return safeList(values).stream()
+                .filter(this::hasText)
+                .findFirst()
+                .orElse(null);
     }
 
     private boolean hasAnySelector(List<String> selectors) {

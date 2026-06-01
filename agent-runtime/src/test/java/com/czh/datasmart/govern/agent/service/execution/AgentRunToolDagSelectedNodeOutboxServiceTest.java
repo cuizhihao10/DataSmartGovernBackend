@@ -21,11 +21,14 @@ import com.czh.datasmart.govern.agent.model.AgentRunState;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionMode;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
 import com.czh.datasmart.govern.agent.model.AgentToolRiskLevel;
+import com.czh.datasmart.govern.agent.model.AgentToolServiceAuthorizationMode;
 import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditMemoryStore;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecord;
 import com.czh.datasmart.govern.agent.service.authorization.AgentToolServiceAuthorizationPreviewService;
+import com.czh.datasmart.govern.agent.service.authorization.AgentToolServiceAuthorizationRemoteResult;
+import com.czh.datasmart.govern.agent.service.authorization.PermissionAdminServiceAuthorizationClient;
 import com.czh.datasmart.govern.agent.service.execution.confirmation.AgentRunToolDagConfirmationRecord;
 import com.czh.datasmart.govern.agent.service.execution.confirmation.InMemoryAgentRunToolDagConfirmationStore;
 import com.czh.datasmart.govern.agent.service.runtime.InMemoryAgentRuntimeEventProjectionStore;
@@ -39,6 +42,7 @@ import org.junit.jupiter.api.Test;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -133,6 +137,54 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
     }
 
     @Test
+    void matchingPolicyVersionShouldEnterOutboxAndKeepDelegationEvidence() {
+        TestFixture fixture = newPermissionAdminFixture("policy:data-sync:v1", "delegation:evidence:001");
+        fixture.saveAudits(asyncAudit("audit-async", "data-sync-execute", Map.of()));
+        AgentRunToolDagExecutionDryRunResponse dryRun = fixture.dryRun(List.of("data-sync-execute"));
+
+        AgentRunToolDagSelectedNodeOutboxEnqueueResponse response = fixture.confirm(
+                List.of("data-sync-execute"),
+                dryRun.selectionFingerprint(),
+                Map.of("audit-async", "policy:data-sync:v1")
+        );
+
+        assertEquals(1, response.outbox().enqueuedCount());
+        AgentRunToolDagConfirmationRecord confirmation = fixture.confirmationStore
+                .findByConfirmationId(response.confirmationId())
+                .orElseThrow();
+        assertEquals(List.of("policy:data-sync:v1"), confirmation.policyVersions());
+        assertEquals(List.of("delegation:evidence:001"), confirmation.delegationEvidence());
+    }
+
+    @Test
+    void missingExpectedPolicyVersionShouldFailClosedWhenPermissionAdminReturnsVersion() {
+        TestFixture fixture = newPermissionAdminFixture("policy:data-sync:v1", "delegation:evidence:001");
+        fixture.saveAudits(asyncAudit("audit-async", "data-sync-execute", Map.of()));
+        AgentRunToolDagExecutionDryRunResponse dryRun = fixture.dryRun(List.of("data-sync-execute"));
+
+        assertThrows(PlatformBusinessException.class, () ->
+                fixture.confirm(List.of("data-sync-execute"), dryRun.selectionFingerprint(), Map.of()));
+        assertTrue(fixture.store.list(RUN_ID, null, 10).isEmpty());
+        assertTrue(fixture.confirmationStore.listByRun(RUN_ID, 10).isEmpty());
+    }
+
+    @Test
+    void mismatchedPolicyVersionShouldFailClosedWhenPermissionAdminPolicyDrifts() {
+        TestFixture fixture = newPermissionAdminFixture("policy:data-sync:v2", "delegation:evidence:002");
+        fixture.saveAudits(asyncAudit("audit-async", "data-sync-execute", Map.of()));
+        AgentRunToolDagExecutionDryRunResponse dryRun = fixture.dryRun(List.of("data-sync-execute"));
+
+        assertThrows(PlatformBusinessException.class, () ->
+                fixture.confirm(
+                        List.of("data-sync-execute"),
+                        dryRun.selectionFingerprint(),
+                        Map.of("audit-async", "policy:data-sync:v1")
+                ));
+        assertTrue(fixture.store.list(RUN_ID, null, 10).isEmpty());
+        assertTrue(fixture.confirmationStore.listByRun(RUN_ID, 10).isEmpty());
+    }
+
+    @Test
     void confirmationMustExplicitlySelectNodes() {
         TestFixture fixture = newFixture();
 
@@ -145,6 +197,7 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
                                 List.of(),
                                 null,
                                 "dag-selection:any",
+                                Map.of(),
                                 true
                         ),
                         "trace-selected"
@@ -152,10 +205,36 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
     }
 
     private TestFixture newFixture() {
+        return newFixture(authorizationProperties -> { }, request -> null);
+    }
+
+    private TestFixture newPermissionAdminFixture(String policyVersion, String delegationEvidence) {
+        return newFixture(
+                authorizationProperties -> {
+                    authorizationProperties.setEnabled(true);
+                    authorizationProperties.setMode(AgentToolServiceAuthorizationMode.PERMISSION_ADMIN_EVALUATE);
+                },
+                request -> new AgentToolServiceAuthorizationRemoteResult(
+                        true,
+                        "测试桩允许 Agent Runtime 服务账号代表用户推进异步工具。",
+                        "ALLOW",
+                        "PROJECT",
+                        List.of(20L),
+                        false,
+                        policyVersion,
+                        true,
+                        delegationEvidence
+                )
+        );
+    }
+
+    private TestFixture newFixture(Consumer<AgentToolServiceAuthorizationProperties> authorizationCustomizer,
+                                   PermissionAdminServiceAuthorizationClient authorizationClient) {
         AgentRuntimeProperties runtimeProperties = new AgentRuntimeProperties();
         AgentAsyncTaskCommandOutboxProperties outboxProperties = new AgentAsyncTaskCommandOutboxProperties();
         AgentRunToolDagConfirmationProperties confirmationProperties = new AgentRunToolDagConfirmationProperties();
         AgentToolServiceAuthorizationProperties authorizationProperties = new AgentToolServiceAuthorizationProperties();
+        authorizationCustomizer.accept(authorizationProperties);
         AgentSessionMemoryStore sessionStore = new AgentSessionMemoryStore();
         AgentToolExecutionAuditMemoryStore auditStore = new AgentToolExecutionAuditMemoryStore();
         AgentToolExecutionAuditService auditService = new AgentToolExecutionAuditService(
@@ -179,7 +258,7 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
                 dagService,
                 policyService,
                 planningService,
-                new AgentToolServiceAuthorizationPreviewService(authorizationProperties, request -> null)
+                new AgentToolServiceAuthorizationPreviewService(authorizationProperties, authorizationClient)
         );
         AgentRunToolDagExecutionDryRunService dryRunService = new AgentRunToolDagExecutionDryRunService(
                 previewService,
@@ -324,6 +403,12 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
         }
 
         AgentRunToolDagSelectedNodeOutboxEnqueueResponse confirm(List<String> nodeIds, String fingerprint) {
+            return confirm(nodeIds, fingerprint, Map.of());
+        }
+
+        AgentRunToolDagSelectedNodeOutboxEnqueueResponse confirm(List<String> nodeIds,
+                                                                 String fingerprint,
+                                                                 Map<String, String> expectedPolicyVersions) {
             return service.enqueueSelectedAsyncNodes(
                     SESSION_ID,
                     RUN_ID,
@@ -332,6 +417,7 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
                             List.of(),
                             null,
                             fingerprint,
+                            expectedPolicyVersions,
                             true
                     ),
                     "trace-selected"

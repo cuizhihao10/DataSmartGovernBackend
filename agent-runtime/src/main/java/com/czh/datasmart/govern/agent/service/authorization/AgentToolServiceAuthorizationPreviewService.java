@@ -115,6 +115,8 @@ public class AgentToolServiceAuthorizationPreviewService {
     private AgentToolServiceAuthorizationPreviewView evaluateRequiredActions(AuthorizationContext context,
                                                                             List<String> reasons,
                                                                             List<String> actions) {
+        List<String> policyVersions = new ArrayList<>();
+        List<String> delegationEvidence = new ArrayList<>();
         for (String action : context.requiredActions()) {
             AgentToolServiceAuthorizationRemoteResult result = permissionAdminClient.evaluate(new AgentToolServiceAuthorizationRemoteRequest(
                     context.tenantId(),
@@ -141,21 +143,41 @@ public class AgentToolServiceAuthorizationPreviewService {
                     + "，dataScopeLevel=" + result.dataScopeLevel() + "。");
             if (result.policyVersion() != null && !result.policyVersion().isBlank()) {
                 reasons.add("permission-admin 策略版本：" + result.policyVersion() + "。");
+                policyVersions.add(result.policyVersion().trim());
             }
             if (result.delegationEvidence() != null && !result.delegationEvidence().isBlank()) {
                 reasons.add("permission-admin 已记录服务账号委托证据：" + result.delegationEvidence() + "。");
+                delegationEvidence.add(result.delegationEvidence().trim());
             }
             if (Boolean.TRUE.equals(result.approvalRequired())) {
                 actions.add("permission-admin 标记该动作仍需审批，真实执行器应进入审批/人工确认链路，而不是直接执行。");
             }
         }
         actions.add("真实执行前仍需在执行入口二次读取最新工具状态、权限策略和租户配额，避免 preview 后状态漂移。");
-        return buildView(context, AgentToolServiceAuthorizationDecision.PERMISSION_ADMIN_ALLOWED, true, reasons, actions);
+        return buildView(
+                context,
+                AgentToolServiceAuthorizationDecision.PERMISSION_ADMIN_ALLOWED,
+                true,
+                policyVersions.stream().distinct().toList(),
+                delegationEvidence.stream().distinct().toList(),
+                reasons,
+                actions
+        );
     }
 
     private AgentToolServiceAuthorizationPreviewView buildView(AuthorizationContext context,
                                                                AgentToolServiceAuthorizationDecision decision,
                                                                boolean allowed,
+                                                               List<String> reasons,
+                                                               List<String> actions) {
+        return buildView(context, decision, allowed, List.of(), List.of(), reasons, actions);
+    }
+
+    private AgentToolServiceAuthorizationPreviewView buildView(AuthorizationContext context,
+                                                               AgentToolServiceAuthorizationDecision decision,
+                                                               boolean allowed,
+                                                               List<String> policyVersions,
+                                                               List<String> delegationEvidence,
                                                                List<String> reasons,
                                                                List<String> actions) {
         return new AgentToolServiceAuthorizationPreviewView(
@@ -178,6 +200,8 @@ public class AgentToolServiceAuthorizationPreviewService {
                 List.copyOf(context.requiredActions()),
                 "SERVICE_ACCOUNT_ON_BEHALF_OF_ACTOR",
                 delegationReason(context, context.requiredActions().isEmpty() ? null : context.requiredActions().get(0)),
+                policyVersions == null ? List.of() : List.copyOf(policyVersions),
+                delegationEvidence == null ? List.of() : List.copyOf(delegationEvidence),
                 List.copyOf(reasons),
                 List.copyOf(actions)
         );

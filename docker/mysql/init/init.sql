@@ -242,6 +242,8 @@ CREATE TABLE IF NOT EXISTS agent_run_tool_dag_confirmation (
     selection_fingerprint VARCHAR(160) NOT NULL COMMENT '确认瞬间服务端重新 dry-run 得到的选择指纹，用于证明调用方确认的是哪一版预案',
     selected_node_ids JSON NOT NULL COMMENT '调用方显式选择的 DAG nodeId 列表，仅保存节点标识，不保存工具参数',
     selected_audit_ids JSON NOT NULL COMMENT '服务端根据 dry-run 重新提取出的工具审计 ID 白名单，是实际允许入箱的范围',
+    policy_versions JSON NOT NULL COMMENT '确认瞬间命中的 permission-admin 策略版本列表，用于执行前复核策略是否漂移',
+    delegation_evidence JSON NOT NULL COMMENT '服务账号委托授权证据摘要列表，不保存工具参数或敏感载荷',
     outbox_ids JSON NOT NULL COMMENT '本次确认关联的 command outbox 记录 ID 列表，便于从确认事实跳转到投递状态',
     command_ids JSON NOT NULL COMMENT '本次确认关联的跨服务 commandId 列表，便于排查 Kafka、task-management Inbox 和任务创建链路',
     tenant_id BIGINT DEFAULT NULL COMMENT '租户边界快照，用于审计查询、配额治理和多租户隔离',

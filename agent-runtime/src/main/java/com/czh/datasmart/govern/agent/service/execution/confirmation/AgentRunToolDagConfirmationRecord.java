@@ -18,6 +18,11 @@ import java.util.List;
  *
  * <p>记录里只保存节点 ID、auditId、outboxId、commandId 和治理上下文，不保存原始工具参数、SQL、prompt、
  * 文件内容或样本数据。这样做能满足审计追踪，同时避免确认表成为敏感数据扩散通道。</p>
+ *
+ * <p>{@code policyVersions} 与 {@code delegationEvidence} 是本阶段新增的“授权证据快照”。
+ * 它们不参与真实执行调度，也不替代 permission-admin 的最终判定；它们的职责是回答生产审计中经常出现的两个问题：
+ * 用户确认入箱时看到的是哪一版授权策略？服务账号代表用户执行的委托证据是什么？
+ * 后续如果确认记录落 MySQL，这两个字段应以 JSON 数组保存，便于审计台展示、检索和跨服务排障。</p>
  */
 public record AgentRunToolDagConfirmationRecord(
         String confirmationId,
@@ -26,6 +31,8 @@ public record AgentRunToolDagConfirmationRecord(
         String selectionFingerprint,
         List<String> selectedNodeIds,
         List<String> selectedAuditIds,
+        List<String> policyVersions,
+        List<String> delegationEvidence,
         List<String> outboxIds,
         List<String> commandIds,
         Long tenantId,
@@ -47,6 +54,8 @@ public record AgentRunToolDagConfirmationRecord(
         selectionFingerprint = requireText(selectionFingerprint, "selectionFingerprint");
         selectedNodeIds = selectedNodeIds == null ? List.of() : List.copyOf(selectedNodeIds);
         selectedAuditIds = selectedAuditIds == null ? List.of() : List.copyOf(selectedAuditIds);
+        policyVersions = policyVersions == null ? List.of() : List.copyOf(policyVersions);
+        delegationEvidence = delegationEvidence == null ? List.of() : List.copyOf(delegationEvidence);
         outboxIds = outboxIds == null ? List.of() : List.copyOf(outboxIds);
         commandIds = commandIds == null ? List.of() : List.copyOf(commandIds);
         confirmed = confirmed == null ? Boolean.TRUE : confirmed;

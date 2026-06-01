@@ -1,5 +1,12 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-01 落地补充：工具执行确认需要绑定授权证据版本
+
+- 本阶段没有新增外部趋势扫描，而是把前期“类 Codex/Claude Code Agent 必须可审计地执行工具”的路线继续落到 Java 控制面。
+- `agent-runtime` selected-node outbox enqueue 现在要求调用方带回 dry-run 时看到的 `policyVersion`，服务端确认前重新 dry-run 并对比当前 permission-admin 策略版本。
+- 这对应前沿 Agent 工具执行治理中的一个核心原则：模型或人类确认的是“某个时间点的行动预案”，真实副作用发生前必须重新绑定权限、策略和审计证据。
+- 后续技术雷达应继续关注 MCP/A2A/tool-use 生态里的 tool approval、capability lease、policy snapshot、signed tool plan 等方向，并优先转化为 DataSmart 的租户安全、确认记录、worker pre-check 和可回放事件能力。
+
 ## 2026-05-25 智能网关 WebSocket 路由校准
 
 本次在继续推进 Agent 实时事件能力时，先按项目 skill 要求校准了 Spring Cloud Gateway 的 WebSocket 转发方式。

@@ -30,6 +30,8 @@ import java.util.List;
  * @param asyncCommandId 异步 command ID；只有 ASYNC_TASK 且已经形成可下发草案时有值。
  * @param serviceAuthorizationDecision 服务间授权预检结论；用于解释 SERVICE_ACCOUNT 代表 actor 执行的授权状态。
  * @param serviceAuthorizationAllowed 服务间授权是否通过；null 表示没有授权预检上下文。
+ * @param serviceAuthorizationPolicyVersions permission-admin 返回的策略版本集合；selected-node 确认入箱会把调用方看到的版本与最新版本对齐校验。
+ * @param serviceAuthorizationDelegationEvidence 服务账号代表用户执行工具时的委托证据，例如授权中心生成的审计编号或委托链路摘要。
  * @param riskLevel 工具风险等级，沿用 policy 口径。
  * @param readOnly 工具是否只读。
  * @param idempotent 工具是否幂等。
@@ -52,6 +54,8 @@ public record AgentToolDagExecutionDryRunItemView(
         String asyncCommandId,
         String serviceAuthorizationDecision,
         Boolean serviceAuthorizationAllowed,
+        List<String> serviceAuthorizationPolicyVersions,
+        List<String> serviceAuthorizationDelegationEvidence,
         String riskLevel,
         Boolean readOnly,
         Boolean idempotent,

@@ -83,6 +83,7 @@ public class AgentRunToolDagSelectionFingerprintSupport {
                 text(item.asyncCommandId()),
                 text(item.serviceAuthorizationDecision()),
                 text(item.serviceAuthorizationAllowed()),
+                text(item.serviceAuthorizationPolicyVersions()),
                 text(item.riskLevel()),
                 text(item.idempotent()),
                 text(item.requiresApproval())

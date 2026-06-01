@@ -1,5 +1,12 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-01 追加落地进展：Agent selected-node 授权版本复核
+
+- `agent-runtime` selected-node 确认入箱已从“只校验 dry-run 指纹”升级为“同时校验 permission-admin policyVersion”，调用方需要按 auditId 带回上一次 dry-run 看到的授权策略版本。
+- 如果确认瞬间重新 dry-run 发现授权策略版本缺失或不一致，系统会在写 outbox 前 fail-closed，避免旧授权预案继续产生真实异步 command。
+- confirmation 记录已保留 `policyVersions` 与 `delegationEvidence`，后续可进入审计导出、管理员补偿台和 runtime event display。
+- 这一步不扩大自动执行范围，而是让现有 DAG selected-node 入箱更接近商业化控制面：人或智能网关确认的不只是节点列表，也是某一版授权事实。
+
 > 本文档用于纠正项目推进过程中过度集中于 `datasource-management` 的问题。
 > 后续所有功能实现都应先对照本文档判断模块归属、产品场景、性能要求和未来迁移方向，再进入代码实现。
 

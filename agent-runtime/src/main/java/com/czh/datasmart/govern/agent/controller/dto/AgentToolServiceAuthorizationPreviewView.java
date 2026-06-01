@@ -33,6 +33,10 @@ import java.util.List;
  * @param targetEndpoint 工具目标端点或权限判定路径。
  * @param targetResourceId 工具目标资源 ID，例如 datasourceId、taskId、syncTaskId。
  * @param requiredActions 真实执行前需要具备的动作权限集合。
+ * @param delegationType 服务账号委托类型；当前用于表达 Agent Runtime 以 SERVICE_ACCOUNT 身份代表用户推进工具。
+ * @param delegationReason 传给 permission-admin 的低敏委托原因，帮助审计台解释“为什么服务账号要代表该 actor 执行该动作”。
+ * @param policyVersions permission-admin 返回的策略版本集合；后续确认入箱会用它做执行时漂移校验。
+ * @param delegationEvidence permission-admin 返回的委托证据集合；用于把 dry-run、确认记录、授权中心审计串成一条证据链。
  * @param reasons 授权预检解释，面向学习、审计和排障。
  * @param recommendedActions 推荐的后续处理动作。
  */
@@ -56,6 +60,8 @@ public record AgentToolServiceAuthorizationPreviewView(
         List<String> requiredActions,
         String delegationType,
         String delegationReason,
+        List<String> policyVersions,
+        List<String> delegationEvidence,
         List<String> reasons,
         List<String> recommendedActions
 ) {
