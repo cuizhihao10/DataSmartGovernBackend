@@ -39,6 +39,7 @@ public class AgentAsyncToolDispatchOnceService {
 
     private final TaskService taskService;
     private final AgentAsyncToolPayloadResolver payloadResolver;
+    private final AgentAsyncToolExecutionPreCheckService preCheckService;
     private final List<AgentAsyncToolExecutor> executors;
     private final AgentRuntimeAsyncToolStatusClient statusClient;
     private final AgentAsyncToolWorkerProperties properties;
@@ -66,6 +67,10 @@ public class AgentAsyncToolDispatchOnceService {
         Long runId = claim.executionRun() == null ? null : claim.executionRun().getId();
         try {
             AgentAsyncToolResolvedPayload payload = payloadResolver.resolve(task, actorContext == null ? null : actorContext.traceId());
+            AgentAsyncToolExecutionPreCheckResult preCheck = preCheckService.preCheck(payload);
+            if (!preCheck.allowed()) {
+                return rejectBeforeExecution(task, runId, payload, actorContext, preCheck);
+            }
             AgentAsyncToolExecutor executor = selectExecutor(payload.toolCode());
             if (!notifyRunningStatus(task, runId, payload, actorContext)) {
                 return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
@@ -110,6 +115,38 @@ public class AgentAsyncToolDispatchOnceService {
             return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, null,
                     OUTCOME_FAILED, exception.getMessage(), Map.of());
         }
+    }
+
+    /**
+     * 在真实工具副作用发生前阻断任务。
+     *
+     * <p>pre-check 失败和工具执行失败不同：此时 worker 还没有调用 data-sync、data-quality 等下游服务。
+     * 因此最安全的处理是先把 FAILED 回写给 agent-runtime，让 Agent 会话和审计台看到阻断原因，
+     * 再把 task-management 任务标记为 FAILED。若 agent-runtime 回写临时失败，则当前任务先 DEFERRED，
+     * 避免任务中心失败而 Agent 审计仍误以为工具还可以执行。</p>
+     */
+    private AgentAsyncToolDispatchOnceResult rejectBeforeExecution(Task task,
+                                                                  Long runId,
+                                                                  AgentAsyncToolResolvedPayload payload,
+                                                                  TaskActorContext actorContext,
+                                                                  AgentAsyncToolExecutionPreCheckResult preCheck) {
+        AgentAsyncToolExecutionResult rejection = AgentAsyncToolExecutionResult.fatalFailure(
+                preCheck.message(),
+                preCheck.diagnosticOutput()
+        );
+        if (!notifyTerminalStatus(task, runId, payload, actorContext, rejection, "FAILED", preCheck.errorCode())) {
+            return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
+                    OUTCOME_DEFERRED, "执行前复核已阻断，但 agent-runtime 状态回写失败，任务已退避等待补偿。", preCheck.diagnosticOutput());
+        }
+        TaskExecutionCallbackContext callbackContext = new TaskExecutionCallbackContext(
+                runId,
+                properties.getExecutorId(),
+                "agent-async-tool:" + payload.commandId() + ":precheck-rejected",
+                actorContext
+        );
+        taskService.failTask(task.getId(), preCheck.message(), callbackContext);
+        return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
+                OUTCOME_FAILED, preCheck.message(), preCheck.diagnosticOutput());
     }
 
     private TaskExecutionClaimRequest claimRequest() {

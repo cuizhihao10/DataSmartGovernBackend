@@ -1,5 +1,12 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-01 追加落地进展：Agent worker 执行前本地二次复核骨架
+
+- `task-management` worker 在 `resolve payloadReference` 之后、回写 `RUNNING` 与调用真实工具适配器之前，新增 `AgentAsyncToolExecutionPreCheckService`，先校验任务状态、Agent 审计状态、payloadReference 类型、工具白名单和执行证据摘要。
+- 当前允许 `PLANNED` 与补偿场景下的 `EXECUTING` 进入执行；仍处于 `WAITING_APPROVAL`、已终结或取消的工具审计会在副作用前 fail-closed。
+- pre-check 阻断时，worker 会先向 `agent-runtime` 回写 `FAILED + AGENT_ASYNC_TOOL_PRECHECK_REJECTED`，再把 task-management 任务标记为失败；如果回写失败，则先 defer，避免任务中心与 Agent 审计割裂。
+- 这一步仍不等同于完整权限中心复核；下一阶段应接入 confirmation 反查、permission-admin 最新策略 evaluate、租户配额、工具级限流和 payloadReference 幂等键复核。
+
 ## 2026-06-01 追加落地进展：Agent 异步命令执行证据预检
 
 - `agent-runtime` selected-node command payload 现在会携带 `confirmationId`、`policyVersions` 和 `delegationEvidence`，把“这条任务命令来自哪次 DAG 确认、基于哪版权限策略、由哪个服务账号委托链产生”传递给 `task-management`。

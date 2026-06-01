@@ -1,5 +1,12 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-01 落地补充：worker-side guardrail 先于真实工具副作用
+
+- 本阶段继续把“工具执行不是函数直调，而是受控行动链路”的 Agent 产品原则落到 task-management worker。
+- worker 当前在调用真实工具适配器前新增本地二次复核：任务必须已被认领为 RUNNING，Agent 审计状态必须仍可执行或可补偿，payloadReference 必须仍是受控 plan-arguments，toolCode 必须存在白名单适配器，confirmation/policy/delegation 证据必须保持低敏短文本。
+- 这对应前沿 Agent 平台常见的 worker-side guardrail / execution preflight / capability lease 思路：即使计划已确认、命令已入箱、任务已创建，真正副作用发生前仍要做最后一跳安全判断。
+- 后续应把本地 pre-check 升级为跨服务 pre-check：远端反查 confirmation、permission-admin 最新策略、租户/项目配额、工具级限流、payloadReference 版本和幂等键。
+
 ## 2026-06-01 落地补充：执行证据进入任务消费预检链路
 
 - 本阶段继续把类 Codex / Claude Code Agent 的“工具执行必须可解释、可复核、可审计”原则落到 Java 控制面，而不是贸然扩大自动执行范围。

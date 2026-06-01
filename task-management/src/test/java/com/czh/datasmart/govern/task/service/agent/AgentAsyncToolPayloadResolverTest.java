@@ -63,6 +63,9 @@ class AgentAsyncToolPayloadResolverTest {
         assertEquals(List.of("credentialRef", "datasourceId"), resolved.argumentNames());
         assertEquals(List.of("credentialRef"), resolved.sensitiveArgumentNames());
         assertEquals(Boolean.TRUE, resolved.dryRunOnly());
+        assertEquals("dag-confirmation:test-001", resolved.confirmationId());
+        assertEquals(List.of("route-policy:860"), resolved.policyVersions());
+        assertEquals(List.of("serviceAccount=datasmart-agent-runtime;representedActor=actor-agent"), resolved.delegationEvidence());
         assertTrue(resolved.payloadBytes() > 0);
         assertEquals("secret://mysql-prod", resolved.planArguments().get("credentialRef"));
     }
@@ -112,6 +115,9 @@ class AgentAsyncToolPayloadResolverTest {
         params.put("payloadReference", "agent-tool-audit://session-worker-001/run-worker-001/atea-worker-001/plan-arguments");
         params.put("argumentNames", argumentNames);
         params.put("sensitiveArgumentNames", argumentNames.contains("credentialRef") ? List.of("credentialRef") : List.of());
+        params.put("confirmationId", "dag-confirmation:test-001");
+        params.put("policyVersions", List.of("route-policy:860"));
+        params.put("delegationEvidence", List.of("serviceAccount=datasmart-agent-runtime;representedActor=actor-agent"));
         return objectMapper.writeValueAsString(params);
     }
 

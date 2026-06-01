@@ -25,6 +25,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -49,6 +50,7 @@ class AgentAsyncToolDispatchOnceServiceTest {
         AgentAsyncToolDispatchOnceService service = new AgentAsyncToolDispatchOnceService(
                 taskService,
                 resolver,
+                new AgentAsyncToolExecutionPreCheckService(List.of(executor)),
                 List.of(executor),
                 statusClient,
                 properties,
@@ -76,7 +78,49 @@ class AgentAsyncToolDispatchOnceServiceTest {
                 eq("SUCCEEDED"), any(String.class), eq(null), any(Map.class));
     }
 
+    @Test
+    void preCheckRejectionShouldFailTaskBeforeExecutorSideEffect() {
+        TaskService taskService = mock(TaskService.class);
+        AgentAsyncToolPayloadResolver resolver = mock(AgentAsyncToolPayloadResolver.class);
+        AgentAsyncToolWorkerProperties properties = new AgentAsyncToolWorkerProperties();
+        properties.setEnabled(true);
+        properties.setDryRunOnly(false);
+        properties.setExecutorId("agent-worker-test");
+        AgentAsyncToolExecutor executor = mock(AgentAsyncToolExecutor.class);
+        when(executor.supports("data-sync.execute")).thenReturn(true);
+        AgentRuntimeAsyncToolStatusClient statusClient = mock(AgentRuntimeAsyncToolStatusClient.class);
+        AgentAsyncToolDispatchOnceService service = new AgentAsyncToolDispatchOnceService(
+                taskService,
+                resolver,
+                new AgentAsyncToolExecutionPreCheckService(List.of(executor)),
+                List.of(executor),
+                statusClient,
+                properties,
+                new ObjectMapper()
+        );
+        Task task = new Task();
+        task.setId(9001L);
+        TaskExecutionRun run = new TaskExecutionRun();
+        run.setId(9101L);
+        when(taskService.claimNextTask(any(TaskExecutionClaimRequest.class), any(TaskActorContext.class)))
+                .thenReturn(new TaskExecutionClaimResult(true, "claimed", task, run));
+        when(resolver.resolve(eq(task), eq("trace-worker"))).thenReturn(payloadWithAuditState("WAITING_APPROVAL"));
+        TaskActorContext actorContext = new TaskActorContext(10L, null, "SERVICE_ACCOUNT", "trace-worker", null, List.of());
+
+        AgentAsyncToolDispatchOnceResult result = service.dispatchOnce(actorContext);
+
+        assertEquals("FAILED", result.outcome());
+        verify(statusClient).notifyStatus(any(AgentAsyncToolResolvedPayload.class), eq(9101L),
+                eq("FAILED"), any(String.class), eq("AGENT_ASYNC_TOOL_PRECHECK_REJECTED"), any(Map.class));
+        verify(taskService).failTask(eq(9001L), any(String.class), any(TaskExecutionCallbackContext.class));
+        verify(executor, never()).execute(any(AgentAsyncToolResolvedPayload.class));
+    }
+
     private AgentAsyncToolResolvedPayload payload() {
+        return payloadWithAuditState("PLANNED");
+    }
+
+    private AgentAsyncToolResolvedPayload payloadWithAuditState(String auditState) {
         return new AgentAsyncToolResolvedPayload(
                 9001L,
                 "RUNNING",
@@ -96,11 +140,14 @@ class AgentAsyncToolDispatchOnceServiceTest {
                 "1001",
                 "trace-worker",
                 "ASYNC_TASK",
-                "PLANNED",
+                auditState,
                 List.of("syncTemplateId"),
                 List.of(),
                 24,
                 false,
+                "dag-confirmation:test-001",
+                List.of("route-policy:860"),
+                List.of("serviceAccount=datasmart-agent-runtime;representedActor=actor-agent"),
                 Map.of("syncTemplateId", 6001L),
                 Map.of(),
                 Map.of(),

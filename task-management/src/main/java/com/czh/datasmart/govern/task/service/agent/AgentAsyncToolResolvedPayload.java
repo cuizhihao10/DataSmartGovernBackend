@@ -42,6 +42,9 @@ public record AgentAsyncToolResolvedPayload(
         List<String> sensitiveArgumentNames,
         Integer payloadBytes,
         Boolean dryRunOnly,
+        String confirmationId,
+        List<String> policyVersions,
+        List<String> delegationEvidence,
         Map<String, Object> planArguments,
         Map<String, Object> governanceHints,
         Map<String, Object> parameterValidation,
@@ -52,6 +55,9 @@ public record AgentAsyncToolResolvedPayload(
     public AgentAsyncToolResolvedPayload {
         argumentNames = argumentNames == null ? List.of() : List.copyOf(argumentNames);
         sensitiveArgumentNames = sensitiveArgumentNames == null ? List.of() : List.copyOf(sensitiveArgumentNames);
+        confirmationId = confirmationId == null || confirmationId.isBlank() ? null : confirmationId.trim();
+        policyVersions = policyVersions == null ? List.of() : List.copyOf(policyVersions);
+        delegationEvidence = delegationEvidence == null ? List.of() : List.copyOf(delegationEvidence);
         planArguments = planArguments == null ? Map.of() : new LinkedHashMap<>(planArguments);
         governanceHints = governanceHints == null ? Map.of() : new LinkedHashMap<>(governanceHints);
         parameterValidation = parameterValidation == null ? Map.of() : new LinkedHashMap<>(parameterValidation);

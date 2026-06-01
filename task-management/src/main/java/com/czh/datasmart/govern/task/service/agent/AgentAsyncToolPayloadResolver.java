@@ -93,6 +93,9 @@ public class AgentAsyncToolPayloadResolver {
                 payload.sensitiveArgumentNames(),
                 payloadBytes,
                 properties.isDryRunOnly(),
+                optionalText(taskParams.get("confirmationId")),
+                stringList(taskParams.get("policyVersions"), "policyVersions"),
+                stringList(taskParams.get("delegationEvidence"), "delegationEvidence"),
                 payload.planArguments(),
                 payload.governanceHints(),
                 payload.parameterValidation(),
@@ -193,6 +196,13 @@ public class AgentAsyncToolPayloadResolver {
         Object value = params.get(fieldName);
         if (value == null || String.valueOf(value).isBlank()) {
             throw new IllegalArgumentException("Agent 异步工具任务 params 缺少 " + fieldName);
+        }
+        return String.valueOf(value).trim();
+    }
+
+    private String optionalText(Object value) {
+        if (value == null || String.valueOf(value).isBlank()) {
+            return null;
         }
         return String.valueOf(value).trim();
     }
