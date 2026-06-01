@@ -338,6 +338,59 @@ class AgentOrchestratorTest(unittest.TestCase):
         self.assertEqual("tool", provider.requests[-1].messages[-1].role)
         self.assertEqual("call_stream_quality", provider.requests[-1].messages[-1].tool_call_id)
 
+    def test_model_tool_call_budget_guard_blocks_excess_auto_tools_in_main_flow(self) -> None:
+        """主编排链路应应用工具调用预算守卫，而不是只在独立组件测试中生效。
+
+        这里让模型一次提出两个低风险同步工具。默认预算允许最多 3 个自动推进工具，因此测试使用
+        AgentModelIntentNode 的默认策略不容易触发阻断；为避免把策略调得过于苛刻影响正常用例，
+        本测试通过重复返回 4 个只读元数据工具调用，验证尾部候选会被预算事件阻断。
+        """
+
+        provider = ToolCallingModelProviderRegistry(
+            tool_calls=tuple(
+                ModelToolCall(
+                    call_id=f"call_metadata_{index}",
+                    name="datasource_metadata_read",
+                    arguments=f'{{"datasourceId":"ds-{index}"}}',
+                )
+                for index in range(4)
+            )
+        )
+        orchestrator = AgentOrchestrator(
+            model_routes=ModelRouteRegistry(default_model_routes()),
+            tool_planner=ToolPlanner(default_tool_registry()),
+            model_providers=provider,
+            skill_registry=AgentSkillRegistry(default_skill_registry()),
+        )
+
+        plan = orchestrator.plan(
+            AgentRequest(
+                tenant_id="tenant-a",
+                project_id="project-a",
+                actor_id="owner-a",
+                objective="请连续读取多个数据源元数据",
+                variables={"datasourceId": "ds-rule"},
+            )
+        )
+
+        budget_event = next(
+            event
+            for event in plan.runtime_events
+            if event.stage == "guard_model_tool_call_budget"
+        )
+
+        self.assertEqual(3, budget_event.attributes["acceptedCountAfterGuard"])
+        self.assertIn(
+            "MODEL_TOOL_CALL_BUDGET_AUTO_EXECUTABLE_COUNT_EXCEEDED",
+            budget_event.attributes["budgetIssueCodes"],
+        )
+        accepted_model_call_ids = {
+            plan.governance_hints.get("modelToolCallId")
+            for plan in plan.tool_plans
+            if plan.governance_hints.get("source") == "model_tool_call"
+        }
+        self.assertNotIn("call_metadata_3", accepted_model_call_ids)
+
     def test_model_route_uses_new_generation_placeholder_not_qwen2(self) -> None:
         orchestrator = build_default_orchestrator()
 

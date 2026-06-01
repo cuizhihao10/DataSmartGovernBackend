@@ -7570,3 +7570,33 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 继续智能网关方向：把 model route、tool budget、workspace context budget、provider fallback 和 memory retrieval budget 统一成 gateway governance response。
 3. 不建议马上做复杂 UI 或完整网关微服务；先让 Python Runtime 固定治理契约，再由 Java gateway/permission-admin 接权限和策略。
 4. Agent skill 能力仍是下一条主线，应在工具预算接入主流程后推进 skill 注册、权限准入和 schema 暴露策略。
+
+## 4.85 Python AI Runtime 工具调用预算守卫接入主编排链路（2026-06-02）
+
+本阶段把 4.84 的独立 `ModelToolCallBudgetGuard` 接入 `AgentModelIntentNode`，让非流式和流式模型 tool_calls 都在生成 ToolPlan 前经过预算守卫。这样智能网关工具治理不再只是可测试组件，而是 Agent 主流程的一部分。
+
+已完成：
+- `AgentModelIntentNode` 构造器新增 `model_tool_call_budget_guard` 注入点，默认使用 `ModelToolCallBudgetGuard`。
+- `_govern_model_tool_calls` 在 planner 生成原始 report 后调用 guard，使用 guarded report 生成最终 `ToolPlan`。
+- 当 budget guard 产生 `MODEL_TOOL_CALL_BUDGET_*` 问题码时，新增 runtime event：
+  - event type 复用 `MODEL_TOOL_CALL_REJECTED`；
+  - stage 为 `guard_model_tool_call_budget`；
+  - attributes 包含 proposed/accepted before/after、auto/high-risk 计数、arguments 字节数、预算策略和 issue codes。
+- 既有 `record_model_tool_call_planning_events` 改为记录 guarded report，因此后续 accepted/rejected 事件反映预算守卫之后的真实准入结果。
+- `test_agent_orchestrator.py` 新增主流程测试：模型一次提出 4 个低风险同步工具时，默认自动推进上限只允许 3 个，尾部候选被预算守卫阻断。
+
+产品意义：
+- 用户和审计现在可以看到“模型提出了工具调用，但智能网关因预算阻断了一部分”，而不是只看到最终工具计划缩水。
+- 预算守卫位于模型 tool_calls 与 Java 控制面之前，可以提前减少审批压力、outbox 压力和下游微服务压力。
+- 该设计保留了 original report 与 guarded report 的差异，后续可接入智能网关响应、指标和租户策略。
+
+当前边界：
+- 预算策略仍是默认静态策略，未从租户套餐、项目配置、角色、工具成本权重或实时 backlog 动态生成。
+- runtime event 已有低敏摘要，但还没有单独的 `MODEL_TOOL_CALL_BUDGET_GUARDED` 事件类型。
+- guard 只影响模型 tool_calls；规则式 `ToolPlanner` 生成的安全基线工具计划暂未纳入同一个预算 guard。
+
+下一步建议：
+1. 增加独立 runtime event type 或治理响应 DTO，避免长期复用 rejected 事件承载预算 guard summary。
+2. 把工具预算策略来源抽象出来，未来接 permission-admin/tenant plan/Java gateway/Redis quota。
+3. 汇总 model route、tool budget、cache plan、memory retrieval、workspace namespace，形成智能网关统一治理摘要。
+4. 接下来可以推进 Agent skill 能力，开始做 skill 注册、权限准入和工具 schema 暴露策略。

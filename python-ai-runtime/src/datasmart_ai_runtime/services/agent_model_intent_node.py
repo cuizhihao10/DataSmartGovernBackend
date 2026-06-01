@@ -43,6 +43,7 @@ from datasmart_ai_runtime.services.model_tool_call_aggregator import (
     ModelToolCallDeltaAggregator,
 )
 from datasmart_ai_runtime.services.model_tool_call_events import record_model_tool_call_planning_events
+from datasmart_ai_runtime.services.model_tool_call_budget_guard import ModelToolCallBudgetGuard
 from datasmart_ai_runtime.services.model_tool_call_planner import ModelToolCallPlanner
 from datasmart_ai_runtime.services.model_provider import ModelProviderRegistry
 from datasmart_ai_runtime.services.model_tool_result_feedback import ModelToolResultFeedbackBuilder
@@ -58,8 +59,8 @@ class AgentModelIntentNodeResult:
     - `summary`：模型返回的自然语言摘要，主要用于计划解释和前端展示；
     - `model_tool_plans`：模型通过 `tool_calls` 提出的工具计划。它们已经经过工具存在性、本轮可见性、
       JSON 参数形态、风险和审批语义治理，但仍不是“已经执行”的工具结果；
-    - `visible_tool_names`：本轮传给模型 Provider 的候选工具名，用于测试、诊断和后续事件补充；
-    - `tool_call_count`：模型实际返回的工具调用数量。该字段有助于后续做模型工具使用率和幻觉率指标。
+    - `visible_tool_names`：本轮传给模型 Provider 的候选工具名；
+    - `tool_call_count`：模型实际返回的工具调用数量，用于后续统计工具使用率和幻觉率。
     - `streaming_source_chunk_count`：如果本次走 streaming 路径，记录参与聚合的 chunk 数；
     - `streaming_source_delta_count`：如果本次走 streaming 路径，记录参与聚合的 tool call delta 数；
     - `streaming_assembly_issue_count`：流式聚合阶段发现的结构问题数量，例如缺少 name/id/arguments。
@@ -92,6 +93,7 @@ class AgentModelIntentNode:
         model_gateway: ModelGatewayGovernanceService,
         tool_planner: ToolPlanner,
         model_tool_call_planner: ModelToolCallPlanner | None = None,
+        model_tool_call_budget_guard: ModelToolCallBudgetGuard | None = None,
         tool_call_delta_aggregator_factory: type[ModelToolCallDeltaAggregator] = ModelToolCallDeltaAggregator,
         tool_execution_feedback_provider: ModelToolExecutionFeedbackProvider | None = None,
         tool_result_feedback_builder: ModelToolResultFeedbackBuilder | None = None,
@@ -100,6 +102,7 @@ class AgentModelIntentNode:
         self._model_gateway = model_gateway
         self._tool_planner = tool_planner
         self._model_tool_call_planner = model_tool_call_planner or ModelToolCallPlanner()
+        self._model_tool_call_budget_guard = model_tool_call_budget_guard or ModelToolCallBudgetGuard()
         self._tool_call_delta_aggregator_factory = tool_call_delta_aggregator_factory
         self._tool_execution_feedback_provider = tool_execution_feedback_provider or SimulatedModelToolExecutionFeedbackProvider()
         self._tool_result_feedback_builder = tool_result_feedback_builder or ModelToolResultFeedbackBuilder()
@@ -205,9 +208,8 @@ class AgentModelIntentNode:
     ) -> AgentModelIntentNodeResult:
         """执行流式模型调用路径，并聚合 tool call delta。
 
-        OpenAI-compatible streaming 下，文本和工具调用片段可能混在同一批 chunk 中返回。这里把文本
-        delta 拼接成人类可读摘要，同时把 `tool_call_deltas` 交给聚合器还原为完整 `ModelToolCall`。
-        注意：聚合成功仍不代表可以执行，后续必须复用 `_govern_model_tool_calls(...)` 进入同一套治理。
+        OpenAI-compatible streaming 下，文本和工具调用片段可能混在同一批 chunk 中返回。这里拼接文本
+        delta，并把 `tool_call_deltas` 聚合为完整 `ModelToolCall` 后继续进入同一套治理。
         """
 
         chunks = tuple(self._stream_chunks(model_request))
@@ -258,10 +260,7 @@ class AgentModelIntentNode:
         """把模型返回的 tool_calls 转为受治理的 ToolPlan。
 
         Provider 解析出的 `tool_calls` 仍然只是模型输出，不能直接执行。这里同时传入完整注册表和
-        本轮 visible tools，原因是两类错误需要区分：
-        - 工具不存在：大概率是模型幻觉或协议映射错误；
-        - 工具存在但不可见：大概率是模型越权尝试或工具暴露策略不一致。
-        两者都会进入 runtime events，但后续产品提示和治理动作不同。
+        本轮 visible tools，用于区分“工具不存在”和“工具存在但本轮不可见”两类治理问题。
         """
 
         if not tool_calls:
@@ -271,8 +270,16 @@ class AgentModelIntentNode:
             registered_tools=self._tool_planner.registered_tools(),
             visible_tools=visible_tools,
         )
-        record_model_tool_call_planning_events(event_recorder, report)
-        return report.accepted_tool_plans
+        guarded = self._model_tool_call_budget_guard.evaluate(report)
+        if guarded.budget_issue_codes:
+            event_recorder.record(
+                AgentRuntimeEventType.MODEL_TOOL_CALL_REJECTED,
+                "guard_model_tool_call_budget",
+                "智能网关已根据工具调用预算阻断部分模型工具调用候选。",
+                attributes=guarded.to_summary(),
+            )
+        record_model_tool_call_planning_events(event_recorder, guarded.guarded_report)
+        return guarded.guarded_report.accepted_tool_plans
 
     def _complete_simulated_tool_feedback_turn(
         self,
@@ -284,10 +291,8 @@ class AgentModelIntentNode:
     ) -> tuple[str, int]:
         """用模拟工具反馈完成第二轮模型调用。
 
-        这是通往真实多步 Agent loop 的“协议验证层”。当前并不调用 Java 执行工具，而是通过
-        `ModelToolExecutionFeedbackProvider` 生成受控反馈，再用 `ModelToolResultFeedbackBuilder`
-        构造 OpenAI-compatible 的 assistant/tool messages。后续替换为 Java provider 时，本方法的
-        主流程仍然成立。
+        这是通往真实多步 Agent loop 的“协议验证层”。当前不调用 Java 执行工具，而是生成受控反馈并
+        构造 OpenAI-compatible 的 assistant/tool messages。后续替换为 Java provider 时主流程仍成立。
         """
 
         if not tool_calls or not model_tool_plans:
@@ -369,8 +374,7 @@ class AgentModelIntentNode:
     def _resource_model_blocked_count(summaries: tuple[dict[str, object], ...]) -> int:
         """统计不允许进入模型上下文的资源数量。
 
-        这类资源不一定是错误。例如 `audit_only` 资源可以被审计台或下载接口使用，只是不应进入模型。
-        单独统计该数量，能让运维判断“模型上下文被裁剪”是安全策略生效，还是 workspace 越界等异常。
+        这类资源不一定是错误，例如 `audit_only` 可供审计台使用，只是不应进入模型。
         """
 
         return sum(1 for item in summaries if not item.get("modelContextAllowed"))
@@ -385,9 +389,8 @@ class AgentModelIntentNode:
     def _workspace_key_from_tool_plans(tool_plans: tuple[ToolPlan, ...]) -> str | None:
         """从 ToolPlan 治理提示中提取当前运行 workspaceKey。
 
-        工作空间已经在计划响应阶段写入每个 ToolPlan 的 `governance_hints`。二轮推理构造工具结果消息时
-        复用该字段，可以让 `ModelToolResultFeedbackBuilder` 校验输出资源是否越过租户/项目/会话边界。
-        如果当前计划还没有 workspaceKey，构建器会按兼容模式运行，避免阻断历史测试和渐进式迁移。
+        二轮推理构造工具结果消息时复用该字段，让反馈构建器校验输出资源是否越过 workspace 边界。
+        历史计划没有 workspaceKey 时按兼容模式运行，避免阻断渐进式迁移。
         """
 
         for plan in tool_plans:
@@ -433,9 +436,7 @@ class AgentModelIntentNode:
     def _should_use_streaming(self, request: AgentRequest) -> bool:
         """判断本次模型意图节点是否优先走 streaming。
 
-        默认启用 streaming，是为了让真实 SSE Provider 能在主链中被自然使用；测试桩或旧 Provider
-        如果没有 `stream(...)` 方法，会自动回到非流式路径。请求变量允许显式关闭 streaming，便于
-        排查问题、比较非流式/流式差异或适配某些暂不稳定的私有模型网关。
+        默认启用 streaming；旧 Provider 没有 `stream(...)` 时自动回到非流式路径。请求变量允许显式关闭。
         """
 
         explicit = request.variables.get("streamModelIntent") or request.variables.get("stream_model_intent")
@@ -450,8 +451,7 @@ class AgentModelIntentNode:
     ) -> None:
         """把模型调用 usage 回写给模型网关治理服务。
 
-        usage 统计是预算、限额、成本报表和异常诊断的基础。该方法单独拆出，是为了让非流式路径和后续
-        streaming trailer usage 路径复用同一生命周期位置。
+        usage 统计是预算、限额、成本报表和异常诊断的基础，后续 streaming trailer usage 可复用。
         """
 
         self._model_gateway.record_invocation_usage(
