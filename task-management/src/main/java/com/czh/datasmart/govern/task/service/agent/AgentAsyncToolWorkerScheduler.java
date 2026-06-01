@@ -56,10 +56,11 @@ public class AgentAsyncToolWorkerScheduler {
         }
         try {
             AgentAsyncToolWorkerBatchResult result = batchService.dispatchBatch(workerActorContext());
-            if (result.attempted() > 0 && (result.claimed() > 0 || result.noTask() > 0)) {
-                log.info("Agent 异步工具后台 worker 单轮完成，attempted={}, claimed={}, completed={}, deferred={}, failed={}, noTask={}, stoppedByNoTask={}",
+            if (result.attempted() > 0 && (result.claimed() > 0 || result.noTask() > 0 || result.capacityLimited() > 0)) {
+                log.info("Agent 异步工具后台 worker 单轮完成，attempted={}, claimed={}, completed={}, deferred={}, failed={}, noTask={}, capacityLimited={}, stoppedByNoTask={}, stoppedByCapacityLimit={}",
                         result.attempted(), result.claimed(), result.completed(), result.deferred(),
-                        result.failed(), result.noTask(), result.stoppedByNoTask());
+                        result.failed(), result.noTask(), result.capacityLimited(), result.stoppedByNoTask(),
+                        result.stoppedByCapacityLimit());
             }
         } catch (RuntimeException exception) {
             log.error("Agent 异步工具后台 worker 单轮执行失败，executorId={}, error={}",

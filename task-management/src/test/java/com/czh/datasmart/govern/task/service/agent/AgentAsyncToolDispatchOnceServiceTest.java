@@ -58,6 +58,7 @@ class AgentAsyncToolDispatchOnceServiceTest {
                 List.of(executor),
                 statusClient,
                 properties,
+                new AgentAsyncToolWorkerAdmissionGuardService(properties),
                 new ObjectMapper()
         );
         Task task = new Task();
@@ -103,6 +104,7 @@ class AgentAsyncToolDispatchOnceServiceTest {
                 List.of(executor),
                 statusClient,
                 properties,
+                new AgentAsyncToolWorkerAdmissionGuardService(properties),
                 new ObjectMapper()
         );
         Task task = new Task();
@@ -147,6 +149,7 @@ class AgentAsyncToolDispatchOnceServiceTest {
                 List.of(executor),
                 statusClient,
                 properties,
+                new AgentAsyncToolWorkerAdmissionGuardService(properties),
                 new ObjectMapper()
         );
         Task task = new Task();
@@ -164,6 +167,38 @@ class AgentAsyncToolDispatchOnceServiceTest {
         verify(taskService).deferTask(eq(9001L), any(String.class), eq(45), any(TaskExecutionCallbackContext.class));
         verify(statusClient, never()).notifyStatus(any(AgentAsyncToolResolvedPayload.class), any(), any(), any(), any(), any());
         verify(executor, never()).execute(any(AgentAsyncToolResolvedPayload.class));
+    }
+
+    @Test
+    void capacityGuardShouldRejectBeforeClaimingTaskWhenLocalConcurrencyIsFull() {
+        TaskService taskService = mock(TaskService.class);
+        AgentAsyncToolWorkerProperties properties = new AgentAsyncToolWorkerProperties();
+        properties.setEnabled(true);
+        properties.setDryRunOnly(false);
+        properties.setMaxLocalConcurrentExecutions(1);
+        AgentAsyncToolWorkerAdmissionGuardService admissionGuard = new AgentAsyncToolWorkerAdmissionGuardService(properties);
+        TaskActorContext actorContext = new TaskActorContext(10L, null, "SERVICE_ACCOUNT", "trace-worker", null, List.of());
+        AgentAsyncToolWorkerAdmissionLease heldLease = admissionGuard.tryAcquire(actorContext);
+        try {
+            AgentAsyncToolDispatchOnceService service = new AgentAsyncToolDispatchOnceService(
+                    taskService,
+                    mock(AgentAsyncToolPayloadResolver.class),
+                    mock(AgentAsyncToolExecutionPreCheckService.class),
+                    List.of(),
+                    mock(AgentRuntimeAsyncToolStatusClient.class),
+                    properties,
+                    admissionGuard,
+                    new ObjectMapper()
+            );
+
+            AgentAsyncToolDispatchOnceResult result = service.dispatchOnce(actorContext);
+
+            assertEquals("CAPACITY_LIMITED", result.outcome());
+            assertEquals(false, result.claimed());
+            verify(taskService, never()).claimNextTask(any(TaskExecutionClaimRequest.class), any(TaskActorContext.class));
+        } finally {
+            heldLease.close();
+        }
     }
 
     private AgentAsyncToolResolvedPayload payload() {

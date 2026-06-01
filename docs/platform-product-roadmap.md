@@ -1,5 +1,14 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-01 追加落地进展：Agent worker 本地容量与调度节流保护
+
+- `task-management` 新增 Agent worker 入场保护：在 `claimNextTask` 之前检查本地并发和最小调度间隔，避免 worker 没有执行容量时仍把任务提前置为 `RUNNING`。
+- 新增 `capacity-guard-enabled`、`max-local-concurrent-executions`、`min-dispatch-interval-ms` 配置；默认开启本地容量保护、单实例并发为 1、调度间隔为 0，优先保证副作用链路安全可审计。
+- `dispatch-once` 新增 `CAPACITY_LIMITED` 结果：容量不足或节流未到达时不认领任务、不改变任务状态，只返回低敏诊断信息。
+- `batch` 与 `scheduler` 可以区分 `NO_TASK` 和 `CAPACITY_LIMITED`，容量不足时停止当前批次，避免同一轮调度反复撞保护阀。
+- 这一步仍是本地 JVM 级保护，不替代未来 Redis/数据库级租户配额、项目配额、工具级令牌桶和下游熔断；但它先把“授权合法也不能无限执行”的产品规则落进 worker 主链路。
+- 下一步建议把本地保护升级为租户/项目/工具维度的分布式配额，并把容量阻断、权限阻断、确认阻断统一写入 runtime event display 和指标。
+
 ## 2026-06-01 追加落地进展：Agent worker 接入 permission-admin 实时授权复核
 
 - `permission-admin` 新增 `EXECUTE_CONFIRMED_ASYNC_TOOL` 动作，用于区分“selected-node 入箱”和“worker 执行真实副作用”两道权限门。

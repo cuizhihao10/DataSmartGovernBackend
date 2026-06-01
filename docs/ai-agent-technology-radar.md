@@ -1,5 +1,12 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-01 落地补充：local admission control before tool execution
+
+- 本阶段把 Agent worker-side guardrail 从“确认与权限复核”继续推进到“容量入场保护”：worker 在 claim 任务前先检查本地并发和调度节流。
+- 这对应前沿 Agent 工具平台中的 admission control / rate limiting / backpressure 思路：工具执行不仅要被允许，还必须在系统容量允许时执行。
+- DataSmart 当前选择先落本地 JVM 级保护，是为了快速防止手动 dispatch、后台 scheduler 或未来多线程 worker 在单实例内过度并发；这不是最终形态。
+- 后续趋势落地应演进到多维度配额：tenant、project、workspace、toolCode、targetService、queue backlog、downstream health，并与 runtime event stream、指标告警和管理员控制台联动。
+
 ## 2026-06-01 落地补充：delegated authorization re-check before side effects
 
 - 本阶段把 Agent worker-side guardrail 继续推进到 permission-admin 实时授权复核：即使 command 已入箱、任务已创建、confirmation 已回查通过，worker 在真实工具副作用前仍要重新 evaluate。

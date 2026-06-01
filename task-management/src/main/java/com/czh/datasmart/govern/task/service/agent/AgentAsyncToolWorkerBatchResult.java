@@ -22,7 +22,9 @@ import java.util.List;
  * @param deferred 本轮退避回队列的任务数。
  * @param failed 本轮标记失败的任务数。
  * @param noTask 本轮遇到没有可领取任务的次数。
+ * @param capacityLimited 本轮被本地容量保护或节流保护阻断的次数。
  * @param stoppedByNoTask 是否因为无任务而提前停止本轮。
+ * @param stoppedByCapacityLimit 是否因为本地容量保护而提前停止本轮。
  * @param results 每次 dispatch-once 的明细结果，便于测试和后续诊断。
  * @param startedAt 本轮开始时间。
  * @param finishedAt 本轮结束时间。
@@ -34,7 +36,9 @@ public record AgentAsyncToolWorkerBatchResult(
         int deferred,
         int failed,
         int noTask,
+        int capacityLimited,
         boolean stoppedByNoTask,
+        boolean stoppedByCapacityLimit,
         List<AgentAsyncToolDispatchOnceResult> results,
         LocalDateTime startedAt,
         LocalDateTime finishedAt) {

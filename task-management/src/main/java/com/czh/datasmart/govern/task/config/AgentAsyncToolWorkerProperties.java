@@ -101,6 +101,33 @@ public class AgentAsyncToolWorkerProperties {
     private boolean stopBatchOnNoTask = true;
 
     /**
+     * 是否启用 worker 本地容量保护。
+     *
+     * <p>该开关保护的是 task-management 当前实例，不是全局租户配额。默认开启，是因为 Agent 工具可能触发数据同步、
+     * 元数据扫描、质量检测、导出等真实副作用；即使权限和确认都合法，也不能让一个实例无限并发地 claim 和执行任务。
+     * 关闭该开关只建议用于非常受控的本地调试环境，生产环境应保持开启，并逐步演进到 Redis/数据库级全局配额。</p>
+     */
+    private boolean capacityGuardEnabled = true;
+
+    /**
+     * 单个 task-management 实例允许同时进入 Agent 异步工具执行链路的最大 dispatch 数。
+     *
+     * <p>这里的“本地并发”覆盖手动 dispatch-once、后台 scheduler 以及未来多线程 worker 在同一个 JVM 内的竞争。
+     * 当前默认 1，偏保守：先保证副作用链路可审计、可回滚、可排障，再逐步压测提高并发。
+     * 多实例部署时，每个实例都会有自己的本地上限；全局并发需要后续通过 Redis/DB 租约继续补齐。</p>
+     */
+    private int maxLocalConcurrentExecutions = 1;
+
+    /**
+     * 两次进入 claim 阶段之间的最小本地间隔，单位毫秒。
+     *
+     * <p>默认 0 表示不额外节流，保持当前测试和本地调试体验。生产环境如果发现 worker 轮询过密、
+     * permission-admin evaluate 压力过大、或队列为空时仍频繁打数据库，可以配置为 100-1000ms 作为保护阀。
+     * 该值是实例级节流，不替代租户级/工具级限流。</p>
+     */
+    private long minDispatchIntervalMs = 0L;
+
+    /**
      * 解析后的参数载荷最大字节数。
      *
      * <p>该限制保护 task-management worker 内存、日志、审计和下游工具适配器。

@@ -105,6 +105,12 @@ datasmart:
       max-dispatches-per-tick: ${DATASMART_TASK_AGENT_ASYNC_WORKER_MAX_DISPATCHES_PER_TICK:1}
       # 单轮遇到 NO_TASK 是否提前停止。默认 true，避免队列为空时继续循环 claim，增加数据库压力。
       stop-batch-on-no-task: ${DATASMART_TASK_AGENT_ASYNC_WORKER_STOP_BATCH_ON_NO_TASK:true}
+      # 是否启用 worker 本地容量保护。默认开启，用于在 claim 任务前拦截本地并发过高或调度过快的请求。
+      capacity-guard-enabled: ${DATASMART_TASK_AGENT_ASYNC_WORKER_CAPACITY_GUARD_ENABLED:true}
+      # 单个 task-management 实例允许同时进入 Agent 工具执行链路的最大 dispatch 数。默认 1，优先保证副作用链路安全可审计。
+      max-local-concurrent-executions: ${DATASMART_TASK_AGENT_ASYNC_WORKER_MAX_LOCAL_CONCURRENT_EXECUTIONS:1}
+      # 两次进入 claim 阶段之间的最小本地间隔，单位毫秒。默认 0 不额外节流，生产可按下游容量设置为 100-1000ms。
+      min-dispatch-interval-ms: ${DATASMART_TASK_AGENT_ASYNC_WORKER_MIN_DISPATCH_INTERVAL_MS:0}
       # 自动认领任务时的租约秒数；过短会导致长工具被过早恢复，过长会拖慢故障恢复。
       claim-lease-seconds: ${DATASMART_TASK_AGENT_ASYNC_WORKER_CLAIM_LEASE_SECONDS:60}
       # 参数载荷最大字节数。Agent 工具参数应保存结构化配置和引用，不应携带大文件、样本数据或海量 SQL。

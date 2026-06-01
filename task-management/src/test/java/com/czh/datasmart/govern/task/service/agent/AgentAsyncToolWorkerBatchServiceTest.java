@@ -68,6 +68,26 @@ class AgentAsyncToolWorkerBatchServiceTest {
         verify(dispatchOnceService, times(2)).dispatchOnce(any(TaskActorContext.class));
     }
 
+    @Test
+    void shouldStopBatchWhenCapacityGuardRejectsDispatch() {
+        AgentAsyncToolDispatchOnceService dispatchOnceService = mock(AgentAsyncToolDispatchOnceService.class);
+        AgentAsyncToolWorkerProperties properties = new AgentAsyncToolWorkerProperties();
+        properties.setMaxDispatchesPerTick(5);
+        AgentAsyncToolWorkerBatchService batchService = new AgentAsyncToolWorkerBatchService(dispatchOnceService, properties);
+        when(dispatchOnceService.dispatchOnce(any(TaskActorContext.class)))
+                .thenReturn(new AgentAsyncToolDispatchOnceResult(false, null, null, null,
+                        AgentAsyncToolDispatchOnceService.OUTCOME_CAPACITY_LIMITED, "本地容量不足", Map.of()));
+
+        AgentAsyncToolWorkerBatchResult result = batchService.dispatchBatch(actorContext());
+
+        assertEquals(1, result.attempted());
+        assertEquals(0, result.claimed());
+        assertEquals(0, result.noTask());
+        assertEquals(1, result.capacityLimited());
+        assertTrue(result.stoppedByCapacityLimit());
+        verify(dispatchOnceService, times(1)).dispatchOnce(any(TaskActorContext.class));
+    }
+
     private TaskActorContext actorContext() {
         return new TaskActorContext(null, null, "SERVICE_ACCOUNT", "trace-worker-test", "PLATFORM", List.of());
     }

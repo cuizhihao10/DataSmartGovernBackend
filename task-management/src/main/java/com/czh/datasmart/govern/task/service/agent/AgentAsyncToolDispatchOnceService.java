@@ -33,6 +33,7 @@ import java.util.Map;
 public class AgentAsyncToolDispatchOnceService {
 
     private static final String OUTCOME_NO_TASK = "NO_TASK";
+    static final String OUTCOME_CAPACITY_LIMITED = "CAPACITY_LIMITED";
     private static final String OUTCOME_COMPLETED = "COMPLETED";
     private static final String OUTCOME_DEFERRED = "DEFERRED";
     private static final String OUTCOME_FAILED = "FAILED";
@@ -43,6 +44,7 @@ public class AgentAsyncToolDispatchOnceService {
     private final List<AgentAsyncToolExecutor> executors;
     private final AgentRuntimeAsyncToolStatusClient statusClient;
     private final AgentAsyncToolWorkerProperties properties;
+    private final AgentAsyncToolWorkerAdmissionGuardService admissionGuardService;
     private final ObjectMapper objectMapper;
 
     /**
@@ -59,77 +61,93 @@ public class AgentAsyncToolDispatchOnceService {
         if (properties.isDryRunOnly()) {
             throw new IllegalStateException("Agent 异步工具 worker 当前为 dryRunOnly=true，只允许 payload 预检，不允许真实执行");
         }
-        TaskExecutionClaimResult claim = taskService.claimNextTask(claimRequest(), actorContext);
-        if (!claim.claimed()) {
-            return new AgentAsyncToolDispatchOnceResult(false, null, null, null, OUTCOME_NO_TASK, claim.message(), Map.of());
+
+        /*
+         * 容量保护必须发生在 claimNextTask 之前。
+         * 如果先把任务认领成 RUNNING，再发现本地并发或节流不允许执行，就只能把任务 defer 或等待租约恢复，
+         * 这会制造额外数据库写入，也会让运维看到“刚 RUNNING 又退回”的抖动。先申请入场许可，可以在 worker
+         * 没有容量时直接返回 CAPACITY_LIMITED，不改变任何任务状态。
+         */
+        AgentAsyncToolWorkerAdmissionLease admission = admissionGuardService.tryAcquire(actorContext);
+        if (!admission.acquired()) {
+            return new AgentAsyncToolDispatchOnceResult(false, null, null, null,
+                    OUTCOME_CAPACITY_LIMITED, admission.message(), admission.diagnostics());
         }
-        Task task = claim.task();
-        Long runId = claim.executionRun() == null ? null : claim.executionRun().getId();
-        try {
-            AgentAsyncToolResolvedPayload payload = payloadResolver.resolve(task, actorContext == null ? null : actorContext.traceId());
-            AgentAsyncToolExecutionPreCheckResult preCheck = preCheckService.preCheck(payload);
-            if (!preCheck.allowed()) {
-                return rejectBeforeExecution(task, runId, payload, actorContext, preCheck);
+
+        try (AgentAsyncToolWorkerAdmissionLease ignored = admission) {
+            TaskExecutionClaimResult claim = taskService.claimNextTask(claimRequest(), actorContext);
+            if (!claim.claimed()) {
+                return new AgentAsyncToolDispatchOnceResult(false, null, null, null, OUTCOME_NO_TASK, claim.message(), Map.of());
             }
-            AgentAsyncToolExecutor executor = selectExecutor(payload.toolCode());
-            if (!notifyRunningStatus(task, runId, payload, actorContext)) {
-                return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
-                        OUTCOME_DEFERRED, "agent-runtime RUNNING 状态回写失败，任务已退避等待补偿。", Map.of());
-            }
-            AgentAsyncToolExecutionResult executionResult = executor.execute(payload);
-            TaskExecutionCallbackContext callbackContext = callbackContext(runId, payload, actorContext, executionResult);
-            if (executionResult.success()) {
-                if (!notifyTerminalStatus(task, runId, payload, actorContext, executionResult, "SUCCEEDED", null)) {
-                    return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
-                            OUTCOME_DEFERRED, "业务执行已成功，但 agent-runtime 状态回写失败，任务已退避等待补偿。", executionResult.output());
+            Task task = claim.task();
+            Long runId = claim.executionRun() == null ? null : claim.executionRun().getId();
+            try {
+                AgentAsyncToolResolvedPayload payload = payloadResolver.resolve(task, actorContext == null ? null : actorContext.traceId());
+                AgentAsyncToolExecutionPreCheckResult preCheck = preCheckService.preCheck(payload);
+                if (!preCheck.allowed()) {
+                    return rejectBeforeExecution(task, runId, payload, actorContext, preCheck);
                 }
-                taskService.completeTask(task.getId(), toJson(executionResult.output()), callbackContext);
-                return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
-                        OUTCOME_COMPLETED, executionResult.message(), executionResult.output());
-            }
-            if (executionResult.retryable()) {
-                if (!notifyTerminalStatus(task, runId, payload, actorContext, executionResult, "DEFERRED", null)) {
+                AgentAsyncToolExecutor executor = selectExecutor(payload.toolCode());
+                if (!notifyRunningStatus(task, runId, payload, actorContext)) {
                     return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
-                            OUTCOME_DEFERRED, "工具临时失败且 agent-runtime 状态回写失败，任务已退避等待补偿。", executionResult.output());
+                            OUTCOME_DEFERRED, "agent-runtime RUNNING 状态回写失败，任务已退避等待补偿。", Map.of());
                 }
-                taskService.deferTask(task.getId(), executionResult.message(), 30, callbackContext);
+                AgentAsyncToolExecutionResult executionResult = executor.execute(payload);
+                TaskExecutionCallbackContext callbackContext = callbackContext(runId, payload, actorContext, executionResult);
+                if (executionResult.success()) {
+                    if (!notifyTerminalStatus(task, runId, payload, actorContext, executionResult, "SUCCEEDED", null)) {
+                        return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
+                                OUTCOME_DEFERRED, "业务执行已成功，但 agent-runtime 状态回写失败，任务已退避等待补偿。", executionResult.output());
+                    }
+                    taskService.completeTask(task.getId(), toJson(executionResult.output()), callbackContext);
+                    return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
+                            OUTCOME_COMPLETED, executionResult.message(), executionResult.output());
+                }
+                if (executionResult.retryable()) {
+                    if (!notifyTerminalStatus(task, runId, payload, actorContext, executionResult, "DEFERRED", null)) {
+                        return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
+                                OUTCOME_DEFERRED, "工具临时失败且 agent-runtime 状态回写失败，任务已退避等待补偿。", executionResult.output());
+                    }
+                    taskService.deferTask(task.getId(), executionResult.message(), 30, callbackContext);
+                    return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
+                            OUTCOME_DEFERRED, executionResult.message(), executionResult.output());
+                }
+                if (!notifyTerminalStatus(task, runId, payload, actorContext, executionResult,
+                        "FAILED", "AGENT_ASYNC_TOOL_FATAL_FAILURE")) {
+                    return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
+                            OUTCOME_DEFERRED, "工具失败状态尚未成功回写 agent-runtime，任务已退避等待补偿。", executionResult.output());
+                }
+                taskService.failTask(task.getId(), executionResult.message(), callbackContext);
                 return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
-                        OUTCOME_DEFERRED, executionResult.message(), executionResult.output());
+                        OUTCOME_FAILED, executionResult.message(), executionResult.output());
+            } catch (AgentAsyncToolPreCheckUnavailableException exception) {
+                /*
+                 * 执行前复核依赖不可用不是业务失败。
+                 * 例如 agent-runtime confirmation 查询短暂失败、permission-admin evaluate 超时，或后续配额服务不可用时，
+                 * worker 既不能绕过复核执行副作用，也不应该把任务永久 FAILED。这里选择 defer，让任务回到可重试队列，
+                 * 等控制面恢复后再次判断。
+                 */
+                TaskExecutionCallbackContext callbackContext = new TaskExecutionCallbackContext(
+                        runId,
+                        properties.getExecutorId(),
+                        "agent-async-tool:" + task.getId() + ":precheck-unavailable-deferred",
+                        actorContext
+                );
+                taskService.deferTask(task.getId(), exception.getMessage(),
+                        properties.getPreCheckUnavailableDeferSeconds(), callbackContext);
+                return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, null,
+                        OUTCOME_DEFERRED, exception.getMessage(), Map.of());
+            } catch (RuntimeException exception) {
+                TaskExecutionCallbackContext callbackContext = new TaskExecutionCallbackContext(
+                        runId,
+                        properties.getExecutorId(),
+                        "agent-async-tool:" + task.getId() + ":failed",
+                        actorContext
+                );
+                taskService.failTask(task.getId(), exception.getMessage(), callbackContext);
+                return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, null,
+                        OUTCOME_FAILED, exception.getMessage(), Map.of());
             }
-            if (!notifyTerminalStatus(task, runId, payload, actorContext, executionResult,
-                    "FAILED", "AGENT_ASYNC_TOOL_FATAL_FAILURE")) {
-                return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
-                        OUTCOME_DEFERRED, "工具失败状态尚未成功回写 agent-runtime，任务已退避等待补偿。", executionResult.output());
-            }
-            taskService.failTask(task.getId(), executionResult.message(), callbackContext);
-            return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, payload.toolCode(),
-                    OUTCOME_FAILED, executionResult.message(), executionResult.output());
-        } catch (AgentAsyncToolPreCheckUnavailableException exception) {
-            /*
-             * 执行前复核依赖不可用不是业务失败。
-             * 例如 agent-runtime confirmation 查询短暂失败时，worker 既不能绕过复核执行副作用，
-             * 也不应该把任务永久 FAILED。这里选择 defer，让任务回到可重试队列，等控制面恢复后再次判断。
-             */
-            TaskExecutionCallbackContext callbackContext = new TaskExecutionCallbackContext(
-                    runId,
-                    properties.getExecutorId(),
-                    "agent-async-tool:" + task.getId() + ":precheck-unavailable-deferred",
-                    actorContext
-            );
-            taskService.deferTask(task.getId(), exception.getMessage(),
-                    properties.getPreCheckUnavailableDeferSeconds(), callbackContext);
-            return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, null,
-                    OUTCOME_DEFERRED, exception.getMessage(), Map.of());
-        } catch (RuntimeException exception) {
-            TaskExecutionCallbackContext callbackContext = new TaskExecutionCallbackContext(
-                    runId,
-                    properties.getExecutorId(),
-                    "agent-async-tool:" + task.getId() + ":failed",
-                    actorContext
-            );
-            taskService.failTask(task.getId(), exception.getMessage(), callbackContext);
-            return new AgentAsyncToolDispatchOnceResult(true, task.getId(), runId, null,
-                    OUTCOME_FAILED, exception.getMessage(), Map.of());
         }
     }
 

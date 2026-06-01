@@ -55,6 +55,8 @@ class AgentAsyncToolWorkerSchedulerTest {
                 0,
                 0,
                 0,
+                0,
+                false,
                 false,
                 List.of(),
                 LocalDateTime.now(),

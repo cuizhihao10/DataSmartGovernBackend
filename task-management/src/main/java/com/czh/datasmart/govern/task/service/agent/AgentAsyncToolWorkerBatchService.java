@@ -48,12 +48,23 @@ public class AgentAsyncToolWorkerBatchService {
         int deferred = 0;
         int failed = 0;
         int noTask = 0;
+        int capacityLimited = 0;
         boolean stoppedByNoTask = false;
+        boolean stoppedByCapacityLimit = false;
 
         for (int index = 0; index < maxDispatches; index++) {
             AgentAsyncToolDispatchOnceResult result = dispatchOnceService.dispatchOnce(actorContext);
             results.add(result);
             if (!result.claimed()) {
+                if (AgentAsyncToolDispatchOnceService.OUTCOME_CAPACITY_LIMITED.equals(result.outcome())) {
+                    /*
+                     * 容量不足不是“队列无任务”，而是当前 worker 不应该继续 claim。
+                     * 同一轮批处理中继续循环大概率仍会命中同一个保护阀，因此这里主动停止，避免在一个 tick 内刷屏日志或压测控制面。
+                     */
+                    capacityLimited++;
+                    stoppedByCapacityLimit = true;
+                    break;
+                }
                 noTask++;
                 if (properties.isStopBatchOnNoTask()) {
                     stoppedByNoTask = true;
@@ -78,7 +89,9 @@ public class AgentAsyncToolWorkerBatchService {
                 deferred,
                 failed,
                 noTask,
+                capacityLimited,
                 stoppedByNoTask,
+                stoppedByCapacityLimit,
                 List.copyOf(results),
                 startedAt,
                 LocalDateTime.now()
