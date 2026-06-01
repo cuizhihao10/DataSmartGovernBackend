@@ -17,10 +17,22 @@ from datasmart_ai_runtime.services.hybrid_context_builder import ContextSelectio
 from datasmart_ai_runtime.services.intent_analyzer import RuleBasedIntentAnalyzer
 from datasmart_ai_runtime.services.memory_planner import AgentMemoryPlanner
 from datasmart_ai_runtime.services.memory_retriever import AgentMemoryRetriever, InMemoryAgentMemoryRetriever
+from datasmart_ai_runtime.services.memory_store import (
+    AgentMemoryStore,
+    AgentMemoryStoreEntry,
+    AgentMemoryStoreWriteResult,
+    InMemoryAgentMemoryStore,
+)
+from datasmart_ai_runtime.services.memory_store_retriever import StoreBackedAgentMemoryRetriever
 from datasmart_ai_runtime.services.memory_write_governance import (
     AgentMemoryWriteGovernanceService,
     approve_memory_write_candidate,
     reject_memory_write_candidate,
+)
+from datasmart_ai_runtime.services.memory_write_materializer import (
+    AgentApprovedMemoryWriteMaterializer,
+    AgentMemoryMaterializationOutcome,
+    AgentMemoryMaterializationResult,
 )
 from datasmart_ai_runtime.services.memory_write_candidate_store import (
     AgentMemoryWriteCandidateStore,
@@ -207,6 +219,14 @@ __all__ = [
     "AgentMemoryPlanner",
     "AgentMemoryRetriever",
     "InMemoryAgentMemoryRetriever",
+    "AgentMemoryStore",
+    "AgentMemoryStoreEntry",
+    "AgentMemoryStoreWriteResult",
+    "InMemoryAgentMemoryStore",
+    "StoreBackedAgentMemoryRetriever",
+    "AgentApprovedMemoryWriteMaterializer",
+    "AgentMemoryMaterializationOutcome",
+    "AgentMemoryMaterializationResult",
     "AgentMemoryWriteGovernanceService",
     "AgentMemoryWriteCandidateStore",
     "InMemoryAgentMemoryWriteCandidateStore",

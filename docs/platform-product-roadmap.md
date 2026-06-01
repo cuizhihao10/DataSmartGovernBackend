@@ -1,5 +1,14 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-02 追加落地进展：长期记忆 APPROVED 候选正式落成闭环
+
+- 推进节奏已从 Java worker 局部收口切换到 AI 大能力面，优先补长期记忆“批准后真正可检索”的缺口。
+- Python Runtime 新增正式长期记忆 store 协议与内存实现，支持幂等写入、候选反查、tenant/project/session 范围过滤、TTL 过期排除和有界读取窗口。
+- 新增 `AgentApprovedMemoryWriteMaterializer`：只允许 `APPROVED` 候选进入正式 store；重复 worker 消费返回 `ALREADY_MATERIALIZED`；只复制低敏 `contentSummary`，不把原始 outputRef、SQL、样本数据或完整工具结果写入模型可检索正文。
+- 第一阶段采用保守写入策略：仅允许 `public/internal` 摘要；敏感候选即使已批准也必须等待脱敏流水线；支持 PROJECT/TENANT 范围，GLOBAL 与 SESSION 暂不直接开放。
+- 新增 store-backed retriever：正式 store 先做范围过滤，现有检索器再做一次隔离校验和关键词排序，使落成后的项目经验可以被同项目后续 Agent 请求召回。
+- 当前正式记忆 store 仍为内存实现，尚未接 Chroma、Neo4j、MySQL、workspace namespace、持久化 receipt、后台消息 worker 和遗忘任务；下一阶段应从这些生产化能力中选择最小闭环继续推进。
+
 ## 2026-06-02 追加落地进展：Agent worker 低基数保护指标
 
 - `task-management` 新增 `AgentAsyncToolWorkerMetricsService`，把 worker 调度结果与安全保护原因接入 Micrometer。

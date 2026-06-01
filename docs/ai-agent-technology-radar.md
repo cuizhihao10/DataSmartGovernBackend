@@ -1,5 +1,15 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-02 落地补充：long-term memory needs governed materialization
+
+- 本阶段从 Java worker 收口切换到长期记忆主线，把已存在的“候选生成、审批、SQL 候选仓储、分页 API”继续推进为“APPROVED 候选可以幂等落成正式记忆，并被后续请求召回”。
+- 这对应当前 Agent memory 的重要工程趋势：长期记忆不是无差别聊天历史，也不是工具成功后直接写向量库；它需要 namespace、范围隔离、写入治理、幂等、TTL、检索边界和遗忘策略。
+- DataSmart 当前只把低敏 `contentSummary` 写入正式记忆正文。原始工具输出、SQL、样本和 outputRef 不会直接进入模型上下文；敏感候选即使审批通过，也会继续等待脱敏流水线。
+- 正式 store 与 retriever 都保留 tenant/project/session 隔离。后续接 Chroma、Neo4j 或 MySQL 时，相关性搜索可以下沉，但范围过滤不能删除。
+- 当前 materializer 支持 PROJECT/TENANT，暂缓 SESSION 与 GLOBAL：SESSION 需要稳定 session 字段和短期记忆 TTL 策略，GLOBAL 需要更严格的组织级审批、prompt-injection 防护和只读发布流程。
+- 参考资料：LangGraph Memory：`https://docs.langchain.com/oss/python/langgraph/memory`；LangGraph Persistence：`https://docs.langchain.com/oss/python/langgraph/persistence`。
+- 下一步趋势落地建议在两条路线中择一：一是补正式记忆持久化 receipt、workspace namespace、后台 outbox worker 和遗忘任务；二是切入智能网关会话编排，把正式记忆召回接入上下文预算和模型 provider 路由。
+
 ## 2026-06-02 落地补充：guardrail metrics need bounded cardinality
 
 - 本阶段把 worker-side guardrail 从“时间线可解释”推进到“可聚合告警”：claim 前容量不足、claim 后执行复核阻断、confirmation 或 permission-admin 暂不可用退避，都进入 Micrometer 计数指标。
