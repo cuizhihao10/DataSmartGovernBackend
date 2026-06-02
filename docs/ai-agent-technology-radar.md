@@ -1,5 +1,12 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-02 落地补充：Agent API surface needs modular route ownership
+
+- 本阶段没有盲目继续叠加长期记忆或工具执行新功能，而是先治理 Python Runtime 的 API surface，避免 Agent 规划、事件回放、WebSocket 和诊断能力全部堆在一个 bootstrap 文件中。
+- 这对应 Codex、Claude Code 类 Agent 平台的工程趋势：随着工具调用、长期记忆、会话事件、权限策略、人工确认和模型网关不断增长，API 入口必须按能力面拆分，否则每次扩展都会造成局部文件膨胀和隐性耦合。
+- DataSmart 当前新增 `api_agent_routes.py` 作为 Agent 规划与 runtime event 路由注册模块，`api.py` 继续作为可选 FastAPI app 装配入口。这个边界为后续智能网关服务间认证、WebSocket 会话治理、事件审计导出和长期记忆上下文注入留下了更干净的挂点。
+- 后续趋势落地建议：继续把 memory-write API、diagnostics API、model-gateway API 拆成独立 route module，并引入统一的内部认证/审计 dependency，避免在每个 handler 里重复实现权限和观测逻辑。
+
 ## 2026-06-02 落地补充：long-term memory needs governed materialization
 
 - 本阶段从 Java worker 收口切换到长期记忆主线，把已存在的“候选生成、审批、SQL 候选仓储、分页 API”继续推进为“APPROVED 候选可以幂等落成正式记忆，并被后续请求召回”。

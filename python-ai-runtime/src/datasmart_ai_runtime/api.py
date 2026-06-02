@@ -7,20 +7,16 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
-from contextlib import suppress
 from typing import Any
 
 from datasmart_ai_runtime.api_events import (
     build_event_control_response,
     build_event_replay_response,
     build_event_websocket_payloads,
-    runtime_event_from_payload,
-    subscription_request_from_payload,
 )
 from datasmart_ai_runtime.api_skill_admission import build_skill_admission_policy
-from datasmart_ai_runtime.api_trusted_context import enrich_agent_plan_payload_from_gateway_headers
+from datasmart_ai_runtime.api_agent_routes import register_agent_runtime_routes
 from datasmart_ai_runtime.api_plan_response import build_plan_response
 from datasmart_ai_runtime.api_memory_write import register_memory_write_routes
 from datasmart_ai_runtime.config import default_skill_registry, default_tool_registry, model_routes_from_env
@@ -40,7 +36,6 @@ from datasmart_ai_runtime.services.runtime_event_components import (
     build_runtime_event_components,
     runtime_event_component_diagnostics,
 )
-from datasmart_ai_runtime.services.runtime_event_websocket import RuntimeEventWebSocketConnectionAdapter
 from datasmart_ai_runtime.services.tool_registry_client import JavaAgentToolRegistryClient, ToolRegistryClientError
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 from datasmart_ai_runtime.services.skill_registry import AgentSkillRegistry
@@ -459,121 +454,22 @@ def create_app() -> Any:
 
         return memory_write_store_diagnostics(memory_write_store_runtime)
 
-    @app.post("/agent/plans")
-    def create_agent_plan(payload: dict[str, Any], http_request: Request) -> dict[str, Any]:
-        """生成 Agent 工具计划。
-
-        当前先接收 dict 并转换为 `AgentRequest`，后续可替换为 Pydantic DTO。这样能保持核心领域层
-        不依赖 Web 框架，同时让 API 层承担请求校验与协议适配职责。
-        """
-
-        request = AgentRequest(**enrich_agent_plan_payload_from_gateway_headers(payload, http_request.headers))
-        return build_plan_response(
-            request,
-            orchestrator,
-            event_store=event_store,
-            live_push_hub=live_push_hub,
-            event_publisher=event_publisher,
-            plan_ingestion_client=plan_ingestion_client,
-            control_plane_feedback_collector=control_plane_feedback_collector,
-            runtime_event_feedback_bridge=runtime_event_feedback_bridge,
-            loop_control_evaluator=loop_control_evaluator,
-            second_turn_orchestrator=second_turn_orchestrator,
-            memory_write_governance=memory_write_governance,
-        )
-
-    @app.post("/agent/events/replay")
-    def replay_agent_events(payload: dict[str, Any]) -> dict[str, Any]:
-        """按订阅请求回放 Agent 事件。
-
-        当前路由是协议适配雏形，并不声称已经具备生产级事件存储能力。调用方需要传入：
-        - `subscription`：订阅请求，包含 clientId/sessionId/runId/requestId/afterSequence/eventTypes；
-        - `events`：待筛选的事件集合，通常可直接使用 `/agent/plans` 返回的 `plan.runtimeEvents`。
-
-        后续真正接入智能网关时，`events` 应由服务端根据 sessionId/runId 从事件存储中加载，而不是由
-        前端回传；这里先让同步 replay 协议可测试、可阅读、可演进。
-        """
-
-        subscription = subscription_request_from_payload(payload.get("subscription", {}))
-        events = tuple(runtime_event_from_payload(item) for item in payload.get("events", ()))
-        return build_event_replay_response(
-            subscription,
-            events=events,
-            event_store=event_store if not events else None,
-            external_replay_sources=runtime_event_replay_sources,
-        )
-
-    @app.post("/agent/events/control")
-    def control_agent_event_subscription(payload: dict[str, Any]) -> dict[str, Any]:
-        """处理实时事件订阅控制消息。
-
-        这是 WebSocket 落地前的同步控制入口，主要用于前端/网关联调和单元测试协议：
-        - `subscribe`：建立订阅并返回 subscriptionId，可携带 sessionId/runId/requestId/afterSequence；
-        - `ack`：确认客户端已经处理到的 sequence；
-        - `heartbeat`：连接保活，也可携带 lastSequence；
-        - `reconnect`：断线后按 afterSequence 或服务端最近 ack 构建 replay；
-        - `unsubscribe`：主动关闭订阅并记录关闭原因。
-
-        真实 WebSocket handler 后续只需要在消息循环里调用 `build_event_control_response(...)`，并把返回
-        的响应通过 socket 发回客户端；这样 HTTP 与 WebSocket 不会出现两套状态机。
-        """
-
-        return build_event_control_response(payload, session_manager)
-
-    @app.websocket("/agent/events/ws")
-    async def websocket_agent_event_subscription(websocket: Any) -> None:
-        """实时事件订阅 WebSocket 雏形。
-
-        这是当前项目第一次把实时事件控制协议挂到真正的 WebSocket 入口上。它仍然是最小实现：
-        - 连接建立后等待客户端发送 JSON 控制消息；
-        - 通过同一套控制/授权/状态机逻辑处理消息；
-        - 将结果拆成一个或多个 JSON frame 发回客户端。
-
-        这里不额外实现认证握手、心跳调度和后台推送队列，因为当前阶段的目标是先把协议与 handler
-        连起来，而不是一次性把完整消息总线做完。
-        """
-
-        await websocket.accept()
-        connection = RuntimeEventWebSocketConnectionAdapter(
-            session_manager=session_manager,
-            live_push_hub=live_push_hub,
-        )
-        outgoing_frames: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-
-        async def sender_loop() -> None:
-            """统一发送出口，避免多个协程同时直接写 websocket。"""
-
-            while True:
-                frame_payload = await outgoing_frames.get()
-                await websocket.send_json(frame_payload)
-
-        async def live_push_loop() -> None:
-            """周期性把 live push hub 中积压的事件帧推送给当前连接。"""
-
-            while True:
-                await asyncio.sleep(0.2)
-                for frame_payload in connection.drain_live_payloads():
-                    await outgoing_frames.put(frame_payload)
-
-        sender_task = asyncio.create_task(sender_loop())
-        live_task = asyncio.create_task(live_push_loop())
-        try:
-            while True:
-                payload = await websocket.receive_json()
-                for frame_payload in connection.handle_message(payload):
-                    await outgoing_frames.put(frame_payload)
-        except Exception:
-            # 这里故意保持宽容退出：真正生产环境会细分 WebSocketDisconnect、授权失败和序列化失败，
-            # 当前阶段先让连接以可控方式结束，避免把协议雏形复杂化。
-            await websocket.close()
-        finally:
-            connection.close(reason="websocket_handler_finished")
-            sender_task.cancel()
-            live_task.cancel()
-            with suppress(Exception):
-                await sender_task
-            with suppress(Exception):
-                await live_task
+    register_agent_runtime_routes(
+        app,
+        request_type=Request,
+        orchestrator=orchestrator,
+        event_store=event_store,
+        session_manager=session_manager,
+        live_push_hub=live_push_hub,
+        event_publisher=event_publisher,
+        runtime_event_replay_sources=runtime_event_replay_sources,
+        plan_ingestion_client=plan_ingestion_client,
+        control_plane_feedback_collector=control_plane_feedback_collector,
+        runtime_event_feedback_bridge=runtime_event_feedback_bridge,
+        loop_control_evaluator=loop_control_evaluator,
+        second_turn_orchestrator=second_turn_orchestrator,
+        memory_write_governance=memory_write_governance,
+    )
 
     register_memory_write_routes(app, memory_write_governance)
 

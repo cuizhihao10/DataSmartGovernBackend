@@ -17,6 +17,7 @@
 - 智能网关工具治理：已具备模型工具调用候选规划、可见工具校验、参数 schema 校验和工具调用预算守卫，可限制单轮工具数量、自动推进数量、高风险工具数量和 arguments 体积；预算策略已抽象为 provider，当前支持环境变量、`AgentRequest.variables["toolCallBudget"]` 覆盖，以及可选远程调用 Java permission-admin `/permissions/agent/tool-budget-policies/evaluate`。远程策略默认关闭，适合生产或联调环境按租户套餐、项目等级、角色、workspace 风险和实时 backlog 动态生成预算；预算阻断会写入独立 `MODEL_TOOL_CALL_BUDGET_GUARDED` runtime event，API 响应已提供 `intelligentGatewayGovernance` 统一摘要，汇总模型路由、工具预算、workspace 和记忆检索治理事实。
 - 长期记忆治理：已具备记忆召回计划、候选生成、审批/拒绝、候选 SQL store、低敏摘要正式落成、materialization receipt 和 store-backed 检索骨架；候选和正式记忆都会携带 `workspaceKey/memoryNamespace`，检索时按当前 Agent 工作空间过滤，避免同项目不同 workspace 或 session 沙箱误共享记忆。当前正式记忆 store 默认仍为内存实现，后续再按类型接入 Chroma、Neo4j、MySQL 和 MinIO。
 - `api.create_app()`：提供可选 FastAPI 入口。当前测试不依赖 FastAPI，安装 API 依赖后即可启动服务。
+- Agent API 路由已从 bootstrap 入口拆到 `api_agent_routes.py`：`api.py` 只负责装配模型网关、事件组件、长期记忆候选治理和 Java 控制面客户端；`/agent/plans`、事件 replay/control 与 WebSocket handler 由独立注册函数承载。这样后续继续增加服务间认证、智能网关会话、审计导出和长期记忆上下文注入时，不会把启动文件拖成难以维护的巨型模块。
 
 ## 为什么先做这个骨架
 

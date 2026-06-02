@@ -1,5 +1,13 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-02 追加落地进展：Python Agent API 路由注册解耦
+
+- Python Runtime 的 `api.py` 已从“启动装配 + 诊断路由 + Agent 规划路由 + 事件路由 + WebSocket handler 混在一起”调整为更清晰的 bootstrap 边界。
+- 新增 `api_agent_routes.py`，集中注册 `/agent/plans`、`/agent/events/replay`、`/agent/events/control` 与 `/agent/events/ws`，并保留详细中文说明，解释可信 Header 注入、事件回放、控制状态机复用和 WebSocket 后台任务收尾原则。
+- `api.py` 现在只负责创建 FastAPI app、装配模型网关/事件组件/长期记忆候选治理/Java 控制面客户端，并调用路由注册函数；文件规模降至 476 行，低于 500 行约束。
+- 这次属于商业化工程治理，不是单纯“挪代码”：后续要继续接入服务间认证、智能网关会话、长期记忆检索、工具市场、审计导出时，应沿着 route module/service module 拆分，而不是继续把 handler 堆回 bootstrap 文件。
+- 当前仍没有安装并启动真实 FastAPI 服务进行浏览器级联调；本阶段验证重点是编译、协议构造和现有 API/事件单测。
+
 ## 2026-06-02 追加落地进展：长期记忆 APPROVED 候选正式落成闭环
 
 - 推进节奏已从 Java worker 局部收口切换到 AI 大能力面，优先补长期记忆“批准后真正可检索”的缺口。
