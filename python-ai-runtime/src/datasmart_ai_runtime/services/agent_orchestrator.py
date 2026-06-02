@@ -291,7 +291,7 @@ class AgentOrchestrator:
 
         if self._skill_registry is None:
             return AgentSkillPlan(rationale="当前运行环境未配置 Skill 注册表，跳过 Skill 选择。")
-        return self._skill_registry.select(request.objective, intent_analysis)
+        return self._skill_registry.select(request.objective, intent_analysis, request=request)
 
     def _invoke_model_intent(
         self,

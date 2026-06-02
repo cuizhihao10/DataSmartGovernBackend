@@ -7792,3 +7792,52 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 如果继续工具预算，只做生产化补强：服务间认证、策略版本落库、worker backlog 指标源和 fail-closed 配置外显。
 3. 中期把 `intelligentGatewayGovernance` 写入 Java replay/index，让前端治理卡片、告警和审计导出都能看到“远程策略来源”和“预算阻断结果”。
 4. Java 业务主线仍要推进 data-sync/data-quality/task-management 的真实 worker 串联，避免 AI Runtime 局部能力过度膨胀。
+
+## 4.91 Python AI Runtime Agent Skill 准入治理基线（2026-06-02）
+
+本阶段正式切入 Agent skill 能力主线的第一步：Skill 命中之后，不能直接等同于本轮可启用。真实商业化 Agent 中，Skill 是可发现、可治理、可审计的能力包；它可能依赖工具、权限、记忆、审批策略和风险等级。如果只按语义选择 Skill，普通用户也可能命中高风险任务创建、权限策略解释或未来数据导出 Skill，进而让模型看到不该暴露的工具 schema。
+
+已完成：
+- `AgentSkillSelection` 新增准入治理字段：
+  - `required_permissions`：本 Skill 声明的权限需求；
+  - `risk_level`：本 Skill 风险等级；
+  - `admission_status`：ALLOWED、CONDITIONAL、DENIED_MISSING_PERMISSION、DENIED_RISK_ROLE 等准入结果；
+  - `admission_reasons`：中文准入解释，面向前端和审计。
+- `AgentSkillPlan` 新增 `rejected_skills`：
+  - `selected_skills` 只保留语义命中且准入通过或条件性通过的 Skill；
+  - `rejected_skills` 记录语义命中但因权限、角色或风险策略被挡住的 Skill；
+  - `rationale` 会同时解释启用和拒绝结果。
+- 新增 `AgentSkillAdmissionPolicy`：
+  - 显式读取 `AgentRequest.variables["grantedPermissions"]` 或 `granted_permissions`；
+  - 如果权限事实存在，则严格校验 Skill `required_permissions`；
+  - 如果权限事实缺失，则只做条件性推荐，兼容本地学习和离线测试；
+  - 对 HIGH/CRITICAL Skill 增加 `actorRole` 角色兜底；
+  - 缺少 `actorRole` 时不误杀本地流程，但标记为 CONDITIONAL；
+  - 普通用户显式命中高风险 Skill 时拒绝准入。
+- `AgentSkillRegistry` 接入准入策略：
+  - 语义评分仍负责“是否适合”；
+  - 准入策略负责“是否允许启用”；
+  - 二者解耦，后续可把准入策略替换为 Java permission-admin 远程 provider。
+- `AgentOrchestrator` 在 Skill 选择时传入完整 `AgentRequest`，让 Skill Registry 能消费 gateway/permission-admin 注入的权限和角色事实。
+- 测试覆盖：
+  - 缺少 `quality:rule:draft` 时拒绝质量规则设计 Skill；
+  - 普通用户即使有 `task:create` 权限，也不能启用高风险任务创建 Skill；
+  - 缺少 `actorRole` 时高风险 Skill 仍可条件性推荐，但状态不会伪装成完全通过。
+
+产品意义：
+- Skill 从“推荐能力包”升级为“带准入解释的治理对象”，为后续 Skill Marketplace、租户级 Skill 开关、工具 schema 暴露策略和执行审计打基础。
+- `rejected_skills` 很重要：它让系统能告诉用户“我理解你需要这个能力，但当前权限/角色不允许”，而不是简单表现为 Agent 不会做。
+- 条件性推荐兼顾本地学习环境和生产安全：本地没有 Java 控制面事实时仍可验证流程；生产一旦注入权限事实，就按事实强校验。
+- 该实现没有把权限中心逻辑写死在 Skill Registry 里，而是独立为 policy，后续迁移到 permission-admin evaluate 不需要推翻选择器。
+
+当前边界：
+- 当前准入策略是 Python 本地基线，不是最终 Java permission-admin 远程授权结果。
+- `grantedPermissions` 和 `actorRole` 仍由调用方通过 variables 注入，尚未接 gateway 的可信 Header 或 permission-admin 策略版本。
+- 准入拒绝目前只体现在 `AgentSkillPlan.rejected_skills`，尚未写成独立 runtime event。
+- 还没有 Skill Marketplace、租户级启停、版本发布、灰度、评分反馈和使用统计。
+
+下一步建议：
+1. 下一步继续 Skill 主线：把准入结果写入 runtime event 和 `intelligentGatewayGovernance`，让前端治理卡片能展示 Skill 命中/拒绝原因。
+2. 然后增加 Java permission-admin Skill evaluate 或 gateway 注入契约，把 `grantedPermissions/actorRole` 从普通 variables 升级为可信控制面事实。
+3. 再推进 Skill descriptor 的版本、租户启停、工具 schema 暴露策略和 Marketplace 管理，而不是直接堆更多本地默认 Skill。
+4. 中期需要让 Skill 选择与长期记忆、工具预算、workspace namespace 共同形成“能力包级治理视图”，接近 Codex/Claude Code 类 Agent 的可解释行动边界。

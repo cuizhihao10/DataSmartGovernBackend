@@ -7,8 +7,10 @@ Java `agent-runtime`、插件市场、租户配置、Git 仓库或 MCP prompt/re
 
 from __future__ import annotations
 
+from datasmart_ai_runtime.domain.contracts import AgentRequest
 from datasmart_ai_runtime.domain.intent import GovernanceDomain, IntentAnalysis
 from datasmart_ai_runtime.domain.skills import AgentSkillDescriptor, AgentSkillPlan, AgentSkillSelection
+from datasmart_ai_runtime.services.skill_admission_policy import AgentSkillAdmissionPolicy
 
 
 class AgentSkillRegistry:
@@ -21,20 +23,35 @@ class AgentSkillRegistry:
     - 所有选择结果都带 reason，方便审计和用户理解。
     """
 
-    def __init__(self, skills: tuple[AgentSkillDescriptor, ...]) -> None:
+    def __init__(
+        self,
+        skills: tuple[AgentSkillDescriptor, ...],
+        *,
+        admission_policy: AgentSkillAdmissionPolicy | None = None,
+    ) -> None:
         self._skills = tuple(skill for skill in skills if skill.enabled)
+        self._admission_policy = admission_policy or AgentSkillAdmissionPolicy()
 
-    def select(self, objective: str, intent_analysis: IntentAnalysis | None) -> AgentSkillPlan:
+    def select(
+        self,
+        objective: str,
+        intent_analysis: IntentAnalysis | None,
+        request: AgentRequest | None = None,
+    ) -> AgentSkillPlan:
         """选择适合当前请求的 Skill。
 
         `objective` 用于关键词兜底；`intent_analysis` 用于结构化选择。后续接入 LLM Skill router 时，
         可以保持返回 `AgentSkillPlan` 不变，只替换内部评分实现。
+
+        `request` 用于准入治理。没有请求时保持条件性推荐，兼容旧测试和离线分析；传入请求后，如果
+        `variables` 中包含 `grantedPermissions`、`actorRole` 等控制面事实，就会按权限和风险策略过滤。
         """
 
         objective_text = objective.lower()
         domains = set(intent_analysis.governance_domains if intent_analysis else ())
         candidate_tools = set(intent_analysis.candidate_tools if intent_analysis else ())
         selections: list[AgentSkillSelection] = []
+        rejected: list[AgentSkillSelection] = []
 
         for skill in self._skills:
             score = 0.0
@@ -53,31 +70,50 @@ class AgentSkillRegistry:
 
             if score <= 0:
                 continue
-            selections.append(
-                AgentSkillSelection(
-                    skill_code=skill.skill_code,
-                    display_name=skill.display_name,
-                    domain=skill.domain,
-                    score=min(score, 1.0),
-                    reason="；".join(reasons),
-                    required_tools=skill.required_tools,
-                    memory_dependencies=skill.memory_dependencies,
-                    approval_policy=skill.approval_policy,
-                )
+            admission = self._admission_policy.evaluate(skill, request)
+            selection = AgentSkillSelection(
+                skill_code=skill.skill_code,
+                display_name=skill.display_name,
+                domain=skill.domain,
+                score=min(score, 1.0),
+                reason="；".join(reasons),
+                required_tools=skill.required_tools,
+                memory_dependencies=skill.memory_dependencies,
+                approval_policy=skill.approval_policy,
+                required_permissions=skill.required_permissions,
+                risk_level=str(skill.risk_level or "LOW").upper(),
+                admission_status=admission.status,
+                admission_reasons=admission.reasons,
             )
+            if admission.allowed:
+                selections.append(selection)
+            else:
+                rejected.append(selection)
 
         ordered = tuple(sorted(selections, key=lambda item: item.score, reverse=True)[:3])
+        rejected_ordered = tuple(sorted(rejected, key=lambda item: item.score, reverse=True)[:3])
         return AgentSkillPlan(
             selected_skills=ordered,
+            rejected_skills=rejected_ordered,
             available_skill_count=len(self._skills),
-            rationale=self._build_rationale(ordered, len(self._skills)),
+            rationale=self._build_rationale(ordered, rejected_ordered, len(self._skills)),
         )
 
     @staticmethod
-    def _build_rationale(selections: tuple[AgentSkillSelection, ...], available_count: int) -> str:
+    def _build_rationale(
+        selections: tuple[AgentSkillSelection, ...],
+        rejected: tuple[AgentSkillSelection, ...],
+        available_count: int,
+    ) -> str:
         """构建 Skill 选择解释。"""
 
-        if not selections:
+        if not selections and not rejected:
             return f"当前共有 {available_count} 个可用 Skill，但本次请求没有命中明确能力包。"
+        if not selections:
+            rejected_text = "、".join(item.display_name for item in rejected)
+            return f"当前共有 {available_count} 个可用 Skill，本次命中但准入未通过：{rejected_text}。"
         skill_text = "、".join(item.display_name for item in selections)
-        return f"当前共有 {available_count} 个可用 Skill，本次推荐启用：{skill_text}。"
+        if not rejected:
+            return f"当前共有 {available_count} 个可用 Skill，本次推荐启用：{skill_text}。"
+        rejected_text = "、".join(item.display_name for item in rejected)
+        return f"当前共有 {available_count} 个可用 Skill，本次推荐启用：{skill_text}；另有 Skill 命中但准入未通过：{rejected_text}。"

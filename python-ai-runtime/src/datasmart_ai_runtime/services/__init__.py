@@ -226,6 +226,10 @@ from datasmart_ai_runtime.services.resource_reference_resolver import (
     AgentResourceReferenceResolution,
     AgentResourceReferenceResolver,
 )
+from datasmart_ai_runtime.services.skill_admission_policy import (
+    AgentSkillAdmissionDecision,
+    AgentSkillAdmissionPolicy,
+)
 from datasmart_ai_runtime.services.skill_registry import AgentSkillRegistry
 from datasmart_ai_runtime.services.skill_registry_client import JavaAgentSkillRegistryClient
 from datasmart_ai_runtime.services.tool_parameter_validator import ToolParameterValidator
@@ -370,6 +374,8 @@ __all__ = [
     "AgentResourceReferenceDecision",
     "AgentResourceReferenceResolution",
     "AgentResourceReferenceResolver",
+    "AgentSkillAdmissionDecision",
+    "AgentSkillAdmissionPolicy",
     "ToolParameterValidator",
     "ToolPlanner",
     "ToolExecutionFeedback",
