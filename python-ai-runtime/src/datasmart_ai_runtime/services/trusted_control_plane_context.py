@@ -34,6 +34,25 @@ class AgentTrustedSkillAdmissionContext:
     policy_version: str | None = None
 
 
+@dataclass(frozen=True)
+class AgentTrustedToolBudgetContext:
+    """远程工具预算策略评估所需的可信事实快照。
+
+    工具预算不是普通 UI 偏好，而是智能网关的资源治理边界。例如，终端不能通过伪造
+    ``workerBacklogLevel=NORMAL`` 绕过队列积压降载，也不能把普通用户自报为管理员来扩大自动执行额度。
+    因此，本对象与 Skill admission 快照分开建模：两者虽然共享 workspace 和角色，但生命周期、
+    策略版本与后续审计维度并不完全相同。
+    """
+
+    workspace_key: str | None = None
+    actor_role: str | None = None
+    tenant_plan_code: str = "STANDARD"
+    workspace_risk_level: str = "NORMAL"
+    worker_backlog_level: str = "NORMAL"
+    requested_tool_risk_level: str = "LOW"
+    policy_version: str | None = None
+
+
 class AgentTrustedControlPlaneContextReader:
     """从保留命名空间读取 Skill admission 可信事实。
 
@@ -43,6 +62,7 @@ class AgentTrustedControlPlaneContextReader:
 
     ROOT_KEY = "trustedControlPlane"
     SKILL_ADMISSION_KEY = "skillAdmission"
+    TOOL_BUDGET_KEY = "toolBudget"
 
     @classmethod
     def skill_admission(
@@ -81,6 +101,44 @@ class AgentTrustedControlPlaneContextReader:
             return None
         skill_admission = root.get(cls.SKILL_ADMISSION_KEY)
         return skill_admission if isinstance(skill_admission, Mapping) else None
+
+    @classmethod
+    def tool_budget(
+        cls,
+        request: AgentRequest,
+        *,
+        allow_legacy_variables: bool = False,
+    ) -> AgentTrustedToolBudgetContext:
+        """构造远程工具预算评估使用的可信事实快照。
+
+        默认只读取 ``trustedControlPlane.toolBudget``。迁移期可以显式允许回退到旧 variables，
+        但生产环境不应启用该兼容路径，否则终端仍可伪造角色、套餐、workspace 风险或 backlog 状态。
+        """
+
+        variables = request.variables or {}
+        source = cls._trusted_mapping(variables, cls.TOOL_BUDGET_KEY)
+        if source is None and allow_legacy_variables:
+            source = variables
+        source = source or {}
+        return AgentTrustedToolBudgetContext(
+            workspace_key=_string_value(source, "workspaceKey", "workspace_key"),
+            actor_role=_string_value(source, "actorRole", "actor_role", "role"),
+            tenant_plan_code=_string_value(source, "tenantPlanCode", "tenant_plan_code") or "STANDARD",
+            workspace_risk_level=_string_value(source, "workspaceRiskLevel", "workspace_risk_level") or "NORMAL",
+            worker_backlog_level=_string_value(source, "workerBacklogLevel", "worker_backlog_level") or "NORMAL",
+            requested_tool_risk_level=_string_value(source, "requestedToolRiskLevel", "requested_tool_risk_level") or "LOW",
+            policy_version=_string_value(source, "policyVersion", "policy_version"),
+        )
+
+    @classmethod
+    def _trusted_mapping(cls, variables: Mapping[str, object], section_key: str) -> Mapping[str, object] | None:
+        """读取指定可信上下文章节，统一处理缺失或类型错误。"""
+
+        root = variables.get(cls.ROOT_KEY)
+        if not isinstance(root, Mapping):
+            return None
+        section = root.get(section_key)
+        return section if isinstance(section, Mapping) else None
 
 
 def _first_present(mapping: Mapping[str, object], *keys: str) -> object | None:

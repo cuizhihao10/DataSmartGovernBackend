@@ -74,3 +74,12 @@ $env:DATASMART_PERMISSION_ADMIN_SKILL_ADMISSION_TIMEOUT_SECONDS="3"
   agent-runtime 在受控内部链路中注入；生产环境不能直接暴露 Python Runtime 入口，也不能允许外部客户端
   自行提交 `trustedControlPlane`。迁移期如需兼容旧联调夹具，可以显式开启
   `allow_legacy_request_variables`，但不应在生产启用。
+# 4.96 远程工具预算可信上下文
+
+远程 permission-admin 工具预算评估现在只从
+`variables["trustedControlPlane"]["toolBudget"]` 读取角色、套餐、workspace 风险、worker backlog 和工具风险。
+普通终端 variables 即使伪造管理员角色、企业套餐或空闲队列，也不会污染远程预算策略请求。
+
+本地 `EnvAndRequestModelToolCallBudgetPolicyProvider` 仍保留 request override，便于离线开发、测试和灰度联调；
+远程 `JavaPermissionAdminToolBudgetPolicyClient` 则默认采用更严格边界。迁移期可以显式开启
+`allow_legacy_request_variables`，生产环境不应启用。

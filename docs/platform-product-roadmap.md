@@ -8027,3 +8027,15 @@ permission-admin 的准入请求。旧联调方式仅能通过显式 `allow_lega
 
 下一步应由 gateway/agent-runtime 把已认证 Header、权限快照和租户 Skill 策略转换为该保留命名空间，
 并补服务间认证。中期再把 `policyVersion/matchedPolicy` 结构化写入 selection、event 与 replay/index。
+## 4.96 Python AI Runtime 工具预算可信上下文边界（2026-06-02）
+
+本阶段复用 4.95 的 `trustedControlPlane` 保留命名空间，新增 `AgentTrustedToolBudgetContext`。远程
+permission-admin 工具预算评估默认只读取 `trustedControlPlane.toolBudget`，不再信任普通 variables 中的
+角色、套餐、workspace 风险、worker backlog 和工具风险。
+
+该收口避免终端通过伪造 `actorRole=PLATFORM_ADMIN`、`tenantPlanCode=ENTERPRISE` 或
+`workerBacklogLevel=IDLE` 扩大自动工具调用预算。本地离线 provider 仍保留 request override，远程 provider
+仅提供显式迁移兼容开关。
+
+下一步应把 gateway 已清理并重建的可信 Header、permission-admin 权限快照与运行时 backlog 快照装配进
+Python 保留命名空间，同时增加 `/api/agent/plans` 专用路由和内部调用保护。

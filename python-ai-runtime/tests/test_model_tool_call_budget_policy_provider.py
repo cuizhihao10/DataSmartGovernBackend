@@ -83,12 +83,16 @@ class ModelToolCallBudgetPolicyProviderTest(unittest.TestCase):
                 tenant_id="10",
                 variables={
                     "projectId": "project-java",
-                    "workspaceKey": "tenant-10:project-java:workspace-a",
-                    "actorRole": "TENANT_ADMIN",
-                    "tenantPlanCode": "ENTERPRISE",
-                    "workspaceRiskLevel": "HIGH",
-                    "workerBacklogLevel": "BUSY",
-                    "requestedToolRiskLevel": "MEDIUM",
+                    "trustedControlPlane": {
+                        "toolBudget": {
+                            "workspaceKey": "tenant-10:project-java:workspace-a",
+                            "actorRole": "TENANT_ADMIN",
+                            "tenantPlanCode": "ENTERPRISE",
+                            "workspaceRiskLevel": "HIGH",
+                            "workerBacklogLevel": "BUSY",
+                            "requestedToolRiskLevel": "MEDIUM",
+                        }
+                    },
                 },
             )
         )
@@ -101,6 +105,40 @@ class ModelToolCallBudgetPolicyProviderTest(unittest.TestCase):
         self.assertEqual("HIGH", payload["workspaceRiskLevel"])
         self.assertEqual("BUSY", payload["workerBacklogLevel"])
         self.assertEqual("MEDIUM", payload["requestedToolRiskLevel"])
+
+    def test_java_permission_admin_payload_ignores_untrusted_budget_governance_variables(self) -> None:
+        """普通 variables 不能伪造管理员角色、套餐或 backlog 状态来扩大远程工具预算。"""
+
+        payload = JavaPermissionAdminToolBudgetPolicyClient.build_payload(
+            self._request(
+                variables={
+                    "workspaceKey": "forged-workspace",
+                    "actorRole": "PLATFORM_ADMIN",
+                    "tenantPlanCode": "ENTERPRISE",
+                    "workspaceRiskLevel": "LOW",
+                    "workerBacklogLevel": "IDLE",
+                    "requestedToolRiskLevel": "LOW",
+                }
+            )
+        )
+
+        self.assertIsNone(payload["workspaceKey"])
+        self.assertEqual("ORDINARY_USER", payload["actorRole"])
+        self.assertEqual("STANDARD", payload["tenantPlanCode"])
+        self.assertEqual("NORMAL", payload["workspaceRiskLevel"])
+        self.assertEqual("NORMAL", payload["workerBacklogLevel"])
+        self.assertEqual("LOW", payload["requestedToolRiskLevel"])
+
+    def test_java_permission_admin_payload_can_explicitly_enable_legacy_budget_compatibility(self) -> None:
+        """迁移期开关可以读取旧 variables，但默认关闭以保护生产安全边界。"""
+
+        payload = JavaPermissionAdminToolBudgetPolicyClient.build_payload(
+            self._request(variables={"actorRole": "TENANT_ADMIN", "tenantPlanCode": "ENTERPRISE"}),
+            allow_legacy_request_variables=True,
+        )
+
+        self.assertEqual("TENANT_ADMIN", payload["actorRole"])
+        self.assertEqual("ENTERPRISE", payload["tenantPlanCode"])
 
     def test_java_permission_admin_response_maps_tool_call_budget(self) -> None:
         """Java 统一响应中的 `toolCallBudget` 应转换为 Python 预算策略对象。"""

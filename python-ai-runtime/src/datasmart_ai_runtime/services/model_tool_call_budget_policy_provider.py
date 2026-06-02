@@ -20,6 +20,7 @@ from urllib.request import Request, urlopen
 
 from datasmart_ai_runtime.domain.contracts import AgentRequest
 from datasmart_ai_runtime.services.model_tool_call_budget_guard import ModelToolCallBudgetPolicy
+from datasmart_ai_runtime.services.trusted_control_plane_context import AgentTrustedControlPlaneContextReader
 
 
 class ModelToolCallBudgetPolicyProvider(Protocol):
@@ -137,16 +138,24 @@ class JavaPermissionAdminToolBudgetPolicyClient:
         timeout_seconds: int = 3,
         evaluate_path: str = "/permissions/agent/tool-budget-policies/evaluate",
         urlopen_func: Callable[..., Any] = urlopen,
+        allow_legacy_request_variables: bool = False,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
         self._evaluate_path = evaluate_path
         self._urlopen = urlopen_func
+        self._allow_legacy_request_variables = allow_legacy_request_variables
 
     def evaluate(self, request_context: AgentRequest, trace_id: str | None = None) -> ModelToolCallBudgetPolicy:
         """向 permission-admin 请求本轮工具调用预算策略。"""
 
-        body = json.dumps(self.build_payload(request_context), ensure_ascii=False).encode("utf-8")
+        body = json.dumps(
+            self.build_payload(
+                request_context,
+                allow_legacy_request_variables=self._allow_legacy_request_variables,
+            ),
+            ensure_ascii=False,
+        ).encode("utf-8")
         http_request = Request(
             url=f"{self._base_url}{self._evaluate_path}",
             data=body,
@@ -166,7 +175,12 @@ class JavaPermissionAdminToolBudgetPolicyClient:
         return self.parse_platform_response(payload)
 
     @classmethod
-    def build_payload(cls, request_context: AgentRequest) -> dict[str, Any]:
+    def build_payload(
+        cls,
+        request_context: AgentRequest,
+        *,
+        allow_legacy_request_variables: bool = False,
+    ) -> dict[str, Any]:
         """构造 Java `AgentToolBudgetPolicyEvaluateRequest`。
 
         Python `AgentRequest` 的 tenant/project 当前是字符串，Java DTO 的 tenantId 是 Long。
@@ -175,15 +189,19 @@ class JavaPermissionAdminToolBudgetPolicyClient:
         """
 
         variables = request_context.variables or {}
+        trusted_context = AgentTrustedControlPlaneContextReader.tool_budget(
+            request_context,
+            allow_legacy_variables=allow_legacy_request_variables,
+        )
         return {
             "tenantId": _optional_int(request_context.tenant_id) or _optional_int(variables.get("tenantId")),
             "projectId": str(variables.get("projectId") or request_context.project_id),
-            "workspaceKey": _string_var(variables, "workspaceKey", "workspace_key"),
-            "actorRole": _string_var(variables, "actorRole", "actor_role") or "ORDINARY_USER",
-            "tenantPlanCode": _string_var(variables, "tenantPlanCode", "tenant_plan_code") or "STANDARD",
-            "workspaceRiskLevel": _string_var(variables, "workspaceRiskLevel", "workspace_risk_level") or "NORMAL",
-            "workerBacklogLevel": _string_var(variables, "workerBacklogLevel", "worker_backlog_level") or "NORMAL",
-            "requestedToolRiskLevel": _string_var(variables, "requestedToolRiskLevel", "requested_tool_risk_level") or "LOW",
+            "workspaceKey": trusted_context.workspace_key,
+            "actorRole": trusted_context.actor_role or "ORDINARY_USER",
+            "tenantPlanCode": trusted_context.tenant_plan_code,
+            "workspaceRiskLevel": trusted_context.workspace_risk_level,
+            "workerBacklogLevel": trusted_context.worker_backlog_level,
+            "requestedToolRiskLevel": trusted_context.requested_tool_risk_level,
         }
 
     @classmethod
