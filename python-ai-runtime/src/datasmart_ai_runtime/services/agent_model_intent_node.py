@@ -289,7 +289,7 @@ class AgentModelIntentNode:
         guarded = self._model_tool_call_budget_guard.evaluate(report, policy=budget_policy)
         if guarded.budget_issue_codes:
             event_recorder.record(
-                AgentRuntimeEventType.MODEL_TOOL_CALL_REJECTED,
+                AgentRuntimeEventType.MODEL_TOOL_CALL_BUDGET_GUARDED,
                 "guard_model_tool_call_budget",
                 "智能网关已根据工具调用预算阻断部分模型工具调用候选。",
                 attributes=guarded.to_summary(),

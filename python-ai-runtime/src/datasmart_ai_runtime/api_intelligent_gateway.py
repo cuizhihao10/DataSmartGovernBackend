@@ -16,7 +16,7 @@ from typing import Any
 
 from datasmart_ai_runtime.api_model_gateway import build_model_gateway_governance_response
 from datasmart_ai_runtime.domain.contracts import AgentPlan
-from datasmart_ai_runtime.domain.events import AgentRuntimeEvent
+from datasmart_ai_runtime.domain.events import AgentRuntimeEvent, AgentRuntimeEventType
 from datasmart_ai_runtime.services.agent_workspace import AgentWorkspaceContext
 
 
@@ -66,11 +66,18 @@ def build_intelligent_gateway_governance_response(
 def _tool_budget_summary(events: tuple[AgentRuntimeEvent, ...]) -> dict[str, Any]:
     """从 runtime events 中提取工具调用预算守卫摘要。
 
-    预算守卫事件当前使用 stage=`guard_model_tool_call_budget` 标识。这里选择读取最后一条，是为了兼容
-    未来多模型节点或多轮推理：最后一次预算守卫通常最接近最终 ToolPlan。
+    新版本优先读取 `MODEL_TOOL_CALL_BUDGET_GUARDED`。同时保留对历史
+    stage=`guard_model_tool_call_budget` 的兼容，是为了让旧事件回放、测试夹具或外部 Java replay
+    在迁移期间仍能生成治理摘要。这里读取最后一条，是为了兼容未来多模型节点或多轮推理：最后一次
+    预算守卫通常最接近最终 ToolPlan。
     """
 
-    budget_events = tuple(event for event in events if event.stage == "guard_model_tool_call_budget")
+    budget_events = tuple(
+        event
+        for event in events
+        if event.event_type == AgentRuntimeEventType.MODEL_TOOL_CALL_BUDGET_GUARDED
+        or event.stage == "guard_model_tool_call_budget"
+    )
     if not budget_events:
         return {
             "allowed": True,

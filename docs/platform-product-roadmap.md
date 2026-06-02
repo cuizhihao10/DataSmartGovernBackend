@@ -7669,3 +7669,35 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 接入 Java permission-admin/tenant plan 策略中心，按租户、项目、角色、工具成本、风险等级和 backlog 生成预算。
 3. 将规则式 `ToolPlanner` 的基线工具计划纳入统一预算视图，避免模型工具受控而规则工具绕过容量保护。
 4. 下一条主线可进入 Agent skill 能力：skill 注册、权限准入、工具 schema 暴露策略、执行审计和 Marketplace 管理。
+
+## 4.88 Python AI Runtime 工具调用预算治理事件一等化（2026-06-02）
+
+本阶段承接 4.87 的下一步建议，把工具调用预算守卫从“复用 `MODEL_TOOL_CALL_REJECTED` 并依靠 stage 区分”升级为独立 runtime event 类型。这样预算治理可以被前端、Java gateway、审计回放、指标采集和告警规则直接识别，不再把“模型候选非法/未知工具被拒绝”和“合法候选因预算策略被收缩”混在同一个事件语义里。
+
+已完成：
+- `AgentRuntimeEventType` 新增 `MODEL_TOOL_CALL_BUDGET_GUARDED = "model_tool_call_budget_guarded"`。
+- `AgentModelIntentNode` 在预算守卫触发时记录 `MODEL_TOOL_CALL_BUDGET_GUARDED`，attributes 继续复用低敏 `guarded.to_summary()`：
+  - proposed/accepted before-after；
+  - auto/high-risk 计数；
+  - arguments 字节数；
+  - budget issue codes；
+  - 当前动态 policy。
+- `api_intelligent_gateway._tool_budget_summary()` 优先读取新事件类型，同时兼容历史 `stage="guard_model_tool_call_budget"`，避免旧事件回放和旧夹具失效。
+- `test_agent_orchestrator.py` 明确断言预算阻断事件类型是 `MODEL_TOOL_CALL_BUDGET_GUARDED`。
+- `python-ai-runtime/README.md` 已同步说明独立预算事件。
+
+产品意义：
+- 预算治理事件成为一等审计事实，后续可以直接按 eventType 查询、订阅、指标聚合或告警，不必解析 stage。
+- 事件语义更准确：`MODEL_TOOL_CALL_REJECTED` 表示候选本身因未知工具、不可见工具、非法参数或风险规则被拒绝；`MODEL_TOOL_CALL_BUDGET_GUARDED` 表示候选集合经过预算收缩。
+- 这更接近 Codex/Claude Code 类 Agent 的可解释体验：用户看到的不只是“少了一个工具计划”，而是“模型提出了更多动作，智能网关按预算收缩了动作范围”。
+
+当前边界：
+- 新事件目前只在预算出现阻断问题时记录；如果未来希望审计“预算评估通过”的完整轨迹，可增加 pass-through 事件或 metrics。
+- 事件仍只存在于 Python Runtime runtime event 流，尚未写入 Java 控制面专用索引字段。
+- 规则式 `ToolPlanner` 生成的基线计划仍未纳入同一预算事件。
+
+下一步建议：
+1. 接入 Java permission-admin/tenant plan 策略中心，让预算策略可按租户、项目、角色、工具成本和实时 backlog 动态生成。
+2. 把规则式基线工具计划纳入统一预算视图，避免绕过预算治理。
+3. 开始 Agent skill 能力主线：skill 注册、权限准入、工具 schema 暴露策略、可审计执行和 Marketplace 管理。
+4. 中期把 `MODEL_TOOL_CALL_BUDGET_GUARDED` 写入 Java runtime event/replay 索引，支持治理卡片、告警和审计导出。

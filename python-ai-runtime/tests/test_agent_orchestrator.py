@@ -379,6 +379,7 @@ class AgentOrchestratorTest(unittest.TestCase):
             if event.stage == "guard_model_tool_call_budget"
         )
 
+        self.assertEqual(AgentRuntimeEventType.MODEL_TOOL_CALL_BUDGET_GUARDED, budget_event.event_type)
         self.assertEqual(3, budget_event.attributes["acceptedCountAfterGuard"])
         self.assertIn(
             "MODEL_TOOL_CALL_BUDGET_AUTO_EXECUTABLE_COUNT_EXCEEDED",
