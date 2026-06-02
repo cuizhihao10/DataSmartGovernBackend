@@ -87,7 +87,10 @@ from datasmart_ai_runtime.services.model_tool_call_budget_guard import (
 )
 from datasmart_ai_runtime.services.model_tool_call_budget_policy_provider import (
     EnvAndRequestModelToolCallBudgetPolicyProvider,
+    JavaPermissionAdminToolBudgetPolicyClient,
     ModelToolCallBudgetPolicyProvider,
+    PermissionAdminToolBudgetPolicyClientError,
+    RemoteThenLocalModelToolCallBudgetPolicyProvider,
 )
 from datasmart_ai_runtime.services.model_tool_call_events import (
     ModelToolCallEventRecordingSummary,
@@ -284,7 +287,10 @@ __all__ = [
     "ModelToolCallBudgetGuardReport",
     "ModelToolCallBudgetPolicy",
     "EnvAndRequestModelToolCallBudgetPolicyProvider",
+    "JavaPermissionAdminToolBudgetPolicyClient",
     "ModelToolCallBudgetPolicyProvider",
+    "PermissionAdminToolBudgetPolicyClientError",
+    "RemoteThenLocalModelToolCallBudgetPolicyProvider",
     "ModelToolCallEventRecordingSummary",
     "ModelToolCallPlanner",
     "ModelToolCallPlanningReport",

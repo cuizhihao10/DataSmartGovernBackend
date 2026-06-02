@@ -54,6 +54,12 @@ from datasmart_ai_runtime.services.agent_control_plane_feedback import AgentCont
 from datasmart_ai_runtime.services.agent_loop_control_policy import AgentLoopControlPolicyEvaluator
 from datasmart_ai_runtime.services.agent_second_turn_orchestrator import AgentSecondTurnOrchestrator
 from datasmart_ai_runtime.services.memory_write_governance import AgentMemoryWriteGovernanceService
+from datasmart_ai_runtime.services.model_tool_call_budget_policy_provider import (
+    EnvAndRequestModelToolCallBudgetPolicyProvider,
+    JavaPermissionAdminToolBudgetPolicyClient,
+    ModelToolCallBudgetPolicyProvider,
+    RemoteThenLocalModelToolCallBudgetPolicyProvider,
+)
 
 
 def load_tool_registry(
@@ -176,6 +182,10 @@ def build_default_orchestrator(
     context_max_tokens: int | None = None,
     allowed_context_sensitivity_levels: tuple[ContextSensitivityLevel, ...] | None = None,
     enable_remote_tool_feedback: bool | None = None,
+    model_tool_call_budget_policy_provider: ModelToolCallBudgetPolicyProvider | None = None,
+    permission_admin_base_url: str | None = None,
+    enable_remote_tool_budget_policy: bool | None = None,
+    allow_remote_tool_budget_policy_fallback: bool = True,
 ) -> AgentOrchestrator:
     """创建默认 Agent 编排器。
 
@@ -221,6 +231,12 @@ def build_default_orchestrator(
             auto_execute_dry_run=_truthy_env("DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_DRY_RUN"),
             max_auto_executions=_optional_positive_int_env("DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_MAX"),
         )
+    budget_policy_provider = model_tool_call_budget_policy_provider or build_tool_call_budget_policy_provider(
+        permission_admin_base_url=permission_admin_base_url,
+        trace_id=trace_id,
+        enable_remote=enable_remote_tool_budget_policy,
+        allow_remote_fallback=allow_remote_tool_budget_policy_fallback,
+    )
     return AgentOrchestrator(
         model_routes=ModelRouteRegistry(model_routes_from_env()),
         tool_planner=ToolPlanner(tools),
@@ -229,7 +245,42 @@ def build_default_orchestrator(
         memory_planner=AgentMemoryPlanner(),
         model_gateway=model_gateway,
         skill_registry=AgentSkillRegistry(skills),
+        model_tool_call_budget_policy_provider=budget_policy_provider,
         tool_execution_feedback_provider=tool_feedback_provider,
+    )
+
+
+def build_tool_call_budget_policy_provider(
+    permission_admin_base_url: str | None = None,
+    *,
+    trace_id: str | None = None,
+    enable_remote: bool | None = None,
+    allow_remote_fallback: bool = True,
+) -> ModelToolCallBudgetPolicyProvider:
+    """构建工具调用预算策略 provider。
+
+    默认返回本地 env/request provider；只有显式启用远程且存在 permission-admin 地址时，才调用 Java 控制面。
+    这样本地学习环境不需要启动 Java 服务，生产环境又可以把策略来源切到 permission-admin。
+    """
+
+    local_provider = EnvAndRequestModelToolCallBudgetPolicyProvider()
+    remote_enabled = (
+        _truthy_env("DATASMART_PERMISSION_ADMIN_TOOL_BUDGET_ENABLED")
+        if enable_remote is None
+        else enable_remote
+    )
+    base_url = permission_admin_base_url or os.getenv("DATASMART_PERMISSION_ADMIN_BASE_URL")
+    if not remote_enabled or not base_url:
+        return local_provider
+    remote_client = JavaPermissionAdminToolBudgetPolicyClient(
+        base_url=base_url,
+        timeout_seconds=_positive_int_env("DATASMART_PERMISSION_ADMIN_TOOL_BUDGET_TIMEOUT_SECONDS", 3),
+    )
+    return RemoteThenLocalModelToolCallBudgetPolicyProvider(
+        remote_client,
+        local_provider=local_provider,
+        allow_remote_fallback=allow_remote_fallback,
+        trace_id=trace_id,
     )
 
 

@@ -7746,3 +7746,49 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 后续把 `tenantPlanCode` 接入租户套餐表，把策略版本从拼接字符串升级为正式发布版本。
 3. 接入 worker backlog 指标源，按 task-management/data-sync/data-quality 的实时压力动态收紧预算。
 4. 然后切到 Agent skill 能力主线：skill 注册、权限准入、工具 schema 暴露策略和可审计执行。
+
+## 4.90 Python AI Runtime 接入 permission-admin 工具预算策略（2026-06-02）
+
+本阶段把 4.89 中已经落地的 Java permission-admin 工具预算策略评估接口接回 Python Runtime。目标不是让 Python 直接拥有权限中心能力，而是让智能网关的模型工具预算具备真实控制面来源：Python 仍负责执行预算守卫，permission-admin 负责按租户、项目、角色、套餐、workspace 风险和容量压力生成策略。
+
+已完成：
+- 新增 `JavaPermissionAdminToolBudgetPolicyClient`：
+  - 构造 `AgentToolBudgetPolicyEvaluateRequest` 对齐 Java DTO；
+  - 通过 `POST /permissions/agent/tool-budget-policies/evaluate` 请求预算策略；
+  - 解析 Java `PlatformApiResponse<AgentToolBudgetPolicyView>`；
+  - 将 `toolCallBudget` 转换为 Python `ModelToolCallBudgetPolicy`。
+- 新增 `RemoteThenLocalModelToolCallBudgetPolicyProvider`：
+  - 远程 permission-admin 可用时优先使用 Java 控制面策略；
+  - 远程不可用时默认回退本地 env/request provider，保证本地开发、离线学习和灰度联调不断流；
+  - 支持关闭回退，生产环境可选择 fail-closed，让策略中心故障显式暴露。
+- `build_default_orchestrator()` 新增远程预算策略装配：
+  - `DATASMART_PERMISSION_ADMIN_TOOL_BUDGET_ENABLED=true` 时启用；
+  - `DATASMART_PERMISSION_ADMIN_BASE_URL` 指定 Java permission-admin 地址；
+  - `DATASMART_PERMISSION_ADMIN_TOOL_BUDGET_TIMEOUT_SECONDS` 控制远程请求超时；
+  - 仍允许测试或高级部署显式注入自定义 provider。
+- `AgentOrchestrator` 将预算 provider 传入 `AgentModelIntentNode`，确保远程策略真正参与模型 tool_calls 治理。
+- 测试覆盖：
+  - Python 请求变量到 Java DTO 的映射；
+  - Java `toolCallBudget` 响应到 Python policy 的转换；
+  - 远程可用时优先使用远程策略；
+  - 远程失败且允许回退时使用本地策略；
+  - 关闭回退时抛出策略中心异常。
+- `python-ai-runtime/README.md` 已补充远程启用方式和治理语义。
+
+产品意义：
+- 工具预算策略形成“Java 控制面决策、Python 智能网关执行”的跨服务闭环，不再只靠 Python 默认值或请求变量。
+- 这更接近真实商业 Agent 平台：模型可以提出工具调用，但最终可自动推进多少、是否收紧高风险工具、是否因 backlog 降载，应由企业控制面按租户和运营状态决定。
+- 默认 fail-open 是为了学习环境和灰度联调友好；生产环境可以切换 fail-closed，把策略中心故障作为可观测事故处理。
+- 该实现保持微服务边界：Python 通过 HTTP 契约消费 permission-admin，不直接依赖 Java DTO、数据库或内部 service。
+
+当前边界：
+- 远程调用尚未携带服务间认证 Token、签名或 mTLS；生产环境必须通过 gateway、服务网格或内部网络策略保护该接口。
+- `tenantId` 在 Python `AgentRequest` 中仍是字符串，只有能安全转成整数时才传给 Java；后续应统一租户标识契约。
+- `workerBacklogLevel` 仍由请求变量提供，尚未从 task-management/data-sync/data-quality 指标自动计算。
+- permission-admin 策略仍是内存规则，尚未接数据库策略表、发布版本、缓存失效和审计变更。
+
+下一步建议：
+1. 我建议短期不要继续无限细化预算局部，下一步切到 Agent skill 能力：skill 注册、权限准入、工具 schema 暴露策略、执行审计和 Marketplace 管理。
+2. 如果继续工具预算，只做生产化补强：服务间认证、策略版本落库、worker backlog 指标源和 fail-closed 配置外显。
+3. 中期把 `intelligentGatewayGovernance` 写入 Java replay/index，让前端治理卡片、告警和审计导出都能看到“远程策略来源”和“预算阻断结果”。
+4. Java 业务主线仍要推进 data-sync/data-quality/task-management 的真实 worker 串联，避免 AI Runtime 局部能力过度膨胀。

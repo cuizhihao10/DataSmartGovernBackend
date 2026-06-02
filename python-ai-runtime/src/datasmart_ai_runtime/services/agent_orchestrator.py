@@ -33,6 +33,7 @@ from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceSe
 from datasmart_ai_runtime.services.model_gateway_context import build_model_gateway_context
 from datasmart_ai_runtime.services.model_provider import ModelProviderRegistry
 from datasmart_ai_runtime.services.model_router import ModelRouteRegistry
+from datasmart_ai_runtime.services.model_tool_call_budget_policy_provider import ModelToolCallBudgetPolicyProvider
 from datasmart_ai_runtime.services.model_tool_feedback_provider import ModelToolExecutionFeedbackProvider
 from datasmart_ai_runtime.services.runtime_event_recorder import RuntimeEventRecorder
 from datasmart_ai_runtime.services.skill_registry import AgentSkillRegistry
@@ -60,6 +61,7 @@ class AgentOrchestrator:
         model_gateway: ModelGatewayGovernanceService | None = None,
         skill_registry: AgentSkillRegistry | None = None,
         model_intent_node: AgentModelIntentNode | None = None,
+        model_tool_call_budget_policy_provider: ModelToolCallBudgetPolicyProvider | None = None,
         tool_execution_feedback_provider: ModelToolExecutionFeedbackProvider | None = None,
     ) -> None:
         self._model_routes = model_routes
@@ -76,6 +78,7 @@ class AgentOrchestrator:
             model_providers=self._model_providers,
             model_gateway=self._model_gateway,
             tool_planner=self._tool_planner,
+            model_tool_call_budget_policy_provider=model_tool_call_budget_policy_provider,
             tool_execution_feedback_provider=tool_execution_feedback_provider,
         )
 
