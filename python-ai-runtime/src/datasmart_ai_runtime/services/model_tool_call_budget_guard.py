@@ -113,9 +113,14 @@ class ModelToolCallBudgetGuard:
     def __init__(self, policy: ModelToolCallBudgetPolicy | None = None) -> None:
         self._policy = policy or ModelToolCallBudgetPolicy()
 
-    def evaluate(self, report: ModelToolCallPlanningReport) -> ModelToolCallBudgetGuardReport:
+    def evaluate(
+        self,
+        report: ModelToolCallPlanningReport,
+        policy: ModelToolCallBudgetPolicy | None = None,
+    ) -> ModelToolCallBudgetGuardReport:
         """评估并返回带预算问题的新报告。"""
 
+        active_policy = policy or self._policy
         guarded_candidates: list[ModelToolCallCandidate] = []
         accepted_before = len(report.accepted_tool_plans)
         total_argument_bytes = sum(_argument_bytes(candidate) for candidate in report.candidates)
@@ -128,6 +133,7 @@ class ModelToolCallBudgetGuard:
             issues.extend(self._candidate_budget_issues(
                 candidate=candidate,
                 index=index,
+                policy=active_policy,
                 auto_seen=auto_seen,
                 high_risk_seen=high_risk_seen,
                 cumulative_argument_bytes=cumulative_argument_bytes,
@@ -143,7 +149,7 @@ class ModelToolCallBudgetGuard:
         return ModelToolCallBudgetGuardReport(
             original_report=report,
             guarded_report=guarded_report,
-            policy=self._policy,
+            policy=active_policy,
             proposed_count=len(report.candidates),
             accepted_count_before_guard=accepted_before,
             accepted_count_after_guard=len(guarded_report.accepted_tool_plans),
@@ -157,6 +163,7 @@ class ModelToolCallBudgetGuard:
         *,
         candidate: ModelToolCallCandidate,
         index: int,
+        policy: ModelToolCallBudgetPolicy,
         auto_seen: int,
         high_risk_seen: int,
         cumulative_argument_bytes: int,
@@ -170,35 +177,35 @@ class ModelToolCallBudgetGuard:
 
         issues: list[ModelToolCallGovernanceIssue] = []
         tool_name = candidate.resolved_tool_name
-        if index > self._policy.max_proposed_tool_calls:
+        if index > policy.max_proposed_tool_calls:
             issues.append(_issue(
                 tool_name,
                 "MODEL_TOOL_CALL_BUDGET_PROPOSED_COUNT_EXCEEDED",
-                f"模型本轮提出的工具调用数量超过上限 {self._policy.max_proposed_tool_calls}，请拆分任务或重新规划。",
+                f"模型本轮提出的工具调用数量超过上限 {policy.max_proposed_tool_calls}，请拆分任务或重新规划。",
             ))
-        if _argument_bytes(candidate) > self._policy.max_single_arguments_bytes:
+        if _argument_bytes(candidate) > policy.max_single_arguments_bytes:
             issues.append(_issue(
                 tool_name,
                 "MODEL_TOOL_CALL_BUDGET_SINGLE_ARGUMENTS_TOO_LARGE",
-                f"单个工具 arguments 超过 {self._policy.max_single_arguments_bytes} 字节，禁止直接进入工具计划。",
+                f"单个工具 arguments 超过 {policy.max_single_arguments_bytes} 字节，禁止直接进入工具计划。",
             ))
-        if cumulative_argument_bytes > self._policy.max_total_arguments_bytes or total_argument_bytes > self._policy.max_total_arguments_bytes:
+        if cumulative_argument_bytes > policy.max_total_arguments_bytes or total_argument_bytes > policy.max_total_arguments_bytes:
             issues.append(_issue(
                 tool_name,
                 "MODEL_TOOL_CALL_BUDGET_TOTAL_ARGUMENTS_TOO_LARGE",
-                f"本轮工具 arguments 总体积超过 {self._policy.max_total_arguments_bytes} 字节，需缩小上下文或改走资源引用。",
+                f"本轮工具 arguments 总体积超过 {policy.max_total_arguments_bytes} 字节，需缩小上下文或改走资源引用。",
             ))
-        if candidate.accepted and _is_auto_executable(candidate) and auto_seen >= self._policy.max_auto_executable_tool_calls:
+        if candidate.accepted and _is_auto_executable(candidate) and auto_seen >= policy.max_auto_executable_tool_calls:
             issues.append(_issue(
                 tool_name,
                 "MODEL_TOOL_CALL_BUDGET_AUTO_EXECUTABLE_COUNT_EXCEEDED",
-                f"可自动推进的工具数量超过上限 {self._policy.max_auto_executable_tool_calls}，后续动作应拆批或进入审批。",
+                f"可自动推进的工具数量超过上限 {policy.max_auto_executable_tool_calls}，后续动作应拆批或进入审批。",
             ))
-        if candidate.accepted and _is_high_risk(candidate) and high_risk_seen >= self._policy.max_high_risk_tool_calls:
+        if candidate.accepted and _is_high_risk(candidate) and high_risk_seen >= policy.max_high_risk_tool_calls:
             issues.append(_issue(
                 tool_name,
                 "MODEL_TOOL_CALL_BUDGET_HIGH_RISK_COUNT_EXCEEDED",
-                f"高风险工具数量超过上限 {self._policy.max_high_risk_tool_calls}，请保留最关键动作并重新规划。",
+                f"高风险工具数量超过上限 {policy.max_high_risk_tool_calls}，请保留最关键动作并重新规划。",
             ))
         return tuple(issues)
 

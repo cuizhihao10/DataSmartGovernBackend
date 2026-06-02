@@ -13,7 +13,7 @@
 - `ModelRouteRegistry`：按工作负载选择模型路由，避免业务代码写死某个模型名称。
 - `ToolPlanner`：根据目标、变量和工具注册表生成工具计划，先采用可解释的规则式骨架，后续可替换为 LLM 规划器。
 - `AgentOrchestrator`：以状态节点方式串联目标接收、模型选择、上下文构建、工具规划、审批判断和响应生成。
-- 智能网关工具治理：已具备模型工具调用候选规划、可见工具校验、参数 schema 校验和工具调用预算守卫，可限制单轮工具数量、自动推进数量、高风险工具数量和 arguments 体积；API 响应已提供 `intelligentGatewayGovernance` 统一摘要，汇总模型路由、工具预算、workspace 和记忆检索治理事实。
+- 智能网关工具治理：已具备模型工具调用候选规划、可见工具校验、参数 schema 校验和工具调用预算守卫，可限制单轮工具数量、自动推进数量、高风险工具数量和 arguments 体积；预算策略已抽象为 provider，当前支持环境变量和 `AgentRequest.variables["toolCallBudget"]` 覆盖，后续可替换为 Java permission-admin、租户套餐、项目等级或实时 backlog 策略中心；API 响应已提供 `intelligentGatewayGovernance` 统一摘要，汇总模型路由、工具预算、workspace 和记忆检索治理事实。
 - 长期记忆治理：已具备记忆召回计划、候选生成、审批/拒绝、候选 SQL store、低敏摘要正式落成、materialization receipt 和 store-backed 检索骨架；候选和正式记忆都会携带 `workspaceKey/memoryNamespace`，检索时按当前 Agent 工作空间过滤，避免同项目不同 workspace 或 session 沙箱误共享记忆。当前正式记忆 store 默认仍为内存实现，后续再按类型接入 Chroma、Neo4j、MySQL 和 MinIO。
 - `api.create_app()`：提供可选 FastAPI 入口。当前测试不依赖 FastAPI，安装 API 依赖后即可启动服务。
 
@@ -40,4 +40,5 @@ python -m unittest discover -s python-ai-runtime/tests
 - 将规则式 `ToolPlanner` 抽象为策略接口，增加 LLM 规划器实现。
 - 增加 RAG/GraphRAG 上下文构建器，区分元数据检索、权限事实检索、质量规则案例检索。
 - 增加模型 Provider 适配器，优先兼容 OpenAI-compatible、vLLM、SGLang 等部署形态。
+- 将工具预算策略 provider 接入 Java permission-admin/tenant plan，让不同租户、项目等级、角色、工具成本和实时 worker backlog 能生成不同预算。
 - 为正式长期记忆增加 SQL receipt store、后台 outbox worker、失败重试、补偿查询和向量库 namespace 过滤适配器。

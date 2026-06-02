@@ -44,6 +44,10 @@ from datasmart_ai_runtime.services.model_tool_call_aggregator import (
 )
 from datasmart_ai_runtime.services.model_tool_call_events import record_model_tool_call_planning_events
 from datasmart_ai_runtime.services.model_tool_call_budget_guard import ModelToolCallBudgetGuard
+from datasmart_ai_runtime.services.model_tool_call_budget_policy_provider import (
+    EnvAndRequestModelToolCallBudgetPolicyProvider,
+    ModelToolCallBudgetPolicyProvider,
+)
 from datasmart_ai_runtime.services.model_tool_call_planner import ModelToolCallPlanner
 from datasmart_ai_runtime.services.model_provider import ModelProviderRegistry
 from datasmart_ai_runtime.services.model_tool_result_feedback import ModelToolResultFeedbackBuilder
@@ -94,6 +98,7 @@ class AgentModelIntentNode:
         tool_planner: ToolPlanner,
         model_tool_call_planner: ModelToolCallPlanner | None = None,
         model_tool_call_budget_guard: ModelToolCallBudgetGuard | None = None,
+        model_tool_call_budget_policy_provider: ModelToolCallBudgetPolicyProvider | None = None,
         tool_call_delta_aggregator_factory: type[ModelToolCallDeltaAggregator] = ModelToolCallDeltaAggregator,
         tool_execution_feedback_provider: ModelToolExecutionFeedbackProvider | None = None,
         tool_result_feedback_builder: ModelToolResultFeedbackBuilder | None = None,
@@ -103,6 +108,9 @@ class AgentModelIntentNode:
         self._tool_planner = tool_planner
         self._model_tool_call_planner = model_tool_call_planner or ModelToolCallPlanner()
         self._model_tool_call_budget_guard = model_tool_call_budget_guard or ModelToolCallBudgetGuard()
+        self._model_tool_call_budget_policy_provider = (
+            model_tool_call_budget_policy_provider or EnvAndRequestModelToolCallBudgetPolicyProvider()
+        )
         self._tool_call_delta_aggregator_factory = tool_call_delta_aggregator_factory
         self._tool_execution_feedback_provider = tool_execution_feedback_provider or SimulatedModelToolExecutionFeedbackProvider()
         self._tool_result_feedback_builder = tool_result_feedback_builder or ModelToolResultFeedbackBuilder()
@@ -150,12 +158,14 @@ class AgentModelIntentNode:
             if self._should_use_streaming(request):
                 return self._invoke_streaming(
                     model_request=model_request,
+                    request=request,
                     model_gateway_context=model_gateway_context,
                     available_tools=available_tools,
                     event_recorder=event_recorder,
                 )
             return self._invoke_non_streaming(
                 model_request=model_request,
+                request=request,
                 model_gateway_context=model_gateway_context,
                 available_tools=available_tools,
                 event_recorder=event_recorder,
@@ -166,6 +176,7 @@ class AgentModelIntentNode:
     def _invoke_non_streaming(
         self,
         model_request: ModelInvocationRequest,
+        request: AgentRequest,
         model_gateway_context: ModelGatewayRequestContext,
         available_tools: tuple[ToolDefinition, ...],
         event_recorder: RuntimeEventRecorder,
@@ -180,6 +191,7 @@ class AgentModelIntentNode:
         self._record_model_usage(model_gateway_context, result)
         model_tool_plans = self._govern_model_tool_calls(
             tool_calls=result.tool_calls,
+            request=request,
             visible_tools=available_tools,
             event_recorder=event_recorder,
         )
@@ -202,6 +214,7 @@ class AgentModelIntentNode:
     def _invoke_streaming(
         self,
         model_request: ModelInvocationRequest,
+        request: AgentRequest,
         model_gateway_context: ModelGatewayRequestContext,
         available_tools: tuple[ToolDefinition, ...],
         event_recorder: RuntimeEventRecorder,
@@ -223,6 +236,7 @@ class AgentModelIntentNode:
         assembly_report = self._aggregate_streaming_tool_calls(chunks)
         model_tool_plans = self._govern_model_tool_calls(
             tool_calls=assembly_report.tool_calls,
+            request=request,
             visible_tools=available_tools,
             event_recorder=event_recorder,
         )
@@ -254,6 +268,7 @@ class AgentModelIntentNode:
     def _govern_model_tool_calls(
         self,
         tool_calls: tuple[ModelToolCall, ...],
+        request: AgentRequest,
         visible_tools: tuple[ToolDefinition, ...],
         event_recorder: RuntimeEventRecorder,
     ) -> tuple[ToolPlan, ...]:
@@ -270,7 +285,8 @@ class AgentModelIntentNode:
             registered_tools=self._tool_planner.registered_tools(),
             visible_tools=visible_tools,
         )
-        guarded = self._model_tool_call_budget_guard.evaluate(report)
+        budget_policy = self._model_tool_call_budget_policy_provider.policy_for(request)
+        guarded = self._model_tool_call_budget_guard.evaluate(report, policy=budget_policy)
         if guarded.budget_issue_codes:
             event_recorder.record(
                 AgentRuntimeEventType.MODEL_TOOL_CALL_REJECTED,

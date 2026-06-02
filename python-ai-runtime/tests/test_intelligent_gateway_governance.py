@@ -82,6 +82,30 @@ class IntelligentGatewayGovernanceResponseTest(unittest.TestCase):
             any("缩小本轮模型工具调用批次" in action for action in response["intelligentGatewayGovernance"]["recommendedActions"])
         )
 
+    def test_request_budget_policy_can_relax_tool_budget_in_main_flow(self) -> None:
+        """请求级工具预算策略应能影响主编排链路。"""
+
+        response = build_plan_response(
+            AgentRequest(
+                tenant_id="tenant-a",
+                project_id="project-a",
+                actor_id="user-a",
+                objective="请连续读取多个数据源元数据",
+                variables={
+                    "datasourceId": "ds-rule",
+                    "streamModelIntent": False,
+                    "toolCallBudget": {"maxAutoExecutableToolCalls": 4},
+                },
+            ),
+            self._orchestrator(provider=self._four_metadata_tool_call_provider()),
+        )
+
+        tool_budget = response["intelligentGatewayGovernance"]["toolBudget"]
+
+        self.assertTrue(response["intelligentGatewayGovernance"]["available"])
+        self.assertFalse(tool_budget["guarded"])
+        self.assertEqual((), tool_budget["budgetIssueCodes"])
+
     @staticmethod
     def _orchestrator(provider: object | None = None) -> AgentOrchestrator:
         """构造测试用编排器。"""
@@ -91,6 +115,21 @@ class IntelligentGatewayGovernanceResponseTest(unittest.TestCase):
             tool_planner=ToolPlanner(default_tool_registry()),
             model_providers=provider,
             skill_registry=AgentSkillRegistry(default_skill_registry()),
+        )
+
+    @staticmethod
+    def _four_metadata_tool_call_provider() -> "ToolCallingProvider":
+        """构造一次返回 4 个元数据读取 tool_calls 的 Provider。"""
+
+        return ToolCallingProvider(
+            tuple(
+                ModelToolCall(
+                    call_id=f"call-metadata-{index}",
+                    name="datasource_metadata_read",
+                    arguments=f'{{"datasourceId":"ds-{index}"}}',
+                )
+                for index in range(4)
+            )
         )
 
 

@@ -7631,3 +7631,41 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 增加独立 runtime event type，如 `MODEL_TOOL_CALL_BUDGET_GUARDED`，让事件语义更准确。
 3. 推进 Agent skill 能力：skill 注册、权限准入、工具 schema 暴露策略和可审计执行。
 4. 后续 Java gateway 可读取 `intelligentGatewayGovernance` 并写入审计记录，但不要把决策逻辑复制到 API 层。
+
+## 4.87 Python AI Runtime 工具调用预算策略来源抽象（2026-06-02）
+
+本阶段继续智能网关主线，但没有继续堆叠新的工具执行能力，而是补“预算策略从哪里来”的抽象层。真实商业化 Agent 平台里，同一个模型在不同租户、项目等级、角色、workspace 风险等级、worker backlog 和工具成本下，不应该使用完全相同的工具调用预算。当前先落地轻量 provider，让 Python Runtime 能在不依赖 Java 策略中心的情况下验证动态策略契约。
+
+已完成：
+- 新增 `ModelToolCallBudgetPolicyProvider` 协议，作为预算策略来源的稳定边界。
+- 新增 `EnvAndRequestModelToolCallBudgetPolicyProvider`：
+  - 环境变量作为部署级默认值；
+  - `AgentRequest.variables["toolCallBudget"]` 或 `tool_call_budget` 作为本次请求覆盖值；
+  - 同时兼容 camelCase 与 snake_case 字段；
+  - 非法值、空值、小于 1 的值会被忽略，避免错误配置把 Agent 主链路直接锁死。
+- `ModelToolCallBudgetGuard.evaluate()` 支持传入本轮动态 policy，默认仍兼容原有静态 policy。
+- `AgentModelIntentNode` 在 streaming 与 non-streaming 路径里都会基于当前 `AgentRequest` 获取预算策略，再执行工具预算守卫。
+- `services/__init__.py` 已导出 provider 协议与默认实现。
+- 新增测试覆盖：
+  - 环境变量可覆盖默认预算；
+  - 请求变量优先于环境变量；
+  - 非法配置会被忽略；
+  - 主流程里请求级预算可放宽默认自动推进工具数量限制。
+
+产品意义：
+- 智能网关从“写死一套工具预算”升级为“可由策略来源动态生成预算”，为后续租户套餐、项目等级、角色权限、工具成本和实时容量保护打基础。
+- 请求级覆盖适合前端、Java gateway 或管理台在特定受控场景下临时放宽/收紧策略，例如只读分析型 workspace 可允许更多低风险工具，高敏 workspace 则可收紧自动推进数量。
+- 环境变量覆盖适合私有化部署或压测环境先调整平台默认值，避免在 Java 策略中心成熟前反复改代码。
+- provider 只负责生成预算，不负责执行预算；预算执行仍由 guard 完成，避免策略来源和治理算法耦合。
+
+当前边界：
+- 当前 provider 还没有接 Java permission-admin、tenant plan、Redis quota 或实时 worker backlog。
+- 请求级覆盖必须由上游可信控制面注入；生产环境不应允许普通终端用户随意传入更宽松预算。
+- 预算仍只作用于模型 tool_calls，规则式 `ToolPlanner` 基线计划尚未纳入统一预算。
+- runtime event 仍复用 `MODEL_TOOL_CALL_REJECTED` 语义，尚未新增独立 `MODEL_TOOL_CALL_BUDGET_GUARDED` 事件。
+
+下一步建议：
+1. 优先新增独立预算治理事件类型，让预算守卫成为一等 runtime event，而不是长期复用 rejected 事件。
+2. 接入 Java permission-admin/tenant plan 策略中心，按租户、项目、角色、工具成本、风险等级和 backlog 生成预算。
+3. 将规则式 `ToolPlanner` 的基线工具计划纳入统一预算视图，避免模型工具受控而规则工具绕过容量保护。
+4. 下一条主线可进入 Agent skill 能力：skill 注册、权限准入、工具 schema 暴露策略、执行审计和 Marketplace 管理。
