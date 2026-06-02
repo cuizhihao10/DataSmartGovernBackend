@@ -1,4 +1,4 @@
-"""Agent 记忆写入候选 API 路由注册器。
+﻿"""Agent 记忆写入候选 API 路由注册器。
 
 `api.py` 应保持“应用创建与依赖装配”职责，不适合继续塞入越来越多业务路由细节。
 本文件专门注册长期记忆写入候选的查询、审批和拒绝接口，让 API 层与记忆治理服务解耦。
@@ -19,7 +19,7 @@ from datasmart_ai_runtime.api_memory_write_pagination import paginate_memory_wri
 from datasmart_ai_runtime.domain.memory import (
     AgentMemoryWriteCandidateStatus,
 )
-from datasmart_ai_runtime.services.memory_write_governance import (
+from datasmart_ai_runtime.services.memory.memory_write_governance import (
     AgentMemoryWriteGovernanceService,
     approve_memory_write_candidate,
     reject_memory_write_candidate,

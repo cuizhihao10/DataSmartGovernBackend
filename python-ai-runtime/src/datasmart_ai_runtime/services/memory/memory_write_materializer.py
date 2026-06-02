@@ -1,4 +1,4 @@
-"""已批准长期记忆候选的正式落成服务。
+﻿"""已批准长期记忆候选的正式落成服务。
 
 候选审批和正式写入是两个不同的业务动作：
 - 审批回答“这条低敏摘要是否允许进入后续写入流程”；
@@ -22,16 +22,16 @@ from datasmart_ai_runtime.domain.memory import (
     AgentMemoryWriteCandidate,
     AgentMemoryWriteCandidateStatus,
 )
-from datasmart_ai_runtime.services.memory_store import (
+from datasmart_ai_runtime.services.memory.memory_store import (
     AgentMemoryStore,
     AgentMemoryStoreEntry,
 )
-from datasmart_ai_runtime.services.memory_materialization_receipt_store import (
+from datasmart_ai_runtime.services.memory.memory_materialization_receipt_store import (
     AgentMemoryMaterializationReceiptStore,
     InMemoryAgentMemoryMaterializationReceiptStore,
 )
-from datasmart_ai_runtime.services.memory_write_candidate_store import AgentMemoryWriteCandidateStore
-from datasmart_ai_runtime.services.memory_write_workspace import AgentMemoryWorkspaceSupport
+from datasmart_ai_runtime.services.memory.memory_write_candidate_store import AgentMemoryWriteCandidateStore
+from datasmart_ai_runtime.services.memory.memory_write_workspace import AgentMemoryWorkspaceSupport
 
 
 class AgentMemoryMaterializationOutcome(str, Enum):

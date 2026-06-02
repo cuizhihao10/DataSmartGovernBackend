@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -14,7 +14,7 @@ from datasmart_ai_runtime.domain.memory import (
     AgentMemoryScope,
     AgentMemoryType,
 )
-from datasmart_ai_runtime.services.memory_retriever import InMemoryAgentMemoryRetriever
+from datasmart_ai_runtime.services.memory.memory_retriever import InMemoryAgentMemoryRetriever
 
 
 class InMemoryAgentMemoryRetrieverTest(unittest.TestCase):

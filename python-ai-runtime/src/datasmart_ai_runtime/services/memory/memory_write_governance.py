@@ -1,4 +1,4 @@
-"""Agent 长期记忆写入候选与审批治理服务。
+﻿"""Agent 长期记忆写入候选与审批治理服务。
 
 真实商业化 Agent 的长期记忆能力不能简单理解为“把聊天记录或工具结果写进向量库”。
 在 DataSmart Govern 的数据治理场景里，工具结果可能包含数据源结构、质量异常、审批状态、
@@ -31,11 +31,11 @@ from datasmart_ai_runtime.domain.memory import (
     AgentMemoryWriteProposalReport,
 )
 from datasmart_ai_runtime.services.agent_control_plane_feedback import AgentControlPlaneFeedbackSnapshot
-from datasmart_ai_runtime.services.memory_write_candidate_store import (
+from datasmart_ai_runtime.services.memory.memory_write_candidate_store import (
     AgentMemoryWriteCandidateStore,
     InMemoryAgentMemoryWriteCandidateStore,
 )
-from datasmart_ai_runtime.services.memory_write_candidate_factory import AgentMemoryWriteCandidateFactory
+from datasmart_ai_runtime.services.memory.memory_write_candidate_factory import AgentMemoryWriteCandidateFactory
 from datasmart_ai_runtime.services.model_tool_result_feedback import ToolExecutionFeedbackStatus
 
 

@@ -1,4 +1,4 @@
-"""Agent 长期记忆写入候选存储的运行时组装层。
+﻿"""Agent 长期记忆写入候选存储的运行时组装层。
 
 前几个阶段已经把“记忆写入候选”拆成了领域模型、治理服务、内存 store 与 SQL store。
 本文件负责最后一段启动装配：根据环境变量决定 Python Runtime 到底使用哪一种候选存储。
@@ -23,11 +23,11 @@ from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import urlsplit, urlunsplit
 
-from datasmart_ai_runtime.services.memory_write_candidate_store import (
+from datasmart_ai_runtime.services.memory.memory_write_candidate_store import (
     AgentMemoryWriteCandidateStore,
     InMemoryAgentMemoryWriteCandidateStore,
 )
-from datasmart_ai_runtime.services.memory_write_sql_store import SqlAgentMemoryWriteCandidateStore
+from datasmart_ai_runtime.services.memory.memory_write_sql_store import SqlAgentMemoryWriteCandidateStore
 
 
 SqlConnectionFactory = Callable[["AgentMemoryWriteStoreSettings"], Any]

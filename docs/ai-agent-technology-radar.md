@@ -1,5 +1,12 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-02 落地补充：AI Runtime package layout should follow capability domains
+
+- 本阶段把 Python Runtime 的长期记忆相关文件迁入 `services/memory/`，开始从“按技术层 services 平铺”转向“按 Agent 能力域分包”。
+- 这对应成熟 Agent 工程项目的常见趋势：memory、tools、runtime events、model gateway、skills、integrations 应该各自形成可理解、可测试、可替换的包边界，而不是在一个 services 目录中靠文件名前缀维持秩序。
+- DataSmart 当前采用渐进迁移：先移动 memory 能力域并保持文件名稳定，避免目录治理变成高风险大重构；后续再迁移 runtime events、model gateway、tools、skills 和 API routes。
+- 对 Codex/Claude Code 类 Agent 目标而言，这不是“好看一点”的整理，而是未来支持长期记忆、MCP 工具、模型 provider、事件回放、服务间认证、策略审计和多租户运营时必须提前建立的工程秩序。
+
 ## 2026-06-02 落地补充：Agent API surface needs modular route ownership
 
 - 本阶段没有盲目继续叠加长期记忆或工具执行新功能，而是先治理 Python Runtime 的 API surface，避免 Agent 规划、事件回放、WebSocket 和诊断能力全部堆在一个 bootstrap 文件中。

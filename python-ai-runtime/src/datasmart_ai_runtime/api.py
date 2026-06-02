@@ -1,4 +1,4 @@
-"""可选 FastAPI API 入口。
+﻿"""可选 FastAPI API 入口。
 
 当前项目的核心测试不依赖 FastAPI，因为 AI Runtime 的第一目标是先稳定领域契约与编排逻辑。
 如果本地安装了 `python-ai-runtime[api]`，即可通过 `create_app()` 创建 HTTP 服务，供 Java
@@ -26,9 +26,9 @@ from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
 from datasmart_ai_runtime.services.hybrid_context_builder import ContextSelectionPolicy, HybridContextBuilder
 from datasmart_ai_runtime.services.model_provider import model_provider_registry_from_env
 from datasmart_ai_runtime.services.model_router import ModelRouteRegistry
-from datasmart_ai_runtime.services.memory_planner import AgentMemoryPlanner
+from datasmart_ai_runtime.services.memory.memory_planner import AgentMemoryPlanner
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
-from datasmart_ai_runtime.services.memory_write_components import (
+from datasmart_ai_runtime.services.memory.memory_write_components import (
     build_memory_write_store_runtime,
     memory_write_store_diagnostics,
 )
@@ -50,7 +50,7 @@ from datasmart_ai_runtime.services.agent_plan_ingestion_client import JavaAgentP
 from datasmart_ai_runtime.services.agent_control_plane_feedback import AgentControlPlaneFeedbackCollector
 from datasmart_ai_runtime.services.agent_loop_control_policy import AgentLoopControlPolicyEvaluator
 from datasmart_ai_runtime.services.agent_second_turn_orchestrator import AgentSecondTurnOrchestrator
-from datasmart_ai_runtime.services.memory_write_governance import AgentMemoryWriteGovernanceService
+from datasmart_ai_runtime.services.memory.memory_write_governance import AgentMemoryWriteGovernanceService
 from datasmart_ai_runtime.services.model_tool_call_budget_policy_provider import (
     EnvAndRequestModelToolCallBudgetPolicyProvider,
     JavaPermissionAdminToolBudgetPolicyClient,

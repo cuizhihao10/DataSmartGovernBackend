@@ -1,4 +1,4 @@
-"""正式长期记忆 store 的检索适配器。
+﻿"""正式长期记忆 store 的检索适配器。
 
 `InMemoryAgentMemoryRetriever` 已经验证了范围隔离、关键词排序和目标级报告语义，但它接收的是启动时静态 records。
 本适配器把同一套检索规则连接到正式记忆 store，使审批后 materialize 的记录可以在后续请求中被真正召回。
@@ -11,9 +11,9 @@ from datasmart_ai_runtime.domain.memory import (
     AgentMemoryPlan,
     AgentMemoryRetrievalReport,
 )
-from datasmart_ai_runtime.services.memory_retriever import InMemoryAgentMemoryRetriever, _resolve_session_id
-from datasmart_ai_runtime.services.memory_store import AgentMemoryStore
-from datasmart_ai_runtime.services.memory_write_workspace import AgentMemoryWorkspaceSupport
+from datasmart_ai_runtime.services.memory.memory_retriever import InMemoryAgentMemoryRetriever, _resolve_session_id
+from datasmart_ai_runtime.services.memory.memory_store import AgentMemoryStore
+from datasmart_ai_runtime.services.memory.memory_write_workspace import AgentMemoryWorkspaceSupport
 
 
 class StoreBackedAgentMemoryRetriever:

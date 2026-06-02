@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -10,7 +10,7 @@ from datasmart_ai_runtime.config import default_skill_registry, default_tool_reg
 from datasmart_ai_runtime.domain.contracts import AgentRequest
 from datasmart_ai_runtime.domain.intent import GovernanceDomain, IntentAnalysis, IntentRiskTag
 from datasmart_ai_runtime.domain.memory import AgentMemoryScope, AgentMemoryType
-from datasmart_ai_runtime.services.memory_planner import AgentMemoryPlanner
+from datasmart_ai_runtime.services.memory.memory_planner import AgentMemoryPlanner
 from datasmart_ai_runtime.services.skill_registry import AgentSkillRegistry
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 

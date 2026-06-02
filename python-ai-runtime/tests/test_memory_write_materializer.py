@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -15,14 +15,14 @@ from datasmart_ai_runtime.domain.memory import (
     AgentMemoryWriteCandidate,
     AgentMemoryWriteCandidateStatus,
 )
-from datasmart_ai_runtime.services.memory_store import InMemoryAgentMemoryStore
-from datasmart_ai_runtime.services.memory_store_retriever import StoreBackedAgentMemoryRetriever
-from datasmart_ai_runtime.services.memory_materialization_receipt_store import (
+from datasmart_ai_runtime.services.memory.memory_store import InMemoryAgentMemoryStore
+from datasmart_ai_runtime.services.memory.memory_store_retriever import StoreBackedAgentMemoryRetriever
+from datasmart_ai_runtime.services.memory.memory_materialization_receipt_store import (
     AgentMemoryMaterializationReceiptStatus,
     InMemoryAgentMemoryMaterializationReceiptStore,
 )
-from datasmart_ai_runtime.services.memory_write_candidate_store import InMemoryAgentMemoryWriteCandidateStore
-from datasmart_ai_runtime.services.memory_write_materializer import (
+from datasmart_ai_runtime.services.memory.memory_write_candidate_store import InMemoryAgentMemoryWriteCandidateStore
+from datasmart_ai_runtime.services.memory.memory_write_materializer import (
     AgentApprovedMemoryWriteMaterializer,
     AgentMemoryMaterializationOutcome,
 )

@@ -1,4 +1,4 @@
-"""Agent 长期记忆候选构造器。
+﻿"""Agent 长期记忆候选构造器。
 
 候选生成原本与审批状态机放在同一个治理服务中。随着 workspace、幂等键、敏感级别、工具反馈和未来
 脱敏策略逐步增加，继续把字段拼装塞进治理服务会让单文件持续膨胀，也会模糊“生成候选”和“审批候选”
@@ -22,7 +22,7 @@ from datasmart_ai_runtime.domain.memory import (
     AgentMemoryWriteCandidateStatus,
 )
 from datasmart_ai_runtime.services.agent_control_plane_feedback import AgentControlPlaneFeedbackSnapshot
-from datasmart_ai_runtime.services.memory_write_workspace import AgentMemoryWorkspaceSupport
+from datasmart_ai_runtime.services.memory.memory_write_workspace import AgentMemoryWorkspaceSupport
 
 
 class AgentMemoryWriteCandidateFactory:

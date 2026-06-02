@@ -18,6 +18,7 @@
 - 长期记忆治理：已具备记忆召回计划、候选生成、审批/拒绝、候选 SQL store、低敏摘要正式落成、materialization receipt 和 store-backed 检索骨架；候选和正式记忆都会携带 `workspaceKey/memoryNamespace`，检索时按当前 Agent 工作空间过滤，避免同项目不同 workspace 或 session 沙箱误共享记忆。当前正式记忆 store 默认仍为内存实现，后续再按类型接入 Chroma、Neo4j、MySQL 和 MinIO。
 - `api.create_app()`：提供可选 FastAPI 入口。当前测试不依赖 FastAPI，安装 API 依赖后即可启动服务。
 - Agent API 路由已从 bootstrap 入口拆到 `api_agent_routes.py`：`api.py` 只负责装配模型网关、事件组件、长期记忆候选治理和 Java 控制面客户端；`/agent/plans`、事件 replay/control 与 WebSocket handler 由独立注册函数承载。这样后续继续增加服务间认证、智能网关会话、审计导出和长期记忆上下文注入时，不会把启动文件拖成难以维护的巨型模块。
+- 目录层级治理已开始落地：长期记忆相关服务已从平铺的 `services/` 迁入 `services/memory/` 能力包，并新增 [Python AI Runtime 目录层级治理规范](../docs/python-ai-runtime-package-layout.md)。后续新增功能应优先进入 `agent/`、`memory/`、`model_gateway/`、`runtime_events/`、`tools/`、`skills/` 等能力包，而不是继续把十几个文件散放在同一个目录。
 
 ## 为什么先做这个骨架
 

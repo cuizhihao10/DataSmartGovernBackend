@@ -1,5 +1,13 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-02 追加落地进展：Python Runtime 长期记忆能力包分层
+
+- Python Runtime 开始从“domain/services 两层平铺”转向“按 AI 产品能力域分包”的结构治理，第一批迁移长期记忆相关服务。
+- 新增 `services/memory/` 能力包，承载记忆规划、检索、写入候选、审批治理、候选 store、正式 store、materializer、receipt 和 workspace namespace 支持。
+- 新增 `docs/python-ai-runtime-package-layout.md`，明确后续目标层级：`api/`、`domain/`、`services/agent`、`services/memory`、`services/model_gateway`、`services/runtime_events`、`services/tools`、`services/skills`、`services/integrations` 与 `config/`。
+- 本阶段保持文件名稳定，只先移动目录和更新 import，避免一次性改名、改包、改测试造成大面积回归；后续再按能力域逐批迁移 runtime events、model gateway、tools、skills 和 API routes。
+- 这项治理是为了让智能网关、长期记忆、工具市场、Skill、模型 provider 和事件流继续扩展时具备清晰边界，而不是把 Python Runtime 演变成另一个“几十个文件堆在同一个 services 目录”的临时项目。
+
 ## 2026-06-02 追加落地进展：Python Agent API 路由注册解耦
 
 - Python Runtime 的 `api.py` 已从“启动装配 + 诊断路由 + Agent 规划路由 + 事件路由 + WebSocket handler 混在一起”调整为更清晰的 bootstrap 边界。

@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sqlite3
 import sys
 import unittest
@@ -14,11 +14,11 @@ from datasmart_ai_runtime.domain.memory import (
     AgentMemoryType,
     AgentMemoryWriteCandidateStatus,
 )
-from datasmart_ai_runtime.services.memory_write_governance import (
+from datasmart_ai_runtime.services.memory.memory_write_governance import (
     AgentMemoryWriteGovernanceService,
     approve_memory_write_candidate,
 )
-from datasmart_ai_runtime.services.memory_write_sql_store import SqlAgentMemoryWriteCandidateStore
+from datasmart_ai_runtime.services.memory.memory_write_sql_store import SqlAgentMemoryWriteCandidateStore
 
 
 class AgentMemoryWriteSqlStoreTest(unittest.TestCase):

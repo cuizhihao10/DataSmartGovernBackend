@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sqlite3
 import sys
 import tempfile
@@ -10,13 +10,13 @@ if ROOT not in sys.path:
 
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ToolPlan
 from datasmart_ai_runtime.domain.memory import AgentMemoryPlan, AgentMemoryScope, AgentMemoryType
-from datasmart_ai_runtime.services.memory_write_components import (
+from datasmart_ai_runtime.services.memory.memory_write_components import (
     AgentMemoryWriteStoreSettings,
     build_memory_write_store_runtime,
     memory_write_store_diagnostics,
     memory_write_store_settings_from_env,
 )
-from datasmart_ai_runtime.services.memory_write_governance import AgentMemoryWriteGovernanceService
+from datasmart_ai_runtime.services.memory.memory_write_governance import AgentMemoryWriteGovernanceService
 
 
 class AgentMemoryWriteComponentsTest(unittest.TestCase):

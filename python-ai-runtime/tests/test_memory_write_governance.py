@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import types
 import unittest
@@ -27,7 +27,7 @@ from datasmart_ai_runtime.services.agent_control_plane_feedback import (
     AgentControlPlaneFeedbackItem,
     AgentControlPlaneFeedbackSnapshot,
 )
-from datasmart_ai_runtime.services.memory_write_governance import (
+from datasmart_ai_runtime.services.memory.memory_write_governance import (
     AgentMemoryWriteGovernanceService,
     approve_memory_write_candidate,
     reject_memory_write_candidate,

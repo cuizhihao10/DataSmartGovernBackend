@@ -1,4 +1,4 @@
-"""智能运行时服务层。
+﻿"""智能运行时服务层。
 
 服务层承载可替换的业务算法与编排逻辑，例如模型路由、工具规划、上下文构建和 Agent 状态流转。
 这里的类应尽量保持“小而专注”，避免未来出现一个巨大的 `AgentServiceImpl` 式文件。
@@ -15,48 +15,37 @@ from datasmart_ai_runtime.domain.contracts import ModelInvocationChunk, ModelToo
 from datasmart_ai_runtime.services.context_builder import DefaultContextBuilder
 from datasmart_ai_runtime.services.hybrid_context_builder import ContextSelectionPolicy, HybridContextBuilder
 from datasmart_ai_runtime.services.intent_analyzer import RuleBasedIntentAnalyzer
-from datasmart_ai_runtime.services.memory_planner import AgentMemoryPlanner
-from datasmart_ai_runtime.services.memory_retriever import AgentMemoryRetriever, InMemoryAgentMemoryRetriever
-from datasmart_ai_runtime.services.memory_store import (
-    AgentMemoryStore,
-    AgentMemoryStoreEntry,
-    AgentMemoryStoreWriteResult,
-    InMemoryAgentMemoryStore,
-)
-from datasmart_ai_runtime.services.memory_materialization_receipt_store import (
+from datasmart_ai_runtime.services.memory import (
+    AgentApprovedMemoryWriteMaterializer,
+    AgentMemoryMaterializationOutcome,
     AgentMemoryMaterializationReceipt,
     AgentMemoryMaterializationReceiptStatus,
     AgentMemoryMaterializationReceiptStore,
-    InMemoryAgentMemoryMaterializationReceiptStore,
-)
-from datasmart_ai_runtime.services.memory_store_retriever import StoreBackedAgentMemoryRetriever
-from datasmart_ai_runtime.services.memory_write_governance import (
-    AgentMemoryWriteGovernanceService,
-    approve_memory_write_candidate,
-    reject_memory_write_candidate,
-)
-from datasmart_ai_runtime.services.memory_write_candidate_factory import AgentMemoryWriteCandidateFactory
-from datasmart_ai_runtime.services.memory_write_materializer import (
-    AgentApprovedMemoryWriteMaterializer,
-    AgentMemoryMaterializationOutcome,
     AgentMemoryMaterializationResult,
-)
-from datasmart_ai_runtime.services.memory_write_workspace import (
+    AgentMemoryPlanner,
+    AgentMemoryRetriever,
+    AgentMemoryStore,
+    AgentMemoryStoreEntry,
+    AgentMemoryStoreWriteResult,
     AgentMemoryWorkspaceBinding,
     AgentMemoryWorkspaceSupport,
-)
-from datasmart_ai_runtime.services.memory_write_candidate_store import (
+    AgentMemoryWriteCandidateFactory,
     AgentMemoryWriteCandidateStore,
-    InMemoryAgentMemoryWriteCandidateStore,
-)
-from datasmart_ai_runtime.services.memory_write_components import (
+    AgentMemoryWriteGovernanceService,
     AgentMemoryWriteStoreRuntime,
     AgentMemoryWriteStoreSettings,
+    InMemoryAgentMemoryMaterializationReceiptStore,
+    InMemoryAgentMemoryRetriever,
+    InMemoryAgentMemoryStore,
+    InMemoryAgentMemoryWriteCandidateStore,
+    SqlAgentMemoryWriteCandidateStore,
+    StoreBackedAgentMemoryRetriever,
+    approve_memory_write_candidate,
     build_memory_write_store_runtime,
     memory_write_store_diagnostics,
     memory_write_store_settings_from_env,
+    reject_memory_write_candidate,
 )
-from datasmart_ai_runtime.services.memory_write_sql_store import SqlAgentMemoryWriteCandidateStore
 from datasmart_ai_runtime.services.model_provider import (
     DryRunModelProvider,
     ModelProviderRegistry,

@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import types
 import unittest
@@ -15,8 +15,8 @@ from datasmart_ai_runtime.domain.memory import (
     AgentMemoryWriteCandidate,
     AgentMemoryWriteCandidateStatus,
 )
-from datasmart_ai_runtime.services.memory_write_candidate_store import InMemoryAgentMemoryWriteCandidateStore
-from datasmart_ai_runtime.services.memory_write_governance import AgentMemoryWriteGovernanceService
+from datasmart_ai_runtime.services.memory.memory_write_candidate_store import InMemoryAgentMemoryWriteCandidateStore
+from datasmart_ai_runtime.services.memory.memory_write_governance import AgentMemoryWriteGovernanceService
 
 
 class AgentMemoryWriteApiPaginationTest(unittest.TestCase):
