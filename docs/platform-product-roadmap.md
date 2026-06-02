@@ -7895,3 +7895,66 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. Skill evaluate 应返回 `allowed/admissionStatus/policyVersion/matchedPolicy/rejectionReason/requiredPermissionsSummary`。
 3. gateway 或 agent-runtime 应把可信 `actorRole/grantedPermissions/tenantSkillSwitch/policyVersion` 注入 Python Runtime，而不是长期依赖普通 variables。
 4. 中期把 Skill admission event 写入 Java replay/index，并补前端治理卡片、租户级 Skill 开关、版本发布与 Marketplace 管理。
+
+## 4.93 Permission Admin Agent Skill Admission 策略评估契约（2026-06-02）
+
+本阶段从 Python Runtime 切回 Java 控制面，落地 4.92 推荐的 Skill evaluate 契约。目标不是马上做完整 Skill Marketplace 或数据库策略表，而是先让 permission-admin 能以稳定 API 回答：某个已经被语义命中的 Agent Skill，在当前角色、权限、租户开关和 workspace 风险下，是否允许启用。
+
+已完成：
+- 新增 `AgentSkillAdmissionEvaluateRequest`：
+  - `tenantId/projectId/workspaceKey`：保留租户、项目和 workspace 治理上下文；
+  - `skillCode`：Skill 稳定编码；
+  - `riskLevel`：Skill 风险等级；
+  - `requiredPermissions`：Skill descriptor 声明的必需权限；
+  - `grantedPermissions`：控制面注入的主体权限事实；
+  - `actorRole`：调用主体角色；
+  - `tenantSkillEnabled`：租户级 Skill 开关；
+  - `workspaceRiskLevel`：workspace 风险；
+  - `tenantPlanCode`：租户套餐预留。
+- 新增 `AgentSkillAdmissionPolicyView`：
+  - `allowed`；
+  - `admissionStatus`；
+  - `policySource`；
+  - `policyVersion`；
+  - `matchedPolicy`；
+  - `rejectionReason`；
+  - `requiredPermissionsSummary`；
+  - `satisfiedPermissionsSummary`；
+  - `missingPermissionsSummary`；
+  - `notes/recommendedActions`。
+- 新增 `AgentSkillAdmissionPolicyService` 与 `AgentSkillAdmissionPolicyServiceImpl`：
+  - 租户关闭 Skill 时拒绝；
+  - 缺少必需权限时拒绝；
+  - 缺少权限事实时条件性通过；
+  - HIGH/CRITICAL Skill 在 CRITICAL workspace 中拒绝；
+  - HIGH/CRITICAL Skill 对普通用户拒绝；
+  - 通过时返回 `ALLOW_BY_BASELINE_RULE`；
+  - 每次评估生成 `agent-skill-admission:v1:*` 策略版本。
+- 新增 `AgentSkillAdmissionPolicyController`：
+  - `POST /permissions/agent/skill-admissions/evaluate`；
+  - `POST /api/permission/agent/skill-admissions/evaluate`。
+- 新增 `AgentSkillAdmissionPolicyServiceImplTest`，覆盖：
+  - 项目负责人具备权限时允许；
+  - 缺少必需权限时拒绝；
+  - 租户关闭 Skill 时拒绝；
+  - 普通用户不能启用高风险 Skill；
+  - CRITICAL workspace 阻断高风险 Skill；
+  - 缺少权限事实时条件性通过。
+
+产品意义：
+- Skill admission 第一次进入 Java 企业控制面，不再只是 Python 本地 policy。
+- 该接口把“能力包是否能启用”的判断从“模型理解/语义命中”提升为“权限中心策略事实”，为 Skill Marketplace、租户级能力开关和前端治理卡片打基础。
+- 权限摘要采用 required/satisfied/missing 三段，不返回主体完整权限全集，降低审计接口扩大敏感面的风险。
+- 当前先用内存规则稳定 API 契约，避免过早建表把尚未成熟的 Skill 策略维度固化。
+
+当前边界：
+- 仍是内存规则，不是数据库策略表；管理后台还不能动态配置 Skill admission 策略。
+- Python Runtime 尚未远程调用该接口；当前只是 Java 控制面契约准备好。
+- `grantedPermissions` 仍需要 gateway、agent-runtime 或后续 permission-admin 查询逻辑注入。
+- 尚未写入 Java 审计表、replay/index 或 Kafka 事件。
+
+下一步建议：
+1. 下一步优先做 Python 远程 `AgentSkillAdmissionPolicyProvider`，把 Java evaluate 结果真正接入 Python Skill Registry。
+2. 同步设计 gateway 注入可信 `actorRole/grantedPermissions/tenantSkillEnabled/policyVersion` 的路径，避免普通 variables 被终端伪造。
+3. 后续再做 Skill Marketplace 表、租户启停、版本发布、灰度和审计事件，不要先堆更多默认 Skill。
+4. 中期把 Skill admission、tool budget、workspace、memory 和 runtime replay 汇总到统一治理卡片与 Java replay/index。
