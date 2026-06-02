@@ -18,14 +18,17 @@
 from __future__ import annotations
 
 import os
-import sqlite3
 from dataclasses import dataclass
 from typing import Any, Callable
-from urllib.parse import urlsplit, urlunsplit
 
 from datasmart_ai_runtime.services.memory.memory_write_candidate_store import (
     AgentMemoryWriteCandidateStore,
     InMemoryAgentMemoryWriteCandidateStore,
+)
+from datasmart_ai_runtime.services.memory.memory_sql_connection import (
+    build_mysql_connection,
+    build_sqlite_connection,
+    mask_mysql_dsn,
 )
 from datasmart_ai_runtime.services.memory.memory_write_sql_store import SqlAgentMemoryWriteCandidateStore
 
@@ -190,9 +193,7 @@ def _build_sqlite_connection(settings: AgentMemoryWriteStoreSettings) -> sqlite3
     或在测试中显式创建 schema。这里设置 `row_factory=sqlite3.Row`，让 SQL store 能按字段名还原候选。
     """
 
-    connection = sqlite3.connect(settings.sqlite_path, timeout=settings.connect_timeout_seconds)
-    connection.row_factory = sqlite3.Row
-    return connection
+    return build_sqlite_connection(settings.sqlite_path, settings.connect_timeout_seconds)
 
 
 def _build_mysql_connection(settings: AgentMemoryWriteStoreSettings) -> Any:
@@ -206,60 +207,7 @@ def _build_mysql_connection(settings: AgentMemoryWriteStoreSettings) -> Any:
 
     if not settings.mysql_dsn:
         raise ValueError("DATASMART_AI_MEMORY_WRITE_MYSQL_DSN 未配置，无法启用 mysql store。")
-    kwargs = _parse_mysql_dsn(settings.mysql_dsn, settings.connect_timeout_seconds)
-    try:
-        import pymysql  # type: ignore
-
-        return pymysql.connect(**kwargs, cursorclass=pymysql.cursors.DictCursor)
-    except ImportError:
-        try:
-            import MySQLdb  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError("启用 mysql store 需要安装 PyMySQL 或 mysqlclient。") from exc
-        return MySQLdb.connect(**kwargs)
-
-
-def _parse_mysql_dsn(dsn: str, connect_timeout_seconds: int) -> dict[str, Any]:
-    """解析 MySQL DSN 为 DB-API 连接参数。"""
-
-    if "://" in dsn:
-        parts = urlsplit(dsn)
-        return {
-            "host": parts.hostname or "localhost",
-            "port": parts.port or 3306,
-            "user": parts.username or "root",
-            "password": parts.password or "",
-            "database": parts.path.lstrip("/") or "datasmart",
-            "charset": _query_value(parts.query, "charset") or "utf8mb4",
-            "connect_timeout": connect_timeout_seconds,
-        }
-    values: dict[str, str] = {}
-    for item in dsn.split(";"):
-        if not item.strip() or "=" not in item:
-            continue
-        key, value = item.split("=", 1)
-        values[key.strip().lower()] = value.strip()
-    return {
-        "host": values.get("host", "localhost"),
-        "port": int(values.get("port", "3306")),
-        "user": values.get("user") or values.get("username") or "root",
-        "password": values.get("password", ""),
-        "database": values.get("database") or values.get("db") or "datasmart",
-        "charset": values.get("charset", "utf8mb4"),
-        "connect_timeout": connect_timeout_seconds,
-    }
-
-
-def _query_value(query: str, name: str) -> str | None:
-    """从 URL query 中读取一个简单参数。"""
-
-    for item in query.split("&"):
-        if not item or "=" not in item:
-            continue
-        key, value = item.split("=", 1)
-        if key == name:
-            return value
-    return None
+    return build_mysql_connection(settings.mysql_dsn, settings.connect_timeout_seconds)
 
 
 def _normalize_store_type(value: str | None) -> str:
@@ -291,19 +239,4 @@ def _truthy(value: str | None, default: bool = False) -> bool:
 def _mask_mysql_dsn(dsn: str) -> str:
     """脱敏 MySQL DSN，避免诊断接口泄露数据库密码。"""
 
-    if not dsn:
-        return ""
-    if "://" in dsn:
-        parts = urlsplit(dsn)
-        host = parts.hostname or "localhost"
-        port = f":{parts.port}" if parts.port else ""
-        database = parts.path or ""
-        return urlunsplit((parts.scheme, f"***:***@{host}{port}", database, parts.query, parts.fragment))
-    masked: list[str] = []
-    for item in dsn.split(";"):
-        if "=" not in item:
-            masked.append(item)
-            continue
-        key, value = item.split("=", 1)
-        masked.append(f"{key}=***" if key.strip().lower() in {"password", "pwd"} else f"{key}={value}")
-    return ";".join(masked)
+    return mask_mysql_dsn(dsn)

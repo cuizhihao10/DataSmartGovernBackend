@@ -21,6 +21,7 @@ from datasmart_ai_runtime.api_gateway_security import (
     gateway_signature_nonce_store_settings_from_env,
     gateway_signature_security_diagnostics,
 )
+from datasmart_ai_runtime.api_memory_runtime import api_memory_runtime_diagnostics, build_api_memory_runtime
 from datasmart_ai_runtime.api_skill_admission import build_skill_admission_policy
 from datasmart_ai_runtime.api_agent_routes import register_agent_runtime_routes
 from datasmart_ai_runtime.api_plan_response import build_plan_response
@@ -34,10 +35,6 @@ from datasmart_ai_runtime.services.model_gateway.model_provider import model_pro
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.memory.memory_planner import AgentMemoryPlanner
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
-from datasmart_ai_runtime.services.memory.memory_write_components import (
-    build_memory_write_store_runtime,
-    memory_write_store_diagnostics,
-)
 from datasmart_ai_runtime.services.runtime_events.runtime_event_components import (
     build_runtime_event_components,
     runtime_event_component_diagnostics,
@@ -56,7 +53,6 @@ from datasmart_ai_runtime.services.agent_plan_ingestion_client import JavaAgentP
 from datasmart_ai_runtime.services.agent_control_plane_feedback import AgentControlPlaneFeedbackCollector
 from datasmart_ai_runtime.services.agent_loop_control_policy import AgentLoopControlPolicyEvaluator
 from datasmart_ai_runtime.services.agent_second_turn_orchestrator import AgentSecondTurnOrchestrator
-from datasmart_ai_runtime.services.memory.memory_write_governance import AgentMemoryWriteGovernanceService
 from datasmart_ai_runtime.services.model_gateway.model_tool_call_budget_policy_provider import (
     EnvAndRequestModelToolCallBudgetPolicyProvider,
     JavaPermissionAdminToolBudgetPolicyClient,
@@ -191,6 +187,7 @@ def build_default_orchestrator(
     allow_remote_tool_budget_policy_fallback: bool = True,
     enable_remote_skill_admission_policy: bool | None = None,
     allow_remote_skill_admission_fallback: bool = True,
+    memory_retriever: Any | None = None,
 ) -> AgentOrchestrator:
     """创建默认 Agent 编排器。
 
@@ -254,6 +251,7 @@ def build_default_orchestrator(
         model_providers=model_provider_registry_from_env(),
         context_builder=HybridContextBuilder(policy=context_policy),
         memory_planner=AgentMemoryPlanner(),
+        memory_retriever=memory_retriever,
         model_gateway=model_gateway,
         skill_registry=AgentSkillRegistry(skills, admission_policy=skill_admission_policy),
         model_tool_call_budget_policy_provider=budget_policy_provider,
@@ -378,7 +376,11 @@ def create_app() -> Any:
         description="用于模型路由、Agent 编排和工具计划生成的 Python 智能运行时。",
     )
     model_gateway = ModelGatewayGovernanceService(ModelRouteRegistry(model_routes_from_env()))
-    orchestrator = build_default_orchestrator(model_gateway=model_gateway)
+    memory_runtime = build_api_memory_runtime()
+    orchestrator = build_default_orchestrator(
+        model_gateway=model_gateway,
+        memory_retriever=memory_runtime.memory_retriever,
+    )
     agent_runtime_base_url = os.getenv("DATASMART_AGENT_RUNTIME_BASE_URL")
     plan_ingestion_client = (
         JavaAgentPlanIngestionClient(base_url=agent_runtime_base_url)
@@ -423,14 +425,6 @@ def create_app() -> Any:
     gateway_signature_nonce_settings = gateway_signature_nonce_store_settings_from_env()
     gateway_signature_nonce_store = build_gateway_signature_nonce_store(gateway_signature_nonce_settings)
     gateway_signature_security_stats = GatewaySignatureSecurityStats()
-    # 记忆写入候选 store 是长期记忆写入治理的“事实暂存层”：
-    # - 默认 in-memory，保证本地学习、单元测试和离线规划不需要任何数据库；
-    # - 显式配置 sqlite/mysql 后，候选可以跨 Python Runtime 重启恢复；
-    # - 如果配置了持久化但连接失败，是否回退内存由 fail-open 控制，避免生产环境悄悄丢候选。
-    # 这里把 store 组装与治理服务拆开，是为了让治理服务只关心候选状态机和审批规则，
-    # 不把数据库驱动、DSN、连接超时等基础设施细节耦合进业务逻辑。
-    memory_write_store_runtime = build_memory_write_store_runtime()
-    memory_write_governance = AgentMemoryWriteGovernanceService(store=memory_write_store_runtime.store)
 
     @app.get("/agent/events/diagnostics")
     def runtime_event_diagnostics() -> dict[str, Any]:
@@ -449,19 +443,15 @@ def create_app() -> Any:
 
     @app.get("/agent/memory/write-candidates/diagnostics")
     def memory_write_candidate_store_diagnostics() -> dict[str, Any]:
-        """查询记忆写入候选 store 诊断信息。
+        """查询记忆写入候选 store 诊断信息，不返回任何候选内容。"""
 
-        这个接口服务于长期记忆能力的生产化排障。它不返回任何候选内容，只回答：
-        - 启动时配置的是 `in-memory`、`sqlite` 还是 `mysql`；
-        - 当前真实实现是不是持久化 store；
-        - 如果配置了 MySQL/SQLite 却回退内存，回退原因是什么；
-        - 连接字符串是否已经脱敏。
+        return api_memory_runtime_diagnostics(memory_runtime)["candidateStore"]
 
-        后续进入商业化部署时，该路由应像候选审批路由一样由 gateway/permission-admin 保护，
-        只允许平台管理员、运维人员或服务账号访问。
-        """
+    @app.get("/agent/memory/diagnostics")
+    def memory_runtime_diagnostics() -> dict[str, Any]:
+        """查询长期记忆运行时整体诊断信息。"""
 
-        return memory_write_store_diagnostics(memory_write_store_runtime)
+        return api_memory_runtime_diagnostics(memory_runtime)
 
     @app.get("/agent/security/gateway-signature/diagnostics")
     def gateway_signature_security_runtime_diagnostics() -> dict[str, Any]:
@@ -487,7 +477,7 @@ def create_app() -> Any:
         runtime_event_feedback_bridge=runtime_event_feedback_bridge,
         loop_control_evaluator=loop_control_evaluator,
         second_turn_orchestrator=second_turn_orchestrator,
-        memory_write_governance=memory_write_governance,
+        memory_write_governance=memory_runtime.memory_write_governance,
         # `/agent/plans` 的 gateway 签名失败属于服务间认证失败；这里映射为清晰 401，避免误报 500。
         # 当前使用 401 表示“内部调用凭证缺失、过期或不匹配”；如果未来签名有效但权限不足，再使用 403。
         gateway_signature_error_factory=lambda detail: HTTPException(status_code=401, detail=detail),
@@ -495,6 +485,6 @@ def create_app() -> Any:
         gateway_signature_security_stats=gateway_signature_security_stats,
     )
 
-    register_memory_write_routes(app, memory_write_governance)
+    register_memory_write_routes(app, memory_runtime.memory_write_governance)
 
     return app

@@ -32,6 +32,13 @@ from datasmart_ai_runtime.services.memory.memory_store import (
     AgentMemoryStoreWriteResult,
     InMemoryAgentMemoryStore,
 )
+from datasmart_ai_runtime.services.memory.memory_store_components import (
+    AgentMemoryStoreRuntime,
+    AgentMemoryStoreSettings,
+    build_memory_store_runtime,
+    memory_store_diagnostics,
+    memory_store_settings_from_env,
+)
 from datasmart_ai_runtime.services.memory.memory_store_retriever import StoreBackedAgentMemoryRetriever
 from datasmart_ai_runtime.services.memory.memory_sql_store import SqlAgentMemoryStore
 from datasmart_ai_runtime.services.memory.memory_write_candidate_factory import AgentMemoryWriteCandidateFactory
@@ -73,6 +80,8 @@ __all__ = [
     "AgentMemoryRetriever",
     "AgentMemoryStore",
     "AgentMemoryStoreEntry",
+    "AgentMemoryStoreRuntime",
+    "AgentMemoryStoreSettings",
     "AgentMemoryStoreWriteResult",
     "AgentMemoryWorkspaceBinding",
     "AgentMemoryWorkspaceSupport",
@@ -89,7 +98,10 @@ __all__ = [
     "SqlAgentMemoryStore",
     "StoreBackedAgentMemoryRetriever",
     "approve_memory_write_candidate",
+    "build_memory_store_runtime",
     "build_memory_write_store_runtime",
+    "memory_store_diagnostics",
+    "memory_store_settings_from_env",
     "memory_write_store_diagnostics",
     "memory_write_store_settings_from_env",
     "reject_memory_write_candidate",

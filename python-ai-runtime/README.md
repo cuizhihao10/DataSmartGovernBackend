@@ -15,7 +15,7 @@
 - `AgentOrchestrator`：以状态节点方式串联目标接收、模型选择、上下文构建、工具规划、审批判断和响应生成。
 - Agent Skill 治理：已具备本地/远程 Skill descriptor、语义选择、准入策略、准入 runtime event 和智能网关摘要；Java `permission-admin` 已新增 Skill admission evaluate 契约，Python Runtime 已支持可选远程调用。Skill 命中后会继续校验 `grantedPermissions`、`actorRole` 与风险等级；显式缺权限或普通用户命中高风险 Skill 时会进入 `rejectedSkills`，缺少控制面事实时只做条件性推荐。`SKILL_ADMISSION_EVALUATED` 事件与 `intelligentGatewayGovernance.skillAdmission` 会解释 Skill 启用、条件性启用或拒绝原因。
 - 智能网关工具治理：已具备模型工具调用候选规划、可见工具校验、参数 schema 校验和工具调用预算守卫，可限制单轮工具数量、自动推进数量、高风险工具数量和 arguments 体积；预算策略已抽象为 provider，当前支持环境变量、`AgentRequest.variables["toolCallBudget"]` 覆盖，以及可选远程调用 Java permission-admin `/permissions/agent/tool-budget-policies/evaluate`。远程策略默认关闭，适合生产或联调环境按租户套餐、项目等级、角色、workspace 风险和实时 backlog 动态生成预算；预算阻断会写入独立 `MODEL_TOOL_CALL_BUDGET_GUARDED` runtime event，API 响应已提供 `intelligentGatewayGovernance` 统一摘要，汇总模型路由、工具预算、workspace 和记忆检索治理事实。
-- 长期记忆治理：已具备记忆召回计划、候选生成、审批/拒绝、候选 SQL store、低敏摘要正式落成、materialization receipt、正式记忆 SQL store 和 store-backed 检索骨架；候选和正式记忆都会携带 `workspaceKey/memoryNamespace`，检索时按当前 Agent 工作空间过滤，避免同项目不同 workspace 或 session 沙箱误共享记忆。当前默认装配仍以本地内存 store 便于学习和单测，但已经具备 `SqlAgentMemoryStore` 与 MySQL migration，可把低敏正式记忆沉淀为可审计、可恢复的数据库事实源；后续再围绕同一 `memoryId` 接入 Chroma、Neo4j、MinIO 和对象索引。
+- 长期记忆治理：已具备记忆召回计划、候选生成、审批/拒绝、候选 SQL store、低敏摘要正式落成、materialization receipt、正式记忆 SQL store、正式记忆 runtime builder 和 store-backed 检索接入；候选和正式记忆都会携带 `workspaceKey/memoryNamespace`，检索时按当前 Agent 工作空间过滤，避免同项目不同 workspace 或 session 沙箱误共享记忆。当前默认装配仍以本地内存 store 便于学习和单测；生产可通过 `DATASMART_AI_FORMAL_MEMORY_*` 切到 MySQL，让 `/agent/plans` 从正式记忆表召回低敏经验；后续再围绕同一 `memoryId` 接入 Chroma、Neo4j、MinIO 和对象索引。
 - `api.create_app()`：提供可选 FastAPI 入口。当前测试不依赖 FastAPI，安装 API 依赖后即可启动服务。
 - Agent API 路由已从 bootstrap 入口拆到 `api_agent_routes.py`：`api.py` 只负责装配模型网关、事件组件、长期记忆候选治理和 Java 控制面客户端；`/agent/plans`、事件 replay/control 与 WebSocket handler 由独立注册函数承载。这样后续继续增加服务间认证、智能网关会话、审计导出和长期记忆上下文注入时，不会把启动文件拖成难以维护的巨型模块。
 - 目录层级治理已开始落地：长期记忆相关服务已迁入 `services/memory/`，实时事件流相关服务已迁入 `services/runtime_events/`，模型路由/provider/预算/tool-call 相关服务已迁入 `services/model_gateway/`，并新增 [Python AI Runtime 目录层级治理规范](../docs/python-ai-runtime-package-layout.md)。后续新增功能应优先进入 `agent/`、`memory/`、`model_gateway/`、`runtime_events/`、`tools/`、`skills/` 等能力包，而不是继续把十几个文件散放在同一个目录。
@@ -181,3 +181,35 @@ MySQL migration 建表并传入 MySQL 驱动连接。后续如果引入 Chroma/N
 
 该设计也贴合当前 Agent 长期记忆趋势：长期记忆需要跨会话保留，并通过 namespace/key 或类似机制隔离；
 同时，生产环境必须考虑敏感数据保留、过期、审计和可恢复写入，而不能只依赖进程内缓存。
+
+# 5.02 Agent 正式长期记忆 Runtime Builder
+
+正式长期记忆现在已经进入 API 启动装配。`create_app()` 会通过 `build_api_memory_runtime()` 同时创建：
+
+- 记忆写入候选 store：由 `DATASMART_AI_MEMORY_WRITE_*` 控制；
+- 正式长期记忆 store：由 `DATASMART_AI_FORMAL_MEMORY_*` 控制；
+- `AgentApprovedMemoryWriteMaterializer`：为后续 worker 或补偿入口复用；
+- `StoreBackedAgentMemoryRetriever`：注入默认 orchestrator，使 `/agent/plans` 能从正式 store 召回低敏记忆。
+
+生产或准生产环境可以启用 MySQL 正式记忆 store：
+
+```powershell
+$env:DATASMART_AI_FORMAL_MEMORY_STORE="mysql"
+$env:DATASMART_AI_FORMAL_MEMORY_MYSQL_DSN="mysql://datasmart:******@localhost:3306/datasmart?charset=utf8mb4"
+$env:DATASMART_AI_FORMAL_MEMORY_SQL_CONNECT_TIMEOUT_SECONDS="3"
+$env:DATASMART_AI_FORMAL_MEMORY_STORE_FAIL_OPEN="false"
+```
+
+本地联调也可以使用 SQLite 验证持久化语义：
+
+```powershell
+$env:DATASMART_AI_FORMAL_MEMORY_STORE="sqlite"
+$env:DATASMART_AI_FORMAL_MEMORY_SQLITE_PATH=".local/formal-memory.sqlite3"
+```
+
+新增 `/agent/memory/diagnostics` 会同时返回候选 store、正式 store、retriever 和 materializer 的低敏诊断。
+诊断会脱敏 MySQL DSN，不返回候选内容、正式记忆正文、标签或 namespace 明细；生产环境仍必须通过 gateway 和
+permission-admin 保护该接口。
+
+当前仍未自动启动后台 materialization worker。也就是说：API 已经具备正式 store 与 materializer 装配，
+但 APPROVED 候选的异步消费、租约、失败退避、DLQ、补偿查询和指标仍是下一步。

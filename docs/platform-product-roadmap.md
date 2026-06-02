@@ -8223,3 +8223,60 @@ workspace 风险和实时 backlog 快照。随后把可信快照版本写入 run
 2. 随后做 SQL materialization receipt store 与 outbox worker，把同步 materialize 推进到可重试、可观测、可补偿的后台流程。
 3. 再接 Chroma/Neo4j 二级索引，并强制把 `memoryNamespace` 作为 metadata filter 或 collection/namespace 边界。
 4. 不建议此时继续无限扩展 memory 字段；更重要的是把“写入、召回、遗忘、审计、补偿”闭环跑起来，再进入模型侧记忆摘要优化。
+
+## 5.02 Agent 正式长期记忆 Runtime Builder（2026-06-03）
+
+本阶段承接 5.01 的当前边界：`SqlAgentMemoryStore` 已经实现，但还没有进入 Python Runtime 默认装配。
+如果只停留在“有一个 SQL store 类”，真实 `/agent/plans` 仍然会使用默认内存 retriever，生产环境即使配置了
+MySQL 正式记忆表，也不会真正参与 Agent 召回。本阶段把正式长期记忆 store 推进到 API runtime assembly。
+
+已完成：
+- 新增 `memory_sql_connection.py`：
+  - 集中封装 SQLite/MySQL DB-API 连接创建；
+  - 支持 URL 和分号键值 MySQL DSN；
+  - 支持 PyMySQL/mysqlclient 动态导入；
+  - 支持 MySQL DSN 脱敏，避免诊断接口泄露数据库密码；
+  - 候选 store 和正式 store 复用同一连接工具，减少重复 DSN 解析逻辑。
+- 更新 `memory_write_components.py`：
+  - 删除候选 store 内部重复的 MySQL DSN 解析和脱敏逻辑；
+  - 改为复用共享 SQL 连接工具；
+  - 保持原有环境变量、fail-open/fail-fast 和诊断语义不变。
+- 新增 `memory_store_components.py`：
+  - 支持正式记忆 store 的 `in-memory/sqlite/mysql` 三种模式；
+  - 支持 `DATASMART_AI_FORMAL_MEMORY_STORE`、`DATASMART_AI_FORMAL_MEMORY_SQLITE_PATH`、`DATASMART_AI_FORMAL_MEMORY_MYSQL_DSN`、`DATASMART_AI_FORMAL_MEMORY_SQL_CONNECT_TIMEOUT_SECONDS`、`DATASMART_AI_FORMAL_MEMORY_STORE_FAIL_OPEN`；
+  - 支持 MySQL 失败时本地 fail-open 或生产 fail-fast；
+  - 输出低敏诊断，不返回任何记忆正文、标签或 namespace 明细。
+- 新增 `api_memory_runtime.py`：
+  - 统一装配候选 store、正式 store、候选治理服务、materializer 和 store-backed retriever；
+  - 将长期记忆装配从 `api.py` 中拆出，避免 API bootstrap 继续膨胀；
+  - 提供 `api_memory_runtime_diagnostics(...)`。
+- 更新 `api.py`：
+  - `build_default_orchestrator(...)` 新增可注入 `memory_retriever`；
+  - `create_app()` 通过 `build_api_memory_runtime()` 创建长期记忆组件；
+  - 默认 orchestrator 注入 `StoreBackedAgentMemoryRetriever`，使 `/agent/plans` 可以从正式 store 召回记忆；
+  - 新增 `/agent/memory/diagnostics`，同时展示候选 store、正式 store、retriever 和 materializer 低敏诊断；
+  - 保持 `api.py` 行数低于 500，避免继续形成巨型入口文件。
+- 新增 `test_memory_store_components.py`：
+  - 验证默认正式 store 为内存；
+  - 验证 SQLite 正式 store 可跨 Runtime 重建并被 store-backed retriever 召回；
+  - 验证 MySQL fail-open 回退内存且诊断脱敏；
+  - 验证 MySQL fail-fast 可阻断生产启动；
+  - 验证 API memory runtime 诊断同时包含候选 store、正式 store、retriever 和 materializer。
+
+产品意义：
+- 正式长期记忆从“有 SQL 表和 store 类”推进到“进入真实 Agent 召回路径”。
+- 本地、测试、生产部署获得清晰配置面：本地内存/SQLite，生产 MySQL，故障时可选择 fail-open 或 fail-fast。
+- 诊断接口可以帮助运维快速判断“到底是否启用了 MySQL 正式记忆”，但不会泄露数据库密码或记忆内容。
+- 这一步贴合当前 Agent memory 趋势：长期记忆需要独立于会话消息存在，并作为 store 注入 Agent 运行时，而不是只作为离线表结构存在。
+
+当前边界：
+- materializer 已装配，但后台 worker 仍未启动；APPROVED 候选还没有自动异步落成正式记忆。
+- 正式 store 诊断不执行 schema 探测，避免启动时额外读写数据库；后续可增加受控健康检查。
+- 仍缺 SQL materialization receipt store、outbox worker、失败退避、DLQ、租约、多实例竞争控制和 Prometheus 指标。
+- 仍未接 Chroma/Neo4j 二级索引；当前正式召回仍是 SQL store 窗口 + 关键词排序。
+
+下一步建议：
+1. 做 SQL materialization receipt store，让落成尝试也从内存推进到数据库事实。
+2. 设计 APPROVED 候选 outbox worker：支持租约、批量窗口、失败退避、DLQ 和管理员补偿重放。
+3. 在 worker 稳定后接 Chroma/Neo4j 二级索引，并继续强制 `memoryNamespace` 过滤。
+4. 不建议立刻堆更多 memory 类型字段；先把后台写入、召回、诊断、补偿和指标闭环做稳。
