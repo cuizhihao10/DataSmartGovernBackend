@@ -7701,3 +7701,48 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 把规则式基线工具计划纳入统一预算视图，避免绕过预算治理。
 3. 开始 Agent skill 能力主线：skill 注册、权限准入、工具 schema 暴露策略、可审计执行和 Marketplace 管理。
 4. 中期把 `MODEL_TOOL_CALL_BUDGET_GUARDED` 写入 Java runtime event/replay 索引，支持治理卡片、告警和审计导出。
+
+## 4.89 Permission Admin Agent 工具预算策略评估控制面（2026-06-02）
+
+本阶段从 Python AI Runtime 切回 Java 控制面，落地 4.88 推荐的“Java permission-admin/tenant plan 策略中心”第一步。目标不是马上做完整租户套餐管理后台或数据库策略表，而是先让 permission-admin 能以稳定 API 回答：在当前租户、项目、角色、workspace 风险和 worker backlog 下，Python Runtime 本轮应该使用什么 `toolCallBudget`。
+
+已完成：
+- 新增 `AgentToolBudgetPolicyEvaluateRequest`：
+  - `tenantId/projectId/workspaceKey`：保留租户、项目和 workspace 隔离上下文；
+  - `actorRole`：角色基线，必填；
+  - `tenantPlanCode`：租户套餐，如 FREE、STANDARD、ENTERPRISE、PLATFORM_INTERNAL；
+  - `workspaceRiskLevel`：LOW、NORMAL、HIGH、CRITICAL；
+  - `workerBacklogLevel`：LOW、NORMAL、HIGH、CRITICAL；
+  - `requestedToolRiskLevel`：本轮最高工具风险。
+- 新增 `AgentToolBudgetPolicyView`：
+  - `toolCallBudget` 使用 camelCase，直接对齐 Python `AgentRequest.variables["toolCallBudget"]`；
+  - 返回 `policySource/policyVersion/notes/recommendedActions`，便于管理台和审计台解释策略来源。
+- 新增 `AgentToolBudgetPolicyService` 与 `AgentToolBudgetPolicyServiceImpl`：
+  - 角色生成基础预算；
+  - 租户套餐做上限或小幅放宽；
+  - workspace 风险和 worker backlog 做收紧；
+  - CRITICAL/HIGH 工具风险做额外收紧；
+  - 保证最终预算为正数且高风险数量不超过自动推进数量。
+- 新增 `AgentToolBudgetPolicyController`：
+  - `POST /permissions/agent/tool-budget-policies/evaluate`；
+  - `POST /api/permission/agent/tool-budget-policies/evaluate`。
+- 新增 `AgentToolBudgetPolicyServiceImplTest`，覆盖普通用户保守预算、平台内部套餐放宽、高风险 workspace 收紧、CRITICAL backlog 收紧、CRITICAL 工具风险收紧。
+- `README.md` 已补充当前智能网关进度说明。
+
+产品意义：
+- 工具预算策略第一次进入 Java 控制面，不再只停留在 Python 环境变量或请求变量里。
+- 角色、套餐、workspace 风险和 worker backlog 同时参与计算，说明项目开始具备面向商业化租户、容量保护和高敏空间治理的策略基础。
+- 响应里的 `toolCallBudget` 可被 gateway、agent-runtime 或 Python 远程 provider 直接注入下一跳请求，避免不同服务各自理解预算字段。
+- 当前不直接写数据库，是有意的小步：先稳定 API 契约和规则语义，再进入策略表、发布版本、审计和缓存失效。
+
+当前边界：
+- 仍是内存规则，不是数据库策略中心；不能在管理后台动态编辑。
+- 没有实时读取 task-management/data-sync/data-quality 的真实 backlog 指标，`workerBacklogLevel` 需要调用方传入。
+- Python Runtime 尚未远程调用该接口；当前只是 Java 控制面契约已准备好。
+- 该接口目前只做预算策略评估，不替代 `PermissionDecisionSupport.evaluate()` 的访问授权。
+
+下一步建议：
+1. 增加 Python 远程 `ModelToolCallBudgetPolicyProvider` 或 Java gateway 注入逻辑，把本接口结果真正传入 Python Runtime。
+2. 后续把 `tenantPlanCode` 接入租户套餐表，把策略版本从拼接字符串升级为正式发布版本。
+3. 接入 worker backlog 指标源，按 task-management/data-sync/data-quality 的实时压力动态收紧预算。
+4. 然后切到 Agent skill 能力主线：skill 注册、权限准入、工具 schema 暴露策略和可审计执行。
