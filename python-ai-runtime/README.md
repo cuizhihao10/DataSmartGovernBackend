@@ -68,3 +68,9 @@ $env:DATASMART_PERMISSION_ADMIN_SKILL_ADMISSION_TIMEOUT_SECONDS="3"
 - 增加模型 Provider 适配器，优先兼容 OpenAI-compatible、vLLM、SGLang 等部署形态。
 - 将 permission-admin 工具预算策略继续升级为数据库策略表、租户套餐版本、worker backlog 指标源和策略发布版本，而不是长期停留在内存规则。
 - 为正式长期记忆增加 SQL receipt store、后台 outbox worker、失败重试、补偿查询和向量库 namespace 过滤适配器。
+- 远程 Skill 准入请求中的角色、权限集合、租户开关和 workspace 风险现在只从
+  `variables["trustedControlPlane"]["skillAdmission"]` 保留命名空间读取。普通终端变量即使伪造
+  `actorRole` 或 `grantedPermissions` 也不会被当成可信控制面事实。该命名空间仍需要由 gateway 或
+  agent-runtime 在受控内部链路中注入；生产环境不能直接暴露 Python Runtime 入口，也不能允许外部客户端
+  自行提交 `trustedControlPlane`。迁移期如需兼容旧联调夹具，可以显式开启
+  `allow_legacy_request_variables`，但不应在生产启用。

@@ -34,12 +34,16 @@ class SkillAdmissionPolicyTest(unittest.TestCase):
                 tenant_id="10",
                 variables={
                     "projectId": "project-java",
-                    "workspaceKey": "tenant-10:project-java:workspace-a",
-                    "actorRole": "PROJECT_OWNER",
-                    "grantedPermissions": ("quality:rule:draft", "datasource:metadata:read"),
-                    "tenantSkillEnabled": False,
-                    "workspaceRiskLevel": "HIGH",
-                    "tenantPlanCode": "ENTERPRISE",
+                    "trustedControlPlane": {
+                        "skillAdmission": {
+                            "workspaceKey": "tenant-10:project-java:workspace-a",
+                            "actorRole": "PROJECT_OWNER",
+                            "grantedPermissions": ("quality:rule:draft", "datasource:metadata:read"),
+                            "tenantSkillEnabled": False,
+                            "workspaceRiskLevel": "HIGH",
+                            "tenantPlanCode": "ENTERPRISE",
+                        }
+                    },
                 },
             ),
         )
@@ -53,6 +57,38 @@ class SkillAdmissionPolicyTest(unittest.TestCase):
         self.assertFalse(payload["tenantSkillEnabled"])
         self.assertEqual("HIGH", payload["workspaceRiskLevel"])
         self.assertEqual("ENTERPRISE", payload["tenantPlanCode"])
+
+    def test_java_permission_admin_payload_ignores_untrusted_legacy_authorization_variables(self) -> None:
+        """普通 variables 即使伪造管理员角色和权限，也不能污染远程 Skill 准入请求。"""
+
+        payload = JavaPermissionAdminSkillAdmissionClient.build_payload(
+            self._skill("quality.rule.design"),
+            self._request(
+                variables={
+                    "actorRole": "PLATFORM_ADMIN",
+                    "grantedPermissions": ("quality:rule:draft",),
+                    "tenantSkillEnabled": False,
+                    "workspaceRiskLevel": "CRITICAL",
+                }
+            ),
+        )
+
+        self.assertEqual("ORDINARY_USER", payload["actorRole"])
+        self.assertEqual((), payload["grantedPermissions"])
+        self.assertTrue(payload["tenantSkillEnabled"])
+        self.assertEqual("NORMAL", payload["workspaceRiskLevel"])
+
+    def test_java_permission_admin_payload_can_explicitly_enable_legacy_compatibility(self) -> None:
+        """迁移期可以显式启用旧变量兼容，但该能力不能成为默认安全行为。"""
+
+        payload = JavaPermissionAdminSkillAdmissionClient.build_payload(
+            self._skill("quality.rule.design"),
+            self._request(variables={"actorRole": "PROJECT_OWNER", "grantedPermissions": ("quality:rule:draft",)}),
+            allow_legacy_request_variables=True,
+        )
+
+        self.assertEqual("PROJECT_OWNER", payload["actorRole"])
+        self.assertEqual(("quality:rule:draft",), payload["grantedPermissions"])
 
     def test_java_permission_admin_response_maps_to_admission_decision(self) -> None:
         """Java Skill admission 响应应转换为 Python 准入决策。"""

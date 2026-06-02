@@ -19,6 +19,7 @@ from urllib.request import Request, urlopen
 
 from datasmart_ai_runtime.domain.contracts import AgentRequest
 from datasmart_ai_runtime.domain.skills import AgentSkillDescriptor
+from datasmart_ai_runtime.services.trusted_control_plane_context import AgentTrustedControlPlaneContextReader
 
 
 @dataclass(frozen=True)
@@ -196,11 +197,13 @@ class JavaPermissionAdminSkillAdmissionClient:
         timeout_seconds: int = 3,
         evaluate_path: str = "/permissions/agent/skill-admissions/evaluate",
         urlopen_func: Callable[..., Any] = urlopen,
+        allow_legacy_request_variables: bool = False,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
         self._evaluate_path = evaluate_path
         self._urlopen = urlopen_func
+        self._allow_legacy_request_variables = allow_legacy_request_variables
 
     def evaluate(
         self,
@@ -210,7 +213,14 @@ class JavaPermissionAdminSkillAdmissionClient:
     ) -> AgentSkillAdmissionDecision:
         """向 permission-admin 请求单个 Skill 的准入结果。"""
 
-        body = json.dumps(self.build_payload(skill, request_context), ensure_ascii=False).encode("utf-8")
+        body = json.dumps(
+            self.build_payload(
+                skill,
+                request_context,
+                allow_legacy_request_variables=self._allow_legacy_request_variables,
+            ),
+            ensure_ascii=False,
+        ).encode("utf-8")
         http_request = Request(
             url=f"{self._base_url}{self._evaluate_path}",
             data=body,
@@ -234,6 +244,8 @@ class JavaPermissionAdminSkillAdmissionClient:
         cls,
         skill: AgentSkillDescriptor,
         request_context: AgentRequest,
+        *,
+        allow_legacy_request_variables: bool = False,
     ) -> dict[str, Any]:
         """构造 Java `AgentSkillAdmissionEvaluateRequest`。
 
@@ -243,18 +255,22 @@ class JavaPermissionAdminSkillAdmissionClient:
         """
 
         variables = request_context.variables or {}
+        trusted_context = AgentTrustedControlPlaneContextReader.skill_admission(
+            request_context,
+            allow_legacy_variables=allow_legacy_request_variables,
+        )
         return {
             "tenantId": _optional_int(request_context.tenant_id) or _optional_int(variables.get("tenantId")),
             "projectId": str(variables.get("projectId") or request_context.project_id),
-            "workspaceKey": _string_var(variables, "workspaceKey", "workspace_key"),
+            "workspaceKey": trusted_context.workspace_key,
             "skillCode": skill.skill_code,
             "riskLevel": str(skill.risk_level or "LOW").upper(),
             "requiredPermissions": tuple(skill.required_permissions),
-            "grantedPermissions": tuple(_string_set(_first_present(variables, ("grantedPermissions", "granted_permissions")))),
-            "actorRole": _string_var(variables, "actorRole", "actor_role", "role") or "ORDINARY_USER",
-            "tenantSkillEnabled": _bool_var(variables, True, "tenantSkillEnabled", "tenant_skill_enabled"),
-            "workspaceRiskLevel": _string_var(variables, "workspaceRiskLevel", "workspace_risk_level") or "NORMAL",
-            "tenantPlanCode": _string_var(variables, "tenantPlanCode", "tenant_plan_code") or "STANDARD",
+            "grantedPermissions": trusted_context.granted_permissions,
+            "actorRole": trusted_context.actor_role or "ORDINARY_USER",
+            "tenantSkillEnabled": trusted_context.tenant_skill_enabled,
+            "workspaceRiskLevel": trusted_context.workspace_risk_level,
+            "tenantPlanCode": trusted_context.tenant_plan_code,
         }
 
     @classmethod

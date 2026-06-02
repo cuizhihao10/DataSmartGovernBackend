@@ -235,6 +235,10 @@ from datasmart_ai_runtime.services.skill_admission_policy import (
 )
 from datasmart_ai_runtime.services.skill_registry import AgentSkillRegistry
 from datasmart_ai_runtime.services.skill_registry_client import JavaAgentSkillRegistryClient
+from datasmart_ai_runtime.services.trusted_control_plane_context import (
+    AgentTrustedControlPlaneContextReader,
+    AgentTrustedSkillAdmissionContext,
+)
 from datasmart_ai_runtime.services.tool_parameter_validator import ToolParameterValidator
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 from datasmart_ai_runtime.services.tool_registry_client import JavaAgentToolRegistryClient
@@ -246,6 +250,8 @@ __all__ = [
     "AgentWorkspaceContext",
     "AgentWorkspaceContextBuilder",
     "AgentWorkspaceIsolationLevel",
+    "AgentTrustedControlPlaneContextReader",
+    "AgentTrustedSkillAdmissionContext",
     "AgentMemoryPlanner",
     "AgentMemoryRetriever",
     "InMemoryAgentMemoryRetriever",

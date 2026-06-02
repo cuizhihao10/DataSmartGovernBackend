@@ -8015,3 +8015,15 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 给远程 Skill admission 调用补服务间认证和 fail-closed 配置，避免生产环境控制面不可用时静默放宽。
 3. 把 Java 返回的 `policyVersion/matchedPolicy` 升级为 `AgentSkillSelection` 的结构化字段，而不是只存在于 reason 文本。
 4. 后续再进入 Skill Marketplace 数据表、租户启停、版本发布、灰度和审计事件。
+## 4.95 Python AI Runtime Skill Admission 可信上下文边界（2026-06-02）
+
+本阶段没有继续扩大 Skill 数量，而是先收紧远程准入请求的安全边界。新增
+`AgentTrustedControlPlaneContextReader` 与 `AgentTrustedSkillAdmissionContext`，将角色、权限集合、租户
+Skill 开关、workspace 风险和套餐编码迁移到 `trustedControlPlane.skillAdmission` 保留命名空间。
+
+远程 `JavaPermissionAdminSkillAdmissionClient` 默认不再读取普通 variables 中的授权事实。终端即使伪造
+`actorRole=PLATFORM_ADMIN` 或扩大 `grantedPermissions`，也只能得到保守默认上下文，不能污染发往
+permission-admin 的准入请求。旧联调方式仅能通过显式 `allow_legacy_request_variables=true` 兼容。
+
+下一步应由 gateway/agent-runtime 把已认证 Header、权限快照和租户 Skill 策略转换为该保留命名空间，
+并补服务间认证。中期再把 `policyVersion/matchedPolicy` 结构化写入 selection、event 与 replay/index。
