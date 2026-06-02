@@ -58,11 +58,17 @@ class AgentOrchestratorTest(unittest.TestCase):
         self.assertIn("ready_for_control_plane_execution", plan.state_trace)
         self.assertIn(AgentRuntimeEventType.CONTEXT_SELECTED, {event.event_type for event in plan.runtime_events})
         self.assertIn(AgentRuntimeEventType.INTENT_ANALYZED, {event.event_type for event in plan.runtime_events})
+        self.assertIn(AgentRuntimeEventType.SKILL_ADMISSION_EVALUATED, {event.event_type for event in plan.runtime_events})
         self.assertIn(AgentRuntimeEventType.MODEL_GATEWAY_ROUTED, {event.event_type for event in plan.runtime_events})
         self.assertIn(AgentRuntimeEventType.TOOL_PLANNED, {event.event_type for event in plan.runtime_events})
         self.assertIn(AgentRuntimeEventType.MEMORY_RETRIEVED, {event.event_type for event in plan.runtime_events})
         self.assertTrue(plan.skill_plan.selected_skills)
         self.assertEqual("datasource.profiling", plan.skill_plan.selected_skills[0].skill_code)
+        skill_event = next(
+            event for event in plan.runtime_events if event.event_type == AgentRuntimeEventType.SKILL_ADMISSION_EVALUATED
+        )
+        self.assertGreaterEqual(skill_event.attributes["selectedSkillCount"], 1)
+        self.assertEqual(0, skill_event.attributes["rejectedSkillCount"])
         self.assertIn(
             AgentMemoryType.SEMANTIC,
             {target.memory_type for target in plan.memory_plan.retrieval_targets},

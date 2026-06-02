@@ -7841,3 +7841,57 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 然后增加 Java permission-admin Skill evaluate 或 gateway 注入契约，把 `grantedPermissions/actorRole` 从普通 variables 升级为可信控制面事实。
 3. 再推进 Skill descriptor 的版本、租户启停、工具 schema 暴露策略和 Marketplace 管理，而不是直接堆更多本地默认 Skill。
 4. 中期需要让 Skill 选择与长期记忆、工具预算、workspace namespace 共同形成“能力包级治理视图”，接近 Codex/Claude Code 类 Agent 的可解释行动边界。
+
+## 4.92 Python AI Runtime Skill Admission 事件化与智能网关摘要（2026-06-02）
+
+本阶段承接 4.91 的推荐路线，把 Skill 准入结果从计划字段推进到 runtime event 与智能网关统一治理摘要。这样前端、Java gateway、审计回放和运营看板不需要深入解析 `AgentPlan.skill_plan`，也能直接看到本轮哪些 Skill 被启用、哪些 Skill 被拒绝、拒绝原因是什么。
+
+已完成：
+- `AgentRuntimeEventType` 新增 `SKILL_ADMISSION_EVALUATED = "skill_admission_evaluated"`。
+- `AgentOrchestrator` 在 `select_skills` 阶段记录 Skill admission event：
+  - `availableSkillCount`；
+  - `selectedSkillCount`；
+  - `rejectedSkillCount`；
+  - `selectedSkills` 低敏摘要；
+  - `rejectedSkills` 低敏摘要；
+  - `rationale`。
+- 事件安全边界：
+  - 不写入用户 prompt；
+  - 不写入完整权限全集；
+  - 不写入工具参数、SQL、样本数据或模型消息；
+  - 只记录 Skill code、domain、score、riskLevel、admissionStatus 和中文原因。
+- `api_intelligent_gateway.py` 新增 `skillAdmission` 摘要：
+  - `selectedSkills/rejectedSkills`；
+  - `selectedSkillCount/rejectedSkillCount/conditionalSkillCount`；
+  - `allowed`；
+  - `displaySummary`；
+  - `rationale`。
+- `intelligentGatewayGovernance.available` 现在同时考虑：
+  - 模型网关可用性；
+  - Skill admission 是否存在拒绝；
+  - 工具预算是否通过。
+- `recommendedActions` 新增 Skill admission 建议：
+  - 被拒绝时提示检查权限、角色、租户开关或风险策略；
+  - 条件性启用时提示生产环境补充 `grantedPermissions`、`actorRole` 和策略版本。
+- 测试覆盖：
+  - 编排主链路会产生 `SKILL_ADMISSION_EVALUATED` runtime event；
+  - 默认计划响应包含 `skillAdmission` 摘要；
+  - 显式缺少权限导致 Skill rejected 时，智能网关摘要可见拒绝原因和推荐动作。
+
+产品意义：
+- Skill admission 成为一等治理事实，而不只是计划对象里的嵌套字段。
+- 前端治理卡片可以直接展示“启用了哪些 Skill / 拒绝了哪些 Skill / 为什么拒绝”，更接近 Codex/Claude Code 类 Agent 的可解释行动边界。
+- Java gateway 或审计系统可以按 eventType 消费 Skill 准入结果，后续接 Kafka/replay/index 更容易。
+- 智能网关摘要开始从“模型路由 + 工具预算 + 记忆”扩展到“能力包准入”，这是 Skill Marketplace 和租户级能力治理的前置条件。
+
+当前边界：
+- Skill admission event 仍只存在于 Python Runtime 本地事件流，尚未写入 Java replay/index。
+- 准入事实仍来自 Python 本地 policy 和 request variables，尚未接 Java permission-admin 远程 evaluate。
+- `skillAdmission.allowed=false` 会让统一治理摘要不可用，但当前不会自动阻断规则式 `ToolPlanner` 生成的所有工具计划；后续工具 schema 暴露、规则工具计划和控制面执行还需要进一步统一。
+- 条件性启用还没有按环境配置升级为生产 fail-closed。
+
+下一步建议：
+1. 我建议下一步转向 Java permission-admin Skill evaluate 契约，避免继续只在 Python 本地策略上加规则。
+2. Skill evaluate 应返回 `allowed/admissionStatus/policyVersion/matchedPolicy/rejectionReason/requiredPermissionsSummary`。
+3. gateway 或 agent-runtime 应把可信 `actorRole/grantedPermissions/tenantSkillSwitch/policyVersion` 注入 Python Runtime，而不是长期依赖普通 variables。
+4. 中期把 Skill admission event 写入 Java replay/index，并补前端治理卡片、租户级 Skill 开关、版本发布与 Marketplace 管理。

@@ -41,11 +41,42 @@ class IntelligentGatewayGovernanceResponseTest(unittest.TestCase):
 
         self.assertTrue(governance["available"])
         self.assertTrue(governance["modelGateway"]["available"])
+        self.assertTrue(governance["skillAdmission"]["allowed"])
+        self.assertGreaterEqual(governance["skillAdmission"]["selectedSkillCount"], 1)
         self.assertTrue(governance["toolBudget"]["allowed"])
         self.assertEqual("tenant:tenant-a:project:project-a", governance["workspace"]["workspaceKey"])
         self.assertEqual("memory:tenant:tenant-a:project:project-a", governance["workspace"]["memoryNamespace"])
         self.assertGreaterEqual(governance["memory"]["retrievalTargetCount"], 1)
         self.assertIn("模型路由", governance["displaySummary"])
+
+    def test_skill_admission_rejection_is_exposed_in_unified_gateway_summary(self) -> None:
+        """Skill 准入拒绝应进入智能网关摘要，便于前端治理卡片解释原因。"""
+
+        response = build_plan_response(
+            AgentRequest(
+                tenant_id="tenant-a",
+                project_id="project-a",
+                actor_id="analyst-a",
+                objective="请为客户主数据生成质量规则",
+                variables={
+                    "datasourceId": "ds-001",
+                    "grantedPermissions": ("datasource:metadata:read",),
+                    "actorRole": "PROJECT_OWNER",
+                },
+            ),
+            self._orchestrator(),
+        )
+
+        governance = response["intelligentGatewayGovernance"]
+        skill_admission = governance["skillAdmission"]
+
+        self.assertFalse(governance["available"])
+        self.assertFalse(skill_admission["allowed"])
+        self.assertGreaterEqual(skill_admission["selectedSkillCount"], 1)
+        self.assertEqual(1, skill_admission["rejectedSkillCount"])
+        self.assertEqual("quality.rule.design", skill_admission["rejectedSkills"][0]["skillCode"])
+        self.assertEqual("DENIED_MISSING_PERMISSION", skill_admission["rejectedSkills"][0]["admissionStatus"])
+        self.assertTrue(any("被拒绝 Skill" in action for action in governance["recommendedActions"]))
 
     def test_tool_budget_blocking_is_exposed_in_unified_gateway_summary(self) -> None:
         """工具预算阻断应在统一治理摘要中直接可见。"""

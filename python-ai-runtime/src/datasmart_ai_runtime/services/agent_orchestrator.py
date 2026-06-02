@@ -165,6 +165,7 @@ class AgentOrchestrator:
 
         state_trace.append("select_skills")
         skill_plan = self._select_skills(request, intent_analysis)
+        self._record_skill_admission_event(event_recorder, skill_plan)
 
         state_trace.append("invoke_model_intent")
         model_intent_result = self._invoke_model_intent(
@@ -292,6 +293,60 @@ class AgentOrchestrator:
         if self._skill_registry is None:
             return AgentSkillPlan(rationale="当前运行环境未配置 Skill 注册表，跳过 Skill 选择。")
         return self._skill_registry.select(request.objective, intent_analysis, request=request)
+
+    @staticmethod
+    def _record_skill_admission_event(
+        event_recorder: RuntimeEventRecorder,
+        skill_plan: AgentSkillPlan,
+    ) -> None:
+        """记录 Skill 选择与准入结果。
+
+        Skill admission 是“能力包级治理事实”，它早于工具 schema 暴露和工具计划生成：
+        - 如果某个 Skill 被拒绝，后续模型就不应因为该 Skill 看到对应工具集合；
+        - 如果某个 Skill 只是 CONDITIONAL，本地学习可以继续，但生产控制面应提示补充权限/角色事实；
+        - 如果没有任何 Skill 命中，也应该被记录，方便运营判断是意图识别不足还是 Skill 目录缺失。
+
+        事件 attributes 只保留低敏摘要，不写入用户 objective、权限全集、工具参数或模型消息，避免事件
+        回放系统扩大敏感数据暴露面。
+        """
+
+        selected = tuple(
+            {
+                "skillCode": item.skill_code,
+                "domain": item.domain.value,
+                "score": item.score,
+                "riskLevel": item.risk_level,
+                "admissionStatus": item.admission_status,
+                "admissionReasons": item.admission_reasons,
+            }
+            for item in skill_plan.selected_skills
+        )
+        rejected = tuple(
+            {
+                "skillCode": item.skill_code,
+                "domain": item.domain.value,
+                "score": item.score,
+                "riskLevel": item.risk_level,
+                "admissionStatus": item.admission_status,
+                "admissionReasons": item.admission_reasons,
+            }
+            for item in skill_plan.rejected_skills
+        )
+        severity = AgentRuntimeEventSeverity.AUDIT if rejected else AgentRuntimeEventSeverity.INFO
+        event_recorder.record(
+            AgentRuntimeEventType.SKILL_ADMISSION_EVALUATED,
+            "select_skills",
+            "已完成 Agent Skill 选择与准入治理评估。",
+            severity=severity,
+            attributes={
+                "availableSkillCount": skill_plan.available_skill_count,
+                "selectedSkillCount": len(skill_plan.selected_skills),
+                "rejectedSkillCount": len(skill_plan.rejected_skills),
+                "selectedSkills": selected,
+                "rejectedSkills": rejected,
+                "rationale": skill_plan.rationale,
+            },
+        )
 
     def _invoke_model_intent(
         self,

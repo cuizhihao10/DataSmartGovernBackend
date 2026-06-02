@@ -38,11 +38,12 @@ def build_intelligent_gateway_governance_response(
     """
 
     model_gateway = build_model_gateway_governance_response(plan.model_gateway_decision)
+    skill_admission = _skill_admission_summary(plan)
     tool_budget = _tool_budget_summary(plan.runtime_events)
     memory = _memory_summary(plan)
     workspace = workspace_context.to_summary()
     approval_required = bool(plan.requires_human_approval)
-    available = bool(model_gateway.get("available")) and tool_budget["allowed"]
+    available = bool(model_gateway.get("available")) and skill_admission["allowed"] and tool_budget["allowed"]
     return {
         "available": available,
         "approvalRequired": approval_required,
@@ -54,13 +55,76 @@ def build_intelligent_gateway_governance_response(
             "artifactNamespace": workspace["artifactNamespace"],
         },
         "modelGateway": model_gateway,
+        "skillAdmission": skill_admission,
         "toolBudget": tool_budget,
         "memory": memory,
         "plannedToolCount": len(plan.tool_plans),
         "plannedToolNames": tuple(tool.tool_name for tool in plan.tool_plans),
-        "displaySummary": _display_summary(model_gateway, tool_budget, approval_required),
-        "recommendedActions": _recommended_actions(model_gateway, tool_budget, memory, approval_required),
+        "displaySummary": _display_summary(model_gateway, skill_admission, tool_budget, approval_required),
+        "recommendedActions": _recommended_actions(model_gateway, skill_admission, tool_budget, memory, approval_required),
     }
+
+
+def _skill_admission_summary(plan: AgentPlan) -> dict[str, Any]:
+    """构建 Agent Skill 准入治理摘要。
+
+    Skill admission 是工具 schema 暴露前的能力包级防线。这里优先从 `AgentSkillPlan` 读取，而不是重新
+    解析 runtime event，是为了保持摘要构建简单可靠：runtime event 适合 replay 和审计，plan 字段适合
+    同步响应摘要。两者来自同一份编排结果，不做二次决策。
+    """
+
+    selected = tuple(
+        {
+            "skillCode": item.skill_code,
+            "displayName": item.display_name,
+            "domain": item.domain.value,
+            "riskLevel": item.risk_level,
+            "admissionStatus": item.admission_status,
+            "admissionReasons": item.admission_reasons,
+            "requiredPermissions": item.required_permissions,
+        }
+        for item in plan.skill_plan.selected_skills
+    )
+    rejected = tuple(
+        {
+            "skillCode": item.skill_code,
+            "displayName": item.display_name,
+            "domain": item.domain.value,
+            "riskLevel": item.risk_level,
+            "admissionStatus": item.admission_status,
+            "admissionReasons": item.admission_reasons,
+            "requiredPermissions": item.required_permissions,
+        }
+        for item in plan.skill_plan.rejected_skills
+    )
+    conditional_count = sum(1 for item in plan.skill_plan.selected_skills if item.admission_status == "CONDITIONAL")
+    return {
+        "allowed": not rejected,
+        "availableSkillCount": plan.skill_plan.available_skill_count,
+        "selectedSkillCount": len(selected),
+        "rejectedSkillCount": len(rejected),
+        "conditionalSkillCount": conditional_count,
+        "selectedSkills": selected,
+        "rejectedSkills": rejected,
+        "rationale": plan.skill_plan.rationale,
+        "displaySummary": _skill_admission_display_summary(selected, rejected, conditional_count),
+    }
+
+
+def _skill_admission_display_summary(
+    selected: tuple[dict[str, Any], ...],
+    rejected: tuple[dict[str, Any], ...],
+    conditional_count: int,
+) -> str:
+    """生成 Skill 准入卡片摘要。"""
+
+    if rejected:
+        return "部分 Agent Skill 命中但未通过权限、角色或风险准入。"
+    if conditional_count > 0:
+        return "Agent Skill 已条件性启用；生产环境应补充可信权限和角色事实。"
+    if selected:
+        return "Agent Skill 已完成选择与准入评估。"
+    return "本轮未命中明确 Agent Skill。"
 
 
 def _tool_budget_summary(events: tuple[AgentRuntimeEvent, ...]) -> dict[str, Any]:
@@ -122,6 +186,7 @@ def _memory_summary(plan: AgentPlan) -> dict[str, Any]:
 
 def _display_summary(
     model_gateway: dict[str, Any],
+    skill_admission: dict[str, Any],
     tool_budget: dict[str, Any],
     approval_required: bool,
 ) -> str:
@@ -129,6 +194,8 @@ def _display_summary(
 
     if not model_gateway.get("available"):
         return "模型网关不可用或预算不足，Agent 已进入降级治理路径。"
+    if not skill_admission["allowed"]:
+        return "模型路由可用，但部分 Agent Skill 未通过准入治理。"
     if not tool_budget["allowed"]:
         return "模型路由可用，但工具调用预算已阻断部分候选。"
     if approval_required:
@@ -138,6 +205,7 @@ def _display_summary(
 
 def _recommended_actions(
     model_gateway: dict[str, Any],
+    skill_admission: dict[str, Any],
     tool_budget: dict[str, Any],
     memory: dict[str, Any],
     approval_required: bool,
@@ -146,6 +214,10 @@ def _recommended_actions(
 
     actions: list[str] = []
     actions.extend(model_gateway.get("recommendedActions") or ())
+    if not skill_admission["allowed"]:
+        actions.append("检查被拒绝 Skill 的权限、角色、租户开关或风险策略，并由 permission-admin 提供可信准入事实。")
+    elif skill_admission["conditionalSkillCount"] > 0:
+        actions.append("当前存在条件性启用的 Skill；生产环境应补充 grantedPermissions、actorRole 和策略版本。")
     if not tool_budget["allowed"]:
         actions.append("缩小本轮模型工具调用批次，或把高风险/长耗时工具拆到后续确认步骤。")
     if approval_required:
