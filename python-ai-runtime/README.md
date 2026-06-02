@@ -188,6 +188,7 @@ MySQL migration 建表并传入 MySQL 驱动连接。后续如果引入 Chroma/N
 
 - 记忆写入候选 store：由 `DATASMART_AI_MEMORY_WRITE_*` 控制；
 - 正式长期记忆 store：由 `DATASMART_AI_FORMAL_MEMORY_*` 控制；
+- 落成 receipt store：由 `DATASMART_AI_MEMORY_RECEIPT_*` 控制；
 - `AgentApprovedMemoryWriteMaterializer`：为后续 worker 或补偿入口复用；
 - `StoreBackedAgentMemoryRetriever`：注入默认 orchestrator，使 `/agent/plans` 能从正式 store 召回低敏记忆。
 
@@ -213,3 +214,34 @@ permission-admin 保护该接口。
 
 当前仍未自动启动后台 materialization worker。也就是说：API 已经具备正式 store 与 materializer 装配，
 但 APPROVED 候选的异步消费、租约、失败退避、DLQ、补偿查询和指标仍是下一步。
+
+# 5.03 Agent 长期记忆落成 Receipt SQL Store
+
+长期记忆落成 receipt 现在也支持 SQL 持久化。receipt 与候选、正式记忆是三类不同事实：
+
+- 候选 store 回答“某条工具结果摘要是否允许写入长期记忆”；
+- 正式记忆 store 回答“模型后续可以召回哪条低敏经验摘要”；
+- receipt store 回答“后台 worker 或同步 materializer 是否已经处理过该候选、尝试几次、成功还是失败”。
+
+生产或准生产环境可以启用 MySQL receipt store：
+
+```powershell
+$env:DATASMART_AI_MEMORY_RECEIPT_STORE="mysql"
+$env:DATASMART_AI_MEMORY_RECEIPT_MYSQL_DSN="mysql://datasmart:******@localhost:3306/datasmart?charset=utf8mb4"
+$env:DATASMART_AI_MEMORY_RECEIPT_SQL_CONNECT_TIMEOUT_SECONDS="3"
+$env:DATASMART_AI_MEMORY_RECEIPT_STORE_FAIL_OPEN="false"
+```
+
+本地联调可以使用 SQLite：
+
+```powershell
+$env:DATASMART_AI_MEMORY_RECEIPT_STORE="sqlite"
+$env:DATASMART_AI_MEMORY_RECEIPT_SQLITE_PATH=".local/memory-materialization-receipts.sqlite3"
+```
+
+`/agent/memory/diagnostics` 现在会额外展示 `receiptStore`，用于判断落成执行证据是否真的持久化。
+receipt 只保存状态、attemptCount、workerId、memoryId、namespace、低敏成功/失败摘要和时间，不保存 prompt、
+原始工具输出、样本数据或完整异常堆栈。
+
+当前仍未启动后台 outbox worker。下一步应在 receipt store 之上增加 APPROVED 候选扫描、租约、批量窗口、
+失败退避、DLQ、管理员补偿和指标，而不是让 API 请求同步承担所有正式落成工作。

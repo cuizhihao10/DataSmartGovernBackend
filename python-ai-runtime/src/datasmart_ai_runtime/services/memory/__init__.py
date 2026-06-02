@@ -24,6 +24,16 @@ from datasmart_ai_runtime.services.memory.memory_materialization_receipt_store i
     AgentMemoryMaterializationReceiptStore,
     InMemoryAgentMemoryMaterializationReceiptStore,
 )
+from datasmart_ai_runtime.services.memory.memory_materialization_receipt_components import (
+    AgentMemoryMaterializationReceiptStoreRuntime,
+    AgentMemoryMaterializationReceiptStoreSettings,
+    build_memory_materialization_receipt_store_runtime,
+    memory_materialization_receipt_store_diagnostics,
+    memory_materialization_receipt_store_settings_from_env,
+)
+from datasmart_ai_runtime.services.memory.memory_materialization_receipt_sql_store import (
+    SqlAgentMemoryMaterializationReceiptStore,
+)
 from datasmart_ai_runtime.services.memory.memory_planner import AgentMemoryPlanner
 from datasmart_ai_runtime.services.memory.memory_retriever import AgentMemoryRetriever, InMemoryAgentMemoryRetriever
 from datasmart_ai_runtime.services.memory.memory_store import (
@@ -75,6 +85,8 @@ __all__ = [
     "AgentMemoryMaterializationReceipt",
     "AgentMemoryMaterializationReceiptStatus",
     "AgentMemoryMaterializationReceiptStore",
+    "AgentMemoryMaterializationReceiptStoreRuntime",
+    "AgentMemoryMaterializationReceiptStoreSettings",
     "AgentMemoryMaterializationResult",
     "AgentMemoryPlanner",
     "AgentMemoryRetriever",
@@ -96,10 +108,14 @@ __all__ = [
     "InMemoryAgentMemoryWriteCandidateStore",
     "SqlAgentMemoryWriteCandidateStore",
     "SqlAgentMemoryStore",
+    "SqlAgentMemoryMaterializationReceiptStore",
     "StoreBackedAgentMemoryRetriever",
     "approve_memory_write_candidate",
+    "build_memory_materialization_receipt_store_runtime",
     "build_memory_store_runtime",
     "build_memory_write_store_runtime",
+    "memory_materialization_receipt_store_diagnostics",
+    "memory_materialization_receipt_store_settings_from_env",
     "memory_store_diagnostics",
     "memory_store_settings_from_env",
     "memory_write_store_diagnostics",

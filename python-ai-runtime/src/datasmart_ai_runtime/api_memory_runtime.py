@@ -7,6 +7,7 @@
 本文件把“API 启动时需要的长期记忆组件”聚合起来：
 - 记忆写入候选 store：保存工具结果是否允许写入长期记忆的候选事实；
 - 正式长期记忆 store：保存 APPROVED 候选落成后的可召回低敏摘要；
+- receipt store：保存正式记忆落成尝试、成功、失败和重试次数；
 - 治理服务：负责候选生成、审批、拒绝；
 - materializer：负责把 APPROVED 候选幂等写入正式 store；
 - retriever：负责让 Agent 规划请求能从正式 store 召回记忆。
@@ -17,6 +18,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from datasmart_ai_runtime.services.memory.memory_materialization_receipt_components import (
+    AgentMemoryMaterializationReceiptStoreRuntime,
+    build_memory_materialization_receipt_store_runtime,
+    memory_materialization_receipt_store_diagnostics,
+)
 from datasmart_ai_runtime.services.memory.memory_store_components import (
     AgentMemoryStoreRuntime,
     build_memory_store_runtime,
@@ -39,6 +45,7 @@ class ApiMemoryRuntimeComponents:
     字段说明：
     - `write_store_runtime`：候选 store 运行时，影响 `/agent/memory/write-candidates` 列表、审批和拒绝；
     - `formal_store_runtime`：正式记忆 store 运行时，影响 `/agent/plans` 的长期记忆召回；
+    - `receipt_store_runtime`：落成 receipt store 运行时，影响 materializer 的执行证据持久化；
     - `memory_write_governance`：候选治理服务，接入 API 路由和 plan response 的候选生成；
     - `memory_materializer`：APPROVED 候选落成服务，当前主要供未来 worker/补偿入口复用；
     - `memory_retriever`：store-backed retriever，被注入默认 orchestrator，使正式记忆真正参与 Agent 规划。
@@ -49,6 +56,7 @@ class ApiMemoryRuntimeComponents:
 
     write_store_runtime: AgentMemoryWriteStoreRuntime
     formal_store_runtime: AgentMemoryStoreRuntime
+    receipt_store_runtime: AgentMemoryMaterializationReceiptStoreRuntime
     memory_write_governance: AgentMemoryWriteGovernanceService
     memory_materializer: AgentApprovedMemoryWriteMaterializer
     memory_retriever: StoreBackedAgentMemoryRetriever
@@ -59,7 +67,8 @@ def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
 
     当前函数读取环境变量完成装配：
     - 候选 store 由 `DATASMART_AI_MEMORY_WRITE_*` 控制；
-    - 正式 store 由 `DATASMART_AI_FORMAL_MEMORY_*` 控制。
+    - 正式 store 由 `DATASMART_AI_FORMAL_MEMORY_*` 控制；
+    - receipt store 由 `DATASMART_AI_MEMORY_RECEIPT_*` 控制。
 
     这里没有自动启动后台 worker。原因是正式落成 worker 需要更多生产治理：租约、多实例竞争控制、失败退避、
     DLQ、审计事件和指标。当前先把 store 和 materializer 装配好，后续 worker 可以复用这里的组件边界。
@@ -67,15 +76,18 @@ def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
 
     write_store_runtime = build_memory_write_store_runtime()
     formal_store_runtime = build_memory_store_runtime()
+    receipt_store_runtime = build_memory_materialization_receipt_store_runtime()
     governance = AgentMemoryWriteGovernanceService(store=write_store_runtime.store)
     materializer = AgentApprovedMemoryWriteMaterializer(
         candidate_store=write_store_runtime.store,
         memory_store=formal_store_runtime.store,
+        receipt_store=receipt_store_runtime.store,
     )
     retriever = StoreBackedAgentMemoryRetriever(formal_store_runtime.store)
     return ApiMemoryRuntimeComponents(
         write_store_runtime=write_store_runtime,
         formal_store_runtime=formal_store_runtime,
+        receipt_store_runtime=receipt_store_runtime,
         memory_write_governance=governance,
         memory_materializer=materializer,
         memory_retriever=retriever,
@@ -93,6 +105,7 @@ def api_memory_runtime_diagnostics(components: ApiMemoryRuntimeComponents) -> di
         "component": "python-ai-memory-runtime",
         "candidateStore": memory_write_store_diagnostics(components.write_store_runtime),
         "formalStore": memory_store_diagnostics(components.formal_store_runtime),
+        "receiptStore": memory_materialization_receipt_store_diagnostics(components.receipt_store_runtime),
         "retriever": {
             "implementation": "StoreBackedAgentMemoryRetriever",
             "usesFormalStore": True,

@@ -121,6 +121,7 @@ class AgentMemoryStoreComponentsTest(unittest.TestCase):
         self.assertEqual("python-ai-memory-runtime", diagnostics["component"])
         self.assertIn("candidateStore", diagnostics)
         self.assertIn("formalStore", diagnostics)
+        self.assertIn("receiptStore", diagnostics)
         self.assertEqual("StoreBackedAgentMemoryRetriever", diagnostics["retriever"]["implementation"])
         self.assertFalse(diagnostics["materializer"]["workerEnabled"])
 
@@ -228,6 +229,11 @@ class AgentMemoryStoreComponentsTest(unittest.TestCase):
                 "DATASMART_AI_FORMAL_MEMORY_MYSQL_DSN",
                 "DATASMART_AI_FORMAL_MEMORY_SQL_CONNECT_TIMEOUT_SECONDS",
                 "DATASMART_AI_FORMAL_MEMORY_STORE_FAIL_OPEN",
+                "DATASMART_AI_MEMORY_RECEIPT_STORE",
+                "DATASMART_AI_MEMORY_RECEIPT_SQLITE_PATH",
+                "DATASMART_AI_MEMORY_RECEIPT_MYSQL_DSN",
+                "DATASMART_AI_MEMORY_RECEIPT_SQL_CONNECT_TIMEOUT_SECONDS",
+                "DATASMART_AI_MEMORY_RECEIPT_STORE_FAIL_OPEN",
             )
 
             def __enter__(self):
