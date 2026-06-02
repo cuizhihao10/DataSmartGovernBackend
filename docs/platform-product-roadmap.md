@@ -8338,3 +8338,54 @@ SQL 持久化，并接入 API memory runtime。
 2. 在 runner 之上增加租约、失败退避、最大尝试次数、DLQ 状态和补偿查询。
 3. 把 receipt 成功/失败计数接入 runtime event 或 Prometheus 指标。
 4. worker 稳定后再接 Chroma/Neo4j 二级索引，避免向量库先于可靠写入链路上线。
+
+## 5.04 Agent 长期记忆最小 Materialization Runner（2026-06-03）
+
+本阶段承接 5.03 的下一步推荐：receipt store 已经能够持久化执行证据，但如果没有一个批次执行器，
+APPROVED 候选仍只能靠手工调用单条 materializer。真实 agent 产品不能让“长期记忆落成”停留在人工触发；
+但也不应在租约、退避、DLQ 和指标尚未设计好时直接启动自动后台线程。因此本阶段先实现最小同步 runner，
+作为后续 worker、CLI、管理路由和补偿任务的可复用执行核心。
+
+已完成：
+- 新增 `memory_materialization_runner.py`：
+  - 提供 `AgentMemoryMaterializationRunner`；
+  - 每轮有界扫描 `APPROVED` 候选；
+  - 单条调用 `AgentApprovedMemoryWriteMaterializer.materialize(...)`；
+  - 成功结果区分 `materialized/already_materialized`；
+  - 单条失败不会中断同批其他候选；
+  - 输出 `AgentMemoryMaterializationRunnerReport` 与单条 item 低敏摘要；
+  - 不返回候选正文、正式记忆正文、原始工具输出或完整异常堆栈。
+- 更新 `api_memory_runtime.py`：
+  - `ApiMemoryRuntimeComponents` 新增 `memory_materialization_runner`；
+  - `build_api_memory_runtime()` 默认装配最小 runner；
+  - `/agent/memory/diagnostics` 新增 `materializationRunner`；
+  - 明确 `workerEnabled=false`，表示 API 启动时不会自动后台消费候选。
+- 更新导出：
+  - `services.memory.__init__` 与 `services.__init__` 导出 runner、runner item、runner report 和 item status。
+- 新增 `test_memory_materialization_runner.py`：
+  - 验证 APPROVED 候选可被 runner 落成正式记忆；
+  - 验证单条候选失败时同批其他候选继续处理；
+  - 验证不安全 limit 会被裁剪到 1；
+  - 验证 DRAFT 候选不会被 runner 扫描。
+- 更新 `test_memory_store_components.py`：
+  - API memory runtime 诊断现在必须包含 runner 信息。
+- 更新 README 与技术雷达：
+  - 记录 runner 的产品边界、执行语义和下一步 worker 路线。
+
+产品意义：
+- 长期记忆写入链路从“单条 materializer 可用”推进到“批次执行器可用”。
+- Runner 把 durable action 的基础语义落地：有界窗口、至少一次、幂等写入、失败隔离、低敏报告。
+- 这一步为后续后台 worker 打地基，但没有过早引入线程和调度，避免在缺少租约时制造多实例重复消费风险。
+- 候选审批状态继续保持干净：APPROVED 仍表示治理允许，执行结果由 receipt/formal memory 证明。
+
+当前边界：
+- Runner 仍是同步 `run_once(...)`，不会自动后台循环。
+- 还没有 SQL/outbox 租约、多实例竞争控制、失败退避、最大尝试次数或 DLQ。
+- Runner 报告尚未接 Prometheus、runtime event 或统一审计表。
+- 仍未把成功记忆同步到 Chroma/Neo4j 二级索引。
+
+下一步建议：
+1. 做 worker lease/outbox claim，支持多实例安全领取 APPROVED 候选。
+2. 增加失败退避、最大尝试次数、DLQ 和管理员补偿重放。
+3. 把 runner 成功、失败、幂等复用、跳过原因接入 runtime event 或 Prometheus 指标。
+4. 等 worker 稳定后再接 Chroma/Neo4j 二级索引和遗忘/归档任务。

@@ -10,6 +10,7 @@
 - receipt store：保存正式记忆落成尝试、成功、失败和重试次数；
 - 治理服务：负责候选生成、审批、拒绝；
 - materializer：负责把 APPROVED 候选幂等写入正式 store；
+- materialization runner：负责有界扫描 APPROVED 候选，并把单条失败隔离在批次报告中；
 - retriever：负责让 Agent 规划请求能从正式 store 召回记忆。
 """
 
@@ -29,6 +30,7 @@ from datasmart_ai_runtime.services.memory.memory_store_components import (
     memory_store_diagnostics,
 )
 from datasmart_ai_runtime.services.memory.memory_store_retriever import StoreBackedAgentMemoryRetriever
+from datasmart_ai_runtime.services.memory.memory_materialization_runner import AgentMemoryMaterializationRunner
 from datasmart_ai_runtime.services.memory.memory_write_components import (
     AgentMemoryWriteStoreRuntime,
     build_memory_write_store_runtime,
@@ -48,6 +50,7 @@ class ApiMemoryRuntimeComponents:
     - `receipt_store_runtime`：落成 receipt store 运行时，影响 materializer 的执行证据持久化；
     - `memory_write_governance`：候选治理服务，接入 API 路由和 plan response 的候选生成；
     - `memory_materializer`：APPROVED 候选落成服务，当前主要供未来 worker/补偿入口复用；
+    - `memory_materialization_runner`：APPROVED 候选有界批处理入口，负责失败隔离和低敏批次报告；
     - `memory_retriever`：store-backed retriever，被注入默认 orchestrator，使正式记忆真正参与 Agent 规划。
 
     把这些对象集中到一个 dataclass 中，是为了避免 `create_app()` 中散落多个临时变量；同时也方便测试直接
@@ -59,6 +62,7 @@ class ApiMemoryRuntimeComponents:
     receipt_store_runtime: AgentMemoryMaterializationReceiptStoreRuntime
     memory_write_governance: AgentMemoryWriteGovernanceService
     memory_materializer: AgentApprovedMemoryWriteMaterializer
+    memory_materialization_runner: AgentMemoryMaterializationRunner
     memory_retriever: StoreBackedAgentMemoryRetriever
 
 
@@ -71,7 +75,7 @@ def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
     - receipt store 由 `DATASMART_AI_MEMORY_RECEIPT_*` 控制。
 
     这里没有自动启动后台 worker。原因是正式落成 worker 需要更多生产治理：租约、多实例竞争控制、失败退避、
-    DLQ、审计事件和指标。当前先把 store 和 materializer 装配好，后续 worker 可以复用这里的组件边界。
+    DLQ、审计事件和指标。当前先把 store、materializer 和最小 runner 装配好，后续 worker 可以复用这里的组件边界。
     """
 
     write_store_runtime = build_memory_write_store_runtime()
@@ -83,6 +87,10 @@ def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
         memory_store=formal_store_runtime.store,
         receipt_store=receipt_store_runtime.store,
     )
+    runner = AgentMemoryMaterializationRunner(
+        candidate_store=write_store_runtime.store,
+        materializer=materializer,
+    )
     retriever = StoreBackedAgentMemoryRetriever(formal_store_runtime.store)
     return ApiMemoryRuntimeComponents(
         write_store_runtime=write_store_runtime,
@@ -90,6 +98,7 @@ def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
         receipt_store_runtime=receipt_store_runtime,
         memory_write_governance=governance,
         memory_materializer=materializer,
+        memory_materialization_runner=runner,
         memory_retriever=retriever,
     )
 
@@ -116,10 +125,20 @@ def api_memory_runtime_diagnostics(components: ApiMemoryRuntimeComponents) -> di
         },
         "materializer": {
             "implementation": "AgentApprovedMemoryWriteMaterializer",
+            "runnerAvailable": True,
             "workerEnabled": False,
             "notes": (
-                "当前 API 已装配 materializer 供未来 worker 或补偿入口复用，但尚未自动后台消费 APPROVED 候选。"
-                "生产化 worker 需要补租约、失败退避、DLQ、审计事件和指标。"
+                "当前 API 已装配 materializer 和最小 runner。runner 可以被管理接口、CLI 或未来后台 worker 显式触发，"
+                "但 API 启动时尚不会自动消费 APPROVED 候选。生产化 worker 仍需要补租约、失败退避、DLQ、审计事件和指标。"
+            ),
+        },
+        "materializationRunner": {
+            "implementation": "AgentMemoryMaterializationRunner",
+            "workerEnabled": False,
+            "defaultPolicy": "BOUNDED_AT_LEAST_ONCE_NO_LEASE_YET",
+            "notes": (
+                "runner 负责有界扫描 APPROVED 候选并逐条调用 materializer。单条失败会进入批次报告，"
+                "不会阻塞同批其他候选；候选审批状态不被 runner 修改，执行事实由 receipt/formal store 证明。"
             ),
         },
     }

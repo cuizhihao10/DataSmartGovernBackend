@@ -34,6 +34,12 @@ from datasmart_ai_runtime.services.memory.memory_materialization_receipt_compone
 from datasmart_ai_runtime.services.memory.memory_materialization_receipt_sql_store import (
     SqlAgentMemoryMaterializationReceiptStore,
 )
+from datasmart_ai_runtime.services.memory.memory_materialization_runner import (
+    AgentMemoryMaterializationRunner,
+    AgentMemoryMaterializationRunnerItem,
+    AgentMemoryMaterializationRunnerItemStatus,
+    AgentMemoryMaterializationRunnerReport,
+)
 from datasmart_ai_runtime.services.memory.memory_planner import AgentMemoryPlanner
 from datasmart_ai_runtime.services.memory.memory_retriever import AgentMemoryRetriever, InMemoryAgentMemoryRetriever
 from datasmart_ai_runtime.services.memory.memory_store import (
@@ -87,6 +93,10 @@ __all__ = [
     "AgentMemoryMaterializationReceiptStore",
     "AgentMemoryMaterializationReceiptStoreRuntime",
     "AgentMemoryMaterializationReceiptStoreSettings",
+    "AgentMemoryMaterializationRunner",
+    "AgentMemoryMaterializationRunnerItem",
+    "AgentMemoryMaterializationRunnerItemStatus",
+    "AgentMemoryMaterializationRunnerReport",
     "AgentMemoryMaterializationResult",
     "AgentMemoryPlanner",
     "AgentMemoryRetriever",

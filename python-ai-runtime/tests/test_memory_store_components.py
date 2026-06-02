@@ -122,8 +122,12 @@ class AgentMemoryStoreComponentsTest(unittest.TestCase):
         self.assertIn("candidateStore", diagnostics)
         self.assertIn("formalStore", diagnostics)
         self.assertIn("receiptStore", diagnostics)
+        self.assertIn("materializationRunner", diagnostics)
         self.assertEqual("StoreBackedAgentMemoryRetriever", diagnostics["retriever"]["implementation"])
+        self.assertEqual("AgentMemoryMaterializationRunner", diagnostics["materializationRunner"]["implementation"])
+        self.assertTrue(diagnostics["materializer"]["runnerAvailable"])
         self.assertFalse(diagnostics["materializer"]["workerEnabled"])
+        self.assertFalse(diagnostics["materializationRunner"]["workerEnabled"])
 
     @staticmethod
     def _sqlite_connection_with_schema(settings: AgentMemoryStoreSettings) -> sqlite3.Connection:
