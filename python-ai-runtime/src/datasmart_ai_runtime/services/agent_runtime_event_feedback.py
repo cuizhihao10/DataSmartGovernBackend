@@ -27,7 +27,7 @@ from datasmart_ai_runtime.services.agent_control_plane_feedback import (
     AgentControlPlaneFeedbackItem,
     AgentControlPlaneFeedbackSnapshot,
 )
-from datasmart_ai_runtime.services.model_tool_result_feedback import ToolExecutionFeedbackStatus
+from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import ToolExecutionFeedbackStatus
 from datasmart_ai_runtime.services.runtime_events.runtime_event_replay_source import (
     RuntimeEventReplayCoordinator,
     RuntimeEventReplaySource,

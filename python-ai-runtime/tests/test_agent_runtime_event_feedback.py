@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -25,7 +25,7 @@ from datasmart_ai_runtime.services.agent_plan_ingestion_client import (
 )
 from datasmart_ai_runtime.services.agent_runtime_event_feedback import AgentRuntimeEventFeedbackBridge
 from datasmart_ai_runtime.services.agent_second_turn_orchestrator import AgentSecondTurnResult
-from datasmart_ai_runtime.services.model_tool_result_feedback import (
+from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import (
     ToolExecutionFeedbackStatus,
 )
 

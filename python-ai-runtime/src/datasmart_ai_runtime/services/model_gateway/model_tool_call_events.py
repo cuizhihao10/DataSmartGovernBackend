@@ -23,7 +23,7 @@ from datasmart_ai_runtime.domain.events import (
     AgentRuntimeEventSeverity,
     AgentRuntimeEventType,
 )
-from datasmart_ai_runtime.services.model_tool_call_planner import (
+from datasmart_ai_runtime.services.model_gateway.model_tool_call_planner import (
     ModelToolCallCandidate,
     ModelToolCallPlanningReport,
 )

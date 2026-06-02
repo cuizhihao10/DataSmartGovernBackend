@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 import json
@@ -16,13 +16,13 @@ from datasmart_ai_runtime.domain.contracts import (
     ProviderType,
     WorkloadType,
 )
-from datasmart_ai_runtime.services.model_provider import (
+from datasmart_ai_runtime.services.model_gateway.model_provider import (
     ModelProviderRegistry,
     OpenAICompatibleModelProvider,
     OpenAICompatibleProviderSettings,
     model_provider_registry_from_env,
 )
-from datasmart_ai_runtime.services.model_router import ModelRouteRegistry
+from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 
 
 class ModelProviderRegistryTest(unittest.TestCase):

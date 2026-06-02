@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -7,8 +7,8 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from datasmart_ai_runtime.domain.contracts import AgentRequest
-from datasmart_ai_runtime.services.model_tool_call_budget_guard import ModelToolCallBudgetPolicy
-from datasmart_ai_runtime.services.model_tool_call_budget_policy_provider import (
+from datasmart_ai_runtime.services.model_gateway.model_tool_call_budget_guard import ModelToolCallBudgetPolicy
+from datasmart_ai_runtime.services.model_gateway.model_tool_call_budget_policy_provider import (
     EnvAndRequestModelToolCallBudgetPolicyProvider,
     JavaPermissionAdminToolBudgetPolicyClient,
     PermissionAdminToolBudgetPolicyClientError,

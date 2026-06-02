@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 import sys
 import unittest
@@ -18,7 +18,7 @@ from datasmart_ai_runtime.domain.contracts import (
     ToolRiskLevel,
     WorkloadType,
 )
-from datasmart_ai_runtime.services.model_provider import (
+from datasmart_ai_runtime.services.model_gateway.model_provider import (
     OpenAICompatibleModelProvider,
     OpenAICompatibleProviderSettings,
 )

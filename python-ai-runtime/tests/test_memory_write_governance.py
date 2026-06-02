@@ -32,7 +32,7 @@ from datasmart_ai_runtime.services.memory.memory_write_governance import (
     approve_memory_write_candidate,
     reject_memory_write_candidate,
 )
-from datasmart_ai_runtime.services.model_tool_result_feedback import ToolExecutionFeedbackStatus
+from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import ToolExecutionFeedbackStatus
 
 
 class AgentMemoryWriteGovernanceTest(unittest.TestCase):

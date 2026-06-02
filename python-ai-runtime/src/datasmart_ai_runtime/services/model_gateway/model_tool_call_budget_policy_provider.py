@@ -1,4 +1,4 @@
-"""模型工具调用预算策略来源。
+﻿"""模型工具调用预算策略来源。
 
 `ModelToolCallBudgetGuard` 只负责执行预算规则，不应该知道策略来自哪里。真实商业产品里，工具预算可能
 来自租户套餐、项目等级、用户角色、实时 worker backlog、Java permission-admin 或运营开关。
@@ -19,7 +19,7 @@ from typing import Any, Callable, Mapping, Protocol
 from urllib.request import Request, urlopen
 
 from datasmart_ai_runtime.domain.contracts import AgentRequest
-from datasmart_ai_runtime.services.model_tool_call_budget_guard import ModelToolCallBudgetPolicy
+from datasmart_ai_runtime.services.model_gateway.model_tool_call_budget_guard import ModelToolCallBudgetPolicy
 from datasmart_ai_runtime.services.trusted_control_plane_context import AgentTrustedControlPlaneContextReader
 
 

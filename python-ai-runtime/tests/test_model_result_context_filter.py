@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -6,7 +6,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from datasmart_ai_runtime.services.model_result_context_filter import (
+from datasmart_ai_runtime.services.model_gateway.model_result_context_filter import (
     ModelResultContextFilter,
     ModelResultContextFilterPolicy,
 )

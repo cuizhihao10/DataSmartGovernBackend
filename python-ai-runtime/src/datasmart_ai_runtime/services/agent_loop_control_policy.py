@@ -1,4 +1,4 @@
-"""受控 Agent loop 策略。
+﻿"""受控 Agent loop 策略。
 
 Codex / Claude Code 类 Agent 的体验看起来像“模型自己连续思考并调用工具”，但真实商业化系统不能把
 这种循环做成无边界自动递归。尤其在 DataSmart Govern 这类数据治理平台中，工具可能读取元数据、生成
@@ -23,7 +23,7 @@ from enum import Enum
 from typing import Any
 
 from datasmart_ai_runtime.services.agent_control_plane_feedback import AgentControlPlaneFeedbackSnapshot
-from datasmart_ai_runtime.services.model_tool_result_feedback import ToolExecutionFeedbackStatus
+from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import ToolExecutionFeedbackStatus
 
 
 class AgentLoopControlAction(str, Enum):

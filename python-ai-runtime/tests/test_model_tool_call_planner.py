@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -8,7 +8,7 @@ if ROOT not in sys.path:
 
 from datasmart_ai_runtime.config import default_tool_registry
 from datasmart_ai_runtime.domain.contracts import ModelToolCall
-from datasmart_ai_runtime.services.model_tool_call_planner import ModelToolCallPlanner
+from datasmart_ai_runtime.services.model_gateway.model_tool_call_planner import ModelToolCallPlanner
 
 
 class ModelToolCallPlannerTest(unittest.TestCase):

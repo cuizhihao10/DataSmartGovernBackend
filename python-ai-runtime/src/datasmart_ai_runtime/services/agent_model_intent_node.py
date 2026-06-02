@@ -33,24 +33,24 @@ from datasmart_ai_runtime.domain.intent import IntentAnalysis
 from datasmart_ai_runtime.domain.model_gateway import ModelGatewayRequestContext
 from datasmart_ai_runtime.domain.skills import AgentSkillPlan
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
-from datasmart_ai_runtime.services.model_provider_metadata import build_model_provider_metadata
-from datasmart_ai_runtime.services.model_tool_feedback_provider import (
+from datasmart_ai_runtime.services.model_gateway.model_provider_metadata import build_model_provider_metadata
+from datasmart_ai_runtime.services.model_gateway.model_tool_feedback_provider import (
     ModelToolExecutionFeedbackProvider,
     SimulatedModelToolExecutionFeedbackProvider,
 )
-from datasmart_ai_runtime.services.model_tool_call_aggregator import (
+from datasmart_ai_runtime.services.model_gateway.model_tool_call_aggregator import (
     ModelToolCallAssemblyReport,
     ModelToolCallDeltaAggregator,
 )
-from datasmart_ai_runtime.services.model_tool_call_events import record_model_tool_call_planning_events
-from datasmart_ai_runtime.services.model_tool_call_budget_guard import ModelToolCallBudgetGuard
-from datasmart_ai_runtime.services.model_tool_call_budget_policy_provider import (
+from datasmart_ai_runtime.services.model_gateway.model_tool_call_events import record_model_tool_call_planning_events
+from datasmart_ai_runtime.services.model_gateway.model_tool_call_budget_guard import ModelToolCallBudgetGuard
+from datasmart_ai_runtime.services.model_gateway.model_tool_call_budget_policy_provider import (
     EnvAndRequestModelToolCallBudgetPolicyProvider,
     ModelToolCallBudgetPolicyProvider,
 )
-from datasmart_ai_runtime.services.model_tool_call_planner import ModelToolCallPlanner
-from datasmart_ai_runtime.services.model_provider import ModelProviderRegistry
-from datasmart_ai_runtime.services.model_tool_result_feedback import ModelToolResultFeedbackBuilder
+from datasmart_ai_runtime.services.model_gateway.model_tool_call_planner import ModelToolCallPlanner
+from datasmart_ai_runtime.services.model_gateway.model_provider import ModelProviderRegistry
+from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import ModelToolResultFeedbackBuilder
 from datasmart_ai_runtime.services.runtime_events.runtime_event_recorder import RuntimeEventRecorder
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 

@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -21,7 +21,7 @@ from datasmart_ai_runtime.domain.events import AgentRuntimeEventSeverity, AgentR
 from datasmart_ai_runtime.domain.intent import GovernanceDomain
 from datasmart_ai_runtime.domain.memory import AgentMemoryScope, AgentMemoryType
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
-from datasmart_ai_runtime.services.model_router import ModelRouteRegistry
+from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.skill_registry import AgentSkillRegistry
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 

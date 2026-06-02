@@ -1,4 +1,4 @@
-"""受控 Agent 二轮推理编排器。
+﻿"""受控 Agent 二轮推理编排器。
 
 4.08 已经引入 `AgentLoopControlPolicyEvaluator`，能判断当前控制面反馈是否允许进入二轮模型推理；
 4.09 又把 API 响应组装从 `api.py` 中拆出，避免把所有 Agent 副作用都塞进 HTTP 路由层。本模块承接
@@ -32,11 +32,11 @@ from datasmart_ai_runtime.services.agent_control_plane_feedback import AgentCont
 from datasmart_ai_runtime.services.agent_loop_control_policy import AgentLoopControlAction, AgentLoopControlDecision
 from datasmart_ai_runtime.services.agent_second_turn_events import SecondTurnEventBuilder
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
-from datasmart_ai_runtime.services.model_gateway_context import build_model_gateway_context
+from datasmart_ai_runtime.services.model_gateway.model_gateway_context import build_model_gateway_context
 from datasmart_ai_runtime.domain.model_gateway import ModelGatewayRequestContext
-from datasmart_ai_runtime.services.model_provider import ModelProviderRegistry
-from datasmart_ai_runtime.services.model_provider_metadata import build_model_provider_metadata
-from datasmart_ai_runtime.services.model_tool_result_feedback import ModelToolResultFeedbackBuilder
+from datasmart_ai_runtime.services.model_gateway.model_provider import ModelProviderRegistry
+from datasmart_ai_runtime.services.model_gateway.model_provider_metadata import build_model_provider_metadata
+from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import ModelToolResultFeedbackBuilder
 
 
 @dataclass(frozen=True)

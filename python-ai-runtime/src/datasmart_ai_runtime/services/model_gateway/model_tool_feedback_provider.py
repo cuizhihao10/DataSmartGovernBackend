@@ -1,4 +1,4 @@
-"""模型工具调用的执行反馈提供器。
+﻿"""模型工具调用的执行反馈提供器。
 
 真实商业化 Agent loop 中，模型提出工具调用后，Python Runtime 不应该直接执行工具。DataSmart 的边界是：
 Python 负责模型推理和计划编排，Java `agent-runtime` 负责审批、审计、幂等和真实业务工具执行。
@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from datasmart_ai_runtime.domain.contracts import ModelToolCall, ToolPlan
-from datasmart_ai_runtime.services.model_tool_result_feedback import (
+from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import (
     ToolExecutionFeedback,
     ToolExecutionFeedbackStatus,
 )

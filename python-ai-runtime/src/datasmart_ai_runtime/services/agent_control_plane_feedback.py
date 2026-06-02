@@ -1,4 +1,4 @@
-"""Agent 控制面反馈快照收集器。
+﻿"""Agent 控制面反馈快照收集器。
 
 4.06 已经让 Python Runtime 可以把 `AgentPlan` 提交给 Java `agent-runtime`，并把 Java 返回的
 `sessionId/runId/auditId` 写回 `ToolPlan.governance_hints`。但这一步仍然只是“建立审计引用”，
@@ -22,8 +22,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from datasmart_ai_runtime.domain.contracts import AgentPlan, ModelToolCall, ToolPlan
-from datasmart_ai_runtime.services.model_tool_feedback_provider import ModelToolExecutionFeedbackProvider
-from datasmart_ai_runtime.services.model_tool_result_feedback import (
+from datasmart_ai_runtime.services.model_gateway.model_tool_feedback_provider import ModelToolExecutionFeedbackProvider
+from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import (
     ToolExecutionFeedback,
     ToolExecutionFeedbackStatus,
 )

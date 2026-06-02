@@ -9,8 +9,8 @@ if ROOT not in sys.path:
 from datasmart_ai_runtime.config import default_tool_registry
 from datasmart_ai_runtime.domain.contracts import AgentRequest, ModelToolCall
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventSeverity, AgentRuntimeEventType
-from datasmart_ai_runtime.services.model_tool_call_events import record_model_tool_call_planning_events
-from datasmart_ai_runtime.services.model_tool_call_planner import ModelToolCallPlanner
+from datasmart_ai_runtime.services.model_gateway.model_tool_call_events import record_model_tool_call_planning_events
+from datasmart_ai_runtime.services.model_gateway.model_tool_call_planner import ModelToolCallPlanner
 from datasmart_ai_runtime.services.runtime_events.runtime_event_recorder import RuntimeEventRecorder
 
 

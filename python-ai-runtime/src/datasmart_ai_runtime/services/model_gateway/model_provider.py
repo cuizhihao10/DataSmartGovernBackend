@@ -1,4 +1,4 @@
-"""模型 Provider 抽象。
+﻿"""模型 Provider 抽象。
 
 模型 Provider 负责“把统一的模型调用请求转换成某种具体推理服务调用”。它和模型路由是两层：
 `ModelRouteRegistry` 决定用哪条路由，Provider 决定如何执行这条路由。这样我们可以同时支持
@@ -18,7 +18,7 @@ from datasmart_ai_runtime.domain.contracts import (
     ModelInvocationResult,
     ProviderType,
 )
-from datasmart_ai_runtime.services.openai_compatible_provider import (
+from datasmart_ai_runtime.services.model_gateway.openai_compatible_provider import (
     ModelProviderHttpTransport,
     OpenAICompatibleModelProvider,
     OpenAICompatibleProviderSettings,

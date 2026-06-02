@@ -1,4 +1,4 @@
-"""模型网关治理服务。
+﻿"""模型网关治理服务。
 
 本模块是 DataSmart 模型访问层从“路由表 + Provider 调用”升级到“可治理模型网关”的第一步。
 当前实现仍然是内存版，不直接调用真实 LiteLLM/vLLM/SGLang 网关，但已经把商业化必备的健康状态、
@@ -16,8 +16,8 @@ from datasmart_ai_runtime.domain.model_gateway import (
     ModelProviderHealthSnapshot,
     ModelProviderHealthStatus,
 )
-from datasmart_ai_runtime.services.model_gateway_cache import ModelGatewayCachePlanner
-from datasmart_ai_runtime.services.model_router import ModelRouteRegistry
+from datasmart_ai_runtime.services.model_gateway.model_gateway_cache import ModelGatewayCachePlanner
+from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 
 
 class InMemoryModelProviderHealthRegistry:

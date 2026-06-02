@@ -1,4 +1,4 @@
-"""模型工具执行结果回填消息构建器。
+﻿"""模型工具执行结果回填消息构建器。
 
 前几轮已经完成“模型提出工具调用 -> 平台治理 -> 生成 ToolPlan”。但真正的多步 Agent loop 还需要
 下一段契约：工具执行完成后，如何把结果安全地回填给模型，让模型基于真实工具结果继续推理。
@@ -17,7 +17,7 @@ from typing import Any, Iterable
 
 from datasmart_ai_runtime.domain.contracts import ModelMessage, ModelToolCall
 from datasmart_ai_runtime.domain.resource_reference import AgentResourceReference
-from datasmart_ai_runtime.services.model_result_context_filter import (
+from datasmart_ai_runtime.services.model_gateway.model_result_context_filter import (
     ModelResultContextFilter,
     ModelResultContextFilterPolicy,
     ModelResultContextFilterReport,

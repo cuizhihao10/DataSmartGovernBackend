@@ -1,4 +1,4 @@
-"""Java Agent Runtime 工具执行结果反馈客户端。
+﻿"""Java Agent Runtime 工具执行结果反馈客户端。
 
 DataSmart 的 Agent 工具闭环采用“Python 编排 + Java 控制面”的边界：
 - Python AI Runtime 负责模型调用、tool_calls 治理、工具结果消息回填和二轮推理；
@@ -16,7 +16,7 @@ from typing import Any, Protocol
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
-from datasmart_ai_runtime.services.model_tool_result_feedback import (
+from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import (
     ToolExecutionFeedback,
     ToolExecutionFeedbackStatus,
 )

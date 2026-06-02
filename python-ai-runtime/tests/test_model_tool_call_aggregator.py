@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -7,7 +7,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from datasmart_ai_runtime.domain.contracts import ModelInvocationChunk, ModelToolCallDelta
-from datasmart_ai_runtime.services.model_tool_call_aggregator import ModelToolCallDeltaAggregator
+from datasmart_ai_runtime.services.model_gateway.model_tool_call_aggregator import ModelToolCallDeltaAggregator
 
 
 class ModelToolCallDeltaAggregatorTest(unittest.TestCase):

@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -10,7 +10,7 @@ from datasmart_ai_runtime.api_plan_response import build_plan_response
 from datasmart_ai_runtime.config import default_model_routes, default_skill_registry, default_tool_registry
 from datasmart_ai_runtime.domain.contracts import AgentRequest, ModelInvocationResult, ModelToolCall
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
-from datasmart_ai_runtime.services.model_router import ModelRouteRegistry
+from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.skill_registry import AgentSkillRegistry
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 

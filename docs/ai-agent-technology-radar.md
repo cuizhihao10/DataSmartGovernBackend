@@ -1,5 +1,12 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-02 落地补充：model gateway should own provider and tool-call governance
+
+- 本阶段把模型网关能力迁入 `services/model_gateway/`，让 provider、route registry、budget guard、tool-call schema/planner/aggregator、feedback、result context filter 和 OpenAI-compatible provider 形成独立包边界。
+- 这对应当前 Agent 工程趋势：模型调用不应只是 `call_llm(prompt)`，而应具备 provider abstraction、routing policy、tool-call governance、context safety、cache planning、budget control 和未来 provider health/tenant package 策略。
+- DataSmart 当前仍采用渐进迁移，不改类名、不重命名测试，只先把模型网关能力域从大 `services` 目录中拆出来，降低结构治理对功能稳定性的影响。
+- 后续趋势落地建议优先把智能网关服务间认证、长期记忆持久化和工具能力市场继续落到产品主线；如果继续结构治理，则迁移 `tools/skills` 与 `api/routes`，不要让目录整理变成新的无限循环。
+
 ## 2026-06-02 落地补充：runtime event pipelines need their own package boundary
 
 - 本阶段把 runtime event 能力迁入 `services/runtime_events/`，让事件 store、session、ack/checkpoint、outbox、live push、publisher、replay source、WebSocket frame、visibility 和 authorization 形成独立包边界。

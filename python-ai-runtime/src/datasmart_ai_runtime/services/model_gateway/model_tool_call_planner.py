@@ -1,4 +1,4 @@
-"""模型工具调用候选治理与 ToolPlan 映射。
+﻿"""模型工具调用候选治理与 ToolPlan 映射。
 
 `ModelToolCall` 来自模型输出，不能直接等同于平台工具计划。真实商业化 Agent 必须先回答几个问题：
 - 模型提到的工具是否存在于 DataSmart 工具注册表？
@@ -24,7 +24,7 @@ from datasmart_ai_runtime.domain.contracts import (
     ToolPlan,
     ToolRiskLevel,
 )
-from datasmart_ai_runtime.services.model_tool_schema import OpenAICompatibleToolSchemaBuilder
+from datasmart_ai_runtime.services.model_gateway.model_tool_schema import OpenAICompatibleToolSchemaBuilder
 from datasmart_ai_runtime.services.tool_parameter_validator import ToolParameterValidator
 
 

@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -12,11 +12,11 @@ from datasmart_ai_runtime.domain.contracts import (
     ToolExecutionMode,
     ToolRiskLevel,
 )
-from datasmart_ai_runtime.services.model_tool_call_budget_guard import (
+from datasmart_ai_runtime.services.model_gateway.model_tool_call_budget_guard import (
     ModelToolCallBudgetGuard,
     ModelToolCallBudgetPolicy,
 )
-from datasmart_ai_runtime.services.model_tool_call_planner import ModelToolCallPlanner
+from datasmart_ai_runtime.services.model_gateway.model_tool_call_planner import ModelToolCallPlanner
 
 
 class ModelToolCallBudgetGuardTest(unittest.TestCase):

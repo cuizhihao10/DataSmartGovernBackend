@@ -1,4 +1,4 @@
-"""Java Agent Runtime 工具反馈 Provider。
+﻿"""Java Agent Runtime 工具反馈 Provider。
 
 该模块从 `agent_runtime_tool_feedback_client.py` 拆出，是为了遵守项目“单文件尽量不超过 500 行”的解耦规范。
 Client 文件只负责 Java HTTP 契约、响应解析和 DTO 映射；Provider 文件负责把 ToolPlan 与 Java audit 引用串起来，
@@ -15,11 +15,11 @@ from datasmart_ai_runtime.services.agent_runtime_tool_feedback_client import (
 from datasmart_ai_runtime.services.agent_runtime_tool_execution_contracts import (
     AgentRuntimeToolAutoExecutionSummary,
 )
-from datasmart_ai_runtime.services.model_tool_feedback_provider import (
+from datasmart_ai_runtime.services.model_gateway.model_tool_feedback_provider import (
     ModelToolExecutionFeedbackProvider,
     SimulatedModelToolExecutionFeedbackProvider,
 )
-from datasmart_ai_runtime.services.model_tool_result_feedback import (
+from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import (
     ToolExecutionFeedback,
     ToolExecutionFeedbackStatus,
 )

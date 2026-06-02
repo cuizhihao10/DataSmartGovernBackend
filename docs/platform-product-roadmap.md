@@ -1,5 +1,12 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-02 追加落地进展：Python Runtime 模型网关能力包分层
+
+- Python Runtime 第三批目录治理已迁移模型网关能力域，新增 `services/model_gateway/` 包，集中承载模型路由、provider 注册、OpenAI-compatible 适配、provider metadata、缓存规划、预算守卫、远程工具预算策略、模型原生 tool-call schema/planning/aggregation/events/feedback 和结果上下文过滤。
+- 这批迁移服务于后续 AI Agent 核心能力：模型 provider 可替换、工具调用预算可治理、模型输出可过滤、未来 KV cache/prompt cache/provider health/租户套餐策略可以在模型网关包内继续演进。
+- 顶层 `services/__init__.py` 改为从 `services.model_gateway` 聚合导出，后续模型网关内部继续拆 `providers/routing/tool_calls/budget/cache/safety` 时，外部调用方不需要感知所有内部文件路径。
+- 当前普通业务工具目录、Skill 注册、Agent 编排和 Java 控制面客户端仍在顶层 `services/`，后续可继续分包；但完成模型网关分层后，建议暂停纯目录治理，切回智能网关认证、长期记忆持久化或工具能力市场等产品能力主线。
+
 ## 2026-06-02 追加落地进展：Python Runtime Runtime Event 能力包分层
 
 - Python Runtime 第二批目录治理已迁移 runtime event 能力域，新增 `services/runtime_events/` 包，集中承载事件 store、checkpoint、session、control、outbox、live push、publisher、recorder、replay source、transport、visibility、authorization 和 WebSocket frame 适配。

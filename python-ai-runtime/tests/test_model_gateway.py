@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -25,7 +25,7 @@ from datasmart_ai_runtime.services.model_gateway import (
     InMemoryModelProviderHealthRegistry,
     ModelGatewayGovernanceService,
 )
-from datasmart_ai_runtime.services.model_router import ModelRouteRegistry
+from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 
 
 class ModelGatewayGovernanceServiceTest(unittest.TestCase):

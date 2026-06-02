@@ -1,4 +1,4 @@
-"""模型工具调用预算与批量准入守卫。
+﻿"""模型工具调用预算与批量准入守卫。
 
 Codex、Claude Code、LangGraph、MCP 类 Agent 的工具调用能力越强，越需要在“模型提出工具调用”
 和“平台生成可执行计划”之间增加预算闸门。原因很直接：模型一次响应可能提出很多工具调用，参数体积
@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 from datasmart_ai_runtime.domain.contracts import ToolExecutionMode, ToolRiskLevel
-from datasmart_ai_runtime.services.model_tool_call_planner import (
+from datasmart_ai_runtime.services.model_gateway.model_tool_call_planner import (
     ModelToolCallCandidate,
     ModelToolCallGovernanceIssue,
     ModelToolCallPlanningReport,

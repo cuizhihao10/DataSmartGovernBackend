@@ -24,8 +24,8 @@ from datasmart_ai_runtime.domain.contracts import AgentRequest, ToolDefinition
 from datasmart_ai_runtime.domain.context import ContextSensitivityLevel
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
 from datasmart_ai_runtime.services.hybrid_context_builder import ContextSelectionPolicy, HybridContextBuilder
-from datasmart_ai_runtime.services.model_provider import model_provider_registry_from_env
-from datasmart_ai_runtime.services.model_router import ModelRouteRegistry
+from datasmart_ai_runtime.services.model_gateway.model_provider import model_provider_registry_from_env
+from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.memory.memory_planner import AgentMemoryPlanner
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
 from datasmart_ai_runtime.services.memory.memory_write_components import (
@@ -51,7 +51,7 @@ from datasmart_ai_runtime.services.agent_control_plane_feedback import AgentCont
 from datasmart_ai_runtime.services.agent_loop_control_policy import AgentLoopControlPolicyEvaluator
 from datasmart_ai_runtime.services.agent_second_turn_orchestrator import AgentSecondTurnOrchestrator
 from datasmart_ai_runtime.services.memory.memory_write_governance import AgentMemoryWriteGovernanceService
-from datasmart_ai_runtime.services.model_tool_call_budget_policy_provider import (
+from datasmart_ai_runtime.services.model_gateway.model_tool_call_budget_policy_provider import (
     EnvAndRequestModelToolCallBudgetPolicyProvider,
     JavaPermissionAdminToolBudgetPolicyClient,
     ModelToolCallBudgetPolicyProvider,

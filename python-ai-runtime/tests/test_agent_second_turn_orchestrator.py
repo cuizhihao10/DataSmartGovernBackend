@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -18,7 +18,7 @@ from datasmart_ai_runtime.services.agent_loop_control_policy import (
     AgentLoopControlDecision,
 )
 from datasmart_ai_runtime.services.agent_second_turn_orchestrator import AgentSecondTurnOrchestrator
-from datasmart_ai_runtime.services.model_tool_result_feedback import ToolExecutionFeedbackStatus
+from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import ToolExecutionFeedbackStatus
 
 
 class AgentSecondTurnOrchestratorTest(unittest.TestCase):

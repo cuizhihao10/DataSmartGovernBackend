@@ -36,7 +36,7 @@ from datasmart_ai_runtime.services.memory.memory_write_candidate_store import (
     InMemoryAgentMemoryWriteCandidateStore,
 )
 from datasmart_ai_runtime.services.memory.memory_write_candidate_factory import AgentMemoryWriteCandidateFactory
-from datasmart_ai_runtime.services.model_tool_result_feedback import ToolExecutionFeedbackStatus
+from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import ToolExecutionFeedbackStatus
 
 
 class AgentMemoryWriteGovernanceService:

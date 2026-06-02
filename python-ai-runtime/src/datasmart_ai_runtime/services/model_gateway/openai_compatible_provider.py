@@ -1,4 +1,4 @@
-"""OpenAI-compatible 模型 Provider 实现。
+﻿"""OpenAI-compatible 模型 Provider 实现。
 
 本文件专门承载 OpenAI-compatible Chat Completions 协议细节，包括：
 - HTTP 请求构造、认证 Header 注入和 endpoint 规范化；
@@ -27,7 +27,7 @@ from datasmart_ai_runtime.domain.contracts import (
     ModelToolCall,
     ModelToolCallDelta,
 )
-from datasmart_ai_runtime.services.model_tool_schema import (
+from datasmart_ai_runtime.services.model_gateway.model_tool_schema import (
     ModelToolSchemaExposurePolicy,
     OpenAICompatibleToolSchemaBuilder,
 )
