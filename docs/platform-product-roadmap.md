@@ -7958,3 +7958,60 @@ DataSmart Govern 的目标不是一个单模块数据同步工具，而是一个
 2. 同步设计 gateway 注入可信 `actorRole/grantedPermissions/tenantSkillEnabled/policyVersion` 的路径，避免普通 variables 被终端伪造。
 3. 后续再做 Skill Marketplace 表、租户启停、版本发布、灰度和审计事件，不要先堆更多默认 Skill。
 4. 中期把 Skill admission、tool budget、workspace、memory 和 runtime replay 汇总到统一治理卡片与 Java replay/index。
+
+## 4.94 Python AI Runtime 接入 permission-admin Skill Admission 策略（2026-06-02）
+
+本阶段把 4.93 中 Java permission-admin 已落地的 Skill admission evaluate 契约接回 Python Runtime。目标是让 Skill Registry 在语义命中 Skill 后，可以优先请求 Java 控制面获得准入结果，再决定该 Skill 进入 `selected_skills` 还是 `rejected_skills`。
+
+已完成：
+- `skill_admission_policy.py` 新增 `JavaPermissionAdminSkillAdmissionClient`：
+  - 构造 Java `AgentSkillAdmissionEvaluateRequest`；
+  - 调用 `POST /permissions/agent/skill-admissions/evaluate`；
+  - 解析 `PlatformApiResponse<AgentSkillAdmissionPolicyView>`；
+  - 转换为 Python `AgentSkillAdmissionDecision`。
+- 新增 `PermissionAdminSkillAdmissionClientError`：
+  - 区分远程控制面不可用和本地准入逻辑；
+  - 支持远程失败时按部署策略回退或抛错。
+- 新增 `RemoteThenLocalAgentSkillAdmissionPolicy`：
+  - 远程 permission-admin 可用时优先采用 Java 准入结果；
+  - 远程不可用时默认回退本地 `AgentSkillAdmissionPolicy`；
+  - 支持关闭回退，生产可 fail-closed。
+- 新增 `api_skill_admission.py`：
+  - 提供 `build_skill_admission_policy()`；
+  - 通过 `DATASMART_PERMISSION_ADMIN_SKILL_ADMISSION_ENABLED` 启用远程准入；
+  - 复用 `DATASMART_PERMISSION_ADMIN_BASE_URL`；
+  - 支持 `DATASMART_PERMISSION_ADMIN_SKILL_ADMISSION_TIMEOUT_SECONDS`。
+- `build_default_orchestrator()` 新增参数：
+  - `enable_remote_skill_admission_policy`；
+  - `allow_remote_skill_admission_fallback`。
+- `build_default_orchestrator()` 现在会把 Skill admission policy 注入 `AgentSkillRegistry(skills, admission_policy=...)`。
+- `services/__init__.py` 导出：
+  - `JavaPermissionAdminSkillAdmissionClient`；
+  - `PermissionAdminSkillAdmissionClientError`；
+  - `RemoteThenLocalAgentSkillAdmissionPolicy`。
+- 新增 `test_skill_admission_policy.py`，覆盖：
+  - Python Skill + request 到 Java payload 的映射；
+  - Java response 到 Python decision 的转换；
+  - 远程可用时优先采用远程准入；
+  - 远程失败允许回退；
+  - 远程失败关闭回退时抛错；
+  - API bootstrap 启用远程 provider。
+- `python-ai-runtime/README.md` 已补充远程 Skill 准入环境变量和使用说明。
+
+产品意义：
+- Skill admission 形成“Python 语义选择、Java 控制面准入、Python 事件和治理摘要展示”的闭环。
+- Python 本地 policy 不再是唯一准入来源，后续可以逐步把权限事实、租户开关、策略版本和 Marketplace 配置迁移到 permission-admin。
+- 远程 provider 与本地 policy 解耦，降低后续从内存规则迁移到数据库策略表、租户套餐或服务网格的重构成本。
+- `api.py` 已接近 500 行，本阶段通过新增 `api_skill_admission.py` 控制文件体积，避免 API bootstrap 继续膨胀。
+
+当前边界：
+- Java 远程准入默认关闭，生产需要显式启用环境变量或参数。
+- 远程请求中的 `grantedPermissions/actorRole/tenantSkillEnabled` 仍来自 `AgentRequest.variables`，尚未由 gateway 可信注入。
+- 远程结果的 `policyVersion/matchedPolicy` 当前只进入 `admission_reasons`，尚未结构化写入 `AgentSkillSelection` 独立字段。
+- 还没有服务间认证 Token、签名、mTLS 或 gateway route policy 保护该远程调用。
+
+下一步建议：
+1. 下一步优先做 gateway/agent-runtime 可信注入：把 `actorRole/grantedPermissions/tenantSkillEnabled/policyVersion` 从普通 variables 升级为受信控制面事实。
+2. 给远程 Skill admission 调用补服务间认证和 fail-closed 配置，避免生产环境控制面不可用时静默放宽。
+3. 把 Java 返回的 `policyVersion/matchedPolicy` 升级为 `AgentSkillSelection` 的结构化字段，而不是只存在于 reason 文本。
+4. 后续再进入 Skill Marketplace 数据表、租户启停、版本发布、灰度和审计事件。

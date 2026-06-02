@@ -19,6 +19,7 @@ from datasmart_ai_runtime.api_events import (
     runtime_event_from_payload,
     subscription_request_from_payload,
 )
+from datasmart_ai_runtime.api_skill_admission import build_skill_admission_policy
 from datasmart_ai_runtime.api_plan_response import build_plan_response
 from datasmart_ai_runtime.api_memory_write import register_memory_write_routes
 from datasmart_ai_runtime.config import default_skill_registry, default_tool_registry, model_routes_from_env
@@ -186,6 +187,8 @@ def build_default_orchestrator(
     permission_admin_base_url: str | None = None,
     enable_remote_tool_budget_policy: bool | None = None,
     allow_remote_tool_budget_policy_fallback: bool = True,
+    enable_remote_skill_admission_policy: bool | None = None,
+    allow_remote_skill_admission_fallback: bool = True,
 ) -> AgentOrchestrator:
     """创建默认 Agent 编排器。
 
@@ -237,6 +240,12 @@ def build_default_orchestrator(
         enable_remote=enable_remote_tool_budget_policy,
         allow_remote_fallback=allow_remote_tool_budget_policy_fallback,
     )
+    skill_admission_policy = build_skill_admission_policy(
+        permission_admin_base_url=permission_admin_base_url,
+        trace_id=trace_id,
+        enable_remote=enable_remote_skill_admission_policy,
+        allow_remote_fallback=allow_remote_skill_admission_fallback,
+    )
     return AgentOrchestrator(
         model_routes=ModelRouteRegistry(model_routes_from_env()),
         tool_planner=ToolPlanner(tools),
@@ -244,7 +253,7 @@ def build_default_orchestrator(
         context_builder=HybridContextBuilder(policy=context_policy),
         memory_planner=AgentMemoryPlanner(),
         model_gateway=model_gateway,
-        skill_registry=AgentSkillRegistry(skills),
+        skill_registry=AgentSkillRegistry(skills, admission_policy=skill_admission_policy),
         model_tool_call_budget_policy_provider=budget_policy_provider,
         tool_execution_feedback_provider=tool_feedback_provider,
     )
