@@ -361,7 +361,7 @@ def create_app() -> Any:
     """
 
     try:
-        from fastapi import FastAPI, Request
+        from fastapi import FastAPI, HTTPException, Request
     except ImportError as exc:  # pragma: no cover - 只有未安装 API 依赖时触发
         raise RuntimeError("启动 API 前请先安装可选依赖：pip install -e python-ai-runtime[api]") from exc
     globals()["Request"] = Request
@@ -469,6 +469,10 @@ def create_app() -> Any:
         loop_control_evaluator=loop_control_evaluator,
         second_turn_orchestrator=second_turn_orchestrator,
         memory_write_governance=memory_write_governance,
+        # `/agent/plans` 的 gateway 签名失败属于服务间认证失败，而不是普通业务参数错误。
+        # FastAPI 会把这里抛出的 HTTPException 渲染成清晰的 JSON 响应，避免调用方看到 500 后误判为模型服务异常。
+        # 当前使用 401 表示“内部调用凭证缺失、过期或不匹配”；如果未来签名有效但权限不足，再使用 403。
+        gateway_signature_error_factory=lambda detail: HTTPException(status_code=401, detail=detail),
     )
 
     register_memory_write_routes(app, memory_write_governance)

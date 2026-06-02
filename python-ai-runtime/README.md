@@ -122,3 +122,16 @@ $env:DATASMART_GATEWAY_SIGNATURE_MAX_SKEW_SECONDS="300"
 背压风险；请求体里的 `trustedControlPlane` 仍会被 Python API 边界无条件删除。后续生产增强方向是
 TLS/mTLS、Secret Manager 密钥轮换、Redis nonce 去重、服务网格访问控制和统一异常映射，而不是让 HMAC
 单独承担全部服务间安全。
+
+# 4.99 Gateway 签名失败 API 错误映射
+
+`/agent/plans` 现在会把 gateway 内部签名校验失败映射为 HTTP 401，而不是让
+`GatewaySignatureVerificationError` 冒泡成 500。响应 detail 会包含稳定错误码
+`GATEWAY_SIGNATURE_INVALID`、失败 `reason`、`traceId`、`sourceService` 和请求路径，便于 gateway、运维
+脚本或前端 SDK 定位“未通过统一网关、签名缺失、签名过期或密钥不一致”等问题。
+
+同时，路由层会写入一条安全审计日志，但不会记录共享密钥、签名值、签名原文或完整 Header。这个边界很重要：
+生产安全日志应该帮助定位“谁在什么时候访问了哪个入口并因什么原因失败”，而不是保存可以被复制或重放的认证材料。
+
+当前错误映射仍是 Python API 层日志级审计。后续更成熟的做法是接入统一审计事件、Prometheus 指标、
+告警规则和 Java replay/index，让服务间认证失败可以进入运维大盘与安全告警。

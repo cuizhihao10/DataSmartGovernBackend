@@ -8108,3 +8108,33 @@ workspace 风险和实时 backlog 快照。随后把可信快照版本写入 run
 2. 把 nonce 短 TTL 去重接入 Redis，阻断时间窗口内的重放请求。
 3. 将签名保护扩展到未来会消费高敏控制面事实的事件 replay/control/WebSocket 或内部 service-account 调用。
 4. 继续推进长期记忆正式持久化、工具/Skill 市场和 agent runtime 执行闭环，避免只在 gateway 安全局部继续无限细化。
+
+## 4.99 Gateway 签名失败 API 错误映射（2026-06-02）
+
+本阶段承接 4.98 的当前边界，补齐 Python API 对 `GatewaySignatureVerificationError` 的显式映射。此前强制验签失败会抛出独立异常，但如果真实 FastAPI 服务没有捕获，调用方会看到 500，容易把“服务间认证失败”误判为“模型规划服务异常”。现在 `/agent/plans` 会在路由层捕获验签失败，记录安全日志，并通过 `create_app()` 注入的 FastAPI `HTTPException` 返回 HTTP 401。
+
+已完成：
+- `GatewaySignatureVerificationError` 新增机器可读 `reason` 字段，避免 API 层从错误字符串中解析失败原因。
+- `api_agent_routes.py` 新增 `gateway_signature_error_factory` 注入点：
+  - 核心路由模块仍不在顶层依赖 FastAPI；
+  - 真实 API 环境由 `api.py#create_app()` 注入 `HTTPException(status_code=401, detail=...)`；
+  - 离线测试或未来 Kafka/CLI 载体可以注入自己的错误类型。
+- `/agent/plans` 捕获验签失败后构造统一 detail：
+  - `code=GATEWAY_SIGNATURE_INVALID`；
+  - `message`；
+  - `reason`；
+  - `traceId`；
+  - `sourceService`；
+  - `path`。
+- 路由层新增安全日志，记录 code、reason、traceId、sourceService 和 path，不记录 secret、签名值、签名原文或完整 Header。
+- 新增 `test_api_agent_routes_security.py`，在不安装 FastAPI 的情况下用 fake app 验证 401 映射、错误 detail 和日志不泄密。
+
+产品意义：
+- 401/403 是服务间认证和授权边界的产品语言，500 是服务故障语言。明确错误语义能让网关、运维、前端 SDK 和安全告警更准确地处理问题。
+- 安全日志现在具备最小审计价值：能定位 trace、来源、路径和失败类别，但不会把认证材料写入日志。
+- 本阶段仍是日志级审计，尚未进入统一审计表、Prometheus 指标、告警和 replay/index。下一步如果继续安全链路，应把签名失败 reason 指标化，再接 Redis nonce 去重。
+
+下一步建议：
+1. 接 Redis nonce 短 TTL 去重，阻断签名时间窗口内的重放请求。
+2. 把签名失败按 reason 写入统一指标和审计事件，区分攻击、时钟漂移、密钥不一致和灰度发布异常。
+3. 做完上述安全闭环后，应切回更大的 Agent 产品能力主线：长期记忆正式持久化、工具/Skill 市场、agent runtime 可恢复执行和模型 provider health。

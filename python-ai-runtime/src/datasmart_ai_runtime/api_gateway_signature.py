@@ -103,6 +103,17 @@ class GatewaySignatureVerificationError(PermissionError):
     401/403，并记录“疑似绕过 gateway 或签名配置错误”的安全审计事件。
     """
 
+    def __init__(self, reason: str) -> None:
+        """保存机器可读失败原因。
+
+        ``reason`` 不包含密钥、签名原文或完整 Header，只描述失败类别，例如
+        ``missing-signature-headers``、``signature-mismatch`` 或 ``timestamp-out-of-window``。API 层可以把它
+        安全地写入日志、指标和响应 detail，既方便排障，又避免泄漏敏感材料。
+        """
+
+        self.reason = reason
+        super().__init__(f"gateway signature verification failed: {reason}")
+
 
 def gateway_signature_config_from_env(
     environ: Mapping[str, str] | None = None,
@@ -181,7 +192,7 @@ def ensure_gateway_signature(
 
     result = verify_gateway_signature(headers, config, now_ms=now_ms)
     if not result.valid:
-        raise GatewaySignatureVerificationError(f"gateway signature verification failed: {result.reason}")
+        raise GatewaySignatureVerificationError(result.reason)
 
 
 def sign_gateway_payload(
