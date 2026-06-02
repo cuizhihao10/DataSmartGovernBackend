@@ -8039,3 +8039,16 @@ permission-admin 工具预算评估默认只读取 `trustedControlPlane.toolBudg
 
 下一步应把 gateway 已清理并重建的可信 Header、permission-admin 权限快照与运行时 backlog 快照装配进
 Python 保留命名空间，同时增加 `/api/agent/plans` 专用路由和内部调用保护。
+## 4.97 Gateway Agent Plan 可信 Header 桥接（2026-06-02）
+
+本阶段新增 gateway `/api/agent/plans` 专用路由，并在 Python API 边界增加
+`enrich_agent_plan_payload_from_gateway_headers()`。装配器会先清理请求体中伪造的
+`trustedControlPlane`，再根据统一 gateway 转发的租户、操作者、角色、workspace、trace 和授权项目 Header
+重建最小可信快照。
+
+该路由放在通用 `/api/agent/** -> agent-runtime` 规则之前，确保模型规划进入 Python Runtime，Java
+agent-runtime 继续承担 session、run、audit、工具确认和执行控制面职责。当前 source-service Header 仅是
+迁移期来源标记，不替代服务间认证。
+
+下一步应补内部调用凭证，并由 permission-admin/agent-runtime 注入权限集合、租户 Skill 开关、策略版本、
+workspace 风险和实时 backlog 快照。随后把可信快照版本写入 runtime event 与 replay/index。

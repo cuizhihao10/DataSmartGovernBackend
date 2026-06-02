@@ -20,6 +20,7 @@ from datasmart_ai_runtime.api_events import (
     subscription_request_from_payload,
 )
 from datasmart_ai_runtime.api_skill_admission import build_skill_admission_policy
+from datasmart_ai_runtime.api_trusted_context import enrich_agent_plan_payload_from_gateway_headers
 from datasmart_ai_runtime.api_plan_response import build_plan_response
 from datasmart_ai_runtime.api_memory_write import register_memory_write_routes
 from datasmart_ai_runtime.config import default_skill_registry, default_tool_registry, model_routes_from_env
@@ -365,9 +366,10 @@ def create_app() -> Any:
     """
 
     try:
-        from fastapi import FastAPI
+        from fastapi import FastAPI, Request
     except ImportError as exc:  # pragma: no cover - 只有未安装 API 依赖时触发
         raise RuntimeError("启动 API 前请先安装可选依赖：pip install -e python-ai-runtime[api]") from exc
+    globals()["Request"] = Request
 
     app = FastAPI(
         title="DataSmart Govern Python AI Runtime",
@@ -458,14 +460,14 @@ def create_app() -> Any:
         return memory_write_store_diagnostics(memory_write_store_runtime)
 
     @app.post("/agent/plans")
-    def create_agent_plan(payload: dict[str, Any]) -> dict[str, Any]:
+    def create_agent_plan(payload: dict[str, Any], http_request: Request) -> dict[str, Any]:
         """生成 Agent 工具计划。
 
         当前先接收 dict 并转换为 `AgentRequest`，后续可替换为 Pydantic DTO。这样能保持核心领域层
         不依赖 Web 框架，同时让 API 层承担请求校验与协议适配职责。
         """
 
-        request = AgentRequest(**payload)
+        request = AgentRequest(**enrich_agent_plan_payload_from_gateway_headers(payload, http_request.headers))
         return build_plan_response(
             request,
             orchestrator,

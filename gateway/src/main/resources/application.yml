@@ -64,6 +64,16 @@ spring:
           filters:
             # Python FastAPI 内部路由是 /agent/events/ws，外部网关路径仍归入 /api/agent/** 产品入口。
             - RewritePath=/api/agent/events/ws, /agent/events/ws
+        - id: python-ai-runtime-agent-plans
+          # Agent 规划入口由 Python AI Runtime 承担，而不是由 Java agent-runtime 直接生成模型计划。
+          # 该路由必须放在通用 /api/agent/** 路由之前，否则请求会先被更宽泛的规则转发给 Java 控制面。
+          # gateway 过滤器会在转发前清理外部伪造的 X-DataSmart-*，再写入已认证或开发期受控身份上下文。
+          # Python API 边界随后只根据这些 Header 重建 trustedControlPlane，拒绝相信请求体自报的可信事实。
+          uri: ${DATASMART_PYTHON_AI_RUNTIME_URI:http://localhost:8090}
+          predicates:
+            - Path=/api/agent/plans
+          filters:
+            - RewritePath=/api/agent/plans, /agent/plans
         - id: agent-runtime
           uri: lb://agent-runtime
           predicates:

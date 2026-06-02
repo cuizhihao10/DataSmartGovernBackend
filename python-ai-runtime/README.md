@@ -83,3 +83,13 @@ $env:DATASMART_PERMISSION_ADMIN_SKILL_ADMISSION_TIMEOUT_SECONDS="3"
 本地 `EnvAndRequestModelToolCallBudgetPolicyProvider` 仍保留 request override，便于离线开发、测试和灰度联调；
 远程 `JavaPermissionAdminToolBudgetPolicyClient` 则默认采用更严格边界。迁移期可以显式开启
 `allow_legacy_request_variables`，生产环境不应启用。
+# 4.97 Gateway Agent Plan 可信 Header 桥接
+
+gateway 新增 `/api/agent/plans` 专用路由，将 Agent 规划请求转发给 Python Runtime `/agent/plans`。
+Python API 边界新增 `enrich_agent_plan_payload_from_gateway_headers()`：先删除请求体中任何
+`trustedControlPlane`，再仅在 `X-DataSmart-Source-Service=datasmart-govern-gateway` 时，根据 gateway
+已清理并重建的 `X-DataSmart-*` Header 生成最小可信快照。
+
+该桥接是迁移期边界，不是完整服务间认证。生产环境仍必须禁止终端直连 Python Runtime，并继续补充
+服务账号 Token、签名或 mTLS；权限集合、租户 Skill 开关、策略版本和 worker backlog 也应由 Java
+控制面继续注入，而不是由终端提交。
