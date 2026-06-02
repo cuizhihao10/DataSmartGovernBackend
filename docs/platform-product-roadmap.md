@@ -8389,3 +8389,69 @@ APPROVED 候选仍只能靠手工调用单条 materializer。真实 agent 产品
 2. 增加失败退避、最大尝试次数、DLQ 和管理员补偿重放。
 3. 把 runner 成功、失败、幂等复用、跳过原因接入 runtime event 或 Prometheus 指标。
 4. 等 worker 稳定后再接 Chroma/Neo4j 二级索引和遗忘/归档任务。
+
+## 5.05 Agent 长期记忆 Materialization Lease Store（2026-06-03）
+
+本阶段承接 5.04 的下一步推荐：最小 Runner 已经可以有界扫描 APPROVED 候选并调用 materializer，
+但如果没有独立租约，多个 Python Runtime worker 实例仍可能同时处理同一候选。正式记忆 store 的幂等键可以
+降低重复写入损害，却不能解释“谁领取了任务、为什么重复尝试、旧 worker 是否覆盖了新 worker”。因此本阶段
+把长期记忆落成从“批次执行可用”推进到“多 worker 领取语义可验证”。
+
+已完成：
+- 新增 `memory_materialization_lease_store.py`：
+  - 定义 `AgentMemoryMaterializationLeaseStore` 协议；
+  - 定义租约状态 `leased/succeeded/failed`；
+  - 提供 `AgentMemoryMaterializationLease` 低敏摘要；
+  - 提供线程安全内存实现；
+  - 通过 `lease_token` 实现 fencing，阻止过期 worker 覆盖新 worker。
+- 新增 `memory_materialization_lease_sql_store.py`：
+  - 提供 DB-API SQL 租约 store；
+  - 通过条件 UPDATE + INSERT 冲突恢复实现跨 SQLite/MySQL 的可验证 claim 语义；
+  - `succeed/fail` 必须携带 token 条件更新，失败时抛出 fencing 错误；
+  - 记录低敏 `memoryId/outcome/message/errorMessage`，不保存 prompt、SQL、样本或完整异常堆栈。
+- 新增 `memory_materialization_lease_components.py`：
+  - 支持 `in-memory/sqlite/mysql` 三种 lease store；
+  - 新增 `DATASMART_AI_MEMORY_LEASE_STORE`、`DATASMART_AI_MEMORY_LEASE_SQLITE_PATH`、
+    `DATASMART_AI_MEMORY_LEASE_MYSQL_DSN`、`DATASMART_AI_MEMORY_LEASE_SQL_CONNECT_TIMEOUT_SECONDS`、
+    `DATASMART_AI_MEMORY_LEASE_STORE_FAIL_OPEN`、`DATASMART_AI_MEMORY_LEASE_SECONDS`；
+  - 支持本地 fail-open 和生产 fail-fast；
+  - 输出低敏 `leaseStore` 诊断。
+- 更新 `memory_materialization_runner.py`：
+  - Runner 执行前先领取租约；
+  - 成功后把租约推进到 `succeeded`，后续扫描不再重复处理；
+  - 失败后把租约推进到 `failed`，当前阶段允许后续轮次重新领取；
+  - 如果窗口前部候选被其他 worker 持有，Runner 会继续向后扫描，减少可运行候选饥饿；
+  - 批次属性新增 `executionPolicy=BOUNDED_AT_LEAST_ONCE_WITH_LEASE_TOKEN_FENCING`。
+- 更新 `api_memory_runtime.py`：
+  - API 长期记忆 runtime 新增 `lease_store_runtime`；
+  - `build_api_memory_runtime()` 默认装配 lease store，并把默认租约秒数传给 Runner；
+  - `/agent/memory/diagnostics` 新增 `leaseStore`。
+- 新增 MySQL migration：`20260603_agent_memory_materialization_lease.sql`：
+  - 建立 `agent_memory_materialization_lease` 表；
+  - 增加 candidate 唯一约束、claim 索引、scope/workspace 查询索引和 memory 反查索引；
+  - SQL 注释说明状态、token 安全边界和低敏字段要求。
+- 更新 `docker/mysql/init/permission-admin.sql`：
+  - 在初始化脚本中同步创建 lease 表，便于本地一键环境直接具备长期记忆 worker 基础表。
+- 新增与更新测试：
+  - `test_memory_materialization_lease_store.py` 覆盖内存与 SQL 租约互斥、过期接管、token fencing、成功终态和 runtime builder；
+  - `test_memory_materialization_runner.py` 覆盖成功候选不重复处理、窗口前部被占用时继续扫描；
+  - `test_memory_store_components.py` 覆盖 API memory runtime 诊断中的 `leaseStore`。
+
+产品意义：
+- 长期记忆链路现在具备四类清晰事实：candidate 审批事实、formal memory 可召回事实、receipt 执行证据、lease 并发控制事实。
+- 这一步让未来后台 worker 可以走向多实例部署，而不是只能在单 Python 进程里“看起来能跑”。
+- token fencing 是商业化 Agent worker 的关键安全阀：旧 worker、慢 worker 或网络抖动后的迟到回写不能覆盖新 worker 的处理结果。
+- 独立 lease store 避免把审批状态机、审计 receipt 和短时锁耦合在一起，降低后续补偿台、DLQ、指标和二级索引 worker 的重构风险。
+
+当前边界：
+- 当前仍没有自动后台循环，Runner 仍需要显式触发。
+- `failed` 目前允许立即重试，还没有 nextRetryAt、最大尝试次数、退避策略或 DLQ。
+- lease store 还没有接 Prometheus、runtime event 或 Java 审计链路。
+- SQL 实现先使用可移植条件 UPDATE；高吞吐 MySQL worker 后续可按压测结果引入 `SELECT ... FOR UPDATE SKIP LOCKED` 风格批量 claim。
+- 正式记忆仍未同步 Chroma/Neo4j 二级索引，遗忘/归档任务仍未实现。
+
+下一步建议：
+1. 优先补失败退避、最大尝试次数、DLQ 和管理员补偿重放，避免坏候选在多实例环境中热循环。
+2. 把 Runner 的成功、失败、跳过、fencing 失败和 lease fallback 接入 runtime event 或 Prometheus 指标。
+3. 设计受控管理路由或 CLI，让管理员可以 dry-run、单租户补偿、单候选重放和查看低敏执行证据。
+4. 等 lease、退避、DLQ 和指标稳定后，再启动常驻 worker，并接 Chroma/Neo4j 二级索引与遗忘/归档任务。

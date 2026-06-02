@@ -641,6 +641,41 @@ CREATE TABLE IF NOT EXISTS agent_memory_materialization_receipt (
     KEY idx_agent_memory_materialization_workspace (tenant_id, project_id, workspace_key, status, update_time),
     KEY idx_agent_memory_materialization_memory (memory_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Agent 长期记忆正式落成 receipt 表';
+
+-- Agent 长期记忆落成 worker 租约表。
+--
+-- candidate 表保存审批事实，receipt 表保存执行证据，本表单独保存多实例 worker 的短时领取权。
+-- lease_token 是内部 fencing token：旧 worker 即使在租约过期后晚到，也不能覆盖新 worker 的处理结果。
+-- token 禁止输出到诊断接口、日志或前端；失败重试退避与 DLQ 将在后续阶段继续扩展。
+CREATE TABLE IF NOT EXISTS agent_memory_materialization_lease (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键，仅用于数据库内部索引。',
+    lease_id VARCHAR(160) NOT NULL COMMENT '稳定租约业务 ID，当前按 candidate_id 生成。',
+    candidate_id VARCHAR(128) NOT NULL COMMENT '被领取的长期记忆候选 ID。',
+    tenant_id VARCHAR(64) NOT NULL COMMENT '租户 ID，用于多租户隔离、补偿查询和指标分组。',
+    project_id VARCHAR(64) NOT NULL COMMENT '项目 ID，用于项目级补偿、审计和问题复盘。',
+    workspace_key VARCHAR(255) NOT NULL COMMENT 'Agent 工作空间隔离键，必须继承候选 workspace。',
+    memory_namespace VARCHAR(255) NOT NULL COMMENT '长期记忆命名空间，必须继承候选 namespace。',
+    status VARCHAR(32) NOT NULL COMMENT '租约状态：leased、succeeded、failed。',
+    attempt_count INT NOT NULL DEFAULT 1 COMMENT '候选被领取的累计次数，用于识别 worker 抖动或毒性候选。',
+    worker_id VARCHAR(128) NOT NULL COMMENT '当前或最近处理该候选的 worker 实例标识。',
+    lease_token VARCHAR(128) NOT NULL COMMENT '内部 fencing token，禁止写入日志、诊断接口或前端。',
+    leased_until DATETIME(3) NOT NULL COMMENT '租约过期时间；worker 崩溃后其他实例可在该时间之后接管。',
+    memory_id VARCHAR(128) DEFAULT NULL COMMENT '成功落成后的正式记忆 ID。',
+    outcome VARCHAR(64) DEFAULT NULL COMMENT 'materializer 结果，例如 materialized 或 already_materialized。',
+    message VARCHAR(1024) DEFAULT NULL COMMENT '低敏成功说明，禁止保存工具原始输出。',
+    error_message VARCHAR(1024) DEFAULT NULL COMMENT '低敏失败摘要，禁止保存 prompt、SQL、样本或完整异常堆栈。',
+    started_at DATETIME(3) DEFAULT NULL COMMENT '最近一次领取开始时间。',
+    finished_at DATETIME(3) DEFAULT NULL COMMENT '最近一次成功或失败结束时间。',
+    create_time DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '租约记录首次创建时间。',
+    update_time DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '租约记录最近更新时间。',
+    UNIQUE KEY uk_agent_memory_materialization_lease_id (lease_id),
+    UNIQUE KEY uk_agent_memory_materialization_lease_candidate (candidate_id),
+    KEY idx_agent_memory_materialization_lease_claim (status, leased_until, update_time),
+    KEY idx_agent_memory_materialization_lease_scope (tenant_id, project_id, status, update_time),
+    KEY idx_agent_memory_materialization_lease_workspace (tenant_id, project_id, workspace_key, status, update_time),
+    KEY idx_agent_memory_materialization_lease_memory (memory_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Agent 长期记忆落成 worker 租约表';
+
 -- ---------------------------------------------------------------------------
 -- Agent Runtime DAG 异步工具入箱权限策略
 -- ---------------------------------------------------------------------------

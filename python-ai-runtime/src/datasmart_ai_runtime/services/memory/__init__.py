@@ -7,7 +7,8 @@
 - `memory_retriever` 与 `memory_store_retriever` 负责把正式记忆重新召回到上下文；
 - `memory_store` 负责正式长期记忆的持久化抽象；
 - `memory_write_*` 负责工具结果是否可以沉淀为长期记忆的候选生成、审批治理、SQL 候选仓储和 workspace 隔离；
-- `memory_materialization_receipt_store` 与 `memory_write_materializer` 负责 APPROVED 候选的正式落成和幂等证据。
+- `memory_materialization_lease_store`、`memory_materialization_receipt_store` 与 `memory_write_materializer`
+  负责 APPROVED 候选的安全领取、正式落成和幂等证据。
 
 目录分层原则：
 本包当前仍保留“文件名带 memory_ 前缀”的过渡形态，原因是仓库内已有较多测试和文档引用这些名字。
@@ -23,6 +24,22 @@ from datasmart_ai_runtime.services.memory.memory_materialization_receipt_store i
     AgentMemoryMaterializationReceiptStatus,
     AgentMemoryMaterializationReceiptStore,
     InMemoryAgentMemoryMaterializationReceiptStore,
+)
+from datasmart_ai_runtime.services.memory.memory_materialization_lease_store import (
+    AgentMemoryMaterializationLease,
+    AgentMemoryMaterializationLeaseStatus,
+    AgentMemoryMaterializationLeaseStore,
+    InMemoryAgentMemoryMaterializationLeaseStore,
+)
+from datasmart_ai_runtime.services.memory.memory_materialization_lease_components import (
+    AgentMemoryMaterializationLeaseStoreRuntime,
+    AgentMemoryMaterializationLeaseStoreSettings,
+    build_memory_materialization_lease_store_runtime,
+    memory_materialization_lease_store_diagnostics,
+    memory_materialization_lease_store_settings_from_env,
+)
+from datasmart_ai_runtime.services.memory.memory_materialization_lease_sql_store import (
+    SqlAgentMemoryMaterializationLeaseStore,
 )
 from datasmart_ai_runtime.services.memory.memory_materialization_receipt_components import (
     AgentMemoryMaterializationReceiptStoreRuntime,
@@ -88,6 +105,11 @@ from datasmart_ai_runtime.services.memory.memory_write_workspace import (
 __all__ = [
     "AgentApprovedMemoryWriteMaterializer",
     "AgentMemoryMaterializationOutcome",
+    "AgentMemoryMaterializationLease",
+    "AgentMemoryMaterializationLeaseStatus",
+    "AgentMemoryMaterializationLeaseStore",
+    "AgentMemoryMaterializationLeaseStoreRuntime",
+    "AgentMemoryMaterializationLeaseStoreSettings",
     "AgentMemoryMaterializationReceipt",
     "AgentMemoryMaterializationReceiptStatus",
     "AgentMemoryMaterializationReceiptStore",
@@ -113,19 +135,24 @@ __all__ = [
     "AgentMemoryWriteStoreRuntime",
     "AgentMemoryWriteStoreSettings",
     "InMemoryAgentMemoryMaterializationReceiptStore",
+    "InMemoryAgentMemoryMaterializationLeaseStore",
     "InMemoryAgentMemoryRetriever",
     "InMemoryAgentMemoryStore",
     "InMemoryAgentMemoryWriteCandidateStore",
     "SqlAgentMemoryWriteCandidateStore",
     "SqlAgentMemoryStore",
     "SqlAgentMemoryMaterializationReceiptStore",
+    "SqlAgentMemoryMaterializationLeaseStore",
     "StoreBackedAgentMemoryRetriever",
     "approve_memory_write_candidate",
     "build_memory_materialization_receipt_store_runtime",
+    "build_memory_materialization_lease_store_runtime",
     "build_memory_store_runtime",
     "build_memory_write_store_runtime",
     "memory_materialization_receipt_store_diagnostics",
     "memory_materialization_receipt_store_settings_from_env",
+    "memory_materialization_lease_store_diagnostics",
+    "memory_materialization_lease_store_settings_from_env",
     "memory_store_diagnostics",
     "memory_store_settings_from_env",
     "memory_write_store_diagnostics",

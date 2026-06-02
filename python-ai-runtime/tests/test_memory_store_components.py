@@ -122,6 +122,7 @@ class AgentMemoryStoreComponentsTest(unittest.TestCase):
         self.assertIn("candidateStore", diagnostics)
         self.assertIn("formalStore", diagnostics)
         self.assertIn("receiptStore", diagnostics)
+        self.assertIn("leaseStore", diagnostics)
         self.assertIn("materializationRunner", diagnostics)
         self.assertEqual("StoreBackedAgentMemoryRetriever", diagnostics["retriever"]["implementation"])
         self.assertEqual("AgentMemoryMaterializationRunner", diagnostics["materializationRunner"]["implementation"])
@@ -238,6 +239,12 @@ class AgentMemoryStoreComponentsTest(unittest.TestCase):
                 "DATASMART_AI_MEMORY_RECEIPT_MYSQL_DSN",
                 "DATASMART_AI_MEMORY_RECEIPT_SQL_CONNECT_TIMEOUT_SECONDS",
                 "DATASMART_AI_MEMORY_RECEIPT_STORE_FAIL_OPEN",
+                "DATASMART_AI_MEMORY_LEASE_STORE",
+                "DATASMART_AI_MEMORY_LEASE_SQLITE_PATH",
+                "DATASMART_AI_MEMORY_LEASE_MYSQL_DSN",
+                "DATASMART_AI_MEMORY_LEASE_SQL_CONNECT_TIMEOUT_SECONDS",
+                "DATASMART_AI_MEMORY_LEASE_STORE_FAIL_OPEN",
+                "DATASMART_AI_MEMORY_LEASE_SECONDS",
             )
 
             def __enter__(self):

@@ -17,6 +17,9 @@ from datasmart_ai_runtime.services.memory.memory_materialization_receipt_store i
     AgentMemoryMaterializationReceiptStatus,
     InMemoryAgentMemoryMaterializationReceiptStore,
 )
+from datasmart_ai_runtime.services.memory.memory_materialization_lease_store import (
+    InMemoryAgentMemoryMaterializationLeaseStore,
+)
 from datasmart_ai_runtime.services.memory.memory_materialization_runner import (
     AgentMemoryMaterializationRunner,
     AgentMemoryMaterializationRunnerItemStatus,
@@ -123,12 +126,53 @@ class AgentMemoryMaterializationRunnerTest(unittest.TestCase):
         self.assertIsNotNone(memory_store.get_by_candidate_id("candidate-approved"))
         self.assertIsNone(memory_store.get_by_candidate_id("candidate-draft"))
 
+    def test_run_once_does_not_repeat_successfully_materialized_candidate(self) -> None:
+        """lease 成功终态应阻止 Runner 每轮重复落成同一候选。"""
+
+        candidate_store, _memory_store, receipt_store, runner = self._runtime()
+        candidate_store.save(self._candidate("candidate-a"))
+
+        first = runner.run_once(limit=10)
+        second = runner.run_once(limit=10)
+        receipt = receipt_store.get_by_candidate_id("candidate-a")
+
+        self.assertEqual(1, first.succeeded_count)
+        self.assertEqual(0, second.succeeded_count)
+        self.assertEqual(1, second.skipped_count)
+        self.assertEqual((), second.items)
+        self.assertEqual(1, receipt.attempt_count)
+
+    def test_run_once_scans_past_candidate_leased_by_other_worker(self) -> None:
+        """窗口前部候选被其他实例占用时，Runner 应继续向后扫描，减少可执行候选饥饿。"""
+
+        lease_store = InMemoryAgentMemoryMaterializationLeaseStore()
+        candidate_store, memory_store, _receipt_store, runner = self._runtime(lease_store=lease_store)
+        candidate_store.save(self._candidate("candidate-free", created_offset_seconds=-2))
+        candidate_store.save(self._candidate("candidate-leased", created_offset_seconds=-1))
+        lease_store.try_acquire(
+            candidate_id="candidate-leased",
+            tenant_id="tenant-a",
+            project_id="project-a",
+            workspace_key="tenant:tenant-a:project:project-a",
+            memory_namespace="memory:tenant:tenant-a:project:project-a",
+            worker_id="other-worker",
+            lease_seconds=60,
+        )
+
+        report = runner.run_once(limit=1)
+
+        self.assertEqual(2, report.scanned_count)
+        self.assertEqual(1, report.skipped_count)
+        self.assertEqual(1, report.succeeded_count)
+        self.assertEqual("candidate-free", report.items[0].candidate_id)
+        self.assertIsNotNone(memory_store.get_by_candidate_id("candidate-free"))
+
     @staticmethod
-    def _runtime():
+    def _runtime(*, lease_store=None):
         """构造 Runner 测试运行时。
 
         测试使用内存 store 是为了聚焦 Runner 语义，不代表生产环境会使用内存。生产环境应继续使用 SQL
-        candidate store、SQL formal memory store 和 SQL receipt store，并在下一阶段增加 worker lease。
+        candidate store、SQL formal memory store、SQL receipt store 和 SQL lease store，并在下一阶段增加退避、DLQ 与指标。
         """
 
         candidate_store = InMemoryAgentMemoryWriteCandidateStore()
@@ -143,6 +187,7 @@ class AgentMemoryMaterializationRunnerTest(unittest.TestCase):
         runner = AgentMemoryMaterializationRunner(
             candidate_store=candidate_store,
             materializer=materializer,
+            lease_store=lease_store,
             worker_id="unit-test-memory-runner",
         )
         return candidate_store, memory_store, receipt_store, runner

@@ -7,10 +7,10 @@
 
 为什么不直接继续扩展 `AgentApprovedMemoryWriteMaterializer.materialize_approved()`？
 原因是生产型 agent 平台中的后台动作必须具备“单条失败不拖垮整批”的执行语义。长期记忆写入属于有副作用动作，
-未来会接 Kafka/outbox worker、租约、失败退避、DLQ、管理员补偿重放和 Prometheus 指标。如果批量方法遇到异常就
+未来会接 Kafka/outbox worker、失败退避、DLQ、管理员补偿重放和 Prometheus 指标。如果批量方法遇到异常就
 整体中断，那么一个坏候选会长期阻塞同一窗口中的其他已审批记忆，最终表现为 agent “明明审批通过却记不住”。
 
-当前 Runner 是最小可用版本，暂不内置线程、调度器或多实例竞争控制。它可以被：
+当前 Runner 已接入可替换 lease store，但暂不内置线程、调度器、失败退避或 DLQ。它可以被：
 - 本地 CLI 或测试直接调用；
 - FastAPI 管理路由显式触发；
 - 未来后台 worker 的单轮处理函数复用；
@@ -25,6 +25,11 @@ from enum import Enum
 from typing import Any
 
 from datasmart_ai_runtime.domain.memory import AgentMemoryWriteCandidateStatus
+from datasmart_ai_runtime.services.memory.memory_materialization_lease_store import (
+    AgentMemoryMaterializationLease,
+    AgentMemoryMaterializationLeaseStore,
+    InMemoryAgentMemoryMaterializationLeaseStore,
+)
 from datasmart_ai_runtime.services.memory.memory_write_candidate_store import AgentMemoryWriteCandidateStore
 from datasmart_ai_runtime.services.memory.memory_write_materializer import (
     AgentApprovedMemoryWriteMaterializer,
@@ -95,7 +100,7 @@ class AgentMemoryMaterializationRunnerReport:
     - `requested_limit`：调用方希望处理多少条；
     - `scanned_count`：本轮实际扫描到多少条 APPROVED 候选；
     - `succeeded_count/failed_count`：本轮执行健康度；
-    - `skipped_count`：预留给未来租约、冷却期、DLQ、限流或权限策略跳过；
+    - `skipped_count`：当前记录 lease 未领取成功，未来还可扩展冷却期、DLQ、限流或权限策略跳过；
     - `worker_id`：未来多实例 worker 排障时用于定位具体处理者；
     - `started_at/finished_at`：用于计算批次耗时、吞吐和告警阈值。
     """
@@ -136,24 +141,31 @@ class AgentMemoryMaterializationRunner:
     2. 至少一次：同一候选可能被重复处理，正式 store 和 receipt store 负责幂等确认；
     3. 失败隔离：单条候选失败只写入该条失败摘要，不阻塞同批其他候选；
     4. 低敏报告：Runner 报告只携带控制面 ID、状态和短错误，不泄露候选正文或工具原始输出；
-    5. 暂不抢占：当前版本不实现租约，避免在没有 SQL outbox/worker lease 表之前伪造并发安全。
+    5. 租约抢占：执行前先领取候选，执行后按 token 完成或失败，避免多实例同时处理同一条候选；
+    6. 扫描放大：如果窗口前部候选被其他实例持有，继续向后扫描，减少可运行候选饥饿。
 
     这类 Runner 是“类 Codex/Claude Code agent”走向生产化时非常关键的一块：agent 不能只会计划和调用工具，
     还要能把经过治理的经验可靠沉淀，并在失败后可补偿、可解释、可审计。
     """
 
     MAX_BATCH_SIZE = 100
+    SCAN_WINDOW_MULTIPLIER = 2
+    MAX_SCAN_WINDOW_SIZE = 500
 
     def __init__(
         self,
         *,
         candidate_store: AgentMemoryWriteCandidateStore,
         materializer: AgentApprovedMemoryWriteMaterializer,
+        lease_store: AgentMemoryMaterializationLeaseStore | None = None,
         worker_id: str = "python-ai-runtime-memory-runner",
+        lease_seconds: int = 60,
     ) -> None:
         self._candidate_store = candidate_store
         self._materializer = materializer
+        self._lease_store = lease_store or InMemoryAgentMemoryMaterializationLeaseStore()
         self._worker_id = worker_id
+        self._lease_seconds = max(1, lease_seconds)
 
     def run_once(self, *, limit: int = 50) -> AgentMemoryMaterializationRunnerReport:
         """执行一轮 APPROVED 候选落成。
@@ -176,36 +188,61 @@ class AgentMemoryMaterializationRunner:
 
         started_at = datetime.now(timezone.utc)
         safe_limit = max(1, min(limit, self.MAX_BATCH_SIZE))
+        scan_window_limit = min(safe_limit * self.SCAN_WINDOW_MULTIPLIER, self.MAX_SCAN_WINDOW_SIZE)
         candidates = self._candidate_store.list(
             status=AgentMemoryWriteCandidateStatus.APPROVED,
-            limit=safe_limit,
+            limit=scan_window_limit,
         )
 
         items: list[AgentMemoryMaterializationRunnerItem] = []
+        skipped_count = 0
+        scanned_count = 0
         for candidate in candidates:
-            items.append(self._materialize_candidate(candidate.candidate_id))
+            if len(items) >= safe_limit:
+                break
+            scanned_count += 1
+            lease = self._lease_store.try_acquire(
+                candidate_id=candidate.candidate_id,
+                tenant_id=candidate.tenant_id,
+                project_id=candidate.project_id,
+                workspace_key=candidate.workspace_key or "",
+                memory_namespace=candidate.memory_namespace or "",
+                worker_id=self._worker_id,
+                lease_seconds=self._lease_seconds,
+            )
+            if lease is None:
+                skipped_count += 1
+                continue
+            items.append(self._materialize_candidate(candidate.candidate_id, lease))
 
         succeeded_count = sum(1 for item in items if item.status == AgentMemoryMaterializationRunnerItemStatus.SUCCEEDED)
         failed_count = sum(1 for item in items if item.status == AgentMemoryMaterializationRunnerItemStatus.FAILED)
         finished_at = datetime.now(timezone.utc)
         return AgentMemoryMaterializationRunnerReport(
             requested_limit=limit,
-            scanned_count=len(candidates),
+            scanned_count=scanned_count,
             succeeded_count=succeeded_count,
             failed_count=failed_count,
-            skipped_count=0,
+            skipped_count=skipped_count,
             items=tuple(items),
             worker_id=self._worker_id,
             started_at=started_at,
             finished_at=finished_at,
             attributes={
                 "safeLimit": safe_limit,
+                "scanWindowLimit": scan_window_limit,
+                "claimedCount": len(items),
                 "scanStatus": AgentMemoryWriteCandidateStatus.APPROVED.value,
-                "executionPolicy": "BOUNDED_AT_LEAST_ONCE_NO_LEASE_YET",
+                "executionPolicy": "BOUNDED_AT_LEAST_ONCE_WITH_LEASE_TOKEN_FENCING",
+                "leaseSeconds": self._lease_seconds,
             },
         )
 
-    def _materialize_candidate(self, candidate_id: str) -> AgentMemoryMaterializationRunnerItem:
+    def _materialize_candidate(
+        self,
+        candidate_id: str,
+        lease: AgentMemoryMaterializationLease,
+    ) -> AgentMemoryMaterializationRunnerItem:
         """处理单条候选，并把异常压缩为低敏失败项。
 
         捕获 `Exception` 不是为了吞错，而是为了保护批次处理语义：生产 worker 常见失败包括单条数据不合法、
@@ -215,8 +252,26 @@ class AgentMemoryMaterializationRunner:
 
         try:
             result = self._materializer.materialize(candidate_id)
-            return self._success_item(result)
+            self._lease_store.succeed(
+                candidate_id=candidate_id,
+                lease_token=lease.lease_token,
+                memory_id=result.memory_id,
+                outcome=result.outcome.value,
+                message=result.message,
+            )
+            return self._success_item(result, lease.lease_id)
         except Exception as exc:
+            lease_finalize_error: str | None = None
+            try:
+                self._lease_store.fail(
+                    candidate_id=candidate_id,
+                    lease_token=lease.lease_token,
+                    error_message=f"{type(exc).__name__}: {exc}",
+                )
+            except Exception as finalize_exc:
+                # 如果租约已过期并被其他 worker 接管，旧 worker 的 fail 回写会被 fencing 拒绝。
+                # 这里保留低敏 finalize 错误，方便运维识别“业务失败”和“租约竞争”两类问题。
+                lease_finalize_error = f"{type(finalize_exc).__name__}: {finalize_exc}"[:1000]
             return AgentMemoryMaterializationRunnerItem(
                 candidate_id=candidate_id,
                 status=AgentMemoryMaterializationRunnerItemStatus.FAILED,
@@ -225,11 +280,16 @@ class AgentMemoryMaterializationRunner:
                 attributes={
                     "errorType": type(exc).__name__,
                     "failurePolicy": "CONTINUE_BATCH_AND_KEEP_RECEIPT_IF_AVAILABLE",
+                    "leaseId": lease.lease_id,
+                    "leaseFinalizeError": lease_finalize_error,
                 },
             )
 
     @staticmethod
-    def _success_item(result: AgentMemoryMaterializationResult) -> AgentMemoryMaterializationRunnerItem:
+    def _success_item(
+        result: AgentMemoryMaterializationResult,
+        lease_id: str,
+    ) -> AgentMemoryMaterializationRunnerItem:
         """把 materializer 的成功结果转换为 Runner 单条摘要。"""
 
         return AgentMemoryMaterializationRunnerItem(
@@ -241,5 +301,6 @@ class AgentMemoryMaterializationRunner:
             attributes={
                 **dict(result.attributes),
                 "runnerResult": "success",
+                "leaseId": lease_id,
             },
         )
