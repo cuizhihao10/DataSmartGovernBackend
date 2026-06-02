@@ -1,4 +1,4 @@
-"""Agent Runtime 事件传输 envelope 构建服务。
+﻿"""Agent Runtime 事件传输 envelope 构建服务。
 
 当前项目还没有真正启动 WebSocket Server、Kafka Producer 或审计库写入器，但协议设计不能等到
 最后才补。`RuntimeEventTransportBuilder` 的职责是把请求级 `AgentRuntimeEvent` 列表包装成统一
@@ -22,7 +22,7 @@ from datasmart_ai_runtime.domain.event_transport import (
     RuntimeEventSubscriptionRequest,
 )
 from datasmart_ai_runtime.domain.events import AgentRuntimeEvent
-from datasmart_ai_runtime.services.runtime_event_visibility import RuntimeEventVisibilityPolicy
+from datasmart_ai_runtime.services.runtime_events.runtime_event_visibility import RuntimeEventVisibilityPolicy
 
 
 class RuntimeEventTransportBuilder:

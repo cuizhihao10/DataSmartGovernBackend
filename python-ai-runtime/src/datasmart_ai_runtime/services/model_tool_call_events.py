@@ -1,4 +1,4 @@
-"""模型工具调用治理结果的 Runtime Event 适配器。
+﻿"""模型工具调用治理结果的 Runtime Event 适配器。
 
 `ModelToolCallPlanner` 的职责是把模型提出的 tool_calls 治理成候选 `ToolPlan`；它不应该同时关心
 前端实时展示、WebSocket 推送、审计回放或事件脱敏。这里单独增加一个事件适配器，是为了把“治理判断”
@@ -27,7 +27,7 @@ from datasmart_ai_runtime.services.model_tool_call_planner import (
     ModelToolCallCandidate,
     ModelToolCallPlanningReport,
 )
-from datasmart_ai_runtime.services.runtime_event_recorder import RuntimeEventRecorder
+from datasmart_ai_runtime.services.runtime_events.runtime_event_recorder import RuntimeEventRecorder
 
 
 @dataclass(frozen=True)

@@ -1,4 +1,4 @@
-import json
+﻿import json
 import os
 import sys
 import unittest
@@ -12,7 +12,7 @@ from datasmart_ai_runtime.domain.events import (
     AgentRuntimeEventSeverity,
     AgentRuntimeEventType,
 )
-from datasmart_ai_runtime.services.runtime_event_publisher import (
+from datasmart_ai_runtime.services.runtime_events.runtime_event_publisher import (
     KafkaRuntimeEventPublisher,
     NoopRuntimeEventPublisher,
 )

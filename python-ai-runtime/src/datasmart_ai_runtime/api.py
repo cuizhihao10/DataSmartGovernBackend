@@ -32,7 +32,7 @@ from datasmart_ai_runtime.services.memory.memory_write_components import (
     build_memory_write_store_runtime,
     memory_write_store_diagnostics,
 )
-from datasmart_ai_runtime.services.runtime_event_components import (
+from datasmart_ai_runtime.services.runtime_events.runtime_event_components import (
     build_runtime_event_components,
     runtime_event_component_diagnostics,
 )

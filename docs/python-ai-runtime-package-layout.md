@@ -37,9 +37,12 @@ datasmart_ai_runtime/
 
 - `services/memory/` 已作为第一批能力包建立，承载长期记忆规划、检索、写入候选、审批治理、SQL 候选仓储、
   正式记忆 store、materializer 和 receipt store。
-- `services/__init__.py` 继续保留对外聚合导出，但 memory 相关导出已经改为依赖 `services.memory`，
-  避免顶层服务包直接知道 memory 内部每个文件的位置。
-- 其他能力域仍处于过渡状态：model gateway、runtime events、tools、skills、agent orchestration 还在
+- `services/runtime_events/` 已作为第二批能力包建立，承载事件事实存储、订阅会话、ack/checkpoint、
+  outbox/live push、replay source、publisher、transport、WebSocket frame、visibility 和 authorization。
+  这些能力共同支撑智能网关时间线、断线恢复、前端实时事件流和后续 Agent 执行审计。
+- `services/__init__.py` 继续保留对外聚合导出，但 memory 与 runtime event 相关导出已经分别依赖
+  `services.memory` 与 `services.runtime_events`，避免顶层服务包直接知道子包内部每个文件的位置。
+- 其他能力域仍处于过渡状态：model gateway、tools、skills、agent orchestration 还在
   `services/` 平铺目录中，后续应按测试覆盖逐批迁移。
 
 ## 迁移原则
@@ -52,8 +55,8 @@ datasmart_ai_runtime/
 
 ## 后续推荐顺序
 
-1. `services/runtime_events/`：事件相关文件数量最多，且与智能网关、WebSocket、回放、checkpoint、outbox 强相关。
-2. `services/model_gateway/`：模型 provider、预算、缓存、tool-call planner 和结果过滤需要形成独立模型网关边界。
-3. `services/tools/` 与 `services/skills/`：工具市场、Skill 准入和 MCP-style descriptor 后续会继续增长，应尽早分包。
-4. `api/`：当前仍有多个 `api_*.py` 平铺在包根，后续应迁移为 `api/routes/`、`api/schemas/`、`api/dependencies/`。
-5. `services/agent/`：Agent 编排和 loop control 应与 Java 控制面集成、长期记忆和模型网关解耦。
+1. `services/model_gateway/`：模型 provider、预算、缓存、tool-call planner 和结果过滤需要形成独立模型网关边界。
+2. `services/tools/` 与 `services/skills/`：工具市场、Skill 准入和 MCP-style descriptor 后续会继续增长，应尽早分包。
+3. `api/`：当前仍有多个 `api_*.py` 平铺在包根，后续应迁移为 `api/routes/`、`api/schemas/`、`api/dependencies/`。
+4. `services/agent/`：Agent 编排和 loop control 应与 Java 控制面集成、长期记忆和模型网关解耦。
+5. `services/integrations/`：Java 控制面客户端、外部 replay source、permission-admin 客户端和未来 MCP/HTTP 连接器应逐步收口。

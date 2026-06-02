@@ -1,5 +1,12 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-02 落地补充：runtime event pipelines need their own package boundary
+
+- 本阶段把 runtime event 能力迁入 `services/runtime_events/`，让事件 store、session、ack/checkpoint、outbox、live push、publisher、replay source、WebSocket frame、visibility 和 authorization 形成独立包边界。
+- 这对应前沿 Agent 产品的核心工程事实：用户看到的“正在思考、调用工具、等待确认、执行失败、恢复连接后继续显示历史事件”不是日志附属品，而是一条独立的 runtime event pipeline。
+- DataSmart 当前选择渐进迁移，不改类名、不重命名测试，只先把能力域从大 `services` 目录中拆出来。这样既改善可读性，也避免结构治理破坏已经稳定的事件流测试。
+- 后续趋势落地建议把智能网关服务间认证、事件审计导出、分布式 WebSocket 连接管理和低敏 display policy 都继续放在这个能力域下演进，而不是重新散落到 API 或 Agent orchestrator 文件中。
+
 ## 2026-06-02 落地补充：AI Runtime package layout should follow capability domains
 
 - 本阶段把 Python Runtime 的长期记忆相关文件迁入 `services/memory/`，开始从“按技术层 services 平铺”转向“按 Agent 能力域分包”。

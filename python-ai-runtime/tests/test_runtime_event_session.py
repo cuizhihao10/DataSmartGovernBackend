@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -14,12 +14,12 @@ from datasmart_ai_runtime.domain.event_transport import (
     RuntimeEventSubscriptionRequest,
 )
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
-from datasmart_ai_runtime.services.runtime_event_recorder import RuntimeEventRecorder
-from datasmart_ai_runtime.services.runtime_event_session import (
+from datasmart_ai_runtime.services.runtime_events.runtime_event_recorder import RuntimeEventRecorder
+from datasmart_ai_runtime.services.runtime_events.runtime_event_session import (
     RuntimeEventSessionError,
     RuntimeEventSessionManager,
 )
-from datasmart_ai_runtime.services.runtime_event_store import InMemoryRuntimeEventStore
+from datasmart_ai_runtime.services.runtime_events.runtime_event_store import InMemoryRuntimeEventStore
 
 
 class MutableClock:

@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -14,8 +14,8 @@ from datasmart_ai_runtime.domain.event_transport import (
     RuntimeEventSubscriptionRequest,
 )
 from datasmart_ai_runtime.domain.events import AgentRuntimeEvent, AgentRuntimeEventType
-from datasmart_ai_runtime.services.runtime_event_recorder import RuntimeEventRecorder
-from datasmart_ai_runtime.services.runtime_event_transport import RuntimeEventTransportBuilder
+from datasmart_ai_runtime.services.runtime_events.runtime_event_recorder import RuntimeEventRecorder
+from datasmart_ai_runtime.services.runtime_events.runtime_event_transport import RuntimeEventTransportBuilder
 
 
 class RuntimeEventTransportBuilderTest(unittest.TestCase):

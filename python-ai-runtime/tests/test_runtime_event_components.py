@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -9,26 +9,26 @@ if ROOT not in sys.path:
 from datasmart_ai_runtime.domain.event_transport import RuntimeEventSubscriptionRequest
 from datasmart_ai_runtime.domain.contracts import AgentRequest
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
-from datasmart_ai_runtime.services.runtime_event_checkpoint_store import (
+from datasmart_ai_runtime.services.runtime_events.runtime_event_checkpoint_store import (
     InMemoryRuntimeEventCheckpointStore,
     RedisRuntimeEventCheckpointStore,
 )
-from datasmart_ai_runtime.services.runtime_event_components import (
+from datasmart_ai_runtime.services.runtime_events.runtime_event_components import (
     RuntimeEventComponentSettings,
     build_runtime_event_components,
     runtime_event_component_diagnostics,
     runtime_event_settings_from_env,
 )
-from datasmart_ai_runtime.services.runtime_event_outbox_store import (
+from datasmart_ai_runtime.services.runtime_events.runtime_event_outbox_store import (
     InMemoryRuntimeEventOutboxStore,
     RedisRuntimeEventOutboxStore,
 )
-from datasmart_ai_runtime.services.runtime_event_publisher import (
+from datasmart_ai_runtime.services.runtime_events.runtime_event_publisher import (
     KafkaRuntimeEventPublisher,
     NoopRuntimeEventPublisher,
 )
-from datasmart_ai_runtime.services.runtime_event_recorder import RuntimeEventRecorder
-from datasmart_ai_runtime.services.runtime_event_store import InMemoryRuntimeEventStore, RedisStreamRuntimeEventStore
+from datasmart_ai_runtime.services.runtime_events.runtime_event_recorder import RuntimeEventRecorder
+from datasmart_ai_runtime.services.runtime_events.runtime_event_store import InMemoryRuntimeEventStore, RedisStreamRuntimeEventStore
 
 
 class FakeRedisClient:

@@ -1,4 +1,4 @@
-"""Agent 上下文构建器。
+﻿"""Agent 上下文构建器。
 
 本阶段先实现规则式上下文构建，不直接查询真实数据库、向量库或知识图谱。这样做是有意的：
 先让 Agent 编排链路拥有稳定的上下文输入/输出契约，再逐步替换具体来源，避免后续把 Chroma、
@@ -12,7 +12,7 @@ from typing import Protocol
 
 from datasmart_ai_runtime.domain.context import ContextBlock, ContextSensitivityLevel, ContextSourceType
 from datasmart_ai_runtime.domain.contracts import AgentRequest
-from datasmart_ai_runtime.services.runtime_event_recorder import RuntimeEventRecorder
+from datasmart_ai_runtime.services.runtime_events.runtime_event_recorder import RuntimeEventRecorder
 
 
 class ContextBuilder(Protocol):

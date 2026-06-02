@@ -1,5 +1,12 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-02 追加落地进展：Python Runtime Runtime Event 能力包分层
+
+- Python Runtime 第二批目录治理已迁移 runtime event 能力域，新增 `services/runtime_events/` 包，集中承载事件 store、checkpoint、session、control、outbox、live push、publisher、recorder、replay source、transport、visibility、authorization 和 WebSocket frame 适配。
+- 这批迁移直接服务智能网关体验：Agent 执行时间线、WebSocket 实时推送、断线恢复、事件回放、Java replay bridge 与未来审计导出不再散落在顶层 `services/`。
+- 顶层 `services/__init__.py` 改为从 `services.runtime_events` 聚合导出，后续 runtime event 内部继续拆 `stores/control/transport/visibility` 时，外部调用方不需要感知所有内部文件路径。
+- 现阶段保持历史文件名稳定，只迁移能力包和 import，避免目录治理变成高风险大重命名；后续建议继续迁移 `model_gateway`、`tools`、`skills` 和 `api/routes`。
+
 ## 2026-06-02 追加落地进展：Python Runtime 长期记忆能力包分层
 
 - Python Runtime 开始从“domain/services 两层平铺”转向“按 AI 产品能力域分包”的结构治理，第一批迁移长期记忆相关服务。

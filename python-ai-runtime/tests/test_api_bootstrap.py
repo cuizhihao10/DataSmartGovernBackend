@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -38,7 +38,7 @@ from datasmart_ai_runtime.domain.skills import AgentSkillDescriptor
 from datasmart_ai_runtime.config import default_model_routes
 from datasmart_ai_runtime.services.model_gateway import InMemoryModelBudgetLedger, ModelGatewayGovernanceService
 from datasmart_ai_runtime.services.model_router import ModelRouteRegistry
-from datasmart_ai_runtime.services.runtime_event_store import InMemoryRuntimeEventStore
+from datasmart_ai_runtime.services.runtime_events.runtime_event_store import InMemoryRuntimeEventStore
 from datasmart_ai_runtime.services.skill_registry_client import SkillRegistryClientError
 from datasmart_ai_runtime.services.tool_registry_client import ToolRegistryClientError
 

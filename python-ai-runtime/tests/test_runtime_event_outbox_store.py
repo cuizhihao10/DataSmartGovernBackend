@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -6,11 +6,11 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from datasmart_ai_runtime.services.runtime_event_outbox_store import (
+from datasmart_ai_runtime.services.runtime_events.runtime_event_outbox_store import (
     InMemoryRuntimeEventOutboxStore,
     RedisRuntimeEventOutboxStore,
 )
-from datasmart_ai_runtime.services.runtime_event_websocket import (
+from datasmart_ai_runtime.services.runtime_events.runtime_event_websocket import (
     RuntimeEventWebSocketFrame,
     RuntimeEventWebSocketFrameType,
 )

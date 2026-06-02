@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -14,10 +14,10 @@ from datasmart_ai_runtime.domain.events import (
     AgentRuntimeEventSeverity,
     AgentRuntimeEventType,
 )
-from datasmart_ai_runtime.services.runtime_event_recorder import RuntimeEventRecorder
-from datasmart_ai_runtime.services.runtime_event_session import RuntimeEventSessionManager
-from datasmart_ai_runtime.services.runtime_event_store import InMemoryRuntimeEventStore
-from datasmart_ai_runtime.services.runtime_event_websocket import RuntimeEventWebSocketConnectionAdapter
+from datasmart_ai_runtime.services.runtime_events.runtime_event_recorder import RuntimeEventRecorder
+from datasmart_ai_runtime.services.runtime_events.runtime_event_session import RuntimeEventSessionManager
+from datasmart_ai_runtime.services.runtime_events.runtime_event_store import InMemoryRuntimeEventStore
+from datasmart_ai_runtime.services.runtime_events.runtime_event_websocket import RuntimeEventWebSocketConnectionAdapter
 
 
 class RuntimeEventJavaReplayBridgeTest(unittest.TestCase):

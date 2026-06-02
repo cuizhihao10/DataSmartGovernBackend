@@ -1,4 +1,4 @@
-"""Agent API 路由注册模块。
+﻿"""Agent API 路由注册模块。
 
 `api.py` 的职责应该停留在“创建 FastAPI 应用、装配运行时依赖、调用路由注册函数”。如果把每个
 HTTP/WebSocket handler 都留在 bootstrap 文件里，后续继续增加内部签名校验、服务账号 Token、审计导出、
@@ -24,7 +24,7 @@ from datasmart_ai_runtime.api_events import (
 from datasmart_ai_runtime.api_plan_response import build_plan_response
 from datasmart_ai_runtime.api_trusted_context import enrich_agent_plan_payload_from_gateway_headers
 from datasmart_ai_runtime.domain.contracts import AgentRequest
-from datasmart_ai_runtime.services.runtime_event_websocket import RuntimeEventWebSocketConnectionAdapter
+from datasmart_ai_runtime.services.runtime_events.runtime_event_websocket import RuntimeEventWebSocketConnectionAdapter
 
 
 def register_agent_runtime_routes(

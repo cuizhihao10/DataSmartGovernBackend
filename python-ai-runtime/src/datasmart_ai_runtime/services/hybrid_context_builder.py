@@ -1,4 +1,4 @@
-"""混合上下文构建器。
+﻿"""混合上下文构建器。
 
 `DefaultContextBuilder` 只负责生成本地规则式上下文；未来还会出现 Java 控制面上下文、GraphRAG
 上下文、向量检索上下文、历史事故上下文等多个来源。`HybridContextBuilder` 的职责不是亲自检索，
@@ -22,7 +22,7 @@ from datasmart_ai_runtime.domain.events import (
     AgentRuntimeEventType,
 )
 from datasmart_ai_runtime.services.context_builder import ContextBuilder, DefaultContextBuilder
-from datasmart_ai_runtime.services.runtime_event_recorder import RuntimeEventRecorder
+from datasmart_ai_runtime.services.runtime_events.runtime_event_recorder import RuntimeEventRecorder
 
 
 @dataclass(frozen=True)

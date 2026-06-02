@@ -1,4 +1,4 @@
-"""Agent 计划响应组装器。
+﻿"""Agent 计划响应组装器。
 
 `api.py` 的职责应该是创建 FastAPI 应用、声明路由和装配运行时依赖；而 Agent plan 的响应组装已经
 变得越来越复杂：它要处理事件 envelope、事件存储、实时推送、Kafka 发布、Java plan ingestion、
@@ -20,10 +20,10 @@ from datasmart_ai_runtime.api_model_gateway import build_model_gateway_governanc
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ToolPlan
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
 from datasmart_ai_runtime.services.agent_workspace import AgentWorkspaceContext, AgentWorkspaceContextBuilder
-from datasmart_ai_runtime.services.runtime_event_live_push import RuntimeEventLivePushHub
-from datasmart_ai_runtime.services.runtime_event_publisher import RuntimeEventPublisher
-from datasmart_ai_runtime.services.runtime_event_store import RuntimeEventStore
-from datasmart_ai_runtime.services.runtime_event_transport import RuntimeEventTransportBuilder
+from datasmart_ai_runtime.services.runtime_events.runtime_event_live_push import RuntimeEventLivePushHub
+from datasmart_ai_runtime.services.runtime_events.runtime_event_publisher import RuntimeEventPublisher
+from datasmart_ai_runtime.services.runtime_events.runtime_event_store import RuntimeEventStore
+from datasmart_ai_runtime.services.runtime_events.runtime_event_transport import RuntimeEventTransportBuilder
 
 
 def build_plan_response(

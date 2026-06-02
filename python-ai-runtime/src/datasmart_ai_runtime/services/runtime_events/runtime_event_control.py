@@ -1,4 +1,4 @@
-"""Agent Runtime 实时事件控制消息处理器。
+﻿"""Agent Runtime 实时事件控制消息处理器。
 
 3.42 已经实现了 `RuntimeEventSessionManager`，它负责维护订阅会话状态；但真实网关接入时，前端发来
 的是 JSON 控制消息，例如：
@@ -26,12 +26,12 @@ from datasmart_ai_runtime.domain.event_transport import (
     RuntimeEventSubscriptionRequest,
 )
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
-from datasmart_ai_runtime.services.runtime_event_authorization import (
+from datasmart_ai_runtime.services.runtime_events.runtime_event_authorization import (
     RuntimeEventAccessContext,
     RuntimeEventAuthorizationDecision,
     RuntimeEventSubscriptionAuthorizer,
 )
-from datasmart_ai_runtime.services.runtime_event_session import (
+from datasmart_ai_runtime.services.runtime_events.runtime_event_session import (
     RuntimeEventSessionManager,
     RuntimeEventSessionSnapshot,
 )

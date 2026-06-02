@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import unittest
 
@@ -9,10 +9,10 @@ if ROOT not in sys.path:
 from datasmart_ai_runtime.domain.contracts import AgentRequest
 from datasmart_ai_runtime.domain.event_transport import RuntimeEventConnectionState, RuntimeEventSubscriptionRequest
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
-from datasmart_ai_runtime.services.runtime_event_checkpoint_store import RedisRuntimeEventCheckpointStore
-from datasmart_ai_runtime.services.runtime_event_recorder import RuntimeEventRecorder
-from datasmart_ai_runtime.services.runtime_event_session import RuntimeEventSessionManager
-from datasmart_ai_runtime.services.runtime_event_store import InMemoryRuntimeEventStore
+from datasmart_ai_runtime.services.runtime_events.runtime_event_checkpoint_store import RedisRuntimeEventCheckpointStore
+from datasmart_ai_runtime.services.runtime_events.runtime_event_recorder import RuntimeEventRecorder
+from datasmart_ai_runtime.services.runtime_events.runtime_event_session import RuntimeEventSessionManager
+from datasmart_ai_runtime.services.runtime_events.runtime_event_store import InMemoryRuntimeEventStore
 
 
 class FakeRedisClient:
