@@ -151,6 +151,33 @@ datasmart:
       # 这两个 Header 只用于调试和排障，不应该作为权限判断依据。
       route-prefix-header: X-Gateway-Route-Prefix
       original-path-header: X-Gateway-Original-Path
+      python-runtime-signature:
+        # gateway -> Python AI Runtime 的内部签名开关。
+        #
+        # 为什么不默认开启：
+        # 1. 当前仓库仍支持“只启动 Python Runtime 做学习/单测/离线规划”的模式；
+        # 2. 如果默认开启但没有配置密钥，gateway 会失败关闭，可能让本地新同学误以为路由或模型服务坏了；
+        # 3. 因此本地默认 false，生产或集成环境应显式打开，并在 Python Runtime 同步配置强制验签。
+        #
+        # 推荐生产组合：
+        # - DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_ENABLED=true
+        # - DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_SECRET=<从 Secret Manager 注入的强随机密钥>
+        # - Python Runtime 同步设置 DATASMART_GATEWAY_SIGNATURE_REQUIRED=true
+        # - Python Runtime 同步设置 DATASMART_GATEWAY_SIGNATURE_SECRET=<同一把密钥>
+        enabled: ${DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_ENABLED:false}
+        # HMAC-SHA256 共享密钥，严禁写入 Git。
+        # 该值必须通过环境变量、Kubernetes Secret、Docker secret 或云厂商 Secret Manager 注入。
+        # 开启 enabled 但 secret 为空时，过滤器会失败关闭，避免“安全开关已开但实际没有签名”的误判。
+        secret: ${DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_SECRET:}
+        # 密钥标识不是秘密，用于灰度轮换和排障。
+        # 后续可以扩展为 current/previous 双 key，让 gateway 与 Python Runtime 在滚动升级期间同时接受两把密钥。
+        key-id: ${DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_KEY_ID:gateway-local-v1}
+        # 需要签名保护的 gateway 原始路径。
+        # 当前先保护 /api/agent/plans，因为它会把租户、操作者、角色、workspace、数据范围等 Header
+        # 变成 Python Runtime 内部的 trustedControlPlane。后续如果 replay/control/WebSocket 也开始消费高敏
+        # 控制面事实，应继续把这些路径加入列表，而不是只依赖 source-service 自报。
+        target-paths:
+          - /api/agent/plans
     development-identity:
       # 开发期身份注入默认关闭。它只用于本地联调和测试环境模拟用户身份，不是生产认证方案。
       # 为什么需要它：permission-admin 已经开始参与权限判定，但真实 JWT/IdP 还没有完整接入；

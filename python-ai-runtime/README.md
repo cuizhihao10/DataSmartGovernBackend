@@ -95,3 +95,30 @@ Python API 边界新增 `enrich_agent_plan_payload_from_gateway_headers()`：先
 该桥接是迁移期边界，不是完整服务间认证。生产环境仍必须禁止终端直连 Python Runtime，并继续补充
 服务账号 Token、签名或 mTLS；权限集合、租户 Skill 开关、策略版本和 worker backlog 也应由 Java
 控制面继续注入，而不是由终端提交。
+
+# 4.98 Gateway 到 Python Runtime 签名信任链
+
+`/agent/plans` 现在支持校验 Java gateway 生成的 HMAC-SHA256 内部签名。gateway 会在转发
+`/api/agent/plans` 前，对已清理并重建的租户、操作者、角色、workspace、数据范围和 trace Header 快照
+签名；Python Runtime 在启用校验后，只有签名、keyId、timestamp、nonce 与 HMAC 全部通过时，才允许把
+这些 Header 重建为 `trustedControlPlane`。
+
+本地学习环境可以继续保持不强制验签；生产或集成环境建议同时配置：
+
+```powershell
+# Java gateway
+$env:DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_ENABLED="true"
+$env:DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_SECRET="<从 Secret Manager 注入的强随机密钥>"
+$env:DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_KEY_ID="gateway-prod-v1"
+
+# Python Runtime
+$env:DATASMART_GATEWAY_SIGNATURE_REQUIRED="true"
+$env:DATASMART_GATEWAY_SIGNATURE_SECRET="<同一把密钥>"
+$env:DATASMART_GATEWAY_SIGNATURE_KEY_ID="gateway-prod-v1"
+$env:DATASMART_GATEWAY_SIGNATURE_MAX_SKEW_SECONDS="300"
+```
+
+当前签名保护的是可信 Header 快照，不读取 request body。这样可以避免 reactive gateway 引入 body 缓存和
+背压风险；请求体里的 `trustedControlPlane` 仍会被 Python API 边界无条件删除。后续生产增强方向是
+TLS/mTLS、Secret Manager 密钥轮换、Redis nonce 去重、服务网格访问控制和统一异常映射，而不是让 HMAC
+单独承担全部服务间安全。

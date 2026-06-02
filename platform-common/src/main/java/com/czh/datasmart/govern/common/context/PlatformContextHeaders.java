@@ -27,6 +27,45 @@ public final class PlatformContextHeaders {
     public static final String REQUEST_SOURCE = "X-DataSmart-Request-Source";
 
     /**
+     * gateway -> Python AI Runtime 服务间签名协议版本。
+     *
+     * <p>该签名不是给浏览器或普通业务客户端使用的。它只用于 Python Runtime 判断：
+     * “当前收到的 X-DataSmart-* 控制面 Header 是否确实由统一 gateway 清理、重建并签名”。
+     *
+     * <p>版本字段必须进入签名原文，便于未来从 HMAC-SHA256 v1 平滑升级到新的规范，
+     * 而不是在多个服务里悄悄改变字符串拼接顺序，导致联调和灰度环境难以排查。
+     */
+    public static final String GATEWAY_SIGNATURE_VERSION = "X-DataSmart-Gateway-Signature-Version";
+
+    /**
+     * gateway 生成签名时使用的 epoch milliseconds 时间戳。
+     *
+     * <p>Python Runtime 会检查时间窗口，拒绝明显过旧的签名，降低请求被截获后长期重放的风险。
+     */
+    public static final String GATEWAY_SIGNATURE_TIMESTAMP = "X-DataSmart-Gateway-Signature-Timestamp";
+
+    /**
+     * 单次请求随机 nonce。
+     *
+     * <p>当前 Python Runtime 先校验 nonce 存在并把它绑定进签名原文。后续接入 Redis 后，可以进一步保存
+     * 短 TTL nonce 使用记录，拒绝时间窗口内的重复重放请求。
+     */
+    public static final String GATEWAY_SIGNATURE_NONCE = "X-DataSmart-Gateway-Signature-Nonce";
+
+    /**
+     * 签名密钥标识。
+     *
+     * <p>keyId 不是秘密，它用于密钥轮换。未来 Python Runtime 可以同时保留 current/previous 两把密钥，
+     * 让 gateway 与 Python Runtime 在滚动升级期间仍然可以平滑验证请求。
+     */
+    public static final String GATEWAY_SIGNATURE_KEY_ID = "X-DataSmart-Gateway-Signature-Key-Id";
+
+    /**
+     * gateway 对可信上下文快照计算出的 URL-safe Base64 HMAC-SHA256 签名。
+     */
+    public static final String GATEWAY_SIGNATURE = "X-DataSmart-Gateway-Signature";
+
+    /**
      * 权限中心判定出的数据范围级别。
      *
      * <p>该 Header 通常由 gateway 根据 permission-admin 的判定结果写入，下游业务服务只消费它。

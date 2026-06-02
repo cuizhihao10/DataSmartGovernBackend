@@ -14,6 +14,12 @@ from __future__ import annotations
 
 from typing import Mapping
 
+from datasmart_ai_runtime.api_gateway_signature import (
+    GatewaySignatureVerificationConfig,
+    ensure_gateway_signature,
+    gateway_signature_config_from_env,
+)
+
 
 GATEWAY_SOURCE_SERVICE = "datasmart-govern-gateway"
 TRUSTED_ROOT_KEY = "trustedControlPlane"
@@ -24,6 +30,8 @@ def enrich_agent_plan_payload_from_gateway_headers(
     headers: Mapping[str, str],
     *,
     required_source_service: str = GATEWAY_SOURCE_SERVICE,
+    signature_config: GatewaySignatureVerificationConfig | None = None,
+    now_ms: int | None = None,
 ) -> dict[str, object]:
     """清理调用方伪造事实，并按 gateway Header 重建 Agent plan 请求。
 
@@ -45,6 +53,16 @@ def enrich_agent_plan_payload_from_gateway_headers(
     if source_service != required_source_service:
         sanitized["variables"] = variables
         return sanitized
+
+    # 只有命中统一 gateway 来源时才执行内部签名校验。
+    #
+    # 设计原因：
+    # 1. 非 gateway 请求本来就不会注入 trustedControlPlane，不需要额外验签；
+    # 2. gateway 请求一旦要把 Header 变成可信事实，就必须证明这些 Header 确实由 gateway 生成；
+    # 3. 本地学习环境可能没有配置密钥，因此默认由环境变量决定是否强制校验。生产环境应设置
+    #    DATASMART_GATEWAY_SIGNATURE_REQUIRED=true 和 DATASMART_GATEWAY_SIGNATURE_SECRET。
+    effective_signature_config = signature_config or gateway_signature_config_from_env()
+    ensure_gateway_signature(headers, effective_signature_config, now_ms=now_ms)
 
     tenant_id = _header(headers, "X-DataSmart-Tenant-Id")
     actor_id = _header(headers, "X-DataSmart-Actor-Id")
