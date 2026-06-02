@@ -15,6 +15,12 @@ from datasmart_ai_runtime.api_events import (
     build_event_replay_response,
     build_event_websocket_payloads,
 )
+from datasmart_ai_runtime.api_gateway_security import (
+    GatewaySignatureSecurityStats,
+    build_gateway_signature_nonce_store,
+    gateway_signature_nonce_store_settings_from_env,
+    gateway_signature_security_diagnostics,
+)
 from datasmart_ai_runtime.api_skill_admission import build_skill_admission_policy
 from datasmart_ai_runtime.api_agent_routes import register_agent_runtime_routes
 from datasmart_ai_runtime.api_plan_response import build_plan_response
@@ -414,6 +420,9 @@ def create_app() -> Any:
     session_manager = runtime_events.session_manager
     live_push_hub = runtime_events.live_push_hub
     event_publisher = runtime_events.event_publisher
+    gateway_signature_nonce_settings = gateway_signature_nonce_store_settings_from_env()
+    gateway_signature_nonce_store = build_gateway_signature_nonce_store(gateway_signature_nonce_settings)
+    gateway_signature_security_stats = GatewaySignatureSecurityStats()
     # 记忆写入候选 store 是长期记忆写入治理的“事实暂存层”：
     # - 默认 in-memory，保证本地学习、单元测试和离线规划不需要任何数据库；
     # - 显式配置 sqlite/mysql 后，候选可以跨 Python Runtime 重启恢复；
@@ -454,6 +463,16 @@ def create_app() -> Any:
 
         return memory_write_store_diagnostics(memory_write_store_runtime)
 
+    @app.get("/agent/security/gateway-signature/diagnostics")
+    def gateway_signature_security_runtime_diagnostics() -> dict[str, Any]:
+        """查询 gateway 签名安全诊断信息。"""
+
+        return gateway_signature_security_diagnostics(
+            gateway_signature_security_stats,
+            gateway_signature_nonce_store,
+            gateway_signature_nonce_settings,
+        )
+
     register_agent_runtime_routes(
         app,
         request_type=Request,
@@ -469,10 +488,11 @@ def create_app() -> Any:
         loop_control_evaluator=loop_control_evaluator,
         second_turn_orchestrator=second_turn_orchestrator,
         memory_write_governance=memory_write_governance,
-        # `/agent/plans` 的 gateway 签名失败属于服务间认证失败，而不是普通业务参数错误。
-        # FastAPI 会把这里抛出的 HTTPException 渲染成清晰的 JSON 响应，避免调用方看到 500 后误判为模型服务异常。
+        # `/agent/plans` 的 gateway 签名失败属于服务间认证失败；这里映射为清晰 401，避免误报 500。
         # 当前使用 401 表示“内部调用凭证缺失、过期或不匹配”；如果未来签名有效但权限不足，再使用 403。
         gateway_signature_error_factory=lambda detail: HTTPException(status_code=401, detail=detail),
+        gateway_signature_nonce_store=gateway_signature_nonce_store,
+        gateway_signature_security_stats=gateway_signature_security_stats,
     )
 
     register_memory_write_routes(app, memory_write_governance)

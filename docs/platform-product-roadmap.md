@@ -8138,3 +8138,40 @@ workspace 风险和实时 backlog 快照。随后把可信快照版本写入 run
 1. 接 Redis nonce 短 TTL 去重，阻断签名时间窗口内的重放请求。
 2. 把签名失败按 reason 写入统一指标和审计事件，区分攻击、时钟漂移、密钥不一致和灰度发布异常。
 3. 做完上述安全闭环后，应切回更大的 Agent 产品能力主线：长期记忆正式持久化、工具/Skill 市场、agent runtime 可恢复执行和模型 provider health。
+
+## 5.00 Gateway 签名 nonce 去重与安全诊断（2026-06-02）
+
+本阶段补齐 4.98/4.99 中明确留下的重放风险：HMAC-SHA256 可以证明 Header 快照由 gateway 生成，但如果同一请求在 timestamp 允许窗口内被截获并重复发送，单纯复算签名仍会通过。因此 Python Runtime 新增 gateway 签名 nonce store，只有首次出现的 `keyId + nonce` 能通过，TTL 内重复使用会返回 `nonce-replayed`。
+
+已完成：
+- 新增 `api_gateway_security.py`：
+  - `InMemoryGatewaySignatureNonceStore`：默认本地/单实例实现，带 Lock 与过期清理；
+  - `RedisGatewaySignatureNonceStore`：生产多实例实现，依赖 Redis `SET NX EX` 原子语义；
+  - `DisabledGatewaySignatureNonceStore`：仅供迁移或故障排查显式关闭；
+  - `GatewaySignatureSecurityStats`：进程内聚合签名失败 reason 和最近失败快照；
+  - nonce store 环境变量解析与安全诊断构造函数。
+- `api_gateway_signature.py` 新增 `nonce_ttl_seconds` 和 `GatewaySignatureNonceStore` 协议：
+  - HMAC、timestamp、keyId 校验全部通过后才登记 nonce；
+  - 避免攻击者用无效签名抢先污染 nonce store；
+  - 重复 nonce 返回 `nonce-replayed`。
+- `api_trusted_context.py`、`api_agent_routes.py` 和 `api.py` 串联 nonce store：
+  - `/agent/plans` 验签时传入 nonce store；
+  - 签名失败 reason 写入 `GatewaySignatureSecurityStats`；
+  - 新增 `/agent/security/gateway-signature/diagnostics`，返回 nonce store 配置、TTL、集群安全提示和失败 reason 统计。
+- `pyproject.toml` 新增 `redis` optional extra：`pip install -e python-ai-runtime[redis]`。
+- 新增/更新测试：
+  - Redis nonce store 使用 SET NX EX 拒绝重复 nonce；
+  - 环境变量可构造 Redis store，测试通过 fake client 避免真实 Redis 依赖；
+  - 同一个合法签名 nonce 第二次请求会被拒绝；
+  - API route 安全统计会记录失败 reason；
+  - 诊断响应不返回 secret、签名材料或完整 Header。
+
+产品意义：
+- 智能网关信任链完成了“来源可验证 + 明确错误语义 + 基础防重放 + reason 统计”的最小闭环。
+- 本地默认进程内 store，降低学习和测试门槛；生产可通过 Redis 切到多实例共享 nonce，符合商业化部署对安全和可用性的双重要求。
+- 安全诊断仍是 Python 进程内快照，不是最终审计系统。后续应把 reason counter 接入 Prometheus/告警，并把高风险失败写入 Java 审计链路。
+
+下一步建议：
+1. 不建议继续长时间只围绕 gateway 签名局部优化。当前安全基座已经足够支撑下一阶段 Agent 能力建设。
+2. 推荐切回大能力主线：长期记忆正式持久化、工具/Skill 市场、agent runtime 可恢复执行、模型 provider health 和 KV/prompt cache。
+3. 如果后续再做安全增强，优先做 Prometheus 指标、Java 审计事件和 mTLS/服务网格，而不是继续增加 Python 局部判断。

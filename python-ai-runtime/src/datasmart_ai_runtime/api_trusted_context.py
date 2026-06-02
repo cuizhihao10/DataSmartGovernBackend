@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Mapping
 
 from datasmart_ai_runtime.api_gateway_signature import (
+    GatewaySignatureNonceStore,
     GatewaySignatureVerificationConfig,
     ensure_gateway_signature,
     gateway_signature_config_from_env,
@@ -32,6 +33,7 @@ def enrich_agent_plan_payload_from_gateway_headers(
     required_source_service: str = GATEWAY_SOURCE_SERVICE,
     signature_config: GatewaySignatureVerificationConfig | None = None,
     now_ms: int | None = None,
+    nonce_store: GatewaySignatureNonceStore | None = None,
 ) -> dict[str, object]:
     """清理调用方伪造事实，并按 gateway Header 重建 Agent plan 请求。
 
@@ -62,7 +64,7 @@ def enrich_agent_plan_payload_from_gateway_headers(
     # 3. 本地学习环境可能没有配置密钥，因此默认由环境变量决定是否强制校验。生产环境应设置
     #    DATASMART_GATEWAY_SIGNATURE_REQUIRED=true 和 DATASMART_GATEWAY_SIGNATURE_SECRET。
     effective_signature_config = signature_config or gateway_signature_config_from_env()
-    ensure_gateway_signature(headers, effective_signature_config, now_ms=now_ms)
+    ensure_gateway_signature(headers, effective_signature_config, now_ms=now_ms, nonce_store=nonce_store)
 
     tenant_id = _header(headers, "X-DataSmart-Tenant-Id")
     actor_id = _header(headers, "X-DataSmart-Actor-Id")

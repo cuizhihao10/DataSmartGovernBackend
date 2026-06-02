@@ -135,3 +135,28 @@ TLS/mTLS、Secret Manager 密钥轮换、Redis nonce 去重、服务网格访问
 
 当前错误映射仍是 Python API 层日志级审计。后续更成熟的做法是接入统一审计事件、Prometheus 指标、
 告警规则和 Java replay/index，让服务间认证失败可以进入运维大盘与安全告警。
+
+# 5.00 Gateway 签名 nonce 去重与安全诊断
+
+gateway 签名现在支持 nonce 短 TTL 去重。HMAC 能证明请求由 gateway 生成，但如果同一请求在允许时间窗口内
+被截获并重放，单纯 HMAC 仍可能通过；nonce store 会记录 `keyId + nonce`，TTL 内再次出现相同组合时返回
+`nonce-replayed`。
+
+本地默认使用进程内 nonce store，适合学习、单元测试和单实例开发。生产多实例应显式启用 Redis：
+
+```powershell
+$env:DATASMART_GATEWAY_SIGNATURE_NONCE_STORE="redis"
+$env:DATASMART_GATEWAY_SIGNATURE_NONCE_REDIS_URL="redis://localhost:6379/0"
+$env:DATASMART_GATEWAY_SIGNATURE_NONCE_TTL_SECONDS="300"
+$env:DATASMART_GATEWAY_SIGNATURE_NONCE_KEY_PREFIX="datasmart:gateway-signature:nonce"
+```
+
+启用 Redis 需要安装可选依赖：
+
+```powershell
+pip install -e python-ai-runtime[redis]
+```
+
+同时新增 `/agent/security/gateway-signature/diagnostics` 诊断入口，返回 nonce store 类型、TTL、集群安全提示和
+签名失败 reason 统计。该接口不返回 secret、nonce 原文、签名值或签名原文；生产环境仍必须由 gateway 和
+permission-admin 管理员权限保护。

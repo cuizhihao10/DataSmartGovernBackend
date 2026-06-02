@@ -9,6 +9,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from datasmart_ai_runtime.api_agent_routes import register_agent_runtime_routes
+from datasmart_ai_runtime.api_gateway_security import GatewaySignatureSecurityStats
 
 
 class FakeHttpException(Exception):
@@ -70,6 +71,7 @@ class ApiAgentRoutesSecurityTest(unittest.TestCase):
         """签名失败应返回稳定错误码和排障字段，而不是冒泡成 500。"""
 
         app = FakeApp()
+        stats = GatewaySignatureSecurityStats()
         register_agent_runtime_routes(
             app,
             request_type=FakeRequest,
@@ -86,6 +88,7 @@ class ApiAgentRoutesSecurityTest(unittest.TestCase):
             second_turn_orchestrator=None,
             memory_write_governance=None,
             gateway_signature_error_factory=lambda detail: FakeHttpException(status_code=401, detail=detail),
+            gateway_signature_security_stats=stats,
         )
 
         with _patched_env(
@@ -114,6 +117,7 @@ class ApiAgentRoutesSecurityTest(unittest.TestCase):
         self.assertEqual("/agent/plans", detail["path"])
         self.assertIn("Gateway 内部签名校验失败", logs.output[0])
         self.assertNotIn("secret-for-test", logs.output[0])
+        self.assertEqual({"missing-signature-headers": 1}, stats.snapshot()["failureCountByReason"])
 
 
 class _patched_env:

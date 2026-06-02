@@ -15,6 +15,7 @@ from datasmart_ai_runtime.api_gateway_signature import (
     GATEWAY_SIGNATURE_VERSION,
     sign_gateway_payload,
 )
+from datasmart_ai_runtime.api_gateway_security import InMemoryGatewaySignatureNonceStore
 from datasmart_ai_runtime.api_trusted_context import enrich_agent_plan_payload_from_gateway_headers
 
 
@@ -117,6 +118,34 @@ class ApiTrustedContextTest(unittest.TestCase):
                     max_skew_seconds=1,
                 ),
                 now_ms=1_800_000_010_000,
+            )
+
+    def test_replayed_nonce_is_rejected_after_valid_signature_once(self) -> None:
+        """同一个合法签名 nonce 在 TTL 内只能使用一次。"""
+
+        headers = self._signed_headers()
+        nonce_store = InMemoryGatewaySignatureNonceStore()
+        signature_config = GatewaySignatureVerificationConfig(
+            required=True,
+            secret="secret-for-test",
+            nonce_ttl_seconds=300,
+        )
+
+        enrich_agent_plan_payload_from_gateway_headers(
+            {"variables": {"datasourceId": "ds-001"}},
+            headers,
+            signature_config=signature_config,
+            now_ms=1_800_000_000_100,
+            nonce_store=nonce_store,
+        )
+
+        with self.assertRaisesRegex(PermissionError, "nonce-replayed"):
+            enrich_agent_plan_payload_from_gateway_headers(
+                {"variables": {"datasourceId": "ds-001"}},
+                headers,
+                signature_config=signature_config,
+                now_ms=1_800_000_000_200,
+                nonce_store=nonce_store,
             )
 
     def _signed_headers(self, *, timestamp: str = "1800000000000") -> dict[str, str]:

@@ -50,6 +50,8 @@ def register_agent_runtime_routes(
     second_turn_orchestrator: Any | None,
     memory_write_governance: Any | None,
     gateway_signature_error_factory: Callable[[dict[str, Any]], Exception] | None = None,
+    gateway_signature_nonce_store: Any | None = None,
+    gateway_signature_security_stats: Any | None = None,
 ) -> None:
     """注册 Agent 规划、事件回放和 WebSocket 路由。
 
@@ -67,6 +69,10 @@ def register_agent_runtime_routes(
     - 本模块不能在顶层直接依赖 FastAPI，否则核心单元测试必须安装 API 可选依赖；
     - 真实 HTTP 服务需要把验签失败映射为 401/403，而不是让异常冒泡成 500；
     - 因此由 `api.py#create_app()` 注入 `HTTPException` 工厂，离线测试或未来其他运行载体可以注入自己的错误类型。
+
+    `gateway_signature_nonce_store` 与 `gateway_signature_security_stats` 分别承载防重放和安全统计：
+    - nonce store 只在 HMAC 校验通过后登记 nonce，避免无效签名污染去重存储；
+    - security stats 记录失败 reason 分布，后续可升级为 Prometheus 指标或统一审计事件。
     """
 
     @app.post("/agent/plans")
@@ -86,7 +92,13 @@ def register_agent_runtime_routes(
         """
 
         try:
-            request = AgentRequest(**enrich_agent_plan_payload_from_gateway_headers(payload, http_request.headers))
+            request = AgentRequest(
+                **enrich_agent_plan_payload_from_gateway_headers(
+                    payload,
+                    http_request.headers,
+                    nonce_store=gateway_signature_nonce_store,
+                )
+            )
         except GatewaySignatureVerificationError as exc:
             # 这是一条安全审计日志，而不是普通业务异常日志。
             #
@@ -103,6 +115,8 @@ def register_agent_runtime_routes(
                 error_detail["sourceService"],
                 error_detail["path"],
             )
+            if gateway_signature_security_stats is not None:
+                gateway_signature_security_stats.record_failure(error_detail)
             if gateway_signature_error_factory is not None:
                 raise gateway_signature_error_factory(error_detail) from exc
             raise

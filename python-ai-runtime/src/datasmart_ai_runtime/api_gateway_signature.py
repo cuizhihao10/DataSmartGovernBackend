@@ -22,7 +22,7 @@ import hmac
 import os
 import time
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Mapping, Protocol
 
 
 SIGNATURE_VERSION = "v1"
@@ -67,12 +67,15 @@ class GatewaySignatureVerificationConfig:
       双 key 校验，允许 gateway 与 Python Runtime 滚动升级。
     - ``max_skew_seconds``：允许的时间偏移窗口。窗口越小越安全，但越依赖 gateway 与 Python Runtime 的
       系统时钟同步；当前默认 300 秒是迁移期折中值。
+    - ``nonce_ttl_seconds``：nonce 去重 TTL。生产环境应确保它不小于 ``max_skew_seconds``，否则签名时间
+      窗口仍有效但 nonce 已过期时，重放请求可能再次被接受。
     """
 
     required: bool = False
     secret: str = ""
     key_id: str = "gateway-local-v1"
     max_skew_seconds: int = 300
+    nonce_ttl_seconds: int = 300
 
     @property
     def verification_enabled(self) -> bool:
@@ -94,6 +97,19 @@ class GatewaySignatureVerificationResult:
 
     valid: bool
     reason: str = "ok"
+
+
+class GatewaySignatureNonceStore(Protocol):
+    """gateway 签名 nonce 去重 store 的最小协议。
+
+    签名模块只依赖这一个方法，避免直接绑定 Redis、内存字典或企业缓存 SDK。实现方需要保证：
+    - 第一次看到同一个 keyId + nonce 时返回 True；
+    - TTL 内再次看到相同 keyId + nonce 时返回 False；
+    - TTL 过后允许清理。
+    """
+
+    def try_mark_seen(self, *, key_id: str, nonce: str, timestamp_ms: int, ttl_seconds: int) -> bool:
+        """尝试登记 nonce。"""
 
 
 class GatewaySignatureVerificationError(PermissionError):
@@ -125,6 +141,7 @@ def gateway_signature_config_from_env(
     - ``DATASMART_GATEWAY_SIGNATURE_SECRET``：与 Java gateway 共享的 HMAC 密钥；
     - ``DATASMART_GATEWAY_SIGNATURE_KEY_ID``：密钥标识，需与 gateway 配置一致；
     - ``DATASMART_GATEWAY_SIGNATURE_MAX_SKEW_SECONDS``：允许时间偏移秒数。
+    - ``DATASMART_GATEWAY_SIGNATURE_NONCE_TTL_SECONDS``：nonce 去重 TTL 秒数。
     """
 
     values = os.environ if environ is None else environ
@@ -133,6 +150,7 @@ def gateway_signature_config_from_env(
         secret=(values.get("DATASMART_GATEWAY_SIGNATURE_SECRET") or "").strip(),
         key_id=(values.get("DATASMART_GATEWAY_SIGNATURE_KEY_ID") or "gateway-local-v1").strip(),
         max_skew_seconds=_positive_int(values.get("DATASMART_GATEWAY_SIGNATURE_MAX_SKEW_SECONDS"), 300),
+        nonce_ttl_seconds=_positive_int(values.get("DATASMART_GATEWAY_SIGNATURE_NONCE_TTL_SECONDS"), 300),
     )
 
 
@@ -141,6 +159,7 @@ def verify_gateway_signature(
     config: GatewaySignatureVerificationConfig,
     *,
     now_ms: int | None = None,
+    nonce_store: GatewaySignatureNonceStore | None = None,
 ) -> GatewaySignatureVerificationResult:
     """校验 gateway 签名并返回可解释结果。
 
@@ -148,7 +167,8 @@ def verify_gateway_signature(
     1. 未启用校验时直接返回 ``legacy-not-required``，兼容本地调试；
     2. 缺少密钥、签名字段、协议版本、keyId、timestamp、nonce 时拒绝；
     3. timestamp 必须落在允许时间窗口内，降低抓包后长期重放风险；
-    4. 使用 ``hmac.compare_digest`` 做常量时间比较，避免普通 ``==`` 带来的微弱时序泄露。
+    4. 使用 ``hmac.compare_digest`` 做常量时间比较，避免普通 ``==`` 带来的微弱时序泄露；
+    5. HMAC 通过后再登记 nonce，避免攻击者用无效签名抢先污染 nonce store。
     """
 
     if not config.verification_enabled:
@@ -179,6 +199,17 @@ def verify_gateway_signature(
     )
     if not hmac.compare_digest(expected_signature, provided_signature):
         return GatewaySignatureVerificationResult(valid=False, reason="signature-mismatch")
+    if nonce_store is not None:
+        timestamp_ms = _parse_timestamp_ms(timestamp)
+        if timestamp_ms is None:
+            return GatewaySignatureVerificationResult(valid=False, reason="timestamp-out-of-window")
+        if not nonce_store.try_mark_seen(
+            key_id=key_id,
+            nonce=nonce,
+            timestamp_ms=timestamp_ms,
+            ttl_seconds=config.nonce_ttl_seconds,
+        ):
+            return GatewaySignatureVerificationResult(valid=False, reason="nonce-replayed")
     return GatewaySignatureVerificationResult(valid=True)
 
 
@@ -187,10 +218,11 @@ def ensure_gateway_signature(
     config: GatewaySignatureVerificationConfig,
     *,
     now_ms: int | None = None,
+    nonce_store: GatewaySignatureNonceStore | None = None,
 ) -> None:
     """强制校验 gateway 签名，不通过时抛出可被 API 层捕获的异常。"""
 
-    result = verify_gateway_signature(headers, config, now_ms=now_ms)
+    result = verify_gateway_signature(headers, config, now_ms=now_ms, nonce_store=nonce_store)
     if not result.valid:
         raise GatewaySignatureVerificationError(result.reason)
 
@@ -275,9 +307,17 @@ def _positive_int(value: str | None, default: int) -> int:
 def _timestamp_in_window(timestamp: str, max_skew_seconds: int, *, now_ms: int | None) -> bool:
     """判断 gateway timestamp 是否处于允许时间窗口内。"""
 
-    try:
-        timestamp_ms = int(timestamp)
-    except ValueError:
+    timestamp_ms = _parse_timestamp_ms(timestamp)
+    if timestamp_ms is None:
         return False
     current_ms = int(time.time() * 1000) if now_ms is None else now_ms
     return abs(current_ms - timestamp_ms) <= max_skew_seconds * 1000
+
+
+def _parse_timestamp_ms(timestamp: str) -> int | None:
+    """解析 epoch milliseconds timestamp。"""
+
+    try:
+        return int(timestamp)
+    except ValueError:
+        return None
