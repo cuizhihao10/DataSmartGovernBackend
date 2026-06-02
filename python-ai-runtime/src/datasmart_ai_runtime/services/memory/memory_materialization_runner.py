@@ -27,6 +27,7 @@ from typing import Any
 from datasmart_ai_runtime.domain.memory import AgentMemoryWriteCandidateStatus
 from datasmart_ai_runtime.services.memory.memory_materialization_lease_store import (
     AgentMemoryMaterializationLease,
+    AgentMemoryMaterializationLeaseStatus,
     AgentMemoryMaterializationLeaseStore,
     InMemoryAgentMemoryMaterializationLeaseStore,
 )
@@ -142,7 +143,8 @@ class AgentMemoryMaterializationRunner:
     3. 失败隔离：单条候选失败只写入该条失败摘要，不阻塞同批其他候选；
     4. 低敏报告：Runner 报告只携带控制面 ID、状态和短错误，不泄露候选正文或工具原始输出；
     5. 租约抢占：执行前先领取候选，执行后按 token 完成或失败，避免多实例同时处理同一条候选；
-    6. 扫描放大：如果窗口前部候选被其他实例持有，继续向后扫描，减少可运行候选饥饿。
+    6. 扫描放大：如果窗口前部候选被其他实例持有，继续向后扫描，减少可运行候选饥饿；
+    7. 失败退避：失败候选不会立即热循环，达到最大尝试次数后进入 DLQ 等待管理员补偿。
 
     这类 Runner 是“类 Codex/Claude Code agent”走向生产化时非常关键的一块：agent 不能只会计划和调用工具，
     还要能把经过治理的经验可靠沉淀，并在失败后可补偿、可解释、可审计。
@@ -160,12 +162,18 @@ class AgentMemoryMaterializationRunner:
         lease_store: AgentMemoryMaterializationLeaseStore | None = None,
         worker_id: str = "python-ai-runtime-memory-runner",
         lease_seconds: int = 60,
+        max_attempts: int = 5,
+        retry_base_seconds: int = 30,
+        retry_max_seconds: int = 3600,
     ) -> None:
         self._candidate_store = candidate_store
         self._materializer = materializer
         self._lease_store = lease_store or InMemoryAgentMemoryMaterializationLeaseStore()
         self._worker_id = worker_id
         self._lease_seconds = max(1, lease_seconds)
+        self._max_attempts = max(1, max_attempts)
+        self._retry_base_seconds = max(1, retry_base_seconds)
+        self._retry_max_seconds = max(self._retry_base_seconds, retry_max_seconds)
 
     def run_once(self, *, limit: int = 50) -> AgentMemoryMaterializationRunnerReport:
         """执行一轮 APPROVED 候选落成。
@@ -196,6 +204,7 @@ class AgentMemoryMaterializationRunner:
 
         items: list[AgentMemoryMaterializationRunnerItem] = []
         skipped_count = 0
+        skipped_reasons: dict[str, int] = {}
         scanned_count = 0
         for candidate in candidates:
             if len(items) >= safe_limit:
@@ -212,11 +221,14 @@ class AgentMemoryMaterializationRunner:
             )
             if lease is None:
                 skipped_count += 1
+                skip_reason = self._skip_reason(candidate.candidate_id)
+                skipped_reasons[skip_reason] = skipped_reasons.get(skip_reason, 0) + 1
                 continue
             items.append(self._materialize_candidate(candidate.candidate_id, lease))
 
         succeeded_count = sum(1 for item in items if item.status == AgentMemoryMaterializationRunnerItemStatus.SUCCEEDED)
         failed_count = sum(1 for item in items if item.status == AgentMemoryMaterializationRunnerItemStatus.FAILED)
+        dead_letter_count = sum(1 for item in items if item.attributes.get("leaseStatus") == "dead_letter")
         finished_at = datetime.now(timezone.utc)
         return AgentMemoryMaterializationRunnerReport(
             requested_limit=limit,
@@ -232,9 +244,14 @@ class AgentMemoryMaterializationRunner:
                 "safeLimit": safe_limit,
                 "scanWindowLimit": scan_window_limit,
                 "claimedCount": len(items),
+                "deadLetterCount": dead_letter_count,
+                "skippedReasons": skipped_reasons,
                 "scanStatus": AgentMemoryWriteCandidateStatus.APPROVED.value,
                 "executionPolicy": "BOUNDED_AT_LEAST_ONCE_WITH_LEASE_TOKEN_FENCING",
                 "leaseSeconds": self._lease_seconds,
+                "maxAttempts": self._max_attempts,
+                "retryBaseSeconds": self._retry_base_seconds,
+                "retryMaxSeconds": self._retry_max_seconds,
             },
         )
 
@@ -262,28 +279,73 @@ class AgentMemoryMaterializationRunner:
             return self._success_item(result, lease.lease_id)
         except Exception as exc:
             lease_finalize_error: str | None = None
+            failed_lease: AgentMemoryMaterializationLease | None = None
             try:
-                self._lease_store.fail(
+                failed_lease = self._lease_store.fail(
                     candidate_id=candidate_id,
                     lease_token=lease.lease_token,
                     error_message=f"{type(exc).__name__}: {exc}",
+                    max_attempts=self._max_attempts,
+                    retry_base_seconds=self._retry_base_seconds,
+                    retry_max_seconds=self._retry_max_seconds,
                 )
             except Exception as finalize_exc:
                 # 如果租约已过期并被其他 worker 接管，旧 worker 的 fail 回写会被 fencing 拒绝。
                 # 这里保留低敏 finalize 错误，方便运维识别“业务失败”和“租约竞争”两类问题。
                 lease_finalize_error = f"{type(finalize_exc).__name__}: {finalize_exc}"[:1000]
+            failed_status = failed_lease.status if failed_lease else None
+            is_dead_letter = failed_status == AgentMemoryMaterializationLeaseStatus.DEAD_LETTER
             return AgentMemoryMaterializationRunnerItem(
                 candidate_id=candidate_id,
                 status=AgentMemoryMaterializationRunnerItemStatus.FAILED,
-                message="长期记忆候选落成失败，已在批次报告中保留低敏错误摘要。",
+                message=(
+                    "长期记忆候选落成失败，已达到最大尝试次数并进入 DLQ，等待管理员补偿。"
+                    if is_dead_letter
+                    else "长期记忆候选落成失败，已写入退避窗口并在批次报告中保留低敏错误摘要。"
+                ),
                 error_message=f"{type(exc).__name__}: {exc}"[:1000],
                 attributes={
                     "errorType": type(exc).__name__,
-                    "failurePolicy": "CONTINUE_BATCH_AND_KEEP_RECEIPT_IF_AVAILABLE",
+                    "failurePolicy": "CONTINUE_BATCH_WITH_BACKOFF_AND_DLQ",
                     "leaseId": lease.lease_id,
+                    "leaseStatus": failed_status.value if failed_status else None,
+                    "nextRetryAt": failed_lease.next_retry_at.isoformat() if failed_lease and failed_lease.next_retry_at else None,
+                    "attemptCount": failed_lease.attempt_count if failed_lease else lease.attempt_count,
+                    "maxAttempts": self._max_attempts,
+                    "deadLettered": is_dead_letter,
                     "leaseFinalizeError": lease_finalize_error,
                 },
             )
+
+    def _skip_reason(self, candidate_id: str) -> str:
+        """解释候选本轮未被领取的原因。
+
+        `try_acquire(...)` 只返回领取成功或失败，不强制暴露原因，这是为了保持 store 协议简单。
+        Runner 作为管理报告的生产者，可以在跳过后读取一次低敏租约快照，汇总为稳定 reason：
+        - `active_lease`：其他 worker 仍持有有效租约；
+        - `retry_cooldown`：失败候选还没到 nextRetryAt；
+        - `dead_letter`：候选已进入 DLQ，等待管理员补偿；
+        - `already_succeeded`：候选已经成功落成；
+        - `not_claimable`：没有读取到明确原因，通常表示并发窗口或未来 store 扩展。
+        """
+
+        lease = self._lease_store.get_by_candidate_id(candidate_id)
+        now = datetime.now(timezone.utc)
+        if lease is None:
+            return "not_claimable"
+        if lease.status == AgentMemoryMaterializationLeaseStatus.SUCCEEDED:
+            return "already_succeeded"
+        if lease.status == AgentMemoryMaterializationLeaseStatus.DEAD_LETTER:
+            return "dead_letter"
+        if lease.status == AgentMemoryMaterializationLeaseStatus.LEASED and lease.leased_until > now:
+            return "active_lease"
+        if (
+            lease.status == AgentMemoryMaterializationLeaseStatus.FAILED
+            and lease.next_retry_at
+            and lease.next_retry_at > now
+        ):
+            return "retry_cooldown"
+        return "not_claimable"
 
     @staticmethod
     def _success_item(

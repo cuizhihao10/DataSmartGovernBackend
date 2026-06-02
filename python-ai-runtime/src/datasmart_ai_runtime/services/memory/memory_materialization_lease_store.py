@@ -30,15 +30,38 @@ class AgentMemoryMaterializationLeaseStatus(str, Enum):
 
     - `LEASED`：某个 worker 已在有限时间窗口内取得处理权；
     - `SUCCEEDED`：候选已经成功落成，后续扫描应跳过；
-    - `FAILED`：最近一次尝试失败，当前阶段允许下一轮重新领取。
+    - `FAILED`：最近一次尝试失败，但尚未达到最大尝试次数，需要等 `next_retry_at` 后再重试；
+    - `DEAD_LETTER`：连续失败达到上限，候选进入 DLQ，需要管理员补偿或人工重放。
 
-    下一阶段会在 `FAILED` 上增加 nextRetryAt、最大尝试次数和 DLQ。当前先保留最小状态机，
-    避免一次性把调度、补偿和告警全部揉进同一个改动。
+    `FAILED` 与 `DEAD_LETTER` 的区分很重要：前者是系统自动恢复的一部分，后者是需要运营或管理员介入的异常池。
+    这能避免毒性候选在 worker 中无限热循环，也能给后续补偿台、告警和审计导出留下稳定状态语义。
     """
 
     LEASED = "leased"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
+    DEAD_LETTER = "dead_letter"
+
+
+@dataclass(frozen=True)
+class AgentMemoryMaterializationRetryDecision:
+    """一次失败后的重试/DLQ 判定结果。
+
+    字段说明：
+    - `status`：失败后应写回 lease 的状态，可能是 `FAILED` 或 `DEAD_LETTER`；
+    - `next_retry_at`：下一次允许领取的时间。进入 DLQ 时为空，表示不能自动重试；
+    - `retry_delay_seconds`：本次计算出来的退避秒数，便于 Runner report 和后续指标展示；
+    - `max_attempts`：当前策略允许的最大领取尝试次数；
+    - `dead_lettered`：是否已经进入 DLQ。
+
+    这里单独建模，而不是把公式散落在内存 store、SQL store 和 Runner 里，是为了保证不同存储实现对失败语义一致。
+    """
+
+    status: AgentMemoryMaterializationLeaseStatus
+    next_retry_at: datetime | None
+    retry_delay_seconds: int
+    max_attempts: int
+    dead_lettered: bool
 
 
 @dataclass(frozen=True)
@@ -54,6 +77,7 @@ class AgentMemoryMaterializationLease:
     - `worker_id`：当前或最近处理者；
     - `lease_token`：每次领取生成的新 fencing token，只能在内部传递，不能输出到诊断接口；
     - `leased_until`：租约过期时间。worker 崩溃后，其他实例可以在该时间之后重新领取；
+    - `next_retry_at`：失败后的下一次自动领取时间。未到时间时 Runner 应跳过，避免坏候选热循环；
     - `memory_id/outcome/message/error_message`：最近一次低敏结果，不保存正文、SQL、样本或完整异常堆栈。
     """
 
@@ -68,6 +92,7 @@ class AgentMemoryMaterializationLease:
     worker_id: str
     lease_token: str
     leased_until: datetime
+    next_retry_at: datetime | None = None
     memory_id: str | None = None
     outcome: str | None = None
     message: str | None = None
@@ -94,6 +119,7 @@ class AgentMemoryMaterializationLease:
             "workerId": self.worker_id,
             "leaseTokenPresent": bool(self.lease_token),
             "leasedUntil": self.leased_until.isoformat(),
+            "nextRetryAt": self.next_retry_at.isoformat() if self.next_retry_at else None,
             "memoryId": self.memory_id,
             "outcome": self.outcome,
             "message": self.message,
@@ -139,9 +165,12 @@ class AgentMemoryMaterializationLeaseStore(Protocol):
         candidate_id: str,
         lease_token: str,
         error_message: str,
+        max_attempts: int = 5,
+        retry_base_seconds: int = 30,
+        retry_max_seconds: int = 3600,
         now: datetime | None = None,
     ) -> AgentMemoryMaterializationLease:
-        """使用 fencing token 记录失败，使候选可在后续轮次重试。"""
+        """使用 fencing token 记录失败，并根据重试策略写入冷却时间或 DLQ 终态。"""
 
     def get_by_candidate_id(self, candidate_id: str) -> AgentMemoryMaterializationLease | None:
         """按候选 ID 查询租约快照。"""
@@ -172,17 +201,24 @@ class InMemoryAgentMemoryMaterializationLeaseStore:
     ) -> AgentMemoryMaterializationLease | None:
         """原子尝试领取候选。
 
-        成功领取会生成新的 token。已成功候选永远跳过；仍在有效期内的租约也跳过；失败或已过期租约可以重新领取。
+        成功领取会生成新的 token。已成功和 DLQ 候选永远跳过；仍在有效期内的租约也跳过；
+        失败候选只有在 `next_retry_at` 到达后才能重新领取。
         """
 
         current_time = _utc(now)
         safe_lease_seconds = max(1, lease_seconds)
         with self._lock:
             current = self._leases_by_candidate_id.get(candidate_id)
-            if current and current.status == AgentMemoryMaterializationLeaseStatus.SUCCEEDED:
+            if current and current.status in {
+                AgentMemoryMaterializationLeaseStatus.SUCCEEDED,
+                AgentMemoryMaterializationLeaseStatus.DEAD_LETTER,
+            }:
                 return None
             if current and current.status == AgentMemoryMaterializationLeaseStatus.LEASED:
                 if current.leased_until > current_time:
+                    return None
+            if current and current.status == AgentMemoryMaterializationLeaseStatus.FAILED:
+                if current.next_retry_at and current.next_retry_at > current_time:
                     return None
             lease = AgentMemoryMaterializationLease(
                 lease_id=_lease_id(candidate_id),
@@ -196,7 +232,13 @@ class InMemoryAgentMemoryMaterializationLeaseStore:
                 worker_id=worker_id,
                 lease_token=str(uuid4()),
                 leased_until=current_time + timedelta(seconds=safe_lease_seconds),
+                next_retry_at=None,
+                memory_id=None,
+                outcome=None,
+                message=None,
+                error_message=None,
                 started_at=current_time,
+                finished_at=None,
                 updated_at=current_time,
             )
             self._leases_by_candidate_id[candidate_id] = lease
@@ -224,6 +266,7 @@ class InMemoryAgentMemoryMaterializationLeaseStore:
                 outcome=outcome,
                 message=message[:1024],
                 error_message=None,
+                next_retry_at=None,
                 finished_at=current_time,
                 updated_at=current_time,
             )
@@ -236,17 +279,32 @@ class InMemoryAgentMemoryMaterializationLeaseStore:
         candidate_id: str,
         lease_token: str,
         error_message: str,
+        max_attempts: int = 5,
+        retry_base_seconds: int = 30,
+        retry_max_seconds: int = 3600,
         now: datetime | None = None,
     ) -> AgentMemoryMaterializationLease:
-        """记录失败，并允许候选在后续轮次再次领取。"""
+        """记录失败，并根据策略决定进入退避冷却还是 DLQ。
+
+        退避策略使用指数退避：第 1 次失败等待 base，第 2 次失败等待 base*2，以此类推，并受 max 限制。
+        当 `attempt_count >= max_attempts` 时写入 `DEAD_LETTER`，后续 Runner 不会自动领取，避免毒性候选无限重试。
+        """
 
         current_time = _utc(now)
         with self._lock:
             current = self._required_current_lease(candidate_id, lease_token)
+            decision = decide_materialization_retry(
+                attempt_count=current.attempt_count,
+                now=current_time,
+                max_attempts=max_attempts,
+                retry_base_seconds=retry_base_seconds,
+                retry_max_seconds=retry_max_seconds,
+            )
             stored = replace(
                 current,
-                status=AgentMemoryMaterializationLeaseStatus.FAILED,
+                status=decision.status,
                 error_message=error_message[:1000],
+                next_retry_at=decision.next_retry_at,
                 finished_at=current_time,
                 updated_at=current_time,
             )
@@ -277,6 +335,48 @@ def _utc(value: datetime | None) -> datetime:
 
     current = value or datetime.now(timezone.utc)
     return current.replace(tzinfo=timezone.utc) if current.tzinfo is None else current.astimezone(timezone.utc)
+
+
+def decide_materialization_retry(
+    *,
+    attempt_count: int,
+    now: datetime | None = None,
+    max_attempts: int = 5,
+    retry_base_seconds: int = 30,
+    retry_max_seconds: int = 3600,
+) -> AgentMemoryMaterializationRetryDecision:
+    """根据当前尝试次数计算下一步应自动重试还是进入 DLQ。
+
+    业务解释：
+    - `attempt_count` 来自 lease 领取次数，而不是 receipt begin 次数，因为它代表 worker 真正取得处理权的次数；
+    - 当尝试次数达到上限时进入 `DEAD_LETTER`，后续应由管理员查看低敏错误、修复配置或手动重放；
+    - 未达到上限时写入 `next_retry_at`，Runner 在冷却期内跳过该候选，避免外部依赖抖动时毫秒级热循环。
+
+    性能解释：
+    退避能显著降低坏候选对数据库、向量库、图谱索引和日志系统的压力。当前采用简单指数退避，是为了先固定
+    可解释、可测试的语义；未来可以按租户套餐、错误类型或下游容量切换为更细的策略。
+    """
+
+    current_time = _utc(now)
+    safe_attempts = max(1, max_attempts)
+    safe_base = max(1, retry_base_seconds)
+    safe_max = max(safe_base, retry_max_seconds)
+    if attempt_count >= safe_attempts:
+        return AgentMemoryMaterializationRetryDecision(
+            status=AgentMemoryMaterializationLeaseStatus.DEAD_LETTER,
+            next_retry_at=None,
+            retry_delay_seconds=0,
+            max_attempts=safe_attempts,
+            dead_lettered=True,
+        )
+    retry_delay = min(safe_max, safe_base * (2 ** max(0, attempt_count - 1)))
+    return AgentMemoryMaterializationRetryDecision(
+        status=AgentMemoryMaterializationLeaseStatus.FAILED,
+        next_retry_at=current_time + timedelta(seconds=retry_delay),
+        retry_delay_seconds=retry_delay,
+        max_attempts=safe_attempts,
+        dead_lettered=False,
+    )
 
 
 def _lease_id(candidate_id: str) -> str:

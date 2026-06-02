@@ -23,6 +23,7 @@ from uuid import uuid4
 from datasmart_ai_runtime.services.memory.memory_materialization_lease_store import (
     AgentMemoryMaterializationLease,
     AgentMemoryMaterializationLeaseStatus,
+    decide_materialization_retry,
     _lease_id,
     _utc,
 )
@@ -60,7 +61,7 @@ class SqlAgentMemoryMaterializationLeaseStore:
         """尝试领取一条候选。
 
         算法步骤：
-        1. 先用条件 UPDATE 尝试接管已有失败租约或过期租约；
+        1. 先用条件 UPDATE 尝试接管已到重试时间的失败租约或过期租约；
         2. 如果候选还没有 lease 行，则 INSERT 新租约；
         3. 如果多个实例同时 INSERT，唯一键冲突的一方回滚并再次尝试条件 UPDATE；
         4. 已成功或仍在有效期内的租约返回 `None`。
@@ -102,6 +103,7 @@ class SqlAgentMemoryMaterializationLeaseStore:
             worker_id=worker_id,
             lease_token=lease_token,
             leased_until=leased_until,
+            next_retry_at=None,
             started_at=current_time,
             updated_at=current_time,
         )
@@ -148,7 +150,8 @@ class SqlAgentMemoryMaterializationLeaseStore:
             "UPDATE agent_memory_materialization_lease SET "
             f"status = {self._placeholder}, memory_id = {self._placeholder}, "
             f"outcome = {self._placeholder}, message = {self._placeholder}, "
-            f"error_message = {self._placeholder}, finished_at = {self._placeholder}, "
+            f"error_message = {self._placeholder}, next_retry_at = {self._placeholder}, "
+            f"finished_at = {self._placeholder}, "
             f"update_time = {self._placeholder} "
             f"WHERE candidate_id = {self._placeholder} AND lease_token = {self._placeholder} "
             f"AND status = {self._placeholder}",
@@ -157,6 +160,7 @@ class SqlAgentMemoryMaterializationLeaseStore:
                 memory_id,
                 outcome,
                 message[:1024],
+                None,
                 None,
                 self._format_datetime(current_time),
                 self._format_datetime(current_time),
@@ -175,23 +179,42 @@ class SqlAgentMemoryMaterializationLeaseStore:
         candidate_id: str,
         lease_token: str,
         error_message: str,
+        max_attempts: int = 5,
+        retry_base_seconds: int = 30,
+        retry_max_seconds: int = 3600,
         now: datetime | None = None,
     ) -> AgentMemoryMaterializationLease:
         """记录失败并释放当前领取权。
 
-        当前版本失败后允许下一轮立即重试。下一阶段会增加 next_retry_at、最大尝试次数与 DLQ，避免毒性候选热循环。
+        这里会先读取当前租约计算重试策略，再用 token 条件 UPDATE 写回。即使读取后租约被其他 worker 接管，
+        最终 UPDATE 仍会因为 token 不匹配失败，从而保护新 worker 的处理结果。
         """
 
         current_time = _utc(now)
+        current = self._required(candidate_id)
+        if (
+            current.status != AgentMemoryMaterializationLeaseStatus.LEASED
+            or current.lease_token != lease_token
+        ):
+            self._require_fenced_update(0, candidate_id)
+        decision = decide_materialization_retry(
+            attempt_count=current.attempt_count,
+            now=current_time,
+            max_attempts=max_attempts,
+            retry_base_seconds=retry_base_seconds,
+            retry_max_seconds=retry_max_seconds,
+        )
         cursor = self._execute(
             "UPDATE agent_memory_materialization_lease SET "
             f"status = {self._placeholder}, error_message = {self._placeholder}, "
-            f"finished_at = {self._placeholder}, update_time = {self._placeholder} "
+            f"next_retry_at = {self._placeholder}, finished_at = {self._placeholder}, "
+            f"update_time = {self._placeholder} "
             f"WHERE candidate_id = {self._placeholder} AND lease_token = {self._placeholder} "
             f"AND status = {self._placeholder}",
             (
-                AgentMemoryMaterializationLeaseStatus.FAILED.value,
+                decision.status.value,
                 error_message[:1000],
+                self._format_datetime(decision.next_retry_at),
                 self._format_datetime(current_time),
                 self._format_datetime(current_time),
                 candidate_id,
@@ -230,9 +253,9 @@ class SqlAgentMemoryMaterializationLeaseStore:
         """尝试接管失败租约或过期租约。
 
         条件表达式是并发安全的关键：
-        - `succeeded` 永不重新领取；
+        - `succeeded` 和 `dead_letter` 永不自动重新领取；
         - `leased` 只有在 `leased_until <= now` 时才能接管；
-        - `failed` 当前允许立即重试。
+        - `failed` 只有在 `next_retry_at <= now` 时才能接管。
         """
 
         cursor = self._execute(
@@ -243,10 +266,13 @@ class SqlAgentMemoryMaterializationLeaseStore:
             f"worker_id = {self._placeholder}, lease_token = {self._placeholder}, "
             f"leased_until = {self._placeholder}, memory_id = {self._placeholder}, "
             f"outcome = {self._placeholder}, message = {self._placeholder}, "
-            f"error_message = {self._placeholder}, started_at = {self._placeholder}, "
+            f"error_message = {self._placeholder}, next_retry_at = {self._placeholder}, "
+            f"started_at = {self._placeholder}, "
             f"finished_at = {self._placeholder}, update_time = {self._placeholder} "
             f"WHERE candidate_id = {self._placeholder} AND status <> {self._placeholder} "
-            f"AND (status <> {self._placeholder} OR leased_until IS NULL OR leased_until <= {self._placeholder})",
+            f"AND status <> {self._placeholder} "
+            f"AND (status <> {self._placeholder} OR leased_until IS NULL OR leased_until <= {self._placeholder}) "
+            f"AND (status <> {self._placeholder} OR next_retry_at IS NULL OR next_retry_at <= {self._placeholder})",
             (
                 tenant_id,
                 project_id,
@@ -260,12 +286,16 @@ class SqlAgentMemoryMaterializationLeaseStore:
                 None,
                 None,
                 None,
+                None,
                 self._format_datetime(now),
                 None,
                 self._format_datetime(now),
                 candidate_id,
                 AgentMemoryMaterializationLeaseStatus.SUCCEEDED.value,
+                AgentMemoryMaterializationLeaseStatus.DEAD_LETTER.value,
                 AgentMemoryMaterializationLeaseStatus.LEASED.value,
+                self._format_datetime(now),
+                AgentMemoryMaterializationLeaseStatus.FAILED.value,
                 self._format_datetime(now),
             ),
         )
@@ -319,7 +349,8 @@ class SqlAgentMemoryMaterializationLeaseStore:
 
         return (
             "lease_id,candidate_id,tenant_id,project_id,workspace_key,memory_namespace,status,attempt_count,"
-            "worker_id,lease_token,leased_until,memory_id,outcome,message,error_message,started_at,finished_at,update_time"
+            "worker_id,lease_token,leased_until,next_retry_at,memory_id,outcome,message,error_message,"
+            "started_at,finished_at,update_time"
         )
 
     def _insert_params(self, lease: AgentMemoryMaterializationLease) -> tuple[Any, ...]:
@@ -337,6 +368,7 @@ class SqlAgentMemoryMaterializationLeaseStore:
             lease.worker_id,
             lease.lease_token,
             self._format_datetime(lease.leased_until),
+            self._format_datetime(lease.next_retry_at),
             lease.memory_id,
             lease.outcome,
             lease.message,
@@ -366,6 +398,7 @@ class SqlAgentMemoryMaterializationLeaseStore:
             lease_token=values["lease_token"],
             leased_until=SqlAgentMemoryMaterializationLeaseStore._parse_datetime(values["leased_until"])
             or datetime.now(timezone.utc),
+            next_retry_at=SqlAgentMemoryMaterializationLeaseStore._parse_datetime(values["next_retry_at"]),
             memory_id=values["memory_id"],
             outcome=values["outcome"],
             message=values["message"],

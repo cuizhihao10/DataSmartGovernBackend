@@ -88,6 +88,8 @@ class AgentMemoryMaterializationRunnerTest(unittest.TestCase):
         self.assertEqual(AgentMemoryMaterializationRunnerItemStatus.SUCCEEDED, items_by_candidate_id["candidate-valid"].status)
         self.assertEqual(AgentMemoryMaterializationRunnerItemStatus.FAILED, items_by_candidate_id["candidate-invalid"].status)
         self.assertIn("retentionDays", items_by_candidate_id["candidate-invalid"].error_message)
+        self.assertEqual("failed", items_by_candidate_id["candidate-invalid"].attributes["leaseStatus"])
+        self.assertIsNotNone(items_by_candidate_id["candidate-invalid"].attributes["nextRetryAt"])
         self.assertEqual(AgentMemoryMaterializationReceiptStatus.FAILED, failed_receipt.status)
         self.assertIsNotNone(memory_store.get_by_candidate_id("candidate-valid"))
         self.assertIsNone(memory_store.get_by_candidate_id("candidate-invalid"))
@@ -163,12 +165,46 @@ class AgentMemoryMaterializationRunnerTest(unittest.TestCase):
 
         self.assertEqual(2, report.scanned_count)
         self.assertEqual(1, report.skipped_count)
+        self.assertEqual({"active_lease": 1}, report.attributes["skippedReasons"])
         self.assertEqual(1, report.succeeded_count)
         self.assertEqual("candidate-free", report.items[0].candidate_id)
         self.assertIsNotNone(memory_store.get_by_candidate_id("candidate-free"))
 
+    def test_run_once_skips_failed_candidate_during_retry_cooldown(self) -> None:
+        """失败候选进入退避窗口后，下一轮不应立即重复处理。"""
+
+        candidate_store, _memory_store, receipt_store, runner = self._runtime()
+        candidate_store.save(self._candidate("candidate-invalid", retention_days=0))
+
+        first = runner.run_once(limit=10)
+        second = runner.run_once(limit=10)
+        receipt = receipt_store.get_by_candidate_id("candidate-invalid")
+
+        self.assertEqual(1, first.failed_count)
+        self.assertEqual("failed", first.items[0].attributes["leaseStatus"])
+        self.assertEqual(0, second.failed_count)
+        self.assertEqual(1, second.skipped_count)
+        self.assertEqual({"retry_cooldown": 1}, second.attributes["skippedReasons"])
+        self.assertEqual(1, receipt.attempt_count)
+
+    def test_run_once_marks_dead_letter_when_max_attempts_reached(self) -> None:
+        """达到最大尝试次数时，Runner 应把候选推进 DLQ，后续自动轮次只跳过。"""
+
+        candidate_store, _memory_store, _receipt_store, runner = self._runtime(max_attempts=1)
+        candidate_store.save(self._candidate("candidate-invalid", retention_days=0))
+
+        first = runner.run_once(limit=10)
+        second = runner.run_once(limit=10)
+
+        self.assertEqual(1, first.failed_count)
+        self.assertEqual("dead_letter", first.items[0].attributes["leaseStatus"])
+        self.assertTrue(first.items[0].attributes["deadLettered"])
+        self.assertEqual(1, first.attributes["deadLetterCount"])
+        self.assertEqual(1, second.skipped_count)
+        self.assertEqual({"dead_letter": 1}, second.attributes["skippedReasons"])
+
     @staticmethod
-    def _runtime(*, lease_store=None):
+    def _runtime(*, lease_store=None, max_attempts: int = 5):
         """构造 Runner 测试运行时。
 
         测试使用内存 store 是为了聚焦 Runner 语义，不代表生产环境会使用内存。生产环境应继续使用 SQL
@@ -189,6 +225,7 @@ class AgentMemoryMaterializationRunnerTest(unittest.TestCase):
             materializer=materializer,
             lease_store=lease_store,
             worker_id="unit-test-memory-runner",
+            max_attempts=max_attempts,
         )
         return candidate_store, memory_store, receipt_store, runner
 

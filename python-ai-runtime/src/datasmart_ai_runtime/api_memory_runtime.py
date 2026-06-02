@@ -83,8 +83,8 @@ def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
     - receipt store 由 `DATASMART_AI_MEMORY_RECEIPT_*` 控制；
     - lease store 由 `DATASMART_AI_MEMORY_LEASE_*` 控制。
 
-    这里没有自动启动后台 worker。当前已具备 lease token fencing，但正式 worker 还需要失败退避、DLQ、
-    审计事件和指标。当前先把 store、materializer 和 runner 装配好，后续 worker 可以复用这里的组件边界。
+    这里没有自动启动后台 worker。当前已具备 lease token fencing、失败退避和 DLQ 基础语义，但正式 worker
+    还需要管理员补偿入口、审计事件和指标。当前先把 store、materializer 和 runner 装配好，后续 worker 可以复用这里的组件边界。
     """
 
     write_store_runtime = build_memory_write_store_runtime()
@@ -102,6 +102,9 @@ def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
         materializer=materializer,
         lease_store=lease_store_runtime.store,
         lease_seconds=lease_store_runtime.settings.default_lease_seconds,
+        max_attempts=lease_store_runtime.settings.max_attempts,
+        retry_base_seconds=lease_store_runtime.settings.retry_base_seconds,
+        retry_max_seconds=lease_store_runtime.settings.retry_max_seconds,
     )
     retriever = StoreBackedAgentMemoryRetriever(formal_store_runtime.store)
     return ApiMemoryRuntimeComponents(
@@ -143,16 +146,17 @@ def api_memory_runtime_diagnostics(components: ApiMemoryRuntimeComponents) -> di
             "workerEnabled": False,
             "notes": (
                 "当前 API 已装配 materializer 和最小 runner。runner 可以被管理接口、CLI 或未来后台 worker 显式触发，"
-                "但 API 启动时尚不会自动消费 APPROVED 候选。生产化 worker 仍需要补失败退避、DLQ、审计事件和指标。"
+                "但 API 启动时尚不会自动消费 APPROVED 候选。生产化 worker 仍需要补管理员补偿入口、审计事件和指标。"
             ),
         },
         "materializationRunner": {
             "implementation": "AgentMemoryMaterializationRunner",
             "workerEnabled": False,
-            "defaultPolicy": "BOUNDED_AT_LEAST_ONCE_WITH_LEASE_TOKEN_FENCING",
+            "defaultPolicy": "BOUNDED_AT_LEAST_ONCE_WITH_LEASE_TOKEN_FENCING_AND_BACKOFF_DLQ",
             "notes": (
                 "runner 负责有界扫描 APPROVED 候选、领取 lease 并逐条调用 materializer。单条失败会进入批次报告，"
-                "不会阻塞同批其他候选；token fencing 会阻止过期 worker 覆盖新 worker。候选审批状态不被 runner 修改。"
+                "不会阻塞同批其他候选；token fencing 会阻止过期 worker 覆盖新 worker。失败候选会先退避，达到最大尝试次数后进入 DLQ。"
+                "候选审批状态不被 runner 修改。"
             ),
         },
     }

@@ -79,20 +79,45 @@ class AgentMemoryMaterializationLeaseStoreTest(unittest.TestCase):
         self.assertTrue(stored.to_summary()["leaseTokenPresent"])
 
     def test_in_memory_store_failed_lease_can_be_retried(self) -> None:
-        """失败租约当前允许下一轮重新领取，为后续退避与 DLQ 留出扩展点。"""
+        """失败租约应先进入退避窗口，到达 nextRetryAt 后才能重新领取。"""
 
         store = InMemoryAgentMemoryMaterializationLeaseStore()
-        first = self._acquire(store, worker_id="worker-a")
+        started_at = datetime(2026, 6, 3, 1, 0, tzinfo=timezone.utc)
+        first = self._acquire(store, worker_id="worker-a", now=started_at)
         failed = store.fail(
             candidate_id="candidate-a",
             lease_token=first.lease_token,
             error_message="RuntimeError: 模拟外部存储抖动",
+            max_attempts=3,
+            retry_base_seconds=30,
+            retry_max_seconds=300,
+            now=started_at + timedelta(seconds=1),
         )
-        second = self._acquire(store, worker_id="worker-b")
+        blocked = self._acquire(store, worker_id="worker-b", now=started_at + timedelta(seconds=10))
+        second = self._acquire(store, worker_id="worker-b", now=started_at + timedelta(seconds=31))
 
         self.assertEqual(AgentMemoryMaterializationLeaseStatus.FAILED, failed.status)
+        self.assertEqual((started_at + timedelta(seconds=31)).isoformat(), failed.next_retry_at.isoformat())
+        self.assertIsNone(blocked)
         self.assertEqual(AgentMemoryMaterializationLeaseStatus.LEASED, second.status)
         self.assertEqual(2, second.attempt_count)
+
+    def test_in_memory_store_moves_to_dead_letter_after_max_attempts(self) -> None:
+        """达到最大尝试次数后应进入 DLQ，后续自动 Runner 不再领取。"""
+
+        store = InMemoryAgentMemoryMaterializationLeaseStore()
+        lease = self._acquire(store, worker_id="worker-a")
+        dead_letter = store.fail(
+            candidate_id="candidate-a",
+            lease_token=lease.lease_token,
+            error_message="RuntimeError: 模拟持续失败候选",
+            max_attempts=1,
+        )
+        repeated = self._acquire(store, worker_id="worker-b", now=datetime.now(timezone.utc) + timedelta(days=1))
+
+        self.assertEqual(AgentMemoryMaterializationLeaseStatus.DEAD_LETTER, dead_letter.status)
+        self.assertIsNone(dead_letter.next_retry_at)
+        self.assertIsNone(repeated)
 
     def test_sql_store_persists_lease_and_fencing_semantics(self) -> None:
         """SQL lease store 应跨实例恢复，并执行相同 token fencing 规则。"""
@@ -134,6 +159,46 @@ class AgentMemoryMaterializationLeaseStoreTest(unittest.TestCase):
         self.assertEqual(AgentMemoryMaterializationLeaseStatus.SUCCEEDED, reloaded.status)
         self.assertEqual("memory-a", reloaded.memory_id)
 
+    def test_sql_store_respects_retry_cooldown_and_dead_letter(self) -> None:
+        """SQL lease store 应持久化 next_retry_at，并在达到上限后进入 DLQ。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sqlite_path = os.path.join(temp_dir, "leases.sqlite3")
+            connection = self._connection(sqlite_path)
+            store = SqlAgentMemoryMaterializationLeaseStore(connection)
+            started_at = datetime(2026, 6, 3, 1, 0, tzinfo=timezone.utc)
+            first = self._acquire(store, worker_id="worker-a", now=started_at)
+            failed = store.fail(
+                candidate_id="candidate-a",
+                lease_token=first.lease_token,
+                error_message="RuntimeError: 模拟外部存储抖动",
+                max_attempts=3,
+                retry_base_seconds=30,
+                retry_max_seconds=300,
+                now=started_at + timedelta(seconds=1),
+            )
+            blocked = self._acquire(store, worker_id="worker-b", now=started_at + timedelta(seconds=10))
+            second = self._acquire(store, worker_id="worker-b", now=started_at + timedelta(seconds=31))
+            dead_letter = store.fail(
+                candidate_id="candidate-a",
+                lease_token=second.lease_token,
+                error_message="RuntimeError: 模拟第二次即进入 DLQ",
+                max_attempts=2,
+                retry_base_seconds=30,
+                retry_max_seconds=300,
+                now=started_at + timedelta(seconds=32),
+            )
+            repeated = self._acquire(store, worker_id="worker-c", now=started_at + timedelta(days=1))
+            connection.close()
+
+        self.assertEqual(AgentMemoryMaterializationLeaseStatus.FAILED, failed.status)
+        self.assertIsNotNone(failed.next_retry_at)
+        self.assertIsNone(blocked)
+        self.assertEqual(2, second.attempt_count)
+        self.assertEqual(AgentMemoryMaterializationLeaseStatus.DEAD_LETTER, dead_letter.status)
+        self.assertIsNone(dead_letter.next_retry_at)
+        self.assertIsNone(repeated)
+
     def test_runtime_builder_supports_default_sqlite_and_mysql_failure_modes(self) -> None:
         """lease runtime builder 应支持默认内存、SQLite、MySQL fail-open 和 fail-fast。"""
 
@@ -154,6 +219,9 @@ class AgentMemoryMaterializationLeaseStoreTest(unittest.TestCase):
         diagnostics = memory_materialization_lease_store_diagnostics(mysql_fail_open)
 
         self.assertEqual(60, default_settings.default_lease_seconds)
+        self.assertEqual(5, default_settings.max_attempts)
+        self.assertEqual(30, default_settings.retry_base_seconds)
+        self.assertEqual(3600, default_settings.retry_max_seconds)
         self.assertFalse(default_runtime.persistent)
         self.assertTrue(sqlite_runtime.persistent)
         self.assertFalse(mysql_fail_open.persistent)
@@ -205,6 +273,7 @@ class AgentMemoryMaterializationLeaseStoreTest(unittest.TestCase):
                 worker_id TEXT NOT NULL,
                 lease_token TEXT NOT NULL,
                 leased_until TEXT NOT NULL,
+                next_retry_at TEXT,
                 memory_id TEXT,
                 outcome TEXT,
                 message TEXT,

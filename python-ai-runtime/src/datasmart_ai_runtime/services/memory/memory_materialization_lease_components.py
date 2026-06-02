@@ -8,6 +8,10 @@
 
 lease store 与 receipt store 必须分开配置。receipt 是执行证据，lease 是短时协调状态。两者虽然都围绕 candidateId，
 但生命周期、写入频率和故障处理不同。拆分后，后续可以把 lease 切到 Redis 或专用队列，而不影响审计 receipt。
+
+本组件还承载最小失败策略配置。原因是 Runner 的失败退避、DLQ 判定都依赖 lease 行上的 `attempt_count` 与
+`next_retry_at`，把配置与 lease runtime 放在一起能避免 API bootstrap 再引入一层过早抽象。后续如果策略变复杂，
+可以再拆成独立 materialization policy provider。
 """
 
 from __future__ import annotations
@@ -43,11 +47,17 @@ class AgentMemoryMaterializationLeaseStoreSettings:
     - `connect_timeout_seconds`：启动连接超时；
     - `fail_open`：连接失败时是否退回内存；
     - `default_lease_seconds`：Runner 默认租约窗口。
+    - `max_attempts/retry_base_seconds/retry_max_seconds`：失败退避与 DLQ 策略。
 
     租约窗口需要结合外部存储延迟压测调整：
     - 太短会导致慢 worker 尚未完成就被新实例接管；
     - 太长会导致 worker 崩溃后候选长时间无法恢复；
     - 当前默认 60 秒适合本地与早期联调，不代表最终生产 SLA。
+
+    失败策略也需要结合真实数据质量调整：
+    - maxAttempts 太小会让偶发外部抖动过早进入 DLQ；
+    - maxAttempts 太大或 retryBase 太小会让坏候选持续消耗数据库、日志和下游索引资源；
+    - 当前默认值偏保守，目标是先保护生产稳定性，再通过指标观察调整。
     """
 
     store_type: str = "in-memory"
@@ -56,6 +66,9 @@ class AgentMemoryMaterializationLeaseStoreSettings:
     connect_timeout_seconds: int = 3
     fail_open: bool = True
     default_lease_seconds: int = 60
+    max_attempts: int = 5
+    retry_base_seconds: int = 30
+    retry_max_seconds: int = 3600
 
 
 @dataclass(frozen=True)
@@ -80,7 +93,10 @@ def memory_materialization_lease_store_settings_from_env(
     - `DATASMART_AI_MEMORY_LEASE_MYSQL_DSN`；
     - `DATASMART_AI_MEMORY_LEASE_SQL_CONNECT_TIMEOUT_SECONDS`；
     - `DATASMART_AI_MEMORY_LEASE_STORE_FAIL_OPEN`；
-    - `DATASMART_AI_MEMORY_LEASE_SECONDS`。
+    - `DATASMART_AI_MEMORY_LEASE_SECONDS`；
+    - `DATASMART_AI_MEMORY_MATERIALIZATION_MAX_ATTEMPTS`；
+    - `DATASMART_AI_MEMORY_MATERIALIZATION_RETRY_BASE_SECONDS`；
+    - `DATASMART_AI_MEMORY_MATERIALIZATION_RETRY_MAX_SECONDS`。
     """
 
     source = environ if environ is not None else os.environ
@@ -95,6 +111,15 @@ def memory_materialization_lease_store_settings_from_env(
         ),
         fail_open=_truthy(source.get("DATASMART_AI_MEMORY_LEASE_STORE_FAIL_OPEN"), default=True),
         default_lease_seconds=_positive_int(source.get("DATASMART_AI_MEMORY_LEASE_SECONDS"), default=60),
+        max_attempts=_positive_int(source.get("DATASMART_AI_MEMORY_MATERIALIZATION_MAX_ATTEMPTS"), default=5),
+        retry_base_seconds=_positive_int(
+            source.get("DATASMART_AI_MEMORY_MATERIALIZATION_RETRY_BASE_SECONDS"),
+            default=30,
+        ),
+        retry_max_seconds=_positive_int(
+            source.get("DATASMART_AI_MEMORY_MATERIALIZATION_RETRY_MAX_SECONDS"),
+            default=3600,
+        ),
     )
 
 
@@ -159,6 +184,15 @@ def memory_materialization_lease_store_diagnostics(
         "failOpen": settings.fail_open,
         "connectTimeoutSeconds": settings.connect_timeout_seconds,
         "defaultLeaseSeconds": settings.default_lease_seconds,
+        "failurePolicy": {
+            "maxAttempts": settings.max_attempts,
+            "retryBaseSeconds": settings.retry_base_seconds,
+            "retryMaxSeconds": settings.retry_max_seconds,
+            "notes": (
+                "失败候选会先进入 nextRetryAt 冷却窗口；达到 maxAttempts 后进入 dead_letter，"
+                "等待管理员补偿或人工重放，不再被 Runner 自动领取。"
+            ),
+        },
         "sqlite": {
             "path": settings.sqlite_path if settings.store_type == "sqlite" else None,
         },

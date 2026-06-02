@@ -126,6 +126,7 @@ class AgentMemoryStoreComponentsTest(unittest.TestCase):
         self.assertIn("materializationRunner", diagnostics)
         self.assertEqual("StoreBackedAgentMemoryRetriever", diagnostics["retriever"]["implementation"])
         self.assertEqual("AgentMemoryMaterializationRunner", diagnostics["materializationRunner"]["implementation"])
+        self.assertEqual(5, diagnostics["leaseStore"]["failurePolicy"]["maxAttempts"])
         self.assertTrue(diagnostics["materializer"]["runnerAvailable"])
         self.assertFalse(diagnostics["materializer"]["workerEnabled"])
         self.assertFalse(diagnostics["materializationRunner"]["workerEnabled"])
@@ -245,6 +246,9 @@ class AgentMemoryStoreComponentsTest(unittest.TestCase):
                 "DATASMART_AI_MEMORY_LEASE_SQL_CONNECT_TIMEOUT_SECONDS",
                 "DATASMART_AI_MEMORY_LEASE_STORE_FAIL_OPEN",
                 "DATASMART_AI_MEMORY_LEASE_SECONDS",
+                "DATASMART_AI_MEMORY_MATERIALIZATION_MAX_ATTEMPTS",
+                "DATASMART_AI_MEMORY_MATERIALIZATION_RETRY_BASE_SECONDS",
+                "DATASMART_AI_MEMORY_MATERIALIZATION_RETRY_MAX_SECONDS",
             )
 
             def __enter__(self):

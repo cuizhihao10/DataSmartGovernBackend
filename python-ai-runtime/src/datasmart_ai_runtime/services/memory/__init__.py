@@ -27,9 +27,11 @@ from datasmart_ai_runtime.services.memory.memory_materialization_receipt_store i
 )
 from datasmart_ai_runtime.services.memory.memory_materialization_lease_store import (
     AgentMemoryMaterializationLease,
+    AgentMemoryMaterializationRetryDecision,
     AgentMemoryMaterializationLeaseStatus,
     AgentMemoryMaterializationLeaseStore,
     InMemoryAgentMemoryMaterializationLeaseStore,
+    decide_materialization_retry,
 )
 from datasmart_ai_runtime.services.memory.memory_materialization_lease_components import (
     AgentMemoryMaterializationLeaseStoreRuntime,
@@ -106,6 +108,7 @@ __all__ = [
     "AgentApprovedMemoryWriteMaterializer",
     "AgentMemoryMaterializationOutcome",
     "AgentMemoryMaterializationLease",
+    "AgentMemoryMaterializationRetryDecision",
     "AgentMemoryMaterializationLeaseStatus",
     "AgentMemoryMaterializationLeaseStore",
     "AgentMemoryMaterializationLeaseStoreRuntime",
@@ -147,6 +150,7 @@ __all__ = [
     "approve_memory_write_candidate",
     "build_memory_materialization_receipt_store_runtime",
     "build_memory_materialization_lease_store_runtime",
+    "decide_materialization_retry",
     "build_memory_store_runtime",
     "build_memory_write_store_runtime",
     "memory_materialization_receipt_store_diagnostics",

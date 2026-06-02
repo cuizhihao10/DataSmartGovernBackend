@@ -8455,3 +8455,66 @@ APPROVED 候选仍只能靠手工调用单条 materializer。真实 agent 产品
 2. 把 Runner 的成功、失败、跳过、fencing 失败和 lease fallback 接入 runtime event 或 Prometheus 指标。
 3. 设计受控管理路由或 CLI，让管理员可以 dry-run、单租户补偿、单候选重放和查看低敏执行证据。
 4. 等 lease、退避、DLQ 和指标稳定后，再启动常驻 worker，并接 Chroma/Neo4j 二级索引与遗忘/归档任务。
+
+## 5.06 Agent 长期记忆失败退避与 DLQ 基础语义（2026-06-03）
+
+本阶段承接 5.05 的下一步推荐：lease store 已经能让多 worker 安全领取候选，但失败候选仍会立即变成可重新领取。
+如果直接启动常驻 worker，坏候选、历史脏数据或短时外部存储故障会被快速重复处理，造成日志风暴、数据库写放大、
+receipt attemptCount 异常增长和运维不可解释 backlog。因此本阶段先落地失败退避、最大尝试次数与 DLQ 基础语义。
+
+已完成：
+- 更新 `memory_materialization_lease_store.py`：
+  - `AgentMemoryMaterializationLeaseStatus` 新增 `DEAD_LETTER`；
+  - `AgentMemoryMaterializationLease` 新增 `next_retry_at`；
+  - 新增 `AgentMemoryMaterializationRetryDecision` 与 `decide_materialization_retry(...)`；
+  - 内存 lease store 在 `FAILED` 且未到 `next_retry_at` 时拒绝领取；
+  - 达到 `max_attempts` 时写入 `DEAD_LETTER`，后续自动 Runner 不再领取。
+- 更新 `memory_materialization_lease_sql_store.py`：
+  - SQL lease store 同步支持 `next_retry_at` 与 `DEAD_LETTER`；
+  - 条件 UPDATE 现在只允许已到 `next_retry_at` 的 failed 记录重新领取；
+  - `succeed/fail` 仍保留 token fencing，避免旧 worker 覆盖新 worker。
+- 更新 `memory_materialization_lease_components.py`：
+  - 新增失败策略环境变量：
+    - `DATASMART_AI_MEMORY_MATERIALIZATION_MAX_ATTEMPTS`；
+    - `DATASMART_AI_MEMORY_MATERIALIZATION_RETRY_BASE_SECONDS`；
+    - `DATASMART_AI_MEMORY_MATERIALIZATION_RETRY_MAX_SECONDS`；
+  - `leaseStore.failurePolicy` 诊断展示最大尝试次数、基础退避和退避上限。
+- 更新 `memory_materialization_runner.py`：
+  - 失败时把 `maxAttempts/retryBase/retryMax` 传给 lease store；
+  - 批次报告新增 `skippedReasons`、`deadLetterCount`、`maxAttempts/retryBaseSeconds/retryMaxSeconds`；
+  - 单条失败 item 新增 `leaseStatus/nextRetryAt/attemptCount/maxAttempts/deadLettered`；
+  - 跳过原因区分 `active_lease/retry_cooldown/dead_letter/already_succeeded/not_claimable`。
+- 更新 `api_memory_runtime.py`：
+  - `build_api_memory_runtime()` 把失败策略注入 Runner；
+  - `materializationRunner.defaultPolicy` 更新为 `BOUNDED_AT_LEAST_ONCE_WITH_LEASE_TOKEN_FENCING_AND_BACKOFF_DLQ`。
+- 新增 MySQL migration：`20260603_agent_memory_materialization_lease_retry.sql`：
+  - 为 `agent_memory_materialization_lease` 增加 `next_retry_at`；
+  - 增加 `idx_agent_memory_materialization_lease_retry(status,next_retry_at,leased_until,update_time)`；
+  - SQL 注释说明不在 migration 阶段自动改写历史 failed 记录，避免升级副作用。
+- 更新 `docker/mysql/init/permission-admin.sql`：
+  - 本地初始化表同步增加 `next_retry_at` 和 retry 索引；
+  - `status` 注释补充 `dead_letter`。
+- 更新测试：
+  - `test_memory_materialization_lease_store.py` 覆盖内存与 SQL 退避窗口、冷却后重试、DLQ 和 runtime builder 默认策略；
+  - `test_memory_materialization_runner.py` 覆盖失败后下一轮跳过 `retry_cooldown`，以及 `max_attempts=1` 时进入 `dead_letter`；
+  - `test_memory_store_components.py` 覆盖 `leaseStore.failurePolicy` 诊断和新环境变量隔离。
+- 更新 README、路线图和技术雷达，记录失败退避与 DLQ 的配置、设计目的和下一步补偿路线。
+
+产品意义：
+- 长期记忆 worker 不再会因为单条坏候选形成热循环，减少数据库、日志、向量库和图谱索引的压力。
+- `nextRetryAt` 让失败恢复变成可解释事实，平台可以回答“为什么这条候选暂时没有被处理”。
+- `dead_letter` 让系统自动执行与管理员补偿边界清晰分离，避免自动 worker 永远尝试无法修复的候选。
+- 批次报告的 `skippedReasons` 与 `deadLetterCount` 为后续 Prometheus 指标、告警和管理台列表提供直接输入。
+
+当前边界：
+- 仍未启动常驻后台 worker；Runner 仍通过显式 `run_once(...)` 调用。
+- 还没有管理员补偿路由或 CLI，`dead_letter` 只能阻止自动重试，还不能通过产品界面解除。
+- 退避策略当前是简单指数退避，尚未按错误类型、租户套餐、下游容量或维护窗口动态调整。
+- DLQ 数量、retry cooldown 跳过数、fencing 失败数尚未接入 Prometheus、runtime event 或 Java 审计链路。
+- 正式记忆仍未同步 Chroma/Neo4j 二级索引，遗忘/归档任务仍未实现。
+
+下一步建议：
+1. 优先实现管理员补偿入口：支持低敏查询 DLQ、dry-run 重放、解除 dead_letter、重新安排 nextRetryAt，并写入审计事件。
+2. 把 Runner 的 skippedReasons、deadLetterCount、失败类型和 lease fallback 接入 runtime event 或 Prometheus 指标。
+3. 设计受控常驻 worker 配置：启停开关、单轮 limit、调度间隔、租户并发、全局熔断和关闭时优雅退出。
+4. 等补偿与指标稳定后，再接 Chroma/Neo4j 二级索引同步，避免语义索引先于可恢复执行链路上线。
