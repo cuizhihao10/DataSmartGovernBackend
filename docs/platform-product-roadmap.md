@@ -8518,3 +8518,55 @@ receipt attemptCount 异常增长和运维不可解释 backlog。因此本阶段
 2. 把 Runner 的 skippedReasons、deadLetterCount、失败类型和 lease fallback 接入 runtime event 或 Prometheus 指标。
 3. 设计受控常驻 worker 配置：启停开关、单轮 limit、调度间隔、租户并发、全局熔断和关闭时优雅退出。
 4. 等补偿与指标稳定后，再接 Chroma/Neo4j 二级索引同步，避免语义索引先于可恢复执行链路上线。
+
+## 5.07 Agent 长期记忆管理员补偿入口（2026-06-03）
+
+本阶段承接 5.06 的下一步推荐：DLQ 已经能阻止坏候选自动热循环，但如果没有管理员补偿入口，生产运维仍只能看见
+`dead_letter`，无法安全判断“是否可以重放、会改变什么、何时重试”。因此本阶段先落地单候选、低敏、可 dry-run
+的补偿入口，补齐长期记忆物化失败后的最小运营闭环。
+
+已完成：
+- 扩展 `AgentMemoryMaterializationLeaseStore` 协议：
+  - 新增 `list_for_compensation(...)`，按 tenant/project/workspace/status 查询失败或 DLQ lease；
+  - 新增 `schedule_retry(...)`，把 failed/dead_letter 重新安排到 `nextRetryAt`；
+  - 内存 store 与 SQL store 均同步实现，避免生产 MySQL 模式缺能力。
+- 新增 `memory_materialization_admin.py`：
+  - 新增 `AgentMemoryMaterializationAdminService`；
+  - 支持 `AgentMemoryMaterializationLeaseQuery`；
+  - 支持 `AgentMemoryMaterializationRequeueRequest`；
+  - 支持 dry-run 预览与真实重排；
+  - 限制只处理 `failed/dead_letter`，拒绝 `succeeded/leased`；
+  - 保留 `attemptCount`，不在普通补偿动作中重置故障证据。
+- 新增 `api_memory_materialization_admin.py`：
+  - `GET /agent/memory/materialization/leases` 查询补偿列表；
+  - `POST /agent/memory/materialization/leases/{candidateId}/requeue` 预览或执行重排；
+  - 错误返回使用结构化 `errorCode/message/statusCode`；
+  - `dryRun` 支持 JSON boolean 与字符串布尔值，避免 `"false"` 被误判为 True。
+- 更新 `api_memory_runtime.py` 与 `api.py`：
+  - API runtime 装配 `memory_materialization_admin`；
+  - `/agent/memory/diagnostics` 新增 `materializationAdmin`；
+  - `create_app()` 注册补偿路由。
+- 更新导出：
+  - `services.memory.__init__` 与 `services.__init__` 导出补偿 service、query、request 和 result。
+- 更新测试：
+  - 新增 `test_memory_materialization_admin.py` 覆盖列表、dry-run、不重置 attempt、真实重排与状态保护；
+  - 更新 `test_memory_materialization_lease_store.py` 覆盖 SQL 补偿列表与条件重排。
+
+产品意义：
+- 长期记忆物化链路从“失败可阻断”推进到“失败可运营恢复”。
+- dry-run 让管理员能先看 before/after，不必直接写库试错。
+- 重排只修改 lease，不写正式记忆，也不改变候选审批状态，避免补偿入口变成绕过治理的后门。
+- `operatorId/reason` 成为最小审计字段，为后续统一审计事件、管理台操作历史和安全复盘打基础。
+
+当前边界：
+- Python Runtime 仍不直接做用户鉴权；生产环境必须由 gateway/permission-admin 保护补偿路由。
+- 当前只做单候选补偿，还没有批量 dry-run、批量确认、审批流或错误类型分组处理。
+- 补偿操作暂时写入 lease message，尚未接统一审计事件表。
+- DLQ 数、补偿次数、重排延迟、fencing 失败仍未接 Prometheus 或 runtime event。
+- 常驻后台 worker 仍未启动，Runner 仍需要显式调用。
+
+下一步建议：
+1. 把补偿动作和 Runner 的 skippedReasons/deadLetterCount 接入 runtime event 或 Prometheus，形成可告警指标。
+2. 设计受控常驻 worker：启停开关、调度间隔、单轮 limit、租户并发、全局熔断、优雅关闭。
+3. 再补批量补偿与审计事件：先 dry-run 批量预览，再二次确认执行，避免管理员误批量重放。
+4. 指标与补偿稳定后，再接 Chroma/Neo4j 二级索引 worker，避免语义索引先于可恢复执行链路上线。

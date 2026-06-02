@@ -199,6 +199,70 @@ class AgentMemoryMaterializationLeaseStoreTest(unittest.TestCase):
         self.assertIsNone(dead_letter.next_retry_at)
         self.assertIsNone(repeated)
 
+    def test_sql_store_lists_and_requeues_compensation_leases(self) -> None:
+        """SQL lease store 应支持管理员补偿列表和条件重排。"""
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            sqlite_path = os.path.join(temp_dir, "leases.sqlite3")
+            connection = self._connection(sqlite_path)
+            store = SqlAgentMemoryMaterializationLeaseStore(connection)
+            started_at = datetime(2026, 6, 3, 2, 0, tzinfo=timezone.utc)
+            failed_lease = self._acquire_candidate(store, "candidate-failed", "worker-a", now=started_at)
+            store.fail(
+                candidate_id="candidate-failed",
+                lease_token=failed_lease.lease_token,
+                error_message="RuntimeError: 模拟短暂失败",
+                max_attempts=5,
+                retry_base_seconds=30,
+                now=started_at + timedelta(seconds=1),
+            )
+            dead_letter_lease = self._acquire_candidate(store, "candidate-dlq", "worker-a", now=started_at)
+            store.fail(
+                candidate_id="candidate-dlq",
+                lease_token=dead_letter_lease.lease_token,
+                error_message="RuntimeError: 模拟持续失败",
+                max_attempts=1,
+                now=started_at + timedelta(seconds=2),
+            )
+            succeeded_lease = self._acquire_candidate(store, "candidate-succeeded", "worker-a", now=started_at)
+            store.succeed(
+                candidate_id="candidate-succeeded",
+                lease_token=succeeded_lease.lease_token,
+                memory_id="memory-succeeded",
+                outcome="materialized",
+                message="测试成功终态",
+                now=started_at + timedelta(seconds=3),
+            )
+
+            leases = store.list_for_compensation(project_id="project-a", limit=10)
+            scheduled = store.schedule_retry(
+                candidate_id="candidate-dlq",
+                operator_id="admin-a",
+                reason="修复历史 schema 后重新物化",
+                next_retry_at=started_at + timedelta(seconds=60),
+                now=started_at + timedelta(seconds=4),
+            )
+            blocked = self._acquire_candidate(
+                store,
+                "candidate-dlq",
+                "worker-b",
+                now=started_at + timedelta(seconds=30),
+            )
+            claimed = self._acquire_candidate(
+                store,
+                "candidate-dlq",
+                "worker-b",
+                now=started_at + timedelta(seconds=61),
+            )
+            connection.close()
+
+        self.assertEqual({"candidate-failed", "candidate-dlq"}, {lease.candidate_id for lease in leases})
+        self.assertEqual(AgentMemoryMaterializationLeaseStatus.FAILED, scheduled.status)
+        self.assertEqual((started_at + timedelta(seconds=60)).isoformat(), scheduled.next_retry_at.isoformat())
+        self.assertIsNone(blocked)
+        self.assertEqual(AgentMemoryMaterializationLeaseStatus.LEASED, claimed.status)
+        self.assertEqual(2, claimed.attempt_count)
+
     def test_runtime_builder_supports_default_sqlite_and_mysql_failure_modes(self) -> None:
         """lease runtime builder 应支持默认内存、SQLite、MySQL fail-open 和 fail-fast。"""
 
@@ -243,6 +307,28 @@ class AgentMemoryMaterializationLeaseStoreTest(unittest.TestCase):
 
         return store.try_acquire(
             candidate_id="candidate-a",
+            tenant_id="tenant-a",
+            project_id="project-a",
+            workspace_key="tenant:tenant-a:project:project-a",
+            memory_namespace="memory:tenant:tenant-a:project:project-a",
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+            now=now,
+        )
+
+    @staticmethod
+    def _acquire_candidate(
+        store,
+        candidate_id: str,
+        worker_id: str,
+        *,
+        now: datetime | None = None,
+        lease_seconds: int = 60,
+    ):
+        """使用指定候选 ID 领取测试 lease，便于同一用例构造多种状态。"""
+
+        return store.try_acquire(
+            candidate_id=candidate_id,
             tenant_id="tenant-a",
             project_id="project-a",
             workspace_key="tenant:tenant-a:project:project-a",

@@ -176,6 +176,39 @@ class AgentMemoryMaterializationLeaseStore(Protocol):
         """按候选 ID 查询租约快照。"""
 
 
+    def list_for_compensation(
+        self,
+        *,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+        workspace_key: str | None = None,
+        statuses: tuple[AgentMemoryMaterializationLeaseStatus, ...] | None = None,
+        limit: int = 100,
+    ) -> tuple[AgentMemoryMaterializationLease, ...]:
+        """查询可进入管理员补偿视图的 lease 快照。
+
+        这个方法不是给普通 Agent 规划链路使用，而是给运维台、管理员补偿 API、CLI 和未来审计查询使用。
+        默认只看 `failed/dead_letter`，因为这两类状态才代表“自动链路没有顺利完成，需要人工排查或重排”。
+        `tenant_id/project_id/workspace_key` 是低敏范围条件，后续 gateway/permission-admin 应根据操作者角色
+        强制收紧这些条件，避免平台管理员以外的用户枚举其他租户的失败候选。
+        """
+
+    def schedule_retry(
+        self,
+        *,
+        candidate_id: str,
+        operator_id: str,
+        reason: str,
+        next_retry_at: datetime,
+        now: datetime | None = None,
+    ) -> AgentMemoryMaterializationLease:
+        """把 failed/dead_letter lease 重新安排到可重试窗口。
+
+        该操作只调整 lease 执行事实，不修改候选审批状态，也不直接写正式长期记忆。这样可以保证管理员补偿
+        不能绕过 `APPROVED` 候选治理：真正落成仍然必须由 Runner 在下一轮领取 lease 后调用 materializer。
+        """
+
+
 class InMemoryAgentMemoryMaterializationLeaseStore:
     """线程安全的内存租约实现。
 
@@ -317,6 +350,74 @@ class InMemoryAgentMemoryMaterializationLeaseStore:
         with self._lock:
             return self._leases_by_candidate_id.get(candidate_id)
 
+    def list_for_compensation(
+        self,
+        *,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+        workspace_key: str | None = None,
+        statuses: tuple[AgentMemoryMaterializationLeaseStatus, ...] | None = None,
+        limit: int = 100,
+    ) -> tuple[AgentMemoryMaterializationLease, ...]:
+        """按范围查询失败/DLQ lease，用于管理员补偿台。
+
+        内存实现主要服务本地学习和单元测试，但它仍然完整遵守生产语义：
+        - 默认只返回 `failed/dead_letter`，避免把成功或正在执行的 lease 暴露成“待补偿”；
+        - 支持 tenant/project/workspace 过滤，为后续 RBAC 数据范围下沉保留接口；
+        - 返回结果按 `updated_at` 倒序，方便运维先看最近失败的候选；
+        - `limit` 做上限裁剪，避免管理接口误把进程内所有 lease 一次性返回。
+        """
+
+        selected_statuses = set(statuses or _default_compensation_statuses())
+        safe_limit = max(1, min(int(limit), 500))
+        with self._lock:
+            leases = tuple(
+                lease
+                for lease in self._leases_by_candidate_id.values()
+                if lease.status in selected_statuses
+                and _matches_optional(lease.tenant_id, tenant_id)
+                and _matches_optional(lease.project_id, project_id)
+                and _matches_optional(lease.workspace_key, workspace_key)
+            )
+        return tuple(sorted(leases, key=lambda item: item.updated_at, reverse=True)[:safe_limit])
+
+    def schedule_retry(
+        self,
+        *,
+        candidate_id: str,
+        operator_id: str,
+        reason: str,
+        next_retry_at: datetime,
+        now: datetime | None = None,
+    ) -> AgentMemoryMaterializationLease:
+        """把失败或 DLQ lease 重新放回可领取状态。
+
+        业务约束：
+        - 只允许 `FAILED` 与 `DEAD_LETTER` 被重排；
+        - 不允许重排 `SUCCEEDED`，否则可能造成已经落成的记忆被重复处理；
+        - 不允许重排仍在 `LEASED` 的候选，避免管理员操作覆盖正在执行的 worker；
+        - 不重置 `attempt_count`，因为尝试次数是故障证据。后续如果需要“重置尝试预算”，应增加单独的
+          高权限动作，并强制写审计事件，而不是在普通重排中悄悄清零。
+        """
+
+        current_time = _utc(now)
+        scheduled_time = _utc(next_retry_at)
+        _validate_compensation_operator(operator_id=operator_id, reason=reason)
+        with self._lock:
+            current = self._leases_by_candidate_id.get(candidate_id)
+            if current is None:
+                raise KeyError(f"长期记忆物化 lease 不存在: {candidate_id}")
+            _require_requeueable_status(current)
+            stored = replace(
+                current,
+                status=AgentMemoryMaterializationLeaseStatus.FAILED,
+                next_retry_at=scheduled_time,
+                message=_admin_requeue_message(operator_id=operator_id, reason=reason),
+                updated_at=current_time,
+            )
+            self._leases_by_candidate_id[candidate_id] = stored
+            return stored
+
     def _required_current_lease(self, candidate_id: str, lease_token: str) -> AgentMemoryMaterializationLease:
         """校验 fencing token，阻止过期 worker 覆盖新 worker 的处理结果。"""
 
@@ -335,6 +436,56 @@ def _utc(value: datetime | None) -> datetime:
 
     current = value or datetime.now(timezone.utc)
     return current.replace(tzinfo=timezone.utc) if current.tzinfo is None else current.astimezone(timezone.utc)
+
+
+def _default_compensation_statuses() -> tuple[AgentMemoryMaterializationLeaseStatus, ...]:
+    """管理员补偿视图的默认状态集合。
+
+    这里刻意不包含 `LEASED/SUCCEEDED`：前者代表仍有 worker 正在执行或租约尚未过期，后者代表已经形成终态。
+    把默认集合收窄到 failed/dead_letter，可以降低管理台误操作概率。
+    """
+
+    return (
+        AgentMemoryMaterializationLeaseStatus.FAILED,
+        AgentMemoryMaterializationLeaseStatus.DEAD_LETTER,
+    )
+
+
+def _matches_optional(actual: str, expected: str | None) -> bool:
+    """可选范围过滤器。"""
+
+    return expected is None or not str(expected).strip() or actual == str(expected).strip()
+
+
+def _validate_compensation_operator(*, operator_id: str, reason: str) -> None:
+    """校验管理员补偿操作者与原因。
+
+    补偿动作会改变后续 worker 是否重新处理候选，因此必须记录“谁为什么重排”。当前先在 lease message
+    中留下低敏摘要；未来接入审计事件后，这两个字段会成为审计事实的最小必填项。
+    """
+
+    if not str(operator_id or "").strip():
+        raise ValueError("operatorId 必填，用于审计长期记忆物化补偿责任人。")
+    if not str(reason or "").strip():
+        raise ValueError("reason 必填，用于说明为什么重新安排失败或 DLQ 候选。")
+
+
+def _require_requeueable_status(lease: AgentMemoryMaterializationLease) -> None:
+    """要求 lease 处于可重排状态。"""
+
+    if lease.status not in _default_compensation_statuses():
+        raise ValueError(
+            "只有 failed/dead_letter 状态的长期记忆物化 lease 可以被管理员补偿重排，"
+            f"当前状态为: {lease.status.value}"
+        )
+
+
+def _admin_requeue_message(*, operator_id: str, reason: str) -> str:
+    """构造低敏补偿说明。"""
+
+    safe_operator = str(operator_id).strip()[:128]
+    safe_reason = " ".join(str(reason).strip().split())[:800]
+    return f"管理员 {safe_operator} 已安排长期记忆物化补偿重试：{safe_reason}"
 
 
 def decide_materialization_retry(

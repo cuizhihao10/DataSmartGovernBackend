@@ -37,6 +37,7 @@ from datasmart_ai_runtime.services.memory.memory_store_components import (
 )
 from datasmart_ai_runtime.services.memory.memory_store_retriever import StoreBackedAgentMemoryRetriever
 from datasmart_ai_runtime.services.memory.memory_materialization_runner import AgentMemoryMaterializationRunner
+from datasmart_ai_runtime.services.memory.memory_materialization_admin import AgentMemoryMaterializationAdminService
 from datasmart_ai_runtime.services.memory.memory_write_components import (
     AgentMemoryWriteStoreRuntime,
     build_memory_write_store_runtime,
@@ -58,6 +59,7 @@ class ApiMemoryRuntimeComponents:
     - `memory_write_governance`：候选治理服务，接入 API 路由和 plan response 的候选生成；
     - `memory_materializer`：APPROVED 候选落成服务，当前主要供未来 worker/补偿入口复用；
     - `memory_materialization_runner`：APPROVED 候选有界批处理入口，负责失败隔离和低敏批次报告；
+    - `memory_materialization_admin`：失败/DLQ 补偿服务，负责 dry-run、重排和低敏补偿摘要；
     - `memory_retriever`：store-backed retriever，被注入默认 orchestrator，使正式记忆真正参与 Agent 规划。
 
     把这些对象集中到一个 dataclass 中，是为了避免 `create_app()` 中散落多个临时变量；同时也方便测试直接
@@ -71,6 +73,7 @@ class ApiMemoryRuntimeComponents:
     memory_write_governance: AgentMemoryWriteGovernanceService
     memory_materializer: AgentApprovedMemoryWriteMaterializer
     memory_materialization_runner: AgentMemoryMaterializationRunner
+    memory_materialization_admin: AgentMemoryMaterializationAdminService
     memory_retriever: StoreBackedAgentMemoryRetriever
 
 
@@ -106,6 +109,7 @@ def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
         retry_base_seconds=lease_store_runtime.settings.retry_base_seconds,
         retry_max_seconds=lease_store_runtime.settings.retry_max_seconds,
     )
+    materialization_admin = AgentMemoryMaterializationAdminService(lease_store_runtime.store)
     retriever = StoreBackedAgentMemoryRetriever(formal_store_runtime.store)
     return ApiMemoryRuntimeComponents(
         write_store_runtime=write_store_runtime,
@@ -115,6 +119,7 @@ def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
         memory_write_governance=governance,
         memory_materializer=materializer,
         memory_materialization_runner=runner,
+        memory_materialization_admin=materialization_admin,
         memory_retriever=retriever,
     )
 
@@ -157,6 +162,15 @@ def api_memory_runtime_diagnostics(components: ApiMemoryRuntimeComponents) -> di
                 "runner 负责有界扫描 APPROVED 候选、领取 lease 并逐条调用 materializer。单条失败会进入批次报告，"
                 "不会阻塞同批其他候选；token fencing 会阻止过期 worker 覆盖新 worker。失败候选会先退避，达到最大尝试次数后进入 DLQ。"
                 "候选审批状态不被 runner 修改。"
+            ),
+        },
+        "materializationAdmin": {
+            "implementation": "AgentMemoryMaterializationAdminService",
+            "available": True,
+            "defaultQueryStatuses": ("failed", "dead_letter"),
+            "notes": (
+                "管理员补偿入口只调整 lease 的 nextRetryAt 与重排说明，不会绕过候选审批，也不会直接写正式记忆。"
+                "生产环境必须由 gateway/permission-admin 对该入口做管理员权限、租户范围和审计保护。"
             ),
         },
     }

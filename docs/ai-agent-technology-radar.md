@@ -1,5 +1,13 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-03 落地补充：long-term memory needs operator recovery loops
+
+- 本阶段把长期记忆物化从“失败退避 + DLQ”推进到“管理员可 dry-run、可查询、可重排”的恢复闭环。
+- 这对应当前 Codex、Claude Code 类 Agent 工程中的 durable action recovery 思路：工具调用、记忆写入、索引构建和后台副作用不能只依赖一次进程内执行，必须具备失败证据、可解释状态、人工补偿和后续自动恢复窗口。
+- DataSmart 当前选择单候选补偿而不是立即做批量重放，是为了先稳定安全语义：只允许 failed/dead_letter，保留 attemptCount，不绕过审批，不直接写正式记忆，不暴露 lease token 或候选正文。
+- 这一步也把“管理员操作”纳入 Agent 产品主线：成熟 Agent 平台不仅要会调用工具和记忆，还要能被运维人员安全地恢复、审计和解释。
+- 后续趋势落地建议：把补偿动作接入 runtime event / Prometheus / 审计表，再启动受控常驻 worker；批量补偿、错误类型聚合、租户级恢复 SLA 和 Chroma/Neo4j 二级索引 worker 应建立在这些可观测事实之上。
+
 ## 2026-06-02 落地补充：model gateway should own provider and tool-call governance
 
 - 本阶段把模型网关能力迁入 `services/model_gateway/`，让 provider、route registry、budget guard、tool-call schema/planner/aggregator、feedback、result context filter 和 OpenAI-compatible provider 形成独立包边界。

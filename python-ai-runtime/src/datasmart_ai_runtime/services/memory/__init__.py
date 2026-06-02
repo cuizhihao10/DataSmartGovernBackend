@@ -59,6 +59,12 @@ from datasmart_ai_runtime.services.memory.memory_materialization_runner import (
     AgentMemoryMaterializationRunnerItemStatus,
     AgentMemoryMaterializationRunnerReport,
 )
+from datasmart_ai_runtime.services.memory.memory_materialization_admin import (
+    AgentMemoryMaterializationAdminService,
+    AgentMemoryMaterializationLeaseQuery,
+    AgentMemoryMaterializationRequeueRequest,
+    AgentMemoryMaterializationRequeueResult,
+)
 from datasmart_ai_runtime.services.memory.memory_planner import AgentMemoryPlanner
 from datasmart_ai_runtime.services.memory.memory_retriever import AgentMemoryRetriever, InMemoryAgentMemoryRetriever
 from datasmart_ai_runtime.services.memory.memory_store import (
@@ -122,6 +128,10 @@ __all__ = [
     "AgentMemoryMaterializationRunnerItem",
     "AgentMemoryMaterializationRunnerItemStatus",
     "AgentMemoryMaterializationRunnerReport",
+    "AgentMemoryMaterializationAdminService",
+    "AgentMemoryMaterializationLeaseQuery",
+    "AgentMemoryMaterializationRequeueRequest",
+    "AgentMemoryMaterializationRequeueResult",
     "AgentMemoryMaterializationResult",
     "AgentMemoryPlanner",
     "AgentMemoryRetriever",

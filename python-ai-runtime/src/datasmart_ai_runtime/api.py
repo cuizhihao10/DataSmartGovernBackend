@@ -26,6 +26,7 @@ from datasmart_ai_runtime.api_skill_admission import build_skill_admission_polic
 from datasmart_ai_runtime.api_agent_routes import register_agent_runtime_routes
 from datasmart_ai_runtime.api_plan_response import build_plan_response
 from datasmart_ai_runtime.api_memory_write import register_memory_write_routes
+from datasmart_ai_runtime.api_memory_materialization_admin import register_memory_materialization_admin_routes
 from datasmart_ai_runtime.config import default_skill_registry, default_tool_registry, model_routes_from_env
 from datasmart_ai_runtime.domain.contracts import AgentRequest, ToolDefinition
 from datasmart_ai_runtime.domain.context import ContextSensitivityLevel
@@ -486,5 +487,6 @@ def create_app() -> Any:
     )
 
     register_memory_write_routes(app, memory_runtime.memory_write_governance)
+    register_memory_materialization_admin_routes(app, memory_runtime.memory_materialization_admin)
 
     return app

@@ -23,6 +23,10 @@ from uuid import uuid4
 from datasmart_ai_runtime.services.memory.memory_materialization_lease_store import (
     AgentMemoryMaterializationLease,
     AgentMemoryMaterializationLeaseStatus,
+    _admin_requeue_message,
+    _default_compensation_statuses,
+    _require_requeueable_status,
+    _validate_compensation_operator,
     decide_materialization_retry,
     _lease_id,
     _utc,
@@ -236,6 +240,90 @@ class SqlAgentMemoryMaterializationLeaseStore:
         )
         row = cursor.fetchone()
         return self._lease_from_row(row) if row else None
+
+    def list_for_compensation(
+        self,
+        *,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+        workspace_key: str | None = None,
+        statuses: tuple[AgentMemoryMaterializationLeaseStatus, ...] | None = None,
+        limit: int = 100,
+    ) -> tuple[AgentMemoryMaterializationLease, ...]:
+        """查询管理员补偿台需要展示的失败/DLQ lease。
+
+        SQL store 是生产多实例部署的主要形态，因此这里把范围过滤下沉到数据库：
+        - `status IN (...)` 默认只查 failed/dead_letter，减少不必要扫描；
+        - tenant/project/workspace 条件会成为后续权限数据范围的承接点；
+        - 结果按 `update_time DESC` 排序，方便运维优先处理最近失败；
+        - `LIMIT` 使用经过裁剪的整数拼接，而不是直接使用用户输入，避免 SQL 注入风险。
+        """
+
+        selected_statuses = tuple(statuses or _default_compensation_statuses())
+        safe_limit = max(1, min(int(limit), 500))
+        status_placeholders = ",".join([self._placeholder] * len(selected_statuses))
+        where_parts = [f"status IN ({status_placeholders})"]
+        params: list[Any] = [status.value for status in selected_statuses]
+        if tenant_id and str(tenant_id).strip():
+            where_parts.append(f"tenant_id = {self._placeholder}")
+            params.append(str(tenant_id).strip())
+        if project_id and str(project_id).strip():
+            where_parts.append(f"project_id = {self._placeholder}")
+            params.append(str(project_id).strip())
+        if workspace_key and str(workspace_key).strip():
+            where_parts.append(f"workspace_key = {self._placeholder}")
+            params.append(str(workspace_key).strip())
+        cursor = self._execute(
+            f"SELECT {self._columns()} FROM agent_memory_materialization_lease "
+            f"WHERE {' AND '.join(where_parts)} "
+            f"ORDER BY update_time DESC LIMIT {safe_limit}",
+            tuple(params),
+        )
+        return tuple(self._lease_from_row(row) for row in cursor.fetchall())
+
+    def schedule_retry(
+        self,
+        *,
+        candidate_id: str,
+        operator_id: str,
+        reason: str,
+        next_retry_at: datetime,
+        now: datetime | None = None,
+    ) -> AgentMemoryMaterializationLease:
+        """把 failed/dead_letter lease 重新安排到下一次可领取时间。
+
+        这里先读取当前状态再做条件 UPDATE，是为了同时兼顾清晰错误提示与并发安全：
+        - 当前状态不是 failed/dead_letter 时，直接给出业务冲突；
+        - 真正写回时仍带 `status IN (failed, dead_letter)` 条件，如果状态在读写之间被其他管理员或 worker 改变，
+          UPDATE 将不会命中，从而避免覆盖并发结果；
+        - 不修改 `attempt_count` 和 `lease_token`。下一轮 Runner 领取时会生成新 token 并增加尝试次数。
+        """
+
+        current_time = _utc(now)
+        scheduled_time = _utc(next_retry_at)
+        _validate_compensation_operator(operator_id=operator_id, reason=reason)
+        current = self._required(candidate_id)
+        _require_requeueable_status(current)
+        cursor = self._execute(
+            "UPDATE agent_memory_materialization_lease SET "
+            f"status = {self._placeholder}, next_retry_at = {self._placeholder}, "
+            f"message = {self._placeholder}, update_time = {self._placeholder} "
+            f"WHERE candidate_id = {self._placeholder} "
+            f"AND status IN ({self._placeholder},{self._placeholder})",
+            (
+                AgentMemoryMaterializationLeaseStatus.FAILED.value,
+                self._format_datetime(scheduled_time),
+                _admin_requeue_message(operator_id=operator_id, reason=reason),
+                self._format_datetime(current_time),
+                candidate_id,
+                AgentMemoryMaterializationLeaseStatus.FAILED.value,
+                AgentMemoryMaterializationLeaseStatus.DEAD_LETTER.value,
+            ),
+        )
+        if cursor.rowcount == 0:
+            raise RuntimeError(f"长期记忆物化补偿重排失败，lease 状态可能已变化: {candidate_id}")
+        self._commit()
+        return self._required(candidate_id)
 
     def _try_reacquire(
         self,

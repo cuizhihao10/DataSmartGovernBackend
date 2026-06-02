@@ -355,10 +355,41 @@ Runner 批次报告也会展示：
 - `deadLetterCount`：本轮新进入 DLQ 的数量；
 - 单条失败 item 的 `leaseStatus/nextRetryAt/attemptCount/maxAttempts/deadLettered`。
 
-当前仍未提供管理员补偿路由。也就是说，`dead_letter` 现在已经能阻止自动热循环，但真正的商业化补偿台还需要：
+管理员补偿入口已经在 5.07 开始提供；`dead_letter` 不再只是阻止自动热循环的终态，也可以被管理员通过
+dry-run 和受控重排重新放回 Runner 可领取窗口。
 
-- 管理员按 tenant/project/workspace/candidateId 查询低敏失败证据；
-- dry-run 重放，确认不会绕过审批和权限；
-- 手动解除 DLQ 或重新安排 nextRetryAt；
-- 记录补偿操作审计事件；
-- 将 DLQ 数量、退避跳过数量和 fencing 失败数量接入 Prometheus 或 runtime event。
+# 5.07 Agent 长期记忆管理员补偿入口
+
+长期记忆物化现在新增 `AgentMemoryMaterializationAdminService` 与 FastAPI 管理路由，用于处理 failed/DLQ
+候选的低敏查询、dry-run 预览和受控重排。
+
+新增路由：
+
+- `GET /agent/memory/materialization/leases`：查询 `failed/dead_letter` lease，支持 `tenantId/projectId/workspaceKey/status/limit`；
+- `POST /agent/memory/materialization/leases/{candidateId}/requeue`：预览或执行重排。
+
+重排请求示例：
+
+```json
+{
+  "operatorId": "admin-a",
+  "reason": "下游 MySQL 连接恢复后重新物化",
+  "dryRun": true,
+  "delaySeconds": 30
+}
+```
+
+设计边界：
+
+- `dryRun` 默认应保持为 `true`，管理台确认后才传 `false` 执行真实重排；
+- 补偿入口只允许处理 `failed/dead_letter`，不允许改动 `succeeded` 或正在 `leased` 的候选；
+- 重排只把 lease 改回 `failed` 并设置 `nextRetryAt`，不会绕过候选审批，也不会直接写正式记忆；
+- `attemptCount` 会保留为故障证据，不在普通补偿动作中清零；
+- 结果只返回 lease 低敏摘要，不返回候选正文、正式记忆正文、lease token 原文或工具输出。
+
+当前边界：
+
+- Python Runtime 仍不直接做用户鉴权，生产环境必须由 gateway/permission-admin 保护该入口；
+- 补偿操作当前写入 lease message，尚未接统一审计事件表；
+- 还没有批量补偿、审批流、错误类型分组处理或 Prometheus 指标；
+- 下一步应把补偿结果、DLQ 数量、退避跳过数量和 fencing 失败数量接入 runtime event 或指标体系。
