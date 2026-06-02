@@ -33,6 +33,7 @@ from datasmart_ai_runtime.services.memory.memory_store import (
     InMemoryAgentMemoryStore,
 )
 from datasmart_ai_runtime.services.memory.memory_store_retriever import StoreBackedAgentMemoryRetriever
+from datasmart_ai_runtime.services.memory.memory_sql_store import SqlAgentMemoryStore
 from datasmart_ai_runtime.services.memory.memory_write_candidate_factory import AgentMemoryWriteCandidateFactory
 from datasmart_ai_runtime.services.memory.memory_write_candidate_store import (
     AgentMemoryWriteCandidateStore,
@@ -85,6 +86,7 @@ __all__ = [
     "InMemoryAgentMemoryStore",
     "InMemoryAgentMemoryWriteCandidateStore",
     "SqlAgentMemoryWriteCandidateStore",
+    "SqlAgentMemoryStore",
     "StoreBackedAgentMemoryRetriever",
     "approve_memory_write_candidate",
     "build_memory_write_store_runtime",

@@ -8175,3 +8175,51 @@ workspace 风险和实时 backlog 快照。随后把可信快照版本写入 run
 1. 不建议继续长时间只围绕 gateway 签名局部优化。当前安全基座已经足够支撑下一阶段 Agent 能力建设。
 2. 推荐切回大能力主线：长期记忆正式持久化、工具/Skill 市场、agent runtime 可恢复执行、模型 provider health 和 KV/prompt cache。
 3. 如果后续再做安全增强，优先做 Prometheus 指标、Java 审计事件和 mTLS/服务网格，而不是继续增加 Python 局部判断。
+
+## 5.01 Agent 正式长期记忆 SQL Store（2026-06-02）
+
+本阶段从智能网关安全闭环切回 Agent 大能力主线，优先补长期记忆的正式持久化底座。此前 DataSmart 已经具备
+长期记忆候选生成、审批/拒绝、候选 SQL store、materialization receipt 和内存正式 store；但只要正式记忆
+仍停留在 Python 进程内存，系统就无法满足真实产品的重启恢复、多实例一致、审计反查和后台补偿要求。
+
+已完成：
+- 新增 `SqlAgentMemoryStore`：
+  - 实现正式长期记忆的幂等写入、按来源候选反查、按治理范围和 workspace namespace 检索；
+  - 支持 DB-API 连接对象，sqlite 用于单测，MySQL 用于生产 migration；
+  - 支持 `?` / `%s` 占位符，避免把实现绑定到单一数据库驱动；
+  - 写入前按 `idempotencyKey/sourceCandidateId` 复用已有记录，按 `memoryId` 检查冲突；
+  - 检索时把 `tenant/project/session/scope/memoryType/memoryNamespace/expiresAt` 过滤下沉到 SQL；
+  - 缺少 `memoryNamespace` 时 fail-closed，不退化为项目级全局召回；
+  - 时间字段统一写入 MySQL `DATETIME(3)` 友好的 UTC 字符串，读取时兼容旧 ISO 字符串和驱动返回的 datetime。
+- 新增 MySQL migration：`20260602_agent_memory_store_entry.sql`：
+  - 建立正式长期记忆低敏摘要表；
+  - 增加 `memoryId/idempotencyKey/sourceCandidateId` 唯一约束；
+  - 增加 project、tenant、session 和 expiry 检索索引；
+  - 明确 SQL 注释：不保存完整工具输出、大样本数据、原始 SQL、文件正文或敏感日志。
+- 新增 `test_memory_sql_store.py`：
+  - 验证正式记忆跨 store 实例恢复；
+  - 验证后续 Agent 请求可通过 store-backed retriever 召回；
+  - 验证重复 materialize 按幂等语义复用已有正式记忆；
+  - 验证 workspace namespace 隔离与过期过滤；
+  - 验证写入时间格式贴近 MySQL `DATETIME(3)`。
+- 更新 Python Runtime 导出和 README：
+  - `services.memory` 与 `services` 统一导出 `SqlAgentMemoryStore`；
+  - README 说明正式记忆 SQL Store 的定位、边界和后续二级索引路线。
+
+产品意义：
+- 长期记忆从“进程内演示能力”推进到“可审计、可恢复、可补偿的控制面事实源”。
+- SQL 表先承载低敏摘要和治理元数据，向量库/图谱/对象存储后续作为二级索引围绕 `memoryId` 扩展，而不是替代事实源。
+- workspace namespace 成为正式记忆检索的硬边界，避免同项目多工作空间、多会话沙箱或客户现场专题空间互相污染。
+- 这一步贴近 Codex/Claude Code 类 Agent 的长期记忆方向：记忆不只是聊天历史，而是跨任务、跨会话、可筛选、可恢复的经验资产。
+
+当前边界：
+- `SqlAgentMemoryStore` 已可用，但默认 Runtime 装配仍主要使用内存 store，后续需要增加正式记忆 store runtime builder 和环境变量。
+- 仍缺 SQL receipt store、后台 outbox worker、失败退避、DLQ、补偿查询和管理员重放入口。
+- 尚未把正式记忆写入 Chroma/Neo4j/MinIO 二级索引，当前召回仍是 SQL 控制面窗口 + 关键词排序。
+- 还没有长期记忆遗忘/归档任务，`expiresAt` 已具备字段基础，但清理任务尚未实现。
+
+下一步建议：
+1. 短期优先增加正式记忆 Store runtime builder：支持 `memory formal store = memory/sql` 配置，让本地用内存、生产用 MySQL。
+2. 随后做 SQL materialization receipt store 与 outbox worker，把同步 materialize 推进到可重试、可观测、可补偿的后台流程。
+3. 再接 Chroma/Neo4j 二级索引，并强制把 `memoryNamespace` 作为 metadata filter 或 collection/namespace 边界。
+4. 不建议此时继续无限扩展 memory 字段；更重要的是把“写入、召回、遗忘、审计、补偿”闭环跑起来，再进入模型侧记忆摘要优化。

@@ -15,7 +15,7 @@
 - `AgentOrchestrator`：以状态节点方式串联目标接收、模型选择、上下文构建、工具规划、审批判断和响应生成。
 - Agent Skill 治理：已具备本地/远程 Skill descriptor、语义选择、准入策略、准入 runtime event 和智能网关摘要；Java `permission-admin` 已新增 Skill admission evaluate 契约，Python Runtime 已支持可选远程调用。Skill 命中后会继续校验 `grantedPermissions`、`actorRole` 与风险等级；显式缺权限或普通用户命中高风险 Skill 时会进入 `rejectedSkills`，缺少控制面事实时只做条件性推荐。`SKILL_ADMISSION_EVALUATED` 事件与 `intelligentGatewayGovernance.skillAdmission` 会解释 Skill 启用、条件性启用或拒绝原因。
 - 智能网关工具治理：已具备模型工具调用候选规划、可见工具校验、参数 schema 校验和工具调用预算守卫，可限制单轮工具数量、自动推进数量、高风险工具数量和 arguments 体积；预算策略已抽象为 provider，当前支持环境变量、`AgentRequest.variables["toolCallBudget"]` 覆盖，以及可选远程调用 Java permission-admin `/permissions/agent/tool-budget-policies/evaluate`。远程策略默认关闭，适合生产或联调环境按租户套餐、项目等级、角色、workspace 风险和实时 backlog 动态生成预算；预算阻断会写入独立 `MODEL_TOOL_CALL_BUDGET_GUARDED` runtime event，API 响应已提供 `intelligentGatewayGovernance` 统一摘要，汇总模型路由、工具预算、workspace 和记忆检索治理事实。
-- 长期记忆治理：已具备记忆召回计划、候选生成、审批/拒绝、候选 SQL store、低敏摘要正式落成、materialization receipt 和 store-backed 检索骨架；候选和正式记忆都会携带 `workspaceKey/memoryNamespace`，检索时按当前 Agent 工作空间过滤，避免同项目不同 workspace 或 session 沙箱误共享记忆。当前正式记忆 store 默认仍为内存实现，后续再按类型接入 Chroma、Neo4j、MySQL 和 MinIO。
+- 长期记忆治理：已具备记忆召回计划、候选生成、审批/拒绝、候选 SQL store、低敏摘要正式落成、materialization receipt、正式记忆 SQL store 和 store-backed 检索骨架；候选和正式记忆都会携带 `workspaceKey/memoryNamespace`，检索时按当前 Agent 工作空间过滤，避免同项目不同 workspace 或 session 沙箱误共享记忆。当前默认装配仍以本地内存 store 便于学习和单测，但已经具备 `SqlAgentMemoryStore` 与 MySQL migration，可把低敏正式记忆沉淀为可审计、可恢复的数据库事实源；后续再围绕同一 `memoryId` 接入 Chroma、Neo4j、MinIO 和对象索引。
 - `api.create_app()`：提供可选 FastAPI 入口。当前测试不依赖 FastAPI，安装 API 依赖后即可启动服务。
 - Agent API 路由已从 bootstrap 入口拆到 `api_agent_routes.py`：`api.py` 只负责装配模型网关、事件组件、长期记忆候选治理和 Java 控制面客户端；`/agent/plans`、事件 replay/control 与 WebSocket handler 由独立注册函数承载。这样后续继续增加服务间认证、智能网关会话、审计导出和长期记忆上下文注入时，不会把启动文件拖成难以维护的巨型模块。
 - 目录层级治理已开始落地：长期记忆相关服务已迁入 `services/memory/`，实时事件流相关服务已迁入 `services/runtime_events/`，模型路由/provider/预算/tool-call 相关服务已迁入 `services/model_gateway/`，并新增 [Python AI Runtime 目录层级治理规范](../docs/python-ai-runtime-package-layout.md)。后续新增功能应优先进入 `agent/`、`memory/`、`model_gateway/`、`runtime_events/`、`tools/`、`skills/` 等能力包，而不是继续把十几个文件散放在同一个目录。
@@ -160,3 +160,24 @@ pip install -e python-ai-runtime[redis]
 同时新增 `/agent/security/gateway-signature/diagnostics` 诊断入口，返回 nonce store 类型、TTL、集群安全提示和
 签名失败 reason 统计。该接口不返回 secret、nonce 原文、签名值或签名原文；生产环境仍必须由 gateway 和
 permission-admin 管理员权限保护。
+
+# 5.01 Agent 正式长期记忆 SQL Store
+
+长期记忆现在不再只有内存正式 store。新增 `SqlAgentMemoryStore` 与
+`docker/mysql/migrations/20260602_agent_memory_store_entry.sql`，用于保存已经通过审批并由
+materializer 落成的低敏正式记忆摘要。
+
+这张表的产品定位是“长期记忆控制面事实源”，不是最终的向量检索引擎：
+
+- 保存 `tenantId/projectId/sessionId/scope/memoryType`，让检索可以在 SQL 层先完成治理范围过滤；
+- 保存 `workspaceKey/memoryNamespace/namespaceJson`，避免同项目不同 workspace、session 沙箱或专题空间互相召回记忆；
+- 保存 `idempotencyKey/sourceCandidateId`，支持 worker 重试、补偿任务和审计台反查；
+- 保存 `expiresAt/materializedAt`，为遗忘任务、归档任务和召回排序留下稳定字段；
+- 只保存 `contentSummary` 这类低敏摘要，不保存完整工具输出、样本数据、原始 SQL、文件正文或敏感日志。
+
+当前 SQL Store 采用 Python DB-API 连接对象，不直接创建连接池；sqlite 单测用于验证语义，生产部署应使用
+MySQL migration 建表并传入 MySQL 驱动连接。后续如果引入 Chroma/Neo4j/MinIO，应围绕同一 `memoryId`
+构建二级索引，而不是让向量库成为唯一事实源。
+
+该设计也贴合当前 Agent 长期记忆趋势：长期记忆需要跨会话保留，并通过 namespace/key 或类似机制隔离；
+同时，生产环境必须考虑敏感数据保留、过期、审计和可恢复写入，而不能只依赖进程内缓存。
