@@ -1,4 +1,12 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-03 落地补充：runtime backpressure must be visible before DAG execution
+
+- 本阶段把 runtime-protection verdict 从真实 execute 入口继续传播到 execution-policy、DAG preview 和 dry-run。这对应成熟 Agent host 的一个关键趋势：工具执行的容量、熔断和配额不能只在最后一刻失败，而应该在计划、预览、dry-run 和 worker pre-check 阶段就变成可解释的控制面事实。
+- DataSmart 新增 `inspectExecutionAdmission(...)`，用于只读预判“如果现在启动一次执行是否会超限”。这和当前状态诊断不同：当前状态可能没有超过上限，但再启动一次就会超过。Agent 批量策略必须使用准入预判，否则会在满额边界把不可执行节点展示成候选。
+- Run/DAG 批量响应现在同时携带 sandbox verdict 与 runtime-protection verdict。前者解决 tool safety，后者解决 host-side backpressure 与 target service health，两者组合后才接近 Codex/Claude Code 类 Agent 的真实工具治理形态。
+- 当前仍保持 JVM 内存级实现，适合单实例学习和早期联调；生产趋势应继续迁移到 Redis 原子令牌桶、租户配额中心、服务网格熔断、低基数 Prometheus 指标、runtime event display 和运维手动摘除/恢复。
+- 下一步不建议继续无限扩展本地保护细节；更合理的路线是先把 issueCodes 接入可观测事件与指标，再进入真实 DAG worker pre-check，随后切换到 MCP/Skill 发布流、长期记忆索引 worker 或智能网关多 Agent 协作。
+
 
 ## 2026-06-03 落地补充：tool execution needs runtime backpressure and circuit breakers
 

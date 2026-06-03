@@ -1,5 +1,39 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-03 追加落地进展：Runtime Protection Verdict 接入 Run/DAG 批量策略
+
+- `agent-runtime` 已将工具运行时保护从单工具真实执行入口继续传播到 Run 级 `execution-policy`、DAG execution preview 和 DAG execution dry-run。
+- `AgentToolRuntimeProtectionService` 新增 `inspectExecutionAdmission(...)`：
+  - `inspect(...)` 展示当前运行时事实；
+  - `inspectExecutionAdmission(...)` 在不修改 in-flight 计数、不创建 lease、不改变熔断状态的前提下，预判“如果现在启动一次新工具执行是否会超限”；
+  - 这避免了目标服务容量刚好满额时，批量策略仍把节点展示成可执行候选。
+- `AgentRunToolExecutionPolicyItemView` 新增 runtime-protection 字段：
+  - `runtimeProtectionAllowed`；
+  - 全局/租户/目标服务 in-flight 与上限；
+  - `runtimeCircuitOpen`、`runtimeCircuitOpenUntil`、`runtimeConsecutiveFailures`；
+  - `runtimeProtectionIssueCodes/reasons/recommendedActions`。
+- `AgentRunToolExecutionPolicyService` 在 PLANNED 工具阶段同时合成 sandbox verdict 与 runtime-protection admission verdict：
+  - sandbox 不通过时继续按安全策略阻断；
+  - sandbox 通过但 runtime-protection 不通过时降级为 `BLOCKED_BY_POLICY`；
+  - 运行时保护阻断不强行标记为人工审批问题，而是返回等待、拆批、扩容、排查目标服务熔断等运维动作。
+- `AgentToolDagExecutionPreviewItemView` 与 `AgentToolDagExecutionDryRunItemView` 已透传 runtime-protection 字段：
+  - preview 汇总会提示存在运行时保护暂缓节点；
+  - dry-run 即使命中这些节点，也会保持 `BLOCKED_BY_PREVIEW`，不会把它们送入真实 execute 或异步 outbox 候选。
+- 新增/更新测试：
+  - runtime service 覆盖“准入预判不会修改计数”；
+  - policy 覆盖目标服务满额时批量策略降级为 `BLOCKED_BY_POLICY`；
+  - preview/dry-run 覆盖 runtime 字段透传。
+
+产品意义：
+- 批量策略现在同时尊重“工具是否安全”和“当前是否适合执行”，更接近真实 Agent host 的准入控制。
+- 这一步降低了未来 DAG worker 的风险：worker 可以消费 preview/dry-run 中已经合成的 runtime verdict，而不是自己再写一套容量判断。
+- 当前仍是 JVM 单实例运行时保护，不代表全局租户配额；生产多实例还需要 Redis/DB 原子计数、服务网格熔断、Prometheus 指标和运维手动摘除/恢复。
+
+下一步推荐路线：
+1. 将 sandbox/runtime-protection issueCodes 接入 runtime event display 与低基数指标，形成安全阻断率、容量拒绝率和目标服务熔断率。
+2. 真实 DAG worker 前应合并 sandbox、runtime-protection、permission-admin evaluate 和 confirmation evidence，形成 worker pre-check。
+3. 完成工具执行保护最小闭环后，建议切换一部分精力到 MCP/Skill 发布流、长期记忆索引 worker 或智能网关多 Agent 协作，避免 Agent Runtime 局部继续无限加码。
+
 ## 2026-06-03 追加落地进展：Agent 工具运行时保护与目标服务熔断
 
 - `agent-runtime` 新增 `tool-runtime-protection` 能力，把工具执行治理从“工具计划是否安全”推进到“当前是否有容量执行、目标服务是否健康”。

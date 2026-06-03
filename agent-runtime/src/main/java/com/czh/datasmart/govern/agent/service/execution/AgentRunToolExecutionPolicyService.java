@@ -20,8 +20,11 @@ import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
 import com.czh.datasmart.govern.agent.service.tool.sandbox.AgentToolSandboxPolicyService;
 import com.czh.datasmart.govern.agent.service.tool.sandbox.AgentToolSandboxVerdict;
+import com.czh.datasmart.govern.agent.service.tool.protection.AgentToolRuntimeProtectionService;
+import com.czh.datasmart.govern.agent.service.tool.protection.AgentToolRuntimeProtectionVerdict;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -49,6 +52,7 @@ public class AgentRunToolExecutionPolicyService {
     private final AgentSessionMemoryStore sessionMemoryStore;
     private final AgentToolExecutionAuditService auditService;
     private final AgentToolSandboxPolicyService sandboxPolicyService;
+    private final AgentToolRuntimeProtectionService runtimeProtectionService;
 
     /**
      * Spring 运行时构造函数。
@@ -60,10 +64,34 @@ public class AgentRunToolExecutionPolicyService {
                                               AgentSessionMemoryStore sessionMemoryStore,
                                               AgentToolExecutionAuditService auditService,
                                               AgentToolSandboxPolicyService sandboxPolicyService) {
+        this(properties,
+                sessionMemoryStore,
+                auditService,
+                sandboxPolicyService,
+                AgentToolRuntimeProtectionService.disabledForTests());
+    }
+
+    /**
+     * Spring 生产路径构造函数。
+     *
+     * <p>该构造函数同时注入 sandbox 与 runtime-protection。
+     * sandbox 负责判断工具计划是否安全，runtime-protection 负责判断当前容量、租户压力和目标服务健康是否允许执行。
+     * 把两者都接入 execution-policy，可以让前端、Python Runtime 和未来 DAG worker 在只读阶段就看到完整阻断原因，
+     * 而不是等真正调用 execute 时才被运行时保护拒绝。</p>
+     */
+    @Autowired
+    public AgentRunToolExecutionPolicyService(AgentRuntimeProperties properties,
+                                              AgentSessionMemoryStore sessionMemoryStore,
+                                              AgentToolExecutionAuditService auditService,
+                                              AgentToolSandboxPolicyService sandboxPolicyService,
+                                              AgentToolRuntimeProtectionService runtimeProtectionService) {
         this.properties = properties;
         this.sessionMemoryStore = sessionMemoryStore;
         this.auditService = auditService;
         this.sandboxPolicyService = sandboxPolicyService;
+        this.runtimeProtectionService = runtimeProtectionService == null
+                ? AgentToolRuntimeProtectionService.disabledForTests()
+                : runtimeProtectionService;
     }
 
     /**
@@ -77,7 +105,8 @@ public class AgentRunToolExecutionPolicyService {
                                               AgentSessionMemoryStore sessionMemoryStore,
                                               AgentToolExecutionAuditService auditService) {
         this(disableSandbox(properties), sessionMemoryStore, auditService,
-                new AgentToolSandboxPolicyService(disableSandbox(properties)));
+                new AgentToolSandboxPolicyService(disableSandbox(properties)),
+                AgentToolRuntimeProtectionService.disabledForTests());
     }
 
     /**
@@ -120,7 +149,10 @@ public class AgentRunToolExecutionPolicyService {
 
         AgentToolExecutionState state = parseExecutionState(audit.state());
         AgentToolExecutionMode mode = parseExecutionMode(audit.executionMode());
-        AgentToolSandboxVerdict sandbox = inspectSandbox(session, run, audit);
+        AgentToolExecutionAuditRecord record = requireAuditRecord(session, run, audit);
+        AgentToolSandboxVerdict sandbox = sandboxPolicyService.inspect(session, run, record);
+        AgentToolRuntimeProtectionVerdict runtimeProtection =
+                runtimeProtectionService.inspectExecutionAdmission(session, run, record);
 
         if (run.getState().isTerminal()) {
             decision = AgentRunToolExecutionDecision.RUN_TERMINAL_BLOCKED;
@@ -147,6 +179,17 @@ public class AgentRunToolExecutionPolicyService {
             reasons.addAll(sandbox.reasons());
             actions.add("先处理沙箱 issueCodes=" + sandbox.issueCodes() + " 对应的配置、审批、参数或目标服务问题，再重新预检。");
             actions.addAll(sandbox.recommendedActions());
+        } else if (state == AgentToolExecutionState.PLANNED
+                && !Boolean.TRUE.equals(runtimeProtection.allowed())) {
+            decision = AgentRunToolExecutionDecision.BLOCKED_BY_POLICY;
+            autoExecutable = false;
+            requiresHumanAction = false;
+            blocksRun = true;
+            reasons.add("工具处于 PLANNED，且 sandbox 已允许，但运行时保护判定当前容量或目标服务健康不适合继续执行。");
+            reasons.addAll(runtimeProtection.reasons());
+            actions.add("暂缓进入 execute/async dispatcher；优先处理 runtimeProtectionIssueCodes="
+                    + runtimeProtection.issueCodes() + " 对应的并发、租户压力或目标服务熔断问题。");
+            actions.addAll(runtimeProtection.recommendedActions());
         } else if (state == AgentToolExecutionState.PLANNED) {
             ToolPlannedPolicy plannedPolicy = inspectPlannedTool(mode, audit, reasons, actions);
             decision = plannedPolicy.decision();
@@ -202,6 +245,19 @@ public class AgentRunToolExecutionPolicyService {
                 sandbox.issueCodes(),
                 sandbox.reasons(),
                 sandbox.recommendedActions(),
+                runtimeProtection.allowed(),
+                runtimeProtection.globalInFlight(),
+                runtimeProtection.tenantInFlight(),
+                runtimeProtection.targetServiceInFlight(),
+                runtimeProtection.maxGlobalInFlight(),
+                runtimeProtection.maxTenantInFlight(),
+                runtimeProtection.maxTargetServiceInFlight(),
+                runtimeProtection.circuitOpen(),
+                runtimeProtection.circuitOpenUntil(),
+                runtimeProtection.consecutiveFailures(),
+                runtimeProtection.issueCodes(),
+                runtimeProtection.reasons(),
+                runtimeProtection.recommendedActions(),
                 List.copyOf(reasons),
                 List.copyOf(actions)
         );
@@ -214,15 +270,14 @@ public class AgentRunToolExecutionPolicyService {
      * governance hints 等完整审计事实。这里复用审计服务已有的 requireExecutionAuditRecord(...)，不新增审计服务方法，
      * 避免继续扩大已经较重的审计服务文件。</p>
      */
-    private AgentToolSandboxVerdict inspectSandbox(AgentSessionRecord session,
-                                                   AgentRunRecord run,
-                                                   AgentToolExecutionAuditView audit) {
-        AgentToolExecutionAuditRecord record = auditService.requireExecutionAuditRecord(
+    private AgentToolExecutionAuditRecord requireAuditRecord(AgentSessionRecord session,
+                                                             AgentRunRecord run,
+                                                             AgentToolExecutionAuditView audit) {
+        return auditService.requireExecutionAuditRecord(
                 session.getSessionId(),
                 run.getRunId(),
                 audit.auditId()
         );
-        return sandboxPolicyService.inspect(session, run, record);
     }
 
     /**

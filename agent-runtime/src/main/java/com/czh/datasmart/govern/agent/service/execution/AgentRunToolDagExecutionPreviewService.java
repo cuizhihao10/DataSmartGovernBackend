@@ -126,6 +126,19 @@ public class AgentRunToolDagExecutionPreviewService {
                 policy == null ? List.of() : policy.sandboxIssueCodes(),
                 policy == null ? List.of() : policy.sandboxReasons(),
                 policy == null ? List.of() : policy.sandboxRecommendedActions(),
+                policy == null ? null : policy.runtimeProtectionAllowed(),
+                policy == null ? null : policy.runtimeGlobalInFlight(),
+                policy == null ? null : policy.runtimeTenantInFlight(),
+                policy == null ? null : policy.runtimeTargetServiceInFlight(),
+                policy == null ? null : policy.runtimeMaxGlobalInFlight(),
+                policy == null ? null : policy.runtimeMaxTenantInFlight(),
+                policy == null ? null : policy.runtimeMaxTargetServiceInFlight(),
+                policy == null ? null : policy.runtimeCircuitOpen(),
+                policy == null ? null : policy.runtimeCircuitOpenUntil(),
+                policy == null ? null : policy.runtimeConsecutiveFailures(),
+                policy == null ? List.of() : policy.runtimeProtectionIssueCodes(),
+                policy == null ? List.of() : policy.runtimeProtectionReasons(),
+                policy == null ? List.of() : policy.runtimeProtectionRecommendedActions(),
                 node.blockedByNodeIds(),
                 List.copyOf(reasons),
                 List.copyOf(actions)
@@ -328,6 +341,9 @@ public class AgentRunToolDagExecutionPreviewService {
         if (sandboxRejectedCount(items) > 0) {
             reasons.add("存在工具调用沙箱未通过的节点，preview 已将这些节点降级为策略阻断，真实 DAG worker 不应绕过该 verdict。");
         }
+        if (runtimeProtectionRejectedCount(items) > 0) {
+            reasons.add("存在运行时保护暂缓的节点，说明 sandbox 虽然允许，但当前容量、租户并发或目标服务熔断状态不适合继续推进。");
+        }
         return reasons;
     }
 
@@ -344,6 +360,9 @@ public class AgentRunToolDagExecutionPreviewService {
         }
         if (sandboxRejectedCount(items) > 0) {
             actions.add("优先处理 sandboxIssueCodes 对应的工具目录、目标服务、参数体量、审批或幂等配置问题，再重新生成 preview。");
+        }
+        if (runtimeProtectionRejectedCount(items) > 0) {
+            actions.add("优先查看 runtimeProtectionIssueCodes：如果是并发超限可等待或拆批；如果是目标服务熔断应先排查下游健康再重试。");
         }
         actions.add("进入真实 DAG worker 前，应先接入 permission-admin 服务间授权和工具级并发/配额策略。");
         return actions;
@@ -394,6 +413,12 @@ public class AgentRunToolDagExecutionPreviewService {
     private int sandboxRejectedCount(List<AgentToolDagExecutionPreviewItemView> items) {
         return (int) items.stream()
                 .filter(item -> Boolean.FALSE.equals(item.sandboxAllowed()))
+                .count();
+    }
+
+    private int runtimeProtectionRejectedCount(List<AgentToolDagExecutionPreviewItemView> items) {
+        return (int) items.stream()
+                .filter(item -> Boolean.FALSE.equals(item.runtimeProtectionAllowed()))
                 .count();
     }
 

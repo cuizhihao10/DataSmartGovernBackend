@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.agent.controller.dto;
 
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -66,6 +67,25 @@ public record AgentToolDagExecutionDryRunItemView(
         List<String> sandboxIssueCodes,
         List<String> sandboxReasons,
         List<String> sandboxRecommendedActions,
+        /**
+         * dry-run 继承自 preview 的运行时保护结论。
+         *
+         * <p>dry-run 不会真实执行工具，也不会申请 runtime lease；这里返回的是“如果现在要进入真实执行，
+         * 控制面根据当前容量与熔断状态会如何判断”的只读事实，便于前端二次确认和未来 worker pre-check 复用。</p>
+         */
+        Boolean runtimeProtectionAllowed,
+        Integer runtimeGlobalInFlight,
+        Integer runtimeTenantInFlight,
+        Integer runtimeTargetServiceInFlight,
+        Integer runtimeMaxGlobalInFlight,
+        Integer runtimeMaxTenantInFlight,
+        Integer runtimeMaxTargetServiceInFlight,
+        Boolean runtimeCircuitOpen,
+        Instant runtimeCircuitOpenUntil,
+        Integer runtimeConsecutiveFailures,
+        List<String> runtimeProtectionIssueCodes,
+        List<String> runtimeProtectionReasons,
+        List<String> runtimeProtectionRecommendedActions,
         String riskLevel,
         Boolean readOnly,
         Boolean idempotent,

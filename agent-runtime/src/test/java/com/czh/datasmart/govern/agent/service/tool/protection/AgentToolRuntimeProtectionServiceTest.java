@@ -78,6 +78,29 @@ class AgentToolRuntimeProtectionServiceTest {
     }
 
     @Test
+    void admissionPreviewShouldProjectTheNextExecutionWithoutMutatingCounters() {
+        AgentToolRuntimeProtectionProperties properties = baseProperties();
+        properties.setMaxTargetServiceInFlight(1);
+        AgentToolRuntimeProtectionService service = new AgentToolRuntimeProtectionService(properties);
+        AgentToolExecutionAuditRecord audit = audit("audit-admission-preview", "datasource-management", 10L);
+
+        AgentToolRuntimeProtectionLease firstLease = service.beginExecution(session(), run(), audit);
+
+        AgentToolRuntimeProtectionVerdict current = service.inspect(session(), run(), audit);
+        AgentToolRuntimeProtectionVerdict admission = service.inspectExecutionAdmission(session(), run(), audit);
+        AgentToolRuntimeProtectionVerdict afterPreview = service.inspect(session(), run(), audit);
+
+        assertTrue(current.allowed());
+        assertEquals(1, current.targetServiceInFlight());
+        assertFalse(admission.allowed());
+        assertEquals(2, admission.targetServiceInFlight());
+        assertTrue(admission.issueCodes().contains("TARGET_SERVICE_IN_FLIGHT_LIMIT_EXCEEDED"));
+        assertEquals(1, afterPreview.targetServiceInFlight());
+
+        firstLease.close();
+    }
+
+    @Test
     void shouldOpenCircuitAfterConsecutiveTargetServiceFailures() {
         MutableClock clock = new MutableClock(Instant.parse("2026-06-04T00:00:00Z"));
         AgentToolRuntimeProtectionProperties properties = baseProperties();

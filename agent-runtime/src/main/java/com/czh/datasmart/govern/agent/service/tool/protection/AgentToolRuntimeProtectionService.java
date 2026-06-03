@@ -103,6 +103,34 @@ public class AgentToolRuntimeProtectionService {
     }
 
     /**
+     * 只读预判“如果现在启动这次工具执行，是否会被运行时保护允许”。
+     *
+     * <p>它和 {@link #inspect(AgentSessionRecord, AgentRunRecord, AgentToolExecutionAuditRecord)} 的差异非常重要：
+     * inspect(...) 展示的是当前事实，例如当前 targetService 已有 1 个 in-flight；
+     * inspectExecutionAdmission(...) 展示的是准入预判，会在不修改计数的前提下把“本次即将启动的执行”也算进去。
+     * 因此当 maxTargetServiceInFlight=1 且当前已有 1 个执行中工具时，普通 inspect 仍会说当前没有超过上限，
+     * 但准入预判会返回 TARGET_SERVICE_IN_FLIGHT_LIMIT_EXCEEDED，避免 execution-policy、DAG preview 和 dry-run
+     * 把一个实际上无法再启动的节点展示成执行候选。</p>
+     *
+     * <p>该方法不会占用 lease、不会改变连续失败计数、不会打开或关闭熔断，适合只读策略接口频繁调用。
+     * 真正执行入口仍必须调用 {@link #beginExecution(AgentSessionRecord, AgentRunRecord, AgentToolExecutionAuditRecord)}
+     * 来完成原子性更强的“占用后校验 + finally 释放”。</p>
+     *
+     * @param session 当前 Agent 会话，预留给未来工作空间/套餐级差异化保护。
+     * @param run 当前 Run，预留给未来批次优先级、任务类型和 DAG worker 策略。
+     * @param audit 工具执行审计事实，用于定位 targetService、tenantId 和 toolCode。
+     * @return 不产生副作用的运行时准入 verdict。
+     */
+    public AgentToolRuntimeProtectionVerdict inspectExecutionAdmission(AgentSessionRecord session,
+                                                                       AgentRunRecord run,
+                                                                       AgentToolExecutionAuditRecord audit) {
+        if (!Boolean.TRUE.equals(properties.getEnabled())) {
+            return inspect(session, run, audit);
+        }
+        return inspectWithCounts(audit, projectedCountsAfterAdmission(audit));
+    }
+
+    /**
      * 进入真实工具执行区。
      *
      * <p>该方法会先占用 in-flight 计数，再基于占用后的计数生成 verdict。
@@ -196,6 +224,15 @@ public class AgentToolRuntimeProtectionService {
                 globalInFlight.get(),
                 audit.getTenantId() == null ? 0 : counterValue(tenantInFlight.get(audit.getTenantId())),
                 counterValue(targetServiceInFlight.get(targetService))
+        );
+    }
+
+    private CountSnapshot projectedCountsAfterAdmission(AgentToolExecutionAuditRecord audit) {
+        CountSnapshot current = currentCounts(audit);
+        return new CountSnapshot(
+                current.globalInFlight() + 1,
+                audit.getTenantId() == null ? current.tenantInFlight() : current.tenantInFlight() + 1,
+                current.targetServiceInFlight() + 1
         );
     }
 

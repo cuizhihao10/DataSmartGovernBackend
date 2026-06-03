@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.agent.controller.dto;
 
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -68,6 +69,25 @@ public record AgentToolDagExecutionPreviewItemView(
         List<String> sandboxIssueCodes,
         List<String> sandboxReasons,
         List<String> sandboxRecommendedActions,
+        /**
+         * 运行时保护是否允许该节点在当前容量与目标服务健康状态下继续进入真实执行入口。
+         *
+         * <p>DAG preview 只读展示该字段，不会占用 in-flight，也不会打开或关闭熔断。
+         * 它的价值是让批量调度器在形成候选节点时，提前避开已经超配额或处于熔断期的下游服务。</p>
+         */
+        Boolean runtimeProtectionAllowed,
+        Integer runtimeGlobalInFlight,
+        Integer runtimeTenantInFlight,
+        Integer runtimeTargetServiceInFlight,
+        Integer runtimeMaxGlobalInFlight,
+        Integer runtimeMaxTenantInFlight,
+        Integer runtimeMaxTargetServiceInFlight,
+        Boolean runtimeCircuitOpen,
+        Instant runtimeCircuitOpenUntil,
+        Integer runtimeConsecutiveFailures,
+        List<String> runtimeProtectionIssueCodes,
+        List<String> runtimeProtectionReasons,
+        List<String> runtimeProtectionRecommendedActions,
         List<String> blockedByNodeIds,
         List<String> reasons,
         List<String> recommendedActions

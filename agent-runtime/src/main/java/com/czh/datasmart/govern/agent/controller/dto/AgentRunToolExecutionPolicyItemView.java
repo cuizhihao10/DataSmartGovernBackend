@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.agent.controller.dto;
 
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -51,6 +52,38 @@ public record AgentRunToolExecutionPolicyItemView(String auditId,
                                                   List<String> sandboxIssueCodes,
                                                   List<String> sandboxReasons,
                                                   List<String> sandboxRecommendedActions,
+                                                  /**
+                                                   * 运行时保护是否允许该工具在当前容量与目标服务健康状态下进入真实执行入口。
+                                                   *
+                                                   * <p>该字段和 sandboxAllowed 的边界不同：sandboxAllowed 回答“工具计划是否安全”，
+                                                   * runtimeProtectionAllowed 回答“现在是否适合执行”。例如参数安全、权限满足，
+                                                   * 但目标服务已熔断或当前租户并发过高时，该字段会返回 false。</p>
+                                                   */
+                                                  Boolean runtimeProtectionAllowed,
+                                                  /**
+                                                   * 当前 JVM 内所有工具执行的 in-flight 数量。
+                                                   *
+                                                   * <p>第一阶段这是单实例视角，主要用于前端、Python Runtime 和运维台解释暂缓执行原因；
+                                                   * 多实例生产环境后续应迁移为 Redis/DB/Quota Center 共享计数。</p>
+                                                   */
+                                                  Integer runtimeGlobalInFlight,
+                                                  /**
+                                                   * 当前租户在本 JVM 内的工具执行 in-flight 数量，用于解释租户级公平性和套餐配额边界。
+                                                   */
+                                                  Integer runtimeTenantInFlight,
+                                                  /**
+                                                   * 当前目标服务在本 JVM 内的工具执行 in-flight 数量，用于避免 Agent 把同一个下游微服务压垮。
+                                                   */
+                                                  Integer runtimeTargetServiceInFlight,
+                                                  Integer runtimeMaxGlobalInFlight,
+                                                  Integer runtimeMaxTenantInFlight,
+                                                  Integer runtimeMaxTargetServiceInFlight,
+                                                  Boolean runtimeCircuitOpen,
+                                                  Instant runtimeCircuitOpenUntil,
+                                                  Integer runtimeConsecutiveFailures,
+                                                  List<String> runtimeProtectionIssueCodes,
+                                                  List<String> runtimeProtectionReasons,
+                                                  List<String> runtimeProtectionRecommendedActions,
                                                   List<String> reasons,
                                                   List<String> recommendedActions) {
 }

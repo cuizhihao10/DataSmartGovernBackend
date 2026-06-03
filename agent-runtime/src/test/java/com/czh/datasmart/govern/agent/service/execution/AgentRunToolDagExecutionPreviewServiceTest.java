@@ -78,6 +78,7 @@ class AgentRunToolDagExecutionPreviewServiceTest {
         assertEquals(AgentToolDagExecutionPreviewAction.SYNC_AUTO_EXECUTE_CANDIDATE.name(), item.previewAction());
         assertTrue(item.readyForExecution());
         assertTrue(item.wouldTriggerSideEffect());
+        assertTrue(item.runtimeProtectionAllowed());
         assertEquals("LOW", item.riskLevel());
         assertEquals(0, preview.serviceAuthorizationEvaluatedCount());
         assertEquals(AgentToolServiceAuthorizationDecision.NOT_EVALUATED.name(), item.serviceAuthorization().decision());

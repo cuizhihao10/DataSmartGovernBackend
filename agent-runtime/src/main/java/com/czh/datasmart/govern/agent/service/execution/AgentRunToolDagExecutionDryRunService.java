@@ -299,6 +299,19 @@ public class AgentRunToolDagExecutionDryRunService {
                 item.sandboxIssueCodes(),
                 item.sandboxReasons(),
                 item.sandboxRecommendedActions(),
+                item.runtimeProtectionAllowed(),
+                item.runtimeGlobalInFlight(),
+                item.runtimeTenantInFlight(),
+                item.runtimeTargetServiceInFlight(),
+                item.runtimeMaxGlobalInFlight(),
+                item.runtimeMaxTenantInFlight(),
+                item.runtimeMaxTargetServiceInFlight(),
+                item.runtimeCircuitOpen(),
+                item.runtimeCircuitOpenUntil(),
+                item.runtimeConsecutiveFailures(),
+                item.runtimeProtectionIssueCodes(),
+                item.runtimeProtectionReasons(),
+                item.runtimeProtectionRecommendedActions(),
                 item.riskLevel(),
                 item.readOnly(),
                 item.idempotent(),
@@ -359,6 +372,19 @@ public class AgentRunToolDagExecutionDryRunService {
                 null,
                 null,
                 null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                List.of(),
+                List.of(),
+                List.of(),
+                null,
+                null,
+                null,
+                null,
                 List.of("调用方显式请求的目标在当前 Run 的 DAG execution preview 中不存在。"),
                 List.of("请确认 nodeId/auditId 是否来自同一个 sessionId/runId，并在工具计划刷新后重新获取 preview。")
         );
@@ -387,6 +413,9 @@ public class AgentRunToolDagExecutionDryRunService {
         if (sandboxRejectedCount(items) > 0) {
             reasons.add("本次 dry-run 包含沙箱拒绝的节点；这些节点即使命中选择器，也不会进入真实执行候选。");
         }
+        if (runtimeProtectionRejectedCount(items) > 0) {
+            reasons.add("本次 dry-run 包含运行时保护暂缓的节点；这些节点即使命中选择器，也不应进入真实 execute 或异步 outbox。");
+        }
         return reasons;
     }
 
@@ -403,6 +432,9 @@ public class AgentRunToolDagExecutionDryRunService {
         }
         if (sandboxRejectedCount(items) > 0) {
             actions.add("处理 dry-run item 中的 sandboxIssueCodes，再重新生成 execution-policy、preview 和 dry-run。");
+        }
+        if (runtimeProtectionRejectedCount(items) > 0) {
+            actions.add("处理 dry-run item 中的 runtimeProtectionIssueCodes：并发超限时等待或拆批，目标服务熔断时先排查下游健康。");
         }
         actions.add("进入真实 DAG worker 前，还需要补齐租户配额、工具级限流、并发池、worker 指标和失败补偿策略。");
         return actions;
@@ -424,6 +456,12 @@ public class AgentRunToolDagExecutionDryRunService {
     private int sandboxRejectedCount(List<AgentToolDagExecutionDryRunItemView> items) {
         return (int) items.stream()
                 .filter(item -> Boolean.FALSE.equals(item.sandboxAllowed()))
+                .count();
+    }
+
+    private int runtimeProtectionRejectedCount(List<AgentToolDagExecutionDryRunItemView> items) {
+        return (int) items.stream()
+                .filter(item -> Boolean.FALSE.equals(item.runtimeProtectionAllowed()))
                 .count();
     }
 }

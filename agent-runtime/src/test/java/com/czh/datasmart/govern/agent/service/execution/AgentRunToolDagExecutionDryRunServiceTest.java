@@ -74,6 +74,7 @@ class AgentRunToolDagExecutionDryRunServiceTest {
         assertTrue(item.executionPath().contains("auto-execute-sync"));
         assertTrue(item.executionPath().contains("dryRun=true"));
         assertTrue(item.targetWouldTriggerSideEffect());
+        assertTrue(item.runtimeProtectionAllowed());
     }
 
     @Test

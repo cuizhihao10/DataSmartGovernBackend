@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.service.execution;
 
 import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
+import com.czh.datasmart.govern.agent.config.AgentToolRuntimeProtectionProperties;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolExecutionPolicyView;
 import com.czh.datasmart.govern.agent.event.NoopAgentToolExecutionEventPublisher;
 import com.czh.datasmart.govern.agent.model.AgentRunState;
@@ -22,6 +23,8 @@ import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
 import com.czh.datasmart.govern.agent.service.tool.sandbox.AgentToolSandboxPolicyService;
+import com.czh.datasmart.govern.agent.service.tool.protection.AgentToolRuntimeProtectionLease;
+import com.czh.datasmart.govern.agent.service.tool.protection.AgentToolRuntimeProtectionService;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
@@ -190,6 +193,47 @@ class AgentRunToolExecutionPolicyServiceTest {
         assertTrue(policy.items().getFirst().sandboxIssueCodes().contains("ARGUMENT_BYTES_EXCEED_LIMIT"));
     }
 
+    @Test
+    void runtimeProtectionRejectedToolShouldBecomePolicyBlockedWithIssueCodes() {
+        TestFixture fixture = newRuntimeProtectionFixture(AgentRunState.PLANNING);
+        AgentToolExecutionAuditRecord running = audit(
+                "atea-policy-runtime-running",
+                AgentToolExecutionState.PLANNED,
+                AgentToolExecutionMode.SYNC,
+                AgentToolRiskLevel.LOW,
+                false,
+                true,
+                true,
+                Map.of()
+        );
+        AgentToolExecutionAuditRecord candidate = audit(
+                "atea-policy-runtime-candidate",
+                AgentToolExecutionState.PLANNED,
+                AgentToolExecutionMode.SYNC,
+                AgentToolRiskLevel.LOW,
+                false,
+                true,
+                true,
+                Map.of()
+        );
+        fixture.saveAudits(running, candidate);
+        AgentToolRuntimeProtectionLease lease =
+                fixture.runtimeProtectionService.beginExecution(newSession(), newRun(AgentRunState.PLANNING), running);
+
+        AgentRunToolExecutionPolicyView policy = fixture.service.inspectRunPolicy("session-policy-001", "run-policy-001");
+
+        assertEquals(0, policy.autoExecutableCount());
+        assertEquals(2, policy.blockingCount());
+        assertTrue(policy.items().stream()
+                .allMatch(item -> AgentRunToolExecutionDecision.BLOCKED_BY_POLICY.name().equals(item.decision())));
+        assertTrue(policy.items().stream()
+                .allMatch(item -> Boolean.FALSE.equals(item.runtimeProtectionAllowed())));
+        assertTrue(policy.items().stream()
+                .allMatch(item -> item.runtimeProtectionIssueCodes().contains("TARGET_SERVICE_IN_FLIGHT_LIMIT_EXCEEDED")));
+
+        lease.close();
+    }
+
     /**
      * 构造测试上下文。
      *
@@ -209,6 +253,24 @@ class AgentRunToolExecutionPolicyServiceTest {
         return newFixture(runState, properties, true);
     }
 
+    private TestFixture newRuntimeProtectionFixture(AgentRunState runState) {
+        AgentRuntimeProperties properties = new AgentRuntimeProperties();
+        AgentToolRuntimeProtectionProperties runtimeProperties = new AgentToolRuntimeProtectionProperties();
+        runtimeProperties.setEnabled(true);
+        runtimeProperties.setMaxGlobalInFlight(10);
+        runtimeProperties.setMaxTenantInFlight(10);
+        runtimeProperties.setMaxTargetServiceInFlight(1);
+        runtimeProperties.setCircuitBreakerEnabled(true);
+        runtimeProperties.setConsecutiveFailureThreshold(3);
+        runtimeProperties.setCircuitOpenSeconds(60L);
+        return newFixture(
+                runState,
+                properties,
+                false,
+                new AgentToolRuntimeProtectionService(runtimeProperties)
+        );
+    }
+
     /**
      * 构造测试上下文。
      *
@@ -218,6 +280,13 @@ class AgentRunToolExecutionPolicyServiceTest {
     private TestFixture newFixture(AgentRunState runState,
                                    AgentRuntimeProperties properties,
                                    boolean enableSandbox) {
+        return newFixture(runState, properties, enableSandbox, AgentToolRuntimeProtectionService.disabledForTests());
+    }
+
+    private TestFixture newFixture(AgentRunState runState,
+                                   AgentRuntimeProperties properties,
+                                   boolean enableSandbox,
+                                   AgentToolRuntimeProtectionService runtimeProtectionService) {
         AgentSessionMemoryStore sessionStore = new AgentSessionMemoryStore();
         AgentToolExecutionAuditMemoryStore auditStore = new AgentToolExecutionAuditMemoryStore();
         AgentToolExecutionAuditService auditService = new AgentToolExecutionAuditService(
@@ -229,12 +298,15 @@ class AgentRunToolExecutionPolicyServiceTest {
                         properties,
                         sessionStore,
                         auditService,
-                        new AgentToolSandboxPolicyService(properties)
+                        new AgentToolSandboxPolicyService(properties),
+                        runtimeProtectionService
                 )
                 : new AgentRunToolExecutionPolicyService(
-                        properties,
+                        disableSandbox(properties),
                         sessionStore,
-                        auditService
+                        auditService,
+                        new AgentToolSandboxPolicyService(disableSandbox(properties)),
+                        runtimeProtectionService
                 );
         AgentSessionRecord session = new AgentSessionRecord(
                 "session-policy-001",
@@ -262,7 +334,38 @@ class AgentRunToolExecutionPolicyServiceTest {
                 "Run 已创建"
         ));
         sessionStore.save(session);
-        return new TestFixture(service, auditStore);
+        return new TestFixture(service, auditStore, runtimeProtectionService);
+    }
+
+    private AgentSessionRecord newSession() {
+        return new AgentSessionRecord(
+                "session-policy-001",
+                10L,
+                20L,
+                30L,
+                "actor-policy",
+                "PYTHON_AI_RUNTIME",
+                "工具执行策略预检测试",
+                WorkspaceIsolationLevel.PROJECT,
+                "tenant:10:project:20",
+                LocalDateTime.now()
+        );
+    }
+
+    private AgentRunRecord newRun(AgentRunState runState) {
+        return new AgentRunRecord(
+                "run-policy-001",
+                "session-policy-001",
+                runState,
+                "AGENT_REASONING",
+                "测试工具执行策略",
+                true,
+                false,
+                List.of(),
+                Map.of(),
+                LocalDateTime.now(),
+                "Run 已创建"
+        );
     }
 
     private AgentRuntimeProperties.ToolDefinitionProperties datasourceMetadataTool() {
@@ -281,6 +384,11 @@ class AgentRunToolExecutionPolicyServiceTest {
         tool.setMaxRetries(0);
         tool.setAllowedActions(List.of("READ"));
         return tool;
+    }
+
+    private AgentRuntimeProperties disableSandbox(AgentRuntimeProperties properties) {
+        properties.getToolSandbox().setEnabled(false);
+        return properties;
     }
 
     private AgentToolExecutionAuditRecord audit(String auditId,
@@ -323,7 +431,8 @@ class AgentRunToolExecutionPolicyServiceTest {
     }
 
     private record TestFixture(AgentRunToolExecutionPolicyService service,
-                               AgentToolExecutionAuditMemoryStore auditStore) {
+                               AgentToolExecutionAuditMemoryStore auditStore,
+                               AgentToolRuntimeProtectionService runtimeProtectionService) {
 
         /**
          * 保存审计记录。
