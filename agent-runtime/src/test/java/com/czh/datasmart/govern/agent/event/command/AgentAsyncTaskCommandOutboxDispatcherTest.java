@@ -7,8 +7,12 @@
 package com.czh.datasmart.govern.agent.event.command;
 
 import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
+import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventDisplayView;
 import com.czh.datasmart.govern.agent.service.execution.AgentAsyncTaskCommandPreCheckService;
 import com.czh.datasmart.govern.agent.service.execution.AgentAsyncTaskCommandPreCheckVerdict;
+import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventDisplaySupport;
+import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventProjectionRecord;
+import com.czh.datasmart.govern.agent.service.runtime.InMemoryAgentRuntimeEventProjectionStore;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -148,11 +152,15 @@ class AgentAsyncTaskCommandOutboxDispatcherTest {
         AgentAsyncTaskCommandPreCheckService preCheckService = mock(AgentAsyncTaskCommandPreCheckService.class);
         when(preCheckService.inspect(any())).thenReturn(verdict("async-command-precheck-blocked", "BLOCKED"));
         AgentAsyncTaskCommandDispatchTarget target = mock(AgentAsyncTaskCommandDispatchTarget.class);
+        InMemoryAgentRuntimeEventProjectionStore projectionStore = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        AgentAsyncTaskCommandPreCheckRuntimeEventPublisher eventPublisher =
+                new AgentAsyncTaskCommandPreCheckRuntimeEventPublisher(projectionStore);
         AgentAsyncTaskCommandOutboxDispatcher dispatcher = new AgentAsyncTaskCommandOutboxDispatcher(
                 properties,
                 store,
                 List.of(target),
-                preCheckService
+                preCheckService,
+                eventPublisher
         );
 
         AgentAsyncTaskCommandOutboxDispatcher.AgentAsyncTaskCommandOutboxDispatchSummary summary =
@@ -163,6 +171,13 @@ class AgentAsyncTaskCommandOutboxDispatcherTest {
         assertEquals(AgentAsyncTaskCommandOutboxStatus.BLOCKED, blocked.status());
         assertTrue(blocked.lastError().contains("CONFIRMATION_EXPIRED"));
         verify(target, never()).dispatch(any());
+        assertPreCheckRuntimeEvent(
+                projectionStore,
+                "tool_pre_check_blocked",
+                "AGENT_ASYNC_TOOL_PRECHECK_BLOCKED",
+                "BLOCKED_BEFORE_SIDE_EFFECT",
+                "Agent 异步命令执行前复核阻断"
+        );
     }
 
     @Test
@@ -175,11 +190,15 @@ class AgentAsyncTaskCommandOutboxDispatcherTest {
         AgentAsyncTaskCommandPreCheckService preCheckService = mock(AgentAsyncTaskCommandPreCheckService.class);
         when(preCheckService.inspect(any())).thenReturn(verdict("async-command-precheck-deferred", "DEFERRED"));
         AgentAsyncTaskCommandDispatchTarget target = mock(AgentAsyncTaskCommandDispatchTarget.class);
+        InMemoryAgentRuntimeEventProjectionStore projectionStore = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        AgentAsyncTaskCommandPreCheckRuntimeEventPublisher eventPublisher =
+                new AgentAsyncTaskCommandPreCheckRuntimeEventPublisher(projectionStore);
         AgentAsyncTaskCommandOutboxDispatcher dispatcher = new AgentAsyncTaskCommandOutboxDispatcher(
                 properties,
                 store,
                 List.of(target),
-                preCheckService
+                preCheckService,
+                eventPublisher
         );
 
         AgentAsyncTaskCommandOutboxDispatcher.AgentAsyncTaskCommandOutboxDispatchSummary summary =
@@ -191,6 +210,41 @@ class AgentAsyncTaskCommandOutboxDispatcherTest {
         assertNotNull(failed.nextRetryAt());
         assertTrue(failed.lastError().contains("RUNTIME_PROTECTION_DEFERRED_BEFORE_WORKER"));
         verify(target, never()).dispatch(any());
+        assertPreCheckRuntimeEvent(
+                projectionStore,
+                "tool_pre_check_deferred",
+                "AGENT_ASYNC_TOOL_PRECHECK_DEFERRED",
+                "DEFERRED_WAITING_RETRY",
+                "Agent 异步命令执行前复核暂缓"
+        );
+    }
+
+    private void assertPreCheckRuntimeEvent(InMemoryAgentRuntimeEventProjectionStore projectionStore,
+                                            String expectedStage,
+                                            String expectedErrorCode,
+                                            String expectedDisplayStatus,
+                                            String expectedTitle) {
+        /*
+         * 这里不是只断言“事件数量为 1”，而是同时验证事件事实层和 display 解释层：
+         * - 事实层保证 dispatcher 的安全决策可以被 replay/audit 查询到；
+         * - display 层保证前端不用再猜测 errorCode 的含义，可以直接展示阻断/暂缓状态和建议动作。
+         */
+        List<AgentRuntimeEventProjectionRecord> records = projectionStore.listByRunId("run-dispatch-command");
+        assertEquals(1, records.size());
+        AgentRuntimeEventProjectionRecord record = records.get(0);
+        assertEquals("agent.tool_execution.state_changed", record.eventType());
+        assertEquals(expectedStage, record.stage());
+        assertEquals(expectedErrorCode, record.attributes().get("errorCode"));
+        assertEquals("data-sync.execute", record.attributes().get("toolCode"));
+        assertEquals(1, ((List<?>) record.attributes().get("issueCodes")).size());
+
+        AgentRuntimeEventDisplayView display = new AgentRuntimeEventDisplaySupport().buildDisplay(record);
+        assertEquals("AGENT_TOOL_GUARDRAIL", display.category());
+        assertEquals(expectedTitle, display.title());
+        assertEquals(expectedDisplayStatus, display.status());
+        assertEquals(1, display.metrics().get("issueCodeCount"));
+        assertTrue(display.requiresAttention());
+        assertTrue(display.recommendedActions().get(0).contains("selected-node confirmation"));
     }
 
     private AgentAsyncTaskCommandOutboxProperties properties() {

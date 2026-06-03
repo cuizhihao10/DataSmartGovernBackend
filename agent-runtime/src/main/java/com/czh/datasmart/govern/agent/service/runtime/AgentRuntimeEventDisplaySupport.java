@@ -82,10 +82,12 @@ public class AgentRuntimeEventDisplaySupport {
         boolean deferred = isDeferredGuardrail(errorCode, message, record.stage());
         Map<String, Object> metrics = new LinkedHashMap<>();
         putIfPresent(metrics, "errorCode", errorCode);
-        putIfPresent(metrics, "toolCode", textAttribute(attributes, "toolCode"));
-        putIfPresent(metrics, "currentState", textAttribute(attributes, "currentState"));
-        putIfPresent(metrics, "targetService", textAttribute(attributes, "targetService"));
-        metrics.put("sideEffectPrevented", !deferred);
+      putIfPresent(metrics, "toolCode", textAttribute(attributes, "toolCode"));
+      putIfPresent(metrics, "currentState", textAttribute(attributes, "currentState"));
+      putIfPresent(metrics, "targetService", textAttribute(attributes, "targetService"));
+      putIfPresent(metrics, "preCheckDecision", textAttribute(attributes, "preCheckDecision"));
+      metrics.put("issueCodeCount", listSize(attributes.get("issueCodes")));
+      metrics.put("sideEffectPrevented", !deferred);
 
         return new AgentRuntimeEventDisplayView(
                 "AGENT_TOOL_GUARDRAIL",
@@ -304,12 +306,14 @@ public class AgentRuntimeEventDisplaySupport {
             case "agent_async_tool_policy_version_drift" -> "Agent 工具策略版本已变化";
             case "agent_async_tool_confirmation_rejected" -> "Agent 工具确认记录复核失败";
             case "agent_async_tool_permission_unavailable" -> "权限中心暂不可用，工具等待重试";
-            case "agent_async_tool_confirmation_unavailable" -> "确认记录暂不可用，工具等待重试";
-            case "agent_async_tool_not_whitelisted" -> "Agent 工具未配置白名单适配器";
-            case "agent_async_tool_audit_state_rejected" -> "Agent 工具状态不允许执行";
-            default -> normalize(message).contains("暂时不可用")
-                    ? "Agent 工具执行前复核暂不可用"
-                    : "Agent 工具执行前保护已触发";
+          case "agent_async_tool_confirmation_unavailable" -> "确认记录暂不可用，工具等待重试";
+          case "agent_async_tool_not_whitelisted" -> "Agent 工具未配置白名单适配器";
+          case "agent_async_tool_audit_state_rejected" -> "Agent 工具状态不允许执行";
+          case "agent_async_tool_precheck_blocked" -> "Agent 异步命令执行前复核阻断";
+          case "agent_async_tool_precheck_deferred" -> "Agent 异步命令执行前复核暂缓";
+          default -> normalize(message).contains("暂时不可用")
+                  ? "Agent 工具执行前复核暂不可用"
+                  : "Agent 工具执行前保护已触发";
         };
     }
 
@@ -325,12 +329,15 @@ public class AgentRuntimeEventDisplaySupport {
         if (normalizedCode.contains("policy_version_drift")) {
             return List.of("重新执行 dry-run/selected-node confirmation，使用最新策略版本生成新的执行证据。");
         }
-        if (normalizedCode.contains("confirmation_rejected")) {
-            return List.of("核对 confirmationId、sessionId、runId、auditId 和 commandId 是否来自同一次 DAG 确认。");
-        }
-        if (normalizedCode.contains("permission_unavailable") || normalizedMessage.contains("permission-admin")) {
-            return List.of("等待 permission-admin 恢复后由 worker 自动重试；若持续出现，请检查服务发现、超时和权限中心健康。");
-        }
+      if (normalizedCode.contains("confirmation_rejected")) {
+          return List.of("核对 confirmationId、sessionId、runId、auditId 和 commandId 是否来自同一次 DAG 确认。");
+      }
+      if (normalizedCode.contains("precheck")) {
+          return List.of("检查 selected-node confirmation、policyVersion、sandboxIssueCodes 和 runtimeProtectionIssueCodes，确认应重新确认、人工补偿还是等待退避重试。");
+      }
+      if (normalizedCode.contains("permission_unavailable") || normalizedMessage.contains("permission-admin")) {
+          return List.of("等待 permission-admin 恢复后由 worker 自动重试；若持续出现，请检查服务发现、超时和权限中心健康。");
+      }
         if (normalizedCode.contains("confirmation_unavailable") || normalizedMessage.contains("confirmation")) {
             return List.of("等待 agent-runtime confirmation 查询恢复后由 worker 自动重试；若持续出现，请检查运行时控制面健康。");
         }
@@ -345,10 +352,11 @@ public class AgentRuntimeEventDisplaySupport {
         String normalizedMessage = normalize(message);
         String normalizedStage = normalize(stage);
         return normalizedCode.contains("unavailable")
-                || normalizedMessage.contains("暂时不可用")
-                || normalizedMessage.contains("等待重试")
-                || "tool_executing".equals(normalizedStage);
-    }
+              || normalizedMessage.contains("暂时不可用")
+              || normalizedMessage.contains("等待重试")
+              || normalizedStage.contains("deferred")
+              || "tool_executing".equals(normalizedStage);
+  }
 
     private String genericCategory(String eventType) {
         String normalized = normalize(eventType);

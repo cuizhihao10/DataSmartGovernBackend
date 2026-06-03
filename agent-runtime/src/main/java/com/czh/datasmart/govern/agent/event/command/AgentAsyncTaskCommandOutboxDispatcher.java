@@ -39,31 +39,42 @@ public class AgentAsyncTaskCommandOutboxDispatcher {
     private final AgentAsyncTaskCommandOutboxStore outboxStore;
     private final List<AgentAsyncTaskCommandDispatchTarget> dispatchTargets;
     private final AgentAsyncTaskCommandPreCheckService preCheckService;
+    private final AgentAsyncTaskCommandPreCheckRuntimeEventPublisher preCheckRuntimeEventPublisher;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     /**
      * Spring 生产路径构造函数。
      *
-     * <p>生产路径注入 preCheckService，但是否执行 pre-check 仍由
+     * <p>生产路径注入 preCheckService 和 preCheckRuntimeEventPublisher，但是否执行 pre-check 仍由
      * {@code datasmart.agent-runtime.async-task-commands.outbox.dispatcher-pre-check-enabled} 控制。
-     * 这样可以在不破坏本地学习和历史 command 的前提下，把集成/生产环境逐步切到 fail-closed worker 前置复核。</p>
+     * 这样可以在不破坏本地学习和历史 command 的前提下，把集成/生产环境逐步切到 fail-closed worker 前置复核；
+     * 一旦复核阻断或暂缓，运行时事件也会进入投影层，方便前端时间线和审计 replay 解释“为什么没有继续投递”。</p>
      */
     @Autowired
     public AgentAsyncTaskCommandOutboxDispatcher(AgentAsyncTaskCommandOutboxProperties properties,
                                                  AgentAsyncTaskCommandOutboxStore outboxStore,
                                                  List<AgentAsyncTaskCommandDispatchTarget> dispatchTargets,
-                                                 AgentAsyncTaskCommandPreCheckService preCheckService) {
+                                                 AgentAsyncTaskCommandPreCheckService preCheckService,
+                                                 AgentAsyncTaskCommandPreCheckRuntimeEventPublisher preCheckRuntimeEventPublisher) {
         this.properties = properties;
         this.outboxStore = outboxStore;
         this.dispatchTargets = dispatchTargets;
         this.preCheckService = preCheckService;
+        this.preCheckRuntimeEventPublisher = preCheckRuntimeEventPublisher;
+    }
+
+    public AgentAsyncTaskCommandOutboxDispatcher(AgentAsyncTaskCommandOutboxProperties properties,
+                                                 AgentAsyncTaskCommandOutboxStore outboxStore,
+                                                 List<AgentAsyncTaskCommandDispatchTarget> dispatchTargets,
+                                                 AgentAsyncTaskCommandPreCheckService preCheckService) {
+        this(properties, outboxStore, dispatchTargets, preCheckService, null);
     }
 
     /**
      * 旧单元测试兼容构造函数。
      *
      * <p>已有 dispatcher 测试只验证 outbox 投递状态机，并不需要完整构造 session/audit/confirmation。
-     * 因此三参数构造函数保留为 pre-check 关闭路径；新增 pre-check 测试应使用四参数构造函数。</p>
+     * 因此三参数构造函数保留为 pre-check 关闭路径；新增 pre-check 测试如果要验证事件投影，应使用五参数构造函数。</p>
      */
     public AgentAsyncTaskCommandOutboxDispatcher(AgentAsyncTaskCommandOutboxProperties properties,
                                                  AgentAsyncTaskCommandOutboxStore outboxStore,
@@ -176,6 +187,7 @@ public class AgentAsyncTaskCommandOutboxDispatcher {
             return null;
         }
         String message = preCheckMessage(verdict);
+        publishPreCheckRuntimeEvent(record, verdict);
         if ("DEFERRED".equals(verdict.decision())) {
             markFailed(record, message, now);
             return DispatchOutcome.failedOutcome();
@@ -184,6 +196,13 @@ public class AgentAsyncTaskCommandOutboxDispatcher {
         log.warn("Agent 异步命令 pre-check 阻断投递，outboxId={}, commandId={}, decision={}, issueCodes={}",
                 record.outboxId(), record.commandId(), verdict.decision(), verdict.issueCodes());
         return DispatchOutcome.blockedOutcome();
+    }
+
+    private void publishPreCheckRuntimeEvent(AgentAsyncTaskCommandOutboxRecord record,
+                                             AgentAsyncTaskCommandPreCheckVerdict verdict) {
+        if (preCheckRuntimeEventPublisher != null) {
+            preCheckRuntimeEventPublisher.publish(record, verdict);
+        }
     }
 
     private String preCheckMessage(AgentAsyncTaskCommandPreCheckVerdict verdict) {

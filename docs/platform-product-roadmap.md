@@ -1,5 +1,27 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-04 追加落地进展：Pre-Check 结果进入 Runtime Event 时间线
+
+- `agent-runtime` 已把异步 command dispatcher 的 pre-check `BLOCKED/DEFERRED` 结果写入 runtime event。
+- 新增 `AgentAsyncTaskCommandPreCheckRuntimeEventPublisher`，只发布低敏摘要，不写工具参数、payload、SQL、prompt 或完整 reason。
+- dispatcher 在阻断或暂缓 target dispatch 前会发布事件：
+  - `tool_pre_check_blocked`：表示 worker 已阻止副作用；
+  - `tool_pre_check_deferred`：表示当前等待重试，适合退避恢复。
+- runtime event display 已能给出前端可直接使用的标题、状态、建议动作和低风险指标：
+  - `BLOCKED_BEFORE_SIDE_EFFECT`；
+  - `DEFERRED_WAITING_RETRY`；
+  - `preCheckDecision`；
+  - `issueCodeCount`。
+
+产品意义：
+- 这一步把“后台安全闸门”变成“产品可见事实”，用户不会只看到任务没继续执行，却不知道是确认过期、策略变化、沙箱拒绝还是容量暂缓。
+- 事件语义与 outbox 状态机分离：outbox 负责可靠投递状态，runtime event 负责时间线/replay/诊断展示，避免 dispatcher 文件继续膨胀。
+- 当前仍是内存投影与 best-effort 可见性；商业化生产还需要事件持久化、低基数指标、告警和强审计 outbox。
+
+下一步推荐路线：
+1. 给 pre-check issueCodes 增加 Prometheus 指标和最小告警。
+2. 完成 Agent Runtime 最小可观测闭环后，切换到 MCP/Skill 发布流、长期记忆二级索引或智能网关多 Agent 协作，保持全项目均衡演进。
+
 ## 2026-06-04 追加落地进展：异步 Command Dispatcher 接入 Pre-Check
 
 - `agent-runtime` 已把 6.07 的 worker pre-check 契约接入异步 command dispatcher 投递前链路。

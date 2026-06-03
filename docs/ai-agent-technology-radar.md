@@ -1,4 +1,12 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-04 落地补充：pre-check decisions should become timeline events
+
+- 本阶段把 dispatcher pre-check 的 `BLOCKED/DEFERRED` 结果写入 runtime event，并增强 display 解释。这对应成熟 Agent host 的趋势：工具调用治理不能只存在于后端状态机、日志或开发者控制台，而应成为用户和运营可见的 timeline fact。
+- 对 Codex、Claude Code 类 Agent 来说，工具调用能力的关键不只是“会调用工具”，还包括：调用前能确认、调用中能限流/沙箱、调用后能审计、异常时能清楚解释为什么没有发生副作用。DataSmart 当前把这条链路推进到了“执行前复核结果可 replay”。
+- 当前事件只写低敏摘要：`toolCode/targetService/commandId/preCheckDecision/issueCodes/currentState`。这延续了生产化监控的低基数原则：Prometheus、审计台和前端时间线需要稳定事实，不应把 prompt、SQL、工具参数或 payload 放进公共事件流。
+- `DEFERRED` 与 `BLOCKED` 的展示差异很重要：前者暗示自动退避重试和容量/熔断恢复，后者暗示重新确认、人工补偿或管理员治理。把这两者混成一个“失败”会直接降低商业产品的可运营性。
+- 下一步建议先补低基数指标和告警，然后不要继续只在 Java Agent Runtime 局部扩展，应切换到 MCP/Skill 发布流、长期记忆二级索引 worker 或智能网关多 Agent 协作，把 Agent 平台从“工具执行控制面”推进到更完整的智能工作台。
+
 ## 2026-06-04 落地补充：pre-check should gate dispatch, not only document intent
 
 - 本阶段把异步 command pre-check 从只读契约推进到 dispatcher 投递前安全闸门。这个变化很关键：如果 pre-check 只存在于文档或诊断接口里，真实消息仍可能绕过确认、沙箱和容量判断进入 task-management。
