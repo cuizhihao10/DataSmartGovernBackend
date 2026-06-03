@@ -1,5 +1,40 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-03 追加落地进展：Agent 工具调用沙箱策略
+
+- `agent-runtime` 新增工具调用沙箱控制面能力，把真实工具执行前的安全预检从“基础 Guard 校验”扩展为“可解释、可查询、可硬拦截”的 sandbox verdict。
+- 新增 `AgentRuntimeProperties.toolSandbox` 配置，覆盖沙箱开关、注册表强制命中、目标服务 baseUrl 准入、参数体量上限、同步超时上限、非幂等重试阻断、敏感参数审批和目标服务白/黑名单。
+- 新增 `AgentToolSandboxPolicyService`，统一检查：
+  - session/run/audit 控制面归属；
+  - 租户、项目、workspace、actor 业务边界；
+  - 工具目录是否命中、是否禁用、targetService/targetEndpoint/readOnly/riskLevel 是否漂移；
+  - targetService 是否在已知 baseUrl、白名单和黑名单范围内；
+  - planArguments 是否超过控制面体量上限；
+  - missingFields 是否仍未补齐；
+  - sensitive=true 参数是否缺少人工审批；
+  - 同步工具是否超出最大同步超时；
+  - 非幂等工具是否错误配置自动重试；
+  - 非只读、高风险或高危动作是否缺审批。
+- `AgentToolExecutionGuard` 已接入沙箱硬拦截：真实 execute 入口在调用下游工具适配器前，会先 fail-closed 拒绝被 sandbox verdict 阻断的工具。
+- `AgentToolExecutionAuditController` 新增 `GET /{sessionId}/runs/{runId}/tool-executions/{auditId}/sandbox-policy`，返回低敏诊断字段：allowed、isolationMode、argumentBytes、limits、issueCodes、reasons、recommendedActions。
+- 新增 `AgentToolSandboxPolicyServiceTest`，覆盖注册只读工具允许、targetService 漂移阻断、超大参数阻断、非幂等重试阻断、Guard fail-closed。
+
+产品意义：
+- 这一步让工具调用更接近 Codex、Claude Code 类 Agent 的真实安全结构：模型可以规划工具，但真实副作用必须经过控制面策略、审批证据、参数边界和服务准入。
+- 沙箱不是替代具体工具适配器。适配器仍需要做下游资源权限、字段脱敏、响应清洗和业务状态校验；沙箱负责在执行前拦截“明显不该进入下游”的工具计划。
+- 新接口让前端、Python Runtime 和运维能在执行前理解“为什么这个工具能跑/不能跑”，避免只在 execute 失败后才发现配置或安全问题。
+
+当前边界：
+- 当前沙箱仍是 Java 控制面策略沙箱，不是容器级、网络级或 SQL 引擎级隔离。
+- 当前没有租户级 quota、工具级令牌桶、下游健康熔断、并发池容量、SQL dry-run 或 HTTP egress policy。
+- 当前 verdict 不写独立审计表；真实执行链路仍依赖既有工具执行审计和 runtime event。
+
+下一步推荐路线：
+1. 把 sandbox verdict 接入 Run 级 execution-policy、DAG preview 和 dry-run，让批量推进也能看到沙箱原因。
+2. 增加工具级/目标服务级限流与下游健康熔断，和模型 Provider Health 形成统一智能网关健康治理。
+3. 引入 SQL/HTTP/文件工具的专用沙箱适配器：SQL dry-run、只读连接、HTTP egress allow-list、输出脱敏和资源引用化。
+4. 后续进入 MCP/Skill 工具市场时，把沙箱 issueCodes 纳入工具发布审核、租户准入和前端审批页。
+
 ## 2026-06-03 追加落地进展：模型 Provider Health 与熔断治理
 
 - Python AI Runtime 在 `services/model_gateway/` 下新增 `model_provider_health.py`，把模型 Provider 从“静态路由候选”推进到“可根据真实调用结果动态治理的运行时对象”。

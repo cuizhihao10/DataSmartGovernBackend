@@ -1,5 +1,14 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-03 落地补充：tool execution needs host-side sandbox verdicts
+
+- 本阶段把 `agent-runtime` 的工具执行前治理推进到“host-side sandbox verdict”。这对应当前 Agent 工程趋势：工具调用不能只靠模型自觉，也不能只靠 prompt 约束；真正执行工具的宿主/控制面必须在每次工具调用前后执行 guardrail、权限、参数、超时、输出和审计治理。
+- MCP Tools 官方规范把工具定位为模型可自动发现和调用的能力，同时要求服务端验证输入、实现访问控制、限流、清洗输出；客户端也应对敏感操作提示确认、展示工具输入、校验结果、设置超时并记录审计。DataSmart 当前把这些要求转成 Java 控制面沙箱：注册表一致性、targetService 准入、参数体量、审批事实和幂等重试先落地。
+- OpenAI Agents SDK 文档也明确区分 agent 级 guardrails 与 tool guardrails：tool guardrails 会围绕每次 function-tool invocation 执行。DataSmart 的落点不是照搬 SDK，而是把同类思想放进 `AgentToolExecutionGuard + AgentToolSandboxPolicyService`，让 Python Runtime、前端、DAG worker 和手动 execute 都共享 Java 控制面的执行前 verdict。
+- 当前实现刻意保持低敏：诊断接口返回 issueCodes、中文 reasons、推荐动作和参数体量，不返回完整 tool arguments、prompt、SQL、样本数据或密钥。成熟 Agent 平台的可解释性不能以泄露上下文为代价。
+- 这一步也把“工具沙箱”从未来大词拆成可递进能力：当前是控制面策略沙箱；下一步可以接工具级限流、下游健康熔断、SQL dry-run、HTTP egress allow-list、容器级隔离、输出脱敏和审计 outbox。
+- 参考资料：MCP Tools specification：`https://modelcontextprotocol.io/specification/2024-11-05/server/tools`；OpenAI Agents SDK guardrails：`https://openai.github.io/openai-agents-js/guides/guardrails/`；OpenAI Agents SDK tracing：`https://github.com/openai/openai-agents-python/blob/main/docs/tracing.md`。
+
 ## 2026-06-03 落地补充：agent model gateways need health-aware routing
 
 - 本阶段把模型网关从“静态路由 + dry-run/openai-compatible provider 抽象”继续推进到“健康感知路由”。这对应 Codex、Claude Code 类 Agent 的真实工程趋势：模型调用层必须具备 provider health、fallback、熔断、预算、缓存和工具调用治理，而不是把所有请求无条件发给一个默认模型。

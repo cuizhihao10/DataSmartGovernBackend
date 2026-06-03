@@ -136,6 +136,21 @@ public class AgentRuntimeProperties {
     private Boolean strictToolRegistryBinding = true;
 
     /**
+     * Agent 工具调用沙箱配置。
+     *
+     * <p>这里的“沙箱”不是指已经启动了容器、Firecracker、gVisor 或 Kubernetes Job。
+     * 当前阶段它是 Java 控制面里的执行前策略沙箱：在真正调用 datasource-management、data-quality、
+     * task-management 等下游服务之前，先检查工具目录一致性、目标服务范围、参数体量、幂等重试、同步超时、
+     * 高风险审批和敏感参数暴露等风险。</p>
+     *
+     * <p>为什么先做控制面沙箱，而不是直接做进程级隔离：
+     * 1. DataSmart 当前工具大多是平台内部 HTTP 工具，最大风险首先来自“模型计划绕过治理规则”，不是本地 shell；
+     * 2. 控制面沙箱能被人工执行、自动执行、DAG worker 和未来 MCP bridge 复用；
+     * 3. 后续如果引入真实容器沙箱、SQL dry-run、网络 egress policy 或文件系统隔离，也可以把这些底层结果回写到同一 verdict。</p>
+     */
+    private ToolSandboxProperties toolSandbox = new ToolSandboxProperties();
+
+    /**
      * 模型路由表。
      *
      * <p>Key 建议使用 `ModelWorkloadType` 枚举名，例如 `AGENT_REASONING`、`EMBEDDING`。
@@ -367,6 +382,111 @@ public class AgentRuntimeProperties {
          * 输入字段 schema。
          */
         private List<ToolInputFieldProperties> inputSchema = new ArrayList<>();
+    }
+
+    /**
+     * 工具调用沙箱策略配置。
+     *
+     * <p>该配置面向“商业化 Agent 工具执行”而不是演示联调：
+     * - enabled 控制是否启用沙箱硬校验；
+     * - requireRegisteredTool 控制是否必须命中工具目录；
+     * - requireKnownTargetService 控制 targetService 是否必须有基础地址；
+     * - maxArgumentBytes 控制模型计划参数的最大体量，避免 prompt 注入或异常大对象拖垮网关/审计；
+     * - maxSyncTimeoutMs 控制同步工具的最长可接受超时，超过后应转异步任务；
+     * - allowed/blockedTargetServices 支持生产环境把工具 egress 限定在已批准服务集合内。</p>
+     */
+    @Data
+    public static class ToolSandboxProperties {
+
+        /**
+         * 是否启用工具调用沙箱。
+         *
+         * <p>生产环境建议保持 true。关闭后 Guard 仍会保留基础会话边界、参数缺失和写工具审批校验，
+         * 但不会执行注册表一致性、服务白名单、参数体量、幂等重试等扩展策略。</p>
+         */
+        private Boolean enabled = true;
+
+        /**
+         * 是否要求工具必须存在于启用的工具目录。
+         *
+         * <p>商业化环境应保持 true，避免调用方伪造 toolCode、targetService 或 riskLevel。
+         * 如果本地研发需要临时验证未注册工具，应在本地配置显式关闭，而不是修改业务代码。</p>
+         */
+        private Boolean requireRegisteredTool = true;
+
+        /**
+         * 是否要求 targetService 必须出现在 toolServiceBaseUrls 中。
+         *
+         * <p>该检查并不代表服务一定健康，只代表目标服务属于平台明确配置过的下游调用面。
+         * 后续可继续叠加服务发现健康、熔断、限流和队列容量。</p>
+         */
+        private Boolean requireKnownTargetService = true;
+
+        /**
+         * 工具计划参数最大字节数。
+         *
+         * <p>Agent 计划参数会进入审计、审批提示、下游工具请求和二轮推理上下文。
+         * 如果不限制体量，模型可能把大段表结构、样本数据或用户粘贴的超长文本塞进参数，造成内存压力和审计污染。
+         * 默认 64KB 是一个保守的控制面上限，真实导入/导出大文件应走对象存储引用，而不是直接放进 tool arguments。</p>
+         */
+        private Integer maxArgumentBytes = 64 * 1024;
+
+        /**
+         * 同步工具最大超时时间。
+         *
+         * <p>超过该阈值的工具不适合在 HTTP 请求线程内同步执行，应转为 ASYNC_TASK、Kafka command 或 task-management worker。
+         * 这样可以避免一次 Agent 请求长时间占用网关连接、Tomcat/Netty 线程和下游连接池。</p>
+         */
+        private Long maxSyncTimeoutMs = 30000L;
+
+        /**
+         * 是否阻断“非幂等工具配置了自动重试”的组合。
+         *
+         * <p>非幂等写操作如果自动重试，可能产生重复任务、重复导出、重复审批或不一致副作用。
+         * 当前默认阻断，直到对应工具具备业务幂等键、去重表或补偿流程。</p>
+         */
+        private Boolean blockNonIdempotentRetry = true;
+
+        /**
+         * 是否要求敏感参数必须有人工审批事实。
+         *
+         * <p>工具目录 inputSchema 中标记 sensitive=true 的字段，通常包含任务草稿、SQL、导出范围、异常样本或业务目标。
+         * 如果这类字段出现在参数中但没有审批人，沙箱会阻断，防止模型在用户未确认时把敏感上下文带入下游执行。</p>
+         */
+        private Boolean blockSensitiveArgumentsWithoutApproval = true;
+
+        /**
+         * 允许调用的目标服务列表。
+         *
+         * <p>为空表示不启用 allow-list，只要求命中工具目录和已知 baseUrl。
+         * 生产环境可以按租户套餐、部署域或安全域配置，例如只允许 datasource-management 和 task-management。</p>
+         */
+        private List<String> allowedTargetServices = new ArrayList<>();
+
+        /**
+         * 禁止调用的目标服务列表。
+         *
+         * <p>该列表优先级高于 allowedTargetServices，可用于维护窗口、紧急下线、事故止血或客户环境裁剪。</p>
+         */
+        private List<String> blockedTargetServices = new ArrayList<>();
+
+        /**
+         * 默认必须审批的高危动作关键词。
+         *
+         * <p>工具目录 allowedActions 是一层抽象动作描述。即使某个工具暂时把 riskLevel 配低了，
+         * 只要动作包含 DELETE、EXPORT、EXECUTE_SQL 这类高危意图，沙箱仍会要求人工审批。</p>
+         */
+        private List<String> approvalRequiredActions = new ArrayList<>(List.of(
+                "DELETE",
+                "EXPORT",
+                "EXECUTE_SQL",
+                "WRITE",
+                "ADMIN",
+                "APPROVE",
+                "PUBLISH",
+                "SYNC_RUN",
+                "TASK_SUBMIT"
+        ));
     }
 
     /**

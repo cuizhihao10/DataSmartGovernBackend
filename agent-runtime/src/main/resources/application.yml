@@ -252,6 +252,40 @@ datasmart:
     # 会话绑定工具时强制从工具目录继承元数据。
     # 生产环境建议保持 true，避免调用方伪造 toolType、targetService、riskLevel 或审批要求。
     strict-tool-registry-binding: true
+    # Agent 工具调用沙箱。
+    # 这里的沙箱是“执行前控制面沙箱”：它不启动容器，也不直接调用下游服务；
+    # 它负责在真实工具适配器执行前检查工具目录一致性、目标服务范围、参数体量、同步超时、幂等重试和审批事实。
+    # 后续如果引入容器级隔离、SQL dry-run、HTTP egress policy、工具健康熔断，也应把结果接入同一 sandbox verdict。
+    tool-sandbox:
+      # 生产环境建议保持 true。关闭后仅保留基础 Guard 校验，不再执行注册表漂移和目标服务治理。
+      enabled: ${DATASMART_AGENT_RUNTIME_TOOL_SANDBOX_ENABLED:true}
+      # 要求工具必须来自工具目录。这样模型或调用方不能随意伪造 toolCode、riskLevel 或 targetService。
+      require-registered-tool: true
+      # 要求 targetService 必须在 tool-service-base-urls 中配置，避免 Agent 调用未登记的内网服务。
+      require-known-target-service: true
+      # 工具参数最大体量。大对象、文件、样本数据应改为资源引用，不能直接塞进 tool arguments。
+      max-argument-bytes: ${DATASMART_AGENT_RUNTIME_TOOL_SANDBOX_MAX_ARGUMENT_BYTES:65536}
+      # 同步工具最长可接受超时。超过该阈值的工具应转 ASYNC_TASK/Kafka command/task-management worker。
+      max-sync-timeout-ms: ${DATASMART_AGENT_RUNTIME_TOOL_SANDBOX_MAX_SYNC_TIMEOUT_MS:30000}
+      # 非幂等工具不允许配置自动重试，除非后续实现业务幂等键、去重表和补偿流程。
+      block-non-idempotent-retry: true
+      # sensitive=true 的工具参数需要人工审批事实，避免模型在用户未确认时携带敏感上下文执行。
+      block-sensitive-arguments-without-approval: true
+      # 目标服务白名单为空时表示使用工具目录 + baseUrl 作为准入边界；生产可按租户或安全域显式配置。
+      allowed-target-services: []
+      # 目标服务黑名单优先级高于白名单，可用于维护窗口、事故止血或客户环境裁剪。
+      blocked-target-services: []
+      # 这些动作关键词默认要求审批，即使某个工具临时把风险等级配置得偏低，也不会绕过高危动作确认。
+      approval-required-actions:
+        - DELETE
+        - EXPORT
+        - EXECUTE_SQL
+        - WRITE
+        - ADMIN
+        - APPROVE
+        - PUBLISH
+        - SYNC_RUN
+        - TASK_SUBMIT
     # Agent 工具目录。
     # 当前只注册工具元数据，不直接执行工具；真实执行会在后续工具适配器中做权限、审批、幂等和审计。
     tool-service-base-urls:

@@ -17,6 +17,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolExecutionPolicy
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionAuditView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionDecisionRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionResultView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentToolSandboxPolicyView;
 import com.czh.datasmart.govern.agent.service.AgentSessionService;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionResultQueryService;
@@ -26,6 +27,7 @@ import com.czh.datasmart.govern.agent.service.execution.AgentRunToolDagExecution
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolDagExecutionPreviewService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolPlanDagService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolExecutionPolicyService;
+import com.czh.datasmart.govern.agent.service.execution.AgentToolSandboxPolicyQueryService;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import lombok.RequiredArgsConstructor;
@@ -60,6 +62,7 @@ public class AgentToolExecutionAuditController {
     private final AgentRunToolPlanDagService toolPlanDagService;
     private final AgentRunToolDagExecutionPreviewService toolDagExecutionPreviewService;
     private final AgentRunToolDagExecutionDryRunService toolDagExecutionDryRunService;
+    private final AgentToolSandboxPolicyQueryService sandboxPolicyQueryService;
 
     /**
      * 查询某次 Agent Run 的工具执行审计记录。
@@ -100,6 +103,34 @@ public class AgentToolExecutionAuditController {
             @PathVariable("runId") String runId,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success(executionPolicyService.inspectRunPolicy(sessionId, runId), traceId);
+    }
+
+    /**
+     * 查询单个工具计划的调用沙箱预检。
+     *
+     * <p>该接口是“真实执行前最后一层安全解释”。它不会调用下游服务，也不会修改审计状态，
+     * 只会基于当前 session/run/audit、工具目录和沙箱配置生成低敏 verdict。</p>
+     *
+     * <p>与 execution-policy 的区别：
+     * - execution-policy 关注 Run 级推进，例如自动执行、等待审批、异步任务、失败重试；
+     * - sandbox-policy 关注单个工具是否满足安全执行条件，例如 targetService 是否被伪造、工具目录是否漂移、
+     *   参数是否过大、非幂等工具是否错误配置自动重试、敏感参数是否缺审批。</p>
+     *
+     * <p>典型使用方式：
+     * 1. 前端在用户点击“执行工具”前展示该结果，解释为什么允许/阻断；
+     * 2. 运维排查工具无法执行时，查看 issueCodes 和 recommendedActions；
+     * 3. Python Runtime 或智能网关在未来做多步工具调用时，把该接口作为只读 preflight，而真实执行仍走 execute 或 worker。</p>
+     */
+    @GetMapping("/{sessionId}/runs/{runId}/tool-executions/{auditId}/sandbox-policy")
+    public PlatformApiResponse<AgentToolSandboxPolicyView> getToolSandboxPolicy(
+            @PathVariable("sessionId") String sessionId,
+            @PathVariable("runId") String runId,
+            @PathVariable("auditId") String auditId,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(
+                sandboxPolicyQueryService.inspectToolSandboxPolicy(sessionId, runId, auditId),
+                traceId
+        );
     }
 
     /**
