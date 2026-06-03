@@ -286,6 +286,32 @@ datasmart:
         - PUBLISH
         - SYNC_RUN
         - TASK_SUBMIT
+    # Agent 工具运行时保护。
+    # 该配置和 tool-sandbox 不是同一件事：sandbox 负责判断“工具计划是否安全”，runtime-protection 负责判断“当前是否有容量执行”。
+    # 当前实现是 agent-runtime 单实例 JVM 内存级保护，用于本地学习、早期联调和第一阶段商业化安全阀。
+    # 多实例生产环境应继续升级为 Redis/DB 原子计数、租户套餐配额、服务网格熔断和 Prometheus 告警，否则每个实例只能看到自己的本地压力。
+    tool-runtime-protection:
+      # 是否启用工具运行时保护。生产环境建议保持 true，防止模型循环、重复点击或 DAG 批量推进把工具调用放大成下游故障。
+      enabled: ${DATASMART_AGENT_RUNTIME_TOOL_RUNTIME_PROTECTION_ENABLED:true}
+      # 当前 JVM 内所有工具执行的总并发上限。该值保护 agent-runtime 自身线程、连接池、内存和适配器调用链。
+      max-global-in-flight: ${DATASMART_AGENT_RUNTIME_TOOL_MAX_GLOBAL_IN_FLIGHT:50}
+      # 单租户在当前 JVM 内允许的工具执行并发上限，用于避免某个租户占满整个平台执行能力。
+      max-tenant-in-flight: ${DATASMART_AGENT_RUNTIME_TOOL_MAX_TENANT_IN_FLIGHT:20}
+      # 单目标服务在当前 JVM 内允许的工具执行并发上限，例如 datasource-management、data-quality、task-management 分别隔离。
+      max-target-service-in-flight: ${DATASMART_AGENT_RUNTIME_TOOL_MAX_TARGET_SERVICE_IN_FLIGHT:10}
+      # 是否启用连续失败熔断。开启后，同一 targetService 连续失败达到阈值会进入冷却期，避免故障被 Agent 自动重试放大。
+      circuit-breaker-enabled: ${DATASMART_AGENT_RUNTIME_TOOL_CIRCUIT_BREAKER_ENABLED:true}
+      # 同一 targetService 连续失败多少次后打开熔断。第一阶段按服务聚合，后续可细化为 service + toolCode。
+      consecutive-failure-threshold: ${DATASMART_AGENT_RUNTIME_TOOL_CONSECUTIVE_FAILURE_THRESHOLD:3}
+      # 熔断冷却时间，单位秒。冷却期内新的工具执行会被 runtime-protection-policy 拒绝。
+      circuit-open-seconds: ${DATASMART_AGENT_RUNTIME_TOOL_CIRCUIT_OPEN_SECONDS:60}
+      # 这些错误码不计入连续失败。参数错误、人工拒绝、业务状态冲突通常不代表下游服务故障，不应触发服务级熔断。
+      ignored-circuit-failure-codes:
+        - BAD_REQUEST
+        - VALIDATION_ERROR
+        - MISSING_PARAMETERS
+        - USER_REJECTED
+        - BUSINESS_STATE_CONFLICT
     # Agent 工具目录。
     # 当前只注册工具元数据，不直接执行工具；真实执行会在后续工具适配器中做权限、审批、幂等和审计。
     tool-service-base-urls:

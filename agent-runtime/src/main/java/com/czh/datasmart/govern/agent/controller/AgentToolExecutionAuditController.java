@@ -17,6 +17,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolExecutionPolicy
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionAuditView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionDecisionRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionResultView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentToolRuntimeProtectionPolicyView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolSandboxPolicyView;
 import com.czh.datasmart.govern.agent.service.AgentSessionService;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
@@ -27,6 +28,7 @@ import com.czh.datasmart.govern.agent.service.execution.AgentRunToolDagExecution
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolDagExecutionPreviewService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolPlanDagService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolExecutionPolicyService;
+import com.czh.datasmart.govern.agent.service.execution.AgentToolRuntimeProtectionQueryService;
 import com.czh.datasmart.govern.agent.service.execution.AgentToolSandboxPolicyQueryService;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
@@ -63,6 +65,7 @@ public class AgentToolExecutionAuditController {
     private final AgentRunToolDagExecutionPreviewService toolDagExecutionPreviewService;
     private final AgentRunToolDagExecutionDryRunService toolDagExecutionDryRunService;
     private final AgentToolSandboxPolicyQueryService sandboxPolicyQueryService;
+    private final AgentToolRuntimeProtectionQueryService runtimeProtectionQueryService;
 
     /**
      * 查询某次 Agent Run 的工具执行审计记录。
@@ -129,6 +132,33 @@ public class AgentToolExecutionAuditController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success(
                 sandboxPolicyQueryService.inspectToolSandboxPolicy(sessionId, runId, auditId),
+                traceId
+        );
+    }
+
+    /**
+     * 查询单个工具计划的运行时容量与熔断保护策略。
+     *
+     * <p>该接口用于解释“工具本身已经安全，但现在是否适合执行”。
+     * 它不会调用下游服务，不会推进审计状态，也不会占用执行容量；只读取当前 JVM 内的 in-flight 计数和目标服务健康状态。</p>
+     *
+     * <p>与 `sandbox-policy` 的边界：
+     * - `sandbox-policy` 关注工具目录、targetService 漂移、参数体量、审批和敏感字段；
+     * - `runtime-protection-policy` 关注全局并发、租户并发、目标服务并发和连续失败熔断；
+     * - 两者都通过后，真实执行入口仍会再次校验，避免调用方绕过 preflight 直接 execute。</p>
+     *
+     * <p>商业化使用方式：
+     * 前端或 Python Runtime 可以在执行按钮/自动推进前同时读取 sandbox 与 runtime protection，
+     * 把“安全原因”和“容量原因”分开展示。后续接入 Prometheus 后，issueCodes 可作为低基数指标标签。</p>
+     */
+    @GetMapping("/{sessionId}/runs/{runId}/tool-executions/{auditId}/runtime-protection-policy")
+    public PlatformApiResponse<AgentToolRuntimeProtectionPolicyView> getToolRuntimeProtectionPolicy(
+            @PathVariable("sessionId") String sessionId,
+            @PathVariable("runId") String runId,
+            @PathVariable("auditId") String auditId,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(
+                runtimeProtectionQueryService.inspectToolRuntimeProtection(sessionId, runId, auditId),
                 traceId
         );
     }

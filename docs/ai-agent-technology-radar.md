@@ -1,5 +1,24 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-03 落地补充：tool execution needs runtime backpressure and circuit breakers
+
+- 本阶段把 `agent-runtime` 工具执行链路从 sandbox verdict 继续推进到 runtime-protection verdict。前者回答“工具计划是否安全”，后者回答“当前是否因为容量、租户压力或目标服务故障而应该暂缓执行”。
+- 这对应成熟 Agent 工程里的 host-side backpressure 思路：模型可以规划工具，但 host 必须控制工具执行速率、并发、超时、失败冷却和下游健康，避免自动化能力把小故障放大成平台事故。
+- DataSmart 当前落地点：
+  - 新增 `AgentToolRuntimeProtectionService`，使用 `inspect(...)` 输出低敏 verdict，使用 `beginExecution(...)` lease 控制真实执行入口；
+  - `AgentToolExecutionService` 在 sandbox guard 后申请 lease，执行结束后记录 success/failure，并按 targetService 维护连续失败熔断；
+  - 新增 `runtime-protection-policy` 只读接口，让前端、Python Runtime 和运维台可以解释容量拒绝与熔断拒绝；
+  - 配置上把全局并发、租户并发、目标服务并发、连续失败阈值和熔断冷却期显式暴露。
+- 当前实现刻意不直接引入复杂中间件：JVM 内存计数适合当前单实例学习与联调；生产多实例应继续迁移到 Redis 原子令牌桶、租户配额中心、服务网格熔断、Prometheus 指标和管理台手动摘除/恢复。
+- 趋势映射：MCP Tools 规范强调工具调用必须由服务端控制访问、校验输入、限流和清洗输出；OpenAI Agents SDK guardrails 强调 tool/agent 调用链路应具备 guardrail。DataSmart 本次把这些思想转化为“host-side runtime verdict + lease”，让工具执行不是单纯的函数调用，而是受控运行时资源。
+- 下一步技术路线：
+  - 将 runtime-protection verdict 传播到 Run/DAG 批量策略；
+  - 将容量拒绝、熔断打开、连续失败计数映射为低基数指标；
+  - 真实 DAG worker 上线前，把 runtime-protection、sandbox、permission-admin evaluate 和 confirmation evidence 合并为 worker pre-check；
+  - 随后应切换一部分精力到 MCP/Skill 发布流、长期记忆索引 worker 或智能网关多 Agent 协作，避免只在工具保护局部无限加码。
+
+参考资料：MCP Tools specification：`https://modelcontextprotocol.io/specification/draft/server/tools`；OpenAI Agents SDK guardrails：`https://openai.github.io/openai-agents-js/guides/guardrails`。
+
 ## 2026-06-03 落地补充：sandbox verdicts must propagate into batch planning
 
 - 本阶段把工具调用沙箱从“单工具执行前检查”推进到“Run/DAG 批量策略面共享 verdict”。这对应成熟 Agent 工程的一个关键点：安全判断不能只存在于最后 execute 入口，否则 preview、dry-run、前端按钮和 Python Runtime 仍可能把危险动作显示成候选。

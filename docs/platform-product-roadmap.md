@@ -1,5 +1,44 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-03 追加落地进展：Agent 工具运行时保护与目标服务熔断
+
+- `agent-runtime` 新增 `tool-runtime-protection` 能力，把工具执行治理从“工具计划是否安全”推进到“当前是否有容量执行、目标服务是否健康”。
+- 新增 `AgentToolRuntimeProtectionProperties`，独立承载工具运行时保护配置，避免继续扩大已经接近 500 行的 `AgentRuntimeProperties`：
+  - `maxGlobalInFlight`：当前 JVM 内工具总并发上限；
+  - `maxTenantInFlight`：单租户本地并发上限；
+  - `maxTargetServiceInFlight`：单目标服务本地并发上限；
+  - `consecutiveFailureThreshold` 与 `circuitOpenSeconds`：目标服务连续失败熔断策略；
+  - `ignoredCircuitFailureCodes`：避免业务参数错误、人工拒绝等非下游故障误触发熔断。
+- 新增 `AgentToolRuntimeProtectionService`：
+  - 提供只读 `inspect(...)` verdict；
+  - 提供 `beginExecution(...)` lease；
+  - lease 会在真实执行前占用 in-flight，并在执行成功/失败后释放容量、刷新连续失败和熔断状态；
+  - 当前为 JVM 内存版，后续可替换为 Redis/DB 原子计数、租户套餐配额和服务网格健康状态。
+- `AgentToolExecutionService` 已接入 runtime-protection：
+  - sandbox guard 通过后，先申请 runtime-protection lease；
+  - 被限流或熔断拒绝的工具不会进入 `EXECUTING`；
+  - 适配器成功会清零目标服务连续失败；
+  - 适配器失败会按低基数错误码推动连续失败熔断。
+- `AgentToolExecutionAuditController` 新增：
+  - `GET /agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/{auditId}/runtime-protection-policy`
+  - `GET /api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/{auditId}/runtime-protection-policy`
+  - 用于展示全局、租户、目标服务 in-flight、熔断窗口、连续失败次数、issueCodes、reasons 和 recommendedActions。
+- 新增 `AgentToolRuntimeProtectionServiceTest`，覆盖：
+  - lease 占用与释放；
+  - 目标服务并发超限；
+  - 连续失败打开熔断；
+  - 业务状态冲突不误触发目标服务熔断。
+
+产品意义：
+- 这一步补齐了类 Codex/Claude Code Agent 工具调用中的运行时可靠性边界：工具不仅要“被允许”，还要“当前适合执行”。
+- 对商业化数据治理产品尤其重要：数据源扫描、质量规则生成、任务草稿保存等工具如果被 Agent 批量触发，必须具备租户公平性、下游服务保护和故障冷却。
+- 当前实现承认边界：本阶段不是全局分布式限流，也不是服务网格级熔断；它先固定控制面契约和执行入口行为，降低后续替换底层存储/探针的成本。
+
+下一步推荐路线：
+1. 将 runtime-protection verdict 接入 Run 级 execution-policy、DAG preview 和 dry-run，避免批量策略继续把已熔断服务的工具展示为候选。
+2. 将 sandbox/runtime-protection issueCodes 接入 runtime event display 与低基数指标，形成可告警的工具阻断率、熔断率和容量拒绝率。
+3. 如果继续 Agent Runtime 主线，下一批应做真实 DAG worker pre-check；如果切换大模块，则优先进入 MCP/Skill 工具市场发布流、长期记忆索引 worker 或智能网关多 Agent 协作。
+
 ## 2026-06-03 追加落地进展：Agent 沙箱 Verdict 接入 Run/DAG 批量推进策略
 
 - `agent-runtime` 已将上阶段单工具 `sandbox-policy` 诊断接入 Run 级 execution-policy、DAG execution preview 和 DAG execution dry-run。

@@ -16,9 +16,11 @@ import com.czh.datasmart.govern.agent.service.tool.AgentToolExecutionContext;
 import com.czh.datasmart.govern.agent.service.tool.AgentToolExecutionGuard;
 import com.czh.datasmart.govern.agent.service.tool.AgentToolExecutionOutcome;
 import com.czh.datasmart.govern.agent.service.tool.AgentToolExecutionOutputStore;
+import com.czh.datasmart.govern.agent.service.tool.protection.AgentToolRuntimeProtectionLease;
+import com.czh.datasmart.govern.agent.service.tool.protection.AgentToolRuntimeProtectionService;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -42,13 +44,50 @@ import java.util.Map;
  * 因此审计状态推进必须集中在执行框架中完成。
  */
 @Service
-@RequiredArgsConstructor
 public class AgentToolExecutionService {
 
     private final AgentToolExecutionAuditService auditService;
     private final List<AgentToolAdapter> adapters;
     private final AgentToolExecutionGuard executionGuard;
     private final AgentToolExecutionOutputStore outputStore;
+    private final AgentToolRuntimeProtectionService runtimeProtectionService;
+
+    /**
+     * Spring 生产路径构造函数。
+     *
+     * <p>真实业务运行时必须注入 `AgentToolRuntimeProtectionService`。
+     * 这能确保工具调用在进入下游适配器之前，同时经过 sandbox 安全检查和运行时容量/熔断检查。</p>
+     */
+    @Autowired
+    public AgentToolExecutionService(AgentToolExecutionAuditService auditService,
+                                     List<AgentToolAdapter> adapters,
+                                     AgentToolExecutionGuard executionGuard,
+                                     AgentToolExecutionOutputStore outputStore,
+                                     AgentToolRuntimeProtectionService runtimeProtectionService) {
+        this.auditService = auditService;
+        this.adapters = adapters;
+        this.executionGuard = executionGuard;
+        this.outputStore = outputStore;
+        this.runtimeProtectionService = runtimeProtectionService;
+    }
+
+    /**
+     * 旧单测兼容构造函数。
+     *
+     * <p>仓库里已有一些测试直接 new 执行服务，只关注工具适配器结果和审计状态。
+     * 为了避免本次运行时保护升级牵连大量旧夹具，这里提供关闭保护的兼容路径；
+     * 新增运行时保护行为由专门的 `AgentToolRuntimeProtectionServiceTest` 覆盖。</p>
+     */
+    public AgentToolExecutionService(AgentToolExecutionAuditService auditService,
+                                     List<AgentToolAdapter> adapters,
+                                     AgentToolExecutionGuard executionGuard,
+                                     AgentToolExecutionOutputStore outputStore) {
+        this(auditService,
+                adapters,
+                executionGuard,
+                outputStore,
+                AgentToolRuntimeProtectionService.disabledForTests());
+    }
 
     /**
      * 执行某个工具计划。
@@ -68,18 +107,21 @@ public class AgentToolExecutionService {
                 auditId
         );
         executionGuard.validateBeforeExecution(session, run, plannedAudit);
-        AgentToolExecutionAuditRecord audit = auditService.startExecution(session.getSessionId(), run.getRunId(), auditId);
-        AgentToolExecutionContext context = new AgentToolExecutionContext(
-                session,
-                run,
-                audit,
-                run.getVariables() == null ? Map.of() : run.getVariables(),
-                traceId
-        );
+        AgentToolRuntimeProtectionLease runtimeLease = runtimeProtectionService.beginExecution(session, run, plannedAudit);
+        AgentToolExecutionAuditRecord audit = null;
         try {
+            audit = auditService.startExecution(session.getSessionId(), run.getRunId(), auditId);
+            AgentToolExecutionContext context = new AgentToolExecutionContext(
+                    session,
+                    run,
+                    audit,
+                    run.getVariables() == null ? Map.of() : run.getVariables(),
+                    traceId
+            );
             AgentToolAdapter adapter = findAdapter(audit.getToolCode());
             AgentToolExecutionOutcome outcome = adapter.execute(context);
             if (outcome.success()) {
+                runtimeLease.recordSuccess();
                 outputStore.save(
                         new AgentToolExecutionOutputStore.AgentToolExecutionAuditSnapshot(
                                 audit.getSessionId(),
@@ -96,6 +138,7 @@ public class AgentToolExecutionService {
                 );
                 return new AgentToolExecutionResultView(auditView, outcome.output());
             }
+            runtimeLease.recordFailure(outcome.errorCode(), outcome.message());
             AgentToolExecutionAuditView auditView = auditService.failExecution(
                     audit,
                     outcome.errorCode(),
@@ -103,13 +146,40 @@ public class AgentToolExecutionService {
             );
             return new AgentToolExecutionResultView(auditView, outcome.output());
         } catch (Exception ex) {
+            if (audit == null) {
+                runtimeLease.recordFailure("BUSINESS_STATE_CONFLICT", ex.getMessage());
+                if (ex instanceof RuntimeException runtimeException) {
+                    throw runtimeException;
+                }
+                throw new PlatformBusinessException(
+                        PlatformErrorCode.INTERNAL_ERROR,
+                        "工具执行状态启动失败：" + ex.getMessage()
+                );
+            }
+            runtimeLease.recordFailure(runtimeProtectionErrorCode(ex), ex.getMessage());
             AgentToolExecutionAuditView auditView = auditService.failExecution(
                     audit,
                     "TOOL_ADAPTER_EXCEPTION",
                     "工具适配器执行异常: " + ex.getMessage()
             );
             return new AgentToolExecutionResultView(auditView, Map.of());
+        } finally {
+            runtimeLease.close();
         }
+    }
+
+    /**
+     * 将执行框架异常转换为运行时保护可消费的低基数错误码。
+     *
+     * <p>缺少工具适配器、审计状态冲突这类问题属于 Java 控制面配置或状态问题，
+     * 不能误认为 targetService 已经不可用，否则会把一个本地配置错误升级成目标服务熔断。
+     * 真正的下游失败应由工具适配器返回明确的 outcome.errorCode，例如 DEPENDENCY_TIMEOUT 或 DOWNSTREAM_5XX。</p>
+     */
+    private String runtimeProtectionErrorCode(Exception exception) {
+        if (exception instanceof PlatformBusinessException) {
+            return "BUSINESS_STATE_CONFLICT";
+        }
+        return "TOOL_ADAPTER_EXCEPTION";
     }
 
     /**
