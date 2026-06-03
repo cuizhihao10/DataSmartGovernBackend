@@ -1,5 +1,33 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-04 追加落地进展：Runtime Event 展示接入工具阻断摘要
+
+- `agent-runtime` 已把 DAG dry-run 中的 sandbox/runtime-protection verdict 压缩为 runtime event 低敏摘要：
+  - `sandboxRejectedCount` 与去重后的 `sandboxIssueCodes`；
+  - `runtimeProtectionRejectedCount` 与去重后的 `runtimeProtectionIssueCodes`；
+  - `runtimeCircuitOpenCount`；
+  - `runtimeCapacityRejectedCount`。
+- dry-run 事件的节点摘要现在包含 `sandboxAllowed/sandboxIssueCodes` 与
+  `runtimeProtectionAllowed/runtimeProtectionIssueCodes/runtimeCircuitOpen`，但仍不写工具参数、完整 reasons、
+  executionPath、SQL、payload 或用户输入。
+- `AgentRuntimeEventDisplaySupport` 已把这些事件属性解释为前端/运营台可直接展示的低风险指标：
+  - 沙箱拒绝数；
+  - 运行时保护拒绝数；
+  - issueCode 数量；
+  - 熔断数；
+  - 容量拒绝数。
+- display 的推荐动作已能区分安全沙箱问题、容量问题和目标服务熔断问题，避免用户只看到“阻断”后盲目重试。
+
+产品意义：
+- 这一步把工具保护事实从 execution-policy/preview/dry-run 的当前响应推进到 runtime event 时间线，后续可用于 replay、审计、运营看板和告警。
+- 指标保持低基数和低敏，符合生产监控约束：Prometheus/Grafana 可以统计趋势，单节点排障仍走受控事件详情和审计链路。
+- 当前仍未接 Prometheus 指标和真实 DAG worker；下一步若继续 Agent Runtime，应优先做 worker pre-check 或低基数告警，而不是继续新增本地保护规则。
+
+下一步推荐路线：
+1. 做真实 DAG worker pre-check：合并 sandbox、runtime-protection、permission-admin evaluate、confirmation evidence。
+2. 将沙箱拒绝率、容量拒绝率和熔断率接入 Prometheus/告警。
+3. 随后切换部分精力到 MCP/Skill 发布流、长期记忆二级索引或智能网关多 Agent 协作，避免局部过度打磨。
+
 ## 2026-06-03 追加落地进展：Runtime Protection Verdict 接入 Run/DAG 批量策略
 
 - `agent-runtime` 已将工具运行时保护从单工具真实执行入口继续传播到 Run 级 `execution-policy`、DAG execution preview 和 DAG execution dry-run。

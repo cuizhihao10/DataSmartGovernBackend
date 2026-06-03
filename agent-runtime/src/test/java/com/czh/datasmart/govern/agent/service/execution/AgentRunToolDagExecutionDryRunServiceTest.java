@@ -112,8 +112,17 @@ class AgentRunToolDagExecutionDryRunServiceTest {
         assertEquals(response.syncDryRunCandidateCount(), event.attributes().get("syncDryRunCandidateCount"));
         assertEquals(response.selectionFingerprint(), event.attributes().get("selectionFingerprint"));
         assertTrue(response.selectionFingerprint().startsWith("dag-selection:"));
+        assertEquals(0, event.attributes().get("sandboxRejectedCount"));
+        assertEquals(List.of(), event.attributes().get("sandboxIssueCodes"));
+        assertEquals(0, event.attributes().get("runtimeProtectionRejectedCount"));
+        assertEquals(List.of(), event.attributes().get("runtimeProtectionIssueCodes"));
         assertEquals("SUMMARY_ONLY_NO_TOOL_ARGUMENTS_NO_EXECUTION_PATH", event.attributes().get("eventPayloadPolicy"));
         assertEquals(1, ((List<?>) event.attributes().get("items")).size());
+        Map<?, ?> itemSummary = (Map<?, ?>) ((List<?>) event.attributes().get("items")).getFirst();
+        assertTrue((Boolean) itemSummary.get("sandboxAllowed"));
+        assertEquals(List.of(), itemSummary.get("sandboxIssueCodes"));
+        assertTrue((Boolean) itemSummary.get("runtimeProtectionAllowed"));
+        assertEquals(List.of(), itemSummary.get("runtimeProtectionIssueCodes"));
     }
 
     @Test
@@ -253,6 +262,13 @@ class AgentRunToolDagExecutionDryRunServiceTest {
         assertFalse(item.sandboxAllowed());
         assertTrue(item.sandboxIssueCodes().contains("ARGUMENT_BYTES_EXCEED_LIMIT"));
         assertTrue(response.summaryReasons().stream().anyMatch(reason -> reason.contains("沙箱拒绝")));
+
+        AgentRuntimeEventProjectionRecord event = fixture.projectionStore.listByRunId(RUN_ID).getFirst();
+        assertEquals(1, event.attributes().get("sandboxRejectedCount"));
+        assertEquals(List.of("ARGUMENT_BYTES_EXCEED_LIMIT"), event.attributes().get("sandboxIssueCodes"));
+        Map<?, ?> itemSummary = (Map<?, ?>) ((List<?>) event.attributes().get("items")).getFirst();
+        assertFalse((Boolean) itemSummary.get("sandboxAllowed"));
+        assertEquals(List.of("ARGUMENT_BYTES_EXCEED_LIMIT"), itemSummary.get("sandboxIssueCodes"));
     }
 
     private TestFixture newFixture() {

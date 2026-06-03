@@ -1,4 +1,14 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-04 落地补充：guardrail issue codes should become replayable facts
+
+- 本阶段把 sandbox/runtime-protection 的 issueCodes 接入 DAG dry-run runtime event 和 display。这个方向对应成熟 Agent host 的一个关键趋势：工具调用保护不能只在当次 HTTP 响应里解释，必须进入可 replay、可审计、可运营聚合的事件事实层。
+- DataSmart 当前没有把完整 reasons、工具参数、executionPath 或 payload 写入事件，而是只写 `sandboxRejectedCount`、`runtimeProtectionRejectedCount`、去重 issueCodes、熔断数和容量拒绝数。这是有意的低基数设计：看板和告警需要稳定枚举与计数，敏感排障需要受控详情接口，不应把两者混在一起。
+- display 层现在能把“被阻断”进一步解释成“沙箱拒绝、容量拒绝、目标服务熔断”。这比单一 blockedCount 更接近 Codex/Claude Code 类 Agent host 的运营体验：模型可以规划工具，但宿主平台需要解释为什么动作暂缓、应由谁处理、是否适合自动重试。
+- 下一步趋势落地有两条分支：
+  - 短期继续 Agent Runtime：把这些低基数摘要接入 Prometheus、告警和真实 DAG worker pre-check；
+  - 平衡项目整体：切换到 MCP/Skill 发布流、长期记忆 Chroma/Neo4j 二级索引 worker 或智能网关多 Agent 协作。
+- 关键边界：当前仍是事件展示和内存投影，不是强审计 outbox，也不是全局分布式限流。生产化还需要持久化事件、指标、告警、服务网格/mTLS、全局配额和运维手动摘除。
+
 ## 2026-06-03 落地补充：runtime backpressure must be visible before DAG execution
 
 - 本阶段把 runtime-protection verdict 从真实 execute 入口继续传播到 execution-policy、DAG preview 和 dry-run。这对应成熟 Agent host 的一个关键趋势：工具执行的容量、熔断和配额不能只在最后一刻失败，而应该在计划、预览、dry-run 和 worker pre-check 阶段就变成可解释的控制面事实。

@@ -123,6 +123,10 @@ public class AgentRuntimeEventDisplaySupport {
         int notFoundCount = intAttribute(attributes, "notFoundCount");
         int batchLimitCount = intAttribute(attributes, "batchLimitReachedCount");
         int selectedCount = intAttribute(attributes, "selectedCount");
+        int sandboxRejectedCount = intAttribute(attributes, "sandboxRejectedCount");
+        int runtimeProtectionRejectedCount = intAttribute(attributes, "runtimeProtectionRejectedCount");
+        int runtimeCircuitOpenCount = intAttribute(attributes, "runtimeCircuitOpenCount");
+        int runtimeCapacityRejectedCount = intAttribute(attributes, "runtimeCapacityRejectedCount");
         String status = dryRunStatus(syncCount, asyncCount, blockedCount, notFoundCount, batchLimitCount);
 
         Map<String, Object> metrics = new LinkedHashMap<>();
@@ -132,19 +136,35 @@ public class AgentRuntimeEventDisplaySupport {
         metrics.put("blockedCount", blockedCount);
         metrics.put("notFoundCount", notFoundCount);
         metrics.put("batchLimitReachedCount", batchLimitCount);
+        /*
+         * display.metrics 只放“低风险、低基数”的可展示指标。
+         *
+         * 这些字段不会暴露具体工具参数、SQL、接口 payload 或用户输入，却能回答运营上非常关键的问题：
+         * - 阻断是普通依赖/审批问题，还是安全沙箱拒绝；
+         * - 运行时保护是容量限制，还是目标服务已经熔断；
+         * - 当前事件是否值得平台管理员介入，而不是只让业务用户反复点击重试。
+         */
+        metrics.put("sandboxRejectedCount", sandboxRejectedCount);
+        metrics.put("sandboxIssueCodeCount", listSize(attributes.get("sandboxIssueCodes")));
+        metrics.put("runtimeProtectionRejectedCount", runtimeProtectionRejectedCount);
+        metrics.put("runtimeProtectionIssueCodeCount", listSize(attributes.get("runtimeProtectionIssueCodes")));
+        metrics.put("runtimeCircuitOpenCount", runtimeCircuitOpenCount);
+        metrics.put("runtimeCapacityRejectedCount", runtimeCapacityRejectedCount);
         metrics.put("dryRunOnly", true);
         metrics.put("itemCount", listSize(attributes.get("items")));
 
         return new AgentRuntimeEventDisplayView(
                 "DAG_DRY_RUN",
                 "DAG 执行预案已生成",
-                "同步候选 " + syncCount + " 个，异步预案 " + asyncCount + " 个，阻断 "
-                        + blockedCount + " 个，未命中 " + notFoundCount + " 个。",
+                dryRunSummary(syncCount, asyncCount, blockedCount, notFoundCount,
+                        sandboxRejectedCount, runtimeProtectionRejectedCount),
                 status,
                 "dag-dry-run",
-                shouldRequireAttention(syncCount, asyncCount, blockedCount, notFoundCount, batchLimitCount),
+                shouldRequireAttention(syncCount, asyncCount, blockedCount, notFoundCount, batchLimitCount,
+                        sandboxRejectedCount, runtimeProtectionRejectedCount),
                 REPLAY_POLICY_APPEND_AND_ACK,
-                dryRunRecommendedActions(syncCount, asyncCount, blockedCount, notFoundCount, batchLimitCount),
+                dryRunRecommendedActions(syncCount, asyncCount, blockedCount, notFoundCount, batchLimitCount,
+                        sandboxRejectedCount, runtimeProtectionRejectedCount, runtimeCircuitOpenCount, runtimeCapacityRejectedCount),
                 Collections.unmodifiableMap(metrics)
         );
     }
@@ -186,21 +206,44 @@ public class AgentRuntimeEventDisplaySupport {
                                            int asyncCount,
                                            int blockedCount,
                                            int notFoundCount,
-                                           int batchLimitCount) {
-        return blockedCount > 0 || notFoundCount > 0 || batchLimitCount > 0 || syncCount + asyncCount == 0;
+                                           int batchLimitCount,
+                                           int sandboxRejectedCount,
+                                           int runtimeProtectionRejectedCount) {
+        return blockedCount > 0
+                || notFoundCount > 0
+                || batchLimitCount > 0
+                || sandboxRejectedCount > 0
+                || runtimeProtectionRejectedCount > 0
+                || syncCount + asyncCount == 0;
     }
 
     private List<String> dryRunRecommendedActions(int syncCount,
                                                   int asyncCount,
                                                   int blockedCount,
                                                   int notFoundCount,
-                                                  int batchLimitCount) {
+                                                  int batchLimitCount,
+                                                  int sandboxRejectedCount,
+                                                  int runtimeProtectionRejectedCount,
+                                                  int runtimeCircuitOpenCount,
+                                                  int runtimeCapacityRejectedCount) {
         List<String> actions = new ArrayList<>();
         if (syncCount + asyncCount > 0) {
             actions.add("在动作审批面板确认选中节点后，再进入同步 dry-run 二次确认或受控异步 outbox。");
         }
         if (blockedCount > 0) {
             actions.add("查看节点级阻断原因，补齐审批、参数、依赖或服务间授权后重新 dry-run。");
+        }
+        if (sandboxRejectedCount > 0) {
+            actions.add("优先查看 sandboxIssueCodes：沙箱拒绝通常表示工具目录、参数体积、幂等策略或目标服务边界需要修正。");
+        }
+        if (runtimeProtectionRejectedCount > 0) {
+            actions.add("优先查看 runtimeProtectionIssueCodes：运行时保护拒绝通常表示需要拆批、等待并发释放或处理目标服务健康问题。");
+        }
+        if (runtimeCapacityRejectedCount > 0) {
+            actions.add("存在容量类拒绝时，不建议由 Agent 自动重试，应采用退避、队列化或降低本批次并发。");
+        }
+        if (runtimeCircuitOpenCount > 0) {
+            actions.add("存在目标服务熔断时，应先排查下游健康、接口变更和最近失败码，冷却期结束前不要继续扩大调用。");
         }
         if (notFoundCount > 0) {
             actions.add("核对请求中的 nodeId/auditId，避免前端或 Python Runtime 使用过期 DAG selector。");
@@ -212,6 +255,21 @@ public class AgentRuntimeEventDisplaySupport {
             actions.add("当前没有可推进节点，可继续等待依赖完成或重新生成工具计划。");
         }
         return List.copyOf(actions);
+    }
+
+    private String dryRunSummary(int syncCount,
+                                 int asyncCount,
+                                 int blockedCount,
+                                 int notFoundCount,
+                                 int sandboxRejectedCount,
+                                 int runtimeProtectionRejectedCount) {
+        String summary = "同步候选 " + syncCount + " 个，异步预案 " + asyncCount + " 个，阻断 "
+                + blockedCount + " 个，未命中 " + notFoundCount + " 个。";
+        if (sandboxRejectedCount <= 0 && runtimeProtectionRejectedCount <= 0) {
+            return summary;
+        }
+        return summary + " 其中沙箱拒绝 " + sandboxRejectedCount
+                + " 个，运行时保护暂缓 " + runtimeProtectionRejectedCount + " 个。";
     }
 
     private List<String> genericRecommendedActions(AgentRuntimeEventProjectionRecord record, boolean requiresAttention) {

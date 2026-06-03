@@ -20,9 +20,12 @@ import org.springframework.stereotype.Component;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -162,6 +165,24 @@ public class AgentRunToolDagExecutionDryRunEventPublisher {
         attributes.put("notSelectedCount", response.notSelectedCount());
         attributes.put("notFoundCount", response.notFoundCount());
         attributes.put("batchLimitReachedCount", response.batchLimitReachedCount());
+        /*
+         * 这里新增的是“控制面阻断摘要”，不是完整原因明细。
+         *
+         * 在商业化 Agent 产品里，运营和审计通常会关心：
+         * - 有多少节点被沙箱策略拒绝；
+         * - 有多少节点因为运行时容量/熔断保护被暂缓；
+         * - 常见阻断问题码是什么，是否集中在某个保护维度上。
+         *
+         * 但 runtime event 又不能变成另一个工具明细表。完整 reasons、recommendedActions、工具参数、
+         * executionPath 等内容要么可能包含业务上下文，要么容易形成高基数数据，不适合进入事件流长期扩散。
+         * 因此这里仅写入去重后的 issueCodes 与聚合计数，既能支撑看板和告警，也保留安全边界。
+         */
+        attributes.put("sandboxRejectedCount", sandboxRejectedCount(response.items()));
+        attributes.put("sandboxIssueCodes", issueCodes(response.items(), IssueCodeSource.SANDBOX));
+        attributes.put("runtimeProtectionRejectedCount", runtimeProtectionRejectedCount(response.items()));
+        attributes.put("runtimeProtectionIssueCodes", issueCodes(response.items(), IssueCodeSource.RUNTIME_PROTECTION));
+        attributes.put("runtimeCircuitOpenCount", runtimeCircuitOpenCount(response.items()));
+        attributes.put("runtimeCapacityRejectedCount", runtimeCapacityRejectedCount(response.items()));
         attributes.put("actionCounts", actionCounts(response.items()));
         attributes.put("items", itemSummaries(response.items()));
         attributes.put("summaryReasonCount", response.summaryReasons() == null ? 0 : response.summaryReasons().size());
@@ -205,10 +226,94 @@ public class AgentRunToolDagExecutionDryRunEventPublisher {
         summary.put("asyncCommandId", item.asyncCommandId());
         summary.put("serviceAuthorizationDecision", item.serviceAuthorizationDecision());
         summary.put("serviceAuthorizationAllowed", item.serviceAuthorizationAllowed());
+        /*
+         * 节点级摘要同样只暴露低敏问题码，不暴露 sandboxReasons 或 runtimeProtectionReasons。
+         *
+         * 原因是 reasons 可能描述具体租户、项目、接口、参数大小、下游健康等上下文，适合在当前 API 响应中
+         * 按权限直接返回给调用方，但不适合写入 runtime event 这种会被 replay、导出和多角色消费的通用事件层。
+         * issueCodes 是稳定枚举，天然适合作为事件展示、聚合统计和未来低基数指标的连接点。
+         */
+        summary.put("sandboxAllowed", item.sandboxAllowed());
+        summary.put("sandboxIssueCodes", safeList(item.sandboxIssueCodes()));
+        summary.put("runtimeProtectionAllowed", item.runtimeProtectionAllowed());
+        summary.put("runtimeProtectionIssueCodes", safeList(item.runtimeProtectionIssueCodes()));
+        summary.put("runtimeCircuitOpen", item.runtimeCircuitOpen());
         summary.put("riskLevel", item.riskLevel());
         summary.put("readOnly", item.readOnly());
         summary.put("idempotent", item.idempotent());
         summary.put("requiresApproval", item.requiresApproval());
         return Collections.unmodifiableMap(summary);
+    }
+
+    private int sandboxRejectedCount(List<AgentToolDagExecutionDryRunItemView> items) {
+        if (items == null || items.isEmpty()) {
+            return 0;
+        }
+        return (int) items.stream()
+                .filter(item -> Boolean.FALSE.equals(item.sandboxAllowed()))
+                .count();
+    }
+
+    private int runtimeProtectionRejectedCount(List<AgentToolDagExecutionDryRunItemView> items) {
+        if (items == null || items.isEmpty()) {
+            return 0;
+        }
+        return (int) items.stream()
+                .filter(item -> Boolean.FALSE.equals(item.runtimeProtectionAllowed()))
+                .count();
+    }
+
+    private int runtimeCircuitOpenCount(List<AgentToolDagExecutionDryRunItemView> items) {
+        if (items == null || items.isEmpty()) {
+            return 0;
+        }
+        return (int) items.stream()
+                .filter(item -> Boolean.TRUE.equals(item.runtimeCircuitOpen())
+                        || safeList(item.runtimeProtectionIssueCodes()).contains("TARGET_SERVICE_CIRCUIT_OPEN"))
+                .count();
+    }
+
+    private int runtimeCapacityRejectedCount(List<AgentToolDagExecutionDryRunItemView> items) {
+        if (items == null || items.isEmpty()) {
+            return 0;
+        }
+        return (int) items.stream()
+                .filter(item -> safeList(item.runtimeProtectionIssueCodes()).stream().anyMatch(this::isRuntimeCapacityIssue))
+                .count();
+    }
+
+    private boolean isRuntimeCapacityIssue(String issueCode) {
+        String normalized = issueCode == null ? "" : issueCode.trim().toUpperCase(Locale.ROOT);
+        return normalized.contains("IN_FLIGHT_LIMIT_EXCEEDED");
+    }
+
+    private List<String> issueCodes(List<AgentToolDagExecutionDryRunItemView> items, IssueCodeSource source) {
+        if (items == null || items.isEmpty()) {
+            return List.of();
+        }
+        Set<String> codes = new LinkedHashSet<>();
+        for (AgentToolDagExecutionDryRunItemView item : items) {
+            List<String> itemCodes = source == IssueCodeSource.SANDBOX
+                    ? item.sandboxIssueCodes()
+                    : item.runtimeProtectionIssueCodes();
+            codes.addAll(safeList(itemCodes));
+        }
+        return List.copyOf(codes);
+    }
+
+    private List<String> safeList(List<String> values) {
+        if (values == null || values.isEmpty()) {
+            return List.of();
+        }
+        return values.stream()
+                .filter(value -> value != null && !value.isBlank())
+                .map(String::trim)
+                .distinct()
+                .toList();
+    }
+
+    private enum IssueCodeSource {
+        SANDBOX,
+        RUNTIME_PROTECTION
     }
 }
