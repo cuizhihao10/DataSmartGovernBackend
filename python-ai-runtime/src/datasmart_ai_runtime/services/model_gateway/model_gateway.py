@@ -17,40 +17,8 @@ from datasmart_ai_runtime.domain.model_gateway import (
     ModelProviderHealthStatus,
 )
 from datasmart_ai_runtime.services.model_gateway.model_gateway_cache import ModelGatewayCachePlanner
+from datasmart_ai_runtime.services.model_gateway.model_provider_health import InMemoryModelProviderHealthRegistry
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
-
-
-class InMemoryModelProviderHealthRegistry:
-    """内存版 Provider 健康注册表。
-
-    生产环境中，健康状态可能来自 Prometheus 指标、网关 `/health`、最近 N 次模型调用错误率、
-    GPU 队列长度或人工熔断开关。这里先用内存快照，是为了让模型网关路由策略可测试、可解释，
-    后续替换为 Redis、数据库或观测系统时不影响决策契约。
-    """
-
-    def __init__(self, snapshots: tuple[ModelProviderHealthSnapshot, ...] = ()) -> None:
-        self._snapshots = {snapshot.provider_name: snapshot for snapshot in snapshots}
-
-    def mark(self, snapshot: ModelProviderHealthSnapshot) -> None:
-        """更新某个 Provider 的健康快照。"""
-
-        self._snapshots[snapshot.provider_name] = snapshot
-
-    def snapshot_for(self, route: ModelRoute) -> ModelProviderHealthSnapshot:
-        """读取路由对应的健康快照。
-
-        没有快照时返回 `UNKNOWN`，而不是直接判定不可用。这样本地开发和刚启动的环境不会因为暂未
-        上报健康状态就完全不可用；生产环境可以通过告警要求 Provider 必须定期上报。
-        """
-
-        return self._snapshots.get(
-            route.provider_name,
-            ModelProviderHealthSnapshot(
-                provider_name=route.provider_name,
-                status=ModelProviderHealthStatus.UNKNOWN,
-                notes="尚未收到 Provider 健康快照。",
-            ),
-        )
 
 
 class InMemoryModelBudgetLedger:
@@ -239,6 +207,37 @@ class ModelGatewayGovernanceService:
 
         used_tokens = max(prompt_tokens or 0, 0) + max(completion_tokens or 0, 0)
         self._budget_ledger.record_usage(context.tenant_id, context.project_id, used_tokens)
+        return used_tokens
+
+    def record_invocation_result(
+        self,
+        context: ModelGatewayRequestContext,
+        result: object,
+    ) -> int:
+        """记录模型调用结果，统一更新预算台账和 Provider 健康台账。
+
+        真实 Agent 产品里，模型调用结束后不能只拿到文本就结束，还要把两个控制面事实写回：
+        - `usage`：用于预算、套餐、成本报表和消耗告警；
+        - `health`：用于后续路由、fallback、熔断和运维诊断。
+
+        这里接收 `object` 而不是强行扩大类型依赖，是为了兼容测试桩和未来 Provider result 扩展；
+        只要对象暴露 `provider_name/error_code/latency_ms/prompt_tokens/completion_tokens` 这些字段即可。
+        """
+
+        used_tokens = self.record_invocation_usage(
+            context,
+            prompt_tokens=getattr(result, "prompt_tokens", None),
+            completion_tokens=getattr(result, "completion_tokens", None),
+        )
+        provider_name = str(getattr(result, "provider_name", "") or "").strip()
+        if provider_name:
+            error_code = getattr(result, "error_code", None)
+            self._health_registry.record_invocation(
+                provider_name,
+                succeeded=error_code is None,
+                latency_ms=getattr(result, "latency_ms", None),
+                error_code=str(error_code) if error_code else None,
+            )
         return used_tokens
 
     @staticmethod

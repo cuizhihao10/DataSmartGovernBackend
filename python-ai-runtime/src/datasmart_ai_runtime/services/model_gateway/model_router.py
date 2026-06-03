@@ -57,3 +57,14 @@ class ModelRouteRegistry:
         if WorkloadType.AGENT_REASONING in self._routes:
             return self._routes[WorkloadType.AGENT_REASONING]
         raise ValueError("模型路由表为空，至少需要配置一个 AGENT_REASONING 路由")
+
+    def all_routes(self) -> tuple[ModelRoute, ...]:
+        """返回当前注册表中的全部模型路由。
+
+        该方法主要服务诊断和运营面板，而不是常规路由选择。Provider 健康摘要需要知道某个
+        providerName 关联了哪些 workload/model，否则运维人员只看到“某 Provider 不可用”，却无法判断
+        影响的是 Agent 推理、Embedding、Rerank 还是代码生成。这里返回扁平 tuple，避免调用方直接读取
+        内部 `_routes` 字典并依赖它的存储结构。
+        """
+
+        return tuple(route for routes in self._routes.values() for route in routes)

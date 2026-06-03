@@ -58,7 +58,10 @@ from datasmart_ai_runtime.services.memory.memory_materialization_worker import (
     AgentMemoryMaterializationWorker,
     memory_materialization_worker_settings_from_env,
 )
-from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
+from datasmart_ai_runtime.services.model_gateway import (
+    InMemoryModelProviderHealthRegistry,
+    ModelGatewayGovernanceService,
+)
 from datasmart_ai_runtime.services.model_gateway.model_provider import model_provider_registry_from_env
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.runtime_events.runtime_event_components import (
@@ -107,7 +110,13 @@ def create_app() -> Any:
         version="0.1.0",
         description="用于模型路由、Agent 编排和工具计划生成的 Python 智能运行时。",
     )
-    model_gateway = ModelGatewayGovernanceService(ModelRouteRegistry(model_routes_from_env()))
+    model_routes = model_routes_from_env()
+    model_route_registry = ModelRouteRegistry(model_routes)
+    model_provider_health_registry = InMemoryModelProviderHealthRegistry()
+    model_gateway = ModelGatewayGovernanceService(
+        model_route_registry,
+        health_registry=model_provider_health_registry,
+    )
     memory_runtime = build_api_memory_runtime()
     orchestrator = build_default_orchestrator(
         model_gateway=model_gateway,
@@ -209,6 +218,22 @@ def create_app() -> Any:
             gateway_signature_nonce_store,
             gateway_signature_nonce_settings,
         )
+
+    @app.get("/agent/models/provider-health/diagnostics")
+    def model_provider_health_diagnostics() -> dict[str, Any]:
+        """查询模型 Provider 健康治理诊断信息。
+
+        该接口面向智能网关运维、前端治理卡片和 Java 控制面排障。它只返回低敏状态事实：
+        providerName、workload、modelName、健康状态、错误率、延迟、熔断窗口和推荐动作；不会返回 prompt、
+        用户消息、工具参数、模型响应正文或 API Key。
+
+        为什么放在 Python Runtime：
+        当前真实 Provider 调用发生在 Python AI Runtime，因此最接近调用结果、延迟和错误码。Java
+        agent-runtime 后续可以通过 gateway 调用该诊断，或把摘要同步到统一观测/审计中心；但不应在
+        Java 侧凭空猜测 Python Provider 的真实健康状态。
+        """
+
+        return model_provider_health_registry.diagnostics(model_route_registry.all_routes())
 
     @app.get("/agent/metrics")
     def agent_runtime_prometheus_metrics() -> Any:

@@ -1,5 +1,13 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-03 落地补充：agent model gateways need health-aware routing
+
+- 本阶段把模型网关从“静态路由 + dry-run/openai-compatible provider 抽象”继续推进到“健康感知路由”。这对应 Codex、Claude Code 类 Agent 的真实工程趋势：模型调用层必须具备 provider health、fallback、熔断、预算、缓存和工具调用治理，而不是把所有请求无条件发给一个默认模型。
+- DataSmart 新增的 Provider Health Registry 先从真实调用结果出发：成功、失败、错误码和延迟会影响下一次路由选择。连续失败会打开熔断窗口；错误率需要最小样本数才会参与状态判定，避免一次偶发 503 造成过度 fallback。
+- 这一步没有直接伪造外部 `/health` 调用，也没有引入具体供应商 SDK。这样的边界更稳：未来接 OpenAI-compatible、vLLM、SGLang、LiteLLM 或企业内部模型网关时，只需要把健康事件回灌到同一 registry。
+- `/agent/models/provider-health/diagnostics` 只返回低敏诊断，不返回 prompt、工具参数、模型正文或密钥。成熟 Agent 平台的诊断面板必须解释“为什么 fallback”，但不能变成上下文泄漏面。
+- 趋势落地建议：下一阶段应把健康摘要接入 Prometheus 和告警，并继续推进 KV/prefix cache 命中率、provider quality score、tenant package、灰度路由和工具调用沙箱。不要把模型网关停留在“能调通一个模型”的 demo 层。
+
 ## 2026-06-03 落地补充：memory materialization needs audit outbox
 
 - 本阶段把长期记忆物化从“有 runtime event、指标和告警”继续推进到“有审计 outbox”。这对应成熟 Agent durable action 的关键趋势：模型或 worker 产生副作用后，平台不仅要能看见和告警，还要能把动作事实交给审计系统、客户归档或合规复盘。

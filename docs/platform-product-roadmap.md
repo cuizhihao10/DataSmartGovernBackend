@@ -1,5 +1,33 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-03 追加落地进展：模型 Provider Health 与熔断治理
+
+- Python AI Runtime 在 `services/model_gateway/` 下新增 `model_provider_health.py`，把模型 Provider 从“静态路由候选”推进到“可根据真实调用结果动态治理的运行时对象”。
+- 新增 `ModelProviderHealthPolicy`：可配置最近窗口大小、连续失败阈值、错误率阈值、延迟阈值、最小样本数和熔断冷却期。
+- 新增 `InMemoryModelProviderHealthRegistry`：支持人工/外部探针 `mark(...)`，也支持真实调用后 `record_invocation(...)` 回写成功、失败、延迟和错误码。
+- `ModelGatewayGovernanceService` 新增 `record_invocation_result(...)`，让模型调用结束后同时写回 token usage 和 Provider 健康事实。
+- `AgentModelIntentNode` 与 `AgentSecondTurnOrchestrator` 已从“只回写 usage”升级为“回写 usage + provider health”，为后续自动 fallback、健康诊断和告警打基础。
+- `ModelRouteRegistry` 新增 `all_routes()`，诊断摘要可以展示 provider 关联的 workload/model，避免运维只看到孤立 providerName。
+- FastAPI 新增 `/agent/models/provider-health/diagnostics`，返回低敏健康摘要：状态、延迟、错误率、熔断窗口、最近样本数、关联模型、运维告警和推荐动作。
+- `api_model_gateway` 的治理摘要新增 selected provider 的延迟、错误率、检查时间和健康说明，便于前端/Java 控制面解释 fallback。
+- 新增 `test_model_provider_health.py`，覆盖连续失败熔断、熔断主路由 fallback、调用结果回写预算与健康、未知 Provider 诊断和冷却后观察期。
+
+产品意义：
+- 这一步把智能网关从“能选模型”推进到“知道模型是否可靠”。Codex、Claude Code 类 Agent 的体验不只取决于模型能力，也取决于当主模型故障、慢、限流或预算异常时，系统能否快速降级且说明原因。
+- 当前实现不假装已经有真实 Prometheus 或外部 `/health` 探针，而是先固定“真实调用结果如何影响后续路由”的契约。后续可把健康数据来源迁移到 Redis、Prometheus、服务网格或 Java 控制面。
+- 熔断策略使用连续失败和最小错误率样本数，避免一次偶发 503 直接判死 Provider，也避免连续失败仍继续打主路由。
+
+当前边界：
+- 健康注册表仍是进程内内存版，重启后状态会丢失；生产应迁移到 Redis/MySQL/Prometheus 或服务网格指标。
+- 当前只接入非流式和二轮模型调用结果；streaming 路径还没有 usage trailer 和最终延迟事件，后续应补齐。
+- 诊断接口当前只读，不提供手动熔断/恢复 API；生产应由 gateway/permission-admin 限制为平台管理员或运维角色。
+
+下一步推荐路线：
+1. 增加真实 Provider 探针：OpenAI-compatible `/models` 或 `/health`、vLLM/SGLang metrics、LiteLLM health，以及 Prometheus 回灌。
+2. 把 provider health 指标暴露到 `/agent/metrics`，增加 unavailable、degraded、circuit open、fallback rate 和 p95 latency 告警。
+3. 继续模型网关主线：补 KV/prefix cache 命中率、cache admission、tenant package、provider quality score 和灰度路由。
+4. 平衡 AI Agent 主线：下一批可以转向工具调用沙箱，避免模型网关也变成新的局部无限优化点。
+
 ## 2026-06-03 追加落地进展：Agent Skill Marketplace 治理摘要
 
 - `agent-runtime` 在现有 Skill descriptor 只读接口基础上，新增 `/agent-runtime/skills/marketplace/summary` 与 `/api/agent/skills/marketplace/summary`。

@@ -329,19 +329,16 @@ class AgentSecondTurnOrchestrator:
         plan: AgentPlan,
         result: ModelInvocationResult,
     ) -> None:
-        """把二轮模型 usage 回写到模型网关治理服务。
+        """把二轮模型调用结果回写到模型网关治理服务。
 
         `model_gateway` 是可选注入项。没有注入时仍然允许二轮推理完成，原因是当前项目还处于渐进式集成；
-        但生产环境建议注入共享治理服务，确保二轮 token 也进入预算、成本和告警统计。
+        但生产环境建议注入共享治理服务，确保二轮 token、错误码和延迟都进入预算、成本、Provider 健康
+        和告警统计。否则一次 Agent 请求的首轮健康可见，二轮总结故障却不可见，会影响真实排障。
         """
 
         if self._model_gateway is None:
             return
-        self._model_gateway.record_invocation_usage(
-            build_model_gateway_context(request, plan.context_blocks),
-            prompt_tokens=result.prompt_tokens,
-            completion_tokens=result.completion_tokens,
-        )
+        self._model_gateway.record_invocation_result(build_model_gateway_context(request, plan.context_blocks), result)
 
     @staticmethod
     def _skipped(

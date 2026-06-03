@@ -23,7 +23,6 @@
 
 from datasmart_ai_runtime.services.model_gateway.model_gateway import (
     InMemoryModelBudgetLedger,
-    InMemoryModelProviderHealthRegistry,
     ModelGatewayGovernanceService,
 )
 from datasmart_ai_runtime.services.model_gateway.model_gateway_cache import ModelGatewayCachePlanner
@@ -34,6 +33,11 @@ from datasmart_ai_runtime.services.model_gateway.model_provider import (
     OpenAICompatibleModelProvider,
     OpenAICompatibleProviderSettings,
     model_provider_registry_from_env,
+)
+from datasmart_ai_runtime.services.model_gateway.model_provider_health import (
+    InMemoryModelProviderHealthRegistry,
+    ModelProviderHealthPolicy,
+    ModelProviderInvocationHealthEvent,
 )
 from datasmart_ai_runtime.services.model_gateway.model_provider_metadata import build_model_provider_metadata
 from datasmart_ai_runtime.services.model_gateway.model_result_context_filter import (
@@ -94,6 +98,8 @@ __all__ = [
     "ModelGatewayCachePlanner",
     "ModelGatewayGovernanceService",
     "ModelProviderRegistry",
+    "ModelProviderHealthPolicy",
+    "ModelProviderInvocationHealthEvent",
     "ModelResultContextFilter",
     "ModelResultContextFilterPolicy",
     "ModelResultContextFilterReport",

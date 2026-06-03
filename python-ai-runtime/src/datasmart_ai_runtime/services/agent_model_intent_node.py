@@ -465,16 +465,17 @@ class AgentModelIntentNode:
         model_gateway_context: ModelGatewayRequestContext,
         result: ModelInvocationResult,
     ) -> None:
-        """把模型调用 usage 回写给模型网关治理服务。
+        """把模型调用结果回写给模型网关治理服务。
 
-        usage 统计是预算、限额、成本报表和异常诊断的基础，后续 streaming trailer usage 可复用。
+        过去这里只记录 usage，用于预算、限额和成本报表。本阶段进一步把 Provider 健康也纳入同一条
+        调用后生命周期：如果真实模型返回错误码、超时或高延迟，模型网关可以在后续请求中自动触发
+        degraded/unavailable/fallback，而不是继续把流量打到故障 Provider。
+
+        注意：streaming 路径当前还没有标准 usage trailer，因此仍保留上方专门的空 usage 记录位置；
+        后续 Provider chunk 增加最终 usage 和延迟信息后，可复用同一个 `record_invocation_result(...)`。
         """
 
-        self._model_gateway.record_invocation_usage(
-            model_gateway_context,
-            prompt_tokens=result.prompt_tokens,
-            completion_tokens=result.completion_tokens,
-        )
+        self._model_gateway.record_invocation_result(model_gateway_context, result)
 
     @staticmethod
     def _truthy(value: object) -> bool:
