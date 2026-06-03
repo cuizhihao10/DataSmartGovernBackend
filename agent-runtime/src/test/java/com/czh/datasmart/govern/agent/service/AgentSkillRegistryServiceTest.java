@@ -9,6 +9,8 @@ package com.czh.datasmart.govern.agent.service;
 import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
 import com.czh.datasmart.govern.agent.config.AgentSkillRegistryProperties;
 import com.czh.datasmart.govern.agent.controller.dto.AgentSkillDescriptorView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentSkillMarketplaceFacetView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentSkillMarketplaceSummaryView;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -17,14 +19,15 @@ import java.util.LinkedHashMap;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Agent Skill 注册服务测试。
  *
- * <p>这组测试保护 Java Skill descriptor 的核心契约。
- * Python Runtime 后续会消费这些字段，如果 Java 侧字段名、过滤语义或默认值悄悄变化，
+ * <p>这组测试保护 Java Skill descriptor 和 Skill Marketplace 摘要的核心契约。
+ * Python Runtime 会消费这些字段；如果 Java 侧字段名、过滤语义、默认值或市场统计口径发生变化，
  * 测试应第一时间暴露问题，而不是等到 Agent 规划结果异常才排查。
  */
 class AgentSkillRegistryServiceTest {
@@ -43,7 +46,7 @@ class AgentSkillRegistryServiceTest {
     }
 
     /**
-     * 验证默认只返回启用 Skill。
+     * 验证默认 enabledOnly 语义下只返回启用 Skill。
      */
     @Test
     void listSkillDescriptorsShouldOnlyReturnEnabledSkillsWhenRequested() {
@@ -87,11 +90,75 @@ class AgentSkillRegistryServiceTest {
     }
 
     /**
+     * 验证 Skill Marketplace 摘要会输出市场首页需要的数量、筛选维度和运营建议。
+     *
+     * <p>includeDisabled=true 是市场运营视角：禁用 Skill 不能被模型规划，但对前端市场页和管理员排障很重要，
+     * 因为它代表灰度下线、租户裁剪、故障隔离或未来版本能力。
+     */
+    @Test
+    void getMarketplaceSummaryShouldExposeGovernanceFacetsAndRecommendations() {
+        AgentSkillMarketplaceSummaryView summary = service.getMarketplaceSummary(true);
+
+        assertEquals("datasmart.agent.skill.marketplace.v1", summary.schemaVersion());
+        assertEquals(3, summary.registrySkillCount());
+        assertEquals(3, summary.visibleSkillCount());
+        assertEquals(2, summary.enabledSkillCount());
+        assertEquals(1, summary.disabledSkillCount());
+        assertEquals(1, summary.highRiskSkillCount());
+        assertEquals(2, summary.approvalRequiredSkillCount());
+        assertEquals(3, summary.auditRequiredSkillCount());
+        assertEquals(3, summary.tenantScopedSkillCount());
+        assertEquals(3, summary.projectScopedSkillCount());
+
+        AgentSkillMarketplaceFacetView qualityDomain = facet(summary.domainFacets(), "DATA_QUALITY");
+        assertEquals("DOMAIN", qualityDomain.facetType());
+        assertEquals(1, qualityDomain.totalCount());
+        assertEquals(1, qualityDomain.enabledCount());
+
+        AgentSkillMarketplaceFacetView disabledDomain = facet(summary.domainFacets(), "GENERAL_GOVERNANCE");
+        assertEquals(1, disabledDomain.disabledCount());
+
+        AgentSkillMarketplaceFacetView highRisk = facet(summary.riskLevelFacets(), "HIGH");
+        assertEquals(1, highRisk.enabledCount());
+
+        AgentSkillMarketplaceFacetView episodicMemory = facet(summary.memoryDependencyFacets(), "EPISODIC");
+        assertEquals(2, episodicMemory.totalCount());
+
+        assertTrue(summary.operationalWarnings().stream().anyMatch(item -> item.contains("已禁用 Skill")));
+        assertTrue(summary.recommendedActions().stream().anyMatch(item -> item.contains("数据库市场")));
+    }
+
+    /**
+     * 验证 includeDisabled=false 时摘要只面向可规划能力。
+     *
+     * <p>该语义适合 Python Runtime 或智能网关启动诊断：它们通常不关心已经禁用的 Skill，
+     * 只需要判断“当前可用于模型规划的能力包集合”是否健康。
+     */
+    @Test
+    void getMarketplaceSummaryShouldExcludeDisabledSkillsWhenRequested() {
+        AgentSkillMarketplaceSummaryView summary = service.getMarketplaceSummary(false);
+
+        assertEquals(3, summary.registrySkillCount());
+        assertEquals(2, summary.visibleSkillCount());
+        assertEquals(2, summary.enabledSkillCount());
+        assertEquals(0, summary.disabledSkillCount());
+        assertFalse(summary.domainFacets().stream().anyMatch(item -> item.value().equals("GENERAL_GOVERNANCE")));
+        assertTrue(summary.operationalWarnings().stream().anyMatch(item -> item.contains("未发现明显配置缺口")));
+    }
+
+    /**
      * 验证未注册 Skill 会明确返回业务异常。
      */
     @Test
     void getSkillDescriptorShouldRejectUnknownSkill() {
         assertThrows(PlatformBusinessException.class, () -> service.getSkillDescriptor("unknown.skill"));
+    }
+
+    private AgentSkillMarketplaceFacetView facet(List<AgentSkillMarketplaceFacetView> facets, String value) {
+        return facets.stream()
+                .filter(item -> item.value().equals(value))
+                .findFirst()
+                .orElseThrow();
     }
 
     private AgentSkillRegistryProperties.SkillDefinitionProperties qualityRuleSkill() {

@@ -1,5 +1,7 @@
 # DataSmart Govern Python AI Runtime
 
+> 2026-06-03 补充：Java `agent-runtime` 的 Skill 注册表已新增 Marketplace 治理摘要接口，可聚合领域、风险、审批、记忆依赖、启用/禁用和隔离策略。Python Runtime 当前仍消费 descriptor 与 permission-admin admission；后续可把该摘要接入启动诊断，用于判断远程 Skill 市场是否健康、是否高风险能力过多、是否缺少审计或隔离。
+
 这个目录是 DataSmart Govern 的 Python 智能运行时初始骨架，定位不是替代 Java 微服务，而是承接后续 `Agent 编排`、`模型路由`、`RAG/GraphRAG 检索`、`工具计划生成`、`OpenClaw/LangGraph 风格状态流转` 等 AI 能力。
 
 ## 当前边界

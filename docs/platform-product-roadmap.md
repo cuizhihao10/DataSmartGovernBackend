@@ -1,5 +1,32 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-03 追加落地进展：Agent Skill Marketplace 治理摘要
+
+- `agent-runtime` 在现有 Skill descriptor 只读接口基础上，新增 `/agent-runtime/skills/marketplace/summary` 与 `/api/agent/skills/marketplace/summary`。
+- 新增 `AgentSkillMarketplaceSummaryView` 与 `AgentSkillMarketplaceFacetView`，用于输出 Skill 市场首页、运营看板和 Python Runtime 启动诊断都可消费的聚合视图。
+- 摘要会统计注册表总数、可见 Skill 数、启用/禁用数量、高风险数量、需审批/复核数量、强制审计数量、租户/项目隔离数量。
+- 摘要会按 `domain`、`riskLevel`、`approvalPolicy`、`memoryDependency` 输出 facets，前端可直接用于筛选器，Python Runtime 可用于远程注册表健康诊断。
+- `includeDisabled=true` 面向市场运营视角，会把禁用 Skill 纳入统计，用于灰度下线、租户裁剪和故障隔离排查；`includeDisabled=false` 面向 Agent 规划视角，只统计当前可规划能力。
+- 服务端同时返回低敏 `operationalWarnings` 与 `recommendedActions`，用于提示高风险 Skill 缺审批、缺审计、缺租户/项目隔离、禁用 Skill 缺下线说明等商业化治理缺口。
+- `AgentSkillRegistryService` 已重写为可读中文注释版，原有 descriptor 列表/详情语义保持不变；新增服务、控制器和 DTO 文件均低于 500 行。
+- 新增/更新 `AgentSkillRegistryServiceTest`，覆盖 descriptor 原有契约、市场摘要、禁用 Skill 统计和 `includeDisabled=false` 语义。
+
+产品意义：
+- Skill 从“Python Runtime 可选择的能力包”继续推进到“Java 控制面可运营的能力市场对象”。这一步没有急着引入数据库发布流，而是先稳定读侧治理契约，降低后续迁移成本。
+- 企业级 Skill Marketplace 不能只是列表页；它必须回答哪些能力启用、哪些被禁用、哪些高风险、哪些需要审批、哪些依赖长期记忆、哪些缺少审计和隔离。
+- 该摘要接口为后续前端市场页、租户级启停、版本发布、灰度批次、审批策略模板、权限包绑定、使用统计和 A2A Agent Card 导出提供统一口径。
+
+当前边界：
+- 当前仍是配置式 Skill 注册表，不支持数据库版本、租户级启停、发布审批、评分反馈或使用统计。
+- 当前摘要是只读治理视图，不会改变 Python Runtime 的 Skill 选择结果，也不会绕过 permission-admin 的 Skill admission evaluate。
+- 当前 facets 适合小规模注册表；当 Skill 数量进入几百到几千级时，应迁移到数据库分页、索引和缓存策略。
+
+下一步推荐路线：
+1. 增加 Skill Marketplace 数据表：skill 基础信息、版本、发布状态、租户开关、灰度批次、下线原因和变更审计。
+2. 把 permission-admin Skill admission 与 Skill Marketplace 绑定，形成“租户开关 + 权限包 + 风险策略 + 审批模板”的统一准入事实。
+3. 增加 Skill 使用统计与效果反馈：命中次数、拒绝次数、审批通过率、工具调用失败率、记忆写入候选数和用户评分。
+4. 将当前摘要 facets 接给前端市场页和 Python Runtime 远程注册表诊断，避免前端/Python 各自统计导致口径漂移。
+
 ## 2026-06-03 追加落地进展：长期记忆物化审计 Outbox
 
 - Python AI Runtime 新增长期记忆物化审计 outbox，把 worker 批次和管理员补偿动作从“可观察事件”推进到“可持久审计事实”。
