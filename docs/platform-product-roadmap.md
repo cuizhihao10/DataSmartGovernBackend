@@ -1,5 +1,27 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-03 追加落地进展：长期记忆物化审计 Outbox
+
+- Python AI Runtime 新增长期记忆物化审计 outbox，把 worker 批次和管理员补偿动作从“可观察事件”推进到“可持久审计事实”。
+- 新增 `memory_materialization_audit_outbox.py`：定义审计记录、内存 store、recorder、required/fail-open 策略和低敏 payload 约束。
+- 新增 `memory_materialization_audit_outbox_sql_store.py` 与 `memory_materialization_audit_outbox_components.py`：支持 in-memory、SQLite、MySQL 三种 store，支持启动期 store fail-open/fail-fast，也支持运行期 required 策略。
+- 新增 MySQL migration `20260603_agent_memory_materialization_audit_outbox.sql`，并同步更新 `docker/mysql/init/permission-admin.sql`，本地一键环境也具备 outbox 表。
+- `AgentMemoryMaterializationWorker` 每轮生成 runtime event 后会先写可选审计 outbox；如果 outbox 配置为 required 且写入失败，本轮 worker 会按失败计数并可能触发熔断。
+- 管理员补偿 requeue 路由会返回 `auditOutboxDelivery`；如果 required 写入失败，会返回结构化 503 `MEMORY_MATERIALIZATION_AUDIT_OUTBOX_UNAVAILABLE`。
+- `/agent/memory/diagnostics` 新增 `materializationAuditOutbox`，展示 enabled、required、store 类型、持久化状态、fallback 和低敏 recent 计数。
+- 新增 `test_memory_materialization_audit_outbox.py`，并更新 worker、event、runtime diagnostics 测试，覆盖 disabled、required、SQLite 持久化和 fail-closed 行为。
+
+产品意义：
+- 长期记忆后台链路进一步接近商业化 Agent 的 durable action 要求：不是只“跑过”和“有指标”，而是要能证明谁做了什么、何时做、是否 dry-run、是否留下后续可派发的审计事实。
+- 审计 outbox 与 Runtime Event、Prometheus 分工明确，避免把实时 replay、聚合告警和客户审计归档混成一套不可维护机制。
+- 当前仍承认边界：这还不是同库事务级 outbox。`required=true` 能让失败显式暴露，但不能自动回滚已经写入的 lease/formal memory 状态。强合规终态应继续做事务 outbox 和 Java 审计派发。
+
+下一步建议：
+1. 增加 Java audit bridge/dispatcher：claim pending outbox、投递 permission-admin 审计中心、ack、失败重试和 DLQ。
+2. 为 audit outbox 增加 Prometheus 指标和告警：pending 积压、最老 pending 年龄、投递失败率、连续 dispatcher 错误。
+3. 做批量补偿审批流：批量 dry-run、风险分组、二次确认、真实 requeue、审计 outbox、回滚说明。
+4. 在强合规模式下继续推进同库事务 outbox，避免业务状态变更与审计记录出现提交窗口。
+
 ## 2026-06-03 追加落地进展：长期记忆物化 Prometheus 告警规则
 
 - Python AI Runtime 新增 `docker/prometheus/rules/python-ai-runtime-alerts.yml`，把长期记忆物化链路从“有指标可抓取”推进到“异常可主动告警”。
@@ -8,7 +30,7 @@
 - 告警 runbook 明确把单候选排障导向 Runtime Event replay、lease/receipt 查询和审计日志，Prometheus 只负责聚合判断与运维提醒，避免把监控系统当成明细查询库。
 - 新增 `test_prometheus_alert_rules.py`，固定 Python Runtime scrape job、核心告警名称、高基数选择器禁用规则和 dry-run 聚合表达式，降低后续修改告警时的回归风险。
 - 当前阈值仍偏向本地和早期集成环境；生产环境需要按租户规模、worker 实例数、候选产生速率、下游存储容量和 SLA 做分级调优。
-- 下一步建议转向统一审计 outbox/fail-closed 选项、批量补偿审批流、Chroma/Neo4j 二级索引同步 worker 和 Grafana/Alertmanager 接入，而不是继续无限堆叠单条告警规则。
+- Python 审计 outbox/fail-closed 选项已在后续小批次落地；下一步建议转向 Java 审计派发、批量补偿审批流、Chroma/Neo4j 二级索引同步 worker 和 Grafana/Alertmanager 接入，而不是继续无限堆叠单条告警规则。
 
 ## 2026-06-03 追加落地进展：长期记忆物化受控后台 Worker
 
@@ -18,7 +40,7 @@
 - Worker 每轮会生成 `memory_materialization_run_completed` Runtime Event，并写入 event store/publisher 与低基数 Prometheus 指标；事件/指标旁路失败不会把已完成 Runner 批次改判失败。
 - `/agent/memory/diagnostics` 现在会返回 `materializationWorker`，展示 enabled、running、fuseOpen、runCount、completedRunCount、failedRunCount、consecutiveErrorCount 和 lastResult。
 - 当前仍是单线程循环，不做租户级并发、多线程池或动态容量调度；多实例生产部署应使用 SQL lease store，依靠 lease token fencing 防止旧 worker 覆盖新 worker。
-- Prometheus 告警规则已在后续小批次落地；下一步建议补审计 outbox/fail-closed 选项，然后再进入 Chroma/Neo4j 二级索引同步 worker 和批量补偿审批流。
+- Prometheus 告警规则和 Python 审计 outbox 已在后续小批次落地；下一步建议补 Java 审计派发/事务强一致，然后再进入 Chroma/Neo4j 二级索引同步 worker 和批量补偿审批流。
 
 ## 2026-06-03 追加落地进展：长期记忆物化低基数 Prometheus 指标
 
@@ -27,7 +49,7 @@
 - 新增低基数指标：Runner 批次数、候选 scanned/claimed/succeeded/failed/skipped/dead_lettered、跳过原因、fencing finalize error、批次耗时 count/sum、管理员补偿重排次数。
 - 指标标签只使用有限枚举，例如 `result`、`severity`、`reason`、`action`、`dry_run`、`after_status`；不把 tenantId、projectId、candidateId、leaseId、traceId、workspaceKey 放入 Prometheus 标签。
 - `docker/prometheus/prometheus.yml` 新增 `python-ai-runtime` job，默认抓取 `host.docker.internal:8090/agent/metrics`，让本地运维面可以同时看到 Java Actuator 与 Python AI Runtime 指标。
-- 受控常驻 worker 和 Prometheus 告警规则已在后续小批次落地；当前仍没有统一审计 outbox。下一步建议补审计强一致、批量补偿审批和二级索引同步。
+- 受控常驻 worker、Prometheus 告警规则和 Python 审计 outbox 已在后续小批次落地；当前仍没有 Java 审计派发和事务强一致。下一步建议补审计派发、批量补偿审批和二级索引同步。
 
 ## 2026-06-03 追加落地进展：长期记忆物化 Runtime Event 可观测性
 
@@ -35,7 +57,7 @@
 - 新增 `memory_materialization_run_completed` 与 `memory_materialization_requeue_recorded` 两类事件，用低敏字段记录成功数、失败数、DLQ 数量、retry cooldown 跳过数、active lease 跳过数、fencing finalize 失败数和管理员重排动作。
 - FastAPI `create_app()` 已把物化补偿路由接入当前 runtime event store 与 publisher；事件投递失败采用 fail-open，并在响应中返回 `runtimeEventDelivery.errors`，避免本地学习或旁路 Kafka/Redis 故障直接破坏补偿主流程。
 - 这一步把长期记忆从“后台执行器内部状态”推进到“智能网关/运维台/审计系统可观察事实”，为后续 Prometheus 指标、统一审计表、常驻 worker、批量补偿和二级索引 worker 打基础。
-- 当前尚未实现审计强一致 outbox、租户级补偿 SLA 或常驻物化调度；低基数指标已经在后续小批次落地，下一步更适合进入受控常驻 worker 或审计 outbox，避免继续只在局部 API 上堆功能。
+- Python 审计 outbox、低基数指标和受控常驻 worker 已在后续小批次落地；当前尚未实现 Java 审计派发、事务强一致、租户级补偿 SLA 或批量审批流。
 
 ## 2026-06-02 追加落地进展：Python Runtime 模型网关能力包分层
 

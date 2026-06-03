@@ -26,6 +26,10 @@ from datasmart_ai_runtime.domain.events import AgentRuntimeEvent
 from datasmart_ai_runtime.services.memory.memory_materialization_events import (
     memory_materialization_runner_event,
 )
+from datasmart_ai_runtime.services.memory.memory_materialization_audit_outbox import (
+    AgentMemoryMaterializationAuditOutboxError,
+    AgentMemoryMaterializationAuditOutboxRecorder,
+)
 from datasmart_ai_runtime.services.memory.memory_materialization_runner import (
     AgentMemoryMaterializationRunner,
     AgentMemoryMaterializationRunnerReport,
@@ -63,6 +67,7 @@ class AgentMemoryMaterializationWorkerRunResult:
     completed: bool
     report: AgentMemoryMaterializationRunnerReport | None
     runtime_event: AgentRuntimeEvent | None
+    audit_delivery: dict[str, Any]
     event_delivery: dict[str, Any]
     metric_delivery: dict[str, Any]
     error: dict[str, str] | None = None
@@ -74,6 +79,7 @@ class AgentMemoryMaterializationWorkerRunResult:
             "completed": self.completed,
             "report": self.report.to_summary() if self.report else None,
             "runtimeEvent": _runtime_event_payload(self.runtime_event) if self.runtime_event else None,
+            "auditDelivery": self.audit_delivery,
             "eventDelivery": self.event_delivery,
             "metricDelivery": self.metric_delivery,
             "error": self.error,
@@ -100,6 +106,7 @@ class AgentMemoryMaterializationWorker:
         event_store: Any | None = None,
         event_publisher: Any | None = None,
         metrics_recorder: Any | None = None,
+        audit_outbox_recorder: AgentMemoryMaterializationAuditOutboxRecorder | None = None,
         worker_name: str = "python-ai-runtime-memory-materialization-worker",
     ) -> None:
         self.settings = settings or AgentMemoryMaterializationWorkerSettings()
@@ -107,6 +114,7 @@ class AgentMemoryMaterializationWorker:
         self._event_store = event_store
         self._event_publisher = event_publisher
         self._metrics_recorder = metrics_recorder
+        self._audit_outbox_recorder = audit_outbox_recorder
         self._worker_name = worker_name
         self._lock = RLock()
         self._stop_event = Event()
@@ -172,12 +180,27 @@ class AgentMemoryMaterializationWorker:
         try:
             report = self._runner.run_once(limit=self.settings.batch_limit)
             runtime_event = memory_materialization_runner_event(report)
+            try:
+                audit_delivery = self._record_audit_outbox(runtime_event)
+            except AgentMemoryMaterializationAuditOutboxError as exc:
+                result = AgentMemoryMaterializationWorkerRunResult(
+                    completed=False,
+                    report=report,
+                    runtime_event=runtime_event,
+                    audit_delivery=exc.delivery,
+                    event_delivery=_empty_event_delivery(self._event_store, self._event_publisher),
+                    metric_delivery=_empty_metric_delivery(self._metrics_recorder),
+                    error=_delivery_error("memory_materialization_audit_outbox", exc),
+                )
+                self._record_failed_result(result)
+                return result
             event_delivery = self._record_runtime_event(runtime_event)
             metric_delivery = self._record_metrics(runtime_event)
             result = AgentMemoryMaterializationWorkerRunResult(
                 completed=True,
                 report=report,
                 runtime_event=runtime_event,
+                audit_delivery=audit_delivery,
                 event_delivery=event_delivery,
                 metric_delivery=metric_delivery,
             )
@@ -192,18 +215,12 @@ class AgentMemoryMaterializationWorker:
                 completed=False,
                 report=None,
                 runtime_event=None,
-                event_delivery={"storeEnabled": self._event_store is not None, "publisherEnabled": self._event_publisher is not None, "stored": False, "publishedCount": 0, "errors": ()},
-                metric_delivery={"enabled": self._metrics_recorder is not None, "recorded": False, "errors": ()},
+                audit_delivery=_empty_audit_delivery(self._audit_outbox_recorder),
+                event_delivery=_empty_event_delivery(self._event_store, self._event_publisher),
+                metric_delivery=_empty_metric_delivery(self._metrics_recorder),
                 error=_delivery_error("memory_materialization_worker", exc),
             )
-            with self._lock:
-                self._run_count += 1
-                self._failed_run_count += 1
-                self._consecutive_error_count += 1
-                self._last_result = result
-                if self._consecutive_error_count >= self.settings.max_consecutive_errors:
-                    self._fuse_open = True
-                    self._stop_event.set()
+            self._record_failed_result(result)
             return result
 
     def diagnostics(self) -> dict[str, Any]:
@@ -270,6 +287,20 @@ class AgentMemoryMaterializationWorker:
             "errors": tuple(errors),
         }
 
+    def _record_audit_outbox(self, event: AgentRuntimeEvent) -> dict[str, Any]:
+        """把 worker 批次事件写入审计 outbox。
+
+        与 runtime event/metrics 不同，审计 outbox 可以被配置为 required。required 模式下，如果 outbox 写入失败，
+        本轮 worker 会按失败计数，后续可能触发熔断。这样做是为了支持强合规部署的“审计不可静默丢失”要求。
+
+        当前实现仍不是 SQL 事务级强一致：Runner 的正式记忆/lease 状态可能已经写入。该方法的价值是把失败显式暴露，
+        后续真正生产终态应把 runner 状态更新与 outbox append 放入同库事务。
+        """
+
+        if self._audit_outbox_recorder is None:
+            return {"enabled": False, "required": False, "stored": False, "outboxId": None, "errors": ()}
+        return self._audit_outbox_recorder.record_runtime_event(event)
+
     def _record_metrics(self, event: AgentRuntimeEvent) -> dict[str, Any]:
         """把 worker 事件写入低基数指标旁路。"""
 
@@ -288,6 +319,22 @@ class AgentMemoryMaterializationWorker:
                 "errors": (_delivery_error("memory_materialization_metrics", exc),),
             }
 
+    def _record_failed_result(self, result: AgentMemoryMaterializationWorkerRunResult) -> None:
+        """记录失败轮次并按连续失败阈值打开熔断。
+
+        失败来源可能是 Runner 本身，也可能是 required 审计 outbox 写入失败。把它们统一纳入连续失败计数，是为了让
+        强合规环境在审计链路不可用时自动停止后台副作用，避免越错越多。
+        """
+
+        with self._lock:
+            self._run_count += 1
+            self._failed_run_count += 1
+            self._consecutive_error_count += 1
+            self._last_result = result
+            if self._consecutive_error_count >= self.settings.max_consecutive_errors:
+                self._fuse_open = True
+                self._stop_event.set()
+
 
 def memory_materialization_worker_settings_from_env(environ: dict[str, str] | None = None) -> AgentMemoryMaterializationWorkerSettings:
     """从环境变量读取 worker 配置。"""
@@ -301,6 +348,36 @@ def memory_materialization_worker_settings_from_env(environ: dict[str, str] | No
         max_consecutive_errors=_int_env(source, "DATASMART_AI_MEMORY_MATERIALIZATION_WORKER_MAX_CONSECUTIVE_ERRORS", 5, minimum=1, maximum=100),
         stop_timeout_seconds=_float_env(source, "DATASMART_AI_MEMORY_MATERIALIZATION_WORKER_STOP_TIMEOUT_SECONDS", 5.0, minimum=0.1),
     )
+
+
+def _empty_audit_delivery(recorder: AgentMemoryMaterializationAuditOutboxRecorder | None) -> dict[str, Any]:
+    """构造未写入审计 outbox 时的稳定 delivery 摘要。"""
+
+    return {
+        "enabled": bool(recorder and recorder.enabled),
+        "required": bool(recorder and recorder.required),
+        "stored": False,
+        "outboxId": None,
+        "errors": (),
+    }
+
+
+def _empty_event_delivery(event_store: Any | None, event_publisher: Any | None) -> dict[str, Any]:
+    """构造未写入 runtime event 旁路时的稳定 delivery 摘要。"""
+
+    return {
+        "storeEnabled": event_store is not None,
+        "publisherEnabled": event_publisher is not None,
+        "stored": False,
+        "publishedCount": 0,
+        "errors": (),
+    }
+
+
+def _empty_metric_delivery(metrics_recorder: Any | None) -> dict[str, Any]:
+    """构造未写入指标时的稳定 delivery 摘要。"""
+
+    return {"enabled": metrics_recorder is not None, "recorded": False, "errors": ()}
 
 
 def _runtime_event_payload(event: AgentRuntimeEvent | None) -> dict[str, Any] | None:

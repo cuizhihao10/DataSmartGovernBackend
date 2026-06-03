@@ -26,6 +26,10 @@ from datasmart_ai_runtime.services.memory.memory_materialization_events import (
     AgentMemoryMaterializationEventContext,
     memory_materialization_requeue_event,
 )
+from datasmart_ai_runtime.services.memory.memory_materialization_audit_outbox import (
+    AgentMemoryMaterializationAuditOutboxError,
+    AgentMemoryMaterializationAuditOutboxRecorder,
+)
 from datasmart_ai_runtime.services.memory.memory_materialization_lease_store import (
     AgentMemoryMaterializationLeaseStatus,
 )
@@ -38,6 +42,7 @@ def register_memory_materialization_admin_routes(
     event_store: Any | None = None,
     event_publisher: Any | None = None,
     metrics_recorder: Any | None = None,
+    audit_outbox_recorder: AgentMemoryMaterializationAuditOutboxRecorder | None = None,
 ) -> None:
     """注册长期记忆物化补偿路由。
 
@@ -53,6 +58,10 @@ def register_memory_materialization_admin_routes(
     - API 启动态会传入 RuntimeEventStore/RuntimeEventPublisher，让补偿动作进入 replay 与异步事件总线；
     - 事件发布失败不会回滚补偿状态，因为当前还没有事务 outbox。后续若企业环境要求审计 fail-closed，
       应增加配置开关和数据库事务边界，而不是在这里隐式阻断所有本地开发。
+
+    `audit_outbox_recorder` 用于把补偿动作写入长期审计 outbox。默认可不传，便于本地学习；生产强合规部署
+    可通过 required 策略把审计写入失败映射为 503。需要注意：当前还不是同库事务级 outbox，如果 requeue 状态
+    已写入但 outbox append 失败，系统会显式返回错误并保留低敏诊断，后续应继续演进为事务 outbox。
 
     `metrics_recorder` 同样是可选旁路：它把补偿 runtime event 转换为低基数 Prometheus 指标。指标失败不应
     影响补偿主流程，因为监控系统短暂不可用时，管理员仍然需要恢复长期记忆物化链路。
@@ -168,10 +177,21 @@ def register_memory_materialization_admin_routes(
             result,
             _event_context_from_payload(payload, operator_id=result.operator_id),
         )
+        try:
+            audit_delivery = _record_audit_outbox(event, audit_outbox_recorder=audit_outbox_recorder)
+        except AgentMemoryMaterializationAuditOutboxError as exc:
+            raise _http_error(
+                HTTPException,
+                status_code=503,
+                error_code="MEMORY_MATERIALIZATION_AUDIT_OUTBOX_UNAVAILABLE",
+                message=str(exc),
+                extra={"auditOutboxDelivery": exc.delivery},
+            ) from exc
         delivery = _record_runtime_event(event, event_store=event_store, event_publisher=event_publisher)
         metric_delivery = _record_memory_materialization_metrics(event, metrics_recorder=metrics_recorder)
         response = result.to_summary()
         response["runtimeEvent"] = _runtime_event_payload(event)
+        response["auditOutboxDelivery"] = audit_delivery
         response["runtimeEventDelivery"] = delivery
         response["runtimeMetricDelivery"] = metric_delivery
         return response
@@ -338,6 +358,27 @@ def _record_memory_materialization_metrics(
         }
 
 
+def _record_audit_outbox(
+    event: AgentRuntimeEvent,
+    *,
+    audit_outbox_recorder: AgentMemoryMaterializationAuditOutboxRecorder | None,
+) -> dict[str, Any]:
+    """把补偿动作写入审计 outbox。
+
+    审计 outbox 与 runtime event/metrics 的区别：
+    - runtime event 负责 replay 和用户/运维可见性；
+    - metrics 负责聚合告警；
+    - audit outbox 负责后续进入 Java 审计中心、客户审计导出或合规归档。
+
+    当前默认 disabled/fail-open，避免本地开发必须配置数据库；强合规环境可以配置 required，让审计失败以 503
+    显式反馈给管理台。
+    """
+
+    if audit_outbox_recorder is None:
+        return {"enabled": False, "required": False, "stored": False, "outboxId": None, "errors": ()}
+    return audit_outbox_recorder.record_runtime_event(event)
+
+
 def _runtime_event_payload(event: AgentRuntimeEvent) -> dict[str, Any]:
     """把 AgentRuntimeEvent 转成 API JSON 友好的 lowerCamelCase payload。"""
 
@@ -389,14 +430,18 @@ def _http_error(
     status_code: int,
     error_code: str,
     message: str,
+    extra: dict[str, Any] | None = None,
 ) -> Exception:
     """构造结构化 HTTP 错误，便于前端、网关与日志统计统一识别。"""
 
+    detail = {
+        "errorCode": error_code,
+        "message": message,
+        "statusCode": status_code,
+    }
+    if extra:
+        detail.update(extra)
     return http_exception_type(
         status_code=status_code,
-        detail={
-            "errorCode": error_code,
-            "message": message,
-            "statusCode": status_code,
-        },
+        detail=detail,
     )

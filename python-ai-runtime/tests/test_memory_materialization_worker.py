@@ -9,6 +9,10 @@ if ROOT not in sys.path:
 
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
 from datasmart_ai_runtime.services.memory.memory_materialization_metrics import AgentMemoryMaterializationMetrics
+from datasmart_ai_runtime.services.memory.memory_materialization_audit_outbox import (
+    AgentMemoryMaterializationAuditOutboxRecorder,
+    InMemoryAgentMemoryMaterializationAuditOutboxStore,
+)
 from datasmart_ai_runtime.services.memory.memory_materialization_runner import (
     AgentMemoryMaterializationRunnerItem,
     AgentMemoryMaterializationRunnerItemStatus,
@@ -35,12 +39,17 @@ class AgentMemoryMaterializationWorkerTest(unittest.TestCase):
         event_store = _RecordingEventStore()
         publisher = _RecordingEventPublisher()
         metrics = AgentMemoryMaterializationMetrics()
+        audit_store = InMemoryAgentMemoryMaterializationAuditOutboxStore()
         worker = AgentMemoryMaterializationWorker(
             runner=runner,
             settings=AgentMemoryMaterializationWorkerSettings(batch_limit=12),
             event_store=event_store,
             event_publisher=publisher,
             metrics_recorder=metrics,
+            audit_outbox_recorder=AgentMemoryMaterializationAuditOutboxRecorder(
+                store=audit_store,
+                enabled=True,
+            ),
         )
 
         result = worker.run_once()
@@ -51,6 +60,8 @@ class AgentMemoryMaterializationWorkerTest(unittest.TestCase):
         self.assertEqual([12], runner.limits)
         self.assertEqual(AgentRuntimeEventType.MEMORY_MATERIALIZATION_RUN_COMPLETED, event_store.events[0].event_type)
         self.assertEqual([1], publisher.batch_sizes)
+        self.assertTrue(result.audit_delivery["stored"])
+        self.assertEqual(1, len(audit_store.list_recent()))
         self.assertTrue(result.metric_delivery["recorded"])
         self.assertIn('datasmart_ai_memory_materialization_runs_total{result="succeeded",severity="info"} 1', metric_text)
         self.assertEqual(1, diagnostics["runCount"])
@@ -73,6 +84,33 @@ class AgentMemoryMaterializationWorkerTest(unittest.TestCase):
         self.assertFalse(result.event_delivery["stored"])
         self.assertEqual(2, len(result.event_delivery["errors"]))
         self.assertTrue(result.metric_delivery["recorded"])
+
+    def test_required_audit_outbox_failure_marks_round_failed(self) -> None:
+        """required 审计 outbox 失败时，worker 本轮应按失败处理并保留低敏诊断。"""
+
+        runner = _FakeRunner()
+        worker = AgentMemoryMaterializationWorker(
+            runner=runner,
+            settings=AgentMemoryMaterializationWorkerSettings(max_consecutive_errors=1),
+            audit_outbox_recorder=AgentMemoryMaterializationAuditOutboxRecorder(
+                store=_FailingAuditOutboxStore(),
+                enabled=True,
+                required=True,
+            ),
+        )
+
+        result = worker.run_once()
+        diagnostics = worker.diagnostics()
+
+        self.assertFalse(result.completed)
+        self.assertEqual([50], runner.limits)
+        self.assertIsNotNone(result.report)
+        self.assertTrue(result.audit_delivery["enabled"])
+        self.assertTrue(result.audit_delivery["required"])
+        self.assertFalse(result.audit_delivery["stored"])
+        self.assertEqual("memory_materialization_audit_outbox", result.error["component"])
+        self.assertEqual(1, diagnostics["failedRunCount"])
+        self.assertTrue(diagnostics["fuseOpen"])
 
     def test_runner_exceptions_open_fuse_after_consecutive_failures(self) -> None:
         """连续 Runner 异常达到阈值后，worker 应打开熔断标记并停止后台循环。"""
@@ -180,6 +218,16 @@ class _FailingEventPublisher:
 
     def publish(self, events) -> int:
         raise RuntimeError("模拟 event publisher 故障")
+
+
+class _FailingAuditOutboxStore:
+    """模拟审计 outbox 不可用。"""
+
+    def append(self, record):
+        raise RuntimeError("模拟 audit outbox 故障")
+
+    def list_recent(self, *, limit: int = 100):
+        return ()
 
 
 def _runner_report() -> AgentMemoryMaterializationRunnerReport:

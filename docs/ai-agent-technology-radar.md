@@ -1,12 +1,20 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-03 落地补充：memory materialization needs audit outbox
+
+- 本阶段把长期记忆物化从“有 runtime event、指标和告警”继续推进到“有审计 outbox”。这对应成熟 Agent durable action 的关键趋势：模型或 worker 产生副作用后，平台不仅要能看见和告警，还要能把动作事实交给审计系统、客户归档或合规复盘。
+- DataSmart 新增的审计 outbox 不替代 Runtime Event，也不替代 Prometheus。Runtime Event 负责 replay 和时间线，Prometheus 负责聚合告警，audit outbox 负责“谁在什么时间对哪个候选/批次做了什么，是否 dry-run，是否留下可派发审计事实”。
+- 当前支持 in-memory、SQLite、MySQL，并把 `enabled`、`required`、`store_fail_open` 分开配置。这是商业化产品常见的渐进式安全姿态：本地学习环境默认不被数据库绑定，生产强合规环境可以选择 fail-fast/fail-closed。
+- 本阶段也明确承认边界：`required=true` 能让 worker/API 把审计写入失败显式暴露，但还不是同库事务级 outbox，不能自动回滚已经提交的 lease/formal memory 状态。下一步应做 Java audit dispatcher、outbox claim/ack/retry 指标，以及事务 outbox。
+- 趋势落地建议：后续批量补偿应围绕 outbox 设计为“批量 dry-run -> 风险分组 -> 二次确认 -> 真实 requeue -> 审计 outbox -> dispatcher 派发”的产品流程，而不是只加一个批量 POST 接口。
+
 ## 2026-06-03 落地补充：memory materialization needs actionable alerts
 
 - 本阶段把长期记忆物化从“有低基数指标”继续推进到“有可执行告警规则”。这对应 Codex、Claude Code 类 Agent 平台的生产化要求：长期记忆、工具副作用和后台恢复链路不能只写日志，必须能在异常扩大前主动提醒运维。
 - DataSmart 当前新增的告警不追求覆盖所有明细，而是覆盖关键运营问题：Python Runtime 指标入口不可用、Prometheus target 缺失、DLQ 增长、finalize/fencing 错误、失败率升高、retry cooldown 积压、worker 长时间无批次、补偿重排激增和 dry-run-only 停滞。
 - 规则保持低基数，继续禁止把 tenantId、projectId、candidateId、leaseId、traceId、workspaceKey 等业务主键作为 Prometheus 标签。单条候选仍通过 Runtime Event replay、lease/receipt 查询和审计日志定位。
 - dry-run-only 告警采用 `sum(...) unless sum(...) > 0` 的聚合语义，而不是直接比较 `dry_run=true/false` 两组标签不同的时间序列。这类细节看似小，但会决定告警在真实 Prometheus 中是否能触发。
-- 下一步趋势落地建议：把告警接入 Alertmanager/Grafana，再补统一审计 outbox、批量补偿二次确认、租户级恢复 SLA 和 Chroma/Neo4j 二级索引 worker；不要继续只在单条告警阈值上无限打磨。
+- Python 审计 outbox 已在后续小批次落地。下一步趋势落地建议：把告警接入 Alertmanager/Grafana，再补 Java 审计派发、事务强一致、批量补偿二次确认、租户级恢复 SLA 和 Chroma/Neo4j 二级索引 worker；不要继续只在单条告警阈值上无限打磨。
 
 ## 2026-06-03 落地补充：memory materialization worker should be controlled, not hidden
 
@@ -14,7 +22,7 @@
 - DataSmart 当前没有把 worker 默认打开，而是要求显式配置 `DATASMART_AI_MEMORY_MATERIALIZATION_WORKER_ENABLED=true`。这是商业化产品很重要的安全姿态：长期记忆会影响未来模型上下文，未准备好 SQL lease store、审计和指标前不应自动写入。
 - Worker 每轮复用 Runner、Runtime Event 和 Prometheus 指标，而不是在后台线程里重写一套逻辑。这样“人工触发、CLI、后台循环、未来 Java task-management 调度”可以共享同一套低敏事实和观测链路。
 - 当前仍保持单线程循环，并通过 `maxConsecutiveErrors` 做连续异常熔断。多线程与租户并发并非没有价值，但应等 Prometheus 告警、SQL lease store、下游向量库容量、审计 outbox 和配额策略稳定后再扩展。
-- Prometheus 告警规则已在后续小批次落地。下一步趋势落地建议：把补偿动作和 worker 批次写入审计 outbox/fail-closed 链路，再进入 Chroma/Neo4j 二级索引 worker 和遗忘/归档任务。
+- Prometheus 告警规则和 Python 审计 outbox 已在后续小批次落地。下一步趋势落地建议：把审计 outbox 派发到 Java 审计中心，再进入 Chroma/Neo4j 二级索引 worker 和遗忘/归档任务。
 
 ## 2026-06-03 落地补充：memory materialization metrics must stay low-cardinality
 
@@ -22,7 +30,7 @@
 - 这对应生产级 Agent 平台的 observability 纪律：runtime event/tracing 适合保留单次 run 和单条候选的上下文，Prometheus 适合聚合告警和趋势判断。二者不能混用，否则指标系统会被业务 ID、高频 trace 和候选明细拖垮。
 - DataSmart 当前明确禁止把 `tenantId/projectId/candidateId/leaseId/requestId/runId/sessionId/workspaceKey` 作为 Prometheus 标签，只保留 `result/severity/reason/action/dry_run/after_status` 等有限枚举。单条候选排障继续走 Runtime Event replay、lease/receipt 查询和审计日志。
 - 这一步仍保持 Python Runtime 默认零依赖，没有直接引入 `prometheus_client`。后续如果进入生产级指标体系，可以在保持 `/agent/metrics` 路径不变的前提下，替换为官方 client、Histogram、multiprocess collector 或 OpenTelemetry bridge。
-- 受控常驻 worker 和 Prometheus 告警规则已在后续小批次落地。下一步趋势落地建议是设计审计 outbox/fail-closed 选项，满足强合规客户对补偿动作不可丢失、对后台异常可告警且可追溯的要求。
+- 受控常驻 worker、Prometheus 告警规则和 Python 审计 outbox 已在后续小批次落地。下一步趋势落地建议是设计 Java 审计派发和事务强一致，满足强合规客户对补偿动作不可丢失、对后台异常可告警且可追溯的要求。
 
 ## 2026-06-03 落地补充：memory materialization needs traceable recovery events
 
@@ -30,7 +38,7 @@
 - 这对应当前 Agent 平台的 durable execution / tracing / human-in-the-loop 趋势：LangGraph persistence 强调 checkpoint 支撑 human-in-the-loop、memory、time travel 和 fault-tolerant execution；OpenAI Agents SDK tracing 强调 agent run 中的步骤、工具调用和自定义事件应可追踪；MCP Tools 规范也强调工具调用需要清晰的可见性和受控交互。
 - DataSmart 当前选择先进入 Runtime Event，而不是直接上常驻 worker 或 Prometheus，是为了先稳定事实契约：哪些字段低敏、哪些计数可聚合、哪些事件属于审计、哪些失败只影响旁路投递而不回滚补偿主流程。
 - Runner 事件聚合 `DLQ/retry cooldown/active lease/fencing finalize error`，避免未来 Prometheus 直接使用 candidateId、tenantId、traceId 等高基数字段；管理员重排事件只记录 operatorId、状态变化和 namespace，不记录候选正文、正式记忆正文、SQL、工具输出或 lease token。
-- 这些事件已经在后续小批次映射为低基数 Prometheus 指标。下一步趋势落地建议是引入事务 outbox 或审计 fail-closed 选项；随后再启动受控常驻 worker、批量补偿、租户级恢复 SLA 和 Chroma/Neo4j 二级索引同步。
+- 这些事件已经在后续小批次映射为低基数 Prometheus 指标，并进一步写入 Python 审计 outbox。下一步趋势落地建议是引入 Java 审计派发与事务 outbox；随后再推进批量补偿、租户级恢复 SLA 和 Chroma/Neo4j 二级索引同步。
 - 参考资料：LangGraph persistence：`https://docs.langchain.com/oss/python/langgraph/persistence`；OpenAI Agents SDK tracing：`https://openai.github.io/openai-agents-python/tracing/`；MCP Tools specification：`https://modelcontextprotocol.io/specification/2025-06-18/server/tools`。
 
 ## 2026-06-03 落地补充：long-term memory needs operator recovery loops

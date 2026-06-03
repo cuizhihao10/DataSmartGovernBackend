@@ -8,6 +8,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from datasmart_ai_runtime.api_memory_materialization_admin import (
+    _record_audit_outbox,
     _record_runtime_event,
     _runtime_event_payload,
 )
@@ -20,6 +21,11 @@ from datasmart_ai_runtime.services.memory.memory_materialization_events import (
     AgentMemoryMaterializationEventContext,
     memory_materialization_requeue_event,
     memory_materialization_runner_event,
+)
+from datasmart_ai_runtime.services.memory.memory_materialization_audit_outbox import (
+    AgentMemoryMaterializationAuditOutboxError,
+    AgentMemoryMaterializationAuditOutboxRecorder,
+    InMemoryAgentMemoryMaterializationAuditOutboxStore,
 )
 from datasmart_ai_runtime.services.memory.memory_materialization_lease_store import (
     InMemoryAgentMemoryMaterializationLeaseStore,
@@ -183,6 +189,41 @@ class AgentMemoryMaterializationEventTest(unittest.TestCase):
         self.assertEqual("memory_materialization_run_completed", payload["eventType"])
         self.assertEqual("info", payload["severity"])
 
+    def test_record_audit_outbox_can_be_required_for_compensation_events(self) -> None:
+        """补偿事件可以写入审计 outbox；required 模式下写入失败应抛错。"""
+
+        event = memory_materialization_requeue_event(
+            AgentMemoryMaterializationAdminService(self._failed_store("candidate-a")).requeue(
+                AgentMemoryMaterializationRequeueRequest(
+                    candidate_id="candidate-a",
+                    operator_id="admin-a",
+                    reason="补偿审计测试",
+                    dry_run=False,
+                )
+            )
+        )
+        audit_store = InMemoryAgentMemoryMaterializationAuditOutboxStore()
+        delivery = _record_audit_outbox(
+            event,
+            audit_outbox_recorder=AgentMemoryMaterializationAuditOutboxRecorder(
+                store=audit_store,
+                enabled=True,
+                required=True,
+            ),
+        )
+
+        self.assertTrue(delivery["stored"])
+        self.assertEqual(1, len(audit_store.list_recent()))
+        with self.assertRaises(AgentMemoryMaterializationAuditOutboxError):
+            _record_audit_outbox(
+                event,
+                audit_outbox_recorder=AgentMemoryMaterializationAuditOutboxRecorder(
+                    store=_FailingAuditOutboxStore(),
+                    enabled=True,
+                    required=True,
+                ),
+            )
+
     @staticmethod
     def _failed_store(candidate_id: str) -> InMemoryAgentMemoryMaterializationLeaseStore:
         """构造带一条 failed lease 的内存 store。
@@ -230,6 +271,16 @@ class _FailingEventPublisher:
         """模拟 RuntimeEventPublisher.publish，并稳定抛出异常便于验证 fail-open 行为。"""
 
         raise RuntimeError("模拟事件总线不可用")
+
+
+class _FailingAuditOutboxStore:
+    """测试用审计 outbox store，稳定抛错以验证 required 行为。"""
+
+    def append(self, record):
+        raise RuntimeError("模拟审计 outbox 不可用")
+
+    def list_recent(self, *, limit: int = 100):
+        return ()
 
 
 if __name__ == "__main__":

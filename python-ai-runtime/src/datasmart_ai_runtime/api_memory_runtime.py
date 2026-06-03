@@ -13,6 +13,7 @@
 - materializer：负责把 APPROVED 候选幂等写入正式 store；
 - materialization runner：负责有界扫描 APPROVED 候选，并把单条失败隔离在批次报告中；
 - materialization worker：由 API 启动层按配置可选启动，周期性调用 runner，并把批次报告写入事件与指标；
+- materialization audit outbox：把 worker 批次和管理员补偿记录成可持久化审计事实；
 - retriever：负责让 Agent 规划请求能从正式 store 召回记忆。
 """
 
@@ -30,6 +31,11 @@ from datasmart_ai_runtime.services.memory.memory_materialization_lease_component
     AgentMemoryMaterializationLeaseStoreRuntime,
     build_memory_materialization_lease_store_runtime,
     memory_materialization_lease_store_diagnostics,
+)
+from datasmart_ai_runtime.services.memory.memory_materialization_audit_outbox_components import (
+    AgentMemoryMaterializationAuditOutboxRuntime,
+    build_memory_materialization_audit_outbox_runtime,
+    memory_materialization_audit_outbox_diagnostics,
 )
 from datasmart_ai_runtime.services.memory.memory_store_components import (
     AgentMemoryStoreRuntime,
@@ -57,6 +63,7 @@ class ApiMemoryRuntimeComponents:
     - `formal_store_runtime`：正式记忆 store 运行时，影响 `/agent/plans` 的长期记忆召回；
     - `receipt_store_runtime`：落成 receipt store 运行时，影响 materializer 的执行证据持久化；
     - `lease_store_runtime`：落成 lease store 运行时，影响多 worker 是否可以安全竞争同一候选；
+    - `audit_outbox_runtime`：审计 outbox 运行时，影响 worker 批次和管理员补偿是否形成持久审计事实；
     - `memory_write_governance`：候选治理服务，接入 API 路由和 plan response 的候选生成；
     - `memory_materializer`：APPROVED 候选落成服务，当前主要供未来 worker/补偿入口复用；
     - `memory_materialization_runner`：APPROVED 候选有界批处理入口，负责失败隔离和低敏批次报告；
@@ -71,6 +78,7 @@ class ApiMemoryRuntimeComponents:
     formal_store_runtime: AgentMemoryStoreRuntime
     receipt_store_runtime: AgentMemoryMaterializationReceiptStoreRuntime
     lease_store_runtime: AgentMemoryMaterializationLeaseStoreRuntime
+    audit_outbox_runtime: AgentMemoryMaterializationAuditOutboxRuntime
     memory_write_governance: AgentMemoryWriteGovernanceService
     memory_materializer: AgentApprovedMemoryWriteMaterializer
     memory_materialization_runner: AgentMemoryMaterializationRunner
@@ -86,6 +94,7 @@ def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
     - 正式 store 由 `DATASMART_AI_FORMAL_MEMORY_*` 控制；
     - receipt store 由 `DATASMART_AI_MEMORY_RECEIPT_*` 控制；
     - lease store 由 `DATASMART_AI_MEMORY_LEASE_*` 控制。
+    - 审计 outbox 由 `DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_*` 控制。
 
     这里仍不直接启动后台 worker，而只装配 runner、store 与治理组件。是否启动后台循环由 `api.py` 在 FastAPI
     生命周期中根据 `DATASMART_AI_MEMORY_MATERIALIZATION_WORKER_*` 配置决定。这样可以避免组件装配函数产生隐藏线程，
@@ -96,6 +105,7 @@ def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
     formal_store_runtime = build_memory_store_runtime()
     receipt_store_runtime = build_memory_materialization_receipt_store_runtime()
     lease_store_runtime = build_memory_materialization_lease_store_runtime()
+    audit_outbox_runtime = build_memory_materialization_audit_outbox_runtime()
     governance = AgentMemoryWriteGovernanceService(store=write_store_runtime.store)
     materializer = AgentApprovedMemoryWriteMaterializer(
         candidate_store=write_store_runtime.store,
@@ -118,6 +128,7 @@ def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
         formal_store_runtime=formal_store_runtime,
         receipt_store_runtime=receipt_store_runtime,
         lease_store_runtime=lease_store_runtime,
+        audit_outbox_runtime=audit_outbox_runtime,
         memory_write_governance=governance,
         memory_materializer=materializer,
         memory_materialization_runner=runner,
@@ -139,6 +150,7 @@ def api_memory_runtime_diagnostics(components: ApiMemoryRuntimeComponents) -> di
         "formalStore": memory_store_diagnostics(components.formal_store_runtime),
         "receiptStore": memory_materialization_receipt_store_diagnostics(components.receipt_store_runtime),
         "leaseStore": memory_materialization_lease_store_diagnostics(components.lease_store_runtime),
+        "materializationAuditOutbox": memory_materialization_audit_outbox_diagnostics(components.audit_outbox_runtime),
         "retriever": {
             "implementation": "StoreBackedAgentMemoryRetriever",
             "usesFormalStore": True,
@@ -154,6 +166,7 @@ def api_memory_runtime_diagnostics(components: ApiMemoryRuntimeComponents) -> di
             "notes": (
                 "当前 API 已装配 materializer、runner、管理员补偿、runtime event 和低基数指标。后台 worker 默认关闭，"
                 "只有显式配置 DATASMART_AI_MEMORY_MATERIALIZATION_WORKER_ENABLED=true 后才会在 FastAPI 生命周期中启动。"
+                "审计 outbox 默认关闭；强合规部署可显式启用 DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_ENABLED。"
             ),
         },
         "materializationRunner": {
@@ -173,6 +186,7 @@ def api_memory_runtime_diagnostics(components: ApiMemoryRuntimeComponents) -> di
             "notes": (
                 "管理员补偿入口只调整 lease 的 nextRetryAt 与重排说明，不会绕过候选审批，也不会直接写正式记忆。"
                 "生产环境必须由 gateway/permission-admin 对该入口做管理员权限、租户范围和审计保护。"
+                "如果启用 materializationAuditOutbox，真实 requeue 会同步写入审计 outbox 摘要。"
             ),
         },
     }

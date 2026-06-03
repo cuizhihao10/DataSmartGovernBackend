@@ -678,6 +678,42 @@ CREATE TABLE IF NOT EXISTS agent_memory_materialization_lease (
     KEY idx_agent_memory_materialization_lease_memory (memory_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Agent 长期记忆落成 worker 租约表';
 
+-- Agent 长期记忆物化审计 outbox 表。
+--
+-- receipt 表回答“是否尝试落成”，lease 表回答“谁拥有处理权”，audit outbox 表回答
+-- “worker 批次或管理员补偿动作是否已经留下可转交审计中心的事实”。
+-- payload_json 只能保存低敏控制面字段，禁止保存 prompt、候选正文、正式记忆正文、SQL、
+-- 样本数据、工具原始输出、lease token 或完整异常堆栈。
+CREATE TABLE IF NOT EXISTS agent_memory_materialization_audit_outbox (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '自增主键，仅用于数据库内部索引。',
+    outbox_id VARCHAR(128) NOT NULL COMMENT '审计 outbox 业务 ID；每条 worker 批次或补偿动作一条。',
+    event_type VARCHAR(96) NOT NULL COMMENT '审计事实类型，例如 memory_materialization_run_completed 或 memory_materialization_requeue_recorded。',
+    event_purpose VARCHAR(128) NOT NULL COMMENT '事件用途，例如 batch_observability 或 compensation_audit，便于后续审计路由。',
+    aggregate_id VARCHAR(160) NOT NULL COMMENT '聚合对象 ID；补偿优先 candidateId，批次优先 workerId/runId。',
+    tenant_id VARCHAR(64) DEFAULT NULL COMMENT '租户 ID；后台批次可能没有单一租户，管理员补偿通常有租户。',
+    project_id VARCHAR(64) DEFAULT NULL COMMENT '项目 ID；后台批次可能为空，补偿通常继承 lease 项目。',
+    actor_id VARCHAR(64) DEFAULT NULL COMMENT '操作者或服务账号 ID；worker 批次可为空或使用 worker 身份。',
+    request_id VARCHAR(128) DEFAULT NULL COMMENT '管理请求 ID，用于串联 gateway/Java 管理台调用。',
+    run_id VARCHAR(128) DEFAULT NULL COMMENT 'Runtime Event runId，用于 replay 和审计详情页跳转。',
+    session_id VARCHAR(128) DEFAULT NULL COMMENT '会话 ID；后台补偿通常为空。',
+    severity VARCHAR(32) NOT NULL COMMENT '事件严重级别：info、warning、error、audit。',
+    action VARCHAR(64) DEFAULT NULL COMMENT '动作，例如 batch_completed、dry_run_requeue、scheduled_retry。',
+    dry_run TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否 dry-run；真实重排和预览必须明确区分。',
+    payload_json JSON NOT NULL COMMENT '低敏审计 payload，禁止保存正文、SQL、样本数据、工具原始输出或 lease token。',
+    delivery_status VARCHAR(32) NOT NULL DEFAULT 'pending' COMMENT '投递状态：pending、dispatched、failed；当前阶段先写 pending。',
+    attempt_count INT NOT NULL DEFAULT 0 COMMENT '后续 dispatcher 投递尝试次数；当前 append 阶段保持 0。',
+    next_delivery_attempt_at DATETIME(3) DEFAULT NULL COMMENT '后续 dispatcher 下一次允许投递时间。',
+    created_at DATETIME(3) NOT NULL COMMENT '审计事实产生时间。',
+    updated_at DATETIME(3) NOT NULL COMMENT '审计 outbox 最近更新时间。',
+    create_time DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '数据库记录创建时间。',
+    update_time DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '数据库记录更新时间。',
+    UNIQUE KEY uk_agent_memory_materialization_audit_outbox_id (outbox_id),
+    KEY idx_agent_memory_materialization_audit_dispatch (delivery_status, next_delivery_attempt_at, update_time),
+    KEY idx_agent_memory_materialization_audit_scope (tenant_id, project_id, event_type, created_at),
+    KEY idx_agent_memory_materialization_audit_actor (tenant_id, actor_id, created_at),
+    KEY idx_agent_memory_materialization_audit_aggregate (aggregate_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Agent 长期记忆物化审计 outbox 表';
+
 -- ---------------------------------------------------------------------------
 -- Agent Runtime DAG 异步工具入箱权限策略
 -- ---------------------------------------------------------------------------

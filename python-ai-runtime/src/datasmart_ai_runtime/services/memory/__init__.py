@@ -73,6 +73,23 @@ from datasmart_ai_runtime.services.memory.memory_materialization_events import (
 from datasmart_ai_runtime.services.memory.memory_materialization_metrics import (
     AgentMemoryMaterializationMetrics,
 )
+from datasmart_ai_runtime.services.memory.memory_materialization_audit_outbox import (
+    AgentMemoryMaterializationAuditOutboxError,
+    AgentMemoryMaterializationAuditOutboxRecorder,
+    AgentMemoryMaterializationAuditOutboxRecord,
+    AgentMemoryMaterializationAuditOutboxStore,
+    InMemoryAgentMemoryMaterializationAuditOutboxStore,
+)
+from datasmart_ai_runtime.services.memory.memory_materialization_audit_outbox_components import (
+    AgentMemoryMaterializationAuditOutboxRuntime,
+    AgentMemoryMaterializationAuditOutboxSettings,
+    build_memory_materialization_audit_outbox_runtime,
+    memory_materialization_audit_outbox_diagnostics,
+    memory_materialization_audit_outbox_settings_from_env,
+)
+from datasmart_ai_runtime.services.memory.memory_materialization_audit_outbox_sql_store import (
+    SqlAgentMemoryMaterializationAuditOutboxStore,
+)
 from datasmart_ai_runtime.services.memory.memory_materialization_worker import (
     AgentMemoryMaterializationWorker,
     AgentMemoryMaterializationWorkerRunResult,
@@ -145,6 +162,12 @@ __all__ = [
     "AgentMemoryMaterializationAdminService",
     "AgentMemoryMaterializationEventContext",
     "AgentMemoryMaterializationMetrics",
+    "AgentMemoryMaterializationAuditOutboxError",
+    "AgentMemoryMaterializationAuditOutboxRecorder",
+    "AgentMemoryMaterializationAuditOutboxRecord",
+    "AgentMemoryMaterializationAuditOutboxRuntime",
+    "AgentMemoryMaterializationAuditOutboxSettings",
+    "AgentMemoryMaterializationAuditOutboxStore",
     "AgentMemoryMaterializationWorker",
     "AgentMemoryMaterializationWorkerRunResult",
     "AgentMemoryMaterializationWorkerSettings",
@@ -168,6 +191,7 @@ __all__ = [
     "AgentMemoryWriteStoreSettings",
     "InMemoryAgentMemoryMaterializationReceiptStore",
     "InMemoryAgentMemoryMaterializationLeaseStore",
+    "InMemoryAgentMemoryMaterializationAuditOutboxStore",
     "InMemoryAgentMemoryRetriever",
     "InMemoryAgentMemoryStore",
     "InMemoryAgentMemoryWriteCandidateStore",
@@ -175,10 +199,12 @@ __all__ = [
     "SqlAgentMemoryStore",
     "SqlAgentMemoryMaterializationReceiptStore",
     "SqlAgentMemoryMaterializationLeaseStore",
+    "SqlAgentMemoryMaterializationAuditOutboxStore",
     "StoreBackedAgentMemoryRetriever",
     "approve_memory_write_candidate",
     "build_memory_materialization_receipt_store_runtime",
     "build_memory_materialization_lease_store_runtime",
+    "build_memory_materialization_audit_outbox_runtime",
     "decide_materialization_retry",
     "build_memory_store_runtime",
     "build_memory_write_store_runtime",
@@ -186,6 +212,8 @@ __all__ = [
     "memory_materialization_receipt_store_settings_from_env",
     "memory_materialization_lease_store_diagnostics",
     "memory_materialization_lease_store_settings_from_env",
+    "memory_materialization_audit_outbox_diagnostics",
+    "memory_materialization_audit_outbox_settings_from_env",
     "memory_materialization_requeue_event",
     "memory_materialization_runner_event",
     "memory_materialization_worker_settings_from_env",
