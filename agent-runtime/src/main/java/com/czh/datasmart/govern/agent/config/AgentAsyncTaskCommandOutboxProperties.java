@@ -176,6 +176,20 @@ public class AgentAsyncTaskCommandOutboxProperties {
     private boolean dispatcherAllowNoTargetsAsPublished = false;
 
     /**
+     * dispatcher 投递前是否启用 Agent worker pre-check。
+     *
+     * <p>command outbox 只能证明“命令曾经被确认入箱”，不能证明 dispatcher 领取时仍然允许执行。
+     * 开启该开关后，dispatcher 会在真正投递给 Kafka/HTTP target 前调用
+     * {@code AgentAsyncTaskCommandPreCheckService}，重新复核 selected-node confirmation、当前 execution-policy、
+     * sandbox verdict、runtime-protection verdict 和 policyVersion 证据。</p>
+     *
+     * <p>默认关闭是为了兼容本地学习环境和历史 Run 级 command：这些 command 可能还没有 confirmationId。
+     * 集成环境或生产环境一旦完成 selected-node confirmation 链路接入，应逐步打开该开关，让缺确认、确认过期、
+     * 沙箱拒绝等问题 fail-closed，让容量/熔断问题进入退避重试。</p>
+     */
+    private boolean dispatcherPreCheckEnabled = false;
+
+    /**
      * 是否启用 Kafka 投递目标。
      *
      * <p>这是面向生产主路径的投递方式：dispatcher 从 command outbox 领取记录后，

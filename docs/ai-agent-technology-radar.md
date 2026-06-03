@@ -1,4 +1,11 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-04 落地补充：pre-check should gate dispatch, not only document intent
+
+- 本阶段把异步 command pre-check 从只读契约推进到 dispatcher 投递前安全闸门。这个变化很关键：如果 pre-check 只存在于文档或诊断接口里，真实消息仍可能绕过确认、沙箱和容量判断进入 task-management。
+- DataSmart 当前选择“默认关闭、配置开启”的灰度策略。成熟企业系统里，历史 command、本地学习环境和生产 selected-node 主路径成熟度不同，直接全局 fail-closed 可能造成迁移事故；可配置开关让团队可以先在集成环境验证，再逐步推向生产。
+- `BLOCKED -> BLOCKED`、`DEFERRED -> FAILED + nextRetryAt` 的映射体现了 Agent durable action 的两个不同恢复语义：确认过期/沙箱拒绝需要人工或重新确认；容量满额/熔断暂缓适合退避重试。
+- 下一步应把 pre-check verdict 事件化和指标化。没有 runtime event，前端时间线看不到“为什么 worker 没执行”；没有低基数指标，运营也无法区分确认过期率、策略漂移率、容量暂缓率和沙箱拒绝率。
+
 ## 2026-06-04 落地补充：workers need a final pre-check, not just an outbox record
 
 - 本阶段新增异步 command worker pre-check 契约。它对应成熟 Agent 平台的 durable action 思路：命令已经入箱只代表“曾经被确认过”，不代表 worker 领取时仍然可以执行真实副作用。

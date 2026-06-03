@@ -7,12 +7,15 @@
 package com.czh.datasmart.govern.agent.event.command;
 
 import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
-import lombok.RequiredArgsConstructor;
+import com.czh.datasmart.govern.agent.service.execution.AgentAsyncTaskCommandPreCheckService;
+import com.czh.datasmart.govern.agent.service.execution.AgentAsyncTaskCommandPreCheckVerdict;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -30,13 +33,43 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class AgentAsyncTaskCommandOutboxDispatcher {
 
     private final AgentAsyncTaskCommandOutboxProperties properties;
     private final AgentAsyncTaskCommandOutboxStore outboxStore;
     private final List<AgentAsyncTaskCommandDispatchTarget> dispatchTargets;
+    private final AgentAsyncTaskCommandPreCheckService preCheckService;
     private final AtomicBoolean running = new AtomicBoolean(false);
+
+    /**
+     * Spring 生产路径构造函数。
+     *
+     * <p>生产路径注入 preCheckService，但是否执行 pre-check 仍由
+     * {@code datasmart.agent-runtime.async-task-commands.outbox.dispatcher-pre-check-enabled} 控制。
+     * 这样可以在不破坏本地学习和历史 command 的前提下，把集成/生产环境逐步切到 fail-closed worker 前置复核。</p>
+     */
+    @Autowired
+    public AgentAsyncTaskCommandOutboxDispatcher(AgentAsyncTaskCommandOutboxProperties properties,
+                                                 AgentAsyncTaskCommandOutboxStore outboxStore,
+                                                 List<AgentAsyncTaskCommandDispatchTarget> dispatchTargets,
+                                                 AgentAsyncTaskCommandPreCheckService preCheckService) {
+        this.properties = properties;
+        this.outboxStore = outboxStore;
+        this.dispatchTargets = dispatchTargets;
+        this.preCheckService = preCheckService;
+    }
+
+    /**
+     * 旧单元测试兼容构造函数。
+     *
+     * <p>已有 dispatcher 测试只验证 outbox 投递状态机，并不需要完整构造 session/audit/confirmation。
+     * 因此三参数构造函数保留为 pre-check 关闭路径；新增 pre-check 测试应使用四参数构造函数。</p>
+     */
+    public AgentAsyncTaskCommandOutboxDispatcher(AgentAsyncTaskCommandOutboxProperties properties,
+                                                 AgentAsyncTaskCommandOutboxStore outboxStore,
+                                                 List<AgentAsyncTaskCommandDispatchTarget> dispatchTargets) {
+        this(properties, outboxStore, dispatchTargets, null);
+    }
 
     /**
      * 执行一轮投递。
@@ -110,6 +143,10 @@ public class AgentAsyncTaskCommandOutboxDispatcher {
                     now);
             return DispatchOutcome.blockedOutcome();
         }
+        DispatchOutcome preCheckOutcome = inspectBeforeDispatch(record, now);
+        if (preCheckOutcome != null) {
+            return preCheckOutcome;
+        }
         if (dispatchTargets.isEmpty() && !properties.isDispatcherAllowNoTargetsAsPublished()) {
             markFailed(record, "未配置异步命令投递目标，不能标记为已发布。", now);
             return DispatchOutcome.failedOutcome();
@@ -124,6 +161,36 @@ public class AgentAsyncTaskCommandOutboxDispatcher {
             markFailed(record, exception.getMessage(), Instant.now());
             return DispatchOutcome.failedOutcome();
         }
+    }
+
+    private DispatchOutcome inspectBeforeDispatch(AgentAsyncTaskCommandOutboxRecord record, Instant now) {
+        if (!properties.isDispatcherPreCheckEnabled()) {
+            return null;
+        }
+        if (preCheckService == null) {
+            markFailed(record, "异步命令 dispatcher 已启用 pre-check，但 AgentAsyncTaskCommandPreCheckService 未注入。", now);
+            return DispatchOutcome.failedOutcome();
+        }
+        AgentAsyncTaskCommandPreCheckVerdict verdict = preCheckService.inspect(record);
+        if (Boolean.TRUE.equals(verdict.allowed())) {
+            return null;
+        }
+        String message = preCheckMessage(verdict);
+        if ("DEFERRED".equals(verdict.decision())) {
+            markFailed(record, message, now);
+            return DispatchOutcome.failedOutcome();
+        }
+        outboxStore.markBlocked(record.outboxId(), message, now);
+        log.warn("Agent 异步命令 pre-check 阻断投递，outboxId={}, commandId={}, decision={}, issueCodes={}",
+                record.outboxId(), record.commandId(), verdict.decision(), verdict.issueCodes());
+        return DispatchOutcome.blockedOutcome();
+    }
+
+    private String preCheckMessage(AgentAsyncTaskCommandPreCheckVerdict verdict) {
+        return "Agent 异步命令执行前复核未通过，decision=" + Objects.toString(verdict.decision(), "UNKNOWN")
+                + "，issueCodes=" + verdict.issueCodes()
+                + "，confirmationId=" + Objects.toString(verdict.confirmationId(), "")
+                + "。";
     }
 
     private void markFailed(AgentAsyncTaskCommandOutboxRecord record, String error, Instant now) {

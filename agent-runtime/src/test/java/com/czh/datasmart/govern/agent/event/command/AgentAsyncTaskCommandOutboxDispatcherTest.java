@@ -7,6 +7,8 @@
 package com.czh.datasmart.govern.agent.event.command;
 
 import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
+import com.czh.datasmart.govern.agent.service.execution.AgentAsyncTaskCommandPreCheckService;
+import com.czh.datasmart.govern.agent.service.execution.AgentAsyncTaskCommandPreCheckVerdict;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -16,6 +18,11 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 /**
  * Agent 异步命令 outbox dispatcher 测试。
@@ -132,6 +139,60 @@ class AgentAsyncTaskCommandOutboxDispatcherTest {
         assertEquals(2, current.attemptCount());
     }
 
+    @Test
+    void dispatcherPreCheckBlockedShouldMarkCommandBlockedBeforeTargetDispatch() {
+        AgentAsyncTaskCommandOutboxProperties properties = properties();
+        properties.setDispatcherPreCheckEnabled(true);
+        InMemoryAgentAsyncTaskCommandOutboxStore store = new InMemoryAgentAsyncTaskCommandOutboxStore(10, 100);
+        store.append(record("async-command-precheck-blocked", AgentAsyncTaskCommandOutboxStatus.PENDING, 0, null, Instant.now()));
+        AgentAsyncTaskCommandPreCheckService preCheckService = mock(AgentAsyncTaskCommandPreCheckService.class);
+        when(preCheckService.inspect(any())).thenReturn(verdict("async-command-precheck-blocked", "BLOCKED"));
+        AgentAsyncTaskCommandDispatchTarget target = mock(AgentAsyncTaskCommandDispatchTarget.class);
+        AgentAsyncTaskCommandOutboxDispatcher dispatcher = new AgentAsyncTaskCommandOutboxDispatcher(
+                properties,
+                store,
+                List.of(target),
+                preCheckService
+        );
+
+        AgentAsyncTaskCommandOutboxDispatcher.AgentAsyncTaskCommandOutboxDispatchSummary summary =
+                dispatcher.dispatchOnce();
+
+        assertEquals(1, summary.blocked());
+        AgentAsyncTaskCommandOutboxRecord blocked = store.findByCommandId("async-command-precheck-blocked").orElseThrow();
+        assertEquals(AgentAsyncTaskCommandOutboxStatus.BLOCKED, blocked.status());
+        assertTrue(blocked.lastError().contains("CONFIRMATION_EXPIRED"));
+        verify(target, never()).dispatch(any());
+    }
+
+    @Test
+    void dispatcherPreCheckDeferredShouldMarkFailedForBackoffRetry() {
+        AgentAsyncTaskCommandOutboxProperties properties = properties();
+        properties.setDispatcherPreCheckEnabled(true);
+        properties.setRetryBackoffSeconds(5);
+        InMemoryAgentAsyncTaskCommandOutboxStore store = new InMemoryAgentAsyncTaskCommandOutboxStore(10, 100);
+        store.append(record("async-command-precheck-deferred", AgentAsyncTaskCommandOutboxStatus.PENDING, 0, null, Instant.now()));
+        AgentAsyncTaskCommandPreCheckService preCheckService = mock(AgentAsyncTaskCommandPreCheckService.class);
+        when(preCheckService.inspect(any())).thenReturn(verdict("async-command-precheck-deferred", "DEFERRED"));
+        AgentAsyncTaskCommandDispatchTarget target = mock(AgentAsyncTaskCommandDispatchTarget.class);
+        AgentAsyncTaskCommandOutboxDispatcher dispatcher = new AgentAsyncTaskCommandOutboxDispatcher(
+                properties,
+                store,
+                List.of(target),
+                preCheckService
+        );
+
+        AgentAsyncTaskCommandOutboxDispatcher.AgentAsyncTaskCommandOutboxDispatchSummary summary =
+                dispatcher.dispatchOnce();
+
+        assertEquals(1, summary.failed());
+        AgentAsyncTaskCommandOutboxRecord failed = store.findByCommandId("async-command-precheck-deferred").orElseThrow();
+        assertEquals(AgentAsyncTaskCommandOutboxStatus.FAILED, failed.status());
+        assertNotNull(failed.nextRetryAt());
+        assertTrue(failed.lastError().contains("RUNTIME_PROTECTION_DEFERRED_BEFORE_WORKER"));
+        verify(target, never()).dispatch(any());
+    }
+
     private AgentAsyncTaskCommandOutboxProperties properties() {
         AgentAsyncTaskCommandOutboxProperties properties = new AgentAsyncTaskCommandOutboxProperties();
         properties.setDispatcherBatchSize(10);
@@ -177,6 +238,27 @@ class AgentAsyncTaskCommandOutboxDispatcherTest {
                 256,
                 false,
                 "{\"schemaVersion\":\"datasmart.agent.async-task-command.v1\"}"
+        );
+    }
+
+    private AgentAsyncTaskCommandPreCheckVerdict verdict(String commandId, String decision) {
+        String issueCode = "DEFERRED".equals(decision)
+                ? "RUNTIME_PROTECTION_DEFERRED_BEFORE_WORKER"
+                : "CONFIRMATION_EXPIRED";
+        return new AgentAsyncTaskCommandPreCheckVerdict(
+                commandId,
+                "audit-dispatch-command",
+                "confirmation-dispatch-command",
+                false,
+                decision,
+                "WAITING_ASYNC_EXECUTOR",
+                true,
+                "DEFERRED".equals(decision) ? false : true,
+                "CONFIRMED",
+                Instant.now().plusSeconds(3600),
+                List.of(issueCode),
+                List.of("测试 pre-check verdict"),
+                List.of("测试推荐动作")
         );
     }
 

@@ -1,5 +1,26 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-04 追加落地进展：异步 Command Dispatcher 接入 Pre-Check
+
+- `agent-runtime` 已把 6.07 的 worker pre-check 契约接入异步 command dispatcher 投递前链路。
+- 新增配置 `dispatcher-pre-check-enabled`，默认关闭，避免本地学习环境和历史 Run 级 command 因缺少 confirmationId 被突然 fail-closed。
+- 开启后 dispatcher 行为如下：
+  - `ALLOW_EXECUTION`：继续投递 Kafka/HTTP target；
+  - `BLOCKED`：标记 command outbox 为 `BLOCKED`，不投递目标；
+  - `DEFERRED`：标记 command outbox 为 `FAILED` 并设置 `nextRetryAt`，后续按退避重试；
+  - pre-check 服务缺失但开关开启时，不静默绕过，而是进入 `FAILED`。
+- 新增 dispatcher 测试覆盖 pre-check 阻断和暂缓两类状态映射。
+
+产品意义：
+- command outbox 现在具备投递前安全闸门，避免确认过期、沙箱拒绝、策略漂移或容量暂缓继续扩散到 task-management。
+- 默认关闭 + 可配置开启，适合商业化系统灰度升级：先在集成环境验证 selected-node confirmation 主路径，再逐步打开 fail-closed。
+- 当前还没有把 pre-check verdict 写入 runtime event 或 Prometheus；下一步如果继续 Agent Runtime，应优先补可观测性，而不是继续新增执行规则。
+
+下一步推荐路线：
+1. 将 pre-check `BLOCKED/DEFERRED` 写入 runtime event display，形成 worker 前置保护时间线。
+2. 将 pre-check issueCodes 接入低基数 Prometheus 指标和告警。
+3. 完成最小观测后，切换到 MCP/Skill 发布流、长期记忆二级索引或智能网关多 Agent 协作，避免局部过度打磨。
+
 ## 2026-06-04 追加落地进展：异步命令 Worker Pre-Check 契约
 
 - `agent-runtime` 新增 `AgentAsyncTaskCommandPreCheckService`，用于未来真实 DAG worker / task-management worker 在执行异步 command 前做只读复核。

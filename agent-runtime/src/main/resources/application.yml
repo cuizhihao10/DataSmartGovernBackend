@@ -237,6 +237,12 @@ datasmart:
         dispatcher-recover-stale-publishing-enabled: true
         dispatcher-publishing-timeout-seconds: 300
         dispatcher-allow-no-targets-as-published: false
+        # dispatcher 投递前 pre-check。
+        # 开启后，command 在投递 Kafka/HTTP target 之前会重新复核 selected-node confirmation、当前 execution-policy、
+        # sandbox verdict、runtime-protection verdict 和 policyVersion 证据。
+        # 默认关闭是为了兼容本地学习环境和历史 Run 级 command；当 selected-node confirmation 已经作为生产主路径后，
+        # 建议逐步打开，使缺确认、确认过期、沙箱拒绝等问题 fail-closed，使容量/熔断问题进入退避重试。
+        dispatcher-pre-check-enabled: ${DATASMART_AGENT_RUNTIME_ASYNC_COMMAND_DISPATCHER_PRE_CHECK_ENABLED:false}
         # 是否由 command dispatcher 把 outbox payload 投递到 Kafka。
         # 这是未来生产主路径：agent-runtime outbox -> Kafka -> task-management Inbox。
         # 默认关闭，避免本地没有 Kafka 或 listener 未启用时误触发后台投递。
