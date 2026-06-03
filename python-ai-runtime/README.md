@@ -15,7 +15,7 @@
 - `AgentOrchestrator`：以状态节点方式串联目标接收、模型选择、上下文构建、工具规划、审批判断和响应生成。
 - Agent Skill 治理：已具备本地/远程 Skill descriptor、语义选择、准入策略、准入 runtime event 和智能网关摘要；Java `permission-admin` 已新增 Skill admission evaluate 契约，Python Runtime 已支持可选远程调用。Skill 命中后会继续校验 `grantedPermissions`、`actorRole` 与风险等级；显式缺权限或普通用户命中高风险 Skill 时会进入 `rejectedSkills`，缺少控制面事实时只做条件性推荐。`SKILL_ADMISSION_EVALUATED` 事件与 `intelligentGatewayGovernance.skillAdmission` 会解释 Skill 启用、条件性启用或拒绝原因。
 - 智能网关工具治理：已具备模型工具调用候选规划、可见工具校验、参数 schema 校验和工具调用预算守卫，可限制单轮工具数量、自动推进数量、高风险工具数量和 arguments 体积；预算策略已抽象为 provider，当前支持环境变量、`AgentRequest.variables["toolCallBudget"]` 覆盖，以及可选远程调用 Java permission-admin `/permissions/agent/tool-budget-policies/evaluate`。远程策略默认关闭，适合生产或联调环境按租户套餐、项目等级、角色、workspace 风险和实时 backlog 动态生成预算；预算阻断会写入独立 `MODEL_TOOL_CALL_BUDGET_GUARDED` runtime event，API 响应已提供 `intelligentGatewayGovernance` 统一摘要，汇总模型路由、工具预算、workspace 和记忆检索治理事实。
-- 长期记忆治理：已具备记忆召回计划、候选生成、审批/拒绝、候选 SQL store、低敏摘要正式落成、materialization receipt、正式记忆 SQL store、正式记忆 runtime builder、lease token fencing runner、失败退避、DLQ 基础语义、管理员补偿入口、物化 runtime event、低基数 Prometheus 指标、受控后台 worker 和 store-backed 检索接入；候选和正式记忆都会携带 `workspaceKey/memoryNamespace`，检索时按当前 Agent 工作空间过滤，避免同项目不同 workspace 或 session 沙箱误共享记忆。当前默认装配仍以本地内存 store 便于学习和单测，后台 worker 默认关闭；生产可通过 `DATASMART_AI_FORMAL_MEMORY_*` 与 `DATASMART_AI_MEMORY_LEASE_*` 切到 MySQL，并显式开启 worker，让 `/agent/plans` 从正式记忆表召回低敏经验，同时让多实例 worker 安全领取候选。
+- 长期记忆治理：已具备记忆召回计划、候选生成、审批/拒绝、候选 SQL store、低敏摘要正式落成、materialization receipt、正式记忆 SQL store、正式记忆 runtime builder、lease token fencing runner、失败退避、DLQ 基础语义、管理员补偿入口、物化 runtime event、低基数 Prometheus 指标、受控后台 worker、Prometheus 告警规则和 store-backed 检索接入；候选和正式记忆都会携带 `workspaceKey/memoryNamespace`，检索时按当前 Agent 工作空间过滤，避免同项目不同 workspace 或 session 沙箱误共享记忆。当前默认装配仍以本地内存 store 便于学习和单测，后台 worker 默认关闭；生产可通过 `DATASMART_AI_FORMAL_MEMORY_*` 与 `DATASMART_AI_MEMORY_LEASE_*` 切到 MySQL，并显式开启 worker，让 `/agent/plans` 从正式记忆表召回低敏经验，同时让多实例 worker 安全领取候选。
 - `api.create_app()`：提供可选 FastAPI 入口。当前测试不依赖 FastAPI，安装 API 依赖后即可启动服务。
 - Agent API 路由已从 bootstrap 入口拆到 `api_agent_routes.py`：`api.py` 只负责装配模型网关、事件组件、长期记忆候选治理和 Java 控制面客户端；`/agent/plans`、事件 replay/control 与 WebSocket handler 由独立注册函数承载。这样后续继续增加服务间认证、智能网关会话、审计导出和长期记忆上下文注入时，不会把启动文件拖成难以维护的巨型模块。
 - 目录层级治理已开始落地：长期记忆相关服务已迁入 `services/memory/`，实时事件流相关服务已迁入 `services/runtime_events/`，模型路由/provider/预算/tool-call 相关服务已迁入 `services/model_gateway/`，并新增 [Python AI Runtime 目录层级治理规范](../docs/python-ai-runtime-package-layout.md)。后续新增功能应优先进入 `agent/`、`memory/`、`model_gateway/`、`runtime_events/`、`tools/`、`skills/` 等能力包，而不是继续把十几个文件散放在同一个目录。
@@ -69,7 +69,7 @@ $env:DATASMART_PERMISSION_ADMIN_SKILL_ADMISSION_TIMEOUT_SECONDS="3"
 - 增加 RAG/GraphRAG 上下文构建器，区分元数据检索、权限事实检索、质量规则案例检索。
 - 增加模型 Provider 适配器，优先兼容 OpenAI-compatible、vLLM、SGLang 等部署形态。
 - 将 permission-admin 工具预算策略继续升级为数据库策略表、租户套餐版本、worker backlog 指标源和策略发布版本，而不是长期停留在内存规则。
-- 为正式长期记忆 runner 增加 Prometheus 告警规则、审计 outbox、向量库 namespace 过滤适配器和二级索引同步 worker。
+- 正式长期记忆 runner 已具备 Prometheus 指标和基础告警规则；下一步建议补审计 outbox、向量库 namespace 过滤适配器、二级索引同步 worker 和批量补偿审批流。
 - 远程 Skill 准入请求中的角色、权限集合、租户开关和 workspace 风险现在只从
   `variables["trustedControlPlane"]["skillAdmission"]` 保留命名空间读取。普通终端变量即使伪造
   `actorRole` 或 `grantedPermissions` 也不会被当成可信控制面事实。该命名空间仍需要由 gateway 或
@@ -478,4 +478,35 @@ $env:DATASMART_AI_MEMORY_MATERIALIZATION_WORKER_STOP_TIMEOUT_SECONDS="5"
 - 当前是单线程循环。多实例部署应使用 SQL lease store，由 lease token fencing 防止多个 worker 覆盖同一候选；
 - 连续 Runner 异常达到 `maxConsecutiveErrors` 后会打开熔断标记并停止后台循环，避免坏配置造成错误风暴；
 - 每轮成功后会写 Runtime Event、event store/publisher 和指标；这些旁路失败不会把已完成 Runner 批次改判失败；
-- 还没有统一审计 outbox、Prometheus 告警规则、批量补偿审批流或 Chroma/Neo4j 二级索引 worker。
+- 还没有统一审计 outbox、批量补偿审批流或 Chroma/Neo4j 二级索引 worker。
+
+# 5.11 Agent 长期记忆物化 Prometheus 告警规则
+
+长期记忆物化现在不仅能暴露指标，也新增了 Prometheus 告警规则草案：
+`docker/prometheus/rules/python-ai-runtime-alerts.yml`。这一步的目标是让后台 worker 从“有指标可看”
+推进到“异常会主动提醒”，避免生产环境只有等用户发现长期记忆不再召回、DLQ 堆积或补偿动作异常时才排查。
+
+告警覆盖：
+
+- `PythonAiRuntimeMetricsDown`：Prometheus 无法抓取 `/agent/metrics`。这是所有 AI Runtime 指标和告警的入口级健康检查；
+- `PythonAiRuntimeMetricsTargetMissing`：Prometheus 配置中不存在 `python-ai-runtime` job，用于发现配置未加载或容器未重载；
+- `PythonAiMemoryMaterializationDlqIncreasing`：出现新的 `dead_lettered` 候选，说明自动 worker 已经放弃继续重试，需要管理员介入；
+- `PythonAiMemoryMaterializationFinalizeError`：lease finalize 或 token fencing 回写失败，重点指向多 worker、租约过短或旧 worker 迟到回写；
+- `PythonAiMemoryMaterializationFailureRatioHigh`：候选失败比例持续偏高，用于发现下游正式记忆 store、receipt store、lease store 或数据质量问题；
+- `PythonAiMemoryMaterializationRetryCooldownBacklog`：失败候选大量处于退避冷却，提示系统正在自我保护，但也可能代表下游持续不可用；
+- `PythonAiMemoryMaterializationWorkerNoSuccessfulRun`：Python Runtime 可抓取，但 worker 长时间没有批次指标，用于发现 worker 未启用、熔断或调度配置错误；
+- `PythonAiMemoryMaterializationRequeueSurge`：真实补偿重排次数短时间升高，提示可能存在批量误操作、下游恢复后的集中重放或坏候选反复恢复；
+- `PythonAiMemoryMaterializationDryRunOnly`：管理员做了较多 dry-run 但没有真实 requeue，提示运维流程可能停在二次确认或风险评估阶段。
+
+设计边界：
+
+- 规则只使用 `result/severity/reason/action/dry_run/after_status` 等低基数标签，不把
+  `tenantId/projectId/candidateId/leaseId/requestId/runId/sessionId/traceId/workspaceKey`
+  放进 Prometheus 时序；
+- 单条候选排障继续走 Runtime Event replay、lease/receipt 查询和审计日志，Prometheus 只负责聚合趋势与告警；
+- 当前阈值适合本地或早期集成环境。生产环境需要结合租户规模、worker 实例数、候选产生速率、下游 Chroma/Neo4j/MySQL 容量和 SLA 进行调优；
+- 告警规则配套新增 `test_prometheus_alert_rules.py`，用于固定 scrape job、核心告警名称、低基数选择器和 dry-run 聚合表达式，降低后续修改时的回归风险。
+
+当前边界仍然明确：这一步还没有把告警接入 Alertmanager 路由模板、Grafana 面板、Java 统一审计 outbox 或客户级 SLA 报表。
+下一步如果继续生产化长期记忆，更适合补审计 outbox/fail-closed 选项、批量补偿审批和 Chroma/Neo4j 二级索引 worker，
+而不是继续无限增加单条 Prometheus 规则。

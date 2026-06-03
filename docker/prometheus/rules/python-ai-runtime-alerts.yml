@@ -1,0 +1,124 @@
+# DataSmart Govern - Python AI Runtime 告警规则草案。
+#
+# 设计原则：
+# 1. Python AI Runtime 不是 Spring Boot 服务，因此 Prometheus 抓取路径是 /agent/metrics，而不是 /actuator/prometheus；
+# 2. 本文件优先覆盖长期记忆物化链路：后台 worker 是否可被抓取、DLQ 是否增长、fencing/finalize 是否异常、失败率是否升高、补偿是否异常激增；
+# 3. 告警标签只使用固定枚举和模块名，不把 tenantId、projectId、candidateId、leaseId、runId、traceId、workspaceKey 放入规则标签；
+# 4. 单条候选排障应跳转到 Runtime Event replay、lease/receipt 查询和审计日志；Prometheus 只负责聚合告警；
+# 5. 当前阈值适合本地/早期集成环境，生产环境应按租户规模、worker 实例数、候选产生速率和 SLA 等级调优。
+groups:
+  - name: datasmart-python-ai-runtime-availability
+    rules:
+      - alert: PythonAiRuntimeMetricsDown
+        expr: up{job="python-ai-runtime"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          module: python-ai-runtime
+          category: availability
+        annotations:
+          summary: "Python AI Runtime 指标抓取失败"
+          description: "Prometheus 连续 2 分钟无法抓取 Python AI Runtime 的 /agent/metrics。请优先检查 8090 端口、FastAPI 进程、/agent/metrics 路由、docker 网络和 python-ai-runtime job 配置。"
+
+      - alert: PythonAiRuntimeMetricsTargetMissing
+        expr: absent(up{job="python-ai-runtime"})
+        for: 2m
+        labels:
+          severity: critical
+          module: python-ai-runtime
+          category: availability
+        annotations:
+          summary: "Prometheus 未发现 Python AI Runtime 抓取目标"
+          description: "Prometheus 中不存在 job=python-ai-runtime 的目标。通常表示 prometheus.yml 未加载、规则配置错误、Prometheus 容器未重载，或本地环境尚未启用 Python AI Runtime 指标抓取。"
+
+  - name: datasmart-python-ai-memory-materialization-health
+    rules:
+      - alert: PythonAiMemoryMaterializationDlqIncreasing
+        expr: increase(datasmart_ai_memory_materialization_candidates_total{result="dead_lettered"}[15m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          module: python-ai-runtime
+          category: memory-materialization
+        annotations:
+          summary: "长期记忆物化出现新的 DLQ 候选"
+          description: "最近 15 分钟长期记忆物化产生新的 dead_lettered 候选。请通过 /agent/memory/materialization/leases 查询 failed/dead_letter 列表，并结合 Runtime Event replay、receipt、lease 诊断排查候选配置、下游正式记忆 store、数据库或二级索引链路。"
+
+      - alert: PythonAiMemoryMaterializationFinalizeError
+        expr: increase(datasmart_ai_memory_materialization_finalize_errors_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          module: python-ai-runtime
+          category: memory-materialization
+        annotations:
+          summary: "长期记忆物化出现 lease finalize/fencing 错误"
+          description: "最近 10 分钟长期记忆物化出现 lease finalize error。请重点检查多实例 worker 是否使用 SQL lease store、租约是否过短、worker 是否重启频繁，以及旧 worker 是否在租约过期后迟到回写。"
+
+      - alert: PythonAiMemoryMaterializationFailureRatioHigh
+        expr: |
+          (
+            sum(rate(datasmart_ai_memory_materialization_candidates_total{result="failed"}[15m]))
+            /
+            clamp_min(sum(rate(datasmart_ai_memory_materialization_candidates_total{result=~"succeeded|failed"}[15m])), 1)
+          ) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          module: python-ai-runtime
+          category: memory-materialization
+        annotations:
+          summary: "长期记忆物化失败比例偏高"
+          description: "最近 15 分钟长期记忆物化失败比例持续高于 20%。请先确认是否存在历史坏候选或下游 store 抖动，再检查 formal memory store、receipt store、lease store、workspaceKey/memoryNamespace 证据和敏感级别策略。"
+
+      - alert: PythonAiMemoryMaterializationRetryCooldownBacklog
+        expr: increase(datasmart_ai_memory_materialization_skips_total{reason="retry_cooldown"}[30m]) > 20
+        for: 5m
+        labels:
+          severity: info
+          module: python-ai-runtime
+          category: memory-materialization
+        annotations:
+          summary: "长期记忆物化 retry cooldown 跳过较多"
+          description: "最近 30 分钟 retry_cooldown 跳过次数较高，说明失败候选正在退避等待。少量出现是正常保护；如果持续升高，请结合 DLQ、失败率和补偿重排情况判断是否存在下游存储不可用或候选历史脏数据。"
+
+      - alert: PythonAiMemoryMaterializationWorkerNoSuccessfulRun
+        expr: |
+          up{job="python-ai-runtime"} == 1
+          unless on(instance)
+          rate(datasmart_ai_memory_materialization_runs_total[30m]) > 0
+        for: 30m
+        labels:
+          severity: info
+          module: python-ai-runtime
+          category: memory-materialization
+        annotations:
+          summary: "长期记忆物化 worker 长时间没有批次指标"
+          description: "Prometheus 可以抓取 Python AI Runtime，但 30 分钟内没有观察到 materialization runner 批次。若当前环境未启用 DATASMART_AI_MEMORY_MATERIALIZATION_WORKER_ENABLED，这是预期行为；若已启用，请检查 worker 诊断、候选审批状态和 batchLimit/interval 配置。"
+
+  - name: datasmart-python-ai-memory-materialization-compensation
+    rules:
+      - alert: PythonAiMemoryMaterializationRequeueSurge
+        expr: increase(datasmart_ai_memory_materialization_requeues_total{dry_run="false"}[30m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          module: python-ai-runtime
+          category: memory-compensation
+        annotations:
+          summary: "长期记忆物化补偿重排次数异常升高"
+          description: "最近 30 分钟真实补偿重排次数超过 10 次。请确认是否有批量误操作、下游 store 恢复后的集中重放，或某类候选持续失败。必要时先暂停 worker，执行 dry-run 分组核查后再重排。"
+
+      - alert: PythonAiMemoryMaterializationDryRunOnly
+        expr: |
+          sum(increase(datasmart_ai_memory_materialization_requeues_total{dry_run="true"}[1h])) > 20
+          unless
+          sum(increase(datasmart_ai_memory_materialization_requeues_total{dry_run="false"}[1h])) > 0
+        for: 10m
+        labels:
+          severity: info
+          module: python-ai-runtime
+          category: memory-compensation
+        annotations:
+          summary: "长期记忆物化补偿 dry-run 较多但没有真实重排"
+          description: "最近 1 小时管理员执行了较多 dry-run，但没有真实 requeue。可能是运维正在评估补偿风险，也可能是管理台二次确认流程卡住。请结合操作审计和 failed/dead_letter 列表确认是否需要推进真实重排或归档。"

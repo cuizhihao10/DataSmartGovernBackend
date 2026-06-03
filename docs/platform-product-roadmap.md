@@ -1,5 +1,15 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-03 追加落地进展：长期记忆物化 Prometheus 告警规则
+
+- Python AI Runtime 新增 `docker/prometheus/rules/python-ai-runtime-alerts.yml`，把长期记忆物化链路从“有指标可抓取”推进到“异常可主动告警”。
+- 告警覆盖 Python Runtime 指标抓取失败、Prometheus target 缺失、DLQ 增长、lease finalize/fencing 错误、失败比例升高、retry cooldown 积压、worker 长时间无批次、真实补偿重排激增和 dry-run-only 运营停滞。
+- 规则继续遵循低基数原则：只使用 `result/severity/reason/action/dry_run/after_status` 等枚举标签，不把 tenant、project、candidate、lease、trace、workspace 等业务主键放入 Prometheus 时序。
+- 告警 runbook 明确把单候选排障导向 Runtime Event replay、lease/receipt 查询和审计日志，Prometheus 只负责聚合判断与运维提醒，避免把监控系统当成明细查询库。
+- 新增 `test_prometheus_alert_rules.py`，固定 Python Runtime scrape job、核心告警名称、高基数选择器禁用规则和 dry-run 聚合表达式，降低后续修改告警时的回归风险。
+- 当前阈值仍偏向本地和早期集成环境；生产环境需要按租户规模、worker 实例数、候选产生速率、下游存储容量和 SLA 做分级调优。
+- 下一步建议转向统一审计 outbox/fail-closed 选项、批量补偿审批流、Chroma/Neo4j 二级索引同步 worker 和 Grafana/Alertmanager 接入，而不是继续无限堆叠单条告警规则。
+
 ## 2026-06-03 追加落地进展：长期记忆物化受控后台 Worker
 
 - Python Runtime 新增 `AgentMemoryMaterializationWorker`，在 FastAPI 生命周期中按配置周期性调用 `AgentMemoryMaterializationRunner.run_once(...)`。
@@ -8,7 +18,7 @@
 - Worker 每轮会生成 `memory_materialization_run_completed` Runtime Event，并写入 event store/publisher 与低基数 Prometheus 指标；事件/指标旁路失败不会把已完成 Runner 批次改判失败。
 - `/agent/memory/diagnostics` 现在会返回 `materializationWorker`，展示 enabled、running、fuseOpen、runCount、completedRunCount、failedRunCount、consecutiveErrorCount 和 lastResult。
 - 当前仍是单线程循环，不做租户级并发、多线程池或动态容量调度；多实例生产部署应使用 SQL lease store，依靠 lease token fencing 防止旧 worker 覆盖新 worker。
-- 下一步建议补 Prometheus 告警规则与审计 outbox/fail-closed 选项，然后再进入 Chroma/Neo4j 二级索引同步 worker 和批量补偿审批流。
+- Prometheus 告警规则已在后续小批次落地；下一步建议补审计 outbox/fail-closed 选项，然后再进入 Chroma/Neo4j 二级索引同步 worker 和批量补偿审批流。
 
 ## 2026-06-03 追加落地进展：长期记忆物化低基数 Prometheus 指标
 
@@ -17,7 +27,7 @@
 - 新增低基数指标：Runner 批次数、候选 scanned/claimed/succeeded/failed/skipped/dead_lettered、跳过原因、fencing finalize error、批次耗时 count/sum、管理员补偿重排次数。
 - 指标标签只使用有限枚举，例如 `result`、`severity`、`reason`、`action`、`dry_run`、`after_status`；不把 tenantId、projectId、candidateId、leaseId、traceId、workspaceKey 放入 Prometheus 标签。
 - `docker/prometheus/prometheus.yml` 新增 `python-ai-runtime` job，默认抓取 `host.docker.internal:8090/agent/metrics`，让本地运维面可以同时看到 Java Actuator 与 Python AI Runtime 指标。
-- 受控常驻 worker 已在后续小批次落地；当前仍没有统一审计 outbox 和 Prometheus 告警规则。下一步建议补告警、审计强一致和二级索引同步。
+- 受控常驻 worker 和 Prometheus 告警规则已在后续小批次落地；当前仍没有统一审计 outbox。下一步建议补审计强一致、批量补偿审批和二级索引同步。
 
 ## 2026-06-03 追加落地进展：长期记忆物化 Runtime Event 可观测性
 
