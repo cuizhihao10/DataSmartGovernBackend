@@ -1,5 +1,13 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-03 追加落地进展：长期记忆物化 Runtime Event 可观测性
+
+- Python Runtime 在长期记忆物化链路中新增 runtime event 构建器，把 Runner 批次报告和管理员补偿重排结果转换为统一 `AgentRuntimeEvent`。
+- 新增 `memory_materialization_run_completed` 与 `memory_materialization_requeue_recorded` 两类事件，用低敏字段记录成功数、失败数、DLQ 数量、retry cooldown 跳过数、active lease 跳过数、fencing finalize 失败数和管理员重排动作。
+- FastAPI `create_app()` 已把物化补偿路由接入当前 runtime event store 与 publisher；事件投递失败采用 fail-open，并在响应中返回 `runtimeEventDelivery.errors`，避免本地学习或旁路 Kafka/Redis 故障直接破坏补偿主流程。
+- 这一步把长期记忆从“后台执行器内部状态”推进到“智能网关/运维台/审计系统可观察事实”，为后续 Prometheus 指标、统一审计表、常驻 worker、批量补偿和二级索引 worker 打基础。
+- 当前尚未实现 Prometheus 指标、审计强一致 outbox、租户级补偿 SLA 或常驻物化调度；下一步建议在“低基数指标”与“受控常驻 worker”之间选择最小闭环，避免继续只在局部 API 上堆功能。
+
 ## 2026-06-02 追加落地进展：Python Runtime 模型网关能力包分层
 
 - Python Runtime 第三批目录治理已迁移模型网关能力域，新增 `services/model_gateway/` 包，集中承载模型路由、provider 注册、OpenAI-compatible 适配、provider metadata、缓存规划、预算守卫、远程工具预算策略、模型原生 tool-call schema/planning/aggregation/events/feedback 和结果上下文过滤。

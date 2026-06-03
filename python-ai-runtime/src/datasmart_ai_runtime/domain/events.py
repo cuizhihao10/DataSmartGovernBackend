@@ -48,6 +48,8 @@ class AgentRuntimeEventType(str, Enum):
     MEMORY_RETRIEVED = "memory_retrieved"
     MEMORY_WRITE_CANDIDATE_PROPOSED = "memory_write_candidate_proposed"
     MEMORY_WRITE_DECISION_RECORDED = "memory_write_decision_recorded"
+    MEMORY_MATERIALIZATION_RUN_COMPLETED = "memory_materialization_run_completed"
+    MEMORY_MATERIALIZATION_REQUEUE_RECORDED = "memory_materialization_requeue_recorded"
     APPROVAL_WAITING = "approval_waiting"
 
 

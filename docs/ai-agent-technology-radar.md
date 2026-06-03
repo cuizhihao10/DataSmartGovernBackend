@@ -1,5 +1,14 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-03 落地补充：memory materialization needs traceable recovery events
+
+- 本阶段把长期记忆物化从“管理员可以恢复”继续推进到“恢复与后台批次事实可以进入 runtime event 时间线”。新增的 `memory_materialization_run_completed` 和 `memory_materialization_requeue_recorded` 分别覆盖 Runner 批次汇总和管理员补偿重排。
+- 这对应当前 Agent 平台的 durable execution / tracing / human-in-the-loop 趋势：LangGraph persistence 强调 checkpoint 支撑 human-in-the-loop、memory、time travel 和 fault-tolerant execution；OpenAI Agents SDK tracing 强调 agent run 中的步骤、工具调用和自定义事件应可追踪；MCP Tools 规范也强调工具调用需要清晰的可见性和受控交互。
+- DataSmart 当前选择先进入 Runtime Event，而不是直接上常驻 worker 或 Prometheus，是为了先稳定事实契约：哪些字段低敏、哪些计数可聚合、哪些事件属于审计、哪些失败只影响旁路投递而不回滚补偿主流程。
+- Runner 事件聚合 `DLQ/retry cooldown/active lease/fencing finalize error`，避免未来 Prometheus 直接使用 candidateId、tenantId、traceId 等高基数字段；管理员重排事件只记录 operatorId、状态变化和 namespace，不记录候选正文、正式记忆正文、SQL、工具输出或 lease token。
+- 下一步趋势落地建议：把这些事件进一步映射为低基数 Prometheus 指标，并引入事务 outbox 或审计 fail-closed 选项；随后再启动受控常驻 worker、批量补偿、租户级恢复 SLA 和 Chroma/Neo4j 二级索引同步。
+- 参考资料：LangGraph persistence：`https://docs.langchain.com/oss/python/langgraph/persistence`；OpenAI Agents SDK tracing：`https://openai.github.io/openai-agents-python/tracing/`；MCP Tools specification：`https://modelcontextprotocol.io/specification/2025-06-18/server/tools`。
+
 ## 2026-06-03 落地补充：long-term memory needs operator recovery loops
 
 - 本阶段把长期记忆物化从“失败退避 + DLQ”推进到“管理员可 dry-run、可查询、可重排”的恢复闭环。

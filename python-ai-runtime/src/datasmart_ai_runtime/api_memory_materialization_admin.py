@@ -13,12 +13,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any
 
+from datasmart_ai_runtime.domain.events import AgentRuntimeEvent
 from datasmart_ai_runtime.services.memory.memory_materialization_admin import (
     AgentMemoryMaterializationAdminService,
     AgentMemoryMaterializationLeaseQuery,
     AgentMemoryMaterializationRequeueRequest,
+)
+from datasmart_ai_runtime.services.memory.memory_materialization_events import (
+    AgentMemoryMaterializationEventContext,
+    memory_materialization_requeue_event,
 )
 from datasmart_ai_runtime.services.memory.memory_materialization_lease_store import (
     AgentMemoryMaterializationLeaseStatus,
@@ -28,6 +34,9 @@ from datasmart_ai_runtime.services.memory.memory_materialization_lease_store imp
 def register_memory_materialization_admin_routes(
     app: Any,
     service: AgentMemoryMaterializationAdminService,
+    *,
+    event_store: Any | None = None,
+    event_publisher: Any | None = None,
 ) -> None:
     """注册长期记忆物化补偿路由。
 
@@ -37,6 +46,12 @@ def register_memory_materialization_admin_routes(
 
     当前先提供“单候选重排”，而不是批量重排，是为了降低误操作风险。真实产品里可以再增加批量 dry-run、
     批量确认、审批流、审计导出和按错误类型分组处理，但这些都应建立在单条语义稳定之后。
+
+    `event_store/event_publisher` 是可选旁路：
+    - 本地学习环境可以不传，补偿能力仍可运行；
+    - API 启动态会传入 RuntimeEventStore/RuntimeEventPublisher，让补偿动作进入 replay 与异步事件总线；
+    - 事件发布失败不会回滚补偿状态，因为当前还没有事务 outbox。后续若企业环境要求审计 fail-closed，
+      应增加配置开关和数据库事务边界，而不是在这里隐式阻断所有本地开发。
     """
 
     from fastapi import HTTPException
@@ -145,7 +160,15 @@ def register_memory_materialization_admin_routes(
                 error_code="MEMORY_MATERIALIZATION_REQUEUE_RACE",
                 message=str(exc),
             ) from exc
-        return result.to_summary()
+        event = memory_materialization_requeue_event(
+            result,
+            _event_context_from_payload(payload, operator_id=result.operator_id),
+        )
+        delivery = _record_runtime_event(event, event_store=event_store, event_publisher=event_publisher)
+        response = result.to_summary()
+        response["runtimeEvent"] = _runtime_event_payload(event)
+        response["runtimeEventDelivery"] = delivery
+        return response
 
 
 def _parse_statuses(status: str | None) -> tuple[AgentMemoryMaterializationLeaseStatus, ...] | None:
@@ -219,6 +242,106 @@ def _optional_datetime(value: Any) -> datetime | None:
         return None
     parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+
+
+def _event_context_from_payload(
+    payload: dict[str, Any],
+    *,
+    operator_id: str,
+) -> AgentMemoryMaterializationEventContext:
+    """从补偿请求中解析 runtime event 上下文。
+
+    补偿路由不是普通 `/agent/plans` 请求，不一定有 requestId/runId/sessionId。这里允许调用方显式传入这些
+    字段，便于未来 Java 管理台、任务中心或审计控制面把补偿动作挂到某个管理任务上。
+    """
+
+    return AgentMemoryMaterializationEventContext(
+        actor_id=str(payload.get("actorId") or payload.get("actor_id") or operator_id).strip() or operator_id,
+        request_id=_optional_text(payload.get("requestId", payload.get("request_id"))),
+        run_id=_optional_text(payload.get("runId", payload.get("run_id"))),
+        session_id=_optional_text(payload.get("sessionId", payload.get("session_id"))),
+        sequence=_optional_int(payload.get("sequence")),
+    )
+
+
+def _record_runtime_event(
+    event: AgentRuntimeEvent,
+    *,
+    event_store: Any | None,
+    event_publisher: Any | None,
+) -> dict[str, Any]:
+    """把补偿事件写入 replay store 并尝试发布到异步总线。
+
+    事件链路当前是旁路能力：它提升可观测性和审计可见性，但不应该让本地学习环境因为没有 Redis/Kafka 而
+    无法执行补偿。这里会捕获 store/publisher 异常并返回低敏错误摘要，方便管理台提示“补偿已完成但事件旁路失败”。
+    """
+
+    errors: list[dict[str, str]] = []
+    stored = False
+    published_count = 0
+    if event_store is not None:
+        try:
+            event_store.append_many((event,))
+            stored = True
+        except Exception as exc:  # pragma: no cover - 依赖真实外部存储故障时触发
+            errors.append(_delivery_error("event_store", exc))
+    if event_publisher is not None:
+        try:
+            published_count = int(event_publisher.publish((event,)))
+        except Exception as exc:  # pragma: no cover - 依赖真实 Kafka 故障时触发
+            errors.append(_delivery_error("event_publisher", exc))
+    return {
+        "storeEnabled": event_store is not None,
+        "publisherEnabled": event_publisher is not None,
+        "stored": stored,
+        "publishedCount": published_count,
+        "errors": tuple(errors),
+    }
+
+
+def _runtime_event_payload(event: AgentRuntimeEvent) -> dict[str, Any]:
+    """把 AgentRuntimeEvent 转成 API JSON 友好的 lowerCamelCase payload。"""
+
+    return {
+        "eventType": _enum_value(event.event_type),
+        "stage": event.stage,
+        "message": event.message,
+        "severity": _enum_value(event.severity),
+        "tenantId": event.tenant_id,
+        "projectId": event.project_id,
+        "actorId": event.actor_id,
+        "requestId": event.request_id,
+        "runId": event.run_id,
+        "sessionId": event.session_id,
+        "sequence": event.sequence,
+        "attributes": dict(event.attributes),
+        "createdAt": event.created_at.isoformat(),
+    }
+
+
+def _optional_text(value: Any) -> str | None:
+    """解析可选字符串。"""
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _enum_value(value: Any) -> Any:
+    """把 Enum 转为 JSON 友好值。"""
+
+    return value.value if isinstance(value, Enum) else value
+
+
+def _delivery_error(component: str, exc: Exception) -> dict[str, str]:
+    """构造低敏事件投递错误摘要。"""
+
+    return {
+        "component": component,
+        "errorType": type(exc).__name__,
+        "message": str(exc)[:300],
+    }
 
 
 def _http_error(

@@ -487,6 +487,14 @@ def create_app() -> Any:
     )
 
     register_memory_write_routes(app, memory_runtime.memory_write_governance)
-    register_memory_materialization_admin_routes(app, memory_runtime.memory_materialization_admin)
+    register_memory_materialization_admin_routes(
+        app,
+        memory_runtime.memory_materialization_admin,
+        # 长期记忆物化补偿属于“后台控制面动作”，不是普通 Agent 推理请求。
+        # 这里仍复用统一 Runtime Event 组件，是为了让补偿重排、DLQ 处理、retry cooldown 等事实
+        # 能进入同一条 replay/Kafka/未来指标链路，避免管理端完成了动作但运维侧无法追踪。
+        event_store=event_store,
+        event_publisher=event_publisher,
+    )
 
     return app
