@@ -1,12 +1,21 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-03 追加落地进展：长期记忆物化低基数 Prometheus 指标
+
+- Python Runtime 在长期记忆物化链路中新增 `AgentMemoryMaterializationMetrics`，把 5.12 已有 Runtime Event 转换为 Prometheus exposition text。
+- 新增 `/agent/metrics` 指标端点，当前不依赖 `prometheus_client`，保持 Python Runtime 默认零依赖；后续如果需要 Histogram、multiprocess 或进程级指标，可替换为官方 client 适配器。
+- 新增低基数指标：Runner 批次数、候选 scanned/claimed/succeeded/failed/skipped/dead_lettered、跳过原因、fencing finalize error、批次耗时 count/sum、管理员补偿重排次数。
+- 指标标签只使用有限枚举，例如 `result`、`severity`、`reason`、`action`、`dry_run`、`after_status`；不把 tenantId、projectId、candidateId、leaseId、traceId、workspaceKey 放入 Prometheus 标签。
+- `docker/prometheus/prometheus.yml` 新增 `python-ai-runtime` job，默认抓取 `host.docker.internal:8090/agent/metrics`，让本地运维面可以同时看到 Java Actuator 与 Python AI Runtime 指标。
+- 当前仍未启动受控常驻 worker，也没有统一审计 outbox；下一步建议做 worker 启停开关、调度间隔、单轮 limit、优雅关闭和 Runner 事件/指标自动记录。
+
 ## 2026-06-03 追加落地进展：长期记忆物化 Runtime Event 可观测性
 
 - Python Runtime 在长期记忆物化链路中新增 runtime event 构建器，把 Runner 批次报告和管理员补偿重排结果转换为统一 `AgentRuntimeEvent`。
 - 新增 `memory_materialization_run_completed` 与 `memory_materialization_requeue_recorded` 两类事件，用低敏字段记录成功数、失败数、DLQ 数量、retry cooldown 跳过数、active lease 跳过数、fencing finalize 失败数和管理员重排动作。
 - FastAPI `create_app()` 已把物化补偿路由接入当前 runtime event store 与 publisher；事件投递失败采用 fail-open，并在响应中返回 `runtimeEventDelivery.errors`，避免本地学习或旁路 Kafka/Redis 故障直接破坏补偿主流程。
 - 这一步把长期记忆从“后台执行器内部状态”推进到“智能网关/运维台/审计系统可观察事实”，为后续 Prometheus 指标、统一审计表、常驻 worker、批量补偿和二级索引 worker 打基础。
-- 当前尚未实现 Prometheus 指标、审计强一致 outbox、租户级补偿 SLA 或常驻物化调度；下一步建议在“低基数指标”与“受控常驻 worker”之间选择最小闭环，避免继续只在局部 API 上堆功能。
+- 当前尚未实现审计强一致 outbox、租户级补偿 SLA 或常驻物化调度；低基数指标已经在后续小批次落地，下一步更适合进入受控常驻 worker 或审计 outbox，避免继续只在局部 API 上堆功能。
 
 ## 2026-06-02 追加落地进展：Python Runtime 模型网关能力包分层
 

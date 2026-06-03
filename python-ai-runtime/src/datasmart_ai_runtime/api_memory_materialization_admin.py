@@ -37,6 +37,7 @@ def register_memory_materialization_admin_routes(
     *,
     event_store: Any | None = None,
     event_publisher: Any | None = None,
+    metrics_recorder: Any | None = None,
 ) -> None:
     """注册长期记忆物化补偿路由。
 
@@ -52,6 +53,9 @@ def register_memory_materialization_admin_routes(
     - API 启动态会传入 RuntimeEventStore/RuntimeEventPublisher，让补偿动作进入 replay 与异步事件总线；
     - 事件发布失败不会回滚补偿状态，因为当前还没有事务 outbox。后续若企业环境要求审计 fail-closed，
       应增加配置开关和数据库事务边界，而不是在这里隐式阻断所有本地开发。
+
+    `metrics_recorder` 同样是可选旁路：它把补偿 runtime event 转换为低基数 Prometheus 指标。指标失败不应
+    影响补偿主流程，因为监控系统短暂不可用时，管理员仍然需要恢复长期记忆物化链路。
     """
 
     from fastapi import HTTPException
@@ -165,9 +169,11 @@ def register_memory_materialization_admin_routes(
             _event_context_from_payload(payload, operator_id=result.operator_id),
         )
         delivery = _record_runtime_event(event, event_store=event_store, event_publisher=event_publisher)
+        metric_delivery = _record_memory_materialization_metrics(event, metrics_recorder=metrics_recorder)
         response = result.to_summary()
         response["runtimeEvent"] = _runtime_event_payload(event)
         response["runtimeEventDelivery"] = delivery
+        response["runtimeMetricDelivery"] = metric_delivery
         return response
 
 
@@ -297,6 +303,39 @@ def _record_runtime_event(
         "publishedCount": published_count,
         "errors": tuple(errors),
     }
+
+
+def _record_memory_materialization_metrics(
+    event: AgentRuntimeEvent,
+    *,
+    metrics_recorder: Any | None,
+) -> dict[str, Any]:
+    """把补偿事件写入低基数指标旁路。
+
+    指标记录与 event store/publisher 一样采用 fail-open：Prometheus exporter 或内存指标器出现异常时，API 会把
+    低敏错误返回给调用方，但不会回滚已经完成的 lease 补偿。真实商业部署如果要求“补偿成功必须写审计/指标”，
+    后续应增加显式 fail-closed 配置，而不是把所有本地学习场景默认变成强依赖监控系统。
+    """
+
+    if metrics_recorder is None:
+        return {
+            "enabled": False,
+            "recorded": False,
+            "errors": (),
+        }
+    try:
+        recorded = bool(metrics_recorder.record_runtime_event(event))
+        return {
+            "enabled": True,
+            "recorded": recorded,
+            "errors": (),
+        }
+    except Exception as exc:  # pragma: no cover - 依赖真实指标实现故障时触发
+        return {
+            "enabled": True,
+            "recorded": False,
+            "errors": (_delivery_error("memory_materialization_metrics", exc),),
+        }
 
 
 def _runtime_event_payload(event: AgentRuntimeEvent) -> dict[str, Any]:

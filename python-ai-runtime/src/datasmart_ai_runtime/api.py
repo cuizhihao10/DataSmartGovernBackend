@@ -36,6 +36,7 @@ from datasmart_ai_runtime.services.model_gateway.model_provider import model_pro
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.memory.memory_planner import AgentMemoryPlanner
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
+from datasmart_ai_runtime.services.memory.memory_materialization_metrics import AgentMemoryMaterializationMetrics
 from datasmart_ai_runtime.services.runtime_events.runtime_event_components import (
     build_runtime_event_components,
     runtime_event_component_diagnostics,
@@ -366,7 +367,7 @@ def create_app() -> Any:
     """
 
     try:
-        from fastapi import FastAPI, HTTPException, Request
+        from fastapi import FastAPI, HTTPException, Request, Response
     except ImportError as exc:  # pragma: no cover - 只有未安装 API 依赖时触发
         raise RuntimeError("启动 API 前请先安装可选依赖：pip install -e python-ai-runtime[api]") from exc
     globals()["Request"] = Request
@@ -423,6 +424,7 @@ def create_app() -> Any:
     session_manager = runtime_events.session_manager
     live_push_hub = runtime_events.live_push_hub
     event_publisher = runtime_events.event_publisher
+    memory_materialization_metrics = AgentMemoryMaterializationMetrics()
     gateway_signature_nonce_settings = gateway_signature_nonce_store_settings_from_env()
     gateway_signature_nonce_store = build_gateway_signature_nonce_store(gateway_signature_nonce_settings)
     gateway_signature_security_stats = GatewaySignatureSecurityStats()
@@ -464,6 +466,23 @@ def create_app() -> Any:
             gateway_signature_nonce_settings,
         )
 
+    @app.get("/agent/metrics")
+    def agent_runtime_prometheus_metrics() -> Any:
+        """导出 Python AI Runtime 的 Prometheus 文本指标。
+
+        当前端点先只输出 Python Runtime 自己维护的低基数业务指标，重点覆盖长期记忆物化链路。
+        它不会输出 candidateId、tenantId、projectId、traceId、workspaceKey 等高基数标签；这些明细应继续通过
+        Runtime Event replay、lease/receipt 查询和审计链路定位。
+
+        生产环境中，该端点应由内网 Prometheus 抓取，外部用户不应直接访问。后续如果引入官方
+        `prometheus_client`，这里可以继续保留路径不变，只替换底层渲染实现。
+        """
+
+        return Response(
+            content=memory_materialization_metrics.render_prometheus(),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
+
     register_agent_runtime_routes(
         app,
         request_type=Request,
@@ -495,6 +514,7 @@ def create_app() -> Any:
         # 能进入同一条 replay/Kafka/未来指标链路，避免管理端完成了动作但运维侧无法追踪。
         event_store=event_store,
         event_publisher=event_publisher,
+        metrics_recorder=memory_materialization_metrics,
     )
 
     return app

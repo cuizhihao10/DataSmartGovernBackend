@@ -15,7 +15,7 @@
 - `AgentOrchestrator`：以状态节点方式串联目标接收、模型选择、上下文构建、工具规划、审批判断和响应生成。
 - Agent Skill 治理：已具备本地/远程 Skill descriptor、语义选择、准入策略、准入 runtime event 和智能网关摘要；Java `permission-admin` 已新增 Skill admission evaluate 契约，Python Runtime 已支持可选远程调用。Skill 命中后会继续校验 `grantedPermissions`、`actorRole` 与风险等级；显式缺权限或普通用户命中高风险 Skill 时会进入 `rejectedSkills`，缺少控制面事实时只做条件性推荐。`SKILL_ADMISSION_EVALUATED` 事件与 `intelligentGatewayGovernance.skillAdmission` 会解释 Skill 启用、条件性启用或拒绝原因。
 - 智能网关工具治理：已具备模型工具调用候选规划、可见工具校验、参数 schema 校验和工具调用预算守卫，可限制单轮工具数量、自动推进数量、高风险工具数量和 arguments 体积；预算策略已抽象为 provider，当前支持环境变量、`AgentRequest.variables["toolCallBudget"]` 覆盖，以及可选远程调用 Java permission-admin `/permissions/agent/tool-budget-policies/evaluate`。远程策略默认关闭，适合生产或联调环境按租户套餐、项目等级、角色、workspace 风险和实时 backlog 动态生成预算；预算阻断会写入独立 `MODEL_TOOL_CALL_BUDGET_GUARDED` runtime event，API 响应已提供 `intelligentGatewayGovernance` 统一摘要，汇总模型路由、工具预算、workspace 和记忆检索治理事实。
-- 长期记忆治理：已具备记忆召回计划、候选生成、审批/拒绝、候选 SQL store、低敏摘要正式落成、materialization receipt、正式记忆 SQL store、正式记忆 runtime builder、lease token fencing runner、失败退避、DLQ 基础语义、管理员补偿入口、物化 runtime event 和 store-backed 检索接入；候选和正式记忆都会携带 `workspaceKey/memoryNamespace`，检索时按当前 Agent 工作空间过滤，避免同项目不同 workspace 或 session 沙箱误共享记忆。当前默认装配仍以本地内存 store 便于学习和单测；生产可通过 `DATASMART_AI_FORMAL_MEMORY_*` 与 `DATASMART_AI_MEMORY_LEASE_*` 切到 MySQL，让 `/agent/plans` 从正式记忆表召回低敏经验，并让未来多实例 worker 安全领取候选。
+- 长期记忆治理：已具备记忆召回计划、候选生成、审批/拒绝、候选 SQL store、低敏摘要正式落成、materialization receipt、正式记忆 SQL store、正式记忆 runtime builder、lease token fencing runner、失败退避、DLQ 基础语义、管理员补偿入口、物化 runtime event、低基数 Prometheus 指标和 store-backed 检索接入；候选和正式记忆都会携带 `workspaceKey/memoryNamespace`，检索时按当前 Agent 工作空间过滤，避免同项目不同 workspace 或 session 沙箱误共享记忆。当前默认装配仍以本地内存 store 便于学习和单测；生产可通过 `DATASMART_AI_FORMAL_MEMORY_*` 与 `DATASMART_AI_MEMORY_LEASE_*` 切到 MySQL，让 `/agent/plans` 从正式记忆表召回低敏经验，并让未来多实例 worker 安全领取候选。
 - `api.create_app()`：提供可选 FastAPI 入口。当前测试不依赖 FastAPI，安装 API 依赖后即可启动服务。
 - Agent API 路由已从 bootstrap 入口拆到 `api_agent_routes.py`：`api.py` 只负责装配模型网关、事件组件、长期记忆候选治理和 Java 控制面客户端；`/agent/plans`、事件 replay/control 与 WebSocket handler 由独立注册函数承载。这样后续继续增加服务间认证、智能网关会话、审计导出和长期记忆上下文注入时，不会把启动文件拖成难以维护的巨型模块。
 - 目录层级治理已开始落地：长期记忆相关服务已迁入 `services/memory/`，实时事件流相关服务已迁入 `services/runtime_events/`，模型路由/provider/预算/tool-call 相关服务已迁入 `services/model_gateway/`，并新增 [Python AI Runtime 目录层级治理规范](../docs/python-ai-runtime-package-layout.md)。后续新增功能应优先进入 `agent/`、`memory/`、`model_gateway/`、`runtime_events/`、`tools/`、`skills/` 等能力包，而不是继续把十几个文件散放在同一个目录。
@@ -391,8 +391,8 @@ dry-run 和受控重排重新放回 Runner 可领取窗口。
 
 - Python Runtime 仍不直接做用户鉴权，生产环境必须由 gateway/permission-admin 保护该入口；
 - 补偿操作当前写入 lease message，尚未接统一审计事件表；
-- 还没有批量补偿、审批流、错误类型分组处理或 Prometheus 指标；
-- 下一步应把补偿结果、DLQ 数量、退避跳过数量和 fencing 失败数量继续接入 Prometheus 或统一审计表。
+- 还没有批量补偿、审批流、错误类型分组处理或统一审计事件表；
+- 下一步应把补偿事件接入统一审计 outbox，并设计批量 dry-run/二次确认能力。
 
 # 5.08 Agent 长期记忆物化 Runtime Event
 
@@ -422,3 +422,29 @@ FastAPI `create_app()` 已把 `/agent/memory/materialization/leases/{candidateId
 event store 与 publisher。事件投递当前采用 fail-open 语义：如果 Redis/Kafka 旁路不可用，补偿主流程不会被回滚，
 响应中的 `runtimeEventDelivery.errors` 会返回低敏诊断摘要。生产环境如果要求审计事件强一致，下一步应引入事务
 outbox 或 fail-closed 配置，而不是在 API handler 中隐式阻塞所有本地学习场景。
+
+# 5.09 Agent 长期记忆物化低基数 Prometheus 指标
+
+长期记忆物化 Runtime Event 现在可以进一步映射为 Prometheus 文本指标。新增
+`AgentMemoryMaterializationMetrics`，用于把 `memory_materialization_run_completed` 与
+`memory_materialization_requeue_recorded` 转换成低基数 Counter/Summary 风格序列。
+
+新增端点：
+
+- `GET /agent/metrics`：返回 Prometheus exposition text，默认由 `create_app()` 暴露。
+
+新增指标：
+
+- `datasmart_ai_memory_materialization_runs_total{result,severity}`：Runner 批次数，`result` 只允许 `succeeded/partial_failed/dead_lettered/finalize_error`；
+- `datasmart_ai_memory_materialization_candidates_total{result}`：候选扫描、领取、成功、失败、跳过、DLQ 聚合数；
+- `datasmart_ai_memory_materialization_skips_total{reason}`：跳过原因，限定为 `retry_cooldown/active_lease/dead_letter/already_succeeded/other`；
+- `datasmart_ai_memory_materialization_finalize_errors_total`：lease token fencing 或 finalize 回写失败数；
+- `datasmart_ai_memory_materialization_duration_milliseconds_count/sum{result}`：Runner 批次耗时；
+- `datasmart_ai_memory_materialization_requeues_total{action,dry_run,after_status}`：管理员补偿重排次数。
+
+指标边界：
+
+- 不使用 `tenantId/projectId/candidateId/leaseId/requestId/runId/sessionId/workspaceKey` 作为标签，避免高基数时序拖垮 Prometheus；
+- 单条候选定位继续走 Runtime Event replay、lease/receipt 查询和审计日志；
+- 当前实现不依赖 `prometheus_client`，保持 Python Runtime 默认零依赖；后续如果需要 Histogram、multiprocess 或进程指标，可替换为官方 client 适配器；
+- `docker/prometheus/prometheus.yml` 已新增 `python-ai-runtime` job，默认抓取 `host.docker.internal:8090/agent/metrics`。

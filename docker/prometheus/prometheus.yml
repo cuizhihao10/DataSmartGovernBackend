@@ -46,6 +46,14 @@ scrape_configs:
       - targets: ['host.docker.internal:8084']
     metrics_path: '/actuator/prometheus'
 
+  - job_name: 'python-ai-runtime'
+    static_configs:
+      # Python AI Runtime 默认建议监听 8090，避免与 Chroma 等本地 AI 组件常用的 8000 端口冲突。
+      # 该服务不是 Spring Boot 应用，因此不使用 /actuator/prometheus，而是暴露轻量业务指标端点 /agent/metrics。
+      # 当前端点只输出低基数长期记忆物化指标；单条候选排障继续走 Runtime Event replay、lease/receipt 查询和审计链路。
+      - targets: ['host.docker.internal:8090']
+    metrics_path: '/agent/metrics'
+
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
