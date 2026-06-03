@@ -1,5 +1,34 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-04 追加落地进展：异步命令 Worker Pre-Check 契约
+
+- `agent-runtime` 新增 `AgentAsyncTaskCommandPreCheckService`，用于未来真实 DAG worker / task-management worker 在执行异步 command 前做只读复核。
+- 新增 `AgentAsyncTaskCommandPreCheckVerdict`，输出稳定机器决策：
+  - `ALLOW_EXECUTION`：确认记录有效，当前策略仍允许异步执行；
+  - `BLOCKED`：缺确认、确认过期、确认状态不正确、策略不再允许、沙箱拒绝等不可直接执行问题；
+  - `DEFERRED`：当前策略暂不可判断或 runtime-protection 容量/熔断暂缓，适合后续 worker 退避重试。
+- pre-check 合并了以下执行前事实：
+  - command payload 中的 `confirmationId/policyVersions`；
+  - selected-node confirmation store 中的状态、过期时间、选中 auditId、commandId 和策略版本；
+  - 当前 Run 级 execution-policy；
+  - sandbox verdict；
+  - runtime-protection verdict。
+- 新增 `AgentAsyncTaskCommandPreCheckServiceTest`，覆盖：
+  - 有效确认 + 当前策略允许时通过；
+  - command 缺 confirmationId 时 fail-closed；
+  - confirmation 过期时阻断；
+  - targetService 容量满额时返回 `DEFERRED`。
+
+产品意义：
+- selected-node confirmation 和 command outbox 现在不再只是“入箱证据”，而是具备了 worker 执行前最终复核入口。
+- 这一步降低了未来真实 DAG worker 的事故风险：worker 不会因为 command 已存在就直接触发副作用，而会重新确认当前策略、沙箱、容量和确认事实。
+- 本阶段仍不启动真实后台 worker，也不修改 outbox 状态；它先固定可测试契约，避免 worker 上线后再大改执行安全语义。
+
+下一步推荐路线：
+1. 如果继续 Agent Runtime，应把 pre-check 接入异步 command dispatcher 或未来 worker，并在拒绝/暂缓时写入 runtime event。
+2. 将 `BLOCKED/DEFERRED` issueCodes 接入低基数 Prometheus 指标和告警。
+3. 完成最小 worker 接入后，建议切换到 MCP/Skill 发布流、长期记忆二级索引或智能网关多 Agent 协作，避免继续只在 Java Agent Runtime 局部无限打磨。
+
 ## 2026-06-04 追加落地进展：Runtime Event 展示接入工具阻断摘要
 
 - `agent-runtime` 已把 DAG dry-run 中的 sandbox/runtime-protection verdict 压缩为 runtime event 低敏摘要：

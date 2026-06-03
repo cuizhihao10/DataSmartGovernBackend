@@ -1,4 +1,12 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-04 落地补充：workers need a final pre-check, not just an outbox record
+
+- 本阶段新增异步 command worker pre-check 契约。它对应成熟 Agent 平台的 durable action 思路：命令已经入箱只代表“曾经被确认过”，不代表 worker 领取时仍然可以执行真实副作用。
+- DataSmart 的 pre-check 把 selected-node confirmation、当前 execution-policy、sandbox verdict、runtime-protection verdict 和 payload 中的 policyVersions 合并成一个 verdict。这比在 worker 中散落多个 if 判断更适合商业化产品，因为所有拒绝、暂缓、审计和告警都能共享同一套 issueCodes。
+- `DEFERRED` 与 `BLOCKED` 的区分很重要：容量满额、目标服务熔断、策略服务暂不可用适合退避重试；确认过期、缺 confirmation、沙箱拒绝、策略不再允许则应阻断并等待重新确认或管理员处理。
+- 本阶段没有直接启动真实 worker，是刻意控制节奏。先固定 pre-check 契约和测试，再接 worker、runtime event、Prometheus 和补偿入口，可以避免一边执行副作用一边重构安全语义。
+- 下一步趋势落地应把 pre-check 接入 dispatcher/worker，并让每次 `BLOCKED/DEFERRED` 成为可 replay 事件和低基数指标；随后切换到 MCP/Skill 发布流、长期记忆二级索引或智能网关多 Agent 协作，保持项目整体均衡。
+
 ## 2026-06-04 落地补充：guardrail issue codes should become replayable facts
 
 - 本阶段把 sandbox/runtime-protection 的 issueCodes 接入 DAG dry-run runtime event 和 display。这个方向对应成熟 Agent host 的一个关键趋势：工具调用保护不能只在当次 HTTP 响应里解释，必须进入可 replay、可审计、可运营聚合的事件事实层。
