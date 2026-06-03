@@ -13,6 +13,7 @@ import com.czh.datasmart.govern.agent.model.AgentRunState;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionMode;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
 import com.czh.datasmart.govern.agent.model.AgentToolRiskLevel;
+import com.czh.datasmart.govern.agent.model.AgentToolType;
 import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditMemoryStore;
@@ -20,6 +21,7 @@ import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecor
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
+import com.czh.datasmart.govern.agent.service.tool.sandbox.AgentToolSandboxPolicyService;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
@@ -165,6 +167,29 @@ class AgentRunToolExecutionPolicyServiceTest {
         assertEquals(AgentRunToolExecutionDecision.RUN_TERMINAL_BLOCKED.name(), policy.items().getFirst().decision());
     }
 
+    @Test
+    void sandboxRejectedToolShouldBecomePolicyBlockedWithIssueCodes() {
+        TestFixture fixture = newSandboxFixture(AgentRunState.PLANNING);
+        fixture.saveAudits(audit(
+                "atea-policy-sandbox-oversize",
+                AgentToolExecutionState.PLANNED,
+                AgentToolExecutionMode.SYNC,
+                AgentToolRiskLevel.LOW,
+                false,
+                true,
+                true,
+                Map.of()
+        ));
+
+        AgentRunToolExecutionPolicyView policy = fixture.service.inspectRunPolicy("session-policy-001", "run-policy-001");
+
+        assertEquals(0, policy.autoExecutableCount());
+        assertEquals(1, policy.blockingCount());
+        assertEquals(AgentRunToolExecutionDecision.BLOCKED_BY_POLICY.name(), policy.items().getFirst().decision());
+        assertFalse(policy.items().getFirst().sandboxAllowed());
+        assertTrue(policy.items().getFirst().sandboxIssueCodes().contains("ARGUMENT_BYTES_EXCEED_LIMIT"));
+    }
+
     /**
      * 构造测试上下文。
      *
@@ -172,17 +197,45 @@ class AgentRunToolExecutionPolicyServiceTest {
      * 策略服务只依赖当前 Run 和审计快照，不需要 Spring 容器、HTTP Controller 或真实数据库。
      */
     private TestFixture newFixture(AgentRunState runState) {
+        AgentRuntimeProperties properties = new AgentRuntimeProperties();
+        return newFixture(runState, properties, false);
+    }
+
+    private TestFixture newSandboxFixture(AgentRunState runState) {
+        AgentRuntimeProperties properties = new AgentRuntimeProperties();
+        properties.getToolSandbox().setMaxArgumentBytes(16);
+        properties.getToolServiceBaseUrls().put("datasource-management", "http://localhost:8082");
+        properties.getToolRegistry().put("datasource.metadata.read", datasourceMetadataTool());
+        return newFixture(runState, properties, true);
+    }
+
+    /**
+     * 构造测试上下文。
+     *
+     * <p>enableSandbox=false 使用旧兼容构造函数，保护历史 execution-policy 状态机测试；
+     * enableSandbox=true 使用显式沙箱服务，验证新接入的执行前安全 verdict 会参与 Run 级策略判断。</p>
+     */
+    private TestFixture newFixture(AgentRunState runState,
+                                   AgentRuntimeProperties properties,
+                                   boolean enableSandbox) {
         AgentSessionMemoryStore sessionStore = new AgentSessionMemoryStore();
         AgentToolExecutionAuditMemoryStore auditStore = new AgentToolExecutionAuditMemoryStore();
         AgentToolExecutionAuditService auditService = new AgentToolExecutionAuditService(
                 auditStore,
                 new NoopAgentToolExecutionEventPublisher()
         );
-        AgentRunToolExecutionPolicyService service = new AgentRunToolExecutionPolicyService(
-                new AgentRuntimeProperties(),
-                sessionStore,
-                auditService
-        );
+        AgentRunToolExecutionPolicyService service = enableSandbox
+                ? new AgentRunToolExecutionPolicyService(
+                        properties,
+                        sessionStore,
+                        auditService,
+                        new AgentToolSandboxPolicyService(properties)
+                )
+                : new AgentRunToolExecutionPolicyService(
+                        properties,
+                        sessionStore,
+                        auditService
+                );
         AgentSessionRecord session = new AgentSessionRecord(
                 "session-policy-001",
                 10L,
@@ -210,6 +263,24 @@ class AgentRunToolExecutionPolicyServiceTest {
         ));
         sessionStore.save(session);
         return new TestFixture(service, auditStore);
+    }
+
+    private AgentRuntimeProperties.ToolDefinitionProperties datasourceMetadataTool() {
+        AgentRuntimeProperties.ToolDefinitionProperties tool = new AgentRuntimeProperties.ToolDefinitionProperties();
+        tool.setEnabled(true);
+        tool.setToolCode("datasource.metadata.read");
+        tool.setToolType(AgentToolType.DATASOURCE_METADATA);
+        tool.setTargetService("datasource-management");
+        tool.setTargetEndpoint("/metadata");
+        tool.setReadOnly(true);
+        tool.setRiskLevel(AgentToolRiskLevel.LOW);
+        tool.setExecutionMode(AgentToolExecutionMode.SYNC);
+        tool.setRequiresApproval(false);
+        tool.setIdempotent(true);
+        tool.setTimeoutMs(10000L);
+        tool.setMaxRetries(0);
+        tool.setAllowedActions(List.of("READ"));
+        return tool;
     }
 
     private AgentToolExecutionAuditRecord audit(String auditId,

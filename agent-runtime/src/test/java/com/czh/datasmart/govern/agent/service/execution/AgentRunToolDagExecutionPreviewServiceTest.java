@@ -17,6 +17,7 @@ import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
 import com.czh.datasmart.govern.agent.model.AgentToolRiskLevel;
 import com.czh.datasmart.govern.agent.model.AgentToolServiceAuthorizationDecision;
 import com.czh.datasmart.govern.agent.model.AgentToolServiceAuthorizationMode;
+import com.czh.datasmart.govern.agent.model.AgentToolType;
 import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
 import com.czh.datasmart.govern.agent.service.authorization.AgentToolServiceAuthorizationRemoteRequest;
@@ -28,6 +29,7 @@ import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecor
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
+import com.czh.datasmart.govern.agent.service.tool.sandbox.AgentToolSandboxPolicyService;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
@@ -217,6 +219,32 @@ class AgentRunToolDagExecutionPreviewServiceTest {
         assertEquals(AgentToolDagExecutionPreviewAction.WAIT_HUMAN_ACTION.name(), item(preview, "task-create").previewAction());
     }
 
+    @Test
+    void sandboxRejectedNodeShouldBeVisibleAndBlockedInPreview() {
+        TestFixture fixture = newSandboxFixture();
+        fixture.saveAudits(audit(
+                "audit-sandbox",
+                1,
+                AgentToolExecutionState.PLANNED,
+                AgentToolExecutionMode.SYNC,
+                AgentToolRiskLevel.LOW,
+                false,
+                true,
+                true,
+                Map.of("planNodeId", "sandbox-blocked")
+        ));
+
+        AgentRunToolDagExecutionPreviewView preview = fixture.previewService.previewRunDagExecution(SESSION_ID, RUN_ID);
+
+        assertFalse(preview.hasExecutableCandidates());
+        assertEquals(1, preview.blockedCount());
+        AgentToolDagExecutionPreviewItemView item = item(preview, "sandbox-blocked");
+        assertEquals(AgentToolDagExecutionPreviewAction.BLOCKED_BY_POLICY.name(), item.previewAction());
+        assertFalse(item.sandboxAllowed());
+        assertTrue(item.sandboxIssueCodes().contains("ARGUMENT_BYTES_EXCEED_LIMIT"));
+        assertTrue(preview.summaryReasons().stream().anyMatch(reason -> reason.contains("工具调用沙箱未通过")));
+    }
+
     private AgentToolDagExecutionPreviewItemView item(AgentRunToolDagExecutionPreviewView preview, String nodeId) {
         return preview.items().stream()
                 .filter(item -> nodeId.equals(item.nodeId()))
@@ -229,13 +257,29 @@ class AgentRunToolDagExecutionPreviewServiceTest {
         });
     }
 
+    private TestFixture newSandboxFixture() {
+        return newFixture(properties -> {
+        }, request -> null, true);
+    }
+
     private TestFixture newFixture(Consumer<AgentToolServiceAuthorizationProperties> authorizationCustomizer) {
-        return newFixture(authorizationCustomizer, request -> null);
+        return newFixture(authorizationCustomizer, request -> null, false);
     }
 
     private TestFixture newFixture(Consumer<AgentToolServiceAuthorizationProperties> authorizationCustomizer,
                                    PermissionAdminServiceAuthorizationClient authorizationClient) {
+        return newFixture(authorizationCustomizer, authorizationClient, false);
+    }
+
+    private TestFixture newFixture(Consumer<AgentToolServiceAuthorizationProperties> authorizationCustomizer,
+                                   PermissionAdminServiceAuthorizationClient authorizationClient,
+                                   boolean enableSandbox) {
         AgentRuntimeProperties properties = new AgentRuntimeProperties();
+        if (enableSandbox) {
+            properties.getToolSandbox().setMaxArgumentBytes(16);
+            properties.getToolServiceBaseUrls().put("datasource-management", "http://localhost:8082");
+            properties.getToolRegistry().put("datasource.metadata.read", datasourceMetadataTool());
+        }
         AgentToolServiceAuthorizationProperties authorizationProperties = new AgentToolServiceAuthorizationProperties();
         authorizationCustomizer.accept(authorizationProperties);
         AgentSessionMemoryStore sessionStore = new AgentSessionMemoryStore();
@@ -244,11 +288,18 @@ class AgentRunToolDagExecutionPreviewServiceTest {
                 auditStore,
                 new NoopAgentToolExecutionEventPublisher()
         );
-        AgentRunToolExecutionPolicyService policyService = new AgentRunToolExecutionPolicyService(
-                properties,
-                sessionStore,
-                auditService
-        );
+        AgentRunToolExecutionPolicyService policyService = enableSandbox
+                ? new AgentRunToolExecutionPolicyService(
+                        properties,
+                        sessionStore,
+                        auditService,
+                        new AgentToolSandboxPolicyService(properties)
+                )
+                : new AgentRunToolExecutionPolicyService(
+                        properties,
+                        sessionStore,
+                        auditService
+                );
         AgentRunToolPlanDagService dagService = new AgentRunToolPlanDagService(policyService, auditService);
         AgentRunAsyncTaskCommandPlanningService asyncPlanningService = new AgentRunAsyncTaskCommandPlanningService(
                 properties,
@@ -294,6 +345,24 @@ class AgentRunToolDagExecutionPreviewServiceTest {
         ));
         sessionStore.save(session);
         return new TestFixture(previewService, auditStore);
+    }
+
+    private AgentRuntimeProperties.ToolDefinitionProperties datasourceMetadataTool() {
+        AgentRuntimeProperties.ToolDefinitionProperties tool = new AgentRuntimeProperties.ToolDefinitionProperties();
+        tool.setEnabled(true);
+        tool.setToolCode("datasource.metadata.read");
+        tool.setToolType(AgentToolType.DATASOURCE_METADATA);
+        tool.setTargetService("datasource-management");
+        tool.setTargetEndpoint("/metadata");
+        tool.setReadOnly(true);
+        tool.setRiskLevel(AgentToolRiskLevel.LOW);
+        tool.setExecutionMode(AgentToolExecutionMode.SYNC);
+        tool.setRequiresApproval(false);
+        tool.setIdempotent(true);
+        tool.setTimeoutMs(10000L);
+        tool.setMaxRetries(0);
+        tool.setAllowedActions(List.of("READ"));
+        return tool;
     }
 
     private AgentToolExecutionAuditRecord audit(String auditId,

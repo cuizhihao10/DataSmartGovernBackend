@@ -26,6 +26,11 @@ import java.util.List;
  * @param autoExecutable 是否可作为当前批次自动执行候选；这只是候选标记，不会在查询接口里触发副作用。
  * @param requiresHumanAction 是否需要人类介入，例如审批、补参数、人工复核失败。
  * @param blocksRun 是否阻塞当前 Run 继续自动推进。
+ * @param sandboxAllowed 工具调用沙箱是否允许该工具进入真实执行入口。它是执行前安全预检结论，不代表工具已经执行。
+ * @param sandboxIsolationMode 沙箱建议隔离模式，例如 READ_ONLY_SYNC、APPROVAL_BOUND、ASYNC_TASK_BOUND、BLOCKED。
+ * @param sandboxIssueCodes 沙箱机器可读问题码，便于前端、运维、测试和后续告警稳定识别阻断原因。
+ * @param sandboxReasons 沙箱中文原因说明。该字段只返回低敏解释，不返回完整工具参数、SQL、样本数据或 prompt。
+ * @param sandboxRecommendedActions 沙箱推荐动作，例如补工具目录、补审批、拆异步任务、修复非幂等重试配置。
  * @param reasons 产生该决策的原因列表，面向学习、审计和排障。
  * @param recommendedActions 推荐下一步动作，面向前端按钮、运营处理和 Python 编排器。
  */
@@ -41,6 +46,11 @@ public record AgentRunToolExecutionPolicyItemView(String auditId,
                                                   Boolean autoExecutable,
                                                   Boolean requiresHumanAction,
                                                   Boolean blocksRun,
+                                                  Boolean sandboxAllowed,
+                                                  String sandboxIsolationMode,
+                                                  List<String> sandboxIssueCodes,
+                                                  List<String> sandboxReasons,
+                                                  List<String> sandboxRecommendedActions,
                                                   List<String> reasons,
                                                   List<String> recommendedActions) {
 }

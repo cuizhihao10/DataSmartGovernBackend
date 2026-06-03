@@ -32,6 +32,11 @@ import java.util.List;
  * @param serviceAuthorizationAllowed 服务间授权是否通过；null 表示没有授权预检上下文。
  * @param serviceAuthorizationPolicyVersions permission-admin 返回的策略版本集合；selected-node 确认入箱会把调用方看到的版本与最新版本对齐校验。
  * @param serviceAuthorizationDelegationEvidence 服务账号代表用户执行工具时的委托证据，例如授权中心生成的审计编号或委托链路摘要。
+ * @param sandboxAllowed 工具调用沙箱是否允许该节点后续进入真实执行入口。
+ * @param sandboxIsolationMode 沙箱建议隔离模式。
+ * @param sandboxIssueCodes 沙箱问题码；dry-run 会把它透传出来，避免用户只看到“preview 阻断”却不知道具体安全原因。
+ * @param sandboxReasons 沙箱低敏原因说明。
+ * @param sandboxRecommendedActions 沙箱推荐动作。
  * @param riskLevel 工具风险等级，沿用 policy 口径。
  * @param readOnly 工具是否只读。
  * @param idempotent 工具是否幂等。
@@ -56,6 +61,11 @@ public record AgentToolDagExecutionDryRunItemView(
         Boolean serviceAuthorizationAllowed,
         List<String> serviceAuthorizationPolicyVersions,
         List<String> serviceAuthorizationDelegationEvidence,
+        Boolean sandboxAllowed,
+        String sandboxIsolationMode,
+        List<String> sandboxIssueCodes,
+        List<String> sandboxReasons,
+        List<String> sandboxRecommendedActions,
         String riskLevel,
         Boolean readOnly,
         Boolean idempotent,

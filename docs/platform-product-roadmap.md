@@ -1,5 +1,38 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-03 追加落地进展：Agent 沙箱 Verdict 接入 Run/DAG 批量推进策略
+
+- `agent-runtime` 已将上阶段单工具 `sandbox-policy` 诊断接入 Run 级 execution-policy、DAG execution preview 和 DAG execution dry-run。
+- `AgentRunToolExecutionPolicyItemView` 新增沙箱字段：`sandboxAllowed`、`sandboxIsolationMode`、`sandboxIssueCodes`、`sandboxReasons`、`sandboxRecommendedActions`。
+- `AgentRunToolExecutionPolicyService` 在 `PLANNED` 工具阶段调用 `AgentToolSandboxPolicyService`：
+  - 沙箱通过时保留原有自动执行、异步执行器、草稿复核等策略；
+  - 沙箱拒绝时直接降级为 `BLOCKED_BY_POLICY`，避免批量策略把危险工具继续标记为可执行候选。
+- `AgentToolDagExecutionPreviewItemView` 与 `AgentRunToolDagExecutionPreviewService` 透传沙箱 verdict：
+  - DAG preview 可以在同一个节点明细里展示沙箱问题码、隔离模式和推荐动作；
+  - preview 汇总会提示存在沙箱未通过节点，真实 DAG worker 不应绕过该 verdict。
+- `AgentToolDagExecutionDryRunItemView` 与 `AgentRunToolDagExecutionDryRunService` 透传沙箱 verdict：
+  - 显式选择被沙箱拒绝的节点时，dry-run 返回 `BLOCKED_BY_PREVIEW`；
+  - 响应仍保留 `sandboxIssueCodes`，调用方不必再逐个调用单工具 `/sandbox-policy` 才能知道阻断原因。
+- 新增/更新测试：
+  - policy 覆盖沙箱拒绝工具变成 `BLOCKED_BY_POLICY`；
+  - preview 覆盖沙箱拒绝节点被阻断且汇总可见；
+  - dry-run 覆盖显式选择沙箱拒绝节点时仍不进入执行候选，并透传问题码。
+
+产品意义：
+- 上一阶段解决的是“单个工具执行前能否被沙箱拦截”；这一阶段解决的是“批量工具推进、DAG preview 和 dry-run 是否也尊重同一沙箱事实”。
+- 这一步降低了未来真实 DAG worker 的风险：worker 可以先消费 preview/dry-run 中已经合成的沙箱 verdict，而不是自己重新拼装一套判断逻辑。
+- 对前端和 Python Runtime 来说，一个 Run 级响应就能解释依赖、审批、参数、权限和沙箱阻断，不必在多工具场景下发起 N+1 次单工具诊断。
+
+当前边界：
+- 沙箱 verdict 尚未进入 runtime event、Prometheus 指标或审计 outbox。
+- 当前还没有真实 DAG worker；preview/dry-run 仍是无副作用策略面。
+- 当前工具级限流、目标服务健康熔断、SQL dry-run、HTTP egress allow-list 和输出脱敏仍未落地。
+
+下一步推荐路线：
+1. 将沙箱 issueCodes 写入 runtime event display 与低基数指标，形成可告警的工具安全阻断率。
+2. 在真实 DAG worker 启动前，增加工具级/目标服务级令牌桶、租户配额、并发池和下游健康熔断。
+3. 为 SQL/HTTP/文件类工具增加专用 sandbox adapter，形成从控制面策略沙箱到执行器隔离沙箱的递进链路。
+
 ## 2026-06-03 追加落地进展：Agent 工具调用沙箱策略
 
 - `agent-runtime` 新增工具调用沙箱控制面能力，把真实工具执行前的安全预检从“基础 Guard 校验”扩展为“可解释、可查询、可硬拦截”的 sandbox verdict。

@@ -294,6 +294,11 @@ public class AgentRunToolDagExecutionDryRunService {
                 authorization == null ? null : authorization.allowed(),
                 authorization == null ? List.of() : authorization.policyVersions(),
                 authorization == null ? List.of() : authorization.delegationEvidence(),
+                item.sandboxAllowed(),
+                item.sandboxIsolationMode(),
+                item.sandboxIssueCodes(),
+                item.sandboxReasons(),
+                item.sandboxRecommendedActions(),
                 item.riskLevel(),
                 item.readOnly(),
                 item.idempotent(),
@@ -347,6 +352,11 @@ public class AgentRunToolDagExecutionDryRunService {
                 List.of(),
                 null,
                 null,
+                List.of(),
+                List.of(),
+                List.of(),
+                null,
+                null,
                 null,
                 null,
                 List.of("调用方显式请求的目标在当前 Run 的 DAG execution preview 中不存在。"),
@@ -374,6 +384,9 @@ public class AgentRunToolDagExecutionDryRunService {
         if (Boolean.FALSE.equals(preview.hasExecutableCandidates())) {
             reasons.add("上游 preview 当前没有可执行候选，通常需要先处理依赖、审批、参数补全或服务间授权。");
         }
+        if (sandboxRejectedCount(items) > 0) {
+            reasons.add("本次 dry-run 包含沙箱拒绝的节点；这些节点即使命中选择器，也不会进入真实执行候选。");
+        }
         return reasons;
     }
 
@@ -387,6 +400,9 @@ public class AgentRunToolDagExecutionDryRunService {
         }
         if (count(items, AgentToolDagExecutionDryRunAction.BLOCKED_BY_PREVIEW) > 0) {
             actions.add("被 preview 阻断的节点应先处理依赖、参数、审批、权限或策略问题，而不是绕过 preview 直接调用执行入口。");
+        }
+        if (sandboxRejectedCount(items) > 0) {
+            actions.add("处理 dry-run item 中的 sandboxIssueCodes，再重新生成 execution-policy、preview 和 dry-run。");
         }
         actions.add("进入真实 DAG worker 前，还需要补齐租户配额、工具级限流、并发池、worker 指标和失败补偿策略。");
         return actions;
@@ -402,6 +418,12 @@ public class AgentRunToolDagExecutionDryRunService {
     private int count(List<AgentToolDagExecutionDryRunItemView> items, AgentToolDagExecutionDryRunAction action) {
         return (int) items.stream()
                 .filter(item -> action.name().equals(item.dryRunAction()))
+                .count();
+    }
+
+    private int sandboxRejectedCount(List<AgentToolDagExecutionDryRunItemView> items) {
+        return (int) items.stream()
+                .filter(item -> Boolean.FALSE.equals(item.sandboxAllowed()))
                 .count();
     }
 }

@@ -121,6 +121,11 @@ public class AgentRunToolDagExecutionPreviewService {
                 asyncPlan != null && Boolean.TRUE.equals(asyncPlan.dispatchable()),
                 asyncPlan == null ? null : asyncPlan.commandId(),
                 serviceAuthorization,
+                policy == null ? null : policy.sandboxAllowed(),
+                policy == null ? null : policy.sandboxIsolationMode(),
+                policy == null ? List.of() : policy.sandboxIssueCodes(),
+                policy == null ? List.of() : policy.sandboxReasons(),
+                policy == null ? List.of() : policy.sandboxRecommendedActions(),
                 node.blockedByNodeIds(),
                 List.copyOf(reasons),
                 List.copyOf(actions)
@@ -320,6 +325,9 @@ public class AgentRunToolDagExecutionPreviewService {
         } else {
             reasons.add("已生成服务间授权预检结果；真实执行入口仍需要二次读取最新权限和工具状态，避免预览后状态漂移。");
         }
+        if (sandboxRejectedCount(items) > 0) {
+            reasons.add("存在工具调用沙箱未通过的节点，preview 已将这些节点降级为策略阻断，真实 DAG worker 不应绕过该 verdict。");
+        }
         return reasons;
     }
 
@@ -333,6 +341,9 @@ public class AgentRunToolDagExecutionPreviewService {
         }
         if (count(items, AgentToolDagExecutionPreviewAction.WAIT_HUMAN_ACTION) > 0) {
             actions.add("优先处理审批、草稿确认或失败复核，避免 Agent 在未授权状态下继续行动。");
+        }
+        if (sandboxRejectedCount(items) > 0) {
+            actions.add("优先处理 sandboxIssueCodes 对应的工具目录、目标服务、参数体量、审批或幂等配置问题，再重新生成 preview。");
         }
         actions.add("进入真实 DAG worker 前，应先接入 permission-admin 服务间授权和工具级并发/配额策略。");
         return actions;
@@ -377,6 +388,12 @@ public class AgentRunToolDagExecutionPreviewService {
                 .filter(item -> !AgentToolServiceAuthorizationDecision.NOT_EVALUATED.name()
                         .equals(item.serviceAuthorization().decision()))
                 .filter(item -> !Boolean.TRUE.equals(item.serviceAuthorization().allowed()))
+                .count();
+    }
+
+    private int sandboxRejectedCount(List<AgentToolDagExecutionPreviewItemView> items) {
+        return (int) items.stream()
+                .filter(item -> Boolean.FALSE.equals(item.sandboxAllowed()))
                 .count();
     }
 

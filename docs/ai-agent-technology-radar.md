@@ -1,5 +1,14 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-03 落地补充：sandbox verdicts must propagate into batch planning
+
+- 本阶段把工具调用沙箱从“单工具执行前检查”推进到“Run/DAG 批量策略面共享 verdict”。这对应成熟 Agent 工程的一个关键点：安全判断不能只存在于最后 execute 入口，否则 preview、dry-run、前端按钮和 Python Runtime 仍可能把危险动作显示成候选。
+- DataSmart 当前让 execution-policy、DAG preview、DAG dry-run 共同透传 `sandboxAllowed/isolationMode/issueCodes/reasons/recommendedActions`。这让调用方在一次 Run 级响应中同时看到依赖、审批、参数、服务授权和沙箱阻断。
+- MCP Tools 规范强调服务端必须做访问控制、输入校验、限流和输出清洗；OpenAI Agents SDK 也把 guardrails 放在 agent/tool 调用链路中。DataSmart 的本次落点是把这些理念转成“host-side verdict 作为批量调度输入”，而不是只在 UI 上做提示。
+- 这一步仍不等同于容器沙箱。它先解决控制面事实一致性：只要沙箱拒绝，Run policy 就降级为 `BLOCKED_BY_POLICY`，DAG preview/dry-run 就不会继续把该节点当成可执行候选。
+- 下一步趋势落地应把沙箱 issueCodes 接入 runtime event、低基数指标和真实 DAG worker pre-check；随后再推进 SQL dry-run、HTTP egress allow-list、工具级限流和执行器隔离。
+- 参考资料：MCP Tools specification：`https://modelcontextprotocol.io/specification/draft/server/tools`；OpenAI Agents SDK guardrails：`https://openai.github.io/openai-agents-js/guides/guardrails`。
+
 ## 2026-06-03 落地补充：tool execution needs host-side sandbox verdicts
 
 - 本阶段把 `agent-runtime` 的工具执行前治理推进到“host-side sandbox verdict”。这对应当前 Agent 工程趋势：工具调用不能只靠模型自觉，也不能只靠 prompt 约束；真正执行工具的宿主/控制面必须在每次工具调用前后执行 guardrail、权限、参数、超时、输出和审计治理。

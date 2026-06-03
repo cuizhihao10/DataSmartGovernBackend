@@ -34,6 +34,12 @@ import java.util.List;
  * @param asyncCommandId 异步命令 ID；只有 ASYNC_TASK 且存在命令草案时有值。
  * @param serviceAuthorization 服务间授权预览。它解释 SERVICE_ACCOUNT 是否具备代表 actor 推进该工具的上下文或权限依据；
  *                             该字段不替代真实执行入口的二次授权。
+ * @param sandboxAllowed 工具调用沙箱是否允许该节点进入真实执行入口。preview 会把该字段从 execution-policy 透传出来，
+ *                       让前端和 Python Runtime 在 DAG 批量视图中也能看到执行前安全状态。
+ * @param sandboxIsolationMode 沙箱建议隔离模式，例如 READ_ONLY_SYNC、APPROVAL_BOUND、ASYNC_TASK_BOUND、BLOCKED。
+ * @param sandboxIssueCodes 沙箱问题码列表；为空通常表示沙箱未发现阻断项。
+ * @param sandboxReasons 沙箱低敏原因说明，不包含完整工具参数。
+ * @param sandboxRecommendedActions 沙箱推荐动作。
  * @param blockedByNodeIds 当前 DAG 前置阻断节点。
  * @param reasons 预览判断原因。
  * @param recommendedActions 推荐下一步动作。
@@ -57,6 +63,11 @@ public record AgentToolDagExecutionPreviewItemView(
         Boolean asyncDispatchable,
         String asyncCommandId,
         AgentToolServiceAuthorizationPreviewView serviceAuthorization,
+        Boolean sandboxAllowed,
+        String sandboxIsolationMode,
+        List<String> sandboxIssueCodes,
+        List<String> sandboxReasons,
+        List<String> sandboxRecommendedActions,
         List<String> blockedByNodeIds,
         List<String> reasons,
         List<String> recommendedActions

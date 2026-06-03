@@ -16,6 +16,7 @@ import com.czh.datasmart.govern.agent.model.AgentRunState;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionMode;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
 import com.czh.datasmart.govern.agent.model.AgentToolRiskLevel;
+import com.czh.datasmart.govern.agent.model.AgentToolType;
 import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditMemoryStore;
@@ -26,6 +27,7 @@ import com.czh.datasmart.govern.agent.service.runtime.InMemoryAgentRuntimeEventP
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
+import com.czh.datasmart.govern.agent.service.tool.sandbox.AgentToolSandboxPolicyService;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
@@ -222,8 +224,51 @@ class AgentRunToolDagExecutionDryRunServiceTest {
                 .anyMatch(item -> AgentToolDagExecutionDryRunAction.BATCH_LIMIT_REACHED.name().equals(item.dryRunAction())));
     }
 
+    @Test
+    void explicitSandboxRejectedNodeShouldStayBlockedAndExposeSandboxIssues() {
+        TestFixture fixture = newSandboxFixture();
+        fixture.saveAudits(audit(
+                "audit-sandbox",
+                1,
+                AgentToolExecutionState.PLANNED,
+                AgentToolExecutionMode.SYNC,
+                AgentToolRiskLevel.LOW,
+                false,
+                true,
+                true,
+                Map.of("planNodeId", "sandbox-blocked")
+        ));
+
+        AgentRunToolDagExecutionDryRunResponse response = fixture.dryRunService.dryRunDagExecution(
+                SESSION_ID,
+                RUN_ID,
+                new AgentRunToolDagExecutionDryRunRequest(List.of("sandbox-blocked"), List.of(), null, false)
+        );
+
+        assertEquals(1, response.selectedCount());
+        assertEquals(1, response.blockedCount());
+        AgentToolDagExecutionDryRunItemView item = response.items().getFirst();
+        assertEquals(AgentToolDagExecutionDryRunAction.BLOCKED_BY_PREVIEW.name(), item.dryRunAction());
+        assertFalse(item.sandboxAllowed());
+        assertTrue(item.sandboxIssueCodes().contains("ARGUMENT_BYTES_EXCEED_LIMIT"));
+        assertTrue(response.summaryReasons().stream().anyMatch(reason -> reason.contains("沙箱拒绝")));
+    }
+
     private TestFixture newFixture() {
+        return newFixture(false);
+    }
+
+    private TestFixture newSandboxFixture() {
+        return newFixture(true);
+    }
+
+    private TestFixture newFixture(boolean enableSandbox) {
         AgentRuntimeProperties properties = new AgentRuntimeProperties();
+        if (enableSandbox) {
+            properties.getToolSandbox().setMaxArgumentBytes(16);
+            properties.getToolServiceBaseUrls().put("datasource-management", "http://localhost:8082");
+            properties.getToolRegistry().put("datasource.metadata.read", datasourceMetadataTool());
+        }
         AgentToolServiceAuthorizationProperties authorizationProperties = new AgentToolServiceAuthorizationProperties();
         AgentSessionMemoryStore sessionStore = new AgentSessionMemoryStore();
         AgentToolExecutionAuditMemoryStore auditStore = new AgentToolExecutionAuditMemoryStore();
@@ -231,11 +276,18 @@ class AgentRunToolDagExecutionDryRunServiceTest {
                 auditStore,
                 new NoopAgentToolExecutionEventPublisher()
         );
-        AgentRunToolExecutionPolicyService policyService = new AgentRunToolExecutionPolicyService(
-                properties,
-                sessionStore,
-                auditService
-        );
+        AgentRunToolExecutionPolicyService policyService = enableSandbox
+                ? new AgentRunToolExecutionPolicyService(
+                        properties,
+                        sessionStore,
+                        auditService,
+                        new AgentToolSandboxPolicyService(properties)
+                )
+                : new AgentRunToolExecutionPolicyService(
+                        properties,
+                        sessionStore,
+                        auditService
+                );
         AgentRunToolPlanDagService dagService = new AgentRunToolPlanDagService(policyService, auditService);
         AgentRunAsyncTaskCommandPlanningService asyncPlanningService = new AgentRunAsyncTaskCommandPlanningService(
                 properties,
@@ -291,6 +343,24 @@ class AgentRunToolDagExecutionDryRunServiceTest {
         ));
         sessionStore.save(session);
         return new TestFixture(dryRunService, auditStore, projectionStore);
+    }
+
+    private AgentRuntimeProperties.ToolDefinitionProperties datasourceMetadataTool() {
+        AgentRuntimeProperties.ToolDefinitionProperties tool = new AgentRuntimeProperties.ToolDefinitionProperties();
+        tool.setEnabled(true);
+        tool.setToolCode("datasource.metadata.read");
+        tool.setToolType(AgentToolType.DATASOURCE_METADATA);
+        tool.setTargetService("datasource-management");
+        tool.setTargetEndpoint("/metadata");
+        tool.setReadOnly(true);
+        tool.setRiskLevel(AgentToolRiskLevel.LOW);
+        tool.setExecutionMode(AgentToolExecutionMode.SYNC);
+        tool.setRequiresApproval(false);
+        tool.setIdempotent(true);
+        tool.setTimeoutMs(10000L);
+        tool.setMaxRetries(0);
+        tool.setAllowedActions(List.of("READ"));
+        return tool;
     }
 
     private AgentToolExecutionAuditRecord audit(String auditId,

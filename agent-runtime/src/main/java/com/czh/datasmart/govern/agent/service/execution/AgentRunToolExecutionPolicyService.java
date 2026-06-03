@@ -14,12 +14,14 @@ import com.czh.datasmart.govern.agent.model.AgentRunState;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionMode;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
+import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
+import com.czh.datasmart.govern.agent.service.tool.sandbox.AgentToolSandboxPolicyService;
+import com.czh.datasmart.govern.agent.service.tool.sandbox.AgentToolSandboxVerdict;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
-import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -41,12 +43,42 @@ import java.util.Map;
  * 4. 商业化系统必须把失败重试、非幂等阻断、Run 终态保护等规则前置到统一策略层。
  */
 @Service
-@RequiredArgsConstructor
 public class AgentRunToolExecutionPolicyService {
 
     private final AgentRuntimeProperties properties;
     private final AgentSessionMemoryStore sessionMemoryStore;
     private final AgentToolExecutionAuditService auditService;
+    private final AgentToolSandboxPolicyService sandboxPolicyService;
+
+    /**
+     * Spring 运行时构造函数。
+     *
+     * <p>生产路径必须注入配置化的沙箱策略服务，使 execution-policy 与真实 execute 入口看到同一套沙箱规则。
+     * 这能避免前端看到“可执行”，但真实 execute 被 Guard 拒绝的口径漂移。</p>
+     */
+    public AgentRunToolExecutionPolicyService(AgentRuntimeProperties properties,
+                                              AgentSessionMemoryStore sessionMemoryStore,
+                                              AgentToolExecutionAuditService auditService,
+                                              AgentToolSandboxPolicyService sandboxPolicyService) {
+        this.properties = properties;
+        this.sessionMemoryStore = sessionMemoryStore;
+        this.auditService = auditService;
+        this.sandboxPolicyService = sandboxPolicyService;
+    }
+
+    /**
+     * 旧单元测试兼容构造函数。
+     *
+     * <p>仓库里已有不少测试只验证 execution-policy 的原始状态机语义，并未配置工具目录。
+     * 为避免这些测试因为“没有工具目录”被沙箱全部阻断，这里提供一个关闭沙箱的兼容路径。
+     * 新增沙箱集成测试应显式使用四参数构造函数。</p>
+     */
+    public AgentRunToolExecutionPolicyService(AgentRuntimeProperties properties,
+                                              AgentSessionMemoryStore sessionMemoryStore,
+                                              AgentToolExecutionAuditService auditService) {
+        this(disableSandbox(properties), sessionMemoryStore, auditService,
+                new AgentToolSandboxPolicyService(disableSandbox(properties)));
+    }
 
     /**
      * 查询某个 Run 的工具执行策略预检。
@@ -64,7 +96,7 @@ public class AgentRunToolExecutionPolicyService {
         AgentSessionRecord session = requireSession(sessionId);
         AgentRunRecord run = requireRun(session, runId);
         List<AgentRunToolExecutionPolicyItemView> items = auditService.listByRun(sessionId, runId).stream()
-                .map(audit -> inspectTool(run.getState(), audit))
+                .map(audit -> inspectTool(session, run, audit))
                 .toList();
         return toRunView(sessionId, run, items);
     }
@@ -76,7 +108,9 @@ public class AgentRunToolExecutionPolicyService {
      * 审批等待、参数缺失、执行模式、失败重试和终态保护都应该能被学习者直接读懂，也方便后续接入租户策略、
      * permission-admin 权限、工具健康状态和队列容量时继续扩展。
      */
-    private AgentRunToolExecutionPolicyItemView inspectTool(AgentRunState runState, AgentToolExecutionAuditView audit) {
+    private AgentRunToolExecutionPolicyItemView inspectTool(AgentSessionRecord session,
+                                                            AgentRunRecord run,
+                                                            AgentToolExecutionAuditView audit) {
         List<String> reasons = new ArrayList<>();
         List<String> actions = new ArrayList<>();
         AgentRunToolExecutionDecision decision;
@@ -86,8 +120,9 @@ public class AgentRunToolExecutionPolicyService {
 
         AgentToolExecutionState state = parseExecutionState(audit.state());
         AgentToolExecutionMode mode = parseExecutionMode(audit.executionMode());
+        AgentToolSandboxVerdict sandbox = inspectSandbox(session, run, audit);
 
-        if (runState.isTerminal()) {
+        if (run.getState().isTerminal()) {
             decision = AgentRunToolExecutionDecision.RUN_TERMINAL_BLOCKED;
             blocksRun = true;
             reasons.add("所属 Agent Run 已进入终态，不能再推进任何工具执行，避免历史审计事实被回写或重放。");
@@ -104,6 +139,14 @@ public class AgentRunToolExecutionPolicyService {
             blocksRun = true;
             reasons.add("参数校验结果仍包含 missingFields，当前工具没有足够输入，不能安全调用下游服务。");
             actions.add("让用户补充缺失字段，或由 Agent 重新规划并从上下文、记忆、数据源元数据中补齐参数。");
+        } else if (state == AgentToolExecutionState.PLANNED && !Boolean.TRUE.equals(sandbox.allowed())) {
+            decision = AgentRunToolExecutionDecision.BLOCKED_BY_POLICY;
+            requiresHumanAction = true;
+            blocksRun = true;
+            reasons.add("工具处于 PLANNED，但工具调用沙箱预检未通过，不能进入同步、异步或人工绕过执行入口。");
+            reasons.addAll(sandbox.reasons());
+            actions.add("先处理沙箱 issueCodes=" + sandbox.issueCodes() + " 对应的配置、审批、参数或目标服务问题，再重新预检。");
+            actions.addAll(sandbox.recommendedActions());
         } else if (state == AgentToolExecutionState.PLANNED) {
             ToolPlannedPolicy plannedPolicy = inspectPlannedTool(mode, audit, reasons, actions);
             decision = plannedPolicy.decision();
@@ -154,9 +197,32 @@ public class AgentRunToolExecutionPolicyService {
                 autoExecutable,
                 requiresHumanAction,
                 blocksRun,
+                sandbox.allowed(),
+                sandbox.isolationMode(),
+                sandbox.issueCodes(),
+                sandbox.reasons(),
+                sandbox.recommendedActions(),
                 List.copyOf(reasons),
                 List.copyOf(actions)
         );
+    }
+
+    /**
+     * 读取真实审计记录并执行工具沙箱预检。
+     *
+     * <p>execution-policy 原本只使用 {@link AgentToolExecutionAuditView}，但沙箱需要读取审批人、计划参数、
+     * governance hints 等完整审计事实。这里复用审计服务已有的 requireExecutionAuditRecord(...)，不新增审计服务方法，
+     * 避免继续扩大已经较重的审计服务文件。</p>
+     */
+    private AgentToolSandboxVerdict inspectSandbox(AgentSessionRecord session,
+                                                   AgentRunRecord run,
+                                                   AgentToolExecutionAuditView audit) {
+        AgentToolExecutionAuditRecord record = auditService.requireExecutionAuditRecord(
+                session.getSessionId(),
+                run.getRunId(),
+                audit.auditId()
+        );
+        return sandboxPolicyService.inspect(session, run, record);
     }
 
     /**
@@ -334,6 +400,12 @@ public class AgentRunToolExecutionPolicyService {
         if (!Boolean.TRUE.equals(properties.getEnabled())) {
             throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT, "Agent Runtime 当前未启用");
         }
+    }
+
+    private static AgentRuntimeProperties disableSandbox(AgentRuntimeProperties properties) {
+        AgentRuntimeProperties safeProperties = properties == null ? new AgentRuntimeProperties() : properties;
+        safeProperties.getToolSandbox().setEnabled(false);
+        return safeProperties;
     }
 
     private AgentSessionRecord requireSession(String sessionId) {
