@@ -10,10 +10,10 @@
 未来会接 Kafka/outbox worker、失败退避、DLQ、管理员补偿重放和 Prometheus 指标。如果批量方法遇到异常就
 整体中断，那么一个坏候选会长期阻塞同一窗口中的其他已审批记忆，最终表现为 agent “明明审批通过却记不住”。
 
-当前 Runner 已接入可替换 lease store，但暂不内置线程、调度器、失败退避或 DLQ。它可以被：
+当前 Runner 已接入可替换 lease store、失败退避和 DLQ，但不直接拥有后台线程生命周期。它可以被：
 - 本地 CLI 或测试直接调用；
 - FastAPI 管理路由显式触发；
-- 未来后台 worker 的单轮处理函数复用；
+- `AgentMemoryMaterializationWorker` 的单轮处理函数复用；
 - Java task-management 通过 HTTP/gRPC/Kafka 触发后作为 Python Runtime 内部执行器复用。
 """
 

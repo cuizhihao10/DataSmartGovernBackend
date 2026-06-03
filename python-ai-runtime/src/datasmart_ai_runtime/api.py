@@ -37,6 +37,10 @@ from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteR
 from datasmart_ai_runtime.services.memory.memory_planner import AgentMemoryPlanner
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
 from datasmart_ai_runtime.services.memory.memory_materialization_metrics import AgentMemoryMaterializationMetrics
+from datasmart_ai_runtime.services.memory.memory_materialization_worker import (
+    AgentMemoryMaterializationWorker,
+    memory_materialization_worker_settings_from_env,
+)
 from datasmart_ai_runtime.services.runtime_events.runtime_event_components import (
     build_runtime_event_components,
     runtime_event_component_diagnostics,
@@ -425,9 +429,33 @@ def create_app() -> Any:
     live_push_hub = runtime_events.live_push_hub
     event_publisher = runtime_events.event_publisher
     memory_materialization_metrics = AgentMemoryMaterializationMetrics()
+    memory_materialization_worker = AgentMemoryMaterializationWorker(
+        runner=memory_runtime.memory_materialization_runner,
+        settings=memory_materialization_worker_settings_from_env(),
+        event_store=event_store,
+        event_publisher=event_publisher,
+        metrics_recorder=memory_materialization_metrics,
+    )
     gateway_signature_nonce_settings = gateway_signature_nonce_store_settings_from_env()
     gateway_signature_nonce_store = build_gateway_signature_nonce_store(gateway_signature_nonce_settings)
     gateway_signature_security_stats = GatewaySignatureSecurityStats()
+
+    def _start_memory_materialization_worker() -> None:
+        """FastAPI startup 生命周期中启动长期记忆物化 worker。
+
+        worker 默认关闭；只有显式配置开启时才会创建后台线程。这里把启动函数放在 `create_app()` 内部，是为了复用
+        本次 API 装配出来的 runner、event store、publisher 和 metrics，而不是重新构建一套可能漂移的组件。
+        """
+
+        memory_materialization_worker.start()
+
+    def _stop_memory_materialization_worker() -> None:
+        """FastAPI shutdown 生命周期中请求 worker 优雅停止。"""
+
+        memory_materialization_worker.stop()
+
+    app.add_event_handler("startup", _start_memory_materialization_worker)
+    app.add_event_handler("shutdown", _stop_memory_materialization_worker)
 
     @app.get("/agent/events/diagnostics")
     def runtime_event_diagnostics() -> dict[str, Any]:
@@ -454,7 +482,12 @@ def create_app() -> Any:
     def memory_runtime_diagnostics() -> dict[str, Any]:
         """查询长期记忆运行时整体诊断信息。"""
 
-        return api_memory_runtime_diagnostics(memory_runtime)
+        diagnostics = api_memory_runtime_diagnostics(memory_runtime)
+        worker_diagnostics = memory_materialization_worker.diagnostics()
+        diagnostics["materializer"]["workerEnabled"] = worker_diagnostics["enabled"]
+        diagnostics["materializationRunner"]["workerEnabled"] = worker_diagnostics["enabled"]
+        diagnostics["materializationWorker"] = worker_diagnostics
+        return diagnostics
 
     @app.get("/agent/security/gateway-signature/diagnostics")
     def gateway_signature_security_runtime_diagnostics() -> dict[str, Any]:

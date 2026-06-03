@@ -1,12 +1,20 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-03 落地补充：memory materialization worker should be controlled, not hidden
+
+- 本阶段把长期记忆物化从“Runner 可显式调用”推进到“受控后台 worker 可选启动”。这一步对应成熟 Agent durable action 的核心要求：副作用不能只存在于一次同步请求中，而要能被后台恢复、周期执行、诊断和熔断。
+- DataSmart 当前没有把 worker 默认打开，而是要求显式配置 `DATASMART_AI_MEMORY_MATERIALIZATION_WORKER_ENABLED=true`。这是商业化产品很重要的安全姿态：长期记忆会影响未来模型上下文，未准备好 SQL lease store、审计和指标前不应自动写入。
+- Worker 每轮复用 Runner、Runtime Event 和 Prometheus 指标，而不是在后台线程里重写一套逻辑。这样“人工触发、CLI、后台循环、未来 Java task-management 调度”可以共享同一套低敏事实和观测链路。
+- 当前仍保持单线程循环，并通过 `maxConsecutiveErrors` 做连续异常熔断。多线程与租户并发并非没有价值，但应等 Prometheus 告警、SQL lease store、下游向量库容量、审计 outbox 和配额策略稳定后再扩展。
+- 下一步趋势落地建议：为 DLQ 增长、失败率升高、finalize error、补偿重排激增增加告警规则；再把补偿动作和 worker 批次写入审计 outbox/fail-closed 链路；最后进入 Chroma/Neo4j 二级索引 worker 和遗忘/归档任务。
+
 ## 2026-06-03 落地补充：memory materialization metrics must stay low-cardinality
 
 - 本阶段把长期记忆物化 Runtime Event 进一步映射为 Prometheus 低基数指标，覆盖 Runner 批次、候选处理数量、跳过原因、fencing finalize error、批次耗时和管理员补偿重排次数。
 - 这对应生产级 Agent 平台的 observability 纪律：runtime event/tracing 适合保留单次 run 和单条候选的上下文，Prometheus 适合聚合告警和趋势判断。二者不能混用，否则指标系统会被业务 ID、高频 trace 和候选明细拖垮。
 - DataSmart 当前明确禁止把 `tenantId/projectId/candidateId/leaseId/requestId/runId/sessionId/workspaceKey` 作为 Prometheus 标签，只保留 `result/severity/reason/action/dry_run/after_status` 等有限枚举。单条候选排障继续走 Runtime Event replay、lease/receipt 查询和审计日志。
 - 这一步仍保持 Python Runtime 默认零依赖，没有直接引入 `prometheus_client`。后续如果进入生产级指标体系，可以在保持 `/agent/metrics` 路径不变的前提下，替换为官方 client、Histogram、multiprocess collector 或 OpenTelemetry bridge。
-- 下一步趋势落地建议：启动受控常驻 worker，并让 worker 每轮自动生成 Runtime Event 与指标；同时设计审计 outbox/fail-closed 选项，满足强合规客户对补偿动作不可丢失的要求。
+- 受控常驻 worker 已在后续小批次落地。下一步趋势落地建议是设计审计 outbox/fail-closed 选项，并为 DLQ、失败率和 finalize error 增加告警规则，满足强合规客户对补偿动作不可丢失、对后台异常可告警的要求。
 
 ## 2026-06-03 落地补充：memory materialization needs traceable recovery events
 

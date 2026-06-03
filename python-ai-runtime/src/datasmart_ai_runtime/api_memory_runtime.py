@@ -12,6 +12,7 @@
 - 治理服务：负责候选生成、审批、拒绝；
 - materializer：负责把 APPROVED 候选幂等写入正式 store；
 - materialization runner：负责有界扫描 APPROVED 候选，并把单条失败隔离在批次报告中；
+- materialization worker：由 API 启动层按配置可选启动，周期性调用 runner，并把批次报告写入事件与指标；
 - retriever：负责让 Agent 规划请求能从正式 store 召回记忆。
 """
 
@@ -86,8 +87,9 @@ def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
     - receipt store 由 `DATASMART_AI_MEMORY_RECEIPT_*` 控制；
     - lease store 由 `DATASMART_AI_MEMORY_LEASE_*` 控制。
 
-    这里没有自动启动后台 worker。当前已具备 lease token fencing、失败退避和 DLQ 基础语义，但正式 worker
-    还需要管理员补偿入口、审计事件和指标。当前先把 store、materializer 和 runner 装配好，后续 worker 可以复用这里的组件边界。
+    这里仍不直接启动后台 worker，而只装配 runner、store 与治理组件。是否启动后台循环由 `api.py` 在 FastAPI
+    生命周期中根据 `DATASMART_AI_MEMORY_MATERIALIZATION_WORKER_*` 配置决定。这样可以避免组件装配函数产生隐藏线程，
+    也方便 CLI、测试或未来 Java task-management 调度器复用同一套长期记忆运行时。
     """
 
     write_store_runtime = build_memory_write_store_runtime()
@@ -150,8 +152,8 @@ def api_memory_runtime_diagnostics(components: ApiMemoryRuntimeComponents) -> di
             "runnerAvailable": True,
             "workerEnabled": False,
             "notes": (
-                "当前 API 已装配 materializer 和最小 runner。runner 可以被管理接口、CLI 或未来后台 worker 显式触发，"
-                "但 API 启动时尚不会自动消费 APPROVED 候选。生产化 worker 仍需要补管理员补偿入口、审计事件和指标。"
+                "当前 API 已装配 materializer、runner、管理员补偿、runtime event 和低基数指标。后台 worker 默认关闭，"
+                "只有显式配置 DATASMART_AI_MEMORY_MATERIALIZATION_WORKER_ENABLED=true 后才会在 FastAPI 生命周期中启动。"
             ),
         },
         "materializationRunner": {
@@ -161,7 +163,7 @@ def api_memory_runtime_diagnostics(components: ApiMemoryRuntimeComponents) -> di
             "notes": (
                 "runner 负责有界扫描 APPROVED 候选、领取 lease 并逐条调用 materializer。单条失败会进入批次报告，"
                 "不会阻塞同批其他候选；token fencing 会阻止过期 worker 覆盖新 worker。失败候选会先退避，达到最大尝试次数后进入 DLQ。"
-                "候选审批状态不被 runner 修改。"
+                "候选审批状态不被 runner 修改。后台循环由 AgentMemoryMaterializationWorker 可选驱动。"
             ),
         },
         "materializationAdmin": {
