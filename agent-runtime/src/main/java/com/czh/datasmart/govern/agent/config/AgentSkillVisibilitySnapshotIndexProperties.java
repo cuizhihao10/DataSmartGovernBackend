@@ -35,6 +35,23 @@ public class AgentSkillVisibilitySnapshotIndexProperties {
     private boolean enabled = true;
 
     /**
+     * Skill 可见性快照专用索引的实现类型。
+     *
+     * <p>当前支持：</p>
+     * <p>1. {@code memory}：默认值，使用 JVM 内存窗口，适合本地学习、单元测试和无数据库联调；</p>
+     * <p>2. {@code mysql}：使用 MySQL 表持久化低敏快照事实，适合需要跨实例共享、服务重启恢复、
+     * 审计导出和长期报表的集成环境/生产环境。</p>
+     *
+     * <p>这里没有把 {@code enabled} 和 {@code store} 合并成一个字段，是为了让运维语义更清晰：
+     * {@code enabled=false} 表示完全关闭专用索引并回退到通用 runtime event projection；
+     * {@code enabled=true + store=memory/mysql} 表示启用专用索引，但选择不同承载介质。
+     * 生产环境切换到 mysql 时，还必须同时设置
+     * {@code datasmart.agent-runtime.persistence.database-enabled=true} 并完成表结构迁移，
+     * 防止误配一个字符串就让应用在本地强制连接数据库。</p>
+     */
+    private String store = "memory";
+
+    /**
      * 单个 run 在内存索引中最多保留多少条 Skill 可见性快照。
      *
      * <p>正常一次 `/agent/plans` 通常只会产生一条快照；但多轮推理、重试、二轮工具反馈或未来会话内能力

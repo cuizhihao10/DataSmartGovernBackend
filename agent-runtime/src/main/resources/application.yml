@@ -125,6 +125,13 @@ datasmart:
         # 和后续 Manifest 指纹灰度排查。默认启用，因为当前实现仍是内存版，不依赖 MySQL/ClickHouse。
         # 如果要回退到 6.15 的行为，可以设置 enabled=false，查询服务会自动 fallback 到通用 projection。
         enabled: ${DATASMART_AGENT_RUNTIME_SKILL_VISIBILITY_INDEX_ENABLED:true}
+        # 专用索引实现类型。
+        # memory：默认 JVM 热窗口，适合本地学习、单元测试和无数据库联调；
+        # mysql：写入 agent_skill_visibility_snapshot_index 表，适合跨实例、跨重启、审计导出和长期治理报表。
+        # 切到 mysql 时必须同时设置 datasmart.agent-runtime.persistence.database-enabled=true，
+        # 并先执行 docker/mysql/migrations/20260604_agent_skill_visibility_snapshot_index.sql。
+        # 这里保留独立 store 开关，是为了支持“启用专用索引但选择不同承载介质”的灰度策略。
+        store: ${DATASMART_AGENT_RUNTIME_SKILL_VISIBILITY_INDEX_STORE:memory}
         # 单个 run 在索引中最多保留多少条 Skill 可见性快照。
         # 多轮推理、二轮工具反馈或未来会话内能力刷新都可能生成多条快照；上限用于防止异常循环堆积。
         max-snapshots-per-run: ${DATASMART_AGENT_RUNTIME_SKILL_VISIBILITY_INDEX_MAX_PER_RUN:1000}

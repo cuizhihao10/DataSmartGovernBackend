@@ -9242,3 +9242,52 @@ Manifest `contentFingerprint` 从“启动诊断字段”推进为“每次 Agen
 2. 增加索引诊断和低基数指标：物化成功数、重复数、fallback 查询数、按 Manifest 绑定状态的窗口分布。
 3. 再推进 gateway 会话级 Skill cache，按租户、项目、角色、权限包、套餐、workspace 风险、预算策略和 Manifest 指纹缓存 READY Skill。
 4. 当持久化索引与 cache 稳定后，建议切到长期记忆二级索引或多 Agent 协作，避免 Skill 可见性链路继续局部扩张。
+
+## 5.10 Skill 可见性快照 MySQL 持久化索引（2026-06-04）
+
+本阶段承接 5.09 的推荐，把 Skill 可见性快照专用索引从 JVM 内存窗口推进到可选 MySQL 持久化实现。
+这不是要把 agent-runtime 变成通用事件数据库，而是给 `skill_visibility_snapshot_recorded` 这一类低敏能力边界事实
+建立可恢复、可审计、可长期聚合的存储底座。
+
+已完成：
+- `AgentSkillVisibilitySnapshotIndexProperties` 新增 `store` 配置：
+  - `memory` 为默认实现，继续服务本地学习、单元测试和无数据库联调；
+  - `mysql` 启用 MySQL 版专用索引；
+  - `enabled=false` 仍表示关闭专用索引并回退通用 runtime event projection。
+- `InMemoryAgentSkillVisibilitySnapshotIndexStore` 改为只在 `enabled=true + store=memory` 时注册。
+- 新增 `JdbcAgentSkillVisibilitySnapshotIndexStore`：
+  - 只接收 `skill_visibility_snapshot_recorded`；
+  - 使用 `identity_key` 唯一键处理 Kafka 重放、consumer rebalance 和人工补偿导致的重复写入；
+  - 查询继续复用 `AgentRuntimeEventProjectionQuery`，保持 tenant/project/actor/request/run/session/severity/afterSequence/limit 语义；
+  - PROJECT 授权项目为空集合时直接返回空结果，不退化成全量查询。
+- 新增 `JdbcAgentSkillVisibilitySnapshotIndexRecordMapper`：
+  - 将 SQL 字段绑定、JSON 序列化、ResultSet 还原从 Store 中拆出；
+  - Store 保持在 500 行以内，避免重新形成“大 Impl”；
+  - `attributes_json` 只作为低敏兼容载体，主要查询字段拆成普通列。
+- `AgentRuntimeJdbcPersistenceConfiguration` 纳入 `skill-visibility-index.store=mysql` 条件，仍要求
+  `datasmart.agent-runtime.persistence.database-enabled=true` 才创建 JDBC 连接池。
+- 新增 MySQL 迁移脚本 `20260604_agent_skill_visibility_snapshot_index.sql`：
+  - 建立 `agent_skill_visibility_snapshot_index` 表；
+  - 按 run/session/request/actor/replaySequence、Manifest 指纹、权限事实来源和 severity 建索引；
+  - 明确不保存 prompt、SQL、工具参数、连接密钥、样本数据、长期记忆正文或完整权限明细。
+- `application.yml` 新增 `DATASMART_AGENT_RUNTIME_SKILL_VISIBILITY_INDEX_STORE` 配置说明。
+- 新增 JDBC Mapper/Store 单元测试，不连接真实 MySQL，使用 Mockito 保护幂等写入、字段还原、授权范围和查询参数绑定。
+
+产品意义：
+- Skill 可见性事实从“单实例热窗口”升级为可跨实例、跨重启恢复的治理事实。
+- Skill Marketplace、租户能力包统计、Manifest 灰度/回滚、权限策略漂移排查可以围绕同一张低敏索引表展开。
+- 前端治理卡片和运营报表不需要直接解析通用 runtime event attributes，也不需要依赖 Python Runtime 当前进程状态。
+- 通过 `store=memory/mysql` 保持学习环境和生产环境的不同成本模型，避免本地开发被数据库依赖绑死。
+
+当前边界：
+- MySQL Store 是同步物化路径，暂未实现 outbox 式补偿重放；极端情况下如果通用 projection 成功但 MySQL 索引失败，
+  当前会依赖日志/异常暴露，后续应补重放或 dispatcher。
+- 还没有 Prometheus 指标：物化成功数、重复数、失败数、查询来源、fallback 次数和按 Manifest 绑定状态分布。
+- 还没有按 `manifestFingerprint/tenantPlanCode/permissionFactSource` 的专用报表 API。
+- 还未接 gateway 会话级 READY Skill cache，也未接租户能力包发布流和 Skill Marketplace 可编辑发布。
+
+下一步建议：
+1. 增加 Skill 可见性索引诊断与低基数指标，先让物化链路是否健康变得可观测。
+2. 设计 gateway 会话级 Skill cache，把 Manifest 指纹、租户套餐、权限事实和 workspace 风险一起纳入缓存键。
+3. 将 MySQL 索引的长期保留策略、归档策略和管理员导出权限纳入审计设计。
+4. 完成 1-2 个索引/缓存闭环后，建议切到长期记忆二级索引或多 Agent 协作，保持项目整体推进节奏。

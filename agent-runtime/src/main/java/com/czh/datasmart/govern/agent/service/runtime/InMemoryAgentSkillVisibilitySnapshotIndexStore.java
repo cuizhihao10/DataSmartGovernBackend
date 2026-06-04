@@ -7,7 +7,7 @@
 package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.config.AgentSkillVisibilitySnapshotIndexProperties;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayDeque;
@@ -32,11 +32,9 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * <p>- 索引只保存低敏聚合事实，不能扩展为保存 prompt、SQL、工具参数或权限明细。</p>
  */
 @Component
-@ConditionalOnProperty(
-        prefix = "datasmart.agent-runtime.runtime-events.skill-visibility-index",
-        name = "enabled",
-        havingValue = "true",
-        matchIfMissing = true
+@ConditionalOnExpression(
+        "'${datasmart.agent-runtime.runtime-events.skill-visibility-index.enabled:true}'.equalsIgnoreCase('true') "
+                + "&& '${datasmart.agent-runtime.runtime-events.skill-visibility-index.store:memory}'.equalsIgnoreCase('memory')"
 )
 public class InMemoryAgentSkillVisibilitySnapshotIndexStore implements AgentSkillVisibilitySnapshotIndexStore {
 
