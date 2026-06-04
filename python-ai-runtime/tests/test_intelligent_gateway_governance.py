@@ -43,6 +43,12 @@ class IntelligentGatewayGovernanceResponseTest(unittest.TestCase):
         self.assertTrue(governance["modelGateway"]["available"])
         self.assertTrue(governance["skillAdmission"]["allowed"])
         self.assertGreaterEqual(governance["skillAdmission"]["selectedSkillCount"], 1)
+        self.assertEqual("SESSION_SKILL_VISIBILITY_SNAPSHOT", governance["skillVisibility"]["snapshotType"])
+        self.assertEqual("agent-plan-skill-admission", governance["skillVisibility"]["snapshotSource"])
+        self.assertGreaterEqual(governance["skillVisibility"]["visibleSkillCount"], 1)
+        self.assertEqual(0, governance["skillVisibility"]["hiddenSkillCount"])
+        self.assertEqual("missing", governance["skillVisibility"]["visibilityFilters"]["permissionFactSource"])
+        self.assertIn("visibleSkills", governance["skillVisibility"])
         self.assertTrue(governance["toolBudget"]["allowed"])
         self.assertEqual("tenant:tenant-a:project:project-a", governance["workspace"]["workspaceKey"])
         self.assertEqual("memory:tenant:tenant-a:project:project-a", governance["workspace"]["memoryNamespace"])
@@ -76,7 +82,16 @@ class IntelligentGatewayGovernanceResponseTest(unittest.TestCase):
         self.assertEqual(1, skill_admission["rejectedSkillCount"])
         self.assertEqual("quality.rule.design", skill_admission["rejectedSkills"][0]["skillCode"])
         self.assertEqual("DENIED_MISSING_PERMISSION", skill_admission["rejectedSkills"][0]["admissionStatus"])
+        skill_visibility = governance["skillVisibility"]
+        self.assertFalse(skill_visibility["available"])
+        self.assertEqual(1, skill_visibility["hiddenSkillCount"])
+        self.assertEqual("quality.rule.design", skill_visibility["hiddenSkills"][0]["skillCode"])
+        self.assertEqual(1, skill_visibility["hiddenAdmissionStatusCounts"]["DENIED_MISSING_PERMISSION"])
+        self.assertEqual("legacy-request-variables", skill_visibility["visibilityFilters"]["permissionFactSource"])
+        self.assertTrue(skill_visibility["visibilityFilters"]["legacyRequestVariablesDetected"])
+        self.assertTrue(any("旧式请求变量" in action for action in skill_visibility["recommendedActions"]))
         self.assertTrue(any("被拒绝 Skill" in action for action in governance["recommendedActions"]))
+        self.assertTrue(any("trustedControlPlane.skillAdmission" in action for action in governance["recommendedActions"]))
 
     def test_tool_budget_blocking_is_exposed_in_unified_gateway_summary(self) -> None:
         """工具预算阻断应在统一治理摘要中直接可见。"""
@@ -105,6 +120,8 @@ class IntelligentGatewayGovernanceResponseTest(unittest.TestCase):
         tool_budget = response["intelligentGatewayGovernance"]["toolBudget"]
 
         self.assertFalse(response["intelligentGatewayGovernance"]["available"])
+        self.assertFalse(response["intelligentGatewayGovernance"]["skillVisibility"]["available"])
+        self.assertFalse(response["intelligentGatewayGovernance"]["skillVisibility"]["visibilityFilters"]["toolBudgetAllowed"])
         self.assertTrue(tool_budget["guarded"])
         self.assertEqual(4, tool_budget["proposedCount"])
         self.assertEqual(3, tool_budget["acceptedCountAfterGuard"])

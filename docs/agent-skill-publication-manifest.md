@@ -128,6 +128,28 @@ $env:DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_MAX_NON_READY_ITEMS="10"
 - 诊断接口应由 gateway 与 permission-admin 保护，不应直接暴露给终端用户。
 - 后续可以把 `manifestFingerprint` 写入 runtime event、Prometheus gauge、启动日志和智能网关会话快照。
 
+## 5.2 智能网关会话级可见性快照
+
+Python Runtime 已在 `intelligentGatewayGovernance.skillVisibility` 中输出会话级 Skill 可见性快照。
+
+它与 Manifest 的关系如下：
+
+- Manifest 是平台/运行时级“全局发布目录快照”，回答“Java 控制面发布了哪些 Skill”。
+- `skillVisibility` 是请求/会话级“当前可见能力快照”，回答“本轮目标、当前 workspace、角色、权限和工具预算下，哪些 Skill 真的可见”。
+- 当前 `skillVisibility` 复用本轮 `AgentSkillPlan` 的选择与准入结果，不在响应阶段重新拉 Manifest 或重新请求 permission-admin。
+
+这样设计是为了避免二次决策漂移：如果响应组装时重新计算一次 Skill 可见性，可能出现模型实际使用的 Skill 和前端展示的可见 Skill 不一致。先复用计划事实，再逐步接入 Manifest 指纹、Java 控制面审计和 WebSocket 会话状态，是更稳的商业化演进路线。
+
+当前快照只返回低敏摘要：
+
+- 可见 Skill 数量、隐藏 Skill 数量、条件性可见数量；
+- 可见 Skill 的 skillCode、领域、风险等级、准入状态、依赖数量；
+- 被隐藏 Skill 的 skillCode、领域、风险等级、隐藏原因数量；
+- 事实来源：`trusted-control-plane`、`legacy-request-variables` 或 `missing`；
+- 风险等级分布、领域分布、隐藏状态分布和推荐动作。
+
+它不会返回完整权限清单、prompt、工具参数、样本数据或密钥。
+
 ## 6. 与 MCP 最新规范的关系
 
 本阶段不是直接实现完整 MCP Server，而是先落地 DataSmart 内部 `MCP-style Skill Manifest`。原因是 DataSmart 的 Skill 位于 MCP Tool 之上：它组织的是一组工具、记忆、审批、审计和治理策略，而不是单个可调用函数。

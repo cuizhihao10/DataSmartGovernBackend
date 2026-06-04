@@ -1,5 +1,45 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-04 追加落地进展：智能网关会话级 Skill 可见性快照
+
+- Python Runtime 的 `intelligentGatewayGovernance` 新增 `skillVisibility`：
+  - 输出 `SESSION_SKILL_VISIBILITY_SNAPSHOT`；
+  - 基于本轮 `AgentSkillPlan` 汇总当前会话真正可见的 Skill；
+  - 汇总语义命中但被权限、角色、风险、租户开关或准入策略隐藏的 Skill；
+  - 不重新拉 Manifest，不重新请求 permission-admin，避免响应组装阶段二次决策或引入额外副作用。
+- `skillVisibility` 当前包含：
+  - `visibleSkillCount`；
+  - `hiddenSkillCount`；
+  - `conditionalVisibleSkillCount`；
+  - `visibleSkills` 低敏摘要；
+  - `hiddenSkills` 低敏摘要；
+  - `visibleRiskLevelCounts`；
+  - `visibleDomainCounts`；
+  - `hiddenAdmissionStatusCounts`；
+  - `visibilityFilters`；
+  - `recommendedActions`。
+- `visibilityFilters` 会解释事实来源：
+  - `trusted-control-plane`：来自 gateway/Java 控制面注入的 `trustedControlPlane.skillAdmission`；
+  - `legacy-request-variables`：来自旧式请求变量中的 `actorRole/grantedPermissions`；
+  - `missing`：没有可信角色或权限事实。
+- 响应只暴露权限数量、状态、风险等级和 Skill 编码，不返回完整权限清单、prompt、工具参数、样本数据或密钥。
+- 智能网关总 `recommendedActions` 会在检测到旧式角色/权限变量时提示迁移到 `trustedControlPlane.skillAdmission`。
+
+产品意义：
+- 平台开始具备“当前会话可见能力集”的解释能力，而不只是全局 Skill 目录或远端 Manifest 诊断。
+- 前端治理卡片和 Java gateway 可以解释“为什么某个 Skill 被隐藏”，而不是只看到模型没有使用某项能力。
+- 这一步为后续 WebSocket 会话能力更新、Java 控制面审计、租户/角色能力包、MCP/A2A 会话级工具暴露打基础。
+
+当前边界：
+- 当前快照是计划响应内的同步摘要，不是持久化会话缓存。
+- 当前没有把快照写入 runtime event、Kafka、Java 控制面或 Prometheus。
+- 当前没有直接使用 Manifest 指纹做会话快照版本绑定；后续应把 `manifestFingerprint` 与 `skillVisibility` 关联起来。
+
+下一步推荐路线：
+1. 把 `skillVisibility` 写入 runtime event 或 Java plan ingestion，形成可 replay 的会话能力事实。
+2. 在 gateway 层按租户、项目、角色、权限包和套餐生成会话级 Skill 缓存，避免每次规划都重新解释能力集。
+3. 将 Manifest 指纹、Skill 可见性和工具预算一起纳入智能网关诊断面板。
+
 ## 2026-06-04 追加落地进展：Python Runtime Manifest 启动诊断
 
 - Python Runtime 新增 `services/skills/` 能力包，承载 Skill Publication Manifest 运行时诊断逻辑，避免继续把 Skill 相关能力平铺在 `services/` 根目录。

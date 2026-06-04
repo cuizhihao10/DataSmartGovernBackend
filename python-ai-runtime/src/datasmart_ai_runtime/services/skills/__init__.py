@@ -10,10 +10,12 @@ from datasmart_ai_runtime.services.skills.skill_publication_diagnostics import (
     build_skill_publication_manifest_diagnostics_service,
     skill_publication_diagnostics_settings_from_env,
 )
+from datasmart_ai_runtime.services.skills.session_skill_visibility import build_session_skill_visibility_snapshot
 
 __all__ = [
     "AgentSkillPublicationDiagnosticsSettings",
     "AgentSkillPublicationManifestDiagnosticsService",
+    "build_session_skill_visibility_snapshot",
     "build_skill_publication_manifest_diagnostics_service",
     "skill_publication_diagnostics_settings_from_env",
 ]

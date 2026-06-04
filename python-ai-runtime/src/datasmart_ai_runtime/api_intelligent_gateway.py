@@ -15,24 +15,28 @@ from __future__ import annotations
 from typing import Any
 
 from datasmart_ai_runtime.api_model_gateway import build_model_gateway_governance_response
-from datasmart_ai_runtime.domain.contracts import AgentPlan
+from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest
 from datasmart_ai_runtime.domain.events import AgentRuntimeEvent, AgentRuntimeEventType
 from datasmart_ai_runtime.services.agent_workspace import AgentWorkspaceContext
+from datasmart_ai_runtime.services.skills import build_session_skill_visibility_snapshot
 
 
 def build_intelligent_gateway_governance_response(
     plan: AgentPlan,
     workspace_context: AgentWorkspaceContext,
+    request: AgentRequest,
 ) -> dict[str, Any]:
     """构建本次 Agent 计划的智能网关统一治理摘要。
 
     输入说明：
     - `plan`：编排器已经生成的计划，包含模型网关决策、工具计划、记忆计划、检索报告和 runtime events；
     - `workspace_context`：响应组装层统一生成的工作空间上下文，用于说明缓存、记忆和产物隔离边界。
+    - `request`：原始 Agent 请求。这里只读取会话与可信控制面事实来源，不把普通 variables 当成授权事实。
 
     输出说明：
     - `available` 不是“模型可用”的同义词，而是“本次智能网关没有出现阻断性治理问题”；
     - `toolBudget` 汇总预算守卫结果，若本轮没有模型工具调用预算事件，则返回默认 allowed；
+    - `skillVisibility` 汇总当前会话可见 Skill 快照，解释哪些 Skill 进入本轮能力集、哪些被准入策略隐藏；
     - `memory` 只返回目标数量、召回数量和 retriever 标识，不返回任何记忆正文；
     - `recommendedActions` 给出后续产品动作，例如等待审批、缩小工具调用批次或补充 sessionId。
     """
@@ -42,6 +46,14 @@ def build_intelligent_gateway_governance_response(
     tool_budget = _tool_budget_summary(plan.runtime_events)
     memory = _memory_summary(plan)
     workspace = workspace_context.to_summary()
+    skill_visibility = build_session_skill_visibility_snapshot(
+        plan,
+        request,
+        workspace,
+        skill_admission,
+        tool_budget,
+        model_gateway,
+    )
     approval_required = bool(plan.requires_human_approval)
     available = bool(model_gateway.get("available")) and skill_admission["allowed"] and tool_budget["allowed"]
     return {
@@ -56,12 +68,20 @@ def build_intelligent_gateway_governance_response(
         },
         "modelGateway": model_gateway,
         "skillAdmission": skill_admission,
+        "skillVisibility": skill_visibility,
         "toolBudget": tool_budget,
         "memory": memory,
         "plannedToolCount": len(plan.tool_plans),
         "plannedToolNames": tuple(tool.tool_name for tool in plan.tool_plans),
         "displaySummary": _display_summary(model_gateway, skill_admission, tool_budget, approval_required),
-        "recommendedActions": _recommended_actions(model_gateway, skill_admission, tool_budget, memory, approval_required),
+        "recommendedActions": _recommended_actions(
+            model_gateway,
+            skill_admission,
+            skill_visibility,
+            tool_budget,
+            memory,
+            approval_required,
+        ),
     }
 
 
@@ -206,6 +226,7 @@ def _display_summary(
 def _recommended_actions(
     model_gateway: dict[str, Any],
     skill_admission: dict[str, Any],
+    skill_visibility: dict[str, Any],
     tool_budget: dict[str, Any],
     memory: dict[str, Any],
     approval_required: bool,
@@ -218,6 +239,8 @@ def _recommended_actions(
         actions.append("检查被拒绝 Skill 的权限、角色、租户开关或风险策略，并由 permission-admin 提供可信准入事实。")
     elif skill_admission["conditionalSkillCount"] > 0:
         actions.append("当前存在条件性启用的 Skill；生产环境应补充 grantedPermissions、actorRole 和策略版本。")
+    if skill_visibility["visibilityFilters"]["legacyRequestVariablesDetected"]:
+        actions.append("当前会话 Skill 快照检测到旧式角色或权限变量；生产环境应迁移到 trustedControlPlane.skillAdmission。")
     if not tool_budget["allowed"]:
         actions.append("缩小本轮模型工具调用批次，或把高风险/长耗时工具拆到后续确认步骤。")
     if approval_required:

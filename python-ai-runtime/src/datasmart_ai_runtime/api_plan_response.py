@@ -129,6 +129,7 @@ def build_plan_response(
     response["intelligentGatewayGovernance"] = build_intelligent_gateway_governance_response(
         plan,
         workspace_context,
+        request,
     )
     if control_plane_ingestion is not None:
         response["controlPlaneIngestion"] = control_plane_ingestion.to_summary()

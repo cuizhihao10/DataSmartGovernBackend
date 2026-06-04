@@ -1,5 +1,13 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-04 落地补充：agent hosts need session-level skill visibility, not only global catalogs
+
+- 本阶段把 `intelligentGatewayGovernance` 从 Skill 准入摘要继续推进到会话级 Skill 可见性快照。成熟 Agent host 不只需要知道“平台有哪些 Skill”，还要知道“当前会话、当前角色、当前权限和当前预算下，哪些 Skill 真正可见”。
+- 这个方向贴近 Codex、Claude Code 类 Agent host 的工程体验：工具和 Skill 暴露给模型前，宿主需要先按身份、workspace、预算、风险和确认策略过滤，再把可见集合交给规划器或 UI。否则全局目录越丰富，越容易把用户当前不能用的能力泄露给模型。
+- DataSmart 当前选择复用本轮 `AgentSkillPlan` 生成快照，而不是响应阶段重新拉 Manifest 或重新调用 permission-admin。这是为了避免二次决策导致“计划实际使用的 Skill”和“网关展示的 Skill”不一致。
+- 快照显式标记事实来源：`trusted-control-plane`、`legacy-request-variables` 或 `missing`。这能帮助迁移旧联调路径，同时提醒生产环境必须由 gateway 注入可信控制面事实。
+- 下一步应把 `skillVisibility` 写入 runtime event、Java plan ingestion 或 WebSocket 会话状态，并与 Manifest `contentFingerprint` 绑定，形成可 replay、可排障、可灰度对比的会话能力事实。
+
 ## 2026-06-04 落地补充：agent runtimes should expose the skill catalog they actually see
 
 - 本阶段把 Skill Publication Manifest 接入 Python Runtime 启动诊断。成熟 Agent host 不只是“有一个能力目录”，还必须能回答当前运行时实际看见了哪版能力目录、READY 能力有多少、哪些能力因为审批/审计/隔离问题不能进入规划。
