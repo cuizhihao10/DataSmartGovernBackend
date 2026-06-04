@@ -1,5 +1,36 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-04 追加落地进展：Python Runtime Manifest 启动诊断
+
+- Python Runtime 新增 `services/skills/` 能力包，承载 Skill Publication Manifest 运行时诊断逻辑，避免继续把 Skill 相关能力平铺在 `services/` 根目录。
+- 新增 `AgentSkillPublicationManifestDiagnosticsService`：
+  - startup 可主动读取 Java `agent-runtime` `/agent-runtime/skills/publication/manifest`；
+  - 记录远端 Manifest `contentFingerprint`、schema、发布模式、生成时间和刷新次数；
+  - 统计 READY Skill 数量、非 READY Skill 数量、发布状态分布、风险等级分布和警告 Skill 数量；
+  - 远端失败时默认 fallback 到本地默认 Skill，并在诊断中标记 `REMOTE_UNAVAILABLE_FALLBACK`；
+  - 生产强治理环境可通过 `DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REQUIRED=true` 改为 fail-closed。
+- FastAPI 新增低敏诊断接口：
+  - `GET /agent/skills/publication/diagnostics`；
+  - 返回 Manifest 指纹、READY/非 READY 数量、状态分布、风险分布、fallback 状态和推荐动作；
+  - 不返回完整 descriptor、权限明细、prompt、工具参数、样本数据或密钥。
+- Python README 与 Manifest 设计文档已补充环境变量、诊断状态、接口用途和商业化边界。
+- 新增 `test_skill_publication_diagnostics.py`，覆盖本地默认、远端成功、远端失败 fallback、required fail-closed 和环境变量解析。
+
+产品意义：
+- Python Runtime 不再只是“能解析 Manifest”，而是能在启动和运维面解释自己当前是否看见 Java Skill 发布事实源。
+- `contentFingerprint` 开始进入运行时诊断层，为后续缓存复用、灰度对比、事故排查和智能网关会话能力快照打基础。
+- fallback 被显式暴露，避免生产事故中误以为 Python 使用的是 Java 最新发布目录，实际却静默退回本地默认 Skill。
+
+当前边界：
+- 诊断服务暂不改变当前 Agent 规划主路径，规划仍使用 descriptor 加载结果。
+- 诊断仍是进程内快照，没有定时刷新线程、Prometheus 指标或 runtime event。
+- 诊断没有租户/角色维度过滤，后续会话级能力快照仍需由智能网关或 Java 控制面注入权限上下文。
+
+下一步推荐路线：
+1. 让智能网关生成会话级 Skill 能力快照，按租户、项目、角色、权限包和预算策略过滤 READY Skill。
+2. 将 `manifestFingerprint` 写入 runtime event、启动日志和 Prometheus 指标，方便跨实例排查使用了哪版能力目录。
+3. 数据库化 Skill 发布流前，先把 tool registry、skill admission policy、tool budget policy 与 Manifest 诊断串成一张执行前治理图。
+
 ## 2026-06-04 追加落地进展：Skill Publication Manifest 能力发布快照
 
 - `agent-runtime` 新增 Skill Publication Manifest，把 Skill 注册表从“descriptor 列表”推进到“可发布、可缓存、可诊断的能力目录快照”。

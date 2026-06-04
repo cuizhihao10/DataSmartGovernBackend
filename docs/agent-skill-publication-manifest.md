@@ -81,6 +81,53 @@ Python 侧转换为不可变 dataclass，是为了减少规划链路中被某个
 - 即使 Skill 是 `READY`，执行前仍必须经过 Java 控制面的权限、审批、沙箱、runtime-protection 和审计链路；
 - 当 Manifest 读取失败时，应区分“远端不可用”和“目录为空”，前者应触发降级或启动诊断，后者可能是租户策略结果。
 
+## 5.1 Python Runtime 启动诊断
+
+Python Runtime 已新增 Skill Publication Manifest 低敏诊断入口：
+
+```text
+GET /agent/skills/publication/diagnostics
+```
+
+诊断服务位于 `python-ai-runtime/src/datasmart_ai_runtime/services/skills/`，不会直接改变当前 Agent 规划主路径。
+它的职责是回答“远端 Skill 发布事实源是否健康”，而不是立即替代 descriptor 加载。
+
+诊断状态：
+
+- `REMOTE_READY`：已成功读取 Java Manifest，并能返回指纹、READY 数量和非 READY 分布。
+- `REMOTE_UNAVAILABLE_FALLBACK`：远端读取失败，当前使用本地默认 Skill fallback。
+- `REMOTE_NOT_REFRESHED`：启用了远端诊断但尚未刷新，通常意味着 startup 刷新被关闭或尚未触发。
+- `LOCAL_DEFAULT_ONLY`：未配置远端 Java base URL，当前只使用本地默认 Skill。
+
+关键字段：
+
+- `manifestFingerprint`：远端目录级内容指纹，可用于启动日志、运行时事件、缓存和灰度排查。
+- `readySkillCount`：可进入默认规划候选集的 Skill 数量。
+- `nonReadySkillCount`：非 READY Skill 数量。
+- `publicationStateCounts`：按 READY、DISABLED、NEEDS_APPROVAL_POLICY 等状态聚合。
+- `riskLevelCounts`：按 LOW、MEDIUM、HIGH 聚合。
+- `nonReadySkills`：最多展示配置数量的低敏摘要，只包含 skillCode、publicationState、riskLevel、enabled、warningCount。
+- `fallback`：是否正在使用本地默认 Skill。
+- `lastError`：远端失败的脱敏错误摘要，长度受限。
+
+常用配置：
+
+```powershell
+$env:DATASMART_AGENT_RUNTIME_BASE_URL="http://localhost:8091"
+$env:DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_DIAGNOSTICS_ENABLED="true"
+$env:DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_INCLUDE_DISABLED="true"
+$env:DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REFRESH_ON_STARTUP="true"
+$env:DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REQUIRED="false"
+$env:DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_MAX_NON_READY_ITEMS="10"
+```
+
+商业化建议：
+
+- 本地学习环境建议 `required=false`，保证 Java 控制面未启动时 Python Runtime 仍可用。
+- 集成/生产环境如果要求所有 Agent 能力必须来自 Java 发布事实源，可设置 `required=true`，让启动期刷新失败直接暴露。
+- 诊断接口应由 gateway 与 permission-admin 保护，不应直接暴露给终端用户。
+- 后续可以把 `manifestFingerprint` 写入 runtime event、Prometheus gauge、启动日志和智能网关会话快照。
+
 ## 6. 与 MCP 最新规范的关系
 
 本阶段不是直接实现完整 MCP Server，而是先落地 DataSmart 内部 `MCP-style Skill Manifest`。原因是 DataSmart 的 Skill 位于 MCP Tool 之上：它组织的是一组工具、记忆、审批、审计和治理策略，而不是单个可调用函数。
@@ -119,9 +166,9 @@ Python 侧转换为不可变 dataclass，是为了减少规划链路中被某个
 
 短期建议：
 
-- 给 Python Runtime 启动诊断接入 Manifest 指纹和 READY Skill 数量；
 - 为智能网关增加“会话可见 Skill 快照”，按租户、项目、角色和权限包过滤；
 - 把 Skill Manifest 与现有 tool registry、skill admission policy、tool budget policy 串起来，形成完整执行前治理链路。
+- 将 `manifestFingerprint` 写入 runtime event、Prometheus 指标和启动日志，形成可追踪的运行时版本事实。
 
 中期建议：
 

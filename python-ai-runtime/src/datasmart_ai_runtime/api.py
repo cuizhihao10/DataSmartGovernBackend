@@ -68,6 +68,7 @@ from datasmart_ai_runtime.services.runtime_events.runtime_event_components impor
     build_runtime_event_components,
     runtime_event_component_diagnostics,
 )
+from datasmart_ai_runtime.services.skills import build_skill_publication_manifest_diagnostics_service
 
 
 def _build_runtime_event_replay_sources(agent_runtime_base_url: str | None) -> tuple[Any, ...]:
@@ -172,11 +173,23 @@ def create_app() -> Any:
     gateway_signature_nonce_settings = gateway_signature_nonce_store_settings_from_env()
     gateway_signature_nonce_store = build_gateway_signature_nonce_store(gateway_signature_nonce_settings)
     gateway_signature_security_stats = GatewaySignatureSecurityStats()
+    skill_publication_manifest_diagnostics = build_skill_publication_manifest_diagnostics_service(agent_runtime_base_url)
 
     def _start_memory_materialization_worker() -> None:
         """FastAPI startup 生命周期中启动长期记忆物化 worker。"""
 
         memory_materialization_worker.start()
+
+    def _refresh_skill_publication_manifest_diagnostics() -> None:
+        """FastAPI startup 生命周期中刷新 Skill 发布 Manifest 诊断。
+
+        这一步不会改变当前 AgentOrchestrator 已加载的 Skill descriptor，也不会直接影响模型规划。
+        它的作用是让运维在服务启动后立刻看到远端 Skill 发布事实源是否健康、当前 Manifest 指纹是什么、
+        READY/非 READY Skill 分布如何。如果远端不可用且未配置 required，服务仍会启动，但诊断会标记 fallback。
+        """
+
+        if skill_publication_manifest_diagnostics.should_refresh_on_startup():
+            skill_publication_manifest_diagnostics.refresh()
 
     def _stop_memory_materialization_worker() -> None:
         """FastAPI shutdown 生命周期中请求 worker 优雅停止。"""
@@ -184,6 +197,7 @@ def create_app() -> Any:
         memory_materialization_worker.stop()
 
     app.add_event_handler("startup", _start_memory_materialization_worker)
+    app.add_event_handler("startup", _refresh_skill_publication_manifest_diagnostics)
     app.add_event_handler("shutdown", _stop_memory_materialization_worker)
 
     @app.get("/agent/events/diagnostics")
@@ -218,6 +232,17 @@ def create_app() -> Any:
             gateway_signature_nonce_store,
             gateway_signature_nonce_settings,
         )
+
+    @app.get("/agent/skills/publication/diagnostics")
+    def skill_publication_manifest_runtime_diagnostics() -> dict[str, Any]:
+        """查询 Skill Publication Manifest 启动诊断。
+
+        该接口面向智能网关、Java 控制面和运维台，用来确认 Python Runtime 当前是否看见 Java
+        `agent-runtime` 发布的 Skill Manifest，以及远端不可用时是否回退到了本地默认 Skill。
+        响应只返回指纹、数量、状态分布和低敏推荐动作，不返回完整 descriptor、权限明细、prompt 或工具参数。
+        """
+
+        return skill_publication_manifest_diagnostics.diagnostics()
 
     @app.get("/agent/models/provider-health/diagnostics")
     def model_provider_health_diagnostics() -> dict[str, Any]:

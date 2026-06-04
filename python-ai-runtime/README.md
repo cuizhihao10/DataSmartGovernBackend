@@ -4,6 +4,8 @@
 
 > 2026-06-03 补充：Java `agent-runtime` 的 Skill 注册表已新增 Marketplace 治理摘要接口，可聚合领域、风险、审批、记忆依赖、启用/禁用和隔离策略。Python Runtime 当前仍消费 descriptor 与 permission-admin admission；后续可把该摘要接入启动诊断，用于判断远程 Skill 市场是否健康、是否高风险能力过多、是否缺少审计或隔离。
 
+> 2026-06-04 补充：Python Runtime 已新增 Skill Publication Manifest 启动诊断。`/agent/skills/publication/diagnostics` 会报告 Java `agent-runtime` Manifest 是否可用、目录级 `contentFingerprint`、READY Skill 数量、非 READY 状态分布和本地默认 Skill fallback 状态。该接口只返回低敏摘要，不返回完整 descriptor、权限明细、prompt 或工具参数。
+
 这个目录是 DataSmart Govern 的 Python 智能运行时初始骨架，定位不是替代 Java 微服务，而是承接后续 `Agent 编排`、`模型路由`、`RAG/GraphRAG 检索`、`工具计划生成`、`OpenClaw/LangGraph 风格状态流转` 等 AI 能力。
 
 ## 当前边界
@@ -18,6 +20,7 @@
 - `ToolPlanner`：根据目标、变量和工具注册表生成工具计划，先采用可解释的规则式骨架，后续可替换为 LLM 规划器。
 - `AgentOrchestrator`：以状态节点方式串联目标接收、模型选择、上下文构建、工具规划、审批判断和响应生成。
 - Agent Skill 治理：已具备本地/远程 Skill descriptor、语义选择、准入策略、准入 runtime event 和智能网关摘要；Java `permission-admin` 已新增 Skill admission evaluate 契约，Python Runtime 已支持可选远程调用。Skill 命中后会继续校验 `grantedPermissions`、`actorRole` 与风险等级；显式缺权限或普通用户命中高风险 Skill 时会进入 `rejectedSkills`，缺少控制面事实时只做条件性推荐。`SKILL_ADMISSION_EVALUATED` 事件与 `intelligentGatewayGovernance.skillAdmission` 会解释 Skill 启用、条件性启用或拒绝原因。
+- Skill Publication Manifest 诊断：已具备 `services/skills/` 独立能力包，FastAPI startup 可主动读取 Java `agent-runtime` `/agent-runtime/skills/publication/manifest`，并通过 `/agent/skills/publication/diagnostics` 暴露低敏诊断。诊断会区分 `REMOTE_READY`、`REMOTE_UNAVAILABLE_FALLBACK`、`REMOTE_NOT_REFRESHED` 和 `LOCAL_DEFAULT_ONLY`，展示 Manifest 指纹、READY/非 READY 数量、发布状态分布、风险等级分布和推荐动作；远端失败时默认回退本地 Skill，生产可通过 `DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REQUIRED=true` 改为 fail-closed。
 - 智能网关工具治理：已具备模型工具调用候选规划、可见工具校验、参数 schema 校验和工具调用预算守卫，可限制单轮工具数量、自动推进数量、高风险工具数量和 arguments 体积；预算策略已抽象为 provider，当前支持环境变量、`AgentRequest.variables["toolCallBudget"]` 覆盖，以及可选远程调用 Java permission-admin `/permissions/agent/tool-budget-policies/evaluate`。远程策略默认关闭，适合生产或联调环境按租户套餐、项目等级、角色、workspace 风险和实时 backlog 动态生成预算；预算阻断会写入独立 `MODEL_TOOL_CALL_BUDGET_GUARDED` runtime event，API 响应已提供 `intelligentGatewayGovernance` 统一摘要，汇总模型路由、工具预算、workspace 和记忆检索治理事实。
 - 模型 Provider Health 治理：已具备调用结果驱动的内存健康注册表、连续失败熔断、错误率/延迟降级、低敏诊断摘要和路由 fallback 联动。`ModelGatewayGovernanceService.record_invocation_result(...)` 会同时更新 token usage 与 Provider 健康；`/agent/models/provider-health/diagnostics` 可用于智能网关运维卡片和 Java 控制面排障。当前未持久化健康状态，也未接真实 `/health` 探针和 Prometheus 回灌。
 - 长期记忆治理：已具备记忆召回计划、候选生成、审批/拒绝、候选 SQL store、低敏摘要正式落成、materialization receipt、正式记忆 SQL store、正式记忆 runtime builder、lease token fencing runner、失败退避、DLQ 基础语义、管理员补偿入口、物化 runtime event、低基数 Prometheus 指标、受控后台 worker、Prometheus 告警规则、审计 outbox 和 store-backed 检索接入；候选和正式记忆都会携带 `workspaceKey/memoryNamespace`，检索时按当前 Agent 工作空间过滤，避免同项目不同 workspace 或 session 沙箱误共享记忆。当前默认装配仍以本地内存 store 便于学习和单测，后台 worker 与审计 outbox 默认关闭；生产可通过 `DATASMART_AI_FORMAL_MEMORY_*`、`DATASMART_AI_MEMORY_LEASE_*` 与 `DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_*` 切到 MySQL，并显式开启 worker，让 `/agent/plans` 从正式记忆表召回低敏经验，同时让多实例 worker 安全领取候选并留下审计事实。
@@ -65,6 +68,33 @@ $env:DATASMART_PERMISSION_ADMIN_SKILL_ADMISSION_TIMEOUT_SECONDS="3"
 ```
 
 启用后，`build_default_orchestrator()` 会在 Skill 语义命中后，优先请求 permission-admin `/permissions/agent/skill-admissions/evaluate`，并把 Java 返回的 `allowed/admissionStatus/rejectionReason/policyVersion` 转成 Python `AgentSkillAdmissionDecision`。远程失败默认回退本地策略；生产环境如果希望 fail-closed，可在代码注入时关闭 `allow_remote_skill_admission_fallback`。
+
+## Skill Publication Manifest 启动诊断
+
+当配置 `DATASMART_AGENT_RUNTIME_BASE_URL` 后，Python Runtime 可以在启动期读取 Java `agent-runtime` 的 Skill 发布 Manifest，并把低敏健康摘要暴露给智能网关、Java 控制面或运维台：
+
+```text
+GET /agent/skills/publication/diagnostics
+```
+
+常用环境变量：
+
+```powershell
+$env:DATASMART_AGENT_RUNTIME_BASE_URL="http://localhost:8091"
+$env:DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_DIAGNOSTICS_ENABLED="true"
+$env:DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_INCLUDE_DISABLED="true"
+$env:DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REFRESH_ON_STARTUP="true"
+$env:DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REQUIRED="false"
+$env:DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_MAX_NON_READY_ITEMS="10"
+```
+
+设计边界：
+
+- 诊断接口不改变当前 Agent 规划主路径，规划仍使用已加载的 Skill descriptor。
+- 诊断默认包含禁用 Skill，是为了看见非 READY 原因；模型规划不应直接消费禁用 Skill。
+- 本地学习环境允许远端 Manifest 失败后 fallback 到本地默认 Skill。
+- 生产强治理环境可以设置 `DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REQUIRED=true`，让远端发布事实源不可用时显式失败。
+- 诊断响应不返回完整 descriptor、权限明细、prompt、工具参数、样本数据或密钥。
 
 ## 下一步建议
 

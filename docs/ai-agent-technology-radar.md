@@ -1,5 +1,13 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-04 落地补充：agent runtimes should expose the skill catalog they actually see
+
+- 本阶段把 Skill Publication Manifest 接入 Python Runtime 启动诊断。成熟 Agent host 不只是“有一个能力目录”，还必须能回答当前运行时实际看见了哪版能力目录、READY 能力有多少、哪些能力因为审批/审计/隔离问题不能进入规划。
+- `manifestFingerprint` 是运行时可解释性的关键锚点。后续如果同一个租户在多个 Python Runtime 实例、多个 gateway 会话或灰度批次中出现规划差异，指纹可以帮助快速判断是不是能力目录版本不一致。
+- 当前诊断显式区分 `REMOTE_READY`、`REMOTE_UNAVAILABLE_FALLBACK`、`REMOTE_NOT_REFRESHED` 和 `LOCAL_DEFAULT_ONLY`。这比静默回退更适合商业化产品：开发环境可以 fallback，生产环境必须知道自己是否偏离 Java 控制面的发布事实源。
+- 本阶段没有直接改变 Agent 规划主路径，是刻意渐进：先观测 Manifest 健康，再接会话级能力快照、缓存刷新、runtime event 和 Prometheus。这样不会让发布目录新能力上线时立刻改变模型规划结果，降低迁移风险。
+- 下一步建议把 Manifest 指纹写进 runtime event 与智能网关会话快照，并把 Skill 可见性从全局目录推进到租户、项目、角色、权限包和预算策略过滤后的会话能力集。
+
 ## 2026-06-04 落地补充：skills need publishable manifests before full MCP adapters
 
 - 本阶段把 Agent Skill 从普通 descriptor 列表推进到 `Skill Publication Manifest`。这对应当前 Agent 工程趋势：能力不能只散落在本地 prompt、工具函数和配置文件里，而应该先形成可发现、可版本化、可缓存、可诊断的目录事实源。
