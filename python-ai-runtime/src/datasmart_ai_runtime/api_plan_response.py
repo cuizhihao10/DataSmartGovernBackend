@@ -41,6 +41,7 @@ def build_plan_response(
     loop_control_evaluator: Any | None = None,
     second_turn_orchestrator: Any | None = None,
     memory_write_governance: Any | None = None,
+    skill_publication_diagnostics_service: Any | None = None,
 ) -> dict[str, Any]:
     """构建同步 HTTP 风格的 Agent 计划响应。
 
@@ -120,6 +121,17 @@ def build_plan_response(
         if memory_events:
             plan = replace(plan, runtime_events=plan.runtime_events + memory_events)
 
+    # Skill Manifest 诊断服务提供的是“能力发布目录版本证据”，不是新的准入决策。
+    # 这里在响应组装层读取一次低敏快照，并把它继续传给智能网关摘要和 runtime event：
+    # - 前端可以看见本轮会话绑定的 Manifest 指纹或本地回退状态；
+    # - Java replay index 可以把同一指纹写入投影视图；
+    # - 后续灰度、缓存命中、Marketplace 统计能够按 Manifest 版本聚合。
+    # 如果诊断服务未注入或暂时不可用，本轮计划仍可继续生成，但快照会明确标记为未绑定/诊断不可用，
+    # 避免把“没有版本证据”误解释成“已经绑定远端发布目录”。
+    skill_manifest_diagnostics = _skill_publication_manifest_diagnostics_snapshot(
+        skill_publication_diagnostics_service
+    )
+
     # `intelligentGatewayGovernance` 以前只在 HTTP 响应末尾构建，因此 event store、WebSocket replay
     # 和 Kafka publisher 都看不到其中的 `skillVisibility`。现在先构建治理摘要，再把会话级 Skill
     # 可见性压缩成一条低敏 runtime event 追加到计划事件流，最后统一发布。这样同步响应、断线恢复、
@@ -128,6 +140,7 @@ def build_plan_response(
         plan,
         workspace_context,
         request,
+        skill_manifest_diagnostics=skill_manifest_diagnostics,
     )
     plan = _attach_skill_visibility_event(
         plan,
@@ -200,6 +213,39 @@ def _collect_control_plane_feedback(
     if control_plane_feedback_collector is None:
         return None
     return control_plane_feedback_collector.collect(plan)
+
+
+def _skill_publication_manifest_diagnostics_snapshot(
+    skill_publication_diagnostics_service: Any | None,
+) -> dict[str, Any] | None:
+    """读取 Skill Publication Manifest 低敏诊断快照。
+
+    这个函数刻意只调用 `diagnostics()`，不在每次 `/agent/plans` 请求中刷新远端 Manifest：
+    - 刷新远端 Manifest 可能产生网络 IO，不应该混入用户同步规划路径；
+    - FastAPI startup 已经可以按配置主动刷新，运维也可以通过诊断接口观察状态；
+    - 计划响应只需要“当前 Python Runtime 已知的最近一次发布目录证据”，用于审计和版本绑定。
+
+    失败处理原则：
+    - Manifest 诊断属于证据增强，不属于本轮模型规划的硬依赖；
+    - 因此这里不会让诊断异常把用户规划请求打成 500；
+    - 但会返回一个稳定的 `DIAGNOSTICS_UNAVAILABLE` 快照，让治理卡片、事件和 Java 投影都能明确看见
+      “这次没有拿到 Manifest 证据”，而不是静默丢字段。
+    """
+
+    if skill_publication_diagnostics_service is None:
+        return None
+    try:
+        snapshot = skill_publication_diagnostics_service.diagnostics()
+    except Exception as exc:  # pragma: no cover - 防御第三方启动装配或远端诊断对象异常
+        return {
+            "status": "DIAGNOSTICS_UNAVAILABLE",
+            "source": "diagnostics-service",
+            "fallback": True,
+            "remoteManifestAvailable": False,
+            "manifestFingerprint": None,
+            "lastError": str(exc),
+        }
+    return snapshot if isinstance(snapshot, dict) else None
 
 
 def _attach_workspace_hints(plan: AgentPlan, workspace_context: AgentWorkspaceContext) -> AgentPlan:

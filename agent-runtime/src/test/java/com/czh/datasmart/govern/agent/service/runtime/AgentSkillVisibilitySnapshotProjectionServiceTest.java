@@ -53,6 +53,8 @@ class AgentSkillVisibilitySnapshotProjectionServiceTest {
         assertEquals(2, response.totalVisibleSkillCount());
         assertEquals(1, response.totalHiddenSkillCount());
         assertEquals(1L, response.permissionFactSourceCounts().get("trusted-control-plane"));
+        assertEquals(1L, response.manifestBindingStatusCounts().get("BOUND_REMOTE_MANIFEST"));
+        assertEquals(1L, response.manifestSourceCounts().get("java-agent-runtime"));
         assertEquals(1, response.hiddenAdmissionStatusCounts().get("DENIED_MISSING_PERMISSION"));
 
         AgentSkillVisibilitySnapshotProjectionView snapshot = response.snapshots().getFirst();
@@ -60,6 +62,14 @@ class AgentSkillVisibilitySnapshotProjectionServiceTest {
         assertEquals("SESSION_SKILL_VISIBILITY_SNAPSHOT", snapshot.snapshotType());
         assertEquals("trusted-control-plane", snapshot.permissionFactSource());
         assertEquals("PROJECT_OWNER", snapshot.actorRole());
+        assertEquals("BOUND_REMOTE_MANIFEST", snapshot.manifestBindingStatus());
+        assertEquals("REMOTE_READY", snapshot.manifestStatus());
+        assertEquals("skill-manifest-fp-test", snapshot.manifestFingerprint());
+        assertEquals("agent-skill-publication-manifest.v1", snapshot.manifestSchemaVersion());
+        assertEquals(6, snapshot.manifestSkillCount());
+        assertEquals(5, snapshot.manifestReadySkillCount());
+        assertEquals(1, snapshot.manifestNonReadySkillCount());
+        assertEquals(false, snapshot.manifestFallback());
         assertEquals(List.of("datasource.profiling", "quality.rule.design"), snapshot.visibleSkillCodes());
         assertEquals(List.of("compliance.masking"), snapshot.hiddenSkillCodes());
         assertEquals(1, snapshot.visibleRiskLevelCounts().get("LOW"));
@@ -86,6 +96,7 @@ class AgentSkillVisibilitySnapshotProjectionServiceTest {
         assertEquals(1, response.totalMatched());
         assertEquals(0L, response.availableSnapshotCount());
         assertEquals(1L, response.unavailableSnapshotCount());
+        assertEquals(1L, response.manifestBindingStatusCounts().get("LOCAL_DEFAULT_OR_FALLBACK"));
         assertEquals(2L, response.snapshots().getFirst().replaySequence());
         assertTrue(response.snapshots().getFirst().hiddenSkillCount() > 0);
     }
@@ -115,6 +126,15 @@ class AgentSkillVisibilitySnapshotProjectionServiceTest {
         attributes.put("legacyRequestVariablesDetected", !available);
         attributes.put("modelGatewayAvailable", true);
         attributes.put("toolBudgetAllowed", true);
+        attributes.put("manifestBindingStatus", available ? "BOUND_REMOTE_MANIFEST" : "LOCAL_DEFAULT_OR_FALLBACK");
+        attributes.put("manifestStatus", available ? "REMOTE_READY" : "LOCAL_DEFAULT_ONLY");
+        attributes.put("manifestSource", available ? "java-agent-runtime" : "local-default");
+        attributes.put("manifestFingerprint", available ? "skill-manifest-fp-test" : null);
+        attributes.put("manifestSchemaVersion", available ? "agent-skill-publication-manifest.v1" : null);
+        attributes.put("manifestSkillCount", 6);
+        attributes.put("manifestReadySkillCount", available ? 5 : 4);
+        attributes.put("manifestNonReadySkillCount", available ? 1 : 0);
+        attributes.put("manifestFallback", !available);
         attributes.put("visibleSkillCodes", List.of("datasource.profiling", "quality.rule.design"));
         attributes.put("visibleSkillCodesTruncatedCount", 0);
         attributes.put("hiddenSkillCodes", List.of("compliance.masking"));

@@ -49,6 +49,7 @@ def register_agent_runtime_routes(
     loop_control_evaluator: Any | None,
     second_turn_orchestrator: Any | None,
     memory_write_governance: Any | None,
+    skill_publication_diagnostics_service: Any | None = None,
     gateway_signature_error_factory: Callable[[dict[str, Any]], Exception] | None = None,
     gateway_signature_nonce_store: Any | None = None,
     gateway_signature_security_stats: Any | None = None,
@@ -73,6 +74,10 @@ def register_agent_runtime_routes(
     `gateway_signature_nonce_store` 与 `gateway_signature_security_stats` 分别承载防重放和安全统计：
     - nonce store 只在 HMAC 校验通过后登记 nonce，避免无效签名污染去重存储；
     - security stats 记录失败 reason 分布，后续可升级为 Prometheus 指标或统一审计事件。
+
+    `skill_publication_diagnostics_service` 用来把 Java agent-runtime 发布的 Skill Manifest 指纹带入
+    `/agent/plans` 响应和 runtime event。它不参与本轮 Skill 准入决策，只提供“当前能力目录版本证据”：
+    如果生产环境后续发现某个 Skill 在某一版 Manifest 后异常隐藏/暴露，运维可以按指纹回放和定位。
     """
 
     @app.post("/agent/plans")
@@ -132,6 +137,7 @@ def register_agent_runtime_routes(
             loop_control_evaluator=loop_control_evaluator,
             second_turn_orchestrator=second_turn_orchestrator,
             memory_write_governance=memory_write_governance,
+            skill_publication_diagnostics_service=skill_publication_diagnostics_service,
         )
 
     @app.post("/agent/events/replay")

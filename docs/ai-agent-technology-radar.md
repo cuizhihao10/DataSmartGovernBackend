@@ -4,9 +4,9 @@
 
 - 本阶段把 Python Runtime 的 `skill_visibility_snapshot_recorded` 事件接入 Java `agent-runtime` 专用查询视图。成熟 Agent host 不只在运行时生成事件，还需要控制面能按产品语义查询这些事件，否则前端、审计台和运营报表会被迫解析自由 attributes。
 - DataSmart 当前没有急着新建持久化表，而是先复用现有 runtime event projection store，新增强类型 `AgentSkillVisibilitySnapshotProjectionView` 和 `/runtime-events/skill-visibility-snapshots` 只读入口。这是一种渐进路线：先稳定跨语言事件语义，再落 SQL/ClickHouse/OpenSearch 索引。
-- 该视图保留低敏字段：可见/隐藏数量、Skill code、权限事实来源、风险/领域/隐藏状态分布、策略版本和 replaySequence。它仍不返回 prompt、SQL、工具参数、完整权限清单或长期记忆正文。
+- 该视图保留低敏字段：可见/隐藏数量、Skill code、权限事实来源、Manifest 绑定状态、Manifest 指纹、风险/领域/隐藏状态分布、策略版本和 replaySequence。它仍不返回 prompt、SQL、工具参数、完整权限清单或长期记忆正文。
 - Java display 层现在能把该事件解释为 `SKILL_VISIBILITY`，而不是泛化系统事件；BASIC 用户可以看到进度但属性被脱敏。这让 HTTP replay、WebSocket 断线恢复和前端 timeline 的体验更接近 Codex/Claude Code 类 Agent host 的“可解释工具/Skill 暴露边界”。
-- 下一步应把 Manifest `contentFingerprint` 写入事件，并把热窗口查询升级为持久化 replay index。只有绑定 Manifest 版本，平台才能在灰度、回滚和事故复盘时回答“会话当时使用的是哪版能力目录”。
+- Manifest `contentFingerprint` 已进入 Python 事件与 Java 专用投影；下一步应把热窗口查询升级为持久化 replay index。只有跨实例、跨重启保留这些 Manifest 版本事实，平台才能在灰度、回滚和事故复盘时长期回答“会话当时使用的是哪版能力目录”。
 
 ## 2026-06-04 落地补充：session skill visibility should be replayable, not only returned once
 
@@ -14,7 +14,7 @@
 - 成熟 Agent host 不只需要“实时规划”，还需要用户刷新、WebSocket 断线、Java 控制面补索引、审计员回放和运营报表都能还原当时的能力边界。否则 Skill Marketplace 越丰富，事故复盘时越难回答“模型当时是否真的看见了某个能力”。
 - DataSmart 当前选择只写低敏聚合属性：Skill code、数量、风险/领域/隐藏状态分布、权限事实来源、策略版本和推荐动作数量；不写 prompt、SQL、工具参数、完整权限清单或记忆正文。这符合 Agent runtime event 的产品定位：公共时间线保存事实摘要，敏感排障走受控详情接口。
 - 实时事件可见性策略已允许普通用户看到该事件的进度存在，但 BASIC 级别仍会脱敏 attributes。项目负责人、审计员和管理员可以按既有策略看到低敏聚合字段，用于治理卡片、回放和排障。
-- 当前事件已接入 Java 热窗口 replay/index 查询视图；下一步应继续绑定 Manifest `contentFingerprint` 并落地持久化索引。这样才能支持灰度对比、租户能力包版本追踪和策略漂移排查。
+- 当前事件已接入 Java 热窗口 replay/index 查询视图，并携带 Manifest `contentFingerprint`；下一步应落地持久化索引。这样才能支持灰度对比、租户能力包版本追踪和策略漂移排查。
 
 ## 2026-06-04 落地补充：agent hosts need session-level skill visibility, not only global catalogs
 
@@ -22,7 +22,7 @@
 - 这个方向贴近 Codex、Claude Code 类 Agent host 的工程体验：工具和 Skill 暴露给模型前，宿主需要先按身份、workspace、预算、风险和确认策略过滤，再把可见集合交给规划器或 UI。否则全局目录越丰富，越容易把用户当前不能用的能力泄露给模型。
 - DataSmart 当前选择复用本轮 `AgentSkillPlan` 生成快照，而不是响应阶段重新拉 Manifest 或重新调用 permission-admin。这是为了避免二次决策导致“计划实际使用的 Skill”和“网关展示的 Skill”不一致。
 - 快照显式标记事实来源：`trusted-control-plane`、`legacy-request-variables` 或 `missing`。这能帮助迁移旧联调路径，同时提醒生产环境必须由 gateway 注入可信控制面事实。
-- 当前 `skillVisibility` 已写入 runtime event；下一步应接入 Java plan ingestion 或 WebSocket 会话状态，并与 Manifest `contentFingerprint` 绑定，形成可查询、可排障、可灰度对比的会话能力事实。
+- 当前 `skillVisibility` 已写入 runtime event，并与 Manifest `contentFingerprint` 绑定后进入 Java 专用查询视图；下一步应把它从内存热窗口推进到持久化索引或会话 cache，形成跨实例可查询、可排障、可灰度对比的会话能力事实。
 
 ## 2026-06-04 落地补充：agent runtimes should expose the skill catalog they actually see
 
@@ -30,7 +30,7 @@
 - `manifestFingerprint` 是运行时可解释性的关键锚点。后续如果同一个租户在多个 Python Runtime 实例、多个 gateway 会话或灰度批次中出现规划差异，指纹可以帮助快速判断是不是能力目录版本不一致。
 - 当前诊断显式区分 `REMOTE_READY`、`REMOTE_UNAVAILABLE_FALLBACK`、`REMOTE_NOT_REFRESHED` 和 `LOCAL_DEFAULT_ONLY`。这比静默回退更适合商业化产品：开发环境可以 fallback，生产环境必须知道自己是否偏离 Java 控制面的发布事实源。
 - 本阶段没有直接改变 Agent 规划主路径，是刻意渐进：先观测 Manifest 健康，再接会话级能力快照、缓存刷新、runtime event 和 Prometheus。这样不会让发布目录新能力上线时立刻改变模型规划结果，降低迁移风险。
-- 下一步建议把 Manifest 指纹写进 runtime event 与智能网关会话快照，并把 Skill 可见性从全局目录推进到租户、项目、角色、权限包和预算策略过滤后的会话能力集。
+- Manifest 指纹已经写入 runtime event 与智能网关会话快照；下一步建议把 Skill 可见性从单次响应事实推进到租户、项目、角色、权限包和预算策略过滤后的可缓存会话能力集。
 
 ## 2026-06-04 落地补充：skills need publishable manifests before full MCP adapters
 

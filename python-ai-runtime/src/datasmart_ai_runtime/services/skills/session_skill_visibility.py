@@ -29,6 +29,7 @@ def build_session_skill_visibility_snapshot(
     skill_admission: dict[str, Any],
     tool_budget: dict[str, Any],
     model_gateway: dict[str, Any],
+    skill_manifest: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """构建会话级 Skill 能力快照。
 
@@ -38,6 +39,8 @@ def build_session_skill_visibility_snapshot(
     - `workspace`：响应组装层生成的 workspace 摘要；
     - `skill_admission`：智能网关已经构建好的 Skill 准入摘要；
     - `tool_budget/model_gateway`：用于说明 Skill 可见性是否还受到预算或模型可用性影响。
+    - `skill_manifest`：当前 Python Runtime 已知的 Skill 发布目录绑定摘要。它不是准入决策来源，
+      只用于把“本轮会话使用/回退到哪版能力目录”写入快照和事件，方便后续审计、灰度和缓存排障。
 
     返回值是前端治理卡片、Java gateway、runtime event 或后续 WebSocket 会话状态可以直接消费的低敏对象。
     """
@@ -45,6 +48,7 @@ def build_session_skill_visibility_snapshot(
     selected = plan.skill_plan.selected_skills
     rejected = plan.skill_plan.rejected_skills
     trusted_context = _skill_visibility_trust_context(request.variables or {})
+    manifest_binding = _manifest_binding_summary(skill_manifest)
     visibility_filters = {
         "tenantId": request.tenant_id,
         "projectId": request.project_id,
@@ -60,6 +64,9 @@ def build_session_skill_visibility_snapshot(
         "legacyRequestVariablesDetected": trusted_context["legacyRequestVariablesDetected"],
         "modelGatewayAvailable": bool(model_gateway.get("available")),
         "toolBudgetAllowed": bool(tool_budget.get("allowed")),
+        "manifestBindingStatus": manifest_binding["bindingStatus"],
+        "manifestStatus": manifest_binding["status"],
+        "manifestSource": manifest_binding["source"],
     }
     visible_skills = tuple(_visible_skill_summary(item) for item in selected)
     hidden_skills = tuple(_hidden_skill_summary(item) for item in rejected)
@@ -75,6 +82,7 @@ def build_session_skill_visibility_snapshot(
         "visibleSkillCount": len(visible_skills),
         "hiddenSkillCount": len(hidden_skills),
         "conditionalVisibleSkillCount": conditional_count,
+        "manifestBinding": manifest_binding,
         "visibilityFilters": visibility_filters,
         "visibleSkills": visible_skills,
         "hiddenSkills": hidden_skills,
@@ -149,6 +157,7 @@ def _skill_visibility_event_attributes(skill_visibility: Mapping[str, Any]) -> d
     visible_skill_codes, visible_truncated = _limited_skill_codes(skill_visibility, "visibleSkills")
     hidden_skill_codes, hidden_truncated = _limited_skill_codes(skill_visibility, "hiddenSkills")
     visibility_filters = dict(skill_visibility.get("visibilityFilters") or {})
+    manifest_binding = dict(skill_visibility.get("manifestBinding") or {})
     return {
         "eventPayloadVersion": "v1",
         "snapshotType": skill_visibility.get("snapshotType"),
@@ -169,6 +178,15 @@ def _skill_visibility_event_attributes(skill_visibility: Mapping[str, Any]) -> d
         "legacyRequestVariablesDetected": bool(visibility_filters.get("legacyRequestVariablesDetected")),
         "modelGatewayAvailable": bool(visibility_filters.get("modelGatewayAvailable")),
         "toolBudgetAllowed": bool(visibility_filters.get("toolBudgetAllowed")),
+        "manifestBindingStatus": manifest_binding.get("bindingStatus"),
+        "manifestStatus": manifest_binding.get("status"),
+        "manifestSource": manifest_binding.get("source"),
+        "manifestFingerprint": manifest_binding.get("manifestFingerprint"),
+        "manifestSchemaVersion": manifest_binding.get("schemaVersion"),
+        "manifestSkillCount": int(manifest_binding.get("manifestSkillCount") or 0),
+        "manifestReadySkillCount": int(manifest_binding.get("readySkillCount") or 0),
+        "manifestNonReadySkillCount": int(manifest_binding.get("nonReadySkillCount") or 0),
+        "manifestFallback": bool(manifest_binding.get("fallback", True)),
         "visibleSkillCodes": visible_skill_codes,
         "visibleSkillCodesTruncatedCount": visible_truncated,
         "hiddenSkillCodes": hidden_skill_codes,
@@ -200,6 +218,58 @@ def _limited_skill_codes(
         if isinstance(item, Mapping) and str(item.get("skillCode") or "").strip()
     )
     return codes[:limit], max(0, len(codes) - limit)
+
+
+def _manifest_binding_summary(skill_manifest: Mapping[str, Any] | None) -> dict[str, Any]:
+    """生成会话快照中的 Manifest 绑定摘要。
+
+    这个函数的职责不是重新解释 Manifest，而是把智能网关层已经归一化的低敏字段再做一次兜底：
+    - 如果调用方没有传入 Manifest 诊断，明确标记 `UNBOUND_NOT_CONFIGURED`；
+    - 如果字段类型异常，转换为稳定的字符串、布尔值和非负整数；
+    - 保留 `manifestFingerprint`，因为它是后续灰度、缓存、审计和回放定位的核心版本证据；
+    - 不保留完整 descriptor、工具 schema、权限明细或非 READY Skill 明细，避免会话事件膨胀和敏感面扩大。
+    """
+
+    if not isinstance(skill_manifest, Mapping):
+        return {
+            "bindingStatus": "UNBOUND_NOT_CONFIGURED",
+            "status": "NOT_CONFIGURED",
+            "source": "not-configured",
+            "fallback": True,
+            "remoteManifestAvailable": False,
+            "manifestFingerprint": None,
+            "schemaVersion": None,
+            "manifestSkillCount": 0,
+            "readySkillCount": 0,
+            "nonReadySkillCount": 0,
+        }
+    return {
+        "bindingStatus": _string_value(skill_manifest, "bindingStatus") or "UNBOUND_UNKNOWN",
+        "status": _string_value(skill_manifest, "status") or "UNKNOWN",
+        "source": _string_value(skill_manifest, "source") or "unknown",
+        "fallback": _bool_value(skill_manifest, True, "fallback"),
+        "remoteManifestAvailable": _bool_value(skill_manifest, False, "remoteManifestAvailable"),
+        "manifestFingerprint": _string_value(skill_manifest, "manifestFingerprint"),
+        "schemaVersion": _string_value(skill_manifest, "schemaVersion"),
+        "manifestSkillCount": _non_negative_int(skill_manifest.get("manifestSkillCount")),
+        "readySkillCount": _non_negative_int(skill_manifest.get("readySkillCount")),
+        "nonReadySkillCount": _non_negative_int(skill_manifest.get("nonReadySkillCount")),
+    }
+
+
+def _non_negative_int(value: object | None) -> int:
+    """读取非负整数，专门用于 Manifest 数量字段兜底。"""
+
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, float):
+        return max(0, int(value))
+    if value is None:
+        return 0
+    try:
+        return max(0, int(str(value).strip()))
+    except ValueError:
+        return 0
 
 
 def _next_runtime_event_sequence(plan: AgentPlan) -> int:

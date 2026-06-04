@@ -60,6 +60,7 @@ class AgentRuntimeEventConsumerServiceTest {
          * Python Runtime 6.14 会把 intelligentGatewayGovernance.skillVisibility 压缩成
          * skill_visibility_snapshot_recorded 事件。这里用 JSON payload 测试真实入站契约，
          * 确认 Java consumer 不需要专门改 schema 就能接收数组、嵌套对象和低敏聚合属性。
+         * 6.16 后事件还会携带 Manifest 指纹绑定字段，用来证明本轮会话使用了哪版 Skill 发布目录。
          */
         InMemoryAgentRuntimeEventProjectionStore store = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
         AgentRuntimeEventConsumerService service = new AgentRuntimeEventConsumerService(
@@ -75,6 +76,8 @@ class AgentRuntimeEventConsumerServiceTest {
         assertEquals("skill_visibility_snapshot_recorded", record.eventType());
         assertEquals("audit", record.severity());
         assertEquals(2, record.attributes().get("visibleSkillCount"));
+        assertEquals("BOUND_REMOTE_MANIFEST", record.attributes().get("manifestBindingStatus"));
+        assertEquals("skill-manifest-fp-test", record.attributes().get("manifestFingerprint"));
         assertEquals(List.of("datasource.profiling", "quality.rule.design"), record.attributes().get("visibleSkillCodes"));
         assertTrue(record.attributes().containsKey("hiddenAdmissionStatusCounts"));
     }
@@ -195,6 +198,15 @@ class AgentRuntimeEventConsumerServiceTest {
                     "hiddenSkillCount": 1,
                     "conditionalVisibleSkillCount": 1,
                     "permissionFactSource": "legacy-request-variables",
+                    "manifestBindingStatus": "BOUND_REMOTE_MANIFEST",
+                    "manifestStatus": "REMOTE_READY",
+                    "manifestSource": "java-agent-runtime",
+                    "manifestFingerprint": "skill-manifest-fp-test",
+                    "manifestSchemaVersion": "agent-skill-publication-manifest.v1",
+                    "manifestSkillCount": 6,
+                    "manifestReadySkillCount": 5,
+                    "manifestNonReadySkillCount": 1,
+                    "manifestFallback": false,
                     "visibleSkillCodes": ["datasource.profiling", "quality.rule.design"],
                     "hiddenSkillCodes": ["compliance.masking"],
                     "visibleRiskLevelCounts": {"LOW": 1, "MEDIUM": 1},

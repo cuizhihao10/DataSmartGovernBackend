@@ -108,6 +108,8 @@ public class AgentSkillVisibilitySnapshotProjectionService {
                 totalVisibleSkillCount,
                 totalHiddenSkillCount,
                 aggregatePermissionFactSources(snapshots),
+                aggregateManifestBindingStatuses(snapshots),
+                aggregateManifestSources(snapshots),
                 aggregateHiddenAdmissionStatuses(snapshots),
                 snapshots
         );
@@ -149,6 +151,15 @@ public class AgentSkillVisibilitySnapshotProjectionService {
                 bool(attributes, "legacyRequestVariablesDetected"),
                 bool(attributes, "modelGatewayAvailable"),
                 bool(attributes, "toolBudgetAllowed"),
+                defaultedText(attributes, "manifestBindingStatus", "UNBOUND_UNKNOWN"),
+                defaultedText(attributes, "manifestStatus", "UNKNOWN"),
+                defaultedText(attributes, "manifestSource", "unknown"),
+                text(attributes, "manifestFingerprint"),
+                text(attributes, "manifestSchemaVersion"),
+                integer(attributes, "manifestSkillCount"),
+                integer(attributes, "manifestReadySkillCount"),
+                integer(attributes, "manifestNonReadySkillCount"),
+                bool(attributes, "manifestFallback"),
                 stringList(attributes, "visibleSkillCodes"),
                 integer(attributes, "visibleSkillCodesTruncatedCount"),
                 stringList(attributes, "hiddenSkillCodes"),
@@ -166,6 +177,26 @@ public class AgentSkillVisibilitySnapshotProjectionService {
         Map<String, Long> counts = new LinkedHashMap<>();
         for (AgentSkillVisibilitySnapshotProjectionView snapshot : snapshots) {
             String source = normalizeValue(snapshot.permissionFactSource(), "unknown");
+            counts.merge(source, 1L, Long::sum);
+        }
+        return Collections.unmodifiableMap(counts);
+    }
+
+    private Map<String, Long> aggregateManifestBindingStatuses(
+            List<AgentSkillVisibilitySnapshotProjectionView> snapshots) {
+        Map<String, Long> counts = new LinkedHashMap<>();
+        for (AgentSkillVisibilitySnapshotProjectionView snapshot : snapshots) {
+            String status = bucketValue(snapshot.manifestBindingStatus(), "UNBOUND_UNKNOWN");
+            counts.merge(status, 1L, Long::sum);
+        }
+        return Collections.unmodifiableMap(counts);
+    }
+
+    private Map<String, Long> aggregateManifestSources(
+            List<AgentSkillVisibilitySnapshotProjectionView> snapshots) {
+        Map<String, Long> counts = new LinkedHashMap<>();
+        for (AgentSkillVisibilitySnapshotProjectionView snapshot : snapshots) {
+            String source = bucketValue(snapshot.manifestSource(), "unknown");
             counts.merge(source, 1L, Long::sum);
         }
         return Collections.unmodifiableMap(counts);
@@ -202,11 +233,22 @@ public class AgentSkillVisibilitySnapshotProjectionService {
         return normalizeValue(text(attributes, key), defaultValue);
     }
 
+    private String defaultedText(Map<String, Object> attributes, String key, String defaultValue) {
+        return bucketValue(text(attributes, key), defaultValue);
+    }
+
     private String normalizeValue(String value, String defaultValue) {
         if (value == null || value.isBlank()) {
             return defaultValue;
         }
         return value.trim().toLowerCase(Locale.ROOT);
+    }
+
+    private String bucketValue(String value, String defaultValue) {
+        if (value == null || value.isBlank()) {
+            return defaultValue;
+        }
+        return value.trim();
     }
 
     private Integer integer(Map<String, Object> attributes, String key) {

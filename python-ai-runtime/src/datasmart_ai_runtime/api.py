@@ -284,6 +284,7 @@ def create_app() -> Any:
         loop_control_evaluator=loop_control_evaluator,
         second_turn_orchestrator=second_turn_orchestrator,
         memory_write_governance=memory_runtime.memory_write_governance,
+        skill_publication_diagnostics_service=skill_publication_manifest_diagnostics,
         gateway_signature_error_factory=lambda detail: HTTPException(status_code=401, detail=detail),
         gateway_signature_nonce_store=gateway_signature_nonce_store,
         gateway_signature_security_stats=gateway_signature_security_stats,

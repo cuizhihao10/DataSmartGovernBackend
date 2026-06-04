@@ -104,6 +104,45 @@ class IntelligentGatewayGovernanceResponseTest(unittest.TestCase):
         self.assertNotIn("requiredPermissions", str(attributes))
         self.assertNotIn("请分析数据源结构", str(attributes))
 
+    def test_skill_visibility_snapshot_binds_skill_manifest_fingerprint(self) -> None:
+        """会话级 Skill 可见性快照应绑定当前 Skill Manifest 指纹。
+
+        这个测试保护的是商业化 Agent host 很关键的一条证据链：当某个租户反馈“某个 Skill 为什么
+        本轮可见/不可见”时，控制面不能只回答权限和角色，还要能回答当时 Python Runtime 看到的是哪一版
+        Java agent-runtime 发布目录。否则后续灰度、缓存、回放和 Marketplace 统计都会缺少版本维度。
+        """
+
+        response = build_plan_response(
+            AgentRequest(
+                tenant_id="tenant-a",
+                project_id="project-a",
+                actor_id="user-a",
+                objective="请分析数据源结构",
+                variables={"datasourceId": "ds-001", "sessionId": "session-manifest"},
+            ),
+            self._orchestrator(),
+            skill_publication_diagnostics_service=FakeSkillPublicationDiagnosticsService(),
+        )
+
+        governance = response["intelligentGatewayGovernance"]
+        skill_manifest = governance["skillManifest"]
+        skill_visibility = governance["skillVisibility"]
+        visibility_event = response["eventEnvelope"]["events"][-1]
+        attributes = visibility_event["attributes"]
+
+        self.assertEqual("BOUND_REMOTE_MANIFEST", skill_manifest["bindingStatus"])
+        self.assertEqual("skill-manifest-fp-20260604", skill_manifest["manifestFingerprint"])
+        self.assertEqual("skill-manifest-fp-20260604", skill_visibility["manifestBinding"]["manifestFingerprint"])
+        self.assertEqual("BOUND_REMOTE_MANIFEST", skill_visibility["visibilityFilters"]["manifestBindingStatus"])
+        self.assertEqual("REMOTE_READY", attributes["manifestStatus"])
+        self.assertEqual("java-agent-runtime", attributes["manifestSource"])
+        self.assertEqual("skill-manifest-fp-20260604", attributes["manifestFingerprint"])
+        self.assertEqual("agent-skill-publication-manifest.v1", attributes["manifestSchemaVersion"])
+        self.assertEqual(6, attributes["manifestSkillCount"])
+        self.assertEqual(5, attributes["manifestReadySkillCount"])
+        self.assertEqual(1, attributes["manifestNonReadySkillCount"])
+        self.assertFalse(attributes["manifestFallback"])
+
     def test_skill_admission_rejection_is_exposed_in_unified_gateway_summary(self) -> None:
         """Skill 准入拒绝应进入智能网关摘要，便于前端治理卡片解释原因。"""
 
@@ -243,6 +282,33 @@ class ToolCallingProvider:
             content="tool calling",
             tool_calls=self._tool_calls,
         )
+
+
+class FakeSkillPublicationDiagnosticsService:
+    """测试用 Skill Manifest 诊断服务。
+
+    真实服务会从 Java agent-runtime 拉取发布目录并缓存诊断快照；测试中只需要一个稳定对象，
+    用来证明计划响应组装层会读取 `diagnostics()`，并把低敏指纹事实一路传入智能网关响应和 runtime event。
+    """
+
+    def diagnostics(self) -> dict[str, object]:
+        return {
+            "status": "REMOTE_READY",
+            "source": "java-agent-runtime",
+            "fallback": False,
+            "remoteManifestAvailable": True,
+            "schemaVersion": "agent-skill-publication-manifest.v1",
+            "manifestType": "AGENT_SKILL_PUBLICATION_MANIFEST",
+            "publicationMode": "READY_ONLY",
+            "manifestFingerprint": "skill-manifest-fp-20260604",
+            "generatedAt": "2026-06-04T11:30:00Z",
+            "lastRefreshAt": "2026-06-04T11:31:00Z",
+            "manifestSkillCount": 6,
+            "readySkillCount": 5,
+            "nonReadySkillCount": 1,
+            "publicationStateCounts": {"READY": 5, "DRAFT": 1},
+            "riskLevelCounts": {"LOW": 3, "MEDIUM": 2, "HIGH": 1},
+        }
 
 
 if __name__ == "__main__":

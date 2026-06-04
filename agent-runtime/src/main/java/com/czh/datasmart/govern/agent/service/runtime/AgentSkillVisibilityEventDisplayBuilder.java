@@ -53,6 +53,7 @@ final class AgentSkillVisibilityEventDisplayBuilder {
         int hiddenCount = intAttribute(attributes, "hiddenSkillCount");
         int conditionalCount = intAttribute(attributes, "conditionalVisibleSkillCount");
         String permissionFactSource = textAttribute(attributes, "permissionFactSource");
+        String manifestBindingStatus = textAttribute(attributes, "manifestBindingStatus");
         boolean available = booleanAttribute(attributes, "available");
 
         Map<String, Object> metrics = new LinkedHashMap<>();
@@ -65,6 +66,10 @@ final class AgentSkillVisibilityEventDisplayBuilder {
         metrics.put("visibleRiskLevelCount", mapSize(attributes.get("visibleRiskLevelCounts")));
         metrics.put("visibleDomainCount", mapSize(attributes.get("visibleDomainCounts")));
         metrics.put("hiddenAdmissionStatusCount", mapSize(attributes.get("hiddenAdmissionStatusCounts")));
+        putIfPresent(metrics, "manifestBindingStatus", manifestBindingStatus);
+        putIfPresent(metrics, "manifestSource", textAttribute(attributes, "manifestSource"));
+        metrics.put("manifestFingerprintPresent", !textAttribute(attributes, "manifestFingerprint").isBlank());
+        metrics.put("manifestReadySkillCount", intAttribute(attributes, "manifestReadySkillCount"));
 
         return new AgentRuntimeEventDisplayView(
                 "SKILL_VISIBILITY",
@@ -74,7 +79,7 @@ final class AgentSkillVisibilityEventDisplayBuilder {
                 "skill",
                 !available || hiddenCount > 0 || conditionalCount > 0,
                 REPLAY_POLICY_APPEND_AND_ACK,
-                recommendedActions(hiddenCount, conditionalCount, permissionFactSource),
+                recommendedActions(hiddenCount, conditionalCount, permissionFactSource, manifestBindingStatus),
                 Collections.unmodifiableMap(metrics)
         );
     }
@@ -95,7 +100,11 @@ final class AgentSkillVisibilityEventDisplayBuilder {
                 + " 个，条件性可见 " + conditionalCount + " 个，权限事实来源：" + source + "。";
     }
 
-    private static List<String> recommendedActions(int hiddenCount, int conditionalCount, String permissionFactSource) {
+    private static List<String> recommendedActions(
+            int hiddenCount,
+            int conditionalCount,
+            String permissionFactSource,
+            String manifestBindingStatus) {
         List<String> actions = new ArrayList<>();
         if (hiddenCount > 0) {
             actions.add("查看 hiddenAdmissionStatusCounts，确认是缺权限、角色不足、租户开关关闭还是风险策略阻断。");
@@ -105,6 +114,13 @@ final class AgentSkillVisibilityEventDisplayBuilder {
         }
         if ("legacy-request-variables".equals(normalize(permissionFactSource))) {
             actions.add("当前仍使用旧式请求变量作为权限事实来源，应迁移到 gateway 签名的 trustedControlPlane。");
+        }
+        String normalizedManifestStatus = normalize(manifestBindingStatus);
+        if ("local_default_or_fallback".equals(normalizedManifestStatus)
+                || "unbound_not_configured".equals(normalizedManifestStatus)) {
+            actions.add("当前会话未绑定远端 Skill Manifest 指纹；生产环境应接入 Java 发布事实源以支持灰度和审计回放。");
+        } else if ("remote_ready_without_fingerprint".equals(normalizedManifestStatus)) {
+            actions.add("远端 Skill Manifest 可用但缺少 contentFingerprint，应补齐发布指纹以定位能力目录版本。");
         }
         if (actions.isEmpty()) {
             actions.add("可将该快照与 Skill Manifest 指纹、工具预算和模型路由一起用于会话治理排障。");

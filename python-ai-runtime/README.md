@@ -6,6 +6,8 @@
 
 > 2026-06-04 补充：Python Runtime 已新增 Skill Publication Manifest 启动诊断。`/agent/skills/publication/diagnostics` 会报告 Java `agent-runtime` Manifest 是否可用、目录级 `contentFingerprint`、READY Skill 数量、非 READY 状态分布和本地默认 Skill fallback 状态。该接口只返回低敏摘要，不返回完整 descriptor、权限明细、prompt 或工具参数。
 
+> 2026-06-04 补充：`/agent/plans` 响应现在会把最近一次 Skill Manifest 诊断快照压缩为 `intelligentGatewayGovernance.skillManifest`，并同步写入 `skillVisibility.manifestBinding` 与 `SKILL_VISIBILITY_SNAPSHOT_RECORDED` runtime event attributes。这样 Java 控制面和前端治理卡片可以回答“本轮会话绑定了哪版 Skill 发布目录”，而不是只能看到可见/隐藏数量。
+
 这个目录是 DataSmart Govern 的 Python 智能运行时初始骨架，定位不是替代 Java 微服务，而是承接后续 `Agent 编排`、`模型路由`、`RAG/GraphRAG 检索`、`工具计划生成`、`OpenClaw/LangGraph 风格状态流转` 等 AI 能力。
 
 ## 当前边界
@@ -20,7 +22,7 @@
 - `ToolPlanner`：根据目标、变量和工具注册表生成工具计划，先采用可解释的规则式骨架，后续可替换为 LLM 规划器。
 - `AgentOrchestrator`：以状态节点方式串联目标接收、模型选择、上下文构建、工具规划、审批判断和响应生成。
 - Agent Skill 治理：已具备本地/远程 Skill descriptor、语义选择、准入策略、准入 runtime event 和智能网关摘要；Java `permission-admin` 已新增 Skill admission evaluate 契约，Python Runtime 已支持可选远程调用。Skill 命中后会继续校验 `grantedPermissions`、`actorRole` 与风险等级；显式缺权限或普通用户命中高风险 Skill 时会进入 `rejectedSkills`，缺少控制面事实时只做条件性推荐。`SKILL_ADMISSION_EVALUATED` 事件与 `intelligentGatewayGovernance.skillAdmission` 会解释 Skill 启用、条件性启用或拒绝原因。
-- 智能网关会话级 Skill 快照：`intelligentGatewayGovernance.skillVisibility` 已能输出本轮会话真正可见的 Skill 能力集、被准入策略隐藏的 Skill、可见风险分布、领域分布、隐藏状态分布和可信事实来源。该快照基于本轮 `AgentSkillPlan`，不会重新拉 Manifest 或重新请求 permission-admin；响应组装器会把它压缩为低敏 `SKILL_VISIBILITY_SNAPSHOT_RECORDED` runtime event，随 `eventEnvelope`、event store、live push 和 publisher 一起发布，便于断线 replay、Java 控制面补索引和后续审计报表。
+- 智能网关会话级 Skill 快照：`intelligentGatewayGovernance.skillVisibility` 已能输出本轮会话真正可见的 Skill 能力集、被准入策略隐藏的 Skill、可见风险分布、领域分布、隐藏状态分布和可信事实来源。该快照基于本轮 `AgentSkillPlan`，不会重新拉 Manifest 或重新请求 permission-admin；响应组装器会把它压缩为低敏 `SKILL_VISIBILITY_SNAPSHOT_RECORDED` runtime event，随 `eventEnvelope`、event store、live push 和 publisher 一起发布，便于断线 replay、Java 控制面补索引和后续审计报表。当前快照还会携带 `manifestBinding`，记录 Manifest 绑定状态、来源、`manifestFingerprint`、READY/非 READY 数量和 fallback 状态，用于灰度、缓存、事故复盘和 Skill Marketplace 版本统计。
 - Skill Publication Manifest 诊断：已具备 `services/skills/` 独立能力包，FastAPI startup 可主动读取 Java `agent-runtime` `/agent-runtime/skills/publication/manifest`，并通过 `/agent/skills/publication/diagnostics` 暴露低敏诊断。诊断会区分 `REMOTE_READY`、`REMOTE_UNAVAILABLE_FALLBACK`、`REMOTE_NOT_REFRESHED` 和 `LOCAL_DEFAULT_ONLY`，展示 Manifest 指纹、READY/非 READY 数量、发布状态分布、风险等级分布和推荐动作；远端失败时默认回退本地 Skill，生产可通过 `DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REQUIRED=true` 改为 fail-closed。
 - 智能网关工具治理：已具备模型工具调用候选规划、可见工具校验、参数 schema 校验和工具调用预算守卫，可限制单轮工具数量、自动推进数量、高风险工具数量和 arguments 体积；预算策略已抽象为 provider，当前支持环境变量、`AgentRequest.variables["toolCallBudget"]` 覆盖，以及可选远程调用 Java permission-admin `/permissions/agent/tool-budget-policies/evaluate`。远程策略默认关闭，适合生产或联调环境按租户套餐、项目等级、角色、workspace 风险和实时 backlog 动态生成预算；预算阻断会写入独立 `MODEL_TOOL_CALL_BUDGET_GUARDED` runtime event，API 响应已提供 `intelligentGatewayGovernance` 统一摘要，汇总模型路由、工具预算、workspace 和记忆检索治理事实。
 - 模型 Provider Health 治理：已具备调用结果驱动的内存健康注册表、连续失败熔断、错误率/延迟降级、低敏诊断摘要和路由 fallback 联动。`ModelGatewayGovernanceService.record_invocation_result(...)` 会同时更新 token usage 与 Provider 健康；`/agent/models/provider-health/diagnostics` 可用于智能网关运维卡片和 Java 控制面排障。当前未持久化健康状态，也未接真实 `/health` 探针和 Prometheus 回灌。
@@ -96,6 +98,7 @@ $env:DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_MAX_NON_READY_ITEMS="10"
 - 本地学习环境允许远端 Manifest 失败后 fallback 到本地默认 Skill。
 - 生产强治理环境可以设置 `DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REQUIRED=true`，让远端发布事实源不可用时显式失败。
 - 诊断响应不返回完整 descriptor、权限明细、prompt、工具参数、样本数据或密钥。
+- `/agent/plans` 不会在每次请求实时刷新 Manifest，只读取诊断服务的最近快照并做低敏归一化；这样既能给会话事件补充版本证据，又避免用户同步规划路径被远端 Manifest 网络 IO 拖慢。
 
 ## 下一步建议
 

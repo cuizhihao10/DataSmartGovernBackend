@@ -19,6 +19,8 @@ import java.util.Map;
  * <p>2. `totalVisibleSkillCount/totalHiddenSkillCount` 可以展示能力暴露规模和隐藏规模；</p>
  * <p>3. `permissionFactSourceCounts` 可以判断生产路径是否还在使用旧式请求变量；</p>
  * <p>4. `hiddenAdmissionStatusCounts` 可以解释隐藏主要来自缺权限、角色不足、租户开关还是风险策略。</p>
+ * <p>5. `manifestBindingStatusCounts/manifestSourceCounts` 可以判断本次窗口内会话是否都绑定到了同一类
+ * Skill 发布事实源，避免不同 Runtime 使用不同能力目录却没有审计证据。</p>
  *
  * <p>当前聚合只基于本次返回窗口，不等同于全量历史报表。后续持久化仓储上线后，可以把同样字段迁移为
  * SQL/ClickHouse 聚合，接口契约仍保持一致。</p>
@@ -39,6 +41,8 @@ public record AgentSkillVisibilitySnapshotProjectionQueryResponse(
         Integer totalVisibleSkillCount,
         Integer totalHiddenSkillCount,
         Map<String, Long> permissionFactSourceCounts,
+        Map<String, Long> manifestBindingStatusCounts,
+        Map<String, Long> manifestSourceCounts,
         Map<String, Integer> hiddenAdmissionStatusCounts,
         List<AgentSkillVisibilitySnapshotProjectionView> snapshots
 ) {

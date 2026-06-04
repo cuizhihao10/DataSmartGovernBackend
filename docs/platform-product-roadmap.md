@@ -9131,3 +9131,59 @@ receipt attemptCount 异常增长和运维不可解释 backlog。因此本阶段
 2. 设计受控常驻 worker：启停开关、调度间隔、单轮 limit、租户并发、全局熔断、优雅关闭。
 3. 再补批量补偿与审计事件：先 dry-run 批量预览，再二次确认执行，避免管理员误批量重放。
 4. 指标与补偿稳定后，再接 Chroma/Neo4j 二级索引 worker，避免语义索引先于可恢复执行链路上线。
+
+## 5.08 Skill Manifest 指纹绑定到会话可见性快照（2026-06-04）
+
+本阶段承接 Skill Publication Manifest、会话级 Skill 可见性快照和 Java replay/index 查询三条链路，把
+Manifest `contentFingerprint` 从“启动诊断字段”推进为“每次 Agent 会话可回放的版本证据”。目标是让
+平台不只回答“本轮有多少 Skill 可见/隐藏”，还要能回答“这次判断基于哪一版能力发布目录”。
+
+已完成：
+- Python `/agent/plans` 响应新增 `intelligentGatewayGovernance.skillManifest`：
+  - 读取 Skill Publication Manifest 诊断服务的最近快照；
+  - 归一化 `bindingStatus/status/source/fallback/remoteManifestAvailable`；
+  - 暴露 `manifestFingerprint/schemaVersion/manifestSkillCount/readySkillCount/nonReadySkillCount`；
+  - 不暴露完整 descriptor、权限明细、prompt、工具参数或非 READY Skill 明细。
+- `skillVisibility` 新增 `manifestBinding`：
+  - 把 Manifest 绑定状态、来源、指纹和 READY/非 READY 数量写入会话级能力快照；
+  - 明确该字段只提供版本证据，不重新参与 Skill 准入决策；
+  - 默认未注入诊断服务时标记 `UNBOUND_NOT_CONFIGURED`，避免静默缺失证据。
+- `SKILL_VISIBILITY_SNAPSHOT_RECORDED` runtime event 新增低敏 Manifest 字段：
+  - `manifestBindingStatus`；
+  - `manifestStatus`；
+  - `manifestSource`；
+  - `manifestFingerprint`；
+  - `manifestSchemaVersion`；
+  - `manifestSkillCount/manifestReadySkillCount/manifestNonReadySkillCount`；
+  - `manifestFallback`。
+- FastAPI 装配链路同步：
+  - `api.py` 将 `skill_publication_manifest_diagnostics` 注入 Agent 路由；
+  - `api_agent_routes.py` 将诊断服务透传给 `build_plan_response(...)`；
+  - `api_plan_response.py` 只读取 `diagnostics()` 最近快照，不在用户同步请求中刷新远端 Manifest，避免额外网络 IO 影响规划延迟。
+- Java `agent-runtime` 专用投影视图同步：
+  - `AgentSkillVisibilitySnapshotProjectionView` 新增 Manifest 绑定字段；
+  - `AgentSkillVisibilitySnapshotProjectionQueryResponse` 新增 `manifestBindingStatusCounts` 与 `manifestSourceCounts`；
+  - `AgentSkillVisibilitySnapshotProjectionService` 解析 Python event attributes 并做窗口聚合；
+  - Skill 可见性 display builder 增加 Manifest 绑定状态、来源、指纹存在性和 READY 数量指标。
+- 测试更新：
+  - Python `test_intelligent_gateway_governance.py` 验证 Manifest 指纹进入智能网关摘要、skillVisibility 和 runtime event；
+  - Java `AgentRuntimeEventConsumerServiceTest` 验证 JSON 入站事件承接 Manifest 字段；
+  - Java `AgentSkillVisibilitySnapshotProjectionServiceTest` 验证强类型 DTO 与窗口聚合。
+
+产品意义：
+- Agent host 开始具备 Codex/Claude Code 类“能力暴露边界可追踪”的版本证据。
+- 后续如果某个 Skill 在某一轮会话异常可见或隐藏，控制面可以同时按租户、项目、角色、权限事实和 Manifest 指纹排查。
+- Manifest 指纹让灰度、回滚、缓存命中、Skill Marketplace 统计和事故复盘具备共同维度。
+- 本阶段没有让 `/agent/plans` 每次实时刷新 Manifest，避免把远端能力目录 IO 放进高频用户请求路径。
+
+当前边界：
+- Java 专用查询仍使用内存 runtime event projection 热窗口，JVM 重启会丢失。
+- Manifest 指纹已进入事件和投影，但尚未进入 MySQL/ClickHouse/OpenSearch 长期审计索引。
+- 当前 Python 主规划仍使用已加载的 Skill descriptor；Manifest 诊断尚未驱动低频缓存刷新和 READY-only 目录切换。
+- 还没有租户级 Skill 版本发布流、灰度批次、回滚、能力包套餐或 Skill Marketplace 管理台。
+
+下一步建议：
+1. 优先设计 Skill 可见性持久化索引表或审计 outbox dispatcher，把热窗口事实升级为跨实例、跨重启的长期审计事实。
+2. 在智能网关侧增加会话级 Skill cache，按租户、项目、角色、权限包、套餐、workspace 风险、预算策略和 Manifest 指纹缓存 READY Skill。
+3. 设计 Manifest 低频刷新/ETag 机制，让 Python Runtime 能按 `contentFingerprint` 判断是否更新本地 Skill registry。
+4. 在推进 1-2 个 Skill 版本治理闭环后，切换到长期记忆二级索引或多 Agent 协作，避免继续只在 Skill 链路局部扩展。

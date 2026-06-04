@@ -86,6 +86,60 @@ public record AgentSkillVisibilitySnapshotProjectionView(
         Boolean legacyRequestVariablesDetected,
         Boolean modelGatewayAvailable,
         Boolean toolBudgetAllowed,
+
+        /**
+         * 本轮会话与 Skill Publication Manifest 的绑定状态。
+         *
+         * <p>典型值包括：
+         * `BOUND_REMOTE_MANIFEST` 表示已经拿到远端 Java 发布目录且存在 contentFingerprint；
+         * `LOCAL_DEFAULT_OR_FALLBACK` 表示 Python Runtime 使用本地默认 Skill 或远端不可用回退；
+         * `REMOTE_READY_WITHOUT_FINGERPRINT` 表示远端可用但缺少版本指纹，需要补齐发布契约。</p>
+         *
+         * <p>这个字段是后续灰度、缓存排障和审计回放的关键维度：同一段时间内如果不同 Python Runtime
+         * 绑定了不同 Manifest，运营台可以按该字段快速定位能力暴露差异。</p>
+         */
+        String manifestBindingStatus,
+
+        /**
+         * Python 诊断服务看到的 Manifest 健康状态，例如 REMOTE_READY、REMOTE_NOT_REFRESHED。
+         */
+        String manifestStatus,
+
+        /**
+         * Manifest 事实来源，例如 java-agent-runtime、local-default 或 diagnostics-service。
+         */
+        String manifestSource,
+
+        /**
+         * Manifest 内容指纹。它不是密钥，而是能力发布目录的版本证据，可用于灰度比对和审计定位。
+         */
+        String manifestFingerprint,
+
+        /**
+         * Manifest schema 版本，便于 Java 控制面兼容未来发布目录结构升级。
+         */
+        String manifestSchemaVersion,
+
+        /**
+         * 当前 Manifest 中的 Skill 总量。远端未绑定时通常为 0 或本地回退数量。
+         */
+        Integer manifestSkillCount,
+
+        /**
+         * 当前 Manifest 中 READY Skill 数量。后续 Marketplace 可据此判断可用能力池规模。
+         */
+        Integer manifestReadySkillCount,
+
+        /**
+         * 当前 Manifest 中非 READY Skill 数量，用于提示能力发布治理仍有阻塞项。
+         */
+        Integer manifestNonReadySkillCount,
+
+        /**
+         * 是否处于本地默认或远端不可用回退路径。生产环境如果长期为 true，应触发运维排查。
+         */
+        Boolean manifestFallback,
+
         List<String> visibleSkillCodes,
         Integer visibleSkillCodesTruncatedCount,
         List<String> hiddenSkillCodes,
