@@ -1,5 +1,42 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-04 追加落地进展：Java 控制面 Skill 可见性快照 Replay Index
+
+- `agent-runtime` 新增 Skill 可见性快照专用查询能力：
+  - 固定读取 `skill_visibility_snapshot_recorded` runtime event；
+  - 复用现有 `AgentRuntimeEventProjectionStore` 热窗口；
+  - 复用 `AgentRuntimeEventProjectionAccessSupport` 做租户、项目、本人数据范围收口；
+  - 将自由 Map attributes 转换为强类型 `AgentSkillVisibilitySnapshotProjectionView`。
+- 新增只读接口：
+  - `GET /agent-runtime/runtime-events/skill-visibility-snapshots`；
+  - `GET /api/agent/runtime-events/skill-visibility-snapshots`；
+  - 支持 `tenantId/projectId/actorId/requestId/runId/sessionId/severity/afterSequence/limit`；
+  - 返回本次窗口的可用快照数量、不可用快照数量、可见/隐藏 Skill 总量、权限事实来源分布和隐藏准入状态分布。
+- Java display 层新增 Skill 可见性展示解释：
+  - 不再把该事件归到泛化 `SYSTEM`；
+  - 输出 `SKILL_VISIBILITY` 分类；
+  - 对普通用户返回 `SUMMARY_MASKED`；
+  - 对项目负责人/审计/管理员输出低敏 metrics 与治理建议。
+- Java 可见性策略补齐：
+  - BASIC 角色可看到 `skill_visibility_snapshot_recorded` 进度事件；
+  - attributes 继续全部脱敏，避免普通用户直接看到 Skill code 和能力边界细节。
+
+产品意义：
+- Skill 可见性事件已经跨过 Python Runtime，进入 Java 控制面可查询、可 replay、可展示的治理链路。
+- 前端/运营台不需要从通用 event attributes 中硬解析 Skill 字段，可以消费强类型 DTO。
+- 后续 Skill Marketplace 可基于该投影统计能力命中、隐藏、权限缺口、租户套餐限制和策略漂移。
+
+当前边界：
+- 当前仍使用内存 projection store，是在线热窗口，不是长期审计表。
+- 尚未把 `manifestFingerprint` 写入快照事件，无法定位“这次会话使用哪版 Skill 发布目录”。
+- 尚未新增 MySQL/ClickHouse/OpenSearch 索引表，也未做 Kafka/审计 outbox 的强持久化。
+- 当前聚合只基于本次返回窗口，不是全量历史报表。
+
+下一步推荐路线：
+1. 为 `skill_visibility_snapshot_recorded` 设计 SQL/审计索引表，至少包含 tenantId、projectId、runId、sessionId、replaySequence、visible/hidden counts、permissionFactSource、policyVersion 和 manifestFingerprint。
+2. 在 Python Runtime 侧把 Manifest `contentFingerprint` 写入 `skillVisibility` 和 runtime event，完成能力目录版本追踪。
+3. 在 gateway 层生成会话级 Skill cache，减少每次计划响应重复解释能力边界。
+
 ## 2026-06-04 追加落地进展：Skill 可见性快照进入 runtime event
 
 - Python Runtime 新增 `SKILL_VISIBILITY_SNAPSHOT_RECORDED` 运行时事件：
@@ -28,7 +65,7 @@
 - 这为 Skill Marketplace 使用统计、租户能力包灰度、Manifest 版本对比和权限策略漂移排查提供基础事实。
 
 当前边界：
-- 当前事件还没有写入 Java plan ingestion 的专门索引表，也没有与 Manifest `contentFingerprint` 绑定。
+- 当前事件已进入 Java 控制面热窗口专用查询视图，但还没有写入长期审计/SQL 索引表，也没有与 Manifest `contentFingerprint` 绑定。
 - 当前只是单次计划响应追加事件，不是 gateway 层持久化会话 Skill 缓存。
 - 当前 Prometheus 不记录 Skill code，避免高基数；后续如果需要趋势指标，应只聚合可见数量、隐藏状态和风险等级。
 

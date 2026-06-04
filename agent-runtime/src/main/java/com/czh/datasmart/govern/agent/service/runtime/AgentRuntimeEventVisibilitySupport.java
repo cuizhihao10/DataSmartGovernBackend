@@ -120,6 +120,7 @@ public class AgentRuntimeEventVisibilitySupport {
             "status",
             "approval_required",
             "approval_waiting",
+            "skill_visibility_snapshot_recorded",
             "tool_execution",
             "tool_planned",
             "tool_completed",

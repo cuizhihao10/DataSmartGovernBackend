@@ -1,12 +1,20 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-04 落地补充：agent control planes should index session capability facts
+
+- 本阶段把 Python Runtime 的 `skill_visibility_snapshot_recorded` 事件接入 Java `agent-runtime` 专用查询视图。成熟 Agent host 不只在运行时生成事件，还需要控制面能按产品语义查询这些事件，否则前端、审计台和运营报表会被迫解析自由 attributes。
+- DataSmart 当前没有急着新建持久化表，而是先复用现有 runtime event projection store，新增强类型 `AgentSkillVisibilitySnapshotProjectionView` 和 `/runtime-events/skill-visibility-snapshots` 只读入口。这是一种渐进路线：先稳定跨语言事件语义，再落 SQL/ClickHouse/OpenSearch 索引。
+- 该视图保留低敏字段：可见/隐藏数量、Skill code、权限事实来源、风险/领域/隐藏状态分布、策略版本和 replaySequence。它仍不返回 prompt、SQL、工具参数、完整权限清单或长期记忆正文。
+- Java display 层现在能把该事件解释为 `SKILL_VISIBILITY`，而不是泛化系统事件；BASIC 用户可以看到进度但属性被脱敏。这让 HTTP replay、WebSocket 断线恢复和前端 timeline 的体验更接近 Codex/Claude Code 类 Agent host 的“可解释工具/Skill 暴露边界”。
+- 下一步应把 Manifest `contentFingerprint` 写入事件，并把热窗口查询升级为持久化 replay index。只有绑定 Manifest 版本，平台才能在灰度、回滚和事故复盘时回答“会话当时使用的是哪版能力目录”。
+
 ## 2026-06-04 落地补充：session skill visibility should be replayable, not only returned once
 
 - 本阶段把 `intelligentGatewayGovernance.skillVisibility` 写入 `SKILL_VISIBILITY_SNAPSHOT_RECORDED` runtime event。这个变化看似小，但它把“当前会话可见能力集”从一次性 HTTP 展示字段推进为可 replay 的运行时事实。
 - 成熟 Agent host 不只需要“实时规划”，还需要用户刷新、WebSocket 断线、Java 控制面补索引、审计员回放和运营报表都能还原当时的能力边界。否则 Skill Marketplace 越丰富，事故复盘时越难回答“模型当时是否真的看见了某个能力”。
 - DataSmart 当前选择只写低敏聚合属性：Skill code、数量、风险/领域/隐藏状态分布、权限事实来源、策略版本和推荐动作数量；不写 prompt、SQL、工具参数、完整权限清单或记忆正文。这符合 Agent runtime event 的产品定位：公共时间线保存事实摘要，敏感排障走受控详情接口。
 - 实时事件可见性策略已允许普通用户看到该事件的进度存在，但 BASIC 级别仍会脱敏 attributes。项目负责人、审计员和管理员可以按既有策略看到低敏聚合字段，用于治理卡片、回放和排障。
-- 下一步不应再只停留在 Python 响应侧，而应把该事件接入 Java plan ingestion/replay index，并把 Manifest `contentFingerprint` 写进快照与事件。这样才能支持灰度对比、租户能力包版本追踪和策略漂移排查。
+- 当前事件已接入 Java 热窗口 replay/index 查询视图；下一步应继续绑定 Manifest `contentFingerprint` 并落地持久化索引。这样才能支持灰度对比、租户能力包版本追踪和策略漂移排查。
 
 ## 2026-06-04 落地补充：agent hosts need session-level skill visibility, not only global catalogs
 

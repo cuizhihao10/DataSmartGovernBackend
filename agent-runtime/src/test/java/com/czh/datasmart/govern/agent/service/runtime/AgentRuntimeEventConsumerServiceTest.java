@@ -55,6 +55,31 @@ class AgentRuntimeEventConsumerServiceTest {
     }
 
     @Test
+    void consumeShouldAcceptSkillVisibilitySnapshotRuntimeEvent() {
+        /*
+         * Python Runtime 6.14 会把 intelligentGatewayGovernance.skillVisibility 压缩成
+         * skill_visibility_snapshot_recorded 事件。这里用 JSON payload 测试真实入站契约，
+         * 确认 Java consumer 不需要专门改 schema 就能接收数组、嵌套对象和低敏聚合属性。
+         */
+        InMemoryAgentRuntimeEventProjectionStore store = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        AgentRuntimeEventConsumerService service = new AgentRuntimeEventConsumerService(
+                objectMapper(),
+                store,
+                new AgentRuntimeEventConsumerStats()
+        );
+
+        AgentRuntimeEventConsumeResult result = service.consume(skillVisibilityRuntimeEventPayload());
+
+        assertTrue(result.accepted());
+        AgentRuntimeEventProjectionRecord record = store.listByRunId("run-skill-001").getFirst();
+        assertEquals("skill_visibility_snapshot_recorded", record.eventType());
+        assertEquals("audit", record.severity());
+        assertEquals(2, record.attributes().get("visibleSkillCount"));
+        assertEquals(List.of("datasource.profiling", "quality.rule.design"), record.attributes().get("visibleSkillCodes"));
+        assertTrue(record.attributes().containsKey("hiddenAdmissionStatusCounts"));
+    }
+
+    @Test
     void consumeShouldTreatSameEventAsDuplicate() {
         InMemoryAgentRuntimeEventProjectionStore store = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
         AgentRuntimeEventConsumerStats stats = new AgentRuntimeEventConsumerStats();
@@ -142,5 +167,43 @@ class AgentRuntimeEventConsumerServiceTest {
                   "createdAt": "2026-05-27T00:00:%02dZ"
                 }
                 """.formatted(runId, sequence, sequence);
+    }
+
+    private String skillVisibilityRuntimeEventPayload() {
+        return """
+                {
+                  "schemaVersion": "agent-runtime-event.v1",
+                  "source": "python-ai-runtime",
+                  "publishedAt": "2026-06-04T11:00:01Z",
+                  "eventType": "skill_visibility_snapshot_recorded",
+                  "stage": "record_skill_visibility_snapshot",
+                  "message": "已记录本轮会话级 Skill 可见性快照。",
+                  "severity": "audit",
+                  "tenantId": "10",
+                  "projectId": "20",
+                  "actorId": "1001",
+                  "requestId": "request-skill-001",
+                  "runId": "run-skill-001",
+                  "sessionId": "session-skill-001",
+                  "sequence": 9,
+                  "attributes": {
+                    "eventPayloadVersion": "v1",
+                    "snapshotType": "SESSION_SKILL_VISIBILITY_SNAPSHOT",
+                    "snapshotSource": "agent-plan-skill-admission",
+                    "available": false,
+                    "visibleSkillCount": 2,
+                    "hiddenSkillCount": 1,
+                    "conditionalVisibleSkillCount": 1,
+                    "permissionFactSource": "legacy-request-variables",
+                    "visibleSkillCodes": ["datasource.profiling", "quality.rule.design"],
+                    "hiddenSkillCodes": ["compliance.masking"],
+                    "visibleRiskLevelCounts": {"LOW": 1, "MEDIUM": 1},
+                    "visibleDomainCounts": {"DATASOURCE": 1, "QUALITY": 1},
+                    "hiddenAdmissionStatusCounts": {"DENIED_MISSING_PERMISSION": 1},
+                    "recommendedActionCount": 2
+                  },
+                  "createdAt": "2026-06-04T11:00:00Z"
+                }
+                """;
     }
 }

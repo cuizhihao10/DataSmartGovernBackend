@@ -41,6 +41,7 @@ public class AgentRuntimeEventDisplaySupport {
      */
     private static final String DAG_DRY_RUN_EVENT_TYPE = "agent.dag_execution.dry_run.completed";
     private static final String TOOL_EXECUTION_EVENT_TYPE = "agent.tool_execution.state_changed";
+    private static final String SKILL_VISIBILITY_EVENT_TYPE = "skill_visibility_snapshot_recorded";
 
     private static final String REPLAY_POLICY_APPEND_AND_ACK = "APPEND_TO_TIMELINE_AND_ALLOW_ACK_CURSOR";
     private static final String REPLAY_POLICY_APPEND_ONLY = "APPEND_TO_TIMELINE";
@@ -61,6 +62,9 @@ public class AgentRuntimeEventDisplaySupport {
         }
         if (TOOL_EXECUTION_EVENT_TYPE.equals(eventType) && isToolGuardrailEvent(record)) {
             return buildToolGuardrailDisplay(record);
+        }
+        if (SKILL_VISIBILITY_EVENT_TYPE.equals(eventType)) {
+            return AgentSkillVisibilityEventDisplayBuilder.build(record);
         }
         return buildGenericDisplay(record);
     }

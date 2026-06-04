@@ -11,11 +11,13 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventProjection
 import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventReplayAckRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventReplayCursorView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventReplayResponse;
+import com.czh.datasmart.govern.agent.controller.dto.AgentSkillVisibilitySnapshotProjectionQueryResponse;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventQueryAccessContext;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventQueryAccessContextResolver;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventProjectionQuery;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventProjectionQueryService;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventReplayService;
+import com.czh.datasmart.govern.agent.service.runtime.AgentSkillVisibilitySnapshotProjectionService;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import lombok.RequiredArgsConstructor;
@@ -49,6 +51,7 @@ public class AgentRuntimeEventProjectionController {
 
     private final AgentRuntimeEventProjectionQueryService queryService;
     private final AgentRuntimeEventReplayService replayService;
+    private final AgentSkillVisibilitySnapshotProjectionService skillVisibilitySnapshotProjectionService;
     private final AgentRuntimeEventQueryAccessContextResolver accessContextResolver;
 
     /**
@@ -102,6 +105,64 @@ public class AgentRuntimeEventProjectionController {
                 authorizedProjectIds
         );
         return PlatformApiResponse.success(queryService.query(query, accessContext), traceId);
+    }
+
+    /**
+     * 查询 Skill 可见性快照 runtime event 的强类型投影视图。
+     *
+     * <p>该接口服务“当前会话到底看见哪些 Skill”的治理场景。它不是第二个通用事件查询入口，而是固定读取
+     * `skill_visibility_snapshot_recorded` 事件，并把 attributes 解析成低敏强类型 DTO。</p>
+     *
+     * <p>产品用途示例：</p>
+     * <p>1. 前端 Agent 运行详情页展示本轮可见 Skill、隐藏 Skill 数量和隐藏原因分布；</p>
+     * <p>2. 运维台排查“为什么某个租户没有看到某项能力”；</p>
+     * <p>3. 后续 Skill Marketplace 统计能力命中、隐藏、权限缺口和策略漂移；</p>
+     * <p>4. Java replay index 把 Python 会话能力事实纳入控制面统一查询。</p>
+     *
+     * <p>安全边界：该接口仍会解析 gateway 注入的租户、操作者、数据范围和授权项目 Header，并由服务层收口查询。
+     * 返回字段只包含低敏聚合摘要，不返回 prompt、SQL、工具参数、完整权限清单、样本数据或长期记忆正文。</p>
+     */
+    @GetMapping("/skill-visibility-snapshots")
+    public PlatformApiResponse<AgentSkillVisibilitySnapshotProjectionQueryResponse> querySkillVisibilitySnapshots(
+            @RequestParam(value = "tenantId", required = false) String tenantId,
+            @RequestParam(value = "projectId", required = false) String projectId,
+            @RequestParam(value = "actorId", required = false) String actorId,
+            @RequestParam(value = "requestId", required = false) String requestId,
+            @RequestParam(value = "runId", required = false) String runId,
+            @RequestParam(value = "sessionId", required = false) String sessionId,
+            @RequestParam(value = "severity", required = false) String severity,
+            @RequestParam(value = "afterSequence", required = false) Long afterSequence,
+            @RequestParam(value = "limit", required = false) Integer limit,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) String currentTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String currentActorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String currentActorRole,
+            @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+        AgentRuntimeEventProjectionQuery query = new AgentRuntimeEventProjectionQuery(
+                tenantId,
+                projectId,
+                actorId,
+                requestId,
+                runId,
+                sessionId,
+                null,
+                severity,
+                limit,
+                afterSequence
+        );
+        AgentRuntimeEventQueryAccessContext accessContext = accessContextResolver.resolve(
+                currentTenantId,
+                currentActorId,
+                currentActorRole,
+                traceId,
+                dataScopeLevel,
+                authorizedProjectIds
+        );
+        return PlatformApiResponse.success(
+                skillVisibilitySnapshotProjectionService.querySnapshots(query, accessContext),
+                traceId
+        );
     }
 
     /**
