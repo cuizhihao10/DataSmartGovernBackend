@@ -241,7 +241,11 @@ from datasmart_ai_runtime.services.skill_admission_policy import (
     RemoteThenLocalAgentSkillAdmissionPolicy,
 )
 from datasmart_ai_runtime.services.skill_registry import AgentSkillRegistry
-from datasmart_ai_runtime.services.skill_registry_client import JavaAgentSkillRegistryClient
+from datasmart_ai_runtime.services.skill_registry_client import (
+    AgentSkillPublicationItem,
+    AgentSkillPublicationManifest,
+    JavaAgentSkillRegistryClient,
+)
 from datasmart_ai_runtime.services.trusted_control_plane_context import (
     AgentTrustedControlPlaneContextReader,
     AgentTrustedSkillAdmissionContext,
@@ -324,6 +328,8 @@ __all__ = [
     "RuleBasedIntentAnalyzer",
     "JavaAgentToolRegistryClient",
     "AgentSkillRegistry",
+    "AgentSkillPublicationItem",
+    "AgentSkillPublicationManifest",
     "JavaAgentSkillRegistryClient",
     "InMemoryRuntimeEventStore",
     "RedisStreamRuntimeEventStore",

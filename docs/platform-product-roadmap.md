@@ -1,5 +1,38 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-04 追加落地进展：Skill Publication Manifest 能力发布快照
+
+- `agent-runtime` 新增 Skill Publication Manifest，把 Skill 注册表从“descriptor 列表”推进到“可发布、可缓存、可诊断的能力目录快照”。
+- 新增 `/agent-runtime/skills/publication/manifest` 与 `/api/agent/skills/publication/manifest` 只读接口：
+  - 默认 `includeDisabled=false`，面向 Python Runtime 和智能网关，只暴露可规划能力；
+  - `includeDisabled=true` 面向市场运营、管理员诊断和灰度下线排查；
+  - 支持 `domain/riskLevel` 过滤，便于后续按治理域、风险等级、租户套餐和角色能力包扩展。
+- Manifest 新增目录级 `contentFingerprint`，不包含生成时间，支持 Python Runtime 做本地缓存、启动诊断和灰度对比。
+- 每个 Skill item 新增 `publicationState`：
+  - `READY`：可进入默认运行时目录；
+  - `DISABLED`：已禁用，不应进入模型规划；
+  - `NEEDS_APPROVAL_POLICY`：高风险能力缺审批策略；
+  - `NEEDS_AUDIT_POLICY`：缺强制审计声明；
+  - `NEEDS_ISOLATION_POLICY`：缺租户/项目隔离声明。
+- Python Runtime `JavaAgentSkillRegistryClient` 新增 `get_publication_manifest(...)`，并提供不可变 `AgentSkillPublicationManifest` / `AgentSkillPublicationItem` dataclass，用于后续启动诊断、Skill 缓存和 MCP/A2A 适配层。
+- 新增 `docs/agent-skill-publication-manifest.md`，说明接口、字段、发布状态、Python 消费方式、MCP-style 边界和下一步商业化路线。
+
+产品意义：
+- Skill 不再只是本地配置或简单列表，而是开始具备“发布事实源”的形态，为能力市场、智能网关会话能力快照、Python Runtime 缓存和未来 MCP/A2A 适配打基础。
+- 高风险 Skill 不被简单禁止，而是通过审批、审计、租户隔离和项目隔离判断是否 READY，这更符合真实企业产品的能力治理逻辑。
+- 目录级指纹让运行时可以低频刷新和缓存，不必在每次消息规划时打 Java 控制面，提前考虑性能和可靠性。
+
+当前边界：
+- 当前 Manifest 仍基于配置式 Skill Registry，不是数据库发布表。
+- 当前没有租户级可见性、套餐能力裁剪、发布审批 UI、灰度批次、回滚和变更通知。
+- 当前只是 MCP-style 内部契约，不是完整 MCP JSON-RPC Server。
+
+下一步推荐路线：
+1. 给 Python Runtime 启动诊断接入 Manifest 指纹、READY Skill 数量和非 READY 风险摘要。
+2. 让智能网关生成会话级 Skill 快照，按租户、项目、角色、权限包和预算策略过滤。
+3. 在合适节点把配置式 Skill Registry 迁移为数据库发布流，补版本、灰度、回滚、租户可见性和审计 outbox。
+4. 再启动 MCP/A2A 适配层，把 READY Skill 转换为标准 prompts/resources/tools 或 Agent Card，而不是直接把内部 DTO 暴露出去。
+
 ## 2026-06-04 追加落地进展：Pre-Check 低基数 Prometheus 指标与告警
 
 - `agent-runtime` 新增 Actuator 与 Prometheus registry，开始具备 `/actuator/prometheus` 指标出口。

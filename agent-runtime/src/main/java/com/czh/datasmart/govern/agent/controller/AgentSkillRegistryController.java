@@ -8,6 +8,8 @@ package com.czh.datasmart.govern.agent.controller;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentSkillDescriptorView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentSkillMarketplaceSummaryView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentSkillPublicationManifestView;
+import com.czh.datasmart.govern.agent.service.AgentSkillPublicationManifestService;
 import com.czh.datasmart.govern.agent.service.AgentSkillRegistryService;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
@@ -39,6 +41,35 @@ import java.util.List;
 public class AgentSkillRegistryController {
 
     private final AgentSkillRegistryService skillRegistryService;
+    private final AgentSkillPublicationManifestService publicationManifestService;
+
+    /**
+     * 查询 Agent Skill 发布 Manifest。
+     *
+     * <p>该接口面向 Python Runtime、智能网关和前端市场页。它不是简单返回 descriptor 列表，
+     * 而是生成目录级发布快照：包含内容指纹、发布状态、运行时消费建议和协议兼容说明。
+     * Python Runtime 可以用 contentFingerprint 判断远端 Skill 目录是否变化，避免每次启动都盲目刷新。</p>
+     *
+     * <p>当前 Manifest 是 DataSmart 内部 MCP-style 契约，不代表完整 MCP JSON-RPC Server。
+     * 真正完整 MCP Server 还需要 capability negotiation、tools/list、resources/list、prompts/list 等协议处理。
+     * 这里先把商业化发布事实源固定住，后续再做协议适配层。</p>
+     *
+     * @param includeDisabled 是否包含禁用 Skill；默认 false，避免模型规划读取下线能力
+     * @param domain 可选治理域过滤
+     * @param riskLevel 可选风险等级过滤
+     * @param traceId 链路追踪 ID，透传给平台统一响应
+     */
+    @GetMapping("/publication/manifest")
+    public PlatformApiResponse<AgentSkillPublicationManifestView> getPublicationManifest(
+            @RequestParam(value = "includeDisabled", required = false, defaultValue = "false") Boolean includeDisabled,
+            @RequestParam(value = "domain", required = false) String domain,
+            @RequestParam(value = "riskLevel", required = false) String riskLevel,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(
+                publicationManifestService.buildManifest(includeDisabled, domain, riskLevel),
+                traceId
+        );
+    }
 
     /**
      * 查询 Agent Skill Marketplace 治理摘要。

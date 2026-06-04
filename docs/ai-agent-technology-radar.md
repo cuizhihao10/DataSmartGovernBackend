@@ -1,4 +1,15 @@
 # DataSmart Govern AI Agent 技术雷达
+
+## 2026-06-04 落地补充：skills need publishable manifests before full MCP adapters
+
+- 本阶段把 Agent Skill 从普通 descriptor 列表推进到 `Skill Publication Manifest`。这对应当前 Agent 工程趋势：能力不能只散落在本地 prompt、工具函数和配置文件里，而应该先形成可发现、可版本化、可缓存、可诊断的目录事实源。
+- MCP 最新规范继续围绕 tools、resources、prompts、elicitation、sampling 和 task support 演进。DataSmart 当前没有直接宣称“已经实现完整 MCP Server”，而是先落地内部 MCP-style Manifest：Java 控制面负责发布事实，Python Runtime 和智能网关负责消费、缓存和后续协议适配。
+- `contentFingerprint` 是这一步的关键工程点。成熟 Agent host 不应每次用户消息都全量刷新能力目录，而应能判断“远端 Skill 目录是否真的变化”，并在启动诊断、灰度对比、缓存复用和事故排查中给出稳定证据。
+- `publicationState` 把 Skill 治理变成机器可读状态：禁用、缺审批、缺审计、缺隔离和 READY 被明确区分。这样未来前端市场、Python 规划器和网关策略不会各自发明一套判断逻辑。
+- 下一步不建议马上堆一个完整 MCP Server 外壳。更稳的商业化路线是先把 Manifest 接入 Python 启动诊断和智能网关会话能力快照，再推进数据库发布流、租户级可见性、灰度/回滚，最后由适配层转换为 MCP tools/resources/prompts 或 A2A Agent Card。
+
+参考资料：MCP 最新规范：`https://modelcontextprotocol.io/specification/2025-11-25`；MCP Tools：`https://modelcontextprotocol.io/specification/2025-11-25/server/tools`；MCP Resources：`https://modelcontextprotocol.io/specification/2025-11-25/server/resources`；MCP Prompts：`https://modelcontextprotocol.io/specification/2025-11-25/server/prompts`；MCP Elicitation：`https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation`。
+
 ## 2026-06-04 落地补充：guardrails need aggregate metrics after timeline facts
 
 - 本阶段把 dispatcher pre-check 的 `ALLOW_EXECUTION/BLOCKED/DEFERRED` 和 issueCode 分布接入 Micrometer/Prometheus，并新增 Alertmanager 规则草案。这是对上一阶段 runtime event 的补齐：timeline fact 解释单次动作，aggregate metrics 判断平台趋势和运营风险。
