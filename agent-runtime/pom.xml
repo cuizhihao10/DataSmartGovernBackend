@@ -24,6 +24,25 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
+        <!--
+            Actuator 为 agent-runtime 暴露 health/info/metrics/prometheus 等运维端点。
+            当前 agent-runtime 已经承载模型路由、工具审计、DAG dry-run、异步 command outbox 和执行前复核，
+            如果缺少 Actuator，pre-check 阻断率、暂缓率、outbox 投递状态等只能停留在日志或内存诊断中，
+            无法进入 Prometheus/Grafana/Alertmanager 的生产运维闭环。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <!--
+            Prometheus 注册表把 Micrometer 指标转换为 /actuator/prometheus exposition text。
+            仅引入 Actuator 时虽然可以在 /actuator/metrics 查询指标，但 Prometheus 不能直接周期抓取；
+            加入该 registry 后，docker/prometheus 的 agent-runtime job 才能采集 Java 控制面的低基数指标。
+        -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.kafka</groupId>
             <artifactId>spring-kafka</artifactId>

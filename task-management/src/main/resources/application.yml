@@ -93,8 +93,9 @@ datasmart:
       # 生产建议先通过 dispatch-once 手动验证链路，再小流量开启自动调度。
       scheduler-enabled: ${DATASMART_TASK_AGENT_ASYNC_WORKER_SCHEDULER_ENABLED:false}
       # Agent Runtime 内部地址，worker 会通过它读取 /internal/agent-runtime/.../plan-arguments 并回写 async-task-status。
+      # Java agent-runtime 默认使用 8091；8090 保留给 Python AI Runtime。
       # 生产环境建议改成服务发现、内网网关或配置中心地址，并叠加服务账号鉴权/mTLS。
-      agent-runtime-base-url: ${DATASMART_AGENT_RUNTIME_INTERNAL_BASE_URL:http://localhost:8090}
+      agent-runtime-base-url: ${DATASMART_AGENT_RUNTIME_INTERNAL_BASE_URL:http://localhost:8091}
       # data-sync 内部服务地址。data-sync.execute 白名单适配器只调用固定内部幂等入口，不会执行 Agent payload 中的任意 targetEndpoint。
       data-sync-base-url: ${DATASMART_DATA_SYNC_INTERNAL_BASE_URL:http://localhost:8086}
       # worker 身份标识，会进入任务租约、回调幂等键和排障日志。

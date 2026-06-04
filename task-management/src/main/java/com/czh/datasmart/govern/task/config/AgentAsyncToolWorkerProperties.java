@@ -47,9 +47,10 @@ public class AgentAsyncToolWorkerProperties {
      * Agent Runtime 内部服务地址。
      *
      * <p>worker 会通过它访问 `/internal/agent-runtime/.../plan-arguments`，按 payloadReference 回读受控参数快照。
+     * Java agent-runtime 默认端口为 8091，避免与 Python AI Runtime 默认 8090 冲突；
      * 生产环境建议通过服务发现、网关内网地址或配置中心覆盖，而不是写死 localhost。</p>
      */
-    private String agentRuntimeBaseUrl = "http://localhost:8090";
+    private String agentRuntimeBaseUrl = "http://localhost:8091";
 
     /**
      * data-sync 内部服务地址。

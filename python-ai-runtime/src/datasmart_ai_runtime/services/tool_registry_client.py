@@ -34,7 +34,7 @@ class JavaAgentToolRegistryClient:
     """从 Java `agent-runtime` 拉取 Agent 工具目录。
 
     参数说明：
-    - `base_url`：Java Agent Runtime 的基础地址，例如 `http://localhost:8090` 或网关地址。
+    - `base_url`：Java Agent Runtime 的基础地址，例如 `http://localhost:8091` 或网关地址。
     - `timeout_seconds`：只读目录接口的超时时间。目录同步不应长时间阻塞用户会话。
 
     当前客户端保留两类接口：

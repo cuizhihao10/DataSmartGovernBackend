@@ -1,5 +1,33 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-04 追加落地进展：Pre-Check 低基数 Prometheus 指标与告警
+
+- `agent-runtime` 新增 Actuator 与 Prometheus registry，开始具备 `/actuator/prometheus` 指标出口。
+- Java `agent-runtime` 默认端口调整为 `8091`，`python-ai-runtime` 继续默认 `8090`，避免两个 AI 相关服务在本地和 Prometheus 抓取中互相冲突。
+- 新增 `AgentAsyncTaskCommandPreCheckMetricsService`：
+  - `datasmart_agent_runtime_async_command_precheck_verdict_total` 记录每条 command 的 `ALLOW_EXECUTION/BLOCKED/DEFERRED`；
+  - `datasmart_agent_runtime_async_command_precheck_issue_total` 记录确认过期、策略缺失、沙箱拒绝、运行时保护暂缓等 issueCode 分布；
+  - 标签只允许 `decision/issueCode/targetService` 等低基数字段，未知值统一归并 `OTHER`。
+- `AgentAsyncTaskCommandOutboxDispatcher` 已在 pre-check verdict 返回后记录指标，允许、阻断、暂缓都会进入聚合统计。
+- `docker/prometheus/prometheus.yml` 新增 `agent-runtime` job，抓取 `host.docker.internal:8091/actuator/prometheus`。
+- 新增 `docker/prometheus/rules/agent-runtime-alerts.yml`，覆盖抓取失败、target 缺失、pre-check 阻断、暂缓比例偏高、确认过期、运行时保护频繁暂缓、当前策略项缺失和未知 issueCode。
+- 新增 `docs/observability-agent-runtime-runbook.md`，说明指标含义、低基数原则、告警排障和当前边界。
+- 新增测试固定指标低基数白名单、dispatcher 指标接入、Prometheus job 与告警规则契约。
+
+产品意义：
+- pre-check 不再只是 runtime event 明细和 outbox 状态，而是进入 Prometheus/Grafana/Alertmanager 聚合运营面。
+- 运营可以区分“用户需要重新确认”“容量或熔断需要退避”“策略服务或历史 command 迁移有问题”，而不是只看到工具失败。
+- 默认端口拆分解决了 Java Agent Runtime 与 Python AI Runtime 的本地部署冲突，为后续智能网关、模型运行时和 Java 控制面同时启动打基础。
+
+当前边界：
+- 指标仍是单 JVM 实例级，不代表全局分布式配额。
+- 还没有 Grafana dashboard JSON，也没有 outbox 积压、最老 pending 年龄和 dispatcher 失败率指标。
+- runtime event 仍是内存投影，尚未持久化为强审计事实。
+
+下一步推荐路线：
+1. 不建议继续只加 Java 局部保护规则；下一步应切换到 MCP/Skill 发布流、长期记忆 Chroma/Neo4j 二级索引 worker 或智能网关多 Agent 协作。
+2. 如果继续 Agent Runtime 运维闭环，优先补 async command outbox 积压/最老 pending 年龄/blocked 数指标，而不是继续增加 pre-check 分支。
+
 ## 2026-06-04 追加落地进展：Pre-Check 结果进入 Runtime Event 时间线
 
 - `agent-runtime` 已把异步 command dispatcher 的 pre-check `BLOCKED/DEFERRED` 结果写入 runtime event。
@@ -344,7 +372,7 @@
 - 新增 `/agent/metrics` 指标端点，当前不依赖 `prometheus_client`，保持 Python Runtime 默认零依赖；后续如果需要 Histogram、multiprocess 或进程级指标，可替换为官方 client 适配器。
 - 新增低基数指标：Runner 批次数、候选 scanned/claimed/succeeded/failed/skipped/dead_lettered、跳过原因、fencing finalize error、批次耗时 count/sum、管理员补偿重排次数。
 - 指标标签只使用有限枚举，例如 `result`、`severity`、`reason`、`action`、`dry_run`、`after_status`；不把 tenantId、projectId、candidateId、leaseId、traceId、workspaceKey 放入 Prometheus 标签。
-- `docker/prometheus/prometheus.yml` 新增 `python-ai-runtime` job，默认抓取 `host.docker.internal:8090/agent/metrics`，让本地运维面可以同时看到 Java Actuator 与 Python AI Runtime 指标。
+- `docker/prometheus/prometheus.yml` 新增 `python-ai-runtime` job，默认抓取 `host.docker.internal:8090/agent/metrics`，让本地运维面可以把 Python Runtime 指标与各 Java Actuator job 并行观察。
 - 受控常驻 worker、Prometheus 告警规则和 Python 审计 outbox 已在后续小批次落地；当前仍没有 Java 审计派发和事务强一致。下一步建议补审计派发、批量补偿审批和二级索引同步。
 
 ## 2026-06-03 追加落地进展：长期记忆物化 Runtime Event 可观测性

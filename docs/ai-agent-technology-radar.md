@@ -1,4 +1,12 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-04 落地补充：guardrails need aggregate metrics after timeline facts
+
+- 本阶段把 dispatcher pre-check 的 `ALLOW_EXECUTION/BLOCKED/DEFERRED` 和 issueCode 分布接入 Micrometer/Prometheus，并新增 Alertmanager 规则草案。这是对上一阶段 runtime event 的补齐：timeline fact 解释单次动作，aggregate metrics 判断平台趋势和运营风险。
+- Codex、Claude Code 类 Agent 的成熟体验并不只是“模型能调用工具”，而是工具调用宿主能持续回答：最近有多少动作被允许，多少被阻断，多少因容量/熔断暂缓，多少是用户确认过期导致。没有聚合指标，平台只能事后查日志，无法做值班告警和容量治理。
+- DataSmart 当前延续低基数纪律：指标标签只保留 `decision/issueCode/targetService`，未知值归并 `OTHER`；`commandId/runId/sessionId/traceId/tenantId/projectId` 继续留给 runtime event、outbox 诊断和审计链路，而不是进入 Prometheus。
+- 本阶段还修正了 Java Agent Runtime 与 Python AI Runtime 的默认端口边界：Java 控制面使用 `8091/actuator/prometheus`，Python 运行时使用 `8090/agent/metrics`。这类部署细节看似小，但如果不治理，会让本地联调和 Prometheus 告警长期产生误报。
+- 下一步不建议继续沿着 pre-check 无限制细化。更合理的产品路线是把注意力切到 MCP/Skill 发布流、长期记忆二级索引 worker 或智能网关多 Agent 协作；如果短期继续运维闭环，则只补 outbox 积压和最老 pending 年龄这类关键平台信号。
+
 ## 2026-06-04 落地补充：pre-check decisions should become timeline events
 
 - 本阶段把 dispatcher pre-check 的 `BLOCKED/DEFERRED` 结果写入 runtime event，并增强 display 解释。这对应成熟 Agent host 的趋势：工具调用治理不能只存在于后端状态机、日志或开发者控制台，而应成为用户和运营可见的 timeline fact。

@@ -33,7 +33,7 @@ class JavaAgentSkillRegistryClient:
     """从 Java `agent-runtime` 拉取 Skill descriptor。
 
     参数说明：
-    - `base_url`：Java Agent Runtime 基础地址，例如 `http://localhost:8090`。
+    - `base_url`：Java Agent Runtime 基础地址，例如 `http://localhost:8091`。
     - `timeout_seconds`：只读 descriptor 接口超时时间，避免启动时长时间阻塞。
     - `descriptors_path`：Skill descriptor 路径；如果未来统一从 gateway 暴露，可替换为
       `/api/agent/skills/descriptors`。

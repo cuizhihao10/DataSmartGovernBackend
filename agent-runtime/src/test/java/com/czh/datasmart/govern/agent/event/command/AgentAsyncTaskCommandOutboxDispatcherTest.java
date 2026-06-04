@@ -13,6 +13,7 @@ import com.czh.datasmart.govern.agent.service.execution.AgentAsyncTaskCommandPre
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventDisplaySupport;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventProjectionRecord;
 import com.czh.datasmart.govern.agent.service.runtime.InMemoryAgentRuntimeEventProjectionStore;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -155,12 +156,16 @@ class AgentAsyncTaskCommandOutboxDispatcherTest {
         InMemoryAgentRuntimeEventProjectionStore projectionStore = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
         AgentAsyncTaskCommandPreCheckRuntimeEventPublisher eventPublisher =
                 new AgentAsyncTaskCommandPreCheckRuntimeEventPublisher(projectionStore);
+        SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+        AgentAsyncTaskCommandPreCheckMetricsService metricsService =
+                new AgentAsyncTaskCommandPreCheckMetricsService(meterRegistry);
         AgentAsyncTaskCommandOutboxDispatcher dispatcher = new AgentAsyncTaskCommandOutboxDispatcher(
                 properties,
                 store,
                 List.of(target),
                 preCheckService,
-                eventPublisher
+                eventPublisher,
+                metricsService
         );
 
         AgentAsyncTaskCommandOutboxDispatcher.AgentAsyncTaskCommandOutboxDispatchSummary summary =
@@ -178,6 +183,7 @@ class AgentAsyncTaskCommandOutboxDispatcherTest {
                 "BLOCKED_BEFORE_SIDE_EFFECT",
                 "Agent 异步命令执行前复核阻断"
         );
+        assertPreCheckMetric(meterRegistry, "BLOCKED", "CONFIRMATION_EXPIRED");
     }
 
     @Test
@@ -193,12 +199,16 @@ class AgentAsyncTaskCommandOutboxDispatcherTest {
         InMemoryAgentRuntimeEventProjectionStore projectionStore = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
         AgentAsyncTaskCommandPreCheckRuntimeEventPublisher eventPublisher =
                 new AgentAsyncTaskCommandPreCheckRuntimeEventPublisher(projectionStore);
+        SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
+        AgentAsyncTaskCommandPreCheckMetricsService metricsService =
+                new AgentAsyncTaskCommandPreCheckMetricsService(meterRegistry);
         AgentAsyncTaskCommandOutboxDispatcher dispatcher = new AgentAsyncTaskCommandOutboxDispatcher(
                 properties,
                 store,
                 List.of(target),
                 preCheckService,
-                eventPublisher
+                eventPublisher,
+                metricsService
         );
 
         AgentAsyncTaskCommandOutboxDispatcher.AgentAsyncTaskCommandOutboxDispatchSummary summary =
@@ -217,6 +227,19 @@ class AgentAsyncTaskCommandOutboxDispatcherTest {
                 "DEFERRED_WAITING_RETRY",
                 "Agent 异步命令执行前复核暂缓"
         );
+        assertPreCheckMetric(meterRegistry, "DEFERRED", "RUNTIME_PROTECTION_DEFERRED_BEFORE_WORKER");
+    }
+
+    private void assertPreCheckMetric(SimpleMeterRegistry meterRegistry,
+                                      String expectedDecision,
+                                      String expectedIssueCode) {
+        assertEquals(1.0, meterRegistry.counter("datasmart_agent_runtime_async_command_precheck_verdict_total",
+                "decision", expectedDecision,
+                "targetService", "data-sync").count());
+        assertEquals(1.0, meterRegistry.counter("datasmart_agent_runtime_async_command_precheck_issue_total",
+                "decision", expectedDecision,
+                "issueCode", expectedIssueCode,
+                "targetService", "data-sync").count());
     }
 
     private void assertPreCheckRuntimeEvent(InMemoryAgentRuntimeEventProjectionStore projectionStore,

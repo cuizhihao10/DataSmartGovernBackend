@@ -41,6 +41,13 @@ scrape_configs:
       - targets: ['host.docker.internal:8086']
     metrics_path: '/actuator/prometheus'
 
+  - job_name: 'agent-runtime'
+    static_configs:
+      # Java agent-runtime 默认监听 8091，并通过 Spring Boot Actuator 暴露 /actuator/prometheus。
+      # Python AI Runtime 默认监听 8090，二者必须分端口抓取，否则 Prometheus 会把 Java/Python 指标误判为同一个服务。
+      - targets: ['host.docker.internal:8091']
+    metrics_path: '/actuator/prometheus'
+
   - job_name: 'observability'
     static_configs:
       - targets: ['host.docker.internal:8084']

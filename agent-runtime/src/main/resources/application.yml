@@ -1,5 +1,9 @@
 server:
-  port: 8090
+  # Java agent-runtime 是 AI 控制面服务，默认使用 8091。
+  # Python AI Runtime 已在网关和 Prometheus 中默认占用 8090；如果两个服务都使用 8090，
+  # 本地联调会出现端口冲突，Prometheus 也无法同时抓取 /agent/metrics 与 /actuator/prometheus。
+  # 生产环境仍建议通过 Nacos、内网网关或服务网格暴露服务地址，而不是依赖本地端口。
+  port: ${DATASMART_AGENT_RUNTIME_SERVER_PORT:8091}
 
 spring:
   application:
@@ -662,7 +666,20 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,prometheus
+        # health/info 用于基础存活检查，metrics 用于本地排障，prometheus 用于 Prometheus 周期抓取。
+        # 这里显式暴露 prometheus，是因为 pre-check 阻断率、暂缓率和 issueCode 分布需要进入 Grafana/Alertmanager。
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      # 与其他 Java 微服务保持一致：默认不把完整健康细节暴露给未授权调用方。
+      show-details: when-authorized
+    prometheus:
+      # 显式开启 Prometheus 端点，便于从配置层理解“agent-runtime 已经具备可抓取指标出口”。
+      enabled: true
+  metrics:
+    tags:
+      # application 标签是低基数服务名，适合 Grafana 按模块筛选；不要在这里加入 tenant/run/trace 等业务主键。
+      application: ${spring.application.name}
 
 logging:
   level:

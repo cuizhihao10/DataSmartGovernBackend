@@ -1,0 +1,105 @@
+# DataSmart Govern - agent-runtime 告警规则草案。
+#
+# 设计原则：
+# 1. agent-runtime 是 Java 侧 AI 控制面，当前重点监控异步 command dispatcher 的执行前复核；
+# 2. Prometheus 只看聚合趋势：通过率、阻断率、暂缓率、确认过期、容量暂缓、策略缺失；
+# 3. 单条 command 的排障继续走 runtime event replay、outbox 诊断、confirmation 查询和结构化日志；
+# 4. 规则标签只使用 module/category/severity 这类固定枚举，不把 commandId、tenantId、runId、traceId 等业务主键放入时序；
+# 5. 当前阈值适合本地和早期集成环境，生产应按 worker 实例数、租户套餐、任务流量和 SLA 重新调优。
+groups:
+  - name: datasmart-agent-runtime-availability
+    rules:
+      - alert: AgentRuntimeMetricsDown
+        expr: up{job="agent-runtime"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          module: agent-runtime
+          category: availability
+        annotations:
+          summary: "agent-runtime Prometheus 抓取失败"
+          description: "Prometheus 连续 2 分钟无法抓取 agent-runtime 的 /actuator/prometheus。请优先检查 Java agent-runtime 进程、8091 端口、Actuator Prometheus 端点、docker 网络和 agent-runtime job 配置。"
+
+      - alert: AgentRuntimeMetricsTargetMissing
+        expr: absent(up{job="agent-runtime"})
+        for: 2m
+        labels:
+          severity: critical
+          module: agent-runtime
+          category: availability
+        annotations:
+          summary: "Prometheus 未发现 agent-runtime 抓取目标"
+          description: "Prometheus 中不存在 job=agent-runtime 的目标。通常表示 prometheus.yml 未加载、Prometheus 容器未重载，或本地环境尚未启用 agent-runtime 指标抓取。"
+
+  - name: datasmart-agent-runtime-async-command-precheck
+    rules:
+      - alert: AgentRuntimeAsyncCommandPreCheckBlockedDetected
+        expr: increase(datasmart_agent_runtime_async_command_precheck_verdict_total{decision="BLOCKED"}[15m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          module: agent-runtime
+          category: async-command-precheck
+        annotations:
+          summary: "Agent 异步 command 执行前复核出现阻断"
+          description: "最近 15 分钟 agent-runtime dispatcher pre-check 产生 BLOCKED verdict。请通过 runtime event replay 查询 tool_pre_check_blocked 事件，并结合 confirmationId、policyVersion、sandboxIssueCodes 和 outbox 状态判断是否需要重新 dry-run/confirmation 或人工补偿。"
+
+      - alert: AgentRuntimeAsyncCommandPreCheckDeferredRatioHigh
+        expr: |
+          (
+            sum(rate(datasmart_agent_runtime_async_command_precheck_verdict_total{decision="DEFERRED"}[15m]))
+            /
+            clamp_min(sum(rate(datasmart_agent_runtime_async_command_precheck_verdict_total[15m])), 1)
+          ) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          module: agent-runtime
+          category: async-command-precheck
+        annotations:
+          summary: "Agent 异步 command 执行前复核暂缓比例偏高"
+          description: "最近 15 分钟 pre-check DEFERRED 比例持续高于 20%。通常表示 runtime-protection 容量不足、目标服务熔断或 Run policy 暂不可读。请检查 targetService 容量、熔断状态、agent-runtime 日志和下游服务健康。"
+
+      - alert: AgentRuntimeAsyncCommandConfirmationExpired
+        expr: increase(datasmart_agent_runtime_async_command_precheck_issue_total{issueCode="CONFIRMATION_EXPIRED"}[15m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          module: agent-runtime
+          category: async-command-precheck
+        annotations:
+          summary: "Agent 异步 command 确认记录过期"
+          description: "最近 15 分钟出现 CONFIRMATION_EXPIRED。说明用户确认的 dry-run 预案已经过期，worker 不应继续执行副作用。请引导用户重新执行 dry-run 和 selected-node confirmation。"
+
+      - alert: AgentRuntimeAsyncCommandRuntimeProtectionDeferred
+        expr: increase(datasmart_agent_runtime_async_command_precheck_issue_total{issueCode="RUNTIME_PROTECTION_DEFERRED_BEFORE_WORKER"}[15m]) > 5
+        for: 5m
+        labels:
+          severity: info
+          module: agent-runtime
+          category: async-command-precheck
+        annotations:
+          summary: "Agent 异步 command 因运行时保护频繁暂缓"
+          description: "最近 15 分钟 runtime-protection 暂缓超过 5 次。少量出现是正常背压；如果持续升高，请评估是否需要拆批、扩容、调整并发上限或排查目标服务熔断。"
+
+      - alert: AgentRuntimeAsyncCommandPolicyItemMissing
+        expr: increase(datasmart_agent_runtime_async_command_precheck_issue_total{issueCode="CURRENT_POLICY_ITEM_MISSING"}[10m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          module: agent-runtime
+          category: async-command-precheck
+        annotations:
+          summary: "Agent 异步 command 执行前无法读取当前策略项"
+          description: "最近 10 分钟出现 CURRENT_POLICY_ITEM_MISSING。请检查 session/run/audit 是否仍存在、Run policy 服务是否异常，以及 dispatcher pre-check 是否在历史 command 上提前打开。"
+
+      - alert: AgentRuntimeAsyncCommandPreCheckUnknownIssueCode
+        expr: increase(datasmart_agent_runtime_async_command_precheck_issue_total{issueCode="OTHER"}[30m]) > 0
+        for: 5m
+        labels:
+          severity: info
+          module: agent-runtime
+          category: async-command-precheck
+        annotations:
+          summary: "Agent 异步 command pre-check 出现未知 issueCode"
+          description: "最近 30 分钟出现 issueCode=OTHER。通常表示代码新增了 pre-check 原因但未同步指标白名单、告警和 runbook。请检查 AgentAsyncTaskCommandPreCheckMetricsService 的 ALLOWED_ISSUE_CODES。"
