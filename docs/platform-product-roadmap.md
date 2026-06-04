@@ -1,5 +1,42 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-04 追加落地进展：Skill 可见性快照进入 runtime event
+
+- Python Runtime 新增 `SKILL_VISIBILITY_SNAPSHOT_RECORDED` 运行时事件：
+  - 基于同步响应中的 `intelligentGatewayGovernance.skillVisibility` 生成；
+  - 在 `eventEnvelope` 构建、event store 写入、live push 和 publisher 发布之前追加到 `AgentPlan.runtime_events`；
+  - 让“当前会话可见哪些 Skill”不再只是一次 HTTP 响应字段，而是可以 replay、补索引和审计的会话事实。
+- 事件 attributes 只保存低敏聚合事实：
+  - 可见/隐藏/条件性可见数量；
+  - 可见与隐藏 Skill code，默认最多 20 个，避免事件体过大；
+  - 权限事实来源、角色事实来源、权限数量、租户开关、workspace 风险、套餐编码和策略版本；
+  - 风险等级分布、领域分布、隐藏准入状态分布；
+  - 摘要文案和推荐动作数量。
+- 事件不会写入：
+  - 用户 objective；
+  - prompt、SQL、工具参数、模型输出；
+  - 完整权限清单；
+  - 样本数据、密钥、Token 或记忆正文。
+- 实时事件可见性策略已把该事件纳入普通用户进度白名单：
+  - 普通用户只看到脱敏后的进度；
+  - 项目负责人、审计员和管理员可按现有策略查看低敏聚合属性；
+  - 字段级敏感词脱敏规则仍继续生效。
+
+产品意义：
+- `skillVisibility` 从“前端治理卡片摘要”升级为“会话级 runtime fact”，更接近商业 Agent host 的能力可见性治理。
+- 断线重连、会话 replay、Java 控制面事件索引和后续审计报表都可以还原“当时模型/会话实际可见的 Skill 集合”。
+- 这为 Skill Marketplace 使用统计、租户能力包灰度、Manifest 版本对比和权限策略漂移排查提供基础事实。
+
+当前边界：
+- 当前事件还没有写入 Java plan ingestion 的专门索引表，也没有与 Manifest `contentFingerprint` 绑定。
+- 当前只是单次计划响应追加事件，不是 gateway 层持久化会话 Skill 缓存。
+- 当前 Prometheus 不记录 Skill code，避免高基数；后续如果需要趋势指标，应只聚合可见数量、隐藏状态和风险等级。
+
+下一步推荐路线：
+1. 把 `SKILL_VISIBILITY_SNAPSHOT_RECORDED` 接入 Java plan ingestion/replay index，形成可查询的会话能力事实表。
+2. 把 Manifest `contentFingerprint` 写入 Skill 可见性快照和事件，支持跨实例灰度对比与事故排查。
+3. 在 gateway 层增加会话级 Skill cache，按租户、项目、角色、权限包、套餐和预算策略生成可见能力集，减少重复解释。
+
 ## 2026-06-04 追加落地进展：智能网关会话级 Skill 可见性快照
 
 - Python Runtime 的 `intelligentGatewayGovernance` 新增 `skillVisibility`：
@@ -32,11 +69,11 @@
 
 当前边界：
 - 当前快照是计划响应内的同步摘要，不是持久化会话缓存。
-- 当前没有把快照写入 runtime event、Kafka、Java 控制面或 Prometheus。
+- 快照已经写入 Python runtime event，但尚未进入 Java 控制面专门索引、Kafka 审计投递或 Prometheus 聚合指标。
 - 当前没有直接使用 Manifest 指纹做会话快照版本绑定；后续应把 `manifestFingerprint` 与 `skillVisibility` 关联起来。
 
 下一步推荐路线：
-1. 把 `skillVisibility` 写入 runtime event 或 Java plan ingestion，形成可 replay 的会话能力事实。
+1. 把 `skillVisibility` 接入 Java plan ingestion，形成可查询、可审计的会话能力事实。
 2. 在 gateway 层按租户、项目、角色、权限包和套餐生成会话级 Skill 缓存，避免每次规划都重新解释能力集。
 3. 将 Manifest 指纹、Skill 可见性和工具预算一起纳入智能网关诊断面板。
 

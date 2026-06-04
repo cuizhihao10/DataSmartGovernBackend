@@ -94,6 +94,27 @@ class RuntimeEventVisibilityPolicyTest(unittest.TestCase):
 
         self.assertEqual(RuntimeEventVisibilityLevel.BASIC, policy.resolve_level(request))
 
+    def test_basic_user_can_see_skill_visibility_progress_with_masked_attributes(self) -> None:
+        """普通用户可看到 Skill 可见性进度事件，但属性仍按 BASIC 策略脱敏。"""
+
+        policy = RuntimeEventVisibilityPolicy()
+        request = RuntimeEventSubscriptionRequest(client_id="browser-a", roles=("ORDINARY_USER",))
+        event = AgentRuntimeEvent(
+            event_type=AgentRuntimeEventType.SKILL_VISIBILITY_SNAPSHOT_RECORDED,
+            stage="record_skill_visibility_snapshot",
+            message="已记录本轮会话级 Skill 可见性快照。",
+            sequence=1,
+            attributes={"visibleSkillCount": 1, "visibleSkillCodes": ("datasource.profiling",)},
+        )
+
+        visible = policy.filter_and_mask((event,), request)
+
+        self.assertEqual(1, len(visible))
+        self.assertEqual("事件详情已按当前角色权限脱敏", visible[0].message)
+        self.assertEqual(RuntimeEventVisibilityPolicy.MASKED_VALUE, visible[0].attributes["visibleSkillCount"])
+        self.assertEqual(RuntimeEventVisibilityPolicy.MASKED_VALUE, visible[0].attributes["visibleSkillCodes"])
+        self.assertEqual(RuntimeEventVisibilityLevel.BASIC.value, visible[0].attributes["_datasmartVisibilityLevel"])
+
     def test_visibility_stats_records_filtered_and_masked_events(self) -> None:
         """策略统计应能反映过滤、脱敏和角色级别命中情况。"""
 

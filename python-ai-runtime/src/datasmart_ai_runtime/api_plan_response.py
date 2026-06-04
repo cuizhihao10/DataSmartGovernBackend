@@ -18,12 +18,14 @@ from typing import Any
 from datasmart_ai_runtime.api_intelligent_gateway import build_intelligent_gateway_governance_response
 from datasmart_ai_runtime.api_model_gateway import build_model_gateway_governance_response
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ToolPlan
+from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
 from datasmart_ai_runtime.services.agent_workspace import AgentWorkspaceContext, AgentWorkspaceContextBuilder
 from datasmart_ai_runtime.services.runtime_events.runtime_event_live_push import RuntimeEventLivePushHub
 from datasmart_ai_runtime.services.runtime_events.runtime_event_publisher import RuntimeEventPublisher
 from datasmart_ai_runtime.services.runtime_events.runtime_event_store import RuntimeEventStore
 from datasmart_ai_runtime.services.runtime_events.runtime_event_transport import RuntimeEventTransportBuilder
+from datasmart_ai_runtime.services.skills import build_session_skill_visibility_runtime_event
 
 
 def build_plan_response(
@@ -118,6 +120,20 @@ def build_plan_response(
         if memory_events:
             plan = replace(plan, runtime_events=plan.runtime_events + memory_events)
 
+    # `intelligentGatewayGovernance` 以前只在 HTTP 响应末尾构建，因此 event store、WebSocket replay
+    # 和 Kafka publisher 都看不到其中的 `skillVisibility`。现在先构建治理摘要，再把会话级 Skill
+    # 可见性压缩成一条低敏 runtime event 追加到计划事件流，最后统一发布。这样同步响应、断线恢复、
+    # Java replay index 和审计报表都能围绕同一条事实演进，避免“前端看到过，但事件系统无法回放”。
+    intelligent_gateway_governance = build_intelligent_gateway_governance_response(
+        plan,
+        workspace_context,
+        request,
+    )
+    plan = _attach_skill_visibility_event(
+        plan,
+        request=request,
+        intelligent_gateway_governance=intelligent_gateway_governance,
+    )
     _publish_plan_events(
         plan,
         event_store=event_store,
@@ -126,11 +142,7 @@ def build_plan_response(
     )
     response = _build_base_response(plan, event_transport_builder)
     response["agentWorkspace"] = workspace_context.to_summary()
-    response["intelligentGatewayGovernance"] = build_intelligent_gateway_governance_response(
-        plan,
-        workspace_context,
-        request,
-    )
+    response["intelligentGatewayGovernance"] = intelligent_gateway_governance
     if control_plane_ingestion is not None:
         response["controlPlaneIngestion"] = control_plane_ingestion.to_summary()
     if control_plane_feedback is not None:
@@ -144,6 +156,33 @@ def build_plan_response(
     if memory_write_proposal is not None:
         response["memoryWriteProposal"] = memory_write_proposal.to_summary()
     return response
+
+
+def _attach_skill_visibility_event(
+    plan: AgentPlan,
+    *,
+    request: AgentRequest,
+    intelligent_gateway_governance: dict[str, Any],
+) -> AgentPlan:
+    """把会话级 Skill 可见性快照追加到运行时事件流。
+
+    该函数是响应组装层与 Skill 可见性服务之间的边界：
+    - 响应组装层负责决定“什么时候追加事件”，确保事件出现在 publish/store/envelope 之前；
+    - Skill 服务负责决定“事件 attributes 该长什么样”，确保低敏字段裁剪规则集中维护；
+    - 如果未来 Java plan ingestion 在更早阶段已经生成同类事件，这里会跳过重复追加，避免一次响应内
+      出现两条含义相同的快照事件。
+    """
+
+    if any(
+        event.event_type == AgentRuntimeEventType.SKILL_VISIBILITY_SNAPSHOT_RECORDED
+        for event in plan.runtime_events
+    ):
+        return plan
+    skill_visibility = intelligent_gateway_governance.get("skillVisibility")
+    if not isinstance(skill_visibility, dict):
+        return plan
+    visibility_event = build_session_skill_visibility_runtime_event(plan, request, skill_visibility)
+    return replace(plan, runtime_events=plan.runtime_events + (visibility_event,))
 
 
 def _collect_control_plane_feedback(

@@ -14,6 +14,11 @@ from collections import Counter
 from typing import Any, Mapping
 
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest
+from datasmart_ai_runtime.domain.events import (
+    AgentRuntimeEvent,
+    AgentRuntimeEventSeverity,
+    AgentRuntimeEventType,
+)
 from datasmart_ai_runtime.domain.skills import AgentSkillSelection
 
 
@@ -85,6 +90,143 @@ def build_session_skill_visibility_snapshot(
             tool_budget,
         ),
     }
+
+
+def build_session_skill_visibility_runtime_event(
+    plan: AgentPlan,
+    request: AgentRequest,
+    skill_visibility: Mapping[str, Any],
+) -> AgentRuntimeEvent:
+    """把会话级 Skill 可见性快照转换为可回放的运行时事件。
+
+    为什么需要单独事件：
+    - `skillAdmission` 事件回答“语义命中的 Skill 是否通过准入”，偏策略评估；
+    - `skillVisibility` 快照回答“当前会话最终能让模型/用户看到哪些能力”，偏会话事实；
+    - 两者虽然相关，但面向的产品页面和审计问题不同。如果共用一个事件，后续前端可见性面板、
+      Java replay index、Skill Marketplace 使用统计都会被迫解析过宽的准入事件。
+
+    安全边界：
+    - 事件 attributes 只保存低敏聚合事实，例如数量、Skill code、风险/领域分布、事实来源；
+    - 不写入用户 objective、prompt、SQL、工具参数、权限编码明细、模型输出或记忆正文；
+    - `visibleSkillCodes/hiddenSkillCodes` 默认最多保留 20 个，避免未来 Skill 数量增长后单条事件过大。
+
+    生命周期：
+    - 该事件由响应组装层在 `intelligentGatewayGovernance` 构建后追加；
+    - 追加后再进入 event store、live push、publisher 和 HTTP snapshot envelope；
+    - 因此它可以用于断线 replay、Java 控制面补索引和运营审计，而不只是一次性 HTTP 展示字段。
+    """
+
+    first_event = plan.runtime_events[0] if plan.runtime_events else None
+    return AgentRuntimeEvent(
+        event_type=AgentRuntimeEventType.SKILL_VISIBILITY_SNAPSHOT_RECORDED,
+        stage="record_skill_visibility_snapshot",
+        message="已记录本轮会话级 Skill 可见性快照。",
+        severity=(
+            AgentRuntimeEventSeverity.AUDIT
+            if not bool(skill_visibility.get("available"))
+            else AgentRuntimeEventSeverity.INFO
+        ),
+        tenant_id=request.tenant_id,
+        project_id=request.project_id,
+        actor_id=request.actor_id,
+        request_id=plan.request_id,
+        run_id=first_event.run_id if first_event else None,
+        session_id=first_event.session_id if first_event else _request_session_id(request),
+        sequence=_next_runtime_event_sequence(plan),
+        attributes=_skill_visibility_event_attributes(skill_visibility),
+    )
+
+
+def _skill_visibility_event_attributes(skill_visibility: Mapping[str, Any]) -> dict[str, Any]:
+    """生成 Skill 可见性事件属性。
+
+    这里故意不直接把完整 `skillVisibility` 原样塞入事件：
+    - 响应字段可以相对丰富，方便前端治理卡片展示；
+    - 事件字段会被持久化、回放、投递到消息总线，必须更紧凑、更稳定、更低敏；
+    - 未来 Java replay index 可以只依赖这些聚合字段做查询和报表，不需要理解完整前端响应结构。
+    """
+
+    visible_skill_codes, visible_truncated = _limited_skill_codes(skill_visibility, "visibleSkills")
+    hidden_skill_codes, hidden_truncated = _limited_skill_codes(skill_visibility, "hiddenSkills")
+    visibility_filters = dict(skill_visibility.get("visibilityFilters") or {})
+    return {
+        "eventPayloadVersion": "v1",
+        "snapshotType": skill_visibility.get("snapshotType"),
+        "snapshotSource": skill_visibility.get("snapshotSource"),
+        "available": bool(skill_visibility.get("available")),
+        "availableSkillCount": int(skill_visibility.get("availableSkillCount") or 0),
+        "visibleSkillCount": int(skill_visibility.get("visibleSkillCount") or 0),
+        "hiddenSkillCount": int(skill_visibility.get("hiddenSkillCount") or 0),
+        "conditionalVisibleSkillCount": int(skill_visibility.get("conditionalVisibleSkillCount") or 0),
+        "permissionFactSource": visibility_filters.get("permissionFactSource"),
+        "actorRoleSource": visibility_filters.get("actorRoleSource"),
+        "actorRole": visibility_filters.get("actorRole"),
+        "grantedPermissionCount": int(visibility_filters.get("grantedPermissionCount") or 0),
+        "tenantSkillEnabled": bool(visibility_filters.get("tenantSkillEnabled", True)),
+        "workspaceRiskLevel": visibility_filters.get("workspaceRiskLevel"),
+        "tenantPlanCode": visibility_filters.get("tenantPlanCode"),
+        "policyVersion": visibility_filters.get("policyVersion"),
+        "legacyRequestVariablesDetected": bool(visibility_filters.get("legacyRequestVariablesDetected")),
+        "modelGatewayAvailable": bool(visibility_filters.get("modelGatewayAvailable")),
+        "toolBudgetAllowed": bool(visibility_filters.get("toolBudgetAllowed")),
+        "visibleSkillCodes": visible_skill_codes,
+        "visibleSkillCodesTruncatedCount": visible_truncated,
+        "hiddenSkillCodes": hidden_skill_codes,
+        "hiddenSkillCodesTruncatedCount": hidden_truncated,
+        "visibleRiskLevelCounts": dict(skill_visibility.get("visibleRiskLevelCounts") or {}),
+        "visibleDomainCounts": dict(skill_visibility.get("visibleDomainCounts") or {}),
+        "hiddenAdmissionStatusCounts": dict(skill_visibility.get("hiddenAdmissionStatusCounts") or {}),
+        "displaySummary": skill_visibility.get("displaySummary"),
+        "recommendedActionCount": len(tuple(skill_visibility.get("recommendedActions") or ())),
+    }
+
+
+def _limited_skill_codes(
+    skill_visibility: Mapping[str, Any],
+    field_name: str,
+    limit: int = 20,
+) -> tuple[tuple[str, ...], int]:
+    """提取并截断 Skill code 列表。
+
+    Skill code 是能力目录的低敏标识，适合写入事件；displayName、准入原因和权限要求则更适合留在
+    同步响应或受保护的审计详情里。这里使用固定上限，是为了防止未来一个会话命中几十上百个 Skill
+    时把 runtime event 变成大对象，影响 WebSocket replay 和 Kafka 投递。
+    """
+
+    skills = tuple(skill_visibility.get(field_name) or ())
+    codes = tuple(
+        str(item.get("skillCode")).strip()
+        for item in skills
+        if isinstance(item, Mapping) and str(item.get("skillCode") or "").strip()
+    )
+    return codes[:limit], max(0, len(codes) - limit)
+
+
+def _next_runtime_event_sequence(plan: AgentPlan) -> int:
+    """计算追加事件的 sequence。
+
+    编排器内部使用 `RuntimeEventRecorder` 从 1 递增生成事件顺序；响应组装层追加治理事件时不再持有
+    recorder，因此需要从现有事件中取最大 sequence + 1。这样即使二轮推理、记忆候选等阶段已经追加
+    过事件，本事件仍能排在当前计划事件流的最后。
+    """
+
+    sequences = tuple(event.sequence for event in plan.runtime_events if event.sequence is not None)
+    return (max(sequences) + 1) if sequences else len(plan.runtime_events) + 1
+
+
+def _request_session_id(request: AgentRequest) -> str | None:
+    """从请求变量中读取 sessionId 作为兜底会话关联。
+
+    正常情况下 sessionId 已由编排器写入第一条 runtime event；该方法只处理极简测试或外部构造
+    AgentPlan 时没有原始事件的情况，避免新增事件丢失会话维度。
+    """
+
+    variables = request.variables or {}
+    value = variables.get("sessionId") or variables.get("session_id")
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _visible_skill_summary(selection: AgentSkillSelection) -> dict[str, Any]:

@@ -9,6 +9,7 @@ if ROOT not in sys.path:
 from datasmart_ai_runtime.api_plan_response import build_plan_response
 from datasmart_ai_runtime.config import default_model_routes, default_skill_registry, default_tool_registry
 from datasmart_ai_runtime.domain.contracts import AgentRequest, ModelInvocationResult, ModelToolCall
+from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.skill_registry import AgentSkillRegistry
@@ -54,6 +55,54 @@ class IntelligentGatewayGovernanceResponseTest(unittest.TestCase):
         self.assertEqual("memory:tenant:tenant-a:project:project-a", governance["workspace"]["memoryNamespace"])
         self.assertGreaterEqual(governance["memory"]["retrievalTargetCount"], 1)
         self.assertIn("模型路由", governance["displaySummary"])
+
+    def test_skill_visibility_snapshot_is_recorded_as_runtime_event(self) -> None:
+        """会话级 Skill 可见性快照应进入 runtime event 与 HTTP envelope。
+
+        这个测试保护的是产品级可回放能力：如果快照只存在于 HTTP 响应顶层，用户刷新、WebSocket
+        断线重连或 Java 控制面补索引时就无法还原“当时模型到底看见了哪些 Skill”。因此事件必须和
+        本轮计划的其他 runtime events 一起发布，并保持低敏字段裁剪。
+        """
+
+        response = build_plan_response(
+            AgentRequest(
+                tenant_id="tenant-a",
+                project_id="project-a",
+                actor_id="user-a",
+                objective="请分析数据源结构",
+                variables={"datasourceId": "ds-001", "sessionId": "session-skill-visibility"},
+            ),
+            self._orchestrator(),
+        )
+
+        skill_visibility = response["intelligentGatewayGovernance"]["skillVisibility"]
+        visibility_events = tuple(
+            event
+            for event in response["plan"]["runtime_events"]
+            if event["event_type"] == AgentRuntimeEventType.SKILL_VISIBILITY_SNAPSHOT_RECORDED
+        )
+
+        self.assertEqual(1, len(visibility_events))
+        event = visibility_events[0]
+        attributes = event["attributes"]
+        self.assertEqual(event, response["eventEnvelope"]["events"][-1])
+        self.assertEqual(len(response["plan"]["runtime_events"]), event["sequence"])
+        self.assertEqual("session-skill-visibility", event["session_id"])
+        self.assertEqual("SESSION_SKILL_VISIBILITY_SNAPSHOT", attributes["snapshotType"])
+        self.assertEqual(skill_visibility["visibleSkillCount"], attributes["visibleSkillCount"])
+        self.assertEqual(skill_visibility["hiddenSkillCount"], attributes["hiddenSkillCount"])
+        self.assertEqual(skill_visibility["visibleRiskLevelCounts"], attributes["visibleRiskLevelCounts"])
+        self.assertEqual(
+            tuple(item["skillCode"] for item in skill_visibility["visibleSkills"]),
+            attributes["visibleSkillCodes"],
+        )
+        self.assertIn("datasource.profiling", attributes["visibleSkillCodes"])
+        self.assertEqual(0, attributes["visibleSkillCodesTruncatedCount"])
+        self.assertEqual("missing", attributes["permissionFactSource"])
+        self.assertEqual(0, attributes["grantedPermissionCount"])
+        self.assertNotIn("grantedPermissions", str(attributes))
+        self.assertNotIn("requiredPermissions", str(attributes))
+        self.assertNotIn("请分析数据源结构", str(attributes))
 
     def test_skill_admission_rejection_is_exposed_in_unified_gateway_summary(self) -> None:
         """Skill 准入拒绝应进入智能网关摘要，便于前端治理卡片解释原因。"""

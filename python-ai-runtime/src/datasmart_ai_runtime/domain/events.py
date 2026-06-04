@@ -39,6 +39,7 @@ class AgentRuntimeEventType(str, Enum):
     MODEL_TOOL_CALL_APPROVAL_REQUIRED = "model_tool_call_approval_required"
     MODEL_TOOL_CALL_BUDGET_GUARDED = "model_tool_call_budget_guarded"
     SKILL_ADMISSION_EVALUATED = "skill_admission_evaluated"
+    SKILL_VISIBILITY_SNAPSHOT_RECORDED = "skill_visibility_snapshot_recorded"
     TOOL_EXECUTION_STATE_CHANGED = "agent.tool_execution.state_changed"
     TOOL_AUTO_EXECUTION_SYNC_COMPLETED = "tool_auto_execution_sync_completed"
     TOOL_RESULT_FEEDBACK_BUILT = "tool_result_feedback_built"

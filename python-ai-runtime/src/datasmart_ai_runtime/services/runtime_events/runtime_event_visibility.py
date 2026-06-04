@@ -112,6 +112,7 @@ class RuntimeEventVisibilityPolicy:
             "model_tool_call_accepted",
             "model_tool_call_rejected",
             "model_tool_call_approval_required",
+            "skill_visibility_snapshot_recorded",
             "tool_result_feedback_built",
             "agent_loop_control_decided",
             "model_second_turn_completed",

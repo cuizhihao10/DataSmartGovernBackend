@@ -1,12 +1,20 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-04 落地补充：session skill visibility should be replayable, not only returned once
+
+- 本阶段把 `intelligentGatewayGovernance.skillVisibility` 写入 `SKILL_VISIBILITY_SNAPSHOT_RECORDED` runtime event。这个变化看似小，但它把“当前会话可见能力集”从一次性 HTTP 展示字段推进为可 replay 的运行时事实。
+- 成熟 Agent host 不只需要“实时规划”，还需要用户刷新、WebSocket 断线、Java 控制面补索引、审计员回放和运营报表都能还原当时的能力边界。否则 Skill Marketplace 越丰富，事故复盘时越难回答“模型当时是否真的看见了某个能力”。
+- DataSmart 当前选择只写低敏聚合属性：Skill code、数量、风险/领域/隐藏状态分布、权限事实来源、策略版本和推荐动作数量；不写 prompt、SQL、工具参数、完整权限清单或记忆正文。这符合 Agent runtime event 的产品定位：公共时间线保存事实摘要，敏感排障走受控详情接口。
+- 实时事件可见性策略已允许普通用户看到该事件的进度存在，但 BASIC 级别仍会脱敏 attributes。项目负责人、审计员和管理员可以按既有策略看到低敏聚合字段，用于治理卡片、回放和排障。
+- 下一步不应再只停留在 Python 响应侧，而应把该事件接入 Java plan ingestion/replay index，并把 Manifest `contentFingerprint` 写进快照与事件。这样才能支持灰度对比、租户能力包版本追踪和策略漂移排查。
+
 ## 2026-06-04 落地补充：agent hosts need session-level skill visibility, not only global catalogs
 
 - 本阶段把 `intelligentGatewayGovernance` 从 Skill 准入摘要继续推进到会话级 Skill 可见性快照。成熟 Agent host 不只需要知道“平台有哪些 Skill”，还要知道“当前会话、当前角色、当前权限和当前预算下，哪些 Skill 真正可见”。
 - 这个方向贴近 Codex、Claude Code 类 Agent host 的工程体验：工具和 Skill 暴露给模型前，宿主需要先按身份、workspace、预算、风险和确认策略过滤，再把可见集合交给规划器或 UI。否则全局目录越丰富，越容易把用户当前不能用的能力泄露给模型。
 - DataSmart 当前选择复用本轮 `AgentSkillPlan` 生成快照，而不是响应阶段重新拉 Manifest 或重新调用 permission-admin。这是为了避免二次决策导致“计划实际使用的 Skill”和“网关展示的 Skill”不一致。
 - 快照显式标记事实来源：`trusted-control-plane`、`legacy-request-variables` 或 `missing`。这能帮助迁移旧联调路径，同时提醒生产环境必须由 gateway 注入可信控制面事实。
-- 下一步应把 `skillVisibility` 写入 runtime event、Java plan ingestion 或 WebSocket 会话状态，并与 Manifest `contentFingerprint` 绑定，形成可 replay、可排障、可灰度对比的会话能力事实。
+- 当前 `skillVisibility` 已写入 runtime event；下一步应接入 Java plan ingestion 或 WebSocket 会话状态，并与 Manifest `contentFingerprint` 绑定，形成可查询、可排障、可灰度对比的会话能力事实。
 
 ## 2026-06-04 落地补充：agent runtimes should expose the skill catalog they actually see
 
