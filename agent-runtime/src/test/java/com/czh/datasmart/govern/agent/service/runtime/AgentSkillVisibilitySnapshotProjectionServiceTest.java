@@ -14,6 +14,7 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -48,6 +49,7 @@ class AgentSkillVisibilitySnapshotProjectionServiceTest {
         );
 
         assertEquals(1, response.totalMatched());
+        assertEquals("runtime-event-projection-fallback", response.indexSource());
         assertEquals(1L, response.availableSnapshotCount());
         assertEquals(0L, response.unavailableSnapshotCount());
         assertEquals(2, response.totalVisibleSkillCount());
@@ -94,11 +96,42 @@ class AgentSkillVisibilitySnapshotProjectionServiceTest {
         );
 
         assertEquals(1, response.totalMatched());
+        assertEquals("runtime-event-projection-fallback", response.indexSource());
         assertEquals(0L, response.availableSnapshotCount());
         assertEquals(1L, response.unavailableSnapshotCount());
         assertEquals(1L, response.manifestBindingStatusCounts().get("LOCAL_DEFAULT_OR_FALLBACK"));
         assertEquals(2L, response.snapshots().getFirst().replaySequence());
         assertTrue(response.snapshots().getFirst().hiddenSkillCount() > 0);
+    }
+
+    @Test
+    void querySnapshotsShouldPreferDedicatedIndexWhenConfigured() {
+        /*
+         * 该测试保护 6.17 的索引演进方向：查询服务应该优先读取专用 Skill 可见性索引，而不是继续扫描通用
+         * runtime event projection。为了证明优先级，这里故意只把目标记录写入 indexStore，projectionStore 中
+         * 放一条同 run 的非 Skill 事件；如果服务仍扫描 projectionStore，就不会返回目标快照。
+         */
+        InMemoryAgentRuntimeEventProjectionStore projectionStore = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        projectionStore.append(nonSkillRuntimeEvent("tool-event-only-in-projection", "20", "run-skill-index", 1));
+        InMemoryAgentSkillVisibilitySnapshotIndexStore indexStore =
+                new InMemoryAgentSkillVisibilitySnapshotIndexStore(10, 100);
+        indexStore.append(skillVisibilityRecord("skill-snapshot-indexed", "20", "run-skill-index", 2, true));
+        AgentSkillVisibilitySnapshotProjectionService service = new AgentSkillVisibilitySnapshotProjectionService(
+                projectionStore,
+                new AgentRuntimeEventProjectionAccessSupport(),
+                Optional.of(indexStore)
+        );
+
+        AgentSkillVisibilitySnapshotProjectionQueryResponse response = service.querySnapshots(
+                new AgentRuntimeEventProjectionQuery("10", null, null, null,
+                        "run-skill-index", null, null, null, 20),
+                projectOwnerContext()
+        );
+
+        assertEquals("dedicated-skill-visibility-index", response.indexSource());
+        assertEquals(1, response.totalMatched());
+        assertEquals("skill-snapshot-indexed", response.snapshots().getFirst().identityKey());
+        assertEquals("skill-manifest-fp-test", response.snapshots().getFirst().manifestFingerprint());
     }
 
     private AgentRuntimeEventProjectionRecord skillVisibilityRecord(String identityKey,

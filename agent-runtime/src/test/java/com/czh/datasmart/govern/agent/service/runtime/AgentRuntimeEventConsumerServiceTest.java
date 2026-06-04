@@ -11,6 +11,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -80,6 +81,38 @@ class AgentRuntimeEventConsumerServiceTest {
         assertEquals("skill-manifest-fp-test", record.attributes().get("manifestFingerprint"));
         assertEquals(List.of("datasource.profiling", "quality.rule.design"), record.attributes().get("visibleSkillCodes"));
         assertTrue(record.attributes().containsKey("hiddenAdmissionStatusCounts"));
+    }
+
+    @Test
+    void consumeShouldMaterializeSkillVisibilitySnapshotIntoDedicatedIndex() {
+        /*
+         * 专用索引是从通用 runtime event 热窗口走向长期审计索引的第一步。
+         * 这个测试证明：consumer 首次接收 Skill 可见性事件时，会把已经分配 replaySequence 的记录同步写入索引；
+         * 同一 payload 再次投递时，通用 projection 先识别 duplicate，专用索引也不会被重复放大。
+         */
+        InMemoryAgentRuntimeEventProjectionStore projectionStore = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        InMemoryAgentSkillVisibilitySnapshotIndexStore indexStore =
+                new InMemoryAgentSkillVisibilitySnapshotIndexStore(10, 100);
+        AgentRuntimeEventConsumerService service = new AgentRuntimeEventConsumerService(
+                objectMapper(),
+                projectionStore,
+                new AgentRuntimeEventConsumerStats(),
+                Optional.of(indexStore)
+        );
+
+        AgentRuntimeEventConsumeResult first = service.consume(skillVisibilityRuntimeEventPayload());
+        AgentRuntimeEventConsumeResult duplicate = service.consume(skillVisibilityRuntimeEventPayload());
+
+        assertTrue(first.accepted());
+        assertTrue(duplicate.duplicate());
+        assertEquals(1, indexStore.size());
+        List<AgentRuntimeEventProjectionRecord> indexedSnapshots = indexStore.query(
+                new AgentRuntimeEventProjectionQuery("10", "20", null, null,
+                        "run-skill-001", null, null, null, 20)
+        );
+        assertEquals(1, indexedSnapshots.size());
+        assertEquals(1L, indexedSnapshots.getFirst().replaySequence());
+        assertEquals("skill-manifest-fp-test", indexedSnapshots.getFirst().attributes().get("manifestFingerprint"));
     }
 
     @Test

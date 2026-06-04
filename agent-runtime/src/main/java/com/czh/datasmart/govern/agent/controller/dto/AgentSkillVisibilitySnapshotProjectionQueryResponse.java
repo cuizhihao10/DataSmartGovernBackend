@@ -36,6 +36,15 @@ public record AgentSkillVisibilitySnapshotProjectionQueryResponse(
          */
         Integer totalMatched,
 
+        /**
+         * 本次查询使用的索引来源。
+         *
+         * <p>`dedicated-skill-visibility-index` 表示已经从专用 Skill 可见性索引读取；
+         * `runtime-event-projection-fallback` 表示专用索引未启用，查询回退到通用 runtime event 热窗口。
+         * 该字段能帮助运维判断当前环境是否已经进入更可产品化的索引路径。</p>
+         */
+        String indexSource,
+
         Long availableSnapshotCount,
         Long unavailableSnapshotCount,
         Integer totalVisibleSkillCount,

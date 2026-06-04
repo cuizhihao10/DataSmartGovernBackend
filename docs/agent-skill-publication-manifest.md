@@ -176,9 +176,13 @@ GET /api/agent/runtime-events/skill-visibility-snapshots
 runtime event attributes。查询仍经过 gateway Header 转换出的租户、项目、本人数据范围收口；普通用户可以
 在通用 replay 中看到该事件进度，但属性会被 BASIC 策略脱敏。
 
-当前 Java 侧仍使用 runtime event projection 热窗口，不是长期审计表。Java 专用视图已经能读取
-`manifestBindingStatus/manifestSource/manifestFingerprint`，并按绑定状态与来源聚合返回窗口；后续需要为
-Skill 可见性快照建立 SQL/审计索引表，支持跨实例、跨重启、跨版本的灰度对比和事故复盘。
+当前 Java 侧已新增 `AgentSkillVisibilitySnapshotIndexStore` 专用索引端口和内存实现。runtime event consumer
+首次接收 `skill_visibility_snapshot_recorded` 后，会把低敏快照同步物化到专用索引；查询服务优先读取该索引，
+未启用时才 fallback 到通用 runtime event projection。Java 专用视图已经能读取
+`manifestBindingStatus/manifestSource/manifestFingerprint`，并按绑定状态与来源聚合返回窗口。
+
+当前专用索引仍是 JVM 内存实现，不是长期审计表。后续需要增加 MySQL/ClickHouse/OpenSearch/审计中心实现，
+支持跨实例、跨重启、跨版本的灰度对比和事故复盘。
 
 ## 6. 与 MCP 最新规范的关系
 
@@ -218,7 +222,7 @@ Skill 可见性快照建立 SQL/审计索引表，支持跨实例、跨重启、
 
 短期建议：
 
-- 将会话可见 Skill 快照升级为可持久化索引，并按租户、项目、角色、权限包、套餐和 Manifest 指纹过滤；
+- 将会话可见 Skill 快照专用索引从内存实现升级为 MySQL/ClickHouse/OpenSearch 或审计中心持久化实现，并按租户、项目、角色、权限包、套餐和 Manifest 指纹过滤；
 - 把 Skill Manifest 与现有 tool registry、skill admission policy、tool budget policy 串起来，形成完整执行前治理链路。
 - 将 `manifestFingerprint` 继续接入 Prometheus 指标和启动日志，形成更完整的运行时版本事实。
 

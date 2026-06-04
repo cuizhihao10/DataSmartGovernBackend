@@ -8,7 +8,7 @@ package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentSkillVisibilitySnapshotProjectionQueryResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentSkillVisibilitySnapshotProjectionView;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * Skill 可见性快照 runtime event 的控制面查询服务。
@@ -36,7 +37,6 @@ import java.util.Objects;
  * ClickHouse 或审计中心落地时，可以把 `projectionStore.query(...)` 换成索引查询，API 契约不需要推翻。</p>
  */
 @Service
-@RequiredArgsConstructor
 public class AgentSkillVisibilitySnapshotProjectionService {
 
     /**
@@ -46,9 +46,41 @@ public class AgentSkillVisibilitySnapshotProjectionService {
      * Python 未来新增的事件类型；只有当某个事件进入 Java 专用查询/展示语义时，才在对应服务中固定常量。</p>
      */
     public static final String SKILL_VISIBILITY_EVENT_TYPE = "skill_visibility_snapshot_recorded";
+    private static final String DEDICATED_INDEX_SOURCE = "dedicated-skill-visibility-index";
+    private static final String PROJECTION_FALLBACK_SOURCE = "runtime-event-projection-fallback";
 
     private final AgentRuntimeEventProjectionStore projectionStore;
     private final AgentRuntimeEventProjectionAccessSupport accessSupport;
+    private final Optional<AgentSkillVisibilitySnapshotIndexStore> snapshotIndexStore;
+
+    /**
+     * Spring 运行时使用的构造方法。
+     *
+     * <p>专用索引是本服务的优先数据源，但不是强依赖。这样设计有三个好处：</p>
+     * <p>1. 本地学习环境可以关闭索引，继续从通用 runtime event 热窗口查询；</p>
+     * <p>2. 专用索引实现可以从 memory 平滑替换为 MySQL/ClickHouse，不影响 controller 契约；</p>
+     * <p>3. 如果索引配置缺失或迁移中暂时不可用，接口仍能保持向后兼容，不会让前端治理卡片突然不可用。</p>
+     */
+    @Autowired
+    public AgentSkillVisibilitySnapshotProjectionService(
+            AgentRuntimeEventProjectionStore projectionStore,
+            AgentRuntimeEventProjectionAccessSupport accessSupport,
+            Optional<AgentSkillVisibilitySnapshotIndexStore> snapshotIndexStore) {
+        this.projectionStore = projectionStore;
+        this.accessSupport = accessSupport;
+        this.snapshotIndexStore = snapshotIndexStore;
+    }
+
+    /**
+     * 历史单元测试兼容构造方法。
+     *
+     * <p>没有传入专用索引时，服务会回退到通用 projection store，保持 6.15 阶段的查询行为。</p>
+     */
+    public AgentSkillVisibilitySnapshotProjectionService(
+            AgentRuntimeEventProjectionStore projectionStore,
+            AgentRuntimeEventProjectionAccessSupport accessSupport) {
+        this(projectionStore, accessSupport, Optional.empty());
+    }
 
     /**
      * 查询会话级 Skill 可见性快照。
@@ -63,10 +95,25 @@ public class AgentSkillVisibilitySnapshotProjectionService {
         AgentRuntimeEventProjectionQuery scopedQuery = forceSkillVisibilityEventType(
                 accessSupport.restrict(query, accessContext)
         );
-        List<AgentSkillVisibilitySnapshotProjectionView> snapshots = projectionStore.query(scopedQuery).stream()
+        List<AgentRuntimeEventProjectionRecord> records = queryIndexedRecords(scopedQuery);
+        List<AgentSkillVisibilitySnapshotProjectionView> snapshots = records.stream()
                 .map(this::toView)
                 .toList();
-        return buildResponse(scopedQuery, snapshots);
+        return buildResponse(scopedQuery, snapshots, indexSource());
+    }
+
+    private List<AgentRuntimeEventProjectionRecord> queryIndexedRecords(AgentRuntimeEventProjectionQuery scopedQuery) {
+        /*
+         * 专用索引存在时优先使用它，避免每次查询都扫描通用 runtime event 热窗口。
+         * fallback 不是长期目标，只是为了兼容旧配置、灰度迁移和本地调试。
+         */
+        return snapshotIndexStore
+                .map(store -> store.query(scopedQuery))
+                .orElseGet(() -> projectionStore.query(scopedQuery));
+    }
+
+    private String indexSource() {
+        return snapshotIndexStore.isPresent() ? DEDICATED_INDEX_SOURCE : PROJECTION_FALLBACK_SOURCE;
     }
 
     private AgentRuntimeEventProjectionQuery forceSkillVisibilityEventType(AgentRuntimeEventProjectionQuery query) {
@@ -92,7 +139,8 @@ public class AgentSkillVisibilitySnapshotProjectionService {
 
     private AgentSkillVisibilitySnapshotProjectionQueryResponse buildResponse(
             AgentRuntimeEventProjectionQuery query,
-            List<AgentSkillVisibilitySnapshotProjectionView> snapshots) {
+            List<AgentSkillVisibilitySnapshotProjectionView> snapshots,
+            String indexSource) {
         long availableCount = snapshots.stream().filter(snapshot -> Boolean.TRUE.equals(snapshot.available())).count();
         int totalVisibleSkillCount = snapshots.stream()
                 .mapToInt(snapshot -> safeInt(snapshot.visibleSkillCount()))
@@ -103,6 +151,7 @@ public class AgentSkillVisibilitySnapshotProjectionService {
         return new AgentSkillVisibilitySnapshotProjectionQueryResponse(
                 query.normalizedLimit(),
                 snapshots.size(),
+                indexSource,
                 availableCount,
                 snapshots.size() - availableCount,
                 totalVisibleSkillCount,

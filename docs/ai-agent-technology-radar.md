@@ -1,5 +1,13 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-04 落地补充：session capability facts should be materialized into dedicated indexes
+
+- 本阶段把 Java `agent-runtime` 的 Skill 可见性查询从“扫描通用 runtime event 热窗口”推进到“专用索引端口 + 内存物化”。成熟 Agent host 里，工具/Skill 暴露边界不应永远停留在自由 attributes 扫描，否则 Marketplace、审计台和前端治理卡片都会被事件内部结构绑死。
+- 新增 `AgentSkillVisibilitySnapshotIndexStore` 和内存实现后，consumer 首次接收 `skill_visibility_snapshot_recorded` 会把低敏快照物化到专用索引；查询服务优先读专用索引，并通过 `indexSource` 告诉调用方当前来自专用索引还是 projection fallback。
+- 这一步仍然保持克制：没有马上把表结构固化到 MySQL，也没有引入 ClickHouse/OpenSearch。原因是 Skill 可见性事件还在快速演进，先稳定端口、查询语义、权限收口和 DTO，后续再接持久化 store 更稳。
+- 从产品角度看，专用索引是从“运行时可回放”走向“运营可分析”的中间层。后续可以按 tenant/project/actorRole/permissionFactSource/manifestFingerprint/hiddenAdmissionStatus 聚合，回答灰度、套餐、权限缺口和策略漂移问题。
+- 下一步建议落 MySQL 或 ClickHouse 索引实现，并补低基数诊断指标：索引物化成功数、重复数、fallback 查询数、按 Manifest 指纹的窗口分布。完成后应考虑切到 gateway 会话级 Skill cache，而不是继续只堆查询字段。
+
 ## 2026-06-04 落地补充：agent control planes should index session capability facts
 
 - 本阶段把 Python Runtime 的 `skill_visibility_snapshot_recorded` 事件接入 Java `agent-runtime` 专用查询视图。成熟 Agent host 不只在运行时生成事件，还需要控制面能按产品语义查询这些事件，否则前端、审计台和运营报表会被迫解析自由 attributes。

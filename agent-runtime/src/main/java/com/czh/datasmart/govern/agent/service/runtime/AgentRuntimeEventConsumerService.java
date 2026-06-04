@@ -8,13 +8,14 @@ package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.StringJoiner;
 
 /**
@@ -34,7 +35,6 @@ import java.util.StringJoiner;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class AgentRuntimeEventConsumerService {
 
     private static final String SUPPORTED_SCHEMA_VERSION = "agent-runtime-event.v1";
@@ -42,6 +42,38 @@ public class AgentRuntimeEventConsumerService {
     private final ObjectMapper objectMapper;
     private final AgentRuntimeEventProjectionStore projectionStore;
     private final AgentRuntimeEventConsumerStats consumerStats;
+    private final Optional<AgentSkillVisibilitySnapshotIndexStore> skillVisibilitySnapshotIndexStore;
+
+    /**
+     * Spring 运行时使用的构造方法。
+     *
+     * <p>`skillVisibilitySnapshotIndexStore` 是 Optional，是为了支持一个清晰的渐进开关：
+     * - 开启专用索引时，consumer 会把 Skill 可见性快照从通用事件流中物化出来；
+     * - 关闭专用索引时，系统仍可退回通用 runtime event projection 查询，保持向后兼容；
+     * - 后续替换为 MySQL/ClickHouse 索引时，只需要提供同一接口的实现。</p>
+     */
+    @Autowired
+    public AgentRuntimeEventConsumerService(ObjectMapper objectMapper,
+                                            AgentRuntimeEventProjectionStore projectionStore,
+                                            AgentRuntimeEventConsumerStats consumerStats,
+                                            Optional<AgentSkillVisibilitySnapshotIndexStore> skillVisibilitySnapshotIndexStore) {
+        this.objectMapper = objectMapper;
+        this.projectionStore = projectionStore;
+        this.consumerStats = consumerStats;
+        this.skillVisibilitySnapshotIndexStore = skillVisibilitySnapshotIndexStore;
+    }
+
+    /**
+     * 单元测试和早期调用方兼容构造方法。
+     *
+     * <p>很多历史测试只关心通用 projection 消费语义，不需要专用 Skill 索引。保留该构造方法可以避免为了
+     * 新增索引端口而重写大量无关测试，也体现“新增能力不破坏旧主路径”的演进原则。</p>
+     */
+    public AgentRuntimeEventConsumerService(ObjectMapper objectMapper,
+                                            AgentRuntimeEventProjectionStore projectionStore,
+                                            AgentRuntimeEventConsumerStats consumerStats) {
+        this(objectMapper, projectionStore, consumerStats, Optional.empty());
+    }
 
     /**
      * 处理 Kafka payload。
@@ -80,7 +112,24 @@ public class AgentRuntimeEventConsumerService {
         if (!appended) {
             return AgentRuntimeEventConsumeResult.duplicate(record.identityKey());
         }
+        materializeSkillVisibilitySnapshot(record);
         return AgentRuntimeEventConsumeResult.accepted(record.identityKey());
+    }
+
+    private void materializeSkillVisibilitySnapshot(AgentRuntimeEventProjectionRecord record) {
+        /*
+         * 这里故意发生在 projectionStore.append(...) 成功之后：
+         * - 通用 projection 是消费者幂等主入口，重复消息应先在那里被拦住；
+         * - 专用索引只物化首次接收的低敏快照，避免 Kafka 重放把统计数据放大；
+         * - 物化时优先取 projectionStore 中已经分配 replaySequence 的记录，让专用索引和通用 replay 使用同一游标。
+         */
+        if (!AgentSkillVisibilitySnapshotProjectionService.SKILL_VISIBILITY_EVENT_TYPE.equals(record.eventType())
+                || skillVisibilitySnapshotIndexStore.isEmpty()) {
+            return;
+        }
+        AgentRuntimeEventProjectionRecord storedRecord = projectionStore.findByIdentityKey(record.identityKey())
+                .orElse(record);
+        skillVisibilitySnapshotIndexStore.get().append(storedRecord);
     }
 
     /**

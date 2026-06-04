@@ -9187,3 +9187,58 @@ Manifest `contentFingerprint` 从“启动诊断字段”推进为“每次 Agen
 2. 在智能网关侧增加会话级 Skill cache，按租户、项目、角色、权限包、套餐、workspace 风险、预算策略和 Manifest 指纹缓存 READY Skill。
 3. 设计 Manifest 低频刷新/ETag 机制，让 Python Runtime 能按 `contentFingerprint` 判断是否更新本地 Skill registry。
 4. 在推进 1-2 个 Skill 版本治理闭环后，切换到长期记忆二级索引或多 Agent 协作，避免继续只在 Skill 链路局部扩展。
+
+## 5.09 Skill 可见性快照专用索引端口与内存物化（2026-06-04）
+
+本阶段承接 5.08 的下一步推荐，但没有直接把表结构一次性固化到 MySQL。原因是 Skill 可见性事件仍在快速演进，
+如果过早建表，后续 Manifest、租户能力包、套餐、灰度批次和 Skill Marketplace 统计字段变化时会反复迁移。
+本阶段先把“专用索引”作为端口和查询数据源落地，让 consumer、查询服务、DTO 和权限收口先围绕稳定边界工作。
+
+已完成：
+- 新增 `AgentSkillVisibilitySnapshotIndexProperties`：
+  - 配置前缀为 `datasmart.agent-runtime.runtime-events.skill-visibility-index`；
+  - 支持 `enabled`、`maxSnapshotsPerRun`、`maxTotalSnapshots`；
+  - 默认启用内存索引，本地学习环境不依赖数据库。
+- 新增 `AgentSkillVisibilitySnapshotIndexStore`：
+  - 定义 Skill 可见性快照专用索引端口；
+  - 只承接 `skill_visibility_snapshot_recorded` 低敏聚合事实；
+  - 为未来 MySQL/ClickHouse/OpenSearch/审计中心实现预留同一查询契约。
+- 新增 `InMemoryAgentSkillVisibilitySnapshotIndexStore`：
+  - identityKey 幂等去重；
+  - run 维度窗口裁剪；
+  - JVM 全局窗口裁剪；
+  - replaySequence 缺失时兜底分配；
+  - 保持 PROJECT 数据范围空集合返回空结果的安全语义。
+- 更新 `AgentRuntimeEventConsumerService`：
+  - Spring 构造器注入 `Optional<AgentSkillVisibilitySnapshotIndexStore>`；
+  - 通用 projection 首次 append 成功后，才把 Skill 可见性快照物化进专用索引；
+  - 重复 Kafka payload 会先被 projection 幂等拦截，不会放大专用索引。
+- 更新 `AgentSkillVisibilitySnapshotProjectionService`：
+  - 查询时优先读取专用索引；
+  - 专用索引未启用时 fallback 到通用 runtime event projection；
+  - 响应新增 `indexSource`，区分 `dedicated-skill-visibility-index` 与 `runtime-event-projection-fallback`。
+- `application.yml` 新增详细配置说明和环境变量：
+  - `DATASMART_AGENT_RUNTIME_SKILL_VISIBILITY_INDEX_ENABLED`；
+  - `DATASMART_AGENT_RUNTIME_SKILL_VISIBILITY_INDEX_MAX_PER_RUN`；
+  - `DATASMART_AGENT_RUNTIME_SKILL_VISIBILITY_INDEX_MAX_TOTAL`。
+- 测试增强：
+  - `AgentRuntimeEventConsumerServiceTest` 覆盖 consumer 物化专用索引和重复消息不重复入索引；
+  - `AgentSkillVisibilitySnapshotProjectionServiceTest` 覆盖 fallback 查询、专用索引优先查询和 `indexSource`。
+
+产品意义：
+- Skill 可见性快照从“通用事件热窗口中的一种事件”推进为“可独立索引的会话能力事实”。
+- 后续前端治理卡片、运营报表和 Skill Marketplace 可以围绕专用索引扩展，不必长期解析自由 attributes。
+- 该设计为后续持久化实现留出清晰替换点，避免直接在 consumer 或 controller 中写死数据库逻辑。
+- 当前仍保持内存默认，避免本地学习和测试因为数据库依赖被拖慢。
+
+当前边界：
+- 专用索引仍是 JVM 内存实现，服务重启和多实例之间不会共享。
+- 尚未落 MySQL/ClickHouse/OpenSearch 表结构，也没有索引物化成功/失败的 Prometheus 指标。
+- 当前索引仍跟随 runtime event consumer，同步路径暂未实现 outbox 式补偿重放。
+- 还没有按 `manifestFingerprint` 或 `tenantPlanCode` 的专门报表 API，只是查询响应具备相关字段。
+
+下一步建议：
+1. 优先实现 MySQL 或 ClickHouse 版 `AgentSkillVisibilitySnapshotIndexStore`，并设计表结构、唯一键、查询索引和保留策略。
+2. 增加索引诊断和低基数指标：物化成功数、重复数、fallback 查询数、按 Manifest 绑定状态的窗口分布。
+3. 再推进 gateway 会话级 Skill cache，按租户、项目、角色、权限包、套餐、workspace 风险、预算策略和 Manifest 指纹缓存 READY Skill。
+4. 当持久化索引与 cache 稳定后，建议切到长期记忆二级索引或多 Agent 协作，避免 Skill 可见性链路继续局部扩张。

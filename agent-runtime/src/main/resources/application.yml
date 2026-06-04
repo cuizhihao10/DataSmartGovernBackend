@@ -118,6 +118,19 @@ datasmart:
         max-events-per-run: 1000
         # 当前 JVM 内所有 runtime event 投影的总上限，用于防止重放或事件风暴打满内存。
         max-total-events: 10000
+      skill-visibility-index:
+        # Skill 可见性快照专用索引。
+        # 通用 runtime event projection 负责所有事件的热窗口和 replay；专用索引只保存
+        # skill_visibility_snapshot_recorded 的低敏聚合事实，面向前端治理卡片、审计台、Skill Marketplace
+        # 和后续 Manifest 指纹灰度排查。默认启用，因为当前实现仍是内存版，不依赖 MySQL/ClickHouse。
+        # 如果要回退到 6.15 的行为，可以设置 enabled=false，查询服务会自动 fallback 到通用 projection。
+        enabled: ${DATASMART_AGENT_RUNTIME_SKILL_VISIBILITY_INDEX_ENABLED:true}
+        # 单个 run 在索引中最多保留多少条 Skill 可见性快照。
+        # 多轮推理、二轮工具反馈或未来会话内能力刷新都可能生成多条快照；上限用于防止异常循环堆积。
+        max-snapshots-per-run: ${DATASMART_AGENT_RUNTIME_SKILL_VISIBILITY_INDEX_MAX_PER_RUN:1000}
+        # 当前 JVM 内 Skill 可见性快照索引总上限。
+        # 生产长期审计应接 MySQL/ClickHouse/OpenSearch 或审计中心，不能只依赖这个内存窗口。
+        max-total-snapshots: ${DATASMART_AGENT_RUNTIME_SKILL_VISIBILITY_INDEX_MAX_TOTAL:10000}
     tool-execution-events:
       # Java 控制面向外发布“工具执行审计状态变化”的开关。
       # 默认关闭是为了保护本地开发；生产环境打开前，应先创建 topic、配置 ACL、告警、保留时间和消费侧幂等。
