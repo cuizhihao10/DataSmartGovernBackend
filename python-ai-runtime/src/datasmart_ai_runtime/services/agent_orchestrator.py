@@ -31,6 +31,9 @@ from datasmart_ai_runtime.services.memory.memory_planner import AgentMemoryPlann
 from datasmart_ai_runtime.services.memory.memory_retriever import AgentMemoryRetriever, InMemoryAgentMemoryRetriever
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
 from datasmart_ai_runtime.services.model_gateway.model_gateway_context import build_model_gateway_context
+from datasmart_ai_runtime.services.model_gateway.model_gateway_runtime_event import (
+    build_model_gateway_routed_event_attributes,
+)
 from datasmart_ai_runtime.services.model_gateway.model_provider import ModelProviderRegistry
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.model_gateway.model_tool_call_budget_policy_provider import ModelToolCallBudgetPolicyProvider
@@ -119,34 +122,7 @@ class AgentOrchestrator:
             "route_model_gateway",
             "已完成模型网关治理决策。",
             severity=AgentRuntimeEventSeverity.WARNING if selected_route is None else AgentRuntimeEventSeverity.INFO,
-            attributes={
-                "selectedProvider": selected_route.provider_name if selected_route else None,
-                "selectedModel": selected_route.model_name if selected_route else None,
-                "fallbackUsed": model_gateway_decision.fallback_used,
-                "budgetAllowed": model_gateway_decision.budget_decision.allowed,
-                "cacheKeyScope": model_gateway_decision.cache_key_scope.value,
-                "cachePlanEnabled": (
-                    model_gateway_decision.cache_plan.enabled
-                    if model_gateway_decision.cache_plan
-                    else False
-                ),
-                "cachePlanNamespace": (
-                    model_gateway_decision.cache_plan.namespace
-                    if model_gateway_decision.cache_plan
-                    else None
-                ),
-                "cachePlanTtlSeconds": (
-                    model_gateway_decision.cache_plan.ttl_seconds
-                    if model_gateway_decision.cache_plan
-                    else 0
-                ),
-                "cachePlanIssues": (
-                    model_gateway_decision.cache_plan.issues
-                    if model_gateway_decision.cache_plan
-                    else ()
-                ),
-                "candidateCount": len(model_gateway_decision.candidate_routes),
-            },
+            attributes=build_model_gateway_routed_event_attributes(model_gateway_decision),
         )
 
         state_trace.append("analyze_intent")
