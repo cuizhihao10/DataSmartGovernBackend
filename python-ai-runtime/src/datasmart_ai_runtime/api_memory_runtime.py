@@ -44,6 +44,12 @@ from datasmart_ai_runtime.services.memory.memory_store_components import (
 )
 from datasmart_ai_runtime.services.memory.memory_store_retriever import StoreBackedAgentMemoryRetriever
 from datasmart_ai_runtime.services.memory.memory_secondary_index import secondary_index_runtime_diagnostics
+from datasmart_ai_runtime.services.memory.memory_secondary_index_sync import (
+    AgentMemorySecondaryIndexSyncScheduler,
+    AgentMemorySecondaryIndexSyncWorker,
+    InMemoryAgentMemorySecondaryIndexSyncTaskStore,
+    secondary_index_sync_diagnostics,
+)
 from datasmart_ai_runtime.services.memory.memory_materialization_runner import AgentMemoryMaterializationRunner
 from datasmart_ai_runtime.services.memory.memory_materialization_admin import AgentMemoryMaterializationAdminService
 from datasmart_ai_runtime.services.memory.memory_write_components import (
@@ -85,6 +91,9 @@ class ApiMemoryRuntimeComponents:
     memory_materialization_runner: AgentMemoryMaterializationRunner
     memory_materialization_admin: AgentMemoryMaterializationAdminService
     memory_retriever: StoreBackedAgentMemoryRetriever
+    secondary_index_sync_store: InMemoryAgentMemorySecondaryIndexSyncTaskStore
+    secondary_index_sync_scheduler: AgentMemorySecondaryIndexSyncScheduler
+    secondary_index_sync_worker: AgentMemorySecondaryIndexSyncWorker
 
 
 def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
@@ -107,11 +116,14 @@ def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
     receipt_store_runtime = build_memory_materialization_receipt_store_runtime()
     lease_store_runtime = build_memory_materialization_lease_store_runtime()
     audit_outbox_runtime = build_memory_materialization_audit_outbox_runtime()
+    secondary_index_sync_store = InMemoryAgentMemorySecondaryIndexSyncTaskStore()
+    secondary_index_sync_scheduler = AgentMemorySecondaryIndexSyncScheduler(store=secondary_index_sync_store)
     governance = AgentMemoryWriteGovernanceService(store=write_store_runtime.store)
     materializer = AgentApprovedMemoryWriteMaterializer(
         candidate_store=write_store_runtime.store,
         memory_store=formal_store_runtime.store,
         receipt_store=receipt_store_runtime.store,
+        secondary_index_sync_scheduler=secondary_index_sync_scheduler,
     )
     runner = AgentMemoryMaterializationRunner(
         candidate_store=write_store_runtime.store,
@@ -124,6 +136,7 @@ def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
     )
     materialization_admin = AgentMemoryMaterializationAdminService(lease_store_runtime.store)
     retriever = StoreBackedAgentMemoryRetriever(formal_store_runtime.store)
+    secondary_index_sync_worker = AgentMemorySecondaryIndexSyncWorker(store=secondary_index_sync_store)
     return ApiMemoryRuntimeComponents(
         write_store_runtime=write_store_runtime,
         formal_store_runtime=formal_store_runtime,
@@ -135,6 +148,9 @@ def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
         memory_materialization_runner=runner,
         memory_materialization_admin=materialization_admin,
         memory_retriever=retriever,
+        secondary_index_sync_store=secondary_index_sync_store,
+        secondary_index_sync_scheduler=secondary_index_sync_scheduler,
+        secondary_index_sync_worker=secondary_index_sync_worker,
     )
 
 
@@ -161,6 +177,17 @@ def api_memory_runtime_diagnostics(components: ApiMemoryRuntimeComponents) -> di
                 "再从正式长期记忆 store 读取候选窗口并执行轻量关键词排序。"
                 "未来接入 Chroma/Neo4j/MinIO 索引时仍必须保留 memoryNamespace 范围过滤。"
             ),
+        },
+        "secondaryIndexSync": {
+            **secondary_index_sync_diagnostics(components.secondary_index_sync_store),
+            "worker": {
+                "implementation": "AgentMemorySecondaryIndexSyncWorker",
+                "defaultAdapter": "NoopAgentMemorySecondaryIndexSyncAdapter",
+                "notes": (
+                    "当前同步 worker 默认使用 no-op adapter 验证任务状态机。生产接入 Chroma/Neo4j/MinIO 时，"
+                    "应按 indexKind 替换 adapter，并补充持久化任务 store、指标和管理员重排入口。"
+                ),
+            },
         },
         "materializer": {
             "implementation": "AgentApprovedMemoryWriteMaterializer",

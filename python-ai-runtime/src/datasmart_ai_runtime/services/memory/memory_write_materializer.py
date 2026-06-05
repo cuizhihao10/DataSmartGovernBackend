@@ -32,6 +32,7 @@ from datasmart_ai_runtime.services.memory.memory_materialization_receipt_store i
 )
 from datasmart_ai_runtime.services.memory.memory_write_candidate_store import AgentMemoryWriteCandidateStore
 from datasmart_ai_runtime.services.memory.memory_write_workspace import AgentMemoryWorkspaceSupport
+from datasmart_ai_runtime.services.memory.memory_secondary_index_sync import AgentMemorySecondaryIndexSyncScheduler
 
 
 class AgentMemoryMaterializationOutcome(str, Enum):
@@ -96,11 +97,13 @@ class AgentApprovedMemoryWriteMaterializer:
         candidate_store: AgentMemoryWriteCandidateStore,
         memory_store: AgentMemoryStore,
         receipt_store: AgentMemoryMaterializationReceiptStore | None = None,
+        secondary_index_sync_scheduler: AgentMemorySecondaryIndexSyncScheduler | None = None,
         worker_id: str = "python-ai-runtime-inline",
     ) -> None:
         self._candidate_store = candidate_store
         self._memory_store = memory_store
         self._receipt_store = receipt_store or InMemoryAgentMemoryMaterializationReceiptStore()
+        self._secondary_index_sync_scheduler = secondary_index_sync_scheduler
         self._worker_id = worker_id
 
     def materialize(self, candidate_id: str) -> AgentMemoryMaterializationResult:
@@ -143,11 +146,18 @@ class AgentApprovedMemoryWriteMaterializer:
                 outcome=outcome.value,
                 message=message,
             )
+            sync_results = (
+                self._secondary_index_sync_scheduler.schedule_for_entry(write_result.entry)
+                if self._secondary_index_sync_scheduler is not None
+                else ()
+            )
             return self._result(
                 write_result.entry,
                 outcome,
                 message,
                 receipt_id=receipt.receipt_id,
+                secondary_index_task_count=len(sync_results),
+                secondary_index_task_created_count=sum(1 for item in sync_results if item.created),
             )
         except Exception as exc:
             self._receipt_store.fail(receipt_id=receipt.receipt_id, error_message=f"{type(exc).__name__}: {exc}")
@@ -247,6 +257,8 @@ class AgentApprovedMemoryWriteMaterializer:
         outcome: AgentMemoryMaterializationOutcome,
         message: str,
         receipt_id: str,
+        secondary_index_task_count: int = 0,
+        secondary_index_task_created_count: int = 0,
     ) -> AgentMemoryMaterializationResult:
         """构造低敏落成结果。"""
 
@@ -263,5 +275,7 @@ class AgentApprovedMemoryWriteMaterializer:
                 "memoryNamespace": entry.memory_namespace,
                 "receiptId": receipt_id,
                 "expiresAt": entry.expires_at.isoformat(),
+                "secondaryIndexTaskCount": secondary_index_task_count,
+                "secondaryIndexTaskCreatedCount": secondary_index_task_created_count,
             },
         )

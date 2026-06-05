@@ -1,5 +1,13 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-05 落地补充：secondary memory indexes need durable sync tasks
+
+- 本阶段把长期记忆二级索引从“路由契约”推进到“同步任务契约”。成熟 Agent memory 不是把正式记忆写入 store 就结束了，还要把同一条受治理记忆同步到 vector、graph、resource 或 keyword 索引，并能观察哪些索引已经同步、哪些失败、哪些进入 DLQ。
+- DataSmart 当前新增 `AgentMemorySecondaryIndexSyncScheduler` 和 `AgentMemorySecondaryIndexSyncWorker`。materializer 写入正式 store 后会创建二级索引同步任务；worker 默认使用 no-op adapter 验证状态机，后续可以替换为 Chroma、Neo4j、MinIO 或企业内部索引服务。
+- 这一步继续保持安全边界：同步任务只保存 memoryId、candidateId、tenant/project/session、workspaceKey、memoryNamespace、indexKind 和 action，不保存记忆正文、prompt、SQL、样本数据或工具原始输出。
+- 当前不是完整向量库上线，而是先把 upsert/delete/expire、pending/synced/failed/dead_letter、退避和诊断固定下来。这样后续真实 adapter 出问题时，不会推翻 materializer 或 retriever 主链路。
+- 下一步如果继续 memory 主线，建议接一个真实 semantic memory adapter，并补 ready task、sync failure、DLQ、index latency 等低基数指标；随后应切到多 Agent 协作或智能网关会话调度，保持平台整体节奏。
+
 ## 2026-06-05 落地补充：long-term memory needs routed secondary indexes
 
 - 本阶段把长期记忆检索从“正式 store 候选窗口 + 关键词排序”推进到“二级索引路由契约”。成熟 Agent 记忆系统不会只靠一种检索方式：语义知识适合 vector，流程和依赖适合 graph，事件经验适合 keyword/event index，报告和日志适合 resource index。

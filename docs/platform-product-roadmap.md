@@ -1,5 +1,36 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-05 追加落地进展：长期记忆二级索引同步 worker 契约
+
+- Python Runtime 新增 `memory_secondary_index_sync.py`：
+  - 定义二级索引同步动作 `upsert/delete/expire`；
+  - 定义任务状态 `pending/synced/failed/dead_letter`；
+  - 新增内存任务 store，支持 taskId 幂等保存、ready 窗口查询、成功标记、失败退避和 DLQ；
+  - 新增 `AgentMemorySecondaryIndexSyncScheduler`，在正式记忆落成后按记忆类型生成 vector/keyword/graph/resource 索引任务；
+  - 新增 `AgentMemorySecondaryIndexSyncWorker`，默认使用 no-op adapter 验证状态机，后续可按 indexKind 替换为 Chroma、Neo4j、MinIO adapter。
+- `AgentApprovedMemoryWriteMaterializer` 已接入可选同步调度器：
+  - 正式记忆写入成功或幂等复用后创建二级索引任务；
+  - 重复 materialize 不会重复创建索引任务；
+  - 返回结果 attributes 中包含同步任务数量与新建数量。
+- `api_memory_runtime_diagnostics(...)` 新增 `secondaryIndexSync` 诊断：
+  - 展示 ready task 数量、按索引类型分布、按动作分布和默认 no-op worker；
+  - 明确当前只验证任务链路，真实索引 adapter 尚未上线。
+
+产品意义：
+- 长期记忆从“可路由检索”推进到“正式落成后可派生索引任务”，为真正 Chroma/Neo4j/MinIO 同步打下执行层边界。
+- 同步状态机把“正式记忆存在”和“二级索引已更新”拆成两个可观测事实，避免索引失败时误以为记忆不可用或静默漏索引。
+- 任务不保存记忆正文，只保存 memoryId、scope、namespace 和 indexKind，降低同步队列扩散敏感内容的风险。
+
+当前边界：
+- 当前任务 store 仍为内存实现；生产需要 SQLite/MySQL/Redis 或 Kafka/outbox 持久化。
+- 默认 worker 使用 no-op adapter，不代表真实 Chroma、Neo4j、MinIO 同步已经完成。
+- 暂无同步指标、告警、管理员重排接口和索引重建任务。
+
+下一步推荐路线：
+1. 若继续长期记忆，应优先落一个真实 semantic memory adapter：Chroma 或 pgvector，并强制 metadata filter 先于相似度召回。
+2. 同时补低基数指标：ready task 数量、同步成功/失败、DLQ 数量、按 indexKind 的 fallback 比例。
+3. 完成一个真实 adapter 后建议切到多 Agent 协作/智能网关会话调度，让项目从 memory 局部回到整体 Agent 平台演进。
+
 ## 2026-06-05 追加落地进展：长期记忆二级索引路由契约
 
 - Python Runtime 新增 `memory_secondary_index.py`：
