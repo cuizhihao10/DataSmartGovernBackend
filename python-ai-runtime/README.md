@@ -629,3 +629,30 @@ Agent、工具预算、Skill 可见性、长期记忆、模型路由和人工 ha
 - 把 Master Agent handoff 图升级成可执行状态机，明确专家 Agent 的输入输出和失败回退；
 - 为 data-sync、permission-admin、task-management 等微服务补齐专属 Agent Skill，避免调度只依赖通用关键词；
 - 跟进 A2A、MCP、Agents SDK tracing/session 等生态能力，但继续保持租户、项目、workspace 和审计边界优先。
+
+# 5.14 多 Agent 会话调度 Runtime Event
+
+`agentSessionScheduling` 现在不仅存在于同步 HTTP 响应中，也会追加一条低敏 Runtime Event：
+`agent_session_scheduling_recorded`。这让事件存储、WebSocket replay、Kafka publisher 和未来 Java projection
+都能还原本轮多 Agent 调度事实。
+
+事件属性覆盖：
+
+- `status`、`available`、`primaryAgentRole`、`participatingAgentCount`；
+- `participatingAgentRoles`、`participationModeCounts`、`agentStatusCounts`；
+- `handoffRequired`、`handoffAgentRoles`；
+- `intentDomains`、`selectedSkillCodes`、`visibleSkillCodes`、`plannedToolNames`、`memoryDependencies`；
+- `modelGatewayAvailable`、`skillAdmissionAllowed`、`toolBudgetAllowed`、`approvalRequired`；
+- `tenantScoped`、`projectScoped`、`displaySummary`、`recommendedActionCount`。
+
+安全边界：
+
+- 事件不写入 objective、prompt、SQL、工具参数、样本数据、模型输出、长期记忆正文或完整推荐动作；
+- Agent 角色、工具名、Skill code 等低敏控制面字段最多保留 20 个，避免未来能力目录变大后事件膨胀；
+- `BLOCKED` 记为 `ERROR`，`DEGRADED/APPROVAL_REQUIRED` 或 handoff 场景记为 `AUDIT`，正常 `READY` 记为 `INFO`。
+
+设计意义：
+
+- Skill 可见性事件回答“模型本轮看见哪些能力”；
+- Agent 会话调度事件回答“本轮由哪些 Agent 参与以及是否需要 handoff”；
+- 两者都进入 Runtime Event 后，前端实时会话、断线恢复、Java replay index 和审计报表可以基于同一条事件链演进。

@@ -20,6 +20,7 @@ from datasmart_ai_runtime.api_model_gateway import build_model_gateway_governanc
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ToolPlan
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
+from datasmart_ai_runtime.services.agent_gateway import build_agent_session_scheduling_runtime_event
 from datasmart_ai_runtime.services.agent_workspace import AgentWorkspaceContext, AgentWorkspaceContextBuilder
 from datasmart_ai_runtime.services.runtime_events.runtime_event_live_push import RuntimeEventLivePushHub
 from datasmart_ai_runtime.services.runtime_events.runtime_event_publisher import RuntimeEventPublisher
@@ -147,6 +148,15 @@ def build_plan_response(
         request=request,
         intelligent_gateway_governance=intelligent_gateway_governance,
     )
+    # 多 Agent 会话调度和 Skill 可见性一样，不能只停留在 HTTP 响应顶层。
+    # 如果不事件化，WebSocket 断线恢复、Kafka 异步消费、Java replay projection 和审计报表都无法还原
+    # “本轮有哪些 Agent 参与、谁需要 handoff、为什么降级”。这里把调度视图压缩成低敏事件后再发布，
+    # 让同步响应和异步事件流围绕同一份会话事实演进。
+    plan = _attach_agent_session_scheduling_event(
+        plan,
+        request=request,
+        intelligent_gateway_governance=intelligent_gateway_governance,
+    )
     _publish_plan_events(
         plan,
         event_store=event_store,
@@ -196,6 +206,32 @@ def _attach_skill_visibility_event(
         return plan
     visibility_event = build_session_skill_visibility_runtime_event(plan, request, skill_visibility)
     return replace(plan, runtime_events=plan.runtime_events + (visibility_event,))
+
+
+def _attach_agent_session_scheduling_event(
+    plan: AgentPlan,
+    *,
+    request: AgentRequest,
+    intelligent_gateway_governance: dict[str, Any],
+) -> AgentPlan:
+    """把多 Agent 会话调度视图追加到运行时事件流。
+
+    该事件与 `agentSessionScheduling` 同源，但比同步响应更紧凑：
+    - 响应字段服务前端治理卡片，可以带完整参与 Agent 列表和推荐动作；
+    - 事件字段服务 replay、Kafka、Java projection 和审计，只保留角色、状态、参与模式、handoff 和策略轴；
+    - 如果未来 Java plan ingestion 已经生成同类事件，这里会按事件类型跳过，避免重复发布。
+    """
+
+    if any(
+        event.event_type == AgentRuntimeEventType.AGENT_SESSION_SCHEDULING_RECORDED
+        for event in plan.runtime_events
+    ):
+        return plan
+    scheduling = intelligent_gateway_governance.get("agentSessionScheduling")
+    if not isinstance(scheduling, dict):
+        return plan
+    scheduling_event = build_agent_session_scheduling_runtime_event(plan, request, scheduling)
+    return replace(plan, runtime_events=plan.runtime_events + (scheduling_event,))
 
 
 def _collect_control_plane_feedback(

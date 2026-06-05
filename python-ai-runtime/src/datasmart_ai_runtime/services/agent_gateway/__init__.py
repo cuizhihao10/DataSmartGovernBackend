@@ -9,8 +9,12 @@ from datasmart_ai_runtime.services.agent_gateway.session_scheduler import (
     AgentSessionScheduler,
     build_agent_session_scheduling_policy_view,
 )
+from datasmart_ai_runtime.services.agent_gateway.session_events import (
+    build_agent_session_scheduling_runtime_event,
+)
 
 __all__ = (
     "AgentSessionScheduler",
     "build_agent_session_scheduling_policy_view",
+    "build_agent_session_scheduling_runtime_event",
 )

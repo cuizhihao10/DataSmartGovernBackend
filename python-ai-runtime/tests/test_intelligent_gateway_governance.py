@@ -85,8 +85,8 @@ class IntelligentGatewayGovernanceResponseTest(unittest.TestCase):
         self.assertEqual(1, len(visibility_events))
         event = visibility_events[0]
         attributes = event["attributes"]
-        self.assertEqual(event, response["eventEnvelope"]["events"][-1])
-        self.assertEqual(len(response["plan"]["runtime_events"]), event["sequence"])
+        self.assertEqual(event, response["eventEnvelope"]["events"][-2])
+        self.assertEqual(len(response["plan"]["runtime_events"]) - 1, event["sequence"])
         self.assertEqual("session-skill-visibility", event["session_id"])
         self.assertEqual("SESSION_SKILL_VISIBILITY_SNAPSHOT", attributes["snapshotType"])
         self.assertEqual(skill_visibility["visibleSkillCount"], attributes["visibleSkillCount"])
@@ -127,7 +127,7 @@ class IntelligentGatewayGovernanceResponseTest(unittest.TestCase):
         governance = response["intelligentGatewayGovernance"]
         skill_manifest = governance["skillManifest"]
         skill_visibility = governance["skillVisibility"]
-        visibility_event = response["eventEnvelope"]["events"][-1]
+        visibility_event = response["eventEnvelope"]["events"][-2]
         attributes = visibility_event["attributes"]
 
         self.assertEqual("BOUND_REMOTE_MANIFEST", skill_manifest["bindingStatus"])

@@ -9,6 +9,7 @@ if ROOT not in sys.path:
 from datasmart_ai_runtime.api_plan_response import build_plan_response
 from datasmart_ai_runtime.config import default_model_routes, default_skill_registry, default_tool_registry
 from datasmart_ai_runtime.domain.contracts import AgentRequest, ModelInvocationResult, ModelToolCall
+from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.skill_registry import AgentSkillRegistry
@@ -137,6 +138,60 @@ class AgentSessionSchedulerTest(unittest.TestCase):
         self.assertNotIn("ds-sensitive", serialized)
         self.assertNotIn("请连续读取多个数据源元数据", serialized)
         self.assertNotIn('"datasourceId"', serialized)
+
+    def test_session_scheduling_snapshot_is_recorded_as_runtime_event(self) -> None:
+        """多 Agent 会话调度视图应进入 runtime event。
+
+        这个测试保护的是可回放能力：如果调度视图只存在于 HTTP 顶层响应，WebSocket 断线恢复、Kafka
+        消费、Java projection 或审计导出都无法知道当时有哪些 Agent 参与。事件属性必须保持低敏，
+        只保存角色、计数、状态和策略轴，不保存用户目标、工具参数或 datasourceId。
+        """
+
+        response = build_plan_response(
+            AgentRequest(
+                tenant_id="tenant-a",
+                project_id="project-a",
+                actor_id="quality-owner",
+                objective="请为客户主数据生成质量规则，并分析相关数据源结构",
+                variables={
+                    "datasourceId": "ds-quality-secret",
+                    "businessGoal": "识别客户编号唯一性和关键字段完整性问题",
+                    "grantedPermissions": (
+                        "datasource:metadata:read",
+                        "quality:rule:draft",
+                    ),
+                    "actorRole": "PROJECT_OWNER",
+                    "sessionId": "session-scheduling-event",
+                },
+            ),
+            self._orchestrator(),
+        )
+
+        scheduling = response["intelligentGatewayGovernance"]["agentSessionScheduling"]
+        scheduling_events = tuple(
+            event
+            for event in response["plan"]["runtime_events"]
+            if event["event_type"] == AgentRuntimeEventType.AGENT_SESSION_SCHEDULING_RECORDED
+        )
+
+        self.assertEqual(1, len(scheduling_events))
+        event = scheduling_events[0]
+        attributes = event["attributes"]
+        self.assertEqual(event, response["eventEnvelope"]["events"][-1])
+        self.assertEqual(len(response["plan"]["runtime_events"]), event["sequence"])
+        self.assertEqual("session-scheduling-event", event["session_id"])
+        self.assertEqual("AGENT_SESSION_SCHEDULING_POLICY_VIEW", attributes["snapshotType"])
+        self.assertEqual(scheduling["status"], attributes["status"])
+        self.assertEqual(scheduling["participatingAgentCount"], attributes["participatingAgentCount"])
+        self.assertIn("MASTER_ORCHESTRATOR", attributes["participatingAgentRoles"])
+        self.assertIn("DATA_QUALITY_AGENT", attributes["participatingAgentRoles"])
+        self.assertIn("SPECIALIST", attributes["participationModeCounts"])
+        self.assertIn("data_quality", attributes["intentDomains"])
+        self.assertIn("quality.rule.design", attributes["selectedSkillCodes"])
+        self.assertIn("quality.rule.suggest", attributes["plannedToolNames"])
+        self.assertNotIn("ds-quality-secret", str(attributes))
+        self.assertNotIn("请为客户主数据生成质量规则", str(attributes))
+        self.assertNotIn("businessGoal", str(attributes))
 
     @staticmethod
     def _orchestrator(provider: object | None = None) -> AgentOrchestrator:
