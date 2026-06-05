@@ -1,5 +1,14 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-06 落地补充：model routing decisions should become control-plane projections
+
+- 本阶段把 Python `model_gateway_routed` runtime event 接入 Java 强类型 projection 和 display。这个方向贴近当前 Agent tracing 趋势：成熟 Agent Host 不只记录最终回答，还要能回放 LLM 选择、工具调用、handoff、guardrail 和自定义事件。
+- DataSmart 当前没有让 Java 重新计算模型路由，而是把 Python 已经产生的低敏事实转换成控制面视图：selectedProvider、selectedModel、health status、fallback、budget、cache plan 和 route scoring 摘要。这样可以避免 Java/Python 双写两套路由判断。
+- 该投影继续遵守低敏边界：不返回 prompt、messages、工具参数、SQL、URL、API Key、模型输出、真实 cache key、isolationKey 或 KV cache。Provider 名称和模型名称属于控制面事实，但仍经过租户/项目/本人范围收口。
+- 这一步让模型网关能力从“Python 内部 runtime event”进入 Java 查询面，为后续 WebSocket timeline、审计导出、Grafana 排障跳转和 provider health 诊断联动打基础。
+- 下一步不建议继续无限增加 projection 字段。更高价值路线是转向 MCP/A2A adapter 草案，或者只补一小步 provider health diagnostics 只读快照，然后切到多 Agent 会话调度与外部协议兼容。
+- 参考资料：OpenAI Agents SDK tracing：`https://openai.github.io/openai-agents-js/guides/tracing/`；OpenAI Agents Python tracing：`https://openai.github.io/openai-agents-python/tracing/`。
+
 ## 2026-06-06 落地补充：provider health probes need aggregate metrics, not provider labels
 
 - 本阶段把模型 Provider 主动健康探测接入 Python Runtime `/agent/metrics`。这对应 Agent Host 生产化趋势：模型网关不只要能 fallback，还要让运维能看到健康探测是否持续运行、失败率是否升高、最近一轮是否出现大量 unavailable。

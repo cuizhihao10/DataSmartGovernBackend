@@ -84,4 +84,63 @@ class AgentRuntimeEventDisplaySupportTest {
         assertTrue(display.recommendedActions().stream().anyMatch(action -> action.contains("runtimeProtectionIssueCodes")));
         assertTrue(display.recommendedActions().stream().anyMatch(action -> action.contains("熔断")));
     }
+
+    /**
+     * 模型网关路由事件应被解释成 Provider/fallback/cache 治理卡片。
+     *
+     * <p>这条测试保护 5.24 的控制面体验：通用 runtime event timeline 不应只显示
+     * “事件类型：model_gateway_routed”，而应直接告诉用户本轮是否 fallback、选中 Provider 健康状态如何、
+     * cache plan 是否启用，以及接下来该排查预算、健康还是缓存隔离。</p>
+     */
+    @Test
+    void modelGatewayRoutedDisplayShouldExposeFallbackAndHealthSummary() {
+        AgentRuntimeEventDisplayView display = new AgentRuntimeEventDisplaySupport().buildDisplay(new AgentRuntimeEventProjectionRecord(
+                "model-gateway-routing-display",
+                "agent-runtime-event.v1",
+                "python-ai-runtime",
+                "model_gateway_routed",
+                "route_model_gateway",
+                "模型网关已记录本轮 Provider 路由决策。",
+                "audit",
+                "10",
+                "20",
+                "1001",
+                "trace-model-display",
+                "run-model-display",
+                "session-model-display",
+                1L,
+                Instant.parse("2026-06-06T00:00:00Z"),
+                Instant.parse("2026-06-06T00:00:00Z"),
+                Instant.parse("2026-06-06T00:00:01Z"),
+                Map.ofEntries(
+                        Map.entry("selectedProvider", "vllm-backup"),
+                        Map.entry("selectedModel", "qwen3.5-agent"),
+                        Map.entry("selectedHealthStatus", "degraded"),
+                        Map.entry("configuredPrimaryProvider", "openai-primary"),
+                        Map.entry("fallbackUsed", true),
+                        Map.entry("budgetAllowed", true),
+                        Map.entry("budgetWarning", false),
+                        Map.entry("cacheAwareRouting", true),
+                        Map.entry("cachePlanEnabled", true),
+                        Map.entry("cachePlanIssues", List.of()),
+                        Map.entry("candidateCount", 2),
+                        Map.entry("orderedCandidateProviders", List.of("openai-primary", "vllm-backup")),
+                        Map.entry("routeScoringCount", 2),
+                        Map.entry("routeScoringTruncated", false)
+                )
+        ));
+
+        assertEquals("MODEL_GATEWAY_ROUTING", display.category());
+        assertEquals("模型网关已使用备用 Provider", display.title());
+        assertEquals("FALLBACK_USED", display.status());
+        assertTrue(display.requiresAttention());
+        assertTrue(display.summary().contains("vllm-backup"));
+        assertEquals("vllm-backup", display.metrics().get("selectedProvider"));
+        assertEquals("degraded", display.metrics().get("selectedHealthStatus"));
+        assertEquals(true, display.metrics().get("fallbackUsed"));
+        assertEquals(true, display.metrics().get("cachePlanEnabled"));
+        assertEquals(2, display.metrics().get("routeScoringCount"));
+        assertTrue(display.recommendedActions().stream().anyMatch(action -> action.contains("主路由降级原因")));
+        assertTrue(display.recommendedActions().stream().anyMatch(action -> action.contains("provider health diagnostics")));
+    }
 }
