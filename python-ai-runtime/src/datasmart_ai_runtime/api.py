@@ -61,6 +61,8 @@ from datasmart_ai_runtime.services.memory.memory_materialization_worker import (
 from datasmart_ai_runtime.services.model_gateway import (
     InMemoryModelProviderHealthRegistry,
     ModelGatewayGovernanceService,
+    ModelProviderHealthProbeService,
+    model_provider_health_probe_settings_from_env,
 )
 from datasmart_ai_runtime.services.model_gateway.model_provider import model_provider_registry_from_env
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
@@ -114,6 +116,11 @@ def create_app() -> Any:
     model_routes = model_routes_from_env()
     model_route_registry = ModelRouteRegistry(model_routes)
     model_provider_health_registry = InMemoryModelProviderHealthRegistry()
+    model_provider_health_probe_settings = model_provider_health_probe_settings_from_env()
+    model_provider_health_probe = ModelProviderHealthProbeService(
+        model_provider_health_registry,
+        settings=model_provider_health_probe_settings,
+    )
     model_gateway = ModelGatewayGovernanceService(
         model_route_registry,
         health_registry=model_provider_health_registry,
@@ -191,6 +198,20 @@ def create_app() -> Any:
         if skill_publication_manifest_diagnostics.should_refresh_on_startup():
             skill_publication_manifest_diagnostics.refresh()
 
+    def _probe_model_provider_health_on_startup() -> None:
+        """FastAPI startup 生命周期中按需执行模型 Provider 主动健康探测。
+
+        默认不启用启动探测，是为了避免本地学习环境或 CI 因外部模型 endpoint 不可达而变慢。生产环境如果
+        配置了真实 Provider endpoint，可以通过 `DATASMART_AI_MODEL_PROVIDER_HEALTH_PROBE_ON_STARTUP=true`
+        让服务启动后立即生成第一批健康快照，减少长时间 UNKNOWN 对路由评分的影响。
+        """
+
+        if model_provider_health_probe_settings.startup_probe_enabled:
+            model_provider_health_probe.probe_routes(
+                model_route_registry.all_routes(),
+                requested_by="startup",
+            )
+
     def _stop_memory_materialization_worker() -> None:
         """FastAPI shutdown 生命周期中请求 worker 优雅停止。"""
 
@@ -198,6 +219,7 @@ def create_app() -> Any:
 
     app.add_event_handler("startup", _start_memory_materialization_worker)
     app.add_event_handler("startup", _refresh_skill_publication_manifest_diagnostics)
+    app.add_event_handler("startup", _probe_model_provider_health_on_startup)
     app.add_event_handler("shutdown", _stop_memory_materialization_worker)
 
     @app.get("/agent/events/diagnostics")
@@ -258,7 +280,27 @@ def create_app() -> Any:
         Java 侧凭空猜测 Python Provider 的真实健康状态。
         """
 
-        return model_provider_health_registry.diagnostics(model_route_registry.all_routes())
+        diagnostics = model_provider_health_registry.diagnostics(model_route_registry.all_routes())
+        diagnostics["activeProbe"] = model_provider_health_probe.diagnostics()
+        return diagnostics
+
+    @app.post("/agent/models/provider-health/probe")
+    def model_provider_health_active_probe(dry_run: bool = False) -> dict[str, Any]:
+        """显式触发模型 Provider 主动健康探测。
+
+        路由语义：
+        - `dry_run=true`：只返回将要探测的 Provider 摘要，不访问外部 endpoint，也不写回健康状态；
+        - `dry_run=false`：访问真实健康检查地址，并把 HEALTHY/DEGRADED/UNAVAILABLE 快照写回 registry。
+
+        该接口应由 gateway、平台管理员或运维工具保护。Python Runtime 这里只负责低敏探测与状态回灌，
+        不在响应中暴露完整 URL query、API Key、prompt、工具参数、模型输出或真实 KV cache 内容。
+        """
+
+        return model_provider_health_probe.probe_routes(
+            model_route_registry.all_routes(),
+            requested_by="api",
+            dry_run=dry_run,
+        )
 
     @app.get("/agent/metrics")
     def agent_runtime_prometheus_metrics() -> Any:

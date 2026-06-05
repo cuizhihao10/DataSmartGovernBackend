@@ -9924,3 +9924,60 @@ Agent 请求中的“为什么选择这个 Provider、是否发生 fallback、ca
 2. 随后把 `MODEL_GATEWAY_ROUTED` v2 attributes 接入 Java projection 或 WebSocket timeline，让前端能直接展示“本轮为什么 fallback”。
 3. 再往真实推理性能推进时，接入 vLLM/SGLang/Dynamo 风格的 cache hit、TTFT、prefill tokens、queue length 和 worker utilization。
 4. 并行高价值路线仍是 MCP/A2A adapter 草案，把内部 Skill Manifest、handoff DAG 和工具控制面映射为外部协议契约。
+
+## 5.22 Python AI Runtime 模型 Provider 主动健康探测（2026-06-06）
+
+本阶段承接 5.21，继续模型网关主线，但刻意不继续扩大 route scoring 字段。5.20/5.21 已经让 Provider
+健康状态参与路由并进入 runtime event，本阶段补齐健康状态的数据来源：除了真实模型调用后的被动回写，
+还支持由 API、运维工具或可选启动流程显式触发主动健康探测。这样真实 OpenAI-compatible、vLLM、SGLang、
+内部模型网关接入后，可以更快把 UNKNOWN 状态转成 HEALTHY/DEGRADED/UNAVAILABLE，减少冷启动和低流量场景
+对 fallback 判断的影响。
+
+已完成：
+- 新增 `model_provider_health_probe.py`：
+  - `ModelProviderHealthProbeService` 按 providerName 去重探测模型路由；
+  - `ModelProviderHealthProbeSettings` 支持 timeout、单轮上限和 startup probe 开关；
+  - 支持 `dry_run` 预览，不访问外部 endpoint，也不写回 health registry；
+  - dry-run Provider 或未配置 endpoint 的路由会被跳过，不会误报故障；
+  - 2xx 标记 HEALTHY，401/403/404/429 标记 DEGRADED，5xx、网络错误、超时标记 UNAVAILABLE；
+  - 探测成功或失败会通过 `InMemoryModelProviderHealthRegistry.mark(...)` 回灌快照，让现有路由评分自然消费。
+- 低敏输出与指标约束：
+  - probe result 只返回 providerName、providerType、workload、model、sanitized probeUrl、outcome、healthStatus、latency、errorCode；
+  - URL 会移除 query 与 fragment，避免 API Key、token 或调试参数进入诊断响应；
+  - `diagnostics()` 暴露 probeRun/probeSuccess/probeFailure/probeSkipped 这类低基数计数；
+  - 明确不把完整 URL、tenantId、projectId、runId、traceId 作为 Prometheus 标签。
+- FastAPI 接入：
+  - `/agent/models/provider-health/diagnostics` 新增 `activeProbe` 诊断块；
+  - 新增 `POST /agent/models/provider-health/probe?dry_run=true|false` 显式触发探测；
+  - `DATASMART_AI_MODEL_PROVIDER_HEALTH_PROBE_ON_STARTUP=true` 时可在启动阶段自动探测；
+  - 默认不启用启动探测，避免本地学习环境、CI 或 dry-run 默认配置访问外部网络。
+- 包导出更新：
+  - `services.model_gateway.__init__` 导出探测 service、settings、result 与 env settings builder。
+- 测试增强：
+  - 成功探测会标记 Provider 为 HEALTHY；
+  - HTTP 503 会标记 UNAVAILABLE 且不泄露 query/token；
+  - dry-run 请求与 dry-run Provider 不访问网络、不写回 registry；
+  - 网络错误会更新探测低基数计数与不可用快照。
+
+验证：
+- `python -m unittest python-ai-runtime\tests\test_model_provider_health_probe.py python-ai-runtime\tests\test_model_provider_health.py python-ai-runtime\tests\test_model_gateway.py`：19 个测试通过。
+- `python -m unittest discover -s python-ai-runtime\tests`：381 个测试通过。
+- `Get-ChildItem python-ai-runtime\src -Recurse -Filter *.py | ForEach-Object { python -m py_compile $_.FullName }`：Python 源码语法编译通过。
+- 文件行数检查：`model_provider_health_probe.py` 456 行、`api.py` 326 行、`test_model_provider_health_probe.py` 197 行，均低于 500 行约束。
+
+产品意义：
+- 模型网关不再只能等待真实模型调用后才知道 Provider 是否健康；运维和网关可以主动刷新健康事实。
+- route scoring、runtime event、diagnostics 现在共享同一个 health registry，避免 API、事件、路由各自维护一套状态。
+- 该设计为后续 Prometheus、provider 队列长度、TTFT/TPOT、cache hit 和供应商限流数据接入留出替换点。
+
+当前边界：
+- 主动探测仍是同步显式触发，不是后台定时 worker。
+- 当前没有真实 Prometheus 文本指标导出，只先在 diagnostics 中保留低基数计数。
+- 探测只检查健康 endpoint，不代表真实 chat completion、embedding、rerank 或长上下文请求一定成功。
+- 当前 health registry 仍是进程内存，服务重启后探测快照会丢失；生产环境后续应接 Redis/MySQL/Prometheus 或 Java 控制面回灌。
+
+下一步推荐路线：
+1. 将 provider health probe 的低基数计数接入 `/agent/metrics`，输出 Prometheus 文本指标，但严格避免高基数标签。
+2. 把 `MODEL_GATEWAY_ROUTED` v2 和 provider health diagnostics 接入 Java projection/WebSocket timeline，让前端能解释 fallback。
+3. 再进一步接真实推理遥测：TTFT、TPOT、prefill tokens、cache hit、queue length、GPU worker utilization。
+4. 并行推进 MCP/A2A adapter 草案，避免模型网关局部优化拖慢工具协议与多 Agent 协作主线。

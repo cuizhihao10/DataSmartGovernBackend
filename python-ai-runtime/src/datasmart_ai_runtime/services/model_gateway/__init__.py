@@ -39,6 +39,12 @@ from datasmart_ai_runtime.services.model_gateway.model_provider_health import (
     ModelProviderHealthPolicy,
     ModelProviderInvocationHealthEvent,
 )
+from datasmart_ai_runtime.services.model_gateway.model_provider_health_probe import (
+    ModelProviderHealthProbeResult,
+    ModelProviderHealthProbeService,
+    ModelProviderHealthProbeSettings,
+    model_provider_health_probe_settings_from_env,
+)
 from datasmart_ai_runtime.services.model_gateway.model_provider_metadata import build_model_provider_metadata
 from datasmart_ai_runtime.services.model_gateway.model_result_context_filter import (
     ModelResultContextFilter,
@@ -99,6 +105,9 @@ __all__ = [
     "ModelGatewayGovernanceService",
     "ModelProviderRegistry",
     "ModelProviderHealthPolicy",
+    "ModelProviderHealthProbeResult",
+    "ModelProviderHealthProbeService",
+    "ModelProviderHealthProbeSettings",
     "ModelProviderInvocationHealthEvent",
     "ModelResultContextFilter",
     "ModelResultContextFilterPolicy",
@@ -131,6 +140,7 @@ __all__ = [
     "ToolExecutionFeedbackStatus",
     "build_model_gateway_context",
     "build_model_provider_metadata",
+    "model_provider_health_probe_settings_from_env",
     "model_provider_registry_from_env",
     "record_model_tool_call_planning_events",
 ]
