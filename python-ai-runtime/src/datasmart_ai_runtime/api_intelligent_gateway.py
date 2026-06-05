@@ -17,6 +17,7 @@ from typing import Any, Mapping
 from datasmart_ai_runtime.api_model_gateway import build_model_gateway_governance_response
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest
 from datasmart_ai_runtime.domain.events import AgentRuntimeEvent, AgentRuntimeEventType
+from datasmart_ai_runtime.services.agent_gateway import build_agent_session_scheduling_policy_view
 from datasmart_ai_runtime.services.agent_workspace import AgentWorkspaceContext
 from datasmart_ai_runtime.services.skills import build_session_skill_visibility_snapshot
 
@@ -58,6 +59,22 @@ def build_intelligent_gateway_governance_response(
         model_gateway,
         skill_manifest,
     )
+    # 会话级多 Agent 调度视图是智能网关从“模型代理”走向“Agent Host”的关键控制面字段。
+    # 它不重新做模型、Skill、工具预算或记忆决策，而是把上面已经生成的治理事实压缩成：
+    # - 本轮哪些 Agent 参与；
+    # - 谁是主控，谁是专家，谁是权限/记忆/运维防护 Agent；
+    # - 是否因为预算、准入、模型路由或记忆缺失而降级；
+    # - 哪些 handoff 应进入 Java 控制面审批。
+    # 这样前端、Java gateway 和审计系统不需要分别从 plan/tool/runtimeEvents 里拼凑多 Agent 参与事实。
+    agent_session_scheduling = build_agent_session_scheduling_policy_view(
+        plan,
+        request,
+        model_gateway=model_gateway,
+        skill_admission=skill_admission,
+        tool_budget=tool_budget,
+        memory=memory,
+        skill_visibility=skill_visibility,
+    )
     approval_required = bool(plan.requires_human_approval)
     available = bool(model_gateway.get("available")) and skill_admission["allowed"] and tool_budget["allowed"]
     return {
@@ -74,6 +91,7 @@ def build_intelligent_gateway_governance_response(
         "skillManifest": skill_manifest,
         "skillAdmission": skill_admission,
         "skillVisibility": skill_visibility,
+        "agentSessionScheduling": agent_session_scheduling,
         "toolBudget": tool_budget,
         "memory": memory,
         "plannedToolCount": len(plan.tool_plans),
@@ -83,6 +101,7 @@ def build_intelligent_gateway_governance_response(
             model_gateway,
             skill_admission,
             skill_visibility,
+            agent_session_scheduling,
             tool_budget,
             memory,
             approval_required,
@@ -386,6 +405,7 @@ def _recommended_actions(
     model_gateway: dict[str, Any],
     skill_admission: dict[str, Any],
     skill_visibility: dict[str, Any],
+    agent_session_scheduling: dict[str, Any],
     tool_budget: dict[str, Any],
     memory: dict[str, Any],
     approval_required: bool,
@@ -405,6 +425,12 @@ def _recommended_actions(
         actions.append("缩小本轮模型工具调用批次，或把高风险/长耗时工具拆到后续确认步骤。")
     if approval_required:
         actions.append("将需审批工具计划提交 Java agent-runtime，等待项目负责人或管理员确认。")
+    # 多 Agent 调度建议来自会话策略视图，通常包含 handoff、权限包、工具预算拆分和真实多 Agent runtime
+    # 的后续演进建议。这里最多透传前三条，避免治理卡片重复过长；完整建议仍保留在
+    # `agentSessionScheduling.recommendedActions` 中。
+    for action in tuple(agent_session_scheduling.get("recommendedActions") or ())[:3]:
+        if action not in actions:
+            actions.append(str(action))
     if memory["retrievalTargetCount"] > 0 and memory["totalRetrieved"] == 0:
         actions.append("本轮没有召回长期记忆；如需要复用历史经验，可先确认 workspace 和记忆写入闭环。")
     binding_status = str(skill_manifest.get("bindingStatus") or "")

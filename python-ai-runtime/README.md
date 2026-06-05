@@ -600,3 +600,32 @@ $env:DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_STORE_FAIL_OPEN="false"
 - 增加 Java audit bridge/dispatcher，把 pending outbox 派发到 permission-admin 审计中心；
 - 增加 claim/ack/retry 字段流转和 Prometheus 指标，覆盖 outbox 积压、投递失败率和最老 pending 年龄；
 - 把管理员批量补偿做成“批量 dry-run -> 风险分组 -> 二次确认 -> 真实 requeue -> 审计 outbox”的完整流程。
+
+# 5.13 智能网关多 Agent 会话调度策略视图
+
+Python Runtime 现在在 `intelligentGatewayGovernance.agentSessionScheduling` 中返回会话级多 Agent 调度摘要。
+这一步不是完整多 Agent 执行器，而是先把控制面契约稳定下来：主控 Agent、领域专家 Agent、防护型
+Agent、工具预算、Skill 可见性、长期记忆、模型路由和人工 handoff 都能在同一个低敏字段里被解释。
+
+调度视图包含：
+
+- `primaryAgentRole`：当前固定为 `MASTER_ORCHESTRATOR`，表示本轮由主控编排 Agent 汇总目标、计划和治理结论；
+- `participatingAgents`：本轮参与的 Agent，例如 `DATASOURCE_AGENT`、`DATA_QUALITY_AGENT`、`TASK_AGENT`、`PERMISSION_AGENT`、`MEMORY_AGENT`、`OPS_AGENT`；
+- `policyAxes`：调度依据，包括治理域、已选 Skill、可见 Skill、计划工具、记忆依赖、模型网关状态、Skill 准入、工具预算和审批需求；
+- `status`：`READY`、`DEGRADED`、`APPROVAL_REQUIRED` 或 `BLOCKED`；
+- `handoffRequired`：高风险工具、审批任务或关键阻断是否需要交给 Java 控制面审批/人工接管；
+- `recommendedActions`：下一步建议，例如恢复模型网关、补权限包、拆分工具批次或接入真实多 Agent runtime。
+
+设计边界：
+
+- 调度器只读取已有计划事实，不重新做权限、预算、模型或记忆决策；
+- 响应只暴露 Skill code、工具名、记忆类型和状态摘要，不暴露 prompt、工具参数、SQL、样本数据或记忆正文；
+- 当前是同步策略视图，还没有真正启动并发专家 Agent、A2A handoff、MCP 工具资源协商或长期会话状态机；
+- 后续真实执行应由 Java agent-runtime 负责审批、审计、幂等和任务状态，Python Runtime 负责模型规划与策略解释。
+
+下一步建议：
+
+- 将该策略视图写入 Runtime Event，支持 WebSocket/replay/Java 投影；
+- 把 Master Agent handoff 图升级成可执行状态机，明确专家 Agent 的输入输出和失败回退；
+- 为 data-sync、permission-admin、task-management 等微服务补齐专属 Agent Skill，避免调度只依赖通用关键词；
+- 跟进 A2A、MCP、Agents SDK tracing/session 等生态能力，但继续保持租户、项目、workspace 和审计边界优先。
