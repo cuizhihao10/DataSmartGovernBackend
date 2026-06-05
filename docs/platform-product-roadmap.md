@@ -9718,3 +9718,47 @@ policyVersion 摘要和 selected-node outbox 请求模板。
 2. 为 selected-node outbox endpoint 增加来源字段或证据字段，记录其来自 handoff DAG bridge preview 的 fingerprint。
 3. 补齐 data-sync、permission-admin、task-management 专属 Skill 和工具契约，让 bridge preview 有更多真实商业节点可映射。
 4. 完成桥接证据后，建议切到模型 provider health / KV cache / MCP-A2A adapter 或 Python Runtime 编排，不继续无限细化 Java preview 字段。
+## 5.18 Handoff DAG 桥接预览 Runtime Event 化（2026-06-05）
+
+本阶段承接 5.17，把 handoff DAG 到 Tool DAG 的 bridge preview 从“只存在于同步 HTTP 响应里的预检结果”
+推进为可进入 runtime event timeline 的低敏运行事实。目标不是执行工具、写 outbox 或创建审批，而是让管理台、
+审计台和未来 WebSocket replay 能看到“用户或 Agent Host 已从 handoff DAG 的工具控制节点进入工具级预检链路”。
+
+已完成：
+- 新增 `AgentSessionHandoffDagExecutionBridgeEventPublisher`：
+  - 事件类型为 `agent.handoff_dag.execution_bridge.previewed`；
+  - schema 为 `datasmart.agent-runtime.handoff-dag-execution-bridge-preview.v1`；
+  - 写入现有 `AgentRuntimeEventProjectionStore`，不新增第二套事件存储；
+  - 通过 `AgentSessionMemoryStore` 回填 tenant/project/actor 维度；
+  - 只记录 handoffNodeIds、mappedToolNodeIds、mappedToolAuditIds、bridgeAction、bridgeReady、selectionFingerprint、
+    selectedCount、asyncEnqueuePreviewCount、blockedCount、templateGenerated、templateAsyncNodeCount 等低敏摘要；
+  - 明确不记录 prompt、SQL、工具参数、targetEndpoint、executionPath、完整 request template 或样例数据。
+- `AgentSessionHandoffDagExecutionBridgeService` 增强：
+  - 生成 bridge preview 响应后发布 runtime event；
+  - 事件发布采用尽力而为策略，投影或发布器异常不会阻断 preview 响应；
+  - 保持 preview-only 边界，不执行工具、不写 outbox、不创建 confirmation、不投递 Kafka。
+- 测试增强：
+  - 验证 bridge preview 会写入低敏 runtime event；
+  - 验证 tenant/project/actor/requestId 回填；
+  - 验证事件不包含 `executionPath`、`targetEndpoint`、`toolArguments`、`prompt`、`sql`、完整 request template；
+  - 验证发布器异常不会阻断 preview API 响应。
+
+验证：
+- `mvn -pl agent-runtime -am "-Dtest=AgentSessionHandoffDagExecutionBridgeServiceTest,AgentRunToolDagExecutionDryRunServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：12 个测试通过。
+
+产品意义：
+- handoff DAG、Tool DAG dry-run、selected-node outbox 之间开始形成可回放证据链。
+- 管理台可以在会话时间线里解释“从多 Agent 协作图进入工具预检”的关键转换点。
+- 该设计贴近 Codex/Claude Code 类 Agent 的受控行动链：规划与 handoff 可解释，工具预检可审计，真实执行仍需确认与 outbox 治理。
+
+当前边界：
+- 事件只是桥接预览事实，不代表工具执行、审批通过或 outbox 入箱。
+- 当前仍写入通用 runtime event projection 热窗口，不是 dedicated MySQL index。
+- selected-node confirmation 尚未记录 bridge 来源证据。
+- 还没有把该事件接入 WebSocket live push、审批任务按钮权限或前端 DAG 节点状态联动。
+
+下一步推荐路线：
+1. 为 selected-node outbox confirmation 增加 bridge 来源证据字段，把 handoff bridge preview 的 fingerprint、handoffNodeIds 和 traceId 串入确认记录。
+2. 补齐 data-sync、permission-admin、task-management 专属 Skill 和工具契约，让桥接预览覆盖更多商业化核心微服务。
+3. 完成桥接证据闭环后，建议切到模型 provider health、KV/prefix cache、MCP/A2A adapter 或 Python Runtime 真实 Agent 编排，避免 Java preview 链路无限细化。
+4. 如果前端开始高频消费该 timeline，再评估 dedicated index、低基数指标和诊断接口。

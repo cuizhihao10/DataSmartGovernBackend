@@ -12,6 +12,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentSessionHandoffDagExecu
 import com.czh.datasmart.govern.agent.controller.dto.AgentSessionHandoffDagExecutionBridgePreviewResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolDagExecutionDryRunItemView;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -34,6 +35,7 @@ import java.util.Map;
  * 会绕过这些细粒度判断，违背商业化 Agent 平台对可审计、可暂停、可恢复执行的要求。</p>
  */
 @Service
+@Slf4j
 @RequiredArgsConstructor
 public class AgentSessionHandoffDagExecutionBridgeService {
 
@@ -43,6 +45,7 @@ public class AgentSessionHandoffDagExecutionBridgeService {
     private static final String ACTION_NO_TOOL_CANDIDATE = "NO_TOOL_CANDIDATE";
 
     private final AgentRunToolDagExecutionDryRunService dryRunService;
+    private final AgentSessionHandoffDagExecutionBridgeEventPublisher bridgeEventPublisher;
 
     /**
      * 生成 handoff DAG 到 Tool DAG 的执行桥接预览。
@@ -97,7 +100,7 @@ public class AgentSessionHandoffDagExecutionBridgeService {
                 ? selectedNodeOutboxTemplate(dryRun)
                 : Map.of();
 
-        return new AgentSessionHandoffDagExecutionBridgePreviewResponse(
+        AgentSessionHandoffDagExecutionBridgePreviewResponse response = new AgentSessionHandoffDagExecutionBridgePreviewResponse(
                 sessionId,
                 runId,
                 bridgeReady,
@@ -110,6 +113,18 @@ public class AgentSessionHandoffDagExecutionBridgeService {
                 summaryReasons(toolControlSelected, dryRun, bridgeAction),
                 recommendedActions(toolControlSelected, dryRun, bridgeAction, template)
         );
+        /*
+         * 桥接预览本身没有副作用，但它是用户/Agent Host 从“会话级 handoff DAG”进入“工具级 dry-run 链路”的关键操作。
+         * 写入 runtime event 后，管理台可以回放这一步，审计台也能看到当时桥接是否可推进。发布器内部采用尽力而为策略，
+         * 因此投影写入失败不会影响 preview API 的响应。
+         */
+        try {
+            bridgeEventPublisher.publish(sessionId, runId, traceId, safeRequest, response);
+        } catch (RuntimeException ex) {
+            log.warn("Handoff DAG 桥接预览事件发布失败，但预览响应将继续返回，sessionId={}, runId={}, error={}",
+                    sessionId, runId, ex.getMessage());
+        }
+        return response;
     }
 
     private String resolveBridgeAction(boolean toolControlSelected, AgentRunToolDagExecutionDryRunResponse dryRun) {

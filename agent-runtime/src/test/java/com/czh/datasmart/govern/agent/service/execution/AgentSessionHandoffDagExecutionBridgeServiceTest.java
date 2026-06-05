@@ -11,8 +11,16 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagExecutionDry
 import com.czh.datasmart.govern.agent.controller.dto.AgentSessionHandoffDagExecutionBridgePreviewRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentSessionHandoffDagExecutionBridgePreviewResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolDagExecutionDryRunItemView;
+import com.czh.datasmart.govern.agent.model.AgentRunState;
+import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
+import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventProjectionRecord;
+import com.czh.datasmart.govern.agent.service.runtime.InMemoryAgentRuntimeEventProjectionStore;
+import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
@@ -36,13 +44,15 @@ class AgentSessionHandoffDagExecutionBridgeServiceTest {
 
     private static final String SESSION_ID = "session-handoff-bridge-001";
     private static final String RUN_ID = "run-handoff-bridge-001";
+    private static final LocalDateTime BASE_TIME = LocalDateTime.of(2026, 6, 5, 0, 0);
 
     @Test
     void toolControlNodeShouldPreviewDryRunAndBuildSelectedNodeTemplate() {
         AgentRunToolDagExecutionDryRunService dryRunService = mock(AgentRunToolDagExecutionDryRunService.class);
+        AgentSessionHandoffDagExecutionBridgeEventPublisher bridgeEventPublisher = mock(AgentSessionHandoffDagExecutionBridgeEventPublisher.class);
         when(dryRunService.dryRunDagExecution(eq(SESSION_ID), eq(RUN_ID), any(AgentRunToolDagExecutionDryRunRequest.class), eq("trace-bridge")))
                 .thenReturn(dryRunResponse(List.of(asyncItem("tool-node-1", "audit-1"))));
-        AgentSessionHandoffDagExecutionBridgeService service = new AgentSessionHandoffDagExecutionBridgeService(dryRunService);
+        AgentSessionHandoffDagExecutionBridgeService service = new AgentSessionHandoffDagExecutionBridgeService(dryRunService, bridgeEventPublisher);
 
         AgentSessionHandoffDagExecutionBridgePreviewResponse response = service.previewBridge(
                 SESSION_ID,
@@ -68,14 +78,16 @@ class AgentSessionHandoffDagExecutionBridgeServiceTest {
         assertEquals(List.of("audit-1"), response.selectedNodeOutboxRequestTemplate().get("auditIds"));
         assertEquals(Map.of("audit-1", "policy:v1"), response.selectedNodeOutboxRequestTemplate().get("expectedPolicyVersionsByAuditId"));
         verify(dryRunService).dryRunDagExecution(eq(SESSION_ID), eq(RUN_ID), any(AgentRunToolDagExecutionDryRunRequest.class), eq("trace-bridge"));
+        verify(bridgeEventPublisher).publish(eq(SESSION_ID), eq(RUN_ID), eq("trace-bridge"), any(AgentSessionHandoffDagExecutionBridgePreviewRequest.class), eq(response));
     }
 
     @Test
     void nonToolControlHandoffNodeShouldNotBecomeExecutableToolBridge() {
         AgentRunToolDagExecutionDryRunService dryRunService = mock(AgentRunToolDagExecutionDryRunService.class);
+        AgentSessionHandoffDagExecutionBridgeEventPublisher bridgeEventPublisher = mock(AgentSessionHandoffDagExecutionBridgeEventPublisher.class);
         when(dryRunService.dryRunDagExecution(eq(SESSION_ID), eq(RUN_ID), any(AgentRunToolDagExecutionDryRunRequest.class), eq("trace-bridge")))
                 .thenReturn(dryRunResponse(List.of()));
-        AgentSessionHandoffDagExecutionBridgeService service = new AgentSessionHandoffDagExecutionBridgeService(dryRunService);
+        AgentSessionHandoffDagExecutionBridgeService service = new AgentSessionHandoffDagExecutionBridgeService(dryRunService, bridgeEventPublisher);
 
         AgentSessionHandoffDagExecutionBridgePreviewResponse response = service.previewBridge(
                 SESSION_ID,
@@ -95,14 +107,16 @@ class AgentSessionHandoffDagExecutionBridgeServiceTest {
         assertEquals("HANDOFF_NODE_NOT_EXECUTABLE", response.bridgeAction());
         assertTrue(response.selectedNodeOutboxRequestTemplate().get("nodeIds") instanceof List<?>);
         assertTrue(((List<?>) response.selectedNodeOutboxRequestTemplate().get("nodeIds")).isEmpty());
+        verify(bridgeEventPublisher).publish(eq(SESSION_ID), eq(RUN_ID), eq("trace-bridge"), any(AgentSessionHandoffDagExecutionBridgePreviewRequest.class), eq(response));
     }
 
     @Test
     void toolControlWithoutDryRunCandidateShouldRemainPreviewOnly() {
         AgentRunToolDagExecutionDryRunService dryRunService = mock(AgentRunToolDagExecutionDryRunService.class);
+        AgentSessionHandoffDagExecutionBridgeEventPublisher bridgeEventPublisher = mock(AgentSessionHandoffDagExecutionBridgeEventPublisher.class);
         when(dryRunService.dryRunDagExecution(eq(SESSION_ID), eq(RUN_ID), any(AgentRunToolDagExecutionDryRunRequest.class), eq("trace-bridge")))
                 .thenReturn(dryRunResponse(List.of()));
-        AgentSessionHandoffDagExecutionBridgeService service = new AgentSessionHandoffDagExecutionBridgeService(dryRunService);
+        AgentSessionHandoffDagExecutionBridgeService service = new AgentSessionHandoffDagExecutionBridgeService(dryRunService, bridgeEventPublisher);
 
         AgentSessionHandoffDagExecutionBridgePreviewResponse response = service.previewBridge(
                 SESSION_ID,
@@ -121,6 +135,118 @@ class AgentSessionHandoffDagExecutionBridgeServiceTest {
         assertFalse(response.bridgeReady());
         assertEquals("NO_TOOL_CANDIDATE", response.bridgeAction());
         assertTrue(response.recommendedActions().getFirst().contains("当前没有可推进工具候选"));
+    }
+
+    @Test
+    void bridgePreviewShouldAppendLowSensitiveRuntimeEvent() {
+        AgentRunToolDagExecutionDryRunService dryRunService = mock(AgentRunToolDagExecutionDryRunService.class);
+        when(dryRunService.dryRunDagExecution(eq(SESSION_ID), eq(RUN_ID), any(AgentRunToolDagExecutionDryRunRequest.class), eq("trace-bridge-event")))
+                .thenReturn(dryRunResponse(List.of(asyncItem("tool-node-1", "audit-1"))));
+        InMemoryAgentRuntimeEventProjectionStore projectionStore = new InMemoryAgentRuntimeEventProjectionStore(20, 100);
+        AgentSessionMemoryStore sessionStore = new AgentSessionMemoryStore();
+        sessionStore.save(session());
+        AgentSessionHandoffDagExecutionBridgeEventPublisher bridgeEventPublisher = new AgentSessionHandoffDagExecutionBridgeEventPublisher(
+                projectionStore,
+                sessionStore
+        );
+        AgentSessionHandoffDagExecutionBridgeService service = new AgentSessionHandoffDagExecutionBridgeService(dryRunService, bridgeEventPublisher);
+
+        service.previewBridge(
+                SESSION_ID,
+                RUN_ID,
+                new AgentSessionHandoffDagExecutionBridgePreviewRequest(
+                        List.of("tool-control"),
+                        List.of("tool-node-1"),
+                        List.of("audit-1"),
+                        10,
+                        false,
+                        true
+                ),
+                "trace-bridge-event"
+        );
+
+        List<AgentRuntimeEventProjectionRecord> events = projectionStore.listByRunId(RUN_ID);
+        assertEquals(1, events.size());
+        AgentRuntimeEventProjectionRecord event = events.getFirst();
+        assertEquals(AgentSessionHandoffDagExecutionBridgeEventPublisher.EVENT_TYPE, event.eventType());
+        assertEquals("handoff_dag_execution_bridge_previewed", event.stage());
+        assertEquals("trace-bridge-event", event.requestId());
+        assertEquals("10", event.tenantId());
+        assertEquals("20", event.projectId());
+        assertEquals("actor-handoff-bridge", event.actorId());
+        assertEquals(true, event.attributes().get("previewOnly"));
+        assertEquals(true, event.attributes().get("bridgeReady"));
+        assertEquals("TOOL_CONTROL_DRY_RUN", event.attributes().get("bridgeAction"));
+        assertEquals(List.of("tool-control"), event.attributes().get("handoffNodeIds"));
+        assertEquals(List.of("tool-node-1"), event.attributes().get("mappedToolNodeIds"));
+        assertEquals(List.of("audit-1"), event.attributes().get("mappedToolAuditIds"));
+        assertEquals(1, event.attributes().get("templateAsyncNodeCount"));
+        assertEquals(1, event.attributes().get("templateAsyncAuditCount"));
+        assertEquals(false, event.attributes().get("templateConfirmedDefault"));
+        assertEquals("SUMMARY_ONLY_NO_TOOL_ARGS_NO_PROMPT_NO_EXECUTION_PATH_NO_TEMPLATE_BODY", event.attributes().get("eventPayloadPolicy"));
+        assertFalse(event.attributes().containsKey("executionPath"));
+        assertFalse(event.attributes().containsKey("targetEndpoint"));
+        assertFalse(event.attributes().containsKey("toolArguments"));
+        assertFalse(event.attributes().containsKey("prompt"));
+        assertFalse(event.attributes().containsKey("sql"));
+        assertFalse(event.attributes().containsKey("selectedNodeOutboxRequestTemplate"));
+    }
+
+    @Test
+    void bridgeEventPublisherFailureShouldNotBlockPreviewResponse() {
+        AgentRunToolDagExecutionDryRunService dryRunService = mock(AgentRunToolDagExecutionDryRunService.class);
+        AgentSessionHandoffDagExecutionBridgeEventPublisher bridgeEventPublisher = mock(AgentSessionHandoffDagExecutionBridgeEventPublisher.class);
+        when(dryRunService.dryRunDagExecution(eq(SESSION_ID), eq(RUN_ID), any(AgentRunToolDagExecutionDryRunRequest.class), eq("trace-bridge")))
+                .thenReturn(dryRunResponse(List.of(asyncItem("tool-node-1", "audit-1"))));
+        org.mockito.Mockito.doThrow(new RuntimeException("projection down"))
+                .when(bridgeEventPublisher)
+                .publish(eq(SESSION_ID), eq(RUN_ID), eq("trace-bridge"), any(AgentSessionHandoffDagExecutionBridgePreviewRequest.class), any(AgentSessionHandoffDagExecutionBridgePreviewResponse.class));
+        AgentSessionHandoffDagExecutionBridgeService service = new AgentSessionHandoffDagExecutionBridgeService(dryRunService, bridgeEventPublisher);
+
+        AgentSessionHandoffDagExecutionBridgePreviewResponse response = service.previewBridge(
+                SESSION_ID,
+                RUN_ID,
+                new AgentSessionHandoffDagExecutionBridgePreviewRequest(
+                        List.of("tool-control"),
+                        List.of("tool-node-1"),
+                        List.of(),
+                        10,
+                        false,
+                        true
+                ),
+                "trace-bridge"
+        );
+
+        assertTrue(response.bridgeReady());
+    }
+
+    private AgentSessionRecord session() {
+        AgentSessionRecord session = new AgentSessionRecord(
+                SESSION_ID,
+                10L,
+                20L,
+                30L,
+                "actor-handoff-bridge",
+                "JAVA_AGENT_RUNTIME",
+                "Handoff DAG 桥接预览事件测试会话",
+                WorkspaceIsolationLevel.PROJECT,
+                "tenant:10:project:20",
+                BASE_TIME
+        );
+        session.addRun(new AgentRunRecord(
+                RUN_ID,
+                SESSION_ID,
+                AgentRunState.PLANNING,
+                "HANDOFF_DAG_BRIDGE_PREVIEW",
+                "测试 handoff DAG bridge preview runtime event",
+                true,
+                false,
+                List.of(),
+                Map.of(),
+                BASE_TIME,
+                "Run 已创建"
+        ));
+        return session;
     }
 
     private AgentRunToolDagExecutionDryRunResponse dryRunResponse(List<AgentToolDagExecutionDryRunItemView> items) {
