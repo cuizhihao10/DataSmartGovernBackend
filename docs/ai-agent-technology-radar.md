@@ -1,5 +1,13 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-05 落地补充：long-term memory needs routed secondary indexes
+
+- 本阶段把长期记忆检索从“正式 store 候选窗口 + 关键词排序”推进到“二级索引路由契约”。成熟 Agent 记忆系统不会只靠一种检索方式：语义知识适合 vector，流程和依赖适合 graph，事件经验适合 keyword/event index，报告和日志适合 resource index。
+- DataSmart 当前新增 `AgentMemorySecondaryIndexRouter`，让每个 `AgentMemoryRetrievalTarget` 都能表达首选索引、实际索引、fallback 原因和候选窗口大小。这样 API 诊断和检索报告能明确告诉运维：本次到底是走了 vector、graph、resource，还是因为索引不可用退回 keyword。
+- 这一步刻意不直接连接 Chroma、Neo4j 或 MinIO。原因是索引同步、namespace metadata filter、删除/遗忘、重建和观测指标都需要先有稳定契约；先把路由和诊断放进主链路，后续替换具体索引实现风险更低。
+- 关键安全边界没有放松：即使将来使用向量相似度或图谱 traversal，索引层也必须先执行 tenant/project/session/memoryNamespace 过滤，不能先召回全局结果再交给模型“自行忽略”。
+- 下一步建议做二级索引同步 worker 契约和 Chroma/pgvector semantic adapter；完成一个真实索引通道后，应切到多 Agent 协作或智能网关会话调度主线，避免长期记忆局部继续吞掉全部节奏。
+
 ## 2026-06-05 落地补充：cache admission decisions, not user prompts or full plans
 
 - 本阶段把 gateway 会话级 READY Skill cache 从规划建议推进到主路径契约：gateway 为 `/api/agent/plans` 生成低敏缓存上下文，Python Runtime 验签后只缓存 Skill admission decision。

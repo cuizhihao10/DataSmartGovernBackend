@@ -1,5 +1,35 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-05 追加落地进展：长期记忆二级索引路由契约
+
+- Python Runtime 新增 `memory_secondary_index.py`：
+  - `AgentMemorySecondaryIndexKind` 定义 `keyword/vector/graph/resource` 四类索引通道；
+  - `AgentMemorySecondaryIndexRouter` 按记忆类型选择首选索引；
+  - `StoreBackedAgentMemorySecondaryIndex` 作为过渡适配器，继续委托正式记忆 store 执行 tenant/project/session/memoryNamespace 过滤；
+  - `secondary_index_runtime_diagnostics(...)` 输出可用索引和实现类，避免生产误以为已接入真实向量库或图数据库。
+- `StoreBackedAgentMemoryRetriever` 已接入二级索引路由：
+  - 语义记忆默认优先 `vector`；
+  - 情节记忆默认优先 `keyword`；
+  - 程序记忆默认优先 `graph`；
+  - 资源记忆默认优先 `resource`；
+  - 如果首选索引不可用，会在检索结果 attributes 中显式标记 fallback。
+- API 长期记忆运行时诊断已展示 `secondaryIndexes`，说明当前 retriever 的索引通道能力。
+
+产品意义：
+- 长期记忆从“正式 store + 关键词排序”升级为“可路由、可诊断、可替换的多索引检索架构”。
+- 这更接近成熟 Agent 记忆系统：语义知识走向量、流程/依赖走图谱、事件经验走结构化索引、报告/日志走资源索引。
+- 当前仍不强绑 Chroma/Neo4j/MinIO，保持本地开发轻量，同时为生产替换点预留清晰接口。
+
+当前边界：
+- `vector/graph/resource` 当前是 store-backed 过渡适配器，不代表真实 Chroma、Neo4j 或 MinIO 已上线。
+- 还没有索引同步 worker；APPROVED 记忆落成后只进入正式 store，尚未异步写入各类二级索引。
+- 还没有召回质量指标、索引命中率、fallback 比例或索引延迟分布。
+
+下一步推荐路线：
+1. 优先补二级索引同步 worker 契约，把正式记忆落成事件转成 vector/graph/resource 索引更新任务。
+2. 如果继续记忆主线，可先接 Chroma/pgvector 的 semantic memory metadata filter，确保 namespace 过滤先于相似度结果进入模型上下文。
+3. 为保持项目整体均衡，完成索引 worker 契约后建议切到多 Agent 协作/智能网关会话调度，而不是继续只在 memory 局部无限加码。
+
 ## 2026-06-05 追加落地进展：Gateway 会话级 READY Skill 准入缓存上下文
 
 - gateway 新增 `GatewaySkillVisibilityCacheContextFilter`，针对 `/api/agent/plans` 写入低敏 Skill 可见性缓存上下文：

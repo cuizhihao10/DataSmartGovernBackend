@@ -112,6 +112,17 @@ from datasmart_ai_runtime.services.memory.memory_store_components import (
     memory_store_settings_from_env,
 )
 from datasmart_ai_runtime.services.memory.memory_store_retriever import StoreBackedAgentMemoryRetriever
+from datasmart_ai_runtime.services.memory.memory_secondary_index import (
+    AgentMemorySecondaryIndex,
+    AgentMemorySecondaryIndexKind,
+    AgentMemorySecondaryIndexQuery,
+    AgentMemorySecondaryIndexResult,
+    AgentMemorySecondaryIndexRoute,
+    AgentMemorySecondaryIndexRouter,
+    StoreBackedAgentMemorySecondaryIndex,
+    default_store_backed_secondary_indexes,
+    secondary_index_runtime_diagnostics,
+)
 from datasmart_ai_runtime.services.memory.memory_sql_store import SqlAgentMemoryStore
 from datasmart_ai_runtime.services.memory.memory_write_candidate_factory import AgentMemoryWriteCandidateFactory
 from datasmart_ai_runtime.services.memory.memory_write_candidate_store import (
@@ -182,6 +193,12 @@ __all__ = [
     "AgentMemoryStoreRuntime",
     "AgentMemoryStoreSettings",
     "AgentMemoryStoreWriteResult",
+    "AgentMemorySecondaryIndex",
+    "AgentMemorySecondaryIndexKind",
+    "AgentMemorySecondaryIndexQuery",
+    "AgentMemorySecondaryIndexResult",
+    "AgentMemorySecondaryIndexRoute",
+    "AgentMemorySecondaryIndexRouter",
     "AgentMemoryWorkspaceBinding",
     "AgentMemoryWorkspaceSupport",
     "AgentMemoryWriteCandidateFactory",
@@ -201,6 +218,7 @@ __all__ = [
     "SqlAgentMemoryMaterializationLeaseStore",
     "SqlAgentMemoryMaterializationAuditOutboxStore",
     "StoreBackedAgentMemoryRetriever",
+    "StoreBackedAgentMemorySecondaryIndex",
     "approve_memory_write_candidate",
     "build_memory_materialization_receipt_store_runtime",
     "build_memory_materialization_lease_store_runtime",
@@ -208,6 +226,7 @@ __all__ = [
     "decide_materialization_retry",
     "build_memory_store_runtime",
     "build_memory_write_store_runtime",
+    "default_store_backed_secondary_indexes",
     "memory_materialization_receipt_store_diagnostics",
     "memory_materialization_receipt_store_settings_from_env",
     "memory_materialization_lease_store_diagnostics",
@@ -219,6 +238,7 @@ __all__ = [
     "memory_materialization_worker_settings_from_env",
     "memory_store_diagnostics",
     "memory_store_settings_from_env",
+    "secondary_index_runtime_diagnostics",
     "memory_write_store_diagnostics",
     "memory_write_store_settings_from_env",
     "reject_memory_write_candidate",

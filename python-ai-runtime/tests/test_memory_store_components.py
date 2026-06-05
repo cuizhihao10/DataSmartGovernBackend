@@ -126,6 +126,8 @@ class AgentMemoryStoreComponentsTest(unittest.TestCase):
         self.assertIn("materializationAuditOutbox", diagnostics)
         self.assertIn("materializationRunner", diagnostics)
         self.assertEqual("StoreBackedAgentMemoryRetriever", diagnostics["retriever"]["implementation"])
+        self.assertIn("vector", diagnostics["retriever"]["secondaryIndexes"]["availableIndexes"])
+        self.assertIn("graph", diagnostics["retriever"]["secondaryIndexes"]["availableIndexes"])
         self.assertEqual("AgentMemoryMaterializationRunner", diagnostics["materializationRunner"]["implementation"])
         self.assertEqual(5, diagnostics["leaseStore"]["failurePolicy"]["maxAttempts"])
         self.assertFalse(diagnostics["materializationAuditOutbox"]["enabled"])

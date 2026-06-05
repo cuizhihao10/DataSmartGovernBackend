@@ -43,6 +43,7 @@ from datasmart_ai_runtime.services.memory.memory_store_components import (
     memory_store_diagnostics,
 )
 from datasmart_ai_runtime.services.memory.memory_store_retriever import StoreBackedAgentMemoryRetriever
+from datasmart_ai_runtime.services.memory.memory_secondary_index import secondary_index_runtime_diagnostics
 from datasmart_ai_runtime.services.memory.memory_materialization_runner import AgentMemoryMaterializationRunner
 from datasmart_ai_runtime.services.memory.memory_materialization_admin import AgentMemoryMaterializationAdminService
 from datasmart_ai_runtime.services.memory.memory_write_components import (
@@ -154,9 +155,11 @@ def api_memory_runtime_diagnostics(components: ApiMemoryRuntimeComponents) -> di
         "retriever": {
             "implementation": "StoreBackedAgentMemoryRetriever",
             "usesFormalStore": True,
+            "secondaryIndexes": secondary_index_runtime_diagnostics(components.memory_retriever.secondary_indexes()),
             "notes": (
-                "Agent 规划请求会从正式长期记忆 store 读取候选窗口，再执行轻量关键词排序。"
-                "未来接入 Chroma/Neo4j 时仍必须保留 memoryNamespace 范围过滤。"
+                "Agent 规划请求会先按记忆类型选择 vector/graph/resource/keyword 二级索引通道，"
+                "再从正式长期记忆 store 读取候选窗口并执行轻量关键词排序。"
+                "未来接入 Chroma/Neo4j/MinIO 索引时仍必须保留 memoryNamespace 范围过滤。"
             ),
         },
         "materializer": {
