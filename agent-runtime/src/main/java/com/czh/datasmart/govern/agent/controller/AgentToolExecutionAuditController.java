@@ -14,6 +14,8 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagExecutionDry
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagExecutionPreviewView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolPlanDagView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolExecutionPolicyView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentSessionHandoffDagExecutionBridgePreviewRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentSessionHandoffDagExecutionBridgePreviewResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionAuditView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionDecisionRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionResultView;
@@ -28,6 +30,7 @@ import com.czh.datasmart.govern.agent.service.execution.AgentRunToolDagExecution
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolDagExecutionPreviewService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolPlanDagService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolExecutionPolicyService;
+import com.czh.datasmart.govern.agent.service.execution.AgentSessionHandoffDagExecutionBridgeService;
 import com.czh.datasmart.govern.agent.service.execution.AgentToolRuntimeProtectionQueryService;
 import com.czh.datasmart.govern.agent.service.execution.AgentToolSandboxPolicyQueryService;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
@@ -64,6 +67,7 @@ public class AgentToolExecutionAuditController {
     private final AgentRunToolPlanDagService toolPlanDagService;
     private final AgentRunToolDagExecutionPreviewService toolDagExecutionPreviewService;
     private final AgentRunToolDagExecutionDryRunService toolDagExecutionDryRunService;
+    private final AgentSessionHandoffDagExecutionBridgeService handoffDagExecutionBridgeService;
     private final AgentToolSandboxPolicyQueryService sandboxPolicyQueryService;
     private final AgentToolRuntimeProtectionQueryService runtimeProtectionQueryService;
 
@@ -228,6 +232,36 @@ public class AgentToolExecutionAuditController {
             @RequestBody(required = false) AgentRunToolDagExecutionDryRunRequest request,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success(toolDagExecutionDryRunService.dryRunDagExecution(sessionId, runId, request, traceId), traceId);
+    }
+
+    /**
+     * 预览 Master Agent handoff DAG 如何桥接到现有 Tool DAG 执行链路。
+     *
+     * <p>该接口是 5.16 handoff DAG 与现有 dry-run / selected-node confirmation / outbox 链路之间的
+     * 第一层连接。它不会执行工具、不会写 outbox、不会创建 confirmation，也不会触发 Kafka；它只把
+     * handoff DAG 上的 `tool-control` 节点翻译为 Tool DAG dry-run，并给出下一步 selected-node outbox
+     * 请求模板。</p>
+     *
+     * <p>为什么需要这个桥接接口：handoff DAG 是会话级协作图，Tool DAG 是具体工具执行图。前端或 Agent Host
+     * 如果只看到 handoff DAG，很容易误以为“点击 tool-control 就能执行所有工具”。该接口会重新读取当前 Run 的
+     * 工具 DAG、依赖、权限、沙箱和容量保护结果，告诉调用方哪些具体工具节点可以进入同步 dry-run 或异步 outbox 预案。</p>
+     *
+     * <p>使用方式建议：</p>
+     * <p>1. 管理台先调用 `/runtime-events/agent-session-handoff-dags` 展示会话级协作图；</p>
+     * <p>2. 用户选择 `tool-control` 后调用本接口；</p>
+     * <p>3. 如果响应存在异步 outbox 模板，前端展示模板并要求用户或策略显式确认；</p>
+     * <p>4. 真实入箱仍调用 `dag-selected-node-outbox/enqueue`，且必须把模板中的 `confirmed=false` 改为显式 `true`。</p>
+     */
+    @PostMapping("/{sessionId}/runs/{runId}/tool-executions/handoff-dag-execution-bridge-preview")
+    public PlatformApiResponse<AgentSessionHandoffDagExecutionBridgePreviewResponse> previewHandoffDagExecutionBridge(
+            @PathVariable("sessionId") String sessionId,
+            @PathVariable("runId") String runId,
+            @RequestBody(required = false) AgentSessionHandoffDagExecutionBridgePreviewRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(
+                handoffDagExecutionBridgeService.previewBridge(sessionId, runId, request, traceId),
+                traceId
+        );
     }
 
     /**

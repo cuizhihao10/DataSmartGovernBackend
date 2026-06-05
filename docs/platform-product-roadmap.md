@@ -9673,3 +9673,48 @@ Plane -> Feedback -> Second Turn”的低敏只读图契约，为后续真实多
 2. 补齐 data-sync、permission-admin、task-management 的专属 Skill 与工具契约，让 handoff DAG 覆盖更多真实商业场景。
 3. 若前端高频查询该图，再设计 dedicated handoff DAG index、低基数指标和诊断接口。
 4. 为避免 Java 局部继续无限扩展，完成一个最小执行闭环后应切到模型 provider health、KV/prefix cache、MCP/A2A adapter 或 Python runtime 真实 Agent 编排。
+
+## 5.17 Handoff DAG 到 Tool DAG 执行链路桥接预览（2026-06-05）
+
+本阶段承接 5.16，把只读 handoff DAG 向现有工具执行治理链路推进一小步。目标不是让 handoff DAG
+直接执行工具，而是新增一个桥接预览接口：当用户或 Agent Host 在 handoff DAG 上选择 `tool-control`
+节点时，Java 控制面会重新调用现有 Tool DAG dry-run，返回可推进工具候选、selectionFingerprint、
+policyVersion 摘要和 selected-node outbox 请求模板。
+
+已完成：
+- 新增 DTO：
+  - `AgentSessionHandoffDagExecutionBridgePreviewRequest`；
+  - `AgentSessionHandoffDagExecutionBridgePreviewResponse`。
+- 新增 `AgentSessionHandoffDagExecutionBridgeService`：
+  - 只接受低敏 handoffNodeIds/toolNodeIds/toolAuditIds 选择器；
+  - 只有 `tool-control` 会映射到 Tool DAG dry-run；
+  - Master、Memory、Feedback、Second Turn 等会话级节点不会被强行映射为工具执行；
+  - 可生成 selected-node outbox 请求模板，但模板默认 `confirmed=false`；
+  - 不执行工具、不写 outbox、不创建 confirmation、不投递 Kafka。
+- `AgentToolExecutionAuditController` 新增：
+  - `POST /agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/handoff-dag-execution-bridge-preview`；
+  - `POST /api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/handoff-dag-execution-bridge-preview`。
+- 新增测试 `AgentSessionHandoffDagExecutionBridgeServiceTest`：
+  - `tool-control` 选择会调用 dry-run 并生成 outbox 模板；
+  - 非工具控制节点不会被误映射为可执行工具桥；
+  - 没有工具候选时保持 preview-only 状态。
+
+验证：
+- `mvn -pl agent-runtime -am "-Dtest=AgentSessionHandoffDagExecutionBridgeServiceTest,AgentSessionHandoffDagServiceTest,AgentRunToolDagExecutionDryRunServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：13 个测试通过。
+
+产品意义：
+- handoff DAG 不再只是展示图，而是能引导用户进入现有 dry-run/confirmation/outbox 安全链路。
+- 前端可从会话级 DAG 的 `tool-control` 节点跳到工具级预检，展示哪些具体工具可同步执行、哪些可异步入箱、哪些被阻断。
+- 该阶段避免新建第二套执行器，继续复用已具备权限、沙箱、容量保护、指纹、策略版本和 confirmation 的工具执行治理链路。
+
+当前边界：
+- 桥接接口仍然只读，不产生任何副作用。
+- outbox request template 只是低敏建议，不是授权令牌；真实入箱仍必须调用 selected-node endpoint，并由服务端重新 dry-run。
+- 第一版只识别 `tool-control`，暂不把 specialist/feedback/second-turn 映射到真实 worker。
+- 还没有把桥接预览写入 runtime event，也没有和前端按钮权限、审批任务或 WebSocket timeline 绑定。
+
+下一步推荐路线：
+1. 将桥接预览事件化，写入 runtime event timeline，让“用户从 handoff DAG 进入工具预检”可回放。
+2. 为 selected-node outbox endpoint 增加来源字段或证据字段，记录其来自 handoff DAG bridge preview 的 fingerprint。
+3. 补齐 data-sync、permission-admin、task-management 专属 Skill 和工具契约，让 bridge preview 有更多真实商业节点可映射。
+4. 完成桥接证据后，建议切到模型 provider health / KV cache / MCP-A2A adapter 或 Python Runtime 编排，不继续无限细化 Java preview 字段。
