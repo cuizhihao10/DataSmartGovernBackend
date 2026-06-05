@@ -86,6 +86,33 @@ class AgentRuntimeEventConsumerServiceTest {
     }
 
     @Test
+    void consumeShouldAcceptAgentSessionSchedulingRuntimeEvent() {
+        /*
+         * Python Runtime 5.14 会把 intelligentGatewayGovernance.agentSessionScheduling 压缩成
+         * agent_session_scheduling_recorded 事件。Java consumer 不应把它当作未知异常事件拒绝；
+         * 它要进入通用 projection，供后续强类型查询服务和 Java projection/index 使用。
+         */
+        InMemoryAgentRuntimeEventProjectionStore store = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        AgentRuntimeEventConsumerService service = new AgentRuntimeEventConsumerService(
+                objectMapper(),
+                store,
+                new AgentRuntimeEventConsumerStats()
+        );
+
+        AgentRuntimeEventConsumeResult result = service.consume(agentSessionSchedulingRuntimeEventPayload());
+
+        assertTrue(result.accepted());
+        AgentRuntimeEventProjectionRecord record = store.listByRunId("run-agent-session-001").getFirst();
+        assertEquals("agent_session_scheduling_recorded", record.eventType());
+        assertEquals("audit", record.severity());
+        assertEquals("APPROVAL_REQUIRED", record.attributes().get("status"));
+        assertEquals("MASTER_ORCHESTRATOR", record.attributes().get("primaryAgentRole"));
+        assertEquals(List.of("MASTER_ORCHESTRATOR", "TASK_AGENT", "PERMISSION_AGENT"), record.attributes().get("participatingAgentRoles"));
+        assertEquals(List.of("TASK_AGENT", "PERMISSION_AGENT"), record.attributes().get("handoffAgentRoles"));
+        assertTrue(record.attributes().containsKey("participationModeCounts"));
+    }
+
+    @Test
     void consumeShouldMaterializeSkillVisibilitySnapshotIntoDedicatedIndex() {
         /*
          * 专用索引是从通用 runtime event 热窗口走向长期审计索引的第一步。
@@ -283,6 +310,55 @@ class AgentRuntimeEventConsumerServiceTest {
                     "recommendedActionCount": 2
                   },
                   "createdAt": "2026-06-04T11:00:00Z"
+                }
+                """;
+    }
+
+    private String agentSessionSchedulingRuntimeEventPayload() {
+        return """
+                {
+                  "schemaVersion": "agent-runtime-event.v1",
+                  "source": "python-ai-runtime",
+                  "publishedAt": "2026-06-05T12:00:01Z",
+                  "eventType": "agent_session_scheduling_recorded",
+                  "stage": "record_agent_session_scheduling",
+                  "message": "已记录本轮多 Agent 会话调度策略视图。",
+                  "severity": "audit",
+                  "tenantId": "10",
+                  "projectId": "20",
+                  "actorId": "1001",
+                  "requestId": "request-agent-session-001",
+                  "runId": "run-agent-session-001",
+                  "sessionId": "session-agent-session-001",
+                  "sequence": 10,
+                  "attributes": {
+                    "eventPayloadVersion": "v1",
+                    "snapshotType": "AGENT_SESSION_SCHEDULING_POLICY_VIEW",
+                    "available": true,
+                    "status": "APPROVAL_REQUIRED",
+                    "primaryAgentRole": "MASTER_ORCHESTRATOR",
+                    "participatingAgentCount": 3,
+                    "participatingAgentRoles": ["MASTER_ORCHESTRATOR", "TASK_AGENT", "PERMISSION_AGENT"],
+                    "participatingAgentRolesTruncatedCount": 0,
+                    "participationModeCounts": {"PRIMARY": 1, "SPECIALIST": 1, "GUARDRAIL": 1},
+                    "agentStatusCounts": {"APPROVAL_REQUIRED": 3},
+                    "handoffRequired": true,
+                    "handoffAgentRoles": ["TASK_AGENT", "PERMISSION_AGENT"],
+                    "intentDomains": ["task_management"],
+                    "selectedSkillCodes": ["governed.task.creation"],
+                    "visibleSkillCodes": ["governed.task.creation"],
+                    "plannedToolNames": ["task.create.draft"],
+                    "memoryDependencies": ["episodic", "procedural"],
+                    "modelGatewayAvailable": true,
+                    "skillAdmissionAllowed": true,
+                    "toolBudgetAllowed": true,
+                    "approvalRequired": true,
+                    "tenantScoped": true,
+                    "projectScoped": true,
+                    "displaySummary": "智能网关已调度 3 个 Agent，其中部分动作需要人工审批后才能执行。",
+                    "recommendedActionCount": 1
+                  },
+                  "createdAt": "2026-06-05T12:00:00Z"
                 }
                 """;
     }

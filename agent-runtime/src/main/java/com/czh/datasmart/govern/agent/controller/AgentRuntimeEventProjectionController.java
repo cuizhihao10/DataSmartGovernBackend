@@ -11,6 +11,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventProjection
 import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventReplayAckRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventReplayCursorView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventReplayResponse;
+import com.czh.datasmart.govern.agent.controller.dto.AgentSessionSchedulingProjectionQueryResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentSkillVisibilitySnapshotIndexDiagnosticsView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentSkillVisibilitySnapshotProjectionQueryResponse;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventQueryAccessContext;
@@ -18,6 +19,7 @@ import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventQueryAcce
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventProjectionQuery;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventProjectionQueryService;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventReplayService;
+import com.czh.datasmart.govern.agent.service.runtime.AgentSessionSchedulingProjectionService;
 import com.czh.datasmart.govern.agent.service.runtime.AgentSkillVisibilitySnapshotProjectionService;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
@@ -53,6 +55,7 @@ public class AgentRuntimeEventProjectionController {
     private final AgentRuntimeEventProjectionQueryService queryService;
     private final AgentRuntimeEventReplayService replayService;
     private final AgentSkillVisibilitySnapshotProjectionService skillVisibilitySnapshotProjectionService;
+    private final AgentSessionSchedulingProjectionService agentSessionSchedulingProjectionService;
     private final AgentRuntimeEventQueryAccessContextResolver accessContextResolver;
 
     /**
@@ -162,6 +165,64 @@ public class AgentRuntimeEventProjectionController {
         );
         return PlatformApiResponse.success(
                 skillVisibilitySnapshotProjectionService.querySnapshots(query, accessContext),
+                traceId
+        );
+    }
+
+    /**
+     * 查询多 Agent 会话调度 runtime event 的强类型投影视图。
+     *
+     * <p>该接口服务“本轮会话由哪些 Agent 参与、谁是主控、谁需要 handoff、是否出现降级”的治理场景。
+     * 它固定读取 `agent_session_scheduling_recorded` 事件，并把 attributes 解析为低敏强类型 DTO。</p>
+     *
+     * <p>产品用途示例：</p>
+     * <p>1. Agent 会话详情页展示 Master/Specialist/Guardrail/Observer 参与情况；</p>
+     * <p>2. 审计员排查某次高风险任务为什么进入人工 handoff；</p>
+     * <p>3. 运营台统计哪些领域 Agent、工具和 Skill 经常参与；</p>
+     * <p>4. 后续 Master Agent handoff DAG 可以基于该视图回放“调度阶段已经做过什么”。</p>
+     *
+     * <p>安全边界：该接口不返回用户 objective、prompt、工具参数、SQL、样本数据、模型输出或长期记忆正文。
+     * 返回字段只包含角色、状态、工具名、Skill code、记忆类型和计数等低敏控制面事实。</p>
+     */
+    @GetMapping("/agent-session-scheduling-snapshots")
+    public PlatformApiResponse<AgentSessionSchedulingProjectionQueryResponse> queryAgentSessionSchedulingSnapshots(
+            @RequestParam(value = "tenantId", required = false) String tenantId,
+            @RequestParam(value = "projectId", required = false) String projectId,
+            @RequestParam(value = "actorId", required = false) String actorId,
+            @RequestParam(value = "requestId", required = false) String requestId,
+            @RequestParam(value = "runId", required = false) String runId,
+            @RequestParam(value = "sessionId", required = false) String sessionId,
+            @RequestParam(value = "severity", required = false) String severity,
+            @RequestParam(value = "afterSequence", required = false) Long afterSequence,
+            @RequestParam(value = "limit", required = false) Integer limit,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) String currentTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String currentActorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String currentActorRole,
+            @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+        AgentRuntimeEventProjectionQuery query = new AgentRuntimeEventProjectionQuery(
+                tenantId,
+                projectId,
+                actorId,
+                requestId,
+                runId,
+                sessionId,
+                null,
+                severity,
+                limit,
+                afterSequence
+        );
+        AgentRuntimeEventQueryAccessContext accessContext = accessContextResolver.resolve(
+                currentTenantId,
+                currentActorId,
+                currentActorRole,
+                traceId,
+                dataScopeLevel,
+                authorizedProjectIds
+        );
+        return PlatformApiResponse.success(
+                agentSessionSchedulingProjectionService.querySnapshots(query, accessContext),
                 traceId
         );
     }
