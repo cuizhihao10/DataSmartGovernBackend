@@ -10080,3 +10080,56 @@ TTFT/TPOT/GPU 遥测，而是让前端、审计台和运维侧能从 Java 控制
 2. 更推荐随后切到 MCP/A2A adapter 草案，把内部 Skill Manifest、handoff DAG、模型路由和工具控制面映射为外部协议契约。
 3. 若继续可观测性，应补 Grafana/Alertmanager 草案，而不是继续扩 projection 字段。
 4. 中期再接真实推理遥测和分布式 health registry，避免当前内存热窗口被误认为生产级长期审计。
+
+## 5.25 Java Agent Runtime MCP/A2A 外部协议映射预览（2026-06-06）
+
+本阶段承接 5.24 的推荐路线，刻意不继续堆模型网关 projection 字段，而是切到更宏观的 Agent 平台互联能力：
+把内部 Skill Manifest、Tool Registry、Handoff DAG、Runtime Event Projection 和 Model Gateway 映射为 MCP/A2A
+协议契约预览。目标不是立刻上线完整 MCP Server 或 A2A Server，而是先固定“对外暴露什么、隐藏什么、哪些能力只能诊断可见、
+哪些能力可以进入外部 Agent Card”的治理边界。
+
+已完成：
+- 新增 `AgentExternalProtocolAdapterController`：
+  - `GET /agent-runtime/protocol-adapters/mcp-a2a/preview`；
+  - `GET /api/agent/protocol-adapters/mcp-a2a/preview`；
+  - 支持 `domain`、`riskLevel`、`includeNonReady` 过滤与诊断视角；
+  - 接口只读，不接收工具调用、不读取资源正文、不返回 prompt 正文。
+- 新增 `AgentExternalProtocolAdapterPreviewService`：
+  - 聚合 `AgentSkillPublicationManifestService`、`AgentSkillRegistryService`、`AgentToolRegistryService`；
+  - 将启用工具映射为 MCP Tool 预览，但只返回 toolCode、低敏描述、schema 引用、风险等级、审批要求、参数数量和隔离边界；
+  - 将控制面对象映射为 MCP Resource 目录，包括 Skill Manifest、Tool Descriptor、Runtime Events、Model Gateway Routing、Handoff DAG；
+  - 将治理工作流映射为 MCP Prompt 目录，但只返回模板名、用途和参数名，不返回 prompt messages/text；
+  - 将 READY Skill 映射为 A2A Agent Card Skill，非 READY/禁用 Skill 只保留在管理诊断建议中；
+  - 明确 `previewOnly=true`、`executionEnabled=false`、`metadataOnly=true`，真实协议调用后续仍必须进入权限、审批、审计、沙箱和 runtime event 链路。
+- 新增 DTO：
+  - `AgentExternalProtocolAdapterPreviewResponse`；
+  - `AgentExternalProtocolAdapterPolicyView`；
+  - `AgentMcpAdapterPreviewView`、`AgentMcpToolPreviewView`、`AgentMcpResourcePreviewView`、`AgentMcpPromptPreviewView`；
+  - `AgentA2aAgentCardPreviewView`、`AgentA2aSkillPreviewView`；
+  - `AgentExternalProtocolMappingView`。
+- 新增 `AgentExternalProtocolAdapterPreviewServiceTest`：
+  - 验证 MCP tools/resources/prompts 与 A2A Agent Card 能从现有控制面事实源生成；
+  - 验证非 READY 和禁用 Skill 不进入 A2A Agent Card；
+  - 验证审批型工具在 MCP 预览中标记为 taskSupport required；
+  - 验证响应不包含内部 targetEndpoint、toolArguments、完整 request template、内部 URL、查询语句样例、API key 或工具参数值。
+
+验证：
+- `mvn -pl agent-runtime -am "-Dtest=AgentExternalProtocolAdapterPreviewServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：3 个测试通过，Maven Toolchain 使用 JDK 21。
+- 行数检查：`AgentExternalProtocolAdapterPreviewService.java` 369 行、`AgentExternalProtocolStaticPreviewCatalog.java` 189 行、`AgentExternalProtocolAdapterController.java` 73 行、`AgentExternalProtocolAdapterPreviewServiceTest.java` 201 行，符合当前 500 行内约束。
+
+产品意义：
+- 项目开始从内部 Agent Runtime 控制面走向外部 Agent 协议互联，补齐 Codex/Claude Code 类 Agent Host 所需的工具目录、能力名片、资源目录和治理边界。
+- MCP 和 A2A 被定位为“协议投影层”，不替代 DataSmart 现有权限、审批、审计、工具沙箱、outbox、runtime event 和模型网关治理。
+- 对外协议预览只暴露 capability metadata，不扩散 prompt、工具实参、资源正文、模型输出或密钥，避免 Agent 生态互联变成新的敏感上下文扩散面。
+
+当前边界：
+- 当前不是完整 MCP JSON-RPC Server，没有 initialize/capability negotiation、tools/call、resources/read、prompts/get。
+- 当前不是完整 A2A Server，没有真实 `/.well-known/agent-card.json`、task endpoint、streaming、push notification 或签名 Agent Card。
+- MCP Resource 和 Prompt 只暴露目录，不返回正文。
+- A2A Agent Card 预览只暴露 READY Skill，不代表外部 Agent 已可直接委派任务。
+
+下一步推荐路线：
+1. 优先实现 MCP `tools/list` 只读端点，并继续保持 schema 引用与工具执行分离。
+2. 实现 A2A public Agent Card 只读端点，但只暴露 READY Skill、低敏能力摘要和安全方案说明。
+3. 为真实协议调用设计 runtime event 类型，让外部 Agent 的发现、委派、取消、失败和审批等待都可追踪。
+4. 后续再接 tools/call 或 A2A task 时，必须先通过 permission-admin、tool preflight、confirmation/outbox、限流和 worker pre-check。
