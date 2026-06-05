@@ -1,5 +1,14 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-06 落地补充：provider health probes need aggregate metrics, not provider labels
+
+- 本阶段把模型 Provider 主动健康探测接入 Python Runtime `/agent/metrics`。这对应 Agent Host 生产化趋势：模型网关不只要能 fallback，还要让运维能看到健康探测是否持续运行、失败率是否升高、最近一轮是否出现大量 unavailable。
+- DataSmart 当前选择把指标做成低基数聚合：累计 runs/outcomes、最近一轮 candidate/probed/truncated、按 `status` 的 Provider 数量、探测配置开关和限额。没有把 providerName、URL、tenantId、projectId、runId、traceId 放进 label。
+- 这个边界很重要。Prometheus 官方实践强调标签不应承载高基数或无界值，指标名称和标签也应保持稳定；单个 Provider 的诊断明细应留在诊断接口、runtime event、审计或日志中，而不是变成时序数据库的标签。
+- 本阶段继续保持 Python Runtime 默认零依赖，没有引入 `prometheus_client`。这适合当前学习和单元测试环境；未来如果接 Histogram、multiprocess collector 或 OpenTelemetry bridge，可以保持 `/agent/metrics` 契约不变，替换内部渲染器。
+- 下一步不建议继续只堆 Provider 探测字段。更高价值路线是把 `MODEL_GATEWAY_ROUTED` v2、provider health diagnostics 接入 Java projection/WebSocket timeline，或者切到 MCP/A2A adapter 与多 Agent 会话调度，让模型网关能力回到整体 Agent 平台闭环。
+- 参考资料：Prometheus metric and label naming：`https://prometheus.io/docs/practices/naming/`；Prometheus instrumentation best practices：`https://prometheus.io/docs/practices/instrumentation/`。
+
 ## 2026-06-05 落地补充：semantic memory adapters should enforce metadata filters first
 
 - 本阶段新增 Chroma-compatible semantic memory adapter，把 `semantic + vector` 同步任务从 no-op 推进到可注入真实 collection 的端口实现。它不强依赖 Chroma SDK，而是定义 `ChromaCollectionPort` 和 `AgentMemoryEmbeddingProvider`，让 Chroma Open Source、Chroma Cloud、pgvector 或企业内部向量平台都能接入。

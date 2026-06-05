@@ -45,6 +45,10 @@ from datasmart_ai_runtime.services.model_gateway.model_provider_health_probe imp
     ModelProviderHealthProbeSettings,
     model_provider_health_probe_settings_from_env,
 )
+from datasmart_ai_runtime.services.model_gateway.model_provider_health_probe_metrics import (
+    render_model_provider_health_probe_diagnostics_prometheus,
+    render_model_provider_health_probe_prometheus,
+)
 from datasmart_ai_runtime.services.model_gateway.model_provider_metadata import build_model_provider_metadata
 from datasmart_ai_runtime.services.model_gateway.model_result_context_filter import (
     ModelResultContextFilter,
@@ -143,4 +147,6 @@ __all__ = [
     "model_provider_health_probe_settings_from_env",
     "model_provider_registry_from_env",
     "record_model_tool_call_planning_events",
+    "render_model_provider_health_probe_diagnostics_prometheus",
+    "render_model_provider_health_probe_prometheus",
 ]

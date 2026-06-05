@@ -9981,3 +9981,52 @@ Agent 请求中的“为什么选择这个 Provider、是否发生 fallback、ca
 2. 把 `MODEL_GATEWAY_ROUTED` v2 和 provider health diagnostics 接入 Java projection/WebSocket timeline，让前端能解释 fallback。
 3. 再进一步接真实推理遥测：TTFT、TPOT、prefill tokens、cache hit、queue length、GPU worker utilization。
 4. 并行推进 MCP/A2A adapter 草案，避免模型网关局部优化拖慢工具协议与多 Agent 协作主线。
+
+## 5.23 Python AI Runtime 模型 Provider 主动探测 Prometheus 指标接入（2026-06-06）
+
+本阶段承接 5.22，把模型 Provider 主动健康探测的低基数诊断计数接入 `/agent/metrics`。目标不是把
+每个 Provider 的明细都塞进 Prometheus，而是让运维能对“探测是否运行、成功/失败/跳过是否异常、
+最近一轮健康状态分布是否恶化、探测配置是否启用”建立看板和告警。单个 Provider 的 URL、错误说明和
+sanitized 诊断仍保留在 `/agent/models/provider-health/diagnostics`，不进入指标标签。
+
+已完成：
+- 新增 `model_provider_health_probe_metrics.py`：
+  - 提供 `render_model_provider_health_probe_prometheus(...)`；
+  - 提供 `render_model_provider_health_probe_diagnostics_prometheus(...)`，便于单元测试和未来远程 exporter 复用；
+  - 累计指标使用 counter：`runs_total` 与 `outcomes_total{outcome=success|failure|skipped}`；
+  - 最近一轮快照使用 gauge：candidate/probed/truncated、last-run outcome、last-run health status；
+  - 配置状态使用 gauge：startup enabled、timeout seconds、max routes per run；
+  - 指标标签只使用 `outcome/status` 固定枚举，不读取 `lastRun.results` 中的 providerName、probeUrl、routeModels 等明细。
+- `/agent/metrics` 增强：
+  - 继续输出长期记忆物化指标；
+  - 追加模型 Provider 主动探测指标；
+  - API 层只做指标文本拼接，不承载具体指标业务逻辑，避免 `api.py` 再次膨胀。
+- 包导出更新：
+  - `services.model_gateway.__init__` 导出 Provider 探测指标渲染函数。
+- 新增 `test_model_provider_health_probe_metrics.py`：
+  - 覆盖 success/failure/skipped 混合探测；
+  - 覆盖最近一轮 health status 分布；
+  - 覆盖未发生探测时仍输出固定 0 序列，方便 Prometheus 发现端点；
+  - 验证 providerName、URL host、token、prompt、toolArguments 不进入指标文本。
+
+验证：
+- `python -m unittest python-ai-runtime\tests\test_model_provider_health_probe_metrics.py python-ai-runtime\tests\test_model_provider_health_probe.py`：6 个测试通过。
+- `python -m unittest discover -s python-ai-runtime\tests`：383 个测试通过。
+- `Get-ChildItem python-ai-runtime\src -Recurse -Filter *.py | ForEach-Object { python -m py_compile $_.FullName }`：Python 源码语法编译通过。
+
+产品意义：
+- 模型 Provider 健康治理从“可诊断”推进到“可监控、可告警、可趋势分析”。
+- Prometheus 只承担聚合趋势与告警职责，不承载 Provider 明细、租户明细或敏感上下文，符合生产监控低基数原则。
+- `/agent/metrics` 现在能同时覆盖长期记忆物化和模型网关健康探测，为后续 Grafana 看板和 Alertmanager 规则提供统一入口。
+
+当前边界：
+- 指标来自进程内探测服务内存计数，服务重启后累计值会归零。
+- 当前没有后台定时探测 worker，也没有 Alertmanager 规则；仍需运维或 API 显式触发探测。
+- 尚未接入真实推理遥测：TTFT、TPOT、prefill tokens、cache hit、queue length、GPU worker utilization。
+- Provider 级排障仍要看诊断接口或 runtime event，不能从 Prometheus 指标里还原单个 Provider 的完整历史。
+
+下一步推荐路线：
+1. 不建议继续无限细化 Provider 探测指标；下一步优先把 `MODEL_GATEWAY_ROUTED` v2 与 provider health diagnostics 接入 Java projection/WebSocket timeline。
+2. 若继续模型网关主线，建议补 Alertmanager/Grafana 草案：probe failure rate、last-run unavailable ratio、startup probe disabled in prod 等规则。
+3. 中期接真实推理遥测：TTFT、TPOT、prefill tokens、cache hit、queue length 和 GPU worker utilization。
+4. 平衡项目整体时，下一阶段可切到 MCP/A2A adapter 草案或多 Agent 会话调度，避免模型网关局部持续膨胀。

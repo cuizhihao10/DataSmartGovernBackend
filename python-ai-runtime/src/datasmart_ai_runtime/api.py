@@ -63,6 +63,7 @@ from datasmart_ai_runtime.services.model_gateway import (
     ModelGatewayGovernanceService,
     ModelProviderHealthProbeService,
     model_provider_health_probe_settings_from_env,
+    render_model_provider_health_probe_prometheus,
 )
 from datasmart_ai_runtime.services.model_gateway.model_provider import model_provider_registry_from_env
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
@@ -304,10 +305,26 @@ def create_app() -> Any:
 
     @app.get("/agent/metrics")
     def agent_runtime_prometheus_metrics() -> Any:
-        """导出 Python AI Runtime 的 Prometheus 文本指标。"""
+        """导出 Python AI Runtime 的 Prometheus 文本指标。
+
+        该端点是 Python AI Runtime 的轻量指标出口，当前合并两类低基数指标：
+        - 长期记忆物化指标：用于观察后台物化批次、候选处理、补偿重排和 fencing/finalize 错误；
+        - 模型 Provider 主动探测指标：用于观察健康探测运行次数、success/failure/skipped 分布、
+          最近一轮状态分布和探测配置。
+
+        这里不输出 providerName、tenantId、projectId、runId、traceId、URL、prompt、工具参数或模型正文。
+        这些明细属于 runtime event、诊断接口或审计链路，不能进入 Prometheus label，否则会在真实客户环境中
+        制造高基数时序，并增加敏感信息泄露面。
+        """
+
+        metric_parts = (
+            memory_materialization_metrics.render_prometheus().rstrip(),
+            render_model_provider_health_probe_prometheus(model_provider_health_probe).rstrip(),
+            "",
+        )
 
         return Response(
-            content=memory_materialization_metrics.render_prometheus(),
+            content="\n".join(metric_parts),
             media_type="text/plain; version=0.0.4; charset=utf-8",
         )
 
