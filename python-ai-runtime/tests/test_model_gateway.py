@@ -20,6 +20,7 @@ from datasmart_ai_runtime.domain.model_gateway import (
     ModelProviderHealthSnapshot,
     ModelProviderHealthStatus,
 )
+from datasmart_ai_runtime.api_model_gateway import build_model_gateway_governance_response
 from datasmart_ai_runtime.services.model_gateway import (
     InMemoryModelBudgetLedger,
     InMemoryModelProviderHealthRegistry,
@@ -113,6 +114,92 @@ class ModelGatewayGovernanceServiceTest(unittest.TestCase):
 
         self.assertEqual("interactive-agent", decision.selected_route.provider_name)
         self.assertEqual(ModelCacheKeyScope.PROJECT_SAFE, decision.cache_key_scope)
+
+    def test_health_aware_scoring_prefers_healthy_fallback_over_degraded_primary(self) -> None:
+        """健康 Provider 应优先于已经降级的配置主路由。
+
+        这条规则对应真实 Agent 网关的故障隔离场景：如果主模型最近出现高错误率或高延迟，
+        继续因为 priority=1 而强行命中它，会让用户体验、工具计划和预算都被故障 Provider 拖累。
+        因此在允许 fallback 时，健康状态应先于配置优先级参与排序。
+        """
+
+        primary = _route("primary-agent", priority=1)
+        fallback = _route("fallback-agent", priority=10)
+        health = InMemoryModelProviderHealthRegistry(
+            (
+                ModelProviderHealthSnapshot(
+                    provider_name="primary-agent",
+                    status=ModelProviderHealthStatus.DEGRADED,
+                    latency_ms=4500,
+                    notes="主模型近期延迟偏高。",
+                ),
+                ModelProviderHealthSnapshot(
+                    provider_name="fallback-agent",
+                    status=ModelProviderHealthStatus.HEALTHY,
+                    latency_ms=320,
+                ),
+            )
+        )
+        service = ModelGatewayGovernanceService(
+            ModelRouteRegistry((primary, fallback)),
+            health_registry=health,
+        )
+
+        decision = service.decide(_context(attributes={"sessionId": "session-health-aware"}))
+        response = build_model_gateway_governance_response(decision)
+
+        self.assertEqual("fallback-agent", decision.selected_route.provider_name)
+        self.assertTrue(decision.fallback_used)
+        self.assertEqual(("fallback-agent", "primary-agent"), decision.attributes["orderedCandidateProviders"])
+        self.assertEqual("primary-agent", response["configuredPrimaryProvider"])
+        self.assertTrue(response["cacheAwareRouting"])
+        self.assertEqual("fallback-agent", response["routeScoring"][1]["providerName"])
+        self.assertTrue(any("Provider 健康" in note for note in decision.governance_notes))
+
+    def test_cache_aware_scoring_prefers_cacheable_route_when_health_is_comparable(self) -> None:
+        """健康状态相同时，能生成安全 cache namespace 的候选可以优先。
+
+        prefix/KV cache 的收益主要来自复用稳定系统提示、工具 schema、元数据摘要和项目级治理上下文。
+        但可复用的前提是隔离边界完整：如果主路由声明 `SESSION_ONLY` 却没有 sessionId，本次不能安全缓存；
+        若备用路由声明 `PROJECT_SAFE` 且租户/项目完整，就可以作为更适合长上下文复用的候选。
+        """
+
+        session_only_primary = _route(
+            "session-only-agent",
+            priority=1,
+            cache_key_scope=ModelCacheKeyScope.SESSION_ONLY,
+        )
+        project_safe_fallback = _route(
+            "project-cache-agent",
+            priority=10,
+            cache_key_scope=ModelCacheKeyScope.PROJECT_SAFE,
+        )
+        health = InMemoryModelProviderHealthRegistry(
+            (
+                ModelProviderHealthSnapshot(
+                    provider_name="session-only-agent",
+                    status=ModelProviderHealthStatus.HEALTHY,
+                ),
+                ModelProviderHealthSnapshot(
+                    provider_name="project-cache-agent",
+                    status=ModelProviderHealthStatus.HEALTHY,
+                ),
+            )
+        )
+        service = ModelGatewayGovernanceService(
+            ModelRouteRegistry((session_only_primary, project_safe_fallback)),
+            health_registry=health,
+        )
+
+        decision = service.decide(_context())
+
+        self.assertEqual("project-cache-agent", decision.selected_route.provider_name)
+        self.assertTrue(decision.fallback_used)
+        self.assertTrue(decision.cache_plan.enabled)
+        self.assertEqual(ModelCacheKeyScope.PROJECT_SAFE, decision.cache_plan.scope)
+        self.assertEqual(("project-cache-agent", "session-only-agent"), decision.attributes["orderedCandidateProviders"])
+        self.assertEqual(("SESSION_ID_MISSING",), decision.attributes["routeScoring"][0]["cacheIssues"])
+        self.assertEqual((), decision.attributes["routeScoring"][1]["cacheIssues"])
 
     def test_explicit_cache_scope_overrides_route_default(self) -> None:
         """高敏感请求可以显式把缓存范围收紧为 NO_CACHE。"""

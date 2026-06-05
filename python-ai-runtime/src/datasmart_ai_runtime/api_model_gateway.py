@@ -57,6 +57,14 @@ def build_model_gateway_governance_response(
         "cachePlan": decision.cache_plan.to_summary() if decision.cache_plan else None,
         "candidateCount": len(decision.candidate_routes),
         "candidateProviders": tuple(route.provider_name for route in decision.candidate_routes),
+        # routeScoring 是模型网关给前端和 Java 控制面的低敏解释材料：
+        # 它只包含候选 provider/model、健康状态、缓存计划是否启用和排序 key，不包含 prompt、
+        # 工具参数、用户输入、模型输出或真实 KV cache 内容。这样管理台可以解释“为什么发生
+        # fallback / 为什么选择 cache 更友好的路由”，而不会扩大敏感上下文暴露面。
+        "routeScoring": decision.attributes.get("routeScoring"),
+        "orderedCandidateProviders": decision.attributes.get("orderedCandidateProviders"),
+        "configuredPrimaryProvider": decision.attributes.get("configuredPrimaryProvider"),
+        "cacheAwareRouting": decision.attributes.get("cacheAwareRouting"),
         "governanceNotes": decision.governance_notes,
         "displaySummary": _display_summary(decision),
         "recommendedActions": _recommended_actions(decision),

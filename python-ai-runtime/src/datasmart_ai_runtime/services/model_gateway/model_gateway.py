@@ -7,10 +7,13 @@ fallback、预算控制、延迟等级和缓存边界做成稳定接口。
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from datasmart_ai_runtime.domain.contracts import ModelCacheKeyScope, ModelRoute
 from datasmart_ai_runtime.domain.model_gateway import (
     ModelGatewayBudgetDecision,
     ModelGatewayBudgetPolicy,
+    ModelGatewayCachePlan,
     ModelGatewayRequestContext,
     ModelGatewayRoutingDecision,
     ModelProviderHealthSnapshot,
@@ -95,6 +98,55 @@ class InMemoryModelBudgetLedger:
         return _budget_key(tenant_id, None)
 
 
+@dataclass(frozen=True)
+class _RouteScoringSnapshot:
+    """一次候选模型路由的低敏打分快照。
+
+    这个对象是模型网关内部使用的“排序说明书”，不会包含 prompt、工具参数、模型输出或租户数据正文。
+    它存在的目的，是让 provider health 与 prefix/KV cache 治理真正参与路由决策，而不只是出现在
+    诊断接口里。成熟推理网关（例如 vLLM/SGLang/Dynamo 类部署）会越来越强调 cache-aware routing：
+    如果多个候选都健康，选择更容易复用安全前缀的候选，可以降低 prefill 成本和首 token 延迟；但如果
+    cache 友好的候选已经熔断或不可用，健康状态必须优先于缓存命中率。
+
+    字段说明：
+    - `route`：候选模型路由；
+    - `health`：该路由对应 Provider 的当前健康快照；
+    - `cache_plan`：按该候选路由生成的安全缓存计划；
+    - `health_rank`：健康排序分，越小越优，UNAVAILABLE 会被排到最后；
+    - `latency_rank`：调用方声明延迟等级时，匹配者优先；
+    - `cache_rank`：能生成安全 cache namespace 的候选优先；
+    - `priority`：配置优先级，作为前面治理维度相同后的稳定排序因子。
+    """
+
+    route: ModelRoute
+    health: ModelProviderHealthSnapshot
+    cache_plan: ModelGatewayCachePlan
+    health_rank: int
+    latency_rank: int
+    cache_rank: int
+    priority: int
+
+    def sort_key(self) -> tuple[int, int, int, int]:
+        """返回 Python `sorted(...)` 可直接使用的排序 key。"""
+
+        return (self.health_rank, self.latency_rank, self.cache_rank, self.priority)
+
+    def to_summary(self) -> dict[str, object]:
+        """转换为低敏诊断摘要，便于 API 响应和运行时事件复用。"""
+
+        return {
+            "providerName": self.route.provider_name,
+            "modelName": self.route.model_name,
+            "healthStatus": self.health.status.value,
+            "latencyTier": self.route.latency_tier.value,
+            "cacheScope": self.cache_plan.scope.value,
+            "cachePlanEnabled": self.cache_plan.enabled,
+            "cacheIssues": self.cache_plan.issues,
+            "priority": self.priority,
+            "sortKey": self.sort_key(),
+        }
+
+
 class ModelGatewayGovernanceService:
     """模型网关治理决策服务。
 
@@ -148,14 +200,20 @@ class ModelGatewayGovernanceService:
                 attributes={"blockedBy": "budget"},
             )
 
-        ordered_candidates = self._order_candidates(candidates, context)
+        route_scores = self._score_candidates(candidates, context)
+        ordered_scores = self._order_scores(route_scores, allow_fallback=context.allow_fallback)
+        ordered_candidates = tuple(score.route for score in ordered_scores)
         selected_route: ModelRoute | None = None
         selected_health: ModelProviderHealthSnapshot | None = None
-        unavailable_notes: list[str] = []
-        for route in ordered_candidates:
-            health = self._health_registry.snapshot_for(route)
+        unavailable_notes = [
+            f"Provider {score.route.provider_name} 不可用，已从可执行候选中降级或跳过。"
+            for score in route_scores
+            if score.health.status == ModelProviderHealthStatus.UNAVAILABLE
+        ]
+        for score in ordered_scores:
+            route = score.route
+            health = score.health
             if health.status == ModelProviderHealthStatus.UNAVAILABLE:
-                unavailable_notes.append(f"Provider {route.provider_name} 不可用，已跳过。")
                 if not context.allow_fallback:
                     break
                 continue
@@ -163,7 +221,7 @@ class ModelGatewayGovernanceService:
             selected_health = health
             break
 
-        fallback_used = bool(selected_route and ordered_candidates and selected_route != ordered_candidates[0])
+        fallback_used = bool(selected_route and candidates and selected_route != candidates[0])
         final_cache_scope = context.cache_key_scope or (selected_route.cache_key_scope if selected_route else cache_key_scope)
         cache_plan = self._cache_planner.plan(
             context=context,
@@ -171,6 +229,8 @@ class ModelGatewayGovernanceService:
             selected_route=selected_route,
         )
         notes = self._build_notes(context, selected_route, selected_health, fallback_used, unavailable_notes, budget_decision)
+        if route_scores:
+            notes.append("候选模型排序已纳入 Provider 健康、延迟等级和 prefix/KV cache 安全复用边界。")
         if cache_plan.enabled:
             notes.append(
                 f"模型缓存计划已启用，namespace={cache_plan.namespace}，TTL={cache_plan.ttl_seconds} 秒。"
@@ -190,6 +250,11 @@ class ModelGatewayGovernanceService:
                 "workload": context.workload.value,
                 "allowFallback": context.allow_fallback,
                 "candidateCount": len(ordered_candidates),
+                "configuredPrimaryProvider": candidates[0].provider_name if candidates else None,
+                "selectedProvider": selected_route.provider_name if selected_route else None,
+                "orderedCandidateProviders": tuple(route.provider_name for route in ordered_candidates),
+                "routeScoring": tuple(score.to_summary() for score in route_scores),
+                "cacheAwareRouting": True,
             },
         )
 
@@ -240,24 +305,82 @@ class ModelGatewayGovernanceService:
             )
         return used_tokens
 
-    @staticmethod
-    def _order_candidates(
+    def _score_candidates(
+        self,
         candidates: tuple[ModelRoute, ...],
         context: ModelGatewayRequestContext,
-    ) -> tuple[ModelRoute, ...]:
-        """按延迟等级偏好和优先级排序候选路由。"""
+    ) -> tuple[_RouteScoringSnapshot, ...]:
+        """为每条候选路由生成健康/cache/延迟综合评分。
+
+        这里刻意对每个候选都预生成 cache plan，而不是只给最终选中的路由生成。原因是 cache-aware
+        routing 必须在“选择之前”知道某条路由是否能在当前租户/项目/会话边界内安全复用 prefix/KV cache。
+        例如两个 Provider 都健康时，`PROJECT_SAFE` 且具备 projectId 的候选可以优先于缺少 sessionId 导致
+        `SESSION_ONLY` cache 禁用的候选；但如果该候选不可用，健康排序会先把它降到最后。
+        """
+
+        scores: list[_RouteScoringSnapshot] = []
+        for route in candidates:
+            health = self._health_registry.snapshot_for(route)
+            scope = context.cache_key_scope or route.cache_key_scope
+            cache_plan = self._cache_planner.plan(
+                context=context,
+                scope=scope,
+                selected_route=route,
+            )
+            scores.append(
+                _RouteScoringSnapshot(
+                    route=route,
+                    health=health,
+                    cache_plan=cache_plan,
+                    health_rank=self._health_rank(health.status),
+                    latency_rank=self._latency_rank(route, context),
+                    cache_rank=0 if cache_plan.enabled else 1,
+                    priority=route.priority,
+                )
+            )
+        return tuple(scores)
+
+    @staticmethod
+    def _order_scores(
+        scores: tuple[_RouteScoringSnapshot, ...],
+        *,
+        allow_fallback: bool,
+    ) -> tuple[_RouteScoringSnapshot, ...]:
+        """按模型网关治理规则排序候选评分。
+
+        `allow_fallback=false` 时只返回配置主路由的评分。这个分支非常重要：用户或上层策略可能明确要求
+        不允许 fallback，例如高风险审批、模型一致性评估、供应商隔离测试等场景。如果这时仍按健康/cache
+        排序选择第二候选，就会违背调用方对“只用指定主路由”的业务约束。
+        """
+
+        if not scores:
+            return ()
+        if not allow_fallback:
+            return (scores[0],)
+        return tuple(sorted(scores, key=lambda score: score.sort_key()))
+
+    @staticmethod
+    def _health_rank(status: ModelProviderHealthStatus) -> int:
+        """把 Provider 健康状态转换为排序分。
+
+        HEALTHY 优先；UNKNOWN 允许本地学习环境继续运行，但低于明确 healthy；DEGRADED 可作为兜底候选；
+        UNAVAILABLE/熔断必须排到最后，并在实际选择循环中跳过。
+        """
+
+        return {
+            ModelProviderHealthStatus.HEALTHY: 0,
+            ModelProviderHealthStatus.UNKNOWN: 1,
+            ModelProviderHealthStatus.DEGRADED: 2,
+            ModelProviderHealthStatus.UNAVAILABLE: 99,
+        }.get(status, 50)
+
+    @staticmethod
+    def _latency_rank(route: ModelRoute, context: ModelGatewayRequestContext) -> int:
+        """计算延迟等级匹配分，越小越优。"""
 
         if context.latency_tier is None:
-            return candidates
-        return tuple(
-            sorted(
-                candidates,
-                key=lambda route: (
-                    route.latency_tier != context.latency_tier,
-                    route.priority,
-                ),
-            )
-        )
+            return 0
+        return 0 if route.latency_tier == context.latency_tier else 1
 
     @staticmethod
     def _build_notes(
