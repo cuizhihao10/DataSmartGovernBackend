@@ -138,6 +138,13 @@ from datasmart_ai_runtime.services.memory.memory_secondary_index_sync import (
     NoopAgentMemorySecondaryIndexSyncAdapter,
     secondary_index_sync_diagnostics,
 )
+from datasmart_ai_runtime.services.memory.memory_chroma_adapter import (
+    AgentMemoryEmbeddingProvider,
+    ChromaCollectionPort,
+    ChromaSemanticMemoryAdapterSettings,
+    ChromaSemanticMemorySyncAdapter,
+    DeterministicHashEmbeddingProvider,
+)
 from datasmart_ai_runtime.services.memory.memory_sql_store import SqlAgentMemoryStore
 from datasmart_ai_runtime.services.memory.memory_write_candidate_factory import AgentMemoryWriteCandidateFactory
 from datasmart_ai_runtime.services.memory.memory_write_candidate_store import (
@@ -224,6 +231,11 @@ __all__ = [
     "AgentMemorySecondaryIndexSyncTaskStore",
     "AgentMemorySecondaryIndexSyncWorker",
     "AgentMemorySecondaryIndexSyncWorkerReport",
+    "AgentMemoryEmbeddingProvider",
+    "ChromaCollectionPort",
+    "ChromaSemanticMemoryAdapterSettings",
+    "ChromaSemanticMemorySyncAdapter",
+    "DeterministicHashEmbeddingProvider",
     "AgentMemoryWorkspaceBinding",
     "AgentMemoryWorkspaceSupport",
     "AgentMemoryWriteCandidateFactory",

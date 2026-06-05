@@ -1,5 +1,12 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-05 落地补充：semantic memory adapters should enforce metadata filters first
+
+- 本阶段新增 Chroma-compatible semantic memory adapter，把 `semantic + vector` 同步任务从 no-op 推进到可注入真实 collection 的端口实现。它不强依赖 Chroma SDK，而是定义 `ChromaCollectionPort` 和 `AgentMemoryEmbeddingProvider`，让 Chroma Open Source、Chroma Cloud、pgvector 或企业内部向量平台都能接入。
+- 关键工程点不是“能不能 upsert 一段文本”，而是 metadata filter 边界。adapter 强制写入 tenantId、projectId、sessionId、workspaceKey、memoryNamespace、memoryType、scope 和 payloadPolicy，避免向量库后续跨 workspace 或跨项目召回。
+- 当前仍未启用真实 Chroma 查询，也没有批量 embedding worker。DataSmart 选择先落同步 adapter 和 metadata 契约，是为了避免常见误区：向量库接得很快，但忘记审批、namespace、遗忘、重建、指标和审计。
+- 这一步完成后，长期记忆主线已经有候选治理、正式 store、物化 runner、审计 outbox、二级索引路由、同步 worker 和 semantic vector adapter 端口。下一步更应切到多 Agent 协作/智能网关会话调度，把项目从 memory 局部带回整体 Agent 平台。
+
 ## 2026-06-05 落地补充：secondary memory indexes need durable sync tasks
 
 - 本阶段把长期记忆二级索引从“路由契约”推进到“同步任务契约”。成熟 Agent memory 不是把正式记忆写入 store 就结束了，还要把同一条受治理记忆同步到 vector、graph、resource 或 keyword 索引，并能观察哪些索引已经同步、哪些失败、哪些进入 DLQ。

@@ -1,5 +1,35 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-05 追加落地进展：Chroma-compatible 语义记忆适配器
+
+- Python Runtime 新增 `memory_chroma_adapter.py`：
+  - `ChromaCollectionPort` 定义 Chroma-compatible collection 的最小 upsert 端口；
+  - `AgentMemoryEmbeddingProvider` 定义 embedding provider 注入端口；
+  - `ChromaSemanticMemorySyncAdapter` 只处理 `indexKind=vector` 且 `memoryType=semantic` 的同步任务；
+  - `DeterministicHashEmbeddingProvider` 仅用于本地测试和状态机验证，不作为生产 embedding 模型。
+- Adapter 同步时会：
+  - 按 candidateId 从正式记忆 store 读取记忆；
+  - 校验 task 的 memoryId、workspaceKey、memoryNamespace 与正式记忆一致；
+  - 生成低敏 document；
+  - 调用注入式 embedding provider；
+  - 调用注入式 Chroma collection upsert；
+  - metadata 强制携带 tenantId、projectId、sessionId、workspaceKey、memoryNamespace、memoryType、scope、payloadPolicy 和 expiresAt。
+
+产品意义：
+- 这一步把 semantic memory 的 vector 通道从 no-op 任务推进到可接真实 Chroma collection 的适配端口。
+- 仍不硬依赖 Chroma SDK，避免本地学习环境和 CI 被外部服务卡住。
+- 最关键的生产边界已经进入代码：`memoryNamespace` 必须作为向量索引 metadata filter 基础字段，不能只靠模型自行忽略跨 workspace 结果。
+
+当前边界：
+- 默认 API runtime 尚未自动启用该 adapter；生产需要显式注入真实 Chroma collection 和 embedding provider。
+- 当前没有实现查询侧 Chroma similarity search，retriever 仍通过 store-backed 索引窗口验证主链路。
+- 当前没有 embedding 模型网关真实调用、批量向量化、索引延迟指标或重建任务。
+
+下一步推荐路线：
+1. 长期记忆主线到这里应暂时收束，不建议继续马上实现完整 Chroma 查询、Neo4j 和 MinIO。
+2. 下一阶段建议切到多 Agent 协作/智能网关会话调度，把 Master Agent、专职 Agent、工具预算、记忆和 Skill 可见性放进统一会话策略视图。
+3. 后续回到 memory 时，再做 Chroma query adapter、metadata filter 查询测试、索引同步指标和管理员重建入口。
+
 ## 2026-06-05 追加落地进展：长期记忆二级索引同步 worker 契约
 
 - Python Runtime 新增 `memory_secondary_index_sync.py`：
