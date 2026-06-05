@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.agent.service.execution.confirmation;
 
+import com.czh.datasmart.govern.agent.model.AgentHandoffDagBridgeSourceEvidence;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -41,7 +42,7 @@ final class JdbcAgentRunToolDagConfirmationRecordMapper {
     static final String SELECT_COLUMNS = """
             confirmation_id, session_id, run_id, selection_fingerprint,
             selected_node_ids, selected_audit_ids, policy_versions, delegation_evidence,
-            outbox_ids, command_ids, tenant_id, project_id, workspace_id, actor_id, trace_id,
+            bridge_source_evidence, outbox_ids, command_ids, tenant_id, project_id, workspace_id, actor_id, trace_id,
             confirmed, status, expires_at, create_time, update_time
             """;
 
@@ -56,12 +57,12 @@ final class JdbcAgentRunToolDagConfirmationRecordMapper {
             INSERT INTO agent_run_tool_dag_confirmation (
                 confirmation_id, session_id, run_id, selection_fingerprint,
                 selected_node_ids, selected_audit_ids, policy_versions, delegation_evidence,
-                outbox_ids, command_ids, tenant_id, project_id, workspace_id, actor_id, trace_id,
+                bridge_source_evidence, outbox_ids, command_ids, tenant_id, project_id, workspace_id, actor_id, trace_id,
                 confirmed, status, expires_at, create_time, update_time
             ) VALUES (
                 ?, ?, ?, ?,
                 ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?
             )
             """;
@@ -91,6 +92,7 @@ final class JdbcAgentRunToolDagConfirmationRecordMapper {
         statement.setString(index++, toJson(record.selectedAuditIds(), objectMapper, "selectedAuditIds"));
         statement.setString(index++, toJson(record.policyVersions(), objectMapper, "policyVersions"));
         statement.setString(index++, toJson(record.delegationEvidence(), objectMapper, "delegationEvidence"));
+        setNullableString(statement, index++, toJson(record.bridgeSourceEvidence(), objectMapper, "bridgeSourceEvidence"));
         statement.setString(index++, toJson(record.outboxIds(), objectMapper, "outboxIds"));
         statement.setString(index++, toJson(record.commandIds(), objectMapper, "commandIds"));
         setNullableLong(statement, index++, record.tenantId());
@@ -122,6 +124,7 @@ final class JdbcAgentRunToolDagConfirmationRecordMapper {
                 fromJson(resultSet.getString("selected_audit_ids"), objectMapper, "selected_audit_ids"),
                 fromJson(resultSet.getString("policy_versions"), objectMapper, "policy_versions"),
                 fromJson(resultSet.getString("delegation_evidence"), objectMapper, "delegation_evidence"),
+                fromBridgeSourceJson(resultSet.getString("bridge_source_evidence"), objectMapper, "bridge_source_evidence"),
                 fromJson(resultSet.getString("outbox_ids"), objectMapper, "outbox_ids"),
                 fromJson(resultSet.getString("command_ids"), objectMapper, "command_ids"),
                 getNullableLong(resultSet, "tenant_id"),
@@ -159,6 +162,19 @@ final class JdbcAgentRunToolDagConfirmationRecordMapper {
         }
     }
 
+    private static String toJson(AgentHandoffDagBridgeSourceEvidence value,
+                                 ObjectMapper objectMapper,
+                                 String fieldName) throws SQLException {
+        if (value == null) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException exception) {
+            throw new SQLException("序列化 DAG 确认记录 bridge 来源证据失败: " + fieldName, exception);
+        }
+    }
+
     private static List<String> fromJson(String json, ObjectMapper objectMapper, String columnName) throws SQLException {
         if (json == null || json.isBlank()) {
             return List.of();
@@ -167,6 +183,19 @@ final class JdbcAgentRunToolDagConfirmationRecordMapper {
             return objectMapper.readValue(json, STRING_LIST_TYPE);
         } catch (JsonProcessingException exception) {
             throw new SQLException("反序列化 DAG 确认记录 JSON 字段失败: " + columnName, exception);
+        }
+    }
+
+    private static AgentHandoffDagBridgeSourceEvidence fromBridgeSourceJson(String json,
+                                                                            ObjectMapper objectMapper,
+                                                                            String columnName) throws SQLException {
+        if (json == null || json.isBlank()) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(json, AgentHandoffDagBridgeSourceEvidence.class);
+        } catch (JsonProcessingException exception) {
+            throw new SQLException("反序列化 DAG 确认记录 bridge 来源证据失败: " + columnName, exception);
         }
     }
 

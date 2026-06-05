@@ -112,7 +112,8 @@ class AgentRunAsyncTaskCommandOutboxServiceTest {
                 new AgentAsyncTaskCommandExecutionEvidence(
                         "dag-confirmation:test-001",
                         List.of("route-policy:860"),
-                        List.of("serviceAccount=datasmart-agent-runtime;representedActor=actor-outbox")
+                        List.of("serviceAccount=datasmart-agent-runtime;representedActor=actor-outbox"),
+                        null
                 )
         );
 

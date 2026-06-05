@@ -259,6 +259,14 @@ public class AgentRunAsyncTaskCommandOutboxService {
             payload.put("confirmationId", executionEvidence.confirmationId());
             payload.put("policyVersions", executionEvidence.policyVersions());
             payload.put("delegationEvidence", executionEvidence.delegationEvidence());
+            /*
+             * bridgeSourceEvidence 只在 selected-node confirmation 明确来自 handoff DAG bridge preview 时写入。
+             * 它让后续 task-management worker、审计台和补偿台能解释“这条异步命令是从哪次 handoff tool-control
+             * 预检推进而来”，但 worker 仍必须通过 confirmationId 回查 confirmation 记录，不能只凭该字段执行。
+             */
+            if (executionEvidence.bridgeSourceEvidence() != null) {
+                payload.put("bridgeSourceEvidence", executionEvidence.bridgeSourceEvidence());
+            }
         }
         payload.put("priority", properties.getDefaultPriority());
         payload.put("maxRetryCount", properties.getDefaultMaxRetryCount());

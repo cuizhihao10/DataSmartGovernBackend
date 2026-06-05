@@ -133,6 +133,7 @@ class AgentRunToolDagConfirmationQueryServiceTest {
                 List.of("audit-a"),
                 List.of("route-policy:1"),
                 List.of("serviceAccount=datasmart-agent-runtime;representedActor=" + actorId),
+                null,
                 List.of("outbox-a"),
                 List.of("command-a"),
                 10L,

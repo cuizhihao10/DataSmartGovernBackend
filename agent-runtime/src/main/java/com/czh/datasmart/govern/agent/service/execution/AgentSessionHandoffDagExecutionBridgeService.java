@@ -11,6 +11,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagExecutionDry
 import com.czh.datasmart.govern.agent.controller.dto.AgentSessionHandoffDagExecutionBridgePreviewRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentSessionHandoffDagExecutionBridgePreviewResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolDagExecutionDryRunItemView;
+import com.czh.datasmart.govern.agent.model.AgentHandoffDagBridgeSourceEvidence;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -97,7 +98,8 @@ public class AgentSessionHandoffDagExecutionBridgeService {
                 && dryRun.selectedCount() != null
                 && dryRun.selectedCount() > 0;
         Map<String, Object> template = Boolean.TRUE.equals(safeRequest.buildSelectedNodeOutboxTemplate())
-                ? selectedNodeOutboxTemplate(dryRun)
+                ? selectedNodeOutboxTemplate(dryRun, handoffNodeIds, mappedToolNodeIds, mappedToolAuditIds,
+                bridgeAction, bridgeReady, traceId)
                 : Map.of();
 
         AgentSessionHandoffDagExecutionBridgePreviewResponse response = new AgentSessionHandoffDagExecutionBridgePreviewResponse(
@@ -137,7 +139,13 @@ public class AgentSessionHandoffDagExecutionBridgeService {
         return ACTION_TOOL_CONTROL_DRY_RUN;
     }
 
-    private Map<String, Object> selectedNodeOutboxTemplate(AgentRunToolDagExecutionDryRunResponse dryRun) {
+    private Map<String, Object> selectedNodeOutboxTemplate(AgentRunToolDagExecutionDryRunResponse dryRun,
+                                                           List<String> handoffNodeIds,
+                                                           List<String> mappedToolNodeIds,
+                                                           List<String> mappedToolAuditIds,
+                                                           String bridgeAction,
+                                                           boolean bridgeReady,
+                                                           String traceId) {
         List<String> asyncNodeIds = new ArrayList<>();
         List<String> asyncAuditIds = new ArrayList<>();
         Map<String, String> policyVersionsByAuditId = new LinkedHashMap<>();
@@ -162,6 +170,22 @@ public class AgentSessionHandoffDagExecutionBridgeService {
         template.put("maxNodes", dryRun.requestedMaxNodes());
         template.put("expectedDryRunFingerprint", dryRun.selectionFingerprint());
         template.put("expectedPolicyVersionsByAuditId", Map.copyOf(policyVersionsByAuditId));
+        /*
+         * bridgeSourceEvidence 是本阶段新增的“证据传递钩子”：
+         * - bridge preview 不直接执行工具，因此它需要把来源摘要交给下一步 selected-node confirmation；
+         * - selected-node endpoint 收到该对象后仍会重新 dry-run、重新校验 fingerprint 和 auditId 范围；
+         * - 对象中不包含 targetEndpoint、工具参数、SQL、prompt 或完整 request template，只保存低敏控制面摘要。
+         */
+        template.put("bridgeSourceEvidence", AgentHandoffDagBridgeSourceEvidence.handoffBridgePreview(
+                bridgeAction,
+                bridgeReady,
+                dryRun.selectionFingerprint(),
+                handoffNodeIds,
+                mappedToolNodeIds.isEmpty() ? asyncNodeIds : mappedToolNodeIds,
+                mappedToolAuditIds.isEmpty() ? asyncAuditIds : mappedToolAuditIds,
+                traceId,
+                AgentSessionHandoffDagExecutionBridgeEventPublisher.EVENT_TYPE
+        ));
         /*
          * 这里必须明确为 false。桥接预览只负责告诉调用方“如果要继续，应携带哪些字段去 selected-node outbox endpoint”，
          * 不替用户、策略或审批流做最终确认。真实确认时调用方必须显式把 confirmed 改为 true，服务端仍会重新 dry-run。

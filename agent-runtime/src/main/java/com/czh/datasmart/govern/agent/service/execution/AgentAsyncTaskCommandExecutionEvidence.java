@@ -6,6 +6,8 @@
  */
 package com.czh.datasmart.govern.agent.service.execution;
 
+import com.czh.datasmart.govern.agent.model.AgentHandoffDagBridgeSourceEvidence;
+
 import java.util.List;
 
 /**
@@ -22,7 +24,14 @@ import java.util.List;
 public record AgentAsyncTaskCommandExecutionEvidence(
         String confirmationId,
         List<String> policyVersions,
-        List<String> delegationEvidence
+        List<String> delegationEvidence,
+        /*
+         * 可选的 handoff DAG bridge preview 来源证据。
+         *
+         * 该字段会随 command payload 进入 task-management/worker 侧，用于解释“这条命令来自哪次
+         * handoff tool-control 预检”。它不能替代 confirmationId 回查，也不能作为授权依据。
+         */
+        AgentHandoffDagBridgeSourceEvidence bridgeSourceEvidence
 ) {
 
     /**
@@ -45,6 +54,11 @@ public record AgentAsyncTaskCommandExecutionEvidence(
                 .map(String::trim)
                 .distinct()
                 .toList();
+        /*
+         * bridgeSourceEvidence 允许为空，原因是历史 command、Run 级兼容入口和直接 Tool DAG dry-run 入口
+         * 可能没有 handoff bridge 来源。它一旦存在，也只作为低敏审计上下文进入 payload；worker 仍必须
+         * 通过 confirmationId 回查 confirmation 表，不能只凭该来源证据执行真实副作用。
+         */
     }
 
     /**
@@ -55,7 +69,7 @@ public record AgentAsyncTaskCommandExecutionEvidence(
      * payload 组装时再根据 confirmationId 是否存在决定是否写入证据字段。</p>
      */
     public static AgentAsyncTaskCommandExecutionEvidence empty() {
-        return new AgentAsyncTaskCommandExecutionEvidence(null, List.of(), List.of());
+        return new AgentAsyncTaskCommandExecutionEvidence(null, List.of(), List.of(), null);
     }
 
     /**

@@ -16,6 +16,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentToolDagExecutionDryRun
 import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
 import com.czh.datasmart.govern.agent.config.AgentRunToolDagConfirmationProperties;
 import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcConnectionManager;
+import com.czh.datasmart.govern.agent.model.AgentHandoffDagBridgeSourceEvidence;
 import com.czh.datasmart.govern.agent.service.execution.confirmation.AgentRunToolDagConfirmationRecord;
 import com.czh.datasmart.govern.agent.service.execution.confirmation.AgentRunToolDagConfirmationStatus;
 import com.czh.datasmart.govern.agent.service.execution.confirmation.AgentRunToolDagConfirmationStore;
@@ -61,6 +62,7 @@ public class AgentRunToolDagSelectedNodeOutboxService {
     private final AgentAsyncTaskCommandOutboxProperties outboxProperties;
     private final AgentRunToolDagConfirmationProperties confirmationProperties;
     private final Optional<AgentRuntimeJdbcConnectionManager> jdbcConnectionManager;
+    private final AgentHandoffDagBridgeSourceEvidenceValidator bridgeSourceEvidenceValidator;
 
     /**
      * 将调用方明确确认的异步 DAG 节点写入 outbox。
@@ -91,7 +93,9 @@ public class AgentRunToolDagSelectedNodeOutboxService {
         ensureFingerprintMatches(request.expectedDryRunFingerprint(), dryRun.selectionFingerprint());
         Set<String> selectedAuditIds = requireOnlyAsyncOutboxCandidates(dryRun);
         ensurePolicyVersionsMatch(request.expectedPolicyVersionsByAuditId(), dryRun, selectedAuditIds);
-        return persistOutboxAndConfirmation(sessionId, runId, request, traceId, dryRun, selectedAuditIds);
+        AgentHandoffDagBridgeSourceEvidence bridgeSourceEvidence =
+                bridgeSourceEvidenceValidator.validate(request.bridgeSourceEvidence(), dryRun, request, selectedAuditIds);
+        return persistOutboxAndConfirmation(sessionId, runId, request, traceId, dryRun, selectedAuditIds, bridgeSourceEvidence);
     }
 
     /**
@@ -111,14 +115,17 @@ public class AgentRunToolDagSelectedNodeOutboxService {
             AgentRunToolDagSelectedNodeOutboxEnqueueRequest request,
             String traceId,
             AgentRunToolDagExecutionDryRunResponse dryRun,
-            Set<String> selectedAuditIds) {
+            Set<String> selectedAuditIds,
+            AgentHandoffDagBridgeSourceEvidence bridgeSourceEvidence) {
         Optional<AgentRuntimeJdbcConnectionManager> manager = selectedNodeDurableTransactionManager();
         if (manager.isPresent()) {
             return manager.get().executeInTransaction(connection ->
-                    persistOutboxAndConfirmationInCurrentBoundary(sessionId, runId, request, traceId, dryRun, selectedAuditIds)
+                    persistOutboxAndConfirmationInCurrentBoundary(sessionId, runId, request, traceId,
+                            dryRun, selectedAuditIds, bridgeSourceEvidence)
             );
         }
-        return persistOutboxAndConfirmationInCurrentBoundary(sessionId, runId, request, traceId, dryRun, selectedAuditIds);
+        return persistOutboxAndConfirmationInCurrentBoundary(sessionId, runId, request, traceId,
+                dryRun, selectedAuditIds, bridgeSourceEvidence);
     }
 
     /**
@@ -134,13 +141,14 @@ public class AgentRunToolDagSelectedNodeOutboxService {
             AgentRunToolDagSelectedNodeOutboxEnqueueRequest request,
             String traceId,
             AgentRunToolDagExecutionDryRunResponse dryRun,
-            Set<String> selectedAuditIds) {
+            Set<String> selectedAuditIds,
+            AgentHandoffDagBridgeSourceEvidence bridgeSourceEvidence) {
         AgentRunAsyncTaskCommandOutboxEnqueueResponse outbox =
                 outboxService.enqueueSelectedRunAsyncTaskCommands(
                         sessionId,
                         runId,
                         selectedAuditIds,
-                        executionEvidenceByAuditId(sessionId, runId, dryRun, selectedAuditIds)
+                        executionEvidenceByAuditId(sessionId, runId, dryRun, selectedAuditIds, bridgeSourceEvidence)
                 );
         AgentRunToolDagConfirmationRecord confirmation = saveConfirmation(
                 sessionId,
@@ -149,7 +157,8 @@ public class AgentRunToolDagSelectedNodeOutboxService {
                 dryRun,
                 selectedAuditIds,
                 outbox,
-                traceId
+                traceId,
+                bridgeSourceEvidence
         );
         return new AgentRunToolDagSelectedNodeOutboxEnqueueResponse(
                 sessionId,
@@ -196,7 +205,8 @@ public class AgentRunToolDagSelectedNodeOutboxService {
                                                                AgentRunToolDagExecutionDryRunResponse dryRun,
                                                                Set<String> selectedAuditIds,
                                                                AgentRunAsyncTaskCommandOutboxEnqueueResponse outbox,
-                                                               String traceId) {
+                                                               String traceId,
+                                                               AgentHandoffDagBridgeSourceEvidence bridgeSourceEvidence) {
         Instant now = Instant.now();
         Instant expiresAt = now.plusSeconds(Math.max(1, confirmationProperties.getConfirmationTtlSeconds()));
         List<AgentAsyncTaskCommandOutboxRecordView> outboxItems = outbox.items() == null ? List.of() : outbox.items();
@@ -210,6 +220,7 @@ public class AgentRunToolDagSelectedNodeOutboxService {
                 selectedAuditIds.stream().sorted().toList(),
                 collectPolicyVersions(dryRun, selectedAuditIds),
                 collectDelegationEvidence(dryRun, selectedAuditIds),
+                bridgeSourceEvidence,
                 outboxItems.stream().map(AgentAsyncTaskCommandOutboxRecordView::outboxId).filter(this::hasText).toList(),
                 outboxItems.stream().map(AgentAsyncTaskCommandOutboxRecordView::commandId).filter(this::hasText).toList(),
                 first == null ? null : first.tenantId(),
@@ -233,7 +244,8 @@ public class AgentRunToolDagSelectedNodeOutboxService {
             String sessionId,
             String runId,
             AgentRunToolDagExecutionDryRunResponse dryRun,
-            Set<String> selectedAuditIds) {
+            Set<String> selectedAuditIds,
+            AgentHandoffDagBridgeSourceEvidence bridgeSourceEvidence) {
         /*
          * 为本次 selected-node 确认生成稳定 confirmationId，并把它按 auditId 附加到每条异步 command。
          *
@@ -253,7 +265,8 @@ public class AgentRunToolDagSelectedNodeOutboxService {
             evidenceByAuditId.put(item.auditId(), new AgentAsyncTaskCommandExecutionEvidence(
                     confirmationId,
                     item.serviceAuthorizationPolicyVersions(),
-                    item.serviceAuthorizationDelegationEvidence()
+                    item.serviceAuthorizationDelegationEvidence(),
+                    bridgeSourceEvidence
             ));
         }
         return Map.copyOf(evidenceByAuditId);

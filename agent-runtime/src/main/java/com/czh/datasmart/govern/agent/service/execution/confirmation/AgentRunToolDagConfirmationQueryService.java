@@ -97,6 +97,7 @@ public class AgentRunToolDagConfirmationQueryService {
                 record.selectedAuditIds(),
                 record.policyVersions(),
                 record.delegationEvidence(),
+                record.bridgeSourceEvidence(),
                 record.outboxIds(),
                 record.commandIds(),
                 record.tenantId(),

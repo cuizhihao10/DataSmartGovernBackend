@@ -230,6 +230,7 @@ class AgentAsyncTaskCommandPreCheckServiceTest {
                 List.of(AUDIT_ID),
                 policyVersions,
                 List.of("delegation-precheck"),
+                null,
                 List.of("outbox-precheck"),
                 List.of(COMMAND_ID),
                 10L,

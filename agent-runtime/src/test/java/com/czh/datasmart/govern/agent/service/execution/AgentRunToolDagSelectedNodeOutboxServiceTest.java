@@ -19,6 +19,7 @@ import com.czh.datasmart.govern.agent.event.NoopAgentToolExecutionEventPublisher
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxRecord;
 import com.czh.datasmart.govern.agent.event.command.InMemoryAgentAsyncTaskCommandOutboxStore;
 import com.czh.datasmart.govern.agent.model.AgentRunState;
+import com.czh.datasmart.govern.agent.model.AgentHandoffDagBridgeSourceEvidence;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionMode;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
 import com.czh.datasmart.govern.agent.model.AgentToolRiskLevel;
@@ -160,6 +161,67 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
     }
 
     @Test
+    void bridgeSourceEvidenceShouldBePersistedAndPropagatedToOutboxPayload() {
+        TestFixture fixture = newFixture();
+        fixture.saveAudits(asyncAudit("audit-async", "data-sync-execute", Map.of()));
+        AgentRunToolDagExecutionDryRunResponse dryRun = fixture.dryRun(List.of("data-sync-execute"));
+        AgentHandoffDagBridgeSourceEvidence bridgeSourceEvidence = AgentHandoffDagBridgeSourceEvidence.handoffBridgePreview(
+                AgentHandoffDagBridgeSourceEvidence.BRIDGE_ACTION_TOOL_CONTROL_DRY_RUN,
+                true,
+                dryRun.selectionFingerprint(),
+                List.of("tool-control"),
+                List.of("data-sync-execute"),
+                List.of("audit-async"),
+                "trace-handoff-bridge-preview",
+                AgentSessionHandoffDagExecutionBridgeEventPublisher.EVENT_TYPE
+        );
+
+        AgentRunToolDagSelectedNodeOutboxEnqueueResponse response = fixture.confirm(
+                List.of("data-sync-execute"),
+                dryRun.selectionFingerprint(),
+                Map.of(),
+                bridgeSourceEvidence
+        );
+
+        AgentRunToolDagConfirmationRecord confirmation = fixture.confirmationStore
+                .findByConfirmationId(response.confirmationId())
+                .orElseThrow();
+        assertEquals(bridgeSourceEvidence, confirmation.bridgeSourceEvidence());
+        AgentAsyncTaskCommandOutboxRecord command = fixture.store.list(RUN_ID, null, 10).getFirst();
+        assertTrue(command.payloadJson().contains("\"bridgeSourceEvidence\""));
+        assertTrue(command.payloadJson().contains("\"sourceType\":\"HANDOFF_DAG_BRIDGE_PREVIEW\""));
+        assertTrue(command.payloadJson().contains("\"previewTraceId\":\"trace-handoff-bridge-preview\""));
+        assertTrue(command.payloadJson().contains("\"mappedToolAuditIds\":[\"audit-async\"]"));
+        assertTrue(command.payloadJson().contains("\"confirmationId\":\"" + response.confirmationId() + "\""));
+    }
+
+    @Test
+    void bridgeSourceEvidenceShouldRejectAuditOutsidePreviewMapping() {
+        TestFixture fixture = newFixture();
+        fixture.saveAudits(asyncAudit("audit-async", "data-sync-execute", Map.of()));
+        AgentRunToolDagExecutionDryRunResponse dryRun = fixture.dryRun(List.of("data-sync-execute"));
+        AgentHandoffDagBridgeSourceEvidence forgedEvidence = AgentHandoffDagBridgeSourceEvidence.handoffBridgePreview(
+                AgentHandoffDagBridgeSourceEvidence.BRIDGE_ACTION_TOOL_CONTROL_DRY_RUN,
+                true,
+                dryRun.selectionFingerprint(),
+                List.of("tool-control"),
+                List.of("data-sync-execute"),
+                List.of("audit-other"),
+                "trace-handoff-bridge-preview",
+                AgentSessionHandoffDagExecutionBridgeEventPublisher.EVENT_TYPE
+        );
+
+        assertThrows(PlatformBusinessException.class, () -> fixture.confirm(
+                List.of("data-sync-execute"),
+                dryRun.selectionFingerprint(),
+                Map.of(),
+                forgedEvidence
+        ));
+        assertTrue(fixture.store.list(RUN_ID, null, 10).isEmpty());
+        assertTrue(fixture.confirmationStore.listByRun(RUN_ID, 10).isEmpty());
+    }
+
+    @Test
     void missingExpectedPolicyVersionShouldFailClosedWhenPermissionAdminReturnsVersion() {
         TestFixture fixture = newPermissionAdminFixture("policy:data-sync:v1", "delegation:evidence:001");
         fixture.saveAudits(asyncAudit("audit-async", "data-sync-execute", Map.of()));
@@ -201,7 +263,8 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
                                 null,
                                 "dag-selection:any",
                                 Map.of(),
-                                true
+                                true,
+                                null
                         ),
                         "trace-selected"
                 ));
@@ -327,7 +390,8 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
                 confirmationStore,
                 outboxProperties,
                 confirmationProperties,
-                jdbcConnectionManager
+                jdbcConnectionManager,
+                new AgentHandoffDagBridgeSourceEvidenceValidator()
         );
         AgentSessionRecord session = new AgentSessionRecord(
                 SESSION_ID,
@@ -455,6 +519,13 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
         AgentRunToolDagSelectedNodeOutboxEnqueueResponse confirm(List<String> nodeIds,
                                                                  String fingerprint,
                                                                  Map<String, String> expectedPolicyVersions) {
+            return confirm(nodeIds, fingerprint, expectedPolicyVersions, null);
+        }
+
+        AgentRunToolDagSelectedNodeOutboxEnqueueResponse confirm(List<String> nodeIds,
+                                                                 String fingerprint,
+                                                                 Map<String, String> expectedPolicyVersions,
+                                                                 AgentHandoffDagBridgeSourceEvidence bridgeSourceEvidence) {
             return service.enqueueSelectedAsyncNodes(
                     SESSION_ID,
                     RUN_ID,
@@ -464,7 +535,8 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
                             null,
                             fingerprint,
                             expectedPolicyVersions,
-                            true
+                            true,
+                            bridgeSourceEvidence
                     ),
                     "trace-selected"
             );

@@ -9762,3 +9762,61 @@ policyVersion 摘要和 selected-node outbox 请求模板。
 2. 补齐 data-sync、permission-admin、task-management 专属 Skill 和工具契约，让桥接预览覆盖更多商业化核心微服务。
 3. 完成桥接证据闭环后，建议切到模型 provider health、KV/prefix cache、MCP/A2A adapter 或 Python Runtime 真实 Agent 编排，避免 Java preview 链路无限细化。
 4. 如果前端开始高频消费该 timeline，再评估 dedicated index、低基数指标和诊断接口。
+
+## 5.19 Handoff Bridge 来源证据贯通 selected-node confirmation/outbox（2026-06-05）
+
+本阶段承接 5.18，把 handoff bridge preview 的低敏来源证据继续串入 selected-node confirmation 与异步 command
+outbox。目标不是增加新的执行权限，也不是让 bridge preview 变成授权令牌，而是让“从 handoff DAG 的 `tool-control`
+节点进入工具预检，再由用户/Agent Host 显式确认入箱”的 durable action 链条具备可追溯来源。
+
+已完成：
+- 新增 `AgentHandoffDagBridgeSourceEvidence`：
+  - 标识来源类型 `HANDOFF_DAG_BRIDGE_PREVIEW`；
+  - 记录 bridgeAction、bridgeReady、selectionFingerprint、handoffNodeIds、mappedToolNodeIds、mappedToolAuditIds；
+  - 记录 previewTraceId 与 previewEventType，便于审计台把 confirmation/outbox 反查到 bridge preview timeline；
+  - 字段全部为低敏摘要，不保存 prompt、SQL、工具参数、targetEndpoint、executionPath、样例数据或完整模板。
+- 新增 `AgentHandoffDagBridgeSourceEvidenceValidator`：
+  - 将来源证据校验从 selected-node outbox 主服务拆出，保持主服务行数低于 500 行；
+  - 对 sourceType、bridgeAction、bridgeReady、tool-control 节点、selectionFingerprint 做 fail-closed 校验；
+  - 若 evidence 携带 mappedToolAuditIds，则要求最终 selectedAuditIds 是其子集；
+  - 若 evidence 携带 mappedToolNodeIds 且请求按 nodeId 确认，则要求请求 nodeId 不超出 bridge preview 映射范围。
+- `AgentSessionHandoffDagExecutionBridgeService` 增强：
+  - bridge preview 的 selected-node request template 新增 `bridgeSourceEvidence`；
+  - 模板仍默认 `confirmed=false`，继续防止 preview 响应被误用为真实执行确认。
+- selected-node confirmation/outbox 链路增强：
+  - `AgentRunToolDagSelectedNodeOutboxEnqueueRequest` 支持可选 `bridgeSourceEvidence`；
+  - `AgentRunToolDagConfirmationRecord` 与查询视图持久化并返回该低敏来源证据；
+  - `AgentAsyncTaskCommandExecutionEvidence` 与 outbox payload 透传该证据，便于 dispatcher/worker pre-check 后续继续验证来源；
+  - 该证据不替代当前 dry-run、指纹、policyVersion、沙箱、容量、confirmation 和 worker pre-check。
+- JDBC/SQL 增强：
+  - `agent_run_tool_dag_confirmation` 新增 `bridge_source_evidence JSON DEFAULT NULL`；
+  - 初始化 SQL 与迁移 SQL 均同步该字段；
+  - 不为 JSON 字段建立索引，避免高基数 trace/节点列表进入数据库索引层，当前仅作为审计详情字段。
+- 测试增强：
+  - 覆盖 bridge evidence 从 template 到 confirmation 再到 outbox payload 的透传；
+  - 覆盖 auditId 超出 bridge preview 映射范围时拒绝入箱；
+  - 覆盖 JDBC mapper/store 对 `bridge_source_evidence` 的 JSON 序列化与反序列化；
+  - 覆盖旧入口 evidence 为空时仍保持兼容。
+
+验证：
+- `mvn -pl agent-runtime -am "-Dtest=AgentSessionHandoffDagExecutionBridgeServiceTest,AgentRunToolDagSelectedNodeOutboxServiceTest,AgentRunAsyncTaskCommandOutboxServiceTest,JdbcAgentRunToolDagConfirmationStoreTest,AgentRunToolDagConfirmationQueryServiceTest,AgentAsyncTaskCommandPreCheckServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：31 个测试通过。
+- `mvn -pl agent-runtime -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：216 个测试通过。
+- 关键 Java 文件行数检查：`AgentRunToolDagSelectedNodeOutboxService.java` 469 行、`AgentHandoffDagBridgeSourceEvidenceValidator.java` 187 行，符合当前 500 行内约束。
+
+产品意义：
+- Handoff DAG、bridge preview、Tool DAG dry-run、selected-node confirmation、command outbox 之间形成了第一条可追溯行动证据链。
+- 管理台和审计台后续可以解释“这个异步工具 command 是从哪次 handoff bridge preview 推进而来”，而不需要解析 prompt 或工具参数。
+- 该设计更接近 Codex/Claude Code 类 Agent Host 的受控行动链：Agent 可以规划和 handoff，但真实副作用必须经过可回放预检、显式确认、outbox 和 worker pre-check。
+- 通过拆出 validator，当前实现也回应了代码解耦要求：来源治理规则独立于 outbox 写入流程，后续接 MCP/A2A/人工补偿来源时不必继续膨胀主服务。
+
+当前边界：
+- `bridgeSourceEvidence` 不是授权令牌，也不是审批通过凭据；它只回答“这次确认声称来自哪次 bridge preview”。
+- 当前还没有 WebSocket live timeline 直接联动该证据，也没有 dedicated confirmation evidence index。
+- outbox payload 虽然携带 bridge 来源，但 dispatcher/worker 仍需要继续执行 confirmation、权限、容量和下游健康 pre-check。
+- data-sync、permission-admin、task-management 的专属 Skill/工具契约还需要继续补齐，否则 handoff DAG 的商业场景覆盖仍偏窄。
+
+下一步推荐路线：
+1. 不建议继续在 Java bridge preview 字段上无限细化；本阶段已经完成最小证据闭环。
+2. 推荐优先切到模型 provider health 与 KV/prefix cache 治理，让智能网关具备更真实的模型路由、成本、延迟和缓存判断能力。
+3. 也可以切到 MCP/A2A adapter 草案，把内部 Skill Manifest、handoff DAG 和工具控制面映射为外部协议契约。
+4. 如果继续做 Java agent-runtime，建议只做一小步 WebSocket/live timeline 联动或 worker pre-check 消费 bridge evidence，不要再扩成新的大局部。

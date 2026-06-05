@@ -12,6 +12,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentSessionHandoffDagExecu
 import com.czh.datasmart.govern.agent.controller.dto.AgentSessionHandoffDagExecutionBridgePreviewResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolDagExecutionDryRunItemView;
 import com.czh.datasmart.govern.agent.model.AgentRunState;
+import com.czh.datasmart.govern.agent.model.AgentHandoffDagBridgeSourceEvidence;
 import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventProjectionRecord;
 import com.czh.datasmart.govern.agent.service.runtime.InMemoryAgentRuntimeEventProjectionStore;
@@ -77,6 +78,12 @@ class AgentSessionHandoffDagExecutionBridgeServiceTest {
         assertEquals(List.of("tool-node-1"), response.selectedNodeOutboxRequestTemplate().get("nodeIds"));
         assertEquals(List.of("audit-1"), response.selectedNodeOutboxRequestTemplate().get("auditIds"));
         assertEquals(Map.of("audit-1", "policy:v1"), response.selectedNodeOutboxRequestTemplate().get("expectedPolicyVersionsByAuditId"));
+        AgentHandoffDagBridgeSourceEvidence bridgeSourceEvidence =
+                (AgentHandoffDagBridgeSourceEvidence) response.selectedNodeOutboxRequestTemplate().get("bridgeSourceEvidence");
+        assertEquals(AgentHandoffDagBridgeSourceEvidence.SOURCE_TYPE_HANDOFF_DAG_BRIDGE_PREVIEW, bridgeSourceEvidence.sourceType());
+        assertEquals("TOOL_CONTROL_DRY_RUN", bridgeSourceEvidence.bridgeAction());
+        assertEquals("dag-selection:test", bridgeSourceEvidence.selectionFingerprint());
+        assertEquals(List.of("audit-1"), bridgeSourceEvidence.mappedToolAuditIds());
         verify(dryRunService).dryRunDagExecution(eq(SESSION_ID), eq(RUN_ID), any(AgentRunToolDagExecutionDryRunRequest.class), eq("trace-bridge"));
         verify(bridgeEventPublisher).publish(eq(SESSION_ID), eq(RUN_ID), eq("trace-bridge"), any(AgentSessionHandoffDagExecutionBridgePreviewRequest.class), eq(response));
     }

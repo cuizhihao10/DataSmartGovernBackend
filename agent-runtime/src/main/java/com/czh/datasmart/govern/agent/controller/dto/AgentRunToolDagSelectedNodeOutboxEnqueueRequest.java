@@ -6,6 +6,8 @@
  */
 package com.czh.datasmart.govern.agent.controller.dto;
 
+import com.czh.datasmart.govern.agent.model.AgentHandoffDagBridgeSourceEvidence;
+
 import java.util.List;
 import java.util.Map;
 
@@ -31,6 +33,14 @@ public record AgentRunToolDagSelectedNodeOutboxEnqueueRequest(
         Integer maxNodes,
         String expectedDryRunFingerprint,
         Map<String, String> expectedPolicyVersionsByAuditId,
-        Boolean confirmed
+        Boolean confirmed,
+        /*
+         * 可选的 handoff DAG bridge preview 来源证据。
+         *
+         * 该字段不是授权令牌，也不替代服务端重新 dry-run。它只用于把“handoff DAG tool-control 预检”
+         * 与“selected-node confirmation”串成可审计证据链。服务端会校验其中的 fingerprint、handoff 节点
+         * 和 auditId 范围；校验失败时会 fail-closed，避免调用方用旧 bridge 或伪造来源推进真实副作用。
+         */
+        AgentHandoffDagBridgeSourceEvidence bridgeSourceEvidence
 ) {
 }

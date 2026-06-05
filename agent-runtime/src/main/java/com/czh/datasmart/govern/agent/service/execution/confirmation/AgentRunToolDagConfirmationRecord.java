@@ -6,6 +6,8 @@
  */
 package com.czh.datasmart.govern.agent.service.execution.confirmation;
 
+import com.czh.datasmart.govern.agent.model.AgentHandoffDagBridgeSourceEvidence;
+
 import java.time.Instant;
 import java.util.List;
 
@@ -33,6 +35,14 @@ public record AgentRunToolDagConfirmationRecord(
         List<String> selectedAuditIds,
         List<String> policyVersions,
         List<String> delegationEvidence,
+        /*
+         * Handoff DAG bridge preview 来源证据。
+         *
+         * 它用于解释“这次 selected-node confirmation 是否来自 handoff DAG 上的 tool-control 桥接预览”。
+         * 字段只保存来源摘要，不保存工具参数、SQL、prompt、targetEndpoint 或完整模板；为空表示历史调用方、
+         * 直接 Tool DAG dry-run 调用方或尚未接入 handoff bridge 的入口。
+         */
+        AgentHandoffDagBridgeSourceEvidence bridgeSourceEvidence,
         List<String> outboxIds,
         List<String> commandIds,
         Long tenantId,
@@ -56,6 +66,11 @@ public record AgentRunToolDagConfirmationRecord(
         selectedAuditIds = selectedAuditIds == null ? List.of() : List.copyOf(selectedAuditIds);
         policyVersions = policyVersions == null ? List.of() : List.copyOf(policyVersions);
         delegationEvidence = delegationEvidence == null ? List.of() : List.copyOf(delegationEvidence);
+        /*
+         * bridgeSourceEvidence 可以为空：历史 Run 级入口、直接从 Tool DAG dry-run 进入 selected-node 的调用方，
+         * 都可能没有 handoff DAG bridge preview 来源。为空不影响既有链路；一旦调用方提供，服务层会在保存前完成
+         * fingerprint、tool-control 和 auditId 范围校验。
+         */
         outboxIds = outboxIds == null ? List.of() : List.copyOf(outboxIds);
         commandIds = commandIds == null ? List.of() : List.copyOf(commandIds);
         confirmed = confirmed == null ? Boolean.TRUE : confirmed;

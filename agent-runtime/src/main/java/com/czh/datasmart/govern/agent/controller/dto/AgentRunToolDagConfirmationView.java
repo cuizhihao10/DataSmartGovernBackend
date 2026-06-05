@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.agent.controller.dto;
 
+import com.czh.datasmart.govern.agent.model.AgentHandoffDagBridgeSourceEvidence;
 import com.czh.datasmart.govern.agent.service.execution.confirmation.AgentRunToolDagConfirmationStatus;
 
 import java.time.Instant;
@@ -49,6 +50,13 @@ public record AgentRunToolDagConfirmationView(
         List<String> selectedAuditIds,
         List<String> policyVersions,
         List<String> delegationEvidence,
+        /*
+         * 可审计但低敏的 handoff bridge 来源摘要。
+         *
+         * 管理台可以用它把 confirmation 跳回 handoff DAG bridge preview 时间线，理解这次确认来自哪个
+         * tool-control 预检；但它不能被当成执行授权，也不包含任何工具参数或业务数据。
+         */
+        AgentHandoffDagBridgeSourceEvidence bridgeSourceEvidence,
         List<String> outboxIds,
         List<String> commandIds,
         Long tenantId,

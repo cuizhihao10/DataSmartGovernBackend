@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.service.execution.confirmation;
 
 import com.czh.datasmart.govern.agent.config.AgentRuntimePersistenceProperties;
+import com.czh.datasmart.govern.agent.model.AgentHandoffDagBridgeSourceEvidence;
 import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcConnectionManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -64,6 +65,7 @@ class JdbcAgentRunToolDagConfirmationStoreTest {
         assertEquals("dag-confirmation:001", saved.confirmationId());
         assertEquals(List.of("policy:v1"), saved.policyVersions());
         assertEquals(List.of("delegation:evidence:001"), saved.delegationEvidence());
+        assertEquals("trace-bridge-preview", saved.bridgeSourceEvidence().previewTraceId());
         verify(insertStatement).executeUpdate();
         verify(selectStatement).executeQuery();
         verify(insertConnection).close();
@@ -90,6 +92,8 @@ class JdbcAgentRunToolDagConfirmationStoreTest {
         assertEquals(List.of("audit-a"), records.getFirst().selectedAuditIds());
         assertEquals(List.of("outbox-a"), records.getFirst().outboxIds());
         assertEquals(List.of("command-a"), records.getFirst().commandIds());
+        assertEquals(AgentHandoffDagBridgeSourceEvidence.SOURCE_TYPE_HANDOFF_DAG_BRIDGE_PREVIEW,
+                records.getFirst().bridgeSourceEvidence().sourceType());
         assertTrue(records.getFirst().confirmed());
     }
 
@@ -113,6 +117,7 @@ class JdbcAgentRunToolDagConfirmationStoreTest {
                 List.of("audit-a"),
                 List.of("policy:v1"),
                 List.of("delegation:evidence:001"),
+                bridgeSourceEvidence(),
                 List.of("outbox-a"),
                 List.of("command-a"),
                 10L,
@@ -139,6 +144,19 @@ class JdbcAgentRunToolDagConfirmationStoreTest {
         when(resultSet.getString("selected_audit_ids")).thenReturn("[\"audit-a\"]");
         when(resultSet.getString("policy_versions")).thenReturn("[\"policy:v1\"]");
         when(resultSet.getString("delegation_evidence")).thenReturn("[\"delegation:evidence:001\"]");
+        when(resultSet.getString("bridge_source_evidence")).thenReturn("""
+                {
+                  "sourceType": "HANDOFF_DAG_BRIDGE_PREVIEW",
+                  "bridgeAction": "TOOL_CONTROL_DRY_RUN",
+                  "bridgeReady": true,
+                  "selectionFingerprint": "dag-selection:fingerprint",
+                  "handoffNodeIds": ["tool-control"],
+                  "mappedToolNodeIds": ["node-a"],
+                  "mappedToolAuditIds": ["audit-a"],
+                  "previewTraceId": "trace-bridge-preview",
+                  "previewEventType": "agent.handoff_dag.execution_bridge.previewed"
+                }
+                """);
         when(resultSet.getString("outbox_ids")).thenReturn("[\"outbox-a\"]");
         when(resultSet.getString("command_ids")).thenReturn("[\"command-a\"]");
         when(resultSet.getLong("tenant_id")).thenReturn(10L);
@@ -152,5 +170,18 @@ class JdbcAgentRunToolDagConfirmationStoreTest {
         when(resultSet.getTimestamp("expires_at")).thenReturn(Timestamp.from(expiresAt));
         when(resultSet.getTimestamp("create_time")).thenReturn(Timestamp.from(createdAt));
         when(resultSet.getTimestamp("update_time")).thenReturn(Timestamp.from(createdAt));
+    }
+
+    private AgentHandoffDagBridgeSourceEvidence bridgeSourceEvidence() {
+        return AgentHandoffDagBridgeSourceEvidence.handoffBridgePreview(
+                AgentHandoffDagBridgeSourceEvidence.BRIDGE_ACTION_TOOL_CONTROL_DRY_RUN,
+                true,
+                "dag-selection:fingerprint",
+                List.of("tool-control"),
+                List.of("node-a"),
+                List.of("audit-a"),
+                "trace-bridge-preview",
+                "agent.handoff_dag.execution_bridge.previewed"
+        );
     }
 }
