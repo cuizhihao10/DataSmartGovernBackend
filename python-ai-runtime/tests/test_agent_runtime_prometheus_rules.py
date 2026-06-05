@@ -9,9 +9,9 @@ class AgentRuntimePrometheusRuleContractTest(unittest.TestCase):
     这些测试不替代 `promtool check rules`。它们的价值是固定本项目自己的生产约束：
 
     1. agent-runtime 必须有独立 scrape job，避免和 Python AI Runtime 共用 8090；
-    2. pre-check 关键告警名称需要稳定，便于 Alertmanager、Grafana 和中文 runbook 引用；
+    2. pre-check 与 Skill 可见性索引关键告警名称需要稳定，便于 Alertmanager、Grafana 和中文 runbook 引用；
     3. 规则表达式不能选择 commandId、tenantId、runId、traceId 等高基数业务标签；
-    4. DEFERRED 比例告警必须用聚合后的 rate 表达，避免按实例或 targetService 误判。
+    4. DEFERRED、索引失败率和 fallback 查询比例告警必须用聚合后的 rate 表达，避免按实例、Store 或业务维度误判。
     """
 
     REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -51,12 +51,27 @@ class AgentRuntimePrometheusRuleContractTest(unittest.TestCase):
         for alert_name in expected_alerts:
             self.assertIn(f"- alert: {alert_name}", rules)
 
+    def test_skill_visibility_index_alert_names_are_stable(self) -> None:
+        """Skill 可见性索引告警名称需要稳定，避免管理台和 runbook 引用漂移。"""
+
+        rules = self._read_alert_rules()
+        expected_alerts = [
+            "AgentRuntimeSkillVisibilityIndexMaterializationFailureDetected",
+            "AgentRuntimeSkillVisibilityIndexMaterializationFailureRatioHigh",
+            "AgentRuntimeSkillVisibilityIndexFallbackQueryRatioHigh",
+            "AgentRuntimeSkillVisibilityIndexDedicatedQueryFailureDetected",
+            "AgentRuntimeSkillVisibilityIndexManifestBindingUnhealthy",
+        ]
+
+        for alert_name in expected_alerts:
+            self.assertIn(f"- alert: {alert_name}", rules)
+
     def test_alert_expressions_do_not_select_high_cardinality_business_labels(self) -> None:
         """规则选择器不能使用高基数字段作为标签。"""
 
         rules = self._read_alert_rules()
         forbidden_selector = re.compile(
-            r"\{[^}\n]*(tenantId|projectId|commandId|outboxId|requestId|runId|sessionId|traceId|workspaceId)\s*="
+            r"\{[^}\n]*(tenantId|projectId|actorId|commandId|outboxId|requestId|runId|sessionId|traceId|workspaceId|manifestFingerprint)\s*="
         )
 
         self.assertIsNone(forbidden_selector.search(rules))
@@ -69,6 +84,32 @@ class AgentRuntimePrometheusRuleContractTest(unittest.TestCase):
         self.assertIn('sum(rate(datasmart_agent_runtime_async_command_precheck_verdict_total{decision="DEFERRED"}[15m]))', rules)
         self.assertIn("clamp_min(sum(rate(datasmart_agent_runtime_async_command_precheck_verdict_total[15m])), 1)", rules)
         self.assertIn("> 0.2", rules)
+
+    def test_skill_visibility_index_rules_use_aggregate_rate_and_low_cardinality_labels(self) -> None:
+        """Skill 可见性索引告警应使用聚合指标，并只选择低基数枚举标签。"""
+
+        rules = self._read_alert_rules()
+
+        self.assertIn(
+            'sum(rate(datasmart_agent_runtime_skill_visibility_index_materialization_total{outcome="failed"}[30m]))',
+            rules,
+        )
+        self.assertIn(
+            'clamp_min(sum(rate(datasmart_agent_runtime_skill_visibility_index_materialization_total{outcome=~"materialized|duplicate|failed"}[30m])), 1)',
+            rules,
+        )
+        self.assertIn(
+            'sum(rate(datasmart_agent_runtime_skill_visibility_index_query_total{source="fallback",result="success"}[30m]))',
+            rules,
+        )
+        self.assertIn(
+            'clamp_min(sum(rate(datasmart_agent_runtime_skill_visibility_index_query_total{result="success"}[30m])), 1)',
+            rules,
+        )
+        self.assertIn(
+            'outcome=~"materialized|duplicate",bindingStatus=~"UNKNOWN|UNBOUND_UNKNOWN|DIAGNOSTICS_UNAVAILABLE|REMOTE_UNAVAILABLE_FALLBACK|LOCAL_DEFAULT_OR_FALLBACK|OTHER"',
+            rules,
+        )
 
 
 if __name__ == "__main__":

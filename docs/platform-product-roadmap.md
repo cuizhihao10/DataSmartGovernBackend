@@ -9344,3 +9344,53 @@ Manifest `contentFingerprint` 从“启动诊断字段”推进为“每次 Agen
 2. 设计 gateway 会话级 READY Skill cache，避免每次 `/agent/plans` 都重复做相同能力过滤。
 3. 如果继续增强索引可靠性，应设计 outbox 式补偿队列，而不是在同步 consumer 路径里继续堆重试。
 4. 完成指标和 cache 后，建议切到长期记忆二级索引或多 Agent 协作，让项目从 Skill 可见性局部继续向整体 Agent 能力推进。
+
+## 5.12 Skill 可见性索引 Prometheus 告警与运维 Runbook（2026-06-05）
+
+本阶段承接 5.11，但没有继续扩展新的 Java 查询字段或报表 API，而是把上一阶段新增的 Micrometer 指标正式接入
+Prometheus 告警规则和 Agent Runtime runbook。这样做是为了让“专用索引是否健康”从诊断接口里的被动信息，
+升级为运维可以主动收到的生产信号。
+
+已完成：
+- `docker/prometheus/rules/agent-runtime-alerts.yml` 新增 `datasmart-agent-runtime-skill-visibility-index` 告警组：
+  - `AgentRuntimeSkillVisibilityIndexMaterializationFailureDetected`；
+  - `AgentRuntimeSkillVisibilityIndexMaterializationFailureRatioHigh`；
+  - `AgentRuntimeSkillVisibilityIndexFallbackQueryRatioHigh`；
+  - `AgentRuntimeSkillVisibilityIndexDedicatedQueryFailureDetected`；
+  - `AgentRuntimeSkillVisibilityIndexManifestBindingUnhealthy`。
+- 告警表达式覆盖：
+  - 物化失败增量；
+  - 物化失败率；
+  - fallback 查询比例；
+  - dedicated index 查询失败；
+  - `UNKNOWN/UNBOUND_UNKNOWN/DIAGNOSTICS_UNAVAILABLE/REMOTE_UNAVAILABLE_FALLBACK/LOCAL_DEFAULT_OR_FALLBACK/OTHER`
+    等非理想 Manifest 绑定状态。
+- `python-ai-runtime/tests/test_agent_runtime_prometheus_rules.py` 增强：
+  - 固定 Skill 可见性索引告警名称；
+  - 验证失败率和 fallback 比例使用聚合后的 `rate`；
+  - 继续防止规则选择器使用 tenantId、runId、sessionId、traceId、manifestFingerprint 等高基数字段。
+- `docs/observability-agent-runtime-runbook.md` 增强：
+  - 补充 Skill 可见性索引指标含义、标签、用途；
+  - 补充物化失败、fallback 查询比例偏高、Manifest 绑定异常的排障路径；
+  - 给出临时 Grafana 查询建议。
+- `docs/agent-skill-publication-manifest.md` 同步告警名称和设计边界：
+  - Manifest 指纹适合进入启动日志、诊断接口和审计报表；
+  - 不应作为 Prometheus 标签，避免发布批次变多后引发高基数时序风险。
+
+产品意义：
+- Skill 可见性索引从“有指标可查”推进为“异常可主动告警”。
+- 运维人员可以区分 MySQL 索引写入失败、查询 fallback、dedicated 查询失败和 Manifest 绑定异常，而不是只能等待前端治理页报错。
+- 告警规则继续遵守低基数原则，适合后续进入多租户和客户私有化部署。
+- 这一步完成了当前 Skill 可见性索引的最小生产观测闭环，为后续转向 gateway 会话级 READY Skill cache 留出节奏。
+
+当前边界：
+- 本阶段没有新增 agent-runtime 专属 Grafana dashboard JSON，只提供 Prometheus 告警和临时查询建议。
+- 告警只能发现异常，仍不能替代 outbox/dispatcher 式持久补偿。
+- 告警阈值仍偏早期集成环境，生产应按租户规模、请求量、实例数和 SLA 调整。
+- 还没有把 Alertmanager 路由策略细分到 Skill 可见性负责人或 Agent Runtime 值班人。
+
+下一步建议：
+1. 优先进入 gateway 会话级 READY Skill cache，把租户、项目、角色、权限包、套餐、workspace 风险、预算策略和 Manifest 指纹纳入缓存键。
+2. 如果继续补观测面，可再做 agent-runtime 统一 Grafana dashboard，把 pre-check、Skill 可见性索引、模型网关健康放在一个 Agent 运行时总览里。
+3. 对 Skill 索引可靠性，下一步应设计 outbox 式补偿队列，而不是继续扩大同步 consumer 逻辑。
+4. 完成 cache 或补偿其中一条后，建议切到长期记忆二级索引或多 Agent 协作主线，保持项目整体推进。

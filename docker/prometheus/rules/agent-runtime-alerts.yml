@@ -1,8 +1,8 @@
 # DataSmart Govern - agent-runtime 告警规则草案。
 #
 # 设计原则：
-# 1. agent-runtime 是 Java 侧 AI 控制面，当前重点监控异步 command dispatcher 的执行前复核；
-# 2. Prometheus 只看聚合趋势：通过率、阻断率、暂缓率、确认过期、容量暂缓、策略缺失；
+# 1. agent-runtime 是 Java 侧 AI 控制面，当前重点监控异步 command dispatcher 的执行前复核和 Skill 可见性索引健康；
+# 2. Prometheus 只看聚合趋势：通过率、阻断率、暂缓率、确认过期、容量暂缓、策略缺失、索引失败率、fallback 比例和 Manifest 绑定异常；
 # 3. 单条 command 的排障继续走 runtime event replay、outbox 诊断、confirmation 查询和结构化日志；
 # 4. 规则标签只使用 module/category/severity 这类固定枚举，不把 commandId、tenantId、runId、traceId 等业务主键放入时序；
 # 5. 当前阈值适合本地和早期集成环境，生产应按 worker 实例数、租户套餐、任务流量和 SLA 重新调优。
@@ -103,3 +103,70 @@ groups:
         annotations:
           summary: "Agent 异步 command pre-check 出现未知 issueCode"
           description: "最近 30 分钟出现 issueCode=OTHER。通常表示代码新增了 pre-check 原因但未同步指标白名单、告警和 runbook。请检查 AgentAsyncTaskCommandPreCheckMetricsService 的 ALLOWED_ISSUE_CODES。"
+
+  - name: datasmart-agent-runtime-skill-visibility-index
+    rules:
+      - alert: AgentRuntimeSkillVisibilityIndexMaterializationFailureDetected
+        expr: increase(datasmart_agent_runtime_skill_visibility_index_materialization_total{outcome="failed"}[15m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          module: agent-runtime
+          category: skill-visibility-index
+        annotations:
+          summary: "Skill 可见性索引物化出现失败"
+          description: "最近 15 分钟 Skill 可见性快照专用索引出现 failed 物化。请优先检查 agent-runtime 日志、/agent-runtime/runtime-events/skill-visibility-snapshots/diagnostics、MySQL 连接池、agent_skill_visibility_snapshot_index 表结构和 Kafka 重放情况。该告警不携带 runId/sessionId/tenantId，单条排障应转到 runtime event replay 与诊断接口。"
+
+      - alert: AgentRuntimeSkillVisibilityIndexMaterializationFailureRatioHigh
+        expr: |
+          (
+            sum(rate(datasmart_agent_runtime_skill_visibility_index_materialization_total{outcome="failed"}[30m]))
+            /
+            clamp_min(sum(rate(datasmart_agent_runtime_skill_visibility_index_materialization_total{outcome=~"materialized|duplicate|failed"}[30m])), 1)
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          module: agent-runtime
+          category: skill-visibility-index
+        annotations:
+          summary: "Skill 可见性索引物化失败比例偏高"
+          description: "最近 30 分钟 Skill 可见性索引物化失败比例持续高于 5%。这通常表示 MySQL 索引写入、表结构、JSON 字段映射或索引 Store 条件装配存在问题。请先查看诊断接口的 lastFailureStage/lastFailureReason，再决定是否切回 memory store、暂停相关 consumer 或执行人工补偿重放。"
+
+      - alert: AgentRuntimeSkillVisibilityIndexFallbackQueryRatioHigh
+        expr: |
+          (
+            sum(rate(datasmart_agent_runtime_skill_visibility_index_query_total{source="fallback",result="success"}[30m]))
+            /
+            clamp_min(sum(rate(datasmart_agent_runtime_skill_visibility_index_query_total{result="success"}[30m])), 1)
+          ) > 0.3
+        for: 10m
+        labels:
+          severity: warning
+          module: agent-runtime
+          category: skill-visibility-index
+        annotations:
+          summary: "Skill 可见性查询 fallback 比例偏高"
+          description: "最近 30 分钟 Skill 可见性快照查询中 fallback projection 占比持续高于 30%。本地学习环境可接受 fallback，但生产环境通常应使用 dedicated index。请检查 DATASMART_AGENT_RUNTIME_SKILL_VISIBILITY_INDEX_ENABLED、STORE、数据库总开关和 Store Bean 装配情况。"
+
+      - alert: AgentRuntimeSkillVisibilityIndexDedicatedQueryFailureDetected
+        expr: increase(datasmart_agent_runtime_skill_visibility_index_query_total{source="dedicated",result="failed"}[10m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          module: agent-runtime
+          category: skill-visibility-index
+        annotations:
+          summary: "Skill 可见性 dedicated index 查询失败"
+          description: "最近 10 分钟 dedicated Skill 可见性索引查询失败。该问题会影响治理页、会话能力回放和 Skill Marketplace 后续统计。请检查 diagnostics.currentIndexSizeStatus、activeStore、MySQL 查询索引、授权项目范围过滤和最近应用发布变更。"
+
+      - alert: AgentRuntimeSkillVisibilityIndexManifestBindingUnhealthy
+        expr: sum(increase(datasmart_agent_runtime_skill_visibility_index_materialization_total{outcome=~"materialized|duplicate",bindingStatus=~"UNKNOWN|UNBOUND_UNKNOWN|DIAGNOSTICS_UNAVAILABLE|REMOTE_UNAVAILABLE_FALLBACK|LOCAL_DEFAULT_OR_FALLBACK|OTHER"}[30m])) > 0
+        for: 5m
+        labels:
+          severity: info
+          module: agent-runtime
+          category: skill-visibility-index
+        annotations:
+          summary: "Skill 可见性快照出现非理想 Manifest 绑定状态"
+          description: "最近 30 分钟新物化的 Skill 可见性快照出现 UNKNOWN、fallback、本地默认或诊断不可用的 Manifest 绑定状态。开发环境可能是预期行为；生产环境应检查 Python Runtime 是否能读取 Java Skill Publication Manifest、contentFingerprint 是否稳定、远端 manifest 诊断是否 required fail-closed。"
