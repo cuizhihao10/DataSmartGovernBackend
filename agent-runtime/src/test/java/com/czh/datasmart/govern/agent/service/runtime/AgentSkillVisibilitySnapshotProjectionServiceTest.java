@@ -6,6 +6,8 @@
  */
 package com.czh.datasmart.govern.agent.service.runtime;
 
+import com.czh.datasmart.govern.agent.config.AgentSkillVisibilitySnapshotIndexProperties;
+import com.czh.datasmart.govern.agent.controller.dto.AgentSkillVisibilitySnapshotIndexDiagnosticsView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentSkillVisibilitySnapshotProjectionQueryResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentSkillVisibilitySnapshotProjectionView;
 import org.junit.jupiter.api.Test;
@@ -132,6 +134,74 @@ class AgentSkillVisibilitySnapshotProjectionServiceTest {
         assertEquals(1, response.totalMatched());
         assertEquals("skill-snapshot-indexed", response.snapshots().getFirst().identityKey());
         assertEquals("skill-manifest-fp-test", response.snapshots().getFirst().manifestFingerprint());
+    }
+
+    @Test
+    void diagnosticsShouldExposeDedicatedIndexTelemetryAndConfiguration() {
+        InMemoryAgentRuntimeEventProjectionStore projectionStore = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        InMemoryAgentSkillVisibilitySnapshotIndexStore indexStore =
+                new InMemoryAgentSkillVisibilitySnapshotIndexStore(10, 100);
+        indexStore.append(skillVisibilityRecord("skill-snapshot-indexed", "20", "run-diagnostics", 2, true));
+        AgentSkillVisibilitySnapshotIndexProperties properties = new AgentSkillVisibilitySnapshotIndexProperties();
+        properties.setStore("memory");
+        AgentSkillVisibilitySnapshotIndexTelemetry telemetry =
+                AgentSkillVisibilitySnapshotIndexTelemetry.inMemoryOnly();
+        AgentSkillVisibilitySnapshotProjectionService service = new AgentSkillVisibilitySnapshotProjectionService(
+                projectionStore,
+                new AgentRuntimeEventProjectionAccessSupport(),
+                Optional.of(indexStore),
+                properties,
+                telemetry
+        );
+
+        service.querySnapshots(
+                new AgentRuntimeEventProjectionQuery("10", null, null, null,
+                        "run-diagnostics", null, null, null, 20),
+                projectOwnerContext()
+        );
+        AgentSkillVisibilitySnapshotIndexDiagnosticsView diagnostics = service.diagnostics();
+
+        assertTrue(diagnostics.enabled());
+        assertEquals("memory", diagnostics.configuredStore());
+        assertEquals("dedicated-skill-visibility-index", diagnostics.activeIndexSource());
+        assertEquals("memory", diagnostics.activeStore());
+        assertEquals(1, diagnostics.currentIndexSize());
+        assertEquals("available", diagnostics.currentIndexSizeStatus());
+        assertEquals(1L, diagnostics.dedicatedQueryCount());
+        assertEquals(0L, diagnostics.fallbackQueryCount());
+        assertEquals(1L, diagnostics.dedicatedQueryResultCount());
+    }
+
+    @Test
+    void diagnosticsShouldExposeFallbackQueryWhenDedicatedIndexIsDisabled() {
+        InMemoryAgentRuntimeEventProjectionStore projectionStore = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        projectionStore.append(skillVisibilityRecord("skill-snapshot-fallback", "20", "run-fallback", 1, true));
+        AgentSkillVisibilitySnapshotIndexProperties properties = new AgentSkillVisibilitySnapshotIndexProperties();
+        properties.setEnabled(false);
+        AgentSkillVisibilitySnapshotIndexTelemetry telemetry =
+                AgentSkillVisibilitySnapshotIndexTelemetry.inMemoryOnly();
+        AgentSkillVisibilitySnapshotProjectionService service = new AgentSkillVisibilitySnapshotProjectionService(
+                projectionStore,
+                new AgentRuntimeEventProjectionAccessSupport(),
+                Optional.empty(),
+                properties,
+                telemetry
+        );
+
+        service.querySnapshots(
+                new AgentRuntimeEventProjectionQuery("10", null, null, null,
+                        "run-fallback", null, null, null, 20),
+                projectOwnerContext()
+        );
+        AgentSkillVisibilitySnapshotIndexDiagnosticsView diagnostics = service.diagnostics();
+
+        assertEquals("runtime-event-projection-fallback", diagnostics.activeIndexSource());
+        assertEquals("none", diagnostics.activeStore());
+        assertEquals("not-available", diagnostics.currentIndexSizeStatus());
+        assertEquals(1, diagnostics.fallbackProjectionSize());
+        assertEquals(0L, diagnostics.dedicatedQueryCount());
+        assertEquals(1L, diagnostics.fallbackQueryCount());
+        assertEquals(1L, diagnostics.fallbackQueryResultCount());
     }
 
     private AgentRuntimeEventProjectionRecord skillVisibilityRecord(String identityKey,

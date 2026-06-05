@@ -43,6 +43,7 @@ public class AgentRuntimeEventConsumerService {
     private final AgentRuntimeEventProjectionStore projectionStore;
     private final AgentRuntimeEventConsumerStats consumerStats;
     private final Optional<AgentSkillVisibilitySnapshotIndexStore> skillVisibilitySnapshotIndexStore;
+    private final AgentSkillVisibilitySnapshotIndexTelemetry skillVisibilitySnapshotIndexTelemetry;
 
     /**
      * Spring 运行时使用的构造方法。
@@ -56,11 +57,24 @@ public class AgentRuntimeEventConsumerService {
     public AgentRuntimeEventConsumerService(ObjectMapper objectMapper,
                                             AgentRuntimeEventProjectionStore projectionStore,
                                             AgentRuntimeEventConsumerStats consumerStats,
-                                            Optional<AgentSkillVisibilitySnapshotIndexStore> skillVisibilitySnapshotIndexStore) {
+                                            Optional<AgentSkillVisibilitySnapshotIndexStore> skillVisibilitySnapshotIndexStore,
+                                            AgentSkillVisibilitySnapshotIndexTelemetry skillVisibilitySnapshotIndexTelemetry) {
         this.objectMapper = objectMapper;
         this.projectionStore = projectionStore;
         this.consumerStats = consumerStats;
         this.skillVisibilitySnapshotIndexStore = skillVisibilitySnapshotIndexStore;
+        this.skillVisibilitySnapshotIndexTelemetry = skillVisibilitySnapshotIndexTelemetry;
+    }
+
+    public AgentRuntimeEventConsumerService(ObjectMapper objectMapper,
+                                            AgentRuntimeEventProjectionStore projectionStore,
+                                            AgentRuntimeEventConsumerStats consumerStats,
+                                            Optional<AgentSkillVisibilitySnapshotIndexStore> skillVisibilitySnapshotIndexStore) {
+        this(objectMapper,
+                projectionStore,
+                consumerStats,
+                skillVisibilitySnapshotIndexStore,
+                AgentSkillVisibilitySnapshotIndexTelemetry.inMemoryOnly());
     }
 
     /**
@@ -110,6 +124,14 @@ public class AgentRuntimeEventConsumerService {
         AgentRuntimeEventProjectionRecord record = toProjectionRecord(message);
         boolean appended = projectionStore.append(record);
         if (!appended) {
+            /*
+             * 这里仍然尝试物化 Skill 可见性快照，是 6.19 阶段补上的一个可靠性细节：
+             * projectionStore 是消费幂等的第一道闸门，但如果上一轮“projection 写入成功、专用索引写入失败”，
+             * Kafka 重试时会先命中 projection duplicate。若此时直接返回 duplicate，MySQL 索引就永远没有补写机会。
+             * 因此对 Skill 可见性事件，即使 projection 已存在，也允许专用索引再执行一次幂等 append。
+             * 已存在的索引记录会由 identityKey 返回 false，不会放大统计事实。
+             */
+            materializeSkillVisibilitySnapshot(record);
             return AgentRuntimeEventConsumeResult.duplicate(record.identityKey());
         }
         materializeSkillVisibilitySnapshot(record);
@@ -125,11 +147,36 @@ public class AgentRuntimeEventConsumerService {
          */
         if (!AgentSkillVisibilitySnapshotProjectionService.SKILL_VISIBILITY_EVENT_TYPE.equals(record.eventType())
                 || skillVisibilitySnapshotIndexStore.isEmpty()) {
+            if (AgentSkillVisibilitySnapshotProjectionService.SKILL_VISIBILITY_EVENT_TYPE.equals(record.eventType())) {
+                skillVisibilitySnapshotIndexTelemetry.recordSkipped(record, "index-store-missing");
+            }
             return;
         }
         AgentRuntimeEventProjectionRecord storedRecord = projectionStore.findByIdentityKey(record.identityKey())
                 .orElse(record);
-        skillVisibilitySnapshotIndexStore.get().append(storedRecord);
+        AgentSkillVisibilitySnapshotIndexStore store = skillVisibilitySnapshotIndexStore.get();
+        String storeLabel = storeLabel(store);
+        try {
+            boolean indexed = store.append(storedRecord);
+            if (indexed) {
+                skillVisibilitySnapshotIndexTelemetry.recordMaterialized(storedRecord, storeLabel);
+            } else {
+                skillVisibilitySnapshotIndexTelemetry.recordDuplicate(storedRecord, storeLabel);
+            }
+        } catch (RuntimeException exception) {
+            skillVisibilitySnapshotIndexTelemetry.recordMaterializationFailure(storedRecord, storeLabel, exception);
+            throw exception;
+        }
+    }
+
+    private String storeLabel(AgentSkillVisibilitySnapshotIndexStore store) {
+        if (store instanceof InMemoryAgentSkillVisibilitySnapshotIndexStore) {
+            return "memory";
+        }
+        if (store instanceof JdbcAgentSkillVisibilitySnapshotIndexStore) {
+            return "mysql";
+        }
+        return "other";
     }
 
     /**

@@ -12,9 +12,11 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -113,6 +115,39 @@ class AgentRuntimeEventConsumerServiceTest {
         assertEquals(1, indexedSnapshots.size());
         assertEquals(1L, indexedSnapshots.getFirst().replaySequence());
         assertEquals("skill-manifest-fp-test", indexedSnapshots.getFirst().attributes().get("manifestFingerprint"));
+    }
+
+    @Test
+    void duplicateProjectionShouldStillRetrySkillVisibilityIndexMaterialization() {
+        /*
+         * 这个测试覆盖 6.19 的可靠性修正：
+         * 第一次消费时 projection 已经写入成功，但专用索引模拟 MySQL 故障抛错；
+         * Kafka 随后重放同一 payload 时，projection 会判定 duplicate。
+         *
+         * 如果 duplicate 分支直接返回，专用索引就永远缺失这条低敏快照；
+         * 修正后 duplicate 分支仍会幂等尝试专用索引 append，从而让 MySQL 恢复后有补写机会。
+         */
+        InMemoryAgentRuntimeEventProjectionStore projectionStore = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        RecoveringSkillVisibilitySnapshotIndexStore indexStore = new RecoveringSkillVisibilitySnapshotIndexStore();
+        AgentSkillVisibilitySnapshotIndexTelemetry telemetry =
+                AgentSkillVisibilitySnapshotIndexTelemetry.inMemoryOnly();
+        AgentRuntimeEventConsumerService service = new AgentRuntimeEventConsumerService(
+                objectMapper(),
+                projectionStore,
+                new AgentRuntimeEventConsumerStats(),
+                Optional.of(indexStore),
+                telemetry
+        );
+
+        assertThrows(IllegalStateException.class, () -> service.consume(skillVisibilityRuntimeEventPayload()));
+        AgentRuntimeEventConsumeResult retry = service.consume(skillVisibilityRuntimeEventPayload());
+
+        assertTrue(retry.duplicate());
+        assertEquals(1, projectionStore.size());
+        assertEquals(1, indexStore.size());
+        assertEquals(2, indexStore.appendAttempts());
+        assertEquals(1L, telemetry.snapshot().failedMaterializationCount());
+        assertEquals(1L, telemetry.snapshot().materializedCount());
     }
 
     @Test
@@ -250,5 +285,34 @@ class AgentRuntimeEventConsumerServiceTest {
                   "createdAt": "2026-06-04T11:00:00Z"
                 }
                 """;
+    }
+
+    private static class RecoveringSkillVisibilitySnapshotIndexStore implements AgentSkillVisibilitySnapshotIndexStore {
+
+        private final InMemoryAgentSkillVisibilitySnapshotIndexStore delegate =
+                new InMemoryAgentSkillVisibilitySnapshotIndexStore(10, 100);
+        private final AtomicInteger appendAttempts = new AtomicInteger();
+
+        @Override
+        public boolean append(AgentRuntimeEventProjectionRecord record) {
+            if (appendAttempts.incrementAndGet() == 1) {
+                throw new IllegalStateException("模拟 Skill 可见性 MySQL 索引暂时不可用");
+            }
+            return delegate.append(record);
+        }
+
+        @Override
+        public List<AgentRuntimeEventProjectionRecord> query(AgentRuntimeEventProjectionQuery query) {
+            return delegate.query(query);
+        }
+
+        @Override
+        public int size() {
+            return delegate.size();
+        }
+
+        private int appendAttempts() {
+            return appendAttempts.get();
+        }
     }
 }

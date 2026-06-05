@@ -9291,3 +9291,56 @@ Manifest `contentFingerprint` 从“启动诊断字段”推进为“每次 Agen
 2. 设计 gateway 会话级 Skill cache，把 Manifest 指纹、租户套餐、权限事实和 workspace 风险一起纳入缓存键。
 3. 将 MySQL 索引的长期保留策略、归档策略和管理员导出权限纳入审计设计。
 4. 完成 1-2 个索引/缓存闭环后，建议切到长期记忆二级索引或多 Agent 协作，保持项目整体推进节奏。
+
+## 5.11 Skill 可见性索引诊断、低基数指标与幂等补物化（2026-06-05）
+
+本阶段继续完善 5.10 的 MySQL 持久化索引，但刻意不继续扩报表 API 或复杂查询维度。重点是让索引链路具备
+生产可观测性和基本补偿能力：平台管理员要能知道“索引是否启用、实际是否 fallback、物化是否失败、Manifest
+绑定状态是否异常”，而不是只在代码里拥有一个 Store。
+
+已完成：
+- 新增 `AgentSkillVisibilitySnapshotIndexTelemetry`：
+  - 记录物化成功、重复、跳过、失败；
+  - 记录 dedicated/fallback 查询次数和返回记录数；
+  - 记录 Manifest 绑定状态分布；
+  - 同步写入 Micrometer counter，指标名前缀为 `datasmart_agent_runtime_skill_visibility_index`。
+- 新增 `AgentSkillVisibilitySnapshotIndexTelemetrySnapshot`：
+  - 作为遥测内存快照，避免诊断接口直接暴露 Atomic 计数器。
+- 新增 `AgentSkillVisibilitySnapshotIndexDiagnosticsView`：
+  - 输出 enabled、configuredStore、activeIndexSource、activeStore；
+  - 输出 currentIndexSize、sizeStatus、sizeError；
+  - 输出 fallbackProjectionSize；
+  - 输出物化、查询和 Manifest 绑定状态低敏统计。
+- `AgentSkillVisibilitySnapshotProjectionService` 增强：
+  - dedicated index 查询成功/失败都会记录 telemetry；
+  - fallback projection 查询也会记录；
+  - 新增 `diagnostics()` 聚合配置、索引大小探测和遥测快照。
+- `AgentRuntimeEventProjectionController` 新增只读诊断接口：
+  - `GET /agent-runtime/runtime-events/skill-visibility-snapshots/diagnostics`；
+  - `GET /api/agent/runtime-events/skill-visibility-snapshots/diagnostics`。
+- `AgentRuntimeEventConsumerService` 增强：
+  - 物化成功、重复、跳过、失败都会记录 telemetry；
+  - projection duplicate 场景仍会对 Skill 可见性快照再次尝试专用索引 append；
+  - 解决“projection 首次成功但 MySQL 索引首次失败，Kafka 重放又被 projection 判重，导致索引永远漏写”的风险。
+- 测试增强：
+  - `AgentSkillVisibilitySnapshotIndexTelemetryTest` 保护低基数指标标签；
+  - `AgentSkillVisibilitySnapshotProjectionServiceTest` 覆盖 dedicated/fallback 诊断；
+  - `AgentRuntimeEventConsumerServiceTest` 覆盖 projection duplicate 后补物化。
+
+产品意义：
+- Skill 可见性索引链路开始具备运维可解释性：是否启用、是否 fallback、失败是否持续、Manifest 绑定状态是否异常都可见。
+- Micrometer 指标遵守低基数原则，不把 runId、sessionId、tenantId、projectId、traceId 或 Manifest 指纹作为标签。
+- duplicate 补物化让 MySQL 临时故障后的 Kafka 重放更有恢复机会，降低索引缺口长期沉默存在的概率。
+- 诊断接口只返回低敏聚合健康信息，适合后续接管理台健康卡片和告警面板。
+
+当前边界：
+- 仍没有 outbox/dispatcher 式持久补偿队列；如果 projection 成功后专用索引失败且 Kafka 不再重放，仍可能存在漏索引。
+- 指标当前是 counter 和内存快照，尚未增加告警规则、Grafana 面板和 SLO。
+- 诊断接口的访问控制仍依赖 gateway/permission-admin 未来路由权限，不应直接公网暴露。
+- 还没有按 Manifest 指纹、套餐、权限事实来源的运营报表 API。
+
+下一步建议：
+1. 给 Skill 可见性索引指标补 Prometheus/Grafana 告警建议，例如物化失败率、fallback 查询比例、UNKNOWN Manifest 绑定状态占比。
+2. 设计 gateway 会话级 READY Skill cache，避免每次 `/agent/plans` 都重复做相同能力过滤。
+3. 如果继续增强索引可靠性，应设计 outbox 式补偿队列，而不是在同步 consumer 路径里继续堆重试。
+4. 完成指标和 cache 后，建议切到长期记忆二级索引或多 Agent 协作，让项目从 Skill 可见性局部继续向整体 Agent 能力推进。

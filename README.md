@@ -12,7 +12,7 @@
 
 **构建环境说明**：本项目固定使用 JDK 21。若本机 `mvn -v` 默认显示 Java 8，请先阅读 [docs/development-jdk21.md](docs/development-jdk21.md)，项目根 `pom.xml` 已配置 Maven Toolchains 自动选择 JDK 21，避免 Java 21 语法被旧 JDK 误判失败。
 
-**当前智能网关进度补充**：`permission-admin` 已新增 Agent 工具预算策略评估入口，可按角色、租户套餐、workspace 风险和 worker backlog 生成 Python Runtime 可消费的 `toolCallBudget`；`agent-runtime` 已新增 Skill 可见性快照 runtime event 专用查询入口，可把 Python Runtime 的 `SKILL_VISIBILITY_SNAPSHOT_RECORDED` 纳入 Java 控制面 replay/index 视图；Python Runtime 现在会把 Skill Publication Manifest 的 `contentFingerprint` 绑定到 `intelligentGatewayGovernance.skillManifest`、`skillVisibility.manifestBinding` 和可回放事件 attributes，Java 专用投影视图也能按 Manifest 绑定状态与来源聚合；独立 Skill 可见性快照索引已具备 `memory/mysql` 两种实现，其中 MySQL 版通过 `agent_skill_visibility_snapshot_index` 表支持跨实例、跨重启、长期审计和 Skill Marketplace 统计。
+**当前智能网关进度补充**：`permission-admin` 已新增 Agent 工具预算策略评估入口，可按角色、租户套餐、workspace 风险和 worker backlog 生成 Python Runtime 可消费的 `toolCallBudget`；`agent-runtime` 已新增 Skill 可见性快照 runtime event 专用查询入口，可把 Python Runtime 的 `SKILL_VISIBILITY_SNAPSHOT_RECORDED` 纳入 Java 控制面 replay/index 视图；Python Runtime 现在会把 Skill Publication Manifest 的 `contentFingerprint` 绑定到 `intelligentGatewayGovernance.skillManifest`、`skillVisibility.manifestBinding` 和可回放事件 attributes，Java 专用投影视图也能按 Manifest 绑定状态与来源聚合；独立 Skill 可见性快照索引已具备 `memory/mysql` 两种实现，其中 MySQL 版通过 `agent_skill_visibility_snapshot_index` 表支持跨实例、跨重启、长期审计和 Skill Marketplace 统计；索引链路已新增低基数 Micrometer 指标、只读诊断接口和 projection duplicate 场景下的幂等补物化能力。
 
 ---
 

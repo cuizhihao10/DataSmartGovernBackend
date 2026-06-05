@@ -6,6 +6,8 @@
  */
 package com.czh.datasmart.govern.agent.service.runtime;
 
+import com.czh.datasmart.govern.agent.config.AgentSkillVisibilitySnapshotIndexProperties;
+import com.czh.datasmart.govern.agent.controller.dto.AgentSkillVisibilitySnapshotIndexDiagnosticsView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentSkillVisibilitySnapshotProjectionQueryResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentSkillVisibilitySnapshotProjectionView;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -52,6 +54,8 @@ public class AgentSkillVisibilitySnapshotProjectionService {
     private final AgentRuntimeEventProjectionStore projectionStore;
     private final AgentRuntimeEventProjectionAccessSupport accessSupport;
     private final Optional<AgentSkillVisibilitySnapshotIndexStore> snapshotIndexStore;
+    private final AgentSkillVisibilitySnapshotIndexProperties indexProperties;
+    private final AgentSkillVisibilitySnapshotIndexTelemetry indexTelemetry;
 
     /**
      * Spring 运行时使用的构造方法。
@@ -65,10 +69,25 @@ public class AgentSkillVisibilitySnapshotProjectionService {
     public AgentSkillVisibilitySnapshotProjectionService(
             AgentRuntimeEventProjectionStore projectionStore,
             AgentRuntimeEventProjectionAccessSupport accessSupport,
-            Optional<AgentSkillVisibilitySnapshotIndexStore> snapshotIndexStore) {
+            Optional<AgentSkillVisibilitySnapshotIndexStore> snapshotIndexStore,
+            AgentSkillVisibilitySnapshotIndexProperties indexProperties,
+            AgentSkillVisibilitySnapshotIndexTelemetry indexTelemetry) {
         this.projectionStore = projectionStore;
         this.accessSupport = accessSupport;
         this.snapshotIndexStore = snapshotIndexStore;
+        this.indexProperties = indexProperties;
+        this.indexTelemetry = indexTelemetry;
+    }
+
+    public AgentSkillVisibilitySnapshotProjectionService(
+            AgentRuntimeEventProjectionStore projectionStore,
+            AgentRuntimeEventProjectionAccessSupport accessSupport,
+            Optional<AgentSkillVisibilitySnapshotIndexStore> snapshotIndexStore) {
+        this(projectionStore,
+                accessSupport,
+                snapshotIndexStore,
+                new AgentSkillVisibilitySnapshotIndexProperties(),
+                AgentSkillVisibilitySnapshotIndexTelemetry.inMemoryOnly());
     }
 
     /**
@@ -107,13 +126,113 @@ public class AgentSkillVisibilitySnapshotProjectionService {
          * 专用索引存在时优先使用它，避免每次查询都扫描通用 runtime event 热窗口。
          * fallback 不是长期目标，只是为了兼容旧配置、灰度迁移和本地调试。
          */
-        return snapshotIndexStore
-                .map(store -> store.query(scopedQuery))
-                .orElseGet(() -> projectionStore.query(scopedQuery));
+        if (snapshotIndexStore.isPresent()) {
+            AgentSkillVisibilitySnapshotIndexStore store = snapshotIndexStore.get();
+            String storeLabel = storeLabel(store);
+            try {
+                List<AgentRuntimeEventProjectionRecord> records = store.query(scopedQuery);
+                indexTelemetry.recordDedicatedQuery(storeLabel, records.size());
+                return records;
+            } catch (RuntimeException exception) {
+                indexTelemetry.recordQueryFailure("dedicated", storeLabel, exception);
+                throw exception;
+            }
+        }
+        try {
+            List<AgentRuntimeEventProjectionRecord> records = projectionStore.query(scopedQuery);
+            indexTelemetry.recordFallbackQuery(records.size());
+            return records;
+        } catch (RuntimeException exception) {
+            indexTelemetry.recordQueryFailure("fallback", "none", exception);
+            throw exception;
+        }
     }
 
     private String indexSource() {
         return snapshotIndexStore.isPresent() ? DEDICATED_INDEX_SOURCE : PROJECTION_FALLBACK_SOURCE;
+    }
+
+    /**
+     * 生成 Skill 可见性快照专用索引诊断。
+     *
+     * <p>该诊断聚合三类信息：</p>
+     * <p>1. 配置视角：是否启用、配置 store、内存窗口上限；</p>
+     * <p>2. 运行视角：当前实际使用 dedicated index 还是 fallback projection，索引大小是否可读取；</p>
+     * <p>3. 遥测视角：物化、重复、跳过、失败、查询来源和 Manifest 绑定状态分布。</p>
+     *
+     * <p>它不是替代 Prometheus 的最终观测面，而是给运维和学习调试一个低敏、结构化、可直接阅读的快照。
+     * 真正的告警仍应基于 Micrometer 指标，例如物化失败率、fallback 查询比例和 UNKNOWN Manifest 绑定状态占比。</p>
+     */
+    public AgentSkillVisibilitySnapshotIndexDiagnosticsView diagnostics() {
+        AgentSkillVisibilitySnapshotIndexTelemetrySnapshot telemetry = indexTelemetry.snapshot();
+        IndexSizeProbe sizeProbe = probeIndexSize();
+        return new AgentSkillVisibilitySnapshotIndexDiagnosticsView(
+                indexProperties.isEnabled(),
+                normalizeStore(indexProperties.getStore()),
+                indexSource(),
+                snapshotIndexStore.map(this::storeLabel).orElse("none"),
+                Math.max(1, indexProperties.getMaxSnapshotsPerRun()),
+                Math.max(1, indexProperties.getMaxTotalSnapshots()),
+                sizeProbe.currentIndexSize(),
+                sizeProbe.status(),
+                sizeProbe.error(),
+                projectionStore.size(),
+                telemetry.materializedCount(),
+                telemetry.duplicateMaterializationCount(),
+                telemetry.skippedMaterializationCount(),
+                telemetry.failedMaterializationCount(),
+                telemetry.dedicatedQueryCount(),
+                telemetry.fallbackQueryCount(),
+                telemetry.failedQueryCount(),
+                telemetry.dedicatedQueryResultCount(),
+                telemetry.fallbackQueryResultCount(),
+                telemetry.manifestBindingStatusCounts(),
+                telemetry.lastMaterializedAt(),
+                telemetry.lastDuplicateMaterializationAt(),
+                telemetry.lastSkippedMaterializationAt(),
+                telemetry.lastFailedMaterializationAt(),
+                telemetry.lastDedicatedQueryAt(),
+                telemetry.lastFallbackQueryAt(),
+                telemetry.lastQueryFailedAt(),
+                telemetry.lastFailureStage(),
+                telemetry.lastFailureReason(),
+                telemetry.lastSkippedReason()
+        );
+    }
+
+    private IndexSizeProbe probeIndexSize() {
+        if (snapshotIndexStore.isEmpty()) {
+            return new IndexSizeProbe(0, "not-available", null);
+        }
+        try {
+            return new IndexSizeProbe(snapshotIndexStore.get().size(), "available", null);
+        } catch (RuntimeException exception) {
+            return new IndexSizeProbe(-1, "unavailable", safeError(exception));
+        }
+    }
+
+    private String safeError(RuntimeException exception) {
+        String message = exception.getMessage();
+        String error = exception.getClass().getSimpleName()
+                + (message == null || message.isBlank() ? "" : ":" + message);
+        return error.length() <= 300 ? error : error.substring(0, 300);
+    }
+
+    private String storeLabel(AgentSkillVisibilitySnapshotIndexStore store) {
+        if (store instanceof InMemoryAgentSkillVisibilitySnapshotIndexStore) {
+            return "memory";
+        }
+        if (store instanceof JdbcAgentSkillVisibilitySnapshotIndexStore) {
+            return "mysql";
+        }
+        return "other";
+    }
+
+    private String normalizeStore(String store) {
+        if (store == null || store.isBlank()) {
+            return "memory";
+        }
+        return store.trim().toLowerCase(Locale.ROOT);
     }
 
     private AgentRuntimeEventProjectionQuery forceSkillVisibilityEventType(AgentRuntimeEventProjectionQuery query) {
@@ -373,5 +492,14 @@ public class AgentSkillVisibilitySnapshotProjectionService {
             }
         }
         return Collections.unmodifiableMap(parsed);
+    }
+
+    /**
+     * 索引大小探测结果。
+     *
+     * <p>MySQL Store 的 {@code size()} 需要真正访问数据库。诊断接口应该尽量告诉运维“当前无法探测索引大小”，
+     * 而不是因为数据库不可用就让整个诊断接口 500。这个小 record 用于把探测状态和低敏错误一起带回 DTO。</p>
+     */
+    private record IndexSizeProbe(int currentIndexSize, String status, String error) {
     }
 }

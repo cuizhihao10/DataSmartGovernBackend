@@ -11,6 +11,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventProjection
 import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventReplayAckRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventReplayCursorView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventReplayResponse;
+import com.czh.datasmart.govern.agent.controller.dto.AgentSkillVisibilitySnapshotIndexDiagnosticsView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentSkillVisibilitySnapshotProjectionQueryResponse;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventQueryAccessContext;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventQueryAccessContextResolver;
@@ -163,6 +164,24 @@ public class AgentRuntimeEventProjectionController {
                 skillVisibilitySnapshotProjectionService.querySnapshots(query, accessContext),
                 traceId
         );
+    }
+
+    /**
+     * 查询 Skill 可见性快照专用索引诊断信息。
+     *
+     * <p>该接口回答“Skill 可见性索引链路是否健康”，不是查询某个用户会话的 Skill 明细。
+     * 它返回配置 store、实际查询来源、索引大小探测状态、物化/重复/跳过/失败计数、查询来源计数和
+     * Manifest 绑定状态分布。生产上该接口应由 gateway + permission-admin 保护在平台管理员、
+     * 运维或审计员权限下。</p>
+     *
+     * <p>安全边界：诊断视图不返回 runId、sessionId、requestId、traceId、tenantId、projectId、
+     * actorId、manifestFingerprint 或 Skill code 明细，因此可以安全用于管理端健康卡片和告警排障。
+     * 真正的会话级 Skill 明细仍走 `/skill-visibility-snapshots` 并经过数据范围收口。</p>
+     */
+    @GetMapping("/skill-visibility-snapshots/diagnostics")
+    public PlatformApiResponse<AgentSkillVisibilitySnapshotIndexDiagnosticsView> skillVisibilitySnapshotIndexDiagnostics(
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(skillVisibilitySnapshotProjectionService.diagnostics(), traceId);
     }
 
     /**
