@@ -81,7 +81,24 @@ Python 侧转换为不可变 dataclass，是为了减少规划链路中被某个
 - 即使 Skill 是 `READY`，执行前仍必须经过 Java 控制面的权限、审批、沙箱、runtime-protection 和审计链路；
 - 当 Manifest 读取失败时，应区分“远端不可用”和“目录为空”，前者应触发降级或启动诊断，后者可能是租户策略结果。
 
-## 5.1 Python Runtime 启动诊断
+### 5.1 会话级 READY Skill 准入缓存
+
+Python Runtime 已新增 `SkillVisibilityAdmissionCache`，用于复用同一可信控制面上下文下的 Skill 准入判断。
+
+设计边界：
+
+- 只缓存 `AgentSkillAdmissionDecision`，不缓存用户目标、prompt、完整 `AgentPlan`、模型输出、工具参数或工具结果。
+- key 由 gateway 签名保护的 cache key、projectId、sessionId、Skill 注册表/Manifest 指纹、skillCode、租户套餐、workspace 风险和预算策略版本组成。
+- gateway cache key 只表达租户、角色、workspace、数据范围、授权项目、审批要求等控制面事实；Python Runtime 仍会叠加项目、会话和 Skill 发布指纹。
+- 如果请求没有 `trustedControlPlane.skillVisibilityCache.gatewayCacheKey`，缓存默认不启用，避免普通请求变量伪造缓存上下文。
+
+生产演进建议：
+
+- 单实例或学习环境可使用进程内缓存；
+- 多实例生产环境应替换为 Redis/企业缓存 SDK，并补充命中率、miss 原因、TTL 过期、策略版本失效等低基数指标；
+- 当远端 Manifest `contentFingerprint` 可用时，应优先使用正式 Manifest 指纹作为缓存失效锚点。
+
+## 5.2 Python Runtime 启动诊断
 
 Python Runtime 已新增 Skill Publication Manifest 低敏诊断入口：
 

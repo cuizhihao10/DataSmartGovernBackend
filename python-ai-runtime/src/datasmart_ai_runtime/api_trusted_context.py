@@ -72,6 +72,16 @@ def enrich_agent_plan_payload_from_gateway_headers(
     workspace_id = _header(headers, "X-DataSmart-Workspace-Id")
     trace_id = _header(headers, "X-DataSmart-Trace-Id")
     authorized_project_ids = _csv(_header(headers, "X-DataSmart-Authorized-Project-Ids"))
+    tenant_plan_code = _header(headers, "X-DataSmart-Tenant-Plan-Code") or "STANDARD"
+    workspace_risk_level = _header(headers, "X-DataSmart-Workspace-Risk-Level") or "NORMAL"
+    tool_budget_policy_version = _header(headers, "X-DataSmart-Tool-Budget-Policy-Version")
+    skill_visibility_cache_key = _header(headers, "X-DataSmart-Skill-Visibility-Cache-Key")
+    skill_visibility_cache_version = _header(headers, "X-DataSmart-Skill-Visibility-Cache-Version")
+    skill_visibility_cache_scope = _header(headers, "X-DataSmart-Skill-Visibility-Cache-Scope")
+    skill_visibility_cache_ttl_seconds = _positive_int(
+        _header(headers, "X-DataSmart-Skill-Visibility-Cache-Ttl-Seconds"),
+        0,
+    )
 
     # tenantId 与 actorId 属于认证主体事实。只要 gateway 已提供，就覆盖请求体同名字段；
     # 如果 Header 缺失则保留请求体值，兼容本地开发，但生产 gateway 应配置为身份缺失时拒绝请求。
@@ -85,8 +95,10 @@ def enrich_agent_plan_payload_from_gateway_headers(
     common_policy_facts = {
         "workspaceKey": workspace_id,
         "actorRole": actor_role,
+        "tenantPlanCode": tenant_plan_code,
+        "workspaceRiskLevel": workspace_risk_level,
     }
-    variables[TRUSTED_ROOT_KEY] = {
+    trusted_control_plane = {
         "requestContext": {
             "sourceService": source_service,
             "traceId": trace_id,
@@ -97,8 +109,26 @@ def enrich_agent_plan_payload_from_gateway_headers(
             "authorizedProjectIds": authorized_project_ids,
         },
         "skillAdmission": dict(common_policy_facts),
-        "toolBudget": dict(common_policy_facts),
+        "toolBudget": {
+            **common_policy_facts,
+            "policyVersion": tool_budget_policy_version,
+        },
     }
+    if skill_visibility_cache_key:
+        # 只在 gateway 提供缓存 key 时注入缓存上下文。该 key 已被 gateway HMAC 签名保护，
+        # Python Runtime 仍会把它与 project/session/Skill Manifest 指纹再次组合，避免跨项目、
+        # 跨会话或跨 Skill 发布版本复用准入判断。
+        trusted_control_plane["skillVisibilityCache"] = {
+            "enabled": True,
+            "gatewayCacheKey": skill_visibility_cache_key,
+            "version": skill_visibility_cache_version or "v1",
+            "scope": skill_visibility_cache_scope or "session-ready-skill-admission",
+            "ttlSeconds": skill_visibility_cache_ttl_seconds,
+            "tenantPlanCode": tenant_plan_code,
+            "workspaceRiskLevel": workspace_risk_level,
+            "toolBudgetPolicyVersion": tool_budget_policy_version,
+        }
+    variables[TRUSTED_ROOT_KEY] = trusted_control_plane
     sanitized["variables"] = variables
     return sanitized
 
@@ -120,3 +150,19 @@ def _csv(value: str | None) -> tuple[str, ...]:
     if not value:
         return ()
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _positive_int(value: str | None, default: int) -> int:
+    """读取正整数 Header。
+
+    gateway Header 属于外部输入边界，即使已经验签，也可能因为配置错误携带空值、负数或非数字。
+    Python Runtime 在读取 TTL 时采用保守兜底：非法值不让缓存无限期生效，而是回退为调用方指定的默认值。
+    """
+
+    if value is None:
+        return default
+    try:
+        parsed = int(str(value).strip())
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default

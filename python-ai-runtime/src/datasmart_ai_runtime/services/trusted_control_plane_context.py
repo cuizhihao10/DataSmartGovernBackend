@@ -53,6 +53,28 @@ class AgentTrustedToolBudgetContext:
     policy_version: str | None = None
 
 
+@dataclass(frozen=True)
+class AgentTrustedSkillVisibilityCacheContext:
+    """Skill 可见性准入缓存的可信上下文。
+
+    该对象承载的是 gateway 已验签的低敏控制面摘要，而不是完整请求、用户 prompt、模型输出或工具参数。
+    字段设计刻意偏保守：
+    - ``gateway_cache_key``：gateway 根据租户、角色、workspace、数据范围、套餐和预算策略派生的摘要；
+    - ``ttl_seconds``：本轮允许的短期缓存时间，Python 侧还会限制最大值，避免配置错误导致长期复用；
+    - ``scope``：说明缓存只用于会话级 READY Skill admission，不应用于完整 AgentPlan 或工具结果；
+    - 套餐、风险和预算策略版本用于组成最终 key，防止策略升级后继续命中过期准入结论。
+    """
+
+    enabled: bool = False
+    gateway_cache_key: str | None = None
+    version: str = "v1"
+    scope: str = "session-ready-skill-admission"
+    ttl_seconds: int = 0
+    tenant_plan_code: str = "STANDARD"
+    workspace_risk_level: str = "NORMAL"
+    tool_budget_policy_version: str | None = None
+
+
 class AgentTrustedControlPlaneContextReader:
     """从保留命名空间读取 Skill admission 可信事实。
 
@@ -63,6 +85,7 @@ class AgentTrustedControlPlaneContextReader:
     ROOT_KEY = "trustedControlPlane"
     SKILL_ADMISSION_KEY = "skillAdmission"
     TOOL_BUDGET_KEY = "toolBudget"
+    SKILL_VISIBILITY_CACHE_KEY = "skillVisibilityCache"
 
     @classmethod
     def skill_admission(
@@ -131,6 +154,36 @@ class AgentTrustedControlPlaneContextReader:
         )
 
     @classmethod
+    def skill_visibility_cache(
+        cls,
+        request: AgentRequest,
+    ) -> AgentTrustedSkillVisibilityCacheContext:
+        """读取 gateway 注入的 Skill 可见性缓存上下文。
+
+        注意：这里不提供 legacy variables 回退。缓存上下文如果可以由终端自报，就会出现跨租户、
+        跨项目复用 READY Skill 准入结果的风险。因此只有 ``trustedControlPlane.skillVisibilityCache``
+        中的字段会被读取，而该命名空间应只由 API 边界在 gateway 签名验证通过后写入。
+        """
+
+        variables = request.variables or {}
+        source = cls._trusted_mapping(variables, cls.SKILL_VISIBILITY_CACHE_KEY) or {}
+        gateway_cache_key = _string_value(source, "gatewayCacheKey", "gateway_cache_key")
+        return AgentTrustedSkillVisibilityCacheContext(
+            enabled=_bool_value(source, False, "enabled"),
+            gateway_cache_key=gateway_cache_key,
+            version=_string_value(source, "version") or "v1",
+            scope=_string_value(source, "scope") or "session-ready-skill-admission",
+            ttl_seconds=_positive_int(_first_present(source, "ttlSeconds", "ttl_seconds"), 0),
+            tenant_plan_code=_string_value(source, "tenantPlanCode", "tenant_plan_code") or "STANDARD",
+            workspace_risk_level=_string_value(source, "workspaceRiskLevel", "workspace_risk_level") or "NORMAL",
+            tool_budget_policy_version=_string_value(
+                source,
+                "toolBudgetPolicyVersion",
+                "tool_budget_policy_version",
+            ),
+        )
+
+    @classmethod
     def _trusted_mapping(cls, variables: Mapping[str, object], section_key: str) -> Mapping[str, object] | None:
         """读取指定可信上下文章节，统一处理缺失或类型错误。"""
 
@@ -179,3 +232,15 @@ def _bool_value(mapping: Mapping[str, object], default: bool, *keys: str) -> boo
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _positive_int(value: object | None, default: int) -> int:
+    """把控制面数值字段规范化为正整数。"""
+
+    if value is None:
+        return default
+    try:
+        parsed = int(str(value).strip())
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default

@@ -142,7 +142,7 @@ class GatewayPythonRuntimeSignatureFilterTest {
                 "nonce-001",
                 "gateway-local-v1",
                 "secret-for-test"
-        )).isEqualTo("TLnhpKWAwjCXoKkAGLUZwtuIaykIu6DB7RpOKAwmQ-8");
+        )).isEqualTo("eyNpj9AQxXZ4VLAsC-NTKcL2Ew5vInsNpNZBtGUE0oY");
     }
 
     /**

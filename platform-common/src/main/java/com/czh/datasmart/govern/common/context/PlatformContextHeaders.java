@@ -27,6 +27,64 @@ public final class PlatformContextHeaders {
     public static final String REQUEST_SOURCE = "X-DataSmart-Request-Source";
 
     /**
+     * 当前租户套餐编码。
+     *
+     * <p>该字段用于智能网关做能力裁剪、工具预算、缓存隔离和审计解释。
+     * 例如 STANDARD、PROFESSIONAL、ENTERPRISE 等套餐可能拥有不同 Skill 数量、自动执行额度和高风险操作能力。
+     * 当前 gateway 先从配置中写入默认值，后续应由 permission-admin 或租户配置中心返回真实套餐事实。</p>
+     */
+    public static final String TENANT_PLAN_CODE = "X-DataSmart-Tenant-Plan-Code";
+
+    /**
+     * 当前 workspace 风险等级。
+     *
+     * <p>workspace 风险会影响高风险 Skill 是否可见、工具预算是否收紧、模型缓存是否允许跨请求复用。
+     * 该 Header 必须由 gateway 或受信控制面写入，终端不能自报 NORMAL 来绕过 HIGH_RISK workspace 策略。</p>
+     */
+    public static final String WORKSPACE_RISK_LEVEL = "X-DataSmart-Workspace-Risk-Level";
+
+    /**
+     * 工具预算策略版本。
+     *
+     * <p>会话级 READY Skill cache 必须把预算策略版本纳入 key。原因是同一个租户、角色和项目下，
+     * 如果工具预算从“最多自动 3 个工具”调整为“最多自动 1 个工具”，可见 Skill 和后续工具暴露都可能变化。
+     * 缓存 key 不包含策略版本会导致旧能力边界被错误复用。</p>
+     */
+    public static final String TOOL_BUDGET_POLICY_VERSION = "X-DataSmart-Tool-Budget-Policy-Version";
+
+    /**
+     * gateway 生成的 Skill 可见性缓存协议版本。
+     *
+     * <p>该协议不是缓存响应体，而是给 Python Runtime 一个“当前控制面事实快照可以如何分组复用”的低敏提示。
+     * 版本字段用于未来调整 key 拼接规则时做灰度兼容。</p>
+     */
+    public static final String SKILL_VISIBILITY_CACHE_VERSION = "X-DataSmart-Skill-Visibility-Cache-Version";
+
+    /**
+     * gateway 生成的 Skill 可见性缓存 key。
+     *
+     * <p>该值是控制面事实快照的 SHA-256 摘要，不包含 prompt、objective、SQL、工具参数或完整权限清单。
+     * Python Runtime 会在此基础上继续拼接 projectId、sessionId 和 Manifest/本地注册表指纹，形成最终缓存 key。</p>
+     */
+    public static final String SKILL_VISIBILITY_CACHE_KEY = "X-DataSmart-Skill-Visibility-Cache-Key";
+
+    /**
+     * Skill 可见性缓存 TTL 秒数。
+     *
+     * <p>短 TTL 用于平衡性能与权限一致性：权限、套餐或 workspace 风险变化后，缓存最多只在短窗口内保留。
+     * 更严格的生产环境还应叠加权限策略变更事件主动失效。</p>
+     */
+    public static final String SKILL_VISIBILITY_CACHE_TTL_SECONDS = "X-DataSmart-Skill-Visibility-Cache-Ttl-Seconds";
+
+    /**
+     * Skill 可见性缓存范围说明。
+     *
+     * <p>当前推荐值是 session-ready-skill-admission，表示缓存的是“某个会话控制面边界下的 Skill 准入结果”，
+     * 不是完整 AgentPlan、模型输出或工具执行结果。</p>
+     */
+    public static final String SKILL_VISIBILITY_CACHE_SCOPE = "X-DataSmart-Skill-Visibility-Cache-Scope";
+
+    /**
      * gateway -> Python AI Runtime 服务间签名协议版本。
      *
      * <p>该签名不是给浏览器或普通业务客户端使用的。它只用于 Python Runtime 判断：

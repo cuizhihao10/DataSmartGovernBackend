@@ -1,5 +1,33 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-05 追加落地进展：Gateway 会话级 READY Skill 准入缓存上下文
+
+- gateway 新增 `GatewaySkillVisibilityCacheContextFilter`，针对 `/api/agent/plans` 写入低敏 Skill 可见性缓存上下文：
+  - 租户套餐、workspace 风险、工具预算策略版本；
+  - 缓存版本、缓存 scope、TTL 和 gateway 派生的 cache key；
+  - cache key 只基于租户、角色、workspace、数据范围、授权项目、审批要求和策略摘要，不读取 request body。
+- gateway HMAC 签名协议已纳入上述缓存 Header，Python Runtime 只有在 gateway 签名验证通过后才会把它们重建为 `trustedControlPlane.skillVisibilityCache`。
+- Python Runtime 新增 `SkillVisibilityAdmissionCache`：
+  - 只缓存单个 Skill 的 admission decision；
+  - 不缓存用户 objective、prompt、完整 AgentPlan、模型输出、工具参数或工具结果；
+  - 最终 key 继续拼接 projectId、sessionId、Skill 注册表/Manifest 指纹、skillCode、租户套餐、workspace 风险和预算策略版本。
+- `AgentSkillRegistry` 仍逐次执行语义评分，只在准入策略评估处使用缓存；这保证用户换目标时不会复用错误排序，同时减少同一会话下重复权限/风险/套餐判断。
+
+产品意义：
+- 这一步把 Skill 可见性从“可观测事实和索引”推进到“规划主路径可复用的准入缓存”，更接近 Codex、Claude Code 类 Agent host 的能力暴露治理。
+- 缓存边界保持安全：复用稳定控制面事实，不复用自然语言目标或模型结果，避免跨租户、跨权限、跨会话泄露。
+- gateway 和 Python 通过签名 Header 建立可信上下文，后续可以自然升级到 Redis 分布式缓存、真实租户套餐回填和 Manifest 灰度失效。
+
+当前边界：
+- 当前缓存是 Python 进程内缓存，多实例生产部署仍需要 Redis 或企业缓存 SDK。
+- gateway 当前使用配置默认值写入租户套餐、workspace 风险和预算策略版本，后续应从 permission-admin 授权结果或租户策略中心回填真值。
+- sessionId 仍来自 Python 请求变量；未来如果 gateway 统一管理会话，应把 sessionId 升级为签名 Header。
+
+下一步推荐路线：
+1. 短期可做 gateway/permission-admin 真值回填：租户套餐、workspace 风险、预算策略版本和权限包摘要。
+2. 若继续性能主线，可把 Python 进程内缓存替换为 Redis，并补命中率、miss 原因、TTL 过期等低基数指标。
+3. 为避免继续只在 Skill 可见性局部扩张，建议下一阶段切到长期记忆二级索引或多 Agent 协作/智能网关主线。
+
 ## 2026-06-04 追加落地进展：Java 控制面 Skill 可见性快照 Replay Index
 
 - `agent-runtime` 新增 Skill 可见性快照专用查询能力：

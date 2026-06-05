@@ -106,6 +106,20 @@ public class GatewayContextProperties {
     private PythonRuntimeSignature pythonRuntimeSignature = new PythonRuntimeSignature();
 
     /**
+     * gateway -> Python Runtime 会话级 Skill 可见性缓存上下文配置。
+     *
+     * <p>这里的“缓存”不是 HTTP 响应缓存，也不是把用户 objective、prompt 或模型结果存在 gateway。
+     * 它只生成一个低敏、可签名、可失效的控制面事实摘要，让 Python Runtime 可以把“哪些 Skill
+     * 在当前租户/角色/workspace/数据范围/预算策略下通过准入”缓存起来。
+     *
+     * <p>为什么先由 gateway 生成缓存上下文：
+     * - gateway 最接近认证、授权、数据范围和服务间签名边界；
+     * - Python Runtime 可以继续专注 Agent 编排，不需要猜测哪些 Header 是可信的；
+     * - 缓存 key 可以在服务间签名中被保护，避免终端伪造 key 诱导 Python 复用错误准入结果。</p>
+     */
+    private SkillVisibilityCache skillVisibilityCache = new SkillVisibilityCache();
+
+    /**
      * Python Runtime 下游签名参数。
      */
     @Data
@@ -141,5 +155,76 @@ public class GatewayContextProperties {
          * 后续如果 replay/control/WebSocket 也开始消费高敏控制面事实，应继续扩展此列表。
          */
         private List<String> targetPaths = new ArrayList<>(List.of("/api/agent/plans"));
+    }
+
+    /**
+     * Skill 可见性缓存上下文参数。
+     */
+    @Data
+    public static class SkillVisibilityCache {
+
+        /**
+         * 是否为 Agent 规划入口写入 Skill 可见性缓存上下文 Header。
+         *
+         * <p>默认开启是因为它不缓存响应体，也不改变路由结果；只是在可信 Header 中增加一个低敏摘要。
+         * Python Runtime 如果没有启用对应缓存，看到这些 Header 也只会当作普通上下文忽略。</p>
+         */
+        private boolean enabled = true;
+
+        /**
+         * 缓存协议版本。
+         *
+         * <p>该版本会进入 key 原文和 Header。未来如果 key 因子发生不兼容变化，可以升级版本并让
+         * Python Runtime 同时接受新旧版本一段时间。</p>
+         */
+        private String version = "v1";
+
+        /**
+         * 当前缓存语义范围。
+         *
+         * <p>session-ready-skill-admission 表示“按会话控制面边界缓存 Skill 准入结果”，
+         * 不代表缓存完整计划、模型输出或工具执行结果。</p>
+         */
+        private String scope = "session-ready-skill-admission";
+
+        /**
+         * 缓存 TTL 秒数。
+         *
+         * <p>TTL 不宜过长：权限、套餐、workspace 风险和预算策略都可能变化。
+         * 后续接入权限策略变更事件后，可以在 TTL 之外增加主动失效。</p>
+         */
+        private int ttlSeconds = 300;
+
+        /**
+         * 当前缓存上下文适用的 gateway 原始路径。
+         *
+         * <p>先只覆盖 `/api/agent/plans`，因为这个入口会触发 Skill admission、工具预算和模型网关治理。
+         * WebSocket replay/control 等入口当前不做 Skill 准入，不应误写该缓存上下文。</p>
+         */
+        private List<String> targetPaths = new ArrayList<>(List.of("/api/agent/plans"));
+
+        /**
+         * 租户套餐默认值。
+         *
+         * <p>真实商业化部署应由 permission-admin、租户中心或套餐服务返回真实值。
+         * 当前先使用配置默认值，让 key 结构从一开始就包含套餐维度，避免后续改 key 造成大范围迁移。</p>
+         */
+        private String defaultTenantPlanCode = "STANDARD";
+
+        /**
+         * workspace 风险等级默认值。
+         *
+         * <p>真实值未来可以来自 workspace 风险评估、数据分类分级或人工标记。
+         * 默认 NORMAL 只代表“当前还没有接入风险事实源”，不代表所有 workspace 都低风险。</p>
+         */
+        private String defaultWorkspaceRiskLevel = "NORMAL";
+
+        /**
+         * 工具预算策略版本默认值。
+         *
+         * <p>缓存 key 必须包含预算策略版本。否则策略从宽变窄后，Python Runtime 可能继续复用旧的
+         * READY Skill 准入结果，导致模型看到不该自动规划的能力。</p>
+         */
+        private String defaultToolBudgetPolicyVersion = "gateway-default-v1";
     }
 }

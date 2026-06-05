@@ -78,6 +78,40 @@ class ApiTrustedContextTest(unittest.TestCase):
         self.assertEqual("datasmart-govern-gateway", trusted["requestContext"]["sourceService"])
         self.assertEqual("PROJECT_OWNER", trusted["toolBudget"]["actorRole"])
 
+    def test_signed_gateway_cache_headers_inject_skill_visibility_cache_context(self) -> None:
+        """签名保护的缓存 Header 应进入 Skill 可见性缓存上下文。
+
+        这里验证的是安全装配边界：请求体中伪造的 ``trustedControlPlane`` 会先被删除，只有经过 gateway
+        HMAC 签名保护的 Header 才能重建 ``skillVisibilityCache``。Python Runtime 后续只缓存 Skill
+        准入判断，不缓存完整请求或模型输出。
+        """
+
+        headers = self._signed_headers()
+        headers["X-DataSmart-Skill-Visibility-Cache-Key"] = "gateway-cache-key-001"
+        headers["X-DataSmart-Skill-Visibility-Cache-Version"] = "v1"
+        headers["X-DataSmart-Skill-Visibility-Cache-Scope"] = "session-ready-skill-admission"
+        headers["X-DataSmart-Skill-Visibility-Cache-Ttl-Seconds"] = "120"
+        headers[GATEWAY_SIGNATURE] = sign_gateway_payload(
+            headers,
+            timestamp=headers[GATEWAY_SIGNATURE_TIMESTAMP],
+            nonce=headers[GATEWAY_SIGNATURE_NONCE],
+            key_id=headers[GATEWAY_SIGNATURE_KEY_ID],
+            secret="secret-for-test",
+        )
+
+        payload = enrich_agent_plan_payload_from_gateway_headers(
+            {"variables": {"trustedControlPlane": {"skillVisibilityCache": {"gatewayCacheKey": "forged"}}}},
+            headers,
+            signature_config=GatewaySignatureVerificationConfig(required=True, secret="secret-for-test"),
+            now_ms=1_800_000_000_100,
+        )
+
+        cache_context = payload["variables"]["trustedControlPlane"]["skillVisibilityCache"]
+        self.assertTrue(cache_context["enabled"])
+        self.assertEqual("gateway-cache-key-001", cache_context["gatewayCacheKey"])
+        self.assertEqual(120, cache_context["ttlSeconds"])
+        self.assertEqual("STANDARD", cache_context["tenantPlanCode"])
+
     def test_required_signature_rejects_forged_gateway_source(self) -> None:
         """只伪造 source-service 但没有签名时，应拒绝注入可信上下文。"""
 
@@ -162,6 +196,9 @@ class ApiTrustedContextTest(unittest.TestCase):
             "X-DataSmart-Actor-Type": "USER",
             "X-DataSmart-Workspace-Id": "workspace-a",
             "X-DataSmart-Request-Source": "WEB_UI",
+            "X-DataSmart-Tenant-Plan-Code": "STANDARD",
+            "X-DataSmart-Workspace-Risk-Level": "NORMAL",
+            "X-DataSmart-Tool-Budget-Policy-Version": "gateway-default-v1",
             "X-DataSmart-Data-Scope-Level": "PROJECT",
             "X-DataSmart-Authorized-Project-Ids": "20,30",
             GATEWAY_SIGNATURE_VERSION: "v1",

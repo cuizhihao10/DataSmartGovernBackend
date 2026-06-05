@@ -1,5 +1,13 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-05 落地补充：cache admission decisions, not user prompts or full plans
+
+- 本阶段把 gateway 会话级 READY Skill cache 从规划建议推进到主路径契约：gateway 为 `/api/agent/plans` 生成低敏缓存上下文，Python Runtime 验签后只缓存 Skill admission decision。
+- 这个落地点对应当前 Agent host 的一条重要趋势：性能优化不能只理解成“缓存模型回答”。Codex、Claude Code 类工具更需要把工具/Skill 暴露边界、权限事实、会话能力集、模型前缀和工具 schema 分层缓存；其中用户 prompt、完整计划和工具结果通常不适合跨请求复用。
+- DataSmart 当前选择缓存“控制面准入判断”，而不是缓存完整 `AgentPlan`。语义评分仍按每次 objective 重新执行，避免用户目标变化后复用错误能力排序；准入判断则按 gateway key、project、session、Skill Manifest 指纹、skillCode 和策略版本短期复用。
+- gateway 生成的 cache key 被纳入 Java/Python HMAC 签名协议，Python 不相信终端自报缓存 key。这是多租户 Agent 平台必须具备的基本边界，否则高并发缓存会变成权限绕过入口。
+- 下一步如果继续沿性能主线，建议优先做 Redis/分布式缓存、命中率指标和真实策略版本回填；但从项目整体节奏看，更推荐切到长期记忆二级索引或多 Agent 协作主线，避免 Skill 可见性局部继续过度扩张。
+
 ## 2026-06-04 落地补充：session capability facts should be materialized into dedicated indexes
 
 - 本阶段把 Java `agent-runtime` 的 Skill 可见性查询从“扫描通用 runtime event 热窗口”推进到“专用索引端口 + 内存物化”。成熟 Agent host 里，工具/Skill 暴露边界不应永远停留在自由 attributes 扫描，否则 Marketplace、审计台和前端治理卡片都会被事件内部结构绑死。

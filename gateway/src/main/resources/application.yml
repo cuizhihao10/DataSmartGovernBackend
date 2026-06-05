@@ -151,6 +151,36 @@ datasmart:
       # 这两个 Header 只用于调试和排障，不应该作为权限判断依据。
       route-prefix-header: X-Gateway-Route-Prefix
       original-path-header: X-Gateway-Original-Path
+      skill-visibility-cache:
+        # 会话级 READY Skill 可见性缓存上下文。
+        #
+        # 它不是响应缓存：
+        # - 不缓存用户 objective、prompt、模型输出或工具参数；
+        # - 不在 gateway 保存 AgentPlan；
+        # - 只生成一个由租户、操作者、角色、workspace、数据范围、租户套餐、workspace 风险和预算策略版本
+        #   派生出的低敏 key，让 Python Runtime 可以缓存“当前控制面边界下哪些 Skill 通过准入”。
+        #
+        # 为什么放在 gateway：
+        # 1. gateway 已经完成 Header 清理、身份注入和 permission-admin 路由授权；
+        # 2. 这些 Header 会被后续 python-runtime-signature 签名，Python Runtime 可以验证它们确实来自 gateway；
+        # 3. 未来权限策略变更事件、租户套餐变更或 workspace 风险升高时，可以在 gateway/Redis 层做主动失效。
+        enabled: ${DATASMART_GATEWAY_SKILL_VISIBILITY_CACHE_ENABLED:true}
+        # 当前协议版本。若 key 因子发生不兼容变化，应升级版本并同步 Python Runtime。
+        version: ${DATASMART_GATEWAY_SKILL_VISIBILITY_CACHE_VERSION:v1}
+        # 缓存语义范围：当前只缓存“会话控制面边界下的 Skill 准入结果”，不缓存完整响应。
+        scope: ${DATASMART_GATEWAY_SKILL_VISIBILITY_CACHE_SCOPE:session-ready-skill-admission}
+        # TTL 秒数。生产环境建议保持较短，并配合权限/套餐/风险策略变更事件主动失效。
+        ttl-seconds: ${DATASMART_GATEWAY_SKILL_VISIBILITY_CACHE_TTL_SECONDS:300}
+        # 需要生成缓存上下文的 gateway 原始路径。
+        # 当前只覆盖 /api/agent/plans，因为只有该入口会触发 Skill admission、工具预算和模型规划。
+        target-paths:
+          - /api/agent/plans
+        # 当前租户套餐默认值。后续应由 permission-admin 或租户中心返回真实套餐事实。
+        default-tenant-plan-code: ${DATASMART_GATEWAY_DEFAULT_TENANT_PLAN_CODE:STANDARD}
+        # 当前 workspace 风险默认值。后续应由 workspace 风险评估、数据分类分级或人工标记返回真实值。
+        default-workspace-risk-level: ${DATASMART_GATEWAY_DEFAULT_WORKSPACE_RISK_LEVEL:NORMAL}
+        # 工具预算策略版本默认值。策略变化时应改变该值或通过权限策略事件主动失效缓存。
+        default-tool-budget-policy-version: ${DATASMART_GATEWAY_DEFAULT_TOOL_BUDGET_POLICY_VERSION:gateway-default-v1}
       python-runtime-signature:
         # gateway -> Python AI Runtime 的内部签名开关。
         #

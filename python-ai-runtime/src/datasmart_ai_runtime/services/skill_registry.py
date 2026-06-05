@@ -11,6 +11,10 @@ from datasmart_ai_runtime.domain.contracts import AgentRequest
 from datasmart_ai_runtime.domain.intent import GovernanceDomain, IntentAnalysis
 from datasmart_ai_runtime.domain.skills import AgentSkillDescriptor, AgentSkillPlan, AgentSkillSelection
 from datasmart_ai_runtime.services.skill_admission_policy import AgentSkillAdmissionPolicy
+from datasmart_ai_runtime.services.skills.skill_visibility_cache import (
+    SkillVisibilityAdmissionCache,
+    skill_registry_fingerprint,
+)
 
 
 class AgentSkillRegistry:
@@ -28,9 +32,14 @@ class AgentSkillRegistry:
         skills: tuple[AgentSkillDescriptor, ...],
         *,
         admission_policy: AgentSkillAdmissionPolicy | None = None,
+        visibility_cache: SkillVisibilityAdmissionCache | None = None,
     ) -> None:
         self._skills = tuple(skill for skill in skills if skill.enabled)
         self._admission_policy = admission_policy or AgentSkillAdmissionPolicy()
+        # Skill 注册表指纹用于保护缓存不会跨 Skill 发布版本复用。即使 gateway cache key 相同，
+        # 只要本地/远端 Skill descriptor 发生变化，准入缓存也会自动失效。
+        self._registry_fingerprint = skill_registry_fingerprint(self._skills)
+        self._visibility_cache = visibility_cache or SkillVisibilityAdmissionCache()
 
     def select(
         self,
@@ -70,7 +79,12 @@ class AgentSkillRegistry:
 
             if score <= 0:
                 continue
-            admission = self._admission_policy.evaluate(skill, request)
+            admission = self._visibility_cache.get_or_evaluate(
+                skill=skill,
+                request=request,
+                registry_fingerprint=self._registry_fingerprint,
+                evaluator=lambda current_skill=skill: self._admission_policy.evaluate(current_skill, request),
+            )
             selection = AgentSkillSelection(
                 skill_code=skill.skill_code,
                 display_name=skill.display_name,
