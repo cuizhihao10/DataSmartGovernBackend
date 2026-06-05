@@ -375,8 +375,7 @@ public class AgentExternalProtocolAdapterPreviewService {
             return "";
         }
         String sanitized = value
-                .replace("https://", "[external-url-redacted]")
-                .replace("http://", "[external-url-redacted]")
+                .replaceAll("(?i)https?://\\S+", "[external-url-redacted]")
                 .replace("api-key", "[credential-redacted]")
                 .replace("API_KEY", "[credential-redacted]")
                 .replace("secret", "[secret-redacted]")

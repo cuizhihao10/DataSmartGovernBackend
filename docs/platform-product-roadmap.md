@@ -10133,3 +10133,71 @@ TTFT/TPOT/GPU 遥测，而是让前端、审计台和运维侧能从 Java 控制
 2. 实现 A2A public Agent Card 只读端点，但只暴露 READY Skill、低敏能力摘要和安全方案说明。
 3. 为真实协议调用设计 runtime event 类型，让外部 Agent 的发现、委派、取消、失败和审批等待都可追踪。
 4. 后续再接 tools/call 或 A2A task 时，必须先通过 permission-admin、tool preflight、confirmation/outbox、限流和 worker pre-check。
+
+## 5.26 Java Agent Runtime MCP tools/list 与 A2A public Agent Card 只读发现端点（2026-06-06）
+
+本阶段承接 5.25 的外部协议映射预览，继续推进 Agent 平台互联能力，但仍然克制在“发现层”：
+新增 MCP `tools/list` 风格工具目录和 A2A `/.well-known/agent-card.json` 风格公开 Agent Card。
+目标是让外部 Agent、Python Runtime、网关和管理台可以按更接近协议的形态发现 DataSmart 能力，
+但不开放 `tools/call`、A2A task、资源正文读取或 Prompt 正文读取。
+
+已完成：
+- 新增 `AgentExternalProtocolDiscoveryService`：
+  - 独立承载协议发现逻辑，避免 5.25 的 preview service 继续膨胀；
+  - 构建 MCP `tools/list` 风格响应，包含 `jsonrpc=2.0`、`method=tools/list`、`result.tools`、`nextCursor`；
+  - 将内部工具参数转为 JSON Schema 风格 `inputSchema`，只描述字段名、类型、是否必填和敏感标记，不输出 example 或真实参数值；
+  - 将工具治理映射为 MCP annotations，包括 readOnlyHint、destructiveHint、idempotentHint、风险等级、审批要求、租户/项目边界；
+  - 根据审批、异步、草稿等执行模式映射 `taskSupport=required/optional`；
+  - 构建 A2A public Agent Card，只暴露 publicationState=READY 的 Skill。
+- `AgentExternalProtocolAdapterController` 新增管理路径：
+  - `GET /agent-runtime/protocol-adapters/mcp/tools/list`；
+  - `GET /api/agent/protocol-adapters/mcp/tools/list`；
+  - `GET /agent-runtime/protocol-adapters/a2a/agent-card`；
+  - `GET /api/agent/protocol-adapters/a2a/agent-card`。
+- 新增 `AgentA2aDiscoveryController`：
+  - `GET /.well-known/agent-card.json`；
+  - 不使用 `PlatformApiResponse` 包装，保持更接近 A2A Agent Card 自动发现形态；
+  - 不提供 domain/riskLevel 参数，避免公开根路径被用来枚举内部能力目录。
+- 新增 MCP DTO：
+  - `AgentMcpToolsListResponse`；
+  - `AgentMcpToolsListResultView`；
+  - `AgentMcpListedToolView`。
+- 新增 A2A DTO：
+  - `AgentA2aPublicAgentCardView`；
+  - `AgentA2aAgentInterfaceView`；
+  - `AgentA2aAgentProviderView`；
+  - `AgentA2aAgentCapabilitiesView`；
+  - `AgentA2aPublicSkillView`。
+- 加固 URL 脱敏：
+  - `AgentExternalProtocolAdapterPreviewService` 与 `AgentExternalProtocolDiscoveryService` 均改为整段 URL 脱敏；
+  - 避免只替换 `https://` 前缀后仍残留内部域名。
+- 新增 `AgentExternalProtocolDiscoveryServiceTest`：
+  - 验证 MCP tools/list 只返回 schema 和低敏治理注解；
+  - 验证分页 cursor；
+  - 验证审批型工具 `taskSupport=required`；
+  - 验证 A2A public Agent Card 只暴露 READY Skill；
+  - 验证响应不包含内部域名、内部执行端点字段、下游服务字段、工具参数值、查询样例、api key 或 secret。
+
+验证：
+- `mvn -pl agent-runtime -am "-Dtest=AgentExternalProtocolDiscoveryServiceTest,AgentExternalProtocolAdapterPreviewServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：6 个测试通过。
+- `mvn -pl agent-runtime -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：225 个测试通过，Maven Toolchain 使用 JDK 21。
+- `git diff --check`：通过，仅提示部分文件后续被 Git 触碰时会从 LF 转为 CRLF，不影响代码质量。
+- 行数检查：`AgentExternalProtocolDiscoveryService.java` 410 行、`AgentExternalProtocolAdapterController.java` 126 行、`AgentA2aDiscoveryController.java` 41 行、`AgentExternalProtocolDiscoveryServiceTest.java` 257 行，新增 DTO 均为几十行级别，符合 500 行内约束。
+
+产品意义：
+- DataSmart 从“协议映射预览”推进到“协议发现入口”，更接近 Codex、Claude Code 等 Agent Host 的能力目录与 Agent 名片结构。
+- MCP tools/list 让外部 Agent 可以发现工具 schema，但仍不能绕过 DataSmart 的权限、审批、审计和工具沙箱。
+- A2A public Agent Card 让外部 Agent 可以发现 DataSmart Master Agent 能力，但只公开 READY Skill，非 READY/禁用 Skill 不会被自动委派。
+- 这一步把“对外互联”和“内部治理”清晰分层：协议发现可以公开，真实执行必须回到 DataSmart 控制面。
+
+当前边界：
+- 当前仍不是完整 MCP JSON-RPC Server；没有 initialize/capability negotiation、tools/call、resources/read、prompts/get。
+- 当前仍不是完整 A2A Server；没有 task send/get/cancel、streaming、push notification、extended card 鉴权和 JWS 签名。
+- A2A Agent Card 中的公开 URL 仍是示例公开域名，生产环境需要由 gateway/deployment 配置真实 HTTPS 域名。
+- MCP annotations 中的 DataSmart 治理字段属于扩展注解，后续若面向严格 MCP 客户端，需要补兼容模式。
+
+下一步推荐路线：
+1. 优先为“协议发现”增加 runtime event：记录外部 Agent 何时发现 tools/list 或 Agent Card，但只保存低基数、低敏摘要。
+2. 设计 A2A task endpoint 草案之前，应先定义任务状态、取消、超时、幂等、审批等待、push/streaming 的商业化语义。
+3. MCP `tools/call` 不能直接实现为下游 HTTP 调用，必须先接 permission-admin、confirmation/outbox、worker pre-check 和限流。
+4. 并行可以切到 Python Runtime 真实 Agent 编排或长期记忆治理，避免 Java 协议适配层继续局部膨胀。

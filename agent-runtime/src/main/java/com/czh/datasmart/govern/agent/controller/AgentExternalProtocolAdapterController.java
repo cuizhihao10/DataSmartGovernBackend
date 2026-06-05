@@ -7,6 +7,9 @@
 package com.czh.datasmart.govern.agent.controller;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentExternalProtocolAdapterPreviewResponse;
+import com.czh.datasmart.govern.agent.controller.dto.AgentA2aPublicAgentCardView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentMcpToolsListResponse;
+import com.czh.datasmart.govern.agent.service.runtime.AgentExternalProtocolDiscoveryService;
 import com.czh.datasmart.govern.agent.service.runtime.AgentExternalProtocolAdapterPreviewService;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
@@ -39,6 +42,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class AgentExternalProtocolAdapterController {
 
     private final AgentExternalProtocolAdapterPreviewService previewService;
+    private final AgentExternalProtocolDiscoveryService discoveryService;
 
     /**
      * 查询 MCP/A2A 外部协议适配预览。
@@ -71,6 +75,57 @@ public class AgentExternalProtocolAdapterController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success(
                 previewService.buildPreview(domain, riskLevel, includeNonReady),
+                traceId
+        );
+    }
+
+    /**
+     * 查询 MCP `tools/list` 风格的只读工具发现结果。
+     *
+     * <p>路由语义：
+     * `/mcp/tools/list` 是 DataSmart Agent Runtime 面向外部 Agent 协议的一小步“发现接口”。
+     * 它比 `/mcp-a2a/preview` 更接近 MCP `tools/list`，但仍不是完整 MCP JSON-RPC Server：
+     * 当前不处理 initialize，不协商 capability，不接受 `tools/call`，也不会执行工具。</p>
+     *
+     * <p>参数语义：
+     * - `domain`：可选业务域过滤，便于外部 Agent 或管理台只查看某类工具；
+     * - `riskLevel`：可选风险等级过滤；
+     * - `cursor`：分页游标，当前使用 `offset:N` 轻量格式；
+     * - `limit`：分页大小，服务端会限制最大值，防止发现接口被误用成大批量导出；
+     * - `requestId`：模拟 JSON-RPC id，便于调用方排查响应来源。</p>
+     *
+     * <p>安全边界：
+     * 返回内容只包含工具名、低敏描述、输入 JSON Schema、治理注解和 taskSupport，不包含内部 endpoint、
+     * targetService、example、工具实参、Prompt、资源正文、模型输出、密钥或客户样例数据。</p>
+     */
+    @GetMapping("/mcp/tools/list")
+    public PlatformApiResponse<AgentMcpToolsListResponse> listMcpTools(
+            @RequestParam(value = "domain", required = false) String domain,
+            @RequestParam(value = "riskLevel", required = false) String riskLevel,
+            @RequestParam(value = "cursor", required = false) String cursor,
+            @RequestParam(value = "limit", required = false) Integer limit,
+            @RequestParam(value = "requestId", required = false) String requestId,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(
+                discoveryService.listMcpTools(domain, riskLevel, cursor, limit, requestId),
+                traceId
+        );
+    }
+
+    /**
+     * 查询 A2A public Agent Card 的管理路径版本。
+     *
+     * <p>该接口返回内容与根路径 `/.well-known/agent-card.json` 同源，但保留统一响应包装和可选过滤参数，
+     * 更适合管理台、自动化测试和部署前检查。真实外部 Agent 自动发现时，应优先使用根路径发现端点，
+     * 并由网关负责公网域名、TLS、缓存、签名和租户可见性策略。</p>
+     */
+    @GetMapping("/a2a/agent-card")
+    public PlatformApiResponse<AgentA2aPublicAgentCardView> getA2aAgentCard(
+            @RequestParam(value = "domain", required = false) String domain,
+            @RequestParam(value = "riskLevel", required = false) String riskLevel,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(
+                discoveryService.buildA2aPublicAgentCard(domain, riskLevel),
                 traceId
         );
     }
