@@ -346,6 +346,11 @@ class RemoteThenLocalToolExecutionReadinessPolicyProvider:
         - 后续新增影响码或预算字段时，不会出现“远程路径”和“本地路径”解释不一致。
         """
 
+        if self._has_trusted_readiness_policy(request):
+            # gateway/agent-runtime 已经通过签名 envelope 注入 readiness policy 时，远程 provider 不再回源。
+            # 这样同一轮 `/agent/plans` 可以复用 gateway 的控制面评估结果，避免 Python Runtime 内部再发起
+            # 第二次 permission-admin HTTP 调用。
+            return self._local_provider.policy_for(request)
         try:
             remote_policy = self._remote_client.evaluate_readiness_policy(request, trace_id=self._trace_id)
         except Exception:
@@ -357,6 +362,17 @@ class RemoteThenLocalToolExecutionReadinessPolicyProvider:
                 raise RuntimeError("远程 permission-admin 响应缺少标准 toolExecutionReadinessPolicy")
             return self._local_provider.policy_for(request)
         return self._local_provider.policy_for(_request_with_remote_readiness_policy(request, remote_policy))
+
+    @staticmethod
+    def _has_trusted_readiness_policy(request: AgentRequest) -> bool:
+        """判断请求是否已经包含签名保护后的 readiness policy。"""
+
+        variables = request.variables or {}
+        trusted_root = variables.get(ToolExecutionReadinessPolicyProvider.TRUSTED_ROOT_KEY)
+        return isinstance(trusted_root, Mapping) and isinstance(
+            trusted_root.get(ToolExecutionReadinessPolicyProvider.READINESS_POLICY_KEY),
+            Mapping,
+        )
 
 
 @dataclass(frozen=True)

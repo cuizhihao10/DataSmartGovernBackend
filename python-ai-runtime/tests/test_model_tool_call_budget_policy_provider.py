@@ -260,8 +260,9 @@ class ModelToolCallBudgetPolicyProviderTest(unittest.TestCase):
         """远程可用时应优先使用 permission-admin 策略，而不是本地环境变量策略。"""
 
         remote_policy = ModelToolCallBudgetPolicy(max_auto_executable_tool_calls=7)
+        remote_client = _FakeRemoteBudgetClient(remote_policy)
         provider = RemoteThenLocalModelToolCallBudgetPolicyProvider(
-            _FakeRemoteBudgetClient(remote_policy),
+            remote_client,
             local_provider=EnvAndRequestModelToolCallBudgetPolicyProvider(
                 environ={"DATASMART_AI_TOOL_BUDGET_MAX_AUTO_EXECUTABLE_CALLS": "1"}
             ),
@@ -270,6 +271,40 @@ class ModelToolCallBudgetPolicyProviderTest(unittest.TestCase):
         policy = provider.policy_for(self._request())
 
         self.assertEqual(7, policy.max_auto_executable_tool_calls)
+        self.assertEqual(1, remote_client.calls)
+
+    def test_remote_provider_skips_permission_admin_when_trusted_budget_exists(self) -> None:
+        """已存在 gateway 签名预算时，远程 provider 不应再次调用 permission-admin。
+
+        5.42 的性能目标是让 gateway/agent-runtime 一次性注入 policy envelope。
+        如果 Python Runtime 已经拿到 `trustedControlPlane.toolBudget`，继续远程调用 permission-admin
+        会重新引入 5.40 的重复同步评估问题，也可能让同一请求在 gateway 与 Python 内部看到不同策略版本。
+        """
+
+        remote_client = _FakeRemoteBudgetClient(ModelToolCallBudgetPolicy(max_auto_executable_tool_calls=7))
+        provider = RemoteThenLocalModelToolCallBudgetPolicyProvider(
+            remote_client,
+            local_provider=EnvAndRequestModelToolCallBudgetPolicyProvider(),
+        )
+
+        policy = provider.policy_for(
+            self._request(
+                variables={
+                    "trustedControlPlane": {
+                        "toolBudget": {
+                            "maxProposedToolCalls": 2,
+                            "maxAutoExecutableToolCalls": 1,
+                            "maxHighRiskToolCalls": 0,
+                        }
+                    }
+                }
+            )
+        )
+
+        self.assertEqual(2, policy.max_proposed_tool_calls)
+        self.assertEqual(1, policy.max_auto_executable_tool_calls)
+        self.assertEqual(0, policy.max_high_risk_tool_calls)
+        self.assertEqual(0, remote_client.calls)
 
     def test_remote_provider_falls_back_to_local_policy_when_allowed(self) -> None:
         """远程策略中心不可用且允许降级时，应回退到本地策略，保证本地开发与灰度环境不断流。"""
@@ -313,10 +348,12 @@ class _FakeRemoteBudgetClient:
 
     def __init__(self, policy: ModelToolCallBudgetPolicy) -> None:
         self._policy = policy
+        self.calls = 0
 
     def evaluate(self, request_context: AgentRequest, trace_id: str | None = None) -> ModelToolCallBudgetPolicy:
         """保持与真实 client 相同的方法签名，便于测试 provider 编排逻辑。"""
 
+        self.calls += 1
         return self._policy
 
 

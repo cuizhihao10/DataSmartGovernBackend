@@ -1,5 +1,14 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-06 落地补充：agent hosts should inject signed policy before tool execution
+
+- 最新 Agent 平台实践越来越强调 tools、guardrails、tracing 和 durable execution 的组合：工具调用不能只是模型输出一个函数名，还需要宿主平台在执行前注入权限、预算、风险、审批和可回放证据。
+- DataSmart 本阶段把 `X-DataSmart-Tool-Policy-Envelope` 从“Python 可解析的 Header 契约”推进到“gateway `/api/agent/plans` 主链路生成的签名控制面事实”。
+- 这一步减少同一请求内的重复策略调用：gateway 可以一次性评估 `toolCallBudget + toolExecutionReadinessPolicy`，Python 远程 provider 在发现 `trustedControlPlane` 已有 signed policy 后直接本地解析，不再回源 permission-admin。
+- 该实现继续遵守低敏边界：Header 只放策略版本、角色/套餐/风险/backlog、预算数字、布尔开关和 influenceCodes，不放 prompt、SQL、工具实参、样本数据、模型输出、凭证、内部 endpoint 或 artifact 正文。
+- 趋势映射到 DataSmart 的下一步不是继续增加 Header 字段，而是把 readiness 变成 OpenClaw/LangGraph-style 执行图条件节点，再把 MCP `tools/call`、A2A action 和模型 tool_call 汇入同一套 durable action/outbox/worker receipt 链路。
+- 参考资料：OpenAI Agents SDK Guardrails：`https://openai.github.io/openai-agents-python/guardrails/`；OpenAI Agents SDK Tracing：`https://openai.github.io/openai-agents-python/tracing/`；Anthropic Tool Use：`https://platform.claude.com/docs/en/docs/agents-and-tools/tool-use/overview/`；LangGraph Durable Execution：`https://docs.langchain.com/oss/python/langgraph/durable-execution`；LangGraph Human-in-the-loop：`https://docs.langchain.com/oss/python/langgraph/human-in-the-loop`。
+
 ## 2026-06-06 落地补充：policy envelopes reduce duplicate control-plane calls
 
 - 商业化 Agent Host 不能让模型请求体直接决定工具预算、审批、风险阻断或队列策略；这些策略应由受信控制面生成，并通过可验证的边界进入 Agent Runtime。

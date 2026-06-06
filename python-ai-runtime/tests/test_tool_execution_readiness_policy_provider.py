@@ -31,27 +31,27 @@ class ToolExecutionReadinessPolicyProviderTest(unittest.TestCase):
     def test_remote_policy_is_injected_into_trusted_control_plane_without_mutating_request(self) -> None:
         """远程 readiness policy 应复用本地 trusted-control-plane 解析和安全收敛逻辑。"""
 
-        request = self._request()
-        provider = RemoteThenLocalToolExecutionReadinessPolicyProvider(
-            _RemoteReadinessClient(
-                {
-                    "source": "permission-admin",
-                    "policyVersion": "perm-readiness-v2",
-                    "actorRole": "AUDITOR",
-                    "tenantPlanCode": "TRIAL",
-                    "workspaceRiskLevel": "HIGH",
-                    "workerBacklogLevel": "CRITICAL",
-                    "maxAutoSyncTools": 5,
-                    "maxAsyncTools": 4,
-                    "influenceCodes": ("REMOTE_PERMISSION_ADMIN_POLICY",),
-                    "prompt": "should-not-leak",
-                    "arguments": {"datasourceId": "ds-sensitive"},
-                }
-            )
+        remote_client = _RemoteReadinessClient(
+            {
+                "source": "permission-admin",
+                "policyVersion": "perm-readiness-v2",
+                "actorRole": "AUDITOR",
+                "tenantPlanCode": "TRIAL",
+                "workspaceRiskLevel": "HIGH",
+                "workerBacklogLevel": "CRITICAL",
+                "maxAutoSyncTools": 5,
+                "maxAsyncTools": 4,
+                "influenceCodes": ("REMOTE_PERMISSION_ADMIN_POLICY",),
+                "prompt": "should-not-leak",
+                "arguments": {"datasourceId": "ds-sensitive"},
+            }
         )
+        request = self._request()
+        provider = RemoteThenLocalToolExecutionReadinessPolicyProvider(remote_client)
 
         snapshot = provider.policy_for(request)
 
+        self.assertEqual(1, remote_client.calls)
         self.assertEqual("trusted-control-plane", snapshot.source)
         self.assertEqual("perm-readiness-v2", snapshot.policy_version)
         self.assertEqual(0, snapshot.policy.max_auto_sync_tools)
@@ -62,6 +62,49 @@ class ToolExecutionReadinessPolicyProviderTest(unittest.TestCase):
         self.assertNotIn("trustedControlPlane", request.variables)
         self.assertNotIn("should-not-leak", str(snapshot.to_low_sensitive_summary()))
         self.assertNotIn("ds-sensitive", str(snapshot.to_low_sensitive_summary()))
+
+    def test_remote_policy_skips_permission_admin_when_trusted_readiness_exists(self) -> None:
+        """已存在 gateway 签名 readiness policy 时，不应再次调用 permission-admin。
+
+        这条用例固定 5.42 的控制面优化：gateway 生成并签名 policy envelope 后，Python Runtime 只需要
+        本地解析 `trustedControlPlane.toolExecutionReadinessPolicy`。如果这里仍然远程调用，就会让
+        同一请求再次承受网络延迟，并可能拿到与 gateway envelope 不一致的策略版本。
+        """
+
+        remote_client = _RemoteReadinessClient(
+            {
+                "source": "permission-admin",
+                "policyVersion": "should-not-be-used",
+                "maxAutoSyncTools": 9,
+            }
+        )
+        provider = RemoteThenLocalToolExecutionReadinessPolicyProvider(remote_client)
+
+        snapshot = provider.policy_for(
+            self._request(
+                variables={
+                    "trustedControlPlane": {
+                        "toolExecutionReadinessPolicy": {
+                            "source": "gateway-local-fallback",
+                            "policyVersion": "gateway-envelope-v1",
+                            "actorRole": "PROJECT_OWNER",
+                            "tenantPlanCode": "STANDARD",
+                            "workspaceRiskLevel": "NORMAL",
+                            "workerBacklogLevel": "NORMAL",
+                            "maxAutoSyncTools": 1,
+                            "maxAsyncTools": 1,
+                            "influenceCodes": ("GATEWAY_SIGNED_POLICY_ENVELOPE",),
+                        }
+                    }
+                }
+            )
+        )
+
+        self.assertEqual(0, remote_client.calls)
+        self.assertEqual("trusted-control-plane", snapshot.source)
+        self.assertEqual("gateway-envelope-v1", snapshot.policy_version)
+        self.assertEqual(1, snapshot.policy.max_auto_sync_tools)
+        self.assertIn("GATEWAY_SIGNED_POLICY_ENVELOPE", snapshot.influence_codes)
 
     def test_remote_policy_falls_back_to_local_provider_when_allowed(self) -> None:
         """远程不可用且允许回退时，应继续使用本地策略保证学习环境不断流。"""
@@ -118,13 +161,13 @@ class ToolExecutionReadinessPolicyProviderTest(unittest.TestCase):
         self.assertIn("REMOTE_PERMISSION_ADMIN_POLICY", readiness["policy"]["influenceCodes"])
 
     @staticmethod
-    def _request() -> AgentRequest:
+    def _request(variables: dict[str, object] | None = None) -> AgentRequest:
         return AgentRequest(
             tenant_id="tenant-a",
             project_id="project-a",
             actor_id="user-a",
             objective="测试 readiness policy 来源",
-            variables={},
+            variables=variables or {},
         )
 
 
@@ -133,6 +176,7 @@ class _RemoteReadinessClient:
 
     def __init__(self, policy: dict[str, object]) -> None:
         self._policy = policy
+        self.calls = 0
 
     def evaluate_readiness_policy(
         self,
@@ -141,6 +185,7 @@ class _RemoteReadinessClient:
     ) -> dict[str, object]:
         """保持与真实远程客户端相同的方法签名。"""
 
+        self.calls += 1
         return self._policy
 
 

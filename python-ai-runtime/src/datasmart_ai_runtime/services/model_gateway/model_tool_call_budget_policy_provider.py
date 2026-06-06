@@ -194,12 +194,25 @@ class RemoteThenLocalModelToolCallBudgetPolicyProvider:
     def policy_for(self, request: AgentRequest) -> ModelToolCallBudgetPolicy:
         """先尝试远程策略；失败时按配置回退本地策略。"""
 
+        if self._has_trusted_tool_budget(request):
+            # gateway/agent-runtime 已经通过签名 envelope 注入受信预算时，不应再同步回源 permission-admin。
+            # 这正是 5.42 的性能优化目标：同一次 `/agent/plans` 请求共享一份控制面评估结果，
+            # 避免预算 provider 与 readiness provider 各自发起远程调用。
+            return self._local_provider.policy_for(request)
         try:
             return self._remote_client.evaluate(request, trace_id=self._trace_id)
         except PermissionAdminToolBudgetPolicyClientError:
             if not self._allow_remote_fallback:
                 raise
             return self._local_provider.policy_for(request)
+
+    @staticmethod
+    def _has_trusted_tool_budget(request: AgentRequest) -> bool:
+        """判断请求是否已经携带签名保护后的工具预算。"""
+
+        variables = request.variables or {}
+        trusted_root = variables.get("trustedControlPlane")
+        return isinstance(trusted_root, Mapping) and isinstance(trusted_root.get("toolBudget"), Mapping)
 
 
 def _first_present(mapping: Mapping[str, object], keys: tuple[str, ...]) -> object | None:

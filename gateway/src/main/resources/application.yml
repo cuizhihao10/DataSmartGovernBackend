@@ -181,6 +181,36 @@ datasmart:
         default-workspace-risk-level: ${DATASMART_GATEWAY_DEFAULT_WORKSPACE_RISK_LEVEL:NORMAL}
         # 工具预算策略版本默认值。策略变化时应改变该值或通过权限策略事件主动失效缓存。
         default-tool-budget-policy-version: ${DATASMART_GATEWAY_DEFAULT_TOOL_BUDGET_POLICY_VERSION:gateway-default-v1}
+      tool-policy-envelope:
+        # Agent 工具治理策略信封。
+        #
+        # 它会写入 X-DataSmart-Tool-Policy-Envelope，并由后续 python-runtime-signature 一起签名。
+        # Python Runtime 验签后会把其中的 toolCallBudget 与 toolExecutionReadinessPolicy 注入
+        # trustedControlPlane，避免预算 provider 与 readiness provider 在同一 /agent/plans 请求中重复回源。
+        #
+        # 安全边界：
+        # - 只允许低敏策略摘要进入 Header；
+        # - 不允许 prompt、SQL、工具参数值、样本数据、模型输出、凭证、内部 endpoint 或 artifact 正文；
+        # - Header 大小默认限制 4KB，和 Python Runtime 解析上限保持一致。
+        enabled: ${DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_ENABLED:true}
+        target-paths:
+          - /api/agent/plans
+        # 本地默认不强依赖 permission-admin，方便只启动 gateway/Python Runtime 学习联调。
+        # 生产或集成环境建议打开，让 gateway 使用 Java 控制面真实策略生成 envelope。
+        remote-evaluation-enabled: ${DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_REMOTE_ENABLED:false}
+        permission-admin-evaluate-url: ${DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_EVALUATE_URL:http://localhost:8085/permissions/agent/tool-budget-policies/evaluate}
+        timeout: ${DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_TIMEOUT:500ms}
+        # true：远程异常时回退 gateway 本地保守策略；false：远程异常时拒绝本次 Agent 规划请求。
+        # 生产强治理环境可以设置为 false，避免策略中心不可用时继续放行。
+        fail-open-on-remote-error: ${DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_FAIL_OPEN_ON_ERROR:true}
+        max-header-bytes: ${DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_MAX_HEADER_BYTES:4096}
+        default-worker-backlog-level: ${DATASMART_GATEWAY_DEFAULT_WORKER_BACKLOG_LEVEL:NORMAL}
+        default-requested-tool-risk-level: ${DATASMART_GATEWAY_DEFAULT_REQUESTED_TOOL_RISK_LEVEL:LOW}
+        default-max-proposed-tool-calls: ${DATASMART_GATEWAY_DEFAULT_MAX_PROPOSED_TOOL_CALLS:5}
+        default-max-auto-executable-tool-calls: ${DATASMART_GATEWAY_DEFAULT_MAX_AUTO_EXECUTABLE_TOOL_CALLS:2}
+        default-max-high-risk-tool-calls: ${DATASMART_GATEWAY_DEFAULT_MAX_HIGH_RISK_TOOL_CALLS:0}
+        default-max-single-arguments-bytes: ${DATASMART_GATEWAY_DEFAULT_MAX_SINGLE_ARGUMENT_BYTES:16384}
+        default-max-total-arguments-bytes: ${DATASMART_GATEWAY_DEFAULT_MAX_TOTAL_ARGUMENT_BYTES:48000}
       python-runtime-signature:
         # gateway -> Python AI Runtime 的内部签名开关。
         #

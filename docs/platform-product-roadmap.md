@@ -1,5 +1,57 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-06 追加落地进展：gateway 生成 signed tool policy envelope 主链路
+
+- `gateway` 新增 Agent 工具治理策略信封链路：
+  - `GatewayAgentToolPolicyEnvelopeFilter` 在 `/api/agent/plans` 上清理外部伪造的 `X-DataSmart-Tool-Policy-Envelope`；
+  - 按配置调用 permission-admin 或生成 gateway 本地保守 fallback；
+  - 在 `GatewayPythonRuntimeSignatureFilter` 执行前写入 `toolCallBudget + toolExecutionReadinessPolicy`；
+  - 后续签名过滤器会把该 Header 纳入 HMAC canonical payload。
+- 新增独立 `gateway.agent` 契约包：
+  - `GatewayAgentToolPolicyEnvelopeRequest`；
+  - `GatewayAgentToolPolicyEnvelopeView`；
+  - `GatewayAgentToolExecutionReadinessPolicyView`；
+  - `GatewayAgentToolPolicyEnvelopeClient`；
+  - `HttpGatewayAgentToolPolicyEnvelopeClient`；
+  - `GatewayAgentToolPolicyEnvelopeFactory`。
+- 解耦边界：
+  - gateway 不直接依赖 permission-admin 模块 Java DTO；
+  - HTTP client 负责远程统一响应解包；
+  - factory 负责本地 fallback、字段白名单和 Header JSON 上限；
+  - filter 只负责编排 Header 清理、策略评估、写入和 fail-closed。
+- 配置新增 `datasmart.gateway.context.tool-policy-envelope`：
+  - 默认 `enabled=true`；
+  - 默认 `remote-evaluation-enabled=false`，保证本地学习环境不强依赖 permission-admin；
+  - 生产可打开远程评估，让 gateway 使用 Java 控制面真实策略生成 envelope；
+  - 支持超时、失败回退、4KB Header 限制和本地 fallback 预算参数。
+- Python Runtime 同步优化：
+  - `RemoteThenLocalModelToolCallBudgetPolicyProvider` 发现 `trustedControlPlane.toolBudget` 时不再回源 permission-admin；
+  - `RemoteThenLocalToolExecutionReadinessPolicyProvider` 发现 `trustedControlPlane.toolExecutionReadinessPolicy` 时不再回源 permission-admin；
+  - 这让 gateway 签名 envelope 真正消除同一 `/agent/plans` 请求中的重复策略调用。
+
+产品意义：
+- 5.42 把 5.41 的 Header/验签契约推进为真实 gateway 请求链路，预算与 readiness 可以共享同一次 Java 控制面策略结果。
+- 这更贴近当前 Agent 平台趋势：工具调用需要宿主平台的 guardrail、trace 和 durable execution 边界，而不是让模型请求体决定执行策略。
+- 本阶段参考了 OpenAI Agents SDK guardrails/tracing、Anthropic tool use 和 LangGraph durable execution / human-in-the-loop interrupts 的官方文档方向：工具执行应有可解释的前置治理、可追踪事件和可暂停恢复的执行边界。
+
+当前边界：
+- gateway 仍不读取 request body，因此 requestedToolRiskLevel 只能使用配置默认值；未来应由 ToolPlan 草案、MCP tools/call 元数据或 agent-runtime 摘要提供。
+- 本地 fallback 是保守安全兜底，不应替代 permission-admin 正式策略中心。
+- readiness 仍未成为 OpenClaw/LangGraph-style 执行图条件节点。
+
+下一步推荐路线：
+1. 将 signed envelope 作为执行图输入，新增 Python/agent-runtime 的 readiness condition node。
+2. 设计 MCP `tools/call`、A2A action、模型 tool_call 到 DataSmart `ToolPlan/readiness` 的统一入口。
+3. 接入 task-management outbox 与 worker receipt，让可执行工具进入 durable action，而不是只停留在 HTTP plan 响应。
+4. 逐步把 workerBacklogLevel 从配置默认值切换为 task-management/data-sync/data-quality 的真实低基数容量快照。
+
+参考资料：
+- OpenAI Agents SDK Guardrails: https://openai.github.io/openai-agents-python/guardrails/
+- OpenAI Agents SDK Tracing: https://openai.github.io/openai-agents-python/tracing/
+- Anthropic Tool Use: https://platform.claude.com/docs/en/docs/agents-and-tools/tool-use/overview/
+- LangGraph Durable Execution: https://docs.langchain.com/oss/python/langgraph/durable-execution
+- LangGraph Human-in-the-loop Interrupts: https://docs.langchain.com/oss/python/langgraph/human-in-the-loop
+
 ## 2026-06-06 追加落地进展：gateway 签名工具策略 Envelope 接入 Python 受信控制面
 
 - `platform-common` 新增 `X-DataSmart-Tool-Policy-Envelope` 统一 Header 常量，作为 gateway/agent-runtime 向 Python Runtime 下发工具治理策略的低敏控制面信封。

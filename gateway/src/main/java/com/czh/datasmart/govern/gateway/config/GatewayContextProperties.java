@@ -120,6 +120,20 @@ public class GatewayContextProperties {
     private SkillVisibilityCache skillVisibilityCache = new SkillVisibilityCache();
 
     /**
+     * gateway -> Python Runtime 工具治理策略信封配置。
+     *
+     * <p>5.41 已经让 Java/Python 双端具备 `X-DataSmart-Tool-Policy-Envelope` 的签名与解析契约；
+     * 本配置用于 5.42 继续把它放进真实 `/api/agent/plans` 请求链路。它和 Skill 可见性缓存不同：
+     * - Skill 缓存上下文回答“哪些 Skill 在当前控制面边界下可见/可准入”；
+     * - 工具策略信封回答“模型本轮工具预算是多少、ToolPlan 形成后 readiness 应如何收敛”。</p>
+     *
+     * <p>默认不强制调用 permission-admin 远程接口，是为了保持本地学习环境轻量可启动。
+     * 生产环境可以打开 `remoteEvaluationEnabled`，让 gateway 在签名前把 permission-admin 的真实策略结果注入
+     * Python Runtime，从而避免 Python 内部预算 provider 和 readiness provider 重复同步调用同一个策略接口。</p>
+     */
+    private ToolPolicyEnvelope toolPolicyEnvelope = new ToolPolicyEnvelope();
+
+    /**
      * Python Runtime 下游签名参数。
      */
     @Data
@@ -226,5 +240,113 @@ public class GatewayContextProperties {
          * READY Skill 准入结果，导致模型看到不该自动规划的能力。</p>
          */
         private String defaultToolBudgetPolicyVersion = "gateway-default-v1";
+    }
+
+    /**
+     * 工具治理策略信封参数。
+     */
+    @Data
+    public static class ToolPolicyEnvelope {
+
+        /**
+         * 是否为 Agent 规划入口写入工具策略信封。
+         *
+         * <p>默认开启但远程评估默认关闭：gateway 会生成一份保守的本地低敏 envelope。
+         * 这样 Python Runtime 可以优先验证和消费 `trustedControlPlane.toolBudget` /
+         * `trustedControlPlane.toolExecutionReadinessPolicy`，但本地环境不需要同时启动 permission-admin。</p>
+         */
+        private boolean enabled = true;
+
+        /**
+         * 需要注入工具策略信封的 gateway 原始路径。
+         *
+         * <p>当前只覆盖 `/api/agent/plans`。WebSocket replay、运行时事件查询和诊断接口不触发模型工具规划，
+         * 不应误写工具预算或 readiness policy。</p>
+         */
+        private List<String> targetPaths = new ArrayList<>(List.of("/api/agent/plans"));
+
+        /**
+         * 是否调用 permission-admin 生成真实策略。
+         *
+         * <p>false 时使用 gateway 本地保守策略，适合开发、学习、单元测试和 permission-admin 尚未启动的环境。
+         * true 时调用 `permissionAdminEvaluateUrl`，把 Java 权限控制面的正式结果写入 envelope。</p>
+         */
+        private boolean remoteEvaluationEnabled = false;
+
+        /**
+         * 远程 permission-admin 工具策略评估地址。
+         *
+         * <p>当前使用本地直连 HTTP 地址，避免过早依赖服务发现 WebClient 能力。
+         * 后续如果接入 Spring Cloud LoadBalancer，可灰度切到 lb://permission-admin 路径。</p>
+         */
+        private String permissionAdminEvaluateUrl =
+                "http://localhost:8085/permissions/agent/tool-budget-policies/evaluate";
+
+        /**
+         * 远程评估超时时间。
+         *
+         * <p>gateway 位于入口关键路径，不能为了工具策略无限等待 permission-admin。
+         * 商业化目标应监控该调用的 P95/P99；默认 500ms 是开发期上限，生产可按 SLA 调整。</p>
+         */
+        private java.time.Duration timeout = java.time.Duration.ofMillis(500);
+
+        /**
+         * 远程评估异常时是否回退本地保守策略。
+         *
+         * <p>默认 true 是为了保护本地和灰度环境可用性；生产若要求严格控制面一致性，可以设为 false，
+         * 此时 permission-admin 不可用会导致 gateway 拒绝本次 Agent 规划请求。</p>
+         */
+        private boolean failOpenOnRemoteError = true;
+
+        /**
+         * Header 最大字节数。
+         *
+         * <p>Python Runtime 也使用同样的 4KB 上限。这个限制能阻止误把 prompt、SQL、工具参数、
+         * 权限明细或模型输出塞进 Header。策略信封应该永远是小而稳定的低敏摘要。</p>
+         */
+        private int maxHeaderBytes = 4096;
+
+        /**
+         * 本地 fallback 使用的 worker backlog 等级。
+         *
+         * <p>真实值未来应来自 task-management/data-sync/data-quality worker 指标。
+         * 当前默认 NORMAL 表示“没有观测到容量压力”，不是对生产容量的承诺。</p>
+         */
+        private String defaultWorkerBacklogLevel = "NORMAL";
+
+        /**
+         * 本地 fallback 使用的请求工具风险等级。
+         *
+         * <p>gateway 当前不读取 request body，所以无法知道模型本轮将提出哪些工具。
+         * 本地 fallback 先按 LOW 处理；打开远程评估后，未来可以由 agent-runtime 或 request body 摘要提供更准的风险。</p>
+         */
+        private String defaultRequestedToolRiskLevel = "LOW";
+
+        /**
+         * 本地 fallback 最大候选工具数。
+         */
+        private int defaultMaxProposedToolCalls = 5;
+
+        /**
+         * 本地 fallback 最大自动执行工具数。
+         */
+        private int defaultMaxAutoExecutableToolCalls = 2;
+
+        /**
+         * 本地 fallback 最大高风险工具数。
+         *
+         * <p>默认 0 是保守选择：没有 permission-admin 真实策略时，不允许 Python 自动推进高风险工具。</p>
+         */
+        private int defaultMaxHighRiskToolCalls = 0;
+
+        /**
+         * 本地 fallback 单个工具参数体积预算。
+         */
+        private int defaultMaxSingleArgumentsBytes = 16_384;
+
+        /**
+         * 本地 fallback 本轮工具参数总体积预算。
+         */
+        private int defaultMaxTotalArgumentsBytes = 48_000;
     }
 }
