@@ -33,6 +33,7 @@ class AgentRuntimeEventType(str, Enum):
     INTENT_ANALYZED = "intent_analyzed"
     TOOL_PLANNED = "tool_planned"
     TOOL_PARAMETER_VALIDATED = "tool_parameter_validated"
+    TOOL_EXECUTION_READINESS_RECORDED = "tool_execution_readiness_recorded"
     MODEL_TOOL_CALL_PROPOSED = "model_tool_call_proposed"
     MODEL_TOOL_CALL_ACCEPTED = "model_tool_call_accepted"
     MODEL_TOOL_CALL_REJECTED = "model_tool_call_rejected"

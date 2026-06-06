@@ -260,6 +260,8 @@ class ToolPlanner:
             parameter_validation=parameter_validation,
             governance_hints={
                 "protocolHint": tool.protocol_hint,
+                "targetService": tool.target_service,
+                "targetEndpoint": tool.target_endpoint,
                 "tenantScoped": tool.tenant_scoped,
                 "projectScoped": tool.project_scoped,
                 "sensitiveFields": tool.sensitive_fields,

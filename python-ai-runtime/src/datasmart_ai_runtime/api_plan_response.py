@@ -27,6 +27,10 @@ from datasmart_ai_runtime.services.runtime_events.runtime_event_publisher import
 from datasmart_ai_runtime.services.runtime_events.runtime_event_store import RuntimeEventStore
 from datasmart_ai_runtime.services.runtime_events.runtime_event_transport import RuntimeEventTransportBuilder
 from datasmart_ai_runtime.services.skills import build_session_skill_visibility_runtime_event
+from datasmart_ai_runtime.services.tools import (
+    ToolExecutionReadinessService,
+    build_tool_execution_readiness_runtime_event,
+)
 
 
 def build_plan_response(
@@ -65,6 +69,15 @@ def build_plan_response(
     # prefix/KV cache 和文件输出都应围绕这些 namespace 做隔离，而不是各自临时拼 key。
     workspace_context = AgentWorkspaceContextBuilder().build(request)
     plan = _attach_workspace_hints(plan, workspace_context)
+    # 工具执行准备度是“计划生成之后、真实执行之前”的治理快照。
+    # 它不会执行工具，也不会创建审批单；这里只把 ToolPlan 转换成低敏、可解释的 readiness summary，
+    # 让 HTTP 响应、runtime event、WebSocket replay 和未来 Java projection 都能看到同一份执行前事实。
+    tool_execution_readiness = ToolExecutionReadinessService().evaluate(plan.tool_plans)
+    plan = _attach_tool_execution_readiness_event(
+        plan,
+        request=request,
+        tool_execution_readiness=tool_execution_readiness,
+    )
     control_plane_ingestion = None
     control_plane_feedback = None
     runtime_event_feedback = None
@@ -165,6 +178,7 @@ def build_plan_response(
     )
     response = _build_base_response(plan, event_transport_builder)
     response["agentWorkspace"] = workspace_context.to_summary()
+    response["toolExecutionReadiness"] = _tool_execution_readiness_response(tool_execution_readiness)
     response["intelligentGatewayGovernance"] = intelligent_gateway_governance
     if control_plane_ingestion is not None:
         response["controlPlaneIngestion"] = control_plane_ingestion.to_summary()
@@ -179,6 +193,72 @@ def build_plan_response(
     if memory_write_proposal is not None:
         response["memoryWriteProposal"] = memory_write_proposal.to_summary()
     return response
+
+
+def _attach_tool_execution_readiness_event(
+    plan: AgentPlan,
+    *,
+    request: AgentRequest,
+    tool_execution_readiness: Any,
+) -> AgentPlan:
+    """把工具执行准备度快照追加到运行时事件流。
+
+    这里按事件类型去重，是为了兼容未来 `AgentOrchestrator` 或 Java ingestion 更早生成同类事件的情况。
+    当前由响应组装层追加，原因是 workspace hints 也是在这里统一写入 ToolPlan，readiness 需要读取这些
+    治理提示才能判断 target service、敏感字段和后续控制面边界。
+    """
+
+    if any(
+        event.event_type == AgentRuntimeEventType.TOOL_EXECUTION_READINESS_RECORDED
+        for event in plan.runtime_events
+    ):
+        return plan
+    readiness_event = build_tool_execution_readiness_runtime_event(plan, request, tool_execution_readiness)
+    return replace(plan, runtime_events=plan.runtime_events + (readiness_event,))
+
+
+def _tool_execution_readiness_response(tool_execution_readiness: Any) -> dict[str, Any]:
+    """构建 HTTP 响应中的工具执行准备度摘要。
+
+    响应字段比 runtime event 略丰富，但仍坚持低敏白名单：只展示字段名、状态、reason/issue code、
+    风险等级、执行模式和重试提示，不展示任何参数真实值。
+    """
+
+    return {
+        "snapshotType": "TOOL_EXECUTION_READINESS",
+        "payloadPolicy": "LOW_SENSITIVE_METADATA_ONLY",
+        "totalCount": tool_execution_readiness.total_count,
+        "executableCount": tool_execution_readiness.executable_count,
+        "approvalRequiredCount": tool_execution_readiness.approval_required_count,
+        "clarificationRequiredCount": tool_execution_readiness.clarification_required_count,
+        "draftOnlyCount": tool_execution_readiness.draft_only_count,
+        "queuedAsyncCount": tool_execution_readiness.queued_async_count,
+        "throttledCount": tool_execution_readiness.throttled_count,
+        "blockedCount": tool_execution_readiness.blocked_count,
+        "hasBlockingDecision": tool_execution_readiness.has_blocking_decision,
+        "nextActions": tool_execution_readiness.next_actions,
+        "items": tuple(
+            {
+                "planIndex": item.plan_index,
+                "toolName": item.tool_name,
+                "decision": item.decision.value,
+                "executable": item.executable,
+                "queueRequired": item.queue_required,
+                "requiresHumanApproval": item.requires_human_approval,
+                "riskLevel": item.risk_level,
+                "executionMode": item.execution_mode,
+                "targetService": item.target_service,
+                "argumentFieldNames": item.argument_field_names,
+                "sensitiveArgumentNames": item.sensitive_argument_names,
+                "parameterIssueCount": item.parameter_issue_count,
+                "issueCodes": item.issue_codes,
+                "reasonCodes": item.reason_codes,
+                "retryHint": item.retry_hint,
+                "payloadPolicy": item.payload_policy,
+            }
+            for item in tool_execution_readiness.items
+        ),
+    }
 
 
 def _attach_skill_visibility_event(

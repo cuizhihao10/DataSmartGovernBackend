@@ -1,5 +1,35 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-06 追加落地进展：Python Runtime 工具执行准备度接入 Agent Plan 主链路
+
+- `/agent/plans` 响应新增 `toolExecutionReadiness`：
+  - 展示本轮 ToolPlan 的执行前治理快照；
+  - 聚合可执行、审批、澄清、草案、异步队列、限流、阻断数量；
+  - 输出 `EXECUTE_READY_TOOLS`、`REQUEST_USER_CLARIFICATION`、`CREATE_OR_WAIT_APPROVAL`、`SHOW_DRAFT_FOR_REVIEW`、`WAIT_FOR_TOOL_BUDGET` 等 next actions；
+  - item 级别只展示工具名、决策、风险、执行模式、目标服务、参数字段名、敏感字段名、issue/reason code 和 retry hint。
+- Runtime Event 新增 `tool_execution_readiness_recorded`：
+  - 在 HTTP snapshot、event store、WebSocket live push、event publisher 之前追加；
+  - 支持后续 Java projection、timeline 和审计回放消费；
+  - 事件 attributes 进一步压缩，只保留低敏聚合、决策分布、工具名和截断后的 decision summaries。
+- `ToolPlan.governance_hints` 补充 `targetService/targetEndpoint`：
+  - 让 readiness 能解释工具未来应进入哪个业务微服务；
+  - 不改变工具执行行为，不调用 Java，不创建审批或 outbox。
+- 测试同步：
+  - 验证 `/agent/plans` 响应包含 readiness；
+  - 验证 readiness 不泄露 `datasourceId` 真实值或业务目标文本；
+  - 验证 runtime event 中包含 readiness 快照并可被事件 envelope 回放。
+
+产品意义：
+- DataSmart 的 Agent 主链路现在能直接解释“工具为什么还没有执行”：是等待审批、等待澄清、仅展示草案、被预算限流，还是已经可执行。
+- 这一步把 5.35 的独立工具准备度服务变成用户、前端、网关和控制面都可见的运行事实，更接近 Codex/Claude Code 类 Agent 的透明执行体验。
+- 当前仍不开放 Python 侧真实工具执行器，避免绕过 Java 控制面的权限、审批、幂等、审计和任务状态机。
+
+下一步推荐路线：
+1. Java `agent-runtime` 消费 `tool_execution_readiness_recorded`，新增强类型 projection 和 timeline display。
+2. 将 readiness policy 与 permission-admin 的角色、租户套餐、workspace 风险、worker backlog 对接。
+3. 设计 MCP `tools/call` 与 DataSmart ToolPlan/readiness 的统一前置治理合同。
+4. 若避免继续局部打磨，可切到 LangGraph/OpenClaw-style 执行图，把 readiness 作为图节点条件。
+
 ## 2026-06-06 追加落地进展：Python Runtime 工具执行准备度与 tools 能力包
 
 - Python Runtime 新增 `services/tools` 能力包：

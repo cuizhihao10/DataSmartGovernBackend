@@ -180,6 +180,8 @@ class ModelToolCallPlanner:
                 "source": "model_tool_call",
                 "modelToolCallId": tool_call.call_id,
                 "modelToolCallType": tool_call.type,
+                "targetService": tool.target_service,
+                "targetEndpoint": tool.target_endpoint,
                 "tenantScoped": tool.tenant_scoped,
                 "projectScoped": tool.project_scoped,
                 "sensitiveFields": tool.sensitive_fields,

@@ -1,5 +1,13 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-06 落地补充：execution readiness must be visible in the agent timeline
+
+- Agent 工具调用治理如果只停留在内部对象里，用户体验仍然像“黑盒”：用户不知道为什么 Agent 没有继续执行，也不知道是等待审批、缺参数、草案展示还是预算限流。
+- DataSmart 本阶段把 `ToolExecutionReadinessReport` 接入 `/agent/plans` 响应和 runtime event，新增 `tool_execution_readiness_recorded`，让 HTTP snapshot、WebSocket replay、event publisher 和未来 Java projection 都能看到同一份执行前事实。
+- 这一步贴近当前代码 Agent/企业 Agent Host 的趋势：不仅要有 tool call，还要有可解释的 execution gate。Agent 应该能告诉用户“我可以执行哪些，只能展示哪些，哪些要审批，哪些需要你补充信息”。
+- 低敏边界继续保持：响应和事件只暴露字段名、工具名、风险等级、执行模式、目标服务、issue/reason code，不暴露参数值、SQL、prompt、样本数据、payload 明细、模型输出、凭证或内部 endpoint。
+- 下一步应让 Java 控制面消费 readiness event，或把 readiness 作为 LangGraph/OpenClaw-style 执行图的条件节点；不建议绕过控制面直接在 Python 执行工具。
+
 ## 2026-06-06 落地补充：tool calls need execution readiness before execution
 
 - Codex、Claude Code 和 OpenClaw 风格 Agent 的关键能力不是“模型能输出工具名”这么简单，而是运行时能在执行前判断工具是否可自动执行、是否缺参数、是否要审批、是否该入队、是否被预算或风险策略阻断。

@@ -302,6 +302,68 @@ class ApiBootstrapTest(unittest.TestCase):
         self.assertTrue(response["modelGatewayGovernance"]["budgetAllowed"])
         self.assertIsNotNone(response["modelGatewayGovernance"]["selectedModel"])
 
+    def test_plan_response_exposes_tool_execution_readiness_without_sensitive_values(self) -> None:
+        """Agent plan 响应应展示工具执行准备度，但不能泄露工具参数真实值。"""
+
+        orchestrator = build_default_orchestrator()
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="user-a",
+            objective="请基于客户主数据生成质量规则并创建任务",
+            variables={
+                "datasourceId": "ds-sensitive-001",
+                "businessGoal": "手机号唯一性",
+                "createTask": True,
+            },
+        )
+
+        response = build_plan_response(request, orchestrator)
+
+        readiness = response["toolExecutionReadiness"]
+        self.assertEqual("TOOL_EXECUTION_READINESS", readiness["snapshotType"])
+        self.assertEqual("LOW_SENSITIVE_METADATA_ONLY", readiness["payloadPolicy"])
+        self.assertGreaterEqual(readiness["totalCount"], 2)
+        self.assertIn("CREATE_OR_WAIT_APPROVAL", readiness["nextActions"])
+        self.assertIn("SHOW_DRAFT_FOR_REVIEW", readiness["nextActions"])
+        decisions_by_tool = {item["toolName"]: item["decision"] for item in readiness["items"]}
+        self.assertEqual("draft_only", decisions_by_tool["quality.rule.suggest"])
+        self.assertEqual("waiting_approval", decisions_by_tool["task.create.draft"])
+        quality_item = next(item for item in readiness["items"] if item["toolName"] == "quality.rule.suggest")
+        self.assertEqual("data-quality", quality_item["targetService"])
+        self.assertIn("datasourceId", quality_item["argumentFieldNames"])
+        self.assertIn("datasourceId", quality_item["sensitiveArgumentNames"])
+        self.assertNotIn("ds-sensitive-001", str(readiness))
+        self.assertNotIn("手机号唯一性", str(readiness))
+
+    def test_plan_response_records_tool_execution_readiness_event(self) -> None:
+        """工具执行准备度应进入 runtime event，支持后续 WebSocket replay 和 Java projection。"""
+
+        orchestrator = build_default_orchestrator()
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="user-a",
+            objective="请分析这个 MySQL 数据源的表结构",
+            variables={"datasourceId": "ds-sensitive-002"},
+        )
+
+        response = build_plan_response(request, orchestrator)
+        events = response["plan"]["runtime_events"]
+        readiness_events = [
+            event
+            for event in events
+            if event["event_type"] == AgentRuntimeEventType.TOOL_EXECUTION_READINESS_RECORDED
+        ]
+
+        self.assertEqual(1, len(readiness_events))
+        event = readiness_events[0]
+        self.assertEqual("record_tool_execution_readiness", event["stage"])
+        self.assertEqual("TOOL_EXECUTION_READINESS", event["attributes"]["snapshotType"])
+        self.assertEqual(1, event["attributes"]["executableCount"])
+        self.assertEqual(("datasource.metadata.read",), event["attributes"]["toolNames"])
+        self.assertNotIn("ds-sensitive-002", str(event["attributes"]))
+
     def test_event_replay_response_filters_events_by_subscription(self) -> None:
         orchestrator = build_default_orchestrator()
         plan = orchestrator.plan(
