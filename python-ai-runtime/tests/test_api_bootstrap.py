@@ -364,6 +364,52 @@ class ApiBootstrapTest(unittest.TestCase):
         self.assertEqual(("datasource.metadata.read",), event["attributes"]["toolNames"])
         self.assertNotIn("ds-sensitive-002", str(event["attributes"]))
 
+    def test_plan_response_uses_trusted_tool_readiness_policy_snapshot(self) -> None:
+        """`/agent/plans` 应消费受控 readiness 策略快照，并把低敏策略来源写入响应和事件。"""
+
+        orchestrator = build_default_orchestrator()
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="auditor-a",
+            objective="请分析这个 MySQL 数据源的表结构",
+            variables={
+                "datasourceId": "ds-sensitive-004",
+                "trustedControlPlane": {
+                    "toolExecutionReadinessPolicy": {
+                        "policyVersion": "perm-tool-readiness-v4",
+                        "actorRole": "AUDITOR",
+                        "tenantPlanCode": "TRIAL",
+                        "workspaceRiskLevel": "HIGH",
+                        "workerBacklogLevel": "CRITICAL",
+                        "maxAutoSyncTools": 5,
+                        "maxAsyncTools": 4,
+                    }
+                },
+            },
+        )
+
+        response = build_plan_response(request, orchestrator)
+
+        policy = response["toolExecutionReadinessPolicy"]
+        readiness = response["toolExecutionReadiness"]
+        event = next(
+            event
+            for event in response["plan"]["runtime_events"]
+            if event["event_type"] == AgentRuntimeEventType.TOOL_EXECUTION_READINESS_RECORDED
+        )
+        self.assertEqual("trusted-control-plane", policy["source"])
+        self.assertEqual("perm-tool-readiness-v4", policy["policyVersion"])
+        self.assertEqual(0, policy["maxAutoSyncTools"])
+        self.assertEqual(0, policy["maxAsyncTools"])
+        self.assertIn("WORKER_BACKLOG_BLOCKS_TOOL_BUDGET", policy["influenceCodes"])
+        self.assertEqual(1, readiness["throttledCount"])
+        self.assertEqual("trusted-control-plane", readiness["policy"]["source"])
+        self.assertEqual("trusted-control-plane", event["attributes"]["policySource"])
+        self.assertEqual("perm-tool-readiness-v4", event["attributes"]["policyVersion"])
+        self.assertNotIn("ds-sensitive-004", str(policy))
+        self.assertNotIn("ds-sensitive-004", str(event["attributes"]))
+
     def test_event_replay_response_filters_events_by_subscription(self) -> None:
         orchestrator = build_default_orchestrator()
         plan = orchestrator.plan(

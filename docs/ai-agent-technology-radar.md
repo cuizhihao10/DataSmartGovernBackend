@@ -1,5 +1,13 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-06 落地补充：execution gates need policy sources, not only local defaults
+
+- 当前 Agent 工具链的发展趋势不是“模型能调用工具就直接执行”，而是先经过 execution gate：权限、风险、预算、队列、人工确认、参数完整性和审计边界都要参与判断。
+- DataSmart 本阶段把 readiness policy 从 Python 本地默认值推进到受控策略快照：`trustedControlPlane.toolExecutionReadinessPolicy` 可以下发角色、租户套餐、workspace 风险、worker backlog 和策略版本。
+- 这更接近 Codex/Claude Code 类 Agent Host 的生产形态：工具执行前要根据宿主平台的实时治理状态决定是执行、排队、等待审批、请求澄清、仅生成草案还是阻断。
+- 低敏边界仍然保持：策略事件只暴露 source、policyVersion、tenantPlanCode、workspaceRiskLevel、workerBacklogLevel 和 influenceCodes，不暴露 prompt、工具参数、SQL、模型输出、凭证或内部 endpoint。
+- 下一步趋势跟进应进入“策略中心标准化”和“执行图条件节点”：让 permission-admin 输出稳定策略合同，并让 LangGraph/OpenClaw-style 图把 readiness 作为显式分支，而不是在 API 响应层做隐式判断。
+
 ## 2026-06-06 落地补充：execution gates should be queryable by the control plane
 
 - 成熟 Agent Host 不只要在运行时知道 execution readiness，还要让控制面、审计台和 timeline 能查询这层 execution gate。否则用户刷新页面或从 Java 管理台排查时，仍然看不到工具为什么等待审批、澄清或预算恢复。

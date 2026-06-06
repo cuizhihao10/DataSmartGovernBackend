@@ -28,6 +28,7 @@ from datasmart_ai_runtime.services.runtime_events.runtime_event_store import Run
 from datasmart_ai_runtime.services.runtime_events.runtime_event_transport import RuntimeEventTransportBuilder
 from datasmart_ai_runtime.services.skills import build_session_skill_visibility_runtime_event
 from datasmart_ai_runtime.services.tools import (
+    ToolExecutionReadinessPolicyProvider,
     ToolExecutionReadinessService,
     build_tool_execution_readiness_runtime_event,
 )
@@ -72,7 +73,12 @@ def build_plan_response(
     # 工具执行准备度是“计划生成之后、真实执行之前”的治理快照。
     # 它不会执行工具，也不会创建审批单；这里只把 ToolPlan 转换成低敏、可解释的 readiness summary，
     # 让 HTTP 响应、runtime event、WebSocket replay 和未来 Java projection 都能看到同一份执行前事实。
-    tool_execution_readiness = ToolExecutionReadinessService().evaluate(plan.tool_plans)
+    readiness_policy_snapshot = ToolExecutionReadinessPolicyProvider().policy_for(request)
+    tool_execution_readiness = ToolExecutionReadinessService().evaluate(
+        plan.tool_plans,
+        policy=readiness_policy_snapshot.policy,
+        policy_metadata=readiness_policy_snapshot.to_low_sensitive_summary(),
+    )
     plan = _attach_tool_execution_readiness_event(
         plan,
         request=request,
@@ -179,6 +185,7 @@ def build_plan_response(
     response = _build_base_response(plan, event_transport_builder)
     response["agentWorkspace"] = workspace_context.to_summary()
     response["toolExecutionReadiness"] = _tool_execution_readiness_response(tool_execution_readiness)
+    response["toolExecutionReadinessPolicy"] = readiness_policy_snapshot.to_low_sensitive_summary()
     response["intelligentGatewayGovernance"] = intelligent_gateway_governance
     if control_plane_ingestion is not None:
         response["controlPlaneIngestion"] = control_plane_ingestion.to_summary()
@@ -227,6 +234,7 @@ def _tool_execution_readiness_response(tool_execution_readiness: Any) -> dict[st
     return {
         "snapshotType": "TOOL_EXECUTION_READINESS",
         "payloadPolicy": "LOW_SENSITIVE_METADATA_ONLY",
+        "policy": tool_execution_readiness.policy_metadata or {},
         "totalCount": tool_execution_readiness.total_count,
         "executableCount": tool_execution_readiness.executable_count,
         "approvalRequiredCount": tool_execution_readiness.approval_required_count,

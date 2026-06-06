@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from datasmart_ai_runtime.domain.contracts import (
     ToolExecutionMode,
@@ -104,6 +104,7 @@ class ToolExecutionReadinessReport:
     throttled_count: int
     blocked_count: int
     items: tuple[ToolExecutionReadinessItem, ...]
+    policy_metadata: Mapping[str, Any] | None = None
 
     @property
     def has_blocking_decision(self) -> bool:
@@ -149,6 +150,7 @@ class ToolExecutionReadinessService:
         self,
         tool_plans: Iterable[ToolPlan],
         policy: ToolExecutionReadinessPolicy | None = None,
+        policy_metadata: Mapping[str, Any] | None = None,
     ) -> ToolExecutionReadinessReport:
         """评估一组工具计划的执行准备度。
 
@@ -185,6 +187,7 @@ class ToolExecutionReadinessService:
             throttled_count=sum(1 for item in items if item.decision == ToolExecutionReadinessDecision.THROTTLED),
             blocked_count=sum(1 for item in items if item.decision == ToolExecutionReadinessDecision.BLOCKED),
             items=tuple(items),
+            policy_metadata=dict(policy_metadata or {}),
         )
 
     def _evaluate_one(

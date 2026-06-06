@@ -1,5 +1,39 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-06 追加落地进展：Python Runtime 工具执行准备度策略来源接入
+
+- Python `services/tools` 新增 `ToolExecutionReadinessPolicyProvider` 与 `ToolExecutionReadinessPolicySnapshot`：
+  - 优先消费 `trustedControlPlane.toolExecutionReadinessPolicy`；
+  - 兼容现有 `trustedControlPlane.toolBudget` 与 `toolCallBudget` 预算数字；
+  - 没有控制面上下文时回退本地默认策略，便于本地学习和单元测试。
+- `/agent/plans` 现在会把策略快照传给 `ToolExecutionReadinessService.evaluate(...)`：
+  - readiness 不再只能使用 Python 本地默认预算；
+  - 角色、租户套餐、workspace 风险、worker backlog 可以影响同步自动工具预算、异步入队预算、高风险审批和 CRITICAL 阻断；
+  - 只采用“收紧不放宽”的保守策略，避免高风险或高 backlog 场景被模型工具调用压垮。
+- HTTP 响应新增 `toolExecutionReadinessPolicy`：
+  - 展示 source、policyVersion、actorRole、tenantPlanCode、workspaceRiskLevel、workerBacklogLevel；
+  - 展示 maxAutoSyncTools、maxAsyncTools、风险策略布尔值和 influenceCodes；
+  - 不展示 prompt、工具参数值、SQL、样本数据、模型输出、凭证或内部 endpoint。
+- `tool_execution_readiness_recorded` runtime event 新增低敏策略字段：
+  - `policySource`、`policyVersion`、`policyInfluenceCodes`；
+  - `tenantPlanCode`、`workspaceRiskLevel`、`workerBacklogLevel`；
+  - 便于 Java projection、timeline 和审计解释“为什么本轮工具被限流或等待预算恢复”。
+- 测试同步：
+  - `test_tool_execution_readiness.py` 覆盖受控策略如何按 AUDITOR、TRIAL、HIGH risk、CRITICAL backlog 收紧预算；
+  - `test_api_bootstrap.py` 覆盖 `/agent/plans` 响应和 runtime event 中的策略来源；
+  - 定向 Python 测试 22 个通过。
+
+产品意义：
+- readiness 从“本地默认执行前判断”升级为“可被 Java 控制面、permission-admin、gateway 和 worker backlog 驱动的执行前治理”。
+- 这一步避免 Python Runtime 直接绕过 Java 权限中心执行工具，同时又把策略消费合同固定下来，后续真实 permission-admin 接入不需要重写 readiness 算法。
+- 对商业化 Agent Host 来说，工具是否可执行不应只取决于模型建议，还应取决于当前角色、租户套餐、workspace 风险和队列压力。
+
+下一步推荐路线：
+1. Java `permission-admin` 输出标准 `toolExecutionReadinessPolicy` 合同，替代当前兼容 `toolCallBudget` 的过渡路径。
+2. 将 readiness policy 接入 LangGraph/OpenClaw-style 执行图节点，让“计划 -> readiness -> 审批/澄清/执行”成为显式图条件。
+3. 设计 MCP `tools/call` 到 DataSmart `ToolPlan/readiness` 的统一前置治理合同，避免 MCP、A2A、模型 tool_call 三套链路割裂。
+4. 暂不建议继续只扩展 readiness 响应字段；下一步应进入策略中心标准化或执行图落地。
+
 ## 2026-06-06 追加落地进展：Java Agent Runtime 工具执行准备度投影与 Timeline 展示
 
 - Java `agent-runtime` 新增工具执行准备度控制面视图：

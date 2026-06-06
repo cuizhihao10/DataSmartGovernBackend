@@ -72,6 +72,12 @@ def _readiness_event_attributes(readiness: ToolExecutionReadinessReport) -> dict
         "eventPayloadVersion": "v1",
         "snapshotType": "TOOL_EXECUTION_READINESS",
         "payloadPolicy": "LOW_SENSITIVE_METADATA_ONLY",
+        "policySource": _policy_metadata_value(readiness, "source"),
+        "policyVersion": _policy_metadata_value(readiness, "policyVersion"),
+        "policyInfluenceCodes": tuple(_policy_metadata_sequence(readiness, "influenceCodes"))[:20],
+        "tenantPlanCode": _policy_metadata_value(readiness, "tenantPlanCode"),
+        "workspaceRiskLevel": _policy_metadata_value(readiness, "workspaceRiskLevel"),
+        "workerBacklogLevel": _policy_metadata_value(readiness, "workerBacklogLevel"),
         "totalCount": readiness.total_count,
         "executableCount": readiness.executable_count,
         "approvalRequiredCount": readiness.approval_required_count,
@@ -103,6 +109,34 @@ def _readiness_event_attributes(readiness: ToolExecutionReadinessReport) -> dict
             for item in limited_items
         ),
     }
+
+
+def _policy_metadata_value(readiness: ToolExecutionReadinessReport, key: str) -> Any:
+    """从 readiness report 中读取低敏策略元数据。
+
+    策略元数据只允许包含来源、版本、套餐、风险、backlog 和影响码等枚举/摘要字段。这里不做深层对象
+    展开，避免未来调用方误把完整权限对象或内部策略表达式放进 runtime event。
+    """
+
+    if not readiness.policy_metadata:
+        return None
+    value = readiness.policy_metadata.get(key)
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def _policy_metadata_sequence(readiness: ToolExecutionReadinessReport, key: str) -> tuple[str, ...]:
+    """读取策略影响码列表，并统一转成字符串元组。"""
+
+    if not readiness.policy_metadata:
+        return ()
+    value = readiness.policy_metadata.get(key)
+    if isinstance(value, str):
+        return (value,)
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return tuple(str(item) for item in value if str(item).strip())
+    return ()
 
 
 def _event_severity(readiness: ToolExecutionReadinessReport) -> AgentRuntimeEventSeverity:

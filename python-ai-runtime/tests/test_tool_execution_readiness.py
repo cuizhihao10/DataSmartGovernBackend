@@ -8,12 +8,15 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from datasmart_ai_runtime.config import default_tool_registry
-from datasmart_ai_runtime.domain.contracts import ModelToolCall, ToolExecutionMode, ToolPlan, ToolRiskLevel
+from datasmart_ai_runtime.domain.contracts import AgentRequest, ModelToolCall, ToolExecutionMode, ToolPlan, ToolRiskLevel
 from datasmart_ai_runtime.services.model_gateway.model_tool_call_planner import ModelToolCallPlanner
 from datasmart_ai_runtime.services.tools.tool_execution_readiness import (
     ToolExecutionReadinessDecision,
     ToolExecutionReadinessPolicy,
     ToolExecutionReadinessService,
+)
+from datasmart_ai_runtime.services.tools.tool_execution_readiness_policy_provider import (
+    ToolExecutionReadinessPolicyProvider,
 )
 
 
@@ -127,6 +130,53 @@ class ToolExecutionReadinessServiceTest(unittest.TestCase):
         self.assertEqual(("sql",), readiness.items[0].sensitive_argument_names)
         self.assertEqual(("CRITICAL_RISK_BLOCKED",), readiness.items[0].reason_codes)
         self.assertIn("ESCALATE_TO_OPERATOR", readiness.next_actions)
+
+    def test_trusted_control_plane_policy_can_reduce_execution_budget(self) -> None:
+        """受控控制面策略应能按角色、租户套餐、workspace 风险和 worker backlog 收紧 readiness 预算。"""
+
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="auditor-a",
+            objective="请读取数据源元数据",
+            variables={
+                "trustedControlPlane": {
+                    "toolExecutionReadinessPolicy": {
+                        "policyVersion": "perm-tool-readiness-v3",
+                        "actorRole": "AUDITOR",
+                        "tenantPlanCode": "TRIAL",
+                        "workspaceRiskLevel": "HIGH",
+                        "workerBacklogLevel": "CRITICAL",
+                        "maxAutoSyncTools": 5,
+                        "maxAsyncTools": 4,
+                    }
+                },
+                "datasourceId": "ds-sensitive-003",
+            },
+        )
+        snapshot = ToolExecutionReadinessPolicyProvider().policy_for(request)
+        plan = ToolPlan(
+            tool_name="datasource.metadata.read",
+            reason="读取元数据",
+            arguments={"datasourceId": "ds-sensitive-003"},
+            risk_level=ToolRiskLevel.LOW,
+            execution_mode=ToolExecutionMode.SYNC,
+        )
+
+        readiness = ToolExecutionReadinessService().evaluate(
+            (plan,),
+            policy=snapshot.policy,
+            policy_metadata=snapshot.to_low_sensitive_summary(),
+        )
+
+        self.assertEqual("trusted-control-plane", snapshot.source)
+        self.assertEqual(0, snapshot.policy.max_auto_sync_tools)
+        self.assertEqual(0, snapshot.policy.max_async_tools)
+        self.assertIn("READ_ONLY_ROLE_BLOCKS_AUTO_EXECUTION", snapshot.influence_codes)
+        self.assertIn("WORKER_BACKLOG_BLOCKS_TOOL_BUDGET", snapshot.influence_codes)
+        self.assertEqual(ToolExecutionReadinessDecision.THROTTLED, readiness.items[0].decision)
+        self.assertEqual("trusted-control-plane", readiness.policy_metadata["source"])
+        self.assertNotIn("ds-sensitive-003", str(readiness.policy_metadata))
 
 
 if __name__ == "__main__":
