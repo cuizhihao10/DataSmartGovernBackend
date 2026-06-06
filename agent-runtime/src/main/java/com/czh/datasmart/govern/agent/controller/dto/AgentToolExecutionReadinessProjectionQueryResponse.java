@@ -3,6 +3,9 @@
  * @Date: 2026/06/06 00:00
  * @Description DataSmart Govern Backend - AgentToolExecutionReadinessProjectionQueryResponse.java
  * @Version:1.0.0
+ *
+ * <p>5.44 新增的 `graphBranchCounts` 只聚合低敏图谱分支名，用来快速判断本次窗口主要卡在
+ * READY、审批、澄清、预算等待还是执行前阻断，不读取完整 graph nodes/edges 或工具参数。</p>
  */
 package com.czh.datasmart.govern.agent.controller.dto;
 
@@ -30,6 +33,7 @@ public record AgentToolExecutionReadinessProjectionQueryResponse(
         Long throttledWindowCount,
         Long blockedWindowCount,
         Map<String, Long> decisionCounts,
+        Map<String, Long> graphBranchCounts,
         Map<String, Long> toolNameCounts,
         Map<String, Long> nextActionCounts,
         List<AgentToolExecutionReadinessProjectionView> snapshots

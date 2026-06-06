@@ -23,6 +23,10 @@ import java.util.Map;
  *
  * <p>安全边界：本视图只返回低敏控制面事实，包括工具名、决策分布、风险分布、issue/reason code 数量
  * 和决策摘要。它不会返回参数真实值、SQL、prompt、样本数据、payload 明细、模型输出、凭证或内部端点。</p>
+ *
+ * <p>5.44 起额外暴露 readiness graph 摘要字段。这里仍然只保留图谱版本、执行边界、节点/边数量、
+ * 分支列表、分支计数和 durable action 边界，不返回完整 nodes/edges。原因是完整节点和边后续可能携带
+ * 更丰富的编排元数据；Java projection 必须先固定低敏白名单，避免控制面查询成为第二份工具上下文缓存。</p>
  */
 public record AgentToolExecutionReadinessProjectionView(
         String identityKey,
@@ -43,6 +47,18 @@ public record AgentToolExecutionReadinessProjectionView(
         String eventPayloadVersion,
         String snapshotType,
         String payloadPolicy,
+        String graphSnapshotType,
+        String graphPayloadPolicy,
+        String graphVersion,
+        String graphExecutionBoundary,
+        Integer graphNodeCount,
+        Integer graphEdgeCount,
+        List<String> graphBranches,
+        Map<String, Integer> graphBranchCounts,
+        Boolean graphToolExecuted,
+        Boolean graphOutboxWritten,
+        Boolean graphApprovalCreated,
+        Boolean graphWorkerReceiptRequiredForSideEffects,
         Integer totalCount,
         Integer executableCount,
         Integer approvalRequiredCount,

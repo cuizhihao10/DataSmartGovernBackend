@@ -94,6 +94,11 @@ public class AgentToolExecutionReadinessProjectionService {
                 snapshots.stream().filter(snapshot -> safe(snapshot.throttledCount()) > 0).count(),
                 snapshots.stream().filter(snapshot -> safe(snapshot.blockedCount()) > 0).count(),
                 countMap(snapshots.stream().map(AgentToolExecutionReadinessProjectionView::decisionCounts).toList()),
+                /*
+                 * graphBranchCounts 是 readiness graph 的窗口级聚合。它只聚合分支名和次数，
+                 * 不聚合完整节点、边或工具参数，因此适合直接给管理台做趋势卡片和筛选提示。
+                 */
+                countMap(snapshots.stream().map(AgentToolExecutionReadinessProjectionView::graphBranchCounts).toList()),
                 countList(snapshots.stream().map(AgentToolExecutionReadinessProjectionView::toolNames).toList()),
                 countList(snapshots.stream().map(AgentToolExecutionReadinessProjectionView::nextActions).toList()),
                 snapshots
@@ -121,6 +126,23 @@ public class AgentToolExecutionReadinessProjectionService {
                 text(attributes, "eventPayloadVersion"),
                 defaultedText(attributes, "snapshotType", "TOOL_EXECUTION_READINESS"),
                 defaultedText(attributes, "payloadPolicy", "LOW_SENSITIVE_METADATA_ONLY"),
+                /*
+                 * 5.44 的 readiness graph 字段只解析低敏摘要。即使 Python event attributes 中意外出现
+                 * graphNodes、graphEdges、arguments、payload、sql 或 prompt，本服务也不会读取这些字段，
+                 * 从而保证 Java projection 不会成为第二份工具上下文缓存。
+                 */
+                text(attributes, "graphSnapshotType"),
+                text(attributes, "graphPayloadPolicy"),
+                text(attributes, "graphVersion"),
+                text(attributes, "graphExecutionBoundary"),
+                integer(attributes, "graphNodeCount"),
+                integer(attributes, "graphEdgeCount"),
+                stringList(attributes, "graphBranches"),
+                intMap(attributes, "graphBranchCounts"),
+                bool(attributes, "graphToolExecuted"),
+                bool(attributes, "graphOutboxWritten"),
+                bool(attributes, "graphApprovalCreated"),
+                bool(attributes, "graphWorkerReceiptRequiredForSideEffects"),
                 integer(attributes, "totalCount"),
                 integer(attributes, "executableCount"),
                 integer(attributes, "approvalRequiredCount"),

@@ -237,6 +237,20 @@ class AgentRuntimeEventDisplaySupportTest {
                 Instant.parse("2026-06-06T02:00:01Z"),
                 Map.ofEntries(
                         Map.entry("snapshotType", "TOOL_EXECUTION_READINESS"),
+                        Map.entry("graphSnapshotType", "TOOL_EXECUTION_READINESS_GRAPH"),
+                        Map.entry("graphVersion", "tool-readiness-graph:v1"),
+                        Map.entry("graphExecutionBoundary", "PRE_EXECUTION_CONDITION_GRAPH_ONLY"),
+                        Map.entry("graphNodeCount", 4),
+                        Map.entry("graphEdgeCount", 3),
+                        Map.entry("graphBranchCounts", Map.of(
+                                "READY_TO_EXECUTE", 1,
+                                "SHOW_DRAFT_FOR_REVIEW", 1,
+                                "WAITING_APPROVAL", 1
+                        )),
+                        Map.entry("graphToolExecuted", false),
+                        Map.entry("graphOutboxWritten", false),
+                        Map.entry("graphApprovalCreated", false),
+                        Map.entry("graphWorkerReceiptRequiredForSideEffects", true),
                         Map.entry("totalCount", 3),
                         Map.entry("executableCount", 1),
                         Map.entry("approvalRequiredCount", 1),
@@ -264,6 +278,13 @@ class AgentRuntimeEventDisplaySupportTest {
         assertEquals(1, display.metrics().get("approvalRequiredCount"));
         assertEquals(3, display.metrics().get("toolNameCount"));
         assertEquals(3, display.metrics().get("nextActionCount"));
+        assertEquals(4, display.metrics().get("graphNodeCount"));
+        assertEquals(3, display.metrics().get("graphEdgeCount"));
+        assertEquals(3, display.metrics().get("graphBranchCount"));
+        assertEquals(false, display.metrics().get("graphToolExecuted"));
+        assertEquals(false, display.metrics().get("graphOutboxWritten"));
+        assertEquals(false, display.metrics().get("graphApprovalCreated"));
+        assertEquals(true, display.metrics().get("graphWorkerReceiptRequiredForSideEffects"));
         assertTrue(display.recommendedActions().stream().anyMatch(action -> action.contains("审批面板")));
     }
 }

@@ -371,6 +371,16 @@ class ApiBootstrapTest(unittest.TestCase):
         self.assertEqual("TOOL_EXECUTION_READINESS", event["attributes"]["snapshotType"])
         self.assertEqual(1, event["attributes"]["executableCount"])
         self.assertEqual(("datasource.metadata.read",), event["attributes"]["toolNames"])
+        self.assertEqual("TOOL_EXECUTION_READINESS_GRAPH", event["attributes"]["graphSnapshotType"])
+        self.assertEqual("tool-readiness-graph:v1", event["attributes"]["graphVersion"])
+        self.assertEqual("PRE_EXECUTION_CONDITION_GRAPH_ONLY", event["attributes"]["graphExecutionBoundary"])
+        self.assertEqual(2, event["attributes"]["graphNodeCount"])
+        self.assertEqual(1, event["attributes"]["graphEdgeCount"])
+        self.assertEqual({"READY_TO_EXECUTE": 1}, event["attributes"]["graphBranchCounts"])
+        self.assertFalse(event["attributes"]["graphToolExecuted"])
+        self.assertFalse(event["attributes"]["graphOutboxWritten"])
+        self.assertFalse(event["attributes"]["graphApprovalCreated"])
+        self.assertTrue(event["attributes"]["graphWorkerReceiptRequiredForSideEffects"])
         self.assertNotIn("ds-sensitive-002", str(event["attributes"]))
 
     def test_plan_response_uses_trusted_tool_readiness_policy_snapshot(self) -> None:

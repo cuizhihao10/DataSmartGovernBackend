@@ -49,6 +49,19 @@ final class AgentToolExecutionReadinessEventDisplayBuilder {
         metrics.put("toolNameCount", listSize(attributes.get("toolNames")));
         metrics.put("nextActionCount", listSize(attributes.get("nextActions")));
         metrics.put("decisionSummaryCount", listSize(attributes.get("decisionSummaries")));
+        /*
+         * readiness graph 指标用于解释“本次执行前治理图谱有多复杂、路由到哪些分支”。
+         * timeline 只展示低敏计数和边界布尔值，不展开 graph nodes/edges，避免把工具参数或编排细节
+         * 复制到通用时间线卡片中。
+         */
+        metrics.put("graphNodeCount", intAttribute(attributes, "graphNodeCount"));
+        metrics.put("graphEdgeCount", intAttribute(attributes, "graphEdgeCount"));
+        metrics.put("graphBranchCount", mapSize(attributes.get("graphBranchCounts")));
+        metrics.put("graphToolExecuted", boolAttribute(attributes, "graphToolExecuted"));
+        metrics.put("graphOutboxWritten", boolAttribute(attributes, "graphOutboxWritten"));
+        metrics.put("graphApprovalCreated", boolAttribute(attributes, "graphApprovalCreated"));
+        metrics.put("graphWorkerReceiptRequiredForSideEffects",
+                boolAttribute(attributes, "graphWorkerReceiptRequiredForSideEffects"));
 
         return new AgentRuntimeEventDisplayView(
                 "TOOL_EXECUTION_READINESS",
@@ -163,6 +176,27 @@ final class AgentToolExecutionReadinessEventDisplayBuilder {
             return list.size();
         }
         return 0;
+    }
+
+    private static int mapSize(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            return map.size();
+        }
+        return 0;
+    }
+
+    private static boolean boolAttribute(Map<String, Object> attributes, String key) {
+        Object value = attributes.get(key);
+        if (value instanceof Boolean booleanValue) {
+            return booleanValue;
+        }
+        if (value == null) {
+            return false;
+        }
+        return switch (Objects.toString(value, "").trim().toLowerCase(Locale.ROOT)) {
+            case "1", "true", "yes", "on", "enabled" -> true;
+            default -> false;
+        };
     }
 
     private static String normalize(String value) {

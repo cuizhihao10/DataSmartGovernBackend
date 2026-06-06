@@ -52,6 +52,23 @@
 - LangGraph Durable Execution: https://docs.langchain.com/oss/python/langgraph/durable-execution
 - LangGraph Human-in-the-loop Interrupts: https://docs.langchain.com/oss/python/langgraph/human-in-the-loop
 
+## 2026-06-06 追加落地进展：工具执行准备度图谱事件化与 Java 投影
+
+- 本阶段把 5.43 的 `toolExecutionReadinessGraph` 从 `/agent/plans` 同步响应继续推进到 runtime event 与 Java projection。
+  这一步的产品目标不是让图谱“更详细”，而是让执行前治理分支成为可查询、可回放、可展示的控制面事实。
+- Python Runtime 在 `tool_execution_readiness_recorded` 事件中新增 graph 低敏摘要：
+  `graphSnapshotType`、`graphPayloadPolicy`、`graphVersion`、`graphExecutionBoundary`、
+  `graphNodeCount`、`graphEdgeCount`、`graphBranches`、`graphBranchCounts` 和 durable boundary 摘要。
+- Java `agent-runtime` 现在可以在工具执行准备度专用 projection 中读取这些 graph 摘要，并在查询响应中聚合
+  `graphBranchCounts`。timeline display 同步展示节点数、边数、分支数量和 durable boundary。
+- 低敏边界继续保持强约束：runtime event 和 Java projection 都不展开 graph nodes/edges，不保存工具实参、SQL、
+  prompt、样本数据、模型输出、凭证、内部 endpoint、task 正文或 artifact 正文。
+- 商业化意义：管理台可以回答“本次工具计划进入了哪些执行前分支”，运维和审计可以判断是审批等待、参数澄清、
+  预算/队列等待、草稿展示还是执行前阻断，但不会把工具调用上下文复制成第二份敏感数据源。
+- 当前仍不建议继续无限扩展 projection 字段。更高价值的下一阶段是把 MCP `tools/call`、A2A action 和模型
+  tool_call 统一收敛到 `ToolPlan -> readiness -> readiness graph`，再接 task-management outbox、worker receipt
+  与 permission-admin human-in-the-loop。
+
 ## 2026-06-06 追加落地进展：gateway 签名工具策略 Envelope 接入 Python 受信控制面
 
 - `platform-common` 新增 `X-DataSmart-Tool-Policy-Envelope` 统一 Header 常量，作为 gateway/agent-runtime 向 Python Runtime 下发工具治理策略的低敏控制面信封。

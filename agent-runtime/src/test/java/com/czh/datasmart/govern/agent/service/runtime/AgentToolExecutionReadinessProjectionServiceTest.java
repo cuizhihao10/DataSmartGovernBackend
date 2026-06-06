@@ -52,6 +52,9 @@ class AgentToolExecutionReadinessProjectionServiceTest {
         assertEquals(0L, response.blockedWindowCount());
         assertEquals(1L, response.decisionCounts().get("ready_to_execute"));
         assertEquals(1L, response.decisionCounts().get("waiting_approval"));
+        assertEquals(1L, response.graphBranchCounts().get("READY_TO_EXECUTE"));
+        assertEquals(1L, response.graphBranchCounts().get("WAITING_APPROVAL"));
+        assertEquals(1L, response.graphBranchCounts().get("SHOW_DRAFT_FOR_REVIEW"));
         assertEquals(1L, response.toolNameCounts().get("datasource.metadata.read"));
         assertEquals(1L, response.nextActionCounts().get("EXECUTE_READY_TOOLS"));
 
@@ -59,6 +62,18 @@ class AgentToolExecutionReadinessProjectionServiceTest {
         assertEquals("tool_execution_readiness_recorded", snapshot.eventType());
         assertEquals("TOOL_EXECUTION_READINESS", snapshot.snapshotType());
         assertEquals("LOW_SENSITIVE_METADATA_ONLY", snapshot.payloadPolicy());
+        assertEquals("TOOL_EXECUTION_READINESS_GRAPH", snapshot.graphSnapshotType());
+        assertEquals("LOW_SENSITIVE_GRAPH_METADATA_ONLY", snapshot.graphPayloadPolicy());
+        assertEquals("tool-readiness-graph:v1", snapshot.graphVersion());
+        assertEquals("PRE_EXECUTION_CONDITION_GRAPH_ONLY", snapshot.graphExecutionBoundary());
+        assertEquals(4, snapshot.graphNodeCount());
+        assertEquals(3, snapshot.graphEdgeCount());
+        assertEquals(List.of("READY_TO_EXECUTE", "SHOW_DRAFT_FOR_REVIEW", "WAITING_APPROVAL"),
+                snapshot.graphBranches());
+        assertEquals(1, snapshot.graphBranchCounts().get("READY_TO_EXECUTE"));
+        assertFalse(snapshot.graphToolExecuted());
+        assertFalse(snapshot.graphOutboxWritten());
+        assertFalse(snapshot.graphApprovalCreated());
         assertEquals(3, snapshot.totalCount());
         assertEquals(1, snapshot.executableCount());
         assertEquals(1, snapshot.approvalRequiredCount());
@@ -78,6 +93,7 @@ class AgentToolExecutionReadinessProjectionServiceTest {
         assertFalse(serialized.contains("手机号唯一性"));
         assertFalse(serialized.contains("select * from"));
         assertFalse(serialized.contains("toolArguments"));
+        assertFalse(serialized.contains("graphNodes"));
         assertFalse(serialized.contains("internalEndpoint"));
     }
 
@@ -99,6 +115,7 @@ class AgentToolExecutionReadinessProjectionServiceTest {
 
         assertEquals(1, response.totalMatched());
         assertEquals(1L, response.blockedWindowCount());
+        assertEquals(1L, response.graphBranchCounts().get("BLOCKED_BEFORE_EXECUTION"));
         assertEquals(2L, response.snapshots().getFirst().replaySequence());
         assertEquals("blocked", response.snapshots().getFirst().decisionSummaries().getFirst().decision());
         assertEquals(List.of("ESCALATE_TO_OPERATOR"), response.snapshots().getFirst().nextActions());
@@ -113,6 +130,22 @@ class AgentToolExecutionReadinessProjectionServiceTest {
         attributes.put("eventPayloadVersion", "v1");
         attributes.put("snapshotType", "TOOL_EXECUTION_READINESS");
         attributes.put("payloadPolicy", "LOW_SENSITIVE_METADATA_ONLY");
+        attributes.put("graphSnapshotType", "TOOL_EXECUTION_READINESS_GRAPH");
+        attributes.put("graphPayloadPolicy", "LOW_SENSITIVE_GRAPH_METADATA_ONLY");
+        attributes.put("graphVersion", "tool-readiness-graph:v1");
+        attributes.put("graphExecutionBoundary", "PRE_EXECUTION_CONDITION_GRAPH_ONLY");
+        attributes.put("graphNodeCount", blocked ? 2 : 4);
+        attributes.put("graphEdgeCount", blocked ? 1 : 3);
+        attributes.put("graphBranches", blocked
+                ? List.of("BLOCKED_BEFORE_EXECUTION")
+                : List.of("READY_TO_EXECUTE", "SHOW_DRAFT_FOR_REVIEW", "WAITING_APPROVAL"));
+        attributes.put("graphBranchCounts", blocked
+                ? Map.of("BLOCKED_BEFORE_EXECUTION", 1)
+                : Map.of("READY_TO_EXECUTE", 1, "SHOW_DRAFT_FOR_REVIEW", 1, "WAITING_APPROVAL", 1));
+        attributes.put("graphToolExecuted", false);
+        attributes.put("graphOutboxWritten", false);
+        attributes.put("graphApprovalCreated", false);
+        attributes.put("graphWorkerReceiptRequiredForSideEffects", true);
         attributes.put("totalCount", blocked ? 1 : 3);
         attributes.put("executableCount", blocked ? 0 : 1);
         attributes.put("approvalRequiredCount", blocked ? 0 : 1);
@@ -188,6 +221,11 @@ class AgentToolExecutionReadinessProjectionServiceTest {
                 )
         ));
         attributes.put("toolArguments", Map.of("businessGoal", "手机号唯一性"));
+        attributes.put("graphNodes", List.of(Map.of(
+                "nodeId", "tool-sensitive",
+                "arguments", Map.of("datasourceId", "ds-sensitive-001"),
+                "sql", "select * from graph_sensitive_table"
+        )));
         attributes.put("sql", "select * from customer");
         attributes.put("internalEndpoint", "http://internal-agent-runtime");
         return eventRecord(identityKey, "tool_execution_readiness_recorded", projectId,

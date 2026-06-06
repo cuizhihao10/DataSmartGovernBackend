@@ -25,6 +25,9 @@ from datasmart_ai_runtime.services.tools.tool_execution_readiness import (
     ToolExecutionReadinessDecision,
     ToolExecutionReadinessReport,
 )
+from datasmart_ai_runtime.services.tools.tool_execution_readiness_graph import (
+    build_tool_execution_readiness_graph_response,
+)
 
 
 def build_tool_execution_readiness_runtime_event(
@@ -68,6 +71,7 @@ def _readiness_event_attributes(readiness: ToolExecutionReadinessReport) -> dict
     decision_counts = Counter(item.decision.value for item in readiness.items)
     risk_counts = Counter(item.risk_level for item in readiness.items if item.risk_level)
     mode_counts = Counter(item.execution_mode for item in readiness.items if item.execution_mode)
+    graph_attributes = _readiness_graph_event_attributes(readiness)
     return {
         "eventPayloadVersion": "v1",
         "snapshotType": "TOOL_EXECUTION_READINESS",
@@ -93,6 +97,7 @@ def _readiness_event_attributes(readiness: ToolExecutionReadinessReport) -> dict
         "executionModeCounts": dict(sorted(mode_counts.items())),
         "toolNames": tuple(item.tool_name for item in limited_items),
         "toolNamesTruncatedCount": max(0, len(readiness.items) - len(limited_items)),
+        **graph_attributes,
         "decisionSummaries": tuple(
             {
                 "toolName": item.tool_name,
@@ -107,6 +112,43 @@ def _readiness_event_attributes(readiness: ToolExecutionReadinessReport) -> dict
                 "retryHint": item.retry_hint,
             }
             for item in limited_items
+        ),
+    }
+
+
+def _readiness_graph_event_attributes(readiness: ToolExecutionReadinessReport) -> dict[str, Any]:
+    """把 readiness graph 压缩成 runtime event 低敏摘要。
+
+    `/agent/plans` 同步响应可以返回完整的图谱 nodes/edges，因为它面向本次请求的即时治理卡片；
+    runtime event 则需要更克制：事件会进入 replay、Kafka、Java projection 和审计链路，体积和敏感边界都更严格。
+
+    因此这里刻意只保留：
+    - 图谱版本、快照类型和 payload policy，方便 Java 判断字段语义；
+    - execution boundary，提醒消费方这仍是执行前条件图；
+    - node/edge/branch 计数，方便 timeline 和报表展示；
+    - durable action boundary，明确本事件没有执行工具、没有写 outbox、没有创建审批单。
+
+    注意：这里不复制 `nodes`、`edges`、工具参数值、SQL、prompt、样本数据或模型输出。
+    """
+
+    graph = build_tool_execution_readiness_graph_response(readiness)
+    durable_boundary = graph.get("durableActionBoundary")
+    if not isinstance(durable_boundary, dict):
+        durable_boundary = {}
+    return {
+        "graphSnapshotType": graph.get("snapshotType"),
+        "graphPayloadPolicy": graph.get("payloadPolicy"),
+        "graphVersion": graph.get("graphVersion"),
+        "graphExecutionBoundary": graph.get("executionBoundary"),
+        "graphNodeCount": graph.get("nodeCount"),
+        "graphEdgeCount": graph.get("edgeCount"),
+        "graphBranches": tuple(str(branch) for branch in graph.get("branches", ()) if str(branch).strip())[:20],
+        "graphBranchCounts": dict(graph.get("branchCounts") or {}),
+        "graphToolExecuted": bool(durable_boundary.get("toolExecuted")),
+        "graphOutboxWritten": bool(durable_boundary.get("outboxWritten")),
+        "graphApprovalCreated": bool(durable_boundary.get("approvalCreated")),
+        "graphWorkerReceiptRequiredForSideEffects": bool(
+            durable_boundary.get("workerReceiptRequiredForSideEffects")
         ),
     }
 
