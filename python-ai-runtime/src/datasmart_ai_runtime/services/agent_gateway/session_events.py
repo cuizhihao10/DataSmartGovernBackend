@@ -68,6 +68,7 @@ def _scheduling_event_attributes(scheduling: Mapping[str, Any]) -> dict[str, Any
     agents = tuple(item for item in scheduling.get("participatingAgents", ()) if isinstance(item, Mapping))
     limited_agents = agents[:20]
     policy_axes = scheduling.get("policyAxes") if isinstance(scheduling.get("policyAxes"), Mapping) else {}
+    a2a_axis = policy_axes.get("a2aTaskPlanning") if isinstance(policy_axes.get("a2aTaskPlanning"), Mapping) else {}
     status = str(scheduling.get("status") or "UNKNOWN")
     roles = tuple(_string_field(item, "role") for item in limited_agents if _string_field(item, "role"))
     return {
@@ -98,6 +99,25 @@ def _scheduling_event_attributes(scheduling: Mapping[str, Any]) -> dict[str, Any
         "approvalRequired": bool(policy_axes.get("approvalRequired")),
         "tenantScoped": bool(policy_axes.get("tenantScoped")),
         "projectScoped": bool(policy_axes.get("projectScoped")),
+        # A2A task planning 轴只记录 mode、状态、计数和 guardrail code。
+        # 这里刻意不记录 taskPublicId/contextPublicId/artifactRef，也不记录 decisionReason 这种自由文本，
+        # 因为 runtime event 会进入 replay、投影和消息总线，暴露面比同步响应更大。
+        "a2aTaskPlanningAvailable": bool(a2a_axis.get("available")),
+        "a2aTaskPlanningSource": _string_value(a2a_axis.get("source")),
+        "a2aTaskPlanningMode": _string_value(a2a_axis.get("mode")),
+        "a2aTaskPlanningStatus": _string_value(a2a_axis.get("status")),
+        "a2aTaskState": _string_value(a2a_axis.get("a2aState")),
+        "a2aTaskInternalPhase": _string_value(a2a_axis.get("internalPhase")),
+        "a2aTaskTerminal": bool(a2a_axis.get("terminal")),
+        "a2aTaskInterrupted": bool(a2a_axis.get("interrupted")),
+        "a2aTaskExecutable": bool(a2a_axis.get("executable")),
+        "a2aTaskShouldWaitForHuman": bool(a2a_axis.get("shouldWaitForHuman")),
+        "a2aTaskSuggestedActions": _limited_string_tuple(a2a_axis.get("suggestedActions"), limit=20),
+        "a2aTaskGuardrailCodes": _limited_string_tuple(a2a_axis.get("guardrailCodes"), limit=20),
+        "a2aTaskHistoryEventCount": _non_negative_int(a2a_axis.get("historyEventCount")),
+        "a2aTaskArtifactReferenceCount": _non_negative_int(a2a_axis.get("artifactReferenceCount")),
+        "a2aTaskSensitiveFieldIgnoredCount": _non_negative_int(a2a_axis.get("sensitiveFieldIgnoredCount")),
+        "a2aTaskPayloadPolicy": _string_value(a2a_axis.get("payloadPolicy")),
         "displaySummary": _string_value(scheduling.get("displaySummary")),
         "recommendedActionCount": len(tuple(scheduling.get("recommendedActions") or ())),
     }

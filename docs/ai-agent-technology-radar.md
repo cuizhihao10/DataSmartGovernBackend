@@ -1,5 +1,14 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-06 落地补充：A2A task decisions should shape scheduling before execution
+
+- 当前 Agent Host 趋势不是把外部协议 endpoint 直接接到工具执行，而是让协议状态先进入调度、trace、checkpoint 和 human-in-the-loop 控制面。A2A task 的 submitted、working、input-required、auth-required、completed 等状态，应该先影响 Master Agent 的下一步策略，而不是直接触发 worker。
+- DataSmart 本阶段把 Python A2A `planningDecision` 接入 `agentSessionScheduling`：授权等待态会激活权限 Agent，未知状态会激活运维诊断 Agent，用户输入等待态会阻断自动推进。这让外部 Agent 委派任务真正进入 DataSmart 的多 Agent 会话编排。
+- 该落地继续坚持低敏 trace 原则。runtime event 只记录 mode、状态、内部阶段、guardrail code 和计数，不记录 taskPublicId、artifactRef、prompt、工具参数、SQL、样本数据、artifact 正文、模型输出或内部 endpoint。
+- 这一步也让 DataSmart 的路线更接近 Codex/Claude Code 类 Agent：用户看到的是会话与任务进度，系统内部保留的是可回放、可暂停、可审批、可诊断的调度事实。真实执行仍必须回到 permission-admin、task-management、confirmation/outbox、worker pre-check 和 artifact 二次鉴权。
+- 下一步趋势跟进应把 A2A scheduling evidence 接入 Java projection/WebSocket timeline，并设计 task fact 持久化；不要在缺少权限、幂等和 outbox 的情况下开放真实 `message/send`。
+- 参考资料：Google ADK A2A Introduction：`https://adk.dev/a2a/intro/`；A2A Core Protocol Specification：`https://agent2agent.info/specification/core/`；OpenAI Agents tracing：`https://openai.github.io/openai-agents-python/tracing/`。
+
 ## 2026-06-06 落地补充：A2A planning previews should expose decisions without becoming task endpoints
 
 - A2A 生态的关键不只是 Agent Card 发现，还包括 task 状态、history、artifact、streaming 和 push 的可靠恢复。DataSmart 当前选择继续把 A2A task 当成“受治理的持久工作单元”，而不是把协议入口直接接到工具执行。

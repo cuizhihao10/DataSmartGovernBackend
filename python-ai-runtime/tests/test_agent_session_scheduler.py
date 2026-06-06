@@ -193,6 +193,152 @@ class AgentSessionSchedulerTest(unittest.TestCase):
         self.assertNotIn("请为客户主数据生成质量规则", str(attributes))
         self.assertNotIn("businessGoal", str(attributes))
 
+    def test_a2a_authorization_decision_shapes_session_scheduling_and_event(self) -> None:
+        """A2A 授权等待态应进入会话调度，并激活任务/权限 Agent。
+
+        这个用例模拟 Java A2A task 查询预览已经被 5.31/5.32 适配器转成 `planningDecision` 后，
+        再由 gateway 或 Java 控制面注入 `/agent/plans`。会话调度层只消费低敏 decision，不读取原始
+        A2A message，也不把 task id、prompt、工具参数或内部 endpoint 写进 runtime event。
+        """
+
+        response = build_plan_response(
+            AgentRequest(
+                tenant_id="tenant-a",
+                project_id="project-a",
+                actor_id="a2a-operator",
+                objective="查看外部 Agent 委派任务的授权状态",
+                variables={
+                    "trustedControlPlane": {
+                        "a2aTaskPlanningDecision": {
+                            "mode": "WAIT_FOR_AUTHORIZATION",
+                            "status": "WAITING_FOR_CONTROL_PLANE",
+                            "executable": False,
+                            "shouldStartWorker": False,
+                            "shouldWaitForHuman": True,
+                            "suggestedActions": ("REQUEST_AUTHORIZATION", "QUERY_TASK_HISTORY"),
+                            "guardrails": (
+                                "CREDENTIALS_MUST_STAY_OUTSIDE_A2A_MESSAGE_BODY",
+                                "APPROVAL_OR_PERMISSION_SCOPE_MUST_BE_CONFIRMED_BY_CONTROL_PLANE",
+                            ),
+                            "snapshot": {
+                                "taskPublicId": "task_pub_auth_secret",
+                                "contextPublicId": "ctx_pub_auth_secret",
+                                "a2aState": "TASK_STATE_AUTH_REQUIRED",
+                                "internalPhase": "APPROVAL_WAITING",
+                                "sequence": 4,
+                                "terminal": False,
+                                "interrupted": True,
+                                "historyEventCount": 3,
+                                "artifactReferenceCount": 0,
+                                "sensitiveFieldIgnoredCount": 2,
+                                "payloadPolicy": "SUMMARY_ONLY_LOW_SENSITIVE_CONTROL_PLANE_FIELDS",
+                            },
+                            "prompt": "原始 A2A message 不能进入调度摘要",
+                            "toolArguments": {"datasourceId": "ds-a2a-secret"},
+                            "targetEndpoint": "http://internal-a2a-worker.local/tasks",
+                        }
+                    },
+                    "sessionId": "session-a2a-auth",
+                },
+            ),
+            self._orchestrator(),
+        )
+
+        scheduling = response["intelligentGatewayGovernance"]["agentSessionScheduling"]
+        axis = scheduling["policyAxes"]["a2aTaskPlanning"]
+        roles = {agent["role"] for agent in scheduling["participatingAgents"]}
+        event = tuple(
+            item
+            for item in response["plan"]["runtime_events"]
+            if item["event_type"] == AgentRuntimeEventType.AGENT_SESSION_SCHEDULING_RECORDED
+        )[-1]
+        attributes = event["attributes"]
+
+        self.assertTrue(scheduling["available"])
+        self.assertEqual("APPROVAL_REQUIRED", scheduling["status"])
+        self.assertTrue(scheduling["handoffRequired"])
+        self.assertIn("TASK_AGENT", roles)
+        self.assertIn("PERMISSION_AGENT", roles)
+        self.assertEqual("TRUSTED_CONTROL_PLANE", axis["source"])
+        self.assertEqual("WAIT_FOR_AUTHORIZATION", axis["mode"])
+        self.assertEqual("TASK_STATE_AUTH_REQUIRED", axis["a2aState"])
+        self.assertTrue(axis["taskPublicIdPresent"])
+        self.assertTrue(axis["contextPublicIdPresent"])
+        self.assertEqual("WAIT_FOR_AUTHORIZATION", attributes["a2aTaskPlanningMode"])
+        self.assertEqual("TASK_STATE_AUTH_REQUIRED", attributes["a2aTaskState"])
+        self.assertEqual(2, attributes["a2aTaskSensitiveFieldIgnoredCount"])
+        serialized = str(scheduling) + str(attributes)
+        self.assertNotIn("task_pub_auth_secret", serialized)
+        self.assertNotIn("ctx_pub_auth_secret", serialized)
+        self.assertNotIn("原始 A2A message", serialized)
+        self.assertNotIn("ds-a2a-secret", serialized)
+        self.assertNotIn("internal-a2a-worker", serialized)
+        self.assertNotIn("toolArguments", serialized)
+        self.assertNotIn("targetEndpoint", serialized)
+
+    def test_a2a_unknown_decision_blocks_session_and_schedules_ops_agent(self) -> None:
+        """未知或不可信 A2A planning decision 应 fail-closed。
+
+        A2A 协议和 Java task fact 后续都会演进；如果 Python Runtime 看见未知状态，最安全的行为不是猜测
+        下一步，而是把会话标记为 BLOCKED，交给运维/协议诊断 Agent 处理。
+        """
+
+        response = build_plan_response(
+            AgentRequest(
+                tenant_id="tenant-a",
+                project_id="project-a",
+                actor_id="a2a-operator",
+                objective="诊断一个未知 A2A task 状态",
+                variables={
+                    "a2aTaskPlanningDecision": {
+                        "mode": "REJECTED_OR_DIAGNOSTIC",
+                        "status": "BLOCKED",
+                        "executable": False,
+                        "shouldWaitForHuman": True,
+                        "suggestedActions": ("OPEN_DIAGNOSTIC_REVIEW", "STOP_AUTOMATIC_EXECUTION"),
+                        "guardrails": (
+                            "UNKNOWN_OR_UNTRUSTED_A2A_STATE_FAIL_CLOSED",
+                            "CONTROL_PLANE_CONTRACT_VERSION_REVIEW_REQUIRED",
+                        ),
+                        "snapshot": {
+                            "taskPublicId": "task_pub_unknown_secret",
+                            "a2aState": "TASK_STATE_UNSPECIFIED",
+                            "internalPhase": "DEAD_LETTER",
+                            "historyEventCount": 1,
+                            "sensitiveFieldIgnoredCount": 1,
+                            "payloadPolicy": "SUMMARY_ONLY_LOW_SENSITIVE_CONTROL_PLANE_FIELDS",
+                        },
+                        "sql": "select * from hidden_table",
+                    },
+                    "sessionId": "session-a2a-unknown",
+                },
+            ),
+            self._orchestrator(),
+        )
+
+        scheduling = response["intelligentGatewayGovernance"]["agentSessionScheduling"]
+        axis = scheduling["policyAxes"]["a2aTaskPlanning"]
+        roles = {agent["role"] for agent in scheduling["participatingAgents"]}
+        event = tuple(
+            item
+            for item in response["plan"]["runtime_events"]
+            if item["event_type"] == AgentRuntimeEventType.AGENT_SESSION_SCHEDULING_RECORDED
+        )[-1]
+        attributes = event["attributes"]
+
+        self.assertFalse(scheduling["available"])
+        self.assertEqual("BLOCKED", scheduling["status"])
+        self.assertTrue(scheduling["handoffRequired"])
+        self.assertIn("OPS_AGENT", roles)
+        self.assertEqual("REQUEST_VARIABLES_COMPATIBILITY_PREVIEW", axis["source"])
+        self.assertEqual("REJECTED_OR_DIAGNOSTIC", axis["mode"])
+        self.assertEqual("REJECTED_OR_DIAGNOSTIC", attributes["a2aTaskPlanningMode"])
+        self.assertIn("UNKNOWN_OR_UNTRUSTED_A2A_STATE_FAIL_CLOSED", attributes["a2aTaskGuardrailCodes"])
+        serialized = str(scheduling) + str(attributes)
+        self.assertNotIn("task_pub_unknown_secret", serialized)
+        self.assertNotIn("hidden_table", serialized)
+        self.assertNotIn("select *", serialized)
+
     @staticmethod
     def _orchestrator(provider: object | None = None) -> AgentOrchestrator:
         """构造测试用编排器。"""

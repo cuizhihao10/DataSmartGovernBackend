@@ -30,6 +30,7 @@
 - `api.create_app()`：提供可选 FastAPI 入口。当前测试不依赖 FastAPI，安装 API 依赖后即可启动服务。
 - Agent API 路由已从 bootstrap 入口拆到 `api_agent_routes.py`：`api.py` 只负责装配模型网关、事件组件、长期记忆候选治理和 Java 控制面客户端；`/agent/plans`、事件 replay/control 与 WebSocket handler 由独立注册函数承载。这样后续继续增加服务间认证、智能网关会话、审计导出和长期记忆上下文注入时，不会把启动文件拖成难以维护的巨型模块。
 - A2A Task 规划预览：`POST /agent/protocol-adapters/a2a/task-planning-preview` 可接收 Java A2A task 查询预览或未来真实 task 低敏合同，并返回 Python Runtime 可消费的 planning decision。该接口只做状态映射与生产化缺口说明，不创建 task、不取消 task、不执行工具、不写 outbox、不回显原始 payload。
+- A2A Task 会话调度接入：`/agent/plans` 现在可以消费 `trustedControlPlane.a2aTaskPlanningDecision` 中的低敏 planning decision，并把 A2A task 状态纳入 `intelligentGatewayGovernance.agentSessionScheduling`。授权等待态会激活权限 Agent 并进入 `APPROVAL_REQUIRED`，用户输入/预检态会降级阻断直接执行，未知状态会 fail-closed 并激活运维诊断 Agent。对应 runtime event 只记录 mode、状态、阶段、guardrail code 和计数，不记录 task id、prompt、工具参数、SQL、artifact 正文或内部 endpoint。
 - 目录层级治理已开始落地：长期记忆相关服务已迁入 `services/memory/`，实时事件流相关服务已迁入 `services/runtime_events/`，模型路由/provider/预算/tool-call 相关服务已迁入 `services/model_gateway/`，并新增 [Python AI Runtime 目录层级治理规范](../docs/python-ai-runtime-package-layout.md)。后续新增功能应优先进入 `agent/`、`memory/`、`model_gateway/`、`runtime_events/`、`tools/`、`skills/` 等能力包，而不是继续把十几个文件散放在同一个目录。
 
 ## 为什么先做这个骨架

@@ -1,5 +1,41 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-06 追加落地进展：Python Runtime A2A Task 规划接入会话调度
+
+- Python Runtime 新增 `services/agent_gateway/a2a_task_scheduling_context.py`：
+  - 专门把 5.31/5.32 生成的 A2A `planningDecision` 转换为会话调度可消费的低敏上下文；
+  - 支持从 `variables["trustedControlPlane"]["a2aTaskPlanningDecision"]` 读取生产推荐形态；
+  - 兼容 `variables["a2aTaskPlanningDecision"]` 与 `variables["a2aTaskPlanning"]["planningDecision"]`，用于本地联调和迁移；
+  - 只读取 mode、status、A2A state、internalPhase、sequence、计数、guardrail code 和 suggested action，不读取原始 payload。
+- `session_scheduler.py` 已接入 A2A task planning：
+  - `WAIT_FOR_AUTHORIZATION` 会把会话状态提升为 `APPROVAL_REQUIRED`，并激活 `TASK_AGENT` 与 `PERMISSION_AGENT`；
+  - `WAIT_FOR_USER_INPUT` 与 `PRECHECK_REQUIRED` 会把会话标记为 `DEGRADED`，提示不能直接执行；
+  - `REJECTED_OR_DIAGNOSTIC` 会让会话 fail-closed 为 `BLOCKED`，并激活 `OPS_AGENT`；
+  - `WORKER_PLANNING_ALLOWED` 与 `TERMINAL_NO_EXECUTION` 保持可解释但不误开真实执行。
+- `session_events.py` 已把 A2A planning 轴写入 `AGENT_SESSION_SCHEDULING_RECORDED` runtime event：
+  - 只记录 `mode/status/a2aState/internalPhase`、history/artifact/sensitive 计数、guardrail code、suggested action；
+  - 不记录 taskPublicId、contextPublicId、artifactRef、decisionReason、prompt、工具参数、SQL、样本数据、artifact 正文、模型输出、凭证或内部 endpoint。
+- 新增/扩展测试：
+  - 授权等待态会驱动会话进入 `APPROVAL_REQUIRED`；
+  - 未知状态会 fail-closed 并激活运维诊断 Agent；
+  - 调度摘要和 runtime event 都不会泄漏 task id、prompt、工具参数或内部 endpoint。
+
+产品意义：
+- A2A task planning 不再只是独立预览接口，而是进入 `/agent/plans` 的智能网关主链路。
+- 外部 Agent 委派任务后，Master Agent 能知道自己应该等待用户、等待授权、进入预检、只展示终态，还是交给运维诊断。
+- 这一步继续保持“先规划与调度，后真实执行”的商业化节奏，避免过早开放 `message/send` 造成权限、幂等、outbox 和 worker receipt 混乱。
+
+当前边界：
+- 仍没有真实 A2A `message/send`、`tasks/get`、`tasks/cancel`、`tasks/subscribe` 或 push notification。
+- `/agent/plans` 只消费已经低敏化的 planning decision，不调用 Java、不读取 task fact store、不写 task history。
+- direct request variables 兼容形态只用于迁移和本地联调；生产应由 gateway/Java 控制面通过可信链路注入 `trustedControlPlane`。
+
+下一步推荐路线：
+1. 将 A2A planning decision 与 session scheduling event 接入 Java projection/WebSocket timeline，形成前端可回放视图。
+2. 设计 task fact 表与 task-management 对接，明确 task header、history、artifact metadata、worker receipt 和权限事实分层。
+3. 在真实 `message/send` 前补齐 permission-admin 预检、幂等限流、confirmation/outbox、worker pre-check、容量保护和 artifact 二次鉴权。
+4. 为保持整体节奏，下一批可以切到 LangGraph/OpenClaw-style 执行图、MCP adapter 可执行前置治理，或模型网关/记忆主线的生产遥测。
+
 ## 2026-06-06 追加落地进展：Python Runtime A2A Task 规划预览 API
 
 - Python Runtime 新增 `api_a2a_task_planning.py`：

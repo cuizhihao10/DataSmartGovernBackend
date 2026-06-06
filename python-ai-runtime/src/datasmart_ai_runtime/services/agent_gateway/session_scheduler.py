@@ -21,6 +21,12 @@ from typing import Any, Mapping
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ToolExecutionMode, ToolRiskLevel
 from datasmart_ai_runtime.domain.intent import GovernanceDomain
 from datasmart_ai_runtime.domain.memory import AgentMemoryType
+from datasmart_ai_runtime.services.agent_gateway.a2a_task_scheduling_context import (
+    A2aTaskSchedulingContext,
+    apply_a2a_task_scheduling_context,
+    build_a2a_task_scheduling_context,
+    most_restrictive_status,
+)
 from datasmart_ai_runtime.services.agent_gateway.session_models import (
     AgentParticipationMode,
     AgentSchedulingStatus,
@@ -71,7 +77,15 @@ class AgentSessionScheduler:
             tool_budget=tool_budget,
             memory=memory,
         )
-        status = self._overall_status(plan, model_gateway, skill_admission, tool_budget)
+        a2a_context = build_a2a_task_scheduling_context(request)
+        # A2A task planning decision 是外部 Agent 委派任务进入 DataSmart 后的控制面事实。
+        # 这里不重新解析原始 A2A payload，只消费 5.31/5.32 已经低敏化的 planning decision，并按更保守
+        # 的状态合并到会话调度中：例如模型网关 READY，但 A2A task 正在等待授权，则整轮会话仍应显示
+        # `APPROVAL_REQUIRED`，避免前端或后续 runtime 误以为可以直接推进 worker。
+        status = most_restrictive_status(
+            self._overall_status(plan, model_gateway, skill_admission, tool_budget),
+            a2a_context.scheduling_status,
+        )
         agents = self._build_agents(
             domain_values=domain_values,
             selected_skill_codes=selected_skill_codes,
@@ -82,31 +96,40 @@ class AgentSessionScheduler:
             plan=plan,
             request=request,
         )
+        agents = apply_a2a_task_scheduling_context(agents, a2a_context)
         handoff_required = plan.requires_human_approval or status in {
             AgentSchedulingStatus.APPROVAL_REQUIRED,
             AgentSchedulingStatus.BLOCKED,
+        } or a2a_context.requires_handoff
+        policy_axes = {
+            "intentDomains": domain_values,
+            "selectedSkillCodes": selected_skill_codes,
+            "visibleSkillCodes": visible_skill_codes,
+            "plannedToolNames": planned_tool_names,
+            "memoryDependencies": memory_dependencies,
+            "modelGatewayAvailable": bool(model_gateway.get("available")),
+            "skillAdmissionAllowed": bool(skill_admission.get("allowed")),
+            "toolBudgetAllowed": bool(tool_budget.get("allowed", True)),
+            "approvalRequired": bool(plan.requires_human_approval),
+            "tenantScoped": bool(request.tenant_id),
+            "projectScoped": bool(request.project_id),
         }
+        if a2a_context.available:
+            policy_axes["a2aTaskPlanning"] = a2a_context.to_policy_axis()
         return AgentSessionSchedulingPolicyView(
             available=status != AgentSchedulingStatus.BLOCKED,
             status=status,
             primary_agent_role=AgentSessionRole.MASTER_ORCHESTRATOR.value,
             participating_agents=agents,
-            policy_axes={
-                "intentDomains": domain_values,
-                "selectedSkillCodes": selected_skill_codes,
-                "visibleSkillCodes": visible_skill_codes,
-                "plannedToolNames": planned_tool_names,
-                "memoryDependencies": memory_dependencies,
-                "modelGatewayAvailable": bool(model_gateway.get("available")),
-                "skillAdmissionAllowed": bool(skill_admission.get("allowed")),
-                "toolBudgetAllowed": bool(tool_budget.get("allowed", True)),
-                "approvalRequired": bool(plan.requires_human_approval),
-                "tenantScoped": bool(request.tenant_id),
-                "projectScoped": bool(request.project_id),
-            },
+            policy_axes=policy_axes,
             handoff_required=handoff_required,
             display_summary=self._display_summary(status, agents),
-            recommended_actions=self._recommended_actions(status, degraded_reasons, agents),
+            recommended_actions=self._recommended_actions(
+                status,
+                degraded_reasons + a2a_context.degradation_reasons,
+                agents,
+                a2a_context,
+            ),
         )
 
     @staticmethod
@@ -443,6 +466,7 @@ class AgentSessionScheduler:
         status: AgentSchedulingStatus,
         degraded_reasons: tuple[str, ...],
         agents: tuple[ScheduledAgentView, ...],
+        a2a_context: A2aTaskSchedulingContext,
     ) -> tuple[str, ...]:
         """根据调度状态生成下一步建议。"""
 
@@ -457,6 +481,7 @@ class AgentSessionScheduler:
             actions.append("检查长期记忆写入、二级索引同步和 workspace 过滤条件，避免专家 Agent 缺少历史经验。")
         if any(agent.requires_handoff for agent in agents):
             actions.append("把需要 handoff 的 Agent 决策写入 Java 控制面审批单，等待项目负责人或管理员确认。")
+        actions.extend(a2a_context.recommended_actions())
         if not actions:
             actions.append("下一阶段可接入真实多 Agent runtime，把当前策略视图升级为可执行 handoff 图。")
         return tuple(actions)
