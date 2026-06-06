@@ -1,5 +1,35 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-06 追加落地进展：Python Runtime A2A Task 规划预览 API
+
+- Python Runtime 新增 `api_a2a_task_planning.py`：
+  - 专门负责 A2A task planning preview 的 API 响应组装；
+  - 与 `A2aTaskPlanningAdapter` 解耦，避免服务层关心 HTTP schema、route policy 和生产化缺口字段；
+  - 不回显原始 payload，只输出 planning decision、input payload policy、production readiness 和 next steps。
+- `api_agent_routes.py` 新增只读入口：
+  - `POST /agent/protocol-adapters/a2a/task-planning-preview`；
+  - 接收 Java 5.30 `task-query-preview` 风格 JSON 或 `{"contract": {...}}` 包装合同；
+  - 输出 `PRECHECK_REQUIRED`、`WORKER_PLANNING_ALLOWED`、`WAIT_FOR_USER_INPUT`、`WAIT_FOR_AUTHORIZATION`、`TERMINAL_NO_EXECUTION` 或 `REJECTED_OR_DIAGNOSTIC`。
+- 新增 `test_a2a_task_planning_api.py`：
+  - 验证 helper 不回显 prompt、工具参数、内部 endpoint、SQL 或 secret；
+  - 验证路由注册成功；
+  - 验证终态 task 返回 `TERMINAL_NO_EXECUTION`，并只展示 artifact metadata-only 引用。
+
+产品意义：
+- 5.31 的 Python 内部适配器现在有了 HTTP 联调入口，Java 控制面、gateway、命令行脚本和后续 LangGraph/OpenClaw-style 节点都可以直接消费。
+- 该入口继续保持 preview-only，避免把“状态规划能力”误升级成真实 A2A 执行能力。
+- 这一步让 DataSmart 的协议互联主线从 Java 只读预览推进到 Python Runtime 可查询、可调试、可逐步接入会话调度的状态。
+
+当前边界：
+- 该接口不调用 Java，不读取真实 task fact，不写 runtime event，也不进入 `/agent/plans` 主路径。
+- 还没有把 planning decision 接入 `agentSessionScheduling`，也没有进入 WebSocket timeline。
+- 仍不是完整 A2A Server，真实 task endpoint 仍需 task-management、permission-admin、幂等限流、confirmation/outbox、worker pre-check 和 artifact 二次鉴权。
+
+下一步推荐路线：
+1. 把 planning decision 接入 `agentSessionScheduling`，让 A2A task 状态影响 Master/Specialist/Guardrail Agent 的参与方式。
+2. 将 planning decision 事件化，进入 runtime event、WebSocket replay 和 Java projection。
+3. 中期设计 task fact 表与 task-management 对接，再考虑真实 `message/send`。
+
 ## 2026-06-06 追加落地进展：Python Runtime A2A Task 规划适配器
 
 - Python Runtime 新增 `domain/protocols/` 子包：

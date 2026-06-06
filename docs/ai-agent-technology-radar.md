@@ -1,5 +1,13 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-06 落地补充：A2A planning previews should expose decisions without becoming task endpoints
+
+- A2A 生态的关键不只是 Agent Card 发现，还包括 task 状态、history、artifact、streaming 和 push 的可靠恢复。DataSmart 当前选择继续把 A2A task 当成“受治理的持久工作单元”，而不是把协议入口直接接到工具执行。
+- 本阶段新增 Python `POST /agent/protocol-adapters/a2a/task-planning-preview`，让 Java task query preview 或未来真实 task 低敏合同可以在 Python Runtime 中转换为 planning decision。
+- 该接口有意只暴露 decision，不回显原始 payload，也不创建、取消或执行 task。这一点很重要：企业 Agent Host 的联调入口如果复制 prompt、工具参数、SQL、artifact 正文或内部 endpoint，很快会变成第二份敏感上下文缓存。
+- 从演进顺序看，现在已经有 Java Agent Card/状态机/事件契约/查询预览、Python planning adapter 和 Python planning preview API。下一步更应该把 decision 接入会话调度与 runtime event，而不是直接开放 `message/send`。
+- 参考资料：Google ADK A2A Introduction：`https://adk.dev/a2a/intro/`；A2A Core Protocol Specification：`https://agent2agent.info/specification/core/`。
+
 ## 2026-06-06 落地补充：A2A task states should become planning inputs before execution endpoints
 
 - A2A 最新实践继续强调跨服务 Agent 协作、Task 生命周期、history 恢复、artifact 引用、streaming 和 push notification。对 DataSmart 这类企业数据治理 Agent Host 来说，最危险的路径不是“不会开放 A2A”，而是过早把 A2A task endpoint 直接接到工具执行。

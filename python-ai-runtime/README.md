@@ -29,6 +29,7 @@
 - 长期记忆治理：已具备记忆召回计划、候选生成、审批/拒绝、候选 SQL store、低敏摘要正式落成、materialization receipt、正式记忆 SQL store、正式记忆 runtime builder、lease token fencing runner、失败退避、DLQ 基础语义、管理员补偿入口、物化 runtime event、低基数 Prometheus 指标、受控后台 worker、Prometheus 告警规则、审计 outbox 和 store-backed 检索接入；候选和正式记忆都会携带 `workspaceKey/memoryNamespace`，检索时按当前 Agent 工作空间过滤，避免同项目不同 workspace 或 session 沙箱误共享记忆。当前默认装配仍以本地内存 store 便于学习和单测，后台 worker 与审计 outbox 默认关闭；生产可通过 `DATASMART_AI_FORMAL_MEMORY_*`、`DATASMART_AI_MEMORY_LEASE_*` 与 `DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_*` 切到 MySQL，并显式开启 worker，让 `/agent/plans` 从正式记忆表召回低敏经验，同时让多实例 worker 安全领取候选并留下审计事实。
 - `api.create_app()`：提供可选 FastAPI 入口。当前测试不依赖 FastAPI，安装 API 依赖后即可启动服务。
 - Agent API 路由已从 bootstrap 入口拆到 `api_agent_routes.py`：`api.py` 只负责装配模型网关、事件组件、长期记忆候选治理和 Java 控制面客户端；`/agent/plans`、事件 replay/control 与 WebSocket handler 由独立注册函数承载。这样后续继续增加服务间认证、智能网关会话、审计导出和长期记忆上下文注入时，不会把启动文件拖成难以维护的巨型模块。
+- A2A Task 规划预览：`POST /agent/protocol-adapters/a2a/task-planning-preview` 可接收 Java A2A task 查询预览或未来真实 task 低敏合同，并返回 Python Runtime 可消费的 planning decision。该接口只做状态映射与生产化缺口说明，不创建 task、不取消 task、不执行工具、不写 outbox、不回显原始 payload。
 - 目录层级治理已开始落地：长期记忆相关服务已迁入 `services/memory/`，实时事件流相关服务已迁入 `services/runtime_events/`，模型路由/provider/预算/tool-call 相关服务已迁入 `services/model_gateway/`，并新增 [Python AI Runtime 目录层级治理规范](../docs/python-ai-runtime-package-layout.md)。后续新增功能应优先进入 `agent/`、`memory/`、`model_gateway/`、`runtime_events/`、`tools/`、`skills/` 等能力包，而不是继续把十几个文件散放在同一个目录。
 
 ## 为什么先做这个骨架
@@ -99,6 +100,29 @@ $env:DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_MAX_NON_READY_ITEMS="10"
 - 生产强治理环境可以设置 `DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REQUIRED=true`，让远端发布事实源不可用时显式失败。
 - 诊断响应不返回完整 descriptor、权限明细、prompt、工具参数、样本数据或密钥。
 - `/agent/plans` 不会在每次请求实时刷新 Manifest，只读取诊断服务的最近快照并做低敏归一化；这样既能给会话事件补充版本证据，又避免用户同步规划路径被远端 Manifest 网络 IO 拖慢。
+
+## A2A Task 规划预览
+
+Python Runtime 已提供 A2A task 规划预览入口，用于把 Java Agent Runtime 的 A2A task 低敏合同转换成
+Master Agent 可理解的 planning decision：
+
+```text
+POST /agent/protocol-adapters/a2a/task-planning-preview
+```
+
+请求体可以直接提交 Java `task-query-preview` 风格 JSON，也可以使用 `{"contract": {...}}` 包一层。
+
+响应会包含：
+
+- `planningDecision.mode`：`PRECHECK_REQUIRED`、`WORKER_PLANNING_ALLOWED`、`WAIT_FOR_USER_INPUT`、`WAIT_FOR_AUTHORIZATION`、`TERMINAL_NO_EXECUTION` 或 `REJECTED_OR_DIAGNOSTIC`；
+- `productionReadiness.missingProductionRequirements`：真实执行前仍缺失的 task fact、task-management 对接、permission-admin 预检、幂等限流、confirmation outbox、worker pre-check、artifact 二次鉴权和 runtime event timeline；
+- `inputPayloadPolicy`：说明接口不会回显原始 payload，会统计并丢弃不应进入 planning 层的敏感字段。
+
+设计边界：
+
+- 该接口不是 A2A `message/send`、`tasks/get`、`tasks/cancel` 或 `tasks/subscribe`；
+- 不保存、不回显 prompt、工具参数、SQL、样本数据、artifact 正文、模型输出、凭证或内部 endpoint；
+- 真实执行仍必须回到 Java 控制面的权限、审批、outbox、worker receipt 和 artifact 服务二次鉴权链路。
 
 ## 下一步建议
 
