@@ -29,8 +29,22 @@ from datasmart_ai_runtime.services.tools.tool_execution_readiness_policy_provide
     ToolExecutionReadinessPolicyProviderProtocol,
     ToolExecutionReadinessPolicySnapshot,
 )
+from datasmart_ai_runtime.services.tools.tool_action_intake import (
+    ToolActionIntakeBoundary,
+    ToolActionIntakeIssue,
+    ToolActionIntakeItem,
+    ToolActionIntakeReport,
+    ToolActionIntakeService,
+    ToolActionIntakeSource,
+)
 
 __all__ = (
+    "ToolActionIntakeBoundary",
+    "ToolActionIntakeIssue",
+    "ToolActionIntakeItem",
+    "ToolActionIntakeReport",
+    "ToolActionIntakeService",
+    "ToolActionIntakeSource",
     "ToolExecutionReadinessDecision",
     "ToolExecutionReadinessItem",
     "ToolExecutionReadinessPolicy",

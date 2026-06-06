@@ -52,6 +52,21 @@
 - LangGraph Durable Execution: https://docs.langchain.com/oss/python/langgraph/durable-execution
 - LangGraph Human-in-the-loop Interrupts: https://docs.langchain.com/oss/python/langgraph/human-in-the-loop
 
+## 2026-06-06 追加落地进展：工具动作意图统一入口
+
+- 本阶段从继续扩展 projection 字段切换到 Agent Host 主链路：新增 `ToolActionIntakeService`，
+  把模型 `tool_call`、MCP `tools/call` 和 A2A task/action 统一进入 DataSmart 工具治理入口。
+- 入口分流策略：
+  - 模型 tool_call 和 MCP tools/call 可以归一成 `ToolPlan`，再继续进入 readiness/report/graph；
+  - A2A task/action 保持为 A2A 控制面决策，不伪装成普通工具调用；
+  - 未暴露工具、未知工具、非法合同会在 readiness 前 fail-closed。
+- 这一步对商业化产品很关键：外部 Agent 或模型提出“调用工具”并不等于平台已经允许执行。
+  DataSmart 必须先在统一 intake 层做来源归因、可见性校验、参数校验、低敏摘要和下一跳分流。
+- MCP `tools/call` 当前仍不会直接触发下游微服务，而是被重标记为 `source=mcp_tools_call` 的 ToolPlan 候选。
+  后续必须继续走 readiness graph、审批、澄清、outbox、worker receipt 和审计链路。
+- 下一阶段建议把 orchestrator 当前模型 tool_call 治理迁移到该入口服务，再设计只读/预览型 MCP
+  tools/call intake API，让外部 Agent 能看到 readiness graph，而不是获得绕过治理的执行入口。
+
 ## 2026-06-06 追加落地进展：工具执行准备度图谱事件化与 Java 投影
 
 - 本阶段把 5.43 的 `toolExecutionReadinessGraph` 从 `/agent/plans` 同步响应继续推进到 runtime event 与 Java projection。
