@@ -52,6 +52,33 @@
 - LangGraph Durable Execution: https://docs.langchain.com/oss/python/langgraph/durable-execution
 - LangGraph Human-in-the-loop Interrupts: https://docs.langchain.com/oss/python/langgraph/human-in-the-loop
 
+## 2026-06-07 追加落地进展：Python Runtime MCP tools/call intake 只读预检
+- Python Runtime 新增 `/agent/protocol-adapters/mcp/tools-call-intake-preview`：
+  - 支持标准 JSON-RPC `method=tools/call`、`params.name`、`params.arguments`；
+  - 支持本地兼容包装 `call` 和直接 `{name, arguments}`，方便 Java 控制面、智能网关和联调脚本消费；
+  - 路由只做 preview，不执行工具、不写 outbox、不创建审批、不调用 worker。
+- 新增 `api_mcp_tool_call_intake.py`：
+  - 把 MCP 请求转换为 `ToolActionIntakeService.from_mcp_tools_call(...)`；
+  - 继续进入 `ToolExecutionReadinessService` 和 `toolExecutionReadinessGraph`；
+  - 返回低敏 `toolActionIntake`、`toolExecutionReadiness`、`toolExecutionReadinessGraph`、`productionReadiness` 和 `nextSteps`。
+- API bootstrap 优化：
+  - `create_app()` 启动时集中加载工具目录快照；
+  - `build_default_orchestrator(...)` 新增可注入 `tool_registry`；
+  - orchestrator 主链路与 MCP preview 入口共享同一份工具目录，避免同一进程内工具版本漂移。
+- 安全与低敏边界：
+  - 输入中的 `arguments` 可用于内部 ToolPlan 参数校验，但响应只返回字段名、数量、issue/reason code、风险等级、执行模式和目标服务；
+  - 不回显参数真实值、prompt、SQL、样本数据、模型输出、secret、凭证、内部 endpoint 或 artifact 正文；
+  - `productionReadiness.readyForExecution=false`，明确 readiness 通过也不代表已经具备真实执行链路。
+- 验证：
+  - `python -m pytest python-ai-runtime\tests\test_mcp_tool_call_intake_api.py python-ai-runtime\tests\test_a2a_task_planning_api.py python-ai-runtime\tests\test_api_bootstrap.py -q`：22 个测试通过；
+  - `python -m pytest python-ai-runtime\tests -q`：422 个测试通过；
+  - `python -m compileall python-ai-runtime\src\datasmart_ai_runtime\api_mcp_tool_call_intake.py python-ai-runtime\src\datasmart_ai_runtime\api_agent_routes.py python-ai-runtime\src\datasmart_ai_runtime\api_orchestrator_factory.py python-ai-runtime\src\datasmart_ai_runtime\api.py python-ai-runtime\tests\test_mcp_tool_call_intake_api.py`：通过；
+  - 行数检查：`api_mcp_tool_call_intake.py` 258 行、`api_agent_routes.py` 332 行、`api.py` 348 行，均低于 500 行约束。
+- 下一步推荐路线：
+  1. 将 MCP intake preview 结果写入低敏 runtime event，供 Java projection/timeline 回放外部 Agent 工具意图；
+  2. 或先设计 durable action/outbox contract，让 READY/QUEUE_ASYNC 分支具备可恢复执行证据；
+  3. 暂不建议立即实现完整 MCP Server 与真实工具执行，除非同步补齐会话生命周期、认证、授权、幂等、限流、审批和结果脱敏。
+
 ## 2026-06-07 追加落地进展：模型 tool_call 主链路接入统一 intake
 
 - 本阶段把 `AgentModelIntentNode` 的模型 `tool_call` 治理从直接调用 `ModelToolCallPlanner` 改为调用

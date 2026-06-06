@@ -128,11 +128,18 @@ def create_app() -> Any:
         health_registry=model_provider_health_registry,
     )
     memory_runtime = build_api_memory_runtime()
+    agent_runtime_base_url = os.getenv("DATASMART_AGENT_RUNTIME_BASE_URL")
+    # 工具目录在启动阶段集中加载一次，并同时供主 orchestrator 与协议适配 preview 入口使用。
+    # 这样可以避免 `/agent/plans`、MCP tools/call preview 和未来确认页在同一进程里看到不同版本的工具目录：
+    # - 生产环境可优先从 Java agent-runtime 动态读取；
+    # - 本地学习或 Java 服务不可用时回退到 Python 默认工具目录；
+    # - 后续如果要引入工具目录缓存、灰度版本或租户能力包，也可以先在这里统一形成快照。
+    tool_registry = load_tool_registry(tool_registry_base_url=agent_runtime_base_url)
     orchestrator = build_default_orchestrator(
         model_gateway=model_gateway,
         memory_retriever=memory_runtime.memory_retriever,
+        tool_registry=tool_registry,
     )
-    agent_runtime_base_url = os.getenv("DATASMART_AGENT_RUNTIME_BASE_URL")
     plan_ingestion_client = (
         JavaAgentPlanIngestionClient(base_url=agent_runtime_base_url)
         if agent_runtime_base_url and _truthy_env("DATASMART_AGENT_RUNTIME_PLAN_INGESTION_ENABLED")
@@ -351,6 +358,7 @@ def create_app() -> Any:
         memory_write_governance=memory_runtime.memory_write_governance,
         skill_publication_diagnostics_service=skill_publication_manifest_diagnostics,
         tool_execution_readiness_policy_provider=tool_execution_readiness_policy_provider,
+        tool_registry=tool_registry,
         gateway_signature_error_factory=lambda detail: HTTPException(status_code=401, detail=detail),
         gateway_signature_nonce_store=gateway_signature_nonce_store,
         gateway_signature_security_stats=gateway_signature_security_stats,

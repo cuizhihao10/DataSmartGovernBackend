@@ -149,6 +149,7 @@ def build_default_orchestrator(
     allow_remote_fallback: bool = True,
     trace_id: str | None = None,
     tool_registry_client: Any | None = None,
+    tool_registry: tuple[ToolDefinition, ...] | None = None,
     skill_registry_base_url: str | None = None,
     prefer_remote_skills: bool = False,
     allow_remote_skill_fallback: bool = True,
@@ -174,7 +175,13 @@ def build_default_orchestrator(
     - 通过 `allowed_context_sensitivity_levels` 控制哪些敏感级别允许进入模型上下文。
     """
 
-    tools = load_tool_registry(
+    # `tool_registry` 是给 API bootstrap 或测试显式传入的“已解析工具目录快照”。
+    # 为什么需要这个参数：
+    # - `/agent/plans` 主链路、MCP tools/call preview、未来工具确认页都应该基于同一份启动期工具目录；
+    # - 如果每个组件各自调用远程 Java agent-runtime 加载工具，网络抖动或远端灰度发布可能导致同一进程内
+    #   不同入口看到的工具集合不一致；
+    # - 显式注入快照后，调用方可以在启动阶段集中处理远程优先/本地回退策略，orchestrator 只负责消费目录。
+    tools = tool_registry if tool_registry is not None else load_tool_registry(
         tool_registry_base_url=tool_registry_base_url,
         prefer_remote_tools=prefer_remote_tools,
         allow_remote_fallback=allow_remote_fallback,
