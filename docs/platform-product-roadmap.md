@@ -10400,3 +10400,67 @@ canceled、rejected 以及 unspecified 诊断态映射到 DataSmart 内部治理
 2. 真实 `message:send` 前仍必须接 permission-admin、task-management、confirmation/outbox、worker pre-check、限流和幂等。
 3. MCP `tools/call` 与 A2A task 应共用 durable action event contract，避免两套副作用治理链路。
 4. 为避免继续陷在 Java 协议层，完成只读 task preview 后应考虑切回 Python Runtime 编排、长期记忆治理或模型网关真实推理遥测。
+
+## 5.30 Java Agent Runtime A2A Task 查询预览（2026-06-06）
+
+本阶段承接 5.29 的推荐路线，实现“只读 A2A task query/preview 草案”。
+目标是用 mock task fact 演示未来 A2A `GetTask`、`ListTasks`、`SubscribeToTask`、history 恢复、artifact 引用和
+push 边界如何消费 5.29 的 task runtime event 契约。当前仍不接受真实 task id、不读取数据库、不创建任务、
+不取消任务、不触发 worker、不启用 streaming 或 push notification。
+
+已完成：
+- 新增 `AgentA2aTaskQueryPreviewService`：
+  - 构建 A2A task 查询预览；
+  - 支持 `scenario` 场景：`completed`、`working`、`input-required`、`auth-required`、`failed`、`canceled`；
+  - 支持 `historyLength`，模拟 A2A 查询中的最近历史长度限制；
+  - 使用静态 mock history 展示 submitted、working、input-required、auth-required、artifact-announced、completed、failed、canceled 等事件如何恢复 task 当前状态；
+  - 修正取消终态语义：进入 `TASK_STATE_CANCELED` 后 `cancelRequested=false`，避免把终态误标为仍在等待取消确认。
+- `AgentExternalProtocolAdapterController` 新增管理路径：
+  - `GET /agent-runtime/protocol-adapters/a2a/task-query-preview`；
+  - `GET /api/agent/protocol-adapters/a2a/task-query-preview`；
+  - 参数：`scenario`、`historyLength`。
+- 新增 DTO：
+  - `AgentA2aTaskQueryPreviewResponse`；
+  - `AgentA2aTaskQueryContractView`；
+  - `AgentA2aTaskPreviewView`；
+  - `AgentA2aTaskHistoryEventView`；
+  - `AgentA2aTaskArtifactReferenceView`；
+  - `AgentA2aTaskStreamReplayView`；
+  - `AgentA2aTaskPushPreviewView`。
+- 查询预览覆盖：
+  - task 低敏快照：taskPublicId、contextPublicId、currentState、internalPhase、terminal、interrupted、sequence；
+  - history 低敏事件：sequence、eventType、a2aState、internalPhase、streamEventKind、reasonCode、artifactRef；
+  - artifact metadata-only 引用，不返回 artifact 正文；
+  - stream replay cursor：`after-sequence:N`；
+  - push notification 边界：签名、重放保护、退避、最大尝试、低敏 payload；
+  - 真实生产前缺失项：task fact 表、history index、artifact store、Redis 热状态、权限/配额/限流。
+- 新增 `AgentA2aTaskQueryPreviewServiceTest`：
+  - 验证 completed 场景可恢复终态 task 与 artifact 引用；
+  - 验证 `historyLength` 只返回尾部历史；
+  - 验证 input-required/auth-required 中断态展示继续动作但不生成 artifact；
+  - 验证 failed/canceled 终态和未知场景保守处理；
+  - 验证 working 场景非终态且完成时间为空；
+  - 验证序列化预览不包含敏感 payload 英文键、内部 endpoint、凭证或查询样例。
+
+验证：
+- `mvn -pl agent-runtime -am "-Dtest=AgentA2aTaskQueryPreviewServiceTest,AgentA2aTaskRuntimeEventContractPreviewServiceTest,AgentA2aTaskStateMachinePreviewServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：15 个测试通过。
+- `mvn -pl agent-runtime -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：243 个测试通过。
+- Maven Toolchain 使用 JDK 21：`C:\Users\Cui\.jdks\temurin-21.0.10`。
+- 行数检查：`AgentA2aTaskQueryPreviewService.java` 362 行、`AgentExternalProtocolAdapterController.java` 281 行、`AgentA2aTaskQueryPreviewServiceTest.java` 173 行，均低于 500 行约束。
+
+产品意义：
+- A2A task 从“状态机和事件契约可规划”推进到“查询视图可解释”。
+- 这一步把 task fact、runtime event history、artifact metadata、stream replay 和 push 边界串成一个只读视图，便于后续真实 `GetTask` 实现前先验证产品形态。
+- 对商业化 Agent Host 来说，查询恢复比实时 stream 更关键：用户断线、前端刷新、外部 Agent 重试或运维复盘时，都需要可靠 task history，而不是依赖某条实时连接还在。
+
+当前边界：
+- 当前仍不是完整 A2A Server，没有真实 `SendMessage`、`GetTask`、`ListTasks`、`CancelTask`、`SubscribeToTask` 或 push config 管理。
+- 查询预览使用 mock task fact，不读取 task-management、MySQL、Redis、Kafka、artifact store 或 push config。
+- preview 中的 taskPublicId/contextPublicId 都是占位，不代表真实资源。
+- artifact 只返回 metadata-only 引用，未接入正文存储或二次鉴权。
+
+下一步推荐路线：
+1. 不建议继续在 Java A2A preview 层堆更多字段；当前协议发现、状态机、事件契约、查询预览已经形成较完整控制面草案。
+2. 更推荐下一阶段切回 Python Runtime 真实 Agent 编排，把 Java 控制面契约转化为 Python Runtime 可消费的 session/task planning 适配。
+3. 或者切到长期记忆治理，把 task/event/artifact 与长期记忆候选、审批、materialization receipt 串起来。
+4. 若仍继续 A2A 主线，应先做 task fact 表与 task-management 对接设计，而不是直接实现有副作用 `message:send`。

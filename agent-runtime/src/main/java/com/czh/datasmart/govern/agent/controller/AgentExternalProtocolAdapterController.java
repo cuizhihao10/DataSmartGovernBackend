@@ -7,10 +7,12 @@
 package com.czh.datasmart.govern.agent.controller;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentA2aPublicAgentCardView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentA2aTaskQueryPreviewResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentA2aTaskRuntimeEventContractPreviewResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentA2aTaskStateMachinePreviewResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentExternalProtocolAdapterPreviewResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentMcpToolsListResponse;
+import com.czh.datasmart.govern.agent.service.runtime.AgentA2aTaskQueryPreviewService;
 import com.czh.datasmart.govern.agent.service.runtime.AgentA2aTaskRuntimeEventContractPreviewService;
 import com.czh.datasmart.govern.agent.service.runtime.AgentA2aTaskStateMachinePreviewService;
 import com.czh.datasmart.govern.agent.service.runtime.AgentExternalProtocolAdapterPreviewService;
@@ -52,6 +54,7 @@ public class AgentExternalProtocolAdapterController {
     private final AgentExternalProtocolDiscoveryEventPublisher discoveryEventPublisher;
     private final AgentA2aTaskStateMachinePreviewService a2aTaskStateMachinePreviewService;
     private final AgentA2aTaskRuntimeEventContractPreviewService a2aTaskRuntimeEventContractPreviewService;
+    private final AgentA2aTaskQueryPreviewService a2aTaskQueryPreviewService;
 
     /**
      * 查询 MCP/A2A 外部协议适配预览。
@@ -215,6 +218,39 @@ public class AgentExternalProtocolAdapterController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success(
                 a2aTaskRuntimeEventContractPreviewService.buildPreview(),
+                traceId
+        );
+    }
+
+    /**
+     * 查询 A2A Task 只读查询预览。
+     *
+     * <p>路由语义：
+     * `/a2a/task-query-preview` 用来演示未来 A2A `GetTask`、`ListTasks`、`SubscribeToTask` 和 history 恢复
+     * 如何消费 5.29 定义的 task runtime event 契约。它不是 `tasks/get` 的真实实现，不接受真实 task id，
+     * 而是通过 `scenario` 参数返回一组低敏 mock task fact，帮助我们提前验证前端、网关、Python Runtime 和审计台
+     * 对状态历史、artifact 引用、stream replay cursor 和 push 边界的理解。</p>
+     *
+     * <p>参数说明：
+     * - `scenario`：选择预览场景，支持 completed、working、input-required、auth-required、failed、canceled；
+     * - `historyLength`：模拟 A2A 查询中“最多返回最近 N 条 history”的行为，服务端会限制最大值。</p>
+     *
+     * <p>安全边界：
+     * 当前接口只返回 task id 占位、context id 占位、A2A 状态、DataSmart 内部阶段、事件序号、artifact 引用和
+     * 治理摘要；不读取真实任务，不返回原始消息正文、工具输入正文、artifact 正文、模型输出正文、查询语句、
+     * 样例数据、凭证或内部端点。</p>
+     *
+     * @param scenario 预览场景
+     * @param historyLength 最近历史条数限制
+     * @param traceId 链路追踪 ID，透传给统一响应；当前不会写入具体 task event
+     */
+    @GetMapping("/a2a/task-query-preview")
+    public PlatformApiResponse<AgentA2aTaskQueryPreviewResponse> getA2aTaskQueryPreview(
+            @RequestParam(value = "scenario", required = false) String scenario,
+            @RequestParam(value = "historyLength", required = false) Integer historyLength,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(
+                a2aTaskQueryPreviewService.buildPreview(scenario, historyLength),
                 traceId
         );
     }
