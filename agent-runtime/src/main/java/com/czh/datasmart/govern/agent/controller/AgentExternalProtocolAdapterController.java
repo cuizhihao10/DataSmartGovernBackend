@@ -7,8 +7,10 @@
 package com.czh.datasmart.govern.agent.controller;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentA2aPublicAgentCardView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentA2aTaskStateMachinePreviewResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentExternalProtocolAdapterPreviewResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentMcpToolsListResponse;
+import com.czh.datasmart.govern.agent.service.runtime.AgentA2aTaskStateMachinePreviewService;
 import com.czh.datasmart.govern.agent.service.runtime.AgentExternalProtocolAdapterPreviewService;
 import com.czh.datasmart.govern.agent.service.runtime.AgentExternalProtocolDiscoveryAuditContext;
 import com.czh.datasmart.govern.agent.service.runtime.AgentExternalProtocolDiscoveryEventPublisher;
@@ -46,6 +48,7 @@ public class AgentExternalProtocolAdapterController {
     private final AgentExternalProtocolAdapterPreviewService previewService;
     private final AgentExternalProtocolDiscoveryService discoveryService;
     private final AgentExternalProtocolDiscoveryEventPublisher discoveryEventPublisher;
+    private final AgentA2aTaskStateMachinePreviewService a2aTaskStateMachinePreviewService;
 
     /**
      * 查询 MCP/A2A 外部协议适配预览。
@@ -154,6 +157,35 @@ public class AgentExternalProtocolAdapterController {
                 response
         );
         return PlatformApiResponse.success(response, traceId);
+    }
+
+    /**
+     * 查询 A2A Task 状态机只读预览。
+     *
+     * <p>路由语义：
+     * `/a2a/task-state-machine` 表示“查看 DataSmart 将如何承接 A2A task 生命周期”，它服务于管理台、
+     * 架构评审、自动化测试和后续 Python Runtime/网关对接，而不是 A2A 自动发现入口。真实外部 Agent 自动发现
+     * 仍应读取 `/.well-known/agent-card.json`；状态机预览则用于解释 future task endpoint 的治理合同。</p>
+     *
+     * <p>为什么这一步不创建任务：
+     * A2A task 涉及提交、轮询、取消、streaming、push notification、审批、worker pre-check、outbox 和终态审计。
+     * 在这些边界没有固定前直接开放 `message:send`，很容易让协议适配层绕过 permission-admin 或工具沙箱。
+     * 因此当前接口只返回状态、流转和策略说明，不写数据库、不发布事件、不投递 outbox、不执行工具。</p>
+     *
+     * <p>返回行为：
+     * 响应使用统一 `PlatformApiResponse` 包装，内容只包含 A2A 标准状态、DataSmart 内部阶段、允许流转、
+     * 取消/超时/幂等/权限/stream/push 策略和下一步建议；不包含 prompt、message parts、工具参数、
+     * 资源正文、模型输出、内部 endpoint、SQL、sample data 或 secret。</p>
+     *
+     * @param traceId 链路追踪 ID，透传给统一响应；当前不会写 task 事件，仅用于调用方排查本次查询
+     */
+    @GetMapping("/a2a/task-state-machine")
+    public PlatformApiResponse<AgentA2aTaskStateMachinePreviewResponse> getA2aTaskStateMachine(
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(
+                a2aTaskStateMachinePreviewService.buildPreview(),
+                traceId
+        );
     }
 
     /**

@@ -10262,3 +10262,66 @@ TTFT/TPOT/GPU 遥测，而是让前端、审计台和运维侧能从 Java 控制
 2. MCP `tools/call` 前必须先完成 permission-admin scope、confirmation/outbox、worker pre-check、限流、幂等与事件契约，不要直连下游服务。
 3. 可补一个小批次低基数指标：protocolDiscoveryTotal、publicWellKnownReads、mcpToolsListReads、a2aAgentCardReads、callEnabledUnexpected。
 4. 为保持项目整体平衡，下一阶段也可以切到 Python Runtime 真实 Agent 编排或长期记忆治理，而不是继续在 Java 协议适配层加字段。
+
+## 5.28 Java Agent Runtime A2A Task 状态机只读预览（2026-06-06）
+
+本阶段承接 5.27 的推荐路线，仍然不直接开放真实 A2A task endpoint，而是先固定 A2A task 生命周期的控制面合同。
+这一步参考 A2A 最新规范中的 TaskState 思路，把 submitted、working、input-required、auth-required、completed、failed、
+canceled、rejected 以及 unspecified 诊断态映射到 DataSmart 内部治理阶段。目标是让后续 `message:send`、
+`tasks/get`、`tasks/cancel`、streaming 和 push notification 不再凭感觉拼状态，而是有明确的权限、审批、取消、
+幂等、超时、outbox、worker pre-check 和低敏事件边界。
+
+已完成：
+- 新增 `AgentA2aTaskStateMachinePreviewService`：
+  - 只读构建 A2A Task 状态机预览；
+  - 不创建任务、不写数据库、不发布 Kafka、不投递 outbox、不执行工具；
+  - 明确 A2A 对外状态与 DataSmart 内部治理阶段的映射；
+  - 终态任务不允许重新进入 working，重跑必须创建新 task 或管理员补偿记录。
+- `AgentExternalProtocolAdapterController` 新增管理路径：
+  - `GET /agent-runtime/protocol-adapters/a2a/task-state-machine`；
+  - `GET /api/agent/protocol-adapters/a2a/task-state-machine`；
+  - 返回统一 `PlatformApiResponse`，用于管理台、架构评审、自动化测试和后续网关/Python Runtime 对接。
+- 新增 DTO：
+  - `AgentA2aTaskStateMachinePreviewResponse`；
+  - `AgentA2aTaskStateView`；
+  - `AgentA2aTaskInternalPhaseView`；
+  - `AgentA2aTaskTransitionView`；
+  - `AgentA2aTaskPolicyView`。
+- 状态机覆盖的 DataSmart 内部阶段：
+  - `DISCOVERED`、`POLICY_PRECHECK`、`APPROVAL_WAITING`、`INPUT_WAITING`、`OUTBOX_PENDING`；
+  - `WORKER_PRECHECK`、`RUNNING`、`RESULT_READY`、`EXPIRED`、`DEAD_LETTER`。
+- 状态机覆盖的治理策略：
+  - 取消策略：副作用前可直接取消，副作用后需要 worker receipt 或补偿；
+  - 幂等策略：提交、继续输入、审批回调、取消请求都需要独立幂等键；
+  - 授权策略：`auth-required` 映射到 permission-admin scope、审批或租户授权缺口，不通过 A2A 正文交换凭证；
+  - 超时策略：区分 submitted、input-required、auth-required、worker heartbeat、outbox dispatch；
+  - streaming/push 策略：当前未启用，只先定义低敏 payload、签名、退避和恢复边界；
+  - 持久化策略：task header、status history、runtime event、command outbox、worker receipt、artifact metadata 分层保存。
+- 新增 `AgentA2aTaskStateMachinePreviewServiceTest`：
+  - 验证 A2A 标准状态齐备；
+  - 验证终态无出边；
+  - 验证所有流转都只发生在已声明状态内，并携带 guardrail、replayPolicy、eventPolicy 和内部阶段；
+  - 验证响应不包含容易被误用为 payload 字段的敏感英文键、内部 endpoint、凭证或查询样例。
+
+验证：
+- `mvn -pl agent-runtime -am "-Dtest=AgentA2aTaskStateMachinePreviewServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：4 个测试通过。
+- `mvn -pl agent-runtime -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：232 个测试通过。
+- Maven Toolchain 使用 JDK 21：`C:\Users\Cui\.jdks\temurin-21.0.10`。
+- 行数检查：`AgentA2aTaskStateMachinePreviewService.java` 403 行、`AgentExternalProtocolAdapterController.java` 214 行、`AgentA2aTaskStateMachinePreviewServiceTest.java` 158 行，均低于 500 行约束。
+
+产品意义：
+- DataSmart A2A 互联从“Agent Card 可发现”推进到“任务生命周期可治理”。
+- 状态机先行可以避免后续真实 task endpoint 把 A2A 协议状态、内部 worker 状态、审批状态和工具 outbox 状态混在一起。
+- 这一步让 DataSmart 更接近 Codex/Claude Code 类 Agent Host 的运行方式：外部 Agent 可以委派任务，但任务必须经过权限、审批、幂等、取消、worker receipt 和低敏 timeline 的治理链路。
+
+当前边界：
+- 仍不是完整 A2A Server；没有实现 `message:send`、`tasks/get`、`tasks/cancel`、streaming、push notification 或 task 持久化。
+- 状态机预览不写 runtime event，因为它是平台级控制面合同查询，不是某个具体 task 的生命周期事件。
+- 当前只定义策略和状态合同，尚未接入 task-management 统一任务台，也没有 MySQL task 表或 Redis 热状态。
+- streaming 与 push notification 仅定义边界，未启用真实订阅或 webhook 投递。
+
+下一步推荐路线：
+1. 优先设计 A2A task runtime event schema 或只读 task preview，继续保持无副作用。
+2. 真实 `message:send` 前必须接 permission-admin、task-management、confirmation/outbox、worker pre-check、限流和幂等。
+3. 如果继续协议互联主线，可设计 MCP `tools/call` 与 A2A task 共用的 durable action contract。
+4. 为保持整体节奏，完成 A2A 状态机后应评估切回 Python Runtime 编排、长期记忆治理或模型网关真实推理遥测。
