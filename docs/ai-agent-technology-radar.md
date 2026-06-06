@@ -1,5 +1,13 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-06 落地补充：execution gates should be queryable by the control plane
+
+- 成熟 Agent Host 不只要在运行时知道 execution readiness，还要让控制面、审计台和 timeline 能查询这层 execution gate。否则用户刷新页面或从 Java 管理台排查时，仍然看不到工具为什么等待审批、澄清或预算恢复。
+- DataSmart 本阶段把 Python 5.36 的 `tool_execution_readiness_recorded` 接入 Java `agent-runtime` projection 和 display，新增专用查询入口与 timeline builder。
+- 这一步让 readiness 从“Python 响应字段/事件”推进到“Java 控制面事实”，为后续 MCP `tools/call`、A2A action、LangGraph 节点条件和 task-management outbox 提供统一前置治理证据。
+- 低敏边界继续保持：Java projection 只解析白名单字段，即使事件 attributes 里意外出现 arguments、payload、SQL、internalEndpoint，也不会返回给 DTO 或 display。
+- 下一步趋势跟进应进入策略来源和执行图：让 readiness policy 消费 permission-admin/tool budget/worker backlog，或者把 readiness 作为 LangGraph/OpenClaw-style 节点条件，而不是继续堆 projection 字段。
+
 ## 2026-06-06 落地补充：execution readiness must be visible in the agent timeline
 
 - Agent 工具调用治理如果只停留在内部对象里，用户体验仍然像“黑盒”：用户不知道为什么 Agent 没有继续执行，也不知道是等待审批、缺参数、草案展示还是预算限流。

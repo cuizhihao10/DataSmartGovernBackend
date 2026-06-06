@@ -208,4 +208,62 @@ class AgentRuntimeEventDisplaySupportTest {
         assertEquals(2, display.metrics().get("a2aTaskSensitiveFieldIgnoredCount"));
         assertTrue(display.recommendedActions().stream().anyMatch(action -> action.contains("permission-admin")));
     }
+
+    /**
+     * 工具执行准备度事件应被解释成执行前治理卡片。
+     *
+     * <p>这条测试保护 5.37 的用户体验：Python 5.36 已经把 readiness 写入 runtime event，Java timeline
+     * 不能只显示“事件类型”，而应该解释当前是等待审批、需要澄清、预算限流还是已经可进入控制面执行。</p>
+     */
+    @Test
+    void toolExecutionReadinessDisplayShouldExposeApprovalAndDraftSummary() {
+        AgentRuntimeEventDisplayView display = new AgentRuntimeEventDisplaySupport().buildDisplay(new AgentRuntimeEventProjectionRecord(
+                "tool-readiness-display",
+                "agent-runtime-event.v1",
+                "python-ai-runtime",
+                "tool_execution_readiness_recorded",
+                "record_tool_execution_readiness",
+                "已记录本轮工具执行准备度治理快照。",
+                "audit",
+                "10",
+                "20",
+                "1001",
+                "trace-readiness-display",
+                "run-readiness-display",
+                "session-readiness-display",
+                13L,
+                Instant.parse("2026-06-06T02:00:00Z"),
+                Instant.parse("2026-06-06T02:00:00Z"),
+                Instant.parse("2026-06-06T02:00:01Z"),
+                Map.ofEntries(
+                        Map.entry("snapshotType", "TOOL_EXECUTION_READINESS"),
+                        Map.entry("totalCount", 3),
+                        Map.entry("executableCount", 1),
+                        Map.entry("approvalRequiredCount", 1),
+                        Map.entry("clarificationRequiredCount", 0),
+                        Map.entry("draftOnlyCount", 1),
+                        Map.entry("queuedAsyncCount", 0),
+                        Map.entry("throttledCount", 0),
+                        Map.entry("blockedCount", 0),
+                        Map.entry("nextActions", List.of("EXECUTE_READY_TOOLS", "CREATE_OR_WAIT_APPROVAL", "SHOW_DRAFT_FOR_REVIEW")),
+                        Map.entry("toolNames", List.of("datasource.metadata.read", "quality.rule.suggest", "task.create.draft")),
+                        Map.entry("decisionSummaries", List.of(
+                                Map.of("toolName", "task.create.draft", "decision", "waiting_approval")
+                        ))
+                )
+        ));
+
+        assertEquals("TOOL_EXECUTION_READINESS", display.category());
+        assertEquals("工具等待人工审批", display.title());
+        assertEquals("WAITING_APPROVAL", display.status());
+        assertTrue(display.requiresAttention());
+        assertTrue(display.summary().contains("等待审批 1 个"));
+        assertTrue(display.summary().contains("草案 1 个"));
+        assertEquals(3, display.metrics().get("totalCount"));
+        assertEquals(1, display.metrics().get("executableCount"));
+        assertEquals(1, display.metrics().get("approvalRequiredCount"));
+        assertEquals(3, display.metrics().get("toolNameCount"));
+        assertEquals(3, display.metrics().get("nextActionCount"));
+        assertTrue(display.recommendedActions().stream().anyMatch(action -> action.contains("审批面板")));
+    }
 }

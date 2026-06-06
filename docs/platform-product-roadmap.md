@@ -1,5 +1,41 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-06 追加落地进展：Java Agent Runtime 工具执行准备度投影与 Timeline 展示
+
+- Java `agent-runtime` 新增工具执行准备度控制面视图：
+  - `AgentToolExecutionReadinessProjectionView`；
+  - `AgentToolExecutionReadinessDecisionSummaryView`；
+  - `AgentToolExecutionReadinessProjectionQueryResponse`。
+- 新增 `AgentToolExecutionReadinessProjectionService`：
+  - 固定读取 `tool_execution_readiness_recorded`；
+  - 复用 runtime event projection store 与访问范围收口；
+  - 解析 Python 5.36 写入的低敏 readiness attributes；
+  - 聚合可执行、审批、澄清、草案、异步队列、限流、阻断窗口数量；
+  - 聚合 decision、toolName、nextAction 分布。
+- 新增独立 `AgentToolExecutionReadinessProjectionController`：
+  - 路由：`GET /agent-runtime/runtime-events/tool-execution-readiness-snapshots`；
+  - 路由：`GET /api/agent/runtime-events/tool-execution-readiness-snapshots`；
+  - 从通用 runtime event controller 拆出，避免主 controller 超过 500 行并继续膨胀。
+- 新增 `AgentToolExecutionReadinessEventDisplayBuilder`：
+  - timeline 可展示“工具等待人工审批”“工具参数需要澄清”“工具等待预算或队列恢复”“工具已具备执行准备度”等状态；
+  - 展示指标只包含 total/executable/approval/clarification/draft/queued/throttled/blocked 等计数；
+  - 不展示参数真实值、SQL、prompt、payload 明细、模型输出、凭证或内部 endpoint。
+- 测试同步：
+  - `AgentToolExecutionReadinessProjectionServiceTest` 验证强类型解析、窗口聚合、增量 replaySequence 和敏感字段不外泄；
+  - `AgentRuntimeEventDisplaySupportTest` 验证 readiness timeline 展示；
+  - 定向 Maven 测试 14 个通过。
+
+产品意义：
+- Python 5.36 让 readiness 进入 `/agent/plans` 和 runtime event；本阶段让 Java 控制面也能查询和展示这份执行前治理事实。
+- 运行详情页、审计台和未来前端 timeline 可以解释“为什么工具还没执行”，而不是只看到通用事件。
+- 这一步仍不执行工具、不创建审批、不写 outbox；真实副作用继续由 Java 工具执行链路、permission-admin、task-management 和 worker pre-check 管理。
+
+下一步推荐路线：
+1. 将 readiness policy 与 permission-admin/tool budget/worker backlog 对接，让 Python readiness 不再只用本地默认策略。
+2. 设计 MCP `tools/call` 到 ToolPlan/readiness 的统一前置治理合同。
+3. 将 readiness 纳入 LangGraph/OpenClaw-style 执行图条件节点，形成“计划 -> 准备度 -> 审批/澄清/执行”的图式闭环。
+4. 暂不建议继续只堆 Java projection 字段；完成这一环后应转向策略来源或执行图。
+
 ## 2026-06-06 追加落地进展：Python Runtime 工具执行准备度接入 Agent Plan 主链路
 
 - `/agent/plans` 响应新增 `toolExecutionReadiness`：
