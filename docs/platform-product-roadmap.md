@@ -52,6 +52,20 @@
 - LangGraph Durable Execution: https://docs.langchain.com/oss/python/langgraph/durable-execution
 - LangGraph Human-in-the-loop Interrupts: https://docs.langchain.com/oss/python/langgraph/human-in-the-loop
 
+## 2026-06-07 追加落地进展：模型 tool_call 主链路接入统一 intake
+
+- 本阶段把 `AgentModelIntentNode` 的模型 `tool_call` 治理从直接调用 `ModelToolCallPlanner` 改为调用
+  `ToolActionIntakeService.from_model_tool_calls(...)`。这表示统一入口不再只是独立服务，而是已经被真实
+  Agent 编排主链路消费。
+- 预算守卫、模型工具调用事件、二轮工具反馈事件继续复用 intake 内部保留的 planning report，因此对外行为保持稳定，
+  但架构上已经为 MCP `tools/call` 和 A2A action 共用入口做好准备。
+- 同时拆出 `AgentModelToolFeedbackTurnService`，把工具结果回填、二轮模型推理、资源引用过滤计数和 workspace
+  边界读取从 `AgentModelIntentNode` 中移出。主节点从超过 500 行回落到 407 行，符合“单文件不过度膨胀”的项目规范。
+- 产品意义：模型、MCP、A2A 三类工具意图未来可以先进入统一 intake，再进入 readiness graph、审批、澄清、outbox、
+  worker receipt 和审计链路，避免协议适配层绕过平台治理。
+- 下一阶段建议做只读/预览型 MCP `tools/call` intake API，让外部 Agent 能提交工具意图并看到 readiness graph，
+  但仍不触发真实下游副作用。
+
 ## 2026-06-06 追加落地进展：工具动作意图统一入口
 
 - 本阶段从继续扩展 projection 字段切换到 Agent Host 主链路：新增 `ToolActionIntakeService`，

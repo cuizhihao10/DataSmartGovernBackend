@@ -32,11 +32,11 @@ from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
 from datasmart_ai_runtime.domain.intent import IntentAnalysis
 from datasmart_ai_runtime.domain.model_gateway import ModelGatewayRequestContext
 from datasmart_ai_runtime.domain.skills import AgentSkillPlan
+from datasmart_ai_runtime.services.agent_model_tool_feedback_turn import AgentModelToolFeedbackTurnService
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
 from datasmart_ai_runtime.services.model_gateway.model_provider_metadata import build_model_provider_metadata
 from datasmart_ai_runtime.services.model_gateway.model_tool_feedback_provider import (
     ModelToolExecutionFeedbackProvider,
-    SimulatedModelToolExecutionFeedbackProvider,
 )
 from datasmart_ai_runtime.services.model_gateway.model_tool_call_aggregator import (
     ModelToolCallAssemblyReport,
@@ -48,10 +48,10 @@ from datasmart_ai_runtime.services.model_gateway.model_tool_call_budget_policy_p
     EnvAndRequestModelToolCallBudgetPolicyProvider,
     ModelToolCallBudgetPolicyProvider,
 )
-from datasmart_ai_runtime.services.model_gateway.model_tool_call_planner import ModelToolCallPlanner
 from datasmart_ai_runtime.services.model_gateway.model_provider import ModelProviderRegistry
 from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import ModelToolResultFeedbackBuilder
 from datasmart_ai_runtime.services.runtime_events.runtime_event_recorder import RuntimeEventRecorder
+from datasmart_ai_runtime.services.tools import ToolActionIntakeService
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 
 
@@ -96,7 +96,7 @@ class AgentModelIntentNode:
         model_providers: ModelProviderRegistry,
         model_gateway: ModelGatewayGovernanceService,
         tool_planner: ToolPlanner,
-        model_tool_call_planner: ModelToolCallPlanner | None = None,
+        tool_action_intake_service: ToolActionIntakeService | None = None,
         model_tool_call_budget_guard: ModelToolCallBudgetGuard | None = None,
         model_tool_call_budget_policy_provider: ModelToolCallBudgetPolicyProvider | None = None,
         tool_call_delta_aggregator_factory: type[ModelToolCallDeltaAggregator] = ModelToolCallDeltaAggregator,
@@ -106,14 +106,18 @@ class AgentModelIntentNode:
         self._model_providers = model_providers
         self._model_gateway = model_gateway
         self._tool_planner = tool_planner
-        self._model_tool_call_planner = model_tool_call_planner or ModelToolCallPlanner()
+        self._tool_action_intake_service = tool_action_intake_service or ToolActionIntakeService()
         self._model_tool_call_budget_guard = model_tool_call_budget_guard or ModelToolCallBudgetGuard()
         self._model_tool_call_budget_policy_provider = (
             model_tool_call_budget_policy_provider or EnvAndRequestModelToolCallBudgetPolicyProvider()
         )
         self._tool_call_delta_aggregator_factory = tool_call_delta_aggregator_factory
-        self._tool_execution_feedback_provider = tool_execution_feedback_provider or SimulatedModelToolExecutionFeedbackProvider()
-        self._tool_result_feedback_builder = tool_result_feedback_builder or ModelToolResultFeedbackBuilder()
+        self._tool_feedback_turn_service = AgentModelToolFeedbackTurnService(
+            model_providers=self._model_providers,
+            model_gateway=self._model_gateway,
+            tool_execution_feedback_provider=tool_execution_feedback_provider,
+            tool_result_feedback_builder=tool_result_feedback_builder,
+        )
 
     def invoke(
         self,
@@ -195,7 +199,7 @@ class AgentModelIntentNode:
             visible_tools=available_tools,
             event_recorder=event_recorder,
         )
-        second_turn_summary, feedback_count = self._complete_simulated_tool_feedback_turn(
+        second_turn_summary, feedback_count = self._tool_feedback_turn_service.complete(
             model_request=model_request,
             model_gateway_context=model_gateway_context,
             tool_calls=result.tool_calls,
@@ -240,7 +244,7 @@ class AgentModelIntentNode:
             visible_tools=available_tools,
             event_recorder=event_recorder,
         )
-        second_turn_summary, feedback_count = self._complete_simulated_tool_feedback_turn(
+        second_turn_summary, feedback_count = self._tool_feedback_turn_service.complete(
             model_request=model_request,
             model_gateway_context=model_gateway_context,
             tool_calls=assembly_report.tool_calls,
@@ -274,17 +278,21 @@ class AgentModelIntentNode:
     ) -> tuple[ToolPlan, ...]:
         """把模型返回的 tool_calls 转为受治理的 ToolPlan。
 
-        Provider 解析出的 `tool_calls` 仍然只是模型输出，不能直接执行。这里同时传入完整注册表和
-        本轮 visible tools，用于区分“工具不存在”和“工具存在但本轮不可见”两类治理问题。
+        Provider 解析出的 `tool_calls` 仍然只是模型输出，不能直接执行。这里先进入统一
+        `ToolActionIntakeService`，再把 intake 内部的 planning report 交给预算守卫和事件记录器。
+        这样模型 tool_call、MCP tools/call、A2A action 后续可以共享同一套执行前入口治理语义。
         """
 
         if not tool_calls:
             return ()
-        report = self._model_tool_call_planner.plan(
-            tool_calls=tool_calls,
+        intake_report = self._tool_action_intake_service.from_model_tool_calls(
+            tool_calls,
             registered_tools=self._tool_planner.registered_tools(),
             visible_tools=visible_tools,
         )
+        report = intake_report.planning_report
+        if report is None:
+            return ()
         budget_policy = self._model_tool_call_budget_policy_provider.policy_for(request)
         guarded = self._model_tool_call_budget_guard.evaluate(report, policy=budget_policy)
         if guarded.budget_issue_codes:
@@ -296,124 +304,6 @@ class AgentModelIntentNode:
             )
         record_model_tool_call_planning_events(event_recorder, guarded.guarded_report)
         return guarded.guarded_report.accepted_tool_plans
-
-    def _complete_simulated_tool_feedback_turn(
-        self,
-        model_request: ModelInvocationRequest,
-        model_gateway_context: ModelGatewayRequestContext,
-        tool_calls: tuple[ModelToolCall, ...],
-        model_tool_plans: tuple[ToolPlan, ...],
-        event_recorder: RuntimeEventRecorder,
-    ) -> tuple[str, int]:
-        """用模拟工具反馈完成第二轮模型调用。
-
-        这是通往真实多步 Agent loop 的“协议验证层”。当前不调用 Java 执行工具，而是生成受控反馈并
-        构造 OpenAI-compatible 的 assistant/tool messages。后续替换为 Java provider 时主流程仍成立。
-        """
-
-        if not tool_calls or not model_tool_plans:
-            return "", 0
-        feedback_items = self._tool_execution_feedback_provider.feedback_for(tool_calls, model_tool_plans)
-        feedback_bundle = self._tool_result_feedback_builder.build(
-            tool_calls,
-            feedback_items,
-            current_workspace_key=self._workspace_key_from_tool_plans(model_tool_plans),
-        )
-        event_recorder.record(
-            AgentRuntimeEventType.TOOL_RESULT_FEEDBACK_BUILT,
-            "build_tool_result_feedback",
-            "已构建工具执行结果回填消息，准备进入模型第二轮推理。",
-            attributes={
-                "feedbackCount": len(feedback_items),
-                "messageCount": len(feedback_bundle.messages),
-                "missingFeedbackCallIds": feedback_bundle.missing_feedback_call_ids,
-                "extraFeedbackCallIds": feedback_bundle.extra_feedback_call_ids,
-                "complete": feedback_bundle.complete,
-                "resourceResolutionCount": len(feedback_bundle.resource_resolution_summaries),
-                "resourceResolutionBlockedCount": self._resource_blocked_count(
-                    feedback_bundle.resource_resolution_summaries
-                ),
-                "resourceResolutionModelBlockedCount": self._resource_model_blocked_count(
-                    feedback_bundle.resource_resolution_summaries
-                ),
-                "resourceResolutions": feedback_bundle.resource_resolution_summaries,
-                "resultFilterCount": len(feedback_bundle.result_filter_summaries),
-                "resultFilterMaskedCount": self._result_filter_path_count(
-                    feedback_bundle.result_filter_summaries, "maskedPaths"
-                ),
-                "resultFilterRemovedCount": self._result_filter_path_count(
-                    feedback_bundle.result_filter_summaries, "removedPaths"
-                ),
-                "resultFilterTruncatedCount": self._result_filter_path_count(
-                    feedback_bundle.result_filter_summaries, "truncatedPaths"
-                ),
-                "resultFilters": feedback_bundle.result_filter_summaries,
-            },
-        )
-        if not feedback_bundle.complete or not feedback_bundle.messages:
-            return "", len(feedback_items)
-
-        second_turn_request = ModelInvocationRequest(
-            route=model_request.route,
-            messages=model_request.messages + feedback_bundle.messages,
-            temperature=model_request.temperature,
-            max_output_tokens=model_request.max_output_tokens,
-            trace_id=model_request.trace_id,
-            # 第二轮已经是“基于工具结果总结”，不再继续暴露 tools，避免模拟阶段形成无限工具调用循环。
-            available_tools=(),
-            tool_choice="none",
-            strict_tool_schema=model_request.strict_tool_schema,
-            provider_metadata=model_request.provider_metadata,
-        )
-        result = self._model_providers.invoke(second_turn_request)
-        self._record_model_usage(model_gateway_context, result)
-        event_recorder.record(
-            AgentRuntimeEventType.MODEL_SECOND_TURN_COMPLETED,
-            "invoke_model_second_turn",
-            "模型已基于工具结果回填完成第二轮推理。",
-            attributes={
-                "feedbackCount": len(feedback_items),
-                "promptTokens": result.prompt_tokens,
-                "completionTokens": result.completion_tokens,
-                "errorCode": result.error_code,
-            },
-        )
-        return result.content, len(feedback_items)
-
-    @staticmethod
-    def _resource_blocked_count(summaries: tuple[dict[str, object], ...]) -> int:
-        """统计二轮消息构建时被资源治理完全阻断的引用数量。"""
-
-        return sum(1 for item in summaries if item.get("decision") == "blocked")
-
-    @staticmethod
-    def _resource_model_blocked_count(summaries: tuple[dict[str, object], ...]) -> int:
-        """统计不允许进入模型上下文的资源数量。
-
-        这类资源不一定是错误，例如 `audit_only` 可供审计台使用，只是不应进入模型。
-        """
-
-        return sum(1 for item in summaries if not item.get("modelContextAllowed"))
-
-    @staticmethod
-    def _result_filter_path_count(summaries: tuple[dict[str, object], ...], key: str) -> int:
-        """统计字段级过滤报告中某类路径的数量。"""
-
-        return sum(len(item.get(key) or ()) for item in summaries)
-
-    @staticmethod
-    def _workspace_key_from_tool_plans(tool_plans: tuple[ToolPlan, ...]) -> str | None:
-        """从 ToolPlan 治理提示中提取当前运行 workspaceKey。
-
-        二轮推理构造工具结果消息时复用该字段，让反馈构建器校验输出资源是否越过 workspace 边界。
-        历史计划没有 workspaceKey 时按兼容模式运行，避免阻断渐进式迁移。
-        """
-
-        for plan in tool_plans:
-            value = plan.governance_hints.get("workspaceKey")
-            if value is not None and str(value).strip():
-                return str(value).strip()
-        return None
 
     def _aggregate_streaming_tool_calls(
         self,

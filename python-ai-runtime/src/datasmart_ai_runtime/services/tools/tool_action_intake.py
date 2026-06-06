@@ -151,10 +151,16 @@ class ToolActionIntakeItem:
 
 @dataclass(frozen=True)
 class ToolActionIntakeReport:
-    """一次 intake 调用的聚合报告。"""
+    """一次 intake 调用的聚合报告。
+
+    `planning_report` 是内部治理对象，主要给模型工具调用预算守卫、事件记录器和单元测试复用。
+    它可能间接关联 `ToolPlan.arguments`，因此不会出现在 `to_low_sensitive_summary()` 中；对外只暴露
+    `items` 的低敏摘要。
+    """
 
     source: ToolActionIntakeSource
     items: tuple[ToolActionIntakeItem, ...] = ()
+    planning_report: ModelToolCallPlanningReport | None = None
 
     @property
     def accepted_tool_plans(self) -> tuple[ToolPlan, ...]:
@@ -345,7 +351,7 @@ class ToolActionIntakeService:
                     sensitive_field_ignored_count=sensitive_field_ignored_count,
                 )
             )
-        return ToolActionIntakeReport(source=source, items=tuple(items))
+        return ToolActionIntakeReport(source=source, items=tuple(items), planning_report=planning_report)
 
     @staticmethod
     def _relabel_tool_plan_source(
