@@ -10201,3 +10201,64 @@ TTFT/TPOT/GPU 遥测，而是让前端、审计台和运维侧能从 Java 控制
 2. 设计 A2A task endpoint 草案之前，应先定义任务状态、取消、超时、幂等、审批等待、push/streaming 的商业化语义。
 3. MCP `tools/call` 不能直接实现为下游 HTTP 调用，必须先接 permission-admin、confirmation/outbox、worker pre-check 和限流。
 4. 并行可以切到 Python Runtime 真实 Agent 编排或长期记忆治理，避免 Java 协议适配层继续局部膨胀。
+
+## 5.27 Java Agent Runtime 外部协议发现 Runtime Event 化（2026-06-06）
+
+本阶段承接 5.26，把 MCP `tools/list` 和 A2A Agent Card 的“发现行为”写入 runtime event timeline。
+目标不是开放真实 `tools/call` 或 A2A task，而是让外部 Agent、Python Runtime、网关、管理台读取能力目录这件事
+也能被低敏审计、回放和展示。发现事件只记录协议、入口、计数、分页和治理状态，不复制工具目录或 Agent Card 正文。
+
+已完成：
+- 新增 `AgentExternalProtocolDiscoveryAuditContext`：
+  - 承载 traceId、tenantId、workspaceId、actorId、actorRole、requestSource、sourceService；
+  - 专门服务没有 sessionId/runId 的协议发现事件；
+  - 不承载 URL、token、cookie、工具参数、Prompt、资源正文或模型输出。
+- 新增 `AgentExternalProtocolDiscoveryEventPublisher`：
+  - 事件 schema：`datasmart.agent-runtime.external-protocol-discovery-event.v1`；
+  - 事件类型：`agent.external_protocol.discovery.completed`；
+  - MCP stage：`mcp_tools_list_discovered`；
+  - A2A stage：`a2a_agent_card_discovered`；
+  - MCP 事件只写 returnedCount、totalCount、effectiveLimit、nextCursorPresent、filterPresent、callEnabled 等摘要；
+  - A2A 事件只写 endpointKind、readySkillCount、supportedInterfaceCount、securitySchemeCount、signatureCount、streaming/push 状态；
+  - 固定 payload policy：`SUMMARY_ONLY_NO_TOOL_NAMES_NO_SCHEMA_NO_SKILL_IDS_NO_URL_NO_PROMPT_NO_RESOURCE_BODY`。
+- `AgentExternalProtocolAdapterController`：
+  - MCP tools/list 和 A2A 管理 Agent Card 响应成功构建后，尽力写入发现事件；
+  - 读取统一 `X-DataSmart-*` Header 形成审计上下文；
+  - 不让 HTTP 细节污染 discovery service。
+- `AgentA2aDiscoveryController`：
+  - `/.well-known/agent-card.json` 也会写入 public well-known 发现事件；
+  - Header 缺失时按 public/unknown 低敏上下文记录，不阻断匿名公开发现。
+- 新增 `AgentExternalProtocolDiscoveryEventDisplayBuilder`：
+  - 将发现事件解释为 `EXTERNAL_PROTOCOL_DISCOVERY` timeline 项；
+  - 明确展示 `DISCOVERY_ONLY`，提示这不是工具执行或 A2A task 创建。
+- `AgentRuntimeEventDisplaySupport`：
+  - 增加 `agent.external_protocol.discovery.completed` 分发；
+  - 主类只增加少量分发逻辑，避免继续膨胀。
+- 新增 `AgentExternalProtocolDiscoveryEventPublisherTest`：
+  - 验证 MCP 发现事件写入低敏计数；
+  - 验证 A2A public Agent Card 事件不复制 Skill ID 或 URL；
+  - 验证 display 层能解释发现事件；
+  - 验证序列化事件不包含 inputSchema、工具名、Skill ID、公开 URL、内部域名、api key、secret 或工具参数样例。
+
+验证：
+- `mvn -pl agent-runtime -am "-Dtest=AgentExternalProtocolDiscoveryServiceTest,AgentExternalProtocolDiscoveryEventPublisherTest,AgentRuntimeEventDisplaySupportTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：8 个测试通过。
+- `mvn -pl agent-runtime -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：228 个测试通过，Maven Toolchain 使用 JDK 21。
+- `git diff --check`：通过，仅提示部分文件后续被 Git 触碰时会从 LF 转为 CRLF，不影响代码质量。
+- 行数检查：`AgentExternalProtocolDiscoveryEventPublisher.java` 220 行、`AgentExternalProtocolDiscoveryEventDisplayBuilder.java` 94 行、`AgentExternalProtocolDiscoveryAuditContext.java` 37 行、`AgentRuntimeEventDisplaySupport.java` 442 行、`AgentExternalProtocolAdapterController.java` 175 行、`AgentA2aDiscoveryController.java` 69 行、`AgentExternalProtocolDiscoveryEventPublisherTest.java` 236 行，均低于 500 行约束。
+
+产品意义：
+- 外部 Agent 能力发现从“可读取”推进到“可审计、可回放、可展示”。
+- Timeline 可以回答“谁在什么时候读取过 MCP tools/list 或 A2A Agent Card”，但不会泄露工具目录全文或卡片正文。
+- 这一步把 public discovery 纳入控制面事实层，为后续访问频率监控、目录缓存失效、异常扫描识别和租户级协议可见性做准备。
+
+当前边界：
+- 当前发现事件写入内存 runtime event projection，不是长期审计表；服务重启会丢失热窗口事件。
+- 没有新增 Prometheus 指标、限流或异常扫描检测，只是先把事实进入 timeline。
+- 没有实现 MCP `tools/call`、resources/read、prompts/get，也没有实现 A2A task endpoint。
+- public well-known 发现事件在无 Header 时无法绑定真实 actor，只能记录 public/unknown 入口摘要。
+
+下一步推荐路线：
+1. 如果继续协议互联主线，建议先设计 A2A task 状态机草案：submitted、working、input-required、completed、failed、canceled、expired、approval-waiting。
+2. MCP `tools/call` 前必须先完成 permission-admin scope、confirmation/outbox、worker pre-check、限流、幂等与事件契约，不要直连下游服务。
+3. 可补一个小批次低基数指标：protocolDiscoveryTotal、publicWellKnownReads、mcpToolsListReads、a2aAgentCardReads、callEnabledUnexpected。
+4. 为保持项目整体平衡，下一阶段也可以切到 Python Runtime 真实 Agent 编排或长期记忆治理，而不是继续在 Java 协议适配层加字段。

@@ -43,6 +43,7 @@ public class AgentRuntimeEventDisplaySupport {
     private static final String TOOL_EXECUTION_EVENT_TYPE = "agent.tool_execution.state_changed";
     private static final String SKILL_VISIBILITY_EVENT_TYPE = "skill_visibility_snapshot_recorded";
     private static final String MODEL_GATEWAY_ROUTED_EVENT_TYPE = "model_gateway_routed";
+    private static final String EXTERNAL_PROTOCOL_DISCOVERY_EVENT_TYPE = "agent.external_protocol.discovery.completed";
 
     private static final String REPLAY_POLICY_APPEND_AND_ACK = "APPEND_TO_TIMELINE_AND_ALLOW_ACK_CURSOR";
     private static final String REPLAY_POLICY_APPEND_ONLY = "APPEND_TO_TIMELINE";
@@ -69,6 +70,9 @@ public class AgentRuntimeEventDisplaySupport {
         }
         if (MODEL_GATEWAY_ROUTED_EVENT_TYPE.equals(eventType)) {
             return AgentModelGatewayRoutingEventDisplayBuilder.build(record);
+        }
+        if (EXTERNAL_PROTOCOL_DISCOVERY_EVENT_TYPE.equals(eventType)) {
+            return AgentExternalProtocolDiscoveryEventDisplayBuilder.build(record);
         }
         return buildGenericDisplay(record);
     }

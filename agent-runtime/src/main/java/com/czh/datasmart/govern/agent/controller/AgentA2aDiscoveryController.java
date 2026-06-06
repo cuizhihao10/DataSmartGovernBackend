@@ -7,9 +7,13 @@
 package com.czh.datasmart.govern.agent.controller;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentA2aPublicAgentCardView;
+import com.czh.datasmart.govern.agent.service.runtime.AgentExternalProtocolDiscoveryAuditContext;
+import com.czh.datasmart.govern.agent.service.runtime.AgentExternalProtocolDiscoveryEventPublisher;
 import com.czh.datasmart.govern.agent.service.runtime.AgentExternalProtocolDiscoveryService;
+import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -28,6 +32,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class AgentA2aDiscoveryController {
 
     private final AgentExternalProtocolDiscoveryService discoveryService;
+    private final AgentExternalProtocolDiscoveryEventPublisher discoveryEventPublisher;
 
     /**
      * 返回 A2A public Agent Card。
@@ -39,7 +44,30 @@ public class AgentA2aDiscoveryController {
      * @return A2A Agent Card 风格响应
      */
     @GetMapping("/.well-known/agent-card.json")
-    public AgentA2aPublicAgentCardView getPublicAgentCard() {
-        return discoveryService.buildA2aPublicAgentCard(null, null);
+    public AgentA2aPublicAgentCardView getPublicAgentCard(
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) String tenantId,
+            @RequestHeader(value = PlatformContextHeaders.WORKSPACE_ID, required = false) String workspaceId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.REQUEST_SOURCE, required = false) String requestSource,
+            @RequestHeader(value = PlatformContextHeaders.SOURCE_SERVICE, required = false) String sourceService) {
+        AgentA2aPublicAgentCardView response = discoveryService.buildA2aPublicAgentCard(null, null);
+        discoveryEventPublisher.publishA2aAgentCard(
+                new AgentExternalProtocolDiscoveryAuditContext(
+                        traceId,
+                        tenantId,
+                        workspaceId,
+                        actorId,
+                        actorRole,
+                        requestSource == null || requestSource.isBlank() ? "PUBLIC_WELL_KNOWN" : requestSource,
+                        sourceService
+                ),
+                "PUBLIC_WELL_KNOWN",
+                null,
+                null,
+                response
+        );
+        return response;
     }
 }

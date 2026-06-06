@@ -6,11 +6,13 @@
  */
 package com.czh.datasmart.govern.agent.controller;
 
-import com.czh.datasmart.govern.agent.controller.dto.AgentExternalProtocolAdapterPreviewResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentA2aPublicAgentCardView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentExternalProtocolAdapterPreviewResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentMcpToolsListResponse;
-import com.czh.datasmart.govern.agent.service.runtime.AgentExternalProtocolDiscoveryService;
 import com.czh.datasmart.govern.agent.service.runtime.AgentExternalProtocolAdapterPreviewService;
+import com.czh.datasmart.govern.agent.service.runtime.AgentExternalProtocolDiscoveryAuditContext;
+import com.czh.datasmart.govern.agent.service.runtime.AgentExternalProtocolDiscoveryEventPublisher;
+import com.czh.datasmart.govern.agent.service.runtime.AgentExternalProtocolDiscoveryService;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import lombok.RequiredArgsConstructor;
@@ -43,6 +45,7 @@ public class AgentExternalProtocolAdapterController {
 
     private final AgentExternalProtocolAdapterPreviewService previewService;
     private final AgentExternalProtocolDiscoveryService discoveryService;
+    private final AgentExternalProtocolDiscoveryEventPublisher discoveryEventPublisher;
 
     /**
      * 查询 MCP/A2A 外部协议适配预览。
@@ -105,11 +108,23 @@ public class AgentExternalProtocolAdapterController {
             @RequestParam(value = "cursor", required = false) String cursor,
             @RequestParam(value = "limit", required = false) Integer limit,
             @RequestParam(value = "requestId", required = false) String requestId,
-            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
-        return PlatformApiResponse.success(
-                discoveryService.listMcpTools(domain, riskLevel, cursor, limit, requestId),
-                traceId
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) String tenantId,
+            @RequestHeader(value = PlatformContextHeaders.WORKSPACE_ID, required = false) String workspaceId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.REQUEST_SOURCE, required = false) String requestSource,
+            @RequestHeader(value = PlatformContextHeaders.SOURCE_SERVICE, required = false) String sourceService) {
+        AgentMcpToolsListResponse response = discoveryService.listMcpTools(domain, riskLevel, cursor, limit, requestId);
+        discoveryEventPublisher.publishMcpToolsList(
+                auditContext(traceId, tenantId, workspaceId, actorId, actorRole, requestSource, sourceService),
+                domain,
+                riskLevel,
+                cursor,
+                limit,
+                response
         );
+        return PlatformApiResponse.success(response, traceId);
     }
 
     /**
@@ -123,10 +138,45 @@ public class AgentExternalProtocolAdapterController {
     public PlatformApiResponse<AgentA2aPublicAgentCardView> getA2aAgentCard(
             @RequestParam(value = "domain", required = false) String domain,
             @RequestParam(value = "riskLevel", required = false) String riskLevel,
-            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
-        return PlatformApiResponse.success(
-                discoveryService.buildA2aPublicAgentCard(domain, riskLevel),
-                traceId
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) String tenantId,
+            @RequestHeader(value = PlatformContextHeaders.WORKSPACE_ID, required = false) String workspaceId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.REQUEST_SOURCE, required = false) String requestSource,
+            @RequestHeader(value = PlatformContextHeaders.SOURCE_SERVICE, required = false) String sourceService) {
+        AgentA2aPublicAgentCardView response = discoveryService.buildA2aPublicAgentCard(domain, riskLevel);
+        discoveryEventPublisher.publishA2aAgentCard(
+                auditContext(traceId, tenantId, workspaceId, actorId, actorRole, requestSource, sourceService),
+                "MANAGEMENT",
+                domain,
+                riskLevel,
+                response
+        );
+        return PlatformApiResponse.success(response, traceId);
+    }
+
+    /**
+     * 将 HTTP Header 转为协议发现事件上下文。
+     *
+     * <p>控制器负责读取 Header，事件发布器负责写 runtime event。中间用一个明确的上下文对象连接，
+     * 可以避免 publisher 依赖 Spring MVC，也避免 service 层被 HTTP 细节污染。</p>
+     */
+    private AgentExternalProtocolDiscoveryAuditContext auditContext(String traceId,
+                                                                    String tenantId,
+                                                                    String workspaceId,
+                                                                    String actorId,
+                                                                    String actorRole,
+                                                                    String requestSource,
+                                                                    String sourceService) {
+        return new AgentExternalProtocolDiscoveryAuditContext(
+                traceId,
+                tenantId,
+                workspaceId,
+                actorId,
+                actorRole,
+                requestSource,
+                sourceService
         );
     }
 }
