@@ -143,4 +143,69 @@ class AgentRuntimeEventDisplaySupportTest {
         assertTrue(display.recommendedActions().stream().anyMatch(action -> action.contains("主路由降级原因")));
         assertTrue(display.recommendedActions().stream().anyMatch(action -> action.contains("provider health diagnostics")));
     }
+
+    /**
+     * A2A task planning 接入会话调度后，timeline 应直接解释等待授权状态。
+     *
+     * <p>这条测试保护 5.34 的用户体验：Python 5.33 已经把 A2A task planning 写进
+     * `agent_session_scheduling_recorded`，Java timeline 不能只显示“事件类型”，而应该告诉用户当前是
+     * A2A 授权等待、需要权限控制面返回事实，并且不展示 task id、prompt、工具参数或内部 endpoint。</p>
+     */
+    @Test
+    void agentSessionSchedulingDisplayShouldExposeA2aAuthorizationState() {
+        AgentRuntimeEventDisplayView display = new AgentRuntimeEventDisplaySupport().buildDisplay(new AgentRuntimeEventProjectionRecord(
+                "agent-session-scheduling-a2a-display",
+                "agent-runtime-event.v1",
+                "python-ai-runtime",
+                "agent_session_scheduling_recorded",
+                "record_agent_session_scheduling",
+                "已记录本轮多 Agent 会话调度策略视图。",
+                "audit",
+                "10",
+                "20",
+                "1001",
+                "trace-a2a-display",
+                "run-a2a-display",
+                "session-a2a-display",
+                12L,
+                Instant.parse("2026-06-06T01:00:00Z"),
+                Instant.parse("2026-06-06T01:00:00Z"),
+                Instant.parse("2026-06-06T01:00:01Z"),
+                Map.ofEntries(
+                        Map.entry("eventPayloadVersion", "v1"),
+                        Map.entry("snapshotType", "AGENT_SESSION_SCHEDULING_POLICY_VIEW"),
+                        Map.entry("available", true),
+                        Map.entry("status", "APPROVAL_REQUIRED"),
+                        Map.entry("primaryAgentRole", "MASTER_ORCHESTRATOR"),
+                        Map.entry("participatingAgentCount", 3),
+                        Map.entry("participatingAgentRoles", List.of("MASTER_ORCHESTRATOR", "TASK_AGENT", "PERMISSION_AGENT")),
+                        Map.entry("handoffRequired", true),
+                        Map.entry("handoffAgentRoles", List.of("TASK_AGENT", "PERMISSION_AGENT")),
+                        Map.entry("selectedSkillCodes", List.of("governed.task.creation")),
+                        Map.entry("plannedToolNames", List.of("task.create.draft")),
+                        Map.entry("a2aTaskPlanningAvailable", true),
+                        Map.entry("a2aTaskPlanningMode", "WAIT_FOR_AUTHORIZATION"),
+                        Map.entry("a2aTaskPlanningStatus", "WAITING_FOR_CONTROL_PLANE"),
+                        Map.entry("a2aTaskState", "TASK_STATE_AUTH_REQUIRED"),
+                        Map.entry("a2aTaskInternalPhase", "APPROVAL_WAITING"),
+                        Map.entry("a2aTaskShouldWaitForHuman", true),
+                        Map.entry("a2aTaskGuardrailCodes", List.of("CREDENTIALS_MUST_STAY_OUTSIDE_A2A_MESSAGE_BODY")),
+                        Map.entry("a2aTaskSuggestedActions", List.of("REQUEST_AUTHORIZATION", "QUERY_TASK_HISTORY")),
+                        Map.entry("a2aTaskSensitiveFieldIgnoredCount", 2)
+                )
+        ));
+
+        assertEquals("AGENT_SESSION_SCHEDULING", display.category());
+        assertEquals("A2A 任务等待授权", display.title());
+        assertEquals("A2A_WAITING_AUTHORIZATION", display.status());
+        assertTrue(display.requiresAttention());
+        assertTrue(display.summary().contains("WAIT_FOR_AUTHORIZATION"));
+        assertEquals("WAIT_FOR_AUTHORIZATION", display.metrics().get("a2aTaskPlanningMode"));
+        assertEquals("TASK_STATE_AUTH_REQUIRED", display.metrics().get("a2aTaskState"));
+        assertEquals("APPROVAL_WAITING", display.metrics().get("a2aTaskInternalPhase"));
+        assertEquals(1, display.metrics().get("a2aTaskGuardrailCodeCount"));
+        assertEquals(2, display.metrics().get("a2aTaskSuggestedActionCount"));
+        assertEquals(2, display.metrics().get("a2aTaskSensitiveFieldIgnoredCount"));
+        assertTrue(display.recommendedActions().stream().anyMatch(action -> action.contains("permission-admin")));
+    }
 }

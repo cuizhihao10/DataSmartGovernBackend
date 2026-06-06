@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.agent.service.runtime;
 
+import com.czh.datasmart.govern.agent.controller.dto.AgentA2aTaskSchedulingProjectionView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentSessionSchedulingProjectionQueryResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentSessionSchedulingProjectionView;
 import lombok.RequiredArgsConstructor;
@@ -90,6 +91,11 @@ public class AgentSessionSchedulingProjectionService {
                 countStatus(snapshots, "APPROVAL_REQUIRED"),
                 countStatus(snapshots, "BLOCKED"),
                 snapshots.stream().filter(snapshot -> Boolean.TRUE.equals(snapshot.handoffRequired())).count(),
+                snapshots.stream()
+                        .filter(snapshot -> Boolean.TRUE.equals(snapshot.a2aTaskPlanning().available()))
+                        .count(),
+                countScalar(snapshots.stream().map(snapshot -> snapshot.a2aTaskPlanning().mode()).toList()),
+                countScalar(snapshots.stream().map(snapshot -> snapshot.a2aTaskPlanning().a2aState()).toList()),
                 countScalar(snapshots.stream().map(AgentSessionSchedulingProjectionView::primaryAgentRole).toList()),
                 countList(snapshots.stream().map(AgentSessionSchedulingProjectionView::participatingAgentRoles).toList()),
                 countList(snapshots.stream().map(AgentSessionSchedulingProjectionView::intentDomains).toList()),
@@ -170,8 +176,36 @@ public class AgentSessionSchedulingProjectionService {
                 bool(attributes, "approvalRequired"),
                 bool(attributes, "tenantScoped"),
                 bool(attributes, "projectScoped"),
+                a2aTaskPlanningView(attributes),
                 text(attributes, "displaySummary"),
                 integer(attributes, "recommendedActionCount")
+        );
+    }
+
+    private AgentA2aTaskSchedulingProjectionView a2aTaskPlanningView(Map<String, Object> attributes) {
+        /*
+         * Python 5.33 已经完成低敏裁剪，Java 这里仍再次执行“显式字段白名单”：
+         * - 只读取 a2aTaskPlanning*、a2aTaskState、a2aTaskInternalPhase 等稳定摘要字段；
+         * - 不读取 taskPublicId、contextPublicId、artifactRef、decisionReason 或任何自由 payload；
+         * - 字段缺失时返回 available=false 的空视图，保证老事件仍可被查询和聚合。
+         */
+        return new AgentA2aTaskSchedulingProjectionView(
+                bool(attributes, "a2aTaskPlanningAvailable"),
+                defaultedText(attributes, "a2aTaskPlanningSource", "ABSENT"),
+                text(attributes, "a2aTaskPlanningMode"),
+                text(attributes, "a2aTaskPlanningStatus"),
+                text(attributes, "a2aTaskState"),
+                text(attributes, "a2aTaskInternalPhase"),
+                bool(attributes, "a2aTaskTerminal"),
+                bool(attributes, "a2aTaskInterrupted"),
+                bool(attributes, "a2aTaskExecutable"),
+                bool(attributes, "a2aTaskShouldWaitForHuman"),
+                stringList(attributes, "a2aTaskSuggestedActions"),
+                stringList(attributes, "a2aTaskGuardrailCodes"),
+                integer(attributes, "a2aTaskHistoryEventCount"),
+                integer(attributes, "a2aTaskArtifactReferenceCount"),
+                integer(attributes, "a2aTaskSensitiveFieldIgnoredCount"),
+                text(attributes, "a2aTaskPayloadPolicy")
         );
     }
 

@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * 多 Agent 会话调度投影查询服务测试。
@@ -52,6 +53,7 @@ class AgentSessionSchedulingProjectionServiceTest {
         assertEquals(1L, response.readyCount());
         assertEquals(0L, response.blockedCount());
         assertEquals(0L, response.handoffRequiredCount());
+        assertEquals(0L, response.a2aTaskPlanningCount());
         assertEquals(1L, response.primaryAgentRoleCounts().get("MASTER_ORCHESTRATOR"));
         assertEquals(1L, response.participatingAgentRoleCounts().get("DATA_QUALITY_AGENT"));
         assertEquals(1L, response.intentDomainCounts().get("data_quality"));
@@ -71,6 +73,9 @@ class AgentSessionSchedulingProjectionServiceTest {
         assertEquals(1, snapshot.participationModeCounts().get("PRIMARY"));
         assertEquals(2, snapshot.agentStatusCounts().get("READY"));
         assertEquals(false, snapshot.handoffRequired());
+        assertEquals(false, snapshot.a2aTaskPlanning().available());
+        assertEquals("ABSENT", snapshot.a2aTaskPlanning().source());
+        assertNull(snapshot.a2aTaskPlanning().mode());
         assertEquals(0, snapshot.recommendedActionCount());
     }
 
@@ -93,8 +98,21 @@ class AgentSessionSchedulingProjectionServiceTest {
         assertEquals(1, response.totalMatched());
         assertEquals(1L, response.approvalRequiredCount());
         assertEquals(1L, response.handoffRequiredCount());
+        assertEquals(1L, response.a2aTaskPlanningCount());
+        assertEquals(1L, response.a2aTaskPlanningModeCounts().get("WAIT_FOR_AUTHORIZATION"));
+        assertEquals(1L, response.a2aTaskStateCounts().get("TASK_STATE_AUTH_REQUIRED"));
         assertEquals(2L, response.snapshots().getFirst().replaySequence());
         assertEquals(List.of("TASK_AGENT", "PERMISSION_AGENT"), response.snapshots().getFirst().handoffAgentRoles());
+        assertEquals("TRUSTED_CONTROL_PLANE", response.snapshots().getFirst().a2aTaskPlanning().source());
+        assertEquals("WAIT_FOR_AUTHORIZATION", response.snapshots().getFirst().a2aTaskPlanning().mode());
+        assertEquals("TASK_STATE_AUTH_REQUIRED", response.snapshots().getFirst().a2aTaskPlanning().a2aState());
+        assertEquals("APPROVAL_WAITING", response.snapshots().getFirst().a2aTaskPlanning().internalPhase());
+        assertEquals(List.of("REQUEST_AUTHORIZATION", "QUERY_TASK_HISTORY"),
+                response.snapshots().getFirst().a2aTaskPlanning().suggestedActions());
+        assertEquals(List.of("CREDENTIALS_MUST_STAY_OUTSIDE_A2A_MESSAGE_BODY"),
+                response.snapshots().getFirst().a2aTaskPlanning().guardrailCodes());
+        assertEquals(3, response.snapshots().getFirst().a2aTaskPlanning().historyEventCount());
+        assertEquals(2, response.snapshots().getFirst().a2aTaskPlanning().sensitiveFieldIgnoredCount());
     }
 
     private AgentRuntimeEventProjectionRecord schedulingRecord(String identityKey,
@@ -133,6 +151,29 @@ class AgentSessionSchedulingProjectionServiceTest {
         attributes.put("projectScoped", true);
         attributes.put("displaySummary", "智能网关已记录多 Agent 调度。");
         attributes.put("recommendedActionCount", handoffRequired ? 1 : 0);
+        if (handoffRequired) {
+            /*
+             * 这里模拟 Python 5.33 写入的 A2A scheduling attributes。测试刻意只写低敏字段：
+             * 不写 taskPublicId、contextPublicId、artifactRef、prompt、toolArguments、SQL 或内部 endpoint，
+             * 以验证 Java projection 只消费控制面摘要，而不是变成第二份 A2A payload 缓存。
+             */
+            attributes.put("a2aTaskPlanningAvailable", true);
+            attributes.put("a2aTaskPlanningSource", "TRUSTED_CONTROL_PLANE");
+            attributes.put("a2aTaskPlanningMode", "WAIT_FOR_AUTHORIZATION");
+            attributes.put("a2aTaskPlanningStatus", "WAITING_FOR_CONTROL_PLANE");
+            attributes.put("a2aTaskState", "TASK_STATE_AUTH_REQUIRED");
+            attributes.put("a2aTaskInternalPhase", "APPROVAL_WAITING");
+            attributes.put("a2aTaskTerminal", false);
+            attributes.put("a2aTaskInterrupted", true);
+            attributes.put("a2aTaskExecutable", false);
+            attributes.put("a2aTaskShouldWaitForHuman", true);
+            attributes.put("a2aTaskSuggestedActions", List.of("REQUEST_AUTHORIZATION", "QUERY_TASK_HISTORY"));
+            attributes.put("a2aTaskGuardrailCodes", List.of("CREDENTIALS_MUST_STAY_OUTSIDE_A2A_MESSAGE_BODY"));
+            attributes.put("a2aTaskHistoryEventCount", 3);
+            attributes.put("a2aTaskArtifactReferenceCount", 0);
+            attributes.put("a2aTaskSensitiveFieldIgnoredCount", 2);
+            attributes.put("a2aTaskPayloadPolicy", "SUMMARY_ONLY_LOW_SENSITIVE_CONTROL_PLANE_FIELDS");
+        }
         return eventRecord(identityKey, "agent_session_scheduling_recorded", projectId,
                 runId, sequence, handoffRequired ? "audit" : "info", attributes);
     }

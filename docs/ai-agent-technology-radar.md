@@ -1,5 +1,14 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-06 落地补充：A2A scheduling evidence should be visible in projections and timeline
+
+- 成熟 Agent Host 的体验不只是“后端知道状态”，还要让前端 timeline、审计台和控制面能解释状态。A2A task planning 如果只存在于 Python `/agent/plans` 响应中，用户刷新页面、WebSocket replay 或 Java 审计查询时仍然看不到“为什么等待授权/用户/诊断”。
+- DataSmart 本阶段把 Python 5.33 的 A2A scheduling attributes 接入 Java `AgentSessionSchedulingProjectionService`，新增 A2A 子视图与 mode/state 聚合，让控制面能按 `WAIT_FOR_AUTHORIZATION`、`WAIT_FOR_USER_INPUT`、`REJECTED_OR_DIAGNOSTIC` 等规划模式查询。
+- 同时新增 `AgentSessionSchedulingEventDisplayBuilder`，让通用 runtime event timeline 显示 “A2A 任务等待授权” 等人读状态。这样 WebSocket/HTTP replay 不需要前端自己解析自由 Map attributes。
+- 低敏边界仍是关键：projection 和 display 都不返回 task id、artifactRef、prompt、工具参数、SQL、artifact 正文、模型输出、凭证或内部 endpoint。timeline 要解释状态，不应该变成第二份任务载荷缓存。
+- 下一步趋势跟进可以进入 task fact/task-management 对接，或者把 A2A 子视图接入 handoff DAG 解释节点；仍不建议在缺少幂等、权限、outbox 和 worker pre-check 前开放真实 A2A `message/send`。
+- 参考资料：A2A Core Protocol Specification：`https://agent2agent.info/specification/core/`；OpenAI Agents tracing：`https://openai.github.io/openai-agents-python/tracing/`；LangGraph durable execution：`https://docs.langchain.com/oss/python/langgraph/durable-execution`。
+
 ## 2026-06-06 落地补充：A2A task decisions should shape scheduling before execution
 
 - 当前 Agent Host 趋势不是把外部协议 endpoint 直接接到工具执行，而是让协议状态先进入调度、trace、checkpoint 和 human-in-the-loop 控制面。A2A task 的 submitted、working、input-required、auth-required、completed 等状态，应该先影响 Master Agent 的下一步策略，而不是直接触发 worker。

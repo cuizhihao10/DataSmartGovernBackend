@@ -185,10 +185,12 @@ public class AgentRuntimeEventProjectionController {
      * <p>1. Agent 会话详情页展示 Master/Specialist/Guardrail/Observer 参与情况；</p>
      * <p>2. 审计员排查某次高风险任务为什么进入人工 handoff；</p>
      * <p>3. 运营台统计哪些领域 Agent、工具和 Skill 经常参与；</p>
-     * <p>4. 后续 Master Agent handoff DAG 可以基于该视图回放“调度阶段已经做过什么”。</p>
+     * <p>4. 后续 Master Agent handoff DAG 可以基于该视图回放“调度阶段已经做过什么”；</p>
+     * <p>5. 当 Python Runtime 写入 A2A task planning 轴时，本接口会返回 A2A mode/state 子视图，
+     * 解释当前是等待授权、等待用户、预检、终态展示还是诊断阻断。</p>
      *
      * <p>安全边界：该接口不返回用户 objective、prompt、工具参数、SQL、样本数据、模型输出或长期记忆正文。
-     * 返回字段只包含角色、状态、工具名、Skill code、记忆类型和计数等低敏控制面事实。</p>
+     * 返回字段只包含角色、状态、工具名、Skill code、记忆类型、A2A mode/state 和计数等低敏控制面事实。</p>
      */
     @GetMapping("/agent-session-scheduling-snapshots")
     public PlatformApiResponse<AgentSessionSchedulingProjectionQueryResponse> queryAgentSessionSchedulingSnapshots(

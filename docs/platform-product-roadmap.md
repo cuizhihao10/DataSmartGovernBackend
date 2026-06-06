@@ -1,5 +1,42 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-06 追加落地进展：Java Agent Runtime A2A 会话调度投影与 Timeline 展示
+
+- Java `agent-runtime` 新增 `AgentA2aTaskSchedulingProjectionView`：
+  - 作为 `AgentSessionSchedulingProjectionView` 的 A2A 子视图；
+  - 展示 A2A task planning 是否可用、来源、mode、status、A2A state、internalPhase、guardrail code、suggested action 和计数；
+  - 不返回 taskPublicId、contextPublicId、artifactRef、decisionReason、prompt、工具参数、SQL、样本数据、artifact 正文、模型输出、凭证或内部 endpoint。
+- `AgentSessionSchedulingProjectionService` 已解析 Python 5.33 写入的 A2A scheduling attributes：
+  - 返回窗口新增 `a2aTaskPlanningCount`；
+  - 新增 `a2aTaskPlanningModeCounts` 与 `a2aTaskStateCounts`；
+  - 老事件没有 A2A 字段时仍返回 `available=false` 的空子视图，保持兼容。
+- 新增 `AgentSessionSchedulingEventDisplayBuilder`：
+  - 将 `agent_session_scheduling_recorded` timeline 解释为多 Agent 会话调度卡片；
+  - 对 `WAIT_FOR_AUTHORIZATION` 显示 “A2A 任务等待授权”；
+  - 对 `WAIT_FOR_USER_INPUT`、`REJECTED_OR_DIAGNOSTIC`、`PRECHECK_REQUIRED` 生成对应状态与推荐动作；
+  - 只输出低敏 metrics：参与 Agent 数、handoff、A2A mode/state、guardrail/suggested action 数量、敏感字段丢弃数量。
+- `AgentRuntimeEventDisplaySupport` 只新增事件分派，避免主展示类继续膨胀。
+- 测试同步：
+  - `AgentSessionSchedulingProjectionServiceTest` 覆盖 A2A 子视图解析与 mode/state 聚合；
+  - `AgentRuntimeEventDisplaySupportTest` 覆盖 A2A 授权等待 timeline 展示；
+  - `AgentRuntimeEventConsumerServiceTest` 保持 `agent_session_scheduling_recorded` 事件消费兼容。
+
+产品意义：
+- Python 5.33 让 A2A planning 影响 `/agent/plans` 调度；本阶段让 Java 控制面和 WebSocket/HTTP replay timeline 也能看见并解释这些状态。
+- 管理台以后可以直接展示“外部 Agent 委派任务正在等待授权/等待用户/诊断阻断”，而不是只看到一条通用 runtime event。
+- 这一步仍然是只读控制面能力，不打开真实 A2A task 执行入口，继续避免绕过 permission-admin、task-management、outbox 和 worker pre-check。
+
+当前边界：
+- 仍没有真实 A2A `message/send`、`tasks/get`、`tasks/cancel`、`tasks/subscribe` 或 push notification。
+- 当前投影仍读取通用 runtime event 热窗口，不是 MySQL 专用 task fact 或 dedicated scheduling index。
+- A2A 子视图是低敏摘要，不提供 artifact 正文读取、task history 长期查询或审批动作提交。
+
+下一步推荐路线：
+1. 设计 A2A task fact 与 task-management 对接：task header、status history、artifact metadata、worker receipt、permission fact 分层。
+2. 若继续控制面闭环，可把 A2A scheduling 子视图接入 handoff DAG 节点说明，让 DAG 解释为什么停在权限或用户输入节点。
+3. 真实 A2A endpoint 前必须先落幂等限流、confirmation/outbox、worker pre-check、容量保护和 artifact 二次鉴权。
+4. 为保持项目整体节奏，下一批也可以转向 LangGraph/OpenClaw-style 执行图、MCP 执行前治理或模型网关生产遥测。
+
 ## 2026-06-06 追加落地进展：Python Runtime A2A Task 规划接入会话调度
 
 - Python Runtime 新增 `services/agent_gateway/a2a_task_scheduling_context.py`：

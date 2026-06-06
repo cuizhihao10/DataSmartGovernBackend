@@ -41,6 +41,24 @@ public record AgentSessionSchedulingProjectionQueryResponse(
         Long approvalRequiredCount,
         Long blockedCount,
         Long handoffRequiredCount,
+
+        /**
+         * 本次返回窗口中携带 A2A task planning 事实的调度事件数量。
+         *
+         * <p>它用于回答“这些多 Agent 会话里，有多少是由外部 A2A task 委派状态驱动的”。</p>
+         */
+        Long a2aTaskPlanningCount,
+
+        /**
+         * A2A planning mode 分布，例如 WAIT_FOR_AUTHORIZATION、WAIT_FOR_USER_INPUT、REJECTED_OR_DIAGNOSTIC。
+         */
+        Map<String, Long> a2aTaskPlanningModeCounts,
+
+        /**
+         * A2A 标准 task state 分布，例如 TASK_STATE_AUTH_REQUIRED、TASK_STATE_UNSPECIFIED。
+         */
+        Map<String, Long> a2aTaskStateCounts,
+
         Map<String, Long> primaryAgentRoleCounts,
         Map<String, Long> participatingAgentRoleCounts,
         Map<String, Long> intentDomainCounts,

@@ -138,6 +138,16 @@ public record AgentSessionSchedulingProjectionView(
         Boolean approvalRequired,
         Boolean tenantScoped,
         Boolean projectScoped,
+
+        /**
+         * A2A task planning 子视图。
+         *
+         * <p>当 Python 事件来自普通会话时，该对象的 `available=false`；当会话携带外部 A2A task 委派状态时，
+         * 它会解释 task 当前是等待授权、等待用户、预检、终态展示还是诊断阻断。拆成子对象是为了避免主
+         * DTO 继续横向膨胀，也让前端能把 A2A task 卡片作为独立治理块展示。</p>
+         */
+        AgentA2aTaskSchedulingProjectionView a2aTaskPlanning,
+
         String displaySummary,
         Integer recommendedActionCount
 ) {

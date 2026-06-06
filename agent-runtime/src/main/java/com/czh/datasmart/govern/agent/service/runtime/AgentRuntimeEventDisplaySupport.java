@@ -44,6 +44,7 @@ public class AgentRuntimeEventDisplaySupport {
     private static final String SKILL_VISIBILITY_EVENT_TYPE = "skill_visibility_snapshot_recorded";
     private static final String MODEL_GATEWAY_ROUTED_EVENT_TYPE = "model_gateway_routed";
     private static final String EXTERNAL_PROTOCOL_DISCOVERY_EVENT_TYPE = "agent.external_protocol.discovery.completed";
+    private static final String AGENT_SESSION_SCHEDULING_EVENT_TYPE = "agent_session_scheduling_recorded";
 
     private static final String REPLAY_POLICY_APPEND_AND_ACK = "APPEND_TO_TIMELINE_AND_ALLOW_ACK_CURSOR";
     private static final String REPLAY_POLICY_APPEND_ONLY = "APPEND_TO_TIMELINE";
@@ -73,6 +74,9 @@ public class AgentRuntimeEventDisplaySupport {
         }
         if (EXTERNAL_PROTOCOL_DISCOVERY_EVENT_TYPE.equals(eventType)) {
             return AgentExternalProtocolDiscoveryEventDisplayBuilder.build(record);
+        }
+        if (AGENT_SESSION_SCHEDULING_EVENT_TYPE.equals(eventType)) {
+            return AgentSessionSchedulingEventDisplayBuilder.build(record);
         }
         return buildGenericDisplay(record);
     }
