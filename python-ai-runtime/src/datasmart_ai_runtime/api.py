@@ -34,6 +34,7 @@ from datasmart_ai_runtime.api_orchestrator_factory import (
     build_context_selection_policy,
     build_default_orchestrator,
     build_tool_call_budget_policy_provider,
+    build_tool_execution_readiness_policy_provider,
     load_skill_registry,
     load_tool_registry,
     optional_positive_int_env as _optional_positive_int_env,
@@ -182,6 +183,11 @@ def create_app() -> Any:
     gateway_signature_nonce_store = build_gateway_signature_nonce_store(gateway_signature_nonce_settings)
     gateway_signature_security_stats = GatewaySignatureSecurityStats()
     skill_publication_manifest_diagnostics = build_skill_publication_manifest_diagnostics_service(agent_runtime_base_url)
+    # readiness policy provider 负责把 permission-admin 的标准 `toolExecutionReadinessPolicy` 接入
+    # `/agent/plans` 主链路。它与 orchestrator 内部的 `toolCallBudget` provider 分开装配，是为了保持
+    # “模型候选工具预算”和“执行前准备度治理”两个阶段解耦。生产环境后续可以由 gateway 一次性注入完整
+    # policy envelope，以减少同步策略 HTTP 调用次数；当前先保留远程优先、本地回退的最小闭环。
+    tool_execution_readiness_policy_provider = build_tool_execution_readiness_policy_provider()
 
     def _start_memory_materialization_worker() -> None:
         """FastAPI startup 生命周期中启动长期记忆物化 worker。"""
@@ -344,6 +350,7 @@ def create_app() -> Any:
         second_turn_orchestrator=second_turn_orchestrator,
         memory_write_governance=memory_runtime.memory_write_governance,
         skill_publication_diagnostics_service=skill_publication_manifest_diagnostics,
+        tool_execution_readiness_policy_provider=tool_execution_readiness_policy_provider,
         gateway_signature_error_factory=lambda detail: HTTPException(status_code=401, detail=detail),
         gateway_signature_nonce_store=gateway_signature_nonce_store,
         gateway_signature_security_stats=gateway_signature_security_stats,
@@ -370,6 +377,7 @@ __all__ = [
     "build_event_websocket_payloads",
     "build_plan_response",
     "build_tool_call_budget_policy_provider",
+    "build_tool_execution_readiness_policy_provider",
     "create_app",
     "load_skill_registry",
     "load_tool_registry",

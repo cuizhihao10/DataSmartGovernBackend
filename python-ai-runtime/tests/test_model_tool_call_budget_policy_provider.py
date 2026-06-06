@@ -164,6 +164,60 @@ class ModelToolCallBudgetPolicyProviderTest(unittest.TestCase):
         self.assertEqual(1234, policy.max_single_arguments_bytes)
         self.assertEqual(5678, policy.max_total_arguments_bytes)
 
+    def test_java_permission_admin_response_exposes_low_sensitive_readiness_policy(self) -> None:
+        """Java 标准 readiness policy 应被白名单裁剪后提供给 Python 执行准备度 provider。
+
+        这个测试故意在远程响应里放入 `prompt/sql/arguments/internalEndpoint/secret` 等字段，验证客户端不会
+        因为 Java DTO 后续扩展或错误返回而把敏感上下文透传到 `/agent/plans` 响应、runtime event 或 Java replay。
+        """
+
+        response = JavaPermissionAdminToolBudgetPolicyClient.parse_platform_policy_response(
+            {
+                "code": 0,
+                "data": {
+                    "toolCallBudget": {
+                        "maxProposedToolCalls": 8,
+                        "maxAutoExecutableToolCalls": 3,
+                    },
+                    "toolExecutionReadinessPolicy": {
+                        "source": "permission-admin",
+                        "policyVersion": "perm-tool-readiness-v1",
+                        "actorRole": "AUDITOR",
+                        "tenantPlanCode": "TRIAL",
+                        "workspaceRiskLevel": "HIGH",
+                        "workerBacklogLevel": "CRITICAL",
+                        "maxAutoSyncTools": 4,
+                        "maxAsyncTools": 2,
+                        "highRiskRequiresApproval": True,
+                        "criticalRiskBlocked": True,
+                        "allowDraftWithoutAllParameters": False,
+                        "influenceCodes": ["REMOTE_POLICY", "WORKER_BACKLOG_BLOCKS_TOOL_BUDGET"],
+                        "prompt": "不要泄露",
+                        "sql": "select * from secret_table",
+                        "arguments": {"datasourceId": "ds-sensitive"},
+                        "internalEndpoint": "http://permission-admin.internal",
+                        "secret": "token",
+                    },
+                },
+            }
+        )
+
+        readiness_policy = response.tool_execution_readiness_policy
+
+        self.assertIsNotNone(readiness_policy)
+        self.assertEqual(8, response.tool_call_budget_policy.max_proposed_tool_calls)
+        self.assertEqual("permission-admin", readiness_policy["source"])
+        self.assertEqual("perm-tool-readiness-v1", readiness_policy["policyVersion"])
+        self.assertEqual(4, readiness_policy["maxAutoSyncTools"])
+        self.assertEqual(2, readiness_policy["maxAsyncTools"])
+        self.assertFalse(readiness_policy["allowDraftWithoutAllParameters"])
+        self.assertEqual(("REMOTE_POLICY", "WORKER_BACKLOG_BLOCKS_TOOL_BUDGET"), readiness_policy["influenceCodes"])
+        self.assertNotIn("prompt", readiness_policy)
+        self.assertNotIn("sql", readiness_policy)
+        self.assertNotIn("arguments", readiness_policy)
+        self.assertNotIn("internalEndpoint", readiness_policy)
+        self.assertNotIn("secret", readiness_policy)
+
     def test_remote_provider_uses_permission_admin_policy_when_available(self) -> None:
         """远程可用时应优先使用 permission-admin 策略，而不是本地环境变量策略。"""
 

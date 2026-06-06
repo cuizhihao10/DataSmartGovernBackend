@@ -29,6 +29,7 @@ from datasmart_ai_runtime.services.runtime_events.runtime_event_transport import
 from datasmart_ai_runtime.services.skills import build_session_skill_visibility_runtime_event
 from datasmart_ai_runtime.services.tools import (
     ToolExecutionReadinessPolicyProvider,
+    ToolExecutionReadinessPolicyProviderProtocol,
     ToolExecutionReadinessService,
     build_tool_execution_readiness_runtime_event,
 )
@@ -48,6 +49,7 @@ def build_plan_response(
     second_turn_orchestrator: Any | None = None,
     memory_write_governance: Any | None = None,
     skill_publication_diagnostics_service: Any | None = None,
+    tool_execution_readiness_policy_provider: ToolExecutionReadinessPolicyProviderProtocol | None = None,
 ) -> dict[str, Any]:
     """构建同步 HTTP 风格的 Agent 计划响应。
 
@@ -73,7 +75,11 @@ def build_plan_response(
     # 工具执行准备度是“计划生成之后、真实执行之前”的治理快照。
     # 它不会执行工具，也不会创建审批单；这里只把 ToolPlan 转换成低敏、可解释的 readiness summary，
     # 让 HTTP 响应、runtime event、WebSocket replay 和未来 Java projection 都能看到同一份执行前事实。
-    readiness_policy_snapshot = ToolExecutionReadinessPolicyProvider().policy_for(request)
+    # readiness policy provider 通过参数显式注入，而不是在这里固定 new 远程/本地实现。
+    # 这样 API 响应组装器只负责“什么时候需要策略”，不负责“策略从哪里来”；远程 permission-admin、
+    # gateway trustedControlPlane、测试替身和未来 LangGraph 条件节点都可以在不改主流程的情况下接入。
+    readiness_policy_provider = tool_execution_readiness_policy_provider or ToolExecutionReadinessPolicyProvider()
+    readiness_policy_snapshot = readiness_policy_provider.policy_for(request)
     tool_execution_readiness = ToolExecutionReadinessService().evaluate(
         plan.tool_plans,
         policy=readiness_policy_snapshot.policy,

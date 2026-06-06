@@ -37,6 +37,11 @@ from datasmart_ai_runtime.services.skill_registry import AgentSkillRegistry
 from datasmart_ai_runtime.services.skill_registry_client import JavaAgentSkillRegistryClient, SkillRegistryClientError
 from datasmart_ai_runtime.services.tool_registry_client import JavaAgentToolRegistryClient, ToolRegistryClientError
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
+from datasmart_ai_runtime.services.tools import (
+    RemoteThenLocalToolExecutionReadinessPolicyProvider,
+    ToolExecutionReadinessPolicyProvider,
+    ToolExecutionReadinessPolicyProviderProtocol,
+)
 
 
 def load_tool_registry(
@@ -262,6 +267,68 @@ def build_tool_call_budget_policy_provider(
     )
 
 
+def build_tool_execution_readiness_policy_provider(
+    permission_admin_base_url: str | None = None,
+    *,
+    trace_id: str | None = None,
+    enable_remote: bool | None = None,
+    allow_remote_fallback: bool = True,
+) -> ToolExecutionReadinessPolicyProviderProtocol:
+    """构建工具执行准备度策略 provider。
+
+    与 `build_tool_call_budget_policy_provider(...)` 的关系：
+    - `toolCallBudget` 控制模型本轮最多提出和保留多少工具调用；
+    - `toolExecutionReadinessPolicy` 控制已经形成的 ToolPlan 是否可执行、等待审批、等待澄清、入队、限流或阻断。
+
+    两者都来自 permission-admin 的同一个策略接口，但作用阶段不同，所以这里提供独立 builder：
+    - API 响应层可以单独注入 readiness provider；
+    - 旧预算链路继续保持向后兼容；
+    - 后续如果 gateway 一次性注入完整策略 envelope，也只需要替换这个 builder 或 provider，而不需要改
+      `api_plan_response.py` 的主流程。
+
+    环境变量：
+    - `DATASMART_PERMISSION_ADMIN_TOOL_READINESS_POLICY_ENABLED`：优先控制 readiness 远程策略；
+    - 如果未显式配置，则复用 `DATASMART_PERMISSION_ADMIN_TOOL_BUDGET_ENABLED`，方便 5.39 迁移期共用开关；
+    - timeout 可用 `DATASMART_PERMISSION_ADMIN_TOOL_READINESS_TIMEOUT_SECONDS` 单独配置，未配置时复用预算 timeout。
+    """
+
+    local_provider = ToolExecutionReadinessPolicyProvider()
+    remote_enabled = (
+        _tool_readiness_remote_enabled_from_env()
+        if enable_remote is None
+        else enable_remote
+    )
+    base_url = permission_admin_base_url or os.getenv("DATASMART_PERMISSION_ADMIN_BASE_URL")
+    if not remote_enabled or not base_url:
+        return local_provider
+    remote_client = JavaPermissionAdminToolBudgetPolicyClient(
+        base_url=base_url,
+        timeout_seconds=positive_int_env(
+            "DATASMART_PERMISSION_ADMIN_TOOL_READINESS_TIMEOUT_SECONDS",
+            positive_int_env("DATASMART_PERMISSION_ADMIN_TOOL_BUDGET_TIMEOUT_SECONDS", 3),
+        ),
+    )
+    return RemoteThenLocalToolExecutionReadinessPolicyProvider(
+        remote_client,
+        local_provider=local_provider,
+        allow_remote_fallback=allow_remote_fallback,
+        trace_id=trace_id,
+    )
+
+
+def _tool_readiness_remote_enabled_from_env() -> bool:
+    """读取 readiness 远程策略开关。
+
+    迁移期允许复用旧预算开关，是为了让已经启用 permission-admin 工具预算的环境自动获得标准 readiness policy
+    消费能力；但只要显式设置了 readiness 专用开关，就以专用开关为准，方便生产环境分阶段灰度。
+    """
+
+    readiness_value = os.getenv("DATASMART_PERMISSION_ADMIN_TOOL_READINESS_POLICY_ENABLED")
+    if readiness_value is not None:
+        return truthy_env("DATASMART_PERMISSION_ADMIN_TOOL_READINESS_POLICY_ENABLED")
+    return truthy_env("DATASMART_PERMISSION_ADMIN_TOOL_BUDGET_ENABLED")
+
+
 def truthy_env(name: str) -> bool:
     """解析布尔环境变量。
 
@@ -303,6 +370,7 @@ __all__ = [
     "build_context_selection_policy",
     "build_default_orchestrator",
     "build_tool_call_budget_policy_provider",
+    "build_tool_execution_readiness_policy_provider",
     "load_skill_registry",
     "load_tool_registry",
     "optional_positive_int_env",

@@ -52,6 +52,7 @@ def register_agent_runtime_routes(
     second_turn_orchestrator: Any | None,
     memory_write_governance: Any | None,
     skill_publication_diagnostics_service: Any | None = None,
+    tool_execution_readiness_policy_provider: Any | None = None,
     gateway_signature_error_factory: Callable[[dict[str, Any]], Exception] | None = None,
     gateway_signature_nonce_store: Any | None = None,
     gateway_signature_security_stats: Any | None = None,
@@ -80,6 +81,11 @@ def register_agent_runtime_routes(
     `skill_publication_diagnostics_service` 用来把 Java agent-runtime 发布的 Skill Manifest 指纹带入
     `/agent/plans` 响应和 runtime event。它不参与本轮 Skill 准入决策，只提供“当前能力目录版本证据”：
     如果生产环境后续发现某个 Skill 在某一版 Manifest 后异常隐藏/暴露，运维可以按指纹回放和定位。
+
+    `tool_execution_readiness_policy_provider` 是执行准备度策略来源：
+    - 未注入时，响应组装层使用本地 provider，可读取 gateway 放入 `trustedControlPlane` 的快照；
+    - 注入远程 provider 时，Python 会优先向 permission-admin 读取标准 `toolExecutionReadinessPolicy`；
+    - 不论来源如何，策略只能影响 readiness 预算、审批/阻断开关和低敏解释码，不能携带工具参数值或 prompt。
     """
 
     @app.post("/agent/plans")
@@ -140,6 +146,7 @@ def register_agent_runtime_routes(
             second_turn_orchestrator=second_turn_orchestrator,
             memory_write_governance=memory_write_governance,
             skill_publication_diagnostics_service=skill_publication_diagnostics_service,
+            tool_execution_readiness_policy_provider=tool_execution_readiness_policy_provider,
         )
 
     @app.post("/agent/protocol-adapters/a2a/task-planning-preview")

@@ -19,8 +19,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Mapping
+from dataclasses import dataclass, replace
+from typing import Any, Mapping, Protocol
 
 from datasmart_ai_runtime.domain.contracts import AgentRequest
 from datasmart_ai_runtime.services.tools.tool_execution_readiness import ToolExecutionReadinessPolicy
@@ -72,6 +72,39 @@ class ToolExecutionReadinessPolicySnapshot:
             "influenceCodes": self.influence_codes,
             "payloadPolicy": "LOW_SENSITIVE_POLICY_METADATA_ONLY",
         }
+
+
+class ToolExecutionReadinessPolicyProviderProtocol(Protocol):
+    """工具执行准备度策略 provider 协议。
+
+    响应组装层、FastAPI 路由层和测试替身只需要依赖这个极小协议，而不需要关心策略究竟来自：
+    - Java permission-admin 的远程策略评估；
+    - gateway 已经验签后注入的 `trustedControlPlane`；
+    - 本地环境变量或测试默认值。
+
+    这个抽象能避免 `api_plan_response.py` 直接 new 具体实现，也能让后续接入 Redis quota、worker backlog、
+    租户套餐表或 LangGraph 条件节点时保持主流程稳定。
+    """
+
+    def policy_for(self, request: AgentRequest) -> ToolExecutionReadinessPolicySnapshot:
+        """返回当前 Agent 请求可使用的 readiness policy snapshot。"""
+
+
+class RemoteToolExecutionReadinessPolicyClient(Protocol):
+    """远程 readiness policy 客户端协议。
+
+    这里不把协议绑定到某个 HTTP 实现，是为了让真实客户端、测试替身、未来 gateway sidecar、
+    服务网格策略客户端都可以复用同一个 provider。返回值必须是低敏 mapping：只允许包含策略版本、
+    角色枚举、租户套餐、workspace 风险、worker backlog、预算数字和影响码，不能包含 prompt、SQL、
+    工具实参、样本数据、模型输出、凭证或内部 endpoint。
+    """
+
+    def evaluate_readiness_policy(
+        self,
+        request_context: AgentRequest,
+        trace_id: str | None = None,
+    ) -> Mapping[str, Any] | None:
+        """从远程控制面读取低敏 readiness policy；没有标准字段时返回 None。"""
 
 
 class ToolExecutionReadinessPolicyProvider:
@@ -147,7 +180,9 @@ class ToolExecutionReadinessPolicyProvider:
                 _string_value(source, "workerBacklogLevel", "worker_backlog_level") or "NORMAL"
             ),
         )
-        policy, influence_codes = self._apply_contextual_safety_caps(policy, metadata)
+        remote_influence_codes = _string_tuple(_first_present(source, "influenceCodes", "influence_codes"))
+        policy, contextual_influence_codes = self._apply_contextual_safety_caps(policy, metadata)
+        influence_codes = _dedupe_codes(remote_influence_codes + contextual_influence_codes)
         return ToolExecutionReadinessPolicySnapshot(
             policy=policy,
             source="trusted-control-plane",
@@ -268,6 +303,62 @@ class ToolExecutionReadinessPolicyProvider:
         return value if isinstance(value, Mapping) else None
 
 
+class RemoteThenLocalToolExecutionReadinessPolicyProvider:
+    """远程优先、本地回退的 readiness policy provider。
+
+    设计意图：
+    - 在商业化环境中，permission-admin 才是角色、租户套餐、workspace 风险和 worker backlog 的权威控制面；
+    - Python Runtime 不应该自己猜测这些事实，也不应该信任普通请求 body 中自报的治理字段；
+    - 但本地学习、单元测试和灰度环境不能因为 Java 服务未启动而完全不可用，因此默认允许回退到本地 provider。
+
+    工作方式：
+    1. 先调用远程客户端读取低敏 `toolExecutionReadinessPolicy`；
+    2. 把远程策略注入一个新的 `trustedControlPlane.toolExecutionReadinessPolicy` 请求快照；
+    3. 复用本地 `ToolExecutionReadinessPolicyProvider` 的解析、字段归一化和安全收敛逻辑；
+    4. 远程失败或旧版 Java 尚未返回标准字段时，根据 `allow_remote_fallback` 决定回退还是显式抛错。
+
+    性能说明：
+    当前 provider 是最小闭环实现，可能与旧的 `toolCallBudget` 远程 provider 分别调用同一个
+    permission-admin endpoint。生产优化方向是由 gateway/agent-runtime 一次性注入完整 policy envelope，
+    或增加请求级缓存，避免一次 `/agent/plans` 内重复策略评估。
+    """
+
+    def __init__(
+        self,
+        remote_client: RemoteToolExecutionReadinessPolicyClient,
+        *,
+        local_provider: ToolExecutionReadinessPolicyProviderProtocol | None = None,
+        allow_remote_fallback: bool = True,
+        trace_id: str | None = None,
+    ) -> None:
+        self._remote_client = remote_client
+        self._local_provider = local_provider or ToolExecutionReadinessPolicyProvider()
+        self._allow_remote_fallback = allow_remote_fallback
+        self._trace_id = trace_id
+
+    def policy_for(self, request: AgentRequest) -> ToolExecutionReadinessPolicySnapshot:
+        """获取当前请求的 readiness policy。
+
+        远程策略中心返回的是控制面 DTO，不直接等同于 Python 领域对象。因此这里不手写第二套转换逻辑，
+        而是把远程 DTO 放进受信命名空间后复用本地 provider。这样能保证：
+        - trusted-control-plane、request-tool-call-budget、local-default 三种来源的输出结构一致；
+        - actorRole、tenantPlanCode、workspaceRiskLevel、workerBacklogLevel 的安全收敛规则只有一份；
+        - 后续新增影响码或预算字段时，不会出现“远程路径”和“本地路径”解释不一致。
+        """
+
+        try:
+            remote_policy = self._remote_client.evaluate_readiness_policy(request, trace_id=self._trace_id)
+        except Exception:
+            if not self._allow_remote_fallback:
+                raise
+            return self._local_provider.policy_for(request)
+        if remote_policy is None:
+            if not self._allow_remote_fallback:
+                raise RuntimeError("远程 permission-admin 响应缺少标准 toolExecutionReadinessPolicy")
+            return self._local_provider.policy_for(request)
+        return self._local_provider.policy_for(_request_with_remote_readiness_policy(request, remote_policy))
+
+
 @dataclass(frozen=True)
 class _PolicyMetadata:
     """策略上下文的内部规范化结构，避免在收敛函数里反复处理字符串空值。"""
@@ -304,6 +395,57 @@ def _normalize_code(value: str | None) -> str | None:
     if value is None:
         return None
     return value.strip().replace("-", "_").replace(" ", "_").upper() or None
+
+
+def _string_tuple(value: object | None) -> tuple[str, ...]:
+    """把远程影响码列表归一化为去空字符串 tuple。
+
+    影响码属于低敏、机器可读的解释字段，适合进入 HTTP 响应、runtime event 和 Java projection。
+    但它仍然必须被裁剪为纯字符串枚举，不能允许远程响应把复杂对象、权限明细或错误堆栈混入策略摘要。
+    """
+
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        candidates = value.split(",")
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        candidates = value
+    else:
+        return ()
+    return tuple(text for item in candidates if (text := str(item).strip()))
+
+
+def _dedupe_codes(values: tuple[str, ...]) -> tuple[str, ...]:
+    """按原始顺序去重影响码，避免 Java 控制面和 Python 安全收敛输出重复码。"""
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = _normalize_code(value)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    return tuple(result)
+
+
+def _request_with_remote_readiness_policy(
+    request: AgentRequest,
+    remote_policy: Mapping[str, Any],
+) -> AgentRequest:
+    """构造带远程 readiness policy 的不可变请求快照。
+
+    `AgentRequest` 是 frozen dataclass，表示一次请求的领域事实不应被原地修改。这里通过浅拷贝
+    `variables` 与 `trustedControlPlane` 后再 `replace(...)`，可以避免两个风险：
+    - 本轮 readiness provider 的注入意外污染调用方继续持有的原始 request；
+    - 其他逻辑读取普通 variables 时误以为远程 policy 是客户端自己提交的业务字段。
+    """
+
+    variables = dict(request.variables or {})
+    trusted_root = variables.get(ToolExecutionReadinessPolicyProvider.TRUSTED_ROOT_KEY)
+    trusted_mapping = dict(trusted_root) if isinstance(trusted_root, Mapping) else {}
+    trusted_mapping[ToolExecutionReadinessPolicyProvider.READINESS_POLICY_KEY] = dict(remote_policy)
+    variables[ToolExecutionReadinessPolicyProvider.TRUSTED_ROOT_KEY] = trusted_mapping
+    return replace(request, variables=variables)
 
 
 def _bool_value(mapping: Mapping[str, object], default: bool, *keys: str) -> bool:
