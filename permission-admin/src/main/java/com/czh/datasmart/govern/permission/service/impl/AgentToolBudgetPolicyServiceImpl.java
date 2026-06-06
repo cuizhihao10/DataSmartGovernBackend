@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.permission.service.impl;
 
 import com.czh.datasmart.govern.permission.controller.dto.AgentToolBudgetPolicyEvaluateRequest;
 import com.czh.datasmart.govern.permission.controller.dto.AgentToolBudgetPolicyView;
+import com.czh.datasmart.govern.permission.controller.dto.AgentToolExecutionReadinessPolicyView;
 import com.czh.datasmart.govern.permission.service.AgentToolBudgetPolicyService;
 import org.springframework.stereotype.Service;
 
@@ -51,15 +52,125 @@ public class AgentToolBudgetPolicyServiceImpl implements AgentToolBudgetPolicySe
         toolCallBudget.put("maxHighRiskToolCalls", budget.maxHighRiskToolCalls);
         toolCallBudget.put("maxSingleArgumentsBytes", budget.maxSingleArgumentsBytes);
         toolCallBudget.put("maxTotalArgumentsBytes", budget.maxTotalArgumentsBytes);
+        AgentToolExecutionReadinessPolicyView readinessPolicy = buildReadinessPolicy(request, budget, notes);
 
         return new AgentToolBudgetPolicyView(
                 true,
                 "IN_MEMORY_RULE",
                 policyVersion(request),
                 toolCallBudget,
+                readinessPolicy,
                 List.copyOf(notes),
                 recommendedActions(budget, notes)
         );
+    }
+
+    /**
+     * 构建 Python Runtime 可直接注入的工具执行准备度策略。
+     *
+     * <p>这里没有简单复用 `toolCallBudget` map，是因为 readiness 策略需要表达更多执行前治理语义：
+     * 高风险是否审批、CRITICAL 是否阻断、草案是否允许、策略影响码是什么。把这些内容放进独立 DTO，
+     * 可以让 gateway/agent-runtime 后续直接把它注入到
+     * `trustedControlPlane.toolExecutionReadinessPolicy`，而不需要 Python 继续从旧预算字段里猜测。</p>
+     */
+    private AgentToolExecutionReadinessPolicyView buildReadinessPolicy(
+            AgentToolBudgetPolicyEvaluateRequest request,
+            Budget budget,
+            List<String> notes) {
+        String actorRole = normalizeRole(request.getActorRole());
+        String tenantPlanCode = normalizeOrDefault(request.getTenantPlanCode(), "STANDARD");
+        String workspaceRiskLevel = normalizeOrDefault(request.getWorkspaceRiskLevel(), "NORMAL");
+        String workerBacklogLevel = normalizeOrDefault(request.getWorkerBacklogLevel(), "NORMAL");
+        String requestedToolRiskLevel = normalizeOrDefault(request.getRequestedToolRiskLevel(), "LOW");
+        List<String> influenceCodes = readinessInfluenceCodes(actorRole, tenantPlanCode, workspaceRiskLevel,
+                workerBacklogLevel, requestedToolRiskLevel, notes);
+        return new AgentToolExecutionReadinessPolicyView(
+                "permission-admin",
+                policyVersion(request),
+                actorRole,
+                tenantPlanCode,
+                workspaceRiskLevel,
+                workerBacklogLevel,
+                budget.maxAutoExecutableToolCalls,
+                asyncToolBudget(budget, workerBacklogLevel),
+                true,
+                true,
+                allowDraftWithoutAllParameters(workspaceRiskLevel, workerBacklogLevel),
+                influenceCodes
+        );
+    }
+
+    /**
+     * 推导异步工具准备度预算。
+     *
+     * <p>旧的 `toolCallBudget` 主要关注模型提议和同步自动执行数量，没有直接表达“异步入队预算”。
+     * readiness 策略必须显式给出 `maxAsyncTools`，否则 Python 侧只能使用本地默认值。这里用
+     * `maxAutoExecutableToolCalls` 做保守基线，再根据 backlog 收紧，避免 worker 已经积压时继续扩大队列。</p>
+     */
+    private int asyncToolBudget(Budget budget, String workerBacklogLevel) {
+        int baseline = Math.max(0, Math.min(2, budget.maxAutoExecutableToolCalls));
+        if ("CRITICAL".equals(workerBacklogLevel)) {
+            return 0;
+        }
+        if ("HIGH".equals(workerBacklogLevel)) {
+            return Math.min(1, baseline);
+        }
+        return baseline;
+    }
+
+    /**
+     * 判断是否允许参数不完整的工具停留在草案展示阶段。
+     *
+     * <p>普通场景下，草案展示是有价值的：用户能看到 Agent 打算做什么，再补充参数或审批。
+     * 但在 CRITICAL 风险或 CRITICAL backlog 下，继续生成草案可能造成误导，甚至让用户误以为系统已经
+     * 准备好执行。因此这些场景会关闭草案容忍。</p>
+     */
+    private boolean allowDraftWithoutAllParameters(String workspaceRiskLevel, String workerBacklogLevel) {
+        return !"CRITICAL".equals(workspaceRiskLevel) && !"CRITICAL".equals(workerBacklogLevel);
+    }
+
+    /**
+     * 生成稳定的策略影响码。
+     *
+     * <p>notes 适合给人读，influenceCodes 适合给机器聚合。Java projection、Python runtime event、
+     * 前端治理卡片和审计报表都应优先依赖 code，而不是解析中文说明。</p>
+     */
+    private List<String> readinessInfluenceCodes(
+            String actorRole,
+            String tenantPlanCode,
+            String workspaceRiskLevel,
+            String workerBacklogLevel,
+            String requestedToolRiskLevel,
+            List<String> notes) {
+        List<String> codes = new ArrayList<>();
+        if ("AUDITOR".equals(actorRole)) {
+            codes.add("READ_ONLY_ROLE_LIMITS_AUTO_EXECUTION");
+        }
+        if ("FREE".equals(tenantPlanCode) || "COMMUNITY".equals(tenantPlanCode)) {
+            codes.add("TENANT_PLAN_LIMITS_TOOL_BUDGET");
+        }
+        if ("HIGH".equals(workspaceRiskLevel)) {
+            codes.add("WORKSPACE_RISK_REQUIRES_APPROVAL");
+        }
+        if ("CRITICAL".equals(workspaceRiskLevel)) {
+            codes.add("WORKSPACE_RISK_REDUCES_TOOL_BUDGET");
+        }
+        if ("HIGH".equals(workerBacklogLevel)) {
+            codes.add("WORKER_BACKLOG_REDUCES_TOOL_BUDGET");
+        }
+        if ("CRITICAL".equals(workerBacklogLevel)) {
+            codes.add("WORKER_BACKLOG_BLOCKS_TOOL_BUDGET");
+        }
+        if ("HIGH".equals(requestedToolRiskLevel) || "CRITICAL".equals(requestedToolRiskLevel)) {
+            codes.add("REQUESTED_TOOL_RISK_REQUIRES_APPROVAL");
+        }
+        if (codes.isEmpty() && notes.isEmpty()) {
+            codes.add("DEFAULT_PERMISSION_ADMIN_READINESS_POLICY");
+        }
+        if (codes.isEmpty()) {
+            codes.add("ROLE_AND_PLAN_BASELINE_POLICY");
+        }
+        return List.copyOf(codes);
     }
 
     /**
@@ -185,6 +296,14 @@ public class AgentToolBudgetPolicyServiceImpl implements AgentToolBudgetPolicySe
 
     private String normalize(String value) {
         return value == null || value.isBlank() ? "STANDARD" : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private String normalizeRole(String value) {
+        return value == null || value.isBlank() ? "ORDINARY_USER" : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private String normalizeOrDefault(String value, String defaultValue) {
+        return value == null || value.isBlank() ? defaultValue : value.trim().toUpperCase(Locale.ROOT);
     }
 
     /**

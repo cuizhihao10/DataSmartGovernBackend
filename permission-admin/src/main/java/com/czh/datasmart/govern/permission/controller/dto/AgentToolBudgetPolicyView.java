@@ -62,6 +62,15 @@ public class AgentToolBudgetPolicyView {
     private Map<String, Integer> toolCallBudget;
 
     /**
+     * Python Runtime 5.38 之后优先消费的工具执行准备度策略。
+     *
+     * <p>保留 `toolCallBudget` 是为了兼容旧的模型工具调用预算链路；新增本字段是为了让 permission-admin
+     * 明确输出标准 `trustedControlPlane.toolExecutionReadinessPolicy` 合同。两者的业务粒度不同：
+     * 前者约束“模型提出多少工具”，后者约束“计划形成后哪些工具可以进入执行准备态”。</p>
+     */
+    private AgentToolExecutionReadinessPolicyView toolExecutionReadinessPolicy;
+
+    /**
      * 策略解释。
      *
      * <p>用于管理后台和审计台展示“为什么预算被放宽或收紧”。例如角色基线、套餐限制、

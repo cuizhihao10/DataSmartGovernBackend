@@ -1,5 +1,36 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-06 追加落地进展：permission-admin 输出工具执行准备度策略合同
+
+- `permission-admin` 在现有 Agent 工具预算策略响应中新增 `toolExecutionReadinessPolicy`：
+  - 保留旧字段 `toolCallBudget`，兼容 Python 模型工具调用预算链路；
+  - 新增标准 readiness policy，用于后续注入 `trustedControlPlane.toolExecutionReadinessPolicy`；
+  - 明确区分“模型最多提出多少工具”和“ToolPlan 形成后哪些工具可以进入执行准备态”。
+- 新增 `AgentToolExecutionReadinessPolicyView`：
+  - 输出 source、policyVersion、actorRole、tenantPlanCode、workspaceRiskLevel、workerBacklogLevel；
+  - 输出 maxAutoSyncTools、maxAsyncTools、highRiskRequiresApproval、criticalRiskBlocked、allowDraftWithoutAllParameters；
+  - 输出 influenceCodes，便于 Python Runtime、Java projection、前端治理卡片和审计报表使用稳定机器码聚合。
+- `AgentToolBudgetPolicyServiceImpl` 增强：
+  - 根据角色、租户套餐、workspace 风险、worker backlog 和请求工具风险生成 readiness policy；
+  - CRITICAL backlog 会把 maxAsyncTools 收紧为 0；
+  - CRITICAL workspace/backlog 会关闭参数不完整草案容忍；
+  - 保持“只输出低敏控制面元数据”，不携带 prompt、工具参数、SQL、样本数据、模型输出、凭证或内部 endpoint。
+- 测试同步：
+  - `AgentToolBudgetPolicyServiceImplTest` 新增标准 readiness policy 合同覆盖；
+  - 验证 AUDITOR/FREE/HIGH/CRITICAL backlog 会产生对应 influenceCodes；
+  - 验证策略摘要不包含 prompt/sql/arguments/internalEndpoint/secret。
+
+产品意义：
+- Java `permission-admin` 已经能产出 Python Runtime 5.38 优先消费的标准策略合同，项目从“Python 兼容预算字段”推进到“Java 控制面正式输出 readiness policy”。
+- 这一步让执行前治理更接近商业化 Agent Host：模型能不能执行工具，不只看模型建议，还要看角色、套餐、风险和队列压力。
+- 当前仍不直接把策略注入 Python 请求；下一步应由 gateway 或 agent-runtime 将该字段写入 `trustedControlPlane.toolExecutionReadinessPolicy`。
+
+下一步推荐路线：
+1. 在 gateway 或 agent-runtime 中把 permission-admin 的 `toolExecutionReadinessPolicy` 注入 Python `AgentRequest.variables.trustedControlPlane`。
+2. Python 侧可继续保留兼容 `toolCallBudget`，但优先使用标准 readiness policy。
+3. 将 readiness 纳入 LangGraph/OpenClaw-style 执行图条件节点，形成显式“计划 -> readiness -> 审批/澄清/执行”分支。
+4. 继续避免直接开放 Python 工具执行器，真实副作用仍应经过 Java 权限、审批、outbox、worker pre-check 和审计链路。
+
 ## 2026-06-06 追加落地进展：Python Runtime 工具执行准备度策略来源接入
 
 - Python `services/tools` 新增 `ToolExecutionReadinessPolicyProvider` 与 `ToolExecutionReadinessPolicySnapshot`：

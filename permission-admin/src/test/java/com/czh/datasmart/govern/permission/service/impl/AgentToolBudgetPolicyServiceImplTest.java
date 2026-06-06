@@ -114,6 +114,48 @@ class AgentToolBudgetPolicyServiceImplTest {
         assertThat(view.getNotes()).anyMatch(note -> note.contains("CRITICAL 工具风险"));
     }
 
+    /**
+     * permission-admin 应同时输出 Python Runtime 5.38 可消费的标准 readiness policy。
+     *
+     * <p>这个测试保护 5.39 的关键产品合同：旧的 `toolCallBudget` 继续存在，但新链路应优先使用
+     * `toolExecutionReadinessPolicy`。该策略只包含低敏控制面元数据，不能携带 prompt、SQL、工具参数值、
+     * 内部 endpoint 或凭证。</p>
+     */
+    @Test
+    void shouldExposeStandardToolExecutionReadinessPolicyForPythonRuntime() {
+        AgentToolBudgetPolicyEvaluateRequest request = request("AUDITOR");
+        request.setTenantPlanCode("FREE");
+        request.setWorkspaceRiskLevel("HIGH");
+        request.setWorkerBacklogLevel("CRITICAL");
+
+        AgentToolBudgetPolicyView view = service.evaluate(request);
+        String serializedLike = view.getToolExecutionReadinessPolicy().toString();
+
+        assertThat(view.getToolExecutionReadinessPolicy()).isNotNull();
+        assertThat(view.getToolExecutionReadinessPolicy().getSource()).isEqualTo("permission-admin");
+        assertThat(view.getToolExecutionReadinessPolicy().getPolicyVersion()).contains("AUDITOR");
+        assertThat(view.getToolExecutionReadinessPolicy().getActorRole()).isEqualTo("AUDITOR");
+        assertThat(view.getToolExecutionReadinessPolicy().getTenantPlanCode()).isEqualTo("FREE");
+        assertThat(view.getToolExecutionReadinessPolicy().getWorkspaceRiskLevel()).isEqualTo("HIGH");
+        assertThat(view.getToolExecutionReadinessPolicy().getWorkerBacklogLevel()).isEqualTo("CRITICAL");
+        assertThat(view.getToolExecutionReadinessPolicy().getMaxAutoSyncTools()).isEqualTo(1);
+        assertThat(view.getToolExecutionReadinessPolicy().getMaxAsyncTools()).isZero();
+        assertThat(view.getToolExecutionReadinessPolicy().getHighRiskRequiresApproval()).isTrue();
+        assertThat(view.getToolExecutionReadinessPolicy().getCriticalRiskBlocked()).isTrue();
+        assertThat(view.getToolExecutionReadinessPolicy().getAllowDraftWithoutAllParameters()).isFalse();
+        assertThat(view.getToolExecutionReadinessPolicy().getInfluenceCodes())
+                .contains("READ_ONLY_ROLE_LIMITS_AUTO_EXECUTION",
+                        "TENANT_PLAN_LIMITS_TOOL_BUDGET",
+                        "WORKSPACE_RISK_REQUIRES_APPROVAL",
+                        "WORKER_BACKLOG_BLOCKS_TOOL_BUDGET");
+        assertThat(serializedLike)
+                .doesNotContain("prompt")
+                .doesNotContain("sql")
+                .doesNotContain("arguments")
+                .doesNotContain("internalEndpoint")
+                .doesNotContain("secret");
+    }
+
     private AgentToolBudgetPolicyEvaluateRequest request(String actorRole) {
         AgentToolBudgetPolicyEvaluateRequest request = new AgentToolBudgetPolicyEvaluateRequest();
         request.setTenantId(10L);

@@ -1,5 +1,13 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-06 落地补充：policy centers should emit execution-readiness contracts
+
+- 当前 Agent Host 的执行前治理正在从“运行时本地判断”演进为“控制面策略合同”：权限中心、租户套餐、队列压力、风险等级和人工确认策略应共同决定工具是否可执行。
+- DataSmart 本阶段让 `permission-admin` 输出标准 `toolExecutionReadinessPolicy`，不再只输出旧的 `toolCallBudget`。这让 Python Runtime 可以优先消费 Java 控制面策略，而不是从预算字段里猜测 readiness 语义。
+- 该合同将 execution gate 的关键维度固定为 source、policyVersion、actorRole、tenantPlanCode、workspaceRiskLevel、workerBacklogLevel、maxAutoSyncTools、maxAsyncTools 和 influenceCodes。
+- 低敏边界仍是核心：permission-admin 返回的是策略摘要，不是权限表达式、prompt、工具参数、SQL、模型输出或凭证。真实动作授权仍要由 action-level evaluate、outbox 和 worker pre-check 再次确认。
+- 下一步趋势跟进应把该策略注入 Python `trustedControlPlane`，再进入 LangGraph/OpenClaw-style 条件节点；不要让策略合同停留在只读 API 响应里。
+
 ## 2026-06-06 落地补充：execution gates need policy sources, not only local defaults
 
 - 当前 Agent 工具链的发展趋势不是“模型能调用工具就直接执行”，而是先经过 execution gate：权限、风险、预算、队列、人工确认、参数完整性和审计边界都要参与判断。
