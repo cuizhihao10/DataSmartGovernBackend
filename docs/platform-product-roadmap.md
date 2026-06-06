@@ -1,5 +1,42 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-06 追加落地进展：Python Runtime 工具执行准备度与 tools 能力包
+
+- Python Runtime 新增 `services/tools` 能力包：
+  - 用于逐步收敛工具治理、工具执行准备度、工具沙箱、MCP/A2A 工具桥接等能力；
+  - 避免继续把工具相关服务全部平铺在 `services` 根目录；
+  - 当前先落地低风险、低侵入的执行准备度服务，不做大规模搬迁，避免破坏既有测试和导入路径。
+- 新增 `ToolExecutionReadinessService`：
+  - 输入现有 `ToolPlan`，输出低敏 `ToolExecutionReadinessReport`；
+  - 判断 `READY_TO_EXECUTE`、`DRAFT_ONLY`、`WAITING_APPROVAL`、`NEEDS_CLARIFICATION`、`QUEUED_ASYNC`、`THROTTLED`、`BLOCKED`；
+  - 汇总可执行、审批、澄清、草案、异步队列、限流、阻断数量；
+  - 生成 `EXECUTE_READY_TOOLS`、`REQUEST_USER_CLARIFICATION`、`CREATE_OR_WAIT_APPROVAL`、`SUBMIT_ASYNC_COMMAND` 等 next actions。
+- 新增 `ToolExecutionReadinessPolicy`：
+  - 控制单轮同步工具自动执行预算；
+  - 控制异步工具入队预算；
+  - 保守处理 HIGH/CRITICAL 风险；
+  - 允许参数不完整但可草案化的工具停留在草案展示阶段。
+- 安全边界：
+  - 准备度快照只输出参数字段名、敏感字段名、issue code、风险等级、执行模式和目标服务；
+  - 不输出参数真实值、SQL、prompt、样本数据、任务 payload 明细、凭证、模型输出或内部 endpoint；
+  - 当前不执行工具、不创建审批单、不写 Kafka、不写数据库、不调用 Java 微服务。
+- 新增 `test_tool_execution_readiness.py`：
+  - 验证模型工具调用计划可被拆分为 ready、draft、approval；
+  - 验证缺参进入澄清/补齐路径且不泄露真实参数；
+  - 验证同步/异步预算会节流过量工具；
+  - 验证 CRITICAL 工具默认阻断。
+
+产品意义：
+- DataSmart 的 Agent 工具能力从“模型提出 tool_call 并映射为 ToolPlan”推进到“执行前治理决策可解释”。
+- 这更接近 Codex/Claude Code 类 Agent 的真实链路：模型建议动作，运行时先做安全、参数、风险和预算判断，再决定是否执行、审批、澄清或排队。
+- 该阶段没有越过 Java 控制面边界，仍把真实权限、审批、幂等、审计、outbox 和任务状态留给 `agent-runtime` / `task-management`。
+
+下一步推荐路线：
+1. 将准备度报告接入 `/agent/plans` 响应和 runtime event，让前端 timeline 可见“为什么工具还没执行”。
+2. 将工具准备度与 permission-admin 的预算/角色/租户套餐策略打通，替换当前本地 policy 默认值。
+3. 设计 MCP `tools/call` 与 DataSmart `ToolPlan` 的执行前统一网关，避免 MCP、A2A、模型 tool_call 各走一套治理。
+4. 不建议马上实现真实 Python 工具执行器；更稳路线是先让 Java 控制面消费 readiness，再进入审批/outbox/worker。
+
 ## 2026-06-06 追加落地进展：Java Agent Runtime A2A 会话调度投影与 Timeline 展示
 
 - Java `agent-runtime` 新增 `AgentA2aTaskSchedulingProjectionView`：

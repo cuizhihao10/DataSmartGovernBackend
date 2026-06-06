@@ -1,5 +1,14 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-06 落地补充：tool calls need execution readiness before execution
+
+- Codex、Claude Code 和 OpenClaw 风格 Agent 的关键能力不是“模型能输出工具名”这么简单，而是运行时能在执行前判断工具是否可自动执行、是否缺参数、是否要审批、是否该入队、是否被预算或风险策略阻断。
+- DataSmart 本阶段新增 Python `services/tools` 能力包和 `ToolExecutionReadinessService`，把现有 `ToolPlan` 转换为低敏准备度报告，形成 `READY_TO_EXECUTE`、`DRAFT_ONLY`、`WAITING_APPROVAL`、`NEEDS_CLARIFICATION`、`QUEUED_ASYNC`、`THROTTLED`、`BLOCKED` 等状态。
+- 这一步让模型 tool_call 治理从“候选是否接受”推进到“进入执行器前还差什么”。它也为后续 MCP `tools/call`、A2A task action、LangGraph 节点执行、Java outbox worker 共享一套前置判断打基础。
+- 低敏边界依然重要：准备度只记录参数字段名、敏感字段名、风险等级、执行模式、issue code 和 reason code，不记录参数真实值、SQL、prompt、样本数据、payload 明细、模型输出、凭证或内部 endpoint。
+- 下一步趋势跟进应把 readiness 接入 `/agent/plans` 与 runtime event，让用户看到“Agent 为什么等待审批/澄清/预算恢复”，而不是直接开放 Python 侧真实工具执行器。
+- 参考资料：OpenAI Agents tools：`https://openai.github.io/openai-agents-python/tools/`；Anthropic tool use：`https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview`；LangGraph durable execution：`https://docs.langchain.com/oss/python/langgraph/durable-execution`。
+
 ## 2026-06-06 落地补充：A2A scheduling evidence should be visible in projections and timeline
 
 - 成熟 Agent Host 的体验不只是“后端知道状态”，还要让前端 timeline、审计台和控制面能解释状态。A2A task planning 如果只存在于 Python `/agent/plans` 响应中，用户刷新页面、WebSocket replay 或 Java 审计查询时仍然看不到“为什么等待授权/用户/诊断”。
