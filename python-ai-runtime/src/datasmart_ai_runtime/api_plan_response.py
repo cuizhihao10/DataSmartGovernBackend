@@ -31,6 +31,7 @@ from datasmart_ai_runtime.services.tools import (
     ToolExecutionReadinessPolicyProvider,
     ToolExecutionReadinessPolicyProviderProtocol,
     ToolExecutionReadinessService,
+    build_tool_execution_readiness_graph_response,
     build_tool_execution_readiness_runtime_event,
 )
 
@@ -191,6 +192,10 @@ def build_plan_response(
     response = _build_base_response(plan, event_transport_builder)
     response["agentWorkspace"] = workspace_context.to_summary()
     response["toolExecutionReadiness"] = _tool_execution_readiness_response(tool_execution_readiness)
+    # `toolExecutionReadinessGraph` 是 readiness 的编排视角：readiness 摘要回答“每个工具当前是什么决策”，
+    # graph 回答“这些决策会让执行图走向哪个条件分支”。它仍然是执行前低敏视图，不执行工具、不写 outbox、
+    # 不创建审批单，只为后续 LangGraph/OpenClaw-style 条件节点和 Java projection 预留稳定契约。
+    response["toolExecutionReadinessGraph"] = build_tool_execution_readiness_graph_response(tool_execution_readiness)
     response["toolExecutionReadinessPolicy"] = readiness_policy_snapshot.to_low_sensitive_summary()
     response["intelligentGatewayGovernance"] = intelligent_gateway_governance
     if control_plane_ingestion is not None:

@@ -335,6 +335,15 @@ class ApiBootstrapTest(unittest.TestCase):
         self.assertIn("datasourceId", quality_item["sensitiveArgumentNames"])
         self.assertNotIn("ds-sensitive-001", str(readiness))
         self.assertNotIn("手机号唯一性", str(readiness))
+        graph = response["toolExecutionReadinessGraph"]
+        self.assertEqual("TOOL_EXECUTION_READINESS_GRAPH", graph["snapshotType"])
+        self.assertEqual("PRE_EXECUTION_CONDITION_GRAPH_ONLY", graph["executionBoundary"])
+        self.assertIn("SHOW_DRAFT_FOR_REVIEW", graph["branches"])
+        self.assertIn("WAITING_APPROVAL", graph["branches"])
+        self.assertFalse(graph["durableActionBoundary"]["toolExecuted"])
+        self.assertFalse(graph["durableActionBoundary"]["outboxWritten"])
+        self.assertNotIn("ds-sensitive-001", str(graph))
+        self.assertNotIn("手机号唯一性", str(graph))
 
     def test_plan_response_records_tool_execution_readiness_event(self) -> None:
         """工具执行准备度应进入 runtime event，支持后续 WebSocket replay 和 Java projection。"""
