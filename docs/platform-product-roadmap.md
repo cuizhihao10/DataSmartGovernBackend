@@ -10325,3 +10325,78 @@ canceled、rejected 以及 unspecified 诊断态映射到 DataSmart 内部治理
 2. 真实 `message:send` 前必须接 permission-admin、task-management、confirmation/outbox、worker pre-check、限流和幂等。
 3. 如果继续协议互联主线，可设计 MCP `tools/call` 与 A2A task 共用的 durable action contract。
 4. 为保持整体节奏，完成 A2A 状态机后应评估切回 Python Runtime 编排、长期记忆治理或模型网关真实推理遥测。
+
+## 5.29 Java Agent Runtime A2A Task Runtime Event 契约预览（2026-06-06）
+
+本阶段承接 5.28 的推荐路线，继续保持“先控制面合同、后真实执行”的节奏。
+5.28 固定了 A2A Task 状态机，本阶段进一步固定未来真实 task endpoint 应该写入哪些 runtime event，
+这些事件如何映射到 A2A streaming、push notification、任务查询、审计回放、低基数指标和持久化事实。
+目标不是发布真实 task 事件，而是避免后续 `message:send`、`tasks/cancel`、streaming 和 push 各自发明字段，
+导致 timeline、前端、审计台和 worker receipt 无法对齐。
+
+已完成：
+- 新增 `AgentA2aTaskRuntimeEventContractPreviewService`：
+  - 构建 A2A task runtime event 契约只读预览；
+  - 当前 `previewOnly=true`、`eventPublishingEnabled=false`、`taskEndpointEnabled=false`；
+  - 不创建 task、不写 runtime projection、不写 Kafka、不写 task history、不触发 worker；
+  - 明确 task event 只保存低敏摘要，不保存原始消息正文、工具输入正文、artifact 正文、模型输出正文、查询语句、样例数据、凭证或内部端点。
+- `AgentExternalProtocolAdapterController` 新增管理路径：
+  - `GET /agent-runtime/protocol-adapters/a2a/task-runtime-event-contract`；
+  - `GET /api/agent/protocol-adapters/a2a/task-runtime-event-contract`。
+- 新增 DTO：
+  - `AgentA2aTaskRuntimeEventContractPreviewResponse`；
+  - `AgentA2aTaskRuntimeEventContractView`；
+  - `AgentA2aTaskEventPayloadFieldView`；
+  - `AgentA2aTaskEventDeliveryChannelView`。
+- 事件契约覆盖：
+  - `agent.a2a_task.submitted`；
+  - `agent.a2a_task.rejected`；
+  - `agent.a2a_task.working`；
+  - `agent.a2a_task.input_required`；
+  - `agent.a2a_task.auth_required`；
+  - `agent.a2a_task.cancel_requested`；
+  - `agent.a2a_task.canceled`；
+  - `agent.a2a_task.artifact_announced`；
+  - `agent.a2a_task.completed`；
+  - `agent.a2a_task.failed`；
+  - `agent.a2a_task.push_delivery_attempted`。
+- 字段白名单覆盖：
+  - `eventId`、`taskPublicId`、`contextPublicId`、`a2aState`、`previousA2aState`；
+  - `internalPhase`、`sequence`、`idempotencyKeyHash`、`actorRefHash`、`reasonCode`；
+  - `artifactRef`、`terminal` 等低敏或 hash-only 字段。
+- 投递通道契约覆盖：
+  - 内部 runtime projection；
+  - A2A stream status；
+  - A2A stream artifact；
+  - A2A push webhook；
+  - task history query；
+  - task event metrics。
+- 新增 `AgentA2aTaskRuntimeEventContractPreviewServiceTest`：
+  - 验证核心 task 生命周期事件齐备；
+  - 验证每个事件都有字段白名单、stream 映射、禁止载荷说明和消费方说明；
+  - 验证字段白名单包含排序、幂等、状态、artifact 引用和终态字段；
+  - 验证 stream、push、metrics、audit 通道都有独立契约；
+  - 验证序列化预览不包含敏感 payload 英文键、内部 endpoint、凭证或查询样例。
+
+验证：
+- `mvn -pl agent-runtime -am "-Dtest=AgentA2aTaskRuntimeEventContractPreviewServiceTest,AgentA2aTaskStateMachinePreviewServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：9 个测试通过。
+- `mvn -pl agent-runtime -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：237 个测试通过。
+- Maven Toolchain 使用 JDK 21：`C:\Users\Cui\.jdks\temurin-21.0.10`。
+- 行数检查：`AgentA2aTaskRuntimeEventContractPreviewService.java` 331 行、`AgentExternalProtocolAdapterController.java` 245 行、`AgentA2aTaskRuntimeEventContractPreviewServiceTest.java` 191 行，均低于 500 行约束。
+
+产品意义：
+- A2A 互联从“状态机可治理”推进到“状态变化可事件化、可投递、可回放”。
+- 先定义事件契约，可以让后续 streaming、push、task history、runtime projection、metrics 和 audit 共用同一套低敏事实。
+- 这一步继续靠近真实 Agent Host：外部 Agent 看到的是 task status/artifact update，DataSmart 内部保留的是可排序、可幂等、可补偿的 durable action 证据。
+
+当前边界：
+- 仍没有真实 `message:send`、`tasks/get`、`tasks/cancel` 或 task 持久化。
+- 事件契约只读，不写真实 runtime event；因此不会造成“没有 task 却有 task event”的假事实。
+- A2A stream/push 仍未启用，当前只是定义通道安全、投递语义、回放与低敏 payload 边界。
+- 尚未与 task-management 统一任务台打通，也未形成 MySQL task fact 表或 Redis 热状态。
+
+下一步推荐路线：
+1. 若继续协议互联主线，建议做“只读 A2A task preview/query 草案”，用 mock task fact 展示状态历史如何消费事件契约。
+2. 真实 `message:send` 前仍必须接 permission-admin、task-management、confirmation/outbox、worker pre-check、限流和幂等。
+3. MCP `tools/call` 与 A2A task 应共用 durable action event contract，避免两套副作用治理链路。
+4. 为避免继续陷在 Java 协议层，完成只读 task preview 后应考虑切回 Python Runtime 编排、长期记忆治理或模型网关真实推理遥测。

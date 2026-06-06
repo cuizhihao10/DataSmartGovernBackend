@@ -7,9 +7,11 @@
 package com.czh.datasmart.govern.agent.controller;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentA2aPublicAgentCardView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentA2aTaskRuntimeEventContractPreviewResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentA2aTaskStateMachinePreviewResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentExternalProtocolAdapterPreviewResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentMcpToolsListResponse;
+import com.czh.datasmart.govern.agent.service.runtime.AgentA2aTaskRuntimeEventContractPreviewService;
 import com.czh.datasmart.govern.agent.service.runtime.AgentA2aTaskStateMachinePreviewService;
 import com.czh.datasmart.govern.agent.service.runtime.AgentExternalProtocolAdapterPreviewService;
 import com.czh.datasmart.govern.agent.service.runtime.AgentExternalProtocolDiscoveryAuditContext;
@@ -49,6 +51,7 @@ public class AgentExternalProtocolAdapterController {
     private final AgentExternalProtocolDiscoveryService discoveryService;
     private final AgentExternalProtocolDiscoveryEventPublisher discoveryEventPublisher;
     private final AgentA2aTaskStateMachinePreviewService a2aTaskStateMachinePreviewService;
+    private final AgentA2aTaskRuntimeEventContractPreviewService a2aTaskRuntimeEventContractPreviewService;
 
     /**
      * 查询 MCP/A2A 外部协议适配预览。
@@ -184,6 +187,34 @@ public class AgentExternalProtocolAdapterController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success(
                 a2aTaskStateMachinePreviewService.buildPreview(),
+                traceId
+        );
+    }
+
+    /**
+     * 查询 A2A Task runtime event 契约只读预览。
+     *
+     * <p>路由语义：
+     * `/a2a/task-runtime-event-contract` 表示“查看未来 A2A task 生命周期事件应该如何进入 DataSmart runtime event
+     * 链路”。5.28 的 `/a2a/task-state-machine` 回答状态如何流转；本接口回答这些状态变化应该被记录成哪些低敏事件，
+     * 以及事件如何被 A2A streaming、push notification、任务查询、审计回放和指标消费。</p>
+     *
+     * <p>为什么仍然只读：
+     * 事件契约是未来真实 `message:send`、`tasks/cancel`、streaming 和 push 的共同字段边界。如果现在直接写真实事件，
+     * 就会出现“没有真实 task，却有 task 事件”的假事实。因此当前接口只返回 schema/contract 预览，不写 runtime
+     * projection、不写 Kafka、不写 task history、不触发 worker。</p>
+     *
+     * <p>返回行为：
+     * 响应只包含事件类型、字段白名单、投递通道、排序回放策略和持久化分层说明；不会返回原始消息正文、工具输入正文、
+     * artifact 正文、模型输出正文、查询语句、样例数据、凭证或内部端点。</p>
+     *
+     * @param traceId 链路追踪 ID，透传给统一响应；当前不会写入具体 task event
+     */
+    @GetMapping("/a2a/task-runtime-event-contract")
+    public PlatformApiResponse<AgentA2aTaskRuntimeEventContractPreviewResponse> getA2aTaskRuntimeEventContract(
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(
+                a2aTaskRuntimeEventContractPreviewService.buildPreview(),
                 traceId
         );
     }
