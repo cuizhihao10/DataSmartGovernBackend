@@ -12,9 +12,15 @@ from datasmart_ai_runtime.services.agent_gateway.session_scheduler import (
 from datasmart_ai_runtime.services.agent_gateway.session_events import (
     build_agent_session_scheduling_runtime_event,
 )
+from datasmart_ai_runtime.services.agent_gateway.a2a_task_planning_adapter import (
+    A2aTaskPlanningAdapter,
+    build_a2a_task_planning_decision,
+)
 
 __all__ = (
+    "A2aTaskPlanningAdapter",
     "AgentSessionScheduler",
     "build_agent_session_scheduling_policy_view",
     "build_agent_session_scheduling_runtime_event",
+    "build_a2a_task_planning_decision",
 )

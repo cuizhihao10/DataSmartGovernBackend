@@ -1,5 +1,41 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-06 追加落地进展：Python Runtime A2A Task 规划适配器
+
+- Python Runtime 新增 `domain/protocols/` 子包：
+  - 用于承载 A2A/MCP 等外部 Agent 协议的稳定领域合同；
+  - 避免继续把协议对象平铺到 `domain/` 根目录，让模型网关、记忆、Skill 和协议互联边界更清晰。
+- 新增 `A2aTaskPlanningAdapter`：
+  - 消费 Java Agent Runtime 5.30 A2A task query preview 风格合同；
+  - 将 `TASK_STATE_SUBMITTED` 映射为执行前预检；
+  - 将 `TASK_STATE_WORKING` 映射为 worker pre-check 规划；
+  - 将 `TASK_STATE_INPUT_REQUIRED` 映射为等待用户输入；
+  - 将 `TASK_STATE_AUTH_REQUIRED` 或内部 `APPROVAL_WAITING` 映射为等待授权/审批；
+  - 将 completed、failed、canceled、rejected 映射为终态禁止继续执行；
+  - 将未知或缺失状态映射为 fail-closed 诊断。
+- 适配器只保留低敏字段：
+  - taskPublicId、contextPublicId、a2aState、internalPhase、sequence、reasonCode；
+  - allowedClientOperations、governanceSummary；
+  - history event 的 sequence/eventType/state/phase/reasonCode/artifactRef；
+  - artifact metadata-only 引用。
+- 适配器会递归统计并丢弃敏感字段，但不在 summary 中返回敏感字段名或字段值，避免 task planning 摘要变成第二份 payload 缓存。
+
+产品意义：
+- Java A2A 控制面草案开始进入 Python Runtime 消费链路，不再只是 Java 侧只读预览。
+- 这一步让 DataSmart 更接近真实 Agent Host：外部协议 task 状态可以驱动 Master Agent 的下一步规划，但副作用仍必须回到 permission-admin、审批、outbox、worker pre-check 和 artifact 二次鉴权。
+- Python 侧现在具备“理解 task 正在等待输入、等待授权、可做 worker 预检、已终态”的基础能力，为后续 LangGraph/OpenClaw-style 会话图打下可替换适配层。
+
+当前边界：
+- 当前仍没有真实 A2A `message/send`、`tasks/get`、`tasks/cancel`、`tasks/subscribe` 或 push notification。
+- adapter 不访问 Java HTTP，也不写 runtime event、不执行工具、不创建任务、不取消任务。
+- 当前只完成合同消费与规划决策，尚未接入 `/agent/plans` 主路径、LangGraph 节点或 WebSocket timeline。
+
+下一步推荐路线：
+1. 在 Python Runtime 内新增轻量 API/诊断入口，展示 A2A task planning decision，方便 Java 控制面、网关和测试环境联调。
+2. 将该 decision 接入多 Agent 会话调度视图，让 A2A task 状态影响 Master/Specialist/Guardrail Agent 的参与方式。
+3. 后续若继续 A2A 主线，应优先设计 task fact 表与 task-management 对接，而不是直接开放有副作用的 task endpoint。
+4. 从整体节奏看，下一阶段也可以切到 LangGraph/OpenClaw-style 执行图，把当前决策作为图节点输入。
+
 ## 2026-06-05 追加落地进展：Chroma-compatible 语义记忆适配器
 
 - Python Runtime 新增 `memory_chroma_adapter.py`：

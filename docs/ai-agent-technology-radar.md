@@ -1,5 +1,15 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-06 落地补充：A2A task states should become planning inputs before execution endpoints
+
+- A2A 最新实践继续强调跨服务 Agent 协作、Task 生命周期、history 恢复、artifact 引用、streaming 和 push notification。对 DataSmart 这类企业数据治理 Agent Host 来说，最危险的路径不是“不会开放 A2A”，而是过早把 A2A task endpoint 直接接到工具执行。
+- 本阶段没有继续在 Java A2A preview 层增加字段，而是把 Java 5.30 已经形成的 task 查询合同交给 Python Runtime 消费：`A2aTaskPlanningAdapter` 会把 submitted、working、input-required、auth-required 和终态状态映射为 Master Agent 可理解的规划模式。
+- 这种顺序更接近商业化 Agent 平台：先让编排层理解远程 task 的状态，再决定是否进入权限预检、等待用户输入、等待授权、worker 预检或终态展示；最后才考虑真实 `message/send`、`tasks/get`、stream 或 push。
+- DataSmart 当前继续坚持低敏边界：规划决策只保留 task id、context id、状态、阶段、序号、原因码、history 事件摘要和 artifact 引用；不会保留原始消息、工具参数、SQL、样本数据、artifact 正文、模型输出、凭证或内部端点。
+- 这一步也回应了 Python Runtime 目录治理趋势：外部协议合同进入 `domain/protocols` 子包，而不是继续平铺到根目录。后续 MCP resource/prompt、A2A Agent Card、task fact、LangGraph 节点输入都可以按同一结构扩展。
+- 下一步趋势跟进不应马上打开真实 A2A task 副作用端点。更稳的路线是把 planning decision 接入智能网关会话调度和 runtime event，再设计 task fact 持久化、task-management 对接、幂等、限流、审批和 worker receipt。
+- 参考资料：Google ADK A2A Introduction：`https://adk.dev/a2a/intro/`；A2A Core Protocol Specification：`https://agent2agent.info/specification/core/`。
+
 ## 2026-06-06 落地补充：model routing decisions should become control-plane projections
 
 - 本阶段把 Python `model_gateway_routed` runtime event 接入 Java 强类型 projection 和 display。这个方向贴近当前 Agent tracing 趋势：成熟 Agent Host 不只记录最终回答，还要能回放 LLM 选择、工具调用、handoff、guardrail 和自定义事件。
