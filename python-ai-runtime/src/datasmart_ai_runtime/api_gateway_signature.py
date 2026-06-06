@@ -50,6 +50,7 @@ SIGNED_HEADERS = (
     "X-DataSmart-Tenant-Plan-Code",
     "X-DataSmart-Workspace-Risk-Level",
     "X-DataSmart-Tool-Budget-Policy-Version",
+    "X-DataSmart-Tool-Policy-Envelope",
     "X-DataSmart-Skill-Visibility-Cache-Version",
     "X-DataSmart-Skill-Visibility-Cache-Key",
     "X-DataSmart-Skill-Visibility-Cache-Ttl-Seconds",

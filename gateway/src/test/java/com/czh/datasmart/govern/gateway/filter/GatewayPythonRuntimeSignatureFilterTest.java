@@ -136,13 +136,14 @@ class GatewayPythonRuntimeSignatureFilterTest {
                 X-DataSmart-Trace-Id:trace-001
                 X-DataSmart-Tenant-Id:10
                 X-DataSmart-Actor-Id:1001""");
+        assertThat(payload).contains(PlatformContextHeaders.TOOL_POLICY_ENVELOPE + ":");
         assertThat(GatewayPythonRuntimeSignatureFilter.sign(
                 headers,
                 "1800000000000",
                 "nonce-001",
                 "gateway-local-v1",
                 "secret-for-test"
-        )).isEqualTo("eyNpj9AQxXZ4VLAsC-NTKcL2Ew5vInsNpNZBtGUE0oY");
+        )).isEqualTo("B7r5irPoHuecSPLsxR4TtOtrfbL4rllxtrsZR4cVJZQ");
     }
 
     /**

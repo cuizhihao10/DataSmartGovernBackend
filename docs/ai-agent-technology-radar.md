@@ -1,5 +1,13 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-06 落地补充：policy envelopes reduce duplicate control-plane calls
+
+- 商业化 Agent Host 不能让模型请求体直接决定工具预算、审批、风险阻断或队列策略；这些策略应由受信控制面生成，并通过可验证的边界进入 Agent Runtime。
+- DataSmart 本阶段把 `toolCallBudget + toolExecutionReadinessPolicy` 设计为一个 gateway 签名保护的低敏 policy envelope：Java 控制面负责评估，Python Runtime 只负责验签后裁剪、归一化和消费。
+- 这一步解决了 5.40 的一个性能与一致性问题：预算 provider 与 readiness provider 不必长期分别同步调用 permission-admin，同一请求可以共享同一次控制面评估结果。
+- 低敏边界继续是硬约束。Envelope 只允许策略版本、角色/套餐/风险/backlog 枚举、预算数字、布尔策略开关和 influenceCodes；不能携带 prompt、SQL、工具实参、样本数据、模型输出、凭证、内部 endpoint 或 artifact 正文。
+- 后续趋势跟进应进入“执行图条件节点”和“统一工具入口”：MCP `tools/call`、A2A action、模型 tool_call 都应该先落到 DataSmart `ToolPlan/readiness`，再由权限、审批、outbox、worker receipt 和审计链路决定是否执行。
+
 ## 2026-06-06 落地补充：policy centers should emit execution-readiness contracts
 
 - 当前 Agent Host 的执行前治理正在从“运行时本地判断”演进为“控制面策略合同”：权限中心、租户套餐、队列压力、风险等级和人工确认策略应共同决定工具是否可执行。

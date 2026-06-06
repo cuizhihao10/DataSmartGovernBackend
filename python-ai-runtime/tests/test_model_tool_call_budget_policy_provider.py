@@ -56,6 +56,44 @@ class ModelToolCallBudgetPolicyProviderTest(unittest.TestCase):
         self.assertEqual(1, policy.max_auto_executable_tool_calls)
         self.assertEqual(256, policy.max_total_arguments_bytes)
 
+    def test_trusted_control_plane_budget_overrides_untrusted_request_budget(self) -> None:
+        """受信控制面预算应覆盖普通请求预算，防止客户端伪造扩大自动工具执行额度。
+
+        这个用例固定 5.41 的网关策略 envelope 语义：客户端仍可以在迁移期携带 `toolCallBudget`
+        或顶层预算字段，但只要 gateway 验签后重建了 `trustedControlPlane.toolBudget`，Python Runtime
+        就必须优先采用受信预算。这样高风险 workspace、审计角色、试用租户或 worker backlog 过高等场景，
+        不会因为请求体里声明“我可以自动执行更多工具”而绕过 Java permission-admin 的策略判断。
+        """
+
+        provider = EnvAndRequestModelToolCallBudgetPolicyProvider(
+            environ={"DATASMART_AI_TOOL_BUDGET_MAX_AUTO_EXECUTABLE_CALLS": "5"}
+        )
+
+        policy = provider.policy_for(
+            self._request(
+                variables={
+                    "toolCallBudget": {
+                        "maxProposedToolCalls": 9,
+                        "maxAutoExecutableToolCalls": 9,
+                        "maxHighRiskToolCalls": 9,
+                    },
+                    "maxTotalArgumentsBytes": 4096,
+                    "trustedControlPlane": {
+                        "toolBudget": {
+                            "maxProposedToolCalls": 2,
+                            "maxAutoExecutableToolCalls": 1,
+                            "maxHighRiskToolCalls": 0,
+                        }
+                    },
+                }
+            )
+        )
+
+        self.assertEqual(2, policy.max_proposed_tool_calls)
+        self.assertEqual(1, policy.max_auto_executable_tool_calls)
+        self.assertEqual(0, policy.max_high_risk_tool_calls)
+        self.assertEqual(4096, policy.max_total_arguments_bytes)
+
     def test_invalid_values_are_ignored_to_avoid_accidental_lockdown(self) -> None:
         """非法值或非正数应被忽略，避免错误配置把工具链直接锁死。"""
 
@@ -150,7 +188,7 @@ class ModelToolCallBudgetPolicyProviderTest(unittest.TestCase):
                     "toolCallBudget": {
                         "maxProposedToolCalls": 9,
                         "maxAutoExecutableToolCalls": 4,
-                        "maxHighRiskToolCalls": 1,
+                        "maxHighRiskToolCalls": 0,
                         "maxSingleArgumentsBytes": 1234,
                         "maxTotalArgumentsBytes": 5678,
                     }
@@ -160,7 +198,7 @@ class ModelToolCallBudgetPolicyProviderTest(unittest.TestCase):
 
         self.assertEqual(9, policy.max_proposed_tool_calls)
         self.assertEqual(4, policy.max_auto_executable_tool_calls)
-        self.assertEqual(1, policy.max_high_risk_tool_calls)
+        self.assertEqual(0, policy.max_high_risk_tool_calls)
         self.assertEqual(1234, policy.max_single_arguments_bytes)
         self.assertEqual(5678, policy.max_total_arguments_bytes)
 

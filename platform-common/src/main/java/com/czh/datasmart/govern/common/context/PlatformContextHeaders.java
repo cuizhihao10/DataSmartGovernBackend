@@ -53,6 +53,19 @@ public final class PlatformContextHeaders {
     public static final String TOOL_BUDGET_POLICY_VERSION = "X-DataSmart-Tool-Budget-Policy-Version";
 
     /**
+     * gateway 传给 Python Runtime 的工具治理策略 envelope。
+     *
+     * <p>该 Header 用于承载一份经过 gateway 清理、permission-admin 评估、并由 HMAC 签名保护的低敏 JSON 快照。
+     * 推荐结构包含 `toolCallBudget` 与 `toolExecutionReadinessPolicy` 两个对象，分别服务模型工具候选预算
+     * 和执行前 readiness 判断。</p>
+     *
+     * <p>安全边界非常重要：该 Header 只能包含策略数字、枚举、布尔开关、策略版本和 influenceCodes，
+     * 不能包含 prompt、SQL、工具参数值、样本数据、模型输出、凭证、权限对象明细或内部 endpoint。
+     * 它必须进入 gateway -> Python Runtime 签名原文，否则 Python 不应把它升级为 trustedControlPlane。</p>
+     */
+    public static final String TOOL_POLICY_ENVELOPE = "X-DataSmart-Tool-Policy-Envelope";
+
+    /**
      * gateway 生成的 Skill 可见性缓存协议版本。
      *
      * <p>该协议不是缓存响应体，而是给 Python Runtime 一个“当前控制面事实快照可以如何分组复用”的低敏提示。

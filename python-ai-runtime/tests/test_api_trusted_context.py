@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import unittest
@@ -111,6 +112,110 @@ class ApiTrustedContextTest(unittest.TestCase):
         self.assertEqual("gateway-cache-key-001", cache_context["gatewayCacheKey"])
         self.assertEqual(120, cache_context["ttlSeconds"])
         self.assertEqual("STANDARD", cache_context["tenantPlanCode"])
+
+    def test_signed_gateway_tool_policy_envelope_injects_budget_and_readiness_policy(self) -> None:
+        """签名保护的工具策略 envelope 应进入 trustedControlPlane。
+
+        该用例固定 gateway 一次性注入 `toolCallBudget + toolExecutionReadinessPolicy` 的协议形态：
+        请求体里伪造的受信命名空间会被删除，Header 中的 envelope 会被 HMAC 签名覆盖，Python 只裁剪
+        低敏字段，不透传 prompt、SQL、工具参数或内部 endpoint。
+        """
+
+        headers = self._signed_headers()
+        headers["X-DataSmart-Tool-Policy-Envelope"] = json.dumps(
+            {
+                "toolCallBudget": {
+                    "policyVersion": "gateway-policy-v2",
+                    "maxProposedToolCalls": 6,
+                    "maxAutoExecutableToolCalls": 1,
+                    "maxHighRiskToolCalls": 0,
+                    "prompt": "should-not-leak",
+                },
+                "toolExecutionReadinessPolicy": {
+                    "source": "permission-admin",
+                    "policyVersion": "readiness-v2",
+                    "actorRole": "AUDITOR",
+                    "tenantPlanCode": "TRIAL",
+                    "workspaceRiskLevel": "HIGH",
+                    "workerBacklogLevel": "CRITICAL",
+                    "maxAutoSyncTools": 0,
+                    "maxAsyncTools": 0,
+                    "allowDraftWithoutAllParameters": False,
+                    "influenceCodes": ["REMOTE_PERMISSION_ADMIN_POLICY"],
+                    "sql": "select * from secret_table",
+                    "arguments": {"datasourceId": "ds-sensitive"},
+                    "internalEndpoint": "http://permission-admin.internal",
+                },
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        headers[GATEWAY_SIGNATURE] = sign_gateway_payload(
+            headers,
+            timestamp=headers[GATEWAY_SIGNATURE_TIMESTAMP],
+            nonce=headers[GATEWAY_SIGNATURE_NONCE],
+            key_id=headers[GATEWAY_SIGNATURE_KEY_ID],
+            secret="secret-for-test",
+        )
+
+        payload = enrich_agent_plan_payload_from_gateway_headers(
+            {
+                "variables": {
+                    "trustedControlPlane": {
+                        "toolBudget": {"maxAutoExecutableToolCalls": 99},
+                        "toolExecutionReadinessPolicy": {"actorRole": "PLATFORM_ADMIN"},
+                    }
+                }
+            },
+            headers,
+            signature_config=GatewaySignatureVerificationConfig(required=True, secret="secret-for-test"),
+            now_ms=1_800_000_000_100,
+        )
+
+        trusted = payload["variables"]["trustedControlPlane"]
+        tool_budget = trusted["toolBudget"]
+        readiness_policy = trusted["toolExecutionReadinessPolicy"]
+        serialized_trusted = str(trusted)
+        self.assertEqual("gateway-policy-v2", tool_budget["policyVersion"])
+        self.assertEqual(6, tool_budget["maxProposedToolCalls"])
+        self.assertEqual(1, tool_budget["maxAutoExecutableToolCalls"])
+        self.assertEqual(0, tool_budget["maxHighRiskToolCalls"])
+        self.assertEqual("permission-admin", readiness_policy["source"])
+        self.assertEqual("readiness-v2", readiness_policy["policyVersion"])
+        self.assertEqual("AUDITOR", readiness_policy["actorRole"])
+        self.assertEqual(0, readiness_policy["maxAutoSyncTools"])
+        self.assertEqual(("REMOTE_PERMISSION_ADMIN_POLICY",), readiness_policy["influenceCodes"])
+        self.assertNotIn("should-not-leak", serialized_trusted)
+        self.assertNotIn("secret_table", serialized_trusted)
+        self.assertNotIn("ds-sensitive", serialized_trusted)
+        self.assertNotIn("permission-admin.internal", serialized_trusted)
+
+    def test_signed_gateway_tool_policy_envelope_rejects_malformed_json(self) -> None:
+        """签名链路中的策略 envelope 格式错误时应 fail-closed。
+
+        这里不是验证 HMAC 本身，而是验证“签名通过后的控制面载荷仍必须满足结构契约”。
+        如果 gateway 或 agent-runtime 已经声明要下发工具策略 envelope，但实际内容不是 JSON object，
+        Python Runtime 不能把它当作缺失处理后继续使用本地默认预算；否则高风险租户、试用套餐、审计角色
+        或 worker backlog 限流策略会被意外绕过。
+        """
+
+        headers = self._signed_headers()
+        headers["X-DataSmart-Tool-Policy-Envelope"] = "not-json"
+        headers[GATEWAY_SIGNATURE] = sign_gateway_payload(
+            headers,
+            timestamp=headers[GATEWAY_SIGNATURE_TIMESTAMP],
+            nonce=headers[GATEWAY_SIGNATURE_NONCE],
+            key_id=headers[GATEWAY_SIGNATURE_KEY_ID],
+            secret="secret-for-test",
+        )
+
+        with self.assertRaisesRegex(PermissionError, "gateway tool policy envelope must be a JSON object"):
+            enrich_agent_plan_payload_from_gateway_headers(
+                {"variables": {}},
+                headers,
+                signature_config=GatewaySignatureVerificationConfig(required=True, secret="secret-for-test"),
+                now_ms=1_800_000_000_100,
+            )
 
     def test_required_signature_rejects_forged_gateway_source(self) -> None:
         """只伪造 source-service 但没有签名时，应拒绝注入可信上下文。"""

@@ -69,10 +69,13 @@ from datasmart_ai_runtime.services.model_gateway.model_tool_call_budget_guard im
 )
 from datasmart_ai_runtime.services.model_gateway.model_tool_call_budget_policy_provider import (
     EnvAndRequestModelToolCallBudgetPolicyProvider,
-    JavaPermissionAdminToolBudgetPolicyClient,
     ModelToolCallBudgetPolicyProvider,
-    PermissionAdminToolBudgetPolicyClientError,
     RemoteThenLocalModelToolCallBudgetPolicyProvider,
+)
+from datasmart_ai_runtime.services.model_gateway.permission_admin_tool_budget_policy_client import (
+    JavaPermissionAdminToolBudgetPolicyClient,
+    PermissionAdminToolBudgetPolicyClientError,
+    PermissionAdminToolBudgetPolicyResponse,
 )
 from datasmart_ai_runtime.services.model_gateway.model_tool_call_events import (
     ModelToolCallEventRecordingSummary,
@@ -137,6 +140,7 @@ __all__ = [
     "OpenAICompatibleProviderSettings",
     "OpenAICompatibleToolSchemaBuilder",
     "PermissionAdminToolBudgetPolicyClientError",
+    "PermissionAdminToolBudgetPolicyResponse",
     "RemoteThenLocalModelToolCallBudgetPolicyProvider",
     "SimulatedModelToolExecutionFeedbackProvider",
     "ToolExecutionFeedback",

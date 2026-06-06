@@ -12,7 +12,8 @@
 
 from __future__ import annotations
 
-from typing import Mapping
+import json
+from typing import Any, Mapping
 
 from datasmart_ai_runtime.api_gateway_signature import (
     GatewaySignatureNonceStore,
@@ -24,6 +25,8 @@ from datasmart_ai_runtime.api_gateway_signature import (
 
 GATEWAY_SOURCE_SERVICE = "datasmart-govern-gateway"
 TRUSTED_ROOT_KEY = "trustedControlPlane"
+TOOL_POLICY_ENVELOPE_HEADER = "X-DataSmart-Tool-Policy-Envelope"
+MAX_TOOL_POLICY_ENVELOPE_BYTES = 4096
 
 
 def enrich_agent_plan_payload_from_gateway_headers(
@@ -82,6 +85,7 @@ def enrich_agent_plan_payload_from_gateway_headers(
         _header(headers, "X-DataSmart-Skill-Visibility-Cache-Ttl-Seconds"),
         0,
     )
+    tool_policy_envelope = _tool_policy_envelope_from_header(headers)
 
     # tenantId 与 actorId 属于认证主体事实。只要 gateway 已提供，就覆盖请求体同名字段；
     # 如果 Header 缺失则保留请求体值，兼容本地开发，但生产 gateway 应配置为身份缺失时拒绝请求。
@@ -114,6 +118,19 @@ def enrich_agent_plan_payload_from_gateway_headers(
             "policyVersion": tool_budget_policy_version,
         },
     }
+    if tool_policy_envelope is not None:
+        # 工具策略 envelope 是 gateway/permission-admin 一次性下发给 Python Runtime 的低敏控制面快照。
+        # 它必须在验签通过之后才能解析，并且只允许进入 trustedControlPlane；请求体中伪造的同名字段已经在
+        # 函数开头被删除。这样模型工具预算与执行准备度策略可以共享同一次 Java 控制面评估结果，避免
+        # `/agent/plans` 内部为了 toolCallBudget 和 readiness policy 分别远程调用 permission-admin。
+        tool_call_budget = _tool_call_budget_from_envelope(tool_policy_envelope.get("toolCallBudget"))
+        if tool_call_budget:
+            trusted_control_plane["toolBudget"].update(tool_call_budget)
+        readiness_policy = _tool_readiness_policy_from_envelope(
+            tool_policy_envelope.get("toolExecutionReadinessPolicy")
+        )
+        if readiness_policy:
+            trusted_control_plane["toolExecutionReadinessPolicy"] = readiness_policy
     if skill_visibility_cache_key:
         # 只在 gateway 提供缓存 key 时注入缓存上下文。该 key 已被 gateway HMAC 签名保护，
         # Python Runtime 仍会把它与 project/session/Skill Manifest 指纹再次组合，避免跨项目、
@@ -150,6 +167,159 @@ def _csv(value: str | None) -> tuple[str, ...]:
     if not value:
         return ()
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _tool_policy_envelope_from_header(headers: Mapping[str, str]) -> Mapping[str, Any] | None:
+    """读取并解析 gateway 签名保护的工具策略 envelope。
+
+    Header 解析原则：
+    - Header 不存在时返回 None，兼容尚未升级的 gateway；
+    - Header 存在但不是 JSON object 时直接拒绝请求，因为这代表控制面策略注入出现集成错误；
+    - Header 长度限制为 4KB，避免把大量权限明细、prompt 或工具参数误塞进 HTTP Header；
+    - 即使 JSON 中包含未知字段，后续也只按白名单裁剪 `toolCallBudget` 与 `toolExecutionReadinessPolicy`。
+
+    为什么选择 fail-closed：
+    如果 gateway 明确下发了策略 envelope，却因为格式错误被 Python 静默忽略，本轮请求可能退回更宽松的本地默认预算。
+    对商业化 Agent 来说，这比请求失败更危险。因此 envelope 存在但不可解析时应暴露为安全边界错误。
+    """
+
+    raw_value = _header(headers, TOOL_POLICY_ENVELOPE_HEADER)
+    if raw_value is None:
+        return None
+    if len(raw_value.encode("utf-8")) > MAX_TOOL_POLICY_ENVELOPE_BYTES:
+        raise PermissionError("gateway tool policy envelope is too large")
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError as exc:
+        raise PermissionError("gateway tool policy envelope must be a JSON object") from exc
+    if not isinstance(parsed, Mapping):
+        raise PermissionError("gateway tool policy envelope must be a JSON object")
+    return parsed
+
+
+def _tool_call_budget_from_envelope(value: object | None) -> dict[str, object]:
+    """从 envelope 中裁剪模型工具调用预算字段。
+
+    `toolCallBudget` 会进入 `trustedControlPlane.toolBudget`，供本地 `ModelToolCallBudgetPolicyProvider`
+    优先消费。这里不接受 actorRole、workspaceRiskLevel 等身份事实，因为这些事实已经由独立 Header 构建；
+    envelope 只补充预算数字和策略版本，避免一个 JSON 字段覆盖整套可信身份上下文。
+    """
+
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, object] = {}
+    for target_key, aliases in {
+        "policyVersion": ("policyVersion", "policy_version"),
+        "maxProposedToolCalls": ("maxProposedToolCalls", "max_proposed_tool_calls"),
+        "maxAutoExecutableToolCalls": ("maxAutoExecutableToolCalls", "max_auto_executable_tool_calls"),
+        "maxHighRiskToolCalls": ("maxHighRiskToolCalls", "max_high_risk_tool_calls"),
+        "maxSingleArgumentsBytes": ("maxSingleArgumentsBytes", "max_single_arguments_bytes"),
+        "maxTotalArgumentsBytes": ("maxTotalArgumentsBytes", "max_total_arguments_bytes"),
+    }.items():
+        raw_field_value = _first_present(value, *aliases)
+        if target_key == "policyVersion":
+            if text := _string_value(raw_field_value):
+                result[target_key] = text
+        elif (number := _non_negative_int(raw_field_value)) is not None:
+            result[target_key] = number
+    return result
+
+
+def _tool_readiness_policy_from_envelope(value: object | None) -> dict[str, object]:
+    """从 envelope 中裁剪执行准备度策略字段。
+
+    readiness policy 是“执行前是否继续”的关键控制面输入，因此只允许低敏白名单：
+    策略来源、版本、角色/套餐/风险/backlog 枚举、同步/异步预算、审批/阻断/草案布尔开关和影响码。
+    任何 prompt、SQL、工具参数值、样本数据、模型输出、凭证或内部 endpoint 都不会进入 trustedControlPlane。
+    """
+
+    if not isinstance(value, Mapping):
+        return {}
+    result: dict[str, object] = {}
+    for target_key, aliases in {
+        "source": ("source",),
+        "policyVersion": ("policyVersion", "policy_version"),
+        "actorRole": ("actorRole", "actor_role", "role"),
+        "tenantPlanCode": ("tenantPlanCode", "tenant_plan_code"),
+        "workspaceRiskLevel": ("workspaceRiskLevel", "workspace_risk_level"),
+        "workerBacklogLevel": ("workerBacklogLevel", "worker_backlog_level"),
+    }.items():
+        if text := _string_value(_first_present(value, *aliases)):
+            result[target_key] = text
+    for target_key, aliases in {
+        "maxAutoSyncTools": ("maxAutoSyncTools", "max_auto_sync_tools"),
+        "maxAsyncTools": ("maxAsyncTools", "max_async_tools"),
+    }.items():
+        if (number := _non_negative_int(_first_present(value, *aliases))) is not None:
+            result[target_key] = number
+    for target_key, aliases in {
+        "highRiskRequiresApproval": ("highRiskRequiresApproval", "high_risk_requires_approval"),
+        "criticalRiskBlocked": ("criticalRiskBlocked", "critical_risk_blocked"),
+        "allowDraftWithoutAllParameters": (
+            "allowDraftWithoutAllParameters",
+            "allow_draft_without_all_parameters",
+        ),
+    }.items():
+        if (flag := _optional_bool(_first_present(value, *aliases))) is not None:
+            result[target_key] = flag
+    influence_codes = _string_tuple(_first_present(value, "influenceCodes", "influence_codes"))
+    if influence_codes:
+        result["influenceCodes"] = influence_codes
+    return result
+
+
+def _first_present(mapping: Mapping[str, object], *keys: str) -> object | None:
+    """返回第一个显式存在的字段值，保留 0/False 这类有效策略配置。"""
+
+    for key in keys:
+        if key in mapping:
+            return mapping[key]
+    return None
+
+
+def _string_value(value: object | None) -> str | None:
+    """把可选字段规范化为非空字符串。"""
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _non_negative_int(value: object | None) -> int | None:
+    """读取非负整数策略字段；非法值返回 None，由下游默认值兜底。"""
+
+    if value is None:
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _optional_bool(value: object | None) -> bool | None:
+    """读取可选布尔策略字段；字段缺失时返回 None。"""
+
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def _string_tuple(value: object | None) -> tuple[str, ...]:
+    """读取 influenceCodes 这类低敏机器码列表。"""
+
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        candidates = value.split(",")
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        candidates = value
+    else:
+        return ()
+    return tuple(text for item in candidates if (text := str(item).strip()))
 
 
 def _positive_int(value: str | None, default: int) -> int:

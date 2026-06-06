@@ -1,5 +1,37 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-06 追加落地进展：gateway 签名工具策略 Envelope 接入 Python 受信控制面
+
+- `platform-common` 新增 `X-DataSmart-Tool-Policy-Envelope` 统一 Header 常量，作为 gateway/agent-runtime 向 Python Runtime 下发工具治理策略的低敏控制面信封。
+- `gateway` 与 Python `api_gateway_signature.py` 同步把该 Header 纳入内部 HMAC 签名字段集合：
+  - 只有被 Java gateway 签名保护的 envelope 才能进入 Python 受信上下文；
+  - 任何绕过 gateway 的客户端自报策略都不能覆盖 `trustedControlPlane`；
+  - 签名测试同步覆盖 canonical payload，避免以后新增 Header 时遗漏签名链。
+- Python `api_trusted_context.py` 新增策略 envelope 解析：
+  - Header 不存在时兼容旧 gateway；
+  - Header 存在但不是 JSON object、格式非法或超过 4KB 时 fail-closed；
+  - 仅白名单接收 `toolCallBudget` 与 `toolExecutionReadinessPolicy` 的低敏字段；
+  - 明确拒绝 prompt、SQL、工具参数值、样本数据、模型输出、凭证、内部 endpoint 或权限明细进入事件链。
+- `EnvAndRequestModelToolCallBudgetPolicyProvider` 优先消费 `trustedControlPlane.toolBudget`：
+  - 优先级高于请求体 `toolCallBudget`、顶层兼容字段和环境变量；
+  - `0` 被视为合法策略值，例如 `maxHighRiskToolCalls=0` 代表本轮禁止高风险工具，而不是“未配置”；
+  - 这让 Java 控制面可以按角色、套餐、风险、backlog 一次性收紧 Python 工具预算。
+- `JavaPermissionAdminToolBudgetPolicyClient` 从预算 provider 中拆出为独立 client 文件：
+  - provider 负责策略来源优先级；
+  - client 负责 HTTP 请求、响应校验、低敏 DTO 解析；
+  - budget guard 仍只执行预算，不关心策略来自环境变量、请求变量还是 Java 控制面。
+
+产品意义：
+- 5.41 把 5.40 中“预算 provider 与 readiness provider 可能分别远程调用 permission-admin”的边界推进为“gateway 可以一次性注入签名策略 envelope”。
+- 这一步更接近商业化 Agent Host 的控制面形态：模型工具执行前，预算与 readiness 由受信平台策略决定，而不是由模型请求或 Python 本地默认值决定。
+- 策略信封不是工具执行器，也不是权限绕过通道；真实副作用仍需要 Java permission-admin、task-management outbox、worker pre-check、审批和审计链路继续把关。
+
+下一步推荐路线：
+1. 让 Java gateway/agent-runtime 在真实请求链路中生成该 signed policy envelope，替代 Python 侧重复远程策略调用。
+2. 将 readiness 作为 LangGraph/OpenClaw-style 执行图条件节点，形成显式“计划 -> 策略信封 -> readiness -> 审批/澄清/执行/入队”分支。
+3. 设计 MCP `tools/call`、A2A action 和模型 tool_call 共用的 `ToolPlan/readiness` 前置治理合同，避免三套工具入口割裂。
+4. 暂不建议继续只堆 readiness 响应字段；更高价值是进入统一执行图、真实 outbox worker 和工具调用回执闭环。
+
 ## 2026-06-06 追加落地进展：permission-admin 输出工具执行准备度策略合同
 
 - `permission-admin` 在现有 Agent 工具预算策略响应中新增 `toolExecutionReadinessPolicy`：
