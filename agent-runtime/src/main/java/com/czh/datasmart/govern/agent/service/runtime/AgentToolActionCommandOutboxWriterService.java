@@ -54,6 +54,7 @@ public class AgentToolActionCommandOutboxWriterService {
     private static final String STATE_ENQUEUED = "ENQUEUED";
     private static final String STATE_DUPLICATE_REUSED = "DUPLICATE_REUSED";
     private static final String STATE_BLOCKED_BY_PROPOSAL = "BLOCKED_BY_PROPOSAL";
+    private static final String STATE_BLOCKED_BY_SERVER_VERIFICATION = "BLOCKED_BY_SERVER_VERIFICATION";
     private static final String COMMAND_SOURCE = "TOOL_ACTION_COMMAND_PROPOSAL";
     private static final String DEFAULT_TOPIC = "datasmart.agent.tool.async.commands";
     private static final String DEFAULT_CONSUMER = "task-management";
@@ -75,6 +76,8 @@ public class AgentToolActionCommandOutboxWriterService {
     private final AgentAsyncTaskCommandOutboxProperties outboxProperties;
     private final AgentRuntimeProperties runtimeProperties;
     private final AgentToolActionCommandProposalService proposalService;
+    private final AgentToolActionPayloadReferenceVerifier payloadReferenceVerifier;
+    private final AgentToolActionFactEvidenceVerifier factEvidenceVerifier;
     private final AgentAsyncTaskCommandOutboxStore outboxStore;
     private final ObjectMapper objectMapper;
 
@@ -93,8 +96,22 @@ public class AgentToolActionCommandOutboxWriterService {
         if (!Boolean.TRUE.equals(proposal.outboxWriteAllowedByPreflight())) {
             return blockedResponse(proposal);
         }
+        AgentToolActionPayloadReferenceVerificationResult payloadReferenceVerification =
+                payloadReferenceVerifier.verify(proposal, accessContext);
+        AgentToolActionFactEvidenceVerificationResult factEvidenceVerification =
+                factEvidenceVerifier.verify(request, proposal);
+        if (!Boolean.TRUE.equals(payloadReferenceVerification.verifiedForWriter())
+                || !Boolean.TRUE.equals(factEvidenceVerification.verifiedForWriter())) {
+            return verificationBlockedResponse(proposal, payloadReferenceVerification, factEvidenceVerification);
+        }
         assertCanEnqueue(proposal);
-        AgentAsyncTaskCommandOutboxRecord record = buildRecord(proposal, request, accessContext);
+        AgentAsyncTaskCommandOutboxRecord record = buildRecord(
+                proposal,
+                request,
+                accessContext,
+                payloadReferenceVerification,
+                factEvidenceVerification
+        );
         boolean appended = outboxStore.append(record);
         AgentAsyncTaskCommandOutboxRecord current = appended
                 ? record
@@ -110,8 +127,8 @@ public class AgentToolActionCommandOutboxWriterService {
                 proposal.runId(),
                 proposal.payloadReference(),
                 proposal.proposalState(),
-                summaryReasons(proposal, appended),
-                recommendedActions(appended),
+                summaryReasons(proposal, appended, payloadReferenceVerification, factEvidenceVerification),
+                recommendedActions(appended, payloadReferenceVerification, factEvidenceVerification),
                 AgentAsyncTaskCommandOutboxRecordView.from(current)
         );
     }
@@ -129,6 +146,42 @@ public class AgentToolActionCommandOutboxWriterService {
         actions.add("先补齐 proposal 的 missingEvidence/rejectedEvidence，再重新调用 writer。");
         return new AgentToolActionCommandOutboxWriteResponse(
                 STATE_BLOCKED_BY_PROPOSAL,
+                false,
+                false,
+                null,
+                proposal.proposalId(),
+                proposal.graphId(),
+                proposal.contractId(),
+                proposal.runId(),
+                proposal.payloadReference(),
+                proposal.proposalState(),
+                List.copyOf(reasons),
+                List.copyOf(actions),
+                null
+        );
+    }
+
+    /**
+     * 服务端复核未通过时返回阻断响应。
+     *
+     * <p>和 proposal 阻断一样，这里不写 outbox。不同点在于 proposal 已经认为“证据大体足够”，
+     * 但 writer 自己的服务端复核发现引用或事实 ID 不满足更严格的入箱条件。这个阶段必须 fail-closed，
+     * 否则就会把危险引用写成 durable command，后续 dispatcher/worker 很难判断它本来就不该入箱。</p>
+     */
+    private AgentToolActionCommandOutboxWriteResponse verificationBlockedResponse(
+            AgentToolActionCommandProposalResponse proposal,
+            AgentToolActionPayloadReferenceVerificationResult payloadReferenceVerification,
+            AgentToolActionFactEvidenceVerificationResult factEvidenceVerification) {
+        List<String> reasons = new ArrayList<>();
+        reasons.addAll(payloadReferenceVerification.summaryReasons());
+        reasons.addAll(factEvidenceVerification.summaryReasons());
+        reasons.add("writer 服务端复核未通过，本次不会写入 command outbox。");
+        List<String> actions = new ArrayList<>();
+        actions.addAll(payloadReferenceVerification.recommendedActions());
+        actions.addAll(factEvidenceVerification.recommendedActions());
+        actions.add("请重新生成绑定当前 run/session 的 payloadReference 或服务端事实 ID 后再调用 writer。");
+        return new AgentToolActionCommandOutboxWriteResponse(
+                STATE_BLOCKED_BY_SERVER_VERIFICATION,
                 false,
                 false,
                 null,
@@ -183,10 +236,19 @@ public class AgentToolActionCommandOutboxWriterService {
     private AgentAsyncTaskCommandOutboxRecord buildRecord(
             AgentToolActionCommandProposalResponse proposal,
             AgentToolActionCommandProposalRequest request,
-            AgentRuntimeEventQueryAccessContext accessContext) {
+            AgentRuntimeEventQueryAccessContext accessContext,
+            AgentToolActionPayloadReferenceVerificationResult payloadReferenceVerification,
+            AgentToolActionFactEvidenceVerificationResult factEvidenceVerification) {
         Instant now = Instant.now();
         String commandId = commandId(proposal);
-        String payloadJson = toJson(payload(commandId, proposal, request, accessContext));
+        String payloadJson = toJson(payload(
+                commandId,
+                proposal,
+                request,
+                accessContext,
+                payloadReferenceVerification,
+                factEvidenceVerification
+        ));
         int payloadBytes = payloadJson.getBytes(StandardCharsets.UTF_8).length;
         if (payloadBytes > Math.max(1, outboxProperties.getMaxPayloadBytes())) {
             throw new PlatformBusinessException(
@@ -230,7 +292,9 @@ public class AgentToolActionCommandOutboxWriterService {
     private Map<String, Object> payload(String commandId,
                                         AgentToolActionCommandProposalResponse proposal,
                                         AgentToolActionCommandProposalRequest request,
-                                        AgentRuntimeEventQueryAccessContext accessContext) {
+                                        AgentRuntimeEventQueryAccessContext accessContext,
+                                        AgentToolActionPayloadReferenceVerificationResult payloadReferenceVerification,
+                                        AgentToolActionFactEvidenceVerificationResult factEvidenceVerification) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("schemaVersion", defaultText(proposal.commandSchemaVersion(), outboxProperties.getSchemaVersion()));
         payload.put("commandId", commandId);
@@ -252,9 +316,14 @@ public class AgentToolActionCommandOutboxWriterService {
         payload.put("toolName", proposal.toolName());
         payload.put("payloadReference", proposal.payloadReference());
         payload.put("payloadPolicy", proposal.payloadPolicy());
+        payload.put("payloadReferenceVerificationStatus", payloadReferenceVerification.status());
+        payload.put("payloadReferenceType", payloadReferenceVerification.referenceType());
+        payload.put("payloadReferenceAcceptedEvidence", payloadReferenceVerification.acceptedEvidence());
         payload.put("policyVersion", request == null ? null : safeText(request.policyVersion()));
         payload.put("approvalConfirmationId", request == null ? null : safeText(request.approvalConfirmationId()));
         payload.put("clarificationFactId", request == null ? null : safeText(request.clarificationFactId()));
+        payload.put("factEvidenceVerificationStatus", factEvidenceVerification.status());
+        payload.put("factEvidenceAcceptedEvidence", factEvidenceVerification.acceptedEvidence());
         payload.put("workerReceiptRequired", proposal.workerReceiptRequired());
         payload.put("workerReceiptMode", proposal.workerReceiptMode());
         payload.put("serverSideVerificationRequired", true);
@@ -270,9 +339,14 @@ public class AgentToolActionCommandOutboxWriterService {
         return payload;
     }
 
-    private List<String> summaryReasons(AgentToolActionCommandProposalResponse proposal, boolean appended) {
+    private List<String> summaryReasons(AgentToolActionCommandProposalResponse proposal,
+                                        boolean appended,
+                                        AgentToolActionPayloadReferenceVerificationResult payloadReferenceVerification,
+                                        AgentToolActionFactEvidenceVerificationResult factEvidenceVerification) {
         List<String> reasons = new ArrayList<>();
         reasons.add("工具 `" + proposal.toolName() + "` 的 command proposal 已通过写入前预校验。");
+        reasons.addAll(payloadReferenceVerification.summaryReasons());
+        reasons.addAll(factEvidenceVerification.summaryReasons());
         if (appended) {
             reasons.add("已首次写入 command outbox，等待 dispatcher 后续投递到 task-management。");
         } else {
@@ -282,13 +356,17 @@ public class AgentToolActionCommandOutboxWriterService {
         return List.copyOf(reasons);
     }
 
-    private List<String> recommendedActions(boolean appended) {
+    private List<String> recommendedActions(boolean appended,
+                                            AgentToolActionPayloadReferenceVerificationResult payloadReferenceVerification,
+                                            AgentToolActionFactEvidenceVerificationResult factEvidenceVerification) {
         List<String> actions = new ArrayList<>();
         if (appended) {
             actions.add("下一步可手动 dispatch-once 或开启 dispatcher，由 task-management inbox 继续去重和接单。");
         } else {
             actions.add("如果需要重新执行，请先确认已有 outbox 记录状态，再走补偿、重放或死信治理流程。");
         }
+        actions.addAll(payloadReferenceVerification.recommendedActions());
+        actions.addAll(factEvidenceVerification.recommendedActions());
         actions.add("后续应补齐 payloadReference 服务端读取、approval fact 回查和 worker receipt 回写。");
         return List.copyOf(actions);
     }

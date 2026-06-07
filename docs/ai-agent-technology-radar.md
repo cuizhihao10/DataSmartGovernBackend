@@ -1,5 +1,22 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-07 落地补充：Server-side verifiers protect durable tool commands
+
+- 当前 Agent Host 工具调用安全的一个明显趋势，是把“模型/协议给出的引用或确认 ID”当作线索，而不是当作已经可信的执行事实。真正进入 durable command 前，需要宿主平台做服务端 verifier：引用是否属于当前 run/session、是否是受控协议、是否可能是内联 payload、审批事实是否需要回查、是否过期或跨上下文。
+- DataSmart 本阶段在 command outbox writer 前新增 payloadReference verifier 与 fact evidence verifier：
+  - payloadReference verifier 校验 `agent-payload:`、`agent-tool-audit://`、`artifact-ref:`、`payload-ref:` 的结构边界和 run/session 绑定；
+  - fact evidence verifier 校验 approval/clarification fact id 是否是安全短文本，阻断 URL、SQL、JSON、换行和疑似凭证；
+  - writer 在 append outbox 前执行 verifier，不通过则返回 `BLOCKED_BY_SERVER_VERIFICATION`。
+- 这一步继续遵守引用优先原则：verifier 不读取真实参数，不展开 payload，不把 prompt、SQL、工具实参、样本数据、模型输出、凭证或内部 endpoint 写入 outbox。它只把低敏 verification status、reference type、accepted evidence 写入命令信封。
+- 趋势映射：
+  - 这对应 Codex/Claude Code/LangGraph/OpenClaw 类 Agent Host 中“tool call before execution must be revalidated by host”的方向；
+  - 工具动作即使已经通过 readiness/proposal，也必须在 writer、dispatcher、worker 三个阶段逐步复核；
+  - 模型或外部协议不能通过传一个 payloadReference 或 approval id 直接取得执行权。
+- 下一步应从“结构 verifier”进入“事实 verifier”：
+  1. payloadReference verifier 接入真实 payload store/client，按 tenant/project/actor/use-case/policyVersion 做二次鉴权。
+  2. approval/clarification verifier 接入 confirmation store 或 permission-admin，校验事实存在、未过期、已确认、绑定 graph/contract。
+  3. task-management inbox 支持 `AGENT_TOOL_ACTION_CONTROLLED_COMMAND`，并在消费侧继续做 commandId/idempotencyKey 去重。
+
 ## 2026-06-07 落地补充：Durable command writers should create facts, not execute tools
 
 - 当前先进 Agent Host 的可靠工具执行链路通常会把“命令事实创建”和“工具真实执行”拆开：先创建 durable command/outbox fact，再由 dispatcher、inbox、worker lease、receipt 和 retry/dead-letter 链路推进。这样可以在网络抖动、服务重启、多实例部署和人工补偿场景下保持可恢复。

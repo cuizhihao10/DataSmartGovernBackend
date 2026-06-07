@@ -64,6 +64,8 @@ class AgentToolActionCommandOutboxWriterServiceTest {
         assertEquals("agent-runtime", record.targetService());
         assertNull(record.targetEndpoint());
         assertTrue(record.payloadJson().contains("\"source\":\"TOOL_ACTION_COMMAND_PROPOSAL\""));
+        assertTrue(record.payloadJson().contains("\"payloadReferenceVerificationStatus\":\"VERIFIED\""));
+        assertTrue(record.payloadJson().contains("\"factEvidenceVerificationStatus\":\"VERIFIED_OR_NOT_REQUIRED\""));
         assertTrue(record.payloadJson().contains("\"serverSideVerificationRequired\":true"));
         assertFalse(record.payloadJson().contains("ds-sensitive-proposal"));
         assertFalse(record.payloadJson().contains("select * from"));
@@ -124,6 +126,76 @@ class AgentToolActionCommandOutboxWriterServiceTest {
         assertTrue(response.summaryReasons().stream().anyMatch(reason -> reason.contains("不会写入")));
     }
 
+    @Test
+    void writeShouldBlockPayloadReferenceThatDoesNotBelongToCurrentRun() {
+        TestServices services = servicesWithEvents();
+        AgentToolActionExecutionGraphView readyGraph = graphByTool(services.graphService(), "datasource.metadata.read");
+
+        AgentToolActionCommandOutboxWriteResponse response = services.writerService().write(
+                new AgentToolActionCommandProposalRequest(
+                        readyGraph.graphId(),
+                        readyGraph.contractId(),
+                        "10",
+                        null,
+                        null,
+                        null,
+                        "run-proposal",
+                        null,
+                        null,
+                        20,
+                        "agent-payload:another-run/datasource-metadata-read",
+                        null,
+                        null,
+                        "tool-readiness-policy.v1",
+                        "agent-tool-action-command.v1",
+                        "REQUIRED",
+                        "client-request-wrong-run"
+                ),
+                projectOwnerContext()
+        );
+
+        assertEquals("BLOCKED_BY_SERVER_VERIFICATION", response.writerState());
+        assertEquals(false, response.enqueued());
+        assertNull(response.record());
+        assertTrue(response.summaryReasons().stream().anyMatch(reason -> reason.contains("agent-payload")));
+        assertEquals(0, services.outboxStore().list(null, null, 10).size());
+    }
+
+    @Test
+    void writeShouldBlockUnsafeFactEvidenceEvenWhenProposalIsReady() {
+        TestServices services = servicesWithEvents();
+        AgentToolActionExecutionGraphView readyGraph = graphByTool(services.graphService(), "datasource.metadata.read");
+
+        AgentToolActionCommandOutboxWriteResponse response = services.writerService().write(
+                new AgentToolActionCommandProposalRequest(
+                        readyGraph.graphId(),
+                        readyGraph.contractId(),
+                        "10",
+                        null,
+                        null,
+                        null,
+                        "run-proposal",
+                        null,
+                        null,
+                        20,
+                        "agent-payload:run-proposal/datasource-metadata-read",
+                        "https://internal-service/approval/raw",
+                        null,
+                        "tool-readiness-policy.v1",
+                        "agent-tool-action-command.v1",
+                        "REQUIRED",
+                        "client-request-unsafe-fact"
+                ),
+                projectOwnerContext()
+        );
+
+        assertEquals("BLOCKED_BY_SERVER_VERIFICATION", response.writerState());
+        assertEquals(false, response.enqueued());
+        assertNull(response.record());
+        assertTrue(response.summaryReasons().stream().anyMatch(reason -> reason.contains("人工事实证据")));
+        assertEquals(0, services.outboxStore().list(null, null, 10).size());
+    }
+
     private AgentToolActionCommandProposalRequest readyRequest(AgentToolActionExecutionGraphView readyGraph) {
         return new AgentToolActionCommandProposalRequest(
                 readyGraph.graphId(),
@@ -168,6 +240,8 @@ class AgentToolActionCommandOutboxWriterServiceTest {
                         outboxProperties,
                         new AgentRuntimeProperties(),
                         proposalService,
+                        new AgentToolActionPayloadReferenceVerifier(),
+                        new AgentToolActionFactEvidenceVerifier(),
                         outboxStore,
                         new ObjectMapper()
                 );

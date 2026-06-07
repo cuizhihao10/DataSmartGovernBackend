@@ -1,5 +1,30 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-07 追加落地进展：Java Agent Runtime 工具动作服务端复核 Verifier
+
+- Java `agent-runtime` 在 5.53 command outbox writer 基础上，新增 writer 前服务端复核组件：
+  - `AgentToolActionPayloadReferenceVerifier`：校验 payloadReference 协议、长度、危险字符、URL/SQL/JSON/凭证痕迹，以及 run/session 结构绑定；
+  - `AgentToolActionFactEvidenceVerifier`：校验 approvalConfirmationId、clarificationFactId 的低敏 ID 形态，阻断 URL、JSON、SQL、换行、凭证片段和非法字符；
+  - writer 在 append outbox 之前调用两个 verifier，任何一个不通过都会返回 `BLOCKED_BY_SERVER_VERIFICATION`，不写 outbox。
+- 当前支持的 payloadReference 形态：
+  - `agent-payload:{runId}/{payloadKey}`，服务于新工具动作链路；
+  - `agent-tool-audit://{sessionId}/{runId}/{auditId}/plan-arguments`，兼容历史 ASYNC_TASK 审计参数引用；
+  - `artifact-ref:{runId}/{artifactId}`，预留 artifact manifest/结果引用；
+  - `payload-ref:{...runId...}`，预留统一 payload store 引用。
+- 本阶段依然保持克制：
+  - verifier 只返回低敏 verdict，不读取真实参数；
+  - approval/clarification fact 只做 ID 安全复核，尚未回查 confirmation store；
+  - writer payload 只新增 verification status、reference type、accepted evidence 等低敏字段；
+  - 不把工具实参、SQL、prompt、样本数据、模型输出、凭证或内部 endpoint 写入 outbox。
+- 产品意义：
+  - writer 从“只写低敏信封”升级为“写入前可阻断危险引用和危险事实 ID”；
+  - 这减少了后续 dispatcher/worker 才发现引用越界的风险；
+  - 同时保持 payloadReference 真正读取与 approval fact 真正回查的后续扩展空间。
+- 下一步推荐路线：
+  1. 将 verifier 从结构复核升级为真实 payload store lookup，但只在服务端执行，并做 tenant/project/actor/use-case 鉴权。
+  2. 接入 confirmation store 或 permission-admin 审批事实查询，校验 fact 状态、过期时间、发起人、graphId/contractId 绑定。
+  3. 进入 task-management command inbox 适配 `AGENT_TOOL_ACTION_CONTROLLED_COMMAND`，建立真正消费侧去重和 worker lease。
+
 ## 2026-06-07 追加落地进展：Java Agent Runtime 工具动作 Command Outbox Writer
 
 - Java `agent-runtime` 在 5.52 command proposal 之后，新增工具动作 command outbox writer 第一阶段：
