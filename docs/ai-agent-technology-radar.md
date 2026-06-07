@@ -1,5 +1,22 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-07 落地补充：Durable action contracts should precede outbox writes
+
+- 当前 Codex、Claude Code、LangGraph/OpenClaw 风格 Agent 的关键趋势，是把“模型或外部协议提出工具动作”与“系统真正执行副作用”拆成多个可审计阶段：意图接收、准备度判断、人工确认、持久化命令、worker 回执、结果脱敏与审计回放。
+- DataSmart 本阶段把 `tool_action_intake_recorded` 进一步转换为只读 Durable Action 契约预览：
+  - 它不是执行器，也不是 outbox writer；
+  - 它是控制面 evidence mapper，用来判断某个工具动作是否具备进入 outbox 的最低条件；
+  - 它会显式列出缺失项，例如 payload 引用、幂等键、真实 outbox command、人工审批事实、用户澄清事实和 worker receipt。
+- 趋势映射到产品设计时，需要坚持一个很重要的边界：低敏 runtime event 只能证明“发生过什么治理事实”，不能替代真实命令载荷。真实工具参数、SQL、样本数据、模型输出和内部 endpoint 不能为了方便回放而复制到 projection、timeline 或 contract DTO。
+- 这条路线能避免两个常见误区：
+  - 不把 MCP `tools/call` preview 直接做成真实工具执行入口，防止外部协议绕过 DataSmart 的权限、审批、预算和审计；
+  - 不让 Java projection 无限膨胀成万能对象，而是把 projection、contract、outbox、worker receipt 分层，形成可演进的商业化执行链路。
+- 下一步趋势落地建议：
+  1. 将 durable action contract 接入正式 outbox command builder，并强制要求 payloadReference、idempotencyKey、approvalFact 和 workerReceipt 语义齐备。
+  2. 将 contract state 作为执行图条件节点，支持等待审批、等待澄清、等待预算恢复、阻断和入队执行的显式分支。
+  3. 继续跟踪 MCP、A2A、OpenAI Agents SDK、Anthropic Tool Use、LangGraph durable execution 与 OpenClaw/NemoClaw 类项目，把工具能力拆成协议层、治理层、执行层和审计层。
+  4. 后续若引入 KV cache、长短期记忆或模型路由优化，也应遵守相同原则：缓存和记忆保存低敏决策、索引和引用，不保存 prompt、工具实参或完整模型输出。
+
 ## 2026-06-07 落地补充：MCP tools/call intake should become control-plane evidence
 
 - 当前 Agent 工具体系的趋势不是“收到 MCP `tools/call` 就直接执行”，而是让 Agent Host 先把外部工具动作意图转成可治理事实：协议识别、工具可见性、参数形态、readiness、人工审批、预算/队列、outbox 和 worker receipt 都应在真实副作用前发生。

@@ -1,5 +1,34 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-07 追加落地进展：Java Agent Runtime 工具动作入口 Durable Action 契约预览
+
+- Java `agent-runtime` 在工具动作入口投影之后，新增只读 Durable Action 契约预览能力：
+  - 新增 `/agent-runtime/runtime-events/tool-action-intake-durable-action-contracts` 与 `/api/agent/runtime-events/tool-action-intake-durable-action-contracts`；
+  - 该入口不会写 outbox、不会创建审批、不会调用 worker，只把 `tool_action_intake_recorded` 的低敏事实转换为“未来能否进入可恢复执行链路”的契约预览；
+  - 契约会按工具动作拆分出 READY、等待审批、等待澄清、等待预算、执行前阻断、入口拒绝等状态，帮助控制面解释“为什么还不能执行”。
+- 本阶段明确补齐真实副作用执行前必须具备的证据清单：
+  - `payloadReference`：真实工具参数、SQL、样本数据、模型输出等不能进入 runtime event 或投影，后续只能通过受控引用和二次鉴权读取；
+  - `idempotencyKey`：每个候选动作必须具备稳定幂等键，避免重放、补偿或 worker 重试时重复执行；
+  - `outboxCommandType`：READY/QUEUE_ASYNC 分支需要被转换为明确命令类型，而不是直接复用 projection DTO；
+  - `humanApprovalFact`、`userClarificationFact`、`workerReceipt`：审批、澄清和 worker 回执必须形成独立事实，不能靠一次 HTTP 响应口头确认。
+- 低敏与职责边界继续保持：
+  - Java 仅消费 Python 已低敏化的事件字段；
+  - 契约预览不读取、不返回 `arguments`、prompt、SQL、样本数据、模型输出、凭证、内部 endpoint、task/artifact 正文；
+  - projection、contract、outbox、worker receipt 被拆成不同阶段，避免一个服务类同时承担查询、审批、排队和执行职责。
+- 产品意义：
+  - DataSmart 的工具动作链路从“可见投影”推进到“可执行前置契约”，更接近 Codex/Claude Code 类 Agent Host 的 durable execution 思路；
+  - 控制面现在能够提前告诉前端、运维和审计：某个工具动作距离真实副作用还缺哪些证据，而不是只显示 READY/REJECTED 这种粗粒度状态；
+  - 这也为后续把 MCP `tools/call`、A2A action 和模型 tool_call 统一接入 outbox/worker 提供了稳定边界。
+- 当前边界：
+  - 本阶段仍不开放真实工具执行；
+  - 仍未落 MySQL/ClickHouse dedicated contract index；
+  - 仍未把契约写入 task-management outbox，也未接入真实 worker receipt。
+- 下一步推荐路线：
+  1. 将契约预览升级为正式 durable action command builder，但仍要求 payloadReference、审批事实、幂等键和 worker receipt 齐备后才可写 outbox。
+  2. 把 readiness/intake/contract 作为 LangGraph/OpenClaw-style execution graph 的条件节点，形成“入口 -> 准备度 -> 契约 -> outbox -> worker receipt”的显式执行图。
+  3. 为前端确认页设计低敏确认模型，让用户看到风险、缺口和审批状态，但看不到敏感参数原文。
+  4. 暂不建议继续堆更多 projection 字段；更高价值是进入持久化 outbox、审批事实、worker 回执和执行图编排。
+
 ## 2026-06-07 追加落地进展：Java Agent Runtime 工具动作入口投影与 Timeline
 
 - Java `agent-runtime` 已接入 Python 5.48 产生的 `tool_action_intake_recorded` runtime event：
