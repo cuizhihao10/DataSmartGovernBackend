@@ -1,5 +1,34 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-07 追加落地进展：Java Agent Runtime 工具动作 Command Outbox Writer
+
+- Java `agent-runtime` 在 5.52 command proposal 之后，新增工具动作 command outbox writer 第一阶段：
+  - 新增 `POST /agent-runtime/tool-action-commands/outbox/write`；
+  - 新增 `POST /api/agent/tool-action-commands/outbox/write`；
+  - 请求体复用 proposal 请求，服务端会重新生成 proposal，只有 `READY_FOR_OUTBOX_CONFIRMATION` 才写入 outbox；
+  - 写入现有 `AgentAsyncTaskCommandOutboxStore`，复用已有 memory/MySQL outbox、dispatcher、查询、诊断和重试体系。
+- 本阶段的关键设计边界：
+  - writer 不读取 payloadReference 指向的真实工具参数；
+  - writer 不回查内部 endpoint，不直接调用工具或 worker；
+  - writer 不把 prompt、SQL、工具实参、样本数据、模型输出、凭证或内部 endpoint 写入 payloadJson；
+  - payloadJson 只是低敏命令信封，包含 proposalId、graphId、contractId、payloadReference、policyVersion 和后续必须服务端复核的检查项。
+- 解耦与商业化意义：
+  - proposal 负责解释证据是否足够；
+  - writer 负责形成 durable command fact；
+  - dispatcher 负责可靠投递；
+  - task-management inbox/worker 负责真正接单、租约、执行、回执和失败补偿；
+  - 这避免把外部协议入口、前端确认、命令写入、worker 执行混进一个大服务。
+- 当前边界：
+  - 还没有实现 payloadReference 服务端读取器；
+  - 还没有回查 permission-admin/confirmation store 中的审批事实；
+  - 还没有让 task-management 真实消费 `AGENT_TOOL_ACTION_CONTROLLED_COMMAND`；
+  - worker receipt 仍未回写到 runtime event。
+- 下一步推荐路线：
+  1. 为 tool action command 增加 payloadReference verifier，做租户/项目/actor/use-case 二次鉴权。
+  2. 为审批/澄清事实增加服务端 verifier，避免客户端只传 ID 就被误认为已确认。
+  3. 在 task-management 侧建立 command inbox 消费契约，按 commandId/idempotencyKey 去重。
+  4. 把 worker receipt 回写为低敏 runtime event，让前端 timeline 能看到 dispatched/accepted/succeeded/failed/dead_letter。
+
 ## 2026-06-07 追加落地进展：Java Agent Runtime 工具动作 Command Proposal
 
 - Java `agent-runtime` 在执行图预览之后，新增工具动作 command proposal 预备层：

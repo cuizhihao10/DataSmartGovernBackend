@@ -1,5 +1,24 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-07 落地补充：Durable command writers should create facts, not execute tools
+
+- 当前先进 Agent Host 的可靠工具执行链路通常会把“命令事实创建”和“工具真实执行”拆开：先创建 durable command/outbox fact，再由 dispatcher、inbox、worker lease、receipt 和 retry/dead-letter 链路推进。这样可以在网络抖动、服务重启、多实例部署和人工补偿场景下保持可恢复。
+- DataSmart 本阶段把 tool action command proposal 推进到 command outbox writer：
+  - writer 会重新生成 proposal，不信任客户端缓存；
+  - 只有 proposal 返回 `READY_FOR_OUTBOX_CONFIRMATION` 才写入 outbox；
+  - 写入的是低敏 command envelope，包含 proposalId、graphId、contractId、payloadReference、policyVersion 和服务端复核要求；
+  - writer 不读取 payloadReference、不投递 Kafka、不调用 worker，也不创建真实业务任务。
+- 这对应 Codex/Claude Code/LangGraph/OpenClaw-style agent host 的一个重要趋势：工具调用需要 durable execution，但 durable 不等于“立刻执行”。正确分层应是 protocol intake -> readiness/proposal -> durable writer -> dispatcher/inbox -> worker lease -> receipt/event timeline。
+- 安全边界继续保持：
+  - command payload 不能包含 prompt、SQL、工具实参、样本数据、模型输出、凭证、内部 endpoint 或 task/artifact 正文；
+  - targetEndpoint 不应由外部协议或前端推断；
+  - payloadReference 只是引用，必须在 writer 之后由服务端 verifier 继续按租户、项目、actor、用途和策略版本回查。
+- 下一步趋势落地建议：
+  1. 增加 payloadReference verifier，把受控引用读取、权限复核和敏感字段策略独立成组件。
+  2. 增加 approval/clarification fact verifier，避免客户端只提交 ID 就绕过人工确认。
+  3. 在 task-management 侧建立 command inbox + idempotency table，让 `AGENT_TOOL_ACTION_CONTROLLED_COMMAND` 能被可靠消费。
+  4. 将 worker receipt 回写 runtime event，形成 dispatched、accepted、succeeded、failed、retry、dead_letter 的完整低敏 timeline。
+
 ## 2026-06-07 落地补充：Command proposals separate readiness from durable writes
 
 - 当前 Codex、Claude Code、LangGraph/OpenClaw 风格 Agent Host 的工具执行趋势，是把“执行前准备度通过”与“真实持久化命令写入”拆成两个阶段。前者回答“这个工具动作是否具备进入确认/写入的最低条件”，后者才真正创建 outbox、触发 worker 或产生副作用。
