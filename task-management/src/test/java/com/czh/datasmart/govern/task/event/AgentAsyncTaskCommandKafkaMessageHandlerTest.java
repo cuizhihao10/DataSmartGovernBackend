@@ -16,8 +16,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -85,6 +87,65 @@ class AgentAsyncTaskCommandKafkaMessageHandlerTest {
                 "taskCreated", "true",
                 "topic", "UNKNOWN").count());
         verify(consumerService).consume(any(AgentAsyncTaskCommandRequest.class));
+    }
+
+    @Test
+    void toolActionWriterPayloadShouldMapAliasAndIgnoreControlPlaneExtensions() throws JsonProcessingException {
+        when(consumerService.consume(any(AgentAsyncTaskCommandRequest.class))).thenReturn(new AgentAsyncTaskCommandConsumeResponse(
+                "taoc-kafka-001",
+                "tool-action:proposal:run-proposal:datasource-metadata-read",
+                AgentAsyncTaskCommandState.TASK_CREATED,
+                false,
+                true,
+                9200L,
+                "tool-action command 已创建控制面任务"
+        ));
+
+        Map<String, Object> writerPayload = Map.ofEntries(
+                Map.entry("schemaVersion", AgentAsyncTaskCommandConsumerService.SUPPORTED_SCHEMA_VERSION),
+                Map.entry("proposalCommandSchemaVersion", "agent-tool-action-command.v1"),
+                Map.entry("commandId", "taoc-kafka-001"),
+                Map.entry("idempotencyKey", "tool-action:proposal:run-proposal:datasource-metadata-read"),
+                Map.entry("commandType", AgentAsyncTaskCommandConsumerService.SUPPORTED_TOOL_ACTION_COMMAND_TYPE),
+                Map.entry("auditId", "tool-action:graph-contract-hash"),
+                Map.entry("sessionId", "session-proposal"),
+                Map.entry("runId", "run-proposal"),
+                /*
+                 * agent-runtime 工具动作图里字段名是 toolName。DTO 通过 JsonAlias 映射到 toolCode，
+                 * 这样 Kafka 消费侧不会因为控制面命名差异而丢失工具身份。
+                 */
+                Map.entry("toolName", "datasource.metadata.read"),
+                Map.entry("targetService", "agent-runtime"),
+                Map.entry("tenantId", 10L),
+                Map.entry("projectId", 20L),
+                Map.entry("actorId", "1001"),
+                Map.entry("traceId", "trace-tool-action-kafka"),
+                Map.entry("payloadReference", "agent-payload:run-proposal/datasource-metadata-read"),
+                Map.entry("argumentNames", List.of()),
+                Map.entry("sensitiveArgumentNames", List.of()),
+                Map.entry("policyVersions", List.of("tool-readiness-policy.v1")),
+                Map.entry("delegationEvidence", List.of("REFERENCE_PREFIX:agent-payload")),
+                Map.entry("proposalId", "tap_001"),
+                Map.entry("graphId", "graph_001"),
+                Map.entry("contractId", "contract_001"),
+                Map.entry("payloadReferenceVerificationStatus", "VERIFIED"),
+                Map.entry("factEvidenceVerificationStatus", "VERIFIED_OR_NOT_REQUIRED")
+        );
+
+        AgentAsyncTaskCommandKafkaMessageHandler.AgentAsyncTaskCommandKafkaHandleResult result =
+                handler.handle(objectMapper.writeValueAsString(writerPayload));
+
+        assertTrue(result.accepted());
+        assertEquals("taoc-kafka-001", result.commandId());
+        assertEquals(9200L, result.taskId());
+
+        ArgumentCaptor<AgentAsyncTaskCommandRequest> requestCaptor =
+                ArgumentCaptor.forClass(AgentAsyncTaskCommandRequest.class);
+        verify(consumerService).consume(requestCaptor.capture());
+        assertEquals("datasource.metadata.read", requestCaptor.getValue().getToolCode());
+        assertEquals("agent-runtime", requestCaptor.getValue().getTargetService());
+        assertEquals(null, requestCaptor.getValue().getTargetEndpoint());
+        assertEquals(null, requestCaptor.getValue().getWorkspaceId());
     }
 
     @Test

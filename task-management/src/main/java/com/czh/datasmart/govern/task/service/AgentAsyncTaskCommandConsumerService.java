@@ -13,6 +13,8 @@ import com.czh.datasmart.govern.task.controller.dto.TaskActorContext;
 import com.czh.datasmart.govern.task.entity.AgentAsyncTaskCommandInbox;
 import com.czh.datasmart.govern.task.entity.Task;
 import com.czh.datasmart.govern.task.mapper.AgentAsyncTaskCommandInboxMapper;
+import com.czh.datasmart.govern.task.support.AgentAsyncTaskCommandContractSupport;
+import com.czh.datasmart.govern.task.support.AgentAsyncTaskCommandContractSupport.CommandKind;
 import com.czh.datasmart.govern.task.support.AgentAsyncTaskCommandState;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -55,20 +57,26 @@ public class AgentAsyncTaskCommandConsumerService {
     /**
      * 当前消费侧支持的协议版本。
      */
-    public static final String SUPPORTED_SCHEMA_VERSION = "datasmart.agent.async-task-command.v1";
+    public static final String SUPPORTED_SCHEMA_VERSION =
+            AgentAsyncTaskCommandContractSupport.SUPPORTED_SCHEMA_VERSION;
 
     /**
-     * 当前消费侧支持的命令类型。
-     */
-    public static final String SUPPORTED_COMMAND_TYPE = "AGENT_TOOL_ASYNC_TASK_REQUESTED";
-
-    /**
-     * 受控载荷引用协议。
+     * 历史消费侧支持的命令类型。
      *
-     * <p>第一阶段只允许从 Agent 工具审计快照读取参数。后续如扩展 MinIO、workspace artifact 或 secret manager，
-     * 应新增显式白名单协议与专用 resolver，不能接受任意 URL。</p>
+     * <p>保留该常量是为了兼容既有测试、Kafka 样例和 4.x/5.x 早期 Run 级 async-task outbox。
+     * 新增的工具动作受控命令请使用 {@link #SUPPORTED_TOOL_ACTION_COMMAND_TYPE}。</p>
      */
-    private static final String PAYLOAD_REFERENCE_PREFIX = "agent-tool-audit://";
+    public static final String SUPPORTED_COMMAND_TYPE =
+            AgentAsyncTaskCommandContractSupport.COMMAND_TYPE_ASYNC_TASK_REQUESTED;
+
+    /**
+     * 新工具动作受控命令类型。
+     *
+     * <p>该命令进入 Inbox 后只创建 `AGENT_TOOL_ACTION_CONTROLLED` 任务，不会被旧 worker 直接认领。
+     * 这样可以让项目先补齐 command 接单、去重、审计台账，再逐步实现专门的 payload store 与执行器。</p>
+     */
+    public static final String SUPPORTED_TOOL_ACTION_COMMAND_TYPE =
+            AgentAsyncTaskCommandContractSupport.COMMAND_TYPE_TOOL_ACTION_CONTROLLED;
 
     /**
      * 参数名白名单。
@@ -77,6 +85,15 @@ public class AgentAsyncTaskCommandConsumerService {
      * 避免运维台、日志或后续策略表达式被构造内容污染。</p>
      */
     private static final Pattern ARGUMENT_NAME_PATTERN = Pattern.compile("[A-Za-z0-9_.\\[\\]-]{1,128}");
+
+    /**
+     * 低敏事实 ID 白名单。
+     *
+     * <p>新工具动作命令的 approval/clarification 事实后续可能来自 permission-admin、DAG confirmation、
+     * 外部审批系统或前端确认事实表，因此不能像历史 async-task 那样只允许 `dag-confirmation:` 前缀。
+     * 但它仍必须是短 ID，不允许 URL、SQL、JSON、换行或密钥片段。</p>
+     */
+    private static final Pattern SAFE_FACT_ID_PATTERN = Pattern.compile("[A-Za-z0-9:_.\\-]{1,160}");
 
     private static final int MAX_ARGUMENT_NAMES = 200;
     private static final int MAX_EVIDENCE_ITEMS = 20;
@@ -94,7 +111,7 @@ public class AgentAsyncTaskCommandConsumerService {
      */
     @Transactional
     public AgentAsyncTaskCommandConsumeResponse consume(AgentAsyncTaskCommandRequest request) {
-        validateCommand(request);
+        CommandKind commandKind = validateCommand(request);
         AgentAsyncTaskCommandInbox inbox = buildInbox(request);
         try {
             inboxMapper.insert(inbox);
@@ -106,7 +123,7 @@ public class AgentAsyncTaskCommandConsumerService {
             return duplicateResponse(request);
         }
 
-        Task task = createTask(request);
+        Task task = createTask(request, commandKind);
         inbox.setTaskId(task.getId());
         inbox.setConsumeState(AgentAsyncTaskCommandState.TASK_CREATED);
         inbox.setLastSeenTime(LocalDateTime.now());
@@ -130,6 +147,7 @@ public class AgentAsyncTaskCommandConsumerService {
      * <p>字段值已经经过 validateCommand 校验。参数名列表保存为 JSON，但列表里只有字段名，没有字段值。</p>
      */
     private AgentAsyncTaskCommandInbox buildInbox(AgentAsyncTaskCommandRequest request) {
+        CommandKind commandKind = AgentAsyncTaskCommandContractSupport.requireSupportedCommandType(request.getCommandType());
         LocalDateTime now = LocalDateTime.now();
         AgentAsyncTaskCommandInbox inbox = new AgentAsyncTaskCommandInbox();
         inbox.setCommandId(request.getCommandId().trim());
@@ -141,7 +159,10 @@ public class AgentAsyncTaskCommandConsumerService {
         inbox.setRunId(request.getRunId().trim());
         inbox.setToolCode(request.getToolCode().trim());
         inbox.setTargetService(request.getTargetService().trim());
-        inbox.setTargetEndpoint(request.getTargetEndpoint().trim());
+        inbox.setTargetEndpoint(AgentAsyncTaskCommandContractSupport.normalizeTargetEndpoint(
+                commandKind,
+                request.getTargetEndpoint()
+        ));
         inbox.setTenantId(request.getTenantId());
         inbox.setProjectId(request.getProjectId());
         inbox.setWorkspaceId(request.getWorkspaceId());
@@ -164,8 +185,8 @@ public class AgentAsyncTaskCommandConsumerService {
      * <p>task.params 同样只写入安全引用和治理元数据。worker 后续认领任务后，必须根据 payloadReference
      * 访问受控 resolver 读取真正参数。这样 task 表、列表接口和执行日志都不会复制敏感值。</p>
      */
-    private Task createTask(AgentAsyncTaskCommandRequest request) {
-        String params = toJson(buildSafeTaskParams(request));
+    private Task createTask(AgentAsyncTaskCommandRequest request, CommandKind commandKind) {
+        String params = toJson(buildSafeTaskParams(request, commandKind));
         TaskActorContext serviceAccount = new TaskActorContext(
                 0L,
                 null,
@@ -174,11 +195,11 @@ public class AgentAsyncTaskCommandConsumerService {
                 null,
                 List.of()
         );
+        String taskType = AgentAsyncTaskCommandContractSupport.taskType(commandKind);
         return taskService.createTask(
-                "Agent 异步工具: " + request.getToolCode(),
-                "由 Agent Runtime 异步命令创建，auditId=" + request.getAuditId()
-                        + "，目标服务=" + request.getTargetService(),
-                "AGENT_ASYNC_TOOL",
+                taskName(request, commandKind),
+                taskDescription(request, commandKind),
+                taskType,
                 params,
                 request.getPriority(),
                 request.getMaxRetryCount(),
@@ -196,18 +217,29 @@ public class AgentAsyncTaskCommandConsumerService {
      * <p>这里明确采用字段白名单，不直接序列化 request。即使未来 DTO 新增敏感字段，
      * 也不会因为自动序列化而意外落进 task.params。</p>
      */
-    private Map<String, Object> buildSafeTaskParams(AgentAsyncTaskCommandRequest request) {
+    private Map<String, Object> buildSafeTaskParams(AgentAsyncTaskCommandRequest request, CommandKind commandKind) {
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("schemaVersion", request.getSchemaVersion());
         params.put("commandId", request.getCommandId());
+        params.put("commandType", request.getCommandType());
+        params.put("commandKind", commandKind.name());
         params.put("auditId", request.getAuditId());
         params.put("sessionId", request.getSessionId());
         params.put("runId", request.getRunId());
         params.put("toolCode", request.getToolCode());
         params.put("targetService", request.getTargetService());
-        params.put("targetEndpoint", request.getTargetEndpoint());
+        params.put("targetEndpoint", AgentAsyncTaskCommandContractSupport.normalizeTargetEndpoint(
+                commandKind,
+                request.getTargetEndpoint()
+        ));
         params.put("workspaceId", request.getWorkspaceId());
         params.put("payloadReference", request.getPayloadReference());
+        params.put("payloadReferenceType", AgentAsyncTaskCommandContractSupport.payloadReferenceType(commandKind));
+        /*
+         * workerDispatchEnabled 用于把“已经接单的控制面命令”和“可以被现有 worker 执行的历史异步任务”区分开。
+         * 目前只有 AGENT_ASYNC_TOOL 会被旧 worker 认领；新工具动作命令必须等待后续专用执行器接入。
+         */
+        params.put("workerDispatchEnabled", CommandKind.ASYNC_TASK_REQUESTED.equals(commandKind));
         params.put("argumentNames", normalizeArgumentNames(request.getArgumentNames()));
         params.put("sensitiveArgumentNames", normalizeArgumentNames(request.getSensitiveArgumentNames()));
         params.put("confirmationId", normalizeOptionalText(request.getConfirmationId()));
@@ -256,7 +288,7 @@ public class AgentAsyncTaskCommandConsumerService {
      * <p>Bean Validation 只在 HTTP Controller 上自动生效，而未来 Kafka listener 会直接调用 Service。
      * 因此关键安全规则必须在 Service 再校验一次，不能把消息安全寄托在某一种传输适配器上。</p>
      */
-    private void validateCommand(AgentAsyncTaskCommandRequest request) {
+    private CommandKind validateCommand(AgentAsyncTaskCommandRequest request) {
         if (request == null) {
             throw new IllegalArgumentException("Agent 异步工具命令不能为空");
         }
@@ -264,33 +296,41 @@ public class AgentAsyncTaskCommandConsumerService {
         requireText(request.getCommandId(), "commandId");
         requireText(request.getIdempotencyKey(), "idempotencyKey");
         requireText(request.getCommandType(), "commandType");
+        CommandKind commandKind = AgentAsyncTaskCommandContractSupport.requireSupportedCommandType(request.getCommandType());
         requireText(request.getAuditId(), "auditId");
         requireText(request.getSessionId(), "sessionId");
         requireText(request.getRunId(), "runId");
         requireText(request.getToolCode(), "toolCode");
         requireText(request.getTargetService(), "targetService");
-        requireText(request.getTargetEndpoint(), "targetEndpoint");
+        AgentAsyncTaskCommandContractSupport.validateTargetService(commandKind, request.getTargetService());
+        AgentAsyncTaskCommandContractSupport.normalizeTargetEndpoint(commandKind, request.getTargetEndpoint());
         requireText(request.getActorId(), "actorId");
         requireText(request.getTraceId(), "traceId");
         requireText(request.getPayloadReference(), "payloadReference");
         if (!SUPPORTED_SCHEMA_VERSION.equals(request.getSchemaVersion().trim())) {
             throw new IllegalArgumentException("不支持的 Agent 异步命令 schemaVersion: " + request.getSchemaVersion());
         }
-        if (!SUPPORTED_COMMAND_TYPE.equals(request.getCommandType().trim())) {
-            throw new IllegalArgumentException("不支持的 Agent 异步命令 commandType: " + request.getCommandType());
-        }
         requirePositive(request.getTenantId(), "tenantId");
         requirePositive(request.getProjectId(), "projectId");
-        requirePositive(request.getWorkspaceId(), "workspaceId");
-        if (!request.getPayloadReference().trim().startsWith(PAYLOAD_REFERENCE_PREFIX)) {
-            throw new IllegalArgumentException("payloadReference 必须使用受控 agent-tool-audit:// 协议");
+        if (AgentAsyncTaskCommandContractSupport.workspaceRequired(commandKind)) {
+            requirePositive(request.getWorkspaceId(), "workspaceId");
+        } else if (request.getWorkspaceId() != null) {
+            requirePositive(request.getWorkspaceId(), "workspaceId");
         }
+        AgentAsyncTaskCommandContractSupport.validatePayloadReference(
+                commandKind,
+                request.getPayloadReference(),
+                request.getSessionId(),
+                request.getRunId(),
+                request.getAuditId()
+        );
         List<String> argumentNames = normalizeArgumentNames(request.getArgumentNames());
         List<String> sensitiveNames = normalizeArgumentNames(request.getSensitiveArgumentNames());
         if (!new LinkedHashSet<>(argumentNames).containsAll(sensitiveNames)) {
             throw new IllegalArgumentException("sensitiveArgumentNames 必须是 argumentNames 的子集");
         }
-        validateExecutionEvidence(request);
+        validateExecutionEvidence(request, commandKind);
+        return commandKind;
     }
 
     /**
@@ -301,13 +341,49 @@ public class AgentAsyncTaskCommandConsumerService {
      * policyVersion 与 delegationEvidence 也只能是短文本摘要。后续真正执行工具前，还应回查 agent-runtime
      * confirmation、permission-admin 策略版本、payloadReference 和工具状态。</p>
      */
-    private void validateExecutionEvidence(AgentAsyncTaskCommandRequest request) {
+    private void validateExecutionEvidence(AgentAsyncTaskCommandRequest request, CommandKind commandKind) {
         String confirmationId = normalizeOptionalText(request.getConfirmationId());
-        if (confirmationId != null && !confirmationId.startsWith("dag-confirmation:")) {
+        if (confirmationId != null
+                && CommandKind.ASYNC_TASK_REQUESTED.equals(commandKind)
+                && !confirmationId.startsWith("dag-confirmation:")) {
             throw new IllegalArgumentException("confirmationId 必须来自 DAG selected-node 确认记录");
+        }
+        if (confirmationId != null
+                && CommandKind.TOOL_ACTION_CONTROLLED.equals(commandKind)
+                && (!SAFE_FACT_ID_PATTERN.matcher(confirmationId).matches()
+                || looksLikeSensitivePayload(confirmationId))) {
+            throw new IllegalArgumentException("工具动作 confirmationId 只能是低敏事实 ID，不能包含 URL、SQL、prompt 或密钥片段");
         }
         normalizeEvidenceList(request.getPolicyVersions(), "policyVersions");
         normalizeEvidenceList(request.getDelegationEvidence(), "delegationEvidence");
+    }
+
+    /**
+     * 构造任务名称。
+     *
+     * <p>任务名称面向列表页和运营台展示，所以既要保留 toolCode，又要让用户区分“可被 worker 执行的异步工具”
+     * 与“只完成控制面接单的新工具动作”。</p>
+     */
+    private String taskName(AgentAsyncTaskCommandRequest request, CommandKind commandKind) {
+        if (CommandKind.TOOL_ACTION_CONTROLLED.equals(commandKind)) {
+            return "Agent 受控工具动作: " + request.getToolCode();
+        }
+        return "Agent 异步工具: " + request.getToolCode();
+    }
+
+    /**
+     * 构造任务描述。
+     *
+     * <p>描述同样只使用低敏字段。这里不写 payload 正文、参数值或内部 endpoint，
+     * 只说明该任务来自哪个 command、当前目标控制面以及是否会被现有 worker 认领。</p>
+     */
+    private String taskDescription(AgentAsyncTaskCommandRequest request, CommandKind commandKind) {
+        if (CommandKind.TOOL_ACTION_CONTROLLED.equals(commandKind)) {
+            return "由 Agent Runtime 工具动作控制面命令创建，auditId=" + request.getAuditId()
+                    + "，当前只完成 Inbox 去重和任务台账登记，等待后续专用 tool-action executor 回查 payload store 并写入 receipt。";
+        }
+        return "由 Agent Runtime 异步命令创建，auditId=" + request.getAuditId()
+                + "，目标服务=" + request.getTargetService();
     }
 
     private List<String> normalizeArgumentNames(List<String> values) {

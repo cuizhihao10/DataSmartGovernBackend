@@ -6,6 +6,8 @@
  */
 package com.czh.datasmart.govern.task.controller.dto;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
@@ -26,6 +28,7 @@ import java.util.List;
  * <p>3. 使用安全引用后，载荷读取权限可以在执行时动态撤销，而不是消息发出后永久失控。</p>
  */
 @Data
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class AgentAsyncTaskCommandRequest {
 
     /**
@@ -47,7 +50,12 @@ public class AgentAsyncTaskCommandRequest {
     private String idempotencyKey;
 
     /**
-     * 命令类型。当前只接受 AGENT_TOOL_ASYNC_TASK_REQUESTED。
+     * 命令类型。
+     *
+     * <p>当前支持两条产品路径：</p>
+     * <p>1. `AGENT_TOOL_ASYNC_TASK_REQUESTED`：历史异步工具任务，会创建可被现有 worker 认领的 `AGENT_ASYNC_TOOL`；</p>
+     * <p>2. `AGENT_TOOL_ACTION_CONTROLLED_COMMAND`：新工具动作控制面命令，只进入 Inbox 和任务台账，
+     * 等待后续专用 tool-action executor，不会被旧 worker 直接执行。</p>
      */
     @NotBlank(message = "commandType 不能为空")
     private String commandType;
@@ -72,8 +80,13 @@ public class AgentAsyncTaskCommandRequest {
 
     /**
      * 工具编码，例如 data-sync.execute、quality.scan.start。
+     *
+     * <p>新工具动作 writer 的上游图字段叫 toolName，语义上等价于这里的 toolCode。
+     * 使用 JsonAlias 是为了让 task-management 可以兼容两种低敏信封命名，而不要求 agent-runtime
+     * 和 task-management 在同一次迭代里完全同步字段名。</p>
      */
     @NotBlank(message = "toolCode 不能为空")
+    @JsonAlias("toolName")
     private String toolCode;
 
     /**
@@ -84,8 +97,11 @@ public class AgentAsyncTaskCommandRequest {
 
     /**
      * 工具目录声明的目标端点模板。
+     *
+     * <p>该字段对历史 `AGENT_TOOL_ASYNC_TASK_REQUESTED` 必填，worker 会用它和 agent-runtime 参数快照做一致性校验。
+     * 对新 `AGENT_TOOL_ACTION_CONTROLLED_COMMAND` 则必须为空，因为新命令不能让外部调用方携带内部端点，
+     * 真实目标应由后续受控执行器基于 toolCode、payload store、权限策略重新解析。</p>
      */
-    @NotBlank(message = "targetEndpoint 不能为空")
     private String targetEndpoint;
 
     /**
@@ -102,6 +118,9 @@ public class AgentAsyncTaskCommandRequest {
 
     /**
      * Agent 工作空间边界。用于研发、测试、生产空间隔离和产物解析。
+     *
+     * <p>历史 async-task worker 需要该字段做参数快照一致性校验。新工具动作控制面命令当前可以为空，
+     * 因为它可能只绑定 run/project，workspace 需要在后续 payload store 或真实执行器中再物化。</p>
      */
     @Min(value = 1, message = "workspaceId 必须大于 0")
     private Long workspaceId;
@@ -121,8 +140,9 @@ public class AgentAsyncTaskCommandRequest {
     /**
      * 受控载荷引用。
      *
-     * <p>第一阶段要求使用 agent-tool-audit:// 协议，表示 worker 后续需要回到受治理存储读取参数快照，
-     * 而不是把参数值直接塞进消息或任务主表。</p>
+     * <p>历史 async-task 使用 `agent-tool-audit://.../plan-arguments`，表示 worker 后续回到受治理审计存储读取参数快照。
+     * 新工具动作使用 `agent-payload:{runId}/{payloadKey}`，表示后续专用执行器需要回到独立 payload store 读取载荷。
+     * 两者都不允许把参数值直接塞进消息或任务主表。</p>
      */
     @NotBlank(message = "payloadReference 不能为空")
     private String payloadReference;

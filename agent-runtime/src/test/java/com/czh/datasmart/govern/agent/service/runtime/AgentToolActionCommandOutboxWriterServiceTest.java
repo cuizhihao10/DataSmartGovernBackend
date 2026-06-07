@@ -60,9 +60,15 @@ class AgentToolActionCommandOutboxWriterServiceTest {
         AgentAsyncTaskCommandOutboxRecord record = services.outboxStore()
                 .findByCommandId(response.commandId())
                 .orElseThrow();
+        assertEquals("datasmart.agent.async-task-command.v1", record.schemaVersion());
         assertEquals("agent-payload:run-proposal/datasource-metadata-read", record.payloadReference());
         assertEquals("agent-runtime", record.targetService());
         assertNull(record.targetEndpoint());
+        assertTrue(record.payloadJson().contains("\"schemaVersion\":\"datasmart.agent.async-task-command.v1\""));
+        assertTrue(record.payloadJson().contains("\"proposalCommandSchemaVersion\":\"agent-tool-action-command.v1\""));
+        assertTrue(record.payloadJson().contains("\"auditId\":\"" + record.auditId() + "\""));
+        assertTrue(record.payloadJson().contains("\"toolCode\":\"datasource.metadata.read\""));
+        assertTrue(record.payloadJson().contains("\"targetService\":\"agent-runtime\""));
         assertTrue(record.payloadJson().contains("\"source\":\"TOOL_ACTION_COMMAND_PROPOSAL\""));
         assertTrue(record.payloadJson().contains("\"payloadReferenceVerificationStatus\":\"VERIFIED\""));
         assertTrue(record.payloadJson().contains("\"factEvidenceVerificationStatus\":\"VERIFIED_OR_NOT_REQUIRED\""));

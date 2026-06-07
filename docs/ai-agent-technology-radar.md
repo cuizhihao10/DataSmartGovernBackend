@@ -1,5 +1,27 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-07 落地补充：Controlled command inbox separates approval from execution
+
+- 最新 Agent Host 趋势继续强调：工具调用不应从“模型/协议请求”直接跳到“业务副作用执行”。更安全的路线是先形成可暂停、可恢复、可审批、可审计的控制面事实，再由执行器在服务端复核后推进。
+- 本轮核对的外部参考：
+  - OpenAI Agents SDK Human-in-the-loop 文档强调 function tool、hosted MCP 和 nested agent tool 都可能产生审批中断，运行状态需要保存并在审批后恢复；
+  - LangGraph Durable Execution 文档强调长任务和 human-in-the-loop 场景需要持久化执行状态，避免中断、超时或重启后丢失流程；
+  - MCP 官方 Authorization 规范强调受限 MCP server 的授权边界，并明确 token audience validation 与禁止 token passthrough 这类安全要求。
+- DataSmart 本阶段把趋势落成代码：
+  - `agent-runtime` writer 输出 task-management 可消费的低敏命令信封，但不携带内部 endpoint 和工具实参；
+  - `task-management` Inbox 支持 `AGENT_TOOL_ACTION_CONTROLLED_COMMAND`，按 commandId/idempotencyKey 去重并创建 `AGENT_TOOL_ACTION_CONTROLLED` 任务；
+  - 新任务类型不会被旧 `AGENT_ASYNC_TOOL` worker 认领，避免 `agent-payload:` 尚未接 payload store 时发生误执行；
+  - 数据库 Inbox/Outbox 允许 targetEndpoint 为空，使“禁止外部携带内部端点”成为真实可落库的契约，而不是只停留在代码注释。
+- 产品映射：
+  - 这一步让 DataSmart 更接近 Codex/Claude Code 类 Agent Host 的“工具动作先进入宿主控制面，再进入受控执行器”模式；
+  - 人工审批、策略版本、payloadReference 和 worker receipt 都应成为可回放事实，而不是临时 HTTP 请求字段；
+  - 后续完整能力不应是“让 task-management 直接执行 agent-payload”，而是新增专用 tool-action executor，在执行前回查 payload store、permission-admin、confirmation store、worker capacity 和幂等状态。
+- 下一步趋势落地建议：
+  1. `agent-payload:` payload store/client 要先做服务端鉴权和低敏 verdict，不要让 writer 或 Inbox 读取真实参数正文；
+  2. 专用 `AGENT_TOOL_ACTION_CONTROLLED` worker 应先接 pre-check/dry-run/receipt，再逐步开放真实副作用；
+  3. MCP/A2A/模型 tool_call 都应汇入同一套 command inbox，而不是各自绕过权限、审批和审计。
+- 参考资料：OpenAI Agents SDK Human-in-the-loop：`https://openai.github.io/openai-agents-python/human_in_the_loop/`；OpenAI Agents JS tools approval：`https://openai.github.io/openai-agents-js/guides/tools`；LangGraph Durable Execution：`https://docs.langchain.com/oss/python/langgraph/durable-execution`；MCP Authorization：`https://modelcontextprotocol.io/specification/2025-06-18/basic/authorization`。
+
 ## 2026-06-07 落地补充：Evidence replay turns verifier checks into host facts
 
 - 现代 Agent Host 的工具执行安全正在从“校验请求字符串”走向“回放服务端事实证据”。模型 tool_call、MCP `tools/call`、A2A action 或前端确认页提交的 ID，都不应被直接视为可信执行凭据；它们必须被 host/control-plane 回查为真实存在、未过期、未越权、绑定当前 run/session/graph 的事实。

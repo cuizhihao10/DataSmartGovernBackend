@@ -1,5 +1,31 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-07 追加落地进展：Task Management 5.56 受控工具动作命令入箱契约
+
+- `task-management` 已支持消费 `AGENT_TOOL_ACTION_CONTROLLED_COMMAND`：
+  - 新增 `AgentAsyncTaskCommandContractSupport`，集中管理命令类型、任务类型、payloadReference 协议、targetEndpoint 与 workspaceId 条件必填规则；
+  - 历史 `AGENT_TOOL_ASYNC_TASK_REQUESTED` 仍创建 `AGENT_ASYNC_TOOL`，继续被现有 worker 认领和执行；
+  - 新 `AGENT_TOOL_ACTION_CONTROLLED_COMMAND` 创建 `AGENT_TOOL_ACTION_CONTROLLED`，只完成 Inbox 去重和任务台账登记，不会被旧 worker 误认领；
+  - 新命令必须使用 `agent-payload:{runId}/{payloadKey}`，targetService 必须是 `agent-runtime`，并且禁止携带 targetEndpoint。
+- `agent-runtime` writer 同步补齐 task-management 消费契约：
+  - 跨服务 payload 的 schemaVersion 统一使用 `datasmart.agent.async-task-command.v1`；
+  - 保留 `proposalCommandSchemaVersion` 作为低敏扩展字段，避免 proposal schema 与消费 schema 混用；
+  - payload 明确输出 `auditId/toolCode/targetService/workspaceId/priority/maxRetryCount/maxDeferCount` 等消费侧必需字段；
+  - `toolName` 仍保留为控制面展示字段，task-management DTO 通过 `@JsonAlias("toolName")` 兼容字段名差异。
+- 数据库兼容：
+  - `agent_async_task_command_inbox.target_endpoint` 改为可空，因为新工具动作命令不允许外部输入内部端点；
+  - `agent_async_task_command_inbox.workspace_id` 改为可空，因为新控制面命令可能尚未物化 workspace；
+  - `agent_async_task_command_outbox.target_endpoint` 改为可空，避免 MySQL outbox store 在写入新工具动作命令时被 NOT NULL 阻断；
+  - 新增幂等迁移 `20260607_agent_tool_action_command_nullable_endpoint.sql`，同时更新初始化脚本。
+- 安全边界：
+  - task params 只写入低敏摘要：commandType、commandKind、payloadReferenceType、workerDispatchEnabled、参数名、策略版本和证据摘要；
+  - 仍不写入工具实参、SQL、prompt、样本数据、模型输出、凭证、内部 endpoint 或 artifact 正文；
+  - 新命令不会被旧 worker 执行，后续必须接专用 tool-action executor、payload store/client 和 worker receipt。
+- 下一步推荐路线：
+  1. 设计 `agent-payload:` payload store/client 端口，只允许执行器在服务端按 tenant/project/actor/use-case 读取 verdict 和必要载荷；
+  2. 为 `AGENT_TOOL_ACTION_CONTROLLED` 增加专用 worker/dispatcher，但先保持 dry-run/pre-check 模式，直到 approval fact、payload store 和 receipt 回写齐备；
+  3. 把 permission-admin 审批事实接入 fact verifier，补齐普通审批单的存在性、过期、授权和 graph/contract 绑定复核。
+
 ## 2026-06-07 追加落地进展：Java Agent Runtime 5.55 工具动作真实证据复核
 
 - Java `agent-runtime` 在 5.54 writer 前 verifier 基础上，进一步把部分复核从“字符串结构安全”推进到“可用事实源存在性与归属复核”：

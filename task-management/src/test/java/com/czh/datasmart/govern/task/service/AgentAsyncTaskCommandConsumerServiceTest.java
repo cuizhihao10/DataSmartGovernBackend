@@ -97,6 +97,9 @@ class AgentAsyncTaskCommandConsumerServiceTest {
                 paramsCaptor.capture(), any(), any(), any(), eq(10L), isNull(), eq(20L),
                 any(TaskActorContext.class));
         assertTrue(paramsCaptor.getValue().contains("\"payloadReference\""));
+        assertTrue(paramsCaptor.getValue().contains("\"commandType\":\"AGENT_TOOL_ASYNC_TASK_REQUESTED\""));
+        assertTrue(paramsCaptor.getValue().contains("\"payloadReferenceType\":\"AGENT_TOOL_AUDIT\""));
+        assertTrue(paramsCaptor.getValue().contains("\"workerDispatchEnabled\":true"));
         assertTrue(paramsCaptor.getValue().contains("\"credentialRef\""));
         assertTrue(paramsCaptor.getValue().contains("\"confirmationId\":\"dag-confirmation:test-001\""));
         assertTrue(paramsCaptor.getValue().contains("\"policyVersions\":[\"route-policy:860\"]"));
@@ -106,6 +109,48 @@ class AgentAsyncTaskCommandConsumerServiceTest {
         verify(inboxMapper).updateById(updateCaptor.capture());
         assertEquals(AgentAsyncTaskCommandState.TASK_CREATED, updateCaptor.getValue().getConsumeState());
         assertEquals(9001L, updateCaptor.getValue().getTaskId());
+    }
+
+    @Test
+    void controlledToolActionCommandShouldCreateIsolatedControlTask() {
+        AgentAsyncTaskCommandRequest request = validControlledToolActionRequest();
+        Task createdTask = new Task();
+        createdTask.setId(9101L);
+        when(inboxMapper.insert(any(AgentAsyncTaskCommandInbox.class))).thenAnswer(invocation -> {
+            AgentAsyncTaskCommandInbox inbox = invocation.getArgument(0);
+            inbox.setId(2L);
+            return 1;
+        });
+        when(taskService.createTask(anyString(), anyString(), eq("AGENT_TOOL_ACTION_CONTROLLED"),
+                anyString(), any(), any(), any(), eq(10L), isNull(), eq(20L), any(TaskActorContext.class)))
+                .thenReturn(createdTask);
+
+        AgentAsyncTaskCommandConsumeResponse response = service.consume(request);
+
+        assertEquals("taoc-consume-001", response.commandId());
+        assertFalse(response.duplicate());
+        assertTrue(response.taskCreated());
+        assertEquals(9101L, response.taskId());
+
+        ArgumentCaptor<AgentAsyncTaskCommandInbox> inboxCaptor = ArgumentCaptor.forClass(AgentAsyncTaskCommandInbox.class);
+        verify(inboxMapper).insert(inboxCaptor.capture());
+        assertEquals("AGENT_TOOL_ACTION_CONTROLLED_COMMAND", inboxCaptor.getValue().getCommandType());
+        assertEquals("tool-action:graph-contract-hash", inboxCaptor.getValue().getAuditId());
+        assertEquals("agent-runtime", inboxCaptor.getValue().getTargetService());
+        assertEquals(null, inboxCaptor.getValue().getTargetEndpoint());
+        assertEquals(null, inboxCaptor.getValue().getWorkspaceId());
+        assertEquals("agent-payload:run-proposal/datasource-metadata-read",
+                inboxCaptor.getValue().getPayloadReference());
+
+        ArgumentCaptor<String> paramsCaptor = ArgumentCaptor.forClass(String.class);
+        verify(taskService).createTask(anyString(), anyString(), eq("AGENT_TOOL_ACTION_CONTROLLED"),
+                paramsCaptor.capture(), any(), any(), any(), eq(10L), isNull(), eq(20L),
+                any(TaskActorContext.class));
+        assertTrue(paramsCaptor.getValue().contains("\"commandKind\":\"TOOL_ACTION_CONTROLLED\""));
+        assertTrue(paramsCaptor.getValue().contains("\"payloadReferenceType\":\"AGENT_PAYLOAD\""));
+        assertTrue(paramsCaptor.getValue().contains("\"workerDispatchEnabled\":false"));
+        assertTrue(paramsCaptor.getValue().contains("\"confirmationId\":\"approval:human-001\""));
+        assertFalse(paramsCaptor.getValue().contains("targetEndpoint\":\"/internal"));
     }
 
     @Test
@@ -180,6 +225,28 @@ class AgentAsyncTaskCommandConsumerServiceTest {
         verifyNoInteractions(taskService);
     }
 
+    @Test
+    void controlledToolActionCommandMustNotCarryTargetEndpoint() {
+        AgentAsyncTaskCommandRequest request = validControlledToolActionRequest();
+        request.setTargetEndpoint("/internal/unsafe");
+
+        assertThrows(IllegalArgumentException.class, () -> service.consume(request));
+
+        verifyNoInteractions(inboxMapper);
+        verifyNoInteractions(taskService);
+    }
+
+    @Test
+    void controlledToolActionPayloadReferenceMustBelongToCurrentRun() {
+        AgentAsyncTaskCommandRequest request = validControlledToolActionRequest();
+        request.setPayloadReference("agent-payload:another-run/datasource-metadata-read");
+
+        assertThrows(IllegalArgumentException.class, () -> service.consume(request));
+
+        verifyNoInteractions(inboxMapper);
+        verifyNoInteractions(taskService);
+    }
+
     private AgentAsyncTaskCommandRequest validRequest() {
         AgentAsyncTaskCommandRequest request = new AgentAsyncTaskCommandRequest();
         request.setSchemaVersion(AgentAsyncTaskCommandConsumerService.SUPPORTED_SCHEMA_VERSION);
@@ -204,6 +271,35 @@ class AgentAsyncTaskCommandConsumerServiceTest {
         request.setPolicyVersions(List.of("route-policy:860"));
         request.setDelegationEvidence(List.of("serviceAccount=datasmart-agent-runtime;representedActor=actor-agent"));
         request.setPriority("HIGH");
+        request.setMaxRetryCount(3);
+        request.setMaxDeferCount(20);
+        return request;
+    }
+
+    private AgentAsyncTaskCommandRequest validControlledToolActionRequest() {
+        AgentAsyncTaskCommandRequest request = new AgentAsyncTaskCommandRequest();
+        request.setSchemaVersion(AgentAsyncTaskCommandConsumerService.SUPPORTED_SCHEMA_VERSION);
+        request.setCommandId("taoc-consume-001");
+        request.setIdempotencyKey("tool-action:proposal:run-proposal:datasource-metadata-read");
+        request.setCommandType(AgentAsyncTaskCommandConsumerService.SUPPORTED_TOOL_ACTION_COMMAND_TYPE);
+        request.setAuditId("tool-action:graph-contract-hash");
+        request.setSessionId("session-proposal");
+        request.setRunId("run-proposal");
+        request.setToolCode("datasource.metadata.read");
+        request.setTargetService("agent-runtime");
+        request.setTargetEndpoint(null);
+        request.setTenantId(10L);
+        request.setProjectId(20L);
+        request.setWorkspaceId(null);
+        request.setActorId("1001");
+        request.setTraceId("trace-tool-action-consume");
+        request.setPayloadReference("agent-payload:run-proposal/datasource-metadata-read");
+        request.setArgumentNames(List.of());
+        request.setSensitiveArgumentNames(List.of());
+        request.setConfirmationId("approval:human-001");
+        request.setPolicyVersions(List.of("tool-readiness-policy.v1"));
+        request.setDelegationEvidence(List.of("REFERENCE_PREFIX:agent-payload", "RUN_ID_BOUND:run-proposal"));
+        request.setPriority("MEDIUM");
         request.setMaxRetryCount(3);
         request.setMaxDeferCount(20);
         return request;

@@ -241,8 +241,12 @@ public class AgentToolActionCommandOutboxWriterService {
             AgentToolActionFactEvidenceVerificationResult factEvidenceVerification) {
         Instant now = Instant.now();
         String commandId = commandId(proposal);
+        String auditReference = auditReference(proposal);
+        String commandSchemaVersion = outboxProperties.getSchemaVersion();
         String payloadJson = toJson(payload(
                 commandId,
+                commandSchemaVersion,
+                auditReference,
                 proposal,
                 request,
                 accessContext,
@@ -260,13 +264,13 @@ public class AgentToolActionCommandOutboxWriterService {
         return AgentAsyncTaskCommandOutboxRecord.pending(
                 commandId,
                 requireText(proposal.idempotencyKey(), "idempotencyKey"),
-                defaultText(proposal.commandSchemaVersion(), outboxProperties.getSchemaVersion()),
+                commandSchemaVersion,
                 requireText(proposal.commandType(), "commandType"),
                 defaultText(runtimeProperties.getAsyncTaskCommandTopic(), DEFAULT_TOPIC),
                 defaultText(runtimeProperties.getAsyncTaskCommandConsumerService(), DEFAULT_CONSUMER),
                 requireText(proposal.sessionId(), "sessionId"),
                 requireText(proposal.runId(), "runId"),
-                auditReference(proposal),
+                auditReference,
                 requireText(proposal.toolName(), "toolName"),
                 TARGET_SERVICE,
                 null,
@@ -290,16 +294,30 @@ public class AgentToolActionCommandOutboxWriterService {
      * command payload。</p>
      */
     private Map<String, Object> payload(String commandId,
+                                        String commandSchemaVersion,
+                                        String auditReference,
                                         AgentToolActionCommandProposalResponse proposal,
                                         AgentToolActionCommandProposalRequest request,
                                         AgentRuntimeEventQueryAccessContext accessContext,
                                         AgentToolActionPayloadReferenceVerificationResult payloadReferenceVerification,
                                         AgentToolActionFactEvidenceVerificationResult factEvidenceVerification) {
         Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("schemaVersion", defaultText(proposal.commandSchemaVersion(), outboxProperties.getSchemaVersion()));
+        payload.put("schemaVersion", commandSchemaVersion);
+        payload.put("proposalCommandSchemaVersion", proposal.commandSchemaVersion());
         payload.put("commandId", commandId);
         payload.put("idempotencyKey", proposal.idempotencyKey());
         payload.put("commandType", proposal.commandType());
+        /*
+         * 以下字段是 task-management AgentAsyncTaskCommandRequest 的最小消费契约。
+         * tool action writer 本身还会保留 proposalId/graphId/contractId 等控制面字段，但 Kafka handler 默认会忽略
+         * DTO 不认识的扩展字段；因此这里必须显式输出 auditId/toolCode/targetService 等稳定字段，保证消息能被
+         * task-management Inbox 解析、去重和创建控制面任务。
+         */
+        payload.put("auditId", auditReference);
+        payload.put("toolCode", proposal.toolName());
+        payload.put("targetService", TARGET_SERVICE);
+        payload.put("targetEndpoint", null);
+        payload.put("workspaceId", null);
         payload.put("dispatchChannel", DISPATCH_CHANNEL);
         payload.put("source", COMMAND_SOURCE);
         payload.put("proposalId", proposal.proposalId());
@@ -319,6 +337,11 @@ public class AgentToolActionCommandOutboxWriterService {
         payload.put("payloadReferenceVerificationStatus", payloadReferenceVerification.status());
         payload.put("payloadReferenceType", payloadReferenceVerification.referenceType());
         payload.put("payloadReferenceAcceptedEvidence", payloadReferenceVerification.acceptedEvidence());
+        payload.put("argumentNames", List.of());
+        payload.put("sensitiveArgumentNames", List.of());
+        payload.put("confirmationId", request == null ? null : safeText(request.approvalConfirmationId()));
+        payload.put("policyVersions", policyVersions(request == null ? null : request.policyVersion()));
+        payload.put("delegationEvidence", delegationEvidence(payloadReferenceVerification, factEvidenceVerification));
         payload.put("policyVersion", request == null ? null : safeText(request.policyVersion()));
         payload.put("approvalConfirmationId", request == null ? null : safeText(request.approvalConfirmationId()));
         payload.put("clarificationFactId", request == null ? null : safeText(request.clarificationFactId()));
@@ -336,7 +359,42 @@ public class AgentToolActionCommandOutboxWriterService {
                 "RESULT_REDACTION_AND_RECEIPT"
         ));
         payload.put("traceId", accessContext == null ? null : accessContext.traceId());
+        payload.put("priority", outboxProperties.getDefaultPriority());
+        payload.put("maxRetryCount", outboxProperties.getDefaultMaxRetryCount());
+        payload.put("maxDeferCount", outboxProperties.getDefaultMaxDeferCount());
         return payload;
+    }
+
+    /**
+     * 将单个策略版本转成 task-management 消费侧使用的数组字段。
+     *
+     * <p>历史 async-task 命令已经把 policyVersions 建模成列表，这样后续可以同时记录网关路由策略、
+     * permission-admin 工具预算策略、sandbox 策略和运行时保护策略。tool action writer 当前只有一个
+     * policyVersion，也按列表输出，避免消费侧出现“同一语义两个字段”的分裂。</p>
+     */
+    private List<String> policyVersions(String policyVersion) {
+        String text = safeText(policyVersion);
+        return text == null ? List.of() : List.of(text);
+    }
+
+    /**
+     * 生成低敏委托证据摘要。
+     *
+     * <p>这里仅复用 verifier 已经产生的 acceptedEvidence，例如引用前缀、run 绑定、事实复核状态等。
+     * 这些值不包含工具参数、SQL、prompt、样本数据或模型输出，可以安全进入 task.params，供后续执行器和审计台解释
+     * “这条命令为什么被允许入箱”。</p>
+     */
+    private List<String> delegationEvidence(
+            AgentToolActionPayloadReferenceVerificationResult payloadReferenceVerification,
+            AgentToolActionFactEvidenceVerificationResult factEvidenceVerification) {
+        List<String> evidence = new ArrayList<>();
+        if (payloadReferenceVerification != null && payloadReferenceVerification.acceptedEvidence() != null) {
+            evidence.addAll(payloadReferenceVerification.acceptedEvidence());
+        }
+        if (factEvidenceVerification != null && factEvidenceVerification.acceptedEvidence() != null) {
+            evidence.addAll(factEvidenceVerification.acceptedEvidence());
+        }
+        return List.copyOf(evidence);
     }
 
     private List<String> summaryReasons(AgentToolActionCommandProposalResponse proposal,
