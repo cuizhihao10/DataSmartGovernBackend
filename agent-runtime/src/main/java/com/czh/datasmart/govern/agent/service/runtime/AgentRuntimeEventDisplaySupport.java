@@ -46,6 +46,7 @@ public class AgentRuntimeEventDisplaySupport {
     private static final String EXTERNAL_PROTOCOL_DISCOVERY_EVENT_TYPE = "agent.external_protocol.discovery.completed";
     private static final String AGENT_SESSION_SCHEDULING_EVENT_TYPE = "agent_session_scheduling_recorded";
     private static final String TOOL_EXECUTION_READINESS_EVENT_TYPE = "tool_execution_readiness_recorded";
+    private static final String TOOL_ACTION_INTAKE_EVENT_TYPE = "tool_action_intake_recorded";
 
     private static final String REPLAY_POLICY_APPEND_AND_ACK = "APPEND_TO_TIMELINE_AND_ALLOW_ACK_CURSOR";
     private static final String REPLAY_POLICY_APPEND_ONLY = "APPEND_TO_TIMELINE";
@@ -81,6 +82,9 @@ public class AgentRuntimeEventDisplaySupport {
         }
         if (TOOL_EXECUTION_READINESS_EVENT_TYPE.equals(eventType)) {
             return AgentToolExecutionReadinessEventDisplayBuilder.build(record);
+        }
+        if (TOOL_ACTION_INTAKE_EVENT_TYPE.equals(eventType)) {
+            return AgentToolActionIntakeEventDisplayBuilder.build(record);
         }
         return buildGenericDisplay(record);
     }

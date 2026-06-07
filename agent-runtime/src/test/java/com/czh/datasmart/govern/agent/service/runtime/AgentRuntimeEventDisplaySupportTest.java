@@ -287,4 +287,78 @@ class AgentRuntimeEventDisplaySupportTest {
         assertEquals(true, display.metrics().get("graphWorkerReceiptRequiredForSideEffects"));
         assertTrue(display.recommendedActions().stream().anyMatch(action -> action.contains("审批面板")));
     }
+
+    /**
+     * 工具动作入口事件应在 timeline 中展示为“执行前入口治理”卡片。
+     *
+     * <p>这条测试保护 5.49 的用户体验：Python 5.48 已经把 MCP `tools/call` preview 写成
+     * `tool_action_intake_recorded` 低敏事件，Java timeline 不能退回到通用事件展示，而应该直接告诉用户：
+     * 外部工具动作意图是否被入口接收、是否在 readiness 前被拒绝、是否还缺少可见工具配置或协议 method。</p>
+     */
+    @Test
+    void toolActionIntakeDisplayShouldExposeRejectedBeforeReadinessSummary() {
+        AgentRuntimeEventDisplayView display = new AgentRuntimeEventDisplaySupport().buildDisplay(new AgentRuntimeEventProjectionRecord(
+                "tool-action-intake-display",
+                "agent-runtime-event.v1",
+                "python-ai-runtime",
+                "tool_action_intake_recorded",
+                "record_tool_action_intake",
+                "已记录外部工具动作入口治理快照。",
+                "warning",
+                "10",
+                "20",
+                "1001",
+                "trace-tool-intake-display",
+                "run-tool-intake-display",
+                "session-tool-intake-display",
+                14L,
+                Instant.parse("2026-06-07T05:49:00Z"),
+                Instant.parse("2026-06-07T05:49:00Z"),
+                Instant.parse("2026-06-07T05:49:01Z"),
+                Map.ofEntries(
+                        Map.entry("snapshotType", "TOOL_ACTION_INTAKE"),
+                        Map.entry("schemaVersion", "datasmart.python-ai-runtime.mcp-tools-call-intake-preview.v1"),
+                        Map.entry("protocolFamily", "MCP"),
+                        Map.entry("source", "MCP_TOOLS_CALL"),
+                        Map.entry("previewOnly", true),
+                        Map.entry("toolExecutionEnabled", false),
+                        Map.entry("jsonRpcDetected", true),
+                        Map.entry("methodAccepted", true),
+                        Map.entry("callDetected", true),
+                        Map.entry("acceptedToolPlanCount", 0),
+                        Map.entry("rejectedBeforeReadinessCount", 1),
+                        Map.entry("readinessExecutableCount", 0),
+                        Map.entry("readinessApprovalRequiredCount", 0),
+                        Map.entry("readinessClarificationRequiredCount", 0),
+                        Map.entry("readinessDraftOnlyCount", 0),
+                        Map.entry("readinessBlockedCount", 0),
+                        Map.entry("readinessThrottledCount", 0),
+                        Map.entry("toolNames", List.of("datasource.metadata.read")),
+                        Map.entry("issueCodes", List.of("MODEL_TOOL_CALL_NOT_EXPOSED")),
+                        Map.entry("readinessNextActions", List.of("CHECK_VISIBLE_TOOL_NAMES")),
+                        Map.entry("graphBranchCounts", Map.of("NO_TOOL_PLAN", 1)),
+                        Map.entry("graphToolExecuted", false),
+                        Map.entry("graphOutboxWritten", false),
+                        Map.entry("graphApprovalCreated", false),
+                        Map.entry("productionReadyForExecution", false)
+                )
+        ));
+
+        assertEquals("TOOL_ACTION_INTAKE", display.category());
+        assertEquals("工具动作入口已在准备度前拒绝", display.title());
+        assertEquals("REJECTED_BEFORE_READINESS", display.status());
+        assertTrue(display.requiresAttention());
+        assertTrue(display.summary().contains("准备度前拒绝 1 个"));
+        assertEquals(0, display.metrics().get("acceptedToolPlanCount"));
+        assertEquals(1, display.metrics().get("rejectedBeforeReadinessCount"));
+        assertEquals(1, display.metrics().get("toolNameCount"));
+        assertEquals(1, display.metrics().get("issueCodeCount"));
+        assertEquals(1, display.metrics().get("nextActionCount"));
+        assertEquals(1, display.metrics().get("graphBranchCount"));
+        assertEquals(false, display.metrics().get("graphToolExecuted"));
+        assertEquals(false, display.metrics().get("graphOutboxWritten"));
+        assertEquals(false, display.metrics().get("graphApprovalCreated"));
+        assertEquals(false, display.metrics().get("productionReadyForExecution"));
+        assertTrue(display.recommendedActions().stream().anyMatch(action -> action.contains("可见工具集合")));
+    }
 }

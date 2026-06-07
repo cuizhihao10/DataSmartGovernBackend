@@ -1,5 +1,34 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-07 追加落地进展：Java Agent Runtime 工具动作入口投影与 Timeline
+
+- Java `agent-runtime` 已接入 Python 5.48 产生的 `tool_action_intake_recorded` runtime event：
+  - 新增 `/agent-runtime/runtime-events/tool-action-intake-snapshots` 与 `/api/agent/runtime-events/tool-action-intake-snapshots` 专用查询入口；
+  - 服务层固定 eventType，调用方不能把它伪装成通用事件查询入口；
+  - 投影只解析低敏白名单字段：协议族、preview 边界、JSON-RPC 检测、accepted/rejected 数量、boundaryCounts、issueCodes、toolNames、readiness 计数、graph 分支、生产缺口和低敏 decision summary；
+  - 明确不解析、不返回 `arguments`、prompt、SQL、样本数据、模型输出、凭证、内部 endpoint、task/artifact 正文。
+- 新增强类型 DTO：
+  - `AgentToolActionIntakeProjectionView` 承载单条外部工具动作入口快照；
+  - `AgentToolActionIntakeDecisionSummaryView` 承载单个工具计划的低敏执行前决策；
+  - `AgentToolActionIntakeProjectionQueryResponse` 承载窗口聚合，便于管理台展示 accepted/rejected、readiness、工具名、问题码和 graph 分支趋势。
+- Timeline display 已接入：
+  - `tool_action_intake_recorded` 不再退化成通用 runtime event；
+  - 可解释为 `REJECTED_BEFORE_READINESS`、`BLOCKED_BEFORE_EXECUTION`、`WAITING_APPROVAL`、`NEEDS_CLARIFICATION`、`WAITING_TOOL_BUDGET`、`READY_FOR_CONTROLLED_EXECUTION` 或 `INTAKE_RECORDED`；
+  - display 只展示低敏计数和建议动作，不复制工具参数、payload、prompt 或完整上下文。
+- 本阶段对应的产品路线：
+  - 外部 Agent 的 MCP `tools/call` 意图已经从 Python preview 响应推进到 Java 控制面可查询、可回放、可展示的事实；
+  - 这让 DataSmart 更接近 Codex/Claude Code 类 Agent Host：工具动作不是模型说了就执行，而是先进入 host-level intake、readiness、审批、outbox 和 worker receipt 证据链；
+  - 当前 MCP 官方 schema 最新版本页面显示 `2025-11-25 (latest)`，并包含 JSON-RPC 与 `tools/call` 类型，因此后续正式 MCP Server 应以协议生命周期、tools/list、tools/call、cancel/progress、任务状态和授权边界为完整目标，而不是只做单接口直连执行。
+- 当前边界：
+  - 这一步仍是只读控制面投影，不执行工具、不创建审批、不写 outbox、不调用 worker；
+  - 当前投影仍基于 runtime-event fallback store，不是 MySQL/ClickHouse dedicated index；
+  - Java 只消费 Python 已经低敏化的事件，不重新读取 MCP 原始请求体。
+- 下一步推荐路线：
+  1. 进入 durable action/outbox contract，让 READY/QUEUE_ASYNC 分支具备可恢复执行证据链。
+  2. 或把 readiness/intake 变成 LangGraph/OpenClaw-style execution graph 的条件节点，形成真正的智能网关执行图。
+  3. 或推进 MCP Server 第一阶段：initialize、tools/list、tools/call preview、session lifecycle、authorization 和低敏错误响应，但仍不开放真实副作用执行。
+  4. 不建议继续堆 Java projection 字段；更高价值是把控制面事实接到 outbox、审批、worker receipt 和前端确认页。
+
 ## 2026-06-06 追加落地进展：gateway 生成 signed tool policy envelope 主链路
 
 - `gateway` 新增 Agent 工具治理策略信封链路：

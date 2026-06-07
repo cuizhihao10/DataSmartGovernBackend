@@ -1,5 +1,21 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-07 落地补充：MCP tools/call intake should become control-plane evidence
+
+- 当前 Agent 工具体系的趋势不是“收到 MCP `tools/call` 就直接执行”，而是让 Agent Host 先把外部工具动作意图转成可治理事实：协议识别、工具可见性、参数形态、readiness、人工审批、预算/队列、outbox 和 worker receipt 都应在真实副作用前发生。
+- DataSmart 本阶段把 Python 5.48 的 `tool_action_intake_recorded` 接入 Java `agent-runtime` projection 与 timeline：
+  - Java 控制面可以查询外部工具动作入口是否被接收、是否在 readiness 前拒绝、是否等待审批/澄清/预算或是否可进入受控执行；
+  - Timeline 可以直接显示“工具动作入口已在准备度前拒绝”等可理解状态，前端不需要自己解析 attributes map；
+  - 投影和 display 继续坚持低敏边界，不携带 `arguments`、prompt、SQL、样本数据、模型输出、凭证、内部 endpoint 或 artifact 正文。
+- 趋势映射：
+  - MCP 官方 schema 当前 latest 页面为 `2025-11-25`，schema 覆盖 JSON-RPC、`tools/list`、`tools/call`、任务和通知相关类型；这意味着完整 MCP 能力不是一个 HTTP wrapper，而是一组协议生命周期、能力发现、调用、取消、进度、任务和授权协作。
+  - 对 DataSmart 来说，正确演进顺序应是“preview/intake evidence -> readiness graph -> approval/outbox/worker receipt -> controlled execution”，而不是直接把 MCP tools/call 映射成 Java/Python 工具执行器。
+- 下一步趋势落地建议：
+  1. 把 tool action intake 与 readiness 作为 execution graph condition node，靠图分支决定等待审批、澄清、排队、阻断或进入 outbox。
+  2. 设计 durable action/outbox contract，要求每个真实副作用都有 command、幂等键、worker receipt、结果脱敏和审计回放。
+  3. 在实现完整 MCP Server 前，先补 tools/list 可见工具目录、authorization scope、session lifecycle、cancel/progress 和低敏错误模型。
+  4. 继续跟踪 MCP、A2A、LangGraph/OpenClaw、OpenAI Agents SDK 和 Claude Code 类 Agent Host 的工具治理实践，把“工具调用能力”拆成协议、治理、执行、审计四层，而不是做成单个执行函数。
+
 ## 2026-06-06 落地补充：agent hosts should inject signed policy before tool execution
 
 - 最新 Agent 平台实践越来越强调 tools、guardrails、tracing 和 durable execution 的组合：工具调用不能只是模型输出一个函数名，还需要宿主平台在执行前注入权限、预算、风险、审批和可回放证据。
