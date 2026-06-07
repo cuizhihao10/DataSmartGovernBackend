@@ -1,5 +1,36 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-07 追加落地进展：Java Agent Runtime 工具动作 Command Proposal
+
+- Java `agent-runtime` 在执行图预览之后，新增工具动作 command proposal 预备层：
+  - 新增 `POST /agent-runtime/tool-action-commands/proposals`；
+  - 新增 `POST /api/agent/tool-action-commands/proposals`；
+  - 输入为 `graphId/contractId + payloadReference + policyVersion + approval/clarification fact id` 等低敏证据；
+  - 输出是否满足进入正式 outbox writer 的最低条件，但本接口不写 outbox、不创建审批、不读取 payloadReference、不调用 worker。
+- 本阶段主动避免了一个重要风险：
+  - 现有 async command outbox 服务主要服务“已有 auditId 的 ASYNC_TASK 工具审计记录”；
+  - `tool_action_intake_recorded` 来自外部协议入口，当前还没有真实 auditId、payloadReference 二次鉴权、审批事实核验和 worker 容量快照；
+  - 因此不能直接把 intake projection 或 execution graph 当作 outbox command 写入。
+- Proposal 的 fail-closed 规则：
+  - 图状态为 `BLOCKED_BEFORE_EXECUTION` 或 `REJECTED_BEFORE_READINESS` 时阻断；
+  - 图状态仍在等待审批、澄清或预算时阻断；
+  - payloadReference 不安全、像 inline payload、HTTP endpoint、SQL 片段或过长引用时阻断；
+  - 缺少 policyVersion、commandType、idempotencyKey 时阻断；
+  - 审批 ID 即使存在，也只算低敏证据，后续正式 writer 仍必须服务端回查。
+- 产品意义：
+  - 这一步把执行图从“可解释”推进到“可用于正式写入前校验”；
+  - 前端确认页或智能网关可以先拿到 `READY_FOR_OUTBOX_CONFIRMATION`，再调用真正 writer；
+  - 后续 writer 可以复用 proposalId、graphId、contractId、payloadReference、policyVersion 和 idempotencyKey，形成可恢复执行链路。
+- 当前边界：
+  - 尚未创建真实 outbox record；
+  - 尚未读取 payloadReference；
+  - 尚未回查 permission-admin 审批事实；
+  - 尚未接入 task-management/worker backlog 实时容量快照。
+- 下一步推荐路线：
+  1. 实现正式 outbox writer：消费 proposal，服务端回查 graph/contract/payloadReference/approval fact 后写入 outbox。
+  2. 或先接入前端确认页，使用户能补齐 payloadReference、审批事实和澄清事实。
+  3. 再接 task-management worker receipt，把 outbox dispatched/accepted/succeeded/failed/dead_letter 回写为低敏事实。
+
 ## 2026-06-07 追加落地进展：Java Agent Runtime 工具动作执行图预览
 
 - Java `agent-runtime` 在 5.50 Durable Action 契约预览基础上，新增工具动作执行图预览能力：

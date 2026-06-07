@@ -1,5 +1,25 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-07 落地补充：Command proposals separate readiness from durable writes
+
+- 当前 Codex、Claude Code、LangGraph/OpenClaw 风格 Agent Host 的工具执行趋势，是把“执行前准备度通过”与“真实持久化命令写入”拆成两个阶段。前者回答“这个工具动作是否具备进入确认/写入的最低条件”，后者才真正创建 outbox、触发 worker 或产生副作用。
+- DataSmart 本阶段新增工具动作 command proposal：
+  - 它消费 execution graph、durable action contract、payloadReference、policyVersion、approval/clarification fact id 等低敏证据；
+  - 它只判断是否可以进入正式 outbox writer 的复核，不写 outbox、不创建审批、不读取 payloadReference、不调用 worker；
+  - 它把 proposalState、acceptedEvidence、missingEvidence、rejectedEvidence、guardrailNotes 和 recommendedActions 显式返回给控制面，便于前端确认页、审计台和智能网关共同解释下一步。
+- Fail-closed 是本阶段的核心原则：
+  - graph 已阻断或入口已拒绝时直接阻断；
+  - 仍等待审批、澄清、预算或 worker 容量时不允许进入写入；
+  - payloadReference 像内联 payload、HTTP endpoint、SQL 片段、凭证片段或过长引用时阻断；
+  - 缺少 policyVersion、commandType 或 idempotencyKey 时阻断；
+  - 即使传入 approvalConfirmationId，也只被视为低敏线索，正式 writer 仍必须服务端回查审批事实。
+- 这条路线能避免一个常见架构误区：把 projection、execution graph 或 MCP `tools/call` intake 直接当作真实工具命令。projection 只能承载低敏治理事实，真实工具参数、SQL、样本数据、模型输出、内部 endpoint 和凭证都必须留在受控 payload 存储中，通过 payloadReference 与二次鉴权读取。
+- 下一步趋势落地建议：
+  1. 建立正式 outbox writer，由 writer 回查 proposal、graph、contract、payloadReference、审批事实和 worker 容量后再写 durable command。
+  2. 建立前端/智能网关确认页，把 proposal 作为用户确认、审批补齐、澄清补齐和风险说明的统一入口。
+  3. 将 task-management worker receipt 回写为低敏 runtime fact，让 dispatched、accepted、succeeded、failed、retry、dead_letter 都能被 timeline 和审计台追踪。
+  4. 继续跟踪 MCP、A2A、OpenAI Agents SDK、Anthropic Tool Use、LangGraph durable execution、OpenClaw/NemoClaw 类项目，但落地时坚持协议层、治理层、写入层、执行层和审计层分离。
+
 ## 2026-06-07 落地补充：Execution graphs make tool governance explainable
 
 - 现代 Agent Host 的工具治理不应只返回一个 `READY`、`WAITING_APPROVAL` 或 `BLOCKED` 字符串。更可商用的形态是把工具动作拆成可解释执行图：协议入口、readiness、审批/澄清/预算、durable contract、outbox command、worker receipt 和结果脱敏。
