@@ -9,6 +9,7 @@ if ROOT not in sys.path:
 from datasmart_ai_runtime.api_agent_routes import register_agent_runtime_routes
 from datasmart_ai_runtime.api_mcp_tool_call_intake import build_mcp_tool_call_intake_preview_response
 from datasmart_ai_runtime.config import default_tool_registry
+from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
 
 
 class FakeApp:
@@ -35,6 +36,53 @@ class FakeApp:
             return func
 
         return decorator
+
+
+class RecordingEventStore:
+    """记录写入事件的测试替身。"""
+
+    def __init__(self) -> None:
+        self.events = ()
+
+    def append_many(self, events) -> None:
+        """模拟 RuntimeEventStore.append_many。"""
+
+        self.events = self.events + tuple(events)
+
+
+class RecordingLivePushHub:
+    """记录 live push 事件的测试替身。"""
+
+    def __init__(self) -> None:
+        self.events = ()
+
+    def publish(self, events) -> int:
+        """模拟 RuntimeEventLivePushHub.publish。"""
+
+        self.events = self.events + tuple(events)
+        return len(tuple(events))
+
+
+class RecordingPublisher:
+    """记录异步发布事件的测试替身。"""
+
+    def __init__(self) -> None:
+        self.events = ()
+
+    def publish(self, events) -> int:
+        """模拟 RuntimeEventPublisher.publish。"""
+
+        self.events = self.events + tuple(events)
+        return len(tuple(events))
+
+
+class FailingEventStore:
+    """用于验证事件旁路 fail-open 的测试替身。"""
+
+    def append_many(self, events) -> None:
+        """模拟外部 replay store 故障。"""
+
+        raise RuntimeError("store unavailable")
 
 
 class McpToolCallIntakeApiTest(unittest.TestCase):
@@ -119,11 +167,76 @@ class McpToolCallIntakeApiTest(unittest.TestCase):
         """Agent 路由注册函数应暴露 MCP tools/call intake preview POST 入口。"""
 
         app = FakeApp()
+        event_store = RecordingEventStore()
+        live_push_hub = RecordingLivePushHub()
+        event_publisher = RecordingPublisher()
         register_agent_runtime_routes(
             app,
             request_type=object,
             orchestrator=object(),
-            event_store=None,
+            event_store=event_store,
+            session_manager=None,
+            live_push_hub=live_push_hub,
+            event_publisher=event_publisher,
+            runtime_event_replay_sources=(),
+            plan_ingestion_client=None,
+            control_plane_feedback_collector=None,
+            runtime_event_feedback_bridge=None,
+            loop_control_evaluator=None,
+            second_turn_orchestrator=None,
+            memory_write_governance=None,
+            tool_registry=default_tool_registry(),
+        )
+
+        handler = app.post_routes["/agent/protocol-adapters/mcp/tools-call-intake-preview"]
+        response = handler(
+            {
+                "method": "tools/call",
+                "params": {
+                    "name": "datasource.metadata.read",
+                    "arguments": {"datasourceId": "ds-route-secret"},
+                },
+                "context": {
+                    "tenantId": "tenant-route",
+                    "projectId": "project-route",
+                    "actorId": "actor-route",
+                    "requestId": "request-route",
+                    "runId": "run-route",
+                    "sessionId": "session-route",
+                },
+            }
+        )
+
+        self.assertEqual(1, response["toolActionIntake"]["acceptedToolPlanCount"])
+        self.assertEqual(1, response["toolExecutionReadiness"]["executableCount"])
+        self.assertFalse(response["toolExecutionEnabled"])
+        self.assertEqual(AgentRuntimeEventType.TOOL_ACTION_INTAKE_RECORDED.value, response["runtimeEvent"]["eventType"])
+        self.assertEqual("request-route", response["runtimeEvent"]["requestId"])
+        self.assertEqual("session-route", response["runtimeEvent"]["sessionId"])
+        self.assertTrue(response["runtimeEventDelivery"]["stored"])
+        self.assertEqual(1, response["runtimeEventDelivery"]["livePushedCount"])
+        self.assertEqual(1, response["runtimeEventDelivery"]["publishedCount"])
+        self.assertEqual(1, len(event_store.events))
+        self.assertEqual(event_store.events, live_push_hub.events)
+        self.assertEqual(event_store.events, event_publisher.events)
+        event = event_store.events[0]
+        self.assertEqual(AgentRuntimeEventType.TOOL_ACTION_INTAKE_RECORDED, event.event_type)
+        self.assertEqual("tenant-route", event.tenant_id)
+        self.assertEqual(1, event.attributes["acceptedToolPlanCount"])
+        self.assertEqual(1, event.attributes["readinessExecutableCount"])
+        self.assertFalse(event.attributes["graphToolExecuted"])
+        self.assertNotIn("ds-route-secret", str(response))
+        self.assertNotIn("ds-route-secret", str(event.attributes))
+
+    def test_mcp_intake_event_delivery_fail_open(self) -> None:
+        """事件旁路失败时，preview 响应仍应返回并暴露低敏 delivery 错误。"""
+
+        app = FakeApp()
+        register_agent_runtime_routes(
+            app,
+            request_type=object,
+            orchestrator=object(),
+            event_store=FailingEventStore(),
             session_manager=None,
             live_push_hub=None,
             event_publisher=None,
@@ -143,15 +256,16 @@ class McpToolCallIntakeApiTest(unittest.TestCase):
                 "method": "tools/call",
                 "params": {
                     "name": "datasource.metadata.read",
-                    "arguments": {"datasourceId": "ds-route-secret"},
+                    "arguments": {"datasourceId": "ds-fail-open-secret"},
                 },
             }
         )
 
         self.assertEqual(1, response["toolActionIntake"]["acceptedToolPlanCount"])
-        self.assertEqual(1, response["toolExecutionReadiness"]["executableCount"])
-        self.assertFalse(response["toolExecutionEnabled"])
-        self.assertNotIn("ds-route-secret", str(response))
+        self.assertFalse(response["runtimeEventDelivery"]["stored"])
+        self.assertEqual("event_store", response["runtimeEventDelivery"]["errors"][0]["component"])
+        self.assertEqual("RuntimeError", response["runtimeEventDelivery"]["errors"][0]["errorType"])
+        self.assertNotIn("ds-fail-open-secret", str(response))
 
 
 if __name__ == "__main__":

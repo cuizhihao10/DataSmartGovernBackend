@@ -79,6 +79,33 @@
   2. 或先设计 durable action/outbox contract，让 READY/QUEUE_ASYNC 分支具备可恢复执行证据；
   3. 暂不建议立即实现完整 MCP Server 与真实工具执行，除非同步补齐会话生命周期、认证、授权、幂等、限流、审批和结果脱敏。
 
+## 2026-06-07 追加落地进展：MCP intake 低敏 Runtime Event
+- Python Runtime 新增 `tool_action_intake_recorded` 运行时事件：
+  - 定位为通用工具动作意图入口事实，不只绑定 MCP，后续 A2A action、前端确认页重放和后台补偿也可复用；
+  - 本阶段由 MCP preview route 触发；
+  - 事件 attributes 只从低敏 preview response 中提取，不读取原始 `arguments`。
+- 新增 `services/tools/tool_action_intake_events.py`：
+  - 构建 `AgentRuntimeEventType.TOOL_ACTION_INTAKE_RECORDED`；
+  - 支持从根字段、`context`、`trustedControlPlane` 提取 tenant/project/actor/request/run/session；
+  - 事件只保存协议、preview、accepted/rejected 数量、boundaryCounts、issueCodes、readiness 计数、graph 分支、durable boundary 和 missingProductionRequirements；
+  - 不保存工具参数值、prompt、SQL、样本数据、模型输出、凭证、内部 endpoint 或 artifact 正文。
+- MCP preview route 增强：
+  - 返回 `runtimeEvent` 低敏摘要；
+  - 返回 `runtimeEventDelivery`，说明 event store、live push、publisher 是否启用和投递结果；
+  - 事件旁路采用 fail-open，store/live/publisher 故障不会破坏 preview 响应，但会返回低敏错误摘要。
+- runtime visibility 策略补充：
+  - BASIC 级可见事件列表新增 `tool_action_intake_recorded`；
+  - 普通用户仍会按 BASIC 策略脱敏 attributes，管理员/审计/项目角色按既有层级处理。
+- 验证：
+  - `python -m pytest python-ai-runtime\tests\test_mcp_tool_call_intake_api.py -q`：4 个测试通过；
+  - `python -m pytest python-ai-runtime\tests\test_runtime_event_visibility.py python-ai-runtime\tests\test_runtime_event_store.py python-ai-runtime\tests\test_runtime_event_live_push.py python-ai-runtime\tests\test_runtime_event_publisher.py -q`：18 个测试通过；
+  - `python -m compileall python-ai-runtime\src\datasmart_ai_runtime\services\tools\tool_action_intake_events.py python-ai-runtime\src\datasmart_ai_runtime\api_agent_routes.py python-ai-runtime\src\datasmart_ai_runtime\domain\events.py python-ai-runtime\tests\test_mcp_tool_call_intake_api.py`：通过；
+  - 行数检查：`tool_action_intake_events.py` 279 行、`api_agent_routes.py` 428 行、`test_mcp_tool_call_intake_api.py` 267 行，均低于 500 行约束。
+- 下一步推荐路线：
+  1. Java agent-runtime 增加 `tool_action_intake_recorded` projection/timeline display，让外部 Agent 工具意图进入统一时间线；
+  2. 或设计 durable action/outbox contract，让 READY/QUEUE_ASYNC 从事件事实进入可恢复执行链路；
+  3. 暂不建议继续在 Python preview 响应里堆字段，事件化后应转向 Java 消费、审批/outbox 或真实执行图节点。
+
 ## 2026-06-07 追加落地进展：模型 tool_call 主链路接入统一 intake
 
 - 本阶段把 `AgentModelIntentNode` 的模型 `tool_call` 治理从直接调用 `ModelToolCallPlanner` 改为调用

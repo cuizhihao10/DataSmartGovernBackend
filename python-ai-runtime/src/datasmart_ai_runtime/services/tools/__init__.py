@@ -37,6 +37,9 @@ from datasmart_ai_runtime.services.tools.tool_action_intake import (
     ToolActionIntakeService,
     ToolActionIntakeSource,
 )
+from datasmart_ai_runtime.services.tools.tool_action_intake_events import (
+    build_tool_action_intake_runtime_event,
+)
 
 __all__ = (
     "ToolActionIntakeBoundary",
@@ -45,6 +48,7 @@ __all__ = (
     "ToolActionIntakeReport",
     "ToolActionIntakeService",
     "ToolActionIntakeSource",
+    "build_tool_action_intake_runtime_event",
     "ToolExecutionReadinessDecision",
     "ToolExecutionReadinessItem",
     "ToolExecutionReadinessPolicy",

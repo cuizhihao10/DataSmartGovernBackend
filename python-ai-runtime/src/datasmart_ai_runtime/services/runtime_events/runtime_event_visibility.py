@@ -105,6 +105,7 @@ class RuntimeEventVisibilityPolicy:
             "context_truncated",
             "intent_analyzed",
             "tool_planned",
+            "tool_action_intake_recorded",
             "tool_execution",
             "tool_completed",
             "tool_parameter_validated",
