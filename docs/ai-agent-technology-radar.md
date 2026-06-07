@@ -1,5 +1,26 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-07 落地补充：Execution graphs make tool governance explainable
+
+- 现代 Agent Host 的工具治理不应只返回一个 `READY`、`WAITING_APPROVAL` 或 `BLOCKED` 字符串。更可商用的形态是把工具动作拆成可解释执行图：协议入口、readiness、审批/澄清/预算、durable contract、outbox command、worker receipt 和结果脱敏。
+- DataSmart 本阶段新增工具动作执行图预览：
+  - 将 durable action contract 转换为节点和边；
+  - 每个节点都解释状态、证据引用、缺失要求和下一步建议；
+  - 窗口响应提供 graphState、nodeType 和 missingRequirement 聚合，帮助运营台判断瓶颈集中在哪个阶段。
+- 趋势映射：
+  - 这对应 LangGraph/OpenClaw-style condition node 的方向，但当前刻意保持只读控制面预览；
+  - 图中 outbox 和 worker receipt 节点不是执行器，而是提醒真实副作用必须走可恢复命令和回执；
+  - 这种设计能避免 MCP `tools/call`、A2A action、模型 tool_call 三套入口各自绕过治理。
+- 安全原则继续不变：
+  - 执行图只能保存低敏治理事实和引用；
+  - 不保存 prompt、SQL、工具实参、样本数据、模型输出、凭证或内部 endpoint；
+  - payload、结果正文和记忆正文都应通过受控引用和二次鉴权读取。
+- 下一步应把执行图从“可解释预览”推进到“受控命令生成”：
+  1. 由 command builder 校验图状态和 contract 缺口；
+  2. 由审批/确认页补齐人类确认事实；
+  3. 由 task-management outbox 负责持久化命令；
+  4. 由 worker receipt 回写接单、成功、失败、重试和死信事实。
+
 ## 2026-06-07 落地补充：Durable action contracts should precede outbox writes
 
 - 当前 Codex、Claude Code、LangGraph/OpenClaw 风格 Agent 的关键趋势，是把“模型或外部协议提出工具动作”与“系统真正执行副作用”拆成多个可审计阶段：意图接收、准备度判断、人工确认、持久化命令、worker 回执、结果脱敏与审计回放。

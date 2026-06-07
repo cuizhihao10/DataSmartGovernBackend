@@ -1,5 +1,32 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-07 追加落地进展：Java Agent Runtime 工具动作执行图预览
+
+- Java `agent-runtime` 在 5.50 Durable Action 契约预览基础上，新增工具动作执行图预览能力：
+  - 新增 `/agent-runtime/runtime-events/tool-action-execution-graph-previews`；
+  - 新增 `/api/agent/runtime-events/tool-action-execution-graph-previews`；
+  - 输入仍来自低敏 `tool_action_intake_recorded` 投影和 contract preview，不读取原始工具参数；
+  - 输出显式节点与边：`INTAKE`、`READINESS_GATE`、`HUMAN_APPROVAL`、`USER_CLARIFICATION`、`BUDGET_AND_BACKLOG`、`DURABLE_CONTRACT`、`OUTBOX_COMMAND`、`WORKER_RECEIPT`。
+- 本阶段的产品价值：
+  - 把“工具是否能执行”的判断从单个状态字符串推进为条件分支图；
+  - 前端确认页可以展示工具动作卡在审批、澄清、预算、证据缺口还是阻断；
+  - 后续 command builder 可以按图节点读取 `payloadReference`、`idempotencyKey`、审批事实和 worker receipt 策略；
+  - 这更接近 OpenClaw/LangGraph-style execution graph，但当前仍是 Java 控制面只读预览。
+- 解耦与代码规范：
+  - `AgentToolActionExecutionGraphPreviewService` 只负责查询和窗口聚合；
+  - `AgentToolActionExecutionGraphPreviewBuilder` 只负责 contract -> graph 的节点与边构建；
+  - controller、DTO、service、builder、test 均保持在 500 行以内；
+  - 继续避免把 projection、contract、outbox 写入、worker 调度塞进同一个 Impl。
+- 安全边界：
+  - 执行图不包含 `arguments`、prompt、SQL、样本数据、模型输出、凭证、内部 endpoint 或 artifact 正文；
+  - outbox 与 worker 节点只是治理节点，不代表已经写入 outbox 或 worker 已接单；
+  - 真实副作用仍必须由后续专用确认 API、outbox command builder、worker pre-check 和 receipt 链路完成。
+- 下一步推荐路线：
+  1. 设计正式 command builder：读取 graph/contract，只有在 payloadReference、审批事实、幂等键和容量复核齐备后才写 outbox。
+  2. 将前端确认页接入执行图，让用户可见审批、澄清、预算和证据缺口，但不可见敏感参数原文。
+  3. 将 worker backlog 从配置或低敏事件升级为 task-management/worker 的实时容量快照。
+  4. 若转入 MCP 主线，应补 tools/list、authorization scope、session lifecycle、cancel/progress，而不是直接开放真实 tools/call 执行。
+
 ## 2026-06-07 追加落地进展：Java Agent Runtime 工具动作入口 Durable Action 契约预览
 
 - Java `agent-runtime` 在工具动作入口投影之后，新增只读 Durable Action 契约预览能力：
