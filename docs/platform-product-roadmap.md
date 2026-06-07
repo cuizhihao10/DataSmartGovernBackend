@@ -1,5 +1,24 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-07 追加落地进展：Java Agent Runtime 5.55 工具动作真实证据复核
+
+- Java `agent-runtime` 在 5.54 writer 前 verifier 基础上，进一步把部分复核从“字符串结构安全”推进到“可用事实源存在性与归属复核”：
+  - `AgentToolActionPayloadReferenceVerifier` 现在可以注入 `AgentToolExecutionAuditStore`，当 payloadReference 使用 `agent-tool-audit://{sessionId}/{runId}/{auditId}/plan-arguments` 时，会确认 auditId 真实存在，并且审计记录绑定当前 session/run/tenant/project/actor；
+  - `AgentToolActionFactEvidenceVerifier` 现在可以注入 DAG selected-node confirmation store，当 approvalConfirmationId 使用 `dag-confirmation:` 前缀时，会校验确认事实存在、已确认、未过期、绑定当前 session/run/tenant/project/actor，并在访问上下文内可读；
+  - writer 调用 fact verifier 时传入 gateway 访问上下文，避免 confirmationId 被跨项目、跨租户或跨操作者复用。
+- 本阶段仍保持低敏边界：
+  - payload verifier 只读取审计记录元数据，不把 `planArguments`、SQL、prompt、样本数据、模型输出、凭证或内部 endpoint 写入 verifier 结果；
+  - fact verifier 只对 `dag-confirmation:` 做已落地事实源回查，普通 permission-admin 审批单或澄清事实 ID 仍暂时只做短文本安全校验，等待后续专用事实源接入；
+  - outbox writer 响应结构不扩字段，继续通过低敏 acceptedEvidence/issueCodes 表达复核结论。
+- 产品意义：
+  - writer 前复核从“避免明显危险字符串”推进到“避免伪造受控引用和过期确认事实”；
+  - 这更接近商用 Agent Host 的 host-side evidence replay：模型、MCP、A2A 或前端确认页给出的 ID 只能作为线索，最终仍由 Java 控制面回查事实源后才允许进入 durable command；
+  - 该能力也为后续 task-management inbox 消费 `AGENT_TOOL_ACTION_CONTROLLED_COMMAND` 提供更可靠的上游命令事实。
+- 下一步推荐路线：
+  1. 不继续扩 writer 字段，优先进入 task-management command inbox，支持 `AGENT_TOOL_ACTION_CONTROLLED_COMMAND` 的消费契约、去重表、lease 和状态回写；
+  2. 或把 permission-admin 审批事实接入 `AgentToolActionFactEvidenceVerifier`，补齐审批单存在、未过期、已授权、绑定 graph/contract 的复核；
+  3. payload store/client 应作为独立端口设计，避免 verifier 直接读取或缓存真实工具参数正文。
+
 ## 2026-06-07 追加落地进展：Java Agent Runtime 工具动作服务端复核 Verifier
 
 - Java `agent-runtime` 在 5.53 command outbox writer 基础上，新增 writer 前服务端复核组件：

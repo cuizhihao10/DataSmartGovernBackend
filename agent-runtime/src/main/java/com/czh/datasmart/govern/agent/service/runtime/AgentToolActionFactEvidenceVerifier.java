@@ -8,11 +8,18 @@ package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionCommandProposalRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionCommandProposalResponse;
+import com.czh.datasmart.govern.agent.service.execution.confirmation.AgentRunToolDagConfirmationAccessSupport;
+import com.czh.datasmart.govern.agent.service.execution.confirmation.AgentRunToolDagConfirmationRecord;
+import com.czh.datasmart.govern.agent.service.execution.confirmation.AgentRunToolDagConfirmationStatus;
+import com.czh.datasmart.govern.agent.service.execution.confirmation.AgentRunToolDagConfirmationStore;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 
 /**
  * 工具动作审批/澄清事实证据复核器。
@@ -27,6 +34,38 @@ public class AgentToolActionFactEvidenceVerifier {
 
     private static final String STATUS_VERIFIED_OR_NOT_REQUIRED = "VERIFIED_OR_NOT_REQUIRED";
     private static final String STATUS_REJECTED = "REJECTED";
+    private static final String DAG_CONFIRMATION_PREFIX = "dag-confirmation:";
+
+    /**
+     * DAG selected-node confirmation 仓储。
+     *
+     * <p>当前系统里已经存在一类低敏确认事实：用户确认某次 Tool DAG dry-run 的某些节点可入箱。
+     * 当 writer 请求携带 {@code dag-confirmation:...} 这类 ID 时，本 verifier 会回查该仓储，确认它不是
+     * 调用方随手拼出来的字符串。普通 permission-admin 审批单、澄清单等未来事实源尚未接入时，仍只做形态校验，
+     * 避免把一个局部仓储误当成所有审批事实的最终来源。</p>
+     */
+    private final AgentRunToolDagConfirmationStore confirmationStore;
+
+    /**
+     * confirmation 访问范围判断组件。
+     *
+     * <p>writer 不是只要知道 confirmationId 存在就能继续；还要确认这条事实属于当前租户、项目和操作者可见范围。
+     * 这能防止跨项目复制 confirmationId 后绕过前端确认页或智能网关治理。</p>
+     */
+    private final AgentRunToolDagConfirmationAccessSupport confirmationAccessSupport;
+
+    public AgentToolActionFactEvidenceVerifier() {
+        this(null, new AgentRunToolDagConfirmationAccessSupport());
+    }
+
+    @Autowired
+    public AgentToolActionFactEvidenceVerifier(AgentRunToolDagConfirmationStore confirmationStore,
+                                               AgentRunToolDagConfirmationAccessSupport confirmationAccessSupport) {
+        this.confirmationStore = confirmationStore;
+        this.confirmationAccessSupport = confirmationAccessSupport == null
+                ? new AgentRunToolDagConfirmationAccessSupport()
+                : confirmationAccessSupport;
+    }
 
     /**
      * 校验请求中携带的人工事实 ID 是否适合进入 outbox 命令信封。
@@ -38,10 +77,29 @@ public class AgentToolActionFactEvidenceVerifier {
     public AgentToolActionFactEvidenceVerificationResult verify(
             AgentToolActionCommandProposalRequest request,
             AgentToolActionCommandProposalResponse proposal) {
+        return verify(request, proposal, null);
+    }
+
+    /**
+     * 校验请求携带的人工事实 ID 是否适合进入 outbox 命令信封。
+     *
+     * <p>相比双参重载，该方法额外接收 gateway 访问上下文，因此能够对 {@code dag-confirmation:...}
+     * 做租户/项目/操作者范围复核。writer 应优先调用这个入口；双参入口保留给旧测试或不具备 header 上下文的内部调用。</p>
+     *
+     * @param request writer 请求体。
+     * @param proposal proposal 响应，用于校验 confirmation 与当前 graph/run/session 的绑定关系。
+     * @param accessContext 当前访问上下文，来自 gateway 可信 header。
+     * @return 低敏复核结果。{@code verifiedForWriter=false} 时 writer 必须停止。
+     */
+    public AgentToolActionFactEvidenceVerificationResult verify(
+            AgentToolActionCommandProposalRequest request,
+            AgentToolActionCommandProposalResponse proposal,
+            AgentRuntimeEventQueryAccessContext accessContext) {
         List<String> accepted = new ArrayList<>();
         List<String> issues = new ArrayList<>();
         verifyFactId("APPROVAL_CONFIRMATION", request == null ? null : request.approvalConfirmationId(), accepted, issues);
         verifyFactId("CLARIFICATION_FACT", request == null ? null : request.clarificationFactId(), accepted, issues);
+        verifyDagConfirmationIfPresent(request, proposal, accessContext, accepted, issues);
         if (!issues.isEmpty()) {
             return new AgentToolActionFactEvidenceVerificationResult(
                     STATUS_REJECTED,
@@ -78,6 +136,78 @@ public class AgentToolActionFactEvidenceVerifier {
             accepted.add(factType + "_ID:" + factId);
         } else {
             issues.addAll(riskIssues);
+        }
+    }
+
+    /**
+     * 对明确属于 DAG selected-node 的确认事实做真实仓储回查。
+     *
+     * <p>为什么只识别 {@code dag-confirmation:} 前缀：商业产品里审批事实可能来自多个系统，
+     * 例如 permission-admin 审批单、数据资产授权单、外部 ITSM 工单、用户澄清问答记录等。当前仓储只覆盖
+     * agent-runtime 自己生成的 DAG selected-node confirmation，因此不能把所有短文本 ID 都强制拿到这里查。
+     * 通过前缀分流，可以先把已落地的事实源做强复核，同时为后续 permission-admin verifier 保留扩展口。</p>
+     */
+    private void verifyDagConfirmationIfPresent(AgentToolActionCommandProposalRequest request,
+                                                AgentToolActionCommandProposalResponse proposal,
+                                                AgentRuntimeEventQueryAccessContext accessContext,
+                                                List<String> accepted,
+                                                List<String> issues) {
+        String confirmationId = safeText(request == null ? null : request.approvalConfirmationId());
+        if (confirmationId == null || !confirmationId.startsWith(DAG_CONFIRMATION_PREFIX)) {
+            return;
+        }
+        if (confirmationStore == null) {
+            accepted.add("DAG_CONFIRMATION_STORE_NOT_CONFIGURED_FOR_WRITER_VERIFIER");
+            return;
+        }
+        Optional<AgentRunToolDagConfirmationRecord> optionalRecord =
+                confirmationStore.findByConfirmationId(confirmationId);
+        if (optionalRecord.isEmpty()) {
+            issues.add("DAG_CONFIRMATION_RECORD_NOT_FOUND");
+            return;
+        }
+        AgentRunToolDagConfirmationRecord record = optionalRecord.get();
+        if (!Boolean.TRUE.equals(record.confirmed())) {
+            issues.add("DAG_CONFIRMATION_NOT_CONFIRMED");
+        }
+        if (record.status() != AgentRunToolDagConfirmationStatus.CONFIRMED) {
+            issues.add("DAG_CONFIRMATION_STATUS_NOT_CONFIRMED");
+        }
+        if (record.expiresAt() != null && record.expiresAt().isBefore(Instant.now())) {
+            issues.add("DAG_CONFIRMATION_EXPIRED");
+        }
+        if (!safeEquals(record.sessionId(), proposal == null ? null : proposal.sessionId())) {
+            issues.add("DAG_CONFIRMATION_SESSION_MISMATCH");
+        }
+        if (!safeEquals(record.runId(), proposal == null ? null : proposal.runId())) {
+            issues.add("DAG_CONFIRMATION_RUN_MISMATCH");
+        }
+        if (!sameText(record.tenantId(), proposal == null ? null : proposal.tenantId())) {
+            issues.add("DAG_CONFIRMATION_TENANT_MISMATCH");
+        }
+        if (!sameText(record.projectId(), proposal == null ? null : proposal.projectId())) {
+            issues.add("DAG_CONFIRMATION_PROJECT_MISMATCH");
+        }
+        if (!safeEquals(record.actorId(), proposal == null ? null : proposal.actorId())) {
+            issues.add("DAG_CONFIRMATION_ACTOR_MISMATCH");
+        }
+        if (accessContext != null && accessContext.hasIdentity()
+                && !confirmationAccessSupport.canRead(record, accessContext)) {
+            issues.add("DAG_CONFIRMATION_CONTEXT_SCOPE_DENIED");
+        }
+        if (!issues.isEmpty()) {
+            return;
+        }
+        accepted.add("DAG_CONFIRMATION_RECORD_FOUND:" + confirmationId);
+        accepted.add("DAG_CONFIRMATION_METADATA_SCOPE_VERIFIED");
+        if (request != null && safeText(request.policyVersion()) != null) {
+            if (record.policyVersions().isEmpty()) {
+                accepted.add("DAG_CONFIRMATION_POLICY_VERSION_NOT_SNAPSHOTTED");
+            } else if (record.policyVersions().contains(request.policyVersion().trim())) {
+                accepted.add("DAG_CONFIRMATION_POLICY_VERSION_MATCHED");
+            } else {
+                issues.add("DAG_CONFIRMATION_POLICY_VERSION_MISMATCH");
+            }
         }
     }
 
@@ -122,6 +252,17 @@ public class AgentToolActionFactEvidenceVerifier {
             }
         }
         return true;
+    }
+
+    private boolean safeEquals(String left, String right) {
+        String normalizedLeft = safeText(left);
+        String normalizedRight = safeText(right);
+        return normalizedLeft != null && normalizedLeft.equals(normalizedRight);
+    }
+
+    private boolean sameText(Long left, String right) {
+        String normalizedRight = safeText(right);
+        return left != null && normalizedRight != null && String.valueOf(left).equals(normalizedRight);
     }
 
     private String safeText(String value) {

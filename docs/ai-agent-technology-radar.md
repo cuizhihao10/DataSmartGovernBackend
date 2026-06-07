@@ -1,5 +1,20 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-07 落地补充：Evidence replay turns verifier checks into host facts
+
+- 现代 Agent Host 的工具执行安全正在从“校验请求字符串”走向“回放服务端事实证据”。模型 tool_call、MCP `tools/call`、A2A action 或前端确认页提交的 ID，都不应被直接视为可信执行凭据；它们必须被 host/control-plane 回查为真实存在、未过期、未越权、绑定当前 run/session/graph 的事实。
+- DataSmart 本阶段把 5.54 的 writer 前 verifier 推进到部分 evidence replay：
+  - `agent-tool-audit://.../plan-arguments` 会回查工具执行审计仓储，确认 auditId 与当前 proposal 和访问上下文一致；
+  - `dag-confirmation:` 会回查 selected-node confirmation store，确认记录存在、已确认、未过期，并在当前 tenant/project/actor 范围内可读；
+  - 普通 approval/clarification ID 暂不强行绑定 DAG store，避免把当前局部事实源误用成所有审批系统的统一来源。
+- 趋势映射到产品能力时，关键不是“尽快执行工具”，而是“让每一次执行前证据都能被服务端重放和解释”：
+  - readiness/proposal 负责说明当前是否具备最低条件；
+  - verifier 负责把低敏引用回查为可接受事实；
+  - outbox 负责创建 durable command；
+  - dispatcher/inbox/worker 负责租约、幂等、执行和 receipt；
+  - timeline/audit 负责低敏回放和故障诊断。
+- 下一步趋势落地建议：优先把 `AGENT_TOOL_ACTION_CONTROLLED_COMMAND` 接入 task-management inbox，而不是继续只在 Java writer 附近加字段。消费侧 inbox 才能真正验证 durable execution 是否具备去重、租约、重试、死信和 worker receipt。
+
 ## 2026-06-07 落地补充：Server-side verifiers protect durable tool commands
 
 - 当前 Agent Host 工具调用安全的一个明显趋势，是把“模型/协议给出的引用或确认 ID”当作线索，而不是当作已经可信的执行事实。真正进入 durable command 前，需要宿主平台做服务端 verifier：引用是否属于当前 run/session、是否是受控协议、是否可能是内联 payload、审批事实是否需要回查、是否过期或跨上下文。

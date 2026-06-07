@@ -7,11 +7,15 @@
 package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionCommandProposalResponse;
+import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecord;
+import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditStore;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 
 /**
  * 工具动作 payloadReference 写入前复核器。
@@ -39,6 +43,28 @@ public class AgentToolActionPayloadReferenceVerifier {
     private static final String PLAN_ARGUMENTS = "plan-arguments";
 
     /**
+     * 工具执行审计仓储。
+     *
+     * <p>这里不是为了读取 planArguments 原文，而是为了在 writer 写入前确认历史
+     * {@code agent-tool-audit://.../plan-arguments} 引用确实存在，并且 audit 记录绑定的
+     * session/run/tenant/project/actor 与当前 proposal 和访问上下文一致。这样可以避免调用方随手拼一个
+     * 看似合法的 audit 引用，就把不存在或越权的 payloadReference 写进 durable outbox。</p>
+     *
+     * <p>该字段允许为空，是为了保持单元测试和早期迁移代码可以继续使用无参构造器；在 Spring 运行时，
+     * {@link #AgentToolActionPayloadReferenceVerifier(AgentToolExecutionAuditStore)} 会注入真实仓储。</p>
+     */
+    private final AgentToolExecutionAuditStore auditStore;
+
+    public AgentToolActionPayloadReferenceVerifier() {
+        this(null);
+    }
+
+    @Autowired
+    public AgentToolActionPayloadReferenceVerifier(AgentToolExecutionAuditStore auditStore) {
+        this.auditStore = auditStore;
+    }
+
+    /**
      * 校验 payloadReference 是否适合进入 durable command outbox。
      *
      * @param proposal 已通过 proposal 的低敏结果。
@@ -61,7 +87,7 @@ public class AgentToolActionPayloadReferenceVerifier {
             return verifyAgentPayload(reference, proposal);
         }
         if (reference.startsWith(AGENT_TOOL_AUDIT_PREFIX)) {
-            return verifyAgentToolAudit(reference, proposal);
+            return verifyAgentToolAudit(reference, proposal, accessContext);
         }
         if (reference.startsWith(ARTIFACT_REF_PREFIX)) {
             return verifyRunScopedReference(reference, ARTIFACT_REF_PREFIX, "ARTIFACT_REFERENCE", proposal);
@@ -112,7 +138,8 @@ public class AgentToolActionPayloadReferenceVerifier {
      */
     private AgentToolActionPayloadReferenceVerificationResult verifyAgentToolAudit(
             String reference,
-            AgentToolActionCommandProposalResponse proposal) {
+            AgentToolActionCommandProposalResponse proposal,
+            AgentRuntimeEventQueryAccessContext accessContext) {
         String body = reference.substring(AGENT_TOOL_AUDIT_PREFIX.length());
         String[] parts = body.split("/", -1);
         List<String> issues = new ArrayList<>();
@@ -133,11 +160,81 @@ public class AgentToolActionPayloadReferenceVerifier {
             return rejected(reference, "AGENT_TOOL_AUDIT", issues,
                     "agent-tool-audit 引用必须绑定当前 session/run，并且 payloadKind 只能是 plan-arguments。");
         }
+        return verifyAuditRecordBinding(reference, proposal, accessContext, parts);
+    }
+
+    /**
+     * 对历史工具审计载荷引用做“存在性 + 归属”复核。
+     *
+     * <p>这一层是 5.55 相比 5.54 的关键增强：5.54 只证明字符串结构像一个受控引用，
+     * 但无法证明 auditId 真的存在。现在如果仓储可用，就会读取 audit 记录的低敏元数据，
+     * 校验它是否属于当前 session/run，并与 gateway 访问上下文中的 tenant/project/actor 对齐。</p>
+     *
+     * <p>注意：方法只使用 auditId、sessionId、runId、tenantId、projectId、actorId 等元数据，
+     * 不访问 {@code planArguments}、SQL、prompt、样本数据或工具结果。真实参数读取仍然必须由 worker
+     * 或 payload resolver 在执行前按需完成。</p>
+     */
+    private AgentToolActionPayloadReferenceVerificationResult verifyAuditRecordBinding(
+            String reference,
+            AgentToolActionCommandProposalResponse proposal,
+            AgentRuntimeEventQueryAccessContext accessContext,
+            String[] parts) {
+        if (auditStore == null) {
+            return verified(reference, "AGENT_TOOL_AUDIT", List.of(
+                    "REFERENCE_PREFIX:agent-tool-audit",
+                    "SESSION_ID_BOUND:" + proposal.sessionId(),
+                    "RUN_ID_BOUND:" + proposal.runId(),
+                    "PAYLOAD_KIND:plan-arguments",
+                    "AUDIT_STORE_NOT_CONFIGURED_FOR_WRITER_VERIFIER"
+            ));
+        }
+        String auditId = parts[2];
+        Optional<AgentToolExecutionAuditRecord> optionalRecord = auditStore.findById(auditId);
+        if (optionalRecord.isEmpty()) {
+            return rejected(reference, "AGENT_TOOL_AUDIT", List.of("AGENT_TOOL_AUDIT_RECORD_NOT_FOUND"),
+                    "agent-tool-audit 引用指向的审计记录不存在，不能写入 outbox。");
+        }
+        AgentToolExecutionAuditRecord record = optionalRecord.get();
+        List<String> issues = new ArrayList<>();
+        if (!safeEquals(record.getSessionId(), proposal.sessionId())) {
+            issues.add("AGENT_TOOL_AUDIT_RECORD_SESSION_MISMATCH");
+        }
+        if (!safeEquals(record.getRunId(), proposal.runId())) {
+            issues.add("AGENT_TOOL_AUDIT_RECORD_RUN_MISMATCH");
+        }
+        if (!sameText(record.getTenantId(), proposal.tenantId())) {
+            issues.add("AGENT_TOOL_AUDIT_RECORD_TENANT_MISMATCH");
+        }
+        if (!sameText(record.getProjectId(), proposal.projectId())) {
+            issues.add("AGENT_TOOL_AUDIT_RECORD_PROJECT_MISMATCH");
+        }
+        if (!safeEquals(record.getActorId(), proposal.actorId())) {
+            issues.add("AGENT_TOOL_AUDIT_RECORD_ACTOR_MISMATCH");
+        }
+        if (accessContext != null && accessContext.hasIdentity()) {
+            if (!sameLong(record.getTenantId(), accessContext.tenantId())) {
+                issues.add("AGENT_TOOL_AUDIT_RECORD_CONTEXT_TENANT_MISMATCH");
+            }
+            if (accessContext.explicitProjectScope()
+                    && !accessContext.authorizedProjectIdsAsStrings().contains(String.valueOf(record.getProjectId()))) {
+                issues.add("AGENT_TOOL_AUDIT_RECORD_CONTEXT_PROJECT_DENIED");
+            }
+            if ("SELF".equals(accessContext.normalizedDataScopeLevel())
+                    && !safeEquals(record.getActorId(), String.valueOf(accessContext.actorId()))) {
+                issues.add("AGENT_TOOL_AUDIT_RECORD_CONTEXT_ACTOR_DENIED");
+            }
+        }
+        if (!issues.isEmpty()) {
+            return rejected(reference, "AGENT_TOOL_AUDIT", issues,
+                    "agent-tool-audit 审计记录存在，但与当前 proposal 或访问范围不一致。");
+        }
         return verified(reference, "AGENT_TOOL_AUDIT", List.of(
                 "REFERENCE_PREFIX:agent-tool-audit",
                 "SESSION_ID_BOUND:" + proposal.sessionId(),
                 "RUN_ID_BOUND:" + proposal.runId(),
-                "PAYLOAD_KIND:plan-arguments"
+                "PAYLOAD_KIND:plan-arguments",
+                "AUDIT_RECORD_FOUND:" + auditId,
+                "AUDIT_METADATA_SCOPE_VERIFIED"
         ));
     }
 
@@ -289,6 +386,15 @@ public class AgentToolActionPayloadReferenceVerifier {
         String normalizedLeft = safeText(left);
         String normalizedRight = safeText(right);
         return normalizedLeft != null && normalizedLeft.equals(normalizedRight);
+    }
+
+    private boolean sameText(Long left, String right) {
+        String normalizedRight = safeText(right);
+        return left != null && normalizedRight != null && String.valueOf(left).equals(normalizedRight);
+    }
+
+    private boolean sameLong(Long left, Long right) {
+        return left != null && left.equals(right);
     }
 
     private String safeText(String value) {

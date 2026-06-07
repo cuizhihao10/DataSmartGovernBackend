@@ -99,7 +99,7 @@ public class AgentToolActionCommandOutboxWriterService {
         AgentToolActionPayloadReferenceVerificationResult payloadReferenceVerification =
                 payloadReferenceVerifier.verify(proposal, accessContext);
         AgentToolActionFactEvidenceVerificationResult factEvidenceVerification =
-                factEvidenceVerifier.verify(request, proposal);
+                factEvidenceVerifier.verify(request, proposal, accessContext);
         if (!Boolean.TRUE.equals(payloadReferenceVerification.verifiedForWriter())
                 || !Boolean.TRUE.equals(factEvidenceVerification.verifiedForWriter())) {
             return verificationBlockedResponse(proposal, payloadReferenceVerification, factEvidenceVerification);
