@@ -1,5 +1,32 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-11 落地补充：Tool calls should enter a unified pre-execution control flow
+
+- 本阶段重新核对当前 Agent 工具调用生态：
+  - MCP Tools 规范把工具定义为模型可发现、可调用的外部能力，但真实 Host 仍需要在工具调用前做权限、确认和结果治理；
+  - OpenAI Agents SDK Human-in-the-loop 文档强调敏感工具调用可以暂停，等待审批决定后再恢复；
+  - LangGraph 的 interrupts 与 persistence 文档强调执行图可以在关键节点暂停、持久化、恢复，用于 human-in-the-loop、长期运行和故障恢复。
+- 对 DataSmart 的架构映射：
+  - 模型 `tool_call`、MCP `tools/call`、A2A `task/action` 不应该各自直连执行器；
+  - 它们应该先进入统一 `tool_action_gate`：intake -> readiness -> readiness graph -> approval/clarification/outbox 分支；
+  - READY 不代表已执行，只代表可进入下一跳；真实副作用必须继续由 Java outbox、permission-admin、task-management worker 和 runtime event receipt 承接；
+  - 响应和事件必须坚持低敏策略，只保留工具名、字段名、决策码和计数，不泄露参数值、prompt、SQL、样本数据、模型输出、凭证或内部 endpoint。
+- 本轮落地到代码的能力：
+  - 新增 `ToolActionControlFlowService`，统一模型、MCP、A2A 三类入口的执行前控制流；
+  - MCP 专用预检接口内部改为复用该服务，避免 readiness/graph/nextSteps 规则分叉；
+  - 新增 `/agent/tool-actions/control-flow-preview`，给智能网关和后续图编排器提供统一 preview surface；
+  - 全量 Python 测试 427 个通过。
+- 后续趋势落地建议：
+  1. 将该服务映射为 LangGraph/OpenClaw 风格的 `tool_action_gate` 条件节点；
+  2. 把 WAITING_APPROVAL 分支接到 permission-admin 的审批事实和审批策略，而不是只依赖本地默认 policy；
+  3. 把 READY 分支转为 Java `ToolActionCommand` outbox，而不是在 Python HTTP handler 内执行；
+  4. 后续接入 MCP Server 时，仍应让 `tools/call` 先经过同一控制流，再决定是否创建审批、排队或拒绝。
+- 参考资料：
+  - MCP Tools specification: `https://modelcontextprotocol.io/specification/2025-06-18/server/tools`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - LangGraph Interrupts: `https://docs.langchain.com/oss/python/langgraph/interrupts`
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+
 ## 2026-06-11 落地补充：Agent Host API surfaces need capability-oriented packages
 
 - 本阶段核对 FastAPI 官方 “Bigger Applications - Multiple Files” 文档：大型 API 很少适合长期放在单文件里，官方推荐用多个文件和包来组织应用，并通过类似 router 的结构保持灵活性。

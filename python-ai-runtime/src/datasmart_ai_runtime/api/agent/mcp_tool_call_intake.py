@@ -25,10 +25,10 @@ from typing import Any
 from datasmart_ai_runtime.config import default_tool_registry
 from datasmart_ai_runtime.domain.contracts import ToolDefinition
 from datasmart_ai_runtime.services.agent_gateway.a2a_task_mapping_support import count_forbidden_fields
-from datasmart_ai_runtime.services.tools import ToolExecutionReadinessService
-from datasmart_ai_runtime.services.tools.tool_action_intake import ToolActionIntakeService
-from datasmart_ai_runtime.services.tools.tool_execution_readiness_graph import (
-    build_tool_execution_readiness_graph_response,
+from datasmart_ai_runtime.services.tools import (
+    ToolActionControlFlowService,
+    ToolActionIntakeService,
+    ToolExecutionReadinessService,
 )
 
 
@@ -38,6 +38,7 @@ def build_mcp_tool_call_intake_preview_response(
     registered_tools: tuple[ToolDefinition, ...] | None = None,
     intake_service: ToolActionIntakeService | None = None,
     readiness_service: ToolExecutionReadinessService | None = None,
+    control_flow_service: ToolActionControlFlowService | None = None,
 ) -> dict[str, Any]:
     """构建 MCP `tools/call` intake preview 响应。
 
@@ -55,41 +56,24 @@ def build_mcp_tool_call_intake_preview_response(
     tools = registered_tools or default_tool_registry()
     call = _mcp_call_from_payload(payload)
     visible_tools = _visible_tools_from_payload(payload, tools)
-    intake = (intake_service or ToolActionIntakeService()).from_mcp_tools_call(
+    service = control_flow_service or ToolActionControlFlowService(
+        intake_service=intake_service,
+        readiness_service=readiness_service,
+    )
+    control_flow = service.from_mcp_tools_call(
         call,
         registered_tools=tools,
         visible_tools=visible_tools,
     )
-    readiness = (readiness_service or ToolExecutionReadinessService()).evaluate(
-        intake.accepted_tool_plans,
-        policy_metadata={
-            "source": "mcp_tools_call_preview",
-            "protocol": "MCP",
-            "previewOnly": True,
-            "registeredToolCount": len(tools),
-            "visibleToolCount": len(visible_tools) if visible_tools is not None else len(tools),
-        },
-    )
-    readiness_summary = _tool_execution_readiness_summary(readiness)
-    readiness_graph = build_tool_execution_readiness_graph_response(readiness)
-    intake_summary = intake.to_low_sensitive_summary()
-    return {
-        "schemaVersion": "datasmart.python-ai-runtime.mcp-tools-call-intake-preview.v1",
-        "previewOnly": True,
-        "toolExecutionEnabled": False,
-        "protocolFamily": "MCP",
-        "route": {
+    return control_flow.to_low_sensitive_response(
+        schema_version="datasmart.python-ai-runtime.mcp-tools-call-intake-preview.v1",
+        route={
             "method": "POST",
             "path": "/agent/protocol-adapters/mcp/tools-call-intake-preview",
             "intent": "把 MCP tools/call 请求归一为 DataSmart ToolPlan 候选，并执行低敏 readiness 预检。",
         },
-        "inputPayloadPolicy": _input_payload_policy(payload, call),
-        "toolActionIntake": intake_summary,
-        "toolExecutionReadiness": readiness_summary,
-        "toolExecutionReadinessGraph": readiness_graph,
-        "productionReadiness": _production_readiness(intake_summary, readiness_summary),
-        "nextSteps": _next_steps(intake_summary, readiness_summary),
-    }
+        input_payload_policy=_input_payload_policy(payload, call),
+    )
 
 
 def _mcp_call_from_payload(payload: Mapping[str, Any] | None) -> Mapping[str, Any] | None:
@@ -190,111 +174,3 @@ def _input_payload_policy(payload: Mapping[str, Any] | None, call: Mapping[str, 
         "sensitiveFieldHandling": "COUNT_AND_DROP_WITHOUT_FIELD_NAMES_OR_VALUES",
         "sensitiveFieldIgnoredCount": count_forbidden_fields(payload or {}),
     }
-
-
-def _tool_execution_readiness_summary(readiness: Any) -> dict[str, Any]:
-    """把 readiness report 转换成 HTTP 可返回的低敏摘要。
-
-    该函数与 `/agent/plans` 的 readiness 响应保持同一套字段语义，但放在 MCP API helper 内部实现，避免
-    导入 `api/agent/plan_response.py` 的私有函数。字段白名单只包含执行前决策、风险等级、参数字段名和 reason code。
-    """
-
-    return {
-        "snapshotType": "TOOL_EXECUTION_READINESS",
-        "payloadPolicy": "LOW_SENSITIVE_METADATA_ONLY",
-        "policy": readiness.policy_metadata or {},
-        "totalCount": readiness.total_count,
-        "executableCount": readiness.executable_count,
-        "approvalRequiredCount": readiness.approval_required_count,
-        "clarificationRequiredCount": readiness.clarification_required_count,
-        "draftOnlyCount": readiness.draft_only_count,
-        "queuedAsyncCount": readiness.queued_async_count,
-        "throttledCount": readiness.throttled_count,
-        "blockedCount": readiness.blocked_count,
-        "hasBlockingDecision": readiness.has_blocking_decision,
-        "nextActions": readiness.next_actions,
-        "items": tuple(
-            {
-                "planIndex": item.plan_index,
-                "toolName": item.tool_name,
-                "decision": item.decision.value,
-                "executable": item.executable,
-                "queueRequired": item.queue_required,
-                "requiresHumanApproval": item.requires_human_approval,
-                "riskLevel": item.risk_level,
-                "executionMode": item.execution_mode,
-                "targetService": item.target_service,
-                "argumentFieldNames": item.argument_field_names,
-                "sensitiveArgumentNames": item.sensitive_argument_names,
-                "parameterIssueCount": item.parameter_issue_count,
-                "issueCodes": item.issue_codes,
-                "reasonCodes": item.reason_codes,
-                "retryHint": item.retry_hint,
-                "payloadPolicy": item.payload_policy,
-            }
-            for item in readiness.items
-        ),
-    }
-
-
-def _production_readiness(
-    intake_summary: Mapping[str, Any],
-    readiness_summary: Mapping[str, Any],
-) -> dict[str, Any]:
-    """生成面向产品路线的生产化缺口说明。
-
-    即使 readiness 显示某个工具 `ready_to_execute`，本 preview 接口也仍然返回 `readyForExecution=false`。
-    原因是“准备度通过”只代表执行前条件图允许进入下一跳，不代表真实执行链路已经具备认证、审计、队列、
-    幂等、worker receipt 和结果回写能力。
-    """
-
-    return {
-        "readyForExecution": False,
-        "intakeAcceptedToolPlanCount": int(intake_summary.get("acceptedToolPlanCount") or 0),
-        "readinessExecutableCount": int(readiness_summary.get("executableCount") or 0),
-        "missingProductionRequirements": (
-            "MCP_JSON_RPC_SERVER_AND_SESSION_LIFECYCLE",
-            "MCP_CLIENT_AUTHENTICATION_AND_TOOL_SCOPE",
-            "PERMISSION_ADMIN_POLICY_AND_APPROVAL_BINDING",
-            "IDEMPOTENCY_KEY_AND_RATE_LIMIT",
-            "OUTBOX_COMMAND_AND_WORKER_RECEIPT",
-            "RUNTIME_EVENT_TIMELINE_AND_REPLAY_PROJECTION",
-            "TOOL_RESULT_SANITIZATION_AND_ARTIFACT_REFERENCE",
-        ),
-        "boundary": "本接口只做 MCP tools/call intake/readiness 预检，不代表工具已执行或 MCP Server 已生产可用。",
-    }
-
-
-def _next_steps(
-    intake_summary: Mapping[str, Any],
-    readiness_summary: Mapping[str, Any],
-) -> tuple[str, ...]:
-    """根据 intake 与 readiness 结果生成下一步建议。
-
-    这些建议是产品和工程路线提示，不是自动执行命令。真实执行仍需要 Java 控制面和受控 worker 承接。
-    """
-
-    if int(intake_summary.get("rejectedBeforeReadinessCount") or 0) > 0:
-        return (
-            "先检查 MCP 工具名、JSON-RPC method、工具可见性和参数 JSON object 形态，拒绝项不能进入执行器。",
-            "将拒绝原因写入低敏 runtime event，方便 MCP Host、智能网关和审计台定位协议或权限问题。",
-        )
-    if int(readiness_summary.get("clarificationRequiredCount") or 0) > 0:
-        return (
-            "让 Agent 生成低敏追问，等待用户或上游 MCP Host 补齐必填参数后重新预检。",
-            "不要让模型自行猜测数据源、SQL、导出路径、审批理由或其他可能产生副作用的参数。",
-        )
-    if int(readiness_summary.get("approvalRequiredCount") or 0) > 0:
-        return (
-            "把该工具计划送入 permission-admin 审批/确认链路，审批通过前不能执行真实副作用。",
-            "审批页只展示字段名、风险等级、工具说明和脱敏摘要，不展示原始参数值。",
-        )
-    if int(readiness_summary.get("executableCount") or 0) > 0:
-        return (
-            "下一阶段应接 Java outbox/worker receipt，而不是在 HTTP preview handler 内直接执行工具。",
-            "为 MCP tools/call 增加幂等键、租户级速率限制、执行超时预算和结果脱敏策略。",
-        )
-    return (
-        "当前没有可进入 readiness 的工具计划，继续保持只读诊断态。",
-        "如这是预期工具调用，请先确认工具注册表、可见工具集合和 MCP params.name 是否一致。",
-    )

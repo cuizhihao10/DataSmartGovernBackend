@@ -1,5 +1,37 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-11 追加落地进展：Python AI Runtime 5.62 工具动作统一控制流预览
+
+- `python-ai-runtime` 新增 `ToolActionControlFlowService`，把模型 `tool_call`、MCP `tools/call`、A2A `task/action` 三类入口统一成执行前控制流快照：
+  - 先经过 `ToolActionIntakeService` 判断入口意图是否能归一成 `ToolPlan`；
+  - 再经过 `ToolExecutionReadinessService` 生成准备度决策；
+  - 再经过 readiness graph 输出 `READY_TO_EXECUTE`、`WAITING_APPROVAL`、`NEEDS_CLARIFICATION`、`NO_TOOL_PLAN` 等条件分支；
+  - 最终输出 `productionReadiness`、`executionContract` 和 `nextSteps`，明确该响应只是 preview，不代表工具已经执行。
+- MCP tools/call 专用预检接口已改为复用统一控制流服务：
+  - 保留原路径 `/agent/protocol-adapters/mcp/tools-call-intake-preview` 和原 schema version，避免破坏已有契约；
+  - 内部不再单独拼 readiness summary、readiness graph 和生产化建议，减少未来规则分叉；
+  - 继续保留低敏 runtime event 旁路，用于记录外部工具动作意图进入平台治理的事实。
+- Agent API 新增通用预览入口：
+  - `POST /agent/tool-actions/control-flow-preview`；
+  - 支持显式 `source=MODEL_TOOL_CALL/MCP_TOOLS_CALL/A2A_TASK_ACTION`，也支持按 `toolCalls`、`method=tools/call`、`contract/task` 结构保守推断来源；
+  - 当前不额外发布 runtime event，避免与 MCP 专用接口产生重复语义事实，后续可按需要增加 `TOOL_ACTION_CONTROL_FLOW_RECORDED`。
+- 安全与低敏边界：
+  - 不执行工具、不写 outbox、不创建审批单、不调用 worker；
+  - 不回显工具参数值、prompt、SQL、样本数据、模型输出、凭证、内部 endpoint 或 artifact 正文；
+  - 响应只保留工具名、参数字段名、风险等级、执行模式、issue/reason code、分支计数和生产化缺口。
+- 测试：
+  - 新增 `test_tool_action_control_flow.py` 覆盖模型、MCP、A2A、路由注册和敏感值不泄露；
+  - 定向测试 15 个通过；
+  - 全量 Python 测试 `python -m pytest python-ai-runtime\tests -q`：427 个通过。
+- 产品意义：
+  - 这一步把“工具调用入口”从协议适配问题提升为 Agent Host 控制流问题；
+  - 后续真实执行器可以基于同一份控制流，把 READY 分支交给 Java outbox/worker，把 WAITING_APPROVAL 分支交给 permission-admin，把 NEEDS_CLARIFICATION 分支交给对话追问；
+  - 这比每个协议入口各自判断更接近 Codex/Claude Code 类 Agent 产品，也更适合商业化审计、审批、限流和多租户隔离。
+- 下一步推荐路线：
+  1. 把控制流 READY 分支接入 Java command envelope/outbox 之前，先设计统一 `ToolActionCommand` 低敏契约；
+  2. 为 WAITING_APPROVAL 分支对接 permission-admin 的工具动作审批策略，避免 Python 只使用本地默认策略；
+  3. 开始设计 LangGraph/OpenClaw 风格最小执行图，把 `tool_action_gate`、`approval_wait`、`clarification_wait`、`outbox_submit` 做成可恢复节点。
+
 ## 2026-06-11 追加落地进展：Python AI Runtime 5.61 API 层能力包分层
 
 - `python-ai-runtime` 已把根目录平铺的 `api_*.py` 实现迁移到 `datasmart_ai_runtime/api/` 能力包：
