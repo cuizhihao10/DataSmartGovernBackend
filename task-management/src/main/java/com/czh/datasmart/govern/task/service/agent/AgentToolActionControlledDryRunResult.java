@@ -26,6 +26,7 @@ import java.util.Map;
  * @param message 人读说明。
  * @param diagnostics 低敏诊断数据。
  * @param recommendedActions 后续建议动作。
+ * @param receiptDelivery dry-run receipt 回写 agent-runtime timeline 的投递摘要；它只表达是否投递成功，不包含事件正文。
  */
 public record AgentToolActionControlledDryRunResult(
         Boolean claimed,
@@ -38,7 +39,8 @@ public record AgentToolActionControlledDryRunResult(
         Boolean sideEffectExecuted,
         String message,
         Map<String, Object> diagnostics,
-        List<String> recommendedActions
+        List<String> recommendedActions,
+        AgentToolActionControlledReceiptDelivery receiptDelivery
 ) {
 
     public AgentToolActionControlledDryRunResult {
@@ -47,5 +49,8 @@ public record AgentToolActionControlledDryRunResult(
         sideEffectExecuted = Boolean.TRUE.equals(sideEffectExecuted);
         diagnostics = diagnostics == null ? Map.of() : Map.copyOf(diagnostics);
         recommendedActions = recommendedActions == null ? List.of() : List.copyOf(recommendedActions);
+        receiptDelivery = receiptDelivery == null
+                ? AgentToolActionControlledReceiptDelivery.skipped("未尝试回写 dry-run receipt")
+                : receiptDelivery;
     }
 }

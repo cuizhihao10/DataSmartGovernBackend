@@ -123,6 +123,14 @@ datasmart:
       confirmation-check-fail-open-on-error: ${DATASMART_TASK_AGENT_ASYNC_WORKER_CONFIRMATION_CHECK_FAIL_OPEN_ON_ERROR:false}
       # 执行前复核依赖暂时不可用时的退避秒数。后续接入 permission-admin evaluate、配额和限流后也会复用该退避语义。
       pre-check-unavailable-defer-seconds: ${DATASMART_TASK_AGENT_ASYNC_WORKER_PRECHECK_UNAVAILABLE_DEFER_SECONDS:30}
+      # 受控工具动作 dry-run 开关。该链路只认领 AGENT_TOOL_ACTION_CONTROLLED，不会执行真实下游工具；但它会改变任务台账，因此默认关闭。
+      controlled-action-dry-run-enabled: ${DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_DRY_RUN_ENABLED:false}
+      # dry-run 通过但 payload body、专用 executor 或审批事实尚未就绪时的退避秒数，避免队列对不可执行任务进行高频轮询。
+      controlled-action-dry-run-defer-seconds: ${DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_DRY_RUN_DEFER_SECONDS:300}
+      # 是否把受控工具动作 dry-run 结果回写到 agent-runtime timeline；只写低敏 receipt，不写工具实参、SQL、prompt 或 payload body。
+      controlled-action-receipt-enabled: ${DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_RECEIPT_ENABLED:true}
+      # receipt 回写失败时是否允许 dry-run 状态机继续推进。默认 fail-open；强审计阶段应升级为 outbox 重试或改为 false。
+      controlled-action-receipt-fail-open-on-error: ${DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_RECEIPT_FAIL_OPEN_ON_ERROR:true}
       # 是否在真实工具执行前调用 permission-admin 做服务账号委托授权实时复核。
       permission-check-enabled: ${DATASMART_TASK_AGENT_ASYNC_WORKER_PERMISSION_CHECK_ENABLED:true}
       # permission-admin 不可用时是否放行。生产建议保持 false，让任务 defer 等待权限中心恢复。

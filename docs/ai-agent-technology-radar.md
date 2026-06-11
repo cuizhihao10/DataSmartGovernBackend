@@ -1,5 +1,31 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-11 落地补充：Dry-run receipts turn execution gates into replayable host facts
+
+- 本阶段继续跟随 Agent Host 领域的一个清晰趋势：工具调用的安全性不只来自“执行前拦截”，还来自“拦截结果可恢复、可回放、可审计”。
+  - OpenAI Agents SDK Human-in-the-loop 文档强调，敏感工具可以暂停，审批决策进入 run state 后再恢复执行；
+  - LangGraph Persistence 文档强调，checkpoint 不只是断点续跑，还支撑 human-in-the-loop、会话记忆、time travel 调试和故障恢复；
+  - MCP 2025-11-25 Authorization 规范强调 protected resource server、token audience/resource 绑定和 token passthrough 边界，说明工具调用必须由宿主控制面保留清晰授权事实。
+- 对 DataSmart 的架构映射：
+  - `AGENT_TOOL_ACTION_CONTROLLED` 的 dry-run 不能只把 task 状态改成 defer/fail，还需要把“为什么被 defer/fail”变成 agent-runtime 可查询的低敏 timeline 事实；
+  - receipt 是 Agent Host 控制面的可见性事实，不是工具结果正文，也不是下游业务执行凭据；
+  - task-management 负责认领任务、执行前判断和任务状态变化，agent-runtime 负责 receipt 接收、projection 幂等、timeline 展示和后续 replay；
+  - 这保持了微服务边界：任务状态机、Agent runtime event、权限事实、payload store 和真实 executor 各自拥有自己的事实源。
+- 本轮落地到代码的能力：
+  - task-management dry-run dispatcher 在 defer/fail 后调用 agent-runtime 内部 receipt endpoint；
+  - agent-runtime 新增 `agent.tool_execution.controlled_dry_run_receipt_recorded` runtime event；
+  - timeline 展示层新增 `WAITING_PAYLOAD_BODY`、`WAITING_CONTROLLED_EXECUTOR`、`BLOCKED_BEFORE_SIDE_EFFECT` 等状态；
+  - 两侧都坚持低敏 payload policy，不写入工具实参、payload body、SQL、prompt、样本数据、模型输出、凭证、内部 endpoint 或 artifact 正文。
+- 趋势落地建议：
+  1. 将 receipt 从 best-effort HTTP 逐步升级为 outbox 驱动的最终一致事件，适合强审计客户场景；
+  2. 把 permission-admin 审批事实接入 dry-run，让 HITL 决策不只是字符串 ID，而是可恢复、可过期、可授权校验的服务端事实；
+  3. 真实 executor 应复用同一条 receipt/timeline 语义，继续输出 claimed、started、succeeded、failed、retry、dead-letter 等低敏事实；
+  4. Python Runtime、MCP、A2A 和模型 tool_call 都应汇入统一 tool action control plane，避免各入口绕过同一套执行前治理。
+- 参考资料：
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - MCP 2025-11-25 Authorization: `https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization`
+
 ## 2026-06-11 落地补充：Controlled dry-run executors should gate side effects before real tool execution
 
 - 本阶段重新核对的外部趋势：

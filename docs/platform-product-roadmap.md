@@ -1,5 +1,32 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-11 追加落地进展：Agent Runtime + Task Management 5.59 受控工具动作 dry-run receipt timeline
+
+- `task-management` 的 `AGENT_TOOL_ACTION_CONTROLLED` dry-run 调度器已新增低敏 receipt 回写能力：
+  - dry-run 完成任务认领、defer 或 fail 之后，会把结果作为 receipt 发送到 `agent-runtime`；
+  - receipt 只表达 commandId、taskId、taskRunId、outcome、preCheckPassed、payloadStoreEvidence、payloadBodyAvailable、策略版本数量、delegation evidence 数量、建议动作等控制面摘要；
+  - receipt 明确 `sideEffectExecuted=false`，避免运营台、审计台或调试入口误把 dry-run 理解成真实业务工具已经执行；
+  - 当队列为空、本地容量不足、任务为空或 payload 尚未解析时，调度器不会伪造 timeline 事件，而是在 dry-run 结果里返回 skipped receipt delivery。
+- `agent-runtime` 新增内部 receipt 接收与 runtime event 投影：
+  - 内部入口为 `POST /internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/controlled-dry-run-receipts`；
+  - 事件类型为 `agent.tool_execution.controlled_dry_run_receipt_recorded`；
+  - 投影服务按 idempotencyKey 生成 identityKey，重复 receipt 会作为幂等 replay 接受，不重复写入 timeline；
+  - timeline 展示层新增 `TOOL_ACTION_CONTROLLED_DRY_RUN_RECEIPT` 分类，支持 `WAITING_PAYLOAD_BODY`、`WAITING_CONTROLLED_EXECUTOR`、`BLOCKED_BEFORE_SIDE_EFFECT`、`WAITING_WORKER_CAPACITY` 等状态。
+- 安全与低敏边界：
+  - receipt 不允许携带工具实参、payload body、SQL、prompt、样本数据、模型输出、凭证、内部 endpoint 或 artifact 正文；
+  - `agent-runtime` 写入 timeline 前会拒绝 `sideEffectExecuted=true`，并拒绝疑似包含 SQL、prompt、token、password 等敏感片段的 message；
+  - task-management 客户端默认采用 receipt fail-open：receipt 失败不会回滚已经落库的 defer/fail 状态，但会在 dry-run 响应中返回 failed-open 摘要；
+  - 该 fail-open 策略只适合当前“可见性事件”阶段，后续强审计阶段应升级为 task-management outbox + 重试 + 死信 + 补偿任务。
+- 产品意义：
+  - 5.58 已经证明受控工具动作不会被旧 worker 误执行，本阶段进一步让 dry-run 的控制面结果可被 Agent timeline、审计台和智能网关回放；
+  - 这条链路更接近 Codex/Claude Code 类 Agent Host：工具动作先进入宿主控制面，被 readiness、payload store、审批事实、worker 容量和幂等策略逐步放行，然后每一步都留下低敏事实；
+  - Java 控制面现在已经具备 writer、inbox、payload reference、dry-run 和 receipt timeline 的第一阶段闭环，不建议继续在局部无限加字段。
+- 下一步推荐路线：
+  1. 接入 permission-admin 审批事实源，让 approval fact 支持存在性、过期时间、授权状态、graph/contract/tool/policy 绑定复核；
+  2. 设计 payload store 生产实现与只读 executor client，补齐 MySQL/Redis/对象存储/KMS、TTL、审计留存、多实例一致性；
+  3. 后续真实 executor 必须先消费 receipt/outbox/idempotency，再逐步开放副作用；
+  4. 完成上述 Java 控制面收敛后，应阶段性切到 Python AI Runtime、智能网关、长期记忆、Agent tool runtime 和模型网关，避免项目整体路线继续被单个 Java worker 局部牵住。
+
 ## 2026-06-11 追加落地进展：Task Management 5.58 `AGENT_TOOL_ACTION_CONTROLLED` dry-run 调度闸门
 
 - `task-management` 新增受控工具动作专用 dry-run 链路：

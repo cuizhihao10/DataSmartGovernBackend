@@ -31,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -52,7 +53,9 @@ class AgentToolActionControlledDryRunDispatcherServiceTest {
         TaskService taskService = mock(TaskService.class);
         AgentAsyncToolWorkerProperties properties = properties();
         AgentAsyncToolWorkerMetricsService metricsService = mock(AgentAsyncToolWorkerMetricsService.class);
-        AgentToolActionControlledDryRunDispatcherService service = service(taskService, properties, metricsService);
+        AgentRuntimeToolActionControlledReceiptClient receiptClient = receiptClient();
+        AgentToolActionControlledDryRunDispatcherService service =
+                service(taskService, properties, metricsService, receiptClient);
         Task task = controlledTask(List.of(
                 "REFERENCE_PREFIX:agent-payload",
                 "RUN_ID_BOUND:run-proposal",
@@ -73,10 +76,22 @@ class AgentToolActionControlledDryRunDispatcherServiceTest {
         assertEquals(true, result.preCheckPassed());
         assertEquals(false, result.sideEffectExecuted());
         assertEquals("taoc-consume-001", result.commandId());
+        assertTrue(result.receiptDelivery().attempted());
+        assertTrue(result.receiptDelivery().accepted());
 
         verify(taskService).deferTask(eq(9101L), any(String.class), eq(120), any(TaskExecutionCallbackContext.class));
         verify(taskService, never()).failTask(any(), any(), any());
         verify(metricsService).recordDispatchOutcome("DEFERRED_WAITING_PAYLOAD_BODY");
+        verify(receiptClient).publishDryRunReceipt(
+                any(AgentToolActionControlledTaskPayload.class),
+                eq(9201L),
+                eq("DEFERRED_WAITING_PAYLOAD_BODY"),
+                eq(true),
+                any(String.class),
+                isNull(),
+                any(),
+                any(TaskActorContext.class)
+        );
         verifyClaimedControlledTask(taskService);
     }
 
@@ -85,7 +100,9 @@ class AgentToolActionControlledDryRunDispatcherServiceTest {
         TaskService taskService = mock(TaskService.class);
         AgentAsyncToolWorkerProperties properties = properties();
         AgentAsyncToolWorkerMetricsService metricsService = mock(AgentAsyncToolWorkerMetricsService.class);
-        AgentToolActionControlledDryRunDispatcherService service = service(taskService, properties, metricsService);
+        AgentRuntimeToolActionControlledReceiptClient receiptClient = receiptClient();
+        AgentToolActionControlledDryRunDispatcherService service =
+                service(taskService, properties, metricsService, receiptClient);
         Task task = controlledTask(List.of(
                 "REFERENCE_PREFIX:agent-payload",
                 "RUN_ID_BOUND:run-proposal"
@@ -98,9 +115,20 @@ class AgentToolActionControlledDryRunDispatcherServiceTest {
         assertEquals("FAILED_PRECHECK", result.outcome());
         assertEquals(false, result.preCheckPassed());
         assertFalse(result.sideEffectExecuted());
+        assertTrue(result.receiptDelivery().accepted());
         verify(taskService).failTask(eq(9101L), any(String.class), any(TaskExecutionCallbackContext.class));
         verify(taskService, never()).deferTask(any(), any(), any(), any());
         verify(metricsService).recordDispatchOutcome("FAILED_PRECHECK");
+        verify(receiptClient).publishDryRunReceipt(
+                any(AgentToolActionControlledTaskPayload.class),
+                eq(9202L),
+                eq("FAILED_PRECHECK"),
+                eq(false),
+                any(String.class),
+                eq("AGENT_TOOL_ACTION_CONTROLLED_PRECHECK_REJECTED"),
+                any(),
+                any(TaskActorContext.class)
+        );
     }
 
     @Test
@@ -108,7 +136,9 @@ class AgentToolActionControlledDryRunDispatcherServiceTest {
         TaskService taskService = mock(TaskService.class);
         AgentAsyncToolWorkerProperties properties = properties();
         AgentAsyncToolWorkerMetricsService metricsService = mock(AgentAsyncToolWorkerMetricsService.class);
-        AgentToolActionControlledDryRunDispatcherService service = service(taskService, properties, metricsService);
+        AgentRuntimeToolActionControlledReceiptClient receiptClient = receiptClient();
+        AgentToolActionControlledDryRunDispatcherService service =
+                service(taskService, properties, metricsService, receiptClient);
         when(taskService.claimNextTask(any(TaskExecutionClaimRequest.class), any(TaskActorContext.class)))
                 .thenReturn(new TaskExecutionClaimResult(false, "当前没有可认领任务", null, null));
 
@@ -116,7 +146,11 @@ class AgentToolActionControlledDryRunDispatcherServiceTest {
 
         assertEquals(false, result.claimed());
         assertEquals("NO_TASK", result.outcome());
+        assertFalse(result.receiptDelivery().attempted());
         verify(metricsService).recordDispatchOutcome("NO_TASK");
+        verify(receiptClient, never()).publishDryRunReceipt(
+                any(), any(), any(), eq(false), any(), any(), any(), any()
+        );
     }
 
     @Test
@@ -124,24 +158,51 @@ class AgentToolActionControlledDryRunDispatcherServiceTest {
         TaskService taskService = mock(TaskService.class);
         AgentAsyncToolWorkerProperties properties = properties();
         properties.setControlledActionDryRunEnabled(false);
+        AgentRuntimeToolActionControlledReceiptClient receiptClient = receiptClient();
         AgentToolActionControlledDryRunDispatcherService service =
-                service(taskService, properties, mock(AgentAsyncToolWorkerMetricsService.class));
+                service(taskService, properties, mock(AgentAsyncToolWorkerMetricsService.class), receiptClient);
 
         assertThrows(IllegalStateException.class, () -> service.dispatchDryRunOnce(actorContext()));
 
         verify(taskService, never()).claimNextTask(any(TaskExecutionClaimRequest.class), any(TaskActorContext.class));
+        verify(receiptClient, never()).publishDryRunReceipt(any(), any(), any(), eq(false), any(), any(), any(), any());
     }
 
     private AgentToolActionControlledDryRunDispatcherService service(TaskService taskService,
                                                                     AgentAsyncToolWorkerProperties properties,
-                                                                    AgentAsyncToolWorkerMetricsService metricsService) {
+                                                                    AgentAsyncToolWorkerMetricsService metricsService,
+                                                                    AgentRuntimeToolActionControlledReceiptClient receiptClient) {
         return new AgentToolActionControlledDryRunDispatcherService(
                 taskService,
                 new AgentToolActionControlledPayloadResolver(objectMapper),
                 properties,
                 new AgentAsyncToolWorkerAdmissionGuardService(properties),
-                metricsService
+                metricsService,
+                receiptClient
         );
+    }
+
+    private AgentRuntimeToolActionControlledReceiptClient receiptClient() {
+        AgentRuntimeToolActionControlledReceiptClient receiptClient =
+                mock(AgentRuntimeToolActionControlledReceiptClient.class);
+        when(receiptClient.publishDryRunReceipt(
+                any(AgentToolActionControlledTaskPayload.class),
+                any(),
+                any(String.class),
+                any(Boolean.class),
+                any(String.class),
+                any(),
+                any(),
+                any(TaskActorContext.class)
+        )).thenReturn(new AgentToolActionControlledReceiptDelivery(
+                true,
+                true,
+                false,
+                "controlled-tool-action-receipt:test",
+                "agent.tool_execution.controlled_dry_run_receipt_recorded",
+                "receipt accepted"
+        ));
+        return receiptClient;
     }
 
     private AgentAsyncToolWorkerProperties properties() {

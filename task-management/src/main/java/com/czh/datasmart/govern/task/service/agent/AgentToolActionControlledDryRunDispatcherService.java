@@ -50,6 +50,7 @@ public class AgentToolActionControlledDryRunDispatcherService {
     private final AgentAsyncToolWorkerProperties properties;
     private final AgentAsyncToolWorkerAdmissionGuardService admissionGuardService;
     private final AgentAsyncToolWorkerMetricsService metricsService;
+    private final AgentRuntimeToolActionControlledReceiptClient receiptClient;
 
     /**
      * 手动执行一轮受控工具动作 dry-run。
@@ -69,14 +70,16 @@ public class AgentToolActionControlledDryRunDispatcherService {
             metricsService.recordAdmissionRejected(admission.reasonCode());
             metricsService.recordDispatchOutcome(OUTCOME_CAPACITY_LIMITED);
             return result(false, null, null, null, null, OUTCOME_CAPACITY_LIMITED,
-                    false, admission.message(), admission.diagnostics(), List.of("等待本地 worker 容量释放后再重试 dry-run。"));
+                    false, admission.message(), admission.diagnostics(), List.of("等待本地 worker 容量释放后再重试 dry-run。"),
+                    AgentToolActionControlledReceiptDelivery.skipped("未认领具体任务，不写入 Agent timeline"));
         }
         try (AgentAsyncToolWorkerAdmissionLease ignored = admission) {
             TaskExecutionClaimResult claim = taskService.claimNextTask(claimRequest(), actorContext);
             if (!claim.claimed()) {
                 metricsService.recordDispatchOutcome(OUTCOME_NO_TASK);
                 return result(false, null, null, null, null, OUTCOME_NO_TASK,
-                        false, claim.message(), Map.of(), List.of("当前没有待 dry-run 的受控工具动作任务。"));
+                        false, claim.message(), Map.of(), List.of("当前没有待 dry-run 的受控工具动作任务。"),
+                        AgentToolActionControlledReceiptDelivery.skipped("队列为空，不写入 Agent timeline"));
             }
             Task task = claim.task();
             Long runId = claim.executionRun() == null ? null : claim.executionRun().getId();
@@ -85,10 +88,12 @@ public class AgentToolActionControlledDryRunDispatcherService {
                 return result(true, null, runId, null, null, OUTCOME_FAILED_PRECHECK,
                         false, "任务中心返回 claimed=true 但 task 为空，dry-run 已停止以避免误写状态。",
                         Map.of("errorCode", ERROR_CODE_PRECHECK_REJECTED),
-                        List.of("请检查 TaskExecutionRunSupport.claimNextTask 的返回契约和数据库任务记录。"));
+                        List.of("请检查 TaskExecutionRunSupport.claimNextTask 的返回契约和数据库任务记录。"),
+                        AgentToolActionControlledReceiptDelivery.skipped("任务为空，无法定位 session/run，不写入 Agent timeline"));
             }
+            AgentToolActionControlledTaskPayload payload = null;
             try {
-                AgentToolActionControlledTaskPayload payload = payloadResolver.resolve(task);
+                payload = payloadResolver.resolve(task);
                 DryRunDecision decision = decide(payload);
                 TaskExecutionCallbackContext callbackContext = callbackContext(
                         runId,
@@ -99,8 +104,19 @@ public class AgentToolActionControlledDryRunDispatcherService {
                 taskService.deferTask(task.getId(), decision.message(),
                         properties.getControlledActionDryRunDeferSeconds(), callbackContext);
                 metricsService.recordDispatchOutcome(decision.outcome());
+                AgentToolActionControlledReceiptDelivery receiptDelivery = publishReceipt(
+                        payload,
+                        runId,
+                        decision.outcome(),
+                        true,
+                        decision.message(),
+                        null,
+                        decision.actions(),
+                        actorContext
+                );
                 return result(true, task.getId(), runId, payload.commandId(), payload.toolCode(),
-                        decision.outcome(), true, decision.message(), decision.diagnostics(), decision.actions());
+                        decision.outcome(), true, decision.message(), decision.diagnostics(), decision.actions(),
+                        receiptDelivery);
             } catch (RuntimeException exception) {
                 TaskExecutionCallbackContext callbackContext = callbackContext(
                         runId,
@@ -114,8 +130,19 @@ public class AgentToolActionControlledDryRunDispatcherService {
                 Map<String, Object> diagnostics = new LinkedHashMap<>();
                 diagnostics.put("errorCode", ERROR_CODE_PRECHECK_REJECTED);
                 diagnostics.put("errorMessage", safeMessage(exception));
+                AgentToolActionControlledReceiptDelivery receiptDelivery = publishReceipt(
+                        payload,
+                        runId,
+                        OUTCOME_FAILED_PRECHECK,
+                        false,
+                        message,
+                        ERROR_CODE_PRECHECK_REJECTED,
+                        List.of("请重新生成符合 5.57 payload store 证据要求的工具动作命令。"),
+                        actorContext
+                );
                 return result(true, task.getId(), runId, null, null, OUTCOME_FAILED_PRECHECK,
-                        false, message, diagnostics, List.of("请重新生成符合 5.57 payload store 证据要求的工具动作命令。"));
+                        false, message, diagnostics, List.of("请重新生成符合 5.57 payload store 证据要求的工具动作命令。"),
+                        receiptDelivery);
             }
         }
     }
@@ -199,7 +226,8 @@ public class AgentToolActionControlledDryRunDispatcherService {
                                                          boolean preCheckPassed,
                                                          String message,
                                                          Map<String, Object> diagnostics,
-                                                         List<String> actions) {
+                                                         List<String> actions,
+                                                         AgentToolActionControlledReceiptDelivery receiptDelivery) {
         return new AgentToolActionControlledDryRunResult(
                 claimed,
                 taskId,
@@ -211,7 +239,35 @@ public class AgentToolActionControlledDryRunDispatcherService {
                 false,
                 message,
                 diagnostics,
-                actions
+                actions,
+                receiptDelivery
+        );
+    }
+
+    /**
+     * 发布 dry-run receipt 到 agent-runtime timeline。
+     *
+     * <p>receipt 是“可见性事实”，不是当前 task 状态机的唯一事实源。这里放在 defer/fail 写回之后，
+     * 是为了保证事件描述的状态已经真实落在 task-management 中；如果 receipt 回写失败，默认由 client
+     * 按 fail-open 策略返回失败投递摘要，后续强审计阶段再升级为 outbox 重试。</p>
+     */
+    private AgentToolActionControlledReceiptDelivery publishReceipt(AgentToolActionControlledTaskPayload payload,
+                                                                    Long taskRunId,
+                                                                    String outcome,
+                                                                    boolean preCheckPassed,
+                                                                    String message,
+                                                                    String errorCode,
+                                                                    List<String> actions,
+                                                                    TaskActorContext actorContext) {
+        return receiptClient.publishDryRunReceipt(
+                payload,
+                taskRunId,
+                outcome,
+                preCheckPassed,
+                message,
+                errorCode,
+                actions,
+                actorContext
         );
     }
 

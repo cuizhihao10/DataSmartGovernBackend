@@ -180,6 +180,28 @@ public class AgentAsyncToolWorkerProperties {
     private boolean controlledActionDryRunEnabled = false;
 
     /**
+     * 是否把受控工具动作 dry-run 结果回写到 agent-runtime runtime event timeline。
+     *
+     * <p>该开关只影响 `AGENT_TOOL_ACTION_CONTROLLED` 新链路。开启后，task-management dry-run dispatcher
+     * 会把 defer/fail 等低敏结果回写给 agent-runtime，由 agent-runtime 统一进入 runtime event replay/display。
+     * 这能让前端和审计台看到“为什么工具没有执行”：是 payload body 尚未物化、专用 executor 未接入，
+     * 还是 payload store 证据缺失导致 fail-closed。</p>
+     *
+     * <p>它不会把 payload body、工具实参、SQL、prompt、样本数据、模型输出、凭证或内部 endpoint 写入事件。
+     * 未来如果要满足强审计和最终一致要求，应把该回写升级为 task-management outbox，而不是依赖一次 HTTP 调用。</p>
+     */
+    private boolean controlledActionReceiptEnabled = true;
+
+    /**
+     * receipt 回写 agent-runtime 失败时是否允许 dry-run 状态机继续推进。
+     *
+     * <p>默认 true，表示 fail-open：receipt 主要服务 timeline 可见性，不是当前 task 状态机的唯一事实源。
+     * 如果 agent-runtime 短暂不可用，task-management 仍会完成已判断出的 defer/fail 状态，避免任务租约长期悬挂。
+     * 商业化强审计阶段可以改成 false 或者更推荐接入 outbox 重试，确保 receipt 最终进入 timeline。</p>
+     */
+    private boolean controlledActionReceiptFailOpenOnError = true;
+
+    /**
      * 新工具动作 dry-run 通过但尚未具备真实执行条件时的退避秒数。
      *
      * <p>当前阶段 dry-run 的典型结果是“契约和低敏证据通过，但 payload body 或专用 executor 尚未接齐”。
