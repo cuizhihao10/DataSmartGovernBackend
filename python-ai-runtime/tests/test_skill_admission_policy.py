@@ -6,7 +6,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from datasmart_ai_runtime.api_skill_admission import build_skill_admission_policy
+from datasmart_ai_runtime.api.agent.skill_admission import build_skill_admission_policy
 from datasmart_ai_runtime.config import default_skill_registry
 from datasmart_ai_runtime.domain.contracts import AgentRequest
 from datasmart_ai_runtime.services.skill_admission_policy import (

@@ -7,7 +7,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from datasmart_ai_runtime.api import build_default_orchestrator
-from datasmart_ai_runtime.api_plan_response import build_plan_response
+from datasmart_ai_runtime.api.agent.plan_response import build_plan_response
 from datasmart_ai_runtime.domain.contracts import AgentRequest
 from datasmart_ai_runtime.services.agent_workspace import (
     AgentWorkspaceContextBuilder,

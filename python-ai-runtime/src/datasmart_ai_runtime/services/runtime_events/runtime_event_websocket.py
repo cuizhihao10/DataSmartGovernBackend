@@ -177,9 +177,9 @@ class RuntimeEventWebSocketConnectionAdapter:
         if self._closed:
             return self._build_closed_error_payloads()
 
-        # 惰性导入可以避免 `api_events -> runtime_event_websocket` 的模块循环。
-        # 协议入口仍复用 api_events 中的控制响应构建逻辑，防止 HTTP 和 WebSocket 分叉。
-        from datasmart_ai_runtime.api_events import build_event_control_response
+        # 惰性导入可以避免 `api.events -> runtime_event_websocket` 的模块循环。
+        # 协议入口仍复用 api.events 中的控制响应构建逻辑，防止 HTTP 和 WebSocket 分叉。
+        from datasmart_ai_runtime.api.events import build_event_control_response
 
         response = build_event_control_response(message, self._session_manager)
         frames = build_websocket_frames_from_control_response(response)
@@ -218,7 +218,7 @@ class RuntimeEventWebSocketConnectionAdapter:
         if not subscription_id:
             return ()
 
-        from datasmart_ai_runtime.api_events import build_event_control_response
+        from datasmart_ai_runtime.api.events import build_event_control_response
 
         response = build_event_control_response(
             {

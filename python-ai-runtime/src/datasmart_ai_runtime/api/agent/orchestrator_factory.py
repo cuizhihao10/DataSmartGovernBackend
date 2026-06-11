@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from datasmart_ai_runtime.api_skill_admission import build_skill_admission_policy
+from datasmart_ai_runtime.api.agent.skill_admission import build_skill_admission_policy
 from datasmart_ai_runtime.config import default_skill_registry, default_tool_registry, model_routes_from_env
 from datasmart_ai_runtime.domain.context import ContextSensitivityLevel
 from datasmart_ai_runtime.domain.contracts import ToolDefinition
@@ -291,7 +291,7 @@ def build_tool_execution_readiness_policy_provider(
     - API 响应层可以单独注入 readiness provider；
     - 旧预算链路继续保持向后兼容；
     - 后续如果 gateway 一次性注入完整策略 envelope，也只需要替换这个 builder 或 provider，而不需要改
-      `api_plan_response.py` 的主流程。
+      `api/agent/plan_response.py` 的主流程。
 
     环境变量：
     - `DATASMART_PERMISSION_ADMIN_TOOL_READINESS_POLICY_ENABLED`：优先控制 readiness 远程策略；

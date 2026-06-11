@@ -8,7 +8,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from datasmart_ai_runtime.api_memory_write import register_memory_write_routes
+from datasmart_ai_runtime.api.memory.write import register_memory_write_routes
 from datasmart_ai_runtime.domain.memory import (
     AgentMemoryScope,
     AgentMemoryType,

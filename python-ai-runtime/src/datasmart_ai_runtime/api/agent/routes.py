@@ -18,17 +18,17 @@ import logging
 from contextlib import suppress
 from typing import Any, Callable
 
-from datasmart_ai_runtime.api_a2a_task_planning import build_a2a_task_planning_preview_response
-from datasmart_ai_runtime.api_mcp_tool_call_intake import build_mcp_tool_call_intake_preview_response
-from datasmart_ai_runtime.api_events import (
+from datasmart_ai_runtime.api.agent.a2a_task_planning import build_a2a_task_planning_preview_response
+from datasmart_ai_runtime.api.agent.mcp_tool_call_intake import build_mcp_tool_call_intake_preview_response
+from datasmart_ai_runtime.api.events import (
     build_event_control_response,
     build_event_replay_response,
     runtime_event_from_payload,
     subscription_request_from_payload,
 )
-from datasmart_ai_runtime.api_gateway_signature import GatewaySignatureVerificationError
-from datasmart_ai_runtime.api_plan_response import build_plan_response
-from datasmart_ai_runtime.api_trusted_context import enrich_agent_plan_payload_from_gateway_headers
+from datasmart_ai_runtime.api.gateway.signature import GatewaySignatureVerificationError
+from datasmart_ai_runtime.api.agent.plan_response import build_plan_response
+from datasmart_ai_runtime.api.gateway.trusted_context import enrich_agent_plan_payload_from_gateway_headers
 from datasmart_ai_runtime.domain.contracts import AgentRequest
 from datasmart_ai_runtime.services.tools import build_tool_action_intake_runtime_event
 from datasmart_ai_runtime.services.runtime_events.runtime_event_websocket import RuntimeEventWebSocketConnectionAdapter

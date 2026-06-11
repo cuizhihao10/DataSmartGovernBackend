@@ -6,7 +6,7 @@
 
 文件边界说明：
 `api.py` 只保留 FastAPI 应用装配、路由注册和生命周期管理。默认 Agent 编排器、工具目录、Skill 目录、
-上下文预算和工具预算策略的构建逻辑已经拆到 `api_orchestrator_factory.py`。这样既保留
+上下文预算和工具预算策略的构建逻辑已经拆到 `api/agent/orchestrator_factory.py`。这样既保留
 `from datasmart_ai_runtime.api import build_default_orchestrator` 这类历史导入方式，又避免 API 入口再次膨胀
 成一个超过 500 行的启动巨石。
 """
@@ -16,21 +16,21 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from datasmart_ai_runtime.api_events import (
+from datasmart_ai_runtime.api.events import (
     build_event_control_response,
     build_event_replay_response,
     build_event_websocket_payloads,
 )
-from datasmart_ai_runtime.api_gateway_security import (
+from datasmart_ai_runtime.api.gateway.security import (
     GatewaySignatureSecurityStats,
     build_gateway_signature_nonce_store,
     gateway_signature_nonce_store_settings_from_env,
     gateway_signature_security_diagnostics,
 )
-from datasmart_ai_runtime.api_memory_materialization_admin import register_memory_materialization_admin_routes
-from datasmart_ai_runtime.api_memory_runtime import api_memory_runtime_diagnostics, build_api_memory_runtime
-from datasmart_ai_runtime.api_memory_write import register_memory_write_routes
-from datasmart_ai_runtime.api_orchestrator_factory import (
+from datasmart_ai_runtime.api.memory.materialization_admin import register_memory_materialization_admin_routes
+from datasmart_ai_runtime.api.memory.runtime import api_memory_runtime_diagnostics, build_api_memory_runtime
+from datasmart_ai_runtime.api.memory.write import register_memory_write_routes
+from datasmart_ai_runtime.api.agent.orchestrator_factory import (
     build_context_selection_policy,
     build_default_orchestrator,
     build_tool_call_budget_policy_provider,
@@ -41,8 +41,8 @@ from datasmart_ai_runtime.api_orchestrator_factory import (
     positive_int_env as _positive_int_env,
     truthy_env as _truthy_env,
 )
-from datasmart_ai_runtime.api_agent_routes import register_agent_runtime_routes
-from datasmart_ai_runtime.api_plan_response import build_plan_response
+from datasmart_ai_runtime.api.agent.routes import register_agent_runtime_routes
+from datasmart_ai_runtime.api.agent.plan_response import build_plan_response
 from datasmart_ai_runtime.config import model_routes_from_env
 from datasmart_ai_runtime.services.agent_control_plane_feedback import AgentControlPlaneFeedbackCollector
 from datasmart_ai_runtime.services.agent_loop_control_policy import AgentLoopControlPolicyEvaluator

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from datasmart_ai_runtime.api_model_gateway import build_model_gateway_governance_response
+from datasmart_ai_runtime.api.model_gateway import build_model_gateway_governance_response
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest
 from datasmart_ai_runtime.domain.events import AgentRuntimeEvent, AgentRuntimeEventType
 from datasmart_ai_runtime.services.agent_gateway import build_agent_session_scheduling_policy_view

@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
-from datasmart_ai_runtime.api_gateway_signature import (
+from datasmart_ai_runtime.api.gateway.signature import (
     GatewaySignatureNonceStore,
     GatewaySignatureVerificationConfig,
     ensure_gateway_signature,

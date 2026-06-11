@@ -7,7 +7,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from datasmart_ai_runtime.api_gateway_signature import (
+from datasmart_ai_runtime.api.gateway.signature import (
     GatewaySignatureVerificationConfig,
     GATEWAY_SIGNATURE,
     GATEWAY_SIGNATURE_KEY_ID,
@@ -16,8 +16,8 @@ from datasmart_ai_runtime.api_gateway_signature import (
     GATEWAY_SIGNATURE_VERSION,
     sign_gateway_payload,
 )
-from datasmart_ai_runtime.api_gateway_security import InMemoryGatewaySignatureNonceStore
-from datasmart_ai_runtime.api_trusted_context import enrich_agent_plan_payload_from_gateway_headers
+from datasmart_ai_runtime.api.gateway.security import InMemoryGatewaySignatureNonceStore
+from datasmart_ai_runtime.api.gateway.trusted_context import enrich_agent_plan_payload_from_gateway_headers
 
 
 class ApiTrustedContextTest(unittest.TestCase):

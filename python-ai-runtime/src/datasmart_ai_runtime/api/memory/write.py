@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from datasmart_ai_runtime.api_memory_write_pagination import paginate_memory_write_candidates
+from datasmart_ai_runtime.api.memory.write_pagination import paginate_memory_write_candidates
 from datasmart_ai_runtime.domain.memory import (
     AgentMemoryWriteCandidateStatus,
 )

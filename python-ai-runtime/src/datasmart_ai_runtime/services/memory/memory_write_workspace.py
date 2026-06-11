@@ -39,7 +39,7 @@ class AgentMemoryWorkspaceSupport:
     def bind(request: AgentRequest, tool_plan: ToolPlan) -> AgentMemoryWorkspaceBinding:
         """根据请求和 ToolPlan 生成候选 workspace。
 
-        `api_plan_response` 会把服务端构造的 workspace hints 覆盖写入每个 ToolPlan。这里仍然重新根据
+        `api/agent/plan_response` 会把服务端构造的 workspace hints 覆盖写入每个 ToolPlan。这里仍然重新根据
         `AgentRequest` 计算一次 canonical 上下文并做一致性校验，原因是治理服务也可能被其他入口直接调用。
         如果调用方伪造或混入其他 workspace hints，必须在候选形成前 fail-closed。
         """

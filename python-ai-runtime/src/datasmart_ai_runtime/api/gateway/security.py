@@ -1,6 +1,6 @@
 """gateway 签名安全辅助组件。
 
-本模块承接 ``api_gateway_signature.py`` 的密码学校验结果，提供两个更偏“生产运营”的能力：
+本模块承接 ``api/gateway/signature.py`` 的密码学校验结果，提供两个更偏“生产运营”的能力：
 
 1. nonce 去重：
    HMAC 签名能证明请求确实由 gateway 生成，但如果请求在允许时间窗口内被截获并重放，单纯 HMAC

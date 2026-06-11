@@ -6,8 +6,8 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from datasmart_ai_runtime.api_agent_routes import register_agent_runtime_routes
-from datasmart_ai_runtime.api_mcp_tool_call_intake import build_mcp_tool_call_intake_preview_response
+from datasmart_ai_runtime.api.agent.routes import register_agent_runtime_routes
+from datasmart_ai_runtime.api.agent.mcp_tool_call_intake import build_mcp_tool_call_intake_preview_response
 from datasmart_ai_runtime.config import default_tool_registry
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
 

@@ -15,8 +15,8 @@ from __future__ import annotations
 from dataclasses import asdict, replace
 from typing import Any
 
-from datasmart_ai_runtime.api_intelligent_gateway import build_intelligent_gateway_governance_response
-from datasmart_ai_runtime.api_model_gateway import build_model_gateway_governance_response
+from datasmart_ai_runtime.api.gateway.intelligent_gateway import build_intelligent_gateway_governance_response
+from datasmart_ai_runtime.api.model_gateway import build_model_gateway_governance_response
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ToolPlan
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator

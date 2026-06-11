@@ -8,8 +8,8 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from datasmart_ai_runtime.api_agent_routes import register_agent_runtime_routes
-from datasmart_ai_runtime.api_gateway_security import GatewaySignatureSecurityStats
+from datasmart_ai_runtime.api.agent.routes import register_agent_runtime_routes
+from datasmart_ai_runtime.api.gateway.security import GatewaySignatureSecurityStats
 
 
 class FakeHttpException(Exception):
@@ -95,7 +95,7 @@ class ApiAgentRoutesSecurityTest(unittest.TestCase):
             DATASMART_GATEWAY_SIGNATURE_REQUIRED="true",
             DATASMART_GATEWAY_SIGNATURE_SECRET="secret-for-test",
         ):
-            with self.assertLogs("datasmart_ai_runtime.api_agent_routes", level="WARNING") as logs:
+            with self.assertLogs("datasmart_ai_runtime.api.agent.routes", level="WARNING") as logs:
                 with self.assertRaises(FakeHttpException) as raised:
                     app.post_routes["/agent/plans"](
                         {"variables": {"trustedControlPlane": {"toolBudget": {"actorRole": "PLATFORM_ADMIN"}}}},

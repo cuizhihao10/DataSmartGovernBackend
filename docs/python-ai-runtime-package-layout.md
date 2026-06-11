@@ -35,6 +35,17 @@ datasmart_ai_runtime/
 
 ## 当前已开始落地
 
+- `api/` 已作为 HTTP/API 层能力包建立：
+  - `api/app.py` 保留 FastAPI 应用装配、依赖启动和路由注册；
+  - `api/agent/` 承载 Agent planning、A2A/MCP intake 预览、Skill 准入和 orchestrator 工厂；
+  - `api/gateway/` 承载 gateway 签名、nonce、安全诊断、可信上下文和智能网关治理摘要；
+  - `api/events/` 承载 runtime event replay/control/WebSocket payload 适配；
+  - `api/memory/` 承载长期记忆候选治理、物化管理端、分页和 runtime 装配；
+  - `api/model_gateway/` 承载模型网关低敏 HTTP 响应适配。
+- `datasmart_ai_runtime.api` 现在是懒加载兼容入口：
+  - 历史 `from datasmart_ai_runtime.api import create_app` 仍然可用；
+  - 新代码应直接导入 `datasmart_ai_runtime.api.agent.routes`、`datasmart_ai_runtime.api.memory.write` 等能力包；
+  - 不应再在运行时根包新增 `api_xxx.py` 平铺文件。
 - `services/memory/` 已作为第一批能力包建立，承载长期记忆规划、检索、写入候选、审批治理、SQL 候选仓储、
   正式记忆 store、materializer 和 receipt store。
 - `services/runtime_events/` 已作为第二批能力包建立，承载事件事实存储、订阅会话、ack/checkpoint、
@@ -57,8 +68,8 @@ datasmart_ai_runtime/
 
 ## 后续推荐顺序
 
-1. `services/tools/` 与 `services/skills/`：工具市场、Skill 准入和 MCP-style descriptor 后续会继续增长，应尽早分包。
-2. `api/`：当前仍有多个 `api_*.py` 平铺在包根，后续应迁移为 `api/routes/`、`api/schemas/`、`api/dependencies/`。
-3. `services/agent/`：Agent 编排和 loop control 应与 Java 控制面集成、长期记忆和模型网关解耦。
-4. `services/integrations/`：Java 控制面客户端、外部 replay source、permission-admin 客户端和未来 MCP/HTTP 连接器应逐步收口。
-5. 完成一批 tools/skills 或 API 分层后，应暂停纯目录治理，回到智能网关认证、长期记忆持久化或工具能力市场等产品能力实现。
+1. `services/tools/` 与 `services/skills/`：工具市场、Skill 准入和 MCP-style descriptor 后续会继续增长，应结合功能演进继续分包。
+2. `services/agent/`：Agent 编排、二轮推理、loop control、执行图条件节点应与 Java 控制面、长期记忆和模型网关解耦。
+3. `services/integrations/`：Java 控制面客户端、外部 replay source、permission-admin 客户端和未来 MCP/HTTP 连接器应逐步收口。
+4. `api/`：下一阶段不建议继续只做目录移动；若继续整理，应补 `routes/`、`schemas/`、`dependencies/` 等更细层次，并绑定真实 API 能力。
+5. 完成 API 分层后，应暂停纯目录治理，回到智能网关统一 intake、长期记忆持久化、Agent tool runtime 或工具能力市场等产品能力实现。

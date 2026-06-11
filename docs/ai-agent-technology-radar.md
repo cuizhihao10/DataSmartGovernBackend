@@ -1,5 +1,24 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-11 落地补充：Agent Host API surfaces need capability-oriented packages
+
+- 本阶段核对 FastAPI 官方 “Bigger Applications - Multiple Files” 文档：大型 API 很少适合长期放在单文件里，官方推荐用多个文件和包来组织应用，并通过类似 router 的结构保持灵活性。
+- 对 DataSmart 的架构映射：
+  - Python AI Runtime 正在承载智能网关、runtime event、长期记忆、模型网关、A2A、MCP 和工具治理，如果继续把入口散放成 `api_*.py`，后续会让协议、权限、路由、响应组装和服务实现互相缠绕；
+  - 类 Codex/Claude Code Agent 的复杂度不只在推理和工具调用，也在“宿主控制面可维护”：每个入口都要能独立演进认证、审计、低敏响应、replay 和故障诊断；
+  - 因此 API 层先按能力域拆包，是后续接入统一 intake、MCP/A2A 工具协议、长期记忆管理端和模型网关治理的基础工程。
+- 本轮落地到代码的能力：
+  - `datasmart_ai_runtime.api` 从单文件升级为兼容包；
+  - `api/agent`、`api/gateway`、`api/events`、`api/memory`、`api/model_gateway` 分别承载对应 HTTP 边界；
+  - 根聚合入口使用懒加载，避免导入子模块时提前装配整个 FastAPI app；
+  - 迁移后全量 Python 测试 423 个通过。
+- 后续趋势落地建议：
+  1. API 分层完成后，不要长时间停留在目录治理，应回到 Agent 能力主线；
+  2. 下一批更高价值方向是统一 MCP/A2A/model tool_call intake、Agent tool runtime、长期记忆检索/写入闭环和模型网关缓存治理；
+  3. 如果继续分包，应把它绑定到真实能力落地，比如 `services/agent` 的执行图编排或 `services/integrations` 的 Java 控制面客户端，而不是单纯移动文件。
+- 参考资料：
+  - FastAPI Bigger Applications - Multiple Files: `https://fastapi.tiangolo.com/tutorial/bigger-applications/`
+
 ## 2026-06-11 落地补充：Approval ids must resolve to server-side facts before tool execution
 
 - 当前 Agent Host 趋势继续从“模型/协议直接执行工具”转向“宿主控制面持有可恢复状态与审批事实”：

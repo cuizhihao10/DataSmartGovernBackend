@@ -5,7 +5,7 @@ HTTP 入口，用于把这些低敏合同转换成 Master Agent 可消费的 pla
 “API 响应形态”，不负责真实 A2A 网络调用，也不负责执行工具。
 
 为什么单独拆文件：
-- `api_agent_routes.py` 只负责注册路由，如果继续把响应组装、字段说明和推荐动作都写进去，很快会重新
+- `api/agent/routes.py` 只负责注册路由，如果继续把响应组装、字段说明和推荐动作都写进去，很快会重新
   变成大文件；
 - `A2aTaskPlanningAdapter` 是服务层，只关心状态映射，不应该知道 HTTP schemaVersion、routePolicy、
   missingProductionRequirements 这些 API 展示字段；

@@ -196,7 +196,7 @@ def _tool_execution_readiness_summary(readiness: Any) -> dict[str, Any]:
     """把 readiness report 转换成 HTTP 可返回的低敏摘要。
 
     该函数与 `/agent/plans` 的 readiness 响应保持同一套字段语义，但放在 MCP API helper 内部实现，避免
-    导入 `api_plan_response.py` 的私有函数。字段白名单只包含执行前决策、风险等级、参数字段名和 reason code。
+    导入 `api/agent/plan_response.py` 的私有函数。字段白名单只包含执行前决策、风险等级、参数字段名和 reason code。
     """
 
     return {

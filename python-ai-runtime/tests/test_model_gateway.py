@@ -20,7 +20,7 @@ from datasmart_ai_runtime.domain.model_gateway import (
     ModelProviderHealthSnapshot,
     ModelProviderHealthStatus,
 )
-from datasmart_ai_runtime.api_model_gateway import build_model_gateway_governance_response
+from datasmart_ai_runtime.api.model_gateway import build_model_gateway_governance_response
 from datasmart_ai_runtime.services.model_gateway import (
     InMemoryModelBudgetLedger,
     InMemoryModelProviderHealthRegistry,

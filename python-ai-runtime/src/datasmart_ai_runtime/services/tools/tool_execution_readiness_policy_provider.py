@@ -82,7 +82,7 @@ class ToolExecutionReadinessPolicyProviderProtocol(Protocol):
     - gateway 已经验签后注入的 `trustedControlPlane`；
     - 本地环境变量或测试默认值。
 
-    这个抽象能避免 `api_plan_response.py` 直接 new 具体实现，也能让后续接入 Redis quota、worker backlog、
+    这个抽象能避免 `api/agent/plan_response.py` 直接 new 具体实现，也能让后续接入 Redis quota、worker backlog、
     租户套餐表或 LangGraph 条件节点时保持主流程稳定。
     """
 

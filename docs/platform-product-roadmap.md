@@ -1,5 +1,32 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-11 追加落地进展：Python AI Runtime 5.61 API 层能力包分层
+
+- `python-ai-runtime` 已把根目录平铺的 `api_*.py` 实现迁移到 `datasmart_ai_runtime/api/` 能力包：
+  - `api/app.py`：保留 FastAPI 应用装配、运行时组件创建和路由注册入口；
+  - `api/agent/`：承载 `/agent/plans`、A2A task 规划预览、MCP tools/call intake 预检、AgentPlan 响应组装、Skill 准入和 orchestrator 工厂；
+  - `api/gateway/`：承载 HMAC 签名、nonce 去重、安全诊断、可信上下文重建和智能网关治理摘要；
+  - `api/events/`：承载 runtime event replay/control/WebSocket payload 适配；
+  - `api/memory/`：承载长期记忆 runtime 装配、候选治理路由、分页和物化管理端接口；
+  - `api/model_gateway/`：承载模型网关决策到低敏 HTTP 摘要的转换。
+- `datasmart_ai_runtime.api` 已从单文件升级为包级兼容入口：
+  - 仍支持 `from datasmart_ai_runtime.api import create_app/build_plan_response/build_default_orchestrator` 等历史导入；
+  - 使用懒加载避免导入任意子模块时提前加载整个 FastAPI bootstrap，降低循环导入和可选依赖耦合风险；
+  - 新增 API 能力后续应进入对应子包，不应再回到根目录创建新的 `api_xxx.py`。
+- 测试与导入已同步：
+  - 受影响的 API、智能网关、长期记忆、模型网关、Skill 准入和 Agent planning 测试已改为新路径；
+  - `python -m compileall python-ai-runtime\src\datasmart_ai_runtime` 通过；
+  - 定向测试 85 个通过；
+  - 全量 Python 测试 `python -m pytest python-ai-runtime\tests -q`：423 个通过。
+- 产品与工程意义：
+  - 这一步不新增工具副作用或业务执行能力，而是先降低 Python AI Runtime 后续扩展成本；
+  - 智能网关、长期记忆、MCP/A2A intake、模型网关、runtime event 和 Agent planning 现在有更清晰的 HTTP 层落点；
+  - 后续继续实现类 Codex/Claude Code Agent 能力时，可以把协议入口、控制面治理、服务实现和领域契约分层推进，避免再次形成一个难维护的巨型根目录。
+- 下一步推荐路线：
+  1. 不建议继续连续做多轮纯目录迁移；本批 API 层已经解决最明显的根目录平铺问题；
+  2. 下一批应回到产品能力：优先推进智能网关统一 intake、Agent tool runtime、长期记忆检索/写入闭环或模型网关缓存/路由治理；
+  3. 如果继续治理目录，建议只做一个小批次：把 `services` 根目录中的工具/技能/Agent 编排文件迁入 `services/tools`、`services/skills`、`services/agent`，且必须与具体功能一起推进。
+
 ## 2026-06-11 追加落地进展：Permission Admin + Task Management 5.60 受控工具动作审批事实复核
 
 - `permission-admin` 新增 Agent 受控工具动作审批事实能力第一阶段：

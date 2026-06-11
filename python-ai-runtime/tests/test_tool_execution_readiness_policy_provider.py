@@ -6,7 +6,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from datasmart_ai_runtime.api_plan_response import build_plan_response
+from datasmart_ai_runtime.api.agent.plan_response import build_plan_response
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ToolPlan
 from datasmart_ai_runtime.services.tools.tool_execution_readiness import (
     ToolExecutionReadinessDecision,
