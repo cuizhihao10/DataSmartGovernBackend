@@ -18,13 +18,14 @@ import java.util.List;
  * 把 `agent-payload:` 引用误塞进 `agent-tool-audit://.../plan-arguments` 执行链路。</p>
  *
  * <p>字段全部来自 task.params 或任务主表的低敏信息：commandId、payloadReference、策略版本、证据摘要、
- * tenant/project/run/tool 等。它不包含工具参数值、SQL、prompt、样本数据、模型输出、凭证或内部 endpoint。</p>
+ * tenant/project/actor/run/tool 等。它不包含工具参数值、SQL、prompt、样本数据、模型输出、凭证或内部 endpoint。</p>
  *
  * @param taskId task-management 任务 ID。
  * @param taskStatus 当前任务状态，dry-run 认领后通常是 RUNNING。
  * @param taskType 当前任务类型，必须是 AGENT_TOOL_ACTION_CONTROLLED。
  * @param tenantId 任务所属租户。
  * @param projectId 任务所属项目。
+ * @param actorId 发起或被代表的上游 actor ID；用于 permission-admin 审批事实作用域复核。
  * @param commandId agent-runtime writer 生成的 commandId。
  * @param commandType 跨服务命令类型，必须是 AGENT_TOOL_ACTION_CONTROLLED_COMMAND。
  * @param commandKind 消费侧归一化类别，必须是 TOOL_ACTION_CONTROLLED。
@@ -52,6 +53,7 @@ public record AgentToolActionControlledTaskPayload(
         String taskType,
         Long tenantId,
         Long projectId,
+        String actorId,
         String commandId,
         String commandType,
         String commandKind,

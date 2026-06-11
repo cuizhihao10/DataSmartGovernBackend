@@ -1,5 +1,31 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-11 追加落地进展：Permission Admin + Task Management 5.60 受控工具动作审批事实复核
+
+- `permission-admin` 新增 Agent 受控工具动作审批事实能力第一阶段：
+  - 新增 `POST /permissions/agent/tool-action-approvals/facts` 和 `/api/permission/agent/tool-action-approvals/facts`，用于登记低敏审批事实；
+  - 新增 `POST /permissions/agent/tool-action-approvals/evaluate` 和 `/api/permission/agent/tool-action-approvals/evaluate`，用于评估 `approvalFactId` 是否真实存在、未过期、已批准且绑定当前工具动作；
+  - 当前使用 `AgentToolActionApprovalFactStore` 端口 + `InMemoryAgentToolActionApprovalFactStore`，先固定服务端事实语义，后续可替换为 MySQL/Redis/审批流引擎；
+  - 审批事实只保存 approvalFactId、tenant/project/actor、session/run、commandId、toolCode、policyVersion、status、expiresAt、低敏 reason/evidence code。
+- `task-management` 的 `AGENT_TOOL_ACTION_CONTROLLED` dry-run 已接入 permission-admin 审批事实回查：
+  - `confirmationId` 不再只是 task.params 中的安全短文本，而会作为 `approvalFactId` 调用 permission-admin；
+  - APPROVED 且 scope 匹配后，dry-run 才继续进入 payload body/executor 等待；
+  - PENDING、UNKNOWN、MISSING_ID 或 permission-admin 暂不可用时，任务 defer 为 `DEFERRED_WAITING_APPROVAL_FACT`；
+  - REJECTED、EXPIRED、SCOPE_MISMATCH、POLICY_VERSION_MISMATCH 会 fail-closed 为 `FAILED_PRECHECK`；
+  - 新增配置 `controlled-action-approval-check-enabled`、`controlled-action-approval-check-fail-open-on-error`、`controlled-action-approval-evaluate-url`、`controlled-action-approval-timeout-ms`。
+- `agent-runtime` receipt timeline 已识别审批等待状态：
+  - receipt outcome `DEFERRED_WAITING_APPROVAL_FACT` 会映射到 stage `controlled_tool_action_waiting_approval_fact`；
+  - timeline 展示状态为 `WAITING_APPROVAL_FACT`，用于提醒前端、审计台或运维台先补审批事实，而不是误以为 payload store 或 executor 问题。
+- 安全与商业化边界：
+  - 本阶段仍不开放真实工具副作用；
+  - 审批事实评估只交换低敏 ID 和 code，不返回审批意见正文、工具实参、payload body、SQL、prompt、样本数据、模型输出、凭证、内部 endpoint 或 artifact 正文；
+  - 内存审批事实 store 不具备生产持久化、多实例共享、重启恢复、TTL 清理和审计留存，后续必须升级；
+  - 受控工具动作链路现在具备“审批事实必须服务端回查”的最小安全门，避免模型、MCP、A2A 或人工脚本伪造 approval 字符串。
+- 下一步推荐路线：
+  1. 将 approval fact store 升级为 MySQL 表，并补登记/评估审计、TTL 清理、状态流转和管理员查询；
+  2. 设计 payload store 生产实现与 executor 只读 client，补齐加密、TTL、多实例一致性和 payload body 授权读取；
+  3. 在完成 Java 控制面最小闭环后，建议切到 Python AI Runtime/智能网关/长期记忆/Agent tool runtime，避免继续只在 Java worker 内部扩展。
+
 ## 2026-06-11 追加落地进展：Agent Runtime + Task Management 5.59 受控工具动作 dry-run receipt timeline
 
 - `task-management` 的 `AGENT_TOOL_ACTION_CONTROLLED` dry-run 调度器已新增低敏 receipt 回写能力：

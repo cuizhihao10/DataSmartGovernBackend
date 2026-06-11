@@ -178,6 +178,7 @@ public class AgentToolActionControlledDryRunReceiptService {
     private String stage(String outcome) {
         return switch (outcome) {
             case "FAILED_PRECHECK" -> "controlled_tool_action_precheck_failed";
+            case "DEFERRED_WAITING_APPROVAL_FACT" -> "controlled_tool_action_waiting_approval_fact";
             case "DEFERRED_WAITING_PAYLOAD_BODY" -> "controlled_tool_action_waiting_payload_body";
             case "DEFERRED_READY_FOR_EXECUTOR" -> "controlled_tool_action_waiting_executor";
             case "CAPACITY_LIMITED" -> "controlled_tool_action_capacity_limited";
@@ -198,6 +199,7 @@ public class AgentToolActionControlledDryRunReceiptService {
     private String errorCode(String outcome) {
         return switch (outcome) {
             case "FAILED_PRECHECK" -> "AGENT_TOOL_ACTION_CONTROLLED_PRECHECK_REJECTED";
+            case "DEFERRED_WAITING_APPROVAL_FACT" -> "AGENT_TOOL_ACTION_CONTROLLED_WAITING_APPROVAL_FACT";
             case "DEFERRED_WAITING_PAYLOAD_BODY" -> "AGENT_TOOL_ACTION_CONTROLLED_WAITING_PAYLOAD_BODY";
             case "DEFERRED_READY_FOR_EXECUTOR" -> "AGENT_TOOL_ACTION_CONTROLLED_WAITING_EXECUTOR";
             case "CAPACITY_LIMITED" -> "AGENT_TOOL_ACTION_CONTROLLED_CAPACITY_LIMITED";
@@ -208,6 +210,7 @@ public class AgentToolActionControlledDryRunReceiptService {
     private String safeMessage(String message, String outcome) {
         String fallback = switch (outcome) {
             case "FAILED_PRECHECK" -> "受控工具动作 dry-run 前置复核失败，真实工具副作用已被阻断。";
+            case "DEFERRED_WAITING_APPROVAL_FACT" -> "受控工具动作 dry-run 等待 permission-admin 审批事实。";
             case "DEFERRED_WAITING_PAYLOAD_BODY" -> "受控工具动作 dry-run 已通过低敏证据复核，等待 payload body 物化。";
             case "DEFERRED_READY_FOR_EXECUTOR" -> "受控工具动作 dry-run 已通过，等待专用 executor 开放真实执行。";
             default -> "受控工具动作 dry-run receipt 已记录。";

@@ -233,6 +233,7 @@ public class AgentAsyncTaskCommandConsumerService {
                 request.getTargetEndpoint()
         ));
         params.put("workspaceId", request.getWorkspaceId());
+        params.put("actorId", request.getActorId());
         params.put("payloadReference", request.getPayloadReference());
         params.put("payloadReferenceType", AgentAsyncTaskCommandContractSupport.payloadReferenceType(commandKind));
         /*

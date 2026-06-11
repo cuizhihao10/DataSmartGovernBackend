@@ -70,6 +70,7 @@ final class AgentToolActionControlledDryRunReceiptEventDisplayBuilder {
     private static String title(String outcome, boolean preCheckPassed) {
         return switch (outcome) {
             case "FAILED_PRECHECK" -> "受控工具动作前置复核失败";
+            case "DEFERRED_WAITING_APPROVAL_FACT" -> "受控工具动作等待审批事实";
             case "DEFERRED_WAITING_PAYLOAD_BODY" -> "受控工具动作等待 payload body";
             case "DEFERRED_READY_FOR_EXECUTOR" -> "受控工具动作等待专用 executor";
             case "CAPACITY_LIMITED" -> "受控工具动作 dry-run 受容量保护限制";
@@ -100,6 +101,7 @@ final class AgentToolActionControlledDryRunReceiptEventDisplayBuilder {
     private static String status(String outcome, boolean preCheckPassed) {
         return switch (outcome) {
             case "FAILED_PRECHECK" -> "BLOCKED_BEFORE_SIDE_EFFECT";
+            case "DEFERRED_WAITING_APPROVAL_FACT" -> "WAITING_APPROVAL_FACT";
             case "DEFERRED_WAITING_PAYLOAD_BODY" -> "WAITING_PAYLOAD_BODY";
             case "DEFERRED_READY_FOR_EXECUTOR" -> "WAITING_CONTROLLED_EXECUTOR";
             case "CAPACITY_LIMITED" -> "WAITING_WORKER_CAPACITY";
@@ -121,6 +123,9 @@ final class AgentToolActionControlledDryRunReceiptEventDisplayBuilder {
         }
         if ("FAILED_PRECHECK".equals(outcome)) {
             return List.of("检查 payload store 证据、策略版本、runId 绑定和 task.params 低敏命令信封。");
+        }
+        if ("DEFERRED_WAITING_APPROVAL_FACT".equals(outcome)) {
+            return List.of("在 permission-admin 中登记或完成 approvalFactId 对应审批，并确保其绑定当前 tenant/project/actor/session/run/command/tool。");
         }
         if ("DEFERRED_WAITING_PAYLOAD_BODY".equals(outcome)) {
             return List.of("补齐 agent-runtime payload store 生产实现，并确保真实参数只由服务端 executor 按授权读取。");

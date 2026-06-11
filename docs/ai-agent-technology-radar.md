@@ -1,5 +1,25 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-11 落地补充：Approval ids must resolve to server-side facts before tool execution
+
+- 当前 Agent Host 趋势继续从“模型/协议直接执行工具”转向“宿主控制面持有可恢复状态与审批事实”：
+  - OpenAI Agents SDK HITL 文档强调工具调用可以暂停，审批决定进入 `RunState` 后再恢复执行；
+  - LangGraph Persistence 文档强调 checkpoint 支撑 human-in-the-loop、memory、time travel 和 fault-tolerant execution；
+  - MCP Authorization 规范强调 resource/audience 绑定、令牌不能透传，说明外部协议给出的凭据或 ID 不能被下游直接信任。
+- DataSmart 本阶段把该趋势落成审批事实回查：
+  - `confirmationId=approval:xxx` 只能作为线索，不能作为执行凭据；
+  - permission-admin 必须能回查到 approval fact，且事实要绑定 tenant/project/actor/session/run/command/tool/policyVersion；
+  - task-management dry-run 根据 APPROVED/PENDING/REJECTED/EXPIRED/SCOPE_MISMATCH 做 defer 或 fail-closed；
+  - agent-runtime timeline 看到的是 `WAITING_APPROVAL_FACT` 等低敏状态，不会暴露审批意见、工具参数或 payload body。
+- 产品映射：
+  - 这一步让 DataSmart 更接近 Codex/Claude Code 类 Agent Host 的工具治理模型：模型提出动作，控制面登记引用，审批事实由宿主保存，worker 执行前回查；
+  - 对企业客户来说，这比“前端传一个 approvalId 就执行”可靠得多，因为它支持过期、撤销、跨项目复用阻断和审计回放；
+  - 后续 MySQL approval fact store、审批状态流转、管理员查询和 outbox 审计会把它从内存契约推进到生产事实源。
+- 参考资料：
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - MCP 2025-11-25 Authorization: `https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization`
+
 ## 2026-06-11 落地补充：Dry-run receipts turn execution gates into replayable host facts
 
 - 本阶段继续跟随 Agent Host 领域的一个清晰趋势：工具调用的安全性不只来自“执行前拦截”，还来自“拦截结果可恢复、可回放、可审计”。

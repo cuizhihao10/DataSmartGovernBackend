@@ -131,6 +131,14 @@ datasmart:
       controlled-action-receipt-enabled: ${DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_RECEIPT_ENABLED:true}
       # receipt 回写失败时是否允许 dry-run 状态机继续推进。默认 fail-open；强审计阶段应升级为 outbox 重试或改为 false。
       controlled-action-receipt-fail-open-on-error: ${DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_RECEIPT_FAIL_OPEN_ON_ERROR:true}
+      # 是否在受控工具动作 dry-run 阶段回查 permission-admin 审批事实；开启后 confirmationId 不能只是字符串，必须是服务端事实。
+      controlled-action-approval-check-enabled: ${DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_APPROVAL_CHECK_ENABLED:true}
+      # 审批事实评估不可用时是否继续推进。生产建议保持 false，让任务 defer 等待权限中心恢复。
+      controlled-action-approval-check-fail-open-on-error: ${DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_APPROVAL_CHECK_FAIL_OPEN_ON_ERROR:false}
+      # permission-admin 受控工具动作审批事实评估地址。
+      controlled-action-approval-evaluate-url: ${DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_APPROVAL_EVALUATE_URL:http://localhost:8085/permissions/agent/tool-action-approvals/evaluate}
+      # 审批事实评估 HTTP 超时，单位毫秒。
+      controlled-action-approval-timeout-ms: ${DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_APPROVAL_TIMEOUT_MS:1500}
       # 是否在真实工具执行前调用 permission-admin 做服务账号委托授权实时复核。
       permission-check-enabled: ${DATASMART_TASK_AGENT_ASYNC_WORKER_PERMISSION_CHECK_ENABLED:true}
       # permission-admin 不可用时是否放行。生产建议保持 false，让任务 defer 等待权限中心恢复。

@@ -86,6 +86,7 @@ public class AgentToolActionControlledPayloadResolver {
                 task.getType(),
                 task.getTenantId(),
                 task.getProjectId(),
+                optionalText(params.get("actorId")),
                 requiredText(params, "commandId"),
                 requiredText(params, "commandType"),
                 requiredText(params, "commandKind"),

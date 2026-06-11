@@ -40,6 +40,7 @@ public class AgentToolActionControlledDryRunDispatcherService {
 
     private static final String OUTCOME_NO_TASK = "NO_TASK";
     private static final String OUTCOME_CAPACITY_LIMITED = "CAPACITY_LIMITED";
+    private static final String OUTCOME_DEFERRED_WAITING_APPROVAL_FACT = "DEFERRED_WAITING_APPROVAL_FACT";
     private static final String OUTCOME_DEFERRED_WAITING_PAYLOAD_BODY = "DEFERRED_WAITING_PAYLOAD_BODY";
     private static final String OUTCOME_DEFERRED_READY_FOR_EXECUTOR = "DEFERRED_READY_FOR_EXECUTOR";
     private static final String OUTCOME_FAILED_PRECHECK = "FAILED_PRECHECK";
@@ -51,6 +52,7 @@ public class AgentToolActionControlledDryRunDispatcherService {
     private final AgentAsyncToolWorkerAdmissionGuardService admissionGuardService;
     private final AgentAsyncToolWorkerMetricsService metricsService;
     private final AgentRuntimeToolActionControlledReceiptClient receiptClient;
+    private final PermissionAdminAgentToolActionApprovalClient approvalClient;
 
     /**
      * 手动执行一轮受控工具动作 dry-run。
@@ -94,7 +96,7 @@ public class AgentToolActionControlledDryRunDispatcherService {
             AgentToolActionControlledTaskPayload payload = null;
             try {
                 payload = payloadResolver.resolve(task);
-                DryRunDecision decision = decide(payload);
+                DryRunDecision decision = decide(payload, actorContext);
                 TaskExecutionCallbackContext callbackContext = callbackContext(
                         runId,
                         payload.commandId(),
@@ -108,14 +110,14 @@ public class AgentToolActionControlledDryRunDispatcherService {
                         payload,
                         runId,
                         decision.outcome(),
-                        true,
+                        decision.preCheckPassed(),
                         decision.message(),
                         null,
                         decision.actions(),
                         actorContext
                 );
                 return result(true, task.getId(), runId, payload.commandId(), payload.toolCode(),
-                        decision.outcome(), true, decision.message(), decision.diagnostics(), decision.actions(),
+                        decision.outcome(), decision.preCheckPassed(), decision.message(), decision.diagnostics(), decision.actions(),
                         receiptDelivery);
             } catch (RuntimeException exception) {
                 TaskExecutionCallbackContext callbackContext = callbackContext(
@@ -154,16 +156,18 @@ public class AgentToolActionControlledDryRunDispatcherService {
      * 如果 payload body 尚未物化，则 defer 等待 agent-runtime payload store 生产实现；
      * 如果未来 payload body 已可用，仍然 defer 等待专用 executor、审批事实和 receipt 回写接齐。</p>
      */
-    private DryRunDecision decide(AgentToolActionControlledTaskPayload payload) {
+    private DryRunDecision decide(AgentToolActionControlledTaskPayload payload, TaskActorContext actorContext) {
         Map<String, Object> diagnostics = new LinkedHashMap<>();
         diagnostics.put("taskId", payload.taskId());
         diagnostics.put("commandId", payload.commandId());
         diagnostics.put("toolCode", payload.toolCode());
         diagnostics.put("runId", payload.runId());
+        diagnostics.put("approvalFactId", payload.confirmationId());
         diagnostics.put("payloadReference", payload.payloadReference());
         diagnostics.put("payloadKey", payload.payloadKey());
         diagnostics.put("tenantId", payload.tenantId());
         diagnostics.put("projectId", payload.projectId());
+        diagnostics.put("actorId", payload.actorId());
         diagnostics.put("policyVersionCount", payload.policyVersions().size());
         diagnostics.put("delegationEvidenceCount", payload.delegationEvidence().size());
         diagnostics.put("payloadStoreEvidence", payload.hasPayloadStoreEvidence());
@@ -175,10 +179,21 @@ public class AgentToolActionControlledDryRunDispatcherService {
         if (payload.policyVersions().isEmpty()) {
             throw new IllegalStateException("缺少 policyVersions，无法把 dry-run 与控制面策略版本关联");
         }
+        ApprovalGate approvalGate = validateApprovalFact(payload, diagnostics, actorContext);
+        if (!approvalGate.approved()) {
+            return new DryRunDecision(
+                    OUTCOME_DEFERRED_WAITING_APPROVAL_FACT,
+                    approvalGate.message(),
+                    false,
+                    diagnostics,
+                    approvalGate.actions()
+            );
+        }
         if (!payload.payloadBodyAvailable()) {
             return new DryRunDecision(
                     OUTCOME_DEFERRED_WAITING_PAYLOAD_BODY,
                     "受控工具动作 dry-run 通过低敏证据复核，但 payload body 尚未物化，任务已延迟等待 payload store 生产实现。",
+                    true,
                     diagnostics,
                     List.of(
                             "下一步在 agent-runtime payload store 中物化真实参数 body，并保持参数值不进入 task.params。",
@@ -189,12 +204,87 @@ public class AgentToolActionControlledDryRunDispatcherService {
         return new DryRunDecision(
                 OUTCOME_DEFERRED_READY_FOR_EXECUTOR,
                 "受控工具动作 dry-run 通过，payload body 已声明可用，但专用 executor 尚未开放真实副作用，任务已延迟等待执行器接入。",
+                true,
                 diagnostics,
                 List.of(
                         "接入 AGENT_TOOL_ACTION_CONTROLLED 专用 executor，并在执行前回查 payload store、审批事实和幂等状态。",
                         "执行结果必须回写低敏 receipt，不能让 task-management 单方面标记真实工具成功。"
                 )
         );
+    }
+
+    /**
+     * 回查 permission-admin 中的受控工具动作审批事实。
+     *
+     * <p>这里故意不把 `confirmationId` 当成“已经批准”的证明。confirmationId 只是低敏事实 ID，
+     * 它必须能被 permission-admin 回查为 APPROVED，且绑定当前 tenant/project/actor/session/run/command/tool
+     * 与策略版本。这样可以防止模型、外部协议、人工 SQL 修复或旧消息重放通过伪造 `approval:xxx`
+     * 绕过人工审批。</p>
+     *
+     * <p>等待与失败的区别：
+     * 1. 缺少 ID、事实未找到、仍 PENDING、permission-admin 暂不可用：返回未批准但可重试，调用方 defer；
+     * 2. REJECTED、EXPIRED、SCOPE_MISMATCH、POLICY_VERSION_MISMATCH：抛异常，调用方 fail-closed；
+     * 3. 配置关闭或 fail-open：记录诊断后继续，但生产环境不建议长期使用。</p>
+     */
+    private ApprovalGate validateApprovalFact(AgentToolActionControlledTaskPayload payload,
+                                              Map<String, Object> diagnostics,
+                                              TaskActorContext actorContext) {
+        diagnostics.put("approvalCheckEnabled", properties.isControlledActionApprovalCheckEnabled());
+        if (!properties.isControlledActionApprovalCheckEnabled()) {
+            diagnostics.put("approvalCheck", "disabled_by_config");
+            return ApprovalGate.approved(List.of("当前配置关闭审批事实回查，仅适合本地联调；生产环境应开启。"));
+        }
+        AgentToolActionControlledApprovalEvaluationRequest request = new AgentToolActionControlledApprovalEvaluationRequest(
+                payload.confirmationId(),
+                payload.tenantId(),
+                payload.projectId(),
+                payload.actorId(),
+                payload.sessionId(),
+                payload.runId(),
+                payload.commandId(),
+                payload.toolCode(),
+                firstText(payload.policyVersions()),
+                actorContext == null ? null : actorContext.traceId()
+        );
+        try {
+            AgentToolActionControlledApprovalEvaluationResult result = approvalClient.evaluate(request);
+            diagnostics.put("approvalCheck", "evaluated");
+            diagnostics.put("approvalDecision", result.decision());
+            diagnostics.put("approvalApproved", Boolean.TRUE.equals(result.approved()));
+            diagnostics.put("approvalRetryable", Boolean.TRUE.equals(result.retryable()));
+            diagnostics.put("approvalPolicyVersion", result.policyVersion());
+            diagnostics.put("approvalEvidenceCount", result.evidenceCodes().size());
+            diagnostics.put("approvalIssueCount", result.issueCodes().size());
+            if (Boolean.TRUE.equals(result.approved())) {
+                return ApprovalGate.approved(List.of("permission-admin 审批事实回查通过，受控工具动作可继续执行前治理。"));
+            }
+            if (Boolean.TRUE.equals(result.retryable())) {
+                return ApprovalGate.waiting(
+                        "受控工具动作等待 permission-admin 审批事实，decision=" + result.decision()
+                                + "，reason=" + safeText(result.reason(), "等待审批事实生成或完成。"),
+                        List.of(
+                                "请在 permission-admin 中登记或完成该 approvalFactId 对应的审批事实。",
+                                "审批事实必须绑定当前 tenant/project/actor/session/run/command/tool 和策略版本。"
+                        )
+                );
+            }
+            throw new IllegalStateException("permission-admin 审批事实拒绝受控工具动作，decision="
+                    + result.decision() + "，reason=" + safeText(result.reason(), "审批事实未批准"));
+        } catch (RuntimeException exception) {
+            diagnostics.put("approvalCheck", "temporarily_unavailable_or_rejected");
+            diagnostics.put("approvalCheckError", safeMessage(exception));
+            if (properties.isControlledActionApprovalCheckFailOpenOnError()) {
+                return ApprovalGate.approved(List.of("permission-admin 审批事实评估失败但配置为 fail-open，dry-run 继续推进；生产环境应谨慎使用。"));
+            }
+            if (exception instanceof IllegalStateException
+                    && safeMessage(exception).contains("审批事实拒绝")) {
+                throw exception;
+            }
+            return ApprovalGate.waiting(
+                    "permission-admin 审批事实评估暂时不可用，任务已延迟等待权限中心恢复。",
+                    List.of("检查 permission-admin 可用性、审批事实登记状态和服务账号调用链路。")
+            );
+        }
     }
 
     private TaskExecutionClaimRequest claimRequest() {
@@ -280,11 +370,39 @@ public class AgentToolActionControlledDryRunDispatcherService {
         return trimmed.length() <= 300 ? trimmed : trimmed.substring(0, 300);
     }
 
+    private String safeText(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value.trim();
+    }
+
+    private String firstText(List<String> values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value.trim();
+            }
+        }
+        return null;
+    }
+
     private record DryRunDecision(
             String outcome,
             String message,
+            boolean preCheckPassed,
             Map<String, Object> diagnostics,
             List<String> actions
     ) {
+    }
+
+    private record ApprovalGate(boolean approved, String message, List<String> actions) {
+
+        private static ApprovalGate approved(List<String> actions) {
+            return new ApprovalGate(true, "审批事实已通过", actions);
+        }
+
+        private static ApprovalGate waiting(String message, List<String> actions) {
+            return new ApprovalGate(false, message, actions);
+        }
     }
 }

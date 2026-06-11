@@ -74,6 +74,23 @@ class AgentToolActionControlledDryRunReceiptServiceTest {
     }
 
     @Test
+    void waitingApprovalFactReceiptShouldUseDedicatedTimelineStatus() {
+        InMemoryAgentRuntimeEventProjectionStore store = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        AgentToolActionControlledDryRunReceiptService service =
+                new AgentToolActionControlledDryRunReceiptService(store);
+
+        service.receive("session-proposal", "run-proposal", "trace-receipt",
+                request(false, "DEFERRED_WAITING_APPROVAL_FACT", false));
+
+        AgentRuntimeEventProjectionRecord record = store.listByRunId("run-proposal").getFirst();
+        assertEquals("controlled_tool_action_waiting_approval_fact", record.stage());
+        assertEquals("AGENT_TOOL_ACTION_CONTROLLED_WAITING_APPROVAL_FACT", record.attributes().get("errorCode"));
+        AgentRuntimeEventDisplayView display = new AgentRuntimeEventDisplaySupport().buildDisplay(record);
+        assertEquals("WAITING_APPROVAL_FACT", display.status());
+        assertTrue(display.requiresAttention());
+    }
+
+    @Test
     void sideEffectExecutedShouldBeRejectedBecauseReceiptIsDryRunOnly() {
         AgentToolActionControlledDryRunReceiptService service =
                 new AgentToolActionControlledDryRunReceiptService(new InMemoryAgentRuntimeEventProjectionStore(10, 100));
@@ -119,6 +136,12 @@ class AgentToolActionControlledDryRunReceiptServiceTest {
     }
 
     private AgentToolActionControlledDryRunReceiptRequest request(boolean sideEffectExecuted) {
+        return request(sideEffectExecuted, "DEFERRED_WAITING_PAYLOAD_BODY", true);
+    }
+
+    private AgentToolActionControlledDryRunReceiptRequest request(boolean sideEffectExecuted,
+                                                                 String outcome,
+                                                                 boolean preCheckPassed) {
         return new AgentToolActionControlledDryRunReceiptRequest(
                 "taoc-consume-001",
                 9101L,
@@ -128,8 +151,8 @@ class AgentToolActionControlledDryRunReceiptServiceTest {
                 20L,
                 30L,
                 "RUNNING",
-                "DEFERRED_WAITING_PAYLOAD_BODY",
-                true,
+                outcome,
+                preCheckPassed,
                 sideEffectExecuted,
                 "受控工具动作 dry-run 通过低敏证据复核，但 payload body 尚未物化。",
                 null,
@@ -144,7 +167,7 @@ class AgentToolActionControlledDryRunReceiptServiceTest {
                 1,
                 5,
                 List.of("物化 payload body 后仍需接入专用 executor。"),
-                "agent-tool-action-controlled:taoc-consume-001:DEFERRED_WAITING_PAYLOAD_BODY"
+                "agent-tool-action-controlled:taoc-consume-001:" + outcome
         );
     }
 }

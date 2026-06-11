@@ -202,6 +202,42 @@ public class AgentAsyncToolWorkerProperties {
     private boolean controlledActionReceiptFailOpenOnError = true;
 
     /**
+     * 是否在 `AGENT_TOOL_ACTION_CONTROLLED` dry-run 阶段回查 permission-admin 审批事实。
+     *
+     * <p>该开关保护的是新受控工具动作链路，不影响历史 `AGENT_ASYNC_TOOL` worker。
+     * 开启后，dry-run 不再只相信 task.params 中的 `confirmationId` 字符串，而是调用 permission-admin
+     * 确认该审批事实真实存在、未过期、已批准，并且绑定当前 tenant/project/actor/session/run/command/tool。
+     * 这一步是把 HITL 从“文本线索”推进到“服务端可回放事实”的关键安全门。</p>
+     */
+    private boolean controlledActionApprovalCheckEnabled = true;
+
+    /**
+     * permission-admin 审批事实评估不可用时是否继续推进 dry-run。
+     *
+     * <p>默认 false，表示 fail-closed/defer：权限中心不可用时，受控工具动作不会继续靠近真实副作用。
+     * 只有在非常受控的本地调试环境中，才建议临时开启 fail-open；一旦开启，dry-run 诊断会记录该事实，
+     * 方便后续排查“为什么审批服务不可用仍继续推进”。</p>
+     */
+    private boolean controlledActionApprovalCheckFailOpenOnError = false;
+
+    /**
+     * permission-admin 受控工具动作审批事实评估接口地址。
+     *
+     * <p>当前使用完整 URL，方便本地直接联调。生产环境建议改为内部 gateway、服务发现、服务网格地址，
+     * 并叠加服务账号鉴权、mTLS、限流和审计。</p>
+     */
+    private String controlledActionApprovalEvaluateUrl =
+            "http://localhost:8085/permissions/agent/tool-action-approvals/evaluate";
+
+    /**
+     * 调用审批事实评估接口的超时时间，单位毫秒。
+     *
+     * <p>审批事实评估位于 dry-run 关键路径。超时后更安全的做法是 defer 当前任务等待权限中心恢复，
+     * 而不是长时间占住 worker 或直接绕过审批事实。</p>
+     */
+    private long controlledActionApprovalTimeoutMs = 1500L;
+
+    /**
      * 新工具动作 dry-run 通过但尚未具备真实执行条件时的退避秒数。
      *
      * <p>当前阶段 dry-run 的典型结果是“契约和低敏证据通过，但 payload body 或专用 executor 尚未接齐”。
