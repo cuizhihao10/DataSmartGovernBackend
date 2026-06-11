@@ -1,5 +1,32 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-11 追加落地进展：Java Agent Runtime 5.57 `agent-payload:` 服务端登记与低敏判定
+
+- `agent-runtime` 新增 `agent-payload:` payload store 第一阶段：
+  - 新增 `AgentToolActionPayloadStore` 端口，固定登记、按引用查询、过期清理三类最小能力；
+  - 新增 `InMemoryAgentToolActionPayloadStore`，用于本地开发、单元测试和早期联调，明确不是生产级持久化；
+  - 新增 `AgentToolActionPayloadRecord`，把 payloadReference、tenant/project/actor/run/tool、graph/contract、策略版本、过期时间和 metadataDigest 建模为服务端事实；
+  - 新增 `AgentToolActionPayloadVerdict`，把可进入 writer/outbox 的结论限制为低敏 verdict，不携带 payload body。
+- writer/verifier 链路升级：
+  - `AgentToolActionCommandOutboxWriterService` 在 proposal READY 后、payloadReference verifier 前登记 payload envelope；
+  - 登记内容只包含低敏元数据，不保存工具实参、SQL、prompt、样本数据、模型输出、凭证、内部 endpoint 或 artifact 正文；
+  - `AgentToolActionPayloadReferenceVerifier` 在 payload store 可用时，要求 `agent-payload:` 引用必须能回查到服务端登记记录；
+  - verifier 会校验 run、tenant、project、actor、tool、graph、contract 与访问上下文一致，不一致则阻断 outbox 写入。
+- 商业化意义：
+  - `agent-payload:` 从“结构像一个引用”推进到“确实由服务端登记且作用域匹配”；
+  - 这让模型 tool_call、MCP tools/call、A2A action 或前端确认页提交的 payloadReference 只能作为线索，不能直接成为执行凭据；
+  - outbox payload 继续保持低敏信封，只写入 acceptedEvidence、policy、proposal 和 delegation evidence，不扩散真实工具参数。
+- 当前边界：
+  - payload body 还没有物化，当前记录中的 `payloadBodyAvailable=false`；
+  - 内存 store 不具备多实例共享、JVM 重启恢复、KMS 加密、TTL 后台清理和审计留存；
+  - `AGENT_TOOL_ACTION_CONTROLLED` 还没有专用 executor，仍不能真实执行 `agent-payload:`；
+  - permission-admin 普通审批事实还没有接入 fact verifier。
+- 下一步推荐路线：
+  1. 为 `AGENT_TOOL_ACTION_CONTROLLED` 增加专用 executor dry-run/pre-check，先读取 payload verdict、审批事实、worker capacity 和幂等状态，不立刻开放真实副作用；
+  2. 把 payload store 的生产实现拆到 MySQL/Redis/对象存储或加密 vault，补齐 TTL、清理、审计留存和多实例一致性；
+  3. 接入 permission-admin 审批事实，让普通审批单也能校验存在、未过期、已授权并绑定 graph/contract；
+  4. 完成 Java 控制面这一段后，应阶段性转向 Python AI Runtime、智能网关、长期记忆和 Agent tool runtime，避免继续只在 Java writer 附近局部优化。
+
 ## 2026-06-07 追加落地进展：Task Management 5.56 受控工具动作命令入箱契约
 
 - `task-management` 已支持消费 `AGENT_TOOL_ACTION_CONTROLLED_COMMAND`：

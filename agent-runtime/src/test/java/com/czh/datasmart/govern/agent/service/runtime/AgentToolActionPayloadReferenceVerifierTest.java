@@ -31,6 +31,47 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class AgentToolActionPayloadReferenceVerifierTest {
 
     @Test
+    void agentPayloadReferenceShouldRequireServerSidePayloadRecordWhenStoreIsAvailable() {
+        AgentToolActionPayloadStoreService payloadStoreService =
+                new AgentToolActionPayloadStoreService(new InMemoryAgentToolActionPayloadStore());
+        AgentToolActionPayloadReferenceVerifier verifier =
+                new AgentToolActionPayloadReferenceVerifier(null, payloadStoreService);
+
+        AgentToolActionPayloadReferenceVerificationResult result = verifier.verify(
+                proposal("agent-payload:run-001/datasource-metadata-read"),
+                projectOwnerContext()
+        );
+
+        assertFalse(result.verifiedForWriter());
+        assertTrue(result.issueCodes().contains("AGENT_PAYLOAD_RECORD_NOT_FOUND"));
+    }
+
+    @Test
+    void agentPayloadReferenceShouldUseOnlyLowSensitivePayloadStoreVerdictAfterEnvelopeRegistered() {
+        InMemoryAgentToolActionPayloadStore payloadStore = new InMemoryAgentToolActionPayloadStore();
+        AgentToolActionPayloadStoreService payloadStoreService =
+                new AgentToolActionPayloadStoreService(payloadStore);
+        AgentToolActionCommandProposalResponse proposal =
+                proposal("agent-payload:run-001/datasource-metadata-read");
+        payloadStoreService.ensureEnvelope(proposal, null, projectOwnerContext());
+        AgentToolActionPayloadReferenceVerifier verifier =
+                new AgentToolActionPayloadReferenceVerifier(null, payloadStoreService);
+
+        AgentToolActionPayloadReferenceVerificationResult result = verifier.verify(
+                proposal,
+                projectOwnerContext()
+        );
+
+        assertTrue(result.verifiedForWriter());
+        assertTrue(result.acceptedEvidence().contains("AGENT_PAYLOAD_RECORD_FOUND"));
+        assertTrue(result.acceptedEvidence().contains("AGENT_PAYLOAD_METADATA_SCOPE_VERIFIED"));
+        assertTrue(result.acceptedEvidence().contains("PAYLOAD_BODY_NOT_MATERIALIZED"));
+        assertFalse(result.acceptedEvidence().toString().contains("payloadBody"));
+        assertFalse(result.acceptedEvidence().toString().contains("select * from sensitive_table"));
+        assertFalse(result.acceptedEvidence().toString().contains("raw prompt"));
+    }
+
+    @Test
     void agentToolAuditReferenceShouldRequireExistingAuditRecordWhenStoreIsAvailable() {
         AgentToolExecutionAuditMemoryStore auditStore = new AgentToolExecutionAuditMemoryStore();
         AgentToolActionPayloadReferenceVerifier verifier =

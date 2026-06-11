@@ -1,5 +1,26 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-11 落地补充：Payload references must become host-owned facts before execution
+
+- 当前 Agent Host 趋势继续从“模型或协议直接调用工具”转向“宿主控制面持有可恢复事实，再由受控执行器推进副作用”：
+  - OpenAI Agents SDK Human-in-the-loop 文档强调敏感工具调用可以暂停，审批决定需要保存在 run state 中并恢复执行；
+  - LangGraph persistence/durable execution 路线强调长任务、human-in-the-loop 和故障恢复需要持久化状态；
+  - MCP 2025-11-25 Authorization 规范继续强化受限工具服务器的资源绑定、token audience validation 和禁止 token passthrough。
+- DataSmart 本阶段把该趋势落成 `agent-payload:` 服务端登记：
+  - writer 不再只相信 `agent-payload:{runId}/{payloadKey}` 字符串结构；
+  - 服务端先登记 payload envelope 元数据，再由 verifier 回查登记事实；
+  - verdict 只包含 reference、作用域、metadataDigest、payloadBodyAvailable、issueCodes 和 acceptedEvidence，不携带 payload body；
+  - outbox payload 继续禁止 prompt、SQL、工具实参、样本数据、模型输出、凭证、内部 endpoint 和 artifact 正文。
+- 产品映射：
+  - payloadReference 是“指向服务端事实的句柄”，不是“执行权限”；
+  - 真正执行前仍必须由专用 executor 回查 payload store、permission-admin/confirmation fact、worker capacity、幂等状态和过期时间；
+  - 当前内存 store 只是端口和语义验证，生产版需要 MySQL/Redis/对象存储/KMS 加密与审计留存。
+- 下一步趋势落地建议：
+  1. 不要让 task-management 旧 worker 直接执行 `agent-payload:`，应新增 `AGENT_TOOL_ACTION_CONTROLLED` 专用 executor；
+  2. executor 第一阶段先做 dry-run/pre-check，把 payload verdict、审批事实、预算/容量和幂等状态回写为低敏 receipt；
+  3. MCP/A2A/模型 tool_call 的 payload 都应汇入同一套 host-owned payload store，而不是在各入口复制参数正文。
+- 参考资料：OpenAI Agents SDK Human-in-the-loop：`https://openai.github.io/openai-agents-python/human_in_the_loop/`；LangGraph Persistence：`https://docs.langchain.com/oss/python/langgraph/persistence`；MCP 2025-11-25 Authorization：`https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization`。
+
 ## 2026-06-07 落地补充：Controlled command inbox separates approval from execution
 
 - 最新 Agent Host 趋势继续强调：工具调用不应从“模型/协议请求”直接跳到“业务副作用执行”。更安全的路线是先形成可暂停、可恢复、可审批、可审计的控制面事实，再由执行器在服务端复核后推进。

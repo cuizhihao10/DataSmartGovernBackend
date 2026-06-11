@@ -71,13 +71,29 @@ class AgentToolActionCommandOutboxWriterServiceTest {
         assertTrue(record.payloadJson().contains("\"targetService\":\"agent-runtime\""));
         assertTrue(record.payloadJson().contains("\"source\":\"TOOL_ACTION_COMMAND_PROPOSAL\""));
         assertTrue(record.payloadJson().contains("\"payloadReferenceVerificationStatus\":\"VERIFIED\""));
+        assertTrue(record.payloadJson().contains("AGENT_PAYLOAD_RECORD_FOUND"));
+        assertTrue(record.payloadJson().contains("AGENT_PAYLOAD_METADATA_SCOPE_VERIFIED"));
         assertTrue(record.payloadJson().contains("\"factEvidenceVerificationStatus\":\"VERIFIED_OR_NOT_REQUIRED\""));
         assertTrue(record.payloadJson().contains("\"serverSideVerificationRequired\":true"));
+        assertFalse(record.payloadJson().contains("payloadBody"));
         assertFalse(record.payloadJson().contains("ds-sensitive-proposal"));
         assertFalse(record.payloadJson().contains("select * from"));
         assertFalse(record.payloadJson().contains("raw prompt"));
         assertFalse(record.payloadJson().contains("http://internal-service"));
         assertFalse(record.payloadJson().contains("businessGoal"));
+
+        AgentToolActionPayloadRecord payloadRecord = services.payloadStore()
+                .findByReference(record.payloadReference())
+                .orElseThrow();
+        assertEquals("run-proposal", payloadRecord.runId());
+        assertEquals("datasource-metadata-read", payloadRecord.payloadKey());
+        assertEquals("10", payloadRecord.tenantId());
+        assertEquals("20", payloadRecord.projectId());
+        assertEquals("1001", payloadRecord.actorId());
+        assertEquals("datasource.metadata.read", payloadRecord.toolName());
+        assertEquals(false, payloadRecord.payloadBodyAvailable());
+        assertEquals(0, payloadRecord.payloadSizeBytes());
+        assertTrue(payloadRecord.payloadBody().isEmpty());
     }
 
     @Test
@@ -241,17 +257,23 @@ class AgentToolActionCommandOutboxWriterServiceTest {
         AgentAsyncTaskCommandOutboxProperties outboxProperties = new AgentAsyncTaskCommandOutboxProperties();
         InMemoryAgentAsyncTaskCommandOutboxStore outboxStore =
                 new InMemoryAgentAsyncTaskCommandOutboxStore(outboxProperties);
+        InMemoryAgentToolActionPayloadStore payloadStore = new InMemoryAgentToolActionPayloadStore();
+        AgentToolActionPayloadStoreService payloadStoreService =
+                new AgentToolActionPayloadStoreService(payloadStore);
+        AgentToolActionCommandPayloadEnvelopeBuilder payloadEnvelopeBuilder =
+                new AgentToolActionCommandPayloadEnvelopeBuilder(outboxProperties, new ObjectMapper());
         AgentToolActionCommandOutboxWriterService writerService =
                 new AgentToolActionCommandOutboxWriterService(
                         outboxProperties,
                         new AgentRuntimeProperties(),
                         proposalService,
-                        new AgentToolActionPayloadReferenceVerifier(),
+                        payloadStoreService,
+                        payloadEnvelopeBuilder,
+                        new AgentToolActionPayloadReferenceVerifier(null, payloadStoreService),
                         new AgentToolActionFactEvidenceVerifier(),
-                        outboxStore,
-                        new ObjectMapper()
+                        outboxStore
                 );
-        return new TestServices(graphService, writerService, outboxStore);
+        return new TestServices(graphService, writerService, outboxStore, payloadStore);
     }
 
     private AgentToolActionExecutionGraphView graphByTool(
@@ -382,7 +404,8 @@ class AgentToolActionCommandOutboxWriterServiceTest {
     private record TestServices(
             AgentToolActionExecutionGraphPreviewService graphService,
             AgentToolActionCommandOutboxWriterService writerService,
-            InMemoryAgentAsyncTaskCommandOutboxStore outboxStore
+            InMemoryAgentAsyncTaskCommandOutboxStore outboxStore,
+            InMemoryAgentToolActionPayloadStore payloadStore
     ) {
     }
 }

@@ -22,7 +22,9 @@ import java.util.Optional;
  *
  * <p>proposal 阶段已经做了一层“不像内联 payload”的粗筛，但 writer 阶段还需要更接近服务端边界的复核：
  * 引用必须能绑定当前 run/session/tenant/project，不能是任意 URL、SQL、JSON、数组或疑似凭证片段。
- * 该组件仍然不会读取真实载荷；它只判断引用是否具备进入 outbox 的最低结构可信度。</p>
+ * 该组件仍然不会读取真实载荷；它只判断引用是否具备进入 outbox 的最低可信度。
+ * 对 `agent-payload:` 来说，5.57 之后如果 payload store 服务可用，还会回查服务端登记事实，
+ * 让 writer 不再只相信调用方传来的字符串。</p>
  *
  * <p>当前支持四类引用：</p>
  * <p>1. `agent-payload:{runId}/{payloadKey}`：新工具动作链路的受控载荷引用；</p>
@@ -51,17 +53,32 @@ public class AgentToolActionPayloadReferenceVerifier {
      * 看似合法的 audit 引用，就把不存在或越权的 payloadReference 写进 durable outbox。</p>
      *
      * <p>该字段允许为空，是为了保持单元测试和早期迁移代码可以继续使用无参构造器；在 Spring 运行时，
-     * {@link #AgentToolActionPayloadReferenceVerifier(AgentToolExecutionAuditStore)} 会注入真实仓储。</p>
+     * {@link #AgentToolActionPayloadReferenceVerifier(AgentToolExecutionAuditStore, AgentToolActionPayloadStoreService)}
+     * 会注入真实仓储。</p>
      */
     private final AgentToolExecutionAuditStore auditStore;
 
+    /**
+     * `agent-payload:` 服务端登记与判定服务。
+     *
+     * <p>该服务只返回低敏 verdict，不返回 payload body。它的存在让新工具动作链路可以从“结构合法”
+     * 进一步升级为“服务端登记存在、作用域匹配、未过期”。如果为空，则保留早期结构校验模式，方便旧测试和迁移代码。</p>
+     */
+    private final AgentToolActionPayloadStoreService payloadStoreService;
+
     public AgentToolActionPayloadReferenceVerifier() {
-        this(null);
+        this(null, null);
+    }
+
+    public AgentToolActionPayloadReferenceVerifier(AgentToolExecutionAuditStore auditStore) {
+        this(auditStore, null);
     }
 
     @Autowired
-    public AgentToolActionPayloadReferenceVerifier(AgentToolExecutionAuditStore auditStore) {
+    public AgentToolActionPayloadReferenceVerifier(AgentToolExecutionAuditStore auditStore,
+                                                   AgentToolActionPayloadStoreService payloadStoreService) {
         this.auditStore = auditStore;
+        this.payloadStoreService = payloadStoreService;
     }
 
     /**
@@ -84,7 +101,7 @@ public class AgentToolActionPayloadReferenceVerifier {
                     "payloadReference 包含 URL、SQL、JSON、换行、疑似凭证或超过长度上限，不能进入 outbox。");
         }
         if (reference.startsWith(AGENT_PAYLOAD_PREFIX)) {
-            return verifyAgentPayload(reference, proposal);
+            return verifyAgentPayload(reference, proposal, accessContext);
         }
         if (reference.startsWith(AGENT_TOOL_AUDIT_PREFIX)) {
             return verifyAgentToolAudit(reference, proposal, accessContext);
@@ -103,11 +120,13 @@ public class AgentToolActionPayloadReferenceVerifier {
      * 校验新工具动作链路的 agent-payload 引用。
      *
      * <p>该协议要求第一段就是当前 runId，这样同一租户下的不同 run 不能互相复用载荷引用。
-     * 后续真实 payload store 还要继续按 tenant/project/actor/use-case 做二次鉴权。</p>
+     * 如果 payload store 服务已注入，本方法还会要求服务端已经登记过对应 envelope，并按
+     * tenant/project/actor/tool/graph/contract 做低敏元数据复核。真实 payload body 仍不会在这里读取。</p>
      */
     private AgentToolActionPayloadReferenceVerificationResult verifyAgentPayload(
             String reference,
-            AgentToolActionCommandProposalResponse proposal) {
+            AgentToolActionCommandProposalResponse proposal,
+            AgentRuntimeEventQueryAccessContext accessContext) {
         String body = reference.substring(AGENT_PAYLOAD_PREFIX.length());
         String[] parts = body.split("/", -1);
         List<String> issues = new ArrayList<>();
@@ -123,11 +142,36 @@ public class AgentToolActionPayloadReferenceVerifier {
             return rejected(reference, "AGENT_PAYLOAD", issues,
                     "agent-payload 引用必须绑定当前 runId，并包含安全 payload key。");
         }
+        if (payloadStoreService != null) {
+            return fromPayloadStoreVerdict(payloadStoreService.verifyReference(reference, proposal, accessContext));
+        }
         return verified(reference, "AGENT_PAYLOAD", List.of(
                 "REFERENCE_PREFIX:agent-payload",
                 "RUN_ID_BOUND:" + runId,
-                "PAYLOAD_KEY_PRESENT"
+                "PAYLOAD_KEY_PRESENT",
+                "PAYLOAD_STORE_NOT_CONFIGURED_FOR_WRITER_VERIFIER"
         ));
+    }
+
+    /**
+     * 将 payload store verdict 转换成 writer 当前使用的通用复核结果。
+     *
+     * <p>这里不把 verdict 的 metadataDigest、payloadSize、参数名等扩展字段额外展开到 outbox writer DTO，
+     * 只复用 acceptedEvidence/issueCodes/reasons/actions。这样可以避免 writer payload 在每一轮治理增强时不断膨胀，
+     * 同时仍然保留足够的低敏证据说明“为什么这条引用被允许或拒绝”。</p>
+     */
+    private AgentToolActionPayloadReferenceVerificationResult fromPayloadStoreVerdict(
+            AgentToolActionPayloadVerdict verdict) {
+        return new AgentToolActionPayloadReferenceVerificationResult(
+                verdict.status(),
+                verdict.readableForWriter(),
+                verdict.payloadReference(),
+                verdict.referenceType(),
+                verdict.acceptedEvidence(),
+                verdict.issueCodes(),
+                verdict.summaryReasons(),
+                verdict.recommendedActions()
+        );
     }
 
     /**
