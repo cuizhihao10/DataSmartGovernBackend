@@ -1,5 +1,31 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-11 落地补充：Controlled dry-run executors should gate side effects before real tool execution
+
+- 本阶段重新核对的外部趋势：
+  - OpenAI Agents SDK Human-in-the-loop 文档强调，敏感工具调用可以暂停，审批决策进入 run state 后再恢复执行；
+  - LangGraph Persistence 文档强调，checkpoint 可以支撑 human-in-the-loop、会话记忆、time travel 调试和容错恢复；
+  - MCP 2025-11-25 Authorization 规范强调受保护 MCP server 的 OAuth 资源服务器角色、`resource` 参数、access token audience validation，以及禁止 token passthrough 的安全边界。
+- 对 DataSmart 的架构映射：
+  - `AGENT_TOOL_ACTION_CONTROLLED` 不应从 task 入箱直接跳到真实业务工具调用；
+  - 它应该先进入 host/control-plane 的 dry-run executor，由执行器在服务端复核 payload store 事实、审批事实、策略版本、worker 容量和幂等状态；
+  - dry-run 结果必须是低敏 receipt 或任务状态变化，而不是把工具参数、SQL、prompt、样本数据、模型输出、凭证或内部 endpoint 泄露到 task.params、timeline 或 metrics；
+  - 真实 executor 未来可以打开副作用，但必须在 dry-run 语义稳定之后再接入，并继续保留 fail-closed、defer、receipt、retry、dead-letter 和审计链路。
+- 本轮落地到代码的能力：
+  - 新增 task-management 侧 `AgentToolActionControlledPayloadResolver`，只解析低敏命令信封，不读取 payload body；
+  - 新增 `AgentToolActionControlledDryRunDispatcherService`，只认领 `AGENT_TOOL_ACTION_CONTROLLED`，拒绝复用历史 `AGENT_ASYNC_TOOL` worker；
+  - 新增内部 dry-run route，默认关闭，由配置灰度开启，防止调试接口悄悄改变生产任务台账；
+  - 缺少 payload store 服务端证据时 fail-closed，payload body 或真实 executor 未就绪时 defer，而不是伪装成功。
+- 趋势落地建议：
+  1. 下一步补低敏 worker receipt event，把 dry-run 的 claimed/deferred/failed/precheck-passed 写回 agent-runtime timeline；
+  2. 再接 permission-admin 审批事实，使 HITL 不只是字符串 ID，而是可恢复、可过期、可审计的服务端事实；
+  3. payload body 物化时保持 host-owned payload store，不允许外部协议、模型输出或任务表直接携带真实参数正文；
+  4. 智能网关/MCP/A2A/模型 tool_call 都应统一进入 intake -> readiness -> command -> dry-run -> executor receipt 链路，避免每个协议各自绕过治理。
+- 参考资料：
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - MCP 2025-11-25 Authorization: `https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization`
+
 ## 2026-06-11 落地补充：Payload references must become host-owned facts before execution
 
 - 当前 Agent Host 趋势继续从“模型或协议直接调用工具”转向“宿主控制面持有可恢复事实，再由受控执行器推进副作用”：

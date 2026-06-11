@@ -13,6 +13,8 @@ import com.czh.datasmart.govern.task.service.agent.AgentAsyncToolDispatchOnceRes
 import com.czh.datasmart.govern.task.service.agent.AgentAsyncToolDispatchOnceService;
 import com.czh.datasmart.govern.task.service.agent.AgentAsyncToolExecutionPreparationService;
 import com.czh.datasmart.govern.task.service.agent.AgentAsyncToolResolvedPayload;
+import com.czh.datasmart.govern.task.service.agent.AgentToolActionControlledDryRunDispatcherService;
+import com.czh.datasmart.govern.task.service.agent.AgentToolActionControlledDryRunResult;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -38,6 +40,7 @@ public class AgentAsyncToolWorkerController {
 
     private final AgentAsyncToolExecutionPreparationService preparationService;
     private final AgentAsyncToolDispatchOnceService dispatchOnceService;
+    private final AgentToolActionControlledDryRunDispatcherService controlledDryRunDispatcherService;
     private final TaskActorContextResolver actorContextResolver;
 
     /**
@@ -68,5 +71,22 @@ public class AgentAsyncToolWorkerController {
         TaskActorContext actorContext = actorContextResolver.resolve(request);
         AgentAsyncToolDispatchOnceResult result = dispatchOnceService.dispatchOnce(actorContext);
         return ResponseEntity.ok(ApiResponse.success("Agent 异步工具 worker 单次调度完成", result));
+    }
+
+    /**
+     * 手动触发一次受控工具动作 dry-run 调度。
+     *
+     * <p>该入口只认领 `AGENT_TOOL_ACTION_CONTROLLED` 任务，并执行低敏 pre-check：
+     * payloadReference 是否是 `agent-payload:`、服务端 payload store 证据是否存在、策略版本是否可追踪、
+     * 以及当前是否仍缺 payload body 或专用 executor。它不会调用任何业务工具，也不会把任务标记 SUCCESS。
+     * 生产环境应和 `dispatch-once` 一样限制为内部服务账号或运维控制面访问。</p>
+     */
+    @PostMapping("/tool-actions/dry-run-once")
+    public ResponseEntity<ApiResponse<AgentToolActionControlledDryRunResult>> dispatchControlledDryRunOnce(
+            HttpServletRequest request) {
+        TaskActorContext actorContext = actorContextResolver.resolve(request);
+        AgentToolActionControlledDryRunResult result =
+                controlledDryRunDispatcherService.dispatchDryRunOnce(actorContext);
+        return ResponseEntity.ok(ApiResponse.success("Agent 受控工具动作 dry-run 单次调度完成", result));
     }
 }

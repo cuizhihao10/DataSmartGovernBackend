@@ -1,5 +1,38 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-11 追加落地进展：Task Management 5.58 `AGENT_TOOL_ACTION_CONTROLLED` dry-run 调度闸门
+
+- `task-management` 新增受控工具动作专用 dry-run 链路：
+  - 新增 `AgentToolActionControlledPayloadResolver`，只解析 `AGENT_TOOL_ACTION_CONTROLLED` 任务里的低敏命令信封；
+  - 该 resolver 固定校验 `AGENT_TOOL_ACTION_CONTROLLED_COMMAND`、`commandKind=TOOL_ACTION_CONTROLLED`、`payloadReferenceType=AGENT_PAYLOAD`、`workerDispatchEnabled=false`；
+  - 继续要求 `payloadReference` 使用 `agent-payload:{runId}/{payloadKey}`，并复用消费侧契约校验 runId 绑定、targetService、targetEndpoint 禁止携带等边界；
+  - resolver 不调用 agent-runtime payload API，不读取 payload body，不还原工具实参，只保留字段名、策略版本、低敏证据、确认单 ID 等控制面摘要。
+- 新增 `AgentToolActionControlledDryRunDispatcherService`：
+  - 只认领 `AGENT_TOOL_ACTION_CONTROLLED`，不会认领历史 `AGENT_ASYNC_TOOL`；
+  - 复用现有本地 worker capacity guard，避免 dry-run 调试接口在本地实例内无限并发 claim；
+  - `AGENT_PAYLOAD_RECORD_FOUND` 与 `AGENT_PAYLOAD_METADATA_SCOPE_VERIFIED` 缺失时 fail-closed；
+  - payload body 尚未物化时把任务 defer 为 `DEFERRED_WAITING_PAYLOAD_BODY`；
+  - payload body 即使未来可用，当前阶段也只 defer 为 `DEFERRED_READY_FOR_EXECUTOR`，等待专用真实 executor、permission-admin 审批事实与 worker receipt 补齐；
+  - 返回结果明确 `sideEffectExecuted=false`，避免运营台或调试调用方误解为业务工具已执行。
+- 新增内部运维入口：
+  - `POST /internal/agent-async-tool-tasks/tool-actions/dry-run-once`；
+  - 该入口默认由 `datasmart.task-management.agent-async-worker.controlled-action-dry-run-enabled=false` 保护；
+  - 之所以默认关闭，是因为 dry-run 虽然不执行下游业务工具，但会认领任务、创建 execution_run，并把任务写成 defer/fail，属于会改变任务台账的写操作。
+- 产品意义：
+  - 这一步把 5.56 的“新命令入箱但不被旧 worker 执行”和 5.57 的“`agent-payload:` 服务端登记事实”连接成 task-management 侧可运行的执行前治理闸门；
+  - DataSmart 现在可以证明：模型 tool_call、MCP `tools/call`、A2A action 或前端确认页产生的工具动作，不会因为进入 task 队列就被立刻执行；
+  - 受控动作必须先经过任务类型隔离、payload 引用事实复核、策略版本存在性复核、本地容量保护和缺口解释，后续才允许逐步开放真实副作用。
+- 当前边界：
+  - dry-run 仍不读取 payload body，不调用 data-sync、datasource-management、data-quality 等业务服务；
+  - 尚未接入 permission-admin 普通审批事实源，`confirmationId` 仍只是低敏线索；
+  - 尚未回写低敏 worker receipt 到 agent-runtime runtime event；
+  - 当前容量保护仍是 task-management 单实例本地 guard，不是 Redis/DB 全局租户级配额。
+- 下一步推荐路线：
+  1. 补 `AGENT_TOOL_ACTION_CONTROLLED` worker receipt 低敏事件，让 timeline 能看到 claimed/deferred/failed/precheck-passed 等执行前状态；
+  2. 接入 permission-admin 审批事实源，校验审批单存在、未过期、已授权、绑定 graph/contract/tool/policy；
+  3. 设计 payload store 生产实现与只读 executor client：MySQL/Redis/对象存储/KMS、TTL、审计留存、多实例一致性；
+  4. 完成 Java 控制面闭环后，建议阶段性转向 Python AI Runtime/智能网关/长期记忆/Agent tool runtime，避免继续只在 Java worker 局部无限细化。
+
 ## 2026-06-11 追加落地进展：Java Agent Runtime 5.57 `agent-payload:` 服务端登记与低敏判定
 
 - `agent-runtime` 新增 `agent-payload:` payload store 第一阶段：

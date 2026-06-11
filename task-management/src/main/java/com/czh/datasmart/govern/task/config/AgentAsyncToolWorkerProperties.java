@@ -170,6 +170,25 @@ public class AgentAsyncToolWorkerProperties {
     private int preCheckUnavailableDeferSeconds = 30;
 
     /**
+     * 是否启用新工具动作控制面任务的 dry-run 调度入口。
+     *
+     * <p>该开关只影响 `AGENT_TOOL_ACTION_CONTROLLED` 任务，不影响历史 `AGENT_ASYNC_TOOL` worker。
+     * 之所以默认关闭，是因为 dry-run 虽然不会调用真实业务工具，但仍会认领任务、创建 execution_run、
+     * 并把任务 defer/fail 回队列；这些都是会改变任务台账的写操作。生产环境应先确认 agent-runtime
+     * payload store、task-management Inbox 和运营台都能解释这些状态，再逐步打开。</p>
+     */
+    private boolean controlledActionDryRunEnabled = false;
+
+    /**
+     * 新工具动作 dry-run 通过但尚未具备真实执行条件时的退避秒数。
+     *
+     * <p>当前阶段 dry-run 的典型结果是“契约和低敏证据通过，但 payload body 或专用 executor 尚未接齐”。
+     * 此时不应该把任务标记 SUCCESS，也不应该无限快速重试；把任务 defer 一段时间能让队列保持可观测，
+     * 同时避免 worker 对同一条尚不可执行的控制面任务进行过密轮询。</p>
+     */
+    private int controlledActionDryRunDeferSeconds = 300;
+
+    /**
      * 是否在 worker 执行前调用 permission-admin 做实时授权复核。
      *
      * <p>confirmation 回查证明“这个任务来自被确认的 DAG 节点”，但它不能证明“执行时权限仍然有效”。
