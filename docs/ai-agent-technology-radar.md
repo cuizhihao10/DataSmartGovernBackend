@@ -1,5 +1,31 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-14 落地补充：Pre-execution graph runners are the bridge between preview and durable execution
+
+- 本阶段继续对齐 Agent runtime 趋势：
+  - LangGraph 官方把 durable execution、interrupt、persistence 放在运行时核心能力里，说明可恢复 Agent 不能只依赖一次同步响应；
+  - OpenAI Agents SDK HITL 使用工具审批中断和 `RunState` 恢复，说明高风险工具调用应先停在可恢复状态；
+  - MCP tool annotations 仍然只是风险提示，不能替代宿主平台的执行授权和审计事实。
+- 对 DataSmart 的架构映射：
+  - `ToolActionControlFlowService` 是静态控制流视图；
+  - `ToolActionCommandProposalTemplates` 是进入 Java proposal 的低敏模板；
+  - `JavaToolActionCommandProposalClient` 是 Python -> Java proposal 的受控桥；
+  - 新增 `ToolActionExecutionGraphRunner` 是第一层执行前图节点，把 READY、审批、澄清、预算、草案、阻断等分支变成可恢复状态。
+- 本轮落地到代码的能力：
+  - `/agent/tool-actions/control-flow-preview` 新增 `toolActionExecutionGraphRun`；
+  - READY 分支可以在证据完整且 client 启用时提交 Java proposal；
+  - 默认 client 禁用，因此本地 preview 不会联网、不写 outbox、不执行工具；
+  - 全量 Python 测试 436 个通过。
+- 后续趋势落地建议：
+  1. 下一步应补 checkpoint store，让 runner 的状态不只存在于一次 HTTP 响应；
+  2. approval/clarification 应升级为服务端事实查询和 resume，而不是只靠调用方补字符串；
+  3. 真正工具执行仍应由 Java outbox writer、task-management worker 和 receipt projection 承接，Python API 不应直接调用业务微服务。
+- 参考资料：
+  - LangGraph overview: `https://docs.langchain.com/oss/python/langgraph/overview`
+  - LangGraph Interrupts: `https://docs.langchain.com/oss/python/langgraph/interrupts`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Tool Annotations as Risk Vocabulary: `https://blog.modelcontextprotocol.io/posts/2026-03-16-tool-annotations/`
+
 ## 2026-06-14 落地补充：Command proposal client keeps tool execution authority in the host control plane
 
 - 本阶段继续沿用 5.63 的趋势判断：MCP tool annotations 可以描述 read-only、destructive、idempotent、open-world 等风险提示，但不能替代宿主平台自己的执行授权；OpenAI Agents SDK HITL 和 LangGraph interrupt 都把敏感工具调用设计成“暂停、持久化/保留状态、等待外部审批或输入后恢复”。

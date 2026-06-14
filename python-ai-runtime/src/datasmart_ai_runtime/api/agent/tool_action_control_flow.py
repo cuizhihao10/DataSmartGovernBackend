@@ -19,7 +19,12 @@ from typing import Any
 from datasmart_ai_runtime.config import default_tool_registry
 from datasmart_ai_runtime.domain.contracts import ModelToolCall, ToolDefinition
 from datasmart_ai_runtime.services.agent_gateway.a2a_task_mapping_support import count_forbidden_fields
-from datasmart_ai_runtime.services.tools import ToolActionControlFlowService, ToolActionIntakeSource
+from datasmart_ai_runtime.services.tools import (
+    ToolActionControlFlowService,
+    ToolActionExecutionGraphRunner,
+    ToolActionIntakeSource,
+    evidence_selection_from_payload,
+)
 
 
 def build_tool_action_control_flow_preview_response(
@@ -27,6 +32,7 @@ def build_tool_action_control_flow_preview_response(
     *,
     registered_tools: tuple[ToolDefinition, ...] | None = None,
     control_flow_service: ToolActionControlFlowService | None = None,
+    execution_graph_runner: ToolActionExecutionGraphRunner | None = None,
 ) -> dict[str, Any]:
     """构建统一工具动作控制流预览响应。
 
@@ -64,7 +70,7 @@ def build_tool_action_control_flow_preview_response(
             visible_tools=visible_tools,
         )
 
-    return report.to_low_sensitive_response(
+    response = report.to_low_sensitive_response(
         route={
             "method": "POST",
             "path": "/agent/tool-actions/control-flow-preview",
@@ -73,6 +79,17 @@ def build_tool_action_control_flow_preview_response(
         input_payload_policy=_input_payload_policy(payload, source),
         command_context=_command_context_from_payload(payload),
     )
+    # 统一控制流到这里仍然只是“静态预览”。为了向可恢复 Agent Host 再推进一步，本接口额外附带
+    # `toolActionExecutionGraphRun`：它会读取 proposal 模板并运行最小执行前图 runner。
+    # 默认 runner 内部的 Java proposal client 是 disabled，不会产生网络调用；当后续启动层注入启用后的
+    # runner 时，READY 分支才会提交 Java proposal。这样 API 契约先稳定，真实副作用仍由配置和控制面把关。
+    runner = execution_graph_runner or ToolActionExecutionGraphRunner()
+    response["toolActionExecutionGraphRun"] = runner.run(
+        response,
+        evidence_selection=evidence_selection_from_payload(payload),
+        trace_id=_text((payload or {}).get("traceId")) if isinstance(payload, Mapping) else None,
+    ).to_summary()
+    return response
 
 
 def _source_from_payload(payload: Mapping[str, Any] | None) -> ToolActionIntakeSource:

@@ -1,5 +1,37 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-14 追加落地进展：Python AI Runtime 5.65 工具动作执行前图 Runner
+
+- `python-ai-runtime` 新增 `tool_action_execution_graph_runner.py`，把统一控制流、proposal 模板和 Java proposal client 串成最小执行前图：
+  - READY/QUEUED 且 `outboxPreflightCandidate=true` 的模板会进入 proposal client；
+  - 缺少 graphId、payloadReference、policyVersion 等证据时停在 `WAITING_COMMAND_PROPOSAL_EVIDENCE`；
+  - 证据齐全但默认 client 禁用时停在 `COMMAND_PROPOSAL_CLIENT_DISABLED`；
+  - Java proposal 返回可写 outbox 预检时停在 `WAITING_OUTBOX_CONFIRMATION`；
+  - draft、approval、clarification、throttled、blocked 分支不会调用 Java proposal。
+- `/agent/tool-actions/control-flow-preview` 响应新增 `toolActionExecutionGraphRun`：
+  - 默认 runner 内部 Java proposal client 仍为 disabled，不会产生真实 HTTP 调用；
+  - 该字段只描述执行前节点推进情况，不代表工具已执行、outbox 已写入、worker 已派发或审批已创建；
+  - 支持从请求中读取低敏 `commandProposalEvidence`、`commandProposalEvidenceByTemplateId`、`commandProposalEvidenceByToolName`，为后续二阶段恢复/提交提供入口。
+- 低敏与安全边界：
+  - runner 输入只读取控制流响应中的 proposal template，不读取原始 arguments、prompt、SQL、样本数据、模型输出、凭证或内部 endpoint；
+  - proposal client 继续负责 payloadReference 安全判断和 Java 响应白名单裁剪；
+  - Java proposal client 异常会被收敛为低敏 `JAVA_COMMAND_PROPOSAL_CLIENT_ERROR`，不透传远端异常正文。
+- 测试：
+  - 新增 `test_tool_action_execution_graph_runner.py` 覆盖缺证据等待、证据齐全但 client 禁用、启用态 Java proposal 提交、草案分支不调用 Java；
+  - 扩展 `test_tool_action_control_flow.py`，固定统一响应中的 graph runner 字段；
+  - 定向测试 13 个通过；
+  - 全量 Python 测试 `python -m pytest python-ai-runtime\tests -q`：436 个通过；
+  - 行数检查：runner 355 行、API helper 311 行、runner 测试 212 行，均低于 500 行。
+- 产品意义：
+  - 5.62 形成统一控制流，5.63 生成 proposal 模板，5.64 补齐 Java proposal client，5.65 开始形成“可恢复执行图节点”的最小雏形；
+  - 这一步仍不是真实工具执行，但已经把 READY 分支从静态字段推进到可被 runner 消费的节点；
+  - 后续可以在此基础上接入 checkpoint store、permission-admin 审批事实、Java outbox writer 和 worker receipt projection。
+- 下一步推荐路线：
+  1. 为 runner 增加低敏 checkpoint store 接口，先支持 memory，再预留 Redis/MySQL；
+  2. 将 WAITING_APPROVAL/WAITING_CLARIFICATION 分支接 permission-admin 和澄清事实查询；
+  3. 为 `WAITING_OUTBOX_CONFIRMATION` 接 Java outbox writer，但仍需要 operator/graph confirmation 和幂等策略；
+  4. 暂不建议直接把业务工具适配器挂进 Python API handler，避免破坏 Java 控制面事实源。
+
 ## 2026-06-14 追加落地进展：Python AI Runtime 5.64 工具动作 Command Proposal Java 客户端
 
 - `python-ai-runtime` 新增 `tool_action_command_proposal_client.py`，把 5.63 的低敏 proposal 模板推进为可测试的 Java 控制面客户端：

@@ -133,6 +133,9 @@ class ToolActionControlFlowServiceTest(unittest.TestCase):
         template = templates["templates"][0]
         self.assertTrue(template["outboxPreflightCandidate"])
         self.assertEqual("CALL_JAVA_COMMAND_PROPOSAL_AFTER_GRAPH_AND_PAYLOAD_REFERENCE_READY", template["nextAction"])
+        graph_run = response["toolActionExecutionGraphRun"]
+        self.assertEqual("PRE_EXECUTION_GRAPH_RUNNER_ONLY", graph_run["executionBoundary"])
+        self.assertEqual("WAITING_COMMAND_PROPOSAL_EVIDENCE", graph_run["steps"][0]["stepStatus"])
         self.assertIn("GRAPH_ID_OR_CONTRACT_ID_REQUIRED", template["missingBeforeJavaProposal"])
         self.assertIn("PAYLOAD_REFERENCE_REQUIRED", template["missingBeforeJavaProposal"])
         self.assertNotIn("POLICY_VERSION_REQUIRED", template["missingBeforeJavaProposal"])
@@ -179,6 +182,7 @@ class ToolActionControlFlowServiceTest(unittest.TestCase):
         self.assertIn("REQUEST_PERMISSION_PRECHECK", response["controlPlaneDecision"]["suggestedActions"])
         self.assertEqual(0, response["toolActionCommandProposalTemplates"]["totalTemplateCount"])
         self.assertEqual(0, response["toolActionCommandProposalTemplates"]["outboxPreflightCandidateCount"])
+        self.assertEqual(0, response["toolActionExecutionGraphRun"]["stepCount"])
         self.assertNotIn("A2A 用户原文", serialized)
         self.assertNotIn("ds-a2a-secret", serialized)
         self.assertNotIn("internal-a2a", serialized)
