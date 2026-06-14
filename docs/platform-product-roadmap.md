@@ -1,5 +1,33 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-14 追加落地进展：Python AI Runtime 5.63 工具动作 Command Proposal 模板
+
+- `python-ai-runtime` 新增 `tool_action_command_proposal_template.py`，把 readiness 的低敏结果转换成 Java `agent-runtime` command proposal 请求模板：
+  - 模板目标路由对齐 Java 现有 `POST /agent-runtime/tool-action-commands/proposals` 和 `/api/agent/tool-action-commands/proposals`；
+  - 输出 `commandSchemaVersion=agent-tool-action-command.v1`、`workerReceiptMode=REQUIRED`、`COMMAND_TYPE:AGENT_TOOL_ACTION_CONTROLLED_COMMAND` 等低敏证据提示；
+  - 对 READY/QUEUED 分支标记 `outboxPreflightCandidate=true`，但仍要求 graphId/contractId、payloadReference、policyVersion 等证据由 Java 图投影和服务端事实补齐；
+  - 对 draft、approval、clarification、blocked、throttled 分支输出不同 nextAction，避免把非 READY 状态误送 outbox。
+- 统一控制流响应新增 `toolActionCommandProposalTemplates`：
+  - 该字段不是 outbox 写入结果，也不是真实 command；
+  - 它只告诉智能网关、前端确认页或未来 graph runner “下一步应如何调用 Java proposal 预校验”；
+  - 模板不包含 arguments、prompt、SQL、样本数据、模型输出、凭证、内部 endpoint 或 artifact 正文。
+- API 层新增低敏 command context 抽取：
+  - 从顶层或 `context` 中读取 tenantId、projectId、actorId、requestId、runId、sessionId、policyVersion、clientRequestId、afterSequence、limit；
+  - 非法 `limit/afterSequence` 会被安全兜底；
+  - 不读取工具参数值或原始 payload。
+- 测试：
+  - 扩展 `test_tool_action_control_flow.py`，验证 READY 工具会生成 Java proposal 模板，draft/A2A 不会被标记为 outbox-ready；
+  - 定向测试 15 个通过；
+  - 全量 Python 测试 `python -m pytest python-ai-runtime\tests -q`：427 个通过。
+- 产品意义：
+  - 5.62 已经把工具动作统一到执行前控制流，5.63 进一步把 READY 分支连接到 Java 现有 command proposal/outbox 体系；
+  - 这不是开放工具执行，而是把“下一步如何安全进入 Java 预校验”做成稳定低敏契约；
+  - 后续可以在不重写 Python intake/readiness 的前提下，让智能网关或 execution graph runner 调用 Java proposal，再由 Java writer 决定是否写 outbox。
+- 下一步推荐路线：
+  1. 设计或接入 Python -> Java command proposal client，让 graph runner 能实际调用 proposal 接口并处理返回状态；
+  2. 为 `WAITING_APPROVAL` 分支接 permission-admin 审批事实查询，避免只返回模板而不触达真实审批状态；
+  3. 开始构建最小 durable execution graph runner，把 `tool_action_gate -> command_proposal -> outbox_writer` 串成可恢复控制流。
+
 ## 2026-06-11 追加落地进展：Python AI Runtime 5.62 工具动作统一控制流预览
 
 - `python-ai-runtime` 新增 `ToolActionControlFlowService`，把模型 `tool_call`、MCP `tools/call`、A2A `task/action` 三类入口统一成执行前控制流快照：

@@ -44,6 +44,13 @@ from datasmart_ai_runtime.services.tools.tool_action_control_flow import (
     ToolActionControlFlowReport,
     ToolActionControlFlowService,
 )
+from datasmart_ai_runtime.services.tools.tool_action_command_proposal_template import (
+    COMMAND_SCHEMA_VERSION,
+    JAVA_PROPOSAL_API_ROUTE,
+    JAVA_PROPOSAL_ROUTE,
+    WORKER_RECEIPT_MODE,
+    build_tool_action_command_proposal_templates,
+)
 
 __all__ = (
     "ToolActionIntakeBoundary",
@@ -55,6 +62,11 @@ __all__ = (
     "build_tool_action_intake_runtime_event",
     "ToolActionControlFlowReport",
     "ToolActionControlFlowService",
+    "COMMAND_SCHEMA_VERSION",
+    "JAVA_PROPOSAL_API_ROUTE",
+    "JAVA_PROPOSAL_ROUTE",
+    "WORKER_RECEIPT_MODE",
+    "build_tool_action_command_proposal_templates",
     "ToolExecutionReadinessDecision",
     "ToolExecutionReadinessItem",
     "ToolExecutionReadinessPolicy",

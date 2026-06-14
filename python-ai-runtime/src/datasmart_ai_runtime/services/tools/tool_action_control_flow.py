@@ -27,6 +27,9 @@ from datasmart_ai_runtime.services.tools.tool_action_intake import (
     ToolActionIntakeService,
     ToolActionIntakeSource,
 )
+from datasmart_ai_runtime.services.tools.tool_action_command_proposal_template import (
+    build_tool_action_command_proposal_templates,
+)
 from datasmart_ai_runtime.services.tools.tool_execution_readiness import (
     ToolExecutionReadinessPolicy,
     ToolExecutionReadinessReport,
@@ -65,12 +68,17 @@ class ToolActionControlFlowReport:
         schema_version: str = "datasmart.python-ai-runtime.tool-action-control-flow-preview.v1",
         route: Mapping[str, Any] | None = None,
         input_payload_policy: Mapping[str, Any] | None = None,
+        command_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """转换成 HTTP、runtime event 或本地诊断都能复用的低敏响应。
 
         这里故意由白名单逐项组装字段，而不是直接把 dataclass 或内部对象序列化出去。这样即使后续
         intake/readiness 内部为了执行器接入新增了参数值、payload 引用或调试上下文，也不会意外泄漏到
         公开响应、WebSocket timeline 或 Java projection 中。
+
+        `command_context` 是面向 Java command proposal 的低敏上下文字段，例如 tenantId、projectId、
+        requestId、runId、sessionId、policyVersion。它不能包含工具参数值或原始 payload；本方法只把它用于
+        生成“如何调用 Java proposal 接口”的请求模板，不会写 outbox。
         """
 
         intake_summary = self.intake.to_low_sensitive_summary()
@@ -88,6 +96,12 @@ class ToolActionControlFlowReport:
             "toolExecutionReadiness": readiness_summary,
             "toolExecutionReadinessGraph": dict(self.readiness_graph),
             "controlPlaneDecision": dict(self.control_plane_decision or {}),
+            "toolActionCommandProposalTemplates": build_tool_action_command_proposal_templates(
+                source=self.source,
+                protocol_family=self.protocol_family,
+                readiness_summary=readiness_summary,
+                command_context=command_context,
+            ),
             "productionReadiness": _production_readiness(self.source, intake_summary, readiness_summary),
             "nextSteps": _next_steps(self.source, intake_summary, readiness_summary, self.control_plane_decision),
         }

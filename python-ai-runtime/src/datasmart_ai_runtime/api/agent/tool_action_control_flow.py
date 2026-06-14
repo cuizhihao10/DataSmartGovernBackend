@@ -71,6 +71,7 @@ def build_tool_action_control_flow_preview_response(
             "intent": "统一预览模型 tool_call、MCP tools/call 与 A2A task/action 的执行前控制流。",
         },
         input_payload_policy=_input_payload_policy(payload, source),
+        command_context=_command_context_from_payload(payload),
     )
 
 
@@ -222,3 +223,72 @@ def _input_payload_policy(payload: Mapping[str, Any] | None, source: ToolActionI
         "sensitiveFieldHandling": "COUNT_AND_DROP_WITHOUT_FIELD_NAMES_OR_VALUES",
         "sensitiveFieldIgnoredCount": count_forbidden_fields(payload or {}),
     }
+
+
+def _command_context_from_payload(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+    """从请求中提取 Java command proposal 模板可使用的低敏控制面上下文。
+
+    该函数只读取路由、租户、项目、操作者、run/session、policyVersion 等控制面字段，不读取 `arguments`、
+    prompt、SQL、样本数据、模型输出或内部 endpoint。这样模板可以告诉调用方如何进入 Java proposal 接口，
+    但不会把工具真实载荷扩散到 Python 响应中。
+    """
+
+    if not isinstance(payload, Mapping):
+        return {}
+    context = payload.get("context")
+    merged: dict[str, Any] = dict(context) if isinstance(context, Mapping) else {}
+    for key in (
+        "tenantId",
+        "projectId",
+        "actorId",
+        "requestId",
+        "runId",
+        "sessionId",
+        "afterSequence",
+        "limit",
+        "policyVersion",
+        "clientRequestId",
+    ):
+        if key in payload and key not in merged:
+            merged[key] = payload[key]
+    return {
+        "tenantId": _text(merged.get("tenantId")),
+        "projectId": _text(merged.get("projectId")),
+        "actorId": _text(merged.get("actorId")),
+        "requestId": _text(merged.get("requestId")),
+        "runId": _text(merged.get("runId")),
+        "sessionId": _text(merged.get("sessionId")),
+        "afterSequence": _non_negative_int_or_none(merged.get("afterSequence")),
+        "limit": _positive_int(merged.get("limit"), default=100),
+        "policyVersion": _text(merged.get("policyVersion")),
+        "clientRequestId": _text(merged.get("clientRequestId")),
+    }
+
+
+def _positive_int(value: Any, *, default: int) -> int:
+    """把外部输入安全转成正整数，非法时回退默认值。"""
+
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _non_negative_int_or_none(value: Any) -> int | None:
+    """把外部输入安全转成非负整数，非法时返回 None。"""
+
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _text(value: Any) -> str | None:
+    """规范化控制面上下文字段。"""
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None

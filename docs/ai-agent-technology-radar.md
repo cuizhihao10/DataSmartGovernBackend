@@ -1,5 +1,31 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-14 落地补充：Tool annotations and HITL need host-owned command proposal contracts
+
+- 本阶段继续核对 Agent 工具调用生态：
+  - MCP 官方博客强调 tool annotations 是风险词汇与提示，例如 read-only、destructive、idempotent、open-world，但这些提示不能替代 Host 自身的执行治理；
+  - OpenAI Agents SDK Human-in-the-loop 文档强调敏感工具调用要暂停，等待审批后从 `RunState` 恢复；
+  - LangGraph interrupt/persistence 文档强调执行图可以在关键节点暂停、持久化并等待外部输入后恢复。
+- 对 DataSmart 的架构映射：
+  - `readOnlyHint/destructiveHint` 或 DataSmart 自己的 riskLevel 只能帮助生成提示，不能直接授予执行权；
+  - 模型、MCP Host 或 A2A 协议都不应该自行决定“READY 就执行”；
+  - READY 分支应该先生成 Java command proposal 模板，再由 Java `agent-runtime` 通过 graphId/contractId、payloadReference、policyVersion、approvalFact、workerReceiptMode 做服务端复核；
+  - Python Runtime 不保存、不回显工具实参，只输出低敏模板，让控制面事实仍归 Java 所有。
+- 本轮落地到代码的能力：
+  - 新增 `tool_action_command_proposal_template.py`；
+  - `ToolActionControlFlowReport` 新增 `toolActionCommandProposalTemplates`；
+  - `/agent/tool-actions/control-flow-preview` 可返回 Java proposal 请求模板；
+  - 全量 Python 测试 427 个通过。
+- 后续趋势落地建议：
+  1. 把 proposal 模板接到真实 Java proposal client，形成可恢复 graph runner 的下一跳；
+  2. 继续让审批事实、payload store、outbox writer 和 worker receipt 保持 Java 服务端事实源；
+  3. 后续 MCP Server 真正开放时，也只应把 tools/call 转换为 proposal/outbox，而不是让协议层直接执行业务服务。
+- 参考资料：
+  - MCP Tool Annotations as Risk Vocabulary: `https://blog.modelcontextprotocol.io/posts/2026-03-16-tool-annotations/`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - LangGraph Interrupts: `https://docs.langchain.com/oss/python/langgraph/interrupts`
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+
 ## 2026-06-11 落地补充：Tool calls should enter a unified pre-execution control flow
 
 - 本阶段重新核对当前 Agent 工具调用生态：

@@ -83,6 +83,10 @@ class ToolActionControlFlowServiceTest(unittest.TestCase):
         self.assertEqual(1, response["toolExecutionReadiness"]["draftOnlyCount"])
         self.assertEqual("PRE_EXECUTION_CONDITION_GRAPH_ONLY", response["toolExecutionReadinessGraph"]["executionBoundary"])
         self.assertFalse(response["executionContract"]["toolExecuted"])
+        templates = response["toolActionCommandProposalTemplates"]
+        self.assertEqual(1, templates["totalTemplateCount"])
+        self.assertEqual(0, templates["outboxPreflightCandidateCount"])
+        self.assertEqual("SHOW_DRAFT_AND_WAIT_FOR_REVIEW", templates["templates"][0]["nextAction"])
         self.assertNotIn("ds-model-secret", serialized)
         self.assertNotIn("客户手机号唯一性", serialized)
 
@@ -100,6 +104,16 @@ class ToolActionControlFlowServiceTest(unittest.TestCase):
                     "arguments": {"datasourceId": "ds-mcp-secret"},
                 },
                 "visibleToolNames": ["datasource.metadata.read"],
+                "context": {
+                    "tenantId": "tenant-control-flow",
+                    "projectId": "project-control-flow",
+                    "actorId": "actor-control-flow",
+                    "requestId": "request-control-flow",
+                    "runId": "run-control-flow",
+                    "sessionId": "session-control-flow",
+                    "policyVersion": "tool-readiness-policy.v1",
+                    "clientRequestId": "client-control-flow",
+                },
                 "prompt": "MCP 原始 prompt 不能进入响应",
                 "sql": "select * from hidden_table",
                 "targetEndpoint": "http://internal-mcp.local/tools",
@@ -113,6 +127,19 @@ class ToolActionControlFlowServiceTest(unittest.TestCase):
         self.assertEqual(1, response["toolExecutionReadiness"]["executableCount"])
         self.assertIn("READY_TO_EXECUTE", response["toolExecutionReadinessGraph"]["branchCounts"])
         self.assertIn("MCP_JSON_RPC_SERVER_AND_SESSION_LIFECYCLE", response["productionReadiness"]["missingProductionRequirements"])
+        templates = response["toolActionCommandProposalTemplates"]
+        self.assertEqual(1, templates["totalTemplateCount"])
+        self.assertEqual(1, templates["outboxPreflightCandidateCount"])
+        template = templates["templates"][0]
+        self.assertTrue(template["outboxPreflightCandidate"])
+        self.assertEqual("CALL_JAVA_COMMAND_PROPOSAL_AFTER_GRAPH_AND_PAYLOAD_REFERENCE_READY", template["nextAction"])
+        self.assertIn("GRAPH_ID_OR_CONTRACT_ID_REQUIRED", template["missingBeforeJavaProposal"])
+        self.assertIn("PAYLOAD_REFERENCE_REQUIRED", template["missingBeforeJavaProposal"])
+        self.assertNotIn("POLICY_VERSION_REQUIRED", template["missingBeforeJavaProposal"])
+        self.assertEqual("tenant-control-flow", template["requestBodyTemplate"]["tenantId"])
+        self.assertEqual("run-control-flow", template["requestBodyTemplate"]["runId"])
+        self.assertEqual("tool-readiness-policy.v1", template["requestBodyTemplate"]["policyVersion"])
+        self.assertIsNone(template["requestBodyTemplate"]["payloadReference"])
         self.assertNotIn("ds-mcp-secret", serialized)
         self.assertNotIn("MCP 原始 prompt", serialized)
         self.assertNotIn("hidden_table", serialized)
@@ -150,6 +177,8 @@ class ToolActionControlFlowServiceTest(unittest.TestCase):
         self.assertEqual("A2A_TASK_CONTROL_PLANE_DECISION", response["controlPlaneDecision"]["boundary"])
         self.assertEqual("PRECHECK_REQUIRED", response["controlPlaneDecision"]["mode"])
         self.assertIn("REQUEST_PERMISSION_PRECHECK", response["controlPlaneDecision"]["suggestedActions"])
+        self.assertEqual(0, response["toolActionCommandProposalTemplates"]["totalTemplateCount"])
+        self.assertEqual(0, response["toolActionCommandProposalTemplates"]["outboxPreflightCandidateCount"])
         self.assertNotIn("A2A 用户原文", serialized)
         self.assertNotIn("ds-a2a-secret", serialized)
         self.assertNotIn("internal-a2a", serialized)
@@ -195,6 +224,7 @@ class ToolActionControlFlowServiceTest(unittest.TestCase):
         self.assertEqual("MODEL_TOOL_CALL", response["source"])
         self.assertEqual(1, response["toolExecutionReadiness"]["executableCount"])
         self.assertFalse(response["toolExecutionEnabled"])
+        self.assertEqual(1, response["toolActionCommandProposalTemplates"]["outboxPreflightCandidateCount"])
         self.assertNotIn("ds-route-control-flow-secret", str(response))
 
 
