@@ -51,6 +51,13 @@ from datasmart_ai_runtime.services.tools.tool_action_command_proposal_template i
     WORKER_RECEIPT_MODE,
     build_tool_action_command_proposal_templates,
 )
+from datasmart_ai_runtime.services.tools.tool_action_command_proposal_client import (
+    JavaToolActionCommandProposalClient,
+    ToolActionCommandProposalClientError,
+    ToolActionCommandProposalClientResult,
+    ToolActionCommandProposalClientSettings,
+    ToolActionCommandProposalEvidence,
+)
 
 __all__ = (
     "ToolActionIntakeBoundary",
@@ -67,6 +74,11 @@ __all__ = (
     "JAVA_PROPOSAL_ROUTE",
     "WORKER_RECEIPT_MODE",
     "build_tool_action_command_proposal_templates",
+    "JavaToolActionCommandProposalClient",
+    "ToolActionCommandProposalClientError",
+    "ToolActionCommandProposalClientResult",
+    "ToolActionCommandProposalClientSettings",
+    "ToolActionCommandProposalEvidence",
     "ToolExecutionReadinessDecision",
     "ToolExecutionReadinessItem",
     "ToolExecutionReadinessPolicy",

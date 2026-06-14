@@ -1,5 +1,36 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-14 追加落地进展：Python AI Runtime 5.64 工具动作 Command Proposal Java 客户端
+
+- `python-ai-runtime` 新增 `tool_action_command_proposal_client.py`，把 5.63 的低敏 proposal 模板推进为可测试的 Java 控制面客户端：
+  - 默认 `enabled=false`，本地学习和 preview 场景只生成请求摘要，不产生 HTTP 副作用；
+  - 默认 Java agent-runtime 地址对齐当前配置 `http://localhost:8091`；
+  - 目标路由复用 `POST /agent-runtime/tool-action-commands/proposals`；
+  - 通过 `ToolActionCommandProposalEvidence` 显式补齐 graphId/contractId、payloadReference、policyVersion、approval/clarification fact 等可信证据。
+- 新增 `tool_action_command_proposal_contract.py`，把 Java DTO 字段白名单、payloadReference 安全判断和 Java 响应低敏裁剪从客户端主体拆出，保持主客户端职责聚焦、文件行数可控。
+- 客户端安全边界：
+  - 只提交 Java `AgentToolActionCommandProposalRequest` 白名单字段；
+  - 主动剔除模板中的 `toolNameHint/planIndexHint` 展示字段，避免依赖 Java 忽略未知字段；
+  - `payloadReference` 只接受 `agent-payload:`、`payload-ref:`、`artifact-ref:` 等受控引用前缀；
+  - URL、JSON、SQL、凭证片段、换行文本或过长文本会在 Python 侧 fail-closed；
+  - 被判定危险的 payloadReference 不会在 skipped 摘要里回显原值。
+- Java 响应解析：
+  - 只解析 proposalId、proposalState、graphId、contractId、toolName、commandType、payloadReference、payloadPolicy、workerReceiptMode、graphState、terminalState、证据列表和推荐动作等低敏字段；
+  - 不透传 Java 响应里可能出现的 arguments、SQL、prompt、样本数据、模型输出、凭证或内部 endpoint。
+- 测试：
+  - 新增 `test_tool_action_command_proposal_client.py` 覆盖默认禁用、缺证据阻断、危险 payloadReference 阻断、启用态 HTTP POST、Java 统一错误响应；
+  - 定向测试 `test_tool_action_command_proposal_client.py + test_tool_action_control_flow.py`：9 个通过；
+  - 全量 Python 测试 `python -m pytest python-ai-runtime\tests -q`：432 个通过；
+  - 行数检查：客户端 351 行，契约辅助文件 194 行，测试文件 248 行，均低于 500 行约束。
+- 产品意义：
+  - 5.63 解决“如何形成 Java proposal 请求模板”，5.64 解决“Python 如何在受控条件下提交 proposal”；
+  - READY 工具动作现在具备从 preview 到 Java proposal 的可测试桥梁，但仍不开放真实工具执行；
+  - 这为后续最小 durable graph runner 铺路：`tool_action_gate -> command_proposal -> outbox_writer -> worker_receipt_projection`。
+- 下一步推荐路线：
+  1. 开始最小 durable graph runner，把 readiness graph 的 READY 分支接到本客户端，非 READY 分支进入 approval/clarification/budget wait；
+  2. 为 WAITING_APPROVAL 分支接 permission-admin 审批事实查询，而不是只等待外部手动补 evidence；
+  3. 暂不建议直接开放真实工具执行，先把 Java proposal 返回状态、outbox writer 和 worker receipt 串成可恢复闭环。
+
 ## 2026-06-14 追加落地进展：Python AI Runtime 5.63 工具动作 Command Proposal 模板
 
 - `python-ai-runtime` 新增 `tool_action_command_proposal_template.py`，把 readiness 的低敏结果转换成 Java `agent-runtime` command proposal 请求模板：
