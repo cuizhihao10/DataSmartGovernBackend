@@ -20,10 +20,17 @@ from datasmart_ai_runtime.config import default_tool_registry
 from datasmart_ai_runtime.domain.contracts import ModelToolCall, ToolDefinition
 from datasmart_ai_runtime.services.agent_gateway.a2a_task_mapping_support import count_forbidden_fields
 from datasmart_ai_runtime.services.tools import (
+    InMemoryToolActionExecutionCheckpointStore,
     ToolActionControlFlowService,
     ToolActionExecutionGraphRunner,
     ToolActionIntakeSource,
     evidence_selection_from_payload,
+)
+
+
+_DEFAULT_EXECUTION_GRAPH_CHECKPOINT_STORE = InMemoryToolActionExecutionCheckpointStore(
+    max_checkpoints_per_thread=20,
+    max_total_checkpoints=2_000,
 )
 
 
@@ -83,10 +90,13 @@ def build_tool_action_control_flow_preview_response(
     # `toolActionExecutionGraphRun`：它会读取 proposal 模板并运行最小执行前图 runner。
     # 默认 runner 内部的 Java proposal client 是 disabled，不会产生网络调用；当后续启动层注入启用后的
     # runner 时，READY 分支才会提交 Java proposal。这样 API 契约先稳定，真实副作用仍由配置和控制面把关。
-    runner = execution_graph_runner or ToolActionExecutionGraphRunner()
+    runner = execution_graph_runner or ToolActionExecutionGraphRunner(
+        checkpoint_store=_DEFAULT_EXECUTION_GRAPH_CHECKPOINT_STORE,
+    )
     response["toolActionExecutionGraphRun"] = runner.run(
         response,
         evidence_selection=evidence_selection_from_payload(payload),
+        checkpoint_context=_checkpoint_context_from_payload(payload, response),
         trace_id=_text((payload or {}).get("traceId")) if isinstance(payload, Mapping) else None,
     ).to_summary()
     return response
@@ -279,6 +289,55 @@ def _command_context_from_payload(payload: Mapping[str, Any] | None) -> dict[str
         "limit": _positive_int(merged.get("limit"), default=100),
         "policyVersion": _text(merged.get("policyVersion")),
         "clientRequestId": _text(merged.get("clientRequestId")),
+    }
+
+
+def _checkpoint_context_from_payload(
+    payload: Mapping[str, Any] | None,
+    response: Mapping[str, Any],
+) -> dict[str, Any]:
+    """生成执行前图 checkpoint 可保存的低敏上下文。
+
+    checkpoint 的作用是让后续“等待审批 / 等待澄清 / 等待 outbox 确认”的执行前图可以被定位和恢复，
+    因此它只需要租户、项目、操作者、request/run/session/thread 等控制面 ID。
+
+    这里刻意不读取以下内容：
+    - `arguments` / `toolArguments`：工具真实入参必须通过受控 payloadReference 间接引用；
+    - `prompt` / `messages`：用户原文和模型上下文不应进入短期检查点；
+    - `sql` / sample data / model output / internal endpoint：这些属于高敏或业务正文，不能因为 checkpoint 扩散。
+
+    `source` 和 `protocolFamily` 从已经低敏化的 response 中读取，避免重新解释原始 payload。
+    """
+
+    if not isinstance(payload, Mapping):
+        return {
+            "source": _text(response.get("source")),
+            "protocolFamily": _text(response.get("protocolFamily")),
+        }
+    context = payload.get("context")
+    merged: dict[str, Any] = dict(context) if isinstance(context, Mapping) else {}
+    for key in (
+        "tenantId",
+        "projectId",
+        "actorId",
+        "requestId",
+        "runId",
+        "sessionId",
+        "threadId",
+        "checkpointThreadId",
+    ):
+        if key in payload and key not in merged:
+            merged[key] = payload[key]
+    return {
+        "source": _text(response.get("source")),
+        "protocolFamily": _text(response.get("protocolFamily")),
+        "tenantId": _text(merged.get("tenantId")),
+        "projectId": _text(merged.get("projectId")),
+        "actorId": _text(merged.get("actorId")),
+        "requestId": _text(merged.get("requestId")),
+        "runId": _text(merged.get("runId")),
+        "sessionId": _text(merged.get("sessionId")),
+        "threadId": _text(merged.get("threadId") or merged.get("checkpointThreadId")),
     }
 
 

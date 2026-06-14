@@ -21,6 +21,9 @@ from datasmart_ai_runtime.services.tools.tool_action_command_proposal_client imp
     ToolActionCommandProposalClientError,
     ToolActionCommandProposalEvidence,
 )
+from datasmart_ai_runtime.services.tools.tool_action_execution_checkpoint import (
+    ToolActionExecutionCheckpointStore,
+)
 
 
 @dataclass(frozen=True)
@@ -61,12 +64,14 @@ class ToolActionExecutionGraphRunResult:
 
     steps: tuple[dict[str, Any], ...]
     truncated_count: int = 0
+    checkpoint: Mapping[str, Any] | None = None
 
     def to_summary(self) -> dict[str, Any]:
         """转换为 API 响应可直接挂载的低敏摘要。"""
 
         status_counts = _count_by_key(self.steps, "stepStatus")
-        return {
+        checkpoint_persisted = self.checkpoint is not None
+        summary = {
             "schemaVersion": "datasmart.python-ai-runtime.tool-action-execution-graph-runner.v1",
             "previewOnly": True,
             "executionBoundary": "PRE_EXECUTION_GRAPH_RUNNER_ONLY",
@@ -79,11 +84,14 @@ class ToolActionExecutionGraphRunResult:
                 "outboxWritten": False,
                 "workerDispatched": False,
                 "approvalCreated": False,
-                "checkpointPersisted": False,
+                "checkpointPersisted": checkpoint_persisted,
                 "meaning": "本 runner 只推进执行前节点，不代表工具、outbox、worker 或审批事实已经创建。",
             },
             "resumeRequirements": _resume_requirements(self.steps),
         }
+        if self.checkpoint is not None:
+            summary["checkpoint"] = dict(self.checkpoint)
+        return summary
 
 
 class ToolActionExecutionGraphRunner:
@@ -97,9 +105,11 @@ class ToolActionExecutionGraphRunner:
         self,
         *,
         proposal_client: JavaToolActionCommandProposalClient | None = None,
+        checkpoint_store: ToolActionExecutionCheckpointStore | None = None,
         max_templates_per_run: int = 20,
     ) -> None:
         self._proposal_client = proposal_client or JavaToolActionCommandProposalClient()
+        self._checkpoint_store = checkpoint_store
         self._max_templates_per_run = max(1, max_templates_per_run)
 
     def run(
@@ -107,6 +117,7 @@ class ToolActionExecutionGraphRunner:
         control_flow_response: Mapping[str, Any],
         *,
         evidence_selection: ToolActionCommandProposalEvidenceSelection | None = None,
+        checkpoint_context: Mapping[str, Any] | None = None,
         trace_id: str | None = None,
     ) -> ToolActionExecutionGraphRunResult:
         """运行一次低敏执行前图。
@@ -123,7 +134,17 @@ class ToolActionExecutionGraphRunner:
         truncated_count = max(0, len(templates) - len(selected))
         selection = evidence_selection or ToolActionCommandProposalEvidenceSelection()
         steps = tuple(self._run_template(template, selection, trace_id=trace_id) for template in selected)
-        return ToolActionExecutionGraphRunResult(steps=steps, truncated_count=truncated_count)
+        result = ToolActionExecutionGraphRunResult(steps=steps, truncated_count=truncated_count)
+        if self._checkpoint_store is None:
+            return result
+        # 这里先保存“不带 checkpoint 字段”的基础摘要，避免检查点里递归保存自己的定位信息。
+        # store 内部会再次白名单裁剪，因此即使未来调用方误传敏感字段，也不会进入检查点。
+        checkpoint = self._checkpoint_store.save(result.to_summary(), context=checkpoint_context)
+        return ToolActionExecutionGraphRunResult(
+            steps=steps,
+            truncated_count=truncated_count,
+            checkpoint=checkpoint.to_summary(),
+        )
 
     def _run_template(
         self,

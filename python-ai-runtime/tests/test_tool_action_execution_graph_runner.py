@@ -60,6 +60,9 @@ class ToolActionExecutionGraphRunnerTest(unittest.TestCase):
         self.assertIn("GRAPH_OR_PAYLOAD_REFERENCE_OR_POLICY_EVIDENCE", graph_run["resumeRequirements"])
         self.assertFalse(graph_run["sideEffectBoundary"]["toolExecuted"])
         self.assertFalse(graph_run["sideEffectBoundary"]["outboxWritten"])
+        self.assertTrue(graph_run["sideEffectBoundary"]["checkpointPersisted"])
+        self.assertEqual("run-runner", graph_run["checkpoint"]["threadId"])
+        self.assertEqual("MCP_TOOLS_CALL", graph_run["checkpoint"]["source"])
         self.assertNotIn("ds-runner-secret", serialized)
         self.assertNotIn("select * from hidden_table", serialized)
 
@@ -78,6 +81,7 @@ class ToolActionExecutionGraphRunnerTest(unittest.TestCase):
         self.assertEqual("COMMAND_PROPOSAL_CLIENT_DISABLED", graph_run["steps"][0]["stepStatus"])
         self.assertIn("CONTROL_PLANE_CLIENT_ENABLEMENT", graph_run["resumeRequirements"])
         self.assertFalse(graph_run["sideEffectBoundary"]["outboxWritten"])
+        self.assertTrue(graph_run["sideEffectBoundary"]["checkpointPersisted"])
 
     def test_enabled_runner_submits_java_proposal_and_waits_for_outbox_confirmation(self) -> None:
         """当启动层注入启用后的 client 时，READY 分支可以提交 Java proposal。"""
@@ -128,6 +132,8 @@ class ToolActionExecutionGraphRunnerTest(unittest.TestCase):
         self.assertEqual("graph-runner-001", captured["payload"]["graphId"])
         self.assertEqual("WAITING_OUTBOX_CONFIRMATION", graph_run["steps"][0]["stepStatus"])
         self.assertEqual("CALL_JAVA_OUTBOX_WRITER_AFTER_OPERATOR_OR_GRAPH_CONFIRMATION", graph_run["steps"][0]["nextAction"])
+        self.assertFalse(graph_run["sideEffectBoundary"]["checkpointPersisted"])
+        self.assertNotIn("checkpoint", graph_run)
         self.assertNotIn("ds-runner-secret", str(graph_run))
 
     def test_draft_branch_does_not_call_java_proposal(self) -> None:

@@ -1,5 +1,36 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-14 落地补充：Checkpoint 是短期恢复状态，不是长期记忆仓库
+
+- 本轮趋势核验：
+  - LangGraph Persistence 明确区分 checkpointer 和 store：checkpointer 保存 thread 的 graph state，用于短期线程级记忆、human-in-the-loop、time travel 和 fault tolerance；store 保存应用自定义的跨线程长期记忆；
+  - LangGraph Interrupts 强调执行图可以在关键节点暂停，持久化状态后等待外部输入，再通过 resume 继续；
+  - OpenAI Agents SDK Human-in-the-loop 也把敏感工具调用设计为“暂停 -> 返回 interruption -> 序列化/恢复 RunState -> 审批后继续”。
+- 对 DataSmart 的架构映射：
+  - `ToolActionExecutionGraphRunner` 代表执行前图的节点推进；
+  - 新增 checkpoint store 代表短期、线程级、低敏恢复状态；
+  - 现有 long-term memory store 继续承担跨会话经验沉淀，二者不能混用；
+  - prompt、SQL、工具参数、样本数据、模型输出、凭证和内部 endpoint 不进入 checkpoint，也不应通过 checkpoint 间接成为新的敏感上下文缓存。
+- 本轮落地到代码的能力：
+  - 新增 `ToolActionExecutionCheckpointStore` 协议，为 Redis/MySQL/durable workflow engine 预留替换点；
+  - 新增 `InMemoryToolActionExecutionCheckpointStore`，提供单线程和全局容量上限；
+  - `ToolActionExecutionGraphRunner` 可注入 checkpoint store，并在保存后通过 `checkpoint` 摘要返回 checkpointId、threadId、sequence、savedAt；
+  - `/agent/tool-actions/control-flow-preview` 默认使用 memory checkpoint store，让工具动作 preview 具备短期可恢复定位能力；
+  - 全量 Python 测试 439 个通过。
+- 产品判断：
+  - 这一步不是为了“记住用户说过什么”，而是为了让等待审批、等待澄清、等待预算恢复、等待 outbox 确认的执行前图可以被定位和恢复；
+  - 它让 DataSmart 更接近 Codex/Claude Code 类 Agent Host 的运行时骨架：模型提出动作意图，宿主平台保存低敏状态，控制面事实决定是否继续；
+  - 真正商业化前，还需要把 memory store 升级为 Redis/MySQL，并补齐 checkpoint 查询、权限过滤、TTL、租户配额和审计导出。
+- 后续趋势落地建议：
+  1. 用 checkpointId/threadId 串联 approval/clarification resume，而不是让调用方重复提交完整 payload；
+  2. 将 outbox writer 和 worker receipt 接入 checkpoint 恢复链路，形成 durable action 证据；
+  3. 把 checkpoint 指标做成低基数 Prometheus 统计，例如 saved_total、evicted_total、resume_required_count，避免记录 tenantId 或 toolName 高基数字段；
+  4. 继续跟踪 LangGraph durable execution、OpenAI Agents RunState/HITL、MCP tools/call 以及 A2A task 恢复语义，但只吸收能强化 DataSmart 权限、审计、恢复和低敏治理的部分。
+- 参考资料：
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - LangGraph Interrupts: `https://docs.langchain.com/oss/python/langgraph/interrupts`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+
 ## 2026-06-14 落地补充：Pre-execution graph runners are the bridge between preview and durable execution
 
 - 本阶段继续对齐 Agent runtime 趋势：

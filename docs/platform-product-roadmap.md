@@ -1,5 +1,43 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-14 追加落地进展：Python AI Runtime 5.66 工具动作执行前图低敏 Checkpoint Store
+
+- `python-ai-runtime` 新增 `tool_action_execution_checkpoint.py`，把 5.65 的执行前图 runner 从“一次 HTTP 响应里的状态摘要”推进到“可被保存和定位的低敏 checkpoint”：
+  - `ToolActionExecutionCheckpoint` 表示一次执行前图检查点，保存 checkpointId、threadId、sequence、savedAt、tenant/project/actor/run/session 等控制面定位字段；
+  - `ToolActionExecutionCheckpointStore` 定义 save/get/list_by_thread 协议，后续 Redis/MySQL 或 durable workflow engine 可以按该协议替换；
+  - `InMemoryToolActionExecutionCheckpointStore` 提供当前阶段的进程内实现，支持单 thread 数量上限和全局数量上限，避免本地调试或异常请求造成无限内存增长；
+  - `low_sensitive_execution_graph_summary(...)` 对 runner 摘要做二次白名单裁剪，即使未来调用方误传 prompt、SQL、arguments、sample data、model output、credential 或 internal endpoint，也不会进入检查点。
+- `ToolActionExecutionGraphRunner` 新增可选 `checkpoint_store` 注入：
+  - 未注入 store 时保持原 preview-only 行为，便于测试和外部自定义 runner 控制副作用边界；
+  - 注入 store 后会保存“不含 checkpoint 递归字段”的基础 graph run summary；
+  - 响应中的 `sideEffectBoundary.checkpointPersisted=true` 只表示低敏执行前状态已保存，不代表工具已执行、outbox 已写入、worker 已派发或审批已创建；
+  - 响应新增 `checkpoint` 低敏定位摘要，未来可作为审批后 resume、澄清后 resume 或 outbox confirmation 的恢复入口。
+- `/agent/tool-actions/control-flow-preview` 默认接入模块级 in-memory checkpoint store：
+  - 默认 API 路径现在会为每次执行前图 preview 保存一个短期 checkpoint；
+  - checkpoint context 只读取 source、protocolFamily、tenantId、projectId、actorId、requestId、runId、sessionId、threadId/checkpointThreadId；
+  - 不读取工具真实 arguments、prompt、SQL、样本数据、模型输出、凭证或内部 endpoint；
+  - 显式传入自定义 runner 时仍尊重自定义 runner 的 store 配置，不强制保存。
+- 测试：
+  - 新增 `test_tool_action_execution_checkpoint.py`，覆盖低敏裁剪、checkpoint locator、per-thread 驱逐、global 驱逐；
+  - 扩展 `test_tool_action_execution_graph_runner.py`，固定默认 API 保存 checkpoint、自定义 runner 不强制保存 checkpoint；
+  - 定向测试 `python -m pytest python-ai-runtime\tests\test_tool_action_execution_checkpoint.py python-ai-runtime\tests\test_tool_action_execution_graph_runner.py python-ai-runtime\tests\test_tool_action_control_flow.py -q`：11 个测试通过；
+  - 全量 Python 测试 `python -m pytest python-ai-runtime\tests -q`：439 个测试通过；
+  - 行数检查：checkpoint store 424 行，runner 347 行，API helper 340 行，新增 checkpoint 测试 167 行，runner 测试 216 行，均低于 500 行。
+- 产品意义：
+  - DataSmart 的工具动作链路从 `intake -> readiness -> proposal template -> graph runner` 继续推进到 `checkpointed graph runner`；
+  - 这一步更接近 Codex/Claude Code/LangGraph 类 Agent Host 的暂停恢复基础设施：先保存低敏控制面状态，再等待审批、澄清、预算恢复或 outbox 确认；
+  - checkpoint 被明确定位为“短期线程级恢复状态”，不是长期记忆，不会沉淀跨会话经验，也不会扩散敏感上下文。
+- 当前边界：
+  - 当前 store 是进程内 memory 实现，服务重启或多实例部署不会共享检查点；
+  - 尚未提供 checkpoint 查询 API，也尚未把 checkpoint 写入 Redis/MySQL；
+  - WAITING_APPROVAL/WAITING_CLARIFICATION 仍未接 permission-admin 或澄清事实存储；
+  - WAITING_OUTBOX_CONFIRMATION 仍未接 Java outbox writer 和 worker receipt projection。
+- 下一步推荐路线：
+  1. 优先让 `WAITING_APPROVAL` 和 `WAITING_CLARIFICATION` 分支消费服务端事实，并用 checkpointId/threadId 恢复 runner；
+  2. 再为 `WAITING_OUTBOX_CONFIRMATION` 接 Java outbox writer，但必须保留 confirmation、幂等键和 worker receipt；
+  3. 将 memory checkpoint store 抽象替换为 Redis/MySQL 配置化实现，支持跨实例和重启恢复；
+  4. 不建议继续只扩展 graph run 展示字段，下一阶段应把 checkpoint 真正用于 resume 和 durable action 闭环。
+
 ## 2026-06-14 追加落地进展：Python AI Runtime 5.65 工具动作执行前图 Runner
 
 - `python-ai-runtime` 新增 `tool_action_execution_graph_runner.py`，把统一控制流、proposal 模板和 Java proposal client 串成最小执行前图：
