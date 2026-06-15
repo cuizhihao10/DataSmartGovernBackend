@@ -1,5 +1,35 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-15 落地补充：Resume should consume checkpoint locators and server-side facts, not replay raw payloads
+
+- 本轮趋势核验：
+  - LangGraph Persistence 把 checkpointer 定位为 thread-scoped graph state，`thread_id` 是恢复同一线程状态的关键指针；
+  - LangGraph Interrupts 强调暂停后通过 checkpointer 保存位置，再由外部输入 resume，而不是重新提交完整原始请求；
+  - OpenAI Agents SDK Human-in-the-loop 同样把高风险工具调用拆成 interruption、approval decision、RunState resume。
+- 对 DataSmart 的架构映射：
+  - 5.66 已经能保存低敏 checkpoint；
+  - 5.67 新增 checkpoint 查询和 resume-preview，开始让 checkpointId/threadId 成为恢复入口；
+  - resume-preview 只判断 approval、clarification、budget、outbox confirmation 等事实类型是否齐备，不回显事实值；
+  - 这避免了“为了恢复执行而让前端或外部 Agent 重传 prompt/SQL/arguments”的反模式。
+- 本轮落地到代码的能力：
+  - 新增 `/agent/tool-actions/checkpoints/query`；
+  - 新增 `/agent/tool-actions/checkpoints/resume-preview`；
+  - 新增 checkpoint API helper 与独立 route registrar，保持主 routes 文件不过度膨胀；
+  - 全量 Python 测试 443 个通过。
+- 产品判断：
+  - 查询和 resume-preview 是从 demo 走向商业化 Agent Host 的必要中间层：用户断线、审批延迟、worker 恢复、outbox 重放都需要能定位“暂停在哪”；
+  - 但当前阶段不应该直接恢复执行，因为 Java graph/proposal/outbox/worker receipt 还没有完成完整 durable action 闭环；
+  - 正确节奏是先让 checkpoint 被安全查询和预检消费，再接真实审批/澄清事实，再接 outbox/worker。
+- 后续趋势落地建议：
+  1. 将 approval/clarification fact 从手动 payload 升级为 permission-admin / fact store 服务端查询；
+  2. 将 memory checkpoint store 替换为 Redis/MySQL，补齐 TTL、租户配额、scope authorization 和审计事件；
+  3. 为 resume 后的 outbox writer 定义 idempotency key、receipt projection 和 replay protection；
+  4. 继续保持低敏原则：checkpoint/resume 只处理定位符和事实类型，真实 payload 必须留在受控 payload store。
+- 参考资料：
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - LangGraph Interrupts: `https://docs.langchain.com/oss/python/langgraph/interrupts`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+
 ## 2026-06-14 落地补充：Checkpoint 是短期恢复状态，不是长期记忆仓库
 
 - 本轮趋势核验：

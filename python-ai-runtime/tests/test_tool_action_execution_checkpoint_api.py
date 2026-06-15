@@ -1,0 +1,225 @@
+import os
+import sys
+import unittest
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from datasmart_ai_runtime.api.agent.routes import register_agent_runtime_routes
+from datasmart_ai_runtime.api.agent.tool_action_execution_checkpoint import (
+    build_tool_action_execution_checkpoint_query_response,
+    build_tool_action_execution_checkpoint_resume_preview_response,
+)
+from datasmart_ai_runtime.services.tools import InMemoryToolActionExecutionCheckpointStore
+
+
+class FakeApp:
+    """极简路由注册器，用于验证 checkpoint 子路由被主 Agent API 注册。"""
+
+    def __init__(self) -> None:
+        self.post_routes: dict[str, object] = {}
+        self.websocket_routes: dict[str, object] = {}
+
+    def post(self, path: str):
+        """模拟 FastAPI 的 `@app.post(...)` 装饰器。"""
+
+        def decorator(func):
+            self.post_routes[path] = func
+            return func
+
+        return decorator
+
+    def websocket(self, path: str):
+        """模拟 FastAPI 的 `@app.websocket(...)` 装饰器。"""
+
+        def decorator(func):
+            self.websocket_routes[path] = func
+            return func
+
+        return decorator
+
+
+class ToolActionExecutionCheckpointApiTest(unittest.TestCase):
+    """工具动作 checkpoint 查询与恢复预检 API 测试。
+
+    这组测试刻意不验证“真实恢复执行”，因为当前接口的产品定位是恢复预检：
+    - 查询接口只能返回低敏 checkpoint；
+    - resume-preview 只能判断事实类型是否齐备；
+    - 真正 outbox 写入、worker 派发和工具执行仍必须交给 Java 控制面。
+    """
+
+    def setUp(self) -> None:
+        self.store = InMemoryToolActionExecutionCheckpointStore(max_checkpoints_per_thread=5, max_total_checkpoints=20)
+
+    def test_query_by_checkpoint_id_returns_low_sensitive_checkpoint(self) -> None:
+        """按 checkpointId 查询时，可返回低敏 graphRunSummary，但不能泄露敏感正文。"""
+
+        checkpoint = self.store.save(
+            _graph_run_for_resume(),
+            context={
+                "source": "MCP_TOOLS_CALL",
+                "protocolFamily": "MCP",
+                "tenantId": "tenant-api",
+                "projectId": "project-api",
+                "actorId": "actor-api",
+                "runId": "run-api",
+            },
+        )
+
+        response = build_tool_action_execution_checkpoint_query_response(
+            {
+                "checkpointId": checkpoint.checkpoint_id,
+                "tenantId": "tenant-api",
+                "projectId": "project-api",
+                "actorId": "actor-api",
+                "includeGraphRun": True,
+                "prompt": "raw prompt should not leak",
+                "sql": "select * from hidden_table",
+            },
+            checkpoint_store=self.store,
+        )
+        serialized = str(response)
+
+        self.assertEqual(1, response["checkpointCount"])
+        self.assertEqual(checkpoint.checkpoint_id, response["checkpoints"][0]["checkpointId"])
+        self.assertEqual("run-api", response["checkpoints"][0]["threadId"])
+        self.assertIn("graphRunSummary", response["checkpoints"][0])
+        self.assertFalse(response["queryPolicy"]["globalScanAllowed"])
+        self.assertNotIn("raw prompt should not leak", serialized)
+        self.assertNotIn("hidden_table", serialized)
+        self.assertNotIn("ds-api-secret", serialized)
+
+    def test_query_requires_locator_and_filters_scope(self) -> None:
+        """查询必须有 checkpointId/threadId，并且作用域不匹配时不返回检查点。"""
+
+        checkpoint = self.store.save(
+            _graph_run_for_resume(),
+            context={"tenantId": "tenant-a", "projectId": "project-a", "runId": "run-scope"},
+        )
+
+        missing_locator = build_tool_action_execution_checkpoint_query_response({}, checkpoint_store=self.store)
+        wrong_scope = build_tool_action_execution_checkpoint_query_response(
+            {
+                "checkpointId": checkpoint.checkpoint_id,
+                "tenantId": "tenant-b",
+            },
+            checkpoint_store=self.store,
+        )
+
+        self.assertEqual(0, missing_locator["checkpointCount"])
+        self.assertEqual("CHECKPOINT_ID_OR_THREAD_ID_REQUIRED", missing_locator["accessIssues"][0]["code"])
+        self.assertEqual(0, wrong_scope["checkpointCount"])
+        self.assertEqual("CHECKPOINT_SCOPE_MISMATCH", wrong_scope["accessIssues"][0]["code"])
+
+    def test_resume_preview_reports_missing_and_ready_facts_without_echoing_values(self) -> None:
+        """resume-preview 只返回事实类型是否齐备，不回显事实 ID 或 payloadReference 值。"""
+
+        checkpoint = self.store.save(
+            _graph_run_for_resume(),
+            context={"tenantId": "tenant-resume", "runId": "run-resume"},
+        )
+
+        waiting = build_tool_action_execution_checkpoint_resume_preview_response(
+            {"checkpointId": checkpoint.checkpoint_id, "tenantId": "tenant-resume"},
+            checkpoint_store=self.store,
+        )
+        ready = build_tool_action_execution_checkpoint_resume_preview_response(
+            {
+                "checkpointId": checkpoint.checkpoint_id,
+                "tenantId": "tenant-resume",
+                "resumeFacts": {
+                    "graphId": "graph-sensitive-value",
+                    "payloadReference": "agent-payload:resume/secret-reference",
+                    "policyVersion": "tool-readiness-policy.v1",
+                    "arguments": {"datasourceId": "ds-api-secret"},
+                    "sql": "select * from hidden_table",
+                },
+            },
+            checkpoint_store=self.store,
+        )
+        serialized = str(ready)
+
+        self.assertFalse(waiting["resumeDecision"]["readyToResume"])
+        self.assertIn("PAYLOAD_REFERENCE", waiting["resumeFacts"]["missingFactTypes"])
+        self.assertTrue(ready["resumeDecision"]["readyToResume"])
+        self.assertEqual("READY_FOR_DURABLE_RUNNER_RESUME", ready["resumeDecision"]["decision"])
+        self.assertFalse(ready["resumeFacts"]["factValuesEchoed"])
+        self.assertGreaterEqual(ready["resumeFacts"]["ignoredSensitiveFieldCount"], 1)
+        self.assertFalse(ready["sideEffectBoundary"]["toolExecuted"])
+        self.assertFalse(ready["sideEffectBoundary"]["outboxWritten"])
+        self.assertNotIn("graph-sensitive-value", serialized)
+        self.assertNotIn("agent-payload:resume/secret-reference", serialized)
+        self.assertNotIn("ds-api-secret", serialized)
+        self.assertNotIn("hidden_table", serialized)
+
+    def test_routes_register_checkpoint_query_and_resume_preview(self) -> None:
+        """主 Agent API 注册函数应挂载 checkpoint 子路由。"""
+
+        app = FakeApp()
+        register_agent_runtime_routes(
+            app,
+            request_type=object,
+            orchestrator=object(),
+            event_store=None,
+            session_manager=None,
+            live_push_hub=None,
+            event_publisher=None,
+            runtime_event_replay_sources=(),
+            plan_ingestion_client=None,
+            control_plane_feedback_collector=None,
+            runtime_event_feedback_bridge=None,
+            loop_control_evaluator=None,
+            second_turn_orchestrator=None,
+            memory_write_governance=None,
+        )
+
+        self.assertIn("/agent/tool-actions/checkpoints/query", app.post_routes)
+        self.assertIn("/agent/tool-actions/checkpoints/resume-preview", app.post_routes)
+
+
+def _graph_run_for_resume() -> dict[str, object]:
+    """生成一个等待 proposal evidence 的低敏执行前图摘要。"""
+
+    return {
+        "schemaVersion": "datasmart.python-ai-runtime.tool-action-execution-graph-runner.v1",
+        "previewOnly": True,
+        "executionBoundary": "PRE_EXECUTION_GRAPH_RUNNER_ONLY",
+        "stepCount": 1,
+        "truncatedCount": 0,
+        "statusCounts": {"WAITING_COMMAND_PROPOSAL_EVIDENCE": 1},
+        "steps": [
+            {
+                "nodeType": "TOOL_ACTION_COMMAND_PROPOSAL",
+                "templateId": "template-api-001",
+                "toolName": "datasource.metadata.read",
+                "decision": "ready",
+                "outboxPreflightCandidate": True,
+                "payloadPolicy": "REFERENCE_ONLY",
+                "stepStatus": "WAITING_COMMAND_PROPOSAL_EVIDENCE",
+                "proposalSubmission": {
+                    "submissionState": "VALIDATION_FAILED",
+                    "missingEvidence": ["PAYLOAD_REFERENCE_REQUIRED"],
+                    "requestPayload": {
+                        "graphId": "graph-api",
+                        "arguments": {"datasourceId": "ds-api-secret"},
+                    },
+                },
+                "nextAction": "COMPLETE_GRAPH_PAYLOAD_POLICY_OR_APPROVAL_EVIDENCE_THEN_RESUME",
+            }
+        ],
+        "sideEffectBoundary": {
+            "toolExecuted": False,
+            "outboxWritten": False,
+            "workerDispatched": False,
+            "approvalCreated": False,
+            "checkpointPersisted": False,
+        },
+        "resumeRequirements": ["GRAPH_OR_PAYLOAD_REFERENCE_OR_POLICY_EVIDENCE"],
+        "arguments": {"datasourceId": "ds-api-secret"},
+        "sql": "select * from hidden_table",
+    }
+
+
+if __name__ == "__main__":
+    unittest.main()

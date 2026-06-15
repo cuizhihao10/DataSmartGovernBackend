@@ -34,6 +34,18 @@ _DEFAULT_EXECUTION_GRAPH_CHECKPOINT_STORE = InMemoryToolActionExecutionCheckpoin
 )
 
 
+def default_tool_action_execution_checkpoint_store() -> InMemoryToolActionExecutionCheckpointStore:
+    """返回统一控制流 API 默认使用的执行前图 checkpoint store。
+
+    这个函数看起来很小，但它是 5.66 之后很重要的装配边界：
+    - `/agent/tool-actions/control-flow-preview` 会把 runner 结果保存到该 store；
+    - checkpoint 查询与 resume 预检路由必须读取同一个 store，否则“保存”和“查询”会落到两个内存实例里；
+    - 后续替换 Redis/MySQL 时，也可以先从这个函数背后的装配点切换，而不是让每个 API helper 自己创建 store。
+    """
+
+    return _DEFAULT_EXECUTION_GRAPH_CHECKPOINT_STORE
+
+
 def build_tool_action_control_flow_preview_response(
     payload: Mapping[str, Any] | None,
     *,

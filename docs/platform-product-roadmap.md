@@ -1,5 +1,44 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-15 追加落地进展：Python AI Runtime 5.67 工具动作 Checkpoint 查询与恢复预检
+
+- 本阶段承接 5.66。上一阶段已经能保存低敏 checkpoint，但还缺少“被安全消费”的入口。本阶段补齐 checkpoint 查询和 resume 预检，让执行前图状态开始进入可恢复控制面，但仍不执行工具、不写 outbox、不派发 worker。
+- 新增 `api/agent/tool_action_execution_checkpoint.py`：
+  - `build_tool_action_execution_checkpoint_query_response(...)` 支持按 checkpointId 或 threadId 查询低敏 checkpoint；
+  - `build_tool_action_execution_checkpoint_resume_preview_response(...)` 支持提交审批、澄清、预算恢复、outbox 确认等事实后的恢复条件预检；
+  - 查询接口不允许全局扫描，必须提供 checkpointId 或 threadId；
+  - 查询支持预览级 tenantId/projectId/actorId scope 过滤，但明确不替代 gateway/JWT/RBAC；
+  - resume-preview 只返回事实类型是否齐备，不回显 graphId、payloadReference、approvalConfirmationId、clarificationFactId 等事实值。
+- 新增 `api/agent/tool_action_checkpoint_routes.py`：
+  - 路由 `POST /agent/tool-actions/checkpoints/query`；
+  - 路由 `POST /agent/tool-actions/checkpoints/resume-preview`；
+  - 两个路由都保持 preview-only，不产生真实副作用；
+  - 独立拆分路由注册器，避免 `api/agent/routes.py` 继续膨胀。
+- `api/agent/tool_action_control_flow.py` 新增 `default_tool_action_execution_checkpoint_store()`：
+  - checkpoint 保存、查询和 resume-preview 使用同一个默认内存 store；
+  - 后续替换 Redis/MySQL 时，可从这个装配边界统一切换。
+- `api/agent/routes.py`：
+  - 引入并注册 checkpoint 子路由；
+  - 主路由文件仍保持在 500 行以内。
+- 测试：
+  - 新增 `test_tool_action_execution_checkpoint_api.py`；
+  - 覆盖 checkpointId 查询、graphRunSummary 低敏返回、缺定位条件阻断、scope mismatch、resume facts 缺失/齐备、事实值不回显、路由注册；
+  - 定向测试 `python -m pytest python-ai-runtime\tests\test_tool_action_execution_checkpoint_api.py python-ai-runtime\tests\test_tool_action_execution_checkpoint.py python-ai-runtime\tests\test_tool_action_execution_graph_runner.py python-ai-runtime\tests\test_tool_action_control_flow.py -q`：15 个测试通过；
+  - 全量 Python 测试 `python -m pytest python-ai-runtime\tests -q`：443 个测试通过。
+- 产品意义：
+  - checkpoint 从“保存能力”推进到“可查询、可恢复预检”的控制面能力；
+  - 这一步贴近 LangGraph/OpenAI Agents HITL 的暂停恢复模式：用 thread/checkpoint 定位暂停点，用外部事实决定是否可以继续；
+  - 但 DataSmart 仍坚持企业治理边界：Python 只做预检与低敏状态恢复判断，真实 outbox、worker、审批事实和执行证据仍归 Java 控制面承接。
+- 当前边界：
+  - 默认 store 仍是进程内 memory，跨实例、重启恢复、TTL、租户配额、审计导出仍未完成；
+  - resume-preview 只判断事实类型是否齐备，不会真正恢复执行图；
+  - 审批事实、澄清事实、outbox confirmation 仍未接真实 permission-admin / Java outbox writer。
+- 下一步推荐路线：
+  1. 接 permission-admin 审批事实和澄清事实查询，使 resume facts 不再依赖调用方手动传入；
+  2. 将 checkpoint store 抽象升级为 Redis/MySQL 配置化实现，补 TTL、租户配额、权限和审计；
+  3. 在 Java outbox writer 接入前，先定义 resume 后的幂等键与 receipt 投影契约；
+  4. 暂时不要开放真实工具执行，先把恢复事实、outbox、worker receipt 的 durable action 闭环做稳。
+
 ## 2026-06-14 追加落地进展：Python AI Runtime 5.66 工具动作执行前图低敏 Checkpoint Store
 
 - `python-ai-runtime` 新增 `tool_action_execution_checkpoint.py`，把 5.65 的执行前图 runner 从“一次 HTTP 响应里的状态摘要”推进到“可被保存和定位的低敏 checkpoint”：
