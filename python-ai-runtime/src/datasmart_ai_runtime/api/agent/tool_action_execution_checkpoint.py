@@ -112,6 +112,10 @@ def build_tool_action_execution_checkpoint_resume_preview_response(
         request_resume_facts["acceptedFactTypes"],
         server_fact_snapshot.available_fact_types,
     )
+    accepted_fact_types = _without_rejected_fact_types(
+        accepted_fact_types,
+        server_fact_snapshot.rejected_fact_types,
+    )
     required_fact_types = _required_fact_types(checkpoint.resume_requirements)
     missing_fact_types = tuple(item for item in required_fact_types if item not in accepted_fact_types)
     ready_to_resume = not missing_fact_types
@@ -130,6 +134,8 @@ def build_tool_action_execution_checkpoint_resume_preview_response(
             "acceptedFactTypes": accepted_fact_types,
             "requestAcceptedFactTypes": request_resume_facts["acceptedFactTypes"],
             "serverAcceptedFactTypes": server_fact_snapshot.available_fact_types,
+            "serverRejectedFactTypes": server_fact_snapshot.rejected_fact_types,
+            "rejectedFactTypes": server_fact_snapshot.rejected_fact_types,
             "requiredFactTypes": required_fact_types,
             "missingFactTypes": missing_fact_types,
             "ignoredSensitiveFieldCount": request_resume_facts["ignoredSensitiveFieldCount"],
@@ -296,6 +302,24 @@ def _collect_server_resume_facts(
             source="RESUME_FACT_PROVIDER_ERROR",
             error_codes=(exc.__class__.__name__,),
         )
+
+
+def _without_rejected_fact_types(
+    accepted_fact_types: tuple[str, ...],
+    rejected_fact_types: tuple[str, ...],
+) -> tuple[str, ...]:
+    """应用服务端事实源的否决结果。
+
+    这是 5.69 引入的关键安全语义：请求 payload 里的 `approvalConfirmationId`、`clarificationFactId`
+    等字段只能表达“调用方声称有这个事实”，不能天然等价于“服务端已采信这个事实”。如果 permission-admin
+    这类受控 provider 已经确认审批事实不存在、过期、被拒绝或作用域不匹配，就必须把对应事实类型从最终
+    acceptedFactTypes 中移除，避免恢复预检被客户端自报字段绕过。
+    """
+
+    rejected = set(rejected_fact_types)
+    if not rejected:
+        return accepted_fact_types
+    return tuple(item for item in accepted_fact_types if item not in rejected)
 
 
 def _required_fact_types(resume_requirements: tuple[str, ...]) -> tuple[str, ...]:

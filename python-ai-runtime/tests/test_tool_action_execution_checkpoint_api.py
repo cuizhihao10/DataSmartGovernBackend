@@ -14,6 +14,7 @@ from datasmart_ai_runtime.api.agent.tool_action_execution_checkpoint import (
 from datasmart_ai_runtime.services.tools import (
     InMemoryToolActionExecutionCheckpointStore,
     StaticToolActionResumeFactProvider,
+    ToolActionResumeFactSnapshot,
 )
 
 
@@ -41,6 +42,20 @@ class FakeApp:
             return func
 
         return decorator
+
+
+class RejectingApprovalResumeFactProvider:
+    """模拟 permission-admin 判定审批事实不可采信的 provider。"""
+
+    def collect(self, *, checkpoint, request_payload=None):
+        """返回对 approval 事实的服务端否决。"""
+
+        return ToolActionResumeFactSnapshot(
+            source="TEST_REJECTING_APPROVAL_PROVIDER",
+            missing_fact_types=("APPROVAL_CONFIRMATION_FACT",),
+            rejected_fact_types=("APPROVAL_CONFIRMATION_FACT",),
+            error_codes=("APPROVAL_FACT_NOT_APPROVED",),
+        )
 
 
 class ToolActionExecutionCheckpointApiTest(unittest.TestCase):
@@ -200,6 +215,39 @@ class ToolActionExecutionCheckpointApiTest(unittest.TestCase):
         self.assertNotIn("policy-sensitive-value", serialized)
         self.assertNotIn("provider_hidden_table", serialized)
         self.assertNotIn("provider-secret", serialized)
+
+    def test_resume_preview_removes_request_approval_fact_when_server_rejects_it(self) -> None:
+        """服务端否决 approval 事实时，请求自报 approvalConfirmationId 不能让预检通过。"""
+
+        checkpoint = self.store.save(
+            _graph_run_for_human_resume(),
+            context={"tenantId": "tenant-reject", "runId": "run-reject"},
+        )
+
+        response = build_tool_action_execution_checkpoint_resume_preview_response(
+            {
+                "checkpointId": checkpoint.checkpoint_id,
+                "tenantId": "tenant-reject",
+                "resumeFacts": {
+                    "graphId": "graph-sensitive-value",
+                    "payloadReference": "payload-sensitive-reference",
+                    "policyVersion": "policy-sensitive-value",
+                    "approvalConfirmationId": "approval-sensitive-value",
+                    "clarificationFactId": "clarification-sensitive-value",
+                },
+            },
+            checkpoint_store=self.store,
+            resume_fact_provider=RejectingApprovalResumeFactProvider(),
+        )
+        serialized = str(response)
+
+        self.assertFalse(response["resumeDecision"]["readyToResume"])
+        self.assertIn("APPROVAL_CONFIRMATION_FACT", response["resumeFacts"]["requestAcceptedFactTypes"])
+        self.assertIn("APPROVAL_CONFIRMATION_FACT", response["resumeFacts"]["rejectedFactTypes"])
+        self.assertIn("APPROVAL_CONFIRMATION_FACT", response["resumeFacts"]["missingFactTypes"])
+        self.assertNotIn("APPROVAL_CONFIRMATION_FACT", response["resumeFacts"]["acceptedFactTypes"])
+        self.assertNotIn("approval-sensitive-value", serialized)
+        self.assertNotIn("clarification-sensitive-value", serialized)
 
     def test_routes_register_checkpoint_query_and_resume_preview(self) -> None:
         """主 Agent API 注册函数应挂载 checkpoint 子路由。"""

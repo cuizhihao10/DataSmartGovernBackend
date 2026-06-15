@@ -31,6 +31,9 @@ class ToolActionResumeFactSnapshot:
     - `source`：事实来源标识，例如空实现、本地静态实现、permission-admin 查询器或 worker receipt 投影；
     - `available_fact_types`：当前已经确认存在的事实类型，只能是枚举式低敏名称，不能包含事实值；
     - `missing_fact_types`：provider 自己能判断但暂缺的事实类型，当前静态实现不主动推断，未来远程实现可填充；
+    - `rejected_fact_types`：provider 已明确判定不能采信的事实类型，例如调用方传了 approvalId 但 permission-admin
+      校验为 REJECTED/EXPIRED/SCOPE_MISMATCH；API 层会把这些类型从 acceptedFactTypes 中剔除，避免“客户端自报事实”
+      覆盖服务端控制面裁决；
     - `fact_reference_count`：事实引用数量，用来帮助排障“服务端确实查到了几个事实”，但不暴露引用正文；
     - `checked_at`：检查时间，使用 UTC ISO 字符串，方便 Java 控制面、日志和事件回放做时间对齐；
     - `error_codes`：低敏错误码集合，只记录错误类型，不记录异常 message、URL、SQL、Header 或原始响应；
@@ -40,6 +43,7 @@ class ToolActionResumeFactSnapshot:
     source: str
     available_fact_types: tuple[str, ...] = ()
     missing_fact_types: tuple[str, ...] = ()
+    rejected_fact_types: tuple[str, ...] = ()
     fact_reference_count: int = 0
     checked_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     error_codes: tuple[str, ...] = ()
@@ -57,6 +61,7 @@ class ToolActionResumeFactSnapshot:
             "source": self.source,
             "availableFactTypes": self.available_fact_types,
             "missingFactTypes": self.missing_fact_types,
+            "rejectedFactTypes": self.rejected_fact_types,
             "factReferenceCount": self.fact_reference_count,
             "checkedAt": self.checked_at,
             "errorCodes": self.error_codes,

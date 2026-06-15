@@ -1,5 +1,37 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-15 落地补充：Client-supplied resume facts must be verified by the host control plane
+
+- 本轮趋势核验：
+  - LangGraph Interrupts/Persistence 强调暂停点由 checkpointer 保存，恢复时依赖同一 thread/checkpoint 的外部输入，但外部输入不应被无条件信任；
+  - OpenAI Agents SDK Human-in-the-loop 将敏感工具调用建模为 interruption，并要求审批结果进入 RunState 恢复流程；
+  - MCP Authorization 规范把 HTTP transport 的授权放在协议级能力中，说明工具/资源访问不能只靠客户端自报字段。
+- 对 DataSmart 的架构映射：
+  - 5.68 已经把恢复事实抽象成 provider；
+  - 5.69 进一步接入 permission-admin 审批事实评估接口，让 approvalConfirmationId 经过 Java 控制面验真；
+  - `rejectedFactTypes` 成为恢复预检的服务端否决机制，防止请求里出现 approval 字段就被当作事实齐备；
+  - Python 仍然只做低敏 preflight，不返回 approvalId、审批意见、Java reason、SQL、arguments、payload body 或服务 token。
+- 本轮落地到代码的能力：
+  - 新增 `JavaPermissionAdminToolActionResumeFactClient`；
+  - 新增 `build_tool_action_resume_fact_provider(...)` 启动装配函数；
+  - FastAPI `create_app()` 将 resume fact provider 注入 checkpoint 子路由；
+  - resume-preview 合并事实时会剔除服务端拒绝的事实类型；
+  - 全量 Python 测试 454 个通过。
+- 产品判断：
+  - 这是从“可恢复预检”走向“可信恢复预检”的关键一步；
+  - 当前仍不是完整 durable resume，因为 Java 还没有按 checkpointId/threadId 聚合所有恢复事实的 bundle API；
+  - 正确下一步不是直接开放真实工具执行，而是让 Java 控制面提供 approval/clarification/outbox/worker receipt 的统一事实束，并补服务账号签名、RBAC 和审计。
+- 后续趋势落地建议：
+  1. 设计 Java resume-fact bundle API，让 Python 以 checkpointId/threadId 查询事实类型，而不是依赖调用方重传 ID；
+  2. 将 MCP Authorization 的资源服务器/服务账号思路映射到 DataSmart gateway -> Python -> Java 的服务间签名和权限校验；
+  3. 将 LangGraph/OpenAI HITL 的 RunState/interrupt 思路继续映射为 DataSmart 低敏 checkpoint + Java 事实控制面；
+  4. 只有当 outbox、worker receipt、幂等、审计闭环完成后，再考虑真实 resume 执行。
+- 参考资料：
+  - LangGraph Interrupts: `https://docs.langchain.com/oss/python/langgraph/interrupts`
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Authorization: `https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization`
+
 ## 2026-06-15 落地补充：Resume should merge server-side facts before continuing a paused tool graph
 
 - 本轮趋势核验：

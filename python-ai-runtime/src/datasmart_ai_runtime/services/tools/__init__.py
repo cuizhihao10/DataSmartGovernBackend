@@ -78,6 +78,12 @@ from datasmart_ai_runtime.services.tools.tool_action_resume_fact_provider import
     merge_resume_fact_types,
     resume_fact_types_from_mapping,
 )
+from datasmart_ai_runtime.services.tools.tool_action_resume_fact_client import (
+    DEFAULT_PERMISSION_ADMIN_APPROVAL_FACT_EVALUATE_PATH,
+    JavaPermissionAdminToolActionResumeFactClient,
+    PermissionAdminResumeFactClientError,
+    PermissionAdminResumeFactClientSettings,
+)
 
 __all__ = (
     "ToolActionIntakeBoundary",
@@ -111,6 +117,10 @@ __all__ = (
     "ToolActionResumeFactProvider",
     "EmptyToolActionResumeFactProvider",
     "StaticToolActionResumeFactProvider",
+    "DEFAULT_PERMISSION_ADMIN_APPROVAL_FACT_EVALUATE_PATH",
+    "JavaPermissionAdminToolActionResumeFactClient",
+    "PermissionAdminResumeFactClientError",
+    "PermissionAdminResumeFactClientSettings",
     "resume_fact_types_from_mapping",
     "merge_resume_fact_types",
     "ToolExecutionReadinessDecision",

@@ -10,6 +10,7 @@ from datasmart_ai_runtime.api.agent.mcp_tool_call_intake import build_mcp_tool_c
 from datasmart_ai_runtime.api.agent.orchestrator_factory import (
     build_context_selection_policy,
     build_default_orchestrator,
+    build_tool_action_resume_fact_provider,
     build_tool_call_budget_policy_provider,
     build_tool_execution_readiness_policy_provider,
     load_skill_registry,
@@ -26,6 +27,7 @@ __all__ = [
     "build_mcp_tool_call_intake_preview_response",
     "build_plan_response",
     "build_skill_admission_policy",
+    "build_tool_action_resume_fact_provider",
     "build_tool_call_budget_policy_provider",
     "build_tool_execution_readiness_policy_provider",
     "load_skill_registry",

@@ -38,7 +38,12 @@ from datasmart_ai_runtime.services.skill_registry_client import JavaAgentSkillRe
 from datasmart_ai_runtime.services.tool_registry_client import JavaAgentToolRegistryClient, ToolRegistryClientError
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 from datasmart_ai_runtime.services.tools import (
+    DEFAULT_PERMISSION_ADMIN_APPROVAL_FACT_EVALUATE_PATH,
+    EmptyToolActionResumeFactProvider,
+    JavaPermissionAdminToolActionResumeFactClient,
+    PermissionAdminResumeFactClientSettings,
     RemoteThenLocalToolExecutionReadinessPolicyProvider,
+    ToolActionResumeFactProvider,
     ToolExecutionReadinessPolicyProvider,
     ToolExecutionReadinessPolicyProviderProtocol,
 )
@@ -323,6 +328,53 @@ def build_tool_execution_readiness_policy_provider(
     )
 
 
+def build_tool_action_resume_fact_provider(
+    permission_admin_base_url: str | None = None,
+    *,
+    enable_remote: bool | None = None,
+) -> ToolActionResumeFactProvider:
+    """构建工具动作恢复事实 provider。
+
+    该 provider 服务 `/agent/tool-actions/checkpoints/resume-preview`。它与工具预算、执行准备度策略不同：
+    - 预算/readiness 回答“本轮规划和执行前条件如何限制工具”；
+    - resume fact provider 回答“某个已暂停 checkpoint 是否具备继续执行所需的服务端事实”。
+
+    当前阶段只接入 permission-admin 已存在的审批事实评估接口，并且默认关闭：
+    - 默认关闭可以保证本地学习环境、CI 和未启动 Java 服务时仍然稳定；
+    - 显式开启后，Python 会把请求中的 approvalConfirmationId 交给 permission-admin 验真；
+    - 如果 Java 返回未批准、过期或作用域不匹配，provider 会返回 `rejectedFactTypes`，API 层会剔除请求自报的审批事实。
+
+    环境变量：
+    - `DATASMART_PERMISSION_ADMIN_TOOL_ACTION_RESUME_FACTS_ENABLED`：是否启用远程校验；
+    - `DATASMART_PERMISSION_ADMIN_BASE_URL`：permission-admin 根地址；
+    - `DATASMART_PERMISSION_ADMIN_TOOL_ACTION_APPROVAL_FACT_EVALUATE_PATH`：审批事实评估路径；
+    - `DATASMART_PERMISSION_ADMIN_TOOL_ACTION_RESUME_FACTS_TIMEOUT_SECONDS`：远程校验超时时间；
+    - `DATASMART_PERMISSION_ADMIN_SERVICE_TOKEN`：可选服务间 token，不进入任何响应摘要。
+    """
+
+    remote_enabled = (
+        truthy_env("DATASMART_PERMISSION_ADMIN_TOOL_ACTION_RESUME_FACTS_ENABLED")
+        if enable_remote is None
+        else enable_remote
+    )
+    base_url = permission_admin_base_url or os.getenv("DATASMART_PERMISSION_ADMIN_BASE_URL")
+    if not remote_enabled or not base_url:
+        return EmptyToolActionResumeFactProvider()
+    return JavaPermissionAdminToolActionResumeFactClient(
+        PermissionAdminResumeFactClientSettings(
+            enabled=True,
+            base_url=base_url,
+            approval_fact_evaluate_path=os.getenv("DATASMART_PERMISSION_ADMIN_TOOL_ACTION_APPROVAL_FACT_EVALUATE_PATH")
+            or DEFAULT_PERMISSION_ADMIN_APPROVAL_FACT_EVALUATE_PATH,
+            timeout_seconds=positive_int_env(
+                "DATASMART_PERMISSION_ADMIN_TOOL_ACTION_RESUME_FACTS_TIMEOUT_SECONDS",
+                3,
+            ),
+            service_token=os.getenv("DATASMART_PERMISSION_ADMIN_SERVICE_TOKEN"),
+        )
+    )
+
+
 def _tool_readiness_remote_enabled_from_env() -> bool:
     """读取 readiness 远程策略开关。
 
@@ -377,6 +429,7 @@ __all__ = [
     "build_context_selection_policy",
     "build_default_orchestrator",
     "build_tool_call_budget_policy_provider",
+    "build_tool_action_resume_fact_provider",
     "build_tool_execution_readiness_policy_provider",
     "load_skill_registry",
     "load_tool_registry",

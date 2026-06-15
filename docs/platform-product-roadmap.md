@@ -1,5 +1,47 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-15 追加落地进展：Python AI Runtime 5.69 permission-admin 审批恢复事实远程校验
+
+- 本阶段承接 5.68。上一阶段已经有 resume fact provider 抽象，但默认仍是空实现或静态测试事实；如果调用方在
+  `resumeFacts.approvalConfirmationId` 中随便填一个字符串，Python 仍可能把它识别为审批事实类型。本阶段把
+  `permission-admin` 现有审批事实评估接口接入 Python resume-preview，让 approval fact 从“客户端自报字段”
+  升级为“服务端可验证事实”。
+- 新增 `services/tools/tool_action_resume_fact_client.py`：
+  - `JavaPermissionAdminToolActionResumeFactClient` 实现 `ToolActionResumeFactProvider` 协议；
+  - `PermissionAdminResumeFactClientSettings` 承载启用开关、baseUrl、评估路径、timeout、service token；
+  - 默认关闭，只有 `DATASMART_PERMISSION_ADMIN_TOOL_ACTION_RESUME_FACTS_ENABLED=true` 且配置
+    `DATASMART_PERMISSION_ADMIN_BASE_URL` 时才访问远程；
+  - 请求体只提交 Java DTO 白名单字段：approvalFactId、tenantId、projectId、actorId、sessionId、runId、
+    commandId、toolCode、requestedPolicyVersion；
+  - prompt、SQL、arguments、payload body、样本数据、模型输出、凭证、内部 endpoint 不进入远程请求，也不进入响应摘要。
+- `ToolActionResumeFactSnapshot` 新增 `rejectedFactTypes`：
+  - 当 permission-admin 返回未批准、过期、拒绝或作用域不匹配时，provider 会拒绝 `APPROVAL_CONFIRMATION_FACT`；
+  - checkpoint resume-preview 会把 rejected fact types 从最终 `acceptedFactTypes` 中剔除；
+  - 这堵住了“请求里携带 approvalConfirmationId 就被当作审批通过”的绕过风险。
+- `api/agent/orchestrator_factory.py` 新增 `build_tool_action_resume_fact_provider(...)`：
+  - 独立于 tool budget/readiness 开关，避免预算策略启用后意外触发审批事实远程调用；
+  - 支持配置评估路径和超时，兼容本地服务直连与 gateway 前缀；
+  - service token 只作为 Header 发送，不进入异常或 API summary。
+- `api/app.py` 在 FastAPI 启动装配中构建并注入 `tool_action_resume_fact_provider`，让 checkpoint 子路由默认具备远程校验装配点。
+- 测试：
+  - 新增 `test_tool_action_resume_fact_client.py`，覆盖默认禁用、缺 approvalFactId 阻断、低敏 HTTP 请求、approved 接受、not approved 拒绝、平台错误低敏摘要；
+  - 扩展 `test_tool_action_execution_checkpoint_api.py`，覆盖服务端拒绝 approval 后请求自报事实被剔除；
+  - 新增 `test_tool_action_resume_fact_bootstrap.py`，覆盖 provider 默认禁用和显式启用远程客户端；
+  - 全量 Python 测试 `python -m pytest python-ai-runtime\tests -q`：454 个测试通过。
+- 产品意义：
+  - 恢复预检从“事实类型识别”进一步推进到“关键审批事实验真”；
+  - 这更接近 Codex/Claude Code/LangGraph/OpenAI Agents 类 Agent Host 的安全暂停恢复范式：运行时保存暂停点，宿主控制面决定是否允许继续；
+  - 当前仍不开放真实工具执行，执行权继续留给 Java outbox、task-management worker 和 receipt projection。
+- 当前边界：
+  - 当前只校验调用方提供的 approvalFactId，还不是 Java 按 checkpointId/threadId 自动发现全部恢复事实；
+  - clarification fact、outbox confirmation、worker receipt、预算恢复事实仍未接真实服务端 provider；
+  - checkpoint store 仍是进程内 memory，尚不支持跨实例、重启恢复、TTL、租户配额和审计导出。
+- 下一步推荐路线：
+  1. 在 Java 控制面设计 resume fact bundle API：以 checkpointId/threadId/runId 查询 approval、clarification、outbox、worker receipt 的低敏事实类型，减少 Python 对请求重传 ID 的依赖；
+  2. 将 checkpoint store 升级为 Redis/MySQL durable store，补 TTL、scope authorization、租户配额、审计事件和低基数指标；
+  3. 接入 outbox confirmation / worker receipt provider，形成真实 durable action 证据链；
+  4. 继续跟踪 MCP Authorization 和 Agent HITL 趋势，把服务账号签名、RBAC 和审批事实验真做成智能网关的统一能力，而不是散落在单个 API 中。
+
 ## 2026-06-15 追加落地进展：Python AI Runtime 5.68 工具动作 Resume Fact Provider
 
 - 本阶段承接 5.67。上一阶段已经提供 checkpoint 查询和 resume-preview，但恢复事实仍主要依赖调用方在请求里手动传入。真实商业化 Agent Host 不应要求前端、外部 Agent 或调试脚本重传审批 ID、payload reference、澄清结果等事实值，因此本阶段新增服务端恢复事实源抽象。
