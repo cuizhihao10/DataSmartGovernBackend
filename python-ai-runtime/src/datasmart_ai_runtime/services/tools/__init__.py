@@ -70,6 +70,14 @@ from datasmart_ai_runtime.services.tools.tool_action_execution_graph_runner impo
     ToolActionExecutionGraphRunner,
     evidence_selection_from_payload,
 )
+from datasmart_ai_runtime.services.tools.tool_action_resume_fact_provider import (
+    EmptyToolActionResumeFactProvider,
+    StaticToolActionResumeFactProvider,
+    ToolActionResumeFactProvider,
+    ToolActionResumeFactSnapshot,
+    merge_resume_fact_types,
+    resume_fact_types_from_mapping,
+)
 
 __all__ = (
     "ToolActionIntakeBoundary",
@@ -99,6 +107,12 @@ __all__ = (
     "ToolActionExecutionGraphRunResult",
     "ToolActionExecutionGraphRunner",
     "evidence_selection_from_payload",
+    "ToolActionResumeFactSnapshot",
+    "ToolActionResumeFactProvider",
+    "EmptyToolActionResumeFactProvider",
+    "StaticToolActionResumeFactProvider",
+    "resume_fact_types_from_mapping",
+    "merge_resume_fact_types",
     "ToolExecutionReadinessDecision",
     "ToolExecutionReadinessItem",
     "ToolExecutionReadinessPolicy",

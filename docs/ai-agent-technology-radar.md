@@ -1,5 +1,37 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-15 落地补充：Resume should merge server-side facts before continuing a paused tool graph
+
+- 本轮趋势核验：
+  - LangGraph Interrupts 强调中断时由 persistence/checkpointer 保存图状态，并等待外部输入后继续；
+  - LangGraph Persistence 将 checkpointer 用于 thread-scoped 短期状态，将 store 用于跨线程长期记忆，二者不能混淆；
+  - OpenAI Agents Human-in-the-loop 将高风险工具调用表示为 interruption，并通过 RunState 在审批后恢复；
+  - OpenAI Agents running guidance 同样强调审批暂停后应从 state 恢复，而不是开启一个新的用户轮次。
+- 对 DataSmart 的架构映射：
+  - 5.67 已经让 checkpointId/threadId 成为恢复预检入口；
+  - 5.68 把恢复事实抽象为 provider，让审批、澄清、outbox confirmation、worker receipt、预算恢复等事实可以来自服务端；
+  - API 响应只展示事实类型和缺失类型，不展示事实值，避免为了 resume 扩散 prompt、SQL、arguments、payload reference 或审批凭据。
+- 本轮落地到代码的能力：
+  - 新增 `ToolActionResumeFactProvider` 协议；
+  - 新增 `EmptyToolActionResumeFactProvider` 与 `StaticToolActionResumeFactProvider`；
+  - resume-preview 合并请求事实和服务端事实，并新增 `serverSideResumeFacts` 低敏摘要；
+  - provider 异常 fail-closed，不把内部连接、异常消息或原始响应返回给调用方；
+  - 定向 Python 测试 8 个通过。
+- 产品判断：
+  - 这是从“能恢复预检”走向“能被企业控制面安全恢复”的关键缝合点；
+  - 它避免 checkpoint API 直接依赖 permission-admin/outbox/worker 的具体实现，后续可以按 provider 逐个接入；
+  - 不应在这一阶段直接开放真实工具执行，因为 durable outbox、worker receipt、权限审计和幂等链路还没有闭环。
+- 后续趋势落地建议：
+  1. 实现 permission-admin approval/clarification provider，并要求服务间签名或服务账号授权；
+  2. 实现 outbox confirmation / worker receipt provider，把 resume 从“预检通过”推进到“可证明 durable action 已就绪”；
+  3. 把 checkpoint store 替换为 Redis/MySQL durable store，同时补 TTL、租户配额、审计事件和低基数指标；
+  4. 继续跟踪 LangGraph durable execution 与 OpenAI Agents HITL，但只吸收能增强 DataSmart 权限、审计、恢复和低敏治理的机制。
+- 参考资料：
+  - LangGraph Interrupts: `https://docs.langchain.com/oss/python/langgraph/interrupts`
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - OpenAI Running Agents: `https://developers.openai.com/api/docs/guides/agents/running-agents`
+
 ## 2026-06-15 落地补充：Resume should consume checkpoint locators and server-side facts, not replay raw payloads
 
 - 本轮趋势核验：

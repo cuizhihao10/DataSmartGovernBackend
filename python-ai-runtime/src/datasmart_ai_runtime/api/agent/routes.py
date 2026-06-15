@@ -60,6 +60,7 @@ def register_agent_runtime_routes(
     memory_write_governance: Any | None,
     skill_publication_diagnostics_service: Any | None = None,
     tool_execution_readiness_policy_provider: Any | None = None,
+    tool_action_resume_fact_provider: Any | None = None,
     tool_registry: tuple[Any, ...] | None = None,
     gateway_signature_error_factory: Callable[[dict[str, Any]], Exception] | None = None,
     gateway_signature_nonce_store: Any | None = None,
@@ -98,6 +99,10 @@ def register_agent_runtime_routes(
     `tool_registry` 是协议适配预览入口使用的工具目录快照。它与 orchestrator 内部工具规划器使用同一份
     启动期目录时，MCP/A2A/模型主链路看到的工具能力才不会漂移；如果测试或本地脚本没有传入，则 MCP
     preview helper 会回退到 Python 默认工具目录，保证核心单元测试不依赖 Java agent-runtime。
+
+    `tool_action_resume_fact_provider` 是 checkpoint 恢复预检的服务端事实源入口。默认不注入时，
+    resume-preview 只使用调用方请求内事实；后续接入 permission-admin 审批事实、澄清事实库、Java outbox
+    confirmation 或 worker receipt projection 时，只需要注入 provider，而不需要把外部查询逻辑塞进路由文件。
     """
 
     @app.post("/agent/plans")
@@ -232,7 +237,7 @@ def register_agent_runtime_routes(
 
         return build_tool_action_control_flow_preview_response(payload, registered_tools=tool_registry)
 
-    register_tool_action_checkpoint_routes(app)
+    register_tool_action_checkpoint_routes(app, resume_fact_provider=tool_action_resume_fact_provider)
 
     @app.post("/agent/events/replay")
     def replay_agent_events(payload: dict[str, Any]) -> dict[str, Any]:

@@ -16,7 +16,7 @@ from datasmart_ai_runtime.api.agent.tool_action_execution_checkpoint import (
 )
 
 
-def register_tool_action_checkpoint_routes(app: Any) -> None:
+def register_tool_action_checkpoint_routes(app: Any, *, resume_fact_provider: Any | None = None) -> None:
     """注册工具动作 checkpoint 查询与恢复预检路由。
 
     路由设计：
@@ -44,4 +44,7 @@ def register_tool_action_checkpoint_routes(app: Any) -> None:
         payloadReference、policyVersion、outboxConfirmationId 等，不消费事实值、不执行任何副作用。
         """
 
-        return build_tool_action_execution_checkpoint_resume_preview_response(payload)
+        return build_tool_action_execution_checkpoint_resume_preview_response(
+            payload,
+            resume_fact_provider=resume_fact_provider,
+        )

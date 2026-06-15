@@ -11,7 +11,10 @@ from datasmart_ai_runtime.api.agent.tool_action_execution_checkpoint import (
     build_tool_action_execution_checkpoint_query_response,
     build_tool_action_execution_checkpoint_resume_preview_response,
 )
-from datasmart_ai_runtime.services.tools import InMemoryToolActionExecutionCheckpointStore
+from datasmart_ai_runtime.services.tools import (
+    InMemoryToolActionExecutionCheckpointStore,
+    StaticToolActionResumeFactProvider,
+)
 
 
 class FakeApp:
@@ -153,6 +156,51 @@ class ToolActionExecutionCheckpointApiTest(unittest.TestCase):
         self.assertNotIn("ds-api-secret", serialized)
         self.assertNotIn("hidden_table", serialized)
 
+    def test_resume_preview_merges_server_side_fact_provider_without_echoing_values(self) -> None:
+        """服务端事实源可以补齐恢复条件，但响应仍然只能展示事实类型。"""
+
+        checkpoint = self.store.save(
+            _graph_run_for_human_resume(),
+            context={"tenantId": "tenant-provider", "runId": "run-provider"},
+        )
+        provider = StaticToolActionResumeFactProvider(
+            facts_by_checkpoint_id={
+                checkpoint.checkpoint_id: {
+                    "approvalConfirmationId": "approval-sensitive-value",
+                    "clarificationFactId": "clarification-sensitive-value",
+                    "graphId": "graph-sensitive-value",
+                    "payloadReference": "payload-sensitive-reference",
+                    "policyVersion": "policy-sensitive-value",
+                    "sql": "select * from provider_hidden_table",
+                    "arguments": {"secret": "provider-secret"},
+                }
+            }
+        )
+
+        response = build_tool_action_execution_checkpoint_resume_preview_response(
+            {"checkpointId": checkpoint.checkpoint_id, "tenantId": "tenant-provider"},
+            checkpoint_store=self.store,
+            resume_fact_provider=provider,
+        )
+        serialized = str(response)
+
+        self.assertTrue(response["resumeDecision"]["readyToResume"])
+        self.assertEqual("STATIC_RESUME_FACT_PROVIDER", response["serverSideResumeFacts"]["source"])
+        self.assertEqual(5, response["serverSideResumeFacts"]["factReferenceCount"])
+        self.assertEqual((), response["resumeFacts"]["requestAcceptedFactTypes"])
+        self.assertIn("GRAPH_OR_CONTRACT_EVIDENCE", response["resumeFacts"]["serverAcceptedFactTypes"])
+        self.assertIn("PAYLOAD_REFERENCE", response["resumeFacts"]["serverAcceptedFactTypes"])
+        self.assertIn("POLICY_VERSION", response["resumeFacts"]["serverAcceptedFactTypes"])
+        self.assertIn("APPROVAL_CONFIRMATION_FACT", response["resumeFacts"]["serverAcceptedFactTypes"])
+        self.assertIn("CLARIFICATION_FACT", response["resumeFacts"]["serverAcceptedFactTypes"])
+        self.assertNotIn("approval-sensitive-value", serialized)
+        self.assertNotIn("clarification-sensitive-value", serialized)
+        self.assertNotIn("graph-sensitive-value", serialized)
+        self.assertNotIn("payload-sensitive-reference", serialized)
+        self.assertNotIn("policy-sensitive-value", serialized)
+        self.assertNotIn("provider_hidden_table", serialized)
+        self.assertNotIn("provider-secret", serialized)
+
     def test_routes_register_checkpoint_query_and_resume_preview(self) -> None:
         """主 Agent API 注册函数应挂载 checkpoint 子路由。"""
 
@@ -219,6 +267,23 @@ def _graph_run_for_resume() -> dict[str, object]:
         "arguments": {"datasourceId": "ds-api-secret"},
         "sql": "select * from hidden_table",
     }
+
+
+def _graph_run_for_human_resume() -> dict[str, object]:
+    """生成一个需要审批、澄清和 payload 引用共同补齐的恢复场景。"""
+
+    data = dict(_graph_run_for_resume())
+    data["statusCounts"] = {
+        "WAITING_APPROVAL_FACT": 1,
+        "WAITING_CLARIFICATION_FACT": 1,
+        "WAITING_COMMAND_PROPOSAL_EVIDENCE": 1,
+    }
+    data["resumeRequirements"] = [
+        "GRAPH_OR_PAYLOAD_REFERENCE_OR_POLICY_EVIDENCE",
+        "APPROVAL_CONFIRMATION_FACT",
+        "CLARIFICATION_FACT",
+    ]
+    return data
 
 
 if __name__ == "__main__":

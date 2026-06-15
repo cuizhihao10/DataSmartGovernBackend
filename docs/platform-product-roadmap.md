@@ -1,5 +1,41 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-15 追加落地进展：Python AI Runtime 5.68 工具动作 Resume Fact Provider
+
+- 本阶段承接 5.67。上一阶段已经提供 checkpoint 查询和 resume-preview，但恢复事实仍主要依赖调用方在请求里手动传入。真实商业化 Agent Host 不应要求前端、外部 Agent 或调试脚本重传审批 ID、payload reference、澄清结果等事实值，因此本阶段新增服务端恢复事实源抽象。
+- 新增 `services/tools/tool_action_resume_fact_provider.py`：
+  - `ToolActionResumeFactSnapshot` 统一描述服务端事实源返回的低敏快照；
+  - `ToolActionResumeFactProvider` 定义事实查询协议，为后续 permission-admin、澄清事实库、Java outbox confirmation、worker receipt projection 预留装配点；
+  - `EmptyToolActionResumeFactProvider` 保持未装配外部控制面时的旧行为；
+  - `StaticToolActionResumeFactProvider` 支持单元测试和本地联调，用 checkpointId/threadId 模拟服务端事实；
+  - `resume_fact_types_from_mapping(...)` 与 `merge_resume_fact_types(...)` 把事实识别从 API 文件中抽出，避免 checkpoint API 膨胀。
+- `api/agent/tool_action_execution_checkpoint.py`：
+  - `build_tool_action_execution_checkpoint_resume_preview_response(...)` 新增可选 `resume_fact_provider`；
+  - resume-preview 会合并请求内事实和服务端事实；
+  - 响应新增 `serverSideResumeFacts`、`requestAcceptedFactTypes`、`serverAcceptedFactTypes`；
+  - provider 异常时 fail-closed，只返回低敏错误类型，不把异常消息、URL、SQL、Header 或内部响应暴露给调用方。
+- `api/agent/tool_action_checkpoint_routes.py` 与 `api/agent/routes.py`：
+  - checkpoint 子路由支持注入 `tool_action_resume_fact_provider`；
+  - 默认不注入时行为兼容 5.67；
+  - 主 `routes.py` 仍保持 460 行，低于 500 行。
+- 测试：
+  - 新增 `test_tool_action_resume_fact_provider.py`；
+  - 扩展 `test_tool_action_execution_checkpoint_api.py`，覆盖服务端事实补齐恢复条件且事实值不泄漏；
+  - 定向测试 `python -m pytest python-ai-runtime\tests\test_tool_action_resume_fact_provider.py python-ai-runtime\tests\test_tool_action_execution_checkpoint_api.py -q`：8 个测试通过。
+- 产品意义：
+  - resume facts 从“调用方手动补字符串”推进到“可由服务端事实源装配”的控制面模式；
+  - 这更接近 Codex/Claude Code/LangGraph/OpenAI Agents 类 Agent Host：暂停点由 checkpoint/thread 定位，继续条件由受控事实源确认；
+  - 事实源抽象把审批、澄清、outbox、worker receipt、预算恢复等来源留在各自控制面，避免 Python API 层直接耦合所有业务系统。
+- 当前边界：
+  - 本阶段仍是 preview-only，不会真正恢复执行图；
+  - 默认 provider 为空实现，真实 permission-admin、clarification store、outbox writer、worker receipt 尚未接入；
+  - checkpoint store 仍是进程内 memory，跨实例/重启恢复仍需 Redis/MySQL durable store。
+- 下一步推荐路线：
+  1. 优先实现 permission-admin approval/clarification 的远程 provider，让恢复事实真正来自服务端；
+  2. 再实现 outbox confirmation / worker receipt provider，形成 durable action 证据链；
+  3. 将 checkpoint store 升级为 Redis/MySQL，并补 TTL、租户配额、审计事件和低基数指标；
+  4. 继续保持真实工具执行不在 Python preview API 中发生，执行权仍留给 Java outbox + task-management worker。
+
 ## 2026-06-15 追加落地进展：Python AI Runtime 5.67 工具动作 Checkpoint 查询与恢复预检
 
 - 本阶段承接 5.66。上一阶段已经能保存低敏 checkpoint，但还缺少“被安全消费”的入口。本阶段补齐 checkpoint 查询和 resume 预检，让执行前图状态开始进入可恢复控制面，但仍不执行工具、不写 outbox、不派发 worker。

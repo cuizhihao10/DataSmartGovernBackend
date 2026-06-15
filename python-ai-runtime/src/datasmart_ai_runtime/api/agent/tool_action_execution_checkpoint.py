@@ -19,8 +19,13 @@ from typing import Any
 from datasmart_ai_runtime.api.agent.tool_action_control_flow import default_tool_action_execution_checkpoint_store
 from datasmart_ai_runtime.services.agent_gateway.a2a_task_mapping_support import count_forbidden_fields
 from datasmart_ai_runtime.services.tools import (
+    EmptyToolActionResumeFactProvider,
     ToolActionExecutionCheckpoint,
     ToolActionExecutionCheckpointStore,
+    ToolActionResumeFactProvider,
+    ToolActionResumeFactSnapshot,
+    merge_resume_fact_types,
+    resume_fact_types_from_mapping,
 )
 
 
@@ -80,6 +85,7 @@ def build_tool_action_execution_checkpoint_resume_preview_response(
     payload: Mapping[str, Any] | None,
     *,
     checkpoint_store: ToolActionExecutionCheckpointStore | None = None,
+    resume_fact_provider: ToolActionResumeFactProvider | None = None,
 ) -> dict[str, Any]:
     """构建 checkpoint resume 预检响应。
 
@@ -96,9 +102,18 @@ def build_tool_action_execution_checkpoint_resume_preview_response(
     if checkpoint is None:
         return _resume_not_available_response(query, access_issue)
 
-    resume_facts = _resume_fact_presence(payload or {})
+    request_resume_facts = _resume_fact_presence(payload or {})
+    server_fact_snapshot = _collect_server_resume_facts(
+        resume_fact_provider or EmptyToolActionResumeFactProvider(),
+        checkpoint=checkpoint,
+        request_payload=payload or {},
+    )
+    accepted_fact_types = merge_resume_fact_types(
+        request_resume_facts["acceptedFactTypes"],
+        server_fact_snapshot.available_fact_types,
+    )
     required_fact_types = _required_fact_types(checkpoint.resume_requirements)
-    missing_fact_types = tuple(item for item in required_fact_types if item not in resume_facts["acceptedFactTypes"])
+    missing_fact_types = tuple(item for item in required_fact_types if item not in accepted_fact_types)
     ready_to_resume = not missing_fact_types
     return {
         "schemaVersion": RESUME_SCHEMA_VERSION,
@@ -112,12 +127,15 @@ def build_tool_action_execution_checkpoint_resume_preview_response(
         "checkpoint": checkpoint.to_summary(include_graph_run=bool(query["includeGraphRun"])),
         "resumeFacts": {
             "factValuesEchoed": False,
-            "acceptedFactTypes": resume_facts["acceptedFactTypes"],
+            "acceptedFactTypes": accepted_fact_types,
+            "requestAcceptedFactTypes": request_resume_facts["acceptedFactTypes"],
+            "serverAcceptedFactTypes": server_fact_snapshot.available_fact_types,
             "requiredFactTypes": required_fact_types,
             "missingFactTypes": missing_fact_types,
-            "ignoredSensitiveFieldCount": resume_facts["ignoredSensitiveFieldCount"],
+            "ignoredSensitiveFieldCount": request_resume_facts["ignoredSensitiveFieldCount"],
             "payloadPolicy": "FACT_TYPE_PRESENCE_ONLY_VALUES_NOT_ECHOED",
         },
+        "serverSideResumeFacts": server_fact_snapshot.to_summary(),
         "resumeDecision": {
             "readyToResume": ready_to_resume,
             "decision": "READY_FOR_DURABLE_RUNNER_RESUME" if ready_to_resume else "WAITING_FOR_RESUME_FACTS",
@@ -249,45 +267,35 @@ def _resume_fact_presence(payload: Mapping[str, Any]) -> dict[str, Any]:
     - 真正事实值应由后续 durable runner 在服务端内存或受控 store 中消费。
     """
 
-    facts = payload.get("resumeFacts")
-    merged: dict[str, Any] = dict(facts) if isinstance(facts, Mapping) else {}
-    for key in (
-        "graphId",
-        "contractId",
-        "payloadReference",
-        "policyVersion",
-        "approvalConfirmationId",
-        "clarificationFactId",
-        "outboxConfirmationId",
-        "operatorConfirmationId",
-        "controlPlaneClientEnabled",
-        "toolBudgetRecovered",
-        "workerCapacityRecovered",
-    ):
-        if key in payload and key not in merged:
-            merged[key] = payload[key]
-
-    accepted: list[str] = []
-    if _text(merged.get("graphId")) or _text(merged.get("contractId")):
-        accepted.append("GRAPH_OR_CONTRACT_EVIDENCE")
-    if _text(merged.get("payloadReference")):
-        accepted.append("PAYLOAD_REFERENCE")
-    if _text(merged.get("policyVersion")):
-        accepted.append("POLICY_VERSION")
-    if _text(merged.get("approvalConfirmationId")):
-        accepted.append("APPROVAL_CONFIRMATION_FACT")
-    if _text(merged.get("clarificationFactId")):
-        accepted.append("CLARIFICATION_FACT")
-    if _text(merged.get("outboxConfirmationId")) or _text(merged.get("operatorConfirmationId")):
-        accepted.append("OUTBOX_WRITE_CONFIRMATION")
-    if _truthy(merged.get("controlPlaneClientEnabled")):
-        accepted.append("CONTROL_PLANE_CLIENT_ENABLEMENT")
-    if _truthy(merged.get("toolBudgetRecovered")) or _truthy(merged.get("workerCapacityRecovered")):
-        accepted.append("TOOL_BUDGET_OR_WORKER_CAPACITY_RECOVERY")
     return {
-        "acceptedFactTypes": tuple(accepted),
+        "acceptedFactTypes": resume_fact_types_from_mapping(payload),
         "ignoredSensitiveFieldCount": count_forbidden_fields(payload),
     }
+
+
+def _collect_server_resume_facts(
+    provider: ToolActionResumeFactProvider,
+    *,
+    checkpoint: ToolActionExecutionCheckpoint,
+    request_payload: Mapping[str, Any],
+) -> ToolActionResumeFactSnapshot:
+    """调用服务端恢复事实源，并在异常时安全降级。
+
+    provider 后续会连接 permission-admin、澄清事实库、Java outbox writer 或 worker receipt projection。任何一个
+    外部事实源都有可能因为网络、权限、超时或依赖服务异常而失败。preview 接口不能因此泄漏内部异常详情，也不
+    应误判为“事实齐备”；所以这里采用 fail-closed：
+    - 返回空事实集合；
+    - 只暴露异常类型作为低敏错误码；
+    - 不暴露异常 message、URL、SQL、token、Header 或原始响应。
+    """
+
+    try:
+        return provider.collect(checkpoint=checkpoint, request_payload=request_payload)
+    except Exception as exc:  # pragma: no cover - 真实远程事实源故障时触发
+        return ToolActionResumeFactSnapshot(
+            source="RESUME_FACT_PROVIDER_ERROR",
+            error_codes=(exc.__class__.__name__,),
+        )
 
 
 def _required_fact_types(resume_requirements: tuple[str, ...]) -> tuple[str, ...]:
@@ -389,13 +397,13 @@ def _resume_preview_production_readiness() -> dict[str, Any]:
     """resume 预检距离真实恢复执行仍缺的部分。"""
 
     return {
-        "currentMode": "PREFLIGHT_ONLY",
+        "currentMode": "PREFLIGHT_ONLY_WITH_OPTIONAL_SERVER_FACT_PROVIDER",
         "missingProductionRequirements": (
-            "PERMISSION_ADMIN_APPROVAL_FACT_QUERY",
-            "CLARIFICATION_FACT_STORE",
+            "REMOTE_PERMISSION_ADMIN_RESUME_FACT_PROVIDER",
+            "REMOTE_CLARIFICATION_FACT_STORE_PROVIDER",
             "JAVA_GRAPH_PROPOSAL_REVALIDATION",
-            "OUTBOX_WRITER_CONFIRMATION",
-            "WORKER_RECEIPT_PROJECTION",
+            "OUTBOX_WRITER_CONFIRMATION_PROVIDER",
+            "WORKER_RECEIPT_PROJECTION_PROVIDER",
             "IDEMPOTENCY_AND_REPLAY_PROTECTION",
         ),
     }
