@@ -68,6 +68,28 @@ datasmart:
       # 远端权限中心不可用时是否按拒绝处理。
       # 商业化生产环境建议保持 true，避免 permission-admin 故障期间 Agent 越权执行有副作用的工具。
       fail-closed-when-remote-unavailable: ${DATASMART_AGENT_RUNTIME_SERVICE_AUTHORIZATION_FAIL_CLOSED:true}
+    tool-action-resume-facts:
+      # 工具动作恢复事实包配置。
+      # 该能力服务 Python AI Runtime 的 checkpoint/resume-preview：Python 不再只相信请求里自报的
+      # approvalConfirmationId/outbox/receipt 字段，而是向 Java 控制面查询哪些事实类型已被服务端采信。
+      # 注意：本接口仍是 preview/query，不执行工具、不恢复图、不写 outbox、不派发 worker。
+      # 真实执行仍必须经过 command outbox、task-management worker、permission-admin 审批和 receipt 证据链。
+      # 是否启用 permission-admin 审批事实远程评估。
+      # 默认关闭，避免本地学习环境必须同时启动 permission-admin；关闭时 approval fact 会显示 NOT_EVALUATED，
+      # 但绝不会被当作已批准事实。
+      approval-fact-evaluation-enabled: ${DATASMART_AGENT_RUNTIME_RESUME_APPROVAL_FACT_EVALUATION_ENABLED:false}
+      # permission-admin Agent 工具动作审批事实评估接口。
+      # 生产环境建议改为内部 gateway、Nacos 服务发现地址、服务网格入口或 mTLS 受保护地址。
+      # 不建议把公网地址配置到这里，因为请求会包含租户、项目、actor、run、command 等控制面定位字段。
+      approval-fact-evaluate-url: ${DATASMART_AGENT_RUNTIME_RESUME_APPROVAL_FACT_EVALUATE_URL:http://localhost:8085/permissions/agent/tool-action-approvals/evaluate}
+      # 审批事实评估属于恢复预检关键路径，超时应短而明确；超时后由 fail-closed 策略决定是否可重试。
+      approval-fact-timeout-ms: ${DATASMART_AGENT_RUNTIME_RESUME_APPROVAL_FACT_TIMEOUT_MS:1500}
+      # permission-admin 不可用时是否 fail-closed。
+      # 商业化生产环境建议保持 true，防止审批中心故障期间高风险工具动作被 Agent 恢复执行。
+      fail-closed-when-approval-remote-unavailable: ${DATASMART_AGENT_RUNTIME_RESUME_APPROVAL_FACT_FAIL_CLOSED:true}
+      # 单次查询最多扫描多少条 receipt projection。
+      # 当前 runtime event projection 仍是内存热窗口；后续持久化后应改用 runId/commandId/eventType 索引查询。
+      receipt-projection-query-limit: ${DATASMART_AGENT_RUNTIME_RESUME_RECEIPT_QUERY_LIMIT:50}
     persistence:
       # 工具执行审计仓储类型。
       # memory 是当前默认值，适合本地学习、单元测试和早期联调；它不会要求 MySQL 已启动。

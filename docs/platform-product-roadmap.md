@@ -1,5 +1,56 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-16 追加落地进展：Java Agent Runtime 5.70 恢复事实包控制面 API
+
+- 本阶段承接 Python AI Runtime 5.69。上一阶段 Python 已经能向 permission-admin 校验调用方提交的
+  `approvalFactId`，但 Python 仍需要分别理解审批、outbox、worker receipt 等事实来源。本阶段在 Java
+  `agent-runtime` 新增统一恢复事实包查询能力，让 Python/智能网关/未来 Agent Host 可以通过一个控制面 API
+  获取服务端采信的低敏事实类型集合。
+- 新增 `POST /agent-runtime/tool-action-resume-facts/bundles/query` 与
+  `POST /api/agent/tool-action-resume-facts/bundles/query`：
+  - 请求体只允许 checkpoint/thread/session/run/command/outbox/tool/policy 等控制面定位字段；
+  - `approvalFactId` 只用于服务端回查 permission-admin，不在响应中回显；
+  - 响应返回 `availableFactTypes`、`missingFactTypes`、`rejectedFactTypes` 和单项事实状态；
+  - 当前仍是 preview/query，不执行工具、不写 outbox、不派发 worker、不修改 checkpoint。
+- 新增 `AgentToolActionResumeFactBundleService`：
+  - 聚合 permission-admin 审批事实、agent-runtime command outbox、runtime event projection 中的 dry-run/worker receipt；
+  - 对 PROJECT/TENANT/SELF/PLATFORM 数据范围继续复用 `AgentRuntimeEventProjectionAccessSupport` 做服务层收口；
+  - outbox 低敏摘要不返回 `payloadJson`、`payloadReference`、`targetEndpoint`、`lastError`；
+  - receipt 低敏摘要不返回 message、payload body、prompt、SQL、工具参数、样本数据或模型输出。
+- 新增 `AgentToolActionApprovalFactEvaluator` 端口和 `HttpAgentToolActionApprovalFactEvaluator` 实现：
+  - 默认远程审批事实评估关闭，避免本地学习环境强依赖 permission-admin；
+  - 开启后调用 `/permissions/agent/tool-action-approvals/evaluate`；
+  - permission-admin 不可用时按配置 fail-closed，且只返回低敏 issue code，不返回内部 URL、Header、token 或异常原文。
+- 新增恢复事实 DTO 与配置：
+  - `AgentToolActionResumeFactBundleProperties` 管理远程审批事实开关、评估 URL、超时和 receipt 查询窗口；
+  - `application.yml` 已补充详细中文配置说明和环境变量；
+  - 新增 DTO 均保持小文件，核心服务压到 500 行以内，符合拆分和行数约束。
+- 测试：
+  - 新增 `AgentToolActionResumeFactBundleServiceTest`；
+  - 覆盖审批通过 + outbox + receipt 聚合；
+  - 覆盖审批被拒绝进入 `rejectedFactTypes`；
+  - 覆盖项目范围不匹配时 outbox 不可见；
+  - 覆盖 receipt pre-check 失败时拒绝 worker receipt fact；
+  - 序列化响应验证不泄露 approvalFactId、payloadReference、内部 endpoint、SQL、prompt 或 payloadJson。
+- 验证：
+  - `mvn -pl agent-runtime -am "-Dtest=AgentToolActionResumeFactBundleServiceTest,AgentToolActionControlledDryRunReceiptServiceTest,AgentToolActionCommandOutboxWriterServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：14 个测试通过；
+  - Maven Toolchain 使用 JDK 21：`C:\Users\Cui\.jdks\temurin-21.0.10`；
+  - 行数检查：`AgentToolActionResumeFactBundleService.java` 500 行、测试 275 行、Controller 68 行。
+- 产品意义：
+  - resume 从“Python 分散调用多个事实源”推进到“Java 控制面聚合事实包”；
+  - 这更接近 Codex/Claude Code/LangGraph/OpenAI Agents 类 Agent Host：checkpoint/thread 定位暂停点，宿主控制面返回可采信事实，执行仍由 outbox/worker/审批链保护；
+  - 当前实现不会过早开放真实恢复执行，先把企业治理必需的事实验证、低敏摘要和数据范围收口做稳。
+- 当前边界：
+  - Java 还不能仅凭 checkpointId/threadId 自动发现全部事实，仍需要调用方传入 runId/commandId/approvalFactId 等定位符；
+  - clarification fact store 未接入；
+  - receipt 仍来自 runtime event projection 热窗口，生产应增加持久化索引；
+  - 还缺服务账号签名/mTLS、审计事件、低基数指标和 Redis/MySQL durable checkpoint store。
+- 下一步推荐路线：
+  1. 在 Python Runtime 接入该 Java fact bundle API，替代单独调用 permission-admin 的审批事实 provider；
+  2. 设计 durable checkpoint store，使 Java 可以按 checkpointId/threadId 反查 run/command/required facts；
+  3. 接入 clarification fact store 和 worker receipt 持久化索引；
+  4. 为恢复事实查询补审计事件、Prometheus 低基数指标、服务账号签名和 gateway 内部路由。
+
 ## 2026-06-15 追加落地进展：Python AI Runtime 5.69 permission-admin 审批恢复事实远程校验
 
 - 本阶段承接 5.68。上一阶段已经有 resume fact provider 抽象，但默认仍是空实现或静态测试事实；如果调用方在

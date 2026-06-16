@@ -13,6 +13,7 @@ import com.czh.datasmart.govern.agent.config.AgentRuntimePersistenceProperties;
 import com.czh.datasmart.govern.agent.config.AgentRunToolDagConfirmationProperties;
 import com.czh.datasmart.govern.agent.config.AgentSkillVisibilitySnapshotIndexProperties;
 import com.czh.datasmart.govern.agent.config.AgentSkillRegistryProperties;
+import com.czh.datasmart.govern.agent.config.AgentToolActionResumeFactBundleProperties;
 import com.czh.datasmart.govern.agent.config.AgentToolServiceAuthorizationProperties;
 import com.czh.datasmart.govern.agent.config.AgentToolExecutionEventProperties;
 import com.czh.datasmart.govern.agent.config.AgentToolExecutionEventOutboxProperties;
@@ -38,6 +39,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
         AgentSkillVisibilitySnapshotIndexProperties.class,
         AgentRuntimeEventConsumerProperties.class,
         AgentToolServiceAuthorizationProperties.class,
+        AgentToolActionResumeFactBundleProperties.class,
         AgentAsyncTaskCommandOutboxProperties.class,
         AgentRunToolDagConfirmationProperties.class,
         AgentToolExecutionEventProperties.class,

@@ -1,5 +1,37 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-16 落地补充：Resume fact bundle should be a host control-plane API
+
+- 本轮趋势核验：
+  - LangGraph Interrupts 明确图执行可以在节点中暂停，恢复时要复用同一 thread/checkpoint，并且生产环境应使用 durable checkpointer；
+  - LangGraph Persistence 将 checkpoint 定位为 thread-scoped graph state，说明恢复执行不应依赖前端重传完整原始 payload；
+  - OpenAI Agents SDK Human-in-the-loop 把敏感工具调用建模为 interruption，再通过审批/拒绝结果恢复 RunState；
+  - MCP Authorization 把 HTTP transport 授权提升为协议级要求，说明工具/资源访问必须由宿主控制面校验，而不是只相信客户端字段。
+- 对 DataSmart 的架构映射：
+  - Python 5.68/5.69 已经具备 resume fact provider 与 permission-admin 审批事实验真；
+  - Java 5.70 新增 `tool-action-resume-facts/bundles/query`，把 approval、outbox、worker receipt 聚合为 host-level fact bundle；
+  - 该 API 只返回 fact type/status/evidence code/issue code，不返回事实值、工具参数、payload body、SQL、prompt、模型输出或内部 endpoint；
+  - outbox 与 receipt 的摘要被刻意低敏化，避免 runtime/control-plane API 变成第二份敏感上下文缓存。
+- 本轮落地到代码的能力：
+  - 新增 `AgentToolActionResumeFactBundleService`；
+  - 新增 `AgentToolActionApprovalFactEvaluator` 与 HTTP permission-admin 实现；
+  - 新增恢复事实包 Controller、DTO、配置项和单元测试；
+  - 定向 Java 测试 14 个通过，核心服务控制在 500 行。
+- 产品判断：
+  - 这是从“Python 自己串多个 provider”向“Java 企业控制面统一聚合事实”的关键一步；
+  - 它符合 Codex/Claude Code 类 Agent Host 的方向：模型/协议只提出动作意图，宿主平台负责权限、审批、低敏事实、outbox、worker receipt 和审计；
+  - 仍不应该直接开放真实 resume 执行，因为 durable checkpoint store、clarification fact、receipt persistent index、服务账号签名和审计指标还未闭环。
+- 后续趋势落地建议：
+  1. Python Runtime 下一步应消费 Java fact bundle API，而不是继续分别调用 permission-admin/outbox/receipt；
+  2. Java 侧应建设 durable checkpoint store，让 checkpointId/threadId 能自动发现 run/command/required facts；
+  3. MCP `tools/call`、A2A action、模型 tool_call 应统一落入 `ToolPlan -> readiness -> checkpoint -> fact bundle -> outbox/worker receipt`；
+  4. 服务间调用需要引入 MCP Authorization 风格的服务账号签名、mTLS 或内部 gateway 策略。
+- 参考资料：
+  - LangGraph Interrupts: `https://docs.langchain.com/oss/python/langgraph/interrupts`
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Authorization: `https://modelcontextprotocol.io/specification/draft/basic/authorization`
+
 ## 2026-06-15 落地补充：Client-supplied resume facts must be verified by the host control plane
 
 - 本轮趋势核验：
