@@ -7,6 +7,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from datasmart_ai_runtime.api.agent.routes import register_agent_runtime_routes
+from datasmart_ai_runtime.api.agent.tool_action_checkpoint_routes import register_tool_action_checkpoint_routes
 from datasmart_ai_runtime.api.agent.tool_action_execution_checkpoint import (
     build_tool_action_execution_checkpoint_query_response,
     build_tool_action_execution_checkpoint_resume_preview_response,
@@ -272,6 +273,34 @@ class ToolActionExecutionCheckpointApiTest(unittest.TestCase):
 
         self.assertIn("/agent/tool-actions/checkpoints/query", app.post_routes)
         self.assertIn("/agent/tool-actions/checkpoints/resume-preview", app.post_routes)
+
+
+    def test_checkpoint_routes_use_injected_store(self) -> None:
+        """checkpoint 子路由必须使用启动层注入的共享 store。
+
+        这个测试看起来只是一次查询，但它保护的是生产恢复链路的关键装配关系：
+        control-flow-preview 保存 checkpoint、query 查询 checkpoint、resume-preview 预检 checkpoint 必须读写同一个
+        store。否则在 Redis 多实例模式接入前，API 表面看起来都存在，实际恢复时却会因为各自创建内存实例而查不到状态。
+        """
+
+        app = FakeApp()
+        checkpoint = self.store.save(
+            _graph_run_for_resume(),
+            context={"tenantId": "tenant-route", "runId": "run-route"},
+        )
+        register_tool_action_checkpoint_routes(app, checkpoint_store=self.store)
+
+        query_response = app.post_routes["/agent/tool-actions/checkpoints/query"](
+            {
+                "checkpointId": checkpoint.checkpoint_id,
+                "tenantId": "tenant-route",
+                "includeGraphRun": True,
+            }
+        )
+
+        self.assertEqual(1, query_response["checkpointCount"])
+        self.assertEqual(checkpoint.checkpoint_id, query_response["checkpoints"][0]["checkpointId"])
+        self.assertEqual("run-route", query_response["checkpoints"][0]["threadId"])
 
 
 def _graph_run_for_resume() -> dict[str, object]:

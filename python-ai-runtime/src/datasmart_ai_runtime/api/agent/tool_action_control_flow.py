@@ -22,6 +22,7 @@ from datasmart_ai_runtime.services.agent_gateway.a2a_task_mapping_support import
 from datasmart_ai_runtime.services.tools import (
     InMemoryToolActionExecutionCheckpointStore,
     ToolActionControlFlowService,
+    ToolActionExecutionCheckpointStore,
     ToolActionExecutionGraphRunner,
     ToolActionIntakeSource,
     evidence_selection_from_payload,
@@ -52,6 +53,7 @@ def build_tool_action_control_flow_preview_response(
     registered_tools: tuple[ToolDefinition, ...] | None = None,
     control_flow_service: ToolActionControlFlowService | None = None,
     execution_graph_runner: ToolActionExecutionGraphRunner | None = None,
+    checkpoint_store: ToolActionExecutionCheckpointStore | None = None,
 ) -> dict[str, Any]:
     """构建统一工具动作控制流预览响应。
 
@@ -102,8 +104,11 @@ def build_tool_action_control_flow_preview_response(
     # `toolActionExecutionGraphRun`：它会读取 proposal 模板并运行最小执行前图 runner。
     # 默认 runner 内部的 Java proposal client 是 disabled，不会产生网络调用；当后续启动层注入启用后的
     # runner 时，READY 分支才会提交 Java proposal。这样 API 契约先稳定，真实副作用仍由配置和控制面把关。
+    # checkpoint_store 由启动层注入时，control-flow-preview 与 checkpoint 查询/恢复预检会共享同一个存储。
+    # 这对 Redis 生产模式尤其重要：预览阶段保存的短期执行图状态，后续必须能被另一个请求、另一个实例或
+    # 恢复预检路由读到；如果没有注入，则继续使用模块级 in-memory 默认实例，保证本地测试向后兼容。
     runner = execution_graph_runner or ToolActionExecutionGraphRunner(
-        checkpoint_store=_DEFAULT_EXECUTION_GRAPH_CHECKPOINT_STORE,
+        checkpoint_store=checkpoint_store or _DEFAULT_EXECUTION_GRAPH_CHECKPOINT_STORE,
     )
     response["toolActionExecutionGraphRun"] = runner.run(
         response,

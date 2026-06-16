@@ -1,5 +1,57 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-16 追加落地进展：Python AI Runtime 5.72 Redis 工具动作 checkpoint store
+
+- 本阶段承接 Python 5.71。上一阶段 Python resume-preview 已经优先消费 Java agent-runtime 统一恢复事实包，
+  但工具动作执行前图 checkpoint 仍默认保存在进程内 memory store。真实商业化 Agent Host 需要在等待审批、
+  澄清、outbox confirmation 或 worker receipt 期间支持跨请求、跨实例和服务重启后的短期恢复定位，
+  因此本阶段把 checkpoint store 推进到可选 Redis 持久层。
+- 新增 `services/tools/tool_action_execution_checkpoint_redis.py`：
+  - `RedisToolActionExecutionCheckpointStore` 实现 `ToolActionExecutionCheckpointStore` 协议；
+  - Redis key 拆分为 item、thread list、sequence counter 三类；
+  - 使用 `INCR` 为同一 thread 分配递增 sequence；
+  - 支持 `set/get/delete/incr/rpush/ltrim/lrange/expire` 兼容客户端，便于真实 redis-py、Redis Cluster SDK 或测试 fake client 注入；
+  - 保存前继续调用 `low_sensitive_execution_graph_summary(...)` 二次裁剪，避免敏感字段被误写入 Redis。
+- 新增 `services/tools/tool_action_execution_checkpoint_components.py`：
+  - `ToolActionExecutionCheckpointStoreSettings` 管理 store type、Redis URL、key prefix、TTL、单 thread 上限和内存全局上限；
+  - `DATASMART_TOOL_ACTION_CHECKPOINT_STORE` 支持 `in-memory` 与 `redis`；
+  - `DATASMART_TOOL_ACTION_CHECKPOINT_REDIS_URL` 未配置时可复用 `DATASMART_AI_RUNTIME_REDIS_URL`；
+  - 只有显式选择 Redis 时才导入 redis-py，保持本地学习和单元测试零 Redis 依赖；
+  - 新增低敏诊断函数，Redis URL 会脱敏，不返回任何 checkpoint 内容。
+- API 装配更新：
+  - `api/app.py` 在启动阶段创建统一 checkpoint store；
+  - 新增 `GET /agent/tool-actions/checkpoints/diagnostics`，只返回 store 类型、实现类名、TTL、容量和脱敏 Redis URL；
+  - `register_agent_runtime_routes(...)` 新增 `tool_action_checkpoint_store` 注入参数；
+  - `/agent/tool-actions/control-flow-preview`、`/agent/tool-actions/checkpoints/query`、`/agent/tool-actions/checkpoints/resume-preview`
+    现在可共享同一个 store；
+  - 未注入时仍回退到旧的 in-memory 默认实例，保证历史测试和本地离线脚本兼容。
+- 测试：
+  - 新增 `test_tool_action_execution_checkpoint_redis_store.py`，覆盖跨 store 实例读取、thread sequence 递增、
+    per-thread 裁剪、TTL 设置和敏感字段不落 Redis；
+  - 新增 `test_tool_action_execution_checkpoint_components.py`，覆盖默认 in-memory、Redis factory 注入、
+    诊断 URL 脱敏和非法 store type 快速失败；
+  - 扩展 `test_tool_action_control_flow.py`，固定 control-flow-preview 会写入注入的 checkpoint store；
+  - 扩展 `test_tool_action_execution_checkpoint_api.py`，固定 checkpoint 子路由使用启动层注入的共享 store。
+- 验证：
+  - `python -m compileall python-ai-runtime\src\datasmart_ai_runtime ...`：通过；
+  - 定向 checkpoint/control-flow 测试 20 个通过；
+  - 全量 Python 测试 `python -m pytest python-ai-runtime\tests -q`：466 个通过。
+- 产品意义：
+  - checkpoint 从“本地单进程演示状态”推进到“可配置短期 durable store”；
+  - 这贴近 LangGraph/OpenAI Agents/Codex/Claude Code 类 Agent Host 的暂停恢复模式：thread/checkpoint 定位图状态，
+    服务端 fact bundle 决定是否允许恢复，真实副作用仍由 Java outbox、worker receipt、审批和审计链保护；
+  - 当前 Redis store 仍只保存低敏执行图摘要，不保存 prompt、SQL、工具参数、payload body、样本数据、模型输出、凭证或内部 endpoint。
+- 当前边界：
+  - Redis list 裁剪当前使用普通命令组合，极端高并发同 thread 写入后续可升级 Lua/transaction；
+  - Redis 只承担短期恢复状态，不适合作为长期审计、管理员检索或合规归档；
+  - checkpoint 与 Java fact bundle 之间仍需要更强的 checkpointId/threadId 自动事实发现；
+  - 服务账号签名、mTLS/gateway 内部路由、低基数指标、租户配额和 MySQL 长期投影仍未闭环。
+- 下一步推荐路线：
+  1. 将 Redis checkpoint 与 Java fact bundle 的定位字段进一步打通，让 checkpointId/threadId 自动关联 run、command、required facts。
+  2. 为 checkpoint query/resume-preview 增加服务账号签名、审计事件和 Prometheus 低基数指标。
+  3. 补 Java clarification fact store 与 worker receipt 持久化索引。
+  4. 暂不开放真实 resume 执行；先完成 outbox、worker receipt、幂等、配额和审计闭环。
+
 ## 2026-06-16 追加落地进展：Python AI Runtime 5.71 接入 Java 恢复事实包 Provider
 
 - 本阶段承接 Java Agent Runtime 5.70。上一阶段 Java 已经提供 `tool-action-resume-facts/bundles/query`

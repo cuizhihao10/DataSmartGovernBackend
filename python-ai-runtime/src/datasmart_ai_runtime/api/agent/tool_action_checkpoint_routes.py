@@ -14,9 +14,15 @@ from datasmart_ai_runtime.api.agent.tool_action_execution_checkpoint import (
     build_tool_action_execution_checkpoint_query_response,
     build_tool_action_execution_checkpoint_resume_preview_response,
 )
+from datasmart_ai_runtime.services.tools import ToolActionExecutionCheckpointStore
 
 
-def register_tool_action_checkpoint_routes(app: Any, *, resume_fact_provider: Any | None = None) -> None:
+def register_tool_action_checkpoint_routes(
+    app: Any,
+    *,
+    checkpoint_store: ToolActionExecutionCheckpointStore | None = None,
+    resume_fact_provider: Any | None = None,
+) -> None:
     """注册工具动作 checkpoint 查询与恢复预检路由。
 
     路由设计：
@@ -34,7 +40,10 @@ def register_tool_action_checkpoint_routes(app: Any, *, resume_fact_provider: An
         这能避免 checkpoint 查询接口在尚未接入完整认证前被误用成跨租户枚举接口。
         """
 
-        return build_tool_action_execution_checkpoint_query_response(payload)
+        return build_tool_action_execution_checkpoint_query_response(
+            payload,
+            checkpoint_store=checkpoint_store,
+        )
 
     @app.post("/agent/tool-actions/checkpoints/resume-preview")
     def preview_tool_action_checkpoint_resume(payload: dict[str, Any]) -> dict[str, Any]:
@@ -46,5 +55,6 @@ def register_tool_action_checkpoint_routes(app: Any, *, resume_fact_provider: An
 
         return build_tool_action_execution_checkpoint_resume_preview_response(
             payload,
+            checkpoint_store=checkpoint_store,
             resume_fact_provider=resume_fact_provider,
         )

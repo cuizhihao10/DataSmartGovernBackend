@@ -74,6 +74,11 @@ from datasmart_ai_runtime.services.runtime_events.runtime_event_components impor
     runtime_event_component_diagnostics,
 )
 from datasmart_ai_runtime.services.skills import build_skill_publication_manifest_diagnostics_service
+from datasmart_ai_runtime.services.tools import (
+    build_tool_action_execution_checkpoint_store,
+    tool_action_execution_checkpoint_store_diagnostics,
+    tool_action_execution_checkpoint_store_settings_from_env,
+)
 
 
 def _build_runtime_event_replay_sources(agent_runtime_base_url: str | None) -> tuple[Any, ...]:
@@ -201,6 +206,15 @@ def create_app() -> Any:
     # worker/dry-run receipt；如果未启用 fact bundle，仍兼容 5.69 的 permission-admin 单点审批事实 provider。
     # 两条远程链路默认关闭；开启后，未被 Java 控制面采信的事实会通过 rejectedFactTypes 覆盖请求自报事实。
     tool_action_resume_fact_provider = build_tool_action_resume_fact_provider()
+    # 工具动作执行前图 checkpoint store 是“暂停/恢复”能力的短期状态底座。
+    #
+    # 装配原则：
+    # - 本地学习与默认测试环境继续使用 in-memory，保持零 Redis 依赖；
+    # - 生产可以通过 DATASMART_TOOL_ACTION_CHECKPOINT_STORE=redis 切到 Redis，让多实例、重启和后续恢复预检
+    #   能够读到同一个 checkpoint；
+    # - 无论底层存储是什么，payload 都只允许保存低敏执行图摘要，不保存 prompt、SQL、工具参数值、模型输出或凭证。
+    tool_action_checkpoint_store_settings = tool_action_execution_checkpoint_store_settings_from_env()
+    tool_action_checkpoint_store = build_tool_action_execution_checkpoint_store(tool_action_checkpoint_store_settings)
 
     def _start_memory_materialization_worker() -> None:
         """FastAPI startup 生命周期中启动长期记忆物化 worker。"""
@@ -273,6 +287,20 @@ def create_app() -> Any:
             gateway_signature_security_stats,
             gateway_signature_nonce_store,
             gateway_signature_nonce_settings,
+        )
+
+    @app.get("/agent/tool-actions/checkpoints/diagnostics")
+    def tool_action_checkpoint_store_runtime_diagnostics() -> dict[str, Any]:
+        """查询工具动作执行前图 checkpoint store 的启动诊断。
+
+        该接口面向智能网关、Java 控制面和运维排障，用来确认当前 Python Runtime 到底使用 in-memory
+        还是 Redis checkpoint store。响应不会读取或返回任何 checkpoint 正文，只返回实现类名、TTL、
+        容量和脱敏后的 Redis URL，因此可以作为生产健康检查/配置检查的一部分。
+        """
+
+        return tool_action_execution_checkpoint_store_diagnostics(
+            tool_action_checkpoint_store,
+            tool_action_checkpoint_store_settings,
         )
 
     @app.get("/agent/skills/publication/diagnostics")
@@ -365,6 +393,7 @@ def create_app() -> Any:
         skill_publication_diagnostics_service=skill_publication_manifest_diagnostics,
         tool_execution_readiness_policy_provider=tool_execution_readiness_policy_provider,
         tool_action_resume_fact_provider=tool_action_resume_fact_provider,
+        tool_action_checkpoint_store=tool_action_checkpoint_store,
         tool_registry=tool_registry,
         gateway_signature_error_factory=lambda detail: HTTPException(status_code=401, detail=detail),
         gateway_signature_nonce_store=gateway_signature_nonce_store,

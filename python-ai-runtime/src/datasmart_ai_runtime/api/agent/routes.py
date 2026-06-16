@@ -61,6 +61,7 @@ def register_agent_runtime_routes(
     skill_publication_diagnostics_service: Any | None = None,
     tool_execution_readiness_policy_provider: Any | None = None,
     tool_action_resume_fact_provider: Any | None = None,
+    tool_action_checkpoint_store: Any | None = None,
     tool_registry: tuple[Any, ...] | None = None,
     gateway_signature_error_factory: Callable[[dict[str, Any]], Exception] | None = None,
     gateway_signature_nonce_store: Any | None = None,
@@ -103,6 +104,12 @@ def register_agent_runtime_routes(
     `tool_action_resume_fact_provider` 是 checkpoint 恢复预检的服务端事实源入口。默认不注入时，
     resume-preview 只使用调用方请求内事实；后续接入 permission-admin 审批事实、澄清事实库、Java outbox
     confirmation 或 worker receipt projection 时，只需要注入 provider，而不需要把外部查询逻辑塞进路由文件。
+
+    `tool_action_checkpoint_store` 是工具动作执行前图 checkpoint 的共享存储入口：
+    - control-flow-preview 会把低敏执行图 checkpoint 保存到这里；
+    - checkpoint query 与 resume-preview 会从同一个 store 读取；
+    - 生产环境可注入 Redis 实现，避免多实例或重启后丢失等待审批/澄清的短期状态；
+    - 未注入时 helper 仍回退到本地默认 in-memory store，保证离线测试和学习环境不需要 Redis。
     """
 
     @app.post("/agent/plans")
@@ -235,9 +242,17 @@ def register_agent_runtime_routes(
         - 不回显原始参数值、prompt、SQL、样本数据、模型输出、凭证或内部 endpoint。
         """
 
-        return build_tool_action_control_flow_preview_response(payload, registered_tools=tool_registry)
+        return build_tool_action_control_flow_preview_response(
+            payload,
+            registered_tools=tool_registry,
+            checkpoint_store=tool_action_checkpoint_store,
+        )
 
-    register_tool_action_checkpoint_routes(app, resume_fact_provider=tool_action_resume_fact_provider)
+    register_tool_action_checkpoint_routes(
+        app,
+        checkpoint_store=tool_action_checkpoint_store,
+        resume_fact_provider=tool_action_resume_fact_provider,
+    )
 
     @app.post("/agent/events/replay")
     def replay_agent_events(payload: dict[str, Any]) -> dict[str, Any]:

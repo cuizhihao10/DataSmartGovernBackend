@@ -64,6 +64,16 @@ from datasmart_ai_runtime.services.tools.tool_action_execution_checkpoint import
     ToolActionExecutionCheckpointStore,
     low_sensitive_execution_graph_summary,
 )
+from datasmart_ai_runtime.services.tools.tool_action_execution_checkpoint_components import (
+    ToolActionExecutionCheckpointStoreSettings,
+    build_tool_action_execution_checkpoint_store,
+    tool_action_execution_checkpoint_store_diagnostics,
+    tool_action_execution_checkpoint_store_settings_from_env,
+)
+from datasmart_ai_runtime.services.tools.tool_action_execution_checkpoint_redis import (
+    DEFAULT_REDIS_CHECKPOINT_KEY_PREFIX,
+    RedisToolActionExecutionCheckpointStore,
+)
 from datasmart_ai_runtime.services.tools.tool_action_execution_graph_runner import (
     ToolActionCommandProposalEvidenceSelection,
     ToolActionExecutionGraphRunResult,
@@ -114,6 +124,12 @@ __all__ = (
     "ToolActionExecutionCheckpoint",
     "ToolActionExecutionCheckpointStore",
     "InMemoryToolActionExecutionCheckpointStore",
+    "DEFAULT_REDIS_CHECKPOINT_KEY_PREFIX",
+    "RedisToolActionExecutionCheckpointStore",
+    "ToolActionExecutionCheckpointStoreSettings",
+    "build_tool_action_execution_checkpoint_store",
+    "tool_action_execution_checkpoint_store_diagnostics",
+    "tool_action_execution_checkpoint_store_settings_from_env",
     "low_sensitive_execution_graph_summary",
     "ToolActionCommandProposalEvidenceSelection",
     "ToolActionExecutionGraphRunResult",

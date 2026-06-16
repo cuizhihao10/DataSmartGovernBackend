@@ -1,5 +1,38 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-16 落地补充：Checkpoint store should be durable before real tool resume
+
+- 本轮趋势核验：
+  - LangGraph Persistence 明确区分 thread-scoped checkpointer 与 cross-thread store；前者用于对话连续性、HITL、time travel 和 fault tolerance，后者用于用户偏好、事实和共享知识。
+  - LangGraph Interrupts 强调生产 interrupt/resume 需要 durable checkpointer，并且 resume 必须复用同一个 thread id；这说明暂停点不应只停留在单进程内存。
+  - OpenAI Agents SDK Human-in-the-loop 将高风险工具调用建模为暂停、审批、恢复的状态流，强化了“执行前状态必须可恢复”的产品要求。
+  - MCP Authorization 把受限资源与工具调用的授权边界放在协议层，提醒 DataSmart 的工具恢复不应绕过宿主控制面和服务账号边界。
+- 对 DataSmart 的架构映射：
+  - 5.71 已让 Python resume-preview 消费 Java fact bundle，但如果 checkpoint 本身仍是 in-memory，多实例和重启后仍无法稳定定位暂停点。
+  - 5.72 新增 Redis checkpoint store，把短期执行图状态从本地内存推进到可选 durable store。
+  - Redis 只承担短期 thread/checkpoint 状态，不承担长期记忆、审计正文或真实 payload 存储；长期事实仍应进入 Java 控制面、MySQL 投影或对象归档。
+  - `control-flow-preview -> checkpoint query -> resume-preview -> Java fact bundle` 开始形成可恢复 Agent Host 的最小闭环。
+- 本轮落地到代码的能力：
+  - 新增 `RedisToolActionExecutionCheckpointStore`；
+  - 新增 `ToolActionExecutionCheckpointStoreSettings` 与环境变量装配；
+  - FastAPI 启动阶段统一创建 checkpoint store，并注入 control-flow-preview、checkpoint query、resume-preview；
+  - 新增 `/agent/tool-actions/checkpoints/diagnostics` 低敏诊断；
+  - 全量 Python 测试 466 个通过。
+- 产品判断：
+  - 这是从“能展示 checkpoint”走向“checkpoint 可被生产环境恢复链路消费”的关键一步；
+  - 仍不建议开放真实 resume 执行，因为服务账号签名、审计事件、低基数指标、checkpoint/fact bundle 自动关联、worker receipt 持久化索引和租户配额尚未闭环；
+  - 当前最佳路线是继续把真实副作用留在 Java outbox/worker/审批/审计链中，Python 负责低敏图状态、恢复预检和趋势适配。
+- 后续趋势落地建议：
+  1. 把 Redis checkpoint 的 thread/checkpoint 与 Java fact bundle 的 run/command/required facts 自动关联。
+  2. 为 checkpoint 查询与恢复预检补服务账号签名、scope challenge、审计事件和低基数 Prometheus 指标。
+  3. 将 Redis checkpoint 继续与 MCP tools/call、A2A action、模型 tool_call 的统一 `ToolPlan -> readiness -> checkpoint` 控制面打通。
+  4. 后续再评估 MySQL 长期 checkpoint/audit 投影，避免把 Redis TTL 拉长成伪审计库。
+- 参考资料：
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - LangGraph Interrupts: `https://docs.langchain.com/oss/python/langgraph/interrupts`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Authorization: `https://modelcontextprotocol.io/specification/draft/basic/authorization`
+
 ## 2026-06-16 落地补充：Python resume provider should consume host fact bundles
 
 - 本轮趋势核验：

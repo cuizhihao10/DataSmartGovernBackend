@@ -12,7 +12,7 @@ from datasmart_ai_runtime.api.agent.tool_action_control_flow import (
 )
 from datasmart_ai_runtime.config import default_tool_registry
 from datasmart_ai_runtime.domain.contracts import ModelToolCall
-from datasmart_ai_runtime.services.tools import ToolActionControlFlowService
+from datasmart_ai_runtime.services.tools import InMemoryToolActionExecutionCheckpointStore, ToolActionControlFlowService
 
 
 class FakeApp:
@@ -186,6 +186,41 @@ class ToolActionControlFlowServiceTest(unittest.TestCase):
         self.assertNotIn("A2A 用户原文", serialized)
         self.assertNotIn("ds-a2a-secret", serialized)
         self.assertNotIn("internal-a2a", serialized)
+
+    def test_control_flow_preview_uses_injected_checkpoint_store(self) -> None:
+        """控制流预览应把执行图 checkpoint 写入调用方注入的 store。
+
+        这条测试对应生产装配中的关键链路：FastAPI 启动阶段创建一个共享 store，然后 control-flow-preview
+        保存 checkpoint，checkpoint query/resume-preview 再读取同一个 store。只要这里验证注入 store 生效，
+        后续把底层从 in-memory 切到 Redis 时，上层 API 就不需要再改变。
+        """
+
+        checkpoint_store = InMemoryToolActionExecutionCheckpointStore(max_checkpoints_per_thread=5, max_total_checkpoints=20)
+        response = build_tool_action_control_flow_preview_response(
+            {
+                "source": "MCP_TOOLS_CALL",
+                "method": "tools/call",
+                "params": {
+                    "name": "datasource.metadata.read",
+                    "arguments": {"datasourceId": "ds-injected-secret"},
+                },
+                "visibleToolNames": ["datasource.metadata.read"],
+                "context": {
+                    "tenantId": "tenant-injected-store",
+                    "runId": "run-injected-store",
+                    "policyVersion": "tool-readiness-policy.v1",
+                },
+            },
+            registered_tools=self.tools,
+            checkpoint_store=checkpoint_store,
+        )
+
+        checkpoint_id = response["toolActionExecutionGraphRun"]["checkpoint"]["checkpointId"]
+        saved = checkpoint_store.get(checkpoint_id)
+
+        self.assertIsNotNone(saved)
+        self.assertEqual("run-injected-store", saved.thread_id)
+        self.assertNotIn("ds-injected-secret", str(saved.to_summary(include_graph_run=True)))
 
     def test_agent_routes_register_unified_control_flow_preview(self) -> None:
         """Agent 路由注册函数应暴露统一控制流预览入口。"""
