@@ -1,5 +1,58 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-16 追加落地进展：Python AI Runtime 5.71 接入 Java 恢复事实包 Provider
+
+- 本阶段承接 Java Agent Runtime 5.70。上一阶段 Java 已经提供 `tool-action-resume-facts/bundles/query`
+  统一恢复事实包 API，但 Python resume-preview 仍优先使用旧的 permission-admin 单一审批事实 provider。本阶段把
+  Python AI Runtime 的恢复事实来源升级为“优先消费 Java agent-runtime 控制面事实包，旧 permission-admin provider
+  仅作为兼容兜底”。
+- 新增 `services/tools/tool_action_resume_fact_bundle_client.py`：
+  - `JavaAgentRuntimeToolActionResumeFactBundleClient` 实现 `ToolActionResumeFactProvider` 协议；
+  - `AgentRuntimeResumeFactBundleClientSettings` 管理 enabled、baseUrl、bundlePath、timeout、service token、
+    服务账号 actor/role、数据范围和授权项目列表；
+  - 默认关闭，只有 `DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_ENABLED=true` 且配置
+    `DATASMART_AGENT_RUNTIME_BASE_URL` 时才访问 Java；
+  - 默认路径对齐 Java 5.70：`/agent-runtime/tool-action-resume-facts/bundles/query`。
+- 远程请求保持低敏白名单：
+  - 只提交 checkpointId、threadId、sessionId、runId、commandId、outboxId、approvalFactId、
+    clarificationFactId、toolCode、requestedPolicyVersion、tenantId、projectId、actorId、requiredFactTypes
+    等控制面定位字段；
+  - 不提交 prompt、SQL、arguments、payload body、样本数据、模型输出、凭证、内部 endpoint 或 artifact 正文；
+  - Header 只携带服务来源、trace、tenant、actor、role、data scope、authorized project ids 和可选服务 token。
+- 响应解析保持控制面语义：
+  - 解析 Java `PlatformApiResponse.data` 中的 `availableFactTypes`、`missingFactTypes`、`rejectedFactTypes`
+    和单项 fact 的低敏 `issueCodes`；
+  - 如果 Java 返回某个服务端背书事实缺失，而请求方又自报了对应事实值，Python 会把该事实类型提升到
+    `rejectedFactTypes`，避免调用方用任意字符串绕过恢复预检；
+  - Java 不可用或返回平台错误时 fail-closed，只返回低敏错误码，并拒绝请求自报的服务端背书事实类型。
+- `api/agent/orchestrator_factory.py` 更新恢复事实 provider 装配顺序：
+  - 优先检查 `DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_ENABLED`；
+  - 未启用 Java bundle 时，才回落到 `DATASMART_PERMISSION_ADMIN_TOOL_ACTION_RESUME_FACTS_ENABLED`；
+  - 这让 Python 从“分散直连多个 Java 事实源”收敛到“消费 agent-runtime 统一控制面事实包”。
+- `api/app.py` 与 `services/tools/__init__.py` 已同步导出和注入新 provider，保持 FastAPI 启动路径兼容。
+- 测试：
+  - 新增 `test_tool_action_resume_fact_bundle_client.py`，覆盖默认禁用不联网、启用后低敏 POST、available fact
+    解析、Java missing 覆盖请求自报 outbox fact、平台错误低敏 fail-closed；
+  - 扩展 `test_tool_action_resume_fact_bootstrap.py`，固定 Java bundle provider 优先于旧 permission-admin provider；
+  - 定向测试 17 个通过；
+  - 全量 Python 测试 `python -m pytest python-ai-runtime\tests -q`：459 个通过。
+- 产品意义：
+  - Python resume-preview 不再只懂 approval fact，而是开始对接 Java Host 统一事实包，为后续 approval、
+    clarification、outbox、worker receipt、预算恢复事实的统一治理铺路；
+  - 这更接近 Codex/Claude Code/LangGraph/OpenAI Agents 类 Agent Host：模型和协议层提出动作意图，
+    Python 负责低敏预检和图恢复判断，Java 控制面负责事实验真、权限、outbox、receipt 和审计；
+  - 当前仍坚持 preview-only，不执行工具、不写 outbox、不派发 worker、不把服务端事实值回显给调用方。
+- 当前边界：
+  - Java 事实包 API 仍需要调用方传入 runId/commandId/approvalFactId/outboxId 等定位符，尚不能仅凭
+    checkpointId/threadId 自动发现全部事实；
+  - clarification fact store、worker receipt 持久化索引、durable checkpoint store、服务账号签名/mTLS 和审计指标仍未闭环；
+  - Python 新 client 文件已控制在 500 行以内，但接近上限，后续若继续扩展应拆出 contract/parser/helper。
+- 下一步推荐路线：
+  1. 优先做 durable checkpoint store，让 checkpointId/threadId 能稳定关联 run、command 和 required facts。
+  2. 在 Java 控制面补 clarification fact store 与 worker receipt 持久化索引。
+  3. 为 Python -> Java 内部调用补服务账号签名、gateway 内部路由、审计事件和低基数指标。
+  4. 暂不开放真实 resume 执行，先让 fact bundle、outbox、worker receipt、幂等和审计链完全闭环。
+
 ## 2026-06-16 追加落地进展：Java Agent Runtime 5.70 恢复事实包控制面 API
 
 - 本阶段承接 Python AI Runtime 5.69。上一阶段 Python 已经能向 permission-admin 校验调用方提交的

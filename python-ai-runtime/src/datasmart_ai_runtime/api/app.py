@@ -197,8 +197,9 @@ def create_app() -> Any:
     # policy envelope，以减少同步策略 HTTP 调用次数；当前先保留远程优先、本地回退的最小闭环。
     tool_execution_readiness_policy_provider = build_tool_execution_readiness_policy_provider()
     # resume fact provider 负责把 checkpoint 恢复预检从“请求自报事实”推进到“服务端事实校验”。
-    # 当前只接 permission-admin 审批事实评估，并且默认关闭；开启后，如果 approvalConfirmationId 未通过
-    # Java 校验，checkpoint resume-preview 会通过 rejectedFactTypes 阻止该事实被采信。
+    # 当前优先接 Java agent-runtime 的 fact bundle API：Java 统一聚合审批事实、outbox 写入事实和
+    # worker/dry-run receipt；如果未启用 fact bundle，仍兼容 5.69 的 permission-admin 单点审批事实 provider。
+    # 两条远程链路默认关闭；开启后，未被 Java 控制面采信的事实会通过 rejectedFactTypes 覆盖请求自报事实。
     tool_action_resume_fact_provider = build_tool_action_resume_fact_provider()
 
     def _start_memory_materialization_worker() -> None:

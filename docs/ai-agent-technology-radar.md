@@ -1,5 +1,41 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-16 落地补充：Python resume provider should consume host fact bundles
+
+- 本轮趋势核验：
+  - LangGraph Interrupts 强调恢复执行时必须使用同一 thread/checkpoint，且 interrupt 之前的副作用需要可幂等；
+  - LangGraph Persistence 区分 thread-scoped checkpointer 与 cross-thread store，说明恢复执行依赖持久状态定位，而不是重放原始 payload；
+  - OpenAI Agents SDK Human-in-the-loop 将高风险工具调用建模为暂停、审批、恢复 RunState 的流程；
+  - MCP Authorization 将 HTTP transport 的授权边界提升到协议层，说明工具/资源访问应由宿主控制面和服务账号链路保护。
+- 对 DataSmart 的架构映射：
+  - Java 5.70 已把 approval、outbox、worker receipt 聚合成 host-level fact bundle；
+  - Python 5.71 开始优先消费 Java fact bundle，而不是继续分别直连 permission-admin、outbox 或 receipt；
+  - Python 只处理 fact type、issue code、missing/rejected 状态，不处理事实值本身；
+  - 请求侧自报的 approval/outbox/receipt 等服务端背书事实，只要 Java bundle 判定 missing/rejected，就会被 Python 视为 rejected，
+    从而阻断“伪造一个 confirmationId 就进入 ready”的绕过风险。
+- 本轮落地到代码的能力：
+  - 新增 `JavaAgentRuntimeToolActionResumeFactBundleClient`；
+  - 新增 `AgentRuntimeResumeFactBundleClientSettings` 和环境变量装配；
+  - `build_tool_action_resume_fact_provider(...)` 改为 Java bundle 优先、旧 permission-admin provider 兜底；
+  - 全量 Python 测试 459 个通过，关键文件均低于 500 行。
+- 产品判断：
+  - 这是从“Python provider 抽象”推进到“宿主控制面事实包消费”的关键一步；
+  - 后续 DataSmart 的工具执行恢复应继续沿 `checkpoint/thread -> server-side fact bundle -> readiness/resume preview -> Java outbox/worker receipt`
+    演进，而不是把真实工具参数、SQL、prompt 或审批凭证重新塞回 Python API；
+  - 当前仍不建议开放真实 resume 执行，因为 durable checkpoint store、clarification fact、receipt persistent index、
+    service-account signing、mTLS/gateway internal route 和审计指标尚未闭环。
+- 后续趋势落地建议：
+  1. 将 durable checkpoint store 作为下一阶段 P0，让 thread/checkpoint 成为 Java/Python 双侧可复用的恢复定位符。
+  2. 将 MCP `tools/call`、模型 tool_call、A2A action 全部统一进入 DataSmart `ToolPlan -> readiness -> checkpoint -> fact bundle`
+     控制面，而不是协议层直连执行器。
+  3. 为内部 fact bundle 查询补 OAuth/MCP Authorization 风格的服务账号、资源范围和 scope challenge 语义。
+  4. 继续保持模型栈可替换，把恢复事实、工具治理和审计链放在平台层，不绑定某个模型或框架。
+- 参考资料：
+  - LangGraph Interrupts: `https://docs.langchain.com/oss/python/langgraph/interrupts`
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Authorization: `https://modelcontextprotocol.io/specification/draft/basic/authorization`
+
 ## 2026-06-16 落地补充：Resume fact bundle should be a host control-plane API
 
 - 本轮趋势核验：

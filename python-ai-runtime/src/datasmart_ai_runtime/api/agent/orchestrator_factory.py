@@ -38,8 +38,11 @@ from datasmart_ai_runtime.services.skill_registry_client import JavaAgentSkillRe
 from datasmart_ai_runtime.services.tool_registry_client import JavaAgentToolRegistryClient, ToolRegistryClientError
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 from datasmart_ai_runtime.services.tools import (
+    DEFAULT_AGENT_RUNTIME_RESUME_FACT_BUNDLE_PATH,
     DEFAULT_PERMISSION_ADMIN_APPROVAL_FACT_EVALUATE_PATH,
+    AgentRuntimeResumeFactBundleClientSettings,
     EmptyToolActionResumeFactProvider,
+    JavaAgentRuntimeToolActionResumeFactBundleClient,
     JavaPermissionAdminToolActionResumeFactClient,
     PermissionAdminResumeFactClientSettings,
     RemoteThenLocalToolExecutionReadinessPolicyProvider,
@@ -339,12 +342,17 @@ def build_tool_action_resume_fact_provider(
     - 预算/readiness 回答“本轮规划和执行前条件如何限制工具”；
     - resume fact provider 回答“某个已暂停 checkpoint 是否具备继续执行所需的服务端事实”。
 
-    当前阶段只接入 permission-admin 已存在的审批事实评估接口，并且默认关闭：
-    - 默认关闭可以保证本地学习环境、CI 和未启动 Java 服务时仍然稳定；
-    - 显式开启后，Python 会把请求中的 approvalConfirmationId 交给 permission-admin 验真；
-    - 如果 Java 返回未批准、过期或作用域不匹配，provider 会返回 `rejectedFactTypes`，API 层会剔除请求自报的审批事实。
+    当前优先接入 Java agent-runtime 5.70 的 fact bundle API：
+    - Java fact bundle 可以统一聚合 permission-admin 审批事实、command outbox 和 worker receipt；
+    - 如果未启用 Java fact bundle，才回退到 5.69 的 permission-admin 单点审批事实 provider；
+    - 两条远程链路都默认关闭，避免本地学习环境、CI 和未启动 Java 服务时发生网络副作用。
 
     环境变量：
+    - `DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_ENABLED`：是否启用 Java fact bundle provider；
+    - `DATASMART_AGENT_RUNTIME_BASE_URL`：agent-runtime 根地址；
+    - `DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_PATH`：fact bundle 查询路径；
+    - `DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_TIMEOUT_SECONDS`：fact bundle 查询超时；
+    - `DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_SERVICE_ACCOUNT_ACTOR_ID`：服务间调用 Header actorId；
     - `DATASMART_PERMISSION_ADMIN_TOOL_ACTION_RESUME_FACTS_ENABLED`：是否启用远程校验；
     - `DATASMART_PERMISSION_ADMIN_BASE_URL`：permission-admin 根地址；
     - `DATASMART_PERMISSION_ADMIN_TOOL_ACTION_APPROVAL_FACT_EVALUATE_PATH`：审批事实评估路径；
@@ -352,13 +360,35 @@ def build_tool_action_resume_fact_provider(
     - `DATASMART_PERMISSION_ADMIN_SERVICE_TOKEN`：可选服务间 token，不进入任何响应摘要。
     """
 
-    remote_enabled = (
+    agent_runtime_bundle_enabled = truthy_env("DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_ENABLED")
+    agent_runtime_base_url = os.getenv("DATASMART_AGENT_RUNTIME_BASE_URL")
+    if agent_runtime_bundle_enabled and agent_runtime_base_url:
+        return JavaAgentRuntimeToolActionResumeFactBundleClient(
+            AgentRuntimeResumeFactBundleClientSettings(
+                enabled=True,
+                base_url=agent_runtime_base_url,
+                bundle_path=os.getenv("DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_PATH")
+                or DEFAULT_AGENT_RUNTIME_RESUME_FACT_BUNDLE_PATH,
+                timeout_seconds=positive_int_env("DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_TIMEOUT_SECONDS", 3),
+                service_token=os.getenv("DATASMART_AGENT_RUNTIME_SERVICE_TOKEN")
+                or os.getenv("DATASMART_PERMISSION_ADMIN_SERVICE_TOKEN"),
+                service_account_actor_id=os.getenv("DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_SERVICE_ACCOUNT_ACTOR_ID")
+                or "900001",
+                service_account_role=os.getenv("DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_SERVICE_ACCOUNT_ROLE")
+                or "SERVICE_ACCOUNT",
+                data_scope_level=os.getenv("DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_DATA_SCOPE_LEVEL")
+                or "PLATFORM",
+                authorized_project_ids=_csv_env("DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_AUTHORIZED_PROJECT_IDS"),
+            )
+        )
+
+    permission_admin_enabled = (
         truthy_env("DATASMART_PERMISSION_ADMIN_TOOL_ACTION_RESUME_FACTS_ENABLED")
         if enable_remote is None
         else enable_remote
     )
     base_url = permission_admin_base_url or os.getenv("DATASMART_PERMISSION_ADMIN_BASE_URL")
-    if not remote_enabled or not base_url:
+    if not permission_admin_enabled or not base_url:
         return EmptyToolActionResumeFactProvider()
     return JavaPermissionAdminToolActionResumeFactClient(
         PermissionAdminResumeFactClientSettings(
@@ -386,6 +416,19 @@ def _tool_readiness_remote_enabled_from_env() -> bool:
     if readiness_value is not None:
         return truthy_env("DATASMART_PERMISSION_ADMIN_TOOL_READINESS_POLICY_ENABLED")
     return truthy_env("DATASMART_PERMISSION_ADMIN_TOOL_BUDGET_ENABLED")
+
+
+def _csv_env(name: str) -> tuple[str, ...]:
+    """读取逗号分隔环境变量。
+
+    这里用于 Java fact bundle 的 `X-DataSmart-Authorized-Project-Ids` Header。
+    Header 不应携带 prompt、工具参数或任意业务正文，只允许项目 ID 这类低敏范围约束字段。
+    """
+
+    value = os.getenv(name)
+    if not value:
+        return ()
+    return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
 def truthy_env(name: str) -> bool:

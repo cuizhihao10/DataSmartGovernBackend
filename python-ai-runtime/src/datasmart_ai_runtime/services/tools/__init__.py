@@ -84,6 +84,12 @@ from datasmart_ai_runtime.services.tools.tool_action_resume_fact_client import (
     PermissionAdminResumeFactClientError,
     PermissionAdminResumeFactClientSettings,
 )
+from datasmart_ai_runtime.services.tools.tool_action_resume_fact_bundle_client import (
+    DEFAULT_AGENT_RUNTIME_RESUME_FACT_BUNDLE_PATH,
+    AgentRuntimeResumeFactBundleClientError,
+    AgentRuntimeResumeFactBundleClientSettings,
+    JavaAgentRuntimeToolActionResumeFactBundleClient,
+)
 
 __all__ = (
     "ToolActionIntakeBoundary",
@@ -121,6 +127,10 @@ __all__ = (
     "JavaPermissionAdminToolActionResumeFactClient",
     "PermissionAdminResumeFactClientError",
     "PermissionAdminResumeFactClientSettings",
+    "DEFAULT_AGENT_RUNTIME_RESUME_FACT_BUNDLE_PATH",
+    "AgentRuntimeResumeFactBundleClientError",
+    "AgentRuntimeResumeFactBundleClientSettings",
+    "JavaAgentRuntimeToolActionResumeFactBundleClient",
     "resume_fact_types_from_mapping",
     "merge_resume_fact_types",
     "ToolExecutionReadinessDecision",
