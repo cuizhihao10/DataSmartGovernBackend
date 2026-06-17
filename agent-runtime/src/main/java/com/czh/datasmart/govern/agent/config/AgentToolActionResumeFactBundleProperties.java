@@ -55,6 +55,28 @@ public class AgentToolActionResumeFactBundleProperties {
     private Boolean diagnosticEventEnabled = true;
 
     /**
+     * 内存版澄清事实仓储最多保留多少条记录。
+     *
+     * <p>澄清事实用于支撑 Human-in-the-loop 恢复预检：用户补充了缺失信息后，
+     * Java 控制面会保存一条低敏事实，后续 fact bundle 查询再判断该事实是否可采信。
+     * 当前阶段先提供内存实现，用于本地学习、单元测试和单实例联调；因此必须设置上限，避免长时间联调时
+     * 用户反复暂停/补充导致 JVM 内存无限增长。</p>
+     *
+     * <p>生产化后应新增 MySQL durable clarification fact store，并配合 TTL、归档、审计导出和低基数指标。
+     * 该配置不会让内存 store 变成生产级能力，它只是早期阶段的安全护栏。</p>
+     */
+    private Integer clarificationFactMaxRecords = 10000;
+
+    /**
+     * 澄清事实默认有效期，单位秒。
+     *
+     * <p>如果登记请求没有显式传入 expiresAt，服务端会按该 TTL 生成过期时间。
+     * 设计 TTL 的原因是：用户澄清通常依赖当时的上下文、工具策略和数据范围；长期复用旧澄清可能绕过
+     * 新的审批规则、项目授权或用户意图。因此恢复预检必须把过期事实视为 REJECTED，而不是永久 AVAILABLE。</p>
+     */
+    private Long clarificationFactDefaultTtlSeconds = 3600L;
+
+    /**
      * 是否启用 permission-admin 审批事实远程评估。
      *
      * <p>默认关闭，保证本地学习环境不强依赖 permission-admin 已启动。

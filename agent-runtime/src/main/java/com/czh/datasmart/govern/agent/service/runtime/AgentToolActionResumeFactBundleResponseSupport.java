@@ -78,7 +78,7 @@ final class AgentToolActionResumeFactBundleResponseSupport {
             }
             switch (fact.factType()) {
                 case FACT_APPROVAL -> actions.add("WAIT_FOR_OR_RECREATE_PERMISSION_ADMIN_APPROVAL_FACT");
-                case FACT_CLARIFICATION -> actions.add("CONNECT_CLARIFICATION_FACT_STORE_OR_REQUEST_USER_INPUT");
+                case FACT_CLARIFICATION -> actions.add("REGISTER_OR_REFRESH_SERVER_SIDE_CLARIFICATION_FACT");
                 case FACT_OUTBOX -> actions.add("CALL_JAVA_COMMAND_OUTBOX_WRITER_AFTER_GRAPH_CONFIRMATION");
                 case FACT_WORKER_RECEIPT -> actions.add("WAIT_FOR_TASK_MANAGEMENT_RECEIPT_OR_RETRY_DISPATCHER");
                 default -> actions.add("REVIEW_UNKNOWN_RESUME_FACT_TYPE");
@@ -106,7 +106,8 @@ final class AgentToolActionResumeFactBundleResponseSupport {
         if (!mysqlLocatorIndex) {
             missingRequirements.add("MYSQL_DURABLE_CHECKPOINT_THREAD_LOCATOR_INDEX");
         }
-        missingRequirements.add("CLARIFICATION_FACT_PROVIDER");
+        missingRequirements.add("MYSQL_DURABLE_CLARIFICATION_FACT_STORE");
+        missingRequirements.add("CLARIFICATION_FACT_TTL_ARCHIVE_AND_ADMIN_QUERY");
         missingRequirements.add("WORKER_RECEIPT_PERSISTENT_INDEX");
         missingRequirements.add("SERVICE_ACCOUNT_SIGNATURE_OR_MTLS");
         missingRequirements.add("PROMETHEUS_LOW_CARDINALITY_METRICS_FOR_RESUME_FACT_QUERY");

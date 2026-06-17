@@ -175,6 +175,31 @@ class AgentToolActionResumeFactBundleServiceTest {
     }
 
     @Test
+    void clarificationFactShouldBeReadFromServerSideStore() throws JsonProcessingException {
+        TestHarness harness = harness(approvedEvaluator());
+        harness.clarificationStore().upsert(clarificationFactRecord("clarification-fact-ready-001", 20L,
+                AgentToolActionClarificationFactRecord.STATUS_AVAILABLE));
+
+        AgentToolActionResumeFactBundleResponse response = harness.service().query(
+                requestWithClarification(List.of("CLARIFICATION_FACT"), "clarification-fact-ready-001"),
+                projectOwnerContext()
+        );
+
+        assertEquals(List.of("CLARIFICATION_FACT"), response.availableFactTypes());
+        assertTrue(response.missingFactTypes().isEmpty());
+        assertTrue(response.facts().getFirst().evidenceCodes().contains("CLARIFICATION_FACT_CONTENT_NOT_EXPOSED"));
+
+        /*
+         * 澄清事实只证明“用户已经通过受控入口补充过信息”，不保存也不回显补充原文。
+         * 这里用 JSON 级断言保护最终 HTTP 响应不会泄露 factId 之外的澄清内容、prompt 或 SQL。
+         */
+        String json = new ObjectMapper().findAndRegisterModules().writeValueAsString(response);
+        assertFalse(json.contains("user clarification raw answer should not leak"));
+        assertFalse(json.contains("select * from sensitive_table"));
+        assertFalse(json.contains("raw prompt should not leak"));
+    }
+
+    @Test
     void queryShouldPublishLowSensitiveDiagnosticTimelineEvent() throws JsonProcessingException {
         TestHarness harness = harness(approvedEvaluator());
         harness.outboxStore().append(outboxRecord("taoc-resume-001", 20L));
@@ -237,6 +262,8 @@ class AgentToolActionResumeFactBundleServiceTest {
         InMemoryAgentAsyncTaskCommandOutboxStore outboxStore = new InMemoryAgentAsyncTaskCommandOutboxStore(10, 100);
         InMemoryAgentRuntimeEventProjectionStore projectionStore = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
         AgentToolActionResumeLocatorIndexStore locatorIndexStore = new InMemoryAgentToolActionResumeLocatorIndexStore();
+        AgentToolActionClarificationFactStore clarificationStore =
+                new InMemoryAgentToolActionClarificationFactStore(properties);
         AgentToolActionResumeFactBundleService service = new AgentToolActionResumeFactBundleService(
                 properties,
                 evaluator,
@@ -244,9 +271,10 @@ class AgentToolActionResumeFactBundleServiceTest {
                 projectionStore,
                 new AgentRuntimeEventProjectionAccessSupport(),
                 new AgentToolActionResumeLocatorIndexService(locatorIndexStore),
+                new AgentToolActionClarificationFactEvaluator(clarificationStore),
                 new AgentToolActionResumeFactBundleDiagnosticPublisher(projectionStore)
         );
-        return new TestHarness(service, outboxStore, projectionStore);
+        return new TestHarness(service, outboxStore, projectionStore, clarificationStore);
     }
 
     private AgentToolActionResumeFactBundleQueryRequest request(List<String> requiredFactTypes) {
@@ -288,6 +316,50 @@ class AgentToolActionResumeFactBundleServiceTest {
                 null,
                 true,
                 true
+        );
+    }
+
+    private AgentToolActionResumeFactBundleQueryRequest requestWithClarification(List<String> requiredFactTypes,
+                                                                                 String clarificationFactId) {
+        return new AgentToolActionResumeFactBundleQueryRequest(
+                "checkpoint-resume-001",
+                "thread-resume-001",
+                "session-resume",
+                "run-resume",
+                "taoc-resume-001",
+                "async-command-outbox:taoc-resume-001",
+                "approval-fact-approved-001",
+                clarificationFactId,
+                "datasource.metadata.read",
+                "tool-readiness-policy.v1",
+                10L,
+                20L,
+                "1001",
+                requiredFactTypes,
+                true,
+                true
+        );
+    }
+
+    private AgentToolActionClarificationFactRecord clarificationFactRecord(String clarificationFactId,
+                                                                           Long projectId,
+                                                                           String status) {
+        return new AgentToolActionClarificationFactRecord(
+                clarificationFactId,
+                "session-resume",
+                "run-resume",
+                "taoc-resume-001",
+                "datasource.metadata.read",
+                "tool-readiness-policy.v1",
+                "10",
+                String.valueOf(projectId),
+                "1001",
+                status,
+                List.of("USER_CLARIFICATION_CAPTURED"),
+                List.of(),
+                Instant.parse("2026-12-31T00:00:00Z"),
+                Instant.parse("2026-06-17T00:00:00Z"),
+                Instant.parse("2026-06-17T00:00:00Z")
         );
     }
 
@@ -399,7 +471,8 @@ class AgentToolActionResumeFactBundleServiceTest {
     private record TestHarness(
             AgentToolActionResumeFactBundleService service,
             InMemoryAgentAsyncTaskCommandOutboxStore outboxStore,
-            InMemoryAgentRuntimeEventProjectionStore projectionStore
+            InMemoryAgentRuntimeEventProjectionStore projectionStore,
+            AgentToolActionClarificationFactStore clarificationStore
     ) {
     }
 }

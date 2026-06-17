@@ -1,5 +1,48 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-17 追加落地进展：Java Agent Runtime 5.79 服务端澄清事实 store
+
+- 本阶段承接 Java 5.78。上一阶段已经让恢复事实包查询进入 timeline 诊断事件，但 `CLARIFICATION_FACT` 仍是固定缺失，占位语义没有真正落到服务端可验证事实。本阶段新增澄清事实登记、内存仓储和验真器，让用户补充信息从“请求体自报字段”升级为“Java 控制面可回查、可过期、可撤销、可按租户/项目/actor/run/session/command/tool 校验的低敏事实”。
+- 新增澄清事实控制面：
+  - 新增 `POST /agent-runtime/tool-action-clarification-facts/facts` 与 `POST /api/agent/tool-action-clarification-facts/facts`；
+  - 请求体只允许 factId、session/run/command/tool/policy、tenant/project/actor、状态、低敏 evidence/issue codes 和 expiresAt；
+  - 不接收、不保存、不回显用户澄清原文、prompt、SQL、arguments、payload body、样本数据、模型输出、凭证或内部 endpoint；
+  - Header 中的可信 tenant/actor/project scope 会覆盖并约束 body，PROJECT 范围必须命中 `authorizedProjectIds`。
+- 新增领域组件：
+  - `AgentToolActionClarificationFactRecord`：定义低敏澄清事实记录和 AVAILABLE/REVOKED/REJECTED 状态；
+  - `AgentToolActionClarificationFactStore`：抽象仓储接口，为后续 MySQL durable store 预留替换点；
+  - `InMemoryAgentToolActionClarificationFactStore`：当前 memory 实现，支持 upsert 合并、容量上限和并发读写锁；
+  - `AgentToolActionClarificationFactRegistrationService`：处理登记校验、默认 TTL、可信范围收口和低敏证据码；
+  - `AgentToolActionClarificationFactEvaluator`：在 fact bundle 中评估澄清事实是否可采信。
+- 恢复事实包接入：
+  - `AgentToolActionResumeFactBundleService` 的 `CLARIFICATION_FACT` 从固定缺失改为调用澄清事实 evaluator；
+  - 跨租户/跨项目/跨 actor/跨 run/session/command/tool 的事实统一返回 `CLARIFICATION_FACT_NOT_FOUND_OR_NOT_VISIBLE`，防止 factId 探测；
+  - 过期、撤销、拒绝或策略版本漂移的事实进入 `REJECTED`，不会被当作可恢复条件；
+  - `productionReadiness` 改为提示还缺 `MYSQL_DURABLE_CLARIFICATION_FACT_STORE` 与 TTL/归档/管理员查询，而不是旧的“provider 未接入”。
+- 配置与边界：
+  - `AgentToolActionResumeFactBundleProperties` 新增 `clarificationFactMaxRecords` 与 `clarificationFactDefaultTtlSeconds`；
+  - 本阶段刻意没有继续扩写 `application.yml`，因为该文件已经偏大，后续更合理的方向是拆分配置结构；
+  - 当前 memory store 适合本地学习、单元测试和单实例联调，不是最终生产级 durable fact store。
+- 测试与行数：
+  - 新增 `AgentToolActionClarificationFactEvaluatorTest`，覆盖可用、跨项目隐藏、过期拒绝、撤销拒绝、策略版本不一致拒绝和 JSON 脱敏；
+  - 新增 `AgentToolActionClarificationFactRegistrationServiceTest`，覆盖可信 Header 范围、默认 TTL、项目越权和 actor 冒用；
+  - 扩展 `AgentToolActionResumeFactBundleServiceTest`，验证 fact bundle 能从服务端 store 采信 `CLARIFICATION_FACT`；
+  - 定向测试 15 个通过；
+  - 当前触碰 Java 文件均低于 500 行，`AgentToolActionResumeFactBundleService` 为 457 行，`AgentToolActionResumeFactBundleServiceTest` 为 463 行。
+- 产品意义：
+  - 用户补充信息开始具备“服务端事实”形态，恢复预检不再依赖调用方声称自己已经澄清；
+  - 这更接近 Codex/Claude Code/OpenAI Agents/LangGraph 类 Agent Host 的 HITL 恢复模型：暂停点等待外部输入，但恢复前由宿主控制面验证输入事实是否可采信；
+  - 本阶段仍不开放真实工具 resume 执行，真实副作用继续由 Java outbox、worker receipt、审批、幂等、租户配额和审计链保护。
+- 当前边界：
+  - 澄清事实目前仍是 memory store，不能跨 JVM 重启、多实例共享或长期审计；
+  - 尚未实现 MySQL 表、migration、TTL 清理任务、管理员查询接口、Prometheus 指标和审计导出；
+  - 还没有把澄清事实登记事件写入 runtime timeline，当前 timeline 仍主要来自 fact bundle 诊断事件。
+- 下一步推荐路线：
+  1. 补 worker receipt persistent index，减少 fact bundle 对 runtime event projection 热窗口扫描的依赖。
+  2. 把 clarification fact store 升级为 MySQL durable store，补 migration、TTL/归档、管理员查询和低基数指标。
+  3. 设计 OpenClaw-style execution graph 条件节点，把 readiness、approval、budget、locator index、clarification、fact bundle、receipt 和 checkpoint 串成显式执行前条件图。
+  4. 在 outbox、receipt、审批、幂等、配额、审计全部闭环前，继续保持真实 resume 关闭。
+
 ## 2026-06-17 追加落地进展：Java Agent Runtime 5.78 恢复事实包 timeline 诊断事件
 
 - 本阶段承接 Java 5.77。上一阶段已经让 checkpoint/thread locator index 具备 MySQL 持久化能力，但 fact bundle 查询结果仍主要停留在单次 HTTP 响应里，管理员无法在 runtime timeline 中直接看到“恢复预检为什么卡住”。本阶段把恢复事实包查询结果转成低敏 runtime event 诊断快照。

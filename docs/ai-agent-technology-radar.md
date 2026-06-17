@@ -1,5 +1,36 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-17 落地补充：Human clarification should become host-verifiable resume facts
+
+- 本轮趋势核验：
+  - LangGraph Interrupts 官方文档把 HITL 建模为“图执行暂停、checkpointer 保存状态、同一 thread 后续 resume”，并强调生产环境应使用 durable checkpointer；这说明用户补充信息不能只停留在一次 HTTP 请求里，而应成为宿主控制面可验证的恢复事实。
+  - OpenAI Agents SDK Human-in-the-loop 把敏感工具调用拆成 pending approval、decision 和恢复运行状态，提示 DataSmart 的工具恢复也应由 Java host 汇总事实，而不是让 Python Runtime 或外部 Agent 自报已经满足条件。
+  - MCP Authorization 把受保护资源访问放在授权边界内；映射到 DataSmart，`tools/call`、A2A action、OpenClaw graph node 和模型 tool call 都必须经过租户/项目/actor/策略范围校验，不能靠一个 factId 字段绕过控制面。
+- 对 DataSmart 的架构映射：
+  - Java 5.79 新增服务端 `CLARIFICATION_FACT` 控制面，让用户澄清从“请求体字段”升级为“可登记、可过期、可撤销、可验范围的低敏事实”；
+  - 登记 API 只接收 factId、run/session/command/tool/policy、租户/项目/actor 和低敏枚举码，不保存用户澄清原文；
+  - fact bundle 查询会在恢复预检时回查澄清事实，并对跨租户/跨项目/跨 actor/跨 run/session/command/tool 的记录统一隐藏为 not found or not visible；
+  - 过期、撤销、拒绝和策略版本漂移会进入 `REJECTED`，不会被 Python Runtime 误判为可恢复。
+- 本轮落地到代码的能力：
+  - 新增 `AgentToolActionClarificationFactController` 与登记 DTO/View；
+  - 新增 `AgentToolActionClarificationFactRecord`、`AgentToolActionClarificationFactStore`、`InMemoryAgentToolActionClarificationFactStore`；
+  - 新增 `AgentToolActionClarificationFactRegistrationService` 与 `AgentToolActionClarificationFactEvaluator`；
+  - `AgentToolActionResumeFactBundleService` 接入 evaluator，`CLARIFICATION_FACT` 不再固定缺失；
+  - 新增 evaluator/registration/fact bundle 集成测试，定向测试 15 个通过。
+- 产品判断：
+  - 这一步不是继续堆 Java 局部字段，而是在补 Codex/Claude Code/OpenAI Agents/LangGraph 类 Agent Host 的 HITL 安全恢复基础；
+  - memory store 只解决本地闭环，商业化必须继续升级为 MySQL durable store、TTL/归档、管理员查询、低基数指标和审计导出；
+  - 真实 resume 仍应等待 worker receipt persistent index、outbox 幂等、服务账号签名/mTLS、租户配额和 durable audit store 闭环。
+- 后续趋势落地建议：
+  1. 把 `CLARIFICATION_FACT` 也写成低敏 runtime event，便于管理员看到“用户已补充、已过期、已撤销”的状态演进。
+  2. 设计 MySQL durable clarification fact table：factId 唯一索引、tenant/project/run/session/command/tool 组合索引、expiresAt 清理索引、状态变更审计。
+  3. 把 LangGraph/OpenAI HITL 的 approval/edit/respond 模式映射为 DataSmart 的 approval fact、clarification fact、task draft edit fact 和 outbox confirmation fact。
+  4. 把 MCP Authorization 的 resource/scope 思路继续映射到 DataSmart tool plan，保证外部协议层永远不能绕过 Java host 的事实验证。
+- 参考资料：
+  - LangGraph Interrupts: `https://docs.langchain.com/oss/python/langgraph/interrupts`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Authorization: `https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization`
+
 ## 2026-06-17 落地补充：Resume fact checks should be replayable diagnostics before real tool resume
 
 - 本轮趋势核验：

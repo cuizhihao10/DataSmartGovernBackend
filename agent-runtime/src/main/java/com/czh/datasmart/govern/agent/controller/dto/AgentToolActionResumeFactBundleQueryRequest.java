@@ -52,7 +52,13 @@ public record AgentToolActionResumeFactBundleQueryRequest(
         /** 审批事实 ID；仅发送到 permission-admin 验真，不会从本接口响应回显。 */
         String approvalFactId,
 
-        /** 澄清事实 ID；当前阶段只做契约预留，真实 clarification store 后续接入。 */
+        /**
+         * 澄清事实 ID。
+         *
+         * <p>该字段现在会被 Java 控制面用于回查 {@code AgentToolActionClarificationFactStore}。
+         * 调用方传入 factId 并不等于澄清已被采信；服务端仍会校验事实是否已登记、是否在当前租户/项目/actor/run/session/command/tool
+         * 范围内、是否过期、是否撤销以及策略版本是否匹配。响应中不会回显该 ID 原文。</p>
+         */
         String clarificationFactId,
 
         /** 工具编码，用于审批事实与 outbox/receipt 的工具边界校验。 */

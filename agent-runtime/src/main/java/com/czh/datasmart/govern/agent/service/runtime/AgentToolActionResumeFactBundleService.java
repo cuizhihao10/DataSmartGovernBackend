@@ -61,6 +61,7 @@ public class AgentToolActionResumeFactBundleService {
     private final AgentRuntimeEventProjectionStore projectionStore;
     private final AgentRuntimeEventProjectionAccessSupport accessSupport;
     private final AgentToolActionResumeLocatorIndexService locatorIndexService;
+    private final AgentToolActionClarificationFactEvaluator clarificationFactEvaluator;
     private final AgentToolActionResumeFactBundleDiagnosticPublisher diagnosticPublisher;
 
     /**
@@ -94,7 +95,8 @@ public class AgentToolActionResumeFactBundleService {
         for (String factType : requiredFactTypes) {
             switch (factType) {
                 case FACT_APPROVAL -> facts.add(approvalFact(normalizedRequest, accessContext, now));
-                case FACT_CLARIFICATION -> facts.add(clarificationFact(now));
+                case FACT_CLARIFICATION ->
+                        facts.add(clarificationFactEvaluator.evaluate(normalizedRequest, scopedQuery, accessContext, now));
                 case FACT_OUTBOX -> {
                     OutboxFact outboxFact = outboxFact(normalizedRequest, scopedQuery, now);
                     facts.add(outboxFact.fact());
@@ -211,15 +213,6 @@ public class AgentToolActionResumeFactBundleService {
                 result.issueCodes(),
                 now
         );
-    }
-
-    private AgentToolActionResumeFactView clarificationFact(Instant now) {
-        /*
-         * 当前阶段还没有独立 clarification fact store。
-         * 这里先把事实类型列出来并明确返回缺失，避免调用方误以为 clarificationFactId 字段存在就可被采信。
-         */
-        return fact(FACT_CLARIFICATION, "CLARIFICATION_FACT_STORE", "MISSING", false, false, false,
-                List.of(), List.of("CLARIFICATION_FACT_PROVIDER_NOT_CONNECTED"), now);
     }
 
     private OutboxFact outboxFact(AgentToolActionResumeFactBundleQueryRequest request,
