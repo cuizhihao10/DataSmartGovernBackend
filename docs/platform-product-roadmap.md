@@ -1,5 +1,46 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-17 追加落地进展：Python AI Runtime 5.74 checkpoint 低敏审计事件与指标
+
+- 本阶段承接 Python 5.73。上一阶段已经能从 checkpoint 低敏摘要派生 Java fact bundle 查询线索，
+  但 checkpoint query/resume-preview 仍主要停留在同步 HTTP 响应里。本阶段把这两个控制面动作接入
+  Runtime Event 与低基数 Prometheus 指标，让暂停点查询、恢复预检、scope mismatch、事实缺失和 provider
+  异常成为可回放、可推送、可发布、可计量的低敏事实。
+- 事件投递解耦：
+  - 新增 `api/agent/runtime_event_delivery.py`，统一单条 runtime event 到 replay store、live push hub、
+    event publisher 的 fail-open 投递逻辑；
+  - MCP intake preview 与 checkpoint routes 复用同一套投递 helper；
+  - `api/agent/routes.py` 从约 475 行下降到 408 行，避免主路由文件继续堆积旁路投递细节。
+- 新增 checkpoint runtime event：
+  - `tool_action_checkpoint_queried`；
+  - `tool_action_checkpoint_resume_previewed`；
+  - 新增 `services/tools/tool_action_checkpoint_events.py`，只记录 operation、metricResult、访问问题码、
+    恢复决策、事实类型计数、副作用边界和 locator 短 hash；
+  - 不记录 checkpointId/threadId 原文、prompt、SQL、arguments、payloadReference、graphId、模型输出、凭证或内部 endpoint。
+- 新增 checkpoint Prometheus 指标：
+  - 新增 `ToolActionCheckpointMetrics`；
+  - 指标只按 operation、result、severity、fact_state 等固定枚举聚合；
+  - `/agent/metrics` 已合并 checkpoint 指标、长期记忆物化指标和模型 Provider 健康探测指标；
+  - 不把 tenantId、projectId、actorId、checkpointId、threadId、requestId、runId 或 sessionId 作为 label。
+- 路由与响应：
+  - `register_tool_action_checkpoint_routes(...)` 新增 event_store、live_push_hub、event_publisher、metrics_recorder 注入；
+  - query/resume-preview 响应新增 `runtimeEvent`、`runtimeEventDelivery`、`runtimeMetricDelivery`；
+  - productionReadiness 标记 `ROUTE_LEVEL_LOW_SENSITIVE_RUNTIME_EVENT` 与 `ROUTE_LEVEL_LOW_CARDINALITY_PROMETHEUS_COUNTERS`。
+- 验证：
+  - compileall 通过；
+  - 定向测试 32 个通过；
+  - 全量 Python 测试 `python -m pytest python-ai-runtime\tests -q`：473 个通过；
+  - 新增/修改文件均控制在 500 行以内。
+- 产品意义：
+  - checkpoint 从“可查询/可预检”继续推进到“可观测/可审计/可告警”；
+  - 这符合企业 Agent Host 的生产化要求：暂停点访问与恢复判断必须进入统一事件事实层，而不是只存在于一次 HTTP 响应；
+  - 当前仍不执行真实 resume，不写 outbox，不派发 worker，不消费真实工具 payload。
+- 下一步推荐路线：
+  1. 为 checkpoint query/resume-preview 增加 gateway/service-account HMAC 校验和可配置 fail-closed。
+  2. Java 侧建设 checkpoint/thread 到 command/outbox/receipt/approval 的 locator index。
+  3. 补 clarification fact store 与 worker receipt 持久化索引。
+  4. 继续保持真实副作用由 Java outbox/worker/审批/审计链承接。
+
 ## 2026-06-16 追加落地进展：Python AI Runtime 5.73 checkpoint 派生恢复事实定位线索
 
 - 本阶段承接 Python 5.72。上一阶段已经支持可配置 Redis checkpoint store，但 resume-preview 查询 Java

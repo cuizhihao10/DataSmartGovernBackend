@@ -1,5 +1,37 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-17 落地补充：Checkpoint resume surfaces need audit events and low-cardinality metrics
+
+- 本轮趋势核验：
+  - LangGraph Persistence 将 checkpointer 用于 thread 级 graph state、HITL、time travel 与 fault tolerance，说明暂停点不仅要能保存，还要能被检查和恢复。
+  - OpenAI Agents SDK Human-in-the-loop 将工具调用审批建模为暂停、审批、恢复流程，说明恢复预检本身也是可审计控制面动作。
+  - MCP Authorization 强调 bearer、resource、scope 等授权语义，提醒 DataSmart 的 checkpoint query/resume-preview 不能只依赖调用方自报字段，后续必须进入服务账号和 gateway 签名链路。
+- 对 DataSmart 的架构映射：
+  - 5.72 完成 Redis checkpoint store；
+  - 5.73 完成 checkpoint-derived Java fact bundle locator hints；
+  - 5.74 把 checkpoint query/resume-preview 接入 runtime event、live push、publisher 和低基数 Prometheus 指标；
+  - 这让“读取暂停点、恢复预检 ready/waiting、scope mismatch、provider error、事实缺失”都成为可回放事实。
+- 本轮落地到代码的能力：
+  - 新增 `runtime_event_delivery.py` 复用事件投递；
+  - 新增 checkpoint query/resume-preview 两类 runtime event；
+  - 新增 `ToolActionCheckpointMetrics` 并接入 `/agent/metrics`；
+  - checkpoint route 响应新增 `runtimeEvent`、`runtimeEventDelivery`、`runtimeMetricDelivery`；
+  - 全量 Python 测试 473 个通过。
+- 产品判断：
+  - 这是从“checkpoint 可恢复”走向“checkpoint 可运营”的关键一步；
+  - 指标刻意只使用 operation/result/severity/fact_state 等低基数标签，避免把 checkpointId、threadId、tenantId、
+    requestId 或 runId 放入 Prometheus；
+  - 单次业务对象定位继续走 runtime event、Java projection 和后续审计投影，不能用指标系统承载明细。
+- 后续趋势落地建议：
+  1. 对齐 MCP Authorization，给 checkpoint query/resume-preview 增加 service-account HMAC、resource/scope 和 nonce replay 防护。
+  2. 增加 Java-side locator index，使 checkpoint/thread 能自动发现 command/outbox/receipt/approval。
+  3. 将 checkpoint 事件接入 Java projection/timeline，让运维台可查询 checkpoint 访问和恢复预检历史。
+  4. 继续区分短期 checkpoint、长期记忆和审计投影，不把 Redis checkpoint 扩展成万能状态库。
+- 参考资料：
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Authorization: `https://modelcontextprotocol.io/specification/draft/basic/authorization`
+
 ## 2026-06-16 落地补充：Checkpoint-derived locator hints make resume less client-dependent
 
 - 本轮趋势核验：

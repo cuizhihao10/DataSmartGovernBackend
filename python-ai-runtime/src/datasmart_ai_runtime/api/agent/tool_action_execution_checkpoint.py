@@ -407,12 +407,12 @@ def _checkpoint_query_production_readiness() -> dict[str, Any]:
 
     return {
         "currentStore": "CONFIGURABLE_IN_MEMORY_OR_REDIS_SHORT_LIVED",
+        "currentAuditMode": "ROUTE_LEVEL_LOW_SENSITIVE_RUNTIME_EVENT",
+        "currentMetricsMode": "ROUTE_LEVEL_LOW_CARDINALITY_PROMETHEUS_COUNTERS",
         "missingProductionRequirements": (
             "MYSQL_OR_AUDIT_DURABLE_CHECKPOINT_PROJECTION",
             "GATEWAY_OR_SERVICE_ACCOUNT_AUTHORIZATION",
             "TENANT_QUOTA_AND_TTL",
-            "AUDIT_EVENT_FOR_CHECKPOINT_QUERY",
-            "PROMETHEUS_LOW_CARDINALITY_METRICS",
             "CHECKPOINT_TO_JAVA_FACT_BUNDLE_LOCATOR_INDEX",
         ),
     }
@@ -423,6 +423,8 @@ def _resume_preview_production_readiness() -> dict[str, Any]:
 
     return {
         "currentMode": "PREFLIGHT_ONLY_WITH_OPTIONAL_SERVER_FACT_PROVIDER",
+        "currentAuditMode": "ROUTE_LEVEL_LOW_SENSITIVE_RUNTIME_EVENT",
+        "currentMetricsMode": "ROUTE_LEVEL_LOW_CARDINALITY_PROMETHEUS_COUNTERS",
         "missingProductionRequirements": (
             "REMOTE_PERMISSION_ADMIN_RESUME_FACT_PROVIDER",
             "REMOTE_CLARIFICATION_FACT_STORE_PROVIDER",
@@ -430,6 +432,8 @@ def _resume_preview_production_readiness() -> dict[str, Any]:
             "OUTBOX_WRITER_CONFIRMATION_PROVIDER",
             "WORKER_RECEIPT_PROJECTION_PROVIDER",
             "IDEMPOTENCY_AND_REPLAY_PROTECTION",
+            "GATEWAY_OR_SERVICE_ACCOUNT_AUTHORIZATION",
+            "TENANT_QUOTA_AND_TTL",
         ),
     }
 

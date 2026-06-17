@@ -12,9 +12,11 @@ from datasmart_ai_runtime.api.agent.tool_action_execution_checkpoint import (
     build_tool_action_execution_checkpoint_query_response,
     build_tool_action_execution_checkpoint_resume_preview_response,
 )
+from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
 from datasmart_ai_runtime.services.tools import (
     InMemoryToolActionExecutionCheckpointStore,
     StaticToolActionResumeFactProvider,
+    ToolActionCheckpointMetrics,
     ToolActionResumeFactSnapshot,
 )
 
@@ -57,6 +59,53 @@ class RejectingApprovalResumeFactProvider:
             rejected_fact_types=("APPROVAL_CONFIRMATION_FACT",),
             error_codes=("APPROVAL_FACT_NOT_APPROVED",),
         )
+
+
+class RecordingEventStore:
+    """记录 checkpoint route 写入的 runtime event。"""
+
+    def __init__(self) -> None:
+        self.events = ()
+
+    def append_many(self, events) -> None:
+        """模拟 RuntimeEventStore.append_many。"""
+
+        self.events = self.events + tuple(events)
+
+
+class RecordingLivePushHub:
+    """记录 checkpoint route 推送的 live event。"""
+
+    def __init__(self) -> None:
+        self.events = ()
+
+    def publish(self, events) -> int:
+        """模拟 RuntimeEventLivePushHub.publish。"""
+
+        self.events = self.events + tuple(events)
+        return len(tuple(events))
+
+
+class RecordingPublisher:
+    """记录 checkpoint route 发布到异步总线的 runtime event。"""
+
+    def __init__(self) -> None:
+        self.events = ()
+
+    def publish(self, events) -> int:
+        """模拟 RuntimeEventPublisher.publish。"""
+
+        self.events = self.events + tuple(events)
+        return len(tuple(events))
+
+
+class FailingEventStore:
+    """用于验证 checkpoint runtime event 旁路 fail-open。"""
+
+    def append_many(self, events) -> None:
+        """模拟 replay store 故障。"""
+
+        raise RuntimeError("checkpoint store unavailable")
 
 
 class ToolActionExecutionCheckpointApiTest(unittest.TestCase):
@@ -301,6 +350,82 @@ class ToolActionExecutionCheckpointApiTest(unittest.TestCase):
         self.assertEqual(1, query_response["checkpointCount"])
         self.assertEqual(checkpoint.checkpoint_id, query_response["checkpoints"][0]["checkpointId"])
         self.assertEqual("run-route", query_response["checkpoints"][0]["threadId"])
+
+    def test_checkpoint_routes_publish_runtime_events_and_metrics(self) -> None:
+        """checkpoint 子路由应记录低敏 runtime event 并写入低基数指标。"""
+
+        app = FakeApp()
+        event_store = RecordingEventStore()
+        live_push_hub = RecordingLivePushHub()
+        event_publisher = RecordingPublisher()
+        metrics = ToolActionCheckpointMetrics()
+        checkpoint = self.store.save(
+            _graph_run_for_resume(),
+            context={"tenantId": "tenant-observe", "runId": "run-observe"},
+        )
+        register_tool_action_checkpoint_routes(
+            app,
+            checkpoint_store=self.store,
+            event_store=event_store,
+            live_push_hub=live_push_hub,
+            event_publisher=event_publisher,
+            metrics_recorder=metrics,
+        )
+
+        response = app.post_routes["/agent/tool-actions/checkpoints/query"](
+            {
+                "checkpointId": checkpoint.checkpoint_id,
+                "tenantId": "tenant-observe",
+                "context": {
+                    "requestId": "request-observe",
+                    "runId": "run-observe",
+                    "sessionId": "session-observe",
+                },
+                "prompt": "raw prompt should not leak",
+                "sql": "select * from hidden_table",
+            }
+        )
+        runtime_event = response["runtimeEvent"]
+        metric_text = metrics.render_prometheus()
+
+        self.assertEqual(1, response["checkpointCount"])
+        self.assertEqual(AgentRuntimeEventType.TOOL_ACTION_CHECKPOINT_QUERIED.value, runtime_event["eventType"])
+        self.assertEqual("request-observe", runtime_event["requestId"])
+        self.assertEqual("found", runtime_event["attributes"]["metricResult"])
+        self.assertTrue(response["runtimeEventDelivery"]["stored"])
+        self.assertEqual(1, response["runtimeEventDelivery"]["livePushedCount"])
+        self.assertEqual(1, response["runtimeEventDelivery"]["publishedCount"])
+        self.assertTrue(response["runtimeMetricDelivery"]["recorded"])
+        self.assertEqual(event_store.events, live_push_hub.events)
+        self.assertEqual(event_store.events, event_publisher.events)
+        self.assertIn('datasmart_ai_tool_action_checkpoint_events_total{operation="query"', metric_text)
+        self.assertIn('result="found"', metric_text)
+        self.assertNotIn(checkpoint.checkpoint_id, str(runtime_event))
+        self.assertNotIn("raw prompt should not leak", str(runtime_event))
+        self.assertNotIn("hidden_table", str(runtime_event))
+
+    def test_checkpoint_route_event_delivery_failure_is_fail_open(self) -> None:
+        """事件 store 故障不能让 checkpoint 主查询失败，但应返回低敏投递错误。"""
+
+        app = FakeApp()
+        checkpoint = self.store.save(
+            _graph_run_for_resume(),
+            context={"tenantId": "tenant-fail-open", "runId": "run-fail-open"},
+        )
+        register_tool_action_checkpoint_routes(
+            app,
+            checkpoint_store=self.store,
+            event_store=FailingEventStore(),
+        )
+
+        response = app.post_routes["/agent/tool-actions/checkpoints/query"](
+            {"checkpointId": checkpoint.checkpoint_id, "tenantId": "tenant-fail-open"}
+        )
+
+        self.assertEqual(1, response["checkpointCount"])
+        self.assertFalse(response["runtimeEventDelivery"]["stored"])
+        self.assertEqual("event_store", response["runtimeEventDelivery"]["errors"][0]["component"])
+        self.assertEqual("RuntimeError", response["runtimeEventDelivery"]["errors"][0]["errorType"])
 
 
 def _graph_run_for_resume() -> dict[str, object]:

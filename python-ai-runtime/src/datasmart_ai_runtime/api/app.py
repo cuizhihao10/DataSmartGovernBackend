@@ -75,6 +75,7 @@ from datasmart_ai_runtime.services.runtime_events.runtime_event_components impor
 )
 from datasmart_ai_runtime.services.skills import build_skill_publication_manifest_diagnostics_service
 from datasmart_ai_runtime.services.tools import (
+    ToolActionCheckpointMetrics,
     build_tool_action_execution_checkpoint_store,
     tool_action_execution_checkpoint_store_diagnostics,
     tool_action_execution_checkpoint_store_settings_from_env,
@@ -184,6 +185,7 @@ def create_app() -> Any:
     live_push_hub = runtime_events.live_push_hub
     event_publisher = runtime_events.event_publisher
     memory_materialization_metrics = AgentMemoryMaterializationMetrics()
+    tool_action_checkpoint_metrics = ToolActionCheckpointMetrics()
     memory_materialization_worker = AgentMemoryMaterializationWorker(
         runner=memory_runtime.memory_materialization_runner,
         settings=memory_materialization_worker_settings_from_env(),
@@ -358,6 +360,7 @@ def create_app() -> Any:
         - 长期记忆物化指标：用于观察后台物化批次、候选处理、补偿重排和 fencing/finalize 错误；
         - 模型 Provider 主动探测指标：用于观察健康探测运行次数、success/failure/skipped 分布、
           最近一轮状态分布和探测配置。
+        - 工具动作 checkpoint 指标：用于观察 checkpoint query/resume-preview 的访问结果、恢复事实状态和访问问题。
 
         这里不输出 providerName、tenantId、projectId、runId、traceId、URL、prompt、工具参数或模型正文。
         这些明细属于 runtime event、诊断接口或审计链路，不能进入 Prometheus label，否则会在真实客户环境中
@@ -367,6 +370,7 @@ def create_app() -> Any:
         metric_parts = (
             memory_materialization_metrics.render_prometheus().rstrip(),
             render_model_provider_health_probe_prometheus(model_provider_health_probe).rstrip(),
+            tool_action_checkpoint_metrics.render_prometheus().rstrip(),
             "",
         )
 
@@ -394,6 +398,7 @@ def create_app() -> Any:
         tool_execution_readiness_policy_provider=tool_execution_readiness_policy_provider,
         tool_action_resume_fact_provider=tool_action_resume_fact_provider,
         tool_action_checkpoint_store=tool_action_checkpoint_store,
+        tool_action_checkpoint_metrics=tool_action_checkpoint_metrics,
         tool_registry=tool_registry,
         gateway_signature_error_factory=lambda detail: HTTPException(status_code=401, detail=detail),
         gateway_signature_nonce_store=gateway_signature_nonce_store,

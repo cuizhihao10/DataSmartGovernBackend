@@ -22,6 +22,10 @@ from typing import Any, Callable
 
 from datasmart_ai_runtime.api.agent.a2a_task_planning import build_a2a_task_planning_preview_response
 from datasmart_ai_runtime.api.agent.mcp_tool_call_intake import build_mcp_tool_call_intake_preview_response
+from datasmart_ai_runtime.api.agent.runtime_event_delivery import (
+    publish_single_runtime_event,
+    runtime_event_summary,
+)
 from datasmart_ai_runtime.api.agent.tool_action_checkpoint_routes import register_tool_action_checkpoint_routes
 from datasmart_ai_runtime.api.agent.tool_action_control_flow import build_tool_action_control_flow_preview_response
 from datasmart_ai_runtime.api.events import (
@@ -62,6 +66,7 @@ def register_agent_runtime_routes(
     tool_execution_readiness_policy_provider: Any | None = None,
     tool_action_resume_fact_provider: Any | None = None,
     tool_action_checkpoint_store: Any | None = None,
+    tool_action_checkpoint_metrics: Any | None = None,
     tool_registry: tuple[Any, ...] | None = None,
     gateway_signature_error_factory: Callable[[dict[str, Any]], Exception] | None = None,
     gateway_signature_nonce_store: Any | None = None,
@@ -110,6 +115,10 @@ def register_agent_runtime_routes(
     - checkpoint query 与 resume-preview 会从同一个 store 读取；
     - 生产环境可注入 Redis 实现，避免多实例或重启后丢失等待审批/澄清的短期状态；
     - 未注入时 helper 仍回退到本地默认 in-memory store，保证离线测试和学习环境不需要 Redis。
+
+    `tool_action_checkpoint_metrics` 是 checkpoint query/resume-preview 的低基数指标记录器。它只按
+    operation/result/severity/fact_state 等固定枚举聚合，不把 checkpointId、threadId、tenantId、runId
+    或任何 payload locator 放进 Prometheus label。
     """
 
     @app.post("/agent/plans")
@@ -214,8 +223,8 @@ def register_agent_runtime_routes(
         # - publisher 让 Java 控制面和后续 observability 可以异步消费。
         # 事件写入采用 fail-open：旁路失败不应把 preview 请求打成 500，但会在响应里返回低敏 delivery 错误。
         intake_event = build_tool_action_intake_runtime_event(response, request_payload=payload)
-        response["runtimeEvent"] = _runtime_event_summary(intake_event)
-        response["runtimeEventDelivery"] = _publish_single_runtime_event(
+        response["runtimeEvent"] = runtime_event_summary(intake_event)
+        response["runtimeEventDelivery"] = publish_single_runtime_event(
             intake_event,
             event_store=event_store,
             live_push_hub=live_push_hub,
@@ -252,6 +261,10 @@ def register_agent_runtime_routes(
         app,
         checkpoint_store=tool_action_checkpoint_store,
         resume_fact_provider=tool_action_resume_fact_provider,
+        event_store=event_store,
+        live_push_hub=live_push_hub,
+        event_publisher=event_publisher,
+        metrics_recorder=tool_action_checkpoint_metrics,
     )
 
     @app.post("/agent/events/replay")
@@ -393,83 +406,3 @@ def _header(headers: Any, name: str) -> str | None:
         value = next((item for key, item in headers.items() if str(key).lower() == lowered_name), None)
     text = str(value).strip() if value is not None else ""
     return text or None
-
-
-def _publish_single_runtime_event(
-    event: Any,
-    *,
-    event_store: Any | None,
-    live_push_hub: Any | None,
-    event_publisher: Any | None,
-) -> dict[str, Any]:
-    """把单条协议适配事件写入 replay/live/publisher 旁路。
-
-    与 `/agent/plans` 的主流程不同，MCP intake preview 是外部协议联调/治理诊断入口。它的核心返回值是
-    intake/readiness 预检结果，事件投递属于增强可见性能力。因此这里对三条旁路都采用 fail-open：
-    - 某个旁路失败时记录低敏错误摘要；
-    - 不回滚 preview 响应；
-    - 不把异常堆栈、连接串、内部 endpoint 或 producer 详情返回给调用方。
-    """
-
-    events = (event,)
-    errors: list[dict[str, str]] = []
-    stored = False
-    live_pushed_count = 0
-    published_count = 0
-    if event_store is not None:
-        try:
-            event_store.append_many(events)
-            stored = True
-        except Exception as exc:  # pragma: no cover - 依赖真实外部存储故障时触发
-            errors.append(_runtime_event_delivery_error("event_store", exc))
-    if live_push_hub is not None:
-        try:
-            live_pushed_count = int(live_push_hub.publish(events))
-        except Exception as exc:  # pragma: no cover - 依赖真实 WebSocket outbox 故障时触发
-            errors.append(_runtime_event_delivery_error("live_push_hub", exc))
-    if event_publisher is not None:
-        try:
-            published_count = int(event_publisher.publish(events))
-        except Exception as exc:  # pragma: no cover - 依赖真实 Kafka producer 故障时触发
-            errors.append(_runtime_event_delivery_error("event_publisher", exc))
-    return {
-        "eventStoreEnabled": event_store is not None,
-        "livePushEnabled": live_push_hub is not None,
-        "publisherEnabled": event_publisher is not None,
-        "stored": stored,
-        "livePushedCount": live_pushed_count,
-        "publishedCount": published_count,
-        "errors": tuple(errors),
-    }
-
-
-def _runtime_event_summary(event: Any) -> dict[str, Any]:
-    """生成响应中可展示的 runtime event 低敏摘要。
-
-    attributes 本身已经由 `tool_action_intake_events.py` 做过白名单压缩，这里可以随响应返回，方便本地联调、
-    Java 控制面对齐和自动化测试确认事件事实确实与 preview 结果一致。
-    """
-
-    return {
-        "eventType": event.event_type.value,
-        "stage": event.stage,
-        "severity": event.severity.value,
-        "tenantId": event.tenant_id,
-        "projectId": event.project_id,
-        "actorId": event.actor_id,
-        "requestId": event.request_id,
-        "runId": event.run_id,
-        "sessionId": event.session_id,
-        "sequence": event.sequence,
-        "attributes": dict(event.attributes or {}),
-    }
-
-
-def _runtime_event_delivery_error(component: str, exc: Exception) -> dict[str, str]:
-    """把事件旁路异常收敛为低敏错误摘要。"""
-
-    return {
-        "component": component,
-        "errorType": exc.__class__.__name__,
-        "message": str(exc)[:200],
-    }
