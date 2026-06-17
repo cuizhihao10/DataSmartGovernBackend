@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.config.AgentToolActionResumeFactBundleProperties;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -30,6 +31,10 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * 4. 它仍然不保存 message、payload、SQL、prompt、工具参数或内部 endpoint。</p>
  */
 @Component
+@ConditionalOnExpression(
+        "'${datasmart.agent-runtime.tool-action-resume-facts.worker-receipt-index-store:memory}'"
+                + ".equalsIgnoreCase('memory')"
+)
 public class InMemoryAgentToolActionWorkerReceiptIndexStore implements AgentToolActionWorkerReceiptIndexStore {
 
     /**

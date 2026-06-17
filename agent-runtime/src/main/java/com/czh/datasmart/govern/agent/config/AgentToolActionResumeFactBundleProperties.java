@@ -121,6 +121,25 @@ public class AgentToolActionResumeFactBundleProperties {
     private Integer receiptProjectionQueryLimit = 50;
 
     /**
+     * worker receipt 专用索引的承载介质。
+     *
+     * <p>worker receipt index 与 locator index 类似，都是 Agent 恢复链路里的控制面事实索引，
+     * 但二者解决的问题不同：locator index 负责从 checkpoint/thread 找回 command/outbox/approval 等定位符；
+     * worker receipt index 负责回答“某个 command 是否已经被 dry-run/worker 处理过，以及最新低敏结果是什么”。</p>
+     *
+     * <p>当前支持两种模式：</p>
+     * <p>1. memory：默认值，适合本地学习、单元测试和单实例联调。它不要求 MySQL，但服务重启后数据会丢失，多实例之间也不会共享。</p>
+     * <p>2. mysql：写入 agent_tool_action_worker_receipt_index 表，适合商业化环境中的跨 JVM 重启、多实例控制面、审计追溯和恢复前置校验。</p>
+     *
+     * <p>切换到 mysql 时必须同时设置 datasmart.agent-runtime.persistence.database-enabled=true，
+     * 并先执行 worker receipt index 对应 migration。双开关仍然是为了避免开发环境只改 store 字符串就强依赖数据库。</p>
+     *
+     * <p>无论使用哪种实现，该索引都只允许保存低敏机器事实，不保存 message、payload、prompt、SQL、工具参数、
+     * 样本数据、模型输出、凭证或内部 endpoint。这个字段是生产化能力开关，不是放宽脱敏边界的开关。</p>
+     */
+    private String workerReceiptIndexStore = "memory";
+
+    /**
      * 内存版 worker receipt 专用索引最多保留多少条记录。
      *
      * <p>worker receipt index 的目标，是把“按 commandId 找最近 dry-run/worker 回执”的恢复预检路径

@@ -100,6 +100,8 @@ final class AgentToolActionResumeFactBundleResponseSupport {
     static Map<String, Object> productionReadiness(AgentToolActionResumeFactBundleProperties properties) {
         String locatorIndexStore = properties == null ? "memory" : text(properties.getLocatorIndexStore());
         boolean mysqlLocatorIndex = "mysql".equalsIgnoreCase(locatorIndexStore);
+        String workerReceiptIndexStore = properties == null ? "memory" : text(properties.getWorkerReceiptIndexStore());
+        boolean mysqlWorkerReceiptIndex = "mysql".equalsIgnoreCase(workerReceiptIndexStore);
         boolean diagnosticEventEnabled = properties == null
                 || !Boolean.FALSE.equals(properties.getDiagnosticEventEnabled());
         List<String> missingRequirements = new ArrayList<>();
@@ -108,7 +110,9 @@ final class AgentToolActionResumeFactBundleResponseSupport {
         }
         missingRequirements.add("MYSQL_DURABLE_CLARIFICATION_FACT_STORE");
         missingRequirements.add("CLARIFICATION_FACT_TTL_ARCHIVE_AND_ADMIN_QUERY");
-        missingRequirements.add("MYSQL_DURABLE_WORKER_RECEIPT_INDEX");
+        if (!mysqlWorkerReceiptIndex) {
+            missingRequirements.add("MYSQL_DURABLE_WORKER_RECEIPT_INDEX");
+        }
         missingRequirements.add("WORKER_RECEIPT_INDEX_TTL_ARCHIVE_AND_ADMIN_QUERY");
         missingRequirements.add("SERVICE_ACCOUNT_SIGNATURE_OR_MTLS");
         missingRequirements.add("PROMETHEUS_LOW_CARDINALITY_METRICS_FOR_RESUME_FACT_QUERY");
@@ -121,7 +125,9 @@ final class AgentToolActionResumeFactBundleResponseSupport {
                 "currentLocatorIndexMode", mysqlLocatorIndex
                         ? "MYSQL_DURABLE_CHECKPOINT_THREAD_TO_FACT_LOCATOR_INDEX"
                         : "IN_MEMORY_CHECKPOINT_THREAD_TO_FACT_LOCATOR_INDEX",
-                "currentWorkerReceiptIndexMode", "IN_MEMORY_LOW_SENSITIVE_WORKER_RECEIPT_INDEX_WITH_PROJECTION_FALLBACK",
+                "currentWorkerReceiptIndexMode", mysqlWorkerReceiptIndex
+                        ? "MYSQL_DURABLE_LOW_SENSITIVE_WORKER_RECEIPT_INDEX_WITH_PROJECTION_FALLBACK"
+                        : "IN_MEMORY_LOW_SENSITIVE_WORKER_RECEIPT_INDEX_WITH_PROJECTION_FALLBACK",
                 "diagnosticEventMode", diagnosticEventEnabled
                         ? "LOW_SENSITIVE_RUNTIME_EVENT_DIAGNOSTIC_SNAPSHOT"
                         : "DISABLED",

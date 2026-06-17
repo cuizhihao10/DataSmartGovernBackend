@@ -1,5 +1,39 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-18 追加落地进展：Java Agent Runtime 5.81 worker receipt MySQL 持久化索引
+
+- 本阶段承接 Java 5.80。上一阶段已经把 worker/dry-run receipt 从通用 runtime event 热窗口里拆成低敏专用索引，但 Store 仍是 JVM 内存实现，不能支撑服务重启、多实例控制面、长期审计或真实恢复前置校验。本阶段新增 MySQL durable store，让 `WORKER_RECEIPT_PROJECTION` 的索引事实可以跨实例和跨重启保留。
+- 新增 MySQL 持久化能力：
+  - 新增 `agent_tool_action_worker_receipt_index` 表 migration：`docker/mysql/migrations/20260618_agent_tool_action_worker_receipt_index.sql`；
+  - 表内只保存 eventIdentityKey、commandId、tenant/project/actor、run/session、toolCode、taskStatus、outcome、preCheckPassed、sideEffectExecuted、errorCode、replaySequence、consumedAt、indexedAt；
+  - 明确不保存 receipt message、payloadKey、payload body、prompt、SQL、工具参数、样本数据、模型输出、凭证、token、内部 endpoint 或工具结果正文；
+  - 建立 eventIdentityKey 唯一索引，以及 commandId + tenant/project/run/session/replaySequence、tenant/project/consumedAt、run/session/replaySequence 等组合索引。
+- 新增 JDBC 仓储实现：
+  - `JdbcAgentToolActionWorkerReceiptIndexRecordMapper` 负责字段清单、upsert SQL、参数绑定和 ResultSet 还原，避免 Store 类膨胀；
+  - `JdbcAgentToolActionWorkerReceiptIndexStore` 实现 `AgentToolActionWorkerReceiptIndexStore`，按 commandId 查询时把 authorizedProjectIds、tenantId、projectId、actorId、runId、sessionId 和 toolCode 全部下沉到 SQL；
+  - 查询仍保留历史 toolCode 为空的兼容策略，等 durable index 运行稳定并完成历史补物化后可以收紧为强匹配。
+- 配置与装配：
+  - 新增 `datasmart.agent-runtime.tool-action-resume-facts.worker-receipt-index-store=memory/mysql`；
+  - 内存 Store 仅在 `worker-receipt-index-store=memory` 时注册；
+  - MySQL Store 仅在 `worker-receipt-index-store=mysql` 且 `datasmart.agent-runtime.persistence.database-enabled=true` 时注册；
+  - `AgentRuntimeJdbcPersistenceConfiguration` 已把 worker receipt index 纳入连接池创建条件，避免本地默认 memory 模式强依赖 MySQL。
+- 响应与生产就绪解释：
+  - `productionReadiness.currentWorkerReceiptIndexMode` 会根据配置显示 `IN_MEMORY_LOW_SENSITIVE_WORKER_RECEIPT_INDEX_WITH_PROJECTION_FALLBACK` 或 `MYSQL_DURABLE_LOW_SENSITIVE_WORKER_RECEIPT_INDEX_WITH_PROJECTION_FALLBACK`；
+  - 当 worker receipt index 已切到 mysql 时，不再把 `MYSQL_DURABLE_WORKER_RECEIPT_INDEX` 标记为缺失；
+  - TTL/归档、管理员查询、低基数指标和审计导出仍作为后续生产化缺口保留。
+- 测试与行数：
+  - 新增 `JdbcAgentToolActionWorkerReceiptIndexStoreTest`，覆盖无效记录跳过、低敏字段绑定、重复 upsert 返回语义、范围查询、空项目授权短路和 size 诊断；
+  - 定向测试 16 个通过；
+  - 新增 Java 文件均低于 500 行：JDBC Store 约 203 行，Mapper 约 191 行，测试约 260 行。
+- 产品意义：
+  - worker receipt 开始从“单 JVM 恢复辅助缓存”升级为“Java Host 可持久化恢复事实”，更接近成熟 Agent Host 对暂停、审批、恢复和 worker receipt 的控制面治理；
+  - 这一步仍不开放真实工具 resume。真正执行仍必须继续经过 permission-admin 审批、command outbox、task-management worker、配额/熔断、服务账号签名/mTLS、审计和最终 worker receipt 验真。
+- 下一步推荐路线：
+  1. 补 worker receipt index TTL/归档任务、管理员低敏查询接口和 Prometheus 低基数指标。
+  2. 将 clarification fact store 升级为 MySQL durable store，并把澄清事实登记事件化。
+  3. 在完成 durable receipt/clarification 后，切到 OpenClaw-style execution graph 条件节点，避免继续只在 Java resume 局部堆字段。
+  4. 中期把 MCP `tools/call`、A2A action 和模型 tool_call 统一收束到 readiness -> approval/clarification/outbox/worker receipt 的宿主事实链路。
+
 ## 2026-06-17 追加落地进展：Java Agent Runtime 5.80 worker receipt 低敏专用索引
 
 - 本阶段承接 Java 5.79。上一阶段已经让 `CLARIFICATION_FACT` 成为服务端可验证事实，但 `WORKER_RECEIPT_PROJECTION` 仍主要依赖通用 runtime event projection 热窗口扫描。随着恢复预检、checkpoint/thread resume、task-management dry-run 和未来真实 worker receipt 增多，继续按 run/session 扫事件会带来性能和语义边界问题。本阶段新增 worker receipt 低敏专用索引，把 receipt 从“时间线事件里的一个属性”升级为“可按 commandId 查询的恢复事实源”。

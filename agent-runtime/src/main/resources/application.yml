@@ -76,6 +76,14 @@ datasmart:
       # 并先执行 docker/mysql/migrations/20260617_agent_tool_action_resume_locator_index.sql。
       # 该索引只保存低敏定位符，不保存 prompt、SQL、arguments、payload、模型输出、密钥或内部 endpoint。
       locator-index-store: ${DATASMART_AGENT_RUNTIME_RESUME_LOCATOR_INDEX_STORE:memory}
+      # worker receipt 专用索引的承载介质。
+      # memory：默认值，适合本地学习、单元测试和单实例联调，不要求 MySQL，但无法跨重启或多实例共享；
+      # mysql：写入 agent_tool_action_worker_receipt_index 表，适合恢复前置校验、长期审计、控制面多实例和运维排障。
+      # 切换 mysql 时必须同时设置 datasmart.agent-runtime.persistence.database-enabled=true，
+      # 并先执行 docker/mysql/migrations/20260618_agent_tool_action_worker_receipt_index.sql。
+      # 无论使用哪种介质，该索引都只保存低敏机器事实，不保存 receipt message、payload、prompt、SQL、工具参数、
+      # 样本数据、模型输出、凭证、token、内部 endpoint 或工具结果正文。
+      worker-receipt-index-store: ${DATASMART_AGENT_RUNTIME_WORKER_RECEIPT_INDEX_STORE:memory}
       # 是否把事实包查询结果写入低敏 runtime event timeline，便于审计台排查 locator/fact 缺失；不保存事实值或 payload。
       diagnostic-event-enabled: ${DATASMART_AGENT_RUNTIME_RESUME_FACT_DIAGNOSTIC_EVENT_ENABLED:true}
       # 工具动作恢复事实包配置。
@@ -103,8 +111,7 @@ datasmart:
       # 该索引只保存 commandId、run/session、租户/项目/actor、outcome、taskStatus、preCheckPassed、
       # errorCode、replaySequence 等低敏机器事实，不保存 message、payload、SQL、prompt、工具参数或内部 endpoint。
       # 它的作用是让恢复事实包优先按 commandId 查专用索引，降低对通用 runtime event 热窗口扫描的依赖。
-      # 当前仍是 memory 模式，不能跨 JVM 重启或多实例共享；生产化后应继续补 MySQL durable store、TTL/归档、
-      # 管理员查询和 Prometheus 低基数指标。
+      # 该配置只影响 memory 模式；当 worker-receipt-index-store=mysql 时，容量与保留策略应由 MySQL TTL/归档任务负责。
       worker-receipt-index-max-records: ${DATASMART_AGENT_RUNTIME_WORKER_RECEIPT_INDEX_MAX_RECORDS:10000}
     persistence:
       # 工具执行审计仓储类型。

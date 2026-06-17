@@ -1,5 +1,33 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-18 落地补充：Worker receipt indexes need durable host storage before real resume
+
+- 本轮趋势延续：
+  - LangGraph/OpenAI Agents 类 HITL/interrupt/resume 模式都在强调“暂停点恢复依赖 durable state”，因此 worker receipt 不能长期停留在单 JVM 内存索引里；
+  - MCP/A2A/模型 tool_call 等多入口工具意图最终都需要同一套宿主事实链路，receipt 查询必须可审计、可重放、可按租户/项目/actor 范围验证；
+  - 对 DataSmart 来说，durable receipt index 不是为了更快开放副作用执行，而是为了让恢复前置条件能够在服务重启、多实例部署和审计排障中保持可信。
+- 本轮落地到代码的能力：
+  - Java 5.81 新增 `JdbcAgentToolActionWorkerReceiptIndexStore` 和 `JdbcAgentToolActionWorkerReceiptIndexRecordMapper`；
+  - 新增 `agent_tool_action_worker_receipt_index` MySQL migration，建立 eventIdentityKey 幂等唯一索引和 commandId/tenant/project/run/session/replaySequence 组合索引；
+  - 新增 `worker-receipt-index-store=memory/mysql` 配置，内存和 MySQL Store 条件化注册，避免本地学习模式误连数据库；
+  - fact bundle 的 `productionReadiness` 会展示当前 worker receipt index 是否已经是 MySQL durable 模式。
+- 低敏与安全边界：
+  - MySQL 表和 JDBC Store 只保存 commandId、run/session、tenant/project/actor、toolCode、taskStatus、outcome、preCheckPassed、sideEffectExecuted、errorCode、replaySequence 和时间戳；
+  - 不保存 receipt message、payload、prompt、SQL、工具参数、样本数据、模型输出、凭证、token、内部 endpoint 或工具结果正文；
+  - 查询将 authorizedProjectIds、tenantId、projectId、actorId、runId、sessionId 和 toolCode 下沉到 SQL，避免先取回越权记录再在 JVM 过滤。
+- 产品判断：
+  - 这是从 memory host fact 迈向 durable host fact 的关键一步，更接近 Codex/Claude Code 类 Agent Host 的恢复控制面；
+  - 它仍然不是“真实 resume 已开放”的信号。真实副作用执行仍必须等待审批、澄清、outbox、worker receipt、配额、服务账号认证、审计和运维补偿闭环；
+  - 下一阶段不宜继续无限细化 receipt 字段，应补 TTL/归档、管理员低敏查询、Micrometer 指标，随后转向 OpenClaw-style execution graph 条件节点。
+- 后续趋势落地建议：
+  1. 将 clarification fact 也升级为 MySQL durable host fact，并登记低敏状态事件。
+  2. 把 readiness、approval、budget、locator、clarification、outbox、receipt 统一建模为 execution graph 的条件节点。
+  3. 将 MCP `tools/call`、A2A action 和模型 tool_call 都收束到同一组 host facts，避免协议适配层各自实现执行前治理。
+- 参考资料：
+  - LangGraph Interrupts: `https://docs.langchain.com/oss/python/langgraph/interrupts`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Authorization: `https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization`
+
 ## 2026-06-17 落地补充：Worker receipts should become indexed host facts, not only timeline events
 
 - 本轮趋势核验：
