@@ -50,8 +50,43 @@ class FakeCheckpoint:
                 "toolName": "datasource.metadata.read",
                 "proposalSubmission": {
                     "requestPayload": {
+                        "clientRequestId": "command-from-checkpoint",
+                        "approvalConfirmationId": "approval-from-checkpoint",
+                        "clarificationFactId": "clarification-from-checkpoint",
                         "policyVersion": "tool-readiness-policy.v1",
+                        "payloadReference": "agent-payload:checkpoint-secret",
                     }
+                },
+            },
+        )
+    }
+
+
+class CheckpointWithOnlyGraphHints(FakeCheckpoint):
+    """模拟调用方只给 checkpointId/threadId，其他恢复线索需要从低敏图摘要自动推断的场景。"""
+
+    checkpoint_id = "tool-action-checkpoint:hint-only"
+    request_id = None
+    resume_requirements = ()
+    graph_run_summary = {
+        "steps": (
+            {
+                "toolName": "datasource.metadata.read",
+                "proposalSubmission": {
+                    "requestPayload": {
+                        "clientRequestId": "command-from-checkpoint",
+                        "approvalConfirmationId": "approval-from-checkpoint",
+                        "clarificationFactId": "clarification-from-checkpoint",
+                        "policyVersion": "tool-readiness-policy.v1",
+                        "payloadReference": "agent-payload:checkpoint-secret",
+                        "graphId": "graph-secret-should-not-leak",
+                        "prompt": "raw checkpoint prompt should not leak",
+                        "sql": "select * from checkpoint_hidden_table",
+                    },
+                    "javaProposal": {
+                        "outboxId": "outbox-from-checkpoint",
+                        "payloadReference": "java-payload:checkpoint-secret",
+                    },
                 },
             },
         )
@@ -142,6 +177,7 @@ class ToolActionResumeFactBundleClientTest(unittest.TestCase):
         self.assertEqual("PLATFORM", captured["headers"]["x-datasmart-data-scope-level"])
         self.assertEqual("approval-secret-001", captured["payload"]["approvalFactId"])
         self.assertEqual("command-bundle-001", captured["payload"]["commandId"])
+        self.assertEqual("outbox-secret-001", captured["payload"]["outboxId"])
         self.assertEqual("datasource.metadata.read", captured["payload"]["toolCode"])
         self.assertIn("WORKER_RECEIPT_PROJECTION", captured["payload"]["requiredFactTypes"])
         self.assertNotIn("arguments", captured["payload"])
@@ -154,6 +190,64 @@ class ToolActionResumeFactBundleClientTest(unittest.TestCase):
         self.assertNotIn("agent-payload:should-not-be-used", str(summary))
         self.assertNotIn("select * from hidden_table", str(summary))
         self.assertNotIn("raw prompt should not leak", str(summary))
+
+    def test_client_derives_locator_hints_from_checkpoint_when_request_omits_values(self) -> None:
+        """请求未重复传恢复定位符时，客户端应从低敏 checkpoint 摘要补齐 Java 查询 DTO。"""
+
+        captured: dict[str, object] = {}
+
+        def fake_urlopen(request, timeout: int):
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeHttpResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "availableFactTypes": [],
+                        "missingFactTypes": [],
+                        "rejectedFactTypes": [],
+                        "facts": [],
+                    },
+                }
+            )
+
+        client = JavaAgentRuntimeToolActionResumeFactBundleClient(
+            AgentRuntimeResumeFactBundleClientSettings(enabled=True),
+            urlopen_func=fake_urlopen,
+        )
+
+        snapshot = client.collect(
+            checkpoint=CheckpointWithOnlyGraphHints(),
+            request_payload={
+                "checkpointId": "tool-action-checkpoint:hint-only",
+                "context": {
+                    "traceId": "trace-hint-only",
+                    "tenantId": "101",
+                    "projectId": "202",
+                },
+            },
+        )
+        payload = captured["payload"]
+        serialized_payload = str(payload)
+
+        self.assertEqual("command-from-checkpoint", payload["commandId"])
+        self.assertEqual("outbox-from-checkpoint", payload["outboxId"])
+        self.assertEqual("approval-from-checkpoint", payload["approvalFactId"])
+        self.assertEqual("clarification-from-checkpoint", payload["clarificationFactId"])
+        self.assertEqual("datasource.metadata.read", payload["toolCode"])
+        self.assertEqual("tool-readiness-policy.v1", payload["requestedPolicyVersion"])
+        self.assertIn("APPROVAL_CONFIRMATION_FACT", payload["requiredFactTypes"])
+        self.assertIn("CLARIFICATION_FACT", payload["requiredFactTypes"])
+        self.assertIn("OUTBOX_WRITE_CONFIRMATION", payload["requiredFactTypes"])
+        self.assertIn("WORKER_RECEIPT_PROJECTION", payload["requiredFactTypes"])
+        self.assertNotIn("payloadReference", payload)
+        self.assertNotIn("graphId", payload)
+        self.assertNotIn("prompt", payload)
+        self.assertNotIn("sql", payload)
+        self.assertNotIn("arguments", payload)
+        self.assertNotIn("agent-payload:checkpoint-secret", serialized_payload)
+        self.assertNotIn("java-payload:checkpoint-secret", serialized_payload)
+        self.assertNotIn("checkpoint_hidden_table", serialized_payload)
+        self.assertEqual((), snapshot.error_codes)
 
     def test_java_missing_request_supplied_outbox_fact_should_reject_it(self) -> None:
         """调用方自报 outboxConfirmationId 但 Java 查不到 outbox 时，必须进入 rejected。"""

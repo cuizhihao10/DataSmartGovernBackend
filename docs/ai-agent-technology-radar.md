@@ -1,5 +1,36 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-16 落地补充：Checkpoint-derived locator hints make resume less client-dependent
+
+- 本轮趋势核验：
+  - LangGraph Persistence 把 checkpointer 定位为 thread 级短期图状态，把 store 定位为跨线程长期记忆，说明恢复执行应从 checkpoint/thread 出发，而不是依赖客户端重传完整上下文。
+  - OpenAI Agents SDK Human-in-the-loop 展示了暂停、审批、序列化 RunState、恢复的工具调用流程，说明工具恢复需要稳定定位符和可验证事实，而不只是一次性 HTTP payload。
+  - MCP Authorization 强调受保护资源请求需要 bearer token、scope 和 resource 语义，提醒 DataSmart 的 checkpoint/fact bundle 链路必须继续走宿主控制面，而不是把权限判断下放给调用方自报字段。
+- 对 DataSmart 的架构映射：
+  - 5.72 已把 checkpoint store 推进到可配置 Redis，但 Java fact bundle 查询仍需要更多显式定位符；
+  - 5.73 新增 checkpoint-derived locator hints，让 Python 可以从低敏执行图摘要里派生 command、approval、clarification、outbox、tool、policy 线索；
+  - 这让 `checkpoint/thread -> Java fact bundle -> resume-preview` 更接近真实 Agent Host 的恢复控制面；
+  - 仍保持低敏边界，不把 payloadReference、graphId、prompt、SQL、arguments、样本数据、模型输出或内部 endpoint 放进 Java fact bundle 请求。
+- 本轮落地到代码的能力：
+  - 新增 `checkpoint_resume_fact_bundle_hints(...)`；
+  - `JavaAgentRuntimeToolActionResumeFactBundleClient` 接入 checkpoint hints；
+  - requiredFactTypes 结合 checkpoint requirements、请求事实和 checkpoint hints 推断；
+  - checkpoint productionReadiness 修正为可配置 in-memory/Redis 短期 store；
+  - 全量 Python 测试 469 个通过。
+- 产品判断：
+  - 该阶段降低了前端刷新、外部 Agent 重试、worker 补偿和跨实例恢复时的参数拼接成本；
+  - 但它仍只是“恢复预检自动定位增强”，不是完整 durable resume runner；
+  - 下一步应补服务账号授权、审计指标、Java locator index、clarification fact store 和 receipt 持久化，而不是贸然执行真实工具。
+- 后续趋势落地建议：
+  1. 对齐 MCP Authorization 风格，为 Python -> Java fact bundle 查询补服务账号签名、resource/scope 和 gateway 内部路由。
+  2. Java 侧增加 checkpoint/thread 到 command/outbox/receipt/approval 的 locator index，让自动关联从 Python hint 过渡到控制面索引。
+  3. 将 MCP tools/call、A2A action、模型 tool_call 统一接入 checkpoint-derived recovery surface。
+  4. 保持 checkpoint 与长期记忆分层，避免把 Redis checkpoint 扩展成长期知识库或审计库。
+- 参考资料：
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Authorization: `https://modelcontextprotocol.io/specification/draft/basic/authorization`
+
 ## 2026-06-16 落地补充：Checkpoint store should be durable before real tool resume
 
 - 本轮趋势核验：

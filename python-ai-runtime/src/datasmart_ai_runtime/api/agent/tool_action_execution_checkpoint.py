@@ -406,13 +406,14 @@ def _checkpoint_query_production_readiness() -> dict[str, Any]:
     """checkpoint 查询能力距离生产可用仍缺的部分。"""
 
     return {
-        "currentStore": "IN_MEMORY_PROCESS_LOCAL",
+        "currentStore": "CONFIGURABLE_IN_MEMORY_OR_REDIS_SHORT_LIVED",
         "missingProductionRequirements": (
-            "REDIS_OR_MYSQL_DURABLE_CHECKPOINT_STORE",
+            "MYSQL_OR_AUDIT_DURABLE_CHECKPOINT_PROJECTION",
             "GATEWAY_OR_SERVICE_ACCOUNT_AUTHORIZATION",
             "TENANT_QUOTA_AND_TTL",
             "AUDIT_EVENT_FOR_CHECKPOINT_QUERY",
             "PROMETHEUS_LOW_CARDINALITY_METRICS",
+            "CHECKPOINT_TO_JAVA_FACT_BUNDLE_LOCATOR_INDEX",
         ),
     }
 

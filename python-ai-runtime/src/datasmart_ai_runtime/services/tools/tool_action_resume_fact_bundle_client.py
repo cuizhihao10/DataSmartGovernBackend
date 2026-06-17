@@ -22,6 +22,9 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from datasmart_ai_runtime.services.tools.tool_action_resume_fact_checkpoint_hints import (
+    checkpoint_resume_fact_bundle_hints,
+)
 from datasmart_ai_runtime.services.tools.tool_action_resume_fact_provider import (
     ToolActionResumeFactSnapshot,
     resume_fact_types_from_mapping,
@@ -163,11 +166,14 @@ class JavaAgentRuntimeToolActionResumeFactBundleClient:
         - tenant/project/actor/tool/policy 用于作用域校验；
         - requiredFactTypes 告诉 Java 本次关心哪些事实类型。
 
+        字段来源优先级：请求显式低敏字段 > checkpoint 低敏执行图摘要 > checkpoint 对象基础定位字段。
+
         不发送 prompt、messages、SQL、工具 arguments、payload body、样本数据、模型输出、凭证或内部 endpoint。
         """
 
         context = request_payload.get("context")
         context_mapping = context if isinstance(context, Mapping) else {}
+        checkpoint_hints = checkpoint_resume_fact_bundle_hints(checkpoint)
         return {
             "checkpointId": _first_text(
                 request_payload.get("checkpointId"),
@@ -190,19 +196,17 @@ class JavaAgentRuntimeToolActionResumeFactBundleClient:
                 getattr(checkpoint, "run_id", None),
                 getattr(checkpoint, "thread_id", None),
             ),
-            "commandId": _command_id_from_payload_or_checkpoint(request_payload, checkpoint),
-            "outboxId": _first_text(
-                request_payload.get("outboxId"),
-                context_mapping.get("outboxId"),
-                _fact_value_from_payload(request_payload, "outboxId"),
-            ),
-            "approvalFactId": _approval_fact_id_from_payload(request_payload),
+            "commandId": _command_id_from_payload_or_checkpoint(request_payload, checkpoint, checkpoint_hints),
+            "outboxId": _outbox_id_from_payload_or_checkpoint(request_payload, context_mapping, checkpoint_hints),
+            "approvalFactId": _approval_fact_id_from_payload(request_payload, checkpoint_hints),
             "clarificationFactId": _first_text(
                 request_payload.get("clarificationFactId"),
+                context_mapping.get("clarificationFactId"),
                 _fact_value_from_payload(request_payload, "clarificationFactId"),
+                checkpoint_hints.get("clarificationFactId"),
             ),
-            "toolCode": _tool_code_from_payload_or_checkpoint(request_payload, checkpoint),
-            "requestedPolicyVersion": _policy_version_from_payload_or_checkpoint(request_payload, checkpoint),
+            "toolCode": _tool_code_from_payload_or_checkpoint(request_payload, checkpoint_hints),
+            "requestedPolicyVersion": _policy_version_from_payload_or_checkpoint(request_payload, checkpoint_hints),
             "tenantId": _optional_int(
                 _first_text(
                     request_payload.get("tenantId"),
@@ -222,7 +226,11 @@ class JavaAgentRuntimeToolActionResumeFactBundleClient:
                 context_mapping.get("actorId"),
                 getattr(checkpoint, "actor_id", None),
             ),
-            "requiredFactTypes": _required_fact_types(checkpoint=checkpoint, request_payload=request_payload),
+            "requiredFactTypes": _required_fact_types(
+                checkpoint=checkpoint,
+                request_payload=request_payload,
+                checkpoint_hints=checkpoint_hints,
+            ),
             "includeOutboxSummary": True,
             "includeReceiptSummary": True,
         }
@@ -291,8 +299,19 @@ class JavaAgentRuntimeToolActionResumeFactBundleClient:
         return headers
 
 
-def _required_fact_types(*, checkpoint: Any, request_payload: Mapping[str, Any]) -> list[str]:
-    """推断需要 Java 控制面回查的事实类型。"""
+def _required_fact_types(
+    *,
+    checkpoint: Any,
+    request_payload: Mapping[str, Any],
+    checkpoint_hints: Mapping[str, str],
+) -> list[str]:
+    """推断需要 Java 控制面回查的事实类型。
+
+    推断顺序分三层：
+    - checkpoint.resume_requirements 表达执行图为什么暂停，是最稳定的服务端事实需求来源；
+    - request_payload 中的 resumeFacts 表达调用方自报了哪些事实，但仍需要 Java 控制面验真；
+    - checkpoint_hints 表达执行图摘要里已经有某些事实定位符，即使调用方没有重复传，也应让 Java 回查。
+    """
 
     required: list[str] = []
     for requirement in tuple(getattr(checkpoint, "resume_requirements", ()) or ()):
@@ -309,7 +328,13 @@ def _required_fact_types(*, checkpoint: Any, request_payload: Mapping[str, Any])
     for fact_type in request_fact_types:
         if fact_type in {"APPROVAL_CONFIRMATION_FACT", "CLARIFICATION_FACT", "OUTBOX_WRITE_CONFIRMATION"}:
             _append_once(required, fact_type)
-    if _command_id_from_payload_or_checkpoint(request_payload, checkpoint):
+    if checkpoint_hints.get("approvalFactId"):
+        _append_once(required, "APPROVAL_CONFIRMATION_FACT")
+    if checkpoint_hints.get("clarificationFactId"):
+        _append_once(required, "CLARIFICATION_FACT")
+    if _command_id_from_payload_or_checkpoint(request_payload, checkpoint, checkpoint_hints) or checkpoint_hints.get(
+        "outboxId"
+    ):
         _append_once(required, "OUTBOX_WRITE_CONFIRMATION")
         _append_once(required, "WORKER_RECEIPT_PROJECTION")
     if not required:
@@ -341,7 +366,29 @@ def _fact_reference_count(data: Mapping[str, Any]) -> int:
     return len(_safe_code_tuple(data.get("availableFactTypes"), maximum=16))
 
 
-def _approval_fact_id_from_payload(payload: Mapping[str, Any]) -> str | None:
+def _outbox_id_from_payload_or_checkpoint(
+    payload: Mapping[str, Any],
+    context_mapping: Mapping[str, Any],
+    checkpoint_hints: Mapping[str, str],
+) -> str | None:
+    """解析 outbox 定位符。
+
+    Java DTO 字段名叫 `outboxId`，但调用方历史上可能使用 `outboxConfirmationId` 表达“我认为 outbox 已写入”。
+    这里允许把这类别名作为查询定位符发给 Java 验真，但不会在 Python API 摘要中回显。
+    """
+
+    return _first_text(
+        payload.get("outboxId"),
+        payload.get("outboxConfirmationId"),
+        context_mapping.get("outboxId"),
+        context_mapping.get("outboxConfirmationId"),
+        _fact_value_from_payload(payload, "outboxId"),
+        _fact_value_from_payload(payload, "outboxConfirmationId"),
+        checkpoint_hints.get("outboxId"),
+    )
+
+
+def _approval_fact_id_from_payload(payload: Mapping[str, Any], checkpoint_hints: Mapping[str, str]) -> str | None:
     """从请求中提取 approval fact ID，仅用于发往 Java 控制面验真。"""
 
     return _first_text(
@@ -351,11 +398,20 @@ def _approval_fact_id_from_payload(payload: Mapping[str, Any]) -> str | None:
         _fact_value_from_payload(payload, "approvalFactId"),
         _fact_value_from_payload(payload, "approvalConfirmationId"),
         _fact_value_from_payload(payload, "confirmationId"),
+        checkpoint_hints.get("approvalFactId"),
     )
 
 
-def _command_id_from_payload_or_checkpoint(payload: Mapping[str, Any], checkpoint: Any) -> str | None:
-    """解析 commandId，优先使用请求显式字段，其次使用 checkpoint request_id。"""
+def _command_id_from_payload_or_checkpoint(
+    payload: Mapping[str, Any],
+    checkpoint: Any,
+    checkpoint_hints: Mapping[str, str],
+) -> str | None:
+    """解析 commandId。
+
+    commandId 会驱动 Java outbox 与 worker receipt 查询，所以优先使用请求显式字段，其次使用
+    checkpoint_hints 自动恢复定位，最后才用 checkpoint.request_id/checkpoint_id 做兼容兜底。
+    """
 
     context = payload.get("context")
     context_mapping = context if isinstance(context, Mapping) else {}
@@ -364,12 +420,13 @@ def _command_id_from_payload_or_checkpoint(payload: Mapping[str, Any], checkpoin
         payload.get("clientRequestId"),
         context_mapping.get("commandId"),
         context_mapping.get("clientRequestId"),
+        checkpoint_hints.get("commandId"),
         getattr(checkpoint, "request_id", None),
         getattr(checkpoint, "checkpoint_id", None),
     )
 
 
-def _tool_code_from_payload_or_checkpoint(payload: Mapping[str, Any], checkpoint: Any) -> str | None:
+def _tool_code_from_payload_or_checkpoint(payload: Mapping[str, Any], checkpoint_hints: Mapping[str, str]) -> str | None:
     """解析工具编码。"""
 
     params = payload.get("params")
@@ -378,11 +435,14 @@ def _tool_code_from_payload_or_checkpoint(payload: Mapping[str, Any], checkpoint
         payload.get("toolCode"),
         payload.get("toolName"),
         params_mapping.get("name"),
-        _first_checkpoint_step_field(checkpoint, "toolName"),
+        checkpoint_hints.get("toolCode"),
     )
 
 
-def _policy_version_from_payload_or_checkpoint(payload: Mapping[str, Any], checkpoint: Any) -> str | None:
+def _policy_version_from_payload_or_checkpoint(
+    payload: Mapping[str, Any],
+    checkpoint_hints: Mapping[str, str],
+) -> str | None:
     """解析策略版本。"""
 
     context = payload.get("context")
@@ -391,49 +451,13 @@ def _policy_version_from_payload_or_checkpoint(payload: Mapping[str, Any], check
         payload.get("policyVersion"),
         context_mapping.get("policyVersion"),
         _fact_value_from_payload(payload, "policyVersion"),
-        _policy_version_from_checkpoint(checkpoint),
+        checkpoint_hints.get("requestedPolicyVersion"),
     )
 
 
 def _fact_value_from_payload(payload: Mapping[str, Any], key: str) -> Any:
     facts = payload.get("resumeFacts")
     return facts.get(key) if isinstance(facts, Mapping) else None
-
-
-def _policy_version_from_checkpoint(checkpoint: Any) -> str | None:
-    graph_run = getattr(checkpoint, "graph_run_summary", None)
-    if not isinstance(graph_run, Mapping):
-        return None
-    steps = graph_run.get("steps")
-    if not isinstance(steps, (list, tuple)):
-        return None
-    for step in steps:
-        if not isinstance(step, Mapping):
-            continue
-        proposal = step.get("proposalSubmission")
-        if not isinstance(proposal, Mapping):
-            continue
-        request_payload = proposal.get("requestPayload")
-        if isinstance(request_payload, Mapping):
-            value = _text(request_payload.get("policyVersion"))
-            if value:
-                return value
-    return None
-
-
-def _first_checkpoint_step_field(checkpoint: Any, field: str) -> str | None:
-    graph_run = getattr(checkpoint, "graph_run_summary", None)
-    if not isinstance(graph_run, Mapping):
-        return None
-    steps = graph_run.get("steps")
-    if not isinstance(steps, (list, tuple)):
-        return None
-    for step in steps:
-        if isinstance(step, Mapping):
-            value = _text(step.get(field))
-            if value:
-                return value
-    return None
 
 
 def _trace_id_from_payload(payload: Mapping[str, Any], checkpoint: Any) -> str | None:

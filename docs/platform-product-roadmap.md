@@ -1,5 +1,40 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-16 追加落地进展：Python AI Runtime 5.73 checkpoint 派生恢复事实定位线索
+
+- 本阶段承接 Python 5.72。上一阶段已经支持可配置 Redis checkpoint store，但 resume-preview 查询 Java
+  agent-runtime fact bundle 时仍较依赖调用方重复提交 commandId、approvalFactId、clarificationFactId、outboxId、
+  toolCode 和 policyVersion。本阶段把 checkpoint 中已经保存的低敏执行图摘要转化为 Java fact bundle
+  查询提示，让 checkpoint/thread 更接近真实 Agent Host 的恢复入口。
+- 新增 `services/tools/tool_action_resume_fact_checkpoint_hints.py`：
+  - 从 `graph_run_summary.steps[*].proposalSubmission.requestPayload/javaProposal` 中提取低敏定位字段；
+  - 只返回 Java DTO 已支持的 commandId、outboxId、approvalFactId、clarificationFactId、toolCode、requestedPolicyVersion；
+  - 不返回 graphId、payloadReference、prompt、SQL、arguments、样本数据、模型输出、凭证或内部 endpoint；
+  - 该模块独立于 HTTP client，避免恢复事实包客户端继续膨胀，符合单文件 500 行与低耦合约束。
+- `JavaAgentRuntimeToolActionResumeFactBundleClient` 更新：
+  - Java 查询 DTO 的字段来源优先级变为“请求显式低敏字段 > checkpoint 低敏执行图摘要 > checkpoint 对象基础字段”；
+  - 请求方只传 checkpointId/threadId 时，也可从 checkpoint 摘要补齐 command、approval、clarification、outbox、tool、policy 线索；
+  - requiredFactTypes 会结合 checkpoint resume requirements、请求自报事实和 checkpoint-derived hints 推断；
+  - `outboxConfirmationId` 可作为 Java `outboxId` 查询定位符发往 Java 控制面验真，但不会在 Python 摘要中回显。
+- checkpoint API 的生产就绪描述同步更新：
+  - 当前 store 从 `IN_MEMORY_PROCESS_LOCAL` 修正为 `CONFIGURABLE_IN_MEMORY_OR_REDIS_SHORT_LIVED`；
+  - 剩余缺口明确为 MySQL/audit durable projection、服务账号授权、租户配额、审计事件、低基数指标和 Java locator index。
+- 验证：
+  - compileall 通过；
+  - 定向 checkpoint/fact bundle 测试 17 个通过；
+  - 全量 Python 测试 `python -m pytest python-ai-runtime\tests -q`：469 个通过；
+  - 行数检查：`tool_action_resume_fact_bundle_client.py` 500 行、`tool_action_resume_fact_checkpoint_hints.py` 85 行。
+- 产品意义：
+  - 恢复预检从“客户端重新拼完整定位字段”推进到“checkpoint 派生恢复事实查询线索”；
+  - 这与 LangGraph/OpenAI Agents/Codex/Claude Code 类 Agent Host 的暂停恢复模式一致：thread/checkpoint 定位暂停点，
+    Java 控制面验证事实，Python 只做低敏恢复预检；
+  - 当前仍不开放真实 resume 执行，真实副作用继续留给 Java outbox、worker receipt、审批、审计和幂等链路。
+- 下一步推荐路线：
+  1. 补 checkpoint query/resume-preview 的服务账号签名、gateway 内部路由、审计事件和低基数指标。
+  2. Java 侧建设 checkpoint/thread 到 command/outbox/receipt/approval 的 locator index。
+  3. 补 clarification fact store 与 worker receipt 持久化索引。
+  4. 在上述控制面闭环前，不建议直接开放真实工具恢复执行。
+
 ## 2026-06-16 追加落地进展：Python AI Runtime 5.72 Redis 工具动作 checkpoint store
 
 - 本阶段承接 Python 5.71。上一阶段 Python resume-preview 已经优先消费 Java agent-runtime 统一恢复事实包，
