@@ -73,6 +73,7 @@ def _event_attributes(
 
     route = _mapping(response.get("route"))
     production = _mapping(response.get("productionReadiness"))
+    security = _mapping(response.get("securityBoundary"))
     access_issues = tuple(_mapping(item) for item in _sequence(response.get("accessIssues")))
     locator = _locator_summary(request_payload)
     attrs: dict[str, Any] = {
@@ -95,6 +96,14 @@ def _event_attributes(
         "currentStore": _text(production.get("currentStore")),
         "currentAuditMode": _text(production.get("currentAuditMode")),
         "currentMetricsMode": _text(production.get("currentMetricsMode")),
+        # checkpoint 查询与恢复预检虽然是只读/预览接口，但它们会暴露暂停点和恢复事实状态。
+        # 因此事件需要记录“本次访问是否处在 gateway HMAC 保护下”，方便 Java 投影、审计台和运维告警
+        # 区分生产级服务间调用与本地兼容调用。这里仍然只保留布尔值和枚举，不保存签名、nonce 或 Header。
+        "checkpointAuthMode": _text(security.get("authMode")),
+        "checkpointAuthResult": _text(security.get("verificationResult")),
+        "checkpointAuthFailClosed": bool(security.get("failClosed")),
+        "gatewaySignatureRequired": bool(security.get("gatewaySignatureRequired")),
+        "gatewaySignatureVerified": bool(security.get("gatewaySignatureVerified")),
     }
     if operation == "resume_preview":
         attrs.update(_resume_attributes(response))

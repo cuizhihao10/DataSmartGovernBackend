@@ -1,5 +1,52 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-17 追加落地进展：Python AI Runtime 5.75 checkpoint 控制面签名保护
+
+- 本阶段承接 Python 5.74。上一阶段已经把 checkpoint query/resume-preview 接入低敏 runtime event 与
+  Prometheus 指标，但接口仍处在“默认兼容直连、未强制服务间签名”的状态。本阶段新增 checkpoint 专用
+  gateway/service-account HMAC 保护开关，让暂停点查询和恢复预检可以按环境进入 fail-closed。
+- 新增 `api/agent/tool_action_checkpoint_security.py`：
+  - 复用现有 gateway HMAC、timestamp、keyId、nonce 防重放和安全失败统计；
+  - 新增 `prepare_checkpoint_payload_for_route_security(...)`，在路由层读取 Request Header 并执行安全前置处理；
+  - 删除请求体伪造的 `trustedControlPlane`，验签通过后用 gateway Header 覆盖 tenantId、actorId、traceId；
+  - required 模式下会校验请求 projectId 是否在 gateway 授权项目集合中；
+  - 只返回低敏 `securityBoundary`，不返回 secret、签名值、nonce、完整 Header、checkpoint 正文或工具参数。
+- 路由装配更新：
+  - `register_tool_action_checkpoint_routes(...)` 新增 `request_type`、`gateway_signature_required`、
+    `gateway_signature_error_factory`、`gateway_signature_nonce_store`、`gateway_signature_security_stats`；
+  - 未传 `request_type` 时保持单参数 handler，兼容离线测试和本地脚本；
+  - FastAPI 启动路径传入真实 Request 类型，checkpoint query/resume-preview 可读取 Header 并验签；
+  - 新增环境变量 `DATASMART_TOOL_ACTION_CHECKPOINT_GATEWAY_SIGNATURE_REQUIRED`，用于先收紧 checkpoint 控制面接口。
+- 响应与事件更新：
+  - checkpoint 响应新增 `securityBoundary`；
+  - `productionReadiness.currentAuthorizationMode` 会显示当前调用是 `UNSIGNED_LEGACY_COMPATIBLE`、
+    `GATEWAY_CONTEXT_LEGACY_UNSIGNED` 还是 `GATEWAY_HMAC_VERIFIED`；
+  - fail-closed 且签名通过时，当前响应会从 missingProductionRequirements 中移除
+    `GATEWAY_OR_SERVICE_ACCOUNT_AUTHORIZATION`；
+  - runtime event attributes 新增 checkpointAuthMode、checkpointAuthResult、checkpointAuthFailClosed、
+    gatewaySignatureRequired、gatewaySignatureVerified 等低敏字段。
+- 新增测试：
+  - `test_tool_action_checkpoint_route_security.py` 覆盖无签名拒绝、签名通过后使用 gateway 身份、项目授权不匹配拒绝；
+  - 测试明确校验响应不泄露 HMAC 签名、nonce 或 secret；
+  - 旧 checkpoint API 测试保持兼容，直接注册子路由时仍可单参数调用。
+- 验证：
+  - compileall 通过；
+  - 定向测试 42 个通过；
+  - 全量 Python 测试 `python -m pytest python-ai-runtime\tests -q`：476 个通过；
+  - 行数检查：`routes.py` 419 行、`tool_action_checkpoint_routes.py` 259 行、
+    `tool_action_checkpoint_security.py` 329 行、`api/app.py` 444 行、`tool_action_checkpoint_events.py` 314 行，
+    新安全测试 285 行，仍符合 500 行内约束。
+- 产品意义：
+  - checkpoint query/resume-preview 从“可观测但仍偏兼容直连”推进到“可按环境强制 gateway/service-account 签名”；
+  - 这更贴近真实 Agent Host 对暂停点、人工审批、恢复预检和工具调用前控制面的安全要求；
+  - 当前只关闭“访问边界”缺口，不代表可以开放真实 resume 执行，真实副作用仍需 Java outbox、worker receipt、
+    审批、幂等、配额和审计链闭环。
+- 下一步推荐路线：
+  1. Java 侧建设 checkpoint/thread 到 command/outbox/receipt/approval/clarification 的 locator index。
+  2. 将 checkpoint 安全边界投影到 Java agent-runtime timeline/diagnostics，便于管理员查询签名失败与恢复访问历史。
+  3. 给真实 resume 前的 Java outbox/worker receipt 补幂等、租户配额、重放保护和长期审计投影。
+  4. 控制 Python 子系统继续局部加深，下一轮优先向 Java locator index 或 OpenClaw-style execution graph 条件节点推进。
+
 ## 2026-06-17 追加落地进展：Python AI Runtime 5.74 checkpoint 低敏审计事件与指标
 
 - 本阶段承接 Python 5.73。上一阶段已经能从 checkpoint 低敏摘要派生 Java fact bundle 查询线索，

@@ -217,6 +217,15 @@ def create_app() -> Any:
     # - 无论底层存储是什么，payload 都只允许保存低敏执行图摘要，不保存 prompt、SQL、工具参数值、模型输出或凭证。
     tool_action_checkpoint_store_settings = tool_action_execution_checkpoint_store_settings_from_env()
     tool_action_checkpoint_store = build_tool_action_execution_checkpoint_store(tool_action_checkpoint_store_settings)
+    # checkpoint query/resume-preview 是恢复控制面的高价值入口：它们不执行工具，但会暴露暂停点是否存在、
+    # 审批/澄清/outbox/worker receipt 等恢复事实是否齐备。为了支持“先收紧高风险入口，再逐步收紧全部
+    # Python API”的灰度路径，这里提供 checkpoint 专用 fail-closed 开关：
+    # - false：本地学习和旧测试仍可直连；
+    # - true：必须通过统一 gateway HMAC 或等价服务账号签名访问；
+    # - 即使该开关为 false，只要请求声称来自 gateway 且全局签名配置启用，错误签名仍会被拒绝。
+    tool_action_checkpoint_gateway_signature_required = _truthy_env(
+        "DATASMART_TOOL_ACTION_CHECKPOINT_GATEWAY_SIGNATURE_REQUIRED"
+    )
 
     def _start_memory_materialization_worker() -> None:
         """FastAPI startup 生命周期中启动长期记忆物化 worker。"""
@@ -399,6 +408,7 @@ def create_app() -> Any:
         tool_action_resume_fact_provider=tool_action_resume_fact_provider,
         tool_action_checkpoint_store=tool_action_checkpoint_store,
         tool_action_checkpoint_metrics=tool_action_checkpoint_metrics,
+        tool_action_checkpoint_gateway_signature_required=tool_action_checkpoint_gateway_signature_required,
         tool_registry=tool_registry,
         gateway_signature_error_factory=lambda detail: HTTPException(status_code=401, detail=detail),
         gateway_signature_nonce_store=gateway_signature_nonce_store,

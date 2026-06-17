@@ -1,5 +1,40 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-17 落地补充：Checkpoint access should be protected before real resume
+
+- 本轮趋势核验：
+  - LangGraph Persistence 将 checkpointer 定位为 thread 级 graph state 持久层，用于 conversation continuity、
+    human-in-the-loop、time travel 和 fault tolerance；这说明 checkpoint 不只是缓存，而是恢复控制面的关键入口。
+  - OpenAI Agents SDK Human-in-the-loop 强调敏感工具调用可以暂停、等待审批、序列化运行状态并在决策后恢复；
+    这提醒 DataSmart 的 resume-preview 不能只做业务判断，还必须受服务间认证、审计和重放保护约束。
+  - MCP Authorization 规范把 HTTP transport 的受限资源访问放在授权边界下；对 DataSmart 来说，MCP tools/call、
+    A2A action、模型 tool_call 最终都会汇入 checkpoint/resume surface，因此访问控制必须前置。
+- 对 DataSmart 的架构映射：
+  - 5.72 提供 Redis checkpoint store；
+  - 5.73 提供 checkpoint-derived Java fact bundle locator hints；
+  - 5.74 提供 checkpoint query/resume-preview runtime event 与低基数指标；
+  - 5.75 将 checkpoint query/resume-preview 接入 gateway HMAC、nonce 防重放和可配置 fail-closed。
+- 本轮落地到代码的能力：
+  - 新增 `tool_action_checkpoint_security.py`，复用现有 gateway 签名协议，不引入第二套认证机制；
+  - checkpoint route 响应新增低敏 `securityBoundary`；
+  - runtime event attributes 新增 checkpointAuthMode、checkpointAuthResult、gatewaySignatureVerified 等低敏字段；
+  - 新增 `DATASMART_TOOL_ACTION_CHECKPOINT_GATEWAY_SIGNATURE_REQUIRED`，让 checkpoint 控制面可先于其他诊断接口收紧；
+  - 全量 Python 测试 476 个通过。
+- 产品判断：
+  - 这是从“checkpoint 可运营”继续推进到“checkpoint 可受控访问”的关键一步；
+  - 但签名保护只解决调用入口身份问题，尚未解决 Java locator index、真实 outbox 幂等、worker receipt、
+    租户配额、长期审计投影和管理员治理视图；
+  - 因此下一步不应贸然开放真实 resume，而应把恢复定位和 Java 控制面事实索引做稳。
+- 后续趋势落地建议：
+  1. 把 checkpoint/thread 映射到 Java command/outbox/approval/clarification/receipt projection。
+  2. 将 checkpoint 安全事件投影到 Java timeline，让管理员能查签名失败、scope mismatch、resume waiting/ready 历史。
+  3. MCP tools/call 与 A2A action 进入真实执行前，应统一复用 `ToolPlan -> readiness -> checkpoint -> signed resume-preview`。
+  4. 继续区分短期 checkpoint、长期记忆、审计投影和真实副作用 outbox，不把任一层扩成万能状态库。
+- 参考资料：
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Authorization: `https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization`
+
 ## 2026-06-17 落地补充：Checkpoint resume surfaces need audit events and low-cardinality metrics
 
 - 本轮趋势核验：

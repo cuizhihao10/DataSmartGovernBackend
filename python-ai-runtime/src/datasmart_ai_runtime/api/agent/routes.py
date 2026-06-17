@@ -67,6 +67,7 @@ def register_agent_runtime_routes(
     tool_action_resume_fact_provider: Any | None = None,
     tool_action_checkpoint_store: Any | None = None,
     tool_action_checkpoint_metrics: Any | None = None,
+    tool_action_checkpoint_gateway_signature_required: bool = False,
     tool_registry: tuple[Any, ...] | None = None,
     gateway_signature_error_factory: Callable[[dict[str, Any]], Exception] | None = None,
     gateway_signature_nonce_store: Any | None = None,
@@ -119,6 +120,11 @@ def register_agent_runtime_routes(
     `tool_action_checkpoint_metrics` 是 checkpoint query/resume-preview 的低基数指标记录器。它只按
     operation/result/severity/fact_state 等固定枚举聚合，不把 checkpointId、threadId、tenantId、runId
     或任何 payload locator 放进 Prometheus label。
+
+    `tool_action_checkpoint_gateway_signature_required` 是 checkpoint 子路由自己的渐进式安全开关：
+    - 默认 false，保证本地学习环境和历史测试不需要先启动完整 gateway；
+    - 生产或准生产可单独设置为 true，让 checkpoint query/resume-preview 先于其他只读诊断接口进入 fail-closed；
+    - 它复用同一套 gateway HMAC、nonce store 和安全统计，因此不会形成第二套服务间认证协议。
     """
 
     @app.post("/agent/plans")
@@ -259,12 +265,17 @@ def register_agent_runtime_routes(
 
     register_tool_action_checkpoint_routes(
         app,
+        request_type=request_type,
         checkpoint_store=tool_action_checkpoint_store,
         resume_fact_provider=tool_action_resume_fact_provider,
         event_store=event_store,
         live_push_hub=live_push_hub,
         event_publisher=event_publisher,
         metrics_recorder=tool_action_checkpoint_metrics,
+        gateway_signature_required=tool_action_checkpoint_gateway_signature_required,
+        gateway_signature_error_factory=gateway_signature_error_factory,
+        gateway_signature_nonce_store=gateway_signature_nonce_store,
+        gateway_signature_security_stats=gateway_signature_security_stats,
     )
 
     @app.post("/agent/events/replay")
