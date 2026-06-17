@@ -20,10 +20,8 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -62,6 +60,7 @@ public class AgentToolActionResumeFactBundleService {
     private final AgentAsyncTaskCommandOutboxStore outboxStore;
     private final AgentRuntimeEventProjectionStore projectionStore;
     private final AgentRuntimeEventProjectionAccessSupport accessSupport;
+    private final AgentToolActionResumeLocatorIndexService locatorIndexService;
 
     /**
      * 查询恢复事实包。
@@ -81,6 +80,10 @@ public class AgentToolActionResumeFactBundleService {
                 : request;
         Instant now = Instant.now();
         AgentRuntimeEventProjectionQuery scopedQuery = scopedQuery(normalizedRequest, accessContext);
+        AgentToolActionResumeLocatorIndexService.EnrichmentResult locatorEnrichment =
+                locatorIndexService.enrich(normalizedRequest, scopedQuery);
+        normalizedRequest = locatorEnrichment.request();
+        scopedQuery = scopedQuery(normalizedRequest, accessContext);
         List<String> requiredFactTypes = requiredFactTypes(normalizedRequest);
 
         List<AgentToolActionResumeFactView> facts = new ArrayList<>();
@@ -133,7 +136,11 @@ public class AgentToolActionResumeFactBundleService {
                 true,
                 QUERY_BOUNDARY,
                 PAYLOAD_POLICY,
-                requestedLocator(normalizedRequest, scopedQuery),
+                AgentToolActionResumeFactBundleResponseSupport.requestedLocator(
+                        normalizedRequest,
+                        scopedQuery,
+                        locatorEnrichment
+                ),
                 requiredFactTypes,
                 availableFactTypes,
                 missingFactTypes,
@@ -141,8 +148,8 @@ public class AgentToolActionResumeFactBundleService {
                 facts,
                 outboxSummary,
                 receiptSummary,
-                recommendedActions(facts),
-                productionReadiness(),
+                AgentToolActionResumeFactBundleResponseSupport.recommendedActions(facts),
+                AgentToolActionResumeFactBundleResponseSupport.productionReadiness(),
                 now
         );
     }
@@ -371,62 +378,6 @@ public class AgentToolActionResumeFactBundleService {
             result.add(FACT_WORKER_RECEIPT);
         }
         return List.copyOf(result);
-    }
-
-    private Map<String, Object> requestedLocator(AgentToolActionResumeFactBundleQueryRequest request,
-                                                 AgentRuntimeEventProjectionQuery scopedQuery) {
-        Map<String, Object> locator = new LinkedHashMap<>();
-        locator.put("checkpointIdPresent", hasText(request.checkpointId()));
-        locator.put("threadIdPresent", hasText(request.threadId()));
-        locator.put("sessionId", text(request.sessionId()));
-        locator.put("runId", text(request.runId()));
-        locator.put("commandId", text(request.commandId()));
-        locator.put("outboxIdPresent", hasText(request.outboxId()));
-        locator.put("approvalFactIdPresent", hasText(request.approvalFactId()));
-        locator.put("clarificationFactIdPresent", hasText(request.clarificationFactId()));
-        locator.put("toolCode", text(request.toolCode()));
-        locator.put("scopedTenantId", scopedQuery.tenantId());
-        locator.put("scopedProjectId", scopedQuery.projectId());
-        locator.put("scopedActorId", scopedQuery.actorId());
-        return locator;
-    }
-
-    private List<String> recommendedActions(List<AgentToolActionResumeFactView> facts) {
-        Set<String> actions = new LinkedHashSet<>();
-        for (AgentToolActionResumeFactView fact : facts) {
-            if (Boolean.TRUE.equals(fact.rejected())) {
-                actions.add("RECREATE_OR_REPAIR_REJECTED_" + fact.factType());
-                continue;
-            }
-            if (Boolean.TRUE.equals(fact.available())) {
-                continue;
-            }
-            switch (fact.factType()) {
-                case FACT_APPROVAL -> actions.add("WAIT_FOR_OR_RECREATE_PERMISSION_ADMIN_APPROVAL_FACT");
-                case FACT_CLARIFICATION -> actions.add("CONNECT_CLARIFICATION_FACT_STORE_OR_REQUEST_USER_INPUT");
-                case FACT_OUTBOX -> actions.add("CALL_JAVA_COMMAND_OUTBOX_WRITER_AFTER_GRAPH_CONFIRMATION");
-                case FACT_WORKER_RECEIPT -> actions.add("WAIT_FOR_TASK_MANAGEMENT_RECEIPT_OR_RETRY_DISPATCHER");
-                default -> actions.add("REVIEW_UNKNOWN_RESUME_FACT_TYPE");
-            }
-        }
-        if (actions.isEmpty()) {
-            actions.add("SERVER_FACT_TYPES_READY_FOR_PYTHON_RESUME_PREVIEW_BUT_DO_NOT_EXECUTE_TOOL_DIRECTLY");
-        }
-        return List.copyOf(actions);
-    }
-
-    private Map<String, Object> productionReadiness() {
-        return Map.of(
-                "currentMode", "CONTROL_PLANE_FACT_BUNDLE_PREVIEW_ONLY",
-                "missingProductionRequirements", List.of(
-                        "DURABLE_CHECKPOINT_STORE_TO_DISCOVER_FACTS_BY_CHECKPOINT_ID",
-                        "CLARIFICATION_FACT_PROVIDER",
-                        "WORKER_RECEIPT_PERSISTENT_INDEX",
-                        "SERVICE_ACCOUNT_SIGNATURE_OR_MTLS",
-                        "PROMETHEUS_LOW_CARDINALITY_METRICS_FOR_RESUME_FACT_QUERY",
-                        "AUDIT_EVENT_FOR_RESUME_FACT_BUNDLE_QUERY"
-                )
-        );
     }
 
     private AgentToolActionResumeFactView unknownFact(String factType, Instant now) {

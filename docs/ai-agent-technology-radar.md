@@ -1,5 +1,40 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-17 落地补充：Checkpoint/thread should resolve host-side resume facts
+
+- 本轮趋势核验：
+  - LangGraph Persistence 把 checkpointer 定位为 thread 级 graph state，用于 conversation continuity、HITL、
+    time travel 和 fault tolerance；这说明 checkpoint/thread 应该成为恢复入口，而不是只作为一次性响应字段。
+  - OpenAI Agents SDK Human-in-the-loop 把敏感工具调用建模为暂停、返回 interruption、序列化 RunState、审批后恢复；
+    这提醒 DataSmart 的恢复链路需要“从暂停状态找到审批/outbox/receipt 事实”，不能要求调用方每次重传全部事实定位符。
+  - MCP Authorization 把受保护工具/资源访问建模为授权资源服务器请求；DataSmart 映射到产品能力时，需要由 Java host
+    控制面补齐 resource/scope/approval/outbox/receipt 事实，而不是让外部 Agent body 自报。
+- 对 DataSmart 的架构映射：
+  - Python 5.75 已为 checkpoint query/resume-preview 增加可配置 gateway HMAC 保护；
+  - Java 5.76 新增 checkpoint/thread 到 command/outbox/approval/clarification/tool/policy 的内存 locator index；
+  - fact bundle 查询现在可以先学习 Python 派生的低敏 locator hints，再在后续 checkpoint-only 查询中补齐缺失字段；
+  - 访问范围仍由 tenant/project/actor/run/session/tool scoped query 限定，避免 checkpoint/thread 跨范围补齐。
+- 本轮落地到代码的能力：
+  - 新增 `AgentToolActionResumeLocatorIndexRecord`、`AgentToolActionResumeLocatorIndexStore`、
+    `InMemoryAgentToolActionResumeLocatorIndexStore`、`AgentToolActionResumeLocatorIndexService`；
+  - `AgentToolActionResumeFactBundleService` 接入 locator enrichment；
+  - `requestedLocator` 新增 locatorIndexHit 和 locatorIndexEvidenceCodes；
+  - 主服务从 511 行拆到 460 行；
+  - `agent-runtime` 全量测试 281 个通过。
+- 产品判断：
+  - 这是从“恢复预检依赖 Python 重传 hints”走向“Java host 控制面可学习/补齐恢复定位”的关键一步；
+  - 当前仍是内存索引，不能替代 MySQL durable projection；
+  - 后续应继续把 locator index 做成可审计、可迁移、可清理、可诊断的控制面事实表。
+- 后续趋势落地建议：
+  1. MySQL durable locator index：checkpointId/threadId/runId/commandId/outboxId 复合索引、TTL、归档与幂等 upsert。
+  2. Java timeline/diagnostics：展示 checkpoint securityBoundary、locatorIndexHit、missing/rejected fact 状态。
+  3. Clarification fact store：让用户补充信息也成为可验证事实，而不是请求体自报字段。
+  4. Worker receipt persistent index：从 runtime event projection 走向更稳定的 receipt 查询面。
+- 参考资料：
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Authorization: `https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization`
+
 ## 2026-06-17 落地补充：Checkpoint access should be protected before real resume
 
 - 本轮趋势核验：

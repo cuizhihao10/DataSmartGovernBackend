@@ -1,5 +1,51 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-17 追加落地进展：Java Agent Runtime 5.76 checkpoint/thread 恢复 locator index
+
+- 本阶段承接 Python 5.75。上一阶段已经让 checkpoint query/resume-preview 具备可配置 gateway HMAC 保护，
+  但 Java fact bundle 查询仍依赖 Python 每次重复提交 commandId、outboxId、approvalFactId、clarificationFactId
+  等低敏定位符。本阶段在 Java `agent-runtime` 内新增 checkpoint/thread 到恢复事实定位符的第一版 locator index。
+- 新增 locator index 组件：
+  - `AgentToolActionResumeLocatorIndexRecord`：保存 checkpointId、threadId、sessionId、runId、commandId、
+    outboxId、approvalFactId、clarificationFactId、toolCode、policyVersion、tenant/project/actor 等低敏定位字段；
+  - `AgentToolActionResumeLocatorIndexStore`：定义可替换仓储协议；
+  - `InMemoryAgentToolActionResumeLocatorIndexStore`：提供本地学习和单测可用的内存索引；
+  - `AgentToolActionResumeLocatorIndexService`：在 fact bundle 查询前观察请求 hints、写入 index、按 checkpoint/thread
+    命中历史 locator，并在 scoped tenant/project/actor/run/session/tool 范围内补齐缺失字段。
+- `AgentToolActionResumeFactBundleService` 更新：
+  - 查询入口先按访问上下文生成 scoped query；
+  - 再通过 locator index 补齐缺失的 command/outbox/approval/clarification/tool/policy 定位符；
+  - 补齐后继续沿用现有 approval evaluator、command outbox store、runtime event projection receipt 查询；
+  - 响应 `requestedLocator` 新增 `locatorIndexHit` 和 `locatorIndexEvidenceCodes`；
+  - `productionReadiness` 新增 `currentLocatorIndexMode=IN_MEMORY_CHECKPOINT_THREAD_TO_FACT_LOCATOR_INDEX`。
+- 解耦与行数治理：
+  - 新增 `AgentToolActionResumeFactBundleResponseSupport`，把 requestedLocator、recommendedActions、productionReadiness
+    从主 service 拆出；
+  - `AgentToolActionResumeFactBundleService` 从 511 行降到 460 行；
+  - 新增组件均低于 500 行，保持当前模块可持续演进。
+- 新增测试：
+  - 扩展 `AgentToolActionResumeFactBundleServiceTest`，覆盖第一次查询写入 locator index，第二次只凭 checkpointId
+    也能补齐 command/outbox/approval 并查到 approval/outbox/worker receipt 事实；
+  - 测试继续确认响应不泄露 approvalFactId、payloadReference、prompt、SQL 或 payloadJson。
+- 验证：
+  - 定向测试 `AgentToolActionResumeFactBundleServiceTest`：5 个通过；
+  - `mvn -pl agent-runtime -am test -Dmaven.repo.local=...`：281 个测试通过；
+  - 本轮触碰文件均低于 500 行。
+- 产品意义：
+  - 恢复链路从“Python 每次重复提交全部低敏 hints”推进到“Java 控制面可以学习并补齐 checkpoint/thread 对应事实定位符”；
+  - 这更接近 LangGraph/OpenAI Agents 类 Agent Host 的恢复模式：checkpoint/thread 是暂停点入口，Java 控制面负责事实定位与验真；
+  - 仍不开放真实 resume 执行，真实副作用继续由 Java outbox、worker receipt、审批、幂等、配额和审计链保护。
+- 当前边界：
+  - locator index 当前是内存实现，不能跨 JVM 重启或多实例共享；
+  - 尚未建立 MySQL durable index、TTL/归档策略、管理员查询接口和低基数指标；
+  - clarification fact store 与 worker receipt 持久化索引仍未完成；
+  - 全仓 `agent-runtime` 仍有 8 个历史 Java 文件超过 500 行，后续应分批治理。
+- 下一步推荐路线：
+  1. 把 locator index 升级为 MySQL durable projection，并设计 checkpointId/threadId/runId/commandId 索引。
+  2. 将 checkpoint securityBoundary 和 locatorIndexHit 接入 Java timeline/diagnostics，形成管理员可查询视图。
+  3. 补 clarification fact store 与 worker receipt 持久化索引。
+  4. 之后再评估 OpenClaw-style execution graph 条件节点，避免真实 resume 过早绕过 outbox/receipt/审批链。
+
 ## 2026-06-17 追加落地进展：Python AI Runtime 5.75 checkpoint 控制面签名保护
 
 - 本阶段承接 Python 5.74。上一阶段已经把 checkpoint query/resume-preview 接入低敏 runtime event 与

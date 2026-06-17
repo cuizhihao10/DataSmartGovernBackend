@@ -132,16 +132,60 @@ class AgentToolActionResumeFactBundleServiceTest {
                 response.receiptSummary().latestErrorCode());
     }
 
+    @Test
+    void checkpointOnlyQueryShouldResolveFactsFromLocatorIndex() throws JsonProcessingException {
+        TestHarness harness = harness(approvedEvaluator());
+        harness.outboxStore().append(outboxRecord("taoc-resume-001", 20L));
+        harness.projectionStore().append(receiptRecord("receipt-ready", "taoc-resume-001", true, "DRY_RUN_PASSED", 1L));
+
+        /*
+         * 第一次查询模拟 Python 5.73/5.75 已经从 checkpoint 摘要派生出低敏 locator hints。
+         * Java 在这次查询中会把 checkpointId/threadId 与 command/outbox/approval 等定位符写入 locator index。
+         */
+        harness.service().query(
+                request(List.of("APPROVAL_CONFIRMATION_FACT", "OUTBOX_WRITE_CONFIRMATION", "WORKER_RECEIPT_PROJECTION")),
+                projectOwnerContext()
+        );
+
+        /*
+         * 第二次查询只提交 checkpointId，不再重复传 commandId、outboxId、approvalFactId。
+         * 如果 locator index 生效，Java 应能先补齐定位符，再沿用原有 fact bundle 逻辑查 outbox、receipt 和审批事实。
+         */
+        AgentToolActionResumeFactBundleResponse response = harness.service().query(
+                checkpointOnlyRequest(),
+                projectOwnerContext()
+        );
+        String json = new ObjectMapper().findAndRegisterModules().writeValueAsString(response);
+
+        assertTrue((Boolean) response.requestedLocator().get("locatorIndexHit"));
+        assertTrue(((List<?>) response.requestedLocator().get("locatorIndexEvidenceCodes"))
+                .contains("LOCATOR_INDEX_FILLED_MISSING_FIELDS"));
+        assertEquals("taoc-resume-001", response.requestedLocator().get("commandId"));
+        assertEquals(true, response.requestedLocator().get("approvalFactIdPresent"));
+        assertEquals(List.of(
+                "APPROVAL_CONFIRMATION_FACT",
+                "OUTBOX_WRITE_CONFIRMATION",
+                "WORKER_RECEIPT_PROJECTION"
+        ), response.availableFactTypes());
+        assertEquals("IN_MEMORY_CHECKPOINT_THREAD_TO_FACT_LOCATOR_INDEX",
+                response.productionReadiness().get("currentLocatorIndexMode"));
+        assertFalse(json.contains("approval-fact-approved-001"));
+        assertFalse(json.contains("agent-payload:run-resume/sensitive-payload-key"));
+        assertFalse(json.contains("raw prompt should not leak"));
+    }
+
     private TestHarness harness(AgentToolActionApprovalFactEvaluator evaluator) {
         AgentToolActionResumeFactBundleProperties properties = new AgentToolActionResumeFactBundleProperties();
         InMemoryAgentAsyncTaskCommandOutboxStore outboxStore = new InMemoryAgentAsyncTaskCommandOutboxStore(10, 100);
         InMemoryAgentRuntimeEventProjectionStore projectionStore = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        AgentToolActionResumeLocatorIndexStore locatorIndexStore = new InMemoryAgentToolActionResumeLocatorIndexStore();
         AgentToolActionResumeFactBundleService service = new AgentToolActionResumeFactBundleService(
                 properties,
                 evaluator,
                 outboxStore,
                 projectionStore,
-                new AgentRuntimeEventProjectionAccessSupport()
+                new AgentRuntimeEventProjectionAccessSupport(),
+                new AgentToolActionResumeLocatorIndexService(locatorIndexStore)
         );
         return new TestHarness(service, outboxStore, projectionStore);
     }
@@ -162,6 +206,27 @@ class AgentToolActionResumeFactBundleServiceTest {
                 20L,
                 "1001",
                 requiredFactTypes,
+                true,
+                true
+        );
+    }
+
+    private AgentToolActionResumeFactBundleQueryRequest checkpointOnlyRequest() {
+        return new AgentToolActionResumeFactBundleQueryRequest(
+                "checkpoint-resume-001",
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                10L,
+                20L,
+                "1001",
+                null,
                 true,
                 true
         );
