@@ -51,6 +51,8 @@ public class AgentRuntimeEventDisplaySupport {
             "agent.tool_execution.controlled_dry_run_receipt_recorded";
     private static final String TOOL_ACTION_RESUME_FACT_BUNDLE_DIAGNOSTIC_EVENT_TYPE =
             "agent.tool_action.resume_fact_bundle.diagnostics_recorded";
+    private static final String TOOL_ACTION_CLARIFICATION_FACT_EVENT_TYPE =
+            "agent.tool_action.clarification_fact.recorded";
 
     private static final String REPLAY_POLICY_APPEND_AND_ACK = "APPEND_TO_TIMELINE_AND_ALLOW_ACK_CURSOR";
     private static final String REPLAY_POLICY_APPEND_ONLY = "APPEND_TO_TIMELINE";
@@ -95,6 +97,9 @@ public class AgentRuntimeEventDisplaySupport {
         }
         if (TOOL_ACTION_RESUME_FACT_BUNDLE_DIAGNOSTIC_EVENT_TYPE.equals(eventType)) {
             return AgentToolActionResumeFactBundleDiagnosticEventDisplayBuilder.build(record);
+        }
+        if (TOOL_ACTION_CLARIFICATION_FACT_EVENT_TYPE.equals(eventType)) {
+            return AgentToolActionClarificationFactEventDisplayBuilder.build(record);
         }
         return buildGenericDisplay(record);
     }

@@ -440,4 +440,72 @@ class AgentRuntimeEventDisplaySupportTest {
         assertTrue(display.recommendedActions().stream()
                 .anyMatch(action -> action.contains("CALL_JAVA_COMMAND_OUTBOX_WRITER")));
     }
+
+    /**
+     * 澄清事实事件应在 timeline 中展示为 Human-in-the-loop 前置事实，而不是通用事件。
+     *
+     * <p>该测试保护 5.84 的用户体验：当用户或上游 Agent 已经补齐澄清事实后，管理台应能看到
+     * CLARIFICATION_FACT 已登记、是否可用、是否过期、是否绑定 run/session/command，以及当前数据范围是否来自
+     * 可信 Header。展示层仍然不暴露 clarificationFactId 原文、澄清正文、工具参数或 payload。</p>
+     */
+    @Test
+    void clarificationFactDisplayShouldExposeHitlFactSummary() {
+        AgentRuntimeEventDisplayView display = new AgentRuntimeEventDisplaySupport().buildDisplay(new AgentRuntimeEventProjectionRecord(
+                "clarification-fact-display",
+                AgentToolActionClarificationFactEventPublisher.SCHEMA_VERSION,
+                "JAVA_AGENT_RUNTIME",
+                AgentToolActionClarificationFactEventPublisher.EVENT_TYPE,
+                "clarification_fact_available",
+                "澄清事实已登记：status=AVAILABLE，available=true，runIdPresent=true，sessionIdPresent=true，commandIdPresent=true。",
+                "audit",
+                "10",
+                "20",
+                "1001",
+                "trace-clarification-display",
+                "run-clarification-display",
+                "session-clarification-display",
+                16L,
+                Instant.parse("2026-06-18T00:00:00Z"),
+                Instant.parse("2026-06-18T00:00:00Z"),
+                Instant.parse("2026-06-18T00:00:01Z"),
+                Map.ofEntries(
+                        Map.entry("snapshotType", "TOOL_ACTION_CLARIFICATION_FACT"),
+                        Map.entry("payloadPolicy", AgentToolActionClarificationFactEventPublisher.PAYLOAD_POLICY),
+                        Map.entry("clarificationFactIdPresent", true),
+                        Map.entry("status", "AVAILABLE"),
+                        Map.entry("available", true),
+                        Map.entry("expired", false),
+                        Map.entry("expiresAtPresent", true),
+                        Map.entry("runIdPresent", true),
+                        Map.entry("sessionIdPresent", true),
+                        Map.entry("commandIdPresent", true),
+                        Map.entry("toolCode", "datasource.metadata.read"),
+                        Map.entry("requestedPolicyVersion", "tool-readiness-policy.v1"),
+                        Map.entry("evidenceCodeCount", 2),
+                        Map.entry("issueCodeCount", 0),
+                        Map.entry("securityBoundary", Map.of(
+                                "identityPresent", true,
+                                "actorRole", "PROJECT_OWNER",
+                                "dataScopeLevel", "PROJECT",
+                                "explicitProjectScope", true,
+                                "authorizedProjectCount", 1
+                        )),
+                        Map.entry("recommendedActions", List.of(
+                                "澄清事实只表示 CLARIFICATION_FACT 可回查，真实工具 resume 仍必须经过 approval、outbox、worker receipt 和审计闭环。"
+                        ))
+                )
+        ));
+
+        assertEquals("TOOL_ACTION_CLARIFICATION_FACT", display.category());
+        assertEquals("澄清事实已登记", display.title());
+        assertEquals("CLARIFICATION_FACT_AVAILABLE", display.status());
+        assertTrue(!display.requiresAttention());
+        assertEquals(true, display.metrics().get("available"));
+        assertEquals(false, display.metrics().get("expired"));
+        assertEquals(true, display.metrics().get("clarificationFactIdPresent"));
+        assertEquals(true, display.metrics().get("commandIdPresent"));
+        assertEquals(2, display.metrics().get("evidenceCodeCount"));
+        assertEquals("PROJECT_OWNER", display.metrics().get("actorRole"));
+        assertTrue(display.recommendedActions().stream().anyMatch(action -> action.contains("approval")));
+    }
 }

@@ -14,6 +14,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -33,8 +34,14 @@ class AgentToolActionClarificationFactRegistrationServiceTest {
         AgentToolActionResumeFactBundleProperties properties = new AgentToolActionResumeFactBundleProperties();
         properties.setClarificationFactDefaultTtlSeconds(1800L);
         AgentToolActionClarificationFactStore store = new InMemoryAgentToolActionClarificationFactStore(properties);
+        InMemoryAgentRuntimeEventProjectionStore projectionStore =
+                new InMemoryAgentRuntimeEventProjectionStore(20, 100);
         AgentToolActionClarificationFactRegistrationService service =
-                new AgentToolActionClarificationFactRegistrationService(store, properties);
+                new AgentToolActionClarificationFactRegistrationService(
+                        store,
+                        properties,
+                        new AgentToolActionClarificationFactEventPublisher(projectionStore)
+                );
 
         AgentToolActionClarificationFactView view = service.upsert(
                 request("clarification-register-001", 20L, "1001", null),
@@ -49,6 +56,25 @@ class AgentToolActionClarificationFactRegistrationServiceTest {
         assertTrue(view.evidenceCodes().contains("CLARIFICATION_FACT_CONTENT_NOT_STORED"));
         assertTrue(view.expiresAt().isAfter(view.createdAt()));
         assertEquals(1, store.size());
+        assertEquals(1, projectionStore.size());
+        AgentRuntimeEventProjectionRecord event = projectionStore.query(new AgentRuntimeEventProjectionQuery(
+                "10",
+                "20",
+                "1001",
+                null,
+                "run-resume",
+                "session-resume",
+                AgentToolActionClarificationFactEventPublisher.EVENT_TYPE,
+                null,
+                null
+        )).getFirst();
+        assertEquals("CLARIFICATION_FACT_AVAILABLE",
+                new AgentRuntimeEventDisplaySupport().buildDisplay(event).status());
+        assertTrue(Boolean.TRUE.equals(event.attributes().get("clarificationFactIdPresent")));
+        assertEquals("LOW_SENSITIVE_CLARIFICATION_FACT_METADATA_ONLY_NO_FACT_ID_NO_USER_CONTENT",
+                event.attributes().get("payloadPolicy"));
+        assertTrue(Objects.toString(event.attributes(), "").contains("FORM_CONFIRMED"));
+        assertTrue(!Objects.toString(event.attributes(), "").contains("clarification-register-001"));
     }
 
     @Test
@@ -57,7 +83,10 @@ class AgentToolActionClarificationFactRegistrationServiceTest {
         AgentToolActionClarificationFactRegistrationService service =
                 new AgentToolActionClarificationFactRegistrationService(
                         new InMemoryAgentToolActionClarificationFactStore(properties),
-                        properties
+                        properties,
+                        new AgentToolActionClarificationFactEventPublisher(
+                                new InMemoryAgentRuntimeEventProjectionStore(20, 100)
+                        )
                 );
 
         assertThrows(PlatformBusinessException.class,
@@ -71,7 +100,10 @@ class AgentToolActionClarificationFactRegistrationServiceTest {
         AgentToolActionClarificationFactRegistrationService service =
                 new AgentToolActionClarificationFactRegistrationService(
                         new InMemoryAgentToolActionClarificationFactStore(properties),
-                        properties
+                        properties,
+                        new AgentToolActionClarificationFactEventPublisher(
+                                new InMemoryAgentRuntimeEventProjectionStore(20, 100)
+                        )
                 );
 
         assertThrows(PlatformBusinessException.class,

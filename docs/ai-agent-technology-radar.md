@@ -1,5 +1,30 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-18 落地补充：HITL clarification should be visible as low-sensitive timeline events
+
+- 本轮趋势验证：
+  - LangGraph Persistence 将 checkpointer 用于 thread-scoped graph state，将 store 用于跨 thread durable data；映射到 DataSmart，澄清事实既要能作为 durable host fact 保存，也要能被 timeline/replay 安全观察。
+  - OpenAI Agents SDK Human-in-the-loop 将工具审批建模为 interruption、RunState 序列化和 approve/reject 后 resume；映射到 DataSmart，用户澄清事实需要有状态演进事件，才能让长时间 pending 的恢复窗口可排障。
+  - MCP Authorization 强调资源绑定、scope 和最小权限；映射到 DataSmart，澄清事实事件即使写入 timeline，也必须只暴露低敏状态和范围摘要，不允许暴露 factId 原文或用户补充正文。
+- 本轮落地到代码的能力：
+  - Java 5.84 新增 `AgentToolActionClarificationFactEventPublisher`；
+  - 新增 `agent.tool_action.clarification_fact.recorded` 低敏 runtime event；
+  - 新增 `AgentToolActionClarificationFactEventDisplayBuilder`，将事件解释为 Human-in-the-loop 澄清事实卡片；
+  - `AgentToolActionClarificationFactRegistrationService` 在 Store upsert 成功后发布事件，但发布失败不阻断登记主流程；
+  - `AgentRuntimeEventDisplaySupport` 已接入该 eventType。
+- 低敏与安全边界：
+  - 事件只保存 status、available/expired、run/session/command 是否存在、toolCode、policyVersion、evidence/issue code 计数和 securityBoundary 摘要；
+  - 不保存 clarificationFactId 原文、用户澄清正文、prompt、SQL、arguments、payload、样本数据、模型输出、凭证、token、内部 endpoint 或工具结果正文；
+  - display 文案不能作为自动执行依据，真实恢复仍必须读取稳定 attributes、permission-admin 策略、outbox、worker receipt 和审计事实。
+- 产品判断：
+  - 这一步补的是 Agent Host 的“可解释暂停点”能力，而不是继续开放真实工具执行；
+  - 澄清事实从 durable store 进入 timeline 后，管理员可以按 run/session 观察 AVAILABLE/REVOKED/REJECTED/EXPIRED 状态；
+  - 下一步应转向低基数指标、TTL/归档和 OpenClaw-style execution graph 条件节点，避免继续只围绕澄清事实局部打磨。
+- 参考资料：
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Authorization: `https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization`
+
 ## 2026-06-18 落地补充：Human clarification facts must survive long-running resume windows
 
 - 本轮趋势核验：

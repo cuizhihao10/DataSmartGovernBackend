@@ -1,5 +1,39 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-18 追加落地进展：Java Agent Runtime 5.84 澄清事实低敏 runtime event
+
+- 本阶段承接 Java 5.83。上一阶段已经让 `CLARIFICATION_FACT` 具备 memory/mysql 可切换持久化 Store，但管理员只能通过 fact bundle 诊断间接看到澄清事实是否可用。本阶段把澄清事实登记、撤销和拒绝状态写成低敏 runtime event，并接入 timeline 展示解释器。
+- 新增低敏事件发布器：
+  - `AgentToolActionClarificationFactEventPublisher`；
+  - 事件类型：`agent.tool_action.clarification_fact.recorded`；
+  - schema：`datasmart.agent-runtime.tool-action-clarification-fact-event.v1`；
+  - payloadPolicy：`LOW_SENSITIVE_CLARIFICATION_FACT_METADATA_ONLY_NO_FACT_ID_NO_USER_CONTENT`。
+- 事件字段边界：
+  - 只写入 snapshotType、status、available、expired、run/session/command 是否存在、toolCode、requestedPolicyVersion、evidence/issue code 计数、securityBoundary 摘要和推荐动作；
+  - 不写入 clarificationFactId 原文，只保留短指纹用于内部排障；
+  - 不写入用户澄清正文、prompt、SQL、arguments、payload、样本数据、模型输出、凭证、token、内部 endpoint 或工具结果正文。
+- 新增 timeline 展示解释器：
+  - `AgentToolActionClarificationFactEventDisplayBuilder`；
+  - 将事件解释为 `CLARIFICATION_FACT_AVAILABLE`、`CLARIFICATION_FACT_REVOKED`、`CLARIFICATION_FACT_REJECTED`、`CLARIFICATION_FACT_EXPIRED`；
+  - 展示层继续强调：澄清事实可用只表示 `CLARIFICATION_FACT` 可被恢复预检查回查，不代表真实工具 resume、outbox 写入、审批通过或 worker 已执行。
+- 接入主流程：
+  - `AgentToolActionClarificationFactRegistrationService` 在 Store upsert 成功后尝试发布低敏 runtime event；
+  - 发布失败只记录事件发布支路失败，不阻断澄清事实登记；
+  - `AgentRuntimeEventDisplaySupport` 已将该 eventType 分发给专用 display builder。
+- 测试：
+  - 扩展 `AgentToolActionClarificationFactRegistrationServiceTest`，验证登记后会写入 runtime event projection，且事件 attributes 不包含 factId 原文；
+  - 扩展 `AgentRuntimeEventDisplaySupportTest`，验证澄清事实事件不再走通用展示，而是生成 Human-in-the-loop 前置事实卡片；
+  - 定向测试 22 个通过：
+    `mvn -pl agent-runtime -am "-Dtest=AgentToolActionClarificationFactRegistrationServiceTest,AgentRuntimeEventDisplaySupportTest,AgentToolActionClarificationFactEvaluatorTest,AgentToolActionResumeFactBundleServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`。
+- 产品意义：
+  - 管理台和审计台现在可以在 timeline 里看到用户澄清事实的状态演进，而不必只能等待 fact bundle 查询后才知道缺什么；
+  - 这更接近 Codex/Claude Code/OpenAI Agents/LangGraph 类 Agent Host 的 HITL 可观测模式：暂停点、人工补充事实、恢复预检和后续执行证据应当都可被低敏回放；
+  - 本阶段仍不开放真实工具 resume，真实副作用执行仍必须等待 execution graph、approval、outbox、worker receipt、配额、服务账号认证和审计闭环。
+- 下一步推荐路线：
+  1. 为 clarification/receipt/resume fact bundle 补低基数 Micrometer 指标和 TTL/归档任务。
+  2. 开始 OpenClaw-style execution graph 条件节点，把 readiness、approval、budget、locator、clarification、outbox、receipt 和 checkpoint 串成显式 resume gate。
+  3. 设计 MCP `tools/call`、A2A action、模型 tool_call 到 DataSmart ToolPlan/host facts 的统一适配层，避免外部协议绕过 Java host 控制面。
+
 ## 2026-06-18 追加落地进展：Java Agent Runtime 5.83 澄清事实 MySQL 持久化
 
 - 本阶段承接 Java 5.82。上一阶段已经为 worker receipt 补了低敏查询面，但恢复链路中的 `CLARIFICATION_FACT` 仍是 memory store，无法跨 JVM 重启、多实例共享或长期审计。本阶段把澄清事实升级为 memory/mysql 可切换 Store，让 Human-in-the-loop 暂停点的用户补充事实具备 durable host fact 形态。

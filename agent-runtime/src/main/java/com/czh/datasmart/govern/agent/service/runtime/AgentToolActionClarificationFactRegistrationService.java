@@ -40,6 +40,7 @@ public class AgentToolActionClarificationFactRegistrationService {
 
     private final AgentToolActionClarificationFactStore store;
     private final AgentToolActionResumeFactBundleProperties properties;
+    private final AgentToolActionClarificationFactEventPublisher eventPublisher;
 
     /**
      * 登记或更新澄清事实。
@@ -86,6 +87,7 @@ public class AgentToolActionClarificationFactRegistrationService {
                 now
         );
         store.upsert(record);
+        eventPublisher.publish(record, accessContext);
         return AgentToolActionClarificationFactView.from(record, now, PAYLOAD_POLICY);
     }
 
