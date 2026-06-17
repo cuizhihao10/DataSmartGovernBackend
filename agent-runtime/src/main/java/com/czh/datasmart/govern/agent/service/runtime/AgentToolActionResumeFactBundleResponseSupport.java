@@ -6,9 +6,11 @@
  */
 package com.czh.datasmart.govern.agent.service.runtime;
 
+import com.czh.datasmart.govern.agent.config.AgentToolActionResumeFactBundleProperties;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionResumeFactBundleQueryRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionResumeFactView;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -91,21 +93,36 @@ final class AgentToolActionResumeFactBundleResponseSupport {
     /**
      * 构造生产就绪解释。
      *
-     * <p>locator index 已经有内存版，因此旧的“完全缺少 checkpoint-to-facts discovery”需要收敛成更准确的边界：
-     * 当前具备短期内存索引，但还缺 MySQL/审计级 durable index、clarification store、receipt 持久化索引和服务间强认证。</p>
+     * <p>这里不再写死“当前只有内存 locator index”。5.77 之后 locator index 已支持 memory/mysql 两种模式，
+     * 因此响应应根据配置告诉调用方当前运行介质。这样 Python Runtime、运维台和学习者看到的不是过期说明，
+     * 而是“当前环境到底是单机学习模式，还是已经切到 MySQL durable 控制面索引”。</p>
      */
-    static Map<String, Object> productionReadiness() {
+    static Map<String, Object> productionReadiness(AgentToolActionResumeFactBundleProperties properties) {
+        String locatorIndexStore = properties == null ? "memory" : text(properties.getLocatorIndexStore());
+        boolean mysqlLocatorIndex = "mysql".equalsIgnoreCase(locatorIndexStore);
+        boolean diagnosticEventEnabled = properties == null
+                || !Boolean.FALSE.equals(properties.getDiagnosticEventEnabled());
+        List<String> missingRequirements = new ArrayList<>();
+        if (!mysqlLocatorIndex) {
+            missingRequirements.add("MYSQL_DURABLE_CHECKPOINT_THREAD_LOCATOR_INDEX");
+        }
+        missingRequirements.add("CLARIFICATION_FACT_PROVIDER");
+        missingRequirements.add("WORKER_RECEIPT_PERSISTENT_INDEX");
+        missingRequirements.add("SERVICE_ACCOUNT_SIGNATURE_OR_MTLS");
+        missingRequirements.add("PROMETHEUS_LOW_CARDINALITY_METRICS_FOR_RESUME_FACT_QUERY");
+        missingRequirements.add("DURABLE_AUDIT_EVENT_STORE_FOR_RESUME_FACT_BUNDLE_QUERY");
+        if (!diagnosticEventEnabled) {
+            missingRequirements.add("RUNTIME_EVENT_DIAGNOSTIC_SNAPSHOT_FOR_RESUME_FACT_BUNDLE_QUERY");
+        }
         return Map.of(
                 "currentMode", "CONTROL_PLANE_FACT_BUNDLE_PREVIEW_ONLY",
-                "currentLocatorIndexMode", "IN_MEMORY_CHECKPOINT_THREAD_TO_FACT_LOCATOR_INDEX",
-                "missingProductionRequirements", List.of(
-                        "MYSQL_DURABLE_CHECKPOINT_THREAD_LOCATOR_INDEX",
-                        "CLARIFICATION_FACT_PROVIDER",
-                        "WORKER_RECEIPT_PERSISTENT_INDEX",
-                        "SERVICE_ACCOUNT_SIGNATURE_OR_MTLS",
-                        "PROMETHEUS_LOW_CARDINALITY_METRICS_FOR_RESUME_FACT_QUERY",
-                        "AUDIT_EVENT_FOR_RESUME_FACT_BUNDLE_QUERY"
-                )
+                "currentLocatorIndexMode", mysqlLocatorIndex
+                        ? "MYSQL_DURABLE_CHECKPOINT_THREAD_TO_FACT_LOCATOR_INDEX"
+                        : "IN_MEMORY_CHECKPOINT_THREAD_TO_FACT_LOCATOR_INDEX",
+                "diagnosticEventMode", diagnosticEventEnabled
+                        ? "LOW_SENSITIVE_RUNTIME_EVENT_DIAGNOSTIC_SNAPSHOT"
+                        : "DISABLED",
+                "missingProductionRequirements", List.copyOf(missingRequirements)
         );
     }
 

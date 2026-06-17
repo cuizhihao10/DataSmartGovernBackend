@@ -1,5 +1,38 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-17 追加落地进展：Java Agent Runtime 5.78 恢复事实包 timeline 诊断事件
+
+- 本阶段承接 Java 5.77。上一阶段已经让 checkpoint/thread locator index 具备 MySQL 持久化能力，但 fact bundle 查询结果仍主要停留在单次 HTTP 响应里，管理员无法在 runtime timeline 中直接看到“恢复预检为什么卡住”。本阶段把恢复事实包查询结果转成低敏 runtime event 诊断快照。
+- 新增恢复事实包诊断事件：
+  - 新增 `AgentToolActionResumeFactBundleDiagnosticPublisher`，在 fact bundle 查询后写入 `agent.tool_action.resume_fact_bundle.diagnostics_recorded`；
+  - 事件只包含事实类型、状态、计数、locatorIndexHit、locator evidence code、securityBoundary 摘要、outbox/receipt 低敏摘要；
+  - 不保存 approvalFactId、clarificationFactId、outboxId、payloadReference、targetEndpoint、prompt、SQL、arguments、payload body、模型输出、样本数据、密钥或内部 endpoint；
+  - 使用 run/session + 事实状态指纹生成幂等 identityKey，避免同一状态重复刷屏，事实状态变化时才形成新的 timeline 快照。
+- 新增 timeline 展示解释：
+  - 新增 `AgentToolActionResumeFactBundleDiagnosticEventDisplayBuilder`，把诊断事件解释为 `REJECTED_BEFORE_RESUME`、`WAITING_RESUME_FACTS`、`FACTS_READY_FOR_PREVIEW_ONLY`；
+  - `AgentRuntimeEventDisplaySupport` 接入该事件类型，前端和审计台不再只能看到通用系统事件；
+  - 新增 `AgentToolGuardrailEventDisplayBuilder`，把原先塞在 display support 里的工具执行 guardrail 展示逻辑拆出，分发类从 497 行降到 379 行。
+- 配置与生产就绪说明：
+  - `datasmart.agent-runtime.tool-action-resume-facts.diagnostic-event-enabled` 默认开启，可通过 `DATASMART_AGENT_RUNTIME_RESUME_FACT_DIAGNOSTIC_EVENT_ENABLED` 关闭；
+  - `productionReadiness` 改为根据 `locator-index-store=memory/mysql` 动态展示当前 locator index 模式；
+  - 当前已具备低敏 runtime event 诊断快照，但 durable audit event store、Prometheus 低基数指标、clarification fact store、worker receipt persistent index 仍未完成。
+- 测试与行数：
+  - `AgentToolActionResumeFactBundleServiceTest` 新增诊断事件写入与序列化脱敏测试；
+  - `AgentRuntimeEventDisplaySupportTest` 新增恢复事实包诊断展示测试；
+  - 定向测试 `AgentToolActionResumeFactBundleServiceTest,AgentRuntimeEventDisplaySupportTest` 共 12 个通过；
+  - 全量 `agent-runtime` 测试 288 个通过；
+  - 触碰 Java 文件均低于 500 行：诊断 publisher 425 行、诊断 display builder 210 行、guardrail display builder 168 行、display support 379 行、fact bundle service 479 行。
+  - 注意：`agent-runtime` 历史目录仍有少量超过 500 行的 Java 文件，后续应继续分批拆分；本阶段只治理了本轮触碰到的 display/fact bundle 链路。
+- 产品意义：
+  - 恢复链路从“单次 HTTP 返回事实包”推进到“控制面可回放、可解释、可审计的恢复预检 timeline”；
+  - 管理员现在可以按 run/session 查看 locator 是否命中、哪些事实缺失、哪些事实被拒绝、当前数据范围是否完整；
+  - 仍不开放真实 resume 执行，真实副作用继续由 Java outbox、worker receipt、审批、幂等、租户配额和审计链保护。
+- 下一步建议：
+  1. 补 clarification fact store，让用户补充信息成为服务端可验证事实。
+  2. 补 worker receipt persistent index，减少对 runtime event projection 热窗口扫描的依赖。
+  3. 为恢复事实包诊断事件补低基数 Micrometer/Prometheus 指标与告警规则。
+  4. 拆分偏大的 `agent-runtime` 配置文件，避免 `application.yml` 长期膨胀成配置巨石。
+
 ## 2026-06-17 追加落地进展：Java Agent Runtime 5.77 checkpoint/thread 恢复 locator index MySQL 持久化
 
 - 本阶段承接 Java 5.76。上一阶段已经让 Java fact bundle 查询可以学习 checkpoint/thread 对应的低敏恢复定位符，但索引仍是 JVM 内存实现，不能跨重启、多实例共享或长期审计。本阶段将 locator index 升级为可切换 MySQL durable store。

@@ -61,6 +61,7 @@ public class AgentToolActionResumeFactBundleService {
     private final AgentRuntimeEventProjectionStore projectionStore;
     private final AgentRuntimeEventProjectionAccessSupport accessSupport;
     private final AgentToolActionResumeLocatorIndexService locatorIndexService;
+    private final AgentToolActionResumeFactBundleDiagnosticPublisher diagnosticPublisher;
 
     /**
      * 查询恢复事实包。
@@ -131,7 +132,7 @@ public class AgentToolActionResumeFactBundleService {
                 .distinct()
                 .toList();
 
-        return new AgentToolActionResumeFactBundleResponse(
+        AgentToolActionResumeFactBundleResponse response = new AgentToolActionResumeFactBundleResponse(
                 SCHEMA_VERSION,
                 true,
                 QUERY_BOUNDARY,
@@ -149,9 +150,25 @@ public class AgentToolActionResumeFactBundleService {
                 outboxSummary,
                 receiptSummary,
                 AgentToolActionResumeFactBundleResponseSupport.recommendedActions(facts),
-                AgentToolActionResumeFactBundleResponseSupport.productionReadiness(),
+                AgentToolActionResumeFactBundleResponseSupport.productionReadiness(properties),
                 now
         );
+        /*
+         * 恢复事实包查询虽然是 preview-only，但商业化控制面仍需要留下“查询结果摘要”的可观测痕迹。
+         * 这里发布的是低敏诊断事件：只包含事实类型、状态、计数、locatorIndexHit 和数据范围摘要，
+         * 不包含 approvalFactId/outboxId/payloadReference/SQL/prompt/工具参数。
+         *
+         * 该事件让管理员可以在 timeline 中回答：
+         * - Python 只凭 checkpoint/thread 来查时，Java locator index 是否命中；
+         * - 当前 resume-preview 卡在审批、outbox、clarification 还是 worker receipt；
+         * - 当前请求是否处于 PROJECT 数据范围或缺少基础身份。
+         *
+         * publisher 内部会把失败降级为日志告警，不会因为诊断支路影响主查询返回。
+         */
+        if (!Boolean.FALSE.equals(properties.getDiagnosticEventEnabled())) {
+            diagnosticPublisher.publish(normalizedRequest, response, accessContext);
+        }
+        return response;
     }
 
     private AgentToolActionResumeFactView approvalFact(AgentToolActionResumeFactBundleQueryRequest request,

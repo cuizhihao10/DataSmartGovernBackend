@@ -1,5 +1,36 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-17 落地补充：Resume fact checks should be replayable diagnostics before real tool resume
+
+- 本轮趋势核验：
+  - LangGraph 官方文档持续强调 thread/checkpoint、interrupt 和持久化对长任务、HITL 与故障恢复的重要性；对 DataSmart 来说，checkpoint/thread 不能只当作一次性请求字段，而应该进入宿主控制面可回放状态。
+  - OpenAI Agents SDK Human-in-the-loop 把敏感工具调用建模为暂停、审批、序列化运行状态和恢复；这说明“恢复前事实验真”本身就是 Agent Host 的核心治理面，而不是 Python Runtime 的本地判断。
+  - MCP Authorization 规范把受保护资源/工具访问放在授权边界下；DataSmart 映射到企业产品时，MCP tools/call、A2A action 或模型 tool_call 都不能绕过 Java host 的事实索引、审批、outbox 和 receipt 验真。
+- 对 DataSmart 的架构映射：
+  - Java 5.76/5.77 已把 checkpoint/thread 到 command/outbox/approval/clarification/tool/policy 的 locator index 做成 memory/mysql 可替换控制面索引；
+  - Java 5.78 新增恢复事实包诊断事件，把 `locatorIndexHit`、`missingFactTypes`、`rejectedFactTypes`、`securityBoundary` 摘要写入 runtime event timeline；
+  - 这让“暂停点能不能恢复、为什么不能恢复、缺哪个服务端事实”从单次响应升级为可回放诊断。
+- 本轮落地到代码的能力：
+  - 新增 `AgentToolActionResumeFactBundleDiagnosticPublisher`，写入 `agent.tool_action.resume_fact_bundle.diagnostics_recorded`；
+  - 新增 `AgentToolActionResumeFactBundleDiagnosticEventDisplayBuilder`，展示 `REJECTED_BEFORE_RESUME`、`WAITING_RESUME_FACTS`、`FACTS_READY_FOR_PREVIEW_ONLY`；
+  - 新增 `diagnostic-event-enabled` 配置开关；
+  - `productionReadiness` 动态展示 memory/mysql locator index 与诊断事件模式；
+  - `AgentToolGuardrailEventDisplayBuilder` 拆出 guardrail 展示逻辑，保持 display support 低耦合。
+- 产品判断：
+  - 这一步不是“继续堆 Java 小功能”，而是在为 Codex/Claude Code/OpenAI Agents/LangGraph 类 Agent Host 的真实暂停-审批-恢复链路补控制面可见性；
+  - timeline 诊断事件仍是 metadata-only，不代表真实工具恢复已开放；
+  - 真正开放 resume 前还需要 clarification fact store、worker receipt persistent index、服务账号签名/mTLS、租户配额和 durable audit store。
+- 后续趋势落地建议：
+  1. 把 clarification fact store 做成可验证事实源，避免用户补充信息长期停留在请求体自报。
+  2. 把 worker receipt 从通用 runtime event 热窗口提升为可索引持久事实。
+  3. 把 readiness、approval、budget、locator index、fact bundle、receipt 建模为 OpenClaw-style execution graph 条件节点。
+  4. 在模型/工具网关侧继续跟进 MCP Tasks、HITL approval、agent memory 与长任务 checkpoint 的协议演进，但只吸收能增强 DataSmart 租户安全、审计和恢复能力的部分。
+- 参考资料：
+  - LangGraph Memory/Checkpoint 概念: `https://docs.langchain.com/oss/python/concepts/memory`
+  - LangGraph Interrupts: `https://docs.langchain.com/oss/python/langgraph/interrupts`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Authorization: `https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization`
+
 ## 2026-06-17 落地补充：Checkpoint/thread locator index should become durable host control-plane state
 
 - 本轮趋势核验：

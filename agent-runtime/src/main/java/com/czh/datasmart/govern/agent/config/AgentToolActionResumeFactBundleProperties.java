@@ -43,6 +43,18 @@ public class AgentToolActionResumeFactBundleProperties {
     private String locatorIndexStore = "memory";
 
     /**
+     * 是否把每次恢复事实包查询写成低敏 runtime event 诊断快照。
+     *
+     * <p>该开关默认开启，是为了让管理台和审计台可以在统一 timeline 中看到：
+     * checkpoint/thread 是否命中 locator index、哪些事实类型缺失、哪些事实被服务端拒绝、当前请求采用了什么数据范围。
+     * 这类事件只保存事实类型、状态和计数，不保存 approvalFactId、outboxId、payloadReference、SQL、prompt 或工具参数。</p>
+     *
+     * <p>如果本地压测只关心接口吞吐、暂时不希望 projection store 写入额外诊断事件，可以关闭该开关。
+     * 关闭后主查询仍会返回 fact bundle 响应，但 WebSocket/HTTP replay 将无法看到本次恢复预检的独立时间线记录。</p>
+     */
+    private Boolean diagnosticEventEnabled = true;
+
+    /**
      * 是否启用 permission-admin 审批事实远程评估。
      *
      * <p>默认关闭，保证本地学习环境不强依赖 permission-admin 已启动。

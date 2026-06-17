@@ -174,6 +174,64 @@ class AgentToolActionResumeFactBundleServiceTest {
         assertFalse(json.contains("raw prompt should not leak"));
     }
 
+    @Test
+    void queryShouldPublishLowSensitiveDiagnosticTimelineEvent() throws JsonProcessingException {
+        TestHarness harness = harness(approvedEvaluator());
+        harness.outboxStore().append(outboxRecord("taoc-resume-001", 20L));
+        harness.projectionStore().append(receiptRecord("receipt-ready", "taoc-resume-001", true, "DRY_RUN_PASSED", 1L));
+
+        harness.service().query(
+                request(List.of("APPROVAL_CONFIRMATION_FACT", "OUTBOX_WRITE_CONFIRMATION", "WORKER_RECEIPT_PROJECTION")),
+                projectOwnerContext()
+        );
+
+        List<AgentRuntimeEventProjectionRecord> diagnosticRecords = harness.projectionStore().query(
+                new AgentRuntimeEventProjectionQuery(
+                        "10",
+                        "20",
+                        "1001",
+                        null,
+                        "run-resume",
+                        "session-resume",
+                        AgentToolActionResumeFactBundleDiagnosticPublisher.EVENT_TYPE,
+                        null,
+                        10,
+                        List.of("20")
+                )
+        );
+
+        assertEquals(1, diagnosticRecords.size());
+        AgentRuntimeEventProjectionRecord record = diagnosticRecords.getFirst();
+        Map<String, Object> attributes = record.attributes();
+        assertEquals("resume_fact_bundle_ready_preview_only", record.stage());
+        assertEquals("audit", record.severity());
+        assertEquals(true, attributes.get("previewOnly"));
+        assertEquals(true, attributes.get("locatorIndexHit"));
+        assertEquals(3, attributes.get("availableFactTypeCount"));
+        assertEquals(0, attributes.get("missingFactTypeCount"));
+        assertEquals(0, attributes.get("rejectedFactTypeCount"));
+        assertEquals(3, ((List<?>) attributes.get("factSummaries")).size());
+        assertEquals(true, ((Map<?, ?>) attributes.get("outboxSummary")).get("present"));
+        assertEquals(true, ((Map<?, ?>) attributes.get("receiptSummary")).get("present"));
+        assertEquals(1, ((Map<?, ?>) attributes.get("receiptSummary")).get("receiptCount"));
+        assertEquals("PROJECT_OWNER", ((Map<?, ?>) attributes.get("securityBoundary")).get("actorRole"));
+        assertEquals(1, ((Map<?, ?>) attributes.get("securityBoundary")).get("authorizedProjectCount"));
+
+        /*
+         * 诊断事件会进入统一 timeline，因此要像 HTTP 响应一样做最终序列化级别的泄露检查。
+         * 这里重点确认：事件只写事实类型/状态/计数，不扩散 approvalFactId、payload key、内部 endpoint、
+         * SQL、prompt 或 payloadJson。
+         */
+        String json = new ObjectMapper().findAndRegisterModules().writeValueAsString(record);
+        assertFalse(json.contains("approval-fact-approved-001"));
+        assertFalse(json.contains("async-command-outbox:taoc-resume-001"));
+        assertFalse(json.contains("agent-payload:run-resume/sensitive-payload-key"));
+        assertFalse(json.contains("http://internal-service/tools"));
+        assertFalse(json.contains("select * from sensitive_table"));
+        assertFalse(json.contains("raw prompt should not leak"));
+        assertFalse(json.contains("payloadJson"));
+    }
+
     private TestHarness harness(AgentToolActionApprovalFactEvaluator evaluator) {
         AgentToolActionResumeFactBundleProperties properties = new AgentToolActionResumeFactBundleProperties();
         InMemoryAgentAsyncTaskCommandOutboxStore outboxStore = new InMemoryAgentAsyncTaskCommandOutboxStore(10, 100);
@@ -185,7 +243,8 @@ class AgentToolActionResumeFactBundleServiceTest {
                 outboxStore,
                 projectionStore,
                 new AgentRuntimeEventProjectionAccessSupport(),
-                new AgentToolActionResumeLocatorIndexService(locatorIndexStore)
+                new AgentToolActionResumeLocatorIndexService(locatorIndexStore),
+                new AgentToolActionResumeFactBundleDiagnosticPublisher(projectionStore)
         );
         return new TestHarness(service, outboxStore, projectionStore);
     }

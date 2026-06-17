@@ -361,4 +361,83 @@ class AgentRuntimeEventDisplaySupportTest {
         assertEquals(false, display.metrics().get("productionReadyForExecution"));
         assertTrue(display.recommendedActions().stream().anyMatch(action -> action.contains("可见工具集合")));
     }
+
+    /**
+     * 恢复事实包诊断事件应在 timeline 中展示为“恢复预检治理”卡片。
+     *
+     * <p>这条测试保护 5.78 的用户体验：Java fact bundle 查询已经能判断 approval/outbox/receipt 等事实是否可用，
+     * timeline 不能只显示通用事件，而应直接告诉管理员当前是 locator index 已命中但缺事实、事实被拒绝，
+     * 还是仅允许继续 resume-preview。展示层仍然只显示事实类型、状态和计数，不展示事实 ID 或 payload。</p>
+     */
+    @Test
+    void resumeFactBundleDiagnosticDisplayShouldExposeMissingAndLocatorSummary() {
+        AgentRuntimeEventDisplayView display = new AgentRuntimeEventDisplaySupport().buildDisplay(new AgentRuntimeEventProjectionRecord(
+                "resume-fact-bundle-diagnostic-display",
+                AgentToolActionResumeFactBundleDiagnosticPublisher.SCHEMA_VERSION,
+                "JAVA_AGENT_RUNTIME",
+                AgentToolActionResumeFactBundleDiagnosticPublisher.EVENT_TYPE,
+                "resume_fact_bundle_missing_facts",
+                "恢复事实包诊断：已采信 1 个，缺失 2 个，拒绝 0 个，locatorIndexHit=true。",
+                "info",
+                "10",
+                "20",
+                "1001",
+                "trace-resume-display",
+                "run-resume-display",
+                "session-resume-display",
+                15L,
+                Instant.parse("2026-06-17T03:00:00Z"),
+                Instant.parse("2026-06-17T03:00:00Z"),
+                Instant.parse("2026-06-17T03:00:01Z"),
+                Map.ofEntries(
+                        Map.entry("snapshotType", "TOOL_ACTION_RESUME_FACT_BUNDLE_DIAGNOSTIC"),
+                        Map.entry("previewOnly", true),
+                        Map.entry("checkpointIdPresent", true),
+                        Map.entry("threadIdPresent", true),
+                        Map.entry("commandIdPresent", true),
+                        Map.entry("approvalFactIdPresent", true),
+                        Map.entry("outboxIdPresent", true),
+                        Map.entry("clarificationFactIdPresent", false),
+                        Map.entry("toolCode", "datasource.metadata.read"),
+                        Map.entry("locatorIndexHit", true),
+                        Map.entry("locatorIndexEvidenceCodes", List.of("LOCATOR_INDEX_HIT", "LOCATOR_INDEX_FILLED_MISSING_FIELDS")),
+                        Map.entry("requiredFactTypes", List.of("APPROVAL_CONFIRMATION_FACT", "OUTBOX_WRITE_CONFIRMATION", "WORKER_RECEIPT_PROJECTION")),
+                        Map.entry("availableFactTypes", List.of("APPROVAL_CONFIRMATION_FACT")),
+                        Map.entry("missingFactTypes", List.of("OUTBOX_WRITE_CONFIRMATION", "WORKER_RECEIPT_PROJECTION")),
+                        Map.entry("rejectedFactTypes", List.of()),
+                        Map.entry("requiredFactTypeCount", 3),
+                        Map.entry("availableFactTypeCount", 1),
+                        Map.entry("missingFactTypeCount", 2),
+                        Map.entry("rejectedFactTypeCount", 0),
+                        Map.entry("securityBoundary", Map.of(
+                                "identityPresent", true,
+                                "actorRole", "PROJECT_OWNER",
+                                "explicitProjectScope", true,
+                                "authorizedProjectCount", 1
+                        )),
+                        Map.entry("outboxSummary", Map.of("present", false)),
+                        Map.entry("receiptSummary", Map.of("present", false, "receiptCount", 0)),
+                        Map.entry("productionReadiness", Map.of(
+                                "missingProductionRequirementCount", 4
+                        )),
+                        Map.entry("recommendedActions", List.of("CALL_JAVA_COMMAND_OUTBOX_WRITER_AFTER_GRAPH_CONFIRMATION"))
+                )
+        ));
+
+        assertEquals("TOOL_ACTION_RESUME_FACT_BUNDLE", display.category());
+        assertEquals("恢复定位已命中但事实仍缺失", display.title());
+        assertEquals("WAITING_RESUME_FACTS", display.status());
+        assertTrue(display.requiresAttention());
+        assertTrue(display.summary().contains("缺失 2 个"));
+        assertEquals(1, display.metrics().get("availableFactTypeCount"));
+        assertEquals(2, display.metrics().get("missingFactTypeCount"));
+        assertEquals(0, display.metrics().get("rejectedFactTypeCount"));
+        assertEquals(true, display.metrics().get("locatorIndexHit"));
+        assertEquals(2, display.metrics().get("locatorIndexEvidenceCodeCount"));
+        assertEquals(true, display.metrics().get("explicitProjectScope"));
+        assertEquals(1, display.metrics().get("authorizedProjectCount"));
+        assertEquals(4, display.metrics().get("missingProductionRequirementCount"));
+        assertTrue(display.recommendedActions().stream()
+                .anyMatch(action -> action.contains("CALL_JAVA_COMMAND_OUTBOX_WRITER")));
+    }
 }

@@ -76,6 +76,8 @@ datasmart:
       # 并先执行 docker/mysql/migrations/20260617_agent_tool_action_resume_locator_index.sql。
       # 该索引只保存低敏定位符，不保存 prompt、SQL、arguments、payload、模型输出、密钥或内部 endpoint。
       locator-index-store: ${DATASMART_AGENT_RUNTIME_RESUME_LOCATOR_INDEX_STORE:memory}
+      # 是否把事实包查询结果写入低敏 runtime event timeline，便于审计台排查 locator/fact 缺失；不保存事实值或 payload。
+      diagnostic-event-enabled: ${DATASMART_AGENT_RUNTIME_RESUME_FACT_DIAGNOSTIC_EVENT_ENABLED:true}
       # 工具动作恢复事实包配置。
       # 该能力服务 Python AI Runtime 的 checkpoint/resume-preview：Python 不再只相信请求里自报的
       # approvalConfirmationId/outbox/receipt 字段，而是向 Java 控制面查询哪些事实类型已被服务端采信。
