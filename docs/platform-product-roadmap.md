@@ -1,5 +1,43 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-18 追加落地进展：Java Agent Runtime 5.82 worker receipt 低敏查询面
+
+- 本阶段承接 Java 5.81。上一阶段已经把 worker receipt index 升级为 memory/mysql 可切换 Store，但管理台、审计台和智能网关仍缺少一个受权限收口保护的只读查询面。本阶段新增按 `commandId` 查询的 worker receipt 低敏接口，让运维可以在不读取原始 runtime event、message、payload 或工具参数的情况下确认 receipt 是否存在。
+- 新增只读 API：
+  - `GET /agent-runtime/tool-action-worker-receipts/receipts`；
+  - `GET /api/agent/tool-action-worker-receipts/receipts`；
+  - 必须提供 `commandId`，禁止无界扫描；
+  - 支持 `toolCode`、`tenantId`、`projectId`、`actorId`、`runId`、`sessionId` 和 `limit` 缩小查询范围；
+  - 继续消费 gateway/permission-admin 透传的 `tenantId`、`actorId`、`dataScopeLevel`、`authorizedProjectIds` Header，并由服务层与请求参数求交集。
+- 新增查询服务与 DTO：
+  - `AgentToolActionWorkerReceiptIndexQueryService`：
+    - 负责 commandId 必填校验；
+    - 负责 SELF/PROJECT/TENANT/PLATFORM 数据范围收口；
+    - PROJECT 授权项目为空时返回空结果而不是退化成全量可见；
+    - 显式越权 projectId 继续抛出 `TENANT_SCOPE_DENIED`；
+    - 返回 evidenceCodes、missingCapabilities、storeMode 和低敏 receipt 列表。
+  - `AgentToolActionWorkerReceiptIndexView`：
+    - 返回 commandId、tenant/project/actor、run/session、toolCode、taskStatus、outcome、preCheckPassed、sideEffectExecuted、errorCode、replaySequence、consumedAt、indexedAt；
+    - 不返回 eventIdentityKey 原文，只返回 SHA-256 16 位短指纹和 `eventIdentityKeyPresent`；
+    - 不返回 receipt message、payload、prompt、SQL、arguments、样本数据、模型输出、凭证、token、内部 endpoint 或工具结果正文。
+  - `AgentToolActionWorkerReceiptIndexQueryResponse`：
+    - 返回 appliedLimit、totalMatched、storeMode、queryMode、payloadPolicy、currentIndexSize；
+    - 返回 scopedTenantId/scopedProjectId/scopedActorId/scopedRunId/scopedSessionId 和 authorizedProjectIds，便于排障时看清最终收口条件。
+- 测试与行数：
+  - 新增 `AgentToolActionWorkerReceiptIndexQueryServiceTest`；
+  - 覆盖项目范围命中、越权项目拒绝、项目授权为空返回空结果、commandId 必填、SELF actor 范围过滤和 JSON 脱敏；
+  - 定向测试 14 个通过；
+  - 新增 Java 文件均低于 500 行：QueryService 约 216 行，Controller 约 89 行，测试约 235 行。
+- 产品意义：
+  - 这一步把 durable worker receipt host fact 从“内部恢复事实源”推进到“可被运营和审计安全查看的控制面资源”；
+  - 更贴近成熟 Agent Host 的工具调用治理：工具执行准备度、审批、澄清、outbox、worker receipt 和 timeline 都应可被低敏观察；
+  - 这仍不是开放真实工具 resume。真实副作用执行继续等待审批、澄清、outbox、worker receipt、配额、签名/mTLS、审计和补偿链路闭环。
+- 下一步推荐路线：
+  1. 为 worker receipt query/index 补 TTL/归档任务与低基数 Micrometer 指标，避免只停留在人工查询面。
+  2. 将 clarification fact store 升级为 MySQL durable store，并把澄清事实登记写成低敏 runtime event。
+  3. 开始 OpenClaw-style execution graph 条件节点，把 readiness、approval、budget、locator、clarification、outbox、receipt 和 checkpoint 串成显式 resume gate。
+  4. 设计 MCP `tools/call`、A2A action、模型 tool_call 到 DataSmart ToolPlan/host facts 的统一适配层，避免协议入口各自绕过控制面。
+
 ## 2026-06-18 追加落地进展：Java Agent Runtime 5.81 worker receipt MySQL 持久化索引
 
 - 本阶段承接 Java 5.80。上一阶段已经把 worker/dry-run receipt 从通用 runtime event 热窗口里拆成低敏专用索引，但 Store 仍是 JVM 内存实现，不能支撑服务重启、多实例控制面、长期审计或真实恢复前置校验。本阶段新增 MySQL durable store，让 `WORKER_RECEIPT_PROJECTION` 的索引事实可以跨实例和跨重启保留。

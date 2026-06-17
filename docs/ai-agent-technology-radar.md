@@ -1,5 +1,31 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-18 落地补充：Tool-call host facts need low-sensitive operator query surfaces
+
+- 本轮趋势核验：
+  - LangGraph Persistence 明确把 checkpointer 用于短期 thread state，把 store 用于跨 thread 的长期应用数据，并强调中断恢复、失败恢复和跨交互记忆都依赖持久化状态。映射到 DataSmart，worker receipt 这类 host fact 不应只存在于内部索引，也应有安全查询面用于恢复前排障。
+  - OpenAI Agents SDK Tracing 把 agent run、LLM generation、tool call、handoff、guardrail 等都纳入 trace/span，并专门提醒函数工具输入输出可能包含敏感数据，需要控制是否采集。映射到 DataSmart，工具 receipt 查询必须低敏化，不能把 message、payload、SQL、prompt 或工具参数带到运维接口。
+  - MCP Tools 规范持续强调 tool 的 `inputSchema`、`outputSchema`、annotations 和 execution/taskSupport。映射到 DataSmart，未来 MCP `tools/call` 进入平台后，应先转成 DataSmart ToolPlan + readiness/outbox/receipt host facts，而不是绕过 Java 控制面直接执行。
+- 本轮落地到代码的能力：
+  - Java 5.82 新增 `AgentToolActionWorkerReceiptIndexController`，提供按 `commandId` 查询 worker receipt 低敏索引的只读 API；
+  - 新增 `AgentToolActionWorkerReceiptIndexQueryService`，把请求参数与 gateway/permission-admin Header 数据范围求交集；
+  - 新增 query/view DTO，只返回 commandId、scope、toolCode、taskStatus、outcome、preCheckPassed、sideEffectExecuted、errorCode、replaySequence 和时间戳；
+  - eventIdentityKey 只返回 SHA-256 短指纹，不返回原文；
+  - `commandId` 必填，PROJECT 空授权返回空结果，显式越权项目返回 `TENANT_SCOPE_DENIED`。
+- 产品判断：
+  - 这是“可恢复 Agent Host”的运营接口，而不是“真实工具恢复执行”接口；
+  - 它让管理员和智能网关能看到 receipt 是否存在、是否被执行前阻断、是否可能需要补审批/澄清/预算，而不泄露工具上下文；
+  - 下一步应继续补 TTL/归档、低基数指标和 clarification durable store，然后再进入 OpenClaw-style execution graph。
+- 后续趋势落地建议：
+  1. 把 worker receipt query 接入 Micrometer，暴露 `records_found/not_found/scope_empty/denied` 这类低基数指标。
+  2. 将 clarification fact 持久化，并像 receipt 一样提供低敏查询与 timeline 状态。
+  3. 把 MCP tool definition 的 input/output schema、tool annotations 和 DataSmart tool catalog 对齐，形成统一 ToolPlan contract。
+  4. 将 LangGraph checkpointer/store 的思想映射到 Java host facts 与 Python graph state 的双层持久化：Python 保存图状态，Java 保存企业控制面事实。
+- 参考资料：
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - OpenAI Agents SDK Tracing: `https://openai.github.io/openai-agents-python/tracing/`
+  - MCP Tools: `https://modelcontextprotocol.io/specification/2025-11-25/server/tools`
+
 ## 2026-06-18 落地补充：Worker receipt indexes need durable host storage before real resume
 
 - 本轮趋势延续：
