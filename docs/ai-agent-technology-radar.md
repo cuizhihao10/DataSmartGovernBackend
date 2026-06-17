@@ -1,5 +1,29 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-18 落地补充：Human clarification facts must survive long-running resume windows
+
+- 本轮趋势核验：
+  - LangGraph Persistence 将 checkpointer 与 store 区分为 thread state 与跨 thread durable data，并强调恢复中断、故障恢复和跨交互记忆需要持久化。映射到 DataSmart，用户澄清事实属于 Java host facts，不能只保存在 Python 图状态或单 JVM memory store。
+  - OpenAI Agents SDK Human-in-the-loop 文档说明敏感工具调用可以暂停等待审批，`RunState` 可序列化并在决策后恢复；同时提醒长时间 pending task 需要版本标记。映射到 DataSmart，clarification fact 必须保存 requestedPolicyVersion、expiresAt 和状态，防止旧澄清跨策略复用。
+  - MCP Authorization 强调最小权限、资源绑定和 token audience 校验。映射到 DataSmart，澄清事实即使按 factId 找到，也必须继续做 tenant/project/actor/run/session/command/tool 范围验真，不能让外部协议层用 factId 绕过 Java 控制面。
+- 本轮落地到代码的能力：
+  - Java 5.83 新增 `JdbcAgentToolActionClarificationFactStore` 和 `JdbcAgentToolActionClarificationFactRecordMapper`；
+  - 新增 `agent_tool_action_clarification_fact` MySQL migration；
+  - 新增 `clarification-fact-store=memory/mysql` 配置，内存和 MySQL Store 条件化注册；
+  - fact bundle 的 `productionReadiness` 会展示当前 clarification fact store 是否已经是 MySQL durable 模式。
+- 低敏与安全边界：
+  - 表和 JDBC Store 只保存 factId、run/session/command/tool、policyVersion、tenant/project/actor、status、低敏 evidence/issue code、expiresAt 和时间戳；
+  - 不保存用户澄清原文、prompt、SQL、arguments、payload body、样本数据、模型输出、凭证、token、内部 endpoint 或工具结果正文；
+  - Store 只按 factId 读取记录，evaluator 继续统一执行范围验真，避免 memory/mysql 两套实现安全语义漂移。
+- 产品判断：
+  - 这是把 HITL clarification 从“请求体/内存态”推进到 durable host fact 的关键一步；
+  - 它仍不是开放真实 resume 的信号。真实副作用执行仍必须等待 execution graph、审批、outbox、worker receipt、配额和审计闭环；
+  - 下一阶段应补低敏 runtime event、TTL/归档和指标，然后进入 OpenClaw-style execution graph。
+- 参考资料：
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Authorization: `https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization`
+
 ## 2026-06-18 落地补充：Tool-call host facts need low-sensitive operator query surfaces
 
 - 本轮趋势核验：

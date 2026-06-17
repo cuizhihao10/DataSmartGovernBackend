@@ -55,6 +55,24 @@ public class AgentToolActionResumeFactBundleProperties {
     private Boolean diagnosticEventEnabled = true;
 
     /**
+     * 澄清事实仓储的承载介质。
+     *
+     * <p>clarification fact 是 Human-in-the-loop 恢复链路里的关键 host fact：
+     * 当 Agent 暂停并要求用户补充项目、时间、审批人、数据范围或其他缺失条件时，Java 控制面会保存一条低敏事实；
+     * 后续恢复预检必须回查这条事实是否仍然存在、是否属于同一租户/项目/actor/run/session/command/tool、
+     * 是否过期、是否撤销、策略版本是否漂移。</p>
+     *
+     * <p>当前支持两种模式：</p>
+     * <p>1. memory：默认值，适合本地学习、单元测试和单实例联调。服务重启后数据会丢失，多实例之间不会共享。</p>
+     * <p>2. mysql：写入 agent_tool_action_clarification_fact 表，适合跨 JVM 重启、多实例控制面、长期审计和真实 resume gate 前置校验。</p>
+     *
+     * <p>切换到 mysql 时必须同时设置 datasmart.agent-runtime.persistence.database-enabled=true，
+     * 并先执行澄清事实对应 migration。无论哪种实现，都只允许保存低敏事实元数据，不保存用户澄清原文、prompt、SQL、
+     * 工具参数、payload body、样本数据、模型输出、凭证或内部 endpoint。</p>
+     */
+    private String clarificationFactStore = "memory";
+
+    /**
      * 内存版澄清事实仓储最多保留多少条记录。
      *
      * <p>澄清事实用于支撑 Human-in-the-loop 恢复预检：用户补充了缺失信息后，

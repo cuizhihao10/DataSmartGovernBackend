@@ -108,7 +108,11 @@ final class AgentToolActionResumeFactBundleResponseSupport {
         if (!mysqlLocatorIndex) {
             missingRequirements.add("MYSQL_DURABLE_CHECKPOINT_THREAD_LOCATOR_INDEX");
         }
-        missingRequirements.add("MYSQL_DURABLE_CLARIFICATION_FACT_STORE");
+        String clarificationFactStore = properties == null ? "memory" : text(properties.getClarificationFactStore());
+        boolean mysqlClarificationFactStore = "mysql".equalsIgnoreCase(clarificationFactStore);
+        if (!mysqlClarificationFactStore) {
+            missingRequirements.add("MYSQL_DURABLE_CLARIFICATION_FACT_STORE");
+        }
         missingRequirements.add("CLARIFICATION_FACT_TTL_ARCHIVE_AND_ADMIN_QUERY");
         if (!mysqlWorkerReceiptIndex) {
             missingRequirements.add("MYSQL_DURABLE_WORKER_RECEIPT_INDEX");
@@ -128,6 +132,9 @@ final class AgentToolActionResumeFactBundleResponseSupport {
                 "currentWorkerReceiptIndexMode", mysqlWorkerReceiptIndex
                         ? "MYSQL_DURABLE_LOW_SENSITIVE_WORKER_RECEIPT_INDEX_WITH_PROJECTION_FALLBACK"
                         : "IN_MEMORY_LOW_SENSITIVE_WORKER_RECEIPT_INDEX_WITH_PROJECTION_FALLBACK",
+                "currentClarificationFactStoreMode", mysqlClarificationFactStore
+                        ? "MYSQL_DURABLE_LOW_SENSITIVE_CLARIFICATION_FACT_STORE"
+                        : "IN_MEMORY_LOW_SENSITIVE_CLARIFICATION_FACT_STORE",
                 "diagnosticEventMode", diagnosticEventEnabled
                         ? "LOW_SENSITIVE_RUNTIME_EVENT_DIAGNOSTIC_SNAPSHOT"
                         : "DISABLED",

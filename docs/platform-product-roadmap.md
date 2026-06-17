@@ -1,5 +1,38 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-18 追加落地进展：Java Agent Runtime 5.83 澄清事实 MySQL 持久化
+
+- 本阶段承接 Java 5.82。上一阶段已经为 worker receipt 补了低敏查询面，但恢复链路中的 `CLARIFICATION_FACT` 仍是 memory store，无法跨 JVM 重启、多实例共享或长期审计。本阶段把澄清事实升级为 memory/mysql 可切换 Store，让 Human-in-the-loop 暂停点的用户补充事实具备 durable host fact 形态。
+- 新增 MySQL 持久化能力：
+  - 新增 `agent_tool_action_clarification_fact` 表 migration：`docker/mysql/migrations/20260618_agent_tool_action_clarification_fact.sql`；
+  - 表内只保存 clarificationFactId、sessionId、runId、commandId、toolCode、requestedPolicyVersion、tenant/project/actor、status、evidenceCodes、issueCodes、expiresAt、createdAt、updatedAt；
+  - 明确不保存用户澄清原文、prompt、SQL、arguments、payload body、样本数据、模型输出、凭证、token、内部 endpoint 或工具结果正文；
+  - 建立 factId 唯一索引、tenant/project/actor/run/session/command/tool 范围索引、status/expiresAt 清理索引和更新时间索引。
+- 新增 JDBC 仓储实现：
+  - `JdbcAgentToolActionClarificationFactRecordMapper` 负责 SELECT 字段清单、UPSERT SQL、JSON code 数组绑定和 ResultSet 还原；
+  - `JdbcAgentToolActionClarificationFactStore` 实现 `AgentToolActionClarificationFactStore`；
+  - `findByFactId` 只按 factId 查询和还原记录，真正的租户/项目/actor/run/session/command/tool/policyVersion 可见性继续由 evaluator 统一 fail-closed 校验；
+  - `upsert` 使用 MySQL 唯一索引和 `ON DUPLICATE KEY UPDATE` 处理前端重试、网关重放、撤销和过期时间刷新。
+- 配置与装配：
+  - 新增 `datasmart.agent-runtime.tool-action-resume-facts.clarification-fact-store=memory/mysql`；
+  - 内存 Store 仅在 `clarification-fact-store=memory` 时注册；
+  - MySQL Store 仅在 `clarification-fact-store=mysql` 且 `database-enabled=true` 时注册；
+  - `AgentRuntimeJdbcPersistenceConfiguration` 已把 clarification fact 纳入 JDBC DataSource 创建条件；
+  - `productionReadiness.currentClarificationFactStoreMode` 会根据配置显示 memory 或 MySQL durable 模式。
+- 测试与行数：
+  - 新增 `JdbcAgentToolActionClarificationFactStoreTest`，覆盖无效事实跳过、低敏字段与 JSON code 绑定、factId 查询还原、空 factId 短路和 size 诊断；
+  - 定向测试 20 个通过；
+  - 新增 Java 文件均低于 500 行：Mapper 约 202 行，JDBC Store 约 143 行，测试约 201 行。
+- 产品意义：
+  - Human-in-the-loop 用户澄清从“单 JVM 临时事实”升级为“可跨实例、跨重启、可审计的 durable host fact”；
+  - 这让恢复预检更接近成熟 Agent Host：暂停点恢复前，Java 控制面能验证澄清事实是否存在、是否过期、是否撤销、是否属于同一租户/项目/actor/run/session/command/tool；
+  - 本阶段仍不保存澄清原文，也不开放真实 resume；真实副作用执行仍必须等待 execution graph、审批、outbox、worker receipt、配额、签名/mTLS 和审计闭环。
+- 下一步推荐路线：
+  1. 把澄清事实登记写成低敏 runtime event，让管理员能在 timeline 中看到 AVAILABLE/REVOKED/REJECTED/EXPIRED 状态演进。
+  2. 为 clarification/receipt/resume fact bundle 补低基数 Micrometer 指标和 TTL/归档任务。
+  3. 开始 OpenClaw-style execution graph 条件节点，把 readiness、approval、budget、locator、clarification、outbox、receipt 和 checkpoint 串成显式 resume gate。
+  4. 设计 MCP `tools/call`、A2A action、模型 tool_call 到 DataSmart ToolPlan/host facts 的统一适配层。
+
 ## 2026-06-18 追加落地进展：Java Agent Runtime 5.82 worker receipt 低敏查询面
 
 - 本阶段承接 Java 5.81。上一阶段已经把 worker receipt index 升级为 memory/mysql 可切换 Store，但管理台、审计台和智能网关仍缺少一个受权限收口保护的只读查询面。本阶段新增按 `commandId` 查询的 worker receipt 低敏接口，让运维可以在不读取原始 runtime event、message、payload 或工具参数的情况下确认 receipt 是否存在。

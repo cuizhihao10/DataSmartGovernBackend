@@ -76,6 +76,14 @@ datasmart:
       # 并先执行 docker/mysql/migrations/20260617_agent_tool_action_resume_locator_index.sql。
       # 该索引只保存低敏定位符，不保存 prompt、SQL、arguments、payload、模型输出、密钥或内部 endpoint。
       locator-index-store: ${DATASMART_AGENT_RUNTIME_RESUME_LOCATOR_INDEX_STORE:memory}
+      # Human-in-the-loop 澄清事实仓储的承载介质。
+      # memory：默认值，适合本地学习、单元测试和单实例联调；服务重启后澄清事实会丢失；
+      # mysql：写入 agent_tool_action_clarification_fact 表，适合真实 resume gate、长期审计、多实例控制面和故障恢复。
+      # 切换 mysql 时必须同时设置 datasmart.agent-runtime.persistence.database-enabled=true，
+      # 并先执行 docker/mysql/migrations/20260618_agent_tool_action_clarification_fact.sql。
+      # 该仓储只保存 factId、run/session/command/tool、租户/项目/actor、状态、低敏 code 和 expiresAt，
+      # 绝不保存用户澄清原文、prompt、SQL、arguments、payload、样本数据、模型输出、凭证或内部 endpoint。
+      clarification-fact-store: ${DATASMART_AGENT_RUNTIME_CLARIFICATION_FACT_STORE:memory}
       # worker receipt 专用索引的承载介质。
       # memory：默认值，适合本地学习、单元测试和单实例联调，不要求 MySQL，但无法跨重启或多实例共享；
       # mysql：写入 agent_tool_action_worker_receipt_index 表，适合恢复前置校验、长期审计、控制面多实例和运维排障。

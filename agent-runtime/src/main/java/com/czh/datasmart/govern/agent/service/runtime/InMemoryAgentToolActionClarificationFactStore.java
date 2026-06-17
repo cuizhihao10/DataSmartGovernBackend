@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.config.AgentToolActionResumeFactBundleProperties;
 import lombok.RequiredArgsConstructor;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 
 import java.util.Iterator;
@@ -29,6 +30,10 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  */
 @Component
 @RequiredArgsConstructor
+@ConditionalOnExpression(
+        "'${datasmart.agent-runtime.tool-action-resume-facts.clarification-fact-store:memory}'"
+                + ".equalsIgnoreCase('memory')"
+)
 public class InMemoryAgentToolActionClarificationFactStore implements AgentToolActionClarificationFactStore {
 
     /**
