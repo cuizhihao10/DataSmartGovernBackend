@@ -262,16 +262,19 @@ class AgentToolActionResumeFactBundleServiceTest {
         InMemoryAgentAsyncTaskCommandOutboxStore outboxStore = new InMemoryAgentAsyncTaskCommandOutboxStore(10, 100);
         InMemoryAgentRuntimeEventProjectionStore projectionStore = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
         AgentToolActionResumeLocatorIndexStore locatorIndexStore = new InMemoryAgentToolActionResumeLocatorIndexStore();
+        AgentToolActionWorkerReceiptIndexService receiptIndexService = new AgentToolActionWorkerReceiptIndexService(
+                new InMemoryAgentToolActionWorkerReceiptIndexStore(100)
+        );
         AgentToolActionClarificationFactStore clarificationStore =
                 new InMemoryAgentToolActionClarificationFactStore(properties);
         AgentToolActionResumeFactBundleService service = new AgentToolActionResumeFactBundleService(
                 properties,
                 evaluator,
                 outboxStore,
-                projectionStore,
                 new AgentRuntimeEventProjectionAccessSupport(),
                 new AgentToolActionResumeLocatorIndexService(locatorIndexStore),
                 new AgentToolActionClarificationFactEvaluator(clarificationStore),
+                new AgentToolActionWorkerReceiptFactEvaluator(receiptIndexService, projectionStore),
                 new AgentToolActionResumeFactBundleDiagnosticPublisher(projectionStore)
         );
         return new TestHarness(service, outboxStore, projectionStore, clarificationStore);

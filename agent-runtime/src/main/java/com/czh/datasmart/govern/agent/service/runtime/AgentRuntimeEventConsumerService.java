@@ -44,6 +44,7 @@ public class AgentRuntimeEventConsumerService {
     private final AgentRuntimeEventConsumerStats consumerStats;
     private final Optional<AgentSkillVisibilitySnapshotIndexStore> skillVisibilitySnapshotIndexStore;
     private final AgentSkillVisibilitySnapshotIndexTelemetry skillVisibilitySnapshotIndexTelemetry;
+    private final Optional<AgentToolActionWorkerReceiptIndexService> workerReceiptIndexService;
 
     /**
      * Spring 运行时使用的构造方法。
@@ -58,12 +59,14 @@ public class AgentRuntimeEventConsumerService {
                                             AgentRuntimeEventProjectionStore projectionStore,
                                             AgentRuntimeEventConsumerStats consumerStats,
                                             Optional<AgentSkillVisibilitySnapshotIndexStore> skillVisibilitySnapshotIndexStore,
-                                            AgentSkillVisibilitySnapshotIndexTelemetry skillVisibilitySnapshotIndexTelemetry) {
+                                            AgentSkillVisibilitySnapshotIndexTelemetry skillVisibilitySnapshotIndexTelemetry,
+                                            Optional<AgentToolActionWorkerReceiptIndexService> workerReceiptIndexService) {
         this.objectMapper = objectMapper;
         this.projectionStore = projectionStore;
         this.consumerStats = consumerStats;
         this.skillVisibilitySnapshotIndexStore = skillVisibilitySnapshotIndexStore;
         this.skillVisibilitySnapshotIndexTelemetry = skillVisibilitySnapshotIndexTelemetry;
+        this.workerReceiptIndexService = workerReceiptIndexService == null ? Optional.empty() : workerReceiptIndexService;
     }
 
     public AgentRuntimeEventConsumerService(ObjectMapper objectMapper,
@@ -74,7 +77,21 @@ public class AgentRuntimeEventConsumerService {
                 projectionStore,
                 consumerStats,
                 skillVisibilitySnapshotIndexStore,
-                AgentSkillVisibilitySnapshotIndexTelemetry.inMemoryOnly());
+                AgentSkillVisibilitySnapshotIndexTelemetry.inMemoryOnly(),
+                Optional.empty());
+    }
+
+    public AgentRuntimeEventConsumerService(ObjectMapper objectMapper,
+                                            AgentRuntimeEventProjectionStore projectionStore,
+                                            AgentRuntimeEventConsumerStats consumerStats,
+                                            Optional<AgentSkillVisibilitySnapshotIndexStore> skillVisibilitySnapshotIndexStore,
+                                            AgentSkillVisibilitySnapshotIndexTelemetry skillVisibilitySnapshotIndexTelemetry) {
+        this(objectMapper,
+                projectionStore,
+                consumerStats,
+                skillVisibilitySnapshotIndexStore,
+                skillVisibilitySnapshotIndexTelemetry,
+                Optional.empty());
     }
 
     /**
@@ -132,10 +149,30 @@ public class AgentRuntimeEventConsumerService {
              * 已存在的索引记录会由 identityKey 返回 false，不会放大统计事实。
              */
             materializeSkillVisibilitySnapshot(record);
+            materializeWorkerReceiptIndex(record);
             return AgentRuntimeEventConsumeResult.duplicate(record.identityKey());
         }
         materializeSkillVisibilitySnapshot(record);
+        materializeWorkerReceiptIndex(record);
         return AgentRuntimeEventConsumeResult.accepted(record.identityKey());
+    }
+
+    private void materializeWorkerReceiptIndex(AgentRuntimeEventProjectionRecord record) {
+        /*
+         * controlled dry-run receipt 当前主要由 agent-runtime HTTP 内部接口接收，但真实商业化控制面通常会出现
+         * 事件重放、补偿导入、历史 projection 补物化等路径。这里把 Kafka consumer 也接上专用索引，
+         * 保证“通用 projection 已经接收但 receipt index 写入失败”的场景可以在下一次重复消费时自愈。
+         *
+         * 和 Skill 可见性索引一样，物化时优先读取 projectionStore 中已经分配 replaySequence 的记录，
+         * 这样专用索引与通用 timeline 使用同一套 Java 控制面游标。
+         */
+        if (!AgentToolActionControlledDryRunReceiptService.EVENT_TYPE.equals(record.eventType())
+                || workerReceiptIndexService.isEmpty()) {
+            return;
+        }
+        AgentRuntimeEventProjectionRecord storedRecord = projectionStore.findByIdentityKey(record.identityKey())
+                .orElse(record);
+        workerReceiptIndexService.get().materialize(storedRecord);
     }
 
     private void materializeSkillVisibilitySnapshot(AgentRuntimeEventProjectionRecord record) {

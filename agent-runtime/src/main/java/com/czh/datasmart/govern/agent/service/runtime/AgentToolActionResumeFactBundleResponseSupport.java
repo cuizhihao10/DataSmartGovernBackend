@@ -108,7 +108,8 @@ final class AgentToolActionResumeFactBundleResponseSupport {
         }
         missingRequirements.add("MYSQL_DURABLE_CLARIFICATION_FACT_STORE");
         missingRequirements.add("CLARIFICATION_FACT_TTL_ARCHIVE_AND_ADMIN_QUERY");
-        missingRequirements.add("WORKER_RECEIPT_PERSISTENT_INDEX");
+        missingRequirements.add("MYSQL_DURABLE_WORKER_RECEIPT_INDEX");
+        missingRequirements.add("WORKER_RECEIPT_INDEX_TTL_ARCHIVE_AND_ADMIN_QUERY");
         missingRequirements.add("SERVICE_ACCOUNT_SIGNATURE_OR_MTLS");
         missingRequirements.add("PROMETHEUS_LOW_CARDINALITY_METRICS_FOR_RESUME_FACT_QUERY");
         missingRequirements.add("DURABLE_AUDIT_EVENT_STORE_FOR_RESUME_FACT_BUNDLE_QUERY");
@@ -120,6 +121,7 @@ final class AgentToolActionResumeFactBundleResponseSupport {
                 "currentLocatorIndexMode", mysqlLocatorIndex
                         ? "MYSQL_DURABLE_CHECKPOINT_THREAD_TO_FACT_LOCATOR_INDEX"
                         : "IN_MEMORY_CHECKPOINT_THREAD_TO_FACT_LOCATOR_INDEX",
+                "currentWorkerReceiptIndexMode", "IN_MEMORY_LOW_SENSITIVE_WORKER_RECEIPT_INDEX_WITH_PROJECTION_FALLBACK",
                 "diagnosticEventMode", diagnosticEventEnabled
                         ? "LOW_SENSITIVE_RUNTIME_EVENT_DIAGNOSTIC_SNAPSHOT"
                         : "DISABLED",

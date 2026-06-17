@@ -58,10 +58,10 @@ public class AgentToolActionResumeFactBundleService {
     private final AgentToolActionResumeFactBundleProperties properties;
     private final AgentToolActionApprovalFactEvaluator approvalFactEvaluator;
     private final AgentAsyncTaskCommandOutboxStore outboxStore;
-    private final AgentRuntimeEventProjectionStore projectionStore;
     private final AgentRuntimeEventProjectionAccessSupport accessSupport;
     private final AgentToolActionResumeLocatorIndexService locatorIndexService;
     private final AgentToolActionClarificationFactEvaluator clarificationFactEvaluator;
+    private final AgentToolActionWorkerReceiptFactEvaluator workerReceiptFactEvaluator;
     private final AgentToolActionResumeFactBundleDiagnosticPublisher diagnosticPublisher;
 
     /**
@@ -106,7 +106,12 @@ public class AgentToolActionResumeFactBundleService {
                     }
                 }
                 case FACT_WORKER_RECEIPT -> {
-                    ReceiptFact receiptFact = receiptFact(normalizedRequest, scopedQuery, now);
+                    AgentToolActionWorkerReceiptFactEvaluation receiptFact = workerReceiptFactEvaluator.evaluate(
+                            normalizedRequest,
+                            scopedQuery,
+                            now,
+                            normalizedReceiptLimit()
+                    );
                     facts.add(receiptFact.fact());
                     if (Boolean.TRUE.equals(normalizedRequest.includeReceiptSummary())
                             || normalizedRequest.includeReceiptSummary() == null) {
@@ -243,81 +248,6 @@ public class AgentToolActionResumeFactBundleService {
                 ),
                 AgentToolActionResumeFactOutboxSummaryView.from(record)
         );
-    }
-
-    private ReceiptFact receiptFact(AgentToolActionResumeFactBundleQueryRequest request,
-                                    AgentRuntimeEventProjectionQuery scopedQuery,
-                                    Instant now) {
-        if (!hasText(request.commandId())) {
-            return new ReceiptFact(
-                    fact(FACT_WORKER_RECEIPT, "RUNTIME_EVENT_PROJECTION", "MISSING", false, false, false,
-                            List.of(), List.of("WORKER_RECEIPT_COMMAND_ID_REQUIRED"), now),
-                    null
-            );
-        }
-        List<AgentRuntimeEventProjectionRecord> receipts = queryReceiptRecords(request, scopedQuery);
-        if (receipts.isEmpty()) {
-            return new ReceiptFact(
-                    fact(FACT_WORKER_RECEIPT, "RUNTIME_EVENT_PROJECTION", "MISSING", false, false, true,
-                            List.of(), List.of("WORKER_RECEIPT_NOT_FOUND"), now),
-                    new AgentToolActionResumeFactReceiptSummaryView(
-                            0, false, null, null, null, null, null, null, null, PAYLOAD_POLICY
-                    )
-            );
-        }
-        AgentRuntimeEventProjectionRecord latest = receipts.getLast();
-        boolean preCheckPassed = bool(latest.attributes().get("preCheckPassed"));
-        boolean sideEffectExecuted = bool(latest.attributes().get("sideEffectExecuted"));
-        String outcome = text(latest.attributes().get("outcome"));
-        boolean rejected = !preCheckPassed && outcome != null && outcome.startsWith("FAILED");
-        List<String> issueCodes = rejected
-                ? List.of(firstText(text(latest.attributes().get("errorCode")), "WORKER_RECEIPT_PRECHECK_FAILED"))
-                : List.of();
-        return new ReceiptFact(
-                fact(
-                        FACT_WORKER_RECEIPT,
-                        "RUNTIME_EVENT_PROJECTION",
-                        rejected ? "REJECTED" : "AVAILABLE",
-                        !rejected,
-                        rejected,
-                        !preCheckPassed && !rejected,
-                        List.of("WORKER_RECEIPT_PROJECTION_FOUND", "WORKER_RECEIPT_MESSAGE_NOT_EXPOSED"),
-                        issueCodes,
-                        now
-                ),
-                new AgentToolActionResumeFactReceiptSummaryView(
-                        receipts.size(),
-                        true,
-                        latest.replaySequence(),
-                        outcome,
-                        text(latest.attributes().get("taskStatus")),
-                        preCheckPassed,
-                        sideEffectExecuted,
-                        text(latest.attributes().get("errorCode")),
-                        latest.consumedAt(),
-                        PAYLOAD_POLICY
-                )
-        );
-    }
-
-    private List<AgentRuntimeEventProjectionRecord> queryReceiptRecords(AgentToolActionResumeFactBundleQueryRequest request,
-                                                                        AgentRuntimeEventProjectionQuery scopedQuery) {
-        AgentRuntimeEventProjectionQuery receiptQuery = new AgentRuntimeEventProjectionQuery(
-                scopedQuery.tenantId(),
-                scopedQuery.projectId(),
-                scopedQuery.actorId(),
-                null,
-                scopedQuery.runId(),
-                scopedQuery.sessionId(),
-                AgentToolActionControlledDryRunReceiptService.EVENT_TYPE,
-                null,
-                normalizedReceiptLimit(),
-                scopedQuery.afterSequence(),
-                scopedQuery.authorizedProjectIds()
-        );
-        return projectionStore.query(receiptQuery).stream()
-                .filter(record -> request.commandId().equals(text(record.attributes().get("commandId"))))
-                .toList();
     }
 
     private Optional<AgentAsyncTaskCommandOutboxRecord> findOutboxRecord(
@@ -457,16 +387,6 @@ public class AgentToolActionResumeFactBundleService {
         return hasText(first) ? first.trim() : text(fallback);
     }
 
-    private boolean bool(Object value) {
-        if (value instanceof Boolean boolValue) {
-            return boolValue;
-        }
-        return Boolean.parseBoolean(String.valueOf(value));
-    }
-
     private record OutboxFact(AgentToolActionResumeFactView fact, AgentToolActionResumeFactOutboxSummaryView summary) {
-    }
-
-    private record ReceiptFact(AgentToolActionResumeFactView fact, AgentToolActionResumeFactReceiptSummaryView summary) {
     }
 }

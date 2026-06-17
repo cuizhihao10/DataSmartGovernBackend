@@ -119,4 +119,16 @@ public class AgentToolActionResumeFactBundleProperties {
      * 后续切到 MySQL/ClickHouse 后应下沉为 commandId/runId 索引查询。</p>
      */
     private Integer receiptProjectionQueryLimit = 50;
+
+    /**
+     * 内存版 worker receipt 专用索引最多保留多少条记录。
+     *
+     * <p>worker receipt index 的目标，是把“按 commandId 找最近 dry-run/worker 回执”的恢复预检路径
+     * 从通用 runtime event projection 热窗口中拆出来。当前阶段先提供内存实现，便于本地学习、单元测试和单实例联调；
+     * 因此必须设置容量上限，避免异常任务、重复回放或压测流量把 JVM 内存持续放大。</p>
+     *
+     * <p>该配置只保护内存模式，不等价于生产持久化。商业化环境仍需要 MySQL durable worker receipt index、
+     * TTL/归档任务、管理员查询接口、低基数指标和告警规则。</p>
+     */
+    private Integer workerReceiptIndexMaxRecords = 10000;
 }

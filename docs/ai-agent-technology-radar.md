@@ -1,5 +1,34 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-17 落地补充：Worker receipts should become indexed host facts, not only timeline events
+
+- 本轮趋势核验：
+  - LangGraph Interrupts 强调 checkpoint/thread 是恢复执行的持久游标，并提醒生产环境使用 durable checkpointer。映射到 DataSmart，resume gate 不能每次临时扫描事件窗口，而应把恢复依赖事实索引化。
+  - OpenAI Agents SDK Human-in-the-loop 把工具审批、pending interruption、state 持久化和 resume 连接在一起。映射到 DataSmart，worker/dry-run receipt 是恢复前的宿主事实之一，应能被 Java host 按 commandId 验真。
+  - MCP Authorization 强调受保护资源必须验证 token audience 和 scope。映射到 DataSmart，receipt 查询不能只靠 commandId 命中，还必须执行 tenant/project/actor/run/session 数据范围过滤。
+- 对 DataSmart 的架构映射：
+  - Java 5.80 新增 worker receipt 低敏专用索引，让 `WORKER_RECEIPT_PROJECTION` 先查 `commandId` 索引，再 fallback 到 runtime event projection；
+  - receipt 接收服务和 Kafka consumer 都会幂等物化索引，避免“projection 已写入但索引未写入”的补偿缺口；
+  - fact bundle 主服务不再亲自扫描 receipt projection，改为调用独立 evaluator，保持恢复事实聚合、receipt 验真和索引仓储解耦。
+- 本轮落地到代码的能力：
+  - 新增 `AgentToolActionWorkerReceiptIndexRecord/Query/Store` 与 `InMemoryAgentToolActionWorkerReceiptIndexStore`；
+  - 新增 `AgentToolActionWorkerReceiptIndexService` 和 `AgentToolActionWorkerReceiptFactEvaluator`；
+  - `AgentToolActionControlledDryRunReceiptService` 与 `AgentRuntimeEventConsumerService` 接入 receipt index materialization；
+  - `AgentToolActionResumeFactBundleService` 主服务从 457 行降到 392 行；
+  - 新增/扩展测试覆盖索引物化、脱敏、projection fallback、跨项目隐藏和 receipt 接收入口索引写入。
+- 产品判断：
+  - 这不是单纯的性能优化，而是把“恢复执行前的 worker 证据”提升为 host-level indexed fact；
+  - 当前 memory index 仍不能替代生产持久化，下一阶段必须补 MySQL durable index、TTL/归档、管理员查询和低基数指标；
+  - 真正工具 resume 仍应等待 outbox、worker receipt、审批、clarification、服务账号签名/mTLS、租户配额和 durable audit store 闭环。
+- 后续趋势落地建议：
+  1. 设计 MySQL durable worker receipt index，按 commandId + tenant/project/run/session + replaySequence 建索引。
+  2. 把 worker receipt、clarification fact、approval fact、outbox confirmation 统一建模为 OpenClaw-style resume gate 的条件节点。
+  3. 将 MCP tools/call、A2A task action、模型 tool_call 的最终执行都收束到同一组 host facts，而不是各协议各自扫描事件。
+- 参考资料：
+  - LangGraph Interrupts: `https://docs.langchain.com/oss/python/langgraph/interrupts`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Authorization: `https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization`
+
 ## 2026-06-17 落地补充：Human clarification should become host-verifiable resume facts
 
 - 本轮趋势核验：

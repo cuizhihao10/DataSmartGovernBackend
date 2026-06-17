@@ -10,7 +10,8 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionControlledDr
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionControlledDryRunReceiptResponse;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
-import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -34,7 +35,7 @@ import java.util.Map;
  * 如果强行复用旧状态机，会把“执行前治理 receipt”误建模为“工具执行状态”，导致产品语义混乱。</p>
  */
 @Service
-@RequiredArgsConstructor
+@Slf4j
 public class AgentToolActionControlledDryRunReceiptService {
 
     public static final String SCHEMA_VERSION = "datasmart.agent-runtime.tool-action-controlled-dry-run-receipt.v1";
@@ -47,6 +48,30 @@ public class AgentToolActionControlledDryRunReceiptService {
     private static final int MAX_ACTION_LENGTH = 240;
 
     private final AgentRuntimeEventProjectionStore projectionStore;
+    private final AgentToolActionWorkerReceiptIndexService receiptIndexService;
+
+    @Autowired
+    public AgentToolActionControlledDryRunReceiptService(AgentRuntimeEventProjectionStore projectionStore,
+                                                         AgentToolActionWorkerReceiptIndexService receiptIndexService) {
+        this.projectionStore = projectionStore;
+        this.receiptIndexService = receiptIndexService;
+    }
+
+    /**
+     * 兼容早期单元测试的构造方法。
+     *
+     * <p>旧测试只验证 receipt 是否进入 runtime event projection，不关心专用索引。
+     * 为了不让新增索引能力迫使无关测试大面积重写，这里提供一个使用内存索引的轻量构造器。
+     * Spring 运行时仍会使用带 {@link AgentToolActionWorkerReceiptIndexService} 的构造方法。</p>
+     */
+    public AgentToolActionControlledDryRunReceiptService(AgentRuntimeEventProjectionStore projectionStore) {
+        this(
+                projectionStore,
+                new AgentToolActionWorkerReceiptIndexService(
+                        new InMemoryAgentToolActionWorkerReceiptIndexStore(10000)
+                )
+        );
+    }
 
     /**
      * 接收并投影一条 dry-run receipt。
@@ -67,6 +92,7 @@ public class AgentToolActionControlledDryRunReceiptService {
         AgentRuntimeEventProjectionRecord record = toProjectionRecord(sessionId.trim(), runId.trim(),
                 trimToNull(traceId), request);
         boolean appended = projectionStore.append(record);
+        materializeReceiptIndex(record);
         return new AgentToolActionControlledDryRunReceiptResponse(
                 true,
                 !appended,
@@ -75,6 +101,25 @@ public class AgentToolActionControlledDryRunReceiptService {
                 appended ? "受控工具动作 dry-run receipt 已写入 runtime event timeline"
                         : "受控工具动作 dry-run receipt 已存在，本次按幂等重复处理"
         );
+    }
+
+    private void materializeReceiptIndex(AgentRuntimeEventProjectionRecord record) {
+        /*
+         * projectionStore.append(...) 会为内存投影分配 Java replaySequence，但 record 本身是不可变对象，
+         * 因此索引物化要优先读取 store 中的已保存记录。这样 receiptSummary.latestReplaySequence
+         * 与 HTTP replay/WebSocket replay 看到的是同一条 Java 控制面游标。
+         *
+         * 索引写入失败不应反过来否定 receipt 已被 projection 接收这个事实；当前阶段先记录低敏告警。
+         * 后续 MySQL durable index 上线后，可以根据配置决定是否 fail-closed。
+         */
+        AgentRuntimeEventProjectionRecord storedRecord = projectionStore.findByIdentityKey(record.identityKey())
+                .orElse(record);
+        try {
+            receiptIndexService.materialize(storedRecord);
+        } catch (RuntimeException exception) {
+            log.warn("worker receipt 低敏索引物化失败，identityKey={}, runId={}, sessionId={}, error={}",
+                    storedRecord.identityKey(), storedRecord.runId(), storedRecord.sessionId(), exception.getMessage());
+        }
     }
 
     private AgentRuntimeEventProjectionRecord toProjectionRecord(String sessionId,

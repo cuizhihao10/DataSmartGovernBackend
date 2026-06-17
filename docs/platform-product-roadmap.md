@@ -1,5 +1,43 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-17 追加落地进展：Java Agent Runtime 5.80 worker receipt 低敏专用索引
+
+- 本阶段承接 Java 5.79。上一阶段已经让 `CLARIFICATION_FACT` 成为服务端可验证事实，但 `WORKER_RECEIPT_PROJECTION` 仍主要依赖通用 runtime event projection 热窗口扫描。随着恢复预检、checkpoint/thread resume、task-management dry-run 和未来真实 worker receipt 增多，继续按 run/session 扫事件会带来性能和语义边界问题。本阶段新增 worker receipt 低敏专用索引，把 receipt 从“时间线事件里的一个属性”升级为“可按 commandId 查询的恢复事实源”。
+- 新增低敏索引模型：
+  - `AgentToolActionWorkerReceiptIndexRecord`：只保存 eventIdentityKey、commandId、tenant/project/actor、run/session、toolCode、taskStatus、outcome、preCheckPassed、sideEffectExecuted、errorCode、replaySequence 和时间戳；
+  - `AgentToolActionWorkerReceiptIndexQuery`：把 commandId、toolCode、tenant/project/actor、run/session、authorizedProjectIds 和 limit 收口成索引查询条件；
+  - `AgentToolActionWorkerReceiptIndexStore`：抽象 memory/mysql/审计中心的可替换仓储协议；
+  - `InMemoryAgentToolActionWorkerReceiptIndexStore`：当前内存实现，维护 eventIdentityKey 幂等表和 commandId 倒排索引，并执行数据范围过滤。
+- 新增索引服务与事实验真器：
+  - `AgentToolActionWorkerReceiptIndexService` 负责从 runtime event projection 白名单字段物化低敏 receipt 索引；
+  - `AgentToolActionWorkerReceiptFactEvaluator` 负责恢复事实包中的 worker receipt 验真；
+  - 查询策略改为“先查专用索引，未命中时回退通用 runtime event projection，并把回退命中的 projection 幂等补写索引”；
+  - 响应只返回 receiptCount、latestOutcome、latestTaskStatus、latestPreCheckPassed、latestErrorCode、latestReplaySequence，不返回 message、payload、SQL、prompt、工具参数或内部 endpoint。
+- 接入主链路：
+  - `AgentToolActionControlledDryRunReceiptService` 在写入 runtime event projection 后立即物化 worker receipt index；
+  - `AgentRuntimeEventConsumerService` 也接入幂等物化，便于未来 Kafka 重放、补偿导入或历史 projection 补索引；
+  - `AgentToolActionResumeFactBundleService` 不再内置 receipt 扫描与状态判断，改为委托 evaluator，主服务从 457 行降到 392 行；
+  - `productionReadiness` 新增 `currentWorkerReceiptIndexMode=IN_MEMORY_LOW_SENSITIVE_WORKER_RECEIPT_INDEX_WITH_PROJECTION_FALLBACK`，并继续提示缺少 MySQL durable worker receipt index、TTL/归档和管理员查询。
+- 配置与边界：
+  - 新增 `datasmart.agent-runtime.tool-action-resume-facts.worker-receipt-index-max-records`；
+  - 当前索引仍是 memory，适合本地学习、单实例联调和测试，不支持跨 JVM 重启、多实例共享、长期审计或归档；
+  - 本轮仍不开放真实工具 resume 执行，也不写真实 worker 副作用，只补恢复预检事实源。
+- 测试与行数：
+  - 新增 `AgentToolActionWorkerReceiptIndexServiceTest`，覆盖索引物化脱敏、projection 热窗口为空时从索引返回事实、跨项目不可见；
+  - 扩展 receipt service 测试，验证接收 dry-run receipt 后会写入专用索引；
+  - 扩展 fact bundle 测试 harness，让原有恢复事实包场景自动走 index-first + projection fallback；
+  - 定向测试 24 个通过；
+  - 当前触碰 Java 文件均低于 500 行，新增索引类在 40-185 行之间，主 fact bundle service 为 392 行，相关测试文件也低于 500 行。
+- 产品意义：
+  - 恢复链路从“按 run/session 扫事件热窗口”推进到“按 commandId 查询低敏事实索引”，更接近可商用 Agent Host 的恢复控制面；
+  - 这一步为后续 MySQL durable worker receipt index、管理员诊断、Prometheus 指标和真实 resume worker receipt 验真铺平路径；
+  - 仍保持低敏边界和 preview-only 原则，避免在 outbox、审批、配额、服务账号签名和审计闭环前误开放副作用执行。
+- 下一步推荐路线：
+  1. 将 worker receipt index 升级为 MySQL durable store，补 migration、组合索引、TTL/归档和管理员查询。
+  2. 将 clarification fact store 升级为 MySQL durable store，并把澄清事实登记事件化。
+  3. 为 resume fact bundle、clarification fact、worker receipt index 补低基数 Micrometer 指标和告警。
+  4. 进入 OpenClaw-style execution graph 条件节点，把 readiness、approval、budget、locator、clarification、receipt 和 checkpoint 串成显式 resume gate。
+
 ## 2026-06-17 追加落地进展：Java Agent Runtime 5.79 服务端澄清事实 store
 
 - 本阶段承接 Java 5.78。上一阶段已经让恢复事实包查询进入 timeline 诊断事件，但 `CLARIFICATION_FACT` 仍是固定缺失，占位语义没有真正落到服务端可验证事实。本阶段新增澄清事实登记、内存仓储和验真器，让用户补充信息从“请求体自报字段”升级为“Java 控制面可回查、可过期、可撤销、可按租户/项目/actor/run/session/command/tool 校验的低敏事实”。

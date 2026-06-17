@@ -59,6 +59,40 @@ class AgentToolActionControlledDryRunReceiptServiceTest {
     }
 
     @Test
+    void shouldMaterializeLowSensitiveWorkerReceiptIndexWhenReceiptAccepted() {
+        InMemoryAgentRuntimeEventProjectionStore projectionStore = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        InMemoryAgentToolActionWorkerReceiptIndexStore indexStore =
+                new InMemoryAgentToolActionWorkerReceiptIndexStore(100);
+        AgentToolActionWorkerReceiptIndexService indexService =
+                new AgentToolActionWorkerReceiptIndexService(indexStore);
+        AgentToolActionControlledDryRunReceiptService service =
+                new AgentToolActionControlledDryRunReceiptService(projectionStore, indexService);
+
+        service.receive("session-proposal", "run-proposal", "trace-receipt", request(false));
+
+        List<AgentToolActionWorkerReceiptIndexRecord> records = indexStore.queryByCommandId(
+                new AgentToolActionWorkerReceiptIndexQuery(
+                        "taoc-consume-001",
+                        "datasource.metadata.read",
+                        "10",
+                        "20",
+                        "30",
+                        "run-proposal",
+                        "session-proposal",
+                        List.of("20"),
+                        10
+                )
+        );
+        assertEquals(1, records.size());
+        AgentToolActionWorkerReceiptIndexRecord record = records.getFirst();
+        assertEquals("taoc-consume-001", record.commandId());
+        assertEquals("DEFERRED_WAITING_PAYLOAD_BODY", record.outcome());
+        assertEquals(true, record.preCheckPassed());
+        assertEquals(false, record.sideEffectExecuted());
+        assertEquals(1L, record.replaySequence());
+    }
+
+    @Test
     void duplicateReceiptShouldBeAcceptedAsIdempotentReplay() {
         InMemoryAgentRuntimeEventProjectionStore store = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
         AgentToolActionControlledDryRunReceiptService service =

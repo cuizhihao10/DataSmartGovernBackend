@@ -99,6 +99,13 @@ datasmart:
       # 单次查询最多扫描多少条 receipt projection。
       # 当前 runtime event projection 仍是内存热窗口；后续持久化后应改用 runId/commandId/eventType 索引查询。
       receipt-projection-query-limit: ${DATASMART_AGENT_RUNTIME_RESUME_RECEIPT_QUERY_LIMIT:50}
+      # 内存版 worker receipt 专用索引容量上限。
+      # 该索引只保存 commandId、run/session、租户/项目/actor、outcome、taskStatus、preCheckPassed、
+      # errorCode、replaySequence 等低敏机器事实，不保存 message、payload、SQL、prompt、工具参数或内部 endpoint。
+      # 它的作用是让恢复事实包优先按 commandId 查专用索引，降低对通用 runtime event 热窗口扫描的依赖。
+      # 当前仍是 memory 模式，不能跨 JVM 重启或多实例共享；生产化后应继续补 MySQL durable store、TTL/归档、
+      # 管理员查询和 Prometheus 低基数指标。
+      worker-receipt-index-max-records: ${DATASMART_AGENT_RUNTIME_WORKER_RECEIPT_INDEX_MAX_RECORDS:10000}
     persistence:
       # 工具执行审计仓储类型。
       # memory 是当前默认值，适合本地学习、单元测试和早期联调；它不会要求 MySQL 已启动。
