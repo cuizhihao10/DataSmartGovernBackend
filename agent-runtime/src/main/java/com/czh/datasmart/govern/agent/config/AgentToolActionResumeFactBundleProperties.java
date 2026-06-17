@@ -26,6 +26,23 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 public class AgentToolActionResumeFactBundleProperties {
 
     /**
+     * checkpoint/thread 恢复定位索引的承载介质。
+     *
+     * <p>locator index 的职责，是把 Python Runtime 或智能网关传来的 checkpointId/threadId，
+     * 映射到 Java 控制面可以回查的 commandId、outboxId、approvalFactId、clarificationFactId、toolCode
+     * 和 policyVersion 等低敏定位符。它不是工具参数仓库，也不是 checkpoint 正文仓库，因此不能保存
+     * prompt、SQL、arguments、payload body、模型输出、样本数据、密钥或内部 endpoint。</p>
+     *
+     * <p>当前支持两种模式：</p>
+     * <p>1. memory：默认值，适合本地学习、单元测试和单实例联调；服务重启或多实例部署时不会共享数据。</p>
+     * <p>2. mysql：写入 agent_tool_action_resume_locator_index 表，适合跨 JVM 重启、多实例控制面、审计追溯和未来真实 resume 前置校验。</p>
+     *
+     * <p>切换到 mysql 时必须同时设置 datasmart.agent-runtime.persistence.database-enabled=true，
+     * 并先执行对应 migration。双开关设计可以避免开发者只改了 store 字符串，就让本地应用在没有 MySQL 的情况下启动失败。</p>
+     */
+    private String locatorIndexStore = "memory";
+
+    /**
      * 是否启用 permission-admin 审批事实远程评估。
      *
      * <p>默认关闭，保证本地学习环境不强依赖 permission-admin 已启动。

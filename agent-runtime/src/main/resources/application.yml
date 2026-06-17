@@ -69,6 +69,13 @@ datasmart:
       # 商业化生产环境建议保持 true，避免 permission-admin 故障期间 Agent 越权执行有副作用的工具。
       fail-closed-when-remote-unavailable: ${DATASMART_AGENT_RUNTIME_SERVICE_AUTHORIZATION_FAIL_CLOSED:true}
     tool-action-resume-facts:
+      # checkpoint/thread 恢复定位索引的承载介质。
+      # memory：默认值，适合本地学习、单元测试和单实例联调，不要求 MySQL；
+      # mysql：写入 agent_tool_action_resume_locator_index 表，支持跨重启、跨实例和审计追溯。
+      # 注意：切换 mysql 时必须同时设置 datasmart.agent-runtime.persistence.database-enabled=true，
+      # 并先执行 docker/mysql/migrations/20260617_agent_tool_action_resume_locator_index.sql。
+      # 该索引只保存低敏定位符，不保存 prompt、SQL、arguments、payload、模型输出、密钥或内部 endpoint。
+      locator-index-store: ${DATASMART_AGENT_RUNTIME_RESUME_LOCATOR_INDEX_STORE:memory}
       # 工具动作恢复事实包配置。
       # 该能力服务 Python AI Runtime 的 checkpoint/resume-preview：Python 不再只相信请求里自报的
       # approvalConfirmationId/outbox/receipt 字段，而是向 Java 控制面查询哪些事实类型已被服务端采信。

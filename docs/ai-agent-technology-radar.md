@@ -1,5 +1,36 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-17 落地补充：Checkpoint/thread locator index should become durable host control-plane state
+
+- 本轮趋势核验：
+  - LangGraph Persistence 明确把 checkpointer 定位为 thread-scoped graph state，用于对话连续性、HITL、time travel 和 fault tolerance；这说明 checkpoint/thread 不只是短期响应字段，而是恢复入口。
+  - OpenAI Agents SDK Human-in-the-loop 将敏感工具调用建模为暂停、返回 interruption、序列化 RunState、审批后恢复；这要求宿主侧能从暂停点稳定找到审批、outbox、receipt 等服务端事实。
+  - MCP Authorization 将受保护工具和资源访问纳入授权资源服务器边界；DataSmart 映射到产品能力时，外部 Agent 或协议 body 自报 locator 不应成为唯一事实来源，Java host 必须持久化并验真控制面定位符。
+- 对 DataSmart 的架构映射：
+  - Java 5.76 已完成内存版 checkpoint/thread locator index；
+  - Java 5.77 新增 MySQL durable locator index，把 checkpointId/threadId 到 command/outbox/approval/clarification/tool/policy 的映射落到 `agent_tool_action_resume_locator_index`；
+  - `locator-index-store=memory/mysql` 支持灰度切换，`database-enabled=true` 作为数据库链路总开关，避免本地开发被 MySQL 强耦合；
+  - 该索引继续坚持 metadata-only/low-sensitive 策略，不保存 prompt、SQL、arguments、payload、模型输出、样本数据、密钥或内部 endpoint。
+- 本轮落地到代码的能力：
+  - 新增 `JdbcAgentToolActionResumeLocatorIndexRecordMapper` 与 `JdbcAgentToolActionResumeLocatorIndexStore`；
+  - 新增 MySQL migration `20260617_agent_tool_action_resume_locator_index.sql`；
+  - `AgentRuntimeJdbcPersistenceConfiguration` 纳入 locator index 的 MySQL 启用条件；
+  - `InMemoryAgentToolActionResumeLocatorIndexStore` 改为仅在 memory 模式注册，防止双 Store Bean；
+  - 新增 JDBC Store 单测，`agent-runtime` 全量测试 286 个通过。
+- 产品判断：
+  - 这是从“可恢复预检”走向“可恢复控制面事实库”的关键一步；
+  - durable locator index 仍然只是恢复前置索引，不是工具执行器，也不是 checkpoint 正文库；
+  - 不应因为有了 MySQL locator index 就直接开放真实 resume，下一步还需要 timeline/diagnostics、clarification fact store、worker receipt persistent index、服务账号签名和租户级配额。
+- 后续趋势落地建议：
+  1. 将 checkpoint securityBoundary、locatorIndexHit、missing/rejected fact 接入 Java timeline/diagnostics。
+  2. 补 clarification fact store，让“用户补充信息”也成为服务端可验证事实。
+  3. 补 worker receipt persistent index，减少对通用 runtime event projection 热窗口扫描的依赖。
+  4. 设计 OpenClaw-style execution graph 条件节点，把 readiness、approval、budget、locator index、receipt 和 checkpoint 作为显式图条件，而不是让真实工具执行提前绕过控制面。
+- 参考资料：
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Authorization: `https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization`
+
 ## 2026-06-17 落地补充：Checkpoint/thread should resolve host-side resume facts
 
 - 本轮趋势核验：

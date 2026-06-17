@@ -1,5 +1,35 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-17 追加落地进展：Java Agent Runtime 5.77 checkpoint/thread 恢复 locator index MySQL 持久化
+
+- 本阶段承接 Java 5.76。上一阶段已经让 Java fact bundle 查询可以学习 checkpoint/thread 对应的低敏恢复定位符，但索引仍是 JVM 内存实现，不能跨重启、多实例共享或长期审计。本阶段将 locator index 升级为可切换 MySQL durable store。
+- 新增 MySQL 版 locator index 组件：
+  - `JdbcAgentToolActionResumeLocatorIndexRecordMapper`：集中维护字段清单、upsert SQL、参数绑定和 ResultSet 还原，避免 JDBC Store 膨胀；
+  - `JdbcAgentToolActionResumeLocatorIndexStore`：实现 `AgentToolActionResumeLocatorIndexStore`，按 checkpointId/threadId 查询，使用唯一索引 + upsert 合并低敏 locator；
+  - `docker/mysql/migrations/20260617_agent_tool_action_resume_locator_index.sql`：新增 `agent_tool_action_resume_locator_index` 表，包含 checkpoint/thread、session/run、command/outbox、approval/clarification、tool/policy、tenant/project/actor 与更新时间索引。
+- 配置与灰度：
+  - `datasmart.agent-runtime.tool-action-resume-facts.locator-index-store` 新增 `memory/mysql` 两种模式；
+  - 默认仍是 `memory`，保证本地学习、单测和无 MySQL 环境不受影响；
+  - 切换 `mysql` 时必须同时设置 `datasmart.agent-runtime.persistence.database-enabled=true`，并先执行 migration；
+  - `AgentRuntimeJdbcPersistenceConfiguration` 已把该 store 纳入 agent-runtime 专用 JDBC 连接池启用条件。
+- 安全边界：
+  - 该表和 Store 只保存低敏定位符，不保存 prompt、SQL、arguments、payload body、模型输出、样本数据、密钥或内部 endpoint；
+  - approvalFactId、clarificationFactId、outboxId 只供服务端回查，不在 fact bundle 响应里原文回显；
+  - locator 命中后仍由 `AgentToolActionResumeLocatorIndexService` 做 tenant/project/actor/run/session/tool 范围校验，防止跨范围补齐。
+- 测试与行数：
+  - 新增 `JdbcAgentToolActionResumeLocatorIndexStoreTest`，覆盖空壳记录不写库、upsert 参数绑定、checkpoint 查询还原、thread 空值不访问数据库、size 诊断计数；
+  - 定向测试 `JdbcAgentToolActionResumeLocatorIndexStoreTest,AgentToolActionResumeFactBundleServiceTest` 共 10 个通过；
+  - 全量 `agent-runtime` 测试 286 个通过；
+  - 新增 Java 文件分别约 155、164、168 行，当前 `agent-runtime` 源码与测试目录没有 Java 文件超过 500 行，`application.yml` 约 490 行。
+- 产品意义：
+  - 恢复链路从“Java 进程内学习 locator”推进到“Java host 可以把 checkpoint/thread 到恢复事实定位符的映射落到 MySQL 控制面事实库”；
+  - 这更接近真实 Agent Host 的生产形态：checkpoint/thread 负责定位暂停点，Java 控制面负责持久化事实索引、权限验真、审计与后续恢复前置校验；
+  - 仍不开放真实 resume 执行，真实副作用继续留在 Java outbox、worker receipt、审批、幂等、租户配额和审计链中。
+- 当前边界：
+  - 已有 MySQL durable locator index，但还没有 TTL/归档任务、管理员诊断接口、Prometheus 低基数指标和 migration 回滚脚本；
+  - clarification fact store 与 worker receipt persistent index 仍未完成；
+  - 下一步建议优先把 locatorIndexHit、checkpoint securityBoundary、missing/rejected fact 接入 timeline/diagnostics，然后再补 clarification/receipt 持久化索引。
+
 ## 2026-06-17 追加落地进展：Java Agent Runtime 5.76 checkpoint/thread 恢复 locator index
 
 - 本阶段承接 Python 5.75。上一阶段已经让 checkpoint query/resume-preview 具备可配置 gateway HMAC 保护，

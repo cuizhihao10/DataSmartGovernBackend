@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.agent.service.runtime;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
@@ -21,6 +22,9 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * 商业化部署应升级到 MySQL 或审计投影表，并给 checkpointId/threadId 建索引和保留期清理策略。</p>
  */
 @Component
+@ConditionalOnExpression(
+        "'${datasmart.agent-runtime.tool-action-resume-facts.locator-index-store:memory}'.equalsIgnoreCase('memory')"
+)
 public class InMemoryAgentToolActionResumeLocatorIndexStore implements AgentToolActionResumeLocatorIndexStore {
 
     private final Map<String, AgentToolActionResumeLocatorIndexRecord> recordsByCheckpointId = new LinkedHashMap<>();
