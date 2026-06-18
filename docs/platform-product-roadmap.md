@@ -1,5 +1,45 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-18 追加落地进展：Java Agent Runtime 5.85 恢复门控执行图预览
+
+- 本阶段承接 Java 5.84。上一阶段已经把澄清事实写入低敏 timeline，但“恢复前到底卡在哪个条件节点”仍需要调用方阅读 fact bundle 的列表字段自行推断。本阶段新增恢复门控执行图预览，把 checkpoint/locator、security scope、approval、clarification、outbox、worker receipt 和最终 resume gate 串成显式低敏条件图。
+- 新增只读 API：
+  - `POST /agent-runtime/tool-action-resume-gates/graphs/preview`；
+  - `POST /api/agent/tool-action-resume-gates/graphs/preview`；
+  - 请求体复用 `AgentToolActionResumeFactBundleQueryRequest`，继续只允许 checkpointId、threadId、runId、sessionId、commandId、approvalFactId 是否存在、clarificationFactId 是否存在、outboxId 是否存在等低敏定位符；
+  - Header 继续消费 gateway/permission-admin 透传的 tenant、actor、role、dataScopeLevel 和 authorizedProjectIds，并由底层 fact bundle 服务执行范围收口。
+- 新增服务与 DTO：
+  - `AgentToolActionResumeGateGraphPreviewService`：复用事实包服务完成审批、澄清、outbox、receipt 等事实验真，再生成图级统计；
+  - `AgentToolActionResumeGateGraphBuilder`：把事实包转换为 `locator -> security scope -> fact gates -> resume gate` 的固定条件图；
+  - `AgentToolActionResumeGateGraphView` 和 `AgentToolActionResumeGateGraphQueryResponse`：返回图状态、节点/边、低基数状态计数、缺失事实和下一步建议。
+- 图状态设计：
+  - `READY_FOR_RESUME_PREVIEW`：所有要求事实已被 Java 控制面采信，只允许进入 Python/OpenClaw/LangGraph resume-preview；
+  - `WAITING_RESUME_FACTS`：仍缺审批、澄清、outbox 或 worker receipt 等事实；
+  - `RESUME_BLOCKED_BY_REJECTED_FACT`：至少一个事实被服务端拒绝，必须 fail-closed，不能继续 resume-preview。
+- 安全边界：
+  - 图只返回事实类型、状态、低敏 evidence/issue code、布尔存在性、低基数计数和中文解释；
+  - 不返回 approvalFactId、clarificationFactId、outboxId 原文；
+  - 不返回 payloadReference、服务间命令体、targetEndpoint、prompt、SQL、工具参数、样本数据、模型输出、凭证或内部服务响应正文。
+- 测试：
+  - 新增 `AgentToolActionResumeGateGraphPreviewServiceTest`；
+  - 覆盖 READY、REJECTED、WAITING 三种门控态；
+  - 验证图中存在 checkpoint locator、security scope、approval fact、outbox fact、worker receipt fact 和 final resume gate；
+  - 验证序列化响应不包含审批事实 ID、outboxId、payload 引用、内部 endpoint、SQL、prompt 或服务间命令体字段名。
+- 验证：
+  - 定向测试 12 个通过：
+    `mvn -pl agent-runtime -am "-Dtest=AgentToolActionResumeGateGraphPreviewServiceTest,AgentToolActionResumeFactBundleServiceTest,AgentToolActionExecutionGraphPreviewServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`。
+  - Maven Toolchain 使用 JDK 21：`C:\Users\Cui\.jdks\temurin-21.0.10`。
+  - 行数检查：`AgentToolActionResumeGateGraphBuilder.java` 496 行、`AgentToolActionResumeGateGraphPreviewService.java` 102 行、`AgentToolActionResumeGateGraphPreviewController.java` 70 行，均低于 500 行约束。
+- 产品意义：
+  - 这是从“事实包列表”走向“可暂停、可恢复、可解释执行图”的关键一小步；
+  - 后续 MCP `tools/call`、A2A action、模型 tool_call 和前端确认页重放，都可以共用同一套 resume gate 语义；
+  - 本阶段仍不开放真实工具 resume，真实副作用执行仍必须等待正式 runner、服务账号签名或 mTLS、budget/backlog 实时策略、outbox worker、receipt 审计和 artifact 二次鉴权。
+- 下一步推荐路线：
+  1. 将 Python Runtime 的 resume-preview 调用接入该图，做到 checkpoint 暂停后先问 Java host facts，再决定是否继续预览。
+  2. 设计 MCP `tools/call`、A2A action、模型 tool_call 到 `ToolPlan -> readiness -> resume gate -> outbox/worker` 的统一 adapter。
+  3. 为 resume gate 查询补 Micrometer 低基数指标和 TTL/归档策略，但不要继续无限堆 Java 查询字段。
+  4. 准备进入 Python/OpenClaw-style runner：把 readiness、approval、clarification、budget、outbox、receipt 映射为真正可暂停/可恢复条件节点。
+
 ## 2026-06-18 追加落地进展：Java Agent Runtime 5.84 澄清事实低敏 runtime event
 
 - 本阶段承接 Java 5.83。上一阶段已经让 `CLARIFICATION_FACT` 具备 memory/mysql 可切换持久化 Store，但管理员只能通过 fact bundle 诊断间接看到澄清事实是否可用。本阶段把澄清事实登记、撤销和拒绝状态写成低敏 runtime event，并接入 timeline 展示解释器。

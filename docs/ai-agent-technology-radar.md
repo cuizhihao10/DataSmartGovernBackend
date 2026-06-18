@@ -1,5 +1,30 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-18 落地补充：resume should be a host-controlled gate graph, not a self-reported flag
+
+- 本轮趋势核验：
+  - LangGraph Persistence 将 checkpointer 用于 thread-scoped graph state，同时通过持久化能力支持中断恢复、失败恢复和 time travel。映射到 DataSmart，Python checkpoint 只能说明“运行停在哪里”，不能单独证明审批、澄清、outbox 或 worker receipt 已经满足。
+  - OpenAI Agents SDK Human-in-the-loop 将敏感工具调用暂停为 interruption，并在 approve/reject 后用保存的 RunState 恢复。映射到 DataSmart，恢复前必须有显式 resume gate，不能让调用方自报 approvalFactId、commandId 或 outboxId 后直接继续。
+  - MCP Tools/Authorization 说明外部工具调用需要 schema、授权和用户确认等边界。映射到 DataSmart，MCP `tools/call`、A2A action 和模型 tool_call 都应先进入 host-level facts 与 gate graph，再决定审批、澄清、入箱、等待 receipt 或阻断。
+- 本轮落地到代码的能力：
+  - Java 5.85 新增 `AgentToolActionResumeGateGraphPreviewController`；
+  - 新增 `AgentToolActionResumeGateGraphPreviewService`，复用恢复事实包服务作为唯一事实来源；
+  - 新增 `AgentToolActionResumeGateGraphBuilder`，将 fact bundle 转为 `checkpoint locator -> security scope -> fact gates -> resume gate`；
+  - 新增 `AgentToolActionResumeGateGraphView` 和 `AgentToolActionResumeGateGraphQueryResponse`，提供图状态、节点/边、低基数计数、缺失事实和推荐动作。
+- 低敏与安全边界：
+  - 图只返回事实类型、状态、布尔存在性、低敏 evidence/issue code、低基数计数和中文解释；
+  - 不返回 approvalFactId、clarificationFactId、outboxId 原文、payloadReference、服务间命令体、targetEndpoint、prompt、SQL、工具参数、样本数据、模型输出、凭证或内部服务响应正文；
+  - `READY_FOR_RESUME_PREVIEW` 只表示可以进入 Python resume-preview，不表示真实工具已经执行。
+- 产品判断：
+  - 这是把 DataSmart 从“有工具事实列表”推进到“有 host-controlled resume gate graph”的阶段性节点；
+  - 下一步不应继续只给 Java 视图加字段，而应让 Python Runtime/智能网关真实消费该门控图；
+  - 真正商业化执行还需要 service-account 签名或 mTLS、budget/backlog 实时策略、durable audit event store、worker receipt 的真实副作用回执和 artifact 二次鉴权。
+- 参考资料：
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Tools: `https://modelcontextprotocol.io/specification/2025-11-25/server/tools`
+  - MCP Authorization: `https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization`
+
 ## 2026-06-18 落地补充：HITL clarification should be visible as low-sensitive timeline events
 
 - 本轮趋势验证：
