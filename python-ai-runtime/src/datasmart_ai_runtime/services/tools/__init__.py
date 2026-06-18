@@ -106,6 +106,12 @@ from datasmart_ai_runtime.services.tools.tool_action_resume_fact_bundle_client i
     AgentRuntimeResumeFactBundleClientSettings,
     JavaAgentRuntimeToolActionResumeFactBundleClient,
 )
+from datasmart_ai_runtime.services.tools.tool_action_resume_gate_graph_client import (
+    DEFAULT_AGENT_RUNTIME_RESUME_GATE_GRAPH_PATH,
+    AgentRuntimeResumeGateGraphClientError,
+    AgentRuntimeResumeGateGraphClientSettings,
+    JavaAgentRuntimeToolActionResumeGateGraphClient,
+)
 from datasmart_ai_runtime.services.tools.tool_action_resume_fact_checkpoint_hints import (
     checkpoint_resume_fact_bundle_hints,
 )
@@ -158,6 +164,10 @@ __all__ = (
     "AgentRuntimeResumeFactBundleClientError",
     "AgentRuntimeResumeFactBundleClientSettings",
     "JavaAgentRuntimeToolActionResumeFactBundleClient",
+    "DEFAULT_AGENT_RUNTIME_RESUME_GATE_GRAPH_PATH",
+    "AgentRuntimeResumeGateGraphClientError",
+    "AgentRuntimeResumeGateGraphClientSettings",
+    "JavaAgentRuntimeToolActionResumeGateGraphClient",
     "checkpoint_resume_fact_bundle_hints",
     "resume_fact_types_from_mapping",
     "merge_resume_fact_types",

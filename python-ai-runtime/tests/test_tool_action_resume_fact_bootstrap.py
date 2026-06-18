@@ -11,6 +11,7 @@ from datasmart_ai_runtime.api import build_tool_action_resume_fact_provider
 from datasmart_ai_runtime.services.tools import (
     EmptyToolActionResumeFactProvider,
     JavaAgentRuntimeToolActionResumeFactBundleClient,
+    JavaAgentRuntimeToolActionResumeGateGraphClient,
     JavaPermissionAdminToolActionResumeFactClient,
 )
 
@@ -57,6 +58,28 @@ class ToolActionResumeFactBootstrapTest(unittest.TestCase):
             remote_provider = build_tool_action_resume_fact_provider()
 
         self.assertIsInstance(remote_provider, JavaAgentRuntimeToolActionResumeFactBundleClient)
+
+    def test_build_tool_action_resume_fact_provider_prefers_gate_graph_over_bundle(self) -> None:
+        """同时启用 gate graph 与 fact bundle 时，应优先装配 Java 恢复门控图 provider。
+
+        这个优先级是 5.86 的关键兼容策略：fact bundle 仍作为旧环境兜底，但当 Java 5.85
+        gate graph 已可用时，Python resume-preview 应消费图级 READY/WAITING/REJECTED
+        语义。这样后续 OpenClaw-style runner 可以把审批、澄清、outbox、worker receipt
+        和最终 resume gate 当成可解释的条件节点，而不是只看一组扁平 fact type 字符串。
+        """
+
+        with patch.dict(
+            os.environ,
+            {
+                "DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_ENABLED": "true",
+                "DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_ENABLED": "true",
+                "DATASMART_AGENT_RUNTIME_BASE_URL": "http://agent-runtime.test",
+            },
+            clear=True,
+        ):
+            remote_provider = build_tool_action_resume_fact_provider()
+
+        self.assertIsInstance(remote_provider, JavaAgentRuntimeToolActionResumeGateGraphClient)
 
 
 if __name__ == "__main__":

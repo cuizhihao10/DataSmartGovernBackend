@@ -39,10 +39,13 @@ from datasmart_ai_runtime.services.tool_registry_client import JavaAgentToolRegi
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 from datasmart_ai_runtime.services.tools import (
     DEFAULT_AGENT_RUNTIME_RESUME_FACT_BUNDLE_PATH,
+    DEFAULT_AGENT_RUNTIME_RESUME_GATE_GRAPH_PATH,
     DEFAULT_PERMISSION_ADMIN_APPROVAL_FACT_EVALUATE_PATH,
     AgentRuntimeResumeFactBundleClientSettings,
+    AgentRuntimeResumeGateGraphClientSettings,
     EmptyToolActionResumeFactProvider,
     JavaAgentRuntimeToolActionResumeFactBundleClient,
+    JavaAgentRuntimeToolActionResumeGateGraphClient,
     JavaPermissionAdminToolActionResumeFactClient,
     PermissionAdminResumeFactClientSettings,
     RemoteThenLocalToolExecutionReadinessPolicyProvider,
@@ -342,17 +345,16 @@ def build_tool_action_resume_fact_provider(
     - 预算/readiness 回答“本轮规划和执行前条件如何限制工具”；
     - resume fact provider 回答“某个已暂停 checkpoint 是否具备继续执行所需的服务端事实”。
 
-    当前优先接入 Java agent-runtime 5.70 的 fact bundle API：
-    - Java fact bundle 可以统一聚合 permission-admin 审批事实、command outbox 和 worker receipt；
+    当前优先接入 Java agent-runtime 5.85 的 resume gate graph，其次回退 5.70 fact bundle：
+    - gate graph 把 checkpoint/locator/scope/approval/clarification/outbox/receipt 串成条件图；
+    - fact bundle 可以统一聚合 permission-admin 审批事实、command outbox 和 worker receipt；
     - 如果未启用 Java fact bundle，才回退到 5.69 的 permission-admin 单点审批事实 provider；
     - 两条远程链路都默认关闭，避免本地学习环境、CI 和未启动 Java 服务时发生网络副作用。
 
     环境变量：
-    - `DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_ENABLED`：是否启用 Java fact bundle provider；
+    - `DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_ENABLED`：启用 Java gate graph provider；
+    - `DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_ENABLED`：启用 Java fact bundle provider；
     - `DATASMART_AGENT_RUNTIME_BASE_URL`：agent-runtime 根地址；
-    - `DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_PATH`：fact bundle 查询路径；
-    - `DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_TIMEOUT_SECONDS`：fact bundle 查询超时；
-    - `DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_SERVICE_ACCOUNT_ACTOR_ID`：服务间调用 Header actorId；
     - `DATASMART_PERMISSION_ADMIN_TOOL_ACTION_RESUME_FACTS_ENABLED`：是否启用远程校验；
     - `DATASMART_PERMISSION_ADMIN_BASE_URL`：permission-admin 根地址；
     - `DATASMART_PERMISSION_ADMIN_TOOL_ACTION_APPROVAL_FACT_EVALUATE_PATH`：审批事实评估路径；
@@ -360,8 +362,24 @@ def build_tool_action_resume_fact_provider(
     - `DATASMART_PERMISSION_ADMIN_SERVICE_TOKEN`：可选服务间 token，不进入任何响应摘要。
     """
 
-    agent_runtime_bundle_enabled = truthy_env("DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_ENABLED")
     agent_runtime_base_url = os.getenv("DATASMART_AGENT_RUNTIME_BASE_URL")
+    if truthy_env("DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_ENABLED") and agent_runtime_base_url:
+        return JavaAgentRuntimeToolActionResumeGateGraphClient(
+            AgentRuntimeResumeGateGraphClientSettings(
+                enabled=True,
+                base_url=agent_runtime_base_url,
+                graph_path=os.getenv("DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_PATH")
+                or DEFAULT_AGENT_RUNTIME_RESUME_GATE_GRAPH_PATH,
+                timeout_seconds=positive_int_env("DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_TIMEOUT_SECONDS", 3),
+                service_token=os.getenv("DATASMART_AGENT_RUNTIME_SERVICE_TOKEN")
+                or os.getenv("DATASMART_PERMISSION_ADMIN_SERVICE_TOKEN"),
+                service_account_actor_id=os.getenv("DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_SERVICE_ACCOUNT_ACTOR_ID") or "900001",
+                service_account_role=os.getenv("DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_SERVICE_ACCOUNT_ROLE") or "SERVICE_ACCOUNT",
+                data_scope_level=os.getenv("DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_DATA_SCOPE_LEVEL") or "PLATFORM",
+                authorized_project_ids=_csv_env("DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_AUTHORIZED_PROJECT_IDS"),
+            )
+        )
+    agent_runtime_bundle_enabled = truthy_env("DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_ENABLED")
     if agent_runtime_bundle_enabled and agent_runtime_base_url:
         return JavaAgentRuntimeToolActionResumeFactBundleClient(
             AgentRuntimeResumeFactBundleClientSettings(

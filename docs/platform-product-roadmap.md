@@ -1,5 +1,43 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-18 追加落地进展：Python AI Runtime 5.86 接入 Java 恢复门控图事实源
+
+- 本阶段承接 Java Agent Runtime 5.85。上一阶段已经在 Java 控制面提供 `checkpoint locator -> security scope -> fact gates -> resume gate` 的恢复门控图，但 Python Runtime 的 `/agent/tool-actions/checkpoints/resume-preview` 仍可能只消费旧 fact bundle 或 permission-admin 单点审批事实。本阶段让 Python 优先读取 Java gate graph，使 checkpoint 暂停后的恢复预检进入“先问宿主控制面，再决定是否允许预览”的闭环。
+- 新增 Python provider：
+  - `JavaAgentRuntimeToolActionResumeGateGraphClient`；
+  - 默认关闭，只有 `DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_ENABLED=true` 且配置 `DATASMART_AGENT_RUNTIME_BASE_URL` 时才访问 Java；
+  - 默认调用 `POST /agent-runtime/tool-action-resume-gates/graphs/preview`，可通过 `DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_PATH` 覆盖；
+  - 复用旧 fact bundle 请求体构造逻辑，避免 checkpoint hint、requiredFactTypes、tenant/project/actor 等低敏定位字段出现两套解释。
+- 启动装配策略：
+  - gate graph provider 优先级高于 fact bundle provider；
+  - fact bundle provider 继续作为未升级 Java 环境的兜底；
+  - permission-admin 单点审批事实 provider 继续作为更早期环境兜底；
+  - 三条远程链路都保持默认关闭，避免本地学习环境、CI 和未启动 Java 服务时发生网络副作用。
+- resume-preview 响应能力：
+  - `ToolActionResumeFactSnapshot.to_summary()` 现在可附带 `serverSideResumeFacts.resumeGateGraph`；
+  - 图摘要只包含 source、schemaVersion、graphState、terminalState、resumePreviewReady、required/available/missing/rejected fact types、node/edge 计数、blocked/executable 计数、payloadPolicy 和 recommendedActions；
+  - Python 不返回 Java `requestedLocator`、nodes/edges 原文、approvalFactId、clarificationFactId、outboxId、payloadReference、prompt、SQL、arguments、样本数据、模型输出、凭证、token 或内部 endpoint。
+- 安全和失败策略：
+  - 如果 Java gate graph 网络失败、超时、响应非法或平台拒绝，Python 返回低敏错误码和 `REMOTE_GATE_GRAPH_UNAVAILABLE` 摘要；
+  - 当调用方自报 outbox/approval 等 server-backed fact，但 Java 图仍判定缺失时，Python 会把该 fact type 放入 rejected，采用 fail-closed 策略；
+  - `resumePreviewReady=true` 只表示可以进入 Python resume-preview，不表示真实工具已经执行、outbox 已派发或 worker 已完成副作用。
+- 测试与行数：
+  - 新增 `test_tool_action_resume_gate_graph_client.py`；
+  - 扩展 `test_tool_action_resume_fact_bootstrap.py`，验证 gate graph 优先于 fact bundle；
+  - 定向测试 20 个通过：
+    `python -m pytest python-ai-runtime\tests\test_tool_action_resume_gate_graph_client.py python-ai-runtime\tests\test_tool_action_resume_fact_bootstrap.py python-ai-runtime\tests\test_tool_action_execution_checkpoint_api.py python-ai-runtime\tests\test_tool_action_resume_fact_bundle_client.py`；
+  - Python 全量测试 480 个通过：`python -m pytest python-ai-runtime\tests`；
+  - 行数检查：`tool_action_resume_gate_graph_client.py` 373 行、`orchestrator_factory.py` 500 行、`tool_action_resume_fact_provider.py` 257 行。
+- 产品意义：
+  - Python Runtime 开始真正消费 Java Agent Host 的恢复门控解释，而不是只相信请求体事实或扁平 fact list；
+  - 这一步把 Codex/Claude Code/OpenAI Agents/LangGraph 类“暂停、补事实、恢复预检”思想落到 DataSmart 的 Java/Python 分层边界；
+  - 后续 MCP `tools/call`、A2A action、模型 tool_call 和 OpenClaw runner 可以共用 `ToolPlan -> readiness -> resume gate -> outbox/worker` 的统一治理链路。
+- 下一步推荐路线：
+  1. 不再继续扩展 gate graph 展示字段，优先设计 MCP/A2A/model tool_call 到 DataSmart `ToolPlan` 的统一 adapter。
+  2. 进入 OpenClaw-style runner，把 readiness、approval、clarification、budget、outbox、receipt 和 checkpoint 映射为可暂停/可恢复条件节点。
+  3. 把 Java gate graph provider 的服务账号认证从 Bearer token 配置升级到签名 Header 或 mTLS 设计。
+  4. 拆分已超过 500 行的旧 `tool_action_resume_fact_bundle_client.py`，避免 Python 工具治理层继续膨胀。
+
 ## 2026-06-18 追加落地进展：Java Agent Runtime 5.85 恢复门控执行图预览
 
 - 本阶段承接 Java 5.84。上一阶段已经把澄清事实写入低敏 timeline，但“恢复前到底卡在哪个条件节点”仍需要调用方阅读 fact bundle 的列表字段自行推断。本阶段新增恢复门控执行图预览，把 checkpoint/locator、security scope、approval、clarification、outbox、worker receipt 和最终 resume gate 串成显式低敏条件图。

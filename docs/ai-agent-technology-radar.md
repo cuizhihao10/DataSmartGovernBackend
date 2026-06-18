@@ -1,5 +1,31 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-18 落地补充：Python resume-preview should consume the host gate graph before trusting local facts
+
+- 本轮趋势核验：
+  - LangGraph Persistence 把 thread checkpoint、interrupt 恢复和长期 store 区分开，强调恢复运行需要可靠的持久状态。映射到 DataSmart，Python checkpoint 只说明 Agent 图停在何处，不能证明审批、澄清、outbox 或 worker receipt 已满足。
+  - OpenAI Agents SDK Human-in-the-loop 把敏感工具调用暂停为 interruption，并要求恢复时携带原 RunState 与 approve/reject 结果。映射到 DataSmart，Python resume-preview 必须优先读取 Java host-controlled gate graph，而不是相信调用方自报 fact id。
+  - MCP Tools 规范继续强调工具 schema、调用边界、执行状态和外部工具发现。映射到 DataSmart，未来 MCP `tools/call`、A2A action 和模型 tool_call 都应进入统一 ToolPlan 与 host facts 链路，再由 resume gate 决定等待、阻断或进入预览。
+- 本轮落地到代码的能力：
+  - Python 5.86 新增 `JavaAgentRuntimeToolActionResumeGateGraphClient`；
+  - `/agent/tool-actions/checkpoints/resume-preview` 的 server-side facts provider 可以优先调用 Java 5.85 `POST /agent-runtime/tool-action-resume-gates/graphs/preview`；
+  - `ToolActionResumeFactSnapshot` 新增低敏 `resumeGateGraph` 摘要出口；
+  - `orchestrator_factory` 的 provider 装配顺序调整为 gate graph -> fact bundle -> permission-admin；
+  - 新增客户端测试和启动装配测试，覆盖默认关闭、READY 图解析、Java 缺失事实覆盖请求自报事实、敏感字段不回显。
+- 低敏与安全边界：
+  - Python 只暴露 graphState、terminalState、resumePreviewReady、事实类型集合、低基数计数和 recommendedActions；
+  - 不暴露 Java requestedLocator、nodes/edges 原文、approvalFactId、clarificationFactId、outboxId、payloadReference、SQL、prompt、arguments、样本数据、模型输出、token 或内部 endpoint；
+  - Java gate graph 不可用时采用 fail-closed：返回缺失/拒绝事实和低敏错误码，不把远程异常正文透传给调用方。
+- 产品判断：
+  - DataSmart 的 Agent Host 能力从“Java 有恢复图、Python 仍本地判断”推进为“Python 预检真实消费 Java 控制面图”；
+  - 这更接近 Codex/Claude Code/OpenAI Agents/LangGraph 类 Agent 的 HITL 恢复思想：用户补事实、宿主验真、运行时只做恢复预览；
+  - 下一阶段应把同一条链路扩展到 MCP/A2A/model tool_call adapter 和 OpenClaw-style runner，而不是继续围绕单个 provider 堆字段。
+- 参考资料：
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - LangGraph Interrupts: `https://docs.langchain.com/oss/python/langgraph/interrupts`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Tools: `https://modelcontextprotocol.io/specification/2025-06-18/server/tools`
+
 ## 2026-06-18 落地补充：resume should be a host-controlled gate graph, not a self-reported flag
 
 - 本轮趋势核验：

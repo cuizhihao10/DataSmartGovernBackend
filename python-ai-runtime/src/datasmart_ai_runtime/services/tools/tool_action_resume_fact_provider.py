@@ -37,7 +37,9 @@ class ToolActionResumeFactSnapshot:
     - `fact_reference_count`：事实引用数量，用来帮助排障“服务端确实查到了几个事实”，但不暴露引用正文；
     - `checked_at`：检查时间，使用 UTC ISO 字符串，方便 Java 控制面、日志和事件回放做时间对齐；
     - `error_codes`：低敏错误码集合，只记录错误类型，不记录异常 message、URL、SQL、Header 或原始响应；
-    - `payload_policy`：固定声明事实值不回显，避免后续调用者误以为可以从该响应中取回 approvalId 等值。
+    - `payload_policy`：固定声明事实值不回显，避免后续调用者误以为可以从该响应中取回 approvalId 等值；
+    - `resume_gate_graph`：可选 Java host-controlled 门控图摘要，只保存图状态、计数和低敏 code，
+      不保存节点正文、事实 ID、payloadReference、prompt、SQL 或工具参数。
     """
 
     source: str
@@ -48,6 +50,7 @@ class ToolActionResumeFactSnapshot:
     checked_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     error_codes: tuple[str, ...] = ()
     payload_policy: str = FACT_PAYLOAD_POLICY
+    resume_gate_graph: Mapping[str, Any] | None = None
 
     def to_summary(self) -> dict[str, Any]:
         """生成可返回给 API 调用方的低敏摘要。
@@ -57,7 +60,7 @@ class ToolActionResumeFactSnapshot:
         信任边界内消费。
         """
 
-        return {
+        summary = {
             "source": self.source,
             "availableFactTypes": self.available_fact_types,
             "missingFactTypes": self.missing_fact_types,
@@ -67,6 +70,9 @@ class ToolActionResumeFactSnapshot:
             "errorCodes": self.error_codes,
             "payloadPolicy": self.payload_policy,
         }
+        if self.resume_gate_graph:
+            summary["resumeGateGraph"] = dict(self.resume_gate_graph)
+        return summary
 
 
 class ToolActionResumeFactProvider(Protocol):
