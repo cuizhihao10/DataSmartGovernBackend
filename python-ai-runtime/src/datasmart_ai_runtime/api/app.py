@@ -64,6 +64,7 @@ from datasmart_ai_runtime.services.model_gateway import (
     InMemoryModelProviderHealthRegistry,
     ModelGatewayGovernanceService,
     ModelProviderHealthProbeService,
+    default_model_capability_registry,
     model_provider_health_probe_settings_from_env,
     render_model_provider_health_probe_prometheus,
 )
@@ -124,6 +125,12 @@ def create_app() -> Any:
     )
     model_routes = model_routes_from_env()
     model_route_registry = ModelRouteRegistry(model_routes)
+    # 模型能力矩阵是“模型层收敛”的控制面基线：它不负责训练模型、不执行真实推理，也不读取任何敏感请求正文。
+    # 它只用当前路由中的 workload/providerType/modelName/maxContext/cacheScope 做低敏诊断，帮助管理台判断：
+    # - 当前路由还是 dry-run 占位，还是真实 Provider；
+    # - 模型是否适合 Agent、代码生成、Embedding、Rerank、多模态等工作负载；
+    # - DeepSeek/Qwen/GLM/vLLM/SGLang 等接入方式是否仍需要 SKU、工具调用、缓存隔离或压测验证。
+    model_capability_registry = default_model_capability_registry()
     model_provider_health_registry = InMemoryModelProviderHealthRegistry()
     model_provider_health_probe_settings = model_provider_health_probe_settings_from_env()
     model_provider_health_probe = ModelProviderHealthProbeService(
@@ -342,6 +349,23 @@ def create_app() -> Any:
         diagnostics = model_provider_health_registry.diagnostics(model_route_registry.all_routes())
         diagnostics["activeProbe"] = model_provider_health_probe.diagnostics()
         return diagnostics
+
+    @app.get("/agent/models/capabilities/diagnostics")
+    def model_capability_diagnostics() -> dict[str, Any]:
+        """查询模型能力矩阵与当前路由生产适配状态。
+
+        路由语义：
+        - 该接口面向智能网关、平台管理员、运维诊断和上线前检查；
+        - 它回答“当前配置的模型是否适合对应 workload”，而不是发起一次模型调用；
+        - 它不会访问外部 Provider，也不会触发 health probe，因此适合作为启动后快速配置检查。
+
+        响应边界：
+        - 返回模型名、工作负载、provider 类型、能力支持状态、生产缺口和推荐动作；
+        - 不返回 endpoint、API Key、prompt、SQL、工具参数、样本数据、模型输出或内部服务地址；
+        - `needs_provider_validation` 不代表不可用，而是提示必须补充 SKU/工具调用/缓存/压测验证。
+        """
+
+        return model_capability_registry.diagnostics(model_route_registry.all_routes())
 
     @app.post("/agent/models/provider-health/probe")
     def model_provider_health_active_probe(dry_run: bool = False) -> dict[str, Any]:

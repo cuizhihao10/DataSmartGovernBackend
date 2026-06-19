@@ -27,6 +27,14 @@ from datasmart_ai_runtime.services.model_gateway.model_gateway import (
 )
 from datasmart_ai_runtime.services.model_gateway.model_gateway_cache import ModelGatewayCachePlanner
 from datasmart_ai_runtime.services.model_gateway.model_gateway_context import build_model_gateway_context
+from datasmart_ai_runtime.services.model_gateway.model_capability_registry import (
+    CapabilitySupport,
+    ModelCapabilityProfile,
+    ModelCapabilityRegistry,
+    ModelRouteCapabilityAssessment,
+    ModelServingEngine,
+    default_model_capability_registry,
+)
 from datasmart_ai_runtime.services.model_gateway.model_provider import (
     DryRunModelProvider,
     ModelProviderRegistry,
@@ -103,10 +111,13 @@ from datasmart_ai_runtime.services.model_gateway.model_tool_schema import (
 )
 
 __all__ = [
+    "CapabilitySupport",
     "DryRunModelProvider",
     "EnvAndRequestModelToolCallBudgetPolicyProvider",
     "InMemoryModelBudgetLedger",
     "InMemoryModelProviderHealthRegistry",
+    "ModelCapabilityProfile",
+    "ModelCapabilityRegistry",
     "JavaPermissionAdminToolBudgetPolicyClient",
     "ModelGatewayCachePlanner",
     "ModelGatewayGovernanceService",
@@ -116,11 +127,13 @@ __all__ = [
     "ModelProviderHealthProbeService",
     "ModelProviderHealthProbeSettings",
     "ModelProviderInvocationHealthEvent",
+    "ModelRouteCapabilityAssessment",
     "ModelResultContextFilter",
     "ModelResultContextFilterPolicy",
     "ModelResultContextFilterReport",
     "ModelResultContextFilterResult",
     "ModelRouteRegistry",
+    "ModelServingEngine",
     "ModelToolCallAssemblyIssue",
     "ModelToolCallAssemblyReport",
     "ModelToolCallBudgetGuard",
@@ -148,6 +161,7 @@ __all__ = [
     "ToolExecutionFeedbackStatus",
     "build_model_gateway_context",
     "build_model_provider_metadata",
+    "default_model_capability_registry",
     "model_provider_health_probe_settings_from_env",
     "model_provider_registry_from_env",
     "record_model_tool_call_planning_events",
