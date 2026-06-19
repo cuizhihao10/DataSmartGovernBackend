@@ -22,10 +22,9 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from datasmart_ai_runtime.services.tools.tool_action_resume_fact_bundle_client import (
-    AgentRuntimeResumeFactBundleClientSettings,
-    JavaAgentRuntimeToolActionResumeFactBundleClient,
+from datasmart_ai_runtime.services.tools.tool_action_resume_fact_bundle_payload import (
     SERVER_BACKED_FACT_TYPES,
+    build_resume_fact_bundle_payload,
 )
 from datasmart_ai_runtime.services.tools.tool_action_resume_fact_provider import (
     ToolActionResumeFactSnapshot,
@@ -91,20 +90,6 @@ class JavaAgentRuntimeToolActionResumeGateGraphClient:
     ) -> None:
         self._settings = settings or AgentRuntimeResumeGateGraphClientSettings()
         self._urlopen = urlopen_func
-        # 复用旧客户端的 public payload builder，保证 checkpoint hint、request alias、requiredFactTypes
-        # 推断语义一致；这里只拿请求体构造能力，不调用旧 fact bundle endpoint。
-        self._payload_builder = JavaAgentRuntimeToolActionResumeFactBundleClient(
-            AgentRuntimeResumeFactBundleClientSettings(
-                enabled=True,
-                base_url=self._settings.base_url,
-                timeout_seconds=self._settings.timeout_seconds,
-                service_token=self._settings.service_token,
-                service_account_actor_id=self._settings.service_account_actor_id,
-                service_account_role=self._settings.service_account_role,
-                data_scope_level=self._settings.data_scope_level,
-                authorized_project_ids=self._settings.authorized_project_ids,
-            )
-        )
 
     def collect(
         self,
@@ -126,7 +111,7 @@ class JavaAgentRuntimeToolActionResumeGateGraphClient:
             return ToolActionResumeFactSnapshot(source=AGENT_RUNTIME_RESUME_GATE_GRAPH_DISABLED_SOURCE)
 
         payload = request_payload if isinstance(request_payload, Mapping) else {}
-        request_body = self._payload_builder.build_resume_fact_bundle_payload(
+        request_body = build_resume_fact_bundle_payload(
             checkpoint=checkpoint,
             request_payload=payload,
         )

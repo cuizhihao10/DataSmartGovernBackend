@@ -1,5 +1,31 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-19 落地补充：protocol adapters need one internal resume-fact DTO contract
+
+- 本轮趋势判断：
+  - MCP `tools/call`、A2A task/action 和模型原生 tool_call 都在把“外部工具意图”变成更标准化的协议输入；但对 DataSmart 来说，真正商业化的关键不是多开几个入口，而是让所有入口进入同一套 `ToolPlan -> readiness -> resume gate -> outbox/worker` 控制流。
+  - LangGraph/OpenAI Agents 类 HITL/interrupt/resume 模式强调 checkpoint state 与 host-controlled facts 分层。映射到 DataSmart，Python checkpoint 负责图状态，Java host facts 负责审批、澄清、outbox、receipt 和恢复门控验真。
+  - 因此本阶段优先做结构解耦：把恢复事实查询 DTO 独立成共享契约，让 fact bundle、gate graph、后续 MCP/A2A adapter 和 runner 都复用同一套低敏定位规则。
+- 本轮落地到代码的能力：
+  - 新增 `bootstrap_env.py`，统一 Agent API 启动期环境变量解析；
+  - 新增 `resume_fact_provider_factory.py`，把恢复事实 provider 装配从 `orchestrator_factory.py` 拆出；
+  - 新增 `tool_action_resume_fact_bundle_payload.py`，统一构造 Java 恢复事实查询 DTO；
+  - `tool_action_resume_gate_graph_client.py` 直接调用 payload builder，不再实例化旧 fact bundle client；
+  - `tool_action_resume_fact_bundle_client.py` 从 550 行降到 317 行，职责收敛为 HTTP 调用、Header、响应解析和 fail-closed。
+- 低敏与安全边界：
+  - 共享 DTO 只携带 checkpoint/thread/run/session/command/outbox、approval/clarification fact id、toolCode、policyVersion、tenant/project/actor 和 requiredFactTypes；
+  - 不携带 prompt、messages、SQL、arguments、payload body、样本数据、模型输出、凭证、token 或内部 endpoint；
+  - 该 DTO 是 Java 控制面查询线索，不是 Python 采信调用方自报事实的授权依据。
+- 产品判断：
+  - 这是“看起来不酷但非常关键”的商业化步骤：先把内部控制面契约做稳，再继续接 MCP/A2A/模型工具调用和真实 runner；
+  - 后续新增协议入口时，不应绕过 `ToolActionIntakeService`、readiness、resume gate 和 Java host facts；
+  - 下一阶段应基于现有 `tool_action_control_flow.py` 做统一 adapter contract，而不是重复创建平行入口。
+- 参考资料：
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - LangGraph Interrupts: `https://docs.langchain.com/oss/python/langgraph/interrupts`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+  - MCP Tools: `https://modelcontextprotocol.io/specification/2025-06-18/server/tools`
+
 ## 2026-06-18 落地补充：Python resume-preview should consume the host gate graph before trusting local facts
 
 - 本轮趋势核验：

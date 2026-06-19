@@ -22,8 +22,13 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from datasmart_ai_runtime.services.tools.tool_action_resume_fact_checkpoint_hints import (
-    checkpoint_resume_fact_bundle_hints,
+from datasmart_ai_runtime.services.tools.tool_action_resume_fact_bundle_payload import (
+    SERVER_BACKED_FACT_TYPES,
+    append_once,
+    build_resume_fact_bundle_payload as build_resume_fact_bundle_payload_request,
+    first_text,
+    optional_int,
+    text_value,
 )
 from datasmart_ai_runtime.services.tools.tool_action_resume_fact_provider import (
     ToolActionResumeFactSnapshot,
@@ -34,12 +39,6 @@ from datasmart_ai_runtime.services.tools.tool_action_resume_fact_provider import
 DEFAULT_AGENT_RUNTIME_RESUME_FACT_BUNDLE_PATH = "/agent-runtime/tool-action-resume-facts/bundles/query"
 AGENT_RUNTIME_RESUME_FACT_BUNDLE_SOURCE = "AGENT_RUNTIME_RESUME_FACT_BUNDLE_PROVIDER"
 AGENT_RUNTIME_RESUME_FACT_BUNDLE_DISABLED_SOURCE = "AGENT_RUNTIME_RESUME_FACT_BUNDLE_PROVIDER_DISABLED"
-SERVER_BACKED_FACT_TYPES = {
-    "APPROVAL_CONFIRMATION_FACT",
-    "CLARIFICATION_FACT",
-    "OUTBOX_WRITE_CONFIRMATION",
-    "WORKER_RECEIPT_PROJECTION",
-}
 
 
 class AgentRuntimeResumeFactBundleClientError(RuntimeError):
@@ -158,82 +157,17 @@ class JavaAgentRuntimeToolActionResumeFactBundleClient:
         checkpoint: Any,
         request_payload: Mapping[str, Any],
     ) -> dict[str, Any]:
-        """构造 Java `AgentToolActionResumeFactBundleQueryRequest` 请求体。
+        """构造 Java 恢复事实查询请求体。
 
-        请求体只包含 Java 控制面定位字段：
-        - checkpoint/thread/session/run/command/outbox 用于查恢复点、outbox 和 receipt；
-        - approvalFactId/clarificationFactId 仅用于服务端验真；
-        - tenant/project/actor/tool/policy 用于作用域校验；
-        - requiredFactTypes 告诉 Java 本次关心哪些事实类型。
-
-        字段来源优先级：请求显式低敏字段 > checkpoint 低敏执行图摘要 > checkpoint 对象基础定位字段。
-
-        不发送 prompt、messages、SQL、工具 arguments、payload body、样本数据、模型输出、凭证或内部 endpoint。
+        该方法保留在客户端类上是为了兼容已有测试和 gate graph provider 的历史调用方式；真正实现已经拆到
+        `tool_action_resume_fact_bundle_payload.py`。这样新旧 provider 能复用同一套低敏 DTO 规则，同时避免本
+        客户端继续膨胀。
         """
 
-        context = request_payload.get("context")
-        context_mapping = context if isinstance(context, Mapping) else {}
-        checkpoint_hints = checkpoint_resume_fact_bundle_hints(checkpoint)
-        return {
-            "checkpointId": _first_text(
-                request_payload.get("checkpointId"),
-                context_mapping.get("checkpointId"),
-                getattr(checkpoint, "checkpoint_id", None),
-            ),
-            "threadId": _first_text(
-                request_payload.get("threadId"),
-                context_mapping.get("threadId"),
-                getattr(checkpoint, "thread_id", None),
-            ),
-            "sessionId": _first_text(
-                request_payload.get("sessionId"),
-                context_mapping.get("sessionId"),
-                getattr(checkpoint, "session_id", None),
-            ),
-            "runId": _first_text(
-                request_payload.get("runId"),
-                context_mapping.get("runId"),
-                getattr(checkpoint, "run_id", None),
-                getattr(checkpoint, "thread_id", None),
-            ),
-            "commandId": _command_id_from_payload_or_checkpoint(request_payload, checkpoint, checkpoint_hints),
-            "outboxId": _outbox_id_from_payload_or_checkpoint(request_payload, context_mapping, checkpoint_hints),
-            "approvalFactId": _approval_fact_id_from_payload(request_payload, checkpoint_hints),
-            "clarificationFactId": _first_text(
-                request_payload.get("clarificationFactId"),
-                context_mapping.get("clarificationFactId"),
-                _fact_value_from_payload(request_payload, "clarificationFactId"),
-                checkpoint_hints.get("clarificationFactId"),
-            ),
-            "toolCode": _tool_code_from_payload_or_checkpoint(request_payload, checkpoint_hints),
-            "requestedPolicyVersion": _policy_version_from_payload_or_checkpoint(request_payload, checkpoint_hints),
-            "tenantId": _optional_int(
-                _first_text(
-                    request_payload.get("tenantId"),
-                    context_mapping.get("tenantId"),
-                    getattr(checkpoint, "tenant_id", None),
-                )
-            ),
-            "projectId": _optional_int(
-                _first_text(
-                    request_payload.get("projectId"),
-                    context_mapping.get("projectId"),
-                    getattr(checkpoint, "project_id", None),
-                )
-            ),
-            "actorId": _first_text(
-                request_payload.get("actorId"),
-                context_mapping.get("actorId"),
-                getattr(checkpoint, "actor_id", None),
-            ),
-            "requiredFactTypes": _required_fact_types(
-                checkpoint=checkpoint,
-                request_payload=request_payload,
-                checkpoint_hints=checkpoint_hints,
-            ),
-            "includeOutboxSummary": True,
-            "includeReceiptSummary": True,
-        }
+        return build_resume_fact_bundle_payload_request(
+            checkpoint=checkpoint,
+            request_payload=request_payload,
+        )
 
     def _post_platform_request(self, request_body: Mapping[str, Any], *, trace_id: str | None) -> Mapping[str, Any]:
         """发送 Java fact bundle 请求并解析统一响应信封。"""
@@ -299,49 +233,6 @@ class JavaAgentRuntimeToolActionResumeFactBundleClient:
         return headers
 
 
-def _required_fact_types(
-    *,
-    checkpoint: Any,
-    request_payload: Mapping[str, Any],
-    checkpoint_hints: Mapping[str, str],
-) -> list[str]:
-    """推断需要 Java 控制面回查的事实类型。
-
-    推断顺序分三层：
-    - checkpoint.resume_requirements 表达执行图为什么暂停，是最稳定的服务端事实需求来源；
-    - request_payload 中的 resumeFacts 表达调用方自报了哪些事实，但仍需要 Java 控制面验真；
-    - checkpoint_hints 表达执行图摘要里已经有某些事实定位符，即使调用方没有重复传，也应让 Java 回查。
-    """
-
-    required: list[str] = []
-    for requirement in tuple(getattr(checkpoint, "resume_requirements", ()) or ()):
-        if requirement == "APPROVAL_CONFIRMATION_FACT":
-            _append_once(required, "APPROVAL_CONFIRMATION_FACT")
-        elif requirement == "CLARIFICATION_FACT":
-            _append_once(required, "CLARIFICATION_FACT")
-        elif requirement == "OUTBOX_WRITE_CONFIRMATION":
-            _append_once(required, "OUTBOX_WRITE_CONFIRMATION")
-            _append_once(required, "WORKER_RECEIPT_PROJECTION")
-        elif requirement == "TOOL_BUDGET_OR_WORKER_CAPACITY_RECOVERY":
-            _append_once(required, "TOOL_BUDGET_OR_WORKER_CAPACITY_RECOVERY")
-    request_fact_types = resume_fact_types_from_mapping(request_payload)
-    for fact_type in request_fact_types:
-        if fact_type in {"APPROVAL_CONFIRMATION_FACT", "CLARIFICATION_FACT", "OUTBOX_WRITE_CONFIRMATION"}:
-            _append_once(required, fact_type)
-    if checkpoint_hints.get("approvalFactId"):
-        _append_once(required, "APPROVAL_CONFIRMATION_FACT")
-    if checkpoint_hints.get("clarificationFactId"):
-        _append_once(required, "CLARIFICATION_FACT")
-    if _command_id_from_payload_or_checkpoint(request_payload, checkpoint, checkpoint_hints) or checkpoint_hints.get(
-        "outboxId"
-    ):
-        _append_once(required, "OUTBOX_WRITE_CONFIRMATION")
-        _append_once(required, "WORKER_RECEIPT_PROJECTION")
-    if not required:
-        required.extend(("APPROVAL_CONFIRMATION_FACT", "OUTBOX_WRITE_CONFIRMATION", "WORKER_RECEIPT_PROJECTION"))
-    return required
-
-
 def _issue_codes_from_bundle(data: Mapping[str, Any]) -> tuple[str, ...]:
     """从 Java facts 列表中提取低敏 issue code。"""
 
@@ -351,7 +242,7 @@ def _issue_codes_from_bundle(data: Mapping[str, Any]) -> tuple[str, ...]:
         for fact in facts:
             if isinstance(fact, Mapping):
                 for code in _safe_code_tuple(fact.get("issueCodes"), maximum=6):
-                    _append_once(issues, code)
+                    append_once(issues, code)
             if len(issues) >= 12:
                 break
     return tuple(issues)
@@ -366,104 +257,10 @@ def _fact_reference_count(data: Mapping[str, Any]) -> int:
     return len(_safe_code_tuple(data.get("availableFactTypes"), maximum=16))
 
 
-def _outbox_id_from_payload_or_checkpoint(
-    payload: Mapping[str, Any],
-    context_mapping: Mapping[str, Any],
-    checkpoint_hints: Mapping[str, str],
-) -> str | None:
-    """解析 outbox 定位符。
-
-    Java DTO 字段名叫 `outboxId`，但调用方历史上可能使用 `outboxConfirmationId` 表达“我认为 outbox 已写入”。
-    这里允许把这类别名作为查询定位符发给 Java 验真，但不会在 Python API 摘要中回显。
-    """
-
-    return _first_text(
-        payload.get("outboxId"),
-        payload.get("outboxConfirmationId"),
-        context_mapping.get("outboxId"),
-        context_mapping.get("outboxConfirmationId"),
-        _fact_value_from_payload(payload, "outboxId"),
-        _fact_value_from_payload(payload, "outboxConfirmationId"),
-        checkpoint_hints.get("outboxId"),
-    )
-
-
-def _approval_fact_id_from_payload(payload: Mapping[str, Any], checkpoint_hints: Mapping[str, str]) -> str | None:
-    """从请求中提取 approval fact ID，仅用于发往 Java 控制面验真。"""
-
-    return _first_text(
-        payload.get("approvalFactId"),
-        payload.get("approvalConfirmationId"),
-        payload.get("confirmationId"),
-        _fact_value_from_payload(payload, "approvalFactId"),
-        _fact_value_from_payload(payload, "approvalConfirmationId"),
-        _fact_value_from_payload(payload, "confirmationId"),
-        checkpoint_hints.get("approvalFactId"),
-    )
-
-
-def _command_id_from_payload_or_checkpoint(
-    payload: Mapping[str, Any],
-    checkpoint: Any,
-    checkpoint_hints: Mapping[str, str],
-) -> str | None:
-    """解析 commandId。
-
-    commandId 会驱动 Java outbox 与 worker receipt 查询，所以优先使用请求显式字段，其次使用
-    checkpoint_hints 自动恢复定位，最后才用 checkpoint.request_id/checkpoint_id 做兼容兜底。
-    """
-
-    context = payload.get("context")
-    context_mapping = context if isinstance(context, Mapping) else {}
-    return _first_text(
-        payload.get("commandId"),
-        payload.get("clientRequestId"),
-        context_mapping.get("commandId"),
-        context_mapping.get("clientRequestId"),
-        checkpoint_hints.get("commandId"),
-        getattr(checkpoint, "request_id", None),
-        getattr(checkpoint, "checkpoint_id", None),
-    )
-
-
-def _tool_code_from_payload_or_checkpoint(payload: Mapping[str, Any], checkpoint_hints: Mapping[str, str]) -> str | None:
-    """解析工具编码。"""
-
-    params = payload.get("params")
-    params_mapping = params if isinstance(params, Mapping) else {}
-    return _first_text(
-        payload.get("toolCode"),
-        payload.get("toolName"),
-        params_mapping.get("name"),
-        checkpoint_hints.get("toolCode"),
-    )
-
-
-def _policy_version_from_payload_or_checkpoint(
-    payload: Mapping[str, Any],
-    checkpoint_hints: Mapping[str, str],
-) -> str | None:
-    """解析策略版本。"""
-
-    context = payload.get("context")
-    context_mapping = context if isinstance(context, Mapping) else {}
-    return _first_text(
-        payload.get("policyVersion"),
-        context_mapping.get("policyVersion"),
-        _fact_value_from_payload(payload, "policyVersion"),
-        checkpoint_hints.get("requestedPolicyVersion"),
-    )
-
-
-def _fact_value_from_payload(payload: Mapping[str, Any], key: str) -> Any:
-    facts = payload.get("resumeFacts")
-    return facts.get(key) if isinstance(facts, Mapping) else None
-
-
 def _trace_id_from_payload(payload: Mapping[str, Any], checkpoint: Any) -> str | None:
     context = payload.get("context")
     context_mapping = context if isinstance(context, Mapping) else {}
-    return _first_text(
+    return first_text(
         payload.get("traceId"),
         payload.get("requestId"),
         context_mapping.get("traceId"),
@@ -477,8 +274,8 @@ def _actor_id_for_header(
     request_body: Mapping[str, Any],
     settings: AgentRuntimeResumeFactBundleClientSettings,
 ) -> str | None:
-    actor_id = _text(request_body.get("actorId"))
-    if actor_id and _optional_int(actor_id) is not None:
+    actor_id = text_value(request_body.get("actorId"))
+    if actor_id and optional_int(actor_id) is not None:
         return actor_id
     return settings.service_account_actor_id
 
@@ -494,7 +291,7 @@ def _authorized_project_header(
 
 
 def _put_header(headers: dict[str, str], name: str, value: Any) -> None:
-    text = _text(value)
+    text = text_value(value)
     if text:
         headers[name] = text
 
@@ -504,7 +301,7 @@ def _safe_code_tuple(value: Any, *, maximum: int) -> tuple[str, ...]:
         return ()
     result: list[str] = []
     for item in value:
-        text = _text(item)
+        text = text_value(item)
         if text and text not in result:
             result.append(text[:100])
         if len(result) >= maximum:
@@ -516,35 +313,5 @@ def _merge_codes(*groups: tuple[str, ...]) -> tuple[str, ...]:
     merged: list[str] = []
     for group in groups:
         for item in group:
-            _append_once(merged, item)
+            append_once(merged, item)
     return tuple(merged)
-
-
-def _append_once(items: list[str], value: str) -> None:
-    if value not in items:
-        items.append(value)
-
-
-def _first_text(*values: Any) -> str | None:
-    for value in values:
-        text = _text(value)
-        if text:
-            return text
-    return None
-
-
-def _optional_int(value: Any) -> int | None:
-    text = _text(value)
-    if not text:
-        return None
-    try:
-        return int(text)
-    except ValueError:
-        return None
-
-
-def _text(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None

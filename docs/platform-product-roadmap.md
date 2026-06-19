@@ -1,5 +1,34 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-19 追加落地进展：Python AI Runtime 5.87 启动装配与恢复事实 DTO 解耦
+
+- 本阶段承接 Python 5.86。上一阶段已经让 resume-preview 优先消费 Java resume gate graph，但 `orchestrator_factory.py` 达到 500 行，旧 `tool_action_resume_fact_bundle_client.py` 也超过 500 行，继续叠加 MCP/A2A/model tool_call adapter 会把 Python 工具治理层推回“大文件耦合”状态。本阶段先做结构解耦，为后续 OpenClaw-style runner 和统一协议 adapter 铺路。
+- 启动装配拆分：
+  - 新增 `api/agent/bootstrap_env.py`，集中解析 `truthy_env`、`positive_int_env`、`optional_positive_int_env` 和 `csv_env`；
+  - 新增 `api/agent/resume_fact_provider_factory.py`，专门装配 gate graph -> fact bundle -> permission-admin -> empty provider；
+  - `orchestrator_factory.py` 继续 re-export 旧函数名，保持 `datasmart_ai_runtime.api` 和 `datasmart_ai_runtime.api.agent` 历史导入兼容。
+- 恢复事实 DTO 解耦：
+  - 新增 `tool_action_resume_fact_bundle_payload.py`，统一构造 Java 恢复事实查询 DTO；
+  - fact bundle provider 与 gate graph provider 都直接复用同一个 payload builder；
+  - gate graph provider 不再为了构造请求体而实例化旧 fact bundle client，减少反向依赖。
+- 安全边界保持不变：
+  - DTO 只允许 checkpoint/thread/session/run/command/outbox、approvalFactId、clarificationFactId、toolCode、policyVersion、tenant/project/actor 和 requiredFactTypes；
+  - 不把 prompt、messages、SQL、arguments、payload body、样本数据、模型输出、凭证、token 或内部 endpoint 放入 Java 查询 DTO；
+  - 这仍然只是 resume-preview/control-plane query，不执行工具、不写 outbox、不派发 worker。
+- 测试与行数：
+  - 新增 `test_tool_action_resume_fact_bundle_payload.py`，覆盖请求字段优先级、checkpoint 图摘要兜底、敏感字段不进入 DTO、默认 requiredFactTypes；
+  - 定向测试 31 个通过；
+  - Python 全量测试 483 个通过：`python -m pytest python-ai-runtime\tests`；
+  - 行数检查：`orchestrator_factory.py` 356 行、`tool_action_resume_fact_bundle_client.py` 317 行、`tool_action_resume_fact_bundle_payload.py` 292 行、`tool_action_resume_gate_graph_client.py` 358 行、`resume_fact_provider_factory.py` 113 行、`bootstrap_env.py` 71 行。
+- 产品意义：
+  - 这一步不新增用户可见入口，但显著降低后续 MCP/A2A/model tool_call adapter、OpenClaw runner 和服务账号认证升级的改造成本；
+  - 恢复事实 DTO 变成共享契约后，外部协议入口不会各自发明恢复事实定位规则；
+  - 后续可以更放心地把 `ToolPlan -> readiness -> resume gate -> outbox/worker` 推向真实可暂停/可恢复 runner。
+- 下一步推荐路线：
+  1. 在现有 `tool_action_control_flow.py` 和 `tool_action_intake.py` 基础上，设计 MCP/A2A/model tool_call 到 `ToolPlan` 的统一 adapter contract，不重复造入口。
+  2. 设计服务账号签名 Header 或 mTLS，替换当前 Bearer token 配置式服务间信任。
+  3. 进入 OpenClaw-style runner，把 readiness、approval、clarification、budget、outbox、receipt 和 checkpoint 组织为可暂停/可恢复条件节点。
+
 ## 2026-06-18 追加落地进展：Python AI Runtime 5.86 接入 Java 恢复门控图事实源
 
 - 本阶段承接 Java Agent Runtime 5.85。上一阶段已经在 Java 控制面提供 `checkpoint locator -> security scope -> fact gates -> resume gate` 的恢复门控图，但 Python Runtime 的 `/agent/tool-actions/checkpoints/resume-preview` 仍可能只消费旧 fact bundle 或 permission-admin 单点审批事实。本阶段让 Python 优先读取 Java gate graph，使 checkpoint 暂停后的恢复预检进入“先问宿主控制面，再决定是否允许预览”的闭环。

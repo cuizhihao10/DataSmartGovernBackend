@@ -12,6 +12,12 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from datasmart_ai_runtime.api.agent.bootstrap_env import (
+    optional_positive_int_env,
+    positive_int_env,
+    truthy_env,
+)
+from datasmart_ai_runtime.api.agent.resume_fact_provider_factory import build_tool_action_resume_fact_provider
 from datasmart_ai_runtime.api.agent.skill_admission import build_skill_admission_policy
 from datasmart_ai_runtime.config import default_skill_registry, default_tool_registry, model_routes_from_env
 from datasmart_ai_runtime.domain.context import ContextSensitivityLevel
@@ -38,18 +44,7 @@ from datasmart_ai_runtime.services.skill_registry_client import JavaAgentSkillRe
 from datasmart_ai_runtime.services.tool_registry_client import JavaAgentToolRegistryClient, ToolRegistryClientError
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 from datasmart_ai_runtime.services.tools import (
-    DEFAULT_AGENT_RUNTIME_RESUME_FACT_BUNDLE_PATH,
-    DEFAULT_AGENT_RUNTIME_RESUME_GATE_GRAPH_PATH,
-    DEFAULT_PERMISSION_ADMIN_APPROVAL_FACT_EVALUATE_PATH,
-    AgentRuntimeResumeFactBundleClientSettings,
-    AgentRuntimeResumeGateGraphClientSettings,
-    EmptyToolActionResumeFactProvider,
-    JavaAgentRuntimeToolActionResumeFactBundleClient,
-    JavaAgentRuntimeToolActionResumeGateGraphClient,
-    JavaPermissionAdminToolActionResumeFactClient,
-    PermissionAdminResumeFactClientSettings,
     RemoteThenLocalToolExecutionReadinessPolicyProvider,
-    ToolActionResumeFactProvider,
     ToolExecutionReadinessPolicyProvider,
     ToolExecutionReadinessPolicyProviderProtocol,
 )
@@ -334,95 +329,6 @@ def build_tool_execution_readiness_policy_provider(
     )
 
 
-def build_tool_action_resume_fact_provider(
-    permission_admin_base_url: str | None = None,
-    *,
-    enable_remote: bool | None = None,
-) -> ToolActionResumeFactProvider:
-    """构建工具动作恢复事实 provider。
-
-    该 provider 服务 `/agent/tool-actions/checkpoints/resume-preview`。它与工具预算、执行准备度策略不同：
-    - 预算/readiness 回答“本轮规划和执行前条件如何限制工具”；
-    - resume fact provider 回答“某个已暂停 checkpoint 是否具备继续执行所需的服务端事实”。
-
-    当前优先接入 Java agent-runtime 5.85 的 resume gate graph，其次回退 5.70 fact bundle：
-    - gate graph 把 checkpoint/locator/scope/approval/clarification/outbox/receipt 串成条件图；
-    - fact bundle 可以统一聚合 permission-admin 审批事实、command outbox 和 worker receipt；
-    - 如果未启用 Java fact bundle，才回退到 5.69 的 permission-admin 单点审批事实 provider；
-    - 两条远程链路都默认关闭，避免本地学习环境、CI 和未启动 Java 服务时发生网络副作用。
-
-    环境变量：
-    - `DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_ENABLED`：启用 Java gate graph provider；
-    - `DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_ENABLED`：启用 Java fact bundle provider；
-    - `DATASMART_AGENT_RUNTIME_BASE_URL`：agent-runtime 根地址；
-    - `DATASMART_PERMISSION_ADMIN_TOOL_ACTION_RESUME_FACTS_ENABLED`：是否启用远程校验；
-    - `DATASMART_PERMISSION_ADMIN_BASE_URL`：permission-admin 根地址；
-    - `DATASMART_PERMISSION_ADMIN_TOOL_ACTION_APPROVAL_FACT_EVALUATE_PATH`：审批事实评估路径；
-    - `DATASMART_PERMISSION_ADMIN_TOOL_ACTION_RESUME_FACTS_TIMEOUT_SECONDS`：远程校验超时时间；
-    - `DATASMART_PERMISSION_ADMIN_SERVICE_TOKEN`：可选服务间 token，不进入任何响应摘要。
-    """
-
-    agent_runtime_base_url = os.getenv("DATASMART_AGENT_RUNTIME_BASE_URL")
-    if truthy_env("DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_ENABLED") and agent_runtime_base_url:
-        return JavaAgentRuntimeToolActionResumeGateGraphClient(
-            AgentRuntimeResumeGateGraphClientSettings(
-                enabled=True,
-                base_url=agent_runtime_base_url,
-                graph_path=os.getenv("DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_PATH")
-                or DEFAULT_AGENT_RUNTIME_RESUME_GATE_GRAPH_PATH,
-                timeout_seconds=positive_int_env("DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_TIMEOUT_SECONDS", 3),
-                service_token=os.getenv("DATASMART_AGENT_RUNTIME_SERVICE_TOKEN")
-                or os.getenv("DATASMART_PERMISSION_ADMIN_SERVICE_TOKEN"),
-                service_account_actor_id=os.getenv("DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_SERVICE_ACCOUNT_ACTOR_ID") or "900001",
-                service_account_role=os.getenv("DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_SERVICE_ACCOUNT_ROLE") or "SERVICE_ACCOUNT",
-                data_scope_level=os.getenv("DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_DATA_SCOPE_LEVEL") or "PLATFORM",
-                authorized_project_ids=_csv_env("DATASMART_AGENT_RUNTIME_RESUME_GATE_GRAPH_AUTHORIZED_PROJECT_IDS"),
-            )
-        )
-    agent_runtime_bundle_enabled = truthy_env("DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_ENABLED")
-    if agent_runtime_bundle_enabled and agent_runtime_base_url:
-        return JavaAgentRuntimeToolActionResumeFactBundleClient(
-            AgentRuntimeResumeFactBundleClientSettings(
-                enabled=True,
-                base_url=agent_runtime_base_url,
-                bundle_path=os.getenv("DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_PATH")
-                or DEFAULT_AGENT_RUNTIME_RESUME_FACT_BUNDLE_PATH,
-                timeout_seconds=positive_int_env("DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_TIMEOUT_SECONDS", 3),
-                service_token=os.getenv("DATASMART_AGENT_RUNTIME_SERVICE_TOKEN")
-                or os.getenv("DATASMART_PERMISSION_ADMIN_SERVICE_TOKEN"),
-                service_account_actor_id=os.getenv("DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_SERVICE_ACCOUNT_ACTOR_ID")
-                or "900001",
-                service_account_role=os.getenv("DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_SERVICE_ACCOUNT_ROLE")
-                or "SERVICE_ACCOUNT",
-                data_scope_level=os.getenv("DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_DATA_SCOPE_LEVEL")
-                or "PLATFORM",
-                authorized_project_ids=_csv_env("DATASMART_AGENT_RUNTIME_RESUME_FACT_BUNDLE_AUTHORIZED_PROJECT_IDS"),
-            )
-        )
-
-    permission_admin_enabled = (
-        truthy_env("DATASMART_PERMISSION_ADMIN_TOOL_ACTION_RESUME_FACTS_ENABLED")
-        if enable_remote is None
-        else enable_remote
-    )
-    base_url = permission_admin_base_url or os.getenv("DATASMART_PERMISSION_ADMIN_BASE_URL")
-    if not permission_admin_enabled or not base_url:
-        return EmptyToolActionResumeFactProvider()
-    return JavaPermissionAdminToolActionResumeFactClient(
-        PermissionAdminResumeFactClientSettings(
-            enabled=True,
-            base_url=base_url,
-            approval_fact_evaluate_path=os.getenv("DATASMART_PERMISSION_ADMIN_TOOL_ACTION_APPROVAL_FACT_EVALUATE_PATH")
-            or DEFAULT_PERMISSION_ADMIN_APPROVAL_FACT_EVALUATE_PATH,
-            timeout_seconds=positive_int_env(
-                "DATASMART_PERMISSION_ADMIN_TOOL_ACTION_RESUME_FACTS_TIMEOUT_SECONDS",
-                3,
-            ),
-            service_token=os.getenv("DATASMART_PERMISSION_ADMIN_SERVICE_TOKEN"),
-        )
-    )
-
-
 def _tool_readiness_remote_enabled_from_env() -> bool:
     """读取 readiness 远程策略开关。
 
@@ -434,56 +340,6 @@ def _tool_readiness_remote_enabled_from_env() -> bool:
     if readiness_value is not None:
         return truthy_env("DATASMART_PERMISSION_ADMIN_TOOL_READINESS_POLICY_ENABLED")
     return truthy_env("DATASMART_PERMISSION_ADMIN_TOOL_BUDGET_ENABLED")
-
-
-def _csv_env(name: str) -> tuple[str, ...]:
-    """读取逗号分隔环境变量。
-
-    这里用于 Java fact bundle 的 `X-DataSmart-Authorized-Project-Ids` Header。
-    Header 不应携带 prompt、工具参数或任意业务正文，只允许项目 ID 这类低敏范围约束字段。
-    """
-
-    value = os.getenv(name)
-    if not value:
-        return ()
-    return tuple(item.strip() for item in value.split(",") if item.strip())
-
-
-def truthy_env(name: str) -> bool:
-    """解析布尔环境变量。
-
-    Python 的 `bool("false")` 会得到 True，因此生产开关不能直接用 bool 转换。
-    这里集中处理常见写法，避免运维在 `.env` 中写 `false` 却意外启用远程反馈查询。
-    """
-
-    value = os.getenv(name)
-    if value is None:
-        return False
-    return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled"}
-
-
-def positive_int_env(name: str, default: int) -> int:
-    """读取正整数环境变量。"""
-
-    value = os.getenv(name)
-    if value is None or not value.strip():
-        return default
-    parsed = int(value)
-    return parsed if parsed > 0 else default
-
-
-def optional_positive_int_env(name: str) -> int | None:
-    """读取可选正整数环境变量。
-
-    该 helper 用于“Python 可以不传，让 Java 控制面按服务端配置决定”的场景。
-    例如同步自动执行最大数量：如果 Python 写死默认值，可能会覆盖 Java 侧按环境、租户或灰度配置的上限。
-    """
-
-    value = os.getenv(name)
-    if value is None or not value.strip():
-        return None
-    parsed = int(value)
-    return parsed if parsed > 0 else None
 
 
 __all__ = [
