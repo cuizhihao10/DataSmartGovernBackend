@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.czh.datasmart.govern.datasource.controller.dto.MetadataDiscoveryRequest;
 import com.czh.datasmart.govern.datasource.controller.dto.ReadOnlySqlExecutionRequest;
 import com.czh.datasmart.govern.datasource.controller.dto.ReadOnlySqlExecutionResult;
+import com.czh.datasmart.govern.datasource.entity.ConnectorCapabilityProfile;
 import com.czh.datasmart.govern.datasource.entity.DataSourceCapabilityProfile;
 import com.czh.datasmart.govern.datasource.entity.DataSourceConfig;
 import com.czh.datasmart.govern.datasource.entity.DataSourceConnectionTestResult;
@@ -13,6 +14,7 @@ import com.czh.datasmart.govern.datasource.entity.DataSourceMetadataDiscoveryRes
 import com.czh.datasmart.govern.datasource.entity.DataSourceReadOnlySqlExecutionAudit;
 import com.czh.datasmart.govern.datasource.mapper.DataSourceConfigMapper;
 import com.czh.datasmart.govern.datasource.service.DataSourceManagementService;
+import com.czh.datasmart.govern.datasource.service.support.ConnectorCapabilityRegistry;
 import com.czh.datasmart.govern.datasource.service.support.DataSourceMetadataDiscoverySupport;
 import com.czh.datasmart.govern.datasource.service.support.DataSourceReadOnlySqlSupport;
 import com.czh.datasmart.govern.datasource.service.support.DatasourceProjectVisibility;
@@ -65,6 +67,12 @@ public class DataSourceManagementServiceImpl extends ServiceImpl<DataSourceConfi
      * 具体 JDBC 元数据读取、缓存、字段/索引/样例预览组装都交给该组件。
      */
     private final DataSourceMetadataDiscoverySupport dataSourceMetadataDiscoverySupport;
+
+    /**
+     * 连接器能力注册表。
+     * 数据源详情接口仍根据具体数据源返回能力画像，但能力规则本身统一来自注册表，避免 DataSourceType、模板校验和前端向导各维护一套规则。
+     */
+    private final ConnectorCapabilityRegistry connectorCapabilityRegistry;
 
     /**
      * 创建数据源。
@@ -233,20 +241,27 @@ public class DataSourceManagementServiceImpl extends ServiceImpl<DataSourceConfi
         DataSourceConfig config = getRequiredDataSource(id);
         ensureNotDeleted(config);
         DataSourceType type = DataSourceType.fromValue(config.getType());
+        ConnectorCapabilityProfile capability = connectorCapabilityRegistry.getProfile(type.name());
         return new DataSourceCapabilityProfile(
                 config.getId(),
                 config.getName(),
                 type.name(),
-                type.isCanRead(),
-                type.isCanWrite(),
-                type.isSupportsFullSync(),
-                type.isSupportsIncrementalSync(),
-                type.isSupportsStreaming(),
-                type.isSupportsSchemaDiscovery(),
-                type.isSupportsFieldMapping(),
-                type.isSupportsCheckpointResume(),
-                type.isSupportsPreviewSampling(),
-                type.isSupportsPartitionParallelism(),
+                capability.isCanRead(),
+                capability.isCanWrite(),
+                capability.getSupportedSyncModes().contains("FULL"),
+                capability.getSupportedSyncModes().contains("INCREMENTAL_TIME")
+                        || capability.getSupportedSyncModes().contains("INCREMENTAL_ID"),
+                capability.getSupportedSyncModes().contains("STREAMING")
+                        || capability.getSupportedSyncModes().contains("CDC"),
+                capability.isSupportsSchemaDiscovery(),
+                capability.isSupportsFieldMapping(),
+                capability.isSupportsCheckpointResume(),
+                capability.isSupportsPreviewSampling(),
+                capability.isSupportsPartitionParallelism(),
+                capability.getSupportedSyncModes(),
+                capability.getSupportedWriteStrategies(),
+                capability.getPerformanceRecommendations(),
+                capability.getProductionLimitations(),
                 LocalDateTime.now()
         );
     }

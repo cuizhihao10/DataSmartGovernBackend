@@ -15,6 +15,7 @@ import com.czh.datasmart.govern.datasource.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasource.mapper.DataSourceConfigMapper;
 import com.czh.datasmart.govern.datasource.mapper.SyncTemplateMapper;
 import com.czh.datasmart.govern.datasource.service.SyncTemplateService;
+import com.czh.datasmart.govern.datasource.service.support.ConnectorCapabilityRegistry;
 import com.czh.datasmart.govern.datasource.service.support.SyncTemplateAuditSupport;
 import com.czh.datasmart.govern.datasource.service.support.SyncTemplateValidationSupport;
 import com.czh.datasmart.govern.datasource.support.DataSourceStatus;
@@ -87,6 +88,12 @@ public class SyncTemplateServiceImpl extends ServiceImpl<SyncTemplateMapper, Syn
     private final SyncTemplateAuditSupport syncTemplateAuditSupport;
 
     /**
+     * 连接器能力注册表。
+     * 创建和更新模板时要先确认源端、目标端、同步模式和写入策略在能力上成立，避免把明显不可执行的模板写入数据库。
+     */
+    private final ConnectorCapabilityRegistry connectorCapabilityRegistry;
+
+    /**
      * 创建同步模板。
      *
      * @param request 创建请求，包含模板基础信息、源/目标对象、同步模式、写入策略和执行参数。
@@ -98,9 +105,11 @@ public class SyncTemplateServiceImpl extends ServiceImpl<SyncTemplateMapper, Syn
         assertTemplateManagePermission(request.getCreatedBy(), request.getActorRole(),
                 request.getActorTenantId(), request.getTenantId(), null);
         ensureTemplateNameUnique(request.getTenantId(), request.getProjectId(), request.getName(), null);
-        validateDatasourcePair(request.getSourceDatasourceId(), request.getTargetDatasourceId());
+        DatasourcePair datasourcePair = validateDatasourcePair(request.getSourceDatasourceId(), request.getTargetDatasourceId());
         SyncMode syncMode = SyncMode.fromValue(request.getSyncMode());
         SyncWriteStrategy writeStrategy = SyncWriteStrategy.fromValue(request.getWriteStrategy());
+        connectorCapabilityRegistry.assertTemplateCompatible(
+                datasourcePair.source(), datasourcePair.target(), syncMode, writeStrategy, request.getPartitionConfig());
 
         SyncTemplate template = new SyncTemplate();
         template.setTenantId(request.getTenantId());
@@ -145,9 +154,11 @@ public class SyncTemplateServiceImpl extends ServiceImpl<SyncTemplateMapper, Syn
         assertTemplateManagePermission(request.getUpdatedBy(), request.getActorRole(),
                 request.getActorTenantId(), template.getTenantId(), template.getCreatedBy());
         ensureTemplateNameUnique(template.getTenantId(), template.getProjectId(), request.getName(), id);
-        validateDatasourcePair(request.getSourceDatasourceId(), request.getTargetDatasourceId());
+        DatasourcePair datasourcePair = validateDatasourcePair(request.getSourceDatasourceId(), request.getTargetDatasourceId());
         SyncMode syncMode = SyncMode.fromValue(request.getSyncMode());
         SyncWriteStrategy writeStrategy = SyncWriteStrategy.fromValue(request.getWriteStrategy());
+        connectorCapabilityRegistry.assertTemplateCompatible(
+                datasourcePair.source(), datasourcePair.target(), syncMode, writeStrategy, request.getPartitionConfig());
 
         template.setName(request.getName());
         template.setDescription(request.getDescription());
@@ -297,7 +308,7 @@ public class SyncTemplateServiceImpl extends ServiceImpl<SyncTemplateMapper, Syn
         }
     }
 
-    private void validateDatasourcePair(Long sourceDatasourceId, Long targetDatasourceId) {
+    private DatasourcePair validateDatasourcePair(Long sourceDatasourceId, Long targetDatasourceId) {
         if (sourceDatasourceId.equals(targetDatasourceId)) {
             throw new IllegalArgumentException("源数据源和目标数据源不能相同");
         }
@@ -309,6 +320,14 @@ public class SyncTemplateServiceImpl extends ServiceImpl<SyncTemplateMapper, Syn
         if (!isDatasourceAvailable(target)) {
             throw new IllegalStateException("目标数据源当前不可用: " + targetDatasourceId);
         }
+        return new DatasourcePair(source, target);
+    }
+
+    /**
+     * 模板源端/目标端数据源配对。
+     * 使用私有 record 可以避免创建/更新时重复查询数据源，也让能力校验明确消费同一份已校验生命周期的配置快照。
+     */
+    private record DatasourcePair(DataSourceConfig source, DataSourceConfig target) {
     }
 
     private DataSourceConfig getRequiredDatasource(Long id) {

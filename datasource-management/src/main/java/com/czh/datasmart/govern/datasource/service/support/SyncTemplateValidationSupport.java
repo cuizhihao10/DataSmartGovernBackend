@@ -10,6 +10,7 @@ import com.czh.datasmart.govern.datasource.controller.dto.MetadataDiscoveryReque
 import com.czh.datasmart.govern.datasource.entity.DataSourceConfig;
 import com.czh.datasmart.govern.datasource.entity.DataSourceMetadataDiscoveryResult;
 import com.czh.datasmart.govern.datasource.entity.IndexMetadataSummary;
+import com.czh.datasmart.govern.datasource.entity.SyncConnectorCapabilityAssessment;
 import com.czh.datasmart.govern.datasource.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasource.entity.TableMetadataSummary;
 import com.czh.datasmart.govern.datasource.service.DataSourceManagementService;
@@ -70,6 +71,13 @@ public class SyncTemplateValidationSupport {
     private final SyncTemplateFieldMappingSupport fieldMappingSupport;
 
     /**
+     * 连接器能力注册表。
+     * 模板智能校验需要先判断“源端、目标端、同步模式、写入策略”是否在连接器能力上成立，
+     * 再继续做表字段、索引和字段映射校验。这样可以把明显不成立的跨源同步方案尽早暴露给用户。
+     */
+    private final ConnectorCapabilityRegistry connectorCapabilityRegistry;
+
+    /**
      * 执行同步模板智能校验。
      *
      * @param template 待校验模板，已经由主服务确认存在。
@@ -100,6 +108,10 @@ public class SyncTemplateValidationSupport {
         result.put("sourceDatasourceStatus", source.getStatus());
         result.put("targetDatasourceStatus", target.getStatus());
         collectAvailabilityErrors(template, sourceAvailable, targetAvailable, errors);
+        SyncConnectorCapabilityAssessment connectorAssessment = connectorCapabilityRegistry.assessTemplateCompatibility(template, source, target);
+        errors.addAll(connectorAssessment.getErrors());
+        warnings.addAll(connectorAssessment.getWarnings());
+        result.put("connectorCapabilityAssessment", connectorAssessment);
 
         TableMetadataSummary sourceTable = sourceAvailable
                 ? findTemplateTable(source, template.getSourceSchemaName(), template.getSourceObjectName(), actorId, actorRole, actorTenantId)
@@ -160,6 +172,7 @@ public class SyncTemplateValidationSupport {
         result.put("writeStrategy", writeStrategy.name());
         result.put("validatedBy", actorRole);
         result.put("validationDimensions", List.of(
+                "CONNECTOR_CAPABILITY",
                 "OBJECT_EXISTENCE",
                 "MODE_REQUIREMENTS",
                 "WRITE_STRATEGY",

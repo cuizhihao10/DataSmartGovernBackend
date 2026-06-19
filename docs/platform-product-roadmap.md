@@ -1,4 +1,32 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-20 追加落地进展：Datasource Management 5.91 连接器能力注册表与模板前置兼容校验
+
+- 本阶段承接平台整体收敛要求，暂不继续扩展 Agent 工具治理字段，转回 datasource-management/data-sync 的真实业务闭环：先把“连接器能做什么、模板是否能执行”沉淀为统一控制面能力。
+- 新增连接器能力画像：
+  - `ConnectorCapabilityProfile` 描述连接器类型、连接器家族、实现阶段、读写能力、schema 发现、字段映射、检查点、采样、分区并行、支持同步模式、支持写入策略、一致性说明、性能建议、生产限制和下一步建设建议；
+  - `ConnectorCapabilityRegistry` 统一维护 MySQL、PostgreSQL、SQL Server 当前 JDBC 控制面能力，以及 Oracle、MongoDB、Kafka、Hive、ClickHouse、File、Object Storage、REST API 等路线预留画像；
+  - 兼容 `SQLSERVER`、`SQL_SERVER`、`MSSQL` 等别名，避免历史枚举命名影响产品级能力查询。
+- 新增低敏查询入口：
+  - `GET /sync/connectors/capabilities` 查询全部连接器能力矩阵；
+  - `GET /sync/connectors/capabilities/{connectorType}` 查询单个连接器能力画像；
+  - 接口不读取 datasource_config，不返回 JDBC URL、用户名、密码、SQL、样本数据或同步数据，也不触发连接测试、元数据发现或真实同步。
+- 模板业务链路接入：
+  - `SyncTemplateServiceImpl` 在创建/更新模板时调用 `assertTemplateCompatible(...)`，对源端同步模式、目标端写入策略、检查点要求和分区能力做强校验；
+  - `SyncTemplateValidationSupport` 在智能校验结果中返回 `connectorCapabilityAssessment`，并把连接器不兼容错误合并到 errors，把生产边界和性能建议合并到 warnings；
+  - `DataSourceManagementServiceImpl#getCapabilityProfile` 改为读取统一注册表，避免数据源能力接口和模板校验维护两套规则。
+- 当前明确边界：
+  - 这一步是数据同步控制面收敛，不代表真实批量读取/写入执行器已经完成；
+  - JDBC 三类连接器处于 `CONTROL_PLANE_SUPPORTED_EXECUTOR_PENDING`，下一步应接真实 batch reader/writer、checkpoint 提交和执行器回执；
+  - Kafka、对象存储、REST API 等为 `ROADMAP_RESERVED`，用于产品路线和前端向导规划，不能直接承诺生产执行。
+- 验证：
+  - 新增 `ConnectorCapabilityRegistryTest`，覆盖 SQL Server 别名、JDBC 增量 UPSERT、JDBC CDC 阻断、PostgreSQL REPLACE 阻断、路线预留连接器和强校验 fail-fast；
+  - `mvn -pl datasource-management -am "-Dtest=ConnectorCapabilityRegistryTest,DatasourceProjectScopeSupportTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：12 个测试通过；
+  - `mvn -pl datasource-management -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：12 个测试通过；
+  - 行数检查：`ConnectorCapabilityRegistry.java` 462 行、`SyncTemplateValidationSupport.java` 410 行，符合单文件 500 行内约束。
+- 下一步推荐路线：
+  1. 优先为 JDBC 三类连接器补真实 `SyncBatchReader/SyncBatchWriter` 抽象和执行器回调，让当前控制面能力进入真实数据搬运闭环；
+  2. 将 sync execution/checkpoint 与 task-management outbox/worker receipt 对接，统一长任务调度、失败恢复和审计；
+  3. 暂不继续扩展连接器画像字段，除非是为了接真实执行器或前端模板向导必须消费。
 
 ## 2026-06-19 追加落地进展：Python AI Runtime 5.87 启动装配与恢复事实 DTO 解耦
 
