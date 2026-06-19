@@ -25,8 +25,18 @@ class FakeApp:
     """极简路由注册器，用于验证 checkpoint 子路由被主 Agent API 注册。"""
 
     def __init__(self) -> None:
+        self.get_routes: dict[str, object] = {}
         self.post_routes: dict[str, object] = {}
         self.websocket_routes: dict[str, object] = {}
+
+    def get(self, path: str):
+        """模拟 FastAPI 的 `@app.get(...)` 装饰器。"""
+
+        def decorator(func):
+            self.get_routes[path] = func
+            return func
+
+        return decorator
 
     def post(self, path: str):
         """模拟 FastAPI 的 `@app.post(...)` 装饰器。"""

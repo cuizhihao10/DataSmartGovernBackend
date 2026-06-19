@@ -21,6 +21,7 @@ from contextlib import suppress
 from typing import Any, Callable
 
 from datasmart_ai_runtime.api.agent.a2a_task_planning import build_a2a_task_planning_preview_response
+from datasmart_ai_runtime.api.agent.tool_action_adapter_contract import build_tool_action_adapter_contracts_response
 from datasmart_ai_runtime.api.agent.mcp_tool_call_intake import build_mcp_tool_call_intake_preview_response
 from datasmart_ai_runtime.api.agent.runtime_event_delivery import (
     publish_single_runtime_event,
@@ -262,6 +263,16 @@ def register_agent_runtime_routes(
             registered_tools=tool_registry,
             checkpoint_store=tool_action_checkpoint_store,
         )
+
+    @app.get("/agent/tool-actions/adapter-contracts")
+    def query_tool_action_adapter_contracts(source: str | None = None) -> dict[str, Any]:
+        """查询模型 tool_call、MCP tools/call、A2A task/action 的统一 Adapter Contract。
+
+        这个入口面向智能网关、Java Agent Host、管理台和本地学习脚本，用来确认每类工具动作来源进入
+        DataSmart Host 时必须经过哪些治理阶段。它不执行工具、不读取业务数据、不返回工具参数或协议正文。
+        """
+
+        return build_tool_action_adapter_contracts_response({"source": source} if source else None)
 
     register_tool_action_checkpoint_routes(
         app,

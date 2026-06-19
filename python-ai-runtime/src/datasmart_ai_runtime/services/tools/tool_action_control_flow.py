@@ -27,6 +27,9 @@ from datasmart_ai_runtime.services.tools.tool_action_intake import (
     ToolActionIntakeService,
     ToolActionIntakeSource,
 )
+from datasmart_ai_runtime.services.tools.tool_action_adapter_contract import (
+    default_tool_action_adapter_contract_registry,
+)
 from datasmart_ai_runtime.services.tools.tool_action_command_proposal_template import (
     build_tool_action_command_proposal_templates,
 )
@@ -83,12 +86,14 @@ class ToolActionControlFlowReport:
 
         intake_summary = self.intake.to_low_sensitive_summary()
         readiness_summary = _tool_execution_readiness_summary(self.readiness)
+        adapter_contract = default_tool_action_adapter_contract_registry().get(self.source).to_low_sensitive_summary()
         return {
             "schemaVersion": schema_version,
             "previewOnly": True,
             "toolExecutionEnabled": False,
             "source": self.source.value,
             "protocolFamily": self.protocol_family,
+            "toolActionAdapterContract": adapter_contract,
             "route": dict(route or {}),
             "inputPayloadPolicy": dict(input_payload_policy or _default_input_payload_policy(self.source)),
             "executionContract": _execution_contract(self.source),

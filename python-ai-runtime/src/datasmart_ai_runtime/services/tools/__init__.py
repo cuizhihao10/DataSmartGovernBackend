@@ -40,6 +40,12 @@ from datasmart_ai_runtime.services.tools.tool_action_intake import (
 from datasmart_ai_runtime.services.tools.tool_action_intake_events import (
     build_tool_action_intake_runtime_event,
 )
+from datasmart_ai_runtime.services.tools.tool_action_adapter_contract import (
+    ToolActionAdapterContract,
+    ToolActionAdapterContractRegistry,
+    ToolActionAdapterStage,
+    default_tool_action_adapter_contract_registry,
+)
 from datasmart_ai_runtime.services.tools.tool_action_checkpoint_events import (
     build_tool_action_checkpoint_runtime_event,
 )
@@ -124,6 +130,10 @@ __all__ = (
     "ToolActionIntakeService",
     "ToolActionIntakeSource",
     "build_tool_action_intake_runtime_event",
+    "ToolActionAdapterContract",
+    "ToolActionAdapterContractRegistry",
+    "ToolActionAdapterStage",
+    "default_tool_action_adapter_contract_registry",
     "build_tool_action_checkpoint_runtime_event",
     "ToolActionCheckpointMetrics",
     "ToolActionControlFlowReport",

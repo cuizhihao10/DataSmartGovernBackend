@@ -23,8 +23,18 @@ class FakeApp:
     """
 
     def __init__(self) -> None:
+        self.get_routes: dict[str, object] = {}
         self.post_routes: dict[str, object] = {}
         self.websocket_routes: dict[str, object] = {}
+
+    def get(self, path: str):
+        """模拟 FastAPI 的 `@app.get(...)` 装饰器。"""
+
+        def decorator(func):
+            self.get_routes[path] = func
+            return func
+
+        return decorator
 
     def post(self, path: str):
         """模拟 FastAPI 的 `@app.post(...)` 装饰器。"""

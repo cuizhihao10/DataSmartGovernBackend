@@ -15,8 +15,18 @@ class FakeApp:
     """极简路由注册器，用于在不安装 FastAPI 的情况下验证 API handler。"""
 
     def __init__(self) -> None:
+        self.get_routes: dict[str, object] = {}
         self.post_routes: dict[str, object] = {}
         self.websocket_routes: dict[str, object] = {}
+
+    def get(self, path: str):
+        """记录 GET 路由装饰器。"""
+
+        def decorator(func):
+            self.get_routes[path] = func
+            return func
+
+        return decorator
 
     def post(self, path: str):
         """记录 POST 路由装饰器。"""
