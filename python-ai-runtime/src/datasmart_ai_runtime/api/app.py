@@ -30,6 +30,7 @@ from datasmart_ai_runtime.api.gateway.security import (
 from datasmart_ai_runtime.api.memory.materialization_admin import register_memory_materialization_admin_routes
 from datasmart_ai_runtime.api.memory.runtime import api_memory_runtime_diagnostics, build_api_memory_runtime
 from datasmart_ai_runtime.api.memory.write import register_memory_write_routes
+from datasmart_ai_runtime.api.platform import register_platform_convergence_routes
 from datasmart_ai_runtime.api.agent.orchestrator_factory import (
     build_context_selection_policy,
     build_default_orchestrator,
@@ -70,6 +71,7 @@ from datasmart_ai_runtime.services.model_gateway import (
 )
 from datasmart_ai_runtime.services.model_gateway.model_provider import model_provider_registry_from_env
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
+from datasmart_ai_runtime.services.platform_convergence import default_platform_convergence_diagnostics_service
 from datasmart_ai_runtime.services.runtime_events.runtime_event_components import (
     build_runtime_event_components,
     runtime_event_component_diagnostics,
@@ -131,6 +133,7 @@ def create_app() -> Any:
     # - 模型是否适合 Agent、代码生成、Embedding、Rerank、多模态等工作负载；
     # - DeepSeek/Qwen/GLM/vLLM/SGLang 等接入方式是否仍需要 SKU、工具调用、缓存隔离或压测验证。
     model_capability_registry = default_model_capability_registry()
+    platform_convergence_diagnostics = default_platform_convergence_diagnostics_service()
     model_provider_health_registry = InMemoryModelProviderHealthRegistry()
     model_provider_health_probe_settings = model_provider_health_probe_settings_from_env()
     model_provider_health_probe = ModelProviderHealthProbeService(
@@ -448,6 +451,7 @@ def create_app() -> Any:
         metrics_recorder=memory_materialization_metrics,
         audit_outbox_recorder=memory_runtime.audit_outbox_runtime.recorder,
     )
+    register_platform_convergence_routes(app, diagnostics_service=platform_convergence_diagnostics)
 
     return app
 
