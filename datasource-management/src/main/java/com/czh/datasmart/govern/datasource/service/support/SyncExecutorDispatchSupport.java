@@ -13,9 +13,11 @@ import com.czh.datasmart.govern.datasource.controller.dto.SyncExecutorClaimReque
 import com.czh.datasmart.govern.datasource.controller.dto.SyncExecutorClaimResult;
 import com.czh.datasmart.govern.datasource.controller.dto.SyncExecutorHeartbeatRequest;
 import com.czh.datasmart.govern.datasource.controller.dto.SyncLeaseRecoveryResult;
+import com.czh.datasmart.govern.datasource.entity.DataSourceConfig;
 import com.czh.datasmart.govern.datasource.entity.SyncExecution;
 import com.czh.datasmart.govern.datasource.entity.SyncTask;
 import com.czh.datasmart.govern.datasource.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasource.mapper.DataSourceConfigMapper;
 import com.czh.datasmart.govern.datasource.mapper.SyncExecutionMapper;
 import com.czh.datasmart.govern.datasource.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasource.support.SyncAuditAction;
@@ -57,6 +59,13 @@ public class SyncExecutorDispatchSupport {
     private final SyncExecutionMapper syncExecutionMapper;
 
     /**
+     * 数据源配置 Mapper。
+     * 执行器认领结果需要生成批处理执行计划，因此必须读取源端和目标端的数据源类型。
+     * 这里不会把连接串、用户名或密码放入响应，只消费 id/type 等低敏控制字段。
+     */
+    private final DataSourceConfigMapper dataSourceConfigMapper;
+
+    /**
      * 执行器调度配置。
      * 这里读取租约时长、过期租约恢复批量、是否认领前自动恢复、是否自动重新入队等运行参数。
      */
@@ -66,6 +75,12 @@ public class SyncExecutorDispatchSupport {
      * 执行记录与检查点持久化组件。
      */
     private final SyncExecutionPersistenceSupport syncExecutionPersistenceSupport;
+
+    /**
+     * 批处理执行计划构建器。
+     * 它把模板、任务、数据源、execution 和租约翻译成 worker 可消费的低敏执行契约。
+     */
+    private final SyncBatchExecutionPlanBuilder syncBatchExecutionPlanBuilder;
 
     /**
      * 队列容量组件。
@@ -264,7 +279,24 @@ public class SyncExecutorDispatchSupport {
         result.setTargetSchemaName(template.getTargetSchemaName());
         result.setTargetObjectName(template.getTargetObjectName());
         result.setLeaseExpireAt(leaseExpireAt);
+        result.setExecutionPlan(syncBatchExecutionPlanBuilder.buildPlan(
+                task,
+                template,
+                getRequiredDatasource(template.getSourceDatasourceId()),
+                getRequiredDatasource(template.getTargetDatasourceId()),
+                execution,
+                executorId,
+                leaseExpireAt
+        ));
         return result;
+    }
+
+    private DataSourceConfig getRequiredDatasource(Long datasourceId) {
+        DataSourceConfig datasource = dataSourceConfigMapper.selectById(datasourceId);
+        if (datasource == null) {
+            throw new NoSuchElementException("同步执行计划所需数据源不存在: " + datasourceId);
+        }
+        return datasource;
     }
 
     private LocalDateTime computeLeaseExpireAt() {

@@ -113,4 +113,29 @@ public class SyncExecutorProperties {
      * 它通常用于识别“某个租户提交过猛”或“该租户绑定的执行能力不足”。
      */
     private Integer queueAlertThresholdPerTenant = 20;
+
+    /**
+     * JDBC 读取推荐 fetchSize。
+     * 该值会写入批处理执行计划，worker 可以据此控制一次从数据库驱动拉取多少行。
+     * 它不是强制上限，而是控制面给执行器的默认性能建议；未来可以按连接器、租户套餐或执行器池动态下发。
+     */
+    private Integer recommendedJdbcFetchSize = 1000;
+
+    /**
+     * JDBC 写入推荐批大小。
+     * 批量过小会导致网络往返和事务提交过于频繁，批量过大则可能造成内存压力、锁等待或事务日志膨胀。
+     */
+    private Integer recommendedJdbcWriteBatchSize = 1000;
+
+    /**
+     * JDBC 推荐提交间隔，单位为记录数。
+     * 该字段用于提示 worker 何时提交一次事务；真实生产中还需要结合目标库事务日志、锁等待和幂等策略进一步调优。
+     */
+    private Integer recommendedJdbcCommitIntervalRecords = 1000;
+
+    /**
+     * 推荐 checkpoint 保存间隔，单位为记录数。
+     * 间隔越小，失败恢复越精准，但数据库 checkpoint 写入频率也越高；间隔越大，吞吐更好但失败后重放窗口更长。
+     */
+    private Integer checkpointPersistEveryRecords = 5000;
 }

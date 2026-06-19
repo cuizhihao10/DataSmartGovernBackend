@@ -1,4 +1,34 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-20 追加落地进展：Datasource Management 5.92 批处理执行计划接入执行器认领
+
+- 本阶段承接 5.91 连接器能力注册表，不继续扩展连接器画像字段，而是把同步控制面推进到 worker 可消费的批处理执行契约。
+- 新增 `SyncBatchExecutionPlan`：
+  - 作为 `SyncExecutorClaimResult.executionPlan` 返回给执行器；
+  - 结构化描述 readPlan、writePlan、checkpointPlan、runtimeControlPlan、warnings 和 planVersion；
+  - 明确 `executionBoundary=BATCH_EXECUTION_CONTRACT_NO_RAW_SQL_NO_CREDENTIALS`，不返回 JDBC URL、用户名、密码、原始 SQL、样本数据或业务数据。
+- 新增 `SyncBatchExecutionPlanBuilder`：
+  - 将 SyncTask、SyncTemplate、DataSourceConfig、SyncExecution、executorId 和 leaseExpireAt 翻译为低敏执行计划；
+  - 支持 FULL、INCREMENTAL_TIME、INCREMENTAL_ID、REPLAY、BACKFILL 等模式映射到读取策略；
+  - 支持 APPEND、UPSERT、INSERT_IGNORE、REPLACE、OVERWRITE 映射到写入冲突策略；
+  - 生成 checkpoint 类型、初始 checkpoint 策略、分片感知、推荐保存间隔和 worker 回调清单。
+- 执行器认领链路增强：
+  - `SyncExecutorDispatchSupport` 在 claim 成功后加载源/目标数据源类型并构建 `executionPlan`；
+  - `SyncExecutorClaimResult` 补充字段级中文说明，便于后续学习和 worker 对接；
+  - `SyncExecutorProperties` 新增推荐 fetchSize、写入批大小、提交间隔和 checkpoint 保存间隔配置。
+- 测试：
+  - 新增 `SyncBatchExecutionPlanBuilderTest`；
+  - 覆盖增量 UPSERT 水位 checkpoint、全量 APPEND 非恢复场景、序列化不泄露 URL/密码/SQL；
+  - 定向测试 15 个通过；
+  - datasource-management 模块完整测试 15 个通过。
+- 当前边界：
+  - 当前仍未真实执行 JDBC 读取和写入；
+  - worker 现在可以拿到统一执行计划，下一步应实现 `SyncBatchReader/SyncBatchWriter` 与执行器进度/checkpoint 回写；
+  - 不建议继续扩展 plan 展示字段，除非真实 worker 接入需要。
+- 下一步推荐路线：
+  1. 实现 JDBC batch reader/writer 接口与 MySQL/PostgreSQL/SQL Server 方言策略；
+  2. 让 worker 根据 executionPlan 执行受控批处理，并按 checkpointPlan 调用 progress/checkpoint 回写；
+  3. 再对接 task-management outbox/worker receipt，形成跨模块长任务闭环。
+
 ## 2026-06-20 追加落地进展：Datasource Management 5.91 连接器能力注册表与模板前置兼容校验
 
 - 本阶段承接平台整体收敛要求，暂不继续扩展 Agent 工具治理字段，转回 datasource-management/data-sync 的真实业务闭环：先把“连接器能做什么、模板是否能执行”沉淀为统一控制面能力。
