@@ -1,4 +1,31 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-20 追加落地进展：Datasource Management 5.93 JDBC 执行方言层
+
+- 本阶段承接 5.92 批处理执行计划，不继续扩展 plan 字段，而是向真实 worker 执行闭环推进一层：新增执行层 JDBC 方言与内部预编译语句契约。
+- 新增目录层级 `datasource-management/service/execution/jdbc`：
+  - 将执行层 JDBC 能力从原有 `service/support` 中拆出，避免同步控制面、队列治理、权限治理和 SQL 方言混在同一目录；
+  - 新增 `SyncJdbcDialect`、`AbstractSyncJdbcDialect`、`SyncJdbcDialectRegistry`；
+  - 新增 MySQL、PostgreSQL、SQL Server 三类方言实现；
+  - 新增 `SyncJdbcReadStatementSpec`、`SyncJdbcWriteStatementSpec`、`SyncPreparedJdbcStatement` 作为 worker 内部契约。
+- 方言能力：
+  - MySQL 支持全量/增量读取、APPEND、UPSERT、INSERT_IGNORE、REPLACE SQL 模板；
+  - PostgreSQL 支持全量/增量读取、APPEND、ON CONFLICT UPSERT、ON CONFLICT DO NOTHING，并将 REPLACE 显式标记为 upsert 模拟；
+  - SQL Server 支持 TOP 增量读取和 MERGE 语义；
+  - SQLSERVER、MSSQL、PGSQL、POSTGRES 等别名在 registry 入口统一归一化。
+- 安全边界：
+  - SQL 模板只存在于内部执行层，不进入 claim 响应、runtime event、审计投影或普通管理 API；
+  - 真实业务值必须通过 PreparedStatement 参数绑定，测试覆盖 SQL 中不出现样例值；
+  - 对象名、schema、表名、字段名必须通过安全标识符校验，拒绝 where、分号、函数表达式等拼接风险；
+  - OVERWRITE 暂不生成 SQL，等待审批、备份和回滚闭环后再开放。
+- 测试：
+  - 新增 `SyncJdbcDialectRegistryTest`；
+  - 覆盖别名归一化、MySQL 增量读取与 upsert、PostgreSQL insert ignore、SQL Server TOP/MERGE、危险标识符拒绝、缺少主键和 OVERWRITE 拒绝；
+  - 定向测试 15 个通过；
+  - datasource-management 模块完整测试 21 个通过。
+- 当前边界：
+  - 当前仍未建立真实 JDBC 连接池，也未执行真实 PreparedStatement；
+  - 下一步应实现 `SyncBatchReader/SyncBatchWriter`，把 5.92 的 executionPlan 转换为本阶段的 read/write statement spec，并接入 progress/checkpoint/complete/fail 回写。
+
 ## 2026-06-20 追加落地进展：Datasource Management 5.92 批处理执行计划接入执行器认领
 
 - 本阶段承接 5.91 连接器能力注册表，不继续扩展连接器画像字段，而是把同步控制面推进到 worker 可消费的批处理执行契约。
