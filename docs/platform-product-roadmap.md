@@ -1,4 +1,31 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-20 追加落地进展：Datasource Management 5.94 批处理 worker 执行准备包
+
+- 本阶段承接 5.93 JDBC 执行方言层，不直接打开真实数据库连接，而是把 `SyncBatchExecutionPlan -> JDBC statement spec -> read/write context -> checkpoint/callback plan` 的 worker 接入链路补齐。
+- 新增 `service/execution` 执行层契约：
+  - `SyncBatchReader`、`SyncBatchWriter`：定义后续真实批处理 reader/writer 接口；
+  - `SyncBatchReadContext`、`SyncBatchWriteContext`：承载内部 SQL 模板、执行标识、批处理参数和 checkpoint 类型；
+  - `SyncBatchReadResult`、`SyncBatchWriteResult`：只返回低敏统计，不返回真实行数据；
+  - `SyncBatchExecutionPreparationRequest`：把低敏执行计划和字段清单作为准备服务输入；
+  - `SyncBatchWorkerExecutionBundle`：worker 内部执行准备包；
+  - `SyncBatchWorkerCheckpointPlan`、`SyncBatchWorkerCallbackPlan`：整理 checkpoint 与 heartbeat/progress/complete/fail 回调契约；
+  - `SyncBatchExecutionPreparationService`：将 5.92 executionPlan 与 5.93 JDBC 方言层连接起来。
+- 安全与收敛边界：
+  - 当前仍不执行真实 JDBC，不读取业务表，不写入目标库；
+  - execution bundle 是 worker 内部对象，可能包含 SQL 模板，因此不能作为普通管理 API 或低敏事件投影返回；
+  - 真实行数据仍不进入 read/write result，后续只能在 reader/writer 内部受控管道中流转；
+  - STREAMING/CDC 不会被强行塞进 JDBC batch preparation；
+  - OVERWRITE 仍 fail-closed，等待审批、备份、回滚闭环后再开放。
+- 测试：
+  - 新增 `SyncBatchExecutionPreparationServiceTest`；
+  - 覆盖增量计划生成 read/write context、主键字段兜底、缺少 writeColumns 拒绝、流式策略拒绝、OVERWRITE 拒绝、内部 bundle 不含凭据或样本值；
+  - 定向测试 21 个通过；
+  - datasource-management 模块完整测试 27 个通过。
+- 下一步推荐路线：
+  1. 实现真实 `JdbcSyncBatchReader/JdbcSyncBatchWriter` 的受控连接、PreparedStatement 参数绑定和批处理循环；
+  2. 接入 progress/checkpoint/complete/fail 回写，形成 datasource-management 内部执行闭环；
+  3. 再将执行结果对接 task-management outbox/worker receipt，进入跨模块长任务闭环。
+
 ## 2026-06-20 追加落地进展：Datasource Management 5.93 JDBC 执行方言层
 
 - 本阶段承接 5.92 批处理执行计划，不继续扩展 plan 字段，而是向真实 worker 执行闭环推进一层：新增执行层 JDBC 方言与内部预编译语句契约。
