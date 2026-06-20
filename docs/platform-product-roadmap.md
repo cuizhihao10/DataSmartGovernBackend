@@ -1,4 +1,57 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-20 追加落地进展：Datasource Management 5.99 Agent data-sync.execute 内部幂等入口
+- 本阶段承接 Task Management 5.98 的 outbox claim 能力，补齐 `task-management -> datasource-management` 链路中最关键的下游落地点：`POST /internal/data-sync/agent/tasks/execute`。
+- 新增 datasource-management 侧内部 Controller：
+  - `DataSyncAgentInternalController`；
+  - 只接受 `X-DataSmart-Source-Service=task-management` 与 `X-DataSmart-Actor-Role=SERVICE_ACCOUNT`；
+  - 返回 `PlatformApiResponse<DataSyncAgentExecuteResponse>`，保证 task-management 现有 RestClient 可直接解析；
+  - 响应只返回 commandId、syncTaskId、syncExecutionId、state、created、queued、duplicate、message，不返回 SQL、连接串、样本数据、工具实参、prompt、模型输出或内部 endpoint。
+- 新增 Agent 命令契约 DTO：
+  - `DataSyncAgentExecuteRequest`：与 task-management 侧 JSON 字段对齐，但不建立编译期依赖；
+  - `DataSyncAgentExecuteResponse`：作为 task-management outbox receipt 的低敏下游响应。
+- 新增 datasource 侧幂等 receipt：
+  - 表：`sync_agent_command_receipt`；
+  - 实体：`DataSyncAgentCommandReceipt`；
+  - Mapper：`DataSyncAgentCommandReceiptMapper`；
+  - 存储端口与实现：`DataSyncAgentCommandReceiptStore`、`DataSyncAgentCommandReceiptRepository`；
+  - 通过 `command_id`、`idempotency_key`、`receipt_id` 唯一键保护下游副作用；
+  - 字段只保存低敏控制面元数据、模板引用、syncTaskId/syncExecutionId、状态和低敏消息，不保存工具参数正文、SQL、连接串、凭据、样本数据、prompt 或模型输出。
+- 新增编排服务 `DataSyncAgentTaskExecutionService`：
+  - 校验 `toolCode=data-sync.execute`、tenantId、templateId/syncTemplateId；
+  - 优先使用 `syncTemplateId`，兼容历史 `templateId`；
+  - 先插入 RECEIVED receipt 抢占幂等键，再复用 `SyncTaskService.createTask` 和 `SyncTaskService.enqueue`；
+  - 当前只创建并入队同步任务，不直接 run，避免绕过 worker claim、租约、分片、暂停/取消和容量控制；
+  - 重复 command/idempotencyKey 直接复用已有 syncTaskId；
+  - commandId 与 idempotencyKey 绑定冲突时 fail-closed。
+- 权限语义补齐：
+  - `ActorRole.SERVICE_ACCOUNT` 纳入受控同步任务创建和跨任务操作能力；
+  - `SyncPermissionEvaluator` 同步允许 SERVICE_ACCOUNT 执行 `SYNC_TASK/CREATE` 与 `SYNC_TASK/OPERATE_ANY`；
+  - 该能力只服务内部 worker 链路，后续生产化仍需要 gateway 签名、mTLS、服务网格或服务账号证书防止外部伪造。
+- SQL 同步：
+  - `docker/mysql/init/init.sql` 新增 `sync_agent_command_receipt`；
+  - 新增迁移脚本 `docker/mysql/migrations/20260620_datasource_agent_command_receipt.sql`。
+- 测试：
+  - 新增 `DataSyncAgentTaskExecutionServiceTest`；
+  - 覆盖首次命令创建并入队、重复命令复用、幂等绑定冲突拒绝、非法 toolCode 拒绝、非数字 actorId 回退 ownerId；
+  - 定向测试 10 个用例通过；
+  - datasource-management 模块完整测试 41 个用例通过；
+  - Maven Toolchain 使用 JDK 21。
+- 行数检查：
+  - `DataSyncAgentTaskExecutionService.java` 282 行；
+  - `DataSyncAgentTaskExecutionServiceTest.java` 275 行；
+  - `DataSyncAgentCommandReceipt.java` 133 行；
+  - `DataSyncAgentInternalController.java` 89 行；
+  - 新增核心文件均低于 500 行。
+- 当前边界：
+  - 当前只完成“接收 Agent 命令并把同步任务入队”，还没有 task-management 后台 dispatcher 真正循环调用该入口；
+  - 尚未把 datasource 单批 Runner 的 progress/checkpoint/complete/fail 统一回写到 task-management outbox receipt；
+  - 尚未实现 DEAD_LETTER、长时间 DISPATCHING 恢复、租约续期、暂停/取消信号和租户级并发配额；
+  - 当前内部入口仍依赖 Header 上下文校验，生产化需要服务间签名或 mTLS。
+- 下一步推荐路线：
+  1. 在 task-management 建立真实 DataSync dispatcher 循环：claim outbox -> 调用 `/internal/data-sync/agent/tasks/execute` -> recordSuccess/recordRetryableFailure；
+  2. 增加重试上限、DEAD_LETTER、DISPATCHING 超时恢复和低敏调度指标；
+  3. 再把 datasource-management 单批 Runner 的执行回执统一回填 task-management，完成 Agent 工具到同步执行历史的闭环；
+  4. 完成这条 data-sync 主链路后，收敛 Java data-sync 局部扩展，转向 data-quality、model-gateway 或 Agent runner 的闭环缺口。
 ## 2026-06-20 追加落地进展：Task Management 5.98 DataSync worker outbox 调度领取与低敏诊断
 
 - 本阶段承接 Task Management 5.97 的 durable command outbox，不继续扩展 datasource-management 单模块内部细节，而是把跨模块长任务闭环推进到“可被 dispatcher 领取、可被运维诊断”的控制面阶段。

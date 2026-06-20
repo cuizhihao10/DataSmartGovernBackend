@@ -50,13 +50,15 @@ public class SyncPermissionEvaluator {
                 ActorRole.PROJECT_OWNER, ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR);
 
         register(SyncPermissionResource.SYNC_TASK, SyncPermissionAction.CREATE,
-                ActorRole.PROJECT_OWNER, ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR);
+                ActorRole.PROJECT_OWNER, ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR,
+                ActorRole.PLATFORM_ADMINISTRATOR, ActorRole.SERVICE_ACCOUNT);
         register(SyncPermissionResource.SYNC_TASK, SyncPermissionAction.UPDATE_OWNED, ActorRole.PROJECT_OWNER);
         register(SyncPermissionResource.SYNC_TASK, SyncPermissionAction.UPDATE_ANY,
                 ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR);
         register(SyncPermissionResource.SYNC_TASK, SyncPermissionAction.OPERATE_OWNED, ActorRole.PROJECT_OWNER);
         register(SyncPermissionResource.SYNC_TASK, SyncPermissionAction.OPERATE_ANY,
-                ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR);
+                ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR,
+                ActorRole.PLATFORM_ADMINISTRATOR, ActorRole.SERVICE_ACCOUNT);
 
         register(SyncPermissionResource.SYNC_APPROVAL, SyncPermissionAction.APPROVE,
                 ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR);

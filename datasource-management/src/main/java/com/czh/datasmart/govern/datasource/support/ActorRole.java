@@ -71,10 +71,14 @@ public enum ActorRole {
 
     /**
      * 同步任务创建允许角色。
-     * 普通用户和审计员不直接创建任务；项目负责人、运营和管理员可以。
+     *
+     * <p>普通用户和审计员不直接创建任务；项目负责人、运营和管理员可以。
+     * SERVICE_ACCOUNT 被纳入这里，是为了支持 task-management worker 代表已经通过 Agent 治理、审批和 readiness
+     * 的命令落地同步任务。注意：这不是允许外部客户端自称 SERVICE_ACCOUNT 调用公开接口，
+     * 真正生产环境必须由 gateway、服务间签名、mTLS 或服务网格保证机器身份不可伪造。</p>
      */
     private static final EnumSet<ActorRole> TASK_CREATION_ROLES =
-            EnumSet.of(PROJECT_OWNER, OPERATOR, TENANT_ADMINISTRATOR, PLATFORM_ADMINISTRATOR);
+            EnumSet.of(PROJECT_OWNER, OPERATOR, TENANT_ADMINISTRATOR, PLATFORM_ADMINISTRATOR, SERVICE_ACCOUNT);
 
     /**
      * 可以操作“自己负责任务”的角色。
@@ -85,10 +89,13 @@ public enum ActorRole {
 
     /**
      * 可以跨任务治理的角色。
-     * 运营和管理员经常需要代替一线用户做排障、调度、补偿和治理动作。
+     *
+     * <p>运营和管理员经常需要代替一线用户做排障、调度、补偿和治理动作。
+     * SERVICE_ACCOUNT 的加入只服务于内部受控 worker 链路，例如 Agent 命令转换为同步任务并入队；
+     * 它不应该被前端或普通业务客户端直接传入。</p>
      */
     private static final EnumSet<ActorRole> ANY_TASK_OPERATION_ROLES =
-            EnumSet.of(OPERATOR, TENANT_ADMINISTRATOR, PLATFORM_ADMINISTRATOR);
+            EnumSet.of(OPERATOR, TENANT_ADMINISTRATOR, PLATFORM_ADMINISTRATOR, SERVICE_ACCOUNT);
 
     /**
      * 队列健康查看允许角色。
