@@ -1,4 +1,47 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-20 追加落地进展：Task Management 5.97 DataSync worker command outbox 与低敏 receipt
+
+- 本阶段承接 Datasource Management 5.96 单批 Runner 的收敛边界，切回 task-management 做跨模块长任务闭环基础。
+- 新增 `task_data_sync_worker_command_outbox`：
+  - 作为 task-management 到 data-sync worker 的本地 durable command outbox；
+  - 记录 commandId、idempotencyKey、taskId、Agent run/session/audit、toolCode、租户/项目/工作空间、模板 ID、状态、attempt、receipt、syncTaskId、syncExecutionId；
+  - payloadJson 只保存低敏 ID 和控制字段，不保存 SQL、连接串、密码、样本数据、工具参数正文、模型输出或 prompt；
+  - 初始化脚本和迁移脚本同步新增唯一键与查询索引。
+- 新增 Java 模型与服务：
+  - `DataSyncWorkerCommandOutbox`；
+  - `DataSyncWorkerCommandOutboxMapper`；
+  - `DataSyncWorkerCommandOutboxStatus`；
+  - `DataSyncWorkerCommandStageRequest`；
+  - `DataSyncWorkerReceiptRecordRequest`；
+  - `DataSyncWorkerCommandOutboxSnapshot`；
+  - `DataSyncWorkerCommandOutboxService`。
+- outbox 服务能力：
+  - `stageCommand`：先写 PENDING outbox，重复 command/idempotencyKey 复用已有记录；
+  - `markDispatching`：开始投递并递增 attemptCount，已终态命令不会回退；
+  - `recordSuccess`：写入低敏 receipt、syncTaskId、syncExecutionId 和 sideEffect 标记；
+  - `recordRetryableFailure`：写入 DEFERRED、nextRetryAt 和低敏错误摘要；
+  - `recordFatalFailure`：写入 FAILED，等待人工或后续补偿策略处理。
+- `DataSyncExecuteAgentAsyncToolAdapter` 接入 outbox：
+  - 调用 data-sync 内部入口前先 stage + markDispatching；
+  - data-sync 成功响应后 recordSuccess；
+  - RestClientException 记录 DEFERRED；
+  - 其他 RuntimeException 记录 FAILED 后继续按原 worker 语义抛出；
+  - 已 SUCCEEDED 的重复 command 会短路复用 outbox 结果，不重复调用 data-sync。
+- 测试：
+  - 新增 `DataSyncWorkerCommandOutboxServiceTest`；
+  - 覆盖低敏 payload 入箱、重复命令复用、投递 attempt 递增、终态不回退、成功 receipt、缺少模板阻断；
+  - 定向 task-management 相关测试 20 个通过；
+  - task-management 模块完整测试 81 个通过；
+  - Maven Toolchain 使用 JDK 21。
+- 当前边界：
+  - 当前 outbox 已记录真实 data-sync adapter 调用，但仍不是独立异步 dispatcher；
+  - 暂未实现后台扫描 PENDING/DEFERRED outbox、Kafka/HTTP publisher、租约抢占、最大重试 DEAD_LETTER、暂停/取消信号和查询接口；
+  - receipt 先记录 data-sync 内部入口返回的低敏引用，尚未把 datasource-management 5.96 单批 Runner 的每批 receipt 统一写回 task-management。
+- 下一步推荐路线：
+  1. 给 `task_data_sync_worker_command_outbox` 增加 dispatcher/claim 查询服务，扫描 PENDING/DEFERRED 并按 attempt/nextRetryAt 安全投递；
+  2. 增加只读诊断接口，按 taskId、commandId、tenant/project 查询 outbox 与 receipt，服务运维排障；
+  3. 再设计 datasource-management 单批 Runner 的 worker receipt 回写到 task-management，让 task-management 能看到每一批 read/write/progress 的低敏回执。
+
 ## 2026-06-20 追加落地进展：Datasource Management 5.96 同步单批执行 Runner
 
 - 本阶段承接 5.95 JDBC reader/writer 受控执行骨架，完成 datasource-management 内部最小执行闭环。
