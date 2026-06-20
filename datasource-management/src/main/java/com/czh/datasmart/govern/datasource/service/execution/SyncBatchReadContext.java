@@ -11,6 +11,8 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.Map;
+
 /**
  * 批处理读取上下文。
  *
@@ -52,4 +54,11 @@ public class SyncBatchReadContext {
      * 内部预编译读取语句。
      */
     private SyncPreparedJdbcStatement readStatement;
+
+    /**
+     * 读取语句参数。
+     * key 必须与 `readStatement.parameterNames` 对齐，例如 `checkpointValue`、`limit`。
+     * 真实 checkpoint 值只允许进入该内部参数映射，并通过 PreparedStatement 绑定，不能拼接到 SQL 字符串。
+     */
+    private Map<String, Object> parameterValues;
 }

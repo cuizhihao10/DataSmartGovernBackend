@@ -19,6 +19,7 @@ import org.springframework.stereotype.Component;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 批处理执行准备服务。
@@ -124,7 +125,8 @@ public class SyncBatchExecutionPreparationService {
                 plan.getReadPlan().getDatasourceId(),
                 plan.getCheckpointPlan().getCheckpointType(),
                 plan.getReadPlan().getRecommendedFetchSize(),
-                readStatement
+                readStatement,
+                Map.of("limit", plan.getReadPlan().getRecommendedFetchSize())
         );
     }
 

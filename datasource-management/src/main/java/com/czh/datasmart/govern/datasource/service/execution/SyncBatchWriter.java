@@ -19,7 +19,8 @@ public interface SyncBatchWriter {
      * 写入一批数据。
      *
      * @param context 写入上下文，包含内部 SQL 模板、写入策略、批大小、提交间隔和执行标识。
+     * @param recordBatch reader 输出的内部记录批次，可能包含真实业务数据，只能在 worker 内部流转。
      * @return 写入结果摘要。该结果只包含数量和错误摘要，不包含真实行数据。
      */
-    SyncBatchWriteResult writeBatch(SyncBatchWriteContext context);
+    SyncBatchWriteResult writeBatch(SyncBatchWriteContext context, SyncBatchRecordBatch recordBatch);
 }

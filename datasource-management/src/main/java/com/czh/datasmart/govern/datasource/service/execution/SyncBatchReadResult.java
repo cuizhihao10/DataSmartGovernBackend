@@ -13,8 +13,9 @@ import lombok.NoArgsConstructor;
 /**
  * 批处理读取结果摘要。
  *
- * <p>该结果只表达读取统计和控制信号，不表达真实行数据。
- * 真实行数据属于高敏业务内容，只能在 reader 到 writer 的受控内部管道中短暂存在。</p>
+ * <p>该对象仍属于 worker 内部执行层，不是普通 API DTO。
+ * `recordsRead`、`endOfSource`、`checkpointRecommended` 和 `errorSummary` 是低敏摘要，
+ * 但 `recordBatch` 可能包含真实业务行数据，只能在 reader 到 writer 的受控内部管道中短暂存在。</p>
  */
 @Data
 @NoArgsConstructor
@@ -40,4 +41,10 @@ public class SyncBatchReadResult {
      * 低敏错误摘要。
      */
     private String errorSummary;
+
+    /**
+     * 本批读取出的真实记录。
+     * 该字段是高敏内部载体，不能进入控制台响应、runtime event、审计投影或普通日志。
+     */
+    private SyncBatchRecordBatch recordBatch;
 }

@@ -1,4 +1,33 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-20 追加落地进展：Datasource Management 5.95 JDBC reader/writer 受控执行骨架
+
+- 本阶段承接 5.94 worker 执行准备包，开始进入真实 JDBC 批处理执行骨架，但仍不把该能力暴露为普通 API。
+- 新增/调整执行层对象：
+  - `SyncBatchRecordBatch`：reader 到 writer 的内部行批次载体，可能包含真实业务数据，禁止进入 API、runtime event、审计投影和普通日志；
+  - `SyncBatchReadResult` 增加内部 `recordBatch`；
+  - `SyncBatchReadContext` 增加 `parameterValues`，支持 checkpointValue、limit 等参数通过 PreparedStatement 绑定；
+  - `SyncBatchWriter` 改为接收 `SyncBatchRecordBatch`。
+- 新增 JDBC 执行组件：
+  - `SyncJdbcConnectionProvider`：隔离连接获取边界；
+  - `DriverManagerSyncJdbcConnectionProvider`：复用当前项目 DriverManager 风格，读取 `datasource_config` 后校验 ACTIVE 状态、加载驱动、打开只读/写入连接；
+  - `JdbcSyncBatchReader`：按 statement parameterNames 绑定 checkpoint/limit，执行查询并生成内部 record batch；
+  - `JdbcSyncBatchWriter`：按 parameterNames 绑定每行字段，执行 batch，成功 commit，失败 rollback，并只返回数量与低敏错误摘要。
+- 安全与产品边界：
+  - SQL 模板仍来自 5.93 方言层，reader/writer 不拼接对象名或业务值；
+  - 业务值只通过 PreparedStatement 绑定；
+  - 真实行数据只存在于 `SyncBatchRecordBatch` 内部管道；
+  - 当前仍未接入外部 worker 调度循环，也未自动调用 progress/checkpoint/complete/fail；
+  - DriverManager 是当前闭环实现，后续生产增强应替换为可治理连接池、密钥管理和租户级连接配额。
+- 测试：
+  - 新增 `JdbcSyncBatchReaderWriterTest`，使用 JDK 动态代理模拟 JDBC Connection/PreparedStatement/ResultSet；
+  - 覆盖 reader 参数绑定、内部行批次、参数缺失失败摘要、writer 字段绑定、commit、字段缺失 rollback；
+  - 定向测试 16 个通过；
+  - datasource-management 模块完整测试 31 个通过。
+- 下一步推荐路线：
+  1. 做 datasource-management 内部 `SyncBatchExecutionRunner`，串起 prepare -> read -> write -> progress/checkpoint/complete/fail；
+  2. 完成 runner 后暂停 datasource-management 深挖，切到 task-management outbox/worker receipt，形成跨模块长任务闭环；
+  3. 后续生产硬化再补连接池、失败样本脱敏、死锁重试、分片并行和性能指标。
+
 ## 2026-06-20 追加落地进展：Datasource Management 5.94 批处理 worker 执行准备包
 
 - 本阶段承接 5.93 JDBC 执行方言层，不直接打开真实数据库连接，而是把 `SyncBatchExecutionPlan -> JDBC statement spec -> read/write context -> checkpoint/callback plan` 的 worker 接入链路补齐。
