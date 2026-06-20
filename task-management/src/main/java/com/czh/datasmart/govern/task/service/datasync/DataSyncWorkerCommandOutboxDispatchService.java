@@ -49,8 +49,6 @@ public class DataSyncWorkerCommandOutboxDispatchService {
 
     private static final String CLAIM_SCHEMA_VERSION = "datasmart.task.data-sync-worker-outbox.claim.v1";
     private static final String DIAGNOSTICS_SCHEMA_VERSION = "datasmart.task.data-sync-worker-outbox.diagnostics.v1";
-    private static final String ERROR_BODY_HIDDEN_POLICY = "ERROR_SUMMARY_BODY_STORED_BUT_NOT_EXPOSED";
-    private static final String ERROR_BODY_EMPTY_POLICY = "NO_ERROR_SUMMARY";
     private static final String LOW_SENSITIVE_POLICY = "只返回 ID、状态、次数、时间、receipt 和下游低敏引用；不返回 payload_json、SQL、工具实参、样本数据、prompt、模型输出、连接串、凭据或错误正文。";
     private static final int DEFAULT_CLAIM_LIMIT = 20;
     private static final int MAX_CLAIM_LIMIT = 100;
@@ -108,7 +106,7 @@ public class DataSyncWorkerCommandOutboxDispatchService {
             candidate.setAttemptCount(nextAttemptCount);
             candidate.setDispatchedAt(now);
             candidate.setUpdateTime(now);
-            claimed.add(toView(candidate));
+            claimed.add(DataSyncWorkerCommandOutboxViewAssembler.toView(candidate));
         }
 
         if (claimed.isEmpty()) {
@@ -150,7 +148,7 @@ public class DataSyncWorkerCommandOutboxDispatchService {
                         .orderByDesc(DataSyncWorkerCommandOutbox::getId)
         );
         List<DataSyncWorkerCommandOutboxView> recentRecords = recentRows.stream()
-                .map(this::toView)
+                .map(DataSyncWorkerCommandOutboxViewAssembler::toView)
                 .toList();
         List<String> warnings = buildDiagnosticsWarnings(statusCounts, recentRecords, totalCount, effectiveLimit);
 
@@ -315,40 +313,4 @@ public class DataSyncWorkerCommandOutboxDispatchService {
         return value == null ? 0 : value;
     }
 
-    private DataSyncWorkerCommandOutboxView toView(DataSyncWorkerCommandOutbox outbox) {
-        boolean hasLastError = outbox.getLastError() != null && !outbox.getLastError().isBlank();
-        return new DataSyncWorkerCommandOutboxView(
-                outbox.getId(),
-                outbox.getOutboxId(),
-                outbox.getCommandId(),
-                outbox.getIdempotencyKey(),
-                outbox.getTaskId(),
-                outbox.getAgentRunId(),
-                outbox.getAgentSessionId(),
-                outbox.getAuditId(),
-                outbox.getToolCode(),
-                outbox.getTargetService(),
-                outbox.getOperation(),
-                outbox.getTenantId(),
-                outbox.getProjectId(),
-                outbox.getWorkspaceId(),
-                outbox.getTemplateId(),
-                outbox.getSyncTemplateId(),
-                outbox.getStatus(),
-                outbox.getAttemptCount(),
-                outbox.getPayloadSizeBytes(),
-                outbox.getPayloadTruncated(),
-                outbox.getNextRetryAt(),
-                outbox.getDispatchedAt(),
-                outbox.getReceiptId(),
-                outbox.getSyncTaskId(),
-                outbox.getSyncExecutionId(),
-                outbox.getSideEffectStarted(),
-                outbox.getSideEffectExecuted(),
-                hasLastError,
-                hasLastError ? ERROR_BODY_HIDDEN_POLICY : ERROR_BODY_EMPTY_POLICY,
-                outbox.getCreateTime(),
-                outbox.getUpdateTime()
-        );
-    }
 }

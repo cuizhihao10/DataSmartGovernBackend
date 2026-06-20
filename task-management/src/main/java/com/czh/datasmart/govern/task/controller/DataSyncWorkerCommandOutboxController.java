@@ -9,12 +9,15 @@ package com.czh.datasmart.govern.task.controller;
 import com.czh.datasmart.govern.task.common.ApiResponse;
 import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerCommandDeliveryService;
 import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerCommandOutboxDispatchService;
+import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerCommandOutboxRecoveryService;
 import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerOutboxClaimRequest;
 import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerOutboxClaimResult;
 import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerOutboxDiagnosticsRequest;
 import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerOutboxDiagnosticsResult;
 import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerOutboxDispatchBatchRequest;
 import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerOutboxDispatchBatchResult;
+import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerOutboxRecoveryRequest;
+import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerOutboxRecoveryResult;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -30,7 +33,8 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>本控制器提供 task-management 内部 DataSync outbox 的控制面能力：</p>
  * <p>1. {@code POST /internal/data-sync-worker-command-outbox/claim}：只领取命令，不调用下游；</p>
  * <p>2. {@code POST /internal/data-sync-worker-command-outbox/dispatch-batch}：领取并立即投递一批命令；</p>
- * <p>3. {@code GET /internal/data-sync-worker-command-outbox/diagnostics}：查询低敏状态统计和最近记录。</p>
+ * <p>3. {@code POST /internal/data-sync-worker-command-outbox/recover-stale-dispatching}：恢复长时间卡在 DISPATCHING 的命令；</p>
+ * <p>4. {@code GET /internal/data-sync-worker-command-outbox/diagnostics}：查询低敏状态统计和最近记录。</p>
  *
  * <p>安全边界：</p>
  * <p>这些接口属于内部控制面，不应该暴露给普通用户或公网。Controller 只负责 HTTP 参数解析和统一响应，
@@ -51,6 +55,11 @@ public class DataSyncWorkerCommandOutboxController {
      * outbox delivery 服务，负责领取后调用 datasource-management 幂等入口并记录 receipt。
      */
     private final DataSyncWorkerCommandDeliveryService deliveryService;
+
+    /**
+     * outbox recovery 服务，负责把长时间停留在 DISPATCHING 的悬挂命令恢复为 DEFERRED 或 DEAD_LETTER。
+     */
+    private final DataSyncWorkerCommandOutboxRecoveryService recoveryService;
 
     /**
      * 领取待投递的 DataSync worker outbox 命令。
@@ -85,6 +94,28 @@ public class DataSyncWorkerCommandOutboxController {
             @RequestBody DataSyncWorkerOutboxDispatchBatchRequest request) {
         DataSyncWorkerOutboxDispatchBatchResult result = deliveryService.dispatchBatch(request);
         return ResponseEntity.ok(ApiResponse.success("DataSync worker outbox 批量投递完成", result));
+    }
+
+    /**
+     * 恢复长时间停留在 DISPATCHING 的 DataSync worker outbox 命令。
+     *
+     * <p>该路由是有写副作用的运维恢复接口：它会扫描超过配置阈值仍未收到 receipt 的 DISPATCHING 命令。
+     * 未达到最大投递次数的命令会被恢复为 DEFERRED，等待 dispatcher 后续重新领取；已经达到最大投递次数的命令会进入
+     * DEAD_LETTER，等待人工确认或后续受控重放。</p>
+     *
+     * <p>为什么不把该逻辑塞进普通 claim：</p>
+     * <p>1. claim 只负责领取 PENDING/DEFERRED，不应该隐式改写 DISPATCHING，否则调度语义不清晰；</p>
+     * <p>2. 恢复动作需要更强的运维意图，应该单独暴露、单独审计、单独配置阈值；</p>
+     * <p>3. 后续接入 scheduler 时，可以先运行 recovery，再运行 dispatch-batch，让补偿链路和投递链路保持清晰。</p>
+     *
+     * @param request 恢复请求，包含 executorId、租户/项目过滤和本轮 limit。
+     * @return 本轮恢复的低敏统计与恢复记录视图。
+     */
+    @PostMapping("/recover-stale-dispatching")
+    public ResponseEntity<ApiResponse<DataSyncWorkerOutboxRecoveryResult>> recoverStaleDispatching(
+            @RequestBody DataSyncWorkerOutboxRecoveryRequest request) {
+        DataSyncWorkerOutboxRecoveryResult result = recoveryService.recoverStaleDispatching(request);
+        return ResponseEntity.ok(ApiResponse.success("DataSync worker outbox 超时恢复完成", result));
     }
 
     /**

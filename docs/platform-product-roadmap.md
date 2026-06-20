@@ -1,4 +1,50 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-20 追加落地进展：Task Management 6.02 DataSync outbox DISPATCHING 超时恢复
+- 本阶段继续沿 DataSync 主链路做“闭环收敛”，不是扩展新的同步业务形态，而是补齐 outbox 可靠投递中的悬挂恢复能力。
+- 业务问题：
+  - 6.00 已能 `claim -> dispatch -> receipt`；
+  - 6.01 已能在达到最大尝试次数后进入 `DEAD_LETTER`；
+  - 但如果 worker 在 outbox 已进入 `DISPATCHING` 后宕机、重启、网络卡死或下游调用未能写回 receipt，该命令会长期停在 `DISPATCHING`，普通 dispatcher 不会再次领取。
+- 新增配置：
+  - `AgentAsyncToolWorkerProperties.dataSyncOutboxDispatchingTimeoutSeconds`，默认 300 秒，用于判断 `DISPATCHING` 是否 stale；
+  - `AgentAsyncToolWorkerProperties.dataSyncOutboxStaleRecoveryRetryAfterSeconds`，默认 30 秒，用于恢复为 `DEFERRED` 后延迟下一轮领取；
+  - 两个配置都属于平台可靠性策略，不暴露为请求参数，避免调用方误传过短阈值导致重复副作用风险。
+- 新增恢复服务：
+  - `DataSyncWorkerCommandOutboxRecoveryService.recoverStaleDispatching(...)`；
+  - 只扫描 status=`DISPATCHING` 且 `dispatchedAt <= now - timeoutSeconds` 的 outbox；
+  - `attemptCount < dataSyncOutboxMaxAttempts` 时恢复为 `DEFERRED` 并设置 `nextRetryAt`；
+  - `attemptCount >= dataSyncOutboxMaxAttempts` 时转入 `DEAD_LETTER`，停止自动重试；
+  - 每条记录使用 `id + status=DISPATCHING + dispatchedAt<=cutoff` 条件更新，避免覆盖其他线程刚刚写入的成功 receipt。
+- 新增内部控制面路由：
+  - `POST /internal/data-sync-worker-command-outbox/recover-stale-dispatching`；
+  - 该路由有写副作用，只应由内部补偿器、受控运维工具或后续 scheduler 调用；
+  - 返回扫描数、恢复数、DEFERRED 数、DEAD_LETTER 数、跳过数和低敏 outbox 视图。
+- 低敏视图复用：
+  - 新增 `DataSyncWorkerCommandOutboxViewAssembler`；
+  - `claim`、`diagnostics`、`recovery` 统一走同一套出站白名单；
+  - 不返回 `payload_json`、错误正文、SQL、工具实参、样本数据、prompt、模型输出、连接串、凭据或内部 endpoint。
+- 测试：
+  - 新增 `DataSyncWorkerCommandOutboxRecoveryServiceTest`；
+  - 覆盖恢复为 `DEFERRED`、达到上限转 `DEAD_LETTER`、并发条件更新失败跳过、executorId 必填与敏感内容不外露；
+  - 定向测试 `DataSyncWorkerCommandOutboxRecoveryServiceTest,DataSyncWorkerCommandOutboxDispatchServiceTest,DataSyncWorkerCommandDeliveryServiceTest` 共 14 个用例通过；
+  - task-management 模块完整测试 95 个用例通过；
+  - Maven Toolchain 使用 JDK 21。
+- 行数检查：
+  - `DataSyncWorkerCommandOutboxRecoveryService.java`：255 行；
+  - `DataSyncWorkerCommandOutboxController.java`：154 行；
+  - `DataSyncWorkerCommandOutboxDispatchService.java`：316 行；
+  - `DataSyncWorkerCommandOutboxRecoveryServiceTest.java`：181 行；
+  - 核心文件均低于 500 行，且 claim、delivery、recovery 职责继续拆分。
+- 当前边界：
+  - 已补 `DISPATCHING` 超时恢复；
+  - 仍未把恢复动作接入后台 scheduler；
+  - 仍未实现 `DEAD_LETTER` 人工重放、忽略上限重试或关闭处理；
+  - datasource Runner 的 progress/checkpoint/complete/fail 仍未统一回写到 task-management。
+- 下一步推荐路线：
+  1. 优先接入受控后台 scheduler：先执行 stale recovery，再执行 `dispatchBatch`，形成自动投递闭环；
+  2. 再补 `DEAD_LETTER` 管理入口和审计说明，给运维一个安全重放/关闭通道；
+  3. 然后补 datasource Runner 低敏执行回执回写 task-management，完成端到端任务历史；
+  4. DataSync 主链路闭环后，应停止继续在 Java data-sync 局部无限扩展，转向 data-quality、model-gateway、Agent runner 等全局闭环缺口。
 ## 2026-06-20 追加落地进展：Task Management 6.01 DataSync outbox 最大重试与 DEAD_LETTER
 - 本阶段承接 Task Management 6.00 的 `dispatch-batch` 手动投递闭环，不新增新业务能力，而是补齐“失败不能无限重试”的可靠性保护。
 - 配置增强：

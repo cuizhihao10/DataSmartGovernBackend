@@ -73,6 +73,32 @@ public class AgentAsyncToolWorkerProperties {
     private int dataSyncOutboxMaxAttempts = 5;
 
     /**
+     * DataSync worker outbox 在 DISPATCHING 状态允许停留的最大秒数。
+     *
+     * <p>该配置用于 stale recovery，而不是普通 retry。两者的区别是：</p>
+     * <p>1. 普通 retry：投递线程已经捕获到下游临时失败，并主动把 outbox 写回 DEFERRED；</p>
+     * <p>2. stale recovery：投递线程可能已经崩溃、进程重启或网络调用卡死，导致 outbox 长时间留在 DISPATCHING，
+     * 系统没有机会执行正常的失败回写。</p>
+     *
+     * <p>默认 300 秒是一个偏保守的本地和小规模部署阈值：它不会过快干预仍在执行的慢请求，
+     * 但也能避免命令无限期挂在 DISPATCHING。生产环境应结合 datasource-management 的接口超时、
+     * worker 最大执行时间、网络重试策略和下游任务创建 SLA 进行调整。</p>
+     */
+    private int dataSyncOutboxDispatchingTimeoutSeconds = 300;
+
+    /**
+     * stale DISPATCHING 被恢复为 DEFERRED 后，距离下一次允许 dispatcher 重新领取的秒数。
+     *
+     * <p>恢复器不能把命令立刻放回可领取队列，否则如果 datasource-management 刚从故障中恢复，
+     * 大量 stale 命令会马上被重新领取，形成二次冲击。这个延迟给系统一个短暂缓冲窗口，
+     * 也方便运维通过 diagnostics 观察恢复效果。</p>
+     *
+     * <p>如果 attemptCount 已经达到 {@link #dataSyncOutboxMaxAttempts}，恢复器不会使用该延迟，
+     * 而是直接把命令转入 DEAD_LETTER，等待人工确认或后续受控重放能力。</p>
+     */
+    private int dataSyncOutboxStaleRecoveryRetryAfterSeconds = 30;
+
+    /**
      * worker 身份标识。
      *
      * <p>后续接入真实执行器认领和心跳时，该值会进入 task.current_executor_id 和 task_execution_run.executor_id，
