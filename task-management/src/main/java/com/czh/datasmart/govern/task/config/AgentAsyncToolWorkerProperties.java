@@ -62,6 +62,17 @@ public class AgentAsyncToolWorkerProperties {
     private String dataSyncBaseUrl = "http://localhost:8086";
 
     /**
+     * DataSync worker outbox 单条命令允许的最大投递次数。
+     *
+     * <p>该配置保护的是 task-management 到 datasource-management 的跨服务投递账本。
+     * 如果某条 outbox 命令连续进入 DISPATCHING 后仍因为下游不可用、网络错误或超时而失败，
+     * 系统不应该无限地把它放回 DEFERRED 队列，否则会造成隐性资源消耗、日志噪音和队列积压。
+     * 达到该上限后，delivery 服务会把命令推进到 DEAD_LETTER，等待运维或平台管理员确认下游恢复、
+     * 调整配置或执行人工补偿。</p>
+     */
+    private int dataSyncOutboxMaxAttempts = 5;
+
+    /**
      * worker 身份标识。
      *
      * <p>后续接入真实执行器认领和心跳时，该值会进入 task.current_executor_id 和 task_execution_run.executor_id，

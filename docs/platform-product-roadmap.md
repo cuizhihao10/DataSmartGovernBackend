@@ -1,4 +1,32 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-20 追加落地进展：Task Management 6.01 DataSync outbox 最大重试与 DEAD_LETTER
+- 本阶段承接 Task Management 6.00 的 `dispatch-batch` 手动投递闭环，不新增新业务能力，而是补齐“失败不能无限重试”的可靠性保护。
+- 配置增强：
+  - `AgentAsyncToolWorkerProperties` 新增 `dataSyncOutboxMaxAttempts`；
+  - 默认值为 5；
+  - 用于限制 task-management 到 datasource-management 的 DataSync outbox 单条命令最大投递次数。
+- outbox 状态能力增强：
+  - `DataSyncWorkerCommandOutboxService` 新增 `recordDeadLetter(...)`；
+  - DEFERRED 表示仍可自动重试；
+  - DEAD_LETTER 表示命令已经达到自动投递上限，系统停止继续消耗 worker 资源，等待运维或平台管理员人工确认。
+- delivery 策略增强：
+  - `DataSyncWorkerCommandDeliveryService` 在 RestClientException 等临时不可用场景下不再无条件 DEFERRED；
+  - 当 `attemptCount >= dataSyncOutboxMaxAttempts` 时，直接写入 DEAD_LETTER；
+  - 错误摘要仍然只保存异常类型和低敏说明，不写内部 URL、SQL、连接串、凭据、样本数据、工具实参、prompt 或模型输出。
+- 测试：
+  - `DataSyncWorkerCommandDeliveryServiceTest` 新增达到最大投递次数后进入 DEAD_LETTER 的用例；
+  - 定向测试 `DataSyncWorkerCommandDeliveryServiceTest,DataSyncWorkerCommandOutboxServiceTest` 共 10 个用例通过；
+  - task-management 模块完整测试 91 个用例通过；
+  - Maven Toolchain 使用 JDK 21。
+- 当前边界：
+  - 已有“最大投递次数 -> DEAD_LETTER”的保护；
+  - 仍未实现长时间 DISPATCHING 超时恢复；
+  - 仍未实现后台 scheduler 自动调用 `dispatchBatch`；
+  - 仍未实现 DEAD_LETTER 人工重放/ignore limit 管理入口。
+- 下一步推荐路线：
+  1. 增加 DISPATCHING 超时恢复，把卡住的投递恢复为 DEFERRED 或 DEAD_LETTER；
+  2. 增加受控后台 scheduler，使 `dispatchBatch` 从手动入口进入可配置自动循环；
+  3. 再补 DEAD_LETTER 人工重放/诊断入口，形成运维闭环。
 ## 2026-06-20 追加落地进展：Task Management 6.00 DataSync outbox 投递闭环
 - 本阶段承接 Datasource Management 5.99 的内部幂等入口，不继续扩展 JDBC 执行细节，而是补齐 `task-management -> datasource-management` 的真实 outbox dispatcher 投递层。
 - 新增 DataSync 出站调用抽象：

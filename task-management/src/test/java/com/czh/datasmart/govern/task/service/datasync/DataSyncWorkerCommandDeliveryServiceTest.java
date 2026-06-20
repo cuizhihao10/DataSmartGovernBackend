@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.task.service.datasync;
 
+import com.czh.datasmart.govern.task.config.AgentAsyncToolWorkerProperties;
 import com.czh.datasmart.govern.task.entity.DataSyncWorkerCommandOutbox;
 import com.czh.datasmart.govern.task.mapper.DataSyncWorkerCommandOutboxMapper;
 import com.czh.datasmart.govern.task.service.agent.DataSyncAgentExecuteRequest;
@@ -51,6 +52,7 @@ class DataSyncWorkerCommandDeliveryServiceTest {
     private DataSyncWorkerCommandOutboxMapper mapper;
 
     private FakeDataSyncAgentExecuteClient executeClient;
+    private AgentAsyncToolWorkerProperties properties;
     private DataSyncWorkerCommandDeliveryService service;
 
     @BeforeEach
@@ -61,11 +63,13 @@ class DataSyncWorkerCommandDeliveryServiceTest {
         DataSyncWorkerCommandOutboxDispatchService claimService =
                 new DataSyncWorkerCommandOutboxDispatchService(mapper);
         executeClient = new FakeDataSyncAgentExecuteClient();
+        properties = new AgentAsyncToolWorkerProperties();
         service = new DataSyncWorkerCommandDeliveryService(
                 mapper,
                 outboxService,
                 claimService,
                 executeClient,
+                properties,
                 objectMapper
         );
     }
@@ -157,6 +161,27 @@ class DataSyncWorkerCommandDeliveryServiceTest {
         assertFalse(result.toAgentOutput().toString().contains("/internal/data-sync/agent/tasks/execute"));
         assertNotNull(outbox.getNextRetryAt());
         assertFalse(outbox.getLastError().contains("localhost"));
+        verify(mapper, times(2)).updateById(any(DataSyncWorkerCommandOutbox.class));
+    }
+
+    @Test
+    void deliverCommandShouldMoveToDeadLetterWhenRetryAttemptsReachLimit() {
+        properties.setDataSyncOutboxMaxAttempts(3);
+        DataSyncWorkerCommandOutbox outbox = outbox("cmd-004", DataSyncWorkerCommandOutboxStatus.PENDING);
+        outbox.setAttemptCount(2);
+        when(mapper.selectOne(any())).thenReturn(outbox, outbox, outbox);
+        when(mapper.updateById(any(DataSyncWorkerCommandOutbox.class))).thenReturn(1);
+        executeClient.exception = new RestClientException("temporary network unavailable");
+
+        DataSyncWorkerCommandDeliveryResult result = service.deliverCommand("cmd-004");
+
+        assertFalse(result.success());
+        assertFalse(result.retryable());
+        assertEquals(DataSyncWorkerCommandOutboxStatus.DEAD_LETTER.name(), result.status());
+        assertEquals("DEAD_LETTER", result.outcome());
+        assertEquals(3, outbox.getAttemptCount());
+        assertEquals(DataSyncWorkerCommandOutboxStatus.DEAD_LETTER.name(), outbox.getStatus());
+        assertFalse(outbox.getLastError().contains("temporary network unavailable"));
         verify(mapper, times(2)).updateById(any(DataSyncWorkerCommandOutbox.class));
     }
 

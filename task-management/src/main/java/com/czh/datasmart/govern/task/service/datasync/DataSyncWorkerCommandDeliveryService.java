@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.task.service.datasync;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.czh.datasmart.govern.task.config.AgentAsyncToolWorkerProperties;
 import com.czh.datasmart.govern.task.entity.DataSyncWorkerCommandOutbox;
 import com.czh.datasmart.govern.task.mapper.DataSyncWorkerCommandOutboxMapper;
 import com.czh.datasmart.govern.task.service.agent.DataSyncAgentExecuteRequest;
@@ -61,6 +62,7 @@ public class DataSyncWorkerCommandDeliveryService {
     private final DataSyncWorkerCommandOutboxService outboxService;
     private final DataSyncWorkerCommandOutboxDispatchService claimService;
     private final DataSyncAgentExecuteClient executeClient;
+    private final AgentAsyncToolWorkerProperties properties;
     private final ObjectMapper objectMapper;
 
     /**
@@ -178,7 +180,7 @@ public class DataSyncWorkerCommandDeliveryService {
             DataSyncAgentExecuteResponse response = executeClient.execute(request);
             return recordSuccess(request, response);
         } catch (RestClientException exception) {
-            return recordRetryable(outbox.getCommandId(), "data-sync 内部执行入口暂时不可用: "
+            return recordRetryable(outbox, "data-sync 内部执行入口暂时不可用: "
                     + safeExceptionType(exception));
         } catch (RuntimeException exception) {
             return recordFatal(outbox.getCommandId(), "data-sync Agent 执行契约失败: "
@@ -252,9 +254,20 @@ public class DataSyncWorkerCommandDeliveryService {
         );
     }
 
-    private DataSyncWorkerCommandDeliveryResult recordRetryable(String commandId, String message) {
+    private DataSyncWorkerCommandDeliveryResult recordRetryable(DataSyncWorkerCommandOutbox outbox, String message) {
+        int maxAttempts = Math.max(1, properties.getDataSyncOutboxMaxAttempts());
+        int currentAttempts = safeInt(outbox.getAttemptCount());
+        if (currentAttempts >= maxAttempts) {
+            String deadLetterMessage = safeMessage("DataSync worker command 已达到最大投递次数 "
+                    + currentAttempts + "/" + maxAttempts + "，进入 DEAD_LETTER");
+            DataSyncWorkerCommandOutboxSnapshot deadLetter = outboxService.recordDeadLetter(
+                    outbox.getCommandId(),
+                    deadLetterMessage + "；最近失败类型: " + safeMessage(message)
+            );
+            return fromSnapshot(deadLetter, "DEAD_LETTER", false, false, deadLetterMessage);
+        }
         DataSyncWorkerCommandOutboxSnapshot failure = outboxService.recordRetryableFailure(
-                commandId,
+                outbox.getCommandId(),
                 safeMessage(message),
                 RETRY_AFTER_SECONDS
         );
@@ -427,6 +440,10 @@ public class DataSyncWorkerCommandDeliveryService {
 
     private String trimToEmpty(String value) {
         return value == null ? "" : value.trim();
+    }
+
+    private int safeInt(Integer value) {
+        return value == null ? 0 : Math.max(0, value);
     }
 
     private String safeMessage(String message) {

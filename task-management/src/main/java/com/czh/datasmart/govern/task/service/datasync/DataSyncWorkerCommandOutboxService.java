@@ -134,6 +134,30 @@ public class DataSyncWorkerCommandOutboxService {
     }
 
     /**
+     * 记录死信状态。
+     *
+     * <p>DEAD_LETTER 与 FAILED 的区别在于：FAILED 通常表示本次命令存在不可恢复的契约错误，例如 toolCode
+     * 不支持、payload 损坏或幂等身份冲突；DEAD_LETTER 表示命令本身可能仍然有效，但已经超过自动重试上限，
+     * 系统停止继续消耗自动 worker 资源，等待人工介入。</p>
+     *
+     * @param commandId command ID。
+     * @param errorSummary 低敏错误摘要，不应包含内部 URL、SQL、连接串、凭据、样本数据或工具实参正文。
+     * @return outbox 快照。
+     */
+    @Transactional
+    public DataSyncWorkerCommandOutboxSnapshot recordDeadLetter(String commandId, String errorSummary) {
+        DataSyncWorkerCommandOutbox outbox = getRequiredByCommandId(commandId);
+        outbox.setStatus(DataSyncWorkerCommandOutboxStatus.DEAD_LETTER.name());
+        outbox.setSideEffectStarted(Boolean.TRUE.equals(outbox.getSideEffectStarted()));
+        outbox.setSideEffectExecuted(false);
+        outbox.setLastError(truncate(errorSummary));
+        outbox.setNextRetryAt(null);
+        outbox.setUpdateTime(LocalDateTime.now());
+        outboxMapper.updateById(outbox);
+        return snapshot(outbox, false, "DataSync worker command 已超过自动重试上限并进入 DEAD_LETTER");
+    }
+
+    /**
      * 记录不可恢复失败。
      */
     @Transactional
