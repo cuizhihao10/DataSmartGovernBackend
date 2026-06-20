@@ -1,4 +1,38 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-20 追加落地进展：Datasource Management 5.96 同步单批执行 Runner
+
+- 本阶段承接 5.95 JDBC reader/writer 受控执行骨架，完成 datasource-management 内部最小执行闭环。
+- 新增 `SyncBatchExecutionRunRequest`：
+  - 聚合执行准备请求、执行器身份、分片信息、起始 checkpoint 和上一批累计统计；
+  - 明确 `previousRecordsRead/previousRecordsWritten/previousFailedRecordCount` 是为了匹配现有 execution 级累计进度回写，而不是单批增量值；
+  - checkpoint 原始值只允许进入内部参数映射和 PreparedStatement 绑定，不进入普通 API 或低敏结果。
+- 新增 `SyncBatchExecutionRunResult`：
+  - 返回本批读写数量、累计数量、是否完成、是否失败、是否已回写 progress、是否已持久化 checkpoint；
+  - 不返回真实行数据、SQL 模板、连接信息、凭据、样本值或 checkpoint 原始值；
+  - 通过 `checkpointValueVisibility` 提醒调用方 checkpoint 值只能留在 worker 内部和 checkpoint 表。
+- 新增 `SyncBatchExecutionRunner`：
+  - 串起 `prepareJdbcExecution -> readNextBatch -> writeBatch -> reportProgress -> completeExecution/failExecution`；
+  - 增量读取缺少 `checkpointValue` 时 fail-closed，不会继续读源端；
+  - reader 声称有读取记录但没有内部 record batch 时 fail-closed，避免控制面进度与目标端写入不一致；
+  - writer 失败时先回写一次 progress，再调用 failExecution，尽量保留已读/已写/失败数量；
+  - 读到源端结尾时调用 completeExecution，由现有任务控制面决定最终进入 SUCCEEDED 或 PARTIALLY_SUCCEEDED；
+  - 不直接写 `sync_execution` 或 `sync_checkpoint` 表，而是复用 `SyncTaskService` 的权限、状态、审计和 checkpoint upsert。
+- 测试：
+  - 新增 `SyncBatchExecutionRunnerTest`；
+  - 使用 JDK 原生动态代理和手写 fake，不引入 Mockito 动态 agent 警告；
+  - 覆盖正常单批未结束、读到源端结尾完成、reader 失败、writer 失败、增量 checkpoint 缺失 fail-closed；
+  - 定向测试 21 个通过；
+  - datasource-management 模块完整测试 36 个通过；
+  - Maven Toolchain 使用 JDK 21。
+- 当前边界：
+  - Runner 是单批执行原子，不是完整调度循环；
+  - 暂未实现 worker while-loop、租约续期、暂停/取消信号、分片并发、死锁重试、失败样本脱敏存储和真实 outbox receipt；
+  - 完成该阶段后，不建议继续在 datasource-management 单模块深挖字段和 API，应切回 task-management/outbox/worker receipt，形成跨模块长任务闭环。
+- 下一步推荐路线：
+  1. 在 task-management 建立 datasource sync worker outbox/receipt 契约，让任务调度层可以安全触发单批 Runner 并记录 worker 回执；
+  2. 设计 worker 循环的租约续期、暂停/取消信号和幂等 receipt，而不是让 datasource-management 自己承担全局调度；
+  3. 后续再回到 datasource-management 做生产硬化：连接池、密钥管理、失败样本脱敏、死锁重试、分片并行和指标。
+
 ## 2026-06-20 追加落地进展：Datasource Management 5.95 JDBC reader/writer 受控执行骨架
 
 - 本阶段承接 5.94 worker 执行准备包，开始进入真实 JDBC 批处理执行骨架，但仍不把该能力暴露为普通 API。
