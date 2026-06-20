@@ -1,4 +1,48 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-20 追加落地进展：Task Management 6.00 DataSync outbox 投递闭环
+- 本阶段承接 Datasource Management 5.99 的内部幂等入口，不继续扩展 JDBC 执行细节，而是补齐 `task-management -> datasource-management` 的真实 outbox dispatcher 投递层。
+- 新增 DataSync 出站调用抽象：
+  - `DataSyncAgentExecuteClient`：定义 task-management 调用 datasource-management 内部 data-sync.execute 的客户端边界；
+  - `HttpDataSyncAgentExecuteClient`：当前 RestClient 实现，固定调用 `/internal/data-sync/agent/tasks/execute`；
+  - 设计意图是把 HTTP、服务发现、Header、响应解包从 outbox 状态机中拆开，后续可替换为 OpenFeign、gRPC、Kafka publisher 或服务网格调用。
+- 新增 outbox delivery 层：
+  - `DataSyncWorkerCommandDeliveryService`：统一负责 `DISPATCHING -> datasource 内部调用 -> SUCCEEDED/DEFERRED/FAILED receipt`；
+  - 支持 `deliverCommand(commandId)`：给历史 Agent 工具适配器使用，先标记 DISPATCHING 再投递；
+  - 支持 `deliverAlreadyClaimedCommand(commandId)`：给 batch dispatcher 使用，避免 claim 后再次递增 attemptCount；
+  - 支持 `dispatchBatch(...)`：执行 `claim PENDING/到期 DEFERRED -> 逐条投递 -> 返回低敏统计`；
+  - 内部只从 `payload_json` 解析 priority、runMode、ownerId 这类白名单低敏字段，不把 payload_json、SQL、工具实参、连接串、凭据、样本数据、prompt、模型输出或内部 endpoint 暴露给响应、诊断或 Agent 输出。
+- 新增低敏投递契约：
+  - `DataSyncWorkerCommandDeliveryResult`；
+  - `DataSyncWorkerOutboxDispatchBatchRequest`；
+  - `DataSyncWorkerOutboxDispatchBatchResult`。
+- 改造 `DataSyncExecuteAgentAsyncToolAdapter`：
+  - 适配器从 264 行左右瘦身到 137 行；
+  - 职责收敛为 `Agent payload -> DataSync worker command outbox -> delivery 服务`；
+  - 不再直接持有 RestClient、下游响应解包、receipt 构造和失败回写逻辑；
+  - 后续手动 dispatcher、后台 scheduler 或 Kafka publisher 可复用同一套 delivery 语义，避免继续在适配器里堆跨服务逻辑。
+- 内部控制面新增路由：
+  - `POST /internal/data-sync-worker-command-outbox/dispatch-batch`；
+  - 该路由会领取并投递一批 outbox 命令，返回 claimed/succeeded/deferred/failed/skipped 与单条低敏结果；
+  - 仍然不返回 payload_json、SQL、工具实参、连接串、凭据、样本数据、prompt、模型输出、错误正文或内部服务 URL。
+- 新增测试：
+  - `DataSyncWorkerCommandDeliveryServiceTest`；
+  - 覆盖单条投递成功写 receipt；
+  - 覆盖 batch dispatch 已经 claim 后不会重复递增 attemptCount；
+  - 覆盖 datasource 临时不可用时进入 DEFERRED，并验证结果与 lastError 不泄露内部 URL。
+- 验证：
+  - 定向测试：`mvn -pl task-management -am "-Dtest=DataSyncWorkerCommandDeliveryServiceTest,DataSyncWorkerCommandOutboxDispatchServiceTest,DataSyncWorkerCommandOutboxServiceTest,AgentAsyncToolDispatchOnceServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`，19 个用例通过；
+  - 完整测试：`mvn -pl task-management -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`，90 个用例通过；
+  - Maven Toolchain 使用 JDK 21；
+  - 核心新增/改造文件均低于 500 行，`DataSyncWorkerCommandDeliveryService.java` 382 行。
+- 当前边界：
+  - 当前是“可手动触发的一轮 dispatcher 闭环”，还不是长期自动后台循环；
+  - 暂未实现最大重试次数、DEAD_LETTER 自动迁移、长时间 DISPATCHING 超时恢复、租户级并发配额和服务间强签名/mTLS；
+  - datasource-management 单批 Runner 的 progress/checkpoint/complete/fail 仍未统一回写 task-management outbox receipt。
+- 下一步推荐路线：
+  1. 优先增加 outbox 重试上限、DEAD_LETTER 和 DISPATCHING 超时恢复，防止命令卡死；
+  2. 再补后台 scheduler 调用 `dispatchBatch`，从手动闭环推进到受控自动闭环；
+  3. 然后设计 datasource Runner 执行进度回写 task-management 的低敏 receipt，完成端到端任务历史；
+  4. DataSync 主链路达到可解释闭环后，应收敛 Java data-sync 局部扩展，转向 data-quality、model-gateway 或 Agent runner 的闭环缺口。
 ## 2026-06-20 追加落地进展：Datasource Management 5.99 Agent data-sync.execute 内部幂等入口
 - 本阶段承接 Task Management 5.98 的 outbox claim 能力，补齐 `task-management -> datasource-management` 链路中最关键的下游落地点：`POST /internal/data-sync/agent/tasks/execute`。
 - 新增 datasource-management 侧内部 Controller：
