@@ -1,4 +1,44 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-20 追加落地进展：Task Management 5.98 DataSync worker outbox 调度领取与低敏诊断
+
+- 本阶段承接 Task Management 5.97 的 durable command outbox，不继续扩展 datasource-management 单模块内部细节，而是把跨模块长任务闭环推进到“可被 dispatcher 领取、可被运维诊断”的控制面阶段。
+- 新增 `DataSyncWorkerCommandOutboxDispatchService`：
+  - 负责从 `task_data_sync_worker_command_outbox` 查询 PENDING 和到期 DEFERRED 命令；
+  - 通过“状态条件更新”把候选命令推进到 DISPATCHING，并递增 attemptCount、写入 dispatchedAt；
+  - 即使两个 dispatcher 并发读到同一条命令，也只有条件更新成功的一方会拿到该命令，避免简单 select + updateById 造成重复领取；
+  - 当前仍是控制面领取能力，不直接调用真实 data-sync worker，不把网络投递、业务执行和 outbox 抢占耦合到一个类里；
+  - 后续高吞吐版本可升级为数据库 `FOR UPDATE SKIP LOCKED`、乐观锁版本号、租约字段或独立 lease 表。
+- 新增低敏 DTO 与视图：
+  - `DataSyncWorkerCommandOutboxView`；
+  - `DataSyncWorkerOutboxClaimRequest`；
+  - `DataSyncWorkerOutboxClaimResult`；
+  - `DataSyncWorkerOutboxDiagnosticsRequest`；
+  - `DataSyncWorkerOutboxDiagnosticsResult`；
+  - 视图只返回 ID、状态、次数、时间、receipt、syncTaskId、syncExecutionId、租户/项目/工作空间等定位字段；
+  - 不返回 `payload_json`、SQL、工具实参、样本数据、连接串、凭据、prompt、模型输出、内部 endpoint 或错误正文。
+- 新增内部控制器 `DataSyncWorkerCommandOutboxController`：
+  - `POST /internal/data-sync-worker-command-outbox/claim`：内部 dispatcher/补偿器领取待投递 outbox；
+  - `GET /internal/data-sync-worker-command-outbox/diagnostics`：运维控制面按 tenantId、projectId、taskId、commandId、status 查询低敏诊断；
+  - Controller 只做 HTTP 参数解析和统一响应包装，状态抢占、低敏过滤和诊断统计均保留在 Service 层。
+- 新增测试 `DataSyncWorkerCommandOutboxDispatchServiceTest`：
+  - 覆盖 PENDING/到期 DEFERRED 领取；
+  - 覆盖并发条件更新失败时不返回候选命令；
+  - 覆盖 executorId 必填；
+  - 覆盖诊断统计、状态大小写归一、limit 裁剪；
+  - 显式验证响应中不包含 payloadJson、SQL 样例、password 样例或错误正文。
+- 验证：
+  - 定向测试 `DataSyncWorkerCommandOutboxDispatchServiceTest,DataSyncWorkerCommandOutboxServiceTest` 共 12 个通过；
+  - task-management 模块完整测试共 87 个通过；
+  - Maven Toolchain 使用 JDK 21；
+  - 新增核心文件均低于 500 行。
+- 当前边界：
+  - 还没有真正的后台 dispatcher 循环或 Kafka/HTTP publisher；
+  - 还没有最大重试次数、DEAD_LETTER 自动转移、租约续期、长时间 DISPATCHING 失联恢复；
+  - diagnostics 是低敏查询，不是完整审计报表，也不会读取或展示 payload 正文。
+- 下一步推荐路线：
+  1. 建立真实 DataSync worker dispatcher 循环：claim -> 调用 datasource-management 单批 Runner -> record receipt；
+  2. 增加最大重试次数、DEAD_LETTER、长时间 DISPATCHING 失联恢复和租户级并发配额；
+  3. 把 datasource-management 5.96 单批 Runner 的 progress/checkpoint/complete/fail 回执统一回写 task-management，形成端到端任务历史。
 ## 2026-06-20 追加落地进展：Task Management 5.97 DataSync worker command outbox 与低敏 receipt
 
 - 本阶段承接 Datasource Management 5.96 单批 Runner 的收敛边界，切回 task-management 做跨模块长任务闭环基础。
