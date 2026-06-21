@@ -8,10 +8,13 @@ package com.czh.datasmart.govern.task.controller;
 
 import com.czh.datasmart.govern.task.common.ApiResponse;
 import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerCommandDeliveryService;
+import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerCommandOutboxDeadLetterManagementService;
 import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerCommandOutboxDispatchService;
 import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerCommandOutboxRecoveryService;
 import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerOutboxClaimRequest;
 import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerOutboxClaimResult;
+import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerOutboxDeadLetterManageRequest;
+import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerOutboxDeadLetterManageResult;
 import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerOutboxDiagnosticsRequest;
 import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerOutboxDiagnosticsResult;
 import com.czh.datasmart.govern.task.service.datasync.DataSyncWorkerOutboxDispatchBatchRequest;
@@ -34,7 +37,8 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>1. {@code POST /internal/data-sync-worker-command-outbox/claim}：只领取命令，不调用下游；</p>
  * <p>2. {@code POST /internal/data-sync-worker-command-outbox/dispatch-batch}：领取并立即投递一批命令；</p>
  * <p>3. {@code POST /internal/data-sync-worker-command-outbox/recover-stale-dispatching}：恢复长时间卡在 DISPATCHING 的命令；</p>
- * <p>4. {@code GET /internal/data-sync-worker-command-outbox/diagnostics}：查询低敏状态统计和最近记录。</p>
+ * <p>4. {@code POST /internal/data-sync-worker-command-outbox/dead-letters/manage}：人工重放或关闭 DEAD_LETTER；</p>
+ * <p>5. {@code GET /internal/data-sync-worker-command-outbox/diagnostics}：查询低敏状态统计和最近记录。</p>
  *
  * <p>安全边界：</p>
  * <p>这些接口属于内部控制面，不应该暴露给普通用户或公网。Controller 只负责 HTTP 参数解析和统一响应，
@@ -60,6 +64,11 @@ public class DataSyncWorkerCommandOutboxController {
      * outbox recovery 服务，负责把长时间停留在 DISPATCHING 的悬挂命令恢复为 DEFERRED 或 DEAD_LETTER。
      */
     private final DataSyncWorkerCommandOutboxRecoveryService recoveryService;
+
+    /**
+     * outbox dead-letter 管理服务，负责把 DEAD_LETTER 重新放回 DEFERRED 或关闭为 CLOSED。
+     */
+    private final DataSyncWorkerCommandOutboxDeadLetterManagementService deadLetterManagementService;
 
     /**
      * 领取待投递的 DataSync worker outbox 命令。
@@ -116,6 +125,33 @@ public class DataSyncWorkerCommandOutboxController {
             @RequestBody DataSyncWorkerOutboxRecoveryRequest request) {
         DataSyncWorkerOutboxRecoveryResult result = recoveryService.recoverStaleDispatching(request);
         return ResponseEntity.ok(ApiResponse.success("DataSync worker outbox 超时恢复完成", result));
+    }
+
+    /**
+     * 人工处置 DataSync worker outbox 死信命令。
+     *
+     * <p>该路由是有写副作用的内部运维接口，只允许处理 {@code DEAD_LETTER} 状态：</p>
+     * <p>1. REPLAY：把死信重新放回 DEFERRED，重置 attemptCount，并设置 nextRetryAt，由统一 dispatcher 后续领取；</p>
+     * <p>2. CLOSE：把死信推进到 CLOSED 终态，表示人工确认不再重放；</p>
+     * <p>3. 其他状态会被服务层拒绝，避免误把 SUCCEEDED、FAILED 或 CLOSED 重新打开。</p>
+     *
+     * <p>为什么这里不直接调用 datasource-management：</p>
+     * <p>死信重放应复用 outbox 的幂等投递链路。如果管理接口直接调用下游，就会绕过 dispatcher、
+     * attemptCount、nextRetryAt、scheduler 和 receipt 记录，最终形成第二套不可观测的执行路径。</p>
+     *
+     * <p>权限说明：</p>
+     * <p>当前项目还没有把该内部路由接入完整 permission-admin RBAC，因此生产环境必须继续通过 gateway、
+     * 服务网格、ACL、mTLS 或服务账号签名限制调用方。后续应把 REPLAY/CLOSE 拆成独立权限点：
+     * {@code task:datasync-outbox:dead-letter:replay} 与 {@code task:datasync-outbox:dead-letter:close}。</p>
+     *
+     * @param request 死信处置请求，包含 executorId、commandId、action、reason 和可选重放延迟。
+     * @return 处置后的低敏状态视图和提示信息。
+     */
+    @PostMapping("/dead-letters/manage")
+    public ResponseEntity<ApiResponse<DataSyncWorkerOutboxDeadLetterManageResult>> manageDeadLetter(
+            @RequestBody DataSyncWorkerOutboxDeadLetterManageRequest request) {
+        DataSyncWorkerOutboxDeadLetterManageResult result = deadLetterManagementService.manage(request);
+        return ResponseEntity.ok(ApiResponse.success("DataSync worker outbox 死信处置完成", result));
     }
 
     /**

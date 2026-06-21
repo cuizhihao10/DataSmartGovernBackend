@@ -111,7 +111,7 @@ class DataSyncWorkerCommandOutboxDispatchServiceTest {
         DataSyncWorkerCommandOutbox failed = outbox(3L, "cmd-003", DataSyncWorkerCommandOutboxStatus.FAILED);
         failed.setPayloadJson("{\"sql\":\"select * from user_secret\",\"password\":\"secret\"}");
         failed.setLastError("password=secret; select * from user_secret");
-        when(mapper.selectCount(any())).thenReturn(3L, 1L, 1L, 0L, 0L, 1L, 0L);
+        when(mapper.selectCount(any())).thenReturn(3L, 1L, 1L, 0L, 0L, 1L, 0L, 0L);
         when(mapper.selectList(any())).thenReturn(List.of(failed));
 
         DataSyncWorkerOutboxDiagnosticsResult result = service.diagnose(new DataSyncWorkerOutboxDiagnosticsRequest(
@@ -138,7 +138,7 @@ class DataSyncWorkerCommandOutboxDispatchServiceTest {
     @Test
     void diagnosticsShouldNormalizeStatusAndLimitRecentRecords() {
         DataSyncWorkerCommandOutbox succeeded = outbox(4L, "cmd-004", DataSyncWorkerCommandOutboxStatus.SUCCEEDED);
-        when(mapper.selectCount(any())).thenReturn(1L, 0L, 0L, 0L, 1L, 0L, 0L);
+        when(mapper.selectCount(any())).thenReturn(1L, 0L, 0L, 0L, 1L, 0L, 0L, 0L);
         when(mapper.selectList(any())).thenReturn(List.of(succeeded));
 
         DataSyncWorkerOutboxDiagnosticsResult result = service.diagnose(new DataSyncWorkerOutboxDiagnosticsRequest(
@@ -152,7 +152,7 @@ class DataSyncWorkerCommandOutboxDispatchServiceTest {
 
         assertEquals(DataSyncWorkerCommandOutboxStatus.SUCCEEDED.name(), result.requestedStatus());
         assertEquals(1, result.recentRecords().size());
-        verify(mapper, times(7)).selectCount(any());
+        verify(mapper, times(8)).selectCount(any());
     }
 
     @Test

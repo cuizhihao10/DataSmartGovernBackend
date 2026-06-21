@@ -1,4 +1,56 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-21 追加落地进展：Task Management 6.04 DataSync outbox 死信人工处置闭环
+- 本阶段承接 Task Management 6.03，不继续扩展新的 DataSync 连接器、同步模式或调度算法，而是补齐 outbox 生命周期里最后一个关键运维缺口：`DEAD_LETTER` 不能只停留在告警队列中，必须支持受控重放与人工关闭。
+- 产品目标：
+  - 让自动 dispatcher/recovery 产生的 `DEAD_LETTER` 有明确处置入口；
+  - 支持运维或平台管理员在确认下游恢复、业务仍需执行时执行 REPLAY；
+  - 支持业务撤销、模板废弃、数据源下线或事故处置完成后执行 CLOSE；
+  - 通过 `CLOSED` 终态区分“仍等待人工处理”的死信和“已经人工确认结束”的死信。
+- 状态模型增强：
+  - `DataSyncWorkerCommandOutboxStatus` 新增 `CLOSED`；
+  - `terminal()` 现在包含 `SUCCEEDED`、`FAILED`、`DEAD_LETTER`、`CLOSED`；
+  - `DEAD_LETTER` 表示停止自动重试、等待人工确认；
+  - `CLOSED` 表示人工已经确认不再重放，普通 dispatcher 不会再次领取。
+- 新增死信动作契约：
+  - `DataSyncWorkerOutboxDeadLetterAction`：`REPLAY`、`CLOSE`；
+  - `DataSyncWorkerOutboxDeadLetterManageRequest`：executorId、commandId、action、reason、retryAfterSeconds；
+  - `DataSyncWorkerOutboxDeadLetterManageResult`：处置前后状态、重放延迟、低敏 outbox 视图、原因可见性策略和运维提示。
+- 新增管理服务：
+  - `DataSyncWorkerCommandOutboxDeadLetterManagementService`；
+  - 只允许处理当前状态为 `DEAD_LETTER` 的命令；
+  - `REPLAY`：`DEAD_LETTER -> DEFERRED`，`attemptCount` 归零，`nextRetryAt` 按请求值裁剪后设置，等待统一 dispatcher 后续领取；
+  - `CLOSE`：`DEAD_LETTER -> CLOSED`，清空 `nextRetryAt`，不再被普通 dispatcher 领取；
+  - 更新使用 `id + status=DEAD_LETTER` 条件，避免多个运维动作并发覆盖。
+- 新增内部控制面路由：
+  - `POST /internal/data-sync-worker-command-outbox/dead-letters/manage`；
+  - 路由属于内部运维控制面，不应暴露给普通用户或公网；
+  - 当前仍依赖 gateway、ACL、mTLS、服务网格或服务账号签名做生产访问限制；
+  - 后续 permission-admin 应补独立权限点：`task:datasync-outbox:dead-letter:replay` 与 `task:datasync-outbox:dead-letter:close`。
+- 低敏与审计边界：
+  - request.reason 会在服务端做换行清理、常见 secret、Bearer token、endpoint、疑似 SQL 片段脱敏和长度裁剪；
+  - 响应不返回 reason 正文，不返回 `payload_json`、`lastError` 正文、SQL、工具实参、样本数据、prompt、模型输出、连接串、凭据或内部 endpoint；
+  - 处置后的 outbox view 继续复用 `DataSyncWorkerCommandOutboxViewAssembler` 出站白名单；
+  - 管理接口不会直接调用 datasource-management，避免绕过 dispatcher、attempt、scheduler 和 receipt 账本形成第二套执行路径。
+- 测试：
+  - 新增 `DataSyncWorkerCommandOutboxDeadLetterManagementServiceTest`；
+  - 覆盖 REPLAY 归零 attempt 并进入 DEFERRED、CLOSE 进入 CLOSED、非 DEAD_LETTER 拒绝处置、并发条件更新失败拒绝、必填字段校验和敏感 reason 不外露；
+  - 定向测试 `DataSyncWorkerCommandOutboxDeadLetterManagementServiceTest,DataSyncWorkerCommandOutboxDispatchServiceTest,DataSyncWorkerCommandDeliveryServiceTest` 共 15 个用例通过；
+  - task-management 模块完整测试 103 个用例通过；
+  - Maven Toolchain 使用 JDK 21。
+- 行数检查：
+  - `DataSyncWorkerCommandOutboxDeadLetterManagementService.java`：323 行；
+  - `DataSyncWorkerCommandOutboxController.java`：190 行；
+  - `DataSyncWorkerCommandOutboxDeadLetterManagementServiceTest.java`：207 行；
+  - 新增和修改的核心文件均低于 500 行。
+- 当前边界：
+  - DataSync outbox 已形成“入箱、领取、投递、最大重试、超时恢复、自动调度、死信人工处置”的控制面闭环；
+  - 仍未把 datasource Runner 的 progress/checkpoint/complete/fail 低敏回执统一写回 task-management；
+  - 仍未把 REPLAY/CLOSE 接入 permission-admin 的真实 RBAC、审批和审计表；
+  - 当前死信管理是单条命令处置，不是批量事故工单处置或租户级自动化恢复策略。
+- 下一步推荐路线：
+  1. 补 datasource Runner 低敏执行回执回写 task-management，完成端到端任务历史闭环；
+  2. DataSync Java 主链路完成 Runner 回执后应阶段性收敛，避免继续在 outbox 局部扩张；
+  3. 随后切向 data-quality、model-gateway、Agent runner 与智能网关闭环，推进项目整体收敛。
 ## 2026-06-21 追加落地进展：Task Management 6.03 DataSync outbox 自动调度闭环
 - 本阶段承接 Task Management 6.02，不继续扩展 DataSync 字段或连接器能力，而是把“手动恢复 + 手动投递”推进为可配置后台自动闭环。
 - 产品目标：

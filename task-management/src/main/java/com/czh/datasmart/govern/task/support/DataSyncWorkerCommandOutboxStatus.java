@@ -49,7 +49,20 @@ public enum DataSyncWorkerCommandOutboxStatus {
     /**
      * 命令达到最大重试或被运维策略阻断，后续需要人工处理。
      */
-    DEAD_LETTER;
+    DEAD_LETTER,
+
+    /**
+     * 命令已经由运维、平台管理员或受控补偿工具人工关闭。
+     *
+     * <p>为什么不直接复用 FAILED：</p>
+     * <p>1. FAILED 表示系统判定命令本身不可恢复，例如 payload 契约损坏或 toolCode 不支持；</p>
+     * <p>2. DEAD_LETTER 表示系统停止自动重试，等待人工确认；</p>
+     * <p>3. CLOSED 表示人工已经完成处置，并明确要求普通 dispatcher 不再重放该命令。</p>
+     *
+     * <p>这个状态让运维台能够区分“还需要人看”的死信和“已经确认结束”的死信，
+     * 避免长期告警一直停留在 DEAD_LETTER 队列里。</p>
+     */
+    CLOSED;
 
     /**
      * 判断状态是否已经是终态。
@@ -57,6 +70,6 @@ public enum DataSyncWorkerCommandOutboxStatus {
      * @return true 表示不应再被普通 dispatcher 自动覆盖为 DISPATCHING。
      */
     public boolean terminal() {
-        return this == SUCCEEDED || this == FAILED || this == DEAD_LETTER;
+        return this == SUCCEEDED || this == FAILED || this == DEAD_LETTER || this == CLOSED;
     }
 }
