@@ -1,4 +1,56 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-21 追加落地进展：Task Management 6.03 DataSync outbox 自动调度闭环
+- 本阶段承接 Task Management 6.02，不继续扩展 DataSync 字段或连接器能力，而是把“手动恢复 + 手动投递”推进为可配置后台自动闭环。
+- 产品目标：
+  - 让 task-management 能在受控开关下自动处理 DataSync outbox；
+  - 每轮先恢复 stale `DISPATCHING`，再投递 `PENDING` 和到期 `DEFERRED`；
+  - 让主链路从“运维手动触发”向“系统自动运行、运维可介入”收敛。
+- 新增调度组件：
+  - `DataSyncWorkerCommandOutboxScheduler`；
+  - 基于 Spring `@Scheduled` fixed-delay；
+  - 只负责定时触发、安全开关、并发互斥和聚合日志；
+  - 默认不运行，避免本地启动 task-management 后自动创建下游同步任务。
+- 新增调度编排服务：
+  - `DataSyncWorkerCommandOutboxSchedulerService`；
+  - `dispatchScheduledTick()` 执行一轮 `recoverStaleDispatching -> dispatchBatch`；
+  - 恢复和投递继续复用 6.00-6.02 已有服务，不另写第二套状态机；
+  - 当前先全局小批量运行，后续生产化可扩展为租户/项目分片、公平队列、连接器级并发上限和 Redis/DB 全局配额。
+- 新增内部 tick 结果契约：
+  - `DataSyncWorkerOutboxSchedulerTickResult`；
+  - 聚合 recovery 与 dispatch 的低敏结果；
+  - 供 scheduler 日志、单元测试和未来 Micrometer 指标复用；
+  - 日志只打印计数，不打印单条 payload、SQL、工具实参、prompt、模型输出、连接串、凭据、内部 endpoint 或错误正文。
+- 配置增强：
+  - `dataSyncOutboxSchedulerEnabled`，默认 false，DataSync outbox 子链路自动调度开关；
+  - `dataSyncOutboxSchedulerFixedDelayMs`，默认 5000ms，DataSync outbox 专用 fixed-delay；
+  - `dataSyncOutboxRecoveryLimitPerTick`，默认 20，单轮 stale recovery 上限；
+  - `dataSyncOutboxDispatchLimitPerTick`，默认 20，单轮 dispatch 上限；
+  - `application.yml` 已补充对应环境变量，并补齐 `dataSyncOutboxMaxAttempts`、`dataSyncOutboxDispatchingTimeoutSeconds`、`dataSyncOutboxStaleRecoveryRetryAfterSeconds` 的配置说明。
+- 安全开关策略：
+  - 必须同时满足 `enabled=true`、`dryRunOnly=false`、`schedulerEnabled=true`、`dataSyncOutboxSchedulerEnabled=true`；
+  - 这样通用 Agent worker scheduler 打开时，不会误把 DataSync 真实副作用链路一起打开；
+  - 该策略支持按工具链路灰度，降低商业化部署风险。
+- 测试：
+  - 新增 `DataSyncWorkerCommandOutboxSchedulerTest`；
+  - 覆盖子开关关闭不触发、所有开关允许时触发、调度服务必须先 recovery 后 dispatch、配置 executorId 与批量上限正确传递；
+  - 定向测试 `DataSyncWorkerCommandOutboxSchedulerTest,DataSyncWorkerCommandOutboxRecoveryServiceTest,DataSyncWorkerCommandDeliveryServiceTest` 共 11 个用例通过；
+  - Maven Toolchain 使用 JDK 21。
+- 行数检查：
+  - `DataSyncWorkerCommandOutboxScheduler.java`：87 行；
+  - `DataSyncWorkerCommandOutboxSchedulerService.java`：103 行；
+  - `DataSyncWorkerOutboxSchedulerTickResult.java`：61 行；
+  - `AgentAsyncToolWorkerProperties.java`：386 行；
+  - `DataSyncWorkerCommandOutboxSchedulerTest.java`：155 行；
+  - 仍满足单文件 500 行以内的解耦约束。
+- 当前边界：
+  - 已形成“可配置自动恢复 + 自动投递”的后台闭环；
+  - 仍未实现 `DEAD_LETTER` 人工重放、忽略上限重试或关闭处理；
+  - 仍未把 datasource Runner 的 progress/checkpoint/complete/fail 回写到 task-management；
+  - 当前 scheduler 是单实例小批量保护版本，还不是租户级公平调度或全局配额版本。
+- 下一步推荐路线：
+  1. 补 `DEAD_LETTER` 管理入口：重放、关闭、保留人工说明和审计证据；
+  2. 补 datasource Runner 低敏执行回执回写 task-management，完成端到端任务历史；
+  3. 完成这两步后，DataSync Java 主链路应阶段性收敛，转向 data-quality、model-gateway、Agent runner 等项目整体缺口。
 ## 2026-06-20 追加落地进展：Task Management 6.02 DataSync outbox DISPATCHING 超时恢复
 - 本阶段继续沿 DataSync 主链路做“闭环收敛”，不是扩展新的同步业务形态，而是补齐 outbox 可靠投递中的悬挂恢复能力。
 - 业务问题：

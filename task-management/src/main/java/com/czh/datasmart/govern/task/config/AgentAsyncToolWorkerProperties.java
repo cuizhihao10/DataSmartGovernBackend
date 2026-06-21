@@ -99,6 +99,42 @@ public class AgentAsyncToolWorkerProperties {
     private int dataSyncOutboxStaleRecoveryRetryAfterSeconds = 30;
 
     /**
+     * 是否启用 DataSync worker outbox 后台自动调度。
+     *
+     * <p>该开关比通用 {@link #schedulerEnabled} 更细：通用 scheduler 表示 task-management 允许后台 worker 自动运行；
+     * 本开关表示允许自动运行 `data-sync.execute` 这条真实副作用链路。这样可以支持按工具类型灰度：
+     * 先打开 Agent dry-run 或其他低风险链路，再单独打开 data-sync outbox 自动投递。</p>
+     *
+     * <p>默认 false。只有 {@link #enabled}、{@link #schedulerEnabled}、{@code !dryRunOnly}
+     * 和本开关同时满足时，DataSync outbox scheduler 才会真正运行。</p>
+     */
+    private boolean dataSyncOutboxSchedulerEnabled = false;
+
+    /**
+     * DataSync outbox 后台 scheduler 每轮 fixed-delay 间隔，单位毫秒。
+     *
+     * <p>该值单独存在，是因为 DataSync 同步链路比普通任务预检更重：它会访问数据库、调用 datasource-management、
+     * 创建或入队同步任务。如果把它完全绑定到通用 worker scheduler 间隔，后续很难针对数据同步吞吐和下游容量单独调优。</p>
+     */
+    private long dataSyncOutboxSchedulerFixedDelayMs = 5000L;
+
+    /**
+     * DataSync outbox scheduler 单轮最多恢复多少条 stale DISPATCHING 命令。
+     *
+     * <p>恢复动作会写数据库并可能把命令释放回 DEFERRED 队列。该值不宜过大，避免一次性释放大量悬挂命令，
+     * 让下一轮 dispatcher 形成瞬时投递洪峰。生产环境建议结合队列积压、下游恢复能力和告警等级逐步调高。</p>
+     */
+    private int dataSyncOutboxRecoveryLimitPerTick = 20;
+
+    /**
+     * DataSync outbox scheduler 单轮最多投递多少条 outbox 命令。
+     *
+     * <p>该配置是单实例本地保护阀，不是全局租户级配额。未来如果要支撑高吞吐同步，应继续补租户/项目维度公平队列、
+     * datasource connector 级并发上限、Redis/DB 全局令牌和下游健康熔断，而不是单纯把该值调得很大。</p>
+     */
+    private int dataSyncOutboxDispatchLimitPerTick = 20;
+
+    /**
      * worker 身份标识。
      *
      * <p>后续接入真实执行器认领和心跳时，该值会进入 task.current_executor_id 和 task_execution_run.executor_id，

@@ -98,6 +98,20 @@ datasmart:
       agent-runtime-base-url: ${DATASMART_AGENT_RUNTIME_INTERNAL_BASE_URL:http://localhost:8091}
       # data-sync 内部服务地址。data-sync.execute 白名单适配器只调用固定内部幂等入口，不会执行 Agent payload 中的任意 targetEndpoint。
       data-sync-base-url: ${DATASMART_DATA_SYNC_INTERNAL_BASE_URL:http://localhost:8086}
+      # DataSync outbox 自动调度开关。默认关闭，避免本地启动 task-management 后自动调用 datasource-management 产生同步任务副作用。
+      data-sync-outbox-scheduler-enabled: ${DATASMART_TASK_DATA_SYNC_OUTBOX_SCHEDULER_ENABLED:false}
+      # DataSync outbox 后台调度 fixed-delay 间隔，单位毫秒。与通用 worker scheduler 分开，便于按 data-sync 下游容量单独调优。
+      data-sync-outbox-scheduler-fixed-delay-ms: ${DATASMART_TASK_DATA_SYNC_OUTBOX_SCHEDULER_FIXED_DELAY_MS:5000}
+      # 单轮最多恢复多少条长时间停留在 DISPATCHING 的 outbox。过大可能瞬时释放太多命令回 DEFERRED。
+      data-sync-outbox-recovery-limit-per-tick: ${DATASMART_TASK_DATA_SYNC_OUTBOX_RECOVERY_LIMIT_PER_TICK:20}
+      # 单轮最多投递多少条 PENDING/到期 DEFERRED outbox。它是单实例保护阀，不能替代租户级配额和连接器级限流。
+      data-sync-outbox-dispatch-limit-per-tick: ${DATASMART_TASK_DATA_SYNC_OUTBOX_DISPATCH_LIMIT_PER_TICK:20}
+      # 单条 DataSync outbox 最大自动投递次数，达到后进入 DEAD_LETTER 等待人工处理。
+      data-sync-outbox-max-attempts: ${DATASMART_TASK_DATA_SYNC_OUTBOX_MAX_ATTEMPTS:5}
+      # DISPATCHING 超过该秒数仍没有 receipt 时会被 stale recovery 视为悬挂命令。
+      data-sync-outbox-dispatching-timeout-seconds: ${DATASMART_TASK_DATA_SYNC_OUTBOX_DISPATCHING_TIMEOUT_SECONDS:300}
+      # stale DISPATCHING 恢复为 DEFERRED 后，距离下一轮允许领取的退避秒数。
+      data-sync-outbox-stale-recovery-retry-after-seconds: ${DATASMART_TASK_DATA_SYNC_OUTBOX_STALE_RECOVERY_RETRY_AFTER_SECONDS:30}
       # worker 身份标识，会进入任务租约、回调幂等键和排障日志。
       executor-id: ${DATASMART_TASK_AGENT_ASYNC_WORKER_EXECUTOR_ID:task-management-agent-async-worker-local}
       # 后台调度 fixed-delay 间隔，单位毫秒。使用 fixed-delay 是为了等上一轮结束后再等待，避免长任务场景产生调度堆积。
