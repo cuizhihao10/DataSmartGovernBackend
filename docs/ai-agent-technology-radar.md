@@ -1,4 +1,34 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-23 落地补充：Agent Host needs a request-level closure snapshot before durable execution
+
+- 本轮趋势核验：
+  - MCP Tools 规范强调工具通过名称、元数据和输入 schema 暴露给模型，映射到 DataSmart 时，外部 `tools/call`、模型 tool_call、A2A action 都不应直接执行，而应先归一为平台 ToolPlan 与 readiness；
+  - LangGraph 文档继续把 durable execution、streaming、human-in-the-loop、persistence 作为 Agent 编排运行时的核心能力，并通过 checkpoint/store 区分线程状态与长期数据；
+  - OpenAI Agents SDK 文档强调 Agent 应用需要拥有 orchestration、tool execution、approvals 和 state，同时 tracing 要覆盖 LLM generation、tool calls、handoffs、guardrails 和 custom events。
+- 对 DataSmart 的产品判断：
+  - 在没有完整 durable runner 前，最危险的不是“缺少真实执行代码”，而是调用方误把 preview/READY/ingestion 当成副作用已经发生；
+  - 因此本阶段优先补请求级 `agentExecutionClosure`，把一次 `/agent/plans` 到底停在什么门禁、缺什么 host evidence、下一步该进入哪个控制面动作讲清楚；
+  - 这比继续新增更多分散 preview 字段更接近 Codex/Claude Code/OpenAI Agents/LangGraph 类 Agent Host 的生产化路径：先有可解释状态与恢复证据，再开放真实副作用。
+- 本轮落地到代码的能力：
+  - 新增 `services/agent_execution` 子包，承接 Agent 执行收敛类服务；
+  - 新增 `AgentExecutionClosureService` 和 `AgentExecutionClosureReport`；
+  - `/agent/plans` 新增 `agentExecutionClosure` 响应字段；
+  - 闭环快照输出 `closurePhase`、`closedLoopLevel`、`completedStages`、`blockingGates`、`missingRuntimeEvidence`、`nextActions`、低敏计数和副作用边界。
+- 低敏与安全边界：
+  - 不读取或返回 `ToolPlan.arguments` 真实值；
+  - 不返回 objective、prompt、messages、SQL、样本数据、模型输出、工具结果、凭据、内部 endpoint 或 Java 异常正文；
+  - `sideEffectBoundary` 显式声明 Python 同步响应未执行工具、未写 outbox、未创建审批单，worker receipt 才是副作用证据。
+- 后续趋势落地建议：
+  1. 让智能网关消费 `agentExecutionClosure`，把 session admission、provider health、tool readiness、memory scope 和 control-plane evidence 聚合为统一执行前决策；
+  2. 把 READY/QUEUED 分支推进到 Java proposal/outbox 前置确认，再等待 worker receipt，而不是直接让 Python 执行工具；
+  3. 将 LangGraph checkpoint 思想映射为 Python graph state + Java host facts 双层持久化，避免只靠 Python checkpoint 证明审批、澄清、outbox 或 receipt 已满足。
+- 参考资料：
+  - MCP Tools: `https://modelcontextprotocol.io/specification/2025-11-25/server/tools`
+  - LangGraph Overview: `https://docs.langchain.com/oss/python/langgraph/overview`
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - OpenAI Agents SDK: `https://developers.openai.com/api/docs/guides/agents`
+  - OpenAI Agents SDK Tracing: `https://openai.github.io/openai-agents-python/tracing/`
+
 ## 2026-06-22 落地补充：OpenAI-compatible Provider errors must be governance facts, not echoed payloads
 
 - 本轮趋势核验：

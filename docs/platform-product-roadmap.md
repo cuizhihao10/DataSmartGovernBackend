@@ -1,4 +1,43 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-23 追加落地进展：Python Runtime 5.88 Agent 请求级执行闭环快照
+- 本阶段承接模型 Provider 低敏闭环后，开始把项目从“能力分散建设”推进到“请求级闭环收敛”：不继续新增模型家族、不新增真实工具执行副作用、不新增 Java outbox 写入，而是先给 `/agent/plans` 补齐一张统一的 `agentExecutionClosure` 闭环导航卡片。
+- 产品目标：
+  - 让每一次 Agent 请求都能明确展示当前停在哪个门禁：无工具计划、等待用户澄清、等待人工审批、等待草稿复核、等待工具预算、等待 Java 控制面接入、等待控制面反馈或等待 loop policy；
+  - 避免前端、网关或 Java 控制面把 `READY` 工具误解为“工具已执行”，把 Java plan ingestion 误解为“worker 已完成副作用”；
+  - 为后续 OpenClaw/LangGraph-style durable runner 提供稳定的请求级阶段视图，后续真实执行只需要沿着缺失证据补齐，而不是继续堆散点 preview 字段。
+- 新增目录与组件：
+  - 新增 `python-ai-runtime/src/datasmart_ai_runtime/services/agent_execution/` 子包，避免继续把 Agent 执行收敛类能力平铺到 `services` 根目录；
+  - 新增 `AgentExecutionClosureService`，从 `AgentPlan`、`ToolExecutionReadinessReport`、可选 Java control-plane ingestion、feedback、runtime-event feedback、loop decision、second turn、memory write proposal 中生成低敏闭环报告；
+  - 新增 `AgentExecutionClosureReport`，输出 `closurePhase`、`closedLoopLevel`、`completedStages`、`blockingGates`、`missingRuntimeEvidence`、`nextActions`、低敏计数和 `sideEffectBoundary`。
+- API 行为变化：
+  - `/agent/plans` 响应新增 `agentExecutionClosure`；
+  - 该字段不执行工具、不写 outbox、不创建审批单、不调用 Java，不改变已有副作用开关；
+  - 响应只告诉调用方“当前请求下一步应该补哪类证据或进入哪个控制面动作”。
+- 低敏与安全边界：
+  - 不读取或返回 `ToolPlan.arguments` 真实值；
+  - 不返回用户 objective、prompt、messages、SQL、样本数据、模型输出、工具结果、凭据、内部 endpoint 或 Java 远端异常正文；
+  - 只返回阶段名、门禁 code、缺失证据 code、计数、布尔边界和低敏中文解释。
+- 测试：
+  - 新增 `test_agent_execution_closure.py`；
+  - 覆盖低风险 READY 工具等待 Java 控制面接入、审批/草稿工具等待人工复核、Java 已接入但等待控制面反馈三类闭环状态；
+  - 定向测试命令：
+    `python -m pytest python-ai-runtime\tests\test_agent_execution_closure.py python-ai-runtime\tests\test_api_bootstrap.py -q`；
+  - 结果：20 个用例通过。
+- 行数检查：
+  - `agent_execution_closure.py`：353 行；
+  - `services/agent_execution/__init__.py`：17 行；
+  - `api/agent/plan_response.py`：470 行；
+  - `test_agent_execution_closure.py`：140 行；
+  - 新增/修改核心文件均保持在 500 行以内。
+- 当前边界：
+  - 这一步仍是请求级闭环视图，不是真实 durable action runner；
+  - 还没有写 Java outbox、没有调度 worker、没有生成审批单、没有持久化 Agent graph state；
+  - 它解决的是“我们现在到底卡在哪个门禁”的可见性和产品收敛问题。
+- 下一步推荐路线：
+  1. 优先把 `agentExecutionClosure` 的缺失证据映射到 Java agent-runtime 的 plan ingestion、tool feedback、runtime event replay 和 loop policy，而不是继续新增 preview 字段；
+  2. 下一批应推进“READY/QUEUED 工具 -> Java 控制面 proposal/outbox 前置确认 -> worker receipt”的最小 durable action 闭环；
+  3. 智能网关侧后续可以消费 `agentExecutionClosure`，把 provider health、tool readiness、memory scope、session admission 和 control-plane evidence 汇总成一次真正的执行前决策。
+
 ## 2026-06-22 追加落地进展：Python Runtime 5.87 模型 Provider 错误低敏闭环
 - 本阶段承接 Data Quality 6.06 后的整体收敛要求，转向 `python-ai-runtime` 的模型网关主线，不新增模型家族、训练算法或底层推理优化，而是补齐真实 OpenAI-compatible Provider 失败路径的低敏治理。
 - 产品目标：

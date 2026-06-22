@@ -19,6 +19,7 @@ from datasmart_ai_runtime.api.gateway.intelligent_gateway import build_intellige
 from datasmart_ai_runtime.api.model_gateway import build_model_gateway_governance_response
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ToolPlan
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
+from datasmart_ai_runtime.services.agent_execution import AgentExecutionClosureService
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
 from datasmart_ai_runtime.services.agent_gateway import build_agent_session_scheduling_runtime_event
 from datasmart_ai_runtime.services.agent_workspace import AgentWorkspaceContext, AgentWorkspaceContextBuilder
@@ -197,6 +198,20 @@ def build_plan_response(
     # 不创建审批单，只为后续 LangGraph/OpenClaw-style 条件节点和 Java projection 预留稳定契约。
     response["toolExecutionReadinessGraph"] = build_tool_execution_readiness_graph_response(tool_execution_readiness)
     response["toolExecutionReadinessPolicy"] = readiness_policy_snapshot.to_low_sensitive_summary()
+    # `agentExecutionClosure` 是本轮 Agent 请求的“闭环导航卡片”：
+    # - 它不会执行工具、不会写 outbox、不会创建审批单；
+    # - 它只汇总 plan/readiness/control-plane/loop/memory 等已存在事实，告诉调用方当前停在哪个门禁；
+    # - 这样项目进入收敛阶段后，我们可以按闭环缺口推进，而不是继续在单个响应字段上无限扩写。
+    response["agentExecutionClosure"] = AgentExecutionClosureService().build(
+        plan=plan,
+        readiness=tool_execution_readiness,
+        control_plane_ingestion=control_plane_ingestion,
+        control_plane_feedback=control_plane_feedback,
+        runtime_event_feedback=runtime_event_feedback,
+        loop_control_decision=loop_control_decision,
+        second_turn_result=second_turn_result,
+        memory_write_proposal=memory_write_proposal,
+    ).to_summary()
     response["intelligentGatewayGovernance"] = intelligent_gateway_governance
     if control_plane_ingestion is not None:
         response["controlPlaneIngestion"] = control_plane_ingestion.to_summary()
