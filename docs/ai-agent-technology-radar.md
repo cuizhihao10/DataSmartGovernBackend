@@ -1,4 +1,27 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-23 落地补充：intelligent gateway should aggregate the execution closure, not duplicate runner logic
+
+- 本轮趋势校准：
+  - MCP Tools、LangGraph persistence/interrupt 和 OpenAI Agents SDK HITL 的共同方向不是让模型直接执行更多副作用，而是让 Host 能在工具调用前形成清晰的状态、门禁、恢复点和人工介入边界；
+  - 对 DataSmart 来说，智能网关应成为“执行前治理事实聚合器”，而不是新的 runner。它可以汇总模型路由、Skill 可见性、工具预算、长期记忆范围和执行闭环，但不应该重新判断工具能否执行或直接写 outbox；
+  - 这与 Codex/Claude Code 类 Agent 的产品形态一致：用户看到的是一张可以解释下一步的控制面卡片，真实工具副作用仍由受控 Host、审批、outbox 和 receipt 链路证明。
+- 本轮落地到代码的能力：
+  - `/agent/plans.intelligentGatewayGovernance.executionClosure` 新增闭环聚合摘要；
+  - 智能网关只消费 `agentExecutionClosure` 低敏快照，展示阶段、门禁、缺失证据、side-effect 布尔边界和 handoff 候选计数；
+  - `plan_response.py` 的 readiness 响应与 command proposal 上下文抽到 `plan_readiness_views.py`；
+  - `AgentExecutionClosureService` 的 handoff 裁剪抽到 `control_plane_handoff.py`；
+  - 智能网关闭环压缩逻辑独立到 `execution_closure_gateway.py`，避免网关主文件继续膨胀。
+- 产品判断：
+  - 5.90 完成了“闭环事实进入统一网关面板”的收敛步骤；
+  - 下一步的价值不在继续加字段，而在 Java 控制面真实生成 execution graph、payloadReference、outbox 记录和 worker receipt；
+  - 智能网关后续应作为统一执行前决策入口，而不是业务执行器、审批系统或工具 worker。
+- 参考资料：
+  - MCP Tools: `https://modelcontextprotocol.io/specification/2025-11-25/server/tools`
+  - LangGraph Interrupts: `https://docs.langchain.com/oss/python/langgraph/interrupts`
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - OpenAI Agents SDK: `https://developers.openai.com/api/docs/guides/agents`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+
 ## 2026-06-23 落地补充：closure snapshot should include the next host handoff, not only the current gate
 
 - 本轮趋势校准：

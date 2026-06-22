@@ -17,6 +17,10 @@ from typing import Any
 
 from datasmart_ai_runtime.api.gateway.intelligent_gateway import build_intelligent_gateway_governance_response
 from datasmart_ai_runtime.api.model_gateway import build_model_gateway_governance_response
+from datasmart_ai_runtime.api.agent.plan_readiness_views import (
+    build_command_proposal_context,
+    build_tool_execution_readiness_response,
+)
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ToolPlan
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
 from datasmart_ai_runtime.services.agent_execution import AgentExecutionClosureService
@@ -162,6 +166,32 @@ def build_plan_response(
         skill_publication_diagnostics_service
     )
 
+    tool_execution_readiness_response = build_tool_execution_readiness_response(tool_execution_readiness)
+    # command proposal 模板是“下一步如何进入 Java 控制面”的低敏导航，而不是 HTTP 提交动作。
+    # 这里把 `/agent/plans` 生成的 ToolPlan 统一标记为 MODEL_TOOL_CALL + AGENT_PLAN 来源，和 MCP/A2A
+    # 入口区分开；模板只读取 readiness response 中的字段名、状态、风险和计数，不读取 ToolPlan.arguments。
+    command_proposal_templates = build_tool_action_command_proposal_templates(
+        source=ToolActionIntakeSource.MODEL_TOOL_CALL,
+        protocol_family="AGENT_PLAN",
+        readiness_summary=tool_execution_readiness_response,
+        command_context=build_command_proposal_context(request, plan, readiness_policy_snapshot),
+    )
+    # `agentExecutionClosure` 是本轮 Agent 请求的“闭环导航卡片”：
+    # - 它不会执行工具、不会写 outbox、不会创建审批单；
+    # - 它只汇总 plan/readiness/control-plane/loop/memory 等已存在事实，告诉调用方当前停在哪个门禁；
+    # - 这里先于智能网关构建，是为了让智能网关可以聚合闭环状态，而不是让前端自行拼多个顶层字段。
+    agent_execution_closure_summary = AgentExecutionClosureService().build(
+        plan=plan,
+        readiness=tool_execution_readiness,
+        control_plane_ingestion=control_plane_ingestion,
+        control_plane_feedback=control_plane_feedback,
+        runtime_event_feedback=runtime_event_feedback,
+        loop_control_decision=loop_control_decision,
+        second_turn_result=second_turn_result,
+        memory_write_proposal=memory_write_proposal,
+        command_proposal_templates=command_proposal_templates,
+    ).to_summary()
+
     # `intelligentGatewayGovernance` 以前只在 HTTP 响应末尾构建，因此 event store、WebSocket replay
     # 和 Kafka publisher 都看不到其中的 `skillVisibility`。现在先构建治理摘要，再把会话级 Skill
     # 可见性压缩成一条低敏 runtime event 追加到计划事件流，最后统一发布。这样同步响应、断线恢复、
@@ -171,6 +201,7 @@ def build_plan_response(
         workspace_context,
         request,
         skill_manifest_diagnostics=skill_manifest_diagnostics,
+        agent_execution_closure=agent_execution_closure_summary,
     )
     plan = _attach_skill_visibility_event(
         plan,
@@ -193,16 +224,6 @@ def build_plan_response(
         event_publisher=event_publisher,
     )
     response = _build_base_response(plan, event_transport_builder)
-    tool_execution_readiness_response = _tool_execution_readiness_response(tool_execution_readiness)
-    # command proposal 模板是“下一步如何进入 Java 控制面”的低敏导航，而不是 HTTP 提交动作。
-    # 这里把 `/agent/plans` 生成的 ToolPlan 统一标记为 MODEL_TOOL_CALL + AGENT_PLAN 来源，和 MCP/A2A
-    # 入口区分开；模板只读取 readiness response 中的字段名、状态、风险和计数，不读取 ToolPlan.arguments。
-    command_proposal_templates = build_tool_action_command_proposal_templates(
-        source=ToolActionIntakeSource.MODEL_TOOL_CALL,
-        protocol_family="AGENT_PLAN",
-        readiness_summary=tool_execution_readiness_response,
-        command_context=_command_proposal_context(request, plan, readiness_policy_snapshot),
-    )
     response["agentWorkspace"] = workspace_context.to_summary()
     response["toolExecutionReadiness"] = tool_execution_readiness_response
     # `toolExecutionReadinessGraph` 是 readiness 的编排视角：readiness 摘要回答“每个工具当前是什么决策”，
@@ -210,21 +231,7 @@ def build_plan_response(
     # 不创建审批单，只为后续 LangGraph/OpenClaw-style 条件节点和 Java projection 预留稳定契约。
     response["toolExecutionReadinessGraph"] = build_tool_execution_readiness_graph_response(tool_execution_readiness)
     response["toolExecutionReadinessPolicy"] = readiness_policy_snapshot.to_low_sensitive_summary()
-    # `agentExecutionClosure` 是本轮 Agent 请求的“闭环导航卡片”：
-    # - 它不会执行工具、不会写 outbox、不会创建审批单；
-    # - 它只汇总 plan/readiness/control-plane/loop/memory 等已存在事实，告诉调用方当前停在哪个门禁；
-    # - 这样项目进入收敛阶段后，我们可以按闭环缺口推进，而不是继续在单个响应字段上无限扩写。
-    response["agentExecutionClosure"] = AgentExecutionClosureService().build(
-        plan=plan,
-        readiness=tool_execution_readiness,
-        control_plane_ingestion=control_plane_ingestion,
-        control_plane_feedback=control_plane_feedback,
-        runtime_event_feedback=runtime_event_feedback,
-        loop_control_decision=loop_control_decision,
-        second_turn_result=second_turn_result,
-        memory_write_proposal=memory_write_proposal,
-        command_proposal_templates=command_proposal_templates,
-    ).to_summary()
+    response["agentExecutionClosure"] = agent_execution_closure_summary
     response["intelligentGatewayGovernance"] = intelligent_gateway_governance
     if control_plane_ingestion is not None:
         response["controlPlaneIngestion"] = control_plane_ingestion.to_summary()
@@ -261,74 +268,6 @@ def _attach_tool_execution_readiness_event(
         return plan
     readiness_event = build_tool_execution_readiness_runtime_event(plan, request, tool_execution_readiness)
     return replace(plan, runtime_events=plan.runtime_events + (readiness_event,))
-
-
-def _command_proposal_context(
-    request: AgentRequest,
-    plan: AgentPlan,
-    readiness_policy_snapshot: Any,
-) -> dict[str, Any]:
-    """构建 command proposal 模板所需的低敏控制面上下文。
-
-    这个上下文只包含租户、项目、操作者、请求 ID 和策略版本等路由/审计字段，不包含 objective、
-    prompt、工具参数、SQL、样本数据或模型输出。runId/sessionId 等 Java 控制面事实通常要等
-    plan ingestion 后才生成，因此这里不伪造；后续 Java execution graph 或 proposal 调用方应从
-    控制面投影中补齐这些字段。
-    """
-
-    return {
-        "tenantId": request.tenant_id,
-        "projectId": request.project_id,
-        "actorId": request.actor_id,
-        "requestId": plan.request_id,
-        "policyVersion": getattr(readiness_policy_snapshot, "policy_version", None),
-        "clientRequestId": plan.request_id,
-    }
-
-
-def _tool_execution_readiness_response(tool_execution_readiness: Any) -> dict[str, Any]:
-    """构建 HTTP 响应中的工具执行准备度摘要。
-
-    响应字段比 runtime event 略丰富，但仍坚持低敏白名单：只展示字段名、状态、reason/issue code、
-    风险等级、执行模式和重试提示，不展示任何参数真实值。
-    """
-
-    return {
-        "snapshotType": "TOOL_EXECUTION_READINESS",
-        "payloadPolicy": "LOW_SENSITIVE_METADATA_ONLY",
-        "policy": tool_execution_readiness.policy_metadata or {},
-        "totalCount": tool_execution_readiness.total_count,
-        "executableCount": tool_execution_readiness.executable_count,
-        "approvalRequiredCount": tool_execution_readiness.approval_required_count,
-        "clarificationRequiredCount": tool_execution_readiness.clarification_required_count,
-        "draftOnlyCount": tool_execution_readiness.draft_only_count,
-        "queuedAsyncCount": tool_execution_readiness.queued_async_count,
-        "throttledCount": tool_execution_readiness.throttled_count,
-        "blockedCount": tool_execution_readiness.blocked_count,
-        "hasBlockingDecision": tool_execution_readiness.has_blocking_decision,
-        "nextActions": tool_execution_readiness.next_actions,
-        "items": tuple(
-            {
-                "planIndex": item.plan_index,
-                "toolName": item.tool_name,
-                "decision": item.decision.value,
-                "executable": item.executable,
-                "queueRequired": item.queue_required,
-                "requiresHumanApproval": item.requires_human_approval,
-                "riskLevel": item.risk_level,
-                "executionMode": item.execution_mode,
-                "targetService": item.target_service,
-                "argumentFieldNames": item.argument_field_names,
-                "sensitiveArgumentNames": item.sensitive_argument_names,
-                "parameterIssueCount": item.parameter_issue_count,
-                "issueCodes": item.issue_codes,
-                "reasonCodes": item.reason_codes,
-                "retryHint": item.retry_hint,
-                "payloadPolicy": item.payload_policy,
-            }
-            for item in tool_execution_readiness.items
-        ),
-    }
 
 
 def _attach_skill_visibility_event(

@@ -1,4 +1,34 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-23 追加落地进展：Python Runtime 5.90 智能网关聚合 Agent 执行闭环
+- 本阶段承接 5.88/5.89 的执行闭环与控制面 handoff，不继续扩写新的真实执行副作用，而是把 `agentExecutionClosure` 压缩接入 `intelligentGatewayGovernance.executionClosure`。
+- 产品目标：
+  - 让智能网关不只展示模型路由、Skill 准入、工具预算和记忆范围，也能回答“本轮 Agent 执行闭环是否已经具备 Java 控制面交接条件”；
+  - 避免前端、Java gateway 或后续 runner 分别解析 `agentExecutionClosure`、`toolExecutionReadiness`、`controlPlaneHandoff` 等散点字段；
+  - 把项目推进方向从“继续增加局部预览字段”收敛到“统一执行前决策入口 + 后续 Java durable action 补证据”。
+- API 行为变化：
+  - `/agent/plans.intelligentGatewayGovernance` 新增 `executionClosure`；
+  - 该字段只暴露 `closurePhase`、`closedLoopLevel`、`blockingGates`、`missingRuntimeEvidence`、低敏 counts、side-effect 布尔边界、handoff 是否可用、outbox 预检候选数、缺失证据 code 和 handoff nextAction；
+  - 智能网关 `recommendedActions` 会根据闭环阶段补充“补齐 execution graph/payloadReference”“交给 Java 控制面生成 host facts/worker receipt 链路”等建议。
+- 解耦与行数整改：
+  - 新增 `api/agent/plan_readiness_views.py`，承接 readiness HTTP 响应与 command proposal 低敏上下文；
+  - 新增 `services/agent_execution/control_plane_handoff.py`，承接 Java 控制面交接摘要裁剪；
+  - 新增 `api/gateway/execution_closure_gateway.py`，承接智能网关闭环压缩视图；
+  - `plan_response.py` 从超过 500 行回落到 445 行，`agent_execution_closure.py` 回落到 401 行，`intelligent_gateway.py` 保持 476 行。
+- 低敏与边界：
+  - 不把 `requestBodyTemplate`、`templateSummaries`、payloadReference、审批/澄清 fact id、工具参数、prompt、SQL、样本数据、模型输出、凭据或内部 endpoint 放进智能网关闭环摘要；
+  - 不提交 Java proposal、不写 outbox、不调度 worker、不创建审批单；
+  - 智能网关只做聚合，不重新判断闭环阶段，闭环判断仍由 `AgentExecutionClosureService` 负责。
+- 测试：
+  - 定向测试：
+    `python -m pytest python-ai-runtime\tests\test_intelligent_gateway_governance.py python-ai-runtime\tests\test_agent_execution_closure.py python-ai-runtime\tests\test_api_bootstrap.py -q`；
+  - 完整 Python Runtime 测试：
+    `python -m pytest python-ai-runtime\tests -q`；
+  - 当前结果：501 个用例通过。
+- 下一步推荐路线：
+  1. 不建议继续在 Python 响应层增加更多预览字段；
+  2. 下一阶段应让 Java execution graph/payloadReference/outbox writer 补齐 handoff 中的缺失证据；
+  3. 智能网关后续只做执行前统一决策聚合，真实副作用仍必须落到 Java 控制面和 worker receipt。
+
 ## 2026-06-23 追加落地进展：Python Runtime 5.89 Agent 控制面交接摘要
 - 本阶段承接 5.88 的 `agentExecutionClosure`，继续朝“整体闭环收敛”推进，但不新增真实工具执行、不写 Java outbox、不调度 worker，而是把下一步 Java command proposal handoff 摘要纳入闭环快照。
 - 产品目标：

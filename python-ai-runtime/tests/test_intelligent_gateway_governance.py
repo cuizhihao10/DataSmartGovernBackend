@@ -54,7 +54,20 @@ class IntelligentGatewayGovernanceResponseTest(unittest.TestCase):
         self.assertEqual("tenant:tenant-a:project:project-a", governance["workspace"]["workspaceKey"])
         self.assertEqual("memory:tenant:tenant-a:project:project-a", governance["workspace"]["memoryNamespace"])
         self.assertGreaterEqual(governance["memory"]["retrievalTargetCount"], 1)
+        execution_closure = governance["executionClosure"]
+        self.assertTrue(execution_closure["available"])
+        self.assertEqual("ready_for_control_plane_ingestion", execution_closure["closurePhase"])
+        self.assertEqual("pre_execution_only", execution_closure["closedLoopLevel"])
+        self.assertTrue(execution_closure["controlPlaneHandoffAvailable"])
+        self.assertEqual(1, execution_closure["outboxPreflightCandidateCount"])
+        self.assertIn("JAVA_AGENT_PLAN_INGESTION", execution_closure["missingRuntimeEvidence"])
+        self.assertIn("GRAPH_ID_OR_CONTRACT_ID_REQUIRED", execution_closure["handoffMissingEvidenceCodes"])
+        self.assertIn("PAYLOAD_REFERENCE_REQUIRED", execution_closure["handoffMissingEvidenceCodes"])
+        self.assertNotIn("requestBodyTemplate", execution_closure)
+        self.assertNotIn("templateSummaries", execution_closure)
+        self.assertNotIn("ds-001", str(execution_closure))
         self.assertIn("模型路由", governance["displaySummary"])
+        self.assertTrue(any("Java 控制面" in action for action in governance["recommendedActions"]))
 
     def test_skill_visibility_snapshot_is_recorded_as_runtime_event(self) -> None:
         """会话级 Skill 可见性快照应进入 runtime event 与 HTTP envelope。

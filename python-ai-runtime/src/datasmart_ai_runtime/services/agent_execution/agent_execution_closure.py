@@ -26,6 +26,7 @@ from enum import Enum
 from typing import Any, Mapping
 
 from datasmart_ai_runtime.domain.contracts import AgentPlan
+from datasmart_ai_runtime.services.agent_execution.control_plane_handoff import build_control_plane_handoff_summary
 from datasmart_ai_runtime.services.tools import ToolExecutionReadinessReport
 
 
@@ -180,7 +181,7 @@ class AgentExecutionClosureService:
                 control_plane_feedback=control_plane_feedback,
                 runtime_event_feedback=runtime_event_feedback,
             ),
-            control_plane_handoff=self._control_plane_handoff(command_proposal_templates),
+            control_plane_handoff=build_control_plane_handoff_summary(command_proposal_templates),
         )
 
     @staticmethod
@@ -374,108 +375,6 @@ class AgentExecutionClosureService:
         }
 
     @staticmethod
-    def _control_plane_handoff(command_proposal_templates: Mapping[str, Any] | None) -> Mapping[str, Any]:
-        """把 command proposal 模板压缩为闭环快照中的控制面交接摘要。
-
-        这一步是 5.88 之后的收敛增强：闭环快照不只告诉调用方“当前等待 Java 控制面”，还告诉调用方
-        “如果要继续推进，应先补齐哪些低敏证据，再调用哪个 Java proposal 路由”。但这里仍然只做展示：
-        - 不调用 Java HTTP；
-        - 不写 outbox；
-        - 不返回 requestBodyTemplate，避免把 payloadReference、approvalConfirmationId 等受控引用
-          变成同步响应里的二次传播字段；
-        - 不返回 arguments、prompt、SQL、样本数据、模型输出、凭据或内部 endpoint。
-        """
-
-        if not isinstance(command_proposal_templates, Mapping):
-            return {
-                "schemaVersion": "datasmart.python-ai-runtime.agent-execution-control-plane-handoff.v1",
-                "payloadPolicy": "LOW_SENSITIVE_CONTROL_PLANE_HANDOFF_ONLY",
-                "available": False,
-                "previewOnly": True,
-                "reason": "COMMAND_PROPOSAL_TEMPLATE_NOT_BUILT",
-                "totalTemplateCount": 0,
-                "outboxPreflightCandidateCount": 0,
-                "missingEvidenceCodes": (),
-                "templateSummaries": (),
-                "nextAction": "BUILD_COMMAND_PROPOSAL_TEMPLATE_BEFORE_JAVA_HANDOFF",
-            }
-
-        templates = tuple(
-            template for template in command_proposal_templates.get("templates", ()) if isinstance(template, Mapping)
-        )
-        missing_codes = AgentExecutionClosureService._aggregate_template_missing_codes(templates)
-        candidate_count = _int(command_proposal_templates.get("outboxPreflightCandidateCount"))
-        return {
-            "schemaVersion": "datasmart.python-ai-runtime.agent-execution-control-plane-handoff.v1",
-            "payloadPolicy": "LOW_SENSITIVE_CONTROL_PLANE_HANDOFF_ONLY",
-            "available": True,
-            "previewOnly": bool(command_proposal_templates.get("previewOnly", True)),
-            "toolExecutionEnabled": bool(command_proposal_templates.get("toolExecutionEnabled", False)),
-            "commandSchemaVersion": _text(command_proposal_templates.get("commandSchemaVersion")),
-            "workerReceiptMode": _text(command_proposal_templates.get("workerReceiptMode")),
-            "targetControlPlaneRoutes": _safe_routes(command_proposal_templates.get("targetControlPlaneRoutes")),
-            "totalTemplateCount": _int(command_proposal_templates.get("totalTemplateCount"), default=len(templates)),
-            "outboxPreflightCandidateCount": candidate_count,
-            "missingEvidenceCodes": missing_codes,
-            "templateSummaries": tuple(
-                AgentExecutionClosureService._template_summary(template)
-                for template in templates[:10]
-            ),
-            "truncatedTemplateCount": max(len(templates) - 10, 0),
-            "nextAction": (
-                "MATERIALIZE_EXECUTION_GRAPH_AND_PAYLOAD_REFERENCE_THEN_CALL_JAVA_PROPOSAL"
-                if candidate_count > 0
-                else "RESOLVE_READINESS_GATE_BEFORE_JAVA_PROPOSAL"
-            ),
-            "notIncluded": (
-                "requestBodyTemplate",
-                "payloadReference",
-                "approvalConfirmationId",
-                "clarificationFactId",
-                "arguments",
-                "prompt",
-                "sql",
-                "sampleData",
-                "modelOutput",
-                "credential",
-                "internalEndpoint",
-            ),
-        }
-
-    @staticmethod
-    def _template_summary(template: Mapping[str, Any]) -> Mapping[str, Any]:
-        """裁剪单个 proposal 模板，只保留可展示的治理字段。"""
-
-        return {
-            "templateId": _text(template.get("templateId")),
-            "source": _text(template.get("source")),
-            "protocolFamily": _text(template.get("protocolFamily")),
-            "planIndex": template.get("planIndex"),
-            "toolName": _text(template.get("toolName")),
-            "decision": _text(template.get("decision")),
-            "proposalStateHint": _text(template.get("proposalStateHint")),
-            "outboxPreflightCandidate": bool(template.get("outboxPreflightCandidate")),
-            "graphSelectionRequired": bool(template.get("graphSelectionRequired")),
-            "payloadReferenceRequired": bool(template.get("payloadReferenceRequired")),
-            "approvalConfirmationRequired": bool(template.get("approvalConfirmationRequired")),
-            "clarificationFactRequired": bool(template.get("clarificationFactRequired")),
-            "policyVersionRequired": bool(template.get("policyVersionRequired")),
-            "missingBeforeJavaProposal": _string_tuple(template.get("missingBeforeJavaProposal")),
-            "nextAction": _text(template.get("nextAction")),
-        }
-
-    @staticmethod
-    def _aggregate_template_missing_codes(templates: tuple[Mapping[str, Any], ...]) -> tuple[str, ...]:
-        """聚合模板缺失证据 code，保持稳定顺序并去重。"""
-
-        missing: list[str] = []
-        for template in templates:
-            for code in _string_tuple(template.get("missingBeforeJavaProposal")):
-                if code not in missing:
-                    missing.append(code)
-        return tuple(missing)
-
-    @staticmethod
     def _side_effect_boundary(
         *,
         control_plane_ingestion: Any | None,
@@ -500,56 +399,3 @@ class AgentExecutionClosureService:
         """判断本轮是否存在应提交 Java 控制面的候选工具计划。"""
 
         return readiness.executable_count > 0 or readiness.queued_async_count > 0
-
-
-def _safe_routes(value: Any) -> tuple[Mapping[str, str], ...]:
-    """裁剪 Java 控制面目标路由。
-
-    路由属于低敏契约元数据，可以帮助前端、网关或后续 runner 知道下一跳；但仍然只允许 method/path
-    两个字段，避免未来模板里出现 baseUrl、内部 endpoint、认证头或服务发现信息时被闭环快照透传。
-    """
-
-    if not isinstance(value, (list, tuple)):
-        return ()
-    routes: list[Mapping[str, str]] = []
-    for item in value[:5]:
-        if not isinstance(item, Mapping):
-            continue
-        method = _text(item.get("method"))
-        path = _text(item.get("path"))
-        if method and path:
-            routes.append({"method": method, "path": path})
-    return tuple(routes)
-
-
-def _string_tuple(value: Any) -> tuple[str, ...]:
-    """把模板中的低敏 code 列表规范化为 tuple。"""
-
-    if value is None:
-        return ()
-    if isinstance(value, str):
-        candidates = value.split(",")
-    elif isinstance(value, (list, tuple, set, frozenset)):
-        candidates = value
-    else:
-        return ()
-    return tuple(text for item in candidates if (text := _text(item)))
-
-
-def _text(value: Any) -> str | None:
-    """读取非空字符串，空值统一返回 None。"""
-
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _int(value: Any, *, default: int = 0) -> int:
-    """读取非负整数，非法值回退到默认值。"""
-
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed >= 0 else default

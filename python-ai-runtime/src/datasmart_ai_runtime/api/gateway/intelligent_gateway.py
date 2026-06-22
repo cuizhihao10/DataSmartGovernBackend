@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from datasmart_ai_runtime.api.model_gateway import build_model_gateway_governance_response
+from datasmart_ai_runtime.api.gateway.execution_closure_gateway import build_execution_closure_gateway_summary
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest
 from datasmart_ai_runtime.domain.events import AgentRuntimeEvent, AgentRuntimeEventType
 from datasmart_ai_runtime.services.agent_gateway import build_agent_session_scheduling_policy_view
@@ -27,6 +28,7 @@ def build_intelligent_gateway_governance_response(
     workspace_context: AgentWorkspaceContext,
     request: AgentRequest,
     skill_manifest_diagnostics: Mapping[str, Any] | None = None,
+    agent_execution_closure: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """构建本次 Agent 计划的智能网关统一治理摘要。
 
@@ -50,6 +52,10 @@ def build_intelligent_gateway_governance_response(
     memory = _memory_summary(plan)
     workspace = workspace_context.to_summary()
     skill_manifest = _skill_manifest_binding_summary(skill_manifest_diagnostics)
+    # 执行闭环摘要是智能网关从“准入和路由面板”走向“可恢复 Agent Host 面板”的关键拼图。
+    # 这里不重新判断闭环阶段，只消费 `AgentExecutionClosureService` 已经产出的低敏快照，避免网关层
+    # 反向依赖 tool readiness、Java feedback、loop control 等内部对象。
+    execution_closure = build_execution_closure_gateway_summary(agent_execution_closure)
     skill_visibility = build_session_skill_visibility_snapshot(
         plan,
         request,
@@ -92,6 +98,7 @@ def build_intelligent_gateway_governance_response(
         "skillAdmission": skill_admission,
         "skillVisibility": skill_visibility,
         "agentSessionScheduling": agent_session_scheduling,
+        "executionClosure": execution_closure,
         "toolBudget": tool_budget,
         "memory": memory,
         "plannedToolCount": len(plan.tool_plans),
@@ -106,6 +113,7 @@ def build_intelligent_gateway_governance_response(
             memory,
             approval_required,
             skill_manifest,
+            execution_closure,
         ),
     }
 
@@ -410,6 +418,7 @@ def _recommended_actions(
     memory: dict[str, Any],
     approval_required: bool,
     skill_manifest: dict[str, Any],
+    execution_closure: dict[str, Any],
 ) -> tuple[str, ...]:
     """汇总智能网关下一步建议。"""
 
@@ -440,6 +449,28 @@ def _recommended_actions(
         actions.append("远端 Skill Manifest 已可用但缺少 contentFingerprint，应补齐指纹以支持灰度、缓存和审计回放。")
     elif binding_status in {"REMOTE_NOT_REFRESHED", "DIAGNOSTICS_UNAVAILABLE", "REMOTE_UNAVAILABLE_FALLBACK"}:
         actions.append("检查 Skill Manifest 诊断刷新、Java agent-runtime 地址和服务间网络，避免能力目录版本证据缺失。")
+    _append_execution_closure_actions(actions, execution_closure)
     if not actions:
         actions.append("可以继续把工具计划提交 Java 控制面生成审计记录。")
     return tuple(actions)
+
+
+def _append_execution_closure_actions(actions: list[str], execution_closure: dict[str, Any]) -> None:
+    """把 Agent 执行闭环缺口转换为智能网关层面的下一步建议。
+
+    这里不直接透传 `agentExecutionClosure.nextActions`，因为那些 action 更偏机器可读 code；智能网关卡片
+    面向控制台、网关和运维同学，需要补充“为什么”和“交给谁”。同时仍然只使用阶段、code 和计数，不读取
+    工具 payload 或模板正文。
+    """
+
+    if not execution_closure.get("available"):
+        return
+    handoff_action = str(execution_closure.get("handoffNextAction") or "")
+    closure_phase = str(execution_closure.get("closurePhase") or "")
+    missing = set(execution_closure.get("missingRuntimeEvidence") or ())
+    if handoff_action == "MATERIALIZE_EXECUTION_GRAPH_AND_PAYLOAD_REFERENCE_THEN_CALL_JAVA_PROPOSAL":
+        actions.append("补齐 execution graph 与 payloadReference 后，再调用 Java proposal/outbox 预检链路。")
+    if closure_phase == "ready_for_control_plane_ingestion":
+        actions.append("本轮工具已停在执行前门禁，应由 Java 控制面生成 host facts、审计引用和 worker receipt 链路。")
+    if "CONTROL_PLANE_TOOL_FEEDBACK" in missing:
+        actions.append("Java 已接收计划但缺少工具反馈时，应优先回放 runtime event 或查询控制面投影。")
