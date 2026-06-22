@@ -1,4 +1,58 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-22 追加落地进展：Data Quality 6.06 执行诊断与运营可见性闭环
+- 本阶段承接 DataSync 6.05 后的整体收敛要求，切回 `data-quality` 模块，不继续新增扫描器、连接器或复杂清洗算法，而是补齐质量执行链路在生产运营中的第一层诊断能力。
+- 产品目标：
+  - 让管理员可以快速判断 data-quality 是“没有任务在跑”“执行器未启用”“scheduler 未启用”“存在 RUNNING 悬挂”“技术执行失败较多”，还是“业务质量报告失败较多”；
+  - 用低敏诊断视图连接执行事实、报告事实、异常样本数量和执行器运行配置；
+  - 支持后续管理台首页、自动巡检、告警机器人和客户支持工具复用同一套诊断契约；
+  - 不返回 SQL、扫描计划正文、异常样本正文、错误正文、连接串、凭据或内部 endpoint，避免把运维接口变成新的敏感数据出口。
+- 新增服务与 DTO：
+  - 新增 `QualityExecutionDiagnosticsService`，聚合 `quality_check_execution`、`quality_check_report`、`quality_anomaly_detail` 和 `TaskManagementIntegrationProperties`；
+  - 新增 `QualityExecutionDiagnosticsResponse`，承载诊断版本、过滤条件、状态分布、异常数量、最近执行、运行配置、运营提醒和可见性策略；
+  - 新增 `QualityExecutionDiagnosticsExecutionView`，只暴露最近执行低敏元数据与正文存在性，不暴露 `scanPlanSnapshot` 或 `message` 正文；
+  - 新增 `QualityExecutionDiagnosticsRuntimeView`，暴露 coordinator/scheduler/并发护栏/批量上限/退避/租约等低敏运行配置，不暴露 baseUrl、endpoint、认证头或密钥。
+- 新增运营路由：
+  - `GET /quality-rules/executor/diagnostics`；
+  - 参数支持 `tenantId`、`projectId`、`workspaceId`、`ruleId`、`limit`；
+  - 继续消费 `X-DataSmart-Data-Scope-Level` 与 `X-DataSmart-Authorized-Project-Ids`，PROJECT 范围无授权项目时直接安全返回空诊断视图；
+  - 后续接入 permission-admin 时，建议绑定 `quality:executor:diagnostics:read` 权限点。
+- 诊断语义：
+  - execution 状态计数：`RUNNING`、`SUCCESS`、`FAILED`；
+  - report 状态计数：`PASSED`、`FAILED`；
+  - severity 分布：`HIGH`、`MEDIUM`、`LOW`；
+  - anomalyCount：当前过滤范围内的异常样本数量；
+  - recentExecutions：最近执行 ID、规则 ID、任务 ID、执行器 ID、状态、时间、耗时、报告 ID 与正文存在性；
+  - warnings：根据开关、运行状态、失败报告、异常数量和截断情况生成运营提醒。
+- 商业化意义：
+  - data-quality 从“规则、执行、报告、异常均已存在”推进为“能被运营人员判断健康状况”；
+  - 这一步避免继续只堆局部业务字段，而是补齐真实产品上线后必须具备的可诊断性；
+  - 低敏设计为后续管理台、告警、审计导出和 permission-admin 权限收敛预留了安全边界。
+- 测试：
+  - 新增 `QualityExecutionDiagnosticsServiceTest`；
+  - 覆盖状态聚合、PROJECT 空授权安全收口、最近执行低敏转换、运行配置快照和敏感正文不外露；
+  - 定向测试：
+    `mvn -pl data-quality -am "-Dtest=QualityExecutionDiagnosticsServiceTest,DataQualityControllerProjectScopeTest,QualityProjectScopeSupportTest,QualityRuleSuggestionSupportTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`；
+  - 结果：12 个用例通过；
+  - 完整模块测试：
+    `mvn -pl data-quality -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`；
+  - 结果：data-quality 12 个用例通过，Maven Toolchain 使用 JDK 21。
+- 行数检查：
+  - `QualityExecutionDiagnosticsService.java`：434 行；
+  - `QualityExecutorOperationsController.java`：134 行；
+  - `QualityExecutionDiagnosticsResponse.java`：104 行；
+  - `QualityExecutionDiagnosticsExecutionView.java`：106 行；
+  - `QualityExecutionDiagnosticsRuntimeView.java`：83 行；
+  - `QualityExecutionDiagnosticsServiceTest.java`：174 行；
+  - 核心文件均低于 500 行。
+- 当前边界：
+  - 诊断视图仍是读模型，不会自动关闭悬挂 execution、重试任务或派发告警；
+  - 尚未把 data-quality 诊断纳入 observability 告警规则、Agent Runtime timeline 或统一任务看板；
+  - 尚未接入 permission-admin 的真实权限点和独立审计表；
+  - 当前用于“阶段性运营闭环”，不是全量质量大盘、报表导出或清洗工作台。
+- 下一步推荐路线：
+  1. data-quality 主链路建议阶段性收敛，后续只补必要的权限/告警/看板聚合，不再无限扩展规则细节；
+  2. 项目整体应继续转向 model-gateway 模型调用闭环、Agent runner 真实编排闭环和智能网关策略闭环；
+  3. 如果短期继续 Java 收口，优先做跨模块聚合视图或 permission-admin 权限点，而不是继续在单一模块内部堆功能。
 ## 2026-06-22 追加落地进展：DataSync 6.05 Runner 执行回执端到端闭环
 - 本阶段承接 Task Management 6.04，不继续扩展新的连接器、同步模式或 outbox 调度算法，而是补齐 DataSync 主链路最后一个关键断点：task-management 之前只能知道 datasource-management 已接收/入队命令，无法持续看到 Runner 后续 progress、checkpoint、complete、failed。
 - 产品目标：

@@ -6,7 +6,9 @@
  */
 package com.czh.datasmart.govern.quality.controller;
 
+import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.quality.common.ApiResponse;
+import com.czh.datasmart.govern.quality.controller.dto.QualityExecutionDiagnosticsResponse;
 import com.czh.datasmart.govern.quality.controller.dto.QualityExecutionFailRequest;
 import com.czh.datasmart.govern.quality.controller.dto.QualityExecutionStartRequest;
 import com.czh.datasmart.govern.quality.controller.dto.QualityExecutionSuccessRequest;
@@ -15,12 +17,17 @@ import com.czh.datasmart.govern.quality.entity.QualityCheckExecution;
 import com.czh.datasmart.govern.quality.entity.QualityCheckReport;
 import com.czh.datasmart.govern.quality.executor.QualityTaskExecutorCoordinator;
 import com.czh.datasmart.govern.quality.service.DataQualityService;
+import com.czh.datasmart.govern.quality.service.QualityExecutionDiagnosticsService;
+import com.czh.datasmart.govern.quality.service.support.QualityProjectScopeSupport;
+import com.czh.datasmart.govern.quality.service.support.QualityProjectVisibility;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -44,6 +51,8 @@ public class QualityExecutorOperationsController {
 
     private final DataQualityService dataQualityService;
     private final QualityTaskExecutorCoordinator qualityTaskExecutorCoordinator;
+    private final QualityExecutionDiagnosticsService qualityExecutionDiagnosticsService;
+    private final QualityProjectScopeSupport qualityProjectScopeSupport;
 
     /**
      * 质量执行器开始执行回调。
@@ -110,5 +119,41 @@ public class QualityExecutorOperationsController {
             @RequestParam(defaultValue = "1") Integer maxRuns) {
         return ResponseEntity.ok(ApiResponse.success("质量执行器 coordinator 批量运行完成",
                 qualityTaskExecutorCoordinator.runBatch(maxRuns)));
+    }
+
+    /**
+     * 查询质量执行链路低敏诊断视图。
+     *
+     * <p>该接口面向管理员、平台运营、自动化巡检和后续告警系统，用来快速判断 data-quality
+     * 当前是否具备“可执行、可观察、可排障”的基本闭环。它聚合执行状态、报告结果、异常数量、
+     * 最近执行快照和执行器配置，但不会返回 SQL、scanPlanSnapshot 正文、错误 message 正文、
+     * 异常样本、连接串、凭据或内部 endpoint。</p>
+     *
+     * <p>路由语义：{@code /quality-rules/executor/diagnostics} 属于执行器运营控制面，
+     * 不是普通用户查看质量详情的入口。后续接入 permission-admin 时，建议绑定类似
+     * {@code quality:executor:diagnostics:read} 的权限点，并通过 gateway 继续透传 PROJECT 数据范围 Header。</p>
+     *
+     * @param tenantId 可选租户过滤条件
+     * @param projectId 可选项目过滤条件，会和 PROJECT 授权集合一起生效
+     * @param workspaceId 可选工作空间过滤条件
+     * @param ruleId 可选规则过滤条件
+     * @param limit 最近执行返回上限，服务层会裁剪到安全范围
+     * @param dataScopeLevel gateway/permission-admin 透传的数据范围级别
+     * @param authorizedProjectIds gateway/permission-admin 透传的授权项目集合
+     * @return 低敏诊断响应
+     */
+    @GetMapping("/diagnostics")
+    public ResponseEntity<ApiResponse<QualityExecutionDiagnosticsResponse>> diagnoseExecutions(
+            @RequestParam(required = false) Long tenantId,
+            @RequestParam(required = false) Long projectId,
+            @RequestParam(required = false) Long workspaceId,
+            @RequestParam(required = false) Long ruleId,
+            @RequestParam(required = false) Integer limit,
+            @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+        QualityProjectVisibility visibility = qualityProjectScopeSupport.resolveVisibility(
+                projectId, workspaceId, dataScopeLevel, authorizedProjectIds);
+        return ResponseEntity.ok(ApiResponse.success("质量执行链路诊断视图生成完成",
+                qualityExecutionDiagnosticsService.diagnose(tenantId, ruleId, limit, visibility)));
     }
 }
