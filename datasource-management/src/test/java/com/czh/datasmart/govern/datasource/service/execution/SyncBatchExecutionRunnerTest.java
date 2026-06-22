@@ -16,6 +16,7 @@ import com.czh.datasmart.govern.datasource.service.execution.jdbc.MySqlSyncJdbcD
 import com.czh.datasmart.govern.datasource.service.execution.jdbc.PostgreSqlSyncJdbcDialect;
 import com.czh.datasmart.govern.datasource.service.execution.jdbc.SqlServerSyncJdbcDialect;
 import com.czh.datasmart.govern.datasource.service.execution.jdbc.SyncJdbcDialectRegistry;
+import com.czh.datasmart.govern.datasource.service.execution.receipt.TaskManagementExecutionReceiptPublisher;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.InvocationHandler;
@@ -69,7 +70,8 @@ class SyncBatchExecutionRunnerTest {
         ));
         StaticWriter writer = new StaticWriter(new SyncBatchWriteResult(2L, 0L, true, null));
         RecordingTaskService taskService = new RecordingTaskService();
-        SyncBatchExecutionRunner runner = new SyncBatchExecutionRunner(preparationService, reader, writer, taskService.proxy());
+        RecordingReceiptPublisher receiptPublisher = new RecordingReceiptPublisher();
+        SyncBatchExecutionRunner runner = runner(reader, writer, taskService, receiptPublisher);
 
         SyncBatchExecutionRunResult result = runner.runOnce(runRequest(10L, 9L, 0L, "2026-06-20T16:19:00"));
 
@@ -90,6 +92,8 @@ class SyncBatchExecutionRunnerTest {
         assertEquals("shard-0", progressRequest.getShardOrPartition());
         assertEquals(0, taskService.completeRequests.size());
         assertEquals(0, taskService.failRequests.size());
+        assertEquals(1, receiptPublisher.results.size());
+        assertEquals("CHECKPOINT", receiptPublisher.lastEventType());
     }
 
     @Test
@@ -106,7 +110,8 @@ class SyncBatchExecutionRunnerTest {
         ));
         StaticWriter writer = new StaticWriter(new SyncBatchWriteResult(1L, 0L, true, null));
         RecordingTaskService taskService = new RecordingTaskService();
-        SyncBatchExecutionRunner runner = new SyncBatchExecutionRunner(preparationService, reader, writer, taskService.proxy());
+        RecordingReceiptPublisher receiptPublisher = new RecordingReceiptPublisher();
+        SyncBatchExecutionRunner runner = runner(reader, writer, taskService, receiptPublisher);
 
         SyncBatchExecutionRunResult result = runner.runOnce(runRequest(0L, 0L, 0L, "2026-06-20T16:21:00"));
 
@@ -121,6 +126,8 @@ class SyncBatchExecutionRunnerTest {
         assertEquals(1L, completeRequest.getRecordsWritten());
         assertEquals(0L, completeRequest.getFailedRecordCount());
         assertEquals(0, taskService.failRequests.size());
+        assertEquals(1, receiptPublisher.results.size());
+        assertEquals("COMPLETE", receiptPublisher.lastEventType());
     }
 
     @Test
@@ -134,7 +141,8 @@ class SyncBatchExecutionRunnerTest {
         ));
         StaticWriter writer = new StaticWriter(new SyncBatchWriteResult(0L, 0L, true, null));
         RecordingTaskService taskService = new RecordingTaskService();
-        SyncBatchExecutionRunner runner = new SyncBatchExecutionRunner(preparationService, reader, writer, taskService.proxy());
+        RecordingReceiptPublisher receiptPublisher = new RecordingReceiptPublisher();
+        SyncBatchExecutionRunner runner = runner(reader, writer, taskService, receiptPublisher);
 
         SyncBatchExecutionRunResult result = runner.runOnce(runRequest(0L, 0L, 0L, "2026-06-20T16:21:00"));
 
@@ -143,6 +151,8 @@ class SyncBatchExecutionRunnerTest {
         assertTrue(result.getErrorSummary().contains("读取阶段失败"));
         assertFalse(writer.invoked);
         assertEquals(1, taskService.failRequests.size());
+        assertEquals(1, receiptPublisher.results.size());
+        assertEquals("FAILED", receiptPublisher.lastEventType());
     }
 
     @Test
@@ -162,7 +172,8 @@ class SyncBatchExecutionRunnerTest {
         ));
         StaticWriter writer = new StaticWriter(new SyncBatchWriteResult(0L, 2L, false, "目标端唯一键冲突过多"));
         RecordingTaskService taskService = new RecordingTaskService();
-        SyncBatchExecutionRunner runner = new SyncBatchExecutionRunner(preparationService, reader, writer, taskService.proxy());
+        RecordingReceiptPublisher receiptPublisher = new RecordingReceiptPublisher();
+        SyncBatchExecutionRunner runner = runner(reader, writer, taskService, receiptPublisher);
 
         SyncBatchExecutionRunResult result = runner.runOnce(runRequest(3L, 3L, 1L, "2026-06-20T16:22:00"));
 
@@ -173,6 +184,8 @@ class SyncBatchExecutionRunnerTest {
         assertEquals(3L, result.getTotalFailedRecordCount());
         assertEquals(1, taskService.progressRequests.size());
         assertEquals(1, taskService.failRequests.size());
+        assertEquals(1, receiptPublisher.results.size());
+        assertEquals("FAILED", receiptPublisher.lastEventType());
     }
 
     @Test
@@ -180,7 +193,8 @@ class SyncBatchExecutionRunnerTest {
         StaticReader reader = new StaticReader(new SyncBatchReadResult(0L, false, false, null, null));
         StaticWriter writer = new StaticWriter(new SyncBatchWriteResult(0L, 0L, true, null));
         RecordingTaskService taskService = new RecordingTaskService();
-        SyncBatchExecutionRunner runner = new SyncBatchExecutionRunner(preparationService, reader, writer, taskService.proxy());
+        RecordingReceiptPublisher receiptPublisher = new RecordingReceiptPublisher();
+        SyncBatchExecutionRunner runner = runner(reader, writer, taskService, receiptPublisher);
 
         SyncBatchExecutionRunResult result = runner.runOnce(runRequest(0L, 0L, 0L, null));
 
@@ -189,6 +203,27 @@ class SyncBatchExecutionRunnerTest {
         assertFalse(reader.invoked);
         assertFalse(writer.invoked);
         assertEquals(1, taskService.failRequests.size());
+        assertEquals(1, receiptPublisher.results.size());
+        assertEquals("FAILED", receiptPublisher.lastEventType());
+    }
+
+    /**
+     * 创建 Runner 测试对象。
+     *
+     * <p>把构造逻辑集中在这里，是为了后续 Runner 新增端口依赖时不需要在每个测试里重复修改构造参数。
+     * 也能让每个测试更聚焦在“输入、输出、状态回写、执行回执发布”本身。</p>
+     */
+    private SyncBatchExecutionRunner runner(SyncBatchReader reader,
+                                            SyncBatchWriter writer,
+                                            RecordingTaskService taskService,
+                                            RecordingReceiptPublisher receiptPublisher) {
+        return new SyncBatchExecutionRunner(
+                preparationService,
+                reader,
+                writer,
+                taskService.proxy(),
+                receiptPublisher
+        );
     }
 
     /**
@@ -307,6 +342,38 @@ class SyncBatchExecutionRunnerTest {
         public SyncBatchWriteResult writeBatch(SyncBatchWriteContext context, SyncBatchRecordBatch recordBatch) {
             invoked = true;
             return result;
+        }
+    }
+
+    /**
+     * 执行回执发布器测试替身。
+     *
+     * <p>它不发 HTTP，只记录 Runner 是否在每个出口都发布了低敏执行结果。
+     * 这里复刻发布器的事件类型归一逻辑，是为了让测试能直接表达“这个结果应该形成哪类 task-management execution receipt”。</p>
+     */
+    private static class RecordingReceiptPublisher implements TaskManagementExecutionReceiptPublisher {
+
+        private final List<SyncBatchExecutionRunRequest> requests = new ArrayList<>();
+        private final List<SyncBatchExecutionRunResult> results = new ArrayList<>();
+
+        @Override
+        public void publish(SyncBatchExecutionRunRequest request, SyncBatchExecutionRunResult result) {
+            requests.add(request);
+            results.add(result);
+        }
+
+        private String lastEventType() {
+            SyncBatchExecutionRunResult result = results.get(results.size() - 1);
+            if (Boolean.TRUE.equals(result.getFailed())) {
+                return "FAILED";
+            }
+            if (Boolean.TRUE.equals(result.getCompleted())) {
+                return "COMPLETE";
+            }
+            if (Boolean.TRUE.equals(result.getCheckpointPersisted())) {
+                return "CHECKPOINT";
+            }
+            return "PROGRESS";
         }
     }
 

@@ -1,4 +1,66 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-22 追加落地进展：DataSync 6.05 Runner 执行回执端到端闭环
+- 本阶段承接 Task Management 6.04，不继续扩展新的连接器、同步模式或 outbox 调度算法，而是补齐 DataSync 主链路最后一个关键断点：task-management 之前只能知道 datasource-management 已接收/入队命令，无法持续看到 Runner 后续 progress、checkpoint、complete、failed。
+- 产品目标：
+  - 让 DataSync 任务从“命令已投递”推进为“下游真实执行可追踪”；
+  - 支持管理台、任务时间线、告警和审计按 commandId、syncTaskId、syncExecutionId、taskId、租户/项目查询低敏执行历史；
+  - 不把 Runner 回执强行写回已完成的 Agent 异步任务主状态，避免破坏现有 lease/run 生命周期；
+  - 通过独立 execution receipt 投影承接后续 Agent timeline、数据同步看板和运营诊断。
+- task-management 新增执行回执投影：
+  - 新增 `task_data_sync_worker_execution_receipt` 表与迁移 `20260622_task_data_sync_worker_execution_receipt.sql`；
+  - 新增 `DataSyncWorkerExecutionReceipt`、`DataSyncWorkerExecutionReceiptMapper`；
+  - 新增事件类型 `DataSyncWorkerExecutionReceiptEventType`：`PROGRESS`、`CHECKPOINT`、`COMPLETE`、`FAILED`，并兼容 `FAIL -> FAILED` 归一化；
+  - 新增 `DataSyncWorkerExecutionReceiptService`，负责校验、关联 outbox、幂等写入、低敏摘要脱敏和查询聚合；
+  - 新增低敏视图与组装器：只返回 ID、状态、计数、checkpoint 可见性、错误/警告存在性，不返回正文。
+- task-management 新增内部控制面路由：
+  - `POST /internal/data-sync-worker-execution-receipts/record`：接收 datasource Runner 的低敏执行回执；
+  - `GET /internal/data-sync-worker-execution-receipts`：按 commandId、syncTaskId、syncExecutionId、taskId、tenantId、projectId、eventType 查询低敏历史；
+  - 这两个路由只面向内部服务账号、补偿工具或后续管理台后台，不应直接暴露给普通用户或公网。
+- datasource-management 接入 Runner 发布端：
+  - 新增配置 `TaskManagementExecutionReceiptProperties`；
+  - 新增 `service.execution.receipt` 子包，包含发布端口、本地 JSON 契约和 HTTP 发布器；
+  - `SyncBatchExecutionRunner` 在所有出口统一调用发布器：普通进度、检查点、完成、读取失败、写入失败和异常失败都会形成低敏 execution receipt；
+  - 发布器默认 `enabled=false`、`failOpen=true`，本地开发不强依赖 task-management，生产可按环境变量打开；
+  - 发布失败只记录 receiptId、syncTaskId、syncExecutionId、eventType 和异常类型，不打印目标 URL、错误正文、SQL、连接串、工具实参或样本数据。
+- 低敏与合规边界：
+  - execution receipt 不保存 SQL、连接串、工具实参、样本数据、失败行、prompt、模型输出、内部 endpoint 或 checkpoint 原始值；
+  - `checkpointValueVisibility` 只表示可见性策略，例如隐藏原始值，不承载真实 checkpoint；
+  - errorSummary/warnings 写入前做常见 secret、Bearer token、endpoint、疑似 SQL 片段脱敏和长度裁剪；
+  - API 视图仍不返回 errorSummary/warningSummary 正文，只返回存在性、数量和可见性策略。
+- 配置：
+  - `datasmart.datasource.task-management-execution-receipt.enabled`：默认 false；
+  - `task-management-base-url`：默认 `http://localhost:8081`；
+  - `record-endpoint-path`：默认 `/internal/data-sync-worker-execution-receipts/record`；
+  - `fail-open`：默认 true；
+  - `connect-timeout-ms/read-timeout-ms`：默认 1000/1500；
+  - `executor-id/source-service`：用于低敏排障定位。
+- 测试：
+  - 新增 `DataSyncWorkerExecutionReceiptServiceTest`；
+  - 增强 `SyncBatchExecutionRunnerTest`，验证 checkpoint、complete、failed 分支都会触发 execution receipt 发布；
+  - 定向测试：
+    `mvn -pl task-management -am "-Dtest=DataSyncWorkerExecutionReceiptServiceTest,DataSyncWorkerCommandOutboxDeadLetterManagementServiceTest,DataSyncWorkerCommandDeliveryServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`，14 个用例通过；
+  - datasource 定向测试：
+    `mvn -pl datasource-management -am "-Dtest=SyncBatchExecutionRunnerTest,DataSyncAgentTaskExecutionServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`，10 个用例通过；
+  - 完整模块测试：
+    `mvn -pl task-management,datasource-management -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`；
+  - 结果：task-management 108 个用例通过，datasource-management 41 个用例通过，Maven Toolchain 使用 JDK 21。
+- 行数检查：
+  - `DataSyncWorkerExecutionReceiptService.java`：391 行；
+  - `DataSyncWorkerExecutionReceiptController.java`：86 行；
+  - `SyncBatchExecutionRunner.java`：401 行；
+  - `HttpTaskManagementExecutionReceiptPublisher.java`：171 行；
+  - `DataSyncWorkerExecutionReceiptServiceTest.java`：246 行；
+  - `SyncBatchExecutionRunnerTest.java`：389 行；
+  - 核心文件均低于 500 行，并通过 `service.execution.receipt` 子包降低目录平铺杂乱度。
+- 当前边界：
+  - DataSync Java 主链路已经形成从 Agent command -> task-management outbox -> datasource internal command -> datasource Runner -> task-management execution receipt 的低敏闭环；
+  - 仍未把 execution receipt 聚合进 Agent Runtime timeline 或用户级任务看板；
+  - 仍未把内部回执路由接入真实服务间签名、mTLS、permission-admin 权限点和审计表；
+  - 当前 HTTP 发布适合小批量控制面闭环，高吞吐生产形态后续可替换为 Kafka outbox。
+- 下一步推荐路线：
+  1. DataSync Java 主链路建议阶段性收敛，不再继续在局部 outbox/receipt 上无限扩张；
+  2. 优先转向项目全局闭环缺口：data-quality 执行闭环、model-gateway 模型调用闭环、Agent runner 真实编排闭环和智能网关策略闭环；
+  3. 后续回到 DataSync 时，应优先做 execution receipt 到 Agent Runtime timeline/管理台视图的聚合，而不是继续新增底层字段。
 ## 2026-06-21 追加落地进展：Task Management 6.04 DataSync outbox 死信人工处置闭环
 - 本阶段承接 Task Management 6.03，不继续扩展新的 DataSync 连接器、同步模式或调度算法，而是补齐 outbox 生命周期里最后一个关键运维缺口：`DEAD_LETTER` 不能只停留在告警队列中，必须支持受控重放与人工关闭。
 - 产品目标：

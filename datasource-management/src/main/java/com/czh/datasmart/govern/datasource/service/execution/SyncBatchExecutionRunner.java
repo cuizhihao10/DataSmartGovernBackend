@@ -12,6 +12,7 @@ import com.czh.datasmart.govern.datasource.controller.dto.SyncFailRequest;
 import com.czh.datasmart.govern.datasource.controller.dto.SyncProgressRequest;
 import com.czh.datasmart.govern.datasource.service.SyncTaskService;
 import com.czh.datasmart.govern.datasource.service.execution.jdbc.SyncPreparedJdbcStatement;
+import com.czh.datasmart.govern.datasource.service.execution.receipt.TaskManagementExecutionReceiptPublisher;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -70,6 +71,15 @@ public class SyncBatchExecutionRunner {
     private final SyncTaskService syncTaskService;
 
     /**
+     * task-management 执行回执发布器。
+     *
+     * <p>Runner 的主职责仍然是 read -> write -> datasource 本地进度回写；执行回执发布属于跨服务控制面增强。
+     * 因此这里依赖接口而不是具体 HTTP 实现，后续可以替换成 Kafka outbox、gRPC 或服务网格客户端。
+     * 当前默认配置下发布器失败开放，不会因为任务中心短暂不可用就中断数据同步主流程。</p>
+     */
+    private final TaskManagementExecutionReceiptPublisher executionReceiptPublisher;
+
+    /**
      * 执行一批同步数据。
      *
      * @param request 单批执行请求，包含执行计划、执行器身份、累计统计和起始 checkpoint。
@@ -88,17 +98,18 @@ public class SyncBatchExecutionRunner {
 
             SyncBatchReadResult readResult = requireReadResult(syncBatchReader.readNextBatch(bundle.getReadContext()));
             if (hasText(readResult.getErrorSummary())) {
-                return failExecution(taskId, executionId, request, bundle, safeLong(readResult.getRecordsRead()), 0L,
-                        0L, false, "读取阶段失败: " + readResult.getErrorSummary());
+                return publishAndReturn(request, failExecution(taskId, executionId, request, bundle,
+                        safeLong(readResult.getRecordsRead()), 0L, 0L, false,
+                        "读取阶段失败: " + readResult.getErrorSummary()));
             }
 
             SyncBatchRecordBatch recordBatch = requireConsistentRecordBatch(readResult);
             SyncBatchWriteResult writeResult = writeIfNecessary(bundle.getWriteContext(), recordBatch);
             if (hasText(writeResult.getErrorSummary())) {
                 reportProgress(taskId, executionId, request, bundle, readResult, writeResult, null);
-                return failExecution(taskId, executionId, request, bundle, safeLong(readResult.getRecordsRead()),
+                return publishAndReturn(request, failExecution(taskId, executionId, request, bundle, safeLong(readResult.getRecordsRead()),
                         safeLong(writeResult.getRecordsWritten()), safeLong(writeResult.getFailedRecordCount()),
-                        true, "写入阶段失败: " + writeResult.getErrorSummary());
+                        true, "写入阶段失败: " + writeResult.getErrorSummary()));
             }
 
             Object nextCheckpointValue = resolveNextCheckpointValue(request, bundle, readResult);
@@ -106,16 +117,29 @@ public class SyncBatchExecutionRunner {
 
             if (Boolean.TRUE.equals(readResult.getEndOfSource())) {
                 completeExecution(taskId, executionId, request, readResult, writeResult);
-                return buildResult(taskId, executionId, bundle, request, readResult, writeResult,
-                        true, false, true, true, checkpointPersisted, null);
+                return publishAndReturn(request, buildResult(taskId, executionId, bundle, request, readResult, writeResult,
+                        true, false, true, true, checkpointPersisted, null));
             }
 
-            return buildResult(taskId, executionId, bundle, request, readResult, writeResult,
-                    false, false, false, true, checkpointPersisted, null);
+            return publishAndReturn(request, buildResult(taskId, executionId, bundle, request, readResult, writeResult,
+                    false, false, false, true, checkpointPersisted, null));
         } catch (RuntimeException ex) {
             String errorSummary = lowSensitiveError("执行阶段异常", ex);
-            return failExecution(taskId, executionId, request, bundle, 0L, 0L, 0L, false, errorSummary);
+            return publishAndReturn(request, failExecution(taskId, executionId, request, bundle,
+                    0L, 0L, 0L, false, errorSummary));
         }
+    }
+
+    /**
+     * 发布执行回执并返回原始 Runner 结果。
+     *
+     * <p>这个方法让 Runner 的所有出口都走同一条执行回执路径，避免“成功会发布、失败漏发布”之类的状态洞。
+     * 发布器自身负责 enabled/failOpen/通信技术等策略；Runner 只表达“本批执行已经形成一个低敏结果”。</p>
+     */
+    private SyncBatchExecutionRunResult publishAndReturn(SyncBatchExecutionRunRequest request,
+                                                         SyncBatchExecutionRunResult result) {
+        executionReceiptPublisher.publish(request, result);
+        return result;
     }
 
     /**

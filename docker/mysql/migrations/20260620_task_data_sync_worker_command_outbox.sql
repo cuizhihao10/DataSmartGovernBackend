@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS task_data_sync_worker_command_outbox (
     trace_id VARCHAR(128) DEFAULT NULL COMMENT '链路追踪 ID',
     template_id BIGINT DEFAULT NULL COMMENT '历史任务模板 ID，可为空',
     sync_template_id BIGINT DEFAULT NULL COMMENT 'data-sync 模板 ID，可为空但 template_id/sync_template_id 至少一个应存在',
-    status VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/DISPATCHING/DEFERRED/SUCCEEDED/FAILED/DEAD_LETTER',
+    status VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/DISPATCHING/DEFERRED/SUCCEEDED/FAILED/DEAD_LETTER/CLOSED',
     attempt_count INT NOT NULL DEFAULT 0 COMMENT '投递尝试次数',
     payload_json JSON NOT NULL COMMENT '低敏命令 payload；不应包含工具参数正文、SQL、凭据或样本数据',
     payload_size_bytes INT NOT NULL DEFAULT 0 COMMENT 'payload UTF-8 字节数',

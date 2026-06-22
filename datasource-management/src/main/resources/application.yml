@@ -134,6 +134,30 @@ datasmart:
       # 单租户队列预警阈值，用于提前识别租户级积压。
       queue-alert-threshold-per-tenant: 20
 
+    task-management-execution-receipt:
+      # 是否把 datasource-management Runner 的低敏执行结果回写到 task-management。
+      # 默认关闭，是为了避免本地只启动 datasource-management 时因为 task-management 不在线而产生额外噪音。
+      # 生产环境如果需要端到端任务历史、管理台执行时间线和跨服务告警，应显式打开。
+      enabled: ${DATASMART_DATASOURCE_TASK_RECEIPT_ENABLED:false}
+      # task-management 内部访问地址。
+      # 当前本地默认指向 8081；生产环境建议替换为内部 gateway、服务发现域名、Nacos 解析地址或服务网格入口。
+      task-management-base-url: ${DATASMART_TASK_MANAGEMENT_BASE_URL:http://localhost:8081}
+      # task-management 接收 Runner 执行回执的内部路径。
+      # 该路径只面向服务账号或受控 worker，不应暴露给公网或普通用户。
+      record-endpoint-path: ${DATASMART_TASK_EXECUTION_RECEIPT_ENDPOINT:/internal/data-sync-worker-execution-receipts/record}
+      # 发布失败时是否失败开放。
+      # true：回执发布失败只写低敏日志，不中断真实同步执行；
+      # false：回执发布失败会抛出异常，适合强审计场景，但会增加控制面故障影响主流程的风险。
+      fail-open: ${DATASMART_DATASOURCE_TASK_RECEIPT_FAIL_OPEN:true}
+      # HTTP 连接超时毫秒数。回执发布处于执行后控制面路径，超时应短，避免占用 worker。
+      connect-timeout-ms: ${DATASMART_DATASOURCE_TASK_RECEIPT_CONNECT_TIMEOUT_MS:1000}
+      # HTTP 读取响应超时毫秒数。生产环境如果 task-management 偶发抖动，可先调大该值，再评估是否改成 Kafka outbox。
+      read-timeout-ms: ${DATASMART_DATASOURCE_TASK_RECEIPT_READ_TIMEOUT_MS:1500}
+      # datasource 执行器标识，用于 task-management 执行历史排障。
+      executor-id: ${DATASMART_DATASOURCE_EXECUTION_RECEIPT_EXECUTOR_ID:datasource-management-runner}
+      # 来源服务名，会写入服务间 Header 和 receipt payload。
+      source-service: datasource-management
+
     sync-alert:
       # 告警创建或刷新后是否立即尝试投递。
       # 当前采用“先落库、再外送”的策略，即使外送失败，本地治理对象仍然保留。
