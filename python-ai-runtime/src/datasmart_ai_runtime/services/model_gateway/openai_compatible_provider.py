@@ -31,6 +31,10 @@ from datasmart_ai_runtime.services.model_gateway.model_tool_schema import (
     ModelToolSchemaExposurePolicy,
     OpenAICompatibleToolSchemaBuilder,
 )
+from datasmart_ai_runtime.services.model_gateway.model_provider_error_sanitizer import (
+    safe_http_error_message,
+    safe_transport_error_message,
+)
 
 
 class ModelProviderHttpTransport(Protocol):
@@ -130,17 +134,17 @@ class OpenAICompatibleModelProvider:
                 return self._to_result(request, payload, latency_ms)
             except HTTPError as exc:
                 last_error_code = f"MODEL_PROVIDER_HTTP_{exc.code}"
-                last_error_message = self._read_http_error(exc)
+                last_error_message = safe_http_error_message(exc)
                 if not self._should_retry(exc.code, attempt, attempts):
                     break
-            except URLError as exc:
+            except URLError:
                 last_error_code = "MODEL_PROVIDER_NETWORK_ERROR"
-                last_error_message = str(exc.reason)
+                last_error_message = safe_transport_error_message(last_error_code)
                 if not self._should_retry(None, attempt, attempts):
                     break
-            except TimeoutError as exc:
+            except TimeoutError:
                 last_error_code = "MODEL_PROVIDER_TIMEOUT"
-                last_error_message = str(exc)
+                last_error_message = safe_transport_error_message(last_error_code)
                 if not self._should_retry(None, attempt, attempts):
                     break
             if attempt < attempts:
@@ -181,13 +185,13 @@ class OpenAICompatibleModelProvider:
                     event = json.loads(payload)
                     yield self._to_chunk(request, event, sequence)
         except HTTPError as exc:
-            yield self._error_chunk(request, f"MODEL_PROVIDER_HTTP_{exc.code}", self._read_http_error(exc), sequence + 1)
-        except URLError as exc:
-            yield self._error_chunk(request, "MODEL_PROVIDER_NETWORK_ERROR", str(exc.reason), sequence + 1)
-        except TimeoutError as exc:
-            yield self._error_chunk(request, "MODEL_PROVIDER_TIMEOUT", str(exc), sequence + 1)
-        except json.JSONDecodeError as exc:
-            yield self._error_chunk(request, "MODEL_PROVIDER_STREAM_MALFORMED", str(exc), sequence + 1)
+            yield self._error_chunk(request, f"MODEL_PROVIDER_HTTP_{exc.code}", safe_http_error_message(exc), sequence + 1)
+        except URLError:
+            yield self._error_chunk(request, "MODEL_PROVIDER_NETWORK_ERROR", safe_transport_error_message("MODEL_PROVIDER_NETWORK_ERROR"), sequence + 1)
+        except TimeoutError:
+            yield self._error_chunk(request, "MODEL_PROVIDER_TIMEOUT", safe_transport_error_message("MODEL_PROVIDER_TIMEOUT"), sequence + 1)
+        except json.JSONDecodeError:
+            yield self._error_chunk(request, "MODEL_PROVIDER_STREAM_MALFORMED", safe_transport_error_message("MODEL_PROVIDER_STREAM_MALFORMED"), sequence + 1)
 
     def _build_http_request(self, request: ModelInvocationRequest, stream: bool) -> Request:
         """把统一模型请求转换为 OpenAI-compatible Chat Completions HTTP 请求。
@@ -448,18 +452,6 @@ class OpenAICompatibleModelProvider:
             return HTTPStatus(status_code) in self._TRANSIENT_STATUS_CODES
         except ValueError:
             return False
-
-    @staticmethod
-    def _read_http_error(exc: HTTPError) -> str:
-        """读取 HTTPError body，失败时返回状态文本。"""
-
-        try:
-            body = exc.read().decode("utf-8")
-            if body:
-                return body
-        except Exception:
-            pass
-        return f"HTTP {exc.code} {exc.reason}"
 
     @staticmethod
     def _chat_completions_url(endpoint: str) -> str:

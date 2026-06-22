@@ -225,8 +225,14 @@ class ModelProviderRegistryTest(unittest.TestCase):
         self.assertEqual(1, len(chunks))
         self.assertEqual("MODEL_PROVIDER_STREAM_MALFORMED", chunks[0].error_code)
 
-    def test_openai_compatible_provider_returns_error_result_after_non_retryable_error(self) -> None:
-        """不可重试错误应归一化为 ModelInvocationResult，方便上层降级和审计。"""
+    def test_openai_compatible_provider_returns_low_sensitive_error_result_after_non_retryable_error(self) -> None:
+        """不可重试错误应归一化为低敏 ModelInvocationResult。
+
+        上游 OpenAI-compatible 网关的错误 body 可能包含 API Key、内部 endpoint、prompt、SQL、工具参数
+        或供应商私有调试信息。模型 Provider 可以保留稳定 error_code，供预算、健康回写和 fallback 使用；
+        但不能把原始错误正文塞进 `content`，否则前端实时输出、runtime event 或 Java 控制面都会成为新的
+        敏感信息扩散面。
+        """
 
         def transport(request, timeout: int):
             raise HTTPError(
@@ -234,7 +240,10 @@ class ModelProviderRegistryTest(unittest.TestCase):
                 code=401,
                 msg="unauthorized",
                 hdrs=None,
-                fp=FakeErrorBody("invalid api key"),
+                fp=FakeErrorBody(
+                    "invalid api key sk-secret; http://internal-model-gateway/v1; "
+                    "SELECT * FROM sensitive_table"
+                ),
             )
 
         provider = OpenAICompatibleModelProvider(
@@ -250,7 +259,44 @@ class ModelProviderRegistryTest(unittest.TestCase):
         )
 
         self.assertEqual("MODEL_PROVIDER_HTTP_401", result.error_code)
-        self.assertIn("invalid api key", result.content)
+        self.assertIn("状态码 401", result.content)
+        self.assertIn("原始响应正文已按低敏策略隐藏", result.content)
+        self.assertNotIn("sk-secret", result.content)
+        self.assertNotIn("internal-model-gateway", result.content)
+        self.assertNotIn("sensitive_table", result.content)
+
+    def test_openai_compatible_stream_error_chunk_hides_sensitive_provider_body(self) -> None:
+        """流式 HTTP 错误 chunk 也不能回显 Provider 原始错误正文。"""
+
+        def transport(request, timeout: int):
+            raise HTTPError(
+                url=request.full_url,
+                code=503,
+                msg="service unavailable",
+                hdrs=None,
+                fp=FakeErrorBody("upstream prompt=secret toolArguments={'sql':'select * from raw_table'}"),
+            )
+
+        provider = OpenAICompatibleModelProvider(
+            OpenAICompatibleProviderSettings(max_retries=0),
+            transport=transport,
+        )
+
+        chunks = tuple(
+            provider.stream(
+                ModelInvocationRequest(
+                    route=_openai_route(endpoint="http://model-gateway.local/v1"),
+                    messages=(ModelMessage(role="user", content="hello"),),
+                )
+            )
+        )
+
+        self.assertEqual(1, len(chunks))
+        self.assertEqual("MODEL_PROVIDER_HTTP_503", chunks[0].error_code)
+        self.assertIn("状态码 503", chunks[0].content_delta)
+        self.assertNotIn("prompt=secret", chunks[0].content_delta)
+        self.assertNotIn("toolArguments", chunks[0].content_delta)
+        self.assertNotIn("raw_table", chunks[0].content_delta)
 
     def test_model_provider_registry_from_env_injects_openai_settings(self) -> None:
         registry = model_provider_registry_from_env(

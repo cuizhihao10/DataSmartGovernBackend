@@ -1,4 +1,28 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-22 落地补充：OpenAI-compatible Provider errors must be governance facts, not echoed payloads
+
+- 本轮趋势核验：
+  - vLLM 持续提供 OpenAI-compatible server，覆盖 Chat Completions 等 API，适合作为 DataSmart 自托管推理入口之一；
+  - SGLang 同样提供 OpenAI-compatible API，并继续扩展 tool choice、reasoning parser、structured output 等 Agent 关键能力；
+  - LiteLLM 的健康检查驱动路由强调在用户请求命中前主动剔除不健康部署，这与 DataSmart 现有 provider health / fallback / active probe 方向一致。
+- 本轮落地到代码的能力：
+  - 新增 `model_provider_error_sanitizer.py`；
+  - `OpenAICompatibleModelProvider` 的 HTTP、网络、超时、流式解析错误不再回显上游原始正文；
+  - 非流式 `ModelInvocationResult.content` 与流式 `ModelInvocationChunk.content_delta` 只返回稳定错误码对应的低敏中文说明；
+  - 保留 `error_code`、providerName、modelName、latencyMs 等治理事实，继续支持预算、健康台账、fallback 和运维诊断。
+- 低敏与安全边界：
+  - 不读取或回显 HTTPError response body；
+  - 不返回 URL、query、API Key、内部 endpoint、prompt、messages、toolArguments、SQL、样本数据、模型输出或上游异常栈；
+  - 上游原始错误正文应进入受控日志或供应商网关排障链路，不应进入 Agent runtime event、前端实时输出或 Java 控制面投影。
+- 产品判断：
+  - 当前模型层路线继续保持“成熟推理服务 + 可替换 Provider + 治理型模型网关”，不做自研推理内核、微调或后训练；
+  - 接下来如果继续模型网关主线，优先补真实 provider 调用的观测与安全闭环，例如调用审计、fallback 事件、provider quality score、KV/prefix cache 命中率，而不是追逐单个模型家族；
+  - 为避免局部发散，模型网关完成错误低敏和健康闭环后，应尽快转向 Agent runner 真实编排或智能网关执行闭环。
+- 参考资料：
+  - vLLM OpenAI-Compatible Server: `https://docs.vllm.ai/en/latest/serving/online_serving/openai_compatible_server/`
+  - SGLang OpenAI APIs: `https://docs.sglang.ai/basic_usage/openai_api_completions.html`
+  - SGLang Tool Parser: `https://docs.sglang.ai/advanced_features/tool_parser.html`
+  - LiteLLM Health Check Driven Routing: `https://docs.litellm.ai/docs/proxy/health_check_routing`
 
 ## 2026-06-19 落地补充：protocol adapters need one internal resume-fact DTO contract
 

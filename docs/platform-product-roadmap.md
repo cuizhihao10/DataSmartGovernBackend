@@ -1,4 +1,45 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-22 追加落地进展：Python Runtime 5.87 模型 Provider 错误低敏闭环
+- 本阶段承接 Data Quality 6.06 后的整体收敛要求，转向 `python-ai-runtime` 的模型网关主线，不新增模型家族、训练算法或底层推理优化，而是补齐真实 OpenAI-compatible Provider 失败路径的低敏治理。
+- 产品目标：
+  - 支持 vLLM、SGLang、LiteLLM 或企业内部模型网关这类 OpenAI-compatible 接入形态；
+  - 让模型调用失败仍能形成稳定 `error_code`、latency、provider/model 等治理事实；
+  - 避免把上游 HTTP error body、网络异常正文、SSE malformed 片段直接回传到前端、runtime event、Java 控制面或诊断投影；
+  - 为后续 provider health、fallback、预算、调用审计和 Agent runner 真实执行打安全地基。
+- 新增组件：
+  - 新增 `model_provider_error_sanitizer.py`；
+  - 提供 `safe_http_error_message(...)`，按 HTTP 状态码返回低敏中文排障说明，不读取 response body；
+  - 提供 `safe_transport_error_message(...)`，把网络、超时、流式解析错误转换为稳定说明，不透传原始异常 message。
+- 修改 Provider 行为：
+  - `OpenAICompatibleModelProvider.invoke(...)` 在 HTTP、网络、超时失败后返回低敏 `[MODEL_PROVIDER_ERROR] ...`；
+  - `OpenAICompatibleModelProvider.stream(...)` 在 HTTP、网络、超时、JSON 解析失败后返回低敏 error chunk；
+  - 保留 `error_code` 用于健康台账、fallback、预算和运维诊断；
+  - 不再允许 `invalid api key`、内部 URL、SQL、工具参数或上游异常正文进入模型调用结果。
+- 低敏与合规边界：
+  - 不读取或回显 HTTPError response body；
+  - 不返回 URL query、API Key、内部 endpoint、prompt、messages、toolArguments、SQL、样本数据、模型输出或异常栈；
+  - 原始错误正文只应进入受控日志系统或供应商网关排障链路，并由部署侧脱敏管理。
+- 测试：
+  - 增强 `test_model_provider.py`；
+  - 覆盖非流式 HTTP 401 错误正文隐藏；
+  - 覆盖流式 HTTP 503 错误 chunk 隐藏 prompt/toolArguments/SQL；
+  - 定向测试：
+    `python -m pytest python-ai-runtime\tests\test_model_provider.py python-ai-runtime\tests\test_model_gateway.py python-ai-runtime\tests\test_model_provider_health.py python-ai-runtime\tests\test_model_provider_health_probe.py python-ai-runtime\tests\test_agent_orchestrator_model_gateway_events.py -q`；
+  - 结果：31 个用例通过。
+- 行数检查：
+  - `openai_compatible_provider.py`：485 行；
+  - `model_provider_error_sanitizer.py`：49 行；
+  - `test_model_provider.py`：367 行；
+  - 核心文件均低于 500 行。
+- 当前边界：
+  - 仍未实现自研推理优化、微调、后训练或模型算法改造；
+  - 当前路线是“成熟 OpenAI-compatible 推理服务 + DataSmart 可治理模型网关”；
+  - 尚未做调用审计持久化、真实 fallback 事件投递、provider quality score、KV/prefix cache 命中率回灌和多租户模型套餐计费；
+  - 不建议继续围绕模型网关无限堆策略，应尽快转向 Agent runner 真实编排闭环或智能网关执行闭环。
+- 下一步推荐路线：
+  1. 模型网关短期只补必要的调用审计或 fallback 事件，不继续扩展底层推理细节；
+  2. 项目整体优先进入 Agent runner 真实编排闭环，让模型调用、工具计划、readiness、resume gate 和 worker/outbox 串起来；
+  3. 智能网关侧后续应把 provider health、tool readiness、memory scope 和 session admission 聚合成一次可执行前置决策。
 ## 2026-06-22 追加落地进展：Data Quality 6.06 执行诊断与运营可见性闭环
 - 本阶段承接 DataSync 6.05 后的整体收敛要求，切回 `data-quality` 模块，不继续新增扫描器、连接器或复杂清洗算法，而是补齐质量执行链路在生产运营中的第一层诊断能力。
 - 产品目标：
