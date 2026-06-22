@@ -29,9 +29,11 @@ from datasmart_ai_runtime.services.runtime_events.runtime_event_store import Run
 from datasmart_ai_runtime.services.runtime_events.runtime_event_transport import RuntimeEventTransportBuilder
 from datasmart_ai_runtime.services.skills import build_session_skill_visibility_runtime_event
 from datasmart_ai_runtime.services.tools import (
+    ToolActionIntakeSource,
     ToolExecutionReadinessPolicyProvider,
     ToolExecutionReadinessPolicyProviderProtocol,
     ToolExecutionReadinessService,
+    build_tool_action_command_proposal_templates,
     build_tool_execution_readiness_graph_response,
     build_tool_execution_readiness_runtime_event,
 )
@@ -191,8 +193,18 @@ def build_plan_response(
         event_publisher=event_publisher,
     )
     response = _build_base_response(plan, event_transport_builder)
+    tool_execution_readiness_response = _tool_execution_readiness_response(tool_execution_readiness)
+    # command proposal 模板是“下一步如何进入 Java 控制面”的低敏导航，而不是 HTTP 提交动作。
+    # 这里把 `/agent/plans` 生成的 ToolPlan 统一标记为 MODEL_TOOL_CALL + AGENT_PLAN 来源，和 MCP/A2A
+    # 入口区分开；模板只读取 readiness response 中的字段名、状态、风险和计数，不读取 ToolPlan.arguments。
+    command_proposal_templates = build_tool_action_command_proposal_templates(
+        source=ToolActionIntakeSource.MODEL_TOOL_CALL,
+        protocol_family="AGENT_PLAN",
+        readiness_summary=tool_execution_readiness_response,
+        command_context=_command_proposal_context(request, plan, readiness_policy_snapshot),
+    )
     response["agentWorkspace"] = workspace_context.to_summary()
-    response["toolExecutionReadiness"] = _tool_execution_readiness_response(tool_execution_readiness)
+    response["toolExecutionReadiness"] = tool_execution_readiness_response
     # `toolExecutionReadinessGraph` 是 readiness 的编排视角：readiness 摘要回答“每个工具当前是什么决策”，
     # graph 回答“这些决策会让执行图走向哪个条件分支”。它仍然是执行前低敏视图，不执行工具、不写 outbox、
     # 不创建审批单，只为后续 LangGraph/OpenClaw-style 条件节点和 Java projection 预留稳定契约。
@@ -211,6 +223,7 @@ def build_plan_response(
         loop_control_decision=loop_control_decision,
         second_turn_result=second_turn_result,
         memory_write_proposal=memory_write_proposal,
+        command_proposal_templates=command_proposal_templates,
     ).to_summary()
     response["intelligentGatewayGovernance"] = intelligent_gateway_governance
     if control_plane_ingestion is not None:
@@ -248,6 +261,29 @@ def _attach_tool_execution_readiness_event(
         return plan
     readiness_event = build_tool_execution_readiness_runtime_event(plan, request, tool_execution_readiness)
     return replace(plan, runtime_events=plan.runtime_events + (readiness_event,))
+
+
+def _command_proposal_context(
+    request: AgentRequest,
+    plan: AgentPlan,
+    readiness_policy_snapshot: Any,
+) -> dict[str, Any]:
+    """构建 command proposal 模板所需的低敏控制面上下文。
+
+    这个上下文只包含租户、项目、操作者、请求 ID 和策略版本等路由/审计字段，不包含 objective、
+    prompt、工具参数、SQL、样本数据或模型输出。runId/sessionId 等 Java 控制面事实通常要等
+    plan ingestion 后才生成，因此这里不伪造；后续 Java execution graph 或 proposal 调用方应从
+    控制面投影中补齐这些字段。
+    """
+
+    return {
+        "tenantId": request.tenant_id,
+        "projectId": request.project_id,
+        "actorId": request.actor_id,
+        "requestId": plan.request_id,
+        "policyVersion": getattr(readiness_policy_snapshot, "policy_version", None),
+        "clientRequestId": plan.request_id,
+    }
 
 
 def _tool_execution_readiness_response(tool_execution_readiness: Any) -> dict[str, Any]:

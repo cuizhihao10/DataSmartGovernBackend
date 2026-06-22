@@ -1,4 +1,26 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-23 落地补充：closure snapshot should include the next host handoff, not only the current gate
+
+- 本轮趋势校准：
+  - MCP Tools 最新规范继续强调工具的 schema、结构化结果和客户端校验边界。映射到 DataSmart，工具意图不能直接变成副作用执行，而应先进入低敏 ToolPlan、readiness 和 Java 控制面 handoff；
+  - LangGraph interrupts/persistence 强调图可以暂停、保存状态并等待外部输入后恢复。映射到 DataSmart，Python graph state 只能说明“Agent 停在哪里”，真正可执行还要看 Java host facts、proposal、outbox 和 receipt；
+  - OpenAI Agents SDK 的 handoffs、guardrails、human review 和 RunState/HITL 方向说明，Agent Host 需要把“下一步应交给谁、缺什么证据、如何恢复”显式化。
+- 本轮落地到代码的能力：
+  - `/agent/plans` 的 `agentExecutionClosure` 新增 `controlPlaneHandoff`；
+  - `plan_response.py` 复用既有 `build_tool_action_command_proposal_templates(...)`，将本轮 Agent ToolPlan 视为 `MODEL_TOOL_CALL + AGENT_PLAN` 来源，生成 Java command proposal 的低敏模板；
+  - `AgentExecutionClosureService` 只裁剪模板 ID、工具名、decision、proposalStateHint、目标 Java route、缺失证据 code 和候选计数；
+  - 不返回 `requestBodyTemplate`、`payloadReference`、审批/澄清 fact id、工具参数、prompt、SQL、样本数据、模型输出、凭据或内部 endpoint。
+- 产品判断：
+  - 5.88 解决“当前停在哪个门禁”，5.89 进一步解决“下一步应如何安全交给 Java 控制面”；
+  - 这仍然不是 durable runner，也不会提交 Java proposal、写 outbox 或调度 worker；
+  - 下一步应把 `controlPlaneHandoff` 对齐 Java execution graph/payload store/outbox writer，而不是继续在 Python 响应里堆更多预览字段。
+- 参考资料：
+  - MCP Tools: `https://modelcontextprotocol.io/specification/2025-11-25/server/tools`
+  - LangGraph Interrupts: `https://docs.langchain.com/oss/python/langgraph/interrupts`
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+  - OpenAI Agents SDK: `https://developers.openai.com/api/docs/guides/agents`
+  - OpenAI Agents SDK Human-in-the-loop: `https://openai.github.io/openai-agents-python/human_in_the_loop/`
+
 ## 2026-06-23 落地补充：Agent Host needs a request-level closure snapshot before durable execution
 
 - 本轮趋势核验：

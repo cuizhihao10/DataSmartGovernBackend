@@ -1,4 +1,28 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-23 追加落地进展：Python Runtime 5.89 Agent 控制面交接摘要
+- 本阶段承接 5.88 的 `agentExecutionClosure`，继续朝“整体闭环收敛”推进，但不新增真实工具执行、不写 Java outbox、不调度 worker，而是把下一步 Java command proposal handoff 摘要纳入闭环快照。
+- 产品目标：
+  - 让调用方不仅知道本轮 Agent 请求停在 `WAITING_JAVA_CONTROL_PLANE_INGESTION`，还知道可执行工具是否已经具备 proposal 候选、还缺哪些控制面证据、下一跳应调用哪个 Java proposal 路由；
+  - 避免前端、智能网关或后续 runner 自己从多个散点字段拼接 proposal 信息，降低误执行、漏审批、漏 payloadReference 校验的风险；
+  - 继续维持 Python Runtime 的职责边界：模型/工具意图归一、readiness、低敏 handoff 导航，而不是承担 Java host facts、outbox、worker receipt 的事实源责任。
+- API 行为变化：
+  - `/agent/plans.agentExecutionClosure` 新增 `controlPlaneHandoff`；
+  - `controlPlaneHandoff` 返回 `available`、`previewOnly`、`toolExecutionEnabled`、`targetControlPlaneRoutes`、`totalTemplateCount`、`outboxPreflightCandidateCount`、`missingEvidenceCodes`、`templateSummaries` 和 `nextAction`；
+  - `templateSummaries` 只保留模板 ID、来源、协议族、工具名、decision、proposalStateHint、缺失证据 code 与下一步动作。
+- 低敏与边界：
+  - 不返回 `requestBodyTemplate`、`payloadReference`、`approvalConfirmationId`、`clarificationFactId`、工具参数、prompt、SQL、样本数据、模型输出、凭据或内部 endpoint；
+  - 不提交 Java proposal、不创建审批、不写 outbox、不触发 worker；
+  - `READY` 仍然只表示“可以进入 Java proposal 前置校验”，不表示工具已执行。
+- 测试：
+  - 增强 `test_agent_execution_closure.py`，验证 READY 工具会生成 handoff 候选，并验证 `requestBodyTemplate` 没有进入闭环输出；
+  - 定向测试命令：
+    `python -m pytest python-ai-runtime\tests\test_agent_execution_closure.py python-ai-runtime\tests\test_tool_action_command_proposal_client.py python-ai-runtime\tests\test_api_bootstrap.py -q`；
+  - 当前结果：25 个用例通过。
+- 当前边界：
+  - 本阶段仍是低敏 handoff 导航，不是 durable action runner；
+  - 下一步应进入 Java execution graph/payload store/outbox writer 的真实对齐，而不是继续在 Python 响应层扩字段；
+  - 智能网关后续可以消费 `controlPlaneHandoff`，把 session admission、provider health、readiness、memory scope 与 Java host evidence 聚合成统一执行前决策。
+
 ## 2026-06-23 追加落地进展：Python Runtime 5.88 Agent 请求级执行闭环快照
 - 本阶段承接模型 Provider 低敏闭环后，开始把项目从“能力分散建设”推进到“请求级闭环收敛”：不继续新增模型家族、不新增真实工具执行副作用、不新增 Java outbox 写入，而是先给 `/agent/plans` 补齐一张统一的 `agentExecutionClosure` 闭环导航卡片。
 - 产品目标：
