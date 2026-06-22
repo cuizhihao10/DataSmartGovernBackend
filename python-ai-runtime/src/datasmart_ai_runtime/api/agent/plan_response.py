@@ -23,6 +23,10 @@ from datasmart_ai_runtime.api.agent.plan_readiness_views import (
 )
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ToolPlan
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
+from datasmart_ai_runtime.services.agent_capability import (
+    AgentCapabilityMatrixService,
+    default_agent_capability_matrix_service,
+)
 from datasmart_ai_runtime.services.agent_execution import AgentExecutionClosureService
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
 from datasmart_ai_runtime.services.agent_gateway import build_agent_session_scheduling_runtime_event
@@ -58,6 +62,7 @@ def build_plan_response(
     memory_write_governance: Any | None = None,
     skill_publication_diagnostics_service: Any | None = None,
     tool_execution_readiness_policy_provider: ToolExecutionReadinessPolicyProviderProtocol | None = None,
+    agent_capability_matrix_service: AgentCapabilityMatrixService | None = None,
 ) -> dict[str, Any]:
     """构建同步 HTTP 风格的 Agent 计划响应。
 
@@ -165,6 +170,11 @@ def build_plan_response(
     skill_manifest_diagnostics = _skill_publication_manifest_diagnostics_snapshot(
         skill_publication_diagnostics_service
     )
+    # Agent 能力完备度矩阵是项目收敛阶段的“能力地图”。它不参与本轮模型规划、不改变工具可见性、
+    # 不触发任何副作用；这里只把低敏压缩摘要放进 `/agent/plans`，让调用方知道当前 Agent Host
+    # 离 tools/skills/memory/context/permission/command/LLM 等完整闭环还差哪些关键能力。
+    capability_matrix_service = agent_capability_matrix_service or default_agent_capability_matrix_service()
+    agent_capability_closure = capability_matrix_service.plan_summary()
 
     tool_execution_readiness_response = build_tool_execution_readiness_response(tool_execution_readiness)
     # command proposal 模板是“下一步如何进入 Java 控制面”的低敏导航，而不是 HTTP 提交动作。
@@ -226,6 +236,7 @@ def build_plan_response(
     response = _build_base_response(plan, event_transport_builder)
     response["agentWorkspace"] = workspace_context.to_summary()
     response["toolExecutionReadiness"] = tool_execution_readiness_response
+    response["agentCapabilityClosure"] = agent_capability_closure
     # `toolExecutionReadinessGraph` 是 readiness 的编排视角：readiness 摘要回答“每个工具当前是什么决策”，
     # graph 回答“这些决策会让执行图走向哪个条件分支”。它仍然是执行前低敏视图，不执行工具、不写 outbox、
     # 不创建审批单，只为后续 LangGraph/OpenClaw-style 条件节点和 Java projection 预留稳定契约。

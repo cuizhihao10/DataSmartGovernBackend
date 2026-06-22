@@ -43,6 +43,7 @@ from datasmart_ai_runtime.api.agent.orchestrator_factory import (
     positive_int_env as _positive_int_env,
     truthy_env as _truthy_env,
 )
+from datasmart_ai_runtime.api.agent.capabilities import register_agent_capability_routes
 from datasmart_ai_runtime.api.agent.routes import register_agent_runtime_routes
 from datasmart_ai_runtime.api.agent.plan_response import build_plan_response
 from datasmart_ai_runtime.config import model_routes_from_env
@@ -55,6 +56,7 @@ from datasmart_ai_runtime.services.agent_runtime_tool_feedback_client import (
     JavaAgentRuntimeToolFeedbackClient,
     JavaAgentRuntimeToolFeedbackProvider,
 )
+from datasmart_ai_runtime.services.agent_capability import default_agent_capability_matrix_service
 from datasmart_ai_runtime.services.agent_second_turn_orchestrator import AgentSecondTurnOrchestrator
 from datasmart_ai_runtime.services.memory.memory_materialization_metrics import AgentMemoryMaterializationMetrics
 from datasmart_ai_runtime.services.memory.memory_materialization_worker import (
@@ -134,6 +136,7 @@ def create_app() -> Any:
     # - DeepSeek/Qwen/GLM/vLLM/SGLang 等接入方式是否仍需要 SKU、工具调用、缓存隔离或压测验证。
     model_capability_registry = default_model_capability_registry()
     platform_convergence_diagnostics = default_platform_convergence_diagnostics_service()
+    agent_capability_matrix = default_agent_capability_matrix_service()
     model_provider_health_registry = InMemoryModelProviderHealthRegistry()
     model_provider_health_probe_settings = model_provider_health_probe_settings_from_env()
     model_provider_health_probe = ModelProviderHealthProbeService(
@@ -432,6 +435,7 @@ def create_app() -> Any:
         memory_write_governance=memory_runtime.memory_write_governance,
         skill_publication_diagnostics_service=skill_publication_manifest_diagnostics,
         tool_execution_readiness_policy_provider=tool_execution_readiness_policy_provider,
+        agent_capability_matrix_service=agent_capability_matrix,
         tool_action_resume_fact_provider=tool_action_resume_fact_provider,
         tool_action_checkpoint_store=tool_action_checkpoint_store,
         tool_action_checkpoint_metrics=tool_action_checkpoint_metrics,
@@ -452,6 +456,7 @@ def create_app() -> Any:
         audit_outbox_recorder=memory_runtime.audit_outbox_runtime.recorder,
     )
     register_platform_convergence_routes(app, diagnostics_service=platform_convergence_diagnostics)
+    register_agent_capability_routes(app, capability_matrix_service=agent_capability_matrix)
 
     return app
 

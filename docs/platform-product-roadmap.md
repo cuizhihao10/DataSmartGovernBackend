@@ -1,4 +1,40 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-23 追加落地进展：Python Runtime 5.91 Agent 能力完备度矩阵
+- 本阶段承接“项目开始收敛闭口”的要求，不新增真实工具副作用、不写 Java outbox、不调度 worker，而是把完整 Agent Host 需要的能力域固化为可测试、可诊断、可持续维护的能力矩阵。
+- 产品目标：
+  - 将 tools、skills、memory、query engine、context、permission、sub-agent、sessions、command、hook、tech stack、LLM 等 Agent 核心能力全部纳入项目视野；
+  - 每个能力域继续拆分子能力，例如文件读写、命令执行、网页搜索、Skill 加载/创建、短期/长期/profile/FTS 记忆、stream/cache/retry/rate-limit/token-limit、dangerous-path/safe-cmd/HITL 等；
+  - 明确区分“已可用”“部分闭环”“控制面合同就绪”“计划中”“阻塞”，避免把 preview、诊断或只读合同误认为商业化完成；
+  - 后续按矩阵逐项关闭缺口，而不是继续凭感觉在单个局部能力上发散。
+- 新增组件：
+  - `services/agent_capability/agent_capability_matrix.py`
+    - 新增 `AgentCapabilityStatus`、`AgentSubCapability`、`AgentCapabilityDomain`、`AgentCapabilityMatrixService`；
+    - 默认覆盖 12 个一级能力域和 37 个子能力；
+    - 每个子能力写明当前证据、闭环缺口、下一步动作、性能关注点和安全关注点。
+  - `api/agent/capabilities.py`
+    - 新增 `GET /agent/capabilities/diagnostics`；
+    - 新增 `GET /api/agent/capabilities/diagnostics`；
+    - 返回完整低敏 Agent 能力完备度矩阵。
+  - `/agent/plans`
+    - 新增压缩字段 `agentCapabilityClosure`；
+    - 只返回 domainCount、subCapabilityCount、statusCounts、P0 缺口域、下一步收敛动作和每个能力域的 topClosureGaps；
+    - 详细子能力仍通过诊断接口查询，避免高频计划响应膨胀。
+- 低敏与边界：
+  - 能力矩阵只返回能力元数据，不返回 prompt、messages、SQL、工具参数、文件正文、记忆正文、模型输出、凭据或内部 endpoint；
+  - 不执行工具、不调用模型、不读取业务库、不触发 runtime event；
+  - 这是 Agent 能力闭环地图，不是新的 runner 或执行器。
+- 测试：
+  - 新增 `python-ai-runtime/tests/test_agent_capability_matrix.py`；
+  - 定向测试：
+    `python -m pytest python-ai-runtime\tests\test_agent_capability_matrix.py python-ai-runtime\tests\test_intelligent_gateway_governance.py python-ai-runtime\tests\test_agent_execution_closure.py python-ai-runtime\tests\test_api_bootstrap.py -q`；
+  - 完整 Python Runtime 测试：
+    `python -m pytest python-ai-runtime\tests -q`；
+  - 当前结果：505 个用例通过。
+- 收敛意义：
+  - 从现在开始，Agent 部分不再以“继续补一个散点能力”为主，而是按能力矩阵关闭 P0 缺口；
+  - 下一步应优先补 `command.outbox-worker-receipt`、`tool.exec-run-program`、`permission.dangerous-path-safe-cmd` 和 `llm.inference-optimization` 这类直接影响闭环的能力；
+  - 真实副作用仍必须进入 Java 控制面、permission-admin、outbox、worker receipt 和 runtime event 审计链路。
+
 ## 2026-06-23 追加落地进展：Python Runtime 5.90 智能网关聚合 Agent 执行闭环
 - 本阶段承接 5.88/5.89 的执行闭环与控制面 handoff，不继续扩写新的真实执行副作用，而是把 `agentExecutionClosure` 压缩接入 `intelligentGatewayGovernance.executionClosure`。
 - 产品目标：

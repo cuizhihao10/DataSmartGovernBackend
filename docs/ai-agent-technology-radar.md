@@ -1,4 +1,25 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-23 落地补充：a complete Agent Host needs a capability matrix before final closure
+
+- 本轮趋势校准：
+  - OpenAI Agents SDK 将 Agent 描述为由 LLM、instructions、tools、handoffs、guardrails、structured outputs、sessions/hooks 等运行时能力组合而成的应用，并强调当应用拥有 orchestration、tool execution、approvals 和 state 时应使用 Agent SDK 路线；
+  - MCP Tools 规范强调工具发现、工具调用、schema、结构化结果和 human-in-the-loop，这与 DataSmart 的 ToolPlan/readiness/approval/outbox/receipt 链路高度一致；
+  - LangChain Context Engineering 强调模型上下文、工具上下文和生命周期上下文分层，并指出可靠 Agent 的关键不是只换模型，而是把正确的上下文和工具以正确格式传给模型。
+- 本轮落地到代码的能力：
+  - 新增 `AgentCapabilityMatrixService`，把 Agent Host 需要的一级能力固化为 tools、skills、memory、query engine、context、permission、sub-agent、sessions、command、hook、tech stack、LLM；
+  - 每个一级域拆成子能力，例如 file read/write、exec/run-program、web search、Skill create/publish、short/long/profile/SQLite FTS memory、stream/cache/retry/rate-limit/token-limit、dangerous-path/safe-cmd/HITL、outbox/worker receipt、LLM provider routing/cache 等；
+  - 新增 `/agent/capabilities/diagnostics` 与 `/api/agent/capabilities/diagnostics`；
+  - `/agent/plans` 新增 `agentCapabilityClosure` 压缩摘要，帮助计划响应直接展示 Agent 能力收敛缺口。
+- 产品判断：
+  - 5.91 是“Agent 部分进入最终收敛”的控制面基线：以后新增 Agent 能力应先映射到矩阵项，再决定是否实现；
+  - 不再追求无边界扩展，而是优先关闭 P0 缺口：durable command/outbox/worker receipt、safe-cmd/dangerous-path、真实权限事实、LLM 推理服务治理、session 持久化；
+  - 该矩阵不会执行工具或调用模型，它是能力地图和发布门禁，不是新的运行时副作用源。
+- 参考资料：
+  - OpenAI Agents SDK guide: `https://developers.openai.com/api/docs/guides/agents`
+  - OpenAI Agents SDK Agent definitions: `https://openai.github.io/openai-agents-python/agents/`
+  - MCP Tools: `https://modelcontextprotocol.io/specification/2025-06-18/server/tools`
+  - LangChain Context Engineering: `https://docs.langchain.com/oss/python/langchain/context-engineering`
+
 ## 2026-06-23 落地补充：intelligent gateway should aggregate the execution closure, not duplicate runner logic
 
 - 本轮趋势校准：
