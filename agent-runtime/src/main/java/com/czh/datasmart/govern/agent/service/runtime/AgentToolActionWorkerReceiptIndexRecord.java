@@ -61,7 +61,7 @@ public record AgentToolActionWorkerReceiptIndexRecord(
         /** true 表示执行前复核通过；false 表示缺少事实、等待条件或被执行前阻断。 */
         Boolean preCheckPassed,
 
-        /** dry-run receipt 必须保持 false；真实 worker receipt 后续如果开放，也必须被单独建模和审批。 */
+        /** dry-run receipt 必须保持 false；真实 command-worker receipt 只有通过独立回执合同校验后才允许为 true。 */
         Boolean sideEffectExecuted,
 
         /** 低敏机器错误码，用于聚合和推荐动作，不保存人类 message。 */

@@ -49,6 +49,8 @@ public class AgentRuntimeEventDisplaySupport {
     private static final String TOOL_ACTION_INTAKE_EVENT_TYPE = "tool_action_intake_recorded";
     private static final String TOOL_ACTION_CONTROLLED_DRY_RUN_RECEIPT_EVENT_TYPE =
             "agent.tool_execution.controlled_dry_run_receipt_recorded";
+    private static final String TOOL_ACTION_COMMAND_WORKER_RECEIPT_EVENT_TYPE =
+            "agent.tool_execution.command_worker_receipt_recorded";
     private static final String TOOL_ACTION_RESUME_FACT_BUNDLE_DIAGNOSTIC_EVENT_TYPE =
             "agent.tool_action.resume_fact_bundle.diagnostics_recorded";
     private static final String TOOL_ACTION_CLARIFICATION_FACT_EVENT_TYPE =
@@ -94,6 +96,9 @@ public class AgentRuntimeEventDisplaySupport {
         }
         if (TOOL_ACTION_CONTROLLED_DRY_RUN_RECEIPT_EVENT_TYPE.equals(eventType)) {
             return AgentToolActionControlledDryRunReceiptEventDisplayBuilder.build(record);
+        }
+        if (TOOL_ACTION_COMMAND_WORKER_RECEIPT_EVENT_TYPE.equals(eventType)) {
+            return AgentToolActionCommandWorkerReceiptEventDisplayBuilder.build(record);
         }
         if (TOOL_ACTION_RESUME_FACT_BUNDLE_DIAGNOSTIC_EVENT_TYPE.equals(eventType)) {
             return AgentToolActionResumeFactBundleDiagnosticEventDisplayBuilder.build(record);

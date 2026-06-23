@@ -1,4 +1,24 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-23 落地补充：worker receipt is the proof of side effect, not the tool output itself
+
+- 本轮趋势校准：
+  - MCP Tools 将工具定义为可由模型发现和调用的外部系统交互能力，同时强调工具输入校验、访问控制、限流、输出净化、超时、审计以及 human-in-the-loop；映射到 DataSmart，`tools/call` 或模型 tool_call 不能绕过 Host 的 command worker receipt。
+  - OpenAI Agents/Sandbox 文档把 Agent、工具、沙箱、状态、编排和观测分层管理；映射到 DataSmart，真实副作用的可信证据不应来自模型文本或同步 API 响应，而应来自受控 worker 回写的低敏 receipt。
+  - LangChain Context Engineering 强调按 state/store/runtime context 组织工具上下文；映射到 DataSmart，command 安全决策、预算裁剪、artifact 引用和副作用布尔值是可回放上下文事实，但 stdout/stderr、命令行、路径和业务正文不应进入事件层。
+- 本轮落地到代码的能力：
+  - 新增 `agent.tool_execution.command_worker_receipt_recorded` 事件，把 worker 执行回执写入 Java runtime event projection；
+  - 新增独立 command worker receipt controller/service/DTO/display builder，避免和 dry-run receipt 混用；
+  - worker receipt 声明 `sideEffectExecuted=true` 时必须有 `ALLOW_CONTROLLED_EXECUTION`，不能带开放 issueCode；
+  - receipt index 同时支持 dry-run 与真实 command worker receipt，恢复事实包可以从同一低敏索引查询最新处理事实。
+- 产品判断：
+  - 这一步仍然不是 shell runner，也不是底层沙箱实现；
+  - 它把 Agent Host 的 durable action 语义从“准备执行”推进到“有可对账的 worker 回执事实”；
+  - 后续应优先把 Python/OpenClaw-style runner、worker lease、沙箱执行、artifact 二次鉴权和 dead-letter 补偿接到该合同，而不是继续增加预览字段。
+- 参考资料：
+  - MCP Tools: `https://modelcontextprotocol.io/specification/2025-06-18/server/tools`
+  - OpenAI Agents SDK guide: `https://developers.openai.com/api/docs/guides/agents`
+  - OpenAI Sandbox Agents: `https://developers.openai.com/api/docs/guides/agents/sandboxes`
+  - LangChain Context Engineering: `https://docs.langchain.com/oss/python/langchain/context-engineering`
 ## 2026-06-23 落地补充：safe-cmd verdict must be re-checked by the worker, not only returned by an API
 
 - 本轮趋势校准：

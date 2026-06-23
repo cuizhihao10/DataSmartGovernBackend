@@ -53,6 +53,24 @@ class AgentToolActionWorkerReceiptIndexServiceTest {
     }
 
     @Test
+    void shouldMaterializeCommandWorkerReceiptWithConfirmedSideEffect() {
+        InMemoryAgentToolActionWorkerReceiptIndexStore store = new InMemoryAgentToolActionWorkerReceiptIndexStore(100);
+        AgentToolActionWorkerReceiptIndexService service = new AgentToolActionWorkerReceiptIndexService(store);
+
+        boolean indexed = service.materialize(commandWorkerReceiptProjection());
+
+        assertTrue(indexed);
+        List<AgentToolActionWorkerReceiptIndexRecord> records = store.queryByCommandId(indexQuery("20"));
+        assertEquals(1, records.size());
+        AgentToolActionWorkerReceiptIndexRecord record = records.getFirst();
+        assertEquals("taoc-resume-001", record.commandId());
+        assertEquals("EXECUTION_SUCCEEDED", record.outcome());
+        assertEquals(true, record.preCheckPassed());
+        assertEquals(true, record.sideEffectExecuted());
+        assertEquals(17L, record.replaySequence());
+    }
+
+    @Test
     void factEvaluatorShouldReadReceiptFromIndexWhenProjectionHotWindowIsEmpty() {
         InMemoryAgentToolActionWorkerReceiptIndexStore store = new InMemoryAgentToolActionWorkerReceiptIndexStore(100);
         store.upsert(indexRecord("receipt-ready", "20", true, "DRY_RUN_PASSED", 9L));
@@ -209,6 +227,41 @@ class AgentToolActionWorkerReceiptIndexServiceTest {
                 "session-resume",
                 replaySequence,
                 replaySequence,
+                timestamp,
+                timestamp,
+                timestamp,
+                attributes
+        );
+    }
+
+    private AgentRuntimeEventProjectionRecord commandWorkerReceiptProjection() {
+        Map<String, Object> attributes = new LinkedHashMap<>();
+        attributes.put("commandId", "taoc-resume-001");
+        attributes.put("toolCode", "datasource.metadata.read");
+        attributes.put("taskStatus", "SUCCEEDED");
+        attributes.put("outcome", "EXECUTION_SUCCEEDED");
+        attributes.put("preCheckPassed", true);
+        attributes.put("sideEffectExecuted", true);
+        attributes.put("errorCode", "AGENT_COMMAND_WORKER_EXECUTION_SUCCEEDED");
+        attributes.put("message", "低敏执行成功摘要");
+        attributes.put("artifactReference", "agent-artifact:run-resume/receipt-001");
+        Instant timestamp = Instant.parse("2026-06-17T00:00:17Z");
+        return new AgentRuntimeEventProjectionRecord(
+                "command-worker-receipt-ready",
+                "agent-runtime-event.v1",
+                "TASK_MANAGEMENT_WORKER",
+                AgentToolActionCommandWorkerReceiptService.EVENT_TYPE,
+                "command_worker_execution_succeeded",
+                "receipt",
+                "audit",
+                "10",
+                "20",
+                "1001",
+                "trace-resume",
+                "run-resume",
+                "session-resume",
+                17L,
+                17L,
                 timestamp,
                 timestamp,
                 timestamp,

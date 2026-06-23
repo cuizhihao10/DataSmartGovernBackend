@@ -81,8 +81,7 @@ public class AgentToolActionWorkerReceiptIndexService {
     }
 
     private Optional<AgentToolActionWorkerReceiptIndexRecord> parse(AgentRuntimeEventProjectionRecord record) {
-        if (record == null
-                || !AgentToolActionControlledDryRunReceiptService.EVENT_TYPE.equals(record.eventType())) {
+        if (record == null || !isWorkerReceiptEvent(record.eventType())) {
             return Optional.empty();
         }
         Map<String, Object> attributes = record.attributes() == null ? Map.of() : record.attributes();
@@ -108,6 +107,19 @@ public class AgentToolActionWorkerReceiptIndexService {
                 firstInstant(record.consumedAt(), record.publishedAt(), record.createdAt()),
                 Instant.now()
         ));
+    }
+
+    private boolean isWorkerReceiptEvent(String eventType) {
+        /*
+         * 这里同时接收两类 receipt：
+         * 1. controlled dry-run receipt：只证明执行前治理链路被 dry-run 调度器看见，sideEffectExecuted 必须为 false；
+         * 2. command worker receipt：证明真实 worker 已完成预检或受控执行回写，sideEffectExecuted 可以为 true。
+         *
+         * 二者都能服务恢复事实包的同一个问题：“这条 command 是否已经被 worker 链路处理过？”
+         * 因此索引层共享同一张低敏模型；但完整语义仍保留在各自 eventType 和 timeline display 中。
+         */
+        return AgentToolActionControlledDryRunReceiptService.EVENT_TYPE.equals(eventType)
+                || AgentToolActionCommandWorkerReceiptService.EVENT_TYPE.equals(eventType);
     }
 
     private Instant firstInstant(Instant first, Instant second, Instant third) {

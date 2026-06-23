@@ -1,4 +1,40 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-23 追加落地进展：Java Agent Runtime 5.94 受控命令 Worker Receipt 最小合同
+- 本阶段承接 5.93 的 worker 派发前安全复核，不开放真实 shell runner，不读取 payloadReference，不返回 stdout/stderr，而是补齐 command worker 对 agent-runtime 的低敏回执写回合同。
+- 产品目标：
+  - 让 `proposal -> safety-precheck -> outbox -> worker precheck -> command worker receipt -> runtime event/index/display` 形成最小可审计闭环；
+  - 明确 dry-run receipt 仍然只表示执行前治理预演，真实 worker receipt 才能在严格校验后声明 `sideEffectExecuted=true`；
+  - 让恢复事实包和 timeline 能够查询到同一条 command 是否被 worker 链路处理过，以及处理结果是预检通过、执行成功、执行失败、容量限制、跳过执行还是需要补偿；
+  - 继续坚持低敏边界：不保存 commandLine、workingDirectory、真实路径、环境变量、stdout/stderr、工具参数、payload body、SQL、prompt、模型输出、凭据或内部 endpoint。
+- 新增与调整：
+  - 新增 `AgentToolActionCommandWorkerReceiptController`
+    - 内部路由为 `POST /internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-receipts`；
+    - 仅用于 task-management / command-worker 服务间写回，生产环境仍应叠加 gateway 内网路由、服务账号签名、mTLS、ACL 或服务网格策略。
+  - 新增 `AgentToolActionCommandWorkerReceiptRequest` 与 `AgentToolActionCommandWorkerReceiptResponse`
+    - 请求字段只包含 commandId、任务引用、worker 身份摘要、outcome、安全决策、预算裁剪值、artifact 低敏引用、errorCode 和推荐动作；
+    - 响应只返回 accepted、duplicate、identityKey、eventType、outcome 和 sideEffectExecuted，不把写回接口扩展成查询接口。
+  - 新增 `AgentToolActionCommandWorkerReceiptService`
+    - 写入事件类型 `agent.tool_execution.command_worker_receipt_recorded`；
+    - `EXECUTION_SUCCEEDED` 必须同时满足 `preCheckPassed=true`、`sideEffectStarted=true`、`sideEffectExecuted=true`；
+    - 声明副作用已发生时，`commandSafetyDecision` 必须为 `ALLOW_CONTROLLED_EXECUTION`，且不允许仍携带开放 issueCode；
+    - `FAILED_PRECHECK` 必须表示执行前阻断，不能声明预检通过或副作用开始；
+    - artifactReference 只能使用受控低敏 scheme，例如 `agent-artifact:`、`artifact:`、`minio-object:`、`agent-output:`、`command-output:`、`task-artifact:`。
+  - 新增 `AgentToolActionCommandWorkerReceiptEventDisplayBuilder`
+    - timeline 状态覆盖 `BLOCKED_BEFORE_SIDE_EFFECT`、`READY_FOR_CONTROLLED_EXECUTION`、`SIDE_EFFECT_CONFIRMED`、`SIDE_EFFECT_FAILED_OR_UNKNOWN`、`WAITING_WORKER_CAPACITY`、`COMPENSATION_REQUIRED`；
+    - metrics 只展示 outcome、预检/副作用布尔值、安全决策、issueCode 数量、预算裁剪值、artifact 是否可用等低敏信息。
+  - `AgentToolActionWorkerReceiptIndexService`
+    - 现在同时物化 dry-run receipt 与 command worker receipt；
+    - 索引模型保持低敏，只保存 commandId、run/session、tenant/project/actor、outcome、preCheckPassed、sideEffectExecuted、errorCode 和 replaySequence。
+- 商业化意义：
+  - command 主链路从“派发前能阻断”推进到“worker 处理事实可回写、可查询、可回放、可审计”；
+  - 这比直接实现 shell runner 更适合当前收敛阶段，因为它先固定副作用证据合同，避免真实执行上线后缺少对账和补偿事实；
+  - 下一步应进入 Python/OpenClaw-style runner 或 worker lease/sandbox 设计，而不是继续扩展 Java receipt 字段。
+- 验证：
+  - `mvn -pl agent-runtime -am "-Dtest=AgentToolActionCommandWorkerReceiptServiceTest,AgentToolActionWorkerReceiptIndexServiceTest,AgentRuntimeEventDisplaySupportTest,AgentAsyncTaskCommandPreCheckServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：25 个用例通过，Maven Toolchain 使用 JDK 21。
+- 当前边界：
+  - 5.94 仍不是命令执行器；
+  - 尚未实现容器/进程级沙箱、环境变量过滤、stdout/stderr 裁剪、worker lease、真实 artifact 二次鉴权和 dead-letter 补偿台；
+  - 当前 artifactReference 只是低敏引用合同，不代表调用方已经获得 artifact 正文读取权限。
 ## 2026-06-23 追加落地进展：Java Agent Runtime 5.93 命令安全预检接入 Worker 复核合同
 - 本阶段承接 5.92 的命令安全预检合同，不继续扩展真实 shell runner，而是把 safety-precheck 的低敏 verdict 接入 command outbox worker pre-check。
 - 产品目标：
