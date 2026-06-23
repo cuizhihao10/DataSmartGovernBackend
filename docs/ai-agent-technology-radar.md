@@ -1,4 +1,26 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-24 落地补充：worker lease and fencing token should exist before sandbox side effects
+
+- 本轮趋势校准：
+  - MCP Tools 规范要求工具服务端校验输入、访问控制、限流、净化输出并记录审计；映射到 DataSmart，`tools/call` 或 run-program 不能直接等价为“立即执行”，而要先通过 host/worker 的租约与权限护栏。
+  - OpenAI Agents SDK 强调当应用自己拥有工具执行、审批和状态时，应由 server-side runtime 管理 orchestration、tool execution、state 和 approvals；映射到 DataSmart，真实 command worker 必须先领取租约，再进入 sandbox/receipt。
+  - OpenAI Sandbox Agents 把 agent harness 与 sandbox execution 区分开；映射到 DataSmart，fencingToken 是 harness 到 sandbox/worker 的并发边界，不能由模型文本或普通同步响应替代。
+  - LangGraph Persistence 将 thread checkpoint 与跨线程 store 分开；映射到 DataSmart，当前 in-memory lease 只适合短生命周期控制面合同，生产闭环需要 Redis/Java durable fact store。
+- 本轮落地到代码的能力：
+  - 新增 Python `CommandWorkerLeaseManager` 与 `InMemoryCommandWorkerLeaseStore`；
+  - 支持领取、幂等重复领取、被其他 worker 阻断、续租、释放、过期抢占和错误 token 拒绝；
+  - 只有真正持有租约的 worker 才能拿到 `fencingToken`，被阻断的 worker 只能看到状态、版本和重试建议；
+  - 单元测试覆盖 token 不泄露、旧 token 续租失败、释放后新版本领取、过期后抢占，以及租约摘要不携带命令行、stdout/stderr、SQL、prompt、payloadReference、URL 或凭据。
+- 产品判断：
+  - 5.96 仍然不是 shell runner，也不是生产级分布式锁；
+  - 它解决的是真实副作用前的并发语义：谁有资格执行、谁必须停下、旧 worker 是否还能写回；
+  - 下一步应把 lease store 升级为 Redis/Java durable lease，并接 sandbox/stdout-stderr 裁剪与 artifact 二次鉴权，而不是继续扩展 preview 字段。
+- 参考资料：
+  - MCP Tools: `https://modelcontextprotocol.io/specification/2025-06-18/server/tools`
+  - OpenAI Agents SDK guide: `https://developers.openai.com/api/docs/guides/agents`
+  - OpenAI Sandbox Agents: `https://developers.openai.com/api/docs/guides/agents/sandboxes`
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+
 ## 2026-06-24 落地补充：controlled runner should prove the receipt contract before real shell execution
 
 - 本轮趋势校准：

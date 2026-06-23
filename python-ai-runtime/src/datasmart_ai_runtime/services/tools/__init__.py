@@ -138,6 +138,17 @@ from datasmart_ai_runtime.services.tools.command_worker_receipt_client import (
     JavaCommandWorkerReceiptClient,
     JavaCommandWorkerReceiptClientSettings,
 )
+from datasmart_ai_runtime.services.tools.command_worker_lease import (
+    COMMAND_WORKER_LEASE_PAYLOAD_POLICY,
+    COMMAND_WORKER_LEASE_SCHEMA_VERSION,
+    CommandWorkerLeaseManager,
+    CommandWorkerLeaseRecord,
+    CommandWorkerLeaseRequest,
+    CommandWorkerLeaseResult,
+    CommandWorkerLeaseState,
+    CommandWorkerLeaseStore,
+    InMemoryCommandWorkerLeaseStore,
+)
 
 __all__ = (
     "ToolActionIntakeBoundary",
@@ -227,4 +238,13 @@ __all__ = (
     "CommandWorkerReceiptPostResult",
     "JavaCommandWorkerReceiptClient",
     "JavaCommandWorkerReceiptClientSettings",
+    "COMMAND_WORKER_LEASE_PAYLOAD_POLICY",
+    "COMMAND_WORKER_LEASE_SCHEMA_VERSION",
+    "CommandWorkerLeaseManager",
+    "CommandWorkerLeaseRecord",
+    "CommandWorkerLeaseRequest",
+    "CommandWorkerLeaseResult",
+    "CommandWorkerLeaseState",
+    "CommandWorkerLeaseStore",
+    "InMemoryCommandWorkerLeaseStore",
 )

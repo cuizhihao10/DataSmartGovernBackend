@@ -1,4 +1,39 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-24 追加落地进展：Python Runtime 5.96 命令 Worker Lease 与 Token Fencing 合同
+- 本阶段承接 5.95 的受控命令 runner，不开放真实 shell/sandbox 执行，而是先补齐“执行前只能由一个 worker 领取 command”的并发护栏。
+- 产品目标：
+  - 让 `proposal -> safety-precheck -> outbox -> worker precheck -> lease -> controlled runner -> command worker receipt` 的 durable action 主链路继续向闭环靠近；
+  - 避免多实例 worker、队列重试、进程暂停恢复或超时抢占时重复执行同一 command；
+  - 引入 fencing token：worker 后续续租、释放或写回 receipt 必须携带 token，旧 worker 过期后不能再伪造执行事实；
+  - 当前只做 Python in-memory 合同，生产级跨实例租约后续应替换为 Redis、MySQL 行锁或 Java agent-runtime durable fact store；
+  - 保持低敏边界：租约只保存 session/run/command/executor、leaseVersion、expiresAtMs 和 token 摘要，不保存命令行、stdout/stderr、payload、SQL、prompt、模型输出、真实路径、凭据或内部 endpoint。
+- 新增与调整：
+  - 新增 `command_worker_lease.py`
+    - 定义 `CommandWorkerLeaseRequest`、`CommandWorkerLeaseRecord`、`CommandWorkerLeaseResult`、`CommandWorkerLeaseState` 和 `CommandWorkerLeaseManager`；
+    - 支持 `ACQUIRED`、`ALREADY_HELD_BY_CALLER`、`ALREADY_HELD_BY_OTHER`、`RENEWED`、`RELEASED`、`REJECTED`、`EXPIRED`、`NOT_FOUND` 状态；
+    - 同一 worker 重试领取会幂等返回原 token，不同 worker 抢占不会泄露当前持有者 token；
+    - 续租/释放同时校验 executorId 与 fencingToken，避免旧 worker 或旁路调用写回 receipt。
+  - 新增 `InMemoryCommandWorkerLeaseStore`
+    - 使用线程锁保护进程内并发；
+    - 支持过期后重新领取并提升 leaseVersion；
+    - 明确当前不是生产 durable store，后续可替换为 Redis/Java 实现。
+  - 更新 `services/tools/__init__.py`
+    - 导出租约合同，便于后续受控 runner、真实 sandbox runner 或测试复用。
+  - 更新 Agent 能力矩阵
+    - `tool.exec-run-program`、`permission.dangerous-path-safe-cmd` 和 `command.outbox-worker-receipt` 记录 lease/token fencing 合同已完成；
+    - 下一步缺口收敛为跨实例 durable lease、sandbox/stdout-stderr 裁剪、artifact 二次鉴权与 dead-letter 补偿。
+- 商业化意义：
+  - 真实 Agent Host 中，命令执行的最大风险之一不是“命令能不能跑”，而是“重复跑、旧结果覆盖新事实、错误 worker 写回成功”；
+  - lease + fencing token 把命令副作用从“普通函数调用”推进为“可并发治理、可续租、可拒绝旧写”的 durable action；
+  - 这一步仍然不执行命令，但已经为后续接 sandbox、artifact 和 Java receipt 写回提供了必要的并发控制地基。
+- 验证：
+  - `python -m pytest python-ai-runtime\tests\test_command_worker_lease.py python-ai-runtime\tests\test_controlled_command_worker_runner.py python-ai-runtime\tests\test_agent_capability_matrix.py -q`
+  - 当前结果待本轮提交前完整执行。
+- 当前边界：
+  - 5.96 仍不是命令执行器；
+  - 当前租约只在 Python 进程内生效，不支持跨实例、服务重启恢复或队列 visibility timeout 对齐；
+  - Java receipt 写回暂未强制校验 fencingToken，后续接入 durable lease 后应把 token 纳入 worker receipt 服务端校验。
+
 ## 2026-06-23 追加落地进展：Python Runtime 5.95 受控命令 Worker Runner 合同
 - 本阶段承接 Java Agent Runtime 5.94 的 command worker receipt 合同，不直接开放真实 shell runner，而是在 Python/OpenClaw-style 执行层补齐“可生成、可校验、可选写回 Java 的受控 runner 外壳”。
 - 产品目标：
