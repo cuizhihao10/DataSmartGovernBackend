@@ -14,17 +14,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * 受控命令 worker 回执接收服务。
@@ -54,16 +49,33 @@ public class AgentToolActionCommandWorkerReceiptService {
     private static final int MAX_ACTION_COUNT = 6;
     private static final int MAX_ACTION_LENGTH = 240;
     private static final int MAX_ISSUE_CODE_COUNT = 12;
-    private static final Pattern FENCING_TOKEN_PATTERN = Pattern.compile("^cmd-lease:([1-9][0-9]*):[a-fA-F0-9]{8,64}$");
 
     private final AgentRuntimeEventProjectionStore projectionStore;
     private final AgentToolActionWorkerReceiptIndexService receiptIndexService;
+    private final AgentCommandWorkerLeaseService workerLeaseService;
 
     @Autowired
     public AgentToolActionCommandWorkerReceiptService(AgentRuntimeEventProjectionStore projectionStore,
-                                                      AgentToolActionWorkerReceiptIndexService receiptIndexService) {
+                                                      AgentToolActionWorkerReceiptIndexService receiptIndexService,
+                                                      AgentCommandWorkerLeaseService workerLeaseService) {
         this.projectionStore = projectionStore;
         this.receiptIndexService = receiptIndexService;
+        this.workerLeaseService = workerLeaseService;
+    }
+
+    /**
+     * 兼容已有单元测试和局部构造场景的构造器。
+     *
+     * <p>真实 Spring 运行时会注入共享的 {@link AgentCommandWorkerLeaseService}，从而读取统一 lease store。
+     * 该构造器只在测试或局部对象创建时使用独立内存 store，避免把测试环境强行绑定到 MySQL。</p>
+     */
+    public AgentToolActionCommandWorkerReceiptService(AgentRuntimeEventProjectionStore projectionStore,
+                                                      AgentToolActionWorkerReceiptIndexService receiptIndexService) {
+        this(
+                projectionStore,
+                receiptIndexService,
+                new AgentCommandWorkerLeaseService(new InMemoryAgentCommandWorkerLeaseStore())
+        );
     }
 
     /**
@@ -77,7 +89,8 @@ public class AgentToolActionCommandWorkerReceiptService {
                 projectionStore,
                 new AgentToolActionWorkerReceiptIndexService(
                         new InMemoryAgentToolActionWorkerReceiptIndexStore(10000)
-                )
+                ),
+                new AgentCommandWorkerLeaseService(new InMemoryAgentCommandWorkerLeaseStore())
         );
     }
 
@@ -96,7 +109,7 @@ public class AgentToolActionCommandWorkerReceiptService {
                                                                AgentToolActionCommandWorkerReceiptRequest request) {
         validatePath(sessionId, "sessionId");
         validatePath(runId, "runId");
-        validateRequest(request);
+        validateRequest(sessionId, runId, request);
         String normalizedOutcome = normalizeUpper(requireText(request.outcome(), "outcome"));
         AgentRuntimeEventProjectionRecord record = toProjectionRecord(
                 sessionId.trim(),
@@ -182,7 +195,7 @@ public class AgentToolActionCommandWorkerReceiptService {
         attributes.put("sideEffectExecuted", Boolean.TRUE.equals(request.sideEffectExecuted()));
         attributes.put("workerLeaseRequired", workerLeaseRequired(request));
         attributes.put("workerLeaseTokenPresent", trimToNull(request.fencingToken()) != null);
-        attributes.put("workerLeaseTokenDigest", fencingTokenDigest(request.fencingToken()));
+        attributes.put("workerLeaseTokenDigest", workerLeaseService.tokenDigest(request.fencingToken()));
         attributes.put("workerLeaseVersion", nonNegativeLong(request.workerLeaseVersion()));
         attributes.put("workerLeaseExpiresAtMs", nonNegativeLong(request.workerLeaseExpiresAtMs()));
         attributes.put("commandSafetyDecision", safeShortText(request.commandSafetyDecision(), "UNKNOWN", 120));
@@ -206,7 +219,7 @@ public class AgentToolActionCommandWorkerReceiptService {
         return Collections.unmodifiableMap(attributes);
     }
 
-    private void validateRequest(AgentToolActionCommandWorkerReceiptRequest request) {
+    private void validateRequest(String sessionId, String runId, AgentToolActionCommandWorkerReceiptRequest request) {
         if (request == null) {
             throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
                     "受控命令 worker 回执请求体不能为空");
@@ -222,7 +235,12 @@ public class AgentToolActionCommandWorkerReceiptService {
         rejectSensitiveText(request.message(), "message");
         safeActions(request.recommendedActions());
         validateArtifactReference(request.artifactReference(), request.artifactAvailable());
-        validateWorkerLeaseEvidence(request, sideEffectStarted || sideEffectExecuted);
+        /*
+         * 5.97 只校验 fencingToken 格式，本阶段升级为“服务端事实校验”：receipt 必须能对上当前 Java 控制面
+         * lease store 中仍有效的 commandId/executor/token/version/expiresAt。这样即使旧 worker 被暂停后恢复、
+         * 队列重复投递、或者某个调用方伪造格式正确的 token，也不能绕过写回门禁污染 runtime event。
+         */
+        workerLeaseService.validateReceiptLease(sessionId, runId, request, sideEffectStarted || sideEffectExecuted);
 
         if (sideEffectExecuted && !sideEffectStarted) {
             throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
@@ -251,50 +269,6 @@ public class AgentToolActionCommandWorkerReceiptService {
         if ("WORKER_PRECHECK_PASSED".equals(outcome) && (!preCheckPassed || sideEffectStarted || sideEffectExecuted)) {
             throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
                     "WORKER_PRECHECK_PASSED 只能表示执行前复核通过，不能声明真实副作用已开始");
-        }
-    }
-
-    private void validateWorkerLeaseEvidence(AgentToolActionCommandWorkerReceiptRequest request,
-                                             boolean sideEffectTouched) {
-        /*
-         * 真实命令进入副作用区前必须先拿到 worker lease。当前阶段还没有接 Redis/Java durable lease store，
-         * 因此这里先做合同级校验：要求 worker 明确声明 leaseRequired，并携带格式正确、版本一致的 fencingToken。
-         * 后续替换为 durable store 时，可以在这个方法里继续查询“该 token 是否仍是当前有效持有者”，调用方无需改动。
-         */
-        boolean required = workerLeaseRequired(request);
-        if (sideEffectTouched && !required) {
-            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
-                    "受控命令 worker 回执进入副作用执行区时，必须声明 workerLeaseRequired=true");
-        }
-        if (!required
-                && trimToNull(request.fencingToken()) == null
-                && request.workerLeaseVersion() == null
-                && request.workerLeaseExpiresAtMs() == null) {
-            return;
-        }
-
-        String token = trimToNull(request.fencingToken());
-        if (token == null) {
-            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
-                    "workerLeaseRequired=true 时必须提供 fencingToken");
-        }
-        Matcher matcher = FENCING_TOKEN_PATTERN.matcher(token);
-        if (!matcher.matches()) {
-            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
-                    "fencingToken 必须使用 cmd-lease:{version}:{digest} 低敏格式，不能携带 URL、路径、输出或凭据");
-        }
-        Long leaseVersion = request.workerLeaseVersion();
-        if (leaseVersion == null || leaseVersion < 1) {
-            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
-                    "workerLeaseRequired=true 时必须提供大于 0 的 workerLeaseVersion");
-        }
-        if (!String.valueOf(leaseVersion).equals(matcher.group(1))) {
-            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
-                    "fencingToken 中的版本号必须与 workerLeaseVersion 一致");
-        }
-        if (request.workerLeaseExpiresAtMs() == null || request.workerLeaseExpiresAtMs() <= 0) {
-            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
-                    "workerLeaseRequired=true 时必须提供大于 0 的 workerLeaseExpiresAtMs");
         }
     }
 
@@ -492,29 +466,6 @@ public class AgentToolActionCommandWorkerReceiptService {
         return Boolean.TRUE.equals(request.workerLeaseRequired())
                 || Boolean.TRUE.equals(request.sideEffectStarted())
                 || Boolean.TRUE.equals(request.sideEffectExecuted());
-    }
-
-    private String fencingTokenDigest(String fencingToken) {
-        /*
-         * fencingToken 是 worker 写回资格凭证，不能进入 runtime event 明文。
-         * 这里只保存短 digest，既能帮助审计判断“同一条 token 是否重复出现”，又不会让 projection/replay
-         * 变成可被其他调用方复用的写回凭证。
-         */
-        String token = trimToNull(fencingToken);
-        if (token == null) {
-            return null;
-        }
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256")
-                    .digest(token.getBytes(StandardCharsets.UTF_8));
-            StringBuilder builder = new StringBuilder("sha256:");
-            for (int index = 0; index < 10; index++) {
-                builder.append(String.format("%02x", digest[index]));
-            }
-            return builder.toString();
-        } catch (NoSuchAlgorithmException exception) {
-            return "sha256:unavailable";
-        }
     }
 
     private boolean looksSensitive(String value) {

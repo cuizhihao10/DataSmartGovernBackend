@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.agent.service.runtime;
 
+import com.czh.datasmart.govern.agent.controller.dto.AgentCommandWorkerLeaseClaimRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRuntimeEventDisplayView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionCommandWorkerReceiptRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionCommandWorkerReceiptResponse;
@@ -18,6 +19,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -26,13 +28,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>这组测试保护 command outbox 主链路的一个关键收敛点：真实 worker 可以回写“执行成功/失败/阻断”等低敏事实，
  * 但不能借回执接口泄露命令行、stdout/stderr、真实路径、SQL、prompt、payload body、模型输出或内部 endpoint。
- * 只有当安全预检明确允许受控执行时，回执才可以声明 sideEffectExecuted=true。</p>
+ * 只有先领取 Java 控制面 lease，并且安全预检明确允许受控执行时，回执才可以声明 sideEffectExecuted=true。</p>
  */
 class AgentToolActionCommandWorkerReceiptServiceTest {
 
-    private static final String FENCING_TOKEN = "cmd-lease:7:abcdef1234567890";
-    private static final long LEASE_VERSION = 7L;
-    private static final long LEASE_EXPIRES_AT_MS = 1900000000000L;
+    private static final String SESSION_ID = "session-command";
+    private static final String RUN_ID = "run-command";
+    private static final String COMMAND_ID = "cmd-worker-001";
+    private static final String EXECUTOR_ID = "agent-command-worker";
 
     @Test
     void shouldAppendCommandWorkerReceiptIntoProjectionDisplayAndIndex() throws JsonProcessingException {
@@ -42,11 +45,13 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
                 new InMemoryAgentToolActionWorkerReceiptIndexStore(100);
         AgentToolActionWorkerReceiptIndexService indexService =
                 new AgentToolActionWorkerReceiptIndexService(indexStore);
+        AgentCommandWorkerLeaseService leaseService = leaseService();
+        AgentCommandWorkerLeaseRecord lease = claimLease(leaseService, EXECUTOR_ID);
         AgentToolActionCommandWorkerReceiptService service =
-                new AgentToolActionCommandWorkerReceiptService(projectionStore, indexService);
+                new AgentToolActionCommandWorkerReceiptService(projectionStore, indexService, leaseService);
 
         AgentToolActionCommandWorkerReceiptResponse response =
-                service.receive("session-command", "run-command", "trace-command-worker", successRequest());
+                service.receive(SESSION_ID, RUN_ID, "trace-command-worker", successRequest(lease));
 
         assertTrue(response.accepted());
         assertFalse(response.duplicate());
@@ -54,19 +59,19 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
         assertEquals("EXECUTION_SUCCEEDED", response.outcome());
         assertTrue(response.sideEffectExecuted());
 
-        AgentRuntimeEventProjectionRecord record = projectionStore.listByRunId("run-command").getFirst();
+        AgentRuntimeEventProjectionRecord record = projectionStore.listByRunId(RUN_ID).getFirst();
         assertEquals(AgentToolActionCommandWorkerReceiptService.EVENT_TYPE, record.eventType());
         assertEquals("command_worker_execution_succeeded", record.stage());
         assertEquals("TASK_MANAGEMENT_WORKER", record.source());
         assertEquals("trace-command-worker", record.requestId());
-        assertEquals("cmd-worker-001", record.attributes().get("commandId"));
+        assertEquals(COMMAND_ID, record.attributes().get("commandId"));
         assertEquals(true, record.attributes().get("preCheckPassed"));
         assertEquals(true, record.attributes().get("sideEffectStarted"));
         assertEquals(true, record.attributes().get("sideEffectExecuted"));
         assertEquals(true, record.attributes().get("workerLeaseRequired"));
         assertEquals(true, record.attributes().get("workerLeaseTokenPresent"));
-        assertEquals(LEASE_VERSION, record.attributes().get("workerLeaseVersion"));
-        assertEquals(LEASE_EXPIRES_AT_MS, record.attributes().get("workerLeaseExpiresAtMs"));
+        assertEquals(lease.leaseVersion(), record.attributes().get("workerLeaseVersion"));
+        assertEquals(lease.leaseExpiresAt().toEpochMilli(), record.attributes().get("workerLeaseExpiresAtMs"));
         assertTrue(String.valueOf(record.attributes().get("workerLeaseTokenDigest")).startsWith("sha256:"));
         assertEquals("ALLOW_CONTROLLED_EXECUTION", record.attributes().get("commandSafetyDecision"));
         assertEquals("agent-artifact:run-command/receipt-001", record.attributes().get("artifactReference"));
@@ -79,17 +84,17 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
         assertFalse(display.requiresAttention());
         assertEquals(true, display.metrics().get("sideEffectExecuted"));
         assertEquals(true, display.metrics().get("workerLeaseTokenPresent"));
-        assertEquals(7, display.metrics().get("workerLeaseVersion"));
+        assertEquals((int) lease.leaseVersion(), display.metrics().get("workerLeaseVersion"));
 
         List<AgentToolActionWorkerReceiptIndexRecord> indexRecords = indexStore.queryByCommandId(
                 new AgentToolActionWorkerReceiptIndexQuery(
-                        "cmd-worker-001",
+                        COMMAND_ID,
                         "command.run-program",
                         "10",
                         "20",
                         "30",
-                        "run-command",
-                        "session-command",
+                        RUN_ID,
+                        SESSION_ID,
                         List.of("20"),
                         10
                 )
@@ -107,17 +112,24 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
         assertFalse(json.contains("commandLine"));
         assertFalse(json.contains("select * from"));
         assertFalse(json.contains("prompt:"));
-        assertFalse(json.contains(FENCING_TOKEN));
+        assertFalse(json.contains(lease.fencingToken()));
     }
 
     @Test
     void duplicateCommandWorkerReceiptShouldBeAcceptedAsIdempotentReplay() {
+        AgentCommandWorkerLeaseService leaseService = leaseService();
+        AgentCommandWorkerLeaseRecord lease = claimLease(leaseService, EXECUTOR_ID);
         AgentToolActionCommandWorkerReceiptService service =
-                new AgentToolActionCommandWorkerReceiptService(new InMemoryAgentRuntimeEventProjectionStore(10, 100));
+                new AgentToolActionCommandWorkerReceiptService(
+                        new InMemoryAgentRuntimeEventProjectionStore(10, 100),
+                        new AgentToolActionWorkerReceiptIndexService(
+                                new InMemoryAgentToolActionWorkerReceiptIndexStore(100)),
+                        leaseService
+                );
 
-        service.receive("session-command", "run-command", "trace-command-worker", successRequest());
+        service.receive(SESSION_ID, RUN_ID, "trace-command-worker", successRequest(lease));
         AgentToolActionCommandWorkerReceiptResponse duplicate =
-                service.receive("session-command", "run-command", "trace-command-worker", successRequest());
+                service.receive(SESSION_ID, RUN_ID, "trace-command-worker", successRequest(lease));
 
         assertTrue(duplicate.accepted());
         assertTrue(duplicate.duplicate());
@@ -126,79 +138,80 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
 
     @Test
     void sideEffectExecutedShouldRequireAllowControlledExecutionDecision() {
+        AgentCommandWorkerLeaseService leaseService = leaseService();
+        AgentCommandWorkerLeaseRecord lease = claimLease(leaseService, EXECUTOR_ID);
         AgentToolActionCommandWorkerReceiptService service =
-                new AgentToolActionCommandWorkerReceiptService(new InMemoryAgentRuntimeEventProjectionStore(10, 100));
+                receiptServiceWithLease(leaseService);
         AgentToolActionCommandWorkerReceiptRequest request = request(
                 "EXECUTION_SUCCEEDED",
                 true,
                 true,
                 true,
                 "REQUIRES_HUMAN_APPROVAL",
-                List.of()
+                List.of(),
+                lease
         );
 
         assertThrows(PlatformBusinessException.class,
-                () -> service.receive("session-command", "run-command", "trace-command-worker", request));
+                () -> service.receive(SESSION_ID, RUN_ID, "trace-command-worker", request));
     }
 
     @Test
     void sideEffectExecutedShouldRejectOpenSafetyIssueCodes() {
+        AgentCommandWorkerLeaseService leaseService = leaseService();
+        AgentCommandWorkerLeaseRecord lease = claimLease(leaseService, EXECUTOR_ID);
         AgentToolActionCommandWorkerReceiptService service =
-                new AgentToolActionCommandWorkerReceiptService(new InMemoryAgentRuntimeEventProjectionStore(10, 100));
+                receiptServiceWithLease(leaseService);
         AgentToolActionCommandWorkerReceiptRequest request = request(
                 "EXECUTION_SUCCEEDED",
                 true,
                 true,
                 true,
                 "ALLOW_CONTROLLED_EXECUTION",
-                List.of("NETWORK_REQUIRES_APPROVAL")
+                List.of("NETWORK_REQUIRES_APPROVAL"),
+                lease
         );
 
         assertThrows(PlatformBusinessException.class,
-                () -> service.receive("session-command", "run-command", "trace-command-worker", request));
+                () -> service.receive(SESSION_ID, RUN_ID, "trace-command-worker", request));
     }
 
     @Test
     void sideEffectExecutedShouldRequireWorkerLeaseEvidence() {
         AgentToolActionCommandWorkerReceiptService service =
-                new AgentToolActionCommandWorkerReceiptService(new InMemoryAgentRuntimeEventProjectionStore(10, 100));
-        AgentToolActionCommandWorkerReceiptRequest request = new AgentToolActionCommandWorkerReceiptRequest(
-                "cmd-worker-001",
-                9101L,
-                9201L,
-                "agent-command-worker",
-                10L,
-                20L,
-                30L,
-                "SUCCEEDED",
+                receiptServiceWithLease(leaseService());
+        AgentToolActionCommandWorkerReceiptRequest request = request(
                 "EXECUTION_SUCCEEDED",
                 true,
                 true,
                 true,
-                false,
-                null,
-                null,
-                null,
                 "ALLOW_CONTROLLED_EXECUTION",
-                "command-safety-policy.v1",
                 List.of(),
-                30,
-                4096,
-                "MINIO_OBJECT",
-                "agent-artifact:run-command/receipt-001",
-                true,
-                null,
-                "audit-command-worker-001",
-                "command.run-program",
-                "task-management-worker",
-                "EXECUTION_RESULT",
-                "受控命令 worker 已写回低敏执行事实。",
-                List.of("确认任务中心状态与 artifact 元数据已经对账"),
-                "command-worker:cmd-worker-001:missing-lease"
+                null
         );
 
         assertThrows(PlatformBusinessException.class,
-                () -> service.receive("session-command", "run-command", "trace-command-worker", request));
+                () -> service.receive(SESSION_ID, RUN_ID, "trace-command-worker", request));
+    }
+
+    @Test
+    void sideEffectExecutedShouldRejectLeaseHeldByDifferentExecutor() {
+        AgentCommandWorkerLeaseService leaseService = leaseService();
+        AgentCommandWorkerLeaseRecord otherWorkerLease = claimLease(leaseService, "agent-command-worker-other");
+        AgentToolActionCommandWorkerReceiptService service =
+                receiptServiceWithLease(leaseService);
+        AgentToolActionCommandWorkerReceiptRequest request = request(
+                "EXECUTION_SUCCEEDED",
+                true,
+                true,
+                true,
+                "ALLOW_CONTROLLED_EXECUTION",
+                List.of(),
+                otherWorkerLease
+        );
+
+        assertThrows(PlatformBusinessException.class,
+                () -> service.receive(SESSION_ID, RUN_ID, "trace-command-worker", request));
     }
 
     @Test
@@ -207,10 +220,10 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
         AgentToolActionCommandWorkerReceiptService service =
                 new AgentToolActionCommandWorkerReceiptService(store);
 
-        service.receive("session-command", "run-command", "trace-command-worker",
-                request("FAILED_PRECHECK", false, false, false, "BLOCKED", List.of("DANGEROUS_PATH")));
+        service.receive(SESSION_ID, RUN_ID, "trace-command-worker",
+                request("FAILED_PRECHECK", false, false, false, "BLOCKED", List.of(), null));
 
-        AgentRuntimeEventProjectionRecord record = store.listByRunId("run-command").getFirst();
+        AgentRuntimeEventProjectionRecord record = store.listByRunId(RUN_ID).getFirst();
         assertEquals("command_worker_precheck_failed", record.stage());
         assertEquals(false, record.attributes().get("sideEffectExecuted"));
         AgentRuntimeEventDisplayView display = new AgentRuntimeEventDisplaySupport().buildDisplay(record);
@@ -220,13 +233,15 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
 
     @Test
     void sensitiveMessageShouldBeRejectedBeforeEnteringTimeline() {
+        AgentCommandWorkerLeaseService leaseService = leaseService();
+        AgentCommandWorkerLeaseRecord lease = claimLease(leaseService, EXECUTOR_ID);
         AgentToolActionCommandWorkerReceiptService service =
-                new AgentToolActionCommandWorkerReceiptService(new InMemoryAgentRuntimeEventProjectionStore(10, 100));
+                receiptServiceWithLease(leaseService);
         AgentToolActionCommandWorkerReceiptRequest request = new AgentToolActionCommandWorkerReceiptRequest(
-                "cmd-worker-001",
+                COMMAND_ID,
                 9101L,
                 9201L,
-                "agent-command-worker",
+                EXECUTOR_ID,
                 10L,
                 20L,
                 30L,
@@ -236,9 +251,9 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
                 true,
                 false,
                 true,
-                FENCING_TOKEN,
-                LEASE_VERSION,
-                LEASE_EXPIRES_AT_MS,
+                lease.fencingToken(),
+                lease.leaseVersion(),
+                lease.leaseExpiresAt().toEpochMilli(),
                 "ALLOW_CONTROLLED_EXECUTION",
                 "command-safety-policy.v1",
                 List.of(),
@@ -258,18 +273,20 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
         );
 
         assertThrows(PlatformBusinessException.class,
-                () -> service.receive("session-command", "run-command", "trace-command-worker", request));
+                () -> service.receive(SESSION_ID, RUN_ID, "trace-command-worker", request));
     }
 
     @Test
     void unsafeArtifactReferenceShouldBeRejected() {
+        AgentCommandWorkerLeaseService leaseService = leaseService();
+        AgentCommandWorkerLeaseRecord lease = claimLease(leaseService, EXECUTOR_ID);
         AgentToolActionCommandWorkerReceiptService service =
-                new AgentToolActionCommandWorkerReceiptService(new InMemoryAgentRuntimeEventProjectionStore(10, 100));
+                receiptServiceWithLease(leaseService);
         AgentToolActionCommandWorkerReceiptRequest request = new AgentToolActionCommandWorkerReceiptRequest(
-                "cmd-worker-001",
+                COMMAND_ID,
                 9101L,
                 9201L,
-                "agent-command-worker",
+                EXECUTOR_ID,
                 10L,
                 20L,
                 30L,
@@ -279,9 +296,9 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
                 true,
                 true,
                 true,
-                FENCING_TOKEN,
-                LEASE_VERSION,
-                LEASE_EXPIRES_AT_MS,
+                lease.fencingToken(),
+                lease.leaseVersion(),
+                lease.leaseExpiresAt().toEpochMilli(),
                 "ALLOW_CONTROLLED_EXECUTION",
                 "command-safety-policy.v1",
                 List.of(),
@@ -301,11 +318,12 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
         );
 
         assertThrows(PlatformBusinessException.class,
-                () -> service.receive("session-command", "run-command", "trace-command-worker", request));
+                () -> service.receive(SESSION_ID, RUN_ID, "trace-command-worker", request));
     }
 
-    private AgentToolActionCommandWorkerReceiptRequest successRequest() {
-        return request("EXECUTION_SUCCEEDED", true, true, true, "ALLOW_CONTROLLED_EXECUTION", List.of());
+    private AgentToolActionCommandWorkerReceiptRequest successRequest(AgentCommandWorkerLeaseRecord lease) {
+        return request("EXECUTION_SUCCEEDED", true, true, true,
+                "ALLOW_CONTROLLED_EXECUTION", List.of(), lease);
     }
 
     private AgentToolActionCommandWorkerReceiptRequest request(String outcome,
@@ -313,12 +331,14 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
                                                               boolean sideEffectStarted,
                                                               boolean sideEffectExecuted,
                                                               String safetyDecision,
-                                                              List<String> issueCodes) {
+                                                              List<String> issueCodes,
+                                                              AgentCommandWorkerLeaseRecord lease) {
+        boolean leaseRequired = sideEffectStarted || sideEffectExecuted;
         return new AgentToolActionCommandWorkerReceiptRequest(
-                "cmd-worker-001",
+                COMMAND_ID,
                 9101L,
                 9201L,
-                "agent-command-worker",
+                EXECUTOR_ID,
                 10L,
                 20L,
                 30L,
@@ -327,10 +347,10 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
                 preCheckPassed,
                 sideEffectStarted,
                 sideEffectExecuted,
-                sideEffectStarted || sideEffectExecuted,
-                sideEffectStarted || sideEffectExecuted ? FENCING_TOKEN : null,
-                sideEffectStarted || sideEffectExecuted ? LEASE_VERSION : null,
-                sideEffectStarted || sideEffectExecuted ? LEASE_EXPIRES_AT_MS : null,
+                leaseRequired,
+                leaseRequired && lease != null ? lease.fencingToken() : null,
+                leaseRequired && lease != null ? lease.leaseVersion() : null,
+                leaseRequired && lease != null ? lease.leaseExpiresAt().toEpochMilli() : null,
                 safetyDecision,
                 "command-safety-policy.v1",
                 issueCodes,
@@ -347,6 +367,29 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
                 "受控命令 worker 已写回低敏执行事实。",
                 List.of("确认任务中心状态与 artifact 元数据已经对账"),
                 "command-worker:cmd-worker-001:" + outcome
+        );
+    }
+
+    private AgentCommandWorkerLeaseService leaseService() {
+        return new AgentCommandWorkerLeaseService(new InMemoryAgentCommandWorkerLeaseStore());
+    }
+
+    private AgentCommandWorkerLeaseRecord claimLease(AgentCommandWorkerLeaseService leaseService, String executorId) {
+        AgentCommandWorkerLeaseClaimResult result = leaseService.claim(SESSION_ID, RUN_ID,
+                new AgentCommandWorkerLeaseClaimRequest(COMMAND_ID, executorId, 10L, 20L, 30L, 120));
+        assertTrue(result.acquired());
+        assertNotNull(result.record());
+        assertNotNull(result.record().fencingToken());
+        return result.record();
+    }
+
+    private AgentToolActionCommandWorkerReceiptService receiptServiceWithLease(
+            AgentCommandWorkerLeaseService leaseService) {
+        return new AgentToolActionCommandWorkerReceiptService(
+                new InMemoryAgentRuntimeEventProjectionStore(10, 100),
+                new AgentToolActionWorkerReceiptIndexService(
+                        new InMemoryAgentToolActionWorkerReceiptIndexStore(100)),
+                leaseService
         );
     }
 }

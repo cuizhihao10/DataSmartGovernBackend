@@ -68,6 +68,17 @@ datasmart:
       # 远端权限中心不可用时是否按拒绝处理。
       # 商业化生产环境建议保持 true，避免 permission-admin 故障期间 Agent 越权执行有副作用的工具。
       fail-closed-when-remote-unavailable: ${DATASMART_AGENT_RUNTIME_SERVICE_AUTHORIZATION_FAIL_CLOSED:true}
+    command-worker-leases:
+      # command worker lease 的承载介质。
+      # memory：默认值，适合本地学习、单元测试和单实例联调；它能表达 fencing token 语义，
+      #         但 JVM 重启或多实例部署时无法共享当前持有者事实。
+      # mysql：写入 agent_command_worker_lease 表，适合真实 command outbox worker、多实例控制面、
+      #        队列重试、旧 worker 恢复写回拦截和运维审计。切换 mysql 时必须同时设置
+      #        datasmart.agent-runtime.persistence.database-enabled=true，
+      #        并先执行 docker/mysql/migrations/20260624_agent_command_worker_lease.sql。
+      # 安全边界：fencingToken 只允许存在于内部 store、claim 响应和 receipt 请求中，
+      # 不能进入 runtime event、timeline、日志、Prometheus label、工具结果、prompt、SQL 或 artifact 正文。
+      store: ${DATASMART_AGENT_RUNTIME_COMMAND_WORKER_LEASE_STORE:memory}
     tool-action-resume-facts:
       # checkpoint/thread 恢复定位索引的承载介质。
       # memory：默认值，适合本地学习、单元测试和单实例联调，不要求 MySQL；

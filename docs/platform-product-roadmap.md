@@ -1,4 +1,50 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-24 追加落地进展：Java Agent Runtime 5.98 Command Worker Lease Fact 校验
+- 本阶段承接 5.97 的 fencing token 写回合同，把 Java receipt 从“格式/版本字段校验”推进到“查询当前 lease fact 后再允许写 runtime event”。
+- 产品目标：
+  - 让 command worker 在进入真实副作用区前必须先调用 Java 控制面领取 lease；
+  - 同一 worker 重试领取保持幂等，不生成新 token；
+  - 不同 worker 在当前 lease 未过期时被阻断，并且不会拿到当前持有者的 fencingToken；
+  - lease 过期后重新领取会提升 `leaseVersion` 并生成新 token，旧 worker 再写回 receipt 会被拒绝；
+  - 默认保持 memory 方便本地学习，生产可切换 MySQL 事实表支持跨实例和重启恢复。
+- 新增与调整：
+  - 新增 `AgentCommandWorkerLeaseController`
+    - 内部路由：`POST /internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-leases/claims`；
+    - 只返回低敏 commandId/executorId/state/version/expiresAt，只有领取成功或同 worker 幂等重试时返回 fencingToken；
+    - 支持 `X-DataSmart-Trace-Id` 透传到统一响应。
+  - 新增 `AgentCommandWorkerLeaseService`
+    - 统一处理低敏 ID 校验、TTL 裁剪、fencingToken 生成、token digest、receipt lease 事实校验；
+    - receipt 校验必须匹配 sessionId、runId、commandId、executorId、token、leaseVersion 和 expiresAt；
+    - 不接触命令行、stdout/stderr、payload、SQL、prompt、模型输出、真实路径或凭据。
+  - 新增 `AgentCommandWorkerLeaseStore`
+    - 提供内存实现，服务本地学习与单测；
+    - 提供 MySQL 实现，使用 `SELECT ... FOR UPDATE`、主键和版本号保证领取原子性；
+    - 新增 MySQL 字段映射器，避免 Store 文件过长。
+  - 新增数据库迁移
+    - `docker/mysql/migrations/20260624_agent_command_worker_lease.sql`；
+    - 表只保存控制面定位、executor、fencingToken、leaseVersion、expiresAt、acquiredAt、updatedAt；
+    - 不保存命令正文、工具参数、stdout/stderr、artifact 正文、URL、prompt、SQL、模型输出或凭据。
+  - 更新 `AgentToolActionCommandWorkerReceiptService`
+    - 移除内联 token 解析逻辑；
+    - 通过 `AgentCommandWorkerLeaseService.validateReceiptLease(...)` 校验当前有效 lease fact；
+    - runtime event 继续只保存 token digest，不保存 token 明文。
+  - 更新 `application.yml`
+    - 新增 `datasmart.agent-runtime.command-worker-leases.store`；
+    - `memory` 默认本地模式；
+    - `mysql` 需要同时开启 `datasmart.agent-runtime.persistence.database-enabled=true` 并执行迁移。
+- 商业化意义：
+  - 这一步补上了多 worker、多实例、队列重试和旧 worker 恢复时最关键的写回门禁；
+  - 从现在开始，格式正确但没有服务端事实支持的 fencingToken 不能进入 command worker receipt timeline；
+  - command durable action 主链路已经接近“可控执行前闭环”，下一步应优先补真实 sandbox 的输出裁剪、artifact 二次鉴权、dead-letter/补偿和任务最终态对账。
+- 验证：
+  - `mvn -pl agent-runtime -am "-Dtest=AgentCommandWorkerLeaseServiceTest,AgentToolActionCommandWorkerReceiptServiceTest,AgentRuntimeEventDisplaySupportTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：21 个用例通过。
+  - `mvn -pl agent-runtime -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：346 个用例通过。
+  - `python -m pytest python-ai-runtime\tests -q`：520 个用例通过。
+- 当前边界：
+  - 仍不是命令执行器；
+  - MySQL store 已具备生产替换点，但尚未接真实 task-management worker、队列 visibility timeout、续租/释放接口和过期扫描任务；
+  - 仍未实现 stdout/stderr 裁剪、artifact 正文授权、补偿台和 sandbox 资源隔离。
+
 ## 2026-06-24 追加落地进展：Java/Python Runtime 5.97 Worker Receipt 接入 Fencing Token 校验
 - 本阶段承接 Python Runtime 5.96 的 worker lease/token fencing 合同，把 fencing 证据接入 Java command worker receipt 写回口，继续收敛命令 durable action 主链路。
 - 产品目标：

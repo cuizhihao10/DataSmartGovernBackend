@@ -1,4 +1,25 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-24 落地补充：fencing token should be checked against a durable host fact
+
+- 本轮趋势校准：
+  - Redis 官方分布式锁资料明确指出长耗时进程应实现 fencing token；映射到 DataSmart，command worker 不能只凭“格式正确的 token”写回副作用结果，而要让服务端校验 token 是否仍是当前 lease fact。
+  - MCP Tools 继续把工具定义为会触达外部系统的能力；映射到 DataSmart，`tools/call`、run-program、sandbox 命令都必须经过 Host 的权限、租约、回执和审计边界。
+  - OpenAI Sandbox Agents 强调 agent 编排与受控 sandbox execution 分层；映射到 DataSmart，sandbox runner 后续应先调用 Java lease claim，再进入执行，最后携带 token 写回 receipt。
+- 本轮落地到代码的能力：
+  - 新增 Java `AgentCommandWorkerLeaseService`、`AgentCommandWorkerLeaseStore`、内存 store、MySQL store 和内部 claim controller；
+  - 新增 `POST /internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-leases/claims`；
+  - Java receipt service 不再只校验 token 格式，而是校验 session/run/command/executor/token/version/expiresAt 是否能对上当前 lease fact；
+  - 新增 MySQL 迁移 `20260624_agent_command_worker_lease.sql`，生产可通过 `datasmart.agent-runtime.command-worker-leases.store=mysql` 与 `database-enabled=true` 切换到跨实例事实表；
+  - runtime event 仍只保存 token present、token digest、leaseVersion 和 expiresAtMs，不保存 fencingToken 明文。
+- 产品判断：
+  - 这一步把 5.97 的“写回资格合同”升级为“写回资格事实校验”，旧 worker、重复 worker 或伪造 token 的回执会在进入 timeline 前被拒绝；
+  - 当前仍不是 shell/sandbox runner，也没有 stdout/stderr 裁剪、artifact 正文权限或 dead-letter 补偿；
+  - 下一步不建议继续围绕 lease 追加字段，应转向 sandbox 输出裁剪、artifact 二次鉴权、worker 失败补偿和最终任务状态对账。
+- 参考资料：
+  - Redis distributed locks: `https://redis.io/docs/latest/develop/clients/patterns/distributed-locks/`
+  - MCP Tools: `https://modelcontextprotocol.io/specification/2025-11-25/server/tools`
+  - OpenAI Sandbox Agents: `https://developers.openai.com/api/docs/guides/agents/sandboxes`
+
 ## 2026-06-24 落地补充：fencing token must be validated at the receipt boundary, but not replayed in clear text
 
 - 本轮趋势校准：

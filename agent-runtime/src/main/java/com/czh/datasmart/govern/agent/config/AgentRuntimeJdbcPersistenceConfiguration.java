@@ -17,7 +17,8 @@ import org.springframework.context.annotation.Configuration;
  *
  * <p>该配置只在同时满足以下条件时生效：
  * 1. {@code datasmart.agent-runtime.persistence.database-enabled=true}；
- * 2. 工具审计、工具事件 outbox、异步命令 outbox、DAG 确认、Skill 可见性索引或恢复事实索引至少一个明确选择 MySQL 仓储。
+ * 2. 工具审计、工具事件 outbox、异步命令 outbox、DAG 确认、Skill 可见性索引、恢复事实索引
+ *    或 command worker lease 至少一个明确选择 MySQL 仓储。
  *
  * <p>这样设计是为了避免一个很常见的商业化项目坑：只要把 JDBC/MyBatis 依赖加入模块，Spring Boot 就可能在默认本地环境
  * 尝试自动创建数据源，导致没有启动 MySQL 的开发者无法运行任何单元测试或应用。这里采用独立 HikariDataSource Bean，
@@ -33,7 +34,8 @@ import org.springframework.context.annotation.Configuration;
                 + "|| '${datasmart.agent-runtime.runtime-events.skill-visibility-index.store:memory}'.equalsIgnoreCase('mysql') "
                 + "|| '${datasmart.agent-runtime.tool-action-resume-facts.locator-index-store:memory}'.equalsIgnoreCase('mysql') "
                 + "|| '${datasmart.agent-runtime.tool-action-resume-facts.clarification-fact-store:memory}'.equalsIgnoreCase('mysql') "
-                + "|| '${datasmart.agent-runtime.tool-action-resume-facts.worker-receipt-index-store:memory}'.equalsIgnoreCase('mysql'))"
+                + "|| '${datasmart.agent-runtime.tool-action-resume-facts.worker-receipt-index-store:memory}'.equalsIgnoreCase('mysql') "
+                + "|| '${datasmart.agent-runtime.command-worker-leases.store:memory}'.equalsIgnoreCase('mysql'))"
 )
 public class AgentRuntimeJdbcPersistenceConfiguration {
 
