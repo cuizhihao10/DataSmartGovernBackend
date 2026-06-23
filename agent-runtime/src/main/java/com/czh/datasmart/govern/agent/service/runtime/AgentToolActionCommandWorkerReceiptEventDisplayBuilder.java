@@ -62,6 +62,10 @@ final class AgentToolActionCommandWorkerReceiptEventDisplayBuilder {
         metrics.put("preCheckPassed", preCheckPassed);
         metrics.put("sideEffectStarted", sideEffectStarted);
         metrics.put("sideEffectExecuted", sideEffectExecuted);
+        metrics.put("workerLeaseRequired", bool(attributes, "workerLeaseRequired"));
+        metrics.put("workerLeaseTokenPresent", bool(attributes, "workerLeaseTokenPresent"));
+        metrics.put("workerLeaseVersion", intValue(attributes, "workerLeaseVersion"));
+        metrics.put("workerLeaseExpiresAtMs", attributes.get("workerLeaseExpiresAtMs"));
         metrics.put("toolCode", text(attributes, "toolCode", null));
         metrics.put("targetService", text(attributes, "targetService", null));
         metrics.put("taskId", attributes.get("taskId"));

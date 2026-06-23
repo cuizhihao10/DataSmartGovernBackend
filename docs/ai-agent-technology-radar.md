@@ -1,4 +1,27 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-24 落地补充：fencing token must be validated at the receipt boundary, but not replayed in clear text
+
+- 本轮趋势校准：
+  - MCP Tools 把工具调用定义为模型可触发的外部系统交互，并强调工具结果有结构化 schema、错误语义和安全考虑；映射到 DataSmart，工具执行结果不能只靠模型响应或 worker 自报，必须进入 host 可校验的 receipt 边界。
+  - OpenAI Agents SDK 将工具、handoff、guardrails、state/session 等能力分层；映射到 DataSmart，worker 写回资格与执行结果应分层：fencingToken 用于写回资格校验，runtime event 只保存低敏执行事实。
+  - OpenAI Sandbox Agents 把 sandbox execution 放在受控运行环境中；映射到 DataSmart，sandbox runner 后续应先领取 lease，再携带 token 写回 receipt。
+  - LangGraph Persistence 将 checkpoint 与 store 区分；映射到 DataSmart，token 明文属于短生命周期执行资格，不应进入可回放 timeline，只能保存 digest 作为审计锚点。
+- 本轮落地到代码的能力：
+  - Java `AgentToolActionCommandWorkerReceiptRequest` 新增 `workerLeaseRequired`、`fencingToken`、`workerLeaseVersion`、`workerLeaseExpiresAtMs`；
+  - Java receipt service 对进入副作用区的回执强制校验 fencing token 格式、版本一致性和 lease 过期字段；
+  - runtime event attributes 只保存 `workerLeaseTokenPresent` 与 `workerLeaseTokenDigest`，不保存 token 明文；
+  - timeline metrics 展示 lease required/token present/version/expiresAtMs；
+  - Python `ControlledCommandWorkerRunner` 在 side-effect 模式下强制要求 lease 元数据，POST Java payload 时携带 token，但本地 `to_summary()` 隐藏 token。
+- 产品判断：
+  - 5.97 不是生产分布式锁，也不是真实 shell/sandbox；
+  - 这一步把 fencing 从“Python 本地合同”推进到“Java 写回边界合同”，让没有租约证据的副作用回执不能进入 runtime timeline；
+  - 下一步应实现 Redis/Java durable lease store 校验，或开始 sandbox/stdout-stderr 裁剪与 artifact 二次鉴权，避免继续只堆控制面字段。
+- 参考资料：
+  - MCP Tools: `https://modelcontextprotocol.io/specification/2025-06-18/server/tools`
+  - OpenAI Agents SDK guide: `https://developers.openai.com/api/docs/guides/agents`
+  - OpenAI Sandbox Agents: `https://developers.openai.com/api/docs/guides/agents/sandboxes`
+  - LangGraph Persistence: `https://docs.langchain.com/oss/python/langgraph/persistence`
+
 ## 2026-06-24 落地补充：worker lease and fencing token should exist before sandbox side effects
 
 - 本轮趋势校准：

@@ -39,6 +39,7 @@ SAFE_ARTIFACT_REFERENCE_PREFIXES = (
 )
 SAFE_MACHINE_CODE_PATTERN = re.compile(r"^[A-Z0-9_.:-]{1,120}$")
 SAFE_REFERENCE_PATTERN = re.compile(r"^[a-zA-Z0-9_.:/=@+-]{1,220}$")
+SAFE_FENCING_TOKEN_PATTERN = re.compile(r"^cmd-lease:([1-9][0-9]*):[a-fA-F0-9]{8,64}$")
 SENSITIVE_TEXT_MARKERS = (
     "select ",
     "insert ",
@@ -117,6 +118,10 @@ class ControlledCommandWorkerRunRequest:
     command_safety_issue_codes: tuple[str, ...] = field(default_factory=tuple)
     normalized_timeout_seconds: int = 30
     normalized_output_byte_limit_bytes: int = 4096
+    worker_lease_required: bool = False
+    fencing_token: str | None = None
+    worker_lease_version: int | None = None
+    worker_lease_expires_at_ms: int | None = None
     artifact_reference_type: str | None = None
     artifact_reference: str | None = None
     artifact_available: bool = False
@@ -152,7 +157,7 @@ class ControlledCommandWorkerReceipt:
             "payloadPolicy": self.payload_policy,
             "executionPerformed": self.execution_performed,
             "outcome": self.outcome.value,
-            "javaPayload": self.java_payload,
+            "javaPayload": _summary_payload(self.java_payload),
         }
 
 
@@ -203,6 +208,8 @@ class ControlledCommandWorkerRunner:
             CommandWorkerReceiptOutcome.EXECUTION_FAILED,
         }
         side_effect_executed = outcome is CommandWorkerReceiptOutcome.EXECUTION_SUCCEEDED
+        worker_lease_required = bool(request.worker_lease_required or side_effect_started or side_effect_executed)
+        self._validate_worker_lease_boundary(request, worker_lease_required)
         artifact_reference = self._artifact_reference_for(request, side_effect_executed)
         payload = {
             "commandId": _required_text(request.command_id, "command_id"),
@@ -217,6 +224,10 @@ class ControlledCommandWorkerRunner:
             "preCheckPassed": pre_check_passed,
             "sideEffectStarted": side_effect_started,
             "sideEffectExecuted": side_effect_executed,
+            "workerLeaseRequired": worker_lease_required,
+            "fencingToken": _safe_fencing_token(request.fencing_token),
+            "workerLeaseVersion": request.worker_lease_version,
+            "workerLeaseExpiresAtMs": request.worker_lease_expires_at_ms,
             "commandSafetyDecision": safety_decision,
             "commandSafetyPolicyVersion": _safe_text(request.command_safety_policy_version, max_length=160),
             "commandSafetyIssueCodes": list(safe_issue_codes),
@@ -282,6 +293,30 @@ class ControlledCommandWorkerRunner:
             raise ValueError("operator_message 疑似包含命令、输出、SQL、prompt、凭据或内部地址，不能进入 worker receipt")
         if request.artifact_reference and not _is_safe_artifact_reference(request.artifact_reference):
             raise ValueError("artifact_reference 必须是受控低敏引用，不能是 URL、路径逃逸、对象正文或凭据片段")
+
+    def _validate_worker_lease_boundary(
+        self,
+        request: ControlledCommandWorkerRunRequest,
+        worker_lease_required: bool,
+    ) -> None:
+        """校验进入副作用区前必须具备 worker lease 证据。
+
+        这一步不会连接 Redis 或 Java durable store；它只保证 Python runner 生成的 Java payload 在合同层面已经携带
+        fencingToken、leaseVersion 和过期时间。后续真实 sandbox runner 可以在执行前调用 lease manager 领取 token，
+        再把 token 透传到本 runner。
+        """
+
+        if not worker_lease_required and not request.fencing_token:
+            return
+        token_version = _safe_fencing_token_version(request.fencing_token)
+        if token_version is None:
+            raise ValueError("worker lease required 时必须提供 cmd-lease:{version}:{digest} 格式的 fencing_token")
+        if request.worker_lease_version is None or int(request.worker_lease_version) < 1:
+            raise ValueError("worker lease required 时必须提供大于 0 的 worker_lease_version")
+        if token_version != int(request.worker_lease_version):
+            raise ValueError("fencing_token 中的版本号必须与 worker_lease_version 一致")
+        if request.worker_lease_expires_at_ms is None or int(request.worker_lease_expires_at_ms) <= 0:
+            raise ValueError("worker lease required 时必须提供大于 0 的 worker_lease_expires_at_ms")
 
     def _outcome_for(
         self,
@@ -372,6 +407,19 @@ def _drop_none(payload: Mapping[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if value is not None}
 
 
+def _summary_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """生成诊断摘要时隐藏 fencingToken 明文。
+
+    `java_payload` 本身必须携带 token 才能 POST 给 Java；但 `to_summary()` 常用于日志、测试失败输出或诊断接口，
+    不能把 token 这种写回资格凭证扩散出去。因此摘要里只保留 token 是否存在。
+    """
+
+    result = dict(payload)
+    if result.pop("fencingToken", None):
+        result["fencingTokenPresent"] = True
+    return result
+
+
 def _required_text(value: Any, field_name: str) -> str:
     text = _safe_text(value, max_length=260)
     if not text:
@@ -433,6 +481,22 @@ def _non_negative_int(value: Any) -> int:
     except (TypeError, ValueError):
         return 0
     return max(parsed, 0)
+
+
+def _safe_fencing_token(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if _safe_fencing_token_version(text) is None:
+        raise ValueError("fencing_token 必须使用 cmd-lease:{version}:{digest} 格式")
+    return text
+
+
+def _safe_fencing_token_version(value: str | None) -> int | None:
+    if value is None:
+        return None
+    match = SAFE_FENCING_TOKEN_PATTERN.fullmatch(str(value).strip())
+    return int(match.group(1)) if match else None
 
 
 def _is_safe_artifact_reference(value: str) -> bool:

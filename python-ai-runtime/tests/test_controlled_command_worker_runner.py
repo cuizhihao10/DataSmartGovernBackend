@@ -18,6 +18,11 @@ from datasmart_ai_runtime.services.tools import (
 )
 
 
+FENCING_TOKEN = "cmd-lease:7:abcdef1234567890"
+LEASE_VERSION = 7
+LEASE_EXPIRES_AT_MS = 1_900_000_000_000
+
+
 class FakeHttpResponse:
     """单元测试用 HTTP 响应替身。
 
@@ -71,23 +76,42 @@ class ControlledCommandWorkerRunnerTest(unittest.TestCase):
         """模拟成功时必须生成 Java 允许的 `EXECUTION_SUCCEEDED` 形态，并补齐低敏 artifact 引用。"""
 
         receipt = ControlledCommandWorkerRunner().build_receipt(
-            self._request(run_mode=ControlledCommandWorkerRunMode.SIMULATED_EXECUTION_SUCCESS)
+            self._request(
+                run_mode=ControlledCommandWorkerRunMode.SIMULATED_EXECUTION_SUCCESS,
+                fencing_token=FENCING_TOKEN,
+                worker_lease_version=LEASE_VERSION,
+                worker_lease_expires_at_ms=LEASE_EXPIRES_AT_MS,
+            )
         )
         payload = receipt.java_payload
-        serialized = json.dumps(payload, ensure_ascii=False)
+        serialized = json.dumps(receipt.to_summary(), ensure_ascii=False)
 
         self.assertEqual(CommandWorkerReceiptOutcome.EXECUTION_SUCCEEDED, receipt.outcome)
         self.assertEqual("EXECUTION_SUCCEEDED", payload["outcome"])
         self.assertTrue(payload["preCheckPassed"])
         self.assertTrue(payload["sideEffectStarted"])
         self.assertTrue(payload["sideEffectExecuted"])
+        self.assertTrue(payload["workerLeaseRequired"])
+        self.assertEqual(FENCING_TOKEN, payload["fencingToken"])
+        self.assertEqual(LEASE_VERSION, payload["workerLeaseVersion"])
+        self.assertEqual(LEASE_EXPIRES_AT_MS, payload["workerLeaseExpiresAtMs"])
         self.assertEqual("EXECUTION_RESULT", payload["workerReceiptMode"])
         self.assertEqual("AGENT_ARTIFACT", payload["artifactReferenceType"])
         self.assertEqual("agent-artifact:run-command-001/cmd-worker-001/simulated-receipt", payload["artifactReference"])
+        self.assertIn("fencingTokenPresent", serialized)
+        self.assertNotIn(FENCING_TOKEN, serialized)
         self.assertNotIn("select * from", serialized.lower())
         self.assertNotIn("prompt:", serialized.lower())
         self.assertNotIn("stdout", serialized.lower())
         self.assertNotIn("stderr", serialized.lower())
+
+    def test_simulated_side_effect_mode_requires_worker_lease(self) -> None:
+        """进入模拟执行区前必须具备 lease 证据，避免未来真实 runner 绕过并发护栏。"""
+
+        with self.assertRaises(ValueError):
+            ControlledCommandWorkerRunner().build_receipt(
+                self._request(run_mode=ControlledCommandWorkerRunMode.SIMULATED_EXECUTION_SUCCESS)
+            )
 
     def test_non_allow_decision_or_open_issue_codes_fail_closed_before_execution(self) -> None:
         """安全决策不是 allow 或 issueCode 未关闭时，runner 必须生成 `FAILED_PRECHECK`。"""
@@ -146,7 +170,12 @@ class ControlledCommandWorkerRunnerTest(unittest.TestCase):
 
         captured: dict[str, object] = {}
         receipt = ControlledCommandWorkerRunner().build_receipt(
-            self._request(run_mode=ControlledCommandWorkerRunMode.SIMULATED_EXECUTION_SUCCESS)
+            self._request(
+                run_mode=ControlledCommandWorkerRunMode.SIMULATED_EXECUTION_SUCCESS,
+                fencing_token=FENCING_TOKEN,
+                worker_lease_version=LEASE_VERSION,
+                worker_lease_expires_at_ms=LEASE_EXPIRES_AT_MS,
+            )
         )
 
         def fake_urlopen(request, timeout: int):
@@ -197,9 +226,11 @@ class ControlledCommandWorkerRunnerTest(unittest.TestCase):
         )
         self.assertEqual("EXECUTION_SUCCEEDED", captured["payload"]["outcome"])
         self.assertTrue(captured["payload"]["sideEffectExecuted"])
+        self.assertEqual(FENCING_TOKEN, captured["payload"]["fencingToken"])
         self.assertEqual("EXECUTION_SUCCEEDED", summary["outcome"])
         self.assertNotIn("commandLine", summary)
         self.assertNotIn("stdout", summary)
+        self.assertNotIn(FENCING_TOKEN, str(summary))
         self.assertNotIn("agent-runtime.test", str(summary))
 
     def _request(self, **overrides) -> ControlledCommandWorkerRunRequest:

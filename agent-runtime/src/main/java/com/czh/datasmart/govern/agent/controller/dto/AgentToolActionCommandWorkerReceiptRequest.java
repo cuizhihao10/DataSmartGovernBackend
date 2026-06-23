@@ -34,6 +34,10 @@ import java.util.List;
  * @param preCheckPassed true 表示 worker 侧服务端复核通过；false 表示执行前被明确阻断。
  * @param sideEffectStarted true 表示 worker 已经进入可能产生副作用的受控执行区；用于区分“预检通过但尚未执行”。
  * @param sideEffectExecuted true 表示副作用已确认发生；只有安全决策允许受控执行时才能为 true。
+ * @param workerLeaseRequired true 表示本回执声明进入过受控执行区，因此必须携带 worker lease 证据。
+ * @param fencingToken worker 领取 command lease 后拿到的防旧写 token；服务端只校验并生成 digest，不写入事件明文。
+ * @param workerLeaseVersion lease 单调版本号；过期后重新领取必须递增，用于阻断旧 worker 回写。
+ * @param workerLeaseExpiresAtMs lease 过期毫秒时间戳；用于运维判断回执是否在有效窗口内写回。
  * @param commandSafetyDecision Java 安全预检或 worker 复核后的低敏决策，例如 ALLOW_CONTROLLED_EXECUTION。
  * @param commandSafetyPolicyVersion 命令安全策略版本；用于审计“当时用哪一版策略放行/阻断”。
  * @param commandSafetyIssueCodes 安全预检 issueCode 白名单摘要；不允许出现命令行、路径值或参数值。
@@ -64,6 +68,10 @@ public record AgentToolActionCommandWorkerReceiptRequest(
         Boolean preCheckPassed,
         Boolean sideEffectStarted,
         Boolean sideEffectExecuted,
+        Boolean workerLeaseRequired,
+        String fencingToken,
+        Long workerLeaseVersion,
+        Long workerLeaseExpiresAtMs,
         String commandSafetyDecision,
         String commandSafetyPolicyVersion,
         List<String> commandSafetyIssueCodes,

@@ -1,4 +1,43 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-24 追加落地进展：Java/Python Runtime 5.97 Worker Receipt 接入 Fencing Token 校验
+- 本阶段承接 Python Runtime 5.96 的 worker lease/token fencing 合同，把 fencing 证据接入 Java command worker receipt 写回口，继续收敛命令 durable action 主链路。
+- 产品目标：
+  - 让进入副作用执行区的 worker receipt 必须携带 `workerLeaseRequired`、`fencingToken`、`workerLeaseVersion` 和 `workerLeaseExpiresAtMs`；
+  - Java 接收端先做合同级校验：token 必须是 `cmd-lease:{version}:{digest}` 低敏格式，且 token 内版本号必须与 `workerLeaseVersion` 一致；
+  - runtime event 不保存 `fencingToken` 明文，只保存 token 是否存在、`workerLeaseVersion`、`workerLeaseExpiresAtMs` 和短 digest，避免 projection/replay 泄露写回凭证；
+  - Python 受控 runner 在模拟成功/失败这种“进入副作用区”的模式下强制要求 lease 元数据，并把 token/version 透传给 Java payload；
+  - 继续保持边界清晰：这一步是 receipt 合同校验，不是 Redis/Java durable lease store，也不是 sandbox runner。
+- 新增与调整：
+  - 更新 `AgentToolActionCommandWorkerReceiptRequest`
+    - 新增 `workerLeaseRequired`、`fencingToken`、`workerLeaseVersion`、`workerLeaseExpiresAtMs` 字段；
+    - 注释说明 token 是写回资格凭证，服务端只校验和摘要化，不写入事件明文。
+  - 更新 `AgentToolActionCommandWorkerReceiptService`
+    - 副作用回执必须具备 lease/fencing 证据；
+    - 校验 token 格式、版本号一致性和 lease 过期时间字段；
+    - attributes 新增 `workerLeaseRequired`、`workerLeaseTokenPresent`、`workerLeaseTokenDigest`、`workerLeaseVersion`、`workerLeaseExpiresAtMs`。
+  - 更新 `AgentToolActionCommandWorkerReceiptEventDisplayBuilder`
+    - timeline metrics 展示 lease 是否要求、token 是否存在和版本号，不展示 token 明文。
+  - 更新 `ControlledCommandWorkerRunner`
+    - side-effect 模式必须提供 `fencing_token`、`worker_lease_version`、`worker_lease_expires_at_ms`；
+    - `to_summary()` 隐藏 `fencingToken` 明文，只保留 `fencingTokenPresent`。
+  - 更新 Java/Python 测试
+    - 覆盖副作用回执缺 lease 被拒绝；
+    - 覆盖 Java projection 不保存 token 明文；
+    - 覆盖 Python side-effect 模式缺 lease 失败、POST payload 带 token、summary 隐藏 token。
+- 商业化意义：
+  - 这一步把 token fencing 从 Python 本地控制面推进到 Java 事实接收口，阻止“没有租约证据的副作用回执”进入 timeline；
+  - 生产上仍需把 token 与 Redis/Java durable lease store 对账，但当前合同已经固定了后续真实 runner 必须满足的字段、格式和低敏投影方式；
+  - 相比直接开放 shell runner，这一步更符合企业级 Agent Host 的安全收敛节奏：先证明写回资格，再证明执行结果。
+- 验证：
+  - `mvn -pl agent-runtime -am "-Dtest=AgentToolActionCommandWorkerReceiptServiceTest,AgentRuntimeEventDisplaySupportTest,AgentToolActionWorkerReceiptIndexServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：19 个用例通过。
+  - `python -m pytest python-ai-runtime\tests\test_controlled_command_worker_runner.py python-ai-runtime\tests\test_command_worker_lease.py -q`：15 个用例通过。
+  - `mvn -pl agent-runtime -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：340 个用例通过。
+  - `python -m pytest python-ai-runtime\tests -q`：520 个用例通过。
+- 当前边界：
+  - 尚未实现跨实例 durable lease store；
+  - Java 目前校验 token 格式和版本一致性，尚未查询 Redis/Java 租约事实表；
+  - 尚未实现真实 sandbox、stdout/stderr 裁剪、artifact 正文权限和 dead-letter 补偿。
+
 ## 2026-06-24 追加落地进展：Python Runtime 5.96 命令 Worker Lease 与 Token Fencing 合同
 - 本阶段承接 5.95 的受控命令 runner，不开放真实 shell/sandbox 执行，而是先补齐“执行前只能由一个 worker 领取 command”的并发护栏。
 - 产品目标：

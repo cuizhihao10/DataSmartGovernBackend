@@ -30,6 +30,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class AgentToolActionCommandWorkerReceiptServiceTest {
 
+    private static final String FENCING_TOKEN = "cmd-lease:7:abcdef1234567890";
+    private static final long LEASE_VERSION = 7L;
+    private static final long LEASE_EXPIRES_AT_MS = 1900000000000L;
+
     @Test
     void shouldAppendCommandWorkerReceiptIntoProjectionDisplayAndIndex() throws JsonProcessingException {
         InMemoryAgentRuntimeEventProjectionStore projectionStore =
@@ -59,6 +63,11 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
         assertEquals(true, record.attributes().get("preCheckPassed"));
         assertEquals(true, record.attributes().get("sideEffectStarted"));
         assertEquals(true, record.attributes().get("sideEffectExecuted"));
+        assertEquals(true, record.attributes().get("workerLeaseRequired"));
+        assertEquals(true, record.attributes().get("workerLeaseTokenPresent"));
+        assertEquals(LEASE_VERSION, record.attributes().get("workerLeaseVersion"));
+        assertEquals(LEASE_EXPIRES_AT_MS, record.attributes().get("workerLeaseExpiresAtMs"));
+        assertTrue(String.valueOf(record.attributes().get("workerLeaseTokenDigest")).startsWith("sha256:"));
         assertEquals("ALLOW_CONTROLLED_EXECUTION", record.attributes().get("commandSafetyDecision"));
         assertEquals("agent-artifact:run-command/receipt-001", record.attributes().get("artifactReference"));
         assertEquals(AgentToolActionCommandWorkerReceiptService.PAYLOAD_POLICY,
@@ -69,6 +78,8 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
         assertEquals("SIDE_EFFECT_CONFIRMED", display.status());
         assertFalse(display.requiresAttention());
         assertEquals(true, display.metrics().get("sideEffectExecuted"));
+        assertEquals(true, display.metrics().get("workerLeaseTokenPresent"));
+        assertEquals(7, display.metrics().get("workerLeaseVersion"));
 
         List<AgentToolActionWorkerReceiptIndexRecord> indexRecords = indexStore.queryByCommandId(
                 new AgentToolActionWorkerReceiptIndexQuery(
@@ -96,6 +107,7 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
         assertFalse(json.contains("commandLine"));
         assertFalse(json.contains("select * from"));
         assertFalse(json.contains("prompt:"));
+        assertFalse(json.contains(FENCING_TOKEN));
     }
 
     @Test
@@ -147,6 +159,49 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
     }
 
     @Test
+    void sideEffectExecutedShouldRequireWorkerLeaseEvidence() {
+        AgentToolActionCommandWorkerReceiptService service =
+                new AgentToolActionCommandWorkerReceiptService(new InMemoryAgentRuntimeEventProjectionStore(10, 100));
+        AgentToolActionCommandWorkerReceiptRequest request = new AgentToolActionCommandWorkerReceiptRequest(
+                "cmd-worker-001",
+                9101L,
+                9201L,
+                "agent-command-worker",
+                10L,
+                20L,
+                30L,
+                "SUCCEEDED",
+                "EXECUTION_SUCCEEDED",
+                true,
+                true,
+                true,
+                false,
+                null,
+                null,
+                null,
+                "ALLOW_CONTROLLED_EXECUTION",
+                "command-safety-policy.v1",
+                List.of(),
+                30,
+                4096,
+                "MINIO_OBJECT",
+                "agent-artifact:run-command/receipt-001",
+                true,
+                null,
+                "audit-command-worker-001",
+                "command.run-program",
+                "task-management-worker",
+                "EXECUTION_RESULT",
+                "受控命令 worker 已写回低敏执行事实。",
+                List.of("确认任务中心状态与 artifact 元数据已经对账"),
+                "command-worker:cmd-worker-001:missing-lease"
+        );
+
+        assertThrows(PlatformBusinessException.class,
+                () -> service.receive("session-command", "run-command", "trace-command-worker", request));
+    }
+
+    @Test
     void failedPrecheckShouldEnterBlockedDisplayWithoutSideEffect() {
         InMemoryAgentRuntimeEventProjectionStore store = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
         AgentToolActionCommandWorkerReceiptService service =
@@ -180,6 +235,10 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
                 true,
                 true,
                 false,
+                true,
+                FENCING_TOKEN,
+                LEASE_VERSION,
+                LEASE_EXPIRES_AT_MS,
                 "ALLOW_CONTROLLED_EXECUTION",
                 "command-safety-policy.v1",
                 List.of(),
@@ -219,6 +278,10 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
                 true,
                 true,
                 true,
+                true,
+                FENCING_TOKEN,
+                LEASE_VERSION,
+                LEASE_EXPIRES_AT_MS,
                 "ALLOW_CONTROLLED_EXECUTION",
                 "command-safety-policy.v1",
                 List.of(),
@@ -264,6 +327,10 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
                 preCheckPassed,
                 sideEffectStarted,
                 sideEffectExecuted,
+                sideEffectStarted || sideEffectExecuted,
+                sideEffectStarted || sideEffectExecuted ? FENCING_TOKEN : null,
+                sideEffectStarted || sideEffectExecuted ? LEASE_VERSION : null,
+                sideEffectStarted || sideEffectExecuted ? LEASE_EXPIRES_AT_MS : null,
                 safetyDecision,
                 "command-safety-policy.v1",
                 issueCodes,
