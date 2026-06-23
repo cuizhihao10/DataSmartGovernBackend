@@ -1,4 +1,26 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-24 落地补充：controlled runner should prove the receipt contract before real shell execution
+
+- 本轮趋势校准：
+  - MCP Tools 规范把工具视为模型可发现、可调用的外部系统交互能力，同时明确服务端应做输入校验、访问控制、限流、输出净化、超时和审计，客户端也应保留敏感操作确认能力；映射到 DataSmart，`tools/call` 或模型 tool_call 不应该直接变成 shell 执行，而应先进入 Host 管控链路。
+  - OpenAI Agents/Sandbox 的产品形态把 agent 编排、工具、沙箱、状态、观测拆成独立层；映射到 DataSmart，真实副作用不应由模型文本或同步 API 响应证明，而应由受控 worker 写回低敏 receipt。
+  - LangChain Context Engineering 强调 state/store/runtime context 分层组织工具上下文；映射到 DataSmart，command 安全决策、预算裁剪、artifact 引用和副作用布尔值可以进入可回放上下文，但命令行、路径、stdout/stderr、业务 payload 与凭据不能进入事件层。
+- 本轮落地到代码的能力：
+  - 新增 Python `ControlledCommandWorkerRunner`，把 Java 5.94 command worker receipt 的状态约束提前镜像到 Python/OpenClaw-style 执行层；
+  - 新增 `PRECHECK_ONLY`、`SIMULATED_EXECUTION_SUCCESS`、`SIMULATED_EXECUTION_FAILURE`、`CAPACITY_LIMITED` 四类受控模式；
+  - 安全决策不是 `ALLOW_CONTROLLED_EXECUTION` 或 issueCode 未关闭时，Python 侧直接降级为 `FAILED_PRECHECK`；
+  - 新增 `JavaCommandWorkerReceiptClient`，默认关闭，显式启用后只 POST 低敏 Java DTO，并只解析 Java 响应白名单字段；
+  - 测试覆盖敏感 message、unsafe artifact URL、stdout/stderr、SQL/prompt 等不进入 payload 或 postResult。
+- 产品判断：
+  - 5.95 仍不是 shell runner，也不是 sandbox；
+  - 这一步的价值是让后续真实 sandbox/lease/worker 可以复用同一套 receipt 语义，而不是未来再推翻 Java/Python 合同；
+  - 下一步应补 worker lease 与 token fencing，解决多实例重复执行同一 command 的风险，然后再接 sandbox/stdout-stderr 裁剪与 artifact 二次鉴权。
+- 参考资料：
+  - MCP Tools: `https://modelcontextprotocol.io/specification/2025-06-18/server/tools`
+  - OpenAI Agents SDK guide: `https://developers.openai.com/api/docs/guides/agents`
+  - OpenAI Sandbox Agents: `https://developers.openai.com/api/docs/guides/agents/sandboxes`
+  - LangChain Context Engineering: `https://docs.langchain.com/oss/python/langchain/context-engineering`
+
 ## 2026-06-23 落地补充：worker receipt is the proof of side effect, not the tool output itself
 
 - 本轮趋势校准：

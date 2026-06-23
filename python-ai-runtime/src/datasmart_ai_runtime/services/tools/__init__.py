@@ -121,6 +121,23 @@ from datasmart_ai_runtime.services.tools.tool_action_resume_gate_graph_client im
 from datasmart_ai_runtime.services.tools.tool_action_resume_fact_checkpoint_hints import (
     checkpoint_resume_fact_bundle_hints,
 )
+from datasmart_ai_runtime.services.tools.controlled_command_worker_runner import (
+    COMMAND_WORKER_RECEIPT_PAYLOAD_POLICY,
+    COMMAND_WORKER_RECEIPT_SCHEMA_VERSION,
+    JAVA_COMMAND_WORKER_RECEIPT_ROUTE_TEMPLATE,
+    CommandWorkerReceiptOutcome,
+    ControlledCommandWorkerReceipt,
+    ControlledCommandWorkerRunMode,
+    ControlledCommandWorkerRunRequest,
+    ControlledCommandWorkerRunResult,
+    ControlledCommandWorkerRunner,
+)
+from datasmart_ai_runtime.services.tools.command_worker_receipt_client import (
+    CommandWorkerReceiptClientError,
+    CommandWorkerReceiptPostResult,
+    JavaCommandWorkerReceiptClient,
+    JavaCommandWorkerReceiptClientSettings,
+)
 
 __all__ = (
     "ToolActionIntakeBoundary",
@@ -197,4 +214,17 @@ __all__ = (
     "ToolExecutionReadinessGraphEdge",
     "ToolExecutionReadinessGraphNode",
     "build_tool_execution_readiness_graph_response",
+    "COMMAND_WORKER_RECEIPT_PAYLOAD_POLICY",
+    "COMMAND_WORKER_RECEIPT_SCHEMA_VERSION",
+    "JAVA_COMMAND_WORKER_RECEIPT_ROUTE_TEMPLATE",
+    "CommandWorkerReceiptOutcome",
+    "ControlledCommandWorkerReceipt",
+    "ControlledCommandWorkerRunMode",
+    "ControlledCommandWorkerRunRequest",
+    "ControlledCommandWorkerRunResult",
+    "ControlledCommandWorkerRunner",
+    "CommandWorkerReceiptClientError",
+    "CommandWorkerReceiptPostResult",
+    "JavaCommandWorkerReceiptClient",
+    "JavaCommandWorkerReceiptClientSettings",
 )

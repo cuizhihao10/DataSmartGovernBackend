@@ -1,4 +1,37 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-23 追加落地进展：Python Runtime 5.95 受控命令 Worker Runner 合同
+- 本阶段承接 Java Agent Runtime 5.94 的 command worker receipt 合同，不直接开放真实 shell runner，而是在 Python/OpenClaw-style 执行层补齐“可生成、可校验、可选写回 Java 的受控 runner 外壳”。
+- 产品目标：
+  - 让 `proposal -> safety-precheck -> outbox -> worker precheck -> command worker receipt` 链路从 Java 控制面继续延伸到 Python 执行层；
+  - 当前仅支持 `PRECHECK_ONLY`、`SIMULATED_EXECUTION_SUCCESS`、`SIMULATED_EXECUTION_FAILURE` 和 `CAPACITY_LIMITED` 四类受控模式；
+  - 安全决策不是 `ALLOW_CONTROLLED_EXECUTION` 或仍有 issueCode 时，Python runner 会 fail-closed 生成 `FAILED_PRECHECK`，不允许进入副作用声明；
+  - 模拟成功时生成 Java 允许的 `EXECUTION_SUCCEEDED` 回执形态，并自动补齐低敏 `agent-artifact:` 引用，仍然不代表真实 shell 已经执行；
+  - 保持低敏边界：不执行命令、不读 payloadReference、不读取文件、不回传 stdout/stderr、不保存命令行、路径、环境变量、工具参数、SQL、prompt、模型输出、凭据或内部 endpoint。
+- 新增与调整：
+  - 新增 `controlled_command_worker_runner.py`
+    - 定义 `ControlledCommandWorkerRunRequest`、`ControlledCommandWorkerReceipt`、`ControlledCommandWorkerRunner` 等合同；
+    - 明确状态映射：预检通过、执行前阻断、模拟成功、模拟失败、容量受限；
+    - 在 Python 侧提前镜像 Java 5.94 的关键状态约束，避免非法回执进入 Java。
+  - 新增 `command_worker_receipt_client.py`
+    - 定义 `JavaCommandWorkerReceiptClient`、`JavaCommandWorkerReceiptClientSettings` 和 `CommandWorkerReceiptPostResult`；
+    - 默认关闭 HTTP 写回，显式启用后 POST 到 Java 内部路由；
+    - 只解析 Java 响应中的 accepted、duplicate、identityKey、outcome 等低敏字段，不扩散 Java 原始响应或内部 URL。
+  - 更新 `services/tools/__init__.py`
+    - 导出受控 runner 和 Java receipt client，便于后续执行图、worker 或测试复用。
+  - 更新 Agent 能力矩阵
+    - `tool.exec-run-program` 和 `command.outbox-worker-receipt` 记录 Python 受控 runner 已完成；
+    - 下一步缺口收敛为 worker lease、token fencing、sandbox/stdout-stderr 裁剪、artifact 二次鉴权和 dead-letter 补偿。
+- 商业化意义：
+  - 这一阶段仍然不做真实命令执行，但已经把真实 runner 未来必须遵守的回执边界、状态机和 Java 写回路径固定下来；
+  - 后续引入 sandbox、worker lease 或容器化执行时，不应该再改动业务侧的 receipt 语义，只替换执行来源和 artifact 登记方式；
+  - 这比直接上 shell runner 更稳，因为企业级 Agent Host 最怕的不是“暂时不能执行”，而是“执行了却没有低敏、可审计、可补偿的事实证明”。
+- 验证：
+  - `python -m pytest python-ai-runtime\tests\test_controlled_command_worker_runner.py -q`：6 个用例通过。
+- 当前边界：
+  - 5.95 仍不是命令执行器；
+  - 尚未实现 worker lease、token fencing、真实 sandbox、stdout/stderr 裁剪、artifact 正文权限、队列重试或死信；
+  - Java 写回客户端默认关闭，必须由真实 worker 配置显式启用。
+
 ## 2026-06-23 追加落地进展：Java Agent Runtime 5.94 受控命令 Worker Receipt 最小合同
 - 本阶段承接 5.93 的 worker 派发前安全复核，不开放真实 shell runner，不读取 payloadReference，不返回 stdout/stderr，而是补齐 command worker 对 agent-runtime 的低敏回执写回合同。
 - 产品目标：
