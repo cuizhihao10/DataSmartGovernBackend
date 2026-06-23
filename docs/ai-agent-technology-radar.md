@@ -1,4 +1,25 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-23 落地补充：run-program needs a host-side safe-cmd gate before real execution
+
+- 本轮趋势校准：
+  - OpenAI Agents/Sandbox 体系把 Agent harness、工作区状态、审批和沙箱执行分开看待，说明真实工具副作用不应由模型响应直接证明，而应由 Host/Sandbox/State 共同证明；
+  - MCP Tools 规范把工具调用定义为 `tools/call`，并强调客户端或 Host 仍可对工具调用做人工确认和拒绝，这与 DataSmart 的 ToolPlan -> readiness -> safety-precheck -> outbox -> receipt 链路一致；
+  - LangChain Context Engineering 给出按 State、Store、Runtime Context 过滤工具的模式，映射到 DataSmart 就是命令执行前必须按租户、项目、角色、工作区和工具风险过滤。
+- 本轮落地到代码的能力：
+  - 新增 Java `AgentToolActionCommandSafetyPrecheckService`，把 safe-cmd、dangerous-path、network、write、timeout、output-limit 和 HITL 统一成低敏 verdict；
+  - 新增 `POST /agent-runtime/tool-action-commands/safety-precheck` 与 `/api/agent/tool-action-commands/safety-precheck`；
+  - 新增独立 `AgentCommandSafetyPrecheckProperties`，避免主配置类继续膨胀；
+  - 响应固定不返回 commandLine、真实路径、stdout/stderr、脚本正文、SQL、prompt、模型输出、凭据或内部 endpoint。
+- 产品判断：
+  - 5.92 是“命令执行能力闭环”的安全地基，不是真实 shell runner；
+  - 现在可以把 `permission.dangerous-path-safe-cmd` 从 planned 提升到 control_plane_ready，但不能标记为 operational；
+  - 下一步应让 outbox worker 在领取命令前复用同一 verdict，并在 worker receipt 中只记录低敏 decision、issueCodes、预算裁剪和 pathCategories。
+- 参考资料：
+  - OpenAI Agents SDK guide: `https://developers.openai.com/api/docs/guides/agents`
+  - OpenAI Sandbox Agents: `https://developers.openai.com/api/docs/guides/agents/sandboxes`
+  - MCP Tools: `https://modelcontextprotocol.io/specification/2025-06-18/server/tools`
+  - LangChain Context Engineering: `https://docs.langchain.com/oss/python/langchain/context-engineering`
+
 ## 2026-06-23 落地补充：a complete Agent Host needs a capability matrix before final closure
 
 - 本轮趋势校准：

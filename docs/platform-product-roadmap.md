@@ -1,4 +1,41 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-23 追加落地进展：Java Agent Runtime 5.92 命令安全预检合同
+- 本阶段承接 5.91 Agent 能力完备度矩阵中 `tool.exec-run-program` 与 `permission.dangerous-path-safe-cmd` 的 P0 缺口，开始把“模型提出命令”收敛到 Java Host 的安全控制面，而不是直接实现真实 shell 执行。
+- 产品目标：
+  - 为 Codex/Claude Code/OpenClaw 类 Agent 所需的 run-program / shell / MCP tools/call 能力建立第一道可复用门禁；
+  - 在 outbox/worker 之前先判断命令文本、工作区路径、危险路径、联网、写入、超时和输出体量是否安全；
+  - 明确响应只是一份低敏 verdict，不执行命令、不写 outbox、不创建审批单、不返回命令正文或真实路径；
+  - 避免后续真实 worker 上线时再返工 safe-cmd、dangerous-path、HITL 与输出裁剪这些基础安全规则。
+- 新增 Java 组件：
+  - `AgentCommandSafetyPrecheckProperties`
+    - 独立配置命令安全预检策略，避免继续膨胀 `AgentRuntimeProperties`；
+    - 覆盖 safeCommandPrefixes、dangerousCommandFragments、networkCommandFragments、writeCommandFragments、blockedPathFragments、timeout 和 output limit；
+    - 所有配置项均在 `application.yml` 中补充中文说明，便于后续学习和运维调整。
+  - `AgentToolActionCommandSafetyPrecheckRequest`
+    - 定义命令预检请求体；
+    - 允许服务端读取 commandLine、workspaceRoot、workingDirectory、referencedPaths、联网/写入声明和审批引用；
+    - 强调请求体不是执行请求，也不是 outbox 写入请求。
+  - `AgentToolActionCommandSafetyPrecheckResponse`
+    - 输出 `decision`、`executable`、`requiresHumanApproval`、`blocked`、`riskLevel`、预算裁剪结果、issueCodes、reasonCodes、pathCategories 和 recommendedActions；
+    - 固定 `commandLineReturned=false`、`pathValuesReturned=false`、`sideEffectExecuted=false`，作为低敏边界测试锚点。
+  - `AgentToolActionCommandSafetyPrecheckService`
+    - 实现 safe-cmd allowlist、危险命令片段阻断、联网/写入命令审批、workspace 越界检查、危险路径片段阻断、审批引用形态检查、超时和输出预算裁剪；
+    - 租户和项目范围结合可信 Header 做收口；
+    - 命中危险命令、危险路径或越界路径时 fail-closed；
+    - 命中联网/写入/未知命令时进入 Human-in-the-loop，不直接给出可执行结论。
+  - `AgentToolActionCommandSafetyPrecheckController`
+    - 新增 `POST /agent-runtime/tool-action-commands/safety-precheck`；
+    - 新增 `POST /api/agent/tool-action-commands/safety-precheck`；
+    - 控制器只负责 HTTP 参数与 Header 接入，业务判断保留在 service。
+- 能力矩阵同步：
+  - `tool.exec-run-program` 当前证据新增 Java command safety precheck；
+  - `permission.dangerous-path-safe-cmd` 从 planned 调整为 control_plane_ready；
+  - 仍明确缺口：真实 worker 复用该 verdict、容器/进程隔离、环境变量过滤、stdout/stderr 裁剪、worker lease 与 receipt 回写尚未完成。
+- 商业化意义：
+  - 这一步不是继续发散 Java 功能，而是为 Agent 最终闭环补一块必须先有的安全地基；
+  - 后续真实命令执行必须沿着 `proposal -> safety-precheck -> outbox -> worker precheck -> receipt` 推进；
+  - 普通模型输出、MCP tools/call 或 A2A action 不能绕过该门禁直接运行命令。
+
 ## 2026-06-23 追加落地进展：Python Runtime 5.91 Agent 能力完备度矩阵
 - 本阶段承接“项目开始收敛闭口”的要求，不新增真实工具副作用、不写 Java outbox、不调度 worker，而是把完整 Agent Host 需要的能力域固化为可测试、可诊断、可持续维护的能力矩阵。
 - 产品目标：

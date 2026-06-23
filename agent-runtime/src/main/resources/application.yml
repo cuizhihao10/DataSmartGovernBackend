@@ -335,6 +335,124 @@ datasmart:
     # 会话绑定工具时强制从工具目录继承元数据。
     # 生产环境建议保持 true，避免调用方伪造 toolType、targetService、riskLevel 或审批要求。
     strict-tool-registry-binding: true
+    # Agent 命令安全预检。
+    # 该配置服务 Codex/Claude Code/OpenClaw 类 Agent 的 run-program / shell / MCP tools/call 场景：
+    # 模型或外部协议可以提出“想运行什么命令”，但是否允许进入受控 worker，必须先由 Java Host 检查
+    # safe-cmd、dangerous-path、workspace root、联网、写入、超时和输出体量。
+    # 注意：该预检不执行命令、不写 outbox、不创建审批单、不返回命令正文或真实路径。
+    command-safety-precheck:
+      # 生产环境建议保持 true。关闭后预检接口只会返回 POLICY_DISABLED，不会给出可执行结论。
+      enabled: ${DATASMART_AGENT_RUNTIME_COMMAND_SAFETY_PRECHECK_ENABLED:true}
+      # 没有 workspaceRoot 就无法证明 workingDirectory / referencedPaths 没有越界，因此默认要求必须传入。
+      workspace-root-required: true
+      # 命令行最大长度。大段脚本、SQL、prompt 或 base64 文件应转成 artifactReference，而不是塞进命令行。
+      max-command-chars: ${DATASMART_AGENT_RUNTIME_COMMAND_MAX_CHARS:4096}
+      # 默认和最大超时。真实 worker 仍必须再次强制服务端上限，不能信任客户端自报。
+      default-timeout-seconds: ${DATASMART_AGENT_RUNTIME_COMMAND_DEFAULT_TIMEOUT_SECONDS:30}
+      max-timeout-seconds: ${DATASMART_AGENT_RUNTIME_COMMAND_MAX_TIMEOUT_SECONDS:120}
+      # 默认和最大输出字节数。stdout/stderr 可能包含敏感数据，必须按服务端预算裁剪。
+      default-output-byte-limit: ${DATASMART_AGENT_RUNTIME_COMMAND_DEFAULT_OUTPUT_BYTES:16384}
+      max-output-byte-limit: ${DATASMART_AGENT_RUNTIME_COMMAND_MAX_OUTPUT_BYTES:65536}
+      # 写入、联网和未知命令默认需要 Human-in-the-loop。审批事实仍必须由 worker 回查 permission-admin。
+      approval-required-for-write: true
+      approval-required-for-network: true
+      approval-required-for-unknown-command: true
+      # 安全命令前缀只是第一层 allowlist，不代表直接执行；路径、预算、权限、审批和 receipt 仍要复核。
+      safe-command-prefixes:
+        - pwd
+        - ls
+        - dir
+        - cat
+        - type
+        - rg
+        - grep
+        - findstr
+        - head
+        - tail
+        - wc
+        - git status
+        - git diff
+        - git log
+        - mvn -v
+        - mvn test
+        - java -version
+      # 命中这些危险片段时直接阻断，不靠审批绕过。
+      dangerous-command-fragments:
+        - rm -rf
+        - del /s
+        - rmdir /s
+        - format
+        - shutdown
+        - reboot
+        - diskpart
+        - mkfs
+        - dd if=
+        - reg delete
+        - chmod 777
+        - chown -r
+        - icacls
+        - takeown
+        - curl | sh
+        - wget | sh
+        - invoke-expression
+        - iwr
+        - iex
+      # 命中这些片段时进入联网审批语义；后续可继续接域名 allowlist、代理和下载体量限制。
+      network-command-fragments:
+        - curl
+        - wget
+        - invoke-webrequest
+        - iwr
+        - git clone
+        - git fetch
+        - git pull
+        - npm install
+        - pnpm install
+        - yarn install
+        - pip install
+        - uv pip install
+        - docker pull
+      # 命中这些片段时进入写入审批语义；真实执行仍应把写入转成 artifact 或受控 workspace 修改。
+      write-command-fragments:
+        - touch
+        - mkdir
+        - new-item
+        - set-content
+        - out-file
+        - tee
+        - sed -i
+        - echo
+        - cp
+        - copy
+        - mv
+        - move
+        - git add
+        - git commit
+        - npm run build
+        - mvn package
+      # 这些路径片段代表系统目录、凭据目录、VCS 内部目录或本机工具缓存目录。响应只返回分类，不返回路径值。
+      blocked-path-fragments:
+        - /etc
+        - /root
+        - /var/lib
+        - /proc
+        - /sys
+        - c:\windows
+        - c:\program files
+        - \.ssh
+        - /.ssh
+        - \.aws
+        - /.aws
+        - \.kube
+        - /.kube
+        - \.codex
+        - /.codex
+        - \.git
+        - /.git
+        - \.m2
+        - /.m2
+        - \.npm
+        - /.npm
     # Agent 工具调用沙箱。
     # 这里的沙箱是“执行前控制面沙箱”：它不启动容器，也不直接调用下游服务；
     # 它负责在真实工具适配器执行前检查工具目录一致性、目标服务范围、参数体量、同步超时、幂等重试和审批事实。
