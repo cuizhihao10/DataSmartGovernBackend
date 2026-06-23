@@ -74,11 +74,15 @@ class AgentToolActionCommandOutboxWriterServiceTest {
         assertTrue(record.payloadJson().contains("AGENT_PAYLOAD_RECORD_FOUND"));
         assertTrue(record.payloadJson().contains("AGENT_PAYLOAD_METADATA_SCOPE_VERIFIED"));
         assertTrue(record.payloadJson().contains("\"factEvidenceVerificationStatus\":\"VERIFIED_OR_NOT_REQUIRED\""));
+        assertTrue(record.payloadJson().contains("\"commandSafetyPrecheckRequired\":false"));
+        assertTrue(record.payloadJson().contains("\"decision\":\"NOT_APPLICABLE\""));
+        assertTrue(record.payloadJson().contains("COMMAND_SAFETY_PRECHECK_EVIDENCE_IF_REQUIRED"));
         assertTrue(record.payloadJson().contains("\"serverSideVerificationRequired\":true"));
         assertFalse(record.payloadJson().contains("payloadBody"));
         assertFalse(record.payloadJson().contains("ds-sensitive-proposal"));
         assertFalse(record.payloadJson().contains("select * from"));
         assertFalse(record.payloadJson().contains("raw prompt"));
+        assertFalse(record.payloadJson().contains("\"commandLine\":\""));
         assertFalse(record.payloadJson().contains("http://internal-service"));
         assertFalse(record.payloadJson().contains("businessGoal"));
 

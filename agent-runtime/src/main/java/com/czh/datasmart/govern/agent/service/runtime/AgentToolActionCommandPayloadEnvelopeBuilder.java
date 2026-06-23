@@ -131,12 +131,24 @@ public class AgentToolActionCommandPayloadEnvelopeBuilder {
         payload.put("clarificationFactId", request == null ? null : safeText(request.clarificationFactId()));
         payload.put("factEvidenceVerificationStatus", factEvidenceVerification.status());
         payload.put("factEvidenceAcceptedEvidence", factEvidenceVerification.acceptedEvidence());
+        /*
+         * 命令安全预检证据占位。
+         *
+         * 当前 tool-action writer 处理的是“工具动作 command”的低敏入箱，不等同于真实 shell/run-program 执行。
+         * 因此默认声明 commandSafetyPrecheckRequired=false，并放入 NOT_APPLICABLE 摘要，保证历史工具命令不会被误阻断。
+         * 后续如果某个 ToolPlan 真正表示“运行程序/执行命令”，writer 或专用 command builder 必须把 required 置为 true，
+         * 并写入 safety-precheck 返回的低敏 allow verdict。worker pre-check 会在领取前复核该证据，缺失或携带高敏字段
+         * 都会 fail-closed。
+         */
+        payload.put("commandSafetyPrecheckRequired", false);
+        payload.put("commandSafetyPrecheck", commandSafetyPrecheckNotApplicable());
         payload.put("workerReceiptRequired", proposal.workerReceiptRequired());
         payload.put("workerReceiptMode", proposal.workerReceiptMode());
         payload.put("serverSideVerificationRequired", true);
         payload.put("requiredServerSideChecks", List.of(
                 "PAYLOAD_REFERENCE_AUTHORIZATION",
                 "POLICY_VERSION_REPLAY",
+                "COMMAND_SAFETY_PRECHECK_EVIDENCE_IF_REQUIRED",
                 "APPROVAL_OR_CLARIFICATION_FACT_LOOKUP",
                 "WORKER_CAPACITY_LEASE",
                 "IDEMPOTENCY_RECHECK",
@@ -147,6 +159,25 @@ public class AgentToolActionCommandPayloadEnvelopeBuilder {
         payload.put("maxRetryCount", outboxProperties.getDefaultMaxRetryCount());
         payload.put("maxDeferCount", outboxProperties.getDefaultMaxDeferCount());
         return payload;
+    }
+
+    /**
+     * 构造“当前工具动作不适用命令安全预检”的低敏占位。
+     *
+     * <p>为什么不直接省略字段：省略字段容易让后续 worker/executor 分不清“历史 payload 不知道这回事”和“本次明确不适用”。
+     * 用 NOT_APPLICABLE 可以把语义写清楚，同时仍然不包含 commandLine、工作目录、真实路径、stdout/stderr 或工具参数。</p>
+     */
+    private Map<String, Object> commandSafetyPrecheckNotApplicable() {
+        Map<String, Object> evidence = new LinkedHashMap<>();
+        evidence.put("required", false);
+        evidence.put("decision", "NOT_APPLICABLE");
+        evidence.put("payloadPolicy", "LOW_SENSITIVE_COMMAND_SAFETY_PRECHECK_NOT_APPLICABLE");
+        evidence.put("reasonCodes", List.of("TOOL_ACTION_COMMAND_IS_NOT_RUN_PROGRAM"));
+        evidence.put("issueCodes", List.of());
+        evidence.put("commandLineReturned", false);
+        evidence.put("pathValuesReturned", false);
+        evidence.put("sideEffectExecuted", false);
+        return evidence;
     }
 
     /**

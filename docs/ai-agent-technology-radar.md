@@ -1,4 +1,25 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-23 落地补充：safe-cmd verdict must be re-checked by the worker, not only returned by an API
+
+- 本轮趋势校准：
+  - MCP Tools 把工具调用视为模型可触发的 `tools/call`，但同时强调客户端/Host 应保留 human-in-the-loop 和拒绝能力；映射到 DataSmart，模型工具调用不能只依赖一次 API verdict，而要在 worker 派发前重新复核。
+  - OpenAI Agents/Sandbox 的方向是把 Agent、工具、审批、沙箱和状态分层管理；映射到 DataSmart，safety-precheck 只是 Host verdict，outbox/worker 仍要检查该 verdict 是否低敏、未过期、未被伪造或未携带原始命令。
+  - LangChain Context Engineering 强调按 State/Store/Runtime Context 控制工具上下文；映射到 DataSmart，命令安全证据也应是上下文的一部分，但只能保存 decision、issueCodes、预算和分类，不能保存 commandLine/path。
+- 本轮落地到代码的能力：
+  - 新增 `AgentCommandSafetyPrecheckEvidenceEvaluator`，worker pre-check 会验证 outbox payload 的 `commandSafetyPrecheck` 低敏证据段；
+  - `AgentAsyncTaskCommandPreCheckService` 合并该复核结果，缺失 required 证据、非 allow verdict、仍需审批、预算无效或携带高敏字段时 fail-closed；
+  - `AgentToolActionCommandPayloadEnvelopeBuilder` 为普通工具动作写入 `NOT_APPLICABLE` 占位，并在 `requiredServerSideChecks` 中加入 `COMMAND_SAFETY_PRECHECK_EVIDENCE_IF_REQUIRED`；
+  - pre-check runtime event 与 metrics 继续只输出低敏 issueCode，不输出 payloadJson、commandLine、真实路径或工具参数。
+- 产品判断：
+  - 5.93 不是 shell runner，也不是 receipt；它把命令安全从“接口返回值”推进成“worker 派发前合同”；
+  - 下一步最有收敛价值的是 worker receipt：记录低敏 decision、issueCodes、budget、executionOutcome、artifactReference 和 sideEffectStarted/Executed；
+  - 不建议继续扩展更多命令预览字段，除非它直接服务 worker receipt、dead-letter 补偿或 artifact 二次鉴权。
+- 参考资料：
+  - OpenAI Agents SDK guide: `https://developers.openai.com/api/docs/guides/agents`
+  - OpenAI Sandbox Agents: `https://developers.openai.com/api/docs/guides/agents/sandboxes`
+  - MCP Tools: `https://modelcontextprotocol.io/specification/2025-06-18/server/tools`
+  - LangChain Context Engineering: `https://docs.langchain.com/oss/python/langchain/context-engineering`
+
 ## 2026-06-23 落地补充：run-program needs a host-side safe-cmd gate before real execution
 
 - 本轮趋势校准：

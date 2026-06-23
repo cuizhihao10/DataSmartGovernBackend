@@ -1,4 +1,30 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-23 追加落地进展：Java Agent Runtime 5.93 命令安全预检接入 Worker 复核合同
+- 本阶段承接 5.92 的命令安全预检合同，不继续扩展真实 shell runner，而是把 safety-precheck 的低敏 verdict 接入 command outbox worker pre-check。
+- 产品目标：
+  - 让 `proposal -> safety-precheck -> outbox -> worker precheck -> receipt` 链路从“安全预检独立存在”推进到“worker 派发前可强制复核安全证据”；
+  - 对历史非 run-program 工具命令保持兼容，不因为旧 payload 没有安全证据而误阻断；
+  - 对显式声明 `commandSafetyPrecheckRequired=true` 的命令 fail-closed：缺证据、证据不是 allow、仍需审批、预算缺失或携带 commandLine/真实路径时都不能投递；
+  - 继续坚持低敏边界：outbox payload、runtime event、metrics 不保存原始命令、真实路径、stdout/stderr、环境变量、prompt、SQL、工具参数或内部 endpoint。
+- 新增与调整：
+  - 新增 `AgentCommandSafetyPrecheckEvidenceEvaluator`
+    - 专门复核 outbox payload 的 `commandSafetyPrecheck` 证据段；
+    - 支持 `NOT_APPLICABLE` 兼容语义，用于非 shell/run-program 的普通工具动作；
+    - 验证 `decision/executable/requiresHumanApproval/blocked/policyVersion/payloadPolicy/budget/sideEffectExecuted` 等低敏字段；
+    - 递归拒绝 `commandLine`、`workspaceRoot`、`workingDirectory`、`referencedPaths`、`arguments`、`payload`、`stdout/stderr` 等高敏字段。
+  - `AgentAsyncTaskCommandPreCheckService`
+    - 在 confirmation、policyVersion、current policy、sandbox/runtime protection 之后合并命令安全证据复核；
+    - 新增 `COMMAND_SAFETY_PRECHECK_*` issueCodes，dispatcher 会按既有 precheck 状态机阻断或暂缓。
+  - `AgentToolActionCommandPayloadEnvelopeBuilder`
+    - 生成低敏 outbox 信封时写入 `commandSafetyPrecheckRequired=false` 与 `decision=NOT_APPLICABLE`；
+    - `requiredServerSideChecks` 新增 `COMMAND_SAFETY_PRECHECK_EVIDENCE_IF_REQUIRED`，为后续 run-program builder 打开 required 做准备。
+  - `AgentAsyncTaskCommandPreCheckMetricsService`
+    - 新增命令安全证据相关低基数 issueCode 白名单，避免指标全部归并为 OTHER。
+- 商业化意义：
+  - 这一步把安全预检从“独立接口”推进为“worker 领取前合同”，更接近 Codex/Claude Code 类 Agent Host 的执行安全模型；
+  - 当前仍不开放真实命令执行，下一步应补最小 worker receipt，而不是继续增加 preview 字段；
+  - 对商业客户来说，低敏 durable evidence 比模型侧一句“我检查过了”更可信，也更容易审计和告警。
+
 ## 2026-06-23 追加落地进展：Java Agent Runtime 5.92 命令安全预检合同
 - 本阶段承接 5.91 Agent 能力完备度矩阵中 `tool.exec-run-program` 与 `permission.dangerous-path-safe-cmd` 的 P0 缺口，开始把“模型提出命令”收敛到 Java Host 的安全控制面，而不是直接实现真实 shell 执行。
 - 产品目标：

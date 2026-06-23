@@ -50,6 +50,7 @@ public class AgentAsyncTaskCommandPreCheckService {
 
     private final AgentRunToolExecutionPolicyService policyService;
     private final AgentRunToolDagConfirmationStore confirmationStore;
+    private final AgentCommandSafetyPrecheckEvidenceEvaluator commandSafetyPrecheckEvidenceEvaluator;
     private final ObjectMapper objectMapper;
 
     /**
@@ -78,6 +79,7 @@ public class AgentAsyncTaskCommandPreCheckService {
         evaluateConfirmation(record, confirmationId, confirmation, issueCodes, reasons, actions);
         evaluatePolicyVersion(payloadPolicyVersions, confirmation, issueCodes, reasons, actions);
         evaluateCurrentPolicy(policy, issueCodes, reasons, actions);
+        evaluateCommandSafetyPrecheckEvidence(payload, issueCodes, reasons, actions);
 
         String decision = decision(issueCodes);
         if (issueCodes.isEmpty()) {
@@ -225,6 +227,32 @@ public class AgentAsyncTaskCommandPreCheckService {
                     "当前运行时保护判定容量或目标服务健康不适合继续执行。",
                     "请按 runtimeProtectionIssueCodes=" + policy.runtimeProtectionIssueCodes() + " 进行退避、拆批或排查熔断。");
         }
+    }
+
+    /**
+     * 复核 command payload 中的命令安全预检证据。
+     *
+     * <p>这一步是 5.92 safety-precheck 与 worker pre-check 的衔接点。它不要求所有历史 command 都携带
+     * commandSafetyPrecheck，因为现有 outbox 里还有数据同步、元数据读取等非 run-program 类命令；但只要 payload
+     * 显式声明 `commandSafetyPrecheckRequired=true` 或 evidence.required=true，就必须提供低敏、可验证的 allow verdict。</p>
+     *
+     * <p>为什么这里不直接读取 commandLine：worker 领取的是已经入箱的 durable command，payload 必须保持低敏信封。
+     * 原始命令文本只能在预检阶段短暂进入服务端判定，不能被复制到 outbox、runtime event、指标或诊断响应里。</p>
+     */
+    private void evaluateCommandSafetyPrecheckEvidence(Map<String, Object> payload,
+                                                       List<String> issueCodes,
+                                                       List<String> reasons,
+                                                       List<String> actions) {
+        AgentCommandSafetyPrecheckEvidenceEvaluator.AgentCommandSafetyPrecheckEvidenceResult result =
+                commandSafetyPrecheckEvidenceEvaluator.evaluate(payload);
+        if (Boolean.TRUE.equals(result.passed())) {
+            reasons.addAll(result.reasons());
+            actions.addAll(result.recommendedActions());
+            return;
+        }
+        issueCodes.addAll(result.issueCodes());
+        reasons.addAll(result.reasons());
+        actions.addAll(result.recommendedActions());
     }
 
     private String decision(List<String> issueCodes) {

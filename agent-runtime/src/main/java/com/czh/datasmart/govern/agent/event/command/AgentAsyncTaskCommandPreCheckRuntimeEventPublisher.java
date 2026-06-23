@@ -124,7 +124,7 @@ public class AgentAsyncTaskCommandPreCheckRuntimeEventPublisher {
         attributes.put("sandboxAllowed", verdict.sandboxAllowed());
         attributes.put("runtimeProtectionAllowed", verdict.runtimeProtectionAllowed());
         attributes.put("sideEffectPrevented", true);
-        attributes.put("eventPayloadPolicy", "SUMMARY_ONLY_NO_PAYLOAD_JSON_NO_TOOL_ARGUMENTS");
+        attributes.put("eventPayloadPolicy", "SUMMARY_ONLY_NO_PAYLOAD_JSON_NO_TOOL_ARGUMENTS_NO_COMMAND_LINE_NO_PATH_VALUES");
         /*
          * 这里不使用 Map.copyOf：
          * 1. pre-check verdict 中的 confirmationStatus、policyDecision、confirmationExpiresAt 等字段在真实异常场景

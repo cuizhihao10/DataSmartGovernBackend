@@ -72,6 +72,47 @@ class AgentAsyncTaskCommandPreCheckServiceTest {
     }
 
     @Test
+    void requiredCommandSafetyEvidenceShouldPassWhenLowSensitiveAllowVerdictIsPresent() {
+        TestFixture fixture = newFixture(false);
+        fixture.saveAudit(AgentToolExecutionState.PLANNED);
+        fixture.saveConfirmation(Instant.now().plusSeconds(3600), List.of("policy-v1"));
+
+        AgentAsyncTaskCommandPreCheckVerdict verdict = fixture.service.inspect(commandWithAllowSafetyEvidence());
+
+        assertTrue(verdict.allowed());
+        assertEquals("ALLOW_EXECUTION", verdict.decision());
+        assertTrue(verdict.issueCodes().isEmpty());
+        assertTrue(verdict.reasons().stream().anyMatch(reason -> reason.contains("命令安全预检证据通过")));
+    }
+
+    @Test
+    void requiredCommandSafetyEvidenceMissingShouldFailClosed() {
+        TestFixture fixture = newFixture(false);
+        fixture.saveAudit(AgentToolExecutionState.PLANNED);
+        fixture.saveConfirmation(Instant.now().plusSeconds(3600), List.of("policy-v1"));
+
+        AgentAsyncTaskCommandPreCheckVerdict verdict = fixture.service.inspect(commandWithMissingRequiredSafetyEvidence());
+
+        assertFalse(verdict.allowed());
+        assertEquals("BLOCKED", verdict.decision());
+        assertTrue(verdict.issueCodes().contains("COMMAND_SAFETY_PRECHECK_REQUIRED_MISSING"));
+    }
+
+    @Test
+    void commandSafetyEvidenceWithRawCommandLineShouldFailClosed() {
+        TestFixture fixture = newFixture(false);
+        fixture.saveAudit(AgentToolExecutionState.PLANNED);
+        fixture.saveConfirmation(Instant.now().plusSeconds(3600), List.of("policy-v1"));
+
+        AgentAsyncTaskCommandPreCheckVerdict verdict = fixture.service.inspect(commandWithUnsafeSafetyEvidence());
+
+        assertFalse(verdict.allowed());
+        assertEquals("BLOCKED", verdict.decision());
+        assertTrue(verdict.issueCodes().contains("COMMAND_SAFETY_PRECHECK_LOW_SENSITIVE_VIOLATION"));
+        assertTrue(verdict.reasons().stream().anyMatch(reason -> reason.contains("commandLine")));
+    }
+
+    @Test
     void missingConfirmationShouldFailClosed() {
         TestFixture fixture = newFixture(false);
         fixture.saveAudit(AgentToolExecutionState.PLANNED);
@@ -143,6 +184,7 @@ class AgentAsyncTaskCommandPreCheckServiceTest {
         AgentAsyncTaskCommandPreCheckService service = new AgentAsyncTaskCommandPreCheckService(
                 policyService,
                 confirmationStore,
+                new AgentCommandSafetyPrecheckEvidenceEvaluator(),
                 new ObjectMapper()
         );
         AgentSessionRecord session = session();
@@ -253,6 +295,71 @@ class AgentAsyncTaskCommandPreCheckServiceTest {
                   "policyVersions": %s
                 }
                 """.formatted(CONFIRMATION_ID, toJsonArray(policyVersions)));
+    }
+
+    private AgentAsyncTaskCommandOutboxRecord commandWithAllowSafetyEvidence() {
+        return command("""
+                {
+                  "confirmationId": "%s",
+                  "policyVersions": ["policy-v1"],
+                  "commandSafetyPrecheckRequired": true,
+                  "commandSafetyPrecheck": {
+                    "required": true,
+                    "decision": "ALLOW_CONTROLLED_EXECUTION",
+                    "executable": true,
+                    "requiresHumanApproval": false,
+                    "blocked": false,
+                    "riskLevel": "LOW",
+                    "payloadPolicy": "LOW_SENSITIVE_COMMAND_SAFETY_PRECHECK_ONLY",
+                    "policyVersion": "datasmart.agent-command-safety-precheck.v1",
+                    "normalizedTimeoutSeconds": 30,
+                    "normalizedOutputByteLimitBytes": 8192,
+                    "issueCodes": [],
+                    "reasonCodes": ["COMMAND_MATCHED_SAFE_ALLOWLIST"],
+                    "pathCategories": ["WORKSPACE_ROOT_PRESENT", "WORKING_DIRECTORY_INSIDE_WORKSPACE"],
+                    "commandLineReturned": false,
+                    "pathValuesReturned": false,
+                    "sideEffectExecuted": false
+                  }
+                }
+                """.formatted(CONFIRMATION_ID));
+    }
+
+    private AgentAsyncTaskCommandOutboxRecord commandWithMissingRequiredSafetyEvidence() {
+        return command("""
+                {
+                  "confirmationId": "%s",
+                  "policyVersions": ["policy-v1"],
+                  "commandSafetyPrecheckRequired": true
+                }
+                """.formatted(CONFIRMATION_ID));
+    }
+
+    private AgentAsyncTaskCommandOutboxRecord commandWithUnsafeSafetyEvidence() {
+        return command("""
+                {
+                  "confirmationId": "%s",
+                  "policyVersions": ["policy-v1"],
+                  "commandSafetyPrecheckRequired": true,
+                  "commandSafetyPrecheck": {
+                    "required": true,
+                    "decision": "ALLOW_CONTROLLED_EXECUTION",
+                    "executable": true,
+                    "requiresHumanApproval": false,
+                    "blocked": false,
+                    "payloadPolicy": "LOW_SENSITIVE_COMMAND_SAFETY_PRECHECK_ONLY",
+                    "policyVersion": "datasmart.agent-command-safety-precheck.v1",
+                    "normalizedTimeoutSeconds": 30,
+                    "normalizedOutputByteLimitBytes": 8192,
+                    "issueCodes": [],
+                    "reasonCodes": ["COMMAND_MATCHED_SAFE_ALLOWLIST"],
+                    "commandLine": "rm -rf /tmp/secret",
+                    "commandLineReturned": false,
+                    "pathValuesReturned": false,
+                    "sideEffectExecuted": false
+                  }
+                }
+                """.formatted(CONFIRMATION_ID));
     }
 
     private AgentAsyncTaskCommandOutboxRecord commandWithoutConfirmation() {
