@@ -1,4 +1,54 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-24 追加落地进展：Java Agent Runtime 5.102 Command Worker Output Sanitization Gate
+- 本阶段承接 5.101 的 artifact safe preview final-check，不继续扩展 artifact 读取字段，而是补齐真实 worker 输出进入 artifact 之前的净化/裁剪合同。
+- 产品目标：
+  - 保持 receipt 层低敏：`command-worker-receipts` 继续不接收原始 stdout/stderr；
+  - 在 worker 与 artifact store 之间新增输出净化边界：原始输出只允许在内部请求中短生命周期出现，响应只返回安全短预览候选；
+  - 对敏感行做固定占位符重写，避免 SQL、prompt、URL、token、bucket/key、内部 endpoint、原始输出通道标记进入预览；
+  - 按 worker 输出预算、Host 输入硬上限和 Host 预览硬上限共同裁剪，避免超大日志压垮任务结果页或模型上下文。
+- 新增与调整：
+  - 新增 `AgentCommandWorkerOutputSanitizeRequest`
+    - 字段覆盖 `commandId`、`outputChannel`、`rawOutputChunk`、`rawOutputEncoding`、`rawOutputTruncatedByWorker`、`workerOutputByteLimitBytes`、`requestedPreviewBytes`、租户/项目/actor/run/session、`toolCode` 和 `requesterComponent`；
+    - 注释明确 `rawOutputChunk` 只能在内部净化请求中短暂处理，不能写入 runtime event、projection、receipt 或模板。
+  - 新增 `AgentCommandWorkerOutputSanitizeResponse`
+    - 返回 `sanitizedPreviewText`、preview 字节数、敏感行数量、省略行数量、控制字符数量、证据码、问题码和 payloadPolicy；
+    - 固定 `rawOutputReturned=false`，强调响应不是 stdout/stderr 查询接口。
+  - 新增 `AgentCommandWorkerOutputSanitizationService`
+    - 允许输出通道：`STDOUT`、`STDERR`、`COMBINED_LOG`；
+    - 原始输入 Host 硬上限 256KB；
+    - 默认预览 32KB，Host 预览硬上限 64KB，且不超过 workerOutputByteLimitBytes；
+    - 最多处理 240 行，单行最多 500 字符，超出行使用 `[OMITTED_LINES_BY_HOST_POLICY]`；
+    - 敏感行统一替换为 `[REDACTED_SENSITIVE_LINE]`；
+    - 清理控制字符，保留可读低风险上下文；
+    - 使用 UTF-8 字节级裁剪，避免多字节字符截断。
+  - 新增 `AgentCommandWorkerOutputSanitizationController`
+    - 新增 `POST /internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-output-sanitizations`
+    - 新增 `POST /api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-output-sanitizations`
+    - 控制器只做内部路由与 path 上下文补齐，不保存原始输出、不写事件、不生成 artifact。
+  - 新增 `AgentCommandWorkerOutputSanitizationServiceTest`
+    - 覆盖安全输出裁剪后不返回 raw output；
+    - 覆盖 bearer、prompt、SQL、内部 URL 等敏感行重写；
+    - 覆盖 Host 64KB 预览硬上限；
+    - 覆盖非法 outputChannel 拒绝；
+    - 覆盖敏感控制字段在处理输出前拒绝。
+  - 更新 Agent 能力矩阵：
+    - `tool.exec-run-program`
+    - `permission.dangerous-path-safe-cmd`
+    - `command.outbox-worker-receipt`
+    - 将当前证据推进为 command worker 输出净化/敏感行重写/Host 预览裁剪已完成，剩余缺口收敛为真实 sandbox runner、真实对象存储 adapter、durable grant store、dead-letter、lease 续租/释放和任务最终态对账。
+- 低敏边界：
+  - 响应不包含命令行、真实路径、原始 stdout/stderr、payload body、SQL、prompt、模型输出、凭证、fencingToken 明文、MinIO bucket/key、签名 URL 或内部 endpoint；
+  - `sanitizedPreviewText` 只是 artifact safe preview 候选，后续展示前仍应调用 5.101 的 body-read-final-check；
+  - 本阶段不写 runtime event，因此不会把安全预览候选写入 projection 或 timeline。
+- 验证：
+  - 定向 Java 测试：
+    `mvn -pl agent-runtime -am "-Dtest=AgentCommandWorkerOutputSanitizationServiceTest,AgentToolActionArtifactBodyReadFinalCheckServiceTest,AgentToolActionCommandWorkerReceiptServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：21 个用例通过。
+- 当前边界：
+  - 5.102 仍不是真实 sandbox runner，不执行命令、不采集真实进程输出；
+  - 仍未完成真实对象存储 adapter、durable grant store、dead-letter 补偿、lease 续租/释放和任务最终态对账；
+  - 下一步应优先接真实 sandbox runner 的最小外壳或 worker 失败补偿，不建议继续堆更多输出预览字段。
+
 ## 2026-06-24 追加落地进展：Java Agent Runtime 5.101 Command Artifact Safe Preview Final Check
 - 本阶段承接 5.100 的 body-read grant 决策门，继续补齐“真实对象存储返回内容前，必须回到 Java Host 控制面做最终回查”的收敛能力。
 - 产品目标：

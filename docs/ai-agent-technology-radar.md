@@ -1,4 +1,29 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-24 落地补充：worker output must be sanitized before becoming artifact preview
+
+- 本轮趋势校准：
+  - MCP Tools 把工具结果视为模型可消费的 content，但工具服务端仍要负责权限、校验、错误语义和安全考虑；映射到 DataSmart，command worker 输出不能直接变成模型上下文或 timeline 正文，必须先净化成安全预览候选。
+  - OpenAI Sandbox Agents 强调受控 sandbox execution 与 agent orchestration 分层；映射到 DataSmart，sandbox 可以捕获输出，但输出进入 artifact 前要由 Java Host 做统一大小限制、敏感行重写和预览裁剪。
+  - OWASP Authorization Cheat Sheet 的 deny-by-default 与每次请求服务端授权原则继续适用；映射到 DataSmart，输出净化只是生成候选预览，后续展示仍必须走 artifact metadata/body-read/final-check 三层门禁。
+  - OWASP Input Validation Cheat Sheet 强调输入应按语法与语义校验；映射到 DataSmart，worker 输出通道、控制字段、大小、行数和敏感标记都必须在服务端统一验证，而不能依赖 worker 自律。
+- 本轮落地到代码的能力：
+  - 新增 Java `AgentCommandWorkerOutputSanitizationService`，用于 worker 写 artifact 前净化输出片段；
+  - 新增 `POST /internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-output-sanitizations` 与 `/api/internal/...`；
+  - 新增请求/响应 DTO，把 `rawOutputChunk` 限定为内部短生命周期输入，响应固定 `rawOutputReturned=false`；
+  - 输出通道限制为 `STDOUT`、`STDERR`、`COMBINED_LOG`；
+  - 原始输入 Host 硬上限 256KB，安全预览默认 32KB、硬上限 64KB，且不超过 worker 输出预算；
+  - 敏感行统一替换为 `[REDACTED_SENSITIVE_LINE]`，超行数使用 `[OMITTED_LINES_BY_HOST_POLICY]`，控制字符会被清理；
+  - 测试覆盖安全输出裁剪、敏感行重写、64KB 上限、非法通道拒绝和敏感控制字段拒绝。
+- 产品判断：
+  - 这一步关闭的是“stdout/stderr 如何进入 artifact preview 候选”的合同缺口，不代表真实 sandbox runner 已完成；
+  - 当前链路已经形成 `worker output -> output sanitization -> artifact gates -> final-check` 的分层结构；
+  - 下一步不建议继续添加输出预览字段，应进入真实 sandbox runner 最小外壳、worker 失败补偿、真实对象存储 adapter 或任务最终态对账。
+- 参考资料：
+  - MCP Tools: `https://modelcontextprotocol.io/specification/draft/server/tools`
+  - OpenAI Sandbox Agents: `https://developers.openai.com/api/docs/guides/agents/sandboxes`
+  - OWASP Authorization Cheat Sheet: `https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html`
+  - OWASP Input Validation Cheat Sheet: `https://cheatsheetseries.owasp.org/cheatsheets/Input_Validation_Cheat_Sheet.html`
+
 ## 2026-06-24 落地补充：safe previews need a final host check, not direct artifact reads
 
 - 本轮趋势校准：
