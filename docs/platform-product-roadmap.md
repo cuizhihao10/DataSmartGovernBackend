@@ -1,4 +1,57 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-24 追加落地进展：Java Agent Runtime 5.104 Command Outbox Dead-Letter Compensation
+- 本阶段承接 5.103 的 command worker lease 生命周期，不继续扩展输出预览、artifact 字段或新的 Agent UI 概念，而是补齐异步命令投递失败后的可恢复终态。
+- 产品目标：
+  - 将 command outbox 从“自动投递 + 自动重试”推进到“失败后可死信、可重排、可忽略、可备注”；
+  - 避免真实 sandbox runner 接入后出现失败命令反复热循环、旧错误无法人工处置、任务最终态无法解释的问题；
+  - 为运营人员提供低敏补偿入口：只能处理状态、原因码、操作者和下一次重试时间，不允许直接查看 payload、命令行、stdout/stderr、SQL、prompt 或模型输出；
+  - 保持 memory 与 mysql 两套 outbox store 行为一致，便于本地学习、单测和生产部署切换。
+- 新增与调整：
+  - 扩展 `AgentAsyncTaskCommandOutboxStatus`
+    - 新增 `DEAD_LETTER`，表达命令已经被人工或治理策略移出自动投递队列；
+    - `DEAD_LETTER` 与 `BLOCKED` 区分：`BLOCKED` 代表系统判定无法继续自动投递，`DEAD_LETTER` 代表运营侧确认进入补偿池。
+  - 新增 `AgentAsyncTaskCommandOutboxOperationStore`
+    - 将 requeue、dead-letter、ignore、note 等人工补偿操作从主 outbox store 中拆出，避免 JDBC Store 超过 500 行并降低职责耦合；
+    - 内存 Store 与 JDBC Operation Store 均实现同一补偿合同。
+  - 新增 `JdbcAgentAsyncTaskCommandOutboxOperationStore`
+    - `FAILED/BLOCKED/DEAD_LETTER -> PENDING` 用于重排；
+    - `FAILED/BLOCKED -> DEAD_LETTER` 用于转死信；
+    - `FAILED/BLOCKED/DEAD_LETTER -> IGNORED` 用于运营确认忽略；
+    - note 只允许更新未发布记录的低敏备注摘要。
+  - 新增 `AgentAsyncTaskCommandOutboxOperationService`
+    - 集中校验状态流转、操作者、原因码、重试延迟和敏感字段；
+    - 重排延迟最大 24 小时，避免错误配置导致命令长期不可见；
+    - 对 reason/operatorId 做低敏检查，拒绝 SQL、prompt、URL、凭证、stdout/stderr、内部 endpoint 等内容。
+  - 扩展 `AgentAsyncTaskCommandOutboxController`
+    - 新增 `POST /agent-runtime/async-task-commands/outbox/{outboxId}/requeue`
+    - 新增 `POST /api/agent/async-task-commands/outbox/{outboxId}/requeue`
+    - 新增 `POST /agent-runtime/async-task-commands/outbox/{outboxId}/dead-letter`
+    - 新增 `POST /api/agent/async-task-commands/outbox/{outboxId}/dead-letter`
+    - 新增 `POST /agent-runtime/async-task-commands/outbox/{outboxId}/ignore`
+    - 新增 `POST /api/agent/async-task-commands/outbox/{outboxId}/ignore`
+    - 新增 `POST /agent-runtime/async-task-commands/outbox/{outboxId}/notes`
+    - 新增 `POST /api/agent/async-task-commands/outbox/{outboxId}/notes`
+  - 新增 MySQL 迁移 `20260624_agent_async_task_command_outbox_dead_letter.sql`
+    - 当前只调整 `status` 字段注释，不变更列类型，避免对既有数据造成破坏性影响；
+    - 初始化 SQL 与历史建表迁移同步补充 `DEAD_LETTER` 状态说明。
+  - 更新 Agent 能力矩阵：
+    - `tool.exec-run-program`
+    - `permission.dangerous-path-safe-cmd`
+    - `command.outbox-worker-receipt`
+    - 将 dead-letter/requeue/ignore/note 补偿归入已完成控制面能力，剩余缺口收敛为真实 sandbox runner、真实对象存储 adapter、durable grant store、队列 visibility timeout 自动对齐和任务最终态对账。
+- 低敏边界：
+  - 补偿接口不返回 payloadJson、commandLine、workingDirectory、真实路径、stdout/stderr、artifact body、SQL、prompt、模型输出、签名 URL、bucket/key、内部 endpoint 或凭据；
+  - 补偿原因只允许学习与运营友好的低敏摘要，不允许把异常堆栈、工具参数、原始输出或用户数据写入 outbox 最近错误字段；
+  - 已经 `PUBLISHED` 的记录不能被重排、死信、忽略或备注，避免运营操作篡改已发生副作用的命令事实。
+- 验证：
+  - 定向 Java 测试：
+    `mvn -pl agent-runtime -am "-Dtest=AgentAsyncTaskCommandOutboxOperationServiceTest,AgentAsyncTaskCommandOutboxDispatcherTest,JdbcAgentAsyncTaskCommandOutboxStoreTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：13 个用例通过。
+- 当前边界：
+  - 5.104 仍不是真实 sandbox runner，不执行命令、不启动进程、不接容器；
+  - 仍未完成真实对象存储 adapter、durable grant store、队列 visibility timeout 自动协同和任务最终态对账；
+  - 下一步建议完成 command durable action 最后一段真实执行外壳，随后切回 data-sync/data-quality/permission-admin 等业务模块做整体闭环，避免 Agent 层继续无止境发散。
+
 ## 2026-06-24 追加落地进展：Java Agent Runtime 5.103 Command Worker Lease Renew/Release
 - 本阶段承接 5.102 的 command worker 输出净化，不继续扩展 artifact 或 preview 字段，而是补齐真实 worker 执行前必须具备的 lease 生命周期闭环。
 - 产品目标：

@@ -1,4 +1,28 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-24 落地补充：durable tool execution needs dead-letter and manual compensation
+
+- 本轮趋势校准：
+  - MCP Tools 将工具暴露为模型可调用的外部动作，并强调工具调用需要输入 schema、错误语义、授权边界和 human-in-the-loop；映射到 DataSmart，`tools/call` 不能只靠一次模型计划和一次 worker 投递，失败动作必须进入 Host 可治理的补偿队列。
+  - OpenAI Sandbox Agents 强调 agent orchestration 与 sandbox execution 分层；映射到 DataSmart，即使后续由真实 sandbox runner 执行进程，命令是否继续重试、进入死信、忽略或备注仍应由 Java Host 控制面统一管理。
+  - Redis 分布式锁资料强调持有者校验、有效期和失败恢复；映射到 DataSmart，lease/fencing 只解决“谁有资格执行/写回”，dead-letter/requeue/ignore 则解决“失败事实如何被运营恢复或终止”。
+- 本轮落地到代码的能力：
+  - `AgentAsyncTaskCommandOutboxStatus` 新增 `DEAD_LETTER` 状态；
+  - 新增 `AgentAsyncTaskCommandOutboxOperationStore`，把人工补偿职责从主 outbox store 中拆出，降低 JDBC Store 文件长度与职责耦合；
+  - 新增 `JdbcAgentAsyncTaskCommandOutboxOperationStore`，以条件 SQL 实现 requeue、dead-letter、ignore 和 note；
+  - 内存 Store 同步补齐相同补偿语义，保证本地学习、单测与生产 MySQL 路径一致；
+  - 新增 `AgentAsyncTaskCommandOutboxOperationService`，集中校验状态流转、低敏 reason、operatorId 和重排延迟；
+  - `AgentAsyncTaskCommandOutboxController` 新增 requeue、dead-letter、ignore、notes 路由；
+  - MySQL 迁移补充 outbox `DEAD_LETTER` 状态说明，不做破坏性 schema 变更；
+  - 测试覆盖死信后不再自动投递、死信重排延迟、忽略死信、已发布记录禁止补偿、敏感 reason 拒绝。
+- 产品判断：
+  - 这一步关闭的是 command outbox 的失败出口，不代表真实命令执行已经完成；
+  - 当前 command durable action 已经具备 proposal、safety precheck、outbox、lease/fencing、receipt、artifact gate、output sanitization 和 dead-letter compensation 的控制面骨架；
+  - 下一步应进入真实 sandbox runner 最小外壳、真实对象存储 adapter 或任务最终态对账，不建议继续扩展更多补偿字段。
+- 参考资料：
+  - MCP Tools: `https://modelcontextprotocol.io/specification/draft/server/tools`
+  - OpenAI Sandbox Agents: `https://developers.openai.com/api/docs/guides/agents/sandboxes`
+  - Redis Distributed Locks: `https://redis.io/docs/latest/develop/clients/patterns/distributed-locks/`
+
 ## 2026-06-24 落地补充：long-running tool execution needs renewable leases and explicit release
 
 - 本轮趋势校准：

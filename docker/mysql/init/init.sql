@@ -214,7 +214,7 @@ CREATE TABLE IF NOT EXISTS agent_async_task_command_outbox (
     actor_id VARCHAR(128) DEFAULT NULL COMMENT '原始发起者',
     trace_id VARCHAR(128) DEFAULT NULL COMMENT '链路追踪 ID',
     payload_reference VARCHAR(512) NOT NULL COMMENT '受控载荷引用，例如 agent-tool-audit://session/run/audit/plan-arguments',
-    status VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT '投递状态：PENDING/PUBLISHING/PUBLISHED/FAILED/BLOCKED/IGNORED',
+    status VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT '投递状态：PENDING/PUBLISHING/PUBLISHED/FAILED/BLOCKED/DEAD_LETTER/IGNORED',
     attempt_count INT NOT NULL DEFAULT 0 COMMENT '投递尝试次数',
     payload_json JSON NOT NULL COMMENT '待投递命令 envelope；不应包含原始敏感参数值',
     payload_size_bytes INT NOT NULL DEFAULT 0 COMMENT 'payload UTF-8 字节数',

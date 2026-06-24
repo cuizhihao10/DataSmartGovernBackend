@@ -35,7 +35,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
         havingValue = "memory",
         matchIfMissing = true
 )
-public class InMemoryAgentAsyncTaskCommandOutboxStore implements AgentAsyncTaskCommandOutboxStore {
+public class InMemoryAgentAsyncTaskCommandOutboxStore
+        implements AgentAsyncTaskCommandOutboxStore, AgentAsyncTaskCommandOutboxOperationStore {
 
     private final Map<String, AgentAsyncTaskCommandOutboxRecord> recordsByOutboxId = new LinkedHashMap<>();
     private final Map<String, String> outboxIdByCommandId = new LinkedHashMap<>();
@@ -190,6 +191,66 @@ public class InMemoryAgentAsyncTaskCommandOutboxStore implements AgentAsyncTaskC
         return replace(outboxId, record -> record.markBlocked(error, referenceTime));
     }
 
+    /**
+     * 人工重新入队。
+     *
+     * <p>这里只允许 FAILED/BLOCKED/DEAD_LETTER 重新进入 PENDING。PUBLISHING 可能仍被某个 dispatcher 持有，
+     * PUBLISHED 已经成功投递，IGNORED 是管理员明确归档；这些状态都不能被悄悄重排。</p>
+     */
+    @Override
+    public Optional<AgentAsyncTaskCommandOutboxRecord> markRequeued(String outboxId,
+                                                                    String reason,
+                                                                    Instant now,
+                                                                    Instant nextRetryAt) {
+        Instant referenceTime = now == null ? Instant.now() : now;
+        return replaceIf(outboxId,
+                this::canRequeue,
+                record -> record.markRequeued(reason, referenceTime, nextRetryAt));
+    }
+
+    /**
+     * 人工转死信。
+     *
+     * <p>DEAD_LETTER 用来阻断自动重试热循环，通常由运维在确认失败原因短期无法自动恢复后执行。</p>
+     */
+    @Override
+    public Optional<AgentAsyncTaskCommandOutboxRecord> markDeadLetter(String outboxId,
+                                                                      String reason,
+                                                                      Instant now) {
+        Instant referenceTime = now == null ? Instant.now() : now;
+        return replaceIf(outboxId,
+                this::canDeadLetter,
+                record -> record.markDeadLetter(reason, referenceTime));
+    }
+
+    /**
+     * 人工忽略。
+     *
+     * <p>忽略只允许从失败、阻断或死信进入，避免把仍在等待投递或已经成功投递的命令误归档。</p>
+     */
+    @Override
+    public Optional<AgentAsyncTaskCommandOutboxRecord> markIgnored(String outboxId,
+                                                                   String reason,
+                                                                   Instant now) {
+        Instant referenceTime = now == null ? Instant.now() : now;
+        return replaceIf(outboxId,
+                this::canIgnore,
+                record -> record.markIgnored(reason, referenceTime));
+    }
+
+    /**
+     * 追加人工备注。
+     */
+    @Override
+    public Optional<AgentAsyncTaskCommandOutboxRecord> appendOperationNote(String outboxId,
+                                                                           String reason,
+                                                                           Instant now) {
+        Instant referenceTime = now == null ? Instant.now() : now;
+        return replaceIf(outboxId,
+                record -> record.status() != AgentAsyncTaskCommandOutboxStatus.PUBLISHED,
+                record -> record.appendOperationNote(reason, referenceTime));
+    }
+
     @Override
     public int recoverStalePublishing(Instant staleBefore, Instant now, String error) {
         Instant cutoff = staleBefore == null ? Instant.now() : staleBefore;
@@ -224,6 +285,7 @@ public class InMemoryAgentAsyncTaskCommandOutboxStore implements AgentAsyncTaskC
                     count(AgentAsyncTaskCommandOutboxStatus.PUBLISHED),
                     count(AgentAsyncTaskCommandOutboxStatus.FAILED),
                     count(AgentAsyncTaskCommandOutboxStatus.BLOCKED),
+                    count(AgentAsyncTaskCommandOutboxStatus.DEAD_LETTER),
                     count(AgentAsyncTaskCommandOutboxStatus.IGNORED),
                     maxCommandsPerRun,
                     maxTotalRecords,
@@ -281,6 +343,23 @@ public class InMemoryAgentAsyncTaskCommandOutboxStore implements AgentAsyncTaskC
         boolean statusAllowsClaim = record.status() == AgentAsyncTaskCommandOutboxStatus.PENDING
                 || record.status() == AgentAsyncTaskCommandOutboxStatus.FAILED;
         return statusAllowsClaim && (record.nextRetryAt() == null || !record.nextRetryAt().isAfter(referenceTime));
+    }
+
+    private boolean canRequeue(AgentAsyncTaskCommandOutboxRecord record) {
+        return record.status() == AgentAsyncTaskCommandOutboxStatus.FAILED
+                || record.status() == AgentAsyncTaskCommandOutboxStatus.BLOCKED
+                || record.status() == AgentAsyncTaskCommandOutboxStatus.DEAD_LETTER;
+    }
+
+    private boolean canDeadLetter(AgentAsyncTaskCommandOutboxRecord record) {
+        return record.status() == AgentAsyncTaskCommandOutboxStatus.FAILED
+                || record.status() == AgentAsyncTaskCommandOutboxStatus.BLOCKED;
+    }
+
+    private boolean canIgnore(AgentAsyncTaskCommandOutboxRecord record) {
+        return record.status() == AgentAsyncTaskCommandOutboxStatus.FAILED
+                || record.status() == AgentAsyncTaskCommandOutboxStatus.BLOCKED
+                || record.status() == AgentAsyncTaskCommandOutboxStatus.DEAD_LETTER;
     }
 
     private void appendRunIndex(AgentAsyncTaskCommandOutboxRecord record) {

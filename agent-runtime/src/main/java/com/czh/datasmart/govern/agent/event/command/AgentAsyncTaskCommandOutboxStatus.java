@@ -40,6 +40,15 @@ public enum AgentAsyncTaskCommandOutboxStatus {
     BLOCKED,
 
     /**
+     * 已进入命令死信队列，自动 dispatcher 不再领取。
+     *
+     * <p>DEAD_LETTER 与 BLOCKED 的差异在于：BLOCKED 更偏“当前被策略或契约阻断”，修复后可直接重新入队；
+     * DEAD_LETTER 更偏“已经确认自动恢复不安全或无意义”，需要管理员明确重排、忽略或进一步排障。
+     * 真实商业化运维台通常会把 DEAD_LETTER 作为待处理队列，而不是让它继续参与自动重试。</p>
+     */
+    DEAD_LETTER,
+
+    /**
      * 运维或平台管理员明确决定不再投递。
      */
     IGNORED

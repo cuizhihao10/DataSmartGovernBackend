@@ -18,6 +18,7 @@ import java.time.Instant;
  * @param publishedRecords 已投递记录数。
  * @param failedRecords 失败待重试记录数。
  * @param blockedRecords 阻断记录数。
+ * @param deadLetterRecords 死信记录数，表示自动 dispatcher 不再领取、需要管理员处理。
  * @param ignoredRecords 人工忽略记录数。
  * @param maxCommandsPerRun 单 run 保留上限。
  * @param maxTotalRecords 总保留上限。
@@ -31,6 +32,7 @@ public record AgentAsyncTaskCommandOutboxDiagnostics(
         int publishedRecords,
         int failedRecords,
         int blockedRecords,
+        int deadLetterRecords,
         int ignoredRecords,
         int maxCommandsPerRun,
         int maxTotalRecords,

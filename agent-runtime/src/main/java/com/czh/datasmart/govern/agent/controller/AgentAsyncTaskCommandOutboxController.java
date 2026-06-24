@@ -7,6 +7,8 @@
 package com.czh.datasmart.govern.agent.controller;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentAsyncTaskCommandOutboxDispatchResponse;
+import com.czh.datasmart.govern.agent.controller.dto.AgentAsyncTaskCommandOutboxOperationRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentAsyncTaskCommandOutboxOperationResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentAsyncTaskCommandOutboxQueryResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunAsyncTaskCommandOutboxEnqueueResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagSelectedNodeOutboxEnqueueRequest;
@@ -14,6 +16,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagSelectedNode
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxDiagnostics;
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxDispatcher;
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxStore;
+import com.czh.datasmart.govern.agent.service.execution.AgentAsyncTaskCommandOutboxOperationService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunAsyncTaskCommandOutboxService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolDagSelectedNodeOutboxService;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
@@ -45,6 +48,7 @@ public class AgentAsyncTaskCommandOutboxController {
     private final AgentRunAsyncTaskCommandOutboxService outboxService;
     private final AgentRunToolDagSelectedNodeOutboxService selectedNodeOutboxService;
     private final AgentAsyncTaskCommandOutboxStore outboxStore;
+    private final AgentAsyncTaskCommandOutboxOperationService operationService;
     private final AgentAsyncTaskCommandOutboxDispatcher dispatcher;
 
     /**
@@ -111,6 +115,77 @@ public class AgentAsyncTaskCommandOutboxController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success(
                 AgentAsyncTaskCommandOutboxDispatchResponse.from(dispatcher.dispatchOnce()),
+                traceId
+        );
+    }
+
+    /**
+     * 将失败、阻断或死信命令重新入队。
+     *
+     * <p>该接口面向平台管理员/运维人员。典型使用场景是：task-management topic ACL 已修复、目标服务恢复、
+     * payload 契约修正，管理员希望让 dispatcher 再次尝试投递。服务层会保留 attemptCount，
+     * 并只允许 FAILED/BLOCKED/DEAD_LETTER 进入 PENDING，避免误重放正在投递或已经成功的命令。</p>
+     */
+    @PostMapping("/async-task-commands/outbox/{outboxId}/requeue")
+    public PlatformApiResponse<AgentAsyncTaskCommandOutboxOperationResponse> requeue(
+            @PathVariable("outboxId") String outboxId,
+            @RequestBody(required = false) AgentAsyncTaskCommandOutboxOperationRequest request,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(
+                "Agent 异步命令 outbox 已重新入队，等待 dispatcher 补偿投递",
+                operationService.requeue(outboxId, request, actorId),
+                traceId
+        );
+    }
+
+    /**
+     * 将失败或阻断命令转入死信。
+     *
+     * <p>DEAD_LETTER 是自动恢复与人工治理之间的边界：进入死信后 dispatcher 不再自动领取，
+     * 管理员可以在补偿台继续排查、追加备注、重新入队或忽略。这样可以避免坏命令在队列里反复热循环。</p>
+     */
+    @PostMapping("/async-task-commands/outbox/{outboxId}/dead-letter")
+    public PlatformApiResponse<AgentAsyncTaskCommandOutboxOperationResponse> deadLetter(
+            @PathVariable("outboxId") String outboxId,
+            @RequestBody(required = false) AgentAsyncTaskCommandOutboxOperationRequest request,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(
+                "Agent 异步命令 outbox 已进入 dead-letter，停止自动重试",
+                operationService.deadLetter(outboxId, request, actorId),
+                traceId
+        );
+    }
+
+    /**
+     * 人工忽略失败、阻断或死信命令。
+     */
+    @PostMapping("/async-task-commands/outbox/{outboxId}/ignore")
+    public PlatformApiResponse<AgentAsyncTaskCommandOutboxOperationResponse> ignore(
+            @PathVariable("outboxId") String outboxId,
+            @RequestBody(required = false) AgentAsyncTaskCommandOutboxOperationRequest request,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(
+                "Agent 异步命令 outbox 已人工忽略并归档",
+                operationService.ignore(outboxId, request, actorId),
+                traceId
+        );
+    }
+
+    /**
+     * 追加人工处理备注。
+     */
+    @PostMapping("/async-task-commands/outbox/{outboxId}/notes")
+    public PlatformApiResponse<AgentAsyncTaskCommandOutboxOperationResponse> appendNote(
+            @PathVariable("outboxId") String outboxId,
+            @RequestBody(required = false) AgentAsyncTaskCommandOutboxOperationRequest request,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(
+                "Agent 异步命令 outbox 已追加人工处理备注",
+                operationService.appendNote(outboxId, request, actorId),
                 traceId
         );
     }

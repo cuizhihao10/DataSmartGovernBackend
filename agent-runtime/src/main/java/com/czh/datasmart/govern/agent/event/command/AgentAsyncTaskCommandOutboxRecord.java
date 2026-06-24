@@ -127,6 +127,47 @@ public record AgentAsyncTaskCommandOutboxRecord(
     }
 
     /**
+     * 构造重新入队记录。
+     *
+     * <p>人工 requeue 代表“外部配置、权限、目标服务或 payload 契约已经修复，可以允许 dispatcher 重新尝试”。
+     * 这里不会清空 attemptCount，因为尝试次数是判断该 command 健康度的重要证据；如果一条命令多次被人工重排后仍失败，
+     * 运维台应把它升级为更高风险的死信或人工介入事项。</p>
+     */
+    public AgentAsyncTaskCommandOutboxRecord markRequeued(String reason, Instant now, Instant nextRetryAt) {
+        return withStatus(AgentAsyncTaskCommandOutboxStatus.PENDING, attemptCount, now, nextRetryAt, null, reason);
+    }
+
+    /**
+     * 构造死信记录。
+     *
+     * <p>进入 DEAD_LETTER 后，dispatcher 不会再自动领取它。死信不是“成功结束”，而是把自动恢复与人工治理边界切开：
+     * 系统保留 commandId、幂等键、治理范围和最近原因，管理员后续可以 dry-run 判断是否重排或忽略。</p>
+     */
+    public AgentAsyncTaskCommandOutboxRecord markDeadLetter(String reason, Instant now) {
+        return withStatus(AgentAsyncTaskCommandOutboxStatus.DEAD_LETTER, attemptCount, now, null, publishedAt, reason);
+    }
+
+    /**
+     * 构造人工忽略记录。
+     *
+     * <p>IGNORED 表示管理员确认这条 command 不再需要投递或补偿。它不会修改 publishedAt，
+     * 也不会伪装成 PUBLISHED，避免把“已忽略”误当成下游已经收到命令。</p>
+     */
+    public AgentAsyncTaskCommandOutboxRecord markIgnored(String reason, Instant now) {
+        return withStatus(AgentAsyncTaskCommandOutboxStatus.IGNORED, attemptCount, now, null, publishedAt, reason);
+    }
+
+    /**
+     * 追加人工备注。
+     *
+     * <p>当前 command outbox 还没有独立 operation_audit 表，因此先把最近一次人工备注写入 lastError。
+     * 后续如果接入审计表，应把这里的 reason 作为一条独立操作历史，而不是覆盖最近摘要。</p>
+     */
+    public AgentAsyncTaskCommandOutboxRecord appendOperationNote(String reason, Instant now) {
+        return withStatus(status, attemptCount, now, nextRetryAt, publishedAt, reason);
+    }
+
+    /**
      * 标记被 dispatcher 领取。
      */
     public AgentAsyncTaskCommandOutboxRecord markPublishing(Instant now) {

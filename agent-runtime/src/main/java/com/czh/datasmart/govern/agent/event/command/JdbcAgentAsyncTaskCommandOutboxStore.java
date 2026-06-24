@@ -341,14 +341,14 @@ public class JdbcAgentAsyncTaskCommandOutboxStore implements AgentAsyncTaskComma
                         counts.put(status.get(), count);
                         total += count;
                     }
-                    return new AgentAsyncTaskCommandOutboxDiagnostics(
-                            enabled,
+                    return new AgentAsyncTaskCommandOutboxDiagnostics(enabled,
                             total,
                             counts.getOrDefault(AgentAsyncTaskCommandOutboxStatus.PENDING, 0),
                             counts.getOrDefault(AgentAsyncTaskCommandOutboxStatus.PUBLISHING, 0),
                             counts.getOrDefault(AgentAsyncTaskCommandOutboxStatus.PUBLISHED, 0),
                             counts.getOrDefault(AgentAsyncTaskCommandOutboxStatus.FAILED, 0),
                             counts.getOrDefault(AgentAsyncTaskCommandOutboxStatus.BLOCKED, 0),
+                            counts.getOrDefault(AgentAsyncTaskCommandOutboxStatus.DEAD_LETTER, 0),
                             counts.getOrDefault(AgentAsyncTaskCommandOutboxStatus.IGNORED, 0),
                             maxCommandsPerRun,
                             maxTotalRecords,
