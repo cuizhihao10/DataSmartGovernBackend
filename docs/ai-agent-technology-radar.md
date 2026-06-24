@@ -1,4 +1,27 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-24 落地补充：body read grants should be decisions, not download tokens
+
+- 本轮趋势校准：
+  - MCP Tools 将工具结果建模为结构化或非结构化 content，并强调工具调用仍需要输入校验、权限边界和 human-in-the-loop；映射到 DataSmart，工具产物正文不能因为 artifactReference 低敏就直接返回给模型或外部 Agent。
+  - OpenAI Sandbox Agents 强调 agent orchestration 与受控 sandbox execution 分层；映射到 DataSmart，sandbox/worker 可以产生 artifact，但正文读取必须回到 Java Host 控制面和对象存储服务做分阶段授权。
+  - OWASP Authorization Cheat Sheet 强调 deny-by-default、每次请求都执行授权检查、最小权限和服务端强制控制；映射到 DataSmart，metadata access 与 body read grant 必须分别授权，不能复用一次宽泛判断。
+  - OWASP File Upload Cheat Sheet 强调文件内容、文件名、大小、存储位置和下载行为都要受控；映射到 DataSmart，即使 artifact 来自可信 worker，正文读取也要限制大小、读取目的、下载审计和后续 DLP/恶意内容扫描。
+- 本轮落地到代码的能力：
+  - 新增 Java `AgentToolActionArtifactBodyReadGrantService`，复用 metadata-only 预授权结果，再校验 readPurpose、requestedContentMode、requesterComponent 和 maxReadableBytes；
+  - 新增 `POST /agent-runtime/tool-action-artifacts/body-read-grants` 与 `/api/agent/tool-action-artifacts/body-read-grants`；
+  - 新增 DTO 明确 `grantDecisionReference` 只是低敏审计引用，不是 bearer token；
+  - 响应固定不返回正文、不签发 URL、不返回 bucket/key、不返回 stdout/stderr；
+  - 测试覆盖合法 grant、metadata 拒绝、高风险 SIGNED_URL 模式拒绝、敏感 purpose 拒绝和最大字节数裁剪。
+- 产品判断：
+  - 这一步仍是收敛，而不是扩张：它把 command durable action 小闭环从“artifact 引用归属可证”推进到“正文读取前有低敏决策门”；
+  - 下一步不应继续堆 artifact 字段，而应补真实对象存储读取服务的服务端回查、stdout/stderr 裁剪、dead-letter 补偿和任务最终态对账；
+  - 该小闭环完成后，应切回 data-sync/data-quality 等业务微服务闭环，避免 Agent 层继续无限加控制面。
+- 参考资料：
+  - MCP Tools: `https://modelcontextprotocol.io/specification/draft/server/tools`
+  - OpenAI Sandbox Agents: `https://developers.openai.com/api/docs/guides/agents/sandboxes`
+  - OWASP Authorization Cheat Sheet: `https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html`
+  - OWASP File Upload Cheat Sheet: `https://cheatsheetseries.owasp.org/cheatsheets/File_Upload_Cheat_Sheet.html`
+
 ## 2026-06-24 落地补充：fencing token should be checked against a durable host fact
 
 - 本轮趋势校准：

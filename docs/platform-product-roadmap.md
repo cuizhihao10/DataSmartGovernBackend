@@ -1,4 +1,51 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-24 追加落地进展：Java Agent Runtime 5.100 Command Artifact Body Read Grant Gate
+- 本阶段承接 5.99 的 command artifact metadata access gate，继续补齐“正文读取前必须有第二道授权决策”的闭环能力，但仍不直接读取 MinIO/object-store 正文。
+- 产品目标：
+  - 将 artifact 访问链路拆成两道门：第一道门验证低敏 artifactReference 是否属于当前 command worker receipt；第二道门验证读取目的、读取形态、调用组件和最大字节数是否允许进入对象存储最终读取流程；
+  - 避免把 metadata 归属校验误用成正文下载权限，防止工具输出、诊断附件、采样摘要或日志片段在未经过 ACL、DLP、恶意内容扫描、下载审计和限速策略前被直接返回；
+  - 返回低敏 `grantDecisionReference` 用于审计串联，但它不是 bearer token，不能单独换取正文；
+  - 明确响应固定 `bodyContentReturned=false`、`signedUrlIssued=false`、`bearerTokenIssued=false`、`objectStoreReadStillRequired=true`。
+- 新增与调整：
+  - 新增 `AgentToolActionArtifactBodyReadGrantRequest`
+    - 描述 commandId、artifactReference、readPurpose、requestedContentMode、maxReadableBytes、tenant/project/actor/run/session、toolCode 和 requesterComponent 的业务含义；
+    - 请求字段继续保持低敏，不允许 URL、真实路径、stdout/stderr、SQL、prompt、token、bucket/key 或内部 endpoint。
+  - 新增 `AgentToolActionArtifactBodyReadGrantResponse`
+    - 返回 grant 决策码、低敏决策引用、过期时间、最大字节数上限、匹配 receipt 指纹、replaySequence、证据码、问题码和建议动作；
+    - 不返回 artifact 正文、不返回签名 URL、不返回对象存储 bucket/key、不返回命令输出。
+  - 新增 `AgentToolActionArtifactBodyReadGrantService`
+    - 复用 5.99 的 `AgentToolActionArtifactAccessAuthorizationService`，避免重复实现 receipt 查询和租户/项目/actor 收口逻辑；
+    - 支持读取目的白名单：`TASK_RESULT_VIEW`、`AGENT_REVIEW`、`OPERATOR_DIAGNOSTIC`、`AUDIT_REVIEW`、`HUMAN_APPROVAL_REVIEW`；
+    - 支持读取形态白名单：`OBJECT_STORE_BODY_READ_AFTER_STORE_POLICY`、`TRUNCATED_TEXT_PREVIEW`、`SAFE_RENDERED_PREVIEW`；
+    - 默认最大读取 256KB，硬上限 1MB，超过硬上限会服务端裁剪并返回证据码。
+  - 扩展 `AgentToolActionArtifactAccessController`
+    - 新增 `POST /agent-runtime/tool-action-artifacts/body-read-grants`
+    - 新增 `POST /api/agent/tool-action-artifacts/body-read-grants`
+    - 控制器只负责 Header 范围解析与统一响应封装，不承担对象存储读取。
+  - 新增 `AgentToolActionArtifactBodyReadGrantServiceTest`
+    - 覆盖合法 grant 仍不返回正文或下载凭据；
+    - 覆盖 metadata 归属校验失败时拒绝；
+    - 覆盖 `SIGNED_URL` 这类高风险读取模式拒绝；
+    - 覆盖疑似 prompt 的读取目的被请求前拒绝；
+    - 覆盖超大读取请求被裁剪到 1MB 硬上限。
+  - 更新 Agent 能力矩阵：
+    - `tool.exec-run-program`
+    - `permission.dangerous-path-safe-cmd`
+    - `command.outbox-worker-receipt`
+    - 明确 artifact 正文读取 grant 决策门已完成，但真实对象存储正文读取服务、stdout/stderr 裁剪和 sandbox runner 仍未完成。
+- 低敏边界：
+  - grant 决策引用只能用于审计串联，不能作为 bearer token；
+  - 响应不包含 commandLine、workingDirectory、stdout/stderr、payload body、SQL、prompt、模型输出、凭证、fencingToken 明文、MinIO bucket/key、签名 URL 或内部 endpoint；
+  - 后续对象存储读取必须继续校验服务端身份、对象 ACL、DLP/恶意内容扫描、下载审计、保留期和限速策略。
+- 验证：
+  - 定向 Java 测试：
+    `mvn -pl agent-runtime -am "-Dtest=AgentToolActionArtifactBodyReadGrantServiceTest,AgentToolActionArtifactAccessAuthorizationServiceTest,AgentToolActionCommandWorkerReceiptServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：18 个用例通过。
+- 当前边界：
+  - 5.100 不是文件下载服务，也不是真实 MinIO/object-store adapter；
+  - 仍未完成 stdout/stderr 正文裁剪、真实 sandbox runner、artifact 正文读取服务、dead-letter 补偿、lease 续租/释放和任务最终态对账；
+  - command durable action 小闭环还差“真实读取/裁剪/补偿/最终态对账”，完成后应切回 data-sync/data-quality 等业务模块收敛。
+
 ## 2026-06-24 追加落地进展：Java Agent Runtime 5.99 Command Artifact Metadata Access Gate
 - 本阶段承接 5.98 的 command worker lease fact 校验，不继续围绕 lease 字段发散，而是补齐命令执行链路中“读取产物前必须先校验低敏引用归属”的收口能力。
 - 产品目标：
