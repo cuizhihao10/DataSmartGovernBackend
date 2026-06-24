@@ -1,4 +1,28 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-24 落地补充：safe previews need a final host check, not direct artifact reads
+
+- 本轮趋势校准：
+  - MCP Tools 将工具调用结果建模为工具服务端返回的 content，但也强调工具调用需要输入校验、访问控制和 human-in-the-loop；映射到 DataSmart，工具结果预览必须先回到 Host 控制面做最终回查，不能由模型或外部 Agent 直接读取 artifact 正文。
+  - OpenAI Sandbox Agents 强调 agent orchestration 与 sandbox execution 分层；映射到 DataSmart，sandbox/worker 可以产生 artifact 引用，但 artifact 内容展示应由对象存储服务与 Java Host 共同把关。
+  - OWASP Authorization Cheat Sheet 强调每次请求都要服务端授权、默认拒绝和最小权限；映射到 DataSmart，即使上一阶段 grant 成功，最终读取或预览前仍要重新复核当前租户、项目、actor、run/session 和读取目的。
+  - OWASP File Upload Cheat Sheet 强调文件内容、大小、存储位置和下载行为必须受控；映射到 DataSmart，安全预览需要大小上限、内容类型约束、敏感标记拦截、后续 DLP 和下载审计。
+- 本轮落地到代码的能力：
+  - 新增 Java `AgentToolActionArtifactBodyReadFinalCheckService`，复用 body-read grant 服务做当前时刻授权复核；
+  - 新增 `POST /agent-runtime/tool-action-artifacts/body-read-final-checks` 与 `/api/agent/tool-action-artifacts/body-read-final-checks`；
+  - 新增 final-check 请求/响应 DTO，把 `sanitizedPreviewText` 明确定义为“下游已脱敏候选预览”，而不是完整 artifact body；
+  - 对安全预览做 UTF-8 字节级裁剪，默认 32KB，Host 硬上限 64KB，且不能超过 grant 最大读取字节数；
+  - 拒绝疑似 prompt、SQL、URL、token、bucket/key、内部 endpoint、stdout/stderr 标记等敏感内容；
+  - 响应固定不签发 URL、不返回 bearer token、不返回 bucket/key、不返回完整正文。
+- 产品判断：
+  - 这一步是 artifact 读取控制面的最后一次收敛，不应继续扩展更多预览字段；
+  - 当前已经具备 metadata gate、body-read grant gate、final-check safe preview gate 三层合同，后续重点应转向真实 sandbox/stdout-stderr 裁剪、真实对象存储 adapter、durable grant store、dead-letter 补偿和任务最终态对账；
+  - 完成 command durable action 小闭环后，应切回 data-sync/data-quality/permission-admin 等业务模块闭环，避免 Agent 层继续无限发散。
+- 参考资料：
+  - MCP Tools: `https://modelcontextprotocol.io/specification/draft/server/tools`
+  - OpenAI Sandbox Agents: `https://developers.openai.com/api/docs/guides/agents/sandboxes`
+  - OWASP Authorization Cheat Sheet: `https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html`
+  - OWASP File Upload Cheat Sheet: `https://cheatsheetseries.owasp.org/cheatsheets/File_Upload_Cheat_Sheet.html`
+
 ## 2026-06-24 落地补充：body read grants should be decisions, not download tokens
 
 - 本轮趋势校准：

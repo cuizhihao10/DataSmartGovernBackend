@@ -1,4 +1,54 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-24 追加落地进展：Java Agent Runtime 5.101 Command Artifact Safe Preview Final Check
+- 本阶段承接 5.100 的 body-read grant 决策门，继续补齐“真实对象存储返回内容前，必须回到 Java Host 控制面做最终回查”的收敛能力。
+- 产品目标：
+  - 将 artifact 读取链路明确拆成三道门：metadata 归属预授权、正文读取 grant 决策、最终回查与安全预览裁剪；
+  - 避免对象存储服务、任务结果页或外部 Agent 只凭低敏 `grantDecisionReference` 直接拿到正文、签名 URL、bucket/key 或原始输出；
+  - 允许未来对象存储服务传入“已脱敏候选预览”，Java Host 再按 grant、读取形态、字节上限和敏感标记做最后裁剪；
+  - 当前仍不接真实 MinIO，不读取完整对象，不生成下载凭据，只稳定服务端 final-check 合同。
+- 新增与调整：
+  - 新增 `AgentToolActionArtifactBodyReadFinalCheckRequest`
+    - 描述 commandId、artifactReference、previousGrantDecisionReference、readPurpose、requestedContentMode、requestedMaxPreviewBytes、candidateContentType、candidateContentLengthBytes、sanitizedPreviewText 和租户/项目/actor/run/session 范围；
+    - 明确 `sanitizedPreviewText` 必须是下游服务已经基础脱敏后的候选预览，不允许 prompt、SQL、URL、凭证、对象存储定位或原始输出通道标记。
+  - 新增 `AgentToolActionArtifactBodyReadFinalCheckResponse`
+    - 返回 allowed、decision、previewLimitBytes、previewBytes、previewTruncated、safePreviewText、grant 引用、receipt 指纹、证据码、问题码和 payloadPolicy；
+    - 固定 `bodyContentReturned=false`、`signedUrlIssued=false`、`bearerTokenIssued=false`，区分“安全短预览”和“完整 artifact 正文”。
+  - 新增 `AgentToolActionArtifactBodyReadFinalCheckService`
+    - 复用 `AgentToolActionArtifactBodyReadGrantService` 做当前时刻 grant 复核，避免产生第二套授权逻辑；
+    - 要求 `previousGrantDecisionReference` 具备 `artifact-body-grant-decision:sha256:*` 形态，当前仅做低敏形态校验，后续 durable grant store 落地后应升级为服务端记录回查；
+    - 预览模式仅支持 `TRUNCATED_TEXT_PREVIEW` 与 `SAFE_RENDERED_PREVIEW`；
+    - 默认预览上限 32KB，Host 硬上限 64KB，且不能超过 grant 最大读取字节数；
+    - 使用 UTF-8 字节级裁剪，避免中文、多字节字符或 emoji 被截断成非法字符串；
+    - 检测疑似 SQL、prompt、URL、token、bucket/key、内部 endpoint、stdout/stderr 标记等敏感片段时直接拒绝。
+  - 扩展 `AgentToolActionArtifactAccessController`
+    - 新增 `POST /agent-runtime/tool-action-artifacts/body-read-final-checks`
+    - 新增 `POST /api/agent/tool-action-artifacts/body-read-final-checks`
+    - Controller 继续只负责 Header 范围解析和统一响应封装，不承担对象读取、DLP、下载审计或 URL 签发。
+  - 新增 `AgentToolActionArtifactBodyReadFinalCheckServiceTest`
+    - 覆盖合法 grant 复核后只返回裁剪后的安全预览；
+    - 覆盖 grant 复核失败时拒绝预览；
+    - 覆盖伪造 grant 引用在返回预览前被拒绝；
+    - 覆盖敏感 preview 候选被拒绝；
+    - 覆盖预览被 Host 64KB 硬上限裁剪；
+    - 覆盖非预览模式只返回 final-check 通过，不返回正文。
+  - 更新 Agent 能力矩阵：
+    - `tool.exec-run-program`
+    - `permission.dangerous-path-safe-cmd`
+    - `command.outbox-worker-receipt`
+    - 明确 final-check 安全预览回查已完成，剩余缺口收敛为真实 sandbox、stdout/stderr 裁剪、真实对象存储 adapter、durable grant store、dead-letter 和任务最终态对账。
+- 低敏边界：
+  - 请求和响应仍不包含 commandLine、workingDirectory、真实路径、原始 stdout/stderr、payload body、SQL、prompt、模型输出、凭证、fencingToken 明文、MinIO bucket/key、签名 URL 或内部 endpoint；
+  - `safePreviewText` 只允许作为短预览展示，不应写入 runtime event/projection/template，也不应被当作完整 artifact 正文缓存；
+  - `previousGrantDecisionReference` 与 `verifiedGrantDecisionReference` 只是审计串联引用，不是 bearer token。
+- 验证：
+  - 定向 Java 测试：
+    `mvn -pl agent-runtime -am "-Dtest=AgentToolActionArtifactBodyReadFinalCheckServiceTest,AgentToolActionArtifactBodyReadGrantServiceTest,AgentToolActionArtifactAccessAuthorizationServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：15 个用例通过。
+- 当前边界：
+  - 5.101 仍不是 MinIO/object-store adapter，也不是文件下载服务；
+  - durable grant store、真实对象存储读取、stdout/stderr 正文裁剪、sandbox runner、dead-letter 补偿、lease 续租/释放和任务最终态对账仍未完成；
+  - 建议下一步不再继续堆 artifact 预览字段，优先做 sandbox/stdout-stderr 裁剪与 worker 失败补偿，随后切回 data-sync/data-quality 等业务模块闭环。
+
 ## 2026-06-24 追加落地进展：Java Agent Runtime 5.100 Command Artifact Body Read Grant Gate
 - 本阶段承接 5.99 的 command artifact metadata access gate，继续补齐“正文读取前必须有第二道授权决策”的闭环能力，但仍不直接读取 MinIO/object-store 正文。
 - 产品目标：

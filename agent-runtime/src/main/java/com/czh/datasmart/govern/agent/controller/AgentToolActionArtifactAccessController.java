@@ -8,11 +8,14 @@ package com.czh.datasmart.govern.agent.controller;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionArtifactAccessAuthorizationResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionArtifactAccessAuthorizeRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionArtifactBodyReadFinalCheckRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionArtifactBodyReadFinalCheckResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionArtifactBodyReadGrantRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionArtifactBodyReadGrantResponse;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventQueryAccessContext;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventQueryAccessContextResolver;
 import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionArtifactAccessAuthorizationService;
+import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionArtifactBodyReadFinalCheckService;
 import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionArtifactBodyReadGrantService;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
@@ -41,6 +44,7 @@ public class AgentToolActionArtifactAccessController {
 
     private final AgentToolActionArtifactAccessAuthorizationService authorizationService;
     private final AgentToolActionArtifactBodyReadGrantService bodyReadGrantService;
+    private final AgentToolActionArtifactBodyReadFinalCheckService bodyReadFinalCheckService;
     private final AgentRuntimeEventQueryAccessContextResolver accessContextResolver;
 
     /**
@@ -120,6 +124,50 @@ public class AgentToolActionArtifactAccessController {
         );
         AgentToolActionArtifactBodyReadGrantResponse response =
                 bodyReadGrantService.grantBodyRead(request, accessContext);
+        return PlatformApiResponse.success(response, traceId);
+    }
+
+    /**
+     * 执行 artifact 正文读取最终回查与安全预览裁剪。
+     *
+     * <p>这个路由承接 `/body-read-grants` 的低敏 grant 决策，但仍然不是下载接口。它主要面向未来的对象存储服务、
+     * artifact 服务或任务结果页后端：在这些组件准备展示短预览之前，先把上一阶段 grant 引用、低敏 artifact 引用、
+     * 读取目的、读取形态和已脱敏候选预览交回 Java Host 控制面复核。控制面会重新调用 grant 服务确认当前授权仍有效，
+     * 再按服务端硬上限裁剪预览文本，并拒绝疑似 prompt、SQL、URL、凭证、对象存储定位或原始输出通道标记的内容。</p>
+     *
+     * <p>注意：即使本接口返回 `allowed=true`，它也不会返回完整 artifact body、stdout/stderr、签名 URL、
+     * bearer token、bucket/key、命令行、工具实参或内部 endpoint。完整下载能力后续应由独立对象存储服务在 ACL、DLP、
+     * 恶意内容扫描、下载审计、保留期和限速策略全部通过后实现。</p>
+     *
+     * @param request 最终回查请求，包含上一阶段 grant 引用、低敏 artifact 引用和已脱敏候选预览。
+     * @param traceId gateway 透传的链路追踪 ID。
+     * @param currentTenantId 当前调用方租户 ID。
+     * @param currentActorId 当前调用方 actor ID。
+     * @param currentActorRole 当前调用方角色。
+     * @param dataScopeLevel permission-admin 判定的数据范围。
+     * @param authorizedProjectIds PROJECT 范围下的授权项目集合。
+     * @return final-check 结果；最多只包含安全预览短文本，不包含完整正文或下载凭据。
+     */
+    @PostMapping("/body-read-final-checks")
+    public PlatformApiResponse<AgentToolActionArtifactBodyReadFinalCheckResponse> finalCheckArtifactBodyRead(
+            @RequestBody AgentToolActionArtifactBodyReadFinalCheckRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) String currentTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String currentActorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String currentActorRole,
+            @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false)
+            String authorizedProjectIds) {
+        AgentRuntimeEventQueryAccessContext accessContext = accessContextResolver.resolve(
+                currentTenantId,
+                currentActorId,
+                currentActorRole,
+                traceId,
+                dataScopeLevel,
+                authorizedProjectIds
+        );
+        AgentToolActionArtifactBodyReadFinalCheckResponse response =
+                bodyReadFinalCheckService.finalCheck(request, accessContext);
         return PlatformApiResponse.success(response, traceId);
     }
 }
