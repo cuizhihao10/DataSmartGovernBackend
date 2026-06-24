@@ -1,4 +1,48 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-24 追加落地进展：Java Agent Runtime 5.99 Command Artifact Metadata Access Gate
+- 本阶段承接 5.98 的 command worker lease fact 校验，不继续围绕 lease 字段发散，而是补齐命令执行链路中“读取产物前必须先校验低敏引用归属”的收口能力。
+- 产品目标：
+  - 让 `command worker receipt` 中的 `artifactReference` 不再只是一个可被调用方自报的字符串，而是必须能对上当前租户、项目、run/session 范围内的 worker receipt 事实；
+  - 新增 metadata-only 访问预授权，调用方可以确认“这份低敏 artifact 引用是否属于当前 command 执行结果”，但不能通过该接口读取正文、stdout/stderr、签名 URL 或对象存储真实地址；
+  - 继续保持双闸门模型：agent-runtime 只验证低敏引用归属，对象存储/制品服务后续再负责正文读取授权、DLP/恶意内容扫描、下载审计、保留期和导出控制；
+  - 将 MCP/Agents 类工具生态中“工具结果必须由 Host 控制、审计和净化”的趋势落到 DataSmart 的 command durable action 小闭环中。
+- 新增与调整：
+  - 新增 `AgentToolActionArtifactAccessController`
+    - `POST /agent-runtime/tool-action-artifacts/access-authorizations`
+    - `POST /api/agent/tool-action-artifacts/access-authorizations`
+    - 控制器只做 Header 解析和统一响应封装，不执行文件下载，不返回对象存储正文。
+  - 新增 `AgentToolActionArtifactAccessAuthorizationService`
+    - 复用 `AgentRuntimeEventProjectionAccessSupport` 做租户、项目、actor 数据范围收口；
+    - 固定查询 `agent.tool_execution.command_worker_receipt_recorded` 事件；
+    - 按 commandId、artifactReference、artifactReferenceType、toolCode 过滤低敏 attributes；
+    - 只在 receipt 声明 `artifactAvailable=true` 且生命周期进入执行后/补偿阶段时返回 metadata-only 授权；
+    - 响应固定 `bodyContentGranted=false`，不签发 URL、不返回正文、不读取 MinIO。
+  - 新增 DTO：
+    - `AgentToolActionArtifactAccessAuthorizeRequest`
+    - `AgentToolActionArtifactAccessAuthorizationResponse`
+  - 新增 `AgentToolActionArtifactAccessAuthorizationServiceTest`
+    - 覆盖合法 receipt 只获得 metadata-only 预授权；
+    - 覆盖无匹配 receipt 默认拒绝；
+    - 覆盖 PROJECT 授权项目为空时 fail-closed；
+    - 覆盖 http/https 内部 URL 类 unsafe artifactReference 在查询前直接拒绝。
+  - 更新 Agent 能力矩阵：
+    - `tool.exec-run-program`
+    - `permission.dangerous-path-safe-cmd`
+    - `command.outbox-worker-receipt`
+    - 明确 artifact metadata-only 二次预授权已落地，但 artifact 正文读取授权、stdout/stderr 裁剪和真实 sandbox runner 仍未完成。
+- 低敏边界：
+  - 请求和响应只允许 commandId、artifactReference、runId、sessionId、tenant/project/actor、toolCode、decision、evidenceCode、issueCode、receipt 指纹等低敏字段；
+  - 不返回 commandLine、workingDirectory、真实路径、stdout/stderr、payload body、SQL、prompt、模型输出、凭证、fencingToken 明文、MinIO bucket/key、签名 URL 或内部 endpoint；
+  - `matchedReceiptFingerprint` 只使用 receipt identityKey 的短 SHA-256 摘要，便于排障串联但不泄露完整幂等键。
+- 验证：
+  - 定向 Java 测试：
+    `mvn -pl agent-runtime -am "-Dtest=AgentToolActionArtifactAccessAuthorizationServiceTest,AgentToolActionCommandWorkerReceiptServiceTest,AgentCommandWorkerLeaseServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：18 个用例通过。
+- 当前边界：
+  - 5.99 仍不是命令执行器，也不是文件下载服务；
+  - 当前基于 runtime event 热窗口查询 receipt，后续生产级正文读取应引入 durable artifact metadata/index、对象存储 ACL、DLP/恶意内容扫描和下载审计；
+  - stdout/stderr 正文裁剪、真实 sandbox runner、dead-letter 补偿、任务最终态对账仍需继续收口。
+
 ## 2026-06-24 追加落地进展：Java Agent Runtime 5.98 Command Worker Lease Fact 校验
 - 本阶段承接 5.97 的 fencing token 写回合同，把 Java receipt 从“格式/版本字段校验”推进到“查询当前 lease fact 后再允许写 runtime event”。
 - 产品目标：
