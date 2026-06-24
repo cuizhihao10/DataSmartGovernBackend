@@ -1,4 +1,56 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-24 追加落地进展：Java Agent Runtime 5.105 Command Sandbox Run Admission
+- 本阶段承接 5.104 的 command outbox 死信补偿，不继续扩展补偿字段、artifact 字段或输出预览字段，而是补齐真实 sandbox runner 启动前的 Java Host 准入合同。
+- 产品目标：
+  - 在真实进程/容器执行之前增加统一准入闸门：worker 必须携带当前 lease、命令安全决策、workspace 引用和资源预算；
+  - 避免 Python runner 或未来容器 runner 只凭本地判断直接启动命令，从而绕过 Java 控制面的审批、租约、输出预算和审计边界；
+  - 明确 Java Host 当前只做 admission，不接收命令正文、不启动进程、不读取 payload、不返回 token；
+  - 为后续真实 sandbox runner 的调用顺序固定合同：claim lease -> sandbox admission -> sandbox process -> output sanitization -> receipt -> release lease。
+- 新增与调整：
+  - 扩展 `AgentCommandWorkerLeaseService`
+    - 新增 `requireCurrentLeaseEvidence`；
+    - receipt 与 sandbox admission 可复用同一套 executor/token/version/expiresAt 校验；
+    - 避免多个内部入口分别实现 fencing 校验后产生语义漂移。
+  - 新增 `AgentCommandSandboxRunAdmissionRequest`
+    - 字段覆盖 commandId、executorId、fencingToken、workerLeaseVersion、workerLeaseExpiresAtMs、租户/项目/actor、安全决策、issueCodes、隔离模式、超时/输出/CPU/内存预算、workspaceReference、toolCode、requesterComponent 和 idempotencyKey；
+    - DTO 注释明确不接收 commandLine、workingDirectory、环境变量、stdout/stderr、payload body、SQL、prompt、模型输出、URL、真实路径或凭据。
+  - 新增 `AgentCommandSandboxRunAdmissionResponse`
+    - 返回 accepted、decision、sandboxRunId、已验证 lease 版本/过期时间、隔离模式、裁剪后资源预算、workspaceReference、evidenceCodes、issueCodes 和 recommendedActions；
+    - 固定 `processStarted=false`、`rawCommandAccepted=false`、`commandBodyRequired=false`，防止调用方误以为 Java Host 已执行命令。
+  - 新增 `AgentCommandSandboxRunAdmissionService`
+    - 校验当前 worker lease；
+    - 校验 commandSafetyDecision 必须为 `ALLOW_CONTROLLED_EXECUTION` 且 issueCodes 为空；
+    - 要求 workspaceReference 使用 `agent-workspace:`、`workspace:` 或 `sandbox-workspace:` 低敏引用；
+    - 裁剪 timeout、output、CPU、memory 预算；
+    - 生成低敏 `sandbox-run:sha256:*` 引用；
+    - 响应继续不包含 fencingToken 明文、命令正文、输出正文、URL 或真实路径。
+  - 新增 `AgentCommandSandboxRunAdmissionController`
+    - 新增 `POST /internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-sandbox-run-admissions`
+    - 新增 `POST /api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-sandbox-run-admissions`
+  - 新增 `AgentCommandSandboxRunAdmissionServiceTest`
+    - 覆盖有效 lease + allow 安全决策时准入成功；
+    - 覆盖预算裁剪、低敏 sandboxRunId 和响应不泄露 fencingToken；
+    - 覆盖有未关闭 issueCode 时 fail-closed；
+    - 覆盖缺失 workspaceReference 时拒绝启动；
+    - 覆盖 stale lease 与敏感 workspaceReference 被拒绝。
+  - 更新 Agent 能力矩阵：
+    - `tool.exec-run-program`
+    - `permission.dangerous-path-safe-cmd`
+    - `command.outbox-worker-receipt`
+    - 将 Java sandbox run admission 归入已完成控制面能力；剩余缺口收敛为 Python runner 调用 admission、真实进程/容器执行、真实对象存储 adapter、durable grant store、队列 visibility timeout 自动对齐和任务最终态对账。
+- 低敏边界：
+  - 准入请求与响应不包含 commandLine、workingDirectory、真实路径、stdout/stderr、artifact body、SQL、prompt、模型输出、签名 URL、bucket/key、内部 endpoint 或凭据；
+  - fencingToken 只用于服务端校验，不在 admission 响应中返回；
+  - `accepted=false` 时 worker 必须禁止启动进程，并按 issueCodes 写回失败预检或等待补齐证据。
+- 验证：
+  - 定向 Java 测试：
+    `mvn -pl agent-runtime -am "-Dtest=AgentCommandSandboxRunAdmissionServiceTest,AgentCommandWorkerLeaseServiceTest,AgentToolActionCommandWorkerReceiptServiceTest,AgentCommandWorkerOutputSanitizationServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：30 个用例通过。
+- 当前边界：
+  - 5.105 仍不是真实进程/容器 runner，不执行命令、不启动 shell、不接 MinIO 正文读取；
+  - 下一步建议让 Python `ControlledCommandWorkerRunner` 调用 Java sandbox admission，再实现最小真实 sandbox process 外壳；
+  - 完成真实执行外壳后应立即切回 data-sync/data-quality/permission-admin 等业务模块做全项目闭环，避免 Agent 层继续无止境发散。
+
 ## 2026-06-24 追加落地进展：Java Agent Runtime 5.104 Command Outbox Dead-Letter Compensation
 - 本阶段承接 5.103 的 command worker lease 生命周期，不继续扩展输出预览、artifact 字段或新的 Agent UI 概念，而是补齐异步命令投递失败后的可恢复终态。
 - 产品目标：

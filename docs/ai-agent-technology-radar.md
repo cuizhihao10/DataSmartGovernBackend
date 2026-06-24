@@ -1,4 +1,26 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-24 落地补充：sandbox execution should start from host admission, not raw process launch
+
+- 本轮趋势校准：
+  - OpenAI Sandbox Agents 强调 agent orchestration 与 sandbox execution 分层；映射到 DataSmart，Java Host 应先给出可审计准入合同，Python/容器 runner 再按合同启动进程，而不是让模型或 worker 直接传入命令正文。
+  - MCP Tools 将工具调用建模为模型可触发的外部动作，并强调工具 schema、错误语义和 human-in-the-loop；映射到 DataSmart，`tools/call` 到 run-program 之间必须有 Host admission，确认 lease、workspace、预算和安全决策都已满足。
+  - Redis 分布式锁资料强调持有者校验与旧持有者隔离；映射到 DataSmart，sandbox admission 必须复用 command worker lease/fencing fact，不能只信 worker 自报。
+- 本轮落地到代码的能力：
+  - `AgentCommandWorkerLeaseService` 新增 `requireCurrentLeaseEvidence`，供 receipt 与 sandbox admission 共享当前 lease 校验；
+  - 新增 `AgentCommandSandboxRunAdmissionRequest` / `AgentCommandSandboxRunAdmissionResponse`；
+  - 新增 `AgentCommandSandboxRunAdmissionService`，校验 lease、安全决策、workspace 引用和资源预算；
+  - 新增 `POST /internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-sandbox-run-admissions` 与 `/api/internal/...`；
+  - 响应固定 `processStarted=false`、`rawCommandAccepted=false`、`commandBodyRequired=false`，强调 Java Host 只做准入治理；
+  - 测试覆盖准入成功、预算裁剪、token 不泄露、安全 issue fail-closed、缺 workspace 拒绝、stale lease 拒绝和敏感 workspace 拒绝。
+- 产品判断：
+  - 这一步是从模拟 runner 走向真实 runner 的“安全门框”，不是直接开放 shell；
+  - 当前 command durable action 控制面已具备 proposal、safety precheck、outbox、lease/fencing、sandbox admission、output sanitization、receipt、artifact gate 和 dead-letter compensation；
+  - 下一步不应继续扩展 admission 字段，应让 Python controlled runner 调用 Java admission，然后只实现最小真实进程/容器外壳。
+- 参考资料：
+  - OpenAI Sandbox Agents: `https://developers.openai.com/api/docs/guides/agents/sandboxes`
+  - MCP Tools: `https://modelcontextprotocol.io/specification/draft/server/tools`
+  - Redis Distributed Locks: `https://redis.io/docs/latest/develop/clients/patterns/distributed-locks/`
+
 ## 2026-06-24 落地补充：durable tool execution needs dead-letter and manual compensation
 
 - 本轮趋势校准：

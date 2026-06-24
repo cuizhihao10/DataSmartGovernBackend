@@ -195,35 +195,78 @@ public class AgentCommandWorkerLeaseService {
                 && request.workerLeaseExpiresAtMs() == null) {
             return;
         }
-        String token = requiredFencingToken(request.fencingToken());
+        requireCurrentLeaseEvidence(
+                sessionId,
+                runId,
+                request.commandId(),
+                request.executorId(),
+                request.fencingToken(),
+                request.workerLeaseVersion(),
+                request.workerLeaseExpiresAtMs(),
+                "receipt"
+        );
+    }
+
+    /**
+     * 校验某个内部执行入口是否仍然持有当前 command worker lease。
+     *
+     * <p>该方法是给 receipt、sandbox admission、未来真实 worker runner 共享的低敏校验入口。之所以抽出来，
+     * 是因为“谁可以进入副作用区”必须只有一套规则：同一个 session/run/command 下，只有当前 lease fact 里的
+     * executor、fencingToken、leaseVersion 和 leaseExpiresAt 全部匹配，调用方才可以继续执行或写回事实。</p>
+     *
+     * <p>注意它只校验 lease 资格，不代表业务命令已经安全。调用方还必须继续校验 command safety decision、
+     * workspace 隔离、输出预算、artifact 授权和人工审批事实。这样可以把并发资格与业务安全策略分层，避免一个
+     * 方法承担过多职责。</p>
+     *
+     * @param sessionId Agent 会话 ID，来自路由或可信控制面。
+     * @param runId Agent run ID，来自路由或可信控制面。
+     * @param commandId command outbox 指令 ID。
+     * @param executorId worker 低敏身份。
+     * @param fencingToken worker 领取 lease 时拿到的内部 token。
+     * @param workerLeaseVersion lease 单调版本号。
+     * @param workerLeaseExpiresAtMs worker 看到的当前过期时间戳。
+     * @param purpose 调用目的，仅用于错误消息，例如 receipt、sandbox admission；不能携带业务正文。
+     * @return 当前有效 lease 记录，调用方可读取低敏租户/项目/actor 和过期时间。
+     */
+    public AgentCommandWorkerLeaseRecord requireCurrentLeaseEvidence(String sessionId,
+                                                                     String runId,
+                                                                     String commandId,
+                                                                     String executorId,
+                                                                     String fencingToken,
+                                                                     Long workerLeaseVersion,
+                                                                     Long workerLeaseExpiresAtMs,
+                                                                     String purpose) {
+        String token = requiredFencingToken(fencingToken);
         long tokenVersion = tokenVersion(token);
-        if (request.workerLeaseVersion() == null || request.workerLeaseVersion() < 1) {
+        if (workerLeaseVersion == null || workerLeaseVersion < 1) {
             throw badRequest("workerLeaseRequired=true 时必须提供大于 0 的 workerLeaseVersion");
         }
-        if (tokenVersion != request.workerLeaseVersion()) {
+        if (tokenVersion != workerLeaseVersion) {
             throw badRequest("fencingToken 中的版本号必须与 workerLeaseVersion 一致");
         }
-        if (request.workerLeaseExpiresAtMs() == null || request.workerLeaseExpiresAtMs() <= 0) {
+        if (workerLeaseExpiresAtMs == null || workerLeaseExpiresAtMs <= 0) {
             throw badRequest("workerLeaseRequired=true 时必须提供大于 0 的 workerLeaseExpiresAtMs");
         }
 
         AgentCommandWorkerLeaseRecord record = store.findByIdentity(
                 requiredSafeText(sessionId, "sessionId"),
                 requiredSafeText(runId, "runId"),
-                requiredSafeText(request.commandId(), "commandId")
-        ).orElseThrow(() -> badRequest("未找到 command worker lease fact，拒绝写入副作用回执"));
+                requiredSafeText(commandId, "commandId")
+        ).orElseThrow(() -> badRequest("未找到 command worker lease fact，拒绝进入 " + safePurpose(purpose)));
         Instant now = clock.instant();
         if (!record.activeAt(now)) {
-            throw badRequest("command worker lease 已过期，旧 worker 不能写回 receipt");
+            throw badRequest("command worker lease 已过期，旧 worker 不能进入 " + safePurpose(purpose));
         }
-        if (!record.heldBy(requiredSafeText(request.executorId(), "executorId"))
+        if (!record.heldBy(requiredSafeText(executorId, "executorId"))
                 || !token.equals(record.fencingToken())
-                || request.workerLeaseVersion().longValue() != record.leaseVersion()) {
-            throw badRequest("command worker lease 与 receipt 中的 executor/token/version 不匹配");
+                || workerLeaseVersion.longValue() != record.leaseVersion()) {
+            throw badRequest("command worker lease 与 " + safePurpose(purpose)
+                    + " 中的 executor/token/version 不匹配");
         }
-        if (request.workerLeaseExpiresAtMs().longValue() != record.leaseExpiresAt().toEpochMilli()) {
-            throw badRequest("receipt 中的 workerLeaseExpiresAtMs 与当前 lease fact 不一致");
+        if (workerLeaseExpiresAtMs.longValue() != record.leaseExpiresAt().toEpochMilli()) {
+            throw badRequest(safePurpose(purpose) + " 中的 workerLeaseExpiresAtMs 与当前 lease fact 不一致");
         }
+        return record;
     }
 
     /**
@@ -293,6 +336,14 @@ public class AgentCommandWorkerLeaseService {
             throw badRequest(fieldName + " 只能使用低敏标识符，不能携带命令、路径、URL、输出、SQL、prompt 或凭据");
         }
         return text;
+    }
+
+    private String safePurpose(String purpose) {
+        String value = trimToNull(purpose);
+        if (value == null || looksSensitive(value) || !SAFE_ID_PATTERN.matcher(value).matches()) {
+            return "command-worker-protected-zone";
+        }
+        return value;
     }
 
     private int normalizedTtl(Integer value) {
