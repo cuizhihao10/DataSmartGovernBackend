@@ -1,4 +1,48 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-24 追加落地进展：Java Agent Runtime 5.103 Command Worker Lease Renew/Release
+- 本阶段承接 5.102 的 command worker 输出净化，不继续扩展 artifact 或 preview 字段，而是补齐真实 worker 执行前必须具备的 lease 生命周期闭环。
+- 产品目标：
+  - 将 command worker lease 从“只支持领取 claim”推进到“支持领取、续租、释放”；
+  - 支撑后续真实 sandbox runner 的长耗时执行：worker 在命令运行、artifact 上传或等待外部系统时可以续租，避免合法任务因为 TTL 到期被误判为旧 worker；
+  - 支撑队列快速恢复：worker 完成、失败、取消、补偿或主动下线时可以释放 lease，避免只能等待 TTL 过期；
+  - 保持 fencing 版本单调：release 不删除记录，而是把 lease 立即过期，下一次 claim 会递增版本，旧 token 不能继续写 receipt。
+- 新增与调整：
+  - 新增 `AgentCommandWorkerLeaseRenewRequest`
+    - 字段覆盖 `commandId`、`executorId`、`fencingToken`、`workerLeaseVersion`、租户/项目/actor 和 `leaseTtlSeconds`；
+    - 注释明确续租不更换 token、不递增版本，只延长 `leaseExpiresAt`。
+  - 新增 `AgentCommandWorkerLeaseReleaseRequest`
+    - 字段覆盖 `commandId`、`executorId`、`fencingToken`、`workerLeaseVersion`、`releaseReason` 和治理范围字段；
+    - `releaseReason` 只允许低敏代码，不能携带命令、路径、输出或异常正文。
+  - 新增 `AgentCommandWorkerLeaseMutationResponse`
+    - 用 `success` 表达续租/释放是否被接受，避免误用 claim 响应里的 acquired 语义；
+    - 续租成功可返回当前 token，释放成功和拒绝场景均不返回 token。
+  - 扩展 `AgentCommandWorkerLeaseController`
+    - 新增 `POST /internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-leases/renewals`
+    - 新增 `POST /api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-leases/renewals`
+    - 新增 `POST /internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-leases/releases`
+    - 新增 `POST /api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-leases/releases`
+  - 扩展 `AgentCommandWorkerLeaseService`、`AgentCommandWorkerLeaseStore`、内存 Store 和 JDBC Store：
+    - 续租必须校验当前记录存在、未过期、executor/token/version 全部匹配；
+    - 释放同样必须校验当前持有者，并将 `leaseExpiresAt` 更新为当前时间；
+    - JDBC 版本继续使用事务和 `SELECT ... FOR UPDATE`，避免旧 worker 续租覆盖新 worker 抢占。
+  - 更新 Agent 能力矩阵：
+    - `tool.exec-run-program`
+    - `permission.dangerous-path-safe-cmd`
+    - `command.outbox-worker-receipt`
+    - 将 command worker lease claim/renew/release 归入已完成控制面证据，剩余缺口收敛为真实 sandbox runner、真实对象存储 adapter、durable grant store、dead-letter 补偿和队列 visibility timeout 自动对齐。
+- 低敏边界：
+  - 续租/释放请求与响应不包含 commandLine、workingDirectory、真实路径、stdout/stderr、artifact body、SQL、prompt、模型输出、签名 URL、bucket/key、内部 endpoint 或凭据；
+  - 被其他 worker 持有、token 不匹配、版本不匹配、已过期或未找到时均不返回 fencingToken；
+  - release reason 当前只做低敏白名单校验，不写 runtime event，后续若需要审计应另建低敏事件或审计表。
+- 验证：
+  - 定向 Java 测试：
+    `mvn -pl agent-runtime -am "-Dtest=AgentCommandWorkerLeaseServiceTest,AgentToolActionCommandWorkerReceiptServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：19 个用例通过。
+- 当前边界：
+  - 5.103 仍不是真实 sandbox runner，不执行命令、不启动进程、不连接容器；
+  - 仍未完成真实对象存储 adapter、durable grant store、dead-letter 补偿、队列 visibility timeout 自动协同和任务最终态对账；
+  - 下一步应优先接真实 sandbox runner 最小外壳或 worker dead-letter/补偿，完成 command durable action 小闭环后切回 data-sync/data-quality 等业务模块收敛。
+
 ## 2026-06-24 追加落地进展：Java Agent Runtime 5.102 Command Worker Output Sanitization Gate
 - 本阶段承接 5.101 的 artifact safe preview final-check，不继续扩展 artifact 读取字段，而是补齐真实 worker 输出进入 artifact 之前的净化/裁剪合同。
 - 产品目标：

@@ -1,4 +1,26 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-24 落地补充：long-running tool execution needs renewable leases and explicit release
+
+- 本轮趋势校准：
+  - Redis 分布式锁文档强调锁值必须由持有者校验后再释放，并且长耗时任务需要安全延长有效期；映射到 DataSmart，command worker 不能只 claim 一次 lease 后无限执行，必须支持当前 token/version 持有者续租和释放。
+  - MCP Tools 把工具调用抽象为 Host 可治理的外部动作，但协议本身不保证队列重投、worker 崩溃、长耗时执行或旧结果回写安全；映射到 DataSmart，Host 必须用 lease/fencing 保护真实副作用。
+  - OpenAI Sandbox Agents 强调 agent orchestration 与 sandbox execution 分层；映射到 DataSmart，sandbox runner 可以执行进程，但 worker 资格、续租、释放、receipt 校验和 artifact 授权应保留在 Java Host 控制面。
+- 本轮落地到代码的能力：
+  - `AgentCommandWorkerLeaseService` 新增 renew/release 业务方法；
+  - `AgentCommandWorkerLeaseController` 新增内部续租与释放路由；
+  - 内存 Store 与 JDBC Store 均实现 claim/renew/release 一致语义；
+  - JDBC Store 继续使用事务与 `SELECT ... FOR UPDATE`，防止旧 worker 续租覆盖新 worker 抢占；
+  - release 采用“立即过期”而非删除记录，保证后续 claim 版本递增；
+  - 测试覆盖续租延长过期时间、旧 expiresAt 回执拒绝、错误 token 拒绝、释放后新 worker 版本递增、非持有者释放拒绝和不安全 release reason 拒绝。
+- 产品判断：
+  - 这一步是 command durable action 小闭环的收敛项，不是继续扩展 Agent preview；
+  - 在真实 sandbox runner 之前完成 lease renew/release，可以避免后续接入进程执行时出现重复 worker、旧 worker、长任务误超时和版本回退问题；
+  - 下一步不建议继续扩展 lease 字段，应进入真实 sandbox runner 最小外壳、dead-letter/补偿、真实对象存储 adapter 或任务最终态对账。
+- 参考资料：
+  - Redis Distributed Locks: `https://redis.io/docs/latest/develop/clients/patterns/distributed-locks/`
+  - MCP Tools: `https://modelcontextprotocol.io/specification/draft/server/tools`
+  - OpenAI Sandbox Agents: `https://developers.openai.com/api/docs/guides/agents/sandboxes`
+
 ## 2026-06-24 落地补充：worker output must be sanitized before becoming artifact preview
 
 - 本轮趋势校准：

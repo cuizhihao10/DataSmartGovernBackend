@@ -8,6 +8,9 @@ package com.czh.datasmart.govern.agent.controller;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentCommandWorkerLeaseClaimRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentCommandWorkerLeaseClaimResponse;
+import com.czh.datasmart.govern.agent.controller.dto.AgentCommandWorkerLeaseMutationResponse;
+import com.czh.datasmart.govern.agent.controller.dto.AgentCommandWorkerLeaseReleaseRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentCommandWorkerLeaseRenewRequest;
 import com.czh.datasmart.govern.agent.service.runtime.AgentCommandWorkerLeaseClaimResult;
 import com.czh.datasmart.govern.agent.service.runtime.AgentCommandWorkerLeaseRecord;
 import com.czh.datasmart.govern.agent.service.runtime.AgentCommandWorkerLeaseService;
@@ -62,5 +65,60 @@ public class AgentCommandWorkerLeaseController {
                 record == null || record.leaseExpiresAt() == null ? null : record.leaseExpiresAt().toEpochMilli(),
                 result.message()
         ), traceId);
+    }
+
+    /**
+     * 续租 command worker lease。
+     *
+     * <p>该路由解决真实 worker 长耗时执行的问题：worker 在 lease 到期前携带当前 token/version 续租，
+     * Java Host 会确认它仍是当前持有者后再延长 leaseExpiresAt。续租成功后，worker 应使用响应中的
+     * workerLeaseExpiresAtMs 刷新本地 receipt 上下文；否则后续 receipt 会因为过期时间不一致被拒绝。</p>
+     */
+    @PostMapping({
+            "/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-leases/renewals",
+            "/api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-leases/renewals"
+    })
+    public PlatformApiResponse<AgentCommandWorkerLeaseMutationResponse> renew(@PathVariable String sessionId,
+                                                                              @PathVariable String runId,
+                                                                              @RequestBody AgentCommandWorkerLeaseRenewRequest request,
+                                                                              @RequestHeader(value = PlatformContextHeaders.TRACE_ID,
+                                                                                      required = false) String traceId) {
+        AgentCommandWorkerLeaseClaimResult result = leaseService.renew(sessionId, runId, request);
+        return PlatformApiResponse.success(toMutationResponse(result, request.commandId(), request.executorId()), traceId);
+    }
+
+    /**
+     * 释放 command worker lease。
+     *
+     * <p>该路由通常在 worker 已写入 receipt、确认失败、取消补偿完成或进程准备下线时调用。释放成功不会返回 token，
+     * 因为 worker 已经不需要继续证明执行资格；后续其他 worker 如需接手，必须重新 claim 并拿到递增版本的新 token。</p>
+     */
+    @PostMapping({
+            "/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-leases/releases",
+            "/api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-leases/releases"
+    })
+    public PlatformApiResponse<AgentCommandWorkerLeaseMutationResponse> release(@PathVariable String sessionId,
+                                                                                @PathVariable String runId,
+                                                                                @RequestBody AgentCommandWorkerLeaseReleaseRequest request,
+                                                                                @RequestHeader(value = PlatformContextHeaders.TRACE_ID,
+                                                                                        required = false) String traceId) {
+        AgentCommandWorkerLeaseClaimResult result = leaseService.release(sessionId, runId, request);
+        return PlatformApiResponse.success(toMutationResponse(result, request.commandId(), request.executorId()), traceId);
+    }
+
+    private AgentCommandWorkerLeaseMutationResponse toMutationResponse(AgentCommandWorkerLeaseClaimResult result,
+                                                                      String requestCommandId,
+                                                                      String requestExecutorId) {
+        AgentCommandWorkerLeaseRecord record = result.record();
+        return new AgentCommandWorkerLeaseMutationResponse(
+                result.acquired(),
+                result.state().name(),
+                record == null ? requestCommandId : record.commandId(),
+                record == null ? requestExecutorId : record.executorId(),
+                result.tokenVisible() && record != null ? record.fencingToken() : null,
+                record == null ? null : record.leaseVersion(),
+                record == null || record.leaseExpiresAt() == null ? null : record.leaseExpiresAt().toEpochMilli(),
+                result.message()
+        );
     }
 }

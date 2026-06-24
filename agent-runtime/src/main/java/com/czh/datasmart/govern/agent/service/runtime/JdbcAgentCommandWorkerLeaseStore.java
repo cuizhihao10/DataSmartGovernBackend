@@ -61,6 +61,29 @@ public class JdbcAgentCommandWorkerLeaseStore implements AgentCommandWorkerLease
     }
 
     /**
+     * 原子续租 command worker lease。
+     *
+     * <p>续租必须和领取一样进入事务，并锁住当前 command 的 lease 行。否则可能出现这样的竞态：
+     * 旧 worker 看到自己仍持有 token，准备续租；与此同时 lease 过期并被新 worker 领取；如果续租不加锁，
+     * 旧 worker 可能把新 worker 的过期时间覆盖掉，造成两个 worker 都以为自己合法。</p>
+     */
+    @Override
+    public AgentCommandWorkerLeaseClaimResult renew(AgentCommandWorkerLeaseRecord candidate, Instant now) {
+        return connectionManager.executeInTransaction(connection -> renewInTransaction(connection, candidate, now));
+    }
+
+    /**
+     * 原子释放 command worker lease。
+     *
+     * <p>释放也需要锁住当前行，并且只允许当前 token/version 的持有者释放。释放成功后记录仍保留，
+     * 只是 leaseExpiresAt 更新为 now，下一次 claim 会基于旧版本递增，避免版本回退。</p>
+     */
+    @Override
+    public AgentCommandWorkerLeaseClaimResult release(AgentCommandWorkerLeaseRecord candidate, Instant now) {
+        return connectionManager.executeInTransaction(connection -> releaseInTransaction(connection, candidate, now));
+    }
+
+    /**
      * 查询当前 lease fact。
      *
      * <p>receipt 校验使用普通 SELECT 即可，因为写回时只需要读取“当前事实”并判断 token/version 是否一致；
@@ -126,6 +149,115 @@ public class JdbcAgentCommandWorkerLeaseStore implements AgentCommandWorkerLease
                 "command lease 领取成功。");
     }
 
+    private AgentCommandWorkerLeaseClaimResult renewInTransaction(Connection connection,
+                                                                  AgentCommandWorkerLeaseRecord candidate,
+                                                                  Instant now) throws SQLException {
+        Optional<AgentCommandWorkerLeaseRecord> existingOptional =
+                selectByIdentity(connection, candidate.leaseIdentityKey(), true);
+        AgentCommandWorkerLeaseClaimResult rejection = validateCurrentHolder(existingOptional, candidate, now);
+        if (rejection != null) {
+            return rejection;
+        }
+        AgentCommandWorkerLeaseRecord existing = existingOptional.get();
+        AgentCommandWorkerLeaseRecord renewed = new AgentCommandWorkerLeaseRecord(
+                existing.leaseIdentityKey(),
+                existing.sessionId(),
+                existing.runId(),
+                existing.commandId(),
+                existing.executorId(),
+                prefer(candidate.tenantId(), existing.tenantId()),
+                prefer(candidate.projectId(), existing.projectId()),
+                prefer(candidate.actorId(), existing.actorId()),
+                existing.fencingToken(),
+                existing.leaseVersion(),
+                candidate.leaseExpiresAt(),
+                existing.acquiredAt(),
+                now
+        );
+        update(connection, renewed);
+        return AgentCommandWorkerLeaseClaimResult.of(true,
+                AgentCommandWorkerLeaseState.RENEWED,
+                renewed,
+                true,
+                "command lease 续租成功。");
+    }
+
+    private AgentCommandWorkerLeaseClaimResult releaseInTransaction(Connection connection,
+                                                                    AgentCommandWorkerLeaseRecord candidate,
+                                                                    Instant now) throws SQLException {
+        Optional<AgentCommandWorkerLeaseRecord> existingOptional =
+                selectByIdentity(connection, candidate.leaseIdentityKey(), true);
+        AgentCommandWorkerLeaseClaimResult rejection = validateCurrentHolder(existingOptional, candidate, now);
+        if (rejection != null) {
+            return rejection;
+        }
+        AgentCommandWorkerLeaseRecord existing = existingOptional.get();
+        AgentCommandWorkerLeaseRecord released = new AgentCommandWorkerLeaseRecord(
+                existing.leaseIdentityKey(),
+                existing.sessionId(),
+                existing.runId(),
+                existing.commandId(),
+                existing.executorId(),
+                prefer(candidate.tenantId(), existing.tenantId()),
+                prefer(candidate.projectId(), existing.projectId()),
+                prefer(candidate.actorId(), existing.actorId()),
+                existing.fencingToken(),
+                existing.leaseVersion(),
+                now,
+                existing.acquiredAt(),
+                now
+        );
+        update(connection, released);
+        return AgentCommandWorkerLeaseClaimResult.of(true,
+                AgentCommandWorkerLeaseState.RELEASED,
+                released,
+                false,
+                "command lease 已释放，后续 worker 可重新领取新版本。");
+    }
+
+    private AgentCommandWorkerLeaseClaimResult validateCurrentHolder(
+            Optional<AgentCommandWorkerLeaseRecord> existingOptional,
+            AgentCommandWorkerLeaseRecord candidate,
+            Instant now) {
+        if (existingOptional.isEmpty()) {
+            return AgentCommandWorkerLeaseClaimResult.of(false,
+                    AgentCommandWorkerLeaseState.NOT_FOUND,
+                    null,
+                    false,
+                    "未找到 command lease fact，拒绝变更。");
+        }
+        AgentCommandWorkerLeaseRecord existing = existingOptional.get();
+        if (!existing.activeAt(now)) {
+            return AgentCommandWorkerLeaseClaimResult.of(false,
+                    AgentCommandWorkerLeaseState.EXPIRED,
+                    existing,
+                    false,
+                    "command lease 已过期，旧 worker 不能续租或释放。");
+        }
+        if (!existing.heldBy(candidate.executorId())) {
+            return AgentCommandWorkerLeaseClaimResult.of(false,
+                    AgentCommandWorkerLeaseState.ALREADY_HELD_BY_OTHER,
+                    existing,
+                    false,
+                    "command lease 当前由其他 worker 持有。");
+        }
+        if (!existing.fencingToken().equals(candidate.fencingToken())) {
+            return AgentCommandWorkerLeaseClaimResult.of(false,
+                    AgentCommandWorkerLeaseState.TOKEN_MISMATCH,
+                    existing,
+                    false,
+                    "fencingToken 与当前 command lease fact 不一致。");
+        }
+        if (existing.leaseVersion() != candidate.leaseVersion()) {
+            return AgentCommandWorkerLeaseClaimResult.of(false,
+                    AgentCommandWorkerLeaseState.VERSION_MISMATCH,
+                    existing,
+                    false,
+                    "workerLeaseVersion 与当前 command lease fact 不一致。");
+        }
+        return null;
+    }
+
     private Optional<AgentCommandWorkerLeaseRecord> selectByIdentity(Connection connection,
                                                                      String identityKey,
                                                                      boolean forUpdate) throws SQLException {
@@ -157,5 +289,9 @@ public class JdbcAgentCommandWorkerLeaseStore implements AgentCommandWorkerLease
             JdbcAgentCommandWorkerLeaseRecordMapper.bindUpdate(statement, record);
             statement.executeUpdate();
         }
+    }
+
+    private String prefer(String requestedValue, String storedValue) {
+        return requestedValue == null ? storedValue : requestedValue;
     }
 }

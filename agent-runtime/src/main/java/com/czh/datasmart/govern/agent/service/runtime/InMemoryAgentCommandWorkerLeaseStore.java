@@ -76,8 +76,126 @@ public class InMemoryAgentCommandWorkerLeaseStore implements AgentCommandWorkerL
                 "command lease 领取成功。");
     }
 
+    /**
+     * 当前持有者续租。
+     *
+     * <p>内存版虽然只用于本地和单测，也要完整表达生产语义：续租必须先校验当前 lease 仍活跃，
+     * 且 executor、fencingToken、leaseVersion 都与 Store 里的事实一致。这样未来切换到 JDBC/Redis 时，
+     * service 和 controller 不需要重新学习另一套状态机。</p>
+     */
+    @Override
+    public synchronized AgentCommandWorkerLeaseClaimResult renew(AgentCommandWorkerLeaseRecord candidate, Instant now) {
+        AgentCommandWorkerLeaseRecord existing = records.get(candidate.leaseIdentityKey());
+        AgentCommandWorkerLeaseClaimResult rejection = validateCurrentHolder(existing, candidate, now);
+        if (rejection != null) {
+            return rejection;
+        }
+        AgentCommandWorkerLeaseRecord renewed = new AgentCommandWorkerLeaseRecord(
+                existing.leaseIdentityKey(),
+                existing.sessionId(),
+                existing.runId(),
+                existing.commandId(),
+                existing.executorId(),
+                prefer(candidate.tenantId(), existing.tenantId()),
+                prefer(candidate.projectId(), existing.projectId()),
+                prefer(candidate.actorId(), existing.actorId()),
+                existing.fencingToken(),
+                existing.leaseVersion(),
+                candidate.leaseExpiresAt(),
+                existing.acquiredAt(),
+                now
+        );
+        records.put(renewed.leaseIdentityKey(), renewed);
+        return AgentCommandWorkerLeaseClaimResult.of(true,
+                AgentCommandWorkerLeaseState.RENEWED,
+                renewed,
+                true,
+                "command lease 续租成功。");
+    }
+
+    /**
+     * 当前持有者释放。
+     *
+     * <p>释放时把 leaseExpiresAt 写成 now，而不是从 Map 中删除记录。这样后续 claim 会看到一个已过期旧版本，
+     * 进而生成 version+1 的新 fencingToken，保持排障和防旧写回所需的单调版本语义。</p>
+     */
+    @Override
+    public synchronized AgentCommandWorkerLeaseClaimResult release(AgentCommandWorkerLeaseRecord candidate, Instant now) {
+        AgentCommandWorkerLeaseRecord existing = records.get(candidate.leaseIdentityKey());
+        AgentCommandWorkerLeaseClaimResult rejection = validateCurrentHolder(existing, candidate, now);
+        if (rejection != null) {
+            return rejection;
+        }
+        AgentCommandWorkerLeaseRecord released = new AgentCommandWorkerLeaseRecord(
+                existing.leaseIdentityKey(),
+                existing.sessionId(),
+                existing.runId(),
+                existing.commandId(),
+                existing.executorId(),
+                prefer(candidate.tenantId(), existing.tenantId()),
+                prefer(candidate.projectId(), existing.projectId()),
+                prefer(candidate.actorId(), existing.actorId()),
+                existing.fencingToken(),
+                existing.leaseVersion(),
+                now,
+                existing.acquiredAt(),
+                now
+        );
+        records.put(released.leaseIdentityKey(), released);
+        return AgentCommandWorkerLeaseClaimResult.of(true,
+                AgentCommandWorkerLeaseState.RELEASED,
+                released,
+                false,
+                "command lease 已释放，后续 worker 可重新领取新版本。");
+    }
+
     @Override
     public Optional<AgentCommandWorkerLeaseRecord> findByIdentity(String sessionId, String runId, String commandId) {
         return Optional.ofNullable(records.get(AgentCommandWorkerLeaseService.leaseIdentityKey(sessionId, runId, commandId)));
+    }
+
+    private AgentCommandWorkerLeaseClaimResult validateCurrentHolder(AgentCommandWorkerLeaseRecord existing,
+                                                                     AgentCommandWorkerLeaseRecord candidate,
+                                                                     Instant now) {
+        if (existing == null) {
+            return AgentCommandWorkerLeaseClaimResult.of(false,
+                    AgentCommandWorkerLeaseState.NOT_FOUND,
+                    null,
+                    false,
+                    "未找到 command lease fact，拒绝变更。");
+        }
+        if (!existing.activeAt(now)) {
+            return AgentCommandWorkerLeaseClaimResult.of(false,
+                    AgentCommandWorkerLeaseState.EXPIRED,
+                    existing,
+                    false,
+                    "command lease 已过期，旧 worker 不能续租或释放。");
+        }
+        if (!existing.heldBy(candidate.executorId())) {
+            return AgentCommandWorkerLeaseClaimResult.of(false,
+                    AgentCommandWorkerLeaseState.ALREADY_HELD_BY_OTHER,
+                    existing,
+                    false,
+                    "command lease 当前由其他 worker 持有。");
+        }
+        if (!existing.fencingToken().equals(candidate.fencingToken())) {
+            return AgentCommandWorkerLeaseClaimResult.of(false,
+                    AgentCommandWorkerLeaseState.TOKEN_MISMATCH,
+                    existing,
+                    false,
+                    "fencingToken 与当前 command lease fact 不一致。");
+        }
+        if (existing.leaseVersion() != candidate.leaseVersion()) {
+            return AgentCommandWorkerLeaseClaimResult.of(false,
+                    AgentCommandWorkerLeaseState.VERSION_MISMATCH,
+                    existing,
+                    false,
+                    "workerLeaseVersion 与当前 command lease fact 不一致。");
+        }
+        return null;
+    }
+
+    private String prefer(String requestedValue, String storedValue) {
+        return requestedValue == null ? storedValue : requestedValue;
     }
 }

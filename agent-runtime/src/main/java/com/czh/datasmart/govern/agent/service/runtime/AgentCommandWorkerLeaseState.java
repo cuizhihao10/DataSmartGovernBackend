@@ -30,6 +30,22 @@ public enum AgentCommandWorkerLeaseState {
     ALREADY_HELD_BY_OTHER,
 
     /**
+     * 当前持有者续租成功。
+     *
+     * <p>续租不会更换 fencingToken，也不会递增 leaseVersion；它只延长 leaseExpiresAt。
+     * 这样 worker 可以在长耗时执行中保持同一份资格凭证，同时 receipt 必须携带最新过期时间，避免旧本地状态回写。</p>
+     */
+    RENEWED,
+
+    /**
+     * 当前持有者主动释放成功。
+     *
+     * <p>释放不是删除历史事实，而是把 lease 更新为立即过期。下一次 claim 会基于旧版本递增，
+     * 保持 fencing 版本单调，便于排查重复投递、worker 抢占和旧结果回写。</p>
+     */
+    RELEASED,
+
+    /**
      * receipt 写回时 lease 证据校验通过。
      */
     VALID_FOR_RECEIPT,
@@ -43,6 +59,16 @@ public enum AgentCommandWorkerLeaseState {
      * lease 已过期，旧 worker 不能继续写回。
      */
     EXPIRED,
+
+    /**
+     * 当前调用方提供的 fencingToken 与控制面事实不一致。
+     */
+    TOKEN_MISMATCH,
+
+    /**
+     * 当前调用方提供的 workerLeaseVersion 与控制面事实不一致。
+     */
+    VERSION_MISMATCH,
 
     /**
      * executor、token、version 或命令定位不匹配。

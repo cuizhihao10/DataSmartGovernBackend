@@ -7,6 +7,8 @@
 package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentCommandWorkerLeaseClaimRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentCommandWorkerLeaseReleaseRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentCommandWorkerLeaseRenewRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionCommandWorkerReceiptRequest;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import org.junit.jupiter.api.Test;
@@ -113,6 +115,114 @@ class AgentCommandWorkerLeaseServiceTest {
     }
 
     @Test
+    void renewShouldExtendCurrentLeaseAndRequireLatestExpiryOnReceipt() {
+        MutableClock clock = new MutableClock(Instant.parse("2026-06-24T01:00:00Z"));
+        AgentCommandWorkerLeaseService service =
+                new AgentCommandWorkerLeaseService(new InMemoryAgentCommandWorkerLeaseStore(), clock);
+
+        AgentCommandWorkerLeaseRecord oldLease = service.claim(SESSION_ID, RUN_ID,
+                claimRequest(EXECUTOR_ID, 60)).record();
+        clock.advanceSeconds(20);
+        AgentCommandWorkerLeaseClaimResult renewedResult = service.renew(SESSION_ID, RUN_ID,
+                renewRequest(oldLease, EXECUTOR_ID, 180));
+        AgentCommandWorkerLeaseRecord renewedLease = renewedResult.record();
+
+        assertTrue(renewedResult.acquired());
+        assertEquals(AgentCommandWorkerLeaseState.RENEWED, renewedResult.state());
+        assertTrue(renewedResult.tokenVisible());
+        assertEquals(oldLease.fencingToken(), renewedLease.fencingToken());
+        assertEquals(oldLease.leaseVersion(), renewedLease.leaseVersion());
+        assertEquals(clock.instant().plusSeconds(180), renewedLease.leaseExpiresAt());
+        assertTrue(renewedLease.leaseExpiresAt().isAfter(oldLease.leaseExpiresAt()));
+
+        assertThrows(PlatformBusinessException.class,
+                () -> service.validateReceiptLease(SESSION_ID, RUN_ID, receipt(oldLease, EXECUTOR_ID), true));
+        service.validateReceiptLease(SESSION_ID, RUN_ID, receipt(renewedLease, EXECUTOR_ID), true);
+    }
+
+    @Test
+    void renewShouldRejectWrongTokenAndHideCurrentToken() {
+        MutableClock clock = new MutableClock(Instant.parse("2026-06-24T01:00:00Z"));
+        AgentCommandWorkerLeaseService service =
+                new AgentCommandWorkerLeaseService(new InMemoryAgentCommandWorkerLeaseStore(), clock);
+
+        AgentCommandWorkerLeaseRecord lease = service.claim(SESSION_ID, RUN_ID,
+                claimRequest(EXECUTOR_ID, 120)).record();
+        AgentCommandWorkerLeaseClaimResult rejected = service.renew(SESSION_ID, RUN_ID,
+                new AgentCommandWorkerLeaseRenewRequest(
+                        COMMAND_ID,
+                        EXECUTOR_ID,
+                        "cmd-lease:" + lease.leaseVersion() + ":aaaaaaaaaaaaaaaaaaaa",
+                        lease.leaseVersion(),
+                        10L,
+                        20L,
+                        30L,
+                        120
+                ));
+
+        assertFalse(rejected.acquired());
+        assertEquals(AgentCommandWorkerLeaseState.TOKEN_MISMATCH, rejected.state());
+        assertFalse(rejected.tokenVisible());
+        assertEquals(lease.leaseVersion(), rejected.record().leaseVersion());
+    }
+
+    @Test
+    void releaseShouldExpireLeaseAndNextClaimShouldIncrementVersion() {
+        MutableClock clock = new MutableClock(Instant.parse("2026-06-24T01:00:00Z"));
+        AgentCommandWorkerLeaseService service =
+                new AgentCommandWorkerLeaseService(new InMemoryAgentCommandWorkerLeaseStore(), clock);
+
+        AgentCommandWorkerLeaseRecord oldLease = service.claim(SESSION_ID, RUN_ID,
+                claimRequest(EXECUTOR_ID, 120)).record();
+        AgentCommandWorkerLeaseClaimResult releasedResult = service.release(SESSION_ID, RUN_ID,
+                releaseRequest(oldLease, EXECUTOR_ID, "COMPLETED"));
+
+        assertTrue(releasedResult.acquired());
+        assertEquals(AgentCommandWorkerLeaseState.RELEASED, releasedResult.state());
+        assertFalse(releasedResult.tokenVisible());
+        assertEquals(clock.instant(), releasedResult.record().leaseExpiresAt());
+        assertThrows(PlatformBusinessException.class,
+                () -> service.validateReceiptLease(SESSION_ID, RUN_ID, receipt(oldLease, EXECUTOR_ID), true));
+
+        AgentCommandWorkerLeaseRecord newLease = service.claim(SESSION_ID, RUN_ID,
+                claimRequest("agent-command-worker-new", 120)).record();
+
+        assertEquals(oldLease.leaseVersion() + 1, newLease.leaseVersion());
+        assertNotEquals(oldLease.fencingToken(), newLease.fencingToken());
+        service.validateReceiptLease(SESSION_ID, RUN_ID,
+                receipt(newLease, "agent-command-worker-new"), true);
+    }
+
+    @Test
+    void releaseShouldRejectDifferentExecutorAndHideCurrentToken() {
+        MutableClock clock = new MutableClock(Instant.parse("2026-06-24T01:00:00Z"));
+        AgentCommandWorkerLeaseService service =
+                new AgentCommandWorkerLeaseService(new InMemoryAgentCommandWorkerLeaseStore(), clock);
+
+        AgentCommandWorkerLeaseRecord lease = service.claim(SESSION_ID, RUN_ID,
+                claimRequest(EXECUTOR_ID, 120)).record();
+        AgentCommandWorkerLeaseClaimResult rejected = service.release(SESSION_ID, RUN_ID,
+                releaseRequest(lease, "agent-command-worker-other", "WORKER_SHUTDOWN"));
+
+        assertFalse(rejected.acquired());
+        assertEquals(AgentCommandWorkerLeaseState.ALREADY_HELD_BY_OTHER, rejected.state());
+        assertFalse(rejected.tokenVisible());
+        assertEquals(lease.fencingToken(), rejected.record().fencingToken());
+    }
+
+    @Test
+    void releaseShouldRejectReasonContainingUnsafeBusinessText() {
+        AgentCommandWorkerLeaseService service =
+                new AgentCommandWorkerLeaseService(new InMemoryAgentCommandWorkerLeaseStore());
+        AgentCommandWorkerLeaseRecord lease = service.claim(SESSION_ID, RUN_ID,
+                claimRequest(EXECUTOR_ID, 120)).record();
+
+        assertThrows(PlatformBusinessException.class,
+                () -> service.release(SESSION_ID, RUN_ID,
+                        releaseRequest(lease, EXECUTOR_ID, "failed because select * from user")));
+    }
+
+    @Test
     void receiptShouldRejectTokenThatWasNeverClaimedFromStore() {
         AgentCommandWorkerLeaseService service =
                 new AgentCommandWorkerLeaseService(new InMemoryAgentCommandWorkerLeaseStore());
@@ -157,6 +267,36 @@ class AgentCommandWorkerLeaseServiceTest {
 
     private AgentCommandWorkerLeaseClaimRequest claimRequest(String executorId, int ttlSeconds) {
         return new AgentCommandWorkerLeaseClaimRequest(COMMAND_ID, executorId, 10L, 20L, 30L, ttlSeconds);
+    }
+
+    private AgentCommandWorkerLeaseRenewRequest renewRequest(AgentCommandWorkerLeaseRecord lease,
+                                                             String executorId,
+                                                             int ttlSeconds) {
+        return new AgentCommandWorkerLeaseRenewRequest(
+                COMMAND_ID,
+                executorId,
+                lease.fencingToken(),
+                lease.leaseVersion(),
+                10L,
+                20L,
+                30L,
+                ttlSeconds
+        );
+    }
+
+    private AgentCommandWorkerLeaseReleaseRequest releaseRequest(AgentCommandWorkerLeaseRecord lease,
+                                                                 String executorId,
+                                                                 String releaseReason) {
+        return new AgentCommandWorkerLeaseReleaseRequest(
+                COMMAND_ID,
+                executorId,
+                lease.fencingToken(),
+                lease.leaseVersion(),
+                releaseReason,
+                10L,
+                20L,
+                30L
+        );
     }
 
     private AgentToolActionCommandWorkerReceiptRequest receipt(AgentCommandWorkerLeaseRecord lease, String executorId) {

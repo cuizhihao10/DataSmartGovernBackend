@@ -7,6 +7,8 @@
 package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentCommandWorkerLeaseClaimRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentCommandWorkerLeaseReleaseRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentCommandWorkerLeaseRenewRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionCommandWorkerReceiptRequest;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
@@ -86,6 +88,90 @@ public class AgentCommandWorkerLeaseService {
                 now
         );
         return store.claim(candidate, now);
+    }
+
+    /**
+     * 为当前 command worker lease 续租。
+     *
+     * <p>续租的产品价值是降低长耗时命令的误判失败率：worker 可能正在等待 sandbox 退出、上传 artifact、
+     * 或执行受控数据治理脚本，如果 lease 到期后仍继续运行，最终 receipt 会被拒绝。通过续租，worker 可以在
+     * 仍然持有 token/version 的前提下延长执行窗口。</p>
+     *
+     * <p>续租不会更换 fencingToken，也不会递增 leaseVersion；只有旧 lease 过期并被重新 claim 时才递增版本。
+     * 这样 receipt 仍能用“同 token + 同 version + 最新 expiresAt”证明自己是当前持有者。</p>
+     */
+    public AgentCommandWorkerLeaseClaimResult renew(String sessionId,
+                                                    String runId,
+                                                    AgentCommandWorkerLeaseRenewRequest request) {
+        if (request == null) {
+            throw badRequest("command worker lease 续租请求体不能为空");
+        }
+        Instant now = clock.instant();
+        String safeSessionId = requiredSafeText(sessionId, "sessionId");
+        String safeRunId = requiredSafeText(runId, "runId");
+        String commandId = requiredSafeText(request.commandId(), "commandId");
+        String executorId = requiredSafeText(request.executorId(), "executorId");
+        String token = requiredFencingToken(request.fencingToken());
+        long leaseVersion = requiredLeaseVersion(token, request.workerLeaseVersion());
+        int ttlSeconds = normalizedTtl(request.leaseTtlSeconds());
+        AgentCommandWorkerLeaseRecord candidate = new AgentCommandWorkerLeaseRecord(
+                leaseIdentityKey(safeSessionId, safeRunId, commandId),
+                safeSessionId,
+                safeRunId,
+                commandId,
+                executorId,
+                stringValue(request.tenantId()),
+                stringValue(request.projectId()),
+                stringValue(request.actorId()),
+                token,
+                leaseVersion,
+                now.plusSeconds(ttlSeconds),
+                now,
+                now
+        );
+        return store.renew(candidate, now);
+    }
+
+    /**
+     * 释放当前 command worker lease。
+     *
+     * <p>释放用于 worker 已完成、失败、取消、补偿或主动下线的场景。它能缩短队列等待时间：如果不释放，
+     * 其他 worker 必须等 TTL 到期后才能接手；如果释放不校验 token/version，又会让错误调用者提前放开别人的
+     * 执行窗口。因此 release 和 renew 一样必须携带当前 token/version。</p>
+     *
+     * <p>释放原因只做低敏代码白名单校验，目前不持久化到 lease 表。后续如果需要审计 release reason，
+     * 应通过低敏 runtime event 或专门审计表记录，仍然不能包含命令正文、路径、stdout/stderr 或异常堆栈正文。</p>
+     */
+    public AgentCommandWorkerLeaseClaimResult release(String sessionId,
+                                                      String runId,
+                                                      AgentCommandWorkerLeaseReleaseRequest request) {
+        if (request == null) {
+            throw badRequest("command worker lease 释放请求体不能为空");
+        }
+        Instant now = clock.instant();
+        String safeSessionId = requiredSafeText(sessionId, "sessionId");
+        String safeRunId = requiredSafeText(runId, "runId");
+        String commandId = requiredSafeText(request.commandId(), "commandId");
+        String executorId = requiredSafeText(request.executorId(), "executorId");
+        String token = requiredFencingToken(request.fencingToken());
+        long leaseVersion = requiredLeaseVersion(token, request.workerLeaseVersion());
+        normalizedReleaseReason(request.releaseReason());
+        AgentCommandWorkerLeaseRecord candidate = new AgentCommandWorkerLeaseRecord(
+                leaseIdentityKey(safeSessionId, safeRunId, commandId),
+                safeSessionId,
+                safeRunId,
+                commandId,
+                executorId,
+                stringValue(request.tenantId()),
+                stringValue(request.projectId()),
+                stringValue(request.actorId()),
+                token,
+                leaseVersion,
+                now,
+                now,
+                now
+        );
+        return store.release(candidate, now);
     }
 
     /**
@@ -175,6 +261,30 @@ public class AgentCommandWorkerLeaseService {
         }
         tokenVersion(token);
         return token;
+    }
+
+    private long requiredLeaseVersion(String token, Long workerLeaseVersion) {
+        long tokenVersion = tokenVersion(token);
+        if (workerLeaseVersion == null || workerLeaseVersion < 1) {
+            throw badRequest("workerLeaseVersion 必须大于 0");
+        }
+        if (tokenVersion != workerLeaseVersion) {
+            throw badRequest("fencingToken 中的版本号必须与 workerLeaseVersion 一致");
+        }
+        return workerLeaseVersion;
+    }
+
+    private String normalizedReleaseReason(String value) {
+        String reason = trimToNull(value);
+        if (reason == null) {
+            return "UNSPECIFIED";
+        }
+        String normalized = reason.toUpperCase(Locale.ROOT).replace('-', '_');
+        return switch (normalized) {
+            case "COMPLETED", "FAILED", "CANCELLED", "CANCELED", "COMPENSATED",
+                 "WORKER_SHUTDOWN", "ABANDONED", "TIMEOUT", "PRECHECK_REJECTED" -> normalized;
+            default -> throw badRequest("releaseReason 只能使用低敏释放原因代码，不能携带命令、路径、输出或异常正文");
+        };
     }
 
     private String requiredSafeText(String value, String fieldName) {
