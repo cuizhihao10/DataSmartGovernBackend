@@ -38,16 +38,18 @@ from datasmart_ai_runtime.services.tools.controlled_command_worker_contract impo
 
 
 class ControlledCommandWorkerRunMode(str, Enum):
-    """Python 侧当前允许模拟的 worker 运行模式。
+    """Python 侧当前允许的 worker 运行模式。
 
-    这里没有 `REAL_EXECUTION`，是有意的产品边界：真实命令执行必须等到 sandbox、lease、输出裁剪、artifact 权限
-    和补偿机制齐备后再开启。当前模式只用于把 Java receipt 合同接到 Python 执行层，使后续真实 runner 有一个
-    稳定的、可测试的回执外壳。
+    早期只有模拟模式；从 5.107 开始允许“受控进程外壳”把真实进程结果转换成 receipt。即便如此，receipt 仍然只接收
+    低敏事实，不接收 argv、工作目录、stdout/stderr 正文或环境变量。
     """
 
     PRECHECK_ONLY = "PRECHECK_ONLY"
     SIMULATED_EXECUTION_SUCCESS = "SIMULATED_EXECUTION_SUCCESS"
     SIMULATED_EXECUTION_FAILURE = "SIMULATED_EXECUTION_FAILURE"
+    CONTROLLED_PROCESS_EXECUTION_SUCCESS = "CONTROLLED_PROCESS_EXECUTION_SUCCESS"
+    CONTROLLED_PROCESS_EXECUTION_FAILURE = "CONTROLLED_PROCESS_EXECUTION_FAILURE"
+    CONTROLLED_PROCESS_TIMEOUT = "CONTROLLED_PROCESS_TIMEOUT"
     CAPACITY_LIMITED = "CAPACITY_LIMITED"
 
 
@@ -105,6 +107,7 @@ class ControlledCommandWorkerRunRequest:
     artifact_reference_type: str | None = None
     artifact_reference: str | None = None
     artifact_available: bool = False
+    execution_performed: bool = False
     audit_id: str | None = None
     tool_code: str = "command.run-program"
     target_service: str = "python-ai-runtime-controlled-worker"
@@ -233,6 +236,7 @@ class ControlledCommandWorkerRunner:
             schema_version=COMMAND_WORKER_RECEIPT_SCHEMA_VERSION,
             outcome=outcome,
             java_payload=_drop_none(payload),
+            execution_performed=bool(request.execution_performed),
         )
 
     def run(
@@ -405,7 +409,13 @@ class ControlledCommandWorkerRunner:
             return CommandWorkerReceiptOutcome.WORKER_PRECHECK_PASSED
         if run_mode == ControlledCommandWorkerRunMode.SIMULATED_EXECUTION_SUCCESS:
             return CommandWorkerReceiptOutcome.EXECUTION_SUCCEEDED
-        if run_mode == ControlledCommandWorkerRunMode.SIMULATED_EXECUTION_FAILURE:
+        if run_mode == ControlledCommandWorkerRunMode.CONTROLLED_PROCESS_EXECUTION_SUCCESS:
+            return CommandWorkerReceiptOutcome.EXECUTION_SUCCEEDED
+        if run_mode in {
+            ControlledCommandWorkerRunMode.SIMULATED_EXECUTION_FAILURE,
+            ControlledCommandWorkerRunMode.CONTROLLED_PROCESS_EXECUTION_FAILURE,
+            ControlledCommandWorkerRunMode.CONTROLLED_PROCESS_TIMEOUT,
+        }:
             return CommandWorkerReceiptOutcome.EXECUTION_FAILED
         return CommandWorkerReceiptOutcome.CAPACITY_LIMITED
 

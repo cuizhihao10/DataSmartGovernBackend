@@ -1,4 +1,27 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-25 落地补充：real command execution should start as a replaceable host-local adapter
+
+- 本轮趋势校准：
+  - OpenAI Sandbox Agents 将 agent orchestration 与 sandbox execution 分层；映射到 DataSmart，真实执行能力应从可替换 adapter 开始，而不是把 `subprocess` 深埋进 agent 编排逻辑。
+  - MCP Tools 强调工具调用由 Host 暴露并治理；映射到 DataSmart，命令执行必须继续由 Java Host admission、Python process adapter、receipt 和 outbox 补偿共同组成，而不是让模型直接拥有 shell。
+  - Python `subprocess` 官方文档提供 `argv + shell=False`、timeout 和 stdout/stderr pipe 的基础能力；映射到 DataSmart，当前 host-local 外壳只能作为最小执行适配层，生产级隔离仍需要容器/namespace/cgroup/seccomp 或远端 sandbox。
+- 本轮落地到代码的能力：
+  - 新增 `command_sandbox_process_runner.py`，实现 host-local 最小受控进程外壳；
+  - 进程启动必须满足 admission accepted、可执行文件 basename 白名单、workspace root allowlist 和最小环境变量校验；
+  - 使用 `subprocess.Popen(..., shell=False)` 启动 argv 子进程；
+  - stdout/stderr 只记录字节数和截断标记，不进入 summary 或 receipt；
+  - `CommandSandboxProcessRunResult.to_worker_run_request()` 可把成功、失败、超时、阻断结果转换为 Java receipt runner 所需低敏请求；
+  - `ControlledCommandWorkerRunMode` 新增 `CONTROLLED_PROCESS_EXECUTION_SUCCESS/FAILURE/TIMEOUT`，避免真实执行结果继续伪装成模拟模式；
+  - 测试覆盖真实进程成功、超时、输出预算、admission 阻断、可执行文件白名单和 workspace escape。
+- 产品判断：
+  - 这一步把 command durable action 从“准入后仍只能模拟”推进到“可运行最小真实进程外壳”；
+  - 它仍不是 operational 级容器沙箱，不能标记为完整命令执行能力；
+  - 下一步更值得做任务最终态对账、真实对象存储 adapter 或容器级 runner 替换，而不是继续扩展 host-local runner 字段。
+- 参考资料：
+  - OpenAI Sandbox Agents: `https://developers.openai.com/api/docs/guides/agents/sandboxes`
+  - MCP Tools: `https://modelcontextprotocol.io/specification/draft/server/tools`
+  - Python subprocess: `https://docs.python.org/3/library/subprocess.html`
+
 ## 2026-06-25 落地补充：sandbox admission must be called by the runner, not only defined by the host
 
 - 本轮趋势校准：

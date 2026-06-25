@@ -1,4 +1,53 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-25 追加落地进展：Python AI Runtime 5.107 Host-Local Command Sandbox Process Runner
+- 本阶段承接 5.106 的 Python command sandbox admission client，不继续扩展 admission 字段，也不一次性引入完整容器平台，而是新增 host-local 最小受控进程外壳，先把真实进程生命周期接入 command durable action。
+- 产品目标：
+  - 在 Java sandbox admission accepted 之后才允许 Python 启动进程；
+  - 先支持 `argv + shell=False` 的最小执行方式，明确禁止 shell 字符串拼接；
+  - 用可执行文件 basename 白名单、workspace root allowlist、最小环境变量集合、超时和输出字节预算限制执行范围；
+  - stdout/stderr 只统计字节数与截断状态，不写入 summary、runtime event 或 Java receipt；
+  - 进程结果可转换为 `CONTROLLED_PROCESS_RESULT` worker receipt，复用既有 Java receipt 写回与 outbox 补偿链路。
+- 新增与调整：
+  - 新增 `command_sandbox_process_runner.py`
+    - 新增 `CommandSandboxProcessRunnerSettings`；
+    - 新增 `CommandSandboxProcessRunRequest`；
+    - 新增 `CommandSandboxProcessRunResult`；
+    - 新增 `CommandSandboxProcessRunner`；
+    - 支持 admission accepted 校验、argv 白名单、workspace allowlist、最小环境变量、超时、输出预算、低敏 artifactReference 和 result -> worker request 转换。
+  - 扩展 `ControlledCommandWorkerRunMode`
+    - 新增 `CONTROLLED_PROCESS_EXECUTION_SUCCESS`；
+    - 新增 `CONTROLLED_PROCESS_EXECUTION_FAILURE`；
+    - 新增 `CONTROLLED_PROCESS_TIMEOUT`；
+    - 让真实进程结果不再伪装成模拟成功/失败。
+  - 扩展 `ControlledCommandWorkerRunRequest`
+    - 新增 `execution_performed`；
+    - `ControlledCommandWorkerReceipt.to_summary()` 可表达真实进程已经启动过，但仍不暴露 argv、cwd、stdout/stderr 或环境变量。
+  - 新增 `test_command_sandbox_process_runner.py`
+    - 覆盖 admission accepted 后真实进程成功并转换为 Java receipt；
+    - 覆盖进程超时转换为 `EXECUTION_FAILED`；
+    - 覆盖输出预算只保留字节数和截断标记；
+    - 覆盖 admission 未准入时 fail-closed；
+    - 覆盖可执行文件白名单和 workspace escape 拦截。
+  - 更新 Agent 能力矩阵：
+    - `tool.exec-run-program`
+    - `permission.dangerous-path-safe-cmd`
+    - `command.outbox-worker-receipt`
+    - 将 host-local 最小受控进程外壳归入已完成控制面/部分闭环证据；
+    - 剩余缺口收敛为容器/namespace/cgroup 级隔离、网络隔离、真实对象存储 adapter、durable grant store、队列 visibility timeout 和任务最终态对账。
+- 低敏边界：
+  - process runner 请求可以短生命周期持有 `command_argv` 与 `workspace_root`，但 `to_summary()` 和 receipt 不返回这些字段；
+  - stdout/stderr 只记录 `stdoutByteCount`、`stderrByteCount`、`stdoutTruncated`、`stderrTruncated`；
+  - 环境变量默认不继承 PATH、代理、凭据或业务配置，只允许显式低敏变量和少量系统必需变量；
+  - artifactReference 使用 `command-output:{runId}/{commandId}/process-result` 这类低敏引用，不是文件路径、bucket/key 或签名 URL。
+- 验证：
+  - Python 定向测试：
+    `python -m pytest python-ai-runtime\tests\test_command_sandbox_process_runner.py python-ai-runtime\tests\test_controlled_command_worker_runner.py -q`
+  - 当前结果：16 个用例通过。
+- 当前边界：
+  - 5.107 是 host-local 最小进程外壳，不是最终生产容器沙箱；
+  - 仍未完成 cgroup/namespace/seccomp/容器隔离、网络隔离、真实对象存储 adapter、durable grant store、队列 visibility timeout 自动续期和任务最终态对账；
+  - 下一步建议优先补任务最终态对账或真实对象存储 adapter，避免继续在 command runner 局部无限加字段。
+
 ## 2026-06-25 追加落地进展：Python AI Runtime 5.106 Command Sandbox Admission Client
 - 本阶段承接 5.105 的 Java sandbox run admission，不继续扩展 Java admission 字段，也不直接开放真实 shell/容器执行，而是把 Python `ControlledCommandWorkerRunner` 接入 Java Host 准入闸门。
 - 产品目标：
