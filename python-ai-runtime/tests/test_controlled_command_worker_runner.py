@@ -13,6 +13,8 @@ from datasmart_ai_runtime.services.tools import (
     ControlledCommandWorkerRunMode,
     ControlledCommandWorkerRunRequest,
     ControlledCommandWorkerRunner,
+    JavaCommandSandboxAdmissionClient,
+    JavaCommandSandboxAdmissionClientSettings,
     JavaCommandWorkerReceiptClient,
     JavaCommandWorkerReceiptClientSettings,
 )
@@ -232,6 +234,173 @@ class ControlledCommandWorkerRunnerTest(unittest.TestCase):
         self.assertNotIn("stdout", summary)
         self.assertNotIn(FENCING_TOKEN, str(summary))
         self.assertNotIn("agent-runtime.test", str(summary))
+
+    def test_sandbox_admission_success_allows_runner_to_build_execution_receipt(self) -> None:
+        """执行区运行前应先请求 Java sandbox admission，并采用 Java 裁剪后的低敏资源预算。"""
+
+        captured: dict[str, object] = {}
+
+        def fake_urlopen(request, timeout: int):
+            captured["url"] = request.full_url
+            captured["timeout"] = timeout
+            captured["headers"] = dict(request.header_items())
+            captured["payload"] = json.loads(request.data.decode("utf-8"))
+            return FakeHttpResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "accepted": True,
+                        "decision": "ADMITTED",
+                        "sandboxRunId": "sandbox-run:sha256:abcdef1234567890",
+                        "normalizedTimeoutSeconds": 18,
+                        "normalizedOutputByteLimitBytes": 2048,
+                        "isolationMode": "NO_NETWORK_PROCESS_SANDBOX",
+                        "processStarted": False,
+                        "rawCommandAccepted": False,
+                        "issueCodes": [],
+                        "evidenceCodes": ["LEASE_VALID", "WORKSPACE_REFERENCE_VALID"],
+                        "recommendedActions": ["继续执行受控命令并写回低敏 receipt"],
+                        "commandLine": "should-not-be-parsed",
+                        "stdout": "should-not-be-parsed",
+                    },
+                }
+            )
+
+        admission_client = JavaCommandSandboxAdmissionClient(
+            JavaCommandSandboxAdmissionClientSettings(
+                enabled=True,
+                base_url="http://agent-runtime.test",
+                timeout_seconds=9,
+            ),
+            urlopen_func=fake_urlopen,
+        )
+        result = ControlledCommandWorkerRunner().run(
+            self._request(
+                run_mode=ControlledCommandWorkerRunMode.SIMULATED_EXECUTION_SUCCESS,
+                sandbox_admission_required=True,
+                fencing_token=FENCING_TOKEN,
+                worker_lease_version=LEASE_VERSION,
+                worker_lease_expires_at_ms=LEASE_EXPIRES_AT_MS,
+                workspace_reference="agent-workspace:tenant-10/project-20/run-command-001",
+                normalized_timeout_seconds=90,
+                normalized_output_byte_limit_bytes=65_536,
+            ),
+            sandbox_admission_client=admission_client,
+            require_sandbox_admission=True,
+            trace_id="trace-command-sandbox-admission",
+        )
+        receipt_payload = result.receipt.java_payload
+        summary = result.to_summary()
+
+        self.assertEqual(CommandWorkerReceiptOutcome.EXECUTION_SUCCEEDED, result.receipt.outcome)
+        self.assertEqual(9, captured["timeout"])
+        self.assertEqual(
+            "http://agent-runtime.test/internal/agent-runtime/sessions/session-command-001/"
+            "runs/run-command-001/tool-executions/command-sandbox-run-admissions",
+            captured["url"],
+        )
+        self.assertEqual(FENCING_TOKEN, captured["payload"]["fencingToken"])
+        self.assertEqual("agent-workspace:tenant-10/project-20/run-command-001", captured["payload"]["workspaceReference"])
+        self.assertEqual(90, captured["payload"]["requestedTimeoutSeconds"])
+        self.assertNotIn("commandLine", captured["payload"])
+        self.assertNotIn("stdout", captured["payload"])
+        self.assertEqual(18, receipt_payload["normalizedTimeoutSeconds"])
+        self.assertEqual(2048, receipt_payload["normalizedOutputByteLimitBytes"])
+        self.assertTrue(summary["sandboxAdmissionResult"]["accepted"])
+        self.assertEqual("ADMITTED", summary["sandboxAdmissionResult"]["decision"])
+        self.assertNotIn(FENCING_TOKEN, json.dumps(summary, ensure_ascii=False))
+        self.assertNotIn("agent-runtime.test", json.dumps(summary, ensure_ascii=False))
+        self.assertNotIn("should-not-be-parsed", json.dumps(summary, ensure_ascii=False))
+
+    def test_sandbox_admission_denied_turns_side_effect_mode_into_failed_precheck(self) -> None:
+        """Java admission 拒绝时，Python 不能继续声明副作用，而要生成失败预检回执。"""
+
+        def fake_urlopen(request, timeout: int):
+            return FakeHttpResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "accepted": False,
+                        "decision": "DENIED_BY_WORKSPACE_POLICY",
+                        "sandboxRunId": None,
+                        "processStarted": False,
+                        "rawCommandAccepted": False,
+                        "issueCodes": ["WORKSPACE_REFERENCE_REQUIRED"],
+                        "evidenceCodes": ["LEASE_VALID"],
+                        "recommendedActions": ["补齐受控 workspace 引用后重新领取 lease"],
+                    },
+                }
+            )
+
+        admission_client = JavaCommandSandboxAdmissionClient(
+            JavaCommandSandboxAdmissionClientSettings(enabled=True, base_url="http://agent-runtime.test"),
+            urlopen_func=fake_urlopen,
+        )
+        result = ControlledCommandWorkerRunner().run(
+            self._request(
+                run_mode=ControlledCommandWorkerRunMode.SIMULATED_EXECUTION_SUCCESS,
+                sandbox_admission_required=True,
+                fencing_token=FENCING_TOKEN,
+                worker_lease_version=LEASE_VERSION,
+                worker_lease_expires_at_ms=LEASE_EXPIRES_AT_MS,
+            ),
+            sandbox_admission_client=admission_client,
+            require_sandbox_admission=True,
+        )
+        payload = result.receipt.java_payload
+        serialized = json.dumps(result.to_summary(), ensure_ascii=False)
+
+        self.assertEqual(CommandWorkerReceiptOutcome.FAILED_PRECHECK, result.receipt.outcome)
+        self.assertFalse(payload["sideEffectStarted"])
+        self.assertFalse(payload["sideEffectExecuted"])
+        self.assertIn("WORKSPACE_REFERENCE_REQUIRED", payload["commandSafetyIssueCodes"])
+        self.assertEqual("DENIED_BY_WORKSPACE_POLICY", result.sandbox_admission_result.decision)
+        self.assertNotIn(FENCING_TOKEN, serialized)
+        self.assertNotIn("agent-runtime.test", serialized)
+
+    def test_required_sandbox_admission_fails_closed_when_client_is_disabled(self) -> None:
+        """调用方要求 admission 时，即使客户端默认关闭，也必须 fail-closed 而不是继续执行。"""
+
+        result = ControlledCommandWorkerRunner().run(
+            self._request(
+                run_mode=ControlledCommandWorkerRunMode.SIMULATED_EXECUTION_SUCCESS,
+                sandbox_admission_required=True,
+                fencing_token=FENCING_TOKEN,
+                worker_lease_version=LEASE_VERSION,
+                worker_lease_expires_at_ms=LEASE_EXPIRES_AT_MS,
+                workspace_reference="agent-workspace:tenant-10/project-20/run-command-001",
+            ),
+            sandbox_admission_client=JavaCommandSandboxAdmissionClient(urlopen_func=self._failing_urlopen),
+            require_sandbox_admission=True,
+        )
+        payload = result.receipt.java_payload
+
+        self.assertEqual(CommandWorkerReceiptOutcome.FAILED_PRECHECK, result.receipt.outcome)
+        self.assertTrue(result.sandbox_admission_result.skipped)
+        self.assertFalse(payload["sideEffectStarted"])
+        self.assertIn("SANDBOX_ADMISSION_CLIENT_DISABLED", payload["commandSafetyIssueCodes"])
+        self.assertNotIn(FENCING_TOKEN, json.dumps(result.to_summary(), ensure_ascii=False))
+
+    def test_unsafe_workspace_reference_is_rejected_before_java_admission(self) -> None:
+        """workspaceReference 只能是低敏受控引用，不能让 URL、真实路径或凭据进入 Java admission 请求。"""
+
+        admission_client = JavaCommandSandboxAdmissionClient(
+            JavaCommandSandboxAdmissionClientSettings(enabled=True, base_url="http://agent-runtime.test"),
+            urlopen_func=self._failing_urlopen,
+        )
+        with self.assertRaises(ValueError):
+            ControlledCommandWorkerRunner().run(
+                self._request(
+                    run_mode=ControlledCommandWorkerRunMode.SIMULATED_EXECUTION_SUCCESS,
+                    sandbox_admission_required=True,
+                    fencing_token=FENCING_TOKEN,
+                    worker_lease_version=LEASE_VERSION,
+                    worker_lease_expires_at_ms=LEASE_EXPIRES_AT_MS,
+                    workspace_reference="https://internal.example.local/workspaces/root?token=secret",
+                ),
+                sandbox_admission_client=admission_client,
+                require_sandbox_admission=True,
+            )
 
     def _request(self, **overrides) -> ControlledCommandWorkerRunRequest:
         """生成默认允许执行的低敏 worker 请求。"""

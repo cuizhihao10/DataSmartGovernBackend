@@ -138,6 +138,15 @@ from datasmart_ai_runtime.services.tools.command_worker_receipt_client import (
     JavaCommandWorkerReceiptClient,
     JavaCommandWorkerReceiptClientSettings,
 )
+from datasmart_ai_runtime.services.tools.command_sandbox_admission_client import (
+    COMMAND_SANDBOX_ADMISSION_PAYLOAD_POLICY,
+    COMMAND_SANDBOX_ADMISSION_SCHEMA_VERSION,
+    JAVA_COMMAND_SANDBOX_ADMISSION_ROUTE_TEMPLATE,
+    CommandSandboxAdmissionClientError,
+    JavaCommandSandboxAdmissionClient,
+    JavaCommandSandboxAdmissionClientSettings,
+    JavaCommandSandboxAdmissionResult,
+)
 from datasmart_ai_runtime.services.tools.command_worker_lease import (
     COMMAND_WORKER_LEASE_PAYLOAD_POLICY,
     COMMAND_WORKER_LEASE_SCHEMA_VERSION,
@@ -238,6 +247,13 @@ __all__ = (
     "CommandWorkerReceiptPostResult",
     "JavaCommandWorkerReceiptClient",
     "JavaCommandWorkerReceiptClientSettings",
+    "COMMAND_SANDBOX_ADMISSION_PAYLOAD_POLICY",
+    "COMMAND_SANDBOX_ADMISSION_SCHEMA_VERSION",
+    "JAVA_COMMAND_SANDBOX_ADMISSION_ROUTE_TEMPLATE",
+    "CommandSandboxAdmissionClientError",
+    "JavaCommandSandboxAdmissionClient",
+    "JavaCommandSandboxAdmissionClientSettings",
+    "JavaCommandSandboxAdmissionResult",
     "COMMAND_WORKER_LEASE_PAYLOAD_POLICY",
     "COMMAND_WORKER_LEASE_SCHEMA_VERSION",
     "CommandWorkerLeaseManager",

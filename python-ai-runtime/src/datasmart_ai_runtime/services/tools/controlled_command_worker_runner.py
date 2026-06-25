@@ -13,55 +13,27 @@
 
 from __future__ import annotations
 
-import re
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
-
-COMMAND_WORKER_RECEIPT_SCHEMA_VERSION = "datasmart.python-ai-runtime.controlled-command-worker-runner.v1"
-JAVA_COMMAND_WORKER_RECEIPT_ROUTE_TEMPLATE = (
-    "/internal/agent-runtime/sessions/{session_id}/runs/{run_id}/tool-executions/command-worker-receipts"
-)
-COMMAND_WORKER_RECEIPT_PAYLOAD_POLICY = (
-    "SUMMARY_ONLY_NO_COMMAND_LINE_NO_STDIO_NO_TOOL_ARGUMENTS_NO_PROMPT_NO_SQL_NO_PAYLOAD_BODY"
-)
-
-ALLOW_CONTROLLED_EXECUTION = "ALLOW_CONTROLLED_EXECUTION"
-SAFE_ARTIFACT_REFERENCE_PREFIXES = (
-    "agent-artifact:",
-    "artifact:",
-    "minio-object:",
-    "agent-output:",
-    "command-output:",
-    "task-artifact:",
-)
-SAFE_MACHINE_CODE_PATTERN = re.compile(r"^[A-Z0-9_.:-]{1,120}$")
-SAFE_REFERENCE_PATTERN = re.compile(r"^[a-zA-Z0-9_.:/=@+-]{1,220}$")
-SAFE_FENCING_TOKEN_PATTERN = re.compile(r"^cmd-lease:([1-9][0-9]*):[a-fA-F0-9]{8,64}$")
-SENSITIVE_TEXT_MARKERS = (
-    "select ",
-    "insert ",
-    "update ",
-    "delete ",
-    "authorization:",
-    "bearer ",
-    "password",
-    "secret",
-    "credential",
-    "api_key",
-    "apikey",
-    "prompt:",
-    "commandline",
-    "command line",
-    "stdout",
-    "stderr",
-    "workingdirectory",
-    "workspaceroot",
-    "http://",
-    "https://",
-    "jdbc:",
+from datasmart_ai_runtime.services.tools.controlled_command_worker_contract import (
+    ALLOW_CONTROLLED_EXECUTION,
+    COMMAND_WORKER_RECEIPT_PAYLOAD_POLICY,
+    COMMAND_WORKER_RECEIPT_SCHEMA_VERSION,
+    JAVA_COMMAND_WORKER_RECEIPT_ROUTE_TEMPLATE,
+    _drop_none,
+    _is_safe_artifact_reference,
+    _looks_sensitive,
+    _non_negative_int,
+    _required_text,
+    _safe_fencing_token,
+    _safe_fencing_token_version,
+    _safe_machine_codes,
+    _normalize_machine_code,
+    _safe_recommended_actions,
+    _safe_text,
+    _summary_payload,
 )
 
 
@@ -98,6 +70,9 @@ class ControlledCommandWorkerRunRequest:
     - `run_mode` 表示本次 Python runner 是只做预检、模拟成功、模拟失败还是容量受限；
     - `command_safety_decision/policy_version/issue_codes` 必须来自 Java host 或可信控制面，而不是模型自由生成；
     - `normalized_timeout_seconds/normalized_output_byte_limit_bytes` 只记录裁剪后的预算，不记录真实命令参数；
+    - `sandbox_admission_required` 表示调用方要求进入执行区前必须先回到 Java Host 做 admission；
+    - `requested_isolation_mode/requested_cpu_millicores/requested_memory_mb/workspace_reference` 是未来真实 sandbox runner
+      启动前的控制面输入，当前只作为低敏准入合同提交给 Java，不代表 Python 已经启动进程；
     - `artifact_reference` 只能是受控对象引用，不能是 URL、真实路径、stdout/stderr 正文或业务 payload；
     - `operator_message/recommended_actions` 只允许低敏说明，供 timeline 或运维台展示。
     """
@@ -118,6 +93,11 @@ class ControlledCommandWorkerRunRequest:
     command_safety_issue_codes: tuple[str, ...] = field(default_factory=tuple)
     normalized_timeout_seconds: int = 30
     normalized_output_byte_limit_bytes: int = 4096
+    sandbox_admission_required: bool = False
+    requested_isolation_mode: str = "NO_NETWORK_PROCESS_SANDBOX"
+    requested_cpu_millicores: int = 500
+    requested_memory_mb: int = 512
+    workspace_reference: str | None = None
     worker_lease_required: bool = False
     fencing_token: str | None = None
     worker_lease_version: int | None = None
@@ -166,6 +146,7 @@ class ControlledCommandWorkerRunResult:
     """受控 runner 的完整低敏执行结果。"""
 
     receipt: ControlledCommandWorkerReceipt
+    sandbox_admission_result: Any | None = None
     post_result: Any | None = None
 
     def to_summary(self) -> dict[str, Any]:
@@ -174,6 +155,9 @@ class ControlledCommandWorkerRunResult:
         return {
             "schemaVersion": COMMAND_WORKER_RECEIPT_SCHEMA_VERSION,
             "receipt": self.receipt.to_summary(),
+            "sandboxAdmissionResult": (
+                self.sandbox_admission_result.to_summary() if self.sandbox_admission_result else None
+            ),
             "postResult": self.post_result.to_summary() if self.post_result else None,
         }
 
@@ -255,6 +239,8 @@ class ControlledCommandWorkerRunner:
         self,
         request: ControlledCommandWorkerRunRequest,
         *,
+        sandbox_admission_client: Any | None = None,
+        require_sandbox_admission: bool = False,
         receipt_client: Any | None = None,
         post_to_java: bool = False,
         trace_id: str | None = None,
@@ -263,9 +249,33 @@ class ControlledCommandWorkerRunner:
 
         `post_to_java=False` 是默认值，因为当前 runner 主要用于合同闭环和单元测试。真实 worker 上线时，可以在完成
         worker lease、重试和死信策略后显式打开该开关。
+
+        `require_sandbox_admission=True` 是面向真实/准真实执行区的保护开关。开启后，runner 必须先调用 Java
+        sandbox admission：Java 控制面会复核 lease、安全决策、workspace 和资源预算；如果 admission 未启用、调用失败
+        或返回拒绝，Python 会 fail-closed 生成 `FAILED_PRECHECK` 回执，而不会继续声明副作用已经发生。
         """
 
-        receipt = self.build_receipt(request)
+        effective_request = request
+        sandbox_admission_result = None
+        if self._should_request_sandbox_admission(request, require_sandbox_admission):
+            from datasmart_ai_runtime.services.tools.command_sandbox_admission_client import (
+                JavaCommandSandboxAdmissionClient,
+            )
+
+            client = sandbox_admission_client or JavaCommandSandboxAdmissionClient()
+            sandbox_admission_result = client.request_admission(
+                session_id=request.session_id,
+                run_id=request.run_id,
+                request=request,
+                trace_id=trace_id,
+            )
+            effective_request = self._request_after_sandbox_admission(
+                request,
+                sandbox_admission_result,
+                require_sandbox_admission=require_sandbox_admission,
+            )
+
+        receipt = self.build_receipt(effective_request)
         post_result = None
         if post_to_java:
             from datasmart_ai_runtime.services.tools.command_worker_receipt_client import (
@@ -279,7 +289,71 @@ class ControlledCommandWorkerRunner:
                 receipt=receipt,
                 trace_id=trace_id,
             )
-        return ControlledCommandWorkerRunResult(receipt=receipt, post_result=post_result)
+        return ControlledCommandWorkerRunResult(
+            receipt=receipt,
+            sandbox_admission_result=sandbox_admission_result,
+            post_result=post_result,
+        )
+
+    def _should_request_sandbox_admission(
+        self,
+        request: ControlledCommandWorkerRunRequest,
+        require_sandbox_admission: bool,
+    ) -> bool:
+        """判断本次 runner 是否需要先请求 Java sandbox admission。
+
+        这里没有简单地把所有 `SIMULATED_EXECUTION_*` 都强制接 admission，是为了保持历史单元测试、dry-run、离线学习环境
+        可运行；但一旦调用方显式设置 `sandbox_admission_required` 或 `require_sandbox_admission`，就说明这条链路正在模拟
+        或准备进入真实副作用区域，必须先经过 Java Host 控制面。
+        """
+
+        return bool(require_sandbox_admission or request.sandbox_admission_required)
+
+    def _request_after_sandbox_admission(
+        self,
+        request: ControlledCommandWorkerRunRequest,
+        sandbox_admission_result: Any,
+        *,
+        require_sandbox_admission: bool,
+    ) -> ControlledCommandWorkerRunRequest:
+        """把 Java sandbox admission 的低敏结果折叠回 runner 请求。
+
+        - 准入成功：采用 Java 裁剪后的 timeout/output 预算，避免 Python 侧继续使用过大的本地预算；
+        - 准入失败：不抛弃这次运行事实，而是生成带 issueCode 的失败预检回执，让 Java command outbox 能进入补偿/死信链路；
+        - 客户端未启用且调用方要求 admission：同样 fail-closed，防止生产环境因为少配一个开关就绕过 Host admission。
+        """
+
+        accepted = bool(getattr(sandbox_admission_result, "accepted", False))
+        skipped = bool(getattr(sandbox_admission_result, "skipped", False))
+        if accepted:
+            return replace(
+                request,
+                normalized_timeout_seconds=(
+                    getattr(sandbox_admission_result, "normalized_timeout_seconds", None)
+                    or request.normalized_timeout_seconds
+                ),
+                normalized_output_byte_limit_bytes=(
+                    getattr(sandbox_admission_result, "normalized_output_byte_limit_bytes", None)
+                    or request.normalized_output_byte_limit_bytes
+                ),
+            )
+
+        issue_codes = list(request.command_safety_issue_codes)
+        result_issue_codes = getattr(sandbox_admission_result, "issue_codes", ()) or ()
+        issue_codes.extend(str(code) for code in result_issue_codes)
+        if skipped and require_sandbox_admission:
+            issue_codes.append("SANDBOX_ADMISSION_CLIENT_DISABLED")
+        elif not issue_codes:
+            issue_codes.append("SANDBOX_ADMISSION_DENIED")
+        recommended_actions = tuple(request.recommended_actions) + tuple(
+            getattr(sandbox_admission_result, "recommended_actions", ()) or ()
+        )
+        return replace(
+            request,
+            command_safety_issue_codes=_safe_machine_codes(tuple(dict.fromkeys(issue_codes))),
+            operator_message="Java sandbox admission 未准入，Python worker 未启动命令执行。",
+            recommended_actions=_safe_recommended_actions(recommended_actions),
+        )
 
     def _validate_request_boundary(self, request: ControlledCommandWorkerRunRequest) -> None:
         """验证 runner 请求本身没有越过低敏边界。"""
@@ -402,119 +476,3 @@ class ControlledCommandWorkerRunner:
         if explicit_key:
             return explicit_key
         return f"command-worker:{request.run_id}:{request.command_id}:{outcome.value}:{request.run_mode.value}"
-
-def _drop_none(payload: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in payload.items() if value is not None}
-
-
-def _summary_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """生成诊断摘要时隐藏 fencingToken 明文。
-
-    `java_payload` 本身必须携带 token 才能 POST 给 Java；但 `to_summary()` 常用于日志、测试失败输出或诊断接口，
-    不能把 token 这种写回资格凭证扩散出去。因此摘要里只保留 token 是否存在。
-    """
-
-    result = dict(payload)
-    if result.pop("fencingToken", None):
-        result["fencingTokenPresent"] = True
-    return result
-
-
-def _required_text(value: Any, field_name: str) -> str:
-    text = _safe_text(value, max_length=260)
-    if not text:
-        raise ValueError(f"{field_name} 不能为空")
-    return text
-
-
-def _safe_text(value: Any, *, fallback: str | None = None, max_length: int) -> str | None:
-    if value is None:
-        return fallback
-    text = str(value).strip()
-    if not text:
-        return fallback
-    if _looks_sensitive(text):
-        if fallback is not None:
-            return fallback
-        raise ValueError("低敏文本字段疑似包含命令、输出、SQL、prompt、凭据或内部地址")
-    return text[:max_length]
-
-
-def _safe_recommended_actions(actions: tuple[str, ...]) -> tuple[str, ...]:
-    result: list[str] = []
-    for action in actions[:6]:
-        result.append(_required_safe_action(action))
-    return tuple(result)
-
-
-def _required_safe_action(action: str) -> str:
-    value = _safe_text(action, max_length=240)
-    if not value:
-        raise ValueError("recommended_actions 中不能包含空动作")
-    return value
-
-
-def _safe_machine_codes(codes: tuple[str, ...]) -> tuple[str, ...]:
-    result: list[str] = []
-    for code in codes[:12]:
-        normalized = _normalize_machine_code(code)
-        if not normalized:
-            continue
-        if not SAFE_MACHINE_CODE_PATTERN.fullmatch(normalized):
-            raise ValueError("机器码只能包含大写字母、数字、下划线、点、冒号或短横线")
-        if any(marker in normalized.lower() for marker in ("http", "password", "secret", "token", "credential")):
-            raise ValueError("机器码不能携带 URL、凭据或敏感片段")
-        result.append(normalized)
-    return tuple(result)
-
-
-def _normalize_machine_code(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip().upper()
-    return text or None
-
-
-def _non_negative_int(value: Any) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return 0
-    return max(parsed, 0)
-
-
-def _safe_fencing_token(value: str | None) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if _safe_fencing_token_version(text) is None:
-        raise ValueError("fencing_token 必须使用 cmd-lease:{version}:{digest} 格式")
-    return text
-
-
-def _safe_fencing_token_version(value: str | None) -> int | None:
-    if value is None:
-        return None
-    match = SAFE_FENCING_TOKEN_PATTERN.fullmatch(str(value).strip())
-    return int(match.group(1)) if match else None
-
-
-def _is_safe_artifact_reference(value: str) -> bool:
-    reference = value.strip()
-    lowered = reference.lower()
-    if not lowered.startswith(SAFE_ARTIFACT_REFERENCE_PREFIXES):
-        return False
-    if _looks_sensitive(reference):
-        return False
-    if "://" in lowered or ".." in lowered or "\\" in reference:
-        return False
-    if "{" in reference or "}" in reference or "\n" in reference or "\r" in reference:
-        return False
-    return bool(SAFE_REFERENCE_PATTERN.fullmatch(reference))
-
-
-def _looks_sensitive(value: Any) -> bool:
-    if value is None:
-        return False
-    lowered = str(value).lower()
-    return any(marker in lowered for marker in SENSITIVE_TEXT_MARKERS)

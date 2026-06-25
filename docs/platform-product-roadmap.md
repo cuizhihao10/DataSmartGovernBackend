@@ -1,4 +1,50 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-25 追加落地进展：Python AI Runtime 5.106 Command Sandbox Admission Client
+- 本阶段承接 5.105 的 Java sandbox run admission，不继续扩展 Java admission 字段，也不直接开放真实 shell/容器执行，而是把 Python `ControlledCommandWorkerRunner` 接入 Java Host 准入闸门。
+- 产品目标：
+  - 让 Python worker 在进入模拟/未来真实副作用区前必须先请求 Java sandbox admission；
+  - 将 Java 返回的 timeout/output 预算裁剪结果折叠回 command worker receipt；
+  - 当 admission 客户端未启用、Java 返回拒绝或响应异常时，runner 必须 fail-closed 生成 `FAILED_PRECHECK` 回执，而不是继续声明副作用；
+  - 把公共低敏校验从 runner 中拆出，避免 receipt client、admission client 和未来真实 sandbox runner 各维护一套敏感边界。
+- 新增与调整：
+  - 新增 `controlled_command_worker_contract.py`
+    - 统一承载 `fencingToken`、artifact/workspace 引用、低敏文本、机器码、推荐动作和敏感 marker 的公共校验；
+    - 让 runner、receipt client、sandbox admission client 共用同一套低敏边界。
+  - 新增 `command_sandbox_admission_client.py`
+    - 新增 `JavaCommandSandboxAdmissionClient`、`JavaCommandSandboxAdmissionClientSettings`、`JavaCommandSandboxAdmissionResult`；
+    - POST `/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-sandbox-run-admissions`；
+    - 请求只包含 commandId、executorId、fencingToken、leaseVersion、租户/项目/actor、安全决策、隔离模式、预算和低敏 workspaceReference；
+    - 响应只解析 accepted、decision、sandboxRunId、issue/evidence/recommendedActions、裁剪预算和隔离模式；
+    - 如果 Java 响应声称 `processStarted=true` 或 `rawCommandAccepted=true`，Python 侧会拒绝该响应，避免 admission 与 execution 语义混淆。
+  - 扩展 `ControlledCommandWorkerRunRequest`
+    - 新增 `sandbox_admission_required`、`requested_isolation_mode`、`requested_cpu_millicores`、`requested_memory_mb`、`workspace_reference`；
+    - 字段注释明确这些是未来真实 sandbox runner 的控制面输入，不代表 Python 当前已经启动进程。
+  - 扩展 `ControlledCommandWorkerRunner.run`
+    - 新增 `sandbox_admission_client` 与 `require_sandbox_admission`；
+    - 准入通过时使用 Java 裁剪后的预算生成 receipt；
+    - 准入拒绝或客户端未启用时，把 issueCode 写入 commandSafetyIssueCodes 并生成失败预检回执；
+    - `ControlledCommandWorkerRunResult.to_summary()` 新增 `sandboxAdmissionResult`，但不暴露 fencingToken、内部 baseUrl、命令正文、stdout/stderr 或响应原文。
+  - 更新 `CommandWorkerReceiptClient`
+    - 改为从公共合同文件读取路由常量与低敏工具函数，降低 receipt client 对 runner 的反向耦合。
+  - 更新 Agent 能力矩阵：
+    - `tool.exec-run-program`
+    - `permission.dangerous-path-safe-cmd`
+    - `command.outbox-worker-receipt`
+    - 将“Python runner 调用 Java sandbox admission 并 fail-closed”归入已完成控制面能力；
+    - 剩余缺口收敛为真实沙箱进程/容器执行、真实对象存储 adapter、durable grant store、队列 visibility timeout 自动对齐和任务最终态对账。
+- 低敏边界：
+  - admission 请求与摘要不包含 commandLine、arguments、workingDirectory、真实路径、stdout/stderr、artifact body、SQL、prompt、模型输出、签名 URL、bucket/key、内部 endpoint 或凭据；
+  - `fencingToken` 仅出现在 Python -> Java 的内部请求正文和 Java receipt 写回正文中，`to_summary()` 只记录 token 是否存在；
+  - workspaceReference 只允许 `agent-workspace:`、`workspace:`、`sandbox-workspace:` 这类低敏引用，不允许 URL、本机路径、目录逃逸或凭据片段。
+- 验证：
+  - Python 定向测试：
+    `python -m pytest python-ai-runtime\tests\test_controlled_command_worker_runner.py -q`
+  - 当前结果：11 个用例通过。
+- 当前边界：
+  - 5.106 仍不是真实进程/容器 runner，不执行命令、不启动 shell、不采集 stdout/stderr、不接 MinIO 正文读取；
+  - 下一步应优先做最小真实 sandbox process 外壳或任务最终态对账，不再继续扩展 command admission 字段；
+  - 完成 command durable action 的真实执行闭环后，应切回 data-sync、data-quality、permission-admin 等业务模块做项目整体收敛。
+
 ## 2026-06-24 追加落地进展：Java Agent Runtime 5.105 Command Sandbox Run Admission
 - 本阶段承接 5.104 的 command outbox 死信补偿，不继续扩展补偿字段、artifact 字段或输出预览字段，而是补齐真实 sandbox runner 启动前的 Java Host 准入合同。
 - 产品目标：

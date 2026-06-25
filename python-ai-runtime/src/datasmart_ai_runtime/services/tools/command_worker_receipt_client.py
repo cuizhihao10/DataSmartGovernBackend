@@ -18,12 +18,12 @@ from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.request import Request, urlopen
 
-from datasmart_ai_runtime.services.tools.controlled_command_worker_runner import (
-    ControlledCommandWorkerReceipt,
+from datasmart_ai_runtime.services.tools.controlled_command_worker_contract import (
     JAVA_COMMAND_WORKER_RECEIPT_ROUTE_TEMPLATE,
     _required_text,
     _safe_text,
 )
+from datasmart_ai_runtime.services.tools.controlled_command_worker_runner import ControlledCommandWorkerReceipt
 
 
 @dataclass(frozen=True)

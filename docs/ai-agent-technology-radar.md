@@ -1,4 +1,26 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-25 落地补充：sandbox admission must be called by the runner, not only defined by the host
+
+- 本轮趋势校准：
+  - OpenAI Sandbox Agents 将 agent orchestration、工具执行环境和持久化状态分层；映射到 DataSmart，仅有 Java Host admission API 还不够，Python runner 也必须在进入副作用区前实际调用该 API。
+  - MCP Tools 将工具调用视为 Host 暴露给模型的外部动作；映射到 DataSmart，`tools/call -> command.run-program` 不能只停留在 ToolPlan/readiness 阶段，还要在 worker 侧执行前回到 Host 做 lease、workspace、预算和安全决策复核。
+  - Redis distributed locks 的持有者校验原则继续适用；映射到 DataSmart，Python runner 提交 admission 时必须携带 fencingToken，但摘要和事件只允许记录 token 存在性或 digest，不允许扩散 token 明文。
+- 本轮落地到代码的能力：
+  - 新增 `controlled_command_worker_contract.py`，把 runner、receipt client、admission client 共用的低敏校验规则拆出；
+  - 新增 `command_sandbox_admission_client.py`，用于 Python -> Java `command-sandbox-run-admissions` 调用；
+  - `ControlledCommandWorkerRunRequest` 新增 sandbox admission 所需的低敏 workspace、隔离模式、CPU/内存预算和强制准入开关；
+  - `ControlledCommandWorkerRunner.run()` 新增 `sandbox_admission_client` 与 `require_sandbox_admission`，并在 admission 未启用、失败或拒绝时生成 `FAILED_PRECHECK`；
+  - `CommandWorkerReceiptClient` 改为依赖公共合同文件，降低网络 client 与 runner 的耦合；
+  - 单测覆盖 admission 成功后采用 Java 裁剪预算、admission 拒绝后禁止副作用、客户端未启用时 fail-closed、敏感 workspace 引用在 Python 侧拦截。
+- 产品判断：
+  - 这一步把 Java 5.105 的“准入门框”真正接到 Python 执行链，但仍不是 shell/容器执行；
+  - command durable action 当前已经形成：proposal -> safety precheck -> outbox -> lease/fencing -> sandbox admission -> receipt/output/artifact gates -> dead-letter compensation 的控制面闭环；
+  - 下一步不应继续扩展 admission 字段，应进入最小真实 sandbox process 外壳、真实对象存储 adapter、队列 visibility timeout 和任务最终态对账。
+- 参考资料：
+  - OpenAI Sandbox Agents: `https://developers.openai.com/api/docs/guides/agents/sandboxes`
+  - MCP Tools: `https://modelcontextprotocol.io/specification/draft/server/tools`
+  - Redis Distributed Locks: `https://redis.io/docs/latest/develop/clients/patterns/distributed-locks/`
+
 ## 2026-06-24 落地补充：sandbox execution should start from host admission, not raw process launch
 
 - 本轮趋势校准：
