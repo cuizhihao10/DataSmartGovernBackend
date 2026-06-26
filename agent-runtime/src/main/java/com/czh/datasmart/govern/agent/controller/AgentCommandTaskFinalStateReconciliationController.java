@@ -6,14 +6,20 @@
  */
 package com.czh.datasmart.govern.agent.controller;
 
+import com.czh.datasmart.govern.agent.controller.dto.AgentCommandTaskFinalStateCallbackDispatchRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentCommandTaskFinalStateCallbackDispatchResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentCommandTaskFinalStateReconciliationResponse;
+import com.czh.datasmart.govern.agent.service.runtime.AgentCommandTaskFinalStateCallbackDispatchService;
 import com.czh.datasmart.govern.agent.service.runtime.AgentCommandTaskFinalStateReconciliationService;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventQueryAccessContext;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventQueryAccessContextResolver;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -40,6 +46,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class AgentCommandTaskFinalStateReconciliationController {
 
     private final AgentCommandTaskFinalStateReconciliationService reconciliationService;
+    private final AgentCommandTaskFinalStateCallbackDispatchService callbackDispatchService;
     private final AgentRuntimeEventQueryAccessContextResolver accessContextResolver;
 
     /**
@@ -104,6 +111,52 @@ public class AgentCommandTaskFinalStateReconciliationController {
                         limit,
                         accessContext
                 ),
+                traceId
+        );
+    }
+
+    /**
+     * 投递某个 command 的最终态回调。
+     *
+     * <p>该接口是 5.108 “只读对账建议”之后的第一条受控写入桥。
+     * 它不会绕过 task-management 直接改表，也不会读取工具输出或 artifact 正文；
+     * 服务层会先重新调用对账服务，只有在 receipt 足以给出 callbackSuggestion、且 taskId/taskRunId/executorId
+     * 等执行器协议字段齐备时，才会把建议映射到 task-management 的 complete/fail/defer/progress 回调。</p>
+     *
+     * <p>请求体默认 dryRun=true，意味着调用方第一次接入时只会看到“如果投递会怎样”，不会实际写任务状态。
+     * 如果要真实投递，必须显式传 dryRun=false。这样可以降低运维台、脚本或未来自动补偿 worker 配置错误时
+     * 批量推进任务状态的风险。</p>
+     *
+     * @param request command、收口条件和投递策略。
+     * @param traceId 链路追踪 ID。
+     * @param currentTenantId gateway 透传的当前租户。
+     * @param currentActorId gateway 透传的当前 actor。
+     * @param currentActorRole gateway 透传的角色。
+     * @param dataScopeLevel permission-admin 物化出的数据范围。
+     * @param authorizedProjectIds permission-admin 物化出的授权项目集合。
+     * @return 最终态对账结果和低敏投递结果。
+     */
+    @PostMapping("/final-state-callback-dispatches")
+    public PlatformApiResponse<AgentCommandTaskFinalStateCallbackDispatchResponse> dispatchFinalStateCallback(
+            @Valid @RequestBody AgentCommandTaskFinalStateCallbackDispatchRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) String currentTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String currentActorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String currentActorRole,
+            @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false)
+            String authorizedProjectIds) {
+        AgentRuntimeEventQueryAccessContext accessContext = accessContextResolver.resolve(
+                currentTenantId,
+                currentActorId,
+                currentActorRole,
+                traceId,
+                dataScopeLevel,
+                authorizedProjectIds
+        );
+        return PlatformApiResponse.success(
+                "命令任务最终态回调投递请求已处理",
+                callbackDispatchService.dispatch(request, accessContext, traceId),
                 traceId
         );
     }

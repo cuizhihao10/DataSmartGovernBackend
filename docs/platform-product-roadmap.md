@@ -1,4 +1,55 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-27 追加落地进展：Java Agent Runtime 5.113 Command Task Final-State Callback Dispatch
+- 本阶段承接 5.108 的 command task final-state reconciliation 与 5.112 的 Agent 执行安全收口要求，不继续扩展 command runner、artifact 预览、grant 字段或对象存储响应，而是把“只读最终态建议”推进为“受控写回 task-management 的回调桥”。
+- 产品目标：
+  - 让 Agent command worker receipt 可以通过低敏对账建议，安全映射到 task-management 已有执行器回调协议；
+  - 保持跨服务边界清晰：agent-runtime 不跨库改 task 表，只调用 task-management 的 `complete/fail/defer/progress` HTTP 契约；
+  - 默认 `dryRun=true`，首次接入只展示“如果投递会怎样”，避免运维台、脚本或未来自动 worker 配置错误时批量推进任务状态；
+  - 每次真实投递前重新执行 reconciliation，避免旧 receipt、旧建议或重放请求直接改任务；
+  - 缺少 `taskId/taskRunId/executorId/idempotencyKey` 时 fail-closed，不根据 commandId 猜测租约；
+  - 响应不返回 task-management baseUrl、内部 endpoint、命令正文、stdout/stderr、artifact 正文、SQL、prompt、工具参数、样本数据、模型输出、凭据或 token。
+- 新增与调整：
+  - 新增 `AgentCommandTaskFinalStateCallbackDispatchRequest`
+    - 承载 commandId、租户/项目/actor/run/session 收口条件、dry-run 策略、非终态 progress 开关和 defer 延迟秒数；
+    - 注释明确这些字段只能缩小 Header 可信范围，不能扩大权限。
+  - 新增 `AgentCommandTaskFinalStateCallbackDispatchResponse`
+    - 同时返回本次 reconciliation 与投递层状态；
+    - `targetOperation` 只暴露低敏操作名，不暴露 URL 或内部路径。
+  - 新增 `AgentCommandTaskFinalStateCallbackDispatchService`
+    - 将 `SUCCEEDED` 映射为 task complete；
+    - 将 `FAILED` 映射为 task fail；
+    - 将 `DEFERRED` 映射为 task defer；
+    - 将 `RUNNING` 仅在调用方显式开启 `includeNonTerminalProgressCallback=true` 时映射为 progress；
+    - 通过 `datasmart.agent-runtime.tool-service-base-urls.task-management` 找到 task-management，但响应和错误不回显内部地址；
+    - 透传低敏平台上下文 Header：tenant、project scope、traceId、service account actor role；
+    - 对下游 message 做敏感词过滤和长度裁剪，避免 URL、token、SQL、prompt、stdout/stderr 等内容外泄。
+  - 扩展 `AgentCommandTaskFinalStateReconciliationController`
+    - 新增 `POST /agent-runtime/async-task-commands/final-state-callback-dispatches`；
+    - 新增 `POST /api/agent/async-task-commands/final-state-callback-dispatches`；
+    - 路由注释说明该入口是受控补偿桥，不是普通用户手动改任务状态的后门。
+  - 更新 Agent 能力矩阵
+    - 将 `tool.exec-run-program`、`permission.dangerous-path-safe-cmd`、`command.outbox-worker-receipt` 从“只有只读对账”更新为“已有只读对账 + 默认 dry-run 的受控 callback dispatch 入口”；
+    - 剩余缺口从“自动终态回调 worker”细化为“持久化 dispatch history/outbox、自动调度型 worker、服务账号签名或短 token、队列 visibility timeout 自动对齐”。
+- 验证：
+  - Java 定向测试：
+    `mvn -pl agent-runtime -am "-Dtest=AgentCommandTaskFinalStateCallbackDispatchServiceTest,AgentCommandTaskFinalStateReconciliationServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：10 个测试通过，Maven Toolchain 使用 JDK 21。
+  - Python 能力矩阵测试：
+    `python -m pytest python-ai-runtime\tests\test_agent_capability_matrix.py -q`
+  - 当前结果：4 个测试通过。
+  - Java agent-runtime 全量测试：
+    `mvn -pl agent-runtime -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：412 个测试通过。
+- 当前边界：
+  - 5.113 不是后台自动补偿 worker，不会扫描所有 command，也没有新增 agent-runtime 自有 dispatch history 表；
+  - 真实写回仍依赖 task-management 对 runId、executorId、idempotencyKey 和任务状态的校验；
+  - 生产级自动闭环还需要服务账号签名或短 token、持久化投递历史、失败重试、死信告警和调度租约；
+  - Agent command 子链路已经具备“受控执行、低敏 receipt、只读对账、显式写回桥”的阶段性闭环，不建议继续在 command/artifact 局部无限扩展。
+- 下一步建议：
+  1. 若继续 Agent-task 闭环，优先补 task-management 回调服务账号签名/短 token 与 durable dispatch history/outbox，再做自动 worker；
+  2. 若按全项目收敛，建议转入 data-sync 或 data-quality 的真实业务任务闭环，让数据治理主流程与 task-management、agent-runtime 打通；
+  3. 若继续执行安全主线，再进入容器/namespace/cgroup/seccomp 级 sandbox 替换 host-local runner，不再继续扩展 DTO 字段。
+
 ## 2026-06-27 追加落地进展：Java Agent Runtime 5.112 Artifact Body Read Grant MySQL Store 与管理闭环
 - 本阶段承接 5.111 的服务端 grant fact，不继续扩展 artifact 下载、预览字段或对象存储响应，而是把 grant fact 从单实例 memory 推进到可选 MySQL 持久化，并补齐低敏管理查询与撤销入口。
 - 产品目标：
