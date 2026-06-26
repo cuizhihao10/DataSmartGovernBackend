@@ -79,6 +79,39 @@ datasmart:
       # 安全边界：fencingToken 只允许存在于内部 store、claim 响应和 receipt 请求中，
       # 不能进入 runtime event、timeline、日志、Prometheus label、工具结果、prompt、SQL 或 artifact 正文。
       store: ${DATASMART_AGENT_RUNTIME_COMMAND_WORKER_LEASE_STORE:memory}
+    artifact-object-store:
+      minio:
+        # 真实 MinIO/S3-compatible artifact 探针 adapter。
+        # 默认关闭，关闭时由 DisabledAgentToolActionArtifactObjectStoreClient 返回 fail-safe 不可用结果；
+        # 这样本地学习环境不需要配置 MinIO 凭据，也不会误把 artifact 下载能力标记为完成。
+        # 生产或联调开启前必须确认：bucket 已创建、账号只有最小只读权限、artifactReference 已按服务端规则物化、
+        # durable grant store、DLP/恶意内容扫描、下载审计、限速和保留期策略已有明确路线。
+        enabled: ${DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_ENABLED:false}
+        # MinIO/S3-compatible endpoint。该值属于内部基础设施定位信息，不能进入 API 响应、runtime event 或日志。
+        endpoint: ${DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_ENDPOINT:http://localhost:9000}
+        # artifact 默认 bucket。调用方不能提交 bucket/key，真实 objectName 由服务端 locator 按低敏引用映射生成。
+        bucket: ${DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_BUCKET:datasmart-agent-artifacts}
+        # 访问凭据必须通过环境变量、Nacos、K8s Secret 或企业密钥系统注入，不要把生产明文写入本文件。
+        access-key: ${DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_ACCESS_KEY:}
+        secret-key: ${DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_SECRET_KEY:}
+        # 部分 S3-compatible 网关需要 region；本地 MinIO 通常留空即可。
+        region: ${DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_REGION:}
+        # 所有 Agent artifact objectName 的根前缀，便于生命周期、归档、清理和审计统一治理。
+        object-key-root-prefix: ${DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_OBJECT_ROOT_PREFIX:agent-runtime/artifacts}
+        # Adapter 单次最多读取的 sample 字节数。Host probe service 仍会施加 64KB 硬上限；
+        # 这里是 adapter 自己的额外保护，避免未来绕过 Host service 直接复用 adapter 时读入过大对象。
+        max-probe-bytes: ${DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_MAX_PROBE_BYTES:65536}
+        # 对象长度软上限。超过后不阻断存在性探针，但会返回低敏 issueCode，提醒不要把大对象当作模型上下文。
+        soft-max-object-bytes: ${DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_SOFT_MAX_OBJECT_BYTES:52428800}
+        # 低敏 artifactReference 前缀到 objectName 子目录的服务端映射。
+        # 这些值不是 bucket/key 明文，而是受控命名空间规则；调用方只提交左侧前缀对应的 artifactReference。
+        reference-prefix-object-key-prefixes:
+          "agent-artifact:": agent-artifact
+          "artifact:": artifact
+          "artifact-ref:": artifact-ref
+          "command-output:": command-output
+          "task-artifact:": task-artifact
+          "minio-object:": minio-object
     tool-action-resume-facts:
       # checkpoint/thread 恢复定位索引的承载介质。
       # memory：默认值，适合本地学习、单元测试和单实例联调，不要求 MySQL；

@@ -55,6 +55,15 @@
             <groupId>com.zaxxer</groupId>
             <artifactId>HikariCP</artifactId>
         </dependency>
+        <!--
+            MinIO Java SDK 只在 agent-runtime 的 artifact 对象存储 adapter 中使用。
+            业务层继续依赖 AgentToolActionArtifactObjectStoreClient 抽象，不直接依赖 MinIO SDK，
+            这样后续切换 S3-compatible、私有云 OSS 或带 DLP 网关的 artifact service 时不会重构授权链路。
+        -->
+        <dependency>
+            <groupId>io.minio</groupId>
+            <artifactId>minio</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.alibaba.cloud</groupId>
             <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>

@@ -1,4 +1,43 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-26 追加落地进展：Java Agent Runtime 5.110 Configurable MinIO Artifact Probe Adapter
+- 本阶段承接 5.109 的 object-store probe 抽象，不继续扩展 artifact HTTP DTO 字段，而是把默认禁用 adapter 推进为可配置 MinIO/S3-compatible adapter。
+- 产品目标：
+  - 默认保持 `datasmart.agent-runtime.artifact-object-store.minio.enabled=false`，未配置 MinIO 时继续 fail-safe；
+  - 启用后由服务端将低敏 `artifactReference` 映射成内部 objectName，调用方仍不能提交 bucket/key、URL 或真实路径；
+  - 通过 MinIO Java SDK `statObject` 获取对象长度/类型，再通过受限 `getObject` sample 读取确认对象可用；
+  - 响应仍只返回对象可用性、长度、类型、sample 指纹和低敏证据码，不返回 sample 字节、完整正文、签名 URL、bucket/key、endpoint 或凭据。
+- 新增与调整：
+  - `agent-runtime/pom.xml` 新增 `io.minio:minio` 依赖，依赖版本继续由父 POM 统一管理；
+  - 新增 `AgentArtifactObjectStoreMinioProperties`
+    - 配置 endpoint、bucket、accessKey、secretKey、region、objectKeyRootPrefix、引用前缀映射、maxProbeBytes 和 softMaxObjectBytes；
+    - 注释明确生产凭据必须走环境变量、配置中心或密钥系统，不允许写入仓库明文。
+  - 新增 `AgentToolActionArtifactMinioObjectLocator`
+    - 将 `agent-artifact:`、`command-output:` 等低敏引用映射到内部 objectName；
+    - 拒绝 URL、本机路径、路径逃逸、bucket/key 明文和未知前缀。
+  - 新增 `MinioAgentToolActionArtifactObjectStoreClient`
+    - 仅在 `artifact-object-store.minio.enabled=true` 时注册；
+    - 使用 `statObject/getObject` 做服务端探针；
+    - 将 MinIO 错误转换成低敏 issueCode，不把 endpoint、bucket、objectName 或 SDK 原始异常透出。
+  - `application.yml` 新增默认关闭的 `artifact-object-store.minio` 配置块和详细中文说明。
+  - `AgentRuntimeApplication` 注册新的配置属性类。
+  - 新增 `AgentToolActionArtifactMinioObjectLocatorTest`
+    - 覆盖受控引用映射、最长前缀匹配、路径逃逸/URL/Windows 路径拒绝、未知前缀拒绝。
+  - 更新 Agent 能力矩阵：
+    - 将对象存储能力从“只有抽象和禁用 adapter”推进为“已有可配置 MinIO/S3-compatible 探针 adapter”；
+    - 剩余缺口收敛为 durable grant store、对象级 DLP/恶意内容扫描、下载审计、限速、保留期和自动终态回调。
+- 低敏边界：
+  - objectName 只在 adapter 内部短生命周期使用，不写入响应、事件、日志、投影或模型上下文；
+  - `accessKey/secretKey/endpoint/bucket` 只用于 SDK builder 和内部调用，不进入异常文本或响应；
+  - MinIO adapter 返回 `object-version-sha256:*` 指纹，不返回原始 etag、versionId 或对象定位信息。
+- 验证：
+  - Java 定向测试：
+    `mvn -pl agent-runtime -am "-Dtest=AgentToolActionArtifactMinioObjectLocatorTest,AgentToolActionArtifactObjectStoreProbeServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：9 个用例通过。
+- 当前边界：
+  - 5.110 仍不是完整 artifact 下载闭环；它只实现服务端探针 adapter；
+  - 尚未完成 durable grant store、对象级 DLP/恶意内容扫描、下载审计、限速、保留期策略和真实下载/预览服务；
+  - 下一步建议优先做 durable grant store 或切向容器级 sandbox/自动终态回调 worker，避免继续在 artifact DTO 上发散。
+
 ## 2026-06-26 追加落地进展：Java Agent Runtime 5.109 Artifact Object Store Probe Adapter
 - 本阶段承接 5.108 的 command task final-state reconciliation，不继续扩展 command runner、artifact 预览字段或任务对账字段，而是补齐 artifact 读取链路里“对象存储 adapter 可安全接入”的最小底座。
 - 产品目标：

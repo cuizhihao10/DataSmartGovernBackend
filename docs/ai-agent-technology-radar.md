@@ -1,4 +1,25 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-26 落地补充：real artifact storage adapters must stay behind host-controlled locators
+
+- 本轮趋势校准：
+  - MinIO Java SDK 的 `statObject/getObject` 足以支撑对象元数据探测与小范围读取；映射到 DataSmart，真实 SDK 能力应隐藏在 Host adapter 后面，而不是暴露给模型、前端或工具调用方。
+  - S3-compatible 对象存储的安全重点不是“能 get object”，而是“谁能决定 bucket/key、读取范围、版本、保留期和下载审计”；映射到 DataSmart，bucket/key 必须由服务端 locator 根据低敏 artifactReference 生成。
+  - Agent 工具结果引用化趋势继续成立：工具结果正文应进入 artifact store，控制面只处理引用、权限、指纹、长度和短预览。
+- 本轮落地到代码的能力：
+  - 新增 `AgentArtifactObjectStoreMinioProperties`，默认关闭真实 adapter，并配置 endpoint/bucket/引用映射/sample 上限；
+  - 新增 `AgentToolActionArtifactMinioObjectLocator`，把低敏 artifactReference 映射为内部 objectName，并拒绝 URL、路径逃逸和 bucket/key 明文；
+  - 新增 `MinioAgentToolActionArtifactObjectStoreClient`，启用后使用 MinIO SDK `statObject/getObject` 做服务端探针；
+  - 将 MinIO 错误转换为低敏 issueCode，不暴露 endpoint、bucket、objectName、accessKey、secretKey 或 SDK 原始异常；
+  - 新增 locator 测试，保护引用映射和危险路径拒绝。
+- 产品判断：
+  - 这一步把对象存储 adapter 从“可替换接口”推进到“可配置 MinIO/S3-compatible 探针实现”；
+  - 它仍不是下载服务，不应继续加“返回正文/签 URL”字段；
+  - 接下来更重要的是 durable grant store、DLP/恶意内容扫描、下载审计和限速，而不是扩大 HTTP 响应。
+- 参考资料：
+  - MinIO Java Client API: `https://docs.min.io/aistor/developers/sdk/java/api/`
+  - MinIO Java SDK GitHub: `https://github.com/minio/minio-java`
+  - AWS S3 GetObject API: `https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObject.html`
+
 ## 2026-06-26 落地补充：artifact body access should start with a bounded object-store probe
 
 - 本轮趋势校准：
