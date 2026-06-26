@@ -30,7 +30,6 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 import java.util.Locale;
-import java.util.Set;
 
 /**
  * 同步执行生命周期支撑组件。
@@ -38,16 +37,13 @@ import java.util.Set;
  * <p>执行器回调是数据同步最容易变复杂的区域：它会同时改 execution、task、checkpoint、错误样本和审计。
  * 如果直接堆进 DataSyncServiceImpl，服务实现很快会超过 500 行，并且很难看清每个状态流转的业务意图。
  *
- * <p>当前先提供 start、checkpoint、complete、fail 四个入口，后续再扩展 defer、heartbeat、lease、pause、resume。
+ * <p>当前提供 start、checkpoint、complete、fail 四个入口。
+ * heartbeat/lease 已拆到 `DataSyncExecutorLeaseServiceImpl`，暂停/取消后的回调控制信号则委托
+ * {@link SyncExecutionCallbackControlSignalSupport} 处理，避免本类继续膨胀成状态机大杂烩。
  */
 @Component
 @RequiredArgsConstructor
 public class SyncExecutionLifecycleSupport {
-
-    private static final Set<String> ACTIVE_EXECUTION_STATES = Set.of(
-            SyncExecutionState.RUNNING.name(),
-            SyncExecutionState.RETRYING.name()
-    );
 
     private final SyncExecutionMapper executionMapper;
     private final SyncTaskMapper taskMapper;
@@ -55,6 +51,7 @@ public class SyncExecutionLifecycleSupport {
     private final SyncErrorSampleMapper errorSampleMapper;
     private final SyncAuditSupport auditSupport;
     private final SyncCallbackIdempotencySupport idempotencySupport;
+    private final SyncExecutionCallbackControlSignalSupport callbackControlSignalSupport;
 
     /**
      * 启动执行记录。
@@ -95,13 +92,13 @@ public class SyncExecutionLifecycleSupport {
                                           SyncActorContext actorContext) {
         String action = "CHECKPOINT";
         String scopeKey = executionScope(task, execution);
+        callbackControlSignalSupport.assertNoStoppedControlSignal(execution, request.getExecutorId(), action);
         if (idempotencySupport.isDuplicate(task.getTenantId(), task.getId(), execution.getId(), action, scopeKey,
                 request.getIdempotencyKey(), request.getExecutorId(),
                 "checkpoint,type=" + request.getCheckpointType() + ",partition=" + request.getShardOrPartition())) {
             return latestCheckpoint(execution.getId());
         }
-        requireActiveExecution(execution);
-        requireExecutor(execution, request.getExecutorId());
+        callbackControlSignalSupport.assertActiveCallbackAllowed(execution, request.getExecutorId(), action);
         SyncCheckpoint checkpoint = new SyncCheckpoint();
         checkpoint.setTenantId(task.getTenantId());
         checkpoint.setProjectId(task.getProjectId());
@@ -139,13 +136,13 @@ public class SyncExecutionLifecycleSupport {
                                            SyncActorContext actorContext) {
         String action = "COMPLETE";
         String scopeKey = executionScope(task, execution);
+        callbackControlSignalSupport.assertNoStoppedControlSignal(execution, request.getExecutorId(), action);
         if (idempotencySupport.isDuplicate(task.getTenantId(), task.getId(), execution.getId(), action, scopeKey,
                 request.getIdempotencyKey(), request.getExecutorId(),
                 "complete,recordsRead=" + request.getRecordsRead() + ",recordsWritten=" + request.getRecordsWritten())) {
             return executionMapper.selectById(execution.getId());
         }
-        requireActiveExecution(execution);
-        requireExecutor(execution, request.getExecutorId());
+        callbackControlSignalSupport.assertActiveCallbackAllowed(execution, request.getExecutorId(), action);
         execution.setExecutionState(SyncExecutionState.SUCCEEDED.name());
         execution.setRecordsRead(safeLong(request.getRecordsRead()));
         execution.setRecordsWritten(safeLong(request.getRecordsWritten()));
@@ -174,15 +171,13 @@ public class SyncExecutionLifecycleSupport {
                                          SyncActorContext actorContext) {
         String action = "FAIL";
         String scopeKey = executionScope(task, execution);
+        callbackControlSignalSupport.assertNoStoppedControlSignal(execution, request.getExecutorId(), action);
         if (idempotencySupport.isDuplicate(task.getTenantId(), task.getId(), execution.getId(), action, scopeKey,
                 request.getIdempotencyKey(), request.getExecutorId(),
                 "fail,errorType=" + request.getErrorType() + ",errorCode=" + request.getErrorCode())) {
             return latestErrorSample(execution.getId());
         }
-        if (!SyncExecutionState.QUEUED.name().equals(execution.getExecutionState())) {
-            requireActiveExecution(execution);
-            requireExecutor(execution, request.getExecutorId());
-        }
+        callbackControlSignalSupport.assertFailureCallbackAllowed(execution, request.getExecutorId());
         SyncErrorSample errorSample = new SyncErrorSample();
         errorSample.setTenantId(task.getTenantId());
         errorSample.setProjectId(task.getProjectId());
@@ -258,24 +253,10 @@ public class SyncExecutionLifecycleSupport {
         return errorSample;
     }
 
-    private void requireActiveExecution(SyncExecution execution) {
-        if (!ACTIVE_EXECUTION_STATES.contains(execution.getExecutionState())) {
-            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
-                    "当前执行状态不允许写入执行结果: " + execution.getExecutionState());
-        }
-    }
-
     private void requireState(SyncExecution execution, String expectedState, String message) {
         if (!expectedState.equals(execution.getExecutionState())) {
             throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
                     message + "，当前状态=" + execution.getExecutionState());
-        }
-    }
-
-    private void requireExecutor(SyncExecution execution, String executorId) {
-        if (executorId == null || executorId.isBlank() || !executorId.trim().equals(execution.getExecutorId())) {
-            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
-                    "执行器 ID 不匹配，不能写入该执行记录，expected=" + execution.getExecutorId());
         }
     }
 

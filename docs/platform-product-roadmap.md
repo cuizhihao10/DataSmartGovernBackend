@@ -1,4 +1,53 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-27 追加落地进展：Java Data Sync 6.3 Callback Stop-Signal Guard
+- 本阶段承接 Data Sync 6.2 的 heartbeat 控制信号，不继续新增按钮、连接器或执行引擎，而是补齐 `checkpoint/complete/fail` 在暂停/取消后的防写入语义。
+- 产品目标：
+  - worker 在收到或错过 heartbeat 停止信号后，如果又提交最后一次 checkpoint、complete 或 fail，服务端仍能 fail-closed；
+  - 暂停后不允许继续写 checkpoint，避免用户以为任务已暂停但断点仍推进；
+  - 取消后不允许 complete 把 execution 推成 `SUCCEEDED`，避免终态和用户意图冲突；
+  - 暂停/取消后不允许 fail 写错误样本，避免已停止任务被误推入失败告警或人工介入；
+  - executorId 不匹配时不泄露 `PAUSED/CANCELLED` 控制动作，避免通过 executionId 猜测状态。
+- 新增与调整：
+  - 新增 `SyncExecutionCallbackControlSignalSupport`
+    - 集中处理 checkpoint/complete/fail 写入前的控制面停止信号；
+    - `PAUSED` 且 executor 匹配时抛出低敏业务异常，消息包含 `controlAction=STOP_FOR_PAUSE` 与 `shouldContinue=false`；
+    - `CANCELLED` 且 executor 匹配时抛出低敏业务异常，消息包含 `controlAction=STOP_FOR_CANCEL` 与 `shouldContinue=false`；
+    - executor 不匹配时只返回 `FORBIDDEN`，不透露当前执行是否暂停或取消；
+    - 保留既有 QUEUED fail 语义，支持执行前预检失败。
+  - 调整 `SyncExecutionLifecycleSupport`
+    - checkpoint/complete/fail 在幂等登记前先检查停止信号，避免重复 idempotencyKey 返回旧结果而吞掉最新暂停/取消；
+    - checkpoint/complete 的活跃状态与 executor 校验委托给新支撑组件；
+    - fail 的 QUEUED 特例与 RUNNING/RETRYING 校验也委托给新支撑组件；
+    - 删除本类内部重复的 active-state/executor 校验，降低生命周期组件膨胀风险。
+- 测试变化：
+  - 新增 `SyncExecutionCallbackControlSignalSupportTest`
+    - 覆盖 `PAUSED -> STOP_FOR_PAUSE`；
+    - 覆盖 `CANCELLED -> STOP_FOR_CANCEL`；
+    - 覆盖 executorId 不匹配时不泄露控制动作；
+    - 覆盖 RUNNING owner 可以写活跃回调；
+    - 覆盖 QUEUED 可以写 fail；
+    - 覆盖 SUCCEEDED 不能再写 complete。
+  - 新增 `SyncExecutionLifecycleSupportCallbackControlTest`
+    - 覆盖 PAUSED 后 checkpoint 在幂等登记和插入 checkpoint 前停止；
+    - 覆盖 CANCELLED 后 complete 不更新 execution/task；
+    - 覆盖 PAUSED 后 fail 不插入 error sample、不更新 execution/task。
+- 验证：
+  - Java 定向测试：
+    `mvn -pl data-sync -am "-Dtest=SyncExecutionCallbackControlSignalSupportTest,SyncExecutionLifecycleSupportCallbackControlTest,DataSyncExecutorLeaseServiceImplHeartbeatControlTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：14 个测试通过。
+  - Java data-sync 全量测试：
+    `mvn -pl data-sync -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：42 个测试通过，Maven Toolchain 使用 JDK 21。
+- 当前边界：
+  - 本阶段不改变 checkpoint/complete/fail 的成功返回类型，避免在收敛阶段做大范围 API 破坏；
+  - 暂停/取消场景通过统一业务异常表达低敏控制动作，真实 worker SDK 仍需按该消息或错误码停止本地执行；
+  - 仍未实现 replay/backfill、批量暂停、连接器维护模式或管理员强制终止；
+  - data-sync 执行控制链路已具备“生命周期控制 + heartbeat 感知 + 回调防写入”的阶段性闭环。
+- 下一步建议：
+  1. data-sync 若继续收敛，建议进入 replay/backfill 与 checkpoint 读取契约，补齐失败恢复闭环；
+  2. 若避免 data-sync 继续过深，则切到 data-quality 的规则/报告闭环或 permission-admin 的管理闭环；
+  3. worker SDK 层后续需要统一解析 heartbeat DTO 与回调业务异常，把停止动作落到真实执行器。
+
 ## 2026-06-27 追加落地进展：Java Data Sync 6.2 Executor Heartbeat Control Signal
 - 本阶段承接 Data Sync 6.1 的任务生命周期控制面，不继续扩大新按钮或连接器范围，而是补齐“控制台暂停/取消能被 worker 心跳感知”的执行面闭环。
 - 产品目标：
