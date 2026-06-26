@@ -84,6 +84,7 @@ public class AgentToolActionArtifactBodyReadGrantService {
     );
 
     private final AgentToolActionArtifactAccessAuthorizationService metadataAuthorizationService;
+    private final AgentToolActionArtifactBodyReadGrantRecordService grantRecordService;
 
     /**
      * 创建正文读取授权决策。
@@ -138,12 +139,14 @@ public class AgentToolActionArtifactBodyReadGrantService {
             return deniedUnsupportedRequester(metadataDecision, readPurpose, contentMode, maxReadableBytes);
         }
 
-        Long expiresAt = Instant.now().plus(DEFAULT_GRANT_TTL).toEpochMilli();
+        long issuedAt = Instant.now().toEpochMilli();
+        Long expiresAt = issuedAt + DEFAULT_GRANT_TTL.toMillis();
         List<String> evidenceCodes = new ArrayList<>(metadataDecision.evidenceCodes());
         evidenceCodes.add("ARTIFACT_METADATA_AUTHORIZED");
         evidenceCodes.add("READ_PURPOSE_ALLOWED");
         evidenceCodes.add("CONTENT_MODE_ALLOWED");
         evidenceCodes.add("REQUESTER_COMPONENT_ALLOWED");
+        evidenceCodes.add("BODY_READ_GRANT_RECORD_STORED");
         evidenceCodes.add("BODY_NOT_RETURNED");
         evidenceCodes.add("SIGNED_URL_NOT_ISSUED");
         evidenceCodes.add("BEARER_TOKEN_NOT_ISSUED");
@@ -152,7 +155,7 @@ public class AgentToolActionArtifactBodyReadGrantService {
             evidenceCodes.add("MAX_READABLE_BYTES_CAPPED_TO_HARD_LIMIT");
         }
 
-        return response(
+        AgentToolActionArtifactBodyReadGrantResponse response = response(
                 true,
                 "BODY_READ_GRANT_DECISION_RECORDED_OBJECT_STORE_AUTHORIZATION_REQUIRED",
                 metadataDecision,
@@ -169,6 +172,8 @@ public class AgentToolActionArtifactBodyReadGrantService {
                         "如果后续需要用户直接下载，应由对象存储服务在最终授权后生成短时 URL，并单独记录下载审计。"
                 )
         );
+        grantRecordService.recordGrantedDecision(response, issuedAt);
+        return response;
     }
 
     /**

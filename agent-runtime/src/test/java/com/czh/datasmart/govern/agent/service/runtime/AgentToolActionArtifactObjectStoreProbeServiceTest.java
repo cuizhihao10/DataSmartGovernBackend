@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -47,10 +48,12 @@ class AgentToolActionArtifactObjectStoreProbeServiceTest {
     void shouldProbeObjectStoreAfterGrantWithoutReturningSampleBody() throws JsonProcessingException {
         InMemoryAgentRuntimeEventProjectionStore projectionStore =
                 new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        InMemoryAgentToolActionArtifactBodyReadGrantStore grantStore = grantStore();
         appendSuccessfulCommandWorkerReceipt(projectionStore);
-        AgentToolActionArtifactBodyReadGrantResponse grant = issueGrant(projectionStore);
+        AgentToolActionArtifactBodyReadGrantResponse grant = issueGrant(projectionStore, grantStore);
         AgentToolActionArtifactObjectStoreProbeService service =
-                probeService(projectionStore, inMemoryClient("质量报告预览：password=should-never-leak".getBytes(StandardCharsets.UTF_8)));
+                probeService(projectionStore, grantStore,
+                        inMemoryClient("质量报告预览：password=should-never-leak".getBytes(StandardCharsets.UTF_8)));
 
         AgentToolActionArtifactObjectStoreProbeResponse response = service.probe(
                 probeRequest(grant.grantDecisionReference(), 4096),
@@ -87,10 +90,11 @@ class AgentToolActionArtifactObjectStoreProbeServiceTest {
     void shouldReturnUnavailableWhenDefaultObjectStoreClientIsDisabled() {
         InMemoryAgentRuntimeEventProjectionStore projectionStore =
                 new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        InMemoryAgentToolActionArtifactBodyReadGrantStore grantStore = grantStore();
         appendSuccessfulCommandWorkerReceipt(projectionStore);
-        AgentToolActionArtifactBodyReadGrantResponse grant = issueGrant(projectionStore);
+        AgentToolActionArtifactBodyReadGrantResponse grant = issueGrant(projectionStore, grantStore);
         AgentToolActionArtifactObjectStoreProbeService service =
-                probeService(projectionStore, new DisabledAgentToolActionArtifactObjectStoreClient());
+                probeService(projectionStore, grantStore, new DisabledAgentToolActionArtifactObjectStoreClient());
 
         AgentToolActionArtifactObjectStoreProbeResponse response = service.probe(
                 probeRequest(grant.grantDecisionReference(), 4096),
@@ -109,21 +113,47 @@ class AgentToolActionArtifactObjectStoreProbeServiceTest {
     @Test
     void shouldRejectMalformedGrantReferenceBeforeCallingAdapter() {
         AgentToolActionArtifactObjectStoreProbeService service =
-                probeService(new InMemoryAgentRuntimeEventProjectionStore(10, 100), inMemoryClient("safe".getBytes(StandardCharsets.UTF_8)));
+                probeService(new InMemoryAgentRuntimeEventProjectionStore(10, 100), grantStore(),
+                        inMemoryClient("safe".getBytes(StandardCharsets.UTF_8)));
 
         assertThrows(PlatformBusinessException.class,
                 () -> service.probe(probeRequest("not-a-grant-reference", 4096), projectOwnerContext(List.of(20L))));
     }
 
     @Test
+    void shouldDenyUnstoredGrantReferenceBeforeCallingAdapter() {
+        InMemoryAgentRuntimeEventProjectionStore projectionStore =
+                new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        InMemoryAgentToolActionArtifactBodyReadGrantStore grantStore = grantStore();
+        appendSuccessfulCommandWorkerReceipt(projectionStore);
+        AtomicBoolean adapterCalled = new AtomicBoolean(false);
+        AgentToolActionArtifactObjectStoreProbeService service = probeService(projectionStore, grantStore, command -> {
+            adapterCalled.set(true);
+            return inMemoryClient("safe".getBytes(StandardCharsets.UTF_8)).probe(command);
+        });
+
+        AgentToolActionArtifactObjectStoreProbeResponse response = service.probe(
+                probeRequest("artifact-body-grant-decision:sha256:abcdefabcdefabcdefabcdef", 4096),
+                projectOwnerContext(List.of(20L))
+        );
+
+        assertFalse(response.probeAllowed());
+        assertEquals("DENIED_STORED_BODY_READ_GRANT_NOT_FOUND", response.decision());
+        assertFalse(response.objectStoreProbeExecuted());
+        assertTrue(response.issueCodes().contains("STORED_BODY_READ_GRANT_NOT_FOUND"));
+        assertFalse(adapterCalled.get());
+    }
+
+    @Test
     void shouldClipAdapterSampleToHostHardLimit() {
         InMemoryAgentRuntimeEventProjectionStore projectionStore =
                 new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        InMemoryAgentToolActionArtifactBodyReadGrantStore grantStore = grantStore();
         appendSuccessfulCommandWorkerReceipt(projectionStore);
-        AgentToolActionArtifactBodyReadGrantResponse grant = issueGrant(projectionStore);
+        AgentToolActionArtifactBodyReadGrantResponse grant = issueGrant(projectionStore, grantStore);
         byte[] largeSample = new byte[80 * 1024];
         Arrays.fill(largeSample, (byte) 'a');
-        AgentToolActionArtifactObjectStoreProbeService service = probeService(projectionStore, command ->
+        AgentToolActionArtifactObjectStoreProbeService service = probeService(projectionStore, grantStore, command ->
                 new AgentToolActionArtifactObjectStoreProbeSample(
                         true,
                         true,
@@ -155,10 +185,11 @@ class AgentToolActionArtifactObjectStoreProbeServiceTest {
     void sensitiveArtifactReferenceShouldBeRejected() {
         InMemoryAgentRuntimeEventProjectionStore projectionStore =
                 new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        InMemoryAgentToolActionArtifactBodyReadGrantStore grantStore = grantStore();
         appendSuccessfulCommandWorkerReceipt(projectionStore);
-        AgentToolActionArtifactBodyReadGrantResponse grant = issueGrant(projectionStore);
+        AgentToolActionArtifactBodyReadGrantResponse grant = issueGrant(projectionStore, grantStore);
         AgentToolActionArtifactObjectStoreProbeService service =
-                probeService(projectionStore, inMemoryClient("safe".getBytes(StandardCharsets.UTF_8)));
+                probeService(projectionStore, grantStore, inMemoryClient("safe".getBytes(StandardCharsets.UTF_8)));
 
         AgentToolActionArtifactObjectStoreProbeRequest request =
                 new AgentToolActionArtifactObjectStoreProbeRequest(
@@ -220,8 +251,9 @@ class AgentToolActionArtifactObjectStoreProbeServiceTest {
     }
 
     private AgentToolActionArtifactBodyReadGrantResponse issueGrant(
-            InMemoryAgentRuntimeEventProjectionStore projectionStore) {
-        return bodyReadGrantService(projectionStore).grantBodyRead(
+            InMemoryAgentRuntimeEventProjectionStore projectionStore,
+            AgentToolActionArtifactBodyReadGrantStore grantStore) {
+        return bodyReadGrantService(projectionStore, grantStore).grantBodyRead(
                 new AgentToolActionArtifactBodyReadGrantRequest(
                         COMMAND_ID,
                         ARTIFACT_REFERENCE,
@@ -243,21 +275,31 @@ class AgentToolActionArtifactObjectStoreProbeServiceTest {
 
     private AgentToolActionArtifactObjectStoreProbeService probeService(
             InMemoryAgentRuntimeEventProjectionStore projectionStore,
+            AgentToolActionArtifactBodyReadGrantStore grantStore,
             AgentToolActionArtifactObjectStoreClient objectStoreClient) {
         return new AgentToolActionArtifactObjectStoreProbeService(
-                bodyReadGrantService(projectionStore),
+                bodyReadGrantService(projectionStore, grantStore),
+                new AgentToolActionArtifactBodyReadGrantVerificationService(grantStore),
                 objectStoreClient
         );
     }
 
     private AgentToolActionArtifactBodyReadGrantService bodyReadGrantService(
-            InMemoryAgentRuntimeEventProjectionStore projectionStore) {
+            InMemoryAgentRuntimeEventProjectionStore projectionStore,
+            AgentToolActionArtifactBodyReadGrantStore grantStore) {
         AgentToolActionArtifactAccessAuthorizationService metadataAuthorizationService =
                 new AgentToolActionArtifactAccessAuthorizationService(
                         projectionStore,
                         new AgentRuntimeEventProjectionAccessSupport()
                 );
-        return new AgentToolActionArtifactBodyReadGrantService(metadataAuthorizationService);
+        return new AgentToolActionArtifactBodyReadGrantService(
+                metadataAuthorizationService,
+                new AgentToolActionArtifactBodyReadGrantRecordService(grantStore)
+        );
+    }
+
+    private InMemoryAgentToolActionArtifactBodyReadGrantStore grantStore() {
+        return new InMemoryAgentToolActionArtifactBodyReadGrantStore(100);
     }
 
     private void appendSuccessfulCommandWorkerReceipt(InMemoryAgentRuntimeEventProjectionStore projectionStore) {

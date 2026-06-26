@@ -79,6 +79,16 @@ datasmart:
       # 安全边界：fencingToken 只允许存在于内部 store、claim 响应和 receipt 请求中，
       # 不能进入 runtime event、timeline、日志、Prometheus label、工具结果、prompt、SQL 或 artifact 正文。
       store: ${DATASMART_AGENT_RUNTIME_COMMAND_WORKER_LEASE_STORE:memory}
+    artifact-body-read-grants:
+      # artifact 正文读取 grant fact 仓库。
+      # body-read-grants 返回的 grantDecisionReference 只是低敏审计引用，不是 bearer token；
+      # final-check 和 object-store probe 必须回查这里保存的服务端事实，确认引用真实存在、未过期、未撤销且上下文一致。
+      # memory：默认值，适合本地学习、单元测试和单实例联调；JVM 重启会丢失，多实例之间不共享。
+      # mysql：生产化预留方向，后续需要配套 migration、TTL 归档、审计查询、管理员撤销和 database-enabled=true。
+      store: ${DATASMART_AGENT_RUNTIME_ARTIFACT_BODY_READ_GRANT_STORE:memory}
+      # memory 模式下最多保留多少条 grant fact，防止异常 Agent 循环或压测流量无限扩大 JVM 内存。
+      # 该值不等价于生产保留策略；生产 MySQL 模式应通过表分区、归档任务和分页查询控制历史规模。
+      memory-max-records: ${DATASMART_AGENT_RUNTIME_ARTIFACT_BODY_READ_GRANT_MEMORY_MAX_RECORDS:10000}
     artifact-object-store:
       minio:
         # 真实 MinIO/S3-compatible artifact 探针 adapter。

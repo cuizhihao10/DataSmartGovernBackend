@@ -69,6 +69,7 @@ class AgentToolActionArtifactBodyReadGrantServiceTest {
         assertTrue(response.objectStoreReadStillRequired());
         assertEquals("EXECUTION_SUCCEEDED", response.receiptOutcome());
         assertTrue(response.evidenceCodes().contains("ARTIFACT_METADATA_AUTHORIZED"));
+        assertTrue(response.evidenceCodes().contains("BODY_READ_GRANT_RECORD_STORED"));
         assertTrue(response.evidenceCodes().contains("OBJECT_STORE_FINAL_AUTHORIZATION_REQUIRED"));
 
         /*
@@ -242,7 +243,11 @@ class AgentToolActionArtifactBodyReadGrantServiceTest {
                         projectionStore,
                         new AgentRuntimeEventProjectionAccessSupport()
                 );
-        return new AgentToolActionArtifactBodyReadGrantService(metadataAuthorizationService);
+        return new AgentToolActionArtifactBodyReadGrantService(
+                metadataAuthorizationService,
+                new AgentToolActionArtifactBodyReadGrantRecordService(
+                        new InMemoryAgentToolActionArtifactBodyReadGrantStore(100))
+        );
     }
 
     private AgentRuntimeEventQueryAccessContext projectOwnerContext(List<Long> authorizedProjectIds) {

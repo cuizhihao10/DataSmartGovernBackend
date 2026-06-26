@@ -62,6 +62,7 @@ public class AgentToolActionArtifactBodyReadFinalCheckService {
     );
 
     private final AgentToolActionArtifactBodyReadGrantService bodyReadGrantService;
+    private final AgentToolActionArtifactBodyReadGrantVerificationService grantVerificationService;
 
     /**
      * 执行 artifact 正文读取最终回查。
@@ -98,22 +99,29 @@ public class AgentToolActionArtifactBodyReadFinalCheckService {
             return deniedFromGrant(request, grantDecision);
         }
 
+        AgentToolActionArtifactBodyReadGrantVerificationResult storedGrantVerification =
+                grantVerificationService.verifyStoredGrant(request.previousGrantDecisionReference(), grantDecision);
+        if (!storedGrantVerification.verified()) {
+            return deniedFromStoredGrant(request, grantDecision, storedGrantVerification);
+        }
+
         String contentMode = normalizeCode(grantDecision.requestedContentMode());
         boolean previewMode = PREVIEW_CONTENT_MODES.contains(contentMode);
         int previewLimitBytes = resolvePreviewLimitBytes(request.requestedMaxPreviewBytes(), grantDecision.maxReadableBytes());
 
         if (!previewMode) {
-            return allowedWithoutPreview(request, grantDecision, previewLimitBytes);
+            return allowedWithoutPreview(request, grantDecision, storedGrantVerification, previewLimitBytes);
         }
 
         String previewCandidate = safeText(request.sanitizedPreviewText());
         if (previewCandidate == null) {
-            return deniedMissingPreview(request, grantDecision, previewLimitBytes);
+            return deniedMissingPreview(request, grantDecision, storedGrantVerification, previewLimitBytes);
         }
         rejectSensitivePreview(previewCandidate);
 
         PreviewClipResult clipResult = clipUtf8(previewCandidate, previewLimitBytes);
         List<String> evidenceCodes = new ArrayList<>(grantDecision.evidenceCodes());
+        evidenceCodes.addAll(storedGrantVerification.evidenceCodes());
         evidenceCodes.add("BODY_READ_GRANT_RECHECKED");
         evidenceCodes.add("GRANT_DECISION_REFERENCE_SHAPE_VERIFIED");
         evidenceCodes.add("OBJECT_STORE_FINAL_CHECK_COMPLETED");
@@ -219,13 +227,47 @@ public class AgentToolActionArtifactBodyReadFinalCheckService {
     }
 
     /**
+     * 服务端 grant fact 回查失败时，final-check 必须 fail-closed。
+     *
+     * <p>这一步和 grant 重新计算不同：grant 重新计算回答“当前上下文是否仍可授权”，
+     * stored grant verification 回答“调用方提交的 previousGrantDecisionReference 是否确实是服务端之前签发的同一条事实”。
+     * 两者任意一个失败，都不能返回预览或继续读取。</p>
+     */
+    private AgentToolActionArtifactBodyReadFinalCheckResponse deniedFromStoredGrant(
+            AgentToolActionArtifactBodyReadFinalCheckRequest request,
+            AgentToolActionArtifactBodyReadGrantResponse grantDecision,
+            AgentToolActionArtifactBodyReadGrantVerificationResult verification) {
+        List<String> evidenceCodes = new ArrayList<>(grantDecision.evidenceCodes());
+        evidenceCodes.addAll(verification.evidenceCodes());
+        List<String> issueCodes = new ArrayList<>(grantDecision.issueCodes());
+        issueCodes.addAll(verification.issueCodes());
+        return response(
+                false,
+                verification.decision(),
+                request,
+                grantDecision,
+                0,
+                0,
+                false,
+                false,
+                null,
+                false,
+                evidenceCodes,
+                issueCodes,
+                verification.recommendedActions()
+        );
+    }
+
+    /**
      * 非预览模式只返回“最终回查通过”的低敏决策，不返回安全预览文本。
      */
     private AgentToolActionArtifactBodyReadFinalCheckResponse allowedWithoutPreview(
             AgentToolActionArtifactBodyReadFinalCheckRequest request,
             AgentToolActionArtifactBodyReadGrantResponse grantDecision,
+            AgentToolActionArtifactBodyReadGrantVerificationResult verification,
             int previewLimitBytes) {
         List<String> evidenceCodes = new ArrayList<>(grantDecision.evidenceCodes());
+        evidenceCodes.addAll(verification.evidenceCodes());
         evidenceCodes.add("BODY_READ_GRANT_RECHECKED");
         evidenceCodes.add("GRANT_DECISION_REFERENCE_SHAPE_VERIFIED");
         evidenceCodes.add("OBJECT_STORE_FINAL_CHECK_COMPLETED");
@@ -259,9 +301,12 @@ public class AgentToolActionArtifactBodyReadFinalCheckService {
     private AgentToolActionArtifactBodyReadFinalCheckResponse deniedMissingPreview(
             AgentToolActionArtifactBodyReadFinalCheckRequest request,
             AgentToolActionArtifactBodyReadGrantResponse grantDecision,
+            AgentToolActionArtifactBodyReadGrantVerificationResult verification,
             int previewLimitBytes) {
         List<String> issueCodes = new ArrayList<>(grantDecision.issueCodes());
         issueCodes.add("SANITIZED_PREVIEW_REQUIRED");
+        List<String> evidenceCodes = new ArrayList<>(grantDecision.evidenceCodes());
+        evidenceCodes.addAll(verification.evidenceCodes());
         return response(
                 false,
                 "DENIED_SANITIZED_PREVIEW_REQUIRED",
@@ -273,7 +318,7 @@ public class AgentToolActionArtifactBodyReadFinalCheckService {
                 false,
                 null,
                 true,
-                grantDecision.evidenceCodes(),
+                evidenceCodes,
                 issueCodes,
                 List.of("预览模式必须由对象存储服务先完成基础脱敏，并传入 sanitizedPreviewText。")
         );

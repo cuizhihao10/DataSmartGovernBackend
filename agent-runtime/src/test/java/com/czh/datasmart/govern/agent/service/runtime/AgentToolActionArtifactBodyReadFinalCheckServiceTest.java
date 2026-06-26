@@ -44,10 +44,11 @@ class AgentToolActionArtifactBodyReadFinalCheckServiceTest {
     void shouldReturnOnlyClippedSafePreviewAfterGrantRecheck() throws JsonProcessingException {
         InMemoryAgentRuntimeEventProjectionStore projectionStore =
                 new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        InMemoryAgentToolActionArtifactBodyReadGrantStore grantStore = grantStore();
         appendSuccessfulCommandWorkerReceipt(projectionStore);
-        AgentToolActionArtifactBodyReadGrantResponse grant = issueGrant(projectionStore, COMMAND_ID,
+        AgentToolActionArtifactBodyReadGrantResponse grant = issueGrant(projectionStore, grantStore, COMMAND_ID,
                 "TRUNCATED_TEXT_PREVIEW", 128 * 1024);
-        AgentToolActionArtifactBodyReadFinalCheckService service = finalCheckService(projectionStore);
+        AgentToolActionArtifactBodyReadFinalCheckService service = finalCheckService(projectionStore, grantStore);
 
         AgentToolActionArtifactBodyReadFinalCheckResponse response = service.finalCheck(
                 finalCheckRequest(COMMAND_ID, grant.grantDecisionReference(), "TRUNCATED_TEXT_PREVIEW",
@@ -94,10 +95,11 @@ class AgentToolActionArtifactBodyReadFinalCheckServiceTest {
     void shouldDenyFinalCheckWhenGrantRecheckFails() {
         InMemoryAgentRuntimeEventProjectionStore projectionStore =
                 new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        InMemoryAgentToolActionArtifactBodyReadGrantStore grantStore = grantStore();
         appendSuccessfulCommandWorkerReceipt(projectionStore);
-        AgentToolActionArtifactBodyReadGrantResponse grant = issueGrant(projectionStore, COMMAND_ID,
+        AgentToolActionArtifactBodyReadGrantResponse grant = issueGrant(projectionStore, grantStore, COMMAND_ID,
                 "TRUNCATED_TEXT_PREVIEW", 128 * 1024);
-        AgentToolActionArtifactBodyReadFinalCheckService service = finalCheckService(projectionStore);
+        AgentToolActionArtifactBodyReadFinalCheckService service = finalCheckService(projectionStore, grantStore);
 
         AgentToolActionArtifactBodyReadFinalCheckResponse response = service.finalCheck(
                 finalCheckRequest("cmd-worker-missing", grant.grantDecisionReference(), "TRUNCATED_TEXT_PREVIEW",
@@ -115,7 +117,7 @@ class AgentToolActionArtifactBodyReadFinalCheckServiceTest {
     @Test
     void shouldRejectMalformedGrantReferenceBeforeReturningPreview() {
         AgentToolActionArtifactBodyReadFinalCheckService service =
-                finalCheckService(new InMemoryAgentRuntimeEventProjectionStore(10, 100));
+                finalCheckService(new InMemoryAgentRuntimeEventProjectionStore(10, 100), grantStore());
 
         AgentToolActionArtifactBodyReadFinalCheckRequest request =
                 finalCheckRequest(COMMAND_ID, "not-a-grant-reference", "TRUNCATED_TEXT_PREVIEW",
@@ -126,13 +128,34 @@ class AgentToolActionArtifactBodyReadFinalCheckServiceTest {
     }
 
     @Test
+    void shouldDenyWellFormedButUnstoredGrantReference() {
+        InMemoryAgentRuntimeEventProjectionStore projectionStore =
+                new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        InMemoryAgentToolActionArtifactBodyReadGrantStore grantStore = grantStore();
+        appendSuccessfulCommandWorkerReceipt(projectionStore);
+        AgentToolActionArtifactBodyReadFinalCheckService service = finalCheckService(projectionStore, grantStore);
+
+        AgentToolActionArtifactBodyReadFinalCheckResponse response = service.finalCheck(
+                finalCheckRequest(COMMAND_ID, "artifact-body-grant-decision:sha256:1234567890abcdef12345678",
+                        "TRUNCATED_TEXT_PREVIEW", 128 * 1024, 1024, "低敏安全预览候选文本"),
+                projectOwnerContext(List.of(20L))
+        );
+
+        assertFalse(response.allowed());
+        assertEquals("DENIED_STORED_BODY_READ_GRANT_NOT_FOUND", response.decision());
+        assertFalse(response.safePreviewReturned());
+        assertTrue(response.issueCodes().contains("STORED_BODY_READ_GRANT_NOT_FOUND"));
+    }
+
+    @Test
     void shouldRejectSensitivePreviewText() {
         InMemoryAgentRuntimeEventProjectionStore projectionStore =
                 new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        InMemoryAgentToolActionArtifactBodyReadGrantStore grantStore = grantStore();
         appendSuccessfulCommandWorkerReceipt(projectionStore);
-        AgentToolActionArtifactBodyReadGrantResponse grant = issueGrant(projectionStore, COMMAND_ID,
+        AgentToolActionArtifactBodyReadGrantResponse grant = issueGrant(projectionStore, grantStore, COMMAND_ID,
                 "SAFE_RENDERED_PREVIEW", 128 * 1024);
-        AgentToolActionArtifactBodyReadFinalCheckService service = finalCheckService(projectionStore);
+        AgentToolActionArtifactBodyReadFinalCheckService service = finalCheckService(projectionStore, grantStore);
 
         AgentToolActionArtifactBodyReadFinalCheckRequest request =
                 finalCheckRequest(COMMAND_ID, grant.grantDecisionReference(), "SAFE_RENDERED_PREVIEW",
@@ -146,10 +169,11 @@ class AgentToolActionArtifactBodyReadFinalCheckServiceTest {
     void shouldCapPreviewBytesByHostHardLimit() {
         InMemoryAgentRuntimeEventProjectionStore projectionStore =
                 new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        InMemoryAgentToolActionArtifactBodyReadGrantStore grantStore = grantStore();
         appendSuccessfulCommandWorkerReceipt(projectionStore);
-        AgentToolActionArtifactBodyReadGrantResponse grant = issueGrant(projectionStore, COMMAND_ID,
+        AgentToolActionArtifactBodyReadGrantResponse grant = issueGrant(projectionStore, grantStore, COMMAND_ID,
                 "TRUNCATED_TEXT_PREVIEW", 256 * 1024);
-        AgentToolActionArtifactBodyReadFinalCheckService service = finalCheckService(projectionStore);
+        AgentToolActionArtifactBodyReadFinalCheckService service = finalCheckService(projectionStore, grantStore);
 
         AgentToolActionArtifactBodyReadFinalCheckResponse response = service.finalCheck(
                 finalCheckRequest(COMMAND_ID, grant.grantDecisionReference(), "TRUNCATED_TEXT_PREVIEW",
@@ -168,10 +192,11 @@ class AgentToolActionArtifactBodyReadFinalCheckServiceTest {
     void shouldAllowFinalCheckWithoutPreviewForObjectStoreBodyReadMode() {
         InMemoryAgentRuntimeEventProjectionStore projectionStore =
                 new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        InMemoryAgentToolActionArtifactBodyReadGrantStore grantStore = grantStore();
         appendSuccessfulCommandWorkerReceipt(projectionStore);
-        AgentToolActionArtifactBodyReadGrantResponse grant = issueGrant(projectionStore, COMMAND_ID,
+        AgentToolActionArtifactBodyReadGrantResponse grant = issueGrant(projectionStore, grantStore, COMMAND_ID,
                 "OBJECT_STORE_BODY_READ_AFTER_STORE_POLICY", 128 * 1024);
-        AgentToolActionArtifactBodyReadFinalCheckService service = finalCheckService(projectionStore);
+        AgentToolActionArtifactBodyReadFinalCheckService service = finalCheckService(projectionStore, grantStore);
 
         AgentToolActionArtifactBodyReadFinalCheckResponse response = service.finalCheck(
                 finalCheckRequest(COMMAND_ID, grant.grantDecisionReference(),
@@ -188,10 +213,11 @@ class AgentToolActionArtifactBodyReadFinalCheckServiceTest {
 
     private AgentToolActionArtifactBodyReadGrantResponse issueGrant(
             InMemoryAgentRuntimeEventProjectionStore projectionStore,
+            AgentToolActionArtifactBodyReadGrantStore grantStore,
             String commandId,
             String contentMode,
             Integer maxReadableBytes) {
-        return bodyReadGrantService(projectionStore).grantBodyRead(
+        return bodyReadGrantService(projectionStore, grantStore).grantBodyRead(
                 bodyReadGrantRequest(commandId, contentMode, maxReadableBytes),
                 projectOwnerContext(List.of(20L))
         );
@@ -310,18 +336,30 @@ class AgentToolActionArtifactBodyReadFinalCheckServiceTest {
     }
 
     private AgentToolActionArtifactBodyReadFinalCheckService finalCheckService(
-            InMemoryAgentRuntimeEventProjectionStore projectionStore) {
-        return new AgentToolActionArtifactBodyReadFinalCheckService(bodyReadGrantService(projectionStore));
+            InMemoryAgentRuntimeEventProjectionStore projectionStore,
+            AgentToolActionArtifactBodyReadGrantStore grantStore) {
+        return new AgentToolActionArtifactBodyReadFinalCheckService(
+                bodyReadGrantService(projectionStore, grantStore),
+                new AgentToolActionArtifactBodyReadGrantVerificationService(grantStore)
+        );
     }
 
     private AgentToolActionArtifactBodyReadGrantService bodyReadGrantService(
-            InMemoryAgentRuntimeEventProjectionStore projectionStore) {
+            InMemoryAgentRuntimeEventProjectionStore projectionStore,
+            AgentToolActionArtifactBodyReadGrantStore grantStore) {
         AgentToolActionArtifactAccessAuthorizationService metadataAuthorizationService =
                 new AgentToolActionArtifactAccessAuthorizationService(
                         projectionStore,
                         new AgentRuntimeEventProjectionAccessSupport()
                 );
-        return new AgentToolActionArtifactBodyReadGrantService(metadataAuthorizationService);
+        return new AgentToolActionArtifactBodyReadGrantService(
+                metadataAuthorizationService,
+                new AgentToolActionArtifactBodyReadGrantRecordService(grantStore)
+        );
+    }
+
+    private InMemoryAgentToolActionArtifactBodyReadGrantStore grantStore() {
+        return new InMemoryAgentToolActionArtifactBodyReadGrantStore(100);
     }
 
     private AgentRuntimeEventQueryAccessContext projectOwnerContext(List<Long> authorizedProjectIds) {

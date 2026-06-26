@@ -65,6 +65,7 @@ public class AgentToolActionArtifactObjectStoreProbeService {
     );
 
     private final AgentToolActionArtifactBodyReadGrantService bodyReadGrantService;
+    private final AgentToolActionArtifactBodyReadGrantVerificationService grantVerificationService;
     private final AgentToolActionArtifactObjectStoreClient objectStoreClient;
 
     /**
@@ -102,6 +103,12 @@ public class AgentToolActionArtifactObjectStoreProbeService {
             return deniedFromGrant(request, grantDecision);
         }
 
+        AgentToolActionArtifactBodyReadGrantVerificationResult storedGrantVerification =
+                grantVerificationService.verifyStoredGrant(request.previousGrantDecisionReference(), grantDecision);
+        if (!storedGrantVerification.verified()) {
+            return deniedFromStoredGrant(request, grantDecision, storedGrantVerification);
+        }
+
         int probeLimitBytes = resolveProbeLimitBytes(request.requestedProbeBytes(), grantDecision.maxReadableBytes());
         AgentToolActionArtifactObjectStoreProbeSample adapterSample = objectStoreClient.probe(
                 new AgentToolActionArtifactObjectStoreProbeCommand(
@@ -120,7 +127,8 @@ public class AgentToolActionArtifactObjectStoreProbeService {
                 )
         );
 
-        return responseFromAdapter(request, grantDecision, normalizeSample(adapterSample), probeLimitBytes);
+        return responseFromAdapter(request, grantDecision, storedGrantVerification,
+                normalizeSample(adapterSample), probeLimitBytes);
     }
 
     /**
@@ -193,15 +201,51 @@ public class AgentToolActionArtifactObjectStoreProbeService {
     }
 
     /**
+     * stored grant fact 回查失败时拒绝探针，并且不触发对象存储 adapter。
+     *
+     * <p>对象存储探针虽然不返回正文，但它仍可能暴露“某个对象是否存在、大小大概是多少、类型是什么”等侧信道信息。
+     * 因此 previousGrantDecisionReference 不能只做字符串格式校验，必须确认服务端确实保存过同一上下文的 grant fact。</p>
+     */
+    private AgentToolActionArtifactObjectStoreProbeResponse deniedFromStoredGrant(
+            AgentToolActionArtifactObjectStoreProbeRequest request,
+            AgentToolActionArtifactBodyReadGrantResponse grantDecision,
+            AgentToolActionArtifactBodyReadGrantVerificationResult verification) {
+        List<String> evidenceCodes = new ArrayList<>(safeList(grantDecision.evidenceCodes()));
+        evidenceCodes.addAll(verification.evidenceCodes());
+        List<String> issueCodes = new ArrayList<>(safeList(grantDecision.issueCodes()));
+        issueCodes.addAll(verification.issueCodes());
+        return response(
+                false,
+                verification.decision(),
+                request,
+                grantDecision,
+                0,
+                false,
+                false,
+                null,
+                null,
+                0,
+                false,
+                null,
+                null,
+                evidenceCodes,
+                issueCodes,
+                verification.recommendedActions()
+        );
+    }
+
+    /**
      * 把 adapter 内部 sample 转换成低敏 HTTP 响应。
      */
     private AgentToolActionArtifactObjectStoreProbeResponse responseFromAdapter(
             AgentToolActionArtifactObjectStoreProbeRequest request,
             AgentToolActionArtifactBodyReadGrantResponse grantDecision,
+            AgentToolActionArtifactBodyReadGrantVerificationResult verification,
             AgentToolActionArtifactObjectStoreProbeSample sample,
             int probeLimitBytes) {
         ClippedSample clippedSample = clipSample(sample.sampleBytes(), probeLimitBytes, sample.sampleTruncated());
         List<String> evidenceCodes = new ArrayList<>(safeList(grantDecision.evidenceCodes()));
+        evidenceCodes.addAll(verification.evidenceCodes());
         evidenceCodes.add("BODY_READ_GRANT_RECHECKED");
         evidenceCodes.add("GRANT_DECISION_REFERENCE_SHAPE_VERIFIED");
         evidenceCodes.add("OBJECT_STORE_ADAPTER_BOUNDARY_USED");

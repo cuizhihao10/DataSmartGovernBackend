@@ -1,4 +1,21 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-26 落地补充：artifact body grants must become server-side facts, not reference strings
+
+- 本轮趋势校准：
+  - 成熟 Agent Host 不应把工具结果读取权交给模型、前端或外部 Agent 自行判断；读取正文、预览正文和探测对象都必须回到 Host 控制面做事实回查。
+  - 低敏引用不是令牌。`grantDecisionReference` 可以用于审计串联，但不能被当作 bearer token；只有服务端 grant fact 存在、未过期、未撤销且上下文一致，后续读取链路才能继续。
+  - 对象存储探针也属于信息泄露风险点。即使不返回正文，只要能探测“对象是否存在、大小、类型”，也必须先经过服务端 grant fact 验证。
+- 本轮落地到代码的能力：
+  - 新增 artifact body-read grant fact store 抽象、内存实现、状态枚举、记录服务和验证服务；
+  - grant 成功签发后写入服务端低敏事实；
+  - final-check 返回安全预览前回查旧 grant fact；
+  - object-store probe 调用 adapter 前回查旧 grant fact，验证失败时不触发 adapter；
+  - 测试新增“格式正确但未存储 grant 引用”的拒绝场景，保护伪造引用不能继续读取或探测。
+- 产品判断：
+  - 这一步把 artifact 读取链路从“字符串形态校验”推进到“服务端事实校验”，属于收敛闭环，不是继续发散 artifact DTO；
+  - memory store 只是本地学习与单实例联调能力，生产闭环仍需要 MySQL store、TTL 归档、管理员撤销、下载审计、对象级 DLP/恶意内容扫描和限速；
+  - 下一步不建议继续扩展 final-check/probe 响应字段，而应在 MySQL 持久化或整体业务闭环之间做取舍。
+
 ## 2026-06-26 落地补充：real artifact storage adapters must stay behind host-controlled locators
 
 - 本轮趋势校准：

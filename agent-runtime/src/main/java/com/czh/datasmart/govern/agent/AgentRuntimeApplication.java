@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent;
 
 import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
+import com.czh.datasmart.govern.agent.config.AgentArtifactBodyReadGrantStoreProperties;
 import com.czh.datasmart.govern.agent.config.AgentArtifactObjectStoreMinioProperties;
 import com.czh.datasmart.govern.agent.config.AgentCommandSafetyPrecheckProperties;
 import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
@@ -48,6 +49,7 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
         AgentToolExecutionEventOutboxProperties.class,
         AgentCommandSafetyPrecheckProperties.class,
         AgentToolRuntimeProtectionProperties.class,
+        AgentArtifactBodyReadGrantStoreProperties.class,
         AgentArtifactObjectStoreMinioProperties.class
 })
 public class AgentRuntimeApplication {

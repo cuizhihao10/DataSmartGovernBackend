@@ -1,4 +1,33 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-26 追加落地进展：Java Agent Runtime 5.111 Artifact Body Read Grant Fact Store
+- 本阶段承接 5.110 的 MinIO/S3-compatible probe adapter，不继续扩大 artifact 响应字段，而是补齐 body-read grant 的服务端事实闭环：`grantDecisionReference` 不再只是“格式正确即可继续”的低敏引用，final-check 与 object-store probe 都必须回查服务端 grant fact。
+- 产品目标：
+  - 让正文读取授权具备“服务端签发、服务端保存、服务端复核、过期/撤销 fail-closed”的基本治理语义；
+  - 防止调用方伪造一个符合 `artifact-body-grant-decision:sha256:*` 形态的引用后直接进入安全预览或对象存储探针；
+  - 保持低敏边界：grant fact 只保存 commandId、artifactReference、readPurpose、contentMode、tenant/project/actor、run/session、receipt 指纹和过期时间，不保存正文、sample bytes、bucket/key、URL、token、prompt、SQL、工具实参或模型输出；
+  - 默认提供 memory store，适合本地学习和单实例联调；生产闭环仍应升级 MySQL store、TTL 归档、管理员撤销 API、下载审计、对象级 DLP/恶意内容扫描和限速。
+- 新增与调整：
+  - 新增 `AgentArtifactBodyReadGrantStoreProperties`，提供 `artifact-body-read-grants.store` 与 `memory-max-records` 配置，并在 `AgentRuntimeApplication` 注册；
+  - 新增 `AgentToolActionArtifactBodyReadGrantRecord`、`AgentToolActionArtifactBodyReadGrantStatus`、`AgentToolActionArtifactBodyReadGrantStore` 与 `InMemoryAgentToolActionArtifactBodyReadGrantStore`；
+  - 新增 `AgentToolActionArtifactBodyReadGrantRecordService`，在 grant 成功签发后保存服务端低敏事实；
+  - 新增 `AgentToolActionArtifactBodyReadGrantVerificationService` 与 `AgentToolActionArtifactBodyReadGrantVerificationResult`，统一处理未找到、过期、撤销、上下文不一致与验证通过；
+  - `AgentToolActionArtifactBodyReadGrantService` 在成功授权时写入 grant fact，并把 `BODY_READ_GRANT_RECORD_STORED` 纳入 evidence；
+  - `AgentToolActionArtifactBodyReadFinalCheckService` 在返回安全预览前回查旧 grant fact，未找到或上下文不匹配时拒绝；
+  - `AgentToolActionArtifactObjectStoreProbeService` 在调用对象存储 adapter 前回查旧 grant fact，验证失败时不会触发 adapter，避免对象存在性侧信道泄露；
+  - `application.yml` 新增 `datasmart.agent-runtime.artifact-body-read-grants` 配置块和中文说明。
+- 验证：
+  - Java 定向测试：
+    `mvn -pl agent-runtime -am "-Dtest=AgentToolActionArtifactBodyReadGrantServiceTest,AgentToolActionArtifactBodyReadFinalCheckServiceTest,AgentToolActionArtifactObjectStoreProbeServiceTest,AgentToolActionArtifactMinioObjectLocatorTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：22 个测试通过，Maven Toolchain 使用 JDK 21。
+- 当前边界：
+  - memory store 仍不是跨重启、跨实例的生产持久化；后续商业化部署应新增 MySQL grant fact store 与迁移脚本；
+  - 暂未开放管理员撤销/查询 HTTP API，服务层已预留 revoke 语义；
+  - artifact 下载仍未开放：当前只完成 grant fact 回查、safe preview final-check 和 object-store probe，不返回完整正文或签名 URL。
+- 下一步建议：
+  1. 若继续 artifact 主线，优先实现 MySQL grant fact store + migration + 管理员撤销/查询 API；
+  2. 或切到容器级 sandbox，把 host-local runner 替换为 namespace/cgroup/seccomp 隔离执行；
+  3. 或回到整体收敛路线，推进 data-sync/task-management 的真实业务任务闭环，避免 Java Agent artifact 子链路继续过度扩张。
+
 ## 2026-06-26 追加落地进展：Java Agent Runtime 5.110 Configurable MinIO Artifact Probe Adapter
 - 本阶段承接 5.109 的 object-store probe 抽象，不继续扩展 artifact HTTP DTO 字段，而是把默认禁用 adapter 推进为可配置 MinIO/S3-compatible adapter。
 - 产品目标：
