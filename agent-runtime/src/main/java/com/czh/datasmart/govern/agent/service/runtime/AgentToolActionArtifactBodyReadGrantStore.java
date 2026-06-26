@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.agent.service.runtime;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -33,6 +34,17 @@ public interface AgentToolActionArtifactBodyReadGrantStore {
      * 不能因为 previousGrantDecisionReference 的字符串格式正确就继续读取。</p>
      */
     Optional<AgentToolActionArtifactBodyReadGrantRecord> findByReference(String grantDecisionReference);
+
+    /**
+     * 按低敏条件查询 grant fact。
+     *
+     * <p>该方法主要服务管理员排障、审计台和后续 TTL 归档预览，不参与 final-check/probe 的关键执行路径。
+     * 查询条件必须由服务层先经过数据范围收口后再传入；实现层仍要把 authorizedProjectIds 下沉到过滤或 SQL，
+     * 防止只靠 Controller 参数导致跨项目越权。</p>
+     */
+    List<AgentToolActionArtifactBodyReadGrantRecord> query(
+            AgentToolActionArtifactBodyReadGrantQuery query,
+            int limit);
 
     /**
      * 撤销一条 grant fact。

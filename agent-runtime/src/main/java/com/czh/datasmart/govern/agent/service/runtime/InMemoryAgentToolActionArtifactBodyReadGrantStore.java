@@ -10,7 +10,9 @@ import com.czh.datasmart.govern.agent.config.AgentArtifactBodyReadGrantStoreProp
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 
+import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -81,6 +83,40 @@ public class InMemoryAgentToolActionArtifactBodyReadGrantStore
         }
     }
 
+    /**
+     * 按低敏条件查询内存中的 grant fact。
+     *
+     * <p>虽然 memory store 只面向本地学习和单实例联调，但查询语义必须和 MySQL store 尽量一致：
+     * 1. 缺少 grantDecisionReference/commandId 时直接返回空结果，避免误用成全表浏览；
+     * 2. PROJECT 范围下 authorizedProjectIds 为空时返回空结果，不能退化成全项目可见；
+     * 3. 查询结果按签发时间倒序返回，方便管理台优先看到最近一次授权；
+     * 4. limit 在调用方和 Store 两层都生效，避免异常请求把内存窗口一次性序列化出去。</p>
+     */
+    @Override
+    public List<AgentToolActionArtifactBodyReadGrantRecord> query(
+            AgentToolActionArtifactBodyReadGrantQuery query,
+            int limit) {
+        if (query == null || !query.hasRequiredSelector()) {
+            return List.of();
+        }
+        if (query.authorizedProjectIds() != null && query.authorizedProjectIds().isEmpty()) {
+            return List.of();
+        }
+        int appliedLimit = Math.max(1, Math.min(limit, query.normalizedLimit()));
+        lock.readLock().lock();
+        try {
+            return recordsByReference.values().stream()
+                    .filter(record -> matchesQuery(record, query))
+                    .sorted(Comparator.comparingLong(
+                            AgentToolActionArtifactBodyReadGrantRecord::issuedAtEpochMs
+                    ).reversed())
+                    .limit(appliedLimit)
+                    .toList();
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
     @Override
     public Optional<AgentToolActionArtifactBodyReadGrantRecord> revoke(
             String grantDecisionReference,
@@ -127,6 +163,41 @@ public class InMemoryAgentToolActionArtifactBodyReadGrantStore
             String oldestKey = recordsByReference.keySet().iterator().next();
             recordsByReference.remove(oldestKey);
         }
+    }
+
+    /**
+     * 判断单条记录是否满足低敏查询条件。
+     *
+     * <p>这里不做模糊搜索，也不支持 artifact 正文内容搜索。grant fact 管理接口的目标是“按已知低敏定位符排障”，
+     * 不是给用户提供 artifact 内容检索。真正内容检索必须走对象存储 ACL、DLP 和下载审计链路。</p>
+     */
+    private boolean matchesQuery(AgentToolActionArtifactBodyReadGrantRecord record,
+                                 AgentToolActionArtifactBodyReadGrantQuery query) {
+        return matches(record.grantDecisionReference(), query.grantDecisionReference())
+                && matches(record.commandId(), query.commandId())
+                && matches(record.artifactReference(), query.artifactReference())
+                && matches(record.tenantId(), query.tenantId())
+                && matches(record.projectId(), query.projectId())
+                && matches(record.actorId(), query.actorId())
+                && matches(record.runId(), query.runId())
+                && matches(record.sessionId(), query.sessionId())
+                && matches(record.toolCode(), query.toolCode())
+                && matches(record.status() == null ? null : record.status().name(), query.status())
+                && projectVisible(record.projectId(), query.authorizedProjectIds());
+    }
+
+    private boolean projectVisible(String projectId, List<String> authorizedProjectIds) {
+        if (authorizedProjectIds == null) {
+            return true;
+        }
+        return authorizedProjectIds.contains(projectId);
+    }
+
+    private boolean matches(String actual, String expected) {
+        if (expected == null || expected.isBlank()) {
+            return true;
+        }
+        return expected.trim().equals(actual == null ? null : actual.trim());
     }
 
     private static int normalizedMaxRecords(AgentArtifactBodyReadGrantStoreProperties properties) {

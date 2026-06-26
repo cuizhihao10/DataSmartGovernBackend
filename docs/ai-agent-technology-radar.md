@@ -1,4 +1,21 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-27 落地补充：artifact grant facts need durable admin query and revoke before download closure
+
+- 本轮工程校准：
+  - 5.111 已把 `grantDecisionReference` 从“低敏引用字符串”升级为服务端 grant fact；5.112 继续把该 fact 从单实例 memory 推进到可选 MySQL 持久化。
+  - 对 DataSmart 来说，artifact 正文读取不能只追求“能读到对象”，还必须先具备“能解释、能撤销、能跨实例回查”的控制面事实。
+  - 管理员查询和撤销是 artifact 下载前置闭环的一部分：没有撤销能力，grant TTL 内的策略变更、artifact 隔离和人工止血都无法落到执行链路。
+- 本轮落地到代码的能力：
+  - 新增 MySQL 版 artifact body-read grant fact store 与 JDBC mapper；
+  - 新增 `agent_artifact_body_read_grant_fact` 迁移脚本，字段只覆盖低敏授权事实；
+  - 新增低敏管理查询与撤销 API，查询要求 grant 引用或 commandId，禁止无界扫描；
+  - 撤销前按当前 Header 数据范围确认记录可见，避免通过 grant 引用跨项目撤销或探测；
+  - memory store 同步支持相同查询契约，保证本地学习和生产 MySQL 语义不漂移。
+- 产品判断：
+  - 这一步是 artifact 读取控制面的收敛补点，不是完整下载服务；
+  - 仍不返回正文、sample bytes、bucket/key、签名 URL、bearer token、prompt、SQL、工具参数或模型输出；
+  - artifact grant 主链路已经可以阶段性收口，后续更推荐切到容器级 sandbox、自动终态回调 worker 或 data-sync/data-quality/permission-admin 业务闭环。
+
 ## 2026-06-26 落地补充：artifact body grants must become server-side facts, not reference strings
 
 - 本轮趋势校准：

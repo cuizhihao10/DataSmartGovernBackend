@@ -11,6 +11,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -53,6 +54,20 @@ public class AgentToolActionArtifactBodyReadGrantRecordService {
     }
 
     /**
+     * 按低敏条件查询 grant fact。
+     *
+     * <p>该方法主要服务管理员排障、审计台和后续 TTL 归档预览。它和 {@link #findByReference(String)} 的区别是：
+     * findByReference 位于 final-check/probe 的关键授权路径，只按单个引用做精确回查；
+     * query 位于管理查询路径，允许叠加 commandId、tenant/project/actor/run/session/tool/status 等低敏条件。
+     * 服务层保留该入口，是为了让 Controller 不直接接触 Store，后续可以在这里追加审计日志、指标和限流。</p>
+     */
+    public List<AgentToolActionArtifactBodyReadGrantRecord> query(
+            AgentToolActionArtifactBodyReadGrantQuery query,
+            int limit) {
+        return grantStore.query(query, limit);
+    }
+
+    /**
      * 撤销 grant fact 的服务层入口。
      *
      * <p>当前批次暂不新增管理员 HTTP 路由，但先保留服务方法，后续接 permission-admin 审批、
@@ -63,6 +78,16 @@ public class AgentToolActionArtifactBodyReadGrantRecordService {
             String operatorId,
             String reasonCode) {
         return grantStore.revoke(grantDecisionReference, operatorId, reasonCode, Instant.now().toEpochMilli());
+    }
+
+    /**
+     * 当前 grant fact 仓库记录量。
+     *
+     * <p>仅用于低频诊断、单元测试和后续 Micrometer 指标，不建议管理台高频轮询。
+     * MySQL 版本如果表规模很大，后续应把该统计替换成近似指标或后台物化统计。</p>
+     */
+    public int size() {
+        return grantStore.size();
     }
 
     private boolean hasText(String value) {

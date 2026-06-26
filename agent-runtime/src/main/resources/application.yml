@@ -84,7 +84,10 @@ datasmart:
       # body-read-grants 返回的 grantDecisionReference 只是低敏审计引用，不是 bearer token；
       # final-check 和 object-store probe 必须回查这里保存的服务端事实，确认引用真实存在、未过期、未撤销且上下文一致。
       # memory：默认值，适合本地学习、单元测试和单实例联调；JVM 重启会丢失，多实例之间不共享。
-      # mysql：生产化预留方向，后续需要配套 migration、TTL 归档、审计查询、管理员撤销和 database-enabled=true。
+      # mysql：写入 agent_artifact_body_read_grant_fact 表，适合多实例控制面、跨重启回查、管理员低敏查询和撤销。
+      #        切换 mysql 时必须同时设置 datasmart.agent-runtime.persistence.database-enabled=true，
+      #        并先执行 docker/mysql/migrations/20260626_agent_artifact_body_read_grant_fact.sql。
+      #        管理查询/撤销接口只返回低敏 grant fact，不返回 artifact 正文、bucket/key、签名 URL、prompt、SQL 或工具参数。
       store: ${DATASMART_AGENT_RUNTIME_ARTIFACT_BODY_READ_GRANT_STORE:memory}
       # memory 模式下最多保留多少条 grant fact，防止异常 Agent 循环或压测流量无限扩大 JVM 内存。
       # 该值不等价于生产保留策略；生产 MySQL 模式应通过表分区、归档任务和分页查询控制历史规模。
