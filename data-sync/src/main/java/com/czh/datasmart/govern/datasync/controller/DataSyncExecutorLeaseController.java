@@ -15,6 +15,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionClaimReques
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionClaimResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionDeferRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionHeartbeatRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionHeartbeatResult;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.service.DataSyncExecutorLeaseService;
 import com.czh.datasmart.govern.datasync.service.support.DataSyncExecutorServiceAccountSignatureSupport;
@@ -69,13 +70,19 @@ public class DataSyncExecutorLeaseController {
     }
 
     /**
-     * 执行器心跳续租。
+     * 执行器心跳续租与控制面指令感知。
      *
-     * <p>heartbeat 代表 worker 仍然存活并继续处理当前 execution。
-     * 如果心跳被伪造，系统可能错误地认为任务仍在运行，导致过期租约无法恢复。
+     * <p>heartbeat 代表 worker 仍然存活，并希望继续处理当前 execution。
+     * 该接口现在返回 {@link SyncExecutionHeartbeatResult}，而不是直接返回完整 {@link SyncExecution} 实体：
+     * 1. RUNNING 且 executorId 匹配时，服务端续租并返回 {@code controlAction=CONTINUE}；
+     * 2. 控制台把 execution 改成 PAUSED 时，服务端不续租，返回 {@code STOP_FOR_PAUSE}；
+     * 3. 控制台把 execution 改成 CANCELLED 时，服务端不续租，返回 {@code STOP_FOR_CANCEL}；
+     * 4. 其它状态或 executorId 不匹配仍按异常处理，避免错误 worker 猜测任务状态。
+     *
+     * <p>这样 worker 不需要解析数据库实体里的所有字段，也不会因为异常消息模糊而把“暂停/取消”误当成普通失败。
      */
     @PostMapping("/{executionId}/heartbeat")
-    public PlatformApiResponse<SyncExecution> heartbeat(
+    public PlatformApiResponse<SyncExecutionHeartbeatResult> heartbeat(
             @PathVariable Long executionId,
             @Valid @RequestBody SyncExecutionHeartbeatRequest request,
             HttpServletRequest servletRequest,
@@ -84,7 +91,7 @@ public class DataSyncExecutorLeaseController {
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         signatureSupport.verify(servletRequest, traceId, "HEARTBEAT");
-        return PlatformApiResponse.success("同步执行心跳已续租",
+        return PlatformApiResponse.success("同步执行心跳已处理",
                 leaseService.heartbeat(executionId, request, actorContext(tenantId, actorId, actorRole, traceId)), traceId);
     }
 

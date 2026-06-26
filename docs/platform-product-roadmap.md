@@ -1,4 +1,52 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-27 追加落地进展：Java Data Sync 6.2 Executor Heartbeat Control Signal
+- 本阶段承接 Data Sync 6.1 的任务生命周期控制面，不继续扩大新按钮或连接器范围，而是补齐“控制台暂停/取消能被 worker 心跳感知”的执行面闭环。
+- 产品目标：
+  - 让 `PAUSED/CANCELLED` 不再只是数据库状态，而是执行器能读懂的控制协议；
+  - worker 心跳返回明确的 `controlAction`，区分继续执行、为暂停停止、为取消停止；
+  - 暂停/取消响应不续租，避免 worker 在用户已暂停或取消后继续持有写入窗口；
+  - 心跳接口只返回低敏字段，不再把完整 `SyncExecution` 实体作为执行器协议暴露；
+  - 覆盖“读取时 RUNNING、续租时已 CANCELLED”的并发竞态，避免真实生产中把控制动作误判为普通冲突。
+- 新增与调整：
+  - 新增 `SyncExecutionHeartbeatResult`
+    - 字段只包含 execution/task/tenant/project/workspace 标识、执行状态、executorId、读写计数、心跳时间、租约时间和控制动作；
+    - 不返回 checkpointRef、errorSummary、SQL、样本数据、连接配置、凭据、内部端点、prompt 或工具参数；
+    - 提供 `leaseExtended`、`stopForPause`、`stopForCancel` 三个工厂方法，分别表达继续执行、暂停停止、取消停止。
+  - 调整 `DataSyncExecutorLeaseController`
+    - `POST /sync-executions/{executionId}/heartbeat` 返回 `SyncExecutionHeartbeatResult`；
+    - 路由注释补充 worker 可见控制协议、状态语义和异常边界。
+  - 调整 `DataSyncExecutorLeaseService`
+    - heartbeat 契约从返回完整实体改为返回低敏心跳协议结果。
+  - 调整 `DataSyncExecutorLeaseServiceImpl`
+    - heartbeat 开始阶段优先解析 `PAUSED/CANCELLED` 控制信号，避免幂等命中吞掉最新停止状态；
+    - RUNNING 正常路径继续走原子 `heartbeatLease` 续租；
+    - `heartbeatLease` 更新 0 行后重新读取最新 execution，若已变成 `PAUSED/CANCELLED` 则返回停止指令；
+    - 非租约持有者不能读取暂停/取消控制信号，继续按 `FORBIDDEN` 拒绝；
+    - 控制信号感知写入低敏审计摘要，只记录控制动作、executorId 和状态，不记录暂停/取消原因原文。
+- 测试变化：
+  - 新增 `DataSyncExecutorLeaseServiceImplHeartbeatControlTest`
+    - 覆盖 RUNNING 心跳续租返回 `CONTINUE`；
+    - 覆盖 PAUSED 心跳返回 `STOP_FOR_PAUSE` 且不续租；
+    - 覆盖 CANCELLED 心跳返回 `STOP_FOR_CANCEL` 且不续租；
+    - 覆盖续租 UPDATE 竞态失败后读取到 CANCELLED 时返回停止指令；
+    - 覆盖 executorId 不匹配时不能读取控制信号。
+- 验证：
+  - Java 定向测试：
+    `mvn -pl data-sync -am "-Dtest=DataSyncExecutorLeaseServiceImplHeartbeatControlTest,SyncTaskLifecycleOperationSupportTest,DataSyncServiceImplProjectScopeTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：16 个测试通过。
+  - Java data-sync 全量测试：
+    `mvn -pl data-sync -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：33 个测试通过，Maven Toolchain 使用 JDK 21。
+- 当前边界：
+  - 本阶段仍不是物理 kill worker，也没有实现完整 connector 执行引擎；
+  - checkpoint、complete、fail 目前会因状态不再是 RUNNING/RETRYING 而被拒绝，但还没有返回同样友好的控制协议；
+  - 执行器是否真正停止仍依赖 worker 客户端遵守 `controlAction`，后续真实 worker SDK 或 Python/Java 执行器需要按该协议落地；
+  - 尚未实现 replay/backfill、批量暂停、连接器维护模式和管理员强制终止。
+- 下一步建议：
+  1. 若继续收敛 data-sync，优先让 checkpoint/complete/fail 对 PAUSED/CANCELLED 给出更清晰的低敏响应，避免 worker 停止后的最后一次回调产生误导；
+  2. 再进入 replay/backfill 与 checkpoint 读取契约，完成失败恢复和重放闭环；
+  3. 然后切到 data-quality 或 permission-admin 的收敛缺口，避免 data-sync 局部继续过深。
+
 ## 2026-06-27 追加落地进展：Java Data Sync 6.1 Task Lifecycle Control Surface
 - 本阶段从 Agent Runtime 局部收口切回数据治理业务主流程，优先补齐 data-sync 任务生命周期控制面，而不是继续扩展某一个连接器或执行器细节。
 - 产品目标：

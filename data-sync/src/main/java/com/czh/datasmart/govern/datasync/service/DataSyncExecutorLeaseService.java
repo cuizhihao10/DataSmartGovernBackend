@@ -13,6 +13,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionClaimReques
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionClaimResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionDeferRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionHeartbeatRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionHeartbeatResult;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 
 /**
@@ -24,7 +25,7 @@ public interface DataSyncExecutorLeaseService {
 
     SyncExecutionClaimResult claimNext(SyncExecutionClaimRequest request, SyncActorContext actorContext);
 
-    SyncExecution heartbeat(Long executionId, SyncExecutionHeartbeatRequest request, SyncActorContext actorContext);
+    SyncExecutionHeartbeatResult heartbeat(Long executionId, SyncExecutionHeartbeatRequest request, SyncActorContext actorContext);
 
     SyncExecution defer(Long executionId, SyncExecutionDeferRequest request, SyncActorContext actorContext);
 
