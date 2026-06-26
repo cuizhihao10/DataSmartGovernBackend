@@ -41,6 +41,34 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
                                        @Param("lastExecutionId") Long lastExecutionId);
 
     /**
+     * 按生命周期控制动作刷新任务主状态。
+     *
+     * <p>为什么不直接在 Service 里使用 updateById：
+     * 1. 暂停、恢复、重试、取消都需要同时更新 current_state、trigger_type、last_execution_id 和人工介入标记；
+     * 2. attention_reason 需要被显式置空，而 MyBatis-Plus 的默认实体更新策略通常不会把 null 写入数据库；
+     * 3. 生命周期动作属于审计敏感操作，最好通过一个明确的 SQL 入口表达“这是一次控制面状态流转”，而不是散落多个实体字段赋值。
+     *
+     * <p>参数语义：
+     * - targetState：动作完成后的任务主状态，例如 PAUSED、QUEUED、RETRYING、CANCELLED；
+     * - triggerType：本次动作是否要刷新触发来源，恢复和重试通常写 MANUAL，暂停和取消可传 null 保留原值；
+     * - lastExecutionId：本次动作是否创建或关联了新的 execution，恢复和重试会写新 executionId，暂停和取消可保留原值。
+     */
+    @Update("""
+            UPDATE data_sync_task
+            SET current_state = #{targetState},
+                trigger_type = COALESCE(#{triggerType}, trigger_type),
+                last_execution_id = COALESCE(#{lastExecutionId}, last_execution_id),
+                attention_required = 0,
+                attention_reason = NULL,
+                update_time = NOW()
+            WHERE id = #{taskId}
+            """)
+    int markLifecycleState(@Param("taskId") Long taskId,
+                           @Param("targetState") String targetState,
+                           @Param("triggerType") String triggerType,
+                           @Param("lastExecutionId") Long lastExecutionId);
+
+    /**
      * 将任务标记为需要人工介入。
      *
      * <p>该状态通常意味着自动执行已经不再安全或不再经济，例如超过最大退避次数、worker 反复失联、

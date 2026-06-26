@@ -18,6 +18,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCompleteReq
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionStartRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateQueryCriteria;
@@ -51,6 +52,33 @@ public interface DataSyncService {
     SyncTask getTask(Long id, SyncActorContext actorContext);
 
     SyncTaskOperationResult runTask(Long id, SyncActorContext actorContext);
+
+    /**
+     * 暂停同步任务。
+     *
+     * <p>暂停属于可恢复的生命周期控制动作，通常用于维护窗口、下游限流、字段映射待确认等场景。
+     * 当前契约只暴露普通用户/项目负责人入口，不包含管理员强制暂停或批量暂停能力。
+     */
+    SyncTaskOperationResult pauseTask(Long id, SyncTaskLifecycleOperationRequest request, SyncActorContext actorContext);
+
+    /**
+     * 恢复已暂停同步任务，并重新创建待执行 execution。
+     */
+    SyncTaskOperationResult resumeTask(Long id, SyncTaskLifecycleOperationRequest request, SyncActorContext actorContext);
+
+    /**
+     * 从失败或部分成功状态发起普通重试。
+     *
+     * <p>人工介入任务的重跑走 attention 专用服务，避免绕过运营确认。
+     */
+    SyncTaskOperationResult retryTask(Long id, SyncTaskLifecycleOperationRequest request, SyncActorContext actorContext);
+
+    /**
+     * 取消同步任务。
+     *
+     * <p>取消会终止任务继续执行的业务意图；已经完成的执行历史不会被篡改。
+     */
+    SyncTaskOperationResult cancelTask(Long id, SyncTaskLifecycleOperationRequest request, SyncActorContext actorContext);
 
     SyncExecution startExecution(Long taskId, Long executionId, SyncExecutionStartRequest request, SyncActorContext actorContext);
 

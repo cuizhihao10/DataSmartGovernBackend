@@ -368,6 +368,10 @@ SET action = CASE
     WHEN http_method = 'GET' THEN 'VIEW'
     WHEN http_method = 'POST' AND path_pattern LIKE '%/validate' THEN 'VALIDATE'
     WHEN http_method = 'POST' AND path_pattern LIKE '%/run' THEN 'RUN'
+    WHEN http_method = 'POST' AND path_pattern LIKE '%/pause' THEN 'PAUSE'
+    WHEN http_method = 'POST' AND path_pattern LIKE '%/resume' THEN 'RESUME'
+    WHEN http_method = 'POST' AND path_pattern LIKE '%/retry' THEN 'RETRY'
+    WHEN http_method = 'POST' AND path_pattern LIKE '%/cancel' THEN 'CANCEL'
     WHEN http_method = 'POST' AND path_pattern = '/api/agent/plan-ingestions' THEN 'INGEST_PLAN'
     WHEN http_method = 'POST' AND path_pattern LIKE '/api/agent/%' THEN 'EXECUTE'
     WHEN http_method = 'POST' AND path_pattern LIKE '/api/permission/project-memberships%/batch-upsert' THEN 'IMPORT'
@@ -491,6 +495,22 @@ VALUES
 (0, '项目负责人启用项目成员', 'PROJECT_OWNER', 'POST', '/api/permission/project-memberships/*/enable', 'PROJECT_MEMBERSHIP', 'ENABLE', 'ALLOW', 145, 1, '项目负责人可启用自己负责项目的非 OWNER 成员授权。', NOW(), NOW()),
 (0, '项目负责人禁用项目成员', 'PROJECT_OWNER', 'POST', '/api/permission/project-memberships/*/disable', 'PROJECT_MEMBERSHIP', 'DISABLE', 'ALLOW', 145, 1, '项目负责人可禁用自己负责项目的非 OWNER 成员授权，禁用记录会保留审计。', NOW(), NOW()),
 (0, '审计员查看项目成员授权', 'AUDITOR', 'GET', '/api/permission/project-memberships/**', 'PROJECT_MEMBERSHIP', 'VIEW', 'ALLOW', 110, 1, '审计员可只读查看项目成员授权，用于授权来源和越权排查。', NOW(), NOW()),
+(0, '普通用户暂停自己的同步任务', 'ORDINARY_USER', 'POST', '/api/sync/sync-tasks/*/pause', 'SYNC_TASK', 'PAUSE', 'ALLOW', 125, 1, '普通用户可暂停自己数据范围内的同步任务；data-sync 服务层仍按 SELF 数据范围校验任务归属。', NOW(), NOW()),
+(0, '普通用户恢复自己的同步任务', 'ORDINARY_USER', 'POST', '/api/sync/sync-tasks/*/resume', 'SYNC_TASK', 'RESUME', 'ALLOW', 125, 1, '普通用户可恢复自己已暂停的同步任务；恢复会创建新的待执行 execution 并写入审计。', NOW(), NOW()),
+(0, '普通用户重试自己的同步任务', 'ORDINARY_USER', 'POST', '/api/sync/sync-tasks/*/retry', 'SYNC_TASK', 'RETRY', 'ALLOW', 125, 1, '普通用户可重试自己失败或部分成功的同步任务；人工介入任务不能绕过 attention 流程。', NOW(), NOW()),
+(0, '普通用户取消自己的同步任务', 'ORDINARY_USER', 'POST', '/api/sync/sync-tasks/*/cancel', 'SYNC_TASK', 'CANCEL', 'ALLOW', 125, 1, '普通用户可取消自己数据范围内尚未归档的同步任务；执行器回调仍由服务账号协议控制。', NOW(), NOW()),
+(0, '项目负责人暂停项目同步任务', 'PROJECT_OWNER', 'POST', '/api/sync/sync-tasks/*/pause', 'SYNC_TASK', 'PAUSE', 'ALLOW', 145, 1, '项目负责人可暂停授权项目内同步任务，用于维护窗口、下游限流或业务冻结。', NOW(), NOW()),
+(0, '项目负责人恢复项目同步任务', 'PROJECT_OWNER', 'POST', '/api/sync/sync-tasks/*/resume', 'SYNC_TASK', 'RESUME', 'ALLOW', 145, 1, '项目负责人可恢复授权项目内已暂停任务，服务层继续按 authorizedProjectIds 收口。', NOW(), NOW()),
+(0, '项目负责人重试项目同步任务', 'PROJECT_OWNER', 'POST', '/api/sync/sync-tasks/*/retry', 'SYNC_TASK', 'RETRY', 'ALLOW', 145, 1, '项目负责人可重试项目范围内失败或部分成功任务，但不能绕过人工介入处置。', NOW(), NOW()),
+(0, '项目负责人取消项目同步任务', 'PROJECT_OWNER', 'POST', '/api/sync/sync-tasks/*/cancel', 'SYNC_TASK', 'CANCEL', 'ALLOW', 145, 1, '项目负责人可取消项目范围内尚未归档的同步任务，取消动作会进入 data-sync 审计。', NOW(), NOW()),
+(0, '运营人员暂停同步任务', 'OPERATOR', 'POST', '/api/sync/sync-tasks/*/pause', 'SYNC_TASK', 'PAUSE', 'ALLOW', 780, 1, '运营人员可在容量、故障或维护窗口场景暂停租户内同步任务，避免继续扩大运行风险。', NOW(), NOW()),
+(0, '运营人员恢复同步任务', 'OPERATOR', 'POST', '/api/sync/sync-tasks/*/resume', 'SYNC_TASK', 'RESUME', 'ALLOW', 780, 1, '运营人员可在确认故障恢复或维护结束后恢复同步任务。', NOW(), NOW()),
+(0, '运营人员重试同步任务', 'OPERATOR', 'POST', '/api/sync/sync-tasks/*/retry', 'SYNC_TASK', 'RETRY', 'ALLOW', 780, 1, '运营人员可对失败或部分成功同步任务发起普通重试；人工介入任务仍走 attention/rerun。', NOW(), NOW()),
+(0, '运营人员取消同步任务', 'OPERATOR', 'POST', '/api/sync/sync-tasks/*/cancel', 'SYNC_TASK', 'CANCEL', 'ALLOW', 780, 1, '运营人员可取消无法继续执行或风险过高的普通同步任务；强制批量取消后续应单独建管理员入口。', NOW(), NOW()),
+(0, '租户管理员暂停同步任务', 'TENANT_ADMINISTRATOR', 'POST', '/api/sync/sync-tasks/*/pause', 'SYNC_TASK', 'PAUSE', 'ALLOW', 760, 1, '租户管理员可暂停本租户同步任务，适合租户级维护窗口和风险止血。', NOW(), NOW()),
+(0, '租户管理员恢复同步任务', 'TENANT_ADMINISTRATOR', 'POST', '/api/sync/sync-tasks/*/resume', 'SYNC_TASK', 'RESUME', 'ALLOW', 760, 1, '租户管理员可恢复本租户已暂停同步任务。', NOW(), NOW()),
+(0, '租户管理员重试同步任务', 'TENANT_ADMINISTRATOR', 'POST', '/api/sync/sync-tasks/*/retry', 'SYNC_TASK', 'RETRY', 'ALLOW', 760, 1, '租户管理员可重试本租户失败或部分成功同步任务。', NOW(), NOW()),
+(0, '租户管理员取消同步任务', 'TENANT_ADMINISTRATOR', 'POST', '/api/sync/sync-tasks/*/cancel', 'SYNC_TASK', 'CANCEL', 'ALLOW', 760, 1, '租户管理员可取消本租户尚未归档同步任务；执行器回调和人工介入仍由更细策略控制。', NOW(), NOW()),
 (0, '运营人员确认同步事故', 'OPERATOR', 'POST', '/api/sync/sync-incidents/*/acknowledge', 'SYNC_INCIDENT', 'ACKNOWLEDGE', 'ALLOW', 780, 1, '运营人员可确认同步事故已经接手，形成事故责任链起点。', NOW(), NOW()),
 (0, '运营人员分派同步事故', 'OPERATOR', 'POST', '/api/sync/sync-incidents/*/assign', 'SYNC_INCIDENT', 'ASSIGN', 'ALLOW', 780, 1, '运营人员可把同步事故分派给具体负责人，避免事故无人跟进。', NOW(), NOW()),
 (0, '运营人员解决同步事故', 'OPERATOR', 'POST', '/api/sync/sync-incidents/*/resolve', 'SYNC_INCIDENT', 'RESOLVE', 'ALLOW', 780, 1, '运营人员可标记同步事故已解决，但关闭仍会留下独立审计动作。', NOW(), NOW()),

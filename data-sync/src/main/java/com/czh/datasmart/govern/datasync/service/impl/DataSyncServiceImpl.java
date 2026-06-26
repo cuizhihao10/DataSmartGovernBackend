@@ -22,6 +22,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCompleteReq
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionStartRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateQueryCriteria;
@@ -44,6 +45,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncDataVisibility;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionCreationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLifecycleSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskStateMachineSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateValidationSupport;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
@@ -89,6 +91,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncAuditSupport auditSupport;
     private final SyncExecutionLifecycleSupport executionLifecycleSupport;
     private final SyncExecutionCreationSupport executionCreationSupport;
+    private final SyncTaskLifecycleOperationSupport taskLifecycleOperationSupport;
 
     @Override
     @Transactional
@@ -259,6 +262,42 @@ public class DataSyncServiceImpl implements DataSyncService {
                 actorContext, "taskId=" + task.getId() + ",executionId=" + execution.getId());
         return new SyncTaskOperationResult(task.getId(), task.getCurrentState(),
                 "同步任务已进入待执行队列，执行记录 ID=" + execution.getId() + "；后续将接入执行器、checkpoint 和任务中心协议");
+    }
+
+    @Override
+    @Transactional
+    public SyncTaskOperationResult pauseTask(Long id,
+                                             SyncTaskLifecycleOperationRequest request,
+                                             SyncActorContext actorContext) {
+        SyncTask task = getTask(id, actorContext);
+        return taskLifecycleOperationSupport.pauseTask(task, request, actorContext);
+    }
+
+    @Override
+    @Transactional
+    public SyncTaskOperationResult resumeTask(Long id,
+                                              SyncTaskLifecycleOperationRequest request,
+                                              SyncActorContext actorContext) {
+        SyncTask task = getTask(id, actorContext);
+        return taskLifecycleOperationSupport.resumeTask(task, request, actorContext);
+    }
+
+    @Override
+    @Transactional
+    public SyncTaskOperationResult retryTask(Long id,
+                                             SyncTaskLifecycleOperationRequest request,
+                                             SyncActorContext actorContext) {
+        SyncTask task = getTask(id, actorContext);
+        return taskLifecycleOperationSupport.retryTask(task, request, actorContext);
+    }
+
+    @Override
+    @Transactional
+    public SyncTaskOperationResult cancelTask(Long id,
+                                              SyncTaskLifecycleOperationRequest request,
+                                              SyncActorContext actorContext) {
+        SyncTask task = getTask(id, actorContext);
+        return taskLifecycleOperationSupport.cancelTask(task, request, actorContext);
     }
 
     @Override

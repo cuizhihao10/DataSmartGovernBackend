@@ -1,4 +1,65 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-27 追加落地进展：Java Data Sync 6.1 Task Lifecycle Control Surface
+- 本阶段从 Agent Runtime 局部收口切回数据治理业务主流程，优先补齐 data-sync 任务生命周期控制面，而不是继续扩展某一个连接器或执行器细节。
+- 产品目标：
+  - 让同步任务不只停留在“创建、查询、运行”，而是具备暂停、恢复、重试、取消四个基础运营动作；
+  - 让用户动作、执行记录和审计动作形成闭环，便于前端运营台、项目负责人、运维人员和审计人员理解任务处置过程；
+  - 区分普通 retry 与人工介入 rerun，避免 `AWAITING_OPERATOR_ACTION` 被普通用户绕过；
+  - 对运行中任务采用“控制面协作信号”语义：服务端更新 task/execution 状态，后续 worker 通过心跳、checkpoint 或结果回调感知并停止写入；
+  - 继续保持文件拆分和行数约束，避免 `DataSyncServiceImpl` 因状态机扩展超过 500 行。
+- 新增与调整：
+  - 新增 `SyncTaskLifecycleOperationRequest`
+    - 提供可选 `reason` 字段；
+    - 注释说明 reason 会进入审计摘要，不能填写密码、token、SQL、prompt、样本数据或连接串。
+  - 扩展 `SyncTaskStateMachineSupport`
+    - 新增 `assertCanPause`、`assertCanResume`、`assertCanRetry`、`assertCanCancel`；
+    - 明确 pause/resume/retry/cancel 的允许状态集合；
+    - 明确 `AWAITING_OPERATOR_ACTION` 必须走 attention 专用入口。
+  - 扩展 `SyncTaskMapper`
+    - 新增 `markLifecycleState(...)`；
+    - 使用显式 SQL 同时刷新 `current_state`、`trigger_type`、`last_execution_id`；
+    - 显式清空 `attention_required/attention_reason`，避免 MyBatis-Plus null 更新策略残留旧人工介入原因。
+  - 新增 `SyncTaskLifecycleOperationSupport`
+    - 集中实现 pause/resume/retry/cancel；
+    - pause 可把最近 QUEUED/RUNNING/RETRYING execution 标记为 PAUSED；
+    - resume 创建新的 QUEUED execution，并把 task 回到 QUEUED；
+    - retry 创建新的 QUEUED execution，并把 task 标记为 RETRYING；
+    - cancel 可把最近 QUEUED/RUNNING/RETRYING/PAUSED execution 标记为 CANCELLED；
+    - 对用户填写的 reason 做空白压缩、长度裁剪和敏感关键词兜底脱敏。
+  - 扩展 `DataSyncService` 与 `DataSyncServiceImpl`
+    - 新增 `pauseTask`、`resumeTask`、`retryTask`、`cancelTask` 契约；
+    - `DataSyncServiceImpl` 只做权限范围校验后的薄委托，核心状态流转留在 support 中。
+  - 扩展 `DataSyncTaskController`
+    - 新增 `POST /sync-tasks/{id}/pause`；
+    - 新增 `POST /sync-tasks/{id}/resume`；
+    - 新增 `POST /sync-tasks/{id}/retry`；
+    - 新增 `POST /sync-tasks/{id}/cancel`；
+    - 路由注释说明 path、request.reason、低敏返回、协作式暂停/取消边界。
+  - 扩展 `SyncAuditActionType`
+    - 新增 `PAUSE_TASK`、`RESUME_TASK`、`RETRY_TASK`、`CANCEL_TASK`；
+    - 注释区分普通运行、普通重试、人工介入重跑和人工介入取消。
+  - 更新 permission-admin 初始化与迁移 SQL
+    - `permission-admin.sql` 的 action 推断补齐 `PAUSE/RESUME/RETRY/CANCEL`；
+    - 新增 `20260627_data_sync_task_lifecycle_route_policy.sql`；
+    - 为 `ORDINARY_USER`、`PROJECT_OWNER`、`OPERATOR`、`TENANT_ADMINISTRATOR` 补充同步任务普通生命周期按钮权限；
+    - 保持人工介入 attention 与执行器回调仍由更高优先级策略单独控制，服务账号不默认拥有人工按钮动作。
+- 验证：
+  - Java 定向测试：
+    `mvn -pl data-sync -am "-Dtest=SyncTaskLifecycleOperationSupportTest,DataSyncServiceImplProjectScopeTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：11 个测试通过。
+  - Java data-sync 全量测试：
+    `mvn -pl data-sync -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：28 个测试通过，Maven Toolchain 使用 JDK 21。
+- 当前边界：
+  - 本阶段不是物理 kill worker，也不是完整 connector 执行引擎；
+  - 运行中暂停/取消依赖 worker 后续遵守控制面状态，后续应在 heartbeat/checkpoint 协议中补“检测到 PAUSED/CANCELLED 后主动停止”的响应语义；
+  - 暂未实现 replay/backfill/schedule/approve，也没有新增批量暂停、管理员强制取消或连接器维护模式；
+  - 当前已让 data-sync 从“能入队”推进到“可运营控制”，适合作为业务闭环继续收敛的基础。
+- 下一步建议：
+  1. data-sync 下一步优先补 execution 侧对 PAUSED/CANCELLED 的 worker 可见响应，让控制面信号真正影响执行器；
+  2. 再补 replay/backfill 的 API 契约与 checkpoint 语义，完成数据同步失败恢复闭环；
+  3. 并行推进 data-quality 或 permission-admin 的业务闭环，避免继续只在 data-sync 单模块无限加深。
+
 ## 2026-06-27 追加落地进展：Java Agent Runtime 5.113 Command Task Final-State Callback Dispatch
 - 本阶段承接 5.108 的 command task final-state reconciliation 与 5.112 的 Agent 执行安全收口要求，不继续扩展 command runner、artifact 预览、grant 字段或对象存储响应，而是把“只读最终态建议”推进为“受控写回 task-management 的回调桥”。
 - 产品目标：

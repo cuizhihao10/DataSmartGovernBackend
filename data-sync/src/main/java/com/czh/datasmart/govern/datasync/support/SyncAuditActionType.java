@@ -15,7 +15,34 @@ public enum SyncAuditActionType {
     CREATE_TEMPLATE,
     VALIDATE_TEMPLATE,
     CREATE_TASK,
+    /**
+     * 普通运行或执行器生命周期回调。
+     *
+     * <p>该动作覆盖手动入队、执行器认领、心跳、退避、开始执行、完成执行等“运行链路”事件。
+     */
     RUN_TASK,
+    /**
+     * 普通用户或项目负责人主动暂停同步任务。
+     *
+     * <p>暂停不是终态，后续可通过 RESUME_TASK 恢复；运行中的任务采用协作式暂停语义。
+     */
+    PAUSE_TASK,
+    /**
+     * 从 PAUSED 状态恢复同步任务，并创建新的待执行 execution。
+     */
+    RESUME_TASK,
+    /**
+     * 从 FAILED 或 PARTIALLY_SUCCEEDED 状态发起普通重试。
+     *
+     * <p>AWAITING_OPERATOR_ACTION 的重跑不使用该动作，而使用 RERUN_ATTENTION_TASK，避免绕过运营介入闭环。
+     */
+    RETRY_TASK,
+    /**
+     * 普通生命周期取消动作。
+     *
+     * <p>该动作面向非人工介入任务；人工介入任务关闭到取消态时使用 CANCEL_ATTENTION_TASK。
+     */
+    CANCEL_TASK,
     CREATE_EXECUTION,
     UPDATE_CHECKPOINT,
     RECORD_ERROR_SAMPLE,

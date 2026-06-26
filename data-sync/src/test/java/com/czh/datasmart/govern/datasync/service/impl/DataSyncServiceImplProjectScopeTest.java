@@ -26,6 +26,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncDataScopeSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionCreationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLifecycleSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskStateMachineSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateValidationSupport;
 import org.junit.jupiter.api.Test;
@@ -184,7 +185,8 @@ class DataSyncServiceImplProjectScopeTest {
                 mock(SyncTaskStateMachineSupport.class),
                 auditSupport,
                 mock(SyncExecutionLifecycleSupport.class),
-                mock(SyncExecutionCreationSupport.class)
+                mock(SyncExecutionCreationSupport.class),
+                mock(SyncTaskLifecycleOperationSupport.class)
         );
     }
 
@@ -235,7 +237,8 @@ class DataSyncServiceImplProjectScopeTest {
                 mock(SyncTaskStateMachineSupport.class),
                 auditSupport,
                 mock(SyncExecutionLifecycleSupport.class),
-                mock(SyncExecutionCreationSupport.class)
+                mock(SyncExecutionCreationSupport.class),
+                mock(SyncTaskLifecycleOperationSupport.class)
         );
     }
 
