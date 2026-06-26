@@ -372,6 +372,8 @@ SET action = CASE
     WHEN http_method = 'POST' AND path_pattern LIKE '%/resume' THEN 'RESUME'
     WHEN http_method = 'POST' AND path_pattern LIKE '%/retry' THEN 'RETRY'
     WHEN http_method = 'POST' AND path_pattern LIKE '%/cancel' THEN 'CANCEL'
+    WHEN http_method = 'POST' AND path_pattern LIKE '%/replay' THEN 'REPLAY'
+    WHEN http_method = 'POST' AND path_pattern LIKE '%/backfill' THEN 'BACKFILL'
     WHEN http_method = 'POST' AND path_pattern = '/api/agent/plan-ingestions' THEN 'INGEST_PLAN'
     WHEN http_method = 'POST' AND path_pattern LIKE '/api/agent/%' THEN 'EXECUTE'
     WHEN http_method = 'POST' AND path_pattern LIKE '/api/permission/project-memberships%/batch-upsert' THEN 'IMPORT'
@@ -499,18 +501,28 @@ VALUES
 (0, '普通用户恢复自己的同步任务', 'ORDINARY_USER', 'POST', '/api/sync/sync-tasks/*/resume', 'SYNC_TASK', 'RESUME', 'ALLOW', 125, 1, '普通用户可恢复自己已暂停的同步任务；恢复会创建新的待执行 execution 并写入审计。', NOW(), NOW()),
 (0, '普通用户重试自己的同步任务', 'ORDINARY_USER', 'POST', '/api/sync/sync-tasks/*/retry', 'SYNC_TASK', 'RETRY', 'ALLOW', 125, 1, '普通用户可重试自己失败或部分成功的同步任务；人工介入任务不能绕过 attention 流程。', NOW(), NOW()),
 (0, '普通用户取消自己的同步任务', 'ORDINARY_USER', 'POST', '/api/sync/sync-tasks/*/cancel', 'SYNC_TASK', 'CANCEL', 'ALLOW', 125, 1, '普通用户可取消自己数据范围内尚未归档的同步任务；执行器回调仍由服务账号协议控制。', NOW(), NOW()),
+(0, '普通用户回放自己的同步任务', 'ORDINARY_USER', 'POST', '/api/sync/sync-tasks/*/replay', 'SYNC_TASK', 'REPLAY', 'ALLOW', 124, 1, '普通用户可在自己数据范围内从历史 execution 或 checkpoint 发起回放；data-sync 服务层仍会校验任务归属、来源执行记录和低敏恢复计划。', NOW(), NOW()),
+(0, '普通用户补数自己的同步任务', 'ORDINARY_USER', 'POST', '/api/sync/sync-tasks/*/backfill', 'SYNC_TASK', 'BACKFILL', 'ALLOW', 124, 1, '普通用户可为自己数据范围内任务提交低敏补数窗口；大规模补数、批量补数和跨项目补数后续应接审批或管理员入口。', NOW(), NOW()),
 (0, '项目负责人暂停项目同步任务', 'PROJECT_OWNER', 'POST', '/api/sync/sync-tasks/*/pause', 'SYNC_TASK', 'PAUSE', 'ALLOW', 145, 1, '项目负责人可暂停授权项目内同步任务，用于维护窗口、下游限流或业务冻结。', NOW(), NOW()),
 (0, '项目负责人恢复项目同步任务', 'PROJECT_OWNER', 'POST', '/api/sync/sync-tasks/*/resume', 'SYNC_TASK', 'RESUME', 'ALLOW', 145, 1, '项目负责人可恢复授权项目内已暂停任务，服务层继续按 authorizedProjectIds 收口。', NOW(), NOW()),
 (0, '项目负责人重试项目同步任务', 'PROJECT_OWNER', 'POST', '/api/sync/sync-tasks/*/retry', 'SYNC_TASK', 'RETRY', 'ALLOW', 145, 1, '项目负责人可重试项目范围内失败或部分成功任务，但不能绕过人工介入处置。', NOW(), NOW()),
 (0, '项目负责人取消项目同步任务', 'PROJECT_OWNER', 'POST', '/api/sync/sync-tasks/*/cancel', 'SYNC_TASK', 'CANCEL', 'ALLOW', 145, 1, '项目负责人可取消项目范围内尚未归档的同步任务，取消动作会进入 data-sync 审计。', NOW(), NOW()),
+(0, '项目负责人回放项目同步任务', 'PROJECT_OWNER', 'POST', '/api/sync/sync-tasks/*/replay', 'SYNC_TASK', 'REPLAY', 'ALLOW', 144, 1, '项目负责人可在授权项目内发起同步回放，用于失败恢复、下游重建或错误写入修复；恢复计划只保存低敏来源坐标。', NOW(), NOW()),
+(0, '项目负责人补数项目同步任务', 'PROJECT_OWNER', 'POST', '/api/sync/sync-tasks/*/backfill', 'SYNC_TASK', 'BACKFILL', 'ALLOW', 144, 1, '项目负责人可在授权项目内提交历史补数窗口；后续可按补数规模接入审批、容量预估和执行窗口策略。', NOW(), NOW()),
 (0, '运营人员暂停同步任务', 'OPERATOR', 'POST', '/api/sync/sync-tasks/*/pause', 'SYNC_TASK', 'PAUSE', 'ALLOW', 780, 1, '运营人员可在容量、故障或维护窗口场景暂停租户内同步任务，避免继续扩大运行风险。', NOW(), NOW()),
 (0, '运营人员恢复同步任务', 'OPERATOR', 'POST', '/api/sync/sync-tasks/*/resume', 'SYNC_TASK', 'RESUME', 'ALLOW', 780, 1, '运营人员可在确认故障恢复或维护结束后恢复同步任务。', NOW(), NOW()),
 (0, '运营人员重试同步任务', 'OPERATOR', 'POST', '/api/sync/sync-tasks/*/retry', 'SYNC_TASK', 'RETRY', 'ALLOW', 780, 1, '运营人员可对失败或部分成功同步任务发起普通重试；人工介入任务仍走 attention/rerun。', NOW(), NOW()),
 (0, '运营人员取消同步任务', 'OPERATOR', 'POST', '/api/sync/sync-tasks/*/cancel', 'SYNC_TASK', 'CANCEL', 'ALLOW', 780, 1, '运营人员可取消无法继续执行或风险过高的普通同步任务；强制批量取消后续应单独建管理员入口。', NOW(), NOW()),
+(0, '运营人员回放同步任务', 'OPERATOR', 'POST', '/api/sync/sync-tasks/*/replay', 'SYNC_TASK', 'REPLAY', 'ALLOW', 779, 1, '运营人员可在事故恢复、客户修复和下游重建场景发起同步回放；所有动作进入 data-sync 审计。', NOW(), NOW()),
+(0, '运营人员补数同步任务', 'OPERATOR', 'POST', '/api/sync/sync-tasks/*/backfill', 'SYNC_TASK', 'BACKFILL', 'ALLOW', 779, 1, '运营人员可提交租户内低敏补数窗口，用于历史缺口修复、晚到数据补齐和分区级重刷。', NOW(), NOW()),
 (0, '租户管理员暂停同步任务', 'TENANT_ADMINISTRATOR', 'POST', '/api/sync/sync-tasks/*/pause', 'SYNC_TASK', 'PAUSE', 'ALLOW', 760, 1, '租户管理员可暂停本租户同步任务，适合租户级维护窗口和风险止血。', NOW(), NOW()),
 (0, '租户管理员恢复同步任务', 'TENANT_ADMINISTRATOR', 'POST', '/api/sync/sync-tasks/*/resume', 'SYNC_TASK', 'RESUME', 'ALLOW', 760, 1, '租户管理员可恢复本租户已暂停同步任务。', NOW(), NOW()),
 (0, '租户管理员重试同步任务', 'TENANT_ADMINISTRATOR', 'POST', '/api/sync/sync-tasks/*/retry', 'SYNC_TASK', 'RETRY', 'ALLOW', 760, 1, '租户管理员可重试本租户失败或部分成功同步任务。', NOW(), NOW()),
 (0, '租户管理员取消同步任务', 'TENANT_ADMINISTRATOR', 'POST', '/api/sync/sync-tasks/*/cancel', 'SYNC_TASK', 'CANCEL', 'ALLOW', 760, 1, '租户管理员可取消本租户尚未归档同步任务；执行器回调和人工介入仍由更细策略控制。', NOW(), NOW()),
+(0, '租户管理员回放同步任务', 'TENANT_ADMINISTRATOR', 'POST', '/api/sync/sync-tasks/*/replay', 'SYNC_TASK', 'REPLAY', 'ALLOW', 759, 1, '租户管理员可在本租户范围内发起同步回放，适合租户级恢复和客户支持场景。', NOW(), NOW()),
+(0, '租户管理员补数同步任务', 'TENANT_ADMINISTRATOR', 'POST', '/api/sync/sync-tasks/*/backfill', 'SYNC_TASK', 'BACKFILL', 'ALLOW', 759, 1, '租户管理员可在本租户范围内提交补数窗口；超大规模补数后续应结合容量与审批策略。', NOW(), NOW()),
+(0, '服务账号禁止人工回放同步任务', 'SERVICE_ACCOUNT', 'POST', '/api/sync/sync-tasks/*/replay', 'SYNC_TASK', 'REPLAY', 'DENY', 900, 1, '服务账号默认不能调用人工回放入口；worker 应通过受控 execution 租约和恢复计划消费链路运行。', NOW(), NOW()),
+(0, '服务账号禁止人工补数同步任务', 'SERVICE_ACCOUNT', 'POST', '/api/sync/sync-tasks/*/backfill', 'SYNC_TASK', 'BACKFILL', 'DENY', 900, 1, '服务账号默认不能调用人工补数入口，避免机器身份绕过确认、审计和后续审批流程。', NOW(), NOW()),
 (0, '运营人员确认同步事故', 'OPERATOR', 'POST', '/api/sync/sync-incidents/*/acknowledge', 'SYNC_INCIDENT', 'ACKNOWLEDGE', 'ALLOW', 780, 1, '运营人员可确认同步事故已经接手，形成事故责任链起点。', NOW(), NOW()),
 (0, '运营人员分派同步事故', 'OPERATOR', 'POST', '/api/sync/sync-incidents/*/assign', 'SYNC_INCIDENT', 'ASSIGN', 'ALLOW', 780, 1, '运营人员可把同步事故分派给具体负责人，避免事故无人跟进。', NOW(), NOW()),
 (0, '运营人员解决同步事故', 'OPERATOR', 'POST', '/api/sync/sync-incidents/*/resolve', 'SYNC_INCIDENT', 'RESOLVE', 'ALLOW', 780, 1, '运营人员可标记同步事故已解决，但关闭仍会留下独立审计动作。', NOW(), NOW()),

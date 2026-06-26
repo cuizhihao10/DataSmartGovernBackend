@@ -1,4 +1,68 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-27 追加落地进展：Java Data Sync 6.4 Replay Backfill Recovery Contract
+- 本阶段承接 Data Sync 6.3 的执行停止闭环，补齐失败恢复与历史补数的控制面契约，但仍不扩展成完整 connector worker 或真实数据搬运引擎。
+- 产品目标：
+  - 将 replay/backfill 从“未来说明”推进为可审计、可授权、可持久化的 API 契约；
+  - replay 能基于历史 execution 或 checkpoint 派生新的 `QUEUED` execution；
+  - backfill 能按时间窗口、分区窗口或业务分片创建低敏补数计划；
+  - 权限矩阵中明确区分 `RUN`、`RETRY`、`REPLAY`、`BACKFILL`，避免高影响恢复动作被普通运行权限隐式覆盖；
+  - 恢复计划不保存 SQL、连接串、密码、token、prompt、样本数据、模型输出或完整工具参数。
+- 新增与调整：
+  - 新增 `SyncTaskRecoveryOperationRequest`
+    - 统一承载 replay/backfill 的来源 execution、来源 checkpoint、窗口边界、分片选择器和操作原因；
+    - 注释明确这些字段会进入恢复计划和审计摘要，调用方不得写入敏感内容。
+  - 新增 `SyncExecutionRecoveryPlan` 与 `SyncExecutionRecoveryPlanMapper`
+    - 新增 `data_sync_execution_recovery_plan` 持久化契约；
+    - 记录 `recoveryType/sourceExecutionId/sourceCheckpointId/windowStart/windowEnd/shardOrPartition/planState`；
+    - `executionId` 唯一，便于后续 worker 认领 execution 后读取恢复计划。
+  - 新增 `SyncTaskRecoveryOperationSupport`
+    - 集中实现 replay/backfill 状态准入、来源 execution 校验、checkpoint 解析、低敏窗口校验、计划创建、任务入队和审计；
+    - replay 默认使用任务最近 execution，并在未显式传 checkpoint 时读取来源 execution 最新 checkpoint；
+    - backfill 至少要求 `windowStart/windowEnd/shardOrPartition` 之一，避免无边界补数退化成普通 run；
+    - 拒绝 `QUEUED/RUNNING/RETRYING/PAUSED/AWAITING_OPERATOR_ACTION/ARCHIVED` 等不适合直接恢复的状态。
+  - 扩展 `DataSyncService`、`DataSyncServiceImpl` 与 `DataSyncTaskController`
+    - 新增 `POST /sync-tasks/{id}/replay`；
+    - 新增 `POST /sync-tasks/{id}/backfill`；
+    - 主 Service 只负责读取任务与数据范围校验，恢复业务细节委托给 support，避免 `DataSyncServiceImpl` 继续膨胀。
+  - 扩展 `SyncExecutionCreationSupport`
+    - 新增指定 `SyncTriggerType` 的 `createQueuedExecution(...)` 重载；
+    - replay/backfill execution 会写入 `REPLAY/BACKFILL` 触发方式，便于运营筛选、审计统计和后续 worker 调度。
+  - 扩展 SQL 与权限种子
+    - `docker/mysql/init/init.sql` 新增恢复计划表；
+    - 新增 `20260627_data_sync_replay_backfill_recovery_plan.sql`；
+    - 新增 `20260627_data_sync_replay_backfill_route_policy.sql`；
+    - `permission-admin.sql` 补齐 `REPLAY/BACKFILL` action 语义和角色策略，服务账号默认 deny 人工恢复入口。
+- 测试变化：
+  - 新增 `SyncTaskRecoveryOperationSupportTest`
+    - 覆盖 replay 未传 checkpoint 时选择来源 execution 最新 checkpoint；
+    - 覆盖 backfill 空窗口在创建 execution 前被拒绝；
+    - 覆盖 backfill 创建新 execution、恢复计划、任务 QUEUED 状态和审计；
+    - 覆盖 RUNNING 任务不能直接 replay。
+  - 更新 `DataSyncServiceImplProjectScopeTest`
+    - 适配主 Service 新增的恢复 support 依赖，保证原有 PROJECT 数据范围测试继续通过。
+- 验证：
+  - Java 定向测试：
+    `mvn -pl data-sync -am "-Dtest=SyncTaskRecoveryOperationSupportTest,DataSyncServiceImplProjectScopeTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：10 个测试通过。
+  - Java data-sync 全量测试：
+    `mvn -pl data-sync -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：46 个测试通过。
+  - Maven Toolchain 使用 JDK 21：`C:\Users\Cui\.jdks\temurin-21.0.10`。
+- 行数检查：
+  - `DataSyncServiceImpl.java`：493 行；
+  - `SyncTaskRecoveryOperationSupport.java`：426 行；
+  - `DataSyncTaskController.java`：217 行；
+  - 本批新增/修改核心 Java 文件均低于 500 行。
+- 当前边界：
+  - 本阶段只完成 replay/backfill 控制面契约，不执行真实源端读取或目标端写入；
+  - 暂未实现恢复计划的 worker 领取、`CLAIMED/CONSUMED/CANCELLED` 状态推进、补数容量预估、批量补数审批和分区并行；
+  - backfill 窗口仍是连接器无关的低敏字符串，未来接 connector capability 后可演进为强类型 schema；
+  - replay/backfill 已具备 API、权限、审计、持久化、状态流转和测试闭环，适合作为 worker SDK 的下一步输入契约。
+- 下一步建议：
+  1. data-sync 如果继续收敛，优先做 worker 侧读取 recovery plan 的最小消费契约，而不是再新增大量按钮；
+  2. 随后切到 data-quality 或 permission-admin 的闭环缺口，避免 Java data-sync 局部继续过深；
+  3. Agent 侧后续可把 ToolPlan 中的数据恢复动作映射到 replay/backfill API，并走同一权限与审计链路。
+
 ## 2026-06-27 追加落地进展：Java Data Sync 6.3 Callback Stop-Signal Guard
 - 本阶段承接 Data Sync 6.2 的 heartbeat 控制信号，不继续新增按钮、连接器或执行引擎，而是补齐 `checkpoint/complete/fail` 在暂停/取消后的防写入语义。
 - 产品目标：

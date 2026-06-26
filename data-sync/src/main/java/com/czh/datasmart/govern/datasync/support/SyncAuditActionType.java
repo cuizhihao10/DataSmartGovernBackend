@@ -43,6 +43,18 @@ public enum SyncAuditActionType {
      * <p>该动作面向非人工介入任务；人工介入任务关闭到取消态时使用 CANCEL_ATTENTION_TASK。
      */
     CANCEL_TASK,
+    /**
+     * 从历史 execution 或 checkpoint 发起回放。
+     *
+     * <p>回放常用于失败恢复、下游重建或修复错误写入，必须和普通 retry 区分审计口径。
+     */
+    REPLAY_TASK,
+    /**
+     * 按窗口或分区发起历史补数。
+     *
+     * <p>补数通常是运维或项目负责人操作，可能影响大量历史数据，因此需要独立审计动作。
+     */
+    BACKFILL_TASK,
     CREATE_EXECUTION,
     UPDATE_CHECKPOINT,
     RECORD_ERROR_SAMPLE,

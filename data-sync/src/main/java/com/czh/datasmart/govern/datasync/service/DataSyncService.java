@@ -21,6 +21,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionStartReques
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateQueryCriteria;
 import com.czh.datasmart.govern.datasync.entity.SyncAuditRecord;
 import com.czh.datasmart.govern.datasync.entity.SyncCheckpoint;
@@ -79,6 +80,24 @@ public interface DataSyncService {
      * <p>取消会终止任务继续执行的业务意图；已经完成的执行历史不会被篡改。
      */
     SyncTaskOperationResult cancelTask(Long id, SyncTaskLifecycleOperationRequest request, SyncActorContext actorContext);
+
+    /**
+     * 从历史 execution 或 checkpoint 发起同步回放。
+     *
+     * <p>回放不是普通 retry：
+     * retry 表达“同一个失败任务再跑一次”，replay 表达“基于某次历史执行或断点重新派生一次恢复性执行”。
+     * 因此请求需要携带 sourceExecutionId/sourceCheckpointId，服务层会创建新的 QUEUED execution 和恢复计划，
+     * 后续 worker 再根据 executionId 读取恢复计划执行真实数据搬运。
+     */
+    SyncTaskOperationResult replayTask(Long id, SyncTaskRecoveryOperationRequest request, SyncActorContext actorContext);
+
+    /**
+     * 按时间窗口、分区窗口或业务分片发起历史补数。
+     *
+     * <p>补数用于处理历史缺口、晚到数据、客户指定时间段重刷或分区级修复。
+     * 当前服务只保存低敏恢复计划，不在 API 层接收 SQL、样本数据、连接串或完整工具参数。
+     */
+    SyncTaskOperationResult backfillTask(Long id, SyncTaskRecoveryOperationRequest request, SyncActorContext actorContext);
 
     SyncExecution startExecution(Long taskId, Long executionId, SyncExecutionStartRequest request, SyncActorContext actorContext);
 

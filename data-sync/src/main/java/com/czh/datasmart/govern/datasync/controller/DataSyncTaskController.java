@@ -14,6 +14,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.support.SyncActorContextHeaderSupport;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.service.DataSyncService;
@@ -199,6 +200,59 @@ public class DataSyncTaskController {
             @RequestHeader HttpHeaders headers) {
         return PlatformApiResponse.success("同步任务已提交取消",
                 dataSyncService.cancelTask(id, request, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * 从历史 execution 或 checkpoint 发起同步回放。
+     *
+     * <p>路由语义：
+     * - path 中的 id 表示被回放的同步任务；
+     * - request.sourceExecutionId 可指定来源执行记录，不传时默认使用任务最近 execution；
+     * - request.sourceCheckpointId 可指定来源 checkpoint，不传时服务端尝试选择来源 execution 最新 checkpoint；
+     * - 返回值只给出任务 ID、目标状态、新 executionId 与恢复计划摘要，不返回 SQL、样本数据、连接串或 worker 内部参数。
+     *
+     * <p>设计意图：
+     * replay 是“恢复性派生执行”，不是普通 retry。服务端会创建新的 QUEUED execution，
+     * 并把来源 execution/checkpoint 写入恢复计划表。未来 data-sync worker 认领该 execution 后，
+     * 再按恢复计划决定从哪个断点重新读取。
+     */
+    @PostMapping("/{id}/replay")
+    public PlatformApiResponse<SyncTaskOperationResult> replayTask(
+            @PathVariable Long id,
+            @Valid @RequestBody(required = false) SyncTaskRecoveryOperationRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务回放计划已提交",
+                dataSyncService.replayTask(id, request, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * 按时间窗口、分区窗口或业务分片发起同步补数。
+     *
+     * <p>路由语义：
+     * - windowStart/windowEnd 用于描述补数边界，当前保持字符串以兼容 MySQL 时间戳、Kafka offset 时间、文件目录日期等不同连接器；
+     * - shardOrPartition 用于表达分区、分片或业务桶；
+     * - 三者至少提供一个，否则补数动作无法解释“补什么范围”，服务层会返回 BAD_REQUEST；
+     * - reason 进入审计摘要，服务层会做基础低敏兜底，禁止把 SQL、prompt、凭据、样本数据或完整工具参数写入控制面。
+     *
+     * <p>执行边界：
+     * 当前接口只创建恢复计划和待执行 execution，不直接触达源端/目标端。
+     * 这样可以先把 API、权限、审计和 worker 契约闭合起来，再在后续批次接真实连接器执行。
+     */
+    @PostMapping("/{id}/backfill")
+    public PlatformApiResponse<SyncTaskOperationResult> backfillTask(
+            @PathVariable Long id,
+            @Valid @RequestBody(required = false) SyncTaskRecoveryOperationRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务补数计划已提交",
+                dataSyncService.backfillTask(id, request, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
     }
 
     private SyncActorContext actorContext(Long tenantId, Long actorId, String actorRole, String traceId, HttpHeaders headers) {

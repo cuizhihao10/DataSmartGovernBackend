@@ -44,6 +44,18 @@ public class SyncExecutionCreationSupport {
      * @return 已持久化的 QUEUED execution
      */
     public SyncExecution createQueuedExecution(SyncTask task, SyncActorContext actorContext) {
+        return createQueuedExecution(task, actorContext, SyncTriggerType.MANUAL);
+    }
+
+    /**
+     * 创建指定触发类型的待执行记录。
+     *
+     * <p>普通手动运行、恢复和重试可以继续使用默认 MANUAL；
+     * replay/backfill 则必须写入专属 triggerType，否则执行历史、审计统计和未来 worker 调度都无法区分“普通运行”和“恢复性运行”。
+     */
+    public SyncExecution createQueuedExecution(SyncTask task,
+                                               SyncActorContext actorContext,
+                                               SyncTriggerType triggerType) {
         SyncExecution execution = new SyncExecution();
         execution.setTenantId(task.getTenantId());
         execution.setProjectId(task.getProjectId());
@@ -51,7 +63,7 @@ public class SyncExecutionCreationSupport {
         execution.setSyncTaskId(task.getId());
         execution.setExecutionNo(nextExecutionNo(task.getId()));
         execution.setExecutionState(SyncExecutionState.QUEUED.name());
-        execution.setTriggerType(SyncTriggerType.MANUAL.name());
+        execution.setTriggerType(triggerType == null ? SyncTriggerType.MANUAL.name() : triggerType.name());
         execution.setQueuedAt(LocalDateTime.now());
         execution.setRecordsRead(0L);
         execution.setRecordsWritten(0L);
@@ -61,7 +73,9 @@ public class SyncExecutionCreationSupport {
         execution.setUpdateTime(LocalDateTime.now());
         executionMapper.insert(execution);
         auditSupport.saveAudit(task.getTenantId(), task.getId(), execution.getId(), SyncAuditActionType.CREATE_EXECUTION,
-                actorContext, "executionNo=" + execution.getExecutionNo() + ",state=" + execution.getExecutionState());
+                actorContext, "executionNo=" + execution.getExecutionNo()
+                        + ",state=" + execution.getExecutionState()
+                        + ",triggerType=" + execution.getTriggerType());
         return execution;
     }
 

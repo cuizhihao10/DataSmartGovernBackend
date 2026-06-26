@@ -25,6 +25,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionStartReques
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateQueryCriteria;
 import com.czh.datasmart.govern.datasync.entity.SyncAuditRecord;
 import com.czh.datasmart.govern.datasync.entity.SyncCheckpoint;
@@ -46,6 +47,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncExecutionCreationSu
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLifecycleSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskRecoveryOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskStateMachineSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateValidationSupport;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
@@ -74,10 +76,6 @@ import java.util.Locale;
 @RequiredArgsConstructor
 public class DataSyncServiceImpl implements DataSyncService {
 
-    private static final long DEFAULT_CURRENT = 1L;
-    private static final long DEFAULT_PAGE_SIZE = 20L;
-    private static final long MAX_PAGE_SIZE = 200L;
-
     private final SyncTemplateMapper templateMapper;
     private final SyncTaskMapper taskMapper;
     private final SyncExecutionMapper executionMapper;
@@ -92,6 +90,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncExecutionLifecycleSupport executionLifecycleSupport;
     private final SyncExecutionCreationSupport executionCreationSupport;
     private final SyncTaskLifecycleOperationSupport taskLifecycleOperationSupport;
+    private final SyncTaskRecoveryOperationSupport taskRecoveryOperationSupport;
 
     @Override
     @Transactional
@@ -194,7 +193,7 @@ public class DataSyncServiceImpl implements DataSyncService {
         task.setProjectId(resolveScopeValue("projectId", request.getProjectId(), template.getProjectId()));
         task.setWorkspaceId(resolveScopeValue("workspaceId", request.getWorkspaceId(), template.getWorkspaceId()));
         task.setTemplateId(template.getId());
-        task.setName(defaultText(request.getName(), template.getName()));
+        task.setName(querySupport.defaultText(request.getName(), template.getName()));
         task.setDescription(querySupport.defaultText(request.getDescription(), template.getDescription()));
         task.setCurrentState(SyncTaskState.CONFIGURED.name());
         task.setApprovalState(SyncApprovalState.NOT_REQUIRED.name());
@@ -298,6 +297,36 @@ public class DataSyncServiceImpl implements DataSyncService {
                                               SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
         return taskLifecycleOperationSupport.cancelTask(task, request, actorContext);
+    }
+
+    /**
+     * 发起同步回放。
+     *
+     * <p>主 Service 只负责复用 getTask(...) 做租户、项目、SELF 范围校验，然后把恢复语义委托给
+     * SyncTaskRecoveryOperationSupport。这样权限边界集中在入口，恢复计划、checkpoint 解析和审计细节集中在领域组件。
+     */
+    @Override
+    @Transactional
+    public SyncTaskOperationResult replayTask(Long id,
+                                              SyncTaskRecoveryOperationRequest request,
+                                              SyncActorContext actorContext) {
+        SyncTask task = getTask(id, actorContext);
+        return taskRecoveryOperationSupport.replayTask(task, request, actorContext);
+    }
+
+    /**
+     * 发起同步补数。
+     *
+     * <p>补数属于高影响恢复动作，入口仍先读取任务并校验数据范围。
+     * 真实窗口参数校验和恢复计划持久化由 support 负责，避免主 Service 继续膨胀。
+     */
+    @Override
+    @Transactional
+    public SyncTaskOperationResult backfillTask(Long id,
+                                                SyncTaskRecoveryOperationRequest request,
+                                                SyncActorContext actorContext) {
+        SyncTask task = getTask(id, actorContext);
+        return taskRecoveryOperationSupport.backfillTask(task, request, actorContext);
     }
 
     @Override
@@ -451,12 +480,6 @@ public class DataSyncServiceImpl implements DataSyncService {
         return execution;
     }
 
-    private <T> Page<T> page(Long current, Long size) {
-        long safeCurrent = current == null || current <= 0 ? DEFAULT_CURRENT : current;
-        long safeSize = size == null || size <= 0 ? DEFAULT_PAGE_SIZE : Math.min(size, MAX_PAGE_SIZE);
-        return new Page<>(safeCurrent, safeSize);
-    }
-
     private <T, V> void eqIfPresent(LambdaQueryWrapper<T> wrapper,
                                     com.baomidou.mybatisplus.core.toolkit.support.SFunction<T, V> column,
                                     V value) {
@@ -470,19 +493,6 @@ public class DataSyncServiceImpl implements DataSyncService {
 
     private String normalizeCode(String value) {
         return value == null ? null : value.trim().toUpperCase(Locale.ROOT);
-    }
-
-    private String trimToNull(String value) {
-        return value == null || value.isBlank() ? null : value.trim();
-    }
-
-    private String defaultText(String value, String defaultValue) {
-        String trimmed = trimToNull(value);
-        return trimmed == null ? defaultValue : trimmed;
-    }
-
-    private Long actorId(SyncActorContext actorContext) {
-        return actorContext == null ? null : actorContext.actorId();
     }
 
     /**
