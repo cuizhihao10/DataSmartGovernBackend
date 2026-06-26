@@ -34,6 +34,18 @@ public record AgentToolActionWorkerReceiptIndexRecord(
         /** Java command outbox 的 commandId，是恢复事实包查询 worker receipt 的主要业务定位符。 */
         String commandId,
 
+        /** task-management 任务 ID，只保存数字型低敏关联键，方便后续从 Agent 侧反查任务中心。 */
+        Long taskId,
+
+        /** task-management 任务运行 ID，用于区分同一任务的多次认领、重试或补偿执行。 */
+        Long taskRunId,
+
+        /** worker 执行器身份，只保存低敏服务账号/worker 编码，不保存主机地址、容器 ID 或内部 endpoint。 */
+        String executorId,
+
+        /** Agent 工具审计 ID，用于把 worker receipt 与 Agent 审计状态回调建议串联起来。 */
+        String auditId,
+
         /** 租户边界，查询时必须与 gateway/permission-admin 下发的数据范围求交集。 */
         String tenantId,
 
@@ -80,9 +92,41 @@ public record AgentToolActionWorkerReceiptIndexRecord(
     public static final String PAYLOAD_POLICY =
             "LOW_SENSITIVE_RECEIPT_INDEX_NO_MESSAGE_NO_ARGUMENTS_NO_PROMPT_NO_SQL_NO_PAYLOAD_BODY";
 
+    /**
+     * 兼容早期 5.80 阶段的索引记录构造方式。
+     *
+     * <p>5.108 开始，对账服务需要 taskId、taskRunId、executorId、auditId 这些低敏关联键来生成
+     * “是否建议回调 task/Agent 审计”的结论。保留这个重载构造器，是为了让历史单元测试和旧调用方
+     * 不必一次性全部改造；缺失的关联键会被解释为“对账可判断状态，但不能自动拼出完整回调请求”。</p>
+     */
+    public AgentToolActionWorkerReceiptIndexRecord(String eventIdentityKey,
+                                                   String commandId,
+                                                   String tenantId,
+                                                   String projectId,
+                                                   String actorId,
+                                                   String runId,
+                                                   String sessionId,
+                                                   String toolCode,
+                                                   String taskStatus,
+                                                   String outcome,
+                                                   Boolean preCheckPassed,
+                                                   Boolean sideEffectExecuted,
+                                                   String errorCode,
+                                                   Long replaySequence,
+                                                   Instant consumedAt,
+                                                   Instant indexedAt) {
+        this(eventIdentityKey, commandId, null, null, null, null, tenantId, projectId, actorId,
+                runId, sessionId, toolCode, taskStatus, outcome, preCheckPassed, sideEffectExecuted,
+                errorCode, replaySequence, consumedAt, indexedAt);
+    }
+
     public AgentToolActionWorkerReceiptIndexRecord {
         eventIdentityKey = safeText(eventIdentityKey, 240);
         commandId = safeText(commandId, 180);
+        taskId = nonNegativeLong(taskId);
+        taskRunId = nonNegativeLong(taskRunId);
+        executorId = safeText(executorId, 160);
+        auditId = safeText(auditId, 200);
         tenantId = safeText(tenantId, 80);
         projectId = safeText(projectId, 80);
         actorId = safeText(actorId, 120);
@@ -169,5 +213,12 @@ public record AgentToolActionWorkerReceiptIndexRecord(
 
     private static boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private static Long nonNegativeLong(Long value) {
+        if (value == null || value < 0) {
+            return null;
+        }
+        return value;
     }
 }

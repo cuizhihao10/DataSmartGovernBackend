@@ -1,4 +1,25 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-26 落地补充：durable tool execution needs final-state reconciliation before closure
+
+- 本轮趋势校准：
+  - MCP Tools 将工具调用建模为 Host 可治理的外部动作；映射到 DataSmart，工具执行不能只产生 receipt，还要由 Host 把 receipt 对账成任务状态建议，避免 UI、审计台和后续 Agent loop 对同一命令产生不同解释。
+  - OpenAI Sandbox Agents 强调 sandbox execution 与 agent orchestration 分层；映射到 DataSmart，sandbox runner 只负责受控执行，最终任务成功、失败、退避、补偿仍应由 Java Host 的低敏事实对账层统一解释。
+  - Spring Scheduling/异步任务实践提醒长耗时任务需要明确状态与可观测出口；映射到 DataSmart，CAPACITY_LIMITED、WORKER_PRECHECK_PASSED、FAILED_PRECHECK 不能全部粗暴映射为失败或成功，而要分别进入退避、执行中、执行前阻断语义。
+- 本轮落地到代码的能力：
+  - 新增 command task final-state reconciliation 只读接口，按 commandId 查询低敏 worker receipt 索引；
+  - receipt 索引新增 taskId、taskRunId、executorId、auditId 低敏关联键；
+  - 将成功、失败、补偿、执行前阻断、容量退避、预检通过、dry-run-only 分别映射成任务状态建议；
+  - 拆出 `AgentCommandTaskFinalStateDecisionResolver`，避免最终态规则继续堆在大 Service 中；
+  - 测试覆盖终态成功、执行前阻断、容量退避、缺失 receipt 和敏感字段不出响应。
+- 产品判断：
+  - 这一步关闭的是“receipt 已有但任务状态解释未统一”的缺口；
+  - 当前仍不是自动写回 task-management，后续自动化需要幂等表、服务账号签名、补偿策略和 durable history；
+  - command durable action 主线已接近收敛，应减少继续在命令局部加字段，转向对象存储 adapter、容器级 sandbox 或回到核心业务模块闭环。
+- 参考资料：
+  - MCP Tools: `https://modelcontextprotocol.io/specification/draft/server/tools`
+  - OpenAI Sandbox Agents: `https://developers.openai.com/api/docs/guides/agents/sandboxes`
+  - Spring Scheduling: `https://docs.spring.io/spring-framework/reference/integration/scheduling.html`
+
 ## 2026-06-25 落地补充：real command execution should start as a replaceable host-local adapter
 
 - 本轮趋势校准：

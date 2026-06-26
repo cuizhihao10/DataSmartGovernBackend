@@ -92,6 +92,10 @@ public class AgentToolActionWorkerReceiptIndexService {
         return Optional.of(new AgentToolActionWorkerReceiptIndexRecord(
                 record.identityKey(),
                 commandId,
+                longValue(attributes.get("taskId")),
+                longValue(attributes.get("taskRunId")),
+                text(attributes.get("executorId")),
+                text(attributes.get("auditId")),
                 record.tenantId(),
                 record.projectId(),
                 record.actorId(),
@@ -145,6 +149,23 @@ public class AgentToolActionWorkerReceiptIndexService {
             return boolValue;
         }
         return Boolean.parseBoolean(String.valueOf(value));
+    }
+
+    private Long longValue(Object value) {
+        if (value instanceof Number number) {
+            long longValue = number.longValue();
+            return longValue < 0 ? null : longValue;
+        }
+        String text = text(value);
+        if (text == null) {
+            return null;
+        }
+        try {
+            long parsed = Long.parseLong(text);
+            return parsed < 0 ? null : parsed;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     private boolean hasText(String value) {

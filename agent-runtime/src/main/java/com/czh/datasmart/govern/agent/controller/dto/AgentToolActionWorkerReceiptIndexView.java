@@ -29,6 +29,18 @@ public record AgentToolActionWorkerReceiptIndexView(
         /** Java command outbox 的命令 ID，是本查询面的强制入口。 */
         String commandId,
 
+        /** task-management 任务 ID。该字段是低敏关联键，用于从 Agent 侧跳转或对账任务中心。 */
+        Long taskId,
+
+        /** task-management 任务运行 ID，用于区分同一任务的多次执行、重试或补偿。 */
+        Long taskRunId,
+
+        /** worker 执行器 ID。这里只展示服务账号/worker 编码，不展示主机、容器或内部地址。 */
+        String executorId,
+
+        /** Agent 工具审计 ID，用于把 worker receipt 与 Agent 审计状态回调串联。 */
+        String auditId,
+
         /** 租户边界，已经经过 gateway/permission-admin Header 与请求参数求交集。 */
         String tenantId,
 

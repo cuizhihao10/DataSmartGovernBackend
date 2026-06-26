@@ -1,4 +1,46 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-26 追加落地进展：Java Agent Runtime 5.108 Command Task Final-State Reconciliation
+- 本阶段承接 5.107 的 host-local command sandbox process runner，不继续扩展命令执行器字段，也不直接跨服务修改 task-management 数据，而是新增 command -> worker receipt -> task/Agent 审计状态建议的只读对账层。
+- 产品目标：
+  - 按 commandId 查询 worker receipt 低敏索引，并在 tenant/project/actor/run/session 范围内选择最新 receipt；
+  - 将 `EXECUTION_SUCCEEDED`、`EXECUTION_FAILED`、`COMPENSATION_REQUIRED`、`FAILED_PRECHECK`、`WORKER_PRECHECK_PASSED`、`CAPACITY_LIMITED`、`DRY_RUN_PASSED` 翻译成任务成功、失败、补偿、退避或继续等待建议；
+  - 对外只返回状态、证据码、issueCode、推荐动作、receipt 短指纹和回调建议，不返回命令、工具参数、stdout/stderr、payload、SQL、prompt、模型输出或内部 endpoint；
+  - 先形成可审计的只读解释层，未来再由自动回调 worker 结合服务账号签名、幂等表和人工补偿策略执行真实写入。
+- 新增与调整：
+  - 新增 `AgentCommandTaskFinalStateReconciliationController`
+    - `GET /agent-runtime/async-task-commands/final-state-reconciliations`；
+    - `GET /api/agent/async-task-commands/final-state-reconciliations`。
+  - 新增 `AgentCommandTaskFinalStateReconciliationService`
+    - 负责 commandId 必填校验、数据范围收口、receipt 查询、最新 receipt 选择和响应组装；
+    - 显式使用 `newerThan` 选择最新事实，不依赖当前内存 store 的排序实现。
+  - 新增 `AgentCommandTaskFinalStateDecisionResolver`
+    - 将 receipt outcome 到任务状态建议的业务规则从 Service 中拆出；
+    - 避免单个 Service 文件继续膨胀，保留后续扩展 PARTIALLY_SUCCEEDED、CANCELLED、COMPENSATING 等状态的空间。
+  - 新增 `AgentCommandTaskFinalStateDecision`
+    - 承载内部对账决策，不直接暴露为 HTTP DTO。
+  - 新增 DTO：
+    - `AgentCommandTaskFinalStateReconciliationResponse`；
+    - `AgentCommandTaskFinalStateLatestReceiptView`；
+    - `AgentCommandTaskFinalStateCallbackSuggestionView`。
+  - 扩展 worker receipt 低敏索引：
+    - 新增 `taskId`、`taskRunId`、`executorId`、`auditId` 四个低敏关联键；
+    - 保留旧构造器兼容历史测试和旧调用方；
+    - 查询视图同步展示这些低敏关联键，便于后续自动回调补齐路径参数。
+  - 新增 `AgentCommandTaskFinalStateReconciliationServiceTest`
+    - 覆盖成功终态、执行前阻断、容量退避、缺失 receipt 和敏感字段不出响应。
+- 低敏边界：
+  - 对账响应不包含 eventIdentityKey 原文，只返回 SHA-256 短指纹；
+  - 不读取、不返回命令正文、工具参数、工作目录、stdout/stderr、artifact 正文、SQL、prompt、样本数据、模型输出、token 明文、签名 URL、bucket/key、内部 endpoint 或凭据；
+  - `FAILED_PRECHECK` 表示执行前阻断，不要求人工补偿；`EXECUTION_FAILED` 与 `COMPENSATION_REQUIRED` 会提示补偿风险；`CAPACITY_LIMITED` 和 `WORKER_PRECHECK_PASSED` 保持非终态。
+- 验证：
+  - Java 定向测试：
+    `mvn -pl agent-runtime -am "-Dtest=AgentCommandTaskFinalStateReconciliationServiceTest,AgentToolActionWorkerReceiptIndexServiceTest,AgentAsyncToolTaskStatusCallbackServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：11 个用例通过。
+- 当前边界：
+  - 5.108 是只读对账和回调建议，不是自动写 task-management，也不直接调用 Agent async callback；
+  - 自动回调仍需幂等表、服务账号鉴权/签名、补偿策略和 task-management durable history；
+  - command durable action 的任务最终态解释已闭环，下一步应优先推进真实对象存储 adapter、容器级 sandbox 替换或切回 data-sync/data-quality/permission-admin 等业务模块收敛。
+
 ## 2026-06-25 追加落地进展：Python AI Runtime 5.107 Host-Local Command Sandbox Process Runner
 - 本阶段承接 5.106 的 Python command sandbox admission client，不继续扩展 admission 字段，也不一次性引入完整容器平台，而是新增 host-local 最小受控进程外壳，先把真实进程生命周期接入 command durable action。
 - 产品目标：
