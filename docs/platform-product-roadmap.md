@@ -1,4 +1,50 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-26 追加落地进展：Java Agent Runtime 5.109 Artifact Object Store Probe Adapter
+- 本阶段承接 5.108 的 command task final-state reconciliation，不继续扩展 command runner、artifact 预览字段或任务对账字段，而是补齐 artifact 读取链路里“对象存储 adapter 可安全接入”的最小底座。
+- 产品目标：
+  - 在 `body-read-grants` 复核通过之后，允许 Java Host 通过可替换 adapter 对 artifact 对象做服务端探针；
+  - 探针只读取受限 sample，用于确认对象是否可用、内容类型、对象长度、截断状态和 sample SHA-256 指纹；
+  - HTTP 响应不返回 sample 字节、不返回 artifact 正文、不签发 URL、不返回 bearer token、不暴露 bucket/key、真实 endpoint、stdout/stderr、prompt、SQL、工具参数或模型输出；
+  - 默认对象存储客户端保持 fail-safe 禁用，未来真实 MinIO/S3-compatible 实现只需替换 `AgentToolActionArtifactObjectStoreClient`。
+- 新增与调整：
+  - 新增 `AgentToolActionArtifactObjectStoreProbeController`
+    - `POST /agent-runtime/tool-action-artifacts/object-store-probes`；
+    - `POST /api/agent/tool-action-artifacts/object-store-probes`。
+  - 新增 `AgentToolActionArtifactObjectStoreProbeService`
+    - 校验 grant 引用形态、低敏 artifactReference 前缀和探针字节预算；
+    - 复用 `AgentToolActionArtifactBodyReadGrantService` 做当前时刻 grant 复核；
+    - 对 adapter 返回 sample 做 Host 二次裁剪并计算短 SHA-256 指纹；
+    - 响应只保留对象可用性、字节数、内容类型、截断标记、版本指纹和低敏证据码。
+  - 新增可替换对象存储 adapter 合同：
+    - `AgentToolActionArtifactObjectStoreClient`；
+    - `AgentToolActionArtifactObjectStoreProbeCommand`；
+    - `AgentToolActionArtifactObjectStoreProbeSample`；
+    - `DisabledAgentToolActionArtifactObjectStoreClient`。
+  - 新增 DTO：
+    - `AgentToolActionArtifactObjectStoreProbeRequest`；
+    - `AgentToolActionArtifactObjectStoreProbeResponse`。
+  - 新增 `AgentToolActionArtifactObjectStoreProbeServiceTest`
+    - 覆盖 grant 复核后探针成功；
+    - 覆盖默认 adapter 禁用；
+    - 覆盖畸形 grant 引用拒绝；
+    - 覆盖 adapter 超额 sample 被 Host 硬上限裁剪；
+    - 覆盖敏感 artifactReference 拒绝和响应不泄露 sample 正文。
+  - 更新 Agent 能力矩阵：
+    - 将对象存储能力从“完全未接入”推进为“已有服务端探针抽象与默认禁用 adapter”；
+    - 剩余缺口收敛为真实 MinIO/S3-compatible adapter、durable grant store、下载审计、限速和保留期治理。
+- 低敏边界：
+  - `sampleBytes` 只允许在 Service 内存中短生命周期存在，用于计算 hash 和统计，不写入响应、runtime event、projection、日志或模型上下文；
+  - 探针响应不包含完整正文、预览文本、URL、bucket/key、内部 endpoint、fencingToken、命令行、工具参数、SQL、prompt、样本数据、模型输出或凭据；
+  - `previousGrantDecisionReference` 只是审计串联引用，不是 bearer token，Service 仍会重新调用 grant 服务复核。
+- 验证：
+  - Java 定向测试：
+    `mvn -pl agent-runtime -am "-Dtest=AgentToolActionArtifactObjectStoreProbeServiceTest,AgentToolActionArtifactBodyReadGrantServiceTest,AgentToolActionArtifactBodyReadFinalCheckServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：16 个用例通过。
+- 当前边界：
+  - 5.109 是对象存储探针和 adapter 抽象，不是完整 MinIO 下载服务；
+  - 尚未实现真实 MinIO SDK 读取、对象定位映射表、durable grant store、DLP/恶意内容扫描、下载限速、下载审计和保留期策略；
+  - 下一步建议在真实 MinIO adapter、容器级 sandbox 替换和自动终态回调 worker 三者中择一收敛，不再继续扩展 artifact DTO 字段。
+
 ## 2026-06-26 追加落地进展：Java Agent Runtime 5.108 Command Task Final-State Reconciliation
 - 本阶段承接 5.107 的 host-local command sandbox process runner，不继续扩展命令执行器字段，也不直接跨服务修改 task-management 数据，而是新增 command -> worker receipt -> task/Agent 审计状态建议的只读对账层。
 - 产品目标：

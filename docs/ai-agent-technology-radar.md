@@ -1,4 +1,25 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-26 落地补充：artifact body access should start with a bounded object-store probe
+
+- 本轮趋势校准：
+  - MinIO Java Client API 已提供 `statObject` 与带 offset/length 的 `getObject` 能力；映射到 DataSmart，真实对象读取可以基于成熟 SDK，但业务控制面不应直接依赖 bucket/key、SDK 异常和对象流细节。
+  - S3-compatible GetObject 语义强调权限、版本、Range、加密和归档状态；映射到 DataSmart，artifact 读取不能把 grant 引用当成下载令牌，而应拆成 grant 复核、对象探针、DLP/恶意内容扫描、final-check 和下载审计。
+  - Agent Host 趋势仍是“工具结果引用化、正文最小暴露、Host 侧治理”：模型和前端只能看到低敏 artifactReference、指纹和短预览，不能直接拿对象存储定位。
+- 本轮落地到代码的能力：
+  - 新增 `AgentToolActionArtifactObjectStoreClient` 可替换 adapter 合同；
+  - 新增默认禁用实现 `DisabledAgentToolActionArtifactObjectStoreClient`，避免没有真实 MinIO 配置时误标可读取；
+  - 新增 `object-store-probes` 路由，在 grant 复核通过后执行服务端探针；
+  - 探针只返回对象可用性、内容类型、对象长度、sample 字节数、截断标记、sample SHA-256 指纹和低敏证据码；
+  - 测试保护 sample 正文、URL、bucket/key、fencingToken 和内部 endpoint 不出响应。
+- 产品判断：
+  - 这一步不是完整下载服务，而是给真实 MinIO/S3-compatible adapter 留出安全替换缝；
+  - 在项目收敛阶段，它把“真实对象存储 adapter”从纯待办推进到“Host probe 边界已固定”；
+  - 下一步应实现真实 MinIO adapter 或切向容器级 sandbox/自动终态回调，不建议继续扩展 artifact 响应字段。
+- 参考资料：
+  - MinIO Java Client API: `https://docs.min.io/aistor/developers/sdk/java/api/`
+  - MinIO Java SDK GitHub: `https://github.com/minio/minio-java`
+  - AWS S3 GetObject API: `https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObject.html`
+
 ## 2026-06-26 落地补充：durable tool execution needs final-state reconciliation before closure
 
 - 本轮趋势校准：
