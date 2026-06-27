@@ -1,5 +1,41 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-28 追加落地进展：Java Data Quality 4.1 Permission Closure
+- 本阶段承接 `data-quality` 治理总览能力，不继续在质量模块内部盲目扩展新业务按钮，而是把“谁能看质量态势、谁能处理异常、谁能触发执行、谁能作为 worker 回调”纳入 `permission-admin + gateway` 的统一治理闭环。
+- 产品目标：
+  - 让质量治理从“接口可用”推进到“企业角色可控”，避免质量大盘、异常工作台、执行器诊断和 worker 回调被一个粗粒度 `QUALITY_RULE` 权限全部覆盖；
+  - 区分普通用户、项目负责人、运维人员、审计员、租户管理员、平台管理员和服务账号的质量权限边界；
+  - 对外部网关路径补齐资源类型与动作语义，让后续前端菜单、API 网关、审计报表和 Agent ToolPlan 能使用同一套权限语言；
+  - 将 `CALLBACK` 这类机器协议限定给服务账号，避免人类角色通过控制台或脚本伪造执行器回调推进质量执行状态。
+- 新增与调整：
+  - 扩展 `PermissionResourceType`，新增 `QUALITY_GOVERNANCE`、`QUALITY_REPORT`、`QUALITY_ANOMALY`、`QUALITY_EXECUTION`，并保留 `QUALITY_RULE` 专注规则定义与生命周期；
+  - 扩展 `GatewayAuthorizationProperties`，把 `/api/quality/**` 从粗粒度默认规则拆成治理总览、报告、异常、执行器诊断、执行触发、worker 回调、规则配置等路径；
+  - 扩展 `gateway/src/main/resources/application.yml`，让生产配置与 Java 默认配置保持一致，避免本地测试通过但部署配置仍是旧粗粒度权限；
+  - 扩展 `docker/mysql/init/permission-admin.sql`，补齐 data-quality 的菜单、角色菜单绑定、路由策略和数据范围策略；
+  - 新增 `20260628_data_quality_permission_closure.sql` 迁移脚本，支持已有环境把质量权限治理能力安全补齐；
+  - 新增 gateway 权限映射测试与 permission-admin 决策测试，覆盖治理总览、异常、执行诊断、手动执行、服务账号回调和人类角色回调拒绝。
+- 安全与低敏边界：
+  - `QUALITY_GOVERNANCE` 只表达质量态势入口，不返回 SQL、样本、模型输出或内部执行细节；
+  - `QUALITY_REPORT` 与 `QUALITY_ANOMALY` 分离，便于后续做“只读审计”和“异常处理”两类角色；
+  - `QUALITY_EXECUTION` 进一步按 `RUN/CONFIGURE/DIAGNOSE/CALLBACK` 区分人工控制动作与机器协议动作；
+  - 服务账号允许执行器回调，人类角色即使拥有执行权限也默认拒绝 callback，符合商业系统的最小权限原则。
+- 验证：
+  - 定向测试：
+    `mvn -pl permission-admin,gateway -am "-Dtest=PermissionDataQualityDecisionSupportTest,GatewayDataQualityAuthorizationFilterTest,PermissionDecisionSupportTest,GatewayAuthorizationFilterTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：27 个测试通过。
+  - `permission-admin + gateway` 全量测试：
+    `mvn -pl permission-admin,gateway -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：85 个测试通过。
+  - Maven Toolchain 使用 JDK 21：`C:\Users\Cui\.jdks\temurin-21.0.10`。
+- 当前边界：
+  - 本阶段不继续新增质量检测算法、真实清洗执行器或前端页面；
+  - 迁移脚本已提供，但本地未连接真实 MySQL 执行迁移，提交前只做静态检查与 Java 自动化测试；
+  - 质量模块已具备“规则、执行、报告、异常、治理总览、权限控制”的阶段性闭环，后续不建议继续无限深挖同一块。
+- 下一步推荐路线：
+  1. 优先做 data-quality “异常复核/清洗任务创建契约”，把“发现风险”推进到“派发治理任务”；
+  2. 随后让 Agent 以低敏方式读取质量总览和异常聚合，生成治理建议或 ToolPlan，而不是直接接触 SQL、样本和连接信息；
+  3. Java 数据治理模块整体开始进入收敛清单，只补必要闭环缺口，不再做大范围发散式新增。
+
 ## 2026-06-27 追加落地进展：Java Data Quality 4.0 Governance Overview
 - 本阶段从 data-sync 阶段性收口后切换到 `data-quality`，补齐质量模块的业务治理大盘入口，避免质量能力只停留在规则 CRUD、单条检测、执行器诊断和异常明细查询。
 - 产品目标：

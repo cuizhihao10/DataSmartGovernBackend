@@ -562,10 +562,183 @@ datasmart:
             PATCH: UPDATE
             DELETE: DELETE
 
+        # data-quality 权限闭环：
+        # 这里不要把整个 /api/quality/** 都压成 QUALITY_RULE。质量模块已经包含“规则配置、治理总览、
+        # 报告证据、异常工作台、执行器回调/诊断”等不同风险等级的入口，真实商业化权限矩阵必须能区分：
+        # 1. 普通用户/审计员可以看低敏治理态势，不等于能改规则；
+        # 2. 项目负责人可以管理项目质量规则，不等于能伪造 worker 回调；
+        # 3. 运营人员可以诊断执行器与触发运行，不等于能查看或导出未来可能出现的高敏样本；
+        # 4. SERVICE_ACCOUNT 可以调用机器协议，但不能自动获得人类管理页面权限。
+        # GatewayAuthorizationFilter 会按声明顺序命中第一条规则，所以具体端点必须放在兜底规则前面。
+        - path-pattern: /api/quality/quality-rules/governance/overview
+          resource-type: QUALITY_GOVERNANCE
+          default-action: VIEW
+          description: 数据质量治理总览低敏聚合入口，用于查看项目/工作空间级规则、报告、异常和执行态势。
+          method-actions:
+            GET: VIEW
+
+        - path-pattern: /api/quality/quality-rules/reports/*/anomalies
+          resource-type: QUALITY_ANOMALY
+          default-action: VIEW
+          description: 按报告查看质量异常入口，异常比报告摘要更接近业务问题定位，因此单独授权。
+          method-actions:
+            GET: VIEW
+
+        - path-pattern: /api/quality/quality-rules/anomalies/**
+          resource-type: QUALITY_ANOMALY
+          default-action: VIEW
+          description: 质量异常工作台入口，用于异常聚合、异常列表和后续清洗任务线索查看。
+          method-actions:
+            GET: VIEW
+
+        - path-pattern: /api/quality/quality-rules/reports/**
+          resource-type: QUALITY_REPORT
+          default-action: VIEW
+          description: 质量报告查询入口，用于查看检测结果快照、通过率和低敏报告摘要。
+          method-actions:
+            GET: VIEW
+
+        - path-pattern: /api/quality/quality-rules/executor/diagnostics
+          resource-type: QUALITY_EXECUTION
+          default-action: DIAGNOSE
+          description: 质量执行器诊断入口，展示 worker 健康、积压和排障状态，默认应开放给运营/管理员。
+          method-actions:
+            GET: DIAGNOSE
+
+        - path-pattern: /api/quality/quality-rules/executor/executions/*/succeed
+          resource-type: QUALITY_EXECUTION
+          default-action: CALLBACK
+          description: 质量执行器成功回调入口，只应由受控 worker 或 SERVICE_ACCOUNT 调用。
+          method-actions:
+            POST: CALLBACK
+
+        - path-pattern: /api/quality/quality-rules/executor/executions/*/fail
+          resource-type: QUALITY_EXECUTION
+          default-action: CALLBACK
+          description: 质量执行器失败回调入口，只应由受控 worker 或 SERVICE_ACCOUNT 调用。
+          method-actions:
+            POST: CALLBACK
+
+        - path-pattern: /api/quality/quality-rules/executor/executions/start
+          resource-type: QUALITY_EXECUTION
+          default-action: CALLBACK
+          description: 质量执行器开始回调入口，用于把执行记录推进到运行态。
+          method-actions:
+            POST: CALLBACK
+
+        - path-pattern: /api/quality/quality-rules/executor/coordinator/run-once
+          resource-type: QUALITY_EXECUTION
+          default-action: RUN
+          description: 质量执行协调器单次调度入口，属于显式运行类动作。
+          method-actions:
+            POST: RUN
+
+        - path-pattern: /api/quality/quality-rules/executor/coordinator/run-batch
+          resource-type: QUALITY_EXECUTION
+          default-action: RUN
+          description: 质量执行协调器批量调度入口，可能触发多条规则检测，按运行类动作授权。
+          method-actions:
+            POST: RUN
+
+        - path-pattern: /api/quality/quality-rules/*/run-check
+          resource-type: QUALITY_EXECUTION
+          default-action: RUN
+          description: 单条质量规则手动检测入口，属于执行类动作而不是规则创建动作。
+          method-actions:
+            POST: RUN
+
+        - path-pattern: /api/quality/quality-rules/*/executions
+          resource-type: QUALITY_EXECUTION
+          default-action: VIEW
+          description: 单条规则执行历史查询入口，用于查看执行状态、耗时和低敏结果。
+          method-actions:
+            GET: VIEW
+
+        - path-pattern: /api/quality/quality-rules/*/reports
+          resource-type: QUALITY_REPORT
+          default-action: VIEW
+          description: 单条规则质量报告查询入口，用于查看该规则产生的报告列表。
+          method-actions:
+            GET: VIEW
+
+        - path-pattern: /api/quality/quality-rules/*/validate-target
+          resource-type: QUALITY_RULE
+          default-action: VALIDATE
+          description: 规则目标校验入口，用于校验表、字段或对象是否可被质量规则引用。
+          method-actions:
+            POST: VALIDATE
+
+        - path-pattern: /api/quality/quality-rules/*/scan-plan
+          resource-type: QUALITY_RULE
+          default-action: CONFIGURE
+          description: 规则扫描计划生成入口，会影响后续检测方式，按规则配置动作授权。
+          method-actions:
+            POST: CONFIGURE
+
+        - path-pattern: /api/quality/quality-rules/*/relational-sql-plan
+          resource-type: QUALITY_RULE
+          default-action: CONFIGURE
+          description: 关系型规则 SQL 计划预览入口，只返回低敏计划摘要，但仍属于规则配置能力。
+          method-actions:
+            POST: CONFIGURE
+
+        - path-pattern: /api/quality/quality-rules/*/schedule-task
+          resource-type: QUALITY_EXECUTION
+          default-action: CONFIGURE
+          description: 规则调度任务配置入口，会影响后续自动执行节奏，按执行配置动作授权。
+          method-actions:
+            POST: CONFIGURE
+
+        - path-pattern: /api/quality/quality-rules/*/enable
+          resource-type: QUALITY_RULE
+          default-action: ENABLE
+          description: 启用质量规则入口，会让规则参与后续检测。
+          method-actions:
+            POST: ENABLE
+
+        - path-pattern: /api/quality/quality-rules/*/disable
+          resource-type: QUALITY_RULE
+          default-action: DISABLE
+          description: 禁用质量规则入口，会让规则退出后续检测。
+          method-actions:
+            POST: DISABLE
+
+        - path-pattern: /api/quality/quality-rules/*/archive
+          resource-type: QUALITY_RULE
+          default-action: ARCHIVE
+          description: 归档质量规则入口，保留审计事实但停止作为活跃规则使用。
+          method-actions:
+            POST: ARCHIVE
+
+        - path-pattern: /api/quality/quality-rules/*/restore
+          resource-type: QUALITY_RULE
+          default-action: ENABLE
+          description: 恢复已归档质量规则入口，重新进入可配置或可启用状态。
+          method-actions:
+            POST: ENABLE
+
+        - path-pattern: /api/quality/quality-rules/suggestions
+          resource-type: QUALITY_RULE
+          default-action: CREATE
+          description: 质量规则建议生成入口，用于沉淀可编辑规则草案。
+          method-actions:
+            POST: CREATE
+
+        - path-pattern: /api/quality/quality-rules/**
+          resource-type: QUALITY_RULE
+          default-action: EXECUTE
+          description: 数据质量规则管理兜底入口，用于规则创建、查询、更新和删除。
+          method-actions:
+            GET: VIEW
+            POST: CREATE
+            PUT: UPDATE
+            PATCH: UPDATE
+            DELETE: DELETE
+
         - path-pattern: /api/quality/**
           resource-type: QUALITY_RULE
           default-action: EXECUTE
-          description: 数据质量规则、检测执行、异常明细和质量报告。
+          description: 数据质量模块兼容兜底入口；新增端点应优先补充更具体的 route-metadata。
           method-actions:
             GET: VIEW
             POST: CREATE
