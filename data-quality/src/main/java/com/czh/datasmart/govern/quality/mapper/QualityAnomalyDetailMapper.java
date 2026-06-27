@@ -45,6 +45,9 @@ public interface QualityAnomalyDetailMapper extends BaseMapper<QualityAnomalyDet
                    MAX(create_time) AS latest_create_time
             FROM quality_anomaly_detail
             <where>
+                <if test="tenantId != null">
+                    AND tenant_id = #{tenantId}
+                </if>
                 <if test="reportId != null">
                     AND report_id = #{reportId}
                 </if>
@@ -96,6 +99,7 @@ public interface QualityAnomalyDetailMapper extends BaseMapper<QualityAnomalyDet
     })
     List<QualityAnomalyAggregationItem> aggregateAnomalies(
             @Param("groupColumn") String groupColumn,
+            @Param("tenantId") Long tenantId,
             @Param("reportId") Long reportId,
             @Param("ruleId") Long ruleId,
             @Param("anomalyType") String anomalyType,

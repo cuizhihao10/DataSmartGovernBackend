@@ -310,6 +310,7 @@ public class QualityExecutionReportSupport {
         QualityAnomalyAggregationDimension dimension = QualityAnomalyAggregationDimension.fromValue(groupBy);
         return qualityAnomalyDetailMapper.aggregateAnomalies(
                 dimension.getColumnName(),
+                null,
                 reportId,
                 ruleId,
                 normalizeUpper(anomalyType),

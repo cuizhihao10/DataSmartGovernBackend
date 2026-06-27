@@ -1,4 +1,53 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+
+## 2026-06-27 追加落地进展：Java Data Quality 4.0 Governance Overview
+- 本阶段从 data-sync 阶段性收口后切换到 `data-quality`，补齐质量模块的业务治理大盘入口，避免质量能力只停留在规则 CRUD、单条检测、执行器诊断和异常明细查询。
+- 产品目标：
+  - 面向项目负责人、运营人员、审计人员和后续 Agent 复盘流程，提供一眼判断质量治理态势的低敏总览；
+  - 区分“执行器诊断”和“业务质量态势”：前者回答 worker/任务链路是否健康，后者回答项目质量治理风险是否在收敛；
+  - 通过规则生命周期、规则类型、严重级别、目标类型、近期报告、执行状态、异常积压和 TOP 异常维度形成管理入口；
+  - 不新增执行状态机、不新增表、不访问源库，只基于已有事实表做聚合，符合当前收敛阶段的低风险增强方向。
+- 新增与调整：
+  - 新增 `QualityGovernanceOverviewController`
+    - `GET /quality-rules/governance/overview`；
+    - 支持 `tenantId/projectId/workspaceId/windowDays/topLimit`；
+    - 继续接入 `X-DataSmart-Data-Scope-Level` 与 `X-DataSmart-Authorized-Project-Ids`，按 PROJECT 授权范围过滤。
+  - 新增 `QualityGovernanceOverviewService`
+    - 聚合 `quality_rule`、`quality_check_report`、`quality_check_execution`、`quality_anomaly_detail`；
+    - 生成规则生命周期分布、质量维度分布、目标类型分布、报告通过率、执行状态分布、异常数量、TOP 异常字段、TOP 异常类型；
+    - 输出 `qualityScore`、`riskLevel` 和 `nextActions`，为前端大盘、Agent 质量复盘和告警中心提供统一入口。
+  - 新增 `QualityGovernanceOverviewCalculator`
+    - 将通过率、评分、风险等级和治理建议从查询服务中拆出；
+    - 保持 service 专注事实聚合，calculator 专注可解释评分规则，避免单文件继续膨胀。
+  - 新增 `QualityGovernanceRiskLevel`
+    - 明确 `NO_VISIBLE_PROJECT/NOT_STARTED/HEALTHY/WATCH/RISK/CRITICAL` 语义；
+    - 避免把 PROJECT 空授权或无近期报告误判为健康。
+  - 新增 `QualityGovernanceOverviewResponse`
+    - 对字段、评分、窗口、敏感数据策略和数据可见性策略补充详细中文说明；
+    - 响应只返回计数、比例、枚举分布、风险等级和低敏建议。
+  - 扩展 `QualityAnomalyDetailMapper.aggregateAnomalies(...)`
+    - 增加 `tenantId` 过滤参数；
+    - 避免质量大盘按租户聚合时只依赖项目过滤，进一步收紧多租户边界。
+- 低敏与安全边界：
+  - 治理总览不返回 SQL、执行计划正文、异常样本载荷、观测值、连接串、凭据、错误正文、prompt、模型输出或内部 endpoint；
+  - PROJECT 空授权时直接返回空视图，不访问数据库事实表；
+  - 动态异常聚合列仍只来自 `QualityAnomalyAggregationDimension` 白名单，避免任意 group by 字段进入 SQL。
+- 验证：
+  - 定向测试：
+    `mvn -pl data-quality -am "-Dtest=QualityGovernanceOverviewServiceTest,QualityExecutionDiagnosticsServiceTest,DataQualityControllerProjectScopeTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：7 个测试通过。
+  - data-quality 全量测试：
+    `mvn -pl data-quality -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：14 个测试通过。
+  - Maven Toolchain 使用 JDK 21：`C:\Users\Cui\.jdks\temurin-21.0.10`。
+- 当前边界：
+  - 治理总览当前是同步只读聚合，不做趋势序列、SLA 规则、告警订阅、异步报表导出或清洗任务自动创建；
+  - 评分规则是可解释启发式，不是模型判断，也不替代人工审计；
+  - TOP 异常聚合只返回低敏聚合键和数量，不返回样本级详情。
+- 下一步建议：
+  1. data-quality 可继续做“清洗任务/复核任务创建契约”，把异常治理从“看见风险”推进到“派发处理”；
+  2. 也可以切到 permission-admin，补齐质量大盘、异常工作台、清洗任务和执行器诊断对应的角色权限点；
+  3. Agent 侧后续可把质量总览作为低敏上下文输入，用于生成质量复盘计划或建议创建治理任务。
 ## 2026-06-27 追加落地进展：Java Data Sync 6.5 Worker Recovery Plan Consumption Contract
 - 本阶段承接 Data Sync 6.4 的 replay/backfill 恢复计划创建能力，补齐 worker 侧读取与消费恢复计划的最小执行面契约。
 - 产品目标：
