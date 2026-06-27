@@ -55,6 +55,20 @@ public enum SyncAuditActionType {
      * <p>补数通常是运维或项目负责人操作，可能影响大量历史数据，因此需要独立审计动作。
      */
     BACKFILL_TASK,
+    /**
+     * worker 已读取 replay/backfill 恢复计划。
+     *
+     * <p>该动作证明控制面创建的恢复计划已经被具体执行器接收，审计 payload 只记录 planId、recoveryType、
+     * executorId 和状态，不记录补数窗口原文、SQL、连接配置、样本数据或 checkpoint 内容。
+     */
+    CLAIM_RECOVERY_PLAN,
+    /**
+     * worker 已把恢复计划作为执行输入消费。
+     *
+     * <p>该动作证明 worker 已经完成恢复计划加载，后续会走普通 checkpoint/complete/fail 回调链路。
+     * 它与 CLAIM_RECOVERY_PLAN 分开，是为了事故复盘时能区分“worker 看过计划”和“worker 真正开始按计划执行”。
+     */
+    CONSUME_RECOVERY_PLAN,
     CREATE_EXECUTION,
     UPDATE_CHECKPOINT,
     RECORD_ERROR_SAMPLE,

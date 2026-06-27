@@ -1,4 +1,64 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
+## 2026-06-27 追加落地进展：Java Data Sync 6.5 Worker Recovery Plan Consumption Contract
+- 本阶段承接 Data Sync 6.4 的 replay/backfill 恢复计划创建能力，补齐 worker 侧读取与消费恢复计划的最小执行面契约。
+- 产品目标：
+  - 让 replay/backfill 不再停留在“控制面能创建计划”，而是形成“创建计划 -> worker 认领 execution -> worker claim 计划 -> worker consume 计划 -> 普通 checkpoint/complete/fail 回调”的闭环；
+  - 恢复计划状态从 `CREATED` 推进到 `CLAIMED/CONSUMED`，为事故复盘提供“计划已送达”和“计划已应用”的独立证据；
+  - 继续保持机器协议低敏，worker 响应不返回 SQL、连接串、凭据、样本数据、prompt、模型输出、完整工具参数或内部端点；
+  - 只允许 `SERVICE_ACCOUNT` 调用 worker 恢复计划协议，人类角色即使能发起 replay/backfill，也不能伪造 worker 消费状态。
+- 新增与调整：
+  - 新增 `SyncRecoveryPlanState`
+    - 明确 `CREATED/CLAIMED/CONSUMED/CANCELLED` 状态语义；
+    - 注释说明每个状态在恢复计划生命周期中的业务含义和未来扩展边界。
+  - 新增 `SyncRecoveryPlanWorkerRequest` 与 `SyncRecoveryPlanWorkerResult`
+    - request 只包含 `executorId/idempotencyKey`；
+    - response 只返回恢复执行所需低敏坐标；
+    - 自由文本字段在响应层再次做敏感关键词兜底脱敏，防止历史误写内容继续扩散到 worker 协议。
+  - 新增 `DataSyncRecoveryPlanWorkerController`
+    - `POST /sync-executions/{executionId}/recovery-plan/claim`；
+    - `POST /sync-executions/{executionId}/recovery-plan/consume`；
+    - 两个路由均执行 HMAC 服务账号签名校验，controller 只负责机器协议入口，不混入普通任务控制面。
+  - 新增 `DataSyncRecoveryPlanWorkerService` 与 `DataSyncRecoveryPlanWorkerServiceImpl`
+    - 校验 execution 必须是 `RUNNING`；
+    - 校验 `request.executorId` 必须匹配 `execution.executorId`；
+    - 校验恢复计划的 tenant/project/workspace/task/execution 范围与 execution 一致；
+    - `CREATED -> CLAIMED` 和 `CLAIMED -> CONSUMED` 使用数据库条件更新推进，重复请求按当前状态幂等返回；
+    - `consume` 不允许跳过 `claim`，避免丢失“计划已送达”审计证据。
+  - 扩展 `SyncExecutionRecoveryPlanMapper`
+    - 新增按 `executionId` 查询恢复计划；
+    - 新增 `markPlanState(...)` 原子状态推进 SQL。
+  - 扩展 `SyncAuditActionType`
+    - 新增 `CLAIM_RECOVERY_PLAN`；
+    - 新增 `CONSUME_RECOVERY_PLAN`。
+  - 扩展权限 SQL
+    - `permission-admin.sql` 补齐 `CLAIM_RECOVERY_PLAN/CONSUME_RECOVERY_PLAN` action 推断；
+    - 新增 `20260627_data_sync_recovery_plan_worker_route_policy.sql`；
+    - SERVICE_ACCOUNT 允许 claim/consume；
+    - ORDINARY_USER、PROJECT_OWNER、OPERATOR、TENANT_ADMINISTRATOR、AUDITOR 显式拒绝 worker 恢复计划协议。
+- 测试变化：
+  - 新增 `DataSyncRecoveryPlanWorkerServiceImplTest`
+    - 覆盖 CREATED 计划 claim 后变为 CLAIMED；
+    - 覆盖普通 execution 无恢复计划时返回 `hasRecoveryPlan=false`；
+    - 覆盖 CLAIMED 计划 consume 后变为 CONSUMED；
+    - 覆盖 CREATED 计划不能跳过 claim 直接 consume；
+    - 覆盖 executorId 不匹配时在读取计划前拒绝；
+    - 覆盖响应自由文本敏感内容兜底脱敏。
+- 验证：
+  - Java 定向测试：
+    `mvn -pl data-sync -am "-Dtest=DataSyncRecoveryPlanWorkerServiceImplTest,SyncTaskRecoveryOperationSupportTest,DataSyncExecutorLeaseServiceImplHeartbeatControlTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：15 个测试通过。
+  - Java data-sync 全量测试：
+    `mvn -pl data-sync -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：52 个测试通过。
+  - Maven Toolchain 使用 JDK 21：`C:\Users\Cui\.jdks\temurin-21.0.10`。
+- 当前边界：
+  - 本阶段仍不实现真实 connector worker，不读取源端、不写入目标端；
+  - 不做容量预估、分区并行、批量补数审批和计划取消 API；
+  - data-sync 已经具备任务生命周期、worker 租约、停止信号、回调防写入、replay/backfill 计划创建和 worker 消费契约，建议进入阶段性收口。
+- 下一步建议：
+  1. 不再继续给 data-sync 增加大范围新能力，除非是 bugfix 或与 Agent ToolPlan 的必要桥接；
+  2. 切到 data-quality 或 permission-admin 的产品闭环缺口；
+  3. Agent 侧后续可把数据恢复类 ToolPlan 映射到 replay/backfill，并复用当前权限、审计和 worker 恢复计划链路。
 ## 2026-06-27 追加落地进展：Java Data Sync 6.4 Replay Backfill Recovery Contract
 - 本阶段承接 Data Sync 6.3 的执行停止闭环，补齐失败恢复与历史补数的控制面契约，但仍不扩展成完整 connector worker 或真实数据搬运引擎。
 - 产品目标：
