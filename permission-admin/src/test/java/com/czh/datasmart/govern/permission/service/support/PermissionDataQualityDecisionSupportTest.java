@@ -182,6 +182,76 @@ class PermissionDataQualityDecisionSupportTest {
     }
 
     /**
+     * 项目负责人可以把低敏质量异常聚合创建为治理任务，并且只能在授权项目范围内派单。
+     *
+     * <p>这个测试保护的是“异常可见”和“异常处置”之间的权限升级点。
+     * 项目负责人通常需要推动项目内的数据修复，所以允许 CREATE_REMEDIATION_TASK；
+     * 但它仍然不能跨项目派单，因此 permission-admin 必须返回 PROJECT 范围和 actor 的授权项目集合。</p>
+     */
+    @Test
+    void projectOwnerShouldCreateQualityRemediationTaskWithProjectScope() {
+        PermissionDecisionRequest request = request(
+                "PROJECT_OWNER",
+                "POST",
+                "/api/quality/quality-rules/remediation-tasks",
+                "QUALITY_ANOMALY",
+                "CREATE_REMEDIATION_TASK"
+        );
+        when(querySupport.listRoutePolicies(10L, "PROJECT_OWNER"))
+                .thenReturn(List.of(routePolicy(62006L, "PROJECT_OWNER", "POST",
+                        "/api/quality/quality-rules/remediation-tasks",
+                        "QUALITY_ANOMALY", "CREATE_REMEDIATION_TASK", "ALLOW", 146,
+                        "项目负责人创建质量异常治理任务")));
+        when(querySupport.listDataScopePolicies(10L, "PROJECT_OWNER", "QUALITY_ANOMALY"))
+                .thenReturn(List.of(dataScope("PROJECT_OWNER", "QUALITY_ANOMALY",
+                        "PROJECT", "project_id IN ${actorProjectIds}")));
+        when(querySupport.listActorProjectIds(10L, 1001L)).thenReturn(List.of(101L, 102L));
+
+        PermissionDecisionResult result = decisionSupport.evaluate(request, "trace-quality-remediation-create");
+
+        assertThat(result.getAllowed()).isTrue();
+        assertThat(result.getMatchedRoutePolicyId()).isEqualTo(62006L);
+        assertThat(result.getDataScopeLevel()).isEqualTo("PROJECT");
+        assertThat(result.getAuthorizedProjectIds()).containsExactly(101L, 102L);
+        assertThat(result.getReason()).contains("项目负责人创建质量异常治理任务");
+    }
+
+    /**
+     * 审计员即使可以查看异常证据，也不能创建治理任务。
+     *
+     * <p>审计角色的职责是复核、留痕和发现问题，不应该直接改变治理流程或给业务人员派发任务。
+     * 因此 route policy 需要用高优先级 DENY 明确拦截该动作，避免未来新增宽泛 QUALITY_ANOMALY 写权限时误放行。</p>
+     */
+    @Test
+    void auditorShouldDenyQualityRemediationTaskCreation() {
+        PermissionDecisionRequest request = request(
+                "AUDITOR",
+                "POST",
+                "/api/quality/quality-rules/remediation-tasks",
+                "QUALITY_ANOMALY",
+                "CREATE_REMEDIATION_TASK"
+        );
+        when(querySupport.listRoutePolicies(10L, "AUDITOR"))
+                .thenReturn(List.of(
+                        routePolicy(62007L, "AUDITOR", "GET",
+                                "/api/quality/quality-rules/anomalies/**",
+                                "QUALITY_ANOMALY", "VIEW", "ALLOW", 121,
+                                "审计员查看质量异常"),
+                        routePolicy(62008L, "AUDITOR", "POST",
+                                "/api/quality/quality-rules/remediation-tasks",
+                                "QUALITY_ANOMALY", "CREATE_REMEDIATION_TASK", "DENY", 1040,
+                                "审计员禁止创建质量异常治理任务")
+                ));
+
+        PermissionDecisionResult result = decisionSupport.evaluate(request, "trace-quality-remediation-deny");
+
+        assertThat(result.getAllowed()).isFalse();
+        assertThat(result.getRouteEffect()).isEqualTo("DENY");
+        assertThat(result.getMatchedRoutePolicyId()).isEqualTo(62008L);
+        assertThat(result.getReason()).contains("显式拒绝策略");
+    }
+
+    /**
      * 构造权限判定请求。
      */
     private PermissionDecisionRequest request(String actorRole,

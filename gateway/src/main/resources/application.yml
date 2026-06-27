@@ -577,6 +577,13 @@ datasmart:
           method-actions:
             GET: VIEW
 
+        - path-pattern: /api/quality/quality-rules/remediation-tasks
+          resource-type: QUALITY_ANOMALY
+          default-action: CREATE_REMEDIATION_TASK
+          description: 质量异常治理任务创建入口，用于把低敏异常聚合转成 task-management 治理或复核任务；它是异常处置动作，不是质量规则创建。
+          method-actions:
+            POST: CREATE_REMEDIATION_TASK
+
         - path-pattern: /api/quality/quality-rules/reports/*/anomalies
           resource-type: QUALITY_ANOMALY
           default-action: VIEW

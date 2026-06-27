@@ -98,6 +98,10 @@ datasmart:
       # 提交到任务中心的任务类型。
       # 后续质量执行器可以通过 taskType=DATA_QUALITY_SCAN 认领这类任务。
       task-type: DATA_QUALITY_SCAN
+      # 质量异常治理任务类型。
+      # DATA_QUALITY_SCAN 用于“执行质量检测”，DATA_QUALITY_REMEDIATION 用于“处理已经发现的异常”。
+      # 两者分开后，task-management 可以分别统计检测积压和治理积压，未来 worker 也不会误把治理任务当成扫描任务消费。
+      remediation-task-type: DATA_QUALITY_REMEDIATION
       # 默认任务优先级。调用方未传 priority 时使用该值。
       default-priority: MEDIUM
       # 默认最大重试次数。质量扫描可能受源库抖动、网络波动影响，因此保留有限重试。

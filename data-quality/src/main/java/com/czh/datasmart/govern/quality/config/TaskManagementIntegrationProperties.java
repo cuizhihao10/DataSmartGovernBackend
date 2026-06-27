@@ -47,6 +47,16 @@ public class TaskManagementIntegrationProperties {
     private String taskType = "DATA_QUALITY_SCAN";
 
     /**
+     * 质量异常治理任务类型。
+     *
+     * <p>它和 DATA_QUALITY_SCAN 必须分开建模：</p>
+     * <p>1. DATA_QUALITY_SCAN 表示“执行检测”，通常由质量执行器 worker 认领并产生报告；</p>
+     * <p>2. DATA_QUALITY_REMEDIATION 表示“处理已发现异常”，通常由人工、运营流程、Agent 草案或后续清洗执行器接手；</p>
+     * <p>3. 如果两者共用同一个 type，worker 可能误消费治理任务，或者任务中心无法分别统计“检测积压”和“治理积压”。</p>
+     */
+    private String remediationTaskType = "DATA_QUALITY_REMEDIATION";
+
+    /**
      * 默认优先级。
      */
     private String defaultPriority = "MEDIUM";

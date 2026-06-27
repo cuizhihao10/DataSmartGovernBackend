@@ -544,6 +544,46 @@ VALUES
 (0, '租户管理员禁止质量执行器回调', 'TENANT_ADMINISTRATOR', 'POST', '/api/quality/quality-rules/executor/executions/**', 'QUALITY_EXECUTION', 'CALLBACK', 'DENY', 1050, 1, '租户管理员不能用人类身份伪造 worker 回调。', NOW(), NOW()),
 (0, '平台管理员禁止质量执行器回调', 'PLATFORM_ADMINISTRATOR', 'POST', '/api/quality/quality-rules/executor/executions/**', 'QUALITY_EXECUTION', 'CALLBACK', 'DENY', 1050, 1, '平台管理员也应通过受控服务账号或 break-glass 流程处理机器回调，避免人工伪造执行事实。', NOW(), NOW());
 
+-- ---------------------------------------------------------------------------
+-- data-quality 异常治理任务权限策略
+-- ---------------------------------------------------------------------------
+-- POST /api/quality/quality-rules/remediation-tasks 表达的是“把低敏质量异常聚合转成治理/复核任务”。
+-- 它不是质量规则 CREATE，也不是质量执行 RUN，因此 gateway 会映射成 QUALITY_ANOMALY + CREATE_REMEDIATION_TASK。
+-- 只有对异常治理负责的角色才允许派发任务；普通用户和审计员可以看低敏异常，但不能创建处置任务。
+INSERT IGNORE INTO permission_route_policy
+(tenant_id, policy_name, role_code, http_method, path_pattern, resource_type, action, effect, priority, enabled, description, create_time, update_time)
+VALUES
+(0, '普通用户禁止创建质量异常治理任务', 'ORDINARY_USER', 'POST',
+ '/api/quality/quality-rules/remediation-tasks',
+ 'QUALITY_ANOMALY', 'CREATE_REMEDIATION_TASK', 'DENY', 1040, 1,
+ '普通用户可以查看授权项目内低敏异常，但不能把异常派发为治理任务，避免越权制造待办或误触发治理流程。',
+ NOW(), NOW()),
+(0, '审计员禁止创建质量异常治理任务', 'AUDITOR', 'POST',
+ '/api/quality/quality-rules/remediation-tasks',
+ 'QUALITY_ANOMALY', 'CREATE_REMEDIATION_TASK', 'DENY', 1040, 1,
+ '审计员职责是只读复核证据，不能创建或推动治理任务，否则会破坏审计独立性。',
+ NOW(), NOW()),
+(0, '项目负责人创建质量异常治理任务', 'PROJECT_OWNER', 'POST',
+ '/api/quality/quality-rules/remediation-tasks',
+ 'QUALITY_ANOMALY', 'CREATE_REMEDIATION_TASK', 'ALLOW', 146, 1,
+ '项目负责人可在授权项目范围内把低敏质量异常聚合转成治理/复核任务，并由 data-quality 服务层继续按 projectId 收口。',
+ NOW(), NOW()),
+(0, '运营人员创建质量异常治理任务', 'OPERATOR', 'POST',
+ '/api/quality/quality-rules/remediation-tasks',
+ 'QUALITY_ANOMALY', 'CREATE_REMEDIATION_TASK', 'ALLOW', 152, 1,
+ '运营人员可在租户范围内根据异常聚合创建治理任务，用于质量事件跟进、派单和补偿流程。',
+ NOW(), NOW()),
+(0, '租户管理员创建质量异常治理任务', 'TENANT_ADMINISTRATOR', 'POST',
+ '/api/quality/quality-rules/remediation-tasks',
+ 'QUALITY_ANOMALY', 'CREATE_REMEDIATION_TASK', 'ALLOW', 161, 1,
+ '租户管理员可在本租户范围内创建质量异常治理任务，但 payload 仍只允许低敏聚合摘要。',
+ NOW(), NOW()),
+(0, '平台管理员创建质量异常治理任务', 'PLATFORM_ADMINISTRATOR', 'POST',
+ '/api/quality/quality-rules/remediation-tasks',
+ 'QUALITY_ANOMALY', 'CREATE_REMEDIATION_TASK', 'ALLOW', 910, 1,
+ '平台管理员可在全平台范围内创建质量异常治理任务，主要用于跨租户排障、演示环境治理或 break-glass 场景。',
+ NOW(), NOW());
+
 INSERT IGNORE INTO permission_data_scope_policy
 (tenant_id, role_code, resource_type, scope_level, scope_expression, approval_required, enabled, description, create_time, update_time)
 VALUES

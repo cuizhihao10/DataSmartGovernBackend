@@ -1,5 +1,45 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-28 追加落地进展：Java Data Quality 4.2 Remediation Task Contract
+- 本阶段承接 4.0 治理总览和 4.1 权限闭环，把 data-quality 从“发现质量风险”推进到“可创建治理/复核任务”，形成质量模块当前阶段的闭环收口点。
+- 产品目标：
+  - 让项目负责人、运营人员或后续 Agent 能把低敏异常聚合转成 task-management 中可跟踪、可分派、可复核的治理任务；
+  - 把“查看异常”和“创建异常治理任务”拆成不同权限动作，避免只读角色因为能看异常就能派单；
+  - 保持质量模块边界清晰：本阶段只创建治理任务契约，不实现真实清洗执行器、不修改源端数据、不生成可执行脚本；
+  - 为后续 Agent ToolPlan 接入质量治理场景预留稳定 payload，而不把样本、脚本、连接信息、模型正文或工具正文带入任务中心。
+- 新增与调整：
+  - 新增 `POST /quality-rules/remediation-tasks`，用于创建质量异常治理任务；
+  - 新增 `QualityRemediationTaskController`，接收 gateway 透传的租户、操作者、数据范围和授权项目集合；
+  - 新增 `QualityRemediationTaskService`，完成报告可见性校验、PROJECT 空授权短路、异常数量统计、TOP 维度聚合、dry-run 预览和 task-management 提交；
+  - 新增 `QualityRemediationTaskTextSanitizer`，把低敏策略说明、自由文本脱敏、编码规范化从主服务拆出，保证主服务低于 500 行并降低耦合；
+  - 新增 `QualityRemediationTaskPayload`，定义跨微服务任务参数契约；
+  - 扩展 `TaskManagementIntegrationProperties` 和 `application.yml`，新增 `remediation-task-type: DATA_QUALITY_REMEDIATION`；
+  - 扩展 gateway 默认路由元数据和生产 YAML，将 `/api/quality/quality-rules/remediation-tasks` 映射为 `QUALITY_ANOMALY + CREATE_REMEDIATION_TASK`；
+  - 扩展 `permission-admin.sql` 并新增 `20260628_data_quality_remediation_task_permission.sql`，允许项目负责人、运营人员、租户管理员、平台管理员创建治理任务，显式拒绝普通用户和审计员；
+  - 扩展 gateway 与 permission-admin 单测，保护新路由语义和角色决策。
+- 低敏与安全边界：
+  - payload 只包含筛选条件、异常数量、TOP 字段/类型/严重级别聚合、治理类型、治理原因和建议；
+  - 响应和 task-management 参数不返回样本正文、明细标识、查询脚本、模型或工具正文、凭据、连接串或内部地址；
+  - 低敏策略说明本身也避免复述敏感字段名，防止“说明文字”变成另一种泄露面；
+  - `PROJECT` 数据范围没有可见项目时直接返回未提交结果，不查询报告或异常表，避免通过响应差异探测数据是否存在；
+  - reportId 入口会先校验报告项目可见性，再统计异常和创建任务。
+- 验证：
+  - 定向测试：
+    `mvn -pl data-quality,gateway,permission-admin -am "-Dtest=QualityRemediationTaskServiceTest,GatewayDataQualityAuthorizationFilterTest,PermissionDataQualityDecisionSupportTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：16 个测试通过。
+  - `data-quality + gateway + permission-admin` 全量测试：
+    `mvn -pl data-quality,gateway,permission-admin -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：106 个测试通过。
+  - Maven Toolchain 使用 JDK 21：`C:\Users\Cui\.jdks\temurin-21.0.10`。
+- 当前边界：
+  - 本阶段不做自动清洗、不生成或执行修复脚本、不访问源库样本、不实现前端页面；
+  - task-management 当前只接收治理任务契约，后续如果要做审批、SLA、自动分派或工单同步，应放到任务中心和权限中心继续闭环；
+  - data-quality 已具备规则、执行、报告、异常、治理总览、权限和治理任务创建的阶段性闭环，不建议继续在该模块深挖新功能。
+- 下一步推荐路线：
+  1. 优先转向 Agent 收敛：让 Agent 用低敏质量总览/异常聚合生成 ToolPlan 或治理任务草案，接上 tools、permission、context、sessions 和 runtime events；
+  2. 或补齐全平台“闭环清单”文档，把 Java 微服务、智能网关、Python Runtime、模型接入、长期记忆和工具执行准备度按完成度分层；
+  3. data-quality 后续只做必要 bugfix、低敏上下文读取或任务中心契约小调整，避免继续局部无限扩展。
+
 ## 2026-06-28 追加落地进展：Java Data Quality 4.1 Permission Closure
 - 本阶段承接 `data-quality` 治理总览能力，不继续在质量模块内部盲目扩展新业务按钮，而是把“谁能看质量态势、谁能处理异常、谁能触发执行、谁能作为 worker 回调”纳入 `permission-admin + gateway` 的统一治理闭环。
 - 产品目标：

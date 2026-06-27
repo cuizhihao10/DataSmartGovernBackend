@@ -90,6 +90,25 @@ class GatewayDataQualityAuthorizationFilterTest {
     }
 
     /**
+     * 异常治理任务创建入口应使用 QUALITY_ANOMALY + CREATE_REMEDIATION_TASK。
+     *
+     * <p>这是 data-quality 从“看见异常”走向“派发治理”的关键写入口。
+     * 它虽然是 POST，但语义不是创建质量规则，也不是触发质量检测，而是把低敏异常聚合转成 task-management
+     * 中的复核/治理任务。单独的 action 可以让 permission-admin 把“能看异常”和“能派单处理异常”拆成不同按钮权限。</p>
+     */
+    @Test
+    void remediationTaskCreationShouldUseQualityAnomalyCreateRemediationTaskAuthorization() {
+        GatewayPermissionDecisionRequest request = capturedDecisionRequest(
+                "/api/quality/quality-rules/remediation-tasks",
+                "POST",
+                "PROJECT_OWNER"
+        );
+
+        assertThat(request.getResourceType()).isEqualTo("QUALITY_ANOMALY");
+        assertThat(request.getAction()).isEqualTo("CREATE_REMEDIATION_TASK");
+    }
+
+    /**
      * 执行器诊断入口应使用 QUALITY_EXECUTION + DIAGNOSE。
      *
      * <p>诊断接口通常暴露 worker 健康状态、积压数量、最近执行耗时等运维信息，风险高于普通报告查看。

@@ -297,6 +297,9 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/quality/quality-rules/governance/overview", "QUALITY_GOVERNANCE",
                 "数据质量治理总览低敏聚合入口，用于查看规则、报告、执行和异常的项目级态势。",
                 Map.of("GET", "VIEW")));
+        defaults.add(route("/api/quality/quality-rules/remediation-tasks", "QUALITY_ANOMALY",
+                "质量异常治理任务创建入口，用于把低敏异常聚合转成 task-management 治理/复核任务；它是异常处置动作，不是质量规则创建。",
+                Map.of("POST", "CREATE_REMEDIATION_TASK")));
         defaults.add(route("/api/quality/quality-rules/reports/*/anomalies", "QUALITY_ANOMALY",
                 "按报告查看质量异常明细或聚合结果，风险高于普通报告摘要，因此单独映射到异常资源。",
                 Map.of("GET", "VIEW")));
