@@ -1,5 +1,24 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-28 追加落地进展：Agent Runtime Submission Fact Recovery
+- 本阶段承接质量治理真实提交链路的下游幂等闭环，补齐 `UNKNOWN` 提交事实的最小运营恢复入口：当 agent-runtime 无法确认下游副作用是否发生时，运营人员可以先按 `commandId` 低敏查询，再通过人工对账结果把事实收敛为 `SUBMITTED` 或 `REJECTED`。
+- 产品价值：
+  - 把“副作用不确定”从开发排障问题变成可管理的运营状态，降低重复创建任务、误重放真实操作和跨租户误查的风险；
+  - 默认 `dryRun=true`，人工恢复先预演后落库，适合商业化场景中的双人复核或工单审批流程；
+  - 查询只暴露短指纹、状态、低敏原因码和下游任务引用，不暴露 payload、prompt、SQL、样本、模型输出、工具参数、凭据或内部 URL。
+- 新增与调整：
+  - 新增 `GET /agent-runtime/tool-action-submissions/{commandId}` 与 `/api/agent/...` 查询入口；
+  - 新增 `POST /agent-runtime/tool-action-submissions/{commandId}/manual-resolutions` 与 `/api/agent/...` 人工恢复入口；
+  - 新增 `AgentToolActionSubmissionFactRecoveryService` 与独立 DTO，保持 controller、API 契约和提交事实仓储解耦；
+  - 写操作仅允许运营、租户管理员、平台管理员或服务账号角色执行，且只允许 `UNKNOWN -> SUBMITTED/REJECTED`。
+- 验证：
+  - 定向测试通过：`AgentToolActionSubmissionFactRecoveryServiceTest` 与 `QualityRemediationTaskCommandSubmissionServiceTest` 共 8 个测试；
+  - `agent-runtime` 全量测试通过：429 个测试；
+  - 本批新增重点文件均低于 500 行，Maven Toolchain 使用 JDK 21。
+- 收敛判断：
+  - 质量治理 Agent 工具链路已经具备 dry-run、payloadReference、审批确认、Host submit、提交事实、下游任务创建幂等、UNKNOWN 人工收敛的主闭环；
+  - 后续不再继续沿单一质量治理链路无限扩展，下一阶段应切回全局 Agent 能力矩阵和 Java 核心业务模块的闭环清单，按 P0/P1/P2 收敛整个项目。
+
 ## 2026-06-28 追加落地进展：Task Creation Idempotency Closure
 - 本阶段承接 agent-runtime 受控提交事实，把质量治理真实提交链路继续向下游收口：agent-runtime 使用 outbox 业务幂等键构造 data-quality 真实提交请求，data-quality 透传 `idempotencyKey`，task-management 通过 `task.creation_idempotency_key` 唯一索引和复用校验避免重复创建治理任务。
 - 产品价值：
