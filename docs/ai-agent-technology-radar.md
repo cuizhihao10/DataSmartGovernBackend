@@ -1,4 +1,18 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-28 落地补充：command envelopes need structured payload-body readiness, not body content
+
+- 本轮趋势校准：
+  - 成熟 Agent Host 的 command envelope 不应塞入工具结果正文，但也不能只给 worker 一串难解析的 evidence 文本。
+  - 更稳的做法是把“payload body 是否已由 Host 物化、大小是多少”作为结构化低敏字段写入 envelope，真实读取仍回到 Host store 做权限和过期复核。
+  - 这符合 Codex/Claude Code/OpenClaw 类系统的 Host 控制面趋势：模型和前端只处理引用与状态，Host/worker 才能在受控边界内读取正文。
+- 本轮落地到代码的能力：
+  - `AgentToolActionPayloadReferenceVerificationResult` 新增 `payloadBodyAvailable` 与 `payloadSizeBytes`；
+  - `AgentToolActionCommandPayloadEnvelopeBuilder` 把这两个字段写入 command payload 白名单；
+  - writer 测试证明已物化 `agent-payload:` 穿过 writer 后，payload body 仍只存在于服务端 store，不进入 outbox payload。
+- 产品判断：
+  - 这是 approval/outbox worker 前的收敛补点；
+  - 下一步应做 confirmation fact 和 worker 读取复核，不应继续增加正文展示字段。
+
 ## 2026-06-28 落地补充：tool dry-run results should become host-owned payload facts
 
 - 本轮趋势校准：

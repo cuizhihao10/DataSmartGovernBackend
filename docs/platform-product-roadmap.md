@@ -1,5 +1,29 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-28 追加落地进展：Java Agent Runtime Command Envelope Payload Body Availability
+- 本阶段承接上一批 payloadReference 物化，把 `payloadBodyAvailable/payloadSizeBytes` 从 verifier 结果结构化传入 tool-action command payload。
+- 产品目标：
+  - 后续 task-management worker / executor 不需要解析 evidence 字符串，也能知道 payload body 是否已经由 Host 物化；
+  - command payload 继续只传低敏状态、大小和证据，不传 `payloadBody`、草案正文、异常聚合明细、prompt、SQL 或样本；
+  - 证明 `AgentToolActionCommandOutboxWriterService.ensureEnvelope(...)` 遇到已物化 `agent-payload:` 时不会覆盖正文记录；
+  - 为后续 approval confirmation fact 和审批后 outbox worker 读取服务端 payload body 打基础。
+- 新增与调整：
+  - `AgentToolActionPayloadReferenceVerificationResult` 新增 `payloadBodyAvailable` 与 `payloadSizeBytes`；
+  - `AgentToolActionPayloadReferenceVerifier` 从 payload store verdict 带出 body 可用性和大小，其它引用类型默认 `false/0`；
+  - `AgentToolActionCommandPayloadEnvelopeBuilder` 将这两个字段写入 command payload 白名单，并补充中文注释说明该字段不能替代执行前二次复核；
+  - `AgentToolActionCommandOutboxWriterServiceTest` 新增已物化 `agent-payload:` 穿过 writer 的回归测试，确认 command payload 不包含 `remediationTaskDraft/topAnomalyTypes/FORMAT_INVALID` 等正文内容。
+- 验证：
+  - 定向 Java 测试：
+    `mvn -pl agent-runtime -am "-Dtest=AgentToolActionCommandOutboxWriterServiceTest,AgentToolActionPayloadReferenceVerifierTest,AgentToolActionPayloadStoreServiceTest,QualityRemediationTaskDraftToolAdapterTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：16 个测试通过。
+  - `agent-runtime` 全量测试：
+    `mvn -pl agent-runtime -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：416 个测试通过。
+- 下一步推荐路线：
+  1. 接 approval confirmation fact，让人工确认页围绕 payloadReference、body 可用性、大小和策略确认；
+  2. 再接审批后 outbox worker，由 Host 复核 payload body 后调用 data-quality `dryRun=false`；
+  3. 最后补 runtime event / readiness projection 的低敏状态展示，形成质量治理 Agent 工具闭环。
+
 ## 2026-06-28 追加落地进展：Java Agent Runtime Remediation PayloadReference Materialization
 - 本阶段承接上一批 `quality.remediation.task.draft` Java dry-run adapter，把治理任务草案从“工具输出中直接展开低敏 preview”收敛为“服务端 payload body + 对外 payloadReference”。
 - 产品目标：

@@ -120,6 +120,15 @@ public class AgentToolActionCommandPayloadEnvelopeBuilder {
         payload.put("payloadPolicy", proposal.payloadPolicy());
         payload.put("payloadReferenceVerificationStatus", payloadReferenceVerification.status());
         payload.put("payloadReferenceType", payloadReferenceVerification.referenceType());
+        /*
+         * payload body 物化状态。
+         *
+         * 这两个字段只表达“服务端是否已经保存了可读取正文”以及“正文大小”，不携带正文内容。
+         * task-management 或后续 executor 可以据此决定是否回到 agent-runtime payload store 做服务端读取；
+         * 不能因为 bodyAvailable=true 就跳过 tenant/project/actor/run/tool/contract 的二次复核。
+         */
+        payload.put("payloadBodyAvailable", payloadReferenceVerification.payloadBodyAvailable());
+        payload.put("payloadSizeBytes", payloadReferenceVerification.payloadSizeBytes());
         payload.put("payloadReferenceAcceptedEvidence", payloadReferenceVerification.acceptedEvidence());
         payload.put("argumentNames", List.of());
         payload.put("sensitiveArgumentNames", List.of());

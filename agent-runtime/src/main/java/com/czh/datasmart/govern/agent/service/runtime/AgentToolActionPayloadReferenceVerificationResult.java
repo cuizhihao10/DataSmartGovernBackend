@@ -18,6 +18,8 @@ import java.util.List;
  * @param verifiedForWriter 是否允许 writer 继续写入 outbox。
  * @param normalizedPayloadReference 规范化后的引用字符串。
  * @param referenceType 引用类型，例如 AGENT_PAYLOAD、AGENT_TOOL_AUDIT、ARTIFACT_REFERENCE。
+ * @param payloadBodyAvailable 引用背后的 payload body 是否已经由服务端物化。
+ * @param payloadSizeBytes 已物化 payload body 的字节数；未物化时为 0。
  * @param acceptedEvidence 已接受的低敏证据。
  * @param issueCodes 阻断或风险代码。
  * @param summaryReasons 人读原因说明。
@@ -28,9 +30,16 @@ public record AgentToolActionPayloadReferenceVerificationResult(
         Boolean verifiedForWriter,
         String normalizedPayloadReference,
         String referenceType,
+        Boolean payloadBodyAvailable,
+        Integer payloadSizeBytes,
         List<String> acceptedEvidence,
         List<String> issueCodes,
         List<String> summaryReasons,
         List<String> recommendedActions
 ) {
+
+    public AgentToolActionPayloadReferenceVerificationResult {
+        payloadBodyAvailable = Boolean.TRUE.equals(payloadBodyAvailable);
+        payloadSizeBytes = Math.max(0, payloadSizeBytes == null ? 0 : payloadSizeBytes);
+    }
 }

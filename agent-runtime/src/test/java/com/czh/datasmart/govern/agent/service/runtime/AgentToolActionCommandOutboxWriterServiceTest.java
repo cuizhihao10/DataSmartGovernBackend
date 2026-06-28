@@ -18,6 +18,7 @@ import com.czh.datasmart.govern.agent.event.command.InMemoryAgentAsyncTaskComman
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -73,12 +74,14 @@ class AgentToolActionCommandOutboxWriterServiceTest {
         assertTrue(record.payloadJson().contains("\"payloadReferenceVerificationStatus\":\"VERIFIED\""));
         assertTrue(record.payloadJson().contains("AGENT_PAYLOAD_RECORD_FOUND"));
         assertTrue(record.payloadJson().contains("AGENT_PAYLOAD_METADATA_SCOPE_VERIFIED"));
+        assertTrue(record.payloadJson().contains("\"payloadBodyAvailable\":false"));
+        assertTrue(record.payloadJson().contains("\"payloadSizeBytes\":0"));
         assertTrue(record.payloadJson().contains("\"factEvidenceVerificationStatus\":\"VERIFIED_OR_NOT_REQUIRED\""));
         assertTrue(record.payloadJson().contains("\"commandSafetyPrecheckRequired\":false"));
         assertTrue(record.payloadJson().contains("\"decision\":\"NOT_APPLICABLE\""));
         assertTrue(record.payloadJson().contains("COMMAND_SAFETY_PRECHECK_EVIDENCE_IF_REQUIRED"));
         assertTrue(record.payloadJson().contains("\"serverSideVerificationRequired\":true"));
-        assertFalse(record.payloadJson().contains("payloadBody"));
+        assertFalse(record.payloadJson().contains("\"payloadBody\":"));
         assertFalse(record.payloadJson().contains("ds-sensitive-proposal"));
         assertFalse(record.payloadJson().contains("select * from"));
         assertFalse(record.payloadJson().contains("raw prompt"));
@@ -98,6 +101,62 @@ class AgentToolActionCommandOutboxWriterServiceTest {
         assertEquals(false, payloadRecord.payloadBodyAvailable());
         assertEquals(0, payloadRecord.payloadSizeBytes());
         assertTrue(payloadRecord.payloadBody().isEmpty());
+    }
+
+    @Test
+    void writeShouldPreserveMaterializedAgentPayloadBodyAsReferenceOnlyCommandEnvelope() {
+        TestServices services = servicesWithEvents();
+        AgentToolActionExecutionGraphView readyGraph = graphByTool(services.graphService(), "datasource.metadata.read");
+        AgentToolActionPayloadMaterializationService materializationService =
+                new AgentToolActionPayloadMaterializationService(services.payloadStore());
+        String payloadReference = "agent-payload:run-proposal/datasource-metadata-read";
+        materializationService.materializePayloadBody(
+                new AgentToolActionPayloadMaterializationService.AgentToolActionPayloadMaterializationRequest(
+                        payloadReference,
+                        "run-proposal",
+                        "10",
+                        "20",
+                        "1001",
+                        "datasource.metadata.read",
+                        readyGraph.graphId(),
+                        readyGraph.contractId(),
+                        "LOW_SENSITIVE_DRAFT_BODY",
+                        List.of("remediationScope", "dryRun"),
+                        List.of("remediationScope"),
+                        Map.of(
+                                "summary", Map.of("draftOnly", true, "anomalyCount", 18),
+                                "remediationTaskDraft", Map.of(
+                                        "payloadPolicy", "LOW_SENSITIVE_AGGREGATION_ONLY",
+                                        "topAnomalyTypes", List.of(Map.of("key", "FORMAT_INVALID", "count", 18))
+                                )
+                        ),
+                        Duration.ofMinutes(30)
+                )
+        ).orElseThrow();
+
+        AgentToolActionCommandOutboxWriteResponse response = services.writerService().write(
+                readyRequest(readyGraph),
+                projectOwnerContext()
+        );
+
+        assertEquals("ENQUEUED", response.writerState());
+        AgentAsyncTaskCommandOutboxRecord record = services.outboxStore()
+                .findByCommandId(response.commandId())
+                .orElseThrow();
+        assertEquals(payloadReference, record.payloadReference());
+        assertTrue(record.payloadJson().contains("\"payloadBodyAvailable\":true"));
+        assertTrue(record.payloadJson().contains("\"payloadSizeBytes\":"));
+        assertTrue(record.payloadJson().contains("PAYLOAD_BODY_AVAILABLE"));
+        assertTrue(record.payloadJson().contains("PAYLOAD_METADATA_DIGEST"));
+        assertFalse(record.payloadJson().contains("remediationTaskDraft"));
+        assertFalse(record.payloadJson().contains("topAnomalyTypes"));
+        assertFalse(record.payloadJson().contains("FORMAT_INVALID"));
+
+        AgentToolActionPayloadRecord payloadRecord = services.payloadStore()
+                .findByReference(payloadReference)
+                .orElseThrow();
+        assertTrue(payloadRecord.payloadBodyAvailable());
+        assertTrue(payloadRecord.payloadBody().containsKey("remediationTaskDraft"));
     }
 
     @Test
