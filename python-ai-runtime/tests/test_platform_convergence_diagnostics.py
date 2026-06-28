@@ -69,7 +69,8 @@ class PlatformConvergenceDiagnosticsTest(unittest.TestCase):
         agent_runtime = domains["agent-runtime"]
 
         self.assertEqual("P0", data_sync["priority"])
-        self.assertEqual(ConvergencePhase.FOUNDATION_READY.value, data_sync["currentPhase"])
+        self.assertEqual(ConvergencePhase.CONTROL_PLANE_READY.value, data_sync["currentPhase"])
+        self.assertTrue(any("连接器能力矩阵" in item for item in data_sync["completedCapabilities"]))
         self.assertTrue(any("checkpoint" in item or "重试" in item for item in data_sync["openGaps"]))
         self.assertTrue(any("task-management" in item for item in data_sync["dependsOn"]))
         self.assertTrue(any("data-sync" in item or "数据同步" in item for item in task["nextActions"]))

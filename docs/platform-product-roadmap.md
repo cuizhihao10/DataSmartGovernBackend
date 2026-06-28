@@ -1,5 +1,23 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-28 追加落地进展：Data Sync Connector Capability Control Plane
+- 本阶段从 Agent 局部收敛切回 data-sync 业务闭环，新增低敏连接器能力控制面。它覆盖 MySQL、PostgreSQL、SQL Server、Oracle、MongoDB、Kafka、Hive、ClickHouse、File、Object Storage、REST API，并提供源端/目标端/syncMode 兼容性预检。
+- 产品价值：
+  - 前端创建同步模板、Agent 规划同步任务、运营台评估连接器能力时，可以先读取同一份能力矩阵，而不是把 MySQL、PostgreSQL、Kafka、文件和对象存储各自写成硬编码判断；
+  - Kafka 不会被误当作传统 FULL 表同步源，CDC/流式模式会显式要求源端和目标端都具备流式能力；
+  - 兼容性响应只返回低敏能力元数据、一致性目标、checkpoint 要求、重试模式、问题码和建议动作，不返回连接串、SQL、样本、密钥或内部地址。
+- 新增接口：
+  - `GET /sync-connectors/capabilities` 与 `GET /api/sync-connectors/capabilities`；
+  - `GET /sync-connectors/compatibility` 与 `GET /api/sync-connectors/compatibility`。
+- 验证：
+  - data-sync 定向测试通过：6 个；
+  - data-sync 全量测试通过：58 个；
+  - Python 平台收敛诊断测试通过：4 个；
+  - 重点文件均低于 500 行。
+- 收敛判断：
+  - data-sync 从“只有基础任务/执行控制面”进一步具备连接器能力控制面，平台收敛诊断已从 `foundation_ready` 校准为 `control_plane_ready`；
+  - 下一步应把该能力矩阵接入模板校验和 datasource-management 低敏实例能力查询，再推进至少一种全量/增量同步真实闭环。
+
 ## 2026-06-28 追加落地进展：Agent Capability Baseline Reconciliation
 - 本阶段没有继续扩展质量治理字段，而是校准 Python Runtime 的 Agent 能力矩阵和平台收敛诊断：质量治理工具链路已经从 dry-run preview 推进到部分真实闭环，因此路线图不应再把它描述为“尚未真实调用”。
 - 产品价值：

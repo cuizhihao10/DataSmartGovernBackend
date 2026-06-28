@@ -280,22 +280,23 @@ def _default_domain_statuses() -> tuple[PlatformConvergenceDomainStatus, ...]:
             display_name="数据源管理与数据同步",
             owner_layer="java-core-business",
             priority="P0",
-            current_phase=ConvergencePhase.FOUNDATION_READY,
+            current_phase=ConvergencePhase.CONTROL_PLANE_READY,
             target_phase=ConvergencePhase.PARTIAL_CLOSED_LOOP,
             completed_capabilities=(
                 "已有数据源管理基础能力和大量注释整改，模块边界逐步清晰。",
                 "产品文档已定义连接器矩阵、同步模式、状态机、API outline、领域模型和 schema 设计方向。",
+                "data-sync 已新增低敏连接器能力矩阵和源/目标/模式兼容性预检，为 MySQL、PostgreSQL、Kafka、文件和对象存储等场景提供统一能力事实。",
             ),
             open_gaps=(
-                "真实数据同步任务生命周期尚未与 task-management、checkpoint、重试、回放和告警闭环。",
-                "连接器能力探测、密钥绑定、元数据采集、全量/增量/CDC/批量模式仍需产品化落地。",
+                "真实 connector worker 读取写入、datasource-management 实例能力探测、密钥绑定和元数据采集仍需产品化落地。",
+                "全量/增量/CDC/批量模式还需要与 task-management、checkpoint、重试、回放和告警形成端到端闭环。",
             ),
             closure_exit_criteria=(
                 "MySQL/PostgreSQL 至少形成统一连接器抽象、连接测试、能力探测和元数据采集闭环。",
                 "至少一种同步模式能进入任务创建、执行记录、checkpoint、失败重试和低敏运行历史。",
             ),
             next_actions=(
-                "优先补 connector abstraction 和 sync task runtime，而不是继续只优化数据源 CRUD。",
+                "把 connector capability 与 datasource-management 连接测试、metadata discovery 和模板校验打通。",
                 "同步任务应先支持全量/增量最小闭环，再逐步扩展 CDC、回放、backfill 和跨租户限流。",
             ),
             depends_on=("task-management", "permission-admin", "observability"),
