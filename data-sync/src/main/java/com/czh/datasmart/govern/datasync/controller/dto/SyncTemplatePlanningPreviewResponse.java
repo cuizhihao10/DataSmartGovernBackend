@@ -28,6 +28,12 @@ import java.util.List;
  * @param sourceConnectorType 源端连接器类型低敏枚举，例如 MYSQL。
  * @param targetConnectorType 目标端连接器类型低敏枚举，例如 POSTGRESQL。
  * @param syncMode 同步模式，例如 FULL、INCREMENTAL_TIME、CDC_STREAMING。
+ * @param sourceObjectDeclared 是否已经声明源端对象名称；不返回对象名正文，避免普通预览接口扩大业务元数据暴露面。
+ * @param targetObjectDeclared 是否已经声明目标端对象名称；缺失时真实 worker 无法形成读写计划。
+ * @param writeStrategy 归一化后的写入策略，例如 APPEND、UPSERT、OVERWRITE；为空模板会按 APPEND 兼容处理。
+ * @param writeStrategyRequiresConflictKey 当前写入策略是否要求 primaryKeyField。
+ * @param primaryKeyDeclared 是否声明主键或冲突字段；不返回字段名正文。
+ * @param incrementalFieldDeclared 是否声明增量字段；INCREMENTAL_TIME/INCREMENTAL_ID 必须声明。
  * @param previewStatus 预览状态：READY、NEEDS_REVIEW、BLOCKED。
  * @param canProceedToTaskDraft 是否建议允许进入任务草稿阶段；BLOCKED 时为 false。
  * @param executionPrecheckReady 是否已经达到执行前预检的推荐状态；NEEDS_REVIEW/BLOCKED 时为 false。
@@ -54,6 +60,12 @@ public record SyncTemplatePlanningPreviewResponse(
         String sourceConnectorType,
         String targetConnectorType,
         String syncMode,
+        boolean sourceObjectDeclared,
+        boolean targetObjectDeclared,
+        String writeStrategy,
+        boolean writeStrategyRequiresConflictKey,
+        boolean primaryKeyDeclared,
+        boolean incrementalFieldDeclared,
         String previewStatus,
         boolean canProceedToTaskDraft,
         boolean executionPrecheckReady,

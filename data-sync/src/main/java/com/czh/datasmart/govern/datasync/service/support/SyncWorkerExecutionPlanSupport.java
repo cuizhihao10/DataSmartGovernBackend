@@ -14,6 +14,8 @@ import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
 import com.czh.datasmart.govern.datasync.support.SyncExecutionState;
+import com.czh.datasmart.govern.datasync.support.SyncMode;
+import com.czh.datasmart.govern.datasync.support.SyncWriteStrategy;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -64,12 +66,13 @@ public class SyncWorkerExecutionPlanSupport {
         }
 
         PlanFacts facts = collectFacts(execution, template);
+        SyncWriteStrategy writeStrategy = resolveWriteStrategy(template, facts.issueCodes());
         SyncConnectorCompatibilityView compatibility = resolveCompatibility(template, facts.issueCodes());
         boolean connectorSupported = compatibility != null && compatibility.supported();
         if (compatibility != null) {
             facts.issueCodes().addAll(compatibility.issueCodes());
         }
-        appendTemplateIssues(template, compatibility, facts.issueCodes());
+        appendTemplateIssues(template, writeStrategy, compatibility, facts.issueCodes());
 
         String planStatus = resolvePlanStatus(facts.issueCodes(), connectorSupported);
         facts.workerActions().addAll(workerActions(planStatus, compatibility));
@@ -93,6 +96,12 @@ public class SyncWorkerExecutionPlanSupport {
                 normalize(template.getSourceConnectorType()),
                 normalize(template.getTargetConnectorType()),
                 normalize(template.getSyncMode()),
+                hasText(template.getSourceObjectName()),
+                hasText(template.getTargetObjectName()),
+                writeStrategy == null ? null : writeStrategy.name(),
+                writeStrategy != null && writeStrategy.requiresConflictKey(),
+                hasText(template.getPrimaryKeyField()),
+                hasText(template.getIncrementalField()),
                 connectorSupported,
                 compatibility == null ? null : compatibility.consistencyGoal(),
                 compatibility != null && compatibility.checkpointRequired(),
@@ -132,6 +141,12 @@ public class SyncWorkerExecutionPlanSupport {
         if (!hasText(template.getSyncMode())) {
             issueCodes.add("SYNC_MODE_MISSING");
         }
+        if (!hasText(template.getSourceObjectName())) {
+            issueCodes.add("SOURCE_OBJECT_NOT_DECLARED");
+        }
+        if (!hasText(template.getTargetObjectName())) {
+            issueCodes.add("TARGET_OBJECT_NOT_DECLARED");
+        }
         if (!hasText(template.getFieldMappingConfig())) {
             issueCodes.add("FIELD_MAPPING_NOT_DECLARED");
         }
@@ -142,6 +157,26 @@ public class SyncWorkerExecutionPlanSupport {
             issueCodes.add("TIMEOUT_POLICY_NOT_DECLARED");
         }
         return new PlanFacts(issueCodes, workerActions);
+    }
+
+    /**
+     * 解析 worker 执行时必须理解的写入策略。
+     *
+     * <p>空策略会兼容为 APPEND，但会留下 WRITE_STRATEGY_DEFAULTED_TO_APPEND 警告，提醒 worker 和运营台：
+     * 默认追加写入虽然能跑通最小闭环，但在重试、回放和补数场景下更容易产生重复记录。未知策略则直接变成阻断问题，
+     * 因为 worker 不能自行猜测写入语义。</p>
+     */
+    private SyncWriteStrategy resolveWriteStrategy(SyncTemplate template, List<String> issueCodes) {
+        try {
+            SyncWriteStrategy writeStrategy = SyncWriteStrategy.fromValue(template.getWriteStrategy());
+            if (!hasText(template.getWriteStrategy())) {
+                issueCodes.add("WRITE_STRATEGY_DEFAULTED_TO_APPEND");
+            }
+            return writeStrategy;
+        } catch (IllegalArgumentException exception) {
+            issueCodes.add("WRITE_STRATEGY_UNSUPPORTED");
+            return null;
+        }
     }
 
     /**
@@ -176,10 +211,22 @@ public class SyncWorkerExecutionPlanSupport {
      * 因此这里给出显式 issueCode，帮助后续 runner 决定是否 fail-closed。</p>
      */
     private void appendTemplateIssues(SyncTemplate template,
+                                      SyncWriteStrategy writeStrategy,
                                       SyncConnectorCompatibilityView compatibility,
                                       List<String> issueCodes) {
         if (compatibility != null && !compatibility.supported()) {
             issueCodes.add("CONNECTOR_COMPATIBILITY_UNSUPPORTED");
+        }
+        if (writeStrategy != null && writeStrategy.requiresConflictKey() && !hasText(template.getPrimaryKeyField())) {
+            issueCodes.add("PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE");
+        }
+        SyncMode syncMode = resolveModeOrNull(template.getSyncMode());
+        if ((syncMode == SyncMode.INCREMENTAL_TIME || syncMode == SyncMode.INCREMENTAL_ID)
+                && !hasText(template.getIncrementalField())) {
+            issueCodes.add("INCREMENTAL_FIELD_NOT_DECLARED");
+        }
+        if (writeStrategy != null && writeStrategy.isDestructiveRewrite()) {
+            issueCodes.add("DESTRUCTIVE_WRITE_STRATEGY_REQUIRES_REVIEW");
         }
         if (compatibility != null && compatibility.checkpointRequired() && !hasText(template.getFilterConfig())) {
             issueCodes.add("CHECKPOINT_BOUNDARY_NOT_DECLARED");
@@ -205,7 +252,12 @@ public class SyncWorkerExecutionPlanSupport {
                 || issueCodes.contains("CONNECTOR_FACTS_MISSING")
                 || issueCodes.contains("SYNC_MODE_MISSING")
                 || issueCodes.contains("CONNECTOR_COMPATIBILITY_UNKNOWN")
-                || issueCodes.contains("CONNECTOR_COMPATIBILITY_UNSUPPORTED")) {
+                || issueCodes.contains("CONNECTOR_COMPATIBILITY_UNSUPPORTED")
+                || issueCodes.contains("SOURCE_OBJECT_NOT_DECLARED")
+                || issueCodes.contains("TARGET_OBJECT_NOT_DECLARED")
+                || issueCodes.contains("WRITE_STRATEGY_UNSUPPORTED")
+                || issueCodes.contains("PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE")
+                || issueCodes.contains("INCREMENTAL_FIELD_NOT_DECLARED")) {
             return "BLOCKED";
         }
         return issueCodes.isEmpty() ? "READY_TO_RUN" : "READY_WITH_WARNINGS";
@@ -259,6 +311,12 @@ public class SyncWorkerExecutionPlanSupport {
                 null,
                 null,
                 false,
+                false,
+                null,
+                false,
+                false,
+                false,
+                false,
                 null,
                 false,
                 null,
@@ -278,6 +336,18 @@ public class SyncWorkerExecutionPlanSupport {
     private boolean isFullLikeMode(String syncMode) {
         String mode = normalize(syncMode);
         return "FULL".equals(mode) || "ONE_TIME_MIGRATION".equals(mode);
+    }
+
+    private SyncMode resolveModeOrNull(String syncMode) {
+        String mode = normalize(syncMode);
+        if (mode == null) {
+            return null;
+        }
+        try {
+            return SyncMode.valueOf(mode);
+        } catch (IllegalArgumentException exception) {
+            return null;
+        }
     }
 
     private boolean hasText(String value) {

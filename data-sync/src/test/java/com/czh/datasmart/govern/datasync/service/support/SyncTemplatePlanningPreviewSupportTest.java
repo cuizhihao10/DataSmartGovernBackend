@@ -43,6 +43,7 @@ class SyncTemplatePlanningPreviewSupportTest {
     @Test
     void previewShouldReturnNeedsReviewWhenIncrementalBoundaryAndPoliciesAreMissing() {
         SyncTemplatePlanningPreviewResponse response = support.preview(template("MYSQL", "POSTGRESQL", "INCREMENTAL_TIME")
+                .incrementalField("updated_at")
                 .fieldMappingConfig("{}")
                 .build());
 
@@ -55,6 +56,37 @@ class SyncTemplatePlanningPreviewSupportTest {
                 "TIMEOUT_POLICY_NOT_DECLARED"
         );
         assertThat(response.recommendedActions()).anyMatch(action -> action.contains("增量同步"));
+    }
+
+    @Test
+    void previewShouldBlockWhenExecutableObjectBindingIsMissing() {
+        SyncTemplatePlanningPreviewResponse response = support.preview(template("MYSQL", "POSTGRESQL", "FULL")
+                .withoutObjects()
+                .fieldMappingConfig("{}")
+                .retryPolicy("{}")
+                .timeoutPolicy("{}")
+                .build());
+
+        assertThat(response.previewStatus()).isEqualTo("BLOCKED");
+        assertThat(response.sourceObjectDeclared()).isFalse();
+        assertThat(response.targetObjectDeclared()).isFalse();
+        assertThat(response.issueCodes()).contains("SOURCE_OBJECT_NOT_DECLARED", "TARGET_OBJECT_NOT_DECLARED");
+    }
+
+    @Test
+    void previewShouldBlockConflictWriteWithoutPrimaryKey() {
+        SyncTemplatePlanningPreviewResponse response = support.preview(template("MYSQL", "POSTGRESQL", "FULL")
+                .writeStrategy("UPSERT")
+                .fieldMappingConfig("{}")
+                .retryPolicy("{}")
+                .timeoutPolicy("{}")
+                .build());
+
+        assertThat(response.previewStatus()).isEqualTo("BLOCKED");
+        assertThat(response.writeStrategy()).isEqualTo("UPSERT");
+        assertThat(response.writeStrategyRequiresConflictKey()).isTrue();
+        assertThat(response.primaryKeyDeclared()).isFalse();
+        assertThat(response.issueCodes()).contains("PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE");
     }
 
     @Test
@@ -120,9 +152,30 @@ class SyncTemplatePlanningPreviewSupportTest {
             template.setWorkspaceId(301L);
             template.setSourceDatasourceId(10001L);
             template.setTargetDatasourceId(20001L);
+            template.setSourceSchemaName("ods");
+            template.setSourceObjectName("customer");
+            template.setTargetSchemaName("dwd");
+            template.setTargetObjectName("customer");
             template.setSourceConnectorType(sourceConnectorType);
             template.setTargetConnectorType(targetConnectorType);
             template.setSyncMode(syncMode);
+            template.setWriteStrategy("APPEND");
+        }
+
+        private TemplateBuilder withoutObjects() {
+            template.setSourceObjectName(null);
+            template.setTargetObjectName(null);
+            return this;
+        }
+
+        private TemplateBuilder writeStrategy(String value) {
+            template.setWriteStrategy(value);
+            return this;
+        }
+
+        private TemplateBuilder incrementalField(String value) {
+            template.setIncrementalField(value);
+            return this;
         }
 
         private TemplateBuilder fieldMappingConfig(String value) {

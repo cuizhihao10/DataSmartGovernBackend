@@ -77,6 +77,41 @@ public class SyncTemplate {
     private Long targetDatasourceId;
 
     /**
+     * 源端 schema 名称。
+     *
+     * <p>schema 是执行器定位源端对象的低敏结构化元数据。它只表达“对象位于哪个逻辑命名空间”，不包含
+     * JDBC URL、host、port、database 连接地址、账号、密钥或 SQL 条件。对于 MySQL 可理解为库名，
+     * 对 PostgreSQL/SQL Server 可理解为 schema；对于文件、API、消息队列等非关系型连接器，后续可以为空或由
+     * connector runtime 解释为命名空间。</p>
+     */
+    private String sourceSchemaName;
+
+    /**
+     * 源端对象名称。
+     *
+     * <p>真实 batch runner 至少需要知道从哪个表、视图、topic、文件逻辑对象或 API 资源读取数据。过去 data-sync
+     * 只保存 datasourceId 和 syncMode，导致 workerPlan 只能说明“从哪个数据源到哪个数据源”，却无法说明“同步哪个对象”，
+     * 这会阻塞执行闭环。因此这里补充对象名，但仍不保存 SQL、where 条件、样本数据或完整文件路径。</p>
+     */
+    private String sourceObjectName;
+
+    /**
+     * 目标端 schema 名称。
+     *
+     * <p>含义与 sourceSchemaName 对称，用于后续写入器定位目标对象所在命名空间。该字段属于配置元数据，
+     * 不应被写入普通审计摘要、runtime event 或低敏投影正文。</p>
+     */
+    private String targetSchemaName;
+
+    /**
+     * 目标端对象名称。
+     *
+     * <p>执行器需要根据该字段确定写入目标。它和 targetDatasourceId 共同组成“写到哪里”的低敏定位契约；
+     * 真正的连接、事务、SQL 模板和凭据仍由受控 connector runtime 根据 datasourceId 读取。</p>
+     */
+    private String targetObjectName;
+
+    /**
      * 源端连接器类型。
      *
      * <p>该字段冗余保存的是低敏能力事实快照，例如 MYSQL、POSTGRESQL、KAFKA。
@@ -98,6 +133,31 @@ public class SyncTemplate {
      * 同步模式，例如 FULL、INCREMENTAL_TIME、CDC_STREAMING。
      */
     private String syncMode;
+
+    /**
+     * 目标端写入策略。
+     *
+     * <p>常见值包括 APPEND、UPSERT、INSERT_IGNORE、REPLACE、OVERWRITE。该字段决定 runner 如何处理目标端冲突：
+     * APPEND 只追加，UPSERT 需要主键或唯一键，OVERWRITE 具有覆盖风险。它是执行闭环的关键控制字段，
+     * 因为不同写入策略会影响幂等、重试、回放、补数和人工审批要求。</p>
+     */
+    private String writeStrategy;
+
+    /**
+     * 主键或冲突判断字段。
+     *
+     * <p>当 writeStrategy 为 UPSERT、INSERT_IGNORE、REPLACE 等需要冲突判断的策略时，必须声明该字段。
+     * 这里保存的是字段名，不保存字段值；字段值只会在真实执行时留在受控 worker 内存和目标端写入语句中。</p>
+     */
+    private String primaryKeyField;
+
+    /**
+     * 增量字段。
+     *
+     * <p>INCREMENTAL_TIME 与 INCREMENTAL_ID 模式必须知道用哪个字段推进 checkpoint。该字段只保存字段名，
+     * 不保存 checkpoint 值、时间窗口、业务条件或样本数据；真实水位值应进入 checkpoint 表或 worker 内部状态。</p>
+     */
+    private String incrementalField;
 
     /**
      * 字段映射配置 JSON。

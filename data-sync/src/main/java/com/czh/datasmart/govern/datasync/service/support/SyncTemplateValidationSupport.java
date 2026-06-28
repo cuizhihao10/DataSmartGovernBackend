@@ -11,10 +11,12 @@ import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncConnectorCompatibilityView;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
+import com.czh.datasmart.govern.datasync.support.SyncWriteStrategy;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 /**
  * 同步模板校验支撑组件。
@@ -29,6 +31,8 @@ import java.util.Locale;
  */
 @Component
 public class SyncTemplateValidationSupport {
+
+    private static final Pattern SAFE_IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_]{0,127}");
 
     private final SyncConnectorCapabilityRegistry connectorCapabilityRegistry;
 
@@ -79,6 +83,9 @@ public class SyncTemplateValidationSupport {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR, "源数据源和目标数据源不能相同");
         }
         SyncMode mode = resolveMode(template.getSyncMode());
+        SyncWriteStrategy writeStrategy = resolveWriteStrategy(template.getWriteStrategy());
+        validateExecutableObjectBinding(template);
+        validateCheckpointAndWriteStrategy(template, mode, writeStrategy);
         validateConnectorCompatibility(template, mode);
     }
 
@@ -95,6 +102,61 @@ public class SyncTemplateValidationSupport {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
                     "不支持的同步模式: " + syncMode);
         }
+    }
+
+    /**
+     * 解析并归一化写入策略。
+     *
+     * <p>写入策略会影响目标端冲突处理、幂等、回放和补数行为，因此不能让执行器在运行时自行猜测。
+     * 这里允许空值回落到 APPEND，是为了兼容历史模板；但如果传入了未知策略，则必须 fail-fast，避免后续 runner
+     * 因为不认识策略而走到错误的写入语义。</p>
+     */
+    public SyncWriteStrategy resolveWriteStrategy(String writeStrategy) {
+        try {
+            return SyncWriteStrategy.fromValue(writeStrategy);
+        } catch (IllegalArgumentException exception) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR, exception.getMessage());
+        }
+    }
+
+    /**
+     * 校验执行必需的对象定位字段。
+     *
+     * <p>data-sync 过去只校验 datasourceId 和 syncMode，这只能证明“源端/目标端数据源存在引用”，不能证明真实 worker
+     * 知道读哪个对象、写哪个对象。商业化同步平台必须在进入任务创建或执行前明确对象定位，否则 worker 只能从 JSON 配置、
+     * 前端约定或人工说明里猜测，最终会导致不可审计、不可复现和难以排障。</p>
+     *
+     * <p>这里采用保守的安全标识符规则：只允许字母、数字和下划线，并要求以字母或下划线开头。原因不是所有数据库都只能这样命名，
+     * 而是当前阶段还没有引入统一的 identifier quote/escape 层；在没有安全转义抽象前，宁可限制输入，也不能把复杂对象名直接交给
+     * 后续 SQL 生成器。</p>
+     */
+    private void validateExecutableObjectBinding(SyncTemplate template) {
+        requireObjectName("源端对象名称", template.getSourceObjectName());
+        requireObjectName("目标端对象名称", template.getTargetObjectName());
+        validateOptionalIdentifier("源端 schema 名称", template.getSourceSchemaName());
+        validateOptionalIdentifier("目标端 schema 名称", template.getTargetSchemaName());
+    }
+
+    /**
+     * 校验 checkpoint 与写入策略之间的必备字段。
+     *
+     * <p>增量同步没有 incrementalField 就无法推进 checkpoint；UPSERT/INSERT_IGNORE/REPLACE 没有 primaryKeyField
+     * 就无法做冲突判断。与其让 worker 在执行中失败，不如在模板校验阶段就返回明确的业务错误。</p>
+     */
+    private void validateCheckpointAndWriteStrategy(SyncTemplate template,
+                                                    SyncMode mode,
+                                                    SyncWriteStrategy writeStrategy) {
+        if ((mode == SyncMode.INCREMENTAL_TIME || mode == SyncMode.INCREMENTAL_ID)
+                && !hasText(template.getIncrementalField())) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    "增量同步必须声明 incrementalField，用于 checkpoint 推进和断点续行");
+        }
+        validateOptionalIdentifier("增量字段", template.getIncrementalField());
+        if (writeStrategy.requiresConflictKey() && !hasText(template.getPrimaryKeyField())) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    writeStrategy.name() + " 写入策略必须声明 primaryKeyField，用于目标端冲突判断和幂等写入");
+        }
+        validateOptionalIdentifier("主键或冲突字段", template.getPrimaryKeyField());
     }
 
     /**
@@ -127,5 +189,27 @@ public class SyncTemplateValidationSupport {
 
     private String normalizeOptionalCode(String value) {
         return value == null || value.isBlank() ? null : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private void requireObjectName(String fieldName, String value) {
+        if (!hasText(value)) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    fieldName + "不能为空，真实执行器必须明确源端和目标端对象定位");
+        }
+        validateOptionalIdentifier(fieldName, value);
+    }
+
+    private void validateOptionalIdentifier(String fieldName, String value) {
+        if (!hasText(value)) {
+            return;
+        }
+        if (!SAFE_IDENTIFIER.matcher(value.trim()).matches()) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    fieldName + "只能包含字母、数字和下划线，并且必须以字母或下划线开头。当前阶段暂不接受带空格、引号、点号或 SQL 片段的对象标识");
+        }
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 }

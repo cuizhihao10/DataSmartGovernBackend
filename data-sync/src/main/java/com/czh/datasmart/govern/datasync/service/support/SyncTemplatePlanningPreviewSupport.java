@@ -10,6 +10,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncConnectorCompatibili
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplatePlanningPreviewResponse;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
+import com.czh.datasmart.govern.datasync.support.SyncWriteStrategy;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -52,14 +53,20 @@ public class SyncTemplatePlanningPreviewSupport {
         List<String> performanceNotes = new ArrayList<>();
         List<String> safetyNotes = new ArrayList<>();
         SyncMode syncMode = resolveMode(template, issueCodes, recommendedActions);
+        SyncWriteStrategy writeStrategy = resolveWriteStrategy(template, issueCodes, recommendedActions);
         SyncConnectorCompatibilityView compatibility = resolveCompatibility(template, syncMode, issueCodes, recommendedActions);
 
+        boolean sourceObjectDeclared = hasText(template.getSourceObjectName());
+        boolean targetObjectDeclared = hasText(template.getTargetObjectName());
+        boolean primaryKeyDeclared = hasText(template.getPrimaryKeyField());
+        boolean incrementalFieldDeclared = hasText(template.getIncrementalField());
         boolean fieldMappingDeclared = hasText(template.getFieldMappingConfig());
         boolean filterDeclared = hasText(template.getFilterConfig());
         boolean partitionDeclared = hasText(template.getPartitionConfig());
         boolean retryPolicyDeclared = hasText(template.getRetryPolicy());
         boolean timeoutPolicyDeclared = hasText(template.getTimeoutPolicy());
-        evaluateConfigurationHints(syncMode, compatibility, fieldMappingDeclared, filterDeclared, partitionDeclared,
+        evaluateConfigurationHints(syncMode, writeStrategy, compatibility, sourceObjectDeclared, targetObjectDeclared,
+                primaryKeyDeclared, incrementalFieldDeclared, fieldMappingDeclared, filterDeclared, partitionDeclared,
                 retryPolicyDeclared, timeoutPolicyDeclared, issueCodes, recommendedActions, performanceNotes, safetyNotes);
 
         String previewStatus = resolvePreviewStatus(issueCodes);
@@ -73,6 +80,12 @@ public class SyncTemplatePlanningPreviewSupport {
                 normalize(template.getSourceConnectorType()),
                 normalize(template.getTargetConnectorType()),
                 normalize(template.getSyncMode()),
+                sourceObjectDeclared,
+                targetObjectDeclared,
+                writeStrategy == null ? null : writeStrategy.name(),
+                writeStrategy != null && writeStrategy.requiresConflictKey(),
+                primaryKeyDeclared,
+                incrementalFieldDeclared,
                 previewStatus,
                 !BLOCKED.equals(previewStatus),
                 READY.equals(previewStatus),
@@ -114,6 +127,30 @@ public class SyncTemplatePlanningPreviewSupport {
     }
 
     /**
+     * 解析写入策略并把未知策略压缩为低敏 issueCode。
+     *
+     * <p>预览接口的职责是“一次性列出配置问题”，因此这里不直接抛异常。真正创建任务或执行前校验仍会在
+     * {@link SyncTemplateValidationSupport} 中 fail-fast。这样前端和 Agent 可以在一个响应里同时看到对象定位、
+     * 写入策略、checkpoint、重试和超时等多类缺口。</p>
+     */
+    private SyncWriteStrategy resolveWriteStrategy(SyncTemplate template,
+                                                   List<String> issueCodes,
+                                                   List<String> recommendedActions) {
+        try {
+            SyncWriteStrategy writeStrategy = SyncWriteStrategy.fromValue(template.getWriteStrategy());
+            if (!hasText(template.getWriteStrategy())) {
+                issueCodes.add("WRITE_STRATEGY_DEFAULTED_TO_APPEND");
+                recommendedActions.add("建议显式声明 writeStrategy；默认 APPEND 能兼容历史模板，但重试、回放或补数时更容易产生重复记录");
+            }
+            return writeStrategy;
+        } catch (IllegalArgumentException exception) {
+            issueCodes.add("WRITE_STRATEGY_UNSUPPORTED");
+            recommendedActions.add("将 writeStrategy 调整为 APPEND、UPSERT、INSERT_IGNORE、REPLACE 或 OVERWRITE 之一");
+            return null;
+        }
+    }
+
+    /**
      * 调用连接器能力矩阵生成兼容性结果。
      */
     private SyncConnectorCompatibilityView resolveCompatibility(SyncTemplate template,
@@ -145,7 +182,12 @@ public class SyncTemplatePlanningPreviewSupport {
      * 但仍应只返回低敏摘要。</p>
      */
     private void evaluateConfigurationHints(SyncMode syncMode,
+                                            SyncWriteStrategy writeStrategy,
                                             SyncConnectorCompatibilityView compatibility,
+                                            boolean sourceObjectDeclared,
+                                            boolean targetObjectDeclared,
+                                            boolean primaryKeyDeclared,
+                                            boolean incrementalFieldDeclared,
                                             boolean fieldMappingDeclared,
                                             boolean filterDeclared,
                                             boolean partitionDeclared,
@@ -155,6 +197,27 @@ public class SyncTemplatePlanningPreviewSupport {
                                             List<String> recommendedActions,
                                             List<String> performanceNotes,
                                             List<String> safetyNotes) {
+        if (!sourceObjectDeclared) {
+            issueCodes.add("SOURCE_OBJECT_NOT_DECLARED");
+            recommendedActions.add("声明 sourceObjectName，真实执行器必须知道从哪个表、视图、topic 或逻辑资源读取");
+        }
+        if (!targetObjectDeclared) {
+            issueCodes.add("TARGET_OBJECT_NOT_DECLARED");
+            recommendedActions.add("声明 targetObjectName，真实执行器必须知道写入哪个目标对象");
+        }
+        if (writeStrategy != null && writeStrategy.requiresConflictKey() && !primaryKeyDeclared) {
+            issueCodes.add("PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE");
+            recommendedActions.add(writeStrategy.name() + " 写入策略需要 primaryKeyField，用于目标端冲突判断和幂等写入");
+        }
+        if (writeStrategy != null && writeStrategy.isDestructiveRewrite()) {
+            issueCodes.add("DESTRUCTIVE_WRITE_STRATEGY_REQUIRES_REVIEW");
+            recommendedActions.add("OVERWRITE 属于覆盖式高风险写入，建议接入 permission-admin 审批、影响范围预估和回滚预案后再运行");
+            safetyNotes.add("覆盖式写入不应由普通 worker 静默执行，应在执行前完成人审、审计和备份策略确认");
+        }
+        if ((syncMode == SyncMode.INCREMENTAL_TIME || syncMode == SyncMode.INCREMENTAL_ID) && !incrementalFieldDeclared) {
+            issueCodes.add("INCREMENTAL_FIELD_NOT_DECLARED");
+            recommendedActions.add("增量同步必须声明 incrementalField，用于 checkpoint 推进、断点续行和失败恢复");
+        }
         if (!fieldMappingDeclared) {
             issueCodes.add("FIELD_MAPPING_NOT_DECLARED");
             recommendedActions.add("如果源端和目标端 schema 不完全一致，请补充 fieldMappingConfig；预览不会返回字段映射原文");
@@ -213,7 +276,12 @@ public class SyncTemplatePlanningPreviewSupport {
                 || "SOURCE_MODE_NOT_SUPPORTED".equals(issueCode)
                 || "TARGET_MODE_NOT_SUPPORTED".equals(issueCode)
                 || "SOURCE_STREAMING_REQUIRED".equals(issueCode)
-                || "TARGET_STREAMING_REQUIRED".equals(issueCode);
+                || "TARGET_STREAMING_REQUIRED".equals(issueCode)
+                || "SOURCE_OBJECT_NOT_DECLARED".equals(issueCode)
+                || "TARGET_OBJECT_NOT_DECLARED".equals(issueCode)
+                || "WRITE_STRATEGY_UNSUPPORTED".equals(issueCode)
+                || "PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE".equals(issueCode)
+                || "INCREMENTAL_FIELD_NOT_DECLARED".equals(issueCode);
     }
 
     private boolean hasText(String value) {

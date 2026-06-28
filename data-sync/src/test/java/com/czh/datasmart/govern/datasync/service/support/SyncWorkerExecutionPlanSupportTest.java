@@ -45,6 +45,9 @@ class SyncWorkerExecutionPlanSupportTest {
         assertThat(plan.planStatus()).isEqualTo("READY_TO_RUN");
         assertThat(plan.connectorCompatibilitySupported()).isTrue();
         assertThat(plan.checkpointRequired()).isFalse();
+        assertThat(plan.sourceObjectDeclared()).isTrue();
+        assertThat(plan.targetObjectDeclared()).isTrue();
+        assertThat(plan.writeStrategy()).isEqualTo("APPEND");
         assertThat(plan.workerActions()).contains("CLAIM_ALREADY_MARKED_RUNNING_DO_NOT_CALL_START");
         assertThat(plan.toString())
                 .doesNotContain("不要返回字段映射正文")
@@ -56,6 +59,7 @@ class SyncWorkerExecutionPlanSupportTest {
     @Test
     void incrementalTemplateWithoutBoundaryShouldWarnWorker() {
         Fixture fixture = fixture(template("INCREMENTAL_TIME", "MYSQL", "POSTGRESQL")
+                .setIncrementalFieldForTest("updated_at")
                 .setFieldMappingConfigForTest("{}")
                 .setRetryPolicyForTest("{}")
                 .setTimeoutPolicyForTest("{}"));
@@ -66,6 +70,40 @@ class SyncWorkerExecutionPlanSupportTest {
         assertThat(plan.checkpointRequired()).isTrue();
         assertThat(plan.issueCodes()).contains("CHECKPOINT_BOUNDARY_NOT_DECLARED");
         assertThat(plan.workerActions()).contains("WRITE_CHECKPOINT_AFTER_EACH_SAFE_BATCH");
+    }
+
+    @Test
+    void missingObjectBindingShouldBlockWorkerBeforeReadOrWrite() {
+        Fixture fixture = fixture(template("FULL", "MYSQL", "POSTGRESQL")
+                .setSourceObjectNameForTest(null)
+                .setTargetObjectNameForTest(null)
+                .setFieldMappingConfigForTest("{}")
+                .setRetryPolicyForTest("{}")
+                .setTimeoutPolicyForTest("{}"));
+
+        SyncWorkerExecutionPlanView plan = fixture.support().buildPlan(execution(), task());
+
+        assertThat(plan.planStatus()).isEqualTo("BLOCKED");
+        assertThat(plan.sourceObjectDeclared()).isFalse();
+        assertThat(plan.targetObjectDeclared()).isFalse();
+        assertThat(plan.issueCodes()).contains("SOURCE_OBJECT_NOT_DECLARED", "TARGET_OBJECT_NOT_DECLARED");
+        assertThat(plan.workerActions()).contains("DO_NOT_READ_OR_WRITE_DATA");
+    }
+
+    @Test
+    void conflictWriteWithoutPrimaryKeyShouldBlockWorker() {
+        Fixture fixture = fixture(template("FULL", "MYSQL", "POSTGRESQL")
+                .setWriteStrategyForTest("UPSERT")
+                .setFieldMappingConfigForTest("{}")
+                .setRetryPolicyForTest("{}")
+                .setTimeoutPolicyForTest("{}"));
+
+        SyncWorkerExecutionPlanView plan = fixture.support().buildPlan(execution(), task());
+
+        assertThat(plan.planStatus()).isEqualTo("BLOCKED");
+        assertThat(plan.writeStrategyRequiresConflictKey()).isTrue();
+        assertThat(plan.primaryKeyDeclared()).isFalse();
+        assertThat(plan.issueCodes()).contains("PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE");
     }
 
     @Test
@@ -137,9 +175,14 @@ class SyncWorkerExecutionPlanSupportTest {
         template.setWorkspaceId(301L);
         template.setSourceDatasourceId(10001L);
         template.setTargetDatasourceId(10002L);
+        template.setSourceSchemaName("ods");
+        template.setSourceObjectName("customer");
+        template.setTargetSchemaName("dwd");
+        template.setTargetObjectName("customer");
         template.setSourceConnectorType(sourceConnectorType);
         template.setTargetConnectorType(targetConnectorType);
         template.setSyncMode(syncMode);
+        template.setWriteStrategy("APPEND");
         template.setEnabled(true);
         return template;
     }
@@ -177,6 +220,26 @@ class SyncWorkerExecutionPlanSupportTest {
 
         private TestTemplate setTimeoutPolicyForTest(String value) {
             setTimeoutPolicy(value);
+            return this;
+        }
+
+        private TestTemplate setSourceObjectNameForTest(String value) {
+            setSourceObjectName(value);
+            return this;
+        }
+
+        private TestTemplate setTargetObjectNameForTest(String value) {
+            setTargetObjectName(value);
+            return this;
+        }
+
+        private TestTemplate setWriteStrategyForTest(String value) {
+            setWriteStrategy(value);
+            return this;
+        }
+
+        private TestTemplate setIncrementalFieldForTest(String value) {
+            setIncrementalField(value);
             return this;
         }
     }

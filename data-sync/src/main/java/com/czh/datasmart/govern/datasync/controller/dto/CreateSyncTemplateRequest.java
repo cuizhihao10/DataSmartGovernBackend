@@ -50,6 +50,38 @@ public class CreateSyncTemplateRequest {
     private Long targetDatasourceId;
 
     /**
+     * 源端 schema 名称。
+     *
+     * <p>该字段用于执行器定位源端对象所在命名空间，例如 MySQL 的库名、PostgreSQL 的 schema 名称。
+     * 它不包含连接地址、账号、密钥或 SQL 条件；如果某类连接器没有 schema 概念，可以为空。</p>
+     */
+    private String sourceSchemaName;
+
+    /**
+     * 源端对象名称。
+     *
+     * <p>该字段用于表达“从哪个逻辑对象读取”，例如表名、视图名、topic 逻辑名或 API 资源名。它是进入真实执行闭环的必要配置，
+     * 但仍然不是 SQL，也不包含 where 条件、样本数据或完整文件路径。服务端会按安全标识符规则做校验，避免后续 runner
+     * 被迫处理拼接 SQL 风险。</p>
+     */
+    private String sourceObjectName;
+
+    /**
+     * 目标端 schema 名称。
+     *
+     * <p>含义与 sourceSchemaName 对称，用于表达写入目标的命名空间。生产环境中它还可以参与权限、配额和审计分组。</p>
+     */
+    private String targetSchemaName;
+
+    /**
+     * 目标端对象名称。
+     *
+     * <p>该字段用于表达“写入到哪个逻辑对象”。如果缺少该字段，worker 即使拿到 datasourceId 和 syncMode，
+     * 也无法形成可执行的写入计划。</p>
+     */
+    private String targetObjectName;
+
+    /**
      * 源端连接器类型，例如 MYSQL、POSTGRESQL、KAFKA、OBJECT_STORAGE。
      *
      * <p>这个字段是低敏控制面信息，只表达“源端属于哪类系统”，不表达真实 host、port、database、topic、
@@ -74,6 +106,31 @@ public class CreateSyncTemplateRequest {
      */
     @NotBlank(message = "同步模式不能为空")
     private String syncMode;
+
+    /**
+     * 目标端写入策略。
+     *
+     * <p>可选值包括 APPEND、UPSERT、INSERT_IGNORE、REPLACE、OVERWRITE。为空时服务端会按历史兼容回落到 APPEND，
+     * 但预览和 workerPlan 会提示默认追加写入的重试/回放重复风险。真实生产中，关键主数据通常应显式选择 UPSERT
+     * 并声明 primaryKeyField。</p>
+     */
+    private String writeStrategy;
+
+    /**
+     * 主键或冲突判断字段。
+     *
+     * <p>当 writeStrategy 为 UPSERT、INSERT_IGNORE、REPLACE 时必须声明。这里保存字段名，不保存任何字段值；
+     * 字段值只应存在于受控 worker 的读写上下文和目标端数据库中。</p>
+     */
+    private String primaryKeyField;
+
+    /**
+     * 增量字段。
+     *
+     * <p>INCREMENTAL_TIME 与 INCREMENTAL_ID 模式必须声明该字段，用于 checkpoint 推进。它只保存字段名，
+     * 不保存 checkpoint 原始值、窗口边界或业务过滤条件。</p>
+     */
+    private String incrementalField;
 
     private String fieldMappingConfig;
     private String filterConfig;

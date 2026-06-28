@@ -291,7 +291,12 @@ class DataSyncServiceImplProjectScopeTest {
         request.setName("客户主数据同步模板");
         request.setSourceDatasourceId(10001L);
         request.setTargetDatasourceId(20001L);
+        request.setSourceSchemaName("ods");
+        request.setSourceObjectName("customer");
+        request.setTargetSchemaName("dwd");
+        request.setTargetObjectName("customer");
         request.setSyncMode("FULL");
+        request.setWriteStrategy("APPEND");
         return request;
     }
 

@@ -1,5 +1,33 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Data Sync Template Execution Contract
+- 本阶段承接 `Data Sync Worker Execution Plan Contract`，继续把 data-sync 从“worker 能看到执行计划”推进到“模板本身具备真实执行器最小可消费契约”。这一步没有直接实现 JDBC 批量读写，也没有把凭据、SQL、过滤条件或字段映射正文下发给 worker，而是先补齐执行闭环不可缺少的低敏结构化字段：源/目标对象定位、写入策略、冲突键和增量字段。
+- 产品价值：
+  - 模板创建、模板预览和 workerPlan 现在都能判断是否声明了源端对象、目标端对象、写入策略、冲突键和增量字段；
+  - `APPEND`、`UPSERT`、`INSERT_IGNORE`、`REPLACE`、`OVERWRITE` 被固化为 data-sync 控制面的写入策略语义，后续 batch runner、回放、补数、幂等和审批可以围绕同一枚举演进；
+  - 增量同步缺少 `incrementalField` 会在模板校验、预览和 workerPlan 阶段阻断，避免真实执行器在运行时猜测 checkpoint 字段；
+  - 冲突型写入策略缺少 `primaryKeyField` 会 fail-closed，避免 UPSERT/REPLACE 等策略在没有冲突判断依据时误写；
+  - `OVERWRITE` 被识别为破坏性写入，预览和执行计划会提示需要审批、影响范围评估和回滚预案。
+- 安全边界：
+  - 新增字段只保存低敏控制面事实，不保存 JDBC URL、host、port、账号、密钥、SQL、where 条件、样本数据、checkpoint 原始值、内部 endpoint、prompt 或模型输出；
+  - 预览和 workerPlan 优先返回“是否声明”的布尔事实，不把对象名、字段名或 JSON 配置正文扩散到低敏响应；
+  - 真实凭据、字段映射、过滤条件、分区策略和 SQL 生成仍应由后续受控 connector runtime 在权限、审计和脱敏边界内读取。
+- 新增与调整：
+  - `SyncTemplate`、`CreateSyncTemplateRequest`、模板预览 DTO、workerPlan DTO 新增执行契约字段；
+  - 新增 `SyncWriteStrategy` 枚举，集中解释写入策略、冲突键要求和覆盖式写入风险；
+  - `SyncTemplateValidationSupport` 新增安全标识符校验、增量字段校验和冲突键校验；
+  - `SyncTemplatePlanningPreviewSupport` 新增对象定位、写入策略、主键和增量字段的预检问题码；
+  - `SyncWorkerExecutionPlanSupport` 新增相同执行契约的低敏 readiness 输出；
+  - MySQL 初始化脚本和迁移脚本补齐 `data_sync_template` 的执行契约列与索引。
+- 验证：
+  - data-sync 全量测试通过：`mvn -pl data-sync -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`，当前 86 个用例通过；
+  - `git diff --check` 通过，仅有 Git 在 Windows 下 LF/CRLF 转换提示；
+  - 行数检查通过：`SyncWorkerExecutionPlanSupport.java` 363 行，`SyncTemplatePlanningPreviewSupport.java` 294 行，`SyncTemplateValidationSupport.java` 215 行，`SyncTemplate.java` 219 行，主要新增/修改文件均低于 500 行。
+- 收敛判断：
+  - data-sync 当前已经具备 `datasource capability -> template validation -> preview -> task/execution -> claim -> workerPlan` 的控制面链路；
+  - 下一步不建议继续扩展模板展示字段，应该进入最小 batch runner bridge：按 `workerPlan` 找到受控 connector runtime，读取配置，完成批次读写、checkpoint、complete/fail，并补 task-management receipt；
+  - JSON Schema 校验、并发分片、CDC、高级回放和跨项目审批应作为 runner 闭环后的增强项，不应再次阻塞第一条可运行同步链路。
+
 ## 2026-06-29 追加落地进展：Data Sync Worker Execution Plan Contract
 - 本阶段承接 `Data Sync Template Planning Preview` 的收敛路线，开始从“模板控制面预检”推进到“真实 worker 可消费执行契约”。目标不是马上把 JDBC 读写、字段映射解析、SQL 生成和凭据读取全部塞进服务端，而是先稳定 claim 成功后 worker 拿到的低敏执行计划。
 - 产品价值：

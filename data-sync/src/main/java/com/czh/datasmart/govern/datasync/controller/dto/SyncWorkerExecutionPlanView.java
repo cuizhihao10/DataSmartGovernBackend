@@ -40,6 +40,12 @@ import java.util.List;
  * @param sourceConnectorType 源端连接器类型低敏枚举，例如 MYSQL、POSTGRESQL。
  * @param targetConnectorType 目标端连接器类型低敏枚举。
  * @param syncMode 同步模式，例如 FULL、INCREMENTAL_TIME、CDC_STREAMING。
+ * @param sourceObjectDeclared 是否已经声明源端对象名称；workerPlan 不返回对象名正文，只告诉执行器配置是否具备。
+ * @param targetObjectDeclared 是否已经声明目标端对象名称；缺失时 worker 不应猜测写入目标。
+ * @param writeStrategy 写入策略，例如 APPEND、UPSERT、OVERWRITE；该枚举会影响幂等、冲突处理、回放和审批。
+ * @param writeStrategyRequiresConflictKey 当前写入策略是否要求 primaryKeyField。
+ * @param primaryKeyDeclared 是否声明主键或冲突字段；不返回字段名正文。
+ * @param incrementalFieldDeclared 是否声明增量字段；增量同步缺失时应阻断真实执行。
  * @param connectorCompatibilitySupported 连接器组合与同步模式是否通过能力矩阵。
  * @param consistencyGoal 推荐一致性目标，例如 SNAPSHOT_BOUNDED、AT_LEAST_ONCE_DEDUP_AWARE。
  * @param checkpointRequired 当前同步模式是否建议或需要 checkpoint。
@@ -74,6 +80,12 @@ public record SyncWorkerExecutionPlanView(
         String sourceConnectorType,
         String targetConnectorType,
         String syncMode,
+        boolean sourceObjectDeclared,
+        boolean targetObjectDeclared,
+        String writeStrategy,
+        boolean writeStrategyRequiresConflictKey,
+        boolean primaryKeyDeclared,
+        boolean incrementalFieldDeclared,
         boolean connectorCompatibilitySupported,
         String consistencyGoal,
         boolean checkpointRequired,

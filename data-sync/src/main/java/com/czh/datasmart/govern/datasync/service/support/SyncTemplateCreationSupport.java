@@ -84,9 +84,16 @@ public class SyncTemplateCreationSupport {
         template.setDescription(querySupport.trimToNull(request.getDescription()));
         template.setSourceDatasourceId(request.getSourceDatasourceId());
         template.setTargetDatasourceId(request.getTargetDatasourceId());
+        template.setSourceSchemaName(querySupport.trimToNull(request.getSourceSchemaName()));
+        template.setSourceObjectName(querySupport.trimToNull(request.getSourceObjectName()));
+        template.setTargetSchemaName(querySupport.trimToNull(request.getTargetSchemaName()));
+        template.setTargetObjectName(querySupport.trimToNull(request.getTargetObjectName()));
         template.setSourceConnectorType(querySupport.normalizeCode(request.getSourceConnectorType()));
         template.setTargetConnectorType(querySupport.normalizeCode(request.getTargetConnectorType()));
         template.setSyncMode(querySupport.normalizeCode(request.getSyncMode()));
+        template.setWriteStrategy(querySupport.normalizeCode(request.getWriteStrategy()));
+        template.setPrimaryKeyField(querySupport.trimToNull(request.getPrimaryKeyField()));
+        template.setIncrementalField(querySupport.trimToNull(request.getIncrementalField()));
         template.setFieldMappingConfig(querySupport.trimToNull(request.getFieldMappingConfig()));
         template.setFilterConfig(querySupport.trimToNull(request.getFilterConfig()));
         template.setPartitionConfig(querySupport.trimToNull(request.getPartitionConfig()));
@@ -104,14 +111,23 @@ public class SyncTemplateCreationSupport {
     /**
      * 生成低敏审计摘要。
      *
-     * <p>审计摘要只记录模板 ID、syncMode 和连接器枚举，不记录 datasource 连接详情、字段映射 JSON、过滤条件、
-     * SQL、样本、凭据或内部 endpoint。字段映射和过滤条件在真实客户环境中可能包含业务字段名或敏感规则，
-     * 不适合直接进入普通审计摘要。</p>
+     * <p>审计摘要只记录模板 ID、syncMode、连接器枚举、写入策略和关键配置是否声明，不记录 datasource 连接详情、
+     * 源/目标对象名称、字段映射 JSON、过滤条件、SQL、样本、凭据或内部 endpoint。对象名和字段名虽然不是凭据，
+     * 但在真实客户环境中也可能透露业务域，因此普通审计只保存布尔摘要，详细配置仍留在受权限保护的模板详情中。</p>
      */
     private String auditSummary(SyncTemplate template) {
         return "templateId=" + template.getId()
                 + ",syncMode=" + template.getSyncMode()
                 + ",sourceConnectorType=" + template.getSourceConnectorType()
-                + ",targetConnectorType=" + template.getTargetConnectorType();
+                + ",targetConnectorType=" + template.getTargetConnectorType()
+                + ",writeStrategy=" + template.getWriteStrategy()
+                + ",sourceObjectDeclared=" + hasText(template.getSourceObjectName())
+                + ",targetObjectDeclared=" + hasText(template.getTargetObjectName())
+                + ",primaryKeyDeclared=" + hasText(template.getPrimaryKeyField())
+                + ",incrementalFieldDeclared=" + hasText(template.getIncrementalField());
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 }

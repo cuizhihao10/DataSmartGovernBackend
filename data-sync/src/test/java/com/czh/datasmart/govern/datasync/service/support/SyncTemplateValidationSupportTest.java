@@ -76,13 +76,53 @@ class SyncTemplateValidationSupportTest {
                 .contains("SOURCE_MODE_UNSUPPORTED");
     }
 
+    @Test
+    void validateTemplateShouldRejectMissingExecutableObjectBinding() {
+        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL");
+        template.setSourceObjectName(null);
+
+        PlatformBusinessException exception = assertThrows(PlatformBusinessException.class,
+                () -> validationSupport.validateTemplate(template));
+
+        org.assertj.core.api.Assertions.assertThat(exception.getMessage())
+                .contains("源端对象名称不能为空");
+    }
+
+    @Test
+    void validateTemplateShouldRejectConflictWriteWithoutPrimaryKey() {
+        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL");
+        template.setWriteStrategy("UPSERT");
+
+        PlatformBusinessException exception = assertThrows(PlatformBusinessException.class,
+                () -> validationSupport.validateTemplate(template));
+
+        org.assertj.core.api.Assertions.assertThat(exception.getMessage())
+                .contains("primaryKeyField");
+    }
+
+    @Test
+    void validateTemplateShouldRejectIncrementalModeWithoutIncrementalField() {
+        SyncTemplate template = template("INCREMENTAL_TIME", "MYSQL", "POSTGRESQL");
+
+        PlatformBusinessException exception = assertThrows(PlatformBusinessException.class,
+                () -> validationSupport.validateTemplate(template));
+
+        org.assertj.core.api.Assertions.assertThat(exception.getMessage())
+                .contains("incrementalField");
+    }
+
     private SyncTemplate template(String syncMode, String sourceConnectorType, String targetConnectorType) {
         SyncTemplate template = new SyncTemplate();
         template.setTenantId(7L);
         template.setProjectId(101L);
         template.setSourceDatasourceId(10001L);
         template.setTargetDatasourceId(20001L);
+        template.setSourceSchemaName("ods");
+        template.setSourceObjectName("customer");
+        template.setTargetSchemaName("dwd");
+        template.setTargetObjectName("customer");
         template.setSyncMode(syncMode);
+        template.setWriteStrategy("APPEND");
         template.setSourceConnectorType(sourceConnectorType);
         template.setTargetConnectorType(targetConnectorType);
         return template;
