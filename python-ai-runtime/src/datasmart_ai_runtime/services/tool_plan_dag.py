@@ -31,6 +31,7 @@ class ToolPlanDagAnnotator:
 
     _IMPLICIT_TOOL_DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "quality.rule.suggest": ("datasource.metadata.read",),
+        "quality.remediation.task.draft": ("quality.rule.suggest",),
         "task.create.draft": ("quality.rule.suggest",),
         "task.draft.persist": ("task.create.draft",),
     }
@@ -38,6 +39,7 @@ class ToolPlanDagAnnotator:
     _RESULT_ALIAS_BY_TOOL: dict[str, str] = {
         "datasource.metadata.read": "metadata",
         "quality.rule.suggest": "suggestion",
+        "quality.remediation.task.draft": "remediationTaskDraft",
         "task.create.draft": "taskDraft",
         "task.draft.persist": "persistedTaskDraft",
         "data-sync.execute": "dataSyncExecution",

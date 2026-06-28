@@ -83,6 +83,7 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
         self.assertIn("tool.file-read-write", tool_capabilities)
         self.assertIn("tool.exec-run-program", tool_capabilities)
         self.assertIn("tool.web-search", tool_capabilities)
+        self.assertIn("tool.quality-remediation-task-draft", tool_capabilities)
         self.assertIn("memory.sqlite-fts", memory_capabilities)
         self.assertIn("memory.m-create-retrieve", memory_capabilities)
         self.assertIn("permission.dangerous-path-safe-cmd", permission_capabilities)

@@ -1,5 +1,37 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-28 追加落地进展：Python AI Runtime Agent Quality Remediation ToolPlan
+- 本阶段承接 Java Data Quality 4.2 的低敏治理任务创建契约，把“质量异常治理任务”接入 Python AI Runtime 的 tools、skills、intent、ToolPlan 和能力矩阵，而不是继续在 data-quality 单个微服务里扩新按钮。
+- 产品目标：
+  - 让 Agent 能识别“异常复核、派单、整改、修复、治理任务”等场景，并生成 `quality.remediation.task.draft` 工具计划；
+  - 区分“生成质量规则草案”和“把已发现异常转成治理任务草案”，避免因为用户只说“异常”就误触发派单；
+  - 将 Java `POST /quality-rules/remediation-tasks` 映射成 Python Runtime 可规划的低敏 dry-run 工具契约；
+  - 保持收敛方向：当前只生成草案和低敏预览，不直接提交 task-management、不执行清洗脚本、不修改源端数据。
+- 新增与调整：
+  - `default_tool_registry()` 新增 `quality.remediation.task.draft`；
+  - `default_skill_registry()` 新增 `quality.anomaly.remediation` Skill；
+  - `RuleBasedIntentAnalyzer` 新增质量异常治理任务识别，并避免与普通 `quality.rule.suggest` 混淆；
+  - `ToolPlanner` 新增质量异常治理任务规划分支，专注判断“何时需要规划该工具”；
+  - 新增 `QualityRemediationToolPlanArgumentBuilder`，集中构造 `remediationScope`、`dryRun=true`、默认治理类型和低敏建议编码，避免通用 Planner 继续膨胀；
+  - `ToolPlanDagAnnotator` 新增 `remediationTaskDraft` 结果别名；
+  - `AgentSkillRegistry` 支持 `requiresExplicitTrigger` 元数据，确保派单、整改、治理任务这类高影响 Skill 必须命中专用工具或明确触发词，不能仅因 DATA_QUALITY 领域命中就进入准入列表；
+  - Agent 能力矩阵新增 `tool.quality-remediation-task-draft`，标记为 `CONTROL_PLANE_READY`。
+- 低敏边界：
+  - 工具参数只保留 `reportId/ruleId/severity/anomalyType/fieldName/targetObject/startTime/endTime` 等定位范围；
+  - 不携带用户 objective、异常样本、observedValue、SQL、prompt、模型输出、工具参数正文、凭据或内部 endpoint；
+  - 无任何异常定位范围时，参数校验会要求上下文补齐或用户选择，不能伪装成可执行计划。
+- 验证：
+  - 定向 Python 测试：
+    `python -m unittest python-ai-runtime.tests.test_intent_analyzer python-ai-runtime.tests.test_tool_planner python-ai-runtime.tests.test_agent_capability_matrix python-ai-runtime.tests.test_api_bootstrap`
+  - 当前结果：35 个测试通过。
+  - 全量 Python 测试：
+    `python -m unittest discover -s python-ai-runtime\tests`
+  - 当前结果：532 个测试通过；`test_command_sandbox_process_runner.py` 仍有 Windows 子进程管道 `ResourceWarning`，但不影响断言结果。
+- 下一步推荐路线：
+  1. 将 `remediationTaskDraft` 接入 Java agent-runtime 的 execution graph、payloadReference、审批确认和 outbox；
+  2. 让 readiness / runtime event projection 展示该草案的低敏状态，而不是展示完整工具参数；
+  3. 不再深挖 data-quality 新功能，优先把 Agent 的 tools、permission、sessions、runtime events、task-management 侧闭环串起来。
+
 ## 2026-06-28 追加落地进展：Java Data Quality 4.2 Remediation Task Contract
 - 本阶段承接 4.0 治理总览和 4.1 权限闭环，把 data-quality 从“发现质量风险”推进到“可创建治理/复核任务”，形成质量模块当前阶段的闭环收口点。
 - 产品目标：

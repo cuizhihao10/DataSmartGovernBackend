@@ -77,6 +77,14 @@ class AgentSkillRegistry:
                 score += 0.15
                 reasons.append("关键词命中 " + "、".join(matched_keywords[:3]))
 
+            # 某些 Skill 不是“看到同一个治理域就可以默认启用”的泛化能力，而是会把用户意图推进到派单、
+            # 审批、整改、执行准备等更高影响链路。例如质量异常治理任务草案如果只因为 DATA_QUALITY
+            # 领域命中就被选中，会让普通“帮我设计质量规则”的请求同时出现一个被拒绝的派单 Skill，
+            # 既增加前端噪声，也可能让用户误以为系统准备创建治理任务。`requiresExplicitTrigger`
+            # 用来表达这种收敛规则：只有专用工具命中或目标文本出现明确触发词时，才进入后续准入判断。
+            if skill.attributes.get("requiresExplicitTrigger") and not matched_tools and not matched_keywords:
+                continue
+
             if score <= 0:
                 continue
             admission = self._visibility_cache.get_or_evaluate(

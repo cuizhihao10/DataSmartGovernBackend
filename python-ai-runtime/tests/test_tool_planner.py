@@ -8,7 +8,7 @@ if ROOT not in sys.path:
 
 from datasmart_ai_runtime.config import default_tool_registry
 from datasmart_ai_runtime.domain.context import ContextBlock, ContextSourceType
-from datasmart_ai_runtime.domain.contracts import AgentRequest, ToolParameterIssueAction
+from datasmart_ai_runtime.domain.contracts import AgentRequest, ToolExecutionMode, ToolParameterIssueAction
 from datasmart_ai_runtime.domain.intent import GovernanceDomain, IntentAnalysis, IntentRiskTag
 from datasmart_ai_runtime.domain.skills import AgentSkillPlan, AgentSkillSelection
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
@@ -139,6 +139,77 @@ class ToolPlannerTest(unittest.TestCase):
             payload["intentRiskTags"],
         )
         self.assertEqual(("exportFormat",), payload["missingParameters"])
+
+    def test_quality_remediation_task_draft_uses_low_sensitive_scope_contract(self) -> None:
+        """质量异常治理任务草案只应携带低敏范围和 dry-run 控制字段。
+
+        这个测试把 Java data-quality 已完成的 `/quality-rules/remediation-tasks` 契约接入 Agent 规划层：
+        - Planner 只生成 `quality.remediation.task.draft`，不再额外生成泛化 `task.create.draft`；
+        - 参数使用 `remediationScope` 收口，便于后续来自质量报告、异常工作台或告警中心的入口复用；
+        - 不把用户 objective、异常样本、SQL、prompt 或模型输出塞进工具参数，避免规划响应成为敏感内容扩散点。
+        """
+
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="owner-a",
+            objective="请把 77 号质量报告里的高危异常创建治理任务草案，先人工复核",
+            variables={
+                "reportId": 77,
+                "severity": "HIGH",
+                "anomalyType": "FORMAT_INVALID",
+                "fieldName": "phone",
+                "createRemediationTask": True,
+                "priority": "HIGH",
+            },
+        )
+
+        plans = ToolPlanner(default_tool_registry()).plan(request=request)
+
+        self.assertEqual(("quality.remediation.task.draft",), tuple(plan.tool_name for plan in plans))
+        plan = plans[0]
+        self.assertEqual(ToolExecutionMode.DRAFT_ONLY, plan.execution_mode)
+        self.assertFalse(plan.requires_human_approval)
+        self.assertTrue(plan.arguments["dryRun"])
+        self.assertEqual("LOW_SENSITIVE_AGGREGATION_ONLY", plan.arguments["payloadPolicy"])
+        self.assertEqual("HIGH", plan.arguments["priority"])
+        self.assertEqual("remediationTaskDraft", plan.governance_hints["resultAlias"])
+        self.assertEqual("/quality-rules/remediation-tasks", plan.governance_hints["targetEndpoint"])
+        self.assertEqual(("remediationScope", "reason", "recommendation"), plan.governance_hints["sensitiveFields"])
+        self.assertTrue(plan.parameter_validation.can_execute)
+        self.assertEqual((), plan.parameter_validation.issues)
+
+        scope = plan.arguments["remediationScope"]
+        self.assertEqual(77, scope["reportId"])
+        self.assertEqual("HIGH", scope["severity"])
+        self.assertEqual("FORMAT_INVALID", scope["anomalyType"])
+        self.assertEqual("phone", scope["fieldName"])
+        self.assertNotIn("objective", plan.arguments)
+        self.assertNotIn("sample", str(plan.arguments).lower())
+        self.assertNotIn("select * from", str(plan.arguments).lower())
+
+    def test_quality_remediation_task_without_scope_waits_for_context_or_user_selection(self) -> None:
+        """没有任何异常定位范围时，治理任务草案不能假装可执行。
+
+        真实商业场景里，用户可能只说“帮我创建异常治理任务”，但没有说明是哪份报告、哪条规则或哪批异常。
+        Planner 此时仍可以保留工具意图，但 readiness 会基于 `remediationScope` 缺失进入澄清/上下文补齐链路。
+        """
+
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="owner-a",
+            objective="请创建质量异常治理任务草案",
+            variables={"createRemediationTask": True},
+        )
+
+        plans = ToolPlanner(default_tool_registry()).plan(request=request)
+
+        plan = plans[0]
+        self.assertEqual("quality.remediation.task.draft", plan.tool_name)
+        self.assertFalse(plan.parameter_validation.can_execute)
+        self.assertEqual("remediationScope", plan.parameter_validation.issues[0].parameter_name)
+        self.assertEqual(ToolParameterIssueAction.CAN_FILL_FROM_CONTEXT, plan.parameter_validation.issues[0].action)
 
     def test_tool_plan_exposes_governance_hints_from_descriptor_contract(self) -> None:
         request = AgentRequest(

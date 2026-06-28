@@ -219,6 +219,66 @@ def default_tool_registry() -> tuple[ToolDefinition, ...]:
             cache_policy="project_safe",
         ),
         ToolDefinition(
+            name="quality.remediation.task.draft",
+            description=(
+                "基于质量报告或异常工作台的低敏筛选条件生成治理/复核任务草案；"
+                "当前只面向 dry-run 预览和人工确认，不直接修改源端数据。"
+            ),
+            risk_level=ToolRiskLevel.MEDIUM,
+            execution_mode=ToolExecutionMode.DRAFT_ONLY,
+            required_permissions=("quality:anomaly:remediation:create-draft",),
+            target_service="data-quality",
+            target_endpoint="/quality-rules/remediation-tasks",
+            input_schema={
+                "remediationScope": {
+                    "type": "object",
+                    "required": True,
+                    "sensitive": False,
+                    "resolution": "derived",
+                    "description": (
+                        "治理任务的低敏定位范围。它只描述 reportId、ruleId、severity、anomalyType、"
+                        "fieldName、targetObject 等筛选维度，不包含异常样本、观测值、SQL、prompt 或模型输出正文。"
+                    ),
+                },
+                "remediationType": {
+                    "type": "string",
+                    "required": True,
+                    "sensitive": False,
+                    "resolution": "derived",
+                    "description": (
+                        "治理类型，例如 MANUAL_REVIEW、CLEANING_PLAN、SOURCE_SYSTEM_FIX 或 RULE_TUNING。"
+                        "该字段只是任务意图，不代表 Agent 可以自动执行清洗写入。"
+                    ),
+                },
+                "reason": {
+                    "type": "string",
+                    "required": True,
+                    "sensitive": False,
+                    "resolution": "derived",
+                    "description": (
+                        "创建治理任务的低敏原因摘要。默认由规划器生成稳定文案，避免把用户 prompt、工具参数、"
+                        "样本值或模型输出原文写入任务 payload。"
+                    ),
+                },
+                "dryRun": {
+                    "type": "boolean",
+                    "required": True,
+                    "sensitive": False,
+                    "resolution": "derived",
+                    "description": (
+                        "固定为 true，表示只请求 data-quality 生成低敏治理任务预览，不真正提交 task-management。"
+                    ),
+                },
+            },
+            allowed_actions=("CREATE_REMEDIATION_TASK_DRAFT", "DRY_RUN_PREVIEW"),
+            tool_type="DATA_QUALITY_REMEDIATION",
+            tenant_scoped=True,
+            project_scoped=True,
+            sensitive_fields=("remediationScope", "reason", "recommendation"),
+            memory_write_policy="episodic",
+            cache_policy="session_only",
+        ),
+        ToolDefinition(
             name="task.create.draft",
             description="生成任务创建草案，供用户或管理员确认后再进入任务管理模块。",
             risk_level=ToolRiskLevel.HIGH,
@@ -313,6 +373,26 @@ def default_skill_registry() -> tuple[AgentSkillDescriptor, ...]:
             approval_policy="DRAFT_REVIEW",
             trigger_keywords=("质量", "规则", "校验", "异常", "清洗"),
             examples=("请为客户主数据生成完整性和手机号格式校验规则",),
+        ),
+        AgentSkillDescriptor(
+            skill_code="quality.anomaly.remediation",
+            display_name="质量异常治理任务 Skill",
+            description=(
+                "用于把质量报告或异常工作台中的低敏异常聚合转成治理/复核任务草案，"
+                "帮助项目负责人、运营人员或 Agent 在人工确认前完成派单预览。"
+            ),
+            domain=GovernanceDomain.DATA_QUALITY,
+            required_tools=("quality.remediation.task.draft",),
+            required_permissions=("quality:anomaly:remediation:create-draft",),
+            memory_dependencies=(AgentMemoryType.EPISODIC, AgentMemoryType.PROCEDURAL),
+            risk_level="medium",
+            approval_policy="DRAFT_REVIEW",
+            trigger_keywords=("治理任务", "异常复核", "派单", "整改", "修复任务", "remediation"),
+            examples=("请把 77 号质量报告里的高危异常生成治理任务草案，先人工复核",),
+            attributes={
+                "requiresExplicitTrigger": True,
+                "triggerPolicyReason": "质量异常治理任务会影响后续派单/复核链路，不能仅凭 DATA_QUALITY 领域命中就启用。",
+            },
         ),
         AgentSkillDescriptor(
             skill_code="governed.task.creation",

@@ -1,4 +1,21 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-28 落地补充：business remediation tools should enter Agent as low-sensitive draft plans first
+
+- 本轮趋势校准：
+  - 成熟 Agent Host 不应让模型直接触发业务写入型工具；高影响业务动作应先进入可解释、可审批、可回放的 ToolPlan / draft / readiness gate。
+  - 数据治理平台里的“异常治理任务”属于业务状态变更意图，即使当前只是 dry-run，也应该被建模成低敏工具草案，而不是把异常样本、SQL 或模型输出交给模型自由处理。
+  - MCP tools、OpenAI/Claude/Codex 类 Agent 的共同趋势是让 Host 负责工具 schema、权限、审批、执行前检查和低敏结果回填，模型只提出结构化意图。
+- 本轮落地到代码的能力：
+  - Python Runtime 新增 `quality.remediation.task.draft`，将 Java data-quality 的治理任务契约映射成 Agent 可规划工具；
+  - 意图识别区分普通质量规则设计和异常治理派单，避免“异常”泛词导致误规划；
+  - Skill Registry 增加 `requiresExplicitTrigger` 显式触发护栏，让高影响业务 Skill 必须命中专用工具或关键词后才进入准入判断，避免普通领域规划被“附带拒绝项”污染；
+  - ToolPlan 使用 `remediationScope` 聚合低敏定位条件，并固定 `dryRun=true`，不直接触发 task-management 写入；
+  - DAG hint 新增 `remediationTaskDraft` 结果别名，便于后续 Java execution graph、审批确认和事件投影引用；
+  - Agent capability matrix 将该能力标记为控制面就绪，而不是误标为真实执行闭环完成。
+- 产品判断：
+  - 这是 Agent 收敛阶段的桥接动作：把已完成的 Java 业务契约接入 Agent，而不是继续发散新算法、新清洗执行器或新前端入口；
+  - 下一步更值得做的是 Host 侧 graph/outbox/approval/payloadReference，而不是继续增加 Planner 字段。
+
 ## 2026-06-27 落地补充：artifact grant facts need durable admin query and revoke before download closure
 
 - 本轮工程校准：

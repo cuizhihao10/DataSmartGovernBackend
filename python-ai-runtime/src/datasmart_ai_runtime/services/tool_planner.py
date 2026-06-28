@@ -18,6 +18,9 @@ from datasmart_ai_runtime.domain.contracts import (
 from datasmart_ai_runtime.domain.intent import IntentAnalysis, IntentRiskTag
 from datasmart_ai_runtime.domain.resource_reference import AgentResourceReference
 from datasmart_ai_runtime.domain.skills import AgentSkillPlan
+from datasmart_ai_runtime.services.quality_remediation_tool_plan_builder import (
+    QualityRemediationToolPlanArgumentBuilder,
+)
 from datasmart_ai_runtime.services.tool_plan_dag import ToolPlanDagAnnotator
 from datasmart_ai_runtime.services.tool_parameter_validator import ToolParameterValidator
 
@@ -44,6 +47,7 @@ class ToolPlanner:
         self._tools = {tool.name: tool for tool in tools}
         self._parameter_validator = parameter_validator or ToolParameterValidator()
         self._dag_annotator = ToolPlanDagAnnotator()
+        self._quality_remediation_arguments = QualityRemediationToolPlanArgumentBuilder()
 
     def plan(
         self,
@@ -69,6 +73,7 @@ class ToolPlanner:
         datasource_id = self._resolve_datasource_id(request, context_blocks)
         business_goal = self._resolve_business_goal(request, context_blocks)
         planned_tool_names: set[str] = set()
+        wants_quality_remediation = self._wants_quality_remediation(request, objective, candidate_tools)
 
         wants_datasource_metadata = (
             "datasource.metadata.read" in candidate_tools
@@ -88,7 +93,7 @@ class ToolPlanner:
         quality_keywords = ("quality", "rule", "校验", "质量", "规则", "异常", "清洗")
         wants_quality_rule = (
             "quality.rule.suggest" in candidate_tools
-            or self._contains_any(objective, quality_keywords)
+            or (self._contains_any(objective, quality_keywords) and not wants_quality_remediation)
         )
         if wants_quality_rule and "quality.rule.suggest" in self._tools:
             tool = self._tools["quality.rule.suggest"]
@@ -110,12 +115,37 @@ class ToolPlanner:
             )
             planned_tool_names.add("quality.rule.suggest")
 
+        if wants_quality_remediation and "quality.remediation.task.draft" in self._tools:
+            tool = self._tools["quality.remediation.task.draft"]
+            plans.append(
+                self._build_plan(
+                    tool=tool,
+                    reason=(
+                        "用户目标指向质量异常复核、整改或派单。该工具只生成低敏治理任务草案和 dry-run 预览，"
+                        "不直接提交 task-management，也不执行清洗脚本，适合作为人工确认前的 Agent 建议。"
+                    ),
+                    arguments={
+                        **self._quality_remediation_arguments.build(request),
+                        **self._reference_argument(
+                            argument_name="suggestionRef",
+                            from_tool="quality.rule.suggest",
+                            path="suggestion",
+                            enabled="quality.rule.suggest" in planned_tool_names,
+                        ),
+                    },
+                )
+            )
+            planned_tool_names.add("quality.remediation.task.draft")
+
         task_keywords = ("create task", "schedule", "run", "创建任务", "调度", "执行", "同步任务")
         create_task_requested = bool(request.variables.get("createTask") or request.variables.get("create_task"))
         wants_task_draft = (
-            "task.create.draft" in candidate_tools
-            or create_task_requested
-            or self._contains_any(objective, task_keywords)
+            not wants_quality_remediation
+            and (
+                "task.create.draft" in candidate_tools
+                or create_task_requested
+                or self._contains_any(objective, task_keywords)
+            )
         )
         if wants_task_draft and "task.create.draft" in self._tools:
             tool = self._tools["task.create.draft"]
@@ -146,9 +176,12 @@ class ToolPlanner:
             planned_tool_names.add("task.create.draft")
 
         wants_task_draft_persist = (
-            "task.draft.persist" in candidate_tools
-            or create_task_requested
-            or bool(request.variables.get("persistTaskDraft") or request.variables.get("persist_task_draft"))
+            not wants_quality_remediation
+            and (
+                "task.draft.persist" in candidate_tools
+                or create_task_requested
+                or bool(request.variables.get("persistTaskDraft") or request.variables.get("persist_task_draft"))
+            )
         )
         if (
             wants_task_draft_persist
@@ -279,6 +312,43 @@ class ToolPlanner:
         """
 
         return any(keyword in text for keyword in keywords)
+
+    def _wants_quality_remediation(
+        self,
+        request: AgentRequest,
+        objective: str,
+        candidate_tools: set[str],
+    ) -> bool:
+        """判断是否需要规划质量异常治理任务草案工具。
+
+        这里和 `RuleBasedIntentAnalyzer` 保持同一套触发边界：普通“质量异常识别/清洗规则”仍属于规则设计，
+        只有“治理任务、复核、派单、整改、修复”等动作语义才进入治理任务草案。
+        这样可以把产品能力收敛成两条清晰链路：
+        - 质量规则链路：metadata -> rule suggestion -> generic task draft；
+        - 异常治理链路：quality report/anomaly scope -> remediation task draft -> Java 控制面确认。
+        """
+
+        if "quality.remediation.task.draft" in candidate_tools:
+            return True
+        if request.variables.get("createRemediationTask") or request.variables.get("create_remediation_task"):
+            return True
+        if request.variables.get("remediationTask") or request.variables.get("remediation_task"):
+            return True
+        return self._contains_any(
+            objective,
+            (
+                "remediation",
+                "remediate",
+                "治理任务",
+                "异常复核",
+                "质量复核",
+                "派单",
+                "整改",
+                "修复任务",
+                "处理任务",
+                "创建治理",
+            ),
+        )
 
     @staticmethod
     def _reference_argument(argument_name: str, from_tool: str, path: str, enabled: bool) -> dict[str, object]:

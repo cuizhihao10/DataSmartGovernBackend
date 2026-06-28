@@ -51,12 +51,28 @@ class RuleBasedIntentAnalyzer:
             self._append_unique(candidate_tools, "datasource.metadata.read")
             self._append_unique(risk_tags, IntentRiskTag.READ_ONLY)
 
-        if self._contains_any(objective, ("quality", "rule", "校验", "质量", "规则", "异常", "清洗", "完整性")):
+        remediation_requested = self._wants_quality_remediation(request, objective)
+        quality_rule_requested = self._contains_any(
+            objective,
+            ("quality", "rule", "校验", "质量", "规则", "异常", "清洗", "完整性"),
+        )
+
+        if quality_rule_requested and not remediation_requested:
             self._append_unique(domains, GovernanceDomain.DATA_QUALITY)
             self._append_unique(candidate_tools, "quality.rule.suggest")
             self._append_unique(risk_tags, IntentRiskTag.DRAFT_GENERATION)
             if not datasource_id:
                 self._append_unique(missing_parameters, "datasourceId")
+
+        if remediation_requested:
+            self._append_unique(domains, GovernanceDomain.DATA_QUALITY)
+            self._append_unique(domains, GovernanceDomain.TASK_MANAGEMENT)
+            self._append_unique(candidate_tools, "quality.remediation.task.draft")
+            self._append_unique(risk_tags, IntentRiskTag.DRAFT_GENERATION)
+            self._append_unique(risk_tags, IntentRiskTag.STATE_CHANGE)
+            self._append_unique(risk_tags, IntentRiskTag.APPROVAL_REQUIRED)
+            if not self._has_remediation_scope(request):
+                self._append_unique(missing_parameters, "remediationScope")
 
         if self._contains_any(objective, ("sync", "同步", "补数", "回放", "增量", "cdc")):
             self._append_unique(domains, GovernanceDomain.DATA_SYNC)
@@ -65,7 +81,10 @@ class RuleBasedIntentAnalyzer:
             self._append_unique(risk_tags, IntentRiskTag.APPROVAL_REQUIRED)
 
         create_task_requested = bool(request.variables.get("createTask") or request.variables.get("create_task"))
-        if create_task_requested or self._contains_any(objective, ("create task", "schedule", "run", "创建任务", "调度", "执行")):
+        if not remediation_requested and (
+            create_task_requested
+            or self._contains_any(objective, ("create task", "schedule", "run", "创建任务", "调度", "执行"))
+        ):
             self._append_unique(domains, GovernanceDomain.TASK_MANAGEMENT)
             self._append_unique(candidate_tools, "task.create.draft")
             self._append_unique(risk_tags, IntentRiskTag.STATE_CHANGE)
@@ -98,6 +117,60 @@ class RuleBasedIntentAnalyzer:
         """判断文本是否命中任一关键词。"""
 
         return any(keyword in text for keyword in keywords)
+
+    def _wants_quality_remediation(self, request: AgentRequest, objective: str) -> bool:
+        """判断用户是否在请求“质量异常治理任务”而不是普通质量规则草案。
+
+        质量域里“异常”这个词出现频率很高：生成规则时会说异常识别，查看报告时会说异常统计，
+        真正需要创建治理任务时才会出现“复核、派单、整改、修复、治理任务”等动作词。
+        因此这里刻意不让单独的“异常”触发治理任务草案，避免 Agent 在普通规则设计场景中多规划一个派单工具。
+        """
+
+        if request.variables.get("createRemediationTask") or request.variables.get("create_remediation_task"):
+            return True
+        if request.variables.get("remediationTask") or request.variables.get("remediation_task"):
+            return True
+        return self._contains_any(
+            objective,
+            (
+                "remediation",
+                "remediate",
+                "治理任务",
+                "异常复核",
+                "质量复核",
+                "派单",
+                "整改",
+                "修复任务",
+                "处理任务",
+                "创建治理",
+            ),
+        )
+
+    @staticmethod
+    def _has_remediation_scope(request: AgentRequest) -> bool:
+        """判断治理任务是否至少具备一个低敏定位条件。
+
+        Java data-quality 的治理任务接口可以从 reportId、ruleId、异常类型、严重级别、字段或目标对象等维度定位异常。
+        Python Runtime 不应该要求用户一次性给出全部条件，否则会破坏“先生成草案再人工确认”的体验；
+        但如果完全没有定位范围，后续 task-management 也无法解释这张治理任务到底要处理哪一批异常。
+        """
+
+        scope_fields = (
+            "reportId",
+            "report_id",
+            "ruleId",
+            "rule_id",
+            "anomalyType",
+            "anomaly_type",
+            "severity",
+            "fieldName",
+            "field_name",
+            "targetObject",
+            "target_object",
+            "projectId",
+            "project_id",
+        )
+        return any(request.variables.get(field) not in (None, "", [], {}) for field in scope_fields)
 
     def _append_high_risk_tags(
         self,
