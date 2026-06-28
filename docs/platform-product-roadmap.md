@@ -1,5 +1,30 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-28 追加落地进展：Java Agent Runtime Approval Confirmation Fact
+- 本阶段承接 payloadReference 物化和 command envelope body 可用性，把真实执行前的人审确认从“调用方传入一个 ID”升级为 Host 服务端事实。
+- 产品目标：
+  - 人工确认页或未来 permission-admin 审批回调只确认 `agent-payload:` 引用、body 可用性、大小、策略和作用域元数据；
+  - writer 写 outbox 前必须回查 `tool-action-confirmation:`，确认该事实存在、未过期、已确认、绑定当前 tenant/project/actor/run/tool/graph/contract；
+  - 确认事实不保存 payloadBody、治理草案正文、异常聚合明细、prompt、SQL、样本、模型输出、凭据或内部 endpoint；
+  - 让质量治理 Agent 链路继续向“可审批、可回放、可恢复执行”收敛，而不是继续扩大 dry-run 展示字段。
+- 新增与调整：
+  - 新增 `AgentToolActionApprovalConfirmationRecord/Status/Store`，定义低敏确认事实领域模型和仓储端口；
+  - 新增 `InMemoryAgentToolActionApprovalConfirmationStore`，用于本地学习、单实例联调和单元测试；
+  - 新增 `AgentToolActionApprovalConfirmationService`，创建 `tool-action-confirmation:{digest}`，并强制只接受已物化 payload body；
+  - 新增 `AgentToolActionApprovalConfirmationEvidenceVerifier`，专门负责确认事实强回查，避免主 fact verifier 继续膨胀；
+  - `AgentToolActionFactEvidenceVerifier` 接入新 verifier，对 `tool-action-confirmation:` 配置缺失、记录缺失、过期、未确认或作用域不匹配全部 fail-closed。
+- 验证：
+  - 定向 Java 测试：
+    `mvn -pl agent-runtime -am "-Dtest=AgentToolActionApprovalConfirmationServiceTest,AgentToolActionApprovalConfirmationEvidenceVerifierTest,AgentToolActionFactEvidenceVerifierTest,AgentToolActionCommandOutboxWriterServiceTest,AgentToolActionPayloadStoreServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：17 个测试通过。
+  - `agent-runtime` 全量测试：
+    `mvn -pl agent-runtime -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：421 个测试通过。
+- 下一步推荐路线：
+  1. 接审批后 outbox worker，由 Host 读取并复核 payload body 后调用 data-quality `dryRun=false`；
+  2. 补 runtime event / readiness projection 的低敏状态展示，表达“payload 已物化、确认事实已存在、等待 worker 执行”；
+  3. 再决定是否把内存 confirmation store 替换为 MySQL/permission-admin 审批事实持久化，避免单实例状态成为生产短板。
+
 ## 2026-06-28 追加落地进展：Java Agent Runtime Command Envelope Payload Body Availability
 - 本阶段承接上一批 payloadReference 物化，把 `payloadBodyAvailable/payloadSizeBytes` 从 verifier 结果结构化传入 tool-action command payload。
 - 产品目标：

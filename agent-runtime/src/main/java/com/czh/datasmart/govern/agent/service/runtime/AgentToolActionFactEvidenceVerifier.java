@@ -54,17 +54,34 @@ public class AgentToolActionFactEvidenceVerifier {
      */
     private final AgentRunToolDagConfirmationAccessSupport confirmationAccessSupport;
 
+    /**
+     * 工具动作 payload 审批确认事实校验器。
+     *
+     * <p>`tool-action-confirmation:` 是当前阶段新增的强事实源：它不只是“ID 形态安全”，还要证明用户确认过的
+     * payloadReference 已经由 Host 物化、仍在 TTL 内、并且绑定当前 tenant/project/actor/run/tool/graph/contract。
+     * 将这部分逻辑拆到独立组件，是为了避免本类随着审批中心、澄清事实、ITSM 工单等事实源不断膨胀。</p>
+     */
+    private final AgentToolActionApprovalConfirmationEvidenceVerifier approvalConfirmationEvidenceVerifier;
+
     public AgentToolActionFactEvidenceVerifier() {
-        this(null, new AgentRunToolDagConfirmationAccessSupport());
+        this(null, new AgentRunToolDagConfirmationAccessSupport(), null);
+    }
+
+    public AgentToolActionFactEvidenceVerifier(AgentRunToolDagConfirmationStore confirmationStore,
+                                               AgentRunToolDagConfirmationAccessSupport confirmationAccessSupport) {
+        this(confirmationStore, confirmationAccessSupport, null);
     }
 
     @Autowired
     public AgentToolActionFactEvidenceVerifier(AgentRunToolDagConfirmationStore confirmationStore,
-                                               AgentRunToolDagConfirmationAccessSupport confirmationAccessSupport) {
+                                               AgentRunToolDagConfirmationAccessSupport confirmationAccessSupport,
+                                               AgentToolActionApprovalConfirmationEvidenceVerifier
+                                                       approvalConfirmationEvidenceVerifier) {
         this.confirmationStore = confirmationStore;
         this.confirmationAccessSupport = confirmationAccessSupport == null
                 ? new AgentRunToolDagConfirmationAccessSupport()
                 : confirmationAccessSupport;
+        this.approvalConfirmationEvidenceVerifier = approvalConfirmationEvidenceVerifier;
     }
 
     /**
@@ -100,6 +117,7 @@ public class AgentToolActionFactEvidenceVerifier {
         verifyFactId("APPROVAL_CONFIRMATION", request == null ? null : request.approvalConfirmationId(), accepted, issues);
         verifyFactId("CLARIFICATION_FACT", request == null ? null : request.clarificationFactId(), accepted, issues);
         verifyDagConfirmationIfPresent(request, proposal, accessContext, accepted, issues);
+        verifyToolActionApprovalConfirmationIfPresent(request, proposal, accessContext, accepted, issues);
         if (!issues.isEmpty()) {
             return new AgentToolActionFactEvidenceVerificationResult(
                     STATUS_REJECTED,
@@ -209,6 +227,32 @@ public class AgentToolActionFactEvidenceVerifier {
                 issues.add("DAG_CONFIRMATION_POLICY_VERSION_MISMATCH");
             }
         }
+    }
+
+    /**
+     * 对工具动作 payload 审批确认事实做强校验。
+     *
+     * <p>通用 {@link #verifyFactId(String, String, List, List)} 只能证明 ID 没有 URL/JSON/SQL/换行/凭证片段风险；
+     * 但 `tool-action-confirmation:` 这种事实已经由本模块落地了服务端 store，因此必须进一步回查确认记录。
+     * 如果 Spring 运行时没有注入专用校验器，说明当前部署还处于迁移或测试模式，这里采取 fail-closed，避免把
+     * 只做形态校验的 confirmationId 写入 outbox。</p>
+     */
+    private void verifyToolActionApprovalConfirmationIfPresent(
+            AgentToolActionCommandProposalRequest request,
+            AgentToolActionCommandProposalResponse proposal,
+            AgentRuntimeEventQueryAccessContext accessContext,
+            List<String> accepted,
+            List<String> issues) {
+        String confirmationId = safeText(request == null ? null : request.approvalConfirmationId());
+        if (confirmationId == null
+                || !confirmationId.startsWith(AgentToolActionApprovalConfirmationEvidenceVerifier.CONFIRMATION_PREFIX)) {
+            return;
+        }
+        if (approvalConfirmationEvidenceVerifier == null) {
+            issues.add("TOOL_ACTION_APPROVAL_CONFIRMATION_VERIFIER_NOT_CONFIGURED");
+            return;
+        }
+        approvalConfirmationEvidenceVerifier.verifyIfPresent(request, proposal, accessContext, accepted, issues);
     }
 
     private List<String> factIdRiskIssues(String factType, String factId) {

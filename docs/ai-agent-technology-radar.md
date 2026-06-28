@@ -1,4 +1,18 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-28 落地补充：approval confirmations should be host-owned facts, not caller-provided strings
+
+- 本轮趋势校准：
+  - 成熟 Agent Host 不应把“用户确认过了”理解成调用方传来一个普通字符串；确认必须成为 Host 可回查、可过期、可撤销、可审计的服务端事实。
+  - 对 DataSmart 来说，`agent-payload:` 已经能保存服务端草案正文后，下一步不是扩大正文展示，而是让人工确认围绕引用、大小、策略、作用域和 TTL 发生。
+  - 这和 Codex/Claude Code/OpenClaw 类工具执行趋势一致：模型与前端只持有低敏引用和事实 ID，Host/worker 才能在受控边界内读取正文并产生副作用。
+- 本轮落地到代码的能力：
+  - 新增 `tool-action-confirmation:` 服务端确认事实；
+  - 注册服务在创建确认前回查 payload store，并要求 payload body 已物化；
+  - writer 前 fact verifier 会强校验确认事实存在、CONFIRMED、未过期、作用域匹配、policyVersion 匹配；
+  - acceptedEvidence 只包含低敏证据，不包含治理草案正文、异常聚合、prompt、SQL 或模型输出。
+- 产品判断：
+  - 这是 outbox worker 真正执行前必须补上的闭口；
+  - 下一步应接 worker 读取复核和低敏事件可见性，不应继续扩展 confirmation DTO 字段或把审批页变成正文搬运通道。
 ## 2026-06-28 落地补充：command envelopes need structured payload-body readiness, not body content
 
 - 本轮趋势校准：
