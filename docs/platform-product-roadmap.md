@@ -1,5 +1,25 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Data Sync Worker Execution Plan Contract
+- 本阶段承接 `Data Sync Template Planning Preview` 的收敛路线，开始从“模板控制面预检”推进到“真实 worker 可消费执行契约”。目标不是马上把 JDBC 读写、字段映射解析、SQL 生成和凭据读取全部塞进服务端，而是先稳定 claim 成功后 worker 拿到的低敏执行计划。
+- 产品价值：
+  - worker 认领 execution 后不再只拿到 task/execution 实体，而是同时拿到 `workerPlan`，明确同步模式、连接器类型、连接器兼容性、checkpoint 要求、配置块声明情况、执行前阻断项和下一步动作；
+  - `workerPlan` 明确 claim 已经把 execution 原子流转为 `RUNNING`，worker 不应再调用 start，而应直接进入 heartbeat、批处理、checkpoint、complete/fail 回调；
+  - 计划状态区分 `READY_TO_RUN`、`READY_WITH_WARNINGS`、`BLOCKED`，为后续真实 MySQL/PostgreSQL runner 的 fail-closed、保守默认值和运营复核提供稳定输入；
+  - 该契约不暴露字段映射正文、过滤条件正文、分区配置正文、重试/超时策略正文、SQL、样本数据、连接串、账号、密钥、文件路径或内部 endpoint。
+- 新增与调整：
+  - 新增 `SyncWorkerExecutionPlanView`，作为 claim 响应中的低敏 worker 执行计划 DTO；
+  - 新增 `SyncWorkerExecutionPlanSupport`，负责把 `SyncExecution`、`SyncTask`、`SyncTemplate` 和 `SyncConnectorCapabilityRegistry` 合成为可解释计划；
+  - `SyncExecutionClaimResult` 新增 `workerPlan` 字段；
+  - `DataSyncExecutorLeaseServiceImpl#claimNext` 在认领成功后生成并返回 worker plan，未命中或并发认领失败时保持 null；
+  - 新增 `SyncWorkerExecutionPlanSupportTest` 与 `DataSyncExecutorLeaseServiceImplClaimPlanTest`，覆盖低敏计划、增量边界警告、不兼容连接器阻断、模板缺失 fail-closed，以及 claim 返回计划。
+- 验证：
+  - 定向 Java 测试通过：`SyncWorkerExecutionPlanSupportTest`、`DataSyncExecutorLeaseServiceImplClaimPlanTest`、`DataSyncExecutorLeaseServiceImplHeartbeatControlTest` 共 10 个用例；
+  - 行数检查：`DataSyncExecutorLeaseServiceImpl.java` 384 行，`SyncWorkerExecutionPlanSupport.java` 270 行，`SyncWorkerExecutionPlanView.java` 56 行，两个新增测试分别 178/160 行，均低于 500 行约束。
+- 收敛判断：
+  - data-sync 已具备 `template -> task -> execution -> claim -> workerPlan -> heartbeat/checkpoint/complete/fail` 的控制面执行契约；
+  - 下一步应继续推进最小真实 batch runner：先支持 MySQL/PostgreSQL 的安全批次循环、checkpoint 回写和 complete/fail 回调，再考虑更复杂的 CDC、多线程分片、跨项目审批和 task-management receipt。
+
 ## 2026-06-29 追加落地进展：Data Sync Template Planning Preview
 - 本阶段承接 `Data Sync Datasource Capability Snapshot Consumption` 的下一步收敛路线，不继续扩展 capability snapshot 字段，而是补齐同步模板创建任务前的低敏规划预览。目标是让用户、Agent 或运营台在创建任务前知道模板是否 READY、NEEDS_REVIEW 或 BLOCKED，以及缺少哪些配置块。
 - 产品价值：

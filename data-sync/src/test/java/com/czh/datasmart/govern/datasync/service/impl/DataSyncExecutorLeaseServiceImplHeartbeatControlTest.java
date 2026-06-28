@@ -16,6 +16,7 @@ import com.czh.datasmart.govern.datasync.mapper.SyncExecutionMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.service.support.SyncAuditSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncCallbackIdempotencySupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncWorkerExecutionPlanSupport;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
 import com.czh.datasmart.govern.datasync.support.SyncExecutionState;
 import org.junit.jupiter.api.Test;
@@ -176,7 +177,8 @@ class DataSyncExecutorLeaseServiceImplHeartbeatControlTest {
                 taskMapper,
                 auditSupport,
                 new DataSyncExecutorProperties(),
-                idempotencySupport);
+                idempotencySupport,
+                mock(SyncWorkerExecutionPlanSupport.class));
         return new Fixture(service, executionMapper, auditSupport, idempotencySupport);
     }
 

@@ -24,6 +24,7 @@ import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.service.DataSyncExecutorLeaseService;
 import com.czh.datasmart.govern.datasync.service.support.SyncAuditSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncCallbackIdempotencySupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncWorkerExecutionPlanSupport;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
 import com.czh.datasmart.govern.datasync.support.SyncExecutionState;
 import com.czh.datasmart.govern.datasync.support.SyncTaskState;
@@ -60,18 +61,19 @@ public class DataSyncExecutorLeaseServiceImpl implements DataSyncExecutorLeaseSe
     private final SyncAuditSupport auditSupport;
     private final DataSyncExecutorProperties executorProperties;
     private final SyncCallbackIdempotencySupport idempotencySupport;
+    private final SyncWorkerExecutionPlanSupport workerExecutionPlanSupport;
 
     @Override
     @Transactional
     public SyncExecutionClaimResult claimNext(SyncExecutionClaimRequest request, SyncActorContext actorContext) {
         SyncExecution candidate = executionMapper.selectNextClaimCandidate(request.getTenantId());
         if (candidate == null) {
-            return new SyncExecutionClaimResult(false, "当前没有可认领的同步执行记录", null, null);
+            return new SyncExecutionClaimResult(false, "当前没有可认领的同步执行记录", null, null, null);
         }
         long leaseSeconds = boundedSeconds(request.getLeaseSeconds(), DEFAULT_LEASE_SECONDS, MAX_LEASE_SECONDS);
         int updated = executionMapper.claimQueuedExecution(candidate.getId(), request.getExecutorId().trim(), leaseSeconds);
         if (updated == 0) {
-            return new SyncExecutionClaimResult(false, "候选执行记录已被其他执行器认领，请稍后重试", null, null);
+            return new SyncExecutionClaimResult(false, "候选执行记录已被其他执行器认领，请稍后重试", null, null, null);
         }
 
         SyncExecution claimed = requireExecution(candidate.getId());
@@ -82,7 +84,8 @@ public class DataSyncExecutorLeaseServiceImpl implements DataSyncExecutorLeaseSe
         taskMapper.updateById(task);
         auditSupport.saveAudit(task.getTenantId(), task.getId(), claimed.getId(), SyncAuditActionType.RUN_TASK,
                 actorContext, "claimExecution,executorId=" + request.getExecutorId() + ",leaseSeconds=" + leaseSeconds);
-        return new SyncExecutionClaimResult(true, "同步执行记录认领成功", claimed, task);
+        return new SyncExecutionClaimResult(true, "同步执行记录认领成功",
+                claimed, task, workerExecutionPlanSupport.buildPlan(claimed, task));
     }
 
     @Override
