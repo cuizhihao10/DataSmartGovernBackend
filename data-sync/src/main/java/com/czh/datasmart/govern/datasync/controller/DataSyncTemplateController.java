@@ -12,6 +12,7 @@ import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTemplateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplatePlanningPreviewResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.support.SyncActorContextHeaderSupport;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
@@ -35,7 +36,7 @@ import org.springframework.web.bind.annotation.RestController;
  * 这样做的好处是：用户可以先创建模板、校验模板、预览影响范围，再决定是否创建任务或提交审批。
  */
 @RestController
-@RequestMapping("/sync-templates")
+@RequestMapping({"/sync-templates", "/api/sync-templates"})
 @RequiredArgsConstructor
 public class DataSyncTemplateController {
 
@@ -109,6 +110,25 @@ public class DataSyncTemplateController {
             @RequestHeader HttpHeaders headers) {
         return PlatformApiResponse.success("同步模板校验完成",
                 dataSyncService.validateTemplate(id, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * 生成同步模板规划预览。
+     *
+     * <p>该接口面向“创建任务前的低敏配置健康检查”。它不会执行同步，不会读取源端样本，不会返回字段映射、
+     * 过滤条件、分区窗口、SQL、checkpoint 原文或连接配置，只返回 issueCodes、recommendedActions、
+     * 性能提示和安全提示，便于用户或 Agent 判断下一步是补配置、发起审批还是创建任务草稿。</p>
+     */
+    @PostMapping("/{id}/preview")
+    public PlatformApiResponse<SyncTemplatePlanningPreviewResponse> previewTemplate(
+            @PathVariable Long id,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步模板规划预览生成成功",
+                dataSyncService.previewTemplate(id, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
     }
 
     private SyncActorContext actorContext(Long tenantId, Long actorId, String actorRole, String traceId, HttpHeaders headers) {

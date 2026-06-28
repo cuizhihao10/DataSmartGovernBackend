@@ -26,6 +26,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperati
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperationRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplatePlanningPreviewResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateQueryCriteria;
 import com.czh.datasmart.govern.datasync.entity.SyncAuditRecord;
 import com.czh.datasmart.govern.datasync.entity.SyncCheckpoint;
@@ -50,6 +51,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperat
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskRecoveryOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskStateMachineSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateCreationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTemplatePlanningPreviewSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateValidationSupport;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
 import com.czh.datasmart.govern.datasync.support.SyncApprovalState;
@@ -93,6 +95,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncTaskLifecycleOperationSupport taskLifecycleOperationSupport;
     private final SyncTaskRecoveryOperationSupport taskRecoveryOperationSupport;
     private final SyncTemplateCreationSupport templateCreationSupport;
+    private final SyncTemplatePlanningPreviewSupport templatePlanningPreviewSupport;
 
     @Override
     @Transactional
@@ -145,6 +148,12 @@ public class DataSyncServiceImpl implements DataSyncService {
         auditSupport.saveTemplateAudit(template, SyncAuditActionType.VALIDATE_TEMPLATE,
                 actorContext, "templateId=" + template.getId());
         return new SyncTaskOperationResult(null, "VALIDATED", "同步模板校验通过，后续可创建同步任务或执行预览");
+    }
+
+    @Override
+    public SyncTemplatePlanningPreviewResponse previewTemplate(Long id, SyncActorContext actorContext) {
+        SyncTemplate template = getTemplate(id, actorContext);
+        return templatePlanningPreviewSupport.preview(template);
     }
 
     @Override

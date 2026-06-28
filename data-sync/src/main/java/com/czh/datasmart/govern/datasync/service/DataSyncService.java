@@ -22,6 +22,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperati
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperationRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplatePlanningPreviewResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateQueryCriteria;
 import com.czh.datasmart.govern.datasync.entity.SyncAuditRecord;
 import com.czh.datasmart.govern.datasync.entity.SyncCheckpoint;
@@ -45,6 +46,14 @@ public interface DataSyncService {
     SyncTemplate getTemplate(Long id, SyncActorContext actorContext);
 
     SyncTaskOperationResult validateTemplate(Long id, SyncActorContext actorContext);
+
+    /**
+     * 生成同步模板规划预览。
+     *
+     * <p>预览只返回低敏配置健康结果，不执行同步、不读取源端数据、不返回字段映射原文、过滤条件、SQL 或样本。
+     * 它用于帮助用户、Agent 或运营人员理解“这个模板是否适合进入任务草稿/执行前预检”。</p>
+     */
+    SyncTemplatePlanningPreviewResponse previewTemplate(Long id, SyncActorContext actorContext);
 
     SyncTask createTask(CreateSyncTaskRequest request, SyncActorContext actorContext);
 

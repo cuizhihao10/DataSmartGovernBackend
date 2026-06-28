@@ -1,5 +1,25 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Data Sync Template Planning Preview
+- 本阶段承接 `Data Sync Datasource Capability Snapshot Consumption` 的下一步收敛路线，不继续扩展 capability snapshot 字段，而是补齐同步模板创建任务前的低敏规划预览。目标是让用户、Agent 或运营台在创建任务前知道模板是否 READY、NEEDS_REVIEW 或 BLOCKED，以及缺少哪些配置块。
+- 产品价值：
+  - 新增 `POST /sync-templates/{id}/preview` 与 `POST /api/sync-templates/{id}/preview`，对齐 data-sync API outline 中的模板 preview 能力；
+  - 预览只返回低敏配置健康摘要，不执行同步、不读取源端样本、不生成 SQL、不返回字段映射/过滤/分区/重试/超时配置原文；
+  - 返回 `previewStatus`、是否建议进入任务草稿、是否达到执行前预检、连接器兼容性、checkpoint 要求、配置块是否声明、issueCodes、recommendedActions、performanceNotes 和 safetyNotes；
+  - Controller 同时支持 `/sync-templates` 与 `/api/sync-templates`，便于本地直连和 gateway API 路径逐步统一。
+- 新增与调整：
+  - 新增 `SyncTemplatePlanningPreviewResponse`，作为低敏预览响应 DTO；
+  - 新增 `SyncTemplatePlanningPreviewSupport`，基于 `SyncConnectorCapabilityRegistry`、同步模式和配置块存在性生成 READY/NEEDS_REVIEW/BLOCKED；
+  - `DataSyncService` 与 `DataSyncServiceImpl` 新增 `previewTemplate`；
+  - 新增 `SyncTemplatePlanningPreviewSupportTest`，覆盖 READY、增量边界缺失 NEEDS_REVIEW、连接器不兼容 BLOCKED、敏感配置正文不泄露、旧模板连接器事实缺失等场景。
+- 验证：
+  - 定向 Java 测试通过：`SyncTemplatePlanningPreviewSupportTest`、`SyncTemplateConnectorFactResolverTest`、`DataSyncServiceImplProjectScopeTest`、`SyncTemplateValidationSupportTest` 共 22 个用例；
+  - data-sync 全量测试通过：74 个用例；
+  - 行数检查：`DataSyncServiceImpl.java` 476 行，`SyncTemplatePlanningPreviewSupport.java` 215 行，`DataSyncTemplateController.java` 127 行，`SyncTemplatePlanningPreviewSupportTest.java` 144 行，均低于 500 行约束。
+- 收敛判断：
+  - data-sync 已具备模板创建、连接器事实补全、能力矩阵预检和低敏规划预览；
+  - 下一步应进入最小真实同步闭环，优先 MySQL/PostgreSQL：template -> task -> execution -> batch runner -> checkpoint -> complete/fail -> task-management receipt，而不是继续扩展控制面字段。
+
 ## 2026-06-29 追加落地进展：Data Sync Datasource Capability Snapshot Consumption
 - 本阶段承接 `Datasource Capability Snapshot Contract` 的下一步推荐路线，把 data-sync 模板创建从“依赖调用方手动传 connector type”推进到“缺少 connector type 时按 datasourceId 调用 datasource-management 低敏能力快照自动补全”。这一步仍然不做真实数据同步执行器、不触发连接测试、不读取元数据或样本，只收敛模板配置阶段的可信能力事实来源。
 - 产品价值：

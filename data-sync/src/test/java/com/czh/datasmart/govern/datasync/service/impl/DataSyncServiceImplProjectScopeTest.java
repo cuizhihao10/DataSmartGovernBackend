@@ -30,8 +30,10 @@ import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskRecoveryOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskStateMachineSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncConnectorCapabilityRegistry;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateConnectorFactResolver;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateCreationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTemplatePlanningPreviewSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateValidationSupport;
 import org.junit.jupiter.api.Test;
 
@@ -195,7 +197,8 @@ class DataSyncServiceImplProjectScopeTest {
                 mock(SyncExecutionCreationSupport.class),
                 mock(SyncTaskLifecycleOperationSupport.class),
                 mock(SyncTaskRecoveryOperationSupport.class),
-                templateCreationSupport(templateMapper, auditSupport, dataScopeSupport, querySupport, templateValidationSupport)
+                templateCreationSupport(templateMapper, auditSupport, dataScopeSupport, querySupport, templateValidationSupport),
+                new SyncTemplatePlanningPreviewSupport(new SyncConnectorCapabilityRegistry())
         );
     }
 
@@ -252,7 +255,8 @@ class DataSyncServiceImplProjectScopeTest {
                 mock(SyncExecutionCreationSupport.class),
                 mock(SyncTaskLifecycleOperationSupport.class),
                 mock(SyncTaskRecoveryOperationSupport.class),
-                templateCreationSupport(templateMapper, auditSupport, dataScopeSupport, querySupport, templateValidationSupport)
+                templateCreationSupport(templateMapper, auditSupport, dataScopeSupport, querySupport, templateValidationSupport),
+                new SyncTemplatePlanningPreviewSupport(new SyncConnectorCapabilityRegistry())
         );
     }
 
