@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.datasync.service.impl;
 
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
+import com.czh.datasmart.govern.datasync.config.DataSyncDatasourceCapabilityProperties;
 import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTemplateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncAuditQueryCriteria;
@@ -29,6 +30,8 @@ import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskRecoveryOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskStateMachineSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTemplateConnectorFactResolver;
+import com.czh.datasmart.govern.datasync.service.support.SyncTemplateCreationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateValidationSupport;
 import org.junit.jupiter.api.Test;
 
@@ -173,6 +176,9 @@ class DataSyncServiceImplProjectScopeTest {
     }
 
     private DataSyncServiceImpl service(SyncTemplateMapper templateMapper, SyncAuditSupport auditSupport) {
+        SyncDataScopeSupport dataScopeSupport = new SyncDataScopeSupport();
+        SyncQuerySupport querySupport = new SyncQuerySupport();
+        SyncTemplateValidationSupport templateValidationSupport = new SyncTemplateValidationSupport();
         return new DataSyncServiceImpl(
                 templateMapper,
                 mock(SyncTaskMapper.class),
@@ -180,15 +186,16 @@ class DataSyncServiceImplProjectScopeTest {
                 mock(SyncCheckpointMapper.class),
                 mock(SyncErrorSampleMapper.class),
                 mock(SyncAuditRecordMapper.class),
-                new SyncDataScopeSupport(),
-                new SyncQuerySupport(),
-                new SyncTemplateValidationSupport(),
+                dataScopeSupport,
+                querySupport,
+                templateValidationSupport,
                 mock(SyncTaskStateMachineSupport.class),
                 auditSupport,
                 mock(SyncExecutionLifecycleSupport.class),
                 mock(SyncExecutionCreationSupport.class),
                 mock(SyncTaskLifecycleOperationSupport.class),
-                mock(SyncTaskRecoveryOperationSupport.class)
+                mock(SyncTaskRecoveryOperationSupport.class),
+                templateCreationSupport(templateMapper, auditSupport, dataScopeSupport, querySupport, templateValidationSupport)
         );
     }
 
@@ -226,6 +233,9 @@ class DataSyncServiceImplProjectScopeTest {
                                         SyncErrorSampleMapper errorSampleMapper,
                                         SyncAuditRecordMapper auditRecordMapper,
                                         SyncAuditSupport auditSupport) {
+        SyncDataScopeSupport dataScopeSupport = new SyncDataScopeSupport();
+        SyncQuerySupport querySupport = new SyncQuerySupport();
+        SyncTemplateValidationSupport templateValidationSupport = new SyncTemplateValidationSupport();
         return new DataSyncServiceImpl(
                 templateMapper,
                 taskMapper,
@@ -233,16 +243,40 @@ class DataSyncServiceImplProjectScopeTest {
                 checkpointMapper,
                 errorSampleMapper,
                 auditRecordMapper,
-                new SyncDataScopeSupport(),
-                new SyncQuerySupport(),
-                new SyncTemplateValidationSupport(),
+                dataScopeSupport,
+                querySupport,
+                templateValidationSupport,
                 mock(SyncTaskStateMachineSupport.class),
                 auditSupport,
                 mock(SyncExecutionLifecycleSupport.class),
                 mock(SyncExecutionCreationSupport.class),
                 mock(SyncTaskLifecycleOperationSupport.class),
-                mock(SyncTaskRecoveryOperationSupport.class)
+                mock(SyncTaskRecoveryOperationSupport.class),
+                templateCreationSupport(templateMapper, auditSupport, dataScopeSupport, querySupport, templateValidationSupport)
         );
+    }
+
+    private SyncTemplateCreationSupport templateCreationSupport(SyncTemplateMapper templateMapper,
+                                                               SyncAuditSupport auditSupport,
+                                                               SyncDataScopeSupport dataScopeSupport,
+                                                               SyncQuerySupport querySupport,
+                                                               SyncTemplateValidationSupport templateValidationSupport) {
+        return new SyncTemplateCreationSupport(
+                templateMapper,
+                dataScopeSupport,
+                querySupport,
+                disabledConnectorFactResolver(querySupport),
+                templateValidationSupport,
+                auditSupport
+        );
+    }
+
+    private SyncTemplateConnectorFactResolver disabledConnectorFactResolver(SyncQuerySupport querySupport) {
+        DataSyncDatasourceCapabilityProperties properties = new DataSyncDatasourceCapabilityProperties();
+        properties.setEnabled(false);
+        return new SyncTemplateConnectorFactResolver((datasourceId, actorContext) -> {
+            throw new AssertionError("测试夹具已关闭 datasource-management 能力快照调用，不应触发远程读取");
+        }, properties, querySupport);
     }
 
     private CreateSyncTemplateRequest templateRequest(Long projectId) {

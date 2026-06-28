@@ -49,6 +49,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskRecoveryOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskStateMachineSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTemplateCreationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateValidationSupport;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
 import com.czh.datasmart.govern.datasync.support.SyncApprovalState;
@@ -91,48 +92,12 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncExecutionCreationSupport executionCreationSupport;
     private final SyncTaskLifecycleOperationSupport taskLifecycleOperationSupport;
     private final SyncTaskRecoveryOperationSupport taskRecoveryOperationSupport;
+    private final SyncTemplateCreationSupport templateCreationSupport;
 
     @Override
     @Transactional
     public SyncTemplate createTemplate(CreateSyncTemplateRequest request, SyncActorContext actorContext) {
-        SyncTemplate template = new SyncTemplate();
-        template.setTenantId(dataScopeSupport.resolveTenantForCreate(request.getTenantId(), actorContext));
-        template.setProjectId(request.getProjectId());
-        template.setWorkspaceId(request.getWorkspaceId());
-        template.setName(request.getName().trim());
-        template.setDescription(querySupport.trimToNull(request.getDescription()));
-        template.setSourceDatasourceId(request.getSourceDatasourceId());
-        template.setTargetDatasourceId(request.getTargetDatasourceId());
-        template.setSourceConnectorType(querySupport.normalizeCode(request.getSourceConnectorType()));
-        template.setTargetConnectorType(querySupport.normalizeCode(request.getTargetConnectorType()));
-        template.setSyncMode(querySupport.normalizeCode(request.getSyncMode()));
-        template.setFieldMappingConfig(querySupport.trimToNull(request.getFieldMappingConfig()));
-        template.setFilterConfig(querySupport.trimToNull(request.getFilterConfig()));
-        template.setPartitionConfig(querySupport.trimToNull(request.getPartitionConfig()));
-        template.setRetryPolicy(querySupport.trimToNull(request.getRetryPolicy()));
-        template.setTimeoutPolicy(querySupport.trimToNull(request.getTimeoutPolicy()));
-        template.setEnabled(true);
-        template.setCreatedBy(actorContext == null ? null : actorContext.actorId());
-        template.setUpdatedBy(actorContext == null ? null : actorContext.actorId());
-        template.setCreateTime(LocalDateTime.now());
-        template.setUpdateTime(LocalDateTime.now());
-        /*
-         * 写入类动作必须在入库前完成项目范围校验。
-         *
-         * 列表查询可以在 SQL 上追加 project_id IN (...)，详情查询可以读出对象后校验 projectId；
-         * 但创建模板如果不提前校验，就会先把未授权项目的数据写进库里，后续再靠“看不到”补救已经太晚。
-         * 因此这里显式调用 validateProjectWritable，把 PROJECT 范围下的越权写入阻断在 insert 之前。
-         */
-        dataScopeSupport.validateProjectWritable(
-                template.getTenantId(), template.getProjectId(), template.getWorkspaceId(), actorContext, "同步模板");
-        templateValidationSupport.validateTemplate(template);
-        templateMapper.insert(template);
-        auditSupport.saveTemplateAudit(template, SyncAuditActionType.CREATE_TEMPLATE,
-                actorContext, "templateId=" + template.getId()
-                        + ",syncMode=" + template.getSyncMode()
-                        + ",sourceConnectorType=" + template.getSourceConnectorType()
-                        + ",targetConnectorType=" + template.getTargetConnectorType());
-        return template;
+        return templateCreationSupport.createTemplate(request, actorContext);
     }
 
     @Override

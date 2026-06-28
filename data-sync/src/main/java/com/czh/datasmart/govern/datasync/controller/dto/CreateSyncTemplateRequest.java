@@ -53,16 +53,19 @@ public class CreateSyncTemplateRequest {
      * 源端连接器类型，例如 MYSQL、POSTGRESQL、KAFKA、OBJECT_STORAGE。
      *
      * <p>这个字段是低敏控制面信息，只表达“源端属于哪类系统”，不表达真实 host、port、database、topic、
-     * bucket、文件路径、账号或密钥。当前它是可选字段：旧调用方只传 datasourceId 时仍可创建模板；
-     * 新调用方或 Agent 规划如果能提供该字段，服务端会结合连接器能力矩阵做更强的同步模式预检。</p>
+     * bucket、文件路径、账号或密钥。当前它是可选字段：调用方只传 datasourceId 时，服务端会优先调用
+     * datasource-management 的低敏能力快照自动补全 connector type；如果快照补全在本地环境被关闭，
+     * 两端都缺省时仍按历史兼容逻辑只做基础校验。</p>
      */
     private String sourceConnectorType;
 
     /**
      * 目标端连接器类型。
      *
-     * <p>必须与 sourceConnectorType 同时提供或同时缺省。只传其中一个会导致模板校验无法判断完整的数据流向，
-     * 服务端会 fail-closed 拒绝，避免把“半个能力事实”误当成可执行配置。</p>
+     * <p>目标端字段与源端字段遵循同一低敏原则。推荐调用方只传 datasourceId，让服务端按可信快照补全；
+     * 如果调用方显式传入 connector type，则服务端会先归一化，再结合能力矩阵判断源端、目标端和 syncMode
+     * 是否匹配。最终进入模板校验时如果只剩一端 connector type，仍会 fail-closed 拒绝，避免把“半个能力事实”
+     * 误当成可执行配置。</p>
      */
     private String targetConnectorType;
 

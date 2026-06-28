@@ -1,5 +1,30 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Data Sync Datasource Capability Snapshot Consumption
+- 本阶段承接 `Datasource Capability Snapshot Contract` 的下一步推荐路线，把 data-sync 模板创建从“依赖调用方手动传 connector type”推进到“缺少 connector type 时按 datasourceId 调用 datasource-management 低敏能力快照自动补全”。这一步仍然不做真实数据同步执行器、不触发连接测试、不读取元数据或样本，只收敛模板配置阶段的可信能力事实来源。
+- 产品价值：
+  - 前端或 Agent 创建同步模板时可以只传 sourceDatasourceId、targetDatasourceId 和 syncMode，data-sync 会通过 datasource-management 快照补全 `sourceConnectorType/targetConnectorType`；
+  - 快照不允许进入模板规划、源端不可读、目标端不可写、租户/项目/工作空间不一致时会 fail-closed，避免把明显不可执行或越权的数据流推进到任务队列；
+  - 调用方已显式传入两端 connector type 时默认不强制远程校验，保留历史链路稳定性；商业化部署可通过 `validate-provided-connector-facts=true` 打开更严格的一致性校验；
+  - `DataSyncServiceImpl` 的模板创建长流程已拆入 `SyncTemplateCreationSupport`，主服务从接近 500 行降到 467 行，避免继续向 Impl 堆业务逻辑。
+- 新增与调整：
+  - 新增 `DataSyncDatasourceCapabilityProperties`，配置快照调用开关、远端地址、internal 路径、服务账号 Header 和超时；
+  - 新增 `integration.datasource` 包，包含本地低敏快照 DTO、响应 envelope、客户端接口与 HTTP RestClient 实现；
+  - 新增 `SyncTemplateConnectorFactResolver`，集中处理快照读取、connector type 补全、规划资格、读写能力和租户/项目/空间边界校验；
+  - 新增 `SyncTemplateCreationSupport`，承载模板创建工作流：DTO 转实体、项目写入校验、能力事实补全、模板校验、落库和低敏审计；
+  - 更新 `CreateSyncTemplateRequest` 与 `SyncTemplateValidationSupport` 注释，明确 connector type 可由服务端按低敏快照补全。
+- 低敏与安全规则：
+  - data-sync 只消费 connectorType、tenantId、projectId、workspaceId、eligibleForTemplatePlanning、canRead/canWrite、issueCodes 和 recommendedActions；
+  - 不读取或返回 JDBC URL、host、port、database、username、password、topic、bucket、文件路径、SQL、样本数据、连接失败原文、凭据、prompt、模型输出或内部 endpoint；
+  - 远程调用失败时不猜测 connector type，而是按 fail-closed 返回模板预检错误。
+- 验证：
+  - 定向 Java 测试通过：`SyncTemplateConnectorFactResolverTest`、`SyncTemplateValidationSupportTest`、`DataSyncServiceImplProjectScopeTest` 共 17 个用例；
+  - data-sync 全量测试通过：69 个用例；
+  - 行数检查：`DataSyncServiceImpl.java` 467 行，`SyncTemplateConnectorFactResolver.java` 215 行，`SyncTemplateCreationSupport.java` 98 行，`HttpDatasourceCapabilitySnapshotClient.java` 101 行，`SyncTemplateConnectorFactResolverTest.java` 237 行，均低于 500 行约束。
+- 收敛判断：
+  - data-sync 模板配置阶段已经完成 datasourceId -> capability snapshot -> connector type -> capability matrix 的控制面闭环；
+  - 下一步不应继续扩展快照字段，而应推进模板 fieldMapping/checkpoint/partition/writeStrategy 的 validate/preview，随后选择 MySQL/PostgreSQL 最小真实同步闭环。
+
 ## 2026-06-28 追加落地进展：Datasource Capability Snapshot Contract
 - 本阶段承接 `Data Sync Template Connector Validation` 的下一步推荐路线，开始把 data-sync 依赖的连接器事实从“调用方手动传 connector type”推进为“datasource-management 按 datasourceId 返回低敏能力快照”。这一步不扩展真实同步执行器，也不触发连接测试或元数据发现，只补跨服务事实查询契约。
 - 产品价值：

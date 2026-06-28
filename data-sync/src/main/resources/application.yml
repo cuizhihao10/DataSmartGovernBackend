@@ -56,6 +56,38 @@ logging:
 
 datasmart:
   data-sync:
+    datasource-capability:
+      # 是否启用 datasource-management 的低敏能力快照读取。
+      # 开启后，创建同步模板时如果调用方没有传 sourceConnectorType/targetConnectorType，
+      # data-sync 会按 sourceDatasourceId/targetDatasourceId 调用
+      # /internal/datasources/{datasourceId}/capability-snapshot 自动补全连接器类型。
+      #
+      # 业务意义：
+      # 1. 前端或 Agent 不需要猜测 MYSQL、POSTGRESQL、KAFKA 等 connector type；
+      # 2. data-sync 可以使用 datasource-management 已登记的可信事实做模板预检；
+      # 3. 快照只包含低敏能力字段，不包含 JDBC URL、账号、密码、SQL、样本、topic、bucket 或内部 endpoint。
+      #
+      # 如果本地只单独启动 data-sync、没有启动 datasource-management，可以临时设为 false。
+      # 但生产环境建议保持 true，否则模板会回退到“只做基础 datasourceId 校验”的历史兼容模式。
+      enabled: true
+      # 当调用方已经显式传入 sourceConnectorType/targetConnectorType 时，是否仍然回查 datasource-management 校验一致性。
+      # 默认 false 是为了降低当前收敛阶段对远端服务的强依赖：完整传入 connector type 的旧链路可以继续稳定运行。
+      # 商业化部署或高安全租户建议设置为 true，避免调用方把 datasourceId=MySQL 的数据源伪装成其他 connector type。
+      validate-provided-connector-facts: false
+      # datasource-management 本地默认端口是 8082。
+      # 生产环境可以替换为服务发现地址、内网域名、gateway 内部路由或 service mesh 虚拟服务地址。
+      base-url: http://localhost:8082
+      # data-sync 作为后端微服务，默认调用 internal 快照路由。
+      # 该路由仍只返回低敏快照，并要求 SOURCE_SERVICE=data-sync、ACTOR_ROLE=SERVICE_ACCOUNT。
+      snapshot-path-template: /internal/datasources/{datasourceId}/capability-snapshot
+      # 发送给 datasource-management 的服务身份 Header。
+      # 当前是最小可信服务账号契约，后续可升级为 HMAC、mTLS 或服务网格鉴权。
+      source-service: data-sync
+      actor-role: SERVICE_ACCOUNT
+      # 能力快照是轻量控制面查询，不应该长时间阻塞用户创建模板。
+      # 如果 datasource-management 不可用，data-sync 会 fail-closed 返回模板预检错误，而不是猜测 connector type。
+      connect-timeout-ms: 1000
+      read-timeout-ms: 1500
     executor:
       # 单条 execution 允许被 defer 或过期租约恢复回队列的最大次数。
       # 达到该阈值后，系统会停止自动 requeue，把 execution 标记为 FAILED，

@@ -23,7 +23,9 @@ import java.util.Locale;
  * Bean Validation 能判断“字段有没有传”，但产品校验还要判断“这种同步模式是否需要 field mapping、是否允许源和目标相同、
  * 是否需要 checkpoint 配置、是否需要审批”等更靠近业务的规则。
  *
- * <p>当前先落基础规则，后续可以逐步接入连接器能力矩阵和 datasource-management 的元数据发现结果。
+ * <p>当前已经接入连接器能力矩阵；模板创建链路会先通过 {@link SyncTemplateConnectorFactResolver}
+ * 尝试从 datasource-management 低敏能力快照补全 sourceConnectorType/targetConnectorType，再进入本校验组件。
+ * 后续仍可继续接入字段映射、checkpoint 策略、写入策略和元数据发现结果。
  */
 @Component
 public class SyncTemplateValidationSupport {
@@ -60,10 +62,11 @@ public class SyncTemplateValidationSupport {
      *     <li>连接器能力校验：当模板携带 sourceConnectorType/targetConnectorType 时，进一步检查该连接器组合是否支持 syncMode。</li>
      * </ul>
      *
-     * <p>为什么连接器字段暂时可选：
-     * 当前 data-sync 与 datasource-management 的 datasourceId -> connectorType 低敏查询契约还没有打通。
-     * 为了保持旧模板和旧接口可用，缺省 connector type 时只执行基础校验；一旦调用方提供任意一个 connector type，
-     * 就必须同时提供源端和目标端，并通过能力矩阵预检。</p>
+     * <p>为什么连接器字段仍然保持兼容可选：
+     * 创建模板时如果启用了 datasource-management 能力快照，服务端会按 datasourceId 自动补全 connector type；
+     * 如果本地开发或历史调用方临时关闭了快照补全，两端都缺省时仍只执行基础校验，避免旧模板立即不可用。
+     * 但只要进入本方法时只剩一端 connector type，就说明能力事实不完整，必须 fail-closed 拒绝；
+     * 两端都有 connector type 时则必须通过能力矩阵预检。</p>
      */
     public void validateTemplate(SyncTemplate template) {
         if (template == null) {
