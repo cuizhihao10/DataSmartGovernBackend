@@ -1,5 +1,23 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-28 追加落地进展：Datasource Capability Snapshot Contract
+- 本阶段承接 `Data Sync Template Connector Validation` 的下一步推荐路线，开始把 data-sync 依赖的连接器事实从“调用方手动传 connector type”推进为“datasource-management 按 datasourceId 返回低敏能力快照”。这一步不扩展真实同步执行器，也不触发连接测试或元数据发现，只补跨服务事实查询契约。
+- 产品价值：
+  - data-sync 后续可以按 datasourceId 自动获得 `connectorType`、`healthStatus`、生命周期状态、连接测试状态和能力标志，减少前端或 Agent 手工传错连接器类型的风险；
+  - Agent 规划同步或质量治理工具时，可以先读取低敏能力事实，再决定是否需要澄清、审批、连接测试或 operator 介入；
+  - 快照只返回连接器枚举、能力标志、同步模式、写入策略、issueCodes 和 recommendedActions，不返回 JDBC URL、host、database、username、password、连接失败原文、SQL、样本或内部 endpoint；
+  - 新增 `/internal/datasources/{id}/capability-snapshot`，为 data-sync、task-management、agent-runtime 等服务账号预留服务间调用路径，并做最小可信服务账号校验。
+- 新增接口：
+  - `GET /datasources/{id}/capability-snapshot`：公开低敏查询入口，继续复用 PROJECT 数据范围 Header 做项目可见性校验；
+  - `GET /internal/datasources/{id}/capability-snapshot`：内部服务账号入口，仅允许白名单服务以 `SERVICE_ACCOUNT` 身份调用。
+- 验证：
+  - datasource-management 定向测试通过：21 个；
+  - datasource-management 全量测试通过：50 个；
+  - 新增 `DataSourceCapabilitySnapshotView` 185 行、`DataSourceCapabilitySnapshotService` 204 行、`DataSourceCapabilitySnapshotController` 135 行，均低于 500 行约束。
+- 收敛判断：
+  - datasource-management 已具备 datasourceId -> connectorType/healthStatus/capabilitySnapshot 的低敏事实查询契约；
+  - 下一步不应继续扩展该快照字段，而应让 data-sync 模板创建/校验消费该接口，形成“模板只传 datasourceId，也能自动完成连接器能力预检”的闭环。
+
 ## 2026-06-28 追加落地进展：Data Sync Template Connector Validation
 - 本阶段把上一阶段新增的连接器能力矩阵正式接入同步模板创建/校验链路。旧调用方不传 connector type 时仍保持兼容；新调用方如果传 `sourceConnectorType/targetConnectorType`，服务端会校验源端、目标端和 `syncMode` 是否匹配，并把连接器类型低敏快照保存到 `data_sync_template`。
 - 产品价值：
