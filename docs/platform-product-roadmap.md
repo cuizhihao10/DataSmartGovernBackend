@@ -1,5 +1,19 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-28 追加落地进展：Data Sync Template Connector Validation
+- 本阶段把上一阶段新增的连接器能力矩阵正式接入同步模板创建/校验链路。旧调用方不传 connector type 时仍保持兼容；新调用方如果传 `sourceConnectorType/targetConnectorType`，服务端会校验源端、目标端和 `syncMode` 是否匹配，并把连接器类型低敏快照保存到 `data_sync_template`。
+- 产品价值：
+  - 模板不再只知道 datasourceId 和 syncMode，而能提前识别 Kafka FULL、文件目标 CDC_STREAMING、只传一端 connector type 等不安全配置；
+  - 源/目标连接器类型只保存 MYSQL、POSTGRESQL、KAFKA 等低敏枚举，不保存连接串、库名、topic、bucket、账号、密钥、SQL 或样本；
+  - MySQL 初始化脚本和迁移脚本已补 `source_connector_type`、`target_connector_type` 与组合索引，为后续运营筛选和任务调度准备。
+- 验证：
+  - data-sync 定向测试通过：16 个；
+  - data-sync 全量测试通过：62 个；
+  - `DataSyncServiceImpl.java` 当前 487 行，仍低于 500 行但后续应避免继续塞复杂逻辑。
+- 收敛判断：
+  - data-sync 已从“连接器能力只读诊断”推进到“模板定义阶段真实预检”；
+  - 下一步应接 datasource-management 的 datasourceId -> connectorType/healthStatus/capabilitySnapshot 低敏查询契约，减少前端或 Agent 手动传 connector type 的依赖。
+
 ## 2026-06-28 追加落地进展：Data Sync Connector Capability Control Plane
 - 本阶段从 Agent 局部收敛切回 data-sync 业务闭环，新增低敏连接器能力控制面。它覆盖 MySQL、PostgreSQL、SQL Server、Oracle、MongoDB、Kafka、Hive、ClickHouse、File、Object Storage、REST API，并提供源端/目标端/syncMode 兼容性预检。
 - 产品价值：

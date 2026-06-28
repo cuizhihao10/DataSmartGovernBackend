@@ -285,7 +285,7 @@ def _default_domain_statuses() -> tuple[PlatformConvergenceDomainStatus, ...]:
             completed_capabilities=(
                 "已有数据源管理基础能力和大量注释整改，模块边界逐步清晰。",
                 "产品文档已定义连接器矩阵、同步模式、状态机、API outline、领域模型和 schema 设计方向。",
-                "data-sync 已新增低敏连接器能力矩阵和源/目标/模式兼容性预检，为 MySQL、PostgreSQL、Kafka、文件和对象存储等场景提供统一能力事实。",
+                "data-sync 已新增低敏连接器能力矩阵和源/目标/模式兼容性预检，并接入同步模板创建/校验链路，为 MySQL、PostgreSQL、Kafka、文件和对象存储等场景提供统一能力事实。",
             ),
             open_gaps=(
                 "真实 connector worker 读取写入、datasource-management 实例能力探测、密钥绑定和元数据采集仍需产品化落地。",
@@ -296,7 +296,7 @@ def _default_domain_statuses() -> tuple[PlatformConvergenceDomainStatus, ...]:
                 "至少一种同步模式能进入任务创建、执行记录、checkpoint、失败重试和低敏运行历史。",
             ),
             next_actions=(
-                "把 connector capability 与 datasource-management 连接测试、metadata discovery 和模板校验打通。",
+                "把 datasource-management 的 datasourceId -> connectorType/healthStatus/capabilitySnapshot 低敏查询契约接入模板校验。",
                 "同步任务应先支持全量/增量最小闭环，再逐步扩展 CDC、回放、backfill 和跨租户限流。",
             ),
             depends_on=("task-management", "permission-admin", "observability"),

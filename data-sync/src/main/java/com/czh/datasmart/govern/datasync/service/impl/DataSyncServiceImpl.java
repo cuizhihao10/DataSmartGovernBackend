@@ -103,6 +103,8 @@ public class DataSyncServiceImpl implements DataSyncService {
         template.setDescription(querySupport.trimToNull(request.getDescription()));
         template.setSourceDatasourceId(request.getSourceDatasourceId());
         template.setTargetDatasourceId(request.getTargetDatasourceId());
+        template.setSourceConnectorType(querySupport.normalizeCode(request.getSourceConnectorType()));
+        template.setTargetConnectorType(querySupport.normalizeCode(request.getTargetConnectorType()));
         template.setSyncMode(querySupport.normalizeCode(request.getSyncMode()));
         template.setFieldMappingConfig(querySupport.trimToNull(request.getFieldMappingConfig()));
         template.setFilterConfig(querySupport.trimToNull(request.getFilterConfig()));
@@ -126,7 +128,10 @@ public class DataSyncServiceImpl implements DataSyncService {
         templateValidationSupport.validateTemplate(template);
         templateMapper.insert(template);
         auditSupport.saveTemplateAudit(template, SyncAuditActionType.CREATE_TEMPLATE,
-                actorContext, "templateId=" + template.getId() + ",syncMode=" + template.getSyncMode());
+                actorContext, "templateId=" + template.getId()
+                        + ",syncMode=" + template.getSyncMode()
+                        + ",sourceConnectorType=" + template.getSourceConnectorType()
+                        + ",targetConnectorType=" + template.getTargetConnectorType());
         return template;
     }
 

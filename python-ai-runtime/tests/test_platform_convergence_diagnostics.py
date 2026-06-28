@@ -71,6 +71,7 @@ class PlatformConvergenceDiagnosticsTest(unittest.TestCase):
         self.assertEqual("P0", data_sync["priority"])
         self.assertEqual(ConvergencePhase.CONTROL_PLANE_READY.value, data_sync["currentPhase"])
         self.assertTrue(any("连接器能力矩阵" in item for item in data_sync["completedCapabilities"]))
+        self.assertTrue(any("模板创建/校验" in item for item in data_sync["completedCapabilities"]))
         self.assertTrue(any("checkpoint" in item or "重试" in item for item in data_sync["openGaps"]))
         self.assertTrue(any("task-management" in item for item in data_sync["dependsOn"]))
         self.assertTrue(any("data-sync" in item or "数据同步" in item for item in task["nextActions"]))

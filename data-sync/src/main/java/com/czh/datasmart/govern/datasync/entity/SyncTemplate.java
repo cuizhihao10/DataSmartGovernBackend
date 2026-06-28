@@ -77,6 +77,24 @@ public class SyncTemplate {
     private Long targetDatasourceId;
 
     /**
+     * 源端连接器类型。
+     *
+     * <p>该字段冗余保存的是低敏能力事实快照，例如 MYSQL、POSTGRESQL、KAFKA。
+     * 它不是 datasource-management 的替代品，不保存连接串、库名、topic、bucket、账号或密钥。
+     * 冗余它的原因是模板校验、任务创建、执行器调度和运营查询都需要快速知道“这个模板大致属于哪类连接器组合”，
+     * 避免每次都跨服务回查 datasource-management。</p>
+     */
+    private String sourceConnectorType;
+
+    /**
+     * 目标端连接器类型。
+     *
+     * <p>与 sourceConnectorType 配合后，data-sync 可以判断 FULL、INCREMENTAL、CDC、OFFLINE_EXPORT 等模式是否适合当前源/目标组合。
+     * 例如 Kafka 不应被当作传统 FULL 表同步源，文件目标也不应直接承接 CDC_STREAMING。</p>
+     */
+    private String targetConnectorType;
+
+    /**
      * 同步模式，例如 FULL、INCREMENTAL_TIME、CDC_STREAMING。
      */
     private String syncMode;

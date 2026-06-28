@@ -731,6 +731,8 @@ CREATE TABLE IF NOT EXISTS data_sync_template (
     description VARCHAR(512) COMMENT '模板说明，描述业务目的、数据范围和使用注意事项',
     source_datasource_id BIGINT NOT NULL COMMENT '源数据源 ID，引用 datasource-management 登记的数据源',
     target_datasource_id BIGINT NOT NULL COMMENT '目标数据源 ID，引用 datasource-management 登记的数据源',
+    source_connector_type VARCHAR(64) COMMENT '源端连接器类型低敏快照，例如 MYSQL、POSTGRESQL、KAFKA；不保存连接串、库名、topic、bucket、账号或密钥',
+    target_connector_type VARCHAR(64) COMMENT '目标端连接器类型低敏快照，用于模板能力预检、任务调度和运营筛选',
     sync_mode VARCHAR(64) NOT NULL COMMENT '同步模式：FULL、INCREMENTAL_TIME、INCREMENTAL_ID、CDC_STREAMING、SCHEDULED_BATCH、ONE_TIME_MIGRATION、REPLAY、BACKFILL、OFFLINE_IMPORT、OFFLINE_EXPORT',
     field_mapping_config TEXT COMMENT '字段映射配置 JSON，包含源字段、目标字段、类型转换、默认值、脱敏规则等',
     filter_config TEXT COMMENT '过滤条件配置 JSON，例如业务日期、租户字段、状态字段过滤',
@@ -745,6 +747,7 @@ CREATE TABLE IF NOT EXISTS data_sync_template (
     INDEX idx_data_sync_template_tenant_mode (tenant_id, sync_mode, enabled),
     INDEX idx_data_sync_template_project_mode (tenant_id, project_id, sync_mode, enabled),
     INDEX idx_data_sync_template_workspace (tenant_id, workspace_id, update_time),
+    INDEX idx_data_sync_template_connector_mode (tenant_id, source_connector_type, target_connector_type, sync_mode),
     INDEX idx_data_sync_template_source (source_datasource_id),
     INDEX idx_data_sync_template_target (target_datasource_id),
     INDEX idx_data_sync_template_update_time (update_time)
