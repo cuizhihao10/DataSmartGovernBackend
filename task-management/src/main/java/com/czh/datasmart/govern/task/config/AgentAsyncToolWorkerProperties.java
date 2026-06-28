@@ -275,6 +275,46 @@ public class AgentAsyncToolWorkerProperties {
     private boolean controlledActionReceiptFailOpenOnError = true;
 
     /**
+     * 是否允许 `AGENT_TOOL_ACTION_CONTROLLED` 在满足审批与 payload body 条件后进入真实 Host 提交。
+     *
+     * <p>该开关是从“dry-run/pre-check”走向“真实副作用”的最后一道 task-management 本地总闸。
+     * 即使 payload body 已经物化、permission-admin 审批事实通过，如果该值仍为 false，worker 也只会把任务
+     * defer 为“等待专用 executor/提交开关”，不会调用 agent-runtime submit 入口。</p>
+     *
+     * <p>生产建议灰度开启：先限定工具白名单为 `quality.remediation.task.draft`，确认 command lease、
+     * submit 幂等、command worker receipt、task-management 终态写回和 data-quality 下游任务都稳定后，
+     * 再考虑扩展到更多工具。</p>
+     */
+    private boolean controlledActionSubmitEnabled = false;
+
+    /**
+     * 允许真实 Host 提交的受控工具白名单。
+     *
+     * <p>该白名单不是工具市场注册表，也不是权限策略本身，只是 task-management worker 的最后一层安全保护。
+     * 当前只开放已经实现 agent-runtime Host 提交入口的质量治理任务草案工具。未来如果新增 PostgreSQL 同步、
+     * 文件清洗、数据资产入库等工具，应逐个补齐 Host submit client、receipt 契约和测试后再加入列表。</p>
+     */
+    private java.util.List<String> controlledActionSubmitToolAllowlist =
+            java.util.List.of("quality.remediation.task.draft");
+
+    /**
+     * 调用 agent-runtime 真实提交入口的 HTTP 超时，单位毫秒。
+     *
+     * <p>超时不应被简单视为业务失败，因为请求可能已经到达 agent-runtime 并开始下游提交。
+     * 调用方会把这种情况处理为“状态未知，需要幂等补偿”，并使用 commandId/idempotencyKey 重试。</p>
+     */
+    private long controlledActionSubmitTimeoutMs = 3000L;
+
+    /**
+     * command worker lease TTL，单位秒。
+     *
+     * <p>该 TTL 保护的是 agent-runtime commandId 级执行资格，而不是 task-management task 租约。
+     * 它不宜过长，否则 worker 崩溃后其它实例要等待太久才能接手；也不宜过短，否则真实提交和 receipt 写回
+     * 还没完成就过期，导致 agent-runtime 拒绝回执。</p>
+     */
+    private int controlledActionCommandLeaseTtlSeconds = 120;
+
+    /**
      * 是否在 `AGENT_TOOL_ACTION_CONTROLLED` dry-run 阶段回查 permission-admin 审批事实。
      *
      * <p>该开关保护的是新受控工具动作链路，不影响历史 `AGENT_ASYNC_TOOL` worker。

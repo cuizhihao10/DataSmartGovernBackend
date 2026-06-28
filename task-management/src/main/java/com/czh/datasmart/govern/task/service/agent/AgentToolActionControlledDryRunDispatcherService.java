@@ -24,8 +24,10 @@ import java.util.Map;
 /**
  * `AGENT_TOOL_ACTION_CONTROLLED` 专用 dry-run 调度器。
  *
- * <p>这是新工具动作执行链路的第一步，但它不是正式 executor：不会读取 payload body，不会调用 data-sync、
- * datasource-management、data-quality 或任何下游业务服务，也不会把任务标记为成功。它只做三件事：</p>
+ * <p>这是新工具动作执行链路的第一步。5.115 之前它只做 dry-run/pre-check，不读取 payload body，也不产生真实副作用。
+ * 5.115 之后它增加了一条非常窄的真实提交出口：当 payload body 已物化、审批事实通过、工具命中白名单且配置显式开启时，
+ * 它会把质量治理任务提交动作委派给 {@link AgentToolActionControlledQualityRemediationExecutionService}，
+ * 由后者完成 command lease、Host submit、command worker receipt 和任务终态写回。</p>
  *
  * <p>1. 从 task-management 队列中认领 `AGENT_TOOL_ACTION_CONTROLLED` 任务；</p>
  * <p>2. 解析 task.params 中的低敏命令信封，确认 `agent-payload:` 已有服务端登记证据；</p>
@@ -53,6 +55,7 @@ public class AgentToolActionControlledDryRunDispatcherService {
     private final AgentAsyncToolWorkerMetricsService metricsService;
     private final AgentRuntimeToolActionControlledReceiptClient receiptClient;
     private final PermissionAdminAgentToolActionApprovalClient approvalClient;
+    private final AgentToolActionControlledQualityRemediationExecutionService qualityRemediationExecutionService;
 
     /**
      * 手动执行一轮受控工具动作 dry-run。
@@ -97,6 +100,15 @@ public class AgentToolActionControlledDryRunDispatcherService {
             try {
                 payload = payloadResolver.resolve(task);
                 DryRunDecision decision = decide(payload, actorContext);
+                if (decision.submitQualityRemediation()) {
+                    return qualityRemediationExecutionService.execute(
+                            task,
+                            runId,
+                            payload,
+                            actorContext,
+                            decision.diagnostics()
+                    );
+                }
                 TaskExecutionCallbackContext callbackContext = callbackContext(
                         runId,
                         payload.commandId(),
@@ -152,9 +164,10 @@ public class AgentToolActionControlledDryRunDispatcherService {
     /**
      * 根据低敏 payload 证据决定当前 dry-run 处置。
      *
-     * <p>当前不会返回“成功执行”。如果 payload store 证据缺失，说明命令不可信，应 fail-closed；
+     * <p>如果 payload store 证据缺失，说明命令不可信，应 fail-closed；
      * 如果 payload body 尚未物化，则 defer 等待 agent-runtime payload store 生产实现；
-     * 如果未来 payload body 已可用，仍然 defer 等待专用 executor、审批事实和 receipt 回写接齐。</p>
+     * 如果 payload body 已可用，则继续检查 submit 开关、dryRunOnly 保护和工具白名单。只有全部满足时才进入
+     * 质量治理 Host submit；否则仍然 defer，避免把“某个字段可用”误解成“所有工具都可以执行”。</p>
      */
     private DryRunDecision decide(AgentToolActionControlledTaskPayload payload, TaskActorContext actorContext) {
         Map<String, Object> diagnostics = new LinkedHashMap<>();
@@ -185,6 +198,7 @@ public class AgentToolActionControlledDryRunDispatcherService {
                     OUTCOME_DEFERRED_WAITING_APPROVAL_FACT,
                     approvalGate.message(),
                     false,
+                    false,
                     diagnostics,
                     approvalGate.actions()
             );
@@ -194,6 +208,7 @@ public class AgentToolActionControlledDryRunDispatcherService {
                     OUTCOME_DEFERRED_WAITING_PAYLOAD_BODY,
                     "受控工具动作 dry-run 通过低敏证据复核，但 payload body 尚未物化，任务已延迟等待 payload store 生产实现。",
                     true,
+                    false,
                     diagnostics,
                     List.of(
                             "下一步在 agent-runtime payload store 中物化真实参数 body，并保持参数值不进入 task.params。",
@@ -201,16 +216,48 @@ public class AgentToolActionControlledDryRunDispatcherService {
                     )
             );
         }
+        if (canSubmitQualityRemediation(payload)) {
+            diagnostics.put("qualityRemediationSubmitCandidate", true);
+            return new DryRunDecision(
+                    OUTCOME_DEFERRED_READY_FOR_EXECUTOR,
+                    "受控工具动作 dry-run 通过，质量治理 Host 提交条件已满足，准备领取 command worker lease 并执行受控提交。",
+                    true,
+                    true,
+                    diagnostics,
+                    List.of("进入 agent-runtime Host 质量治理提交入口，提交后必须写 command worker receipt。")
+            );
+        }
+        diagnostics.put("qualityRemediationSubmitCandidate", false);
+        diagnostics.put("controlledActionSubmitEnabled", properties.isControlledActionSubmitEnabled());
+        diagnostics.put("controlledActionDryRunOnly", properties.isDryRunOnly());
+        diagnostics.put("submitToolAllowlistHit", submitToolAllowed(payload.toolCode()));
         return new DryRunDecision(
                 OUTCOME_DEFERRED_READY_FOR_EXECUTOR,
-                "受控工具动作 dry-run 通过，payload body 已声明可用，但专用 executor 尚未开放真实副作用，任务已延迟等待执行器接入。",
+                "受控工具动作 dry-run 通过，payload body 已声明可用，但真实提交开关、工具白名单或 dryRunOnly 保护尚未放行，任务已延迟等待执行器接入。",
                 true,
+                false,
                 diagnostics,
                 List.of(
-                        "接入 AGENT_TOOL_ACTION_CONTROLLED 专用 executor，并在执行前回查 payload store、审批事实和幂等状态。",
-                        "执行结果必须回写低敏 receipt，不能让 task-management 单方面标记真实工具成功。"
+                        "确认是否要开启 controlled-action-submit-enabled，并保持 dry-run-only=false。",
+                        "仅将已具备 Host submit、command lease、worker receipt 和测试覆盖的工具加入提交白名单。"
                 )
         );
+    }
+
+    private boolean canSubmitQualityRemediation(AgentToolActionControlledTaskPayload payload) {
+        return properties.isControlledActionSubmitEnabled()
+                && !properties.isDryRunOnly()
+                && AgentToolActionControlledQualityRemediationExecutionService.QUALITY_REMEDIATION_TOOL_CODE
+                .equals(payload.toolCode())
+                && submitToolAllowed(payload.toolCode());
+    }
+
+    private boolean submitToolAllowed(String toolCode) {
+        if (properties.getControlledActionSubmitToolAllowlist() == null) {
+            return false;
+        }
+        return properties.getControlledActionSubmitToolAllowlist().stream()
+                .anyMatch(allowed -> allowed != null && allowed.equals(toolCode));
     }
 
     /**
@@ -289,7 +336,7 @@ public class AgentToolActionControlledDryRunDispatcherService {
 
     private TaskExecutionClaimRequest claimRequest() {
         TaskExecutionClaimRequest request = new TaskExecutionClaimRequest();
-        request.setExecutorId(properties.getExecutorId() + "-tool-action-controlled-dry-run");
+        request.setExecutorId(AgentToolActionControlledWorkerIds.controlledExecutorId(properties));
         request.setTaskType(AgentAsyncTaskCommandContractSupport.TASK_TYPE_AGENT_TOOL_ACTION_CONTROLLED);
         request.setLeaseSeconds(properties.getClaimLeaseSeconds());
         return request;
@@ -301,7 +348,7 @@ public class AgentToolActionControlledDryRunDispatcherService {
                                                          TaskActorContext actorContext) {
         return new TaskExecutionCallbackContext(
                 runId,
-                properties.getExecutorId() + "-tool-action-controlled-dry-run",
+                AgentToolActionControlledWorkerIds.controlledExecutorId(properties),
                 "agent-tool-action-controlled:" + commandId + ":" + outcome,
                 actorContext
         );
@@ -390,6 +437,7 @@ public class AgentToolActionControlledDryRunDispatcherService {
             String outcome,
             String message,
             boolean preCheckPassed,
+            boolean submitQualityRemediation,
             Map<String, Object> diagnostics,
             List<String> actions
     ) {

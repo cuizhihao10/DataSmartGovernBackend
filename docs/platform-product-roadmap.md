@@ -1,5 +1,34 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-28 追加落地进展：Task Management Controlled Worker Host Submit
+- 本阶段承接 Java Agent Runtime 的质量治理受控提交 endpoint，把 task-management `AGENT_TOOL_ACTION_CONTROLLED` worker 从“审批通过后继续等待 executor”推进到“可在显式开关下调用 Host submit 并写 command worker receipt”。
+- 产品目标：
+  - task-management 继续只持有低敏 command envelope，不读取 payload body；
+  - worker 在 payload body 已声明可用、permission-admin 审批事实通过、工具命中白名单且 `dryRunOnly=false` 时，领取 agent-runtime command worker lease；
+  - worker 调用 agent-runtime `quality-remediation-submit`，由 Host 回查 outbox、confirmation 和 payload store 后调用 data-quality；
+  - worker 将低敏执行结果写入 command worker receipt，再把 task-management 任务标记 SUCCESS/FAILED/DEFERRED。
+- 新增与调整：
+  - 新增 `AgentToolActionControlledQualityRemediationExecutionService`，负责 command lease、Host submit、command worker receipt 和任务终态写回；
+  - 新增 `AgentRuntimeCommandWorkerLeaseClient`、`AgentRuntimeQualityRemediationSubmitClient`、`AgentRuntimeToolActionCommandWorkerReceiptClient`，保持跨服务调用与 dispatcher 解耦；
+  - `AgentToolActionControlledDryRunDispatcherService` 仅做准入判断和委派，文件仍低于 500 行；
+  - 新增配置 `controlled-action-submit-enabled`、`controlled-action-submit-tool-allowlist`、`controlled-action-submit-timeout-ms`、`controlled-action-command-lease-ttl-seconds`，默认不产生真实副作用。
+- 验证：
+  - 定向 Java 测试：
+    `mvn -pl task-management -am "-Dtest=AgentToolActionControlledDryRunDispatcherServiceTest,AgentToolActionControlledQualityRemediationExecutionServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：9 个测试通过。
+  - `task-management` 全量测试：
+    `mvn -pl task-management -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：111 个测试通过，Maven Toolchain 使用 JDK 21。
+- 当前边界：
+  - 真实提交默认关闭，必须同时满足 `controlled-action-submit-enabled=true` 与 `dry-run-only=false`；
+  - 当前只对白名单工具 `quality.remediation.task.draft` 开放 Host submit；
+  - task-management 侧尚未增加 durable execution fact/outbox 来保证 receipt 回写和 submit 结果的跨重启补偿；
+  - agent-runtime 的 commandId 幂等仍是 JVM 级缓存，生产级仍需 MySQL execution fact 和跨服务幂等键。
+- 下一步推荐路线：
+  1. 为质量治理提交结果增加 durable execution fact，把 commandId、downstreamTaskId、receipt identityKey 和补偿状态落库；
+  2. 在 runtime event/readiness projection 中展示“真实治理任务已提交/等待下游执行”的低敏状态；
+  3. 收口质量治理链路后，切换到 Agent 能力矩阵中尚未闭环的 memory/tools/sessions/context/permission，而不是继续无限扩展单个治理工具。
+
 ## 2026-06-28 追加落地进展：Java Agent Runtime Quality Remediation Submit Endpoint
 - 本阶段承接 approval confirmation fact，把质量治理 Agent 链路从“已审批、可入箱”推进到 agent-runtime Host 内部可真实提交。
 - 产品目标：

@@ -1,4 +1,19 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-28 落地补充：task workers should execute through Host leases and receipts
+
+- 本轮趋势校准：
+  - 类 Codex/Claude Code/OpenClaw 的工具执行不应只依赖“队列 worker 拿到任务”这一层租约；进入真实副作用前还应领取 Host 维护的 command lease，并用 worker receipt 证明执行结果。
+  - 对 DataSmart 来说，task-management 负责任务队列和运行租约，agent-runtime 负责 commandId 级 lease、Host payload 复核、receipt 投影和恢复事实包。
+  - 这让质量治理工具从“审批事实已存在”进一步收敛到“可执行、可回放、可补偿”的商业化闭环。
+- 本轮落地到代码的能力：
+  - task-management controlled worker 在条件满足时会领取 agent-runtime command worker lease；
+  - worker 只按 commandId 调用 agent-runtime `quality-remediation-submit`，不读取 payload body；
+  - 提交结果通过 command worker receipt 回写 runtime event，dry-run receipt 不再被误用为真实执行回执；
+  - 新增 submit 开关、工具白名单、HTTP 超时和 command lease TTL，默认不产生真实副作用。
+- 产品判断：
+  - 这是质量治理 Agent 工具闭环的关键收敛点，优先级高于继续扩展 dry-run 字段；
+  - 下一步应补 durable execution fact 和 projection 可见性，再转入 Agent 能力矩阵其它短板闭环。
+
 ## 2026-06-28 落地补充：real side effects should be invoked by the Host after fact replay
 
 - 本轮趋势校准：

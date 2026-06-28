@@ -109,7 +109,7 @@ public class AgentRuntimeToolActionControlledReceiptClient {
                 payload.commandId(),
                 payload.taskId(),
                 taskRunId,
-                properties.getExecutorId() + "-tool-action-controlled-dry-run",
+                AgentToolActionControlledWorkerIds.controlledExecutorId(properties),
                 payload.tenantId(),
                 payload.projectId(),
                 actorContext == null ? null : actorContext.actorId(),

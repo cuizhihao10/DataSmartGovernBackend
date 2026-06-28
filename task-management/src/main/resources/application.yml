@@ -145,6 +145,14 @@ datasmart:
       controlled-action-receipt-enabled: ${DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_RECEIPT_ENABLED:true}
       # receipt 回写失败时是否允许 dry-run 状态机继续推进。默认 fail-open；强审计阶段应升级为 outbox 重试或改为 false。
       controlled-action-receipt-fail-open-on-error: ${DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_RECEIPT_FAIL_OPEN_ON_ERROR:true}
+      # 是否允许受控工具动作在审批通过、payload body 已物化后进入真实 Host 提交。默认关闭，避免本地启动后产生真实副作用。
+      controlled-action-submit-enabled: ${DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_SUBMIT_ENABLED:false}
+      # 真实 Host 提交工具白名单。当前只开放已经实现 agent-runtime submit 入口的质量治理任务草案工具。
+      controlled-action-submit-tool-allowlist: ${DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_SUBMIT_TOOL_ALLOWLIST:quality.remediation.task.draft}
+      # 调用 agent-runtime 真实提交入口的 HTTP 超时，单位毫秒；超时会被视为状态未知并进入幂等补偿。
+      controlled-action-submit-timeout-ms: ${DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_SUBMIT_TIMEOUT_MS:3000}
+      # agent-runtime command worker lease TTL，单位秒；用于阻断旧 worker 或重复投递写入真实执行回执。
+      controlled-action-command-lease-ttl-seconds: ${DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_COMMAND_LEASE_TTL_SECONDS:120}
       # 是否在受控工具动作 dry-run 阶段回查 permission-admin 审批事实；开启后 confirmationId 不能只是字符串，必须是服务端事实。
       controlled-action-approval-check-enabled: ${DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_APPROVAL_CHECK_ENABLED:true}
       # 审批事实评估不可用时是否继续推进。生产建议保持 false，让任务 defer 等待权限中心恢复。

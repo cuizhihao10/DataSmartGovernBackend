@@ -97,6 +97,52 @@ class AgentToolActionControlledDryRunDispatcherServiceTest {
     }
 
     @Test
+    void shouldDelegateToQualityRemediationExecutorWhenBodyApprovalAndSubmitGateAreReady() {
+        TaskService taskService = mock(TaskService.class);
+        AgentAsyncToolWorkerProperties properties = properties();
+        properties.setDryRunOnly(false);
+        properties.setControlledActionSubmitEnabled(true);
+        AgentAsyncToolWorkerMetricsService metricsService = mock(AgentAsyncToolWorkerMetricsService.class);
+        AgentRuntimeToolActionControlledReceiptClient receiptClient = receiptClient();
+        PermissionAdminAgentToolActionApprovalClient approvalClient = approvedApprovalClient();
+        AgentToolActionControlledQualityRemediationExecutionService executionService =
+                mock(AgentToolActionControlledQualityRemediationExecutionService.class);
+        AgentToolActionControlledDryRunDispatcherService service =
+                service(taskService, properties, metricsService, receiptClient, approvalClient, executionService);
+        Task task = controlledQualityTaskWithBodyAvailable();
+        when(taskService.claimNextTask(any(TaskExecutionClaimRequest.class), any(TaskActorContext.class)))
+                .thenReturn(new TaskExecutionClaimResult(true, "claimed", task, run(9205L)));
+        when(executionService.execute(eq(task), eq(9205L), any(AgentToolActionControlledTaskPayload.class),
+                any(TaskActorContext.class), any()))
+                .thenReturn(new AgentToolActionControlledDryRunResult(
+                        true,
+                        9101L,
+                        9205L,
+                        "taoc-consume-001",
+                        "quality.remediation.task.draft",
+                        "EXECUTION_SUCCEEDED",
+                        true,
+                        true,
+                        "质量治理任务已受控提交",
+                        Map.of("qualityRemediationSubmitCandidate", true),
+                        List.of("已写入 command worker receipt"),
+                        AgentToolActionControlledReceiptDelivery.skipped("由执行服务负责 receipt")
+                ));
+
+        AgentToolActionControlledDryRunResult result = service.dispatchDryRunOnce(actorContext());
+
+        assertEquals("EXECUTION_SUCCEEDED", result.outcome());
+        assertTrue(result.sideEffectExecuted());
+        verify(executionService).execute(eq(task), eq(9205L), any(AgentToolActionControlledTaskPayload.class),
+                any(TaskActorContext.class), any());
+        verify(taskService, never()).deferTask(any(), any(), any(), any());
+        verify(taskService, never()).failTask(any(), any(), any());
+        verify(receiptClient, never()).publishDryRunReceipt(
+                any(), any(), any(), eq(false), any(), any(), any(), any()
+        );
+    }
+
+    @Test
     void shouldFailTaskWhenPayloadStoreEvidenceIsMissingBeforeApprovalCheck() {
         TaskService taskService = mock(TaskService.class);
         AgentAsyncToolWorkerProperties properties = properties();
@@ -264,6 +310,16 @@ class AgentToolActionControlledDryRunDispatcherServiceTest {
                                                                     AgentAsyncToolWorkerMetricsService metricsService,
                                                                     AgentRuntimeToolActionControlledReceiptClient receiptClient,
                                                                     PermissionAdminAgentToolActionApprovalClient approvalClient) {
+        return service(taskService, properties, metricsService, receiptClient, approvalClient,
+                mock(AgentToolActionControlledQualityRemediationExecutionService.class));
+    }
+
+    private AgentToolActionControlledDryRunDispatcherService service(TaskService taskService,
+                                                                    AgentAsyncToolWorkerProperties properties,
+                                                                    AgentAsyncToolWorkerMetricsService metricsService,
+                                                                    AgentRuntimeToolActionControlledReceiptClient receiptClient,
+                                                                    PermissionAdminAgentToolActionApprovalClient approvalClient,
+                                                                    AgentToolActionControlledQualityRemediationExecutionService executionService) {
         return new AgentToolActionControlledDryRunDispatcherService(
                 taskService,
                 new AgentToolActionControlledPayloadResolver(objectMapper),
@@ -271,7 +327,8 @@ class AgentToolActionControlledDryRunDispatcherServiceTest {
                 new AgentAsyncToolWorkerAdmissionGuardService(properties),
                 metricsService,
                 receiptClient,
-                approvalClient
+                approvalClient,
+                executionService
         );
     }
 
@@ -340,18 +397,32 @@ class AgentToolActionControlledDryRunDispatcherServiceTest {
         ));
     }
 
+    private Task controlledQualityTaskWithBodyAvailable() {
+        return controlledTask(List.of(
+                "REFERENCE_PREFIX:agent-payload",
+                "RUN_ID_BOUND:run-proposal",
+                "AGENT_PAYLOAD_RECORD_FOUND",
+                "AGENT_PAYLOAD_METADATA_SCOPE_VERIFIED",
+                "PAYLOAD_BODY_AVAILABLE"
+        ), "quality.remediation.task.draft", "quality-remediation-task-draft:audit-001");
+    }
+
     private Task controlledTask(List<String> delegationEvidence) {
+        return controlledTask(delegationEvidence, "datasource.metadata.read", "datasource-metadata-read");
+    }
+
+    private Task controlledTask(List<String> delegationEvidence, String toolCode, String payloadKey) {
         Task task = new Task();
         task.setId(9101L);
         task.setType(AgentAsyncTaskCommandContractSupport.TASK_TYPE_AGENT_TOOL_ACTION_CONTROLLED);
         task.setStatus(TaskStatus.RUNNING);
         task.setTenantId(10L);
         task.setProjectId(20L);
-        task.setParams(toJson(params(delegationEvidence)));
+        task.setParams(toJson(params(delegationEvidence, toolCode, payloadKey)));
         return task;
     }
 
-    private Map<String, Object> params(List<String> delegationEvidence) {
+    private Map<String, Object> params(List<String> delegationEvidence, String toolCode, String payloadKey) {
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("schemaVersion", "datasmart.agent.async-task-command.v1");
         params.put("commandId", "taoc-consume-001");
@@ -360,12 +431,12 @@ class AgentToolActionControlledDryRunDispatcherServiceTest {
         params.put("auditId", "tool-action:graph-contract-hash");
         params.put("sessionId", "session-proposal");
         params.put("runId", "run-proposal");
-        params.put("toolCode", "datasource.metadata.read");
+        params.put("toolCode", toolCode);
         params.put("targetService", "agent-runtime");
         params.put("targetEndpoint", null);
         params.put("workspaceId", null);
         params.put("actorId", "30");
-        params.put("payloadReference", "agent-payload:run-proposal/datasource-metadata-read");
+        params.put("payloadReference", "agent-payload:run-proposal/" + payloadKey);
         params.put("payloadReferenceType", "AGENT_PAYLOAD");
         params.put("workerDispatchEnabled", false);
         params.put("argumentNames", List.of());
