@@ -1,4 +1,19 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-28 落地补充：tool dry-run results should become host-owned payload facts
+
+- 本轮趋势校准：
+  - 类 Codex / Claude Code / OpenClaw 的 Agent Host 越来越强调“模型只提出结构化意图，Host 持有工具状态、权限事实和正文读取权”。
+  - 对 DataSmart 来说，即使治理任务草案已经是低敏 dry-run 结果，也不应该在工具输出、事件投影、审批页和 outbox 中反复复制正文。
+  - 更稳的商业化做法是把 dry-run 正文写成服务端 payload fact，对外只传播 `payloadReference`、大小、策略和可用性，后续审批与执行再回到 Host 复核。
+- 本轮落地到代码的能力：
+  - 新增 `AgentToolActionPayloadMaterializationService`，将 payload body 物化职责从 verifier/store service 中拆出，保持文件行数和职责边界清晰；
+  - `quality.remediation.task.draft` dry-run 成功后，公开输出移除 `lowSensitivePayloadPreview`，改为返回 `agent-payload:` 引用；
+  - payload body 保存在服务端 store，绑定 tenant/project/actor/run/tool/graph/contract 和 TTL；
+  - 测试覆盖公开输出不含 body 内部聚合字段、verifier evidence 不泄露正文、payload body 可由服务端记录回查。
+- 产品判断：
+  - 这是从“可执行 dry-run adapter”走向“可审批、可回放、可恢复执行”的收敛步骤；
+  - 下一步不建议继续扩充草案字段，而应接 approval confirmation fact、outbox worker 和 readiness projection 的低敏状态展示。
+
 ## 2026-06-28 落地补充：Agent Host should own dry-run adapters before business-side effects
 
 - 本轮趋势校准：

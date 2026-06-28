@@ -9,6 +9,7 @@ package com.czh.datasmart.govern.agent.service.runtime;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionCommandProposalResponse;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +26,56 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Redis、对象存储或加密 vault，也必须保持这些断言成立。</p>
  */
 class AgentToolActionPayloadStoreServiceTest {
+
+    @Test
+    void materializePayloadBodyShouldStoreLowSensitiveBodyBehindReference() {
+        InMemoryAgentToolActionPayloadStore store = new InMemoryAgentToolActionPayloadStore();
+        AgentToolActionPayloadStoreService service = new AgentToolActionPayloadStoreService(store);
+        AgentToolActionPayloadMaterializationService materializationService =
+                new AgentToolActionPayloadMaterializationService(store);
+        String payloadReference = materializationService
+                .buildPayloadReference("run-001", "quality-remediation-task-draft:audit-001")
+                .orElseThrow();
+
+        AgentToolActionPayloadRecord record = materializationService.materializePayloadBody(
+                        new AgentToolActionPayloadMaterializationService.AgentToolActionPayloadMaterializationRequest(
+                                payloadReference,
+                                "run-001",
+                                "10",
+                                "20",
+                                "1001",
+                                "quality.remediation.task.draft",
+                                "graph-001",
+                                "quality-remediation-task-draft.v1",
+                                "LOW_SENSITIVE_DRAFT_BODY",
+                                List.of("remediationScope", "dryRun"),
+                                List.of("remediationScope", "reason"),
+                                Map.of(
+                                        "summary", Map.of("draftOnly", true, "anomalyCount", 18),
+                                        "remediationTaskDraft", Map.of(
+                                                "payloadPolicy", "LOW_SENSITIVE_AGGREGATION_ONLY",
+                                                "scope", Map.of("reportId", 77, "severity", "HIGH")
+                                        )
+                                ),
+                                Duration.ofMinutes(30)
+                        )
+                )
+                .orElseThrow();
+
+        assertEquals(payloadReference, record.payloadReference());
+        assertTrue(record.payloadBodyAvailable());
+        assertTrue(record.payloadSizeBytes() > 0);
+        assertTrue(record.payloadBody().containsKey("remediationTaskDraft"));
+
+        AgentToolActionPayloadVerdict verdict = service.verifyReference(
+                payloadReference,
+                proposal(payloadReference, "quality.remediation.task.draft", "quality-remediation-task-draft.v1"),
+                projectOwnerContext()
+        );
+        assertTrue(verdict.readableForWriter());
+        assertTrue(verdict.acceptedEvidence().contains("PAYLOAD_BODY_AVAILABLE"));
+        assertFalse(verdict.acceptedEvidence().toString().contains("remediationTaskDraft"));
+    }
 
     @Test
     void ensureEnvelopeShouldRegisterLowSensitiveMetadataWithoutPayloadBody() {
@@ -120,12 +171,16 @@ class AgentToolActionPayloadStoreServiceTest {
     }
 
     private AgentToolActionCommandProposalResponse proposal(String payloadReference) {
+        return proposal(payloadReference, "datasource.metadata.read", "contract-001");
+    }
+
+    private AgentToolActionCommandProposalResponse proposal(String payloadReference, String toolName, String contractId) {
         return new AgentToolActionCommandProposalResponse(
                 "proposal-001",
                 "READY_FOR_OUTBOX_CONFIRMATION",
                 true,
                 "graph-001",
-                "contract-001",
+                contractId,
                 "event-key-001",
                 1L,
                 "10",
@@ -135,7 +190,7 @@ class AgentToolActionPayloadStoreServiceTest {
                 "run-001",
                 "session-001",
                 Instant.parse("2026-06-07T08:00:00Z"),
-                "datasource.metadata.read",
+                toolName,
                 "AGENT_TOOL_ACTION_CONTROLLED_COMMAND",
                 "agent-tool-action-command.v1",
                 "idem-001",

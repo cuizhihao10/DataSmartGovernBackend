@@ -8,6 +8,9 @@ package com.czh.datasmart.govern.agent.service.tool;
 
 import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
 import com.czh.datasmart.govern.agent.config.AgentToolServiceAuthorizationProperties;
+import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionPayloadMaterializationService;
+import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionPayloadMaterializationService.AgentToolActionPayloadMaterializationRequest;
+import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionPayloadRecord;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
@@ -17,7 +20,12 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
+import java.time.Duration;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * `quality.remediation.task.draft` 工具适配器。
@@ -43,18 +51,21 @@ public class QualityRemediationTaskDraftToolAdapter implements AgentToolAdapter 
     private final RestClient.Builder restClientBuilder;
     private final QualityRemediationTaskDraftRequestFactory requestFactory;
     private final QualityRemediationTaskDraftResponseMapper responseMapper;
+    private final AgentToolActionPayloadMaterializationService payloadMaterializationService;
 
     public QualityRemediationTaskDraftToolAdapter(
             AgentRuntimeProperties properties,
             AgentToolServiceAuthorizationProperties serviceAuthorizationProperties,
             RestClient.Builder restClientBuilder,
             QualityRemediationTaskDraftRequestFactory requestFactory,
-            QualityRemediationTaskDraftResponseMapper responseMapper) {
+            QualityRemediationTaskDraftResponseMapper responseMapper,
+            AgentToolActionPayloadMaterializationService payloadMaterializationService) {
         this.properties = properties;
         this.serviceAuthorizationProperties = serviceAuthorizationProperties;
         this.restClientBuilder = restClientBuilder;
         this.requestFactory = requestFactory;
         this.responseMapper = responseMapper;
+        this.payloadMaterializationService = payloadMaterializationService;
     }
 
     @Override
@@ -82,11 +93,72 @@ public class QualityRemediationTaskDraftToolAdapter implements AgentToolAdapter 
                     .retrieve()
                     .body(new ParameterizedTypeReference<>() {
                     });
-            return responseMapper.toOutcome(request, response);
+            AgentToolExecutionOutcome outcome = responseMapper.toOutcome(request, response);
+            return outcome.success() ? attachPayloadReference(context, outcome) : outcome;
         } catch (RestClientException exception) {
             return AgentToolExecutionOutcome.failed("QUALITY_REMEDIATION_DRAFT_DOWNSTREAM_ERROR",
                     "调用 data-quality 治理任务 dry-run 接口失败: " + exception.getMessage());
         }
+    }
+
+    /**
+     * 将低敏治理任务草案正文登记为服务端 payload body，并在工具输出中只保留引用。
+     *
+     * <p>为什么不直接把 `lowSensitivePayloadPreview` 留在工具输出里：
+     * 工具输出会被审计查询、模型二轮反馈、runtime event、前端卡片和后续 outbox 链路多次消费。
+     * 即使当前 preview 是低敏的，反复复制大 payload 也会增加泄露面、日志体积和审批页版本漂移风险。
+     * 因此这里把草案正文物化到 `agent-payload:` store，输出只保留引用、大小和策略字段。</p>
+     */
+    private AgentToolExecutionOutcome attachPayloadReference(AgentToolExecutionContext context,
+                                                             AgentToolExecutionOutcome outcome) {
+        Map<String, Object> output = new LinkedHashMap<>(outcome.output());
+        Object rawDraft = output.get("remediationTaskDraft");
+        if (!(rawDraft instanceof Map<?, ?> draftMap)) {
+            return outcome;
+        }
+        Map<String, Object> draftForStore = copyStringKeyMap(draftMap);
+        Map<String, Object> draftForOutput = new LinkedHashMap<>(draftForStore);
+        draftForOutput.remove("lowSensitivePayloadPreview");
+
+        Map<String, Object> payloadBody = new LinkedHashMap<>();
+        payloadBody.put("summary", copyIfMap(output.get("summary")));
+        payloadBody.put("remediationTaskDraft", draftForStore);
+        payloadBody.put("recommendedActions", output.get("recommendedActions"));
+
+        String payloadKey = "quality-remediation-task-draft:" + safeSegment(context.audit().getAuditId());
+        Optional<AgentToolActionPayloadRecord> materialized = payloadMaterializationService
+                .buildPayloadReference(context.run().getRunId(), payloadKey)
+                .flatMap(reference -> payloadMaterializationService.materializePayloadBody(
+                        new AgentToolActionPayloadMaterializationRequest(
+                                reference,
+                                context.run().getRunId(),
+                                String.valueOf(context.session().getTenantId()),
+                                String.valueOf(context.session().getProjectId()),
+                                context.session().getActorId(),
+                                context.audit().getToolCode(),
+                                "quality-remediation-task-draft-graph",
+                                "quality-remediation-task-draft.v1",
+                                "LOW_SENSITIVE_DRAFT_BODY",
+                                argumentNames(context.audit().getPlanArguments()),
+                                sensitiveArgumentNames(context.audit().getGovernanceHints()),
+                                payloadBody,
+                                Duration.ofHours(2)
+                        )));
+
+        if (materialized.isPresent()) {
+            AgentToolActionPayloadRecord record = materialized.get();
+            draftForOutput.put("payloadReference", record.payloadReference());
+            draftForOutput.put("payloadBodyAvailable", record.payloadBodyAvailable());
+            draftForOutput.put("payloadSizeBytes", record.payloadSizeBytes());
+            draftForOutput.put("payloadPolicy", record.payloadPolicy());
+            draftForOutput.put("payloadReferenceTtlPolicy", "TWO_HOURS");
+            output.put("summary", summaryWithPayloadReference(output.get("summary"), record));
+        } else {
+            draftForOutput.put("payloadReferenceStatus", "UNAVAILABLE");
+            draftForOutput.put("payloadReferenceIssue", "LOW_SENSITIVE_DRAFT_BODY_NOT_MATERIALIZED");
+        }
+        output.put("remediationTaskDraft", draftForOutput);
+        return AgentToolExecutionOutcome.succeeded(outcome.message(), output);
     }
 
     /**
@@ -118,5 +190,71 @@ public class QualityRemediationTaskDraftToolAdapter implements AgentToolAdapter 
                     "未配置工具下游服务地址，targetService=" + TARGET_SERVICE);
         }
         return baseUrl;
+    }
+
+    private Map<String, Object> summaryWithPayloadReference(Object rawSummary,
+                                                            AgentToolActionPayloadRecord record) {
+        Map<String, Object> summary = copyIfMap(rawSummary);
+        summary.put("payloadReference", record.payloadReference());
+        summary.put("payloadBodyAvailable", record.payloadBodyAvailable());
+        summary.put("payloadSizeBytes", record.payloadSizeBytes());
+        summary.put("payloadPolicy", record.payloadPolicy());
+        return summary;
+    }
+
+    private Map<String, Object> copyIfMap(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            return copyStringKeyMap(map);
+        }
+        return Map.of();
+    }
+
+    private Map<String, Object> copyStringKeyMap(Map<?, ?> source) {
+        Map<String, Object> copy = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : source.entrySet()) {
+            if (entry.getKey() != null && entry.getValue() != null) {
+                copy.put(String.valueOf(entry.getKey()), entry.getValue());
+            }
+        }
+        return copy;
+    }
+
+    private List<String> argumentNames(Map<String, Object> arguments) {
+        if (arguments == null || arguments.isEmpty()) {
+            return List.of();
+        }
+        return arguments.keySet().stream()
+                .map(String::valueOf)
+                .filter(value -> !value.isBlank())
+                .sorted()
+                .toList();
+    }
+
+    private List<String> sensitiveArgumentNames(Map<String, Object> governanceHints) {
+        if (governanceHints == null || governanceHints.isEmpty()) {
+            return List.of();
+        }
+        Object raw = governanceHints.get("sensitiveArgumentNames");
+        if (raw == null) {
+            raw = governanceHints.get("sensitiveFields");
+        }
+        if (raw instanceof Collection<?> collection) {
+            return collection.stream()
+                    .map(String::valueOf)
+                    .filter(value -> !value.isBlank())
+                    .sorted()
+                    .toList();
+        }
+        if (raw == null || String.valueOf(raw).isBlank()) {
+            return List.of();
+        }
+        return List.of(String.valueOf(raw));
+    }
+
+    private String safeSegment(String value) {
+        if (value == null || value.isBlank()) {
+            return "unknown";
+        }
+        return value.trim().replaceAll("[^A-Za-z0-9_.:-]", "_");
     }
 }

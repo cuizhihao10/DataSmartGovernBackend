@@ -1,5 +1,35 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-28 追加落地进展：Java Agent Runtime Remediation PayloadReference Materialization
+- 本阶段承接上一批 `quality.remediation.task.draft` Java dry-run adapter，把治理任务草案从“工具输出中直接展开低敏 preview”收敛为“服务端 payload body + 对外 payloadReference”。
+- 产品目标：
+  - 审批页、runtime event、工具结果查询和后续 outbox 只看到 `agent-payload:{runId}/{payloadKey}`、大小、策略和可用性，不反复复制草案正文；
+  - 让质量治理 dry-run 结果成为 Host 控制面的服务端事实，为后续 approval confirmation fact、outbox worker 和 executor 复核打基础；
+  - 保持当前阶段无副作用：不提交 task-management、不执行清洗脚本、不打开 `dryRun=false`；
+  - 遵守收敛路线：补齐已规划链路的安全闭口，而不是继续扩展 data-quality 或 adapter 字段。
+- 新增与调整：
+  - 新增 `AgentToolActionPayloadMaterializationService`，专门负责构造 `agent-payload:` 引用、复制低敏 body、计算元数据摘要、写入短 TTL payload store；
+  - `AgentToolActionPayloadStoreService` 回归登记与校验职责，不再同时承担 body 物化，避免单类膨胀和职责耦合；
+  - `QualityRemediationTaskDraftToolAdapter` 成功 dry-run 后会把 `summary/remediationTaskDraft/recommendedActions` 写入服务端 payload store；
+  - 对外 `remediationTaskDraft` 移除 `lowSensitivePayloadPreview`，只附加 `payloadReference/payloadBodyAvailable/payloadSizeBytes/payloadPolicy/payloadReferenceTtlPolicy`；
+  - 测试补齐公开输出不包含 `topAnomalyTypes`、正文只保存在 payload store、verifier evidence 不泄露正文的断言。
+- 低敏边界：
+  - payloadReference 不包含 prompt、SQL、样本、完整参数、凭据、内部 endpoint 或模型输出；
+  - payload body 仅由 Java Host 中的业务 adapter 写入，模型和前端不能自行提交正文；
+  - payload store 记录绑定 tenant/project/actor/run/tool/graph/contract，后续 executor 仍必须重新校验过期和权限；
+  - 当前内存 store 只适合本地学习与单实例联调，生产闭环仍需要 MySQL/Redis/对象存储/KMS 等持久化替换。
+- 验证：
+  - 定向 Java 测试：
+    `mvn -pl agent-runtime -am "-Dtest=QualityRemediationTaskDraftToolAdapterTest,AgentToolActionPayloadStoreServiceTest,AgentToolActionPayloadReferenceVerifierTest,AgentToolRegistryServiceTest,AgentToolExecutionResultQueryTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：18 个测试通过。
+  - `agent-runtime` 全量测试：
+    `mvn -pl agent-runtime -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：415 个测试通过。
+- 下一步推荐路线：
+  1. 把该 payloadReference 接入 approval confirmation fact，让人工确认页只确认引用和低敏摘要；
+  2. 再接 outbox worker，审批通过后由 Host 复核 payload body 并调用 data-quality 提交真实治理任务；
+  3. 同步在 runtime event / readiness projection 展示“草案已物化、等待审批/执行”的低敏状态。
+
 ## 2026-06-28 追加落地进展：Java Agent Runtime Quality Remediation Draft Adapter
 - 本阶段承接 Python AI Runtime 的 `quality.remediation.task.draft` ToolPlan，把质量异常治理任务草案接入 Java `agent-runtime` 的工具执行框架，而不是停留在 Python 计划层。
 - 产品目标：

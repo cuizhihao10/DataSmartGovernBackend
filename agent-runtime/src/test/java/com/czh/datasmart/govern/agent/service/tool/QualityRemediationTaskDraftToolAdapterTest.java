@@ -11,6 +11,9 @@ import com.czh.datasmart.govern.agent.config.AgentToolServiceAuthorizationProper
 import com.czh.datasmart.govern.agent.model.AgentRunState;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
 import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
+import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionPayloadMaterializationService;
+import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionPayloadRecord;
+import com.czh.datasmart.govern.agent.service.runtime.InMemoryAgentToolActionPayloadStore;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
@@ -51,7 +54,7 @@ class QualityRemediationTaskDraftToolAdapterTest {
     void shouldCallDataQualityDryRunAndReturnLowSensitiveDraft() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
-        QualityRemediationTaskDraftToolAdapter adapter = adapter(builder);
+        AdapterFixture fixture = adapter(builder);
 
         server.expect(once(), requestTo("http://data-quality.test/quality-rules/remediation-tasks"))
                 .andExpect(method(HttpMethod.POST))
@@ -70,7 +73,7 @@ class QualityRemediationTaskDraftToolAdapterTest {
                 .andExpect(jsonPath("$.aggregationLimit").value(50))
                 .andRespond(withSuccess(successResponse(), MediaType.APPLICATION_JSON));
 
-        AgentToolExecutionOutcome outcome = adapter.execute(context(Map.of(
+        AgentToolExecutionOutcome outcome = fixture.adapter().execute(context(Map.of(
                 "remediationScope", Map.of(
                         "projectId", 999L,
                         "workspaceId", 888L,
@@ -100,7 +103,18 @@ class QualityRemediationTaskDraftToolAdapterTest {
         assertEquals(20, scope.get("projectId"));
         assertEquals(77, scope.get("reportId"));
         assertEquals("HIGH", scope.get("severity"));
-        assertTrue(draft.containsKey("lowSensitivePayloadPreview"));
+        assertFalse(draft.containsKey("lowSensitivePayloadPreview"));
+        assertEquals("agent-payload:run-001/quality-remediation-task-draft:audit-remediation",
+                draft.get("payloadReference"));
+        assertEquals(true, draft.get("payloadBodyAvailable"));
+
+        AgentToolActionPayloadRecord payloadRecord = fixture.payloadStore()
+                .findByReference(String.valueOf(draft.get("payloadReference")))
+                .orElseThrow();
+        assertTrue(payloadRecord.payloadBodyAvailable());
+        assertTrue(payloadRecord.payloadBody().containsKey("remediationTaskDraft"));
+        assertTrue(String.valueOf(payloadRecord.payloadBody()).contains("topAnomalyTypes"));
+        assertFalse(String.valueOf(outcome.output()).contains("topAnomalyTypes"));
         server.verify();
     }
 
@@ -108,14 +122,14 @@ class QualityRemediationTaskDraftToolAdapterTest {
     void shouldReturnStableFailureWhenDataQualityRejectsDryRun() {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
-        QualityRemediationTaskDraftToolAdapter adapter = adapter(builder);
+        AdapterFixture fixture = adapter(builder);
 
         server.expect(once(), requestTo("http://data-quality.test/quality-rules/remediation-tasks"))
                 .andRespond(withSuccess("""
                         {"code":400,"message":"项目不可见","data":null}
                         """, MediaType.APPLICATION_JSON));
 
-        AgentToolExecutionOutcome outcome = adapter.execute(context(Map.of(
+        AgentToolExecutionOutcome outcome = fixture.adapter().execute(context(Map.of(
                 "remediationScope", Map.of("reportId", 77L),
                 "reason", "创建治理任务草案"
         )));
@@ -126,17 +140,20 @@ class QualityRemediationTaskDraftToolAdapterTest {
         server.verify();
     }
 
-    private QualityRemediationTaskDraftToolAdapter adapter(RestClient.Builder builder) {
+    private AdapterFixture adapter(RestClient.Builder builder) {
         AgentRuntimeProperties properties = new AgentRuntimeProperties();
         properties.getToolServiceBaseUrls().put("data-quality", "http://data-quality.test");
         AgentToolServiceAuthorizationProperties authorizationProperties = new AgentToolServiceAuthorizationProperties();
-        return new QualityRemediationTaskDraftToolAdapter(
+        InMemoryAgentToolActionPayloadStore payloadStore = new InMemoryAgentToolActionPayloadStore();
+        QualityRemediationTaskDraftToolAdapter adapter = new QualityRemediationTaskDraftToolAdapter(
                 properties,
                 authorizationProperties,
                 builder,
                 new QualityRemediationTaskDraftRequestFactory(),
-                new QualityRemediationTaskDraftResponseMapper()
+                new QualityRemediationTaskDraftResponseMapper(),
+                new AgentToolActionPayloadMaterializationService(payloadStore)
         );
+        return new AdapterFixture(adapter, payloadStore);
     }
 
     private AgentToolExecutionContext context(Map<String, Object> planArguments) {
@@ -226,5 +243,9 @@ class QualityRemediationTaskDraftToolAdapterTest {
                   }
                 }
                 """;
+    }
+
+    private record AdapterFixture(QualityRemediationTaskDraftToolAdapter adapter,
+                                  InMemoryAgentToolActionPayloadStore payloadStore) {
     }
 }
