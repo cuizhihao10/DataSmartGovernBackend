@@ -656,6 +656,57 @@ datasmart:
             example: 检查订单主键唯一性和金额异常值
             sensitive: false
             resolution: USER_REQUIRED
+      quality.remediation.task.draft:
+        enabled: true
+        tool-code: quality.remediation.task.draft
+        tool-type: DATA_QUALITY
+        display-name: 质量异常治理任务草案
+        description: 基于质量报告或异常聚合范围生成治理/复核任务 dry-run 预览；当前只生成低敏草案，不直接提交 task-management，也不执行清洗脚本。
+        target-service: data-quality
+        target-endpoint: /quality-rules/remediation-tasks
+        read-only: false
+        risk-level: MEDIUM
+        execution-mode: DRAFT_ONLY
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: SESSION_ONLY
+        timeout-ms: 15000
+        max-retries: 0
+        allowed-actions:
+          - CREATE_REMEDIATION_TASK_DRAFT
+          - DRY_RUN_PREVIEW
+        input-schema:
+          - name: remediationScope
+            type: object
+            required: true
+            description: 低敏异常定位范围，例如 reportId、ruleId、severity、anomalyType、fieldName、targetObject、startTime、endTime；不允许放入样本、observedValue、SQL、prompt、模型输出或完整工具参数。
+            example: '{"reportId":77,"severity":"HIGH","anomalyType":"FORMAT_INVALID","fieldName":"phone"}'
+            sensitive: true
+            resolution: CAN_FILL_FROM_CONTEXT
+          - name: remediationType
+            type: string
+            required: true
+            description: 治理类型，例如 MANUAL_REVIEW、CLEANING_PLAN、SOURCE_SYSTEM_FIX、RULE_TUNING；当前仅用于草案说明，不触发清洗执行。
+            example: MANUAL_REVIEW
+            sensitive: false
+            resolution: USER_REQUIRED
+          - name: reason
+            type: string
+            required: true
+            description: 创建治理任务草案的低敏原因，只能写业务背景，不能写样本、SQL、prompt、模型输出或内部地址。
+            example: 基于低敏质量异常聚合生成治理任务草案，需人工复核后再提交。
+            sensitive: true
+            resolution: USER_REQUIRED
+          - name: dryRun
+            type: boolean
+            required: true
+            description: 是否只预演；Java adapter 会强制设置为 true，保证当前阶段不会真实提交 task-management。
+            example: "true"
+            sensitive: false
+            resolution: SYSTEM_INJECTED
       task.create.draft:
         enabled: true
         tool-code: task.create.draft
@@ -803,6 +854,34 @@ datasmart:
           - 清洗
         examples:
           - 请为客户主数据生成完整性和手机号格式校验规则
+      quality.anomaly.remediation:
+        enabled: true
+        skill-code: quality.anomaly.remediation
+        display-name: 质量异常治理任务 Skill
+        description: 将质量报告或异常工作台中的低敏异常聚合转成治理/复核任务草案，默认只生成 dry-run 预览，等待人工确认后再提交。
+        domain: DATA_QUALITY
+        required-tools:
+          - quality.remediation.task.draft
+        required-permissions:
+          - quality:anomaly:remediation:create-draft
+        memory-dependencies:
+          - EPISODIC
+        risk-level: MEDIUM
+        approval-policy: DRAFT_REVIEW
+        tenant-scoped: true
+        project-scoped: true
+        audit-required: true
+        default-memory-scope: SESSION
+        retention-days: 14
+        trigger-keywords:
+          - 治理任务
+          - 异常复核
+          - 派单
+          - 整改
+          - 修复任务
+          - remediation
+        examples:
+          - 请基于这份质量报告生成异常治理任务草案
       governed.task.creation:
         enabled: true
         skill-code: governed.task.creation

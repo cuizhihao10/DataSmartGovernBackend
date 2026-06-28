@@ -1,4 +1,20 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-28 落地补充：Agent Host should own dry-run adapters before business-side effects
+
+- 本轮趋势校准：
+  - 类 Codex / Claude Code / OpenClaw 的 Agent 能力不是“模型直接调用所有业务接口”，而是 Host 先把工具调用收口成可审计、可审批、可回放的 adapter。
+  - 对数据治理平台来说，质量异常治理任务虽然最终可能创建工单或任务，但第一阶段应通过 Java Host 的 dry-run adapter 生成低敏预览，再进入 approval/payloadReference/outbox。
+  - 这样可以把模型规划、工具 schema、服务账号调用、项目范围校验、低敏输出和真实副作用拆成多个可控节点，降低一次性打通真实写入的风险。
+- 本轮落地到代码的能力：
+  - Java `agent-runtime` 新增 `QualityRemediationTaskDraftToolAdapter`，调用 data-quality dry-run 端点；
+  - 请求工厂强制 `dryRun=true`，并用 Agent Session tenant/project/workspace 覆盖模型传入范围；
+  - 响应映射器只输出 `summary`、`remediationTaskDraft` 和低敏 payload preview；
+  - Java 工具注册表和 Skill 注册表补齐 `quality.remediation.task.draft` 与 `quality.anomaly.remediation`；
+  - `agent-runtime` 全量 414 个测试通过，说明该工具进入 Host 控制面后未破坏既有 tool execution / outbox / runtime event 链路。
+- 产品判断：
+  - 这一步让质量治理 ToolPlan 从“Python 可规划”推进到“Java Host 可执行 dry-run”，是收敛闭环的一段；
+  - 下一步不应继续给 adapter 加大量字段，而应接 payloadReference、approval confirmation fact 和 outbox worker。
+
 ## 2026-06-28 落地补充：business remediation tools should enter Agent as low-sensitive draft plans first
 
 - 本轮趋势校准：

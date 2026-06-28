@@ -1,5 +1,36 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-28 追加落地进展：Java Agent Runtime Quality Remediation Draft Adapter
+- 本阶段承接 Python AI Runtime 的 `quality.remediation.task.draft` ToolPlan，把质量异常治理任务草案接入 Java `agent-runtime` 的工具执行框架，而不是停留在 Python 计划层。
+- 产品目标：
+  - 让 Java 控制面能够识别、绑定、执行 `quality.remediation.task.draft`；
+  - 调用 data-quality `POST /quality-rules/remediation-tasks` 的 dry-run 能力，生成低敏治理任务预览；
+  - 强制 `dryRun=true`，当前不提交 task-management、不进入真实任务队列、不执行清洗脚本；
+  - 继续按收敛路线推进：先打通 Host 控制面，再进入审批确认、payloadReference 和 outbox。
+- 新增与调整：
+  - 新增 `QualityRemediationTaskDraftRequest`，作为 agent-runtime 到 data-quality 的低耦合 HTTP JSON 请求模型；
+  - 新增 `QualityRemediationTaskDraftRequestFactory`，只读取 `remediationScope` 白名单字段，并优先使用 Agent Session 的 tenant/project/workspace；
+  - 新增 `QualityRemediationTaskDraftResponseMapper`，把下游响应收口成低敏 `summary`、`remediationTaskDraft` 和 recommendedActions；
+  - 新增 `QualityRemediationTaskDraftToolAdapter`，通过服务账号 Header 调用 data-quality dry-run 端点；
+  - `application.yml` 注册 `quality.remediation.task.draft` 工具和 `quality.anomaly.remediation` Skill；
+  - 新增 `QualityRemediationTaskDraftToolAdapterTest`，覆盖服务账号 Header、项目范围覆盖、dry-run 强制和低敏输出。
+- 低敏边界：
+  - Java adapter 不透传用户 objective、prompt、SQL、样本、observedValue、模型输出、完整工具参数、凭据或内部 endpoint；
+  - planArguments 中即使传入 `dryRun=false`，请求工厂仍会强制设置 `dryRun=true`；
+  - 模型/ToolPlan 传入的 projectId 不优先于 Java Session projectId，防止跨项目伪造；
+  - 输出只保留 data-quality 返回的低敏 payload preview，不生成真实任务 ID。
+- 验证：
+  - 定向 Java 测试：
+    `mvn -pl agent-runtime -am "-Dtest=QualityRemediationTaskDraftToolAdapterTest,AgentToolRegistryServiceTest,AgentRunToolDagExecutionPreviewServiceTest,AgentRunToolDagExecutionDryRunServiceTest,AgentToolExecutionResultQueryTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：24 个测试通过。
+  - `agent-runtime` 全量测试：
+    `mvn -pl agent-runtime -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：414 个测试通过。
+- 下一步推荐路线：
+  1. 把 `remediationTaskDraft` 输出接入 payloadReference / approval confirmation fact，避免审批页复制完整 payload；
+  2. 在 execution graph / readiness projection 中展示低敏状态，而不是展示工具参数；
+  3. 再决定是否增加“审批后提交 data-quality dryRun=false”的 outbox worker，避免本阶段直接打开真实派单副作用。
+
 ## 2026-06-28 追加落地进展：Python AI Runtime Agent Quality Remediation ToolPlan
 - 本阶段承接 Java Data Quality 4.2 的低敏治理任务创建契约，把“质量异常治理任务”接入 Python AI Runtime 的 tools、skills、intent、ToolPlan 和能力矩阵，而不是继续在 data-quality 单个微服务里扩新按钮。
 - 产品目标：
