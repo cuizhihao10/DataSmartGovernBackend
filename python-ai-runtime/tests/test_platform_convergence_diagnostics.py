@@ -73,7 +73,10 @@ class PlatformConvergenceDiagnosticsTest(unittest.TestCase):
         self.assertTrue(any("checkpoint" in item or "重试" in item for item in data_sync["openGaps"]))
         self.assertTrue(any("task-management" in item for item in data_sync["dependsOn"]))
         self.assertTrue(any("data-sync" in item or "数据同步" in item for item in task["nextActions"]))
-        self.assertTrue(any("真实" in item or "outbox" in item for item in agent_runtime["openGaps"]))
+        self.assertEqual(ConvergencePhase.PARTIAL_CLOSED_LOOP.value, agent_runtime["currentPhase"])
+        self.assertTrue(any("质量治理" in item and "真实提交链路" in item for item in agent_runtime["completedCapabilities"]))
+        self.assertTrue(any("通用" in item or "adapter contract" in item for item in agent_runtime["openGaps"]))
+        self.assertFalse(any("缺真实副作用执行链路" in item for item in agent_runtime["commercialBlockers"]))
         self.assertIn("不再无限扩展单个 preview", diagnostics["convergenceBoundary"])
 
     def test_diagnostics_is_low_sensitive_and_not_runtime_export(self) -> None:

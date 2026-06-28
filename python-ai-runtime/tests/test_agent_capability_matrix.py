@@ -90,6 +90,24 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
         self.assertIn(AgentCapabilityStatus.CONTROL_PLANE_READY.value, diagnostics["statusCounts"])
         self.assertIn(AgentCapabilityStatus.PLANNED.value, diagnostics["statusCounts"])
 
+    def test_quality_remediation_tool_reflects_partial_real_closure(self) -> None:
+        """质量治理工具状态应跟随最新提交闭环更新，避免继续按旧 dry-run 口径推进。"""
+
+        diagnostics = default_agent_capability_matrix_service().diagnostics()
+        tools = next(domain for domain in diagnostics["domains"] if domain["domainId"] == "tools")
+        quality_tool = next(
+            item for item in tools["subCapabilities"]
+            if item["capabilityId"] == "tool.quality-remediation-task-draft"
+        )
+        serialized = str(quality_tool)
+
+        self.assertEqual(AgentCapabilityStatus.PARTIAL_CLOSED_LOOP.value, quality_tool["status"])
+        self.assertIn("Host submit", quality_tool["currentEvidence"])
+        self.assertIn("提交事实", quality_tool["currentEvidence"])
+        self.assertIn("UNKNOWN 人工恢复", quality_tool["currentEvidence"])
+        self.assertIn("统一 ToolPlan", quality_tool["nextAction"])
+        self.assertNotIn("尚未由 Java agent-runtime 将该 ToolPlan 写入真实", serialized)
+
     def test_matrix_is_low_sensitive_capability_metadata(self) -> None:
         """能力矩阵只能返回低敏能力元数据，不能变成运行时内容导出。"""
 

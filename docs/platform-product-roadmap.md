@@ -1,5 +1,15 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-28 追加落地进展：Agent Capability Baseline Reconciliation
+- 本阶段没有继续扩展质量治理字段，而是校准 Python Runtime 的 Agent 能力矩阵和平台收敛诊断：质量治理工具链路已经从 dry-run preview 推进到部分真实闭环，因此路线图不应再把它描述为“尚未真实调用”。
+- 产品价值：
+  - 能力矩阵现在明确 `tool.quality-remediation-task-draft` 是 `partial_closed_loop`，证据包含 readiness、payloadReference、人审确认、Host submit、提交事实、下游幂等和 UNKNOWN 人工恢复；
+  - 平台收敛诊断现在明确 `agent-runtime` 已进入 `partial_closed_loop`，剩余风险是“真实副作用闭环尚未通用化”，而不是“完全缺真实副作用执行链路”；
+  - 后续研发会被引导到通用 tool action closure、MCP/A2A/model tool_call 统一适配和 data-sync 业务闭环，而不是继续重复优化单一质量治理链路。
+- 验证：
+  - Python 定向测试通过：`test_agent_capability_matrix` 与 `test_platform_convergence_diagnostics` 共 9 个测试；
+  - 关键文件均低于 500 行。
+
 ## 2026-06-28 追加落地进展：Agent Runtime Submission Fact Recovery
 - 本阶段承接质量治理真实提交链路的下游幂等闭环，补齐 `UNKNOWN` 提交事实的最小运营恢复入口：当 agent-runtime 无法确认下游副作用是否发生时，运营人员可以先按 `commandId` 低敏查询，再通过人工对账结果把事实收敛为 `SUBMITTED` 或 `REJECTED`。
 - 产品价值：
