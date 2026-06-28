@@ -40,9 +40,26 @@ public interface TaskService extends IService<Task> {
     /**
      * 创建任务。
      */
+    default Task createTask(String name, String description, String type, String params, String priority,
+                            Integer maxRetryCount, Integer maxDeferCount, Long tenantId, Long ownerId,
+                            Long projectId, TaskActorContext actorContext) {
+        return createTask(name, description, type, params, priority, maxRetryCount, maxDeferCount,
+                tenantId, ownerId, projectId, actorContext, null);
+    }
+
+    /**
+     * 创建任务，并可选启用“创建阶段幂等”。
+     *
+     * <p>creationIdempotencyKey 只用于保护任务创建这个副作用，适合 Agent command、跨服务补偿、
+     * 外部工单同步、data-quality 治理任务提交等会发生网络重试的入口。调用方不传该字段时，
+     * task-management 保持普通创建语义，即每次调用都创建一条新任务。</p>
+     *
+     * <p>该键必须是低敏机器标识，不能携带 payload、SQL、prompt、样本、模型输出、凭据或内部 URL。
+     * 服务层会清洗校验，数据库唯一索引负责并发下的最终裁决。</p>
+     */
     Task createTask(String name, String description, String type, String params, String priority,
                     Integer maxRetryCount, Integer maxDeferCount, Long tenantId, Long ownerId,
-                    Long projectId, TaskActorContext actorContext);
+                    Long projectId, TaskActorContext actorContext, String creationIdempotencyKey);
 
     /**
      * 分页查询任务。

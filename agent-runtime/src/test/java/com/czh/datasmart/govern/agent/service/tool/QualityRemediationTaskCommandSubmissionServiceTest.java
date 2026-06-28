@@ -74,6 +74,7 @@ class QualityRemediationTaskCommandSubmissionServiceTest {
                 .andExpect(jsonPath("$.anomalyType").value("FORMAT_INVALID"))
                 .andExpect(jsonPath("$.fieldName").value("phone"))
                 .andExpect(jsonPath("$.dryRun").value(false))
+                .andExpect(jsonPath("$.idempotencyKey").value("idem-remediation-001"))
                 .andRespond(withSuccess(successResponse(), MediaType.APPLICATION_JSON));
 
         AgentToolActionQualityRemediationSubmitResponse response = fixture.service().submit(

@@ -39,10 +39,12 @@ public class QualityRemediationTaskSubmissionRequestBuilder {
      *
      * @param payloadRecord 已通过 TTL 与作用域复核的 payload 记录。
      * @param commandPayload command envelope 白名单字段，用于补充 priority/maxRetryCount 等低敏执行参数。
+     * @param submissionIdempotencyKey agent-runtime 提交事实已确认的稳定幂等键，用于跨服务重试时复用同一条下游任务。
      * @return `dryRun=false` 的 data-quality 请求。
      */
     public QualityRemediationTaskDraftRequest build(AgentToolActionPayloadRecord payloadRecord,
-                                                    Map<String, Object> commandPayload) {
+                                                    Map<String, Object> commandPayload,
+                                                    String submissionIdempotencyKey) {
         if (payloadRecord == null || !Boolean.TRUE.equals(payloadRecord.payloadBodyAvailable())) {
             throw new IllegalStateException("质量治理真实提交需要已物化的 agent-payload body");
         }
@@ -75,6 +77,7 @@ public class QualityRemediationTaskSubmissionRequestBuilder {
                         20, DEFAULT_PRIORITY),
                 boundedInteger(commandPayload.get("maxRetryCount"), 3, 0, 20),
                 boundedInteger(commandPayload.get("aggregationLimit"), 10, 1, 50),
+                safeBusinessText(firstText(submissionIdempotencyKey, commandPayload.get("idempotencyKey")), 180, null),
                 false
         );
     }

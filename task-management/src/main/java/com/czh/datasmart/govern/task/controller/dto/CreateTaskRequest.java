@@ -2,6 +2,7 @@ package com.czh.datasmart.govern.task.controller.dto;
 
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 
 /**
@@ -42,6 +43,20 @@ public class CreateTaskRequest {
      */
     @NotBlank(message = "任务类型不能为空")
     private String type;
+
+    /**
+     * 创建阶段幂等键。
+     *
+     * <p>该字段用于跨服务“创建任务”请求的安全重试。典型场景是 Agent、data-quality、data-sync 或外部工单系统
+     * 已经向 task-management 发起创建请求，但由于 HTTP 超时、worker 重启、Kafka 重放或补偿脚本重试，
+     * 调用方无法确认第一次请求是否成功。此时再次使用同一个幂等键调用，任务中心会复用第一次创建的任务。</p>
+     *
+     * <p>它不是业务标题，也不是 payload 摘要，只能是低敏机器标识，例如 commandId、外部工单号或
+     * {@code module:runId:commandId}。不要把 SQL、prompt、样本数据、工具参数、凭据、内部 URL 或模型输出放进来。
+     * 服务层会继续做字符集和敏感内容校验，数据库唯一索引会承担并发下的最终去重。</p>
+     */
+    @Size(max = 180, message = "任务创建幂等键长度不能超过 180")
+    private String idempotencyKey;
 
     /**
      * 请求方期望绑定的租户 ID。

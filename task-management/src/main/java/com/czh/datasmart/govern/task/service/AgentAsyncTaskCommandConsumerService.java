@@ -207,7 +207,8 @@ public class AgentAsyncTaskCommandConsumerService {
                 request.getTenantId(),
                 null,
                 request.getProjectId(),
-                serviceAccount
+                serviceAccount,
+                request.getIdempotencyKey()
         );
     }
 

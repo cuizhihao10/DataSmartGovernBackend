@@ -80,7 +80,8 @@ public class TaskController {
                 request.getTenantId(),
                 request.getOwnerId(),
                 request.getProjectId(),
-                actorContext(httpRequest));
+                actorContext(httpRequest),
+                request.getIdempotencyKey());
         return ResponseEntity.ok(ApiResponse.success("任务创建成功", task));
     }
 

@@ -61,6 +61,7 @@ public class QualityRemediationTaskDraftRequestFactory {
                 normalizePriority(arguments.get("priority")),
                 boundedInteger(arguments.get("maxRetryCount"), 3, 0, 20),
                 boundedInteger(arguments.get("aggregationLimit"), 10, 1, 50),
+                null,
                 true
         );
     }

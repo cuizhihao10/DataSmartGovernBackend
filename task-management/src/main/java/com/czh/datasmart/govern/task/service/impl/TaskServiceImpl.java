@@ -103,8 +103,17 @@ public class TaskServiceImpl extends ServiceImpl<TaskMapper, Task> implements Ta
     public Task createTask(String name, String description, String type, String params, String priority,
                            Integer maxRetryCount, Integer maxDeferCount, Long tenantId, Long ownerId,
                            Long projectId, TaskActorContext actorContext) {
+        return createTask(name, description, type, params, priority, maxRetryCount, maxDeferCount,
+                tenantId, ownerId, projectId, actorContext, null);
+    }
+
+    @Override
+    @Transactional
+    public Task createTask(String name, String description, String type, String params, String priority,
+                           Integer maxRetryCount, Integer maxDeferCount, Long tenantId, Long ownerId,
+                           Long projectId, TaskActorContext actorContext, String creationIdempotencyKey) {
         return lifecycleSupport.createTask(name, description, type, params, priority, maxRetryCount, maxDeferCount,
-                tenantId, ownerId, projectId, actorContext);
+                tenantId, ownerId, projectId, actorContext, creationIdempotencyKey);
     }
 
     @Override

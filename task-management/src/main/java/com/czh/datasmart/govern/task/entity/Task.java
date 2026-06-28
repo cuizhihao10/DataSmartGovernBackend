@@ -58,6 +58,23 @@ public class Task {
     private String type;
 
     /**
+     * 任务创建幂等键。
+     *
+     * <p>该字段用于保护“创建任务”这个真实副作用，和执行回调里的 idempotencyKey 不是同一个层次：</p>
+     * <p>1. 创建幂等键解决的是上游重复调用 {@code POST /tasks} 时是否复用同一条任务；</p>
+     * <p>2. 回调幂等键解决的是同一条任务执行过程中 progress/complete/fail/defer 回调是否重复推进状态；</p>
+     * <p>3. 两者都很重要，但作用阶段不同，不能互相替代。</p>
+     *
+     * <p>真实商用链路里，Agent、data-quality、data-sync、外部工单系统或补偿脚本都可能因为网络超时、
+     * worker 重启、Kafka 重放或人工重试而再次提交同一创建请求。只要它们传入相同的低敏幂等键，
+     * task-management 就会返回第一次创建的任务，而不是创建第二条任务。</p>
+     *
+     * <p>安全要求：该字段只能保存低敏机器标识，不能保存 payload 正文、SQL、prompt、样本数据、模型输出、
+     * 凭据、内部 URL 或工具参数正文。服务层会做字符集、长度和敏感关键词校验，数据库唯一索引负责最终去重。</p>
+     */
+    private String creationIdempotencyKey;
+
+    /**
      * 租户 ID。
      *
      * <p>这是 task-management 从“单租户演示任务列表”走向“企业级多租户任务平台”的关键字段。

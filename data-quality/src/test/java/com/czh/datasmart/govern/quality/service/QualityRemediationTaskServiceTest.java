@@ -167,6 +167,7 @@ class QualityRemediationTaskServiceTest {
         assertThat(response.isSubmitted()).isTrue();
         assertThat(response.getTaskId()).isEqualTo(9001L);
         assertThat(taskRequest.getType()).isEqualTo("DATA_QUALITY_REMEDIATION");
+        assertThat(taskRequest.getIdempotencyKey()).isEqualTo("tool-action:quality-remediation:command-001");
         assertThat(taskRequest.getTenantId()).isEqualTo(10L);
         assertThat(taskRequest.getProjectId()).isEqualTo(101L);
         assertThat(taskRequest.getOwnerId()).isEqualTo(1001L);
@@ -220,6 +221,7 @@ class QualityRemediationTaskServiceTest {
         request.setFieldName("email");
         request.setRemediationType("MANUAL_REVIEW");
         request.setReason("核心客户字段空值异常，需要项目负责人复核。");
+        request.setIdempotencyKey("tool-action:quality-remediation:command-001");
         request.setStartTime(LocalDateTime.of(2026, 6, 1, 0, 0));
         request.setEndTime(LocalDateTime.of(2026, 6, 28, 23, 59));
         return request;

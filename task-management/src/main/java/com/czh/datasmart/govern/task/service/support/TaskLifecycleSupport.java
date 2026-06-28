@@ -9,6 +9,7 @@ import com.czh.datasmart.govern.task.support.TaskPriority;
 import com.czh.datasmart.govern.task.support.TaskStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
@@ -47,6 +48,7 @@ public class TaskLifecycleSupport {
     private final TaskCallbackIdempotencySupport idempotencySupport;
     private final TaskExecutorCallbackSupport executorCallbackSupport;
     private final TaskDataScopeSupport dataScopeSupport;
+    private final TaskCreationIdempotencySupport creationIdempotencySupport;
 
     /**
      * 创建任务。
@@ -58,10 +60,25 @@ public class TaskLifecycleSupport {
     public Task createTask(String name, String description, String type, String params, String priority,
                            Integer maxRetryCount, Integer maxDeferCount, Long tenantId, Long ownerId,
                            Long projectId, TaskActorContext actorContext) {
+        return createTask(name, description, type, params, priority, maxRetryCount, maxDeferCount,
+                tenantId, ownerId, projectId, actorContext, null);
+    }
+
+    /**
+     * 创建任务，并在调用方提供低敏幂等键时复用已创建任务。
+     *
+     * <p>幂等键不是必填字段，因为平台仍然要支持用户在页面上连续手工创建多个相似任务。
+     * 只有 Agent、跨服务补偿、外部工单同步这类“同一业务意图可能被网络重试”的调用方，才应该显式传入稳定键。</p>
+     */
+    public Task createTask(String name, String description, String type, String params, String priority,
+                           Integer maxRetryCount, Integer maxDeferCount, Long tenantId, Long ownerId,
+                           Long projectId, TaskActorContext actorContext, String creationIdempotencyKey) {
+        String normalizedCreationKey = creationIdempotencySupport.normalize(creationIdempotencyKey);
         Task task = new Task();
         task.setName(name);
         task.setDescription(description);
         task.setType(type);
+        task.setCreationIdempotencyKey(normalizedCreationKey);
         task.setTenantId(dataScopeSupport.resolveTenantIdForCreate(tenantId, actorContext));
         task.setOwnerId(dataScopeSupport.resolveOwnerIdForCreate(ownerId, actorContext));
         task.setProjectId(dataScopeSupport.resolveProjectIdForCreate(projectId, actorContext));
@@ -79,12 +96,23 @@ public class TaskLifecycleSupport {
         task.setCreateTime(LocalDateTime.now());
         task.setUpdateTime(LocalDateTime.now());
 
-        taskMapper.insert(task);
+        Task existing = creationIdempotencySupport.findExisting(normalizedCreationKey).orElse(null);
+        if (existing != null) {
+            return creationIdempotencySupport.reuseExisting(existing, task);
+        }
+        try {
+            taskMapper.insert(task);
+        } catch (DuplicateKeyException exception) {
+            if (normalizedCreationKey == null) {
+                throw exception;
+            }
+            return creationIdempotencySupport.recoverAfterDuplicateKey(normalizedCreationKey, task);
+        }
         logSupport.saveExecutionLog(task.getId(), "CREATE", null, TaskStatus.PENDING, "任务已创建",
                 "tenantId=" + task.getTenantId()
                         + ", ownerId=" + task.getOwnerId()
                         + ", projectId=" + task.getProjectId()
-                        + ", params=" + task.getParams(),
+                        + ", creationIdempotencyKeyPresent=" + (normalizedCreationKey != null),
                 logSupport.actorLabel(actorContext));
         log.info("创建任务成功，taskId={}", task.getId());
         return task;

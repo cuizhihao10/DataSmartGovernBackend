@@ -75,6 +75,18 @@ public record QualityRemediationTaskDraftRequest(
         Integer aggregationLimit,
 
         /**
+         * 真实提交到 task-management 时使用的创建幂等键。
+         *
+         * <p>dry-run 阶段该字段保持为空，因为 dry-run 不产生下游真实任务；审批确认后的 Host 受控提交阶段，
+         * 服务端会从 command payload 中取稳定 idempotencyKey 并写入该字段。这样即使 agent-runtime、data-quality
+         * 或 task-management 之间出现 HTTP 超时、worker 重启、补偿重放，也能由任务中心复用同一条治理任务。</p>
+         *
+         * <p>该字段只允许低敏机器标识，不能包含 prompt、SQL、样本数据、完整工具参数、模型输出、凭据或内部 URL。
+         * agent-runtime 只负责传递稳定键，最终的字符集和唯一约束由 task-management 再次校验。</p>
+         */
+        String idempotencyKey,
+
+        /**
          * 是否只预演。
          *
          * <p>dry-run 工具适配器会强制使用 true；审批确认后的受控提交服务会在 Host 内部复核 payload body 后显式使用 false。

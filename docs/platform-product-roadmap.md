@@ -1,5 +1,24 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-28 追加落地进展：Task Creation Idempotency Closure
+- 本阶段承接 agent-runtime 受控提交事实，把质量治理真实提交链路继续向下游收口：agent-runtime 使用 outbox 业务幂等键构造 data-quality 真实提交请求，data-quality 透传 `idempotencyKey`，task-management 通过 `task.creation_idempotency_key` 唯一索引和复用校验避免重复创建治理任务。
+- 产品价值：
+  - HTTP 超时、worker 重投、Kafka 重放或多实例竞争时，不再仅依赖 agent-runtime 本地事实防重，而是让最终业务任务表也能识别同一次创建意图；
+  - 幂等复用会校验任务类型、租户、项目和负责人，避免不同调用方误用相同 key 时串单；
+  - task-management 日志只记录是否携带幂等键，不继续记录任务 `params` 正文，降低治理草案、异常聚合或工具参数扩散风险。
+- 新增与调整：
+  - task-management 新增 `TaskCreationIdempotencySupport`，并为 `POST /tasks`、`TaskService`、`TaskLifecycleSupport` 和 Agent async command consumer 接入创建幂等键；
+  - data-quality 的治理任务请求和 task-management 跨服务 DTO 增加 `idempotencyKey`；
+  - agent-runtime 的质量治理真实提交请求显式携带 outbox 业务幂等键，避免把 worker 调 Host 的接口幂等键误当作下游任务创建键；
+  - 新增 `20260628_task_creation_idempotency_key.sql`，并同步更新 MySQL 初始化脚本。
+- 验证：
+  - 定向跨模块测试通过：task-management 14 个、data-quality 4 个、agent-runtime 5 个相关测试；
+  - 三模块全量测试通过：task-management 115 个、data-quality 18 个、agent-runtime 424 个测试；
+  - Maven Toolchain 使用 JDK 21，重点文件仍控制在 500 行以内。
+- 收敛判断：
+  - 质量治理 Agent 工具链路已经从 dry-run、payloadReference、approval confirmation、Host submit、提交事实推进到下游任务创建幂等，后续不应继续扩展治理草案字段；
+  - 下一步更适合补最小 `UNKNOWN` 对账/人工恢复入口，然后切回全局 Agent 能力矩阵与项目闭环清单，防止继续围绕单一 Java 链路发散。
+
 ## 2026-06-28 追加落地进展：Agent Runtime Controlled Submission Fact
 - 本阶段承接 task-management controlled worker Host submit，把 agent-runtime 质量治理真实提交从“JVM 本地 commandId 缓存”推进为“可替换、可持久化、低敏提交事实仓储”。
 - 产品目标：

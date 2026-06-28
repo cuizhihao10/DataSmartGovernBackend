@@ -166,6 +166,19 @@ public class QualityRemediationTaskRequest {
     private Integer aggregationLimit;
 
     /**
+     * 下游任务创建幂等键。
+     *
+     * <p>该字段面向“真实提交到 task-management”的场景，尤其是 Agent Host、审批后 worker、补偿脚本或外部系统重试。
+     * 当 data-quality 已经把质量治理请求转发给 task-management，但上游因为超时或进程重启无法确认结果时，
+     * 后续重试必须使用同一个幂等键，task-management 才能复用第一次创建的治理任务。</p>
+     *
+     * <p>它不是治理原因、不是异常摘要，也不是 payload 指纹，只能保存低敏机器标识，例如
+     * {@code tool-action:proposal:run:command}。不要把 SQL、prompt、样本数据、异常明细、工具参数正文、
+     * 凭据或内部 URL 放进来；data-quality 只负责透传，最终校验和唯一约束由 task-management 承担。</p>
+     */
+    private String idempotencyKey;
+
+    /**
      * 是否只预演。
      *
      * <p>true 表示只返回将要提交给 task-management 的低敏 payload 预览，不真正创建任务。

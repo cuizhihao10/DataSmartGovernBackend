@@ -24,6 +24,17 @@ public class TaskCreateRequest {
     private String type;
 
     /**
+     * task-management 创建阶段幂等键。
+     *
+     * <p>data-quality 不自己解释该键，也不会把它写入质量 payload；它只是把上游传入的低敏机器标识
+     * 透传给 task-management，让任务中心在跨服务重试、补偿和并发提交时能够复用同一条任务。</p>
+     *
+     * <p>典型来源包括 Agent command idempotencyKey、外部工单号或批处理提交 ID。该字段不能包含
+     * SQL、prompt、异常样本、工具参数正文、凭据、内部 URL 或模型输出。</p>
+     */
+    private String idempotencyKey;
+
+    /**
      * 质量任务所属租户 ID。
      *
      * <p>该字段会映射到 task-management 的 task.tenant_id。

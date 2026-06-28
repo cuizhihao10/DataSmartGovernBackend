@@ -109,8 +109,8 @@ public class QualityRemediationTaskCommandSubmissionService {
                 .orElseThrow(() -> badRequest("未找到 command 绑定的工具动作审批确认事实，commandId=" + safeCommandId));
         validateConfirmationRecord(outboxRecord, commandPayload, payloadRecord, confirmationRecord);
 
-        QualityRemediationTaskDraftRequest submitRequest =
-                requestBuilder.build(payloadRecord, commandPayload);
+        QualityRemediationTaskDraftRequest submitRequest = requestBuilder.build(payloadRecord, commandPayload,
+                firstText(outboxRecord.idempotencyKey(), request == null ? null : request.idempotencyKey()));
         AgentToolActionSubmissionFactRecord startFact = startFact(outboxRecord, commandPayload,
                 confirmationRecord, request);
         AgentToolActionSubmissionFactStartResult startResult = submissionFactStore.start(startFact);
@@ -330,7 +330,7 @@ public class QualityRemediationTaskCommandSubmissionService {
         return new AgentToolActionSubmissionFactRecord(
                 AgentToolActionSubmissionFactRecord.identityKey(outboxRecord.commandId()),
                 outboxRecord.commandId(),
-                firstText(request == null ? null : request.idempotencyKey(), outboxRecord.idempotencyKey()),
+                firstText(outboxRecord.idempotencyKey(), request == null ? null : request.idempotencyKey()),
                 outboxRecord.sessionId(),
                 outboxRecord.runId(),
                 outboxRecord.auditId(),

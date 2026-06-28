@@ -346,6 +346,7 @@ public class QualityRemediationTaskService {
         taskRequest.setName(taskName(payload));
         taskRequest.setDescription(taskDescription(payload));
         taskRequest.setType(taskProperties.getRemediationTaskType());
+        taskRequest.setIdempotencyKey(safeText(request.getIdempotencyKey(), 180));
         taskRequest.setTenantId(payload.getTenantId());
         taskRequest.setProjectId(payload.getProjectId());
         taskRequest.setOwnerId(firstNonNull(request.getAssigneeActorId(), actorId, taskProperties.getExecutorActorId()));

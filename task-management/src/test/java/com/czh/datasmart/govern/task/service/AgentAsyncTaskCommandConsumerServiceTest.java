@@ -76,7 +76,8 @@ class AgentAsyncTaskCommandConsumerServiceTest {
             return 1;
         });
         when(taskService.createTask(anyString(), anyString(), eq("AGENT_ASYNC_TOOL"),
-                anyString(), any(), any(), any(), eq(10L), isNull(), eq(20L), any(TaskActorContext.class)))
+                anyString(), any(), any(), any(), eq(10L), isNull(), eq(20L), any(TaskActorContext.class),
+                eq("agent-tool-async:session-001:run-001:atea-001")))
                 .thenReturn(createdTask);
 
         AgentAsyncTaskCommandConsumeResponse response = service.consume(request);
@@ -95,7 +96,7 @@ class AgentAsyncTaskCommandConsumerServiceTest {
         ArgumentCaptor<String> paramsCaptor = ArgumentCaptor.forClass(String.class);
         verify(taskService).createTask(anyString(), anyString(), eq("AGENT_ASYNC_TOOL"),
                 paramsCaptor.capture(), any(), any(), any(), eq(10L), isNull(), eq(20L),
-                any(TaskActorContext.class));
+                any(TaskActorContext.class), eq("agent-tool-async:session-001:run-001:atea-001"));
         assertTrue(paramsCaptor.getValue().contains("\"payloadReference\""));
         assertTrue(paramsCaptor.getValue().contains("\"commandType\":\"AGENT_TOOL_ASYNC_TASK_REQUESTED\""));
         assertTrue(paramsCaptor.getValue().contains("\"payloadReferenceType\":\"AGENT_TOOL_AUDIT\""));
@@ -122,7 +123,8 @@ class AgentAsyncTaskCommandConsumerServiceTest {
             return 1;
         });
         when(taskService.createTask(anyString(), anyString(), eq("AGENT_TOOL_ACTION_CONTROLLED"),
-                anyString(), any(), any(), any(), eq(10L), isNull(), eq(20L), any(TaskActorContext.class)))
+                anyString(), any(), any(), any(), eq(10L), isNull(), eq(20L), any(TaskActorContext.class),
+                eq("tool-action:proposal:run-proposal:datasource-metadata-read")))
                 .thenReturn(createdTask);
 
         AgentAsyncTaskCommandConsumeResponse response = service.consume(request);
@@ -145,7 +147,7 @@ class AgentAsyncTaskCommandConsumerServiceTest {
         ArgumentCaptor<String> paramsCaptor = ArgumentCaptor.forClass(String.class);
         verify(taskService).createTask(anyString(), anyString(), eq("AGENT_TOOL_ACTION_CONTROLLED"),
                 paramsCaptor.capture(), any(), any(), any(), eq(10L), isNull(), eq(20L),
-                any(TaskActorContext.class));
+                any(TaskActorContext.class), eq("tool-action:proposal:run-proposal:datasource-metadata-read"));
         assertTrue(paramsCaptor.getValue().contains("\"commandKind\":\"TOOL_ACTION_CONTROLLED\""));
         assertTrue(paramsCaptor.getValue().contains("\"payloadReferenceType\":\"AGENT_PAYLOAD\""));
         assertTrue(paramsCaptor.getValue().contains("\"workerDispatchEnabled\":false"));
@@ -166,7 +168,7 @@ class AgentAsyncTaskCommandConsumerServiceTest {
         assertTrue(response.taskCreated());
         assertEquals(9001L, response.taskId());
         verify(taskService, never()).createTask(anyString(), anyString(), anyString(), anyString(),
-                any(), any(), any(), any(), any(), any(), any());
+                any(), any(), any(), any(), any(), any(), any(), any());
         verify(inboxMapper).updateById(existing);
     }
 
