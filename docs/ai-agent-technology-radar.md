@@ -1,4 +1,19 @@
 # DataSmart Govern AI Agent 技术雷达
+## 2026-06-28 落地补充：real side effects should be invoked by the Host after fact replay
+
+- 本轮趋势校准：
+  - 成熟 Agent 工具链路不是“worker 看到参数就执行”，而是由 Host 重放 outbox、approval fact、payload fact 和 policyVersion 后再越过副作用边界。
+  - 对 DataSmart 来说，task-management 更适合负责队列、租约和调度；agent-runtime 负责恢复 Host-owned payload body 并调用 data-quality。
+  - 这保持了 Codex/Claude Code/OpenClaw 类架构中的关键边界：工具正文与执行权留在 Host，调度器只持有低敏 command envelope。
+- 本轮落地到代码的能力：
+  - 新增质量治理真实提交内部 endpoint；
+  - 提交服务要求 outbox 已 PUBLISHED、审批确认事实 CONFIRMED、payload body 已物化且作用域一致；
+  - 提交 data-quality 时显式使用 `dryRun=false`；
+  - 响应不返回 payloadPreview、草案正文、异常聚合、prompt、SQL 或模型输出。
+- 产品判断：
+  - 这是质量治理 Agent 从“控制面闭环”进入“受控副作用闭环”的关键一步；
+  - 下一步应把 task-management controlled worker 接入该 endpoint，并补 durable execution fact，而不是继续扩展 dry-run 展示字段。
+
 ## 2026-06-28 落地补充：approval confirmations should be host-owned facts, not caller-provided strings
 
 - 本轮趋势校准：

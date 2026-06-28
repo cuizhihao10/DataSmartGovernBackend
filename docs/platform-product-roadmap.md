@@ -1,5 +1,31 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-28 追加落地进展：Java Agent Runtime Quality Remediation Submit Endpoint
+- 本阶段承接 approval confirmation fact，把质量治理 Agent 链路从“已审批、可入箱”推进到 agent-runtime Host 内部可真实提交。
+- 产品目标：
+  - task-management worker 只传 commandId，不直接读取 payload body；
+  - agent-runtime 按 commandId 回查 outbox、`tool-action-confirmation:` 和 `agent-payload:`；
+  - 所有事实都通过后，由 Host 内部把服务端 payload body 还原为 data-quality 请求，并显式设置 `dryRun=false`；
+  - 响应只返回低敏执行摘要和 taskId/taskStatus，不返回 payloadPreview、草案正文、异常聚合明细、prompt、SQL 或样本。
+- 新增与调整：
+  - 新增 `POST /internal/agent-runtime/tool-action-commands/{commandId}/quality-remediation-submit`；
+  - 新增 `AgentToolActionQualityRemediationSubmitRequest/Response`，作为 task-management worker 调用和 receipt 写回的低敏契约；
+  - 新增 `QualityRemediationTaskSubmissionRequestBuilder`，从 Host payload body 中提取 scope/filters 并构造 `dryRun=false` 请求；
+  - 新增 `QualityRemediationTaskCommandSubmissionService`，强校验 outbox=PUBLISHED、confirmation=CONFIRMED、payload body 已物化、作用域和 policyVersion 一致后调用 data-quality；
+  - 为当前 JVM 增加 commandId 本地幂等缓存，避免同一进程重复调用 data-quality；生产级仍应落 MySQL execution fact。
+- 验证：
+  - 定向 Java 测试：
+    `mvn -pl agent-runtime -am "-Dtest=QualityRemediationTaskCommandSubmissionServiceTest,QualityRemediationTaskDraftToolAdapterTest,AgentToolActionApprovalConfirmationServiceTest,AgentToolActionApprovalConfirmationEvidenceVerifierTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：9 个测试通过。
+- 当前边界：
+  - task-management `AGENT_TOOL_ACTION_CONTROLLED` worker 还没有自动调用该 endpoint；
+  - commandId 幂等缓存仍是内存级，跨实例/重启后需要 MySQL execution fact；
+  - data-quality/task-management 侧还没有接收稳定幂等键，后续要补跨服务幂等。
+- 下一步推荐路线：
+  1. 在 task-management controlled worker 中接入该 endpoint，并把响应写回 command worker receipt；
+  2. 为质量治理提交结果增加 durable execution fact，替代当前本地幂等缓存；
+  3. 在 readiness/runtime event projection 展示“已提交真实治理任务”的低敏状态。
+
 ## 2026-06-28 追加落地进展：Java Agent Runtime Approval Confirmation Fact
 - 本阶段承接 payloadReference 物化和 command envelope body 可用性，把真实执行前的人审确认从“调用方传入一个 ID”升级为 Host 服务端事实。
 - 产品目标：

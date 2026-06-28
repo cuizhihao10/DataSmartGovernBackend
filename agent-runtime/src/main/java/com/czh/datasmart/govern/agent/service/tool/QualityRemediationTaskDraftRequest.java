@@ -74,7 +74,12 @@ public record QualityRemediationTaskDraftRequest(
         /** TOP 聚合数量，避免把异常全量明细塞进任务草案。 */
         Integer aggregationLimit,
 
-        /** 强制 true：Agent 当前只做治理任务草案预演，不提交真实 task-management 任务。 */
+        /**
+         * 是否只预演。
+         *
+         * <p>dry-run 工具适配器会强制使用 true；审批确认后的受控提交服务会在 Host 内部复核 payload body 后显式使用 false。
+         * 该字段的切换必须发生在 Java 控制面服务端，不能由模型、Python Runtime 或前端自由决定。</p>
+         */
         Boolean dryRun
 ) {
 }
