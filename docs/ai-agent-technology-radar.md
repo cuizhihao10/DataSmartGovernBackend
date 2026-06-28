@@ -364,6 +364,22 @@
   - OWASP Authorization Cheat Sheet: `https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html`
   - OWASP File Upload Cheat Sheet: `https://cheatsheetseries.owasp.org/cheatsheets/File_Upload_Cheat_Sheet.html`
 
+## 2026-06-28 落地补充：Host submission facts should gate real side effects before retry
+
+- 本轮趋势校准：
+  - 类 Codex/Claude Code/OpenClaw 的成熟 Agent Host 不会把“再次收到同一个工具命令”简单解释为“可以再次执行副作用”；真实写入、创建任务、运行程序、访问对象正文等动作都需要 Host 侧事实来证明当前执行到了哪一步。
+  - 对 DataSmart 来说，task-management worker lease 只能证明“哪个 worker 有资格尝试执行”，不能证明“下游 data-quality 是否已经被调用、是否已经创建任务、是否需要对账”。因此还需要 commandId 级提交事实作为副作用前后的控制面证据。
+  - `UNKNOWN` 是商业化系统必须显式承认的一类状态：网络异常、HTTP 超时或客户端异常不等价于下游一定未执行。成熟 Agent 平台更倾向 fail-closed 和人工/自动对账，而不是盲目重试。
+- 本轮落地到代码的能力：
+  - agent-runtime 新增低敏 `AgentToolActionSubmissionFactRecord`，把 commandId、idempotencyKey、payloadReference、confirmationId、policyVersion、下游 taskId/taskStatus 和低敏诊断动作写成可复用事实；
+  - 新增 memory/mysql 两类 `AgentToolActionSubmissionFactStore`，让本地学习和生产持久化走同一个接口；
+  - `QualityRemediationTaskCommandSubmissionService` 在调用 data-quality 前登记 `SUBMITTING`，在成功/拒绝后写入 `SUBMITTED/REJECTED`，在不确定异常后写入 `UNKNOWN`；
+  - 重复调用遇到 `SUBMITTED/REJECTED` 直接复用事实，遇到 `SUBMITTING/UNKNOWN` 则 fail-closed，保护真实治理任务不被重复创建。
+- 产品判断：
+  - 这一步是在收口 Agent 工具真实副作用链路，不是扩展新工具能力；
+  - 下一步应优先做下游幂等键、提交事实投影可见性和 UNKNOWN 对账路径，再切到 Agent 能力矩阵其它闭环；
+  - 不建议继续围绕质量治理 dry-run 增加展示字段，否则会重新把项目拖回局部功能发散。
+
 ## 2026-06-24 落地补充：body read grants should be decisions, not download tokens
 
 - 本轮趋势校准：

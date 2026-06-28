@@ -18,6 +18,10 @@ import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionApprovalCon
 import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionApprovalConfirmationStore;
 import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionPayloadRecord;
 import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionPayloadStore;
+import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionSubmissionFactRecord;
+import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionSubmissionFactStartResult;
+import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionSubmissionFactStore;
+import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionSubmissionStatus;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
@@ -34,7 +38,6 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 质量治理受控命令真实提交服务。
@@ -57,25 +60,25 @@ public class QualityRemediationTaskCommandSubmissionService {
     private static final String COMMAND_TYPE = "AGENT_TOOL_ACTION_CONTROLLED_COMMAND";
     private static final String SUCCESS_OUTCOME = "EXECUTION_SUCCEEDED";
     private static final String NOT_SUBMITTED_OUTCOME = "EXECUTION_SKIPPED";
+    private static final String UNKNOWN_OUTCOME = "EXECUTION_STATUS_UNKNOWN";
+    private static final String UNKNOWN_ERROR_CODE = "QUALITY_REMEDIATION_SUBMIT_UNKNOWN";
 
     private final AgentAsyncTaskCommandOutboxStore outboxStore;
     private final AgentToolActionPayloadStore payloadStore;
     private final AgentToolActionApprovalConfirmationStore confirmationStore;
+    /**
+     * 真实提交事实仓储。
+     *
+     * <p>业务代码只依赖该接口，不关心当前是本地 memory 还是 MySQL 实现。
+     * memory 适合本地学习和单实例联调；MySQL 实现则用于跨实例、跨重启的 commandId 防重、
+     * UNKNOWN 状态对账和后续运营查询，避免旧的 JVM 本地缓存成为生产闭环短板。</p>
+     */
+    private final AgentToolActionSubmissionFactStore submissionFactStore;
     private final QualityRemediationTaskSubmissionRequestBuilder requestBuilder;
     private final AgentRuntimeProperties runtimeProperties;
     private final AgentToolServiceAuthorizationProperties serviceAuthorizationProperties;
     private final RestClient.Builder restClientBuilder;
     private final ObjectMapper objectMapper;
-
-    /**
-     * 本地幂等缓存。
-     *
-     * <p>它只能保证当前 JVM 内重复调用不会重复创建治理任务，不能替代生产级 durable idempotency。
-     * 下一阶段如果要完全商用闭环，应把 commandId -> downstream taskId 写入 MySQL execution fact，
-     * 并让 data-quality/task-management 接收稳定幂等键。</p>
-     */
-    private final Map<String, AgentToolActionQualityRemediationSubmitResponse> completedByCommandId =
-            new ConcurrentHashMap<>();
 
     /**
      * 提交已审批的质量治理受控命令。
@@ -90,9 +93,9 @@ public class QualityRemediationTaskCommandSubmissionService {
             AgentToolActionQualityRemediationSubmitRequest request,
             String traceId) {
         String safeCommandId = requireText(commandId, "commandId");
-        AgentToolActionQualityRemediationSubmitResponse cached = completedByCommandId.get(safeCommandId);
-        if (cached != null) {
-            return duplicate(cached);
+        var existingFact = submissionFactStore.findByCommandId(safeCommandId);
+        if (existingFact.isPresent()) {
+            return responseFromExistingFact(existingFact.get());
         }
         AgentAsyncTaskCommandOutboxRecord outboxRecord = outboxStore.findByCommandId(safeCommandId)
                 .orElseThrow(() -> badRequest("未找到质量治理受控命令 outbox 记录，commandId=" + safeCommandId));
@@ -108,12 +111,33 @@ public class QualityRemediationTaskCommandSubmissionService {
 
         QualityRemediationTaskDraftRequest submitRequest =
                 requestBuilder.build(payloadRecord, commandPayload);
-        AgentToolActionQualityRemediationSubmitResponse response =
-                submitToDataQuality(outboxRecord, commandPayload, confirmationRecord, submitRequest, request, traceId);
-        if (Boolean.TRUE.equals(response.sideEffectExecuted())) {
-            completedByCommandId.putIfAbsent(safeCommandId, response);
+        AgentToolActionSubmissionFactRecord startFact = startFact(outboxRecord, commandPayload,
+                confirmationRecord, request);
+        AgentToolActionSubmissionFactStartResult startResult = submissionFactStore.start(startFact);
+        if (!startResult.started()) {
+            return responseFromExistingFact(startResult.record());
         }
-        return response;
+        try {
+            AgentToolActionQualityRemediationSubmitResponse response =
+                    submitToDataQuality(outboxRecord, commandPayload, confirmationRecord, submitRequest, request, traceId);
+            submissionFactStore.save(factFromResponse(startResult.record(), response));
+            return response;
+        } catch (RuntimeException exception) {
+            submissionFactStore.save(startResult.record().transitionTo(
+                    AgentToolActionSubmissionStatus.UNKNOWN,
+                    true,
+                    false,
+                    UNKNOWN_OUTCOME,
+                    null,
+                    null,
+                    UNKNOWN_ERROR_CODE,
+                    List.of(UNKNOWN_ERROR_CODE),
+                    List.of("暂停自动重放，先查询 data-quality/task-management 是否已经创建下游治理任务。"),
+                    safeExceptionMessage(exception),
+                    Instant.now()
+            ));
+            throw exception;
+        }
     }
 
     private void validateOutboxRecord(AgentAsyncTaskCommandOutboxRecord record, Map<String, Object> payload) {
@@ -263,22 +287,93 @@ public class QualityRemediationTaskCommandSubmissionService {
         );
     }
 
+    private AgentToolActionQualityRemediationSubmitResponse responseFromExistingFact(
+            AgentToolActionSubmissionFactRecord fact) {
+        if (fact.status().reusableResponse()) {
+            return duplicate(fact);
+        }
+        throw new PlatformBusinessException(
+                PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                switch (fact.status()) {
+                    case SUBMITTING -> "质量治理真实提交仍处于 SUBMITTING，不能重复调用下游；请等待 worker 对账或稍后重试。";
+                    case UNKNOWN -> "质量治理真实提交状态为 UNKNOWN，不能自动重放；请先对账 data-quality/task-management 下游任务。";
+                    default -> "质量治理真实提交事实状态暂不可复用，status=" + fact.status();
+                }
+        );
+    }
+
     private AgentToolActionQualityRemediationSubmitResponse duplicate(
-            AgentToolActionQualityRemediationSubmitResponse cached) {
+            AgentToolActionSubmissionFactRecord fact) {
         return new AgentToolActionQualityRemediationSubmitResponse(
-                cached.accepted(),
                 true,
-                cached.sideEffectStarted(),
-                cached.sideEffectExecuted(),
-                cached.outcome(),
-                cached.commandId(),
-                cached.payloadReference(),
-                cached.confirmationId(),
-                cached.taskId(),
-                cached.taskStatus(),
-                "命中 agent-runtime 本地幂等缓存，未重复调用 data-quality。",
-                cached.issueCodes(),
-                cached.recommendedActions()
+                true,
+                fact.sideEffectStarted(),
+                fact.sideEffectExecuted(),
+                fact.outcome(),
+                fact.commandId(),
+                fact.payloadReference(),
+                fact.confirmationId(),
+                fact.downstreamTaskId(),
+                fact.downstreamTaskStatus(),
+                "命中 agent-runtime 受控提交事实，未重复调用 data-quality。",
+                fact.issueCodes(),
+                fact.recommendedActions()
+        );
+    }
+
+    private AgentToolActionSubmissionFactRecord startFact(
+            AgentAsyncTaskCommandOutboxRecord outboxRecord,
+            Map<String, Object> commandPayload,
+            AgentToolActionApprovalConfirmationRecord confirmationRecord,
+            AgentToolActionQualityRemediationSubmitRequest request) {
+        Instant now = Instant.now();
+        return new AgentToolActionSubmissionFactRecord(
+                AgentToolActionSubmissionFactRecord.identityKey(outboxRecord.commandId()),
+                outboxRecord.commandId(),
+                firstText(request == null ? null : request.idempotencyKey(), outboxRecord.idempotencyKey()),
+                outboxRecord.sessionId(),
+                outboxRecord.runId(),
+                outboxRecord.auditId(),
+                outboxRecord.toolCode(),
+                stringValue(outboxRecord.tenantId()),
+                stringValue(outboxRecord.projectId()),
+                outboxRecord.actorId(),
+                outboxRecord.payloadReference(),
+                confirmationRecord.confirmationId(),
+                text(commandPayload.get("policyVersion")),
+                TARGET_SERVICE,
+                TARGET_ENDPOINT,
+                AgentToolActionSubmissionStatus.SUBMITTING,
+                false,
+                false,
+                null,
+                null,
+                null,
+                null,
+                List.of(),
+                List.of("已登记 SUBMITTING 事实，当前调用方可以继续执行真实提交。"),
+                "质量治理真实提交开始，等待 data-quality 返回低敏结果。",
+                now,
+                now
+        );
+    }
+
+    private AgentToolActionSubmissionFactRecord factFromResponse(
+            AgentToolActionSubmissionFactRecord startFact,
+            AgentToolActionQualityRemediationSubmitResponse response) {
+        boolean submitted = Boolean.TRUE.equals(response.sideEffectExecuted());
+        return startFact.transitionTo(
+                submitted ? AgentToolActionSubmissionStatus.SUBMITTED : AgentToolActionSubmissionStatus.REJECTED,
+                Boolean.TRUE.equals(response.sideEffectStarted()),
+                submitted,
+                response.outcome(),
+                response.taskId(),
+                response.taskStatus(),
+                submitted ? null : "DATA_QUALITY_REMEDIATION_SUBMIT_REJECTED",
+                response.issueCodes(),
+                response.recommendedActions(),
+                response.message(),
+                Instant.now()
         );
     }
 
@@ -403,5 +498,13 @@ public class QualityRemediationTaskCommandSubmissionService {
             return fallback;
         }
         return text.length() <= 300 ? text : text.substring(0, 300);
+    }
+
+    private String safeExceptionMessage(RuntimeException exception) {
+        String message = exception.getMessage();
+        if (message == null || message.isBlank()) {
+            return exception.getClass().getSimpleName();
+        }
+        return message.length() <= 240 ? message : message.substring(0, 240);
     }
 }

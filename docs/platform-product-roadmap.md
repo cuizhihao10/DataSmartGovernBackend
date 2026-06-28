@@ -1,5 +1,37 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-28 追加落地进展：Agent Runtime Controlled Submission Fact
+- 本阶段承接 task-management controlled worker Host submit，把 agent-runtime 质量治理真实提交从“JVM 本地 commandId 缓存”推进为“可替换、可持久化、低敏提交事实仓储”。
+- 产品目标：
+  - commandId 首次进入真实 data-quality 提交前，先登记 `SUBMITTING` 事实，避免 worker 重投、接口重试或多实例竞争直接重复创建下游治理任务；
+  - `SUBMITTED/REJECTED` 作为可复用终态，重复调用只返回低敏提交摘要，不再二次调用 data-quality；
+  - 下游调用异常时写入 `UNKNOWN`，表示副作用是否已经发生无法由当前调用栈确认，后续必须先对账 data-quality/task-management，而不是盲目自动重放；
+  - 提交事实只保存 commandId、idempotencyKey、tenant/project/actor、payloadReference、confirmationId、policyVersion、下游 taskId/taskStatus、issueCodes 和 recommendedActions 等低敏字段。
+- 新增与调整：
+  - 新增 `AgentToolActionSubmissionStatus`、`AgentToolActionSubmissionFactRecord`、`AgentToolActionSubmissionFactStore` 与 `AgentToolActionSubmissionFactStartResult`；
+  - 新增 memory 与 JDBC 两套提交事实仓储实现，默认 `memory` 适合本地学习和单实例联调，生产可通过配置切换 `mysql`；
+  - 新增 `JdbcAgentToolActionSubmissionFactRecordMapper` 与 `20260628_agent_tool_action_submission_fact.sql`，为跨实例、跨重启和运营对账准备 MySQL 表；
+  - `QualityRemediationTaskCommandSubmissionService` 真实调用 data-quality 前先 start fact，重复请求按事实状态返回或 fail-closed；
+  - `application.yml` 增加 `datasmart.agent-runtime.tool-action-submissions.store`，并用中文说明 memory/mysql 的使用边界。
+- 低敏与安全边界：
+  - 提交事实不保存 payload body、治理草案正文、SQL、prompt、样本、模型输出、凭据、stdout/stderr、完整内部 URL 或工具完整参数；
+  - `targetEndpoint` 只允许保存端点模板，不保存完整服务地址；
+  - `UNKNOWN` 状态优先保护真实副作用不被重复触发，牺牲自动重试便利性换取商业化安全性；
+  - data-quality/task-management 侧仍需要继续补稳定 idempotencyKey、下游对账和终态回调，才能形成严格 exactly-once 语义。
+- 验证：
+  - `mvn -pl agent-runtime -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：424 个测试通过；
+  - `mvn -pl task-management,agent-runtime -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`：task-management 111 个测试、agent-runtime 424 个测试通过；
+  - Maven Toolchain 使用 JDK 21：`C:\Users\Cui\.jdks\temurin-21.0.10`。
+- 当前边界：
+  - 提交事实还没有独立管理查询、手工对账、UNKNOWN 人工确认或重放 API；
+  - runtime event/readiness projection 尚未展示 `SUBMITTING/SUBMITTED/REJECTED/UNKNOWN` 的提交事实视图；
+  - data-quality 真实任务创建接口尚未消费稳定幂等键，跨服务 exactly-once 仍需下游配合；
+  - 本阶段是质量治理 Agent 工具链路收口，不继续扩展新的治理草案字段。
+- 下一步推荐路线：
+  1. 优先补 data-quality/task-management 下游幂等与对账契约，关闭 UNKNOWN 后的人工恢复路径；
+  2. 在 runtime event/readiness projection 中展示提交事实状态，让前端和运营能看到真实提交进度；
+  3. 质量治理工具链路阶段性闭合后，切到 Agent 能力矩阵的 memory/tools/sessions/context/permission 闭环短板，避免继续局部膨胀。
+
 ## 2026-06-28 追加落地进展：Task Management Controlled Worker Host Submit
 - 本阶段承接 Java Agent Runtime 的质量治理受控提交 endpoint，把 task-management `AGENT_TOOL_ACTION_CONTROLLED` worker 从“审批通过后继续等待 executor”推进到“可在显式开关下调用 Host submit 并写 command worker receipt”。
 - 产品目标：

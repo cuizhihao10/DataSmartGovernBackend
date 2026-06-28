@@ -79,6 +79,17 @@ datasmart:
       # 安全边界：fencingToken 只允许存在于内部 store、claim 响应和 receipt 请求中，
       # 不能进入 runtime event、timeline、日志、Prometheus label、工具结果、prompt、SQL 或 artifact 正文。
       store: ${DATASMART_AGENT_RUNTIME_COMMAND_WORKER_LEASE_STORE:memory}
+    tool-action-submissions:
+      # 受控工具真实提交事实仓库。
+      # 这个配置控制 commandId -> 下游副作用提交状态 的承载介质，服务于质量治理真实提交、后续更多写工具提交、
+      # worker 重试、服务重启恢复、运营对账和审计排障。
+      # memory：默认值，适合本地学习、单元测试和单实例联调；只能在当前 JVM 内阻止重复提交。
+      # mysql：写入 agent_tool_action_submission_fact 表，适合多实例控制面、跨重启恢复和长周期审计。
+      #        切换 mysql 时必须同时设置 datasmart.agent-runtime.persistence.database-enabled=true，
+      #        并先执行 docker/mysql/migrations/20260628_agent_tool_action_submission_fact.sql。
+      # 安全边界：提交事实只保存 commandId、payloadReference、confirmationId、状态、downstreamTaskId 和低敏 issueCode；
+      # 不保存 payload body、prompt、SQL、样本、模型输出、凭据、内部 URL 或工具参数正文。
+      store: ${DATASMART_AGENT_RUNTIME_TOOL_ACTION_SUBMISSION_STORE:memory}
     artifact-body-read-grants:
       # artifact 正文读取 grant fact 仓库。
       # body-read-grants 返回的 grantDecisionReference 只是低敏审计引用，不是 bearer token；

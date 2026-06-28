@@ -15,8 +15,11 @@ import com.czh.datasmart.govern.agent.event.command.InMemoryAgentAsyncTaskComman
 import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionApprovalConfirmationRecord;
 import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionApprovalConfirmationStatus;
 import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionPayloadRecord;
+import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionSubmissionFactRecord;
+import com.czh.datasmart.govern.agent.service.runtime.AgentToolActionSubmissionStatus;
 import com.czh.datasmart.govern.agent.service.runtime.InMemoryAgentToolActionApprovalConfirmationStore;
 import com.czh.datasmart.govern.agent.service.runtime.InMemoryAgentToolActionPayloadStore;
+import com.czh.datasmart.govern.agent.service.runtime.InMemoryAgentToolActionSubmissionFactStore;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -101,6 +104,8 @@ class QualityRemediationTaskCommandSubmissionServiceTest {
         );
         assertTrue(duplicate.duplicate());
         assertEquals(7001L, duplicate.taskId());
+        assertEquals(AgentToolActionSubmissionStatus.SUBMITTED,
+                fixture.submissionFactStore().findByCommandId("command-remediation-001").orElseThrow().status());
         server.verify();
     }
 
@@ -119,6 +124,24 @@ class QualityRemediationTaskCommandSubmissionServiceTest {
         server.verify();
     }
 
+    @Test
+    void submitShouldBlockDuplicateWhenSubmissionFactIsStillSubmitting() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        TestFixture fixture = fixture(builder);
+        fixture.prepareVerifiedFacts(false);
+        fixture.saveSubmittingFact();
+
+        RuntimeException exception = assertThrows(RuntimeException.class, () -> fixture.service().submit(
+                "command-remediation-001",
+                new AgentToolActionQualityRemediationSubmitRequest("task-worker-001", 501L, 9001L, null),
+                "trace-submit-test"
+        ));
+
+        assertTrue(exception.getMessage().contains("SUBMITTING"));
+        server.verify();
+    }
+
     private TestFixture fixture(RestClient.Builder builder) {
         AgentRuntimeProperties runtimeProperties = new AgentRuntimeProperties();
         runtimeProperties.getToolServiceBaseUrls().put("data-quality", "http://data-quality.test");
@@ -127,17 +150,20 @@ class QualityRemediationTaskCommandSubmissionServiceTest {
         InMemoryAgentToolActionPayloadStore payloadStore = new InMemoryAgentToolActionPayloadStore();
         InMemoryAgentToolActionApprovalConfirmationStore confirmationStore =
                 new InMemoryAgentToolActionApprovalConfirmationStore();
+        InMemoryAgentToolActionSubmissionFactStore submissionFactStore =
+                new InMemoryAgentToolActionSubmissionFactStore();
         QualityRemediationTaskCommandSubmissionService service = new QualityRemediationTaskCommandSubmissionService(
                 outboxStore,
                 payloadStore,
                 confirmationStore,
+                submissionFactStore,
                 new QualityRemediationTaskSubmissionRequestBuilder(),
                 runtimeProperties,
                 new AgentToolServiceAuthorizationProperties(),
                 builder,
                 new ObjectMapper()
         );
-        return new TestFixture(service, outboxStore, payloadStore, confirmationStore, new ObjectMapper());
+        return new TestFixture(service, outboxStore, payloadStore, confirmationStore, submissionFactStore, new ObjectMapper());
     }
 
     private String successResponse() {
@@ -172,6 +198,7 @@ class QualityRemediationTaskCommandSubmissionServiceTest {
             InMemoryAgentAsyncTaskCommandOutboxStore outboxStore,
             InMemoryAgentToolActionPayloadStore payloadStore,
             InMemoryAgentToolActionApprovalConfirmationStore confirmationStore,
+            InMemoryAgentToolActionSubmissionFactStore submissionFactStore,
             ObjectMapper objectMapper
     ) {
 
@@ -317,6 +344,39 @@ class QualityRemediationTaskCommandSubmissionServiceTest {
                     Instant.now(),
                     Instant.now().plusSeconds(1800)
             );
+        }
+
+        private void saveSubmittingFact() {
+            Instant now = Instant.now();
+            submissionFactStore.save(new AgentToolActionSubmissionFactRecord(
+                    AgentToolActionSubmissionFactRecord.identityKey("command-remediation-001"),
+                    "command-remediation-001",
+                    "idem-remediation-001",
+                    "session-001",
+                    "run-001",
+                    "audit-remediation-001",
+                    "quality.remediation.task.draft",
+                    "10",
+                    "20",
+                    "1001",
+                    "agent-payload:run-001/quality-remediation-task-draft:audit-001",
+                    "tool-action-confirmation:remediation-001",
+                    "tool-readiness-policy.v1",
+                    "data-quality",
+                    "/quality-rules/remediation-tasks",
+                    AgentToolActionSubmissionStatus.SUBMITTING,
+                    false,
+                    false,
+                    null,
+                    null,
+                    null,
+                    null,
+                    List.of(),
+                    List.of("等待已有 worker 完成提交。"),
+                    "已有提交正在处理中。",
+                    now,
+                    now
+            ));
         }
     }
 }

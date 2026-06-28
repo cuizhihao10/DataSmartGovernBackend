@@ -36,6 +36,7 @@ import org.springframework.context.annotation.Configuration;
                 + "|| '${datasmart.agent-runtime.tool-action-resume-facts.clarification-fact-store:memory}'.equalsIgnoreCase('mysql') "
                 + "|| '${datasmart.agent-runtime.tool-action-resume-facts.worker-receipt-index-store:memory}'.equalsIgnoreCase('mysql') "
                 + "|| '${datasmart.agent-runtime.command-worker-leases.store:memory}'.equalsIgnoreCase('mysql') "
+                + "|| '${datasmart.agent-runtime.tool-action-submissions.store:memory}'.equalsIgnoreCase('mysql') "
                 + "|| '${datasmart.agent-runtime.artifact-body-read-grants.store:memory}'.equalsIgnoreCase('mysql'))"
 )
 public class AgentRuntimeJdbcPersistenceConfiguration {
