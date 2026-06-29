@@ -145,6 +145,24 @@ class RuleBasedIntentAnalyzerTest(unittest.TestCase):
         self.assertNotIn("workspaceFilePath", analysis.missing_parameters)
         self.assertIn("workspaceFileContentRef", analysis.missing_parameters)
 
+    def test_web_search_intent_targets_controlled_search_tool(self) -> None:
+        """联网/最新资料意图应命中受控网页搜索工具。"""
+
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="analyst-a",
+            objective="请联网搜索 Qwen3.7 Agent 最新资料，并给出引用来源",
+        )
+        context_blocks = DefaultContextBuilder().build(request)
+
+        analysis = RuleBasedIntentAnalyzer().analyze(request, context_blocks)
+
+        self.assertIn(GovernanceDomain.KNOWLEDGE_QA, analysis.governance_domains)
+        self.assertIn(GovernanceDomain.GENERAL_GOVERNANCE, analysis.governance_domains)
+        self.assertIn("web.search.query", analysis.candidate_tools)
+        self.assertIn(IntentRiskTag.READ_ONLY, analysis.risk_tags)
+
 
 if __name__ == "__main__":
     unittest.main()

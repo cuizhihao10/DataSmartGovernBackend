@@ -1,5 +1,21 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-30 落地补充：web search must be provider-governed, citation-first, and query-reference based
+
+- 本轮趋势校准：
+  - 类 Codex、Claude Code、OpenClaw 的 Agent Host 越来越需要外部资料检索，但“能联网”不能等同于“模型可以任意抓 URL”。成熟做法是由 Host 管理搜索 Provider、网络权限、查询脱敏、缓存、限流、引用验证和结果裁剪。
+  - 对 DataSmart 来说，web-search 主要服务“最新资料、外部政策、开源项目趋势、引用来源”，但企业数据治理场景里的查询词可能包含客户名、字段名、SQL、内部地址或错误栈，必须先引用化和风险标记。
+  - 搜索结果必须 citation-first。没有来源的搜索摘要不应进入模型最终回答，也不应进入长期记忆。
+- 本轮落地到代码的能力：
+  - 新增 `web.search.query` 默认工具；
+  - 新增 `WebSearchGovernanceService`，输出 `searchQueryRef`、Provider allowlist、network policy、SESSION_ONLY cache TTL、rate-limit 和 result policy；
+  - `RuleBasedIntentAnalyzer` 和 `ToolPlanner` 已能在用户请求“联网/最新/引用来源”时生成受控搜索计划；
+  - Agent 能力矩阵把 `tool.web-search` 从 planned 推进到 partial closed-loop。
+- 产品判断：
+  - 这一步关闭的是“搜索工具契约缺失”问题，不是完整搜索执行器；
+  - 下一步如果继续该方向，应接真实 Provider adapter、引用验证、结果去重、Redis/网关限流和 Java worker receipt；
+  - 不建议在当前收口阶段开放任意 URL fetch、HTML 抓取、文件下载或浏览器自动操作，否则会引入新的安全面和验收范围。
+
 ## 2026-06-30 落地补充：context micro-compaction is a Host control-plane capability, not prompt trimming
 
 - 本轮趋势校准：

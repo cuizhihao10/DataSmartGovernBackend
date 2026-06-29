@@ -1,5 +1,27 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-30 追加落地进展：Python AI Runtime Controlled Web Search Tool Contract
+- 本阶段继续按“整体闭环收敛”推进，关闭 Agent P0 hardBlocker 中的 `tool.web-search` 计划项，但没有直接开放任意联网能力。目标是让 web search 先成为受控工具契约：模型可以提出搜索意图，Host 负责查询引用化、Provider allowlist、网络权限、缓存 TTL、限流和引用结果策略。
+- 产品价值：
+  - 新增 `web.search.query` 默认工具，风险等级为 `MEDIUM`，执行模式为 `DRAFT_ONLY`，表示当前只生成受控搜索请求草案，不直接访问外网；
+  - 新增 `WebSearchGovernanceService`，把原始查询转换为低敏 `searchQueryRef`，只暴露 queryDigest、长度、词数、敏感等级和 materialization 策略；
+  - 新增 `WebSearchToolPlanBuilder`，用户显式要求联网、最新资料、外部资料或引用来源时生成搜索计划；
+  - `RuleBasedIntentAnalyzer` 已能识别 web-search 意图，`ToolPlanner` 会把搜索计划接入主链，`ToolPlanDagAnnotator` 为结果写入 `webSearchResults` alias；
+  - Agent 能力矩阵将 `tool.web-search` 从 `PLANNED` 校准为 `PARTIAL_CLOSED_LOOP`。
+- 安全边界：
+  - ToolPlan 不保存原始 query、URL、HTML、API Key、Provider endpoint、搜索结果正文、SQL 或样本数据；
+  - 查询中出现密钥标记、内网地址、SQL 或敏感业务词时，会生成稳定 issue code，供后续审批/阻断策略消费；
+  - 默认 `publicWebAllowed=false`，只表达“受控 Provider 可执行”，不允许模型或 Python Runtime 任意抓取 URL；
+  - 搜索结果策略要求 citation-first、snippet-only、禁止原始 HTML 和文件下载。
+- 验证：
+  - 定向测试通过：`test_web_search_tool.py`、`test_tool_planner.py`、`test_intent_analyzer.py`、`test_agent_capability_matrix.py`，共 31 个用例；
+  - 扩展回归通过：`test_agent_orchestrator.py`、`test_model_tool_schema.py`、`test_tool_execution_readiness.py`、`test_mcp_tool_call_intake_api.py`、`test_tool_action_intake.py`，共 28 个用例；
+  - 行数检查：`web_search_tool.py` 364 行，`tool_planner.py` 412 行，`intent_analyzer.py` 336 行，`config_tool_registry.py` 324 行，均低于 500 行约束。
+- 收敛判断：
+  - `tool.web-search` 已具备计划层治理契约，但还不是生产执行完成态；
+  - 下一步不建议扩展更多搜索字段，而应在真实 Provider adapter、引用验证、结果缓存、Redis/网关级限流和 Java worker receipt 中选择最短闭口路径；
+  - P0 Agent hardBlocker 目前主要剩 `llm.inference-optimization` 与真实 E2E 联调，项目应继续朝最终闭环推进。
+
 ## 2026-06-30 追加落地进展：Python AI Runtime Context Micro-Compact Closure
 - 本阶段继续按“整体闭环收敛”推进，没有继续发散新的 Agent 协议或模型算法能力，而是关闭 Agent 主链路中的上下文工程缺口。目标是让长上下文在进入模型前具备可解释的微压缩治理，避免上下文只能在“完整塞进模型”和“整块截断丢弃”之间二选一。
 - 产品价值：

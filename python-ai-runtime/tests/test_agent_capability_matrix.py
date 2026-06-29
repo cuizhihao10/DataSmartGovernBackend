@@ -138,6 +138,25 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
         self.assertIn("长会话历史摘要", micro_compact["closureGap"])
         self.assertNotIn("prompt", serialized.lower())
 
+    def test_web_search_tool_reflects_controlled_contract_closure(self) -> None:
+        """网页搜索工具已具备受控契约，但还不是生产执行完成态。"""
+
+        diagnostics = default_agent_capability_matrix_service().diagnostics()
+        tools = next(domain for domain in diagnostics["domains"] if domain["domainId"] == "tools")
+        web_search = next(
+            item
+            for item in tools["subCapabilities"]
+            if item["capabilityId"] == "tool.web-search"
+        )
+        serialized = str(web_search)
+
+        self.assertEqual(AgentCapabilityStatus.PARTIAL_CLOSED_LOOP.value, web_search["status"])
+        self.assertIn("WebSearchGovernanceService", web_search["currentEvidence"])
+        self.assertIn("searchQueryRef", web_search["currentEvidence"])
+        self.assertIn("真实搜索 Provider", web_search["closureGap"])
+        self.assertNotIn("api_key", serialized.lower())
+        self.assertNotIn("endpoint", web_search["currentEvidence"].lower())
+
     def test_closure_readiness_groups_p0_gaps_for_final_project_convergence(self) -> None:
         """闭口门禁应把 P0 缺口分层，帮助项目停止发散并优先关闭硬阻塞。"""
 

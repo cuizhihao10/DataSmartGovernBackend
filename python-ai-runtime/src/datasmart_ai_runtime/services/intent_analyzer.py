@@ -94,6 +94,12 @@ class RuleBasedIntentAnalyzer:
             self._append_unique(domains, GovernanceDomain.PERMISSION_ADMIN)
             self._append_unique(risk_tags, IntentRiskTag.CROSS_SCOPE)
 
+        if self._wants_web_search(request, objective):
+            self._append_unique(domains, GovernanceDomain.KNOWLEDGE_QA)
+            self._append_unique(domains, GovernanceDomain.GENERAL_GOVERNANCE)
+            self._append_unique(candidate_tools, "web.search.query")
+            self._append_unique(risk_tags, IntentRiskTag.READ_ONLY)
+
         workspace_file_operation = self._workspace_file_operation(request, objective)
         if workspace_file_operation == "READ":
             self._append_unique(domains, GovernanceDomain.GENERAL_GOVERNANCE)
@@ -160,6 +166,39 @@ class RuleBasedIntentAnalyzer:
                 "修复任务",
                 "处理任务",
                 "创建治理",
+            ),
+        )
+
+    def _wants_web_search(self, request: AgentRequest, objective: str) -> bool:
+        """判断用户是否需要外部网页搜索。
+
+        网页搜索被建模为“受控外部资料检索”，不是普通知识问答。只要用户显式要求联网、最新资料、
+        引用来源，或控制面变量启用 webSearch，就把 `web.search.query` 加入候选工具。真实联网仍必须
+        经过工具计划、网络权限、Provider allowlist、限流和引用策略，不会由意图分析器直接执行。
+        """
+
+        if request.variables.get("webSearch") or request.variables.get("useWebSearch") or request.variables.get("use_web_search"):
+            return True
+        if request.variables.get("searchQuery") or request.variables.get("webSearchQuery") or request.variables.get("search_query"):
+            return True
+        return self._contains_any(
+            objective,
+            (
+                "web search",
+                "search web",
+                "internet",
+                "online",
+                "latest",
+                "current",
+                "网页搜索",
+                "联网搜索",
+                "联网查",
+                "网上查",
+                "搜索一下",
+                "查一下最新",
+                "最新资料",
+                "外部资料",
+                "引用来源",
             ),
         )
 

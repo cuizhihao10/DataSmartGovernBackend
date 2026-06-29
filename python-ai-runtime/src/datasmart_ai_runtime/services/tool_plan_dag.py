@@ -43,6 +43,7 @@ class ToolPlanDagAnnotator:
         "task.create.draft": "taskDraft",
         "task.draft.persist": "persistedTaskDraft",
         "data-sync.execute": "dataSyncExecution",
+        "web.search.query": "webSearchResults",
     }
 
     def annotate(self, tool_plans: tuple[ToolPlan, ...]) -> tuple[ToolPlan, ...]:

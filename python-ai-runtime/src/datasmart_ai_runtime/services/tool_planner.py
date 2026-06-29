@@ -22,6 +22,7 @@ from datasmart_ai_runtime.services.quality_remediation_tool_plan_builder import 
     QualityRemediationToolPlanArgumentBuilder,
 )
 from datasmart_ai_runtime.services.tools.workspace_file_plan_builder import WorkspaceFileToolPlanBuilder
+from datasmart_ai_runtime.services.tools.web_search_tool import WebSearchToolPlanBuilder
 from datasmart_ai_runtime.services.tool_plan_dag import ToolPlanDagAnnotator
 from datasmart_ai_runtime.services.tool_parameter_validator import ToolParameterValidator
 
@@ -50,6 +51,7 @@ class ToolPlanner:
         self._dag_annotator = ToolPlanDagAnnotator()
         self._quality_remediation_arguments = QualityRemediationToolPlanArgumentBuilder()
         self._workspace_file_plans = WorkspaceFileToolPlanBuilder()
+        self._web_search_plans = WebSearchToolPlanBuilder()
 
     def plan(
         self,
@@ -105,6 +107,20 @@ class ToolPlanner:
         )
         plans.extend(workspace_file_plans)
         planned_tool_names.update(plan.tool_name for plan in workspace_file_plans)
+
+        web_search_plans = self._web_search_plans.build(
+            request=request,
+            objective=objective,
+            candidate_tools=candidate_tools,
+            tools=self._tools,
+            plan_factory=lambda tool, reason, arguments: self._build_plan(
+                tool=tool,
+                reason=reason,
+                arguments=arguments,
+            ),
+        )
+        plans.extend(web_search_plans)
+        planned_tool_names.update(plan.tool_name for plan in web_search_plans)
 
         quality_keywords = ("quality", "rule", "校验", "质量", "规则", "异常", "清洗")
         wants_quality_rule = (

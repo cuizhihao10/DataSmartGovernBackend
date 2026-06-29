@@ -131,6 +131,53 @@ def default_tool_registry() -> tuple[ToolDefinition, ...]:
             cache_policy="session_only",
         ),
         ToolDefinition(
+            name="web.search.query",
+            description=(
+                "生成受控网页搜索请求草案。该工具只产生 searchQueryRef、Provider allowlist、缓存 TTL、"
+                "限流窗口和引用结果策略，不允许模型或 Python Runtime 直接抓取任意 URL。"
+            ),
+            risk_level=ToolRiskLevel.MEDIUM,
+            execution_mode=ToolExecutionMode.DRAFT_ONLY,
+            required_permissions=("agent:network:web-search",),
+            target_service="python-ai-runtime",
+            target_endpoint="internal://web-search/query",
+            input_schema={
+                "searchQueryRef": {
+                    "type": "object",
+                    "required": True,
+                    "sensitive": True,
+                    "resolution": "derived",
+                    "description": (
+                        "搜索查询的低敏引用，包含 queryDigest、长度、敏感等级和 materialization 策略；"
+                        "不得在 AgentPlan、事件或日志中携带原始查询正文。"
+                    ),
+                },
+                "providerPolicy": {
+                    "type": "object",
+                    "required": True,
+                    "sensitive": False,
+                    "resolution": "derived",
+                    "description": "允许的搜索 Provider 摘要和密钥管理边界，不包含 endpoint 或 API Key。",
+                },
+                "resultPolicy": {
+                    "type": "object",
+                    "required": True,
+                    "sensitive": False,
+                    "resolution": "derived",
+                    "description": "搜索结果引用策略，例如必须带 citation、只允许 snippet 和来源元数据。",
+                },
+            },
+            read_only=True,
+            idempotent=True,
+            allowed_actions=("PREPARE_SEARCH_QUERY", "SEARCH_WITH_CITATIONS"),
+            tool_type="WEB_SEARCH",
+            tenant_scoped=True,
+            project_scoped=True,
+            sensitive_fields=("searchQueryRef",),
+            memory_write_policy="none",
+            cache_policy="session_only",
+        ),
+        ToolDefinition(
             name="quality.rule.suggest",
             description="根据元数据、业务目标和历史质量问题生成数据质量规则草案。",
             risk_level=ToolRiskLevel.MEDIUM,

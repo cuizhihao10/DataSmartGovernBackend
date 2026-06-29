@@ -179,6 +179,14 @@ from datasmart_ai_runtime.services.tools.workspace_file_tool import (
     WorkspaceFileWriteRequest,
 )
 from datasmart_ai_runtime.services.tools.workspace_file_plan_builder import WorkspaceFileToolPlanBuilder
+from datasmart_ai_runtime.services.tools.web_search_tool import (
+    WEB_SEARCH_TOOL_PAYLOAD_POLICY,
+    WEB_SEARCH_TOOL_SCHEMA_VERSION,
+    WebSearchGovernanceDecision,
+    WebSearchGovernancePolicy,
+    WebSearchGovernanceService,
+    WebSearchToolPlanBuilder,
+)
 
 __all__ = (
     "ToolActionIntakeBoundary",
@@ -301,4 +309,10 @@ __all__ = (
     "WorkspaceFileToolSettings",
     "WorkspaceFileWriteRequest",
     "WorkspaceFileToolPlanBuilder",
+    "WEB_SEARCH_TOOL_PAYLOAD_POLICY",
+    "WEB_SEARCH_TOOL_SCHEMA_VERSION",
+    "WebSearchGovernanceDecision",
+    "WebSearchGovernancePolicy",
+    "WebSearchGovernanceService",
+    "WebSearchToolPlanBuilder",
 )

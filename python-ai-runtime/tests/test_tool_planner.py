@@ -174,6 +174,39 @@ class ToolPlannerTest(unittest.TestCase):
         self.assertEqual("contentRef", plan.parameter_validation.issues[0].parameter_name)
         self.assertEqual(ToolParameterIssueAction.CAN_FILL_FROM_CONTEXT, plan.parameter_validation.issues[0].action)
 
+    def test_web_search_plan_uses_query_reference_and_governance_policies(self) -> None:
+        """网页搜索计划只能携带低敏查询引用和治理策略。
+
+        web-search 是外部网络能力，不能把用户原始查询、URL、SQL 或敏感业务词直接写入 `/agent/plans`。
+        Planner 这里只生成搜索草案，真实 Provider 执行必须继续经过网络权限、allowlist、限流和引用校验。
+        """
+
+        raw_query = "Qwen3.7 Agent tool calling latest release"
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="analyst-a",
+            objective="请联网搜索最新资料并给出引用来源",
+            variables={"searchQuery": raw_query, "sessionId": "session-web-search"},
+        )
+
+        plans = ToolPlanner(default_tool_registry()).plan(request=request)
+
+        plan = next(plan for plan in plans if plan.tool_name == "web.search.query")
+        serialized = str(plan.arguments)
+        self.assertEqual(ToolExecutionMode.DRAFT_ONLY, plan.execution_mode)
+        self.assertFalse(plan.requires_human_approval)
+        self.assertTrue(plan.parameter_validation.can_execute)
+        self.assertEqual("LOW_SENSITIVE_SEARCH_GOVERNANCE_METADATA_ONLY", plan.arguments["payloadPolicy"])
+        self.assertIn("searchQueryRef", plan.arguments)
+        self.assertIn("providerPolicy", plan.arguments)
+        self.assertIn("rateLimitPolicy", plan.arguments)
+        self.assertEqual("webSearchResults", plan.governance_hints["resultAlias"])
+        self.assertTrue(plan.governance_hints["webSearchGoverned"])
+        self.assertEqual("CONTROLLED_PROVIDER_ONLY", plan.governance_hints["externalNetworkAccess"])
+        self.assertNotIn(raw_query, serialized)
+        self.assertNotIn("最新资料", serialized)
+
     def test_task_plan_carries_high_risk_intent_tags(self) -> None:
         request = AgentRequest(
             tenant_id="tenant-a",
