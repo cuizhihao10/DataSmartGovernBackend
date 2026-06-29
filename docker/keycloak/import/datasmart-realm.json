@@ -1,0 +1,334 @@
+{
+  "realm": "datasmart",
+  "displayName": "DataSmart Govern Local Realm",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "roles": {
+    "realm": [
+      {
+        "name": "DATASMART_ORDINARY_USER",
+        "description": "DataSmart 普通用户，本地样板角色。"
+      },
+      {
+        "name": "DATASMART_PROJECT_OWNER",
+        "description": "DataSmart 项目负责人，可管理项目内治理任务。"
+      },
+      {
+        "name": "DATASMART_OPERATOR",
+        "description": "DataSmart 运营人员，可处理执行、告警和人工介入。"
+      },
+      {
+        "name": "DATASMART_AUDITOR",
+        "description": "DataSmart 审计员，偏只读和审计复核。"
+      },
+      {
+        "name": "DATASMART_TENANT_ADMINISTRATOR",
+        "description": "DataSmart 租户管理员。"
+      },
+      {
+        "name": "DATASMART_PLATFORM_ADMINISTRATOR",
+        "description": "DataSmart 平台管理员，本地样板最高权限用户。"
+      },
+      {
+        "name": "DATASMART_SERVICE_ACCOUNT",
+        "description": "DataSmart 服务账号角色，用于本地模拟机器调用。"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "datasmart-gateway",
+      "name": "DataSmart Gateway",
+      "description": "本地开发用 gateway OIDC client。生产应替换为企业 IdP 中正式注册的应用或资源服务器。",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "bearerOnly": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": true,
+      "fullScopeAllowed": true,
+      "redirectUris": [
+        "http://localhost:3000/*",
+        "http://localhost:5173/*",
+        "http://localhost:8080/*"
+      ],
+      "webOrigins": [
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:8080"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
+      },
+      "protocolMappers": [
+        {
+          "name": "datasmart-gateway-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "datasmart-gateway",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "datasmart-tenant-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "datasmart_tenant_id",
+            "claim.name": "datasmart_tenant_id",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "datasmart-actor-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "datasmart_actor_id",
+            "claim.name": "datasmart_actor_id",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "datasmart-actor-role",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "datasmart_actor_role",
+            "claim.name": "datasmart_actor_role",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "datasmart-actor-type",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "datasmart_actor_type",
+            "claim.name": "datasmart_actor_type",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "datasmart-workspace-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "datasmart_workspace_id",
+            "claim.name": "datasmart_workspace_id",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "project-owner",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Project",
+      "lastName": "Owner",
+      "email": "project-owner@example.local",
+      "attributes": {
+        "datasmart_tenant_id": [
+          "10"
+        ],
+        "datasmart_actor_id": [
+          "1001"
+        ],
+        "datasmart_actor_role": [
+          "PROJECT_OWNER"
+        ],
+        "datasmart_actor_type": [
+          "USER"
+        ],
+        "datasmart_workspace_id": [
+          "workspace-a"
+        ]
+      },
+      "realmRoles": [
+        "DATASMART_PROJECT_OWNER"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "DataSmart@123",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "operator",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "DataSmart",
+      "lastName": "Operator",
+      "email": "operator@example.local",
+      "attributes": {
+        "datasmart_tenant_id": [
+          "10"
+        ],
+        "datasmart_actor_id": [
+          "1002"
+        ],
+        "datasmart_actor_role": [
+          "OPERATOR"
+        ],
+        "datasmart_actor_type": [
+          "USER"
+        ],
+        "datasmart_workspace_id": [
+          "workspace-a"
+        ]
+      },
+      "realmRoles": [
+        "DATASMART_OPERATOR"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "DataSmart@123",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "auditor",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "DataSmart",
+      "lastName": "Auditor",
+      "email": "auditor@example.local",
+      "attributes": {
+        "datasmart_tenant_id": [
+          "10"
+        ],
+        "datasmart_actor_id": [
+          "1003"
+        ],
+        "datasmart_actor_role": [
+          "AUDITOR"
+        ],
+        "datasmart_actor_type": [
+          "USER"
+        ],
+        "datasmart_workspace_id": [
+          "workspace-a"
+        ]
+      },
+      "realmRoles": [
+        "DATASMART_AUDITOR"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "DataSmart@123",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "platform-admin",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Platform",
+      "lastName": "Admin",
+      "email": "platform-admin@example.local",
+      "attributes": {
+        "datasmart_tenant_id": [
+          "1"
+        ],
+        "datasmart_actor_id": [
+          "9001"
+        ],
+        "datasmart_actor_role": [
+          "PLATFORM_ADMINISTRATOR"
+        ],
+        "datasmart_actor_type": [
+          "USER"
+        ],
+        "datasmart_workspace_id": [
+          "platform"
+        ]
+      },
+      "realmRoles": [
+        "DATASMART_PLATFORM_ADMINISTRATOR"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "DataSmart@123",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "sync-service",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Sync",
+      "lastName": "Service",
+      "email": "sync-service@example.local",
+      "attributes": {
+        "datasmart_tenant_id": [
+          "10"
+        ],
+        "datasmart_actor_id": [
+          "9101"
+        ],
+        "datasmart_actor_role": [
+          "SERVICE_ACCOUNT"
+        ],
+        "datasmart_actor_type": [
+          "SERVICE_ACCOUNT"
+        ],
+        "datasmart_workspace_id": [
+          "system-sync"
+        ]
+      },
+      "realmRoles": [
+        "DATASMART_SERVICE_ACCOUNT"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "DataSmart@123",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

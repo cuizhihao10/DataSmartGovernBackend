@@ -1,5 +1,23 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Gateway Keycloak 本地 OIDC 联调闭环
+- 本阶段承接上一阶段 Gateway OIDC 认证中心收敛，把“gateway 能校验标准 JWT”继续推进为“本地环境能用真实 Keycloak access token 进行端到端联调”。这一步仍然不自研登录系统，而是用主流 IdP 方式补齐开发、测试、学习环境的身份基础设施。
+- 产品价值：
+  - `docker-compose.yml` 新增 `keycloak` 服务，使用官方 Keycloak 镜像、realm import 和独立 `keycloak_data` 数据卷；
+  - 新增 `docker/keycloak/import/datasmart-realm.json`，内置 `datasmart` realm、`datasmart-gateway` client、audience mapper、DataSmart 平台 claim mapper、角色和样例用户；
+  - 新增 `docker/keycloak/README.md`，说明本地启动方式、样例用户、access token 获取方式、gateway `/auth/session` 验证方式和生产注意事项；
+  - `docs/gateway-oidc-keycloak-integration.md` 更新为“仓库已提供本地 realm 样板”，不再把 Keycloak realm 导入文件列为缺口；
+  - 样例角色覆盖 `PROJECT_OWNER`、`OPERATOR`、`AUDITOR`、`PLATFORM_ADMINISTRATOR`、`SERVICE_ACCOUNT`，便于后续验证 permission-admin、服务账号和 Agent 工具治理场景。
+- 安全边界：
+  - Keycloak `start-dev`、本地管理员和样例用户密码只允许用于开发联调；
+  - 生产环境必须使用正式 Keycloak 集群、企业 IdP 或云 IAM，并启用 TLS、外部数据库、Secret Manager、组织同步、审计策略和正式登录流；
+  - gateway 仍只做 Resource Server，不签发 token，不保存密码，不托管 refresh token；
+  - 服务到服务调用后续仍应升级为 confidential client、Client Credentials、HMAC、mTLS 或 service mesh 身份组合。
+- 收敛判断：
+  - 认证中心已经形成 `Keycloak/企业 IdP -> gateway JWT 校验 -> 平台身份 Header -> permission-admin 授权` 的本地可运行骨架；
+  - 下一步不建议继续扩展 gateway 自身登录能力，而应把 OIDC 角色与 permission-admin 的路由、菜单、服务账号和数据范围策略打通；
+  - 认证中心闭环后，应继续回到 data-sync worker loop、task-management receipt 和 Agent 工具调用执行闭环，推动全项目从“能力散点”收敛为“端到端业务链路”。
+
 ## 2026-06-29 追加落地进展：Gateway OIDC 认证中心收敛
 - 本阶段按商业化要求补齐 gateway 认证中心，不再采用开发 token 或临时 Header 作为生产身份方案，而是让 gateway 以 Spring Security OAuth2 Resource Server 形态接入 Keycloak、企业 IdP 或云 IAM。
 - 产品价值：

@@ -121,6 +121,43 @@ services:
       - datasmart-network
     restart: unless-stopped
 
+  # Keycloak 是本地开发与集成测试使用的 OIDC 身份提供方样板。
+  #
+  # 设计意图：
+  # 1. gateway 已按 OIDC Resource Server 校验 Bearer JWT，因此本地环境也需要一个真实 IdP 签发标准 JWT；
+  # 2. 这里使用 Keycloak 官方镜像和 realm import，而不是在 gateway 内继续维护简化 token 逻辑；
+  # 3. `docker/keycloak/import/datasmart-realm.json` 会导入 datasmart realm、datasmart-gateway client、
+  #    audience mapper、DataSmart 平台必需 claim mapper 和本地样例用户；
+  # 4. `start-dev`、默认 admin 密码和样例用户密码只允许用于本地学习/联调，生产必须替换为正式 Keycloak 集群、
+  #    企业 IdP、TLS、外部数据库、Secret Manager 和组织用户同步策略。
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.6.4
+    container_name: datasmart-keycloak
+    command:
+      - start-dev
+      - --http-port=18080
+      - --import-realm
+    environment:
+      # Keycloak 26+ 推荐使用 KC_BOOTSTRAP_ADMIN_* 初始化本地管理员。
+      # 这些默认值只用于本地容器；生产不能把 admin/admin 或任何固定密码写入部署配置。
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${DATASMART_KEYCLOAK_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${DATASMART_KEYCLOAK_ADMIN_PASSWORD:-admin}
+      # 打开健康和指标端点，便于后续 Prometheus 或运维脚本对认证中心做存活检查。
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+    ports:
+      # 对外使用 18080，避免与 gateway 8080、Nacos 8848、Chroma 8000 等端口冲突。
+      - "18080:18080"
+    volumes:
+      # realm import 只读挂载，防止容器运行时误改仓库内的身份样板。
+      - ./docker/keycloak/import:/opt/keycloak/data/import:ro
+      # Keycloak dev 模式默认使用本地存储。保留数据卷后，realm 修改不会自动覆盖既有 realm；
+      # 需要重新导入时可删除 keycloak_data 卷或在 Admin Console 手动调整。
+      - keycloak_data:/opt/keycloak/data
+    networks:
+      - datasmart-network
+    restart: unless-stopped
+
   # Prometheus 负责抓取并存储可观测性层暴露的指标数据。
   prometheus:
     image: prom/prometheus:latest
@@ -195,6 +232,7 @@ volumes:
   minio_data:
   nacos_logs:
   nacos_data:
+  keycloak_data:
   prometheus_data:
   alertmanager_data:
   grafana_data:
