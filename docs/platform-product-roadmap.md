@@ -1,5 +1,26 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Workspace File Payload Materialization Internal API
+- 本阶段承接 `Workspace File Payload Materialization`，继续做闭环收敛，不扩大文件系统能力。上一阶段已经有 Java service 能把 `workspace.file.read/write` 的真实参数物化到服务端 `agent-payload:` store；本阶段补齐内部控制面入口，让 Python Runtime、Agent 编排器或未来 workspace worker 准备阶段可以通过受控 API 调用该能力。
+- 产品价值：
+  - 新增 `/internal/agent-runtime/tool-action-workspace-files/payload-materializations` 内部路由；
+  - Controller 从 gateway/permission-admin 可信 Header 解析 tenant、actor、dataScope、authorizedProjectIds；
+  - 请求体中的 tenantId/projectId/actorId 只能缩小范围，不能覆盖可信 Header；
+  - PROJECT 数据范围下，projectId 必须落在授权项目集合内，否则 fail-closed；
+  - 新增 request/response DTO，把内部真实参数输入与低敏响应输出显式拆开；
+  - route 响应继续只返回 payloadReference、digest、byteCount、evidenceCodes、issueCodes 和 recommendedActions。
+- 安全边界：
+  - 该路由是 internal 控制面入口，不是普通用户接口、文件下载接口或真实文件 worker；
+  - 响应不返回 relativePath、workspace root、content、contentReference 原值、prompt、SQL、工具参数正文、凭据或内部 endpoint；
+  - tenant/actor 必须来自可信 Header 或与请求体一致，缺失身份上下文时拒绝物化；
+  - 后续真实 worker 仍必须等待 artifact grant、DLP/恶意内容扫描、审批/豁免、worker lease 和 worker receipt。
+- 验证：
+  - 定向 Maven 测试通过：`AgentWorkspaceFilePayloadMaterializationControllerTest`、`AgentWorkspaceFilePayloadMaterializationServiceTest`、`AgentToolActionPayloadStoreServiceTest`，共 13 个用例；
+  - 行数检查：Controller 179 行，request DTO 37 行，response DTO 64 行，Controller 测试 157 行，均低于 500 行约束。
+- 收敛判断：
+  - `tool.file-read-write` 现在从 Python 工具、Java contract、Java service 物化推进到 Java internal API 可调用状态；
+  - 下一步应继续把 worker lease、artifact grant、worker receipt 与该 payloadReference 串联，而不是继续扩大路径类型、二进制文件或任意本机访问能力。
+
 ## 2026-06-29 追加落地进展：Workspace File Payload Materialization
 - 本阶段承接 `Workspace File Tool Durable Action Contract`，继续沿 Agent 闭口路线推进，但没有扩大文件系统权限范围。目标是补齐 `workspace.file.read/write` 从“低敏工具规划/contract”进入真实 durable worker 前必须有的服务端参数物化层：真实 relativePath、写入正文或 contentReference 只保存到服务端 `agent-payload:` store，对外响应只暴露摘要、大小、证据码和问题码。
 - 产品价值：
