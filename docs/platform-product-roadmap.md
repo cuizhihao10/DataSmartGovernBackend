@@ -15,8 +15,10 @@
   - 认证审计只回答“gateway 是否接受该身份”，不替代 permission-admin 的路由、资源、动作、数据范围和审批授权审计；
   - `application-prod.yml` 不写死生产 issuer、HMAC secret 或内部服务地址，生产必须通过环境变量、Docker Secret、Kubernetes Secret 或 Secret Manager 注入。
 - 验证：
-  - 定向 Maven 测试已覆盖 OIDC Header 注入、Keycloak realm role 映射、缺必需 claim fail-closed、认证审计事件和认证指标；
-  - 后续提交前还需要再跑 gateway 全量测试，确认新增生产 profile 不影响默认测试 profile。
+  - gateway 全量测试通过：`mvn -pl gateway -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`，共 61 个用例；
+  - gateway 干净构建测试通过：`mvn -pl gateway -am clean test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`，从空 target 重新编译 49 个 gateway 源码文件和 13 个测试源码文件后，61 个用例全部通过；
+  - 空白差异检查通过：`git diff --check` 与 `git diff --cached --check` 均无空白错误，仅有 Windows LF/CRLF 换行提示；
+  - 行数检查：新增认证审计类、指标类、过滤器和测试文件均低于 500 行约束。
 - 收敛判断：
   - 认证中心不再走简化自研登录路线，而是明确收敛到 OIDC/Keycloak/企业 IdP + gateway Resource Server + permission-admin 授权中心；
   - 下一步不建议继续扩展登录表单、密码策略或自研 session，而应做端到端联调和内部服务账号链路闭口；
