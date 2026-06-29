@@ -123,6 +123,42 @@ datasmart:
       # 当前 data-sync 外层多批循环和避让重试尚未实现，因此默认不让 run-once 自行重试。
       # 后续接入 worker loop、退避策略和幂等写入后，再统一纳入 retryPolicy。
       default-max-retry-count: 0
+    worker-loop:
+      # 是否启用 data-sync 内嵌 worker loop 定时调度。
+      # worker loop 会真实认领 QUEUED execution，并可能触发 datasource-management 读取源端、写入目标端，
+      # 因此默认关闭，避免开发者只启动 data-sync 时无意中执行历史任务。
+      #
+      # 商用或完整联调环境开启前，请至少确认：
+      # 1. datasource-management 已启动，且 /internal/sync-batch-runs/run-once 可用；
+      # 2. datasource-run-once.enabled=true，并配置了正确的内网地址或服务发现地址；
+      # 3. 执行器签名、服务账号、OIDC/mTLS/service mesh 身份策略已经按环境要求开启；
+      # 4. Prometheus 能抓取 worker loop 指标，运维人员能看到 failed/claimed/dispatched 的变化；
+      # 5. 当前最小闭环只支持 FULL/ONE_TIME_MIGRATION 单批场景，增量、多批和分片并发仍会 fail-closed。
+      scheduler-enabled: false
+      # 内嵌 worker 默认执行器 ID。
+      # 多实例生产部署时建议用环境变量覆盖为 data-sync-worker-${HOSTNAME}，
+      # 这样 execution.executor_id 可以直接帮助定位是哪台实例认领了任务。
+      executor-id: data-sync-embedded-worker
+      # 单轮最多认领并处理多少条 execution。
+      # 默认 3 是保守闭环值；如果队列积压严重，应优先增加 worker 实例或独立 worker 池，而不是无限调大单轮数量。
+      max-executions-per-run: 3
+      # claim 时申请的租约秒数。
+      # 该值应大于 datasource-run-once.read-timeout-ms 对应秒数，并给 complete/fail 回写留出余量。
+      lease-seconds: 180
+      # 可选租户过滤。为空表示平台级 worker 可认领所有租户任务。
+      # 租户专属部署或监管隔离客户可以指定 tenant-id。
+      tenant-id:
+      # 服务启动后首次运行 worker loop 的延迟。
+      initial-delay-ms: 20000
+      # 上一轮 worker loop 结束后多久启动下一轮。
+      fixed-delay-ms: 10000
+      # 调度器写审计时使用的平台系统 actorId。
+      # 接入 Keycloak/OIDC service account 后，可替换为真实服务账号主体 ID。
+      system-actor-id: 0
+      # 调度器写审计时使用的角色，保持和服务账号委托契约一致。
+      system-actor-role: SERVICE_ACCOUNT
+      # 自动生成 traceId 的前缀，不承载业务参数或敏感执行信息。
+      trace-id-prefix: data-sync-worker-loop
     executor:
       # 单条 execution 允许被 defer 或过期租约恢复回队列的最大次数。
       # 达到该阈值后，系统会停止自动 requeue，把 execution 标记为 FAILED，

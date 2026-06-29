@@ -1,5 +1,32 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Data Sync Worker Loop Closure
+- 本阶段承接 `Data Sync Run-Once Dispatch Closure`，把前一阶段已经完成的 `SyncBatchRunOnceDispatchService` 接入正式 worker loop。目标不是继续扩展更多连接器，而是让 data-sync 能从 QUEUED execution 开始，完成 `claim -> template -> run-once dispatch -> complete/fail` 的最小可执行闭环。
+- 产品价值：
+  - 新增 `DataSyncWorkerLoopService` 与默认实现，按配置或请求执行一轮 worker loop，支持单轮最多处理多条 execution；
+  - 新增 `POST /sync-workers/run-once` 与 `POST /internal/sync-workers/run-once`，用于运维手动触发、调度中心触发或未来独立 worker 服务复用；
+  - 新增 `DataSyncWorkerLoopScheduler`，可通过 `datasmart.data-sync.worker-loop.scheduler-enabled=true` 开启内嵌定时认领执行；
+  - 新增 worker loop 低敏结果 DTO，返回 claimed、dispatched、completed、failed、queueDrained、issueCodes 等控制面摘要；
+  - 新增 `DataSyncWorkerLoopMetrics`，暴露最近一轮 claimed/dispatched/completed/failed、成功/失败时间戳、调度轮次、跳过和失败指标；
+  - `application.yml` 增加 worker-loop 配置与中文说明，明确默认不自动触发真实数据搬运、生产开启前必须确认 datasource-management、服务账号、监控和当前最小闭环边界。
+- 安全边界：
+  - worker loop 返回值不包含字段映射正文、过滤条件、SQL、checkpoint 原始值、连接地址、账号、密码、样本数据或远端响应正文；
+  - 手动/internal 触发入口复用执行器服务账号签名校验组件，生产可启用 HMAC，并继续演进到 OIDC service account、mTLS 或 service mesh；
+  - 模板缺失、派发异常等结构性问题会写低敏 fail-closed，避免 execution 长期停留在 RUNNING；
+  - 调度指标不使用 tenantId、taskId、executionId、traceId、workerId 作为标签，避免 Prometheus 高基数风险。
+- 验证：
+  - 定向 Java 测试：
+    `mvn -pl data-sync -am "-Dtest=DataSyncWorkerLoopServiceImplTest,SyncBatchRunOnceDispatchServiceTest,SyncBatchRunnerBridgePlanSupportTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：12 个测试通过；
+  - data-sync 全量测试：
+    `mvn -pl data-sync -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：102 个测试通过，Maven Toolchain 使用 JDK 21；
+  - 行数检查：`DataSyncWorkerLoopServiceImpl.java` 289 行，`DataSyncWorkerLoopMetrics.java` 167 行，`DataSyncWorkerLoopController.java` 58 行，`DataSyncWorkerLoopServiceImplTest.java` 269 行，均低于 500 行约束。
+- 收敛判断：
+  - data-sync 与 datasource-management 已形成最小真实执行闭环骨架：`QUEUED execution -> worker claim -> run-once dispatch -> data-sync complete/fail`；
+  - 下一步不再继续扩大 data-sync 局部功能，应优先补 `task-management receipt`，让同步执行成功/失败进入全平台任务中心；
+  - 在 receipt 后再判断是否做 checkpoint handoff、多批循环和独立 worker 池，避免闭环前继续发散连接器类型。
+
 ## 2026-06-29 追加落地进展：Gateway OIDC 服务账号委托授权契约
 - 本阶段承接 Keycloak 本地 OIDC 联调闭环，继续把认证中心与 permission-admin 授权中心打通。重点不是新增登录能力，而是让 OIDC/Keycloak 解析出的 `actorType=SERVICE_ACCOUNT`、workspace 和委托责任链能够进入 permission-admin 判定请求、缓存键和审计摘要。
 - 产品价值：
