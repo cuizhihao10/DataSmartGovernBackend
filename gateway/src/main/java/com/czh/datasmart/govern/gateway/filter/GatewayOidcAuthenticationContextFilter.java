@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.gateway.filter;
 
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
+import com.czh.datasmart.govern.gateway.authentication.GatewayAuthenticationAuditSupport;
 import com.czh.datasmart.govern.gateway.authentication.GatewayAuthenticationCenterService;
 import com.czh.datasmart.govern.gateway.authorization.GatewayAuthorizationErrorWriter;
 import com.czh.datasmart.govern.gateway.config.GatewayAuthenticationCenterProperties;
@@ -40,6 +41,7 @@ public class GatewayOidcAuthenticationContextFilter implements GlobalFilter, Ord
 
     private final GatewayAuthenticationCenterProperties authenticationProperties;
     private final GatewayAuthenticationCenterService authenticationCenterService;
+    private final GatewayAuthenticationAuditSupport authenticationAuditSupport;
     private final GatewayAuthorizationErrorWriter authorizationErrorWriter;
 
     /**
@@ -75,6 +77,10 @@ public class GatewayOidcAuthenticationContextFilter implements GlobalFilter, Ord
         if (!principal.authenticated()) {
             if (authenticationProperties.getOidc().isFailClosedOnMissingRequiredClaims()
                     && authenticationCenterService.missingRequiredBusinessClaims(principal)) {
+                authenticationAuditSupport.recordRejected(
+                        exchange.getRequest(),
+                        principal,
+                        "OIDC_JWT_FAIL_CLOSED_MISSING_REQUIRED_CLAIMS");
                 return authorizationErrorWriter.writeForbidden(
                         exchange.getResponse(),
                         exchange.getRequest().getHeaders().getFirst(PlatformContextHeaders.TRACE_ID),
@@ -83,6 +89,7 @@ public class GatewayOidcAuthenticationContextFilter implements GlobalFilter, Ord
             return chain.filter(exchange);
         }
 
+        authenticationAuditSupport.recordResolved(exchange.getRequest(), principal);
         ServerHttpRequest authenticatedRequest = exchange.getRequest()
                 .mutate()
                 .headers(headers -> authenticationCenterService.writePlatformIdentityHeaders(headers, principal))

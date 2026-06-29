@@ -1,5 +1,27 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Gateway Authentication Audit And Prod Profile
+- 本阶段没有继续发散 Agent 文件工具或模型细节，而是按整体闭环收敛路线补齐 gateway 认证中心的生产化缺口。当前项目已经选择 OIDC/Keycloak/企业 IdP 路线，gateway 作为 Resource Server 校验 access token，permission-admin 继续承担授权中心职责；本阶段重点让“身份解析成功或失败”具备低敏审计、指标和生产 profile 安全基线。
+- 产品价值：
+  - 新增 `GatewayAuthenticationAuditEvent`，把一次 gateway 认证解析结果固化成低敏事件；
+  - 新增 `GatewayAuthenticationAuditSink` 和 `LoggingGatewayAuthenticationAuditSink`，先落结构化日志端口，后续可扩展 Kafka、SIEM、observability 或 permission-admin 审计中心；
+  - 新增 `GatewayAuthenticationAuditSupport`，统一记录 `RESOLVED`、`REJECTED` 等认证结果，避免审计逻辑散落到过滤器；
+  - 新增 `GatewayAuthenticationMetrics`，记录 `datasmart.gateway.authentication.outcome`，让运维能看到认证成功率、失败原因和主体类型分布；
+  - `GatewayOidcAuthenticationContextFilter` 在 OIDC/JWT 成功映射平台身份时写低敏审计，在缺必需 claim 且 fail-closed 时写拒绝审计；
+  - 新增 `gateway/src/main/resources/application-prod.yml`，把生产 profile 收敛为 OIDC issuer 必填、禁止外部自报身份 Header、禁用开发身份、强制 permission-admin 授权、强制 Python Runtime HMAC 签名的安全基线。
+- 安全边界：
+  - 认证审计事件不保存 access token、refresh token、完整 JWT claim、邮箱、手机号、密码、client secret、证书、prompt、SQL、工具参数、样本数据、模型输出或内部 endpoint；
+  - 指标标签只保留 `outcome`、`auth_type`、`actor_type`、`primary_issue`，不把 tenantId、actorId、workspaceId 放进 Prometheus 标签，避免多租户高并发下指标基数爆炸；
+  - 认证审计只回答“gateway 是否接受该身份”，不替代 permission-admin 的路由、资源、动作、数据范围和审批授权审计；
+  - `application-prod.yml` 不写死生产 issuer、HMAC secret 或内部服务地址，生产必须通过环境变量、Docker Secret、Kubernetes Secret 或 Secret Manager 注入。
+- 验证：
+  - 定向 Maven 测试已覆盖 OIDC Header 注入、Keycloak realm role 映射、缺必需 claim fail-closed、认证审计事件和认证指标；
+  - 后续提交前还需要再跑 gateway 全量测试，确认新增生产 profile 不影响默认测试 profile。
+- 收敛判断：
+  - 认证中心不再走简化自研登录路线，而是明确收敛到 OIDC/Keycloak/企业 IdP + gateway Resource Server + permission-admin 授权中心；
+  - 下一步不建议继续扩展登录表单、密码策略或自研 session，而应做端到端联调和内部服务账号链路闭口；
+  - 认证中心仍有生产缺口：持久化审计表/Kafka 审计 topic、IdP 组织同步、token revocation/logout、mTLS/service mesh、权限变更事件驱动缓存失效和 Kubernetes/Helm 生产部署样例。
+
 ## 2026-06-29 追加落地进展：Workspace File Worker Receipt Adapter
 - 本阶段承接 `Workspace File Payload Materialization Internal API`，继续做 workspace 文件工具闭口收敛。目标不是直接开放真实文件 worker，而是先让未来 workspace worker 的低敏回执可以绑定服务端 `agent-payload:` fact，并复用既有 command worker receipt、runtime event projection 和 worker receipt index。
 - 产品价值：

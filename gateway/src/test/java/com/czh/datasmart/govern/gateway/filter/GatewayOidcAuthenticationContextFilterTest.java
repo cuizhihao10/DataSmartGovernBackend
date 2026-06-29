@@ -7,12 +7,17 @@
 package com.czh.datasmart.govern.gateway.filter;
 
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
+import com.czh.datasmart.govern.gateway.authentication.GatewayAuthenticationAuditEvent;
+import com.czh.datasmart.govern.gateway.authentication.GatewayAuthenticationAuditSink;
+import com.czh.datasmart.govern.gateway.authentication.GatewayAuthenticationAuditSupport;
 import com.czh.datasmart.govern.gateway.authentication.GatewayAuthenticationCenterService;
 import com.czh.datasmart.govern.gateway.authorization.GatewayAuthorizationErrorWriter;
 import com.czh.datasmart.govern.gateway.config.GatewayAuthenticationCenterProperties;
 import com.czh.datasmart.govern.gateway.config.GatewayContextProperties;
 import com.czh.datasmart.govern.gateway.controller.dto.GatewayAuthenticationPrincipalView;
+import com.czh.datasmart.govern.gateway.monitoring.GatewayAuthenticationMetrics;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
@@ -26,6 +31,7 @@ import reactor.core.publisher.Mono;
 
 import java.security.Principal;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -45,7 +51,8 @@ class GatewayOidcAuthenticationContextFilterTest {
      */
     @Test
     void verifiedJwtShouldWritePlatformIdentityHeaders() {
-        GatewayOidcAuthenticationContextFilter filter = filter();
+        FilterFixture fixture = filterFixture();
+        GatewayOidcAuthenticationContextFilter filter = fixture.filter();
         RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
         ServerWebExchange exchange = exchange(jwt(Map.of(
                 "datasmart_tenant_id", 10L,
@@ -75,6 +82,21 @@ class GatewayOidcAuthenticationContextFilterTest {
                 .isEqualTo("USER");
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.WORKSPACE_ID))
                 .isEqualTo("workspace-a");
+        assertThat(fixture.auditSink().events()).hasSize(1);
+        GatewayAuthenticationAuditEvent auditEvent = fixture.auditSink().events().getFirst();
+        assertThat(auditEvent.outcome()).isEqualTo("RESOLVED");
+        assertThat(auditEvent.authenticationType()).isEqualTo("OIDC_JWT");
+        assertThat(auditEvent.tenantId()).isEqualTo(10L);
+        assertThat(auditEvent.actorId()).isEqualTo(1001L);
+        assertThat(auditEvent.actorRole()).isEqualTo("PROJECT_OWNER");
+        assertThat(auditEvent.requestPath()).isEqualTo("/api/task/tasks");
+        assertThat(auditEvent.payloadPolicy()).contains("NO_TOKEN");
+        assertThat(fixture.registry().find("datasmart.gateway.authentication.outcome")
+                .tag("outcome", "RESOLVED")
+                .tag("auth_type", "OIDC_JWT")
+                .tag("actor_type", "USER")
+                .tag("primary_issue", "NONE")
+                .counter().count()).isEqualTo(1.0d);
     }
 
     /**
@@ -82,7 +104,8 @@ class GatewayOidcAuthenticationContextFilterTest {
      */
     @Test
     void keycloakRealmRolesShouldBeMappedToPlatformRole() {
-        GatewayOidcAuthenticationContextFilter filter = filter();
+        FilterFixture fixture = filterFixture();
+        GatewayOidcAuthenticationContextFilter filter = fixture.filter();
         RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
         ServerWebExchange exchange = exchange(jwt(Map.of(
                 "datasmart_tenant_id", "20",
@@ -97,6 +120,9 @@ class GatewayOidcAuthenticationContextFilterTest {
                 .isEqualTo("OPERATOR");
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.WORKSPACE_ID))
                 .isEqualTo("default");
+        assertThat(fixture.auditSink().events())
+                .extracting(GatewayAuthenticationAuditEvent::outcome)
+                .containsExactly("RESOLVED");
     }
 
     /**
@@ -107,7 +133,8 @@ class GatewayOidcAuthenticationContextFilterTest {
      */
     @Test
     void missingRequiredBusinessClaimsShouldFailClosed() {
-        GatewayOidcAuthenticationContextFilter filter = filter();
+        FilterFixture fixture = filterFixture();
+        GatewayOidcAuthenticationContextFilter filter = fixture.filter();
         RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
         ServerWebExchange exchange = exchange(jwt(Map.of(
                 "datasmart_tenant_id", 10L,
@@ -118,16 +145,35 @@ class GatewayOidcAuthenticationContextFilterTest {
 
         assertThat(chain.called()).isFalse();
         assertThat(exchange.getResponse().getStatusCode().value()).isEqualTo(403);
+        assertThat(fixture.auditSink().events()).hasSize(1);
+        GatewayAuthenticationAuditEvent auditEvent = fixture.auditSink().events().getFirst();
+        assertThat(auditEvent.outcome()).isEqualTo("REJECTED");
+        assertThat(auditEvent.issueCodes())
+                .contains("OIDC_JWT_CONTEXT_INCOMPLETE", "OIDC_JWT_FAIL_CLOSED_MISSING_REQUIRED_CLAIMS");
+        assertThat(fixture.registry().find("datasmart.gateway.authentication.outcome")
+                .tag("outcome", "REJECTED")
+                .tag("auth_type", "OIDC_JWT")
+                .tag("actor_type", "USER")
+                .tag("primary_issue", "OIDC_JWT_CONTEXT_INCOMPLETE")
+                .counter().count()).isEqualTo(1.0d);
     }
 
-    private GatewayOidcAuthenticationContextFilter filter() {
+    private FilterFixture filterFixture() {
         GatewayAuthenticationCenterProperties properties = new GatewayAuthenticationCenterProperties();
         GatewayAuthenticationCenterService authenticationCenterService = authenticationCenterService(properties);
-        return new GatewayOidcAuthenticationContextFilter(
+        CapturingGatewayAuthenticationAuditSink auditSink = new CapturingGatewayAuthenticationAuditSink();
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        GatewayAuthenticationAuditSupport authenticationAuditSupport = new GatewayAuthenticationAuditSupport(
+                List.of(auditSink),
+                new GatewayAuthenticationMetrics(registry)
+        );
+        GatewayOidcAuthenticationContextFilter filter = new GatewayOidcAuthenticationContextFilter(
                 properties,
                 authenticationCenterService,
+                authenticationAuditSupport,
                 new GatewayAuthorizationErrorWriter(new ObjectMapper())
         );
+        return new FilterFixture(filter, auditSink, registry);
     }
 
     private GatewayAuthenticationCenterService authenticationCenterService() {
@@ -168,8 +214,36 @@ class GatewayOidcAuthenticationContextFilterTest {
     }
 
     /**
-     * 记录是否进入后续网关链路。
+     * 过滤器测试夹具。
+     *
+     * <p>把 filter、审计 sink 和 registry 放在一起，方便每个测试既验证请求是否继续向下游流转，
+     * 也验证认证审计事件和指标是否同步产生。</p>
      */
+    private record FilterFixture(GatewayOidcAuthenticationContextFilter filter,
+                                 CapturingGatewayAuthenticationAuditSink auditSink,
+                                 SimpleMeterRegistry registry) {
+    }
+
+    /**
+     * 测试用内存审计 sink。
+     *
+     * <p>生产代码使用日志 sink，单元测试不依赖日志断言，而是通过这个捕获器确认事件内容。
+     * 捕获器只在测试中保存低敏事件，不会接触 token 或完整 claim。</p>
+     */
+    private static class CapturingGatewayAuthenticationAuditSink implements GatewayAuthenticationAuditSink {
+
+        private final List<GatewayAuthenticationAuditEvent> events = new ArrayList<>();
+
+        @Override
+        public void emit(GatewayAuthenticationAuditEvent event) {
+            events.add(event);
+        }
+
+        private List<GatewayAuthenticationAuditEvent> events() {
+            return events;
+        }
+    }
+
     private static class RecordingGatewayFilterChain implements GatewayFilterChain {
 
         private boolean called;

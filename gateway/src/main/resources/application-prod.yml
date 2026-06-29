@@ -1,0 +1,94 @@
+# Gateway 生产环境收敛配置。
+#
+# 本文件只在 `spring.profiles.active=prod` 时生效，用于把默认开发友好的配置切换为商业部署更安全的模式。
+# 设计原则：
+# 1. 认证交给 Keycloak、企业 IdP 或云 IAM，gateway 只作为 OIDC Resource Server 校验 access token；
+# 2. gateway 不信任外部自报的 X-DataSmart-* 身份 Header，只接受已验证 JWT 映射出的平台身份；
+# 3. 授权必须继续交给 permission-admin，不能因为权限中心异常就 fail-open；
+# 4. gateway -> Python Runtime 的控制面 Header 必须签名，避免绕过 gateway 直连 Python Runtime 时伪造可信上下文；
+# 5. 所有 secret、issuer、audience 和内部服务地址都通过环境变量或 Secret Manager 注入，不在 Git 中写死生产值。
+
+spring:
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # 生产必须显式指定真实 OIDC issuer。
+          # Keycloak 示例：https://idp.example.com/realms/datasmart
+          # 企业 IdP 示例：https://login.example.com/oauth2/default
+          # Spring Security 会根据 issuer 发现 jwks_uri，并校验 JWT 签名、iss、exp、nbf 等协议级事实。
+          issuer-uri: ${DATASMART_GATEWAY_OIDC_ISSUER_URI}
+
+datasmart:
+  gateway:
+    context:
+      # 生产环境必须关闭。
+      # 原因：tenantId、actorId、actorRole、actorType 等 Header 会直接影响权限、审计和租户隔离。
+      # 如果允许外部请求自报这些 Header，攻击者可以伪造平台管理员、服务账号或其他租户身份。
+      trust-incoming-platform-context: false
+
+    authentication-center:
+      # 保持认证中心能力开启，让 /auth/capabilities 和 /auth/session 能说明当前 OIDC 接入状态。
+      enabled: true
+      provider-mode: OIDC_RESOURCE_SERVER
+      # 与 spring.security.oauth2.resourceserver.jwt.issuer-uri 保持一致。
+      # 单独保留该字段，是为了让能力接口和显式 JwtDecoder 配置都能读取同一业务语义。
+      issuer: ${DATASMART_GATEWAY_AUTH_CENTER_ISSUER:${DATASMART_GATEWAY_OIDC_ISSUER_URI}}
+      oidc:
+        enabled: true
+        # 生产必须开启 audience 校验，避免其他系统签发的 access token 被误用于 DataSmart gateway。
+        audience-validation-enabled: true
+        # JWT 已通过签名校验但缺少租户、actor 或角色时必须拒绝。
+        # “token 合法”不等于“可以进入多租户业务系统”。
+        fail-closed-on-missing-required-claims: true
+        required-audiences:
+          - ${DATASMART_GATEWAY_OIDC_REQUIRED_AUDIENCE:datasmart-gateway}
+        # 下面这些 claim 名称可以适配不同 IdP；若企业 IdP 使用不同命名，只需改配置，不改代码。
+        tenant-id-claim: ${DATASMART_GATEWAY_OIDC_TENANT_ID_CLAIM:datasmart_tenant_id}
+        actor-id-claim: ${DATASMART_GATEWAY_OIDC_ACTOR_ID_CLAIM:datasmart_actor_id}
+        actor-role-claim: ${DATASMART_GATEWAY_OIDC_ACTOR_ROLE_CLAIM:datasmart_actor_role}
+        actor-type-claim: ${DATASMART_GATEWAY_OIDC_ACTOR_TYPE_CLAIM:datasmart_actor_type}
+        workspace-id-claim: ${DATASMART_GATEWAY_OIDC_WORKSPACE_ID_CLAIM:datasmart_workspace_id}
+
+    development-identity:
+      # 生产必须关闭开发期身份注入。
+      # dev:... token 和 X-DataSmart-Dev-Identity 只允许本地联调使用，不能作为商业认证方式。
+      enabled: false
+      allow-authorization-bearer-token: false
+
+    authorization:
+      # 生产强制启用 gateway -> permission-admin 路由级授权。
+      enabled: true
+      # 生产关闭影子模式：permission-admin 拒绝时 gateway 必须真正拦截请求。
+      shadow-mode: false
+      # 权限中心不可用时生产必须 fail-closed，避免权限系统故障扩大为越权访问。
+      fail-open-on-error: false
+      # 容器网络中推荐用服务名访问 permission-admin；如果部署到 Kubernetes，可改为集群内 DNS 或服务网格地址。
+      decision-endpoint: ${DATASMART_GATEWAY_PERMISSION_DECISION_ENDPOINT:http://permission-admin:8085/permissions/evaluate}
+      timeout: ${DATASMART_GATEWAY_PERMISSION_DECISION_TIMEOUT:500ms}
+      cache:
+        # 生产可以开启短 TTL 本地缓存降低 permission-admin 热点压力。
+        # 后续多 gateway 实例应叠加 Redis/Kafka 权限变更事件，实现跨实例主动失效。
+        enabled: ${DATASMART_GATEWAY_AUTHORIZATION_CACHE_ENABLED:true}
+        cache-shadow-mode-decisions: false
+        cache-denied-decisions: true
+        cache-approval-required-decisions: false
+        allow-ttl: ${DATASMART_GATEWAY_AUTHORIZATION_CACHE_ALLOW_TTL:30s}
+        deny-ttl: ${DATASMART_GATEWAY_AUTHORIZATION_CACHE_DENY_TTL:5s}
+
+    tool-policy-envelope:
+      # 生产让 gateway 优先消费 permission-admin 的真实 Agent 工具预算/readiness 策略。
+      # 这样 Python Runtime 不需要猜测租户套餐、角色、workspace 风险或 worker backlog。
+      enabled: true
+      remote-evaluation-enabled: true
+      fail-open-on-remote-error: false
+      permission-admin-evaluate-url: ${DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_EVALUATE_URL:http://permission-admin:8085/permissions/agent/tool-budget-policies/evaluate}
+
+    python-runtime-signature:
+      # 生产必须开启 gateway -> Python Runtime HMAC 签名。
+      # Python Runtime 只有验签通过后，才应把 X-DataSmart-* 升级为 trustedControlPlane。
+      enabled: true
+      # 必须通过环境变量、Docker secret、Kubernetes Secret 或云 Secret Manager 注入。
+      # 如果为空，签名过滤器会 fail-closed，避免“开关开启但没有真实签名保护”的误配置。
+      secret: ${DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_SECRET}
+      key-id: ${DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_KEY_ID:gateway-prod-v1}
