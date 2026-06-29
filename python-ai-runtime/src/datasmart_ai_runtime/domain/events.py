@@ -30,6 +30,7 @@ class AgentRuntimeEventType(str, Enum):
     CONTEXT_TRUNCATED = "context_truncated"
     CONTEXT_SELECTED = "context_selected"
     MODEL_GATEWAY_ROUTED = "model_gateway_routed"
+    MODEL_QUERY_EXECUTED = "model_query_executed"
     INTENT_ANALYZED = "intent_analyzed"
     TOOL_PLANNED = "tool_planned"
     TOOL_PARAMETER_VALIDATED = "tool_parameter_validated"

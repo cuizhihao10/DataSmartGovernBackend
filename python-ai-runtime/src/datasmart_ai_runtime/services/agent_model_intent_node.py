@@ -28,13 +28,14 @@ from datasmart_ai_runtime.domain.contracts import (
     ToolPlan,
 )
 from datasmart_ai_runtime.domain.context import ContextBlock
-from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
+from datasmart_ai_runtime.domain.events import AgentRuntimeEventSeverity, AgentRuntimeEventType
 from datasmart_ai_runtime.domain.intent import IntentAnalysis
 from datasmart_ai_runtime.domain.model_gateway import ModelGatewayRequestContext
 from datasmart_ai_runtime.domain.skills import AgentSkillPlan
 from datasmart_ai_runtime.services.agent_model_tool_feedback_turn import AgentModelToolFeedbackTurnService
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
 from datasmart_ai_runtime.services.model_gateway.model_provider_metadata import build_model_provider_metadata
+from datasmart_ai_runtime.services.model_gateway.model_query_engine import ModelQueryEngine, ModelQueryEngineResult
 from datasmart_ai_runtime.services.model_gateway.model_tool_feedback_provider import (
     ModelToolExecutionFeedbackProvider,
 )
@@ -102,6 +103,7 @@ class AgentModelIntentNode:
         tool_call_delta_aggregator_factory: type[ModelToolCallDeltaAggregator] = ModelToolCallDeltaAggregator,
         tool_execution_feedback_provider: ModelToolExecutionFeedbackProvider | None = None,
         tool_result_feedback_builder: ModelToolResultFeedbackBuilder | None = None,
+        model_query_engine: ModelQueryEngine | None = None,
     ) -> None:
         self._model_providers = model_providers
         self._model_gateway = model_gateway
@@ -112,11 +114,16 @@ class AgentModelIntentNode:
             model_tool_call_budget_policy_provider or EnvAndRequestModelToolCallBudgetPolicyProvider()
         )
         self._tool_call_delta_aggregator_factory = tool_call_delta_aggregator_factory
+        self._model_query_engine = model_query_engine or ModelQueryEngine(
+            model_gateway=self._model_gateway,
+            model_providers=self._model_providers,
+        )
         self._tool_feedback_turn_service = AgentModelToolFeedbackTurnService(
             model_providers=self._model_providers,
             model_gateway=self._model_gateway,
             tool_execution_feedback_provider=tool_execution_feedback_provider,
             tool_result_feedback_builder=tool_result_feedback_builder,
+            model_query_engine=self._model_query_engine,
         )
 
     def invoke(
@@ -191,8 +198,12 @@ class AgentModelIntentNode:
         私有化模型网关或单元测试桩都支持 SSE；真实产品必须允许“可流式则流式，不可流式则安全降级”。
         """
 
-        result = self._model_providers.invoke(model_request)
-        self._record_model_usage(model_gateway_context, result)
+        query_result = self._model_query_engine.invoke(
+            model_request,
+            context=model_gateway_context,
+        )
+        self._record_model_query_event(event_recorder, "invoke_model_intent", query_result)
+        result = query_result.result
         model_tool_plans = self._govern_model_tool_calls(
             tool_calls=result.tool_calls,
             request=request,
@@ -316,6 +327,30 @@ class AgentModelIntentNode:
         """
 
         return self._tool_call_delta_aggregator_factory.from_chunks(chunks)
+
+    @staticmethod
+    def _record_model_query_event(
+        event_recorder: RuntimeEventRecorder,
+        stage: str,
+        query_result: ModelQueryEngineResult,
+    ) -> None:
+        """记录模型查询引擎执行摘要。
+
+        该事件说明“模型调用是否经过 cache、rate limit、token limit、retry/fallback”，但不会记录
+        prompt、messages、工具参数、模型输出正文或 Provider 原始错误。这样前端/控制面可以观察模型层
+        是否真正闭环，同时不把模型调用变成新的敏感信息扩散面。
+        """
+
+        severity = AgentRuntimeEventSeverity.INFO
+        if query_result.result.error_code is not None:
+            severity = AgentRuntimeEventSeverity.WARNING
+        event_recorder.record(
+            AgentRuntimeEventType.MODEL_QUERY_EXECUTED,
+            stage,
+            "模型查询引擎已完成一次受治理模型调用。",
+            severity=severity,
+            attributes=query_result.to_summary(),
+        )
 
     @staticmethod
     def _combine_summaries(first_turn_summary: str, second_turn_summary: str) -> str:

@@ -58,6 +58,17 @@ from datasmart_ai_runtime.services.model_gateway.model_provider_health_probe_met
     render_model_provider_health_probe_prometheus,
 )
 from datasmart_ai_runtime.services.model_gateway.model_provider_metadata import build_model_provider_metadata
+from datasmart_ai_runtime.services.model_gateway.model_query_engine import (
+    ModelQueryEngine,
+    ModelQueryEngineResult,
+    ModelQueryEngineSettings,
+)
+from datasmart_ai_runtime.services.model_gateway.model_query_engine_components import (
+    InMemoryModelQueryRateLimiter,
+    InMemoryModelQueryResultCache,
+    ModelQueryRateLimitDecision,
+    ModelQueryRateLimitPolicy,
+)
 from datasmart_ai_runtime.services.model_gateway.model_result_context_filter import (
     ModelResultContextFilter,
     ModelResultContextFilterPolicy,
@@ -116,11 +127,18 @@ __all__ = [
     "EnvAndRequestModelToolCallBudgetPolicyProvider",
     "InMemoryModelBudgetLedger",
     "InMemoryModelProviderHealthRegistry",
+    "InMemoryModelQueryRateLimiter",
+    "InMemoryModelQueryResultCache",
     "ModelCapabilityProfile",
     "ModelCapabilityRegistry",
     "JavaPermissionAdminToolBudgetPolicyClient",
     "ModelGatewayCachePlanner",
     "ModelGatewayGovernanceService",
+    "ModelQueryEngine",
+    "ModelQueryEngineResult",
+    "ModelQueryEngineSettings",
+    "ModelQueryRateLimitDecision",
+    "ModelQueryRateLimitPolicy",
     "ModelProviderRegistry",
     "ModelProviderHealthPolicy",
     "ModelProviderHealthProbeResult",

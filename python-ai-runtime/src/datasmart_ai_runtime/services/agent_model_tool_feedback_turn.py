@@ -17,10 +17,11 @@ from datasmart_ai_runtime.domain.contracts import (
     ModelToolCall,
     ToolPlan,
 )
-from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
+from datasmart_ai_runtime.domain.events import AgentRuntimeEventSeverity, AgentRuntimeEventType
 from datasmart_ai_runtime.domain.model_gateway import ModelGatewayRequestContext
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
 from datasmart_ai_runtime.services.model_gateway.model_provider import ModelProviderRegistry
+from datasmart_ai_runtime.services.model_gateway.model_query_engine import ModelQueryEngine
 from datasmart_ai_runtime.services.model_gateway.model_tool_feedback_provider import (
     ModelToolExecutionFeedbackProvider,
     SimulatedModelToolExecutionFeedbackProvider,
@@ -44,11 +45,16 @@ class AgentModelToolFeedbackTurnService:
         model_gateway: ModelGatewayGovernanceService,
         tool_execution_feedback_provider: ModelToolExecutionFeedbackProvider | None = None,
         tool_result_feedback_builder: ModelToolResultFeedbackBuilder | None = None,
+        model_query_engine: ModelQueryEngine | None = None,
     ) -> None:
         self._model_providers = model_providers
         self._model_gateway = model_gateway
         self._tool_execution_feedback_provider = tool_execution_feedback_provider or SimulatedModelToolExecutionFeedbackProvider()
         self._tool_result_feedback_builder = tool_result_feedback_builder or ModelToolResultFeedbackBuilder()
+        self._model_query_engine = model_query_engine or ModelQueryEngine(
+            model_gateway=self._model_gateway,
+            model_providers=self._model_providers,
+        )
 
     def complete(
         self,
@@ -123,8 +129,18 @@ class AgentModelToolFeedbackTurnService:
             strict_tool_schema=model_request.strict_tool_schema,
             provider_metadata=model_request.provider_metadata,
         )
-        result = self._model_providers.invoke(second_turn_request)
-        self._model_gateway.record_invocation_result(model_gateway_context, result)
+        query_result = self._model_query_engine.invoke(
+            second_turn_request,
+            context=model_gateway_context,
+        )
+        result = query_result.result
+        event_recorder.record(
+            AgentRuntimeEventType.MODEL_QUERY_EXECUTED,
+            "invoke_model_second_turn",
+            "工具反馈二轮模型调用已通过模型查询引擎完成治理执行。",
+            severity=AgentRuntimeEventSeverity.WARNING if result.error_code else AgentRuntimeEventSeverity.INFO,
+            attributes=query_result.to_summary(),
+        )
         event_recorder.record(
             AgentRuntimeEventType.MODEL_SECOND_TURN_COMPLETED,
             "invoke_model_second_turn",

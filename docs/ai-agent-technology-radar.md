@@ -1,4 +1,20 @@
 # DataSmart Govern AI Agent 技术雷达
+
+## 2026-06-30 落地补充：model calls need a governed Query Engine, not direct Provider calls
+
+- 本轮趋势校准：
+  - 类 Codex、Claude Code、OpenClaw 的 Agent Host 不应让编排节点直接调用某个模型 Provider；模型访问本身也需要 Host 控制面，统一处理 retry、fallback、限流、token 预算、缓存隔离、usage/health 回写和低敏事件。
+  - 对 DataSmart 来说，模型层不做算法训练、微调、后训练或底层推理内核；更适合的商业化路线是接入成熟 vLLM/SGLang/LiteLLM/OpenAI-compatible 服务，并把推理服务能力通过可替换 Query Engine 暴露给 Agent 主链。
+  - prefix/KV cache 与 completion cache 都不能只看 prompt 哈希；企业数据治理场景必须绑定 tenant/project/workspace/session 边界，fallback 路由也不能复用主路由 cachePlan。
+- 本轮落地到代码的能力：
+  - 新增 `ModelQueryEngine` 和 `model_query_engine_components.py`，把模型网关决策、token-limit、rate-limit、会话级缓存、Provider 调用、retry/fallback 和 usage/health 回写串成统一执行链；
+  - 首轮 `AgentModelIntentNode` 和工具反馈二轮 `AgentModelToolFeedbackTurnService` 都改为通过 Query Engine 调用模型；
+  - 新增 `MODEL_QUERY_EXECUTED` runtime event，只记录低敏治理摘要，不记录 prompt、SQL、工具参数、模型输出、endpoint 或 API Key；
+  - Agent 能力矩阵把 `query.cache-token-limit` 与 `query.retry-rate-limit` 调整为部分闭环，避免项目收口门禁继续按旧 planned 口径判断。
+- 产品判断：
+  - 这是模型层从“Provider 抽象已存在”推进到“查询执行治理闭环”的关键步骤；
+  - 下一步应补 Redis/网关级分布式限流、精确 tokenizer、Prometheus 指标、vLLM/SGLang cache/batching/queue 诊断和 permission-admin 套餐策略，而不是转向自研模型训练或推理内核。
+
 ## 2026-06-28 落地补充：task workers should execute through Host leases and receipts
 
 - 本轮趋势校准：

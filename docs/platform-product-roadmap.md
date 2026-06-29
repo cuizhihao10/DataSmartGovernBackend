@@ -1,5 +1,26 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-30 追加落地进展：Python AI Runtime Model Query Engine Closure
+- 本阶段回到整体闭环收敛路线，没有继续扩展 Java 单点业务字段，也没有把模型层发散到训练、微调、后训练或自研推理内核。目标是把 Codex/Claude Code/OpenClaw 类 Agent 必备的模型调用治理补到主链：让首轮模型意图识别和工具反馈二轮推理都经过统一 Query Engine，而不是直接调用 Provider。
+- 产品价值：
+  - 新增 `ModelQueryEngine`，串联模型网关路由决策、token-limit 预检、请求级 rate-limit、会话级安全结果缓存、Provider 调用、retry/fallback、usage/health 回写和低敏执行摘要；
+  - 新增 `MODEL_QUERY_EXECUTED` runtime event，前端、Java 控制面和运维视图可以看到模型查询是否发生 cache hit、rate limit、token limit、fallback 和 provider error；
+  - `AgentModelIntentNode` 的首轮模型意图调用和 `AgentModelToolFeedbackTurnService` 的工具反馈二轮调用都已切到 Query Engine，避免首轮可观测、二轮不可观测；
+  - fallback 到备用路由时会保守禁用旧 route 的 Provider cachePlan，避免把主路由 keyPrefix 误用于备用 Provider；
+  - Agent 能力矩阵将 `query.cache-token-limit` 与 `query.retry-rate-limit` 从计划/控制面口径校准为部分闭环，项目收敛门禁更接近真实状态。
+- 安全边界：
+  - Query Engine 摘要不返回 prompt、messages、SQL、工具参数正文、样本数据、模型完整输出、Provider endpoint、API Key、上游错误 body 或内部配额公式；
+  - 会话级结果缓存只在 `SESSION_ONLY` cachePlan 下启用，key 使用 SHA-256 哈希与 cache namespace，不包含明文 prompt；
+  - rate-limit 当前只返回稳定错误码、窗口摘要和低敏尝试计数；
+  - token-limit 当前使用启发式估算，生产应接 Provider tokenizer、模型网关 usage trailer 或精确上下文预算服务。
+- 验证：
+  - 定向 Python 测试通过：`test_model_query_engine.py`、`test_agent_orchestrator.py`、`test_agent_capability_matrix.py`、`test_model_gateway.py`、`test_model_provider.py`、`test_model_provider_health.py`，共 45 个用例；
+  - 行数检查：`model_query_engine.py` 471 行，`model_query_engine_components.py` 194 行，`agent_model_intent_node.py` 442 行，`agent_model_tool_feedback_turn.py` 190 行，`test_model_query_engine.py` 296 行，均低于 500 行约束。
+- 收敛判断：
+  - 模型层的下一步不应转向算法研发，而应继续补生产化接入：Redis/网关级分布式限流、精确 tokenizer、Prometheus 低基数指标、真实 vLLM/SGLang/LiteLLM cache/batching 指标和 permission-admin 套餐策略；
+  - `llm.inference-optimization` 仍不是完成态，因为成熟推理服务指标、queue time、TTFT、TPS、cache hit rate 和 batching 配置诊断还未接入；
+  - 当前项目仍未彻底完成，后续应继续关闭 P0 hardBlocker：context micro-compact、tool.web-search、真实 E2E 联调和必要的业务链路闭口。
+
 ## 2026-06-30 追加落地进展：Local E2E Service Account Smoke Closure
 - 本阶段没有继续扩展新的业务端点，而是把上一阶段 gateway 内部服务账号保护纳入本地闭环验证。目标是让开发者能用一个只读 smoke 脚本确认：Keycloak realm、gateway 内部路由、内部端点 actorType 守卫和本地服务账号样例没有漂移。
 - 产品价值：
