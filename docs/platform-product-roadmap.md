@@ -1,5 +1,26 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Workspace File Worker Receipt Adapter
+- 本阶段承接 `Workspace File Payload Materialization Internal API`，继续做 workspace 文件工具闭口收敛。目标不是直接开放真实文件 worker，而是先让未来 workspace worker 的低敏回执可以绑定服务端 `agent-payload:` fact，并复用既有 command worker receipt、runtime event projection 和 worker receipt index。
+- 产品价值：
+  - 新增 `AgentWorkspaceFileWorkerReceiptService`，作为 workspace 文件 worker 与通用 command worker receipt 的防腐适配层；
+  - 新增 `/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/workspace-file-worker-receipts` 内部路由；
+  - 新增 request/response DTO，要求 workspace worker 提交 payloadReference、READ/WRITE 操作和通用低敏 command worker receipt；
+  - 适配层会校验 payloadReference 已物化、未过期、payload body 可用；
+  - 适配层会校验 payload fact 与 receipt 的 run、tenant、project、actor、toolCode、operation 一致；
+  - 校验通过后委托 `AgentToolActionCommandWorkerReceiptService` 写 runtime event 与 worker receipt index，保持回执落点统一。
+- 安全边界：
+  - 不读取、不返回 relativePath、workspace root、content、contentReference 原值、stdout/stderr、prompt、SQL、工具参数正文、凭据或内部 endpoint；
+  - `EXECUTION_SUCCEEDED` 必须登记低敏 artifactReference，不能只靠 message 证明文件读写结果；
+  - 真实结果正文读取仍必须走 artifact grant 和 final-check；
+  - 真实文件 worker、DLP/恶意内容扫描、并发写入锁和对象存储产物落地仍是下一阶段工作。
+- 验证：
+  - 定向 Maven 测试通过：`AgentWorkspaceFileWorkerReceiptServiceTest`、`AgentWorkspaceFilePayloadMaterializationServiceTest`、`AgentToolActionCommandWorkerReceiptServiceTest`、`AgentCommandWorkerLeaseServiceTest`，共 28 个用例；
+  - 行数检查：`AgentWorkspaceFileWorkerReceiptService.java` 264 行，Controller 50 行，测试 273 行，均低于 500 行约束。
+- 收敛判断：
+  - `tool.file-read-write` 现在具备 Python 受控工具、Java durable contract、payload 物化、internal API 和 worker receipt 适配五段能力；
+  - 下一步应把 artifact grant/final-check 与 workspace 文件读结果产物串起来，或开始关闭其他 P0 hardBlocker，避免继续在文件工具局部无限扩张。
+
 ## 2026-06-29 追加落地进展：Workspace File Payload Materialization Internal API
 - 本阶段承接 `Workspace File Payload Materialization`，继续做闭环收敛，不扩大文件系统能力。上一阶段已经有 Java service 能把 `workspace.file.read/write` 的真实参数物化到服务端 `agent-payload:` store；本阶段补齐内部控制面入口，让 Python Runtime、Agent 编排器或未来 workspace worker 准备阶段可以通过受控 API 调用该能力。
 - 产品价值：
