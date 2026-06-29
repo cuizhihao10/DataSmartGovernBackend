@@ -42,11 +42,13 @@ import java.util.Locale;
  * <p>这个顺序非常关键。如果身份注入发生在清理之前，刚写入的 Header 会被清掉；
  * 如果身份注入发生在授权之后，permission-admin 仍然只能看到默认匿名身份。
  *
- * <p>商业化演进方向：
+ * <p>商业化边界：
  * 当前类只服务本地和测试联调，令牌格式简单、没有签名，不具备生产安全性。
- * 后续接入真实认证时，可以新增 JWT/IdP 过滤器并保持相同输出：写入 X-DataSmart-Tenant-Id、
- * X-DataSmart-Actor-Id、X-DataSmart-Actor-Role、X-DataSmart-Actor-Type、X-DataSmart-Workspace-Id。
- * 这样 permission-admin、task-management、datasource-management 等下游模块不需要关心身份最初来自哪里。
+ * 生产链路已经由 GatewayOidcAuthenticationContextFilter 接入 OIDC/JWT Resource Server；
+ * 本过滤器必须保持默认关闭，且不应在生产配置中覆盖 OIDC 写入的身份 Header。
+ * 两条链路最终都写入 X-DataSmart-Tenant-Id、X-DataSmart-Actor-Id、X-DataSmart-Actor-Role、
+ * X-DataSmart-Actor-Type、X-DataSmart-Workspace-Id，是为了让 permission-admin、task-management、
+ * datasource-management 等下游模块稳定消费同一套平台身份上下文。
  */
 @Slf4j
 @Component

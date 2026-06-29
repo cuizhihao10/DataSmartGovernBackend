@@ -25,9 +25,11 @@ import java.util.Map;
  * 2. GatewayAuthorizationProperties 负责“是否把请求交给权限中心判定，以及判定失败时如何处理”。
  *
  * <p>为什么不直接默认强制开启？
- * 当前项目还没有完整 JWT/IdP 登录态，也不是所有本地开发环境都会同时启动 permission-admin。
- * 如果默认强制开启，开发者只启动某个业务模块时会发现所有请求突然 403 或 503，这会让联调成本变高。
- * 因此当前默认是 enabled=false，代码能力先落地，后续接入认证中心和启动编排后再把它切到强制模式。
+ * 当前 gateway 已接入 OIDC/JWT Resource Server 作为认证中心，但 permission-admin 的授权策略、审计记录、
+ * 服务账号策略和本地开发依赖并不一定总是同时启动。如果默认强制授权，开发者只启动某个业务模块时会遇到
+ * 所有请求 403 或权限中心不可用导致 503，这会拉高学习和联调成本。
+ * 因此当前默认 enabled=false、shadowMode=true，适合先观察权限矩阵；生产环境应切换为 enabled=true、
+ * shadowMode=false、failOpenOnError=false，让“已认证身份”继续接受 permission-admin 的强制授权。
  */
 @Data
 @Component
@@ -103,7 +105,9 @@ public class GatewayAuthorizationProperties {
      */
     private List<String> publicPathPatterns = new ArrayList<>(List.of(
             "/actuator/**",
-            "/gateway/contracts/**"
+            "/gateway/contracts/**",
+            "/auth/**",
+            "/api/auth/**"
     ));
 
     /**

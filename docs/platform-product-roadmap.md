@@ -1,5 +1,28 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Gateway OIDC 认证中心收敛
+- 本阶段按商业化要求补齐 gateway 认证中心，不再采用开发 token 或临时 Header 作为生产身份方案，而是让 gateway 以 Spring Security OAuth2 Resource Server 形态接入 Keycloak、企业 IdP 或云 IAM。
+- 产品价值：
+  - `gateway` 新增 OIDC/JWT Resource Server 依赖与安全过滤链，`/api/**` 默认需要 Bearer JWT，公开能力接口只保留 `/auth/capabilities`、`/api/auth/capabilities`、健康检查和网关契约；
+  - 新增 `GatewayJwtAudienceValidator`，在 issuer、签名、过期时间之外校验 `aud`，避免其他资源服务器 token 被误用于调用 DataSmart gateway；
+  - 新增 `GatewayOidcAuthenticationContextFilter`，把已验证 JWT 的租户、操作者、角色、actorType 和 workspace 映射为 `X-DataSmart-*`，后续 permission-admin 再基于这些上下文执行 RBAC 和数据范围授权；
+  - 新增认证中心能力与当前会话接口：`GET /auth/capabilities`、`GET /api/auth/capabilities`、`GET /auth/session`、`GET /api/auth/session`；
+  - 兼容 Keycloak `realm_access.roles` 与自定义 `datasmart_roles`，并允许通过配置声明 claim 名称、角色前缀裁剪和必需 audience；
+  - 新增 `docs/gateway-oidc-keycloak-integration.md`，说明 Keycloak/企业 IdP claim、audience、服务账号和生产部署检查清单。
+- 安全边界：
+  - gateway 不签发 token，不保存密码，不处理 refresh token，不替代 MFA/SSO；
+  - gateway 不返回 access token、refresh token、完整 JWT claim、密钥、邮箱/手机号、策略正文或内部服务地址；
+  - JWT 合法但缺少 `tenantId`、`actorId` 或角色时默认失败关闭；
+  - `development-identity` 仍只允许作为本地联调能力，生产应保持关闭；
+  - 业务服务继续不解析 JWT，只消费 gateway 写入的低敏平台身份上下文。
+- 当前边界：
+  - 尚未内置 Keycloak realm 导入文件、OIDC login redirect、BFF session、SCIM/JIT 用户同步、token revocation 和登出联动；
+  - permission-admin 强制授权仍需在生产配置中切换为 enabled=true、shadowMode=false、failOpenOnError=false；
+  - 服务到服务调用仍需继续升级为 OIDC service account、HMAC、mTLS 或 service mesh 身份组合。
+- 收敛判断：
+  - 认证中心已从“开发身份注入”升级为“主流 OIDC/Keycloak/企业 IdP 接入”，后续不建议自研登录系统；
+  - 下一步应把 permission-admin 的角色/菜单/路由/服务账号策略与 OIDC 身份打通，并继续收敛 data-sync worker 与 task-management receipt。
+
 ## 2026-06-29 追加落地进展：Data Sync Run-Once Dispatch Closure
 - 本阶段承接 `Datasource Connector Runtime Run-Once Contract`，把 data-sync 侧的执行派发闭环补齐到“可以调用 datasource-management 受控 run-once，并根据低敏结果回写 data-sync 生命周期”。这一步不是继续扩展控制面展示字段，而是收敛真实执行链路：`claim -> workerPlan -> bridgePlan -> datasource run-once -> complete/fail`。
 - 产品价值：

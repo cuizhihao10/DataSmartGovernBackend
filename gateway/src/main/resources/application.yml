@@ -101,9 +101,11 @@ spring:
     oauth2:
       resourceserver:
         jwt:
-          # 认证服务虽然尚未完整落地，但先把 issuer 契约写清楚，
-          # 后续接入统一安全体系时更稳。
-          issuer-uri: http://localhost:8080/auth/realms/datasmart
+          # OIDC/JWT Resource Server issuer。
+          # Keycloak 17+ 默认路径通常是 http://<host>:<port>/realms/<realm>；
+          # 生产环境应替换为企业 IdP、Keycloak 集群或云 IAM 的真实 issuer，并确保 gateway 可以访问其
+          # /.well-known/openid-configuration 与 jwks_uri。
+          issuer-uri: ${DATASMART_GATEWAY_OIDC_ISSUER_URI:http://localhost:18080/realms/datasmart}
 
 datasmart:
   gateway:
@@ -238,6 +240,64 @@ datasmart:
         # 控制面事实，应继续把这些路径加入列表，而不是只依赖 source-service 自报。
         target-paths:
           - /api/agent/plans
+    authentication-center:
+      # 网关认证中心门面开关。
+      #
+      # 当前阶段它不是自研用户中心，而是 OIDC/JWT 认证能力的统一收口：
+      # - /auth/capabilities 用于说明当前认证模式和生产替代建议；
+      # - /auth/session 用于查看 gateway 当前把请求解析成哪个平台身份；
+      #
+      # 生产建议：
+      # 1. 使用 Keycloak/OIDC/企业 IdP 负责登录、MFA、SSO、token 签发和 refresh token 轮换；
+      # 2. gateway 只验证 access token，并把已验证 claim 映射为 X-DataSmart-*；
+      # 3. 继续让 permission-admin 负责“能不能访问”的授权判断。
+      enabled: ${DATASMART_GATEWAY_AUTH_CENTER_ENABLED:true}
+      # 当前认证提供方模式。OIDC_RESOURCE_SERVER 表示 gateway 作为资源服务器校验 Bearer JWT。
+      provider-mode: ${DATASMART_GATEWAY_AUTH_CENTER_PROVIDER_MODE:OIDC_RESOURCE_SERVER}
+      # 认证中心对外展示的 issuer 标识，应与 spring.security.oauth2.resourceserver.jwt.issuer-uri 保持一致。
+      issuer: ${DATASMART_GATEWAY_AUTH_CENTER_ISSUER:${DATASMART_GATEWAY_OIDC_ISSUER_URI:http://localhost:18080/realms/datasmart}}
+      oidc:
+        # 是否启用 OIDC/JWT 认证和 claim 到平台上下文 Header 的映射。
+        enabled: ${DATASMART_GATEWAY_OIDC_ENABLED:true}
+        # JWT 通过签名校验但缺少 DataSmart 必需 claim 时是否失败关闭。
+        # 生产必须 true，避免请求退化成匿名租户或默认角色继续进入业务系统。
+        fail-closed-on-missing-required-claims: ${DATASMART_GATEWAY_OIDC_FAIL_CLOSED_ON_MISSING_CLAIMS:true}
+        # 是否校验 JWT audience。
+        # 生产必须启用。issuer 只能证明 token 来自可信 IdP，audience 才能证明 token 是签发给 DataSmart gateway 的。
+        audience-validation-enabled: ${DATASMART_GATEWAY_OIDC_AUDIENCE_VALIDATION_ENABLED:true}
+        # gateway 接受的资源 audience。
+        # Keycloak 推荐通过 Audience Mapper 把 datasmart-gateway 写入 access token 的 aud；
+        # 企业 IdP 中通常对应 API Identifier / Resource Server Identifier / Application ID URI。
+        required-audiences:
+          - ${DATASMART_GATEWAY_OIDC_REQUIRED_AUDIENCE:datasmart-gateway}
+        # 租户 ID claim。Keycloak 可通过 Client Scope Mapper 添加该自定义 claim。
+        tenant-id-claim: ${DATASMART_GATEWAY_OIDC_TENANT_ID_CLAIM:datasmart_tenant_id}
+        # 操作者数字 ID claim。当前 Java 控制面仍使用 Long actorId，因此不直接使用标准 sub。
+        actor-id-claim: ${DATASMART_GATEWAY_OIDC_ACTOR_ID_CLAIM:datasmart_actor_id}
+        # 单角色 claim，优先级高于 roles 数组和 Keycloak realm_access.roles。
+        actor-role-claim: ${DATASMART_GATEWAY_OIDC_ACTOR_ROLE_CLAIM:datasmart_actor_role}
+        # 操作者类型 claim：USER、SERVICE_ACCOUNT、AGENT、SYSTEM_SCHEDULER。
+        actor-type-claim: ${DATASMART_GATEWAY_OIDC_ACTOR_TYPE_CLAIM:datasmart_actor_type}
+        # 工作空间 claim，用于 Agent 工作区、任务隔离和资产目录边界。
+        workspace-id-claim: ${DATASMART_GATEWAY_OIDC_WORKSPACE_ID_CLAIM:datasmart_workspace_id}
+        # 角色数组 claim。如果 actor-role-claim 不存在，则从这里选择第一个平台认可的角色。
+        roles-claim: ${DATASMART_GATEWAY_OIDC_ROLES_CLAIM:datasmart_roles}
+        # Keycloak 默认角色结构兼容：realm_access.roles。
+        keycloak-realm-access-claim: ${DATASMART_GATEWAY_OIDC_KEYCLOAK_REALM_ACCESS_CLAIM:realm_access}
+        keycloak-roles-field: ${DATASMART_GATEWAY_OIDC_KEYCLOAK_ROLES_FIELD:roles}
+        default-actor-type: ${DATASMART_GATEWAY_OIDC_DEFAULT_ACTOR_TYPE:USER}
+        default-workspace-id: ${DATASMART_GATEWAY_OIDC_DEFAULT_WORKSPACE_ID:default}
+        allowed-roles:
+          - ORDINARY_USER
+          - PROJECT_OWNER
+          - OPERATOR
+          - AUDITOR
+          - TENANT_ADMINISTRATOR
+          - PLATFORM_ADMINISTRATOR
+          - SERVICE_ACCOUNT
+        role-prefixes-to-strip:
+          - ROLE_
+          - DATASMART_
     development-identity:
       # 开发期身份注入默认关闭。它只用于本地联调和测试环境模拟用户身份，不是生产认证方案。
       # 为什么需要它：permission-admin 已经开始参与权限判定，但真实 JWT/IdP 还没有完整接入；
@@ -295,6 +355,8 @@ datasmart:
       public-path-patterns:
         - /actuator/**
         - /gateway/contracts/**
+        - /auth/**
+        - /api/auth/**
       cache:
         # 是否启用网关本地授权判定缓存。
         # 当前默认 false：因为权限矩阵、路由策略和身份来源仍在建设期，过早缓存会影响调试和策略一致性。
