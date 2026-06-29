@@ -74,6 +74,16 @@ spring:
             - Path=/api/agent/plans
           filters:
             - RewritePath=/api/agent/plans, /agent/plans
+        - id: agent-runtime-internal
+          # agent-runtime 的内部服务账号入口。
+          # 这些路径承载 worker lease、worker receipt、payload materialization 等机器协议，
+          # 不应作为普通 /api/agent/** 用户控制面暴露；网关会在授权过滤器里额外要求
+          # actorRole=SERVICE_ACCOUNT 且 actorType=SERVICE_ACCOUNT，再继续交给 permission-admin 做策略审计。
+          uri: lb://agent-runtime
+          predicates:
+            - Path=/api/internal/agent-runtime/**
+          filters:
+            - RewritePath=/api/internal/agent-runtime/(?<segment>.*), /internal/agent-runtime/$\{segment}
         - id: agent-runtime
           uri: lb://agent-runtime
           predicates:
@@ -814,6 +824,21 @@ datasmart:
             PUT: UPDATE
             PATCH: UPDATE
             DELETE: DELETE
+
+        # agent-runtime 内部服务账号入口必须先于普通 /api/agent/** 语义声明。
+        # 它不是用户发起的会话控制面，而是 worker lease、worker receipt、payload materialization 等机器协议。
+        # 因此 GET 只允许内部查看，POST/PUT/PATCH/DELETE 均归为 EXECUTE_INTERNAL，方便 permission-admin
+        # 单独配置服务账号策略、审计服务间调用和后续接入 mTLS/HMAC/服务网格策略。
+        - path-pattern: /api/internal/agent-runtime/**
+          resource-type: AI_RUNTIME
+          default-action: EXECUTE_INTERNAL
+          description: Agent Runtime 内部服务账号控制面入口，用于 worker lease、worker receipt、payload materialization 等机器协议调用。
+          method-actions:
+            GET: VIEW_INTERNAL
+            POST: EXECUTE_INTERNAL
+            PUT: EXECUTE_INTERNAL
+            PATCH: EXECUTE_INTERNAL
+            DELETE: EXECUTE_INTERNAL
 
         - path-pattern: /api/agent/events/ws
           resource-type: AI_RUNTIME

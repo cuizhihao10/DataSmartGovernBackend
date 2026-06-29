@@ -1,5 +1,27 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-30 追加落地进展：Gateway Internal Service Account Endpoint Closure
+- 本阶段继续按“整体闭环收敛”推进，没有继续扩展单个 Agent 工具或 data-sync 字段，而是把前面已经完成的 `agent-runtime` 内部 worker/API 能力纳入 gateway 统一认证、授权和审计边界。
+- 产品价值：
+  - `gateway` 新增 `/api/internal/agent-runtime/**` 路由，统一转发到 `agent-runtime` 的 `/internal/agent-runtime/**`，让 worker lease、worker receipt、payload materialization 等机器协议不再绕开网关；
+  - `GatewayInternalServiceEndpointGuard` 从只校验 `actorRole=SERVICE_ACCOUNT` 升级为同时校验 `actorRole=SERVICE_ACCOUNT` 与 `actorType=SERVICE_ACCOUNT`；
+  - `InternalServiceEndpointProperties` 新增 `allowedActorTypes`，使内部端点规则能够表达“服务账号角色”和“机器主体类型”两个维度；
+  - 默认内部端点覆盖 AgentPlan ingestion、command worker receipt、command worker lease、controlled dry-run receipt、sandbox admission、output sanitization、workspace file payload materialization 和 workspace file worker receipt；
+  - `/api/internal/agent-runtime/**` 授权语义映射为 `AI_RUNTIME + EXECUTE_INTERNAL`，GET 为 `VIEW_INTERNAL`，便于 permission-admin 后续按服务账号策略、机器协议审计和运维告警单独治理。
+- 安全边界：
+  - 只拥有服务账号角色但 `actorType` 仍是 `USER` 的请求会在 gateway 本地 fail-closed，不进入 permission-admin；
+  - 内部端点守卫不记录 token、client secret、完整 JWT claim、prompt、SQL、工具参数、样本数据、模型输出、文件正文或内部 endpoint 正文；
+  - 当前仍是 gateway 本地固定窗口限流，生产多实例建议继续升级到 Redis/云网关限流；
+  - 当前提供可选 internal token，生产建议继续收敛到 OIDC client credentials + HMAC/mTLS/service mesh 组合。
+- 验证：
+  - 定向测试通过：`GatewayInternalServiceEndpointGuardTest` 与 `GatewayAuthorizationFilterTest` 共 19 个用例；
+  - gateway 全量测试通过：`mvn -pl gateway -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`，共 66 个用例；
+  - 行数检查：`GatewayInternalServiceEndpointGuard.java` 190 行，`GatewayAuthorizationProperties.java` 454 行，`GatewayAuthorizationFilterTest.java` 448 行，新增 `GatewayInternalServiceEndpointGuardTest.java` 91 行，均低于 500 行约束。
+- 收敛判断：
+  - 认证中心不再停留在“能解析 OIDC token”，而是开始保护真实服务间机器协议入口；
+  - 下一步优先级应转向端到端联调与剩余 P0 闭环清单，而不是继续扩大 gateway 认证周边能力；
+  - 若继续补强安全，建议只做生产部署必要项：服务账号 client credentials 联调、HMAC/mTLS、分布式限流、权限变更缓存失效和审计持久化。
+
 ## 2026-06-29 追加落地进展：Gateway Authentication Audit And Prod Profile
 - 本阶段没有继续发散 Agent 文件工具或模型细节，而是按整体闭环收敛路线补齐 gateway 认证中心的生产化缺口。当前项目已经选择 OIDC/Keycloak/企业 IdP 路线，gateway 作为 Resource Server 校验 access token，permission-admin 继续承担授权中心职责；本阶段重点让“身份解析成功或失败”具备低敏审计、指标和生产 profile 安全基线。
 - 产品价值：

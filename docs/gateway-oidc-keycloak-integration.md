@@ -1,5 +1,17 @@
 # Gateway OIDC / Keycloak / 企业 IdP 接入说明
 
+## 2026-06-30 补充：内部服务账号端点保护
+
+本阶段在既有 OIDC/Keycloak 认证中心基础上，继续收敛服务间调用边界：`/api/internal/agent-runtime/**` 已作为 gateway 统一入口转发到 `agent-runtime` 的 `/internal/agent-runtime/**`，用于 worker lease、worker receipt、payload materialization 等机器协议调用。该入口不属于普通用户会话 API，必须先通过 gateway 本地内部端点守卫，再进入 permission-admin 做策略判定与审计。
+
+关键原则如下：
+
+- 内部端点默认同时要求 `actorRole=SERVICE_ACCOUNT` 与 `actorType=SERVICE_ACCOUNT`。`actorRole` 表示权限集合，`actorType` 表示 token 主体类型；两者分开校验可以避免普通用户或管理员仅凭临时角色误入机器协议入口。
+- `/api/internal/agent-runtime/**` 在授权语义上统一映射为 `AI_RUNTIME + EXECUTE_INTERNAL`，GET 映射为 `VIEW_INTERNAL`，便于 permission-admin 为服务账号配置独立策略、审计和告警。
+- 默认保护的端点覆盖 AgentPlan ingestion、command worker receipt、command worker lease、controlled dry-run receipt、sandbox admission、output sanitization、workspace file payload materialization 和 workspace file worker receipt。
+- 当前仍是 gateway 本地固定窗口限流和可选 internal token；生产环境建议继续升级为 OIDC client credentials + HMAC/mTLS/service mesh + Redis/网关级分布式限流。
+- 守卫和授权审计只处理低敏控制面字段，不记录 access token、client secret、完整 JWT claim、prompt、SQL、工具参数正文、样本数据、模型输出、文件正文或内部 endpoint 正文。
+
 ## 目标定位
 
 DataSmart Govern 的 gateway 不再把“认证中心”做成临时 Header、开发 token 或自研简化登录接口，而是按生产主流方式作为 **OIDC Resource Server** 接入 Keycloak、企业统一 IdP 或云 IAM。

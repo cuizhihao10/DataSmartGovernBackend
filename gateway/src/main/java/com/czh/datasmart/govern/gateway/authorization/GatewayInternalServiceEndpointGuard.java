@@ -70,6 +70,24 @@ public class GatewayInternalServiceEndpointGuard {
                     "内部服务端点只允许服务账号调用，endpoint=" + endpoint.getName() + ", actorRole=" + actorRole);
         }
 
+        /*
+         * 服务账号内部入口不能只看 actorRole。
+         *
+         * 生产环境的 OIDC/Keycloak 或企业 IdP 通常会同时携带：
+         * 1. actorRole：权限集合，例如 SERVICE_ACCOUNT、PROJECT_OWNER、AUDITOR；
+         * 2. actorType：主体类型，例如 USER、SERVICE_ACCOUNT、AGENT。
+         *
+         * role 可以因为授权策略、临时应急、租户套餐或管理台配置而变化；actorType 则表达“这个 token
+         * 代表的是人还是机器”。内部 worker 回执、payload 物化、计划接入等端点属于机器协议入口，
+         * 因此这里默认要求 actorRole 和 actorType 都是 SERVICE_ACCOUNT，避免普通用户或管理员
+         * 仅凭角色误入服务间调用通道。
+         */
+        String actorType = normalize(headers.getFirst(PlatformContextHeaders.ACTOR_TYPE));
+        if (!actorTypeAllowed(endpoint.getAllowedActorTypes(), actorType)) {
+            return GuardDecision.denied(endpoint.getName(), HttpStatus.FORBIDDEN,
+                    "内部服务端点要求服务账号主体类型，endpoint=" + endpoint.getName() + ", actorType=" + actorType);
+        }
+
         if (!tokenAllowed(endpoint, headers)) {
             return GuardDecision.denied(endpoint.getName(), HttpStatus.FORBIDDEN,
                     "内部服务端点 Token 校验失败，endpoint=" + endpoint.getName());
@@ -109,6 +127,16 @@ public class GatewayInternalServiceEndpointGuard {
                 .filter(Objects::nonNull)
                 .map(this::normalize)
                 .anyMatch(role -> role.equals(actorRole));
+    }
+
+    private boolean actorTypeAllowed(List<String> allowedActorTypes, String actorType) {
+        if (allowedActorTypes == null || allowedActorTypes.isEmpty()) {
+            return true;
+        }
+        return allowedActorTypes.stream()
+                .filter(Objects::nonNull)
+                .map(this::normalize)
+                .anyMatch(type -> type.equals(actorType));
     }
 
     private boolean tokenAllowed(InternalServiceEndpointProperties endpoint,

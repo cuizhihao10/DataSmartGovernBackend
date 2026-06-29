@@ -212,7 +212,7 @@ class GatewayAuthorizationFilterTest {
         GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
         PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
         GatewayAuthorizationFilter filter = filter(properties, decisionClient);
-        MockServerWebExchange exchange = exchangeWithRole("/api/agent/plan-ingestions", "POST", "SERVICE_ACCOUNT");
+        MockServerWebExchange exchange = serviceAccountExchange("/api/agent/plan-ingestions", "POST");
         RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
         when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
 
@@ -262,6 +262,34 @@ class GatewayAuthorizationFilterTest {
         assertThat(request.getDelegationType()).isEqualTo("SERVICE_ACCOUNT_ON_BEHALF_OF_ACTOR");
         assertThat(request.getDelegationReason()).isEqualTo("AGENT_CONFIRMED_TOOL_OUTBOX");
         assertThat(request.getRequestedPolicyVersion()).isEqualTo("route-policy:860");
+    }
+
+    /**
+     * agent-runtime 内部 worker/API 入口应使用独立的内部执行动作进入 permission-admin。
+     *
+     * <p>这条测试把本地守卫和授权语义串起来验证：网关先确认它确实是服务账号主体，
+     * 再把 `/api/internal/agent-runtime/**` 翻译为 `AI_RUNTIME + EXECUTE_INTERNAL`。
+     * 这样 permission-admin 可以给机器协议配置不同于普通用户会话 API 的策略、审计和告警。
+     */
+    @Test
+    void apiInternalAgentRuntimeEndpointShouldUseExecuteInternalAuthorization() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = serviceAccountExchange(
+                "/api/internal/agent-runtime/sessions/session-1/runs/run-1/tool-executions/command-worker-receipts",
+                "POST");
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
+
+        filter.filter(exchange, chain).block();
+
+        ArgumentCaptor<GatewayPermissionDecisionRequest> captor = forClass(GatewayPermissionDecisionRequest.class);
+        verify(decisionClient).evaluate(captor.capture(), eq("trace-test-001"));
+        assertThat(chain.called()).isTrue();
+        assertThat(captor.getValue().getResourceType()).isEqualTo("AI_RUNTIME");
+        assertThat(captor.getValue().getAction()).isEqualTo("EXECUTE_INTERNAL");
+        assertThat(captor.getValue().getActorType()).isEqualTo("SERVICE_ACCOUNT");
     }
 
     /**
@@ -398,8 +426,8 @@ class GatewayAuthorizationFilterTest {
         when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
 
         RecordingGatewayFilterChain firstChain = new RecordingGatewayFilterChain();
-        filter.filter(exchangeWithRole("/api/agent/plan-ingestions", "POST", "SERVICE_ACCOUNT"), firstChain).block();
-        MockServerWebExchange secondExchange = exchangeWithRole("/api/agent/plan-ingestions", "POST", "SERVICE_ACCOUNT");
+        filter.filter(serviceAccountExchange("/api/agent/plan-ingestions", "POST"), firstChain).block();
+        MockServerWebExchange secondExchange = serviceAccountExchange("/api/agent/plan-ingestions", "POST");
         RecordingGatewayFilterChain secondChain = new RecordingGatewayFilterChain();
         filter.filter(secondExchange, secondChain).block();
 

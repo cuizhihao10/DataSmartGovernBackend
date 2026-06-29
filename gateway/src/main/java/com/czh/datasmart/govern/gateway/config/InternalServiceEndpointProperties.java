@@ -43,6 +43,20 @@ public class InternalServiceEndpointProperties {
     private List<String> allowedActorRoles = new ArrayList<>(List.of("SERVICE_ACCOUNT"));
 
     /**
+     * 允许调用该内部端点的主体类型。
+     *
+     * <p>这里和 {@link #allowedActorRoles} 分开配置，是为了贴近 OIDC/Keycloak 或企业 IdP 的真实身份模型：
+     * role 表示“这个主体被授予了哪些权限集合”，actorType 表示“这个主体本身是什么类型”。
+     * 在生产环境里，普通用户、管理员、Agent、服务账号都可能拥有不同角色，但只有 `SERVICE_ACCOUNT`
+     * 这类机器主体才应该直接调用 worker 回执、plan ingestion、内部补偿等机器协议入口。
+     *
+     * <p>如果只校验角色，不校验主体类型，未来一旦某个用户被临时授予 SERVICE_ACCOUNT 风格的管理角色，
+     * 就可能绕过正常的人机交互入口，直接构造内部控制面请求。默认值要求 actorType 也是 SERVICE_ACCOUNT，
+     * 让“服务账号角色 + 服务账号主体类型”共同构成内部端点的第一道身份门槛。
+     */
+    private List<String> allowedActorTypes = new ArrayList<>(List.of("SERVICE_ACCOUNT"));
+
+    /**
      * 可选内部 Token Header 名称。
      *
      * <p>如果 internalToken 为空，则不校验 token，只校验角色与限流。

@@ -176,6 +176,9 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/datasource/**", "DATASOURCE", "数据源、连接器、元数据与同步控制面"));
         defaults.add(route("/api/agent/plan-ingestions", "AI_RUNTIME",
                 "Python AI Runtime 向 Java agent-runtime 提交 AgentPlan 的内部控制面入口", Map.of("POST", "INGEST_PLAN")));
+        defaults.add(route("/api/internal/agent-runtime/**", "AI_RUNTIME",
+                "Agent Runtime 内部服务账号控制面入口，用于 worker lease、worker receipt、payload materialization 等机器协议调用",
+                internalMethodActions()));
         defaults.add(route("/api/agent/events/ws", "AI_RUNTIME",
                 "Agent Runtime 实时事件 WebSocket 订阅入口，用于订阅 run/session 进度、断线续传、ack 和 heartbeat",
                 Map.of("GET", "SUBSCRIBE")));
@@ -383,14 +386,39 @@ public class GatewayAuthorizationProperties {
      * 应继续在这里增加端点，而不是让它们依赖普通 `/api/agent/**` 通配策略。
      */
     private static List<InternalServiceEndpointProperties> defaultInternalServiceEndpoints() {
+        List<InternalServiceEndpointProperties> endpoints = new ArrayList<>();
+        endpoints.add(internalEndpoint("agent-plan-ingestion", "/api/agent/plan-ingestions", 120,
+                "Python AI Runtime 提交 AgentPlan 到 Java 控制面的内部入口。"));
+        endpoints.add(internalEndpoint("agent-runtime-command-worker-receipts", "/api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-receipts", 240,
+                "命令 worker 写回执行结果的内部入口。"));
+        endpoints.add(internalEndpoint("agent-runtime-command-worker-leases", "/api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-leases/**", 600,
+                "命令 worker 领取、续租和释放租约的内部入口。"));
+        endpoints.add(internalEndpoint("agent-runtime-controlled-dry-run-receipts", "/api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/controlled-dry-run-receipts", 240,
+                "受控 dry-run worker 写回低敏预演结果的内部入口。"));
+        endpoints.add(internalEndpoint("agent-runtime-command-sandbox-run-admissions", "/api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-sandbox-run-admissions", 240,
+                "命令沙箱准入结果写回入口，用于执行前补齐隔离与资源配额证据。"));
+        endpoints.add(internalEndpoint("agent-runtime-command-worker-output-sanitizations", "/api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-output-sanitizations", 240,
+                "worker 输出低敏清洗结果写回入口。"));
+        endpoints.add(internalEndpoint("agent-runtime-workspace-file-payload-materializations", "/api/internal/agent-runtime/tool-action-workspace-files/payload-materializations", 120,
+                "workspace 文件工具真实参数物化入口，只允许可信服务账号调用。"));
+        endpoints.add(internalEndpoint("agent-runtime-workspace-file-worker-receipts", "/api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/workspace-file-worker-receipts", 240,
+                "workspace 文件 worker 执行结果写回入口。"));
+        return endpoints;
+    }
+
+    private static InternalServiceEndpointProperties internalEndpoint(String name,
+                                                                      String pathPattern,
+                                                                      int maxRequestsPerMinute,
+                                                                      String description) {
         InternalServiceEndpointProperties endpoint = new InternalServiceEndpointProperties();
-        endpoint.setName("agent-plan-ingestion");
-        endpoint.setPathPattern("/api/agent/plan-ingestions");
+        endpoint.setName(name);
+        endpoint.setPathPattern(pathPattern);
         endpoint.setAllowedActorRoles(List.of("SERVICE_ACCOUNT"));
+        endpoint.setAllowedActorTypes(List.of("SERVICE_ACCOUNT"));
         endpoint.setRateLimitEnabled(true);
-        endpoint.setMaxRequestsPerMinute(120);
-        endpoint.setDescription("Python AI Runtime 提交 AgentPlan 到 Java 控制面的内部入口。");
-        return new ArrayList<>(List.of(endpoint));
+        endpoint.setMaxRequestsPerMinute(maxRequestsPerMinute);
+        endpoint.setDescription(description);
+        return endpoint;
     }
 
     /**
@@ -433,6 +461,16 @@ public class GatewayAuthorizationProperties {
         methodActions.put("PUT", "UPDATE");
         methodActions.put("PATCH", "UPDATE");
         methodActions.put("DELETE", "DELETE");
+        return methodActions;
+    }
+
+    private static Map<String, String> internalMethodActions() {
+        Map<String, String> methodActions = new LinkedHashMap<>();
+        methodActions.put("GET", "VIEW_INTERNAL");
+        methodActions.put("POST", "EXECUTE_INTERNAL");
+        methodActions.put("PUT", "EXECUTE_INTERNAL");
+        methodActions.put("PATCH", "EXECUTE_INTERNAL");
+        methodActions.put("DELETE", "EXECUTE_INTERNAL");
         return methodActions;
     }
 
