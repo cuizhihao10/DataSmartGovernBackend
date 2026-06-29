@@ -1,5 +1,22 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Local E2E Closure Runbook And Smoke Check
+- 本阶段承接 `Data Sync Task-Management Receipt Delivery`，不继续在单个局部模块扩展字段或控制面展示，而是把当前已完成的认证中心、网关、授权中心、任务中心、数据同步控制面和数据源执行面收敛成一条本地可启动、可探测、可复查的最小闭环链路。
+- 产品价值：
+  - 新增 `docs/local-e2e-closure-runbook.md`，明确 Keycloak、gateway、permission-admin、task-management、data-sync、datasource-management 的本地启动顺序、迁移边界、健康探针和真实 worker loop 触发前置条件；
+  - 新增 `scripts/local-e2e-smoke-check.ps1`，提供只读 smoke check，检查关键文件、Keycloak realm、核心迁移、Docker 容器和关键 HTTP 端点；
+  - README 新增本地闭环联调入口，后续开发者不需要在超长进度记录里反查如何把项目串起来；
+  - runbook 把“最小商业化链路”和“AI/图谱/对象存储增强链路”分层，避免把 Chroma、Neo4j、MinIO 等增强依赖误作为 data-sync 最小闭环的硬阻塞。
+- 安全边界：
+  - smoke 脚本不创建任务、不触发 `POST /sync-workers/run-once`、不调用 datasource-management run-once、不读取源端数据、不写入目标端数据；
+  - 脚本和文档不打印 access token、refresh token、client secret、数据库密码、SQL、样本数据、prompt、模型输出或内部请求正文；
+  - runbook 明确 Compose 与 Keycloak realm 样板仅用于本地开发，生产必须使用正式 Secret Manager、TLS、外部数据库、企业 IdP、审计和部署治理；
+  - MySQL migrations 当前不会被 Compose 自动执行，runbook 明确把 schema 迁移作为人工步骤和后续 Flyway/Liquibase 收敛缺口。
+- 收敛判断：
+  - 当前项目已经有一条可被本地验证的主链路：`Keycloak/IdP -> gateway -> permission-admin -> task-management outbox/receipt -> data-sync worker loop -> datasource-management run-once -> data-sync receipt -> task-management projection`；
+  - 后续不应继续围绕单个模块无限优化，应优先补端到端实际启动验证、数据库迁移治理、receipt outbox/retry/dead-letter，以及 Agent tools/skills/memory/query/context/permission/session/command/hook/LLM 的最小闭口清单；
+  - 模型层继续保持 provider-neutral 和成熟推理服务接入方向，不在本项目内做底层算法、微调或后训练扩散。
+
 ## 2026-06-29 追加落地进展：Data Sync Task-Management Receipt Delivery
 - 本阶段承接 `Data Sync Worker Loop Closure`，把 data-sync execution complete/fail 结果主动投递到 task-management 已有的 DataSync worker execution receipt 投影。目标是让“真实数据同步执行结果”进入全平台任务中心，而不是只停留在 data-sync 自己的 execution 表里。
 - 产品价值：
