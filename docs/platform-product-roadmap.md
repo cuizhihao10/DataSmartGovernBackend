@@ -1,5 +1,26 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Agent Capability Closure Readiness Gate
+- 本阶段承接 `Data Sync Receipt Outbox Retry Dead-Letter Closure` 后的整体收敛路线，切回 AI Agent 核心闭口清单。目标不是继续新增某个工具或某个模型字段，而是把用户明确要求的 tools、skills、memory、query engine、context、permission、sub-agent、sessions、command、hook、tech stack、LLM 等完整 Agent Host 能力，转换成可查询、可测试、可发布门禁化的闭口验收口径。
+- 产品价值：
+  - 新增 `agent_capability_closure.py`，复用既有 Agent 能力矩阵，计算 readinessScore、最终收口门禁、P0 硬阻塞、控制面转实缺口和生产化加固缺口；
+  - `/agent/capabilities/diagnostics` 继续返回完整能力矩阵，新增 `/agent/capabilities/closure-readiness` 与 `/api/agent/capabilities/closure-readiness` 作为更短的发布前检查入口；
+  - `/agent/plans.agentCapabilityClosure` 现在携带 `closureReadiness`，让每次计划响应都能看到当前 Agent Host 是否可以进入最终项目收尾；
+  - 门禁明确区分 `planned/blocked`、`control_plane_ready`、`partial_closed_loop`，避免把“有合同、无真实闭环”误判成商业化完成；
+  - 该能力帮助后续研发从“继续发散补字段”转向“先关闭 P0 planned/blocked，再把控制面合同转成真实闭环，最后做生产化加固”。
+- 安全边界：
+  - 闭口验收只读取 capabilityId、displayName、status、ownerModule、closureGap、nextAction 等低敏治理元数据；
+  - 不读取 prompt、SQL、工具参数、文件正文、记忆正文、模型输出、样本数据、凭据、内部 endpoint 或真实运行结果；
+  - 新增路由是只读诊断接口，不调用模型、不执行工具、不写 outbox、不创建审批单。
+- 验证：
+  - 定向 Python 测试通过：`python -m unittest python-ai-runtime.tests.test_agent_capability_matrix`，共 6 个用例；
+  - Python Runtime 全量单元测试通过：`python -m unittest discover -s python-ai-runtime/tests`，共 534 个用例；
+  - 行数检查：`agent_capability_matrix.py` 426 行，`agent_capability_closure.py` 226 行，`api/agent/capabilities.py` 64 行，均低于 500 行约束。
+- 收敛判断：
+  - Agent 部分现在具备“完整能力矩阵 + 闭口门禁”的统一验收入口，后续不应再凭感觉决定继续做哪个 Agent 局部能力；
+  - 当前门禁仍会判定不允许直接最终收口，因为 P0 中仍存在 file read/write、web search、micro-compact、rate-limit/fallback、inference optimization 等 planned 硬缺口；
+  - 下一步应从闭口门禁返回的 P0 hardBlockers 中选择最小必要项转实，优先做能贯穿 tools、permission、context、LLM 和 runtime event 的核心链路，而不是继续扩展 data-sync 或单个治理工具的边缘字段。
+
 ## 2026-06-29 追加落地进展：Data Sync Receipt Outbox Retry Dead-Letter Closure
 - 本阶段承接 `Local E2E Closure Runbook And Smoke Check`，补齐上一个 data-sync 跨服务闭环缺口：data-sync execution complete/fail 已经会投递到 task-management receipt，但如果 task-management 短暂不可用，原先只会低敏日志告警，缺少 durable outbox、退避重试和 dead-letter。
 - 产品价值：

@@ -18,6 +18,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from datasmart_ai_runtime.services.agent_capability.agent_capability_closure import (
+    build_agent_capability_closure_readiness,
+)
+
 
 class AgentCapabilityStatus(str, Enum):
     """Agent 子能力当前成熟度。
@@ -164,6 +168,7 @@ class AgentCapabilityMatrixService:
             "statusCounts": _status_counts(sub_capabilities),
             "p0GapDomains": self._p0_gap_domains(),
             "nextClosureActions": self._next_closure_actions(),
+            "closureReadiness": self.closure_readiness(),
             "domains": tuple(domain.to_summary() for domain in self.domains),
         }
 
@@ -180,8 +185,18 @@ class AgentCapabilityMatrixService:
             "statusCounts": _status_counts(sub_capabilities),
             "p0GapDomains": self._p0_gap_domains(),
             "nextClosureActions": self._next_closure_actions(),
+            "closureReadiness": self.closure_readiness(),
             "domains": tuple(domain.to_plan_summary() for domain in self.domains),
         }
+
+    def closure_readiness(self) -> dict[str, Any]:
+        """生成 Agent 能力最终闭口验收视图。
+
+        该方法复用同一份 `domains`，因此不会出现“诊断矩阵说 A，项目收口门禁说 B”的双口径问题。
+        它只读取低敏治理字段，适合在 `/agent/plans`、独立诊断路由、管理台发布门禁和路线图复盘中复用。
+        """
+
+        return build_agent_capability_closure_readiness(self.domains)
 
     def _p0_gap_domains(self) -> tuple[str, ...]:
         """列出 P0 且仍有未闭环子能力的领域。"""

@@ -22,6 +22,8 @@ def register_agent_capability_routes(
     路由设计：
     - `/agent/capabilities/diagnostics`：Python Runtime 直连和本地学习使用；
     - `/api/agent/capabilities/diagnostics`：预留给统一 gateway、管理台和上线前检查使用。
+    - `/agent/capabilities/closure-readiness`：返回更短的项目闭口门禁视图；
+    - `/api/agent/capabilities/closure-readiness`：给 gateway 或发布检查流水线使用的同等路径。
 
     返回边界：
     - 只返回能力域、子能力、状态、归属模块、闭环缺口、性能与安全关注点；
@@ -40,6 +42,23 @@ def register_agent_capability_routes(
         """通过统一网关路径查询同一份 Agent 能力完备度矩阵。"""
 
         return capability_matrix_service.diagnostics()
+
+    @app.get("/agent/capabilities/closure-readiness")
+    def agent_capability_closure_readiness() -> dict[str, Any]:
+        """查询 Agent 能力最终闭口门禁。
+
+        该接口比完整 diagnostics 更适合发布前检查：它不展开所有子能力，而是聚焦 P0 是否还有
+        planned/blocked、control-plane-only 和 partial-closed-loop 缺口。调用者可以据此判断当前工作
+        应继续补核心闭环，还是进入最终硬化与收尾。
+        """
+
+        return capability_matrix_service.closure_readiness()
+
+    @app.get("/api/agent/capabilities/closure-readiness")
+    def agent_capability_closure_readiness_from_gateway() -> dict[str, Any]:
+        """通过统一网关路径查询同一份 Agent 能力闭口门禁。"""
+
+        return capability_matrix_service.closure_readiness()
 
 
 __all__ = ["register_agent_capability_routes"]

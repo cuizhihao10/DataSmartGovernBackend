@@ -15,9 +15,15 @@ from datasmart_ai_runtime.services.agent_capability.agent_capability_matrix impo
     AgentCapabilityStatus,
     default_agent_capability_matrix_service,
 )
+from datasmart_ai_runtime.services.agent_capability.agent_capability_closure import (
+    AgentClosureGateDecision,
+    build_agent_capability_closure_readiness,
+)
 
 __all__ = (
+    "AgentClosureGateDecision",
     "AgentCapabilityMatrixService",
     "AgentCapabilityStatus",
+    "build_agent_capability_closure_readiness",
     "default_agent_capability_matrix_service",
 )

@@ -10,6 +10,7 @@ from datasmart_ai_runtime.api import build_default_orchestrator, build_plan_resp
 from datasmart_ai_runtime.api.agent.capabilities import register_agent_capability_routes
 from datasmart_ai_runtime.domain.contracts import AgentRequest
 from datasmart_ai_runtime.services.agent_capability import (
+    AgentClosureGateDecision,
     AgentCapabilityStatus,
     default_agent_capability_matrix_service,
 )
@@ -46,6 +47,7 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
 
         diagnostics = default_agent_capability_matrix_service().diagnostics()
         domains = {domain["domainId"]: domain for domain in diagnostics["domains"]}
+        closure_readiness = diagnostics["closureReadiness"]
 
         self.assertEqual("datasmart.agent-capability-matrix.v1", diagnostics["schemaVersion"])
         self.assertEqual("AGENT_CAPABILITY_COMPLETENESS_MATRIX", diagnostics["diagnosticType"])
@@ -89,6 +91,12 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
         self.assertIn("permission.dangerous-path-safe-cmd", permission_capabilities)
         self.assertIn(AgentCapabilityStatus.CONTROL_PLANE_READY.value, diagnostics["statusCounts"])
         self.assertIn(AgentCapabilityStatus.PLANNED.value, diagnostics["statusCounts"])
+        self.assertEqual("AGENT_CAPABILITY_CLOSURE_READINESS", closure_readiness["snapshotType"])
+        self.assertEqual(
+            AgentClosureGateDecision.NOT_READY_FOR_PROJECT_CLOSURE.value,
+            closure_readiness["gateDecision"],
+        )
+        self.assertFalse(closure_readiness["canStartFinalProjectClosure"])
 
     def test_quality_remediation_tool_reflects_partial_real_closure(self) -> None:
         """质量治理工具状态应跟随最新提交闭环更新，避免继续按旧 dry-run 口径推进。"""
@@ -107,6 +115,31 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
         self.assertIn("UNKNOWN 人工恢复", quality_tool["currentEvidence"])
         self.assertIn("统一 ToolPlan", quality_tool["nextAction"])
         self.assertNotIn("尚未由 Java agent-runtime 将该 ToolPlan 写入真实", serialized)
+
+    def test_closure_readiness_groups_p0_gaps_for_final_project_convergence(self) -> None:
+        """闭口门禁应把 P0 缺口分层，帮助项目停止发散并优先关闭硬阻塞。"""
+
+        readiness = default_agent_capability_matrix_service().closure_readiness()
+        hard_blocker_ids = {item["capabilityId"] for item in readiness["hardBlockers"]}
+        control_plane_gap_ids = {item["capabilityId"] for item in readiness["controlPlaneGaps"]}
+        operationalization_gap_ids = {item["capabilityId"] for item in readiness["operationalizationGaps"]}
+        serialized = str(readiness).lower()
+
+        self.assertEqual("datasmart.agent-capability-closure-readiness.v1", readiness["schemaVersion"])
+        self.assertEqual("LOW_SENSITIVE_CAPABILITY_METADATA_ONLY", readiness["payloadPolicy"])
+        self.assertGreater(readiness["readinessScore"], 0)
+        self.assertLess(readiness["readinessScore"], 100)
+        self.assertGreater(readiness["p0HardBlockerCount"], 0)
+        self.assertGreater(readiness["p0ControlPlaneGapCount"], 0)
+        self.assertGreater(readiness["p0OperationalizationGapCount"], 0)
+        self.assertIn("tool.file-read-write", hard_blocker_ids)
+        self.assertIn("llm.inference-optimization", hard_blocker_ids)
+        self.assertIn("tool.exec-run-program", control_plane_gap_ids)
+        self.assertIn("memory.long-term", operationalization_gap_ids)
+        self.assertIn("P0 能力域不允许继续存在 planned 或 blocked 子能力。", readiness["stageExitCriteria"])
+        self.assertNotIn("api_key", serialized)
+        self.assertNotIn("select * from", serialized)
+        self.assertNotIn("raw prompt", serialized)
 
     def test_matrix_is_low_sensitive_capability_metadata(self) -> None:
         """能力矩阵只能返回低敏能力元数据，不能变成运行时内容导出。"""
@@ -132,10 +165,14 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
 
         self.assertIn("/agent/capabilities/diagnostics", app.get_routes)
         self.assertIn("/api/agent/capabilities/diagnostics", app.get_routes)
+        self.assertIn("/agent/capabilities/closure-readiness", app.get_routes)
+        self.assertIn("/api/agent/capabilities/closure-readiness", app.get_routes)
         direct_response = app.get_routes["/agent/capabilities/diagnostics"]()
         gateway_response = app.get_routes["/api/agent/capabilities/diagnostics"]()
+        closure_response = app.get_routes["/api/agent/capabilities/closure-readiness"]()
         self.assertEqual(direct_response, gateway_response)
         self.assertEqual("AGENT_CAPABILITY_COMPLETENESS_MATRIX", direct_response["diagnosticType"])
+        self.assertEqual("AGENT_CAPABILITY_CLOSURE_READINESS", closure_response["snapshotType"])
 
     def test_plan_response_contains_compressed_capability_closure(self) -> None:
         """`/agent/plans` 应返回压缩能力闭环摘要，而不是完整能力矩阵。"""
@@ -151,6 +188,7 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
             build_default_orchestrator(),
         )
         closure = response["agentCapabilityClosure"]
+        closure_readiness = closure["closureReadiness"]
         domains = {domain["domainId"]: domain for domain in closure["domains"]}
 
         self.assertEqual("AGENT_CAPABILITY_CLOSURE", closure["snapshotType"])
@@ -161,6 +199,9 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
         self.assertIn("command", closure["p0GapDomains"])
         self.assertGreaterEqual(len(closure["nextClosureActions"]), 1)
         self.assertIn("topClosureGaps", domains["tools"])
+        self.assertEqual("AGENT_CAPABILITY_CLOSURE_READINESS", closure_readiness["snapshotType"])
+        self.assertFalse(closure_readiness["canStartFinalProjectClosure"])
+        self.assertIn("STOP_FEATURE_EXPANSION", closure_readiness["recommendedDeliveryMode"])
         self.assertNotIn("subCapabilities", domains["tools"])
         self.assertNotIn("ds-capability-sensitive", str(closure))
 
