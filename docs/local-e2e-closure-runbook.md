@@ -147,6 +147,16 @@ mvn -pl agent-runtime -am spring-boot:run "-Dmaven.repo.local=D:\Desktop\DataSma
 .\scripts\local-e2e-smoke-check.ps1 -Strict
 ```
 
+如果需要验证本地 Keycloak 样例服务账号是否能被 gateway 解析为机器主体：
+
+```powershell
+.\scripts\local-e2e-smoke-check.ps1 -CheckServiceAccountToken
+```
+
+该探针会使用本地 realm 中的 `sync-service` 样例账号向 Keycloak 获取 access token，然后只调用 gateway 的 `/auth/session` 读取低敏身份视图。它的通过条件是 gateway 返回 `tenantId=10`、`actorId=9101`、`actorRole=SERVICE_ACCOUNT`、`actorType=SERVICE_ACCOUNT`、`workspaceId=system-sync`。脚本不会打印 access token、refresh token、密码、完整 JWT claim 或响应正文，也不会调用任何 POST 业务接口。
+
+需要特别注意：`sync-service + password grant` 只服务于本地开发 smoke。生产环境不应使用 password grant 或仓库内样例密码，服务间调用应改为 OIDC client credentials、企业 IdP 托管服务账号、mTLS 或 service mesh 身份，并把 client secret 放入 Secret Manager、Kubernetes Secret 或企业密钥库。
+
 脚本安全边界：
 
 - 不创建任务。

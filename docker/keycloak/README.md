@@ -70,6 +70,23 @@ Invoke-RestMethod -Headers @{ Authorization = "Bearer $($token.access_token)" } 
 
 gateway 应解析出 `tenantId=10`、`actorId=1001`、`actorRole=PROJECT_OWNER`、`actorType=USER` 和 `workspaceId=workspace-a`。
 
+## 本地服务账号 Smoke
+
+本地 realm 同时提供 `sync-service` 样例账号，用于验证服务账号 token 是否能被 gateway 映射为机器主体。推荐通过仓库根目录的 smoke 脚本执行：
+
+```powershell
+.\scripts\local-e2e-smoke-check.ps1 -CheckServiceAccountToken
+```
+
+该探针只会完成两步：
+
+- 使用 `sync-service` 从本地 Keycloak 获取 access token。
+- 携带该 token 调用 gateway `/auth/session`，确认低敏身份字段为 `actorRole=SERVICE_ACCOUNT`、`actorType=SERVICE_ACCOUNT`、`tenantId=10`、`actorId=9101`、`workspaceId=system-sync`。
+
+脚本不会打印 access token、refresh token、密码、完整 JWT claim 或响应正文，也不会调用 agent-runtime、data-sync、task-management 的任何写入接口。
+
+生产环境不要沿用该 password grant 示例。真实服务间调用应使用独立 confidential client、client credentials、企业 IdP 托管服务账号、mTLS 或 service mesh 身份；client secret 必须放入 Secret Manager、Kubernetes Secret、Docker secret 或企业密钥库，不能写入 realm JSON、脚本或 Git 历史。
+
 ## Claim 设计
 
 realm 样板通过 client protocol mapper 把用户属性映射为 DataSmart 所需 claim：

@@ -1,5 +1,25 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-30 追加落地进展：Local E2E Service Account Smoke Closure
+- 本阶段没有继续扩展新的业务端点，而是把上一阶段 gateway 内部服务账号保护纳入本地闭环验证。目标是让开发者能用一个只读 smoke 脚本确认：Keycloak realm、gateway 内部路由、内部端点 actorType 守卫和本地服务账号样例没有漂移。
+- 产品价值：
+  - `scripts/local-e2e-smoke-check.ps1` 新增静态契约检查，验证 `/api/internal/agent-runtime/**` 路由、`allowedActorTypes`、`actorTypeAllowed` 和 `sync-service` 样例账号是否存在；
+  - 新增 `-CheckServiceAccountToken` 可选探针，用本地 Keycloak `sync-service` 获取 access token，并只调用 gateway `/auth/session` 验证低敏身份映射；
+  - 探针通过条件固定为 `tenantId=10`、`actorId=9101`、`actorRole=SERVICE_ACCOUNT`、`actorType=SERVICE_ACCOUNT`、`workspaceId=system-sync`；
+  - `docs/local-e2e-closure-runbook.md` 与 `docker/keycloak/README.md` 明确本地 password grant 只用于 smoke，生产必须迁移到 client credentials、企业 IdP 服务账号、mTLS 或 service mesh。
+- 安全边界：
+  - smoke 脚本不打印 access token、refresh token、密码、完整 JWT claim、响应正文、SQL、样本数据、prompt、模型输出或内部请求正文；
+  - `-CheckServiceAccountToken` 只调用 Keycloak token endpoint 与 gateway `/auth/session`，不触发 POST 业务接口、不创建任务、不运行 worker loop、不读写真实业务数据；
+  - 默认不获取 token，避免未启动本地 Keycloak/gateway 时把普通静态检查变成强依赖；
+  - 本地 `sync-service` 样例密码不能进入生产，生产 secret 必须由 Secret Manager、Kubernetes Secret、Docker secret 或企业密钥库托管。
+- 验证：
+  - 只读静态 smoke 通过：`powershell -ExecutionPolicy Bypass -File .\scripts\local-e2e-smoke-check.ps1 -SkipDocker -SkipHttp`，结果 PASS=12、WARN=14、FAIL=0；
+  - 行数检查：`scripts/local-e2e-smoke-check.ps1` 296 行，低于 500 行约束。
+- 收敛判断：
+  - 现在本地闭环检查不再只是“文件和健康检查存在”，而是能提前发现服务账号身份链路配置漂移；
+  - 下一步建议进入真实启动联调或剩余 P0 Agent 闭环清单，不建议继续扩展 smoke 脚本为复杂压测工具；
+  - 若后续补生产部署，只补 Secret Manager、client credentials、mTLS/service mesh 和审计持久化这些必要闭环，不做自研登录系统。
+
 ## 2026-06-30 追加落地进展：Gateway Internal Service Account Endpoint Closure
 - 本阶段继续按“整体闭环收敛”推进，没有继续扩展单个 Agent 工具或 data-sync 字段，而是把前面已经完成的 `agent-runtime` 内部 worker/API 能力纳入 gateway 统一认证、授权和审计边界。
 - 产品价值：

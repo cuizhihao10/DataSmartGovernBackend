@@ -8,6 +8,9 @@
        如果只是想检查脚本语法或仓库文件完整性，可传入 -SkipDocker -SkipHttp。
     3. 默认不会因为失败直接返回非 0 退出码，便于在服务尚未启动时作为诊断工具使用；
        如果需要 CI/严格验收语义，可传入 -Strict，此时任一失败检查会让脚本退出 1。
+    4. 如需验证本地 Keycloak 样例服务账号是否能被 gateway 解析为 SERVICE_ACCOUNT，
+       可传入 -CheckServiceAccountToken。脚本只调用 Keycloak token endpoint 与 gateway /auth/session，
+       不会把 token 打印到终端，也不会触发任何业务写入或 worker 执行动作。
 
     安全边界：
     - 不打印 access token、refresh token、client secret、数据库密码、SQL、样本数据或内部请求正文。
@@ -18,6 +21,7 @@ param(
     [switch]$Strict,
     [switch]$SkipDocker,
     [switch]$SkipHttp,
+    [switch]$CheckServiceAccountToken,
     [int]$TimeoutSeconds = 3,
     [string]$GatewayBaseUrl = "http://localhost:8080",
     [string]$TaskManagementBaseUrl = "http://localhost:8081",
@@ -26,6 +30,9 @@ param(
     [string]$DataSyncBaseUrl = "http://localhost:8086",
     [string]$AgentRuntimeBaseUrl = "http://localhost:8091",
     [string]$KeycloakBaseUrl = "http://localhost:18080",
+    [string]$ServiceAccountUsername = "sync-service",
+    [string]$ServiceAccountPassword = "DataSmart@123",
+    [string]$ServiceAccountClientId = "datasmart-gateway",
     [string]$PrometheusBaseUrl = "http://localhost:9090",
     [string]$GrafanaBaseUrl = "http://localhost:3000"
 )
@@ -94,6 +101,31 @@ function Test-JsonFile {
     }
 }
 
+function Test-FileContains {
+    param(
+        [string]$RelativePath,
+        [string]$ExpectedText,
+        [string]$Purpose
+    )
+
+    $path = Join-Path $script:RepoRoot $RelativePath
+    if (-not (Test-Path -LiteralPath $path)) {
+        Add-Check -Name "静态契约: $RelativePath" -Status "FAIL" -Detail "文件不存在，无法验证：$Purpose"
+        return
+    }
+
+    try {
+        $content = Get-Content -Encoding UTF8 -LiteralPath $path -Raw
+        if ($content.Contains($ExpectedText)) {
+            Add-Check -Name "静态契约: $RelativePath" -Status "PASS" -Detail $Purpose
+        } else {
+            Add-Check -Name "静态契约: $RelativePath" -Status "FAIL" -Detail "未找到期望片段，可能导致闭环联调漂移：$Purpose"
+        }
+    } catch {
+        Add-Check -Name "静态契约: $RelativePath" -Status "FAIL" -Detail "无法读取文件，无法验证：$Purpose"
+    }
+}
+
 function Test-DockerContainers {
     if ($SkipDocker) {
         Add-Check -Name "Docker 容器检查" -Status "WARN" -Detail "已通过 -SkipDocker 跳过"
@@ -133,6 +165,78 @@ function Test-DockerContainers {
         }
     } catch {
         Add-Check -Name "Docker 容器列表" -Status "FAIL" -Detail "无法读取 docker ps，可能 Docker daemon 未启动"
+    }
+}
+
+function Invoke-ServiceAccountTokenProbe {
+    if ($SkipHttp) {
+        Add-Check -Name "服务账号 OIDC 身份探针" -Status "WARN" -Detail "已通过 -SkipHttp 跳过"
+        return
+    }
+    if (-not $CheckServiceAccountToken) {
+        Add-Check -Name "服务账号 OIDC 身份探针" -Status "WARN" -Detail "默认不获取 token；如需验证 sync-service -> gateway /auth/session，请追加 -CheckServiceAccountToken"
+        return
+    }
+
+    $accessToken = $null
+    try {
+        $tokenResponse = Invoke-RestMethod -Method Post `
+            -Uri "$KeycloakBaseUrl/realms/datasmart/protocol/openid-connect/token" `
+            -ContentType "application/x-www-form-urlencoded" `
+            -TimeoutSec $TimeoutSeconds `
+            -Body @{
+                grant_type = "password"
+                client_id = $ServiceAccountClientId
+                username = $ServiceAccountUsername
+                password = $ServiceAccountPassword
+            }
+        $accessToken = $tokenResponse.access_token
+        if ([string]::IsNullOrWhiteSpace($accessToken)) {
+            Add-Check -Name "服务账号 OIDC 身份探针" -Status "FAIL" -Detail "Keycloak 返回成功但没有 access_token"
+            return
+        }
+
+        $sessionResponse = Invoke-RestMethod -Method Get `
+            -Uri "$GatewayBaseUrl/auth/session" `
+            -TimeoutSec $TimeoutSeconds `
+            -Headers @{
+                Authorization = "Bearer $accessToken"
+                "X-DataSmart-Trace-Id" = "local-smoke-service-account"
+            }
+        $principal = $sessionResponse.data
+        if ($null -eq $principal) {
+            Add-Check -Name "服务账号 OIDC 身份探针" -Status "FAIL" -Detail "gateway /auth/session 未返回 data 字段"
+            return
+        }
+
+        $identityMatches =
+            [string]$principal.tenantId -eq "10" -and
+            [string]$principal.actorId -eq "9101" -and
+            [string]$principal.actorRole -eq "SERVICE_ACCOUNT" -and
+            [string]$principal.actorType -eq "SERVICE_ACCOUNT" -and
+            [string]$principal.workspaceId -eq "system-sync"
+
+        if ($identityMatches) {
+            Add-Check -Name "服务账号 OIDC 身份探针" -Status "PASS" -Detail "sync-service 已被 gateway 解析为 SERVICE_ACCOUNT，tenantId=10, actorId=9101, workspaceId=system-sync"
+        } else {
+            Add-Check -Name "服务账号 OIDC 身份探针" -Status "FAIL" -Detail "gateway 返回的服务账号低敏身份字段不符合本地 realm 约定"
+        }
+    } catch {
+        $statusCode = $null
+        if ($_.Exception.Response -ne $null) {
+            try {
+                $statusCode = [int]$_.Exception.Response.StatusCode
+            } catch {
+                $statusCode = $null
+            }
+        }
+        if ($statusCode -ne $null) {
+            Add-Check -Name "服务账号 OIDC 身份探针" -Status "FAIL" -Detail "HTTP $statusCode；请确认 Keycloak、gateway 和 OIDC issuer 配置已启动并一致"
+        } else {
+            Add-Check -Name "服务账号 OIDC 身份探针" -Status "FAIL" -Detail "无法完成 token 获取或 /auth/session 调用；未输出 token、密码或响应正文"
+        }
+    } finally {
+        $accessToken = $null
     }
 }
 
@@ -187,6 +291,10 @@ Test-RequiredFile -RelativePath "docker/mysql/migrations/20260620_task_data_sync
 Test-RequiredFile -RelativePath "docker/mysql/migrations/20260622_task_data_sync_worker_execution_receipt.sql" -Purpose "task-management DataSync execution receipt 表迁移"
 Test-RequiredFile -RelativePath "docker/mysql/migrations/20260629_data_sync_template_execution_contract.sql" -Purpose "data-sync 模板执行契约字段迁移"
 Test-RequiredFile -RelativePath "docker/mysql/migrations/20260629_data_sync_task_management_receipt_outbox.sql" -Purpose "data-sync task-management receipt outbox/retry/dead-letter 表迁移"
+Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -ExpectedText "/api/internal/agent-runtime/**" -Purpose "gateway 暴露 agent-runtime 内部服务账号入口，支撑服务间调用闭环"
+Test-FileContains -RelativePath "gateway/src/main/java/com/czh/datasmart/govern/gateway/config/GatewayAuthorizationProperties.java" -ExpectedText "setAllowedActorTypes(List.of(`"SERVICE_ACCOUNT`"))" -Purpose "默认内部端点同时要求服务账号角色和服务账号主体类型"
+Test-FileContains -RelativePath "gateway/src/main/java/com/czh/datasmart/govern/gateway/authorization/GatewayInternalServiceEndpointGuard.java" -ExpectedText "actorTypeAllowed" -Purpose "内部端点守卫必须校验 actorType，避免人类用户 role-only 误入机器协议"
+Test-FileContains -RelativePath "docker/keycloak/import/datasmart-realm.json" -ExpectedText '"username": "sync-service"' -Purpose "本地 realm 必须保留服务账号样例，用于验证 OIDC -> gateway 身份映射"
 
 Test-DockerContainers
 
@@ -202,6 +310,7 @@ Invoke-HttpProbe -Name "Permission Admin health" -Url "$PermissionAdminBaseUrl/a
 Invoke-HttpProbe -Name "Agent Runtime health" -Url "$AgentRuntimeBaseUrl/actuator/health"
 Invoke-HttpProbe -Name "Prometheus ready" -Url "$PrometheusBaseUrl/-/ready"
 Invoke-HttpProbe -Name "Grafana health" -Url "$GrafanaBaseUrl/api/health"
+Invoke-ServiceAccountTokenProbe
 
 $passed = ($script:Checks | Where-Object { $_.Status -eq "PASS" }).Count
 $warned = ($script:Checks | Where-Object { $_.Status -eq "WARN" }).Count
