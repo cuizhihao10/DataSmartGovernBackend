@@ -1,5 +1,28 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-30 追加落地进展：Python AI Runtime Context Micro-Compact Closure
+- 本阶段继续按“整体闭环收敛”推进，没有继续发散新的 Agent 协议或模型算法能力，而是关闭 Agent 主链路中的上下文工程缺口。目标是让长上下文在进入模型前具备可解释的微压缩治理，避免上下文只能在“完整塞进模型”和“整块截断丢弃”之间二选一。
+- 产品价值：
+  - 新增 `ContextMicroCompactor`，以确定性抽取策略压缩过长上下文块，不调用额外模型，不引入额外 Provider 成本和失败点；
+  - `HybridContextBuilder` 在过滤、去重、排序之后调用 micro-compact，再进入原有总 token 预算选择，让所有下游统一消费已治理上下文；
+  - 新增 `CONTEXT_MICRO_COMPACTED` runtime event，前端、Java 控制面和审计回放可以看到压缩块数、token 节省、来源类型分布、原因码和平均可信度；
+  - 能力矩阵将 `context.micro-compact` 从 planned 校准为 partial closed-loop，同时保留长会话历史摘要、tool-compact 和真实 tokenizer 作为后续缺口；
+  - 压缩后的 `ContextBlock.metadata.microCompact` 会保留 applied、policy、原始/压缩 token 估算、confidence 和 reasonCodes，便于学习和排障。
+- 安全边界：
+  - micro-compact runtime event 只返回低敏统计，不返回上下文正文、SQL、样本数据、工具参数、prompt、模型输出或内部 endpoint；
+  - 压缩内容进入模型前会对明显密钥赋值、长随机 token 和 SQL 语句做保守脱敏；
+  - 该能力不是长期记忆写入，也不会把压缩摘要自动保存到长期上下文；
+  - 当前是启发式 token 估算和抽取式摘要，生产仍应结合真实 tokenizer、DLP、权限策略和工具结果引用化。
+- 验证：
+  - 定向 Python 测试通过：`test_context_micro_compactor.py`、`test_hybrid_context_builder.py`、`test_agent_capability_matrix.py`，共 14 个用例；
+  - Python 全量编译通过：`python -m compileall python-ai-runtime\src python-ai-runtime\tests`；
+  - Python 全量单测通过：`python -m unittest discover -s python-ai-runtime\tests`，共 553 个用例；
+  - 行数检查：`context_micro_compactor.py` 419 行，`hybrid_context_builder.py` 434 行，`agent_capability_matrix.py` 393 行，新增测试 93 行，均低于 500 行约束。
+- 收敛判断：
+  - `context.micro-compact` 已经从“计划项”进入“主链可用的部分闭环”，但还不能视为完全完成；
+  - 下一步不应继续扩展微压缩算法细节，而应补 `tool.web-search` 的安全工具契约、`llm.inference-optimization` 的成熟推理服务诊断，或转入真实 E2E 启动联调；
+  - 项目整体仍应继续朝闭环收敛推进，避免在上下文工程局部长期打磨。
+
 ## 2026-06-30 追加落地进展：Python AI Runtime Model Query Engine Closure
 - 本阶段回到整体闭环收敛路线，没有继续扩展 Java 单点业务字段，也没有把模型层发散到训练、微调、后训练或自研推理内核。目标是把 Codex/Claude Code/OpenClaw 类 Agent 必备的模型调用治理补到主链：让首轮模型意图识别和工具反馈二轮推理都经过统一 Query Engine，而不是直接调用 Provider。
 - 产品价值：

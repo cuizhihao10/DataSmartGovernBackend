@@ -28,6 +28,7 @@ class AgentRuntimeEventType(str, Enum):
     CONTEXT_FILTERED = "context_filtered"
     CONTEXT_DEDUPLICATED = "context_deduplicated"
     CONTEXT_TRUNCATED = "context_truncated"
+    CONTEXT_MICRO_COMPACTED = "context_micro_compacted"
     CONTEXT_SELECTED = "context_selected"
     MODEL_GATEWAY_ROUTED = "model_gateway_routed"
     MODEL_QUERY_EXECUTED = "model_query_executed"

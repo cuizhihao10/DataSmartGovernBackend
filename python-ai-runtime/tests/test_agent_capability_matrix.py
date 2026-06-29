@@ -116,6 +116,28 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
         self.assertIn("统一 ToolPlan", quality_tool["nextAction"])
         self.assertNotIn("尚未由 Java agent-runtime 将该 ToolPlan 写入真实", serialized)
 
+    def test_context_micro_compact_reflects_partial_closed_loop(self) -> None:
+        """上下文微压缩已接入主链，但不能误标为完全完成。
+
+        这里保护项目闭口节奏：实现了确定性 micro-compact 和低敏事件后，应从 planned 移出；但长会话
+        历史摘要、工具结果压缩和真实 tokenizer 仍是缺口，所以只能是 partial closed-loop。
+        """
+
+        diagnostics = default_agent_capability_matrix_service().diagnostics()
+        context_domain = next(domain for domain in diagnostics["domains"] if domain["domainId"] == "context")
+        micro_compact = next(
+            item
+            for item in context_domain["subCapabilities"]
+            if item["capabilityId"] == "context.micro-compact"
+        )
+        serialized = str(micro_compact)
+
+        self.assertEqual(AgentCapabilityStatus.PARTIAL_CLOSED_LOOP.value, micro_compact["status"])
+        self.assertIn("ContextMicroCompactor", micro_compact["currentEvidence"])
+        self.assertIn("CONTEXT_MICRO_COMPACTED", micro_compact["currentEvidence"])
+        self.assertIn("长会话历史摘要", micro_compact["closureGap"])
+        self.assertNotIn("prompt", serialized.lower())
+
     def test_closure_readiness_groups_p0_gaps_for_final_project_convergence(self) -> None:
         """闭口门禁应把 P0 缺口分层，帮助项目停止发散并优先关闭硬阻塞。"""
 

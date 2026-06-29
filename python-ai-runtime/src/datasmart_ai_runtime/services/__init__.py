@@ -13,6 +13,13 @@ from datasmart_ai_runtime.services.agent_workspace import (
 )
 from datasmart_ai_runtime.domain.contracts import ModelInvocationChunk, ModelToolCall, ModelToolCallDelta
 from datasmart_ai_runtime.services.context_builder import DefaultContextBuilder
+from datasmart_ai_runtime.services.context_micro_compactor import (
+    ContextMicroCompactionDecision,
+    ContextMicroCompactionItem,
+    ContextMicroCompactionPolicy,
+    ContextMicroCompactionReport,
+    ContextMicroCompactor,
+)
 from datasmart_ai_runtime.services.hybrid_context_builder import ContextSelectionPolicy, HybridContextBuilder
 from datasmart_ai_runtime.services.intent_analyzer import RuleBasedIntentAnalyzer
 from datasmart_ai_runtime.services.memory import (
@@ -330,6 +337,11 @@ __all__ = [
     "SqlAgentMemoryMaterializationLeaseStore",
     "SqlAgentMemoryMaterializationAuditOutboxStore",
     "DefaultContextBuilder",
+    "ContextMicroCompactionDecision",
+    "ContextMicroCompactionItem",
+    "ContextMicroCompactionPolicy",
+    "ContextMicroCompactionReport",
+    "ContextMicroCompactor",
     "ContextSelectionPolicy",
     "HybridContextBuilder",
     "RuleBasedIntentAnalyzer",

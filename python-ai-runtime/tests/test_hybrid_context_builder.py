@@ -10,6 +10,7 @@ if ROOT not in sys.path:
 from datasmart_ai_runtime.domain.context import ContextBlock, ContextSensitivityLevel, ContextSourceType
 from datasmart_ai_runtime.domain.contracts import AgentRequest
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
+from datasmart_ai_runtime.services.context_micro_compactor import ContextMicroCompactionPolicy
 from datasmart_ai_runtime.services.hybrid_context_builder import ContextSelectionPolicy, HybridContextBuilder
 
 
@@ -90,6 +91,60 @@ class HybridContextBuilderTest(unittest.TestCase):
         selected = HybridContextBuilder(builders=(FixedContextBuilder(blocks),)).build(self._request())
 
         self.assertEqual(("public", "confidential"), tuple(block.source_id for block in selected))
+
+    def test_micro_compacts_long_context_before_final_token_budget(self) -> None:
+        """过长上下文应先微压缩，再进入最终 token 预算选择。
+
+        这个测试保护主链路接入点：微压缩不应该只停留在独立服务测试里。真实编排中，上下文来源先经过
+        过滤、去重和排序，然后长块被压缩，最后才应用整体 token budget。
+        """
+
+        now = datetime.now(timezone.utc)
+        secret_value = "secret-token-abcdefghijklmnopqrstuvwxyz1234567890"
+        long_content = "\n".join(
+            (
+                "必须校验租户、项目、审批和工具权限，禁止把高风险工具直接交给模型执行。",
+                f"token={secret_value}",
+                "select * from sensitive_customer_sample;",
+                "模型网关限流时应进入 retry、fallback 和低敏事件记录。",
+            )
+            * 10
+        )
+        block = ContextBlock(
+            source_type=ContextSourceType.SYSTEM_POLICY,
+            title="长上下文",
+            content=long_content,
+            relevance_score=0.99,
+            sensitivity_level=ContextSensitivityLevel.CONFIDENTIAL,
+            source_id="long-policy",
+            expires_at=now + timedelta(minutes=5),
+            token_estimate=720,
+        )
+        builder = HybridContextBuilder(
+            builders=(FixedContextBuilder((block,)),),
+            micro_compaction_policy=ContextMicroCompactionPolicy(
+                trigger_token_threshold=80,
+                target_token_budget=60,
+                max_segments=4,
+                max_segment_chars=120,
+                minimum_saved_tokens=16,
+            ),
+        )
+
+        selected = builder.build(self._request())
+        event = next(
+            event
+            for event in builder.last_events()
+            if event.event_type == AgentRuntimeEventType.CONTEXT_MICRO_COMPACTED
+        )
+
+        self.assertEqual(1, len(selected))
+        self.assertIn("微压缩", selected[0].title)
+        self.assertNotIn(secret_value, selected[0].content)
+        self.assertNotIn("select * from", selected[0].content.lower())
+        self.assertEqual(1, event.attributes["compactedCount"])
+        self.assertEqual("LOW_SENSITIVE_CONTEXT_COMPACTION_METADATA_ONLY", event.attributes["payloadPolicy"])
+        self.assertNotIn(secret_value, str(event.attributes))
 
     @staticmethod
     def _request() -> AgentRequest:

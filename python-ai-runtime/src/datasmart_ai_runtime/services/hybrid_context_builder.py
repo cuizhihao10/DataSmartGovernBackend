@@ -22,6 +22,11 @@ from datasmart_ai_runtime.domain.events import (
     AgentRuntimeEventType,
 )
 from datasmart_ai_runtime.services.context_builder import ContextBuilder, DefaultContextBuilder
+from datasmart_ai_runtime.services.context_micro_compactor import (
+    ContextMicroCompactionPolicy,
+    ContextMicroCompactionReport,
+    ContextMicroCompactor,
+)
 from datasmart_ai_runtime.services.runtime_events.runtime_event_recorder import RuntimeEventRecorder
 
 
@@ -56,9 +61,13 @@ class HybridContextBuilder:
         self,
         builders: tuple[ContextBuilder, ...] | None = None,
         policy: ContextSelectionPolicy | None = None,
+        micro_compactor: ContextMicroCompactor | None = None,
+        micro_compaction_policy: ContextMicroCompactionPolicy | None = None,
     ) -> None:
         self._builders = builders or (DefaultContextBuilder(),)
         self._policy = policy or ContextSelectionPolicy()
+        self._micro_compactor = micro_compactor or ContextMicroCompactor()
+        self._micro_compaction_policy = micro_compaction_policy or ContextMicroCompactionPolicy()
         self._last_events: tuple[AgentRuntimeEvent, ...] = ()
 
     def build(
@@ -96,7 +105,9 @@ class HybridContextBuilder:
         filtered = self._filter_contexts(collected, request, events, event_recorder)
         deduplicated = self._deduplicate(filtered, request, events, event_recorder)
         ordered = sorted(deduplicated, key=self._sort_key)
-        selected = self._apply_token_budget(ordered, request, events, event_recorder)
+        compacted_report = self._micro_compactor.compact(ordered, policy=self._micro_compaction_policy)
+        self._record_micro_compaction(compacted_report, request, events, event_recorder)
+        selected = self._apply_token_budget(list(compacted_report.blocks), request, events, event_recorder)
         self._record(
             events,
             request,
@@ -111,6 +122,31 @@ class HybridContextBuilder:
         )
         self._last_events = tuple(events)
         return tuple(selected)
+
+    def _record_micro_compaction(
+        self,
+        report: ContextMicroCompactionReport,
+        request: AgentRequest,
+        events: list[AgentRuntimeEvent],
+        event_recorder: RuntimeEventRecorder | None,
+    ) -> None:
+        """记录上下文微压缩事件。
+
+        微压缩事件只在真正发生压缩或明显节省 token 时产生，避免普通短请求的事件流过于嘈杂。事件属性
+        严格使用 `ContextMicroCompactionReport.to_event_attributes()` 的低敏摘要，不包含上下文正文、
+        SQL、样本数据、工具参数、prompt、模型输出或内部 endpoint。
+        """
+
+        if not report.should_record_event():
+            return
+        self._record(
+            events,
+            request,
+            event_recorder,
+            AgentRuntimeEventType.CONTEXT_MICRO_COMPACTED,
+            "已对过长上下文执行确定性微压缩，降低模型输入 token 与敏感正文扩散风险。",
+            attributes=report.to_event_attributes(),
+        )
 
     def last_events(self) -> tuple[AgentRuntimeEvent, ...]:
         """返回最近一次上下文构建产生的事件。

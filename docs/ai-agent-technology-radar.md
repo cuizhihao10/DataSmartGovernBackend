@@ -1,5 +1,21 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-30 落地补充：context micro-compaction is a Host control-plane capability, not prompt trimming
+
+- 本轮趋势校准：
+  - 类 Codex、Claude Code、OpenClaw 的 Agent Host 不能只把上下文管理理解成“prompt 字符串截断”；真正可商用的上下文工程需要在模型调用前治理上下文来源、敏感级别、token 成本、摘要可信度和可回放解释。
+  - 对 DataSmart 来说，RAG/GraphRAG、长期记忆、工具结果、权限事实和任务状态未来都会进入上下文候选集。如果没有 micro-compact，长上下文要么拖慢模型 prefill，要么被整块丢弃，都会影响 Agent 质量与成本。
+  - 微压缩应优先作为 Host 控制面能力落地：用确定性摘要、低敏事件和可信度标记先关闭工程闭环；后续如接专用 summary model，也必须继续受 token、权限、DLP 和事件白名单约束。
+- 本轮落地到代码的能力：
+  - 新增 `ContextMicroCompactor`，在模型调用前对过长 `ContextBlock` 做确定性抽取式摘要；
+  - `HybridContextBuilder` 在过滤、去重、排序之后触发 micro-compact，再进入总 token budget；
+  - 新增 `CONTEXT_MICRO_COMPACTED` runtime event，只记录低敏压缩统计；
+  - Agent 能力矩阵把 `context.micro-compact` 从 planned 推进到 partial closed-loop。
+- 产品判断：
+  - 这一步把上下文工程从“已有选择策略”推进到“长上下文可压缩、可解释、可观测”的闭环；
+  - 后续更值得补的是长会话摘要、工具结果 tool-compact、真实 tokenizer 和推理服务 prefix/KV cache 指标，而不是继续在本地抽取算法上无限打磨；
+  - 摘要不能成为第二份敏感正文缓存，runtime event/projection/template 中仍不得保存 prompt、SQL、工具参数、样本数据、模型输出或上下文全文。
+
 ## 2026-06-30 落地补充：model calls need a governed Query Engine, not direct Provider calls
 
 - 本轮趋势校准：

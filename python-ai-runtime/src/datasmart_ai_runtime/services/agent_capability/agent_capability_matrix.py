@@ -339,7 +339,7 @@ def _default_capability_domains() -> tuple[AgentCapabilityDomain, ...]:
             closure_goal="system prompt、消息、工具上下文、micro-compact、tool-compact 和 token 预算可治理。",
             sub_capabilities=(
                 _cap("context.system-prompt", "System Prompt 与动态指令", S.PARTIAL_CLOSED_LOOP, "agent_orchestrator", "已有 AgentRequest、Skill admission 和 model route 对计划的影响。", "还缺版本化系统提示词、按角色动态提示词和提示词审计。", "将系统提示词模板与 Skill manifest/policyVersion 绑定。", "提示词拼装应可测并受 token budget 约束。", "普通诊断不能返回系统提示词全文。"),
-                _cap("context.micro-compact", "微压缩与对话摘要", S.PLANNED, "context selection", "已有 context selection policy 基础。", "缺少 micro-compact、tool-compact、长会话摘要和摘要可信度标记。", "先实现低敏 micro-compact 摘要契约，再接入会话长上下文。", "摘要应按消息数量/token 阈值触发。", "摘要不能把敏感工具输出扩散到长期上下文。"),
+                _cap("context.micro-compact", "微压缩与对话摘要", S.PARTIAL_CLOSED_LOOP, "context selection", "已有 context selection policy、确定性 ContextMicroCompactor、压缩可信度标记、低敏 CONTEXT_MICRO_COMPACTED runtime event 和模型输入前压缩接入。", "仍缺长会话历史摘要、对话轮次级 micro-compact、工具结果 tool-compact 和基于真实 tokenizer 的精确触发阈值。", "下一步把 session history 与 worker receipt/artifactReference 转成可压缩低敏上下文，并与真实模型 tokenizer 对齐。", "摘要应按消息数量、token 阈值、上下文来源和模型窗口动态触发；当前仍是启发式 token 估算。", "摘要事件不保存正文；压缩内容进入模型前会对密钥、长 token 和 SQL 片段做保守脱敏，敏感工具输出仍不能写入长期上下文。"),
                 _cap("context.tool-compact", "工具上下文裁剪", S.CONTROL_PLANE_READY, "tool readiness + context", "已有 readiness 低敏字段名和参数问题计数。", "缺少真实工具结果裁剪、引用化和模型二轮注入策略。", "把 worker receipt/artifactReference 转成可注入模型的低敏 tool context。", "工具结果要按大小、类型和重要性裁剪。", "工具结果正文默认不注入，除非通过权限和脱敏。"),
             ),
         ),
