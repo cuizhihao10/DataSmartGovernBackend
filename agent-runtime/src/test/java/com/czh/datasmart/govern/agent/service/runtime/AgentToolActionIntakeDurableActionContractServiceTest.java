@@ -107,6 +107,61 @@ class AgentToolActionIntakeDurableActionContractServiceTest {
         assertEquals("NONE", response.contracts().getFirst().outboxCommandType());
     }
 
+    @Test
+    void queryContractsShouldSpecializeWorkspaceFileToolsWithoutExposingPathOrContent() {
+        InMemoryAgentRuntimeEventProjectionStore store = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        store.append(workspaceFileIntakeRecord("intake-workspace-file", "20", "run-workspace-file", 1));
+        AgentToolActionIntakeProjectionService projectionService = new AgentToolActionIntakeProjectionService(
+                store,
+                new AgentRuntimeEventProjectionAccessSupport()
+        );
+        AgentToolActionIntakeDurableActionContractService service =
+                new AgentToolActionIntakeDurableActionContractService(projectionService);
+
+        AgentToolActionIntakeDurableActionContractQueryResponse response = service.queryContracts(
+                new AgentRuntimeEventProjectionQuery("10", null, null, null,
+                        "run-workspace-file", null, null, null, 20),
+                projectOwnerContext()
+        );
+
+        assertEquals(1, response.sourceSnapshotCount());
+        assertEquals(2, response.totalContracts());
+        assertEquals(1L, response.readyForDurableContractCount());
+        assertEquals(1L, response.waitingApprovalCount());
+        assertEquals(1L, response.toolNameCounts().get("workspace.file.read"));
+        assertEquals(1L, response.toolNameCounts().get("workspace.file.write"));
+        assertTrue(response.missingRequirementCounts().containsKey("WORKSPACE_FILE_PATH_REFERENCE_REQUIRED"));
+        assertTrue(response.missingRequirementCounts().containsKey("WORKSPACE_FILE_ARTIFACT_GRANT_REQUIRED"));
+
+        AgentToolActionIntakeDurableActionContractView readContract = response.contracts().stream()
+                .filter(contract -> "workspace.file.read".equals(contract.toolName()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("AGENT_WORKSPACE_FILE_READ_COMMAND", readContract.outboxCommandType());
+        assertTrue(readContract.requiredEvidence().contains("WORKSPACE_FILE_PATH_REFERENCE"));
+        assertTrue(readContract.requiredEvidence().contains("WORKSPACE_FILE_ARTIFACT_GRANT"));
+        assertTrue(readContract.missingRequirements().contains("WORKSPACE_FILE_PATH_REFERENCE_REQUIRED"));
+        assertTrue(readContract.missingRequirements().contains("WORKSPACE_FILE_WORKER_RECEIPT_REQUIRED"));
+        assertTrue(readContract.guardrailNotes().stream().anyMatch(note -> note.contains("projection 不允许恢复真实路径")));
+
+        AgentToolActionIntakeDurableActionContractView writeContract = response.contracts().stream()
+                .filter(contract -> "workspace.file.write".equals(contract.toolName()))
+                .findFirst()
+                .orElseThrow();
+        assertEquals("WAITING_APPROVAL", writeContract.durableActionState());
+        assertEquals("NONE", writeContract.outboxCommandType());
+        assertTrue(writeContract.requiredEvidence().contains("WORKSPACE_FILE_CONTENT_REFERENCE"));
+        assertTrue(writeContract.requiredEvidence().contains("WORKSPACE_FILE_DLP_OR_MALWARE_SCAN"));
+        assertTrue(writeContract.missingRequirements().contains("WORKSPACE_FILE_CONTENT_REFERENCE_REQUIRED"));
+        assertTrue(writeContract.missingRequirements().contains("WORKSPACE_FILE_WRITE_APPROVAL_OR_POLICY_ALLOWANCE_REQUIRED"));
+
+        String serialized = response.toString();
+        assertFalse(serialized.contains("reports/private-output.md"));
+        assertFalse(serialized.contains("write-content-secret"));
+        assertFalse(serialized.contains("workspaceFileContent"));
+        assertFalse(serialized.contains("C:\\tenant\\workspace"));
+    }
+
     private AgentRuntimeEventProjectionRecord intakeRecord(String identityKey,
                                                            String projectId,
                                                            String runId,
@@ -194,6 +249,92 @@ class AgentToolActionIntakeDurableActionContractServiceTest {
                 "request-contract",
                 runId,
                 "session-contract",
+                sequence,
+                timestamp,
+                timestamp,
+                timestamp,
+                attributes
+        );
+    }
+
+    private AgentRuntimeEventProjectionRecord workspaceFileIntakeRecord(String identityKey,
+                                                                        String projectId,
+                                                                        String runId,
+                                                                        long sequence) {
+        Map<String, Object> attributes = new LinkedHashMap<>();
+        attributes.put("eventPayloadVersion", "v1");
+        attributes.put("snapshotType", "TOOL_ACTION_INTAKE");
+        attributes.put("payloadPolicy", "LOW_SENSITIVE_TOOL_ACTION_INTAKE_EVENT_ONLY");
+        attributes.put("schemaVersion", "datasmart.python-ai-runtime.mcp-tools-call-intake-preview.v1");
+        attributes.put("protocolFamily", "MCP");
+        attributes.put("previewOnly", true);
+        attributes.put("toolExecutionEnabled", false);
+        attributes.put("jsonRpcDetected", true);
+        attributes.put("methodAccepted", true);
+        attributes.put("callDetected", true);
+        attributes.put("source", "MCP_TOOLS_CALL");
+        attributes.put("totalCount", 2);
+        attributes.put("acceptedToolPlanCount", 2);
+        attributes.put("rejectedBeforeReadinessCount", 0);
+        attributes.put("issueCodes", List.of("WORKSPACE_FILE_WRITE_APPROVAL_REQUIRED"));
+        attributes.put("toolNames", List.of("workspace.file.read", "workspace.file.write"));
+        attributes.put("readinessExecutableCount", 1);
+        attributes.put("readinessApprovalRequiredCount", 1);
+        attributes.put("readinessClarificationRequiredCount", 0);
+        attributes.put("readinessThrottledCount", 0);
+        attributes.put("readinessBlockedCount", 0);
+        attributes.put("readinessReasonCodes", List.of("READY_LOW_RISK_SYNC", "HUMAN_APPROVAL_REQUIRED"));
+        attributes.put("graphOutboxWritten", false);
+        attributes.put("graphWorkerReceiptRequiredForSideEffects", true);
+        attributes.put("productionReadyForExecution", false);
+        attributes.put("missingProductionRequirements", List.of("OUTBOX_COMMAND_AND_WORKER_RECEIPT"));
+        attributes.put("decisionSummaries", List.of(
+                Map.of(
+                        "toolName", "workspace.file.read",
+                        "decision", "ready_to_execute",
+                        "executable", true,
+                        "queueRequired", false,
+                        "requiresHumanApproval", false,
+                        "parameterIssueCount", 0,
+                        "issueCodes", List.of(),
+                        "reasonCodes", List.of("READY_LOW_RISK_SYNC")
+                ),
+                Map.ofEntries(
+                        Map.entry("toolName", "workspace.file.write"),
+                        Map.entry("decision", "waiting_approval"),
+                        Map.entry("executable", false),
+                        Map.entry("queueRequired", false),
+                        Map.entry("requiresHumanApproval", true),
+                        Map.entry("parameterIssueCount", 0),
+                        Map.entry("issueCodes", List.of("WORKSPACE_FILE_WRITE_APPROVAL_REQUIRED")),
+                        Map.entry("reasonCodes", List.of("HUMAN_APPROVAL_REQUIRED")),
+                        Map.entry("arguments", Map.of(
+                                "workspaceFilePath", "reports/private-output.md",
+                                "workspaceFileContent", "write-content-secret"
+                        ))
+                )
+        ));
+        attributes.put("arguments", Map.of(
+                "workspaceFilePath", "reports/private-output.md",
+                "workspaceFileContent", "write-content-secret",
+                "workspaceRoot", "C:\\tenant\\workspace"
+        ));
+        attributes.put("prompt", "raw prompt should not be exposed");
+        Instant timestamp = Instant.parse("2026-06-29T15:10:0" + sequence + "Z");
+        return new AgentRuntimeEventProjectionRecord(
+                identityKey,
+                "agent-runtime-event.v1",
+                "python-ai-runtime",
+                "tool_action_intake_recorded",
+                "record_tool_action_intake",
+                "recorded workspace file tool action intake",
+                "audit",
+                "10",
+                projectId,
+                "1001",
+                "request-workspace-file",
+                runId,
+                "session-workspace-file",
                 sequence,
                 timestamp,
                 timestamp,

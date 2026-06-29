@@ -1,5 +1,27 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Workspace File Tool Durable Action Contract
+- 本阶段承接 `Agent Controlled Workspace File Tools`，没有继续扩大文件系统访问范围，而是把 `workspace.file.read/write` 接入 Java `agent-runtime` 的 durable action 控制面识别链路。目标是让 Python Runtime 产生的低敏工具意图，能在 Java 侧被解释为“文件工具专用 command 类型 + 生产级证据缺口”，为后续 outbox、worker receipt 和 artifact grant 闭环铺路。
+- 产品价值：
+  - 新增 `AgentWorkspaceFileActionContractPolicy`，集中描述 workspace 文件工具进入 durable action 前的 commandType、必备证据、缺失要求和防护说明；
+  - `workspace.file.read` 会被识别为 `AGENT_WORKSPACE_FILE_READ_COMMAND`，`workspace.file.write` 会被识别为 `AGENT_WORKSPACE_FILE_WRITE_COMMAND`；
+  - durable contract 会显式要求 workspace scope 授权、workspace root allowlist、文件路径引用、artifact grant、worker receipt；
+  - 写入工具额外要求内容引用、覆盖冲突策略、DLP/恶意内容扫描、人工审批或策略豁免；
+  - proposal 层会保留 workspace 文件专用 commandType，但在缺少路径引用、artifact grant 等服务端证据时仍保持 fail-closed，不会写 outbox。
+- 安全边界：
+  - Java 控制面仍不恢复真实文件路径、文件正文、写入内容、prompt、SQL、工具参数正文、凭据或内部 endpoint；
+  - `tool_action_intake_recorded` 事件只作为低敏控制面事实使用，不能替代 payload store、审批事实、artifact grant 或 worker receipt；
+  - 文件读写结果正文必须走受控 artifact 或脱敏引用，timeline/projection/command payload 只能保存摘要、hash、grant 状态和低敏 reason/issue code。
+- 验证：
+  - 定向 Maven 测试通过：`AgentToolActionIntakeDurableActionContractServiceTest`、`AgentToolActionCommandProposalServiceTest`、`AgentToolActionExecutionGraphPreviewServiceTest`，共 9 个用例；
+  - `agent-runtime` 全量测试通过：`mvn -pl agent-runtime -am test -Dmaven.repo.local=...`，共 431 个用例；
+  - 空白差异检查通过：`git diff --check`，仅有 Windows LF/CRLF 换行提示；
+  - 行数检查：`AgentWorkspaceFileActionContractPolicy.java` 108 行，`AgentToolActionIntakeDurableActionContractService.java` 403 行，两个新增/修改测试分别 333/404 行，均低于 500 行约束。
+- 收敛判断：
+  - `tool.file-read-write` 现在不仅有 Python 内部受控执行能力，也在 Java 控制面具备文件工具专用 durable contract 识别；
+  - 下一步若继续这条链路，应补“真实 payloadReference 物化读取 + artifact grant + worker receipt 回写”，而不是扩展任意文件路径或二进制能力；
+  - 若切换到另一个 P0 hardBlocker，优先 web-search、context micro-compact、query retry/rate-limit 或 LLM provider fallback/cache 这些闭口项。
+
 ## 2026-06-29 追加落地进展：Agent Controlled Workspace File Tools
 - 本阶段承接 `Agent Capability Closure Readiness Gate`，从闭口门禁返回的 P0 hardBlockers 中优先选择 `tool.file-read-write` 转实。目标不是开放任意本机文件系统，而是先落一个 Codex/Claude Code 类 Agent 必备的“受控 workspace 文件读写”最小闭环。
 - 产品价值：

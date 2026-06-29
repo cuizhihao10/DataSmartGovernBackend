@@ -147,6 +147,50 @@ class AgentToolActionCommandProposalServiceTest {
         assertTrue(response.missingEvidence().contains("VISIBLE_TOOL_OR_PROTOCOL_ACCEPTANCE_REQUIRED"));
     }
 
+    @Test
+    void proposeShouldPreserveWorkspaceFileCommandTypeWhileWaitingForFileEvidence() {
+        TestServices services = servicesWithWorkspaceFileEvent();
+        AgentToolActionExecutionGraphView workspaceFileGraph = graphByTool(
+                services.graphService(),
+                "workspace.file.read",
+                "run-workspace-proposal"
+        );
+
+        AgentToolActionCommandProposalResponse response = services.proposalService().propose(
+                new AgentToolActionCommandProposalRequest(
+                        workspaceFileGraph.graphId(),
+                        workspaceFileGraph.contractId(),
+                        "10",
+                        null,
+                        null,
+                        null,
+                        "run-workspace-proposal",
+                        null,
+                        null,
+                        20,
+                        "agent-payload:run-workspace-proposal/workspace-file-read",
+                        null,
+                        null,
+                        "workspace-file-policy.v1",
+                        "agent-tool-action-command.v1",
+                        "REQUIRED",
+                        "client-request-workspace-file"
+                ),
+                projectOwnerContext()
+        );
+
+        assertEquals("WAITING_REQUIRED_EVIDENCE", response.proposalState());
+        assertEquals(false, response.outboxWriteAllowedByPreflight());
+        assertEquals("AGENT_WORKSPACE_FILE_READ_COMMAND", response.commandType());
+        assertTrue(response.missingEvidence().contains("WORKSPACE_FILE_PATH_REFERENCE_REQUIRED"));
+        assertTrue(response.missingEvidence().contains("WORKSPACE_FILE_ARTIFACT_GRANT_REQUIRED"));
+
+        String serialized = response.toString();
+        assertFalse(serialized.contains("reports/private-output.md"));
+        assertFalse(serialized.contains("workspaceRoot"));
+        assertFalse(serialized.contains("raw prompt"));
+    }
+
     private TestServices servicesWithEvents() {
         InMemoryAgentRuntimeEventProjectionStore store = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
         store.append(intakeRecord("intake-ready", "20", "run-proposal", 1, "ready"));
@@ -162,10 +206,31 @@ class AgentToolActionCommandProposalServiceTest {
         return new TestServices(graphService, new AgentToolActionCommandProposalService(graphService));
     }
 
+    private TestServices servicesWithWorkspaceFileEvent() {
+        InMemoryAgentRuntimeEventProjectionStore store = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        store.append(workspaceFileIntakeRecord("intake-workspace-file", "20", "run-workspace-proposal", 1));
+        AgentToolActionIntakeProjectionService projectionService = new AgentToolActionIntakeProjectionService(
+                store,
+                new AgentRuntimeEventProjectionAccessSupport()
+        );
+        AgentToolActionIntakeDurableActionContractService contractService =
+                new AgentToolActionIntakeDurableActionContractService(projectionService);
+        AgentToolActionExecutionGraphPreviewService graphService =
+                new AgentToolActionExecutionGraphPreviewService(contractService);
+        return new TestServices(graphService, new AgentToolActionCommandProposalService(graphService));
+    }
+
     private AgentToolActionExecutionGraphView graphByTool(
             AgentToolActionExecutionGraphPreviewService graphService,
             String toolName) {
-        return queryGraphs(graphService).graphs().stream()
+        return graphByTool(graphService, toolName, "run-proposal");
+    }
+
+    private AgentToolActionExecutionGraphView graphByTool(
+            AgentToolActionExecutionGraphPreviewService graphService,
+            String toolName,
+            String runId) {
+        return queryGraphs(graphService, runId).graphs().stream()
                 .filter(graph -> toolName.equals(graph.toolName()))
                 .findFirst()
                 .orElseThrow();
@@ -182,9 +247,15 @@ class AgentToolActionCommandProposalServiceTest {
 
     private AgentToolActionExecutionGraphQueryResponse queryGraphs(
             AgentToolActionExecutionGraphPreviewService graphService) {
+        return queryGraphs(graphService, "run-proposal");
+    }
+
+    private AgentToolActionExecutionGraphQueryResponse queryGraphs(
+            AgentToolActionExecutionGraphPreviewService graphService,
+            String runId) {
         return graphService.queryExecutionGraphs(
                 new AgentRuntimeEventProjectionQuery("10", null, null, null,
-                        "run-proposal", null, null, null, 20),
+                        runId, null, null, null, 20),
                 projectOwnerContext()
         );
     }
@@ -268,6 +339,75 @@ class AgentToolActionCommandProposalServiceTest {
                 "request-proposal",
                 runId,
                 "session-proposal",
+                sequence,
+                timestamp,
+                timestamp,
+                timestamp,
+                attributes
+        );
+    }
+
+    private AgentRuntimeEventProjectionRecord workspaceFileIntakeRecord(String identityKey,
+                                                                        String projectId,
+                                                                        String runId,
+                                                                        long sequence) {
+        Map<String, Object> attributes = new LinkedHashMap<>();
+        attributes.put("eventPayloadVersion", "v1");
+        attributes.put("snapshotType", "TOOL_ACTION_INTAKE");
+        attributes.put("payloadPolicy", "LOW_SENSITIVE_TOOL_ACTION_INTAKE_EVENT_ONLY");
+        attributes.put("schemaVersion", "datasmart.python-ai-runtime.mcp-tools-call-intake-preview.v1");
+        attributes.put("protocolFamily", "MCP");
+        attributes.put("previewOnly", true);
+        attributes.put("toolExecutionEnabled", false);
+        attributes.put("source", "MCP_TOOLS_CALL");
+        attributes.put("totalCount", 1);
+        attributes.put("acceptedToolPlanCount", 1);
+        attributes.put("rejectedBeforeReadinessCount", 0);
+        attributes.put("issueCodes", List.of());
+        attributes.put("toolNames", List.of("workspace.file.read"));
+        attributes.put("readinessExecutableCount", 1);
+        attributes.put("readinessApprovalRequiredCount", 0);
+        attributes.put("readinessClarificationRequiredCount", 0);
+        attributes.put("readinessThrottledCount", 0);
+        attributes.put("readinessBlockedCount", 0);
+        attributes.put("readinessReasonCodes", List.of("READY_LOW_RISK_SYNC"));
+        attributes.put("graphOutboxWritten", false);
+        attributes.put("graphWorkerReceiptRequiredForSideEffects", true);
+        attributes.put("productionReadyForExecution", false);
+        attributes.put("missingProductionRequirements", List.of("OUTBOX_COMMAND_AND_WORKER_RECEIPT"));
+        attributes.put("decisionSummaries", List.of(
+                Map.ofEntries(
+                        Map.entry("toolName", "workspace.file.read"),
+                        Map.entry("decision", "ready_to_execute"),
+                        Map.entry("executable", true),
+                        Map.entry("queueRequired", false),
+                        Map.entry("requiresHumanApproval", false),
+                        Map.entry("parameterIssueCount", 0),
+                        Map.entry("issueCodes", List.of()),
+                        Map.entry("reasonCodes", List.of("READY_LOW_RISK_SYNC")),
+                        Map.entry("arguments", Map.of("workspaceFilePath", "reports/private-output.md"))
+                )
+        ));
+        attributes.put("arguments", Map.of(
+                "workspaceFilePath", "reports/private-output.md",
+                "workspaceRoot", "C:\\tenant\\workspace"
+        ));
+        attributes.put("prompt", "raw prompt should not be exposed");
+        Instant timestamp = Instant.parse("2026-06-29T15:20:0" + sequence + "Z");
+        return new AgentRuntimeEventProjectionRecord(
+                identityKey,
+                "agent-runtime-event.v1",
+                "python-ai-runtime",
+                "tool_action_intake_recorded",
+                "record_tool_action_intake",
+                "recorded workspace file tool action intake",
+                "audit",
+                "10",
+                projectId,
+                "1001",
+                "request-workspace-proposal",
+                runId,
+                "session-workspace-proposal",
                 sequence,
                 timestamp,
                 timestamp,

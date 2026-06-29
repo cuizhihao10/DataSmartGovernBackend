@@ -55,6 +55,8 @@ public class AgentToolActionIntakeDurableActionContractService {
     private static final String STATE_INTAKE_ONLY = "INTAKE_ONLY";
 
     private final AgentToolActionIntakeProjectionService projectionService;
+    private final AgentWorkspaceFileActionContractPolicy workspaceFileActionContractPolicy =
+            new AgentWorkspaceFileActionContractPolicy();
 
     /**
      * 查询并推导工具动作入口 durable action 契约。
@@ -134,10 +136,10 @@ public class AgentToolActionIntakeDurableActionContractService {
                 commandType(state, decision),
                 idempotencyKey(snapshot, safeText(decision.toolName()), index),
                 Boolean.TRUE.equals(snapshot.graphWorkerReceiptRequiredForSideEffects()),
-                requiredEvidence(decision),
+                requiredEvidence(safeText(decision.toolName()), decision),
                 missingRequirements(snapshot, state, decision, outboxWritableNow),
                 PAYLOAD_POLICY,
-                guardrailNotes(state, outboxWritableNow)
+                guardrailNotes(safeText(decision.toolName()), state, outboxWritableNow)
         );
     }
 
@@ -171,10 +173,10 @@ public class AgentToolActionIntakeDurableActionContractService {
                 "NONE",
                 idempotencyKey(snapshot, toolName, 0),
                 Boolean.TRUE.equals(snapshot.graphWorkerReceiptRequiredForSideEffects()),
-                requiredEvidence(null),
-                missingRequirements(snapshot, state, null, false),
+                requiredEvidence(toolName, null),
+                missingRequirements(snapshot, state, toolName, null, false),
                 PAYLOAD_POLICY,
-                guardrailNotes(state, false)
+                guardrailNotes(toolName, state, false)
         );
     }
 
@@ -234,13 +236,19 @@ public class AgentToolActionIntakeDurableActionContractService {
         if (!isReadyState(state)) {
             return "NONE";
         }
+        String workspaceFileCommandType = workspaceFileActionContractPolicy.commandTypeFor(
+                decision == null ? null : decision.toolName()
+        );
+        if (workspaceFileCommandType != null) {
+            return workspaceFileCommandType;
+        }
         if (decision != null && Boolean.TRUE.equals(decision.queueRequired())) {
             return "AGENT_TOOL_ACTION_ASYNC_COMMAND";
         }
         return "AGENT_TOOL_ACTION_CONTROLLED_COMMAND";
     }
 
-    private List<String> requiredEvidence(AgentToolActionIntakeDecisionSummaryView decision) {
+    private List<String> requiredEvidence(String toolName, AgentToolActionIntakeDecisionSummaryView decision) {
         List<String> evidence = new ArrayList<>();
         evidence.add("SOURCE_RUNTIME_EVENT_REPLAY_SEQUENCE");
         evidence.add("LOW_SENSITIVE_TOOL_DECISION_SUMMARY");
@@ -251,11 +259,26 @@ public class AgentToolActionIntakeDurableActionContractService {
         if (decision != null && Boolean.TRUE.equals(decision.requiresHumanApproval())) {
             evidence.add("HUMAN_APPROVAL_CONFIRMATION_ID");
         }
+        workspaceFileActionContractPolicy.addRequiredEvidence(toolName, evidence);
         return List.copyOf(evidence);
     }
 
     private List<String> missingRequirements(AgentToolActionIntakeProjectionView snapshot,
                                              String state,
+                                             AgentToolActionIntakeDecisionSummaryView decision,
+                                             boolean outboxWritableNow) {
+        return missingRequirements(
+                snapshot,
+                state,
+                decision == null ? null : decision.toolName(),
+                decision,
+                outboxWritableNow
+        );
+    }
+
+    private List<String> missingRequirements(AgentToolActionIntakeProjectionView snapshot,
+                                             String state,
+                                             String toolName,
                                              AgentToolActionIntakeDecisionSummaryView decision,
                                              boolean outboxWritableNow) {
         Set<String> missing = new LinkedHashSet<>(safeList(snapshot.missingProductionRequirements()));
@@ -278,10 +301,11 @@ public class AgentToolActionIntakeDurableActionContractService {
         if (decision != null && safeInt(decision.parameterIssueCount()) > 0) {
             missing.add("VALID_TOOL_ARGUMENT_SHAPE_REQUIRED");
         }
+        workspaceFileActionContractPolicy.addMissingRequirements(toolName, state, missing);
         return List.copyOf(missing);
     }
 
-    private List<String> guardrailNotes(String state, boolean outboxWritableNow) {
+    private List<String> guardrailNotes(String toolName, String state, boolean outboxWritableNow) {
         List<String> notes = new ArrayList<>();
         notes.add("该契约来自低敏 runtime event，只能作为控制面预览，不能替代真实 outbox command。");
         notes.add("真实执行必须使用 payloadReference 读取受控参数，不能从本契约恢复原始 arguments。");
@@ -291,6 +315,7 @@ public class AgentToolActionIntakeDurableActionContractService {
         if (STATE_REJECTED.equals(state) || STATE_BLOCKED.equals(state)) {
             notes.add("被拒绝或阻断的工具动作不能进入执行器，必须回到协议、工具可见性或策略配置层修复。");
         }
+        workspaceFileActionContractPolicy.addGuardrailNotes(toolName, notes);
         return List.copyOf(notes);
     }
 
