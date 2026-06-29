@@ -1,5 +1,27 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Workspace File Payload Materialization
+- 本阶段承接 `Workspace File Tool Durable Action Contract`，继续沿 Agent 闭口路线推进，但没有扩大文件系统权限范围。目标是补齐 `workspace.file.read/write` 从“低敏工具规划/contract”进入真实 durable worker 前必须有的服务端参数物化层：真实 relativePath、写入正文或 contentReference 只保存到服务端 `agent-payload:` store，对外响应只暴露摘要、大小、证据码和问题码。
+- 产品价值：
+  - 新增 `AgentWorkspaceFilePayloadMaterializationService`，把 workspace 文件工具参数校验、payloadReference 构造、内部 body 物化和低敏响应收口在独立服务内，避免继续膨胀 durable contract/proposal 主流程；
+  - 支持 `workspace.file.read` 与 `workspace.file.write` 两类操作，工具名与操作必须匹配；
+  - `READ` 只物化相对路径和路径摘要，`WRITE` 支持内联 content 或 contentReference 二选一；
+  - 默认内联写入大小上限为 256KB，并预留 `maxInlineContentBytes` 让后续按租户套餐、角色、worker backlog 或策略中心动态收紧；
+  - 成功响应会返回 `payloadReference`、`pathDigest`、`contentSha256`、`contentSizeBytes`、`payloadPolicy`、`evidenceCodes` 和后续动作建议，为 artifact grant、DLP 扫描、审批、worker receipt 串联提供稳定事实。
+- 安全边界：
+  - 对外响应、事件、projection、timeline 和日志仍不返回 relativePath、workspace root、content、contentReference 原值、prompt、SQL、工具参数正文、凭据或内部 endpoint；
+  - 路径校验拒绝绝对路径、URL、Windows 盘符、反斜杠、空段、`.`、`..`、隐藏目录、凭据目录、敏感文件名和高风险后缀；
+  - 写入正文会拒绝明显密钥、token、私钥、JDBC、SQL、prompt、URL 等风险 marker，避免把高敏正文物化进 store；
+  - 本服务只做参数物化，不执行真实文件读写；真实 worker 仍必须等待 payloadReference、workspace scope、artifact grant、DLP/恶意内容扫描、审批/豁免和 worker receipt。
+- 验证：
+  - 定向 Maven 测试通过：`AgentWorkspaceFilePayloadMaterializationServiceTest`、`AgentToolActionPayloadStoreServiceTest`、`AgentToolActionPayloadReferenceVerifierTest`，共 13 个用例；
+  - `agent-runtime` 全量测试通过：`mvn -pl agent-runtime -am test -Dmaven.repo.local=...`，共 436 个用例；
+  - 行数检查：`AgentWorkspaceFilePayloadMaterializationService.java` 482 行，`AgentWorkspaceFilePayloadMaterializationServiceTest.java` 227 行，均低于 500 行约束。
+- 收敛判断：
+  - `tool.file-read-write` 现在具备 Python 内部受控工具、Java durable contract 识别和 Java 服务端 payload 物化三段能力；
+  - 下一步不应继续扩展任意文件系统或更多路径规则，而应补 artifact grant 与 worker receipt 的闭环接入，或切到其他 P0 hardBlocker：web-search、context micro-compact、query retry/rate-limit、LLM provider fallback/cache；
+  - 这一步把“参数能否安全进入执行器”从隐含约定变成可测试服务契约，有助于项目从功能发散转向整体闭口。
+
 ## 2026-06-29 追加落地进展：Workspace File Tool Durable Action Contract
 - 本阶段承接 `Agent Controlled Workspace File Tools`，没有继续扩大文件系统访问范围，而是把 `workspace.file.read/write` 接入 Java `agent-runtime` 的 durable action 控制面识别链路。目标是让 Python Runtime 产生的低敏工具意图，能在 Java 侧被解释为“文件工具专用 command 类型 + 生产级证据缺口”，为后续 outbox、worker receipt 和 artifact grant 闭环铺路。
 - 产品价值：
