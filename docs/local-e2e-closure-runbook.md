@@ -93,7 +93,7 @@ Get-ChildItem -LiteralPath .\docker\mysql\migrations -Filter *.sql |
 
 - 执行迁移前建议备份本地数据卷或确认这是可丢弃的开发库。
 - 不要把生产数据库密码写入脚本、文档或提交历史。
-- 当前最小闭环至少需要 task-management outbox、task-management receipt 和 data-sync template execution contract 相关迁移。
+- 当前最小闭环至少需要 task-management outbox、task-management receipt、data-sync template execution contract 和 data-sync task-management receipt outbox 相关迁移。
 - 后续商业化收敛建议引入 Flyway 或 Liquibase，把 schema 版本从“人工记忆”升级为“应用启动可校验”。
 
 ### 4.3 启动 Java 微服务
@@ -199,7 +199,7 @@ POST http://localhost:8086/internal/sync-workers/run-once
 
 - 数据库迁移仍是手动执行，缺少 Flyway/Liquibase 级别的 schema 版本治理。
 - 服务到服务调用仍在逐步从临时 Header/HMAC 迁移到 OIDC service account、mTLS 或 service mesh 身份。
-- data-sync receipt 投递当前默认不阻断主流程，尚未具备本地 receipt outbox/retry/dead-letter。
+- data-sync receipt 已具备本地 outbox/retry/dead-letter；后续仍需要在真实联调中验证 task-management 故障、恢复和死信告警路径。
 - data-sync 最小执行闭环主要支持 FULL/ONE_TIME_MIGRATION 单批，增量 checkpoint handoff、多批循环和分片并发仍需谨慎收敛。
 - Agent 侧 tools、skills、memory、query engine、context、permission、sub-agent、sessions、command、hook、LLM provider 还需要整理成最小闭口清单。
 - Compose 是本地开发工具，不是生产部署方案；生产仍需要 Kubernetes/Helm、Secret Manager、TLS、外部数据库、审计、备份和容量规划。
@@ -209,7 +209,7 @@ POST http://localhost:8086/internal/sync-workers/run-once
 建议后续不要再围绕某个局部模块无限扩展，而是按闭环优先级推进：
 
 1. 完成一次本地最小链路实际启动验证，记录哪些服务能启动、哪些依赖配置仍阻塞。
-2. 为 data-sync 补 receipt outbox/retry/dead-letter，提升跨服务投影可靠性。
-3. 为数据库迁移引入统一版本管理，减少新环境搭建时的 schema 漂移。
-4. 把 Agent 能力整理为最小闭口清单：tools、skills、memory、query engine、context、permission、sub-agent、sessions、command、hook、LLM provider。
-5. 对模型层保持 provider-neutral 策略，优先接入成熟推理服务、缓存、限流、重试、token budget 和可观测，而不是在本项目内做底层算法或微调。
+2. 为数据库迁移引入统一版本管理，减少新环境搭建时的 schema 漂移。
+3. 把 Agent 能力整理为最小闭口清单：tools、skills、memory、query engine、context、permission、sub-agent、sessions、command、hook、LLM provider。
+4. 对模型层保持 provider-neutral 策略，优先接入成熟推理服务、缓存、限流、重试、token budget 和可观测，而不是在本项目内做底层算法或微调。
+5. 做一次真实故障演练：暂停 task-management、让 data-sync 产生 receipt、确认 outbox RETRY_WAIT、恢复 task-management 后确认 DELIVERED。

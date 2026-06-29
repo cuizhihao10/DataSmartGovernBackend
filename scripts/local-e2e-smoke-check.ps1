@@ -186,6 +186,7 @@ Test-JsonFile -RelativePath "docker/keycloak/import/datasmart-realm.json" -Purpo
 Test-RequiredFile -RelativePath "docker/mysql/migrations/20260620_task_data_sync_worker_command_outbox.sql" -Purpose "task-management DataSync command outbox 表迁移"
 Test-RequiredFile -RelativePath "docker/mysql/migrations/20260622_task_data_sync_worker_execution_receipt.sql" -Purpose "task-management DataSync execution receipt 表迁移"
 Test-RequiredFile -RelativePath "docker/mysql/migrations/20260629_data_sync_template_execution_contract.sql" -Purpose "data-sync 模板执行契约字段迁移"
+Test-RequiredFile -RelativePath "docker/mysql/migrations/20260629_data_sync_task_management_receipt_outbox.sql" -Purpose "data-sync task-management receipt outbox/retry/dead-letter 表迁移"
 
 Test-DockerContainers
 

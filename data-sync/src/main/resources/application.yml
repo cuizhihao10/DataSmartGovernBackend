@@ -146,6 +146,42 @@ datasmart:
       # task-management 写入 receipt 的读取超时。
       # 如果后续改为 Kafka/outbox 投递，这里会被消息投递超时替代。
       read-timeout-ms: 2000
+      outbox:
+        # 是否启用 data-sync 本地 receipt outbox。
+        # 开启后，complete/fail 会先把低敏 receipt 请求写入 data_sync_task_management_receipt_outbox，
+        # 再尝试投递 task-management。这样 task-management 短暂不可用、网络抖动或 data-sync 进程崩溃时，
+        # receipt 投递意图仍然可恢复，而不是只丢在日志里。
+        enabled: true
+        # 是否在 outbox 入库后立即投递。
+        # true 表示正常路径接近实时；失败后仍由后台 scheduler 按 nextRetryAt 补偿。
+        # false 表示只落库不立即投递，通常只用于排障或对端限流保护。
+        immediate-delivery-enabled: true
+        # 是否启用后台定时补偿。
+        # 生产建议开启；如果关闭，RETRY_WAIT/PENDING 记录只能通过 internal dispatch-due 手动触发。
+        scheduler-enabled: true
+        # 服务启动后首次扫描延迟，避免应用刚启动、连接池和服务注册尚未稳定时立刻补偿。
+        initial-delay-ms: 45000
+        # 上一轮补偿结束后多久再次扫描。
+        fixed-delay-ms: 30000
+        # 单轮最多处理多少条 due receipt。
+        # 如果积压长期存在，应优先排查 task-management 可用性和网络，而不是无限调大批量。
+        batch-size: 20
+        # 单条 receipt 最大投递次数，达到后进入 DEAD_LETTER，等待运维介入。
+        max-attempts: 6
+        # 初始退避秒数；失败次数越多，nextRetryAt 会按指数退避增长。
+        base-backoff-seconds: 30
+        # 最大退避秒数，防止长期故障后 nextRetryAt 被推得过远。
+        max-backoff-seconds: 1800
+        # DELIVERING 最大停留秒数。
+        # 如果 data-sync 在标记 DELIVERING 后崩溃，超过该时间会被后台调度器重新纳入重试范围。
+        stale-delivering-seconds: 300
+        # 后台补偿使用的平台系统 actorId。
+        # 接入 OIDC service account 后，可替换为真实服务账号主体 ID。
+        system-actor-id: 0
+        # 后台补偿使用的平台系统角色。
+        system-actor-role: SERVICE_ACCOUNT
+        # 自动生成 traceId 的前缀，不承载业务参数、SQL、样本或内部 endpoint。
+        trace-id-prefix: data-sync-task-management-receipt-outbox
     worker-loop:
       # 是否启用 data-sync 内嵌 worker loop 定时调度。
       # worker loop 会真实认领 QUEUED execution，并可能触发 datasource-management 读取源端、写入目标端，

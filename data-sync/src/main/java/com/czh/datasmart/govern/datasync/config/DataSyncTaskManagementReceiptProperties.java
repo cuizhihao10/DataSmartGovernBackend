@@ -71,4 +71,75 @@ public class DataSyncTaskManagementReceiptProperties {
      * 读取 task-management 响应的超时时间，单位毫秒。
      */
     private long readTimeoutMs = 2000L;
+
+    /**
+     * receipt outbox 配置。
+     *
+     * <p>这里把 outbox 放在 task-management-receipt 配置块下面，是因为它不是通用消息 outbox，
+     * 而是专门服务于 “data-sync execution 完成/失败事实 -> task-management 投影” 这条跨服务闭环。
+     * 后续如果 data-sync 还要向 Kafka、审计中心、告警中心投递其它事件，可以再抽象统一 outbox。</p>
+     */
+    private Outbox outbox = new Outbox();
+
+    @Data
+    public static class Outbox {
+
+        /**
+         * 是否启用本地 durable outbox。
+         *
+         * <p>默认启用。关闭后会退回到“直接 HTTP 投递”的历史模式，只适合本地排障；
+         * 商业化环境建议保持开启，因为 task-management 短暂不可用时必须保留待补偿投递意图。</p>
+         */
+        private boolean enabled = true;
+
+        /**
+         * 是否在写入 outbox 后立即尝试投递。
+         *
+         * <p>开启后正常路径仍然接近实时：complete/fail 后立即 POST 给 task-management；
+         * 如果这次失败，再由 scheduler 按 nextRetryAt 重试。</p>
+         */
+        private boolean immediateDeliveryEnabled = true;
+
+        /**
+         * 是否启用后台定时重试。
+         *
+         * <p>如果关闭，失败 receipt 会停在 PENDING/RETRY_WAIT，需要运维手动调用 internal dispatch 接口。</p>
+         */
+        private boolean schedulerEnabled = true;
+
+        /** 后台调度器启动后首次扫描延迟。 */
+        private long initialDelayMs = 45000L;
+
+        /** 后台调度器上一轮结束后多久再次扫描。 */
+        private long fixedDelayMs = 30000L;
+
+        /** 单轮最多处理多少条 due receipt，避免一次性打爆 task-management。 */
+        private int batchSize = 20;
+
+        /** 单条 receipt 最大投递次数，达到后进入 DEAD_LETTER。 */
+        private int maxAttempts = 6;
+
+        /** 初始退避秒数；第 N 次失败会按指数退避增长。 */
+        private long baseBackoffSeconds = 30L;
+
+        /** 最大退避秒数，避免长时间故障后 nextRetryAt 过远。 */
+        private long maxBackoffSeconds = 1800L;
+
+        /**
+         * DELIVERING 状态最大允许停留秒数。
+         *
+         * <p>如果进程在“标记 DELIVERING 后、写 DELIVERED/RETRY_WAIT 前”崩溃，记录会卡在 DELIVERING。
+         * 后台调度器会把超过该时间的 DELIVERING 视为可重试，形成崩溃恢复能力。</p>
+         */
+        private long staleDeliveringSeconds = 300L;
+
+        /** 调度器和手动补偿默认使用的平台系统 actorId。 */
+        private Long systemActorId = 0L;
+
+        /** 调度器和手动补偿默认使用的平台系统角色。 */
+        private String systemActorRole = "SERVICE_ACCOUNT";
+
+        /** 自动生成 traceId 的前缀，不承载业务参数或敏感执行信息。 */
+        private String traceIdPrefix = "data-sync-task-management-receipt-outbox";
+    }
 }

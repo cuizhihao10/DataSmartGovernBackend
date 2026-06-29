@@ -1,33 +1,34 @@
 /**
  * @Author : Cui
- * @Date: 2026/06/29 13:18
+ * @Date: 2026/06/29 19:34
  * @Description DataSmart Govern Backend - DataSyncTaskManagementReceiptPublisherTest.java
  * @Version:1.0.0
  */
 package com.czh.datasmart.govern.datasync.service.support;
 
-import com.czh.datasmart.govern.common.error.PlatformBusinessException;
-import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.datasync.config.DataSyncTaskManagementReceiptProperties;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
-import com.czh.datasmart.govern.datasync.integration.task.receipt.TaskManagementExecutionReceiptClient;
 import com.czh.datasmart.govern.datasync.integration.task.receipt.TaskManagementExecutionReceiptRequest;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 
 /**
  * task-management receipt 发布器测试。
  *
- * <p>本测试不启动 HTTP 服务，只验证 data-sync 领域事实如何转换成低敏 receipt 请求。
- * 这能防止后续维护时不小心把 SQL、endpoint、字段值、样本数据或异常 message 放进回执。</p>
+ * <p>publisher 只负责把 data-sync 的领域事实转换成低敏 receipt 请求；
+ * 真正“先落 outbox、再投递、失败重试、死信”的可靠性由 DataSyncTaskManagementReceiptOutboxService 测试覆盖。
+ * 这样拆分后，测试也能体现代码职责边界。</p>
  */
 class DataSyncTaskManagementReceiptPublisherTest {
 
@@ -35,13 +36,16 @@ class DataSyncTaskManagementReceiptPublisherTest {
      * complete receipt 应只携带数量、完成状态和 checkpoint 可见性策略。
      */
     @Test
-    void publishCompleteShouldBuildLowSensitiveReceipt() {
-        FakeReceiptClient client = new FakeReceiptClient(false);
-        DataSyncTaskManagementReceiptPublisher publisher = publisher(client, false);
+    void publishCompleteShouldBuildLowSensitiveReceiptAndEnqueueOutbox() {
+        DataSyncTaskManagementReceiptOutboxService outboxService = mock(DataSyncTaskManagementReceiptOutboxService.class);
+        DataSyncTaskManagementReceiptPublisher publisher = publisher(outboxService, true);
+        SyncTask task = task();
+        SyncExecution execution = execution();
+        SyncActorContext actor = actor();
 
-        publisher.publishComplete(task(), execution(), actor(), response());
+        publisher.publishComplete(task, execution, actor, response());
 
-        TaskManagementExecutionReceiptRequest request = client.captured();
+        TaskManagementExecutionReceiptRequest request = capturedRequest(outboxService, task, execution, actor);
         assertThat(request.getReceiptId()).isEqualTo("data-sync-execution-receipt:88:complete");
         assertThat(request.getEventType()).isEqualTo("COMPLETE");
         assertThat(request.getSyncTaskId()).isEqualTo(11L);
@@ -60,15 +64,18 @@ class DataSyncTaskManagementReceiptPublisherTest {
      * failed receipt 应只携带低敏错误码和 issueCode，不携带异常正文或样本。
      */
     @Test
-    void publishFailedShouldBuildLowSensitiveReceipt() {
-        FakeReceiptClient client = new FakeReceiptClient(false);
-        DataSyncTaskManagementReceiptPublisher publisher = publisher(client, false);
+    void publishFailedShouldBuildLowSensitiveReceiptAndEnqueueOutbox() {
+        DataSyncTaskManagementReceiptOutboxService outboxService = mock(DataSyncTaskManagementReceiptOutboxService.class);
+        DataSyncTaskManagementReceiptPublisher publisher = publisher(outboxService, true);
+        SyncTask task = task();
+        SyncExecution execution = execution();
+        SyncActorContext actor = actor();
 
-        publisher.publishFailed(task(), execution(), actor(),
+        publisher.publishFailed(task, execution, actor(),
                 "OUTER_BATCH_LOOP_NOT_IMPLEMENTED",
                 List.of("OUTER_BATCH_LOOP_NOT_IMPLEMENTED", "jdbc:mysql://hidden"));
 
-        TaskManagementExecutionReceiptRequest request = client.captured();
+        TaskManagementExecutionReceiptRequest request = capturedRequest(outboxService, task, execution, actor);
         assertThat(request.getReceiptId()).isEqualTo("data-sync-execution-receipt:88:failed");
         assertThat(request.getEventType()).isEqualTo("FAILED");
         assertThat(request.getFailed()).isTrue();
@@ -78,31 +85,37 @@ class DataSyncTaskManagementReceiptPublisherTest {
     }
 
     /**
-     * 默认投影投递失败不阻断 data-sync 主状态机。
+     * 配置关闭时，publisher 不应写 outbox，也不应触发 HTTP 投递。
      */
     @Test
-    void publishShouldNotThrowWhenDeliveryIsNotRequired() {
-        DataSyncTaskManagementReceiptPublisher publisher = publisher(new FakeReceiptClient(true), false);
+    void publishShouldDoNothingWhenReceiptDisabled() {
+        DataSyncTaskManagementReceiptOutboxService outboxService = mock(DataSyncTaskManagementReceiptOutboxService.class);
+        DataSyncTaskManagementReceiptPublisher publisher = publisher(outboxService, false);
 
-        assertThatCode(() -> publisher.publishFailed(task(), execution(), actor(), "REMOTE_FAILED", List.of()))
-                .doesNotThrowAnyException();
+        publisher.publishComplete(task(), execution(), actor(), response());
+
+        verify(outboxService, never()).enqueueAndDispatch(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any());
     }
 
-    /**
-     * 强一致配置下，投递失败会向上抛出，供生产环境按需启用。
-     */
-    @Test
-    void publishShouldThrowWhenDeliveryIsRequired() {
-        DataSyncTaskManagementReceiptPublisher publisher = publisher(new FakeReceiptClient(true), true);
-
-        assertThatThrownBy(() -> publisher.publishFailed(task(), execution(), actor(), "REMOTE_FAILED", List.of()))
-                .isInstanceOf(PlatformBusinessException.class);
+    private TaskManagementExecutionReceiptRequest capturedRequest(DataSyncTaskManagementReceiptOutboxService outboxService,
+                                                                  SyncTask task,
+                                                                  SyncExecution execution,
+                                                                  SyncActorContext actor) {
+        ArgumentCaptor<TaskManagementExecutionReceiptRequest> captor =
+                ArgumentCaptor.forClass(TaskManagementExecutionReceiptRequest.class);
+        verify(outboxService).enqueueAndDispatch(eq(task), eq(execution), captor.capture(), eq(actor));
+        return captor.getValue();
     }
 
-    private DataSyncTaskManagementReceiptPublisher publisher(FakeReceiptClient client, boolean deliveryRequired) {
+    private DataSyncTaskManagementReceiptPublisher publisher(DataSyncTaskManagementReceiptOutboxService outboxService,
+                                                             boolean enabled) {
         DataSyncTaskManagementReceiptProperties properties = new DataSyncTaskManagementReceiptProperties();
-        properties.setDeliveryRequired(deliveryRequired);
-        return new DataSyncTaskManagementReceiptPublisher(client, properties);
+        properties.setEnabled(enabled);
+        return new DataSyncTaskManagementReceiptPublisher(outboxService, properties);
     }
 
     private SyncTask task() {
@@ -139,31 +152,5 @@ class DataSyncTaskManagementReceiptPublisherTest {
         response.setTotalFailedRecordCount(1L);
         response.setEndOfSource(true);
         return response;
-    }
-
-    /**
-     * 测试专用 receipt 客户端。
-     */
-    private static class FakeReceiptClient implements TaskManagementExecutionReceiptClient {
-
-        private final boolean fail;
-        private TaskManagementExecutionReceiptRequest captured;
-
-        private FakeReceiptClient(boolean fail) {
-            this.fail = fail;
-        }
-
-        @Override
-        public void record(TaskManagementExecutionReceiptRequest request, SyncActorContext actorContext) {
-            if (fail) {
-                throw new PlatformBusinessException(PlatformErrorCode.EXTERNAL_DEPENDENCY_FAILED,
-                        "task-management unavailable");
-            }
-            this.captured = request;
-        }
-
-        private TaskManagementExecutionReceiptRequest captured() {
-            return captured;
-        }
     }
 }

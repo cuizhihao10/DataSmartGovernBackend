@@ -1,5 +1,29 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Data Sync Receipt Outbox Retry Dead-Letter Closure
+- 本阶段承接 `Local E2E Closure Runbook And Smoke Check`，补齐上一个 data-sync 跨服务闭环缺口：data-sync execution complete/fail 已经会投递到 task-management receipt，但如果 task-management 短暂不可用，原先只会低敏日志告警，缺少 durable outbox、退避重试和 dead-letter。
+- 产品价值：
+  - 新增 `data_sync_task_management_receipt_outbox` 表和迁移脚本，把低敏 receipt 请求、投递状态、尝试次数、nextRetryAt、deadLetterAt 和低敏错误码持久化；
+  - `DataSyncTaskManagementReceiptPublisher` 职责收窄为“构造低敏 receipt 请求”，真正投递交给 `DataSyncTaskManagementReceiptOutboxService`；
+  - 新增 outbox 服务，实现 `PENDING -> DELIVERING -> DELIVERED/RETRY_WAIT/DEAD_LETTER` 状态流转；
+  - 新增后台调度器和 internal/manual `POST /task-management-receipt-outbox/dispatch-due`、`POST /internal/task-management-receipt-outbox/dispatch-due` 补偿入口；
+  - 新增 Micrometer 指标，记录最近一轮 scanned/delivered/retry/dead-letter 和低基数 outcome 计数；
+  - smoke 脚本和本地闭环 runbook 已同步检查新迁移与最新可靠性边界。
+- 安全边界：
+  - outbox payload 只保存 `TaskManagementExecutionReceiptRequest` 的低敏字段，不保存字段映射正文、过滤条件、SQL、连接串、凭据、checkpoint 原始值、失败行样本、prompt、模型输出、内部 URL 或远端响应正文；
+  - 失败摘要只保存标准化 errorCode、attempt 和下一状态，不保存异常 message、HTTP 响应体或 task-management 内部路径；
+  - 指标标签不使用 tenantId、taskId、executionId、receiptId、traceId 等高基数字段；
+  - manual dispatch 入口不允许传 payload 或目标地址，只能派发已落库且 due 的 outbox 记录，并复用执行器服务账号签名校验。
+- 验证：
+  - 定向测试通过：`DataSyncTaskManagementReceiptOutboxServiceTest`、`DataSyncTaskManagementReceiptPublisherTest`、`SyncBatchRunOnceDispatchServiceTest` 共 12 个用例；
+  - data-sync 全量测试通过：110 个用例；
+  - 本地 smoke 静态模式通过：PASS=8，WARN=13，FAIL=0；
+  - 主要新增文件均低于 500 行，符合当前解耦与文件体积约束。
+- 收敛判断：
+  - data-sync 与 task-management 之间已经具备“本地事实先闭合、跨服务投影最终一致补偿”的可靠闭环；
+  - 下一步不建议继续扩展 data-sync 连接器类型，应优先做真实本地故障演练、数据库迁移版本治理，或开始收敛 Agent tools/skills/memory/query/context/permission/session/command/hook/LLM 的最小闭口清单；
+  - 如果后续对 receipt 要求强一致，可结合 `deliveryRequired=true`、告警规则和运维手动 dispatch 流程，而不是让一次 HTTP 故障直接吞掉投影事实。
+
 ## 2026-06-29 追加落地进展：Local E2E Closure Runbook And Smoke Check
 - 本阶段承接 `Data Sync Task-Management Receipt Delivery`，不继续在单个局部模块扩展字段或控制面展示，而是把当前已完成的认证中心、网关、授权中心、任务中心、数据同步控制面和数据源执行面收敛成一条本地可启动、可探测、可复查的最小闭环链路。
 - 产品价值：

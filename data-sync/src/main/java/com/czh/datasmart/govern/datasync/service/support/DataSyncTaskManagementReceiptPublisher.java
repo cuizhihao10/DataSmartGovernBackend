@@ -6,16 +6,13 @@
  */
 package com.czh.datasmart.govern.datasync.service.support;
 
-import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.datasync.config.DataSyncTaskManagementReceiptProperties;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
-import com.czh.datasmart.govern.datasync.integration.task.receipt.TaskManagementExecutionReceiptClient;
 import com.czh.datasmart.govern.datasync.integration.task.receipt.TaskManagementExecutionReceiptRequest;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
@@ -33,15 +30,13 @@ import java.util.List;
  * <p>2. FAILED 只发送错误码、低敏错误摘要和问题码 warning，不发送异常 message、SQL、URL、字段值或样本；</p>
  * <p>3. commandId 当前可为空，task-management 会尝试按 syncTaskId + syncExecutionId 回查 outbox。</p>
  */
-@Slf4j
 @Component
 @RequiredArgsConstructor
 public class DataSyncTaskManagementReceiptPublisher {
 
-    private static final String SOURCE_SERVICE = "data-sync";
     private static final String CHECKPOINT_VISIBILITY = "NO_CHECKPOINT_VALUE_IN_RECEIPT";
 
-    private final TaskManagementExecutionReceiptClient receiptClient;
+    private final DataSyncTaskManagementReceiptOutboxService outboxService;
     private final DataSyncTaskManagementReceiptProperties properties;
 
     /**
@@ -70,7 +65,7 @@ public class DataSyncTaskManagementReceiptPublisher {
         request.setCheckpointType(null);
         request.setCheckpointValueVisibility(CHECKPOINT_VISIBILITY);
         request.setWarnings(List.of("data-sync 已完成本次 execution，task-management 仅记录低敏执行投影"));
-        deliver(request, actorContext);
+        outboxService.enqueueAndDispatch(task, execution, request, actorContext);
     }
 
     /**
@@ -103,7 +98,7 @@ public class DataSyncTaskManagementReceiptPublisher {
         request.setWarnings(issueCodes == null || issueCodes.isEmpty()
                 ? List.of("data-sync 回写失败回执，未提供额外低敏 issueCode")
                 : issueCodes.stream().map(code -> "issueCode=" + safeCode(code)).toList());
-        deliver(request, actorContext);
+        outboxService.enqueueAndDispatch(task, execution, request, actorContext);
     }
 
     private TaskManagementExecutionReceiptRequest baseRequest(SyncTask task,
@@ -117,24 +112,8 @@ public class DataSyncTaskManagementReceiptPublisher {
         request.setEventType(eventType);
         request.setEventTime(LocalDateTime.now());
         request.setExecutorId(execution.getExecutorId());
-        request.setSourceService(SOURCE_SERVICE);
+        request.setSourceService(properties.getSourceService());
         return request;
-    }
-
-    /**
-     * 统一投递并处理“receipt 投影失败是否阻断主流程”的策略。
-     */
-    private void deliver(TaskManagementExecutionReceiptRequest request, SyncActorContext actorContext) {
-        try {
-            receiptClient.record(request, actorContext);
-        } catch (PlatformBusinessException exception) {
-            log.warn("task-management execution receipt 投递失败: syncTaskId={}, syncExecutionId={}, receiptId={}, eventType={}, exceptionType={}, deliveryRequired={}",
-                    request.getSyncTaskId(), request.getSyncExecutionId(), request.getReceiptId(), request.getEventType(),
-                    exception.getClass().getSimpleName(), properties.isDeliveryRequired());
-            if (properties.isDeliveryRequired()) {
-                throw exception;
-            }
-        }
     }
 
     private String receiptId(SyncExecution execution, String eventType) {
