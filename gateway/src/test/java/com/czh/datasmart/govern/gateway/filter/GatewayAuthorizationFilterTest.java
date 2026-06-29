@@ -12,6 +12,7 @@ import com.czh.datasmart.govern.gateway.authorization.GatewayAuthorizationErrorW
 import com.czh.datasmart.govern.gateway.authorization.GatewayInternalServiceEndpointGuard;
 import com.czh.datasmart.govern.gateway.authorization.GatewayPermissionDecisionRequest;
 import com.czh.datasmart.govern.gateway.authorization.GatewayPermissionDecisionResult;
+import com.czh.datasmart.govern.gateway.authorization.GatewayServiceAccountDelegationSupport;
 import com.czh.datasmart.govern.gateway.authorization.PermissionAdminDecisionClient;
 import com.czh.datasmart.govern.gateway.config.GatewayAuthorizationProperties;
 import com.czh.datasmart.govern.gateway.monitoring.GatewayAuthorizationMetrics;
@@ -226,6 +227,44 @@ class GatewayAuthorizationFilterTest {
     }
 
     /**
+     * 服务账号请求应把 actorType、workspace 和委托责任链传给 permission-admin。
+     *
+     * <p>这条测试保护 OIDC/Keycloak 接入后的关键商业化边界：
+     * 1. Keycloak 可以签发 `actorType=SERVICE_ACCOUNT` 的机器身份；
+     * 2. gateway 不应只把它压缩成一个普通 `actorRole=SERVICE_ACCOUNT`；
+     * 3. permission-admin 的判定与审计应能看到服务账号自身、被代表主体、委托类型和策略版本；
+     * 4. 后续 data-sync worker、agent-runtime 工具执行、task-management 补偿任务都可以复用同一责任链契约。</p>
+     */
+    @Test
+    void serviceAccountAuthorizationRequestShouldCarryDelegationContext() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = serviceAccountExchange(
+                "/api/agent/sessions/session-1/runs/run-1/tool-executions/dag-selected-node-outbox/enqueue",
+                "POST");
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
+
+        filter.filter(exchange, chain).block();
+
+        ArgumentCaptor<GatewayPermissionDecisionRequest> captor = forClass(GatewayPermissionDecisionRequest.class);
+        verify(decisionClient).evaluate(captor.capture(), eq("trace-test-001"));
+        GatewayPermissionDecisionRequest request = captor.getValue();
+        assertThat(chain.called()).isTrue();
+        assertThat(request.getActorRole()).isEqualTo("SERVICE_ACCOUNT");
+        assertThat(request.getActorType()).isEqualTo("SERVICE_ACCOUNT");
+        assertThat(request.getWorkspaceId()).isEqualTo("system-sync");
+        assertThat(request.getRequestSource()).isEqualTo("AGENT_TOOL_CALL");
+        assertThat(request.getServiceAccountActorId()).isEqualTo(9101L);
+        assertThat(request.getServiceAccountCode()).isEqualTo("datasmart-sync-service");
+        assertThat(request.getRepresentedActorId()).isEqualTo("1001");
+        assertThat(request.getDelegationType()).isEqualTo("SERVICE_ACCOUNT_ON_BEHALF_OF_ACTOR");
+        assertThat(request.getDelegationReason()).isEqualTo("AGENT_CONFIRMED_TOOL_OUTBOX");
+        assertThat(request.getRequestedPolicyVersion()).isEqualTo("route-policy:860");
+    }
+
+    /**
      * Agent 实时事件 WebSocket 握手应按订阅动作进入权限中心。
      *
      * <p>WebSocket 握手在 HTTP 层表现为 GET 请求，如果只沿用通用 REST 语义，gateway 会把它解释成 VIEW。
@@ -408,7 +447,8 @@ class GatewayAuthorizationFilterTest {
                 new GatewayAuthorizationDecisionCache(properties),
                 new GatewayAuthorizationMetrics(new SimpleMeterRegistry()),
                 new GatewayInternalServiceEndpointGuard(properties),
-                new GatewayAuthorizationErrorWriter(new ObjectMapper())
+                new GatewayAuthorizationErrorWriter(new ObjectMapper()),
+                new GatewayServiceAccountDelegationSupport()
         );
     }
 
@@ -428,6 +468,28 @@ class GatewayAuthorizationFilterTest {
                 .header(PlatformContextHeaders.TENANT_ID, "10")
                 .header(PlatformContextHeaders.ACTOR_ID, "1001")
                 .header(PlatformContextHeaders.ACTOR_ROLE, actorRole)
+                .build();
+        return MockServerWebExchange.from(request);
+    }
+
+    /**
+     * 构造带服务账号和委托责任链 Header 的 mock 请求。
+     */
+    private MockServerWebExchange serviceAccountExchange(String path, String method) {
+        MockServerHttpRequest request = MockServerHttpRequest.method(org.springframework.http.HttpMethod.valueOf(method), path)
+                .header(PlatformContextHeaders.TRACE_ID, "trace-test-001")
+                .header(PlatformContextHeaders.TENANT_ID, "10")
+                .header(PlatformContextHeaders.ACTOR_ID, "9101")
+                .header(PlatformContextHeaders.ACTOR_ROLE, "SERVICE_ACCOUNT")
+                .header(PlatformContextHeaders.ACTOR_TYPE, "SERVICE_ACCOUNT")
+                .header(PlatformContextHeaders.WORKSPACE_ID, "system-sync")
+                .header(PlatformContextHeaders.REQUEST_SOURCE, "AGENT_TOOL_CALL")
+                .header(PlatformContextHeaders.SERVICE_ACCOUNT_ACTOR_ID, "9101")
+                .header(PlatformContextHeaders.SERVICE_ACCOUNT_CODE, "datasmart-sync-service")
+                .header(PlatformContextHeaders.REPRESENTED_ACTOR_ID, "1001")
+                .header(PlatformContextHeaders.DELEGATION_TYPE, "SERVICE_ACCOUNT_ON_BEHALF_OF_ACTOR")
+                .header(PlatformContextHeaders.DELEGATION_REASON, "AGENT_CONFIRMED_TOOL_OUTBOX")
+                .header(PlatformContextHeaders.REQUESTED_POLICY_VERSION, "route-policy:860")
                 .build();
         return MockServerWebExchange.from(request);
     }

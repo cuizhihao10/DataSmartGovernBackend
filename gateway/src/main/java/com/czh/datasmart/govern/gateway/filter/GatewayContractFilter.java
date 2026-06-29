@@ -56,6 +56,12 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
             PlatformContextHeaders.SOURCE_SERVICE,
             PlatformContextHeaders.WORKSPACE_ID,
             PlatformContextHeaders.REQUEST_SOURCE,
+            PlatformContextHeaders.SERVICE_ACCOUNT_ACTOR_ID,
+            PlatformContextHeaders.SERVICE_ACCOUNT_CODE,
+            PlatformContextHeaders.REPRESENTED_ACTOR_ID,
+            PlatformContextHeaders.DELEGATION_TYPE,
+            PlatformContextHeaders.DELEGATION_REASON,
+            PlatformContextHeaders.REQUESTED_POLICY_VERSION,
             PlatformContextHeaders.TENANT_PLAN_CODE,
             PlatformContextHeaders.WORKSPACE_RISK_LEVEL,
             PlatformContextHeaders.TOOL_BUDGET_POLICY_VERSION,
@@ -209,6 +215,12 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
         copyIfPresent(request, headers, PlatformContextHeaders.ACTOR_ROLE);
         copyIfPresent(request, headers, PlatformContextHeaders.ACTOR_TYPE);
         copyIfPresent(request, headers, PlatformContextHeaders.WORKSPACE_ID);
+        copyIfPresent(request, headers, PlatformContextHeaders.SERVICE_ACCOUNT_ACTOR_ID);
+        copyIfPresent(request, headers, PlatformContextHeaders.SERVICE_ACCOUNT_CODE);
+        copyIfPresent(request, headers, PlatformContextHeaders.REPRESENTED_ACTOR_ID);
+        copyIfPresent(request, headers, PlatformContextHeaders.DELEGATION_TYPE);
+        copyIfPresent(request, headers, PlatformContextHeaders.DELEGATION_REASON);
+        copyIfPresent(request, headers, PlatformContextHeaders.REQUESTED_POLICY_VERSION);
     }
 
     /**

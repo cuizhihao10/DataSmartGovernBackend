@@ -27,6 +27,56 @@ public final class PlatformContextHeaders {
     public static final String REQUEST_SOURCE = "X-DataSmart-Request-Source";
 
     /**
+     * 服务账号主体 ID。
+     *
+     * <p>当请求由机器身份发起时，`ACTOR_ID` 通常已经是服务账号自身 ID；但在“服务账号代表用户执行”
+     * 的链路里，审计系统还需要明确保存机器主体。该 Header 允许上游受信网关、任务执行器或 Agent Runtime
+     * 显式声明服务账号 actorId。外部客户端不能自报该字段，必须由 gateway 清理后基于可信身份或受信上游重建。</p>
+     */
+    public static final String SERVICE_ACCOUNT_ACTOR_ID = "X-DataSmart-Service-Account-Actor-Id";
+
+    /**
+     * 服务账号可读编码。
+     *
+     * <p>actorId 适合数据库关联，但事故排查时更需要稳定的可读标识，例如 `datasmart-agent-runtime`、
+     * `datasmart-sync-worker`。该字段只允许保存低敏主体编码，不允许保存 client secret、token、证书指纹或内部 endpoint。</p>
+     */
+    public static final String SERVICE_ACCOUNT_CODE = "X-DataSmart-Service-Account-Code";
+
+    /**
+     * 被服务账号代表的业务主体。
+     *
+     * <p>Agent 工具执行、data-sync worker、task-management 补偿任务都可能出现“机器账号代表某个用户或任务”
+     * 执行动作的场景。该字段用于审计责任链：谁实际发起 HTTP 调用，谁是被代表的业务主体。它不应承载 prompt、
+     * SQL、工具参数、样本数据或任何高敏业务正文。</p>
+     */
+    public static final String REPRESENTED_ACTOR_ID = "X-DataSmart-Represented-Actor-Id";
+
+    /**
+     * 服务账号委托类型。
+     *
+     * <p>推荐值如 `SERVICE_ACCOUNT_ON_BEHALF_OF_ACTOR`、`SYSTEM_COMPENSATION`、`SCHEDULED_JOB`。
+     * permission-admin 不应因为该字段存在就自动放行，它只作为审计、策略解释和未来审批流的低敏上下文。</p>
+     */
+    public static final String DELEGATION_TYPE = "X-DataSmart-Delegation-Type";
+
+    /**
+     * 服务账号委托原因摘要。
+     *
+     * <p>该字段用于解释为什么机器身份需要代表上游主体调用权限中心，例如“Agent 已确认工具节点入箱”。
+     * 它必须保持低敏、短文本，不允许写入 prompt、SQL、工具参数值、模型输出、样本数据或客户业务正文。</p>
+     */
+    public static final String DELEGATION_REASON = "X-DataSmart-Delegation-Reason";
+
+    /**
+     * 调用方期望沿用的权限策略版本。
+     *
+     * <p>该字段为后续“预检时命中 A 版本，执行时必须仍然是 A 版本”的强一致权限链路预留。
+     * 当前 permission-admin 会返回实际命中的 policyVersion；未来执行器可把预检版本回传，权限中心再判定是否过期。</p>
+     */
+    public static final String REQUESTED_POLICY_VERSION = "X-DataSmart-Requested-Policy-Version";
+
+    /**
      * 当前租户套餐编码。
      *
      * <p>该字段用于智能网关做能力裁剪、工具预算、缓存隔离和审计解释。

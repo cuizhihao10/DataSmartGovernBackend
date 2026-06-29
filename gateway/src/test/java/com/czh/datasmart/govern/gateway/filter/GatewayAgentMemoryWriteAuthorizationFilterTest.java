@@ -155,7 +155,8 @@ class GatewayAgentMemoryWriteAuthorizationFilterTest {
                 new GatewayAuthorizationDecisionCache(properties),
                 new GatewayAuthorizationMetrics(new SimpleMeterRegistry()),
                 new GatewayInternalServiceEndpointGuard(properties),
-                new GatewayAuthorizationErrorWriter(new ObjectMapper())
+                new GatewayAuthorizationErrorWriter(new ObjectMapper()),
+                new com.czh.datasmart.govern.gateway.authorization.GatewayServiceAccountDelegationSupport()
         );
     }
 

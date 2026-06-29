@@ -13,6 +13,7 @@ import com.czh.datasmart.govern.gateway.authorization.GatewayAuthorizationErrorW
 import com.czh.datasmart.govern.gateway.authorization.GatewayInternalServiceEndpointGuard;
 import com.czh.datasmart.govern.gateway.authorization.GatewayPermissionDecisionRequest;
 import com.czh.datasmart.govern.gateway.authorization.GatewayPermissionDecisionResult;
+import com.czh.datasmart.govern.gateway.authorization.GatewayServiceAccountDelegationSupport;
 import com.czh.datasmart.govern.gateway.authorization.PermissionAdminDecisionClient;
 import com.czh.datasmart.govern.gateway.config.GatewayAuthorizationProperties;
 import com.czh.datasmart.govern.gateway.monitoring.GatewayAuthorizationMetrics;
@@ -73,6 +74,7 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
     private final GatewayAuthorizationMetrics authorizationMetrics;
     private final GatewayInternalServiceEndpointGuard internalServiceEndpointGuard;
     private final GatewayAuthorizationErrorWriter authorizationErrorWriter;
+    private final GatewayServiceAccountDelegationSupport serviceAccountDelegationSupport;
 
     /**
      * 执行路由级授权。
@@ -254,8 +256,16 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
      * 构造权限判定请求。
      *
      * <p>当前从 X-DataSmart-* Header 读取租户、操作者和角色。
-     * 因为 JWT 解析还未落地，所以缺失角色时会使用配置里的 defaultActorRole。
-     * 这只是迁移期兜底，不应作为长期生产身份来源。
+     * OIDC 接入后，这些 Header 通常由 GatewayOidcAuthenticationContextFilter 根据已验证 JWT 写入；
+     * 本地开发模式下也可能由受控开发身份过滤器写入。缺失角色时仍会使用配置里的 defaultActorRole，
+     * 但这只是迁移期兜底，不应作为长期生产身份来源。
+     *
+     * <p>除了租户、角色、路径和动作，本方法还会补齐 actorType、workspace、requestSource 和服务账号委托上下文。
+     * 这些字段看似不直接影响当前路由策略匹配，但它们决定审计责任链和未来更细粒度策略：
+     * 1. SERVICE_ACCOUNT 不是超级管理员，必须说明机器主体是谁；
+     * 2. Agent/tool/data-sync worker 代表用户执行时，需要说明 representedActor；
+     * 3. workspace 是 Agent 记忆、工具和数据范围的重要隔离边界；
+     * 4. requestSource 可用于区分 Web UI、OpenAPI、调度器和 Agent 工具调用。
      */
     private GatewayPermissionDecisionRequest buildDecisionRequest(ServerHttpRequest request) {
         HttpHeaders headers = request.getHeaders();
@@ -264,17 +274,25 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
         Long tenantId = parseLongOrDefault(headers.getFirst(PlatformContextHeaders.TENANT_ID), authorizationProperties.getDefaultTenantId());
         Long actorId = parseLongOrDefault(headers.getFirst(PlatformContextHeaders.ACTOR_ID), authorizationProperties.getAnonymousActorId());
         String actorRole = valueOrDefault(headers.getFirst(PlatformContextHeaders.ACTOR_ROLE), authorizationProperties.getDefaultActorRole());
+        String actorType = normalizeOptionalContractValue(headers.getFirst(PlatformContextHeaders.ACTOR_TYPE));
+        String workspaceId = trimToNull(headers.getFirst(PlatformContextHeaders.WORKSPACE_ID));
+        String requestSource = normalizeOptionalContractValue(headers.getFirst(PlatformContextHeaders.REQUEST_SOURCE));
         AuthorizationMetadata authorizationMetadata = resolveAuthorizationMetadata(path, method);
 
-        return new GatewayPermissionDecisionRequest(
-                tenantId,
-                actorId,
-                actorRole,
-                method,
-                path,
-                authorizationMetadata.resourceType(),
-                authorizationMetadata.action()
-        );
+        GatewayPermissionDecisionRequest decisionRequest = new GatewayPermissionDecisionRequest();
+        decisionRequest.setTenantId(tenantId);
+        decisionRequest.setActorId(actorId);
+        decisionRequest.setActorRole(normalizeContractValue(actorRole));
+        decisionRequest.setActorType(actorType);
+        decisionRequest.setWorkspaceId(workspaceId);
+        decisionRequest.setRequestSource(requestSource);
+        decisionRequest.setHttpMethod(method);
+        decisionRequest.setRequestPath(path);
+        decisionRequest.setResourceType(authorizationMetadata.resourceType());
+        decisionRequest.setAction(authorizationMetadata.action());
+        decisionRequest.setRequestedPolicyVersion(trimToNull(headers.getFirst(PlatformContextHeaders.REQUESTED_POLICY_VERSION)));
+        serviceAccountDelegationSupport.populate(headers, decisionRequest, actorId);
+        return decisionRequest;
     }
 
     /**
@@ -449,11 +467,30 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
     }
 
     /**
+     * 规范化可选契约编码。
+     *
+     * <p>actorType、requestSource、delegationType 等字段通常是枚举型编码，转成大写下划线有利于权限审计、
+     * 缓存键和后续策略匹配保持一致。空值保持 null，不制造伪默认值。</p>
+     */
+    private String normalizeOptionalContractValue(String value) {
+        String trimmed = trimToNull(value);
+        return trimmed == null ? null : normalizeContractValue(trimmed);
+    }
+
+    /**
      * 字符串为空时使用默认值。
      */
     private String valueOrDefault(String value, String defaultValue) {
         return value == null || value.isBlank() ? defaultValue : value.trim();
     }
+
+    /**
+     * 去除空白并把空字符串归一化为 null。
+     */
+    private String trimToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
 
     /**
      * 排在 GatewayContractFilter 之后执行。

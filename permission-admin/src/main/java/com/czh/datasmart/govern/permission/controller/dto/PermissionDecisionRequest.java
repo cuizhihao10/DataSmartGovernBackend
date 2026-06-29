@@ -36,6 +36,29 @@ public class PermissionDecisionRequest {
     private String actorRole;
 
     /**
+     * 操作者类型。
+     *
+     * <p>典型值包括 USER、SERVICE_ACCOUNT、AGENT、SYSTEM_SCHEDULER。当前授权仍以角色和路由策略为准，
+     * 但 actorType 能帮助审计和后续策略区分“人类访问”“机器访问”“Agent 访问”。</p>
+     */
+    private String actorType;
+
+    /**
+     * 工作区 ID。
+     *
+     * <p>工作区是 Agent、工具执行、长期记忆和数据治理任务的隔离边界。当前 permission-admin 先接收并审计该字段，
+     * 后续可扩展为 workspace 级策略、风险等级和数据范围过滤。</p>
+     */
+    private String workspaceId;
+
+    /**
+     * 请求来源。
+     *
+     * <p>例如 WEB_UI、OPEN_API、AGENT_TOOL_CALL、SCHEDULER。该字段用于审计和未来策略分层，不应单独成为放行依据。</p>
+     */
+    private String requestSource;
+
+    /**
      * HTTP 方法，例如 GET、POST、PUT、DELETE。
      */
     @NotBlank(message = "HTTP 方法不能为空")

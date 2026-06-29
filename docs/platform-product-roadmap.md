@@ -1,5 +1,27 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Gateway OIDC 服务账号委托授权契约
+- 本阶段承接 Keycloak 本地 OIDC 联调闭环，继续把认证中心与 permission-admin 授权中心打通。重点不是新增登录能力，而是让 OIDC/Keycloak 解析出的 `actorType=SERVICE_ACCOUNT`、workspace 和委托责任链能够进入 permission-admin 判定请求、缓存键和审计摘要。
+- 产品价值：
+  - `PlatformContextHeaders` 新增服务账号委托 Header 常量：服务账号 actorId、服务账号编码、被代表主体、委托类型、委托原因和请求策略版本；
+  - `GatewayContractFilter` 会清理这些 Header，只有受信上游或 gateway 自身重建后才允许继续传递，避免外部客户端自报服务账号责任链；
+  - `GatewayPermissionDecisionRequest` 与 permission-admin `PermissionDecisionRequest` 新增 actorType、workspaceId、requestSource 等字段；
+  - 新增 `GatewayServiceAccountDelegationSupport`，把服务账号委托上下文从 `GatewayAuthorizationFilter` 中拆出，保持过滤器 500 行以内；
+  - `GatewayAuthorizationDecisionCache` 的缓存键纳入 actorType、workspace、requestSource、serviceAccountActorId、serviceAccountCode、representedActorId、delegationType 和 requestedPolicyVersion，避免服务账号代表不同主体时串用授权结果；
+  - permission-admin 审计 detailJson 记录 actorType、workspaceId 和 requestSource，配合已有委托证据形成更完整责任链。
+- 安全边界：
+  - 委托字段不会让请求自动放行，permission-admin 仍以角色、路由策略、资源类型、动作、数据范围和审批要求做最终判断；
+  - 委托原因只允许低敏短文本，不允许写入 prompt、SQL、工具参数、样本数据、模型输出、token、secret 或内部 endpoint；
+  - 服务账号缓存隔离优先安全，牺牲部分命中率也不能把 A 用户的授权结果误用于 B 用户。
+- 验证：
+  - 定向测试通过：`GatewayAuthorizationFilterTest`、`GatewayAuthorizationDecisionCacheTest`、`PermissionDecisionSupportTest`；
+  - gateway + permission-admin 全量测试通过：gateway 61 个测试通过，permission-admin 35 个测试通过，Maven Toolchain 使用 JDK 21；
+  - 行数检查：`GatewayAuthorizationFilter.java` 471 行，`GatewayServiceAccountDelegationSupport.java` 117 行，`GatewayAuthorizationFilterTest.java` 488 行，均低于 500 行约束。
+- 收敛判断：
+  - 认证中心与授权中心已具备“OIDC 身份 -> gateway Header -> permission-admin 低敏判定请求 -> 审计责任链”的闭环骨架；
+  - 下一步应把 data-sync、agent-runtime、task-management 等内部调用逐步迁移到 OIDC service account / HMAC / mTLS 组合，不再依赖临时 Header 白名单；
+  - 同时回到 data-sync worker loop 与 task-management receipt，把业务执行链路收口，而不是继续横向发散认证周边能力。
+
 ## 2026-06-29 追加落地进展：Gateway Keycloak 本地 OIDC 联调闭环
 - 本阶段承接上一阶段 Gateway OIDC 认证中心收敛，把“gateway 能校验标准 JWT”继续推进为“本地环境能用真实 Keycloak access token 进行端到端联调”。这一步仍然不自研登录系统，而是用主流 IdP 方式补齐开发、测试、学习环境的身份基础设施。
 - 产品价值：

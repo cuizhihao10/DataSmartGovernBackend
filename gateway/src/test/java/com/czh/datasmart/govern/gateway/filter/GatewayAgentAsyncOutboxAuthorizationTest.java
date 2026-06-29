@@ -95,7 +95,8 @@ class GatewayAgentAsyncOutboxAuthorizationTest {
                 new GatewayAuthorizationDecisionCache(properties),
                 new GatewayAuthorizationMetrics(new SimpleMeterRegistry()),
                 new GatewayInternalServiceEndpointGuard(properties),
-                new GatewayAuthorizationErrorWriter(new ObjectMapper())
+                new GatewayAuthorizationErrorWriter(new ObjectMapper()),
+                new com.czh.datasmart.govern.gateway.authorization.GatewayServiceAccountDelegationSupport()
         );
         MockServerWebExchange exchange = MockServerWebExchange.from(
                 MockServerHttpRequest.method(org.springframework.http.HttpMethod.valueOf(method), path)

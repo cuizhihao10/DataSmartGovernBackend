@@ -58,6 +58,9 @@ public class PermissionAuditSupport {
         auditRecord.setSummary(result.getReason());
         auditRecord.setDetailJson("{\"httpMethod\":\"" + jsonEscape(request.getHttpMethod())
                 + "\",\"requestPath\":\"" + jsonEscape(request.getRequestPath())
+                + "\",\"actorType\":\"" + jsonEscape(request.getActorType())
+                + "\",\"workspaceId\":\"" + jsonEscape(request.getWorkspaceId())
+                + "\",\"requestSource\":\"" + jsonEscape(request.getRequestSource())
                 + "\",\"matchedRoutePolicyId\":\"" + nullSafe(result.getMatchedRoutePolicyId())
                 + "\",\"policyVersion\":\"" + jsonEscape(result.getPolicyVersion())
                 + "\",\"delegated\":\"" + nullSafe(result.getDelegated())

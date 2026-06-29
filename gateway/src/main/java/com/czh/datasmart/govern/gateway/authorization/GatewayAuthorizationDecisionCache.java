@@ -311,26 +311,46 @@ public class GatewayAuthorizationDecisionCache {
      *
      * <p>这里刻意包含 tenantId、actorId、actorRole、method、path、resourceType、action。
      * 从性能角度看，只按 tenant+role+path 缓存命中率更高；
-     * 但当前权限中心未来可能加入用户级授权、委托审批、工作区隔离、服务账号差异策略。
-     * 第一版选择更保守的键，优先保证不把 A 用户的允许结果误用于 B 用户。
+     * 但当前权限中心已经开始接入 OIDC actorType、workspace、服务账号委托和请求来源。
+     * 如果缓存键不包含这些字段，就可能出现：
+     * 1. 同一个 actorId 既有人类登录又有服务账号调用，结果被错误复用；
+     * 2. 同一角色跨 workspace 的风险策略不同，但缓存命中旧 workspace 判定；
+     * 3. 服务账号代表不同用户执行工具，authorizedProjectIds 或审批要求被串用。
+     * 因此这里选择更保守的键，优先保证安全边界，后续再通过策略版本和 Redis/Caffeine 优化命中率。
      */
     private record CacheKey(Long tenantId,
                             Long actorId,
                             String actorRole,
+                            String actorType,
+                            String workspaceId,
+                            String requestSource,
                             String requestMethod,
                             String requestPath,
                             String resourceType,
-                            String action) {
+                            String action,
+                            Long serviceAccountActorId,
+                            String serviceAccountCode,
+                            String representedActorId,
+                            String delegationType,
+                            String requestedPolicyVersion) {
 
         private static CacheKey from(GatewayPermissionDecisionRequest request) {
             return new CacheKey(
                     request.getTenantId(),
                     request.getActorId(),
                     request.getActorRole(),
+                    request.getActorType(),
+                    request.getWorkspaceId(),
+                    request.getRequestSource(),
                     request.getHttpMethod(),
                     request.getRequestPath(),
                     request.getResourceType(),
-                    request.getAction()
+                    request.getAction(),
+                    request.getServiceAccountActorId(),
+                    request.getServiceAccountCode(),
+                    request.getRepresentedActorId(),
+                    request.getDelegationType(),
+                    request.getRequestedPolicyVersion()
             );
         }
     }
