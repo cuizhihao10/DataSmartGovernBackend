@@ -1,5 +1,38 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Data Sync Run-Once Dispatch Closure
+- 本阶段承接 `Datasource Connector Runtime Run-Once Contract`，把 data-sync 侧的执行派发闭环补齐到“可以调用 datasource-management 受控 run-once，并根据低敏结果回写 data-sync 生命周期”。这一步不是继续扩展控制面展示字段，而是收敛真实执行链路：`claim -> workerPlan -> bridgePlan -> datasource run-once -> complete/fail`。
+- 产品价值：
+  - 新增 data-sync 本地 run-once client 契约与 HTTP 实现，调用 datasource-management `POST /internal/sync-batch-runs/run-once`，但不直接依赖 datasource-management Java DTO；
+  - 新增 `SyncBatchRunOnceDispatchService`，统一完成 bridgePlan 生成、配置开关判断、checkpoint handoff 阻断、远端执行结果解释和 data-sync complete/fail 回写；
+  - 优先放行 FULL/ONE_TIME_MIGRATION 且 checkpoint 类型为 `NONE_OR_FINAL_WATERMARK` 的最小单批闭环；
+  - INCREMENTAL_TIME/INCREMENTAL_ID、REPLAY、BACKFILL 等需要 checkpoint 原始值安全交接的场景暂时 fail-closed，避免把不完整增量能力伪装成已闭环；
+  - 远端返回“还有后续批次”时暂时 fail-closed，因为 data-sync 外层多批循环、心跳续租、checkpoint 持久化和退避重试尚未完整实现；
+  - run-once client 日志只记录 taskId、executionId、traceId、异常类型，不记录 URL、请求体、响应体、远端 message、字段清单或 checkpoint。
+- 新增与调整：
+  - 新增 `DataSyncDatasourceRunOnceProperties` 与 `application.yml` 配置块，支持开关、baseUrl、internal path、服务账号 Header、连接/读取超时、默认 fetch/write batch/commit interval/timeout/retry；
+  - 新增 `DatasourceRunOnceRequest/Response/Envelope/Client/HttpDatasourceRunOnceClient`，作为 data-sync 侧的跨服务契约镜像；
+  - 新增 `SyncBatchRunOnceDispatchResult`，作为内部低敏派发摘要；
+  - 新增 `SyncBatchRunOnceDispatchServiceTest`，覆盖单批完成、增量 checkpoint handoff 阻断、字段重命名阻断、远端多批未闭环阻断。
+- 当前边界：
+  - 当前尚未把 dispatch service 接到真实 worker loop 或定时消费器中，仍缺一个正式“claim 后调用 run-once dispatch”的 worker 入口；
+  - 当前尚未写 checkpoint 原始值安全交接机制，因此增量同步仍不能打开真实闭环；
+  - 当前尚未实现多批循环、分片并发、字段重命名/转换、失败样本采样、task-management receipt 和吞吐指标；
+  - 当前 internal 鉴权仍依赖 Header 白名单，生产应继续升级 gateway HMAC、mTLS、service mesh 身份或 permission-admin 机器账号策略。
+- 验证：
+  - 定向 Java 测试：
+    `mvn -pl data-sync -am "-Dtest=SyncBatchRunOnceDispatchServiceTest,SyncBatchRunnerBridgePlanSupportTest,SyncFieldMappingExecutionContractSupportTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：12 个测试通过；
+  - data-sync 全量测试：
+    `mvn -pl data-sync -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：98 个测试通过，Maven Toolchain 使用 JDK 21；
+  - `git diff --check` 通过，仅有 Windows 下 LF/CRLF 转换提示；
+  - 行数检查：`SyncBatchRunOnceDispatchService.java` 374 行，`HttpDatasourceRunOnceClient.java` 119 行，`SyncBatchRunOnceDispatchServiceTest.java` 297 行，均低于 500 行约束。
+- 收敛判断：
+  - data-sync 与 datasource-management 已具备“计划侧 bridge + 执行侧 run-once + data-sync 生命周期回写”的最小闭环骨架；
+  - 下一步不应继续扩字段，而应把 dispatch service 接入正式 worker loop，并补 task-management receipt，让同步执行结果进入全平台任务中心；
+  - checkpoint handoff、多批循环和指标是 runner 闭环的必要收敛项，应优先于新增更多连接器类型。
+
 ## 2026-06-29 追加落地进展：Datasource Connector Runtime Run-Once Contract
 - 本阶段承接 `Data Sync Batch Runner Bridge Contract`，在 datasource-management 中补齐面向 data-sync 的内部单批执行入口。目标不是把 data-sync 控制面挪回 datasource-management，也不是复用会改 legacy 同步状态的旧 Runner，而是让 datasource-management 作为受控 connector runtime 执行“一批 read/write”，并返回低敏结果摘要。
 - 产品价值：

@@ -88,6 +88,41 @@ datasmart:
       # 如果 datasource-management 不可用，data-sync 会 fail-closed 返回模板预检错误，而不是猜测 connector type。
       connect-timeout-ms: 1000
       read-timeout-ms: 1500
+    datasource-run-once:
+      # 是否启用 data-sync -> datasource-management 的受控单批执行调用。
+      # 该开关不同于 datasource-capability：capability 只是低敏控制面查询，而 run-once 会触发真实源端读取和目标端写入。
+      # 因此关闭时不能让 execution 无限保持 RUNNING，调度服务会 fail-closed 并写入低敏错误样本。
+      enabled: true
+      # datasource-management 本地默认端口是 8082。
+      # 生产环境可以替换为 Nacos 服务发现地址、内部 gateway、service mesh 虚拟服务或受控内网域名。
+      # 不要在日志、runtime event 或用户响应中回显该地址，避免泄露内部拓扑。
+      base-url: http://localhost:8082
+      # datasource-management 暴露给 data-sync 的 internal 单批执行路径。
+      # 该路径只允许 SOURCE_SERVICE=data-sync 且 ACTOR_ROLE=SERVICE_ACCOUNT 的服务账号调用。
+      run-once-path: /internal/sync-batch-runs/run-once
+      # 服务账号来源标识，会写入 X-DataSmart-Source-Service。
+      source-service: data-sync
+      # 服务账号角色标识，会写入 X-DataSmart-Actor-Role。
+      actor-role: SERVICE_ACCOUNT
+      # 建立 HTTP 连接的超时时间。
+      # run-once 属于真实执行链路，连接建立不应长时间阻塞 worker 租约；真正的数据读写耗时由 read-timeout 与运行计划控制。
+      connect-timeout-ms: 1500
+      # 读取远端响应的超时时间。
+      # 当前先支持单批闭环，默认 10 秒适合本地与小批量验证；生产应结合 fetchSize、目标端写入速度和 worker lease TTL 调整。
+      read-timeout-ms: 10000
+      # 传递给 connector runtime 的默认读取批大小建议。
+      # 这不是强制值，具体 JDBC reader 仍可结合方言、表规模、连接器能力和租约剩余时间调整。
+      default-fetch-size: 512
+      # 传递给 connector runtime 的默认写入批大小建议。
+      default-write-batch-size: 256
+      # 默认事务提交间隔，按记录数表达。
+      # 后续如果支持大表并发分片，可按目标端吞吐、事务日志压力和失败重试成本动态调整。
+      default-commit-interval-records: 256
+      # 单批执行默认超时时间，单位秒。
+      default-timeout-seconds: 600
+      # 当前 data-sync 外层多批循环和避让重试尚未实现，因此默认不让 run-once 自行重试。
+      # 后续接入 worker loop、退避策略和幂等写入后，再统一纳入 retryPolicy。
+      default-max-retry-count: 0
     executor:
       # 单条 execution 允许被 defer 或过期租约恢复回队列的最大次数。
       # 达到该阈值后，系统会停止自动 requeue，把 execution 标记为 FAILED，
