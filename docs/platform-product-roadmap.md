@@ -1,5 +1,27 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Data Sync Batch Runner Bridge Contract
+- 本阶段承接 `Data Sync Template Execution Contract`，继续把 data-sync 从“模板与 workerPlan 具备执行前契约”推进到“可以判断是否允许派发给最小批量执行器”。这一步仍然不直接执行 JDBC，也不把 datasource-management 的内部 Runner 直接拉进 data-sync，而是先补内部桥接计划，避免形成双控制面和跨模块强耦合。
+- 产品价值：
+  - 新增字段映射执行契约解析器，把 `fieldMappingConfig` 转换为内部 `selectedColumns`、`writeColumns`、`primaryKeyColumns`，为后续受控 connector runtime 构建 read/write 请求；
+  - 字段映射解析只返回低敏 issueCode，不把原始 JSON、字段映射正文、SQL、过滤条件、样本数据或连接信息放入公开响应；
+  - 最小 bridge 当前只允许 MySQL、PostgreSQL、SQL Server 关系型 JDBC 批处理组合，Kafka、文件、对象存储、REST API、MongoDB 等连接器继续 fail-closed，等待专用 runner；
+  - sourceField 与 targetField 不一致时显式阻断，因为当前最小 JDBC runner 还没有字段重命名/转换层，避免“映射已声明但真实写入取不到目标参数”的隐性数据错误；
+  - `OVERWRITE` 会等待后续 permission-admin 审批和桥接策略确认，不允许直接进入最小 runner，避免破坏性写入被演示链路误放行。
+- 新增与调整：
+  - 新增 `SyncFieldMappingExecutionContract` 与 `SyncFieldMappingExecutionContractSupport`，作为 data-sync 内部字段映射执行契约；
+  - 新增 `SyncBatchRunnerBridgePlan` 与 `SyncBatchRunnerBridgePlanSupport`，合并 execution、task、template、workerPlan 和字段映射契约，输出 `READY_TO_DISPATCH` 或 `BLOCKED`；
+  - 新增单元测试覆盖同名字段可派发、字段改名阻断、非 JDBC 连接器阻断、覆盖式写入等待审批、非法 JSON 不泄露原文等场景。
+- 当前边界：
+  - 当前仍未执行真实 JDBC/文件/Kafka 数据读写；
+  - 当前桥接计划是内部对象，不是公开 API，不应被 controller、runtime event 或普通审计投影直接返回；
+  - 当前只支持保守安全字段标识符，不支持表达式、JSONPath、带引号字段、带点字段或数据库私有转义；
+  - 当前未接入 datasource-management 的“单批读写结果”远程接口，也未生成 task-management receipt。
+- 收敛判断：
+  - data-sync 已形成 `capability snapshot -> template contract -> preview -> task/execution -> claim workerPlan -> bridge dispatch plan` 的执行前闭环；
+  - 下一步应做受控 connector runtime 调用契约：让 datasource-management 或独立 runner 暴露“单批读写、返回低敏结果”的内部接口，再由 data-sync 写 checkpoint 与 complete/fail；
+  - 不建议继续扩展预览字段或 workerPlan 展示字段，优先闭合 `runner result -> checkpoint -> execution complete/fail -> task-management receipt`。
+
 ## 2026-06-29 追加落地进展：Data Sync Template Execution Contract
 - 本阶段承接 `Data Sync Worker Execution Plan Contract`，继续把 data-sync 从“worker 能看到执行计划”推进到“模板本身具备真实执行器最小可消费契约”。这一步没有直接实现 JDBC 批量读写，也没有把凭据、SQL、过滤条件或字段映射正文下发给 worker，而是先补齐执行闭环不可缺少的低敏结构化字段：源/目标对象定位、写入策略、冲突键和增量字段。
 - 产品价值：
