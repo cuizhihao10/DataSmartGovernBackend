@@ -1,5 +1,23 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Datasource Connector Runtime Run-Once Contract
+- 本阶段承接 `Data Sync Batch Runner Bridge Contract`，在 datasource-management 中补齐面向 data-sync 的内部单批执行入口。目标不是把 data-sync 控制面挪回 datasource-management，也不是复用会改 legacy 同步状态的旧 Runner，而是让 datasource-management 作为受控 connector runtime 执行“一批 read/write”，并返回低敏结果摘要。
+- 产品价值：
+  - 新增 `POST /internal/sync-batch-runs/run-once`，只允许 `data-sync` 服务账号调用，避免 task-management、agent-runtime、前端或普通管理接口直接触发真实数据读写；
+  - 新增 run-once service，复用既有 JDBC preparation、reader、writer，但不调用 `SyncTaskService.reportProgress/completeExecution/failExecution`，避免双控制面；
+  - 响应只返回本批读写数量、累计数量、是否建议 progress/checkpoint/complete/fail、checkpoint 类型和低敏错误摘要，不返回真实行数据、SQL、连接串、凭据、字段值或 checkpoint 原始值；
+  - reader/writer 错误摘要会二次清洗，发现 JDBC URL、SQL、password、token、secret 等片段时隐藏细节；
+  - internal request/response 避免 Lombok `@Data` 默认 `toString()`，降低 checkpoint 起点、字段名、对象定位被误打日志的风险。
+- 当前边界：
+  - 该入口已经可以执行单批 read/write，但尚未由 data-sync 远程调用；
+  - 响应不返回 checkpoint 原始值，因此完整增量闭环还需要后续设计安全 checkpoint handoff，例如加密 envelope、服务端回调或专用 mTLS 端点；
+  - 当前仍以 JDBC 批处理为核心，不覆盖 Kafka CDC、文件、对象存储、REST API、MongoDB 等专用 runner；
+  - 当前 internal 鉴权仍是 Header 白名单 + SERVICE_ACCOUNT 的最小保护，生产环境应升级为 gateway HMAC、mTLS 或服务网格身份。
+- 收敛判断：
+  - data-sync 与 datasource-management 之间已经具备“计划侧 bridge”和“执行侧 run-once”两个端点的雏形；
+  - 下一步应在 data-sync 增加 run-once client 与执行服务，把 `claim -> bridgePlan -> datasource run-once -> progress/complete/fail` 串起来；
+  - 增量任务在接入前必须先确定 checkpoint 原始值的安全交接方案，避免为了闭环速度破坏低敏边界。
+
 ## 2026-06-29 追加落地进展：Data Sync Batch Runner Bridge Contract
 - 本阶段承接 `Data Sync Template Execution Contract`，继续把 data-sync 从“模板与 workerPlan 具备执行前契约”推进到“可以判断是否允许派发给最小批量执行器”。这一步仍然不直接执行 JDBC，也不把 datasource-management 的内部 Runner 直接拉进 data-sync，而是先补内部桥接计划，避免形成双控制面和跨模块强耦合。
 - 产品价值：
