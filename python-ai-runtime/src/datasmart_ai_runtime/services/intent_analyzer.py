@@ -94,6 +94,23 @@ class RuleBasedIntentAnalyzer:
             self._append_unique(domains, GovernanceDomain.PERMISSION_ADMIN)
             self._append_unique(risk_tags, IntentRiskTag.CROSS_SCOPE)
 
+        workspace_file_operation = self._workspace_file_operation(request, objective)
+        if workspace_file_operation == "READ":
+            self._append_unique(domains, GovernanceDomain.GENERAL_GOVERNANCE)
+            self._append_unique(candidate_tools, "workspace.file.read")
+            self._append_unique(risk_tags, IntentRiskTag.READ_ONLY)
+            if not self._has_workspace_file_path(request):
+                self._append_unique(missing_parameters, "workspaceFilePath")
+        elif workspace_file_operation == "WRITE":
+            self._append_unique(domains, GovernanceDomain.GENERAL_GOVERNANCE)
+            self._append_unique(candidate_tools, "workspace.file.write")
+            self._append_unique(risk_tags, IntentRiskTag.STATE_CHANGE)
+            self._append_unique(risk_tags, IntentRiskTag.APPROVAL_REQUIRED)
+            if not self._has_workspace_file_path(request):
+                self._append_unique(missing_parameters, "workspaceFilePath")
+            if not self._has_workspace_file_content_reference(request):
+                self._append_unique(missing_parameters, "workspaceFileContentRef")
+
         self._append_high_risk_tags(objective, request, risk_tags, missing_parameters)
 
         if not domains:
@@ -171,6 +188,55 @@ class RuleBasedIntentAnalyzer:
             "project_id",
         )
         return any(request.variables.get(field) not in (None, "", [], {}) for field in scope_fields)
+
+    def _workspace_file_operation(self, request: AgentRequest, objective: str) -> str | None:
+        """识别 workspace 文件读写意图。
+
+        这里把读和写分开，是为了让风险标签和后续审批策略更清楚：
+        - 读文件属于只读能力，但仍必须受 workspace 与路径白名单约束；
+        - 写文件会改变 workspace 资源，必须进入审批/确认链路。
+        """
+
+        operation = str(request.variables.get("fileOperation") or request.variables.get("file_operation") or "").upper()
+        if operation in {"READ", "READ_TEXT"}:
+            return "READ"
+        if operation in {"WRITE", "WRITE_TEXT", "CREATE", "OVERWRITE"}:
+            return "WRITE"
+        if request.variables.get("workspaceFileContent") is not None or request.variables.get("workspace_file_content") is not None:
+            return "WRITE"
+        if self._contains_any(
+            objective,
+            ("write file", "create file", "update file", "写文件", "创建文件", "更新文件", "保存到文件", "写入 workspace"),
+        ):
+            return "WRITE"
+        if self._contains_any(
+            objective,
+            ("read file", "读取文件", "查看文件", "打开文件", "读取 workspace", "查看 workspace", "readme", "文档文件"),
+        ):
+            return "READ"
+        return None
+
+    @staticmethod
+    def _has_workspace_file_path(request: AgentRequest) -> bool:
+        """判断请求是否提供了 workspace 相对路径。"""
+
+        fields = ("workspaceFilePath", "workspace_file_path", "relativePath", "relative_path", "filePath", "file_path")
+        return any(request.variables.get(field) not in (None, "", [], {}) for field in fields)
+
+    @staticmethod
+    def _has_workspace_file_content_reference(request: AgentRequest) -> bool:
+        """判断请求是否提供了写入内容或内容引用。
+
+        规划响应不会输出正文；这个判断只用于缺失参数提示。
+        """
+
+        fields = (
+            "workspaceFileContentRef",
+            "workspace_file_content_ref",
+            "workspaceFileContent",
+            "workspace_file_content",
+        )
+        return any(request.variables.get(field) not in (None, "", [], {}) for field in fields)
 
     def _append_high_risk_tags(
         self,

@@ -167,6 +167,18 @@ from datasmart_ai_runtime.services.tools.command_worker_lease import (
     CommandWorkerLeaseStore,
     InMemoryCommandWorkerLeaseStore,
 )
+from datasmart_ai_runtime.services.tools.workspace_file_tool import (
+    WORKSPACE_FILE_TOOL_PAYLOAD_POLICY,
+    WORKSPACE_FILE_TOOL_SCHEMA_VERSION,
+    WorkspaceFileOperation,
+    WorkspaceFileOperationResult,
+    WorkspaceFileOperationStatus,
+    WorkspaceFileReadRequest,
+    WorkspaceFileToolService,
+    WorkspaceFileToolSettings,
+    WorkspaceFileWriteRequest,
+)
+from datasmart_ai_runtime.services.tools.workspace_file_plan_builder import WorkspaceFileToolPlanBuilder
 
 __all__ = (
     "ToolActionIntakeBoundary",
@@ -279,4 +291,14 @@ __all__ = (
     "CommandWorkerLeaseState",
     "CommandWorkerLeaseStore",
     "InMemoryCommandWorkerLeaseStore",
+    "WORKSPACE_FILE_TOOL_PAYLOAD_POLICY",
+    "WORKSPACE_FILE_TOOL_SCHEMA_VERSION",
+    "WorkspaceFileOperation",
+    "WorkspaceFileOperationResult",
+    "WorkspaceFileOperationStatus",
+    "WorkspaceFileReadRequest",
+    "WorkspaceFileToolService",
+    "WorkspaceFileToolSettings",
+    "WorkspaceFileWriteRequest",
+    "WorkspaceFileToolPlanBuilder",
 )

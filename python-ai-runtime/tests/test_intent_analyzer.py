@@ -107,6 +107,44 @@ class RuleBasedIntentAnalyzerTest(unittest.TestCase):
         self.assertIn(IntentRiskTag.STATE_CHANGE, analysis.risk_tags)
         self.assertIn(IntentRiskTag.APPROVAL_REQUIRED, analysis.risk_tags)
 
+    def test_workspace_file_read_intent_targets_file_read_tool(self) -> None:
+        """读取 workspace 文件应进入只读文件工具候选，并提示缺失路径。"""
+
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="analyst-a",
+            objective="请读取 workspace 中的 README 文件并总结",
+        )
+        context_blocks = DefaultContextBuilder().build(request)
+
+        analysis = RuleBasedIntentAnalyzer().analyze(request, context_blocks)
+
+        self.assertIn(GovernanceDomain.GENERAL_GOVERNANCE, analysis.governance_domains)
+        self.assertIn("workspace.file.read", analysis.candidate_tools)
+        self.assertIn(IntentRiskTag.READ_ONLY, analysis.risk_tags)
+        self.assertIn("workspaceFilePath", analysis.missing_parameters)
+
+    def test_workspace_file_write_intent_requires_approval_and_content_reference(self) -> None:
+        """写 workspace 文件是状态变更，缺少内容引用时不能直接执行。"""
+
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="operator-a",
+            objective="请写文件保存治理报告",
+            variables={"workspaceFilePath": "outputs/report.md"},
+        )
+        context_blocks = DefaultContextBuilder().build(request)
+
+        analysis = RuleBasedIntentAnalyzer().analyze(request, context_blocks)
+
+        self.assertIn("workspace.file.write", analysis.candidate_tools)
+        self.assertIn(IntentRiskTag.STATE_CHANGE, analysis.risk_tags)
+        self.assertIn(IntentRiskTag.APPROVAL_REQUIRED, analysis.risk_tags)
+        self.assertNotIn("workspaceFilePath", analysis.missing_parameters)
+        self.assertIn("workspaceFileContentRef", analysis.missing_parameters)
+
 
 if __name__ == "__main__":
     unittest.main()

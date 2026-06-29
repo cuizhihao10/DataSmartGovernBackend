@@ -105,6 +105,75 @@ class ToolPlannerTest(unittest.TestCase):
         self.assertEqual("datasourceId", plan.parameter_validation.issues[0].parameter_name)
         self.assertEqual(ToolParameterIssueAction.CAN_FILL_FROM_CONTEXT, plan.parameter_validation.issues[0].action)
 
+    def test_workspace_file_read_plan_uses_digest_instead_of_raw_path(self) -> None:
+        """文件读取计划只能携带低敏路径摘要，不能把真实相对路径暴露给 `/agent/plans`。"""
+
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="analyst-a",
+            objective="请读取 workspace 里的 README 文件",
+            variables={"workspaceFilePath": "docs/private-note.md", "sessionId": "session-a"},
+        )
+
+        plans = ToolPlanner(default_tool_registry()).plan(request=request)
+
+        plan = next(plan for plan in plans if plan.tool_name == "workspace.file.read")
+        serialized = str(plan.arguments)
+        self.assertEqual(ToolExecutionMode.SYNC, plan.execution_mode)
+        self.assertFalse(plan.requires_human_approval)
+        self.assertIn("filePathRef", plan.arguments)
+        self.assertIn("filePathDigest", plan.arguments)
+        self.assertEqual("agent:workspace-file:read", next(tool for tool in default_tool_registry() if tool.name == "workspace.file.read").required_permissions[0])
+        self.assertNotIn("docs/private-note.md", serialized)
+        self.assertTrue(plan.parameter_validation.can_execute)
+        self.assertEqual((), plan.parameter_validation.issues)
+
+    def test_workspace_file_write_plan_requires_approval_and_hides_content(self) -> None:
+        """文件写入计划必须进入审批，并且只携带 contentRef，不携带正文。"""
+
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="operator-a",
+            objective="请创建文件保存治理报告",
+            variables={
+                "workspaceFilePath": "outputs/report.md",
+                "workspaceFileContent": "这里是不能进入计划响应的报告正文",
+                "sessionId": "session-a",
+            },
+        )
+
+        plans = ToolPlanner(default_tool_registry()).plan(request=request)
+
+        plan = next(plan for plan in plans if plan.tool_name == "workspace.file.write")
+        serialized = str(plan.arguments)
+        self.assertEqual(ToolExecutionMode.APPROVAL_REQUIRED, plan.execution_mode)
+        self.assertTrue(plan.requires_human_approval)
+        self.assertIn("contentRef", plan.arguments)
+        self.assertIn("contentByteCount", plan.arguments)
+        self.assertNotIn("outputs/report.md", serialized)
+        self.assertNotIn("报告正文", serialized)
+        self.assertTrue(plan.parameter_validation.can_execute)
+
+    def test_workspace_file_write_without_content_waits_for_content_reference(self) -> None:
+        """只说写文件但没有内容引用时，计划应保留但不能执行。"""
+
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="operator-a",
+            objective="请写文件到 workspace",
+            variables={"workspaceFilePath": "outputs/report.md"},
+        )
+
+        plans = ToolPlanner(default_tool_registry()).plan(request=request)
+
+        plan = next(plan for plan in plans if plan.tool_name == "workspace.file.write")
+        self.assertFalse(plan.parameter_validation.can_execute)
+        self.assertEqual("contentRef", plan.parameter_validation.issues[0].parameter_name)
+        self.assertEqual(ToolParameterIssueAction.CAN_FILL_FROM_CONTEXT, plan.parameter_validation.issues[0].action)
+
     def test_task_plan_carries_high_risk_intent_tags(self) -> None:
         request = AgentRequest(
             tenant_id="tenant-a",

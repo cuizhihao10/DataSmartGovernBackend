@@ -1,5 +1,30 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Agent Controlled Workspace File Tools
+- 本阶段承接 `Agent Capability Closure Readiness Gate`，从闭口门禁返回的 P0 hardBlockers 中优先选择 `tool.file-read-write` 转实。目标不是开放任意本机文件系统，而是先落一个 Codex/Claude Code 类 Agent 必备的“受控 workspace 文件读写”最小闭环。
+- 产品价值：
+  - 新增 `WorkspaceFileToolService`，支持 `read_text` 与 `write_text` 两类受控操作；
+  - 新增 `workspace.file.read`、`workspace.file.write` 默认工具定义，具备权限、风险、输入 schema、缓存策略和低敏字段说明；
+  - 新增 `WorkspaceFileToolPlanBuilder`，让规划器生成 `filePathRef/contentRef/pathDigest`，而不是把真实相对路径或写入正文放进 ToolPlan；
+  - `RuleBasedIntentAnalyzer` 能识别读取/写入 workspace 文件意图，并输出候选工具、风险标签和缺失参数；
+  - Agent 能力矩阵将 `tool.file-read-write` 从 `planned` 校准为 `partial_closed_loop`，闭口门禁会把它从 hard blocker 移到 operationalization gap。
+- 安全边界：
+  - 文件操作默认关闭，必须显式配置 workspace root allowlist；
+  - 只允许 workspace 内相对路径，拒绝绝对路径、URL、盘符、反斜杠逃逸、`..`、隐藏目录、凭据文件名和高风险后缀；
+  - 读写都受字节预算控制，读取正文只保存在内部 `content` 字段，`to_summary()` 不返回正文；
+  - 写入正文不会进入 `/agent/plans`，规划器只返回 `contentRef`、`contentByteCount` 和 digest；
+  - 摘要只返回 pathDigest、contentSha256、byteCount、truncated、artifactReference、issue/evidence code，不返回真实路径、文件正文、prompt、SQL、工具参数正文、凭据或内部 endpoint。
+- 验证：
+  - 定向 Python 测试通过：`python -m unittest python-ai-runtime.tests.test_workspace_file_tool python-ai-runtime.tests.test_tool_planner python-ai-runtime.tests.test_intent_analyzer python-ai-runtime.tests.test_agent_capability_matrix python-ai-runtime.tests.test_api_bootstrap`，共 47 个用例；
+  - Python Runtime 全量测试通过：`python -m unittest discover -s python-ai-runtime/tests`，共 544 个用例；
+  - Python 语法编译检查通过：`python -m compileall python-ai-runtime/src python-ai-runtime/tests`；
+  - 空白差异检查通过：`git diff --check`，仅出现 Windows LF/CRLF 换行提示，无空白错误；
+  - 行数检查：`config.py` 212 行，`config_tool_registry.py` 270 行，`tool_planner.py` 359 行，`workspace_file_tool.py` 368 行，`workspace_file_plan_builder.py` 161 行，均低于 500 行约束。
+- 收敛判断：
+  - `tool.file-read-write` 已具备 Python Runtime 内部受控执行、默认工具目录、意图识别、低敏规划和能力矩阵闭口口径；
+  - 该能力仍不是最终生产闭口，因为还缺 Java durable outbox/worker receipt、对象存储 artifact grant、DLP/恶意内容扫描、下载审计、TTL 和管理台恢复；
+  - 下一步不建议继续扩展任意文件系统能力，应把这条链路接入 Java command/tool durable runner，或者转向另一个 P0 hardBlocker：web-search、micro-compact、模型 retry/rate-limit/fallback。
+
 ## 2026-06-29 追加落地进展：Agent Capability Closure Readiness Gate
 - 本阶段承接 `Data Sync Receipt Outbox Retry Dead-Letter Closure` 后的整体收敛路线，切回 AI Agent 核心闭口清单。目标不是继续新增某个工具或某个模型字段，而是把用户明确要求的 tools、skills、memory、query engine、context、permission、sub-agent、sessions、command、hook、tech stack、LLM 等完整 Agent Host 能力，转换成可查询、可测试、可发布门禁化的闭口验收口径。
 - 产品价值：
