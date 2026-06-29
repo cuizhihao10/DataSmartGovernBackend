@@ -1,5 +1,34 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-29 追加落地进展：Data Sync Task-Management Receipt Delivery
+- 本阶段承接 `Data Sync Worker Loop Closure`，把 data-sync execution complete/fail 结果主动投递到 task-management 已有的 DataSync worker execution receipt 投影。目标是让“真实数据同步执行结果”进入全平台任务中心，而不是只停留在 data-sync 自己的 execution 表里。
+- 产品价值：
+  - 新增 `DataSyncTaskManagementReceiptProperties`，配置 task-management receipt 地址、超时、来源服务、服务账号角色和投递失败策略；
+  - 新增 data-sync 侧 `TaskManagementExecutionReceiptClient`、HTTP 实现和本地请求镜像，继续通过 JSON 契约解耦 task-management Java DTO；
+  - 新增 `DataSyncTaskManagementReceiptPublisher`，把 data-sync complete/failed 领域事实转换成 task-management receipt 请求；
+  - `SyncBatchRunOnceDispatchService` 在 complete/fail 回写后发布 receipt，让 `worker loop -> run-once dispatch -> data-sync lifecycle -> task-management projection` 形成闭环；
+  - `application.yml` 增加 `datasmart.data-sync.task-management-receipt` 配置说明，默认投递但不阻断 data-sync 主状态机。
+- 安全边界：
+  - receipt 请求只携带 syncTaskId、syncExecutionId、executorId、数量、完成/失败标记、checkpoint 可见性策略、低敏 errorCode 和 issueCode；
+  - 不携带字段映射正文、过滤条件、SQL、连接串、凭据、checkpoint 原始值、失败行、样本数据、prompt、模型输出或内部 endpoint；
+  - HTTP client 日志不打印 baseUrl、完整 URI、请求体、响应体或远端 message；
+  - task-management 暂不可用时默认只低敏告警，避免任务中心投影故障反向卡死 data-sync complete/fail。
+- 验证：
+  - 定向 data-sync 测试：
+    `mvn -pl data-sync -am "-Dtest=DataSyncTaskManagementReceiptPublisherTest,SyncBatchRunOnceDispatchServiceTest,DataSyncWorkerLoopServiceImplTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：12 个测试通过；
+  - data-sync 全量测试：
+    `mvn -pl data-sync -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：106 个测试通过；
+  - task-management receipt 对端测试：
+    `mvn -pl task-management -am "-Dtest=DataSyncWorkerExecutionReceiptServiceTest" "-Dsurefire.failIfNoSpecifiedTests=false" test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`
+  - 当前结果：5 个测试通过；
+  - 行数检查：`SyncBatchRunOnceDispatchService.java` 409 行，`DataSyncTaskManagementReceiptPublisher.java` 149 行，`HttpTaskManagementExecutionReceiptClient.java` 126 行，均低于 500 行约束。
+- 收敛判断：
+  - 当前已形成 `task-management outbox/receipt 投影 <- data-sync worker loop <- datasource-management run-once` 的最小跨模块执行闭环；
+  - 下一步不应继续在 data-sync 内新增更多局部字段，应优先做一次端到端联调脚本或轻量集成文档，确认 Keycloak、gateway、task-management、data-sync、datasource-management 的本地链路可按顺序启动验证；
+  - 更深层能力如 receipt retry/outbox、checkpoint handoff、多批循环、独立 worker 池属于后续增强，不应阻塞当前项目整体收敛。
+
 ## 2026-06-29 追加落地进展：Data Sync Worker Loop Closure
 - 本阶段承接 `Data Sync Run-Once Dispatch Closure`，把前一阶段已经完成的 `SyncBatchRunOnceDispatchService` 接入正式 worker loop。目标不是继续扩展更多连接器，而是让 data-sync 能从 QUEUED execution 开始，完成 `claim -> template -> run-once dispatch -> complete/fail` 的最小可执行闭环。
 - 产品价值：

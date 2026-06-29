@@ -49,7 +49,8 @@ class SyncBatchRunOnceDispatchServiceTest {
     void fullRunOnceShouldCallDatasourceAndCompleteExecutionWhenSourceExhausted() {
         FakeDatasourceRunOnceClient client = new FakeDatasourceRunOnceClient(completeResponse());
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
-        SyncBatchRunOnceDispatchService service = service(client, lifecycleSupport, properties(true));
+        DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
+        SyncBatchRunOnceDispatchService service = service(client, lifecycleSupport, properties(true), receiptPublisher);
 
         SyncExecution execution = execution("FULL");
         SyncBatchRunOnceDispatchResult result = service.dispatchRunOnce(execution, task(), template("FULL", directMapping()),
@@ -72,6 +73,7 @@ class SyncBatchRunOnceDispatchServiceTest {
         assertThat(completeCaptor.getValue().getExecutorId()).isEqualTo("worker-1");
         assertThat(completeCaptor.getValue().getRecordsRead()).isEqualTo(12L);
         assertThat(completeCaptor.getValue().getRecordsWritten()).isEqualTo(10L);
+        verify(receiptPublisher).publishComplete(eq(task()), eq(execution), any(SyncActorContext.class), any(DatasourceRunOnceResponse.class));
         verify(lifecycleSupport, never()).failExecution(any(), any(), any(), any());
     }
 
@@ -82,7 +84,8 @@ class SyncBatchRunOnceDispatchServiceTest {
     void incrementalModeShouldFailBeforeRemoteCallUntilCheckpointHandoffExists() {
         FakeDatasourceRunOnceClient client = new FakeDatasourceRunOnceClient(completeResponse());
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
-        SyncBatchRunOnceDispatchService service = service(client, lifecycleSupport, properties(true));
+        DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
+        SyncBatchRunOnceDispatchService service = service(client, lifecycleSupport, properties(true), receiptPublisher);
         SyncExecution execution = execution("INCREMENTAL_TIME");
 
         SyncBatchRunOnceDispatchResult result = service.dispatchRunOnce(execution, task(),
@@ -93,6 +96,8 @@ class SyncBatchRunOnceDispatchServiceTest {
         assertThat(result.issueCodes()).contains("CHECKPOINT_HANDOFF_NOT_IMPLEMENTED");
         assertThat(client.calls()).isZero();
         assertFail(lifecycleSupport, execution, "CHECKPOINT_HANDOFF_NOT_IMPLEMENTED");
+        verify(receiptPublisher).publishFailed(eq(task()), eq(execution), any(SyncActorContext.class),
+                eq("CHECKPOINT_HANDOFF_NOT_IMPLEMENTED"), any());
     }
 
     /**
@@ -102,7 +107,8 @@ class SyncBatchRunOnceDispatchServiceTest {
     void fieldRenameShouldFailBeforeRemoteCallUntilTransformLayerExists() {
         FakeDatasourceRunOnceClient client = new FakeDatasourceRunOnceClient(completeResponse());
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
-        SyncBatchRunOnceDispatchService service = service(client, lifecycleSupport, properties(true));
+        DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
+        SyncBatchRunOnceDispatchService service = service(client, lifecycleSupport, properties(true), receiptPublisher);
         SyncExecution execution = execution("FULL");
 
         SyncBatchRunOnceDispatchResult result = service.dispatchRunOnce(execution, task(),
@@ -113,6 +119,8 @@ class SyncBatchRunOnceDispatchServiceTest {
         assertThat(result.issueCodes()).contains("FIELD_RENAME_TRANSFORM_NOT_SUPPORTED_BY_MINIMAL_BRIDGE");
         assertThat(client.calls()).isZero();
         assertFail(lifecycleSupport, execution, "BRIDGE_PLAN_BLOCKED");
+        verify(receiptPublisher).publishFailed(eq(task()), eq(execution), any(SyncActorContext.class),
+                eq("BRIDGE_PLAN_BLOCKED"), any());
     }
 
     /**
@@ -125,7 +133,8 @@ class SyncBatchRunOnceDispatchServiceTest {
     void moreBatchesShouldFailClosedUntilOuterLoopExists() {
         FakeDatasourceRunOnceClient client = new FakeDatasourceRunOnceClient(moreBatchesResponse());
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
-        SyncBatchRunOnceDispatchService service = service(client, lifecycleSupport, properties(true));
+        DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
+        SyncBatchRunOnceDispatchService service = service(client, lifecycleSupport, properties(true), receiptPublisher);
         SyncExecution execution = execution("FULL");
 
         SyncBatchRunOnceDispatchResult result = service.dispatchRunOnce(execution, task(), template("FULL", directMapping()),
@@ -136,16 +145,20 @@ class SyncBatchRunOnceDispatchServiceTest {
         assertThat(result.remoteRunStatus()).isEqualTo("BATCH_WRITTEN_MORE_REMAIN");
         assertThat(client.calls()).isEqualTo(1);
         assertFail(lifecycleSupport, execution, "OUTER_BATCH_LOOP_NOT_IMPLEMENTED");
+        verify(receiptPublisher).publishFailed(eq(task()), eq(execution), any(SyncActorContext.class),
+                eq("OUTER_BATCH_LOOP_NOT_IMPLEMENTED"), any());
     }
 
     private SyncBatchRunOnceDispatchService service(FakeDatasourceRunOnceClient client,
                                                    SyncExecutionLifecycleSupport lifecycleSupport,
-                                                   DataSyncDatasourceRunOnceProperties properties) {
+                                                   DataSyncDatasourceRunOnceProperties properties,
+                                                   DataSyncTaskManagementReceiptPublisher receiptPublisher) {
         return new SyncBatchRunOnceDispatchService(
                 new SyncBatchRunnerBridgePlanSupport(new SyncFieldMappingExecutionContractSupport(new ObjectMapper())),
                 client,
                 properties,
-                lifecycleSupport);
+                lifecycleSupport,
+                receiptPublisher);
     }
 
     private DataSyncDatasourceRunOnceProperties properties(boolean enabled) {

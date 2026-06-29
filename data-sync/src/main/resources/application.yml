@@ -123,6 +123,29 @@ datasmart:
       # 当前 data-sync 外层多批循环和避让重试尚未实现，因此默认不让 run-once 自行重试。
       # 后续接入 worker loop、退避策略和幂等写入后，再统一纳入 retryPolicy。
       default-max-retry-count: 0
+    task-management-receipt:
+      # 是否把 data-sync execution 的完成/失败低敏事实投递到 task-management。
+      # 该能力用于把“下游真实执行结果”纳入平台任务中心、Agent timeline、运维诊断和告警闭环。
+      enabled: true
+      # receipt 投递失败是否阻断 data-sync complete/fail 主流程。
+      # 默认 false：task-management receipt 是投影与诊断面，短暂不可用不应反向卡死 data-sync 状态机。
+      # 如果客户要求强一致任务中心，可以设置为 true，但必须配合重试、死信和告警，否则下游任务中心故障会放大为同步执行故障。
+      delivery-required: false
+      # task-management 本地默认端口是 8081。
+      # 生产环境可替换为 Nacos 服务名、内部 gateway、service mesh 虚拟服务或受控内网域名。
+      # 不要在日志、API 响应、runtime event 或 receipt 正文中回显该地址。
+      base-url: http://localhost:8081
+      # task-management 记录 DataSync worker execution receipt 的 internal 路由。
+      record-path: /internal/data-sync-worker-execution-receipts/record
+      # data-sync 作为 receipt 来源服务写入的服务名 Header 和请求字段。
+      source-service: data-sync
+      # 内部调用使用的服务账号角色。
+      actor-role: SERVICE_ACCOUNT
+      # receipt 是轻量投影写入，连接建立不应阻塞 worker 租约。
+      connect-timeout-ms: 1000
+      # task-management 写入 receipt 的读取超时。
+      # 如果后续改为 Kafka/outbox 投递，这里会被消息投递超时替代。
+      read-timeout-ms: 2000
     worker-loop:
       # 是否启用 data-sync 内嵌 worker loop 定时调度。
       # worker loop 会真实认领 QUEUED execution，并可能触发 datasource-management 读取源端、写入目标端，

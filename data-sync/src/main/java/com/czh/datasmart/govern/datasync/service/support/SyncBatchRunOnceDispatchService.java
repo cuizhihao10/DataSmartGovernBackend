@@ -56,6 +56,7 @@ public class SyncBatchRunOnceDispatchService {
     private final DatasourceRunOnceClient datasourceRunOnceClient;
     private final DataSyncDatasourceRunOnceProperties properties;
     private final SyncExecutionLifecycleSupport lifecycleSupport;
+    private final DataSyncTaskManagementReceiptPublisher receiptPublisher;
 
     /**
      * 生成 bridge plan、调用 datasource-management run-once，并把结果回写到 data-sync 生命周期。
@@ -330,6 +331,7 @@ public class SyncBatchRunOnceDispatchService {
         request.setCheckpointRef(null);
         request.setIdempotencyKey("datasource-run-once-complete-" + execution.getId());
         lifecycleSupport.completeExecution(task, execution, request, actorContext);
+        receiptPublisher.publishComplete(task, execution, actorContext, response);
     }
 
     private void failExecution(SyncTask task,
@@ -350,6 +352,7 @@ public class SyncBatchRunOnceDispatchService {
         request.setRetryable(retryable);
         request.setIdempotencyKey("datasource-run-once-fail-" + execution.getId() + "-" + errorCode);
         lifecycleSupport.failExecution(task, execution, request, actorContext);
+        receiptPublisher.publishFailed(task, execution, actorContext, errorCode, List.of(errorCode));
     }
 
     private List<String> readCapabilities(SyncBatchRunnerBridgePlan bridgePlan) {
