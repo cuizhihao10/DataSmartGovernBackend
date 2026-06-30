@@ -126,6 +126,16 @@ $env:DATASMART_MYSQL_PASSWORD = "<请填写本地开发库密码>"
 
 如果本机有 `mysql.exe` 但 MySQL 服务没有启动，脚本会输出 `MySQL 连接` 失败；这表示当前只能完成 migration 文件静态治理，暂时不能读取真实数据库历史。
 
+常见低敏错误码说明：
+
+- `ACCESS_DENIED`：MySQL 服务可达，但用户名或密码不匹配。请检查 `-MySqlUser`、`DATASMART_MYSQL_USER`、`DATASMART_MYSQL_PASSWORD` 或本地 root 密码。
+- `UNKNOWN_DATABASE`：MySQL 服务和凭据可用，但 `datasmart_govern` 数据库不存在。请先创建开发库，或通过 `-DatabaseName` 指定已有库。
+- `CONNECTION_FAILED`：端口不可达、服务未启动、连接被防火墙阻断，或应该改用 Docker 模式。
+- `HOST_UNRESOLVED`：`-MySqlHost` 主机名无法解析。
+- `MYSQL_CLI_ARGUMENT_ERROR`：本机 `mysql.exe` 参数兼容性或版本存在问题。
+
+这些错误码只用于排障分类，脚本不会打印 MySQL 密码、SQL 正文或原始错误正文。
+
 如果确认这是可变更的本地开发库，并且希望执行尚未登记的 migration，再显式追加 `-Apply`：
 
 ```powershell

@@ -96,6 +96,54 @@ function ConvertTo-SqlLiteral {
     return "'" + ($Value -replace "'", "''") + "'"
 }
 
+function Get-MySqlFailureCode {
+    param([string]$ErrorText)
+
+    <#
+        将 mysql client 的原始失败信息折叠成低敏 issueCode。
+
+        为什么不直接输出原始错误：
+        - mysql CLI 的错误有时会带用户名、主机、数据库名、路径或客户端参数；
+        - 迁移治理脚本可能会被复制到 CI、截图或 issue 中，因此默认只输出分类后的原因码；
+        - 分类后的 issueCode 足以指导下一步排障，同时不会暴露密码、SQL 正文或业务数据。
+    #>
+    if ([string]::IsNullOrWhiteSpace($ErrorText)) {
+        return "MYSQL_UNKNOWN_ERROR"
+    }
+    if ($ErrorText -match "MYSQL_ERROR_CODE=(ACCESS_DENIED|UNKNOWN_DATABASE|CONNECTION_FAILED|HOST_UNRESOLVED|MYSQL_CLI_ARGUMENT_ERROR|MYSQL_COMMAND_FAILED|MYSQL_UNKNOWN_ERROR)") {
+        return $Matches[1]
+    }
+    if ($ErrorText -match "ERROR 1045|Access denied") {
+        return "ACCESS_DENIED"
+    }
+    if ($ErrorText -match "ERROR 1049|Unknown database") {
+        return "UNKNOWN_DATABASE"
+    }
+    if ($ErrorText -match "ERROR 2003|Can't connect|No connection could be made|actively refused") {
+        return "CONNECTION_FAILED"
+    }
+    if ($ErrorText -match "ERROR 2005|Unknown MySQL server host") {
+        return "HOST_UNRESOLVED"
+    }
+    if ($ErrorText -match "Usage:|unknown option|ambiguous option") {
+        return "MYSQL_CLI_ARGUMENT_ERROR"
+    }
+    return "MYSQL_COMMAND_FAILED"
+}
+
+function Get-MySqlFailureGuidance {
+    param([string]$FailureCode)
+
+    switch ($FailureCode) {
+        "ACCESS_DENIED" { return "请检查 MySqlUser、DATASMART_MYSQL_PASSWORD 或本地 MySQL root 密码；脚本未打印密码" }
+        "UNKNOWN_DATABASE" { return "请先创建 datasmart_govern 数据库，或通过 -DatabaseName 指定已有开发库" }
+        "CONNECTION_FAILED" { return "请确认 MySQL 服务正在运行、端口未被防火墙阻断，或改用 -ConnectionMode Docker" }
+        "HOST_UNRESOLVED" { return "请检查 -MySqlHost 参数是否正确" }
+        "MYSQL_CLI_ARGUMENT_ERROR" { return "请检查本机 mysql.exe 版本和脚本连接参数；脚本已避免输出 SQL 正文" }
+        default { return "请检查 MySQL 服务、凭据、数据库名和客户端版本；脚本未输出原始错误正文" }
+    }
+}
+
 function Get-MigrationRecords {
     <#
         读取并校验迁移文件清单。
@@ -198,7 +246,7 @@ function Invoke-MySql {
         $dockerArgs += $DatabaseName
         $output = $Sql | docker @dockerArgs 2>&1
     } else {
-        $mysqlArgs = @("-h$MySqlHost", "-P$MySqlPort", "-u$MySqlUser", "--batch", "--raw")
+        $mysqlArgs = @("--host=$MySqlHost", "--port=$MySqlPort", "--user=$MySqlUser", "--batch", "--raw")
         if ($SkipColumnNames) {
             $mysqlArgs += "--skip-column-names"
         }
@@ -212,7 +260,8 @@ function Invoke-MySql {
         }
     }
     if ($LASTEXITCODE -ne 0) {
-        throw "mysql command failed: $($output -join ' ')"
+        $failureCode = Get-MySqlFailureCode (($output | ForEach-Object { $_.ToString() }) -join " ")
+        throw "MYSQL_ERROR_CODE=$failureCode"
     }
     return $output
 }
@@ -235,7 +284,8 @@ function Test-MySqlConnectionReady {
         Add-Check -Name "MySQL 连接" -Status "PASS" -Detail "已连接 $DatabaseName；未打印密码或查询正文"
         return $true
     } catch {
-        Add-Check -Name "MySQL 连接" -Status "FAIL" -Detail "无法连接本地 MySQL；请检查连接模式、容器或本地服务、数据库名、DATASMART_MYSQL_USER 和 DATASMART_MYSQL_PASSWORD"
+        $failureCode = Get-MySqlFailureCode $_.Exception.Message
+        Add-Check -Name "MySQL 连接" -Status "FAIL" -Detail "无法连接本地 MySQL，issueCode=$failureCode；$(Get-MySqlFailureGuidance $failureCode)"
         return $false
     }
 }
@@ -329,7 +379,8 @@ function Invoke-MigrationFile {
         Add-Check -Name "执行迁移: $($Record.FileName)" -Status "PASS" -Detail "已执行并登记，elapsedMs=$($stopwatch.ElapsedMilliseconds)"
     } catch {
         $stopwatch.Stop()
-        Add-Check -Name "执行迁移: $($Record.FileName)" -Status "FAIL" -Detail "执行失败；未输出 SQL 正文，请查看 MySQL 日志或单独检查该 migration"
+        $failureCode = Get-MySqlFailureCode $_.Exception.Message
+        Add-Check -Name "执行迁移: $($Record.FileName)" -Status "FAIL" -Detail "执行失败，issueCode=$failureCode；未输出 SQL 正文，请查看 MySQL 日志或单独检查该 migration"
         throw
     }
 }

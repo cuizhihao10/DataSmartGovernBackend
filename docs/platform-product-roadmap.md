@@ -19,7 +19,7 @@
   - PowerShell AST 解析通过；
   - 静态迁移治理通过：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\local-mysql-migration-governance.ps1 -StaticOnly`，`PASS=53, WARN=0, FAIL=0`；
   - 当前 52 个 migration SQL 文件和 1 个静态模式检查均通过，没有命名、空文件或重复 migrationId 问题；
-  - 在当前机器 Docker CLI 不存在但 `mysql.exe` 存在的情况下，`-ConnectionMode LocalCli` 能进入本机 CLI 连接路径，并正确报告 MySQL 服务未连接为 `FAIL=1`，没有误判为脚本解析失败。
+  - 在当前机器 Docker CLI 不存在但 `mysql.exe` 存在的情况下，`-ConnectionMode LocalCli` 能进入本机 CLI 连接路径，并正确报告本机 MySQL 凭据不匹配为 `issueCode=ACCESS_DENIED`、`FAIL=1`，没有打印密码或原始错误正文。
 - 收敛判断：
   - 这一步不替代最终生产迁移系统，但能显著降低真实本地 E2E 启动时“代码已更新、数据库旧数据卷没迁移”的失败概率；
   - 下一步仍应进入真实启动联调，优先使用迁移治理脚本确认 schema 后，再运行认证 gateway smoke；
