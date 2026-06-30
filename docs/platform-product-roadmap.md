@@ -1,5 +1,25 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-30 追加落地进展：Python AI Runtime SQLite FTS Memory Index Closure
+- 本阶段继续按“整体闭环收敛”推进，优先关闭 Agent P0 hardBlocker 中的 `memory.sqlite-fts`，没有继续扩展新的记忆类型、模型算法或业务模块字段。目标是让长期记忆在 SQL 事实源、Chroma-compatible 语义索引之外，补齐一条本地/轻量部署可用的全文检索二级索引通道。
+- 产品价值：
+  - 新增 `SQLiteFtsAgentMemorySecondaryIndex`，实现 FTS5 schema 初始化、正式记忆幂等 upsert、过期清理、低敏 diagnostics 和 FTS 检索；
+  - FTS 命中前先按 tenant/project/session/memoryNamespace 做结构化过滤，命中后再回查正式 `AgentMemoryStore` 并二次校验范围，避免索引残留造成跨 workspace 泄漏；
+  - `StoreBackedAgentMemoryRetriever` 可把 `KEYWORD` 二级索引替换为 SQLite FTS adapter，证明检索主链路不再只能依赖 store-backed 全量候选窗口；
+  - Agent 能力矩阵将 `memory.sqlite-fts` 从 `PLANNED` 校准为 `PARTIAL_CLOSED_LOOP`，项目 P0 hard blocker 进一步收敛。
+- 安全边界：
+  - FTS 适配器只索引已经审批并落成的正式低敏记忆摘要，不直接索引工具原始输出、SQL、样本数据、prompt 或模型输出；
+  - 检索 attributes 只返回实现名、payloadPolicy、queryTermCount、candidateLimit、candidateCount 等低敏字段，不返回 snippet、记忆正文、真实 query、SQL 或内部路径；
+  - 本地 SQLite 适合学习、单机和轻量客户现场，生产仍需要加密落盘、后台同步 worker、索引压缩/重建、查询超时和健康指标。
+- 验证：
+  - 定向测试通过：`python -m unittest python-ai-runtime\tests\test_memory_sqlite_fts_adapter.py python-ai-runtime\tests\test_agent_capability_matrix.py`，共 14 个用例；
+  - Python 编译检查通过：`python -m compileall python-ai-runtime\src python-ai-runtime\tests`；
+  - Python Runtime 全量单测通过：`python -m unittest discover -s python-ai-runtime\tests`，共 569 个用例；
+  - 新增适配器文件 444 行，低于 500 行约束。
+- 收敛判断：
+  - `memory.sqlite-fts` 不再是 P0 hard blocker，但仍属于生产化加固项；
+  - 下一步不建议继续扩展记忆字段或搜索算法，而应优先关闭剩余 P0 hard blocker：`skill.create-publish`，随后进入最小 E2E 联调与最终闭口验收。
+
 ## 2026-06-30 追加落地进展：Python AI Runtime Mature Inference Optimization Diagnostics
 - 本阶段继续按“整体闭环收敛”推进，关闭 Agent P0 中 `llm.inference-optimization` 的 planned 缺口，但没有把项目发散到模型训练、微调、后训练或底层推理内核研发。目标是让模型层的“推理优化”收敛为成熟 serving stack 的低敏诊断控制面：vLLM/SGLang/LiteLLM/OpenAI-compatible 路由都能被解释还缺哪些 TTFT、TPS、queue、batching、prefix/KV cache 和 GPU/KV pressure 指标。
 - 产品价值：

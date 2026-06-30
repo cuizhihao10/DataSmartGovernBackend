@@ -177,6 +177,25 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
         self.assertNotIn("api_key", serialized)
         self.assertNotIn("endpoint", inference["currentEvidence"].lower())
 
+    def test_sqlite_fts_memory_reflects_partial_closed_loop(self) -> None:
+        """SQLite FTS 已形成本地全文索引闭环，但仍需要生产化同步和运维补强。"""
+
+        diagnostics = default_agent_capability_matrix_service().diagnostics()
+        memory_domain = next(domain for domain in diagnostics["domains"] if domain["domainId"] == "memory")
+        sqlite_fts = next(
+            item
+            for item in memory_domain["subCapabilities"]
+            if item["capabilityId"] == "memory.sqlite-fts"
+        )
+        serialized = str(sqlite_fts).lower()
+
+        self.assertEqual(AgentCapabilityStatus.PARTIAL_CLOSED_LOOP.value, sqlite_fts["status"])
+        self.assertIn("SQLiteFtsAgentMemorySecondaryIndex", sqlite_fts["currentEvidence"])
+        self.assertIn("StoreBackedAgentMemoryRetriever", sqlite_fts["currentEvidence"])
+        self.assertIn("materialization receipt", sqlite_fts["nextAction"])
+        self.assertNotIn("prompt", serialized)
+        self.assertNotIn("sample data", serialized)
+
     def test_closure_readiness_groups_p0_gaps_for_final_project_convergence(self) -> None:
         """闭口门禁应把 P0 缺口分层，帮助项目停止发散并优先关闭硬阻塞。"""
 
@@ -195,6 +214,7 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
         self.assertGreater(readiness["p0OperationalizationGapCount"], 0)
         self.assertNotIn("tool.file-read-write", hard_blocker_ids)
         self.assertNotIn("llm.inference-optimization", hard_blocker_ids)
+        self.assertNotIn("memory.sqlite-fts", hard_blocker_ids)
         self.assertIn("llm.inference-optimization", control_plane_gap_ids)
         self.assertIn("tool.exec-run-program", control_plane_gap_ids)
         self.assertIn("tool.file-read-write", operationalization_gap_ids)

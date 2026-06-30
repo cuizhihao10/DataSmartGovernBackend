@@ -1,5 +1,20 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-30 落地补充：long-term memory should use hybrid retrieval with Host-owned boundaries
+
+- 本轮趋势校准：
+  - Codex、Claude Code、OpenClaw 类 Agent 的长期记忆能力不应只依赖单一向量库；真实产品通常需要短期会话状态、长期语义记忆、事件/情节记忆、profile、全文检索和向量/图谱混合召回共同工作；
+  - SQLite FTS5 适合作为本地学习、轻量客户现场和开发者离线联调的全文检索底座，但不能被误判为大规模生产检索服务；
+  - 记忆索引必须由 Host 控制范围过滤、过期清理、低敏返回和正式 store 回查，不能让模型、前端或工具直接消费索引正文。
+- 本轮落地到代码的能力：
+  - 新增 `SQLiteFtsAgentMemorySecondaryIndex`，补齐 `KEYWORD` 二级索引真实 FTS5 adapter；
+  - 支持 FTS schema 初始化、幂等 upsert、过期清理、低敏 diagnostics 和 `StoreBackedAgentMemoryRetriever` 融合；
+  - Agent 能力矩阵把 `memory.sqlite-fts` 从 planned 推进到 partial closed-loop。
+- 产品判断：
+  - 这一步关闭的是“没有本地全文索引 adapter”的 P0 硬缺口，不代表长期记忆生产闭环全部完成；
+  - 后续只建议补后台同步 worker、索引压缩/重建、查询超时、加密落盘、健康指标和 Chroma/pgvector hybrid retrieval；
+  - 当前更高优先级是关闭剩余 P0 hard blocker `skill.create-publish`，再进入 Keycloak/gateway/permission-admin/agent-runtime/Python Runtime 的最小 E2E 闭环。
+
 ## 2026-06-30 落地补充：inference optimization should be serving-observable, not kernel-in-repo
 
 - 本轮趋势校准：

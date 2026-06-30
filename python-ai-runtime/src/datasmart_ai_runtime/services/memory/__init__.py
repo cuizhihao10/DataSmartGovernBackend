@@ -145,6 +145,13 @@ from datasmart_ai_runtime.services.memory.memory_chroma_adapter import (
     ChromaSemanticMemorySyncAdapter,
     DeterministicHashEmbeddingProvider,
 )
+from datasmart_ai_runtime.services.memory.memory_sqlite_fts_adapter import (
+    SQLiteFtsAgentMemorySecondaryIndex,
+    SQLiteFtsMemoryIndexSettings,
+    SQLiteFtsMemoryIndexUpsertResult,
+    sqlite_fts5_available,
+    sqlite_fts_memory_index_diagnostics,
+)
 from datasmart_ai_runtime.services.memory.memory_sql_store import SqlAgentMemoryStore
 from datasmart_ai_runtime.services.memory.memory_write_candidate_factory import AgentMemoryWriteCandidateFactory
 from datasmart_ai_runtime.services.memory.memory_write_candidate_store import (
@@ -236,6 +243,9 @@ __all__ = [
     "ChromaSemanticMemoryAdapterSettings",
     "ChromaSemanticMemorySyncAdapter",
     "DeterministicHashEmbeddingProvider",
+    "SQLiteFtsAgentMemorySecondaryIndex",
+    "SQLiteFtsMemoryIndexSettings",
+    "SQLiteFtsMemoryIndexUpsertResult",
     "AgentMemoryWorkspaceBinding",
     "AgentMemoryWorkspaceSupport",
     "AgentMemoryWriteCandidateFactory",
@@ -251,6 +261,8 @@ __all__ = [
     "InMemoryAgentMemoryStore",
     "InMemoryAgentMemoryWriteCandidateStore",
     "SqlAgentMemoryWriteCandidateStore",
+    "sqlite_fts5_available",
+    "sqlite_fts_memory_index_diagnostics",
     "SqlAgentMemoryStore",
     "SqlAgentMemoryMaterializationReceiptStore",
     "SqlAgentMemoryMaterializationLeaseStore",
