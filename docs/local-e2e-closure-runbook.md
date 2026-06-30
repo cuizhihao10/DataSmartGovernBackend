@@ -12,10 +12,11 @@
 - `task-management`：任务中心，负责 DataSync worker command outbox 和 execution receipt 投影。
 - `data-sync`：数据同步控制面，负责模板、execution、worker loop、run-once dispatch 和 receipt 投递。
 - `datasource-management`：数据源与 connector runtime，负责受控单批 run-once 读写执行。
+- `python-ai-runtime`：Agent Host 运行时，负责能力闭口诊断、Skill Manifest 消费、模型网关诊断和受控规划入口。
 
 增强闭环依赖暂不作为本 runbook 的硬性通过条件：
 
-- `agent-runtime` 和 `python-ai-runtime`：用于 Agent plans、tools、skills、memory、sessions、runtime events 等 AI 闭环。
+- `agent-runtime`：用于 Agent plans、tools、skills、memory、sessions、runtime events 等 Java 控制面闭环。
 - `Chroma`：用于长期语义记忆、RAG、语义检索和后续模型上下文增强。
 - `Neo4j`：用于血缘、资产关系、GraphRAG 和治理知识图谱。
 - `MinIO`：用于报告、工件、大对象、导出文件和后续 artifact 读取授权。
@@ -40,7 +41,7 @@
 - Maven。建议所有命令附带本地仓库参数，避免污染全局 Maven 缓存。
 - Docker Desktop 或兼容 Docker daemon。
 - PowerShell 7 或 Windows PowerShell。当前 smoke 脚本使用 PowerShell 编写。
-- 可用端口：`8080`、`8081`、`8082`、`8085`、`8086`、`8091`、`18080`、`3306`、`6379`、`8848`、`9092`、`9090`、`3000`。
+- 可用端口：`8080`、`8081`、`8082`、`8085`、`8086`、`8090`、`8091`、`18080`、`3306`、`6379`、`8848`、`9092`、`9090`、`3000`。
 
 建议固定使用的 Maven 参数：
 
@@ -114,6 +115,26 @@ mvn -pl gateway -am spring-boot:run "-Dmaven.repo.local=D:\Desktop\DataSmart-Gov
 mvn -pl agent-runtime -am spring-boot:run "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"
 ```
 
+### 4.4 启动 Python AI Runtime
+
+Python Runtime 默认不强绑定 FastAPI 依赖，便于离线单测和学习。如果要验证 gateway 到 Python 的 Agent Host 诊断链路，需要先安装可选 API 依赖，并在 `8090` 端口启动：
+
+```powershell
+$env:PYTHONPATH = "$PWD\python-ai-runtime\src"
+python -m pip install -e ".\python-ai-runtime[api]"
+python -m uvicorn "datasmart_ai_runtime.api:create_app" --factory --host 0.0.0.0 --port 8090
+```
+
+启动后可以直连这些低敏诊断接口：
+
+```text
+GET http://localhost:8090/agent/capabilities/closure-readiness
+GET http://localhost:8090/agent/skills/publication/diagnostics
+GET http://localhost:8090/agent/models/inference-optimization/diagnostics
+```
+
+这些接口只用于闭口检查和运行时诊断，不会执行工具、不创建任务、不读取源端数据、不写 worker outbox，也不会返回 prompt、SQL、工具参数、样本数据、模型输出、token、内部 endpoint 或长期记忆正文。
+
 启动顺序说明：
 
 - `permission-admin` 应先于 `gateway` 启动，否则 gateway 的强授权模式会无法访问授权中心。
@@ -180,6 +201,9 @@ mvn -pl agent-runtime -am spring-boot:run "-Dmaven.repo.local=D:\Desktop\DataSma
 | Data Sync health | `http://localhost:8086/actuator/health` | 数据同步控制面进程存活 |
 | Data Sync capabilities | `http://localhost:8086/sync-connectors/capabilities` | 连接器能力目录可查询 |
 | Agent Runtime health | `http://localhost:8091/actuator/health` | Agent Java 控制面进程存活 |
+| Python Runtime closure readiness | `http://localhost:8090/agent/capabilities/closure-readiness` | Agent Host 能力闭口门禁可查询 |
+| Python Runtime Skill Manifest diagnostics | `http://localhost:8090/agent/skills/publication/diagnostics` | Python 是否看见 Java Skill Manifest、缓存和 fallback 状态可查询 |
+| Python Runtime inference optimization diagnostics | `http://localhost:8090/agent/models/inference-optimization/diagnostics` | 模型推理优化控制面缺口可查询 |
 | Prometheus ready | `http://localhost:9090/-/ready` | 指标系统可接收查询 |
 | Grafana health | `http://localhost:3000/api/health` | 看板系统可访问 |
 

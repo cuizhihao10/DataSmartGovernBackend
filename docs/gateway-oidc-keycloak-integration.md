@@ -1,5 +1,28 @@
 # Gateway OIDC / Keycloak / 企业 IdP 接入说明
 
+## 2026-06-30 补充：Python Runtime 低敏诊断路由收口
+
+本阶段在既有 OIDC/Keycloak 认证中心和 `/api/internal/agent-runtime/**` 服务账号入口基础上，继续把 Python AI Runtime 的低敏诊断能力收口到统一 gateway。此前 gateway 只把 `/api/agent/plans` 和 `/api/agent/events/ws` 显式转给 Python Runtime，其它 `/api/agent/**` 会落入 Java `agent-runtime` 通配路由。这样会导致 `/api/agent/skills/publication/refresh`、能力闭口、模型诊断等 Python 接口在文档上存在，但从统一入口并不能稳定命中。
+
+本次新增的 gateway 路由只覆盖低敏诊断与闭口检查：
+
+- `/api/agent/capabilities/**`
+- `/api/agent/skills/publication/diagnostics`
+- `/api/agent/skills/publication/refresh`
+- `/api/agent/models/provider-health/diagnostics`
+- `/api/agent/models/capabilities/diagnostics`
+- `/api/agent/models/inference-optimization/diagnostics`
+- `/api/agent/security/gateway-signature/diagnostics`
+- `/api/agent/tool-actions/checkpoints/diagnostics`
+- `/api/agent/platform/convergence/diagnostics`
+
+设计边界如下：
+
+- 这些路径必须放在通用 `/api/agent/** -> agent-runtime` 路由之前，避免被 Java 控制面通配吞掉。
+- 这些接口默认仍受 gateway OIDC 和 permission-admin 路由授权保护；gateway 只负责统一入口和身份上下文，不替代授权中心。
+- POST `/api/agent/skills/publication/refresh` 只刷新 Python 进程内 Manifest 诊断缓存，属于运维诊断动作；它不创建业务对象、不触发工具执行、不写 worker outbox，也不绕过 permission-admin、HITL、tool readiness 或 runtime protection。
+- 响应只允许包含低敏状态、原因码、计数、指纹存在性、策略版本和建议动作；不得返回 token、完整 JWT claim、prompt、SQL、工具参数、样本数据、模型输出、内部 endpoint、artifact 正文或长期记忆正文。
+
 ## 2026-06-30 补充：内部服务账号端点保护
 
 本阶段在既有 OIDC/Keycloak 认证中心基础上，继续收敛服务间调用边界：`/api/internal/agent-runtime/**` 已作为 gateway 统一入口转发到 `agent-runtime` 的 `/internal/agent-runtime/**`，用于 worker lease、worker receipt、payload materialization 等机器协议调用。该入口不属于普通用户会话 API，必须先通过 gateway 本地内部端点守卫，再进入 permission-admin 做策略判定与审计。

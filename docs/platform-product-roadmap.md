@@ -1,5 +1,26 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-30 追加落地进展：Gateway Python Runtime Diagnostics Route Closure
+- 本阶段继续按“整体闭环收敛”推进，没有新增 Agent 能力、模型能力或工具执行器，而是修正统一 gateway 入口与 Python Runtime 低敏诊断接口之间的路由缺口。
+- 产品价值：
+  - gateway 新增 `python-ai-runtime-runtime-diagnostics` 路由，显式把能力闭口、Skill Manifest 诊断/刷新、模型 Provider 健康、模型能力适配、推理优化、gateway 签名、checkpoint 和平台收敛诊断转发到 Python Runtime；
+  - 该路由放在通用 `/api/agent/** -> agent-runtime` 之前，避免 Python Runtime 诊断接口被 Java `agent-runtime` 通配路由吞掉；
+  - `/gateway/contracts` 同步展示 Python Runtime 规划入口、Python Runtime 诊断入口、Java agent-runtime 用户控制面和内部服务账号入口，便于本地联调和学习；
+  - 本地 smoke 脚本新增 Python Runtime `8090` 端口、闭口 readiness、Skill Manifest diagnostics 和 inference optimization diagnostics 探针；
+  - `docs/local-e2e-closure-runbook.md` 增加 Python Runtime 启动方式和低敏探针清单。
+- 安全边界：
+  - 这些 gateway 路由仍受 OIDC/JWT 和 permission-admin 路由授权保护；gateway 只做统一入口与可信上下文收口，不替代授权中心；
+  - POST `/api/agent/skills/publication/refresh` 只刷新 Python 进程内 Manifest 诊断缓存，不创建业务对象、不执行工具、不写 worker outbox；
+  - 所有诊断响应仍不得返回 token、完整 JWT claim、prompt、SQL、工具参数、样本数据、模型输出、内部 endpoint、artifact 正文或长期记忆正文。
+- 验证：
+  - 本地 smoke 脚本跳过 Docker/HTTP 模式通过：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\local-e2e-smoke-check.ps1 -SkipDocker -SkipHttp`，静态检查 14 项通过；
+  - gateway Maven 测试通过：`mvn -pl gateway -am test "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"`，共 66 个用例；
+  - Java 契约控制器 108 行，仍低于 500 行约束。
+- 收敛判断：
+  - 这一步把“Python Runtime 有接口”推进为“统一 gateway 能正确暴露低敏诊断入口”；
+  - 下一步应继续朝真实本地 E2E 启动验证推进，优先检查 Keycloak token、gateway 授权、permission-admin、agent-runtime 与 Python Runtime 是否能同时启动并通过 smoke；
+  - 不建议继续扩展更多诊断端点，除非它直接服务于最终闭口验收。
+
 ## 2026-06-30 追加落地进展：Python AI Runtime Skill Manifest Refresh Closure
 - 本阶段继续按“整体闭环收敛”推进，没有继续扩展 Skill DSL、prompt 模板、工具执行器或新的 Agent 能力，而是把 Java `agent-runtime` 已经提供的 scoped Skill Publication Manifest 接入 Python Runtime 的低频刷新控制面。
 - 产品价值：

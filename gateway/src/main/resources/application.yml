@@ -74,6 +74,22 @@ spring:
             - Path=/api/agent/plans
           filters:
             - RewritePath=/api/agent/plans, /agent/plans
+        - id: python-ai-runtime-runtime-diagnostics
+          # Python Runtime 低敏诊断与闭口检查入口。
+          #
+          # 为什么要在通用 /api/agent/** -> Java agent-runtime 之前显式声明：
+          # 1. `/api/agent/**` 同时承载 Java Agent 控制面和 Python Agent Host 运行时诊断；
+          # 2. 如果不先匹配这些 Python 路径，Skill Manifest 刷新、能力闭口、模型 Provider 健康等接口会被误转到
+          #    Java `agent-runtime`，导致本地 E2E 看起来“gateway 可访问”，但实际 AI Runtime 诊断链路没有闭合；
+          # 3. 这些接口只返回低敏控制面摘要，不执行工具、不创建任务、不读取业务数据、不返回 prompt/SQL/模型输出；
+          # 4. POST `/api/agent/skills/publication/refresh` 只刷新 Python 进程内 Manifest 诊断缓存，仍然不绕过
+          #    OIDC、permission-admin、HITL、tool readiness 或 runtime protection。
+          uri: ${DATASMART_PYTHON_AI_RUNTIME_URI:http://localhost:8090}
+          predicates:
+            - Path=/api/agent/capabilities/**,/api/agent/skills/publication/diagnostics,/api/agent/skills/publication/refresh,/api/agent/models/provider-health/diagnostics,/api/agent/models/capabilities/diagnostics,/api/agent/models/inference-optimization/diagnostics,/api/agent/security/gateway-signature/diagnostics,/api/agent/tool-actions/checkpoints/diagnostics,/api/agent/platform/convergence/diagnostics
+          filters:
+            # Python Runtime 内部统一使用 /agent/** 作为运行时能力域；外部仍然挂在 /api/agent/**，由 gateway 负责收口。
+            - RewritePath=/api/agent/(?<segment>.*), /agent/$\{segment}
         - id: agent-runtime-internal
           # agent-runtime 的内部服务账号入口。
           # 这些路径承载 worker lease、worker receipt、payload materialization 等机器协议，
@@ -846,6 +862,64 @@ datasmart:
           description: Agent Runtime 实时事件 WebSocket 订阅入口，用于前端订阅 run/session 进度、断线续传、ack 和 heartbeat。
           method-actions:
             GET: SUBSCRIBE
+
+        # Python Runtime 低敏诊断与闭口检查入口。
+        # 这些路径虽然同属于 /api/agent/**，但目标服务是 Python AI Runtime，而不是 Java agent-runtime：
+        # - capabilities/closure-readiness 用于上线前确认 Agent Host 能力是否闭口；
+        # - Skill Publication diagnostics/refresh 用于确认 Python 是否看见 Java scoped Manifest；
+        # - model diagnostics 用于查看 Provider 健康、模型能力适配和成熟推理服务指标缺口；
+        # - gateway signature/checkpoint/platform convergence 诊断用于排查信任链、恢复点和整个平台收敛状态。
+        # 所有接口都只允许返回低敏摘要，不允许输出 token、完整 claim、prompt、SQL、工具参数、样本数据、
+        # 模型输出、内部 endpoint、artifact 正文或长期记忆正文。POST refresh 也只归为 DIAGNOSE，因为它
+        # 刷新的是运行时诊断缓存，不创建业务对象、不触发工具执行、不写 worker outbox。
+        - path-pattern: /api/agent/capabilities/**
+          resource-type: AI_RUNTIME
+          default-action: DIAGNOSE
+          description: Python Runtime Agent 能力矩阵与闭口门禁诊断入口，用于上线前检查 tools、skills、memory、query engine、context、permission、sessions、LLM 等能力是否闭合。
+          method-actions:
+            GET: DIAGNOSE
+
+        - path-pattern: /api/agent/skills/publication/diagnostics
+          resource-type: AI_RUNTIME
+          default-action: DIAGNOSE
+          description: Python Runtime Skill Publication Manifest 诊断入口，用于查看当前是否看见 Java scoped Manifest、指纹和 READY/非 READY 统计。
+          method-actions:
+            GET: DIAGNOSE
+
+        - path-pattern: /api/agent/skills/publication/refresh
+          resource-type: AI_RUNTIME
+          default-action: DIAGNOSE
+          description: Python Runtime Skill Publication Manifest 受控刷新入口，只刷新低敏诊断缓存并遵守 TTL、冷却和远端错误重试策略。
+          method-actions:
+            POST: DIAGNOSE
+
+        - path-pattern: /api/agent/models/*/diagnostics
+          resource-type: AI_RUNTIME
+          default-action: DIAGNOSE
+          description: Python Runtime 模型 Provider 健康、模型能力适配和推理优化诊断入口，用于上线前确认模型层控制面缺口。
+          method-actions:
+            GET: DIAGNOSE
+
+        - path-pattern: /api/agent/security/gateway-signature/diagnostics
+          resource-type: AI_RUNTIME
+          default-action: DIAGNOSE
+          description: Python Runtime gateway HMAC 签名验真诊断入口，用于确认可信 Header 是否只能由统一 gateway 注入。
+          method-actions:
+            GET: DIAGNOSE
+
+        - path-pattern: /api/agent/tool-actions/checkpoints/diagnostics
+          resource-type: AI_RUNTIME
+          default-action: DIAGNOSE
+          description: Python Runtime 工具动作 checkpoint store 诊断入口，用于确认恢复点存储实现、TTL 和容量边界。
+          method-actions:
+            GET: DIAGNOSE
+
+        - path-pattern: /api/agent/platform/convergence/diagnostics
+          resource-type: AI_RUNTIME
+          default-action: DIAGNOSE
+          description: Python Runtime 平台收敛诊断入口，用于从宏观模块维度查看 gateway、permission、agent-runtime、Python Runtime 和数据治理微服务闭口状态。
+          method-actions:
+            GET: DIAGNOSE
 
         # Agent 工具执行事件 outbox 是 Java 控制面与实时事件流之间的可靠投递缓冲区。
         # 查询、诊断、重新入队、忽略和备注的风险等级不同，不能全部退化为普通 GET/POST 语义：

@@ -1,5 +1,21 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-30 落地补充：Agent Host diagnostics must be reachable through the governed gateway
+
+- 本轮趋势校准：
+  - Codex、Claude Code、OpenClaw 类 Agent Host 不只需要内部诊断接口，还需要这些诊断接口能从统一 gateway、OIDC 身份和授权策略链路下被访问。否则诊断能力只适合开发者直连，不适合企业运维、审计和上线前验收。
+  - Java Agent 控制面和 Python Agent Host 共用 `/api/agent/**` 产品入口时，路由顺序本身就是安全和可运维边界：Python 低敏诊断必须在 Java 通配路由之前显式声明，Java 的 durable action、runtime events 和 sessions 仍继续归 Java agent-runtime。
+  - 诊断路由不应变成旁路执行入口。Skill Manifest refresh、模型健康、能力闭口、gateway 签名和 checkpoint 诊断都只能返回低敏摘要，不能触发工具执行或泄露内部 payload。
+- 本轮落地到代码的能力：
+  - gateway 新增 `python-ai-runtime-runtime-diagnostics` 路由，覆盖 capabilities、Skill Manifest diagnostics/refresh、model diagnostics、gateway-signature、checkpoint 和 platform convergence 诊断；
+  - gateway 路由授权元数据为这些入口补充 `AI_RUNTIME + DIAGNOSE` 语义；
+  - `/gateway/contracts` 同步展示 Python Runtime 规划入口、Python Runtime 诊断入口、Java agent-runtime 控制面和内部服务账号入口；
+  - 本地 smoke 脚本新增 Python Runtime 直连探针，runbook 增加 Python Runtime 启动命令与诊断端点。
+- 产品判断：
+  - 这一步不是新增 Agent 功能，而是把已有能力接入统一入口和验收脚本；
+  - 下一步更应该做一次真实本地 E2E 启动验证，确认 Keycloak、gateway、permission-admin、agent-runtime、Python Runtime 能同时通过只读 smoke；
+  - 不建议继续无限追加 diagnostics 路由，除非它直接服务于最终商业化闭口门禁。
+
 ## 2026-06-30 落地补充：Skill Manifest refresh should be controlled, scoped, and low-frequency
 
 - 本轮趋势校准：

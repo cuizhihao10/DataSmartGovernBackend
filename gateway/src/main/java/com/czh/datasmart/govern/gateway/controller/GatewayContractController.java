@@ -72,6 +72,38 @@ public class GatewayContractController {
                         "数据质量模块入口，负责质量规则管理、规则执行和报告查询"
                 ),
                 new GatewayRouteContract(
+                        "python-ai-runtime",
+                        "/api/agent/plans",
+                        "DATASMART_PYTHON_AI_RUNTIME_URI",
+                        "/agent/plans",
+                        "必须先经过 OIDC 身份解析、平台上下文清理和 gateway -> Python Runtime 签名策略；生产应启用 HMAC 验签",
+                        "Python Agent Host 规划入口，负责模型路由、上下文构建、工具计划、Skill 准入、记忆检索和低敏事件摘要"
+                ),
+                new GatewayRouteContract(
+                        "python-ai-runtime",
+                        "/api/agent/capabilities/**、/api/agent/skills/publication/*、/api/agent/models/*/diagnostics",
+                        "DATASMART_PYTHON_AI_RUNTIME_URI",
+                        "/agent/**",
+                        "只允许低敏诊断与闭口检查；GET/POST 刷新均需经过 gateway 认证和 permission-admin 路由授权",
+                        "Python Runtime 诊断入口，覆盖能力闭口、Skill Manifest 缓存、模型 Provider 健康、推理优化和平台收敛状态"
+                ),
+                new GatewayRouteContract(
+                        "agent-runtime",
+                        "/api/agent/**",
+                        "lb://agent-runtime",
+                        "/agent-runtime/**",
+                        "普通 Agent Java 控制面入口；具体运行事件、工具、会话、Skill 生命周期等动作由 permission-admin 细分授权",
+                        "Java Agent 控制面入口，负责运行事件投影、工具审计、Skill 发布、会话/Run 和 durable action 证据"
+                ),
+                new GatewayRouteContract(
+                        "agent-runtime-internal",
+                        "/api/internal/agent-runtime/**",
+                        "lb://agent-runtime",
+                        "/internal/agent-runtime/**",
+                        "内部机器协议入口，默认要求 SERVICE_ACCOUNT 角色和 SERVICE_ACCOUNT 主体类型",
+                        "服务账号专用入口，承载 worker lease、worker receipt、payload materialization、sandbox admission 等机器协议"
+                ),
+                new GatewayRouteContract(
                         "observability",
                         "/api/observability/**",
                         "lb://observability",
