@@ -23,6 +23,20 @@
 - POST `/api/agent/skills/publication/refresh` 只刷新 Python 进程内 Manifest 诊断缓存，属于运维诊断动作；它不创建业务对象、不触发工具执行、不写 worker outbox，也不绕过 permission-admin、HITL、tool readiness 或 runtime protection。
 - 响应只允许包含低敏状态、原因码、计数、指纹存在性、策略版本和建议动作；不得返回 token、完整 JWT claim、prompt、SQL、工具参数、样本数据、模型输出、内部 endpoint、artifact 正文或长期记忆正文。
 
+本地闭环验证可以使用 smoke 脚本的认证网关探针：
+
+```powershell
+.\scripts\local-e2e-smoke-check.ps1 -CheckServiceAccountToken -CheckAgentGatewayDiagnostics
+```
+
+该命令会先用本地 `sync-service` 样例服务账号验证 `/auth/session` 的低敏身份映射，再携带 Bearer token 访问 gateway 下的 `/api/agent/capabilities/closure-readiness`、`/api/agent/skills/publication/diagnostics` 和 `/api/agent/models/inference-optimization/diagnostics`。脚本只判断状态码，不打印 token、完整 claim、诊断响应正文或 Python Runtime 下游错误正文。
+
+排障时可以按失败状态区分边界：
+
+- `401/403` 通常说明 OIDC claim、audience、gateway 资源服务器配置或 permission-admin 路由策略不一致。
+- `502/503/timeout` 通常说明 gateway 下游不可达、路由顺序漂移、Python Runtime 未启动或 `8090` 地址配置不一致。
+- `/auth/session` 成功但 Agent 诊断失败，说明认证中心基本可用，应优先检查授权策略、route rewrite 和 Python Runtime 下游链路，而不是继续怀疑 token 签发。
+
 ## 2026-06-30 补充：内部服务账号端点保护
 
 本阶段在既有 OIDC/Keycloak 认证中心基础上，继续收敛服务间调用边界：`/api/internal/agent-runtime/**` 已作为 gateway 统一入口转发到 `agent-runtime` 的 `/internal/agent-runtime/**`，用于 worker lease、worker receipt、payload materialization 等机器协议调用。该入口不属于普通用户会话 API，必须先通过 gateway 本地内部端点守卫，再进入 permission-admin 做策略判定与审计。

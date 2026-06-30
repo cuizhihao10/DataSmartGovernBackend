@@ -1,5 +1,26 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-30 追加落地进展：Authenticated Gateway Agent Diagnostics Smoke Closure
+- 本阶段继续按“整体闭环收敛”推进，没有新增 Agent 能力、模型能力、工具执行器或业务写入链路，而是把上一阶段 gateway 到 Python Runtime 的低敏诊断路由补成可通过认证入口验证的 smoke 探针。
+- 产品价值：
+  - `scripts/local-e2e-smoke-check.ps1` 新增 `-CheckAgentGatewayDiagnostics` 开关，用本地 `sync-service` 样例服务账号获取 Bearer token 后，通过 gateway 调用 Agent Host 低敏诊断入口；
+  - 新探针覆盖 `/api/agent/capabilities/closure-readiness`、`/api/agent/skills/publication/diagnostics` 和 `/api/agent/models/inference-optimization/diagnostics`，用于验证 `Keycloak -> gateway OIDC -> permission-admin route authorization -> gateway rewrite -> Python Runtime` 的真实入口链路；
+  - 服务账号 token 获取逻辑被抽成 `Get-ServiceAccountAccessToken`，避免 `/auth/session` 探针和 Agent 诊断探针重复实现敏感凭据处理；
+  - runbook 和 OIDC 文档补充了认证网关诊断探针的使用方式、故障边界和安全约束。
+- 安全边界：
+  - 该探针默认关闭，只有显式传入 `-CheckAgentGatewayDiagnostics` 才会获取 token 和访问 gateway Agent 诊断入口；
+  - 脚本只执行 GET 诊断请求，不调用工具执行、任务创建、worker loop、datasource run-once 或任何 POST 业务接口；
+  - 脚本不打印 token、refresh token、完整 JWT claim、诊断响应正文、prompt、SQL、工具参数、样本数据、模型输出、内部 endpoint 或长期记忆正文；
+  - `sync-service + password grant` 只作为本地开发 smoke 样例，生产仍应使用 OIDC client credentials、企业 IdP 托管服务账号、mTLS/service mesh 和 Secret Manager。
+- 验证：
+  - 本地 smoke 脚本跳过 Docker/HTTP 模式通过：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\local-e2e-smoke-check.ps1 -SkipDocker -SkipHttp`，`PASS=14, WARN=18, FAIL=0`；
+  - 带新开关的参数解析验证通过：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\local-e2e-smoke-check.ps1 -SkipDocker -SkipHttp -CheckServiceAccountToken -CheckAgentGatewayDiagnostics`，`PASS=14, WARN=18, FAIL=0`；
+  - 本批只修改 PowerShell smoke 与文档，没有 Java/Python 运行时代码变更，因此未重复执行 Maven/Python 全量测试。
+- 收敛判断：
+  - 这一步把“gateway 有路由”推进为“本地验收脚本可以按认证入口验证路由”，更接近最终闭口验收；
+  - 下一步不建议继续扩展诊断字段，而应进入真实启动联调：Keycloak、permission-admin、gateway、Python Runtime 和必要 Java 微服务同时运行后，执行不带 `-SkipHttp` 的认证 smoke；
+  - 如果真实联调失败，优先修 route policy、服务启动、schema 迁移或下游地址，不再通过堆叠新 Agent 功能掩盖闭环缺口。
+
 ## 2026-06-30 追加落地进展：Gateway Python Runtime Diagnostics Route Closure
 - 本阶段继续按“整体闭环收敛”推进，没有新增 Agent 能力、模型能力或工具执行器，而是修正统一 gateway 入口与 Python Runtime 低敏诊断接口之间的路由缺口。
 - 产品价值：

@@ -1,5 +1,21 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-30 落地补充：Agent diagnostics need authenticated smoke verification, not only routes
+
+- 本轮趋势校准：
+  - Codex、Claude Code、OpenClaw 类 Agent Host 的企业落地不能只停留在“诊断接口存在”或“gateway 配了路由”；真正可上线的链路需要能用企业身份、授权策略和统一入口做可复现 smoke 验收。
+  - Agent Host 的 diagnostics、readiness、Skill Manifest cache、inference optimization 等接口属于控制面可观测能力，不应绕过 OIDC、permission-admin 或 gateway route policy；否则现场排障和安全审计会出现“开发者直连能看，生产入口不可用”的断裂。
+  - smoke 探针也必须低敏：只检查状态码和低敏身份映射，不打印 token、完整 claim、诊断正文、prompt、SQL、工具参数、样本数据、模型输出或内部 endpoint。
+- 本轮落地到代码的能力：
+  - 本地 smoke 脚本新增 `-CheckAgentGatewayDiagnostics`，可携带本地服务账号 token 访问 gateway 下的 Agent Host 低敏诊断入口；
+  - 新探针覆盖 closure readiness、Skill Manifest diagnostics 和 inference optimization diagnostics，帮助区分 OIDC/授权失败与 gateway 下游不可达；
+  - 服务账号 token 获取被抽为统一函数，`/auth/session` 和 Agent 诊断探针复用同一套敏感处理边界；
+  - runbook 与 OIDC 文档补充了认证网关 smoke 的命令、通过含义和 401/403、502/503、timeout 的排障方向。
+- 产品判断：
+  - 这一步不是新增 Agent 能力，而是把 Agent Host 诊断纳入企业入口验收；
+  - 下一步应进行真实本地 E2E 启动验证，确认 Keycloak、gateway、permission-admin、Python Runtime 与必要 Java 微服务同时通过认证 smoke；
+  - 如果继续模型层或 Agent 层工作，应优先补真实 provider 指标回灌、token budget、rate-limit、retry、cache 和工具执行闭环的验收点，而不是继续创建无法被统一入口验证的新接口。
+
 ## 2026-06-30 落地补充：Agent Host diagnostics must be reachable through the governed gateway
 
 - 本轮趋势校准：

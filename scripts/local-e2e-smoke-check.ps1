@@ -11,17 +11,23 @@
     4. 如需验证本地 Keycloak 样例服务账号是否能被 gateway 解析为 SERVICE_ACCOUNT，
        可传入 -CheckServiceAccountToken。脚本只调用 Keycloak token endpoint 与 gateway /auth/session，
        不会把 token 打印到终端，也不会触发任何业务写入或 worker 执行动作。
+    5. 如需进一步验证“认证后的统一 gateway 入口 -> Python AI Runtime 低敏诊断接口”链路，
+       可传入 -CheckAgentGatewayDiagnostics。该探针会复用本地样例服务账号获取 Bearer token，
+       只调用 GET 诊断端点，不读取响应正文、不打印 token、不触发工具执行或数据同步。
 
     安全边界：
     - 不打印 access token、refresh token、client secret、数据库密码、SQL、样本数据或内部请求正文。
     - 不执行 POST /sync-workers/run-once，避免无意触发真实数据搬运。
     - 不执行数据库迁移，只提示迁移文件是否存在；是否应用迁移由 runbook 中的人工步骤控制。
+    - Gateway Agent 诊断探针只验证 OIDC、permission-admin 路由授权和 gateway 转发是否贯通，
+      不把 Python Runtime 的诊断响应正文输出到终端，避免未来响应字段扩展时误泄露敏感内容。
 #>
 param(
     [switch]$Strict,
     [switch]$SkipDocker,
     [switch]$SkipHttp,
     [switch]$CheckServiceAccountToken,
+    [switch]$CheckAgentGatewayDiagnostics,
     [int]$TimeoutSeconds = 3,
     [string]$GatewayBaseUrl = "http://localhost:8080",
     [string]$TaskManagementBaseUrl = "http://localhost:8081",
@@ -169,6 +175,35 @@ function Test-DockerContainers {
     }
 }
 
+function Get-ServiceAccountAccessToken {
+    <#
+        获取本地 Keycloak 样例服务账号 access token。
+
+        设计说明：
+        - 当前 smoke 脚本只在开发环境使用仓库内置 realm 样例账号，目的是验证 OIDC/JWT
+          到 gateway 平台身份映射的真实链路，而不是在生产环境复用 password grant。
+        - 该函数只把 token 作为内存中的临时变量返回给调用方，调用方必须在 finally 中清空引用；
+          任何日志、异常说明和检查结果都不得打印 token、refresh token、完整 JWT claim 或密码。
+        - 生产环境服务间调用应替换为 OIDC client credentials、企业 IdP 托管服务账号、
+          mTLS/service mesh 身份或云 IAM，并把 client secret 放入 Secret Manager。
+    #>
+    $tokenResponse = Invoke-RestMethod -Method Post `
+        -Uri "$KeycloakBaseUrl/realms/datasmart/protocol/openid-connect/token" `
+        -ContentType "application/x-www-form-urlencoded" `
+        -TimeoutSec $TimeoutSeconds `
+        -Body @{
+            grant_type = "password"
+            client_id = $ServiceAccountClientId
+            username = $ServiceAccountUsername
+            password = $ServiceAccountPassword
+        }
+    $accessToken = $tokenResponse.access_token
+    if ([string]::IsNullOrWhiteSpace($accessToken)) {
+        throw "Keycloak 返回成功但没有 access_token"
+    }
+    return $accessToken
+}
+
 function Invoke-ServiceAccountTokenProbe {
     if ($SkipHttp) {
         Add-Check -Name "服务账号 OIDC 身份探针" -Status "WARN" -Detail "已通过 -SkipHttp 跳过"
@@ -181,22 +216,7 @@ function Invoke-ServiceAccountTokenProbe {
 
     $accessToken = $null
     try {
-        $tokenResponse = Invoke-RestMethod -Method Post `
-            -Uri "$KeycloakBaseUrl/realms/datasmart/protocol/openid-connect/token" `
-            -ContentType "application/x-www-form-urlencoded" `
-            -TimeoutSec $TimeoutSeconds `
-            -Body @{
-                grant_type = "password"
-                client_id = $ServiceAccountClientId
-                username = $ServiceAccountUsername
-                password = $ServiceAccountPassword
-            }
-        $accessToken = $tokenResponse.access_token
-        if ([string]::IsNullOrWhiteSpace($accessToken)) {
-            Add-Check -Name "服务账号 OIDC 身份探针" -Status "FAIL" -Detail "Keycloak 返回成功但没有 access_token"
-            return
-        }
-
+        $accessToken = Get-ServiceAccountAccessToken
         $sessionResponse = Invoke-RestMethod -Method Get `
             -Uri "$GatewayBaseUrl/auth/session" `
             -TimeoutSec $TimeoutSeconds `
@@ -235,6 +255,97 @@ function Invoke-ServiceAccountTokenProbe {
             Add-Check -Name "服务账号 OIDC 身份探针" -Status "FAIL" -Detail "HTTP $statusCode；请确认 Keycloak、gateway 和 OIDC issuer 配置已启动并一致"
         } else {
             Add-Check -Name "服务账号 OIDC 身份探针" -Status "FAIL" -Detail "无法完成 token 获取或 /auth/session 调用；未输出 token、密码或响应正文"
+        }
+    } finally {
+        $accessToken = $null
+    }
+}
+
+function Invoke-AgentGatewayDiagnosticsProbe {
+    <#
+        验证认证后的 gateway 是否能到达 Python AI Runtime 低敏诊断入口。
+
+        为什么要单独做这个探针：
+        - 直连 `http://localhost:8090/agent/...` 只能证明 Python Runtime 自身启动了，
+          不能证明生产入口路径中必须经过的 OIDC、permission-admin、gateway route rewrite
+          和下游转发全部贯通。
+        - 这些诊断接口属于“闭环可观测入口”，不是业务执行入口；因此脚本只允许 GET，
+          只检查 HTTP 状态码，不解析也不打印响应正文。
+        - 如果返回 401/403，优先排查 Keycloak claim、audience、gateway OIDC 配置和
+          permission-admin 路由策略；如果返回 502/503/timeout，优先排查 gateway 路由顺序、
+          Python Runtime 8090 启动状态和服务发现地址。
+    #>
+    if ($SkipHttp) {
+        Add-Check -Name "Gateway Agent 诊断路由探针" -Status "WARN" -Detail "已通过 -SkipHttp 跳过"
+        return
+    }
+    if (-not $CheckAgentGatewayDiagnostics) {
+        Add-Check -Name "Gateway Agent 诊断路由探针" -Status "WARN" -Detail "默认不获取 token 验证 /api/agent 诊断转发；如需验证，请追加 -CheckAgentGatewayDiagnostics"
+        return
+    }
+
+    $accessToken = $null
+    try {
+        $accessToken = Get-ServiceAccountAccessToken
+    } catch {
+        Add-Check -Name "Gateway Agent 诊断路由认证准备" -Status "FAIL" -Detail "无法从 Keycloak 获取本地样例服务账号 token；未输出 token、密码或响应正文"
+        return
+    }
+
+    try {
+        $diagnosticEndpoints = @(
+            @{
+                Name = "Gateway Agent closure readiness"
+                Path = "/api/agent/capabilities/closure-readiness"
+                Meaning = "统一 gateway 能以认证身份访问 Agent Host 能力闭口诊断"
+            },
+            @{
+                Name = "Gateway Agent Skill Manifest diagnostics"
+                Path = "/api/agent/skills/publication/diagnostics"
+                Meaning = "统一 gateway 能以认证身份访问 Skill Manifest 缓存与刷新诊断"
+            },
+            @{
+                Name = "Gateway Agent inference optimization diagnostics"
+                Path = "/api/agent/models/inference-optimization/diagnostics"
+                Meaning = "统一 gateway 能以认证身份访问模型推理优化控制面诊断"
+            }
+        )
+
+        foreach ($endpoint in $diagnosticEndpoints) {
+            $url = "$GatewayBaseUrl$($endpoint.Path)"
+            try {
+                $response = Invoke-WebRequest -UseBasicParsing -Method GET `
+                    -Uri $url `
+                    -TimeoutSec $TimeoutSeconds `
+                    -Headers @{
+                        Authorization = "Bearer $accessToken"
+                        "X-DataSmart-Trace-Id" = "local-smoke-agent-diagnostics"
+                    }
+                $statusCode = [int]$response.StatusCode
+                if ($statusCode -eq 200) {
+                    Add-Check -Name $endpoint.Name -Status "PASS" -Detail "HTTP 200；$($endpoint.Meaning)"
+                } else {
+                    Add-Check -Name $endpoint.Name -Status "FAIL" -Detail "HTTP $statusCode；期望 HTTP 200，未输出诊断响应正文"
+                }
+            } catch {
+                $statusCode = $null
+                if ($_.Exception.Response -ne $null) {
+                    try {
+                        $statusCode = [int]$_.Exception.Response.StatusCode
+                    } catch {
+                        $statusCode = $null
+                    }
+                }
+                if ($statusCode -eq 401 -or $statusCode -eq 403) {
+                    Add-Check -Name $endpoint.Name -Status "FAIL" -Detail "HTTP $statusCode；认证或授权未通过，请检查 Keycloak claim、audience、gateway OIDC 和 permission-admin 路由策略"
+                } elseif ($statusCode -eq 502 -or $statusCode -eq 503) {
+                    Add-Check -Name $endpoint.Name -Status "FAIL" -Detail "HTTP $statusCode；gateway 无法到达 Python Runtime，请检查路由顺序、8090 端口和服务地址"
+                } elseif ($statusCode -ne $null) {
+                    Add-Check -Name $endpoint.Name -Status "FAIL" -Detail "HTTP $statusCode；期望 HTTP 200，未输出诊断响应正文"
+                } else {
+                    Add-Check -Name $endpoint.Name -Status "FAIL" -Detail "无法访问 $url；请确认 gateway、permission-admin、Keycloak 和 Python Runtime 均已启动"
+                }
+            }
         }
     } finally {
         $accessToken = $null
@@ -317,6 +428,7 @@ Invoke-HttpProbe -Name "Python AI Runtime inference optimization diagnostics" -U
 Invoke-HttpProbe -Name "Prometheus ready" -Url "$PrometheusBaseUrl/-/ready"
 Invoke-HttpProbe -Name "Grafana health" -Url "$GrafanaBaseUrl/api/health"
 Invoke-ServiceAccountTokenProbe
+Invoke-AgentGatewayDiagnosticsProbe
 
 $passed = ($script:Checks | Where-Object { $_.Status -eq "PASS" }).Count
 $warned = ($script:Checks | Where-Object { $_.Status -eq "WARN" }).Count
