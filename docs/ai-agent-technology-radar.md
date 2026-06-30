@@ -1,5 +1,21 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-30 落地补充：inference optimization should be serving-observable, not kernel-in-repo
+
+- 本轮趋势校准：
+  - Codex、Claude Code、OpenClaw 类 Agent Host 越来越依赖长上下文、工具调用、流式反馈和多轮恢复，因此模型层性能不能只看“模型名称是否先进”，还要看 serving stack 是否能解释 TTFT、TPS、queue time、cache hit rate、batching、fallback 和 token budget；
+  - 成熟路线是使用 vLLM、SGLang、LiteLLM、OpenAI-compatible enterprise gateway 或托管 Provider，把 prefix/KV cache、continuous batching、parallel serving、限流和健康诊断纳入 Host 控制面；
+  - DataSmart 当前阶段不应在业务仓库内做模型训练、微调、后训练、CUDA kernel 或 KV cache 调度器研发，否则会拖慢平台闭环并扩大不可验证范围。
+- 本轮落地到代码的能力：
+  - 新增 `ModelInferenceOptimizationDiagnosticsService`，把 vLLM/SGLang/LiteLLM/OpenAI-compatible 的低敏 serving profile 和指标缺口固化为诊断服务；
+  - 新增 `/agent/models/inference-optimization/diagnostics` 与 `/api/agent/models/inference-optimization/diagnostics`；
+  - 新增 `ModelInferenceServingMetricsSnapshot`，为 Prometheus/vLLM/SGLang/LiteLLM/企业模型网关指标回灌预留合同；
+  - Agent 能力矩阵将 `llm.inference-optimization` 从 planned 推进到 control-plane-ready。
+- 产品判断：
+  - 这一步关闭的是“推理优化没有控制面合同”的缺口，不是完成真实 GPU 压测；
+  - 后续如果继续模型层，只做指标回灌、benchmark/eval、精确 tokenizer、分布式限流、租户套餐和灰度报告；
+  - 当前更推荐先关闭剩余 P0 hard blocker，再进入 Keycloak/gateway/permission-admin/agent-runtime/Python Runtime 的最小 E2E 联调。
+
 ## 2026-06-30 落地补充：web search must be provider-governed, citation-first, and query-reference based
 
 - 本轮趋势校准：

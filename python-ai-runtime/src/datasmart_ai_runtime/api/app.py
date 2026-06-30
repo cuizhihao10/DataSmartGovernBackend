@@ -67,6 +67,7 @@ from datasmart_ai_runtime.services.model_gateway import (
     InMemoryModelProviderHealthRegistry,
     ModelGatewayGovernanceService,
     ModelProviderHealthProbeService,
+    default_inference_optimization_diagnostics_service,
     default_model_capability_registry,
     model_provider_health_probe_settings_from_env,
     render_model_provider_health_probe_prometheus,
@@ -135,6 +136,10 @@ def create_app() -> Any:
     # - 模型是否适合 Agent、代码生成、Embedding、Rerank、多模态等工作负载；
     # - DeepSeek/Qwen/GLM/vLLM/SGLang 等接入方式是否仍需要 SKU、工具调用、缓存隔离或压测验证。
     model_capability_registry = default_model_capability_registry()
+    # 推理优化诊断服务回答的是“成熟 serving stack 是否已经具备可观测优化闭环”，而不是“模型算法是否更强”。
+    # 当前项目不做训练/微调/推理内核开发，只把 vLLM/SGLang/LiteLLM 所需指标固定成低敏合同。
+    # FastAPI 路由默认不会主动访问任何外部 endpoint；真实指标后续应由 Prometheus、模型网关或 Java 控制面注入。
+    inference_optimization_diagnostics = default_inference_optimization_diagnostics_service()
     platform_convergence_diagnostics = default_platform_convergence_diagnostics_service()
     agent_capability_matrix = default_agent_capability_matrix_service()
     model_provider_health_registry = InMemoryModelProviderHealthRegistry()
@@ -372,6 +377,24 @@ def create_app() -> Any:
         """
 
         return model_capability_registry.diagnostics(model_route_registry.all_routes())
+
+    @app.get("/agent/models/inference-optimization/diagnostics")
+    @app.get("/api/agent/models/inference-optimization/diagnostics")
+    def model_inference_optimization_diagnostics() -> dict[str, Any]:
+        """查询成熟推理服务优化诊断。
+
+        路由语义：
+        - 该接口面向智能网关、运维面板、Java 控制面和上线前检查；
+        - 它不触发模型调用、不抓取 Prometheus、不访问 vLLM/SGLang/LiteLLM endpoint；
+        - 当前仅根据模型路由推断 serving engine，并列出 TTFT、TPS、queue time、batching、cache hit rate、
+          KV cache/GPU pressure 等生产推理优化所需的低敏指标缺口。
+
+        低敏边界：
+        - 返回 providerName、modelName、workload、serving engine、指标名称、状态码和建议动作；
+        - 不返回 endpoint、API Key、prompt、messages、SQL、工具参数、样本数据、模型输出或内部网络地址。
+        """
+
+        return inference_optimization_diagnostics.diagnostics(model_route_registry.all_routes())
 
     @app.post("/agent/models/provider-health/probe")
     def model_provider_health_active_probe(dry_run: bool = False) -> dict[str, Any]:

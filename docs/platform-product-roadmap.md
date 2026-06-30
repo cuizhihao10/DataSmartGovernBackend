@@ -1,5 +1,24 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-30 追加落地进展：Python AI Runtime Mature Inference Optimization Diagnostics
+- 本阶段继续按“整体闭环收敛”推进，关闭 Agent P0 中 `llm.inference-optimization` 的 planned 缺口，但没有把项目发散到模型训练、微调、后训练或底层推理内核研发。目标是让模型层的“推理优化”收敛为成熟 serving stack 的低敏诊断控制面：vLLM/SGLang/LiteLLM/OpenAI-compatible 路由都能被解释还缺哪些 TTFT、TPS、queue、batching、prefix/KV cache 和 GPU/KV pressure 指标。
+- 产品价值：
+  - 新增 `ModelInferenceOptimizationDiagnosticsService`，按模型路由推断 serving profile，并输出状态、缺失指标、问题码和下一步动作；
+  - 新增 `/agent/models/inference-optimization/diagnostics` 与 `/api/agent/models/inference-optimization/diagnostics`，供智能网关、Java 控制面、运维面板和上线前检查读取；
+  - 新增 `ModelInferenceServingMetricsSnapshot`，为未来 Prometheus、vLLM/SGLang metrics、LiteLLM admin API 或企业模型网关回灌指标预留稳定低敏结构；
+  - Agent 能力矩阵将 `llm.inference-optimization` 从 `PLANNED` 校准为 `CONTROL_PLANE_READY`，但仍保留真实指标回灌和 benchmark/eval 的控制面转实缺口。
+- 安全边界：
+  - 诊断服务不访问真实模型、不抓取 endpoint、不执行 benchmark、不读取 Prometheus；
+  - 响应不返回 endpoint、API Key、prompt、messages、SQL、工具参数、样本数据、模型输出、真实 URL 或内部网络地址；
+  - 当前只表达“成熟推理优化应该观测什么”，不声称默认 dry-run 或未回灌指标的路由已经生产可用。
+- 验证：
+  - 定向测试通过：`test_model_inference_optimization.py`、`test_agent_capability_matrix.py`、`test_model_gateway.py`、`test_model_capability_registry.py`，共 30 个用例；
+  - Python Runtime 全量单测通过：`python -m unittest discover -s python-ai-runtime\tests`，共 564 个用例；
+  - 当前探针显示 `llm.inference-optimization` 已进入 P0 control-plane gap；项目仍有 `skill.create-publish` 与 `memory.sqlite-fts` 两个 P0 hard blocker，不能误报最终完成。
+- 收敛判断：
+  - 模型层继续坚持“成熟技术接入 + 低敏诊断 + benchmark/eval”，不进入算法研发或底层推理优化；
+  - 下一步不建议继续扩展模型字段，应优先关闭剩余 P0 hard blocker：Skill 创建/发布闭环、SQLite FTS 记忆检索闭环，随后进入最小 E2E 启动联调。
+
 ## 2026-06-30 追加落地进展：Python AI Runtime Controlled Web Search Tool Contract
 - 本阶段继续按“整体闭环收敛”推进，关闭 Agent P0 hardBlocker 中的 `tool.web-search` 计划项，但没有直接开放任意联网能力。目标是让 web search 先成为受控工具契约：模型可以提出搜索意图，Host 负责查询引用化、Provider allowlist、网络权限、缓存 TTL、限流和引用结果策略。
 - 产品价值：

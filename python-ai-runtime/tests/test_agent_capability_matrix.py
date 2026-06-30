@@ -157,6 +157,26 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
         self.assertNotIn("api_key", serialized.lower())
         self.assertNotIn("endpoint", web_search["currentEvidence"].lower())
 
+    def test_llm_inference_optimization_reflects_control_plane_diagnostics(self) -> None:
+        """成熟推理优化已具备诊断控制面，但仍不能被误标为完全生产闭环。"""
+
+        diagnostics = default_agent_capability_matrix_service().diagnostics()
+        llm_domain = next(domain for domain in diagnostics["domains"] if domain["domainId"] == "llm")
+        inference = next(
+            item
+            for item in llm_domain["subCapabilities"]
+            if item["capabilityId"] == "llm.inference-optimization"
+        )
+        serialized = str(inference).lower()
+
+        self.assertEqual(AgentCapabilityStatus.CONTROL_PLANE_READY.value, inference["status"])
+        self.assertIn("ModelInferenceOptimizationDiagnosticsService", inference["currentEvidence"])
+        self.assertIn("TTFT", inference["currentEvidence"])
+        self.assertIn("vLLM/SGLang/LiteLLM", inference["currentEvidence"])
+        self.assertIn("Prometheus", inference["closureGap"])
+        self.assertNotIn("api_key", serialized)
+        self.assertNotIn("endpoint", inference["currentEvidence"].lower())
+
     def test_closure_readiness_groups_p0_gaps_for_final_project_convergence(self) -> None:
         """闭口门禁应把 P0 缺口分层，帮助项目停止发散并优先关闭硬阻塞。"""
 
@@ -174,7 +194,8 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
         self.assertGreater(readiness["p0ControlPlaneGapCount"], 0)
         self.assertGreater(readiness["p0OperationalizationGapCount"], 0)
         self.assertNotIn("tool.file-read-write", hard_blocker_ids)
-        self.assertIn("llm.inference-optimization", hard_blocker_ids)
+        self.assertNotIn("llm.inference-optimization", hard_blocker_ids)
+        self.assertIn("llm.inference-optimization", control_plane_gap_ids)
         self.assertIn("tool.exec-run-program", control_plane_gap_ids)
         self.assertIn("tool.file-read-write", operationalization_gap_ids)
         self.assertIn("P0 能力域不允许继续存在 planned 或 blocked 子能力。", readiness["stageExitCriteria"])
