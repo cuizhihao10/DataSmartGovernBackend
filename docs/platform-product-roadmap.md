@@ -14,8 +14,9 @@
   - `force=true` 只绕过 TTL/冷却策略，不绕过 permission-admin、OIDC/Keycloak、工具 readiness、HITL、runtime protection 或租户隔离；
   - `/agent/plans` 仍只读取最近诊断快照，不在用户高频同步请求中拉远端 Manifest，避免能力目录网络 IO 拖慢规划链路。
 - 验证：
-  - Python 定向测试通过：`test_skill_publication_diagnostics.py`、`test_skill_registry_client.py`、`test_agent_capability_matrix.py`，共 25 个用例；
+  - Python 定向测试通过：`test_skill_publication_diagnostics.py`、`test_skill_registry_client.py`、`test_agent_capability_matrix.py`，共 26 个用例；
   - 测试覆盖强制刷新、缓存新鲜跳过刷新、远端错误重试窗口、从未刷新状态、环境变量解析、tenant/project 范围透传和能力矩阵证据同步；
+  - Python Runtime 全量单测通过：`python -m unittest discover -s python-ai-runtime\tests`，共 576 个用例；
   - 当前最长相关文件仍低于 500 行约束，刷新控制被拆成独立模块，没有继续把诊断服务膨胀成巨型文件。
 - 收敛判断：
   - 这一批关闭的是“Python 侧无法低频刷新 Java scoped Manifest”的运行时消费缺口；
