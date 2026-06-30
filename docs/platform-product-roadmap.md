@@ -1,5 +1,28 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-30 追加落地进展：Local MySQL Migration Governance Closure
+- 本阶段继续按“整体闭环收敛”推进，没有新增业务模块、Agent 能力或模型能力，而是优先修复真实本地 E2E 启动前最容易卡住的 schema 漂移问题。
+- 产品价值：
+  - 新增 `scripts/local-mysql-migration-governance.ps1`，作为 Flyway/Liquibase 前的过渡型本地迁移治理脚本；
+  - 支持 `-StaticOnly` 只校验迁移文件命名、非空、重复 migrationId 和 SHA-256 清单；
+  - 默认模式连接本地 MySQL 后只读取迁移历史并输出执行计划，不执行 SQL；
+  - `-Apply` 显式执行尚未登记的 `docker/mysql/migrations/*.sql`，并写入 `datasmart_schema_migration_history`；
+  - `-BaselineExisting` 用于旧本地库已经人工执行过迁移后的补登记，不执行 SQL；
+  - smoke 脚本新增该迁移治理脚本的存在性检查，runbook 与 README 同步说明使用方式。
+- 安全边界：
+  - 默认不执行数据库变更，避免把闭环 smoke 或计划检查变成真实 schema 修改；
+  - 脚本不打印 MySQL 密码、连接串、SQL 正文、查询结果正文或业务数据；
+  - 历史表只记录 migrationId、文件名、SHA-256、执行模式、耗时和低敏备注；
+  - 该脚本是本地开发和闭环联调过渡层，生产仍建议引入 Flyway/Liquibase，并配合备份、回滚、审批和变更窗口。
+- 验证：
+  - PowerShell AST 解析通过；
+  - 静态迁移治理通过：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\local-mysql-migration-governance.ps1 -StaticOnly`，`PASS=53, WARN=0, FAIL=0`；
+  - 当前 52 个 migration SQL 文件和 1 个静态模式检查均通过，没有命名、空文件或重复 migrationId 问题。
+- 收敛判断：
+  - 这一步不替代最终生产迁移系统，但能显著降低真实本地 E2E 启动时“代码已更新、数据库旧数据卷没迁移”的失败概率；
+  - 下一步仍应进入真实启动联调，优先使用迁移治理脚本确认 schema 后，再运行认证 gateway smoke；
+  - 如果真实联调暴露迁移失败，应修具体 migration 或引入 Flyway/Liquibase，而不是继续扩展局部业务功能。
+
 ## 2026-06-30 追加落地进展：Authenticated Gateway Agent Diagnostics Smoke Closure
 - 本阶段继续按“整体闭环收敛”推进，没有新增 Agent 能力、模型能力、工具执行器或业务写入链路，而是把上一阶段 gateway 到 Python Runtime 的低敏诊断路由补成可通过认证入口验证的 smoke 探针。
 - 产品价值：

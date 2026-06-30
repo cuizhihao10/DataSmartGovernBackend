@@ -95,7 +95,39 @@ Get-ChildItem -LiteralPath .\docker\mysql\migrations -Filter *.sql |
 - 执行迁移前建议备份本地数据卷或确认这是可丢弃的开发库。
 - 不要把生产数据库密码写入脚本、文档或提交历史。
 - 当前最小闭环至少需要 task-management outbox、task-management receipt、data-sync template execution contract 和 data-sync task-management receipt outbox 相关迁移。
-- 后续商业化收敛建议引入 Flyway 或 Liquibase，把 schema 版本从“人工记忆”升级为“应用启动可校验”。
+- 当前仓库已经提供过渡型本地迁移治理脚本 [local-mysql-migration-governance.ps1](../scripts/local-mysql-migration-governance.ps1)，用于把 schema 版本从“人工记忆”推进到“可检查、可登记、可回放”的闭环状态；后续商业化收敛仍建议引入 Flyway 或 Liquibase。
+
+建议先执行静态检查，确认迁移目录里没有命名漂移、空文件或重复 migrationId：
+
+```powershell
+.\scripts\local-mysql-migration-governance.ps1 -StaticOnly
+```
+
+当 MySQL 容器已经启动后，可以查看当前数据库迁移计划。默认模式只读取历史表和输出计划，不执行 SQL：
+
+```powershell
+.\scripts\local-mysql-migration-governance.ps1
+```
+
+如果确认这是可变更的本地开发库，并且希望执行尚未登记的 migration，再显式追加 `-Apply`：
+
+```powershell
+.\scripts\local-mysql-migration-governance.ps1 -Apply
+```
+
+如果某个旧本地库已经人工执行过迁移，但之前没有历史表，可以使用 `-BaselineExisting` 做补登记。该模式不会执行 SQL，只把当前仓库 migration 文件名和 SHA-256 校验和登记到 `datasmart_schema_migration_history`，用于后续发现文件漂移：
+
+```powershell
+.\scripts\local-mysql-migration-governance.ps1 -BaselineExisting
+```
+
+迁移治理脚本的设计边界：
+
+- 默认不执行 SQL，避免把只读 smoke 或计划检查变成数据库变更动作。
+- `-Apply` 按文件名顺序执行 `docker/mysql/migrations/*.sql`，执行完成后登记 migrationId、文件名、SHA-256、耗时和执行模式。
+- `-BaselineExisting` 只补登记，不代表真实执行过 SQL；它适合开发库补账，不应作为生产跳过迁移的手段。
+- 脚本不会打印 MySQL 密码、业务数据、SQL 正文或查询结果正文。
+- 该脚本是 Flyway/Liquibase 前的本地闭环过渡层，不是最终生产迁移系统。
 
 ### 4.3 启动 Java 微服务
 

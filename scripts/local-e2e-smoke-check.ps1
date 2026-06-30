@@ -398,6 +398,7 @@ Write-Host "仓库根目录：$script:RepoRoot" -ForegroundColor Cyan
 Test-RequiredFile -RelativePath "pom.xml" -Purpose "Maven reactor 根配置，固定 JDK 21 与多模块构建"
 Test-RequiredFile -RelativePath "docs/development-jdk21.md" -Purpose "JDK 21 / Maven Toolchains 使用说明"
 Test-RequiredFile -RelativePath "docker-compose.yml" -Purpose "本地中间件、Keycloak、Prometheus、Grafana 启动编排"
+Test-RequiredFile -RelativePath "scripts/local-mysql-migration-governance.ps1" -Purpose "本地 MySQL 增量迁移治理入口，支持迁移清单检查、执行计划、Apply 和 Baseline 补登记"
 Test-JsonFile -RelativePath "docker/keycloak/import/datasmart-realm.json" -Purpose "本地 OIDC realm、client、claim mapper 和样例用户"
 Test-RequiredFile -RelativePath "docker/mysql/migrations/20260620_task_data_sync_worker_command_outbox.sql" -Purpose "task-management DataSync command outbox 表迁移"
 Test-RequiredFile -RelativePath "docker/mysql/migrations/20260622_task_data_sync_worker_execution_receipt.sql" -Purpose "task-management DataSync execution receipt 表迁移"
