@@ -64,9 +64,19 @@ public class AgentSkillRegistryController {
             @RequestParam(value = "includeDisabled", required = false, defaultValue = "false") Boolean includeDisabled,
             @RequestParam(value = "domain", required = false) String domain,
             @RequestParam(value = "riskLevel", required = false) String riskLevel,
+            @RequestParam(value = "tenantId", required = false) String tenantId,
+            @RequestParam(value = "projectId", required = false) String projectId,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) String headerTenantId,
+            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) String headerProjectId,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success(
-                publicationManifestService.buildManifest(includeDisabled, domain, riskLevel),
+                publicationManifestService.buildManifest(
+                        includeDisabled,
+                        domain,
+                        riskLevel,
+                        firstNonBlank(headerTenantId, tenantId),
+                        firstNonBlank(headerProjectId, projectId)
+                ),
                 traceId
         );
     }
@@ -127,5 +137,16 @@ public class AgentSkillRegistryController {
             @PathVariable("skillCode") String skillCode,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success(skillRegistryService.getSkillDescriptor(skillCode), traceId);
+    }
+
+    /**
+     * 在 Header 与 query 参数之间选择可信范围值。
+     *
+     * <p>生产环境应优先相信 gateway/IdP/permission-admin 注入的 Header；query 参数只用于本地联调、
+     * 管理诊断或尚未接入 gateway 的测试链路。该方法只做“选择”，不做授权扩大：
+     * 真正的可见范围仍应由 gateway 与 permission-admin 在上游完成校验和收口。</p>
+     */
+    private String firstNonBlank(String headerValue, String queryValue) {
+        return headerValue == null || headerValue.isBlank() ? queryValue : headerValue;
     }
 }

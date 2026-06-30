@@ -210,6 +210,7 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
 
         self.assertEqual(AgentCapabilityStatus.PARTIAL_CLOSED_LOOP.value, create_publish["status"])
         self.assertIn("draft -> review -> ready -> deprecated", create_publish["currentEvidence"])
+        self.assertIn("Manifest", create_publish["currentEvidence"])
         self.assertIn("治理策略预检", create_publish["currentEvidence"])
         self.assertIn("Manifest", create_publish["closureGap"])
         self.assertNotIn("raw prompt", serialized)

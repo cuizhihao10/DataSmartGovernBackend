@@ -19,6 +19,14 @@ public final class PlatformContextHeaders {
 
     public static final String TRACE_ID = "X-DataSmart-Trace-Id";
     public static final String TENANT_ID = "X-DataSmart-Tenant-Id";
+    /**
+     * 当前请求所属项目 ID。
+     *
+     * <p>项目是 DataSmart 多数治理动作的默认数据边界：数据源、同步任务、质量规则、Agent workspace、
+     * Skill 可见性和工具执行审计通常都必须落在某个项目下。该 Header 应由 gateway 或受信任的服务间调用链路注入，
+     * 下游服务只能用它收口查询范围，不能把浏览器直接传入的项目 ID 当作扩大权限的依据。</p>
+     */
+    public static final String PROJECT_ID = "X-DataSmart-Project-Id";
     public static final String ACTOR_ID = "X-DataSmart-Actor-Id";
     public static final String ACTOR_ROLE = "X-DataSmart-Actor-Role";
     public static final String ACTOR_TYPE = "X-DataSmart-Actor-Type";

@@ -1,5 +1,28 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-30 追加落地进展：Java Agent Runtime Skill Manifest Lifecycle Bridge
+- 本阶段继续按“整体闭环收敛”推进，没有继续扩展 Skill DSL、prompt 模板或新的 Agent 工具，而是把上一阶段 `skill.create-publish` 的 READY/DEPRECATED 生命周期事实接入 Skill Publication Manifest 消费面。
+- 产品价值：
+  - `AgentSkillPublicationManifestService` 现在支持带 `tenantId/projectId` 的 scoped Manifest 构建；
+  - Manifest 会在静态 registry Skill 之外，合并同租户/同项目内已经 READY 的生命周期发布单；
+  - `includeDisabled=true` 的管理诊断场景可以额外看到 DEPRECATED 生命周期发布单；
+  - 无租户/项目范围的旧 Manifest 调用仍只返回静态 registry，避免跨租户或跨项目暴露发布事实；
+  - `AgentSkillRegistryController` 的 Manifest 路由支持 `X-DataSmart-Tenant-Id`、`X-DataSmart-Project-Id` Header，并兼容本地联调 query 参数；
+  - `PlatformContextHeaders` 新增统一 `PROJECT_ID` 常量，减少项目 Header 魔法字符串。
+- 安全边界：
+  - Manifest 只合并低敏发布元数据：skillCode、displayName、domain、riskLevel、approvalPolicy、工具/权限/记忆依赖、隔离标记、内容指纹和状态；
+  - 不读取、不返回 prompt、SQL、工具参数、样本数据、模型输出、脚本正文、凭据、内部 endpoint 或真实连接信息；
+  - READY 只表示发布资格通过，不替代 permission-admin、tool readiness、工具预算、HITL 审批、审计和 runtime-protection；
+  - 当前合并策略是静态 registry 优先，生命周期发布单不会覆盖同名内置 Skill，避免 durable store 尚未生产化前误替换内置能力。
+- 验证：
+  - Java 定向测试通过：`AgentSkillPublicationManifestServiceTest`、`AgentSkillPublicationLifecycleServiceTest`、`AgentSkillRegistryServiceTest`，共 19 个用例；
+  - 测试覆盖 READY 生命周期事实进入 scoped Manifest、无范围调用不暴露生命周期事实、DRAFT/IN_REVIEW 不可见、DEPRECATED 仅在诊断视角可见；
+  - Agent 能力矩阵已同步：`skill.create-publish` 的 currentEvidence 改为已接入 scoped Manifest，closureGap 收敛为 durable store、outbox、Keycloak/IdP、灰度/回滚和缓存失效。
+- 收敛判断：
+  - `skill.create-publish` 已从写侧状态机推进到运行时发现面的小闭环；
+  - 仍不宣称 Skill Marketplace 完全生产化，因为 MySQL/JDBC durable store、发布 outbox、审批单绑定、灰度批次、回滚、租户可见性索引和 Python Runtime 低频刷新/缓存失效还未完成；
+  - 下一步更推荐进入最小 E2E 联调或 durable store/outbox 转实，不再继续堆 Skill 发布字段。
+
 ## 2026-06-30 追加落地进展：Java Agent Runtime Skill Create/Publish Lifecycle Closure
 - 本阶段继续按“整体闭环收敛”推进，优先关闭 Agent P0 hardBlocker 中最后一个 `skill.create-publish`。本次没有继续扩展新的 Skill DSL、prompt 模板或执行器能力，而是把 Skill Marketplace 从只读注册表/Manifest 消费侧推进到写侧生命周期控制面。
 - 产品价值：

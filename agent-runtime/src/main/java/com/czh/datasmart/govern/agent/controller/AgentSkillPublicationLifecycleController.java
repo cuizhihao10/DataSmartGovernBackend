@@ -53,7 +53,7 @@ public class AgentSkillPublicationLifecycleController {
     public PlatformApiResponse<AgentSkillPublicationLifecycleView> createDraft(
             @Valid @RequestBody AgentSkillPublicationDraftCreateRequest request,
             @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) String tenantId,
-            @RequestHeader(value = "X-DataSmart-Project-Id", required = false) String projectId,
+            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) String projectId,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         AgentSkillPublicationLifecycleView view =
