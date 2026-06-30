@@ -197,7 +197,7 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
         self.assertNotIn("sample data", serialized)
 
     def test_skill_create_publish_reflects_lifecycle_state_machine_closure(self) -> None:
-        """Skill 创建发布已经具备状态机闭环，但仍需要 durable store 与 Manifest 绑定。"""
+        """Skill 创建发布已具备状态机、Manifest 桥接和 Python 刷新控制，但仍需持久化/E2E。"""
 
         diagnostics = default_agent_capability_matrix_service().diagnostics()
         skills_domain = next(domain for domain in diagnostics["domains"] if domain["domainId"] == "skills")
@@ -209,10 +209,12 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
         serialized = str(create_publish).lower()
 
         self.assertEqual(AgentCapabilityStatus.PARTIAL_CLOSED_LOOP.value, create_publish["status"])
-        self.assertIn("draft -> review -> ready -> deprecated", create_publish["currentEvidence"])
+        self.assertIn("状态机", create_publish["currentEvidence"])
         self.assertIn("Manifest", create_publish["currentEvidence"])
-        self.assertIn("治理策略预检", create_publish["currentEvidence"])
+        self.assertIn("Python Runtime", create_publish["currentEvidence"])
+        self.assertIn("refreshControl", create_publish["currentEvidence"])
         self.assertIn("Manifest", create_publish["closureGap"])
+        self.assertIn("durable store", create_publish["closureGap"])
         self.assertNotIn("raw prompt", serialized)
         self.assertNotIn("select * from", serialized)
 

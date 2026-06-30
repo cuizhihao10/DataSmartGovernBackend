@@ -343,6 +343,28 @@ def create_app() -> Any:
 
         return skill_publication_manifest_diagnostics.diagnostics()
 
+    @app.post("/agent/skills/publication/refresh")
+    @app.post("/api/agent/skills/publication/refresh")
+    def refresh_skill_publication_manifest_runtime_cache(request: Request, force: bool = False) -> dict[str, Any]:
+        """受控刷新 Skill Publication Manifest 诊断缓存。
+
+        该路由用于项目闭环阶段的运行时校验：Java `agent-runtime` 负责 Skill 发布事实，Python Runtime
+        负责消费最近一次低敏 Manifest 指纹与状态分布。为了避免每次 `/agent/plans` 都同步访问 Java
+        控制面，刷新动作必须显式触发，并且默认遵守 TTL、冷却时间和失败重试策略。
+
+        `force=true` 只表示绕过普通 TTL 与冷却时间，不表示绕过认证、远端未配置、Manifest required
+        失败关闭等生产安全边界。响应只返回刷新原因、前后指纹、是否变化和最新诊断，不返回完整
+        descriptor、prompt、工具参数、权限明细、Java URL、token 或异常堆栈。
+        """
+
+        try:
+            return skill_publication_manifest_diagnostics.refresh_if_needed(
+                trace_id=request.headers.get("X-DataSmart-Trace-Id"),
+                force=force,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"Skill Publication Manifest 刷新失败：{str(exc)[:120]}") from exc
+
     @app.get("/agent/models/provider-health/diagnostics")
     def model_provider_health_diagnostics() -> dict[str, Any]:
         """查询模型 Provider 健康治理诊断信息。

@@ -26,6 +26,10 @@ from datasmart_ai_runtime.services.skill_registry_client import (
     JavaAgentSkillRegistryClient,
     SkillRegistryClientError,
 )
+from datasmart_ai_runtime.services.skills.skill_publication_refresh import (
+    AgentSkillPublicationManifestRefreshController,
+    AgentSkillPublicationRefreshPolicy,
+)
 
 
 @dataclass(frozen=True)
@@ -45,6 +49,10 @@ class AgentSkillPublicationDiagnosticsSettings:
     include_disabled: bool = True
     refresh_on_startup: bool = True
     max_non_ready_items: int = 10
+    refresh_control_enabled: bool = True
+    refresh_stale_after_seconds: int = 300
+    refresh_min_interval_seconds: int = 30
+    refresh_retry_after_error_seconds: int = 60
 
 
 class AgentSkillPublicationManifestDiagnosticsService:
@@ -65,10 +73,19 @@ class AgentSkillPublicationManifestDiagnosticsService:
         client: Any | None,
         settings: AgentSkillPublicationDiagnosticsSettings | None = None,
         local_skill_provider: Callable[[], tuple[AgentSkillDescriptor, ...]] = default_skill_registry,
+        refresh_controller: AgentSkillPublicationManifestRefreshController | None = None,
     ) -> None:
         self._client = client
         self._settings = settings or AgentSkillPublicationDiagnosticsSettings()
         self._local_skill_provider = local_skill_provider
+        self._refresh_controller = refresh_controller or AgentSkillPublicationManifestRefreshController(
+            AgentSkillPublicationRefreshPolicy(
+                enabled=self._settings.refresh_control_enabled,
+                stale_after_seconds=self._settings.refresh_stale_after_seconds,
+                min_refresh_interval_seconds=self._settings.refresh_min_interval_seconds,
+                retry_after_error_seconds=self._settings.refresh_retry_after_error_seconds,
+            )
+        )
         self._last_manifest: AgentSkillPublicationManifest | None = None
         self._last_error: str | None = None
         self._last_refresh_at: str | None = None
@@ -103,6 +120,43 @@ class AgentSkillPublicationManifestDiagnosticsService:
                 raise
         return self.diagnostics()
 
+    def refresh_if_needed(self, trace_id: str | None = None, *, force: bool = False) -> dict[str, Any]:
+        """按刷新控制策略执行一次“必要时刷新”。
+
+        该方法面向运维面板、gateway 管理入口和本地 smoke check，而不是面向每一次用户规划请求。
+        它会先基于当前低敏诊断快照生成刷新决策，再决定是否调用 `refresh()` 访问 Java 控制面。
+        这样既能及时发现 Skill 发布、下线、回滚和指纹变化，又不会让 Manifest 成为 `/agent/plans`
+        高频同步路径上的额外瓶颈。
+        """
+
+        before = self.diagnostics()
+        decision = self._refresh_controller.decide(before, force=force)
+        before_fingerprint = before.get("manifestFingerprint")
+        if not decision.should_refresh:
+            return {
+                "schemaVersion": "datasmart.agent.skill-publication-refresh-result.v1",
+                "refreshTriggered": False,
+                "force": force,
+                "decision": decision.to_summary(),
+                "beforeManifestFingerprint": before_fingerprint,
+                "afterManifestFingerprint": before_fingerprint,
+                "fingerprintChanged": False,
+                "diagnostics": before,
+            }
+
+        after = self.refresh(trace_id=trace_id)
+        after_fingerprint = after.get("manifestFingerprint")
+        return {
+            "schemaVersion": "datasmart.agent.skill-publication-refresh-result.v1",
+            "refreshTriggered": True,
+            "force": force,
+            "decision": decision.to_summary(),
+            "beforeManifestFingerprint": before_fingerprint,
+            "afterManifestFingerprint": after_fingerprint,
+            "fingerprintChanged": bool(before_fingerprint and after_fingerprint and before_fingerprint != after_fingerprint),
+            "diagnostics": after,
+        }
+
     def should_refresh_on_startup(self) -> bool:
         """返回 FastAPI startup 是否应该主动刷新 Manifest。
 
@@ -133,7 +187,7 @@ class AgentSkillPublicationManifestDiagnosticsService:
         }
 
         if not self._settings.enabled or self._client is None:
-            return {
+            return self._with_refresh_control({
                 **base,
                 "status": "LOCAL_DEFAULT_ONLY",
                 "source": "local-default",
@@ -150,10 +204,10 @@ class AgentSkillPublicationManifestDiagnosticsService:
                     "当前未启用远端 Skill Manifest 诊断，Python Runtime 使用本地默认 Skill。"
                     "如果要接入 Java 控制面的发布事实源，请配置 DATASMART_AGENT_RUNTIME_BASE_URL。",
                 ),
-            }
+            })
 
         if self._last_manifest is None:
-            return {
+            return self._with_refresh_control({
                 **base,
                 "status": "REMOTE_UNAVAILABLE_FALLBACK" if self._last_error else "REMOTE_NOT_REFRESHED",
                 "source": "local-default",
@@ -167,14 +221,14 @@ class AgentSkillPublicationManifestDiagnosticsService:
                 "nonReadySkills": (),
                 "lastError": self._last_error,
                 "recommendedActions": _fallback_actions(self._settings.required, bool(self._last_error)),
-            }
+            })
 
         manifest = self._last_manifest
         publication_state_counts = Counter(item.publication_state for item in manifest.skills)
         ready_skills = tuple(item for item in manifest.skills if item.publication_state == "READY")
         non_ready_skills = tuple(item for item in manifest.skills if item.publication_state != "READY")
 
-        return {
+        return self._with_refresh_control({
             **base,
             "status": "REMOTE_READY",
             "source": "java-agent-runtime",
@@ -199,6 +253,19 @@ class AgentSkillPublicationManifestDiagnosticsService:
             ),
             "lastError": None,
             "recommendedActions": _remote_ready_actions(manifest, len(non_ready_skills)),
+        })
+
+    def _with_refresh_control(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        """给 Manifest 诊断快照追加刷新控制结果。
+
+        注意：这里不会触发真实刷新，只把“当前是否应该刷新”作为低敏控制面元数据返回。
+        真实刷新只能通过 `refresh()` 或 `refresh_if_needed()` 发生，避免诊断接口、`/agent/plans`
+        或前端管理卡片在读取状态时隐式访问 Java 控制面。
+        """
+
+        return {
+            **snapshot,
+            "refreshControl": self._refresh_controller.decide(snapshot).to_summary(),
         }
 
 
@@ -219,6 +286,21 @@ def skill_publication_diagnostics_settings_from_env(source: dict[str, str] | Non
         max_non_ready_items=_positive_int(
             values.get("DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_MAX_NON_READY_ITEMS"),
             10,
+        ),
+        refresh_control_enabled=_truthy(
+            values.get("DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REFRESH_CONTROL_ENABLED", "true")
+        ),
+        refresh_stale_after_seconds=_positive_int(
+            values.get("DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REFRESH_STALE_AFTER_SECONDS"),
+            300,
+        ),
+        refresh_min_interval_seconds=_positive_int(
+            values.get("DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REFRESH_MIN_INTERVAL_SECONDS"),
+            30,
+        ),
+        refresh_retry_after_error_seconds=_positive_int(
+            values.get("DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REFRESH_RETRY_AFTER_ERROR_SECONDS"),
+            60,
         ),
     )
 
@@ -244,6 +326,10 @@ def build_skill_publication_manifest_diagnostics_service(
         include_disabled=resolved_settings.include_disabled,
         refresh_on_startup=resolved_settings.refresh_on_startup,
         max_non_ready_items=resolved_settings.max_non_ready_items,
+        refresh_control_enabled=resolved_settings.refresh_control_enabled,
+        refresh_stale_after_seconds=resolved_settings.refresh_stale_after_seconds,
+        refresh_min_interval_seconds=resolved_settings.refresh_min_interval_seconds,
+        refresh_retry_after_error_seconds=resolved_settings.refresh_retry_after_error_seconds,
     )
     return AgentSkillPublicationManifestDiagnosticsService(resolved_client, effective_settings)
 

@@ -135,6 +135,8 @@ class JavaAgentSkillRegistryClient:
         include_disabled: bool = False,
         domain: str | None = None,
         risk_level: str | None = None,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
         trace_id: str | None = None,
     ) -> AgentSkillPublicationManifest:
         """读取 Java Skill 发布 Manifest。
@@ -151,8 +153,23 @@ class JavaAgentSkillRegistryClient:
             query_params["domain"] = domain
         if risk_level:
             query_params["riskLevel"] = risk_level
+        # Java 5.37 后 Manifest 可以按 tenant/project 合并生命周期发布事实。
+        # 这里同时写 query 与 Header：
+        # - query 便于本地调试、curl 和不经过 gateway 的 smoke check；
+        # - Header 贴近真实生产链路，由 gateway/OIDC 解析后的可信平台上下文注入；
+        # - Java 侧约定 Header 优先，因此未来接入 gateway 时不会被普通 query 参数覆盖可信身份边界。
+        if tenant_id and tenant_id.strip():
+            query_params["tenantId"] = tenant_id.strip()
+        if project_id and project_id.strip():
+            query_params["projectId"] = project_id.strip()
         url = f"{self._base_url}{self._publication_manifest_path}?{urlencode(query_params)}"
         headers = {"Accept": "application/json"}
+        # Header 中仍然只放低敏租户/项目标识，不放 access token、完整 JWT claim、用户角色明细或权限列表。
+        # 真正的授权判断应由 gateway、permission-admin 和 Java agent-runtime 共同完成。
+        if tenant_id and tenant_id.strip():
+            headers["X-DataSmart-Tenant-Id"] = tenant_id.strip()
+        if project_id and project_id.strip():
+            headers["X-DataSmart-Project-Id"] = project_id.strip()
         if trace_id:
             headers["X-Trace-Id"] = trace_id
 

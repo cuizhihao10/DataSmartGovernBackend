@@ -1,5 +1,27 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-30 追加落地进展：Python AI Runtime Skill Manifest Refresh Closure
+- 本阶段继续按“整体闭环收敛”推进，没有继续扩展 Skill DSL、prompt 模板、工具执行器或新的 Agent 能力，而是把 Java `agent-runtime` 已经提供的 scoped Skill Publication Manifest 接入 Python Runtime 的低频刷新控制面。
+- 产品价值：
+  - Python Runtime 新增 `AgentSkillPublicationManifestRefreshController`，用于判断 Manifest 缓存是否应该刷新，而不是让 `/agent/plans` 每次都同步访问 Java 控制面；
+  - `AgentSkillPublicationManifestDiagnosticsService` 新增 `refresh_if_needed(...)`，支持普通 TTL 刷新、远端错误后的重试冷却、强制刷新和刷新前后指纹摘要；
+  - 新增 `POST /agent/skills/publication/refresh` 与 `/api/agent/skills/publication/refresh`，让运维台、智能网关或联调脚本可以显式触发刷新；
+  - `JavaAgentSkillRegistryClient#get_publication_manifest(...)` 开始支持 `tenantId/projectId` query 参数与可信 Header，和 Java scoped Manifest 桥接保持一致；
+  - 诊断响应统一带 `refreshControl`，可解释“从未刷新、缓存新鲜、缓存过期、冷却中、远端错误等待重试、强制刷新”等状态。
+- 安全边界：
+  - 刷新控制只处理低敏字段：Manifest 指纹、READY/非 READY 数量、状态分布、风险分布、刷新次数、时间戳、错误摘要和原因码；
+  - 不返回完整 descriptor、prompt、SQL、工具参数、样本数据、模型输出、凭据、Java 内部 endpoint、真实 Header 或异常堆栈；
+  - `force=true` 只绕过 TTL/冷却策略，不绕过 permission-admin、OIDC/Keycloak、工具 readiness、HITL、runtime protection 或租户隔离；
+  - `/agent/plans` 仍只读取最近诊断快照，不在用户高频同步请求中拉远端 Manifest，避免能力目录网络 IO 拖慢规划链路。
+- 验证：
+  - Python 定向测试通过：`test_skill_publication_diagnostics.py`、`test_skill_registry_client.py`、`test_agent_capability_matrix.py`，共 25 个用例；
+  - 测试覆盖强制刷新、缓存新鲜跳过刷新、远端错误重试窗口、从未刷新状态、环境变量解析、tenant/project 范围透传和能力矩阵证据同步；
+  - 当前最长相关文件仍低于 500 行约束，刷新控制被拆成独立模块，没有继续把诊断服务膨胀成巨型文件。
+- 收敛判断：
+  - 这一批关闭的是“Python 侧无法低频刷新 Java scoped Manifest”的运行时消费缺口；
+  - 仍不宣称 Skill Marketplace 完全生产化，因为 MySQL/JDBC durable store、发布 outbox、审批单/Keycloak/企业 IdP 绑定、灰度/回滚和租户可见性索引还未转实；
+  - 下一步更推荐进入 Keycloak/gateway/permission-admin/agent-runtime/Python Runtime 最小 E2E 联调，或只补 durable store/outbox 这类闭口必需项，不再扩展新的 Skill 字段。
+
 ## 2026-06-30 追加落地进展：Java Agent Runtime Skill Manifest Lifecycle Bridge
 - 本阶段继续按“整体闭环收敛”推进，没有继续扩展 Skill DSL、prompt 模板或新的 Agent 工具，而是把上一阶段 `skill.create-publish` 的 READY/DEPRECATED 生命周期事实接入 Skill Publication Manifest 消费面。
 - 产品价值：

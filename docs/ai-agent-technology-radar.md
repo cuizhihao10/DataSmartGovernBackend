@@ -1,5 +1,22 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-30 落地补充：Skill Manifest refresh should be controlled, scoped, and low-frequency
+
+- 本轮趋势校准：
+  - Codex、Claude Code、OpenClaw 类 Agent Host 的 Skill 目录不能只在启动时拉一次，也不能在每次用户请求时无脑刷新；成熟做法是把能力目录作为 Host-owned control-plane cache，结合 TTL、错误冷却、强制刷新、指纹和租户/项目范围进行治理。
+  - Java 控制面负责发布事实、状态机、审批和租户边界；Python Runtime 负责消费低敏 Manifest 快照，并把刷新决策解释给智能网关和运维面板。这样可以避免模型或工具执行器直接决定“哪些 Skill 已上线”。
+  - 刷新接口必须是低敏诊断/运维能力，而不是暴露完整能力包。Manifest 刷新结果可以给出指纹、数量和原因码，但不应泄露 descriptor 正文、prompt、工具参数、SQL、endpoint 或凭据。
+- 本轮落地到代码的能力：
+  - Python Runtime 新增 `AgentSkillPublicationManifestRefreshController`，用 TTL、最小刷新间隔、远端错误重试窗口和 `force` 参数生成刷新决策；
+  - `AgentSkillPublicationManifestDiagnosticsService` 新增 `refresh_if_needed(...)`，诊断响应统一携带 `refreshControl`；
+  - 新增 `POST /agent/skills/publication/refresh` 与 `/api/agent/skills/publication/refresh`；
+  - `JavaAgentSkillRegistryClient` 支持 `tenantId/projectId` query 与 `X-DataSmart-Tenant-Id`、`X-DataSmart-Project-Id` Header 透传，和 Java scoped Manifest 保持同构；
+  - Agent 能力矩阵把 `skill.create-publish` 的证据补充为 Java 生命周期状态机、scoped Manifest 与 Python Runtime 低频刷新控制已经串起。
+- 产品判断：
+  - 这一步是 Skill 发布目录消费链路的闭口，不是继续扩展 Skill Marketplace 的新范围；
+  - 下一步应优先做最小 E2E 联调或 durable store/outbox/Keycloak 审批绑定，不建议继续堆 Skill 字段、prompt 模板或更多本地刷新策略；
+  - 如果未来接 MCP/A2A adapter，应该复用这套 scoped Manifest + refreshControl 的低敏控制面，而不是让外部协议直接读取内部发布表。
+
 ## 2026-06-30 落地补充：Skill publishing needs a governed lifecycle, not only a manifest
 
 - 本轮趋势校准：

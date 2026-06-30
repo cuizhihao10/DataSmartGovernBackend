@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+import json
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
@@ -8,6 +9,7 @@ if ROOT not in sys.path:
 
 from datasmart_ai_runtime.domain.intent import GovernanceDomain
 from datasmart_ai_runtime.domain.memory import AgentMemoryType
+import datasmart_ai_runtime.services.skill_registry_client as skill_registry_client_module
 from datasmart_ai_runtime.services.skill_registry_client import (
     AgentSkillPublicationManifest,
     JavaAgentSkillRegistryClient,
@@ -16,6 +18,56 @@ from datasmart_ai_runtime.services.skill_registry_client import (
 
 
 class JavaAgentSkillRegistryClientTest(unittest.TestCase):
+    def test_publication_manifest_request_forwards_tenant_and_project_scope(self) -> None:
+        """读取 Manifest 时应透传租户/项目范围，才能消费 Java scoped Manifest。"""
+
+        captured: dict[str, object] = {}
+        original_urlopen = skill_registry_client_module.urlopen
+
+        def fake_urlopen(request, timeout):  # noqa: ANN001 - 测试替身需要贴合 urllib 调用形态
+            captured["url"] = request.full_url
+            captured["tenantHeader"] = request.get_header("X-datasmart-tenant-id")
+            captured["projectHeader"] = request.get_header("X-datasmart-project-id")
+            captured["traceHeader"] = request.get_header("X-trace-id")
+            captured["timeout"] = timeout
+            return _FakeHttpResponse(
+                {
+                    "code": 0,
+                    "reason": "SUCCESS",
+                    "data": {
+                        "schemaVersion": "datasmart.agent.skill.publication-manifest.v1",
+                        "manifestType": "DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST",
+                        "protocolHint": "MCP_STYLE_SKILL_MANIFEST",
+                        "descriptorSchemaVersion": "datasmart.agent.skill.v1",
+                        "publicationMode": "READY_ONLY",
+                        "contentFingerprint": "s" * 64,
+                        "includeDisabled": False,
+                        "skillCount": 0,
+                        "skills": [],
+                    },
+                }
+            )
+
+        skill_registry_client_module.urlopen = fake_urlopen
+        try:
+            client = JavaAgentSkillRegistryClient(base_url="http://agent-runtime.local", timeout_seconds=7)
+            manifest = client.get_publication_manifest(
+                include_disabled=False,
+                tenant_id="tenant-10",
+                project_id="project-20",
+                trace_id="trace-scope",
+            )
+        finally:
+            skill_registry_client_module.urlopen = original_urlopen
+
+        self.assertEqual("s" * 64, manifest.content_fingerprint)
+        self.assertIn("tenantId=tenant-10", str(captured["url"]))
+        self.assertIn("projectId=project-20", str(captured["url"]))
+        self.assertEqual("tenant-10", captured["tenantHeader"])
+        self.assertEqual("project-20", captured["projectHeader"])
+        self.assertEqual("trace-scope", captured["traceHeader"])
+        self.assertEqual(7, captured["timeout"])
+
     def test_parse_java_skill_descriptor_response_to_skill_definition(self) -> None:
         payload = {
             "code": 0,
@@ -147,6 +199,26 @@ class JavaAgentSkillRegistryClientTest(unittest.TestCase):
             JavaAgentSkillRegistryClient.parse_publication_manifest_platform_response(
                 {"code": 503, "reason": "SERVICE_UNAVAILABLE", "message": "Skill 发布 Manifest 不可用", "data": None}
             )
+
+
+class _FakeHttpResponse:
+    """urllib `urlopen` 的最小测试响应对象。
+
+    客户端只依赖上下文管理器和 `read()`，因此测试替身也只实现这两个行为，避免为了一个请求构造测试
+    引入真实 HTTP server。响应正文仍是平台统一 JSON，不包含 token、endpoint 或任何敏感 Manifest 明细。
+    """
+
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._payload = payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> bool:  # noqa: ANN001 - 上下文管理器协议参数
+        return False
+
+    def read(self) -> bytes:
+        return json.dumps(self._payload).encode("utf-8")
 
 
 if __name__ == "__main__":

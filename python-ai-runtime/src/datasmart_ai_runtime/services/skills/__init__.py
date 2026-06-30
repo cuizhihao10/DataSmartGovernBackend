@@ -10,6 +10,11 @@ from datasmart_ai_runtime.services.skills.skill_publication_diagnostics import (
     build_skill_publication_manifest_diagnostics_service,
     skill_publication_diagnostics_settings_from_env,
 )
+from datasmart_ai_runtime.services.skills.skill_publication_refresh import (
+    AgentSkillPublicationManifestRefreshController,
+    AgentSkillPublicationRefreshDecision,
+    AgentSkillPublicationRefreshPolicy,
+)
 from datasmart_ai_runtime.services.skills.session_skill_visibility import (
     build_session_skill_visibility_runtime_event,
     build_session_skill_visibility_snapshot,
@@ -18,6 +23,9 @@ from datasmart_ai_runtime.services.skills.session_skill_visibility import (
 __all__ = [
     "AgentSkillPublicationDiagnosticsSettings",
     "AgentSkillPublicationManifestDiagnosticsService",
+    "AgentSkillPublicationManifestRefreshController",
+    "AgentSkillPublicationRefreshDecision",
+    "AgentSkillPublicationRefreshPolicy",
     "build_session_skill_visibility_runtime_event",
     "build_session_skill_visibility_snapshot",
     "build_skill_publication_manifest_diagnostics_service",

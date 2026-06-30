@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
@@ -14,6 +15,8 @@ from datasmart_ai_runtime.services.skill_registry_client import (  # noqa: E402
 from datasmart_ai_runtime.services.skills import (  # noqa: E402
     AgentSkillPublicationDiagnosticsSettings,
     AgentSkillPublicationManifestDiagnosticsService,
+    AgentSkillPublicationManifestRefreshController,
+    AgentSkillPublicationRefreshPolicy,
     build_skill_publication_manifest_diagnostics_service,
     skill_publication_diagnostics_settings_from_env,
 )
@@ -72,6 +75,108 @@ class SkillPublicationDiagnosticsTest(unittest.TestCase):
         self.assertEqual({"HIGH": 1, "LOW": 1, "MEDIUM": 1}, diagnostics["riskLevelCounts"])
         self.assertEqual("disabled.skill", diagnostics["nonReadySkills"][0]["skillCode"])
         self.assertTrue(any("manifestFingerprint" in item for item in diagnostics["recommendedActions"]))
+        self.assertEqual("MANIFEST_CACHE_FRESH", diagnostics["refreshControl"]["reasonCode"])
+        self.assertFalse(diagnostics["refreshControl"]["shouldRefresh"])
+
+    def test_diagnostics_marks_remote_manifest_as_never_refreshed_before_first_refresh(self) -> None:
+        """远端 Manifest 已启用但尚未刷新时，应提示控制面先建立指纹基线。"""
+
+        service = AgentSkillPublicationManifestDiagnosticsService(
+            FakePublicationManifestClient(manifest=_manifest()),
+            AgentSkillPublicationDiagnosticsSettings(enabled=True),
+        )
+
+        diagnostics = service.diagnostics()
+
+        self.assertEqual("REMOTE_NOT_REFRESHED", diagnostics["status"])
+        self.assertEqual("NEVER_REFRESHED", diagnostics["refreshControl"]["reasonCode"])
+        self.assertTrue(diagnostics["refreshControl"]["shouldRefresh"])
+
+    def test_refresh_if_needed_force_refreshes_manifest_cache(self) -> None:
+        """强制刷新应显式触发远端读取，并返回前后指纹对比结果。"""
+
+        client = FakePublicationManifestClient(manifest=_manifest())
+        service = AgentSkillPublicationManifestDiagnosticsService(
+            client,
+            AgentSkillPublicationDiagnosticsSettings(enabled=True, include_disabled=True),
+        )
+
+        result = service.refresh_if_needed(trace_id="trace-force", force=True)
+
+        self.assertTrue(result["refreshTriggered"])
+        self.assertTrue(result["force"])
+        self.assertEqual([True], client.calls)
+        self.assertIsNone(result["beforeManifestFingerprint"])
+        self.assertEqual("f" * 64, result["afterManifestFingerprint"])
+        self.assertEqual("REMOTE_READY", result["diagnostics"]["status"])
+
+    def test_refresh_if_needed_skips_fresh_manifest_without_remote_call(self) -> None:
+        """Manifest 仍在有效期内时，普通刷新应复用缓存而不访问远端。"""
+
+        client = FakePublicationManifestClient(manifest=_manifest())
+        service = AgentSkillPublicationManifestDiagnosticsService(
+            client,
+            AgentSkillPublicationDiagnosticsSettings(
+                enabled=True,
+                include_disabled=True,
+                refresh_min_interval_seconds=300,
+            ),
+        )
+        service.refresh()
+        client.calls.clear()
+
+        result = service.refresh_if_needed(force=False)
+
+        self.assertFalse(result["refreshTriggered"])
+        self.assertEqual([], client.calls)
+        self.assertEqual("MANIFEST_CACHE_FRESH", result["decision"]["reasonCode"])
+
+    def test_refresh_controller_retries_after_remote_error_window(self) -> None:
+        """上次远端失败超过重试窗口后，应建议重新刷新而不是永久停在 fallback。"""
+
+        now = datetime(2026, 6, 30, 10, 0, 0, tzinfo=timezone.utc)
+        controller = AgentSkillPublicationManifestRefreshController(
+            AgentSkillPublicationRefreshPolicy(
+                stale_after_seconds=300,
+                min_refresh_interval_seconds=10,
+                retry_after_error_seconds=60,
+            ),
+            now=lambda: now,
+        )
+        diagnostics = {
+            "enabled": True,
+            "lastRefreshAt": (now - timedelta(seconds=90)).isoformat(),
+            "lastError": "REMOTE_UNAVAILABLE",
+        }
+
+        decision = controller.decide(diagnostics)
+
+        self.assertTrue(decision.should_refresh)
+        self.assertEqual("RETRY_AFTER_REMOTE_ERROR", decision.reason_code)
+
+    def test_refresh_controller_waits_during_remote_error_retry_window(self) -> None:
+        """远端失败后尚未到错误重试窗口时，应明确停留在退避状态。"""
+
+        now = datetime(2026, 6, 30, 10, 0, 0, tzinfo=timezone.utc)
+        controller = AgentSkillPublicationManifestRefreshController(
+            AgentSkillPublicationRefreshPolicy(
+                stale_after_seconds=300,
+                min_refresh_interval_seconds=10,
+                retry_after_error_seconds=60,
+            ),
+            now=lambda: now,
+        )
+        diagnostics = {
+            "enabled": True,
+            "lastRefreshAt": (now - timedelta(seconds=30)).isoformat(),
+            "lastError": "REMOTE_UNAVAILABLE",
+        }
+
+        decision = controller.decide(diagnostics)
+
+        self.assertFalse(decision.should_refresh)
+        self.assertEqual("REMOTE_ERROR_RETRY_WINDOW_ACTIVE", decision.reason_code)
+        self.assertEqual(30, decision.cooldown_seconds_remaining)
 
     def test_remote_failure_falls_back_to_local_skills_when_not_required(self) -> None:
         client = FakePublicationManifestClient(should_fail=True)
@@ -107,6 +212,10 @@ class SkillPublicationDiagnosticsTest(unittest.TestCase):
                 "DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_INCLUDE_DISABLED": "false",
                 "DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REFRESH_ON_STARTUP": "false",
                 "DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_MAX_NON_READY_ITEMS": "3",
+                "DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REFRESH_CONTROL_ENABLED": "true",
+                "DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REFRESH_STALE_AFTER_SECONDS": "120",
+                "DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REFRESH_MIN_INTERVAL_SECONDS": "15",
+                "DATASMART_AGENT_SKILL_PUBLICATION_MANIFEST_REFRESH_RETRY_AFTER_ERROR_SECONDS": "45",
             }
         )
 
@@ -115,6 +224,10 @@ class SkillPublicationDiagnosticsTest(unittest.TestCase):
         self.assertFalse(settings.include_disabled)
         self.assertFalse(settings.refresh_on_startup)
         self.assertEqual(3, settings.max_non_ready_items)
+        self.assertTrue(settings.refresh_control_enabled)
+        self.assertEqual(120, settings.refresh_stale_after_seconds)
+        self.assertEqual(15, settings.refresh_min_interval_seconds)
+        self.assertEqual(45, settings.refresh_retry_after_error_seconds)
 
 
 def _manifest() -> AgentSkillPublicationManifest:
