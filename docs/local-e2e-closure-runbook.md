@@ -49,6 +49,31 @@
 -Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2
 ```
 
+### 3.1 启动前环境就绪诊断
+
+在启动容器、Java 微服务或 Python Runtime 之前，建议先运行环境就绪脚本：
+
+```powershell
+.\scripts\local-e2e-environment-readiness.ps1
+```
+
+该脚本的定位是“启动前体检”，不是 smoke check。它会检查 Docker CLI/daemon、`mysql.exe`、MySQL 凭据环境变量是否设置、关键端口是否已经打开、`fastapi/uvicorn` 是否可导入，以及 Python Runtime 低敏诊断接口是否可访问。
+
+脚本默认不会猜测数据库密码，也不会连接 MySQL 执行任何 SQL。如果你已经明确设置了本地开发库账号密码，可以追加凭据探针：
+
+```powershell
+$env:DATASMART_MYSQL_USER = "root"
+$env:DATASMART_MYSQL_PASSWORD = "<请填写本地开发库密码>"
+.\scripts\local-e2e-environment-readiness.ps1 -ProbeMySqlCredential
+```
+
+安全边界：
+
+- MySQL 凭据探针只执行 `SELECT 1`，不读取业务表、不创建库表、不应用 migration。
+- 脚本只报告环境变量是否设置，不打印任何密码、token、SQL、HTTP 响应正文或业务数据。
+- Python Runtime 探针只检查 3 个低敏 GET 诊断端点的状态码，不解析或保存响应正文。
+- 如果输出中 Docker、Redis、Kafka、Nacos、Keycloak、gateway、Java 微服务端口为 `FAIL`，优先启动依赖或服务，不要先怀疑业务代码。
+
 ## 4. 启动顺序
 
 ### 4.1 启动基础设施

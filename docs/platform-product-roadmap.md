@@ -1,5 +1,28 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-30 追加落地进展：Local E2E Environment Readiness Closure
+- 本阶段继续按“整体闭环收敛”推进，没有新增业务功能、Agent 能力、模型路由或数据同步执行能力，而是把真实 E2E 启动前的环境阻塞变成可重复诊断的脚本化能力。
+- 产品价值：
+  - 新增 `scripts/local-e2e-environment-readiness.ps1`，作为 `local-e2e-smoke-check.ps1` 之前的“启动前体检”；
+  - 脚本集中检查 Docker CLI/daemon、`mysql.exe`、MySQL 凭据环境变量、关键端口、Python API 依赖和 Python Runtime 低敏诊断接口；
+  - 默认不猜测数据库密码、不连接 MySQL 执行 SQL，只有显式传入 `-ProbeMySqlCredential` 且提供密码时才执行 `SELECT 1`；
+  - 运行时输出使用 ASCII，避免 Windows PowerShell 5.1 在无 BOM UTF-8 脚本中误解析中文字符串；
+  - README 与本地 E2E runbook 已把流程调整为：先做环境 readiness，再做 MySQL migration governance，最后做真实 smoke。
+- 安全边界：
+  - 不启动容器、不启动微服务、不执行 migration、不创建任务、不触发 worker loop；
+  - 不打印数据库密码、JWT、SQL、HTTP 响应正文、样本数据、工具参数或模型输出；
+  - Python Runtime 探针只检查低敏 GET 诊断端点状态码，不解析响应正文；
+  - MySQL 探针只做 `SELECT 1`，用于区分“端口可达但凭据错误”和“数据库不可达”。
+- 验证：
+  - PowerShell AST 解析通过；
+  - 当前脚本 293 行，低于 500 行约束；
+  - 当前机器运行结果能稳定完成并汇总：Docker CLI 缺失、MySQL CLI 存在、MySQL 3306 开放、MySQL 凭据环境变量未设置、Redis/Kafka/Nacos/Keycloak/gateway/Java 服务/Python Runtime 端口未打开、`fastapi/uvicorn` 可导入；
+  - 默认模式退出码为 0，适合作为诊断工具；严格验收可追加 `-Strict`。
+- 收敛判断：
+  - 这一步没有让全平台 E2E 直接通过，但把“为什么不能继续启动”从人工猜测收敛为脚本输出；
+  - 当前真实 E2E 的下一步仍是准备 Docker 或本地中间件、设置 MySQL 开发凭据、运行 migration plan，然后启动 Keycloak/gateway/Java 微服务；
+  - 后续如果继续失败，应根据 readiness/smoke 的低敏分类修环境或服务启动，不再扩展局部业务代码掩盖闭环缺口。
+
 ## 2026-06-30 追加落地进展：Python Runtime Real HTTP E2E Smoke Closure
 - 本阶段继续按“整体闭环收敛”推进，没有新增 Agent 能力、工具执行器或业务写入链路，而是把 Python AI Runtime 从“单测可用、诊断路由已设计”推进到“本机真实 HTTP 进程可启动、诊断接口可访问”。
 - 产品价值：
