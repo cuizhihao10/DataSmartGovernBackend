@@ -431,9 +431,9 @@ Invoke-HttpProbe -Name "Grafana health" -Url "$GrafanaBaseUrl/api/health"
 Invoke-ServiceAccountTokenProbe
 Invoke-AgentGatewayDiagnosticsProbe
 
-$passed = ($script:Checks | Where-Object { $_.Status -eq "PASS" }).Count
-$warned = ($script:Checks | Where-Object { $_.Status -eq "WARN" }).Count
-$failed = ($script:Checks | Where-Object { $_.Status -eq "FAIL" }).Count
+$passed = @($script:Checks | Where-Object { $_.Status -eq "PASS" }).Count
+$warned = @($script:Checks | Where-Object { $_.Status -eq "WARN" }).Count
+$failed = @($script:Checks | Where-Object { $_.Status -eq "FAIL" }).Count
 
 Write-Host ""
 Write-Host ("汇总：PASS={0}, WARN={1}, FAIL={2}" -f $passed, $warned, $failed) -ForegroundColor Cyan

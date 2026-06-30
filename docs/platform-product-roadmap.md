@@ -5,6 +5,7 @@
 - 产品价值：
   - 新增 `scripts/local-mysql-migration-governance.ps1`，作为 Flyway/Liquibase 前的过渡型本地迁移治理脚本；
   - 支持 `-StaticOnly` 只校验迁移文件命名、非空、重复 migrationId 和 SHA-256 清单；
+  - 默认 `-ConnectionMode Auto` 会优先使用正在运行的 Docker `datasmart-mysql` 容器；当 Docker 不可用但本机存在 `mysql.exe` 时，可退到 `LocalCli` 连接本地 MySQL；
   - 默认模式连接本地 MySQL 后只读取迁移历史并输出执行计划，不执行 SQL；
   - `-Apply` 显式执行尚未登记的 `docker/mysql/migrations/*.sql`，并写入 `datasmart_schema_migration_history`；
   - `-BaselineExisting` 用于旧本地库已经人工执行过迁移后的补登记，不执行 SQL；
@@ -17,7 +18,8 @@
 - 验证：
   - PowerShell AST 解析通过；
   - 静态迁移治理通过：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\local-mysql-migration-governance.ps1 -StaticOnly`，`PASS=53, WARN=0, FAIL=0`；
-  - 当前 52 个 migration SQL 文件和 1 个静态模式检查均通过，没有命名、空文件或重复 migrationId 问题。
+  - 当前 52 个 migration SQL 文件和 1 个静态模式检查均通过，没有命名、空文件或重复 migrationId 问题；
+  - 在当前机器 Docker CLI 不存在但 `mysql.exe` 存在的情况下，`-ConnectionMode LocalCli` 能进入本机 CLI 连接路径，并正确报告 MySQL 服务未连接为 `FAIL=1`，没有误判为脚本解析失败。
 - 收敛判断：
   - 这一步不替代最终生产迁移系统，但能显著降低真实本地 E2E 启动时“代码已更新、数据库旧数据卷没迁移”的失败概率；
   - 下一步仍应进入真实启动联调，优先使用迁移治理脚本确认 schema 后，再运行认证 gateway smoke；

@@ -15,6 +15,8 @@
       .\scripts\local-mysql-migration-governance.ps1 -StaticOnly
     - 查看本地 MySQL 里哪些迁移尚未执行：
       .\scripts\local-mysql-migration-governance.ps1
+    - Docker 不在 PATH 但本机安装了 mysql.exe 时，改用本地 CLI 连接：
+      .\scripts\local-mysql-migration-governance.ps1 -ConnectionMode LocalCli
     - 执行尚未登记的迁移：
       .\scripts\local-mysql-migration-governance.ps1 -Apply
     - 已经手工执行过迁移时，仅补齐历史登记：
@@ -31,7 +33,11 @@ param(
     [switch]$Apply,
     [switch]$BaselineExisting,
     [switch]$Strict,
+    [ValidateSet("Auto", "Docker", "LocalCli")]
+    [string]$ConnectionMode = "Auto",
     [string]$ContainerName = "datasmart-mysql",
+    [string]$MySqlHost = "127.0.0.1",
+    [int]$MySqlPort = 3306,
     [string]$DatabaseName = "datasmart_govern",
     [string]$MySqlUser = "",
     [string]$MySqlPassword = "",
@@ -42,6 +48,7 @@ $ErrorActionPreference = "Stop"
 $script:Checks = New-Object System.Collections.Generic.List[object]
 $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $script:HistoryTableName = "datasmart_schema_migration_history"
+$script:EffectiveConnectionMode = $null
 
 if ([string]::IsNullOrWhiteSpace($MySqlUser)) {
     $MySqlUser = if ([string]::IsNullOrWhiteSpace($env:DATASMART_MYSQL_USER)) { "root" } else { $env:DATASMART_MYSQL_USER }
@@ -140,53 +147,95 @@ function Get-MigrationRecords {
     return $records
 }
 
+function Resolve-MySqlConnectionMode {
+    <#
+        选择本轮迁移治理要使用的 MySQL 连接方式。
+
+        设计说明：
+        - Docker 模式适合仓库默认 Compose 环境，直接进入 `datasmart-mysql` 容器执行 mysql client；
+        - LocalCli 模式适合 Docker Desktop 未安装、Docker 未加入 PATH、或开发者已经有本地 MySQL
+          实例的机器，通过本机 `mysql.exe` 连接 `127.0.0.1:3306`；
+        - Auto 模式优先选择正在运行的 Docker 容器；如果 Docker 不存在或容器没运行，再退到本地
+          mysql CLI。这样不会强迫所有开发者拥有同一种基础设施入口。
+    #>
+    if ($ConnectionMode -eq "Docker") {
+        return "Docker"
+    }
+    if ($ConnectionMode -eq "LocalCli") {
+        return "LocalCli"
+    }
+    if ((Test-CommandExists -CommandName "docker")) {
+        try {
+            $runningContainers = & docker ps --format "{{.Names}}"
+            if ($runningContainers -contains $ContainerName) {
+                return "Docker"
+            }
+        } catch {
+            # Auto 模式下 Docker CLI 异常时继续尝试 LocalCli，避免因为 Docker Desktop 未启动阻塞静态以外的本地治理。
+        }
+    }
+    if (Test-CommandExists -CommandName "mysql") {
+        return "LocalCli"
+    }
+    return $null
+}
+
 function Invoke-MySql {
     param(
         [string]$Sql,
         [switch]$SkipColumnNames
     )
 
-    $dockerArgs = @(
-        "exec",
-        "-i",
-        "-e",
-        "MYSQL_PWD=$MySqlPassword",
-        $ContainerName,
-        "mysql",
-        "-u$MySqlUser",
-        "--batch",
-        "--raw"
-    )
-    if ($SkipColumnNames) {
-        $dockerArgs += "--skip-column-names"
+    if ([string]::IsNullOrWhiteSpace($script:EffectiveConnectionMode)) {
+        throw "MySQL connection mode is not resolved"
     }
-    $dockerArgs += $DatabaseName
 
-    $output = $Sql | docker @dockerArgs 2>&1
+    if ($script:EffectiveConnectionMode -eq "Docker") {
+        $dockerArgs = @("exec", "-i", "-e", "MYSQL_PWD=$MySqlPassword", $ContainerName, "mysql", "-u$MySqlUser", "--batch", "--raw")
+        if ($SkipColumnNames) {
+            $dockerArgs += "--skip-column-names"
+        }
+        $dockerArgs += $DatabaseName
+        $output = $Sql | docker @dockerArgs 2>&1
+    } else {
+        $mysqlArgs = @("-h$MySqlHost", "-P$MySqlPort", "-u$MySqlUser", "--batch", "--raw")
+        if ($SkipColumnNames) {
+            $mysqlArgs += "--skip-column-names"
+        }
+        $mysqlArgs += $DatabaseName
+        $previousMysqlPwd = $env:MYSQL_PWD
+        try {
+            $env:MYSQL_PWD = $MySqlPassword
+            $output = $Sql | mysql @mysqlArgs 2>&1
+        } finally {
+            $env:MYSQL_PWD = $previousMysqlPwd
+        }
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "mysql command failed: $($output -join ' ')"
     }
     return $output
 }
 
-function Test-MySqlContainerReady {
-    if (-not (Test-CommandExists -CommandName "docker")) {
-        Add-Check -Name "Docker CLI" -Status "FAIL" -Detail "未发现 docker 命令，无法读取本地 MySQL 迁移历史"
+function Test-MySqlConnectionReady {
+    $script:EffectiveConnectionMode = Resolve-MySqlConnectionMode
+    if ([string]::IsNullOrWhiteSpace($script:EffectiveConnectionMode)) {
+        Add-Check -Name "MySQL 客户端" -Status "FAIL" -Detail "未发现可用 Docker 容器或 mysql CLI，无法读取本地 MySQL 迁移历史"
         return $false
     }
 
-    $runningContainers = & docker ps --format "{{.Names}}"
-    if ($runningContainers -notcontains $ContainerName) {
-        Add-Check -Name "MySQL 容器" -Status "FAIL" -Detail "容器 $ContainerName 未运行；可先执行 docker compose up -d mysql"
-        return $false
+    if ($script:EffectiveConnectionMode -eq "Docker") {
+        Add-Check -Name "MySQL 连接模式" -Status "PASS" -Detail "使用 Docker 容器 $ContainerName"
+    } else {
+        Add-Check -Name "MySQL 连接模式" -Status "PASS" -Detail "使用本机 mysql CLI 连接 ${MySqlHost}:${MySqlPort}/$DatabaseName"
     }
 
     try {
         Invoke-MySql -Sql "SELECT 1;" -SkipColumnNames | Out-Null
-        Add-Check -Name "MySQL 连接" -Status "PASS" -Detail "已连接容器 $ContainerName/$DatabaseName；未打印密码或查询正文"
+        Add-Check -Name "MySQL 连接" -Status "PASS" -Detail "已连接 $DatabaseName；未打印密码或查询正文"
         return $true
     } catch {
-        Add-Check -Name "MySQL 连接" -Status "FAIL" -Detail "无法连接本地 MySQL；请检查容器、数据库名、DATASMART_MYSQL_USER 和 DATASMART_MYSQL_PASSWORD"
+        Add-Check -Name "MySQL 连接" -Status "FAIL" -Detail "无法连接本地 MySQL；请检查连接模式、容器或本地服务、数据库名、DATASMART_MYSQL_USER 和 DATASMART_MYSQL_PASSWORD"
         return $false
     }
 }
@@ -296,7 +345,7 @@ if ($Apply -and $BaselineExisting) {
     $migrationRecords = @(Get-MigrationRecords)
 
     if (-not $StaticOnly -and $migrationRecords.Count -gt 0) {
-        $ready = Test-MySqlContainerReady
+        $ready = Test-MySqlConnectionReady
         if ($ready) {
             if ($Apply -or $BaselineExisting) {
                 Ensure-HistoryTable
@@ -331,9 +380,9 @@ if ($Apply -and $BaselineExisting) {
     }
 }
 
-$passed = ($script:Checks | Where-Object { $_.Status -eq "PASS" }).Count
-$warned = ($script:Checks | Where-Object { $_.Status -eq "WARN" }).Count
-$failed = ($script:Checks | Where-Object { $_.Status -eq "FAIL" }).Count
+$passed = @($script:Checks | Where-Object { $_.Status -eq "PASS" }).Count
+$warned = @($script:Checks | Where-Object { $_.Status -eq "WARN" }).Count
+$failed = @($script:Checks | Where-Object { $_.Status -eq "FAIL" }).Count
 
 Write-Host ""
 Write-Host ("Summary: PASS={0}, WARN={1}, FAIL={2}" -f $passed, $warned, $failed) -ForegroundColor Cyan

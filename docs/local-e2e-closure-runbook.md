@@ -109,6 +109,23 @@ Get-ChildItem -LiteralPath .\docker\mysql\migrations -Filter *.sql |
 .\scripts\local-mysql-migration-governance.ps1
 ```
 
+迁移脚本默认使用 `-ConnectionMode Auto`。在 Auto 模式下，它会优先使用正在运行的 `datasmart-mysql` Docker 容器；如果当前机器没有 Docker CLI、Docker Desktop 未加入 PATH，或容器没有运行，但本机存在 `mysql.exe`，脚本会退到本机 MySQL CLI 连接 `127.0.0.1:3306/datasmart_govern`。如果你明确要使用某一种模式，可以手动指定：
+
+```powershell
+.\scripts\local-mysql-migration-governance.ps1 -ConnectionMode Docker
+.\scripts\local-mysql-migration-governance.ps1 -ConnectionMode LocalCli
+```
+
+本机 MySQL CLI 模式可以通过参数或环境变量覆盖连接信息：
+
+```powershell
+$env:DATASMART_MYSQL_USER = "root"
+$env:DATASMART_MYSQL_PASSWORD = "<请填写本地开发库密码>"
+.\scripts\local-mysql-migration-governance.ps1 -ConnectionMode LocalCli -MySqlHost 127.0.0.1 -MySqlPort 3306 -DatabaseName datasmart_govern
+```
+
+如果本机有 `mysql.exe` 但 MySQL 服务没有启动，脚本会输出 `MySQL 连接` 失败；这表示当前只能完成 migration 文件静态治理，暂时不能读取真实数据库历史。
+
 如果确认这是可变更的本地开发库，并且希望执行尚未登记的 migration，再显式追加 `-Apply`：
 
 ```powershell
