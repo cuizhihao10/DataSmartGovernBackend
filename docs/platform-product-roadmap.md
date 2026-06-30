@@ -1,5 +1,26 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-30 追加落地进展：Java Agent Runtime Skill Create/Publish Lifecycle Closure
+- 本阶段继续按“整体闭环收敛”推进，优先关闭 Agent P0 hardBlocker 中最后一个 `skill.create-publish`。本次没有继续扩展新的 Skill DSL、prompt 模板或执行器能力，而是把 Skill Marketplace 从只读注册表/Manifest 消费侧推进到写侧生命周期控制面。
+- 产品价值：
+  - 新增 Skill 发布生命周期状态机：`DRAFT -> IN_REVIEW -> READY -> DEPRECATED`，并支持审核拒绝 `REJECTED`；
+  - 新增 `/agent-runtime/skills/publications` 与 `/api/agent/skills/publications` 路由，支持创建草稿、提交审核、审核通过、审核拒绝、下线、单条查询和列表查询；
+  - 新增低敏发布单 DTO、内容指纹、重复 `skillCode/version` 校验、治理策略预检、管理员审核轻量防线、状态聚合和推荐动作；
+  - Agent 能力矩阵将 `skill.create-publish` 从 `PLANNED` 校准为 `PARTIAL_CLOSED_LOOP`，P0 hard blocker 数量降为 0，项目进入“关闭控制面转实缺口 + 最小 E2E 联调”的阶段。
+- 安全边界：
+  - 发布单只保存 Skill 编码、版本、治理域、风险等级、审批策略、工具依赖、权限依赖、记忆依赖、状态和操作者；
+  - 不保存 prompt、SQL、工具参数、样本数据、模型输出、脚本正文、凭据、URL 或内部 endpoint；
+  - 高风险 Skill 提交审核前必须具备人工审批策略、审计声明、租户隔离、项目隔离和权限声明；
+  - 当前身份校验仍是 Header/请求体轻量防线，生产需要由 Keycloak/OIDC、企业 IdP、gateway 和 permission-admin 提供可信主体与审批动作。
+- 验证：
+  - Java 定向测试通过：`AgentSkillPublicationLifecycleServiceTest`、`AgentSkillPublicationManifestServiceTest`、`AgentSkillRegistryServiceTest`，共 15 个用例；
+  - Python 能力矩阵测试通过：`python -m unittest python-ai-runtime\tests\test_agent_capability_matrix.py`，共 11 个用例；
+  - 新增最长 Java 文件 `AgentSkillPublicationLifecycleService.java` 为 478 行，低于 500 行约束。
+- 收敛判断：
+  - `skill.create-publish` 不再是 P0 hard blocker，但仍属于 partial closed-loop；
+  - 下一步不建议继续扩展 Skill DSL 或 prompt 模板，而应把 READY 发布事实接入 Manifest/Skill visibility cache，并补 MySQL/JDBC durable store、发布 outbox、灰度/回滚和审批单绑定；
+  - 项目整体应从“补 P0 hard blocker”转向“Keycloak/gateway/permission-admin/agent-runtime/Python Runtime 最小 E2E 启动联调 + 控制面转实缺口收口”。
+
 ## 2026-06-30 追加落地进展：Python AI Runtime SQLite FTS Memory Index Closure
 - 本阶段继续按“整体闭环收敛”推进，优先关闭 Agent P0 hardBlocker 中的 `memory.sqlite-fts`，没有继续扩展新的记忆类型、模型算法或业务模块字段。目标是让长期记忆在 SQL 事实源、Chroma-compatible 语义索引之外，补齐一条本地/轻量部署可用的全文检索二级索引通道。
 - 产品价值：
@@ -18,7 +39,7 @@
   - 新增适配器文件 444 行，低于 500 行约束。
 - 收敛判断：
   - `memory.sqlite-fts` 不再是 P0 hard blocker，但仍属于生产化加固项；
-  - 下一步不建议继续扩展记忆字段或搜索算法，而应优先关闭剩余 P0 hard blocker：`skill.create-publish`，随后进入最小 E2E 联调与最终闭口验收。
+  - 下一步不建议继续扩展记忆字段或搜索算法；`skill.create-publish` 已补状态机闭环，后续应进入最小 E2E 联调与最终闭口验收。
 
 ## 2026-06-30 追加落地进展：Python AI Runtime Mature Inference Optimization Diagnostics
 - 本阶段继续按“整体闭环收敛”推进，关闭 Agent P0 中 `llm.inference-optimization` 的 planned 缺口，但没有把项目发散到模型训练、微调、后训练或底层推理内核研发。目标是让模型层的“推理优化”收敛为成熟 serving stack 的低敏诊断控制面：vLLM/SGLang/LiteLLM/OpenAI-compatible 路由都能被解释还缺哪些 TTFT、TPS、queue、batching、prefix/KV cache 和 GPU/KV pressure 指标。
@@ -34,10 +55,10 @@
 - 验证：
   - 定向测试通过：`test_model_inference_optimization.py`、`test_agent_capability_matrix.py`、`test_model_gateway.py`、`test_model_capability_registry.py`，共 30 个用例；
   - Python Runtime 全量单测通过：`python -m unittest discover -s python-ai-runtime\tests`，共 564 个用例；
-  - 当前探针显示 `llm.inference-optimization` 已进入 P0 control-plane gap；项目仍有 `skill.create-publish` 与 `memory.sqlite-fts` 两个 P0 hard blocker，不能误报最终完成。
+  - 当前探针显示 `llm.inference-optimization` 已进入 P0 control-plane gap；`memory.sqlite-fts` 与 `skill.create-publish` 已从 hard blocker 推进到 partial closed-loop，项目仍不能误报最终完成。
 - 收敛判断：
   - 模型层继续坚持“成熟技术接入 + 低敏诊断 + benchmark/eval”，不进入算法研发或底层推理优化；
-  - 下一步不建议继续扩展模型字段，应优先关闭剩余 P0 hard blocker：Skill 创建/发布闭环、SQLite FTS 记忆检索闭环，随后进入最小 E2E 启动联调。
+  - 下一步不建议继续扩展模型字段，应把真实指标回灌和最小 E2E 启动联调作为收敛重点。
 
 ## 2026-06-30 追加落地进展：Python AI Runtime Controlled Web Search Tool Contract
 - 本阶段继续按“整体闭环收敛”推进，关闭 Agent P0 hardBlocker 中的 `tool.web-search` 计划项，但没有直接开放任意联网能力。目标是让 web search 先成为受控工具契约：模型可以提出搜索意图，Host 负责查询引用化、Provider allowlist、网络权限、缓存 TTL、限流和引用结果策略。

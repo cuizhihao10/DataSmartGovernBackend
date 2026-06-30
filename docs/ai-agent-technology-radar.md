@@ -1,5 +1,21 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-06-30 落地补充：Skill publishing needs a governed lifecycle, not only a manifest
+
+- 本轮趋势校准：
+  - Codex、Claude Code、OpenClaw 类 Agent Host 的 Skill/工具生态不能只停留在“能列出能力”或“能读取 Manifest”；商用产品必须管理能力包的创建、审核、发布、下线、审计和回滚边界；
+  - Skill 发布是 Host-owned control-plane 事实，不应由模型或 Python Runtime 自行决定上线。Python Runtime 应消费 READY 的低敏发布事实，Java 控制面负责状态、权限、审计和持久化；
+  - 高风险 Skill 可以上线，但必须具备人工审批、权限声明、租户/项目隔离、审计和执行前 readiness，不应通过 enabled=true 这种单一布尔值绕过治理。
+- 本轮落地到代码的能力：
+  - Java `agent-runtime` 新增 Skill 发布生命周期状态机：DRAFT、IN_REVIEW、READY、REJECTED、DEPRECATED；
+  - 新增发布草稿、提交审核、审核通过、审核拒绝、下线和查询 API；
+  - 新增低敏发布单 DTO、内容指纹、重复版本校验、治理策略预检、管理员审核轻量防线和敏感备注拦截；
+  - Agent 能力矩阵把 `skill.create-publish` 从 planned 推进到 partial closed-loop，P0 hard blocker 数量降为 0。
+- 产品判断：
+  - 这一步关闭的是“没有创建/发布状态机”的 P0 硬缺口，不代表 Skill 市场已经完全生产化；
+  - 后续只建议补 READY 生命周期事实与 Manifest/Skill visibility cache 绑定、MySQL durable store、发布 outbox、审批单/Keycloak/企业 IdP 绑定、灰度和回滚；
+  - 当前项目应进入 Keycloak/gateway/permission-admin/agent-runtime/Python Runtime 最小 E2E 联调，而不是继续扩展 Skill DSL、prompt 模板或更多局部治理字段。
+
 ## 2026-06-30 落地补充：long-term memory should use hybrid retrieval with Host-owned boundaries
 
 - 本轮趋势校准：
@@ -13,7 +29,7 @@
 - 产品判断：
   - 这一步关闭的是“没有本地全文索引 adapter”的 P0 硬缺口，不代表长期记忆生产闭环全部完成；
   - 后续只建议补后台同步 worker、索引压缩/重建、查询超时、加密落盘、健康指标和 Chroma/pgvector hybrid retrieval；
-  - 当前更高优先级是关闭剩余 P0 hard blocker `skill.create-publish`，再进入 Keycloak/gateway/permission-admin/agent-runtime/Python Runtime 的最小 E2E 闭环。
+  - 当前更高优先级是 Keycloak/gateway/permission-admin/agent-runtime/Python Runtime 的最小 E2E 闭环。
 
 ## 2026-06-30 落地补充：inference optimization should be serving-observable, not kernel-in-repo
 
@@ -29,7 +45,7 @@
 - 产品判断：
   - 这一步关闭的是“推理优化没有控制面合同”的缺口，不是完成真实 GPU 压测；
   - 后续如果继续模型层，只做指标回灌、benchmark/eval、精确 tokenizer、分布式限流、租户套餐和灰度报告；
-  - 当前更推荐先关闭剩余 P0 hard blocker，再进入 Keycloak/gateway/permission-admin/agent-runtime/Python Runtime 的最小 E2E 联调。
+  - 当前更推荐进入 Keycloak/gateway/permission-admin/agent-runtime/Python Runtime 的最小 E2E 联调，并把控制面合同逐步转成真实运行事实。
 
 ## 2026-06-30 落地补充：web search must be provider-governed, citation-first, and query-reference based
 

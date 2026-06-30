@@ -93,7 +93,7 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
         self.assertIn(AgentCapabilityStatus.PLANNED.value, diagnostics["statusCounts"])
         self.assertEqual("AGENT_CAPABILITY_CLOSURE_READINESS", closure_readiness["snapshotType"])
         self.assertEqual(
-            AgentClosureGateDecision.NOT_READY_FOR_PROJECT_CLOSURE.value,
+            AgentClosureGateDecision.CLOSE_CONTROL_PLANE_GAPS_FIRST.value,
             closure_readiness["gateDecision"],
         )
         self.assertFalse(closure_readiness["canStartFinalProjectClosure"])
@@ -193,8 +193,27 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
         self.assertIn("SQLiteFtsAgentMemorySecondaryIndex", sqlite_fts["currentEvidence"])
         self.assertIn("StoreBackedAgentMemoryRetriever", sqlite_fts["currentEvidence"])
         self.assertIn("materialization receipt", sqlite_fts["nextAction"])
-        self.assertNotIn("prompt", serialized)
+        self.assertNotIn("raw prompt", serialized)
         self.assertNotIn("sample data", serialized)
+
+    def test_skill_create_publish_reflects_lifecycle_state_machine_closure(self) -> None:
+        """Skill 创建发布已经具备状态机闭环，但仍需要 durable store 与 Manifest 绑定。"""
+
+        diagnostics = default_agent_capability_matrix_service().diagnostics()
+        skills_domain = next(domain for domain in diagnostics["domains"] if domain["domainId"] == "skills")
+        create_publish = next(
+            item
+            for item in skills_domain["subCapabilities"]
+            if item["capabilityId"] == "skill.create-publish"
+        )
+        serialized = str(create_publish).lower()
+
+        self.assertEqual(AgentCapabilityStatus.PARTIAL_CLOSED_LOOP.value, create_publish["status"])
+        self.assertIn("draft -> review -> ready -> deprecated", create_publish["currentEvidence"])
+        self.assertIn("治理策略预检", create_publish["currentEvidence"])
+        self.assertIn("Manifest", create_publish["closureGap"])
+        self.assertNotIn("raw prompt", serialized)
+        self.assertNotIn("select * from", serialized)
 
     def test_closure_readiness_groups_p0_gaps_for_final_project_convergence(self) -> None:
         """闭口门禁应把 P0 缺口分层，帮助项目停止发散并优先关闭硬阻塞。"""
@@ -209,12 +228,13 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
         self.assertEqual("LOW_SENSITIVE_CAPABILITY_METADATA_ONLY", readiness["payloadPolicy"])
         self.assertGreater(readiness["readinessScore"], 0)
         self.assertLess(readiness["readinessScore"], 100)
-        self.assertGreater(readiness["p0HardBlockerCount"], 0)
+        self.assertEqual(0, readiness["p0HardBlockerCount"])
         self.assertGreater(readiness["p0ControlPlaneGapCount"], 0)
         self.assertGreater(readiness["p0OperationalizationGapCount"], 0)
         self.assertNotIn("tool.file-read-write", hard_blocker_ids)
         self.assertNotIn("llm.inference-optimization", hard_blocker_ids)
         self.assertNotIn("memory.sqlite-fts", hard_blocker_ids)
+        self.assertNotIn("skill.create-publish", hard_blocker_ids)
         self.assertIn("llm.inference-optimization", control_plane_gap_ids)
         self.assertIn("tool.exec-run-program", control_plane_gap_ids)
         self.assertIn("tool.file-read-write", operationalization_gap_ids)
@@ -283,7 +303,7 @@ class AgentCapabilityMatrixTest(unittest.TestCase):
         self.assertIn("topClosureGaps", domains["tools"])
         self.assertEqual("AGENT_CAPABILITY_CLOSURE_READINESS", closure_readiness["snapshotType"])
         self.assertFalse(closure_readiness["canStartFinalProjectClosure"])
-        self.assertIn("STOP_FEATURE_EXPANSION", closure_readiness["recommendedDeliveryMode"])
+        self.assertIn("CONVERT_CONTROL_PLANE", closure_readiness["recommendedDeliveryMode"])
         self.assertNotIn("subCapabilities", domains["tools"])
         self.assertNotIn("ds-capability-sensitive", str(closure))
 
