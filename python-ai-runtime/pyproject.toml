@@ -7,7 +7,10 @@ authors = [{ name = "Cui" }]
 dependencies = []
 
 [project.optional-dependencies]
-api = ["fastapi>=0.110", "uvicorn>=0.27"]
+# API 依赖是可选项：核心 Agent/工具/记忆/模型网关单测不强制安装 FastAPI。
+# 这里设置 `<1.0` 主版本上限，是为了避免未来 FastAPI/Uvicorn 进入 1.x 后出现破坏性启动行为；
+# 同时运行时代码已通过 `api/lifecycle.py` 兼容当前较新的 FastAPI 0.138.x 生命周期 API。
+api = ["fastapi>=0.110,<1.0", "uvicorn>=0.27,<1.0"]
 # Kafka 发布器是生产集成能力，不放入默认依赖，避免本地学习、离线规划和单元测试被消息中间件客户端绑定。
 # 部署方如果启用 DATASMART_AI_RUNTIME_EVENT_PUBLISHER=kafka，可通过 `pip install -e python-ai-runtime[kafka]` 安装。
 kafka = ["kafka-python>=2.0"]

@@ -1,5 +1,28 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-06-30 追加落地进展：Python Runtime Real HTTP E2E Smoke Closure
+- 本阶段继续按“整体闭环收敛”推进，没有新增 Agent 能力、工具执行器或业务写入链路，而是把 Python AI Runtime 从“单测可用、诊断路由已设计”推进到“本机真实 HTTP 进程可启动、诊断接口可访问”。
+- 产品价值：
+  - 真实安装 `python-ai-runtime[api]` 可选依赖后，发现新版 FastAPI 已不再提供旧的 `app.add_event_handler(...)` 应用级生命周期方法，导致 `uvicorn datasmart_ai_runtime.api:create_app --factory` 启动失败；
+  - 新增 `api/lifecycle.py`，统一兼容旧版 `app.add_event_handler`、新版 `app.router.add_event_handler` 以及 router 生命周期列表，避免 Web 框架版本变化扩散到 Agent 编排、长期记忆、模型网关等业务组件；
+  - 新增 `api/runtime_event_replay_sources.py`，把 Java `agent-runtime` replay source 的环境变量装配从 `api/app.py` 拆出，保持主应用入口低于 500 行；
+  - 修复 `register_agent_runtime_routes(...)` 的真实装配漂移，删除已过期的 `agent_capability_matrix_service` 参数；
+  - 新增真实 `create_app()` 工厂测试，并把响应集成类测试拆到 `test_api_response_integration.py`，避免 FakeApp 契约测试通过但真实 FastAPI 工厂启动失败。
+- 安全边界：
+  - 本次真实 HTTP smoke 只验证 Python Runtime 的低敏诊断 GET 接口，不执行工具、不创建任务、不读取或写入真实业务数据；
+  - 诊断接口仍不得返回 prompt、SQL、工具参数、样本数据、模型输出、token、内部 endpoint、artifact 正文或长期记忆正文；
+  - `python-ai-runtime[api]` 增加 `<1.0` 主版本上限，降低未来依赖大版本跳变破坏本地闭环的概率；真实生产仍建议使用独立 venv/容器镜像，而不是污染全局 Anaconda 环境。
+- 验证：
+  - `python -m unittest python-ai-runtime\tests\test_api_bootstrap.py python-ai-runtime\tests\test_api_response_integration.py` 通过，共 18 个用例；
+  - Python Runtime 全量单测通过：`python -m unittest discover -s python-ai-runtime\tests`，共 577 个用例；
+  - `uvicorn` 真实启动成功，`127.0.0.1:8090` 端口打开；
+  - 直连低敏诊断接口均返回 HTTP 200：`/agent/capabilities/closure-readiness`、`/agent/skills/publication/diagnostics`、`/agent/models/inference-optimization/diagnostics`；
+  - `scripts/local-e2e-smoke-check.ps1 -SkipDocker -PythonAiRuntimeBaseUrl http://127.0.0.1:8090` 中 Python Runtime 三项探针通过，整体仍因 Keycloak、gateway、Java 微服务、Prometheus/Grafana 未启动而失败。
+- 收敛判断：
+  - Python Runtime 直连诊断链路已完成真实 HTTP 小闭环；
+  - 全平台真实 E2E 的剩余阻塞不是 Python Runtime 启动问题，而是本机 Docker 不可用、MySQL 开发凭据不匹配，以及 Keycloak/gateway/Java 微服务/监控组件尚未启动；
+  - 下一步应优先准备本地中间件与数据库凭据，再启动 Keycloak、permission-admin、gateway、task-management、data-sync、datasource-management、agent-runtime，运行不带 `-SkipHttp` 的认证 gateway smoke。
+
 ## 2026-06-30 追加落地进展：Local MySQL Migration Governance Closure
 - 本阶段继续按“整体闭环收敛”推进，没有新增业务模块、Agent 能力或模型能力，而是优先修复真实本地 E2E 启动前最容易卡住的 schema 漂移问题。
 - 产品价值：

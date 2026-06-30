@@ -33,12 +33,7 @@ from datasmart_ai_runtime.domain.events import (
 )
 from datasmart_ai_runtime.domain.intent import GovernanceDomain
 from datasmart_ai_runtime.domain.memory import AgentMemoryType
-from datasmart_ai_runtime.domain.model_gateway import ModelGatewayBudgetPolicy
 from datasmart_ai_runtime.domain.skills import AgentSkillDescriptor
-from datasmart_ai_runtime.config import default_model_routes
-from datasmart_ai_runtime.services.model_gateway import InMemoryModelBudgetLedger, ModelGatewayGovernanceService
-from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
-from datasmart_ai_runtime.services.runtime_events.runtime_event_store import InMemoryRuntimeEventStore
 from datasmart_ai_runtime.services.skill_registry_client import SkillRegistryClientError
 from datasmart_ai_runtime.services.tool_registry_client import ToolRegistryClientError
 
@@ -84,17 +79,6 @@ class FakeSkillRegistryClient:
         if self._should_fail:
             raise SkillRegistryClientError("模拟 Java Skill 描述符不可用")
         return self._skills
-
-
-class FakeRuntimeEventPublisher:
-    """记录 API 层是否把规划事件交给异步发布器。"""
-
-    def __init__(self) -> None:
-        self.published_batches: list[int] = []
-
-    def publish(self, events) -> int:
-        self.published_batches.append(len(events))
-        return len(events)
 
 
 class FakeReplaySource:
@@ -485,72 +469,6 @@ class ApiBootstrapTest(unittest.TestCase):
             envelope["events"][0]["attributes"]["_datasmartOriginalSequence"],
         )
         self.assertTrue(envelope["events"][0]["attributes"]["_datasmartSyntheticReplaySequence"])
-
-    def test_plan_response_can_store_events_for_later_replay(self) -> None:
-        orchestrator = build_default_orchestrator()
-        store = InMemoryRuntimeEventStore()
-        request = AgentRequest(
-            tenant_id="tenant-a",
-            project_id="project-a",
-            actor_id="user-a",
-            objective="请先分析这个 MySQL 数据源的表结构",
-            variables={"datasourceId": "ds-001", "sessionId": "session-store"},
-        )
-
-        build_plan_response(request, orchestrator, event_store=store)
-        response = build_event_replay_response(
-            RuntimeEventSubscriptionRequest(
-                client_id="client-a",
-                session_id="session-store",
-                after_sequence=0,
-            ),
-            event_store=store,
-        )
-
-        envelope = response["eventEnvelope"]
-        self.assertTrue(envelope["events"])
-        self.assertEqual("session-store", envelope["session_id"])
-        self.assertEqual(1, envelope["sequence_from"])
-
-    def test_plan_response_can_publish_runtime_events_to_async_bus(self) -> None:
-        orchestrator = build_default_orchestrator()
-        publisher = FakeRuntimeEventPublisher()
-        request = AgentRequest(
-            tenant_id="tenant-a",
-            project_id="project-a",
-            actor_id="user-a",
-            objective="请先分析这个 MySQL 数据源的表结构",
-            variables={"datasourceId": "ds-001", "sessionId": "session-publisher"},
-        )
-
-        response = build_plan_response(request, orchestrator, event_publisher=publisher)
-
-        self.assertEqual([len(response["plan"]["runtime_events"])], publisher.published_batches)
-        self.assertGreater(publisher.published_batches[0], 0)
-
-    def test_plan_response_exposes_budget_blocked_model_gateway_summary(self) -> None:
-        routes = ModelRouteRegistry(default_model_routes())
-        budget_ledger = InMemoryModelBudgetLedger(
-            (ModelGatewayBudgetPolicy(tenant_id="tenant-a", project_id="project-a", monthly_token_budget=1),)
-        )
-        model_gateway = ModelGatewayGovernanceService(routes, budget_ledger=budget_ledger)
-        orchestrator = build_default_orchestrator(model_gateway=model_gateway)
-        request = AgentRequest(
-            tenant_id="tenant-a",
-            project_id="project-a",
-            actor_id="user-a",
-            objective="请先分析这个 MySQL 数据源的表结构",
-            variables={"datasourceId": "ds-001"},
-        )
-
-        response = build_plan_response(request, orchestrator)
-
-        governance = response["modelGatewayGovernance"]
-        self.assertFalse(governance["available"])
-        self.assertFalse(governance["budgetAllowed"])
-        self.assertIsNone(governance["selectedModel"])
-        self.assertTrue(any("预算" in action for action in governance["recommendedActions"]))
-
 
 if __name__ == "__main__":
     unittest.main()

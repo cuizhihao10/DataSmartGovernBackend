@@ -40,18 +40,18 @@ from datasmart_ai_runtime.api.agent.orchestrator_factory import (
     load_skill_registry,
     load_tool_registry,
     optional_positive_int_env as _optional_positive_int_env,
-    positive_int_env as _positive_int_env,
     truthy_env as _truthy_env,
 )
 from datasmart_ai_runtime.api.agent.capabilities import register_agent_capability_routes
 from datasmart_ai_runtime.api.agent.routes import register_agent_runtime_routes
 from datasmart_ai_runtime.api.agent.plan_response import build_plan_response
+from datasmart_ai_runtime.api.lifecycle import register_lifecycle_handler
+from datasmart_ai_runtime.api.runtime_event_replay_sources import build_runtime_event_replay_sources
 from datasmart_ai_runtime.config import model_routes_from_env
 from datasmart_ai_runtime.services.agent_control_plane_feedback import AgentControlPlaneFeedbackCollector
 from datasmart_ai_runtime.services.agent_loop_control_policy import AgentLoopControlPolicyEvaluator
 from datasmart_ai_runtime.services.agent_plan_ingestion_client import JavaAgentPlanIngestionClient
 from datasmart_ai_runtime.services.agent_runtime_event_feedback import AgentRuntimeEventFeedbackBridge
-from datasmart_ai_runtime.services.agent_runtime_event_replay_client import JavaAgentRuntimeEventReplayClient
 from datasmart_ai_runtime.services.agent_runtime_tool_feedback_client import (
     JavaAgentRuntimeToolFeedbackClient,
     JavaAgentRuntimeToolFeedbackProvider,
@@ -86,28 +86,6 @@ from datasmart_ai_runtime.services.tools import (
     tool_action_execution_checkpoint_store_diagnostics,
     tool_action_execution_checkpoint_store_settings_from_env,
 )
-
-
-def _build_runtime_event_replay_sources(agent_runtime_base_url: str | None) -> tuple[Any, ...]:
-    """按环境变量装配外部 runtime-event replay source。
-
-    当前只接入 Java `agent-runtime` 投影；但返回 tuple 而不是单对象，是为了给未来继续接入 Kafka
-    replay、长期审计库、对象归档或多区域事件源预留组合空间。
-    """
-
-    if not agent_runtime_base_url or not _truthy_env("DATASMART_AGENT_RUNTIME_EVENT_REPLAY_ENABLED"):
-        return ()
-    return (
-        JavaAgentRuntimeEventReplayClient(
-            base_url=agent_runtime_base_url,
-            timeout_seconds=_positive_int_env("DATASMART_AGENT_RUNTIME_EVENT_REPLAY_TIMEOUT_SECONDS", 3),
-            replay_path=os.getenv("DATASMART_AGENT_RUNTIME_EVENT_REPLAY_PATH")
-            or "/agent-runtime/runtime-events/replay",
-            ack_path=os.getenv("DATASMART_AGENT_RUNTIME_EVENT_ACK_PATH")
-            or "/agent-runtime/runtime-events/replay/acks",
-            default_limit=_positive_int_env("DATASMART_AGENT_RUNTIME_EVENT_REPLAY_LIMIT", 200),
-        ),
-    )
 
 
 def create_app() -> Any:
@@ -191,7 +169,7 @@ def create_app() -> Any:
         if control_plane_feedback_collector and _truthy_env("DATASMART_AGENT_RUNTIME_SECOND_TURN_ENABLED")
         else None
     )
-    runtime_event_replay_sources = _build_runtime_event_replay_sources(agent_runtime_base_url)
+    runtime_event_replay_sources = build_runtime_event_replay_sources(agent_runtime_base_url)
     runtime_event_feedback_bridge = (
         AgentRuntimeEventFeedbackBridge(runtime_event_replay_sources)
         if runtime_event_replay_sources and _truthy_env("DATASMART_AGENT_RUNTIME_EVENT_LOOP_FEEDBACK_ENABLED")
@@ -280,10 +258,10 @@ def create_app() -> Any:
 
         memory_materialization_worker.stop()
 
-    app.add_event_handler("startup", _start_memory_materialization_worker)
-    app.add_event_handler("startup", _refresh_skill_publication_manifest_diagnostics)
-    app.add_event_handler("startup", _probe_model_provider_health_on_startup)
-    app.add_event_handler("shutdown", _stop_memory_materialization_worker)
+    register_lifecycle_handler(app, "startup", _start_memory_materialization_worker)
+    register_lifecycle_handler(app, "startup", _refresh_skill_publication_manifest_diagnostics)
+    register_lifecycle_handler(app, "startup", _probe_model_provider_health_on_startup)
+    register_lifecycle_handler(app, "shutdown", _stop_memory_materialization_worker)
 
     @app.get("/agent/events/diagnostics")
     def runtime_event_diagnostics() -> dict[str, Any]:
@@ -480,7 +458,6 @@ def create_app() -> Any:
         memory_write_governance=memory_runtime.memory_write_governance,
         skill_publication_diagnostics_service=skill_publication_manifest_diagnostics,
         tool_execution_readiness_policy_provider=tool_execution_readiness_policy_provider,
-        agent_capability_matrix_service=agent_capability_matrix,
         tool_action_resume_fact_provider=tool_action_resume_fact_provider,
         tool_action_checkpoint_store=tool_action_checkpoint_store,
         tool_action_checkpoint_metrics=tool_action_checkpoint_metrics,
