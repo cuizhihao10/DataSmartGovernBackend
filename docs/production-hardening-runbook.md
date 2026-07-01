@@ -129,6 +129,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\production-readine
 
 默认模式用于收敛推进：已满足本地闭环和生产加固文档契约时返回成功；尚未真正实现的 Kubernetes/Helm、SBOM、备份恢复、容量压测和故障演练脚本会以 warning 形式列出，提醒它们是生产阻塞项。
 
+供应链 SBOM 就绪检查可单独运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\sbom-check.ps1
+```
+
+如果需要生成不含 Secret 的源码侧依赖范围快照，可追加 `-WriteSourceInventory`，输出会写入被 Git 忽略的 `target/sbom`。该快照不是完整 CycloneDX/SPDX SBOM；正式发布时仍应在 CI 中对已构建镜像使用 Syft 或企业 SBOM 工具生成标准格式制品。
+
 如果需要把 warning 也视为失败，可使用严格模式：
 
 ```powershell
