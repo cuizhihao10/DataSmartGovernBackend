@@ -88,6 +88,41 @@ class GatewayAgentRuntimeAuthorizationFilterTest {
     }
 
     /**
+     * Skill 可见性投影诊断应使用 DIAGNOSE，而不是被 runtime-events 通配规则解释成 VIEW_EVENTS。
+     *
+     * <p>该接口展示的是 Java 控制面是否已经收到 Python Runtime 发布的 Skill visibility snapshot、
+     * 是否存在 fallback/duplicate/manifest binding 异常。它是运维健康视角，不是普通事件流浏览。
+     * 如果误落入 `/api/agent/runtime-events/**`，审计查看权限就会意外覆盖运维诊断权限。</p>
+     */
+    @Test
+    void skillVisibilitySnapshotDiagnosticsShouldUseDiagnoseAuthorization() {
+        assertAuthorization(
+                "/api/agent/runtime-events/skill-visibility-snapshots/diagnostics",
+                "GET",
+                "OPERATOR",
+                "AI_RUNTIME",
+                "DIAGNOSE"
+        );
+    }
+
+    /**
+     * 异步命令 outbox 诊断应使用 DIAGNOSE，而不是普通 VIEW。
+     *
+     * <p>该接口用于观察 agent-runtime 到 task-management 的异步命令是否积压、失败、进入死信或等待恢复。
+     * 它不执行 dispatch、不 requeue、不修改 outbox，但暴露的是运行可靠性状态，应由运维诊断权限控制。</p>
+     */
+    @Test
+    void asyncTaskCommandOutboxDiagnosticsShouldUseDiagnoseAuthorization() {
+        assertAuthorization(
+                "/api/agent/async-task-commands/outbox/diagnostics",
+                "GET",
+                "OPERATOR",
+                "AI_RUNTIME",
+                "DIAGNOSE"
+        );
+    }
+
+    /**
      * Python Runtime 指标入口应使用 AI_RUNTIME + DIAGNOSE，而不是落入普通 `/api/agent/**` 查看规则。
      *
      * <p>`/api/agent/metrics` 暴露的是 Prometheus 低基数聚合指标，业务含义接近运维诊断：

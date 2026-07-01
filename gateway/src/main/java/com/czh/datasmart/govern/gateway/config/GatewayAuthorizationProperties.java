@@ -209,15 +209,14 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/agent/runtime-events/diagnostics", "AI_RUNTIME",
                 "Agent Runtime 运行时事件消费诊断接口，用于运维查看 Kafka consumer、投影窗口和拒绝原因统计",
                 Map.of("GET", "DIAGNOSE")));
+        defaults.add(route("/api/agent/runtime-events/skill-visibility-snapshots/diagnostics", "AI_RUNTIME", "Agent Runtime Skill 可见性快照索引诊断接口，用于确认 Java 控制面是否收到 Python Runtime 投影事实", Map.of("GET", "DIAGNOSE")));
         defaults.add(route("/api/agent/runtime-events/replay/acks", "AI_RUNTIME",
                 "Agent Runtime 事件回放客户端 ack 游标入口，用于确认 WebSocket/HTTP replay 已消费到的 replaySequence",
                 Map.of("GET", "VIEW_EVENTS", "POST", "ACK_EVENTS")));
         defaults.add(route("/api/agent/runtime-events/**", "AI_RUNTIME",
                 "Agent Runtime 运行时事件投影查询接口，用于查看 run/session/request 维度的 Agent 执行事件",
                 Map.of("GET", "VIEW_EVENTS")));
-        defaults.add(route("/api/agent/metrics", "AI_RUNTIME",
-                "Python AI Runtime Prometheus 低基数指标入口；它用于观测 LangGraph、长期记忆、模型网关、checkpoint 和执行门禁等运行趋势，不承载工具执行、业务写入或单次请求排障正文",
-                Map.of("GET", "DIAGNOSE")));
+        defaults.add(route("/api/agent/metrics", "AI_RUNTIME", "Python AI Runtime Prometheus 低基数指标入口；它用于观测 LangGraph、长期记忆、模型网关、checkpoint 和执行门禁等运行趋势，不承载工具执行、业务写入或单次请求排障正文", Map.of("GET", "DIAGNOSE")));
         defaults.add(route("/api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/dag-confirmations/**", "AI_RUNTIME",
                 "Agent DAG selected-node 确认记录审计查询接口，用于查看人工确认、dry-run 指纹、策略版本和 outbox 证据",
                 Map.of("GET", "VIEW_TOOL_CONFIRMATIONS")));
@@ -228,6 +227,7 @@ public class GatewayAuthorizationProperties {
                 "DAG 已确认选中节点异步入箱入口，只允许推进经过 dry-run 指纹复核的节点", Map.of("POST", "ENQUEUE_SELECTED_ASYNC_TOOL")));
         defaults.add(route("/api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/async-command-outbox/enqueue", "AI_RUNTIME",
                 "兼容 Run 级异步命令批量入箱入口，生产应收口为内部补偿或管理员动作", Map.of("POST", "ENQUEUE_RUN_ASYNC_TOOLS")));
+        defaults.add(route("/api/agent/async-task-commands/outbox/diagnostics", "AI_RUNTIME", "Agent Runtime 异步命令 outbox 诊断接口，用于查看待投递、失败、死信和恢复状态", Map.of("GET", "DIAGNOSE")));
         defaults.add(route("/api/agent/**", "AI_RUNTIME",
                 "Agent Runtime 模型、工具、Skill、会话、Run、计划接入和工具审计控制面"));
         defaults.add(route("/api/sync/sync-templates/*/validate", "SYNC_TEMPLATE",

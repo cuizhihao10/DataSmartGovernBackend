@@ -1019,6 +1019,13 @@ datasmart:
           method-actions:
             GET: DIAGNOSE
 
+        - path-pattern: /api/agent/runtime-events/skill-visibility-snapshots/diagnostics
+          resource-type: AI_RUNTIME
+          default-action: DIAGNOSE
+          description: Agent Runtime Skill 可见性快照索引诊断入口，用于确认 Java 控制面是否已收到 Python Runtime 发布的 Skill visibility projection。
+          method-actions:
+            GET: DIAGNOSE
+
         # runtime event replay ack 是客户端消费位置写入动作，不应退化为 VIEW_EVENTS。
         # 后续 WebSocket 断线重连、Python Runtime 桥接和前端时间线恢复都会依赖该 cursor。
         - path-pattern: /api/agent/runtime-events/replay/acks
@@ -1114,6 +1121,13 @@ datasmart:
           description: 兼容 Run 级异步命令批量入箱入口；生产应收口为内部补偿或管理员动作。
           method-actions:
             POST: ENQUEUE_RUN_ASYNC_TOOLS
+
+        - path-pattern: /api/agent/async-task-commands/outbox/diagnostics
+          resource-type: AI_RUNTIME
+          default-action: DIAGNOSE
+          description: Agent Runtime 异步命令 outbox 诊断入口，用于查看待投递、失败、死信和恢复状态，不能退化为普通 VIEW。
+          method-actions:
+            GET: DIAGNOSE
 
         - path-pattern: /api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/{auditId}/approve
           resource-type: AI_RUNTIME

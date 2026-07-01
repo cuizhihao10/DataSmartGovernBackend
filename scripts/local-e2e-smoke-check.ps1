@@ -11,9 +11,9 @@
     4. 如需验证本地 Keycloak 样例服务账号是否能被 gateway 解析为 SERVICE_ACCOUNT，
        可传入 -CheckServiceAccountToken。脚本只调用 Keycloak token endpoint 与 gateway /auth/session，
        不会把 token 打印到终端，也不会触发任何业务写入或 worker 执行动作。
-    5. 如需进一步验证“认证后的统一 gateway 入口 -> Python AI Runtime 低敏诊断/指标接口”链路，
+    5. 如需进一步验证“认证后的统一 gateway 入口 -> Python AI Runtime 与 Java Agent Runtime 低敏诊断/指标接口”链路，
        可传入 -CheckAgentGatewayDiagnostics。该探针会复用本地样例服务账号获取 Bearer token，
-       只调用 GET 诊断端点，不读取响应正文、不打印 token、不触发工具执行或数据同步。
+       只调用 GET 诊断/只读端点，不读取响应正文、不打印 token、不触发工具执行或数据同步。
 
     安全边界：
     - 不打印 access token、refresh token、client secret、数据库密码、SQL、样本数据或内部请求正文。
@@ -269,13 +269,13 @@ function Invoke-ServiceAccountTokenProbe {
 
 function Invoke-AgentGatewayDiagnosticsProbe {
     <#
-        验证认证后的 gateway 是否能到达 Python AI Runtime 低敏诊断/指标入口。
+        验证认证后的 gateway 是否能到达 Python AI Runtime 与 Java Agent Runtime 低敏诊断/指标入口。
 
         为什么要单独做这个探针：
         - 直连 `http://localhost:8090/agent/...` 只能证明 Python Runtime 自身启动了，
           不能证明生产入口路径中必须经过的 OIDC、permission-admin、gateway route rewrite
           和下游转发全部贯通。
-        - 这些诊断和指标接口属于“闭环可观测入口”，不是业务执行入口；因此脚本只允许 GET，
+        - 这些诊断、指标和只读控制面接口属于“闭环可观测入口”，不是业务执行入口；因此脚本只允许 GET，
           只检查 HTTP 状态码，不解析也不打印响应正文。
         - 如果返回 401/403，优先排查 Keycloak claim、audience、gateway OIDC 配置和
           permission-admin 路由策略；如果返回 502/503/timeout，优先排查 gateway 路由顺序、
@@ -300,26 +300,18 @@ function Invoke-AgentGatewayDiagnosticsProbe {
 
     try {
         $diagnosticEndpoints = @(
-            @{
-                Name = "Gateway Agent closure readiness"
-                Path = "/api/agent/capabilities/closure-readiness"
-                Meaning = "统一 gateway 能以认证身份访问 Agent Host 能力闭口诊断"
-            },
-            @{
-                Name = "Gateway Agent Skill Manifest diagnostics"
-                Path = "/api/agent/skills/publication/diagnostics"
-                Meaning = "统一 gateway 能以认证身份访问 Skill Manifest 缓存与刷新诊断"
-            },
-            @{
-                Name = "Gateway Agent inference optimization diagnostics"
-                Path = "/api/agent/models/inference-optimization/diagnostics"
-                Meaning = "统一 gateway 能以认证身份访问模型推理优化控制面诊断"
-            },
-            @{
-                Name = "Gateway Agent Prometheus metrics"
-                Path = "/api/agent/metrics"
-                Meaning = "统一 gateway 能以认证身份访问 Python Runtime 低基数 Prometheus 指标入口"
-            }
+            @{ Name = "Gateway Agent closure readiness"; Path = "/api/agent/capabilities/closure-readiness"; Meaning = "统一 gateway 能以认证身份访问 Agent Host 能力闭口诊断" },
+            @{ Name = "Gateway Agent Skill Manifest diagnostics"; Path = "/api/agent/skills/publication/diagnostics"; Meaning = "统一 gateway 能以认证身份访问 Skill Manifest 缓存与刷新诊断" },
+            @{ Name = "Gateway Agent inference optimization diagnostics"; Path = "/api/agent/models/inference-optimization/diagnostics"; Meaning = "统一 gateway 能以认证身份访问模型推理优化控制面诊断" },
+            @{ Name = "Gateway Agent Prometheus metrics"; Path = "/api/agent/metrics"; Meaning = "统一 gateway 能以认证身份访问 Python Runtime 低基数 Prometheus 指标入口" },
+            @{ Name = "Gateway Agent Runtime sessions query"; Path = "/api/agent/sessions"; Meaning = "统一 gateway 能以认证身份访问 Java Agent Runtime 会话只读列表入口" },
+            @{ Name = "Gateway Agent Runtime tool descriptors"; Path = "/api/agent/tools/descriptors"; Meaning = "统一 gateway 能以认证身份访问 Java Agent Runtime 工具描述符入口" },
+            @{ Name = "Gateway Agent Runtime Skill publication manifest"; Path = "/api/agent/skills/publication/manifest"; Meaning = "统一 gateway 能以认证身份访问 Java Agent Runtime Skill Manifest" },
+            @{ Name = "Gateway Agent Runtime model routes"; Path = "/api/agent/models/routes"; Meaning = "统一 gateway 能以认证身份访问 Java Agent Runtime 模型路由控制面" },
+            @{ Name = "Gateway Agent Runtime event diagnostics"; Path = "/api/agent/runtime-events/diagnostics"; Meaning = "统一 gateway 能以认证身份访问 Java Agent Runtime 事件投影诊断" },
+            @{ Name = "Gateway Agent Runtime Skill visibility diagnostics"; Path = "/api/agent/runtime-events/skill-visibility-snapshots/diagnostics"; Meaning = "统一 gateway 能以认证身份访问 Java Agent Runtime Skill 可见性投影诊断" },
+            @{ Name = "Gateway Agent Runtime tool event outbox diagnostics"; Path = "/api/agent/tool-execution-events/outbox/diagnostics"; Meaning = "统一 gateway 能以认证身份访问 Java Agent Runtime 工具事件 outbox 诊断" },
+            @{ Name = "Gateway Agent Runtime async command outbox diagnostics"; Path = "/api/agent/async-task-commands/outbox/diagnostics"; Meaning = "统一 gateway 能以认证身份访问 Java Agent Runtime 异步命令 outbox 诊断" }
         )
 
         foreach ($endpoint in $diagnosticEndpoints) {
@@ -350,7 +342,7 @@ function Invoke-AgentGatewayDiagnosticsProbe {
                 if ($statusCode -eq 401 -or $statusCode -eq 403) {
                     Add-Check -Name $endpoint.Name -Status "FAIL" -Detail "HTTP $statusCode；认证或授权未通过，请检查 Keycloak claim、audience、gateway OIDC 和 permission-admin 路由策略"
                 } elseif ($statusCode -eq 502 -or $statusCode -eq 503) {
-                    Add-Check -Name $endpoint.Name -Status "FAIL" -Detail "HTTP $statusCode；gateway 无法到达 Python Runtime，请检查路由顺序、8090 端口和服务地址"
+                    Add-Check -Name $endpoint.Name -Status "FAIL" -Detail "HTTP $statusCode；gateway 无法到达下游 Runtime，请检查 Python 8090、Java agent-runtime 8091、路由顺序和服务地址"
                 } elseif ($statusCode -ne $null) {
                     Add-Check -Name $endpoint.Name -Status "FAIL" -Detail "HTTP $statusCode；期望 HTTP 200，未输出诊断响应正文"
                 } else {
@@ -419,8 +411,12 @@ Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -Ex
 Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -ExpectedText "python-ai-runtime-runtime-diagnostics" -Purpose "gateway 必须把 Python Runtime 低敏诊断入口放在通用 /api/agent/** -> agent-runtime 路由之前"
 Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -ExpectedText "/api/agent/skills/publication/refresh" -Purpose "统一网关必须能路由 Skill Manifest 受控刷新入口，避免 Python 诊断能力只停留在直连端口"
 Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -ExpectedText "/api/agent/metrics" -Purpose "统一网关必须能路由 Python Runtime Prometheus 低基数指标入口，避免 AI 运行时指标只停留在直连端口"
+Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -ExpectedText "/api/agent/runtime-events/skill-visibility-snapshots/diagnostics" -Purpose "统一网关必须显式声明 Skill 可见性投影诊断权限，避免被 runtime-events 通配规则误归类为普通事件查看"
+Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -ExpectedText "/api/agent/async-task-commands/outbox/diagnostics" -Purpose "统一网关必须显式声明异步命令 outbox 诊断权限，避免恢复事实入口退化为普通 /api/agent 通配授权"
 Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -ExpectedText "RewritePath=/api/observability/" -Purpose "gateway 必须把 /api/observability/** 改写到 observability 服务内部领域路径，避免可观测性服务只存在直连入口"
 Test-FileContains -RelativePath "gateway/src/main/java/com/czh/datasmart/govern/gateway/config/GatewayAuthorizationProperties.java" -ExpectedText "/api/agent/metrics" -Purpose "gateway 默认授权元数据必须识别 Python Runtime 指标入口，避免未加载 YAML 或配置中心覆盖时退化为通配规则"
+Test-FileContains -RelativePath "gateway/src/main/java/com/czh/datasmart/govern/gateway/config/GatewayAuthorizationProperties.java" -ExpectedText "/api/agent/runtime-events/skill-visibility-snapshots/diagnostics" -Purpose "gateway 默认授权元数据必须识别 Skill 可见性投影诊断入口，避免配置漂移时被通配规则吞掉"
+Test-FileContains -RelativePath "gateway/src/main/java/com/czh/datasmart/govern/gateway/config/GatewayAuthorizationProperties.java" -ExpectedText "/api/agent/async-task-commands/outbox/diagnostics" -Purpose "gateway 默认授权元数据必须识别异步命令 outbox 诊断入口，保证恢复事实诊断始终按 DIAGNOSE 授权"
 Test-FileContains -RelativePath "agent-runtime/src/main/java/com/czh/datasmart/govern/agent/controller/AgentRuntimeEventProjectionController.java" -ExpectedText "/skill-visibility-snapshots/diagnostics" -Purpose "agent-runtime 必须提供 runtime event 与 Skill 可见性投影诊断，支撑 Java 控制面事实验收"
 Test-FileContains -RelativePath "agent-runtime/src/main/java/com/czh/datasmart/govern/agent/controller/AgentToolExecutionEventOutboxController.java" -ExpectedText "/diagnostics" -Purpose "agent-runtime 必须提供工具事件 outbox 诊断，支撑事件投递堆积和阻断排查"
 Test-FileContains -RelativePath "agent-runtime/src/main/java/com/czh/datasmart/govern/agent/controller/AgentAsyncTaskCommandOutboxController.java" -ExpectedText "/async-task-commands/outbox/diagnostics" -Purpose "agent-runtime 必须提供异步命令 outbox 诊断，支撑 Java 控制面恢复事实验收"

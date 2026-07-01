@@ -280,7 +280,7 @@ GET http://localhost:8090/agent/metrics
 
 该探针会使用本地 realm 中的 `sync-service` 样例账号向 Keycloak 获取 access token，然后只调用 gateway 的 `/auth/session` 读取低敏身份视图。它的通过条件是 gateway 返回 `tenantId=10`、`actorId=9101`、`actorRole=SERVICE_ACCOUNT`、`actorType=SERVICE_ACCOUNT`、`workspaceId=system-sync`。脚本不会打印 access token、refresh token、密码、完整 JWT claim 或响应正文，也不会调用任何 POST 业务接口。
 
-如果需要进一步验证“认证后的统一 gateway 入口是否能访问 Python AI Runtime 低敏诊断接口”，可以在服务账号探针基础上追加 gateway Agent 诊断探针：
+如果需要进一步验证“认证后的统一 gateway 入口是否能访问 Python AI Runtime 与 Java Agent Runtime 的低敏诊断/只读控制面接口”，可以在服务账号探针基础上追加 gateway Agent 诊断探针：
 
 ```powershell
 .\scripts\local-e2e-smoke-check.ps1 -CheckServiceAccountToken -CheckAgentGatewayDiagnostics
@@ -293,15 +293,23 @@ GET http://localhost:8080/api/agent/capabilities/closure-readiness
 GET http://localhost:8080/api/agent/skills/publication/diagnostics
 GET http://localhost:8080/api/agent/models/inference-optimization/diagnostics
 GET http://localhost:8080/api/agent/metrics
+GET http://localhost:8080/api/agent/sessions
+GET http://localhost:8080/api/agent/tools/descriptors
+GET http://localhost:8080/api/agent/skills/publication/manifest
+GET http://localhost:8080/api/agent/models/routes
+GET http://localhost:8080/api/agent/runtime-events/diagnostics
+GET http://localhost:8080/api/agent/runtime-events/skill-visibility-snapshots/diagnostics
+GET http://localhost:8080/api/agent/tool-execution-events/outbox/diagnostics
+GET http://localhost:8080/api/agent/async-task-commands/outbox/diagnostics
 ```
 
-设计意图是验证真实入口链路中的 `Keycloak -> gateway OIDC -> permission-admin route authorization -> gateway route rewrite -> Python Runtime` 是否贯通，而不是验证 Python Runtime 直连端口本身。脚本只检查 HTTP 状态码，不解析、不保存、不打印诊断或指标响应正文；即使后续诊断字段继续扩展，或 Prometheus 指标族继续增加，也不会把 prompt、SQL、工具参数、样本数据、模型输出、token、内部 endpoint、长期记忆正文或高基数业务标识带到终端日志里。
+设计意图是验证真实入口链路中的 `Keycloak -> gateway OIDC -> permission-admin route authorization -> gateway route rewrite -> Python Runtime / Java agent-runtime` 是否贯通，而不是验证 Python Runtime `8090` 或 Java agent-runtime `8091` 直连端口本身。脚本只检查 HTTP 状态码，不解析、不保存、不打印诊断、指标或控制面响应正文；即使后续诊断字段继续扩展，或 Prometheus 指标族继续增加，也不会把 prompt、SQL、工具参数、样本数据、模型输出、token、内部 endpoint、长期记忆正文、会话明细、工具目录详情、模型路由详情或 outbox 排障正文带到终端日志里。
 
 故障判断建议：
 
 - 如果返回 `401/403`，优先检查 Keycloak realm、`aud=datasmart-gateway`、DataSmart 必需 claim、gateway OIDC 配置和 permission-admin 路由策略。
-- 如果返回 `502/503` 或超时，优先检查 gateway 路由顺序、`python-ai-runtime-runtime-diagnostics` 路由是否仍位于通用 `/api/agent/** -> agent-runtime` 之前，以及 Python Runtime 是否已在 `8090` 端口启动。
-- 如果 `/auth/session` 通过但 Agent 诊断路由失败，说明身份解析已经成功，问题更可能集中在 permission-admin 对 `/api/agent/**` 诊断路由的授权、gateway route rewrite 或 Python Runtime 下游可达性。
+- 如果返回 `502/503` 或超时，优先检查 gateway 路由顺序、`python-ai-runtime-runtime-diagnostics` 路由是否仍位于通用 `/api/agent/** -> agent-runtime` 之前、Python Runtime 是否已在 `8090` 端口启动，以及 Java agent-runtime 是否已在 `8091` 端口启动。
+- 如果 `/auth/session` 通过但 Agent 诊断路由失败，说明身份解析已经成功，问题更可能集中在 permission-admin 对 `/api/agent/**` 诊断路由的授权、gateway route rewrite、Python Runtime 下游可达性或 Java agent-runtime 下游可达性。
 
 需要特别注意：`sync-service + password grant` 只服务于本地开发 smoke。生产环境不应使用 password grant 或仓库内样例密码，服务间调用应改为 OIDC client credentials、企业 IdP 托管服务账号、mTLS 或 service mesh 身份，并把 client secret 放入 Secret Manager、Kubernetes Secret 或企业密钥库。
 

@@ -1,5 +1,23 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-07-01 落地补充：Agent Runtime gateway authorization path becomes the acceptance boundary
+
+- 本轮趋势校准：
+  - Codex、Claude Code、OpenClaw 类 Agent Host 的真实可用性不能只靠运行时直连端口验证；生产入口必须经过 OIDC、统一 gateway、授权中心、路由改写和下游服务健康检查。
+  - 当前项目已经进入闭环收敛阶段，因此本轮不再增加新的 Agent 角色、工具类型或图节点，而是让既有 Java Agent Runtime 控制面事实进入认证后的 gateway 验收路径。
+  - 诊断接口也需要更细的权限语义：Skill 可见性投影、runtime event 流浏览、异步命令 outbox 恢复事实不应全部落入同一个通配授权。
+- 本轮落地到代码和验收的能力：
+  - gateway 授权策略新增 `/api/agent/runtime-events/skill-visibility-snapshots/diagnostics`，按 `AI_RUNTIME + DIAGNOSE` 处理；
+  - gateway 授权策略新增 `/api/agent/async-task-commands/outbox/diagnostics`，按 `AI_RUNTIME + DIAGNOSE` 处理；
+  - `GatewayAgentRuntimeAuthorizationFilterTest` 增加两个权限语义回归用例，防止诊断路由被 `/api/agent/runtime-events/**` 或 `/api/agent/**` 通配规则吞掉；
+  - `-CheckAgentGatewayDiagnostics` 现在会通过 gateway 认证入口探测 Python Runtime 诊断/指标以及 Java Agent Runtime 的 sessions、tools、Skill Manifest、model routes、runtime event diagnostics、Skill visibility diagnostics、tool event outbox diagnostics、async command outbox diagnostics。
+- 安全边界：
+  - 所有新增 gateway 探针只允许 GET，只检查状态码，不打印响应正文，不触发工具执行、run 创建、outbox 派发、ack、enqueue、refresh 或 publish；
+  - 探针不输出 token、prompt、SQL、工具参数、样本数据、模型输出、长期记忆正文、会话正文、工具目录详情、模型路由详情或 outbox 排障正文。
+- 产品判断：
+  - Java/Python Agent 控制面接下来应进入真实全平台 smoke，而不是继续扩张展示型 Agent 能力；
+  - 如果真实 smoke 失败，应优先修 OIDC claim、gateway route rewrite、permission-admin route policy、Java 服务启动、Python Runtime 启动和 migration，而不是继续增加局部功能。
+
 ## 2026-07-01 落地补充：Java Agent Runtime control plane enters smoke acceptance
 
 - 本轮趋势校准：

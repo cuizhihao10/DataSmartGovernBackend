@@ -1,5 +1,22 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-07-01 追加落地进展：Agent Runtime Gateway Authorization Probe Closure
+- 本阶段继续承接项目“尽快闭环收敛”的路线，没有新增 Agent 角色、没有新增 LangGraph 节点、没有触发工具执行或数据同步，而是把上一阶段直连 `agent-runtime:8091` 的只读控制面探针推进到统一 gateway 认证授权路径。
+- 已落地能力：
+  - gateway 授权配置显式声明 `/api/agent/runtime-events/skill-visibility-snapshots/diagnostics`，按 `AI_RUNTIME + DIAGNOSE + GET` 处理，避免被 `/api/agent/runtime-events/**` 通配规则误判为普通事件查看；
+  - gateway 授权配置显式声明 `/api/agent/async-task-commands/outbox/diagnostics`，按 `AI_RUNTIME + DIAGNOSE + GET` 处理，避免恢复事实诊断退化为普通 `/api/agent/**` 控制面查看；
+  - Java 默认授权元数据与 `GatewayAgentRuntimeAuthorizationFilterTest` 同步覆盖上述两个诊断入口，保证 YAML、配置中心和代码默认值之间不漂移；
+  - `scripts/local-e2e-smoke-check.ps1 -CheckAgentGatewayDiagnostics` 的认证后只读探针从 Python Runtime 指标/诊断扩展到 Java Agent Runtime sessions、tools、Skill Manifest、model routes、runtime events 与 outbox diagnostics；
+  - `docs/local-e2e-closure-runbook.md` 已记录 gateway 认证链路下的完整探针清单和安全边界。
+- 架构收敛价值：
+  - Agent 控制面验收从“直连 Java 8091 可访问”推进到“Keycloak、gateway、permission-admin、route rewrite 和 Java agent-runtime 都在同一条认证链路中可验证”；
+  - Skill 可见性投影与异步命令 outbox 恢复事实具备独立 DIAGNOSE 权限语义，后续运维账号、审计账号和普通查看账号可以被更精细地区分；
+  - 本阶段仍保持只读，不创建 session、不启动 run、不 ack replay、不 enqueue command、不 dispatch outbox、不写 runtime event。
+- 下一步推荐路线：
+  1. 进入真实全平台 smoke，不带 `-SkipHttp` 并启用 `-CheckServiceAccountToken -CheckAgentGatewayDiagnostics`；
+  2. 如果失败，优先修 Keycloak realm、gateway 路由、permission-admin 授权、Java 服务启动、Python Runtime 启动、migration 和 Prometheus 可达性；
+  3. 在真实 smoke 通过前，不再新增展示型 Agent 能力或局部业务扩展。
+
 ## 2026-07-01 追加落地进展：Agent Runtime Control Plane Smoke Closure
 - 本阶段继续承接“把必做与控制范围 Agent 的控制面合同、事件投影、权限和恢复事实纳入 E2E”的路线，不新增 LangGraph 节点、不新增 Agent 角色、不触发真实工具执行。
 - 已落地能力：
