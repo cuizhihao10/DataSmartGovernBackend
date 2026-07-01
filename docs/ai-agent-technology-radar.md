@@ -1,5 +1,26 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-07-01 落地补充：Readiness and resume gate should be explicit LangGraph conditions
+
+- 本轮趋势校准：
+  - Codex、Claude Code、OpenClaw、LangGraph 类 Agent Host 的工具调用不会从模型意图直接跳到副作用执行，中间必须存在可暂停、可审批、可恢复的 host-level 条件门禁；
+  - readiness、approval、clarification、budget、draft review、resume gate 不应只是响应字段或散落的 if/else，而应逐步成为可编译、可观测、可替换的图节点；
+  - DataSmart 当前进入收敛阶段，因此本轮只迁移执行前门禁，不新增真实工具执行器，不绕过 Java outbox、permission-admin、checkpoint 和 worker receipt。
+- 本轮落地到代码的能力：
+  - 新增 `services/tools/langgraph_execution_gate.py`；
+  - 新增 `LangGraphExecutionGateWorkflow`，使用真实 LangGraph `StateGraph` 和 `add_conditional_edges`；
+  - `/agent/plans` 顶层新增 `agentExecutionGateWorkflow`；
+  - execution gate 消费 `ToolExecutionReadinessReport`，根据 dominant gate 路由到 `NO_TOOL_PLAN`、`BLOCKED`、`HUMAN_INPUT`、`HUMAN_APPROVAL`、`CAPACITY_WAIT`、`DRAFT_REVIEW` 或 `RESUME_PREFLIGHT`；
+  - READY/QUEUED 工具也不会在 Python 中直接执行，而是进入 `RESUME_PREFLIGHT`，声明必须等待 Java checkpoint、host facts、outbox 和 worker receipt。
+- 产品判断：
+  - LangGraph 已从规划外壳、多智能体协作和多智能体执行前计划，继续推进到工具执行门禁条件节点；
+  - 这关闭了“readiness/resume gate 仍完全停留在手写响应逻辑”的缺口；
+  - 仍不能宣称完整 durable runner 已完成，因为真实 checkpoint 恢复、outbox 写入、worker 派发和 receipt 对账仍由 Java 控制面承接或待最终闭口。
+- 安全判断：
+  - execution gate 只保存 readiness 计数、分支、route、host fact 类型和副作用边界；
+  - 不保存或返回 prompt、SQL、工具参数真实值、样本数据、模型输出、token、内部 endpoint、artifact 正文或异常堆栈；
+  - 客户端自报 approvalId、payloadReference 或 outboxId 不能绕过 resume gate，恢复事实必须来自 Java host-controlled facts。
+
 ## 2026-07-01 落地补充：Multi-agent execution should be planned before side effects
 
 - 本轮趋势校准：

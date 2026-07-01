@@ -44,6 +44,7 @@ from datasmart_ai_runtime.services.runtime_events.runtime_event_transport import
 from datasmart_ai_runtime.services.skills import build_session_skill_visibility_runtime_event
 from datasmart_ai_runtime.services.tools import (
     ToolActionIntakeSource,
+    LangGraphExecutionGateWorkflow,
     ToolExecutionReadinessPolicyProvider,
     ToolExecutionReadinessPolicyProviderProtocol,
     ToolExecutionReadinessService,
@@ -183,6 +184,11 @@ def build_plan_response(
     agent_capability_closure = capability_matrix_service.plan_summary()
 
     tool_execution_readiness_response = build_tool_execution_readiness_response(tool_execution_readiness)
+    # execution gate workflow 是 readiness 之后的 LangGraph 条件门禁层：
+    # - readiness response/graph 负责展示“每个工具当前是什么执行前决策”；
+    # - execution gate workflow 负责用真实 LangGraph conditional edge 选择 dominant gate；
+    # - resume gate 在这里仍然只是预检语义，不会恢复 checkpoint、不会写 outbox、不会派发 worker。
+    agent_execution_gate_workflow = LangGraphExecutionGateWorkflow.from_env().run(tool_execution_readiness)
     # command proposal 模板是“下一步如何进入 Java 控制面”的低敏导航，而不是 HTTP 提交动作。
     # 这里把 `/agent/plans` 生成的 ToolPlan 统一标记为 MODEL_TOOL_CALL + AGENT_PLAN 来源，和 MCP/A2A
     # 入口区分开；模板只读取 readiness response 中的字段名、状态、风险和计数，不读取 ToolPlan.arguments。
@@ -265,6 +271,7 @@ def build_plan_response(
     response["agentCollaborationExecutionPlan"] = agent_collaboration_execution_plan.to_summary()
     response["agentWorkspace"] = workspace_context.to_summary()
     response["toolExecutionReadiness"] = tool_execution_readiness_response
+    response["agentExecutionGateWorkflow"] = agent_execution_gate_workflow.to_summary()
     response["agentCapabilityClosure"] = agent_capability_closure
     # `toolExecutionReadinessGraph` 是 readiness 的编排视角：readiness 摘要回答“每个工具当前是什么决策”，
     # graph 回答“这些决策会让执行图走向哪个条件分支”。它仍然是执行前低敏视图，不执行工具、不写 outbox、

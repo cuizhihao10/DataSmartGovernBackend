@@ -328,6 +328,15 @@ class ApiBootstrapTest(unittest.TestCase):
         self.assertFalse(graph["durableActionBoundary"]["outboxWritten"])
         self.assertNotIn("ds-sensitive-001", str(graph))
         self.assertNotIn("手机号唯一性", str(graph))
+        execution_gate = response["agentExecutionGateWorkflow"]
+        self.assertEqual("langgraph", execution_gate["engine"])
+        self.assertEqual("LANGGRAPH_EXECUTION_GATE_EVALUATED", execution_gate["status"])
+        self.assertIn(execution_gate["gateRoute"], execution_gate["conditionalRoutes"])
+        self.assertFalse(execution_gate["sideEffectBoundary"]["toolExecuted"])
+        self.assertFalse(execution_gate["sideEffectBoundary"]["checkpointMutated"])
+        self.assertTrue(execution_gate["sideEffectBoundary"]["javaControlPlaneRequiredForSideEffects"])
+        self.assertNotIn("ds-sensitive-001", str(execution_gate))
+        self.assertNotIn("手机号唯一性", str(execution_gate))
 
     def test_plan_response_records_tool_execution_readiness_event(self) -> None:
         """工具执行准备度应进入 runtime event，支持后续 WebSocket replay 和 Java projection。"""
