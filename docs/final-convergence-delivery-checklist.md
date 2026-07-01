@@ -81,6 +81,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-e2e-smoke-ch
 
 结果：真实只读 E2E smoke `PASS=89, WARN=0, FAIL=0`。
 
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\production-readiness-check.ps1
+```
+
+结果口径：默认模式用于收敛阶段，已闭环和已文档化的生产加固契约应通过；Kubernetes/Helm、SBOM、镜像签名、备份恢复、容量基线、故障演练等尚未交付的生产事项会以 `WARN` 形式保留，提醒它们是正式上线前的阻塞项。若进入真实发布门禁，可追加 `-StrictProductionGates`，把所有 `WARN` 提升为失败。
+
 ## 5. 生产上线前待办
 
 这些事项属于“商业化生产加固”，不是继续扩展本地 demo 功能。后续若继续推进，优先级应高于新增 Agent 角色或新增业务分支。
