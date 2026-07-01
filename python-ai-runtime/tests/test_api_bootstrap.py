@@ -375,6 +375,20 @@ class ApiBootstrapTest(unittest.TestCase):
         self.assertFalse(event["attributes"]["graphApprovalCreated"])
         self.assertTrue(event["attributes"]["graphWorkerReceiptRequiredForSideEffects"])
         self.assertNotIn("ds-sensitive-002", str(event["attributes"]))
+        gate_events = [
+            event
+            for event in events
+            if event["event_type"] == AgentRuntimeEventType.AGENT_EXECUTION_GATE_RECORDED
+        ]
+        self.assertEqual(1, len(gate_events))
+        gate_attributes = gate_events[0]["attributes"]
+        self.assertEqual("LANGGRAPH_EXECUTION_GATE_WORKFLOW", gate_attributes["snapshotType"])
+        self.assertEqual("RESUME_PREFLIGHT", gate_attributes["gateRoute"])
+        self.assertFalse(gate_attributes["toolExecuted"])
+        self.assertFalse(gate_attributes["outboxWritten"])
+        self.assertTrue(gate_attributes["javaControlPlaneRequiredForSideEffects"])
+        self.assertIn("WORKER_RECEIPT_FACT", gate_attributes["resumeRequiredFactTypes"])
+        self.assertNotIn("ds-sensitive-002", str(gate_attributes))
 
     def test_plan_response_uses_trusted_tool_readiness_policy_snapshot(self) -> None:
         """`/agent/plans` 应消费受控 readiness 策略快照，并把低敏策略来源写入响应和事件。"""

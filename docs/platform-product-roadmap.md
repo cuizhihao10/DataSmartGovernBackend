@@ -7,6 +7,7 @@
   - 新增 `LangGraphExecutionGateWorkflow`，使用 LangGraph `StateGraph` 编译并执行 `load_readiness_context -> route_execution_gate -> 条件分支 -> finalize_execution_gate`；
   - workflow 使用 `add_conditional_edges` 将 readiness dominant gate 路由到 `NO_TOOL_PLAN`、`BLOCKED`、`HUMAN_INPUT`、`HUMAN_APPROVAL`、`CAPACITY_WAIT`、`DRAFT_REVIEW` 或 `RESUME_PREFLIGHT`；
   - `/agent/plans` 顶层新增 `agentExecutionGateWorkflow`；
+  - 新增 `agent_execution_gate_recorded` runtime event，并把该事件加入实时事件 BASIC 可见性白名单，方便前端进度、WebSocket replay、Kafka publisher、Java projection 和审计回放消费；
   - 能力矩阵同步记录 `agentExecutionGateWorkflow`，把 readiness/resume gate 从“普通响应字段”推进为 LangGraph 条件门禁。
 - 架构收敛价值：
   - readiness summary 继续回答“每个工具是什么执行前决策”；
@@ -18,11 +19,12 @@
   - 输出不包含 prompt、SQL、工具参数真实值、样本数据、模型输出、token、内部 endpoint、artifact 正文或异常堆栈；
   - 真实 durable runner、checkpoint 恢复、worker receipt 对账和服务账号签名仍需继续与 Java 控制面对齐。
 - 验证结果：
-  - 定向测试通过：`test_langgraph_execution_gate_workflow.py`、`test_api_bootstrap.py`、`test_langgraph_planning_workflow.py` 共 20 个用例；
-  - 新增 `langgraph_execution_gate.py` 当前 465 行，`plan_response.py` 当前 443 行，均低于 500 行约束。
+  - 定向测试通过：`test_langgraph_execution_gate_workflow.py`、`test_api_bootstrap.py`、`test_langgraph_planning_workflow.py`、`test_runtime_event_visibility.py`；
+  - Python Runtime 全量测试通过：`python -m pytest python-ai-runtime\tests -q`，共 587 个用例；
+  - 新增 `langgraph_execution_gate.py` 当前 465 行，`langgraph_execution_gate_events.py` 当前 131 行，`plan_response.py` 当前 468 行，均低于 500 行约束。
 - 下一步推荐：
   1. 把 execution gate 的 `RESUME_PREFLIGHT` 与 Java checkpoint locator、fact bundle、worker receipt 标准字段对齐；
-  2. 为 execution gate 增加低基数指标和 runtime event 摘要；
+  2. 为 execution gate 增加低基数指标；
   3. 继续迁移 `retrieve_memory` 或 specialist handoff 中最小的一条闭口节点；
   4. 不再扩展新的 Agent 角色或工具类型，优先完成 Java/Python 控制面事实闭环和最终 E2E。
 

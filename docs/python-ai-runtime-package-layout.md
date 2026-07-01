@@ -58,8 +58,8 @@ datasmart_ai_runtime/
   低敏工作项、协作边和执行边界规则。该包当前只生成控制面合同，不执行工具、不写 outbox、不创建审批。
 - `services/tools/` 已开始承载工具治理闭口能力，包括 ToolPlan intake、readiness、readiness graph、
   checkpoint/resume-preview 客户端、command proposal、worker receipt 合同以及新增的
-  `LangGraphExecutionGateWorkflow`。该 workflow 只做执行前条件路由，不执行工具、不写 outbox、
-  不修改 checkpoint，后续工具治理新增能力应优先继续放入该包。
+  `LangGraphExecutionGateWorkflow` 和 `agent_execution_gate_recorded` runtime event adapter。该 workflow
+  只做执行前条件路由，不执行工具、不写 outbox、不修改 checkpoint，后续工具治理新增能力应优先继续放入该包。
 - `services/__init__.py` 继续保留对外聚合导出，但 memory、runtime event 与 model gateway 相关导出已经分别依赖
   `services.memory`、`services.runtime_events`、`services.model_gateway` 与 `services.multi_agent`，避免顶层服务包直接知道子包内部每个文件的位置。
 - 其他能力域仍处于过渡状态：skills、agent orchestration 还在

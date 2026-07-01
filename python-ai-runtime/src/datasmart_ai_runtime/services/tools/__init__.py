@@ -33,6 +33,9 @@ from datasmart_ai_runtime.services.tools.langgraph_execution_gate import (
     LangGraphExecutionGateDiagnostics,
     LangGraphExecutionGateWorkflow,
 )
+from datasmart_ai_runtime.services.tools.langgraph_execution_gate_events import (
+    build_langgraph_execution_gate_runtime_event,
+)
 from datasmart_ai_runtime.services.tools.tool_action_intake import (
     ToolActionIntakeBoundary,
     ToolActionIntakeIssue,
@@ -262,6 +265,7 @@ __all__ = (
     "RemoteThenLocalToolExecutionReadinessPolicyProvider",
     "LangGraphExecutionGateDiagnostics",
     "LangGraphExecutionGateWorkflow",
+    "build_langgraph_execution_gate_runtime_event",
     "build_tool_execution_readiness_runtime_event",
     "ToolExecutionReadinessGraph",
     "ToolExecutionReadinessGraphBranch",

@@ -39,6 +39,7 @@ class AgentRuntimeEventType(str, Enum):
     TOOL_ACTION_CHECKPOINT_QUERIED = "tool_action_checkpoint_queried"
     TOOL_ACTION_CHECKPOINT_RESUME_PREVIEWED = "tool_action_checkpoint_resume_previewed"
     TOOL_EXECUTION_READINESS_RECORDED = "tool_execution_readiness_recorded"
+    AGENT_EXECUTION_GATE_RECORDED = "agent_execution_gate_recorded"
     MODEL_TOOL_CALL_PROPOSED = "model_tool_call_proposed"
     MODEL_TOOL_CALL_ACCEPTED = "model_tool_call_accepted"
     MODEL_TOOL_CALL_REJECTED = "model_tool_call_rejected"

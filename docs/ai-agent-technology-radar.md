@@ -10,6 +10,7 @@
   - 新增 `services/tools/langgraph_execution_gate.py`；
   - 新增 `LangGraphExecutionGateWorkflow`，使用真实 LangGraph `StateGraph` 和 `add_conditional_edges`；
   - `/agent/plans` 顶层新增 `agentExecutionGateWorkflow`；
+  - 新增 `agent_execution_gate_recorded` runtime event，让 WebSocket replay、Kafka publisher、Java projection 和审计回放能消费同一份低敏门禁事实；
   - execution gate 消费 `ToolExecutionReadinessReport`，根据 dominant gate 路由到 `NO_TOOL_PLAN`、`BLOCKED`、`HUMAN_INPUT`、`HUMAN_APPROVAL`、`CAPACITY_WAIT`、`DRAFT_REVIEW` 或 `RESUME_PREFLIGHT`；
   - READY/QUEUED 工具也不会在 Python 中直接执行，而是进入 `RESUME_PREFLIGHT`，声明必须等待 Java checkpoint、host facts、outbox 和 worker receipt。
 - 产品判断：

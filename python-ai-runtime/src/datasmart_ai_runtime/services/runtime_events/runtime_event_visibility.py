@@ -106,6 +106,7 @@ class RuntimeEventVisibilityPolicy:
             "intent_analyzed",
             "tool_planned",
             "tool_action_intake_recorded",
+            "agent_execution_gate_recorded",
             "tool_execution",
             "tool_completed",
             "tool_parameter_validated",

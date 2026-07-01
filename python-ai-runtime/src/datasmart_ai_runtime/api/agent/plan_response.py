@@ -49,6 +49,7 @@ from datasmart_ai_runtime.services.tools import (
     ToolExecutionReadinessPolicyProviderProtocol,
     ToolExecutionReadinessService,
     build_tool_action_command_proposal_templates,
+    build_langgraph_execution_gate_runtime_event,
     build_tool_execution_readiness_graph_response,
     build_tool_execution_readiness_runtime_event,
 )
@@ -189,6 +190,12 @@ def build_plan_response(
     # - execution gate workflow 负责用真实 LangGraph conditional edge 选择 dominant gate；
     # - resume gate 在这里仍然只是预检语义，不会恢复 checkpoint、不会写 outbox、不会派发 worker。
     agent_execution_gate_workflow = LangGraphExecutionGateWorkflow.from_env().run(tool_execution_readiness)
+    agent_execution_gate_summary = agent_execution_gate_workflow.to_summary()
+    plan = _attach_agent_execution_gate_event(
+        plan,
+        request=request,
+        execution_gate_summary=agent_execution_gate_summary,
+    )
     # command proposal 模板是“下一步如何进入 Java 控制面”的低敏导航，而不是 HTTP 提交动作。
     # 这里把 `/agent/plans` 生成的 ToolPlan 统一标记为 MODEL_TOOL_CALL + AGENT_PLAN 来源，和 MCP/A2A
     # 入口区分开；模板只读取 readiness response 中的字段名、状态、风险和计数，不读取 ToolPlan.arguments。
@@ -271,7 +278,7 @@ def build_plan_response(
     response["agentCollaborationExecutionPlan"] = agent_collaboration_execution_plan.to_summary()
     response["agentWorkspace"] = workspace_context.to_summary()
     response["toolExecutionReadiness"] = tool_execution_readiness_response
-    response["agentExecutionGateWorkflow"] = agent_execution_gate_workflow.to_summary()
+    response["agentExecutionGateWorkflow"] = agent_execution_gate_summary
     response["agentCapabilityClosure"] = agent_capability_closure
     # `toolExecutionReadinessGraph` 是 readiness 的编排视角：readiness 摘要回答“每个工具当前是什么决策”，
     # graph 回答“这些决策会让执行图走向哪个条件分支”。它仍然是执行前低敏视图，不执行工具、不写 outbox、
@@ -315,6 +322,28 @@ def _attach_tool_execution_readiness_event(
         return plan
     readiness_event = build_tool_execution_readiness_runtime_event(plan, request, tool_execution_readiness)
     return replace(plan, runtime_events=plan.runtime_events + (readiness_event,))
+
+
+def _attach_agent_execution_gate_event(
+    plan: AgentPlan,
+    *,
+    request: AgentRequest,
+    execution_gate_summary: dict[str, Any],
+) -> AgentPlan:
+    """把 LangGraph execution gate 快照追加到运行时事件流。
+
+    readiness event 说明“工具计划被判定为什么状态”；execution gate event 说明“LangGraph 条件图把本轮
+    路由到哪个 dominant gate”。这两条事件服务不同视角，不能互相替代。这里仍然按事件类型去重，避免
+    后续 `AgentOrchestrator` 或 Java ingestion 更早生成同类事件时重复发布。
+    """
+
+    if any(
+        event.event_type == AgentRuntimeEventType.AGENT_EXECUTION_GATE_RECORDED
+        for event in plan.runtime_events
+    ):
+        return plan
+    gate_event = build_langgraph_execution_gate_runtime_event(plan, request, execution_gate_summary)
+    return replace(plan, runtime_events=plan.runtime_events + (gate_event,))
 
 
 def _attach_skill_visibility_event(
