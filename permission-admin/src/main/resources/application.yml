@@ -21,6 +21,11 @@ spring:
     # Kafka 预留给后续权限变更事件、审计事件、权限缓存失效通知等异步能力。
     bootstrap-servers: localhost:9092
   cloud:
+    compatibility-verifier:
+      # 项目当前按既定技术栈固定 Spring Boot 3.5.11 与 Spring Cloud 2023.0.3。
+      # Spring Cloud 的内置校验器只维护官方推荐组合，会在启动阶段拦截 3.5.x；
+      # 这里显式关闭“启动硬拦截”，但不代表忽略兼容风险，真实兼容性仍通过本地 E2E、Maven 构建和 smoke check 验证。
+      enabled: false
     nacos:
       discovery:
         # 注册到 Nacos 后，gateway 才能通过 lb://permission-admin 做服务发现转发。
@@ -45,8 +50,9 @@ management:
   endpoints:
     web:
       exposure:
-        # 权限模块当前先暴露基础健康、信息和指标端点，后续可补充授权延迟、缓存命中率等自定义指标。
-        include: health,info,metrics
+        # health/info 用于基础探活，metrics 用于本地排障，prometheus 用于 docker/prometheus 周期抓取。
+        # permission-admin 是 gateway 授权决策的控制面，授权延迟、策略缓存和事件消费状态必须进入统一监控。
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       # 生产环境下健康详情不应无条件公开，避免泄露数据库、Nacos 等内部依赖状态。

@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.service.execution.confirmation;
 
 import com.czh.datasmart.govern.agent.config.AgentRunToolDagConfirmationProperties;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -41,6 +42,14 @@ public class InMemoryAgentRunToolDagConfirmationStore implements AgentRunToolDag
     private final int maxConfirmationsPerRun;
     private final int maxTotalRecords;
 
+    /**
+     * Spring 生产运行时使用的配置构造器。
+     *
+     * <p>该内存 store 同时提供了一个测试构造器，用于直接传入容量上限验证裁剪行为。
+     * 显式标注 {@link Autowired} 可以避免应用启动时 Spring 在多个构造器之间无法选择，
+     * 也能把“运行时配置来自 application.yml / 配置属性类，测试配置来自构造参数”的边界讲清楚。</p>
+     */
+    @Autowired
     public InMemoryAgentRunToolDagConfirmationStore(AgentRunToolDagConfirmationProperties properties) {
         this.maxConfirmationsPerRun = Math.max(1, properties.getMaxConfirmationsPerRun());
         this.maxTotalRecords = Math.max(1, properties.getMaxTotalRecords());

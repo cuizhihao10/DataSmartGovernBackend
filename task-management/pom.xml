@@ -30,7 +30,21 @@
         </dependency>
         <dependency>
             <groupId>com.baomidou</groupId>
-            <artifactId>mybatis-plus-boot-starter</artifactId>
+            <!--
+              任务中心需要稳定扫描 TaskMapper、TaskExecutionMapper 等持久化接口。
+              使用 Boot3 专用 starter 可以保证 Spring Boot 3.5.x 下 MapperFactoryBean 元数据类型正确，
+              避免本地 E2E 真实启动时在任务服务入口就失败。
+            -->
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <!--
+              任务列表、执行历史和 outbox 运维视图都依赖分页查询。
+              MyBatis-Plus 新版本把 PaginationInnerInterceptor 相关能力拆到 jsqlparser 扩展中，
+              因此这里显式引入，避免真实启动时出现运行期 ClassNotFound。
+            -->
+            <artifactId>mybatis-plus-jsqlparser</artifactId>
         </dependency>
         <dependency>
             <groupId>com.mysql</groupId>
@@ -48,6 +62,15 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <!--
+            task-management 是任务调度、重试、worker 队列和异步命令 outbox 的核心模块。
+            Prometheus registry 让这些 Micrometer 指标可以通过 /actuator/prometheus 被统一采集，
+            避免只能在本地 /actuator/metrics 手工排障，无法进入 Grafana/Alertmanager。
+        -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
         <dependency>
             <groupId>com.alibaba.cloud</groupId>

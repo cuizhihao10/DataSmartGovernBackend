@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.config.AgentSkillVisibilitySnapshotIndexProperties;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 
@@ -58,6 +59,14 @@ public class InMemoryAgentSkillVisibilitySnapshotIndexStore implements AgentSkil
     private final int maxTotalSnapshots;
     private long nextReplaySequence = 1L;
 
+    /**
+     * Spring 生产运行时使用的配置构造器。
+     *
+     * <p>Skill 可见性索引在本地闭环阶段默认使用 memory store，但仍需要从配置属性读取
+     * per-run 与全局保留窗口，避免 runtime event replay 或 Kafka 重放时无限堆积。
+     * 由于本类保留了测试构造器，必须显式告诉 Spring 使用该构造器完成 Bean 装配。</p>
+     */
+    @Autowired
     public InMemoryAgentSkillVisibilitySnapshotIndexStore(AgentSkillVisibilitySnapshotIndexProperties properties) {
         this.maxSnapshotsPerRun = Math.max(1, properties.getMaxSnapshotsPerRun());
         this.maxTotalSnapshots = Math.max(1, properties.getMaxTotalSnapshots());

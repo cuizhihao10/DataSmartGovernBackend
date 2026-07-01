@@ -33,9 +33,29 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
+        <!--
+            data-quality 虽然不是本轮最小 E2E 必启链路，但 Prometheus 已经按 /actuator/prometheus 抓取该服务。
+            提前补齐 registry 可以保证质量规则执行、调度 tick、并发护栏等指标在后续启动时直接进入监控面板。
+        -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.baomidou</groupId>
-            <artifactId>mybatis-plus-boot-starter</artifactId>
+            <!--
+              数据质量模块虽然不是当前 E2E 最小链路的首要启动对象，但它同样属于 Boot3 微服务。
+              统一替换为 Boot3 starter 可以避免后续补齐质量规则、报告、执行记录时再次遇到同类启动问题。
+            -->
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <!--
+              质量规则、扫描报告和异常明细后续都会走分页列表。
+              该扩展承载 PaginationInnerInterceptor 所需类，避免模块在真正启动时才暴露缺包问题。
+            -->
+            <artifactId>mybatis-plus-jsqlparser</artifactId>
         </dependency>
         <dependency>
             <groupId>com.mysql</groupId>

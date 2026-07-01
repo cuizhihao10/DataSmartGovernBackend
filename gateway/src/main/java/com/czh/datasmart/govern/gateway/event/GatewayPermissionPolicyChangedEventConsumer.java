@@ -51,9 +51,14 @@ public class GatewayPermissionPolicyChangedEventConsumer {
      * 这样本地开发没有 Kafka 时，gateway 仍然可以正常启动。
      */
     @KafkaListener(
-            topics = "#{@gatewayPermissionPolicyEventProperties.topic}",
-            groupId = "#{@gatewayPermissionPolicyEventProperties.groupId}",
-            autoStartup = "#{@gatewayPermissionPolicyEventProperties.enabled}"
+            /*
+             * listener 参数直接从 Environment 读取，支持 application.yml、Nacos 与环境变量覆盖。
+             * 即使当前配置类显式声明了 Bean 名，也不建议让启动期注解依赖短 Bean 名；
+             * 对 gateway 这种入口服务来说，配置解析失败应尽量少由 Bean 命名细节触发。
+             */
+            topics = "${datasmart.gateway.authorization.policy-events.topic:datasmart.permission.policy.changed}",
+            groupId = "${datasmart.gateway.authorization.policy-events.group-id:datasmart-gateway-permission-policy-cache-invalidator}",
+            autoStartup = "${datasmart.gateway.authorization.policy-events.enabled:false}"
     )
     public void onPermissionPolicyChanged(String payload) {
         try {

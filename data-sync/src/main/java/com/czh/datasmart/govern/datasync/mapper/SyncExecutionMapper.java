@@ -34,7 +34,7 @@ public interface SyncExecutionMapper extends BaseMapper<SyncExecution> {
             SELECT *
             FROM data_sync_execution
             WHERE execution_state = 'QUEUED'
-              AND (queued_at IS NULL OR queued_at <= NOW())
+              AND (queued_at IS NULL OR queued_at &lt;= NOW())
             <if test="tenantId != null">
               AND tenant_id = #{tenantId}
             </if>
@@ -60,7 +60,7 @@ public interface SyncExecutionMapper extends BaseMapper<SyncExecution> {
                 update_time = NOW()
             WHERE id = #{executionId}
               AND execution_state = 'QUEUED'
-              AND (queued_at IS NULL OR queued_at <= NOW())
+              AND (queued_at IS NULL OR queued_at &lt;= NOW())
             """)
     int claimQueuedExecution(@Param("executionId") Long executionId,
                              @Param("executorId") String executorId,
@@ -139,7 +139,7 @@ public interface SyncExecutionMapper extends BaseMapper<SyncExecution> {
             FROM data_sync_execution
             WHERE execution_state = 'RUNNING'
               AND lease_expire_time IS NOT NULL
-              AND lease_expire_time < NOW()
+              AND lease_expire_time &lt; NOW()
             <if test="tenantId != null">
               AND tenant_id = #{tenantId}
             </if>
@@ -179,7 +179,7 @@ public interface SyncExecutionMapper extends BaseMapper<SyncExecution> {
             WHERE id = #{executionId}
               AND execution_state = 'RUNNING'
               AND lease_expire_time IS NOT NULL
-              AND lease_expire_time < NOW()
+              AND lease_expire_time &lt; NOW()
             """)
     int requeueExpiredLease(@Param("executionId") Long executionId,
                             @Param("reason") String reason,

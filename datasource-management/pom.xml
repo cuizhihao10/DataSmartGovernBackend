@@ -24,9 +24,39 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
+        <!--
+            datasource-management 负责外部数据源登记、连接探测、元数据采集和同步运行支撑。
+            这些能力一旦进入真实客户环境，就必须被健康检查、指标和告警覆盖；否则连接池耗尽、
+            探测失败、队列积压等问题只能靠人工翻日志定位。Actuator 提供 /actuator/health 与 /actuator/metrics。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <!--
+            Prometheus registry 把 Actuator/Micrometer 指标转换成 Prometheus 文本格式。
+            docker/prometheus/prometheus.yml 已经抓取 datasource-management 的 /actuator/prometheus，
+            因此依赖和 exposure 配置必须同时存在，才能形成真实监控闭环。
+        -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.baomidou</groupId>
-            <artifactId>mybatis-plus-boot-starter</artifactId>
+            <!--
+              数据源管理模块会持久化数据源配置、密钥引用、连接探测记录和元数据采集状态。
+              这里跟随父工程统一使用 Boot3 starter，确保 Mapper 扫描与 Spring Boot 3.5.x 兼容。
+            -->
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <!--
+              数据源列表、元数据采集记录和只读 SQL 审计记录需要分页治理。
+              分页拦截器依赖 jsqlparser 扩展包，显式声明可以让本地 E2E 与生产包运行行为一致。
+            -->
+            <artifactId>mybatis-plus-jsqlparser</artifactId>
         </dependency>
         <dependency>
             <groupId>com.mysql</groupId>

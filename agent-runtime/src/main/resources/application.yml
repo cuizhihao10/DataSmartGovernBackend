@@ -9,6 +9,10 @@ spring:
   application:
     name: agent-runtime
   cloud:
+    compatibility-verifier:
+      # agent-runtime 是 AI 控制面，必须跟 gateway、permission-admin 等 Java 服务保持同一固定技术栈。
+      # 关闭 Spring Cloud 官方矩阵硬校验后，仍要通过 Kafka/Nacos/HTTP 真实联调确认兼容性，而不能把该配置视为“风险消失”。
+      enabled: false
     nacos:
       discovery:
         server-addr: localhost:8848

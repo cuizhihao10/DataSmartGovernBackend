@@ -1,0 +1,20 @@
+# DataSmart Govern 本地真实 E2E 覆盖配置。
+#
+# 使用场景：
+# - Windows 本机已经安装并运行 MySQL80，占用了宿主机 3306；
+# - 又希望按项目标准 Compose 启动 `datasmart-mysql`，获得仓库约定的本地开发账号、数据库和 Nacos 依赖；
+# - 不希望为了联调强行停止或改动用户机器上的已有 MySQL 服务。
+#
+# 使用方式：
+#   $env:DATASMART_LOCAL_MYSQL_PORT = "13306"
+#   docker compose -f docker-compose.yml -f docker-compose.local-e2e.yml up -d mysql redis zookeeper kafka nacos keycloak prometheus grafana
+#
+# 设计说明：
+# - 容器内部仍然是 mysql:3306，所以 Nacos 等容器内服务继续通过 `mysql:3306` 访问，不需要改 base compose；
+# - 只有 Windows 宿主机访问 MySQL 时改用 127.0.0.1:13306；
+# - Java 微服务如果从宿主机启动，需要通过 `SPRING_DATASOURCE_URL` 或各模块 JDBC 环境变量指向 13306；
+# - 这里使用 Compose 的 `!override` 显式替换 ports，避免 base compose 的 `3306:3306` 与本机 MySQL80 冲突。
+services:
+  mysql:
+    ports: !override
+      - "${DATASMART_LOCAL_MYSQL_PORT:-13306}:3306"

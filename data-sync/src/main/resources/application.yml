@@ -21,6 +21,10 @@ spring:
     # 预留给同步任务状态事件、执行器调度事件、checkpoint 事件和告警事件。
     bootstrap-servers: localhost:9092
   cloud:
+    compatibility-verifier:
+      # data-sync 参与真实 E2E 时必须和其他 Java 服务使用同一套固定栈。
+      # 因 Spring Cloud 2023 的校验器不认可 Boot 3.5.x，这里显式关闭硬校验，并通过启动与 smoke 结果验证实际兼容性。
+      enabled: false
     nacos:
       discovery:
         server-addr: localhost:8848

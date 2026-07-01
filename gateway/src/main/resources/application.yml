@@ -9,6 +9,11 @@ spring:
   profiles:
     active: dev
   cloud:
+    compatibility-verifier:
+      # gateway 是所有服务的统一入口，若被 Spring Cloud 版本矩阵硬校验拦截，真实 E2E 无法继续。
+      # 当前项目先遵守既定 Spring Boot 3.5.11 / Spring Cloud 2023.0.3 约束关闭硬校验；
+      # 后续商业化发布前仍建议用完整回归和压测评估该固定栈组合。
+      enabled: false
     gateway:
       # 路由显式声明出来，更适合作为学习资料。
       # 只看配置也能直接理解“哪个前缀转到哪个模块”。
@@ -1189,7 +1194,9 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        # health/info 用于基础探活，metrics 用于本地排障，prometheus 用于 docker/prometheus 周期抓取。
+        # gateway 处在所有外部流量入口，后续限流、授权、WebSocket 连接数和 Python Runtime 代理指标都需要进入统一监控。
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       show-details: when-authorized

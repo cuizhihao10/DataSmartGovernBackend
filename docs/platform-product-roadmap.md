@@ -1,5 +1,51 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-07-01 追加落地进展：Local Real E2E Closure And Observability Endpoint Alignment
+- 本阶段继续按“尽快闭环收敛”推进，没有继续扩展局部业务功能或新 Agent 能力，而是把真实本地 E2E 的基础设施、OIDC 认证、gateway、Java 微服务、Python Runtime 诊断链路和 Prometheus 抓取端点打通。
+- 已落地内容：
+  - gateway 移除 `spring-boot-starter-web`，保持 Spring Cloud Gateway 的 Reactive/WebFlux 运行模型，避免 MVC/Servlet classpath 阻断启动；
+  - 修复 gateway、agent-runtime、task-management 等真实启动中暴露的构造器注入、Kafka listener 配置、MyBatis 注解 SQL 转义和本地对象存储 fallback 问题；
+  - 为 `datasource-management`、`permission-admin` 补齐 Actuator，为 `gateway`、`task-management`、`datasource-management`、`permission-admin`、`data-quality` 补齐 Prometheus registry；
+  - 将关键服务的 `management.endpoints.web.exposure.include` 对齐为 `health,info,metrics,prometheus`，让 Compose 中的 Prometheus 抓取配置和服务实际暴露端点一致；
+  - 保留 Docker 镜像预拉取、MySQL `13306` 本地覆盖、readiness、smoke、JDK 21 Toolchains 等本地 E2E 支撑能力。
+- 真实验证结果：
+  - 多模块构建通过，Maven 使用 JDK 21；
+  - gateway、task-management、datasource-management、permission-admin、data-sync、agent-runtime 的 `/actuator/health` 与 `/actuator/prometheus` 均返回 HTTP 200；
+  - `scripts/local-e2e-environment-readiness.ps1 -ProbeMySqlCredential` 汇总 `PASS=24, WARN=2, FAIL=0`；
+  - `scripts/local-e2e-smoke-check.ps1 -CheckServiceAccountToken -CheckAgentGatewayDiagnostics` 汇总 `PASS=43, WARN=0, FAIL=0`；
+  - Keycloak/OIDC 服务账号、gateway 身份映射、permission-admin 路由授权、gateway 到 Python Runtime 低敏诊断路由已形成认证入口闭环。
+- 收敛判断：
+  - 当前已经完成“本地真实只读 E2E 诊断闭环”，但这不等价于生产发布完成；
+  - 下一步不应继续无限扩展单点能力，而应把闭环从只读诊断推进到安全的业务草案链路：认证入口 -> gateway 授权 -> task-management 持久化 -> agent-runtime/Python 低敏计划 -> 不执行高风险工具；
+  - 后续新增能力必须服务于项目闭口验收，优先补 P0 验收缺口、运行手册、最小安全业务链路和生产部署说明。
+
+## 2026-06-30 追加落地进展：Local E2E Docker Runtime Recovery
+- 本阶段继续按“尽快闭环收敛”推进，没有新增 Agent 能力、模型能力、Java 业务 API 或数据同步执行逻辑，而是修复真实本地 E2E 环境的 Docker、MySQL、镜像与 schema 启动阻塞。
+- 已落地内容：
+  - 新增 `scripts/local-e2e-docker-image-cache.ps1`，按 Compose 镜像清单尝试国内镜像前缀，拉取成功后重新 tag 成标准镜像名，避免把临时镜像站写死到 `docker-compose.yml`；
+  - 新增 `docker-compose.local-e2e.yml`，在 Windows 本机 `MySQL80` 占用 `3306` 时，把项目 Docker MySQL 映射到 `13306`；
+  - `scripts/local-e2e-environment-readiness.ps1` 支持从 `DATASMART_LOCAL_MYSQL_PORT` 读取 MySQL 探针端口；
+  - 修复 `docker/mysql/init/init.sql` 中 MySQL 8.0.46 不再支持的 `GRANT ... IDENTIFIED BY` 旧语法；
+  - 将 `20260602_agent_memory_workspace_namespace.sql` 改为 information_schema + 动态 SQL 的幂等迁移，避免 fresh snapshot 库重复加列；
+  - 新增 `docs/local-e2e-docker-troubleshooting.md`，记录国内镜像预拉取、Docker Desktop mirror 限制、`MySQL80` 端口覆盖、fresh snapshot baseline 与当前镜像阻塞清单。
+- 真实环境验证：
+  - Docker Desktop CLI/daemon 可用；
+  - 用户级 JDK 已切到 `C:\Users\Cui\.jdks\temurin-21.0.10`，当前 Maven 使用 Java 21；
+  - `mysql:8.0`、`redis:7.2-alpine` 已成功准备并启动；
+  - 项目 MySQL 通过 `127.0.0.1:13306` 暴露，避免与 Windows `MySQL80:3306` 冲突；
+  - readiness 凭据探针连接 `127.0.0.1:13306/datasmart_govern` 通过；
+  - MySQL 初始化完整执行后，`datasmart_govern` 有 51 张业务表；
+  - migration governance 默认计划模式最终读取 52 条历史，汇总 `PASS=108, WARN=0, FAIL=0`；
+  - Python Runtime 8090 仍可访问三项低敏诊断接口。
+- 当前仍阻塞的真实 E2E 依赖：
+  - `confluentinc/cp-zookeeper:7.6.0`、`confluentinc/cp-kafka:7.6.0`、`nacos/nacos-server:v2.3.0`、`quay.io/keycloak/keycloak:26.6.4`、`grafana/grafana:latest` 仍受镜像 layer 下载 EOF/TLS timeout 影响；
+  - Docker Desktop 4.80 重启后 `docker info` 仍显示 registry mirrors 为空，说明用户目录 `daemon.json` 未被同步为实际 Linux engine mirror；
+  - 当前更可靠的下一步是准备稳定镜像代理或企业内部镜像仓库，而不是继续把时间耗在公共镜像站反复重试。
+- 收敛判断：
+  - 数据库与 Redis 前置依赖已经从“不可用”推进到“可连接、可登记、可审计”；
+  - 全平台 E2E 尚未完成，剩余关键点是 Kafka/Nacos/Keycloak/Grafana 镜像供应和 Java 服务真实启动；
+  - 后续优先解决依赖镜像供应与服务启动，不再新增局部 Agent/业务功能来掩盖真实闭环缺口。
+
 ## 2026-06-30 追加落地进展：Local E2E Environment Readiness Closure
 - 本阶段继续按“整体闭环收敛”推进，没有新增业务功能、Agent 能力、模型路由或数据同步执行能力，而是把真实 E2E 启动前的环境阻塞变成可重复诊断的脚本化能力。
 - 产品价值：

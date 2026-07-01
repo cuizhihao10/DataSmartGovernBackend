@@ -103,7 +103,12 @@ services:
     container_name: datasmart-nacos
     environment:
       MODE: standalone
+      # Nacos 2.3 镜像的配置模板已经从旧的 spring.datasource.platform 迁移到 spring.sql.init.platform，
+      # 但部分启动路径和排障资料仍会同时参考旧属性。这里同时提供环境变量和 JVM system property，
+      # 让本地 E2E 明确进入 MySQL 外置存储模式，避免出现 "No DataSource set" 的重启循环。
       SPRING_DATASOURCE_PLATFORM: mysql
+      SPRING_SQL_INIT_PLATFORM: mysql
+      JAVA_OPT_EXT: "-Dspring.datasource.platform=mysql -Dspring.sql.init.platform=mysql"
       MYSQL_SERVICE_HOST: mysql
       MYSQL_SERVICE_PORT: 3306
       MYSQL_SERVICE_DB_NAME: nacos

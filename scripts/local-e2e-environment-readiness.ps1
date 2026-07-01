@@ -40,6 +40,13 @@ $ErrorActionPreference = "Stop"
 $script:Checks = New-Object System.Collections.Generic.List[object]
 $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
+if (
+    -not $PSBoundParameters.ContainsKey("MySqlPort") -and
+    -not [string]::IsNullOrWhiteSpace($env:DATASMART_LOCAL_MYSQL_PORT)
+) {
+    $MySqlPort = [int]$env:DATASMART_LOCAL_MYSQL_PORT
+}
+
 if ([string]::IsNullOrWhiteSpace($MySqlUser)) {
     $MySqlUser = if ([string]::IsNullOrWhiteSpace($env:DATASMART_MYSQL_USER)) { "root" } else { $env:DATASMART_MYSQL_USER }
 }
@@ -226,7 +233,7 @@ foreach ($name in @("DATASMART_MYSQL_USER", "DATASMART_MYSQL_PASSWORD", "MYSQL_P
 }
 
 $ports = @(
-    @{ Name = "MySQL"; Port = 3306; Required = $true },
+    @{ Name = "MySQL"; Port = $MySqlPort; Required = $true },
     @{ Name = "Redis"; Port = 6379; Required = $true },
     @{ Name = "Nacos"; Port = 8848; Required = $true },
     @{ Name = "Kafka"; Port = 9092; Required = $true },

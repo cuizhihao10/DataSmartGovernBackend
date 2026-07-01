@@ -172,8 +172,8 @@ management:
         # 引入 spring-boot-starter-actuator 后，可以通过 /actuator/metrics 查看质量执行器相关指标，
         # 例如 datasmart_quality_executor_run_total、datasmart_quality_executor_scheduler_tick_total。
         # 并发护栏触发时，还可以查看 datasmart_quality_executor_concurrency_rejected_total。
-        # 后续接入 Prometheus registry 后，再把 prometheus 端点加入这里。
-        include: health,info,metrics
+        # prometheus 端点用于让 Compose 中的 Prometheus 直接抓取这些指标，避免后续质量模块启动后再次出现监控 404 噪声。
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       show-details: when-authorized

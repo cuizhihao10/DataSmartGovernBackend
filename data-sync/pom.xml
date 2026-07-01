@@ -43,7 +43,12 @@
         </dependency>
         <dependency>
             <groupId>com.baomidou</groupId>
-            <artifactId>mybatis-plus-boot-starter</artifactId>
+            <!--
+              数据同步服务依赖 Mapper 访问任务、连接器、运行实例和检查点等表。
+              本项目固定 Spring Boot 3.5.11，因此必须使用 Boot3 专用 starter，
+              防止旧 starter 在 Mapper Bean 类型推断阶段阻塞真实 E2E 启动。
+            -->
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
         </dependency>
         <dependency>
             <groupId>com.mysql</groupId>

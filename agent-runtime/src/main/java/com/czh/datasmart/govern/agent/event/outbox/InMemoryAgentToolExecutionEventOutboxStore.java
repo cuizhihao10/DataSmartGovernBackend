@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.event.outbox;
 
 import com.czh.datasmart.govern.agent.config.AgentToolExecutionEventOutboxProperties;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -56,6 +57,16 @@ public class InMemoryAgentToolExecutionEventOutboxStore implements AgentToolExec
     private final int maxEventsPerRun;
     private final int maxTotalRecords;
 
+    /**
+     * Spring 生产运行时使用的构造器。
+     *
+     * <p>该内存 outbox store 也保留了一个接收窗口大小的测试构造器，方便单元测试直接构造小容量仓储。
+     * 真实应用启动时必须从 {@link AgentToolExecutionEventOutboxProperties} 读取容量、保留窗口和诊断边界；
+     * 因此在存在多个构造器时显式标注 {@link Autowired}，避免 Spring 尝试寻找不存在的无参构造器。</p>
+     *
+     * @param properties Agent 工具执行事件 outbox 的内存窗口配置。
+     */
+    @Autowired
     public InMemoryAgentToolExecutionEventOutboxStore(AgentToolExecutionEventOutboxProperties properties) {
         this.maxEventsPerRun = Math.max(1, properties.getMaxEventsPerRun());
         this.maxTotalRecords = Math.max(1, properties.getMaxTotalRecords());

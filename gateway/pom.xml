@@ -16,10 +16,12 @@
             <artifactId>platform-common</artifactId>
             <version>${project.version}</version>
         </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
-        </dependency>
+        <!--
+            gateway 是平台统一入口，运行模型必须保持 Spring Cloud Gateway 的 Reactive/WebFlux 栈。
+            这里不能引入 spring-boot-starter-web：它会把 Spring MVC/Servlet 栈放到 classpath，
+            Spring Cloud Gateway 启动时会主动拒绝 MVC classpath，避免“边缘网关”在高并发代理场景下退化为阻塞式 Servlet 模型。
+            WebFlux、Netty 与响应式路由能力由 spring-cloud-starter-gateway 间接提供。
+        -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
@@ -39,6 +41,15 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <!--
+            Prometheus registry 会把 gateway 的 Micrometer 指标导出到 /actuator/prometheus。
+            docker/prometheus/prometheus.yml 已经按该路径抓取 gateway；如果只暴露 /actuator/metrics，
+            Prometheus 会持续收到 404，真实 E2E 日志会被监控噪声淹没，运维也无法看到入口层限流、授权和路由指标。
+        -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
         <dependency>
             <groupId>com.alibaba.cloud</groupId>

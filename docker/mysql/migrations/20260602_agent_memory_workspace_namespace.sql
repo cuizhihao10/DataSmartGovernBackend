@@ -11,7 +11,49 @@
 -- 历史候选进入正式记忆前应由补偿工具基于原始 run/audit 重新计算并人工确认 namespace，
 -- 避免把旧候选猜测性迁移到错误空间。
 
-ALTER TABLE agent_memory_write_candidate
-    ADD COLUMN workspace_key VARCHAR(255) DEFAULT NULL COMMENT 'Agent 工作空间隔离键；同一项目内不同 workspace/session 不应共享长期记忆。' AFTER source,
-    ADD COLUMN memory_namespace VARCHAR(255) DEFAULT NULL COMMENT '长期记忆命名空间，通常为 memory:{workspaceKey}；正式记忆检索必须按该字段过滤。' AFTER workspace_key,
-    ADD KEY idx_agent_memory_write_candidate_workspace (tenant_id, project_id, workspace_key, status, create_time);
+-- 真实 E2E 闭环发现：init.sql 已经吸收了较新的 agent_memory_write_candidate 表结构，
+-- 新库首次初始化后再执行本 migration 时可能遇到 Duplicate column。
+-- 因此这里改为 information_schema + 动态 SQL 的幂等写法：
+-- 1. 字段已存在时只执行 SELECT 1；
+-- 2. 字段不存在时才 ALTER TABLE；
+-- 3. 索引同样先检查再创建。
+SET @schema_name = DATABASE();
+
+SET @sql = IF(
+    EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = @schema_name
+          AND table_name = 'agent_memory_write_candidate'
+          AND column_name = 'workspace_key'
+    ),
+    'SELECT 1',
+    'ALTER TABLE agent_memory_write_candidate ADD COLUMN workspace_key VARCHAR(255) DEFAULT NULL COMMENT ''Agent 工作空间隔离键；同一项目内不同 workspace/session 不应共享长期记忆。'' AFTER source'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF(
+    EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = @schema_name
+          AND table_name = 'agent_memory_write_candidate'
+          AND column_name = 'memory_namespace'
+    ),
+    'SELECT 1',
+    'ALTER TABLE agent_memory_write_candidate ADD COLUMN memory_namespace VARCHAR(255) DEFAULT NULL COMMENT ''长期记忆命名空间，通常为 memory:{workspaceKey}；正式记忆检索必须按该字段过滤。'' AFTER workspace_key'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @sql = IF(
+    EXISTS (
+        SELECT 1
+        FROM information_schema.statistics
+        WHERE table_schema = @schema_name
+          AND table_name = 'agent_memory_write_candidate'
+          AND index_name = 'idx_agent_memory_write_candidate_workspace'
+    ),
+    'SELECT 1',
+    'ALTER TABLE agent_memory_write_candidate ADD KEY idx_agent_memory_write_candidate_workspace (tenant_id, project_id, workspace_key, status, create_time)'
+);
+PREPARE stmt FROM @sql; EXECUTE stmt; DEALLOCATE PREPARE stmt;

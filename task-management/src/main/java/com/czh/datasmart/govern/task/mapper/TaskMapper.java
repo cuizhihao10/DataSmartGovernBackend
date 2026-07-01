@@ -39,7 +39,7 @@ public interface TaskMapper extends BaseMapper<Task> {
             SELECT *
             FROM task
             WHERE status IN ('PENDING', 'DEFERRED')
-              AND (queued_time IS NULL OR queued_time <= NOW())
+              AND (queued_time IS NULL OR queued_time &lt;= NOW())
             <if test="taskType != null and taskType != ''">
               AND type = #{taskType}
             </if>
@@ -78,7 +78,7 @@ public interface TaskMapper extends BaseMapper<Task> {
                 update_time = NOW()
             WHERE id = #{taskId}
               AND status IN ('PENDING', 'DEFERRED')
-              AND (queued_time IS NULL OR queued_time <= NOW())
+              AND (queued_time IS NULL OR queued_time &lt;= NOW())
             """)
     int claimTask(@Param("taskId") Long taskId,
                   @Param("executorId") String executorId,

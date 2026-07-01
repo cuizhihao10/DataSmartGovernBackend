@@ -9,6 +9,7 @@ package com.czh.datasmart.govern.gateway.filter;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.gateway.config.GatewayContextProperties;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.cloud.gateway.filter.GlobalFilter;
 import org.springframework.core.Ordered;
@@ -99,6 +100,15 @@ public class GatewayPythonRuntimeSignatureFilter implements GlobalFilter, Ordere
     private final GatewayContextProperties contextProperties;
     private final Clock clock;
 
+    /**
+     * Spring 生产环境使用的构造器。
+     *
+     * <p>本类额外保留了一个包可见构造器用于单元测试注入固定 {@link Clock}。
+     * 如果不显式标记 {@code @Autowired}，Spring 在扫描到多个构造器时无法判断应该使用哪一个，
+     * 真实 E2E 启动阶段就会误报“没有默认构造器”。这里明确生产构造器后，既保留可测试性，
+     * 又不会把测试辅助入口暴露成运行时依赖。</p>
+     */
+    @Autowired
     public GatewayPythonRuntimeSignatureFilter(GatewayContextProperties contextProperties) {
         this(contextProperties, Clock.systemUTC());
     }

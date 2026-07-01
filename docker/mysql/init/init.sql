@@ -13,7 +13,11 @@ CREATE DATABASE IF NOT EXISTS nacos
     CHARACTER SET utf8mb4
     COLLATE utf8mb4_unicode_ci;
 
-GRANT ALL PRIVILEGES ON nacos.* TO 'root'@'%' IDENTIFIED BY 'password';
+-- MySQL 8.0.46 no longer accepts "GRANT ... IDENTIFIED BY ...".
+-- The official mysql image normally creates root@% from MYSQL_ROOT_PASSWORD;
+-- CREATE USER IF NOT EXISTS keeps old and fresh local volumes both idempotent.
+CREATE USER IF NOT EXISTS 'root'@'%' IDENTIFIED BY 'password';
+GRANT ALL PRIVILEGES ON nacos.* TO 'root'@'%';
 FLUSH PRIVILEGES;
 
 CREATE DATABASE IF NOT EXISTS datasmart_govern

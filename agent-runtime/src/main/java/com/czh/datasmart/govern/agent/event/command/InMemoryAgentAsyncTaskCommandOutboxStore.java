@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.event.command;
 
 import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
@@ -45,6 +46,16 @@ public class InMemoryAgentAsyncTaskCommandOutboxStore
     private final int maxCommandsPerRun;
     private final int maxTotalRecords;
 
+    /**
+     * Spring 生产运行时使用的配置构造器。
+     *
+     * <p>本类还保留了一个面向单元测试的数值构造器，用于在测试里快速指定窗口容量。
+     * 当一个 Bean 存在多个构造器时，Spring 无法仅凭类型推断“哪一个才是容器装配入口”，
+     * 因此这里显式标注 {@link Autowired}：运行时从
+     * {@link AgentAsyncTaskCommandOutboxProperties} 读取 outbox 容量配置，测试仍可直接调用
+     * {@code new InMemoryAgentAsyncTaskCommandOutboxStore(...)} 验证边界裁剪逻辑。</p>
+     */
+    @Autowired
     public InMemoryAgentAsyncTaskCommandOutboxStore(AgentAsyncTaskCommandOutboxProperties properties) {
         this.maxCommandsPerRun = Math.max(1, properties.getMaxCommandsPerRun());
         this.maxTotalRecords = Math.max(1, properties.getMaxTotalRecords());

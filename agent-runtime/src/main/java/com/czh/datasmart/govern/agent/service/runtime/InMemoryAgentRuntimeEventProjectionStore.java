@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.config.AgentRuntimeEventConsumerProperties;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayDeque;
@@ -64,6 +65,17 @@ public class InMemoryAgentRuntimeEventProjectionStore implements AgentRuntimeEve
      */
     private long nextReplaySequence = 1L;
 
+    /**
+     * Spring 生产运行时使用的构造器。
+     *
+     * <p>该类同时保留了一个接收两个 int 参数的测试构造器，用于单元测试快速构造小窗口仓储。
+     * 当一个 Spring Bean 存在多个构造器时，Spring 无法仅凭参数类型判断哪个构造器代表“正式依赖注入入口”，
+     * 因此这里显式标注 {@link Autowired}：生产运行时从
+     * {@link AgentRuntimeEventConsumerProperties} 读取窗口上限，测试代码仍可继续使用轻量构造器。</p>
+     *
+     * @param properties Agent runtime event 消费与投影配置，包含单个 run 的事件窗口上限和全局事件窗口上限。
+     */
+    @Autowired
     public InMemoryAgentRuntimeEventProjectionStore(AgentRuntimeEventConsumerProperties properties) {
         this.maxEventsPerRun = Math.max(1, properties.getMaxEventsPerRun());
         this.maxTotalEvents = Math.max(1, properties.getMaxTotalEvents());

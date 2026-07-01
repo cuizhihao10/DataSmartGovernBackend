@@ -26,7 +26,11 @@
         </dependency>
         <dependency>
             <groupId>com.baomidou</groupId>
-            <artifactId>mybatis-plus-boot-starter</artifactId>
+            <!--
+              可观测模块后续会持久化告警规则、事件索引和运维复盘结果。
+              即使当前闭环优先级低于 gateway/agent/runtime，也要保持依赖栈一致，避免局部模块遗留旧 starter。
+            -->
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
         </dependency>
         <dependency>
             <groupId>com.mysql</groupId>

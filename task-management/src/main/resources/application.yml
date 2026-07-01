@@ -31,6 +31,11 @@ spring:
       # 本地联调时从 earliest 开始更容易观察链路；生产环境需要结合 offset 管理和灰度策略谨慎调整。
       auto-offset-reset: earliest
   cloud:
+    compatibility-verifier:
+      # 本项目固定使用 Spring Boot 3.5.11 + Spring Cloud 2023.0.3。
+      # 为了让真实 E2E 能按项目既定栈启动，关闭 Spring Cloud 对官方推荐版本矩阵的硬校验；
+      # 后续如果允许升级 Spring Cloud，应优先移除该开关并回到官方兼容组合。
+      enabled: false
     nacos:
       discovery:
         # Nacos 用于服务注册与发现，支撑 gateway 和模块间调用定位。
@@ -54,8 +59,9 @@ management:
   endpoints:
     web:
       exposure:
-        # 当前先暴露基础健康、信息和指标端点。后续 Agent worker 指标接入后可继续扩展。
-        include: health,info,metrics
+        # health/info 用于基础探活，metrics 用于本地排障，prometheus 用于 docker/prometheus 周期抓取。
+        # task-management 是调度、重试、队列积压和 outbox 的核心控制面，生产运维不能只靠日志判断任务系统是否健康。
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       # 仅在授权情况下展示细节，避免健康检查泄露过多内部信息。

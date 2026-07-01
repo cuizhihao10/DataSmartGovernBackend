@@ -20,6 +20,10 @@ spring:
     # 预留给后续元数据变更事件、同步任务事件、执行器回调事件和跨模块异步协作。
     bootstrap-servers: localhost:9092
   cloud:
+    compatibility-verifier:
+      # 固定技术栈阶段关闭 Spring Cloud 启动兼容性硬校验。
+      # 该开关只避免启动前置拦截，不替代服务注册、数据库、Kafka、gateway 路由和真实 smoke 的兼容性验证。
+      enabled: false
     nacos:
       discovery:
         # 当前继续保留 Nacos 作为本地服务发现中心，方便 gateway 和其他模块发现 datasource-management。
@@ -44,8 +48,9 @@ management:
   endpoints:
     web:
       exposure:
-        # 当前先暴露 health/info/metrics，后续 observability 模块会进一步接 Prometheus/Grafana。
-        include: health,info,metrics
+        # health/info 用于基础探活，metrics 用于本地排障，prometheus 用于 docker/prometheus 周期抓取。
+        # datasource-management 后续会暴露连接探测、元数据采集、同步队列和只读 SQL 审计等指标，必须提前形成运维闭环。
+        include: health,info,metrics,prometheus
   endpoint:
     health:
       show-details: when-authorized

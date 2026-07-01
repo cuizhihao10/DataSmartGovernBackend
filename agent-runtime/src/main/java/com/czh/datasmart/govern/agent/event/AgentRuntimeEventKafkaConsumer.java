@@ -41,9 +41,15 @@ public class AgentRuntimeEventKafkaConsumer {
      * - autoStartup 绑定 enabled 开关，生产环境准备好 Kafka 后再打开。</p>
      */
     @KafkaListener(
-            topics = "#{@agentRuntimeEventConsumerProperties.topic}",
-            groupId = "#{@agentRuntimeEventConsumerProperties.groupId}",
-            autoStartup = "#{@agentRuntimeEventConsumerProperties.enabled}"
+            /*
+             * 使用配置占位符读取 Kafka listener 参数，而不是通过 "#{@xxxProperties}" 读取短 Bean 名。
+             * @EnableConfigurationProperties 注册出的配置 Bean 名称不一定等于类名首字母小写，
+             * 如果依赖短名，应用可能在 SpEL 解析阶段启动失败。占位符方式直接读取 Environment，
+             * 同时支持 application.yml、Nacos 配置中心和环境变量覆盖，更适合真实部署。
+             */
+            topics = "${datasmart.agent-runtime.runtime-events.kafka.topic:datasmart.agent-runtime.events}",
+            groupId = "${datasmart.agent-runtime.runtime-events.kafka.group-id:datasmart-agent-runtime-control-plane}",
+            autoStartup = "${datasmart.agent-runtime.runtime-events.kafka.enabled:false}"
     )
     public void onAgentRuntimeEvent(String payload) {
         AgentRuntimeEventConsumeResult result = consumerService.consume(payload);

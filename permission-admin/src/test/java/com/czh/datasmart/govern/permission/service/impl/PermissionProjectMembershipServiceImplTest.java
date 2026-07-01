@@ -101,7 +101,12 @@ class PermissionProjectMembershipServiceImplTest {
                 .isInstanceOfSatisfying(PlatformBusinessException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(PlatformErrorCode.TENANT_SCOPE_DENIED));
 
-        verify(membershipMapper, never()).insert(any());
+        /*
+         * MyBatis-Plus 3.5.14 的 BaseMapper 同时提供 insert(T) 与 insert(Collection<T>)。
+         * 测试这里验证的是“不能写入单条项目成员授权记录”，因此必须把 Mockito matcher
+         * 明确成 PermissionProjectMembership，避免 any() 同时匹配单条实体和批量集合重载。
+         */
+        verify(membershipMapper, never()).insert(any(PermissionProjectMembership.class));
         verify(auditSupport, never()).saveMutationAudit(any(), any(), any(), any(), any(), any());
         verify(membershipChangedEventPublisher, never()).publishProjectMembershipChanged(any(), any(), any(), any());
     }
@@ -145,7 +150,11 @@ class PermissionProjectMembershipServiceImplTest {
                 .isInstanceOfSatisfying(PlatformBusinessException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(PlatformErrorCode.FORBIDDEN));
 
-        verify(membershipMapper, never()).insert(any());
+        /*
+         * 这里同样只关心是否阻止了单条 OWNER 授权记录写入；强类型 matcher 可以让测试含义
+         * 与 MyBatis-Plus 新增的批量 insert 重载保持边界清晰。
+         */
+        verify(membershipMapper, never()).insert(any(PermissionProjectMembership.class));
         verify(auditSupport, never()).saveMutationAudit(any(), any(), any(), any(), any(), any());
     }
 

@@ -6,7 +6,7 @@
  */
 package com.czh.datasmart.govern.agent.service.runtime;
 
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -18,11 +18,18 @@ import java.util.List;
  * 因此默认实现采用 fail-safe 行为：返回“未执行探针、对象不可用、需要启用真实 adapter”的低敏结果。
  * 这样本地学习、单测和早期部署不会因为缺少 MinIO 配置而启动失败，但业务调用也不会误以为已经完成真实读取。</p>
  *
- * <p>`@ConditionalOnMissingBean` 的意义是：未来新增 `MinioAgentToolActionArtifactObjectStoreClient`
- * 后，Spring 会自动让真实实现替换默认禁用实现，而不需要修改 Service 或 Controller。</p>
+ * <p>这里使用“MinIO 未显式启用时注册”的条件，而不是只依赖 {@code @ConditionalOnMissingBean}。
+ * 普通组件扫描场景下，缺失 Bean 条件容易受扫描与条件评估顺序影响；对本地 E2E 来说，
+ * 更确定的规则是：未设置 {@code datasmart.agent-runtime.artifact-object-store.minio.enabled=true}
+ * 时，一定注册 fail-safe disabled adapter；显式启用 MinIO 时，再由真实 adapter 接管。</p>
  */
 @Component
-@ConditionalOnMissingBean(AgentToolActionArtifactObjectStoreClient.class)
+@ConditionalOnProperty(
+        prefix = "datasmart.agent-runtime.artifact-object-store.minio",
+        name = "enabled",
+        havingValue = "false",
+        matchIfMissing = true
+)
 public class DisabledAgentToolActionArtifactObjectStoreClient implements AgentToolActionArtifactObjectStoreClient {
 
     /**

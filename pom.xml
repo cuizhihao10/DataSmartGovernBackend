@@ -64,7 +64,14 @@
         <mysql.version>8.0.33</mysql.version>
         <redis.version>7.2.4</redis.version>
         <minio.version>8.5.7</minio.version>
-        <mybatis-plus.version>3.5.5</mybatis-plus.version>
+        <!--
+          MyBatis-Plus 需要使用支持 Spring Boot 3 / Spring Framework 6 的新版 starter。
+          旧的 mybatis-plus-boot-starter 在 Spring Boot 3.5.x 环境下可能把 MapperFactoryBean
+          的 factoryBeanObjectType 写成 String，导致服务启动时报：
+          Invalid value type for attribute 'factoryBeanObjectType': java.lang.String。
+          因此这里统一升级到 Boot3 专用 starter 对应的 3.5.14 版本，避免各业务模块分别处理兼容问题。
+        -->
+        <mybatis-plus.version>3.5.14</mybatis-plus.version>
     </properties>
     <modules>
         <module>platform-common</module>
@@ -117,10 +124,27 @@
                 <artifactId>minio</artifactId>
                 <version>${minio.version}</version>
             </dependency>
-            <!-- MyBatis Plus -->
+            <!--
+              MyBatis-Plus Boot3 Starter：
+              - 统一为 permission-admin、task-management、datasource-management、data-sync 等
+                MySQL 持久化服务提供 Mapper 扫描、SqlSessionFactory、分页插件等基础能力；
+              - 选择 spring-boot3-starter 是因为本项目固定 Spring Boot 3.5.11 / JDK 21，
+                不能再使用面向旧 Spring Boot 2 生态的 boot-starter；
+              - 该依赖只解决框架适配，业务上的租户隔离、权限过滤、审计字段仍由各模块服务层负责。
+            -->
             <dependency>
                 <groupId>com.baomidou</groupId>
-                <artifactId>mybatis-plus-boot-starter</artifactId>
+                <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+                <version>${mybatis-plus.version}</version>
+            </dependency>
+            <!--
+              MyBatis-Plus 3.5.9+ 将分页拦截器依赖的 JSqlParser 能力拆分为独立扩展包。
+              task-management、datasource-management、data-quality 当前都显式注册了 PaginationInnerInterceptor，
+              因此需要把该扩展也纳入统一版本管理；否则服务编译可能通过，但运行时会因为找不到分页插件类而启动失败。
+            -->
+            <dependency>
+                <groupId>com.baomidou</groupId>
+                <artifactId>mybatis-plus-jsqlparser</artifactId>
                 <version>${mybatis-plus.version}</version>
             </dependency>
         </dependencies>

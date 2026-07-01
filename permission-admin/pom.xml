@@ -24,9 +24,30 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
+        <!--
+            permission-admin 是平台认证授权链路的控制面，gateway 会依赖它做路由授权、数据范围和服务账号策略判定。
+            因此它必须暴露 /actuator/health 供 smoke、编排系统和运维探活使用，不能只依赖业务接口间接证明存活。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <!--
+            Prometheus registry 让授权延迟、缓存命中、策略事件消费等 Micrometer 指标可以进入统一监控。
+            即使当前只使用基础 JVM/HTTP 指标，也要先把 /actuator/prometheus 契约固定下来，避免 Compose 抓取持续 404。
+        -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
         <dependency>
             <groupId>com.baomidou</groupId>
-            <artifactId>mybatis-plus-boot-starter</artifactId>
+            <!--
+              权限中心是 gateway 授权决策、菜单/角色/服务账号管理的持久化控制面。
+              这里必须使用 Spring Boot 3 专用 starter，否则 Mapper Bean 在 Spring 6.2 环境下
+              会因为 factoryBeanObjectType 类型不兼容而导致整个认证授权链路无法启动。
+            -->
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
         </dependency>
         <dependency>
             <groupId>com.mysql</groupId>

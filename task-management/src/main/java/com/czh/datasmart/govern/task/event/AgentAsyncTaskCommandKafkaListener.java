@@ -42,9 +42,17 @@ public class AgentAsyncTaskCommandKafkaListener {
      * - autoStartup 绑定 enabled 开关，避免本地没有 Kafka 时自动连接。</p>
      */
     @KafkaListener(
-            topics = "#{@agentAsyncTaskCommandKafkaProperties.topic}",
-            groupId = "#{@agentAsyncTaskCommandKafkaProperties.groupId}",
-            autoStartup = "#{@agentAsyncTaskCommandKafkaProperties.enabled}"
+            /*
+             * 这里刻意使用配置占位符，而不是 "#{@xxxProperties.topic}" 形式读取配置 Bean。
+             *
+             * 原因是 @EnableConfigurationProperties 注册出的 Bean 名称并不总是等于类名首字母小写，
+             * 如果 listener 依赖短 Bean 名，真实启动时可能在解析 SpEL 阶段就失败。
+             * 使用 `${...}` 后，topic、groupId、autoStartup 都直接来自 Environment，
+             * 与 application.yml、Nacos 配置、环境变量覆盖的生产习惯一致，也能让本地 E2E 更稳定。
+             */
+            topics = "${datasmart.task-management.agent-async-commands.kafka.topic:datasmart.agent.tool.async.commands}",
+            groupId = "${datasmart.task-management.agent-async-commands.kafka.group-id:datasmart-task-management-agent-command-consumer}",
+            autoStartup = "${datasmart.task-management.agent-async-commands.kafka.enabled:false}"
     )
     public void onAgentAsyncTaskCommand(ConsumerRecord<String, String> record) {
         AgentAsyncTaskCommandKafkaRecordMetadata metadata = AgentAsyncTaskCommandKafkaRecordMetadata.from(record);

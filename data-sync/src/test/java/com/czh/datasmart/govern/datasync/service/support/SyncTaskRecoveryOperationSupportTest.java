@@ -110,7 +110,12 @@ class SyncTaskRecoveryOperationSupportTest {
                 () -> fixture.support().backfillTask(task, new SyncTaskRecoveryOperationRequest(), actor()));
 
         verify(fixture.executionCreationSupport(), never()).createQueuedExecution(any(), any(), any());
-        verify(fixture.recoveryPlanMapper(), never()).insert(any());
+        /*
+         * MyBatis-Plus 3.5.14 的 BaseMapper 新增了 insert(Collection<T>) 重载。
+         * 该用例验证的是“不应该写入单条恢复计划”，因此 matcher 必须绑定到 SyncExecutionRecoveryPlan，
+         * 避免 Mockito any() 同时匹配单条实体与批量集合。
+         */
+        verify(fixture.recoveryPlanMapper(), never()).insert(any(SyncExecutionRecoveryPlan.class));
     }
 
     /**
@@ -168,7 +173,11 @@ class SyncTaskRecoveryOperationSupportTest {
                 () -> fixture.support().replayTask(task, new SyncTaskRecoveryOperationRequest(), actor()));
 
         verify(fixture.executionCreationSupport(), never()).createQueuedExecution(any(), any(), any());
-        verify(fixture.recoveryPlanMapper(), never()).insert(any());
+        /*
+         * RUNNING 任务被拒绝 replay 时，不允许生成任何单条 recovery plan。
+         * 强类型 matcher 让测试语义和 BaseMapper 新旧重载差异解耦。
+         */
+        verify(fixture.recoveryPlanMapper(), never()).insert(any(SyncExecutionRecoveryPlan.class));
     }
 
     private Fixture fixture() {

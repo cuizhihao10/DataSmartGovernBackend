@@ -15,6 +15,7 @@ import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxS
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxStore;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.Clock;
@@ -47,6 +48,15 @@ public class AgentAsyncTaskCommandOutboxOperationService {
     private final AgentAsyncTaskCommandOutboxOperationStore operationStore;
     private final Clock clock;
 
+    /**
+     * Spring 运行时构造器。
+     *
+     * <p>本服务保留了一个包级测试构造器，用于注入固定 {@link Clock} 来稳定断言时间字段。
+     * 多构造器场景下显式标注 {@link Autowired}，可以避免 Spring 误走无参构造路径，
+     * 同时让读代码的人明确：生产 Bean 只依赖 outbox 查询 store 与人工操作 store，
+     * 不直接读取 payload、不调用下游执行器，也不绕过 dispatcher 的安全边界。</p>
+     */
+    @Autowired
     public AgentAsyncTaskCommandOutboxOperationService(AgentAsyncTaskCommandOutboxStore outboxStore,
                                                        AgentAsyncTaskCommandOutboxOperationStore operationStore) {
         this(outboxStore, operationStore, Clock.systemUTC());

@@ -12,6 +12,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentCommandWorkerLeaseRene
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionCommandWorkerReceiptRequest;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -45,6 +46,15 @@ public class AgentCommandWorkerLeaseService {
     private final AgentCommandWorkerLeaseStore store;
     private final Clock clock;
 
+    /**
+     * Spring 运行时构造器。
+     *
+     * <p>worker lease 是受控工具执行链路的并发护栏，真实运行时只需要注入
+     * {@link AgentCommandWorkerLeaseStore}。类内另外保留了一个包级测试构造器，用于注入固定
+     * {@link Clock} 来验证 TTL、过期和 fencing token 逻辑。显式标注 {@link Autowired}
+     * 可以让 Spring 明确选择该构造器，避免在多构造器场景下尝试寻找不存在的无参构造器。</p>
+     */
+    @Autowired
     public AgentCommandWorkerLeaseService(AgentCommandWorkerLeaseStore store) {
         this(store, Clock.systemUTC());
     }

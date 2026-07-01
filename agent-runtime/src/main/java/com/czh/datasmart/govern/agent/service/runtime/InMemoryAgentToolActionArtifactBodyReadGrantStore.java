@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.config.AgentArtifactBodyReadGrantStoreProperties;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 
@@ -46,6 +47,15 @@ public class InMemoryAgentToolActionArtifactBodyReadGrantStore
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private final int maxRecords;
 
+    /**
+     * Spring 运行时构造器。
+     *
+     * <p>artifact 正文读取授权事实虽然在本地默认保存在内存中，但它仍然必须受容量上限约束，
+     * 否则对象存储探针或读取授权异常循环会持续堆积 grant fact。这里从配置属性读取 memory
+     * store 上限；类内的包级构造器只服务于单元测试容量裁剪场景。显式标注 {@link Autowired}
+     * 可以避免 Spring 在多构造器情况下寻找无参构造器。</p>
+     */
+    @Autowired
     public InMemoryAgentToolActionArtifactBodyReadGrantStore(
             AgentArtifactBodyReadGrantStoreProperties properties) {
         this(normalizedMaxRecords(properties));

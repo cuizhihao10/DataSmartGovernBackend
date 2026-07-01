@@ -10,6 +10,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentCommandSandboxRunAdmis
 import com.czh.datasmart.govern.agent.controller.dto.AgentCommandSandboxRunAdmissionResponse;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -66,6 +67,15 @@ public class AgentCommandSandboxRunAdmissionService {
     private final AgentCommandWorkerLeaseService leaseService;
     private final Clock clock;
 
+    /**
+     * Spring 运行时构造器。
+     *
+     * <p>command sandbox 准入服务在单元测试中需要注入固定 {@link Clock} 来稳定 sandboxRunId
+     * 与时间相关断言，因此类内保留了一个包级测试构造器。真实应用启动时必须使用该 public 构造器，
+     * 从容器拿到 worker lease 服务后再进入准入校验流程；显式标注 {@link Autowired} 可以避免
+     * Spring 在多构造器场景下误判为需要无参构造器。</p>
+     */
+    @Autowired
     public AgentCommandSandboxRunAdmissionService(AgentCommandWorkerLeaseService leaseService) {
         this(leaseService, Clock.systemUTC());
     }

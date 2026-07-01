@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.config.AgentToolActionResumeFactBundleProperties;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 
@@ -55,6 +56,14 @@ public class InMemoryAgentToolActionWorkerReceiptIndexStore implements AgentTool
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private final int maxRecords;
 
+    /**
+     * Spring 生产运行时使用的配置构造器。
+     *
+     * <p>worker receipt 索引只保存低敏投影事实，但在真实 E2E 中会随着 worker 回执增长。
+     * 这里从配置属性读取最大记录数，并显式标注 {@link Autowired}，让 Spring 与测试构造器的职责分开：
+     * 运行时走配置属性，单元测试走容量参数。</p>
+     */
+    @Autowired
     public InMemoryAgentToolActionWorkerReceiptIndexStore(AgentToolActionResumeFactBundleProperties properties) {
         this(normalizedMaxRecords(properties));
     }
