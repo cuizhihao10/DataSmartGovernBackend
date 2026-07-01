@@ -1,5 +1,22 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-07-01 落地补充：Java Agent Runtime control plane enters smoke acceptance
+
+- 本轮趋势校准：
+  - Codex、Claude Code、OpenClaw 类 Agent Host 不只需要 Python 侧规划图，也需要 Java 控制面能查询会话、工具、Skill、模型路由、事件投影和 outbox 恢复事实；
+  - 当前项目进入闭环阶段后，`agent-runtime` 的验收标准不能停留在 `/actuator/health`，否则“进程存活”会被误判成“控制面可用”；
+  - 本轮选择 smoke 验收而不是新增图节点，是为了让多 Agent 和工具执行控制面的已有实现能被真实 E2E 发现。
+- 本轮落地到验收的能力：
+  - 本地 smoke 静态检查 Java runtime event projection、Skill 可见性 projection、工具事件 outbox 和异步命令 outbox 诊断控制器；
+  - 本地 smoke 运行时检查 `/agent-runtime/sessions`、`/agent-runtime/tools/descriptors`、`/agent-runtime/skills/publication/manifest`、`/agent-runtime/models/routes`；
+  - 本地 smoke 运行时检查 `/agent-runtime/runtime-events/diagnostics`、`/agent-runtime/runtime-events/skill-visibility-snapshots/diagnostics`、`/agent-runtime/tool-execution-events/outbox/diagnostics`、`/agent-runtime/async-task-commands/outbox/diagnostics`。
+- 安全边界：
+  - 这些探针只调用 GET，不调用 publish、refresh、dispatch、requeue、ack、enqueue、create-session 或 run 创建入口；
+  - smoke 不打印响应正文，避免会话、事件、工具目录、模型路由或 outbox 诊断未来扩展时泄露高基数业务排障信息。
+- 产品判断：
+  - Java Agent Runtime 的下一步重点是接入 gateway 认证授权路径下的只读探针，然后跑真实全平台 smoke；
+  - 如果真实 smoke 失败，应优先修启动、路由、权限、迁移和健康探针，不继续扩展展示型 Agent 功能。
+
 ## 2026-07-01 落地补充：AI Runtime metrics enters gateway and smoke acceptance
 
 - 本轮趋势校准：

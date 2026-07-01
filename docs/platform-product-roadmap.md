@@ -1,5 +1,20 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-07-01 追加落地进展：Agent Runtime Control Plane Smoke Closure
+- 本阶段继续承接“把必做与控制范围 Agent 的控制面合同、事件投影、权限和恢复事实纳入 E2E”的路线，不新增 LangGraph 节点、不新增 Agent 角色、不触发真实工具执行。
+- 已落地能力：
+  - `scripts/local-e2e-smoke-check.ps1` 新增 Java `agent-runtime` 控制面静态契约检查，覆盖 runtime event 投影诊断、Skill 可见性投影诊断、工具事件 outbox 诊断和异步命令 outbox 诊断；
+  - smoke 新增只读 HTTP 探针：sessions query、tool descriptors、Skill publication manifest、model routes、runtime event diagnostics、Skill visibility diagnostics、tool event outbox diagnostics、async command outbox diagnostics；
+  - `docs/local-e2e-closure-runbook.md` 已把这些端点加入关键探针清单，并明确不调用 publish、refresh、dispatch、requeue、ack、enqueue 或会话创建入口。
+- 架构收敛价值：
+  - `agent-runtime` 不再只通过 `/actuator/health` 被判断为“可用”，而是能检查 Java Agent 控制面事实、事件投影、Skill Manifest、工具目录和恢复 outbox 诊断是否真的可查询；
+  - 多 Agent 的 Java 控制面验收从“服务活着”推进到“会话、工具、Skill、模型路由、事件投影、outbox 恢复事实都能被只读巡检”；
+  - 本阶段仍保持 smoke 只读，不写 runtime event、不创建会话、不派发 outbox、不确认消费游标，避免 E2E 预检误触发真实副作用。
+- 下一步推荐路线：
+  1. 继续补 gateway 认证路径下的 Java `agent-runtime` 只读控制面探针，验证 `/api/agent/** -> agent-runtime` 授权链路；
+  2. 再进入真实全平台 smoke，不带 `-SkipHttp` 检查 Keycloak/gateway/permission-admin/Java 服务/Python Runtime/Prometheus 是否整体可达；
+  3. 若真实 smoke 暴露启动或迁移问题，优先修启动脚本、环境变量、migration 和 health probe，不再新增展示型 Agent 功能。
+
 ## 2026-07-01 追加落地进展：AI Runtime Metrics Gateway And Smoke Closure
 - 本阶段承接“进入 Java/Python 控制面事实与全平台 smoke/E2E 闭环”的推荐路线，不新增 LangGraph 节点、不新增 Agent 角色、不触发真实工具执行。
 - 已落地能力：

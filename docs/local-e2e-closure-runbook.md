@@ -258,6 +258,7 @@ GET http://localhost:8090/agent/metrics
 - 关键容器是否运行，例如 MySQL、Redis、Kafka、Nacos、Keycloak、Prometheus、Grafana。
 - 关键 HTTP 探针是否可访问，例如 `/actuator/health`、Keycloak realm metadata、gateway auth capabilities、data-sync connector capabilities、task-management receipt query。
 - AI Runtime 闭环契约是否仍然存在，例如 `/agent/metrics` 指标路由、`agentMemoryRetrievalWorkflow` 低基数指标记录、多 Agent `runtimeAgentDeliveryTiers` 分层、gateway `/api/agent/metrics` 统一入口和能力矩阵证据。
+- Java Agent Runtime 控制面事实是否可查询，例如 sessions、tools、Skill Manifest、model routes、runtime event diagnostics、Skill 可见性投影诊断、工具事件 outbox 诊断和异步命令 outbox 诊断。
 
 如果只是验证脚本语法和仓库文件完整性：
 
@@ -311,6 +312,7 @@ GET http://localhost:8080/api/agent/metrics
 - 不调用 datasource-management run-once。
 - 不读取源端数据。
 - 不写入目标端数据。
+- 不调用 Agent Runtime 的 publish、refresh、dispatch、requeue、ack、enqueue 或会话创建入口。
 - 不打印 token、client secret、数据库密码、SQL、样本数据、prompt、模型输出或内部请求正文。
 
 ## 6. 关键探针清单
@@ -327,6 +329,14 @@ GET http://localhost:8080/api/agent/metrics
 | Data Sync health | `http://localhost:8086/actuator/health` | 数据同步控制面进程存活 |
 | Data Sync capabilities | `http://localhost:8086/sync-connectors/capabilities` | 连接器能力目录可查询 |
 | Agent Runtime health | `http://localhost:8091/actuator/health` | Agent Java 控制面进程存活 |
+| Agent Runtime sessions query | `http://localhost:8091/agent-runtime/sessions` | 会话控制面只读列表入口可访问，不创建会话或运行 |
+| Agent Runtime tool descriptors | `http://localhost:8091/agent-runtime/tools/descriptors` | 工具目录机器可读描述符可查询，支撑 Python Runtime 和智能网关规划前检查 |
+| Agent Runtime Skill publication manifest | `http://localhost:8091/agent-runtime/skills/publication/manifest` | Java Skill Manifest 可查询，支撑 Python Runtime Skill Publication 消费链路 |
+| Agent Runtime model routes | `http://localhost:8091/agent-runtime/models/routes` | Java 模型路由控制面可查询，支撑模型网关与运行时治理对齐 |
+| Agent Runtime runtime event diagnostics | `http://localhost:8091/agent-runtime/runtime-events/diagnostics` | runtime event consumer/projection 诊断可查询 |
+| Agent Runtime Skill visibility diagnostics | `http://localhost:8091/agent-runtime/runtime-events/skill-visibility-snapshots/diagnostics` | Skill 可见性快照索引诊断可查询 |
+| Agent Runtime tool event outbox diagnostics | `http://localhost:8091/agent-runtime/tool-execution-events/outbox/diagnostics` | 工具事件 outbox 堆积、失败和阻断诊断可查询 |
+| Agent Runtime async command outbox diagnostics | `http://localhost:8091/agent-runtime/async-task-commands/outbox/diagnostics` | 异步命令 outbox 投递、失败和恢复状态诊断可查询 |
 | Python Runtime closure readiness | `http://localhost:8090/agent/capabilities/closure-readiness` | Agent Host 能力闭口门禁可查询 |
 | Python Runtime Skill Manifest diagnostics | `http://localhost:8090/agent/skills/publication/diagnostics` | Python 是否看见 Java Skill Manifest、缓存和 fallback 状态可查询 |
 | Python Runtime inference optimization diagnostics | `http://localhost:8090/agent/models/inference-optimization/diagnostics` | 模型推理优化控制面缺口可查询 |

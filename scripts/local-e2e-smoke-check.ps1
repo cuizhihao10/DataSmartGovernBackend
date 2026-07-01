@@ -23,6 +23,8 @@
       不把 Python Runtime 的诊断响应正文输出到终端，避免未来响应字段扩展时误泄露敏感内容。
     - Python Runtime `/agent/metrics` 和 gateway `/api/agent/metrics` 只验证 HTTP 状态码与静态契约，
       不打印 Prometheus 文本正文，避免未来新增指标时把高基数字段或业务排障内容带入终端日志。
+    - Java agent-runtime 控制面探针只调用 GET 查询和 diagnostics，不调用 publish/refresh/dispatch/requeue/ack/enqueue，
+      因此不会创建会话、写 runtime event、派发 outbox、确认消费游标或触发任何真实工具副作用。
 #>
 param(
     [switch]$Strict,
@@ -419,6 +421,9 @@ Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -Ex
 Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -ExpectedText "/api/agent/metrics" -Purpose "统一网关必须能路由 Python Runtime Prometheus 低基数指标入口，避免 AI 运行时指标只停留在直连端口"
 Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -ExpectedText "RewritePath=/api/observability/" -Purpose "gateway 必须把 /api/observability/** 改写到 observability 服务内部领域路径，避免可观测性服务只存在直连入口"
 Test-FileContains -RelativePath "gateway/src/main/java/com/czh/datasmart/govern/gateway/config/GatewayAuthorizationProperties.java" -ExpectedText "/api/agent/metrics" -Purpose "gateway 默认授权元数据必须识别 Python Runtime 指标入口，避免未加载 YAML 或配置中心覆盖时退化为通配规则"
+Test-FileContains -RelativePath "agent-runtime/src/main/java/com/czh/datasmart/govern/agent/controller/AgentRuntimeEventProjectionController.java" -ExpectedText "/skill-visibility-snapshots/diagnostics" -Purpose "agent-runtime 必须提供 runtime event 与 Skill 可见性投影诊断，支撑 Java 控制面事实验收"
+Test-FileContains -RelativePath "agent-runtime/src/main/java/com/czh/datasmart/govern/agent/controller/AgentToolExecutionEventOutboxController.java" -ExpectedText "/diagnostics" -Purpose "agent-runtime 必须提供工具事件 outbox 诊断，支撑事件投递堆积和阻断排查"
+Test-FileContains -RelativePath "agent-runtime/src/main/java/com/czh/datasmart/govern/agent/controller/AgentAsyncTaskCommandOutboxController.java" -ExpectedText "/async-task-commands/outbox/diagnostics" -Purpose "agent-runtime 必须提供异步命令 outbox 诊断，支撑 Java 控制面恢复事实验收"
 Test-RequiredFile -RelativePath "python-ai-runtime/src/datasmart_ai_runtime/services/memory/langgraph_memory_retrieval_metrics.py" -Purpose "LangGraph 长期记忆检索观察图的 Prometheus 低基数指标实现"
 Test-FileContains -RelativePath "python-ai-runtime/src/datasmart_ai_runtime/services/memory/langgraph_memory_retrieval_metrics.py" -ExpectedText "datasmart_ai_langgraph_memory_retrieval_workflows_total" -Purpose "agentMemoryRetrievalWorkflow 必须暴露 workflow 级指标，便于发现记忆检索观察图是否执行、fallback 或失败"
 Test-FileContains -RelativePath "python-ai-runtime/src/datasmart_ai_runtime/api/metrics.py" -ExpectedText "langgraph_memory_retrieval_metrics.render_prometheus" -Purpose "/agent/metrics 必须合并长期记忆检索指标，而不是只停留在独立类实现"
@@ -446,6 +451,14 @@ Invoke-HttpProbe -Name "Data Sync health" -Url "$DataSyncBaseUrl/actuator/health
 Invoke-HttpProbe -Name "Data Sync connector capabilities" -Url "$DataSyncBaseUrl/sync-connectors/capabilities"
 Invoke-HttpProbe -Name "Permission Admin health" -Url "$PermissionAdminBaseUrl/actuator/health"
 Invoke-HttpProbe -Name "Agent Runtime health" -Url "$AgentRuntimeBaseUrl/actuator/health"
+Invoke-HttpProbe -Name "Agent Runtime sessions query" -Url "$AgentRuntimeBaseUrl/agent-runtime/sessions"
+Invoke-HttpProbe -Name "Agent Runtime tool descriptors" -Url "$AgentRuntimeBaseUrl/agent-runtime/tools/descriptors"
+Invoke-HttpProbe -Name "Agent Runtime Skill publication manifest" -Url "$AgentRuntimeBaseUrl/agent-runtime/skills/publication/manifest"
+Invoke-HttpProbe -Name "Agent Runtime model routes" -Url "$AgentRuntimeBaseUrl/agent-runtime/models/routes"
+Invoke-HttpProbe -Name "Agent Runtime runtime event diagnostics" -Url "$AgentRuntimeBaseUrl/agent-runtime/runtime-events/diagnostics"
+Invoke-HttpProbe -Name "Agent Runtime Skill visibility diagnostics" -Url "$AgentRuntimeBaseUrl/agent-runtime/runtime-events/skill-visibility-snapshots/diagnostics"
+Invoke-HttpProbe -Name "Agent Runtime tool event outbox diagnostics" -Url "$AgentRuntimeBaseUrl/agent-runtime/tool-execution-events/outbox/diagnostics"
+Invoke-HttpProbe -Name "Agent Runtime async command outbox diagnostics" -Url "$AgentRuntimeBaseUrl/agent-runtime/async-task-commands/outbox/diagnostics"
 Invoke-HttpProbe -Name "Observability health" -Url "$ObservabilityBaseUrl/actuator/health"
 Invoke-HttpProbe -Name "Observability platform closure readiness" -Url "$ObservabilityBaseUrl/observability/platform/closure-readiness"
 Invoke-HttpProbe -Name "Observability service health snapshots" -Url "$ObservabilityBaseUrl/observability/platform/service-health-snapshots"
