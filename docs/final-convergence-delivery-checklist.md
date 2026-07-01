@@ -85,7 +85,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-e2e-smoke-ch
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\production-readiness-check.ps1
 ```
 
-结果口径：默认模式用于收敛阶段，已闭环和已文档化的生产加固契约应通过；生产环境值与 Secret 管理说明见 [production-environment-values.md](production-environment-values.md)。容量基线、故障演练等尚未交付的生产事项会以 `WARN` 形式保留，提醒它们是正式上线前的阻塞项。若进入真实发布门禁，可追加 `-StrictProductionGates`，把所有 `WARN` 提升为失败。
+结果口径：默认模式用于收敛阶段，已闭环和已文档化的生产加固契约应通过；生产环境值与 Secret 管理说明见 [production-environment-values.md](production-environment-values.md)。容量基线已经具备静态门禁和计划输出能力，故障演练等尚未交付的生产事项会以 `WARN` 形式保留，提醒它们是正式上线前的阻塞项。若进入真实发布门禁，可追加 `-StrictProductionGates`，把所有 `WARN` 提升为失败。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\helm-delivery-check.ps1
@@ -110,6 +110,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\backup-restore-che
 ```
 
 结果口径：默认模式只验证备份恢复交付边界，不连接数据库、不读取 Secret、不导出业务数据、不执行恢复覆盖；它会检查 [backup-restore-runbook.md](backup-restore-runbook.md)、有状态 Compose volume、config-as-code 路径和恢复清单输出边界。恢复演练环境可追加 `-CheckLocalTools` 检查工具链，或追加 `-WriteRecoveryInventory` 生成不含 Secret 的恢复范围清单。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\capacity-baseline-check.ps1
+```
+
+结果口径：默认模式只验证容量基线交付边界，不执行真实压测、不读取 Secret、不触发 worker、不提交工具、不写业务数据；它会检查 [capacity-baseline-runbook.md](capacity-baseline-runbook.md)、Gateway、Java 服务、Python Runtime、Kafka、MySQL/Redis/MinIO/Chroma/Neo4j、Agent plan 和观测配置。压测 runner 可追加 `-CheckLocalTools` 检查工具链，或追加 `-WriteBaselinePlan` 生成不含 Secret 的容量计划。
 
 ## 5. 生产上线前待办
 

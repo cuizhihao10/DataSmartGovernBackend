@@ -171,7 +171,7 @@ try {
     Test-RequiredText -RelativePath "docs/production-hardening-runbook.md" -ExpectedText "容量基线" -Purpose "production hardening docs must cover capacity baseline"
     Test-RequiredText -RelativePath "docs/production-hardening-runbook.md" -ExpectedText "故障演练" -Purpose "production hardening docs must cover failure drills"
     Test-AnyPathExists -Name "backup-restore" -RelativePaths @("scripts/backup-restore-check.ps1", "scripts/mysql-backup.ps1", "docs/backup-restore-runbook.md") -Purpose "add backup/restore runbook or executable checks before production release"
-    Test-AnyPathExists -Name "capacity-baseline" -RelativePaths @("scripts/capacity-baseline.ps1", "scripts/load-test", "docs/capacity-baseline-report.md") -Purpose "add repeatable capacity baseline procedure before production release"
+    Test-AnyPathExists -Name "capacity-baseline" -RelativePaths @("scripts/capacity-baseline-check.ps1", "scripts/capacity-baseline.ps1", "scripts/load-test", "docs/capacity-baseline-runbook.md", "docs/capacity-baseline-report.md") -Purpose "add repeatable capacity baseline procedure before production release"
     Test-AnyPathExists -Name "failure-drills" -RelativePaths @("scripts/failure-drill.ps1", "docs/failure-drill-runbook.md", "docs/disaster-recovery-runbook.md") -Purpose "add failure-drill or disaster-recovery runbook before production release"
 
     Write-Host "[SUMMARY] PASS=$passCount, WARN=$warnCount, FAIL=$failCount"
