@@ -74,7 +74,7 @@ docker compose --env-file .env.application `
 
 observability 的 `service-base-urls` 也按模块代码注入容器 DNS；未配置时自动回退 `localhost:<defaultPort>`，所以 IDE 模式和容器模式可以共享一套代码。
 
-OIDC token 的 issuer 默认保持 `http://localhost:18080/realms/datasmart`，供宿主机客户端获取和校验；Gateway 容器通过独立的内部 JWK URL `http://keycloak:18080/.../certs` 获取公钥。生产环境应使用统一 HTTPS 域名、正式企业 IdP/Keycloak 集群和受信任证书。
+OIDC token 的 issuer 默认保持 `http://localhost:18080/realms/datasmart`，供宿主机客户端获取和校验；Gateway 容器通过独立的内部 JWK URL `http://keycloak:18080/.../certs` 获取公钥。对应配置是 `DATASMART_GATEWAY_OIDC_ISSUER_URI` 和 `DATASMART_GATEWAY_OIDC_JWK_SET_URI`。两者拆分后，Gateway 不会在容器内把 `localhost` 误认为 Keycloak，同时仍会用 issuer 校验 JWT 的 `iss`，不会退化成只验签不验签发者。生产环境应使用统一 HTTPS 域名、正式企业 IdP/Keycloak 集群和受信任证书。
 
 ## 6. 可观测性
 
@@ -100,4 +100,3 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-e2e-smoke-ch
 ## 7. 当前生产边界
 
 本交付物完成的是单机容器化闭环，不等于多节点生产发布。正式商用上线前仍需要完成 TLS/mTLS、Secret Manager、镜像签名与 SBOM、漏洞扫描、资源 requests/limits、滚动升级、数据库备份恢复、Kafka/Redis/MySQL 高可用、对象存储生命周期、容量压测和故障演练。
-

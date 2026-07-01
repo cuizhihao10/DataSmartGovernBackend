@@ -139,7 +139,11 @@ services:
   # 4. `start-dev`、默认 admin 密码和样例用户密码只允许用于本地学习/联调，生产必须替换为正式 Keycloak 集群、
   #    企业 IdP、TLS、外部数据库、Secret Manager 和组织用户同步策略。
   keycloak:
-    image: ${DATASMART_KEYCLOAK_IMAGE:-docker.m.daocloud.io/quay.io/keycloak/keycloak:26.6.4}
+    # Keycloak 官方镜像来源是 Quay，而不是 Docker Hub。
+    # Docker Hub 镜像可通过 `docker.m.daocloud.io/library/...` 加速；
+    # Quay 镜像则需要使用 DaoCloud 的 Quay 专用入口 `quay.m.daocloud.io/...`。
+    # 保留 DATASMART_KEYCLOAK_IMAGE 覆盖点，便于企业环境切换到私有镜像仓库或已签名镜像。
+    image: ${DATASMART_KEYCLOAK_IMAGE:-quay.m.daocloud.io/keycloak/keycloak:26.6.4}
     container_name: datasmart-keycloak
     command:
       - start-dev

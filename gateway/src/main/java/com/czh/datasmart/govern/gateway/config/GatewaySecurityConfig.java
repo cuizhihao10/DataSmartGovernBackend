@@ -14,6 +14,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusReactiveJwtDecoder;
 import org.springframework.security.web.server.SecurityWebFilterChain;
+import org.springframework.util.StringUtils;
 
 /**
  * @Author : Cui
@@ -97,9 +98,7 @@ public class GatewaySecurityConfig {
             havingValue = "true", matchIfMissing = true)
     public NimbusReactiveJwtDecoder gatewayJwtDecoder() {
         GatewayAuthenticationCenterProperties.OidcJwtProperties oidc = authenticationCenterProperties.getOidc();
-        NimbusReactiveJwtDecoder decoder = NimbusReactiveJwtDecoder
-                .withIssuerLocation(authenticationCenterProperties.getIssuer())
-                .build();
+        NimbusReactiveJwtDecoder decoder = buildJwtDecoder(oidc);
         OAuth2TokenValidator<Jwt> issuerAndTimestampValidator =
                 JwtValidators.createDefaultWithIssuer(authenticationCenterProperties.getIssuer());
         OAuth2TokenValidator<Jwt> audienceValidator = new GatewayJwtAudienceValidator(
@@ -111,5 +110,32 @@ public class GatewaySecurityConfig {
                 audienceValidator
         ));
         return decoder;
+    }
+
+    /**
+     * 根据部署环境选择 JWT 公钥发现方式。
+     *
+     * <p>多数生产环境里，`issuer` 本身就是 gateway 可以直接访问的企业 IdP 地址，例如
+     * `https://idp.example.com/realms/datasmart`。这时使用 `withIssuerLocation(...)` 最清晰：
+     * Spring Security 会读取 `/.well-known/openid-configuration`，再从其中的 `jwks_uri` 拉取公钥。</p>
+     *
+     * <p>本地全容器 E2E 会遇到一个常见但容易误判的问题：宿主机通过
+     * `http://localhost:18080` 访问 Keycloak，token 的 `iss` 因而也是 localhost；可是 gateway
+     * 运行在容器内，容器里的 localhost 是 gateway 自己。此时如果继续用 issuer discovery，JWT 解码器会访问
+     * `gateway 容器自己的 18080` 并失败。</p>
+     *
+     * <p>因此这里支持显式 `jwkSetUri`：当它存在时，decoder 直接从该地址取公钥；但后续 validator 仍然按
+     * `authenticationCenterProperties.issuer` 校验 token 的 issuer。也就是说，网络寻址可以走容器 DNS，
+     * 安全语义仍然锚定真实 issuer，不会因为本地部署便利而退化成“只验签不验签发者”。</p>
+     */
+    private NimbusReactiveJwtDecoder buildJwtDecoder(GatewayAuthenticationCenterProperties.OidcJwtProperties oidc) {
+        if (StringUtils.hasText(oidc.getJwkSetUri())) {
+            return NimbusReactiveJwtDecoder
+                    .withJwkSetUri(oidc.getJwkSetUri())
+                    .build();
+        }
+        return NimbusReactiveJwtDecoder
+                .withIssuerLocation(authenticationCenterProperties.getIssuer())
+                .build();
     }
 }

@@ -48,7 +48,11 @@ param(
     ),
 
     [string[]]$QuayMirrors = @(
-        "docker.m.daocloud.io/quay.io"
+        # Quay 与 Docker Hub 不属于同一上游仓库体系。DaoCloud 对 Quay 提供的是
+        # `quay.m.daocloud.io/<namespace>/<image>:<tag>` 入口，而不是
+        # `docker.m.daocloud.io/quay.io/...`。把默认候选源固定在 Quay 专用域，可以避免
+        # Compose 或预拉脚本在 Keycloak 镜像上反复遇到 403/manifest 解析失败。
+        "quay.m.daocloud.io"
     ),
 
     [string[]]$ImageName = @(),

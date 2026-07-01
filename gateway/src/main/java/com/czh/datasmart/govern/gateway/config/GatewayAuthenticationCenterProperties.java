@@ -69,6 +69,24 @@ public class GatewayAuthenticationCenterProperties {
         private boolean enabled = true;
 
         /**
+         * JWT 公钥集合地址，也就是 OIDC/JWKS 协议里的 `jwks_uri`。
+         *
+         * <p>这个字段和上层 `issuer` 是故意拆开的：</p>
+         * <p>1. `issuer` 是安全语义，代表 token 的 `iss` 必须等于哪个可信签发者；</p>
+         * <p>2. `jwkSetUri` 是网络寻址语义，代表 gateway 到哪里拉取验签公钥；</p>
+         * <p>3. 在本地 Docker Compose 中，宿主机通过 `http://localhost:18080` 向 Keycloak 取 token，
+         * token 里的 issuer 也会是 `http://localhost:18080/realms/datasmart`；</p>
+         * <p>4. 但 gateway 容器内部访问 `localhost` 只会访问自身，因此必须用
+         * `http://keycloak:18080/.../certs` 这样的容器 DNS 拉取公钥；</p>
+         * <p>5. 生产环境如果 IdP issuer 对 gateway 可直连，可以留空本字段，让 Spring Security 通过
+         * issuer discovery 自动发现 JWKS；如果存在内外网地址差异，则显式配置该字段。</p>
+         *
+         * <p>安全边界：配置该字段并不会跳过 issuer 校验。`GatewaySecurityConfig` 仍会使用
+         * `JwtValidators.createDefaultWithIssuer(...)` 校验 `iss/exp/nbf` 等协议级事实。</p>
+         */
+        private String jwkSetUri;
+
+        /**
          * 是否校验 JWT audience。
          *
          * <p>OIDC access token 不仅要证明“由可信 issuer 签发”，还要证明“这个 token 是发给当前资源服务器的”。

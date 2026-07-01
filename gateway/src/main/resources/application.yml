@@ -295,6 +295,12 @@ datasmart:
       oidc:
         # 是否启用 OIDC/JWT 认证和 claim 到平台上下文 Header 的映射。
         enabled: ${DATASMART_GATEWAY_OIDC_ENABLED:true}
+        # JWT 公钥集合地址。它和 issuer 分离，是为了支持“外部 issuer + 内部 JWKS 地址”的部署模式：
+        # - issuer 仍用于校验 token 的 iss，代表安全语义；
+        # - jwk-set-uri 只用于 gateway 拉取验签公钥，代表网络寻址语义；
+        # - 本地全容器 E2E 中，token issuer 是宿主机可访问的 localhost，但 gateway 容器需要通过 keycloak 服务名取公钥。
+        # 生产环境如果 gateway 可以直接访问 issuer discovery，可以留空该字段。
+        jwk-set-uri: ${DATASMART_GATEWAY_OIDC_JWK_SET_URI:}
         # JWT 通过签名校验但缺少 DataSmart 必需 claim 时是否失败关闭。
         # 生产必须 true，避免请求退化成匿名租户或默认角色继续进入业务系统。
         fail-closed-on-missing-required-claims: ${DATASMART_GATEWAY_OIDC_FAIL_CLOSED_ON_MISSING_CLAIMS:true}

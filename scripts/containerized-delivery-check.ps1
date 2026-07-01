@@ -64,6 +64,26 @@ function Invoke-CheckedCommand {
     }
 }
 
+function Assert-FileContains {
+    param(
+        [string]$RelativePath,
+        [string]$ExpectedText,
+        [string]$Purpose
+    )
+
+    $path = Join-Path $repositoryRoot $RelativePath
+    if (-not (Test-Path -LiteralPath $path)) {
+        throw "missing contract file: $RelativePath"
+    }
+
+    $content = Get-Content -Raw -LiteralPath $path
+    if (-not $content.Contains($ExpectedText)) {
+        throw "delivery contract drift: $RelativePath missing '$ExpectedText'. $Purpose"
+    }
+
+    Write-Pass "$RelativePath - $Purpose"
+}
+
 function Get-ApplicationJar {
     param([string]$Module)
 
@@ -111,6 +131,20 @@ try {
         "--quiet"
     )
     Write-Pass "Compose config"
+
+    Write-Step "verify gateway OIDC issuer and JWKS split contract"
+    Assert-FileContains `
+        -RelativePath "gateway/src/main/java/com/czh/datasmart/govern/gateway/config/GatewaySecurityConfig.java" `
+        -ExpectedText '.withJwkSetUri(oidc.getJwkSetUri())' `
+        -Purpose 'gateway container mode must support an internal JWKS endpoint instead of issuer discovery against container localhost'
+    Assert-FileContains `
+        -RelativePath "gateway/src/main/resources/application.yml" `
+        -ExpectedText 'jwk-set-uri: ${DATASMART_GATEWAY_OIDC_JWK_SET_URI:}' `
+        -Purpose 'gateway auth configuration must expose the JWKS override while issuer validation remains enabled'
+    Assert-FileContains `
+        -RelativePath "docker-compose.application.yml" `
+        -ExpectedText 'DATASMART_GATEWAY_OIDC_JWK_SET_URI: http://keycloak:18080/realms/datasmart/protocol/openid-connect/certs' `
+        -Purpose 'full container E2E must fetch Keycloak signing keys through container DNS'
 
     if ($BuildRepresentativeImages) {
         Write-Step "build representative Java image"

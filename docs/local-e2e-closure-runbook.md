@@ -309,6 +309,7 @@ GET http://localhost:8080/api/agent/async-task-commands/outbox/diagnostics
 故障判断建议：
 
 - 如果返回 `401/403`，优先检查 Keycloak realm、`aud=datasmart-gateway`、DataSmart 必需 claim、gateway OIDC 配置和 permission-admin 路由策略。
+- 如果返回 `500`，且 gateway 日志包含 `Unable to resolve the Configuration with the provided Issuer` 或 `Connection refused: localhost/127.0.0.1:18080`，说明容器内 Gateway 正在用外部 issuer 地址做 discovery。全容器 E2E 应保留 `DATASMART_GATEWAY_OIDC_ISSUER_URI=http://localhost:18080/realms/datasmart` 校验 token 的 `iss`，同时设置 `DATASMART_GATEWAY_OIDC_JWK_SET_URI=http://keycloak:18080/realms/datasmart/protocol/openid-connect/certs` 让 Gateway 通过容器 DNS 拉取公钥。
 - 如果返回 `502/503` 或超时，优先检查 gateway 路由顺序、`python-ai-runtime-runtime-diagnostics` 路由是否仍位于通用 `/api/agent/** -> agent-runtime` 之前、Python Runtime 是否已在 `8090` 端口启动，以及 Java agent-runtime 是否已在 `8091` 端口启动。
 - 如果 `/auth/session` 通过但 Agent 诊断路由失败，说明身份解析已经成功，问题更可能集中在 permission-admin 对 `/api/agent/**` 诊断路由的授权、gateway route rewrite、Python Runtime 下游可达性或 Java agent-runtime 下游可达性。
 - 如果 Gateway 日志出现 `NoLoadBalancerClientFilter` 或 `Unable to find instance for <service>`，先确认 `gateway/pom.xml` 保留 `spring-cloud-starter-loadbalancer`，再确认 Nacos 中存在健康实例并重启 Gateway。仅引入 Nacos Discovery 只能完成注册发现，不能替代 Gateway 执行 `lb://` 路由所需的 Reactive LoadBalancer。
@@ -339,7 +340,7 @@ PASS=89, WARN=0, FAIL=0
 
 | 能力 | 默认地址 | 通过含义 |
 | --- | --- | --- |
-| Keycloak realm metadata | `http://localhost:18080/realms/datasmart/.well-known/openid-configuration` | 本地 OIDC realm 可访问，gateway 可基于 issuer 获取 JWKS |
+| Keycloak realm metadata | `http://localhost:18080/realms/datasmart/.well-known/openid-configuration` | 本地 OIDC realm 可访问；宿主机 token issuer 保持 localhost，gateway 容器通过 `DATASMART_GATEWAY_OIDC_JWK_SET_URI` 使用 `keycloak:18080` 拉取 JWKS |
 | Gateway health | `http://localhost:8080/actuator/health` | 网关进程存活 |
 | Gateway auth capabilities | `http://localhost:8080/auth/capabilities` | 认证中心配置可被只读查看 |
 | Permission Admin health | `http://localhost:8085/actuator/health` | 授权中心进程存活 |

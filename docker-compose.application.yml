@@ -58,7 +58,7 @@ services:
       DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_EVALUATE_URL: http://permission-admin:8085/permissions/agent/tool-budget-policies/evaluate
       # issuer 保持宿主机可见的 localhost 地址；JWK 则通过容器内 DNS 拉取，避免 gateway 在容器内访问自己的 localhost。
       DATASMART_GATEWAY_OIDC_ISSUER_URI: ${DATASMART_GATEWAY_OIDC_ISSUER_URI:-http://localhost:18080/realms/datasmart}
-      SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: http://keycloak:18080/realms/datasmart/protocol/openid-connect/certs
+      DATASMART_GATEWAY_OIDC_JWK_SET_URI: http://keycloak:18080/realms/datasmart/protocol/openid-connect/certs
       DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_ENABLED: "true"
       DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_SECRET: ${DATASMART_GATEWAY_SIGNATURE_SECRET:-local-development-only-change-me}
       DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_KEY_ID: ${DATASMART_GATEWAY_SIGNATURE_KEY_ID:-gateway-compose-v1}
