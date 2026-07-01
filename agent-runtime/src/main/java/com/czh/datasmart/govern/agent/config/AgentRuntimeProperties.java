@@ -490,56 +490,8 @@ public class AgentRuntimeProperties {
     }
 
     /**
-     * Agent 工具输入字段定义。
-     *
-     * <p>当前使用轻量字段 schema，而不是完整 JSON Schema。
-     * 这样代码更容易学习和维护；后续如果要支持复杂对象、数组、oneOf/anyOf，再升级为标准 JSON Schema。
+     * 兼容既有 {@code AgentRuntimeProperties.ToolInputFieldProperties} 引用和配置绑定的类型别名。
      */
-    @Data
-    public static class ToolInputFieldProperties {
-
-        /**
-         * 字段名。
-         */
-        private String name;
-
-        /**
-         * 字段类型，例如 string、number、boolean、object、array。
-         */
-        private String type = "string";
-
-        /**
-         * 是否必填。
-         */
-        private Boolean required = false;
-
-        /**
-         * 字段说明。
-         */
-        private String description;
-
-        /**
-         * 示例值。
-         */
-        private String example;
-
-        /**
-         * 是否敏感字段。
-         *
-         * <p>例如 SQL、导出范围、数据源凭据、项目 ID、文件路径、异常样本主键都可能是敏感参数。
-         * 标记后，审批提示、审计日志和前端展示可以做脱敏或二次确认。
-         */
-        private Boolean sensitive = false;
-
-        /**
-         * 参数解析方式。
-         *
-         * <p>该字段面向工具规划器：
-         * - USER_REQUIRED：必须由用户显式提供；
-         * - CAN_FILL_FROM_CONTEXT：可以从会话、项目、数据源元数据或记忆中补齐；
-         * - SYSTEM_INJECTED：由系统注入，例如 tenantId、actorId、traceId；
-         * - DERIVED：由其他字段推导。
-         */
-        private String resolution = "USER_REQUIRED";
+    public static class ToolInputFieldProperties extends AgentToolInputFieldProperties {
     }
 }

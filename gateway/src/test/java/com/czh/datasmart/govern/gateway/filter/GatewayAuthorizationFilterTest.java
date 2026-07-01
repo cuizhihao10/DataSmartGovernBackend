@@ -18,15 +18,11 @@ import com.czh.datasmart.govern.gateway.config.GatewayAuthorizationProperties;
 import com.czh.datasmart.govern.gateway.monitoring.GatewayAuthorizationMetrics;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
-import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
-import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentCaptor.forClass;
@@ -479,31 +475,4 @@ class GatewayAuthorizationFilterTest {
         return decision;
     }
 
-    /**
-     * 记录是否发生了下游转发的测试用 GatewayFilterChain。
-     *
-     * <p>真实 gateway chain 会继续执行路由转发；单元测试里我们只需要知道：
-     * 1. 过滤器有没有继续调用 chain；
-     * 2. 继续调用时传入的 exchange 是否已经带上数据范围 Header。
-     */
-    private static class RecordingGatewayFilterChain implements GatewayFilterChain {
-
-        private final AtomicBoolean called = new AtomicBoolean(false);
-        private final AtomicReference<ServerWebExchange> exchange = new AtomicReference<>();
-
-        @Override
-        public Mono<Void> filter(ServerWebExchange exchange) {
-            this.called.set(true);
-            this.exchange.set(exchange);
-            return Mono.empty();
-        }
-
-        private boolean called() {
-            return called.get();
-        }
-
-        private ServerWebExchange exchange() {
-            return exchange.get();
-        }
-    }
 }

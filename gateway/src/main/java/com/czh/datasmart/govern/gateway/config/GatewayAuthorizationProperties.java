@@ -146,7 +146,8 @@ public class GatewayAuthorizationProperties {
      * <p>注意：这不是替代 permission-admin。
      * gateway 本地保护负责“快速拦截明显不该进来的调用”，permission-admin 仍负责策略事实、审计记录和数据范围透传。
      */
-    private List<InternalServiceEndpointProperties> internalServiceEndpoints = defaultInternalServiceEndpoints();
+    private List<InternalServiceEndpointProperties> internalServiceEndpoints =
+            GatewayAuthorizationDefaultCatalog.defaultInternalServiceEndpoints();
 
     /**
      * 授权判定缓存配置。
@@ -279,149 +280,10 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/task/task-drafts/**", "TASK_DRAFT",
                 "任务草稿、审批和转换真实任务入口；草稿不会直接进入执行队列"));
         defaults.add(route("/api/task/**", "TASK", "全平台任务编排、调度、重试、取消和执行记录"));
-        addDataQualityRouteMetadata(defaults);
+        GatewayAuthorizationDefaultCatalog.addDataQualityRouteMetadata(defaults);
         defaults.add(route("/api/permission/**", "SYSTEM_SETTING", "角色、菜单、路由策略、数据范围和平台管理能力"));
         defaults.add(route("/api/observability/**", "AUDIT_LOG", "审计、日志、指标、告警和运维视角"));
         return defaults;
-    }
-
-    /**
-     * 补齐 data-quality 模块的细粒度授权语义。
-     *
-     * <p>为什么不继续只保留 `/api/quality/** -> QUALITY_RULE`？
-     * 数据质量模块现在已经不再只是“规则 CRUD”：它包含治理总览、质量报告、异常工作台、执行器诊断、
-     * 手动触发检测以及 worker 回调等多类入口。真实商业产品里，这几类入口的风险等级完全不同：
-     * 1. 治理总览通常是低敏聚合视图，适合项目负责人、审计员和运营人员查看；
-     * 2. 质量规则会影响后续所有检测结果，属于配置变更能力；
-     * 3. 异常工作台接近业务问题定位，后续可能扩展样本查看、导出和清洗任务创建；
-     * 4. 执行器入口会改变执行状态或暴露 worker 运行信息，不能和普通查看权限混在一起；
-     * 5. 执行器回调是机器协议，原则上只应由 SERVICE_ACCOUNT 调用。
-     *
-     * <p>本方法把这些业务边界提前沉淀为 gateway 的默认路由元数据。即使 `application.yml` 暂时没有覆盖配置，
-     * 本地默认值也能向 permission-admin 发送清晰的 resourceType/action，避免权限中心只能看到模糊的
-     * `QUALITY_RULE + CREATE`。</p>
-     *
-     * @param defaults 默认路由元数据集合，调用方会按插入顺序匹配，越具体的规则必须越靠前。
-     */
-    private static void addDataQualityRouteMetadata(List<RouteAuthorizationMetadata> defaults) {
-        defaults.add(route("/api/quality/quality-rules/governance/overview", "QUALITY_GOVERNANCE",
-                "数据质量治理总览低敏聚合入口，用于查看规则、报告、执行和异常的项目级态势。",
-                Map.of("GET", "VIEW")));
-        defaults.add(route("/api/quality/quality-rules/remediation-tasks", "QUALITY_ANOMALY",
-                "质量异常治理任务创建入口，用于把低敏异常聚合转成 task-management 治理/复核任务；它是异常处置动作，不是质量规则创建。",
-                Map.of("POST", "CREATE_REMEDIATION_TASK")));
-        defaults.add(route("/api/quality/quality-rules/reports/*/anomalies", "QUALITY_ANOMALY",
-                "按报告查看质量异常明细或聚合结果，风险高于普通报告摘要，因此单独映射到异常资源。",
-                Map.of("GET", "VIEW")));
-        defaults.add(route("/api/quality/quality-rules/anomalies/**", "QUALITY_ANOMALY",
-                "质量异常工作台入口，用于查看异常聚合、异常列表和后续清洗任务线索。",
-                Map.of("GET", "VIEW")));
-        defaults.add(route("/api/quality/quality-rules/reports/**", "QUALITY_REPORT",
-                "质量报告查询入口，用于查看检测结果快照、通过率和低敏报告摘要。",
-                Map.of("GET", "VIEW")));
-        defaults.add(route("/api/quality/quality-rules/executor/diagnostics", "QUALITY_EXECUTION",
-                "质量执行器诊断入口，展示 worker 健康、执行积压和运维排障信息。",
-                Map.of("GET", "DIAGNOSE")));
-        defaults.add(route("/api/quality/quality-rules/executor/executions/*/succeed", "QUALITY_EXECUTION",
-                "质量执行器成功回调入口，只应由受控 worker 或服务账号调用。",
-                Map.of("POST", "CALLBACK")));
-        defaults.add(route("/api/quality/quality-rules/executor/executions/*/fail", "QUALITY_EXECUTION",
-                "质量执行器失败回调入口，只应由受控 worker 或服务账号调用。",
-                Map.of("POST", "CALLBACK")));
-        defaults.add(route("/api/quality/quality-rules/executor/executions/start", "QUALITY_EXECUTION",
-                "质量执行器开始回调入口，用于把执行记录推进到运行态。",
-                Map.of("POST", "CALLBACK")));
-        defaults.add(route("/api/quality/quality-rules/executor/coordinator/run-once", "QUALITY_EXECUTION",
-                "质量执行协调器单次调度入口，属于显式运行类动作。",
-                Map.of("POST", "RUN")));
-        defaults.add(route("/api/quality/quality-rules/executor/coordinator/run-batch", "QUALITY_EXECUTION",
-                "质量执行协调器批量调度入口，可能触发多个规则检测，按运行类动作授权。",
-                Map.of("POST", "RUN")));
-        defaults.add(route("/api/quality/quality-rules/*/run-check", "QUALITY_EXECUTION",
-                "单条质量规则手动检测入口，属于执行类动作而不是规则创建动作。",
-                Map.of("POST", "RUN")));
-        defaults.add(route("/api/quality/quality-rules/*/executions", "QUALITY_EXECUTION",
-                "单条规则执行历史查询入口，用于查看执行状态、耗时和低敏结果。",
-                Map.of("GET", "VIEW")));
-        defaults.add(route("/api/quality/quality-rules/*/reports", "QUALITY_REPORT",
-                "单条规则质量报告查询入口，用于查看该规则产生的报告列表。",
-                Map.of("GET", "VIEW")));
-        defaults.add(route("/api/quality/quality-rules/*/validate-target", "QUALITY_RULE",
-                "规则目标校验入口，用于校验表、字段或对象是否可被质量规则引用。",
-                Map.of("POST", "VALIDATE")));
-        defaults.add(route("/api/quality/quality-rules/*/scan-plan", "QUALITY_RULE",
-                "规则扫描计划生成入口，会影响后续检测方式，按规则配置动作授权。",
-                Map.of("POST", "CONFIGURE")));
-        defaults.add(route("/api/quality/quality-rules/*/relational-sql-plan", "QUALITY_RULE",
-                "关系型规则 SQL 计划预览入口，只返回低敏计划摘要，但仍属于规则配置能力。",
-                Map.of("POST", "CONFIGURE")));
-        defaults.add(route("/api/quality/quality-rules/*/schedule-task", "QUALITY_EXECUTION",
-                "规则调度任务配置入口，会影响后续自动执行节奏，按执行配置动作授权。",
-                Map.of("POST", "CONFIGURE")));
-        defaults.add(route("/api/quality/quality-rules/*/enable", "QUALITY_RULE",
-                "启用质量规则入口，会让规则参与后续检测。",
-                Map.of("POST", "ENABLE")));
-        defaults.add(route("/api/quality/quality-rules/*/disable", "QUALITY_RULE",
-                "禁用质量规则入口，会让规则退出后续检测。",
-                Map.of("POST", "DISABLE")));
-        defaults.add(route("/api/quality/quality-rules/*/archive", "QUALITY_RULE",
-                "归档质量规则入口，保留审计事实但停止作为活跃规则使用。",
-                Map.of("POST", "ARCHIVE")));
-        defaults.add(route("/api/quality/quality-rules/*/restore", "QUALITY_RULE",
-                "恢复已归档质量规则入口，重新进入可配置或可启用状态。",
-                Map.of("POST", "ENABLE")));
-        defaults.add(route("/api/quality/quality-rules/suggestions", "QUALITY_RULE",
-                "质量规则建议生成入口，用于沉淀可编辑规则草案。",
-                Map.of("POST", "CREATE")));
-        defaults.add(route("/api/quality/quality-rules/**", "QUALITY_RULE",
-                "数据质量规则管理兜底入口，用于规则创建、查询、更新和删除。",
-                defaultMethodActions()));
-        defaults.add(route("/api/quality/**", "QUALITY_RULE",
-                "数据质量模块兼容兜底入口；新增端点应优先补充更具体的元数据规则。",
-                defaultMethodActions()));
-    }
-
-    /**
-     * 默认内部服务端点。
-     *
-     * <p>当前只把 AgentPlan 接入口纳入强保护。
-     * 后续如果 WebSocket replay、Kafka callback fallback、模型 usage write-back 等能力也通过 HTTP 暴露，
-     * 应继续在这里增加端点，而不是让它们依赖普通 `/api/agent/**` 通配策略。
-     */
-    private static List<InternalServiceEndpointProperties> defaultInternalServiceEndpoints() {
-        List<InternalServiceEndpointProperties> endpoints = new ArrayList<>();
-        endpoints.add(internalEndpoint("agent-plan-ingestion", "/api/agent/plan-ingestions", 120,
-                "Python AI Runtime 提交 AgentPlan 到 Java 控制面的内部入口。"));
-        endpoints.add(internalEndpoint("agent-runtime-command-worker-receipts", "/api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-receipts", 240,
-                "命令 worker 写回执行结果的内部入口。"));
-        endpoints.add(internalEndpoint("agent-runtime-command-worker-leases", "/api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-leases/**", 600,
-                "命令 worker 领取、续租和释放租约的内部入口。"));
-        endpoints.add(internalEndpoint("agent-runtime-controlled-dry-run-receipts", "/api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/controlled-dry-run-receipts", 240,
-                "受控 dry-run worker 写回低敏预演结果的内部入口。"));
-        endpoints.add(internalEndpoint("agent-runtime-command-sandbox-run-admissions", "/api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-sandbox-run-admissions", 240,
-                "命令沙箱准入结果写回入口，用于执行前补齐隔离与资源配额证据。"));
-        endpoints.add(internalEndpoint("agent-runtime-command-worker-output-sanitizations", "/api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/command-worker-output-sanitizations", 240,
-                "worker 输出低敏清洗结果写回入口。"));
-        endpoints.add(internalEndpoint("agent-runtime-workspace-file-payload-materializations", "/api/internal/agent-runtime/tool-action-workspace-files/payload-materializations", 120,
-                "workspace 文件工具真实参数物化入口，只允许可信服务账号调用。"));
-        endpoints.add(internalEndpoint("agent-runtime-workspace-file-worker-receipts", "/api/internal/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/workspace-file-worker-receipts", 240,
-                "workspace 文件 worker 执行结果写回入口。"));
-        return endpoints;
-    }
-
-    private static InternalServiceEndpointProperties internalEndpoint(String name,
-                                                                      String pathPattern,
-                                                                      int maxRequestsPerMinute,
-                                                                      String description) {
-        InternalServiceEndpointProperties endpoint = new InternalServiceEndpointProperties();
-        endpoint.setName(name);
-        endpoint.setPathPattern(pathPattern);
-        endpoint.setAllowedActorRoles(List.of("SERVICE_ACCOUNT"));
-        endpoint.setAllowedActorTypes(List.of("SERVICE_ACCOUNT"));
-        endpoint.setRateLimitEnabled(true);
-        endpoint.setMaxRequestsPerMinute(maxRequestsPerMinute);
-        endpoint.setDescription(description);
-        return endpoint;
     }
 
     /**
@@ -431,7 +293,7 @@ public class GatewayAuthorizationProperties {
      * GET=VIEW，POST=CREATE，PUT/PATCH=UPDATE，DELETE=DELETE。
      * 这不是最终商业权限模型，只是当前阶段比硬编码更清晰、更容易扩展的基线。
      */
-    private static RouteAuthorizationMetadata route(String pathPattern, String resourceType, String description) {
+    static RouteAuthorizationMetadata route(String pathPattern, String resourceType, String description) {
         return route(pathPattern, resourceType, description, defaultMethodActions());
     }
 
@@ -441,10 +303,10 @@ public class GatewayAuthorizationProperties {
      * <p>当一个 POST 并不表示 CREATE，而是 RUN、CALLBACK、RECOVER、ACKNOWLEDGE 等业务动作时，
      * 必须使用这个重载显式指定 methodActions。这样 gateway 发给 permission-admin 的 action 才能反映真实业务意图。
      */
-    private static RouteAuthorizationMetadata route(String pathPattern,
-                                                    String resourceType,
-                                                    String description,
-                                                    Map<String, String> methodActions) {
+    static RouteAuthorizationMetadata route(String pathPattern,
+                                            String resourceType,
+                                            String description,
+                                            Map<String, String> methodActions) {
         RouteAuthorizationMetadata metadata = new RouteAuthorizationMetadata();
         metadata.setPathPattern(pathPattern);
         metadata.setResourceType(resourceType);
@@ -457,7 +319,7 @@ public class GatewayAuthorizationProperties {
     /**
      * 默认 HTTP 方法到平台动作的映射。
      */
-    private static Map<String, String> defaultMethodActions() {
+    static Map<String, String> defaultMethodActions() {
         Map<String, String> methodActions = new LinkedHashMap<>();
         methodActions.put("GET", "VIEW");
         methodActions.put("POST", "CREATE");

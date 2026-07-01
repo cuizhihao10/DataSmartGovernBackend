@@ -277,7 +277,7 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
         String actorType = normalizeOptionalContractValue(headers.getFirst(PlatformContextHeaders.ACTOR_TYPE));
         String workspaceId = trimToNull(headers.getFirst(PlatformContextHeaders.WORKSPACE_ID));
         String requestSource = normalizeOptionalContractValue(headers.getFirst(PlatformContextHeaders.REQUEST_SOURCE));
-        AuthorizationMetadata authorizationMetadata = resolveAuthorizationMetadata(path, method);
+        GatewayAuthorizationMetadata authorizationMetadata = resolveAuthorizationMetadata(path, method);
 
         GatewayPermissionDecisionRequest decisionRequest = new GatewayPermissionDecisionRequest();
         decisionRequest.setTenantId(tenantId);
@@ -307,9 +307,9 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
      * 配置命中后，resourceType 和 action 都来自配置；
      * 未命中时才回退到 inferResourceType/inferAction，保证旧配置和本地联调不被突然破坏。
      */
-    private AuthorizationMetadata resolveAuthorizationMetadata(String path, String method) {
+    private GatewayAuthorizationMetadata resolveAuthorizationMetadata(String path, String method) {
         if (authorizationProperties.getRouteMetadata() == null || authorizationProperties.getRouteMetadata().isEmpty()) {
-            return new AuthorizationMetadata(inferResourceType(path), inferAction(method));
+            return new GatewayAuthorizationMetadata(inferResourceType(path), inferAction(method));
         }
 
         for (GatewayAuthorizationProperties.RouteAuthorizationMetadata metadata : authorizationProperties.getRouteMetadata()) {
@@ -322,10 +322,10 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
 
             String resourceType = valueOrDefault(metadata.getResourceType(), inferResourceType(path));
             String action = resolveActionFromMetadata(metadata, method);
-            return new AuthorizationMetadata(normalizeContractValue(resourceType), normalizeContractValue(action));
+            return new GatewayAuthorizationMetadata(normalizeContractValue(resourceType), normalizeContractValue(action));
         }
 
-        return new AuthorizationMetadata(inferResourceType(path), inferAction(method));
+        return new GatewayAuthorizationMetadata(inferResourceType(path), inferAction(method));
     }
 
     /**
@@ -490,22 +490,11 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
     private String trimToNull(String value) {
         return value == null || value.isBlank() ? null : value.trim();
     }
-
-
     /**
      * 排在 GatewayContractFilter 之后执行。
      */
     @Override
     public int getOrder() {
         return -90;
-    }
-
-    /**
-     * 网关内部使用的授权元数据解析结果。
-     *
-     * <p>它只在本过滤器内部流转，不暴露给下游服务。
-     * 使用 record 可以让 resourceType/action 在构造后保持不可变，避免后续处理链路意外修改判定语义。
-     */
-    private record AuthorizationMetadata(String resourceType, String action) {
     }
 }
