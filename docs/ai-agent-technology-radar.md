@@ -1,5 +1,26 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-07-01 落地补充：Multi-agent execution should be planned before side effects
+
+- 本轮趋势校准：
+  - Codex、Claude Code、OpenClaw、LangGraph 类 Agent Host 的关键不是让多个 Agent 立即并发产生副作用，而是先把多 Agent 的任务拆解、依赖关系、守门关系和恢复边界变成可观察、可审计、可恢复的执行前状态；
+  - 成熟 Agent Host 通常会把“模型/主控提出意图”和“宿主执行副作用”分层，前者可以由 LangGraph 编排，后者必须受权限、审批、outbox、worker receipt 和审计事实约束；
+  - DataSmart 当前进入项目收敛阶段，因此正确路线不是继续添加更多未闭环 Agent，而是把已有主控、专家、权限、记忆、运维角色收束为低敏执行前合同。
+- 本轮落地到代码的能力：
+  - 新增 `services/multi_agent/product_agent_catalog.py`，集中维护 8 个产品 Agent 与当前运行角色的映射；
+  - 新增 `services/multi_agent/langgraph_execution_plan.py`，真实使用 LangGraph `StateGraph` 编译/调用多 Agent 执行前计划图；
+  - 新增 `services/multi_agent/execution_plan_models.py` 与 `execution_plan_rules.py`，拆分模型合同和低敏规则，避免 workflow 文件超过 500 行；
+  - `/agent/plans` 新增 `agentCollaborationExecutionPlan`；
+  - 执行计划输出 workItems、collaborationEdges、executionPolicy、globalState、nextActions，并明确 `PRE_EXECUTION_MULTI_AGENT_PLAN_ONLY`。
+- 产品判断：
+  - LangGraph 已从“规划入口外壳”推进到“多智能体协作控制图”，再推进到“执行前多 Agent 合同图”；
+  - 这仍不是最终执行 runtime，因为真实副作用仍未进入 LangGraph durable checkpoint + Java host facts + worker receipt 的完整闭环；
+  - 下一步应只迁移 readiness gate、resume gate、specialist handoff 这类闭口节点，不再继续发散新的 Agent 角色或模型算法工作。
+- 安全判断：
+  - 执行前计划只暴露角色、工具名、Skill 编码、记忆依赖类型、状态、低敏原因码和协作关系；
+  - 不暴露 prompt、SQL、工具参数真实值、样本数据、模型输出、token、内部 endpoint、artifact 正文或异常堆栈；
+  - 高风险执行仍必须回到 Java 控制面和 permission-admin，不能由 Python 多 Agent 图直接越权执行。
+
 ## 2026-07-01 落地补充：Multi-agent orchestration needs an explicit LangGraph control graph
 
 - 本轮趋势校准：

@@ -1,5 +1,28 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-07-01 追加落地进展：LangGraph Multi-Agent Execution Plan
+- 本阶段继续响应“多智能体能力必须实现、LangGraph 必须实现，并且项目开始整体收敛”的要求，没有让 Python Runtime 直接并发执行工具，而是在既有 LangGraph 协作控制图之后新增执行前协作计划图。
+- 已落地能力：
+  - 新增 `services/multi_agent/` 能力包，避免多智能体相关文件继续平铺在 `services/` 根目录；
+  - 新增 `product_agent_catalog.py`，把 README 规划的 8 个产品 Agent 名册从协作图文件中拆出，形成单一事实来源；
+  - 新增 `LangGraphMultiAgentExecutionPlanWorkflow`，使用真实 LangGraph `StateGraph` 编译并执行 `load_collaboration_context -> assign_agent_work_items -> build_collaboration_edges -> enforce_execution_boundaries -> finalize_execution_plan`；
+  - `/agent/plans` 顶层新增 `agentCollaborationExecutionPlan`；
+  - 执行计划输出 Agent 工作项、依赖角色、协作边、守门关系、执行泳道、全局状态、下一步动作和副作用边界；
+  - Agent 能力矩阵同步记录 `agentCollaborationExecutionPlan`，但仍标记为 `partial_closed_loop`，不夸大为完整生产运行时。
+- 架构收敛价值：
+  - LangGraph 现在不只是“规划入口外壳”和“协作诊断图”，已经能生成可被 gateway、前端和 Java projection 消费的多 Agent 执行前合同；
+  - 产品 Agent 名册、执行计划模型、执行计划规则和 LangGraph workflow 已拆分到独立文件，新增文件均低于 500 行；
+  - Python Runtime 继续只处理低敏控制面事实，真实工具执行、审批、outbox、worker receipt 和业务写入仍由 Java 控制面承接。
+- 当前边界：
+  - 该执行计划图不执行工具、不调用模型、不写 outbox、不创建审批单、不访问源端业务数据；
+  - 输出不包含 objective、prompt、SQL、工具参数真实值、样本数据、模型输出、token、内部 endpoint 或 artifact 正文；
+  - 真实多 Agent lifecycle、实例状态、动态扩缩容、持久 checkpoint、A2A/handoff task 和专项 Agent 业务节点仍是后续闭口工作。
+- 下一步推荐：
+  1. 把 `tool_execution_readiness` 和人工恢复门禁迁成 LangGraph 条件节点；
+  2. 把执行计划工作项发布为 Java 控制面可回放事实；
+  3. 在不继续发散新 Agent 的前提下，补最小 handoff fact 与 worker receipt 对齐；
+  4. 完成这些后进入全平台最终 smoke/E2E 闭环。
+
 ## 2026-07-01 追加落地进展：LangGraph Multi-Agent Collaboration Control Graph
 - 本阶段继续补齐用户追问的 LangGraph 能力边界：上一阶段 LangGraph 只参与规划入口外壳，还没有真正承担复杂流程编排、全局状态管理和多智能体协作。本阶段新增 LangGraph 多智能体协作控制图，让 `/agent/plans` 能明确展示这三类能力的当前状态。
 - 已落地能力：

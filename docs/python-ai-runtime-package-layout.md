@@ -26,6 +26,7 @@ datasmart_ai_runtime/
     agent/                # Agent 编排、二轮推理、loop 控制、workspace 上下文
     memory/               # 长期记忆规划、检索、写入治理、正式落成、store 抽象
     model_gateway/        # 模型路由、provider、预算、缓存、结果过滤、OpenAI-compatible 适配
+    multi_agent/          # 产品 Agent 名册、LangGraph 多 Agent 协作图、执行前工作项、handoff 边界
     runtime_events/       # 事件 store、session、checkpoint、outbox、WebSocket、publisher
     skills/               # Skill registry、准入策略、远程 skill 控制面客户端
     tools/                # 工具规划、schema、参数校验、工具反馈、工具调用聚合
@@ -53,8 +54,10 @@ datasmart_ai_runtime/
   这些能力共同支撑智能网关时间线、断线恢复、前端实时事件流和后续 Agent 执行审计。
 - `services/model_gateway/` 已作为第三批能力包建立，承载模型路由、provider、缓存、预算、模型原生
   tool-call schema/planning/aggregation/feedback、上下文过滤和 OpenAI-compatible provider 适配。
+- `services/multi_agent/` 已作为第四批能力包建立，承载产品 Agent 名册、LangGraph 多智能体执行前计划、
+  低敏工作项、协作边和执行边界规则。该包当前只生成控制面合同，不执行工具、不写 outbox、不创建审批。
 - `services/__init__.py` 继续保留对外聚合导出，但 memory、runtime event 与 model gateway 相关导出已经分别依赖
-  `services.memory`、`services.runtime_events` 与 `services.model_gateway`，避免顶层服务包直接知道子包内部每个文件的位置。
+  `services.memory`、`services.runtime_events`、`services.model_gateway` 与 `services.multi_agent`，避免顶层服务包直接知道子包内部每个文件的位置。
 - 其他能力域仍处于过渡状态：tools、skills、agent orchestration 还在
   `services/` 平铺目录中，后续应按测试覆盖逐批迁移。
 
