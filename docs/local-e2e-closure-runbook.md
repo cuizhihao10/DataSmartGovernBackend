@@ -181,32 +181,49 @@ $env:DATASMART_MYSQL_PASSWORD = "<请填写本地开发库密码>"
 - 脚本不会打印 MySQL 密码、业务数据、SQL 正文或查询结果正文。
 - 该脚本是 Flyway/Liquibase 前的本地闭环过渡层，不是最终生产迁移系统。
 
-### 4.3 启动 Java 微服务
+### 4.3 启动 Java 微服务与 Python AI Runtime
 
-建议每个服务使用独立终端启动，便于观察日志：
-
-```powershell
-mvn -pl permission-admin -am spring-boot:run "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"
-mvn -pl task-management -am spring-boot:run "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"
-mvn -pl datasource-management -am spring-boot:run "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"
-mvn -pl data-sync -am spring-boot:run "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"
-mvn -pl gateway -am spring-boot:run "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"
-```
-
-如果要验证 Agent 控制面投影，再启动：
+优先使用统一启动脚本：
 
 ```powershell
-mvn -pl agent-runtime -am spring-boot:run "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"
+.\scripts\local-e2e-start-runtime.ps1 -MySqlPort 13306
 ```
 
-### 4.4 启动 Python AI Runtime
+脚本会做这些事情：
 
-Python Runtime 默认不强绑定 FastAPI 依赖，便于离线单测和学习。如果要验证 gateway 到 Python 的 Agent Host 诊断链路，需要先安装可选 API 依赖，并在 `8090` 端口启动：
+- 设置本地 E2E 所需环境变量，例如 Docker MySQL `13306`、Nacos `8848`、Kafka `9092`、Keycloak issuer、Python `PYTHONPATH`。
+- 先把 `platform-common` 安装到项目级 `.m2`，再进入每个子模块目录启动 Spring Boot 应用。
+- 后台启动 `permission-admin`、`task-management`、`datasource-management`、`data-quality`、`observability`、`data-sync`、`agent-runtime`、`gateway` 和 `python-ai-runtime`。
+- 端口已打开时跳过重复启动，避免多进程抢端口。
+- stdout/stderr 写入 `logs/local-e2e/*.log`，该目录已被 `.gitignore` 忽略。
+
+为什么推荐脚本而不是直接复制多条 Maven 命令：
+
+- `mvn -pl <module> -am spring-boot:run` 会把父 POM 也纳入执行，父 POM 没有 Spring Boot main class，真实启动时会报 `Unable to find a suitable main class`。
+- 当前各模块普通 `package` 产物还不是可直接 `java -jar` 的 Spring Boot fat jar，直接运行 jar 会报缺少主清单。
+- 子模块目录内执行 `mvn spring-boot:run` 是当前最稳定的本地联调方式；如果后续要切到可执行 jar 或容器镜像，应单独补 Spring Boot repackage、镜像构建和生产启动参数。
+
+如需手动排障，可以先安装共享模块：
+
+```powershell
+mvn -pl platform-common -DskipTests install "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"
+```
+
+再进入单个子模块目录启动，例如：
+
+```powershell
+cd .\permission-admin
+mvn spring-boot:run "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"
+```
+
+### 4.4 Python AI Runtime 直连说明
+
+Python Runtime 默认不强绑定 FastAPI 依赖，便于离线单测和学习。如果只想单独验证 Python 诊断链路，可以手动启动 `8090`：
 
 ```powershell
 $env:PYTHONPATH = "$PWD\python-ai-runtime\src"
 python -m pip install -e ".\python-ai-runtime[api]"
-python -m uvicorn "datasmart_ai_runtime.api:create_app" --factory --host 0.0.0.0 --port 8090
+python -m uvicorn "datasmart_ai_runtime.api:create_app" --factory --host 127.0.0.1 --port 8090
 ```
 
 启动后可以直连这些低敏诊断接口：
