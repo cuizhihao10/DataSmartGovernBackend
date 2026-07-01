@@ -85,7 +85,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-e2e-smoke-ch
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\production-readiness-check.ps1
 ```
 
-结果口径：默认模式用于收敛阶段，已闭环和已文档化的生产加固契约应通过；生产环境值与 Secret 管理说明见 [production-environment-values.md](production-environment-values.md)。Kubernetes/Helm、备份恢复、容量基线、故障演练等尚未交付的生产事项会以 `WARN` 形式保留，提醒它们是正式上线前的阻塞项。若进入真实发布门禁，可追加 `-StrictProductionGates`，把所有 `WARN` 提升为失败。
+结果口径：默认模式用于收敛阶段，已闭环和已文档化的生产加固契约应通过；生产环境值与 Secret 管理说明见 [production-environment-values.md](production-environment-values.md)。Kubernetes/Helm、容量基线、故障演练等尚未交付的生产事项会以 `WARN` 形式保留，提醒它们是正式上线前的阻塞项。若进入真实发布门禁，可追加 `-StrictProductionGates`，把所有 `WARN` 提升为失败。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\sbom-check.ps1
@@ -98,6 +98,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-image-signa
 ```
 
 结果口径：默认模式只验证镜像签名准入条件，不生成私钥、不读取私钥、不推送镜像、不访问生产仓库；若本机没有 Cosign 或本地示例镜像仍使用 `latest` tag，会以 `WARN` 提示正式发布前需要在 CI/CD 或企业 registry 中完成真实签名与不可变镜像引用。真实发布验证可追加 `-VerifyPublishedImages`、`-Images` 和 keyless/公钥策略参数。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\backup-restore-check.ps1
+```
+
+结果口径：默认模式只验证备份恢复交付边界，不连接数据库、不读取 Secret、不导出业务数据、不执行恢复覆盖；它会检查 [backup-restore-runbook.md](backup-restore-runbook.md)、有状态 Compose volume、config-as-code 路径和恢复清单输出边界。恢复演练环境可追加 `-CheckLocalTools` 检查工具链，或追加 `-WriteRecoveryInventory` 生成不含 Secret 的恢复范围清单。
 
 ## 5. 生产上线前待办
 
