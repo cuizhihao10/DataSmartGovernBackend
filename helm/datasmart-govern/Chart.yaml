@@ -1,0 +1,14 @@
+apiVersion: v2
+name: datasmart-govern
+description: DataSmart Govern application-layer Helm chart for gateway, Java services, and Python AI Runtime.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - data-governance
+  - multi-agent
+  - spring-boot
+  - langgraph
+maintainers:
+  - name: Cui
+    email: cui@example.com

@@ -129,6 +129,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\production-readine
 
 默认模式用于收敛推进：已满足本地闭环和生产加固文档契约时返回成功；尚未真正实现的 Kubernetes/Helm、容量压测和故障演练脚本会以 warning 形式列出，提醒它们是生产阻塞项。
 
+Kubernetes/Helm 交付就绪检查可单独运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\helm-delivery-check.ps1
+```
+
+该脚本默认只做静态检查，不连接 Kubernetes 集群、不读取 Secret、不创建 namespace、不部署服务。它会验证 [Kubernetes/Helm 交付说明](kubernetes-helm-deployment.md)、`helm/datasmart-govern` chart 结构、Secret 引用、非 root/只读根文件系统、探针、RollingUpdate、资源限制和高风险 worker 默认关闭策略。如果本机或 CI runner 安装了 Helm，它会自动执行 `helm lint` 和 `helm template`；未安装 Helm 时默认只给 warning，正式发布门禁可用 `-StrictTooling` 收紧。
+
 供应链 SBOM 就绪检查可单独运行：
 
 ```powershell
@@ -181,7 +189,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\production-readine
 
 1. 修复生产就绪检查中的配置漂移和文档缺口。
 2. 先阅读 [生产环境值与 Secret 管理说明](production-environment-values.md)，建立 Secret/TLS、正式 IdP、多环境变量和受控开关的交付边界。
-3. 建立 Kubernetes/Helm 交付骨架。
+3. 基于 Kubernetes/Helm 交付骨架执行 `helm lint`、`helm template` 和客户环境部署评审。
 4. 建立 SBOM、镜像签名和漏洞扫描流水线。
 5. 基于备份恢复脚本执行真实恢复演练，并归档恢复记录、耗时、失败点和修复项。
 6. 建立容量基线脚本和性能报告模板。

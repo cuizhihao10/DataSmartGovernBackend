@@ -85,7 +85,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-e2e-smoke-ch
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\production-readiness-check.ps1
 ```
 
-结果口径：默认模式用于收敛阶段，已闭环和已文档化的生产加固契约应通过；生产环境值与 Secret 管理说明见 [production-environment-values.md](production-environment-values.md)。Kubernetes/Helm、容量基线、故障演练等尚未交付的生产事项会以 `WARN` 形式保留，提醒它们是正式上线前的阻塞项。若进入真实发布门禁，可追加 `-StrictProductionGates`，把所有 `WARN` 提升为失败。
+结果口径：默认模式用于收敛阶段，已闭环和已文档化的生产加固契约应通过；生产环境值与 Secret 管理说明见 [production-environment-values.md](production-environment-values.md)。容量基线、故障演练等尚未交付的生产事项会以 `WARN` 形式保留，提醒它们是正式上线前的阻塞项。若进入真实发布门禁，可追加 `-StrictProductionGates`，把所有 `WARN` 提升为失败。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\helm-delivery-check.ps1
+```
+
+结果口径：默认模式只验证 Kubernetes/Helm 交付边界，不连接集群、不读取 Secret、不创建 namespace、不部署服务；它会检查 [kubernetes-helm-deployment.md](kubernetes-helm-deployment.md)、`helm/datasmart-govern` chart、Secret 契约、安全上下文、探针、RollingUpdate、资源限制和高风险写入口默认关闭策略。CI 安装 Helm 后会自动执行 `helm lint/template`。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\sbom-check.ps1

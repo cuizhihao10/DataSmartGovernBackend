@@ -1,0 +1,10 @@
+# Helm 打包时不应把本地缓存、IDE 配置或临时输出放进 chart 制品。
+# 生产交付时，chart 应只包含模板、values 和必要说明，Secret、构建产物、测试输出都应来自外部发布流程。
+.git/
+.idea/
+.vscode/
+target/
+logs/
+*.log
+*.tmp
+*.bak

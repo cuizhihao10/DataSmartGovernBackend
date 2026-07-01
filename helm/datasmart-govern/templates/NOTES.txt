@@ -1,0 +1,12 @@
+DataSmart Govern Helm chart has been rendered.
+
+Next checks:
+1. Confirm the required Secret exists:
+   kubectl -n {{ .Release.Namespace }} get secret {{ .Values.global.existingSecret }}
+
+2. Confirm gateway ingress and OIDC issuer are production values:
+   issuer: {{ .Values.global.javaEnv.DATASMART_GATEWAY_OIDC_ISSUER_URI | default .Values.services.gateway.env.DATASMART_GATEWAY_OIDC_ISSUER_URI }}
+   host: {{ .Values.ingress.host }}
+
+3. Confirm workers and dispatchers are intentionally enabled or disabled in values.
+   The default chart values keep high-risk write paths disabled.

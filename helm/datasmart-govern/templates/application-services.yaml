@@ -1,0 +1,156 @@
+{{/*
+应用服务模板。
+
+这个模板用 values.services 统一生成 8 个 Java 微服务和 Python AI Runtime 的 Deployment/Service。
+为什么采用 range 而不是每个服务一份模板：
+1. 这些服务在 Kubernetes 侧的形态高度一致：镜像、端口、env、Secret 引用、探针、资源限制；
+2. 统一模板能保证安全上下文、label、探针和滚动升级策略不会因为复制粘贴产生漂移；
+3. 服务差异仍保留在 values 中，方便后续为某个服务单独调整副本、资源、环境变量或 Secret。
+
+注意：这个 chart 只部署应用层服务，不在同一个 chart 中强行自建 MySQL/Redis/Kafka/Keycloak 等中间件。
+生产环境更推荐使用客户托管服务或成熟官方 chart，并通过 values 注入连接地址和 Secret。
+*/}}
+{{- range $name, $svc := .Values.services }}
+{{- if $svc.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "datasmart-govern.serviceName" (dict "root" $ "name" $name) }}
+  labels:
+    {{- include "datasmart-govern.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+    datasmart.cui/runtime: {{ default "java" $svc.runtime }}
+    datasmart.cui/role: {{ default "business-service" $svc.role | quote }}
+spec:
+  replicas: {{ default $.Values.global.replicaCount $svc.replicaCount }}
+  revisionHistoryLimit: {{ $.Values.global.revisionHistoryLimit }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: {{ $.Values.global.rollingUpdate.maxSurge | quote }}
+      maxUnavailable: {{ $.Values.global.rollingUpdate.maxUnavailable | quote }}
+  selector:
+    matchLabels:
+      {{- include "datasmart-govern.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: {{ $name }}
+  template:
+    metadata:
+      labels:
+        {{- include "datasmart-govern.selectorLabels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $name }}
+        datasmart.cui/runtime: {{ default "java" $svc.runtime }}
+      annotations:
+        datasmart.cui/deployment-note: "应用层服务只引用外部中间件地址和 Secret，不在 Pod 内保存生产凭据。"
+        {{- with $.Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "datasmart-govern.serviceAccountName" $ }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ $name }}
+          image: "{{ include "datasmart-govern.image" (dict "root" $ "image" $svc.image) }}"
+          imagePullPolicy: {{ default $.Values.global.imagePullPolicy $svc.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $svc.port }}
+              protocol: TCP
+          env:
+            - name: DATASMART_SERVICE_NAME
+              value: {{ $name | quote }}
+            - name: DATASMART_SERVICE_RUNTIME
+              value: {{ default "java" $svc.runtime | quote }}
+            {{- range $key, $value := $.Values.global.commonEnv }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- if eq (default "java" $svc.runtime) "java" }}
+            {{- range $key, $value := $.Values.global.javaEnv }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- range $.Values.global.javaSecretEnv }}
+            - name: {{ .name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.global.existingSecret }}
+                  key: {{ .key }}
+            {{- end }}
+            {{- end }}
+            {{- range $key, $value := $svc.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- range $svc.secretEnv }}
+            - name: {{ .name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.global.existingSecret }}
+                  key: {{ .key }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: {{ default "/actuator/health" $svc.probe.readinessPath | quote }}
+              port: http
+            initialDelaySeconds: {{ default 30 $svc.probe.initialDelaySeconds }}
+            periodSeconds: {{ default 10 $svc.probe.periodSeconds }}
+            timeoutSeconds: {{ default 3 $svc.probe.timeoutSeconds }}
+            failureThreshold: {{ default 6 $svc.probe.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: {{ default "/actuator/health" $svc.probe.livenessPath | quote }}
+              port: http
+            initialDelaySeconds: {{ default 60 $svc.probe.livenessInitialDelaySeconds }}
+            periodSeconds: {{ default 20 $svc.probe.livenessPeriodSeconds }}
+            timeoutSeconds: {{ default 5 $svc.probe.livenessTimeoutSeconds }}
+            failureThreshold: {{ default 6 $svc.probe.livenessFailureThreshold }}
+          resources:
+            {{- toYaml (default $.Values.defaultResources $svc.resources) | nindent 12 }}
+          securityContext:
+            {{- toYaml $.Values.containerSecurityContext | nindent 12 }}
+          {{- with $svc.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with $svc.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $svc.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $svc.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $svc.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "datasmart-govern.serviceName" (dict "root" $ "name" $name) }}
+  labels:
+    {{- include "datasmart-govern.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  type: {{ default "ClusterIP" $svc.serviceType }}
+  ports:
+    - name: http
+      port: {{ $svc.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "datasmart-govern.selectorLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+{{- end }}
+{{- end }}

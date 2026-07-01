@@ -1,0 +1,293 @@
+# DataSmart Govern Helm values。
+#
+# 这份默认 values 的定位是“生产形态骨架”，不是本地 Compose 的逐行翻译：
+# 1. 应用层服务由本 chart 管理；
+# 2. MySQL、Redis、Kafka、Nacos、Keycloak、MinIO、Neo4j、Chroma 等中间件优先接客户托管服务或成熟 chart；
+# 3. 所有 Secret 只通过 existingSecret 引用，不在 values 中写明文；
+# 4. 高风险 worker、dispatcher、真实工具提交继续默认关闭，避免部署即写数据。
+
+nameOverride: ""
+fullnameOverride: "datasmart-govern"
+
+global:
+  imageRegistry: ""
+  imageTag: "local"
+  imagePullPolicy: IfNotPresent
+  existingSecret: datasmart-platform-secrets
+  replicaCount: 1
+  revisionHistoryLimit: 5
+  rollingUpdate:
+    maxSurge: 25%
+    maxUnavailable: 0
+  commonEnv:
+    TZ: Asia/Shanghai
+  javaEnv:
+    SPRING_PROFILES_ACTIVE: prod
+    SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/datasmart_govern?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=true&rewriteBatchedStatements=true
+    SPRING_DATASOURCE_USERNAME: datasmart
+    SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    SPRING_CLOUD_NACOS_DISCOVERY_SERVER_ADDR: nacos:8848
+    SPRING_REDIS_HOST: redis
+    SPRING_DATA_REDIS_HOST: redis
+  javaSecretEnv:
+    - name: SPRING_DATASOURCE_PASSWORD
+      key: mysql-password
+
+secretContract:
+  requiredKeys:
+    - mysql-password
+    - neo4j-password
+    - minio-access-key
+    - minio-secret-key
+    - gateway-signature-secret
+    - model-api-key
+
+imagePullSecrets: []
+
+serviceAccount:
+  create: true
+  name: ""
+  automountServiceAccountToken: false
+  annotations: {}
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+defaultResources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+ingress:
+  enabled: false
+  className: nginx
+  host: datasmart.example.com
+  path: /
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+  tls:
+    enabled: true
+    secretName: datasmart-gateway-tls
+
+networkPolicy:
+  enabled: false
+
+services:
+  gateway:
+    enabled: true
+    runtime: java
+    role: ingress-and-authz-gateway
+    replicaCount: 2
+    port: 8080
+    image:
+      repository: datasmart/gateway
+    env:
+      DATASMART_PYTHON_AI_RUNTIME_URI: http://datasmart-govern-python-ai-runtime:8090
+      DATASMART_PYTHON_AI_RUNTIME_WS_URI: ws://datasmart-govern-python-ai-runtime:8090
+      DATASMART_GATEWAY_AUTHORIZATION_DECISION_ENDPOINT: http://datasmart-govern-permission-admin:8085/permissions/evaluate
+      DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_REMOTE_ENABLED: "true"
+      DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_EVALUATE_URL: http://datasmart-govern-permission-admin:8085/permissions/agent/tool-budget-policies/evaluate
+      DATASMART_GATEWAY_OIDC_ISSUER_URI: https://idp.example.com/realms/datasmart
+      DATASMART_GATEWAY_OIDC_JWK_SET_URI: https://idp.example.com/realms/datasmart/protocol/openid-connect/certs
+      DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_ENABLED: "true"
+      DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_KEY_ID: gateway-prod-v1
+    secretEnv:
+      - name: DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_SECRET
+        key: gateway-signature-secret
+    probe:
+      readinessPath: /actuator/health
+      livenessPath: /actuator/health
+    resources:
+      requests:
+        cpu: 500m
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 2Gi
+
+  permission-admin:
+    enabled: true
+    runtime: java
+    role: authorization-control-plane
+    port: 8085
+    image:
+      repository: datasmart/permission-admin
+    env: {}
+    secretEnv: []
+    probe:
+      readinessPath: /actuator/health
+      livenessPath: /actuator/health
+
+  task-management:
+    enabled: true
+    runtime: java
+    role: task-and-outbox-control-plane
+    port: 8081
+    image:
+      repository: datasmart/task-management
+    env:
+      DATASMART_AGENT_RUNTIME_INTERNAL_BASE_URL: http://datasmart-govern-agent-runtime:8091
+      DATASMART_DATA_SYNC_INTERNAL_BASE_URL: http://datasmart-govern-data-sync:8086
+      DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_APPROVAL_EVALUATE_URL: http://datasmart-govern-permission-admin:8085/permissions/agent/tool-action-approvals/evaluate
+      DATASMART_PERMISSION_ADMIN_EVALUATE_URL: http://datasmart-govern-permission-admin:8085/permissions/evaluate
+      DATASMART_TASK_AGENT_ASYNC_WORKER_ENABLED: "false"
+      DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_SUBMIT_ENABLED: "false"
+    secretEnv: []
+    probe:
+      readinessPath: /actuator/health
+      livenessPath: /actuator/health
+
+  datasource-management:
+    enabled: true
+    runtime: java
+    role: datasource-control-plane
+    port: 8082
+    image:
+      repository: datasmart/datasource-management
+    env:
+      DATASMART_TASK_MANAGEMENT_BASE_URL: http://datasmart-govern-task-management:8081
+    secretEnv: []
+    probe:
+      readinessPath: /actuator/health
+      livenessPath: /actuator/health
+
+  data-sync:
+    enabled: true
+    runtime: java
+    role: data-sync-control-plane
+    port: 8086
+    image:
+      repository: datasmart/data-sync
+    env:
+      DATASMART_DATA_SYNC_DATASOURCE_CAPABILITY_BASE_URL: http://datasmart-govern-datasource-management:8082
+      DATASMART_DATA_SYNC_DATASOURCE_RUN_ONCE_BASE_URL: http://datasmart-govern-datasource-management:8082
+      DATASMART_DATA_SYNC_TASK_MANAGEMENT_RECEIPT_BASE_URL: http://datasmart-govern-task-management:8081
+    secretEnv: []
+    probe:
+      readinessPath: /actuator/health
+      livenessPath: /actuator/health
+
+  data-quality:
+    enabled: true
+    runtime: java
+    role: data-quality-control-plane
+    port: 8083
+    image:
+      repository: datasmart/data-quality
+    env:
+      SPRING_NEO4J_URI: bolt://neo4j:7687
+      SPRING_NEO4J_AUTHENTICATION_USERNAME: neo4j
+      DATASMART_QUALITY_DATASOURCE_READ_ONLY_SQL_BASE_URL: http://datasmart-govern-datasource-management:8082
+      DATASMART_QUALITY_DATASOURCE_METADATA_VALIDATION_BASE_URL: http://datasmart-govern-datasource-management:8082
+      DATASMART_QUALITY_TASK_MANAGEMENT_BASE_URL: http://datasmart-govern-task-management:8081
+      DATASMART_QUALITY_TASK_MANAGEMENT_EXECUTOR_COORDINATOR_ENABLED: "false"
+    secretEnv:
+      - name: SPRING_NEO4J_AUTHENTICATION_PASSWORD
+        key: neo4j-password
+    probe:
+      readinessPath: /actuator/health
+      livenessPath: /actuator/health
+
+  agent-runtime:
+    enabled: true
+    runtime: java
+    role: agent-control-plane
+    port: 8091
+    image:
+      repository: datasmart/agent-runtime
+    env:
+      DATASMART_AGENT_RUNTIME_JDBC_URL: jdbc:mysql://mysql:3306/datasmart_govern?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=true&rewriteBatchedStatements=true
+      DATASMART_AGENT_RUNTIME_JDBC_USERNAME: datasmart
+      DATASMART_PERMISSION_ADMIN_EVALUATE_URL: http://datasmart-govern-permission-admin:8085/permissions/evaluate
+      DATASMART_AGENT_RUNTIME_RESUME_APPROVAL_FACT_EVALUATE_URL: http://datasmart-govern-permission-admin:8085/permissions/agent/tool-action-approvals/evaluate
+      DATASMART_TASK_MANAGEMENT_AGENT_COMMAND_CONSUME_URL: http://datasmart-govern-task-management:8081/internal/agent-async-task-commands/consume
+      DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_ENDPOINT: http://minio:9000
+      DATASMART_AGENT_TOOL_SERVICE_BASE_URLS_DATASOURCE_MANAGEMENT: http://datasmart-govern-datasource-management:8082
+      DATASMART_AGENT_TOOL_SERVICE_BASE_URLS_DATA_QUALITY: http://datasmart-govern-data-quality:8083
+      DATASMART_AGENT_TOOL_SERVICE_BASE_URLS_TASK_MANAGEMENT: http://datasmart-govern-task-management:8081
+      DATASMART_AGENT_RUNTIME_OUTBOX_DISPATCHER_ENABLED: "false"
+      DATASMART_AGENT_RUNTIME_ASYNC_COMMAND_DISPATCHER_ENABLED: "false"
+    secretEnv:
+      - name: DATASMART_AGENT_RUNTIME_JDBC_PASSWORD
+        key: mysql-password
+      - name: DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_ACCESS_KEY
+        key: minio-access-key
+      - name: DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_SECRET_KEY
+        key: minio-secret-key
+    probe:
+      readinessPath: /actuator/health
+      livenessPath: /actuator/health
+
+  observability:
+    enabled: true
+    runtime: java
+    role: observability-control-plane
+    port: 8084
+    image:
+      repository: datasmart/observability
+    env:
+      DATASMART_OBSERVABILITY_GATEWAY_BASE_URL: http://datasmart-govern-gateway:8080
+      DATASMART_OBSERVABILITY_PERMISSION_ADMIN_BASE_URL: http://datasmart-govern-permission-admin:8085
+      DATASMART_OBSERVABILITY_TASK_MANAGEMENT_BASE_URL: http://datasmart-govern-task-management:8081
+      DATASMART_OBSERVABILITY_DATASOURCE_MANAGEMENT_BASE_URL: http://datasmart-govern-datasource-management:8082
+      DATASMART_OBSERVABILITY_DATA_SYNC_BASE_URL: http://datasmart-govern-data-sync:8086
+      DATASMART_OBSERVABILITY_DATA_QUALITY_BASE_URL: http://datasmart-govern-data-quality:8083
+      DATASMART_OBSERVABILITY_AGENT_RUNTIME_BASE_URL: http://datasmart-govern-agent-runtime:8091
+      DATASMART_OBSERVABILITY_SELF_BASE_URL: http://datasmart-govern-observability:8084
+      DATASMART_OBSERVABILITY_PYTHON_AI_RUNTIME_BASE_URL: http://datasmart-govern-python-ai-runtime:8090
+    secretEnv: []
+    probe:
+      readinessPath: /actuator/health
+      livenessPath: /actuator/health
+
+  python-ai-runtime:
+    enabled: true
+    runtime: python
+    role: ai-runtime
+    port: 8090
+    image:
+      repository: datasmart/python-ai-runtime
+    env:
+      DATASMART_AGENT_RUNTIME_BASE_URL: http://datasmart-govern-agent-runtime:8091
+      DATASMART_PERMISSION_ADMIN_BASE_URL: http://datasmart-govern-permission-admin:8085
+      DATASMART_AI_RUNTIME_REDIS_URL: redis://redis:6379/0
+      DATASMART_AI_RUNTIME_EVENT_STORE: redis-stream
+      DATASMART_AI_RUNTIME_EVENT_CHECKPOINT_STORE: redis
+      DATASMART_AI_RUNTIME_EVENT_OUTBOX_STORE: redis
+      DATASMART_AI_RUNTIME_EVENT_PUBLISHER: kafka
+      DATASMART_AI_RUNTIME_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      DATASMART_GATEWAY_SIGNATURE_REQUIRED: "true"
+      DATASMART_GATEWAY_SIGNATURE_KEY_ID: gateway-prod-v1
+      DATASMART_GATEWAY_SIGNATURE_NONCE_STORE: redis
+      DATASMART_GATEWAY_SIGNATURE_NONCE_REDIS_URL: redis://redis:6379/1
+      DATASMART_AI_OPENAI_COMPATIBLE_BASE_URL: https://model-gateway.example.com/v1
+    secretEnv:
+      - name: DATASMART_GATEWAY_SIGNATURE_SECRET
+        key: gateway-signature-secret
+      - name: DATASMART_AI_OPENAI_COMPATIBLE_API_KEY
+        key: model-api-key
+    probe:
+      readinessPath: /agent/closure/readiness
+      livenessPath: /health
+    resources:
+      requests:
+        cpu: "1"
+        memory: 2Gi
+      limits:
+        cpu: "4"
+        memory: 8Gi

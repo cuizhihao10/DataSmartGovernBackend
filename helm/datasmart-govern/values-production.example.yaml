@@ -1,0 +1,55 @@
+# 生产 values 样例。
+#
+# 该文件只展示覆盖方式，不包含真实 Secret。客户环境应把数据库、OIDC、模型服务、MinIO 等真实凭据
+# 放入 `global.existingSecret` 指向的 Kubernetes Secret 或企业 Secret 管理系统。
+
+global:
+  imageRegistry: harbor.example.com/datasmart
+  imageTag: "2026.07.01-REPLACE_WITH_GIT_SHA"
+  existingSecret: datasmart-prod-secrets
+  replicaCount: 2
+  javaEnv:
+    SPRING_PROFILES_ACTIVE: prod
+    SPRING_DATASOURCE_URL: jdbc:mysql://mysql.prod.svc.cluster.local:3306/datasmart_govern?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=true&rewriteBatchedStatements=true
+    SPRING_DATASOURCE_USERNAME: datasmart_app
+    SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka-prod-bootstrap.kafka.svc:9092
+    SPRING_CLOUD_NACOS_DISCOVERY_SERVER_ADDR: nacos.prod.svc:8848
+    SPRING_REDIS_HOST: redis.prod.svc
+    SPRING_DATA_REDIS_HOST: redis.prod.svc
+
+imagePullSecrets:
+  - name: datasmart-registry-credentials
+
+ingress:
+  enabled: true
+  className: nginx
+  host: datasmart.example.com
+  tls:
+    enabled: true
+    secretName: datasmart-gateway-tls
+
+networkPolicy:
+  enabled: true
+
+services:
+  gateway:
+    replicaCount: 3
+    env:
+      DATASMART_GATEWAY_OIDC_ISSUER_URI: https://idp.example.com/realms/datasmart
+      DATASMART_GATEWAY_OIDC_JWK_SET_URI: https://idp.example.com/realms/datasmart/protocol/openid-connect/certs
+  task-management:
+    replicaCount: 2
+  datasource-management:
+    replicaCount: 2
+  data-sync:
+    replicaCount: 2
+  data-quality:
+    replicaCount: 2
+  agent-runtime:
+    replicaCount: 2
+    env:
+      DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_ENDPOINT: https://minio.example.com
+  python-ai-runtime:
+    replicaCount: 2
+    env:
+      DATASMART_AI_OPENAI_COMPATIBLE_BASE_URL: https://model-gateway.example.com/v1
