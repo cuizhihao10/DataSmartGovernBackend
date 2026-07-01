@@ -80,8 +80,9 @@ class LangGraphExecutionGateMetrics:
     def record_runtime_events(self, events: Iterable[AgentRuntimeEvent]) -> int:
         """批量记录 Runtime Event，并返回真正被本指标器识别的事件数量。
 
-        调用方可以直接把 `plan.runtime_events` 全量传进来，本方法会自行过滤非 execution gate 事件。这样后续
-        API 层、worker、事件回放或 Kafka consumer 都能复用同一个指标入口，而不需要在上游散落事件类型判断。
+        调用方可以直接把 `plan.runtime_events` 全量传进来，本方法会自行过滤非 execution gate 事件。
+        这样后续 API 层、worker、事件回放或 Kafka consumer 都能复用同一个指标入口，而不需要在上游散落
+        事件类型判断。
         """
 
         recorded = 0
@@ -94,10 +95,10 @@ class LangGraphExecutionGateMetrics:
         """记录单条 `agent_execution_gate_recorded` 事件。
 
         返回值语义：
-        - `True`：事件属于 LangGraph execution gate，已经转为指标；
-        - `False`：事件与本指标器无关，已安全忽略。
+        - `True`：事件属于 LangGraph execution gate，已经转换为指标；
+        - `False`：事件与本指标器无关，已经安全忽略。
 
-        指标转化只读取 event attributes 中的低敏字段。即使上游错误地塞入了 checkpointId、token、SQL 等字段，
+        指标转换只读取 event attributes 中的低敏字段。即使上游错误地塞入 checkpointId、token、SQL 等字段，
         本方法也不会把这些字段渲染为 label 或 metric value。
         """
 
@@ -182,7 +183,7 @@ class LangGraphExecutionGateMetrics:
         return "\n".join(lines)
 
     def _inc(self, name: str, labels: dict[str, str], value: float = 1) -> None:
-        """递增一个指标序列，`value <= 0` 时不创建噪声序列。"""
+        """递增一个指标序列；`value <= 0` 时不创建噪声序列。"""
 
         if value <= 0:
             return
@@ -237,7 +238,7 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 
 
 def _sequence(value: Any) -> tuple[Any, ...]:
-    """安全读取列表/元组字段，字符串按单个元素处理。"""
+    """安全读取列表或元组字段；字符串按单个元素处理。"""
 
     if value is None:
         return ()

@@ -47,6 +47,7 @@ class LangGraphMultiAgentExecutionPlanTest(unittest.TestCase):
         self.assertTrue(summary["executed"])
         self.assertTrue(summary["capabilities"]["agentWorkItemPlanning"])
         self.assertTrue(summary["capabilities"]["collaborationEdgePlanning"])
+        self.assertTrue(summary["capabilities"]["specialistHandoffContractPlanning"])
         self.assertTrue(summary["capabilities"]["guardrailAwareExecutionBoundary"])
         self.assertEqual(
             (
@@ -54,6 +55,7 @@ class LangGraphMultiAgentExecutionPlanTest(unittest.TestCase):
                 "langgraph.multi_agent_execution.assign_agent_work_items",
                 "langgraph.multi_agent_execution.build_collaboration_edges",
                 "langgraph.multi_agent_execution.enforce_execution_boundaries",
+                "langgraph.multi_agent_execution.build_specialist_handoff_contracts",
                 "langgraph.multi_agent_execution.finalize_execution_plan",
             ),
             summary["nodeTrace"],
@@ -74,7 +76,23 @@ class LangGraphMultiAgentExecutionPlanTest(unittest.TestCase):
         self.assertIn("MEMORY_AGENT", roles)
         self.assertIn("QUALITY_NEEDS_METADATA_CONTEXT", {edge["reasonCode"] for edge in summary["collaborationEdges"]})
         self.assertIn("SIDE_EFFECT_BOUNDARY_GUARDED", {edge["reasonCode"] for edge in summary["collaborationEdges"]})
+        self.assertGreaterEqual(summary["handoffContractCount"], 1)
+        self.assertEqual(summary["handoffContractCount"], summary["globalState"]["handoffContractCount"])
+        contracts = summary["handoffContracts"]
+        self.assertTrue(
+            any(contract["targetAgentRole"] == "PERMISSION_AGENT" for contract in contracts),
+            "高风险专项 Agent handoff 应优先进入权限守门角色，而不是直接绕到工具执行。",
+        )
+        self.assertTrue(
+            any("APPROVAL_DECISION_FACT" in contract["requiredHostFactTypes"] for contract in contracts),
+            "handoff contract 必须声明后续需要 Java/人审写入的 host fact 类型。",
+        )
+        self.assertTrue(
+            all(not contract["sideEffectBoundary"]["toolExecutedByPython"] for contract in contracts),
+            "handoff contract 是控制面合同，不允许 Python Runtime 在此节点执行工具。",
+        )
         self.assertIn("CREATE_OR_WAIT_HOST_APPROVAL_FACT", summary["nextActions"])
+        self.assertIn("MATERIALIZE_HANDOFF_CONTRACT_IN_JAVA_CONTROL_PLANE", summary["nextActions"])
         self.assertNotIn("secret-datasource-id", serialized)
         self.assertNotIn("secret business goal", serialized)
         self.assertNotIn("secret objective", serialized)
@@ -118,6 +136,7 @@ class LangGraphMultiAgentExecutionPlanTest(unittest.TestCase):
         self.assertEqual("LOW_SENSITIVE_MULTI_AGENT_EXECUTION_PLAN_ONLY", execution_plan["payloadPolicy"])
         self.assertFalse(execution_plan["executed"])
         self.assertEqual(0, execution_plan["workItemCount"])
+        self.assertEqual(0, execution_plan["handoffContractCount"])
         self.assertNotIn("secret objective", serialized)
         self.assertNotIn("secret-datasource-id", serialized)
         self.assertNotIn("secret business goal", serialized)

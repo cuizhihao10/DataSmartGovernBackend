@@ -1,8 +1,8 @@
 """Agent plan 响应中的事件追加、发布与指标旁路工具。
 
 `plan_response.py` 负责把同步 `/agent/plans` 响应组装成一个完整的业务返回体，但随着 runtime event、
-WebSocket replay、Kafka publisher、Skill 可见性、多 Agent 调度和 LangGraph execution gate 都进入响应链路，
-如果所有事件处理细节继续留在主文件里，会再次突破单文件 500 行约束。
+WebSocket replay、Kafka publisher、Skill 可见性、多 Agent 调度和 LangGraph execution gate 都进入
+响应链路，如果所有事件处理细节继续留在主文件里，会再次突破单文件 500 行约束。
 
 本模块专门承接“事件旁路”职责：
 - 把 readiness、execution gate、Skill 可见性、多 Agent 会话调度追加为低敏 Runtime Event；
@@ -41,8 +41,9 @@ def attach_tool_execution_readiness_event(
 ) -> AgentPlan:
     """把工具执行准备度快照追加到运行时事件流。
 
-    readiness event 说明“每个工具当前为什么可执行、需审批、需澄清、只能草案或被阻断”。它必须进入事件流，
-    否则同步 HTTP 响应能看到 readiness，WebSocket 断线恢复、Kafka 消费和 Java projection 却无法回放同一事实。
+    readiness event 说明“每个工具当前为什么可执行、需审批、需澄清、只能草案或被阻断”。它必须进入
+    事件流，否则同步 HTTP 响应能看到 readiness，WebSocket 断线恢复、Kafka 消费和 Java projection
+    却无法回放同一事实。
     """
 
     if any(
@@ -62,8 +63,8 @@ def attach_agent_execution_gate_event(
 ) -> AgentPlan:
     """把 LangGraph execution gate 快照追加到运行时事件流。
 
-    readiness event 说明“工具计划被判定为什么状态”；execution gate event 说明“LangGraph 条件图把本轮路由到
-    哪个 dominant gate”。这两条事件服务不同视角，不能互相替代。
+    readiness event 说明“工具计划被判定为什么状态”；execution gate event 说明“LangGraph 条件图把本轮
+    路由到哪个 dominant gate”。这两条事件服务不同视角，不能互相替代。
     """
 
     if any(

@@ -88,3 +88,9 @@ datasmart_ai_runtime/
 - `api/agent/plan_response_events.py` 已承接 plan response 中的 runtime event 追加、发布和 execution gate 指标旁路，避免 `plan_response.py` 再次膨胀。
 - `services/tools/langgraph_execution_gate_metrics.py` 已归入 `services/tools/`，因为它消费的是工具执行前 LangGraph gate 事件，属于工具治理链路的可观测闭环。
 - 后续如果继续新增 Agent Runtime 指标，应优先判断指标属于 memory、model_gateway、tools、runtime_events 还是 multi_agent，而不是直接塞回 `api/app.py`。
+## 2026-07-01 目录治理补充：Multi-agent handoff contracts
+
+- `services/multi_agent/handoff_contracts.py` 已新增为多 Agent handoff 合同生成规则模块。
+- 该模块放在 `multi_agent/` 而不是 `tools/` 或 `runtime_events/` 下，是因为它描述的是 Agent 之间以及 Agent 到 Java 控制面的交接合同，不是工具执行器，也不是事件存储实现。
+- `langgraph_execution_plan.py` 继续只负责编排 LangGraph 节点流转；handoff 规则拆到独立文件后，该 workflow 约 420 行，仍低于 500 行约束。
+- 后续如果继续补 handoff 指标、Java projection adapter 或 durable checkpoint 对齐，应优先在 `multi_agent/` 下继续分文件扩展，避免把多 Agent 逻辑重新堆回 `services/` 根目录。

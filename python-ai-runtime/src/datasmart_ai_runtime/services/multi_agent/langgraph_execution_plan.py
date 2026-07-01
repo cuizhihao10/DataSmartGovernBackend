@@ -17,6 +17,7 @@ from datasmart_ai_runtime.services.multi_agent.execution_plan_models import (
     MultiAgentExecutionPlanState,
     MultiAgentExecutionWorkItem,
 )
+from datasmart_ai_runtime.services.multi_agent.handoff_contracts import build_specialist_handoff_contracts
 from datasmart_ai_runtime.services.multi_agent.execution_plan_rules import (
     append_edge,
     blocked_by,
@@ -69,6 +70,7 @@ class LangGraphMultiAgentExecutionPlanWorkflow:
         "assign_agent_work_items",
         "build_collaboration_edges",
         "enforce_execution_boundaries",
+        "build_specialist_handoff_contracts",
         "finalize_execution_plan",
     )
     GRAPH_EDGES = (
@@ -76,7 +78,8 @@ class LangGraphMultiAgentExecutionPlanWorkflow:
         "load_collaboration_context->assign_agent_work_items",
         "assign_agent_work_items->build_collaboration_edges",
         "build_collaboration_edges->enforce_execution_boundaries",
-        "enforce_execution_boundaries->finalize_execution_plan",
+        "enforce_execution_boundaries->build_specialist_handoff_contracts",
+        "build_specialist_handoff_contracts->finalize_execution_plan",
         "finalize_execution_plan->END",
     )
 
@@ -188,12 +191,14 @@ class LangGraphMultiAgentExecutionPlanWorkflow:
         builder.add_node("assign_agent_work_items", self._assign_agent_work_items)
         builder.add_node("build_collaboration_edges", self._build_collaboration_edges)
         builder.add_node("enforce_execution_boundaries", self._enforce_execution_boundaries)
+        builder.add_node("build_specialist_handoff_contracts", self._build_specialist_handoff_contracts)
         builder.add_node("finalize_execution_plan", self._finalize_execution_plan)
         builder.add_edge(api.start, "load_collaboration_context")
         builder.add_edge("load_collaboration_context", "assign_agent_work_items")
         builder.add_edge("assign_agent_work_items", "build_collaboration_edges")
         builder.add_edge("build_collaboration_edges", "enforce_execution_boundaries")
-        builder.add_edge("enforce_execution_boundaries", "finalize_execution_plan")
+        builder.add_edge("enforce_execution_boundaries", "build_specialist_handoff_contracts")
+        builder.add_edge("build_specialist_handoff_contracts", "finalize_execution_plan")
         builder.add_edge("finalize_execution_plan", api.end)
         return builder.compile()
 
@@ -303,12 +308,28 @@ class LangGraphMultiAgentExecutionPlanWorkflow:
         }
         return updated
 
+    def _build_specialist_handoff_contracts(self, state: MultiAgentExecutionPlanState) -> MultiAgentExecutionPlanState:
+        """根据执行边界生成 specialist handoff 合同。
+
+        该节点是多 Agent 能力从“工作项/协作边”走向“宿主可接管合同”的关键一步。它只读取低敏 work item
+        和 plan status，不读取用户目标、工具参数或模型输出；生成的合同也只是告诉 Java 控制面和前端：
+        哪个 Agent 需要交接、交给谁、为什么交接、需要哪些 host facts，以及 Python Runtime 不允许做哪些副作用。
+        """
+
+        updated = self._append_trace(state, "langgraph.multi_agent_execution.build_specialist_handoff_contracts")
+        updated["handoffContracts"] = build_specialist_handoff_contracts(
+            tuple(state.get("workItems") or ()),
+            plan_status=str(state.get("planStatus") or "UNKNOWN"),
+        )
+        return updated
+
     def _finalize_execution_plan(self, state: MultiAgentExecutionPlanState) -> MultiAgentExecutionPlanState:
         """汇总全局状态和下一步建议。"""
 
         updated = self._append_trace(state, "langgraph.multi_agent_execution.finalize_execution_plan")
         work_items = tuple(state.get("workItems") or ())
         edges = tuple(state.get("collaborationEdges") or ())
+        handoff_contracts = tuple(state.get("handoffContracts") or ())
         updated["globalState"] = {
             "stateSchemaVersion": "datasmart.multi-agent.execution-plan-state.v1",
             "stateSource": "agentSessionScheduling+agentCollaborationWorkflow+AgentPlan",
@@ -317,11 +338,15 @@ class LangGraphMultiAgentExecutionPlanWorkflow:
             "planStatus": state.get("planStatus") or "UNKNOWN",
             "workItemCount": len(work_items),
             "collaborationEdgeCount": len(edges),
+            "handoffContractCount": len(handoff_contracts),
             "handoffRequired": bool(state.get("handoffRequired")),
             "plannedToolCount": len(tuple(state.get("plannedToolNames") or ())),
             "checkpointPolicy": "SUMMARY_ONLY_NO_PROMPT_NO_TOOL_ARGS_NO_MODEL_OUTPUT",
         }
-        updated["nextActions"] = next_actions_for_plan_status(updated.get("planStatus") or "UNKNOWN")
+        next_actions = list(next_actions_for_plan_status(updated.get("planStatus") or "UNKNOWN"))
+        if handoff_contracts and "MATERIALIZE_HANDOFF_CONTRACT_IN_JAVA_CONTROL_PLANE" not in next_actions:
+            next_actions.append("MATERIALIZE_HANDOFF_CONTRACT_IN_JAVA_CONTROL_PLANE")
+        updated["nextActions"] = tuple(next_actions)
         return updated
 
     def _work_item_for_agent(
@@ -388,6 +413,7 @@ class LangGraphMultiAgentExecutionPlanWorkflow:
             plan_status=str(state.get("planStatus") or "UNKNOWN"),
             work_items=tuple(state.get("workItems") or ()),
             collaboration_edges=tuple(state.get("collaborationEdges") or ()),
+            handoff_contracts=tuple(state.get("handoffContracts") or ()),
             execution_policy=dict(state.get("executionPolicy") or {}),
             global_state=dict(state.get("globalState") or {}),
             next_actions=tuple(state.get("nextActions") or ()),

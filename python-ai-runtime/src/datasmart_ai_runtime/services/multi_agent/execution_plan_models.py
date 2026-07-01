@@ -34,6 +34,7 @@ class MultiAgentExecutionPlanState(TypedDict, total=False):
     agentViews: tuple[dict[str, Any], ...]
     workItems: tuple["MultiAgentExecutionWorkItem", ...]
     collaborationEdges: tuple["MultiAgentExecutionEdge", ...]
+    handoffContracts: tuple["MultiAgentHandoffContract", ...]
     executionPolicy: dict[str, Any]
     globalState: dict[str, Any]
     planStatus: str
@@ -112,6 +113,52 @@ class MultiAgentExecutionEdge:
 
 
 @dataclass(frozen=True)
+class MultiAgentHandoffContract:
+    """多 Agent specialist handoff 的低敏控制面合同。
+
+    为什么需要单独的 handoff contract：
+    - work item 说明“某个 Agent 现在要做什么”；
+    - collaboration edge 说明“Agent 之间有什么协作关系”；
+    - handoff contract 则说明“当某个 Agent 需要把控制权交给权限、人审、运维恢复或 Java 控制面时，
+      下游应该等待哪些 host fact，下一步动作是什么，Python Runtime 不允许做哪些副作用”。
+
+    这个对象是给前端、gateway、Java projection 和审计系统看的合同摘要，不是执行命令：
+    它不包含 prompt、SQL、工具参数、样本数据、模型输出、真实审批 ID、checkpointId 或 commandId。
+    """
+
+    contract_id: str
+    source_agent_role: str
+    target_agent_role: str
+    handoff_type: str
+    status: str
+    reason_codes: tuple[str, ...]
+    required_host_fact_types: tuple[str, ...]
+    missing_evidence_codes: tuple[str, ...]
+    next_action: str
+    source_work_item_status: str
+    side_effect_boundary: dict[str, Any]
+    payload_policy: str = "LOW_SENSITIVE_MULTI_AGENT_HANDOFF_CONTRACT_ONLY"
+
+    def to_summary(self) -> dict[str, Any]:
+        """输出可安全返回给 `/agent/plans` 的 handoff 合同摘要。"""
+
+        return {
+            "contractId": self.contract_id,
+            "sourceAgentRole": self.source_agent_role,
+            "targetAgentRole": self.target_agent_role,
+            "handoffType": self.handoff_type,
+            "status": self.status,
+            "reasonCodes": self.reason_codes,
+            "requiredHostFactTypes": self.required_host_fact_types,
+            "missingEvidenceCodes": self.missing_evidence_codes,
+            "nextAction": self.next_action,
+            "sourceWorkItemStatus": self.source_work_item_status,
+            "sideEffectBoundary": self.side_effect_boundary,
+            "payloadPolicy": self.payload_policy,
+        }
+
+
+@dataclass(frozen=True)
 class MultiAgentExecutionPlanDiagnostics:
     """LangGraph 多智能体执行前计划诊断结果。
 
@@ -134,6 +181,7 @@ class MultiAgentExecutionPlanDiagnostics:
     plan_status: str
     work_items: tuple[MultiAgentExecutionWorkItem, ...]
     collaboration_edges: tuple[MultiAgentExecutionEdge, ...]
+    handoff_contracts: tuple[MultiAgentHandoffContract, ...]
     execution_policy: dict[str, Any]
     global_state: dict[str, Any]
     next_actions: tuple[str, ...]
@@ -156,14 +204,17 @@ class MultiAgentExecutionPlanDiagnostics:
             "capabilities": {
                 "agentWorkItemPlanning": self.executed and bool(self.work_items),
                 "collaborationEdgePlanning": self.executed and bool(self.collaboration_edges),
+                "specialistHandoffContractPlanning": self.executed and bool(self.handoff_contracts),
                 "guardrailAwareExecutionBoundary": self.executed and bool(self.execution_policy),
                 "globalStateManagement": self.executed and bool(self.global_state),
             },
             "planStatus": self.plan_status,
             "workItemCount": len(self.work_items),
             "collaborationEdgeCount": len(self.collaboration_edges),
+            "handoffContractCount": len(self.handoff_contracts),
             "workItems": tuple(item.to_summary() for item in self.work_items),
             "collaborationEdges": tuple(edge.to_summary() for edge in self.collaboration_edges),
+            "handoffContracts": tuple(contract.to_summary() for contract in self.handoff_contracts),
             "executionPolicy": self.execution_policy,
             "globalState": self.global_state,
             "nextActions": self.next_actions,
