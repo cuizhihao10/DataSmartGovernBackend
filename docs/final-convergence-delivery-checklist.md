@@ -85,7 +85,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-e2e-smoke-ch
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\production-readiness-check.ps1
 ```
 
-结果口径：默认模式用于收敛阶段，已闭环和已文档化的生产加固契约应通过；Kubernetes/Helm、SBOM、镜像签名、备份恢复、容量基线、故障演练等尚未交付的生产事项会以 `WARN` 形式保留，提醒它们是正式上线前的阻塞项。若进入真实发布门禁，可追加 `-StrictProductionGates`，把所有 `WARN` 提升为失败。
+结果口径：默认模式用于收敛阶段，已闭环和已文档化的生产加固契约应通过；生产环境值与 Secret 管理说明见 [production-environment-values.md](production-environment-values.md)。Kubernetes/Helm、SBOM、镜像签名、备份恢复、容量基线、故障演练等尚未交付的生产事项会以 `WARN` 形式保留，提醒它们是正式上线前的阻塞项。若进入真实发布门禁，可追加 `-StrictProductionGates`，把所有 `WARN` 提升为失败。
 
 ## 5. 生产上线前待办
 

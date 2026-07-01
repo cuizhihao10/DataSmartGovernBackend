@@ -142,7 +142,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\production-readine
 推荐后续按以下顺序推进：
 
 1. 修复生产就绪检查中的配置漂移和文档缺口。
-2. 建立 Secret/TLS 和正式 IdP 部署方案。
+2. 先阅读 [生产环境值与 Secret 管理说明](production-environment-values.md)，建立 Secret/TLS、正式 IdP、多环境变量和受控开关的交付边界。
 3. 建立 Kubernetes/Helm 交付骨架。
 4. 建立 SBOM、镜像签名和漏洞扫描流水线。
 5. 建立备份恢复脚本和恢复演练记录模板。
