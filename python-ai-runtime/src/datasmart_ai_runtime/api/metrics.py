@@ -7,7 +7,8 @@
 - 长期记忆物化指标；
 - 模型 Provider 主动健康探测指标；
 - 工具动作 checkpoint query/resume-preview 指标；
-- LangGraph execution gate 工具执行前门禁指标。
+- LangGraph execution gate 工具执行前门禁指标；
+- LangGraph memory retrieval 长期记忆检索观察图指标。
 
 安全边界：
 - 指标文本不输出 providerName、tenantId、projectId、runId、traceId、URL、prompt、工具参数或模型正文；
@@ -27,6 +28,7 @@ def register_agent_metrics_route(
     *,
     response_type: type[Any],
     memory_materialization_metrics: Any,
+    langgraph_memory_retrieval_metrics: Any,
     model_provider_health_probe: Any,
     tool_action_checkpoint_metrics: Any,
     langgraph_execution_gate_metrics: Any,
@@ -36,6 +38,7 @@ def register_agent_metrics_route(
     参数说明：
     - `response_type`：由 `create_app()` 延迟导入 FastAPI 后传入，避免核心测试强依赖 API 可选包；
     - `memory_materialization_metrics`：长期记忆物化运行、候选处理、补偿重排和 fencing/finalize 指标；
+    - `langgraph_memory_retrieval_metrics`：长期记忆检索 LangGraph 节点、召回状态、目标类型和 MEMORY_AGENT 指标；
     - `model_provider_health_probe`：模型 Provider 主动健康探测累计结果与最近一轮状态分布；
     - `tool_action_checkpoint_metrics`：checkpoint query/resume-preview 的访问结果与恢复事实状态；
     - `langgraph_execution_gate_metrics`：工具执行前 LangGraph dominant gate、fallback、readiness 和 resume fact 指标。
@@ -49,6 +52,7 @@ def register_agent_metrics_route(
 
         metric_parts = (
             memory_materialization_metrics.render_prometheus().rstrip(),
+            langgraph_memory_retrieval_metrics.render_prometheus().rstrip(),
             render_model_provider_health_probe_prometheus(model_provider_health_probe).rstrip(),
             tool_action_checkpoint_metrics.render_prometheus().rstrip(),
             langgraph_execution_gate_metrics.render_prometheus().rstrip(),

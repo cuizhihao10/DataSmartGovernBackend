@@ -69,6 +69,7 @@ def register_agent_runtime_routes(
     tool_action_checkpoint_store: Any | None = None,
     tool_action_checkpoint_metrics: Any | None = None,
     langgraph_execution_gate_metrics: Any | None = None,
+    langgraph_memory_retrieval_metrics: Any | None = None,
     tool_action_checkpoint_gateway_signature_required: bool = False,
     tool_registry: tuple[Any, ...] | None = None,
     gateway_signature_error_factory: Callable[[dict[str, Any]], Exception] | None = None,
@@ -127,6 +128,10 @@ def register_agent_runtime_routes(
     `agent_execution_gate_recorded` 低敏事件，只按 gate route、gate status、fallback、result、severity、
     readiness decision 和 resume fact state 聚合，帮助运维观察“工具执行前门禁卡在哪里”，但不会把
     tenantId、projectId、checkpointId、commandId、prompt、SQL、工具参数或模型输出写入指标标签。
+
+    `langgraph_memory_retrieval_metrics` 是长期记忆检索观察图的低基数指标记录器。它只消费
+    `agentMemoryRetrievalWorkflow` 低敏摘要，按检索状态、记忆类型、scope、MEMORY_AGENT 调度与消费角色
+    聚合，不把 memoryId、memory namespace、queryHint、记忆正文或用户目标写入 Prometheus label。
 
     `tool_action_checkpoint_gateway_signature_required` 是 checkpoint 子路由自己的渐进式安全开关：
     - 默认 false，保证本地学习环境和历史测试不需要先启动完整 gateway；
@@ -194,6 +199,7 @@ def register_agent_runtime_routes(
             skill_publication_diagnostics_service=skill_publication_diagnostics_service,
             tool_execution_readiness_policy_provider=tool_execution_readiness_policy_provider,
             langgraph_execution_gate_metrics=langgraph_execution_gate_metrics,
+            langgraph_memory_retrieval_metrics=langgraph_memory_retrieval_metrics,
         )
 
     @app.post("/agent/protocol-adapters/a2a/task-planning-preview")

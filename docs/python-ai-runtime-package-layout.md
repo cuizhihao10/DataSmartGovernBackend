@@ -50,22 +50,25 @@ datasmart_ai_runtime/
 - `services/memory/` 已作为第一批能力包建立，承载长期记忆规划、检索、写入候选、审批治理、SQL 候选仓储、
   正式记忆 store、materializer 和 receipt store。新增 `langgraph_memory_retrieval_workflow.py` 与
   `langgraph_memory_retrieval_models.py` 后，`retrieve_memory` 已从编排器内部步骤推进为可观察 LangGraph
-  节点；workflow 文件只负责编排节点流转，models 文件承载低敏 state/diagnostics，避免 memory workflow
-  超过单文件 500 行约束。
+  节点；新增 `langgraph_memory_retrieval_metrics.py` 后，该观察节点也能通过 `/agent/metrics` 输出低基数
+  Prometheus 指标。workflow 文件只负责编排节点流转，models 文件承载低敏 state/diagnostics，metrics
+  文件承载指标转换，避免 memory workflow 超过单文件 500 行约束。
 - `services/runtime_events/` 已作为第二批能力包建立，承载事件事实存储、订阅会话、ack/checkpoint、
   outbox/live push、replay source、publisher、transport、WebSocket frame、visibility 和 authorization。
   这些能力共同支撑智能网关时间线、断线恢复、前端实时事件流和后续 Agent 执行审计。
 - `services/model_gateway/` 已作为第三批能力包建立，承载模型路由、provider、缓存、预算、模型原生
   tool-call schema/planning/aggregation/feedback、上下文过滤和 OpenAI-compatible provider 适配。
 - `services/multi_agent/` 已作为第四批能力包建立，承载产品 Agent 名册、LangGraph 多智能体执行前计划、
-  低敏工作项、协作边和执行边界规则。该包当前只生成控制面合同，不执行工具、不写 outbox、不创建审批。
+  低敏工作项、协作边和执行边界规则。`product_agent_catalog.py` 现在同时维护运行时 Agent 交付优先级：
+  必做角色、控制范围角色和轻量化角色分层明确，避免把 PERMISSION_AGENT/MEMORY_AGENT 等治理角色误判为
+  合规脱敏/反思优化等完整产品专项 Agent。该包当前只生成控制面合同，不执行工具、不写 outbox、不创建审批。
 - `services/tools/` 已开始承载工具治理闭口能力，包括 ToolPlan intake、readiness、readiness graph、
   checkpoint/resume-preview 客户端、command proposal、worker receipt 合同以及新增的
   `LangGraphExecutionGateWorkflow`、`langgraph_execution_gate_contract.py` 和 `agent_execution_gate_recorded`
   runtime event adapter。`langgraph_execution_gate_contract.py` 专门维护 Java checkpoint locator、fact bundle、
   resume gate graph、worker receipt 写入/查询字段对齐表，避免主 workflow 文件超过 500 行。该 workflow
   只做执行前条件路由，不执行工具、不写 outbox、不修改 checkpoint，后续工具治理新增能力应优先继续放入该包。
-- `services/__init__.py` 继续保留对外聚合导出，但 memory、runtime event 与 model gateway 相关导出已经分别依赖
+- `services/__init__.py` 继续保留对外聚合导出，但 memory、runtime event、model gateway 与 multi-agent 相关导出已经分别依赖
   `services.memory`、`services.runtime_events`、`services.model_gateway` 与 `services.multi_agent`，避免顶层服务包直接知道子包内部每个文件的位置。
 - 其他能力域仍处于过渡状态：skills、agent orchestration 还在
   `services/` 平铺目录中，后续应按测试覆盖逐批迁移。

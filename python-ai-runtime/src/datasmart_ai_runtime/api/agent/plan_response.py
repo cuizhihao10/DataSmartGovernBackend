@@ -76,6 +76,7 @@ def build_plan_response(
     tool_execution_readiness_policy_provider: ToolExecutionReadinessPolicyProviderProtocol | None = None,
     agent_capability_matrix_service: AgentCapabilityMatrixService | None = None,
     langgraph_execution_gate_metrics: Any | None = None,
+    langgraph_memory_retrieval_metrics: Any | None = None,
 ) -> dict[str, Any]:
     """构建同步 HTTP 风格的 Agent 计划响应。
 
@@ -271,6 +272,9 @@ def build_plan_response(
         scheduling=intelligent_gateway_governance.get("agentSessionScheduling", {}),
         collaboration_execution_plan=agent_collaboration_execution_plan_summary,
     )
+    agent_memory_retrieval_workflow_summary = agent_memory_retrieval_workflow.to_summary()
+    if langgraph_memory_retrieval_metrics is not None:
+        langgraph_memory_retrieval_metrics.record_summary(agent_memory_retrieval_workflow_summary)
     plan = attach_skill_visibility_event(
         plan,
         request=request,
@@ -295,7 +299,7 @@ def build_plan_response(
     response["agentWorkflowDiagnostics"] = plan.workflow_diagnostics
     response["agentCollaborationWorkflow"] = agent_collaboration_workflow.to_summary()
     response["agentCollaborationExecutionPlan"] = agent_collaboration_execution_plan_summary
-    response["agentMemoryRetrievalWorkflow"] = agent_memory_retrieval_workflow.to_summary()
+    response["agentMemoryRetrievalWorkflow"] = agent_memory_retrieval_workflow_summary
     response["agentWorkspace"] = workspace_context.to_summary()
     response["toolExecutionReadiness"] = tool_execution_readiness_response
     response["agentExecutionGateWorkflow"] = agent_execution_gate_summary

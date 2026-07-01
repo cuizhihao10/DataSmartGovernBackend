@@ -1,5 +1,25 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-07-01 落地补充：Memory retrieval workflow metrics and convergent Agent tiers
+
+- 本轮趋势校准：
+  - Codex、Claude Code、OpenClaw、LangGraph 类 Agent Host 的可观测性通常不会只停留在“响应里有诊断字段”，还需要把关键图节点转换成低基数指标，支撑告警、容量判断和长期趋势分析；
+  - DataSmart 当前已经把 `retrieve_memory` 迁成 `agentMemoryRetrievalWorkflow` 可观测节点，因此本轮补齐 Prometheus 指标，而不是继续扩张新的 Agent 角色或真实执行器；
+  - 多 Agent 能力按用户确认的收敛优先级固化：必做 `MASTER_ORCHESTRATOR`、`DATASOURCE_AGENT`、`DATA_QUALITY_AGENT`、`PERMISSION_AGENT`、`TASK_AGENT`；应做但控制范围 `MEMORY_AGENT`、`OPS_AGENT`、`DATA_SYNC_AGENT`；`ETL_DEVELOPMENT_AGENT`、`DATA_ASSET_AGENT`、`COMPLIANCE_MASKING_AGENT`、`REFLECTION_OPTIMIZATION_AGENT` 暂缓或轻量化。
+- 本轮落地到代码的能力：
+  - 新增 `services/memory/langgraph_memory_retrieval_metrics.py`；
+  - `/agent/metrics` 新增 `datasmart_ai_langgraph_memory_retrieval_*` 指标族；
+  - `/agent/plans` 在生成 `agentMemoryRetrievalWorkflow` 后会把同一份低敏 summary 旁路记录到指标；
+  - `product_agent_catalog.py` 新增运行时 Agent 交付优先级，并修正旧别名：`PERMISSION_AGENT` 不再被误判为完整 `COMPLIANCE_MASKING_AGENT`，`MEMORY_AGENT` 不再被误判为完整 `REFLECTION_OPTIMIZATION_AGENT`；
+  - `agentCollaborationWorkflow` 摘要新增 `runtimeAgentDeliveryTiers`，让前端、gateway 和后续实现线程能直接识别必做/控制范围/轻量化角色。
+- 指标边界：
+  - 指标只按 `workflow_status`、`retrieval_status`、`result`、`fallback`、`memory_type`、`memory_scope`、`agent_role`、`delivery_tier` 等有限标签聚合；
+  - 不输出 tenantId、projectId、actorId、requestId、runId、sessionId、memoryId、memory namespace、queryHint、记忆正文、prompt、SQL、工具参数或模型输出；
+  - 单次请求排障继续走 HTTP response、runtime event、Java projection 和审计日志，Prometheus 只负责趋势与告警。
+- 产品判断：
+  - LangGraph 在当前项目中已经覆盖规划入口、协作控制图、执行前多 Agent 计划、specialist handoff contract、execution gate、resume preflight contract、execution gate metrics、memory retrieval observable node 和 memory retrieval metrics；
+  - 下一步不建议继续新增 LangGraph 展示型节点，而应把 Java/Python 控制面事实、必做 Agent 角色、data-quality/observability 和最终 smoke/E2E 串成完整验收链路。
+
 ## 2026-07-01 落地补充：retrieve_memory should be an observable LangGraph node
 
 - 本轮趋势校准：

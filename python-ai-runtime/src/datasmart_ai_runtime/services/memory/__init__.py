@@ -102,6 +102,7 @@ from datasmart_ai_runtime.services.memory.langgraph_memory_retrieval_models impo
     LangGraphMemoryRetrievalWorkflowDiagnostics,
 )
 from datasmart_ai_runtime.services.memory.langgraph_memory_retrieval_workflow import LangGraphMemoryRetrievalWorkflow
+from datasmart_ai_runtime.services.memory.langgraph_memory_retrieval_metrics import LangGraphMemoryRetrievalMetrics
 from datasmart_ai_runtime.services.memory.memory_store import (
     AgentMemoryStore,
     AgentMemoryStoreEntry,
@@ -259,6 +260,7 @@ __all__ = [
     "AgentMemoryWriteStoreSettings",
     "LangGraphMemoryRetrievalWorkflow",
     "LangGraphMemoryRetrievalWorkflowDiagnostics",
+    "LangGraphMemoryRetrievalMetrics",
     "InMemoryAgentMemoryMaterializationReceiptStore",
     "InMemoryAgentMemoryMaterializationLeaseStore",
     "InMemoryAgentMemoryMaterializationAuditOutboxStore",

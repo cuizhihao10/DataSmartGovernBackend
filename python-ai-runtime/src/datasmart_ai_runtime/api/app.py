@@ -59,7 +59,7 @@ from datasmart_ai_runtime.services.agent_runtime_tool_feedback_client import (
 )
 from datasmart_ai_runtime.services.agent_capability import default_agent_capability_matrix_service
 from datasmart_ai_runtime.services.agent_second_turn_orchestrator import AgentSecondTurnOrchestrator
-from datasmart_ai_runtime.services.memory.memory_materialization_metrics import AgentMemoryMaterializationMetrics
+from datasmart_ai_runtime.services.memory import AgentMemoryMaterializationMetrics, LangGraphMemoryRetrievalMetrics
 from datasmart_ai_runtime.services.memory.memory_materialization_worker import (
     AgentMemoryMaterializationWorker,
     memory_materialization_worker_settings_from_env,
@@ -182,6 +182,7 @@ def create_app() -> Any:
     live_push_hub = runtime_events.live_push_hub
     event_publisher = runtime_events.event_publisher
     memory_materialization_metrics = AgentMemoryMaterializationMetrics()
+    langgraph_memory_retrieval_metrics = LangGraphMemoryRetrievalMetrics()
     tool_action_checkpoint_metrics = ToolActionCheckpointMetrics()
     langgraph_execution_gate_metrics = LangGraphExecutionGateMetrics()
     memory_materialization_worker = AgentMemoryMaterializationWorker(
@@ -420,6 +421,7 @@ def create_app() -> Any:
         app,
         response_type=Response,
         memory_materialization_metrics=memory_materialization_metrics,
+        langgraph_memory_retrieval_metrics=langgraph_memory_retrieval_metrics,
         model_provider_health_probe=model_provider_health_probe,
         tool_action_checkpoint_metrics=tool_action_checkpoint_metrics,
         langgraph_execution_gate_metrics=langgraph_execution_gate_metrics,
@@ -446,6 +448,7 @@ def create_app() -> Any:
         tool_action_checkpoint_store=tool_action_checkpoint_store,
         tool_action_checkpoint_metrics=tool_action_checkpoint_metrics,
         langgraph_execution_gate_metrics=langgraph_execution_gate_metrics,
+        langgraph_memory_retrieval_metrics=langgraph_memory_retrieval_metrics,
         tool_action_checkpoint_gateway_signature_required=tool_action_checkpoint_gateway_signature_required,
         tool_registry=tool_registry,
         gateway_signature_error_factory=lambda detail: HTTPException(status_code=401, detail=detail),

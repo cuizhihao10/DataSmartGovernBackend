@@ -33,6 +33,7 @@ from datasmart_ai_runtime.domain.events import (
 )
 from datasmart_ai_runtime.domain.intent import GovernanceDomain
 from datasmart_ai_runtime.domain.memory import AgentMemoryType
+from datasmart_ai_runtime.services.memory import LangGraphMemoryRetrievalMetrics
 from datasmart_ai_runtime.domain.skills import AgentSkillDescriptor
 from datasmart_ai_runtime.services.skill_registry_client import SkillRegistryClientError
 from datasmart_ai_runtime.services.tools import LangGraphExecutionGateMetrics
@@ -423,6 +424,41 @@ class ApiBootstrapTest(unittest.TestCase):
         self.assertNotIn("project-a", text)
         self.assertNotIn("user-a", text)
         self.assertNotIn("ds-sensitive-metrics", text)
+
+    def test_plan_response_records_langgraph_memory_retrieval_metrics(self) -> None:
+        """`/agent/plans` 应把 memory retrieval workflow 摘要旁路记录为低基数指标。"""
+
+        orchestrator = build_default_orchestrator()
+        metrics = LangGraphMemoryRetrievalMetrics()
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="user-a",
+            objective="请分析这个 MySQL 数据源，并不要泄露 secret objective",
+            variables={
+                "datasourceId": "ds-sensitive-memory-metrics",
+                "businessGoal": "secret business goal",
+                "sessionId": "session-sensitive-memory-metrics",
+            },
+        )
+
+        response = build_plan_response(
+            request,
+            orchestrator,
+            langgraph_memory_retrieval_metrics=metrics,
+        )
+        text = metrics.render_prometheus()
+
+        self.assertIn("agentMemoryRetrievalWorkflow", response)
+        self.assertIn("datasmart_ai_langgraph_memory_retrieval_workflows_total", text)
+        self.assertIn("datasmart_ai_langgraph_memory_retrieval_targets_total", text)
+        self.assertIn("datasmart_ai_langgraph_memory_retrieval_agent_context_total", text)
+        self.assertNotIn("tenant-a", text)
+        self.assertNotIn("project-a", text)
+        self.assertNotIn("user-a", text)
+        self.assertNotIn("ds-sensitive-memory-metrics", text)
+        self.assertNotIn("secret business goal", text)
+        self.assertNotIn("secret objective", text)
 
     def test_plan_response_uses_trusted_tool_readiness_policy_snapshot(self) -> None:
         """`/agent/plans` 应消费受控 readiness 策略快照，并把低敏策略来源写入响应和事件。"""

@@ -29,6 +29,7 @@ from datasmart_ai_runtime.services.multi_agent.product_agent_catalog import (
     PLANNED_PRODUCT_AGENTS,
     ProductAgentDefinition,
     planned_route_aliases,
+    runtime_agent_delivery_tiers,
 )
 
 
@@ -112,10 +113,9 @@ class MultiAgentCollaborationWorkflowDiagnostics:
     handoff_route: str
     next_migration_targets: tuple[str, ...] = (
         "langgraph.plan_tools_node",
-        "langgraph.retrieve_memory_node",
-        "langgraph.tool_execution_readiness_node",
-        "langgraph.human_resume_gate_node",
-        "langgraph.specialist_agent_handoff_nodes",
+        "langgraph.durable_runner_node",
+        "langgraph.java_control_plane_fact_projection",
+        "langgraph.full_platform_e2e_smoke",
     )
 
     def to_summary(self) -> dict[str, Any]:
@@ -140,6 +140,7 @@ class MultiAgentCollaborationWorkflowDiagnostics:
             },
             "plannedProductAgentCount": len(self.planned_product_agents),
             "plannedProductAgents": tuple(agent.to_summary() for agent in self.planned_product_agents),
+            "runtimeAgentDeliveryTiers": runtime_agent_delivery_tiers(),
             "participatingAgentRoles": self.participating_agent_roles,
             "implementedProductAgentRoles": self.implemented_product_agent_roles,
             "missingProductAgentRoles": self.missing_product_agent_roles,

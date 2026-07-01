@@ -1,5 +1,26 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-07-01 追加落地进展：LangGraph Memory Retrieval Metrics And Agent Tier Convergence
+- 本阶段承接上一阶段“补 `agentMemoryRetrievalWorkflow` 的低基数指标”的推荐路线，没有新增真实工具执行器，没有扩张新的 Agent 角色，也没有让 Python Runtime 绕过 Java 控制面写入长期记忆。
+- 已落地能力：
+  - 新增 `python-ai-runtime/src/datasmart_ai_runtime/services/memory/langgraph_memory_retrieval_metrics.py`；
+  - `/agent/metrics` 新增长期记忆检索 LangGraph 指标族：`datasmart_ai_langgraph_memory_retrieval_workflows_total`、`datasmart_ai_langgraph_memory_retrieval_targets_total`、`datasmart_ai_langgraph_memory_retrieval_scopes_total`、`datasmart_ai_langgraph_memory_retrieval_results_total`、`datasmart_ai_langgraph_memory_retrieval_agent_context_total`、`datasmart_ai_langgraph_memory_retrieval_consumer_agents_total`；
+  - `/agent/plans` 响应组装层新增 `langgraph_memory_retrieval_metrics` 可选注入，生成 `agentMemoryRetrievalWorkflow` 后复用同一份低敏 summary 记录指标；
+  - `product_agent_catalog.py` 固化多 Agent 收敛优先级：必做角色、控制范围角色和轻量化角色分层明确；
+  - `agentCollaborationWorkflow` 摘要新增 `runtimeAgentDeliveryTiers`，避免把运行时治理角色误判为完整产品专项 Agent。
+- 架构收敛价值：
+  - 记忆检索图从“HTTP 响应可见”推进到“Prometheus 趋势可观测”，可以观察空召回率、目标类型分布、scope 分布、MEMORY_AGENT 是否被调度以及哪些既定 Agent 正在消费记忆上下文；
+  - 多 Agent 能力不再泛化为“所有规划角色都要完整实现”，而是按商业闭环优先级收敛：先扎实完成主控、数据源、数据质量、权限、任务，再控制范围完成记忆、运维、同步，最后轻量化保留 ETL、资产、合规、反思路线；
+  - `PERMISSION_AGENT` 与 `COMPLIANCE_MASKING_AGENT`、`MEMORY_AGENT` 与 `REFLECTION_OPTIMIZATION_AGENT` 已在 catalog 中解耦，后续不会再因为别名映射造成产品状态误报。
+- 当前边界：
+  - 指标不保存 memoryId、memory namespace、tenantId、projectId、actorId、requestId、runId、sessionId、queryHint、记忆正文、prompt、SQL、工具参数或模型输出；
+  - LangGraph 记忆检索图仍只观察既有 `AgentMemoryPlan` 和 `AgentMemoryRetrievalReport`，不重复访问 Chroma/MySQL/SQLite FTS；
+  - 多 Agent 轻量化角色不在当前阶段继续扩张真实业务节点。
+- 下一步推荐路线：
+  1. 进入 Java/Python 控制面事实与全平台 smoke/E2E 闭环；
+  2. 优先验收必做和控制范围 Agent 的合同、事件、指标、权限与可恢复执行边界；
+  3. 不再新增无验收边界的新 LangGraph 节点或新 Agent 角色。
+
 ## 2026-07-01 追加落地进展：LangGraph Memory Retrieval Observable Node
 - 本阶段承接上一阶段“选择 `retrieve_memory` 的最小 LangGraph 节点迁入”的推荐路线，没有新增真实工具执行器，没有新增 Agent 角色，也没有让 Python Runtime 绕过 Java 控制面写入长期记忆。
 - 已落地能力：
@@ -21,10 +42,10 @@
 - 验证结果：
   - 定向测试通过：`python -m pytest python-ai-runtime\tests\test_langgraph_memory_retrieval_workflow.py -q`；
   - 组合测试通过：`python -m pytest python-ai-runtime\tests\test_langgraph_memory_retrieval_workflow.py python-ai-runtime\tests\test_api_bootstrap.py -q`，共 17 个用例。
-- 下一步推荐路线：
-  1. 补 `agentMemoryRetrievalWorkflow` 的低基数指标，重点观察空召回率、目标类型分布和 MEMORY_AGENT 是否被调度；
-  2. 或者进入 Java/Python 控制面事实最终闭环与全平台 smoke/E2E，避免继续在单个 Agent 子能力上无限扩张；
-  3. 多 Agent 后续不再新增角色，优先把已有角色的合同、事件、指标和 E2E 验收串完整。
+- 后续状态：
+  - `agentMemoryRetrievalWorkflow` 的低基数指标已在后续阶段完成；
+  - 下一步应进入 Java/Python 控制面事实最终闭环与全平台 smoke/E2E，避免继续在单个 Agent 子能力上无限扩张；
+  - 多 Agent 后续不再新增角色，优先把已有角色的合同、事件、指标和 E2E 验收串完整。
 
 ## 2026-07-01 追加落地进展：LangGraph Resume Preflight Contract Alignment
 - 本阶段承接上一阶段 “`RESUME_PREFLIGHT` 需要与 Java checkpoint locator、fact bundle、worker receipt 标准字段对齐” 的推荐路线，没有新增工具执行器，也没有改变 Java/Python 副作用边界，而是把恢复预检合同沉淀为独立 Python 模块。
