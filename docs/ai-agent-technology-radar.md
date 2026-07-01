@@ -1,5 +1,25 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-07-01 落地补充：Resume preflight contract should align with the Java host facts
+
+- 本轮趋势校准：
+  - Codex、Claude Code、OpenClaw、LangGraph 类 Agent Host 的恢复执行能力，关键不是“模型再次请求执行”，而是宿主控制面能用 checkpoint locator、host facts、outbox 和 worker receipt 判断是否可恢复；
+  - `RESUME_PREFLIGHT` 不应该只写“等待 Java 控制面”，还需要显式给出 Java 侧会消费哪些低敏字段、哪些路由参与事实查询、worker receipt 的标准字段是什么；
+  - DataSmart 当前进入闭环收敛，因此本轮只补字段级契约，不新增 Python 工具执行器，也不让 LangGraph 绕过 Java outbox/receipt。
+- 本轮落地到代码的能力：
+  - 新增 `services/tools/langgraph_execution_gate_contract.py`；
+  - `agentExecutionGateWorkflow.resumeGate` 新增 `resumePreflightContract`；
+  - 合同显式对齐 `AgentToolActionResumeFactBundleQueryRequest`、`AgentToolActionResumeLocatorIndexRecord`、`AgentToolActionCommandWorkerReceiptRequest` 和 `AgentToolActionWorkerReceiptIndexView`；
+  - READY/QUEUED 工具的 `requiredFactTypes` 从旧的泛化 `WORKER_RECEIPT_FACT` 收敛为 Java 现有事实类型 `WORKER_RECEIPT_PROJECTION`；
+  - `langgraph_execution_gate.py` 已从 526 行拆回 464 行，避免执行门禁 workflow 继续膨胀。
+- 产品判断：
+  - LangGraph execution gate 现在不仅能路由到 `RESUME_PREFLIGHT`，还知道后续要交给 Java 哪些事实合同；
+  - 这一步仍不是真实恢复执行，真实 checkpoint 恢复、outbox 写入、worker 派发和 receipt 对账继续由 Java 控制面负责；
+  - 下一步更适合补低基数指标或迁移最小 `retrieve_memory` / specialist handoff 节点，而不是继续发散新 Agent。
+- 安全判断：
+  - 合同只暴露字段名、事实类型和路由模板，不暴露真实 checkpointId、commandId、approvalFactId、payloadReference、token、artifact 正文或内部响应；
+  - Python Runtime 仍然不执行工具、不写 outbox、不创建审批、不修改 checkpoint、不派发 worker。
+
 ## 2026-07-01 落地补充：Readiness and resume gate should be explicit LangGraph conditions
 
 - 本轮趋势校准：

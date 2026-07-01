@@ -1,5 +1,29 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-07-01 追加落地进展：LangGraph Resume Preflight Contract Alignment
+- 本阶段承接上一阶段 “`RESUME_PREFLIGHT` 需要与 Java checkpoint locator、fact bundle、worker receipt 标准字段对齐” 的推荐路线，没有新增工具执行器，也没有改变 Java/Python 副作用边界，而是把恢复预检合同沉淀为独立 Python 模块。
+- 已落地能力：
+  - 新增 `services/tools/langgraph_execution_gate_contract.py`，集中维护 dominant route、resume gate 摘要、副作用边界和 Java 恢复预检字段合同；
+  - `agentExecutionGateWorkflow.resumeGate` 新增 `resumePreflightContract`；
+  - 合同显式列出 checkpoint locator 字段、fact bundle / resume gate graph 只读路由、worker receipt 写入路由、worker receipt index 查询路由和低敏 worker receipt 字段；
+  - READY/QUEUED 工具的 `requiredFactTypes` 对齐 Java 当前事实类型：`OUTBOX_WRITE_CONFIRMATION` 与 `WORKER_RECEIPT_PROJECTION`；
+  - `langgraph_execution_gate.py` 从 526 行降为 464 行，新增合同文件 214 行，符合单文件 500 行内的结构治理要求。
+- 架构收敛价值：
+  - Python execution gate 不再只说“等待 Java”，而是能告诉前端、gateway、Java projection 和运维台“后续 Java 需要哪些 locator、fact type、receipt 字段才能继续”；
+  - 字段合同只包含字段名和路由名，真实 ID、payload、SQL、prompt、token、artifact 正文仍留在 Java 控制面或受控存储中；
+  - 这一步把质量治理链路积累的 host fact 经验抽象为通用工具恢复预检合同，为后续全平台 E2E 收口做准备。
+- 当前边界：
+  - 仍未实现 Python 侧真实 durable runner，也没有让 LangGraph 修改 checkpoint、写 outbox 或派发 worker；
+  - worker receipt 的敏感字段值，例如 fencing token、artifact reference 和 message，不会进入 Python plan 响应，只在合同中以字段名说明 Java 内部写入边界；
+  - 真实跨实例 checkpoint store、自动 outbox worker、receipt 对账和最终业务副作用确认仍是后续闭口事项。
+- 验证结果：
+  - 定向测试通过：`python -m pytest python-ai-runtime\tests\test_langgraph_execution_gate_workflow.py python-ai-runtime\tests\test_api_bootstrap.py python-ai-runtime\tests\test_runtime_event_visibility.py -q`；
+  - Python Runtime 全量测试通过：`python -m pytest python-ai-runtime\tests -q`，共 587 个用例。
+- 下一步推荐：
+  1. 为 execution gate 增加 route/status/fallback 低基数指标；
+  2. 选择 `retrieve_memory` 或 specialist handoff 的最小闭口节点迁入 LangGraph；
+  3. 不继续扩展新 Agent 角色或新工具类型，优先完成 Java/Python 控制面事实闭环和最终 E2E。
+
 ## 2026-07-01 追加落地进展：LangGraph Execution Gate For Readiness And Resume
 - 本阶段承接上一阶段“把 `tool_execution_readiness` 与人工恢复门禁迁成 LangGraph 条件节点”的收敛路线，没有新增真实工具执行器，也没有扩大 Agent 角色范围，而是把执行前门禁纳入真实 LangGraph 条件图。
 - 已落地能力：

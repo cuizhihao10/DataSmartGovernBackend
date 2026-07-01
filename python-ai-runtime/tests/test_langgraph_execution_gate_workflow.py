@@ -74,7 +74,17 @@ class LangGraphExecutionGateWorkflowTest(unittest.TestCase):
         self.assertEqual("RESUME_PREFLIGHT", summary["gateRoute"])
         self.assertEqual("READY_FOR_JAVA_CONTROL_PLANE_PREFLIGHT", summary["gateStatus"])
         self.assertIn("langgraph.execution_gate.resume_gate_preflight", summary["nodeTrace"])
-        self.assertIn("WORKER_RECEIPT_FACT", summary["resumeGate"]["requiredFactTypes"])
+        self.assertIn("WORKER_RECEIPT_PROJECTION", summary["resumeGate"]["requiredFactTypes"])
+        contract = summary["resumeGate"]["resumePreflightContract"]
+        self.assertEqual(
+            "datasmart.python-ai-runtime.execution-gate-resume-preflight.v1",
+            contract["schemaVersion"],
+        )
+        self.assertIn("checkpointId", contract["checkpointLocator"]["fieldNames"])
+        self.assertIn("commandId", contract["checkpointLocator"]["fieldNames"])
+        self.assertIn("resumeGateGraphPreview", contract["resumeFactBundle"]["javaRoutes"])
+        self.assertIn("sideEffectExecuted", contract["workerReceipt"]["publicFieldNames"])
+        self.assertTrue(contract["sideEffectPolicy"]["javaControlPlaneRequiredForSideEffects"])
         self.assertTrue(summary["sideEffectBoundary"]["javaControlPlaneRequiredForSideEffects"])
         self.assertTrue(summary["sideEffectBoundary"]["workerReceiptRequiredForSideEffects"])
         self.assertNotIn("ds-sensitive-001", str(summary))

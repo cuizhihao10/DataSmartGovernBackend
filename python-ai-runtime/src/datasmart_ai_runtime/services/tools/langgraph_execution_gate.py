@@ -19,6 +19,13 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, TypedDict
 
 from datasmart_ai_runtime.services.langgraph_planning_workflow import LangGraphApi
+from datasmart_ai_runtime.services.tools.langgraph_execution_gate_contract import (
+    default_resume_gate as _default_resume_gate,
+    dominant_route as _dominant_route,
+    resume_gate_preflight as _resume_gate_preflight_contract,
+    resume_gate_waiting_for as _resume_gate_waiting_for,
+    side_effect_boundary as _side_effect_boundary,
+)
 from datasmart_ai_runtime.services.tools.tool_execution_readiness import ToolExecutionReadinessReport
 from datasmart_ai_runtime.services.tools.tool_execution_readiness_graph import ToolExecutionReadinessGraphBuilder
 
@@ -404,19 +411,7 @@ class LangGraphExecutionGateWorkflow:
             "langgraph.execution_gate.resume_gate_preflight",
             "READY_FOR_JAVA_CONTROL_PLANE_PREFLIGHT",
         )
-        updated["resumeGate"] = {
-            "status": "PENDING_JAVA_CHECKPOINT_AND_HOST_FACTS",
-            "resumePreviewReady": False,
-            "requiredFactTypes": (
-                "GRAPH_OR_CONTRACT_EVIDENCE",
-                "PAYLOAD_REFERENCE",
-                "POLICY_VERSION",
-                "OUTBOX_WRITE_CONFIRMATION",
-                "WORKER_RECEIPT_FACT",
-            ),
-            "checkpointMutationAllowed": False,
-            "meaning": "本轮只生成执行前门禁路线；真实 resume 必须等待 Java checkpoint、outbox 与 worker receipt 事实。",
-        }
+        updated["resumeGate"] = _resume_gate_preflight_contract()
         updated["nextActions"] = (
             "HANDOFF_TO_JAVA_AGENT_RUNTIME",
             "CREATE_LOW_SENSITIVE_CHECKPOINT_OR_PROPOSAL",
@@ -489,63 +484,6 @@ class LangGraphExecutionGateWorkflow:
             fallback_used=fallback_used,
             fallback_reason=fallback_reason,
         )
-
-
-def _dominant_route(counts: Mapping[str, int]) -> tuple[str, tuple[str, ...]]:
-    """根据 readiness 计数选择最保守的 dominant gate。"""
-
-    if int(counts.get("totalCount") or 0) == 0:
-        return "NO_TOOL_PLAN", ("NO_TOOL_PLAN",)
-    if int(counts.get("blockedCount") or 0) > 0:
-        return "BLOCKED", ("BLOCKED_TOOL_PRESENT",)
-    if int(counts.get("clarificationRequiredCount") or 0) > 0:
-        return "HUMAN_INPUT", ("PARAMETER_OR_CONTEXT_CLARIFICATION_REQUIRED",)
-    if int(counts.get("approvalRequiredCount") or 0) > 0:
-        return "HUMAN_APPROVAL", ("APPROVAL_REQUIRED_BEFORE_EXECUTION",)
-    if int(counts.get("throttledCount") or 0) > 0:
-        return "CAPACITY_WAIT", ("TOOL_BUDGET_OR_WORKER_CAPACITY_LIMITED",)
-    if int(counts.get("draftOnlyCount") or 0) > 0:
-        return "DRAFT_REVIEW", ("DRAFT_REVIEW_REQUIRED_BEFORE_SIDE_EFFECT",)
-    return "RESUME_PREFLIGHT", ("READY_OR_QUEUED_TOOL_REQUIRES_JAVA_CONTROL_PLANE",)
-
-
-def _default_resume_gate() -> dict[str, Any]:
-    """默认 resume gate 摘要。"""
-
-    return {
-        "status": "NOT_APPLICABLE_BEFORE_EXECUTION_CHECKPOINT",
-        "resumePreviewReady": False,
-        "requiredFactTypes": (),
-        "checkpointMutationAllowed": False,
-        "meaning": "当前阶段尚未进入可恢复 checkpoint；如果后续产生副作用，必须由 Java 控制面提供恢复事实。",
-    }
-
-
-def _resume_gate_waiting_for(fact_type: str) -> dict[str, Any]:
-    """生成等待某类 host fact 的 resume gate 摘要。"""
-
-    return {
-        "status": "WAITING_FOR_HOST_FACT",
-        "resumePreviewReady": False,
-        "requiredFactTypes": (fact_type,),
-        "checkpointMutationAllowed": False,
-        "meaning": "该分支需要受控服务端事实，不能由客户端自报字段直接越过。",
-    }
-
-
-def _side_effect_boundary() -> dict[str, Any]:
-    """执行门禁图的固定副作用边界。"""
-
-    return {
-        "toolExecuted": False,
-        "outboxWritten": False,
-        "approvalCreated": False,
-        "checkpointMutated": False,
-        "workerDispatched": False,
-        "javaControlPlaneRequiredForSideEffects": True,
-        "workerReceiptRequiredForSideEffects": True,
-    }
-
 
 def _truthy_env(name: str, *, default: bool) -> bool:
     """读取布尔环境变量。"""

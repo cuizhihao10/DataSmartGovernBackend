@@ -387,7 +387,7 @@ class ApiBootstrapTest(unittest.TestCase):
         self.assertFalse(gate_attributes["toolExecuted"])
         self.assertFalse(gate_attributes["outboxWritten"])
         self.assertTrue(gate_attributes["javaControlPlaneRequiredForSideEffects"])
-        self.assertIn("WORKER_RECEIPT_FACT", gate_attributes["resumeRequiredFactTypes"])
+        self.assertIn("WORKER_RECEIPT_PROJECTION", gate_attributes["resumeRequiredFactTypes"])
         self.assertNotIn("ds-sensitive-002", str(gate_attributes))
 
     def test_plan_response_uses_trusted_tool_readiness_policy_snapshot(self) -> None:
