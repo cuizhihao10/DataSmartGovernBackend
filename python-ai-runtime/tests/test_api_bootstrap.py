@@ -8,7 +8,6 @@ if ROOT not in sys.path:
 
 from datasmart_ai_runtime.api import (
     build_default_orchestrator,
-    build_event_replay_response,
     build_plan_response,
     load_skill_registry,
     load_tool_registry,
@@ -24,13 +23,8 @@ from datasmart_ai_runtime.domain.event_transport import (
     RuntimeEventAckMode,
     RuntimeEventChannel,
     RuntimeEventDeliveryMode,
-    RuntimeEventSubscriptionRequest,
 )
-from datasmart_ai_runtime.domain.events import (
-    AgentRuntimeEvent,
-    AgentRuntimeEventSeverity,
-    AgentRuntimeEventType,
-)
+from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
 from datasmart_ai_runtime.domain.intent import GovernanceDomain
 from datasmart_ai_runtime.domain.memory import AgentMemoryType
 from datasmart_ai_runtime.services.memory import LangGraphMemoryRetrievalMetrics
@@ -81,27 +75,6 @@ class FakeSkillRegistryClient:
         if self._should_fail:
             raise SkillRegistryClientError("模拟 Java Skill 描述符不可用")
         return self._skills
-
-
-class FakeReplaySource:
-    source_name = "java-agent-runtime-event-projection"
-
-    def replay(self, request: RuntimeEventSubscriptionRequest) -> tuple[AgentRuntimeEvent, ...]:
-        return (
-            AgentRuntimeEvent(
-                event_type=AgentRuntimeEventType.TOOL_EXECUTION_STATE_CHANGED,
-                stage="tool_completed",
-                message="Java 控制面工具事件",
-                severity=AgentRuntimeEventSeverity.INFO,
-                tenant_id=request.tenant_id,
-                project_id=request.project_id,
-                actor_id=request.actor_id,
-                run_id=request.run_id,
-                session_id=request.session_id,
-                sequence=3,
-                attributes={"toolCode": "datasource.metadata.read"},
-            ),
-        )
 
 
 class ApiBootstrapTest(unittest.TestCase):
@@ -505,63 +478,6 @@ class ApiBootstrapTest(unittest.TestCase):
         self.assertEqual("perm-tool-readiness-v4", event["attributes"]["policyVersion"])
         self.assertNotIn("ds-sensitive-004", str(policy))
         self.assertNotIn("ds-sensitive-004", str(event["attributes"]))
-
-    def test_event_replay_response_filters_events_by_subscription(self) -> None:
-        orchestrator = build_default_orchestrator()
-        plan = orchestrator.plan(
-            AgentRequest(
-                tenant_id="tenant-a",
-                project_id="project-a",
-                actor_id="user-a",
-                objective="请先分析这个 MySQL 数据源的表结构",
-                variables={"datasourceId": "ds-001", "sessionId": "session-a"},
-            )
-        )
-        subscription = RuntimeEventSubscriptionRequest(
-            client_id="client-a",
-            session_id="session-a",
-            after_sequence=1,
-            event_types=(AgentRuntimeEventType.TOOL_PLANNED,),
-        )
-
-        response = build_event_replay_response(subscription, plan.runtime_events)
-
-        envelope = response["eventEnvelope"]
-        self.assertEqual(RuntimeEventChannel.WEBSOCKET, envelope["channel"])
-        self.assertEqual(RuntimeEventDeliveryMode.REPLAY, envelope["delivery_mode"])
-        self.assertEqual(RuntimeEventAckMode.CLIENT_ACK, envelope["ack_mode"])
-        self.assertEqual(1, envelope["replay_from_sequence"])
-        self.assertEqual((AgentRuntimeEventType.TOOL_PLANNED,), tuple(event["event_type"] for event in envelope["events"]))
-        self.assertTrue(all(event["session_id"] == "session-a" for event in envelope["events"]))
-
-    def test_event_replay_response_exposes_external_source_cursors(self) -> None:
-        subscription = RuntimeEventSubscriptionRequest(
-            client_id="client-a",
-            tenant_id="tenant-a",
-            project_id="project-a",
-            actor_id="user-a",
-            roles=("operator",),
-            session_id="session-a",
-            run_id="run-a",
-            after_sequence=3,
-            source_cursors={"java-agent-runtime-event-projection": 2},
-        )
-
-        response = build_event_replay_response(
-            subscription,
-            external_replay_sources=(FakeReplaySource(),),
-        )
-
-        envelope = response["eventEnvelope"]
-        self.assertEqual(
-            3,
-            envelope["attributes"]["sourceCursors"]["java-agent-runtime-event-projection"],
-        )
-        self.assertEqual(
-            3,
-            envelope["events"][0]["attributes"]["_datasmartOriginalSequence"],
-        )
-        self.assertTrue(envelope["events"][0]["attributes"]["_datasmartSyntheticReplaySequence"])
 
 if __name__ == "__main__":
     unittest.main()

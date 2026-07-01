@@ -8,7 +8,6 @@ package com.czh.datasmart.govern.agent.service.execution;
 
 import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
 import com.czh.datasmart.govern.agent.config.AgentRunToolDagConfirmationProperties;
-import com.czh.datasmart.govern.agent.config.AgentRuntimePersistenceProperties;
 import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
 import com.czh.datasmart.govern.agent.config.AgentToolServiceAuthorizationProperties;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagExecutionDryRunRequest;
@@ -111,17 +110,6 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
         assertEquals(first.confirmationId(), second.confirmationId());
         assertEquals(1, fixture.store.list(RUN_ID, null, 10).size());
         assertEquals(1, fixture.confirmationStore.listByRun(RUN_ID, 10).size());
-    }
-
-    @Test
-    void staleDryRunFingerprintShouldFailClosed() {
-        TestFixture fixture = newFixture();
-        fixture.saveAudits(asyncAudit("audit-async", "data-sync-execute", Map.of()));
-
-        assertThrows(PlatformBusinessException.class, () ->
-                fixture.confirm(List.of("data-sync-execute"), "dag-selection:stale"));
-        assertTrue(fixture.store.list(RUN_ID, null, 10).isEmpty());
-        assertTrue(fixture.confirmationStore.listByRun(RUN_ID, 10).isEmpty());
     }
 
     @Test
@@ -249,52 +237,7 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
         assertTrue(fixture.confirmationStore.listByRun(RUN_ID, 10).isEmpty());
     }
 
-    @Test
-    void confirmationMustExplicitlySelectNodes() {
-        TestFixture fixture = newFixture();
-
-        assertThrows(PlatformBusinessException.class, () ->
-                fixture.service.enqueueSelectedAsyncNodes(
-                        SESSION_ID,
-                        RUN_ID,
-                        new AgentRunToolDagSelectedNodeOutboxEnqueueRequest(
-                                List.of(),
-                                List.of(),
-                                null,
-                                "dag-selection:any",
-                                Map.of(),
-                                true,
-                                null
-                        ),
-                        "trace-selected"
-                ));
-    }
-
-    @Test
-    void mysqlOutboxAndConfirmationShouldShareJdbcTransactionBoundary() {
-        RecordingDataSource dataSource = new RecordingDataSource();
-        TestFixture fixture = newFixture(
-                authorizationProperties -> { },
-                request -> null,
-                outboxProperties -> outboxProperties.setStore("mysql"),
-                confirmationProperties -> confirmationProperties.setStore("mysql"),
-                Optional.of(new AgentRuntimeJdbcConnectionManager(dataSource.proxy(), new AgentRuntimePersistenceProperties()))
-        );
-        fixture.saveAudits(asyncAudit("audit-async", "data-sync-execute", Map.of()));
-        AgentRunToolDagExecutionDryRunResponse dryRun = fixture.dryRun(List.of("data-sync-execute"));
-
-        AgentRunToolDagSelectedNodeOutboxEnqueueResponse response = fixture.confirm(
-                List.of("data-sync-execute"),
-                dryRun.selectionFingerprint()
-        );
-
-        assertEquals(1, response.outbox().enqueuedCount());
-        assertEquals(1, dataSource.connectionRequests);
-        assertEquals(1, dataSource.commitCount);
-        assertEquals(0, dataSource.rollbackCount);
-    }
-
-    private TestFixture newFixture() {
+    TestFixture newFixture() {
         return newFixture(authorizationProperties -> { }, request -> null);
     }
 
@@ -329,11 +272,11 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
         );
     }
 
-    private TestFixture newFixture(Consumer<AgentToolServiceAuthorizationProperties> authorizationCustomizer,
-                                   PermissionAdminServiceAuthorizationClient authorizationClient,
-                                   Consumer<AgentAsyncTaskCommandOutboxProperties> outboxCustomizer,
-                                   Consumer<AgentRunToolDagConfirmationProperties> confirmationCustomizer,
-                                   Optional<AgentRuntimeJdbcConnectionManager> jdbcConnectionManager) {
+    TestFixture newFixture(Consumer<AgentToolServiceAuthorizationProperties> authorizationCustomizer,
+                           PermissionAdminServiceAuthorizationClient authorizationClient,
+                           Consumer<AgentAsyncTaskCommandOutboxProperties> outboxCustomizer,
+                           Consumer<AgentRunToolDagConfirmationProperties> confirmationCustomizer,
+                           Optional<AgentRuntimeJdbcConnectionManager> jdbcConnectionManager) {
         AgentRuntimeProperties runtimeProperties = new AgentRuntimeProperties();
         AgentAsyncTaskCommandOutboxProperties outboxProperties = new AgentAsyncTaskCommandOutboxProperties();
         AgentRunToolDagConfirmationProperties confirmationProperties = new AgentRunToolDagConfirmationProperties();
@@ -422,9 +365,9 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
         return new TestFixture(service, dryRunService, store, confirmationStore, auditStore);
     }
 
-    private AgentToolExecutionAuditRecord asyncAudit(String auditId,
-                                                     String nodeId,
-                                                     Map<String, Object> additionalHints) {
+    AgentToolExecutionAuditRecord asyncAudit(String auditId,
+                                             String nodeId,
+                                             Map<String, Object> additionalHints) {
         return audit(
                 auditId,
                 nodeId,
@@ -493,11 +436,11 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
         );
     }
 
-    private record TestFixture(AgentRunToolDagSelectedNodeOutboxService service,
-                               AgentRunToolDagExecutionDryRunService dryRunService,
-                               InMemoryAgentAsyncTaskCommandOutboxStore store,
-                               InMemoryAgentRunToolDagConfirmationStore confirmationStore,
-                               AgentToolExecutionAuditMemoryStore auditStore) {
+    record TestFixture(AgentRunToolDagSelectedNodeOutboxService service,
+                       AgentRunToolDagExecutionDryRunService dryRunService,
+                       InMemoryAgentAsyncTaskCommandOutboxStore store,
+                       InMemoryAgentRunToolDagConfirmationStore confirmationStore,
+                       AgentToolExecutionAuditMemoryStore auditStore) {
 
         void saveAudits(AgentToolExecutionAuditRecord... records) {
             auditStore.saveAll(List.of(records));

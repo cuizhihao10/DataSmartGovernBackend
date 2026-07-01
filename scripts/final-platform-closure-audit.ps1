@@ -192,10 +192,23 @@ try {
     }
 
     Write-Host "[STEP] verify source-file size boundary"
-    $sourceFiles = Get-ChildItem -Recurse -File -Include "*.java", "*.py" |
-        Where-Object { $_.FullName -notmatch "\\target\\|\\.m2\\|\\.pytest_cache\\" }
+    # Anchor discovery to the repository root. Do not trust the current location after child gates.
+    # Avoid -Include because its Windows PowerShell 5 semantics depend on Path/provider behavior.
+    # An empty discovery set must fail instead of being reported as zero oversized files.
+    $sourceFiles = @(
+        Get-ChildItem -LiteralPath $repositoryRoot -Recurse -File |
+            Where-Object {
+                $_.Extension -in @(".java", ".py") -and
+                $_.FullName -notmatch "\\target\\|\\.m2\\|\\.pytest_cache\\|\\__pycache__\\"
+            }
+    )
+    if ($sourceFiles.Count -eq 0) {
+        Write-CheckResult "FAIL" "source-file-discovery" "no Java/Python source files were discovered; size audit cannot be trusted"
+    }
     foreach ($file in $sourceFiles) {
-        $lineCount = (Get-Content -LiteralPath $file.FullName).Count
+        # ReadAllLines matches physical lines shown by IDEs and repository hosts.
+        # Get-Content can undercount some historical mixed-encoding files on Windows PowerShell 5.
+        $lineCount = [System.IO.File]::ReadAllLines($file.FullName).Length
         if ($lineCount -le 500) {
             continue
         }

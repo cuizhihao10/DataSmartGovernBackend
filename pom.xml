@@ -67,6 +67,11 @@
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <spring-cloud.version>2023.0.3</spring-cloud.version>
         <spring-cloud-alibaba.version>2023.0.1.2</spring-cloud-alibaba.version>
+        <!--
+          Surefire 的 argLine 使用 late replacement（@{argLine}），允许 JaCoCo 等后续插件在测试前继续追加参数。
+          先声明空值可以避免当前未启用覆盖率插件时，Surefire 把字面量 @{argLine} 传给 JVM。
+        -->
+        <argLine></argLine>
         <kafka.version>3.6.2</kafka.version>
         <mysql.version>8.0.33</mysql.version>
         <redis.version>7.2.4</redis.version>
@@ -203,6 +208,22 @@
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
                     <skip>${spring-boot.repackage.skip}</skip>
+                </configuration>
+            </plugin>
+            <!--
+              Mockito 5 的 inline mock maker 目前可以在运行时动态附加 Byte Buddy agent，但 JDK 已明确提示
+              未来版本将默认禁止这种 self-attach。这里按 Mockito 推荐方式，在 Surefire 创建测试 JVM 时
+              显式加载 mockito-core agent：
+              1. 只作用于 test 生命周期，不进入任何生产 Spring Boot jar；
+              2. 版本直接复用 Spring Boot dependency management 提供的 mockito.version，避免手工漂移；
+              3. 使用 settings.localRepository 而不是个人绝对路径，开发机与 CI 都能解析；
+              4. 保留 @{argLine}，未来接入 JaCoCo 时不会覆盖其 coverage agent。
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <argLine>@{argLine} -javaagent:${settings.localRepository}/org/mockito/mockito-core/${mockito.version}/mockito-core-${mockito.version}.jar</argLine>
                 </configuration>
             </plugin>
         </plugins>

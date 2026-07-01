@@ -7,18 +7,13 @@
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
 from datasmart_ai_runtime.services.agent_model_intent_node import AgentModelIntentNode, AgentModelIntentNodeResult
 from datasmart_ai_runtime.services.agent_workspace import (
-    AgentWorkspaceContext,
-    AgentWorkspaceContextBuilder,
-    AgentWorkspaceIsolationLevel,
+    AgentWorkspaceContext, AgentWorkspaceContextBuilder, AgentWorkspaceIsolationLevel,
 )
 from datasmart_ai_runtime.domain.contracts import ModelInvocationChunk, ModelToolCall, ModelToolCallDelta
 from datasmart_ai_runtime.services.context_builder import DefaultContextBuilder
 from datasmart_ai_runtime.services.context_micro_compactor import (
-    ContextMicroCompactionDecision,
-    ContextMicroCompactionItem,
-    ContextMicroCompactionPolicy,
-    ContextMicroCompactionReport,
-    ContextMicroCompactor,
+    ContextMicroCompactionDecision, ContextMicroCompactionItem, ContextMicroCompactionPolicy,
+    ContextMicroCompactionReport, ContextMicroCompactor,
 )
 from datasmart_ai_runtime.services.hybrid_context_builder import ContextSelectionPolicy, HybridContextBuilder
 from datasmart_ai_runtime.services.intent_analyzer import RuleBasedIntentAnalyzer

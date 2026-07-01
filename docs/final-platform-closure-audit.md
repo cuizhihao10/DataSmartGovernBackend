@@ -8,6 +8,8 @@
 - Python Runtime 全量测试为 `597 passed`。
 - Maven JDK 21 reactor 全量测试为 `868 tests, 0 failures, 0 errors, 0 skipped`。
 - 生产静态就绪门禁为 `PASS=33, WARN=0, FAIL=0`。
+- 修正物理行统计后，最终闭环证据门禁为 `PASS=91, WARN=2, FAIL=0`；两个 warning
+  只表示仍有 18 个生产源码和 4 个测试文件超过 500 行，不表示功能或测试失败。
 
 这里的“闭环”表示既定产品范围已具备代码、合同、测试、部署和运维制品，不表示已经替客户完成生产上线。真实 Secret 注入、企业 IdP 联调、标准 SBOM、镜像签名、Kubernetes 集群部署、容量压测、备份恢复和故障注入仍必须在客户或预生产环境执行。
 
@@ -103,13 +105,40 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 
 当前没有阻断工程发布候选的 P0 代码失败。剩余 P1 应限制为小规模整改：
 
-- 4 个生产源码文件略超 500 行，需要拆分但不应重构业务边界：
-  - `AgentCommandTaskFinalStateCallbackDispatchService.java`：523 行。
-  - `AgentToolSandboxPolicyService.java`：504 行。
-  - `agent_orchestrator.py`：506 行。
-  - `services/__init__.py`：505 行。
-- 3 个测试文件超过 500 行，可按场景拆分测试类，避免后续维护困难。
-- Mockito 动态 attach 在未来 JDK 版本会受限；当前 JDK 21 测试通过，后续应在 Surefire 中显式配置 Mockito Java agent。
+- 首批 7 个原审计目标已经完成职责拆分：
+  `AgentCommandTaskFinalStateCallbackDispatchService.java`、`AgentToolSandboxPolicyService.java`、
+  `agent_orchestrator.py`、`services/__init__.py` 和 3 个测试文件均已降至 500 行以内。
+- Maven Surefire 已显式使用 Mockito Core JAR 作为 `-javaagent`，不再依赖未来 JDK
+  将禁止的动态 attach；多模块测试仍为 `868/0/0/0`。
+- 审计脚本已改用 `ReadAllLines` 统计物理行，并将源码发现锚定到仓库根目录。旧算法
+  `Get-Content.Count` 会对部分历史编码文件少计行数，且 `-Include` 空集合曾被误判为
+  “零超限”；因此旧文档中的“只剩 4 个生产文件、3 个测试文件”结论已废止。
+- 当前准确剩余 18 个生产源码和 4 个测试文件，共 22 个：
+
+| 行数 | 文件 |
+|---:|---|
+| 633 | `gateway/src/main/java/com/czh/datasmart/govern/gateway/config/GatewayAuthorizationProperties.java` |
+| 547 | `python-ai-runtime/src/datasmart_ai_runtime/services/model_gateway/model_capability_registry.py` |
+| 545 | `agent-runtime/src/main/java/com/czh/datasmart/govern/agent/config/AgentRuntimeProperties.java` |
+| 538 | `agent-runtime/src/main/java/com/czh/datasmart/govern/agent/service/AgentToolExecutionAuditService.java` |
+| 536 | `python-ai-runtime/src/datasmart_ai_runtime/services/memory/memory_materialization_lease_store.py` |
+| 528 | `agent-runtime/src/main/java/com/czh/datasmart/govern/agent/service/runtime/AgentWorkspaceFilePayloadMaterializationService.java` |
+| 521 | `agent-runtime/src/main/java/com/czh/datasmart/govern/agent/service/runtime/AgentToolActionCommandProposalService.java` |
+| 516 | `agent-runtime/src/main/java/com/czh/datasmart/govern/agent/service/AgentSkillPublicationManifestService.java` |
+| 516 | `python-ai-runtime/src/datasmart_ai_runtime/services/memory/memory_materialization_lease_sql_store.py` |
+| 513 | `permission-admin/src/main/java/com/czh/datasmart/govern/permission/service/impl/PermissionProjectMembershipServiceImpl.java` |
+| 512 | `agent-runtime/src/main/java/com/czh/datasmart/govern/agent/service/skill/AgentSkillPublicationLifecycleService.java` |
+| 511 | `gateway/src/main/java/com/czh/datasmart/govern/gateway/filter/GatewayAuthorizationFilter.java` |
+| 510 | `agent-runtime/src/main/java/com/czh/datasmart/govern/agent/service/tool/QualityRemediationTaskCommandSubmissionService.java` |
+| 510 | `python-ai-runtime/src/datasmart_ai_runtime/services/agent_gateway/session_scheduler.py` |
+| 510 | `python-ai-runtime/src/datasmart_ai_runtime/services/tools/command_worker_lease.py` |
+| 510 | `task-management/src/main/java/com/czh/datasmart/govern/task/service/agent/AgentAsyncToolExecutionPreCheckService.java` |
+| 505 | `agent-runtime/src/main/java/com/czh/datasmart/govern/agent/service/runtime/AgentSkillVisibilitySnapshotProjectionService.java` |
+| 505 | `agent-runtime/src/main/java/com/czh/datasmart/govern/agent/service/runtime/AgentToolActionCommandSafetyPrecheckService.java` |
+| 511 | `agent-runtime/src/test/java/com/czh/datasmart/govern/agent/service/runtime/AgentRuntimeEventDisplaySupportTest.java` |
+| 509 | `gateway/src/test/java/com/czh/datasmart/govern/gateway/filter/GatewayAuthorizationFilterTest.java` |
+| 504 | `agent-runtime/src/test/java/com/czh/datasmart/govern/agent/service/AgentSessionServiceTest.java` |
+| 502 | `python-ai-runtime/tests/test_tool_action_execution_checkpoint_api.py` |
 
 这些整改不得引入新产品功能、修改公开 API 或重新设计已稳定的状态机。
 
@@ -119,4 +148,3 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 2. 新 Agent、新连接器、新模型 SKU 和新业务域进入下一版本 backlog，不进入本轮闭环。
 3. 所有真实副作用能力继续默认关闭，直到环境级验收通过。
 4. 生产上线结论必须附带客户环境证据，不能只引用本仓库静态门禁。
-

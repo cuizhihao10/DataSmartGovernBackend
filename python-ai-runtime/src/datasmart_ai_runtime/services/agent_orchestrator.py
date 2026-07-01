@@ -14,7 +14,6 @@ from datasmart_ai_runtime.domain.contracts import (
     AgentPlan,
     AgentRequest,
     ModelRoute,
-    ToolParameterIssueAction,
     ToolPlan,
 )
 from datasmart_ai_runtime.domain.context import ContextBlock
@@ -26,6 +25,12 @@ from datasmart_ai_runtime.domain.intent import IntentAnalysis
 from datasmart_ai_runtime.domain.model_gateway import ModelGatewayRequestContext
 from datasmart_ai_runtime.domain.skills import AgentSkillPlan
 from datasmart_ai_runtime.services.agent_model_intent_node import AgentModelIntentNode, AgentModelIntentNodeResult
+from datasmart_ai_runtime.services.agent_plan_presentation import (
+    build_next_actions,
+    build_response_summary,
+    has_parameter_issues,
+    requires_parameter_clarification,
+)
 from datasmart_ai_runtime.services.context_builder import ContextBuilder, DefaultContextBuilder
 from datasmart_ai_runtime.services.intent_analyzer import IntentAnalyzer, RuleBasedIntentAnalyzer
 from datasmart_ai_runtime.services.langgraph_planning_workflow import LangGraphAgentPlanningWorkflow
@@ -206,15 +211,15 @@ class AgentOrchestrator:
         )
 
         requires_human_approval = any(plan.requires_human_approval for plan in tool_plans)
-        has_parameter_issues = self._has_parameter_issues(tool_plans)
-        requires_parameter_clarification = self._requires_parameter_clarification(tool_plans)
+        has_parameter_issues_found = has_parameter_issues(tool_plans)
+        requires_parameter_clarification_found = requires_parameter_clarification(tool_plans)
 
-        if requires_parameter_clarification:
+        if requires_parameter_clarification_found:
             state_trace.append("clarify_missing_parameters")
-        elif has_parameter_issues:
+        elif has_parameter_issues_found:
             state_trace.append("prepare_draft_with_missing_parameters")
 
-        if has_parameter_issues:
+        if has_parameter_issues_found:
             event_recorder.record(
                 AgentRuntimeEventType.TOOL_PARAMETER_VALIDATED,
                 "validate_tool_parameters",
@@ -222,7 +227,7 @@ class AgentOrchestrator:
                 severity=AgentRuntimeEventSeverity.WARNING,
                 attributes={
                     "issueCount": sum(len(plan.parameter_validation.issues) for plan in tool_plans),
-                    "mustClarify": requires_parameter_clarification,
+                    "mustClarify": requires_parameter_clarification_found,
                 },
             )
 
@@ -239,15 +244,15 @@ class AgentOrchestrator:
                     ),
                 },
             )
-        elif not has_parameter_issues:
+        elif not has_parameter_issues_found:
             state_trace.append("ready_for_control_plane_execution")
 
-        response_summary = self._build_response_summary(
+        response_summary = build_response_summary(
             tool_plans=tool_plans,
             requires_human_approval=requires_human_approval,
         )
 
-        next_actions = self._build_next_actions(tool_plans, requires_human_approval)
+        next_actions = build_next_actions(tool_plans, requires_human_approval)
         return AgentPlan(
             request_id=request_id,
             selected_route=selected_route,
@@ -393,90 +398,6 @@ class AgentOrchestrator:
             merged.append(plan)
             seen.add(plan.tool_name)
         return tuple(merged)
-
-    @staticmethod
-    def _build_response_summary(tool_plans: tuple[ToolPlan, ...], requires_human_approval: bool) -> str:
-        """生成给控制面或前端展示的摘要。
-
-        摘要不替代结构化字段，只用于人读场景。真实产品中可把它展示在 Agent 会话窗口，
-        帮助用户理解“系统为什么要先审批、为什么不是直接执行”。
-        """
-
-        tool_count = len(tool_plans)
-        parameter_issue_count = sum(len(plan.parameter_validation.issues) for plan in tool_plans)
-        if tool_count == 0:
-            return "已完成目标解析，但当前没有命中可调用工具；建议补充工具注册或接入语义规划器。"
-        if parameter_issue_count > 0 and requires_human_approval:
-            return f"已生成 {tool_count} 个工具计划，其中 {parameter_issue_count} 个参数需要补齐，且包含需审批操作。"
-        if parameter_issue_count > 0:
-            return f"已生成 {tool_count} 个工具计划，但发现 {parameter_issue_count} 个参数需要补齐；当前不应直接执行。"
-        if requires_human_approval:
-            return f"已生成 {tool_count} 个工具计划，其中包含高风险或需审批操作，必须先进入人工确认。"
-        return f"已生成 {tool_count} 个工具计划，当前均属于可自动进入控制面执行的低风险操作。"
-
-    @staticmethod
-    def _build_next_actions(tool_plans: tuple[ToolPlan, ...], requires_human_approval: bool) -> tuple[str, ...]:
-        """根据风险结果给出下一步建议。
-
-        这里的建议面向产品闭环，而不是纯技术执行。审批场景需要提示进入 Java Agent Runtime 的
-        审计/审批 API；低风险场景则可以继续由控制面创建工具执行审计并触发执行。
-        """
-
-        parameter_actions = AgentOrchestrator._build_parameter_next_actions(tool_plans)
-        if requires_human_approval:
-            return parameter_actions + (
-                "在 Java agent-runtime 中创建工具执行审计记录。",
-                "由项目负责人、平台管理员或具备授权的审批人确认高风险工具计划。",
-                "审批通过后再调用对应业务微服务执行。",
-            )
-        if parameter_actions:
-            return parameter_actions + (
-                "参数补齐后再将工具计划提交给 Java agent-runtime。",
-            )
-        return (
-            "将工具计划提交给 Java agent-runtime 生成审计记录。",
-            "按工具注册表的目标微服务触发执行并回写运行状态。",
-        )
-
-    @staticmethod
-    def _has_parameter_issues(tool_plans: tuple[ToolPlan, ...]) -> bool:
-        """判断工具计划中是否存在任何参数问题。
-
-        这个方法单独存在，是为了让状态流转更清晰：参数问题不是审批问题，也不是模型问题，而是
-        Agent 计划进入真实执行前必须处理的独立产品状态。
-        """
-
-        return any(plan.parameter_validation.issues for plan in tool_plans)
-
-    @staticmethod
-    def _requires_parameter_clarification(tool_plans: tuple[ToolPlan, ...]) -> bool:
-        """判断是否存在必须向用户澄清的参数问题。
-
-        `ALLOW_DRAFT` 可以进入草案确认页，`CAN_FILL_FROM_CONTEXT` 可以继续尝试检索上下文；
-        但 `MUST_CLARIFY` 代表没有用户或管理员明确选择就不能安全推进。
-        """
-
-        return any(
-            issue.action == ToolParameterIssueAction.MUST_CLARIFY
-            for plan in tool_plans
-            for issue in plan.parameter_validation.issues
-        )
-
-    @staticmethod
-    def _build_parameter_next_actions(tool_plans: tuple[ToolPlan, ...]) -> tuple[str, ...]:
-        """把参数校验问题转换为面向用户和控制面的下一步动作。
-
-        为了避免一次返回过多噪声，当前最多展示前三个参数问题。完整问题列表仍保留在每个
-        `ToolPlan.parameterValidation.issues` 中，前端可以展开查看。
-        """
-
-        actions: list[str] = []
-        for plan in tool_plans:
-            for issue in plan.parameter_validation.issues:
-                if len(actions) >= 3:
-                    return tuple(actions)
-                actions.append(f"补齐工具 `{plan.tool_name}` 的参数 `{issue.parameter_name}`：{issue.message}")
-        return tuple(actions)
 
     def _build_context(
         self,

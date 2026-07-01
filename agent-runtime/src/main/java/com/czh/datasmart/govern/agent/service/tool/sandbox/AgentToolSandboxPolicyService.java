@@ -22,12 +22,19 @@ import org.springframework.stereotype.Service;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+
+import static com.czh.datasmart.govern.agent.service.tool.sandbox.AgentToolSandboxPolicyValueSupport.containsIgnoreCase;
+import static com.czh.datasmart.govern.agent.service.tool.sandbox.AgentToolSandboxPolicyValueSupport.normalize;
+import static com.czh.datasmart.govern.agent.service.tool.sandbox.AgentToolSandboxPolicyValueSupport.normalizedSet;
+import static com.czh.datasmart.govern.agent.service.tool.sandbox.AgentToolSandboxPolicyValueSupport.parseExecutionMode;
+import static com.czh.datasmart.govern.agent.service.tool.sandbox.AgentToolSandboxPolicyValueSupport.parseRiskLevel;
+import static com.czh.datasmart.govern.agent.service.tool.sandbox.AgentToolSandboxPolicyValueSupport.safeMaxArgumentBytes;
+import static com.czh.datasmart.govern.agent.service.tool.sandbox.AgentToolSandboxPolicyValueSupport.safeMaxSyncTimeoutMs;
+import static com.czh.datasmart.govern.agent.service.tool.sandbox.AgentToolSandboxPolicyValueSupport.trim;
 
 /**
  * Agent 工具调用沙箱策略服务。
@@ -426,7 +433,7 @@ public class AgentToolSandboxPolicyService {
         }
         Set<String> requiredActions = normalizedSet(sandbox.getApprovalRequiredActions());
         return audit.getAllowedActions().stream()
-                .map(this::normalize)
+                .map(AgentToolSandboxPolicyValueSupport::normalize)
                 .anyMatch(requiredActions::contains);
     }
 
@@ -443,36 +450,8 @@ public class AgentToolSandboxPolicyService {
         return risk == AgentToolRiskLevel.HIGH || risk == AgentToolRiskLevel.CRITICAL;
     }
 
-    private AgentToolRiskLevel parseRiskLevel(String riskLevel) {
-        try {
-            return AgentToolRiskLevel.valueOf(normalize(riskLevel));
-        } catch (RuntimeException exception) {
-            return null;
-        }
-    }
-
-    private AgentToolExecutionMode parseExecutionMode(String executionMode) {
-        try {
-            return AgentToolExecutionMode.valueOf(normalize(executionMode));
-        } catch (RuntimeException exception) {
-            return null;
-        }
-    }
-
     private boolean hasApproval(AgentToolExecutionAuditRecord audit) {
         return audit.getApprovalOperatorId() != null && !audit.getApprovalOperatorId().isBlank();
-    }
-
-    private int safeMaxArgumentBytes(AgentRuntimeProperties.ToolSandboxProperties sandbox) {
-        return sandbox.getMaxArgumentBytes() == null || sandbox.getMaxArgumentBytes() <= 0
-                ? 64 * 1024
-                : sandbox.getMaxArgumentBytes();
-    }
-
-    private long safeMaxSyncTimeoutMs(AgentRuntimeProperties.ToolSandboxProperties sandbox) {
-        return sandbox.getMaxSyncTimeoutMs() == null || sandbox.getMaxSyncTimeoutMs() <= 0
-                ? 30000L
-                : sandbox.getMaxSyncTimeoutMs();
     }
 
     private void addIssue(List<String> issueCodes,
@@ -484,33 +463,6 @@ public class AgentToolSandboxPolicyService {
         issueCodes.add(code);
         reasons.add(reason);
         actions.add(action);
-    }
-
-    private boolean containsIgnoreCase(List<String> values, String expected) {
-        if (values == null || values.isEmpty() || expected == null) {
-            return false;
-        }
-        String normalizedExpected = normalize(expected);
-        return values.stream().map(this::normalize).anyMatch(normalizedExpected::equals);
-    }
-
-    private Set<String> normalizedSet(Collection<String> values) {
-        Set<String> result = new HashSet<>();
-        if (values == null) {
-            return result;
-        }
-        for (String value : values) {
-            result.add(normalize(value));
-        }
-        return result;
-    }
-
-    private String normalize(String value) {
-        return value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
-    }
-
-    private String trim(String value) {
-        return value == null ? null : value.trim();
     }
 
     private record ArgumentSize(Integer bytes, boolean serializationFailed) {

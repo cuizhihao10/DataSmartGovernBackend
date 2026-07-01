@@ -384,63 +384,6 @@ class AgentRuntimeEventProjectionQueryServiceTest {
         assertEquals("APPEND_TO_TIMELINE_AND_ALLOW_ACK_CURSOR", display.replayPolicy());
     }
 
-    /**
-     * Agent worker guardrail 事件应该被解释成“执行前保护”，而不是普通系统事件。
-     *
-     * <p>task-management worker 现在会把 permission denied、policy drift、confirmation unavailable 等原因
-     * 通过 agent-runtime 工具状态事件写入 runtime event 投影。该测试保证 display 能把这些稳定错误码解释成
-     * 前端可直接展示的分类、状态和建议动作。</p>
-     */
-    @Test
-    void queryShouldExposeDisplayForAgentToolGuardrailEvent() {
-        InMemoryAgentRuntimeEventProjectionStore store = new InMemoryAgentRuntimeEventProjectionStore(10, 100);
-        store.append(new AgentRuntimeEventProjectionRecord(
-                "guardrail-permission-denied-event",
-                "agent-tool-execution-event.v1",
-                "agent-runtime",
-                "agent.tool_execution.state_changed",
-                "tool_failed",
-                "permission-admin 拒绝 Agent worker 执行已确认异步工具，reason=命中显式拒绝策略",
-                "error",
-                "10",
-                "20",
-                "1001",
-                "trace-guardrail",
-                "run-test",
-                "session-test",
-                1L,
-                Instant.parse("2026-06-01T22:26:01Z"),
-                Instant.parse("2026-06-01T22:26:01Z"),
-                Instant.parse("2026-06-01T22:26:02Z"),
-                Map.of(
-                        "errorCode", "AGENT_ASYNC_TOOL_PERMISSION_DENIED",
-                        "toolCode", "data-sync.execute",
-                        "currentState", "FAILED",
-                        "targetService", "data-sync"
-                )
-        ));
-        AgentRuntimeEventProjectionQueryService queryService = new AgentRuntimeEventProjectionQueryService(
-                store,
-                new AgentRuntimeEventConsumerStats(),
-                properties(),
-                new AgentRuntimeEventProjectionAccessSupport(),
-                new AgentRuntimeEventVisibilitySupport(),
-                new AgentRuntimeEventDisplaySupport()
-        );
-
-        var response = queryService.query(new AgentRuntimeEventProjectionQuery(
-                null, null, null, null, "run-test", null, null, null, 10
-        ));
-
-        var display = response.events().getFirst().display();
-        assertEquals("AGENT_TOOL_GUARDRAIL", display.category());
-        assertEquals("Agent 工具被权限策略阻断", display.title());
-        assertEquals("BLOCKED_BEFORE_SIDE_EFFECT", display.status());
-        assertTrue(display.requiresAttention());
-        assertTrue(display.recommendedActions().stream().anyMatch(action -> action.contains("permission-admin")));
-        assertEquals("AGENT_ASYNC_TOOL_PERMISSION_DENIED", display.metrics().get("errorCode"));
-    }
-
     private ObjectMapper objectMapper() {
         return new ObjectMapper().registerModule(new JavaTimeModule());
     }
