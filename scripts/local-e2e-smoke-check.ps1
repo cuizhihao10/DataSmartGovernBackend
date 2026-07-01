@@ -11,7 +11,7 @@
     4. 如需验证本地 Keycloak 样例服务账号是否能被 gateway 解析为 SERVICE_ACCOUNT，
        可传入 -CheckServiceAccountToken。脚本只调用 Keycloak token endpoint 与 gateway /auth/session，
        不会把 token 打印到终端，也不会触发任何业务写入或 worker 执行动作。
-    5. 如需进一步验证“认证后的统一 gateway 入口 -> Python AI Runtime 低敏诊断接口”链路，
+    5. 如需进一步验证“认证后的统一 gateway 入口 -> Python AI Runtime 低敏诊断/指标接口”链路，
        可传入 -CheckAgentGatewayDiagnostics。该探针会复用本地样例服务账号获取 Bearer token，
        只调用 GET 诊断端点，不读取响应正文、不打印 token、不触发工具执行或数据同步。
 
@@ -21,6 +21,8 @@
     - 不执行数据库迁移，只提示迁移文件是否存在；是否应用迁移由 runbook 中的人工步骤控制。
     - Gateway Agent 诊断探针只验证 OIDC、permission-admin 路由授权和 gateway 转发是否贯通，
       不把 Python Runtime 的诊断响应正文输出到终端，避免未来响应字段扩展时误泄露敏感内容。
+    - Python Runtime `/agent/metrics` 和 gateway `/api/agent/metrics` 只验证 HTTP 状态码与静态契约，
+      不打印 Prometheus 文本正文，避免未来新增指标时把高基数字段或业务排障内容带入终端日志。
 #>
 param(
     [switch]$Strict,
@@ -265,13 +267,13 @@ function Invoke-ServiceAccountTokenProbe {
 
 function Invoke-AgentGatewayDiagnosticsProbe {
     <#
-        验证认证后的 gateway 是否能到达 Python AI Runtime 低敏诊断入口。
+        验证认证后的 gateway 是否能到达 Python AI Runtime 低敏诊断/指标入口。
 
         为什么要单独做这个探针：
         - 直连 `http://localhost:8090/agent/...` 只能证明 Python Runtime 自身启动了，
           不能证明生产入口路径中必须经过的 OIDC、permission-admin、gateway route rewrite
           和下游转发全部贯通。
-        - 这些诊断接口属于“闭环可观测入口”，不是业务执行入口；因此脚本只允许 GET，
+        - 这些诊断和指标接口属于“闭环可观测入口”，不是业务执行入口；因此脚本只允许 GET，
           只检查 HTTP 状态码，不解析也不打印响应正文。
         - 如果返回 401/403，优先排查 Keycloak claim、audience、gateway OIDC 配置和
           permission-admin 路由策略；如果返回 502/503/timeout，优先排查 gateway 路由顺序、
@@ -310,6 +312,11 @@ function Invoke-AgentGatewayDiagnosticsProbe {
                 Name = "Gateway Agent inference optimization diagnostics"
                 Path = "/api/agent/models/inference-optimization/diagnostics"
                 Meaning = "统一 gateway 能以认证身份访问模型推理优化控制面诊断"
+            },
+            @{
+                Name = "Gateway Agent Prometheus metrics"
+                Path = "/api/agent/metrics"
+                Meaning = "统一 gateway 能以认证身份访问 Python Runtime 低基数 Prometheus 指标入口"
             }
         )
 
@@ -409,7 +416,16 @@ Test-RequiredFile -RelativePath "docker/mysql/migrations/20260629_data_sync_task
 Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -ExpectedText "/api/internal/agent-runtime/**" -Purpose "gateway 暴露 agent-runtime 内部服务账号入口，支撑服务间调用闭环"
 Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -ExpectedText "python-ai-runtime-runtime-diagnostics" -Purpose "gateway 必须把 Python Runtime 低敏诊断入口放在通用 /api/agent/** -> agent-runtime 路由之前"
 Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -ExpectedText "/api/agent/skills/publication/refresh" -Purpose "统一网关必须能路由 Skill Manifest 受控刷新入口，避免 Python 诊断能力只停留在直连端口"
+Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -ExpectedText "/api/agent/metrics" -Purpose "统一网关必须能路由 Python Runtime Prometheus 低基数指标入口，避免 AI 运行时指标只停留在直连端口"
 Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -ExpectedText "RewritePath=/api/observability/" -Purpose "gateway 必须把 /api/observability/** 改写到 observability 服务内部领域路径，避免可观测性服务只存在直连入口"
+Test-FileContains -RelativePath "gateway/src/main/java/com/czh/datasmart/govern/gateway/config/GatewayAuthorizationProperties.java" -ExpectedText "/api/agent/metrics" -Purpose "gateway 默认授权元数据必须识别 Python Runtime 指标入口，避免未加载 YAML 或配置中心覆盖时退化为通配规则"
+Test-RequiredFile -RelativePath "python-ai-runtime/src/datasmart_ai_runtime/services/memory/langgraph_memory_retrieval_metrics.py" -Purpose "LangGraph 长期记忆检索观察图的 Prometheus 低基数指标实现"
+Test-FileContains -RelativePath "python-ai-runtime/src/datasmart_ai_runtime/services/memory/langgraph_memory_retrieval_metrics.py" -ExpectedText "datasmart_ai_langgraph_memory_retrieval_workflows_total" -Purpose "agentMemoryRetrievalWorkflow 必须暴露 workflow 级指标，便于发现记忆检索观察图是否执行、fallback 或失败"
+Test-FileContains -RelativePath "python-ai-runtime/src/datasmart_ai_runtime/api/metrics.py" -ExpectedText "langgraph_memory_retrieval_metrics.render_prometheus" -Purpose "/agent/metrics 必须合并长期记忆检索指标，而不是只停留在独立类实现"
+Test-FileContains -RelativePath "python-ai-runtime/src/datasmart_ai_runtime/api/agent/plan_response.py" -ExpectedText "langgraph_memory_retrieval_metrics.record_summary(agent_memory_retrieval_workflow_summary)" -Purpose "/agent/plans 必须在生成 agentMemoryRetrievalWorkflow 后记录同一份低敏 summary 指标"
+Test-FileContains -RelativePath "python-ai-runtime/src/datasmart_ai_runtime/services/multi_agent/product_agent_catalog.py" -ExpectedText "RUNTIME_AGENT_DELIVERY_TIERS" -Purpose "多 Agent 必须固化必做、控制范围和轻量化交付分层，避免继续无边界扩张角色"
+Test-FileContains -RelativePath "python-ai-runtime/src/datasmart_ai_runtime/services/langgraph_multi_agent_collaboration.py" -ExpectedText "runtimeAgentDeliveryTiers" -Purpose "多智能体协作图必须输出运行时交付分层，方便前端、gateway 和后续 E2E 判断哪些 Agent 已进入闭环范围"
+Test-FileContains -RelativePath "python-ai-runtime/src/datasmart_ai_runtime/services/agent_capability/agent_capability_matrix.py" -ExpectedText "datasmart_ai_langgraph_memory_retrieval_*" -Purpose "能力矩阵必须记录 LangGraph 记忆检索指标证据，避免闭口诊断落后于真实实现"
 Test-FileContains -RelativePath "data-quality/src/main/java/com/czh/datasmart/govern/quality/controller/QualityReportExportController.java" -ExpectedText "low-sensitive-csv" -Purpose "data-quality 必须提供低敏质量报告导出入口，避免质量报告能力只停留在在线查询"
 Test-FileContains -RelativePath "observability/src/main/java/com/czh/datasmart/govern/observability/controller/ObservabilityPlatformController.java" -ExpectedText "alert-coverage" -Purpose "observability 必须提供平台基础告警覆盖视图，避免可观测性只停留在 health 探活"
 Test-FileContains -RelativePath "gateway/src/main/java/com/czh/datasmart/govern/gateway/config/GatewayAuthorizationProperties.java" -ExpectedText "setAllowedActorTypes(List.of(`"SERVICE_ACCOUNT`"))" -Purpose "默认内部端点同时要求服务账号角色和服务账号主体类型"
@@ -437,6 +453,7 @@ Invoke-HttpProbe -Name "Observability alert coverage" -Url "$ObservabilityBaseUr
 Invoke-HttpProbe -Name "Python AI Runtime closure readiness" -Url "$PythonAiRuntimeBaseUrl/agent/capabilities/closure-readiness"
 Invoke-HttpProbe -Name "Python AI Runtime Skill Manifest diagnostics" -Url "$PythonAiRuntimeBaseUrl/agent/skills/publication/diagnostics"
 Invoke-HttpProbe -Name "Python AI Runtime inference optimization diagnostics" -Url "$PythonAiRuntimeBaseUrl/agent/models/inference-optimization/diagnostics"
+Invoke-HttpProbe -Name "Python AI Runtime Prometheus metrics" -Url "$PythonAiRuntimeBaseUrl/agent/metrics"
 Invoke-HttpProbe -Name "Prometheus ready" -Url "$PrometheusBaseUrl/-/ready"
 Invoke-HttpProbe -Name "Grafana health" -Url "$GrafanaBaseUrl/api/health"
 Invoke-ServiceAccountTokenProbe

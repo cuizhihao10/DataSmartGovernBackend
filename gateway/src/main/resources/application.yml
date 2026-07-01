@@ -86,12 +86,12 @@ spring:
           # 1. `/api/agent/**` 同时承载 Java Agent 控制面和 Python Agent Host 运行时诊断；
           # 2. 如果不先匹配这些 Python 路径，Skill Manifest 刷新、能力闭口、模型 Provider 健康等接口会被误转到
           #    Java `agent-runtime`，导致本地 E2E 看起来“gateway 可访问”，但实际 AI Runtime 诊断链路没有闭合；
-          # 3. 这些接口只返回低敏控制面摘要，不执行工具、不创建任务、不读取业务数据、不返回 prompt/SQL/模型输出；
+          # 3. 这些接口只返回低敏控制面摘要或 Prometheus 低基数指标，不执行工具、不创建任务、不读取业务数据、不返回 prompt/SQL/模型输出；
           # 4. POST `/api/agent/skills/publication/refresh` 只刷新 Python 进程内 Manifest 诊断缓存，仍然不绕过
           #    OIDC、permission-admin、HITL、tool readiness 或 runtime protection。
           uri: ${DATASMART_PYTHON_AI_RUNTIME_URI:http://localhost:8090}
           predicates:
-            - Path=/api/agent/capabilities/**,/api/agent/skills/publication/diagnostics,/api/agent/skills/publication/refresh,/api/agent/models/provider-health/diagnostics,/api/agent/models/capabilities/diagnostics,/api/agent/models/inference-optimization/diagnostics,/api/agent/security/gateway-signature/diagnostics,/api/agent/tool-actions/checkpoints/diagnostics,/api/agent/platform/convergence/diagnostics
+            - Path=/api/agent/capabilities/**,/api/agent/skills/publication/diagnostics,/api/agent/skills/publication/refresh,/api/agent/models/provider-health/diagnostics,/api/agent/models/capabilities/diagnostics,/api/agent/models/inference-optimization/diagnostics,/api/agent/security/gateway-signature/diagnostics,/api/agent/tool-actions/checkpoints/diagnostics,/api/agent/platform/convergence/diagnostics,/api/agent/metrics
           filters:
             # Python Runtime 内部统一使用 /agent/** 作为运行时能力域；外部仍然挂在 /api/agent/**，由 gateway 负责收口。
             - RewritePath=/api/agent/(?<segment>.*), /agent/$\{segment}
@@ -878,10 +878,12 @@ datasmart:
         # - capabilities/closure-readiness 用于上线前确认 Agent Host 能力是否闭口；
         # - Skill Publication diagnostics/refresh 用于确认 Python 是否看见 Java scoped Manifest；
         # - model diagnostics 用于查看 Provider 健康、模型能力适配和成熟推理服务指标缺口；
-        # - gateway signature/checkpoint/platform convergence 诊断用于排查信任链、恢复点和整个平台收敛状态。
+        # - gateway signature/checkpoint/platform convergence 诊断用于排查信任链、恢复点和整个平台收敛状态；
+        # - metrics 用于暴露 Prometheus 低基数指标，使 LangGraph、长期记忆、模型网关和 checkpoint 的运行状态能被统一抓取。
         # 所有接口都只允许返回低敏摘要，不允许输出 token、完整 claim、prompt、SQL、工具参数、样本数据、
-        # 模型输出、内部 endpoint、artifact 正文或长期记忆正文。POST refresh 也只归为 DIAGNOSE，因为它
-        # 刷新的是运行时诊断缓存，不创建业务对象、不触发工具执行、不写 worker outbox。
+        # 模型输出、内部 endpoint、artifact 正文或长期记忆正文。metrics 也只能输出固定枚举 label，
+        # 不能把 tenant/project/run/memoryId 等高基数字段放入 Prometheus。POST refresh 只归为 DIAGNOSE，
+        # 因为它刷新的是运行时诊断缓存，不创建业务对象、不触发工具执行、不写 worker outbox。
         - path-pattern: /api/agent/capabilities/**
           resource-type: AI_RUNTIME
           default-action: DIAGNOSE
@@ -928,6 +930,13 @@ datasmart:
           resource-type: AI_RUNTIME
           default-action: DIAGNOSE
           description: Python Runtime 平台收敛诊断入口，用于从宏观模块维度查看 gateway、permission、agent-runtime、Python Runtime 和数据治理微服务闭口状态。
+          method-actions:
+            GET: DIAGNOSE
+
+        - path-pattern: /api/agent/metrics
+          resource-type: AI_RUNTIME
+          default-action: DIAGNOSE
+          description: Python Runtime Prometheus 低基数指标入口，用于统一观测 LangGraph、长期记忆、模型网关、checkpoint 和执行门禁等运行状态；该入口只允许 GET，不承载工具执行或业务写入。
           method-actions:
             GET: DIAGNOSE
 

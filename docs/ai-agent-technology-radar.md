@@ -1,5 +1,24 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-07-01 落地补充：AI Runtime metrics enters gateway and smoke acceptance
+
+- 本轮趋势校准：
+  - 成熟 Agent Host 的可观测性不能只靠直连运行时端口，生产形态应通过统一 gateway、认证授权和平台 smoke 验收暴露；
+  - `agentMemoryRetrievalWorkflow` 指标已经完成后，当前最重要的不是继续增加图节点，而是确认指标入口、权限语义、gateway 路由和 E2E 检查全部串起来；
+  - 多 Agent 能力也进入收敛验收：必做角色和控制范围角色要有可检查合同、指标和诊断证据，轻量化角色不再继续扩张实现范围。
+- 本轮落地到代码和验收的能力：
+  - gateway 显式代理 `/api/agent/metrics` 到 Python Runtime `/agent/metrics`；
+  - gateway 授权配置把 `/api/agent/metrics` 归为 `AI_RUNTIME` 的 `DIAGNOSE` 只读动作；
+  - Java 默认授权元数据和 `GatewayAgentRuntimeAuthorizationFilterTest` 同步保护该语义，避免配置文件与代码默认值出现漂移；
+  - 本地 smoke 脚本静态检查 `langgraph_memory_retrieval_metrics`、`record_summary`、`RUNTIME_AGENT_DELIVERY_TIERS`、`runtimeAgentDeliveryTiers` 和能力矩阵证据；
+  - 本地 smoke 脚本运行时检查直连 `/agent/metrics`，并在启用 `-CheckAgentGatewayDiagnostics` 时验证认证后的 gateway `/api/agent/metrics`。
+- 安全边界：
+  - smoke 与 gateway 探针只验证状态码，不打印 Prometheus 文本正文；
+  - 指标入口必须继续保持低基数枚举 label，不允许输出 tenant/project/session/run/memoryId、prompt、SQL、工具参数、样本数据、模型输出或长期记忆正文。
+- 产品判断：
+  - LangGraph 与多 Agent 的下一阶段重点是“验收闭环”，不是继续增加展示字段；
+  - 接下来应优先让 Java 控制面事实、gateway 授权、Python Runtime 诊断、data-quality/observability 和完整平台 smoke 形成同一条可重复验证链路。
+
 ## 2026-07-01 落地补充：Memory retrieval workflow metrics and convergent Agent tiers
 
 - 本轮趋势校准：

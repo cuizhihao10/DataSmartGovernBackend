@@ -215,6 +215,9 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/agent/runtime-events/**", "AI_RUNTIME",
                 "Agent Runtime 运行时事件投影查询接口，用于查看 run/session/request 维度的 Agent 执行事件",
                 Map.of("GET", "VIEW_EVENTS")));
+        defaults.add(route("/api/agent/metrics", "AI_RUNTIME",
+                "Python AI Runtime Prometheus 低基数指标入口；它用于观测 LangGraph、长期记忆、模型网关、checkpoint 和执行门禁等运行趋势，不承载工具执行、业务写入或单次请求排障正文",
+                Map.of("GET", "DIAGNOSE")));
         defaults.add(route("/api/agent/sessions/{sessionId}/runs/{runId}/tool-executions/dag-confirmations/**", "AI_RUNTIME",
                 "Agent DAG selected-node 确认记录审计查询接口，用于查看人工确认、dry-run 指纹、策略版本和 outbox 证据",
                 Map.of("GET", "VIEW_TOOL_CONFIRMATIONS")));

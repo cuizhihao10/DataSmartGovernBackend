@@ -232,9 +232,10 @@ python -m uvicorn "datasmart_ai_runtime.api:create_app" --factory --host 127.0.0
 GET http://localhost:8090/agent/capabilities/closure-readiness
 GET http://localhost:8090/agent/skills/publication/diagnostics
 GET http://localhost:8090/agent/models/inference-optimization/diagnostics
+GET http://localhost:8090/agent/metrics
 ```
 
-这些接口只用于闭口检查和运行时诊断，不会执行工具、不创建任务、不读取源端数据、不写 worker outbox，也不会返回 prompt、SQL、工具参数、样本数据、模型输出、token、内部 endpoint 或长期记忆正文。
+这些接口只用于闭口检查、运行时诊断和 Prometheus 低基数指标导出，不会执行工具、不创建任务、不读取源端数据、不写 worker outbox，也不会返回 prompt、SQL、工具参数、样本数据、模型输出、token、内部 endpoint 或长期记忆正文。`/agent/metrics` 只允许输出固定枚举标签，例如 LangGraph workflow 状态、记忆检索状态、模型 Provider 健康状态、checkpoint 查询结果和 Agent 交付分层；它不能输出 tenantId、projectId、runId、sessionId、memoryId、memory namespace 或任何业务正文。
 
 启动顺序说明：
 
@@ -256,6 +257,7 @@ GET http://localhost:8090/agent/models/inference-optimization/diagnostics
 - 关键文件是否存在，例如根 `pom.xml`、JDK 21 文档、Compose 文件、Keycloak realm、关键 MySQL 迁移。
 - 关键容器是否运行，例如 MySQL、Redis、Kafka、Nacos、Keycloak、Prometheus、Grafana。
 - 关键 HTTP 探针是否可访问，例如 `/actuator/health`、Keycloak realm metadata、gateway auth capabilities、data-sync connector capabilities、task-management receipt query。
+- AI Runtime 闭环契约是否仍然存在，例如 `/agent/metrics` 指标路由、`agentMemoryRetrievalWorkflow` 低基数指标记录、多 Agent `runtimeAgentDeliveryTiers` 分层、gateway `/api/agent/metrics` 统一入口和能力矩阵证据。
 
 如果只是验证脚本语法和仓库文件完整性：
 
@@ -289,9 +291,10 @@ GET http://localhost:8090/agent/models/inference-optimization/diagnostics
 GET http://localhost:8080/api/agent/capabilities/closure-readiness
 GET http://localhost:8080/api/agent/skills/publication/diagnostics
 GET http://localhost:8080/api/agent/models/inference-optimization/diagnostics
+GET http://localhost:8080/api/agent/metrics
 ```
 
-设计意图是验证真实入口链路中的 `Keycloak -> gateway OIDC -> permission-admin route authorization -> gateway route rewrite -> Python Runtime` 是否贯通，而不是验证 Python Runtime 直连端口本身。脚本只检查 HTTP 状态码，不解析、不保存、不打印诊断响应正文；即使后续诊断字段继续扩展，也不会把 prompt、SQL、工具参数、样本数据、模型输出、token、内部 endpoint 或长期记忆正文带到终端日志里。
+设计意图是验证真实入口链路中的 `Keycloak -> gateway OIDC -> permission-admin route authorization -> gateway route rewrite -> Python Runtime` 是否贯通，而不是验证 Python Runtime 直连端口本身。脚本只检查 HTTP 状态码，不解析、不保存、不打印诊断或指标响应正文；即使后续诊断字段继续扩展，或 Prometheus 指标族继续增加，也不会把 prompt、SQL、工具参数、样本数据、模型输出、token、内部 endpoint、长期记忆正文或高基数业务标识带到终端日志里。
 
 故障判断建议：
 

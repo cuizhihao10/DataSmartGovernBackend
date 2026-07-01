@@ -1,5 +1,22 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-07-01 追加落地进展：AI Runtime Metrics Gateway And Smoke Closure
+- 本阶段承接“进入 Java/Python 控制面事实与全平台 smoke/E2E 闭环”的推荐路线，不新增 LangGraph 节点、不新增 Agent 角色、不触发真实工具执行。
+- 已落地能力：
+  - gateway 的 `python-ai-runtime-runtime-diagnostics` 路由纳入 `/api/agent/metrics`，避免 Python Runtime Prometheus 指标只能通过直连 `8090` 访问；
+  - gateway 授权语义新增 `/api/agent/metrics`，按 `AI_RUNTIME + DIAGNOSE + GET` 处理，明确它是低敏观测入口而不是业务执行入口；
+  - gateway 默认授权元数据与 `GatewayAgentRuntimeAuthorizationFilterTest` 同步覆盖 `/api/agent/metrics`，避免 YAML、配置中心和代码默认值漂移；
+  - `scripts/local-e2e-smoke-check.ps1` 新增 LangGraph 记忆检索指标、多 Agent `runtimeAgentDeliveryTiers`、能力矩阵证据、直连 `/agent/metrics` 和可选 gateway `/api/agent/metrics` 探针；
+  - `docs/local-e2e-closure-runbook.md` 已同步 Prometheus 指标入口、安全边界和 gateway 探针清单。
+- 架构收敛价值：
+  - `agentMemoryRetrievalWorkflow` 和多 Agent 交付分层不再只停留在单测或响应字段，而是进入本地 E2E smoke 的自动巡检范围；
+  - `/agent/metrics` 从“Python 运行时直连能力”推进为“统一 gateway 可授权、可转发、可验收的生产入口候选”；
+  - 指标探针只检查 HTTP 状态码和静态契约，不打印 Prometheus 正文，避免未来指标扩展时把高基数字段或业务排障正文带进终端日志。
+- 下一步推荐路线：
+  1. 继续把必做和控制范围 Agent 的合同、事件、指标、权限与 Java 控制面事实纳入 E2E；
+  2. 优先修补会阻断全平台 smoke 的路由、权限、启动脚本、迁移和健康探针缺口；
+  3. 暂停新增展示型 Agent 能力，把项目推进到可启动、可观测、可审计、可演示的闭环状态。
+
 ## 2026-07-01 追加落地进展：LangGraph Memory Retrieval Metrics And Agent Tier Convergence
 - 本阶段承接上一阶段“补 `agentMemoryRetrievalWorkflow` 的低基数指标”的推荐路线，没有新增真实工具执行器，没有扩张新的 Agent 角色，也没有让 Python Runtime 绕过 Java 控制面写入长期记忆。
 - 已落地能力：
