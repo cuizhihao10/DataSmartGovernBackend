@@ -43,6 +43,7 @@ from datasmart_ai_runtime.services.langgraph_multi_agent_collaboration import (
 from datasmart_ai_runtime.services.multi_agent.langgraph_execution_plan import (
     LangGraphMultiAgentExecutionPlanWorkflow,
 )
+from datasmart_ai_runtime.services.memory import LangGraphMemoryRetrievalWorkflow
 from datasmart_ai_runtime.services.runtime_events.runtime_event_live_push import RuntimeEventLivePushHub
 from datasmart_ai_runtime.services.runtime_events.runtime_event_publisher import RuntimeEventPublisher
 from datasmart_ai_runtime.services.runtime_events.runtime_event_store import RuntimeEventStore
@@ -257,6 +258,19 @@ def build_plan_response(
         scheduling=intelligent_gateway_governance.get("agentSessionScheduling", {}),
         collaboration=agent_collaboration_workflow.to_summary(),
     )
+    agent_collaboration_execution_plan_summary = agent_collaboration_execution_plan.to_summary()
+    # 长期记忆检索以前只作为 `AgentOrchestrator` 内部的 `retrieve_memory` 顺序步骤存在。
+    # 这里新增的 LangGraph workflow 不重复召回记忆、不读取正文、不修改记忆 store，而是把已经生成的
+    # `memoryPlan + memoryRetrievalReport` 压缩成可观察节点 trace。这样前端、Java projection 和多 Agent
+    # 协作视图能看见 MEMORY_AGENT 如何为专项 Agent 提供上下文支持，同时仍然保持“真实写入/落成由 Java
+    # 控制面和 memory materialization worker 管理”的生产边界。
+    agent_memory_retrieval_workflow = LangGraphMemoryRetrievalWorkflow.from_env().run(
+        memory_plan=plan.memory_plan,
+        retrieval_report=plan.memory_retrieval_report,
+        workspace_context=workspace_context,
+        scheduling=intelligent_gateway_governance.get("agentSessionScheduling", {}),
+        collaboration_execution_plan=agent_collaboration_execution_plan_summary,
+    )
     plan = attach_skill_visibility_event(
         plan,
         request=request,
@@ -280,7 +294,8 @@ def build_plan_response(
     response = _build_base_response(plan, event_transport_builder)
     response["agentWorkflowDiagnostics"] = plan.workflow_diagnostics
     response["agentCollaborationWorkflow"] = agent_collaboration_workflow.to_summary()
-    response["agentCollaborationExecutionPlan"] = agent_collaboration_execution_plan.to_summary()
+    response["agentCollaborationExecutionPlan"] = agent_collaboration_execution_plan_summary
+    response["agentMemoryRetrievalWorkflow"] = agent_memory_retrieval_workflow.to_summary()
     response["agentWorkspace"] = workspace_context.to_summary()
     response["toolExecutionReadiness"] = tool_execution_readiness_response
     response["agentExecutionGateWorkflow"] = agent_execution_gate_summary

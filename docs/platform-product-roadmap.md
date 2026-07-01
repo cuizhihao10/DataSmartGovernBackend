@@ -1,5 +1,31 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-07-01 追加落地进展：LangGraph Memory Retrieval Observable Node
+- 本阶段承接上一阶段“选择 `retrieve_memory` 的最小 LangGraph 节点迁入”的推荐路线，没有新增真实工具执行器，没有新增 Agent 角色，也没有让 Python Runtime 绕过 Java 控制面写入长期记忆。
+- 已落地能力：
+  - 新增 `python-ai-runtime/src/datasmart_ai_runtime/services/memory/langgraph_memory_retrieval_models.py`；
+  - 新增 `python-ai-runtime/src/datasmart_ai_runtime/services/memory/langgraph_memory_retrieval_workflow.py`；
+  - 新增 `LangGraphMemoryRetrievalWorkflow`，使用真实 LangGraph `StateGraph` 编译并执行记忆检索观察图；
+  - 图节点链路为 `load_memory_retrieval_context -> evaluate_retrieval_scope -> summarize_retrieval_report -> bind_memory_agent_context -> finalize_memory_retrieval`；
+  - `/agent/plans` 顶层新增 `agentMemoryRetrievalWorkflow`；
+  - `services/memory/__init__.py` 已导出新 workflow 与 diagnostics。
+- 架构收敛价值：
+  - 长期记忆不再只停留在 `AgentOrchestrator` 内部 `retrieve_memory` 顺序步骤，而是具备可观察节点 trace；
+  - 多 Agent 视图中，`MEMORY_AGENT` 被明确为上下文治理角色，向主控和专项 Agent 提供低敏记忆依赖状态；
+  - 新增状态只输出记忆类型、scope、数量、召回状态、workspace 边界和 Agent 角色，不输出记忆正文或检索 hint；
+  - `langgraph_memory_retrieval_workflow.py` 约 483 行，`langgraph_memory_retrieval_models.py` 约 116 行，继续符合单文件 500 行内约束。
+- 当前边界：
+  - 真实召回仍由已有 `AgentMemoryRetriever` 完成，LangGraph 图本轮只观察结果，不重复访问 Chroma/MySQL/SQLite FTS；
+  - 图不写长期记忆、不物化候选、不创建审批、不写 outbox、不调用模型、不执行工具；
+  - 正式记忆写入、候选审批、materialization receipt、lease、二级索引同步和向量/全文检索生产化仍由既有 memory 服务与 Java 控制面继续闭口。
+- 验证结果：
+  - 定向测试通过：`python -m pytest python-ai-runtime\tests\test_langgraph_memory_retrieval_workflow.py -q`；
+  - 组合测试通过：`python -m pytest python-ai-runtime\tests\test_langgraph_memory_retrieval_workflow.py python-ai-runtime\tests\test_api_bootstrap.py -q`，共 17 个用例。
+- 下一步推荐路线：
+  1. 补 `agentMemoryRetrievalWorkflow` 的低基数指标，重点观察空召回率、目标类型分布和 MEMORY_AGENT 是否被调度；
+  2. 或者进入 Java/Python 控制面事实最终闭环与全平台 smoke/E2E，避免继续在单个 Agent 子能力上无限扩张；
+  3. 多 Agent 后续不再新增角色，优先把已有角色的合同、事件、指标和 E2E 验收串完整。
+
 ## 2026-07-01 追加落地进展：LangGraph Resume Preflight Contract Alignment
 - 本阶段承接上一阶段 “`RESUME_PREFLIGHT` 需要与 Java checkpoint locator、fact bundle、worker receipt 标准字段对齐” 的推荐路线，没有新增工具执行器，也没有改变 Java/Python 副作用边界，而是把恢复预检合同沉淀为独立 Python 模块。
 - 已落地能力：

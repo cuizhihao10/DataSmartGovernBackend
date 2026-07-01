@@ -48,7 +48,10 @@ datasmart_ai_runtime/
   - 新代码应直接导入 `datasmart_ai_runtime.api.agent.routes`、`datasmart_ai_runtime.api.memory.write` 等能力包；
   - 不应再在运行时根包新增 `api_xxx.py` 平铺文件。
 - `services/memory/` 已作为第一批能力包建立，承载长期记忆规划、检索、写入候选、审批治理、SQL 候选仓储、
-  正式记忆 store、materializer 和 receipt store。
+  正式记忆 store、materializer 和 receipt store。新增 `langgraph_memory_retrieval_workflow.py` 与
+  `langgraph_memory_retrieval_models.py` 后，`retrieve_memory` 已从编排器内部步骤推进为可观察 LangGraph
+  节点；workflow 文件只负责编排节点流转，models 文件承载低敏 state/diagnostics，避免 memory workflow
+  超过单文件 500 行约束。
 - `services/runtime_events/` 已作为第二批能力包建立，承载事件事实存储、订阅会话、ack/checkpoint、
   outbox/live push、replay source、publisher、transport、WebSocket frame、visibility 和 authorization。
   这些能力共同支撑智能网关时间线、断线恢复、前端实时事件流和后续 Agent 执行审计。

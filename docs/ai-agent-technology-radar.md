@@ -1,5 +1,26 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-07-01 落地补充：retrieve_memory should be an observable LangGraph node
+
+- 本轮趋势校准：
+  - Codex、Claude Code、OpenClaw、LangGraph 类 Agent Host 的长期记忆能力不应只是编排器内部的一个黑盒步骤；成熟实现通常会把记忆检索作为可观察节点，至少暴露目标类型、scope、召回数量、空召回状态、workspace 边界和多 Agent 消费关系；
+  - DataSmart 当前进入整体闭环收敛阶段，因此本轮只做“最小节点迁入”：不重写召回算法、不新增真实工具执行器、不让 Python Runtime 直接写长期记忆，也不把记忆正文放进诊断响应；
+  - MEMORY_AGENT 在本轮中被明确为上下文治理角色：它负责让主控、数据源、数据质量、同步、任务等专项 Agent 知道长期记忆是否可用、是否为空召回以及是否需要检查 namespace/二级索引。
+- 本轮落地到代码的能力：
+  - 新增 `services/memory/langgraph_memory_retrieval_models.py`，承载低敏 state 与 diagnostics DTO；
+  - 新增 `services/memory/langgraph_memory_retrieval_workflow.py`，使用真实 LangGraph `StateGraph` 编译/调用 `load_memory_retrieval_context -> evaluate_retrieval_scope -> summarize_retrieval_report -> bind_memory_agent_context -> finalize_memory_retrieval`；
+  - `/agent/plans` 顶层新增 `agentMemoryRetrievalWorkflow`；
+  - `agentMemoryRetrievalWorkflow` 输出 `retrievalStatus`、`retrievalScope`、`retrievalReport`、`multiAgentMemoryContext`、`globalState`、`sideEffectBoundary` 和节点 trace；
+  - `services/memory/__init__.py` 已导出新 workflow 与 diagnostics，保持 memory 能力包边界清晰。
+- 产品判断：
+  - LangGraph 已从规划外壳、多 Agent 协作、多 Agent 执行前计划、execution gate，继续推进到长期记忆检索观察节点；
+  - 这一步让长期记忆从“编排器内部步骤”变成“可被前端、gateway、Java projection 和多 Agent 计划消费的图事实”；
+  - 这仍不是完整 durable memory runner：真实正式记忆写入、候选审批、materialization receipt、二级索引同步和向量库/全文索引仍由既有 memory 服务与 Java 控制面边界承接。
+- 安全判断：
+  - 记忆图不输出 prompt、objective、queryHint、reason、SQL、工具参数、样本数据、模型输出、token、记忆正文、真实 memoryId 或包含 tenant/project 的 namespace；
+  - 图只输出类型、scope、数量、状态、Agent 角色、边界和下一步建议；
+  - Python Runtime 仍不写 outbox、不创建审批、不执行工具、不调用模型、不写入或物化长期记忆。
+
 ## 2026-07-01 落地补充：Resume preflight contract should align with the Java host facts
 
 - 本轮趋势校准：
