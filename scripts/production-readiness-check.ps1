@@ -8,7 +8,7 @@ DataSmart Govern 生产就绪静态检查脚本。
 
 为什么默认只把部分项记为 WARN：
 - 当前项目已经完成本地闭环，并已逐步补齐生产环境值说明、SBOM 就绪、镜像签名验证、备份恢复和 Kubernetes/Helm 初始交付制品；
-- 容量压测和故障演练等事项仍是生产阻塞项，但在“收敛推进阶段”不应让普通本地检查直接失败，否则会阻断后续逐步补齐；
+- 容量与故障演练的静态就绪制品已经完成；真实压测和真实故障注入仍必须在客户预生产或专用 runner 中执行，不能由本地静态脚本伪装完成；
 - 当进入真正上线前门禁或 CI 发布阶段时，可以启用 -StrictProductionGates，把 WARN 也视为失败。
 
 脚本故意不读取真实 Secret、不连接生产数据库、不执行迁移、不启动 worker，也不触发任何 Agent 工具。
@@ -172,7 +172,7 @@ try {
     Test-RequiredText -RelativePath "docs/production-hardening-runbook.md" -ExpectedText "故障演练" -Purpose "production hardening docs must cover failure drills"
     Test-AnyPathExists -Name "backup-restore" -RelativePaths @("scripts/backup-restore-check.ps1", "scripts/mysql-backup.ps1", "docs/backup-restore-runbook.md") -Purpose "add backup/restore runbook or executable checks before production release"
     Test-AnyPathExists -Name "capacity-baseline" -RelativePaths @("scripts/capacity-baseline-check.ps1", "scripts/capacity-baseline.ps1", "scripts/load-test", "docs/capacity-baseline-runbook.md", "docs/capacity-baseline-report.md") -Purpose "add repeatable capacity baseline procedure before production release"
-    Test-AnyPathExists -Name "failure-drills" -RelativePaths @("scripts/failure-drill.ps1", "docs/failure-drill-runbook.md", "docs/disaster-recovery-runbook.md") -Purpose "add failure-drill or disaster-recovery runbook before production release"
+    Test-AnyPathExists -Name "failure-drills" -RelativePaths @("scripts/failure-drill-check.ps1", "scripts/failure-drill.ps1", "docs/failure-drill-runbook.md", "docs/disaster-recovery-runbook.md") -Purpose "add failure-drill or disaster-recovery runbook before production release"
 
     Write-Host "[SUMMARY] PASS=$passCount, WARN=$warnCount, FAIL=$failCount"
 
