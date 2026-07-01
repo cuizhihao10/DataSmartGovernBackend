@@ -10,6 +10,10 @@
     <artifactId>permission-admin</artifactId>
     <name>Permission Admin Module</name>
     <description>权限与管理中心模块 - 负责角色、菜单、路由策略、数据范围、审批策略和权限审计的统一管理</description>
+    <properties>
+        <!-- permission-admin 是独立微服务，需要覆盖父工程默认值并启用 Spring Boot repackage。 -->
+        <spring-boot.repackage.skip>false</spring-boot.repackage.skip>
+    </properties>
     <dependencies>
         <dependency>
             <groupId>com.czh.datasmart</groupId>

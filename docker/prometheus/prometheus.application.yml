@@ -1,0 +1,70 @@
+# 全平台容器化运行时的 Prometheus 配置。
+#
+# 基础 prometheus.yml 面向“中间件在 Docker、Java/Python 在宿主机”的 IDE 调试模式，
+# 因此目标使用 host.docker.internal。本文件面向 docker-compose.application.yml，
+# 所有运行时都在 datasmart-network 中，必须使用 Compose 服务 DNS。
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  - job_name: gateway
+    static_configs:
+      - targets: [gateway:8080]
+    metrics_path: /actuator/prometheus
+
+  - job_name: permission-admin
+    static_configs:
+      - targets: [permission-admin:8085]
+    metrics_path: /actuator/prometheus
+
+  - job_name: task-management
+    static_configs:
+      - targets: [task-management:8081]
+    metrics_path: /actuator/prometheus
+
+  - job_name: datasource-management
+    static_configs:
+      - targets: [datasource-management:8082]
+    metrics_path: /actuator/prometheus
+
+  - job_name: data-sync
+    static_configs:
+      - targets: [data-sync:8086]
+    metrics_path: /actuator/prometheus
+
+  - job_name: data-quality
+    static_configs:
+      - targets: [data-quality:8083]
+    metrics_path: /actuator/prometheus
+
+  - job_name: agent-runtime
+    static_configs:
+      - targets: [agent-runtime:8091]
+    metrics_path: /actuator/prometheus
+
+  - job_name: observability
+    static_configs:
+      - targets: [observability:8084]
+    metrics_path: /actuator/prometheus
+
+  - job_name: python-ai-runtime
+    static_configs:
+      - targets: [python-ai-runtime:8090]
+    # Python Runtime 使用自己的低基数指标入口，不伪装为 Spring Boot Actuator。
+    metrics_path: /agent/metrics
+
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]
+

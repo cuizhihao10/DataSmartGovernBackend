@@ -10,6 +10,10 @@
     <artifactId>gateway</artifactId>
     <name>Gateway Module</name>
     <description>智能体网关模块 - 负责会话路由、权限校验、多渠道接入</description>
+    <properties>
+        <!-- gateway 含独立 main class，需要产出可直接 java -jar 启动的 Spring Boot 可执行包。 -->
+        <spring-boot.repackage.skip>false</spring-boot.repackage.skip>
+    </properties>
     <dependencies>
         <dependency>
             <groupId>com.czh.datasmart</groupId>

@@ -41,3 +41,5 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .venv/
+# 本地 Compose 环境文件可能包含数据库、OIDC、模型或 HMAC 密钥；只提交脱敏样例。
+.env.application

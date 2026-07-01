@@ -517,3 +517,6 @@
 3. 开发后：AI需对照“常见问题”，辅助排查代码中的潜在问题，确保符合设计要求；
 
 4. 扩展开发：新增功能（如自定义技能插件）时，AI需遵循本文档的设计原则、规范，确保与现有架构兼容。
+## 容器化交付入口
+
+项目已提供基础设施 Compose、应用层 Compose overlay、共享 Java/Python 多阶段 Dockerfile 和可重复交付检查。完整说明见 [全平台容器化交付说明](docs/containerized-application-deployment.md)。

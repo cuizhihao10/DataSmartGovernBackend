@@ -123,7 +123,7 @@ public class PlatformServiceHealthSnapshotService {
                     0L,
                     "NO_PROBE_PATH");
         }
-        String targetUrl = "http://localhost:" + module.defaultPort() + path;
+        String targetUrl = resolveTargetUrl(module, path);
         PlatformEndpointProbeResult result = endpointProbeClient.probe(URI.create(targetUrl), timeout);
         return new PlatformServiceHealthProbeView(
                 module.moduleCode(),
@@ -135,6 +135,29 @@ public class PlatformServiceHealthSnapshotService {
                 result.statusCode(),
                 result.durationMs(),
                 result.issueCode());
+    }
+
+    /**
+     * 解析跨环境可用的探针 URL。
+     *
+     * <p>解析顺序是“模块显式配置优先，本机端口回退”。显式配置用于 Docker Compose、Kubernetes
+     * 或跨主机部署；回退地址用于开发者直接运行多个 Spring Boot 进程的场景。这里还统一移除根地址末尾的
+     * 斜杠，并确保探针路径以斜杠开头，避免配置成 {@code http://service:8080/} 时得到双斜杠 URL。</p>
+     *
+     * @param module 当前要探测的平台运行时，提供模块代码和本地默认端口。
+     * @param path   该运行时的 health 或 metrics 路径。
+     * @return 可直接交给 HTTP 探针客户端的绝对 URL。
+     */
+    private String resolveTargetUrl(PlatformClosureModuleView module, String path) {
+        String configuredBaseUrl = properties.getServiceBaseUrls().get(module.moduleCode());
+        String baseUrl = configuredBaseUrl == null || configuredBaseUrl.isBlank()
+                ? "http://localhost:" + module.defaultPort()
+                : configuredBaseUrl.trim();
+        String normalizedBaseUrl = baseUrl.endsWith("/")
+                ? baseUrl.substring(0, baseUrl.length() - 1)
+                : baseUrl;
+        String normalizedPath = path.startsWith("/") ? path : "/" + path;
+        return normalizedBaseUrl + normalizedPath;
     }
 
     private String resolveProbeStatus(PlatformEndpointProbeResult result) {

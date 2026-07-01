@@ -10,6 +10,10 @@
     <artifactId>datasource-management</artifactId>
     <name>DataSource Management Module</name>
     <description>数据源管理模块 - 负责多源异构数据源的接入、连接管理、元数据采集</description>
+    <properties>
+        <!-- datasource-management 是独立微服务，需要启用 Spring Boot 可执行包重打包。 -->
+        <spring-boot.repackage.skip>false</spring-boot.repackage.skip>
+    </properties>
     <dependencies>
         <dependency>
             <groupId>com.czh.datasmart</groupId>

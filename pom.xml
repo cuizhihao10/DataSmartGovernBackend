@@ -53,6 +53,13 @@
         <maven-toolchains-plugin.version>3.2.0</maven-toolchains-plugin.version>
         <toolchain.jdk.version>[21,22)</toolchain.jdk.version>
         <!--
+          父工程和 platform-common 都不是可独立启动的 Spring Boot 应用，因此默认跳过 repackage。
+          8 个真正包含 @SpringBootApplication 的服务模块会在各自 POM 中显式覆盖为 false。
+          这种“父级默认安全关闭、应用模块主动开启”的方式可以避免共享库被误包装成 fat jar，
+          同时保证 `mvn package` 产物可以直接通过 `java -jar` 或容器 ENTRYPOINT 启动。
+        -->
+        <spring-boot.repackage.skip>true</spring-boot.repackage.skip>
+        <!--
           显式固定源码与报告输出编码，避免 Windows 本地环境、Maven 默认编码
           与源码中文注释之间出现不一致，导致注释内容或文本块在构建阶段被错误解析。
         -->
@@ -179,6 +186,23 @@
                 <configuration>
                     <version>${toolchain.jdk.version}</version>
                     <discoverToolchains>true</discoverToolchains>
+                </configuration>
+            </plugin>
+            <!--
+              将 Spring Boot repackage 绑定到 package 生命周期。
+
+              原理说明：
+              1. 普通 Maven jar 只包含当前模块编译产物，依赖仍散落在本地 Maven 仓库，不能直接 `java -jar`；
+              2. repackage 会把应用类和运行依赖重新组织为 Spring Boot 可执行 jar，并写入正确的启动清单；
+              3. Spring Boot parent 已经提供名为 repackage 的标准 execution，这里只声明插件，不重复绑定 goal；
+              4. skip 默认由父工程设为 true，只有应用模块显式覆盖后才执行，因此不会破坏 platform-common；
+              5. Docker 镜像只需要复制这一份稳定产物，不必在运行镜像中携带 Maven、源码或本地仓库。
+            -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <skip>${spring-boot.repackage.skip}</skip>
                 </configuration>
             </plugin>
         </plugins>

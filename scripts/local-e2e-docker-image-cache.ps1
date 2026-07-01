@@ -4,13 +4,13 @@ DataSmart Govern local E2E Docker image cache helper.
 设计背景：
 本地真实 E2E 依赖 MySQL、Redis、Kafka、Nacos、Keycloak、Prometheus、Grafana 等多个基础镜像。
 国内网络环境直连 Docker Hub 或 Quay 时经常出现 EOF、TLS timeout、connection reset 等问题。
-如果直接把 docker-compose.yml 的 image 改成某个国内镜像站，会让项目部署文件和临时网络环境强耦合；
-以后 CI、海外环境、客户私有仓库、离线镜像仓库都会受到影响。
+当前 docker-compose.yml 已按项目约定默认使用 DaoCloud，并允许通过 DATASMART_*_IMAGE 覆盖私有仓库。
+本脚本仍保留多国内镜像站回退，用于 DaoCloud 临时 TLS timeout 时预拉同一镜像。
 
 脚本策略：
 1. 拉取时优先尝试国内镜像前缀，例如 docker.m.daocloud.io/library/mysql:8.0。
-2. 拉取成功后重新 tag 成 Compose 声明的标准镜像名，例如 mysql:8.0。
-3. Compose 仍然只使用标准 image 名称，项目长期部署契约不被某个临时镜像站污染。
+2. 拉取成功后仍会额外 tag 成标准镜像名，例如 mysql:8.0，兼容显式覆盖和旧的本地命令。
+3. 镜像站来源 tag 不会删除，因此 Compose 默认的 DaoCloud image reference 可以直接命中本地缓存。
 4. 默认不回退 Docker Hub 或 Quay 官方源；如果确实需要验证官方源，必须显式传入 -AllowOfficialFallback。
 
 安全边界：
@@ -48,7 +48,7 @@ param(
     ),
 
     [string[]]$QuayMirrors = @(
-        "quay.m.daocloud.io"
+        "docker.m.daocloud.io/quay.io"
     ),
 
     [string[]]$ImageName = @(),

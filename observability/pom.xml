@@ -10,6 +10,10 @@
     <artifactId>observability</artifactId>
     <name>Observability Module</name>
     <description>可观测性模块 - 负责全平台的指标监控、日志收集、告警通知</description>
+    <properties>
+        <!-- observability 是独立运维微服务，需要启用 Spring Boot repackage。 -->
+        <spring-boot.repackage.skip>false</spring-boot.repackage.skip>
+    </properties>
     <dependencies>
         <dependency>
             <groupId>com.czh.datasmart</groupId>

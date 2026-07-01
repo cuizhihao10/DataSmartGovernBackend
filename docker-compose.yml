@@ -1,16 +1,15 @@
-version: '3.8'
-
 services:
   # MySQL 是当前已实现业务模块的核心事务库。
   # 挂载初始化脚本可以让本地启动后直接具备可运行的基础表结构。
   mysql:
-    image: mysql:8.0
+    # 默认通过 DaoCloud 国内镜像站拉取；企业环境可用 DATASMART_MYSQL_IMAGE 指向私有仓库。
+    image: ${DATASMART_MYSQL_IMAGE:-docker.m.daocloud.io/library/mysql:8.0}
     container_name: datasmart-mysql
     environment:
-      MYSQL_ROOT_PASSWORD: password
+      MYSQL_ROOT_PASSWORD: ${DATASMART_MYSQL_PASSWORD:-password}
       MYSQL_DATABASE: datasmart_govern
       MYSQL_USER: datasmart
-      MYSQL_PASSWORD: password
+      MYSQL_PASSWORD: ${DATASMART_MYSQL_PASSWORD:-password}
     ports:
       - "3306:3306"
     volumes:
@@ -22,7 +21,7 @@ services:
 
   # Redis 预留给缓存、分布式协调和短生命周期运行态数据。
   redis:
-    image: redis:7.2-alpine
+    image: ${DATASMART_REDIS_IMAGE:-docker.m.daocloud.io/library/redis:7.2-alpine}
     container_name: datasmart-redis
     ports:
       - "6379:6379"
@@ -34,7 +33,7 @@ services:
 
   # Kafka + Zookeeper 为后续模块解耦协作提供异步事件基础设施。
   zookeeper:
-    image: confluentinc/cp-zookeeper:7.6.0
+    image: ${DATASMART_ZOOKEEPER_IMAGE:-docker.m.daocloud.io/confluentinc/cp-zookeeper:7.6.0}
     container_name: datasmart-zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
@@ -43,7 +42,7 @@ services:
       - datasmart-network
 
   kafka:
-    image: confluentinc/cp-kafka:7.6.0
+    image: ${DATASMART_KAFKA_IMAGE:-docker.m.daocloud.io/confluentinc/cp-kafka:7.6.0}
     container_name: datasmart-kafka
     depends_on:
       - zookeeper
@@ -65,10 +64,10 @@ services:
 
   # Neo4j 预留给血缘关系、知识图谱和治理关联建模能力。
   neo4j:
-    image: neo4j:5.20
+    image: ${DATASMART_NEO4J_IMAGE:-docker.m.daocloud.io/library/neo4j:5.20}
     container_name: datasmart-neo4j
     environment:
-      NEO4J_AUTH: neo4j/password
+      NEO4J_AUTH: neo4j/${DATASMART_NEO4J_PASSWORD:-password}
       NEO4J_PLUGINS: '["graph-data-science"]'
     ports:
       - "7474:7474"
@@ -82,11 +81,11 @@ services:
 
   # MinIO 用于保存报表、文件和不适合直接放入 MySQL 的大对象。
   minio:
-    image: minio/minio:latest
+    image: ${DATASMART_MINIO_IMAGE:-docker.m.daocloud.io/minio/minio:latest}
     container_name: datasmart-minio
     environment:
-      MINIO_ACCESS_KEY: datasmart
-      MINIO_SECRET_KEY: datasmart123
+      MINIO_ACCESS_KEY: ${DATASMART_MINIO_ACCESS_KEY:-datasmart}
+      MINIO_SECRET_KEY: ${DATASMART_MINIO_SECRET_KEY:-datasmart123}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -99,7 +98,7 @@ services:
 
   # Nacos 是微服务注册与配置中心，网关和各业务模块都会依赖它。
   nacos:
-    image: nacos/nacos-server:v2.3.0
+    image: ${DATASMART_NACOS_IMAGE:-docker.m.daocloud.io/nacos/nacos-server:v2.3.0}
     container_name: datasmart-nacos
     environment:
       MODE: standalone
@@ -113,7 +112,7 @@ services:
       MYSQL_SERVICE_PORT: 3306
       MYSQL_SERVICE_DB_NAME: nacos
       MYSQL_SERVICE_USER: root
-      MYSQL_SERVICE_PASSWORD: password
+      MYSQL_SERVICE_PASSWORD: ${DATASMART_MYSQL_PASSWORD:-password}
       # MySQL 8 默认认证插件会在非 SSL 连接下要求客户端允许获取公钥。
       # Nacos 2.3 镜像内部使用 JDBC 连接外置 MySQL，如果不显式追加 allowPublicKeyRetrieval=true，
       # 本地 E2E 会在 Nacos 启动阶段报 Public Key Retrieval is not allowed，随后所有 Java 微服务注册都会失败。
@@ -140,7 +139,7 @@ services:
   # 4. `start-dev`、默认 admin 密码和样例用户密码只允许用于本地学习/联调，生产必须替换为正式 Keycloak 集群、
   #    企业 IdP、TLS、外部数据库、Secret Manager 和组织用户同步策略。
   keycloak:
-    image: quay.io/keycloak/keycloak:26.6.4
+    image: ${DATASMART_KEYCLOAK_IMAGE:-docker.m.daocloud.io/quay.io/keycloak/keycloak:26.6.4}
     container_name: datasmart-keycloak
     command:
       - start-dev
@@ -169,7 +168,7 @@ services:
 
   # Prometheus 负责抓取并存储可观测性层暴露的指标数据。
   prometheus:
-    image: prom/prometheus:latest
+    image: ${DATASMART_PROMETHEUS_IMAGE:-docker.m.daocloud.io/prom/prometheus:latest}
     container_name: datasmart-prometheus
     ports:
       - "9090:9090"
@@ -185,7 +184,7 @@ services:
   # Alertmanager 负责接收 Prometheus 触发的告警，并进行分组、抑制、静默和通知路由。
   # 当前配置使用空接收器占位，避免本地开发误发真实通知；生产环境再替换为邮件、企业 IM 或工单 webhook。
   alertmanager:
-    image: prom/alertmanager:latest
+    image: ${DATASMART_ALERTMANAGER_IMAGE:-docker.m.daocloud.io/prom/alertmanager:latest}
     container_name: datasmart-alertmanager
     ports:
       - "9093:9093"
@@ -203,10 +202,10 @@ services:
 
   # Grafana 用于指标可视化以及后续的告警看板展示。
   grafana:
-    image: grafana/grafana:latest
+    image: ${DATASMART_GRAFANA_IMAGE:-docker.m.daocloud.io/grafana/grafana:latest}
     container_name: datasmart-grafana
     environment:
-      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${DATASMART_GRAFANA_ADMIN_PASSWORD:-admin}
     ports:
       - "3000:3000"
     volumes:
@@ -222,7 +221,7 @@ services:
 
   # Chroma 为后续检索增强或语义治理助手能力预留向量存储支撑。
   chroma:
-    image: chromadb/chroma:latest
+    image: ${DATASMART_CHROMA_IMAGE:-docker.m.daocloud.io/chromadb/chroma:latest}
     container_name: datasmart-chroma
     ports:
       - "8000:8000"

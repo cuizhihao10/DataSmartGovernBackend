@@ -10,6 +10,10 @@
     <artifactId>data-sync</artifactId>
     <name>Data Sync Module</name>
     <description>数据同步模块 - 负责同步模板、同步任务、执行编排、checkpoint 和数据移动治理</description>
+    <properties>
+        <!-- data-sync 是独立微服务，需要通过 repackage 形成可部署、可容器化的启动产物。 -->
+        <spring-boot.repackage.skip>false</spring-boot.repackage.skip>
+    </properties>
     <dependencies>
         <dependency>
             <groupId>com.czh.datasmart</groupId>

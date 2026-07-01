@@ -44,6 +44,18 @@ datasmart:
       include-metrics-probe-by-default: false
       # 单次最多探测的运行时数量。当前项目远小于该值，保留该边界是为了未来扩展 worker/connector 后防止探针风暴。
       max-probe-targets: 32
+      # 服务根地址按模块代码配置。默认仍是 localhost，保证开发者直接运行 Spring Boot 进程时无需额外配置；
+      # Compose 会用环境变量覆盖成容器服务 DNS。这里只配置根地址，health/metrics 路径由服务目录统一维护。
+      service-base-urls:
+        gateway: ${DATASMART_OBSERVABILITY_GATEWAY_BASE_URL:http://localhost:8080}
+        permission-admin: ${DATASMART_OBSERVABILITY_PERMISSION_ADMIN_BASE_URL:http://localhost:8085}
+        task-management: ${DATASMART_OBSERVABILITY_TASK_MANAGEMENT_BASE_URL:http://localhost:8081}
+        datasource-management: ${DATASMART_OBSERVABILITY_DATASOURCE_MANAGEMENT_BASE_URL:http://localhost:8082}
+        data-sync: ${DATASMART_OBSERVABILITY_DATA_SYNC_BASE_URL:http://localhost:8086}
+        data-quality: ${DATASMART_OBSERVABILITY_DATA_QUALITY_BASE_URL:http://localhost:8083}
+        agent-runtime: ${DATASMART_OBSERVABILITY_AGENT_RUNTIME_BASE_URL:http://localhost:8091}
+        observability: ${DATASMART_OBSERVABILITY_SELF_BASE_URL:http://localhost:8084}
+        python-ai-runtime: ${DATASMART_OBSERVABILITY_PYTHON_AI_RUNTIME_BASE_URL:http://localhost:8090}
 
 logging:
   level:

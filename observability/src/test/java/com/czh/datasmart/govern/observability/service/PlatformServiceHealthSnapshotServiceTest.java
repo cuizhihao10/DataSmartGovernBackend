@@ -14,6 +14,8 @@ import org.junit.jupiter.api.Test;
 
 import java.net.URI;
 import java.time.Duration;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -76,6 +78,31 @@ class PlatformServiceHealthSnapshotServiceTest {
                 });
     }
 
+    @Test
+    void shouldUseConfiguredContainerServiceBaseUrlAndKeepLocalFallback() {
+        PlatformHealthProbeProperties properties = new PlatformHealthProbeProperties();
+        properties.setServiceBaseUrls(new LinkedHashMap<>(Map.of(
+                "data-quality", "http://data-quality:8083/",
+                "python-ai-runtime", "http://python-ai-runtime:8090")));
+        RecordingProbeClient probeClient = new RecordingProbeClient();
+        PlatformServiceHealthSnapshotService service = new PlatformServiceHealthSnapshotService(
+                new PlatformClosureReadinessService(),
+                probeClient,
+                properties);
+
+        service.buildSnapshot(false);
+
+        /*
+         * data-quality 使用容器 DNS，且配置末尾的斜杠不会造成 "//actuator"；
+         * gateway 未配置覆盖地址，因此继续使用 localhost，证明本地运行方式没有被破坏。
+         */
+        assertThat(probeClient.requestedUris)
+                .contains(
+                        URI.create("http://data-quality:8083/actuator/health"),
+                        URI.create("http://python-ai-runtime:8090/agent/capabilities/closure-readiness"),
+                        URI.create("http://localhost:8080/actuator/health"));
+    }
+
     /**
      * 测试专用 fake 探针客户端。
      *
@@ -95,6 +122,19 @@ class PlatformServiceHealthSnapshotServiceTest {
                 return new PlatformEndpointProbeResult(true, 404, 8, "HTTP_404");
             }
             return new PlatformEndpointProbeResult(true, 200, 5, "OK");
+        }
+    }
+
+    /**
+     * 只记录请求目标的探针客户端，用来验证 URL 解析规则，不发出真实网络请求。
+     */
+    private static class RecordingProbeClient implements PlatformEndpointProbeClient {
+        private final java.util.List<URI> requestedUris = new java.util.ArrayList<>();
+
+        @Override
+        public PlatformEndpointProbeResult probe(URI uri, Duration timeout) {
+            requestedUris.add(uri);
+            return new PlatformEndpointProbeResult(true, 200, 1, "OK");
         }
     }
 }

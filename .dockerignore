@@ -1,0 +1,28 @@
+# 版本控制、IDE 与本地 Codex 元数据不属于镜像构建输入。
+.git
+.github
+.idea
+.vscode
+.codex
+
+# Maven/Python 本地缓存和构建产物必须由镜像 builder 阶段重新生成，不能把宿主机产物带入镜像。
+.m2
+**/target
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+**/*.pyo
+**/*.egg-info
+
+# 本地运行日志、临时数据库和编辑器文件可能包含环境路径或排障信息，禁止进入构建上下文。
+logs
+*.log
+*.tmp
+*.bak
+.DS_Store
+Thumbs.db
+
+# 文档与测试不参与生产镜像构建；源码、POM、pyproject 和 Dockerfile 仍保留。
+docs
+**/src/test
+python-ai-runtime/tests

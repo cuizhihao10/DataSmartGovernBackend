@@ -10,6 +10,10 @@
     <artifactId>agent-runtime</artifactId>
     <name>Agent Runtime Module</name>
     <description>智能体运行时控制面 - 负责模型路由、Agent 调用契约、工具编排入口和未来类 OpenClaw 工作区隔离</description>
+    <properties>
+        <!-- agent-runtime 是 Java Agent Host 控制面，需要启用可执行 jar 以进入统一部署链路。 -->
+        <spring-boot.repackage.skip>false</spring-boot.repackage.skip>
+    </properties>
     <dependencies>
         <dependency>
             <groupId>com.czh.datasmart</groupId>

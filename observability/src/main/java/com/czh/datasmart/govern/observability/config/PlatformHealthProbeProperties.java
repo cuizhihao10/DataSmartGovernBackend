@@ -10,6 +10,9 @@ import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /**
  * 平台健康探针配置。
  *
@@ -48,4 +51,21 @@ public class PlatformHealthProbeProperties {
      * 需要防止一次诊断请求扩散成大量下游 HTTP 调用。</p>
      */
     private int maxProbeTargets = 32;
+
+    /**
+     * 按平台模块代码配置的探针根地址。
+     *
+     * <p>键必须与 {@code PlatformClosureReadinessService} 中的 {@code moduleCode} 一致，例如
+     * {@code gateway}、{@code data-quality}、{@code python-ai-runtime}。值只填写协议、主机和端口，
+     * 例如 {@code http://data-quality:8083}，具体的 health/metrics 路径仍由平台模块清单统一维护。</p>
+     *
+     * <p>为什么不能始终使用 localhost：
+     * 在开发机上，所有服务都直接监听宿主机端口，localhost 是正确目标；但在 Docker 或 Kubernetes 中，
+     * localhost 只代表 observability 容器自身。若继续硬编码 localhost，除 observability 自身外的探针
+     * 都会访问错误进程。使用模块级根地址后，Compose 可以注入服务 DNS，生产环境也可替换为集群 Service。</p>
+     *
+     * <p>该映射允许为空。未配置某个模块时，探针服务会回退到
+     * {@code http://localhost:<defaultPort>}，从而保持既有本地启动方式向后兼容。</p>
+     */
+    private Map<String, String> serviceBaseUrls = new LinkedHashMap<>();
 }

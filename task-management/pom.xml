@@ -10,6 +10,10 @@
     <artifactId>task-management</artifactId>
     <name>Task Management Module</name>
     <description>任务管理模块 - 负责全平台任务的创建、调度、监控、复盘</description>
+    <properties>
+        <!-- task-management 是独立微服务，需要产出包含运行依赖和启动清单的可执行 jar。 -->
+        <spring-boot.repackage.skip>false</spring-boot.repackage.skip>
+    </properties>
     <dependencies>
         <dependency>
             <groupId>com.czh.datasmart</groupId>
