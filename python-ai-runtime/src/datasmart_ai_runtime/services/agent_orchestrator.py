@@ -1,8 +1,9 @@
 ﻿"""Agent 编排器。
 
-这个编排器模拟 OpenClaw/LangGraph 风格的“节点式状态流转”，但暂时不用外部框架。这样我们可以
-先把业务状态、模型路由、工具规划、审批判断这些关键概念稳定下来，再把节点迁移到真正的
-LangGraph Graph 或 OpenClaw Runtime 中。
+这个编排器最初用手写顺序流模拟 OpenClaw/LangGraph 风格的“节点式状态流转”。现在主路径已经接入
+`LangGraphAgentPlanningWorkflow` 作为工作流外壳：LangGraph 负责低敏控制流 preview 和框架诊断，
+现有编排器继续负责稳定的业务计划。后续可以把 plan_tools、retrieve_memory、readiness、resume gate
+逐步迁移成真实 LangGraph 节点，而不是一次性推翻已通过 smoke 的主链路。
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from datasmart_ai_runtime.domain.skills import AgentSkillPlan
 from datasmart_ai_runtime.services.agent_model_intent_node import AgentModelIntentNode, AgentModelIntentNodeResult
 from datasmart_ai_runtime.services.context_builder import ContextBuilder, DefaultContextBuilder
 from datasmart_ai_runtime.services.intent_analyzer import IntentAnalyzer, RuleBasedIntentAnalyzer
+from datasmart_ai_runtime.services.langgraph_planning_workflow import LangGraphAgentPlanningWorkflow
 from datasmart_ai_runtime.services.memory.memory_planner import AgentMemoryPlanner
 from datasmart_ai_runtime.services.memory.memory_retriever import AgentMemoryRetriever, InMemoryAgentMemoryRetriever
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
@@ -66,6 +68,7 @@ class AgentOrchestrator:
         model_intent_node: AgentModelIntentNode | None = None,
         model_tool_call_budget_policy_provider: ModelToolCallBudgetPolicyProvider | None = None,
         tool_execution_feedback_provider: ModelToolExecutionFeedbackProvider | None = None,
+        planning_workflow: LangGraphAgentPlanningWorkflow | None = None,
     ) -> None:
         self._model_routes = model_routes
         self._tool_planner = tool_planner
@@ -84,6 +87,7 @@ class AgentOrchestrator:
             model_tool_call_budget_policy_provider=model_tool_call_budget_policy_provider,
             tool_execution_feedback_provider=tool_execution_feedback_provider,
         )
+        self._planning_workflow = planning_workflow or LangGraphAgentPlanningWorkflow.from_env()
 
     def plan(self, request: AgentRequest) -> AgentPlan:
         """为用户治理目标生成 Agent 计划。
@@ -93,7 +97,11 @@ class AgentOrchestrator:
         包含耗时、输入摘要、输出摘要、错误码、TraceId 的运行时事件。
         """
 
-        state_trace: list[str] = []
+        # LangGraph 工作流外壳先运行，但它只产生低敏 workflow 诊断，不执行工具、不写 outbox、不调用模型。
+        # 这样我们能尽快把主流 LangGraph 接入真实 `/agent/plans` 主路径，同时不破坏现有编排器已经稳定的
+        # 模型路由、工具计划、记忆检索和 runtime event 逻辑。
+        workflow_diagnostics = self._planning_workflow.run(request)
+        state_trace: list[str] = [f"workflow:{workflow_diagnostics.status.lower()}"]
         request_id = str(uuid4())
         run_id = str(uuid4())
         event_recorder = RuntimeEventRecorder(
@@ -256,6 +264,7 @@ class AgentOrchestrator:
             memory_plan=memory_plan,
             memory_retrieval_report=memory_retrieval_report,
             runtime_events=event_recorder.events(),
+            workflow_diagnostics=workflow_diagnostics.to_summary(),
         )
 
     def _select_skills(self, request: AgentRequest, intent_analysis: IntentAnalysis) -> AgentSkillPlan:

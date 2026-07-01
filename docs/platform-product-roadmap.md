@@ -1,5 +1,28 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-07-01 追加落地进展：LangGraph Planning Workflow Shell
+- 本阶段按“快速闭环收敛，但必须接入主流 Agent 技术栈”的要求，把 Python Runtime 的 `/agent/plans` 主路径接入真实 LangGraph 工作流外壳；本次不重写全部编排器，也不扩展新的业务域，而是为后续把工具计划、记忆检索、执行准备度和恢复门禁迁成图节点建立稳定入口。
+- 已落地能力：
+  - `python-ai-runtime[api]` 可选依赖新增 `langgraph>=0.2,<2.0`，让 API 运行时具备真实 LangGraph Graph API；
+  - 新增 `LangGraphAgentPlanningWorkflow`，使用 `StateGraph` 编译并执行 `receive_goal -> governance_gate -> existing_orchestrator_handoff -> finalize` 低敏控制流；
+  - `AgentOrchestrator` 在保留原有模型路由、上下文、Skill、工具计划、记忆和 runtime event 主链路的同时，先运行 LangGraph workflow diagnostics；
+  - `/agent/plans` 响应新增顶层 `agentWorkflowDiagnostics`，展示 engine、status、compiled、executed、nodeTrace、fallback 和下一批迁移节点；
+  - Agent 能力矩阵新增 `stack.langgraph-workflow`，明确当前是 `partial_closed_loop`，避免把 preview shell 误标成完整生产图执行；
+  - `pyproject.toml` 新增 `rag = ["chromadb>=0.5,<2.0"]` 可选依赖组，为下一步 Chroma/RAG 闭环预留安装边界，但不让普通规划测试强依赖向量库。
+- 安全边界：
+  - 当前 LangGraph 图只处理低敏控制面字段，不保存 prompt、SQL、工具参数、样本数据、模型输出、token、内部 endpoint 或完整异常堆栈；
+  - 当前图不执行工具、不写 outbox、不创建审批、不调用模型、不访问源端数据；
+  - LangGraph 依赖缺失或运行失败时默认 fail-open，返回明确 fallback 诊断并继续现有编排路径，避免本地学习环境或 CI 因可选依赖中断。
+- 验证结果：
+  - 定向 Python 测试通过：`test_langgraph_planning_workflow.py`、`test_agent_orchestrator.py`、`test_api_bootstrap.py` 共 26 个用例；
+  - Python Runtime 全量测试通过：`python -m pytest python-ai-runtime\tests`，共 580 个用例；
+  - 本机已安装并真实调用 LangGraph，验证返回 `LANGGRAPH_EXECUTED`、`dependencyAvailable=True`、`compiled=True`、`executed=True`；
+  - 当前新增/改动 Python 文件继续保持低于 500 行。
+- 收敛判断：
+  - 这一步关闭的是“Python Runtime 还没有真实 LangGraph 接入点”的缺口，不代表 Agent 工作流已经全部迁移完成；
+  - 下一步若继续 AI Runtime，应只做两条收口线：把 `plan_tools/retrieve_memory/tool_execution_readiness/resume_gate` 渐进迁为 LangGraph 节点，以及把 Chroma RAG 检索/写入做成可替换 adapter；
+  - data-quality、observability 的产品闭环仍然需要继续补齐，但完整全平台 E2E/smoke 应等这些具体服务切片完成后再统一执行。
+
 ## 2026-07-01 追加落地进展：Data Quality And Observability Closure Slice
 - 本阶段按用户最新要求优先补齐 `data-quality` 与 `observability` 的闭环能力，但仍遵守“整体项目收敛”原则，没有继续发散新的 Agent 能力、模型能力或数据同步大功能。
 - `data-quality` 已补齐质量报告低敏导出主路径：

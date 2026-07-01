@@ -463,3 +463,4 @@ class AgentPlan:
     memory_plan: AgentMemoryPlan = field(default_factory=AgentMemoryPlan)
     memory_retrieval_report: AgentMemoryRetrievalReport = field(default_factory=AgentMemoryRetrievalReport)
     runtime_events: tuple[AgentRuntimeEvent, ...] = ()
+    workflow_diagnostics: dict[str, Any] = field(default_factory=dict)

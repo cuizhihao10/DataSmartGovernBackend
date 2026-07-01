@@ -234,6 +234,7 @@ def build_plan_response(
         event_publisher=event_publisher,
     )
     response = _build_base_response(plan, event_transport_builder)
+    response["agentWorkflowDiagnostics"] = plan.workflow_diagnostics
     response["agentWorkspace"] = workspace_context.to_summary()
     response["toolExecutionReadiness"] = tool_execution_readiness_response
     response["agentCapabilityClosure"] = agent_capability_closure

@@ -409,6 +409,7 @@ def _default_capability_domains() -> tuple[AgentCapabilityDomain, ...]:
             sub_capabilities=(
                 _cap("stack.fixed-backend", "固定后端技术栈", S.OPERATIONAL, "root/maven/docker", "JDK 21、Spring Boot、Kafka、MySQL、Redis、Neo4j、Chroma、MinIO 已在项目契约中固定。", "生产部署硬化和环境分层仍需后续完善。", "继续维护 JDK 21 toolchain 与本地/生产配置说明。", "需要按环境拆分资源配额和连接池。", "配置不能包含明文密钥。"),
                 _cap("stack.replaceable-adapters", "可替换适配层", S.PARTIAL_CLOSED_LOOP, "python-ai-runtime services", "已有 model provider、memory store、checkpoint store 等抽象。", "vector store、workflow engine、web search provider 仍需更明确 adapter 契约。", "把 Chroma/SQLite FTS/未来 pgvector 保持在同一 memory adapter 边界。", "适配层要支持健康诊断和降级。", "替换实现不得改变权限和低敏边界。"),
+                _cap("stack.langgraph-workflow", "LangGraph 规划工作流", S.PARTIAL_CLOSED_LOOP, "python-ai-runtime/services/langgraph_planning_workflow", "已把真实 LangGraph StateGraph 编译/调用外壳接入 `/agent/plans` 主路径，并通过低敏 `agentWorkflowDiagnostics` 暴露 compiled、executed、nodeTrace、fallback 和下一批迁移节点。", "当前只承载 receive_goal、governance_gate、existing_orchestrator_handoff、finalize 这条 preview 控制流，核心 plan_tools、retrieve_memory、readiness、resume gate 仍由现有编排器执行。", "下一步把工具计划、记忆检索、工具执行准备度和人工恢复门禁逐步迁成 LangGraph 条件节点，保持每次迁移都可回退、可测试、可低敏观测。", "LangGraph 节点需要记录耗时、失败分类、重试/跳过原因和节点级 backpressure；迁移执行节点前必须先设计 checkpoint、resume 和幂等键。", "工作流状态只能保存低敏控制面字段，不能把 prompt、SQL、工具参数、样本数据、模型输出、token、内部 endpoint 或完整异常堆栈放入 trace、事件或诊断响应。"),
             ),
         ),
         AgentCapabilityDomain(

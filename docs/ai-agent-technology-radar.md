@@ -1,5 +1,22 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-07-01 落地补充：LangGraph should become the workflow spine, not a side note
+
+- 本轮趋势校准：
+  - Codex、Claude Code、OpenClaw 类 Agent Host 的核心不只是“能调用模型”，而是要有可恢复的工作流骨架：状态节点、条件边、工具门禁、人工确认、记忆检索、运行事件和失败恢复都应能被统一编排；
+  - DataSmart 当前已经有较多手写编排能力，直接推翻会破坏收敛节奏，因此更合适的路线是先接入 LangGraph 外壳，再把 plan_tools、retrieve_memory、readiness、resume gate 逐步迁成真实节点；
+  - RAG/向量库同样不应从零实现底层存储，当前应以 Chroma-compatible adapter 作为近期闭环，保留未来 Milvus、pgvector 或企业向量服务替换空间。
+- 本轮落地到代码的能力：
+  - Python Runtime 新增 `LangGraphAgentPlanningWorkflow`，真实使用 LangGraph `StateGraph` compile/invoke；
+  - `/agent/plans` 顶层新增 `agentWorkflowDiagnostics`，可观察 LangGraph 是否启用、是否编译、是否执行、节点 trace 和 fallback；
+  - `AgentOrchestrator` 保留现有稳定业务编排，只把 LangGraph 作为低敏工作流外壳接入，避免一次性重构主路径；
+  - `pyproject.toml` 新增 `langgraph` API 依赖与 `chromadb` RAG 可选依赖组，为后续主流框架能力闭环做准备；
+  - Agent 能力矩阵新增 `stack.langgraph-workflow`，把该能力标记为 partial closed-loop，而不是虚报已完成。
+- 产品判断：
+  - 这一步是 AI Runtime 收敛的必要地基，不是继续无限发散 Agent 能力；
+  - 下一步只建议做“图节点迁移 + Chroma RAG adapter + data-quality/observability 闭环”，不再继续新增无验收边界的 Agent 花活；
+  - 全平台 E2E/smoke 应放在这些服务切片完成后统一跑，避免每接一个技术点就反复启动全平台。
+
 ## 2026-06-30 落地补充：Agent diagnostics need authenticated smoke verification, not only routes
 
 - 本轮趋势校准：
