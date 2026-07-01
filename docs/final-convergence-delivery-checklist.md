@@ -123,6 +123,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\failure-drill-chec
 
 结果口径：默认模式只验证故障演练交付边界，不执行故障注入、不停止容器、不修改网络、不删除 volume、不读取 Secret、不触发 worker；它会检查 [failure-drill-runbook.md](failure-drill-runbook.md)、Compose 组件、恢复与容量前置条件、Prometheus/Alertmanager 观测路径。演练 runner 可追加 `-CheckLocalTools`，或追加 `-WriteDrillPlan` 生成无敏感信息计划。
 
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-closure-audit.ps1 `
+  -RunPythonTests `
+  -RunMavenTests `
+  -WriteEvidence
+```
+
+结果口径：最终审计同时核对 Java 业务模块、OIDC/权限、11 类 Agent 能力域、LangGraph、多智能体角色分层、部署、观测、生产门禁与文件规模，并可复跑 Python/Maven 全量测试。详细结论见 [final-platform-closure-audit.md](final-platform-closure-audit.md)；证据 JSON 只写入 Git 忽略的 `target/final-platform-closure`。
+
 ## 5. 生产上线前待办
 
 这些事项属于“商业化生产加固”，不是继续扩展本地 demo 功能。后续若继续推进，优先级应高于新增 Agent 角色或新增业务分支。
