@@ -255,6 +255,7 @@ GET http://localhost:8090/agent/metrics
 脚本默认检查：
 
 - 关键文件是否存在，例如根 `pom.xml`、JDK 21 文档、Compose 文件、Keycloak realm、关键 MySQL 迁移。
+- Gateway 是否保留 `spring-cloud-starter-loadbalancer`、Caffeine 实例缓存和 404/503 状态码保留处理，避免 `lb://` 服务发现路由退化为运行时 500。
 - 关键容器是否运行，例如 MySQL、Redis、Kafka、Nacos、Keycloak、Prometheus、Grafana。
 - 关键 HTTP 探针是否可访问，例如 `/actuator/health`、Keycloak realm metadata、gateway auth capabilities、data-sync connector capabilities、task-management receipt query。
 - AI Runtime 闭环契约是否仍然存在，例如 `/agent/metrics` 指标路由、`agentMemoryRetrievalWorkflow` 低基数指标记录、多 Agent `runtimeAgentDeliveryTiers` 分层、gateway `/api/agent/metrics` 统一入口和能力矩阵证据。
@@ -310,6 +311,17 @@ GET http://localhost:8080/api/agent/async-task-commands/outbox/diagnostics
 - 如果返回 `401/403`，优先检查 Keycloak realm、`aud=datasmart-gateway`、DataSmart 必需 claim、gateway OIDC 配置和 permission-admin 路由策略。
 - 如果返回 `502/503` 或超时，优先检查 gateway 路由顺序、`python-ai-runtime-runtime-diagnostics` 路由是否仍位于通用 `/api/agent/** -> agent-runtime` 之前、Python Runtime 是否已在 `8090` 端口启动，以及 Java agent-runtime 是否已在 `8091` 端口启动。
 - 如果 `/auth/session` 通过但 Agent 诊断路由失败，说明身份解析已经成功，问题更可能集中在 permission-admin 对 `/api/agent/**` 诊断路由的授权、gateway route rewrite、Python Runtime 下游可达性或 Java agent-runtime 下游可达性。
+- 如果 Gateway 日志出现 `NoLoadBalancerClientFilter` 或 `Unable to find instance for <service>`，先确认 `gateway/pom.xml` 保留 `spring-cloud-starter-loadbalancer`，再确认 Nacos 中存在健康实例并重启 Gateway。仅引入 Nacos Discovery 只能完成注册发现，不能替代 Gateway 执行 `lb://` 路由所需的 Reactive LoadBalancer。
+- Gateway 的 `GlobalExceptionHandler` 应保留 Spring 已判定的 404/503 状态码。503 表示下游暂时不可用，调用方可以执行受控重试或熔断；500 表示 Gateway 自身未知错误，两者不应混淆。公开响应只返回通用状态消息，不回传内部服务名、实例地址或异常 reason。
+
+2026-07-01 当前本地验证基线：
+
+```text
+.\scripts\local-e2e-smoke-check.ps1 -CheckServiceAccountToken -CheckAgentGatewayDiagnostics
+PASS=89, WARN=0, FAIL=0
+```
+
+该结果证明当前本机的 Keycloak、Gateway、permission-admin、Java 服务、Python Runtime、Prometheus/Grafana，以及认证后的 Python/Java Agent 控制面只读链路可以贯通。它仍然不是生产发布证明；生产环境还需要独立完成高可用部署、容量压测、故障演练、Secret 管理、TLS/mTLS、正式 IdP、备份恢复和升级回滚验证。
 
 需要特别注意：`sync-service + password grant` 只服务于本地开发 smoke。生产环境不应使用 password grant 或仓库内样例密码，服务间调用应改为 OIDC client credentials、企业 IdP 托管服务账号、mTLS 或 service mesh 身份，并把 client secret 放入 Secret Manager、Kubernetes Secret 或企业密钥库。
 

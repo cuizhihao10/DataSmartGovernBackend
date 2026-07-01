@@ -1,5 +1,27 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-07-01 追加落地进展：Gateway LoadBalancer And Real Platform Smoke Closure
+- 本阶段按“真实全平台 smoke 优先”的收敛路线执行，没有新增 Agent、LangGraph 节点或业务 API，而是运行真实认证链路并修复暴露出的入口层基础设施缺口。
+- 真实故障与根因：
+  - 初次真实 smoke 中，直连 Python Runtime `8090`、Java Agent Runtime `8091` 和所有业务服务均返回 200，但认证后经 Gateway 访问 `/api/agent/metrics` 与 Java Agent Runtime 控制面时出现 9 个 HTTP 500；
+  - Gateway 日志实际为 `503 SERVICE_UNAVAILABLE "Unable to find instance for agent-runtime"`，并由 `NoLoadBalancerClientFilter` 抛出；
+  - 根因是 Gateway 虽已接入 Nacos Discovery，却没有显式引入执行 `lb://` 路由所需的 Spring Cloud LoadBalancer；同时全局异常处理把框架已经分类的 503 误包装为 500。
+- 已落地修复：
+  - `gateway/pom.xml` 新增 `spring-cloud-starter-loadbalancer`，让 task、permission、datasource、data-sync、data-quality、agent-runtime、observability 等 `lb://` 路由真正消费 Nacos 健康实例；
+  - 新增 Caffeine 依赖作为 LoadBalancer 生产实例缓存，替代仅适合开发/测试的默认缓存；
+  - `GlobalExceptionHandler` 新增 `ResponseStatusException` 专用处理，保留 404/503 等原始状态，同时只返回低敏通用消息；
+  - 新增 `GlobalExceptionHandlerTest`，验证 503 不会变成 500、内部服务名不会进入公开响应；
+  - smoke 静态契约新增 LoadBalancer、Caffeine 和状态码语义检查。
+- 真实闭环结果：
+  - Gateway 重启后成功从 Nacos 发现 `agent-runtime` 健康实例；
+  - Caffeine 生效后启动日志不再出现 LoadBalancer 默认缓存生产警告；
+  - `local-e2e-smoke-check.ps1 -CheckServiceAccountToken -CheckAgentGatewayDiagnostics` 最终通过：`PASS=89, WARN=0, FAIL=0`；
+  - Keycloak、Gateway、permission-admin、所有 Java 服务、Python Runtime、Prometheus/Grafana，以及认证后的 Python/Java Agent 只读控制面均已在当前本机形成真实 HTTP 闭环。
+- 下一步推荐路线：
+  1. 不再扩张 Agent 展示能力，转入“可重复启动与发布交付”闭环；
+  2. 优先补 Spring Boot 可执行 jar/repackage、模块容器镜像和统一 Compose/部署启动，而不是继续依赖本机 `mvn spring-boot:run`；
+  3. 随后完成生产配置分层、Secret 外置、TLS/mTLS、正式 OIDC client credentials、备份恢复和最小容量/故障演练。
+
 ## 2026-07-01 追加落地进展：Agent Runtime Gateway Authorization Probe Closure
 - 本阶段继续承接项目“尽快闭环收敛”的路线，没有新增 Agent 角色、没有新增 LangGraph 节点、没有触发工具执行或数据同步，而是把上一阶段直连 `agent-runtime:8091` 的只读控制面探针推进到统一 gateway 认证授权路径。
 - 已落地能力：

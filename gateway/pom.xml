@@ -38,6 +38,33 @@
             <groupId>org.springframework.cloud</groupId>
             <artifactId>spring-cloud-starter-gateway</artifactId>
         </dependency>
+        <!--
+            application.yml 中 task-management、permission-admin、data-sync、agent-runtime 等下游路由
+            使用 `lb://服务名`。Nacos Discovery 负责注册和查询服务实例，但它不会单独提供 Gateway
+            执行 `lb://` URI 所需的 ReactiveLoadBalancerClientFilter。
+
+            显式引入 Spring Cloud LoadBalancer 后，Gateway 才能把 Nacos 返回的服务实例转换为真实
+            HTTP 目标地址，并在多实例场景中完成客户端负载均衡。缺少该依赖时，服务即使已经注册到
+            Nacos、直连端口也返回 200，Gateway 仍会通过 NoLoadBalancerClientFilter 返回
+            “Unable to find instance”，造成所有服务发现路由在真实 E2E 中不可用。
+        -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-loadbalancer</artifactId>
+        </dependency>
+        <!--
+            Spring Cloud LoadBalancer 在没有高性能缓存实现时会退回仅适合开发与测试的默认缓存，
+            并在启动日志中明确提示生产环境改用 Caffeine。Gateway 是平台统一入口，服务实例列表、
+            健康实例选择与短时服务发现结果会处于高频访问路径，因此这里显式加入 Caffeine。
+
+            该缓存只服务于 LoadBalancer 的实例选择元数据，不缓存 access token、请求正文、
+            AgentPlan、工具参数或业务响应。缓存失效仍由 Spring Cloud/Nacos 的服务实例更新机制管理，
+            不在业务代码中手工维护实例地址，避免把动态服务发现重新退化为静态路由表。
+        -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>

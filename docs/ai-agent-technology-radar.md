@@ -1,5 +1,24 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-07-01 落地补充：Agent gateway needs a real reactive service-discovery data plane
+
+- 本轮趋势校准：
+  - 成熟 Agent Gateway 的“服务已注册”与“请求可转发”是两个不同层次：Nacos/Consul/Eureka 负责实例发现，Spring Cloud LoadBalancer 或等价数据面组件负责把逻辑服务名解析为健康实例并完成请求转发。
+  - Agent 控制面包含 sessions、tools、skills、models、memory、runtime events 和 outbox diagnostics；如果统一入口的 `lb://` 数据面没有真正启用，这些能力即使直连全部可用，也不能算平台闭环。
+  - 下游无健康实例属于 503 服务不可用，不属于 500 未知程序错误。正确状态码是客户端受控重试、熔断、告警分级和 SLO 归因的基础。
+- 本轮落地到代码与真实运行的能力：
+  - Gateway 显式接入 `spring-cloud-starter-loadbalancer`，Nacos 健康实例现在可以被 `lb://agent-runtime` 等路由真实消费；
+  - LoadBalancer 使用 Caffeine 缓存服务实例选择元数据，不缓存 token、prompt、工具参数、AgentPlan 或业务响应；
+  - `GlobalExceptionHandler` 保留框架已判定的 404/503，并用通用消息隐藏内部服务名、实例地址和异常 reason；
+  - smoke 静态契约保护 LoadBalancer、Caffeine 与状态码语义，运行时探针继续验证认证后的 Python/Java Agent 控制面。
+- 验收结果：
+  - 初次真实 smoke 暴露 9 个 Gateway 500，实际根因为缺少 Reactive LoadBalancer；
+  - 修复并重启 Gateway 后，Nacos 成功返回 `agent-runtime` 健康实例，认证后的 Agent 控制面全部返回 200；
+  - 最终全平台 smoke 为 `PASS=89, WARN=0, FAIL=0`。
+- 产品判断：
+  - 当前 Agent Gateway 的本地真实只读链路已闭合，下一阶段不应再继续堆叠 Agent 展示字段；
+  - 更高价值的收敛工作是可执行 jar、容器镜像、生产配置/Secret、TLS/mTLS、正式服务账号、容量基线和故障演练，让当前能力从“本机可运行”推进到“可交付部署”。
+
 ## 2026-07-01 落地补充：Agent Runtime gateway authorization path becomes the acceptance boundary
 
 - 本轮趋势校准：
