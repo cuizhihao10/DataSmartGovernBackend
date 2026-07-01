@@ -1,5 +1,23 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-07-01 落地补充：Multi-agent orchestration needs an explicit LangGraph control graph
+
+- 本轮趋势校准：
+  - Codex、Claude Code、OpenClaw 类 Agent Host 不是“一个超级 Agent + 一堆工具”就能完成商业闭环；它们需要主控 Agent、专家 Agent、权限/记忆/运维防护 Agent、handoff、全局状态和恢复门禁共同工作；
+  - 多智能体协作不能只在文档里列角色，也不能只在响应里返回参与 Agent 列表；成熟做法是把协作事实放入可执行图，逐步承载状态同步、条件边、人工确认和恢复；
+  - DataSmart 当前阶段不应直接让多个 Agent 并发执行副作用，否则会绕过 Java 控制面、permission-admin 和审计链路。更稳的路线是先做 LangGraph 协作控制图，再逐步迁移真实业务节点。
+- 本轮落地到代码的能力：
+  - 新增 `LangGraphMultiAgentCollaborationWorkflow`；
+  - `/agent/plans` 新增 `agentCollaborationWorkflow`；
+  - 协作图执行 `ingest_session_scheduling -> map_agent_roster -> synchronize_global_state -> evaluate_handoff_policy -> finalize_collaboration`；
+  - 响应明确输出 `complexFlowOrchestration`、`globalStateManagement`、`multiAgentCollaboration`；
+  - 响应明确区分技术路线规划的 8 个产品 Agent、当前已覆盖 Agent、缺失 Agent 和运行治理 Agent；
+  - 协作图继续保持低敏，不读取或输出 prompt、SQL、工具参数、样本数据、模型输出、token 或内部 endpoint。
+- 产品判断：
+  - LangGraph 已从“规划入口外壳”推进到“多智能体协作控制图”，但还不是完整的 OpenClaw/Codex 级执行 runtime；
+  - 下一步应优先迁移 plan_tools、retrieve_memory、tool_execution_readiness、resume_gate 和 specialist handoff 条件节点；
+  - 技术路线中的 ETL、数据资产、合规脱敏、反思优化 Agent 仍需补业务节点和 Java 控制面事实，不能把现有治理角色误认为全部专项 Agent 已完成。
+
 ## 2026-07-01 落地补充：LangGraph should become the workflow spine, not a side note
 
 - 本轮趋势校准：

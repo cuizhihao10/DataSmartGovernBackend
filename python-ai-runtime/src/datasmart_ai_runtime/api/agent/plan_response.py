@@ -31,6 +31,9 @@ from datasmart_ai_runtime.services.agent_execution import AgentExecutionClosureS
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
 from datasmart_ai_runtime.services.agent_gateway import build_agent_session_scheduling_runtime_event
 from datasmart_ai_runtime.services.agent_workspace import AgentWorkspaceContext, AgentWorkspaceContextBuilder
+from datasmart_ai_runtime.services.langgraph_multi_agent_collaboration import (
+    LangGraphMultiAgentCollaborationWorkflow,
+)
 from datasmart_ai_runtime.services.runtime_events.runtime_event_live_push import RuntimeEventLivePushHub
 from datasmart_ai_runtime.services.runtime_events.runtime_event_publisher import RuntimeEventPublisher
 from datasmart_ai_runtime.services.runtime_events.runtime_event_store import RuntimeEventStore
@@ -213,6 +216,15 @@ def build_plan_response(
         skill_manifest_diagnostics=skill_manifest_diagnostics,
         agent_execution_closure=agent_execution_closure_summary,
     )
+    # LangGraph 多智能体协作图消费的是上一步已经生成的 `agentSessionScheduling` 低敏策略视图。
+    # 它不重新做权限、Skill、工具预算或模型决策，也不执行任何工具；它只把“哪些 Agent 参与、哪些规划
+    # Agent 尚未覆盖、当前全局状态是什么、是否需要 handoff”放进真实 LangGraph StateGraph 流转。
+    # 这样既回应了项目技术路线中“LangGraph + 多智能体协作”的要求，又不会绕过 Java 控制面副作用边界。
+    agent_collaboration_workflow = LangGraphMultiAgentCollaborationWorkflow.from_env().run(
+        request=request,
+        plan=plan,
+        scheduling=intelligent_gateway_governance.get("agentSessionScheduling", {}),
+    )
     plan = _attach_skill_visibility_event(
         plan,
         request=request,
@@ -235,6 +247,7 @@ def build_plan_response(
     )
     response = _build_base_response(plan, event_transport_builder)
     response["agentWorkflowDiagnostics"] = plan.workflow_diagnostics
+    response["agentCollaborationWorkflow"] = agent_collaboration_workflow.to_summary()
     response["agentWorkspace"] = workspace_context.to_summary()
     response["toolExecutionReadiness"] = tool_execution_readiness_response
     response["agentCapabilityClosure"] = agent_capability_closure

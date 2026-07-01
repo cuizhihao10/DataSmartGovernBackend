@@ -1,5 +1,31 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-07-01 追加落地进展：LangGraph Multi-Agent Collaboration Control Graph
+- 本阶段继续补齐用户追问的 LangGraph 能力边界：上一阶段 LangGraph 只参与规划入口外壳，还没有真正承担复杂流程编排、全局状态管理和多智能体协作。本阶段新增 LangGraph 多智能体协作控制图，让 `/agent/plans` 能明确展示这三类能力的当前状态。
+- 已落地能力：
+  - 新增 `LangGraphMultiAgentCollaborationWorkflow`；
+  - 使用 LangGraph `StateGraph` 编译并执行 `ingest_session_scheduling -> map_agent_roster -> synchronize_global_state -> evaluate_handoff_policy -> finalize_collaboration`；
+  - `/agent/plans` 顶层新增 `agentCollaborationWorkflow`；
+  - `agentCollaborationWorkflow.capabilities` 明确返回 `complexFlowOrchestration`、`globalStateManagement`、`multiAgentCollaboration`；
+  - 协作图消费既有 `agentSessionScheduling` 低敏策略视图，不重新做权限、Skill、工具预算或模型决策；
+  - 协作图输出规划中 8 个产品 Agent 名册、当前已覆盖 Agent、缺失 Agent、运行治理 Agent 和低敏全局状态。
+- 当前 Agent 覆盖判断：
+  - 技术路线规划的 8 个产品 Agent 是：总控调度、数据源接入、数据质量、ETL 开发、数据资产、合规脱敏、运维告警、反思优化；
+  - 当前代码已有并可参与调度的运行角色包括：`MASTER_ORCHESTRATOR`、`DATASOURCE_AGENT`、`DATA_QUALITY_AGENT`、`DATA_SYNC_AGENT`、`TASK_AGENT`、`PERMISSION_AGENT`、`MEMORY_AGENT`、`OPS_AGENT`、`KNOWLEDGE_AGENT`；
+  - 其中 `TASK_AGENT`、`PERMISSION_AGENT`、`MEMORY_AGENT`、`KNOWLEDGE_AGENT` 属于运行治理/辅助角色，不应误认为已经完整实现全部 8 个专项产品 Agent；
+  - `ETL_DEVELOPMENT_AGENT`、`DATA_ASSET_AGENT`、`COMPLIANCE_MASKING_AGENT`、`REFLECTION_OPTIMIZATION_AGENT` 目前主要是路线/别名覆盖或能力雏形，仍需后续落业务节点和 Java 控制面事实。
+- 安全边界：
+  - 协作图不执行工具、不调用模型、不写 outbox、不创建审批、不访问源端业务数据；
+  - 全局状态只包含状态、角色计数、handoff、工具数量、记忆依赖数量、产品 Agent 覆盖计数和 checkpoint policy；
+  - 不返回 objective、prompt、SQL、工具参数、样本数据、模型输出、token、内部 endpoint 或完整异常堆栈。
+- 验证结果：
+  - 定向测试通过：`test_langgraph_multi_agent_collaboration.py`、`test_langgraph_planning_workflow.py`、`test_agent_session_scheduler.py`、`test_api_bootstrap.py` 共 25 个用例；
+  - 新增文件保持 500 行以内，`langgraph_multi_agent_collaboration.py` 当前 483 行。
+- 收敛判断：
+  - LangGraph 现在已经参与复杂流程编排、全局状态摘要和多智能体协作控制图；
+  - 但它还不是完整生产级多 Agent runtime，因为真实工具执行、持久化 handoff、跨实例状态恢复和全部专项 Agent 业务节点仍未完成；
+  - 下一步应优先把 `plan_tools/retrieve_memory/tool_execution_readiness/resume_gate/specialist handoff` 迁成 LangGraph 条件节点，再补缺失专项 Agent，而不是继续只堆诊断字段。
+
 ## 2026-07-01 追加落地进展：LangGraph Planning Workflow Shell
 - 本阶段按“快速闭环收敛，但必须接入主流 Agent 技术栈”的要求，把 Python Runtime 的 `/agent/plans` 主路径接入真实 LangGraph 工作流外壳；本次不重写全部编排器，也不扩展新的业务域，而是为后续把工具计划、记忆检索、执行准备度和恢复门禁迁成图节点建立稳定入口。
 - 已落地能力：
