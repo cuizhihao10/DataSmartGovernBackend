@@ -14,17 +14,26 @@ spring:
     username: root
     password: password
     driver-class-name: com.mysql.cj.jdbc.Driver
-  data:
-    neo4j:
-      # 当前提前接入 Neo4j，是为了后续扩展血缘分析、知识图谱式规则关联时，
-      # 不需要重新调整模块基础依赖拓扑。
-      uri: bolt://localhost:7687
+  neo4j:
+    # Spring Boot 3.x 的 Neo4j Driver 自动配置读取 spring.neo4j.*，
+    # 不是旧的 spring.data.neo4j.*。如果写错位置，驱动会用无认证 token 访问本地 Neo4j，
+    # /actuator/health 就会因为 "scheme 'none'" 被 Neo4j 拒绝而返回 DOWN。
+    #
+    # 当前 data-quality 提前接入 Neo4j，是为了后续扩展血缘分析、知识图谱式规则关联时，
+    # 不需要重新调整模块基础依赖拓扑。
+    uri: bolt://localhost:7687
+    authentication:
       username: neo4j
       password: password
   kafka:
     # Kafka 预留给后续质量告警、治理事件分发和异步检测链路。
     bootstrap-servers: localhost:9092
   cloud:
+    compatibility-verifier:
+      # 项目已固定使用 Spring Boot 3.5.11、Spring Cloud 2023.0.3 和 Spring Cloud Alibaba 23.0.1.2。
+      # Spring Cloud 的默认兼容性校验表尚未覆盖这个固定组合，真实启动时会在业务 Bean 创建前直接失败。
+      # 因此这里与 gateway 保持一致，关闭硬校验；版本风险通过 Maven 测试、真实 E2E、Actuator 探活和 smoke 脚本兜底。
+      enabled: false
     nacos:
       discovery:
         # Nacos 负责服务注册与发现，支撑网关和其他模块定位当前服务。

@@ -49,5 +49,14 @@
             <groupId>io.micrometer</groupId>
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <!--
+              observability 现在开始承担平台闭环诊断 API，不能再只靠“能启动”判断正确性。
+              引入测试依赖后，可以用轻量单元测试锁定模块清单、公共库边界和低敏响应契约。
+            -->
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

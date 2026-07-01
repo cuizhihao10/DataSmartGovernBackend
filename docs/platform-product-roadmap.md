@@ -1,5 +1,38 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-07-01 追加落地进展：Data Quality And Observability Closure Slice
+- 本阶段按用户最新要求优先补齐 `data-quality` 与 `observability` 的闭环能力，但仍遵守“整体项目收敛”原则，没有继续发散新的 Agent 能力、模型能力或数据同步大功能。
+- `data-quality` 已补齐质量报告低敏导出主路径：
+  - 新增 `GET /quality-rules/reports/{reportId}/exports/low-sensitive-csv`；
+  - 导出报告摘要、规则快照、质量状态、样本量、异常数量、通过率和低敏异常维度；
+  - 明确抑制 `recordIdentifier`、`observedValue`、`expectedValue`、`samplePayload`、`recommendation`、`notes` 等可能含敏字段；
+  - 继续复用 PROJECT 数据范围校验，避免通过猜测 `reportId` 越权下载质量报告；
+  - 使用 `maxAnomalyRows` 与服务端硬上限控制同步导出规模，为后续高敏/大批量异步导出、人审、脱敏和审计保留扩展口。
+- `observability` 已从单纯 `Actuator` 壳推进到平台级闭环控制面：
+  - 新增平台闭环 readiness，用于明确 Java 微服务、Python Runtime 与 `platform-common` 共享库边界；
+  - 新增服务健康快照，按平台服务目录探测 health 与可选 metrics 端点，只返回状态码、耗时和低敏问题分类；
+  - 新增平台基础告警覆盖视图 `GET /observability/platform/alert-coverage`，自动为每个可部署运行时生成 `service-down` 与 `metrics-endpoint-down` 基础规则目录；
+  - 告警覆盖视图会把当前探针异常转换成 CRITICAL/WARNING 告警候选，说明建议处理角色和低敏排障动作；
+  - 该能力不替代 Prometheus/Alertmanager/Grafana，而是作为本项目闭环验收和后续告警物化的控制面。
+- 本地 E2E 脚本已更新：
+  - `local-e2e-environment-readiness.ps1` 把 `data-quality:8083` 与 `observability:8084` 纳入必启端口检查；
+  - `local-e2e-smoke-check.ps1` 纳入 data-quality health、执行器诊断、observability health、closure readiness、service health snapshot 和 alert coverage；
+  - smoke 静态契约检查新增 `low-sensitive-csv` 与 `alert-coverage`，避免这些闭环入口后续被无意删掉。
+- 真实启动缺口已修复：
+  - `data-quality` 与 `observability` 补齐 `spring.cloud.compatibility-verifier.enabled=false`，与 gateway 的固定技术栈策略一致；
+  - `data-quality` 的 Neo4j 配置从旧 `spring.data.neo4j.*` 修正为 Spring Boot 3 的 `spring.neo4j.*`，避免健康检查用无认证 token 访问 Neo4j；
+  - `docker-compose.yml` 为 Nacos 外置 MySQL 连接追加 `allowPublicKeyRetrieval=true`，避免 MySQL 8 默认认证插件导致 Nacos 启动失败。
+- 验证结果：
+  - 定向 Maven 测试通过：`QualityReportLowSensitiveExportServiceTest`、`PlatformClosureReadinessServiceTest`、`PlatformServiceHealthSnapshotServiceTest`、`PlatformAlertCoverageServiceTest` 共 9 个测试；
+  - PowerShell AST 解析通过：`scripts/local-e2e-smoke-check.ps1`、`scripts/local-e2e-environment-readiness.ps1`；
+  - 真实本地探针通过：`data-quality` 的 `/actuator/health`、`/actuator/prometheus`、`/quality-rules/executor/diagnostics` 均返回 200；
+  - 真实本地探针通过：`observability` 的 `/actuator/health`、`/observability/platform/closure-readiness`、`/observability/platform/service-health-snapshots`、`/observability/platform/alert-coverage` 均返回 200；
+  - 当前变更保持 Java 文件拆分，新增服务与 DTO 均低于 500 行。
+- 当前边界：
+  - `data-quality` 已具备规则、扫描计划、执行器、报告、异常聚合、治理任务、执行诊断和低敏导出闭环，但还不是完整的数据质量商业套件；
+  - `observability` 已具备平台目录、健康聚合和基础告警覆盖闭环，但还没有实现完整 Alertmanager 通知、静默、升级、事故单、日志检索和 Grafana dashboard 管理；
+  - 下一步不应继续无限补充单点字段，而应把 gateway、task-management、permission-admin、Python Runtime 等剩余服务重新纳入完整 smoke，把这次已通过的 `data-quality` 与 `observability` 端点放进全平台真实 E2E。
+
 ## 2026-07-01 追加落地进展：Local Real E2E Closure And Observability Endpoint Alignment
 - 本阶段继续按“尽快闭环收敛”推进，没有继续扩展局部业务功能或新 Agent 能力，而是把真实本地 E2E 的基础设施、OIDC 认证、gateway、Java 微服务、Python Runtime 诊断链路和 Prometheus 抓取端点打通。
 - 已落地内容：

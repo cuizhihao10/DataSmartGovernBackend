@@ -117,6 +117,11 @@ spring:
           uri: lb://observability
           predicates:
             - Path=/api/observability/**
+          filters:
+            # observability 内部使用 /observability/** 表达可观测性控制面领域路径。
+            # 外部统一暴露 /api/observability/**，由 gateway 去掉外部前缀并补回服务内领域前缀，
+            # 避免下游 Controller 长期感知网关 API 目录结构。
+            - RewritePath=/api/observability/(?<segment>.*), /observability/$\{segment}
       discovery:
         locator:
           # 打开服务发现定位器，便于后续按服务名动态发现下游服务。

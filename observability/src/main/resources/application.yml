@@ -17,6 +17,12 @@ spring:
   kafka:
     bootstrap-servers: localhost:9092
   cloud:
+    compatibility-verifier:
+      # observability 是本地 E2E 排障入口，如果它在 Spring Cloud 版本硬校验阶段失败，
+      # 运维人员就无法继续看到平台健康、告警覆盖和闭环 readiness。
+      # 当前项目固定栈已经由父 POM、Toolchains、Maven 测试和真实 smoke 共同约束，
+      # 因此这里与 gateway/data-quality 保持一致关闭 compatibility verifier。
+      enabled: false
     nacos:
       discovery:
         server-addr: localhost:8848
@@ -26,6 +32,18 @@ mybatis-plus:
   type-aliases-package: com.czh.datasmart.govern.observability.entity
   configuration:
     map-underscore-to-camel-case: true
+
+datasmart:
+  observability:
+    platform-health:
+      # 单个下游 health/metrics 探针的超时时间。
+      # observability 是排障入口，不能因为某个业务服务卡死就把自身请求也长时间挂住。
+      timeout-millis: 800
+      # 默认只探 health，调用接口时可通过 includeMetricsProbe=true 临时同时探 metrics。
+      # 这样 smoke 检查保持轻量，运维排障时又能确认 Prometheus 出口是否具备。
+      include-metrics-probe-by-default: false
+      # 单次最多探测的运行时数量。当前项目远小于该值，保留该边界是为了未来扩展 worker/connector 后防止探针风暴。
+      max-probe-targets: 32
 
 logging:
   level:

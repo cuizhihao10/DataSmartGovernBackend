@@ -241,6 +241,8 @@ $ports = @(
     @{ Name = "Gateway"; Port = 8080; Required = $true },
     @{ Name = "Task Management"; Port = 8081; Required = $true },
     @{ Name = "Datasource Management"; Port = 8082; Required = $true },
+    @{ Name = "Data Quality"; Port = 8083; Required = $true },
+    @{ Name = "Observability"; Port = 8084; Required = $true },
     @{ Name = "Permission Admin"; Port = 8085; Required = $true },
     @{ Name = "Data Sync"; Port = 8086; Required = $true },
     @{ Name = "Python AI Runtime"; Port = 8090; Required = $true },

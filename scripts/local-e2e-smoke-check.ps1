@@ -32,6 +32,8 @@ param(
     [string]$GatewayBaseUrl = "http://localhost:8080",
     [string]$TaskManagementBaseUrl = "http://localhost:8081",
     [string]$DatasourceManagementBaseUrl = "http://localhost:8082",
+    [string]$DataQualityBaseUrl = "http://localhost:8083",
+    [string]$ObservabilityBaseUrl = "http://localhost:8084",
     [string]$PermissionAdminBaseUrl = "http://localhost:8085",
     [string]$DataSyncBaseUrl = "http://localhost:8086",
     [string]$AgentRuntimeBaseUrl = "http://localhost:8091",
@@ -407,6 +409,9 @@ Test-RequiredFile -RelativePath "docker/mysql/migrations/20260629_data_sync_task
 Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -ExpectedText "/api/internal/agent-runtime/**" -Purpose "gateway 暴露 agent-runtime 内部服务账号入口，支撑服务间调用闭环"
 Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -ExpectedText "python-ai-runtime-runtime-diagnostics" -Purpose "gateway 必须把 Python Runtime 低敏诊断入口放在通用 /api/agent/** -> agent-runtime 路由之前"
 Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -ExpectedText "/api/agent/skills/publication/refresh" -Purpose "统一网关必须能路由 Skill Manifest 受控刷新入口，避免 Python 诊断能力只停留在直连端口"
+Test-FileContains -RelativePath "gateway/src/main/resources/application.yml" -ExpectedText "RewritePath=/api/observability/" -Purpose "gateway 必须把 /api/observability/** 改写到 observability 服务内部领域路径，避免可观测性服务只存在直连入口"
+Test-FileContains -RelativePath "data-quality/src/main/java/com/czh/datasmart/govern/quality/controller/QualityReportExportController.java" -ExpectedText "low-sensitive-csv" -Purpose "data-quality 必须提供低敏质量报告导出入口，避免质量报告能力只停留在在线查询"
+Test-FileContains -RelativePath "observability/src/main/java/com/czh/datasmart/govern/observability/controller/ObservabilityPlatformController.java" -ExpectedText "alert-coverage" -Purpose "observability 必须提供平台基础告警覆盖视图，避免可观测性只停留在 health 探活"
 Test-FileContains -RelativePath "gateway/src/main/java/com/czh/datasmart/govern/gateway/config/GatewayAuthorizationProperties.java" -ExpectedText "setAllowedActorTypes(List.of(`"SERVICE_ACCOUNT`"))" -Purpose "默认内部端点同时要求服务账号角色和服务账号主体类型"
 Test-FileContains -RelativePath "gateway/src/main/java/com/czh/datasmart/govern/gateway/authorization/GatewayInternalServiceEndpointGuard.java" -ExpectedText "actorTypeAllowed" -Purpose "内部端点守卫必须校验 actorType，避免人类用户 role-only 误入机器协议"
 Test-FileContains -RelativePath "docker/keycloak/import/datasmart-realm.json" -ExpectedText '"username": "sync-service"' -Purpose "本地 realm 必须保留服务账号样例，用于验证 OIDC -> gateway 身份映射"
@@ -419,10 +424,16 @@ Invoke-HttpProbe -Name "Gateway auth capabilities" -Url "$GatewayBaseUrl/auth/ca
 Invoke-HttpProbe -Name "Task Management health" -Url "$TaskManagementBaseUrl/actuator/health"
 Invoke-HttpProbe -Name "Task Management DataSync receipt query" -Url "$TaskManagementBaseUrl/internal/data-sync-worker-execution-receipts?limit=1"
 Invoke-HttpProbe -Name "Datasource Management health" -Url "$DatasourceManagementBaseUrl/actuator/health"
+Invoke-HttpProbe -Name "Data Quality health" -Url "$DataQualityBaseUrl/actuator/health"
+Invoke-HttpProbe -Name "Data Quality executor diagnostics" -Url "$DataQualityBaseUrl/quality-rules/executor/diagnostics"
 Invoke-HttpProbe -Name "Data Sync health" -Url "$DataSyncBaseUrl/actuator/health"
 Invoke-HttpProbe -Name "Data Sync connector capabilities" -Url "$DataSyncBaseUrl/sync-connectors/capabilities"
 Invoke-HttpProbe -Name "Permission Admin health" -Url "$PermissionAdminBaseUrl/actuator/health"
 Invoke-HttpProbe -Name "Agent Runtime health" -Url "$AgentRuntimeBaseUrl/actuator/health"
+Invoke-HttpProbe -Name "Observability health" -Url "$ObservabilityBaseUrl/actuator/health"
+Invoke-HttpProbe -Name "Observability platform closure readiness" -Url "$ObservabilityBaseUrl/observability/platform/closure-readiness"
+Invoke-HttpProbe -Name "Observability service health snapshots" -Url "$ObservabilityBaseUrl/observability/platform/service-health-snapshots"
+Invoke-HttpProbe -Name "Observability alert coverage" -Url "$ObservabilityBaseUrl/observability/platform/alert-coverage"
 Invoke-HttpProbe -Name "Python AI Runtime closure readiness" -Url "$PythonAiRuntimeBaseUrl/agent/capabilities/closure-readiness"
 Invoke-HttpProbe -Name "Python AI Runtime Skill Manifest diagnostics" -Url "$PythonAiRuntimeBaseUrl/agent/skills/publication/diagnostics"
 Invoke-HttpProbe -Name "Python AI Runtime inference optimization diagnostics" -Url "$PythonAiRuntimeBaseUrl/agent/models/inference-optimization/diagnostics"
