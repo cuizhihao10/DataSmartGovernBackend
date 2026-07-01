@@ -30,6 +30,7 @@ from datasmart_ai_runtime.api.gateway.security import (
 from datasmart_ai_runtime.api.memory.materialization_admin import register_memory_materialization_admin_routes
 from datasmart_ai_runtime.api.memory.runtime import api_memory_runtime_diagnostics, build_api_memory_runtime
 from datasmart_ai_runtime.api.memory.write import register_memory_write_routes
+from datasmart_ai_runtime.api.metrics import register_agent_metrics_route
 from datasmart_ai_runtime.api.platform import register_platform_convergence_routes
 from datasmart_ai_runtime.api.agent.orchestrator_factory import (
     build_context_selection_policy,
@@ -70,7 +71,6 @@ from datasmart_ai_runtime.services.model_gateway import (
     default_inference_optimization_diagnostics_service,
     default_model_capability_registry,
     model_provider_health_probe_settings_from_env,
-    render_model_provider_health_probe_prometheus,
 )
 from datasmart_ai_runtime.services.model_gateway.model_provider import model_provider_registry_from_env
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
@@ -81,6 +81,7 @@ from datasmart_ai_runtime.services.runtime_events.runtime_event_components impor
 )
 from datasmart_ai_runtime.services.skills import build_skill_publication_manifest_diagnostics_service
 from datasmart_ai_runtime.services.tools import (
+    LangGraphExecutionGateMetrics,
     ToolActionCheckpointMetrics,
     build_tool_action_execution_checkpoint_store,
     tool_action_execution_checkpoint_store_diagnostics,
@@ -182,6 +183,7 @@ def create_app() -> Any:
     event_publisher = runtime_events.event_publisher
     memory_materialization_metrics = AgentMemoryMaterializationMetrics()
     tool_action_checkpoint_metrics = ToolActionCheckpointMetrics()
+    langgraph_execution_gate_metrics = LangGraphExecutionGateMetrics()
     memory_materialization_worker = AgentMemoryMaterializationWorker(
         runner=memory_runtime.memory_materialization_runner,
         settings=memory_materialization_worker_settings_from_env(),
@@ -414,32 +416,14 @@ def create_app() -> Any:
             dry_run=dry_run,
         )
 
-    @app.get("/agent/metrics")
-    def agent_runtime_prometheus_metrics() -> Any:
-        """导出 Python AI Runtime 的 Prometheus 文本指标。
-
-        该端点是 Python AI Runtime 的轻量指标出口，当前合并两类低基数指标：
-        - 长期记忆物化指标：用于观察后台物化批次、候选处理、补偿重排和 fencing/finalize 错误；
-        - 模型 Provider 主动探测指标：用于观察健康探测运行次数、success/failure/skipped 分布、
-          最近一轮状态分布和探测配置。
-        - 工具动作 checkpoint 指标：用于观察 checkpoint query/resume-preview 的访问结果、恢复事实状态和访问问题。
-
-        这里不输出 providerName、tenantId、projectId、runId、traceId、URL、prompt、工具参数或模型正文。
-        这些明细属于 runtime event、诊断接口或审计链路，不能进入 Prometheus label，否则会在真实客户环境中
-        制造高基数时序，并增加敏感信息泄露面。
-        """
-
-        metric_parts = (
-            memory_materialization_metrics.render_prometheus().rstrip(),
-            render_model_provider_health_probe_prometheus(model_provider_health_probe).rstrip(),
-            tool_action_checkpoint_metrics.render_prometheus().rstrip(),
-            "",
-        )
-
-        return Response(
-            content="\n".join(metric_parts),
-            media_type="text/plain; version=0.0.4; charset=utf-8",
-        )
+    register_agent_metrics_route(
+        app,
+        response_type=Response,
+        memory_materialization_metrics=memory_materialization_metrics,
+        model_provider_health_probe=model_provider_health_probe,
+        tool_action_checkpoint_metrics=tool_action_checkpoint_metrics,
+        langgraph_execution_gate_metrics=langgraph_execution_gate_metrics,
+    )
 
     register_agent_runtime_routes(
         app,
@@ -461,6 +445,7 @@ def create_app() -> Any:
         tool_action_resume_fact_provider=tool_action_resume_fact_provider,
         tool_action_checkpoint_store=tool_action_checkpoint_store,
         tool_action_checkpoint_metrics=tool_action_checkpoint_metrics,
+        langgraph_execution_gate_metrics=langgraph_execution_gate_metrics,
         tool_action_checkpoint_gateway_signature_required=tool_action_checkpoint_gateway_signature_required,
         tool_registry=tool_registry,
         gateway_signature_error_factory=lambda detail: HTTPException(status_code=401, detail=detail),

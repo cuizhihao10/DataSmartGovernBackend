@@ -35,6 +35,7 @@ from datasmart_ai_runtime.domain.intent import GovernanceDomain
 from datasmart_ai_runtime.domain.memory import AgentMemoryType
 from datasmart_ai_runtime.domain.skills import AgentSkillDescriptor
 from datasmart_ai_runtime.services.skill_registry_client import SkillRegistryClientError
+from datasmart_ai_runtime.services.tools import LangGraphExecutionGateMetrics
 from datasmart_ai_runtime.services.tool_registry_client import ToolRegistryClientError
 
 
@@ -389,6 +390,39 @@ class ApiBootstrapTest(unittest.TestCase):
         self.assertTrue(gate_attributes["javaControlPlaneRequiredForSideEffects"])
         self.assertIn("WORKER_RECEIPT_PROJECTION", gate_attributes["resumeRequiredFactTypes"])
         self.assertNotIn("ds-sensitive-002", str(gate_attributes))
+
+    def test_plan_response_records_langgraph_execution_gate_metrics(self) -> None:
+        """`/agent/plans` 响应组装层应把 execution gate 事件旁路记录为低基数指标。"""
+
+        orchestrator = build_default_orchestrator()
+        metrics = LangGraphExecutionGateMetrics()
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="user-a",
+            objective="请分析这个 MySQL 数据源的表结构",
+            variables={"datasourceId": "ds-sensitive-metrics"},
+        )
+
+        response = build_plan_response(
+            request,
+            orchestrator,
+            langgraph_execution_gate_metrics=metrics,
+        )
+        text = metrics.render_prometheus()
+
+        self.assertEqual("RESUME_PREFLIGHT", response["agentExecutionGateWorkflow"]["gateRoute"])
+        self.assertIn("datasmart_ai_langgraph_execution_gate_events_total", text)
+        self.assertIn('gate_route="resume_preflight"', text)
+        self.assertIn('result="evaluated"', text)
+        self.assertIn(
+            'datasmart_ai_langgraph_execution_gate_resume_facts_total{fact_state="required",gate_route="resume_preflight"}',
+            text,
+        )
+        self.assertNotIn("tenant-a", text)
+        self.assertNotIn("project-a", text)
+        self.assertNotIn("user-a", text)
+        self.assertNotIn("ds-sensitive-metrics", text)
 
     def test_plan_response_uses_trusted_tool_readiness_policy_snapshot(self) -> None:
         """`/agent/plans` 应消费受控 readiness 策略快照，并把低敏策略来源写入响应和事件。"""

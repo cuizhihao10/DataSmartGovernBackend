@@ -82,3 +82,9 @@ datasmart_ai_runtime/
 3. `services/integrations/`：Java 控制面客户端、外部 replay source、permission-admin 客户端和未来 MCP/HTTP 连接器应逐步收口。
 4. `api/`：下一阶段不建议继续只做目录移动；若继续整理，应补 `routes/`、`schemas/`、`dependencies/` 等更细层次，并绑定真实 API 能力。
 5. 完成 API 分层后，应暂停纯目录治理，回到智能网关统一 intake、长期记忆持久化、Agent tool runtime 或工具能力市场等产品能力实现。
+## 2026-07-01 目录治理补充：Metrics route and execution gate metrics
+
+- `api/metrics.py` 已作为 Prometheus 指标路由注册模块建立，避免继续把 `/agent/metrics` 的响应拼装逻辑堆在 `api/app.py`。
+- `api/agent/plan_response_events.py` 已承接 plan response 中的 runtime event 追加、发布和 execution gate 指标旁路，避免 `plan_response.py` 再次膨胀。
+- `services/tools/langgraph_execution_gate_metrics.py` 已归入 `services/tools/`，因为它消费的是工具执行前 LangGraph gate 事件，属于工具治理链路的可观测闭环。
+- 后续如果继续新增 Agent Runtime 指标，应优先判断指标属于 memory、model_gateway、tools、runtime_events 还是 multi_agent，而不是直接塞回 `api/app.py`。

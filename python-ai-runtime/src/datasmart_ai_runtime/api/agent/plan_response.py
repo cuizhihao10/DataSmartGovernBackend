@@ -21,15 +21,21 @@ from datasmart_ai_runtime.api.agent.plan_readiness_views import (
     build_command_proposal_context,
     build_tool_execution_readiness_response,
 )
+from datasmart_ai_runtime.api.agent.plan_response_events import (
+    attach_agent_execution_gate_event,
+    attach_agent_session_scheduling_event,
+    attach_skill_visibility_event,
+    attach_tool_execution_readiness_event,
+    publish_plan_events,
+    record_agent_execution_gate_metrics,
+)
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ToolPlan
-from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
 from datasmart_ai_runtime.services.agent_capability import (
     AgentCapabilityMatrixService,
     default_agent_capability_matrix_service,
 )
 from datasmart_ai_runtime.services.agent_execution import AgentExecutionClosureService
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
-from datasmart_ai_runtime.services.agent_gateway import build_agent_session_scheduling_runtime_event
 from datasmart_ai_runtime.services.agent_workspace import AgentWorkspaceContext, AgentWorkspaceContextBuilder
 from datasmart_ai_runtime.services.langgraph_multi_agent_collaboration import (
     LangGraphMultiAgentCollaborationWorkflow,
@@ -41,7 +47,6 @@ from datasmart_ai_runtime.services.runtime_events.runtime_event_live_push import
 from datasmart_ai_runtime.services.runtime_events.runtime_event_publisher import RuntimeEventPublisher
 from datasmart_ai_runtime.services.runtime_events.runtime_event_store import RuntimeEventStore
 from datasmart_ai_runtime.services.runtime_events.runtime_event_transport import RuntimeEventTransportBuilder
-from datasmart_ai_runtime.services.skills import build_session_skill_visibility_runtime_event
 from datasmart_ai_runtime.services.tools import (
     ToolActionIntakeSource,
     LangGraphExecutionGateWorkflow,
@@ -49,9 +54,7 @@ from datasmart_ai_runtime.services.tools import (
     ToolExecutionReadinessPolicyProviderProtocol,
     ToolExecutionReadinessService,
     build_tool_action_command_proposal_templates,
-    build_langgraph_execution_gate_runtime_event,
     build_tool_execution_readiness_graph_response,
-    build_tool_execution_readiness_runtime_event,
 )
 
 
@@ -71,6 +74,7 @@ def build_plan_response(
     skill_publication_diagnostics_service: Any | None = None,
     tool_execution_readiness_policy_provider: ToolExecutionReadinessPolicyProviderProtocol | None = None,
     agent_capability_matrix_service: AgentCapabilityMatrixService | None = None,
+    langgraph_execution_gate_metrics: Any | None = None,
 ) -> dict[str, Any]:
     """构建同步 HTTP 风格的 Agent 计划响应。
 
@@ -106,7 +110,7 @@ def build_plan_response(
         policy=readiness_policy_snapshot.policy,
         policy_metadata=readiness_policy_snapshot.to_low_sensitive_summary(),
     )
-    plan = _attach_tool_execution_readiness_event(
+    plan = attach_tool_execution_readiness_event(
         plan,
         request=request,
         tool_execution_readiness=tool_execution_readiness,
@@ -191,11 +195,12 @@ def build_plan_response(
     # - resume gate 在这里仍然只是预检语义，不会恢复 checkpoint、不会写 outbox、不会派发 worker。
     agent_execution_gate_workflow = LangGraphExecutionGateWorkflow.from_env().run(tool_execution_readiness)
     agent_execution_gate_summary = agent_execution_gate_workflow.to_summary()
-    plan = _attach_agent_execution_gate_event(
+    plan = attach_agent_execution_gate_event(
         plan,
         request=request,
         execution_gate_summary=agent_execution_gate_summary,
     )
+    record_agent_execution_gate_metrics(plan, metrics_recorder=langgraph_execution_gate_metrics)
     # command proposal 模板是“下一步如何进入 Java 控制面”的低敏导航，而不是 HTTP 提交动作。
     # 这里把 `/agent/plans` 生成的 ToolPlan 统一标记为 MODEL_TOOL_CALL + AGENT_PLAN 来源，和 MCP/A2A
     # 入口区分开；模板只读取 readiness response 中的字段名、状态、风险和计数，不读取 ToolPlan.arguments。
@@ -252,7 +257,7 @@ def build_plan_response(
         scheduling=intelligent_gateway_governance.get("agentSessionScheduling", {}),
         collaboration=agent_collaboration_workflow.to_summary(),
     )
-    plan = _attach_skill_visibility_event(
+    plan = attach_skill_visibility_event(
         plan,
         request=request,
         intelligent_gateway_governance=intelligent_gateway_governance,
@@ -261,12 +266,12 @@ def build_plan_response(
     # 如果不事件化，WebSocket 断线恢复、Kafka 异步消费、Java replay projection 和审计报表都无法还原
     # “本轮有哪些 Agent 参与、谁需要 handoff、为什么降级”。这里把调度视图压缩成低敏事件后再发布，
     # 让同步响应和异步事件流围绕同一份会话事实演进。
-    plan = _attach_agent_session_scheduling_event(
+    plan = attach_agent_session_scheduling_event(
         plan,
         request=request,
         intelligent_gateway_governance=intelligent_gateway_governance,
     )
-    _publish_plan_events(
+    publish_plan_events(
         plan,
         event_store=event_store,
         live_push_hub=live_push_hub,
@@ -300,103 +305,6 @@ def build_plan_response(
     if memory_write_proposal is not None:
         response["memoryWriteProposal"] = memory_write_proposal.to_summary()
     return response
-
-
-def _attach_tool_execution_readiness_event(
-    plan: AgentPlan,
-    *,
-    request: AgentRequest,
-    tool_execution_readiness: Any,
-) -> AgentPlan:
-    """把工具执行准备度快照追加到运行时事件流。
-
-    这里按事件类型去重，是为了兼容未来 `AgentOrchestrator` 或 Java ingestion 更早生成同类事件的情况。
-    当前由响应组装层追加，原因是 workspace hints 也是在这里统一写入 ToolPlan，readiness 需要读取这些
-    治理提示才能判断 target service、敏感字段和后续控制面边界。
-    """
-
-    if any(
-        event.event_type == AgentRuntimeEventType.TOOL_EXECUTION_READINESS_RECORDED
-        for event in plan.runtime_events
-    ):
-        return plan
-    readiness_event = build_tool_execution_readiness_runtime_event(plan, request, tool_execution_readiness)
-    return replace(plan, runtime_events=plan.runtime_events + (readiness_event,))
-
-
-def _attach_agent_execution_gate_event(
-    plan: AgentPlan,
-    *,
-    request: AgentRequest,
-    execution_gate_summary: dict[str, Any],
-) -> AgentPlan:
-    """把 LangGraph execution gate 快照追加到运行时事件流。
-
-    readiness event 说明“工具计划被判定为什么状态”；execution gate event 说明“LangGraph 条件图把本轮
-    路由到哪个 dominant gate”。这两条事件服务不同视角，不能互相替代。这里仍然按事件类型去重，避免
-    后续 `AgentOrchestrator` 或 Java ingestion 更早生成同类事件时重复发布。
-    """
-
-    if any(
-        event.event_type == AgentRuntimeEventType.AGENT_EXECUTION_GATE_RECORDED
-        for event in plan.runtime_events
-    ):
-        return plan
-    gate_event = build_langgraph_execution_gate_runtime_event(plan, request, execution_gate_summary)
-    return replace(plan, runtime_events=plan.runtime_events + (gate_event,))
-
-
-def _attach_skill_visibility_event(
-    plan: AgentPlan,
-    *,
-    request: AgentRequest,
-    intelligent_gateway_governance: dict[str, Any],
-) -> AgentPlan:
-    """把会话级 Skill 可见性快照追加到运行时事件流。
-
-    该函数是响应组装层与 Skill 可见性服务之间的边界：
-    - 响应组装层负责决定“什么时候追加事件”，确保事件出现在 publish/store/envelope 之前；
-    - Skill 服务负责决定“事件 attributes 该长什么样”，确保低敏字段裁剪规则集中维护；
-    - 如果未来 Java plan ingestion 在更早阶段已经生成同类事件，这里会跳过重复追加，避免一次响应内
-      出现两条含义相同的快照事件。
-    """
-
-    if any(
-        event.event_type == AgentRuntimeEventType.SKILL_VISIBILITY_SNAPSHOT_RECORDED
-        for event in plan.runtime_events
-    ):
-        return plan
-    skill_visibility = intelligent_gateway_governance.get("skillVisibility")
-    if not isinstance(skill_visibility, dict):
-        return plan
-    visibility_event = build_session_skill_visibility_runtime_event(plan, request, skill_visibility)
-    return replace(plan, runtime_events=plan.runtime_events + (visibility_event,))
-
-
-def _attach_agent_session_scheduling_event(
-    plan: AgentPlan,
-    *,
-    request: AgentRequest,
-    intelligent_gateway_governance: dict[str, Any],
-) -> AgentPlan:
-    """把多 Agent 会话调度视图追加到运行时事件流。
-
-    该事件与 `agentSessionScheduling` 同源，但比同步响应更紧凑：
-    - 响应字段服务前端治理卡片，可以带完整参与 Agent 列表和推荐动作；
-    - 事件字段服务 replay、Kafka、Java projection 和审计，只保留角色、状态、参与模式、handoff 和策略轴；
-    - 如果未来 Java plan ingestion 已经生成同类事件，这里会按事件类型跳过，避免重复发布。
-    """
-
-    if any(
-        event.event_type == AgentRuntimeEventType.AGENT_SESSION_SCHEDULING_RECORDED
-        for event in plan.runtime_events
-    ):
-        return plan
-    scheduling = intelligent_gateway_governance.get("agentSessionScheduling")
-    if not isinstance(scheduling, dict):
-        return plan
-    scheduling_event = build_agent_session_scheduling_runtime_event(plan, request, scheduling)
-    return replace(plan, runtime_events=plan.runtime_events + (scheduling_event,))
 
 
 def _collect_control_plane_feedback(
@@ -472,32 +380,6 @@ def _attach_workspace_hints(plan: AgentPlan, workspace_context: AgentWorkspaceCo
         }
         updated_tool_plans.append(replace(tool_plan, governance_hints=merged_hints))
     return replace(plan, tool_plans=tuple(updated_tool_plans))
-
-
-def _publish_plan_events(
-    plan: Any,
-    *,
-    event_store: RuntimeEventStore | None,
-    live_push_hub: RuntimeEventLivePushHub | None,
-    event_publisher: RuntimeEventPublisher | None,
-) -> None:
-    """处理 AgentPlan 运行事件的同步存储、实时推送和异步发布。
-
-    这三类动作服务不同产品场景：
-    - event store：供 replay、断线恢复和审计回放使用；
-    - live push hub：供当前 Python Runtime 内部 WebSocket 连接即时读取；
-    - event publisher：供 Kafka、Java 控制面、告警和观测系统异步消费。
-
-    当前实现仍然是同步调用。后续如果要提高可靠性，应把 publisher 升级为本地 outbox + 后台 worker，
-    避免 Kafka broker 抖动拖慢用户的计划请求。
-    """
-
-    if event_store is not None:
-        event_store.append_many(plan.runtime_events)
-    if live_push_hub is not None:
-        live_push_hub.publish(plan.runtime_events)
-    if event_publisher is not None:
-        event_publisher.publish(plan.runtime_events)
 
 
 def _build_base_response(
