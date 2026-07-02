@@ -23,6 +23,7 @@ from datasmart_ai_runtime.api.agent.plan_readiness_views import (
 )
 from datasmart_ai_runtime.api.agent.plan_response_events import (
     attach_agent_execution_gate_event,
+    attach_agent_execution_session_event,
     attach_agent_session_scheduling_event,
     attach_skill_visibility_event,
     attach_tool_execution_readiness_event,
@@ -289,6 +290,11 @@ def build_plan_response(
     )
     if multi_agent_execution_session_metrics is not None:
         multi_agent_execution_session_metrics.record_summary(agent_execution_session.to_summary())
+    plan = attach_agent_execution_session_event(
+        plan,
+        request=request,
+        agent_execution_session=agent_execution_session.to_summary(),
+    )
     # 长期记忆检索以前只作为 `AgentOrchestrator` 内部的 `retrieve_memory` 顺序步骤存在。
     # 这里新增的 LangGraph workflow 不重复召回记忆、不读取正文、不修改记忆 store，而是把已经生成的
     # `memoryPlan + memoryRetrievalReport` 压缩成可观察节点 trace。这样前端、Java projection 和多 Agent

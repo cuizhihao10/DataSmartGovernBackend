@@ -23,6 +23,7 @@ from typing import Any
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
 from datasmart_ai_runtime.services.agent_gateway import build_agent_session_scheduling_runtime_event
+from datasmart_ai_runtime.services.multi_agent import build_agent_execution_session_runtime_event
 from datasmart_ai_runtime.services.runtime_events.runtime_event_live_push import RuntimeEventLivePushHub
 from datasmart_ai_runtime.services.runtime_events.runtime_event_publisher import RuntimeEventPublisher
 from datasmart_ai_runtime.services.runtime_events.runtime_event_store import RuntimeEventStore
@@ -141,6 +142,32 @@ def attach_agent_session_scheduling_event(
         return plan
     scheduling_event = build_agent_session_scheduling_runtime_event(plan, request, scheduling)
     return replace(plan, runtime_events=plan.runtime_events + (scheduling_event,))
+
+
+def attach_agent_execution_session_event(
+    plan: AgentPlan,
+    *,
+    request: AgentRequest,
+    agent_execution_session: dict[str, Any],
+) -> AgentPlan:
+    """把受控多 Agent 执行会话视图追加到 runtime event 流。
+
+    `agentSessionScheduling` 事件解释“为什么这些 Agent 参与”；`agentExecutionSession` 事件解释
+    “这些 Agent work item 当前停在哪个可恢复状态”。如果只返回 HTTP 顶层字段，Java 控制面、Kafka
+    consumer、WebSocket replay 和审计系统都无法在请求结束后复原这份执行会话事实。
+
+    该事件仍然只记录低敏控制面字段，不包含 prompt、SQL、工具参数、模型输出或样本数据。
+    """
+
+    if any(
+        event.event_type == AgentRuntimeEventType.AGENT_EXECUTION_SESSION_RECORDED
+        for event in plan.runtime_events
+    ):
+        return plan
+    if not isinstance(agent_execution_session, dict):
+        return plan
+    execution_session_event = build_agent_execution_session_runtime_event(plan, request, agent_execution_session)
+    return replace(plan, runtime_events=plan.runtime_events + (execution_session_event,))
 
 
 def publish_plan_events(

@@ -18,10 +18,14 @@ from datasmart_ai_runtime.services.multi_agent.controlled_execution_session impo
     MultiAgentExecutionSessionService,
 )
 from datasmart_ai_runtime.services.multi_agent.execution_session_metrics import MultiAgentExecutionSessionMetrics
+from datasmart_ai_runtime.services.multi_agent.execution_session_events import (
+    build_agent_execution_session_runtime_event,
+)
 
 __all__ = [
     "ControlledMultiAgentExecutionSession",
     "ControlledMultiAgentExecutionWorkItem",
     "MultiAgentExecutionSessionMetrics",
     "MultiAgentExecutionSessionService",
+    "build_agent_execution_session_runtime_event",
 ]
