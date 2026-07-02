@@ -6,7 +6,20 @@
 
 - `product_agent_catalog`：平台规划中的产品级 Agent 名册与运行角色映射；
 - `langgraph_execution_plan`：把会话调度事实转换为执行前多 Agent 工作项和协作边；
+- `controlled_execution_session`：把执行前工作项转换为可恢复、可观察、无副作用的受控多 Agent 会话；
 - 后续如果补真实 handoff、checkpoint 或多 Agent runtime，也应优先放在本包下。
 
 当前包内模块仍然只处理低敏控制面事实，不执行工具、不调用模型、不写 outbox。
 """
+
+from datasmart_ai_runtime.services.multi_agent.controlled_execution_session import (
+    ControlledMultiAgentExecutionSession,
+    ControlledMultiAgentExecutionWorkItem,
+    MultiAgentExecutionSessionService,
+)
+
+__all__ = [
+    "ControlledMultiAgentExecutionSession",
+    "ControlledMultiAgentExecutionWorkItem",
+    "MultiAgentExecutionSessionService",
+]

@@ -34,9 +34,16 @@ class AgentProfileAndDurableLoopResponseTest(unittest.TestCase):
 
         self.assertIn("userProfileMemory", response)
         self.assertIn("agentDurableLoop", response)
+        self.assertIn("agentExecutionSession", response)
         self.assertGreater(response["userProfileMemory"]["activeFacetCount"], 0)
         self.assertIn(response["agentDurableLoop"]["phase"], {"plan_created", "waiting_control_plane"})
         self.assertEqual("LOW_SENSITIVE_LOOP_STATE_ONLY", response["agentDurableLoop"]["payloadPolicy"])
+        self.assertEqual(
+            "LOW_SENSITIVE_MULTI_AGENT_EXECUTION_SESSION_ONLY",
+            response["agentExecutionSession"]["payloadPolicy"],
+        )
+        self.assertIn("MASTER_ORCHESTRATOR", response["agentExecutionSession"]["activeRoles"])
+        self.assertFalse(response["agentExecutionSession"]["sideEffectBoundary"]["toolExecutedByPython"])
 
 
 if __name__ == "__main__":

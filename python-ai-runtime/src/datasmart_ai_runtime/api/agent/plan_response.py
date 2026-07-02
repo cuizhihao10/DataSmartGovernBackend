@@ -43,6 +43,7 @@ from datasmart_ai_runtime.services.langgraph_multi_agent_collaboration import (
 from datasmart_ai_runtime.services.multi_agent.langgraph_execution_plan import (
     LangGraphMultiAgentExecutionPlanWorkflow,
 )
+from datasmart_ai_runtime.services.multi_agent import MultiAgentExecutionSessionService
 from datasmart_ai_runtime.services.memory import LangGraphMemoryRetrievalWorkflow
 from datasmart_ai_runtime.services.runtime_events.runtime_event_live_push import RuntimeEventLivePushHub
 from datasmart_ai_runtime.services.runtime_events.runtime_event_publisher import RuntimeEventPublisher
@@ -275,6 +276,16 @@ def build_plan_response(
         collaboration=agent_collaboration_workflow.to_summary(),
     )
     agent_collaboration_execution_plan_summary = agent_collaboration_execution_plan.to_summary()
+    # `agentExecutionSession` 是执行前计划之后的受控会话层。它把每个 Agent 的 work item 映射为
+    # 可恢复状态、resume action 和 roster coverage，但仍然不执行工具、不调用模型、不写 outbox。
+    # 这一步让多 Agent 能力从“图诊断/合同”推进到“会话运行视图”，同时继续尊重 Java 控制面的副作用边界。
+    agent_execution_session = MultiAgentExecutionSessionService().build(
+        request=request,
+        plan=plan,
+        scheduling=intelligent_gateway_governance.get("agentSessionScheduling", {}),
+        collaboration_execution_plan=agent_collaboration_execution_plan_summary,
+        durable_loop=durable_loop_checkpoint.to_summary() if durable_loop_checkpoint is not None else None,
+    )
     # 长期记忆检索以前只作为 `AgentOrchestrator` 内部的 `retrieve_memory` 顺序步骤存在。
     # 这里新增的 LangGraph workflow 不重复召回记忆、不读取正文、不修改记忆 store，而是把已经生成的
     # `memoryPlan + memoryRetrievalReport` 压缩成可观察节点 trace。这样前端、Java projection 和多 Agent
@@ -314,6 +325,7 @@ def build_plan_response(
     response["agentWorkflowDiagnostics"] = plan.workflow_diagnostics
     response["agentCollaborationWorkflow"] = agent_collaboration_workflow.to_summary()
     response["agentCollaborationExecutionPlan"] = agent_collaboration_execution_plan_summary
+    response["agentExecutionSession"] = agent_execution_session.to_summary()
     response["agentMemoryRetrievalWorkflow"] = agent_memory_retrieval_workflow_summary
     response["userProfileMemory"] = plan.user_profile_context
     response["agentWorkspace"] = workspace_context.to_summary()
