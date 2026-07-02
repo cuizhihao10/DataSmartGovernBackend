@@ -37,7 +37,8 @@ Agent 长期记忆和未来 LangGraph durable state 最终都应使用 PostgreSQ
 
 ### 阶段 0：基础设施与冻结
 
-- 引入 PostgreSQL 18 + pgvector 0.8.3 Compose 服务。
+- 引入 PostgreSQL 17 + pgvector 0.8.3 Compose 服务。选择 17 是为了与 Spring Boot 3.5.11 当前管理的
+  Flyway 正式验证范围对齐，避免使用 PostgreSQL 18 时携带“尚未测试支持”警告。
 - 建立服务级 schema：`permission_admin`、`task_management`、`datasource_management`、`data_sync`、
   `data_quality`、`agent_runtime`、`observability`、`ai_memory`。
 - 父 POM 固定 pgJDBC 版本，模块完成迁移时再显式引入驱动。
@@ -87,6 +88,9 @@ Agent 长期记忆和未来 LangGraph durable state 最终都应使用 PostgreSQ
 
 ## 当前状态
 
-阶段 0 已开始：目标架构、PostgreSQL/pgvector Compose、服务 schema 和 pgJDBC 版本基线已经建立。
-本地真实容器验证已确认 PostgreSQL 18 健康、vector 0.8.3 可用、8 个服务 schema 初始化成功。
-当前尚无 Java 业务服务完成切换，MySQL 仍承担现有运行流量，不能把“PostgreSQL 容器已启动”误认为迁移完成。
+阶段 0 已完成：目标架构、PostgreSQL/pgvector Compose、服务 schema 和 pgJDBC 版本基线已经建立。
+本地真实容器验证已确认 PostgreSQL 17 健康、vector 0.8.3 可用、8 个服务 schema 初始化成功。
+
+阶段 1 已完成首个试点：`observability` 已移除 MySQL 驱动，切换到 pgJDBC、PostgreSQL
+`observability` schema 和 Flyway V1 基线，并通过真实 PostgreSQL 17 Spring Boot 集成测试。
+其他 Java 服务仍由 MySQL 承担现有运行流量，不能把单服务试点通过误认为全平台迁移完成。

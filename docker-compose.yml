@@ -8,7 +8,9 @@ services:
   postgresql:
     # pgvector 官方镜像同时提供 PostgreSQL 与 vector extension。
     # 默认经 DaoCloud 国内镜像前缀拉取；企业环境可通过 DATASMART_POSTGRES_IMAGE 指向 Harbor/Nexus。
-    image: ${DATASMART_POSTGRES_IMAGE:-docker.m.daocloud.io/pgvector/pgvector:0.8.3-pg18}
+    # 当前固定 PostgreSQL 17，因为 Spring Boot 3.5.11 管理的 Flyway 已正式验证到 17；
+    # PostgreSQL 18 虽可启动，但会产生“尚未测试支持”的迁移警告，不适合作为当前商业基线。
+    image: ${DATASMART_POSTGRES_IMAGE:-docker.m.daocloud.io/pgvector/pgvector:0.8.3-pg17}
     container_name: datasmart-postgresql
     environment:
       POSTGRES_DB: datasmart_govern
@@ -17,9 +19,7 @@ services:
     ports:
       - "${DATASMART_LOCAL_POSTGRES_PORT:-5432}:5432"
     volumes:
-      # PostgreSQL 18+ 官方镜像按主版本建立数据子目录，卷必须挂在父目录，
-      # 否则镜像会把旧式 `/var/lib/postgresql/data` 挂载识别为不可升级布局并拒绝启动。
-      - postgresql_data:/var/lib/postgresql
+      - postgresql_data:/var/lib/postgresql/data
       - ./docker/postgresql/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U datasmart -d datasmart_govern"]

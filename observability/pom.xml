@@ -37,8 +37,27 @@
             <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
         </dependency>
         <dependency>
-            <groupId>com.mysql</groupId>
-            <artifactId>mysql-connector-j</artifactId>
+            <!--
+              observability 是第一个完成 PostgreSQL 切换的 Java 试点服务。
+              pgJDBC 版本由父 POM 统一管理；本模块不再携带 MySQL 驱动，避免容器内同时存在两个 JDBC driver
+              时因为 URL 配置错误而静默连接回迁移期数据库。
+            -->
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <!--
+              Flyway 负责 PostgreSQL schema 的版本登记、启动校验和增量迁移。
+              迁移脚本只允许前向演进，clean 在 application.yml 中关闭，避免生产误删可观测性配置与历史事实。
+            -->
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <!-- Flyway 10+ 将 PostgreSQL 数据库支持拆为独立模块，必须与 flyway-core 同时引入。 -->
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.kafka</groupId>

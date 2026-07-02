@@ -237,6 +237,12 @@ services:
         SERVER_PORT: 8084
     environment:
       <<: *java-common-environment
+      # observability 已完成 PostgreSQL 试点切换，显式覆盖公共锚点中的迁移期 MySQL 配置。
+      # currentSchema 保证该服务只能通过默认 search_path 访问自己的 schema。
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgresql:5432/datasmart_govern?currentSchema=observability&ApplicationName=datasmart-observability
+      SPRING_DATASOURCE_USERNAME: datasmart
+      SPRING_DATASOURCE_PASSWORD: ${DATASMART_POSTGRES_PASSWORD:-password}
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       DATASMART_OBSERVABILITY_GATEWAY_BASE_URL: http://gateway:8080
       DATASMART_OBSERVABILITY_PERMISSION_ADMIN_BASE_URL: http://permission-admin:8085
       DATASMART_OBSERVABILITY_TASK_MANAGEMENT_BASE_URL: http://task-management:8081
@@ -249,6 +255,7 @@ services:
     ports:
       - "8084:8084"
     depends_on:
+      - postgresql
       - gateway
       - permission-admin
       - task-management

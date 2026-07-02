@@ -120,7 +120,7 @@ public class PlatformAlertCoverageService {
                     "HEALTH_PROBE",
                     "health 探针不可达、返回非 2xx 或发生连接/超时异常时触发。",
                     "OPERATOR",
-                    "优先检查端口、进程日志、JDK 21、Nacos 注册、MySQL/Kafka/Redis/Neo4j 等依赖。",
+                    "优先检查端口、进程日志、JDK 21、Nacos 注册、PostgreSQL/Kafka/Redis/Neo4j 等依赖。",
                     true));
             rules.add(new PlatformAlertRuleView(
                     module.moduleCode() + ".metrics-endpoint-down",

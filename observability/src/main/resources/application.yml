@@ -7,12 +7,29 @@ spring:
     name: observability
   profiles:
     active: dev
-  # MySQL 预留给告警规则、订阅配置和其他监控配置持久化。
+  # observability 是 MySQL -> PostgreSQL 迁移的首个试点服务。
+  # currentSchema 把未限定表名约束在 observability schema，避免微服务误访问其他模块表。
   datasource:
-    url: jdbc:mysql://localhost:3306/datasmart_govern?useSSL=false&serverTimezone=UTC
-    username: root
-    password: password
-    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/datasmart_govern?currentSchema=observability&ApplicationName=datasmart-observability}
+    username: ${SPRING_DATASOURCE_USERNAME:datasmart}
+    password: ${SPRING_DATASOURCE_PASSWORD:password}
+    driver-class-name: ${SPRING_DATASOURCE_DRIVER_CLASS_NAME:org.postgresql.Driver}
+    hikari:
+      # 运维服务流量通常不高，但在故障风暴中会集中查询；连接池保持有界，避免反向压垮数据库。
+      maximum-pool-size: ${DATASMART_OBSERVABILITY_DB_MAX_POOL_SIZE:10}
+      minimum-idle: ${DATASMART_OBSERVABILITY_DB_MIN_IDLE:1}
+      connection-timeout: ${DATASMART_OBSERVABILITY_DB_CONNECTION_TIMEOUT_MILLIS:3000}
+      validation-timeout: ${DATASMART_OBSERVABILITY_DB_VALIDATION_TIMEOUT_MILLIS:1000}
+  flyway:
+    enabled: true
+    # Flyway 历史表和本服务业务表都位于 observability schema。
+    schemas: observability
+    default-schema: observability
+    create-schemas: false
+    locations: classpath:db/migration/postgresql/observability
+    validate-on-migrate: true
+    clean-disabled: true
+    baseline-on-migrate: false
   # Kafka 后续可承载告警事件和日志流事件。
   kafka:
     bootstrap-servers: localhost:9092
@@ -32,6 +49,10 @@ mybatis-plus:
   type-aliases-package: com.czh.datasmart.govern.observability.entity
   configuration:
     map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      # PostgreSQL 使用小写下划线标识符；禁止 MyBatis-Plus 自动给表名增加前缀。
+      table-prefix: ""
 
 datasmart:
   observability:
