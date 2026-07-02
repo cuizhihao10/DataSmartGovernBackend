@@ -7,7 +7,8 @@
 - `product_agent_catalog`：平台规划中的产品级 Agent 名册与运行角色映射；
 - `langgraph_execution_plan`：把会话调度事实转换为执行前多 Agent 工作项和协作边；
 - `controlled_execution_session`：把执行前工作项转换为可恢复、可观察、无副作用的受控多 Agent 会话；
-- 后续如果补真实 handoff、checkpoint 或多 Agent runtime，也应优先放在本包下。
+- `controlled_turn_runner`：把受控会话继续推进为 turn attempt、manager-as-tools 和 Java 控制面 handoff 合同；
+- 后续如果补真实 checkpoint store、Agent host 或 worker handoff，也应优先放在本包下。
 
 当前包内模块仍然只处理低敏控制面事实，不执行工具、不调用模型、不写 outbox。
 """
@@ -21,11 +22,21 @@ from datasmart_ai_runtime.services.multi_agent.execution_session_metrics import 
 from datasmart_ai_runtime.services.multi_agent.execution_session_events import (
     build_agent_execution_session_runtime_event,
 )
+from datasmart_ai_runtime.services.multi_agent.controlled_turn_runner import (
+    ControlledMultiAgentTurnRunnerDiagnostics,
+    LangGraphMultiAgentTurnRunnerWorkflow,
+)
+from datasmart_ai_runtime.services.multi_agent.turn_runner_events import (
+    build_multi_agent_turn_runner_runtime_event,
+)
 
 __all__ = [
     "ControlledMultiAgentExecutionSession",
     "ControlledMultiAgentExecutionWorkItem",
     "MultiAgentExecutionSessionMetrics",
     "MultiAgentExecutionSessionService",
+    "ControlledMultiAgentTurnRunnerDiagnostics",
+    "LangGraphMultiAgentTurnRunnerWorkflow",
     "build_agent_execution_session_runtime_event",
+    "build_multi_agent_turn_runner_runtime_event",
 ]

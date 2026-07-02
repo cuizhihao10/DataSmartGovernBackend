@@ -1,0 +1,223 @@
+import os
+import sys
+import unittest
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from datasmart_ai_runtime.api import build_default_orchestrator
+from datasmart_ai_runtime.api.agent.plan_response import build_plan_response
+from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest
+from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
+from datasmart_ai_runtime.services.agent_execution import DurableAgentLoopService
+from datasmart_ai_runtime.services.langgraph_planning_workflow import LangGraphApi
+from datasmart_ai_runtime.services.multi_agent import LangGraphMultiAgentTurnRunnerWorkflow
+
+
+class MultiAgentTurnRunnerTest(unittest.TestCase):
+    """受控多 Agent turn runner 测试。
+
+    这组测试保护的是“多 Agent 能力从 execution session 继续推进到 turn 层合同”。turn runner 不负责
+    执行工具或调用模型，但必须把下一轮可以如何推进、哪些 specialist 可被 manager-as-tools 调度、
+    哪些证据必须交给 Java 控制面补齐讲清楚。
+    """
+
+    def test_fake_langgraph_api_builds_turn_attempts_and_manager_as_tools(self) -> None:
+        """注入 fake LangGraph API 时，应完整执行 turn runner 节点链。"""
+
+        workflow = LangGraphMultiAgentTurnRunnerWorkflow(
+            langgraph_api=LangGraphApi(state_graph=FakeStateGraph, start="START", end="END")
+        )
+
+        diagnostics = workflow.run(
+            request=_request(),
+            plan=_plan(),
+            execution_session=_execution_session(),
+            command_proposal_templates=_command_templates(),
+            durable_loop={"runId": "run-a", "phase": "ready_for_second_turn", "attributes": {"turnDepth": 1}},
+        )
+        summary = diagnostics.to_summary()
+        serialized = str(summary)
+
+        self.assertEqual("LANGGRAPH_MULTI_AGENT_TURN_RUNNER_BUILT", summary["status"])
+        self.assertTrue(summary["compiled"])
+        self.assertTrue(summary["executed"])
+        self.assertEqual(
+            (
+                "langgraph.multi_agent_turn.load_execution_session",
+                "langgraph.multi_agent_turn.select_turn_candidates",
+                "langgraph.multi_agent_turn.build_manager_as_tools",
+                "langgraph.multi_agent_turn.enforce_runner_policy",
+                "langgraph.multi_agent_turn.finalize_turn_runner",
+            ),
+            summary["nodeTrace"],
+        )
+        self.assertEqual("READY_FOR_JAVA_CONTROL_PLANE_HANDOFF", summary["runStatus"])
+        self.assertTrue(summary["capabilities"]["durableTurnStatePlanning"])
+        self.assertTrue(summary["capabilities"]["managerAsToolsPlanning"])
+        self.assertTrue(summary["capabilities"]["controlPlaneHandoffPlanning"])
+        self.assertTrue(summary["capabilities"]["sideEffectGuardrails"])
+        self.assertEqual(2, summary["turnAttemptCount"])
+        self.assertEqual(2, summary["controlPlaneHandoffCount"])
+        self.assertFalse(summary["sideEffectBoundary"]["toolExecutedByPython"])
+        self.assertFalse(summary["sideEffectBoundary"]["modelCalledByTurnRunner"])
+        self.assertFalse(summary["sideEffectBoundary"]["outboxWrittenByPython"])
+        self.assertTrue(summary["sideEffectBoundary"]["javaControlPlaneRequiredForSideEffects"])
+        self.assertTrue(
+            any(tool["agentRole"] == "DATA_QUALITY_AGENT" for tool in summary["managerAsTools"]),
+            "specialist Agent 应以 manager-as-tools 低敏描述进入 runner 合同。",
+        )
+        self.assertIn(
+            "JAVA_COMMAND_PROPOSAL_OR_OUTBOX_REQUIRED",
+            summary["turnAttempts"][0]["requiredEvidenceCodes"],
+        )
+        self.assertNotIn("secret objective", serialized)
+        self.assertNotIn("secret-datasource-id", serialized)
+        self.assertNotIn("select * from hidden_customer", serialized)
+        self.assertNotIn("toolArguments", serialized)
+
+    def test_plan_response_contains_turn_runner_and_runtime_event(self) -> None:
+        """`/agent/plans` 应返回 turn runner，并把合同写入 runtime event envelope。"""
+
+        workflow = LangGraphMultiAgentTurnRunnerWorkflow(
+            langgraph_api=LangGraphApi(state_graph=FakeStateGraph, start="START", end="END")
+        )
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="quality-owner",
+            objective="secret objective: 请分析客户订单表并生成质量同步方案。",
+            variables={
+                "sessionId": "session-turn-runner",
+                "datasourceId": "secret-datasource-id",
+                "sql": "select * from hidden_customer",
+            },
+        )
+
+        response = build_plan_response(
+            request,
+            build_default_orchestrator(),
+            durable_agent_loop_service=DurableAgentLoopService(),
+            multi_agent_turn_runner_workflow=workflow,
+        )
+
+        turn_runner = response["agentTurnRunner"]
+        events = [
+            event
+            for event in response["plan"]["runtime_events"]
+            if event["event_type"] == AgentRuntimeEventType.AGENT_TURN_RUNNER_RECORDED
+        ]
+        serialized = str(turn_runner) + str(events)
+
+        self.assertEqual(1, len(events))
+        self.assertIn(events[0], response["eventEnvelope"]["events"])
+        self.assertEqual(turn_runner["runStatus"], events[0]["attributes"]["runStatus"])
+        self.assertEqual("CONTROLLED_MULTI_AGENT_TURN_RUNNER_VIEW", events[0]["attributes"]["snapshotType"])
+        self.assertEqual("LOW_SENSITIVE_MULTI_AGENT_TURN_RUNNER_ONLY", turn_runner["payloadPolicy"])
+        self.assertFalse(turn_runner["sideEffectBoundary"]["toolExecutedByPython"])
+        self.assertFalse(turn_runner["sideEffectBoundary"]["outboxWrittenByPython"])
+        self.assertTrue(turn_runner["sideEffectBoundary"]["workerReceiptRequiredForSideEffects"])
+        self.assertNotIn("secret objective", serialized)
+        self.assertNotIn("secret-datasource-id", serialized)
+        self.assertNotIn("hidden_customer", serialized)
+
+
+class FakeStateGraph:
+    """LangGraph StateGraph 的最小测试替身。"""
+
+    def __init__(self, schema) -> None:  # noqa: ANN001 - fake 只记录协议形状
+        self.schema = schema
+        self.nodes = {}
+        self.edges = {}
+
+    def add_node(self, node: str, action) -> None:  # noqa: ANN001 - fake 只记录协议形状
+        self.nodes[node] = action
+
+    def add_edge(self, start_key: str, end_key: str) -> None:
+        self.edges[start_key] = end_key
+
+    def compile(self) -> "FakeCompiledGraph":
+        return FakeCompiledGraph(nodes=self.nodes, edges=self.edges)
+
+
+class FakeCompiledGraph:
+    """编译后 LangGraph 的最小测试替身。"""
+
+    def __init__(self, *, nodes, edges) -> None:  # noqa: ANN001 - fake 只记录协议形状
+        self.nodes = nodes
+        self.edges = edges
+
+    def invoke(self, input):  # noqa: A002, ANN001, ANN201 - 与 LangGraph API 同名
+        state = dict(input)
+        current = "START"
+        while True:
+            next_node = self.edges[current]
+            if next_node == "END":
+                return state
+            state = self.nodes[next_node](state)
+            current = next_node
+
+
+def _request() -> AgentRequest:
+    return AgentRequest(
+        tenant_id="tenant-a",
+        project_id="project-a",
+        actor_id="user-a",
+        objective="secret objective",
+        variables={"datasourceId": "secret-datasource-id", "sql": "select * from hidden_customer"},
+    )
+
+
+def _plan() -> AgentPlan:
+    return AgentPlan(
+        request_id="request-a",
+        selected_route=None,
+        state_trace=("receive_goal",),
+        tool_plans=(),
+        requires_human_approval=False,
+        response_summary="测试计划",
+    )
+
+
+def _execution_session() -> dict:
+    return {
+        "status": "READY_FOR_CONTROL_PLANE_HANDOFF",
+        "durablePhase": "ready_for_second_turn",
+        "workItems": (
+            {
+                "workItemId": "workitem-1-master",
+                "agentRole": "MASTER_ORCHESTRATOR",
+                "deliveryTier": "must_do",
+                "sessionStatus": "READY_FOR_CONTROL_PLANE_HANDOFF",
+                "resumeAction": "HANDOFF_TO_JAVA_CONTROL_PLANE",
+                "executionLane": "PRIMARY_COORDINATION",
+                "plannedToolCount": 1,
+                "toolArguments": {"sql": "select * from hidden_customer"},
+            },
+            {
+                "workItemId": "workitem-2-quality",
+                "agentRole": "DATA_QUALITY_AGENT",
+                "deliveryTier": "must_do",
+                "sessionStatus": "READY_FOR_AGENT_TURN",
+                "resumeAction": "PREPARE_SPECIALIST_NEXT_TURN",
+                "executionLane": "DOMAIN_SPECIALIST_DRAFT",
+                "plannedToolCount": 1,
+                "visibleSkillCount": 1,
+            },
+        ),
+    }
+
+
+def _command_templates() -> dict:
+    return {
+        "totalTemplateCount": 1,
+        "targetControlPlaneRoutes": (
+            {"method": "POST", "path": "/agent-runtime/tool-action-commands/proposals"},
+            {"method": "POST", "path": "/api/agent/tool-action-commands/proposals"},
+        ),
+    }
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -23,7 +23,10 @@ from typing import Any
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
 from datasmart_ai_runtime.services.agent_gateway import build_agent_session_scheduling_runtime_event
-from datasmart_ai_runtime.services.multi_agent import build_agent_execution_session_runtime_event
+from datasmart_ai_runtime.services.multi_agent import (
+    build_agent_execution_session_runtime_event,
+    build_multi_agent_turn_runner_runtime_event,
+)
 from datasmart_ai_runtime.services.runtime_events.runtime_event_live_push import RuntimeEventLivePushHub
 from datasmart_ai_runtime.services.runtime_events.runtime_event_publisher import RuntimeEventPublisher
 from datasmart_ai_runtime.services.runtime_events.runtime_event_store import RuntimeEventStore
@@ -168,6 +171,32 @@ def attach_agent_execution_session_event(
         return plan
     execution_session_event = build_agent_execution_session_runtime_event(plan, request, agent_execution_session)
     return replace(plan, runtime_events=plan.runtime_events + (execution_session_event,))
+
+
+def attach_agent_turn_runner_event(
+    plan: AgentPlan,
+    *,
+    request: AgentRequest,
+    agent_turn_runner: dict[str, Any],
+) -> AgentPlan:
+    """把受控多 Agent turn runner 合同追加到 runtime event 流。
+
+    `agentExecutionSession` 说明 work item 当前状态；`agentTurnRunner` 则说明下一轮应该如何推进这些
+    work item、哪些 specialist 可以通过 manager-as-tools 被主控调度、哪些 host fact 必须先由 Java
+    控制面或人工补齐。事件化后，Java projection、WebSocket replay 和审计系统才能复原 turn 层合同。
+
+    该事件只记录低敏控制面字段，不包含 prompt、SQL、工具参数、payloadReference 正文、模型输出或样本数据。
+    """
+
+    if any(
+        event.event_type == AgentRuntimeEventType.AGENT_TURN_RUNNER_RECORDED
+        for event in plan.runtime_events
+    ):
+        return plan
+    if not isinstance(agent_turn_runner, dict):
+        return plan
+    turn_runner_event = build_multi_agent_turn_runner_runtime_event(plan, request, agent_turn_runner)
+    return replace(plan, runtime_events=plan.runtime_events + (turn_runner_event,))
 
 
 def publish_plan_events(

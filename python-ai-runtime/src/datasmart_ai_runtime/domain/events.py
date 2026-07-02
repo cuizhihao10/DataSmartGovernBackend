@@ -49,6 +49,7 @@ class AgentRuntimeEventType(str, Enum):
     SKILL_VISIBILITY_SNAPSHOT_RECORDED = "skill_visibility_snapshot_recorded"
     AGENT_SESSION_SCHEDULING_RECORDED = "agent_session_scheduling_recorded"
     AGENT_EXECUTION_SESSION_RECORDED = "agent_execution_session_recorded"
+    AGENT_TURN_RUNNER_RECORDED = "agent_turn_runner_recorded"
     TOOL_EXECUTION_STATE_CHANGED = "agent.tool_execution.state_changed"
     TOOL_AUTO_EXECUTION_SYNC_COMPLETED = "tool_auto_execution_sync_completed"
     TOOL_RESULT_FEEDBACK_BUILT = "tool_result_feedback_built"

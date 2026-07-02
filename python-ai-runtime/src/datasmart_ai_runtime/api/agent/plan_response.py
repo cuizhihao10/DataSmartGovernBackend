@@ -25,6 +25,7 @@ from datasmart_ai_runtime.api.agent.plan_response_events import (
     attach_agent_execution_gate_event,
     attach_agent_execution_session_event,
     attach_agent_session_scheduling_event,
+    attach_agent_turn_runner_event,
     attach_skill_visibility_event,
     attach_tool_execution_readiness_event,
     publish_plan_events,
@@ -44,7 +45,10 @@ from datasmart_ai_runtime.services.langgraph_multi_agent_collaboration import (
 from datasmart_ai_runtime.services.multi_agent.langgraph_execution_plan import (
     LangGraphMultiAgentExecutionPlanWorkflow,
 )
-from datasmart_ai_runtime.services.multi_agent import MultiAgentExecutionSessionService
+from datasmart_ai_runtime.services.multi_agent import (
+    LangGraphMultiAgentTurnRunnerWorkflow,
+    MultiAgentExecutionSessionService,
+)
 from datasmart_ai_runtime.services.memory import LangGraphMemoryRetrievalWorkflow
 from datasmart_ai_runtime.services.runtime_events.runtime_event_live_push import RuntimeEventLivePushHub
 from datasmart_ai_runtime.services.runtime_events.runtime_event_publisher import RuntimeEventPublisher
@@ -81,6 +85,7 @@ def build_plan_response(
     langgraph_execution_gate_metrics: Any | None = None,
     langgraph_memory_retrieval_metrics: Any | None = None,
     multi_agent_execution_session_metrics: Any | None = None,
+    multi_agent_turn_runner_workflow: Any | None = None,
 ) -> dict[str, Any]:
     """构建同步 HTTP 风格的 Agent 计划响应。
 
@@ -295,6 +300,24 @@ def build_plan_response(
         request=request,
         agent_execution_session=agent_execution_session.to_summary(),
     )
+    # `agentTurnRunner` 是多 Agent 从“会话状态”走向“可恢复 turn 合同”的最小闭环。
+    # 它使用 LangGraph 节点选择本轮 turn attempt、生成 manager-as-tools 低敏描述，并列出 Java proposal、
+    # checkpoint、approval 和 worker receipt 等执行前证据缺口；但它仍然不执行工具、不调用模型、不写 outbox。
+    # 这样我们开始具备 Codex/Claude Code 类 Agent loop 的运行层骨架，同时不突破企业控制面边界。
+    turn_runner_workflow = multi_agent_turn_runner_workflow or LangGraphMultiAgentTurnRunnerWorkflow.from_env()
+    agent_turn_runner = turn_runner_workflow.run(
+        request=request,
+        plan=plan,
+        execution_session=agent_execution_session.to_summary(),
+        command_proposal_templates=command_proposal_templates,
+        durable_loop=durable_loop_checkpoint.to_summary() if durable_loop_checkpoint is not None else None,
+    )
+    agent_turn_runner_summary = agent_turn_runner.to_summary()
+    plan = attach_agent_turn_runner_event(
+        plan,
+        request=request,
+        agent_turn_runner=agent_turn_runner_summary,
+    )
     # 长期记忆检索以前只作为 `AgentOrchestrator` 内部的 `retrieve_memory` 顺序步骤存在。
     # 这里新增的 LangGraph workflow 不重复召回记忆、不读取正文、不修改记忆 store，而是把已经生成的
     # `memoryPlan + memoryRetrievalReport` 压缩成可观察节点 trace。这样前端、Java projection 和多 Agent
@@ -335,6 +358,7 @@ def build_plan_response(
     response["agentCollaborationWorkflow"] = agent_collaboration_workflow.to_summary()
     response["agentCollaborationExecutionPlan"] = agent_collaboration_execution_plan_summary
     response["agentExecutionSession"] = agent_execution_session.to_summary()
+    response["agentTurnRunner"] = agent_turn_runner_summary
     response["agentMemoryRetrievalWorkflow"] = agent_memory_retrieval_workflow_summary
     response["userProfileMemory"] = plan.user_profile_context
     response["agentWorkspace"] = workspace_context.to_summary()
