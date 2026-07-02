@@ -22,6 +22,10 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
+import static com.czh.datasmart.govern.agent.service.runtime.WorkspaceFilePayloadDigestSupport.sha256;
+import static com.czh.datasmart.govern.agent.service.runtime.WorkspaceFilePayloadValueSupport.hasText;
+import static com.czh.datasmart.govern.agent.service.runtime.WorkspaceFilePayloadValueSupport.safeText;
+
 /**
  * Workspace 文件工具 payload 物化服务。
  *
@@ -49,8 +53,7 @@ public class AgentWorkspaceFilePayloadMaterializationService {
      * <p>该策略名称刻意强调“引用与摘要优先”，用于提醒调用方：响应可以进入 API、事件、timeline 和审批页，
      * 但不能期待从响应里拿到文件路径或正文。真正参数只能由受控 worker 在服务端内部按引用读取。</p>
      */
-    public static final String PAYLOAD_POLICY =
-            "WORKSPACE_FILE_PAYLOAD_REFERENCE_ONLY_PATH_AND_CONTENT_NOT_EXPOSED";
+    public static final String PAYLOAD_POLICY = "WORKSPACE_FILE_PAYLOAD_REFERENCE_ONLY_PATH_AND_CONTENT_NOT_EXPOSED";
 
     private static final String READ_TOOL = "workspace.file.read";
     private static final String WRITE_TOOL = "workspace.file.write";
@@ -103,8 +106,8 @@ public class AgentWorkspaceFilePayloadMaterializationService {
 
         String toolName = safeText(request.toolName());
         WorkspaceFileOperation operation = resolveOperation(request.operation(), toolName, issueCodes, evidenceCodes);
-        PathValidationResult path = validateRelativePath(request.relativePath(), issueCodes, evidenceCodes);
-        ContentValidationResult content = validateContent(operation, request, issueCodes, evidenceCodes);
+        WorkspaceFilePathValidationResult path = validateRelativePath(request.relativePath(), issueCodes, evidenceCodes);
+        WorkspaceFileContentValidationResult content = validateContent(operation, request, issueCodes, evidenceCodes);
         String payloadReference = resolvePayloadReference(request, operation, path, issueCodes, evidenceCodes);
 
         if (!issueCodes.isEmpty()) {
@@ -197,13 +200,13 @@ public class AgentWorkspaceFilePayloadMaterializationService {
         return operation;
     }
 
-    private PathValidationResult validateRelativePath(String rawPath,
-                                                      List<String> issueCodes,
-                                                      List<String> evidenceCodes) {
+    private WorkspaceFilePathValidationResult validateRelativePath(String rawPath,
+                                                                   List<String> issueCodes,
+                                                                   List<String> evidenceCodes) {
         String path = safeText(rawPath);
         if (path == null) {
             issueCodes.add("WORKSPACE_FILE_RELATIVE_PATH_REQUIRED");
-            return new PathValidationResult(null, null);
+            return new WorkspaceFilePathValidationResult(null, null);
         }
         if (path.length() > MAX_RELATIVE_PATH_LENGTH) {
             issueCodes.add("WORKSPACE_FILE_RELATIVE_PATH_TOO_LONG");
@@ -235,20 +238,21 @@ public class AgentWorkspaceFilePayloadMaterializationService {
 
         if (normalizedSegments.isEmpty()) {
             issueCodes.add("WORKSPACE_FILE_RELATIVE_PATH_EMPTY_AFTER_NORMALIZE");
-            return new PathValidationResult(null, null);
+            return new WorkspaceFilePathValidationResult(null, null);
         }
         String normalizedPath = String.join("/", normalizedSegments);
         evidenceCodes.add("WORKSPACE_FILE_RELATIVE_PATH_VALIDATED");
-        return new PathValidationResult(normalizedPath, sha256(normalizedPath));
+        return new WorkspaceFilePathValidationResult(normalizedPath, sha256(normalizedPath));
     }
 
-    private ContentValidationResult validateContent(WorkspaceFileOperation operation,
-                                                    AgentWorkspaceFilePayloadMaterializationRequest request,
-                                                    List<String> issueCodes,
-                                                    List<String> evidenceCodes) {
+    private WorkspaceFileContentValidationResult validateContent(
+            WorkspaceFileOperation operation,
+            AgentWorkspaceFilePayloadMaterializationRequest request,
+            List<String> issueCodes,
+            List<String> evidenceCodes) {
         if (operation == WorkspaceFileOperation.READ) {
             evidenceCodes.add("WORKSPACE_FILE_READ_CONTENT_NOT_REQUIRED");
-            return new ContentValidationResult(null, 0, false, false);
+            return new WorkspaceFileContentValidationResult(null, 0, false, false);
         }
         String content = request.content();
         String contentReference = safeText(request.contentReference());
@@ -262,10 +266,10 @@ public class AgentWorkspaceFilePayloadMaterializationService {
         }
         if (hasContentReference) {
             evidenceCodes.add("WORKSPACE_FILE_WRITE_CONTENT_REFERENCE_PROVIDED");
-            return new ContentValidationResult(null, 0, true, false);
+            return new WorkspaceFileContentValidationResult(null, 0, true, false);
         }
         if (!hasInlineContent) {
-            return new ContentValidationResult(null, 0, false, false);
+            return new WorkspaceFileContentValidationResult(null, 0, false, false);
         }
         int contentBytes = content.getBytes(StandardCharsets.UTF_8).length;
         int maxBytes = request.maxInlineContentBytes() == null
@@ -282,12 +286,12 @@ public class AgentWorkspaceFilePayloadMaterializationService {
             }
         }
         evidenceCodes.add("WORKSPACE_FILE_WRITE_INLINE_CONTENT_CHECKED");
-        return new ContentValidationResult(sha256(content), contentBytes, false, true);
+        return new WorkspaceFileContentValidationResult(sha256(content), contentBytes, false, true);
     }
 
     private String resolvePayloadReference(AgentWorkspaceFilePayloadMaterializationRequest request,
                                            WorkspaceFileOperation operation,
-                                           PathValidationResult path,
+                                           WorkspaceFilePathValidationResult path,
                                            List<String> issueCodes,
                                            List<String> evidenceCodes) {
         String explicitReference = safeText(request.payloadReference());
@@ -310,8 +314,8 @@ public class AgentWorkspaceFilePayloadMaterializationService {
 
     private Map<String, Object> buildPayloadBody(AgentWorkspaceFilePayloadMaterializationRequest request,
                                                  WorkspaceFileOperation operation,
-                                                 PathValidationResult path,
-                                                 ContentValidationResult content) {
+                                                 WorkspaceFilePathValidationResult path,
+                                                 WorkspaceFileContentValidationResult content) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("operation", operation.name());
         body.put("relativePath", path.normalizedPath());
@@ -332,7 +336,9 @@ public class AgentWorkspaceFilePayloadMaterializationService {
         return body;
     }
 
-    private List<String> argumentNames(WorkspaceFileOperation operation, ContentValidationResult content) {
+    private List<String> argumentNames(
+            WorkspaceFileOperation operation,
+            WorkspaceFileContentValidationResult content) {
         List<String> names = new ArrayList<>();
         names.add("operation");
         names.add("relativePath");
@@ -347,7 +353,9 @@ public class AgentWorkspaceFilePayloadMaterializationService {
         return names;
     }
 
-    private List<String> sensitiveArgumentNames(WorkspaceFileOperation operation, ContentValidationResult content) {
+    private List<String> sensitiveArgumentNames(
+            WorkspaceFileOperation operation,
+            WorkspaceFileContentValidationResult content) {
         List<String> names = new ArrayList<>();
         names.add("relativePath");
         if (operation == WorkspaceFileOperation.WRITE && content.inlineContentProvided()) {
@@ -388,42 +396,6 @@ public class AgentWorkspaceFilePayloadMaterializationService {
                 List.copyOf(issueCodes),
                 List.of("FIX_REQUEST_ARGUMENTS", "RETRY_AFTER_POLICY_REVIEW")
         );
-    }
-
-    private String safeText(String value) {
-        return value == null || value.isBlank() ? null : value.trim();
-    }
-
-    private boolean hasText(String value) {
-        return safeText(value) != null;
-    }
-
-    private String sha256(String value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("当前 JDK 缺少 SHA-256，无法生成 workspace 文件载荷摘要", exception);
-        }
-    }
-
-    private enum WorkspaceFileOperation {
-        READ,
-        WRITE
-    }
-
-    private record PathValidationResult(
-            String normalizedPath,
-            String pathDigest
-    ) {
-    }
-
-    private record ContentValidationResult(
-            String contentSha256,
-            Integer contentSizeBytes,
-            boolean contentReferenceProvided,
-            boolean inlineContentProvided
-    ) {
     }
 
     /**

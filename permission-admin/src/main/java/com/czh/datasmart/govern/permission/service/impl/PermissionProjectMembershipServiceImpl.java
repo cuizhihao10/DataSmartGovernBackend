@@ -34,6 +34,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
+import static com.czh.datasmart.govern.permission.service.impl.PermissionProjectMembershipCopySupport.copyOf;
+
 /**
  * 项目成员授权管理服务实现。
  *
@@ -421,24 +423,6 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
         return new ProjectMembershipMutationResult(membership.getId(), membership.getTenantId(),
                 membership.getActorId(), membership.getProjectId(), membership.getEnabled(), message);
     }
-    private PermissionProjectMembership copyOf(PermissionProjectMembership source) {
-        if (source == null) {
-            return null;
-        }
-        PermissionProjectMembership copy = new PermissionProjectMembership();
-        copy.setId(source.getId());
-        copy.setTenantId(source.getTenantId());
-        copy.setActorId(source.getActorId());
-        copy.setProjectId(source.getProjectId());
-        copy.setWorkspaceId(source.getWorkspaceId());
-        copy.setProjectRole(source.getProjectRole());
-        copy.setGrantSource(source.getGrantSource());
-        copy.setEnabled(source.getEnabled());
-        copy.setCreateTime(source.getCreateTime());
-        copy.setUpdateTime(source.getUpdateTime());
-        return copy;
-    }
-
     private String requireRole(PermissionActorContext actorContext) {
         if (actorContext == null || actorContext.actorRole() == null || actorContext.actorRole().isBlank()) {
             throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN, "缺少可信操作者角色，不能管理项目成员授权");

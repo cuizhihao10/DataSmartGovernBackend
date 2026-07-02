@@ -34,6 +34,10 @@ from datasmart_ai_runtime.services.agent_gateway.session_models import (
     AgentSessionSchedulingPolicyView,
     ScheduledAgentView,
 )
+from datasmart_ai_runtime.services.agent_gateway.session_scheduler_presentation import (
+    display_summary,
+    recommended_actions,
+)
 
 
 class AgentSessionScheduler:
@@ -123,8 +127,8 @@ class AgentSessionScheduler:
             participating_agents=agents,
             policy_axes=policy_axes,
             handoff_required=handoff_required,
-            display_summary=self._display_summary(status, agents),
-            recommended_actions=self._recommended_actions(
+            display_summary=display_summary(status, agents),
+            recommended_actions=recommended_actions(
                 status,
                 degraded_reasons + a2a_context.degradation_reasons,
                 agents,
@@ -448,43 +452,6 @@ class AgentSessionScheduler:
         if plan.requires_human_approval:
             return AgentSchedulingStatus.APPROVAL_REQUIRED
         return AgentSchedulingStatus.READY
-
-    @staticmethod
-    def _display_summary(status: AgentSchedulingStatus, agents: tuple[ScheduledAgentView, ...]) -> str:
-        """生成面向前端治理卡片的一句话摘要。"""
-
-        if status == AgentSchedulingStatus.BLOCKED:
-            return "智能网关已生成多 Agent 调度视图，但关键模型网关或预算能力不可用，当前不应自动推进。"
-        if status == AgentSchedulingStatus.DEGRADED:
-            return f"智能网关已调度 {len(agents)} 个 Agent，但存在权限、预算、记忆或工具治理降级。"
-        if status == AgentSchedulingStatus.APPROVAL_REQUIRED:
-            return f"智能网关已调度 {len(agents)} 个 Agent，其中部分动作需要人工审批后才能执行。"
-        return f"智能网关已调度 {len(agents)} 个 Agent，当前可进入控制面执行或继续会话。"
-
-    @staticmethod
-    def _recommended_actions(
-        status: AgentSchedulingStatus,
-        degraded_reasons: tuple[str, ...],
-        agents: tuple[ScheduledAgentView, ...],
-        a2a_context: A2aTaskSchedulingContext,
-    ) -> tuple[str, ...]:
-        """根据调度状态生成下一步建议。"""
-
-        actions: list[str] = []
-        if status == AgentSchedulingStatus.BLOCKED:
-            actions.append("优先恢复模型网关路由、Provider 健康或租户预算，再允许主控 Agent 推进下一步。")
-        if "SKILL_ADMISSION_REJECTED" in degraded_reasons:
-            actions.append("将被拒绝 Skill 的权限包、租户开关和审批模板同步到 permission-admin 控制面。")
-        if "MODEL_TOOL_CALL_BUDGET_BLOCKED" in degraded_reasons:
-            actions.append("把本轮工具调用拆成多轮计划，或提高高并发/批处理场景下的工具预算策略。")
-        if "MEMORY_TARGETS_WITHOUT_RETRIEVAL_RESULT" in degraded_reasons:
-            actions.append("检查长期记忆写入、二级索引同步和 workspace 过滤条件，避免专家 Agent 缺少历史经验。")
-        if any(agent.requires_handoff for agent in agents):
-            actions.append("把需要 handoff 的 Agent 决策写入 Java 控制面审批单，等待项目负责人或管理员确认。")
-        actions.extend(a2a_context.recommended_actions())
-        if not actions:
-            actions.append("下一阶段可接入真实多 Agent runtime，把当前策略视图升级为可执行 handoff 图。")
-        return tuple(actions)
 
 
 def build_agent_session_scheduling_policy_view(

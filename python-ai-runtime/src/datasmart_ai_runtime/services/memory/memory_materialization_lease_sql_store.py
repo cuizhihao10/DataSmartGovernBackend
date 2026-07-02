@@ -31,6 +31,10 @@ from datasmart_ai_runtime.services.memory.memory_materialization_lease_store imp
     _lease_id,
     _utc,
 )
+from datasmart_ai_runtime.services.memory.memory_materialization_lease_sql_mapping import (
+    LEASE_COLUMNS,
+    lease_from_row,
+)
 
 
 class SqlAgentMemoryMaterializationLeaseStore:
@@ -435,11 +439,7 @@ class SqlAgentMemoryMaterializationLeaseStore:
     def _columns() -> str:
         """返回 SQL 字段顺序。"""
 
-        return (
-            "lease_id,candidate_id,tenant_id,project_id,workspace_key,memory_namespace,status,attempt_count,"
-            "worker_id,lease_token,leased_until,next_retry_at,memory_id,outcome,message,error_message,"
-            "started_at,finished_at,update_time"
-        )
+        return LEASE_COLUMNS
 
     def _insert_params(self, lease: AgentMemoryMaterializationLease) -> tuple[Any, ...]:
         """把领域对象转换为 SQL 参数。"""
@@ -470,33 +470,7 @@ class SqlAgentMemoryMaterializationLeaseStore:
     def _lease_from_row(row: Any) -> AgentMemoryMaterializationLease:
         """把 SQL 行还原为租约对象。"""
 
-        values = dict(row) if hasattr(row, "keys") else dict(
-            zip(SqlAgentMemoryMaterializationLeaseStore._columns().split(","), row)
-        )
-        return AgentMemoryMaterializationLease(
-            lease_id=values["lease_id"],
-            candidate_id=values["candidate_id"],
-            tenant_id=values["tenant_id"],
-            project_id=values["project_id"],
-            workspace_key=values["workspace_key"],
-            memory_namespace=values["memory_namespace"],
-            status=AgentMemoryMaterializationLeaseStatus(values["status"]),
-            attempt_count=int(values["attempt_count"]),
-            worker_id=values["worker_id"],
-            lease_token=values["lease_token"],
-            leased_until=SqlAgentMemoryMaterializationLeaseStore._parse_datetime(values["leased_until"])
-            or datetime.now(timezone.utc),
-            next_retry_at=SqlAgentMemoryMaterializationLeaseStore._parse_datetime(values["next_retry_at"]),
-            memory_id=values["memory_id"],
-            outcome=values["outcome"],
-            message=values["message"],
-            error_message=values["error_message"],
-            started_at=SqlAgentMemoryMaterializationLeaseStore._parse_datetime(values["started_at"])
-            or datetime.now(timezone.utc),
-            finished_at=SqlAgentMemoryMaterializationLeaseStore._parse_datetime(values["finished_at"]),
-            updated_at=SqlAgentMemoryMaterializationLeaseStore._parse_datetime(values["update_time"])
-            or datetime.now(timezone.utc),
-        )
+        return lease_from_row(row)
 
     @staticmethod
     def _format_datetime(value: datetime | None) -> str | None:

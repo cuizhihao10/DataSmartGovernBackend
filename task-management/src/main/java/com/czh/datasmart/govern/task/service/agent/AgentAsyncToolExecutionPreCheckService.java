@@ -19,6 +19,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
+import static com.czh.datasmart.govern.task.service.agent.AgentAsyncToolPreCheckValueSupport.*;
+
 /**
  * Agent 异步工具 worker 执行前二次复核服务。
  *
@@ -443,68 +445,4 @@ public class AgentAsyncToolExecutionPreCheckService {
         );
     }
 
-    private boolean looksLikeSensitivePayload(String value) {
-        String lower = value.toLowerCase(Locale.ROOT);
-        return lower.contains("select ")
-                || lower.contains("insert ")
-                || lower.contains("authorization:")
-                || lower.contains("bearer ")
-                || lower.contains("password")
-                || lower.contains("prompt:");
-    }
-
-    private boolean sameText(String left, String right) {
-        String normalizedLeft = optionalText(left);
-        String normalizedRight = optionalText(right);
-        return normalizedLeft != null && normalizedLeft.equals(normalizedRight);
-    }
-
-    private boolean containsNormalized(List<String> values, String expected) {
-        String normalizedExpected = optionalText(expected);
-        return normalizedExpected != null && normalizedTextSet(values).contains(normalizedExpected);
-    }
-
-    private Set<String> normalizedTextSet(List<String> values) {
-        Set<String> normalized = new LinkedHashSet<>();
-        if (values == null) {
-            return normalized;
-        }
-        for (String value : values) {
-            String item = optionalText(value);
-            if (item != null) {
-                normalized.add(item);
-            }
-        }
-        return normalized;
-    }
-
-    private String safeExceptionMessage(RuntimeException exception) {
-        String message = exception.getMessage();
-        if (message == null || message.isBlank()) {
-            return exception.getClass().getSimpleName();
-        }
-        String trimmed = message.trim();
-        return trimmed.length() <= 300 ? trimmed : trimmed.substring(0, 300);
-    }
-
-    private String optionalText(String value) {
-        return value == null || value.isBlank() ? null : value.trim();
-    }
-
-    private String firstText(List<String> values) {
-        if (values == null) {
-            return null;
-        }
-        for (String value : values) {
-            String item = optionalText(value);
-            if (item != null) {
-                return item;
-            }
-        }
-        return null;
-    }
-
-    private String normalize(String value) {
-        return value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
-    }
 }

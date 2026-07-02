@@ -41,6 +41,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static com.czh.datasmart.govern.agent.service.AgentSessionTestToolFixtures.metadataReadAdapterForTest;
 
 /**
  * Agent 会话服务单元测试。
@@ -398,26 +399,6 @@ class AgentSessionServiceTest {
                 .filter(item -> item.runId().equals(runId))
                 .findFirst()
                 .orElseThrow();
-    }
-
-    private AgentToolAdapter metadataReadAdapterForTest() {
-        return new AgentToolAdapter() {
-            @Override
-            public boolean supports(String toolCode) {
-                return "datasource.metadata.read".equals(toolCode);
-            }
-
-            @Override
-            public AgentToolExecutionOutcome execute(AgentToolExecutionContext context) {
-                return AgentToolExecutionOutcome.succeeded(
-                        "测试适配器模拟数据源元数据读取成功",
-                        Map.of(
-                                "datasourceId", context.audit().getTargetResourceId(),
-                                "tableCount", 2
-                        )
-                );
-            }
-        };
     }
 
     private StartAgentRunRequest runRequest(String input) {

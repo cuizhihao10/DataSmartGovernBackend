@@ -488,49 +488,11 @@ def _admin_requeue_message(*, operator_id: str, reason: str) -> str:
     return f"管理员 {safe_operator} 已安排长期记忆物化补偿重试：{safe_reason}"
 
 
-def decide_materialization_retry(
-    *,
-    attempt_count: int,
-    now: datetime | None = None,
-    max_attempts: int = 5,
-    retry_base_seconds: int = 30,
-    retry_max_seconds: int = 3600,
-) -> AgentMemoryMaterializationRetryDecision:
-    """根据当前尝试次数计算下一步应自动重试还是进入 DLQ。
-
-    业务解释：
-    - `attempt_count` 来自 lease 领取次数，而不是 receipt begin 次数，因为它代表 worker 真正取得处理权的次数；
-    - 当尝试次数达到上限时进入 `DEAD_LETTER`，后续应由管理员查看低敏错误、修复配置或手动重放；
-    - 未达到上限时写入 `next_retry_at`，Runner 在冷却期内跳过该候选，避免外部依赖抖动时毫秒级热循环。
-
-    性能解释：
-    退避能显著降低坏候选对数据库、向量库、图谱索引和日志系统的压力。当前采用简单指数退避，是为了先固定
-    可解释、可测试的语义；未来可以按租户套餐、错误类型或下游容量切换为更细的策略。
-    """
-
-    current_time = _utc(now)
-    safe_attempts = max(1, max_attempts)
-    safe_base = max(1, retry_base_seconds)
-    safe_max = max(safe_base, retry_max_seconds)
-    if attempt_count >= safe_attempts:
-        return AgentMemoryMaterializationRetryDecision(
-            status=AgentMemoryMaterializationLeaseStatus.DEAD_LETTER,
-            next_retry_at=None,
-            retry_delay_seconds=0,
-            max_attempts=safe_attempts,
-            dead_lettered=True,
-        )
-    retry_delay = min(safe_max, safe_base * (2 ** max(0, attempt_count - 1)))
-    return AgentMemoryMaterializationRetryDecision(
-        status=AgentMemoryMaterializationLeaseStatus.FAILED,
-        next_retry_at=current_time + timedelta(seconds=retry_delay),
-        retry_delay_seconds=retry_delay,
-        max_attempts=safe_attempts,
-        dead_lettered=False,
-    )
-
-
 def _lease_id(candidate_id: str) -> str:
     """按候选 ID 生成稳定 lease ID。"""
 
     return f"memory-materialization-lease-{uuid5(NAMESPACE_URL, candidate_id)}"
+
+
+# 保留历史公开导入路径，调用方无需知道重试策略已经从 store 中解耦。
+from .memory_materialization_retry_policy import decide_materialization_retry

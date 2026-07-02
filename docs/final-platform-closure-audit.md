@@ -8,8 +8,8 @@
 - Python Runtime 全量测试为 `597 passed`。
 - Maven JDK 21 reactor 全量测试为 `868 tests, 0 failures, 0 errors, 0 skipped`。
 - 生产静态就绪门禁为 `PASS=33, WARN=0, FAIL=0`。
-- 修正物理行统计后，最终闭环证据门禁为 `PASS=91, WARN=2, FAIL=0`；两个 warning
-  只表示仍有 7 个生产源码和 3 个测试文件超过 500 行，不表示功能或测试失败。
+- 完成四批有界职责拆分后，最终闭环证据门禁为 `PASS=93, WARN=0, FAIL=0`；
+  Java/Python 生产源码与测试文件已全部满足单文件不超过 500 物理行的工程约束。
 
 这里的“闭环”表示既定产品范围已具备代码、合同、测试、部署和运维制品，不表示已经替客户完成生产上线。真实 Secret 注入、企业 IdP 联调、标准 SBOM、镜像签名、Kubernetes 集群部署、容量压测、备份恢复和故障注入仍必须在客户或预生产环境执行。
 
@@ -101,9 +101,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 
 启用前必须同时具备权限、审批、审计、租约、幂等、死信、回滚、容量、告警和值班流程。禁止为了演示“完整”而在默认配置中打开这些开关。
 
-## 6. 冻结前剩余 P1
+## 6. 冻结前 P1 完成情况
 
-当前没有阻断工程发布候选的 P0 代码失败。剩余 P1 应限制为小规模整改：
+当前没有阻断工程发布候选的 P0 代码失败，冻结前识别出的文件规模与测试工具链 P1
+已经全部完成：
 
 - 首批 7 个原审计目标已经完成职责拆分：
   `AgentCommandTaskFinalStateCallbackDispatchService.java`、`AgentToolSandboxPolicyService.java`、
@@ -128,22 +129,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
   - 命令提案提取证据 record 与摘要支持，命令安全预检提取低敏信号 record；
   - Skill 可见性投影提取索引大小探测 record；
   - 状态推进、事务 outbox、持久化和网络提交仍留在原服务中。
-- 当前准确剩余 7 个生产源码和 3 个测试文件，共 10 个：
+- 第四批完成最后 7 个生产源码和 3 个测试文件的职责拆分：
+  - Memory lease 将重试决策、SQL 行映射与时间解析从租约存储中分离，持久化和租约状态机保持不变；
+  - Session scheduler 与 command worker lease 将展示摘要和推荐动作提取为纯展示模块，
+    调度、租约和 fencing 语义保持不变；
+  - Workspace payload 将操作类型、路径/内容校验结果、摘要和值规范化提取为包内值对象与支持类，
+    原服务继续拥有工作区隔离和物化流程；
+  - permission-admin 项目成员复制、task-management 异步工具预检值处理提取为无副作用支持类；
+  - 三个超限测试按澄清事实、Agent 工具夹具和 checkpoint 图运行夹具拆分，覆盖场景没有删除。
+- 审计脚本现已确认生产源码与测试源码两个规模门禁均为 `PASS`，准确剩余超限数量为零。
+- 最终证据模式为 `PASS=93, WARN=0, FAIL=0`，Python 为 `597 passed`，
+  Maven 为 `868 tests, 0 failures, 0 errors, 0 skipped`。
 
-| 行数 | 文件 |
-|---:|---|
-| 536 | `python-ai-runtime/src/datasmart_ai_runtime/services/memory/memory_materialization_lease_store.py` |
-| 528 | `agent-runtime/src/main/java/com/czh/datasmart/govern/agent/service/runtime/AgentWorkspaceFilePayloadMaterializationService.java` |
-| 516 | `python-ai-runtime/src/datasmart_ai_runtime/services/memory/memory_materialization_lease_sql_store.py` |
-| 513 | `permission-admin/src/main/java/com/czh/datasmart/govern/permission/service/impl/PermissionProjectMembershipServiceImpl.java` |
-| 510 | `python-ai-runtime/src/datasmart_ai_runtime/services/agent_gateway/session_scheduler.py` |
-| 510 | `python-ai-runtime/src/datasmart_ai_runtime/services/tools/command_worker_lease.py` |
-| 510 | `task-management/src/main/java/com/czh/datasmart/govern/task/service/agent/AgentAsyncToolExecutionPreCheckService.java` |
-| 511 | `agent-runtime/src/test/java/com/czh/datasmart/govern/agent/service/runtime/AgentRuntimeEventDisplaySupportTest.java` |
-| 504 | `agent-runtime/src/test/java/com/czh/datasmart/govern/agent/service/AgentSessionServiceTest.java` |
-| 502 | `python-ai-runtime/tests/test_tool_action_execution_checkpoint_api.py` |
-
-这些整改不得引入新产品功能、修改公开 API 或重新设计已稳定的状态机。
+本轮代码范围至此冻结。后续只允许 P0/P1 缺陷、安全与兼容性修复，或客户环境接入；
+不得以继续“完善”为由新增产品分支、修改公开 API 或重新设计已稳定状态机。
 
 ## 7. 最终冻结规则
 

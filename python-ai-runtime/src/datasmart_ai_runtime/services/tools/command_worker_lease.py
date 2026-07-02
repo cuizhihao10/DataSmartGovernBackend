@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable, Protocol
 
+from .command_worker_lease_presentation import message_for, recommended_actions_for
+
 
 COMMAND_WORKER_LEASE_SCHEMA_VERSION = "datasmart.python-ai-runtime.command-worker-lease.v1"
 COMMAND_WORKER_LEASE_PAYLOAD_POLICY = (
@@ -410,8 +412,8 @@ class CommandWorkerLeaseManager:
             lease_version=record.lease_version if record else None,
             expires_at_ms=record.expires_at_ms if record else None,
             retry_after_ms=retry_after_ms,
-            message=_message_for(state),
-            recommended_actions=_recommended_actions_for(state),
+            message=message_for(state),
+            recommended_actions=recommended_actions_for(state),
         )
 
 
@@ -482,29 +484,3 @@ def _current_time_ms() -> int:
 def _looks_sensitive(value: Any) -> bool:
     lowered = str(value or "").lower()
     return any(marker in lowered for marker in SENSITIVE_TEXT_MARKERS)
-
-
-def _message_for(state: CommandWorkerLeaseState) -> str:
-    return {
-        CommandWorkerLeaseState.ACQUIRED: "命令租约领取成功，当前 worker 可以继续执行后续低敏预检。",
-        CommandWorkerLeaseState.ALREADY_HELD_BY_CALLER: "同一 worker 已持有租约，本次领取按幂等重试处理。",
-        CommandWorkerLeaseState.ALREADY_HELD_BY_OTHER: "命令租约正由其他 worker 持有，当前 worker 必须停止处理。",
-        CommandWorkerLeaseState.RENEWED: "命令租约续租成功，当前 worker 仍可继续处理。",
-        CommandWorkerLeaseState.RELEASED: "命令租约已释放，后续 worker 可以在需要时重新领取。",
-        CommandWorkerLeaseState.REJECTED: "worker 身份或 fencing token 不匹配，禁止继续处理或写回 receipt。",
-        CommandWorkerLeaseState.EXPIRED: "命令租约已过期，旧 worker 必须停止并重新进入领取流程。",
-        CommandWorkerLeaseState.NOT_FOUND: "未找到命令租约，调用方需要先领取再续租或释放。",
-    }[state]
-
-
-def _recommended_actions_for(state: CommandWorkerLeaseState) -> tuple[str, ...]:
-    return {
-        CommandWorkerLeaseState.ACQUIRED: ("继续执行 worker precheck，并在写回 receipt 前携带 fencingToken。",),
-        CommandWorkerLeaseState.ALREADY_HELD_BY_CALLER: ("复用已有 fencingToken，避免重复生成执行事实。",),
-        CommandWorkerLeaseState.ALREADY_HELD_BY_OTHER: ("停止当前 worker 处理，等待队列 visibility timeout 或调度器重试。",),
-        CommandWorkerLeaseState.RENEWED: ("继续处理并在长任务窗口内按需再次续租。",),
-        CommandWorkerLeaseState.RELEASED: ("结束当前 worker 生命周期，保留低敏审计摘要。",),
-        CommandWorkerLeaseState.REJECTED: ("丢弃当前处理结果，不允许写回 command worker receipt。",),
-        CommandWorkerLeaseState.EXPIRED: ("停止旧执行上下文，重新领取租约后再继续。",),
-        CommandWorkerLeaseState.NOT_FOUND: ("先执行 acquire，再进入 worker precheck 或 runner。",),
-    }[state]
