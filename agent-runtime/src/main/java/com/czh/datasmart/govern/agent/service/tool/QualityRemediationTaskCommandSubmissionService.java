@@ -39,6 +39,18 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static com.czh.datasmart.govern.agent.service.tool.QualityRemediationSubmissionValueSupport.badRequest;
+import static com.czh.datasmart.govern.agent.service.tool.QualityRemediationSubmissionValueSupport.booleanValue;
+import static com.czh.datasmart.govern.agent.service.tool.QualityRemediationSubmissionValueSupport.firstText;
+import static com.czh.datasmart.govern.agent.service.tool.QualityRemediationSubmissionValueSupport.intValue;
+import static com.czh.datasmart.govern.agent.service.tool.QualityRemediationSubmissionValueSupport.longValue;
+import static com.czh.datasmart.govern.agent.service.tool.QualityRemediationSubmissionValueSupport.requireText;
+import static com.czh.datasmart.govern.agent.service.tool.QualityRemediationSubmissionValueSupport.safeEquals;
+import static com.czh.datasmart.govern.agent.service.tool.QualityRemediationSubmissionValueSupport.safeExceptionMessage;
+import static com.czh.datasmart.govern.agent.service.tool.QualityRemediationSubmissionValueSupport.safeMessage;
+import static com.czh.datasmart.govern.agent.service.tool.QualityRemediationSubmissionValueSupport.stringValue;
+import static com.czh.datasmart.govern.agent.service.tool.QualityRemediationSubmissionValueSupport.text;
+
 /**
  * 质量治理受控命令真实提交服务。
  *
@@ -426,85 +438,4 @@ public class QualityRemediationTaskCommandSubmissionService {
         return result;
     }
 
-    private PlatformBusinessException badRequest(String message) {
-        return new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST, message);
-    }
-
-    private String requireText(String value, String fieldName) {
-        if (value == null || value.isBlank()) {
-            throw badRequest(fieldName + " 不能为空");
-        }
-        return value.trim();
-    }
-
-    private String text(Object value) {
-        return value == null || String.valueOf(value).isBlank() ? null : String.valueOf(value).trim();
-    }
-
-    private String firstText(String... values) {
-        for (String value : values) {
-            if (value != null && !value.isBlank()) {
-                return value.trim();
-            }
-        }
-        return null;
-    }
-
-    private String stringValue(Long value) {
-        return value == null ? null : String.valueOf(value);
-    }
-
-    private boolean safeEquals(String left, String right) {
-        String normalizedLeft = text(left);
-        String normalizedRight = text(right);
-        return normalizedLeft != null && normalizedLeft.equals(normalizedRight);
-    }
-
-    private Boolean booleanValue(Object value) {
-        if (value instanceof Boolean bool) {
-            return bool;
-        }
-        if (value == null) {
-            return false;
-        }
-        return Boolean.parseBoolean(String.valueOf(value));
-    }
-
-    private Long longValue(Object value) {
-        if (value instanceof Number number) {
-            return number.longValue();
-        }
-        try {
-            return Long.parseLong(String.valueOf(value));
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
-
-    private int intValue(Object value, int defaultValue) {
-        if (value instanceof Number number) {
-            return number.intValue();
-        }
-        try {
-            return Integer.parseInt(String.valueOf(value));
-        } catch (Exception ignored) {
-            return defaultValue;
-        }
-    }
-
-    private String safeMessage(Object value, String fallback) {
-        String text = text(value);
-        if (text == null) {
-            return fallback;
-        }
-        return text.length() <= 300 ? text : text.substring(0, 300);
-    }
-
-    private String safeExceptionMessage(RuntimeException exception) {
-        String message = exception.getMessage();
-        if (message == null || message.isBlank()) {
-            return exception.getClass().getSimpleName();
-        }
-        return message.length() <= 240 ? message : message.substring(0, 240);
-    }
 }

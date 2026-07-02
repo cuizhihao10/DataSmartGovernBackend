@@ -9,7 +9,7 @@
 - Maven JDK 21 reactor 全量测试为 `868 tests, 0 failures, 0 errors, 0 skipped`。
 - 生产静态就绪门禁为 `PASS=33, WARN=0, FAIL=0`。
 - 修正物理行统计后，最终闭环证据门禁为 `PASS=91, WARN=2, FAIL=0`；两个 warning
-  只表示仍有 14 个生产源码和 3 个测试文件超过 500 行，不表示功能或测试失败。
+  只表示仍有 7 个生产源码和 3 个测试文件超过 500 行，不表示功能或测试失败。
 
 这里的“闭环”表示既定产品范围已具备代码、合同、测试、部署和运维制品，不表示已经替客户完成生产上线。真实 Secret 注入、企业 IdP 联调、标准 SBOM、镜像签名、Kubernetes 集群部署、容量压测、备份恢复和故障注入仍必须在客户或预生产环境执行。
 
@@ -121,25 +121,24 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
   - 模型能力注册表将诊断算法与默认模型画像数据分离，从 547 行降至 389 行；
   - Agent Runtime 配置将工具输入字段 schema 提取为独立值对象，并用兼容子类保留旧引用，
     从 545 行降至 497 行。
-- 当前准确剩余 14 个生产源码和 3 个测试文件，共 17 个：
+- 第三批已按纯计算与低敏值对象边界拆分 7 个 Agent Runtime 生产文件：
+  - 工具执行审计提取只读视图映射器；
+  - Skill Manifest 提取指纹与过滤值支持，Skill Lifecycle 提取草稿校验器；
+  - 质量整改提交提取低敏 JSON 值转换和错误摘要支持；
+  - 命令提案提取证据 record 与摘要支持，命令安全预检提取低敏信号 record；
+  - Skill 可见性投影提取索引大小探测 record；
+  - 状态推进、事务 outbox、持久化和网络提交仍留在原服务中。
+- 当前准确剩余 7 个生产源码和 3 个测试文件，共 10 个：
 
 | 行数 | 文件 |
 |---:|---|
-| 538 | `agent-runtime/src/main/java/com/czh/datasmart/govern/agent/service/AgentToolExecutionAuditService.java` |
 | 536 | `python-ai-runtime/src/datasmart_ai_runtime/services/memory/memory_materialization_lease_store.py` |
 | 528 | `agent-runtime/src/main/java/com/czh/datasmart/govern/agent/service/runtime/AgentWorkspaceFilePayloadMaterializationService.java` |
-| 521 | `agent-runtime/src/main/java/com/czh/datasmart/govern/agent/service/runtime/AgentToolActionCommandProposalService.java` |
-| 516 | `agent-runtime/src/main/java/com/czh/datasmart/govern/agent/service/AgentSkillPublicationManifestService.java` |
 | 516 | `python-ai-runtime/src/datasmart_ai_runtime/services/memory/memory_materialization_lease_sql_store.py` |
 | 513 | `permission-admin/src/main/java/com/czh/datasmart/govern/permission/service/impl/PermissionProjectMembershipServiceImpl.java` |
-| 512 | `agent-runtime/src/main/java/com/czh/datasmart/govern/agent/service/skill/AgentSkillPublicationLifecycleService.java` |
-| 511 | `gateway/src/main/java/com/czh/datasmart/govern/gateway/filter/GatewayAuthorizationFilter.java` |
-| 510 | `agent-runtime/src/main/java/com/czh/datasmart/govern/agent/service/tool/QualityRemediationTaskCommandSubmissionService.java` |
 | 510 | `python-ai-runtime/src/datasmart_ai_runtime/services/agent_gateway/session_scheduler.py` |
 | 510 | `python-ai-runtime/src/datasmart_ai_runtime/services/tools/command_worker_lease.py` |
 | 510 | `task-management/src/main/java/com/czh/datasmart/govern/task/service/agent/AgentAsyncToolExecutionPreCheckService.java` |
-| 505 | `agent-runtime/src/main/java/com/czh/datasmart/govern/agent/service/runtime/AgentSkillVisibilitySnapshotProjectionService.java` |
-| 505 | `agent-runtime/src/main/java/com/czh/datasmart/govern/agent/service/runtime/AgentToolActionCommandSafetyPrecheckService.java` |
 | 511 | `agent-runtime/src/test/java/com/czh/datasmart/govern/agent/service/runtime/AgentRuntimeEventDisplaySupportTest.java` |
 | 504 | `agent-runtime/src/test/java/com/czh/datasmart/govern/agent/service/AgentSessionServiceTest.java` |
 | 502 | `python-ai-runtime/tests/test_tool_action_execution_checkpoint_api.py` |

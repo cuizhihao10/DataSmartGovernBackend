@@ -29,6 +29,11 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
+import static com.czh.datasmart.govern.agent.service.AgentSkillPublicationFingerprintSupport.fingerprintDescriptor;
+import static com.czh.datasmart.govern.agent.service.AgentSkillPublicationFingerprintSupport.fingerprintManifest;
+import static com.czh.datasmart.govern.agent.service.AgentSkillPublicationFingerprintSupport.normalizeFilter;
+import static com.czh.datasmart.govern.agent.service.AgentSkillPublicationFingerprintSupport.normalizeScopeFilter;
+
 /**
  * Agent Skill 发布 Manifest 服务。
  *
@@ -167,6 +172,7 @@ public class AgentSkillPublicationManifestService {
 
         List<AgentSkillPublicationItemView> items = new ArrayList<>(itemsBySkillCode.values());
         String contentFingerprint = fingerprintManifest(
+                MANIFEST_SCHEMA_VERSION,
                 items,
                 shouldIncludeDisabled,
                 domain,
@@ -431,67 +437,6 @@ public class AgentSkillPublicationManifestService {
         return actions;
     }
 
-    private String fingerprintManifest(List<AgentSkillPublicationItemView> items,
-                                       boolean includeDisabled,
-                                       String domain,
-                                       String riskLevel,
-                                       String tenantId,
-                                       String projectId) {
-        StringBuilder builder = new StringBuilder();
-        builder.append(MANIFEST_SCHEMA_VERSION).append('|')
-                .append(includeDisabled).append('|')
-                .append(normalizeFilter(domain)).append('|')
-                .append(normalizeFilter(riskLevel)).append('|')
-                .append(normalizeScopeFilter(tenantId)).append('|')
-                .append(normalizeScopeFilter(projectId));
-        for (AgentSkillPublicationItemView item : items) {
-            builder.append('|').append(item.skillCode()).append(':').append(item.contentFingerprint());
-        }
-        return sha256(builder.toString());
-    }
-
-    private String fingerprintDescriptor(AgentSkillDescriptorView descriptor) {
-        String source = String.join("|",
-                nullSafe(descriptor.schemaVersion()),
-                nullSafe(descriptor.skillCode()),
-                nullSafe(descriptor.displayName()),
-                nullSafe(descriptor.description()),
-                nullSafe(descriptor.domain()),
-                String.join(",", descriptor.requiredTools()),
-                String.join(",", descriptor.requiredPermissions()),
-                String.join(",", descriptor.triggerKeywords()),
-                nullSafe(descriptor.governance().riskLevel()),
-                nullSafe(descriptor.governance().approvalPolicy()),
-                String.valueOf(descriptor.governance().enabled()),
-                String.valueOf(descriptor.governance().auditRequired()),
-                String.valueOf(descriptor.governance().tenantScoped()),
-                String.valueOf(descriptor.governance().projectScoped()),
-                String.join(",", descriptor.memory().memoryDependencies()),
-                nullSafe(descriptor.memory().defaultMemoryScope()),
-                String.valueOf(descriptor.memory().retentionDays())
-        );
-        return sha256(source);
-    }
-
-    private String sha256(String source) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(digest.digest(source.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("当前 JDK 不支持 SHA-256，无法生成 Skill Manifest 指纹", exception);
-        }
-    }
-
-    private String normalizeFilter(String value) {
-        return value == null || value.isBlank()
-                ? "ALL"
-                : value.trim().replace('-', '_').toUpperCase(Locale.ROOT);
-    }
-
-    private String normalizeScopeFilter(String value) {
-        return value == null || value.isBlank() ? "UNSCOPED" : value.trim();
-    }
-
     private String lifecycleDomainFilter(String domain) {
         String normalized = normalizeFilter(domain);
         return "ALL".equals(normalized) ? null : normalized;
@@ -510,7 +455,4 @@ public class AgentSkillPublicationManifestService {
         return value == null || value.isBlank() ? null : value.trim();
     }
 
-    private String nullSafe(Object value) {
-        return Objects.toString(value, "");
-    }
 }

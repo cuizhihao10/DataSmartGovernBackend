@@ -165,7 +165,7 @@ public class AgentSkillVisibilitySnapshotProjectionService {
      */
     public AgentSkillVisibilitySnapshotIndexDiagnosticsView diagnostics() {
         AgentSkillVisibilitySnapshotIndexTelemetrySnapshot telemetry = indexTelemetry.snapshot();
-        IndexSizeProbe sizeProbe = probeIndexSize();
+        AgentSkillVisibilityIndexSizeProbe sizeProbe = probeIndexSize();
         return new AgentSkillVisibilitySnapshotIndexDiagnosticsView(
                 indexProperties.isEnabled(),
                 normalizeStore(indexProperties.getStore()),
@@ -200,14 +200,14 @@ public class AgentSkillVisibilitySnapshotProjectionService {
         );
     }
 
-    private IndexSizeProbe probeIndexSize() {
+    private AgentSkillVisibilityIndexSizeProbe probeIndexSize() {
         if (snapshotIndexStore.isEmpty()) {
-            return new IndexSizeProbe(0, "not-available", null);
+            return new AgentSkillVisibilityIndexSizeProbe(0, "not-available", null);
         }
         try {
-            return new IndexSizeProbe(snapshotIndexStore.get().size(), "available", null);
+            return new AgentSkillVisibilityIndexSizeProbe(snapshotIndexStore.get().size(), "available", null);
         } catch (RuntimeException exception) {
-            return new IndexSizeProbe(-1, "unavailable", safeError(exception));
+            return new AgentSkillVisibilityIndexSizeProbe(-1, "unavailable", safeError(exception));
         }
     }
 
@@ -494,12 +494,4 @@ public class AgentSkillVisibilitySnapshotProjectionService {
         return Collections.unmodifiableMap(parsed);
     }
 
-    /**
-     * 索引大小探测结果。
-     *
-     * <p>MySQL Store 的 {@code size()} 需要真正访问数据库。诊断接口应该尽量告诉运维“当前无法探测索引大小”，
-     * 而不是因为数据库不可用就让整个诊断接口 500。这个小 record 用于把探测状态和低敏错误一起带回 DTO。</p>
-     */
-    private record IndexSizeProbe(int currentIndexSize, String status, String error) {
-    }
 }

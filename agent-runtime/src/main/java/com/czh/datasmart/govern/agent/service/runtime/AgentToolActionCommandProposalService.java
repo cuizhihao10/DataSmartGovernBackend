@@ -27,6 +27,12 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
+import static com.czh.datasmart.govern.agent.service.runtime.AgentToolActionCommandProposalValueSupport.addIfText;
+import static com.czh.datasmart.govern.agent.service.runtime.AgentToolActionCommandProposalValueSupport.defaultText;
+import static com.czh.datasmart.govern.agent.service.runtime.AgentToolActionCommandProposalValueSupport.safeList;
+import static com.czh.datasmart.govern.agent.service.runtime.AgentToolActionCommandProposalValueSupport.safeText;
+import static com.czh.datasmart.govern.agent.service.runtime.AgentToolActionCommandProposalValueSupport.sha256;
+
 /**
  * 工具动作 command proposal 服务。
  *
@@ -86,7 +92,7 @@ public class AgentToolActionCommandProposalService {
                 null, null, null, null, null, null, null, null, null)
                 : request;
         AgentToolActionExecutionGraphView graph = selectGraph(safeRequest, accessContext);
-        ProposalEvidence evidence = evaluateEvidence(safeRequest, graph);
+        AgentToolActionProposalEvidence evidence = evaluateEvidence(safeRequest, graph);
         String proposalState = proposalState(graph, evidence);
         boolean allowed = STATE_READY_CONFIRMATION.equals(proposalState);
         String commandType = evidence.commandType() == null ? "NONE" : evidence.commandType();
@@ -194,8 +200,8 @@ public class AgentToolActionCommandProposalService {
      * missing 表示“还缺少必要事实”，rejected 表示“证据存在但不能信任或必须服务端复核”。正式 writer 后续只能在
      * accepted 且无 missing/rejected 的基础上继续复核，不能直接信任 proposal 响应。</p>
      */
-    private ProposalEvidence evaluateEvidence(AgentToolActionCommandProposalRequest request,
-                                               AgentToolActionExecutionGraphView graph) {
+    private AgentToolActionProposalEvidence evaluateEvidence(AgentToolActionCommandProposalRequest request,
+                                                             AgentToolActionExecutionGraphView graph) {
         Set<String> accepted = new LinkedHashSet<>();
         Set<String> missing = new LinkedHashSet<>();
         Set<String> rejected = new LinkedHashSet<>();
@@ -250,7 +256,7 @@ public class AgentToolActionCommandProposalService {
         }
 
         removeCommandBuilderResolvableRequirements(missing);
-        return new ProposalEvidence(
+        return new AgentToolActionProposalEvidence(
                 commandType,
                 idempotencyKey,
                 List.copyOf(accepted),
@@ -266,7 +272,7 @@ public class AgentToolActionCommandProposalService {
      * 也就是说，即使调用方补齐 payloadReference，只要图仍在等待审批或澄清，本方法也不会返回 READY。
      * 这可以防止客户端伪造一个字段就绕过人类确认、用户澄清或 worker 容量保护。</p>
      */
-    private String proposalState(AgentToolActionExecutionGraphView graph, ProposalEvidence evidence) {
+    private String proposalState(AgentToolActionExecutionGraphView graph, AgentToolActionProposalEvidence evidence) {
         if (GRAPH_BLOCKED.equals(graph.graphState()) || GRAPH_REJECTED.equals(graph.graphState())) {
             return STATE_BLOCKED;
         }
@@ -410,7 +416,7 @@ public class AgentToolActionCommandProposalService {
      */
     private List<String> recommendedActions(AgentToolActionExecutionGraphView graph,
                                             String proposalState,
-                                            ProposalEvidence evidence) {
+                                            AgentToolActionProposalEvidence evidence) {
         List<String> actions = new ArrayList<>();
         if (STATE_READY_CONFIRMATION.equals(proposalState)) {
             actions.add("下一步调用正式 outbox writer，由服务端回查 payloadReference、校验审批事实和写入幂等 command。");
@@ -443,79 +449,4 @@ public class AgentToolActionCommandProposalService {
                 + schemaVersion).substring(0, 32);
     }
 
-    /**
-     * 计算 SHA-256 摘要。
-     *
-     * <p>JDK 21 标准环境必然包含 SHA-256；如果运行时缺失，说明基础 JDK 已异常，直接抛出 IllegalStateException
-     * 比返回随机 ID 更安全，因为随机 ID 会破坏 proposal 与 writer 之间的幂等关联。</p>
-     */
-    private String sha256(String value) {
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            return HexFormat.of().formatHex(digest.digest(value.getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("当前 JDK 缺少 SHA-256，无法生成工具动作 command proposal ID", exception);
-        }
-    }
-
-    /**
-     * 仅在字符串有实际内容时加入集合。
-     *
-     * <p>统一通过 safeText 处理，可以避免 missing/accepted 列表里出现空字符串，减少前端和审计台的歧义。</p>
-     */
-    private void addIfText(Set<String> target, String value) {
-        String text = safeText(value);
-        if (text != null) {
-            target.add(text);
-        }
-    }
-
-    /**
-     * 获取非空文本，否则返回默认值。
-     *
-     * <p>主要用于 schemaVersion、workerReceiptMode 等可选字段。默认值代表控制面的保守约定，
-     * 不是客户端可以用来降低安全要求的开关。</p>
-     */
-    private String defaultText(String value, String fallback) {
-        String text = safeText(value);
-        return text == null ? fallback : text;
-    }
-
-    /**
-     * 规范化可选字符串。
-     *
-     * <p>所有来自请求或图节点的字符串先经过 trim/blank 处理，再进入证据计算，避免空格导致幂等键、
-     * policyVersion 或引用匹配出现看似不同、实际相同的边界问题。</p>
-     */
-    private String safeText(String value) {
-        if (value == null || value.isBlank()) {
-            return null;
-        }
-        return value.trim();
-    }
-
-    /**
-     * 空列表保护。
-     *
-     * <p>执行图 DTO 来自 projection/preview 层，理论上列表不应为空指针；但 proposal 属于写入前置保护层，
-     * 对上游 DTO 的容错要更保守，宁可按空列表处理，也不要因为 NPE 跳过后续安全判断。</p>
-     */
-    private <T> List<T> safeList(List<T> values) {
-        return values == null ? List.of() : values;
-    }
-
-    /**
-     * proposal 证据聚合结果。
-     *
-     * <p>commandType/idempotencyKey 是后续 writer 的关键输入；accepted/missing/rejected 则分别服务于确认页展示、
-     * 审计解释和 fail-closed 判断。record 只承载低敏代码和引用，不承载工具实参或 payload 正文。</p>
-     */
-    private record ProposalEvidence(
-            String commandType,
-            String idempotencyKey,
-            List<String> accepted,
-            List<String> missing,
-            List<String> rejected
-    ) {
-    }
 }

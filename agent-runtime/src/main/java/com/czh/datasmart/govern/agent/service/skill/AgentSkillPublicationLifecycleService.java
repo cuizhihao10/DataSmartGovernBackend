@@ -28,7 +28,10 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
-import java.util.regex.Pattern;
+
+import static com.czh.datasmart.govern.agent.service.skill.AgentSkillPublicationDraftValidator.validateLowSensitiveText;
+import static com.czh.datasmart.govern.agent.service.skill.AgentSkillPublicationDraftValidator.validateSkillCode;
+import static com.czh.datasmart.govern.agent.service.skill.AgentSkillPublicationDraftValidator.isValidSkillCode;
 
 /**
  * Agent Skill 创建、审核、发布和下线状态机服务。
@@ -55,13 +58,6 @@ public class AgentSkillPublicationLifecycleService {
     private static final String VIEW_SCHEMA_VERSION = "datasmart.agent.skill.publication-lifecycle.v1";
     private static final String QUERY_SCHEMA_VERSION = "datasmart.agent.skill.publication-lifecycle-query.v1";
     private static final String QUERY_TYPE = "AGENT_SKILL_PUBLICATION_LIFECYCLE_QUERY";
-    private static final Pattern SKILL_CODE_PATTERN = Pattern.compile("^[a-z0-9][a-z0-9_.-]{2,158}$");
-    private static final List<String> SENSITIVE_TEXT_MARKERS = List.of(
-            "api_key", "apikey", "access_key", "secret", "password", "passwd", "bearer ",
-            "token=", "jdbc:", "http://", "https://", "select *", "insert into", "update ",
-            "delete from", "drop table", "prompt:", "system prompt", "model output"
-    );
-
     private final AgentRuntimeProperties runtimeProperties;
     private final AgentSkillPublicationLifecycleStore lifecycleStore;
 
@@ -350,7 +346,7 @@ public class AgentSkillPublicationLifecycleService {
 
     private List<String> policyIssues(AgentSkillPublicationRecord record) {
         List<String> issues = new ArrayList<>();
-        if (!SKILL_CODE_PATTERN.matcher(record.skillCode()).matches()) {
+        if (!isValidSkillCode(record.skillCode())) {
             issues.add("SKILL_CODE_FORMAT_INVALID");
         }
         if (!List.of("LOW", "MEDIUM", "HIGH", "CRITICAL").contains(record.riskLevel())) {
@@ -408,26 +404,6 @@ public class AgentSkillPublicationLifecycleService {
         } catch (IllegalArgumentException exception) {
             throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
                     "不支持的 Skill 发布状态：" + status);
-        }
-    }
-
-    private void validateSkillCode(String skillCode) {
-        if (!SKILL_CODE_PATTERN.matcher(skillCode).matches()) {
-            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
-                    "skillCode 只能包含小写字母、数字、点、下划线和短横线，且长度需在 3-159 之间");
-        }
-    }
-
-    private void validateLowSensitiveText(String text, String fieldName) {
-        if (text == null || text.isBlank()) {
-            return;
-        }
-        String lower = text.toLowerCase(Locale.ROOT);
-        for (String marker : SENSITIVE_TEXT_MARKERS) {
-            if (lower.contains(marker)) {
-                throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
-                        fieldName + " 只能填写低敏摘要，不能包含 prompt、SQL、URL、凭据、工具参数或样本数据");
-            }
         }
     }
 

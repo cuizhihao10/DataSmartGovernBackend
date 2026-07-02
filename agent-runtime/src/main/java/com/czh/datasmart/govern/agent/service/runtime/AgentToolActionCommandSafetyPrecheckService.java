@@ -70,7 +70,7 @@ public class AgentToolActionCommandSafetyPrecheckService {
         }
 
         inspectAccessScope(safeRequest, accessContext, issueCodes, reasonCodes);
-        CommandSignals commandSignals = inspectCommand(safeRequest, issueCodes, reasonCodes);
+        AgentCommandSafetySignals commandSignals = inspectCommand(safeRequest, issueCodes, reasonCodes);
         inspectApproval(safeRequest, commandSignals, issueCodes, reasonCodes);
         inspectWorkspaceAndPaths(safeRequest, issueCodes, reasonCodes, pathCategories);
 
@@ -153,13 +153,13 @@ public class AgentToolActionCommandSafetyPrecheckService {
      * 控制面先做保守的片段匹配：危险片段直接阻断，联网/写入/未知命令进入审批，真正执行器仍应使用更严格的
      * 参数化命令或容器沙箱。</p>
      */
-    private CommandSignals inspectCommand(AgentToolActionCommandSafetyPrecheckRequest request,
-                                          List<String> issueCodes,
-                                          List<String> reasonCodes) {
+    private AgentCommandSafetySignals inspectCommand(AgentToolActionCommandSafetyPrecheckRequest request,
+                                                     List<String> issueCodes,
+                                                     List<String> reasonCodes) {
         String commandLine = text(request.commandLine());
         if (commandLine == null) {
             add(issueCodes, reasonCodes, "COMMAND_LINE_REQUIRED", "COMMAND_LINE_IS_EMPTY");
-            return new CommandSignals(false, false, false, false);
+            return new AgentCommandSafetySignals(false, false, false, false);
         }
         if (commandLine.length() > safeMaxCommandChars()) {
             add(issueCodes, reasonCodes, "COMMAND_LINE_TOO_LONG", "COMMAND_LINE_EXCEEDS_CONTROL_PLANE_LIMIT");
@@ -187,7 +187,7 @@ public class AgentToolActionCommandSafetyPrecheckService {
         if (!dangerous && knownSafe && !write && !network) {
             reasonCodes.add("COMMAND_MATCHED_SAFE_ALLOWLIST");
         }
-        return new CommandSignals(knownSafe, dangerous, write, network);
+        return new AgentCommandSafetySignals(knownSafe, dangerous, write, network);
     }
 
     /**
@@ -197,7 +197,7 @@ public class AgentToolActionCommandSafetyPrecheckService {
      * 必须回查 permission-admin 或 Java 事实仓储，确认审批没有过期、撤销、跨租户或跨 run。</p>
      */
     private void inspectApproval(AgentToolActionCommandSafetyPrecheckRequest request,
-                                 CommandSignals commandSignals,
+                                 AgentCommandSafetySignals commandSignals,
                                  List<String> issueCodes,
                                  List<String> reasonCodes) {
         boolean approvalNeeded = commandSignals.write()
@@ -330,7 +330,7 @@ public class AgentToolActionCommandSafetyPrecheckService {
     /**
      * 根据阻断、审批、联网/写入信号计算展示风险等级。
      */
-    private String riskLevel(boolean blocked, boolean requiresApproval, CommandSignals signals) {
+    private String riskLevel(boolean blocked, boolean requiresApproval, AgentCommandSafetySignals signals) {
         if (blocked || signals.dangerous()) {
             return "CRITICAL";
         }
@@ -490,16 +490,4 @@ public class AgentToolActionCommandSafetyPrecheckService {
                 : properties.getMaxOutputByteLimit();
     }
 
-    /**
-     * 命令文本判定出的低敏信号。
-     *
-     * <p>该 record 不保存命令本身，只保存是否命中 allowlist、危险、写入、联网四类布尔信号。</p>
-     */
-    private record CommandSignals(
-            boolean knownSafe,
-            boolean dangerous,
-            boolean write,
-            boolean network
-    ) {
-    }
 }

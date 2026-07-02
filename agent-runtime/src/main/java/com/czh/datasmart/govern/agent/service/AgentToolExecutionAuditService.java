@@ -30,6 +30,8 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+
+import static com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditViewMapper.toView;
 import java.util.UUID;
 
 /**
@@ -83,7 +85,7 @@ public class AgentToolExecutionAuditService {
             auditStore.saveAll(records);
             publishInitialPlanEvents(records);
         });
-        return records.stream().map(this::toView).toList();
+        return records.stream().map(AgentToolExecutionAuditViewMapper::toView).toList();
     }
 
     /**
@@ -113,7 +115,7 @@ public class AgentToolExecutionAuditService {
             auditStore.saveAll(records);
             publishInitialPlanEvents(records);
         });
-        return records.stream().map(this::toView).toList();
+        return records.stream().map(AgentToolExecutionAuditViewMapper::toView).toList();
     }
 
     /**
@@ -121,7 +123,7 @@ public class AgentToolExecutionAuditService {
      */
     public List<AgentToolExecutionAuditView> listByRun(String sessionId, String runId) {
         return auditStore.list(sessionId, runId).stream()
-                .map(this::toView)
+                .map(AgentToolExecutionAuditViewMapper::toView)
                 .toList();
     }
 
@@ -494,45 +496,5 @@ public class AgentToolExecutionAuditService {
 
     private String normalizeComment(String comment) {
         return comment == null ? "" : comment.trim();
-    }
-
-    private AgentToolExecutionAuditView toView(AgentToolExecutionAuditRecord record) {
-        return new AgentToolExecutionAuditView(
-                record.getAuditId(),
-                record.getSessionId(),
-                record.getRunId(),
-                record.getBindingId(),
-                record.getToolCode(),
-                record.getToolType(),
-                record.getTargetService(),
-                record.getTargetEndpoint(),
-                record.getTargetResourceId(),
-                record.getTenantId(),
-                record.getProjectId(),
-                record.getWorkspaceId(),
-                record.getActorId(),
-                record.getRiskLevel(),
-                record.getExecutionMode(),
-                record.getRequiresApproval(),
-                record.getReadOnly(),
-                record.getIdempotent(),
-                record.getAllowedActions(),
-                record.getPlanReason(),
-                record.getPlanArguments(),
-                record.getGovernanceHints(),
-                record.getParameterValidation(),
-                record.getState().name(),
-                record.getTraceId(),
-                record.getMessage(),
-                record.getApprovalOperatorId(),
-                record.getApprovalComment(),
-                record.getApprovalTime(),
-                record.getExecutionStartTime(),
-                record.getExecutionFinishTime(),
-                record.getOutputSummary(),
-                record.getErrorCode(),
-                record.getCreateTime(),
-                record.getUpdateTime()
-        );
     }
 }
