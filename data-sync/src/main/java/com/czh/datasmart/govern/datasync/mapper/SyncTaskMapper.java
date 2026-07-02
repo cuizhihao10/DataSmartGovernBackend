@@ -32,9 +32,9 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
             UPDATE data_sync_task
             SET current_state = 'QUEUED',
                 last_execution_id = #{lastExecutionId},
-                attention_required = 0,
+                attention_required = FALSE,
                 attention_reason = NULL,
-                update_time = NOW()
+                update_time = LOCALTIMESTAMP
             WHERE id = #{taskId}
             """)
     int markQueuedAfterLeaseTransition(@Param("taskId") Long taskId,
@@ -58,9 +58,9 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
             SET current_state = #{targetState},
                 trigger_type = COALESCE(#{triggerType}, trigger_type),
                 last_execution_id = COALESCE(#{lastExecutionId}, last_execution_id),
-                attention_required = 0,
+                attention_required = FALSE,
                 attention_reason = NULL,
-                update_time = NOW()
+                update_time = LOCALTIMESTAMP
             WHERE id = #{taskId}
             """)
     int markLifecycleState(@Param("taskId") Long taskId,
@@ -78,9 +78,9 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
             UPDATE data_sync_task
             SET current_state = 'AWAITING_OPERATOR_ACTION',
                 last_execution_id = #{lastExecutionId},
-                attention_required = 1,
+                attention_required = TRUE,
                 attention_reason = #{attentionReason},
-                update_time = NOW()
+                update_time = LOCALTIMESTAMP
             WHERE id = #{taskId}
             """)
     int markAwaitingOperatorAction(@Param("taskId") Long taskId,
@@ -96,9 +96,9 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
     @Update("""
             UPDATE data_sync_task
             SET current_state = 'AWAITING_OPERATOR_ACTION',
-                attention_required = 1,
+                attention_required = TRUE,
                 attention_reason = #{attentionReason},
-                update_time = NOW()
+                update_time = LOCALTIMESTAMP
             WHERE id = #{taskId}
             """)
     int markAttentionAcknowledged(@Param("taskId") Long taskId,
@@ -113,9 +113,9 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
     @Update("""
             UPDATE data_sync_task
             SET current_state = 'CONFIGURED',
-                attention_required = 0,
+                attention_required = FALSE,
                 attention_reason = NULL,
-                update_time = NOW()
+                update_time = LOCALTIMESTAMP
             WHERE id = #{taskId}
             """)
     int markAttentionResolved(@Param("taskId") Long taskId);
@@ -132,9 +132,9 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
             SET current_state = 'QUEUED',
                 trigger_type = 'MANUAL',
                 last_execution_id = #{lastExecutionId},
-                attention_required = 0,
+                attention_required = FALSE,
                 attention_reason = NULL,
-                update_time = NOW()
+                update_time = LOCALTIMESTAMP
             WHERE id = #{taskId}
             """)
     int markAttentionRerunQueued(@Param("taskId") Long taskId,
@@ -149,9 +149,9 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
     @Update("""
             UPDATE data_sync_task
             SET current_state = #{targetState},
-                attention_required = 0,
+                attention_required = FALSE,
                 attention_reason = NULL,
-                update_time = NOW()
+                update_time = LOCALTIMESTAMP
             WHERE id = #{taskId}
             """)
     int closeAttentionTask(@Param("taskId") Long taskId,

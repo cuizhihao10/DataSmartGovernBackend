@@ -49,7 +49,7 @@ public interface SyncExecutionRecoveryPlanMapper extends BaseMapper<SyncExecutio
     @Update("""
             UPDATE data_sync_execution_recovery_plan
             SET plan_state = #{targetState},
-                update_time = NOW()
+                update_time = LOCALTIMESTAMP
             WHERE execution_id = #{executionId}
               AND plan_state = #{expectedState}
             """)

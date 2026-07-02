@@ -55,8 +55,40 @@
             <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
         </dependency>
         <dependency>
-            <groupId>com.mysql</groupId>
-            <artifactId>mysql-connector-j</artifactId>
+            <groupId>com.baomidou</groupId>
+            <!--
+              data-sync 会暴露模板、任务、执行历史、错误样本、事故和 outbox 等分页列表。
+              MyBatis-Plus 3.5.9+ 将分页插件依赖的 JSqlParser 拆分为独立扩展包；
+              如果缺少该依赖，代码编译可能通过，但注册 PaginationInnerInterceptor 时会在运行期失败。
+            -->
+            <artifactId>mybatis-plus-jsqlparser</artifactId>
+        </dependency>
+        <dependency>
+            <!--
+              data-sync 的平台业务事实库迁移到 PostgreSQL。
+              注意：这只表示模板、任务、执行、checkpoint、事故和审计等控制面表使用 PostgreSQL；
+              客户侧 MySQL 作为“源端/目标端连接器”仍然由 datasource-management 和受控 connector runtime 支持，
+              不应在本模块继续保留 mysql-connector-j 作为 Spring Boot 主 datasource 驱动。
+            -->
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <!--
+              Flyway 在服务启动阶段校验并升级 data_sync schema。
+              这样新环境不再依赖旧的 docker/mysql/init/init.sql 手工建表，也避免“代码已切 PG、表却没建”的半迁移状态。
+            -->
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <!--
+              Flyway 10+ 将 PostgreSQL 数据库支持拆成独立模块；
+              只引入 flyway-core 时，真实 PostgreSQL 集成环境会缺少数据库方言实现。
+            -->
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.kafka</groupId>

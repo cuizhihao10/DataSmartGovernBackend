@@ -11,12 +11,32 @@ spring:
   profiles:
     active: dev
   datasource:
-    # 这里连接平台治理库，不是源端或目标端业务库。
-    # 源端/目标端连接信息只保存引用 ID，具体连接配置仍由 datasource-management 管理。
-    url: jdbc:mysql://localhost:3306/datasmart_govern?useSSL=false&serverTimezone=UTC
-    username: root
-    password: password
-    driver-class-name: com.mysql.cj.jdbc.Driver
+    # 这里连接 data-sync 自己的“平台业务事实库”，不是源端或目标端客户业务库。
+    # 源端/目标端连接串、账号、密钥仍由 datasource-management 管理；
+    # data-sync 只保存 datasourceId、低敏 connector type、对象名、任务状态、checkpoint、错误样本和审计事实。
+    # currentSchema=data_sync 让未限定表名默认落在本微服务 schema，降低跨微服务误读同名表的风险。
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/datasmart_govern?currentSchema=data_sync&ApplicationName=datasmart-data-sync}
+    username: ${SPRING_DATASOURCE_USERNAME:datasmart}
+    password: ${SPRING_DATASOURCE_PASSWORD:password}
+    driver-class-name: ${SPRING_DATASOURCE_DRIVER_CLASS_NAME:org.postgresql.Driver}
+    hikari:
+      # data-sync 的执行历史、checkpoint、幂等表和 outbox 都属于高频写入控制面事实。
+      # 显式设置连接池边界，可以避免 worker 积压时单实例无限争抢 PostgreSQL 连接。
+      maximum-pool-size: ${DATASMART_DATA_SYNC_DB_MAX_POOL_SIZE:20}
+      minimum-idle: ${DATASMART_DATA_SYNC_DB_MIN_IDLE:2}
+      connection-timeout: ${DATASMART_DATA_SYNC_DB_CONNECTION_TIMEOUT_MILLIS:3000}
+      validation-timeout: ${DATASMART_DATA_SYNC_DB_VALIDATION_TIMEOUT_MILLIS:1000}
+  flyway:
+    enabled: true
+    # Flyway 历史表和业务表都放在 data_sync schema。
+    # schema 由 docker/postgresql/init/00-platform-schemas.sql 创建；应用负责迁移和校验，不在生产启动时悄悄创建新 schema。
+    schemas: data_sync
+    default-schema: data_sync
+    create-schemas: false
+    locations: classpath:db/migration/postgresql/data-sync
+    validate-on-migrate: true
+    clean-disabled: true
+    baseline-on-migrate: false
   kafka:
     # 预留给同步任务状态事件、执行器调度事件、checkpoint 事件和告警事件。
     bootstrap-servers: localhost:9092
@@ -34,6 +54,11 @@ mybatis-plus:
   type-aliases-package: com.czh.datasmart.govern.datasync.entity
   configuration:
     map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      # data-sync 的 PostgreSQL 表名全部是显式小写下划线命名，不需要迁移期表前缀。
+      # 将该配置写清楚，可以避免未来误把 data_sync_* 当成某个公共前缀自动追加或剥离。
+      table-prefix: ""
 
 management:
   endpoints:

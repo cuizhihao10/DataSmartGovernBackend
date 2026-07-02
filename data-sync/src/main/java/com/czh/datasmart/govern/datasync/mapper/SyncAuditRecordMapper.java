@@ -34,10 +34,15 @@ public interface SyncAuditRecordMapper extends BaseMapper<SyncAuditRecord> {
      * @return 本轮删除数量
      */
     @Delete("""
+            WITH expired AS (
+                SELECT id
+                FROM data_sync_audit_record
+                WHERE create_time < #{expireBefore}
+                ORDER BY create_time ASC, id ASC
+                LIMIT #{limit}
+            )
             DELETE FROM data_sync_audit_record
-            WHERE create_time < #{expireBefore}
-            ORDER BY create_time ASC
-            LIMIT #{limit}
+            WHERE id IN (SELECT id FROM expired)
             """)
     int deleteExpiredAuditRecords(@Param("expireBefore") LocalDateTime expireBefore, @Param("limit") int limit);
 }

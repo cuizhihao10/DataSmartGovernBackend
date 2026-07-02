@@ -1,5 +1,22 @@
 # MySQL 到 PostgreSQL 渐进迁移路线
 
+## 2026-07-03 更新：data-sync PostgreSQL 代码路径迁移
+
+`data-sync` 已完成 PostgreSQL 运行路径迁移，进入阶段 2 第三个核心业务服务的代码切换验收：
+
+- `data-sync` POM 移除平台业务库层面的 MySQL 驱动依赖，新增 pgJDBC、Flyway Core、`flyway-database-postgresql` 与 `mybatis-plus-jsqlparser`；
+- `application.yml` 默认 datasource 切换为 PostgreSQL `data_sync` schema，并补充 Hikari 连接池、Flyway schema、迁移位置和 MyBatis-Plus 表名前缀说明；
+- 新增 `MyBatisPlusConfig`，把分页插件切换为 PostgreSQL 方言，并通过 `MetaObjectHandler` 统一填充 `createTime/updateTime`；
+- 新增 `db/migration/postgresql/data-sync/V1__data_sync_schema_baseline.sql`，覆盖当前 data-sync 微服务自有的 10 张控制面事实表；
+- 10 张表包括：`data_sync_template`、`data_sync_task`、`data_sync_execution`、`data_sync_callback_idempotency`、`data_sync_task_management_receipt_outbox`、`data_sync_checkpoint`、`data_sync_execution_recovery_plan`、`data_sync_error_sample`、`data_sync_incident_record`、`data_sync_audit_record`；
+- PostgreSQL V1 明确不包含 `task_data_sync_*` 与 `agent_memory_*`，前者后续随 task-management/data-sync 边界收敛，后者必须迁入阶段 3 的 `ai_memory`；
+- Mapper SQL 已完成 PostgreSQL 方言修正：`NOW()/DATE_ADD/DATE_SUB` 转为 `LOCALTIMESTAMP` 与 interval 表达式，布尔条件转为 `TRUE/FALSE`，小批量删除改为 CTE 删除模式；
+- 修复 MyBatis 注解 SQL 中比较符的 PostgreSQL 实测问题：动态 `<script>` SQL 保留 XML 转义，普通更新语句通过显式 `<script>` 包装让 `&lt;` 在执行前还原为真实比较符；
+- `docker-compose.application.yml` 对 `data-sync` 显式覆盖公共迁移期 MySQL datasource，改依赖 PostgreSQL、Redis、Kafka、Nacos、datasource-management 与 task-management；
+- 新增 gated 真实 PostgreSQL 集成测试，覆盖 Flyway V1、10 张表存在性、identity 主键回填、BOOLEAN 映射、MyBatis-Plus 分页、执行器租约、恢复计划状态推进、receipt outbox 和 CTE 幂等清理。
+
+该阶段完成后，`data-sync` 已具备新安装和当前开发环境直接使用 PostgreSQL 的代码路径。下一批应补 `data-sync` MySQL 到 PostgreSQL 存量迁移脚手架，迁移对象限定为上面的 10 张 `data_sync_*` 表；`task_data_sync_*` 与 `agent_memory_*` 继续登记为延期迁移对象，不能被临时塞进 data-sync 或 datasource-management。
+
 ## 2026-07-03 更新：datasource-management 存量迁移脚手架
 
 `datasource-management` 已在 PostgreSQL 代码路径迁移之后补齐存量数据迁移入口：
@@ -14,7 +31,7 @@
 - manifest 只记录敏感字段名、行数、checksum 和延期迁移表，不保存 JDBC URL、用户名、密码、SQL 预览、token、prompt、模型输出或客户数据样本；
 - 新增 `docs/datasource-management-postgresql-data-migration.md`，说明停写、备份、导出、导入、对账、只读观察、目标非空保护和敏感导出目录保管要求。
 
-该阶段完成后，`datasource-management` 的商业迁移闭环从“新安装可运行”推进到“具备可审计存量搬迁脚手架”。下一批应进入 `data-sync` PostgreSQL 迁移，重点处理 `data_sync_*` 独立 schema、执行状态、恢复计划、回放补数、错误样本、worker receipt 和 task 桥接边界。`agent_memory_*` 继续登记为阶段 3 `ai_memory` 迁移对象，不能迁入 datasource-management。
+该阶段完成后，`datasource-management` 的商业迁移闭环从“新安装可运行”推进到“具备可审计存量搬迁脚手架”。后续已进入 `data-sync` PostgreSQL 迁移，重点处理 `data_sync_*` 独立 schema、执行状态、恢复计划、回放补数、错误样本、worker receipt 和 task 桥接边界。`agent_memory_*` 继续登记为阶段 3 `ai_memory` 迁移对象，不能迁入 datasource-management。
 
 ## 决策
 
@@ -108,7 +125,7 @@ Agent 长期记忆和未来 LangGraph durable state 最终都应使用 PostgreSQ
 阶段 0 已完成：目标架构、PostgreSQL/pgvector Compose、服务 schema 和 pgJDBC 版本基线已经建立。
 本地真实容器验证已确认 PostgreSQL 17 健康、vector 0.8.3 可用、8 个服务 schema 初始化成功。
 
-阶段 1 的两个代码路径试点已经完成，阶段 2 的前两个核心服务也已完成代码路径切换：
+阶段 1 的两个代码路径试点已经完成，阶段 2 的前三个核心服务也已完成代码路径切换：
 
 - `observability` 已移除 MySQL 驱动，切换到 pgJDBC、PostgreSQL `observability` schema 和 Flyway V1；
 - `data-quality` 已把规则、执行、报告、异常四张业务表转换为 PostgreSQL V1，切换 pgJDBC、
@@ -138,14 +155,20 @@ Agent 长期记忆和未来 LangGraph durable state 最终都应使用 PostgreSQ
   只读 SQL 审计和 Agent 命令 receipt 的低敏插入与显式清理；
 - datasource-management 的 `mysql-connector-j` 被有意保留为外部客户 MySQL 数据源连接器驱动，
   不再用于 Spring Boot 平台业务 datasource；后续不能把它误判为平台业务库尚未迁移。
-- `observability`、`data-quality`、`permission-admin` 三个服务均不再从应用层依赖 MySQL 驱动。
+- `data-sync` 已完成 PostgreSQL `data_sync` schema、pgJDBC、Flyway V1、MyBatis-Plus PostgreSQL 分页方言和 Compose 覆盖配置；
+- data-sync PostgreSQL V1 覆盖当前代码真实使用的 10 张控制面表：`data_sync_template`、`data_sync_task`、
+  `data_sync_execution`、`data_sync_callback_idempotency`、`data_sync_task_management_receipt_outbox`、
+  `data_sync_checkpoint`、`data_sync_execution_recovery_plan`、`data_sync_error_sample`、
+  `data_sync_incident_record`、`data_sync_audit_record`；
+- data-sync 真实 PostgreSQL 17 集成测试已覆盖 Flyway V1、10 张表存在性、identity 主键回填、BOOLEAN 字段映射、
+  MyBatis-Plus Page 分页、execution 租约认领与心跳、恢复计划状态推进、receipt outbox 投递状态和 CTE 幂等清理；
+- `observability`、`data-quality`、`permission-admin`、`data-sync` 四个服务均不再从应用层依赖 MySQL 驱动。
 
 这里的“代码路径完成”只代表新安装和当前开发环境可以直接使用 PostgreSQL。存量客户环境如果已经在
-MySQL 中产生 data-quality、permission-admin 或 datasource-management 业务数据，仍必须完成停写/导出、类型转换、identity
+MySQL 中产生 data-quality、permission-admin、datasource-management 或 data-sync 业务数据，仍必须完成停写/导出、类型转换、identity
 sequence 校正、行数与业务聚合对账、只读观察和回滚点保留，才能按上面的单服务验收门禁标记为商业迁移完成。
 
-下一批应补 `datasource-management` 的 MySQL 到 PostgreSQL 存量迁移脚手架。该脚手架必须重点处理
-数据源连接配置和凭据脱敏：导出、manifest、checksum、日志和错误摘要都不得输出明文密码、完整 JDBC URL、
-token、SQL 样本或客户数据样本。其余 Java 服务仍由 MySQL 承担迁移期运行流量，不能把当前四个服务通过
-误认为全平台迁移完成；同时 `agent_memory_*` 表已登记为阶段 3 的 `ai_memory` 迁移对象，不能在权限中心、
-datasource-management 或 MySQL 初始化脚本中继续扩展。
+下一批应补 `data-sync` 的 MySQL 到 PostgreSQL 存量迁移脚手架。该脚手架必须限定迁移 10 张 `data_sync_*`
+控制面表，并重点处理执行状态、恢复计划、错误样本、checkpoint、receipt outbox 与幂等记录的顺序和对账；
+`task_data_sync_*` 暂随 task-management/data-sync 边界确认，`agent_memory_*` 已登记为阶段 3 的 `ai_memory`
+迁移对象，不能在 data-sync、datasource-management、权限中心或 MySQL 初始化脚本中继续扩展。

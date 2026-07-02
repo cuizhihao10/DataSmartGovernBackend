@@ -167,13 +167,20 @@ services:
         SERVER_PORT: 8086
     environment:
       <<: *java-common-environment
+      # data-sync 的平台业务事实库已迁移到 PostgreSQL。
+      # 这里覆盖公共 MySQL datasource，只影响模板、任务、执行、checkpoint、事故和 outbox 控制面表；
+      # 客户侧 MySQL/PostgreSQL/Kafka/文件等源端或目标端仍通过 datasource-management 的连接器能力访问。
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgresql:5432/datasmart_govern?currentSchema=data_sync&ApplicationName=datasmart-data-sync
+      SPRING_DATASOURCE_USERNAME: datasmart
+      SPRING_DATASOURCE_PASSWORD: ${DATASMART_POSTGRES_PASSWORD:-password}
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       DATASMART_DATA_SYNC_DATASOURCE_CAPABILITY_BASE_URL: http://datasource-management:8082
       DATASMART_DATA_SYNC_DATASOURCE_RUN_ONCE_BASE_URL: http://datasource-management:8082
       DATASMART_DATA_SYNC_TASK_MANAGEMENT_RECEIPT_BASE_URL: http://task-management:8081
     ports:
       - "8086:8086"
     depends_on:
-      - mysql
+      - postgresql
       - redis
       - kafka
       - nacos

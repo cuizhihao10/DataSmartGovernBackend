@@ -34,10 +34,15 @@ public interface SyncCheckpointMapper extends BaseMapper<SyncCheckpoint> {
      * @return 本轮删除数量
      */
     @Delete("""
+            WITH expired AS (
+                SELECT id
+                FROM data_sync_checkpoint
+                WHERE checkpoint_time < #{expireBefore}
+                ORDER BY checkpoint_time ASC, id ASC
+                LIMIT #{limit}
+            )
             DELETE FROM data_sync_checkpoint
-            WHERE checkpoint_time < #{expireBefore}
-            ORDER BY checkpoint_time ASC
-            LIMIT #{limit}
+            WHERE id IN (SELECT id FROM expired)
             """)
     int deleteExpiredCheckpoints(@Param("expireBefore") LocalDateTime expireBefore, @Param("limit") int limit);
 }

@@ -34,7 +34,7 @@ public interface SyncExecutionMapper extends BaseMapper<SyncExecution> {
             SELECT *
             FROM data_sync_execution
             WHERE execution_state = 'QUEUED'
-              AND (queued_at IS NULL OR queued_at &lt;= NOW())
+              AND (queued_at IS NULL OR queued_at &lt;= LOCALTIMESTAMP)
             <if test="tenantId != null">
               AND tenant_id = #{tenantId}
             </if>
@@ -49,18 +49,25 @@ public interface SyncExecutionMapper extends BaseMapper<SyncExecution> {
      *
      * <p>WHERE execution_state='QUEUED' 是并发裁决的关键。
      * 多个 worker 同时看到同一条候选记录时，只有一个能成功把状态改成 RUNNING。
+     *
+     * <p>这里虽然没有动态 if 标签，也仍然显式使用 {@code <script>} 包住 SQL。
+     * 原因是注解 SQL 中如果直接写 {@code <=}，MyBatis XML 语言驱动可能把它当成未闭合标签；
+     * 但如果只写 {@code &lt;=} 而不进入脚本解析，JDBC 又会收到字面量 {@code &lt;=}。
+     * 因此“脚本包装 + XML 转义”是注解 Mapper 中表达比较符的稳定写法。
      */
     @Update("""
+            <script>
             UPDATE data_sync_execution
             SET execution_state = 'RUNNING',
                 executor_id = #{executorId},
-                started_at = COALESCE(started_at, NOW()),
-                heartbeat_time = NOW(),
-                lease_expire_time = DATE_ADD(NOW(), INTERVAL #{leaseSeconds} SECOND),
-                update_time = NOW()
+                started_at = COALESCE(started_at, LOCALTIMESTAMP),
+                heartbeat_time = LOCALTIMESTAMP,
+                lease_expire_time = LOCALTIMESTAMP + (#{leaseSeconds} * INTERVAL '1 second'),
+                update_time = LOCALTIMESTAMP
             WHERE id = #{executionId}
               AND execution_state = 'QUEUED'
-              AND (queued_at IS NULL OR queued_at &lt;= NOW())
+              AND (queued_at IS NULL OR queued_at &lt;= LOCALTIMESTAMP)
+            </script>
             """)
     int claimQueuedExecution(@Param("executionId") Long executionId,
                              @Param("executorId") String executorId,
@@ -73,9 +80,9 @@ public interface SyncExecutionMapper extends BaseMapper<SyncExecution> {
             UPDATE data_sync_execution
             SET records_read = #{recordsRead},
                 records_written = #{recordsWritten},
-                heartbeat_time = NOW(),
-                lease_expire_time = DATE_ADD(NOW(), INTERVAL #{leaseSeconds} SECOND),
-                update_time = NOW()
+                heartbeat_time = LOCALTIMESTAMP,
+                lease_expire_time = LOCALTIMESTAMP + (#{leaseSeconds} * INTERVAL '1 second'),
+                update_time = LOCALTIMESTAMP
             WHERE id = #{executionId}
               AND execution_state = 'RUNNING'
               AND executor_id = #{executorId}
@@ -105,10 +112,10 @@ public interface SyncExecutionMapper extends BaseMapper<SyncExecution> {
                 END,
                 queued_at = CASE
                     WHEN COALESCE(defer_count, 0) + 1 >= #{maxDeferCount} THEN NULL
-                    ELSE DATE_ADD(NOW(), INTERVAL #{delaySeconds} SECOND)
+                    ELSE LOCALTIMESTAMP + (#{delaySeconds} * INTERVAL '1 second')
                 END,
                 finished_at = CASE
-                    WHEN COALESCE(defer_count, 0) + 1 >= #{maxDeferCount} THEN NOW()
+                    WHEN COALESCE(defer_count, 0) + 1 >= #{maxDeferCount} THEN LOCALTIMESTAMP
                     ELSE finished_at
                 END,
                 executor_id = NULL,
@@ -116,7 +123,7 @@ public interface SyncExecutionMapper extends BaseMapper<SyncExecution> {
                 lease_expire_time = NULL,
                 defer_count = COALESCE(defer_count, 0) + 1,
                 error_summary = #{reason},
-                update_time = NOW()
+                update_time = LOCALTIMESTAMP
             WHERE id = #{executionId}
               AND execution_state = 'RUNNING'
               AND executor_id = #{executorId}
@@ -139,7 +146,7 @@ public interface SyncExecutionMapper extends BaseMapper<SyncExecution> {
             FROM data_sync_execution
             WHERE execution_state = 'RUNNING'
               AND lease_expire_time IS NOT NULL
-              AND lease_expire_time &lt; NOW()
+              AND lease_expire_time &lt; LOCALTIMESTAMP
             <if test="tenantId != null">
               AND tenant_id = #{tenantId}
             </if>
@@ -155,8 +162,12 @@ public interface SyncExecutionMapper extends BaseMapper<SyncExecution> {
      *
      * <p>WHERE 条件再次确认状态与租约时间，避免扫描后执行器刚好完成或续租时被错误回收。
      * CASE 表达式负责把“可恢复”和“需要人工介入”合并成一次原子更新，避免服务层先读 deferCount 再写状态时发生并发竞争。
+     *
+     * <p>同 {@link #claimQueuedExecution(Long, String, long)}，这里用 {@code <script>} 让
+     * {@code &lt;} 在执行前被 MyBatis 还原为 PostgreSQL 能理解的比较符。
      */
     @Update("""
+            <script>
             UPDATE data_sync_execution
             SET execution_state = CASE
                     WHEN COALESCE(defer_count, 0) + 1 >= #{maxDeferCount} THEN 'FAILED'
@@ -164,10 +175,10 @@ public interface SyncExecutionMapper extends BaseMapper<SyncExecution> {
                 END,
                 queued_at = CASE
                     WHEN COALESCE(defer_count, 0) + 1 >= #{maxDeferCount} THEN NULL
-                    ELSE NOW()
+                    ELSE LOCALTIMESTAMP
                 END,
                 finished_at = CASE
-                    WHEN COALESCE(defer_count, 0) + 1 >= #{maxDeferCount} THEN NOW()
+                    WHEN COALESCE(defer_count, 0) + 1 >= #{maxDeferCount} THEN LOCALTIMESTAMP
                     ELSE finished_at
                 END,
                 executor_id = NULL,
@@ -175,11 +186,12 @@ public interface SyncExecutionMapper extends BaseMapper<SyncExecution> {
                 lease_expire_time = NULL,
                 defer_count = COALESCE(defer_count, 0) + 1,
                 error_summary = #{reason},
-                update_time = NOW()
+                update_time = LOCALTIMESTAMP
             WHERE id = #{executionId}
               AND execution_state = 'RUNNING'
               AND lease_expire_time IS NOT NULL
-              AND lease_expire_time &lt; NOW()
+              AND lease_expire_time &lt; LOCALTIMESTAMP
+            </script>
             """)
     int requeueExpiredLease(@Param("executionId") Long executionId,
                             @Param("reason") String reason,

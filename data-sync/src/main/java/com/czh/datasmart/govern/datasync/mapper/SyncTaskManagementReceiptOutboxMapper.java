@@ -48,12 +48,12 @@ public interface SyncTaskManagementReceiptOutboxMapper extends BaseMapper<SyncTa
             FROM data_sync_task_management_receipt_outbox
             WHERE (
                     outbox_state IN ('PENDING', 'RETRY_WAIT')
-                    AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+                    AND (next_retry_at IS NULL OR next_retry_at <= LOCALTIMESTAMP)
                   )
                OR (
                     outbox_state = 'DELIVERING'
                     AND last_attempt_at IS NOT NULL
-                    AND last_attempt_at < DATE_SUB(NOW(), INTERVAL #{staleDeliveringSeconds} SECOND)
+                    AND last_attempt_at < LOCALTIMESTAMP - (#{staleDeliveringSeconds} * INTERVAL '1 second')
                   )
             ORDER BY COALESCE(next_retry_at, create_time) ASC, id ASC
             LIMIT #{limit}
@@ -71,19 +71,19 @@ public interface SyncTaskManagementReceiptOutboxMapper extends BaseMapper<SyncTa
             UPDATE data_sync_task_management_receipt_outbox
             SET outbox_state = 'DELIVERING',
                 attempt_count = COALESCE(attempt_count, 0) + 1,
-                last_attempt_at = NOW(),
-                update_time = NOW()
+                last_attempt_at = LOCALTIMESTAMP,
+                update_time = LOCALTIMESTAMP
             WHERE id = #{id}
               AND (
                     (
                       outbox_state IN ('PENDING', 'RETRY_WAIT')
-                      AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+                      AND (next_retry_at IS NULL OR next_retry_at <= LOCALTIMESTAMP)
                     )
                     OR
                     (
                       outbox_state = 'DELIVERING'
                       AND last_attempt_at IS NOT NULL
-                      AND last_attempt_at < DATE_SUB(NOW(), INTERVAL #{staleDeliveringSeconds} SECOND)
+                      AND last_attempt_at < LOCALTIMESTAMP - (#{staleDeliveringSeconds} * INTERVAL '1 second')
                     )
                   )
             """)
@@ -96,11 +96,11 @@ public interface SyncTaskManagementReceiptOutboxMapper extends BaseMapper<SyncTa
     @Update("""
             UPDATE data_sync_task_management_receipt_outbox
             SET outbox_state = 'DELIVERED',
-                delivered_at = NOW(),
+                delivered_at = LOCALTIMESTAMP,
                 next_retry_at = NULL,
                 last_error_code = NULL,
                 last_error_summary = NULL,
-                update_time = NOW()
+                update_time = LOCALTIMESTAMP
             WHERE id = #{id}
               AND outbox_state = 'DELIVERING'
             """)
@@ -119,7 +119,7 @@ public interface SyncTaskManagementReceiptOutboxMapper extends BaseMapper<SyncTa
                 dead_letter_at = #{deadLetterAt},
                 last_error_code = #{lastErrorCode},
                 last_error_summary = #{lastErrorSummary},
-                update_time = NOW()
+                update_time = LOCALTIMESTAMP
             WHERE id = #{id}
               AND outbox_state = 'DELIVERING'
             """)

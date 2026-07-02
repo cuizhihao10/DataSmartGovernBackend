@@ -36,12 +36,17 @@ public interface SyncIncidentRecordMapper extends BaseMapper<SyncIncidentRecord>
      * @return 本轮删除数量
      */
     @Delete("""
+            WITH expired AS (
+                SELECT id
+                FROM data_sync_incident_record
+                WHERE incident_status = 'CLOSED'
+                  AND closed_at IS NOT NULL
+                  AND closed_at < #{expireBefore}
+                ORDER BY closed_at ASC, id ASC
+                LIMIT #{limit}
+            )
             DELETE FROM data_sync_incident_record
-            WHERE incident_status = 'CLOSED'
-              AND closed_at IS NOT NULL
-              AND closed_at < #{expireBefore}
-            ORDER BY closed_at ASC
-            LIMIT #{limit}
+            WHERE id IN (SELECT id FROM expired)
             """)
     int deleteExpiredClosedIncidents(@Param("expireBefore") LocalDateTime expireBefore, @Param("limit") int limit);
 
@@ -53,8 +58,8 @@ public interface SyncIncidentRecordMapper extends BaseMapper<SyncIncidentRecord>
     @Update("""
             UPDATE data_sync_incident_record
             SET incident_status = 'ACKNOWLEDGED',
-                acknowledged_at = NOW(),
-                update_time = NOW()
+                acknowledged_at = LOCALTIMESTAMP,
+                update_time = LOCALTIMESTAMP
             WHERE id = #{incidentId}
               AND incident_status = 'OPEN'
             """)
@@ -69,7 +74,7 @@ public interface SyncIncidentRecordMapper extends BaseMapper<SyncIncidentRecord>
             UPDATE data_sync_incident_record
             SET assigned_operator_id = #{assignedOperatorId},
                 assigned_operator_role = #{assignedOperatorRole},
-                update_time = NOW()
+                update_time = LOCALTIMESTAMP
             WHERE id = #{incidentId}
               AND incident_status <> 'CLOSED'
             """)
@@ -86,8 +91,8 @@ public interface SyncIncidentRecordMapper extends BaseMapper<SyncIncidentRecord>
             UPDATE data_sync_incident_record
             SET incident_status = 'RESOLVED',
                 resolution_summary = #{resolutionSummary},
-                resolved_at = NOW(),
-                update_time = NOW()
+                resolved_at = LOCALTIMESTAMP,
+                update_time = LOCALTIMESTAMP
             WHERE id = #{incidentId}
               AND incident_status <> 'CLOSED'
             """)
@@ -103,8 +108,8 @@ public interface SyncIncidentRecordMapper extends BaseMapper<SyncIncidentRecord>
             UPDATE data_sync_incident_record
             SET incident_status = 'CLOSED',
                 resolution_summary = COALESCE(#{resolutionSummary}, resolution_summary),
-                closed_at = NOW(),
-                update_time = NOW()
+                closed_at = LOCALTIMESTAMP,
+                update_time = LOCALTIMESTAMP
             WHERE id = #{incidentId}
               AND incident_status <> 'CLOSED'
             """)
