@@ -1,6 +1,6 @@
 """长期记忆 SQL Store 的共享连接工具。
 
-候选记忆 store 与正式记忆 store 都需要连接 SQLite/MySQL。如果每个 runtime builder 都复制一份
+候选记忆 store 与正式记忆 store 都需要连接 SQLite/MySQL/PostgreSQL。如果每个 runtime builder 都复制一份
 DSN 解析、密码脱敏和驱动导入逻辑，后续一旦支持 PostgreSQL、连接池、TLS 参数或 Secret Manager，
 就会出现多个文件同时改、容易漏改的耦合问题。
 
@@ -59,6 +59,35 @@ def build_mysql_connection(mysql_dsn: str, connect_timeout_seconds: int) -> Any:
         return MySQLdb.connect(**kwargs)
 
 
+def build_postgresql_connection(postgresql_dsn: str, connect_timeout_seconds: int) -> Any:
+    """创建 PostgreSQL / pgvector DB-API 连接。
+
+    PostgreSQL 是 DataSmart AI Memory 的目标事实源，因此这里把连接能力放进共享工具层，而不是继续让
+    候选、正式记忆、receipt、lease、audit outbox 组件分别理解 psycopg 的导入方式和 DSN 细节。
+
+    支持两类 DSN 写法：
+    - URL：`postgresql://datasmart:password@postgresql:5432/datasmart_govern?options=-csearch_path%3Dai_memory`；
+    - 分号键值：`host=postgresql;port=5432;user=datasmart;password=xxx;database=datasmart_govern;options=-c search_path=ai_memory`。
+
+    这里默认启用 psycopg3 的 `dict_row`，让 SQL store 可以按列名读取查询结果，避免 PostgreSQL 驱动
+    默认 tuple 顺序和 MySQL/SQLite 行对象差异扩大到业务层。建表和迁移仍由 PostgreSQL init 脚本或
+    专用迁移工具负责，Runtime 启动时不悄悄修改生产库。
+    """
+
+    if not postgresql_dsn:
+        raise ValueError("PostgreSQL DSN 未配置，无法启用 postgresql store。")
+    try:
+        import psycopg  # type: ignore
+        from psycopg.rows import dict_row  # type: ignore
+    except ImportError as exc:
+        raise RuntimeError("启用 postgresql store 需要安装 psycopg，例如 python-ai-runtime[postgresql]。") from exc
+
+    if "://" in postgresql_dsn:
+        return psycopg.connect(postgresql_dsn, connect_timeout=connect_timeout_seconds, row_factory=dict_row)
+    kwargs = parse_postgresql_dsn(postgresql_dsn, connect_timeout_seconds)
+    return psycopg.connect(**kwargs, row_factory=dict_row)
+
+
 def parse_mysql_dsn(dsn: str, connect_timeout_seconds: int) -> dict[str, Any]:
     """解析 MySQL DSN 为 DB-API 连接参数。
 
@@ -94,11 +123,70 @@ def parse_mysql_dsn(dsn: str, connect_timeout_seconds: int) -> dict[str, Any]:
     }
 
 
+def parse_postgresql_dsn(dsn: str, connect_timeout_seconds: int) -> dict[str, Any]:
+    """解析分号风格 PostgreSQL DSN。
+
+    psycopg 原生支持 URL 和 libpq 连接串，但项目中已有 MySQL 的 `host=...;password=...` 风格配置。
+    为了让本地 Compose、企业 Secret Manager 和运维脚本保持同一种书写体验，这里也兼容分号键值写法。
+
+    返回值只包含连接所需的低层参数，不包含任何业务含义。诊断接口必须使用 `mask_postgresql_dsn()`，
+    不能把该字典原样输出，因为其中包含 password。
+    """
+
+    values: dict[str, str] = {}
+    for item in dsn.split(";"):
+        if not item.strip() or "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        values[key.strip().lower()] = value.strip()
+    kwargs: dict[str, Any] = {
+        "host": values.get("host", "localhost"),
+        "port": int(values.get("port", "5432")),
+        "user": values.get("user") or values.get("username") or "datasmart",
+        "password": values.get("password") or values.get("pwd", ""),
+        "dbname": values.get("database") or values.get("dbname") or values.get("db") or "datasmart_govern",
+        "connect_timeout": connect_timeout_seconds,
+    }
+    if values.get("options"):
+        kwargs["options"] = values["options"]
+    if values.get("sslmode"):
+        kwargs["sslmode"] = values["sslmode"]
+    if values.get("application_name"):
+        kwargs["application_name"] = values["application_name"]
+    return kwargs
+
+
 def mask_mysql_dsn(dsn: str) -> str:
     """脱敏 MySQL DSN，供诊断接口安全展示。
 
     诊断接口需要回答“当前是不是连到了 MySQL、连的是哪个 host/database”，但不能泄露数据库密码。
     如果把原始 DSN 返回给前端、日志或运维截图，数据库凭证就会变成新的安全风险。
+    """
+
+    if not dsn:
+        return ""
+    if "://" in dsn:
+        parts = urlsplit(dsn)
+        host = parts.hostname or "localhost"
+        port = f":{parts.port}" if parts.port else ""
+        database = parts.path or ""
+        return urlunsplit((parts.scheme, f"***:***@{host}{port}", database, parts.query, parts.fragment))
+    masked: list[str] = []
+    for item in dsn.split(";"):
+        if "=" not in item:
+            masked.append(item)
+            continue
+        key, value = item.split("=", 1)
+        masked.append(f"{key}=***" if key.strip().lower() in {"password", "pwd"} else f"{key}={value}")
+    return ";".join(masked)
+
+
+def mask_postgresql_dsn(dsn: str) -> str:
+    """脱敏 PostgreSQL DSN，供诊断接口安全展示。
+
+    ai_memory 连接串通常会暴露 PostgreSQL host、database、search_path、sslmode 等排障信息。
+    这些信息对运维有价值，但 password 绝不能进入日志、HTTP 诊断响应或截图，因此这里和 MySQL
+    脱敏逻辑保持一致，只保留低敏连接目标。
     """
 
     if not dsn:

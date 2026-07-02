@@ -3,7 +3,8 @@
 该组件与 candidate、formal memory、receipt runtime builder 保持一致的配置模式：
 - 本地默认使用 in-memory，零依赖启动；
 - SQLite 用于轻量联调和持久化语义测试；
-- MySQL 用于生产多实例协调；
+- MySQL 用于迁移期兼容；
+- PostgreSQL 用于目标生产多实例协调，默认落在 `ai_memory` schema；
 - fail-open 适合开发，fail-fast 适合生产。
 
 lease store 与 receipt store 必须分开配置。receipt 是执行证据，lease 是短时协调状态。两者虽然都围绕 candidateId，
@@ -29,8 +30,10 @@ from datasmart_ai_runtime.services.memory.memory_materialization_lease_store imp
 )
 from datasmart_ai_runtime.services.memory.memory_sql_connection import (
     build_mysql_connection,
+    build_postgresql_connection,
     build_sqlite_connection,
     mask_mysql_dsn,
+    mask_postgresql_dsn,
 )
 
 
@@ -42,8 +45,8 @@ class AgentMemoryMaterializationLeaseStoreSettings:
     """长期记忆落成 lease store 启动配置。
 
     字段说明：
-    - `store_type`：支持 `in-memory`、`sqlite`、`mysql`；
-    - `sqlite_path/mysql_dsn`：持久化目标；
+    - `store_type`：支持 `in-memory`、`sqlite`、`mysql`、`postgresql`；
+    - `sqlite_path/mysql_dsn/postgresql_dsn`：持久化目标；
     - `connect_timeout_seconds`：启动连接超时；
     - `fail_open`：连接失败时是否退回内存；
     - `default_lease_seconds`：Runner 默认租约窗口。
@@ -63,6 +66,7 @@ class AgentMemoryMaterializationLeaseStoreSettings:
     store_type: str = "in-memory"
     sqlite_path: str = "datasmart-agent-memory-materialization-leases.sqlite3"
     mysql_dsn: str = ""
+    postgresql_dsn: str = ""
     connect_timeout_seconds: int = 3
     fail_open: bool = True
     default_lease_seconds: int = 60
@@ -91,6 +95,8 @@ def memory_materialization_lease_store_settings_from_env(
     - `DATASMART_AI_MEMORY_LEASE_STORE`；
     - `DATASMART_AI_MEMORY_LEASE_SQLITE_PATH`；
     - `DATASMART_AI_MEMORY_LEASE_MYSQL_DSN`；
+    - `DATASMART_AI_MEMORY_LEASE_POSTGRESQL_DSN`；
+    - `DATASMART_AI_MEMORY_POSTGRESQL_DSN`：全局 AI Memory PostgreSQL DSN，组件专属 DSN 为空时回退使用；
     - `DATASMART_AI_MEMORY_LEASE_SQL_CONNECT_TIMEOUT_SECONDS`；
     - `DATASMART_AI_MEMORY_LEASE_STORE_FAIL_OPEN`；
     - `DATASMART_AI_MEMORY_LEASE_SECONDS`；
@@ -105,6 +111,9 @@ def memory_materialization_lease_store_settings_from_env(
         sqlite_path=source.get("DATASMART_AI_MEMORY_LEASE_SQLITE_PATH")
         or "datasmart-agent-memory-materialization-leases.sqlite3",
         mysql_dsn=source.get("DATASMART_AI_MEMORY_LEASE_MYSQL_DSN") or "",
+        postgresql_dsn=source.get("DATASMART_AI_MEMORY_LEASE_POSTGRESQL_DSN")
+        or source.get("DATASMART_AI_MEMORY_POSTGRESQL_DSN")
+        or "",
         connect_timeout_seconds=_positive_int(
             source.get("DATASMART_AI_MEMORY_LEASE_SQL_CONNECT_TIMEOUT_SECONDS"),
             default=3,
@@ -129,7 +138,7 @@ def build_memory_materialization_lease_store_runtime(
 ) -> AgentMemoryMaterializationLeaseStoreRuntime:
     """按配置创建 lease store。
 
-    生产环境建议 `mysql + fail_open=false`。如果生产误用 fail-open，数据库故障时会退回进程内字典，
+    生产环境建议 `postgresql + fail_open=false`。如果生产误用 fail-open，数据库故障时会退回进程内字典，
     多实例协调失效；诊断接口会明确标记 fallback，便于运维阻断上线。
     """
 
@@ -143,6 +152,14 @@ def build_memory_materialization_lease_store_runtime(
                 store=SqlAgentMemoryMaterializationLeaseStore(connection),
                 settings=resolved,
                 implementation="SqlAgentMemoryMaterializationLeaseStore(sqlite)",
+                persistent=True,
+            )
+        if resolved.store_type == "postgresql":
+            connection = connection_factory(resolved) if connection_factory else _build_postgresql_connection(resolved)
+            return AgentMemoryMaterializationLeaseStoreRuntime(
+                store=SqlAgentMemoryMaterializationLeaseStore(connection, placeholder="%s"),
+                settings=resolved,
+                implementation="SqlAgentMemoryMaterializationLeaseStore(postgresql)",
                 persistent=True,
             )
         connection = connection_factory(resolved) if connection_factory else _build_mysql_connection(resolved)
@@ -199,9 +216,12 @@ def memory_materialization_lease_store_diagnostics(
         "mysql": {
             "dsn": mask_mysql_dsn(settings.mysql_dsn) if settings.store_type == "mysql" else None,
         },
+        "postgresql": {
+            "dsn": mask_postgresql_dsn(settings.postgresql_dsn) if settings.store_type == "postgresql" else None,
+        },
         "notes": (
             "lease store 控制多 worker 并发领取，不保存 prompt、原始工具输出或 lease token 明文诊断。"
-            "生产环境如果 configuredType=mysql 但 persistent=false，说明协调能力已退回进程内，不适合多实例自动 worker。"
+            "生产环境如果 configuredType=mysql/postgresql 但 persistent=false，说明协调能力已退回进程内，不适合多实例自动 worker。"
         ),
     }
 
@@ -233,12 +253,22 @@ def _build_mysql_connection(settings: AgentMemoryMaterializationLeaseStoreSettin
     return build_mysql_connection(settings.mysql_dsn, settings.connect_timeout_seconds)
 
 
+def _build_postgresql_connection(settings: AgentMemoryMaterializationLeaseStoreSettings) -> Any:
+    """创建 PostgreSQL 连接。"""
+
+    if not settings.postgresql_dsn:
+        raise ValueError("DATASMART_AI_MEMORY_LEASE_POSTGRESQL_DSN 未配置，无法启用 postgresql lease store。")
+    return build_postgresql_connection(settings.postgresql_dsn, settings.connect_timeout_seconds)
+
+
 def _normalize_store_type(value: str | None) -> str:
     """规范化 store 类型。"""
 
     normalized = (value or "in-memory").strip().lower().replace("_", "-")
-    if normalized not in {"in-memory", "sqlite", "mysql"}:
-        raise ValueError(f"DATASMART_AI_MEMORY_LEASE_STORE 只支持 in-memory、sqlite 或 mysql，当前值为：{value}")
+    if normalized == "postgres":
+        normalized = "postgresql"
+    if normalized not in {"in-memory", "sqlite", "mysql", "postgresql"}:
+        raise ValueError(f"DATASMART_AI_MEMORY_LEASE_STORE 只支持 in-memory、sqlite、mysql 或 postgresql，当前值为：{value}")
     return normalized
 
 

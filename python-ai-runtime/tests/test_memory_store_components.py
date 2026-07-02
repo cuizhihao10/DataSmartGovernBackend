@@ -111,6 +111,29 @@ class AgentMemoryStoreComponentsTest(unittest.TestCase):
                 connection_factory=lambda _: (_ for _ in ()).throw(RuntimeError("模拟生产正式记忆连接失败")),
             )
 
+    def test_postgresql_formal_memory_store_configuration_masks_password(self) -> None:
+        """正式记忆 store 应支持 PostgreSQL/ai_memory 目标配置。
+
+        PostgreSQL 是长期记忆和 pgvector 的目标事实源。该测试不访问真实数据库，只验证 runtime builder
+        会进入 PostgreSQL SQL store，并且诊断输出不会泄露密码。
+        """
+
+        settings = AgentMemoryStoreSettings(
+            store_type="postgresql",
+            postgresql_dsn=(
+                "host=postgresql;port=5432;user=datasmart;password=secret;"
+                "database=datasmart_govern;options=-c search_path=ai_memory"
+            ),
+        )
+        runtime = build_memory_store_runtime(settings, connection_factory=lambda _: object())
+        diagnostics = memory_store_diagnostics(runtime)
+
+        self.assertTrue(runtime.persistent)
+        self.assertEqual("postgresql", diagnostics["configuredType"])
+        self.assertIn("SqlAgentMemoryStore(postgresql)", diagnostics["implementation"])
+        self.assertNotIn("secret", diagnostics["postgresql"]["dsn"])
+        self.assertIn("ai_memory", diagnostics["postgresql"]["dsn"])
+
     def test_api_memory_runtime_diagnostics_groups_candidate_and_formal_store(self) -> None:
         """API 记忆运行时诊断应同时展示候选 store、正式 store、retriever 和 materializer。"""
 
@@ -235,23 +258,30 @@ class AgentMemoryStoreComponentsTest(unittest.TestCase):
                 "DATASMART_AI_MEMORY_WRITE_STORE",
                 "DATASMART_AI_MEMORY_WRITE_SQLITE_PATH",
                 "DATASMART_AI_MEMORY_WRITE_MYSQL_DSN",
+                "DATASMART_AI_MEMORY_WRITE_POSTGRESQL_DSN",
                 "DATASMART_AI_MEMORY_WRITE_SQL_CONNECT_TIMEOUT_SECONDS",
                 "DATASMART_AI_MEMORY_WRITE_STORE_FAIL_OPEN",
                 "DATASMART_AI_FORMAL_MEMORY_STORE",
                 "DATASMART_AI_FORMAL_MEMORY_SQLITE_PATH",
                 "DATASMART_AI_FORMAL_MEMORY_MYSQL_DSN",
+                "DATASMART_AI_FORMAL_MEMORY_POSTGRESQL_DSN",
                 "DATASMART_AI_FORMAL_MEMORY_SQL_CONNECT_TIMEOUT_SECONDS",
                 "DATASMART_AI_FORMAL_MEMORY_STORE_FAIL_OPEN",
                 "DATASMART_AI_MEMORY_RECEIPT_STORE",
                 "DATASMART_AI_MEMORY_RECEIPT_SQLITE_PATH",
                 "DATASMART_AI_MEMORY_RECEIPT_MYSQL_DSN",
+                "DATASMART_AI_MEMORY_RECEIPT_POSTGRESQL_DSN",
                 "DATASMART_AI_MEMORY_RECEIPT_SQL_CONNECT_TIMEOUT_SECONDS",
                 "DATASMART_AI_MEMORY_RECEIPT_STORE_FAIL_OPEN",
                 "DATASMART_AI_MEMORY_LEASE_STORE",
                 "DATASMART_AI_MEMORY_LEASE_SQLITE_PATH",
                 "DATASMART_AI_MEMORY_LEASE_MYSQL_DSN",
+                "DATASMART_AI_MEMORY_LEASE_POSTGRESQL_DSN",
                 "DATASMART_AI_MEMORY_LEASE_SQL_CONNECT_TIMEOUT_SECONDS",
                 "DATASMART_AI_MEMORY_LEASE_STORE_FAIL_OPEN",
+                "DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_STORE",
+                "DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_POSTGRESQL_DSN",
+                "DATASMART_AI_MEMORY_POSTGRESQL_DSN",
                 "DATASMART_AI_MEMORY_LEASE_SECONDS",
                 "DATASMART_AI_MEMORY_MATERIALIZATION_MAX_ATTEMPTS",
                 "DATASMART_AI_MEMORY_MATERIALIZATION_RETRY_BASE_SECONDS",

@@ -26,7 +26,7 @@ class AgentMemoryWriteComponentsTest(unittest.TestCase):
     这样可以把职责拆清楚：
     - `test_memory_write_governance.py` 证明业务规则正确；
     - `test_memory_write_sql_store.py` 证明 SQL store 读写正确；
-    - 本文件证明 Runtime 启动时能安全选择 in-memory/sqlite/mysql/fallback。
+    - 本文件证明 Runtime 启动时能安全选择 in-memory/sqlite/mysql/postgresql/fallback。
     """
 
     def test_default_settings_use_in_memory_store_for_local_runtime(self) -> None:
@@ -122,6 +122,29 @@ class AgentMemoryWriteComponentsTest(unittest.TestCase):
                 settings,
                 connection_factory=lambda _: (_ for _ in ()).throw(RuntimeError("模拟生产 MySQL 连接失败")),
             )
+
+    def test_postgresql_store_configuration_uses_ai_memory_target_and_masks_password(self) -> None:
+        """PostgreSQL 模式应进入持久化实现，并在诊断中脱敏密码。
+
+        这里不连接真实 PostgreSQL，而是通过 connection_factory 注入哑连接，只验证“配置选择”和“诊断边界”。
+        真实 DDL/pgvector 验收由 PostgreSQL init 脚本和容器 smoke 承担。
+        """
+
+        settings = AgentMemoryWriteStoreSettings(
+            store_type="postgresql",
+            postgresql_dsn=(
+                "postgresql://datasmart:secret@postgresql:5432/datasmart_govern"
+                "?options=-csearch_path%3Dai_memory"
+            ),
+        )
+        runtime = build_memory_write_store_runtime(settings, connection_factory=lambda _: object())
+        diagnostics = memory_write_store_diagnostics(runtime)
+
+        self.assertTrue(runtime.persistent)
+        self.assertEqual("postgresql", diagnostics["configuredType"])
+        self.assertIn("SqlAgentMemoryWriteCandidateStore(postgresql)", diagnostics["implementation"])
+        self.assertNotIn("secret", diagnostics["postgresql"]["dsn"])
+        self.assertIn("ai_memory", diagnostics["postgresql"]["dsn"])
 
     @staticmethod
     def _request() -> AgentRequest:

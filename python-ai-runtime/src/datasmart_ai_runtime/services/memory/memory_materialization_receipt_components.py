@@ -6,7 +6,7 @@
 - receipt store：记录“后台落成尝试是否执行成功”。
 
 本文件负责按环境变量选择 receipt store 实现。它与正式记忆 store runtime builder 保持同样的
-in-memory / sqlite / mysql / fail-open / fail-fast 语义，便于本地学习、准生产联调和生产部署使用同一套
+in-memory / sqlite / mysql / postgresql / fail-open / fail-fast 语义，便于本地学习、准生产联调和生产部署使用同一套
 配置模式。
 """
 
@@ -25,8 +25,10 @@ from datasmart_ai_runtime.services.memory.memory_materialization_receipt_store i
 )
 from datasmart_ai_runtime.services.memory.memory_sql_connection import (
     build_mysql_connection,
+    build_postgresql_connection,
     build_sqlite_connection,
     mask_mysql_dsn,
+    mask_postgresql_dsn,
 )
 
 
@@ -38,20 +40,22 @@ class AgentMemoryMaterializationReceiptStoreSettings:
     """长期记忆落成 receipt store 启动配置。
 
     字段说明：
-    - `store_type`：支持 `in-memory`、`sqlite`、`mysql`；
+    - `store_type`：支持 `in-memory`、`sqlite`、`mysql`、`postgresql`；
     - `sqlite_path`：SQLite 文件路径，仅在 sqlite 模式使用；
     - `mysql_dsn`：MySQL DSN，仅在 mysql 模式使用；
+    - `postgresql_dsn`：PostgreSQL DSN，仅在 postgresql 模式使用，目标 schema 应为 `ai_memory`；
     - `connect_timeout_seconds`：数据库连接超时；
     - `fail_open`：持久化不可用时是否回退内存。
 
     生产建议：
-    receipt 是补偿和审计的执行证据，生产环境应优先 `mysql + fail_open=false`，否则 worker 失败记录可能在
+    receipt 是补偿和审计的执行证据，生产环境应优先 `postgresql + fail_open=false`，否则 worker 失败记录可能在
     Runtime 重启后丢失，管理员无法判断哪些候选需要补偿。
     """
 
     store_type: str = "in-memory"
     sqlite_path: str = "datasmart-agent-memory-materialization-receipts.sqlite3"
     mysql_dsn: str = ""
+    postgresql_dsn: str = ""
     connect_timeout_seconds: int = 3
     fail_open: bool = True
 
@@ -76,6 +80,8 @@ def memory_materialization_receipt_store_settings_from_env(
     - `DATASMART_AI_MEMORY_RECEIPT_STORE`；
     - `DATASMART_AI_MEMORY_RECEIPT_SQLITE_PATH`；
     - `DATASMART_AI_MEMORY_RECEIPT_MYSQL_DSN`；
+    - `DATASMART_AI_MEMORY_RECEIPT_POSTGRESQL_DSN`；
+    - `DATASMART_AI_MEMORY_POSTGRESQL_DSN`：全局 AI Memory PostgreSQL DSN，组件专属 DSN 为空时回退使用；
     - `DATASMART_AI_MEMORY_RECEIPT_SQL_CONNECT_TIMEOUT_SECONDS`；
     - `DATASMART_AI_MEMORY_RECEIPT_STORE_FAIL_OPEN`。
     """
@@ -86,6 +92,9 @@ def memory_materialization_receipt_store_settings_from_env(
         sqlite_path=source.get("DATASMART_AI_MEMORY_RECEIPT_SQLITE_PATH")
         or "datasmart-agent-memory-materialization-receipts.sqlite3",
         mysql_dsn=source.get("DATASMART_AI_MEMORY_RECEIPT_MYSQL_DSN") or "",
+        postgresql_dsn=source.get("DATASMART_AI_MEMORY_RECEIPT_POSTGRESQL_DSN")
+        or source.get("DATASMART_AI_MEMORY_POSTGRESQL_DSN")
+        or "",
         connect_timeout_seconds=_positive_int(
             source.get("DATASMART_AI_MEMORY_RECEIPT_SQL_CONNECT_TIMEOUT_SECONDS"),
             default=3,
@@ -110,6 +119,14 @@ def build_memory_materialization_receipt_store_runtime(
                 store=SqlAgentMemoryMaterializationReceiptStore(connection),
                 settings=resolved,
                 implementation="SqlAgentMemoryMaterializationReceiptStore(sqlite)",
+                persistent=True,
+            )
+        if resolved.store_type == "postgresql":
+            connection = connection_factory(resolved) if connection_factory else _build_postgresql_connection(resolved)
+            return AgentMemoryMaterializationReceiptStoreRuntime(
+                store=SqlAgentMemoryMaterializationReceiptStore(connection, placeholder="%s"),
+                settings=resolved,
+                implementation="SqlAgentMemoryMaterializationReceiptStore(postgresql)",
                 persistent=True,
             )
         connection = connection_factory(resolved) if connection_factory else _build_mysql_connection(resolved)
@@ -153,9 +170,12 @@ def memory_materialization_receipt_store_diagnostics(
         "mysql": {
             "dsn": mask_mysql_dsn(settings.mysql_dsn) if settings.store_type == "mysql" else None,
         },
+        "postgresql": {
+            "dsn": mask_postgresql_dsn(settings.postgresql_dsn) if settings.store_type == "postgresql" else None,
+        },
         "notes": (
             "receipt store 记录长期记忆落成尝试，不保存 prompt、原始工具输出、样本数据或完整异常堆栈。"
-            "生产环境如果 configuredType=mysql 但 persistent=false，说明已按 fail-open 回退内存，"
+            "生产环境如果 configuredType=mysql/postgresql 但 persistent=false，说明已按 fail-open 回退内存，"
             "worker 执行证据不会跨 Runtime 重启保留。"
         ),
     }
@@ -188,13 +208,23 @@ def _build_mysql_connection(settings: AgentMemoryMaterializationReceiptStoreSett
     return build_mysql_connection(settings.mysql_dsn, settings.connect_timeout_seconds)
 
 
+def _build_postgresql_connection(settings: AgentMemoryMaterializationReceiptStoreSettings) -> Any:
+    """创建 PostgreSQL 连接。"""
+
+    if not settings.postgresql_dsn:
+        raise ValueError("DATASMART_AI_MEMORY_RECEIPT_POSTGRESQL_DSN 未配置，无法启用 postgresql receipt store。")
+    return build_postgresql_connection(settings.postgresql_dsn, settings.connect_timeout_seconds)
+
+
 def _normalize_store_type(value: str | None) -> str:
     """规范化 store 类型，并对非法配置快速失败。"""
 
     normalized = (value or "in-memory").strip().lower().replace("_", "-")
-    if normalized not in {"in-memory", "sqlite", "mysql"}:
+    if normalized == "postgres":
+        normalized = "postgresql"
+    if normalized not in {"in-memory", "sqlite", "mysql", "postgresql"}:
         raise ValueError(
-            "DATASMART_AI_MEMORY_RECEIPT_STORE 只支持 in-memory、sqlite 或 mysql，"
+            "DATASMART_AI_MEMORY_RECEIPT_STORE 只支持 in-memory、sqlite、mysql 或 postgresql，"
             f"当前值为：{value}"
         )
     return normalized

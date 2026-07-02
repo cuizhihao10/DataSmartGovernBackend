@@ -321,7 +321,10 @@ services:
       context: .
       dockerfile: docker/runtime/python-ai-runtime.Dockerfile
       args:
-        PYTHON_RUNTIME_EXTRAS: api,rag,kafka,redis
+        # postgresql extra 安装 psycopg3，用于 AI Memory 迁入 PostgreSQL/pgvector 后的长期记忆、receipt、
+        # lease、审计 outbox 和 LangGraph durable state 持久化。默认仍不强制开启各 store，避免本地学习环境
+        # 因未完成 schema 应用或数据库凭据而无法启动。
+        PYTHON_RUNTIME_EXTRAS: api,rag,kafka,redis,postgresql
     environment:
       DATASMART_AGENT_RUNTIME_BASE_URL: http://agent-runtime:8091
       DATASMART_PERMISSION_ADMIN_BASE_URL: http://permission-admin:8085
@@ -334,6 +337,10 @@ services:
       DATASMART_AGENT_DURABLE_LOOP_STORE: redis
       DATASMART_AGENT_DURABLE_LOOP_REDIS_URL: redis://redis:6379/2
       DATASMART_AGENT_DURABLE_LOOP_TTL_SECONDS: "86400"
+      # AI Memory 的目标 PostgreSQL DSN。各 memory 组件可用专属 DSN 覆盖；未覆盖时统一回退到该值。
+      # DSN 使用 options 设置 search_path=ai_memory，让 Python SQL store 使用无 schema 前缀表名时仍被限制在
+      # ai_memory schema 内，避免误写 public、agent_runtime 或其他 Java 微服务 schema。
+      DATASMART_AI_MEMORY_POSTGRESQL_DSN: postgresql://datasmart:${DATASMART_POSTGRES_PASSWORD:-password}@postgresql:5432/datasmart_govern?options=-csearch_path%3Dai_memory
       DATASMART_AI_RUNTIME_EVENT_PUBLISHER: kafka
       DATASMART_AI_RUNTIME_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       DATASMART_GATEWAY_SIGNATURE_REQUIRED: "true"

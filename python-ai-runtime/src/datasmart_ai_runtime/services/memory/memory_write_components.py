@@ -9,10 +9,11 @@
 - 独立组装层可以被 API、后台 worker、命令行诊断工具和测试复用，后续替换为 Java memory-service
   客户端时也不会影响候选状态机。
 
-当前支持三种模式：
+当前支持四种模式：
 - `in-memory`：默认模式，零依赖、适合本地学习和单元测试，但重启丢失；
 - `sqlite`：使用 Python 标准库 `sqlite3`，适合轻量集成测试或单机演示；
 - `mysql`：动态导入 PyMySQL / mysqlclient，适合生产或准生产环境接入 MySQL 持久化表。
+- `postgresql`：动态导入 psycopg3，连接 PostgreSQL `ai_memory` schema，是项目收敛后的目标持久化方向。
 """
 
 from __future__ import annotations
@@ -27,8 +28,10 @@ from datasmart_ai_runtime.services.memory.memory_write_candidate_store import (
 )
 from datasmart_ai_runtime.services.memory.memory_sql_connection import (
     build_mysql_connection,
+    build_postgresql_connection,
     build_sqlite_connection,
     mask_mysql_dsn,
+    mask_postgresql_dsn,
 )
 from datasmart_ai_runtime.services.memory.memory_write_sql_store import SqlAgentMemoryWriteCandidateStore
 
@@ -41,9 +44,10 @@ class AgentMemoryWriteStoreSettings:
     """记忆写入候选 store 启动配置。
 
     字段说明：
-    - `store_type`：目标存储类型，支持 `in-memory`、`sqlite`、`mysql`；
+    - `store_type`：目标存储类型，支持 `in-memory`、`sqlite`、`mysql`、`postgresql`；
     - `sqlite_path`：SQLite 文件路径，仅在 `store_type=sqlite` 时使用；
     - `mysql_dsn`：MySQL 连接字符串，仅在 `store_type=mysql` 时使用，诊断输出必须脱敏；
+    - `postgresql_dsn`：PostgreSQL 连接字符串，仅在 `store_type=postgresql` 时使用，目标应指向 `ai_memory`；
     - `connect_timeout_seconds`：数据库连接超时，防止 Runtime 启动时被故障数据库长时间卡住；
     - `fail_open`：显式选择持久化但连接失败时是否回退内存。
 
@@ -55,6 +59,7 @@ class AgentMemoryWriteStoreSettings:
     store_type: str = "in-memory"
     sqlite_path: str = "datasmart-agent-memory-write-candidates.sqlite3"
     mysql_dsn: str = ""
+    postgresql_dsn: str = ""
     connect_timeout_seconds: int = 3
     fail_open: bool = True
 
@@ -78,9 +83,11 @@ def memory_write_store_settings_from_env(environ: dict[str, str] | None = None) 
     """从环境变量读取记忆写入候选 store 配置。
 
     支持的环境变量：
-    - `DATASMART_AI_MEMORY_WRITE_STORE`：`in-memory` / `sqlite` / `mysql`；
+    - `DATASMART_AI_MEMORY_WRITE_STORE`：`in-memory` / `sqlite` / `mysql` / `postgresql`；
     - `DATASMART_AI_MEMORY_WRITE_SQLITE_PATH`：SQLite 文件路径；
     - `DATASMART_AI_MEMORY_WRITE_MYSQL_DSN`：MySQL DSN，支持 URL 或 `host=...;user=...` 风格；
+    - `DATASMART_AI_MEMORY_WRITE_POSTGRESQL_DSN`：PostgreSQL DSN，推荐包含 `search_path=ai_memory`；
+    - `DATASMART_AI_MEMORY_POSTGRESQL_DSN`：全局 AI Memory PostgreSQL DSN，组件专属 DSN 为空时回退使用；
     - `DATASMART_AI_MEMORY_WRITE_SQL_CONNECT_TIMEOUT_SECONDS`：数据库连接超时秒数；
     - `DATASMART_AI_MEMORY_WRITE_STORE_FAIL_OPEN`：持久化不可用时是否回退内存。
     """
@@ -91,6 +98,9 @@ def memory_write_store_settings_from_env(environ: dict[str, str] | None = None) 
         sqlite_path=source.get("DATASMART_AI_MEMORY_WRITE_SQLITE_PATH")
         or "datasmart-agent-memory-write-candidates.sqlite3",
         mysql_dsn=source.get("DATASMART_AI_MEMORY_WRITE_MYSQL_DSN") or "",
+        postgresql_dsn=source.get("DATASMART_AI_MEMORY_WRITE_POSTGRESQL_DSN")
+        or source.get("DATASMART_AI_MEMORY_POSTGRESQL_DSN")
+        or "",
         connect_timeout_seconds=_positive_int(
             source.get("DATASMART_AI_MEMORY_WRITE_SQL_CONNECT_TIMEOUT_SECONDS"),
             default=3,
@@ -108,9 +118,10 @@ def build_memory_write_store_runtime(
     组装规则：
     1. 默认永远使用内存 store，保证 Python Runtime 零依赖可启动；
     2. SQLite 使用标准库，适合持久化语义联调；
-    3. MySQL 使用动态导入，避免默认安装包被数据库客户端绑定；
-    4. 如果持久化启用失败且 `fail_open=true`，返回内存 store，并在诊断中记录原因；
-    5. 如果 `fail_open=false`，直接抛错，让生产部署快速失败。
+    3. MySQL 作为迁移期兼容路径保留；
+    4. PostgreSQL 使用 psycopg3 动态导入，目标指向 `ai_memory` schema；
+    5. 如果持久化启用失败且 `fail_open=true`，返回内存 store，并在诊断中记录原因；
+    6. 如果 `fail_open=false`，直接抛错，让生产部署快速失败。
     """
 
     resolved = settings or memory_write_store_settings_from_env()
@@ -123,6 +134,14 @@ def build_memory_write_store_runtime(
                 store=SqlAgentMemoryWriteCandidateStore(connection),
                 settings=resolved,
                 implementation="SqlAgentMemoryWriteCandidateStore(sqlite)",
+                persistent=True,
+            )
+        if resolved.store_type == "postgresql":
+            connection = connection_factory(resolved) if connection_factory else _build_postgresql_connection(resolved)
+            return AgentMemoryWriteStoreRuntime(
+                store=SqlAgentMemoryWriteCandidateStore(connection, placeholder="%s"),
+                settings=resolved,
+                implementation="SqlAgentMemoryWriteCandidateStore(postgresql)",
                 persistent=True,
             )
         connection = connection_factory(resolved) if connection_factory else _build_mysql_connection(resolved)
@@ -168,8 +187,11 @@ def memory_write_store_diagnostics(runtime: AgentMemoryWriteStoreRuntime) -> dic
         "mysql": {
             "dsn": _mask_mysql_dsn(settings.mysql_dsn) if settings.store_type == "mysql" else None,
         },
+        "postgresql": {
+            "dsn": mask_postgresql_dsn(settings.postgresql_dsn) if settings.store_type == "postgresql" else None,
+        },
         "notes": (
-            "诊断只说明启动时选择的候选 store，不会执行真实写入探测。生产环境如果 configuredType=mysql "
+            "诊断只说明启动时选择的候选 store，不会执行真实写入探测。生产环境如果 configuredType=mysql/postgresql "
             "但 persistent=false，说明已经按 fail-open 回退到内存，审批候选仍可能在重启后丢失。"
         ),
     }
@@ -210,12 +232,27 @@ def _build_mysql_connection(settings: AgentMemoryWriteStoreSettings) -> Any:
     return build_mysql_connection(settings.mysql_dsn, settings.connect_timeout_seconds)
 
 
+def _build_postgresql_connection(settings: AgentMemoryWriteStoreSettings) -> Any:
+    """创建 PostgreSQL DB-API 连接。
+
+    该连接应使用 `ai_memory` schema。推荐 DSN 写法是在 URL query 或 options 中设置 search_path，
+    例如 `postgresql://datasmart:***@postgresql:5432/datasmart_govern?options=-csearch_path%3Dai_memory`。
+    这样 SQL store 仍可以使用不带 schema 前缀的表名，同时不会误写入 public 或其他服务 schema。
+    """
+
+    if not settings.postgresql_dsn:
+        raise ValueError("DATASMART_AI_MEMORY_WRITE_POSTGRESQL_DSN 未配置，无法启用 postgresql store。")
+    return build_postgresql_connection(settings.postgresql_dsn, settings.connect_timeout_seconds)
+
+
 def _normalize_store_type(value: str | None) -> str:
     """规范化 store 类型，并对非法配置快速失败。"""
 
     normalized = (value or "in-memory").strip().lower().replace("_", "-")
-    if normalized not in {"in-memory", "sqlite", "mysql"}:
-        raise ValueError(f"DATASMART_AI_MEMORY_WRITE_STORE 只支持 in-memory、sqlite 或 mysql，当前值为：{value}")
+    if normalized == "postgres":
+        normalized = "postgresql"
+    if normalized not in {"in-memory", "sqlite", "mysql", "postgresql"}:
+        raise ValueError(f"DATASMART_AI_MEMORY_WRITE_STORE 只支持 in-memory、sqlite、mysql 或 postgresql，当前值为：{value}")
     return normalized
 
 

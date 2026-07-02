@@ -263,8 +263,8 @@ class AgentMemoryMaterializationLeaseStoreTest(unittest.TestCase):
         self.assertEqual(AgentMemoryMaterializationLeaseStatus.LEASED, claimed.status)
         self.assertEqual(2, claimed.attempt_count)
 
-    def test_runtime_builder_supports_default_sqlite_and_mysql_failure_modes(self) -> None:
-        """lease runtime builder 应支持默认内存、SQLite、MySQL fail-open 和 fail-fast。"""
+    def test_runtime_builder_supports_default_sqlite_mysql_and_postgresql_modes(self) -> None:
+        """lease runtime builder 应支持默认内存、SQLite、MySQL 兼容和 PostgreSQL 目标模式。"""
 
         default_settings = memory_materialization_lease_store_settings_from_env({})
         default_runtime = build_memory_materialization_lease_store_runtime(default_settings)
@@ -281,6 +281,17 @@ class AgentMemoryMaterializationLeaseStoreTest(unittest.TestCase):
             connection_factory=lambda _: (_ for _ in ()).throw(RuntimeError("模拟 lease MySQL 不可用")),
         )
         diagnostics = memory_materialization_lease_store_diagnostics(mysql_fail_open)
+        postgresql_runtime = build_memory_materialization_lease_store_runtime(
+            AgentMemoryMaterializationLeaseStoreSettings(
+                store_type="postgresql",
+                postgresql_dsn=(
+                    "postgresql://datasmart:secret@postgresql:5432/datasmart_govern"
+                    "?options=-csearch_path%3Dai_memory"
+                ),
+            ),
+            connection_factory=lambda _: object(),
+        )
+        postgresql_diagnostics = memory_materialization_lease_store_diagnostics(postgresql_runtime)
 
         self.assertEqual(60, default_settings.default_lease_seconds)
         self.assertEqual(5, default_settings.max_attempts)
@@ -291,6 +302,11 @@ class AgentMemoryMaterializationLeaseStoreTest(unittest.TestCase):
         self.assertFalse(mysql_fail_open.persistent)
         self.assertTrue(diagnostics["fallback"])
         self.assertNotIn("secret", diagnostics["mysql"]["dsn"])
+        self.assertTrue(postgresql_runtime.persistent)
+        self.assertEqual("postgresql", postgresql_diagnostics["configuredType"])
+        self.assertIn("SqlAgentMemoryMaterializationLeaseStore(postgresql)", postgresql_diagnostics["implementation"])
+        self.assertNotIn("secret", postgresql_diagnostics["postgresql"]["dsn"])
+        self.assertIn("ai_memory", postgresql_diagnostics["postgresql"]["dsn"])
         with self.assertRaises(RuntimeError):
             build_memory_materialization_lease_store_runtime(
                 AgentMemoryMaterializationLeaseStoreSettings(

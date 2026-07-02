@@ -140,6 +140,28 @@ class AgentMemoryMaterializationAuditOutboxTest(unittest.TestCase):
         self.assertTrue(diagnostics["persistent"])
         self.assertFalse(diagnostics["storeFailOpen"])
 
+    def test_postgresql_audit_outbox_configuration_masks_password(self) -> None:
+        """审计 outbox 应支持 PostgreSQL/ai_memory 目标配置并脱敏诊断。"""
+
+        settings = AgentMemoryMaterializationAuditOutboxSettings(
+            enabled=True,
+            required=False,
+            store_type="postgresql",
+            postgresql_dsn=(
+                "postgresql://datasmart:secret@postgresql:5432/datasmart_govern"
+                "?options=-csearch_path%3Dai_memory"
+            ),
+        )
+        runtime = build_memory_materialization_audit_outbox_runtime(settings, connection_factory=lambda _: object())
+        diagnostics = memory_materialization_audit_outbox_diagnostics(runtime)
+
+        self.assertTrue(diagnostics["enabled"])
+        self.assertTrue(diagnostics["persistent"])
+        self.assertEqual("postgresql", diagnostics["configuredType"])
+        self.assertIn("SqlAgentMemoryMaterializationAuditOutboxStore(postgresql)", diagnostics["implementation"])
+        self.assertNotIn("secret", diagnostics["postgresql"]["dsn"])
+        self.assertIn("ai_memory", diagnostics["postgresql"]["dsn"])
+
     @staticmethod
     def _sqlite_connection_with_schema() -> sqlite3.Connection:
         """创建 SQLite 测试表。

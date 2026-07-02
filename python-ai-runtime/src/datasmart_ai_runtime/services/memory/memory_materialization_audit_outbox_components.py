@@ -3,7 +3,7 @@
 本组件负责把环境变量转换为可用的审计 outbox recorder。它与 receipt/lease runtime builder 保持相同风格：
 
 - 本地默认关闭审计 outbox，避免学习环境启动后产生额外持久化要求；
-- 可选择 in-memory、sqlite、mysql 三类 store；
+- 可选择 in-memory、sqlite、mysql、postgresql 四类 store；
 - SQL 连接失败时可以 fail-open 回退内存，也可以 fail-fast 阻止服务继续启动；
 - `required` 独立于 store fail-open，用于控制“运行中审计写入失败时，worker/API 是否应按失败处理”。
 """
@@ -24,8 +24,10 @@ from datasmart_ai_runtime.services.memory.memory_materialization_audit_outbox_sq
 )
 from datasmart_ai_runtime.services.memory.memory_sql_connection import (
     build_mysql_connection,
+    build_postgresql_connection,
     build_sqlite_connection,
     mask_mysql_dsn,
+    mask_postgresql_dsn,
 )
 
 
@@ -39,12 +41,12 @@ class AgentMemoryMaterializationAuditOutboxSettings:
     字段说明：
     - `enabled`：是否写审计 outbox。默认关闭，避免本地学习环境必须配置数据库；
     - `required`：审计写入失败是否让调用方按失败处理。强合规环境可开启，本地默认关闭；
-    - `store_type/sqlite_path/mysql_dsn/connect_timeout_seconds/store_fail_open`：与 receipt/lease store 保持一致；
+    - `store_type/sqlite_path/mysql_dsn/postgresql_dsn/connect_timeout_seconds/store_fail_open`：与 receipt/lease store 保持一致；
     - `store_fail_open` 控制“启动期连接失败是否回退内存”，`required` 控制“运行期 append 失败是否 fail-closed”，两者不要混淆。
 
     生产建议：
     - `enabled=true`；
-    - `store_type=mysql`；
+    - `store_type=postgresql`；
     - `store_fail_open=false`；
     - 在真正实现同库事务 outbox 后，再把 `required=true` 作为强合规默认策略。
     """
@@ -54,6 +56,7 @@ class AgentMemoryMaterializationAuditOutboxSettings:
     store_type: str = "in-memory"
     sqlite_path: str = "datasmart-agent-memory-materialization-audit-outbox.sqlite3"
     mysql_dsn: str = ""
+    postgresql_dsn: str = ""
     connect_timeout_seconds: int = 3
     store_fail_open: bool = True
 
@@ -81,6 +84,8 @@ def memory_materialization_audit_outbox_settings_from_env(
     - `DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_STORE`；
     - `DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_SQLITE_PATH`；
     - `DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_MYSQL_DSN`；
+    - `DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_POSTGRESQL_DSN`；
+    - `DATASMART_AI_MEMORY_POSTGRESQL_DSN`：全局 AI Memory PostgreSQL DSN，组件专属 DSN 为空时回退使用；
     - `DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_SQL_CONNECT_TIMEOUT_SECONDS`；
     - `DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_STORE_FAIL_OPEN`。
     """
@@ -99,6 +104,9 @@ def memory_materialization_audit_outbox_settings_from_env(
         sqlite_path=source.get("DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_SQLITE_PATH")
         or "datasmart-agent-memory-materialization-audit-outbox.sqlite3",
         mysql_dsn=source.get("DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_MYSQL_DSN") or "",
+        postgresql_dsn=source.get("DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_POSTGRESQL_DSN")
+        or source.get("DATASMART_AI_MEMORY_POSTGRESQL_DSN")
+        or "",
         connect_timeout_seconds=_positive_int(
             source.get("DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_SQL_CONNECT_TIMEOUT_SECONDS"),
             default=3,
@@ -135,6 +143,14 @@ def build_memory_materialization_audit_outbox_runtime(
                 resolved,
                 SqlAgentMemoryMaterializationAuditOutboxStore(connection),
                 implementation="SqlAgentMemoryMaterializationAuditOutboxStore(sqlite)",
+                persistent=True,
+            )
+        if resolved.store_type == "postgresql":
+            connection = connection_factory(resolved) if connection_factory else _build_postgresql_connection(resolved)
+            return _runtime(
+                resolved,
+                SqlAgentMemoryMaterializationAuditOutboxStore(connection, placeholder="%s"),
+                implementation="SqlAgentMemoryMaterializationAuditOutboxStore(postgresql)",
                 persistent=True,
             )
         connection = connection_factory(resolved) if connection_factory else _build_mysql_connection(resolved)
@@ -187,6 +203,9 @@ def memory_materialization_audit_outbox_diagnostics(
         "mysql": {
             "dsn": mask_mysql_dsn(settings.mysql_dsn) if settings.store_type == "mysql" else None,
         },
+        "postgresql": {
+            "dsn": mask_postgresql_dsn(settings.postgresql_dsn) if settings.store_type == "postgresql" else None,
+        },
         "notes": (
             "审计 outbox 记录 worker 批次和管理员补偿的低敏控制面事实，不保存候选正文、SQL、样本数据或工具原始输出。"
             "当前 required=true 只能让调用方按失败处理，不能自动回滚已提交的 lease/formal memory 状态；"
@@ -233,13 +252,25 @@ def _build_mysql_connection(settings: AgentMemoryMaterializationAuditOutboxSetti
     return build_mysql_connection(settings.mysql_dsn, settings.connect_timeout_seconds)
 
 
+def _build_postgresql_connection(settings: AgentMemoryMaterializationAuditOutboxSettings) -> Any:
+    """创建 PostgreSQL 连接。"""
+
+    if not settings.postgresql_dsn:
+        raise ValueError(
+            "DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_POSTGRESQL_DSN 未配置，无法启用 postgresql audit outbox。"
+        )
+    return build_postgresql_connection(settings.postgresql_dsn, settings.connect_timeout_seconds)
+
+
 def _normalize_store_type(value: str | None) -> str:
     """规范化 store 类型。"""
 
     normalized = (value or "in-memory").strip().lower().replace("_", "-")
-    if normalized not in {"in-memory", "sqlite", "mysql"}:
+    if normalized == "postgres":
+        normalized = "postgresql"
+    if normalized not in {"in-memory", "sqlite", "mysql", "postgresql"}:
         raise ValueError(
-            "DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_STORE 只支持 in-memory、sqlite 或 mysql，"
+            "DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_STORE 只支持 in-memory、sqlite、mysql 或 postgresql，"
             f"当前值为：{value}"
         )
     return normalized
