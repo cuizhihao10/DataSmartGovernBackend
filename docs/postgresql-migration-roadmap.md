@@ -1,5 +1,21 @@
 # MySQL 到 PostgreSQL 渐进迁移路线
 
+## 2026-07-03 更新：datasource-management 存量迁移脚手架
+
+`datasource-management` 已在 PostgreSQL 代码路径迁移之后补齐存量数据迁移入口：
+
+- 新增 `scripts/datasource-management-mysql-to-postgresql.py`，支持 `plan/export/import/verify/all` 五种模式；
+- 默认 `plan` 只读，`import/all` 必须显式传入 `--apply`；
+- 默认拒绝导入到非空 PostgreSQL 目标表，避免 seed/test data 与 MySQL 历史事实混成不可解释状态；
+- 迁移 datasource-management 当前代码真实使用的 14 张控制面表，不迁移 `data_sync_*`、`task_data_sync_*`、`agent_memory_*`；
+- 导出 JSONL 与低敏 `manifest.json`，PostgreSQL 导入使用 `COPY FROM STDIN`；
+- 保留 MySQL 原始主键 ID，并在导入后按最大 ID 校正 PostgreSQL identity sequence；
+- 对账使用行数与稳定 SHA-256 摘要，摘要覆盖凭据和配置字段但不输出明文值；
+- manifest 只记录敏感字段名、行数、checksum 和延期迁移表，不保存 JDBC URL、用户名、密码、SQL 预览、token、prompt、模型输出或客户数据样本；
+- 新增 `docs/datasource-management-postgresql-data-migration.md`，说明停写、备份、导出、导入、对账、只读观察、目标非空保护和敏感导出目录保管要求。
+
+该阶段完成后，`datasource-management` 的商业迁移闭环从“新安装可运行”推进到“具备可审计存量搬迁脚手架”。下一批应进入 `data-sync` PostgreSQL 迁移，重点处理 `data_sync_*` 独立 schema、执行状态、恢复计划、回放补数、错误样本、worker receipt 和 task 桥接边界。`agent_memory_*` 继续登记为阶段 3 `ai_memory` 迁移对象，不能迁入 datasource-management。
+
 ## 决策
 
 DataSmart 的目标持久化数据库调整为 PostgreSQL。MySQL 从目标架构降级为迁移期兼容数据库，所有业务微服务、
