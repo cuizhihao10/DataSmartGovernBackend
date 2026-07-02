@@ -126,7 +126,7 @@ public enum PermissionAction {
      * 查看 Agent 长期记忆写入候选。
      *
      * <p>长期记忆候选不是普通的只读列表：它描述的是“哪些工具结果、运行经验或治理结论准备进入长期记忆”。
-     * 一旦候选被批准并写入 Chroma、Neo4j、MySQL 或对象存储，后续 Agent 可能在多个会话中反复检索和复用它。
+     * 一旦候选被批准并写入 PostgreSQL/pgvector、Neo4j 或对象存储，后续 Agent 可能在多个会话中反复检索和复用它。
      * 因此查看候选也要独立建模，方便后续把审计员的只读复核、运营人员的排障查看、项目负责人的项目内查看拆成不同数据范围。</p>
      */
     VIEW_MEMORY_WRITE_CANDIDATES,

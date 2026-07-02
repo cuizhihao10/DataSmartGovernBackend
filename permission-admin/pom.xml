@@ -54,8 +54,32 @@
             <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
         </dependency>
         <dependency>
-            <groupId>com.mysql</groupId>
-            <artifactId>mysql-connector-j</artifactId>
+            <groupId>com.baomidou</groupId>
+            <!--
+              permission-admin 的成员授权、outbox 和审计列表都使用 MyBatis-Plus Page。
+              MyBatis-Plus 3.5.9+ 把分页解析依赖拆到 jsqlparser 扩展包；显式引入后，
+              PostgreSQL 分页方言才能通过 PaginationInnerInterceptor 稳定生成 LIMIT/OFFSET。
+            -->
+            <artifactId>mybatis-plus-jsqlparser</artifactId>
+        </dependency>
+        <dependency>
+            <!--
+              permission-admin 已迁移到 PostgreSQL。驱动版本由父 POM 统一管理，本模块不再携带 MySQL driver，
+              避免连接配置误写时仍能静默连回迁移期 MySQL，从而形成双库权限事实。
+            -->
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <!-- Flyway 负责在服务启动时校验并升级 permission_admin schema，生产环境不依赖手工建表。 -->
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <!-- Flyway 10+ 将 PostgreSQL 方言能力拆到独立模块，必须与 flyway-core 一起引入。 -->
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.kafka</groupId>

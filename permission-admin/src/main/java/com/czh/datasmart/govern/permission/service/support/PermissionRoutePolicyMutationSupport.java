@@ -295,7 +295,7 @@ public class PermissionRoutePolicyMutationSupport {
     /**
      * 针对可空字段构建重复策略查询。
      *
-     * <p>MySQL 中 `NULL = NULL` 不成立，如果直接使用 eq(null) 容易漏掉历史通配策略。
+     * <p>SQL 三值逻辑中 `NULL = NULL` 不成立，如果直接使用 eq(null) 容易漏掉历史通配策略。
      * 这里显式使用 `IS NULL`，保证“同一租户、角色、方法、路径、资源、动作、效果”维度下不会重复。
      */
     private void nullSafeEq(LambdaQueryWrapper<PermissionRoutePolicy> wrapper,

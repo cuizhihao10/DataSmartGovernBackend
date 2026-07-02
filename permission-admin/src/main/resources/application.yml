@@ -11,12 +11,39 @@ spring:
   profiles:
     active: dev
   datasource:
-    # 权限策略属于高价值治理数据，必须持久化到 MySQL，而不能只放在内存或配置文件中。
-    # 当前仍使用本地开发库；生产环境应通过配置中心或环境变量管理连接信息。
-    url: jdbc:mysql://localhost:3306/datasmart_govern?useSSL=false&serverTimezone=UTC
-    username: root
-    password: password
-    driver-class-name: com.mysql.cj.jdbc.Driver
+    # permission-admin 已迁移到 PostgreSQL。
+    # currentSchema=permission_admin 会把未显式限定 schema 的表名约束在权限中心自己的命名空间内，
+    # 防止权限服务误读 data_quality、task_management、agent_runtime 等其他微服务的同名或相似表。
+    # 生产环境应通过配置中心、Secret Manager 或容器环境变量注入 URL、用户名和密码。
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/datasmart_govern?currentSchema=permission_admin&ApplicationName=datasmart-permission-admin}
+    username: ${SPRING_DATASOURCE_USERNAME:datasmart}
+    password: ${SPRING_DATASOURCE_PASSWORD:password}
+    driver-class-name: ${SPRING_DATASOURCE_DRIVER_CLASS_NAME:org.postgresql.Driver}
+    hikari:
+      # 权限判定是 gateway 高频调用链路，连接池必须有清晰上限，避免策略查询抖动时把 PostgreSQL 连接耗尽。
+      maximum-pool-size: ${DATASMART_PERMISSION_DB_MAX_POOL_SIZE:20}
+      # 保留少量空闲连接，降低 gateway 首次授权或策略缓存失效后的冷启动延迟。
+      minimum-idle: ${DATASMART_PERMISSION_DB_MIN_IDLE:2}
+      # 授权链路不应长时间等待数据库连接；超过该时间应快速失败并让 gateway 走降级或拒绝策略。
+      connection-timeout: ${DATASMART_PERMISSION_DB_CONNECTION_TIMEOUT_MILLIS:3000}
+      # 连接校验超时单独收口，避免健康检查或连接借用被慢网络长时间拖住。
+      validation-timeout: ${DATASMART_PERMISSION_DB_VALIDATION_TIMEOUT_MILLIS:1000}
+  flyway:
+    enabled: true
+    # Flyway 历史表和业务表都归属 permission_admin schema。
+    # schema 由 docker/postgresql/init/00-platform-schemas.sql 统一创建，服务启动只负责版本迁移。
+    schemas: permission_admin
+    default-schema: permission_admin
+    create-schemas: false
+    locations: classpath:db/migration/postgresql/permission-admin
+    validate-on-migrate: true
+    # 权限、审计和 outbox 都是高价值事实，clean 会直接删除授权与审计证据，商业环境必须禁用。
+    clean-disabled: true
+    baseline-on-migrate: false
+    # 数据范围策略中会保存 `${actorId}`、`${tenantId}`、`${actorProjectIds}` 这类业务表达式模板。
+    # 它们不是 Flyway 占位符，而是 permission-admin 后续在授权判定时解析的 DSL 片段；
+    # 因此必须关闭 Flyway placeholder 替换，否则启动迁移时会把这些模板误判为缺失配置。
+    placeholder-replacement: false
   kafka:
     # Kafka 预留给后续权限变更事件、审计事件、权限缓存失效通知等异步能力。
     bootstrap-servers: localhost:9092
@@ -38,6 +65,10 @@ mybatis-plus:
   configuration:
     # 数据库使用下划线字段，Java 使用驼峰字段；开启映射可以减少重复注解。
     map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      # PostgreSQL 使用小写下划线标识符；这里禁止给表名追加迁移期前缀。
+      table-prefix: ""
 
 logging:
   level:
@@ -63,7 +94,7 @@ datasmart:
     policy-cache:
       # permission-admin 内部权限事实缓存开关。
       # 它缓存的是 evaluate 需要读取的路由策略和数据范围策略，不是 gateway 那一层最终 allow/deny 判定结果。
-      # 启用后可以降低高频授权判定对 MySQL 的重复读取压力；本地排障时可临时关闭。
+      # 启用后可以降低高频授权判定对 PostgreSQL 的重复读取压力；本地排障时可临时关闭。
       enabled: true
       # 路由策略缓存 TTL。策略变更成功后会主动清理对应租户缓存，TTL 是兜底一致性保护。
       route-policy-ttl: 30s
@@ -73,7 +104,7 @@ datasmart:
       max-entries: 1000
     policy-events:
       # 是否发布权限策略变更事件。
-      # 默认关闭：便于本地只启动 permission-admin + MySQL 时仍能联调管理 API。
+      # 默认关闭：便于本地只启动 permission-admin + PostgreSQL 时仍能联调管理 API。
       # 开启后，路由策略创建、更新、启停成功会向 Kafka 发布事件，gateway 可消费后清理授权缓存。
       enabled: false
       # 权限策略变更事件 Topic。

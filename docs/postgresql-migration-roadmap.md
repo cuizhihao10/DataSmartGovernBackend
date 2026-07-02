@@ -91,7 +91,7 @@ Agent 长期记忆和未来 LangGraph durable state 最终都应使用 PostgreSQ
 阶段 0 已完成：目标架构、PostgreSQL/pgvector Compose、服务 schema 和 pgJDBC 版本基线已经建立。
 本地真实容器验证已确认 PostgreSQL 17 健康、vector 0.8.3 可用、8 个服务 schema 初始化成功。
 
-阶段 1 的两个代码路径试点已经完成：
+阶段 1 的两个代码路径试点已经完成，阶段 2 的第一个核心服务也已完成代码路径切换：
 
 - `observability` 已移除 MySQL 驱动，切换到 pgJDBC、PostgreSQL `observability` schema 和 Flyway V1；
 - `data-quality` 已把规则、执行、报告、异常四张业务表转换为 PostgreSQL V1，切换 pgJDBC、
@@ -100,12 +100,16 @@ Agent 长期记忆和未来 LangGraph durable state 最终都应使用 PostgreSQ
   异常动态聚合和测试数据显式清理；
 - 新增 [data-quality MySQL 到 PostgreSQL 存量数据迁移说明](data-quality-postgresql-data-migration.md)
   与 `scripts/data-quality-mysql-to-postgresql.py`，用于导出、导入、对账和 identity sequence 校正；
-- 两个服务均不再从应用层依赖 MySQL 驱动。
+- `permission-admin` 已完成 PostgreSQL `permission_admin` schema、pgJDBC、Flyway V1、
+  MyBatis-Plus PostgreSQL 分页方言、outbox PostgreSQL 时间表达式和 Compose 覆盖配置；
+- permission-admin 真实 PostgreSQL 17 集成测试已覆盖 Flyway V1、8 张权限中心自有表、默认角色种子、
+  Page 分页、审计插入、outbox PENDING/SENDING/FAILED/IGNORED 状态推进和测试数据显式清理；
+- `observability`、`data-quality`、`permission-admin` 三个服务均不再从应用层依赖 MySQL 驱动。
 
-这里的“代码路径试点完成”只代表新安装和当前开发环境可以直接使用 PostgreSQL。存量客户环境如果已经在
-MySQL 中产生 data-quality 业务数据，仍必须完成停写/导出、类型转换、identity sequence 校正、行数与
-业务聚合对账、只读观察和回滚点保留，才能按上面的单服务验收门禁标记为商业迁移完成。
+这里的“代码路径完成”只代表新安装和当前开发环境可以直接使用 PostgreSQL。存量客户环境如果已经在
+MySQL 中产生 data-quality 或 permission-admin 业务数据，仍必须完成停写/导出、类型转换、identity
+sequence 校正、行数与业务聚合对账、只读观察和回滚点保留，才能按上面的单服务验收门禁标记为商业迁移完成。
 
-下一批可以进入 `permission-admin` PostgreSQL 迁移，但仍要沿用 data-quality 已形成的“空库 Flyway +
-存量导出导入 + 对账 + sequence 校正 + 只读观察”模板；其余 Java 服务仍由 MySQL 承担迁移期运行流量，
-不能把两个试点通过误认为全平台迁移完成。
+下一批应先补 `permission-admin` 的 MySQL 到 PostgreSQL 存量导出、导入、对账和 sequence 校正脚手架，
+然后再进入 `datasource-management`。其余 Java 服务仍由 MySQL 承担迁移期运行流量，不能把三个服务通过
+误认为全平台迁移完成。

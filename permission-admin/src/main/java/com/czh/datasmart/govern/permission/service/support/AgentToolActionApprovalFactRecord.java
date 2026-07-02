@@ -12,7 +12,7 @@ import java.util.List;
 /**
  * Agent 受控工具动作审批事实记录。
  *
- * <p>当前记录由内存 store 保存，字段刻意保持低敏。后续迁移到 MySQL 时，可以直接映射为
+ * <p>当前记录由内存 store 保存，字段刻意保持低敏。后续迁移到 PostgreSQL 时，可以直接映射为
  * `agent_tool_action_approval_fact` 表：以 approvalFactId 做唯一键，以 tenant/project/run/command/tool
  * 做组合索引，以 expiresAt/status 支持过期清理和审批台查询。</p>
  *

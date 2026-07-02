@@ -85,8 +85,19 @@ services:
         SERVER_PORT: 8085
     environment:
       <<: *java-common-environment
+      # permission-admin 已迁移到 PostgreSQL，必须覆盖公共锚点中的迁移期 MySQL datasource。
+      # currentSchema=permission_admin 能把权限角色、路由策略、数据范围、审计和 outbox 限定在权限服务自己的 schema。
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgresql:5432/datasmart_govern?currentSchema=permission_admin&ApplicationName=datasmart-permission-admin
+      SPRING_DATASOURCE_USERNAME: datasmart
+      SPRING_DATASOURCE_PASSWORD: ${DATASMART_POSTGRES_PASSWORD:-password}
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
     ports:
       - "8085:8085"
+    depends_on:
+      - postgresql
+      - redis
+      - kafka
+      - nacos
 
   task-management:
     <<: *java-common

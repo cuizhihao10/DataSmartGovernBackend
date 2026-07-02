@@ -43,7 +43,7 @@ import java.util.Set;
  * 3. Kafka 故障恢复后，是否能人工重试 DEAD 事件？
  * 4. 管理员修改策略、重试事件、忽略事件时，是否都有审计证据？
  *
- * <p>这里没有引入新的中间件，而是继续基于 MySQL outbox 和审计表扩展控制面。
+ * <p>这里没有引入新的中间件，而是继续基于 PostgreSQL outbox 和审计表扩展控制面。
  * 这样做符合当前仓库成熟度：先把产品运维闭环做出来，再逐步接入 Micrometer 指标、告警和更强的工作流审批。
  */
 @Service
@@ -71,7 +71,7 @@ public class PermissionOperationsServiceImpl implements PermissionOperationsServ
      * 列表查询最大页大小。
      *
      * <p>审计表和 outbox 表会随时间持续增长。
-     * 如果不限制 size，管理后台一次请求可能拉取大量 JSON 载荷，影响 MySQL、JVM 内存和网关响应。
+     * 如果不限制 size，管理后台一次请求可能拉取大量 JSON 载荷，影响 PostgreSQL、JVM 内存和网关响应。
      */
     private static final long MAX_PAGE_SIZE = 200L;
 

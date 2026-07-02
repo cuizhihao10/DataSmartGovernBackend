@@ -19,6 +19,11 @@ import java.util.List;
  *
  * <p>这里除了 MyBatis-Plus 基础 CRUD，还提供定时投递器需要的“待发送查询”和“状态推进”SQL。
  * 状态推进使用条件更新，是为了避免多线程或多实例投递器重复处理同一条事件。
+ *
+ * <p>本 Mapper 已随 permission-admin 迁移到 PostgreSQL：
+ * 1. 时间函数统一使用 SQL 标准风格更清晰的 {@code CURRENT_TIMESTAMP}；
+ * 2. 重试时间使用 {@code 参数 * INTERVAL '1 second'}，替代 MySQL 的 DATE_ADD/DATE_SUB；
+ * 3. LIMIT 参数绑定在 PostgreSQL 中可用，仍保留批量扫描上限，避免 dispatcher 一次锁定过多事件。
  */
 public interface PermissionEventOutboxMapper extends BaseMapper<PermissionEventOutbox> {
 
@@ -33,7 +38,7 @@ public interface PermissionEventOutboxMapper extends BaseMapper<PermissionEventO
             FROM permission_event_outbox
             WHERE status IN ('PENDING', 'FAILED')
               AND attempt_count < max_attempts
-              AND (next_retry_time IS NULL OR next_retry_time <= NOW())
+              AND (next_retry_time IS NULL OR next_retry_time <= CURRENT_TIMESTAMP)
             ORDER BY create_time ASC
             LIMIT #{batchSize}
             """)
@@ -48,7 +53,7 @@ public interface PermissionEventOutboxMapper extends BaseMapper<PermissionEventO
     @Update("""
             UPDATE permission_event_outbox
             SET status = 'SENDING',
-                update_time = NOW()
+                update_time = CURRENT_TIMESTAMP
             WHERE id = #{id}
               AND status IN ('PENDING', 'FAILED')
             """)
@@ -60,8 +65,8 @@ public interface PermissionEventOutboxMapper extends BaseMapper<PermissionEventO
     @Update("""
             UPDATE permission_event_outbox
             SET status = 'SENT',
-                sent_time = NOW(),
-                update_time = NOW(),
+                sent_time = CURRENT_TIMESTAMP,
+                update_time = CURRENT_TIMESTAMP,
                 last_error = NULL
             WHERE id = #{id}
             """)
@@ -75,8 +80,8 @@ public interface PermissionEventOutboxMapper extends BaseMapper<PermissionEventO
             SET status = CASE WHEN attempt_count + 1 >= max_attempts THEN 'DEAD' ELSE 'FAILED' END,
                 attempt_count = attempt_count + 1,
                 last_error = #{lastError},
-                next_retry_time = DATE_ADD(NOW(), INTERVAL #{retryDelaySeconds} SECOND),
-                update_time = NOW()
+                next_retry_time = CURRENT_TIMESTAMP + (#{retryDelaySeconds} * INTERVAL '1 second'),
+                update_time = CURRENT_TIMESTAMP
             WHERE id = #{id}
             """)
     int markFailed(@Param("id") Long id,
@@ -93,10 +98,10 @@ public interface PermissionEventOutboxMapper extends BaseMapper<PermissionEventO
             UPDATE permission_event_outbox
             SET status = 'FAILED',
                 last_error = 'SENDING timeout recovered by dispatcher',
-                next_retry_time = NOW(),
-                update_time = NOW()
+                next_retry_time = CURRENT_TIMESTAMP,
+                update_time = CURRENT_TIMESTAMP
             WHERE status = 'SENDING'
-              AND update_time < DATE_SUB(NOW(), INTERVAL #{sendingTimeoutSeconds} SECOND)
+              AND update_time < CURRENT_TIMESTAMP - (#{sendingTimeoutSeconds} * INTERVAL '1 second')
             """)
     int recoverStaleSending(@Param("sendingTimeoutSeconds") long sendingTimeoutSeconds);
 
@@ -114,9 +119,9 @@ public interface PermissionEventOutboxMapper extends BaseMapper<PermissionEventO
             UPDATE permission_event_outbox
             SET status = 'PENDING',
                 attempt_count = 0,
-                next_retry_time = NOW(),
+                next_retry_time = CURRENT_TIMESTAMP,
                 last_error = #{reason},
-                update_time = NOW()
+                update_time = CURRENT_TIMESTAMP
             WHERE id = #{id}
               AND status IN ('FAILED', 'DEAD', 'IGNORED')
             """)
@@ -134,7 +139,7 @@ public interface PermissionEventOutboxMapper extends BaseMapper<PermissionEventO
             UPDATE permission_event_outbox
             SET status = 'IGNORED',
                 last_error = #{reason},
-                update_time = NOW()
+                update_time = CURRENT_TIMESTAMP
             WHERE id = #{id}
               AND status IN ('PENDING', 'FAILED', 'DEAD')
             """)
