@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcConnectionManager;
+import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcSqlExceptionSupport;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 
@@ -14,7 +15,6 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.SQLIntegrityConstraintViolationException;
 import java.util.Optional;
 
 /**
@@ -31,7 +31,8 @@ import java.util.Optional;
  */
 @Component
 @ConditionalOnExpression(
-        "'${datasmart.agent-runtime.tool-action-submissions.store:memory}'.equalsIgnoreCase('mysql') "
+        "T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode)"
+                + ".isJdbcDurable('${datasmart.agent-runtime.tool-action-submissions.store:memory}') "
                 + "&& '${datasmart.agent-runtime.persistence.database-enabled:false}'.equalsIgnoreCase('true')"
 )
 public class JdbcAgentToolActionSubmissionFactStore implements AgentToolActionSubmissionFactStore {
@@ -79,7 +80,10 @@ public class JdbcAgentToolActionSubmissionFactStore implements AgentToolActionSu
             JdbcAgentToolActionSubmissionFactRecordMapper.bindRecord(statement, candidate);
             statement.executeUpdate();
             return new AgentToolActionSubmissionFactStartResult(true, candidate);
-        } catch (SQLIntegrityConstraintViolationException duplicate) {
+        } catch (SQLException duplicate) {
+            if (!AgentRuntimeJdbcSqlExceptionSupport.isDuplicateKey(duplicate)) {
+                throw duplicate;
+            }
             /*
              * 如果两个 worker 同时看到“尚无记录”，其中一个 insert 会成功，另一个会命中唯一键。
              * 这里不把它当成系统异常，而是重新读取已有事实并返回 started=false，

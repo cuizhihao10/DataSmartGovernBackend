@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.agent.service.execution.confirmation;
 
 import com.czh.datasmart.govern.agent.config.AgentRuntimePersistenceProperties;
 import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcConnectionManager;
+import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcSqlExceptionSupport;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
@@ -16,7 +17,6 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.SQLIntegrityConstraintViolationException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -34,7 +34,8 @@ import java.util.Optional;
  */
 @Component
 @ConditionalOnExpression(
-        "'${datasmart.agent-runtime.tool-dag.confirmations.store:memory}'.equalsIgnoreCase('mysql') "
+        "T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode)"
+                + ".isJdbcDurable('${datasmart.agent-runtime.tool-dag.confirmations.store:memory}') "
                 + "&& '${datasmart.agent-runtime.persistence.database-enabled:false}'.equalsIgnoreCase('true')"
 )
 public class JdbcAgentRunToolDagConfirmationStore implements AgentRunToolDagConfirmationStore {
@@ -70,14 +71,14 @@ public class JdbcAgentRunToolDagConfirmationStore implements AgentRunToolDagConf
                 }
             });
         } catch (RuntimeException exception) {
-            if (isDuplicateKey(exception)) {
+            if (AgentRuntimeJdbcSqlExceptionSupport.isDuplicateKey(exception)) {
                 return findByConfirmationId(record.confirmationId())
                         .orElseThrow(() -> new IllegalStateException(
                                 "DAG 确认记录发生唯一键冲突但回读失败，confirmationId=" + record.confirmationId(),
                                 exception
                         ));
             }
-            throw new IllegalStateException("写入 DAG selected-node 确认记录到 MySQL 失败，confirmationId="
+            throw new IllegalStateException("写入 DAG selected-node 确认记录到 JDBC/PostgreSQL 失败，confirmationId="
                     + record.confirmationId(), exception);
         }
     }
@@ -156,20 +157,6 @@ public class JdbcAgentRunToolDagConfirmationStore implements AgentRunToolDagConf
             return Math.min(100, maxQueryLimit);
         }
         return Math.min(limit, maxQueryLimit);
-    }
-
-    private boolean isDuplicateKey(RuntimeException exception) {
-        Throwable current = exception;
-        while (current != null) {
-            if (current instanceof SQLIntegrityConstraintViolationException) {
-                return true;
-            }
-            if (current instanceof SQLException sqlException && "23000".equals(sqlException.getSQLState())) {
-                return true;
-            }
-            current = current.getCause();
-        }
-        return false;
     }
 
     private boolean hasText(String value) {

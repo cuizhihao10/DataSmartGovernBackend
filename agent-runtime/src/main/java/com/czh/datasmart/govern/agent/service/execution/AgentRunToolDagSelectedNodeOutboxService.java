@@ -15,6 +15,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagSelectedNode
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolDagExecutionDryRunItemView;
 import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
 import com.czh.datasmart.govern.agent.config.AgentRunToolDagConfirmationProperties;
+import com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode;
 import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcConnectionManager;
 import com.czh.datasmart.govern.agent.model.AgentHandoffDagBridgeSourceEvidence;
 import com.czh.datasmart.govern.agent.service.execution.confirmation.AgentRunToolDagConfirmationRecord;
@@ -183,10 +184,10 @@ public class AgentRunToolDagSelectedNodeOutboxService {
      * 宁可在 memory 模式下继续保持原有行为，也不要在半持久化组合下宣称具备原子提交能力。</p>
      */
     private Optional<AgentRuntimeJdbcConnectionManager> selectedNodeDurableTransactionManager() {
-        if (!"mysql".equalsIgnoreCase(outboxProperties.getStore())) {
+        if (!AgentRuntimeStoreMode.isJdbcDurable(outboxProperties.getStore())) {
             return Optional.empty();
         }
-        if (!"mysql".equalsIgnoreCase(confirmationProperties.getStore())) {
+        if (!AgentRuntimeStoreMode.isJdbcDurable(confirmationProperties.getStore())) {
             return Optional.empty();
         }
         return jdbcConnectionManager;

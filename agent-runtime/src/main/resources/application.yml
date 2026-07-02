@@ -30,6 +30,26 @@ spring:
       # 这样 Python Runtime、网关、审计中心和 Kafka UI 都可以直接消费/查看 payload，避免被 Java 类型头耦合。
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
+  flyway:
+    # agent-runtime 当前默认仍支持纯内存学习模式，因此 Flyway 默认关闭，避免开发者没有启动 PostgreSQL 时应用无法启动。
+    # 在容器联调、集成测试或生产环境中，如果准备启用任意 JDBC durable store，建议先把本开关设为 true，
+    # 让 Flyway 在服务启动前校验 `agent_runtime` schema 是否具备所需控制面表。
+    enabled: ${DATASMART_AGENT_RUNTIME_FLYWAY_ENABLED:false}
+    # agent-runtime 不使用 Spring Boot 默认 datasource，而是通过 datasmart.agent-runtime.persistence.jdbc
+    # 条件化创建专用连接池。Flyway 这里显式复用同一组环境变量，避免出现“迁移跑在 A 数据库，运行时写 B 数据库”的错位。
+    url: ${DATASMART_AGENT_RUNTIME_JDBC_URL:jdbc:postgresql://localhost:5432/datasmart_govern?currentSchema=agent_runtime&ApplicationName=datasmart-agent-runtime}
+    user: ${DATASMART_AGENT_RUNTIME_JDBC_USERNAME:datasmart}
+    password: ${DATASMART_AGENT_RUNTIME_JDBC_PASSWORD:password}
+    driver-class-name: ${DATASMART_AGENT_RUNTIME_JDBC_DRIVER_CLASS_NAME:org.postgresql.Driver}
+    # Flyway 历史表与本模块控制面表都位于 agent_runtime schema。
+    # schema 由 docker/postgresql/init/00-platform-schemas.sql 统一创建；应用只负责迁移和校验，不在生产启动时悄悄创建新 schema。
+    schemas: agent_runtime
+    default-schema: agent_runtime
+    create-schemas: false
+    locations: classpath:db/migration/postgresql/agent-runtime
+    validate-on-migrate: true
+    clean-disabled: true
+    baseline-on-migrate: false
 
 datasmart:
   agent-runtime:
@@ -191,35 +211,38 @@ datasmart:
       # 该索引只保存 commandId、run/session、租户/项目/actor、outcome、taskStatus、preCheckPassed、
       # errorCode、replaySequence 等低敏机器事实，不保存 message、payload、SQL、prompt、工具参数或内部 endpoint。
       # 它的作用是让恢复事实包优先按 commandId 查专用索引，降低对通用 runtime event 热窗口扫描的依赖。
-      # 该配置只影响 memory 模式；当 worker-receipt-index-store=mysql 时，容量与保留策略应由 MySQL TTL/归档任务负责。
+      # 该配置只影响 memory 模式；当 worker-receipt-index-store=postgresql/jdbc/mysql 时，容量与保留策略应由
+      # PostgreSQL 分区、归档或 TTL 清理任务负责。
       worker-receipt-index-max-records: ${DATASMART_AGENT_RUNTIME_WORKER_RECEIPT_INDEX_MAX_RECORDS:10000}
     persistence:
       # 工具执行审计仓储类型。
-      # memory 是当前默认值，适合本地学习、单元测试和早期联调；它不会要求 MySQL 已启动。
-      # 后续切换为 mysql 时，应配合 agent_tool_execution_audit 表、事务 outbox 和后台 dispatcher 一起灰度，
+      # memory 是当前默认值，适合本地学习、单元测试和早期联调；它不会要求 PostgreSQL 已启动。
+      # 后续切换为 postgresql/jdbc 时，应配合 agent_tool_execution_audit 表、事务 outbox 和后台 dispatcher 一起灰度，
       # 避免出现“审计状态落库了但事件未入 outbox”或“事件发布了但审计状态未提交”的双写风险。
-      audit-store: memory
+      # mysql 仍作为历史兼容别名被 AgentRuntimeStoreMode 识别，但新环境应优先使用 postgresql 或 jdbc。
+      audit-store: ${DATASMART_AGENT_RUNTIME_AUDIT_STORE:memory}
       # 工具执行事件 outbox 仓储类型。
-      # memory 是默认热窗口；mysql 会使用 agent_tool_execution_event_outbox 表持久化待投递事件。
-      # 商业化生产环境最终建议 audit-store 与 outbox-store 同时切到 mysql，并通过事务边界保证同提交。
-      outbox-store: memory
+      # memory 是默认热窗口；postgresql/jdbc 会使用 agent_tool_execution_event_outbox 表持久化待投递事件。
+      # 商业化生产环境最终建议 audit-store 与 outbox-store 同时切到 postgresql/jdbc，并通过事务边界保证同提交。
+      outbox-store: ${DATASMART_AGENT_RUNTIME_OUTBOX_STORE:memory}
       # 数据库持久化总开关。
-      # 当前已经具备 MySQL audit/outbox store、async command outbox store 与 DAG confirmation store，
-      # 但默认保持 false，避免本地学习环境没有 MySQL 时启动失败。
-      # 启用数据库仓储时，必须同时设置 database-enabled=true 与对应 store=mysql，
+      # 当前已经具备 JDBC audit/outbox store、async command outbox store 与 DAG confirmation store，
+      # 但默认保持 false，避免本地学习环境没有 PostgreSQL 时启动失败。
+      # 启用数据库仓储时，必须同时设置 database-enabled=true 与对应 store=postgresql/jdbc，
       # 这样可以防止误配置单个字符串导致本地启动强依赖数据库。
-      database-enabled: false
+      database-enabled: ${DATASMART_AGENT_RUNTIME_DATABASE_ENABLED:false}
       jdbc:
-        # Agent Runtime 专用 MySQL 连接地址。
-        # 默认值仅面向本地 Docker/MySQL 约定；生产环境应通过环境变量或配置中心覆盖，
+        # Agent Runtime 专用 PostgreSQL 连接地址。
+        # 默认值面向本地 Docker/PostgreSQL 约定；生产环境应通过环境变量或配置中心覆盖，
         # 并结合数据库账号最小权限、连接超时、慢 SQL 告警和审计库备份策略。
-        url: ${DATASMART_AGENT_RUNTIME_JDBC_URL:jdbc:mysql://localhost:3306/datasmart_govern?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&rewriteBatchedStatements=true}
-        username: ${DATASMART_AGENT_RUNTIME_JDBC_USERNAME:root}
-        password: ${DATASMART_AGENT_RUNTIME_JDBC_PASSWORD:}
-        driver-class-name: com.mysql.cj.jdbc.Driver
+        # currentSchema=agent_runtime 会把未限定表名默认约束在本模块 schema，降低误读其它微服务表的风险。
+        url: ${DATASMART_AGENT_RUNTIME_JDBC_URL:jdbc:postgresql://localhost:5432/datasmart_govern?currentSchema=agent_runtime&ApplicationName=datasmart-agent-runtime}
+        username: ${DATASMART_AGENT_RUNTIME_JDBC_USERNAME:datasmart}
+        password: ${DATASMART_AGENT_RUNTIME_JDBC_PASSWORD:password}
+        driver-class-name: ${DATASMART_AGENT_RUNTIME_JDBC_DRIVER_CLASS_NAME:org.postgresql.Driver}
         pool-name: datasmart-agent-runtime-jdbc
-        # 连接池大小先保持保守，避免 Agent 工具事件高峰时把 MySQL 连接耗尽。
-        # 后续应按“并发 run 数、工具调用 QPS、outbox dispatcher 频率、数据库慢 SQL”共同压测后调整。
+        # 连接池大小先保持保守，避免 Agent 工具事件高峰时把 PostgreSQL 连接耗尽。
+        # 后续应按“并发 run 数、工具调用 QPS、outbox dispatcher 频率、数据库慢 SQL、锁等待”共同压测后调整。
         minimum-idle: 1
         maximum-pool-size: 10
         connection-timeout-ms: 3000

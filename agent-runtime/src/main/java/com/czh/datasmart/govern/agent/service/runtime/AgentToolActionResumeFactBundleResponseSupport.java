@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.config.AgentToolActionResumeFactBundleProperties;
+import com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionResumeFactBundleQueryRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionResumeFactView;
 
@@ -99,23 +100,23 @@ final class AgentToolActionResumeFactBundleResponseSupport {
      */
     static Map<String, Object> productionReadiness(AgentToolActionResumeFactBundleProperties properties) {
         String locatorIndexStore = properties == null ? "memory" : text(properties.getLocatorIndexStore());
-        boolean mysqlLocatorIndex = "mysql".equalsIgnoreCase(locatorIndexStore);
+        boolean jdbcLocatorIndex = AgentRuntimeStoreMode.isJdbcDurable(locatorIndexStore);
         String workerReceiptIndexStore = properties == null ? "memory" : text(properties.getWorkerReceiptIndexStore());
-        boolean mysqlWorkerReceiptIndex = "mysql".equalsIgnoreCase(workerReceiptIndexStore);
+        boolean jdbcWorkerReceiptIndex = AgentRuntimeStoreMode.isJdbcDurable(workerReceiptIndexStore);
         boolean diagnosticEventEnabled = properties == null
                 || !Boolean.FALSE.equals(properties.getDiagnosticEventEnabled());
         List<String> missingRequirements = new ArrayList<>();
-        if (!mysqlLocatorIndex) {
-            missingRequirements.add("MYSQL_DURABLE_CHECKPOINT_THREAD_LOCATOR_INDEX");
+        if (!jdbcLocatorIndex) {
+            missingRequirements.add("JDBC_DURABLE_CHECKPOINT_THREAD_LOCATOR_INDEX");
         }
         String clarificationFactStore = properties == null ? "memory" : text(properties.getClarificationFactStore());
-        boolean mysqlClarificationFactStore = "mysql".equalsIgnoreCase(clarificationFactStore);
-        if (!mysqlClarificationFactStore) {
-            missingRequirements.add("MYSQL_DURABLE_CLARIFICATION_FACT_STORE");
+        boolean jdbcClarificationFactStore = AgentRuntimeStoreMode.isJdbcDurable(clarificationFactStore);
+        if (!jdbcClarificationFactStore) {
+            missingRequirements.add("JDBC_DURABLE_CLARIFICATION_FACT_STORE");
         }
         missingRequirements.add("CLARIFICATION_FACT_TTL_ARCHIVE_AND_ADMIN_QUERY");
-        if (!mysqlWorkerReceiptIndex) {
-            missingRequirements.add("MYSQL_DURABLE_WORKER_RECEIPT_INDEX");
+        if (!jdbcWorkerReceiptIndex) {
+            missingRequirements.add("JDBC_DURABLE_WORKER_RECEIPT_INDEX");
         }
         missingRequirements.add("WORKER_RECEIPT_INDEX_TTL_ARCHIVE_AND_ADMIN_QUERY");
         missingRequirements.add("SERVICE_ACCOUNT_SIGNATURE_OR_MTLS");
@@ -126,14 +127,14 @@ final class AgentToolActionResumeFactBundleResponseSupport {
         }
         return Map.of(
                 "currentMode", "CONTROL_PLANE_FACT_BUNDLE_PREVIEW_ONLY",
-                "currentLocatorIndexMode", mysqlLocatorIndex
-                        ? "MYSQL_DURABLE_CHECKPOINT_THREAD_TO_FACT_LOCATOR_INDEX"
+                "currentLocatorIndexMode", jdbcLocatorIndex
+                        ? "JDBC_DURABLE_CHECKPOINT_THREAD_TO_FACT_LOCATOR_INDEX"
                         : "IN_MEMORY_CHECKPOINT_THREAD_TO_FACT_LOCATOR_INDEX",
-                "currentWorkerReceiptIndexMode", mysqlWorkerReceiptIndex
-                        ? "MYSQL_DURABLE_LOW_SENSITIVE_WORKER_RECEIPT_INDEX_WITH_PROJECTION_FALLBACK"
+                "currentWorkerReceiptIndexMode", jdbcWorkerReceiptIndex
+                        ? "JDBC_DURABLE_LOW_SENSITIVE_WORKER_RECEIPT_INDEX_WITH_PROJECTION_FALLBACK"
                         : "IN_MEMORY_LOW_SENSITIVE_WORKER_RECEIPT_INDEX_WITH_PROJECTION_FALLBACK",
-                "currentClarificationFactStoreMode", mysqlClarificationFactStore
-                        ? "MYSQL_DURABLE_LOW_SENSITIVE_CLARIFICATION_FACT_STORE"
+                "currentClarificationFactStoreMode", jdbcClarificationFactStore
+                        ? "JDBC_DURABLE_LOW_SENSITIVE_CLARIFICATION_FACT_STORE"
                         : "IN_MEMORY_LOW_SENSITIVE_CLARIFICATION_FACT_STORE",
                 "diagnosticEventMode", diagnosticEventEnabled
                         ? "LOW_SENSITIVE_RUNTIME_EVENT_DIAGNOSTIC_SNAPSHOT"

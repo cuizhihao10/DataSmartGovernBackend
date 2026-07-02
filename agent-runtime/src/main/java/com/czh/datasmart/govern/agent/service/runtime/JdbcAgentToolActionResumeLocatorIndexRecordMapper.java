@@ -18,7 +18,7 @@ import java.util.List;
  * checkpoint/thread 恢复 locator index 的 JDBC 字段映射器。
  *
  * <p>这个类刻意保持 package-private，并且不注册为 Spring Bean。原因是它不是业务服务，
- * 而是 {@link JdbcAgentToolActionResumeLocatorIndexStore} 与 MySQL 表之间的“字段翻译层”：
+ * 而是 {@link JdbcAgentToolActionResumeLocatorIndexStore} 与 JDBC/PostgreSQL 表之间的“字段翻译层”：
  * Store 负责仓储语义、异常包装、查询入口和可替换边界；Mapper 只负责 SQL 字段清单、参数绑定、
  * ResultSet 还原和长度裁剪。这样可以避免 JDBC Store 迅速膨胀成几百行的大 Impl。</p>
  *
@@ -43,15 +43,17 @@ final class JdbcAgentToolActionResumeLocatorIndexRecordMapper {
             """;
 
     /**
-     * locator index 幂等 upsert SQL。
+     * 按 checkpointId 作为冲突目标的 locator index 幂等 upsert SQL。
      *
-     * <p>这里使用 MySQL 唯一索引 + ON DUPLICATE KEY UPDATE 承载并发幂等语义：
-     * 同一个 checkpointId 或 threadId 被多次观察到时，不新增重复行，而是用非空新字段补齐旧记录。</p>
+     * <p>早期 MySQL 版本可以用 {@code ON DUPLICATE KEY UPDATE} 同时吃掉 checkpoint_id 与 thread_id
+     * 两个唯一键冲突；PostgreSQL 的 {@code ON CONFLICT} 必须明确一个冲突目标。因此这里拆成两个 SQL：
+     * 本常量面向 checkpointId 精确恢复入口，下面的 {@link #UPSERT_BY_THREAD_SQL} 面向 threadId 兜底恢复入口。
+     * Store 会根据请求中实际携带的低敏定位符选择主路径，并在另一个唯一键先命中时做一次受控 fallback。</p>
      *
      * <p>字段合并采用“新值非空才覆盖”的规则。这样第一轮只学到 commandId，第二轮又学到 approvalFactId
      * 时，两者会在同一条 locator 记录里逐步汇合；如果新请求没有携带某个字段，也不会把旧字段冲掉。</p>
      */
-    static final String UPSERT_SQL = """
+    static final String UPSERT_BY_CHECKPOINT_SQL = """
             INSERT INTO agent_tool_action_resume_locator_index (
                 checkpoint_id, thread_id, session_id, run_id, command_id, outbox_id,
                 approval_fact_id, clarification_fact_id, tool_code, requested_policy_version,
@@ -61,22 +63,55 @@ final class JdbcAgentToolActionResumeLocatorIndexRecordMapper {
                 ?, ?, ?, ?,
                 ?, ?, ?, ?
             )
-            ON DUPLICATE KEY UPDATE
-                checkpoint_id = COALESCE(NULLIF(VALUES(checkpoint_id), ''), checkpoint_id),
-                thread_id = COALESCE(NULLIF(VALUES(thread_id), ''), thread_id),
-                session_id = COALESCE(NULLIF(VALUES(session_id), ''), session_id),
-                run_id = COALESCE(NULLIF(VALUES(run_id), ''), run_id),
-                command_id = COALESCE(NULLIF(VALUES(command_id), ''), command_id),
-                outbox_id = COALESCE(NULLIF(VALUES(outbox_id), ''), outbox_id),
-                approval_fact_id = COALESCE(NULLIF(VALUES(approval_fact_id), ''), approval_fact_id),
-                clarification_fact_id = COALESCE(NULLIF(VALUES(clarification_fact_id), ''), clarification_fact_id),
-                tool_code = COALESCE(NULLIF(VALUES(tool_code), ''), tool_code),
-                requested_policy_version = COALESCE(NULLIF(VALUES(requested_policy_version), ''), requested_policy_version),
-                tenant_id = COALESCE(NULLIF(VALUES(tenant_id), ''), tenant_id),
-                project_id = COALESCE(NULLIF(VALUES(project_id), ''), project_id),
-                actor_id = COALESCE(NULLIF(VALUES(actor_id), ''), actor_id),
-                updated_at = COALESCE(VALUES(updated_at), updated_at),
-                update_time = CURRENT_TIMESTAMP(3)
+            ON CONFLICT (checkpoint_id) DO UPDATE SET
+                thread_id = COALESCE(NULLIF(EXCLUDED.thread_id, ''), agent_tool_action_resume_locator_index.thread_id),
+                session_id = COALESCE(NULLIF(EXCLUDED.session_id, ''), agent_tool_action_resume_locator_index.session_id),
+                run_id = COALESCE(NULLIF(EXCLUDED.run_id, ''), agent_tool_action_resume_locator_index.run_id),
+                command_id = COALESCE(NULLIF(EXCLUDED.command_id, ''), agent_tool_action_resume_locator_index.command_id),
+                outbox_id = COALESCE(NULLIF(EXCLUDED.outbox_id, ''), agent_tool_action_resume_locator_index.outbox_id),
+                approval_fact_id = COALESCE(NULLIF(EXCLUDED.approval_fact_id, ''), agent_tool_action_resume_locator_index.approval_fact_id),
+                clarification_fact_id = COALESCE(NULLIF(EXCLUDED.clarification_fact_id, ''), agent_tool_action_resume_locator_index.clarification_fact_id),
+                tool_code = COALESCE(NULLIF(EXCLUDED.tool_code, ''), agent_tool_action_resume_locator_index.tool_code),
+                requested_policy_version = COALESCE(NULLIF(EXCLUDED.requested_policy_version, ''), agent_tool_action_resume_locator_index.requested_policy_version),
+                tenant_id = COALESCE(NULLIF(EXCLUDED.tenant_id, ''), agent_tool_action_resume_locator_index.tenant_id),
+                project_id = COALESCE(NULLIF(EXCLUDED.project_id, ''), agent_tool_action_resume_locator_index.project_id),
+                actor_id = COALESCE(NULLIF(EXCLUDED.actor_id, ''), agent_tool_action_resume_locator_index.actor_id),
+                updated_at = COALESCE(EXCLUDED.updated_at, agent_tool_action_resume_locator_index.updated_at),
+                update_time = CURRENT_TIMESTAMP
+            """;
+
+    /**
+     * 按 threadId 作为冲突目标的 locator index 幂等 upsert SQL。
+     *
+     * <p>threadId 通常比 checkpointId 更宽，适合作为 checkpoint 缺失、外部 Agent 只保留 thread 现场、
+     * 或 checkpoint 唯一键尚未建立前的恢复兜底入口。字段合并规则与 checkpoint 路径保持一致，避免两条路径
+     * 对同一张表产生不同业务语义。</p>
+     */
+    static final String UPSERT_BY_THREAD_SQL = """
+            INSERT INTO agent_tool_action_resume_locator_index (
+                checkpoint_id, thread_id, session_id, run_id, command_id, outbox_id,
+                approval_fact_id, clarification_fact_id, tool_code, requested_policy_version,
+                tenant_id, project_id, actor_id, updated_at
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?
+            )
+            ON CONFLICT (thread_id) DO UPDATE SET
+                checkpoint_id = COALESCE(NULLIF(EXCLUDED.checkpoint_id, ''), agent_tool_action_resume_locator_index.checkpoint_id),
+                session_id = COALESCE(NULLIF(EXCLUDED.session_id, ''), agent_tool_action_resume_locator_index.session_id),
+                run_id = COALESCE(NULLIF(EXCLUDED.run_id, ''), agent_tool_action_resume_locator_index.run_id),
+                command_id = COALESCE(NULLIF(EXCLUDED.command_id, ''), agent_tool_action_resume_locator_index.command_id),
+                outbox_id = COALESCE(NULLIF(EXCLUDED.outbox_id, ''), agent_tool_action_resume_locator_index.outbox_id),
+                approval_fact_id = COALESCE(NULLIF(EXCLUDED.approval_fact_id, ''), agent_tool_action_resume_locator_index.approval_fact_id),
+                clarification_fact_id = COALESCE(NULLIF(EXCLUDED.clarification_fact_id, ''), agent_tool_action_resume_locator_index.clarification_fact_id),
+                tool_code = COALESCE(NULLIF(EXCLUDED.tool_code, ''), agent_tool_action_resume_locator_index.tool_code),
+                requested_policy_version = COALESCE(NULLIF(EXCLUDED.requested_policy_version, ''), agent_tool_action_resume_locator_index.requested_policy_version),
+                tenant_id = COALESCE(NULLIF(EXCLUDED.tenant_id, ''), agent_tool_action_resume_locator_index.tenant_id),
+                project_id = COALESCE(NULLIF(EXCLUDED.project_id, ''), agent_tool_action_resume_locator_index.project_id),
+                actor_id = COALESCE(NULLIF(EXCLUDED.actor_id, ''), agent_tool_action_resume_locator_index.actor_id),
+                updated_at = COALESCE(EXCLUDED.updated_at, agent_tool_action_resume_locator_index.updated_at),
+                update_time = CURRENT_TIMESTAMP
             """;
 
     private JdbcAgentToolActionResumeLocatorIndexRecordMapper() {

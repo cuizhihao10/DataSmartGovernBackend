@@ -18,26 +18,26 @@ import org.springframework.context.annotation.Configuration;
  * <p>该配置只在同时满足以下条件时生效：
  * 1. {@code datasmart.agent-runtime.persistence.database-enabled=true}；
  * 2. 工具审计、工具事件 outbox、异步命令 outbox、DAG 确认、Skill 可见性索引、恢复事实索引、
- *    command worker lease 或 artifact 正文读取授权事实至少一个明确选择 MySQL 仓储。
+ *    command worker lease 或 artifact 正文读取授权事实至少一个明确选择 JDBC durable 仓储。
  *
  * <p>这样设计是为了避免一个很常见的商业化项目坑：只要把 JDBC/MyBatis 依赖加入模块，Spring Boot 就可能在默认本地环境
- * 尝试自动创建数据源，导致没有启动 MySQL 的开发者无法运行任何单元测试或应用。这里采用独立 HikariDataSource Bean，
+ * 尝试自动创建数据源，导致没有启动 PostgreSQL 的开发者无法运行任何单元测试或应用。这里采用独立 HikariDataSource Bean，
  * 且通过条件表达式显式收口，默认 memory 模式不会创建连接池。</p>
  */
 @Configuration(proxyBeanMethods = false)
 @ConditionalOnExpression(
         "'${datasmart.agent-runtime.persistence.database-enabled:false}'.equalsIgnoreCase('true') "
-                + "&& ('${datasmart.agent-runtime.persistence.audit-store:memory}'.equalsIgnoreCase('mysql') "
-                + "|| '${datasmart.agent-runtime.persistence.outbox-store:memory}'.equalsIgnoreCase('mysql') "
-                + "|| '${datasmart.agent-runtime.tool-dag.confirmations.store:memory}'.equalsIgnoreCase('mysql') "
-                + "|| '${datasmart.agent-runtime.async-task-commands.outbox.store:memory}'.equalsIgnoreCase('mysql') "
-                + "|| '${datasmart.agent-runtime.runtime-events.skill-visibility-index.store:memory}'.equalsIgnoreCase('mysql') "
-                + "|| '${datasmart.agent-runtime.tool-action-resume-facts.locator-index-store:memory}'.equalsIgnoreCase('mysql') "
-                + "|| '${datasmart.agent-runtime.tool-action-resume-facts.clarification-fact-store:memory}'.equalsIgnoreCase('mysql') "
-                + "|| '${datasmart.agent-runtime.tool-action-resume-facts.worker-receipt-index-store:memory}'.equalsIgnoreCase('mysql') "
-                + "|| '${datasmart.agent-runtime.command-worker-leases.store:memory}'.equalsIgnoreCase('mysql') "
-                + "|| '${datasmart.agent-runtime.tool-action-submissions.store:memory}'.equalsIgnoreCase('mysql') "
-                + "|| '${datasmart.agent-runtime.artifact-body-read-grants.store:memory}'.equalsIgnoreCase('mysql'))"
+                + "&& (T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.persistence.audit-store:memory}') "
+                + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.persistence.outbox-store:memory}') "
+                + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.tool-dag.confirmations.store:memory}') "
+                + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.async-task-commands.outbox.store:memory}') "
+                + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.runtime-events.skill-visibility-index.store:memory}') "
+                + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.tool-action-resume-facts.locator-index-store:memory}') "
+                + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.tool-action-resume-facts.clarification-fact-store:memory}') "
+                + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.tool-action-resume-facts.worker-receipt-index-store:memory}') "
+                + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.command-worker-leases.store:memory}') "
+                + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.tool-action-submissions.store:memory}') "
+                + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.artifact-body-read-grants.store:memory}'))"
 )
 public class AgentRuntimeJdbcPersistenceConfiguration {
 
@@ -72,7 +72,7 @@ public class AgentRuntimeJdbcPersistenceConfiguration {
 
     private String requireText(String value, String propertyName) {
         if (value == null || value.isBlank()) {
-            throw new IllegalStateException("启用 Agent Runtime MySQL 持久化时必须配置 " + propertyName);
+            throw new IllegalStateException("启用 Agent Runtime JDBC/PostgreSQL 持久化时必须配置 " + propertyName);
         }
         return value.trim();
     }

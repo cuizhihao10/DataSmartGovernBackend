@@ -59,7 +59,8 @@ public class AgentToolExecutionEventOutboxSink implements AgentToolExecutionEven
      *
      * <p>这里采用“配置强制 + MySQL 双仓储自动开启”的组合：
      * 1. {@code requiredForStateCommit=true} 可用于灰度或压测场景手动强制；
-     * 2. {@code audit-store=mysql + outbox-store=mysql + database-enabled=true} 表示已经具备真正事务 outbox 条件，
+     * 2. {@code audit-store=postgresql/jdbc + outbox-store=postgresql/jdbc + database-enabled=true}
+     * 表示已经具备真正事务 outbox 条件，
      *    因此自动变成必达 sink，避免生产环境忘记额外打开一个开关。</p>
      *
      * @return true 表示写入 outbox 失败时，发布器应抛出异常并交给服务层事务边界回滚。
@@ -67,7 +68,7 @@ public class AgentToolExecutionEventOutboxSink implements AgentToolExecutionEven
     @Override
     public boolean requiredForStateCommit() {
         return properties.isRequiredForStateCommit()
-                || persistenceProperties.isStateAndOutboxMysqlEnabled();
+                || persistenceProperties.isStateAndOutboxJdbcEnabled();
     }
 
     /**

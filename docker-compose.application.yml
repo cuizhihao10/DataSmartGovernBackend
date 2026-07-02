@@ -243,9 +243,14 @@ services:
         SERVER_PORT: 8091
     environment:
       <<: *java-common-environment
-      DATASMART_AGENT_RUNTIME_JDBC_URL: jdbc:mysql://mysql:3306/datasmart_govern?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
-      DATASMART_AGENT_RUNTIME_JDBC_USERNAME: root
-      DATASMART_AGENT_RUNTIME_JDBC_PASSWORD: ${DATASMART_MYSQL_PASSWORD:-password}
+      # agent-runtime 控制面事实库已迁入 PostgreSQL `agent_runtime` schema。
+      # 这里不使用公共 java-common-environment 中的迁移期 MySQL datasource，而是显式配置专用 JDBC 连接；
+      # 当前默认 store 仍是 memory，不会自动执行真实工具副作用，但 Flyway 会在容器启动时校验控制面表基线。
+      DATASMART_AGENT_RUNTIME_JDBC_URL: jdbc:postgresql://postgresql:5432/datasmart_govern?currentSchema=agent_runtime&ApplicationName=datasmart-agent-runtime
+      DATASMART_AGENT_RUNTIME_JDBC_USERNAME: datasmart
+      DATASMART_AGENT_RUNTIME_JDBC_PASSWORD: ${DATASMART_POSTGRES_PASSWORD:-password}
+      DATASMART_AGENT_RUNTIME_JDBC_DRIVER_CLASS_NAME: org.postgresql.Driver
+      DATASMART_AGENT_RUNTIME_FLYWAY_ENABLED: "true"
       DATASMART_PERMISSION_ADMIN_EVALUATE_URL: http://permission-admin:8085/permissions/evaluate
       DATASMART_AGENT_RUNTIME_RESUME_APPROVAL_FACT_EVALUATE_URL: http://permission-admin:8085/permissions/agent/tool-action-approvals/evaluate
       DATASMART_TASK_MANAGEMENT_AGENT_COMMAND_CONSUME_URL: http://task-management:8081/internal/agent-async-task-commands/consume
@@ -261,7 +266,7 @@ services:
     ports:
       - "8091:8091"
     depends_on:
-      - mysql
+      - postgresql
       - redis
       - kafka
       - nacos

@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.config.AgentRuntimePersistenceProperties;
 import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcConnectionManager;
+import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcSqlExceptionSupport;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 
@@ -36,7 +37,8 @@ import java.util.Optional;
  */
 @Component
 @ConditionalOnExpression(
-        "'${datasmart.agent-runtime.tool-action-resume-facts.locator-index-store:memory}'.equalsIgnoreCase('mysql') "
+        "T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode)"
+                + ".isJdbcDurable('${datasmart.agent-runtime.tool-action-resume-facts.locator-index-store:memory}') "
                 + "&& '${datasmart.agent-runtime.persistence.database-enabled:false}'.equalsIgnoreCase('true')"
 )
 public class JdbcAgentToolActionResumeLocatorIndexStore implements AgentToolActionResumeLocatorIndexStore {
@@ -67,8 +69,8 @@ public class JdbcAgentToolActionResumeLocatorIndexStore implements AgentToolActi
      * 幂等写入或合并 locator 记录。
      *
      * <p>调用方通常是 {@link AgentToolActionResumeLocatorIndexService}：每次 fact bundle 查询开始前，
-     * 服务都会观察请求中已经携带的低敏定位符，并把它们写入索引。写入采用 MySQL 唯一索引和
-     * ON DUPLICATE KEY UPDATE，保证同一个 checkpoint/thread 多次出现时只补齐字段，不生成重复行。</p>
+     * 服务都会观察请求中已经携带的低敏定位符，并把它们写入索引。写入采用 PostgreSQL 唯一索引和
+     * ON CONFLICT，保证同一个 checkpoint/thread 多次出现时只补齐字段，不生成重复行。</p>
      *
      * <p>如果记录没有 checkpointId/threadId，或没有任何 Java 控制面 locator，则直接跳过。
      * 这能避免数据库里堆积无法用于恢复的空壳记录。</p>
@@ -79,18 +81,39 @@ public class JdbcAgentToolActionResumeLocatorIndexStore implements AgentToolActi
             return;
         }
         try {
-            connectionManager.executeWithConnection(connection -> {
-                try (PreparedStatement statement = connection.prepareStatement(
-                        JdbcAgentToolActionResumeLocatorIndexRecordMapper.UPSERT_SQL)) {
-                    JdbcAgentToolActionResumeLocatorIndexRecordMapper.bindRecord(statement, record);
-                    statement.executeUpdate();
-                    return null;
-                }
-            });
+            executeUpsert(record, primaryUpsertSql(record));
         } catch (RuntimeException exception) {
+            /*
+             * PostgreSQL 的 ON CONFLICT 必须指定唯一键目标，而本索引有 checkpoint_id 与 thread_id 两个低敏恢复入口。
+             * 当记录同时携带两个入口时，主路径可能按 checkpoint_id 处理，但真实已存在行却先命中了 thread_id 唯一键。
+             * 这种情况下不应该把它视为系统故障，而应改用 thread_id 再做一次幂等合并，尽量还原早期 MySQL
+             * ON DUPLICATE KEY UPDATE “任一唯一键冲突都可合并”的业务效果。
+             */
+            if (AgentRuntimeJdbcSqlExceptionSupport.isDuplicateKey(exception) && hasText(record.checkpointId())
+                    && hasText(record.threadId())) {
+                executeUpsert(record, JdbcAgentToolActionResumeLocatorIndexRecordMapper.UPSERT_BY_THREAD_SQL);
+                return;
+            }
             throw new IllegalStateException("写入 Agent 工具动作恢复 locator index 失败，checkpointId="
                     + record.checkpointId() + ", threadId=" + record.threadId(), exception);
         }
+    }
+
+    private String primaryUpsertSql(AgentToolActionResumeLocatorIndexRecord record) {
+        if (hasText(record.checkpointId())) {
+            return JdbcAgentToolActionResumeLocatorIndexRecordMapper.UPSERT_BY_CHECKPOINT_SQL;
+        }
+        return JdbcAgentToolActionResumeLocatorIndexRecordMapper.UPSERT_BY_THREAD_SQL;
+    }
+
+    private void executeUpsert(AgentToolActionResumeLocatorIndexRecord record, String sql) {
+        connectionManager.executeWithConnection(connection -> {
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                JdbcAgentToolActionResumeLocatorIndexRecordMapper.bindRecord(statement, record);
+                statement.executeUpdate();
+                return null;
+            }
+        });
     }
 
     /**

@@ -1,5 +1,35 @@
 # MySQL 到 PostgreSQL 渐进迁移路线
 
+## 2026-07-03 更新：agent-runtime 控制面 PostgreSQL 代码路径与 V1 基线
+
+`agent-runtime` 已进入阶段 3 的控制面 PostgreSQL 迁移。本批目标不是迁移长期记忆正文，而是先把 Java Agent Host 的可审计、可恢复、可回放控制面事实固定到 PostgreSQL `agent_runtime` schema：
+
+- `agent-runtime/pom.xml` 移除平台控制面 MySQL 驱动依赖，新增 pgJDBC、Flyway Core 与 `flyway-database-postgresql`；
+- `application.yml` 的 Agent Runtime 专用 JDBC 默认连接切换为 `jdbc:postgresql://localhost:5432/datasmart_govern?currentSchema=agent_runtime&ApplicationName=datasmart-agent-runtime`；
+- `application.yml` 新增 `spring.flyway` 配置，默认 `DATASMART_AGENT_RUNTIME_FLYWAY_ENABLED=false`，避免 memory 学习模式强依赖数据库；容器和集成环境可开启校验 `agent_runtime` schema；
+- `docker-compose.application.yml` 的 `agent-runtime` 改为依赖 `postgresql`，并通过 `DATASMART_AGENT_RUNTIME_JDBC_URL`、`DATASMART_AGENT_RUNTIME_JDBC_DRIVER_CLASS_NAME=org.postgresql.Driver` 和 `DATASMART_AGENT_RUNTIME_FLYWAY_ENABLED=true` 显式进入 PostgreSQL 控制面路径；
+- 新增 `agent-runtime/src/main/resources/db/migration/postgresql/agent-runtime/V1__agent_runtime_schema_baseline.sql`，只包含 11 张控制面表：`agent_tool_execution_audit`、`agent_tool_execution_event_outbox`、`agent_async_task_command_outbox`、`agent_run_tool_dag_confirmation`、`agent_skill_visibility_snapshot_index`、`agent_tool_action_resume_locator_index`、`agent_tool_action_clarification_fact`、`agent_tool_action_worker_receipt_index`、`agent_command_worker_lease`、`agent_artifact_body_read_grant_fact`、`agent_tool_action_submission_fact`；
+- 本批明确不包含 `agent_memory_*`。长期记忆、用户画像、pgvector 语义索引和 LangGraph durable state 后续应进入独立 `ai_memory` schema；
+- Java store mode 继续保留 `mysql` 作为历史兼容别名，但推荐新配置使用 `postgresql`、`postgres` 或 `jdbc`；
+- `JdbcAgentToolActionWorkerReceiptIndexStore` 修复 PostgreSQL 幂等语义：从单条 `ON CONFLICT DO UPDATE` 改为 `INSERT ... ON CONFLICT DO NOTHING` + fallback `UPDATE`，确保返回值 true 只表示首次插入，重复事件刷新返回 false；
+- `AgentRuntimePersistenceProperties#isStateAndOutboxMysqlEnabled` 重命名为 `isStateAndOutboxJdbcEnabled`，避免事务 outbox 条件继续被误解为 MySQL 专属。
+
+验证结果：
+- `.\mvnw.cmd -q -pl agent-runtime -am test` 通过；
+- `docker compose -f docker-compose.yml -f docker-compose.application.yml config --quiet` 通过；
+- `git diff --check` 仅报告 Windows LF/CRLF 提示，无空白错误。
+
+当前边界：
+- 本阶段完成的是 agent-runtime 控制面新安装/代码路径与 Flyway V1 基线，不等价于生产 MySQL 历史控制面数据已经搬迁；
+- 旧 MySQL 初始化脚本中混放的 `agent_memory_*` 仍需后续迁入 `ai_memory`，不能继续留在 MySQL 或误塞进 `agent_runtime`；
+- 尚未执行 agent-runtime 容器级 PostgreSQL smoke，后续需要重建容器并确认 `flyway_schema_history`、11 张表、pgJDBC 连接和 Actuator health。
+
+下一步推荐路线：
+1. 补 `agent-runtime` MySQL 到 PostgreSQL 存量迁移脚手架，迁移对象限定为上述 11 张控制面表，支持 plan/export/import/verify/all、显式 `--apply`、空目标保护、COPY 导入、行数与 SHA-256 对账和 identity sequence 校正；
+2. 重建 `agent-runtime` 容器并执行真实容器级 PostgreSQL smoke；
+3. 进入 `ai_memory` 批次，迁移 `agent_memory_*`、pgvector 语义索引、用户画像和 LangGraph durable state；
+4. Agent Runtime / AI Memory 批次完成后，再规划旧 MySQL 初始化脚本清理与 MySQL 最终下线。
+
 ## 2026-07-03 更新：task-management 容器级 PostgreSQL smoke 验收
 
 `task-management` 在补齐存量迁移脚手架后，已完成真实容器级 PostgreSQL smoke：

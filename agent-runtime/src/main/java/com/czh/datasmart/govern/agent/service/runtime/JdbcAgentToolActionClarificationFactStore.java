@@ -32,8 +32,8 @@ import java.util.Optional;
  */
 @Component
 @ConditionalOnExpression(
-        "'${datasmart.agent-runtime.tool-action-resume-facts.clarification-fact-store:memory}'"
-                + ".equalsIgnoreCase('mysql') "
+        "T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode)"
+                + ".isJdbcDurable('${datasmart.agent-runtime.tool-action-resume-facts.clarification-fact-store:memory}') "
                 + "&& '${datasmart.agent-runtime.persistence.database-enabled:false}'.equalsIgnoreCase('true')"
 )
 public class JdbcAgentToolActionClarificationFactStore implements AgentToolActionClarificationFactStore {
@@ -64,7 +64,7 @@ public class JdbcAgentToolActionClarificationFactStore implements AgentToolActio
      * 幂等写入或刷新澄清事实。
      *
      * <p>调用方通常是 {@link AgentToolActionClarificationFactRegistrationService}。
-     * 同一个 clarificationFactId 多次登记时，MySQL 唯一索引和 ON DUPLICATE KEY UPDATE 会保证只有一行事实，
+     * 同一个 clarificationFactId 多次登记时，PostgreSQL 唯一索引和 ON CONFLICT 会保证只有一行事实，
      * 用于承载前端重试、用户撤销、网关超时重放和长时间等待后刷新过期时间等场景。</p>
      */
     @Override

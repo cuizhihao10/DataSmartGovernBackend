@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.agent.event.command;
 
 import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
 import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcConnectionManager;
+import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcSqlExceptionSupport;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 
@@ -15,7 +16,6 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.SQLIntegrityConstraintViolationException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -42,7 +42,8 @@ import java.util.Optional;
  */
 @Component
 @ConditionalOnExpression(
-        "'${datasmart.agent-runtime.async-task-commands.outbox.store:memory}'.equalsIgnoreCase('mysql') "
+        "T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode)"
+                + ".isJdbcDurable('${datasmart.agent-runtime.async-task-commands.outbox.store:memory}') "
                 + "&& '${datasmart.agent-runtime.persistence.database-enabled:false}'.equalsIgnoreCase('true')"
 )
 public class JdbcAgentAsyncTaskCommandOutboxStore implements AgentAsyncTaskCommandOutboxStore {
@@ -78,10 +79,10 @@ public class JdbcAgentAsyncTaskCommandOutboxStore implements AgentAsyncTaskComma
                 }
             });
         } catch (RuntimeException exception) {
-            if (isDuplicateKey(exception)) {
+            if (AgentRuntimeJdbcSqlExceptionSupport.isDuplicateKey(exception)) {
                 return false;
             }
-            throw new IllegalStateException("写入 Agent 异步命令 outbox 到 MySQL 失败，outboxId=" + record.outboxId(), exception);
+            throw new IllegalStateException("写入 Agent 异步命令 outbox 到 JDBC/PostgreSQL 失败，outboxId=" + record.outboxId(), exception);
         }
     }
 
@@ -453,20 +454,6 @@ public class JdbcAgentAsyncTaskCommandOutboxStore implements AgentAsyncTaskComma
             result.add(value);
         }
         return result;
-    }
-
-    private boolean isDuplicateKey(Throwable exception) {
-        Throwable current = exception;
-        while (current != null) {
-            if (current instanceof SQLIntegrityConstraintViolationException) {
-                return true;
-            }
-            if (current instanceof SQLException sqlException && "23000".equals(sqlException.getSQLState())) {
-                return true;
-            }
-            current = current.getCause();
-        }
-        return false;
     }
 
     private Optional<AgentAsyncTaskCommandOutboxStatus> parseStatus(String value) {

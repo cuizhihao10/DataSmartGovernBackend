@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.config.AgentArtifactBodyReadGrantStoreProperties;
+import com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionArtifactBodyReadGrantFactView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionArtifactBodyReadGrantQueryResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionArtifactBodyReadGrantRevokeResponse;
@@ -263,8 +264,8 @@ public class AgentToolActionArtifactBodyReadGrantQueryService {
 
     private List<String> missingCapabilities() {
         List<String> capabilities = new ArrayList<>();
-        if (!"MYSQL".equals(storeMode())) {
-            capabilities.add("MYSQL_DURABLE_ARTIFACT_BODY_READ_GRANT_FACT");
+        if (!AgentRuntimeStoreMode.isJdbcDurable(storeMode())) {
+            capabilities.add("JDBC_DURABLE_ARTIFACT_BODY_READ_GRANT_FACT");
         }
         capabilities.add("ARTIFACT_BODY_READ_GRANT_TTL_ARCHIVE");
         capabilities.add("ARTIFACT_DOWNLOAD_AUDIT");

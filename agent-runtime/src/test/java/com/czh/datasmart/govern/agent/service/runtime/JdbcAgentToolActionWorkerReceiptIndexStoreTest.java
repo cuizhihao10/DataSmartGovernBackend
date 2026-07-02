@@ -32,17 +32,19 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * MySQL 版 worker receipt 低敏索引仓储测试。
+ * PostgreSQL/JDBC 版 worker receipt 低敏索引仓储测试。
  *
- * <p>这组测试不启动真实 MySQL，而是通过 Mockito 模拟 JDBC 对象，重点保护 Java 仓储层契约：</p>
+ * <p>这组测试不启动真实 PostgreSQL，而是通过 Mockito 模拟 JDBC 对象，重点保护 Java 仓储层契约：</p>
  * <p>1. 无效 receipt 不写库；</p>
- * <p>2. upsert 只绑定低敏字段，不出现 message、payload、SQL、prompt、工具参数等额外列；</p>
+ * <p>2. insert/update 只绑定低敏字段，不出现 message、payload、SQL、prompt、工具参数等额外列；</p>
  * <p>3. 查询时 tenant/project/actor/run/session/toolCode/authorizedProjectIds 会下沉为 SQL 参数；</p>
  * <p>4. PROJECT 授权项目为空时直接短路，避免越权场景下仍访问数据库；</p>
  * <p>5. size 诊断只读取数量，不读取任何 receipt 明细。</p>
  *
- * <p>真实唯一索引、执行计划和 MySQL 方言由 migration 脚本承载。后续如果项目引入 Testcontainers，
- * 可以再补集成测试验证 `ON DUPLICATE KEY UPDATE` 与组合索引在真实 MySQL 8.0 下的行为。</p>
+ * <p>这里特别保护“首次插入”和“重复刷新”的返回值语义。PostgreSQL 的 {@code ON CONFLICT DO UPDATE}
+ * 对 insert/update 都通常返回 1，不能像早期 MySQL 影响行数那样稳定区分重复事件。
+ * 因此生产实现拆成 {@code INSERT ... DO NOTHING} 加 fallback {@code UPDATE}：
+ * INSERT 返回 1 才表示首次物化，INSERT 返回 0 后的 UPDATE 一律视为重复刷新。</p>
  */
 class JdbcAgentToolActionWorkerReceiptIndexStoreTest {
 
@@ -105,18 +107,26 @@ class JdbcAgentToolActionWorkerReceiptIndexStoreTest {
     }
 
     @Test
-    void upsertShouldReturnFalseWhenMySqlReportsDuplicateUpdate() throws SQLException {
+    void upsertShouldReturnFalseWhenPostgreSqlReportsConflictAndRefreshesExistingRow() throws SQLException {
         DataSource dataSource = mock(DataSource.class);
         Connection connection = mock(Connection.class);
-        PreparedStatement statement = mock(PreparedStatement.class);
+        PreparedStatement insertStatement = mock(PreparedStatement.class);
+        PreparedStatement updateStatement = mock(PreparedStatement.class);
         when(dataSource.getConnection()).thenReturn(connection);
-        when(connection.prepareStatement(anyString())).thenReturn(statement);
-        when(statement.executeUpdate()).thenReturn(2);
+        when(connection.prepareStatement(JdbcAgentToolActionWorkerReceiptIndexRecordMapper.INSERT_SQL))
+                .thenReturn(insertStatement);
+        when(connection.prepareStatement(JdbcAgentToolActionWorkerReceiptIndexRecordMapper.UPDATE_SQL))
+                .thenReturn(updateStatement);
+        when(insertStatement.executeUpdate()).thenReturn(0);
+        when(updateStatement.executeUpdate()).thenReturn(1);
         JdbcAgentToolActionWorkerReceiptIndexStore store = store(dataSource);
 
         boolean inserted = store.upsert(record());
 
         assertFalse(inserted);
+        verify(insertStatement).setString(1, "receipt-ready");
+        verify(updateStatement).setString(1, "command-a");
+        verify(updateStatement).setString(16, "receipt-ready");
     }
 
     @Test

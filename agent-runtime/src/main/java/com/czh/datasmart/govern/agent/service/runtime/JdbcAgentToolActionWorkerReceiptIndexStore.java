@@ -19,7 +19,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * MySQL 版 worker/dry-run receipt 低敏索引仓储。
+ * PostgreSQL/JDBC 版 worker/dry-run receipt 低敏索引仓储。
  *
  * <p>该 Store 是内存版 {@link InMemoryAgentToolActionWorkerReceiptIndexStore} 的生产化替换点。
  * 它解决的是 Agent 恢复链路里的“worker receipt 是否真实存在、属于哪个租户/项目/运行、最新低敏结果是什么”的问题。
@@ -32,8 +32,8 @@ import java.util.List;
  */
 @Component
 @ConditionalOnExpression(
-        "'${datasmart.agent-runtime.tool-action-resume-facts.worker-receipt-index-store:memory}'"
-                + ".equalsIgnoreCase('mysql') "
+        "T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode)"
+                + ".isJdbcDurable('${datasmart.agent-runtime.tool-action-resume-facts.worker-receipt-index-store:memory}') "
                 + "&& '${datasmart.agent-runtime.persistence.database-enabled:false}'.equalsIgnoreCase('true')"
 )
 public class JdbcAgentToolActionWorkerReceiptIndexStore implements AgentToolActionWorkerReceiptIndexStore {
@@ -42,7 +42,7 @@ public class JdbcAgentToolActionWorkerReceiptIndexStore implements AgentToolActi
      * agent-runtime 专用 JDBC 连接管理器。
      *
      * <p>这里复用已有连接管理器，而不是创建新的 DataSource，是为了让 agent-runtime 控制面事实库保持统一配置：
-     * 只有明确开启 database-enabled 且某个控制面 Store 选择 mysql 时，连接池才会创建。</p>
+     * 只有明确开启 database-enabled 且某个控制面 Store 选择 JDBC durable 模式时，连接池才会创建。</p>
      */
     private final AgentRuntimeJdbcConnectionManager connectionManager;
 
@@ -50,7 +50,7 @@ public class JdbcAgentToolActionWorkerReceiptIndexStore implements AgentToolActi
      * 数据库查询硬上限。
      *
      * <p>每次 fact bundle 查询还会使用 request/query 自带 limit，但数据库层仍保留全局最大值。
-     * 这样即使上层调用者传入异常大 limit，也不会让 MySQL 返回大量历史 receipt 拖慢恢复预检接口。</p>
+     * 这样即使上层调用者传入异常大 limit，也不会让 PostgreSQL 返回大量历史 receipt 拖慢恢复预检接口。</p>
      */
     private final int maxQueryLimit;
 
@@ -64,10 +64,10 @@ public class JdbcAgentToolActionWorkerReceiptIndexStore implements AgentToolActi
      * 幂等写入或刷新 worker receipt 索引。
      *
      * <p>调用方通常是 {@link AgentToolActionWorkerReceiptIndexService}：HTTP receipt 回写、Kafka runtime event consumer
-     * 或 fact bundle fallback 看到 receipt projection 后，都会把白名单字段物化到这里。MySQL 唯一索引负责并发幂等，
+     * 或 fact bundle fallback 看到 receipt projection 后，都会把白名单字段物化到这里。PostgreSQL 唯一索引负责并发幂等，
      * 同一个 eventIdentityKey 多次出现不会生成多条 receipt。</p>
      *
-     * @return true 表示本次大概率是首次插入；false 表示记录无效、或 MySQL 按唯一索引走了重复更新/无变化路径。
+     * @return true 表示本次确认为首次插入；false 表示记录无效、或 PostgreSQL 唯一索引命中后走了重复刷新路径。
      */
     @Override
     public boolean upsert(AgentToolActionWorkerReceiptIndexRecord record) {
@@ -77,14 +77,26 @@ public class JdbcAgentToolActionWorkerReceiptIndexStore implements AgentToolActi
         try {
             return connectionManager.executeWithConnection(connection -> {
                 try (PreparedStatement statement = connection.prepareStatement(
-                        JdbcAgentToolActionWorkerReceiptIndexRecordMapper.UPSERT_SQL)) {
-                    JdbcAgentToolActionWorkerReceiptIndexRecordMapper.bindRecord(statement, record);
+                        JdbcAgentToolActionWorkerReceiptIndexRecordMapper.INSERT_SQL)) {
+                    JdbcAgentToolActionWorkerReceiptIndexRecordMapper.bindInsertRecord(statement, record);
                     int affectedRows = statement.executeUpdate();
-                    /*
-                     * MySQL INSERT 通常返回 1，ON DUPLICATE KEY UPDATE 通常返回 2，完全无变化时可能返回 0。
-                     * 接口语义只需要区分“是否首次写入”，因此只有 1 被视为 inserted。
-                     */
-                    return affectedRows == 1;
+                    if (affectedRows > 0) {
+                        return true;
+                    }
+                }
+                /*
+                 * PostgreSQL 的 ON CONFLICT DO UPDATE 不能像 MySQL 那样可靠通过影响行数判断首次插入还是重复更新。
+                 * 因此这里显式拆为“先 INSERT DO NOTHING，再 UPDATE 刷新低敏字段”：
+                 * - INSERT 返回 1：说明本次真的创建了新 receipt fact，上层可用 true 统计首次物化。
+                 * - INSERT 返回 0：说明唯一键已经存在，只刷新低敏字段并返回 false，避免恢复链路把重复事件当成新事实。
+                 * 这对 Agent durable loop 很重要，因为 worker receipt 常常来自 HTTP 重试、Kafka 重放、补偿扫描三条路径；
+                 * 若重复事件被误判为首次插入，会让诊断指标、审计解释和幂等恢复策略都变得不可信。
+                 */
+                try (PreparedStatement statement = connection.prepareStatement(
+                        JdbcAgentToolActionWorkerReceiptIndexRecordMapper.UPDATE_SQL)) {
+                    JdbcAgentToolActionWorkerReceiptIndexRecordMapper.bindUpdateRecord(statement, record);
+                    statement.executeUpdate();
+                    return false;
                 }
             });
         } catch (RuntimeException exception) {
@@ -204,7 +216,7 @@ public class JdbcAgentToolActionWorkerReceiptIndexStore implements AgentToolActi
         }
         /*
          * 历史 receipt 可能没有 toolCode。为了兼容已产生的低敏事件，查询侧暂时允许 tool_code 为空的旧记录命中；
-         * 等 MySQL durable index 运行稳定并完成历史补物化后，可以把这里收紧为 tool_code = ?。
+         * 等 JDBC durable index 运行稳定并完成历史补物化后，可以把这里收紧为 tool_code = ?。
          */
         sql.append(" AND (tool_code = ? OR tool_code IS NULL OR tool_code = '')");
         parameters.add(toolCode);

@@ -52,8 +52,33 @@
             <artifactId>spring-kafka</artifactId>
         </dependency>
         <dependency>
-            <groupId>com.mysql</groupId>
-            <artifactId>mysql-connector-j</artifactId>
+            <!--
+              agent-runtime 的控制面事实库正在迁入 PostgreSQL `agent_runtime` schema。
+              这里的事实包括工具执行审计、事件 outbox、异步 command outbox、DAG 确认、恢复定位索引、
+              worker receipt、lease、artifact grant 与受控工具提交事实。
+
+              注意：
+              1. `agent_memory_*` 暂不放入本模块 V1，它们后续进入 `ai_memory + pgvector + LangGraph durable state` 批次；
+              2. `mysql` store mode 字符串仍作为迁移期兼容别名保留在代码中，但平台目标驱动不再是 MySQL；
+              3. 本服务不承担客户侧 JDBC 数据源连接器职责，因此不需要保留 mysql-connector-j。
+            -->
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <!--
+              Flyway 负责在 agent-runtime 需要数据库控制面时校验 `agent_runtime` schema。
+              默认 application.yml 会让 Flyway 关闭，避免 memory 学习模式启动时强依赖 PostgreSQL；
+              容器或集成环境可以通过 DATASMART_AGENT_RUNTIME_FLYWAY_ENABLED=true 显式启用。
+            -->
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <!-- Flyway 10+ 将 PostgreSQL 方言支持拆到独立模块，必须与 flyway-core 同时引入。 -->
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
         <dependency>
             <groupId>com.zaxxer</groupId>

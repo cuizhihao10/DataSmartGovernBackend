@@ -8,13 +8,13 @@ package com.czh.datasmart.govern.agent.event.outbox;
 
 import com.czh.datasmart.govern.agent.config.AgentToolExecutionEventOutboxProperties;
 import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcConnectionManager;
+import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcSqlExceptionSupport;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
 
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.SQLIntegrityConstraintViolationException;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -38,7 +38,8 @@ import java.util.Optional;
  */
 @Component
 @ConditionalOnExpression(
-        "'${datasmart.agent-runtime.persistence.outbox-store:memory}'.equalsIgnoreCase('mysql') "
+        "T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode)"
+                + ".isJdbcDurable('${datasmart.agent-runtime.persistence.outbox-store:memory}') "
                 + "&& '${datasmart.agent-runtime.persistence.database-enabled:false}'.equalsIgnoreCase('true')"
 )
 public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutionEventOutboxStore {
@@ -72,10 +73,10 @@ public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutio
                 }
             });
         } catch (RuntimeException exception) {
-            if (isDuplicateKey(exception)) {
+            if (AgentRuntimeJdbcSqlExceptionSupport.isDuplicateKey(exception)) {
                 return false;
             }
-            throw new IllegalStateException("写入 Agent 工具事件 outbox 到 MySQL 失败，outboxId=" + record.outboxId(), exception);
+            throw new IllegalStateException("写入 Agent 工具事件 outbox 到 JDBC/PostgreSQL 失败，outboxId=" + record.outboxId(), exception);
         }
     }
 
@@ -409,20 +410,6 @@ public class JdbcAgentToolExecutionEventOutboxStore implements AgentToolExecutio
         sql.append(" ORDER BY id ASC LIMIT ?");
         parameters.add(limit);
         return new QueryPlan(sql.toString(), parameters);
-    }
-
-    private boolean isDuplicateKey(Throwable exception) {
-        Throwable current = exception;
-        while (current != null) {
-            if (current instanceof SQLIntegrityConstraintViolationException sqlException) {
-                return true;
-            }
-            if (current instanceof SQLException sqlException && "23000".equals(sqlException.getSQLState())) {
-                return true;
-            }
-            current = current.getCause();
-        }
-        return false;
     }
 
     private int normalizeLimit(int limit) {

@@ -62,23 +62,23 @@ final class JdbcAgentToolActionClarificationFactRecordMapper {
             ) VALUES (
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?,
-                CAST(? AS JSON), CAST(? AS JSON), ?, ?, ?
+                ?, ?, ?, ?, ?
             )
-            ON DUPLICATE KEY UPDATE
-                session_id = COALESCE(NULLIF(VALUES(session_id), ''), session_id),
-                run_id = COALESCE(NULLIF(VALUES(run_id), ''), run_id),
-                command_id = COALESCE(NULLIF(VALUES(command_id), ''), command_id),
-                tool_code = COALESCE(NULLIF(VALUES(tool_code), ''), tool_code),
-                requested_policy_version = COALESCE(NULLIF(VALUES(requested_policy_version), ''), requested_policy_version),
-                tenant_id = COALESCE(NULLIF(VALUES(tenant_id), ''), tenant_id),
-                project_id = COALESCE(NULLIF(VALUES(project_id), ''), project_id),
-                actor_id = COALESCE(NULLIF(VALUES(actor_id), ''), actor_id),
-                status = VALUES(status),
-                evidence_codes_json = VALUES(evidence_codes_json),
-                issue_codes_json = VALUES(issue_codes_json),
-                expires_at = COALESCE(VALUES(expires_at), expires_at),
-                updated_at = COALESCE(VALUES(updated_at), updated_at),
-                update_time = CURRENT_TIMESTAMP(3)
+            ON CONFLICT (clarification_fact_id) DO UPDATE SET
+                session_id = COALESCE(NULLIF(EXCLUDED.session_id, ''), agent_tool_action_clarification_fact.session_id),
+                run_id = COALESCE(NULLIF(EXCLUDED.run_id, ''), agent_tool_action_clarification_fact.run_id),
+                command_id = COALESCE(NULLIF(EXCLUDED.command_id, ''), agent_tool_action_clarification_fact.command_id),
+                tool_code = COALESCE(NULLIF(EXCLUDED.tool_code, ''), agent_tool_action_clarification_fact.tool_code),
+                requested_policy_version = COALESCE(NULLIF(EXCLUDED.requested_policy_version, ''), agent_tool_action_clarification_fact.requested_policy_version),
+                tenant_id = COALESCE(NULLIF(EXCLUDED.tenant_id, ''), agent_tool_action_clarification_fact.tenant_id),
+                project_id = COALESCE(NULLIF(EXCLUDED.project_id, ''), agent_tool_action_clarification_fact.project_id),
+                actor_id = COALESCE(NULLIF(EXCLUDED.actor_id, ''), agent_tool_action_clarification_fact.actor_id),
+                status = EXCLUDED.status,
+                evidence_codes_json = EXCLUDED.evidence_codes_json,
+                issue_codes_json = EXCLUDED.issue_codes_json,
+                expires_at = COALESCE(EXCLUDED.expires_at, agent_tool_action_clarification_fact.expires_at),
+                updated_at = COALESCE(EXCLUDED.updated_at, agent_tool_action_clarification_fact.updated_at),
+                update_time = CURRENT_TIMESTAMP
             """;
 
     private JdbcAgentToolActionClarificationFactRecordMapper() {

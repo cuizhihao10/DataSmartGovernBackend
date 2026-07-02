@@ -64,29 +64,29 @@ final class JdbcAgentToolActionArtifactBodyReadGrantRecordMapper {
                 ?, ?, ?,
                 ?, ?, ?, ?, ?, ?
             )
-            ON DUPLICATE KEY UPDATE
-                command_id = VALUES(command_id),
-                artifact_reference = VALUES(artifact_reference),
-                artifact_reference_type = VALUES(artifact_reference_type),
-                read_purpose = VALUES(read_purpose),
-                requested_content_mode = VALUES(requested_content_mode),
-                max_readable_bytes = VALUES(max_readable_bytes),
-                tenant_id = VALUES(tenant_id),
-                project_id = VALUES(project_id),
-                actor_id = VALUES(actor_id),
-                run_id = VALUES(run_id),
-                session_id = VALUES(session_id),
-                tool_code = VALUES(tool_code),
-                matched_receipt_fingerprint = VALUES(matched_receipt_fingerprint),
-                replay_sequence = VALUES(replay_sequence),
-                receipt_outcome = VALUES(receipt_outcome),
-                issued_at = VALUES(issued_at),
-                expires_at = VALUES(expires_at),
-                status = VALUES(status),
-                revoked_at = VALUES(revoked_at),
-                revoked_by = VALUES(revoked_by),
-                revoke_reason_code = VALUES(revoke_reason_code),
-                update_time = CURRENT_TIMESTAMP(3)
+            ON CONFLICT (grant_decision_reference) DO UPDATE SET
+                command_id = EXCLUDED.command_id,
+                artifact_reference = EXCLUDED.artifact_reference,
+                artifact_reference_type = EXCLUDED.artifact_reference_type,
+                read_purpose = EXCLUDED.read_purpose,
+                requested_content_mode = EXCLUDED.requested_content_mode,
+                max_readable_bytes = EXCLUDED.max_readable_bytes,
+                tenant_id = EXCLUDED.tenant_id,
+                project_id = EXCLUDED.project_id,
+                actor_id = EXCLUDED.actor_id,
+                run_id = EXCLUDED.run_id,
+                session_id = EXCLUDED.session_id,
+                tool_code = EXCLUDED.tool_code,
+                matched_receipt_fingerprint = EXCLUDED.matched_receipt_fingerprint,
+                replay_sequence = EXCLUDED.replay_sequence,
+                receipt_outcome = EXCLUDED.receipt_outcome,
+                issued_at = EXCLUDED.issued_at,
+                expires_at = EXCLUDED.expires_at,
+                status = EXCLUDED.status,
+                revoked_at = EXCLUDED.revoked_at,
+                revoked_by = EXCLUDED.revoked_by,
+                revoke_reason_code = EXCLUDED.revoke_reason_code,
+                update_time = CURRENT_TIMESTAMP
             """;
 
     private JdbcAgentToolActionArtifactBodyReadGrantRecordMapper() {

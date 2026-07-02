@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.agent.service.runtime;
 
+import com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode;
 import com.czh.datasmart.govern.agent.config.AgentToolActionResumeFactBundleProperties;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionWorkerReceiptIndexQueryResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolActionWorkerReceiptIndexView;
@@ -174,8 +175,8 @@ public class AgentToolActionWorkerReceiptIndexQueryService {
 
     private List<String> missingCapabilities() {
         List<String> capabilities = new ArrayList<>();
-        if (!"MYSQL".equals(storeMode())) {
-            capabilities.add("MYSQL_DURABLE_WORKER_RECEIPT_INDEX");
+        if (!AgentRuntimeStoreMode.isJdbcDurable(storeMode())) {
+            capabilities.add("JDBC_DURABLE_WORKER_RECEIPT_INDEX");
         }
         capabilities.add("WORKER_RECEIPT_INDEX_TTL_ARCHIVE");
         capabilities.add("WORKER_RECEIPT_INDEX_LOW_CARDINALITY_METRICS");

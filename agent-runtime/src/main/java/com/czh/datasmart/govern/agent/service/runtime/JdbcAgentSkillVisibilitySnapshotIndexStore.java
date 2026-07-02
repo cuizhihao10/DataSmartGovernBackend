@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.config.AgentRuntimePersistenceProperties;
 import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcConnectionManager;
+import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcSqlExceptionSupport;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.stereotype.Component;
@@ -15,7 +16,6 @@ import org.springframework.stereotype.Component;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.SQLIntegrityConstraintViolationException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -41,7 +41,8 @@ import java.util.List;
 @Component
 @ConditionalOnExpression(
         "'${datasmart.agent-runtime.runtime-events.skill-visibility-index.enabled:true}'.equalsIgnoreCase('true') "
-                + "&& '${datasmart.agent-runtime.runtime-events.skill-visibility-index.store:memory}'.equalsIgnoreCase('mysql') "
+                + "&& T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode)"
+                + ".isJdbcDurable('${datasmart.agent-runtime.runtime-events.skill-visibility-index.store:memory}') "
                 + "&& '${datasmart.agent-runtime.persistence.database-enabled:false}'.equalsIgnoreCase('true')"
 )
 public class JdbcAgentSkillVisibilitySnapshotIndexStore implements AgentSkillVisibilitySnapshotIndexStore {
@@ -82,7 +83,7 @@ public class JdbcAgentSkillVisibilitySnapshotIndexStore implements AgentSkillVis
                 }
             });
         } catch (RuntimeException exception) {
-            if (isDuplicateKey(exception)) {
+            if (AgentRuntimeJdbcSqlExceptionSupport.isDuplicateKey(exception)) {
                 return false;
             }
             throw new IllegalStateException("写入 Skill 可见性快照 MySQL 索引失败，identityKey="
@@ -194,20 +195,6 @@ public class JdbcAgentSkillVisibilitySnapshotIndexStore implements AgentSkillVis
             parameters.add(authorizedProjectIds.get(index));
         }
         sql.append(")");
-    }
-
-    private boolean isDuplicateKey(RuntimeException exception) {
-        Throwable current = exception;
-        while (current != null) {
-            if (current instanceof SQLIntegrityConstraintViolationException) {
-                return true;
-            }
-            if (current instanceof SQLException sqlException && "23000".equals(sqlException.getSQLState())) {
-                return true;
-            }
-            current = current.getCause();
-        }
-        return false;
     }
 
     private record QueryPlan(String sql, List<Object> parameters) {

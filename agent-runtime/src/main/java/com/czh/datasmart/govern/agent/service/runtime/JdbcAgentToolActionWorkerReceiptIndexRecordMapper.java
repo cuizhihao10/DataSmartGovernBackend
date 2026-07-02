@@ -18,9 +18,9 @@ import java.util.List;
  * worker/dry-run receipt 低敏索引的 JDBC 字段映射器。
  *
  * <p>该类故意保持 package-private，并且不注册为 Spring Bean。它不是业务服务，而是
- * {@link JdbcAgentToolActionWorkerReceiptIndexStore} 与 MySQL 表之间的字段翻译层：
+ * {@link JdbcAgentToolActionWorkerReceiptIndexStore} 与 PostgreSQL/JDBC 控制面表之间的字段翻译层：
  * Store 负责仓储语义、查询范围收口、异常包装和可替换边界；Mapper 只负责 SQL 字段清单、
- * upsert 参数绑定、动态查询参数绑定和 ResultSet 还原。</p>
+ * 插入/刷新参数绑定、动态查询参数绑定和 ResultSet 还原。</p>
  *
  * <p>安全边界必须非常清晰：本 mapper 只处理 commandId、租户/项目/actor、run/session、toolCode、
  * taskStatus、outcome、preCheckPassed、sideEffectExecuted、errorCode、replaySequence 和时间戳。
@@ -43,13 +43,15 @@ final class JdbcAgentToolActionWorkerReceiptIndexRecordMapper {
             """;
 
     /**
-     * worker receipt 幂等 upsert SQL。
+     * worker receipt 首次插入 SQL。
      *
      * <p>event_identity_key 是幂等主键。同一条 receipt 如果被 HTTP 重试、Kafka 重放或 fallback 补物化多次，
-     * 只会刷新同一行，不会放大 receiptCount。这里仍然允许字段被新值覆盖，是为了兼容未来补偿任务修复历史行；
-     * 但字段集合始终保持低敏白名单，不允许把 message、payload 或参数正文带进表。</p>
+     * PostgreSQL 的唯一索引会让重复请求走 {@code DO NOTHING}，不会放大 receiptCount。
+     * 这里故意不用 {@code ON CONFLICT DO UPDATE} 直接完成刷新，是因为 PostgreSQL 对 insert/update
+     * 都通常返回 1 行影响数，无法像 MySQL {@code ON DUPLICATE KEY UPDATE} 那样通过影响行数稳定区分
+     * “首次插入”和“重复更新”。Store 会先执行本 SQL，只有真正插入成功才返回 true。</p>
      */
-    static final String UPSERT_SQL = """
+    static final String INSERT_SQL = """
             INSERT INTO agent_tool_action_worker_receipt_index (
                 event_identity_key, command_id, tenant_id, project_id, actor_id,
                 run_id, session_id, tool_code, task_status, outcome,
@@ -61,36 +63,50 @@ final class JdbcAgentToolActionWorkerReceiptIndexRecordMapper {
                 ?, ?, ?, ?,
                 ?, ?
             )
-            ON DUPLICATE KEY UPDATE
-                command_id = VALUES(command_id),
-                tenant_id = VALUES(tenant_id),
-                project_id = VALUES(project_id),
-                actor_id = VALUES(actor_id),
-                run_id = VALUES(run_id),
-                session_id = VALUES(session_id),
-                tool_code = VALUES(tool_code),
-                task_status = VALUES(task_status),
-                outcome = VALUES(outcome),
-                pre_check_passed = VALUES(pre_check_passed),
-                side_effect_executed = VALUES(side_effect_executed),
-                error_code = VALUES(error_code),
-                replay_sequence = VALUES(replay_sequence),
-                consumed_at = VALUES(consumed_at),
-                indexed_at = VALUES(indexed_at),
-                update_time = CURRENT_TIMESTAMP(3)
+            ON CONFLICT (event_identity_key) DO NOTHING
+            """;
+
+    /**
+     * worker receipt 重复事件刷新 SQL。
+     *
+     * <p>当 {@link #INSERT_SQL} 返回 0 时，说明相同 event_identity_key 已经存在。此时再执行 UPDATE，
+     * 把低敏白名单字段刷新到最新状态。拆成两条 SQL 的设计意图有两个：
+     * 第一，保留 {@link AgentToolActionWorkerReceiptIndexStore#upsert(AgentToolActionWorkerReceiptIndexRecord)}
+     * 的返回值语义，true 只代表首次插入；第二，把“并发去重”和“补偿刷新”拆开，便于后续给重复刷新单独加指标、
+     * 限流或审计事件，而不会让 PostgreSQL 行影响数语义污染业务判断。</p>
+     */
+    static final String UPDATE_SQL = """
+            UPDATE agent_tool_action_worker_receipt_index SET
+                command_id = ?,
+                tenant_id = ?,
+                project_id = ?,
+                actor_id = ?,
+                run_id = ?,
+                session_id = ?,
+                tool_code = ?,
+                task_status = ?,
+                outcome = ?,
+                pre_check_passed = ?,
+                side_effect_executed = ?,
+                error_code = ?,
+                replay_sequence = ?,
+                consumed_at = ?,
+                indexed_at = ?,
+                update_time = CURRENT_TIMESTAMP
+            WHERE event_identity_key = ?
             """;
 
     private JdbcAgentToolActionWorkerReceiptIndexRecordMapper() {
     }
 
     /**
-     * 绑定 upsert 参数。
+     * 绑定首次插入参数。
      *
-     * <p>长度裁剪在这里集中处理，原因是 MySQL 表是低敏索引表，不应该因为某个上游异常长 ID 直接写库失败。
+     * <p>长度裁剪在这里集中处理，原因是 JDBC 低敏索引表不应该因为某个上游异常长 ID 直接写库失败。
      * 真正完整的异常上下文应该进入受控审计详情或日志系统，而不是进入 worker receipt index。</p>
      */
-    static void bindRecord(PreparedStatement statement,
-                           AgentToolActionWorkerReceiptIndexRecord record) throws SQLException {
+    static void bindInsertRecord(PreparedStatement statement,
+                                 AgentToolActionWorkerReceiptIndexRecord record) throws SQLException {
         int index = 1;
         setNullableString(statement, index++, truncate(record.eventIdentityKey(), 240));
         setNullableString(statement, index++, truncate(record.commandId(), 180));
@@ -108,6 +124,34 @@ final class JdbcAgentToolActionWorkerReceiptIndexRecordMapper {
         setNullableLong(statement, index++, record.replaySequence());
         setNullableTimestamp(statement, index++, record.consumedAt());
         setNullableTimestamp(statement, index, record.indexedAt());
+    }
+
+    /**
+     * 绑定重复刷新参数。
+     *
+     * <p>UPDATE 参数顺序故意与 INSERT 的字段顺序保持一致，只是把 eventIdentityKey 移到最后作为 WHERE 条件。
+     * 这种写法比复用“更新主键为自身”的 SQL 更直观：event_identity_key 是幂等定位符，不是业务上需要被更新的字段。
+     * 如果将来 event identity 生成算法升级，旧行也应保持原键不变，通过补偿任务写入新键对应的新事实。</p>
+     */
+    static void bindUpdateRecord(PreparedStatement statement,
+                                 AgentToolActionWorkerReceiptIndexRecord record) throws SQLException {
+        int index = 1;
+        setNullableString(statement, index++, truncate(record.commandId(), 180));
+        setNullableString(statement, index++, truncate(record.tenantId(), 80));
+        setNullableString(statement, index++, truncate(record.projectId(), 80));
+        setNullableString(statement, index++, truncate(record.actorId(), 120));
+        setNullableString(statement, index++, truncate(record.runId(), 180));
+        setNullableString(statement, index++, truncate(record.sessionId(), 180));
+        setNullableString(statement, index++, truncate(record.toolCode(), 180));
+        setNullableString(statement, index++, truncate(record.taskStatus(), 80));
+        setNullableString(statement, index++, truncate(record.outcome(), 120));
+        statement.setBoolean(index++, Boolean.TRUE.equals(record.preCheckPassed()));
+        statement.setBoolean(index++, Boolean.TRUE.equals(record.sideEffectExecuted()));
+        setNullableString(statement, index++, truncate(record.errorCode(), 160));
+        setNullableLong(statement, index++, record.replaySequence());
+        setNullableTimestamp(statement, index++, record.consumedAt());
+        setNullableTimestamp(statement, index++, record.indexedAt());
+        setNullableString(statement, index, truncate(record.eventIdentityKey(), 240));
     }
 
     /**

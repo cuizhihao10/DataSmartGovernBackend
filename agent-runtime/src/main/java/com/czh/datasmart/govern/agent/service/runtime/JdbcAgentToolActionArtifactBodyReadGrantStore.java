@@ -33,7 +33,8 @@ import java.util.Optional;
  */
 @Component
 @ConditionalOnExpression(
-        "'${datasmart.agent-runtime.artifact-body-read-grants.store:memory}'.equalsIgnoreCase('mysql') "
+        "T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode)"
+                + ".isJdbcDurable('${datasmart.agent-runtime.artifact-body-read-grants.store:memory}') "
                 + "&& '${datasmart.agent-runtime.persistence.database-enabled:false}'.equalsIgnoreCase('true')"
 )
 public class JdbcAgentToolActionArtifactBodyReadGrantStore
@@ -66,7 +67,7 @@ public class JdbcAgentToolActionArtifactBodyReadGrantStore
      * 幂等保存 grant fact。
      *
      * <p>调用方通常是 {@link AgentToolActionArtifactBodyReadGrantRecordService}。同一个 grantDecisionReference
-     * 多次写入时，MySQL 唯一键和 ON DUPLICATE KEY UPDATE 会保证只有一条事实，用于承载 HTTP 重试、
+     * 多次写入时，PostgreSQL 唯一键和 ON CONFLICT 会保证只有一条事实，用于承载 HTTP 重试、
      * 运行事件补物化和未来 TTL 状态刷新。</p>
      */
     @Override

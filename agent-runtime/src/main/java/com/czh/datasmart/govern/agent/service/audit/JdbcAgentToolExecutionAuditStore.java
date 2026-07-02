@@ -47,7 +47,8 @@ import java.util.Optional;
  */
 @Component
 @ConditionalOnExpression(
-        "'${datasmart.agent-runtime.persistence.audit-store:memory}'.equalsIgnoreCase('mysql') "
+        "T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode)"
+                + ".isJdbcDurable('${datasmart.agent-runtime.persistence.audit-store:memory}') "
                 + "&& '${datasmart.agent-runtime.persistence.database-enabled:false}'.equalsIgnoreCase('true')"
 )
 public class JdbcAgentToolExecutionAuditStore implements AgentToolExecutionAuditStore {
@@ -69,7 +70,7 @@ public class JdbcAgentToolExecutionAuditStore implements AgentToolExecutionAudit
             """;
 
     /**
-     * MySQL upsert SQL。
+     * PostgreSQL upsert SQL。
      *
      * <p>以 audit_id 唯一键作为幂等边界：同一条审计记录首次创建时 INSERT，状态推进后再次 save 时 UPDATE。
      * 后续若把状态更新和 outbox 写入放进同一事务，可以在业务服务层围绕该 save 动作继续扩展事务模板。</p>
@@ -94,40 +95,40 @@ public class JdbcAgentToolExecutionAuditStore implements AgentToolExecutionAudit
                 ?, ?, ?, ?,
                 ?, ?
             )
-            ON DUPLICATE KEY UPDATE
-                session_id = VALUES(session_id),
-                run_id = VALUES(run_id),
-                binding_id = VALUES(binding_id),
-                tool_code = VALUES(tool_code),
-                tool_type = VALUES(tool_type),
-                target_service = VALUES(target_service),
-                target_endpoint = VALUES(target_endpoint),
-                target_resource_id = VALUES(target_resource_id),
-                tenant_id = VALUES(tenant_id),
-                project_id = VALUES(project_id),
-                workspace_id = VALUES(workspace_id),
-                actor_id = VALUES(actor_id),
-                risk_level = VALUES(risk_level),
-                execution_mode = VALUES(execution_mode),
-                requires_approval = VALUES(requires_approval),
-                read_only = VALUES(read_only),
-                idempotent = VALUES(idempotent),
-                allowed_actions = VALUES(allowed_actions),
-                plan_reason = VALUES(plan_reason),
-                plan_arguments = VALUES(plan_arguments),
-                governance_hints = VALUES(governance_hints),
-                parameter_validation = VALUES(parameter_validation),
-                state = VALUES(state),
-                trace_id = VALUES(trace_id),
-                message = VALUES(message),
-                approval_operator_id = VALUES(approval_operator_id),
-                approval_comment = VALUES(approval_comment),
-                approval_time = VALUES(approval_time),
-                execution_start_time = VALUES(execution_start_time),
-                execution_finish_time = VALUES(execution_finish_time),
-                output_summary = VALUES(output_summary),
-                error_code = VALUES(error_code),
-                update_time = VALUES(update_time)
+            ON CONFLICT (audit_id) DO UPDATE SET
+                session_id = EXCLUDED.session_id,
+                run_id = EXCLUDED.run_id,
+                binding_id = EXCLUDED.binding_id,
+                tool_code = EXCLUDED.tool_code,
+                tool_type = EXCLUDED.tool_type,
+                target_service = EXCLUDED.target_service,
+                target_endpoint = EXCLUDED.target_endpoint,
+                target_resource_id = EXCLUDED.target_resource_id,
+                tenant_id = EXCLUDED.tenant_id,
+                project_id = EXCLUDED.project_id,
+                workspace_id = EXCLUDED.workspace_id,
+                actor_id = EXCLUDED.actor_id,
+                risk_level = EXCLUDED.risk_level,
+                execution_mode = EXCLUDED.execution_mode,
+                requires_approval = EXCLUDED.requires_approval,
+                read_only = EXCLUDED.read_only,
+                idempotent = EXCLUDED.idempotent,
+                allowed_actions = EXCLUDED.allowed_actions,
+                plan_reason = EXCLUDED.plan_reason,
+                plan_arguments = EXCLUDED.plan_arguments,
+                governance_hints = EXCLUDED.governance_hints,
+                parameter_validation = EXCLUDED.parameter_validation,
+                state = EXCLUDED.state,
+                trace_id = EXCLUDED.trace_id,
+                message = EXCLUDED.message,
+                approval_operator_id = EXCLUDED.approval_operator_id,
+                approval_comment = EXCLUDED.approval_comment,
+                approval_time = EXCLUDED.approval_time,
+                execution_start_time = EXCLUDED.execution_start_time,
+                execution_finish_time = EXCLUDED.execution_finish_time,
+                output_summary = EXCLUDED.output_summary,
+                error_code = EXCLUDED.error_code,
+                update_time = EXCLUDED.update_time
             """;
 
     private final AgentRuntimeJdbcConnectionManager connectionManager;
@@ -159,7 +160,7 @@ public class JdbcAgentToolExecutionAuditStore implements AgentToolExecutionAudit
                 }
             });
         } catch (RuntimeException exception) {
-            throw new IllegalStateException("保存 Agent 工具执行审计到 MySQL 失败，auditId=" + audit.getAuditId(), exception);
+            throw new IllegalStateException("保存 Agent 工具执行审计到 JDBC/PostgreSQL 失败，auditId=" + audit.getAuditId(), exception);
         }
     }
 
@@ -183,7 +184,7 @@ public class JdbcAgentToolExecutionAuditStore implements AgentToolExecutionAudit
                 }
             });
         } catch (RuntimeException exception) {
-            throw new IllegalStateException("批量保存 Agent 工具执行审计到 MySQL 失败，count=" + audits.size(), exception);
+            throw new IllegalStateException("批量保存 Agent 工具执行审计到 JDBC/PostgreSQL 失败，count=" + audits.size(), exception);
         }
     }
 

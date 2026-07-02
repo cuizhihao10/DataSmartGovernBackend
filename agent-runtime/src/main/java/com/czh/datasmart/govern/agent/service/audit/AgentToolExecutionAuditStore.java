@@ -32,7 +32,7 @@ public interface AgentToolExecutionAuditStore {
      * 保存单条工具执行审计记录。
      *
      * <p>该方法既用于新增，也用于状态流转后的覆盖更新。
-     * 对内存实现来说，它只是一次 Map 覆盖；对未来 MySQL 实现来说，它应被映射为 INSERT ... ON DUPLICATE KEY UPDATE
+     * 对内存实现来说，它只是一次 Map 覆盖；对 PostgreSQL/JDBC 实现来说，它应被映射为 INSERT ... ON CONFLICT DO UPDATE
      * 或明确的 INSERT/UPDATE 流程，并且需要保证 update_time、状态、审批信息、执行时间、结果摘要等字段被同步。</p>
      *
      * @param audit 工具执行审计记录，包含租户、项目、会话、运行、工具、状态、审批和执行摘要。

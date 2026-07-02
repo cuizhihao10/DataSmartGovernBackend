@@ -73,7 +73,7 @@ final class JdbcAgentCommandWorkerLeaseRecordMapper {
                 lease_expires_at = ?,
                 acquired_at = ?,
                 updated_at = ?,
-                update_time = CURRENT_TIMESTAMP(3)
+                update_time = CURRENT_TIMESTAMP
             WHERE lease_identity_key = ?
             """;
 

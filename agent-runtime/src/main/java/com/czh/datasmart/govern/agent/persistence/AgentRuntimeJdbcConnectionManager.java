@@ -19,8 +19,8 @@ import java.sql.SQLException;
  * Agent Runtime 专用 JDBC 连接与轻量事务管理器。
  *
  * <p>这个类不是为了替代 Spring 事务体系，而是当前 agent-runtime 手写 JDBC 阶段的过渡性事务边界。
- * 4.17 与 4.18 已经分别实现了 MySQL 审计仓储和 MySQL outbox 仓储；如果它们各自调用
- * {@link DataSource#getConnection()}，就算两个仓储都写 MySQL，也仍然是两个独立连接、两个独立提交，
+ * 4.17 与 4.18 已经分别实现了 JDBC 审计仓储和 JDBC outbox 仓储；如果它们各自调用
+ * {@link DataSource#getConnection()}，就算两个仓储都写 PostgreSQL，也仍然是两个独立连接、两个独立提交，
  * 不能解决“审计状态提交成功但 outbox 写入失败”的双写问题。</p>
  *
  * <p>这里通过 {@link ThreadLocal} 保存当前线程正在使用的事务连接，让同一条服务调用链上的
@@ -31,7 +31,7 @@ import java.sql.SQLException;
  * <p>边界说明：
  * 1. 只管理 agent-runtime 自己的 JDBC 连接，不跨 datasource-management、task-management 等其他微服务；
  * 2. 只适合单 JVM 内同步调用链，不要把事务连接传给异步线程；
- * 3. 只有 {@code audit-store=mysql + outbox-store=mysql + database-enabled=true} 同时满足时，
+ * 3. 只有 {@code audit-store=postgresql/jdbc + outbox-store=postgresql/jdbc + database-enabled=true} 同时满足时，
  *    才代表“工具审计状态与 outbox 事件可以同事务提交”。</p>
  */
 @Component
@@ -49,7 +49,7 @@ public class AgentRuntimeJdbcConnectionManager {
     /**
      * 当前持久化策略。
      *
-     * <p>连接管理器需要知道 audit/outbox 是否都已经切到 MySQL，避免服务层在只有一边是数据库时
+     * <p>连接管理器需要知道 audit/outbox 是否都已经切到 JDBC durable store，避免服务层在只有一边是数据库时
      * 误以为已经获得了完整事务 outbox 语义。</p>
      */
     private final AgentRuntimePersistenceProperties properties;
@@ -128,11 +128,11 @@ public class AgentRuntimeJdbcConnectionManager {
     /**
      * 判断当前配置是否具备“审计状态 + outbox 事件”同事务提交条件。
      *
-     * <p>只有 audit 与 outbox 都是 MySQL，并且数据库总开关开启时，服务层才应该把事件 outbox 失败视为
+     * <p>只有 audit 与 outbox 都是 JDBC durable store，并且数据库总开关开启时，服务层才应该把事件 outbox 失败视为
      * 可以通过 rollback 恢复的必达失败。否则其中一边仍是 memory，事务只能覆盖部分事实，不能假装已经完全原子。</p>
      */
     public boolean isStateAndOutboxTransactionAvailable() {
-        return properties.isStateAndOutboxMysqlEnabled();
+        return properties.isStateAndOutboxJdbcEnabled();
     }
 
     private <T> T invoke(SqlConnectionCallback<T> callback, Connection connection) {
