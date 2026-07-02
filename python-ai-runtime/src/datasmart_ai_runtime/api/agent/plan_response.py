@@ -79,6 +79,7 @@ def build_plan_response(
     agent_capability_matrix_service: AgentCapabilityMatrixService | None = None,
     langgraph_execution_gate_metrics: Any | None = None,
     langgraph_memory_retrieval_metrics: Any | None = None,
+    multi_agent_execution_session_metrics: Any | None = None,
 ) -> dict[str, Any]:
     """构建同步 HTTP 风格的 Agent 计划响应。
 
@@ -286,6 +287,8 @@ def build_plan_response(
         collaboration_execution_plan=agent_collaboration_execution_plan_summary,
         durable_loop=durable_loop_checkpoint.to_summary() if durable_loop_checkpoint is not None else None,
     )
+    if multi_agent_execution_session_metrics is not None:
+        multi_agent_execution_session_metrics.record_summary(agent_execution_session.to_summary())
     # 长期记忆检索以前只作为 `AgentOrchestrator` 内部的 `retrieve_memory` 顺序步骤存在。
     # 这里新增的 LangGraph workflow 不重复召回记忆、不读取正文、不修改记忆 store，而是把已经生成的
     # `memoryPlan + memoryRetrievalReport` 压缩成可观察节点 trace。这样前端、Java projection 和多 Agent

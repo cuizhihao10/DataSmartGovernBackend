@@ -17,9 +17,11 @@ from datasmart_ai_runtime.services.multi_agent.controlled_execution_session impo
     ControlledMultiAgentExecutionWorkItem,
     MultiAgentExecutionSessionService,
 )
+from datasmart_ai_runtime.services.multi_agent.execution_session_metrics import MultiAgentExecutionSessionMetrics
 
 __all__ = [
     "ControlledMultiAgentExecutionSession",
     "ControlledMultiAgentExecutionWorkItem",
+    "MultiAgentExecutionSessionMetrics",
     "MultiAgentExecutionSessionService",
 ]
