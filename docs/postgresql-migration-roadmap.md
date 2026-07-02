@@ -104,12 +104,17 @@ Agent 长期记忆和未来 LangGraph durable state 最终都应使用 PostgreSQ
   MyBatis-Plus PostgreSQL 分页方言、outbox PostgreSQL 时间表达式和 Compose 覆盖配置；
 - permission-admin 真实 PostgreSQL 17 集成测试已覆盖 Flyway V1、8 张权限中心自有表、默认角色种子、
   Page 分页、审计插入、outbox PENDING/SENDING/FAILED/IGNORED 状态推进和测试数据显式清理；
+- 新增 [permission-admin MySQL 到 PostgreSQL 存量数据迁移说明](permission-admin-postgresql-data-migration.md)
+  与 `scripts/permission-admin-mysql-to-postgresql.py`，用于迁移权限中心 8 张自有表、执行空目标保护、
+  COPY 导入、行数与 SHA-256 摘要对账、identity sequence 校正，并把旧 MySQL 中混放的 `agent_memory_*`
+  表记录为 `deferredTables`，明确后续迁入 `ai_memory` 而不是 `permission_admin`；
 - `observability`、`data-quality`、`permission-admin` 三个服务均不再从应用层依赖 MySQL 驱动。
 
 这里的“代码路径完成”只代表新安装和当前开发环境可以直接使用 PostgreSQL。存量客户环境如果已经在
 MySQL 中产生 data-quality 或 permission-admin 业务数据，仍必须完成停写/导出、类型转换、identity
 sequence 校正、行数与业务聚合对账、只读观察和回滚点保留，才能按上面的单服务验收门禁标记为商业迁移完成。
 
-下一批应先补 `permission-admin` 的 MySQL 到 PostgreSQL 存量导出、导入、对账和 sequence 校正脚手架，
-然后再进入 `datasource-management`。其余 Java 服务仍由 MySQL 承担迁移期运行流量，不能把三个服务通过
-误认为全平台迁移完成。
+下一批应进入 `datasource-management`。该服务迁移时要重点处理数据源连接配置、凭据脱敏、元数据采集结果、
+连接测试记录和项目/租户权限边界。其余 Java 服务仍由 MySQL 承担迁移期运行流量，不能把三个服务通过
+误认为全平台迁移完成；同时 `agent_memory_*` 表已登记为阶段 3 的 `ai_memory` 迁移对象，不能在权限中心
+或 datasource-management 中继续扩展。
