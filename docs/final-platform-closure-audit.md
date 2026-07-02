@@ -34,7 +34,7 @@
 |---|---|---|
 | tools | 文件读写、网页搜索治理、工具规划、参数校验、checkpoint、受控命令 runner | 控制面与本地受控执行已闭合；容器级沙箱和真实搜索 Provider 属生产增强 |
 | skills | Registry、准入、发布生命周期、Manifest、可见性缓存与诊断 | 核心控制面已闭合；灰度发布和客户审批流属于环境集成 |
-| memory | 短期/长期记忆、profile 语义、SQLite FTS、Chroma、m-create/m-retrieve、物化 worker | 核心读写检索链路已闭合；生产 HA 与真实向量规模待验收 |
+| memory | 短期/长期记忆、低敏用户画像、SQLite FTS、Chroma、m-create/m-retrieve、物化 worker | 核心读写检索链路已闭合；用户画像已具备候选/激活/上下文注入基座，生产 HA、画像持久化与真实向量规模待验收 |
 | query engine | API、stream 事件、cache、error、retry、rate-limit、token-limit | 单实例控制面已闭合；分布式限流与真实 tokenizer/serving 指标待环境接入 |
 | context | system/tool/model context、micro-compact、敏感裁剪与预算 | 已闭合 |
 | permission | read/write/exec/network 治理、dangerous-path、safe-cmd、HITL 与 fail-closed | 控制面已闭合；客户策略、组织和服务账号需要 IdP 联调 |

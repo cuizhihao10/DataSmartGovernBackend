@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from uuid import uuid4
 
 from datasmart_ai_runtime.domain.contracts import (
@@ -74,6 +75,7 @@ class AgentOrchestrator:
         model_tool_call_budget_policy_provider: ModelToolCallBudgetPolicyProvider | None = None,
         tool_execution_feedback_provider: ModelToolExecutionFeedbackProvider | None = None,
         planning_workflow: LangGraphAgentPlanningWorkflow | None = None,
+        user_profile_memory: Any | None = None,
     ) -> None:
         self._model_routes = model_routes
         self._tool_planner = tool_planner
@@ -93,6 +95,7 @@ class AgentOrchestrator:
             tool_execution_feedback_provider=tool_execution_feedback_provider,
         )
         self._planning_workflow = planning_workflow or LangGraphAgentPlanningWorkflow.from_env()
+        self._user_profile_memory = user_profile_memory
 
     def plan(self, request: AgentRequest) -> AgentPlan:
         """为用户治理目标生成 Agent 计划。
@@ -119,7 +122,7 @@ class AgentOrchestrator:
         state_trace.append("receive_goal")
         state_trace.append("select_model_route")
         state_trace.append("build_context")
-        context_blocks = self._build_context(request, event_recorder)
+        context_blocks, user_profile_context = self._build_context(request, event_recorder)
 
         state_trace.append("route_model_gateway")
         model_gateway_context = build_model_gateway_context(request, context_blocks)
@@ -268,6 +271,7 @@ class AgentOrchestrator:
             skill_plan=skill_plan,
             memory_plan=memory_plan,
             memory_retrieval_report=memory_retrieval_report,
+            user_profile_context=user_profile_context,
             runtime_events=event_recorder.events(),
             workflow_diagnostics=workflow_diagnostics.to_summary(),
         )
@@ -403,17 +407,53 @@ class AgentOrchestrator:
         self,
         request: AgentRequest,
         event_recorder: RuntimeEventRecorder,
-    ) -> tuple[ContextBlock, ...]:
-        """构建上下文并把请求级事件收集器传递给支持它的构建器。
+    ) -> tuple[tuple[ContextBlock, ...], dict[str, Any]]:
+        """构建上下文、追加用户画像，并把请求级事件收集器传递给支持它的构建器。
 
         这里仍然兼容旧的 `build(request)` 形式。这个兼容层很重要：未来 GraphRAG、Java 控制面、
         向量检索上下文来源可能由不同团队逐步实现，不能因为事件能力升级就强制所有插件同时改造。
         """
 
         try:
-            return self._context_builder.build(request, event_recorder)
+            context_blocks = self._context_builder.build(request, event_recorder)
         except TypeError:
-            return self._context_builder.build(request)
+            context_blocks = self._context_builder.build(request)
+        if self._user_profile_memory is None:
+            return context_blocks, {}
+        try:
+            profile_context = self._user_profile_memory.observe_and_build_context(request)
+        except Exception as exc:  # pragma: no cover - 防御画像 store/抽取器替换实现异常
+            event_recorder.record(
+                AgentRuntimeEventType.CONTEXT_COLLECTED,
+                "load_user_profile",
+                "用户画像上下文加载失败，已跳过画像注入并继续主规划链路。",
+                severity=AgentRuntimeEventSeverity.WARNING,
+                attributes={
+                    "profileLoaded": False,
+                    "errorType": exc.__class__.__name__,
+                    "fallback": True,
+                },
+            )
+            return context_blocks, {
+                "profileLoaded": False,
+                "fallback": True,
+                "errorType": exc.__class__.__name__,
+            }
+        summary = profile_context.to_summary()
+        event_recorder.record(
+            AgentRuntimeEventType.CONTEXT_COLLECTED,
+            "load_user_profile",
+            "已加载用户画像低敏上下文。",
+            attributes={
+                "profileLoaded": True,
+                "contextBlockCount": summary.get("contextBlockCount", 0),
+                "activeFacetCount": summary.get("activeFacetCount", 0),
+                "observedFacetCount": summary.get("observedFacetCount", 0),
+                "candidateFacetCount": summary.get("candidateFacetCount", 0),
+                "payloadPolicy": "LOW_SENSITIVE_PROFILE_FACTS_ONLY",
+            },
+        )
+        return context_blocks + profile_context.context_blocks, summary
 
     @staticmethod
     def _resolve_session_id(request: AgentRequest) -> str | None:

@@ -71,6 +71,7 @@ def build_plan_response(
     runtime_event_feedback_bridge: Any | None = None,
     loop_control_evaluator: Any | None = None,
     second_turn_orchestrator: Any | None = None,
+    durable_agent_loop_service: Any | None = None,
     memory_write_governance: Any | None = None,
     skill_publication_diagnostics_service: Any | None = None,
     tool_execution_readiness_policy_provider: ToolExecutionReadinessPolicyProviderProtocol | None = None,
@@ -122,6 +123,7 @@ def build_plan_response(
     runtime_event_feedback = None
     loop_control_decision = None
     second_turn_result = None
+    durable_loop_checkpoint = None
     memory_write_proposal = None
 
     if plan_ingestion_client is not None:
@@ -156,6 +158,19 @@ def build_plan_response(
             )
             if second_turn_result.runtime_events:
                 plan = replace(plan, runtime_events=plan.runtime_events + second_turn_result.runtime_events)
+
+    if durable_agent_loop_service is not None:
+        # Durable Agent Loop checkpoint 是当前 Codex/Claude Code 类体验继续演进的关键基座。
+        # 它只记录“本轮 Agent run 停在哪个可恢复阶段、下一步应该等待事件/审批/二轮/人工接管”，
+        # 不执行工具、不创建审批、不写 outbox，也不额外调用模型。这样可以先让会话恢复、审计和
+        # 多 Agent handoff 有稳定状态锚点，再逐步迁移到 Redis/MySQL/LangGraph durable runner。
+        durable_loop_checkpoint = durable_agent_loop_service.record(
+            request=request,
+            plan=plan,
+            control_plane_feedback=control_plane_feedback,
+            loop_control_decision=loop_control_decision,
+            second_turn_result=second_turn_result,
+        )
 
     if memory_write_governance is not None:
         # 记忆写入候选同样必须是显式副作用：只有调用方注入治理服务时才生成候选。
@@ -300,6 +315,7 @@ def build_plan_response(
     response["agentCollaborationWorkflow"] = agent_collaboration_workflow.to_summary()
     response["agentCollaborationExecutionPlan"] = agent_collaboration_execution_plan_summary
     response["agentMemoryRetrievalWorkflow"] = agent_memory_retrieval_workflow_summary
+    response["userProfileMemory"] = plan.user_profile_context
     response["agentWorkspace"] = workspace_context.to_summary()
     response["toolExecutionReadiness"] = tool_execution_readiness_response
     response["agentExecutionGateWorkflow"] = agent_execution_gate_summary
@@ -321,6 +337,8 @@ def build_plan_response(
         response["agentLoopControl"] = loop_control_decision.to_summary()
     if second_turn_result is not None:
         response["agentSecondTurn"] = second_turn_result.to_summary()
+    if durable_loop_checkpoint is not None:
+        response["agentDurableLoop"] = durable_loop_checkpoint.to_summary()
     if memory_write_proposal is not None:
         response["memoryWriteProposal"] = memory_write_proposal.to_summary()
     return response

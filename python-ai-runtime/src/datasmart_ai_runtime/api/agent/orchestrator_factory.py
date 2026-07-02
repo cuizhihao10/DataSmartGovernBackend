@@ -171,6 +171,7 @@ def build_default_orchestrator(
     enable_remote_skill_admission_policy: bool | None = None,
     allow_remote_skill_admission_fallback: bool = True,
     memory_retriever: Any | None = None,
+    user_profile_memory: Any | None = None,
 ) -> AgentOrchestrator:
     """创建默认 Agent 编排器。
 
@@ -243,6 +244,7 @@ def build_default_orchestrator(
         skill_registry=AgentSkillRegistry(skills, admission_policy=skill_admission_policy),
         model_tool_call_budget_policy_provider=budget_policy_provider,
         tool_execution_feedback_provider=tool_feedback_provider,
+        user_profile_memory=user_profile_memory,
     )
 
 

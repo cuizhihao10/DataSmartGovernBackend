@@ -185,6 +185,19 @@ from datasmart_ai_runtime.services.memory.memory_write_workspace import (
     AgentMemoryWorkspaceBinding,
     AgentMemoryWorkspaceSupport,
 )
+from datasmart_ai_runtime.services.memory.user_profile_context import (
+    UserProfileContextResult,
+    UserProfileMemoryService,
+)
+from datasmart_ai_runtime.services.memory.user_profile_memory import (
+    InMemoryUserProfileStore,
+    UserProfileFacet,
+    UserProfileFacetStatus,
+    UserProfileFacetType,
+    UserProfileObservationReport,
+    UserProfileScope,
+    UserProfileStore,
+)
 
 __all__ = [
     "AgentApprovedMemoryWriteMaterializer",
@@ -258,6 +271,14 @@ __all__ = [
     "AgentMemoryWriteGovernanceService",
     "AgentMemoryWriteStoreRuntime",
     "AgentMemoryWriteStoreSettings",
+    "UserProfileContextResult",
+    "UserProfileFacet",
+    "UserProfileFacetStatus",
+    "UserProfileFacetType",
+    "UserProfileMemoryService",
+    "UserProfileObservationReport",
+    "UserProfileScope",
+    "UserProfileStore",
     "LangGraphMemoryRetrievalWorkflow",
     "LangGraphMemoryRetrievalWorkflowDiagnostics",
     "LangGraphMemoryRetrievalMetrics",
@@ -268,6 +289,7 @@ __all__ = [
     "InMemoryAgentMemorySecondaryIndexSyncTaskStore",
     "InMemoryAgentMemoryStore",
     "InMemoryAgentMemoryWriteCandidateStore",
+    "InMemoryUserProfileStore",
     "SqlAgentMemoryWriteCandidateStore",
     "sqlite_fts5_available",
     "sqlite_fts_memory_index_diagnostics",

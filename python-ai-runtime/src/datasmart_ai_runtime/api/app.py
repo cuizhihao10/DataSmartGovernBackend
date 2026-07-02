@@ -28,6 +28,7 @@ from datasmart_ai_runtime.api.gateway.security import (
     gateway_signature_security_diagnostics,
 )
 from datasmart_ai_runtime.api.memory.materialization_admin import register_memory_materialization_admin_routes
+from datasmart_ai_runtime.api.memory.profile import register_user_profile_routes
 from datasmart_ai_runtime.api.memory.runtime import api_memory_runtime_diagnostics, build_api_memory_runtime
 from datasmart_ai_runtime.api.memory.write import register_memory_write_routes
 from datasmart_ai_runtime.api.metrics import register_agent_metrics_route
@@ -58,8 +59,13 @@ from datasmart_ai_runtime.services.agent_runtime_tool_feedback_client import (
     JavaAgentRuntimeToolFeedbackProvider,
 )
 from datasmart_ai_runtime.services.agent_capability import default_agent_capability_matrix_service
+from datasmart_ai_runtime.services.agent_execution import DurableAgentLoopService
 from datasmart_ai_runtime.services.agent_second_turn_orchestrator import AgentSecondTurnOrchestrator
-from datasmart_ai_runtime.services.memory import AgentMemoryMaterializationMetrics, LangGraphMemoryRetrievalMetrics
+from datasmart_ai_runtime.services.memory import (
+    AgentMemoryMaterializationMetrics,
+    LangGraphMemoryRetrievalMetrics,
+    UserProfileMemoryService,
+)
 from datasmart_ai_runtime.services.memory.memory_materialization_worker import (
     AgentMemoryMaterializationWorker,
     memory_materialization_worker_settings_from_env,
@@ -132,6 +138,8 @@ def create_app() -> Any:
         health_registry=model_provider_health_registry,
     )
     memory_runtime = build_api_memory_runtime()
+    user_profile_memory = UserProfileMemoryService.default()
+    durable_agent_loop_service = DurableAgentLoopService()
     agent_runtime_base_url = os.getenv("DATASMART_AGENT_RUNTIME_BASE_URL")
     # 工具目录在启动阶段集中加载一次，并同时供主 orchestrator 与协议适配 preview 入口使用。
     # 这样可以避免 `/agent/plans`、MCP tools/call preview 和未来确认页在同一进程里看到不同版本的工具目录：
@@ -143,6 +151,7 @@ def create_app() -> Any:
         model_gateway=model_gateway,
         memory_retriever=memory_runtime.memory_retriever,
         tool_registry=tool_registry,
+        user_profile_memory=user_profile_memory,
     )
     plan_ingestion_client = (
         JavaAgentPlanIngestionClient(base_url=agent_runtime_base_url)
@@ -441,6 +450,7 @@ def create_app() -> Any:
         runtime_event_feedback_bridge=runtime_event_feedback_bridge,
         loop_control_evaluator=loop_control_evaluator,
         second_turn_orchestrator=second_turn_orchestrator,
+        durable_agent_loop_service=durable_agent_loop_service,
         memory_write_governance=memory_runtime.memory_write_governance,
         skill_publication_diagnostics_service=skill_publication_manifest_diagnostics,
         tool_execution_readiness_policy_provider=tool_execution_readiness_policy_provider,
@@ -457,6 +467,7 @@ def create_app() -> Any:
     )
 
     register_memory_write_routes(app, memory_runtime.memory_write_governance)
+    register_user_profile_routes(app, user_profile_memory)
     register_memory_materialization_admin_routes(
         app,
         memory_runtime.memory_materialization_admin,

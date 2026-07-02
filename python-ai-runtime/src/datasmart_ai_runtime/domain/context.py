@@ -27,6 +27,7 @@ class ContextSourceType(str, Enum):
     PERMISSION_FACT = "permission_fact"
     QUALITY_RULE_CASE = "quality_rule_case"
     SYSTEM_POLICY = "system_policy"
+    USER_PROFILE = "user_profile"
 
 
 class ContextSensitivityLevel(str, Enum):

@@ -63,6 +63,7 @@ def register_agent_runtime_routes(
     loop_control_evaluator: Any | None,
     second_turn_orchestrator: Any | None,
     memory_write_governance: Any | None,
+    durable_agent_loop_service: Any | None = None,
     skill_publication_diagnostics_service: Any | None = None,
     tool_execution_readiness_policy_provider: Any | None = None,
     tool_action_resume_fact_provider: Any | None = None,
@@ -137,6 +138,9 @@ def register_agent_runtime_routes(
     - 默认 false，保证本地学习环境和历史测试不需要先启动完整 gateway；
     - 生产或准生产可单独设置为 true，让 checkpoint query/resume-preview 先于其他只读诊断接口进入 fail-closed；
     - 它复用同一套 gateway HMAC、nonce store 和安全统计，因此不会形成第二套服务间认证协议。
+
+    `durable_agent_loop_service` 负责记录低敏 loop checkpoint。它不会执行工具或调用模型，只让一次
+    `/agent/plans` 的状态具备“后续可以按 runId 恢复/诊断”的锚点。
     """
 
     @app.post("/agent/plans")
@@ -195,12 +199,35 @@ def register_agent_runtime_routes(
             runtime_event_feedback_bridge=runtime_event_feedback_bridge,
             loop_control_evaluator=loop_control_evaluator,
             second_turn_orchestrator=second_turn_orchestrator,
+            durable_agent_loop_service=durable_agent_loop_service,
             memory_write_governance=memory_write_governance,
             skill_publication_diagnostics_service=skill_publication_diagnostics_service,
             tool_execution_readiness_policy_provider=tool_execution_readiness_policy_provider,
             langgraph_execution_gate_metrics=langgraph_execution_gate_metrics,
             langgraph_memory_retrieval_metrics=langgraph_memory_retrieval_metrics,
         )
+
+    if durable_agent_loop_service is not None:
+        @app.get("/agent/durable-loop/diagnostics")
+        @app.get("/api/agent/durable-loop/diagnostics")
+        def durable_agent_loop_diagnostics() -> dict[str, Any]:
+            """查询 Durable Agent Loop checkpoint 运行时诊断。"""
+
+            return durable_agent_loop_service.diagnostics()
+
+        @app.post("/agent/durable-loop/checkpoints/query")
+        @app.post("/api/agent/durable-loop/checkpoints/query")
+        def query_durable_agent_loop_checkpoint(payload: dict[str, Any]) -> dict[str, Any]:
+            """按 runId 查询低敏 Durable Agent Loop checkpoint。"""
+
+            run_id = str(payload.get("runId") or payload.get("run_id") or "").strip()
+            if not run_id:
+                return {
+                    "found": False,
+                    "errorCode": "RUN_ID_REQUIRED",
+                    "message": "查询 Durable Agent Loop checkpoint 需要提供 runId。",
+                }
+            return durable_agent_loop_service.get(run_id)
 
     @app.post("/agent/protocol-adapters/a2a/task-planning-preview")
     def preview_a2a_task_planning(payload: dict[str, Any]) -> dict[str, Any]:

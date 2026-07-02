@@ -15,8 +15,22 @@ from datasmart_ai_runtime.services.agent_execution.agent_execution_closure impor
     AgentExecutionClosureReport,
     AgentExecutionClosureService,
 )
+from datasmart_ai_runtime.services.agent_execution.durable_agent_loop import (
+    DurableAgentLoopCheckpoint,
+    DurableAgentLoopPhase,
+    DurableAgentLoopResumeAction,
+    DurableAgentLoopService,
+    DurableAgentLoopStore,
+    InMemoryDurableAgentLoopStore,
+)
 
 __all__ = (
     "AgentExecutionClosureReport",
     "AgentExecutionClosureService",
+    "DurableAgentLoopCheckpoint",
+    "DurableAgentLoopPhase",
+    "DurableAgentLoopResumeAction",
+    "DurableAgentLoopService",
+    "DurableAgentLoopStore",
+    "InMemoryDurableAgentLoopStore",
 )
