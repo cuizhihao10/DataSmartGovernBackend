@@ -1,5 +1,38 @@
 # MySQL 到 PostgreSQL 渐进迁移路线
 
+## 2026-07-03 更新：task-management 容器级 PostgreSQL smoke 验收
+
+`task-management` 在补齐存量迁移脚手架后，已完成真实容器级 PostgreSQL smoke：
+
+- 使用 `docker compose -f docker-compose.yml -f docker-compose.application.yml up -d --build task-management` 重建并重启 `datasmart-task-management`；
+- 容器环境变量确认 `SPRING_DATASOURCE_URL=jdbc:postgresql://postgresql:5432/datasmart_govern?currentSchema=task_management&ApplicationName=datasmart-task-management`；
+- 容器环境变量确认 `SPRING_DATASOURCE_DRIVER_CLASS_NAME=org.postgresql.Driver`；
+- `http://localhost:8081/actuator/health` 返回 `{"status":"UP"}`；
+- `task_management.flyway_schema_history` 中 V1 baseline 成功；
+- `pg_stat_activity` 可见 `application_name=datasmart-task-management` 的 PostgreSQL 连接。
+
+该验收说明 `task-management` 已经不只是配置和测试通过，而是运行中的容器也完成了 PostgreSQL 主路径切换。阶段 2 的核心 Java 业务服务收敛度进一步提高；下一批重点应进入阶段 3 的 `agent-runtime/ai_memory`，处理旧 MySQL 初始化脚本中仍混放的 Agent Runtime 表、Agent Memory 表、pgvector 记忆索引和 LangGraph durable state。
+
+## 2026-07-03 更新：task-management 存量迁移脚手架
+
+`task-management` 已在 PostgreSQL 代码路径迁移之后补齐存量数据迁移入口，阶段 2 第四个核心业务服务从“新安装可运行”推进到“具备可审计历史数据搬迁脚手架”：
+
+- 新增 `scripts/task-management-mysql-to-postgresql.py`，支持 `plan/export/import/verify/all` 五种模式；
+- 默认 `plan` 只读，`import/all` 必须显式传入 `--apply`；
+- 默认拒绝导入到非空 PostgreSQL 目标表，避免 seed/test data、失败残留或人工写入与 MySQL 历史任务事实混成不可解释状态；
+- 迁移对象严格限定为 task-management PostgreSQL V1 与 Java 运行路径真实使用的 8 张任务域表；
+- 8 张表包括：`task`、`task_draft`、`task_execution_log`、`task_execution_run`、`task_callback_idempotency`、`agent_async_task_command_inbox`、`task_data_sync_worker_command_outbox`、`task_data_sync_worker_execution_receipt`；
+- 导出 JSONL 与低敏 `manifest.json`，PostgreSQL 导入使用 `COPY FROM STDIN`；
+- 保留 MySQL 原始主键 ID，导入后按最大 ID 校正 PostgreSQL identity sequence；
+- 对账使用行数与稳定 SHA-256 摘要，覆盖任务参数、草稿参数、checkpoint、执行日志 details、Agent inbox 参数名快照、worker payload 和 execution receipt 摘要，但不输出样本值；
+- 脚本会把 `agent_async_task_command_outbox`、`agent_run_tool_dag_confirmation` 和其他 `agent_*` 非 inbox 表登记为 `DEFERRED targetSchema=agent_runtime`；
+- 脚本会把 `agent_memory_*` 登记为 `DEFERRED targetSchema=ai_memory`；
+- 脚本会把 `data_sync_*` 登记为 `DEFERRED targetSchema=data_sync`，把 `sync_*` / `datasource_*` 登记为 `DEFERRED targetSchema=datasource_management`，把 `quality_*` 登记为 `DEFERRED targetSchema=data_quality`；
+- 如果历史环境中额外出现未纳入 V1 的 `task_*` 表，脚本会登记为 `REVIEW_REQUIRED targetSchema=task_management`，不擅自迁移；
+- 新增 [task-management MySQL 到 PostgreSQL 存量数据迁移说明](task-management-postgresql-data-migration.md)，说明停写、备份、Flyway 建表、计划检查、导出、导入、对账、只读观察、敏感导出目录保管和回滚原则。
+
+该阶段完成后，`task-management` 的商业迁移闭环已经具备 schema、代码运行路径、集成测试和存量搬迁脚手架。下一步应重建 `task-management` 容器并执行真实容器级 PostgreSQL smoke；随后进入阶段 3 的 `agent-runtime/ai_memory`，集中处理旧 MySQL 初始化脚本中混放的 Agent Runtime 表、Agent Memory 表、pgvector 记忆索引和 LangGraph durable state。
+
 ## 2026-07-03 更新：task-management PostgreSQL 代码路径迁移
 
 `task-management` 已完成 PostgreSQL 运行路径迁移，阶段 2 第四个核心业务服务进入新安装可运行状态：
