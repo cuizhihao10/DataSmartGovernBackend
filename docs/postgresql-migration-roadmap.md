@@ -1,5 +1,42 @@
 # MySQL 到 PostgreSQL 渐进迁移路线
 
+## 2026-07-03 更新：ai_memory 存量迁移脚手架
+
+本阶段承接 `ai_memory` PostgreSQL/pgvector V1 基线与 Python Runtime PostgreSQL store 装配入口，补齐旧 MySQL 中 `agent_memory_*` 历史表搬迁到 PostgreSQL `ai_memory` schema 的运维脚手架。
+
+已完成：
+
+- 新增 `scripts/ai-memory-mysql-to-postgresql.py`：
+  - 支持 `plan/export/import/verify/all` 五种模式；
+  - 默认 `plan` 只读，不创建导出目录、不写 PostgreSQL；
+  - `import/all` 必须显式传入 `--apply`；
+  - 默认拒绝导入到非空 PostgreSQL 目标表，避免长期记忆、receipt、lease、outbox seed/test data 或失败残留与历史事实混合；
+  - 迁移对象严格限定为 6 张旧 MySQL `agent_memory_*` 历史表：`agent_memory_write_candidate`、`agent_memory_write_candidate_audit`、`agent_memory_store_entry`、`agent_memory_materialization_receipt`、`agent_memory_materialization_lease`、`agent_memory_materialization_audit_outbox`；
+  - `agent_memory_embedding_index`、`user_profile_fact`、`langgraph_thread_checkpoint`、`langgraph_checkpoint_event` 明确登记为 PostgreSQL-only 新能力表，不从 MySQL 迁移；
+  - 导出 JSONL 与低敏 `manifest.json`，PostgreSQL 导入使用 `COPY FROM STDIN`；
+  - 保留 MySQL 原始自增 `id`，导入完成后按最大 ID 校正 PostgreSQL identity sequence；
+  - 对账使用行数与稳定 SHA-256 checksum，JSON 字段会做 canonical normalization，避免 PostgreSQL JSONB 与 MySQL JSON 文本格式差异造成误报；
+  - 旧 MySQL `DATETIME(3)` 默认按 `+00:00` 解释并导入 PostgreSQL `TIMESTAMPTZ`，可通过 `--mysql-datetime-timezone +08:00` 显式覆盖，避免隐式依赖本机时区；
+  - 历史候选表缺少 `workspace_key`、`memory_namespace` 或 lease 缺少 `next_retry_at` 时导出为 `NULL`，不做猜测性回填。
+- 新增 `docs/ai-memory-postgresql-data-migration.md`：
+  - 说明迁移边界、停写窗口、备份要求、PostgreSQL schema 前提、计划检查、导出、导入、对账、敏感导出目录保管和时间解释策略；
+  - 明确 pgvector embedding、用户画像和 LangGraph durable state 是 PostgreSQL-only 新能力，需要由后续 adapter/checkpointer 写入或重建。
+
+当前边界：
+
+- 当前完成的是存量迁移脚手架，不代表本机或生产 MySQL 历史数据已经实际导入 PostgreSQL；
+- 尚未执行脚本级 `plan` 与空数据 `all --apply` smoke；
+- 尚未接入 pgvector adapter，也尚未把 LangGraph durable checkpoint 真正落到 PostgreSQL；
+- MySQL 初始化脚本中混放的 `agent_memory_*` 暂不立即删除，需等待 AI Memory store smoke、pgvector/checkpointer 和全平台 smoke 通过后再清理。
+
+下一步推荐路线：
+
+1. 执行脚本级验证：`py_compile`、`--help`、`--mode plan`；
+2. 在目标表为空的本地容器环境执行空数据或低风险数据 `all --apply` smoke；
+3. 增加 Python Runtime PostgreSQL store 容器级 smoke；
+4. 接入 pgvector adapter 与 LangGraph PostgreSQL checkpointer；
+5. AI Memory 批次闭环后，再清理旧 MySQL 初始化脚本中的 `agent_memory_*`。
+
 ## 2026-07-03 更新：agent-runtime 控制面 PostgreSQL 代码路径与 V1 基线
 
 `agent-runtime` 已进入阶段 3 的控制面 PostgreSQL 迁移。本批目标不是迁移长期记忆正文，而是先把 Java Agent Host 的可审计、可恢复、可回放控制面事实固定到 PostgreSQL `agent_runtime` schema：

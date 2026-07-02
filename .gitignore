@@ -43,3 +43,7 @@ __pycache__/
 .venv/
 # 本地 Compose 环境文件可能包含数据库、OIDC、模型或 HMAC 密钥；只提交脱敏样例。
 .env.application
+
+# 迁移导出目录可能包含真实业务数据、长期记忆摘要、审计 payload、错误摘要或内部 lease token。
+# 即使 manifest 是低敏的，也不应提交 Git；生产迁移完成后应按安全介质流程清理。
+artifacts/
