@@ -1,5 +1,22 @@
 # MySQL 到 PostgreSQL 渐进迁移路线
 
+## 2026-07-03 更新：data-sync 存量迁移脚手架
+
+`data-sync` 已在 PostgreSQL 代码路径迁移之后补齐存量数据迁移入口：
+
+- 新增 `scripts/data-sync-mysql-to-postgresql.py`，支持 `plan/export/import/verify/all` 五种模式；
+- 默认 `plan` 只读，`import/all` 必须显式传入 `--apply`；
+- 默认拒绝导入到非空 PostgreSQL 目标表，避免 seed/test data、失败残留或重复执行事实与 MySQL 历史数据混成不可解释状态；
+- 迁移对象严格限定为当前 data-sync Java 服务和 PostgreSQL V1 真实使用的 10 张 `data_sync_*` 控制面表；
+- 导出 JSONL 与低敏 `manifest.json`，PostgreSQL 导入使用 `COPY FROM STDIN`；
+- 保留 MySQL 原始主键 ID，并在导入后按最大 ID 校正 PostgreSQL identity sequence；
+- 对账使用行数与稳定 SHA-256 摘要，摘要覆盖配置、checkpoint、payload、错误样本和审计摘要字段，但不输出样本值；
+- 脚本会把 `task_data_sync_*` 登记为 `DEFERRED targetSchema=task_management`，因为它们属于 task-management 的 worker command outbox / execution receipt projection；
+- 脚本会把 `agent_memory_*` 登记为 `DEFERRED targetSchema=ai_memory`，因为它们属于 Agent Runtime / AI Memory 后续批次；
+- 新增 [data-sync MySQL 到 PostgreSQL 存量数据迁移说明](data-sync-postgresql-data-migration.md)，说明停写、备份、导出、导入、对账、只读观察、目标非空保护、敏感导出目录保管和回滚原则。
+
+该阶段完成后，`data-sync` 从“新安装可运行”推进到“具备可审计存量搬迁脚手架”。下一批推荐重建 data-sync 容器并执行真实容器级 PostgreSQL smoke，然后进入 `task-management` PostgreSQL 迁移，在 task-management 批次处理 `task_data_sync_worker_command_outbox` 与 `task_data_sync_worker_execution_receipt`。
+
 ## 2026-07-03 更新：data-sync PostgreSQL 代码路径迁移
 
 `data-sync` 已完成 PostgreSQL 运行路径迁移，进入阶段 2 第三个核心业务服务的代码切换验收：
@@ -9,13 +26,13 @@
 - 新增 `MyBatisPlusConfig`，把分页插件切换为 PostgreSQL 方言，并通过 `MetaObjectHandler` 统一填充 `createTime/updateTime`；
 - 新增 `db/migration/postgresql/data-sync/V1__data_sync_schema_baseline.sql`，覆盖当前 data-sync 微服务自有的 10 张控制面事实表；
 - 10 张表包括：`data_sync_template`、`data_sync_task`、`data_sync_execution`、`data_sync_callback_idempotency`、`data_sync_task_management_receipt_outbox`、`data_sync_checkpoint`、`data_sync_execution_recovery_plan`、`data_sync_error_sample`、`data_sync_incident_record`、`data_sync_audit_record`；
-- PostgreSQL V1 明确不包含 `task_data_sync_*` 与 `agent_memory_*`，前者后续随 task-management/data-sync 边界收敛，后者必须迁入阶段 3 的 `ai_memory`；
+- PostgreSQL V1 明确不包含 `task_data_sync_*` 与 `agent_memory_*`，前者后续随 task-management 迁入 `task_management`，后者必须迁入阶段 3 的 `ai_memory`；
 - Mapper SQL 已完成 PostgreSQL 方言修正：`NOW()/DATE_ADD/DATE_SUB` 转为 `LOCALTIMESTAMP` 与 interval 表达式，布尔条件转为 `TRUE/FALSE`，小批量删除改为 CTE 删除模式；
 - 修复 MyBatis 注解 SQL 中比较符的 PostgreSQL 实测问题：动态 `<script>` SQL 保留 XML 转义，普通更新语句通过显式 `<script>` 包装让 `&lt;` 在执行前还原为真实比较符；
 - `docker-compose.application.yml` 对 `data-sync` 显式覆盖公共迁移期 MySQL datasource，改依赖 PostgreSQL、Redis、Kafka、Nacos、datasource-management 与 task-management；
 - 新增 gated 真实 PostgreSQL 集成测试，覆盖 Flyway V1、10 张表存在性、identity 主键回填、BOOLEAN 映射、MyBatis-Plus 分页、执行器租约、恢复计划状态推进、receipt outbox 和 CTE 幂等清理。
 
-该阶段完成后，`data-sync` 已具备新安装和当前开发环境直接使用 PostgreSQL 的代码路径。下一批应补 `data-sync` MySQL 到 PostgreSQL 存量迁移脚手架，迁移对象限定为上面的 10 张 `data_sync_*` 表；`task_data_sync_*` 与 `agent_memory_*` 继续登记为延期迁移对象，不能被临时塞进 data-sync 或 datasource-management。
+该阶段完成后，`data-sync` 已具备新安装和当前开发环境直接使用 PostgreSQL 的代码路径。后续存量客户环境必须使用 data-sync 存量迁移脚手架完成导出、导入、对账和 sequence 校正；`task_data_sync_*` 与 `agent_memory_*` 继续登记为延期迁移对象，不能被临时塞进 data-sync 或 datasource-management。
 
 ## 2026-07-03 更新：datasource-management 存量迁移脚手架
 
@@ -31,7 +48,7 @@
 - manifest 只记录敏感字段名、行数、checksum 和延期迁移表，不保存 JDBC URL、用户名、密码、SQL 预览、token、prompt、模型输出或客户数据样本；
 - 新增 `docs/datasource-management-postgresql-data-migration.md`，说明停写、备份、导出、导入、对账、只读观察、目标非空保护和敏感导出目录保管要求。
 
-该阶段完成后，`datasource-management` 的商业迁移闭环从“新安装可运行”推进到“具备可审计存量搬迁脚手架”。后续已进入 `data-sync` PostgreSQL 迁移，重点处理 `data_sync_*` 独立 schema、执行状态、恢复计划、回放补数、错误样本、worker receipt 和 task 桥接边界。`agent_memory_*` 继续登记为阶段 3 `ai_memory` 迁移对象，不能迁入 datasource-management。
+该阶段完成后，`datasource-management` 的商业迁移闭环从“新安装可运行”推进到“具备可审计存量搬迁脚手架”。后续已进入并完成 `data-sync` PostgreSQL 代码路径与存量迁移脚手架，重点处理了 `data_sync_*` 独立 schema、执行状态、恢复计划、回放补数、错误样本、worker receipt 和 task 桥接边界。`task_data_sync_*` 明确归属 `task_management`，`agent_memory_*` 继续登记为阶段 3 `ai_memory` 迁移对象，不能迁入 datasource-management。
 
 ## 决策
 
@@ -162,13 +179,17 @@ Agent 长期记忆和未来 LangGraph durable state 最终都应使用 PostgreSQ
   `data_sync_incident_record`、`data_sync_audit_record`；
 - data-sync 真实 PostgreSQL 17 集成测试已覆盖 Flyway V1、10 张表存在性、identity 主键回填、BOOLEAN 字段映射、
   MyBatis-Plus Page 分页、execution 租约认领与心跳、恢复计划状态推进、receipt outbox 投递状态和 CTE 幂等清理；
+- 新增 [data-sync MySQL 到 PostgreSQL 存量数据迁移说明](data-sync-postgresql-data-migration.md)
+  与 `scripts/data-sync-mysql-to-postgresql.py`，用于迁移 10 张 data-sync 自有表、执行空目标保护、
+  COPY 导入、行数与 SHA-256 摘要对账、identity sequence 校正，并把 `task_data_sync_*` 明确登记为
+  `task_management` 后续迁移对象，把 `agent_memory_*` 登记为 `ai_memory` 后续迁移对象；
 - `observability`、`data-quality`、`permission-admin`、`data-sync` 四个服务均不再从应用层依赖 MySQL 驱动。
 
 这里的“代码路径完成”只代表新安装和当前开发环境可以直接使用 PostgreSQL。存量客户环境如果已经在
 MySQL 中产生 data-quality、permission-admin、datasource-management 或 data-sync 业务数据，仍必须完成停写/导出、类型转换、identity
 sequence 校正、行数与业务聚合对账、只读观察和回滚点保留，才能按上面的单服务验收门禁标记为商业迁移完成。
 
-下一批应补 `data-sync` 的 MySQL 到 PostgreSQL 存量迁移脚手架。该脚手架必须限定迁移 10 张 `data_sync_*`
-控制面表，并重点处理执行状态、恢复计划、错误样本、checkpoint、receipt outbox 与幂等记录的顺序和对账；
-`task_data_sync_*` 暂随 task-management/data-sync 边界确认，`agent_memory_*` 已登记为阶段 3 的 `ai_memory`
-迁移对象，不能在 data-sync、datasource-management、权限中心或 MySQL 初始化脚本中继续扩展。
+下一批应重建 data-sync 容器并做真实容器级 PostgreSQL smoke，确认运行中容器已经从旧 MySQL 环境变量切到
+Compose 合成后的 PostgreSQL 环境变量。随后进入 `task-management` PostgreSQL 迁移，并在该批次迁移
+`task_data_sync_worker_command_outbox` 与 `task_data_sync_worker_execution_receipt`；`agent_memory_*`
+已登记为阶段 3 的 `ai_memory` 迁移对象，不能在 data-sync、datasource-management、权限中心或 MySQL 初始化脚本中继续扩展。

@@ -1,27 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""datasource-management MySQL -> PostgreSQL 存量数据迁移与对账工具。
+"""data-sync MySQL -> PostgreSQL 存量数据迁移与对账工具。
 
-本脚本用于 datasource-management 已完成 PostgreSQL 代码路径切换之后的“历史业务数据搬迁”阶段。
-它只处理 datasource-management 当前 Java 服务真实使用的 14 张控制面表，不处理独立 data-sync
-微服务的 `data_sync_*` 表，也不处理 Agent Runtime / AI Memory 的 `agent_memory_*` 表。
+本脚本用于 data-sync 微服务完成 PostgreSQL 代码路径切换之后的“历史业务数据搬迁”阶段。
+它只迁移 data-sync 自己拥有的 10 张 `data_sync_*` 控制面事实表，不迁移 task-management
+持有的 `task_data_sync_*` 表，也不迁移 Agent Runtime / AI Memory 持有的 `agent_memory_*` 表。
 
-为什么 datasource-management 的迁移脚本要比普通业务表更谨慎：
-1. `datasource_config` 保存外部客户数据源连接信息，包含 JDBC URL、用户名、密码、驱动类名等敏感字段。
-2. 只读 SQL 审计、同步审计、告警投递等表可能保存 SQL 预览、错误摘要、通道地址摘要、业务对象名。
-3. Agent 命令 receipt 可能关联 session/run/audit/tool 信息，虽然是低敏控制面数据，但不应扩散到日志样本。
-
-因此本脚本采用以下安全边界：
-- 日志只输出表名、行数、checksum 前缀、迁移目录路径，不输出任何行内容。
-- manifest 只记录表级统计、敏感列名和延期迁移表清单，不写入样本数据、JDBC URL、密码、SQL 正文或 token。
-- JSONL 导出文件是迁移载体，确实包含真实业务数据；生产环境应放在加密磁盘、受控目录或临时安全工作区，
-  迁移完成并通过验收后按企业数据销毁流程处理。
-- 错误摘要会对命令参数脱敏，避免把数据库密码、连接串、SQL 或客户样本带到 CI/终端日志。
+为什么 `task_data_sync_*` 不跟着本脚本一起迁移：
+1. 表名前缀里虽然出现 data_sync，但这两张表的 Java Entity、Mapper、Service、Controller 都在 task-management。
+2. 它们表达的是 task-management 向 data-sync worker 下发命令、接收执行回执投影的任务平台事实。
+3. data-sync 自己保存的是模板、任务、执行、checkpoint、错误样本、事故、审计、幂等和向 task-management
+   投递 receipt 的 outbox；这与 task-management 本地 outbox/receipt 是两个方向相反的协作契约。
+4. 如果把 `task_data_sync_*` 临时塞进 `data_sync` schema，会让 task-management 后续迁移时出现跨 schema
+   JOIN、重复导入、权限边界不清和回滚责任不清的问题。
 
 运行模式：
-- plan：只读检查 MySQL 源表、PostgreSQL 目标表行数和延期迁移表，不写文件、不写数据库。
-- export：从 MySQL 导出 14 张表为 JSONL，同时生成低敏 manifest。
-- import：将 JSONL 通过 PostgreSQL COPY 导入目标 schema，必须显式传入 --apply。
+- plan：只读检查 MySQL 源表、PostgreSQL 目标表和延期迁移表，不写文件、不写数据库。
+- export：导出 10 张 data-sync 表为 JSONL，并生成低敏 manifest。
+- import：把 JSONL 通过 PostgreSQL COPY 导入目标 schema，必须显式传入 --apply。
 - verify：按行数与稳定 SHA-256 摘要对账。
 - all：export -> import -> verify，仍然必须显式传入 --apply 才能写 PostgreSQL。
 """
@@ -42,65 +38,57 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Iterator
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT_ROOT = REPO_ROOT / "artifacts" / "postgresql-migration" / "datasource-management"
+DEFAULT_OUTPUT_ROOT = REPO_ROOT / "artifacts" / "postgresql-migration" / "data-sync"
 
 # COPY FROM STDIN 需要一个极低概率与真实业务值冲突的 NULL 哨兵。
-# 不直接使用常见的 \N，是因为 datasource-management 中 SQL 摘要、错误摘要、JSON 文本理论上可能出现该字面量。
-NULL_SENTINEL = "__DATASMART_DATASOURCE_POSTGRES_COPY_NULL_2C7B91F0__"
+# 不直接使用常见的 \N，是因为 checkpoint、payload、错误摘要或 JSON 文本理论上都可能出现该字面量。
+NULL_SENTINEL = "__DATASMART_DATA_SYNC_POSTGRES_COPY_NULL_9E4D2A18__"
 
-# 这些字段会参与迁移和 checksum，但不会以样本形式写入 manifest 或日志。
-# 注意：字段名本身不是敏感值，manifest 记录字段名是为了提醒运维人员导出文件需要加密保管。
+# 这些字段会参与迁移和 checksum，但不会以样本值形式写入 manifest 或终端日志。
+# 迁移脚本记录“字段名”是为了提醒操作者导出目录需要按敏感介质保管；字段名本身不是敏感值。
 SENSITIVE_COLUMNS_BY_TABLE: dict[str, tuple[str, ...]] = {
-    "datasource_config": ("jdbc_url", "username", "password"),
-    "datasource_readonly_sql_execution_audit": ("sql_preview", "failure_message"),
-    "sync_template": (
+    "data_sync_template": (
         "field_mapping_config",
         "filter_config",
         "partition_config",
         "retry_policy",
         "timeout_policy",
     ),
-    "sync_task": ("schedule_config", "latest_error_summary", "incident_note"),
-    "sync_agent_command_receipt": ("message",),
-    "sync_execution": ("error_summary", "trigger_reason"),
-    "sync_checkpoint": ("checkpoint_value",),
-    "sync_audit_record": ("action_payload",),
-    "sync_permission_policy_change_request": (
-        "binding_values_json",
-        "request_reason",
-        "required_approver_roles_json",
-        "approval_comment",
-        "execution_summary",
+    "data_sync_task": ("schedule_config", "attention_reason", "description"),
+    "data_sync_execution": ("checkpoint_ref", "error_summary"),
+    "data_sync_callback_idempotency": ("request_digest", "response_summary", "error_message"),
+    "data_sync_task_management_receipt_outbox": (
+        "last_error_summary",
+        "payload_json",
     ),
-    "sync_governance_alert": (
-        "summary",
-        "detail",
-        "last_delivery_error",
-        "dead_letter_reason",
+    "data_sync_checkpoint": ("checkpoint_value",),
+    "data_sync_execution_recovery_plan": (
+        "window_start",
+        "window_end",
+        "shard_or_partition",
+        "reason",
     ),
-    "sync_alert_delivery_record": (
-        "target_endpoint",
-        "response_summary",
-        "error_summary",
+    "data_sync_error_sample": (
+        "error_message",
+        "source_record_key",
+        "target_record_key",
+        "sample_payload",
     ),
-    "sync_permission_governance_notification": (
-        "summary",
-        "detail",
-        "last_dispatch_error",
-    ),
+    "data_sync_incident_record": ("description", "resolution_summary"),
+    "data_sync_audit_record": ("action_payload",),
 }
 
 
 @dataclass(frozen=True)
 class ColumnSpec:
-    """跨库迁移列定义。
+    """跨数据库迁移列定义。
 
     name:
         JSONL 字段名，也是 PostgreSQL COPY 的目标列名。
     mysql_expr:
-        MySQL 导出表达式。为了让源端和目标端 checksum 稳定一致，数值、布尔、时间字段会先规范成文本。
+        MySQL 导出表达式。为了让源端和目标端 checksum 稳定一致，数值、布尔、时间、JSON 会先规范成文本。
     postgres_expr:
-        PostgreSQL 对账表达式。它必须和 mysql_expr 使用同一套文本规范，否则相同业务值也可能产生不同摘要。
+        PostgreSQL 对账表达式。它必须与 MySQL 表达式使用同一套文本规范，否则同一业务值也可能产生不同摘要。
     """
 
     name: str
@@ -112,9 +100,8 @@ class ColumnSpec:
 class TableSpec:
     """迁移表定义。
 
-    datasource-management 这批表都使用 id 主键，迁移时保留 MySQL 原始 id。
-    保留原 id 的原因不是为了“偷懒”，而是为了让审计记录、告警、执行历史、外部工单截图或人工排障记录
-    在迁移前后仍能用同一主键定位，降低预生产和生产切换时的验收成本。
+    data-sync 这批表都使用 id 主键。迁移时保留 MySQL 原始 id，是为了让执行历史、审计记录、
+    checkpoint 引用、事故工单截图和人工排障记录在迁移前后仍能用同一个主键定位。
     """
 
     name: str
@@ -128,7 +115,7 @@ class TableSpec:
 
     @property
     def sensitive_columns(self) -> tuple[str, ...]:
-        """返回该表中需要特殊保管、禁止日志样本输出的字段名。"""
+        """返回需要按敏感迁移介质保管、禁止日志样本输出的字段名。"""
 
         return SENSITIVE_COLUMNS_BY_TABLE.get(self.name, ())
 
@@ -136,8 +123,8 @@ class TableSpec:
 def text_col(name: str) -> ColumnSpec:
     """普通文本列。
 
-    MySQL JSON_OBJECT 与 PostgreSQL row_to_json 都会把 VARCHAR/TEXT 输出为 JSON 字符串。
-    对这类列不额外转换，既保留原始业务语义，也避免迁移脚本擅自改写配置文本。
+    VARCHAR/TEXT 在 MySQL JSON_OBJECT 与 PostgreSQL row_to_json 中都会作为 JSON 字符串输出。
+    这类列不额外改写，避免迁移脚本擅自改变用户配置、错误摘要、审计摘要或对象名称。
     """
 
     return ColumnSpec(name, name, name)
@@ -146,9 +133,8 @@ def text_col(name: str) -> ColumnSpec:
 def int_col(name: str) -> ColumnSpec:
     """整数列。
 
-    不同数据库客户端可能把整数反序列化成 int、Decimal 或字符串。
-    checksum 阶段统一转成 text，可以避免“值相同但 JSON 类型不同”造成假失败。
-    COPY 导入 PostgreSQL 时仍会把文本转换回目标整数列。
+    checksum 阶段统一转为 text，避免不同客户端把同一个数值序列化为 int、Decimal 或字符串时造成假失败。
+    COPY 导入 PostgreSQL 时仍会把文本转换回 BIGINT/INTEGER 目标列。
     """
 
     return ColumnSpec(name, f"CAST({name} AS CHAR)", f"{name}::text")
@@ -158,7 +144,7 @@ def bool_col(name: str) -> ColumnSpec:
     """布尔列。
 
     历史 MySQL 使用 TINYINT(1)，目标 PostgreSQL 使用 BOOLEAN。
-    迁移中统一用 true/false 文本表达，既能被 PostgreSQL COPY 识别，也能让 checksum 跨库稳定。
+    迁移中统一输出 true/false 文本，既能被 PostgreSQL COPY 识别，也能让 checksum 跨库稳定。
     """
 
     return ColumnSpec(
@@ -172,8 +158,8 @@ def time_col(name: str) -> ColumnSpec:
     """时间列。
 
     MySQL DATETIME 与 PostgreSQL TIMESTAMP WITHOUT TIME ZONE 都不携带时区。
-    迁移脚本不做隐式时区换算，只把库内值格式化为微秒级文本；如果客户生产库存在时区约定差异，
-    应在停写迁移方案中单独确认，而不是让脚本悄悄改时间。
+    本脚本不做隐式时区换算，只把库内值格式化到微秒级文本；如果客户生产库存在时区约定差异，
+    应在停写迁移方案里单独确认，而不是让脚本悄悄改时间。
     """
 
     return ColumnSpec(
@@ -183,63 +169,20 @@ def time_col(name: str) -> ColumnSpec:
     )
 
 
+def json_text_col(name: str) -> ColumnSpec:
+    """MySQL JSON -> PostgreSQL TEXT 的列。
+
+    data-sync 历史 MySQL 中 `payload_json` 是 JSON 类型，而 PostgreSQL V1 为了保持 Java String 映射稳定，
+    暂按 TEXT 保存。MySQL 导出时必须 CAST AS CHAR，否则 JSON_OBJECT 会把它嵌成对象/数组，导入后与
+    PostgreSQL TEXT 的 JSON 字符串语义不一致，checksum 也会失败。
+    """
+
+    return ColumnSpec(name, f"CAST({name} AS CHAR)", name)
+
+
 TABLES: tuple[TableSpec, ...] = (
     TableSpec(
-        "datasource_config",
-        (
-            int_col("id"),
-            int_col("tenant_id"),
-            int_col("project_id"),
-            int_col("workspace_id"),
-            text_col("name"),
-            text_col("type"),
-            text_col("jdbc_url"),
-            text_col("username"),
-            text_col("password"),
-            text_col("driver_class_name"),
-            text_col("description"),
-            text_col("status"),
-            text_col("last_test_status"),
-            text_col("last_test_message"),
-            time_col("last_test_time"),
-            time_col("create_time"),
-            time_col("update_time"),
-        ),
-    ),
-    TableSpec(
-        "datasource_readonly_sql_execution_audit",
-        (
-            int_col("datasource_tenant_id"),
-            int_col("datasource_project_id"),
-            int_col("datasource_workspace_id"),
-            int_col("id"),
-            int_col("datasource_id"),
-            text_col("datasource_name"),
-            text_col("datasource_type"),
-            text_col("purpose"),
-            int_col("actor_tenant_id"),
-            int_col("actor_id"),
-            text_col("actor_role"),
-            text_col("actor_type"),
-            text_col("source_service"),
-            text_col("trace_id"),
-            text_col("sql_fingerprint"),
-            text_col("sql_preview"),
-            int_col("requested_max_rows"),
-            int_col("applied_max_rows"),
-            int_col("requested_query_timeout_seconds"),
-            int_col("applied_query_timeout_seconds"),
-            int_col("returned_row_count"),
-            int_col("column_count"),
-            int_col("duration_ms"),
-            text_col("execution_status"),
-            text_col("failure_message"),
-            time_col("executed_at"),
-            time_col("create_time"),
-        ),
-    ),
-    TableSpec(
-        "sync_template",
+        "data_sync_template",
         (
             int_col("id"),
             int_col("tenant_id"),
@@ -248,11 +191,13 @@ TABLES: tuple[TableSpec, ...] = (
             text_col("name"),
             text_col("description"),
             int_col("source_datasource_id"),
+            int_col("target_datasource_id"),
             text_col("source_schema_name"),
             text_col("source_object_name"),
-            int_col("target_datasource_id"),
             text_col("target_schema_name"),
             text_col("target_object_name"),
+            text_col("source_connector_type"),
+            text_col("target_connector_type"),
             text_col("sync_mode"),
             text_col("write_strategy"),
             text_col("primary_key_field"),
@@ -270,7 +215,7 @@ TABLES: tuple[TableSpec, ...] = (
         ),
     ),
     TableSpec(
-        "sync_task",
+        "data_sync_task",
         (
             int_col("id"),
             int_col("tenant_id"),
@@ -278,71 +223,33 @@ TABLES: tuple[TableSpec, ...] = (
             int_col("workspace_id"),
             int_col("template_id"),
             text_col("name"),
-            text_col("description"),
             text_col("current_state"),
             text_col("approval_state"),
             text_col("priority"),
+            text_col("schedule_config"),
             text_col("run_mode"),
             text_col("trigger_type"),
-            text_col("schedule_config"),
             int_col("owner_id"),
             int_col("last_execution_id"),
-            time_col("next_run_at"),
-            time_col("queued_at"),
-            text_col("current_executor_id"),
-            time_col("dispatch_lease_expire_at"),
-            bool_col("enabled"),
-            bool_col("operator_attention_required"),
-            int_col("timeout_seconds"),
-            int_col("max_retry_count"),
-            int_col("retry_count"),
-            int_col("queue_attempt_count"),
-            text_col("latest_error_summary"),
-            text_col("incident_note"),
-            int_col("created_by"),
-            int_col("updated_by"),
+            bool_col("attention_required"),
+            text_col("attention_reason"),
+            text_col("description"),
             time_col("create_time"),
             time_col("update_time"),
         ),
     ),
     TableSpec(
-        "sync_agent_command_receipt",
+        "data_sync_execution",
         (
             int_col("id"),
-            text_col("receipt_id"),
-            text_col("command_id"),
-            text_col("idempotency_key"),
-            text_col("agent_session_id"),
-            text_col("agent_run_id"),
-            text_col("audit_id"),
-            text_col("tool_code"),
             int_col("tenant_id"),
             int_col("project_id"),
             int_col("workspace_id"),
-            text_col("actor_id"),
-            text_col("trace_id"),
-            int_col("template_id"),
-            int_col("sync_template_id"),
-            int_col("resolved_template_id"),
-            int_col("sync_task_id"),
-            int_col("sync_execution_id"),
-            text_col("status"),
-            text_col("downstream_state"),
-            bool_col("side_effect_started"),
-            bool_col("side_effect_executed"),
-            bool_col("duplicate"),
-            text_col("message"),
-            time_col("create_time"),
-            time_col("update_time"),
-        ),
-    ),
-    TableSpec(
-        "sync_execution",
-        (
-            int_col("id"),
             int_col("sync_task_id"),
             int_col("execution_no"),
-            text_col("state"),
+            text_col("execution_state"),
+            text_col("trigger_type"),
+            time_col("queued_at"),
             time_col("started_at"),
             time_col("finished_at"),
             text_col("checkpoint_ref"),
@@ -352,207 +259,205 @@ TABLES: tuple[TableSpec, ...] = (
             text_col("error_summary"),
             int_col("triggered_by"),
             text_col("executor_id"),
-            time_col("heartbeat_at"),
-            time_col("lease_expire_at"),
-            text_col("trigger_reason"),
+            time_col("heartbeat_time"),
+            time_col("lease_expire_time"),
+            int_col("defer_count"),
             time_col("create_time"),
             time_col("update_time"),
         ),
     ),
     TableSpec(
-        "sync_checkpoint",
+        "data_sync_callback_idempotency",
         (
             int_col("id"),
+            int_col("tenant_id"),
+            int_col("sync_task_id"),
             int_col("execution_id"),
-            text_col("checkpoint_type"),
-            text_col("checkpoint_value"),
-            text_col("shard_or_partition"),
+            text_col("scope_key"),
+            text_col("action"),
+            text_col("idempotency_key"),
+            text_col("executor_id"),
+            text_col("request_digest"),
+            text_col("callback_state"),
+            text_col("response_summary"),
+            text_col("error_message"),
+            time_col("first_seen_time"),
+            time_col("last_seen_time"),
+            time_col("create_time"),
             time_col("update_time"),
         ),
     ),
     TableSpec(
-        "sync_audit_record",
+        "data_sync_task_management_receipt_outbox",
+        (
+            int_col("id"),
+            text_col("receipt_id"),
+            int_col("tenant_id"),
+            int_col("project_id"),
+            int_col("workspace_id"),
+            int_col("sync_task_id"),
+            int_col("sync_execution_id"),
+            text_col("event_type"),
+            text_col("source_service"),
+            text_col("outbox_state"),
+            int_col("attempt_count"),
+            int_col("max_attempt_count"),
+            time_col("next_retry_at"),
+            time_col("last_attempt_at"),
+            time_col("delivered_at"),
+            time_col("dead_letter_at"),
+            text_col("last_error_code"),
+            text_col("last_error_summary"),
+            int_col("actor_id"),
+            text_col("actor_role"),
+            text_col("trace_id"),
+            json_text_col("payload_json"),
+            time_col("create_time"),
+            time_col("update_time"),
+        ),
+    ),
+    TableSpec(
+        "data_sync_checkpoint",
         (
             int_col("id"),
             int_col("tenant_id"),
+            int_col("project_id"),
+            int_col("workspace_id"),
+            int_col("sync_task_id"),
+            int_col("execution_id"),
+            text_col("checkpoint_type"),
+            text_col("checkpoint_value"),
+            text_col("shard_or_partition"),
+            int_col("records_read"),
+            int_col("records_written"),
+            time_col("checkpoint_time"),
+            time_col("create_time"),
+            time_col("update_time"),
+        ),
+    ),
+    TableSpec(
+        "data_sync_execution_recovery_plan",
+        (
+            int_col("id"),
+            int_col("tenant_id"),
+            int_col("project_id"),
+            int_col("workspace_id"),
+            int_col("sync_task_id"),
+            int_col("execution_id"),
+            text_col("recovery_type"),
+            int_col("source_execution_id"),
+            int_col("source_checkpoint_id"),
+            text_col("window_start"),
+            text_col("window_end"),
+            text_col("shard_or_partition"),
+            text_col("reason"),
+            text_col("plan_state"),
+            time_col("create_time"),
+            time_col("update_time"),
+        ),
+    ),
+    TableSpec(
+        "data_sync_error_sample",
+        (
+            int_col("id"),
+            int_col("tenant_id"),
+            int_col("project_id"),
+            int_col("workspace_id"),
+            int_col("sync_task_id"),
+            int_col("execution_id"),
+            text_col("error_type"),
+            text_col("error_code"),
+            text_col("error_message"),
+            text_col("source_record_key"),
+            text_col("target_record_key"),
+            text_col("sample_payload"),
+            bool_col("retryable"),
+            time_col("create_time"),
+        ),
+    ),
+    TableSpec(
+        "data_sync_incident_record",
+        (
+            int_col("id"),
+            int_col("tenant_id"),
+            int_col("project_id"),
+            int_col("workspace_id"),
+            int_col("sync_task_id"),
+            int_col("execution_id"),
+            text_col("incident_type"),
+            text_col("severity"),
+            text_col("incident_status"),
+            text_col("title"),
+            text_col("description"),
+            int_col("operator_id"),
+            text_col("operator_role"),
+            int_col("assigned_operator_id"),
+            text_col("assigned_operator_role"),
+            text_col("resolution_summary"),
+            time_col("acknowledged_at"),
+            time_col("resolved_at"),
+            time_col("closed_at"),
+            time_col("create_time"),
+            time_col("update_time"),
+        ),
+    ),
+    TableSpec(
+        "data_sync_audit_record",
+        (
+            int_col("id"),
+            int_col("tenant_id"),
+            int_col("project_id"),
+            int_col("workspace_id"),
+            int_col("template_id"),
             int_col("sync_task_id"),
             int_col("execution_id"),
             text_col("action_type"),
             int_col("actor_id"),
             text_col("actor_role"),
             text_col("action_payload"),
+            text_col("result"),
+            text_col("trace_id"),
             time_col("create_time"),
-        ),
-    ),
-    TableSpec(
-        "sync_permission_policy_binding",
-        (
-            int_col("id"),
-            int_col("tenant_id"),
-            text_col("actor_role"),
-            text_col("binding_type"),
-            text_col("binding_value"),
-            text_col("binding_source"),
-            bool_col("enabled"),
-            int_col("priority"),
-            text_col("note"),
-            int_col("created_by"),
-            int_col("updated_by"),
-            time_col("create_time"),
-            time_col("update_time"),
-        ),
-    ),
-    TableSpec(
-        "sync_permission_policy_change_request",
-        (
-            int_col("id"),
-            int_col("target_tenant_id"),
-            int_col("requester_id"),
-            text_col("requester_role"),
-            int_col("requester_tenant_id"),
-            text_col("target_role"),
-            text_col("binding_type"),
-            text_col("binding_values_json"),
-            int_col("requested_priority"),
-            text_col("requested_binding_source"),
-            text_col("request_reason"),
-            text_col("required_approver_roles_json"),
-            text_col("request_status"),
-            int_col("approver_id"),
-            text_col("approver_role"),
-            text_col("approval_mode"),
-            int_col("delegated_from_approver_id"),
-            text_col("delegated_from_approver_role"),
-            text_col("approval_comment"),
-            time_col("approved_at"),
-            time_col("executed_at"),
-            text_col("execution_summary"),
-            time_col("create_time"),
-            time_col("update_time"),
-        ),
-    ),
-    TableSpec(
-        "sync_permission_approval_delegate_rule",
-        (
-            int_col("id"),
-            int_col("target_tenant_id"),
-            int_col("delegator_id"),
-            text_col("delegator_role"),
-            int_col("delegate_id"),
-            text_col("delegate_role"),
-            time_col("effective_from"),
-            time_col("effective_to"),
-            bool_col("enabled"),
-            text_col("delegate_reason"),
-            int_col("created_by"),
-            int_col("updated_by"),
-            time_col("create_time"),
-            time_col("update_time"),
-        ),
-    ),
-    TableSpec(
-        "sync_governance_alert",
-        (
-            int_col("id"),
-            int_col("tenant_id"),
-            int_col("sync_task_id"),
-            text_col("alert_type"),
-            text_col("severity"),
-            text_col("alert_status"),
-            text_col("delivery_status"),
-            text_col("delivery_channel"),
-            text_col("alert_key"),
-            text_col("summary"),
-            text_col("detail"),
-            text_col("source_resource"),
-            text_col("triggered_by_action"),
-            time_col("first_occurred_at"),
-            time_col("last_occurred_at"),
-            int_col("occurrence_count"),
-            int_col("acknowledged_by"),
-            time_col("acknowledged_at"),
-            int_col("resolved_by"),
-            time_col("resolved_at"),
-            time_col("last_delivery_at"),
-            time_col("next_delivery_attempt_at"),
-            int_col("delivery_attempt_count"),
-            text_col("last_delivery_error"),
-            time_col("dead_lettered_at"),
-            text_col("dead_letter_reason"),
-            text_col("dispatch_lease_owner"),
-            time_col("dispatch_lease_expire_at"),
-            time_col("create_time"),
-            time_col("update_time"),
-        ),
-    ),
-    TableSpec(
-        "sync_alert_delivery_record",
-        (
-            int_col("id"),
-            int_col("tenant_id"),
-            int_col("alert_id"),
-            int_col("sync_task_id"),
-            int_col("attempt_no"),
-            text_col("channel"),
-            text_col("delivery_status"),
-            text_col("target_endpoint"),
-            bool_col("manual_dispatch"),
-            int_col("operator_id"),
-            text_col("operator_role"),
-            text_col("response_summary"),
-            text_col("error_summary"),
-            time_col("started_at"),
-            time_col("finished_at"),
-            time_col("create_time"),
-        ),
-    ),
-    TableSpec(
-        "sync_permission_governance_notification",
-        (
-            int_col("id"),
-            int_col("tenant_id"),
-            int_col("change_request_id"),
-            text_col("notification_type"),
-            int_col("recipient_actor_id"),
-            text_col("recipient_actor_role"),
-            text_col("notification_channel"),
-            text_col("notification_status"),
-            text_col("summary"),
-            text_col("detail"),
-            time_col("next_dispatch_at"),
-            int_col("dispatch_attempt_count"),
-            time_col("dispatched_at"),
-            text_col("last_dispatch_error"),
-            int_col("read_by"),
-            time_col("read_at"),
-            time_col("create_time"),
-            time_col("update_time"),
         ),
     ),
 )
 
+TABLE_NAMES = {table.name for table in TABLES}
+IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-def redact_command(command: list[str]) -> str:
-    """生成低敏命令摘要。
 
-    Docker exec 参数中可能包含 MYSQL_PWD。即使只是本地脚本，也不能把密码写入终端、CI 日志或异常摘要。
-    这里仅展示前几个命令片段并对环境变量形式的密码脱敏，避免故障时泄漏连接凭据。
+def safe_identifier(identifier: str) -> str:
+    """校验 SQL 标识符只包含普通字母、数字和下划线。
+
+    本脚本的表名和 schema 名都来自固定配置或命令行参数。即便如此，导入/导出工具仍然要把边界写清楚：
+    迁移脚本通常在高权限数据库账号下运行，不能允许通过 schema/table 参数拼接任意 SQL。
     """
 
-    redacted: list[str] = []
-    for item in command[:8]:
-        if item.startswith("MYSQL_PWD="):
-            redacted.append("MYSQL_PWD=***")
-        else:
-            redacted.append(item)
-    return " ".join(redacted)
+    if not IDENTIFIER_PATTERN.match(identifier):
+        raise RuntimeError(f"非法 SQL 标识符：{identifier}")
+    return identifier
+
+
+def safe_mysql_identifier(identifier: str) -> str:
+    """返回已校验的 MySQL 反引号标识符。"""
+
+    return f"`{safe_identifier(identifier)}`"
+
+
+def qualified_table(args: argparse.Namespace, table: TableSpec) -> str:
+    """返回 PostgreSQL schema.table 表达式。
+
+    这里不使用双引号大小写保留，是因为项目 DDL 全部采用小写下划线命名，保持未引号化标识符更贴近
+    Spring/MyBatis 运行时行为。
+    """
+
+    return f"{safe_identifier(args.postgres_schema)}.{safe_identifier(table.name)}"
 
 
 def run_command(command: list[str], *, stdin: str | None = None) -> str:
-    """执行短输出命令。
+    """执行外部命令并返回 stdout。
 
-    该函数用于 COUNT、sequence reset 等低敏短 SQL。
-    如果命令失败，只抛出脱敏命令摘要和退出码，不回显 stderr，避免数据库错误中带出 SQL 正文或敏感值。
+    错误信息只输出程序和前几个参数，不回显完整命令，避免数据库密码、容器环境变量或长 SQL 进入 CI 日志。
     """
 
     completed = subprocess.run(
@@ -565,44 +470,15 @@ def run_command(command: list[str], *, stdin: str | None = None) -> str:
         check=False,
     )
     if completed.returncode != 0:
-        raise RuntimeError(f"命令执行失败：{redact_command(command)}，exitCode={completed.returncode}")
+        safe_program = " ".join(command[:4])
+        raise RuntimeError(f"命令执行失败：{safe_program}，exitCode={completed.returncode}")
     return completed.stdout
 
 
-def stream_command(command: list[str]) -> Iterator[str]:
-    """按行读取长输出命令。
-
-    datasource-management 的审计、告警和执行历史可能比配置表大很多。
-    使用流式读取可以避免 Python 一次性持有整张表输出，也减少迁移脚本自身成为内存瓶颈的风险。
-    """
-
-    process = subprocess.Popen(
-        command,
-        text=True,
-        encoding="utf-8",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    assert process.stdout is not None
-    assert process.stderr is not None
-    try:
-        for line in process.stdout:
-            yield line
-        stderr = process.stderr.read()
-        exit_code = process.wait()
-    except Exception:
-        process.kill()
-        raise
-    if exit_code != 0:
-        _ = stderr
-        raise RuntimeError(f"命令执行失败：{redact_command(command)}，exitCode={exit_code}")
-
-
 def mysql_command(args: argparse.Namespace, sql: str) -> list[str]:
-    """构造 MySQL Docker CLI 命令。
+    """构造 MySQL CLI 命令。
 
-    MySQL 密码通过容器环境变量 MYSQL_PWD 传入，不拼接到 SQL 中。
-    由于命令参数仍可能被终端或 CI 记录，失败摘要会再次经过 redact_command 脱敏。
+    密码通过 docker exec 环境变量传入，不出现在 mysql 命令参数里；脚本失败时也不会打印完整命令。
     """
 
     return [
@@ -625,9 +501,10 @@ def mysql_command(args: argparse.Namespace, sql: str) -> list[str]:
 
 
 def psql_command(args: argparse.Namespace, sql: str, *, interactive: bool = False) -> list[str]:
-    """构造 PostgreSQL Docker CLI 命令。
+    """构造 PostgreSQL CLI 命令。
 
-    ON_ERROR_STOP=1 确保第一条 SQL 失败时 psql 立刻退出，避免迁移脚本进入“前半段已写入、后半段继续跑”的危险状态。
+    ON_ERROR_STOP=1 保证第一条 SQL 失败时立即退出，避免半成功迁移被误判为成功。
+    interactive=True 用于 COPY FROM STDIN，这时 docker exec 必须保留 -i。
     """
 
     command = ["docker", "exec"]
@@ -652,45 +529,46 @@ def psql_command(args: argparse.Namespace, sql: str, *, interactive: bool = Fals
 
 
 def docker_mysql(args: argparse.Namespace, sql: str) -> str:
+    """执行 MySQL SQL 并返回原始输出。"""
+
     return run_command(mysql_command(args, sql))
 
 
 def docker_mysql_lines(args: argparse.Namespace, sql: str) -> Iterator[str]:
-    return stream_command(mysql_command(args, sql))
+    """逐行返回 MySQL 查询结果。
+
+    MySQL JSON_OBJECT 会把换行符转义在 JSON 字符串内，因此按行拆分不会破坏每条 JSON 记录。
+    """
+
+    output = docker_mysql(args, sql)
+    yield from output.splitlines()
 
 
 def docker_psql(args: argparse.Namespace, sql: str, *, stdin: str | None = None) -> str:
+    """执行 PostgreSQL SQL 并返回原始输出。"""
+
     return run_command(psql_command(args, sql, interactive=stdin is not None), stdin=stdin)
 
 
 def docker_psql_lines(args: argparse.Namespace, sql: str) -> Iterator[str]:
-    return stream_command(psql_command(args, sql))
+    """逐行返回 PostgreSQL 查询结果。"""
 
-
-def safe_mysql_identifier(identifier: str) -> str:
-    """校验并引用 MySQL 标识符。
-
-    延期迁移表名来自 information_schema，但迁移工具属于运维入口，仍然做白名单校验。
-    这样即使未来有人创建了异常表名，也不会被拼进 COUNT SQL。
-    """
-
-    if not re.fullmatch(r"[A-Za-z0-9_]+", identifier):
-        raise RuntimeError(f"MySQL 表名包含不安全字符，已拒绝处理：{identifier!r}")
-    return f"`{identifier}`"
+    output = docker_psql(args, sql)
+    yield from output.splitlines()
 
 
 def mysql_json_select(table: TableSpec) -> str:
-    """生成 MySQL JSONL 导出 SQL。
+    """生成 MySQL 导出 SQL。
 
-    JSON_OBJECT 的字段顺序跟 TableSpec 一致；checksum 阶段还会按字段名重新规范化，因此数据库 JSON 输出顺序变化
-    不会影响最终摘要。
+    JSON_OBJECT 的字段顺序跟 TableSpec 一致；checksum 阶段还会按字段名重新规范化，因此数据库 JSON
+    输出顺序变化不会影响最终摘要。
     """
 
     pairs: list[str] = []
     for column in table.columns:
         pairs.append(f"'{column.name}'")
         pairs.append(column.mysql_expr)
-    return f"SELECT JSON_OBJECT({', '.join(pairs)}) FROM {table.name} ORDER BY id"
+    return f"SELECT JSON_OBJECT({', '.join(pairs)}) FROM {safe_mysql_identifier(table.name)} ORDER BY id"
 
 
 def postgres_json_select(table: TableSpec, schema: str) -> str:
@@ -700,9 +578,10 @@ def postgres_json_select(table: TableSpec, schema: str) -> str:
     - 数值转 text；
     - boolean 转 true/false；
     - timestamp 转微秒级文本；
-    - 配置、payload、错误摘要等 TEXT 字段按原文比较。
+    - JSON/TEXT 字段按原文比较。
     """
 
+    schema = safe_identifier(schema)
     projection = ", ".join(f"{column.postgres_expr} AS {column.name}" for column in table.columns)
     return f"SELECT row_to_json(t) FROM (SELECT {projection} FROM {schema}.{table.name} ORDER BY id) t"
 
@@ -713,7 +592,7 @@ def canonical_row(table: TableSpec, row: dict[str, Any]) -> str:
     checksum 不直接使用数据库原始 JSON 文本，而是按列清单重组，原因是：
     1. 防止字段顺序和空格差异制造假失败；
     2. 防止驱动把同一值表示成数字或字符串导致摘要不一致；
-    3. 让缺列、错列尽早暴露，而不是在导入后才变成隐蔽数据错位。
+    3. 让缺列、错列尽早暴露，而不是在导入后变成隐蔽数据错位。
     """
 
     normalized = {column: (None if row.get(column) is None else str(row.get(column))) for column in table.column_names}
@@ -721,11 +600,15 @@ def canonical_row(table: TableSpec, row: dict[str, Any]) -> str:
 
 
 def update_digest(digest: hashlib._Hash, table: TableSpec, row: dict[str, Any]) -> None:
+    """把规范化后的行追加到 SHA-256 摘要。"""
+
     digest.update(canonical_row(table, row).encode("utf-8"))
     digest.update(b"\n")
 
 
 def checksum_jsonl(table: TableSpec, rows: Iterable[dict[str, Any]]) -> tuple[int, str]:
+    """计算行数和稳定 SHA-256 摘要。"""
+
     digest = hashlib.sha256()
     count = 0
     for row in rows:
@@ -735,6 +618,8 @@ def checksum_jsonl(table: TableSpec, rows: Iterable[dict[str, Any]]) -> tuple[in
 
 
 def read_jsonl(path: pathlib.Path) -> Iterator[dict[str, Any]]:
+    """按行读取 JSONL 导出文件。"""
+
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
             if line.strip():
@@ -742,32 +627,32 @@ def read_jsonl(path: pathlib.Path) -> Iterator[dict[str, Any]]:
 
 
 def count_source(args: argparse.Namespace, table: TableSpec) -> int:
-    output = docker_mysql(args, f"SELECT COUNT(1) FROM {table.name}")
+    """统计 MySQL 源表行数。"""
+
+    output = docker_mysql(args, f"SELECT COUNT(1) FROM {safe_mysql_identifier(table.name)}")
     return int(output.strip() or "0")
 
 
 def count_target(args: argparse.Namespace, table: TableSpec) -> int:
-    output = docker_psql(args, f"SELECT COUNT(1) FROM {args.postgres_schema}.{table.name}")
+    """统计 PostgreSQL 目标表行数。"""
+
+    output = docker_psql(args, f"SELECT COUNT(1) FROM {qualified_table(args, table)}")
     return int(output.strip() or "0")
 
 
 def detect_deferred_tables(args: argparse.Namespace) -> list[dict[str, Any]]:
-    """扫描当前 MySQL schema 中不属于本批 datasource-management 的已知混放表。
+    """扫描当前 MySQL schema 中不属于本批 data-sync 迁移的已知混放表。
 
     记录这些表不是为了迁移它们，而是为了防止“没出现在 JSONL 导出里”被误判为遗漏：
-    - `data_sync_*` 属于独立 data-sync 微服务，应在后续 data-sync PostgreSQL 批次处理。
-    - `agent_memory_*` 属于 AI Memory / Agent Runtime，应在 ai_memory PostgreSQL/pgvector 批次处理。
-    - `task_data_sync_*` 虽然表名包含 data_sync，但实体、Mapper、接口和生命周期都在 task-management，
-      本质是任务平台向 data-sync worker 下发命令、接收执行回执的本地 outbox/receipt 事实，应随 task-management
-      迁入 `task_management` schema。
+    - `task_data_sync_*` 属于 task-management 命令下发和执行回执投影，目标 schema 是 task_management。
+    - `agent_memory_*` 属于 AI Memory / Agent Runtime，目标 schema 是 ai_memory。
     """
 
     sql = (
         "SELECT table_name FROM information_schema.tables "
         "WHERE table_schema = DATABASE() "
-        "AND (table_name REGEXP '^data_sync_' "
-        "OR table_name REGEXP '^agent_memory_' "
-        "OR table_name REGEXP '^task_data_sync_') "
+        "AND (table_name REGEXP '^task_data_sync_' "
+        "OR table_name REGEXP '^agent_memory_') "
         "ORDER BY table_name"
     )
     deferred: list[dict[str, Any]] = []
@@ -776,15 +661,15 @@ def detect_deferred_tables(args: argparse.Namespace) -> list[dict[str, Any]]:
         if not table_name:
             continue
         row_count = int(docker_mysql(args, f"SELECT COUNT(1) FROM {safe_mysql_identifier(table_name)}").strip() or "0")
-        if table_name.startswith("agent_memory_"):
-            target_schema = "ai_memory"
-            reason = "Agent Memory 表属于 AI Memory / Agent Runtime，后续迁入 PostgreSQL ai_memory schema。"
-        elif table_name.startswith("task_data_sync_"):
+        if table_name.startswith("task_data_sync_"):
             target_schema = "task_management"
-            reason = "task_data_sync_* 是 task-management 保存的 DataSync worker 命令 outbox / 执行回执投影，后续迁入 task_management schema。"
+            reason = (
+                "task_data_sync_* 是 task-management 保存的 DataSync worker 命令 outbox / 执行回执投影，"
+                "应随 task-management PostgreSQL 批次迁入 task_management schema。"
+            )
         else:
-            target_schema = "data_sync"
-            reason = "data_sync_* 表属于独立 data-sync 微服务，本脚本不迁入 datasource_management schema。"
+            target_schema = "ai_memory"
+            reason = "agent_memory_* 属于 AI Memory / Agent Runtime，后续迁入 PostgreSQL ai_memory schema。"
         deferred.append(
             {
                 "table": table_name,
@@ -797,10 +682,46 @@ def detect_deferred_tables(args: argparse.Namespace) -> list[dict[str, Any]]:
     return deferred
 
 
+def detect_unmapped_data_sync_tables(args: argparse.Namespace) -> list[dict[str, Any]]:
+    """扫描 MySQL 中额外出现但不在本批 TableSpec 内的 data_sync_* 表。
+
+    本脚本的迁移对象被固定为当前 Java 服务和 PostgreSQL V1 真实使用的 10 张表。若历史环境存在额外
+    data_sync_* 表，脚本不擅自迁移，而是登记为 REVIEW_REQUIRED，让操作者决定是旧表归档、补 DDL，
+    还是作为后续 data-sync 扩展表单独迁移。
+    """
+
+    sql = (
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema = DATABASE() "
+        "AND table_name REGEXP '^data_sync_' "
+        "ORDER BY table_name"
+    )
+    review: list[dict[str, Any]] = []
+    for line in docker_mysql_lines(args, sql):
+        table_name = line.strip()
+        if not table_name or table_name in TABLE_NAMES:
+            continue
+        row_count = int(docker_mysql(args, f"SELECT COUNT(1) FROM {safe_mysql_identifier(table_name)}").strip() or "0")
+        review.append(
+            {
+                "table": table_name,
+                "rows": row_count,
+                "status": "REVIEW_REQUIRED",
+                "targetSchema": "data_sync",
+                "reason": (
+                    "该表以 data_sync_ 开头，但不在当前 PostgreSQL V1 和 Java 实体使用的 10 张表内；"
+                    "为了避免误迁旧实验表或废弃表，脚本只登记不导入。"
+                ),
+            }
+        )
+    return review
+
+
 def export_table(args: argparse.Namespace, table: TableSpec, export_dir: pathlib.Path) -> dict[str, Any]:
     """导出单表 JSONL 并计算源端摘要。
 
-    该函数故意不打印任何行内容。即使是配置名、SQL preview 或告警 summary，在客户环境中也可能暴露业务系统信息。
+    该函数故意不打印任何行内内容。同步配置、checkpoint、payload、错误样本和审计摘要都可能暴露
+    客户业务结构或执行上下文，即便是“摘要”也不应进入普通终端日志。
     """
 
     table_path = export_dir / f"{table.name}.jsonl"
@@ -831,18 +752,17 @@ def write_manifest(
     export_dir: pathlib.Path,
     table_results: list[dict[str, Any]],
     deferred_tables: list[dict[str, Any]],
+    review_tables: list[dict[str, Any]],
 ) -> None:
     """写入低敏 manifest。
 
-    manifest 是迁移验收附件，但不是业务数据样本仓库。它只记录：
-    - 哪些表被迁移；
-    - 行数和 checksum；
-    - 哪些列需要敏感数据保管；
-    - 哪些混放表被延期到其他 schema。
+    manifest 是迁移验收附件，但不是业务数据样本仓库。它只记录表名、行数、checksum、敏感字段名、
+    延期迁移表和需要人工复核的额外表，不保存 SQL、连接串、凭据、checkpoint 原始值、样本载荷、
+    prompt、模型输出或 HTTP 请求/响应正文。
     """
 
     manifest = {
-        "module": "datasource-management",
+        "module": "data-sync",
         "source": "mysql",
         "target": "postgresql",
         "generatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -850,16 +770,22 @@ def write_manifest(
         "postgresContainer": args.postgres_container,
         "postgresSchema": args.postgres_schema,
         "securityNotice": (
-            "JSONL 导出文件包含真实迁移数据，datasource_config 可能包含 JDBC URL、用户名和密码。"
-            "manifest 不保存样本值，迁移目录应按敏感数据介质保管。"
+            "JSONL 导出文件包含真实迁移数据，可能含同步配置、checkpoint、错误样本、审计摘要和低敏 outbox payload。"
+            "manifest 不保存样本值，迁移目录仍必须按敏感数据介质保管。"
+        ),
+        "ownershipNotice": (
+            "本脚本只迁移 10 张 data_sync_* 表。task_data_sync_* 归 task_management，agent_memory_* 归 ai_memory。"
         ),
         "tables": table_results,
         "deferredTables": deferred_tables,
+        "reviewRequiredTables": review_tables,
     }
     (export_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def load_manifest(export_dir: pathlib.Path) -> dict[str, Any]:
+    """读取导出 manifest。"""
+
     manifest_path = export_dir / "manifest.json"
     if not manifest_path.exists():
         raise RuntimeError(f"缺少 manifest.json：{manifest_path}")
@@ -870,7 +796,7 @@ def ensure_target_empty(args: argparse.Namespace) -> None:
     """保护 PostgreSQL 目标表。
 
     存量导入默认只允许空目标表。这样做是为了避免把 PostgreSQL seed/test data 与 MySQL 历史事实混合，
-    造成唯一键冲突、审计链路断裂或对账结果无法解释。
+    造成唯一键冲突、审计链路断裂、执行号重复或对账结果无法解释。
     """
 
     non_empty = [(table.name, count_target(args, table)) for table in TABLES if count_target(args, table) > 0]
@@ -882,8 +808,8 @@ def ensure_target_empty(args: argparse.Namespace) -> None:
 def copy_value(table: TableSpec, column: str, value: Any) -> str:
     """把 JSONL 字段转换为 COPY 字段。
 
-    None 使用 NULL_SENTINEL；其他值按字符串导入。
-    如果真实业务值刚好等于 NULL_SENTINEL，脚本会主动停止，避免把真实字符串误导入为 NULL。
+    None 使用 NULL_SENTINEL；其他值按字符串导入。若真实业务值刚好等于 NULL_SENTINEL，脚本主动停止，
+    避免把真实字符串误导入为 NULL。
     """
 
     if value is None:
@@ -902,7 +828,7 @@ def docker_psql_copy_from_jsonl(
 ) -> int:
     """使用 PostgreSQL COPY 流式导入 JSONL。
 
-    COPY 比逐行 INSERT 更适合迁移执行历史、审计和告警这类可能持续增长的表。
+    COPY 比逐行 INSERT 更适合迁移执行历史、checkpoint、错误样本和审计这类可能持续增长的表。
     这里仍然按行读取 JSONL，不把整个文件读入内存，便于后续在预生产环境处理较大数据量。
     """
 
@@ -937,8 +863,8 @@ def docker_psql_copy_from_jsonl(
 def import_table(args: argparse.Namespace, table: TableSpec, export_dir: pathlib.Path) -> None:
     """导入单表。
 
-    COPY 列顺序与 TableSpec 完全一致，并显式包含 id。
-    因为 identity sequence 不会因显式 id 自动推进，所有表导入完成后必须统一 reset sequence。
+    COPY 列顺序与 TableSpec 完全一致，并显式包含 id。因为 identity sequence 不会因显式 id 自动推进，
+    所有表导入完成后必须统一 reset sequence。
     """
 
     jsonl_path = export_dir / f"{table.name}.jsonl"
@@ -946,7 +872,7 @@ def import_table(args: argparse.Namespace, table: TableSpec, export_dir: pathlib
         raise RuntimeError(f"缺少导出文件：{jsonl_path}")
     columns = ", ".join(table.column_names)
     copy_sql = (
-        f"COPY {args.postgres_schema}.{table.name} ({columns}) "
+        f"COPY {qualified_table(args, table)} ({columns}) "
         f"FROM STDIN WITH (FORMAT csv, DELIMITER E'\\t', NULL '{NULL_SENTINEL}')"
     )
     row_count = docker_psql_copy_from_jsonl(args, copy_sql, table, jsonl_path)
@@ -960,12 +886,13 @@ def reset_identity_sequences(args: argparse.Namespace) -> None:
     setval(..., is_called=false) 用于空表场景，让下一次 nextval 从 1 开始。
     """
 
+    schema = safe_identifier(args.postgres_schema)
     statements = []
     for table in TABLES:
         statements.append(
-            f"SELECT setval(pg_get_serial_sequence('{args.postgres_schema}.{table.name}', 'id'), "
-            f"COALESCE((SELECT MAX(id) FROM {args.postgres_schema}.{table.name}), 1), "
-            f"COALESCE((SELECT MAX(id) FROM {args.postgres_schema}.{table.name}), 0) > 0);"
+            f"SELECT setval(pg_get_serial_sequence('{schema}.{table.name}', 'id'), "
+            f"COALESCE((SELECT MAX(id) FROM {schema}.{table.name}), 1), "
+            f"COALESCE((SELECT MAX(id) FROM {schema}.{table.name}), 0) > 0);"
         )
     docker_psql(args, " ".join(statements))
     print("[SEQUENCE] PostgreSQL identity sequence 已按最大 id 校正")
@@ -982,11 +909,12 @@ def run_plan(args: argparse.Namespace) -> None:
     """只读迁移计划检查。
 
     plan 不创建导出目录、不写 PostgreSQL、不导出业务数据，只展示：
-    - 14 张 datasource-management 控制面表的源端/目标端行数；
-    - MySQL 中发现但不属于本批 schema 的 data-sync / Agent Memory 混放表。
+    - 10 张 data-sync 控制面表的源端/目标端行数；
+    - MySQL 中发现但不属于本批 schema 的 task-management / Agent Memory 混放表；
+    - 额外出现、需要人工复核的 data_sync_* 表。
     """
 
-    print("== datasource-management MySQL -> PostgreSQL 迁移计划 ==")
+    print("== data-sync MySQL -> PostgreSQL 迁移计划 ==")
     for table in TABLES:
         source_count = count_source(args, table)
         target_count = count_target(args, table)
@@ -998,27 +926,35 @@ def run_plan(args: argparse.Namespace) -> None:
         for item in deferred:
             print(f"[DEFERRED] {item['table']}: mysqlRows={item['rows']}, targetSchema={item['targetSchema']}")
     else:
-        print("[DEFERRED] 当前 MySQL schema 未发现 data_sync_*、task_data_sync_* 或 agent_memory_* 混放表")
+        print("[DEFERRED] 当前 MySQL schema 未发现 task_data_sync_* 或 agent_memory_* 混放表")
+    review = detect_unmapped_data_sync_tables(args)
+    if review:
+        print("== 需人工复核的额外 data_sync_* 表 ==")
+        for item in review:
+            print(f"[REVIEW_REQUIRED] {item['table']}: mysqlRows={item['rows']}, targetSchema={item['targetSchema']}")
     print("提示：写入 PostgreSQL 需要使用 --mode import/all --apply，且默认要求目标表为空。")
 
 
 def run_export(args: argparse.Namespace) -> pathlib.Path:
-    """导出 datasource-management 控制面表并写 manifest。"""
+    """导出 data-sync 控制面表并写 manifest。"""
 
     export_dir = pathlib.Path(args.export_dir) if args.export_dir else DEFAULT_OUTPUT_ROOT / dt.datetime.now().strftime("%Y%m%d%H%M%S")
     export_dir.mkdir(parents=True, exist_ok=True)
     results = [export_table(args, table, export_dir) for table in TABLES]
     deferred = detect_deferred_tables(args)
-    write_manifest(args, export_dir, results, deferred)
+    review = detect_unmapped_data_sync_tables(args)
+    write_manifest(args, export_dir, results, deferred, review)
     print(f"[EXPORT] manifest={export_dir / 'manifest.json'}")
     if deferred:
-        print(f"[DEFERRED] 已记录 {len(deferred)} 张非本批表；它们不会被导入 datasource_management schema。")
+        print(f"[DEFERRED] 已记录 {len(deferred)} 张非本批表；它们不会被导入 data_sync schema。")
+    if review:
+        print(f"[REVIEW_REQUIRED] 已记录 {len(review)} 张额外 data_sync_* 表；请先确认归属后再单独处理。")
     print("[SECURITY] 导出目录包含真实迁移数据，请按敏感数据介质保管并在验收后清理。")
     return export_dir
 
 
 def run_import(args: argparse.Namespace, export_dir: pathlib.Path) -> None:
-    """导入 datasource-management 控制面表。
+    """导入 data-sync 控制面表。
 
     import 是写 PostgreSQL 的阶段，必须显式 --apply。
     """
@@ -1035,7 +971,7 @@ def run_verify(args: argparse.Namespace, export_dir: pathlib.Path) -> None:
     """迁移后对账。
 
     verify 使用 manifest 中的源端 checksum 与当前 PostgreSQL 重新计算出的 checksum 比对。
-    deferredTables 只打印提示，不参与本批对账，因为它们明确不属于 datasource_management schema。
+    deferredTables 和 reviewRequiredTables 只打印提示，不参与本批对账，因为它们明确不属于本批导入对象。
     """
 
     manifest = load_manifest(export_dir)
@@ -1051,12 +987,19 @@ def run_verify(args: argparse.Namespace, export_dir: pathlib.Path) -> None:
             mismatches.append(table.name)
     for item in manifest.get("deferredTables", []):
         print(f"[DEFERRED] {item['table']}: rows={item['rows']}, targetSchema={item['targetSchema']}, status={item['status']}")
+    for item in manifest.get("reviewRequiredTables", []):
+        print(f"[REVIEW_REQUIRED] {item['table']}: rows={item['rows']}, targetSchema={item['targetSchema']}, status={item['status']}")
     if mismatches:
         raise RuntimeError("迁移对账失败：" + ", ".join(mismatches))
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="datasource-management MySQL 到 PostgreSQL 存量迁移与对账工具")
+    """解析命令行参数。
+
+    默认值面向本地 Docker Compose；预生产/生产环境可以通过环境变量或命令行覆盖容器名、库名、用户和 schema。
+    """
+
+    parser = argparse.ArgumentParser(description="data-sync MySQL 到 PostgreSQL 存量迁移与对账工具")
     parser.add_argument("--mode", choices=["plan", "export", "import", "verify", "all"], default="plan")
     parser.add_argument("--apply", action="store_true", help="允许执行 PostgreSQL 写入动作")
     parser.add_argument("--allow-target-not-empty", action="store_true", help="允许导入到非空目标表，默认禁止")
@@ -1067,14 +1010,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mysql-password", default=os.getenv("DATASMART_MYSQL_PASSWORD", "password"))
     parser.add_argument("--postgres-container", default=os.getenv("DATASMART_POSTGRES_CONTAINER", "datasmart-postgresql"))
     parser.add_argument("--postgres-database", default=os.getenv("DATASMART_POSTGRES_DATABASE", "datasmart_govern"))
-    parser.add_argument("--postgres-schema", default=os.getenv("DATASMART_POSTGRES_SCHEMA", "datasource_management"))
+    parser.add_argument("--postgres-schema", default=os.getenv("DATASMART_POSTGRES_SCHEMA", "data_sync"))
     parser.add_argument("--postgres-user", default=os.getenv("DATASMART_POSTGRES_USER", "datasmart"))
     return parser.parse_args()
 
 
+def validate_args(args: argparse.Namespace) -> None:
+    """执行运行前参数校验。"""
+
+    safe_identifier(args.postgres_schema)
+
+
 def main() -> int:
+    """脚本入口，把异常折叠成清晰退出码。"""
+
     args = parse_args()
     try:
+        validate_args(args)
         if args.mode == "plan":
             run_plan(args)
         elif args.mode == "export":
