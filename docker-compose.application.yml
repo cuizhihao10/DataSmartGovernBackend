@@ -139,9 +139,21 @@ services:
         SERVER_PORT: 8082
     environment:
       <<: *java-common-environment
+      # datasource-management 的平台业务事实库已迁移到 PostgreSQL。
+      # 注意：这只覆盖 Spring Boot 自身 datasource；模块仍然可以通过连接器驱动访问客户侧 MySQL 数据源。
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgresql:5432/datasmart_govern?currentSchema=datasource_management&ApplicationName=datasmart-datasource-management
+      SPRING_DATASOURCE_USERNAME: datasmart
+      SPRING_DATASOURCE_PASSWORD: ${DATASMART_POSTGRES_PASSWORD:-password}
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       DATASMART_TASK_MANAGEMENT_BASE_URL: http://task-management:8081
     ports:
       - "8082:8082"
+    depends_on:
+      - postgresql
+      - redis
+      - kafka
+      - nacos
+      - task-management
 
   data-sync:
     <<: *java-common

@@ -63,6 +63,12 @@
             <artifactId>mybatis-plus-jsqlparser</artifactId>
         </dependency>
         <dependency>
+            <!--
+              MySQL 驱动在本模块迁移到 PostgreSQL 后仍然保留，但语义已经改变：
+              它不再用于连接平台自身业务库，而是 datasource-management 作为“外部数据源连接器”
+              连接客户侧 MySQL 时所需的运行时驱动。这个区别非常重要，否则迁移 PostgreSQL 时如果直接删除
+              MySQL Connector/J，会导致连接测试、元数据发现、同步批读取/写入等外部 MySQL 场景失效。
+            -->
             <groupId>com.mysql</groupId>
             <artifactId>mysql-connector-j</artifactId>
         </dependency>
@@ -76,9 +82,25 @@
         </dependency>
         <!-- 补充多种 JDBC 驱动，便于当前阶段直接验证异构数据源接入。 -->
         <dependency>
+            <!--
+              pgJDBC 同时承担两类职责：
+              1. 作为本模块平台业务事实库的 PostgreSQL 驱动；
+              2. 作为外部 PostgreSQL 数据源连接测试、元数据发现和同步执行的连接器驱动。
+              版本由父 POM 统一管理，避免不同服务或连接器路径出现驱动行为漂移。
+            -->
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
-            <version>42.6.0</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <!-- Flyway 负责 datasource_management schema 的版本登记、启动校验和后续增量迁移。 -->
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <!-- Flyway 10+ 将 PostgreSQL 方言支持拆到独立模块，必须与 flyway-core 一起引入。 -->
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
         <dependency>
             <groupId>com.microsoft.sqlserver</groupId>

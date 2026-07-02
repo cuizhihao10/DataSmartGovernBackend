@@ -80,7 +80,8 @@ Agent 长期记忆和未来 LangGraph durable state 最终都应使用 PostgreSQ
 
 - PostgreSQL DDL 可在空库幂等执行；
 - MySQL 历史数据已转换并通过校验；
-- 服务只装配 pgJDBC，默认 URL 为 PostgreSQL；
+- 服务默认 URL 为 PostgreSQL，并只把 PostgreSQL 作为平台业务事实库；如果服务本身承担外部连接器职责
+  （例如 datasource-management 需要连接客户侧 MySQL），可保留对应外部连接器驱动，但必须在 POM 和文档中明确它不用于平台库；
 - 单元测试、模块测试、真实 PostgreSQL 集成测试通过；
 - 列表、分页、状态流转、幂等、并发更新和 outbox 场景通过；
 - Prometheus、日志和健康检查可以区分数据库连接失败、连接池耗尽与慢查询；
@@ -91,7 +92,7 @@ Agent 长期记忆和未来 LangGraph durable state 最终都应使用 PostgreSQ
 阶段 0 已完成：目标架构、PostgreSQL/pgvector Compose、服务 schema 和 pgJDBC 版本基线已经建立。
 本地真实容器验证已确认 PostgreSQL 17 健康、vector 0.8.3 可用、8 个服务 schema 初始化成功。
 
-阶段 1 的两个代码路径试点已经完成，阶段 2 的第一个核心服务也已完成代码路径切换：
+阶段 1 的两个代码路径试点已经完成，阶段 2 的前两个核心服务也已完成代码路径切换：
 
 - `observability` 已移除 MySQL 驱动，切换到 pgJDBC、PostgreSQL `observability` schema 和 Flyway V1；
 - `data-quality` 已把规则、执行、报告、异常四张业务表转换为 PostgreSQL V1，切换 pgJDBC、
@@ -108,13 +109,27 @@ Agent 长期记忆和未来 LangGraph durable state 最终都应使用 PostgreSQ
   与 `scripts/permission-admin-mysql-to-postgresql.py`，用于迁移权限中心 8 张自有表、执行空目标保护、
   COPY 导入、行数与 SHA-256 摘要对账、identity sequence 校正，并把旧 MySQL 中混放的 `agent_memory_*`
   表记录为 `deferredTables`，明确后续迁入 `ai_memory` 而不是 `permission_admin`；
+- `datasource-management` 已完成 PostgreSQL `datasource_management` schema、pgJDBC、Flyway V1、
+  MyBatis-Plus PostgreSQL 分页方言和 Compose 覆盖配置；
+- datasource-management PostgreSQL V1 覆盖当前代码真实使用的 14 张控制面表：
+  `datasource_config`、`datasource_readonly_sql_execution_audit`、`sync_template`、`sync_task`、
+  `sync_agent_command_receipt`、`sync_execution`、`sync_checkpoint`、`sync_audit_record`、
+  `sync_permission_policy_binding`、`sync_permission_policy_change_request`、
+  `sync_permission_approval_delegate_rule`、`sync_governance_alert`、`sync_alert_delivery_record`、
+  `sync_permission_governance_notification`；
+- datasource-management 真实 PostgreSQL 17 集成测试已覆盖 Flyway V1、14 张表存在性、identity 主键回填、
+  BOOLEAN 字段映射、MyBatis-Plus Page 分页、数据源登记、同步模板、同步任务、执行记录、检查点、
+  只读 SQL 审计和 Agent 命令 receipt 的低敏插入与显式清理；
+- datasource-management 的 `mysql-connector-j` 被有意保留为外部客户 MySQL 数据源连接器驱动，
+  不再用于 Spring Boot 平台业务 datasource；后续不能把它误判为平台业务库尚未迁移。
 - `observability`、`data-quality`、`permission-admin` 三个服务均不再从应用层依赖 MySQL 驱动。
 
 这里的“代码路径完成”只代表新安装和当前开发环境可以直接使用 PostgreSQL。存量客户环境如果已经在
-MySQL 中产生 data-quality 或 permission-admin 业务数据，仍必须完成停写/导出、类型转换、identity
+MySQL 中产生 data-quality、permission-admin 或 datasource-management 业务数据，仍必须完成停写/导出、类型转换、identity
 sequence 校正、行数与业务聚合对账、只读观察和回滚点保留，才能按上面的单服务验收门禁标记为商业迁移完成。
 
-下一批应进入 `datasource-management`。该服务迁移时要重点处理数据源连接配置、凭据脱敏、元数据采集结果、
-连接测试记录和项目/租户权限边界。其余 Java 服务仍由 MySQL 承担迁移期运行流量，不能把三个服务通过
-误认为全平台迁移完成；同时 `agent_memory_*` 表已登记为阶段 3 的 `ai_memory` 迁移对象，不能在权限中心
-或 datasource-management 中继续扩展。
+下一批应补 `datasource-management` 的 MySQL 到 PostgreSQL 存量迁移脚手架。该脚手架必须重点处理
+数据源连接配置和凭据脱敏：导出、manifest、checksum、日志和错误摘要都不得输出明文密码、完整 JDBC URL、
+token、SQL 样本或客户数据样本。其余 Java 服务仍由 MySQL 承担迁移期运行流量，不能把当前四个服务通过
+误认为全平台迁移完成；同时 `agent_memory_*` 表已登记为阶段 3 的 `ai_memory` 迁移对象，不能在权限中心、
+datasource-management 或 MySQL 初始化脚本中继续扩展。

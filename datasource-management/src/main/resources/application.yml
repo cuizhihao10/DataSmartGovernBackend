@@ -1,21 +1,41 @@
 server:
-  # datasource-management 独立运行端口。
-  # 当前阶段保留模块独立启动能力，方便逐模块开发、调试和学习；正式对外访问时再由 gateway 统一代理。
+  # datasource-management 的独立运行端口。正式对外访问时由 gateway 代理，保留独立端口便于本地调试和模块级 smoke。
   port: 8082
 
 spring:
   application:
-    # 服务名会进入注册发现、日志标识、链路追踪和调度实例标识。
+    # 服务名会进入注册发现、日志标识、链路追踪和跨服务调用配置。
     name: datasource-management
   profiles:
     active: dev
   datasource:
-    # 这里连接的是平台自己的治理库，而不是外部业务库。
-    # 外部 MySQL、PostgreSQL、Kafka、对象存储等连接信息会登记到业务表中，再由平台按需探查或调度。
-    url: jdbc:mysql://localhost:3306/datasmart_govern?useSSL=false&serverTimezone=UTC
-    username: root
-    password: password
-    driver-class-name: com.mysql.cj.jdbc.Driver
+    # 这里连接的是 datasource-management 自己的平台业务事实库，而不是用户登记的外部业务库。
+    # currentSchema=datasource_management 会把未显式限定 schema 的 Mapper 表名约束在本微服务自己的命名空间。
+    # 外部 MySQL/PostgreSQL/SQL Server 等客户数据源仍通过 datasource_config 中登记的 jdbcUrl 和连接器驱动按需访问。
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/datasmart_govern?currentSchema=datasource_management&ApplicationName=datasmart-datasource-management}
+    username: ${SPRING_DATASOURCE_USERNAME:datasmart}
+    password: ${SPRING_DATASOURCE_PASSWORD:password}
+    driver-class-name: ${SPRING_DATASOURCE_DRIVER_CLASS_NAME:org.postgresql.Driver}
+    hikari:
+      # datasource-management 同时承担连接测试、元数据发现、只读 SQL 审计和同步控制面写入，连接池必须有明确上限。
+      maximum-pool-size: ${DATASMART_DATASOURCE_DB_MAX_POOL_SIZE:20}
+      # 保留少量空闲连接，降低管理台列表、队列巡检和 Agent 命令接收的冷启动延迟。
+      minimum-idle: ${DATASMART_DATASOURCE_DB_MIN_IDLE:2}
+      # 控制面接口不应长时间等待数据库连接；超过该时间应快速失败并通过告警/重试路径处理。
+      connection-timeout: ${DATASMART_DATASOURCE_DB_CONNECTION_TIMEOUT_MILLIS:3000}
+      # 连接校验超时独立收口，避免健康检查和连接借用被慢网络拖住。
+      validation-timeout: ${DATASMART_DATASOURCE_DB_VALIDATION_TIMEOUT_MILLIS:1000}
+  flyway:
+    enabled: true
+    # Flyway 历史表和业务表都位于 datasource_management schema。
+    # schema 由 docker/postgresql/init/00-platform-schemas.sql 统一创建，服务启动只负责版本迁移和校验。
+    schemas: datasource_management
+    default-schema: datasource_management
+    create-schemas: false
+    locations: classpath:db/migration/postgresql/datasource-management
+    validate-on-migrate: true
+    # 商业环境中 clean 会删除数据源连接、同步任务、执行记录、告警和审批证据，因此必须永久关闭。
+    clean-disabled: true
   kafka:
     # 预留给后续元数据变更事件、同步任务事件、执行器回调事件和跨模块异步协作。
     bootstrap-servers: localhost:9092
