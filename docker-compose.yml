@@ -1,6 +1,38 @@
 services:
-  # MySQL 是当前已实现业务模块的核心事务库。
-  # 挂载初始化脚本可以让本地启动后直接具备可运行的基础表结构。
+  # PostgreSQL 是 DataSmart 的目标事务数据库、Agent 长期记忆库和 LangGraph durable state 候选底座。
+  #
+  # 当前处于 MySQL -> PostgreSQL 渐进迁移期，因此 PostgreSQL 与 MySQL 会暂时并存：
+  # - 已完成迁移的服务通过 PostgreSQL 中自己的 schema 访问数据；
+  # - 尚未迁移的历史服务继续使用 MySQL，直到对应 schema、SQL、测试和 E2E 全部通过；
+  # - 迁移完成后删除 MySQL 服务和 mysql_data，而不是永久维护双写。
+  postgresql:
+    # pgvector 官方镜像同时提供 PostgreSQL 与 vector extension。
+    # 默认经 DaoCloud 国内镜像前缀拉取；企业环境可通过 DATASMART_POSTGRES_IMAGE 指向 Harbor/Nexus。
+    image: ${DATASMART_POSTGRES_IMAGE:-docker.m.daocloud.io/pgvector/pgvector:0.8.3-pg18}
+    container_name: datasmart-postgresql
+    environment:
+      POSTGRES_DB: datasmart_govern
+      POSTGRES_USER: datasmart
+      POSTGRES_PASSWORD: ${DATASMART_POSTGRES_PASSWORD:-password}
+    ports:
+      - "${DATASMART_LOCAL_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      # PostgreSQL 18+ 官方镜像按主版本建立数据子目录，卷必须挂在父目录，
+      # 否则镜像会把旧式 `/var/lib/postgresql/data` 挂载识别为不可升级布局并拒绝启动。
+      - postgresql_data:/var/lib/postgresql
+      - ./docker/postgresql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U datasmart -d datasmart_govern"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - datasmart-network
+    restart: unless-stopped
+
+  # MySQL 是迁移期兼容数据库，不再是目标架构。
+  # 它只服务于尚未完成 PostgreSQL schema/SQL 转换的历史模块以及当前 Nacos 外置存储。
   mysql:
     # 默认通过 DaoCloud 国内镜像站拉取；企业环境可用 DATASMART_MYSQL_IMAGE 指向私有仓库。
     image: ${DATASMART_MYSQL_IMAGE:-docker.m.daocloud.io/library/mysql:8.0}
@@ -236,6 +268,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  postgresql_data:
   mysql_data:
   redis_data:
   kafka_data:

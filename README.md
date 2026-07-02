@@ -10,6 +10,11 @@
 
 **适配风格**：OpenClaw企业级多智能体架构，贴合数据治理业务场景，明确各环节开发约束与设计要求。
 
+**数据库目标架构说明**：项目已决定从 MySQL 渐进迁移到 PostgreSQL。PostgreSQL 将作为 Java 业务事实、
+Agent 长期记忆、pgvector 语义检索和未来 LangGraph durable state 的目标数据库；MySQL 仅在尚未完成
+服务级迁移时临时保留。迁移原则、顺序和验收门禁见
+[MySQL 到 PostgreSQL 渐进迁移路线](docs/postgresql-migration-roadmap.md)。
+
 **构建环境说明**：本项目固定使用 JDK 21。若本机 `mvn -v` 默认显示 Java 8，请先阅读 [docs/development-jdk21.md](docs/development-jdk21.md)，项目根 `pom.xml` 已配置 Maven Toolchains 自动选择 JDK 21，避免 Java 21 语法被旧 JDK 误判失败。
 
 **本地闭环联调说明**：当前项目已进入“能力收敛、链路闭环”阶段。若需要按最小商业化链路验证 Keycloak、gateway、permission-admin、task-management、data-sync 与 datasource-management 是否能够串起来，请阅读 [docs/local-e2e-closure-runbook.md](docs/local-e2e-closure-runbook.md)；如果遇到 Docker 镜像拉取、Windows `MySQL80` 占用 `3306`、MySQL 初始化或迁移登记问题，请优先阅读 [docs/local-e2e-docker-troubleshooting.md](docs/local-e2e-docker-troubleshooting.md)。启动真实联调前，建议先使用 [scripts/local-e2e-docker-image-cache.ps1](scripts/local-e2e-docker-image-cache.ps1) 通过国内镜像前缀预拉取 Compose 镜像并重新打标准 tag；如果 Windows 本机 `MySQL80` 已占用 `3306`，请叠加 [docker-compose.local-e2e.yml](docker-compose.local-e2e.yml) 将项目 MySQL 暴露到 `13306`。随后使用 [scripts/local-e2e-environment-readiness.ps1](scripts/local-e2e-environment-readiness.ps1) 判断 Docker、MySQL 凭据、端口和 Python Runtime API 依赖是否具备继续启动条件，再用 [scripts/local-mysql-migration-governance.ps1](scripts/local-mysql-migration-governance.ps1) 检查或登记本地 MySQL 增量迁移，最后使用 [scripts/local-e2e-smoke-check.ps1](scripts/local-e2e-smoke-check.ps1) 做只读 smoke check。上述脚本不会创建任务、不会触发 worker loop、不会读取或写入真实业务数据，避免已有数据卷 schema 与当前代码漂移或环境未就绪被误判为业务代码问题。

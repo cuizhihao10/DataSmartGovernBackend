@@ -73,6 +73,12 @@
         -->
         <argLine></argLine>
         <kafka.version>3.6.2</kafka.version>
+        <!--
+          PostgreSQL 是项目新的目标事务数据库和 AI 长期记忆底座。
+          迁移期间 MySQL 版本暂时保留，只用于尚未切换的历史模块；新模块和新迁移不得再引入 MySQL 专属语法。
+          pgJDBC 42.7.12 包含 2026-06 的安全修复，因此显式固定版本，避免不同服务跟随传递依赖产生漂移。
+        -->
+        <postgresql.version>42.7.12</postgresql.version>
         <mysql.version>8.0.33</mysql.version>
         <redis.version>7.2.4</redis.version>
         <minio.version>8.5.7</minio.version>
@@ -123,6 +129,16 @@
                 <groupId>com.mysql</groupId>
                 <artifactId>mysql-connector-j</artifactId>
                 <version>${mysql.version}</version>
+            </dependency>
+            <!--
+              PostgreSQL 目标驱动。这里只在父工程做版本管理，不会自动把驱动塞入所有微服务；
+              每个服务完成 schema 与 SQL 兼容整改后，再在模块 POM 中显式引入，防止“驱动已换但 SQL 未迁移”
+              造成假完成或运行期故障。
+            -->
+            <dependency>
+                <groupId>org.postgresql</groupId>
+                <artifactId>postgresql</artifactId>
+                <version>${postgresql.version}</version>
             </dependency>
             <!-- Redis -->
             <dependency>
