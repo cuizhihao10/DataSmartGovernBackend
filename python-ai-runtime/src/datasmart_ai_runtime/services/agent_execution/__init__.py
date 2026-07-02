@@ -23,6 +23,15 @@ from datasmart_ai_runtime.services.agent_execution.durable_agent_loop import (
     DurableAgentLoopStore,
     InMemoryDurableAgentLoopStore,
 )
+from datasmart_ai_runtime.services.agent_execution.durable_agent_loop_components import (
+    DurableAgentLoopStoreSettings,
+    build_durable_agent_loop_store,
+    durable_agent_loop_store_diagnostics,
+    durable_agent_loop_store_settings_from_env,
+)
+from datasmart_ai_runtime.services.agent_execution.durable_agent_loop_redis import (
+    RedisDurableAgentLoopStore,
+)
 
 __all__ = (
     "AgentExecutionClosureReport",
@@ -33,4 +42,9 @@ __all__ = (
     "DurableAgentLoopService",
     "DurableAgentLoopStore",
     "InMemoryDurableAgentLoopStore",
+    "RedisDurableAgentLoopStore",
+    "DurableAgentLoopStoreSettings",
+    "build_durable_agent_loop_store",
+    "durable_agent_loop_store_diagnostics",
+    "durable_agent_loop_store_settings_from_env",
 )

@@ -24,7 +24,8 @@ datasmart_ai_runtime/
   domain/                 # 领域契约、枚举、纯数据结构，禁止依赖具体基础设施
   services/
     agent_graph/          # LangGraph 节点/边/状态标准、图合同审计与跨请求恢复语义
-    agent/                # Agent 编排、二轮推理、loop 控制、workspace 上下文
+    agent/                # Agent 编排、二轮推理、workspace 上下文
+    agent_execution/      # Durable Loop checkpoint、执行闭环与控制面 handoff
     memory/               # 长期记忆规划、检索、写入治理、正式落成、store 抽象
     model_gateway/        # 模型路由、provider、预算、缓存、结果过滤、OpenAI-compatible 适配
     multi_agent/          # 产品 Agent 名册、LangGraph 多 Agent 协作图、执行前工作项、handoff 边界
@@ -73,6 +74,11 @@ datasmart_ai_runtime/
     “所有 LangGraph 文件都塞进一个目录”的技术型平铺问题；
   - Turn Runner 已从固定流水线升级为依据 `runnerRoute` 分支的条件状态机，并通过
     `requestId/runId/sessionId`、`runnerStatus`、`loopDecision` 和 node trace 描述恢复现场。
+- `services/agent_execution/` 承载 Agent 执行闭环与 Durable Loop 状态：
+  - `durable_agent_loop.py` 定义阶段、恢复动作、checkpoint 和 store 协议；
+  - `durable_agent_loop_redis.py` 提供跨实例、跨重启的 Redis 低敏 checkpoint 实现；
+  - `durable_agent_loop_components.py` 集中环境变量、延迟 Redis client 装配和凭据脱敏诊断；
+  - 本地默认使用 in-memory，应用 Compose 默认使用 Redis DB 2，避免“Durable”能力在容器重启后失效。
 - `services/tools/` 已开始承载工具治理闭口能力，包括 ToolPlan intake、readiness、readiness graph、
   checkpoint/resume-preview 客户端、command proposal、worker receipt 合同以及新增的
   `LangGraphExecutionGateWorkflow`、`langgraph_execution_gate_contract.py` 和 `agent_execution_gate_recorded`

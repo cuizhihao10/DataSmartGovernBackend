@@ -59,7 +59,11 @@ from datasmart_ai_runtime.services.agent_runtime_tool_feedback_client import (
     JavaAgentRuntimeToolFeedbackProvider,
 )
 from datasmart_ai_runtime.services.agent_capability import default_agent_capability_matrix_service
-from datasmart_ai_runtime.services.agent_execution import DurableAgentLoopService
+from datasmart_ai_runtime.services.agent_execution import (
+    DurableAgentLoopService,
+    build_durable_agent_loop_store,
+    durable_agent_loop_store_settings_from_env,
+)
 from datasmart_ai_runtime.services.agent_second_turn_orchestrator import AgentSecondTurnOrchestrator
 from datasmart_ai_runtime.services.memory import (
     AgentMemoryMaterializationMetrics,
@@ -140,7 +144,14 @@ def create_app() -> Any:
     )
     memory_runtime = build_api_memory_runtime()
     user_profile_memory = UserProfileMemoryService.default()
-    durable_agent_loop_service = DurableAgentLoopService()
+    # Durable Agent Loop 的状态仓储必须在应用启动时统一装配，不能让每个请求临时创建 store：
+    # - 默认 in-memory 兼容本地学习与单测；
+    # - 生产设置 DATASMART_AGENT_DURABLE_LOOP_STORE=redis 后，同一 run 可跨实例、跨重启恢复；
+    # - Redis store 只保存白名单低敏状态，不保存 prompt、SQL、工具参数或模型输出正文。
+    durable_agent_loop_store_settings = durable_agent_loop_store_settings_from_env()
+    durable_agent_loop_service = DurableAgentLoopService(
+        build_durable_agent_loop_store(durable_agent_loop_store_settings)
+    )
     agent_runtime_base_url = os.getenv("DATASMART_AGENT_RUNTIME_BASE_URL")
     # 工具目录在启动阶段集中加载一次，并同时供主 orchestrator 与协议适配 preview 入口使用。
     # 这样可以避免 `/agent/plans`、MCP tools/call preview 和未来确认页在同一进程里看到不同版本的工具目录：

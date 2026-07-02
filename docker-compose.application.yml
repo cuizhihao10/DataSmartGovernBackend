@@ -274,6 +274,11 @@ services:
       DATASMART_AI_RUNTIME_EVENT_STORE: redis-stream
       DATASMART_AI_RUNTIME_EVENT_CHECKPOINT_STORE: redis
       DATASMART_AI_RUNTIME_EVENT_OUTBOX_STORE: redis
+      # Durable Agent Loop 使用独立 Redis DB 保存低敏恢复现场，避免容器重启或多实例切换后丢失 run 状态。
+      # 它与 runtime event/checkpoint 数据分库，便于容量、TTL、备份和故障排查分别治理。
+      DATASMART_AGENT_DURABLE_LOOP_STORE: redis
+      DATASMART_AGENT_DURABLE_LOOP_REDIS_URL: redis://redis:6379/2
+      DATASMART_AGENT_DURABLE_LOOP_TTL_SECONDS: "86400"
       DATASMART_AI_RUNTIME_EVENT_PUBLISHER: kafka
       DATASMART_AI_RUNTIME_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       DATASMART_GATEWAY_SIGNATURE_REQUIRED: "true"
