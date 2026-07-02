@@ -169,6 +169,12 @@ services:
         SERVER_PORT: 8083
     environment:
       <<: *java-common-environment
+      # data-quality 已完成 PostgreSQL 切换，显式覆盖公共锚点中的迁移期 MySQL 配置。
+      # schema 隔离既是表命名空间，也是阻止跨微服务误访问业务事实的第一道边界。
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgresql:5432/datasmart_govern?currentSchema=data_quality&ApplicationName=datasmart-data-quality
+      SPRING_DATASOURCE_USERNAME: datasmart
+      SPRING_DATASOURCE_PASSWORD: ${DATASMART_POSTGRES_PASSWORD:-password}
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       SPRING_NEO4J_URI: bolt://neo4j:7687
       SPRING_NEO4J_AUTHENTICATION_USERNAME: neo4j
       SPRING_NEO4J_AUTHENTICATION_PASSWORD: ${DATASMART_NEO4J_PASSWORD:-password}
@@ -180,7 +186,7 @@ services:
     ports:
       - "8083:8083"
     depends_on:
-      - mysql
+      - postgresql
       - redis
       - kafka
       - nacos

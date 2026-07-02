@@ -30,12 +30,16 @@ public class MyBatisPlusConfig {
 
     /**
      * 注册 MyBatis-Plus 拦截器链。
-     * 当前阶段只启用分页拦截器，已经足够覆盖规则列表等常见场景。
+     *
+     * <p>分页 SQL 并不是数据库无关的：不同数据库对 LIMIT/OFFSET、参数绑定和 count 优化的处理不同。
+     * data-quality 已完成 PostgreSQL 切换，因此这里必须显式选择 {@link DbType#POSTGRE_SQL}。
+     * 如果只换 JDBC 驱动却继续保留 MYSQL 方言，普通 CRUD 可能暂时正常，但分页列表会在真实流量下
+     * 生成错误或次优 SQL，这正是“看似迁移成功、实际未完成”的典型风险。</p>
      */
     @Bean
     public MybatisPlusInterceptor mybatisPlusInterceptor() {
         MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();
-        interceptor.addInnerInterceptor(new PaginationInnerInterceptor(DbType.MYSQL));
+        interceptor.addInnerInterceptor(new PaginationInnerInterceptor(DbType.POSTGRE_SQL));
         return interceptor;
     }
 

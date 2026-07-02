@@ -91,6 +91,18 @@ Agent 长期记忆和未来 LangGraph durable state 最终都应使用 PostgreSQ
 阶段 0 已完成：目标架构、PostgreSQL/pgvector Compose、服务 schema 和 pgJDBC 版本基线已经建立。
 本地真实容器验证已确认 PostgreSQL 17 健康、vector 0.8.3 可用、8 个服务 schema 初始化成功。
 
-阶段 1 已完成首个试点：`observability` 已移除 MySQL 驱动，切换到 pgJDBC、PostgreSQL
-`observability` schema 和 Flyway V1 基线，并通过真实 PostgreSQL 17 Spring Boot 集成测试。
-其他 Java 服务仍由 MySQL 承担现有运行流量，不能把单服务试点通过误认为全平台迁移完成。
+阶段 1 的两个代码路径试点已经完成：
+
+- `observability` 已移除 MySQL 驱动，切换到 pgJDBC、PostgreSQL `observability` schema 和 Flyway V1；
+- `data-quality` 已把规则、执行、报告、异常四张业务表转换为 PostgreSQL V1，切换 pgJDBC、
+  MyBatis-Plus PostgreSQL 分页方言、独立 schema 与 Compose 依赖；
+- data-quality 真实 PostgreSQL 17 集成测试已覆盖 identity 主键回填、规则分页、最大执行序号、
+  异常动态聚合和测试数据显式清理；
+- 两个服务均不再从应用层依赖 MySQL 驱动。
+
+这里的“代码路径试点完成”只代表新安装和当前开发环境可以直接使用 PostgreSQL。存量客户环境如果已经在
+MySQL 中产生 data-quality 业务数据，仍必须完成停写/导出、类型转换、identity sequence 校正、行数与
+业务聚合对账、只读观察和回滚点保留，才能按上面的单服务验收门禁标记为商业迁移完成。
+
+下一批进入 `permission-admin` 之前，应先形成可复用的存量数据迁移与对账脚本；其余 Java 服务仍由 MySQL
+承担迁移期运行流量，不能把两个试点通过误认为全平台迁移完成。

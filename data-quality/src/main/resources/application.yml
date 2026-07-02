@@ -9,11 +9,30 @@ spring:
   profiles:
     active: dev
   datasource:
-    # 规则定义和检测报告当前统一持久化到 MySQL。
-    url: jdbc:mysql://localhost:3306/datasmart_govern?useSSL=false&serverTimezone=UTC
-    username: root
-    password: password
-    driver-class-name: com.mysql.cj.jdbc.Driver
+    # data-quality 已迁移到 PostgreSQL。currentSchema 把未限定表名限制在本服务 schema，
+    # 防止 Mapper 因 search_path 错误读取其他微服务的同名表。
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/datasmart_govern?currentSchema=data_quality&ApplicationName=datasmart-data-quality}
+    username: ${SPRING_DATASOURCE_USERNAME:datasmart}
+    password: ${SPRING_DATASOURCE_PASSWORD:password}
+    driver-class-name: ${SPRING_DATASOURCE_DRIVER_CLASS_NAME:org.postgresql.Driver}
+    hikari:
+      # 质量检测可能并发生成执行记录、报告和异常明细，连接池必须有明确上限，
+      # 避免任务积压时每个实例无限争抢 PostgreSQL 连接。
+      maximum-pool-size: ${DATASMART_QUALITY_DB_MAX_POOL_SIZE:20}
+      minimum-idle: ${DATASMART_QUALITY_DB_MIN_IDLE:2}
+      connection-timeout: ${DATASMART_QUALITY_DB_CONNECTION_TIMEOUT_MILLIS:3000}
+      validation-timeout: ${DATASMART_QUALITY_DB_VALIDATION_TIMEOUT_MILLIS:1000}
+  flyway:
+    enabled: true
+    # Flyway 历史表和业务表都归属 data_quality schema；schema 由平台初始化脚本创建。
+    schemas: data_quality
+    default-schema: data_quality
+    create-schemas: false
+    locations: classpath:db/migration/postgresql/data-quality
+    validate-on-migrate: true
+    # 商业环境中 clean 会删除规则、报告和异常证据，因此必须永久关闭。
+    clean-disabled: true
+    baseline-on-migrate: false
   neo4j:
     # Spring Boot 3.x 的 Neo4j Driver 自动配置读取 spring.neo4j.*，
     # 不是旧的 spring.data.neo4j.*。如果写错位置，驱动会用无认证 token 访问本地 Neo4j，
@@ -45,6 +64,10 @@ mybatis-plus:
   type-aliases-package: com.czh.datasmart.govern.quality.entity
   configuration:
     map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      # PostgreSQL 使用小写下划线标识符，不给表名追加任何迁移期前缀。
+      table-prefix: ""
 
 datasmart:
   quality:

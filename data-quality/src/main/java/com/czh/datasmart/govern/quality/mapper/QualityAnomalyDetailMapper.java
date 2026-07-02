@@ -37,6 +37,8 @@ public interface QualityAnomalyDetailMapper extends BaseMapper<QualityAnomalyDet
      * QualityAnomalyAggregationDimension 枚举把业务维度转换成受控列名。
      *
      * <p>查询条件与异常分页接口保持一致，方便运营人员先看聚合分布，再下钻到具体明细。
+     * 当前 SQL 使用的 {@code COUNT/MAX/CONCAT/LIMIT} 已通过真实 PostgreSQL 集成测试；
+     * 后续新增聚合表达式时不能直接复制 MySQL 专属函数，必须同时更新数据库集成测试。
      */
     @Select("""
             <script>

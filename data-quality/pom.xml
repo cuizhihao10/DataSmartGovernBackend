@@ -62,8 +62,23 @@
             <artifactId>mybatis-plus-jsqlparser</artifactId>
         </dependency>
         <dependency>
-            <groupId>com.mysql</groupId>
-            <artifactId>mysql-connector-j</artifactId>
+            <!--
+              data-quality 已迁移到 PostgreSQL。驱动版本由父 POM 统一管理，并只保留 pgJDBC，
+              避免错误配置 JDBC URL 时又静默连接回迁移期 MySQL，造成双库事实不一致。
+            -->
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <!-- Flyway 在应用启动前校验并升级 data_quality schema，生产环境禁止依赖手工建表。 -->
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <!-- Flyway 10+ 把 PostgreSQL 方言支持拆成独立模块，必须与 flyway-core 同时引入。 -->
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
