@@ -49,11 +49,24 @@ class MultiAgentTurnRunnerTest(unittest.TestCase):
                 "langgraph.multi_agent_turn.select_turn_candidates",
                 "langgraph.multi_agent_turn.build_manager_as_tools",
                 "langgraph.multi_agent_turn.enforce_runner_policy",
+                "langgraph.multi_agent_turn.prepare_control_plane_handoff",
                 "langgraph.multi_agent_turn.finalize_turn_runner",
             ),
             summary["nodeTrace"],
         )
         self.assertEqual("READY_FOR_JAVA_CONTROL_PLANE_HANDOFF", summary["runStatus"])
+        self.assertEqual("READY_CONTROL_PLANE_HANDOFF", summary["runnerRoute"])
+        self.assertEqual("READY_FOR_JAVA_CONTROL_PLANE_HANDOFF", summary["runnerStatus"])
+        self.assertEqual(
+            "HANDOFF_TO_JAVA_CONTROL_PLANE_THEN_RESUME_FROM_CHECKPOINT",
+            summary["loopDecision"],
+        )
+        graph_capabilities = summary["runtimeGraphContract"]["capabilities"]
+        self.assertTrue(graph_capabilities["nodeContractReady"])
+        self.assertTrue(graph_capabilities["conditionalEdgesReady"])
+        self.assertTrue(graph_capabilities["loopEdgesReady"])
+        self.assertTrue(graph_capabilities["resumableStateReady"])
+        self.assertTrue(graph_capabilities["runtimeReady"])
         self.assertTrue(summary["capabilities"]["durableTurnStatePlanning"])
         self.assertTrue(summary["capabilities"]["managerAsToolsPlanning"])
         self.assertTrue(summary["capabilities"]["controlPlaneHandoffPlanning"])
@@ -130,6 +143,7 @@ class FakeStateGraph:
         self.schema = schema
         self.nodes = {}
         self.edges = {}
+        self.conditional_edges = {}
 
     def add_node(self, node: str, action) -> None:  # noqa: ANN001 - fake 只记录协议形状
         self.nodes[node] = action
@@ -137,22 +151,36 @@ class FakeStateGraph:
     def add_edge(self, start_key: str, end_key: str) -> None:
         self.edges[start_key] = end_key
 
+    def add_conditional_edges(self, source: str, path, path_map) -> None:  # noqa: ANN001
+        """记录条件路由函数和有限路由表，模拟 LangGraph 的状态机选择。"""
+
+        self.conditional_edges[source] = (path, dict(path_map))
+
     def compile(self) -> "FakeCompiledGraph":
-        return FakeCompiledGraph(nodes=self.nodes, edges=self.edges)
+        return FakeCompiledGraph(
+            nodes=self.nodes,
+            edges=self.edges,
+            conditional_edges=self.conditional_edges,
+        )
 
 
 class FakeCompiledGraph:
     """编译后 LangGraph 的最小测试替身。"""
 
-    def __init__(self, *, nodes, edges) -> None:  # noqa: ANN001 - fake 只记录协议形状
+    def __init__(self, *, nodes, edges, conditional_edges) -> None:  # noqa: ANN001
         self.nodes = nodes
         self.edges = edges
+        self.conditional_edges = conditional_edges
 
     def invoke(self, input):  # noqa: A002, ANN001, ANN201 - 与 LangGraph API 同名
         state = dict(input)
         current = "START"
         while True:
-            next_node = self.edges[current]
+            if current in self.conditional_edges:
+                route_selector, route_map = self.conditional_edges[current]
+                next_node = route_map[route_selector(state)]
+            else:
+                next_node = self.edges[current]
             if next_node == "END":
                 return state
             state = self.nodes[next_node](state)

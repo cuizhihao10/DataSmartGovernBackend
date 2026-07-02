@@ -25,6 +25,9 @@ from __future__ import annotations
 from typing import Any, Mapping, Protocol
 
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest
+from datasmart_ai_runtime.services.agent_graph.multi_agent_turn_runner_contract import (
+    build_multi_agent_turn_runner_graph_contract,
+)
 from datasmart_ai_runtime.services.langgraph_planning_workflow import LangGraphApi
 from datasmart_ai_runtime.services.multi_agent.execution_plan_rules import string_tuple, string_value, truthy_env
 from datasmart_ai_runtime.services.multi_agent.turn_runner_models import (
@@ -61,6 +64,9 @@ class _StateGraph(Protocol):
     def add_edge(self, start_key: str, end_key: str) -> None:
         """注册固定边。"""
 
+    def add_conditional_edges(self, source: str, path: Any, path_map: Mapping[str, str]) -> None:
+        """注册条件边，让 state 中的低敏路由字段决定下一跳。"""
+
     def compile(self) -> _CompiledGraph:
         """编译为可执行图。"""
 
@@ -81,14 +87,33 @@ class LangGraphMultiAgentTurnRunnerWorkflow:
         "select_turn_candidates",
         "build_manager_as_tools",
         "enforce_runner_policy",
+        "wait_approval_fact",
+        "wait_control_plane_feedback",
+        "prepare_control_plane_handoff",
+        "prepare_specialist_turn",
+        "block_turn_runner",
         "finalize_turn_runner",
     )
+    CONDITIONAL_ROUTES = {
+        "WAIT_APPROVAL": "wait_approval_fact",
+        "WAIT_CONTROL_PLANE": "wait_control_plane_feedback",
+        "READY_CONTROL_PLANE_HANDOFF": "prepare_control_plane_handoff",
+        "READY_SPECIALIST_TURN": "prepare_specialist_turn",
+        "BLOCKED": "block_turn_runner",
+        "SUMMARIZE_ONLY": "finalize_turn_runner",
+    }
     GRAPH_EDGES = (
         "START->load_execution_session",
         "load_execution_session->select_turn_candidates",
         "select_turn_candidates->build_manager_as_tools",
         "build_manager_as_tools->enforce_runner_policy",
-        "enforce_runner_policy->finalize_turn_runner",
+        "enforce_runner_policy--WAIT_APPROVAL-->wait_approval_fact",
+        "enforce_runner_policy--WAIT_CONTROL_PLANE-->wait_control_plane_feedback",
+        "enforce_runner_policy--READY_CONTROL_PLANE_HANDOFF-->prepare_control_plane_handoff",
+        "enforce_runner_policy--READY_SPECIALIST_TURN-->prepare_specialist_turn",
+        "enforce_runner_policy--BLOCKED-->block_turn_runner",
+        "enforce_runner_policy--SUMMARIZE_ONLY-->finalize_turn_runner",
+        "*_runner_route->finalize_turn_runner",
         "finalize_turn_runner->END",
     )
 
@@ -136,7 +161,8 @@ class LangGraphMultiAgentTurnRunnerWorkflow:
     ) -> ControlledMultiAgentTurnRunnerDiagnostics:
         """运行受控 turn runner 图。
 
-        `request` 和 `plan` 只用于读取低敏 requestId/session/run 定位字段；本图不会读取用户目标正文、
+        `plan`、`execution_session` 和 `durable_loop` 只用于读取低敏 requestId/session/run 定位字段；
+        本图不会读取用户目标正文、
         ToolPlan.arguments 或模型输出。`command_proposal_templates` 只消费模板数量和目标 route，
         不消费 payloadReference 或工具参数。
         """
@@ -217,12 +243,19 @@ class LangGraphMultiAgentTurnRunnerWorkflow:
         builder.add_node("select_turn_candidates", self._select_turn_candidates)
         builder.add_node("build_manager_as_tools", self._build_manager_as_tools)
         builder.add_node("enforce_runner_policy", self._enforce_runner_policy)
+        builder.add_node("wait_approval_fact", self._wait_approval_fact)
+        builder.add_node("wait_control_plane_feedback", self._wait_control_plane_feedback)
+        builder.add_node("prepare_control_plane_handoff", self._prepare_control_plane_handoff)
+        builder.add_node("prepare_specialist_turn", self._prepare_specialist_turn)
+        builder.add_node("block_turn_runner", self._block_turn_runner)
         builder.add_node("finalize_turn_runner", self._finalize_turn_runner)
         builder.add_edge(api.start, "load_execution_session")
         builder.add_edge("load_execution_session", "select_turn_candidates")
         builder.add_edge("select_turn_candidates", "build_manager_as_tools")
         builder.add_edge("build_manager_as_tools", "enforce_runner_policy")
-        builder.add_edge("enforce_runner_policy", "finalize_turn_runner")
+        builder.add_conditional_edges("enforce_runner_policy", self._select_runner_route, self.CONDITIONAL_ROUTES)
+        for branch_node in set(self.CONDITIONAL_ROUTES.values()) - {"finalize_turn_runner"}:
+            builder.add_edge(branch_node, "finalize_turn_runner")
         builder.add_edge("finalize_turn_runner", api.end)
         return builder.compile()
 
@@ -247,6 +280,17 @@ class LangGraphMultiAgentTurnRunnerWorkflow:
             item for item in execution_session.get("workItems", ()) if isinstance(item, Mapping)
         )
         return {
+            # 三个定位字段只用于 checkpoint/replay 关联，不进入 Prometheus label，也不携带业务正文。
+            "requestId": plan.request_id,
+            "runId": (
+                string_value(durable_loop.get("runId"))
+                or string_value(execution_session.get("runId"))
+                or plan.request_id
+            ),
+            "sessionId": (
+                string_value(execution_session.get("sessionId"))
+                or f"turn-runner-{safe_fragment(plan.request_id)}"
+            ),
             "trace": (),
             "sessionStatus": string_value(execution_session.get("status")) or "UNKNOWN",
             "durablePhase": string_value(execution_session.get("durablePhase")) or "not_recorded",
@@ -257,6 +301,9 @@ class LangGraphMultiAgentTurnRunnerWorkflow:
             "maxTurnDepth": self._max_turn_depth,
             "maxConcurrentAgentTurns": self._max_concurrent_agent_turns,
             "currentTurnDepth": current_turn_depth(plan, durable_loop),
+            "runnerRoute": "UNROUTED",
+            "runnerStatus": "NOT_EVALUATED",
+            "loopDecision": "WAIT_FOR_ROUTE",
         }
 
     def _load_execution_session(self, state: MultiAgentTurnRunnerState) -> MultiAgentTurnRunnerState:
@@ -312,6 +359,64 @@ class LangGraphMultiAgentTurnRunnerWorkflow:
             "approvalCreatedByPython": False,
             "payloadPolicy": "LOW_SENSITIVE_TURN_RUNNER_POLICY_ONLY",
         }
+        attempts = tuple(updated.get("turnAttempts") or ())
+        runner_status = run_status(attempts, updated["runnerPolicy"])
+        updated["runnerStatus"] = runner_status
+        updated["runnerRoute"] = self._route_for_status(runner_status)
+        return updated
+
+    def _select_runner_route(self, state: MultiAgentTurnRunnerState) -> str:
+        """供 LangGraph 条件边使用的路由选择器。
+
+        路由只读取低敏 `runnerRoute`。如果上游状态脏写了未知值，默认进入 `BLOCKED`，避免脏状态被解释成
+        可执行或可继续循环的状态。
+        """
+
+        route = str(state.get("runnerRoute") or "BLOCKED")
+        return route if route in self.CONDITIONAL_ROUTES else "BLOCKED"
+
+    def _wait_approval_fact(self, state: MultiAgentTurnRunnerState) -> MultiAgentTurnRunnerState:
+        """等待审批或人工 handoff fact 的分支节点。"""
+
+        updated = self._append_trace(state, "langgraph.multi_agent_turn.wait_approval_fact")
+        updated["runnerStatus"] = "WAITING_APPROVAL_OR_HANDOFF_FACT"
+        updated["loopDecision"] = "WAIT_EXTERNAL_APPROVAL_FACT_BEFORE_REENTER"
+        return updated
+
+    def _wait_control_plane_feedback(self, state: MultiAgentTurnRunnerState) -> MultiAgentTurnRunnerState:
+        """等待 Java 控制面反馈、worker receipt 或 replay 事件的分支节点。"""
+
+        updated = self._append_trace(state, "langgraph.multi_agent_turn.wait_control_plane_feedback")
+        updated["runnerStatus"] = "WAITING_CONTROL_PLANE_FEEDBACK"
+        updated["loopDecision"] = "WAIT_CONTROL_PLANE_EVENT_REPLAY_BEFORE_REENTER"
+        return updated
+
+    def _prepare_control_plane_handoff(self, state: MultiAgentTurnRunnerState) -> MultiAgentTurnRunnerState:
+        """准备交给 Java 控制面创建 command proposal/outbox 的分支节点。"""
+
+        updated = self._append_trace(state, "langgraph.multi_agent_turn.prepare_control_plane_handoff")
+        updated["runnerStatus"] = "READY_FOR_JAVA_CONTROL_PLANE_HANDOFF"
+        updated["loopDecision"] = "HANDOFF_TO_JAVA_CONTROL_PLANE_THEN_RESUME_FROM_CHECKPOINT"
+        return updated
+
+    def _prepare_specialist_turn(self, state: MultiAgentTurnRunnerState) -> MultiAgentTurnRunnerState:
+        """准备 specialist Agent 下一轮的分支节点。
+
+        这里刻意不在 Python 当前调用中直接递归执行 specialist。真正的循环边由 runtime graph contract
+        声明，并要求 Java checkpoint、幂等键、worker receipt 和恢复事实先落地，再由下一次受控恢复进入。
+        """
+
+        updated = self._append_trace(state, "langgraph.multi_agent_turn.prepare_specialist_turn")
+        updated["runnerStatus"] = "READY_FOR_SPECIALIST_AGENT_TURNS"
+        updated["loopDecision"] = "CONTROLLED_DURABLE_LOOP_REENTRY_REQUIRES_CHECKPOINT_AND_RECEIPT"
+        return updated
+
+    def _block_turn_runner(self, state: MultiAgentTurnRunnerState) -> MultiAgentTurnRunnerState:
+        """阻断分支节点，覆盖深度超限、运行时恢复缺口或未知路由。"""
+
+        updated = self._append_trace(state, "langgraph.multi_agent_turn.block_turn_runner")
+        updated["runnerStatus"] = str(state.get("runnerStatus") or "BLOCKED_WAITING_RECOVERY")
+        updated["loopDecision"] = "STOP_AUTONOMOUS_LOOP_AND_REQUIRE_OPERATOR_RECOVERY"
         return updated
 
     def _finalize_turn_runner(self, state: MultiAgentTurnRunnerState) -> MultiAgentTurnRunnerState:
@@ -320,9 +425,25 @@ class LangGraphMultiAgentTurnRunnerWorkflow:
         updated = self._append_trace(state, "langgraph.multi_agent_turn.finalize_turn_runner")
         attempts = tuple(state.get("turnAttempts") or ())
         policy = dict(state.get("runnerPolicy") or {})
-        updated["runStatus"] = run_status(attempts, policy)
+        updated["runStatus"] = str(state.get("runnerStatus") or run_status(attempts, policy))
         updated["nextActions"] = next_actions(updated["runStatus"], attempts, policy)
         return updated
+
+    @staticmethod
+    def _route_for_status(runner_status: str) -> str:
+        """把全局 runnerStatus 映射为 LangGraph 条件边路由。"""
+
+        if runner_status in {"BLOCKED_TURN_DEPTH_EXCEEDED", "BLOCKED_WAITING_RECOVERY"}:
+            return "BLOCKED"
+        if runner_status in {"WAITING_APPROVAL_OR_HANDOFF_FACT", "WAITING_HUMAN_TAKEOVER"}:
+            return "WAIT_APPROVAL"
+        if runner_status == "WAITING_CONTROL_PLANE_FEEDBACK":
+            return "WAIT_CONTROL_PLANE"
+        if runner_status == "READY_FOR_JAVA_CONTROL_PLANE_HANDOFF":
+            return "READY_CONTROL_PLANE_HANDOFF"
+        if runner_status in {"READY_FOR_SPECIALIST_AGENT_TURNS", "READY_FOR_DRAFT_ONLY_TURNS"}:
+            return "READY_SPECIALIST_TURN"
+        return "SUMMARIZE_ONLY"
 
     def _turn_attempt(
         self,
@@ -390,6 +511,9 @@ class LangGraphMultiAgentTurnRunnerWorkflow:
             graph_edges=self.GRAPH_EDGES,
             node_trace=tuple(state.get("trace") or ()),
             run_status=str(state.get("runStatus") or "UNKNOWN"),
+            runner_route=str(state.get("runnerRoute") or "UNROUTED"),
+            runner_status=str(state.get("runnerStatus") or "NOT_EVALUATED"),
+            loop_decision=str(state.get("loopDecision") or "WAIT_FOR_ROUTE"),
             session_status=str(state.get("sessionStatus") or "UNKNOWN"),
             durable_phase=str(state.get("durablePhase") or "not_recorded"),
             current_turn_depth=int(state.get("currentTurnDepth") or 0),
@@ -399,4 +523,5 @@ class LangGraphMultiAgentTurnRunnerWorkflow:
             manager_as_tools=tuple(state.get("managerAsTools") or ()),
             runner_policy=dict(state.get("runnerPolicy") or {}),
             next_actions=tuple(state.get("nextActions") or ()),
+            runtime_graph_contract=build_multi_agent_turn_runner_graph_contract().to_summary(),
         )

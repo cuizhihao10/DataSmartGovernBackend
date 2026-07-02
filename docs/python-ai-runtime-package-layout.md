@@ -23,6 +23,7 @@ datasmart_ai_runtime/
   api/                    # FastAPI route、请求/响应适配、内部认证 dependency、错误映射
   domain/                 # 领域契约、枚举、纯数据结构，禁止依赖具体基础设施
   services/
+    agent_graph/          # LangGraph 节点/边/状态标准、图合同审计与跨请求恢复语义
     agent/                # Agent 编排、二轮推理、loop 控制、workspace 上下文
     memory/               # 长期记忆规划、检索、写入治理、正式落成、store 抽象
     model_gateway/        # 模型路由、provider、预算、缓存、结果过滤、OpenAI-compatible 适配
@@ -62,6 +63,16 @@ datasmart_ai_runtime/
   低敏工作项、协作边和执行边界规则。`product_agent_catalog.py` 现在同时维护运行时 Agent 交付优先级：
   必做角色、控制范围角色和轻量化角色分层明确，避免把 PERMISSION_AGENT/MEMORY_AGENT 等治理角色误判为
   合规脱敏/反思优化等完整产品专项 Agent。该包当前只生成控制面合同，不执行工具、不写 outbox、不创建审批。
+- `services/agent_graph/` 已作为跨领域 LangGraph 运行标准包建立：
+  - `runtime_contracts.py` 统一定义可复用/可观测/可替换节点、固定/条件/循环/终止边、低敏可恢复状态
+    以及图合同自动审计；
+  - `multi_agent_turn_runner_contract.py` 声明受控多 Agent Turn Runner 的状态机拓扑、条件路由和
+    跨请求 Durable Loop 恢复边；
+  - 该包只定义图运行标准，不承载 datasource、quality、memory 或 tool 的具体业务逻辑。具体 workflow
+    仍保留在 `services/multi_agent/`、`services/memory/`、`services/tools/` 等能力域，避免出现新的
+    “所有 LangGraph 文件都塞进一个目录”的技术型平铺问题；
+  - Turn Runner 已从固定流水线升级为依据 `runnerRoute` 分支的条件状态机，并通过
+    `requestId/runId/sessionId`、`runnerStatus`、`loopDecision` 和 node trace 描述恢复现场。
 - `services/tools/` 已开始承载工具治理闭口能力，包括 ToolPlan intake、readiness、readiness graph、
   checkpoint/resume-preview 客户端、command proposal、worker receipt 合同以及新增的
   `LangGraphExecutionGateWorkflow`、`langgraph_execution_gate_contract.py` 和 `agent_execution_gate_recorded`
@@ -84,7 +95,8 @@ datasmart_ai_runtime/
 ## 后续推荐顺序
 
 1. `services/tools/` 与 `services/skills/`：工具市场、Skill 准入和 MCP-style descriptor 后续会继续增长，应结合功能演进继续分包。
-2. `services/agent/`：Agent 编排、二轮推理、loop control、执行图条件节点应与 Java 控制面、长期记忆和模型网关解耦。
+2. `services/agent/`：Agent 编排、二轮推理和主控 loop 应与 Java 控制面、长期记忆和模型网关解耦；
+   新增执行图必须复用 `services/agent_graph/` 的节点、边、状态合同，而不是再定义一套隐式约定。
 3. `services/integrations/`：Java 控制面客户端、外部 replay source、permission-admin 客户端和未来 MCP/HTTP 连接器应逐步收口。
 4. `api/`：下一阶段不建议继续只做目录移动；若继续整理，应补 `routes/`、`schemas/`、`dependencies/` 等更细层次，并绑定真实 API 能力。
 5. 完成 API 分层后，应暂停纯目录治理，回到智能网关统一 intake、长期记忆持久化、Agent tool runtime 或工具能力市场等产品能力实现。

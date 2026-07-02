@@ -23,6 +23,9 @@ class MultiAgentTurnRunnerState(TypedDict, total=False):
     payloadReference、graphId/contractId、approvalConfirmationId、worker receipt 等受控事实补齐。
     """
 
+    requestId: str
+    runId: str
+    sessionId: str
     trace: tuple[str, ...]
     sessionStatus: str
     durablePhase: str
@@ -33,6 +36,9 @@ class MultiAgentTurnRunnerState(TypedDict, total=False):
     maxTurnDepth: int
     maxConcurrentAgentTurns: int
     currentTurnDepth: int
+    runnerRoute: str
+    runnerStatus: str
+    loopDecision: str
     turnAttempts: tuple["ControlledAgentTurnAttempt", ...]
     managerAsTools: tuple[dict[str, Any], ...]
     runnerPolicy: dict[str, Any]
@@ -111,6 +117,9 @@ class ControlledMultiAgentTurnRunnerDiagnostics:
     graph_edges: tuple[str, ...]
     node_trace: tuple[str, ...]
     run_status: str
+    runner_route: str
+    runner_status: str
+    loop_decision: str
     session_status: str
     durable_phase: str
     current_turn_depth: int
@@ -120,6 +129,7 @@ class ControlledMultiAgentTurnRunnerDiagnostics:
     manager_as_tools: tuple[dict[str, Any], ...]
     runner_policy: dict[str, Any]
     next_actions: tuple[str, ...]
+    runtime_graph_contract: Mapping[str, Any] | None = None
 
     def to_summary(self) -> dict[str, Any]:
         """转换为 `/agent/plans` 顶层字段和 runtime event 可复用的低敏摘要。"""
@@ -137,6 +147,7 @@ class ControlledMultiAgentTurnRunnerDiagnostics:
             "fallbackReason": self.fallback_reason,
             "graphNodes": self.graph_nodes,
             "graphEdges": self.graph_edges,
+            "runtimeGraphContract": dict(self.runtime_graph_contract or {}),
             "nodeTrace": self.node_trace,
             "capabilities": {
                 "durableTurnStatePlanning": self.executed and bool(attempts),
@@ -147,6 +158,9 @@ class ControlledMultiAgentTurnRunnerDiagnostics:
                 "sideEffectGuardrails": bool(self.runner_policy.get("javaControlPlaneRequiredForSideEffects")),
             },
             "runStatus": self.run_status,
+            "runnerRoute": self.runner_route,
+            "runnerStatus": self.runner_status,
+            "loopDecision": self.loop_decision,
             "sessionStatus": self.session_status,
             "durablePhase": self.durable_phase,
             "currentTurnDepth": self.current_turn_depth,
