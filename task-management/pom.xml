@@ -51,8 +51,38 @@
             <artifactId>mybatis-plus-jsqlparser</artifactId>
         </dependency>
         <dependency>
-            <groupId>com.mysql</groupId>
-            <artifactId>mysql-connector-j</artifactId>
+            <!--
+              task-management 的平台业务事实库迁移到 PostgreSQL。
+              这里的“平台业务事实”包括任务快照、草稿审批、执行 run、日志、回调幂等、Agent command inbox
+              以及 task-management 持有的 data-sync worker command/receipt 桥接表。
+
+              需要特别区分：
+              1. task_data_sync_* 虽然名字里有 data_sync，但它们是任务中心对下游 worker 的命令账本和执行投影，
+                 所以归属 task_management schema；
+              2. 旧 MySQL 初始化脚本里混放的 agent_async_task_command_outbox、agent_memory_* 等表不属于本模块，
+                 不会因为本依赖切换而被塞进 task-management；
+              3. 本服务不承担客户侧 JDBC 连接器职责，因此不再需要 mysql-connector-j 作为主 datasource 驱动。
+            -->
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <!--
+              Flyway 负责在服务启动时校验并升级 task_management schema。
+              这样新环境不再依赖 docker/mysql/init/init.sql 里的历史建表脚本，也能避免“JDBC URL 已切 PG，
+              但任务表没有创建”的半迁移状态。
+            -->
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <!--
+              Flyway 10+ 把 PostgreSQL 数据库支持拆成独立模块。
+              没有该依赖时，flyway-core 可能无法识别 PostgreSQL 方言，真实容器启动会在迁移阶段失败。
+            -->
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.kafka</groupId>

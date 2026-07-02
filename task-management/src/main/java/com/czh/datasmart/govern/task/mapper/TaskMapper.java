@@ -32,6 +32,10 @@ public interface TaskMapper extends BaseMapper<Task> {
      * 3. taskType 可选，便于不同执行器只领取自己支持的任务类型。
      * 4. DEFERRED 任务只有 queued_time 到期后才会重新进入认领范围，避免资源不足时被立即反复认领。
      *
+     * <p>PostgreSQL 迁移说明：
+     * MySQL 的 FIELD(priority, ...) 在 PostgreSQL 中不可用，因此这里使用 CASE WHEN 显式表达优先级顺序。
+     * 这种写法虽然比 FIELD 长一点，但它是标准 SQL 思路，优先级含义也更容易被学习和排障。</p>
+     *
      * <p>这不是最终高吞吐队列方案，但能支撑第一版“执行器认领 + 租约 + 心跳”闭环。
      */
     @Select("""
@@ -39,7 +43,7 @@ public interface TaskMapper extends BaseMapper<Task> {
             SELECT *
             FROM task
             WHERE status IN ('PENDING', 'DEFERRED')
-              AND (queued_time IS NULL OR queued_time &lt;= NOW())
+              AND (queued_time IS NULL OR queued_time &lt;= LOCALTIMESTAMP)
             <if test="taskType != null and taskType != ''">
               AND type = #{taskType}
             </if>
@@ -52,7 +56,14 @@ public interface TaskMapper extends BaseMapper<Task> {
             <if test="projectId != null">
               AND project_id = #{projectId}
             </if>
-            ORDER BY FIELD(priority, 'HIGH', 'MEDIUM', 'LOW'), COALESCE(queued_time, create_time) ASC, create_time ASC
+            ORDER BY CASE priority
+                       WHEN 'HIGH' THEN 1
+                       WHEN 'MEDIUM' THEN 2
+                       WHEN 'LOW' THEN 3
+                       ELSE 4
+                     END,
+                     COALESCE(queued_time, create_time) ASC,
+                     create_time ASC
             LIMIT 1
             </script>
             """)
@@ -67,18 +78,22 @@ public interface TaskMapper extends BaseMapper<Task> {
      * <p>WHERE status IN ('PENDING','DEFERRED') 是并发安全的关键：
      * 多个执行器同时看到同一候选任务时，只有第一个成功把状态改成 RUNNING 的执行器真正认领成功。
      * 同时再次判断 queued_time 到期，避免候选查询和条件更新之间任务被管理员或其他流程改成未来延迟时间。
+     *
+     * <p>PostgreSQL 迁移说明：
+     * 租约过期时间使用 {@code LOCALTIMESTAMP + (秒数 * INTERVAL '1 second')} 表达。
+     * 这等价于 MySQL DATE_ADD(NOW(), INTERVAL n SECOND)，但不会把 SQL 继续绑定在 MySQL 专属函数上。</p>
      */
     @Update("""
             UPDATE task
             SET status = 'RUNNING',
                 current_executor_id = #{executorId},
-                lease_expire_time = DATE_ADD(NOW(), INTERVAL #{leaseSeconds} SECOND),
-                heartbeat_time = NOW(),
-                start_time = COALESCE(start_time, NOW()),
-                update_time = NOW()
+                lease_expire_time = LOCALTIMESTAMP + (#{leaseSeconds} * INTERVAL '1 second'),
+                heartbeat_time = LOCALTIMESTAMP,
+                start_time = COALESCE(start_time, LOCALTIMESTAMP),
+                update_time = LOCALTIMESTAMP
             WHERE id = #{taskId}
               AND status IN ('PENDING', 'DEFERRED')
-              AND (queued_time IS NULL OR queued_time &lt;= NOW())
+              AND (queued_time IS NULL OR queued_time <= LOCALTIMESTAMP)
             """)
     int claimTask(@Param("taskId") Long taskId,
                   @Param("executorId") String executorId,
@@ -88,14 +103,15 @@ public interface TaskMapper extends BaseMapper<Task> {
      * 执行器心跳续租。
      *
      * <p>只有当前持有租约的 executorId 才能续租，避免其他执行器误更新任务进度。
+     * 续租 SQL 同样使用 PostgreSQL interval 表达式，保持和认领逻辑一致。</p>
      */
     @Update("""
             UPDATE task
             SET progress = #{progress},
                 checkpoint = #{checkpoint},
-                heartbeat_time = NOW(),
-                lease_expire_time = DATE_ADD(NOW(), INTERVAL #{leaseSeconds} SECOND),
-                update_time = NOW()
+                heartbeat_time = LOCALTIMESTAMP,
+                lease_expire_time = LOCALTIMESTAMP + (#{leaseSeconds} * INTERVAL '1 second'),
+                update_time = LOCALTIMESTAMP
             WHERE id = #{taskId}
               AND status = 'RUNNING'
               AND current_executor_id = #{executorId}

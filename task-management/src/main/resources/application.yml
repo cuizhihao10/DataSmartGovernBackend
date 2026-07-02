@@ -10,12 +10,32 @@ spring:
   profiles:
     active: dev
   datasource:
-    # 任务生命周期的持久化状态保存在 MySQL 中。
-    # 本地默认连接开发库，生产环境应通过环境变量、Nacos 或密钥管理系统覆盖。
-    url: jdbc:mysql://localhost:3306/datasmart_govern?useSSL=false&serverTimezone=UTC
-    username: root
-    password: password
-    driver-class-name: com.mysql.cj.jdbc.Driver
+    # 这里连接 task-management 自己的“平台业务事实库”，不是客户侧业务数据库。
+    # 本模块负责保存任务快照、草稿审批、执行 run、日志、幂等、Agent command inbox 以及 data-sync worker 桥接事实。
+    # currentSchema=task_management 会把未限定表名默认解析到本微服务 schema，避免误读 permission_admin、data_sync 或 datasource_management 的同名/近名表。
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/datasmart_govern?currentSchema=task_management&ApplicationName=datasmart-task-management}
+    username: ${SPRING_DATASOURCE_USERNAME:datasmart}
+    password: ${SPRING_DATASOURCE_PASSWORD:password}
+    driver-class-name: ${SPRING_DATASOURCE_DRIVER_CLASS_NAME:org.postgresql.Driver}
+    hikari:
+      # task-management 是任务队列、执行租约、Agent 异步命令和 data-sync worker outbox 的控制面。
+      # 这些表会同时承载用户查询、worker 认领、心跳、回调、补偿和运营诊断，因此必须给连接池设置清晰边界。
+      # 如果不显式限制，在高积压或补偿任务异常时，单实例可能消耗过多 PostgreSQL 连接，挤压其它业务服务。
+      maximum-pool-size: ${DATASMART_TASK_DB_MAX_POOL_SIZE:20}
+      minimum-idle: ${DATASMART_TASK_DB_MIN_IDLE:2}
+      connection-timeout: ${DATASMART_TASK_DB_CONNECTION_TIMEOUT_MILLIS:3000}
+      validation-timeout: ${DATASMART_TASK_DB_VALIDATION_TIMEOUT_MILLIS:1000}
+  flyway:
+    enabled: true
+    # Flyway 只管理 task_management schema。
+    # schema 由 docker/postgresql/init/00-platform-schemas.sql 统一创建，应用启动时只负责迁移和校验，不在生产环境悄悄创建新 schema。
+    schemas: task_management
+    default-schema: task_management
+    create-schemas: false
+    locations: classpath:db/migration/postgresql/task-management
+    validate-on-migrate: true
+    clean-disabled: true
+    baseline-on-migrate: false
   redis:
     # Redis 预留给短期状态、分布式协作、热点缓存和后续 worker 限流/租户配额。
     host: localhost
@@ -47,6 +67,11 @@ mybatis-plus:
   configuration:
     # 开启下划线到驼峰映射，降低数据库字段与 Java 字段命名转换成本。
     map-underscore-to-camel-case: true
+  global-config:
+    db-config:
+      # task-management 的 PostgreSQL 表都使用显式小写下划线命名，不需要额外表前缀。
+      # 这里写明空前缀，是为了避免后续有人误把 task_ 当成公共前缀自动追加或剥离。
+      table-prefix: ""
 
 logging:
   level:

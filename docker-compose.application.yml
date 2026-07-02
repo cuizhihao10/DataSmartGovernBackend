@@ -111,6 +111,13 @@ services:
         SERVER_PORT: 8081
     environment:
       <<: *java-common-environment
+      # task-management 的平台业务事实库已迁移到 PostgreSQL。
+      # 覆盖公共 MySQL datasource 后，任务快照、草稿、执行 run、日志、幂等、Agent command inbox
+      # 以及 task_data_sync_* 桥接表都会落在 task_management schema。
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgresql:5432/datasmart_govern?currentSchema=task_management&ApplicationName=datasmart-task-management
+      SPRING_DATASOURCE_USERNAME: datasmart
+      SPRING_DATASOURCE_PASSWORD: ${DATASMART_POSTGRES_PASSWORD:-password}
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
       DATASMART_AGENT_RUNTIME_INTERNAL_BASE_URL: http://agent-runtime:8091
       DATASMART_DATA_SYNC_INTERNAL_BASE_URL: http://data-sync:8086
       DATASMART_TASK_AGENT_TOOL_ACTION_CONTROLLED_APPROVAL_EVALUATE_URL: http://permission-admin:8085/permissions/agent/tool-action-approvals/evaluate
@@ -121,7 +128,7 @@ services:
     ports:
       - "8081:8081"
     depends_on:
-      - mysql
+      - postgresql
       - redis
       - kafka
       - nacos

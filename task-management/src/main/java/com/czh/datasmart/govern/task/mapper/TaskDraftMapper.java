@@ -32,11 +32,14 @@ public interface TaskDraftMapper extends BaseMapper<TaskDraft> {
      * @param expectedStatus 期望前置状态，当前应为 APPROVED。
      * @param nextStatus 抢占后的中间状态，当前应为 CONVERTING。
      * @return 受影响行数，1 表示抢占成功，0 表示状态已被其他请求改变。
+     *
+     * <p>PostgreSQL 迁移说明：
+     * 使用 LOCALTIMESTAMP 刷新 update_time，和 V1 DDL 中的 TIMESTAMP WITHOUT TIME ZONE 对齐。</p>
      */
     @Update("""
             UPDATE task_draft
             SET status = #{nextStatus},
-                update_time = NOW()
+                update_time = LOCALTIMESTAMP
             WHERE id = #{draftId}
               AND status = #{expectedStatus}
             """)
@@ -55,8 +58,8 @@ public interface TaskDraftMapper extends BaseMapper<TaskDraft> {
             UPDATE task_draft
             SET status = #{convertedStatus},
                 converted_task_id = #{taskId},
-                convert_time = NOW(),
-                update_time = NOW()
+                convert_time = LOCALTIMESTAMP,
+                update_time = LOCALTIMESTAMP
             WHERE id = #{draftId}
               AND status = #{convertingStatus}
             """)

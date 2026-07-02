@@ -38,13 +38,17 @@ public interface TaskExecutionRunMapper extends BaseMapper<TaskExecutionRun> {
      *
      * <p>只扫描 RUNNING 且 lease_expire_time 早于当前时间的记录。
      * limit 用于避免一次恢复过多任务影响数据库和服务稳定性。
+     *
+     * <p>PostgreSQL 迁移说明：
+     * 使用 {@code LOCALTIMESTAMP} 与 Java {@code LocalDateTime} / PostgreSQL {@code TIMESTAMP WITHOUT TIME ZONE}
+     * 保持一致，避免数据库 session 时区把租约判断隐式转换成另一个时区。</p>
      */
     @Select("""
             SELECT *
             FROM task_execution_run
             WHERE state = 'RUNNING'
               AND lease_expire_time IS NOT NULL
-              AND lease_expire_time < NOW()
+              AND lease_expire_time < LOCALTIMESTAMP
             ORDER BY lease_expire_time ASC
             LIMIT #{limit}
             """)
@@ -56,9 +60,9 @@ public interface TaskExecutionRunMapper extends BaseMapper<TaskExecutionRun> {
     @Update("""
             UPDATE task_execution_run
             SET state = #{state},
-                finished_at = NOW(),
+                finished_at = LOCALTIMESTAMP,
                 error_message = #{errorMessage},
-                update_time = NOW()
+                update_time = LOCALTIMESTAMP
             WHERE id = #{runId}
               AND state = 'RUNNING'
             """)

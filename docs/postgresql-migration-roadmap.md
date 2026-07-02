@@ -1,5 +1,23 @@
 # MySQL 到 PostgreSQL 渐进迁移路线
 
+## 2026-07-03 更新：task-management PostgreSQL 代码路径迁移
+
+`task-management` 已完成 PostgreSQL 运行路径迁移，阶段 2 第四个核心业务服务进入新安装可运行状态：
+
+- `task-management` POM 移除平台业务 datasource 层面的 MySQL 驱动依赖，新增 pgJDBC、Flyway Core 与 `flyway-database-postgresql`；
+- `application.yml` 默认 datasource 切换为 PostgreSQL `task_management` schema，并补充 Hikari 连接池、Flyway schema、迁移位置和 MyBatis-Plus 表名前缀说明；
+- `MyBatisPlusConfig` 把分页插件切换为 PostgreSQL 方言，并用中文说明任务中心当前使用 PostgreSQL 的边界；
+- 新增 `db/migration/postgresql/task-management/V1__task_management_schema_baseline.sql`，覆盖当前 task-management Java 实体真实使用的 8 张任务域表；
+- 8 张表包括：`task`、`task_draft`、`task_execution_log`、`task_execution_run`、`task_callback_idempotency`、`agent_async_task_command_inbox`、`task_data_sync_worker_command_outbox`、`task_data_sync_worker_execution_receipt`；
+- 本批明确没有迁移旧 MySQL 初始化脚本里混放的 `agent_async_task_command_outbox`、`agent_run_tool_dag_confirmation`、`agent_memory_*` 等 Agent Runtime / AI Memory 表；
+- `task_data_sync_worker_command_outbox` 与 `task_data_sync_worker_execution_receipt` 已归入 `task_management` schema，因为它们表达的是任务中心对下游 data-sync worker 的命令账本和执行投影；
+- Mapper SQL 已完成 PostgreSQL 方言修正：`NOW()` 改为 `LOCALTIMESTAMP`，`DATE_ADD` 改为 interval 表达式，`FIELD(priority, ...)` 改为 `CASE` 排序；
+- 修复 MyBatis 注解 SQL 比较符细节：动态 `<script>` SQL 使用 XML 转义，普通注解 SQL 使用真实 `<=`，避免 PostgreSQL 收到字面量 `&lt;=`；
+- `docker-compose.application.yml` 对 `task-management` 显式覆盖公共迁移期 MySQL datasource，改依赖 PostgreSQL、Redis、Kafka、Nacos 和 permission-admin；
+- 新增 gated 真实 PostgreSQL 集成测试，覆盖 Flyway V1、8 张表存在性、identity 主键回填、BOOLEAN/TEXT 映射、MyBatis-Plus Page 分页、任务认领与心跳续租、超时 run 扫描、草稿转换状态推进，以及 Agent inbox / data-sync worker outbox / receipt 写入。
+
+该阶段完成后，`task-management` 已具备新安装和当前开发环境直接使用 PostgreSQL 的代码路径。下一步仍必须补齐 MySQL 到 PostgreSQL 存量迁移脚手架，迁移对象限定为上述 8 张任务域表，并把 `agent_async_task_command_outbox`、`agent_memory_*` 等非本模块表登记为延期迁移对象，而不是塞进 `task_management`。
+
 ## 2026-07-03 更新：data-sync 存量迁移脚手架
 
 `data-sync` 已在 PostgreSQL 代码路径迁移之后补齐存量数据迁移入口：
@@ -183,13 +201,20 @@ Agent 长期记忆和未来 LangGraph durable state 最终都应使用 PostgreSQ
   与 `scripts/data-sync-mysql-to-postgresql.py`，用于迁移 10 张 data-sync 自有表、执行空目标保护、
   COPY 导入、行数与 SHA-256 摘要对账、identity sequence 校正，并把 `task_data_sync_*` 明确登记为
   `task_management` 后续迁移对象，把 `agent_memory_*` 登记为 `ai_memory` 后续迁移对象；
-- `observability`、`data-quality`、`permission-admin`、`data-sync` 四个服务均不再从应用层依赖 MySQL 驱动。
+- `task-management` 已完成 PostgreSQL `task_management` schema、pgJDBC、Flyway V1、MyBatis-Plus PostgreSQL 分页方言和 Compose 覆盖配置；
+- task-management PostgreSQL V1 覆盖当前代码真实使用的 8 张任务域表：`task`、`task_draft`、`task_execution_log`、
+  `task_execution_run`、`task_callback_idempotency`、`agent_async_task_command_inbox`、
+  `task_data_sync_worker_command_outbox`、`task_data_sync_worker_execution_receipt`；
+- task-management 真实 PostgreSQL 17 集成测试已覆盖 Flyway V1、8 张表存在性、identity 主键回填、BOOLEAN/TEXT 字段映射、
+  MyBatis-Plus Page 分页、任务认领与心跳续租、超时 run 扫描、草稿转换状态推进，以及 Agent inbox / data-sync worker
+  outbox / receipt 的低敏插入与显式清理；
+- `observability`、`data-quality`、`permission-admin`、`data-sync`、`task-management` 五个服务均不再从应用层依赖 MySQL 驱动。
 
 这里的“代码路径完成”只代表新安装和当前开发环境可以直接使用 PostgreSQL。存量客户环境如果已经在
-MySQL 中产生 data-quality、permission-admin、datasource-management 或 data-sync 业务数据，仍必须完成停写/导出、类型转换、identity
+MySQL 中产生 data-quality、permission-admin、datasource-management、data-sync 或 task-management 业务数据，仍必须完成停写/导出、类型转换、identity
 sequence 校正、行数与业务聚合对账、只读观察和回滚点保留，才能按上面的单服务验收门禁标记为商业迁移完成。
 
-下一批应重建 data-sync 容器并做真实容器级 PostgreSQL smoke，确认运行中容器已经从旧 MySQL 环境变量切到
-Compose 合成后的 PostgreSQL 环境变量。随后进入 `task-management` PostgreSQL 迁移，并在该批次迁移
-`task_data_sync_worker_command_outbox` 与 `task_data_sync_worker_execution_receipt`；`agent_memory_*`
-已登记为阶段 3 的 `ai_memory` 迁移对象，不能在 data-sync、datasource-management、权限中心或 MySQL 初始化脚本中继续扩展。
+下一批应补齐 `task-management` MySQL 到 PostgreSQL 存量迁移脚手架，迁移对象限定为当前 V1 的 8 张任务域表，
+并把 `agent_async_task_command_outbox`、`agent_run_tool_dag_confirmation`、`agent_memory_*` 等非本模块表登记为延期迁移对象；
+随后重建 task-management 容器并做真实容器级 PostgreSQL smoke。`agent_memory_*` 已登记为阶段 3 的 `ai_memory`
+迁移对象，不能在 data-sync、datasource-management、权限中心、任务中心或 MySQL 初始化脚本中继续扩展。
