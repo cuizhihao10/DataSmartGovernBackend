@@ -70,7 +70,7 @@ from datasmart_ai_runtime.services.memory.memory_materialization_worker import (
     AgentMemoryMaterializationWorker,
     memory_materialization_worker_settings_from_env,
 )
-from datasmart_ai_runtime.services.multi_agent import MultiAgentExecutionSessionMetrics
+from datasmart_ai_runtime.services.multi_agent import MultiAgentExecutionSessionMetrics, MultiAgentTurnRunnerMetrics
 from datasmart_ai_runtime.services.model_gateway import (
     InMemoryModelProviderHealthRegistry,
     ModelGatewayGovernanceService,
@@ -194,6 +194,7 @@ def create_app() -> Any:
     memory_materialization_metrics = AgentMemoryMaterializationMetrics()
     langgraph_memory_retrieval_metrics = LangGraphMemoryRetrievalMetrics()
     multi_agent_execution_session_metrics = MultiAgentExecutionSessionMetrics()
+    multi_agent_turn_runner_metrics = MultiAgentTurnRunnerMetrics()
     tool_action_checkpoint_metrics = ToolActionCheckpointMetrics()
     langgraph_execution_gate_metrics = LangGraphExecutionGateMetrics()
     memory_materialization_worker = AgentMemoryMaterializationWorker(
@@ -437,6 +438,7 @@ def create_app() -> Any:
         tool_action_checkpoint_metrics=tool_action_checkpoint_metrics,
         langgraph_execution_gate_metrics=langgraph_execution_gate_metrics,
         multi_agent_execution_session_metrics=multi_agent_execution_session_metrics,
+        multi_agent_turn_runner_metrics=multi_agent_turn_runner_metrics,
     )
 
     register_agent_runtime_routes(
@@ -463,6 +465,7 @@ def create_app() -> Any:
         langgraph_execution_gate_metrics=langgraph_execution_gate_metrics,
         langgraph_memory_retrieval_metrics=langgraph_memory_retrieval_metrics,
         multi_agent_execution_session_metrics=multi_agent_execution_session_metrics,
+        multi_agent_turn_runner_metrics=multi_agent_turn_runner_metrics,
         tool_action_checkpoint_gateway_signature_required=tool_action_checkpoint_gateway_signature_required,
         tool_registry=tool_registry,
         gateway_signature_error_factory=lambda detail: HTTPException(status_code=401, detail=detail),

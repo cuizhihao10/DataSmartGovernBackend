@@ -2,8 +2,8 @@
 #
 # 设计原则：
 # 1. Python AI Runtime 不是 Spring Boot 服务，因此 Prometheus 抓取路径是 /agent/metrics，而不是 /actuator/prometheus；
-# 2. 本文件优先覆盖长期记忆物化链路：后台 worker 是否可被抓取、DLQ 是否增长、fencing/finalize 是否异常、失败率是否升高、补偿是否异常激增；
-# 3. 告警标签只使用固定枚举和模块名，不把 tenantId、projectId、candidateId、leaseId、runId、traceId、workspaceKey 放入规则标签；
+# 2. 本文件优先覆盖长期记忆物化链路与 Agent Runtime 闭环：后台 worker、Turn Runner、LangGraph 门禁等是否出现可操作异常；
+# 3. 告警标签只使用固定枚举和模块名，不把 tenantId、projectId、candidateId、leaseId、runId、traceId、workspaceKey、turnId、workItemId 放入规则标签；
 # 4. 单条候选排障应跳转到 Runtime Event replay、lease/receipt 查询和审计日志；Prometheus 只负责聚合告警；
 # 5. 当前阈值适合本地/早期集成环境，生产环境应按租户规模、worker 实例数、候选产生速率和 SLA 等级调优。
 groups:
@@ -122,3 +122,49 @@ groups:
         annotations:
           summary: "长期记忆物化补偿 dry-run 较多但没有真实重排"
           description: "最近 1 小时管理员执行了较多 dry-run，但没有真实 requeue。可能是运维正在评估补偿风险，也可能是管理台二次确认流程卡住。请结合操作审计和 failed/dead_letter 列表确认是否需要推进真实重排或归档。"
+
+  - name: datasmart-python-ai-multi-agent-turn-runner-health
+    rules:
+      - alert: PythonAiMultiAgentTurnRunnerSideEffectViolation
+        expr: increase(datasmart_ai_multi_agent_turn_runner_safety_boundary_total{state="violation"}[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          module: python-ai-runtime
+          category: multi-agent-turn-runner
+        annotations:
+          summary: "多 Agent Turn Runner 出现副作用边界违规"
+          description: "最近 10 分钟 Turn Runner 指标出现 state=violation。受控 Turn Runner 按设计不应执行工具、调用模型、写 outbox、创建审批或派发 worker。请立即查看 agent_turn_runner_recorded Java projection、runtime event replay 和最近发布版本，确认 Python Runtime 是否绕过 Java 控制面。"
+
+      - alert: PythonAiMultiAgentTurnRunnerBlockedIncreasing
+        expr: increase(datasmart_ai_multi_agent_turn_runner_runs_total{run_status=~"blocked_.*"}[15m]) > 0
+        for: 3m
+        labels:
+          severity: warning
+          module: python-ai-runtime
+          category: multi-agent-turn-runner
+        annotations:
+          summary: "多 Agent Turn Runner 阻断状态增长"
+          description: "最近 15 分钟 Turn Runner 出现 blocked_* runStatus。请优先检查 turn depth、runtime recovery fact、Java 控制面反馈、审批事实和 worker receipt 是否缺失，避免多 Agent loop 长期停留在不可恢复状态。"
+
+      - alert: PythonAiMultiAgentTurnRunnerWorkerReceiptRequiredHigh
+        expr: increase(datasmart_ai_multi_agent_turn_runner_required_evidence_total{evidence_code="worker_receipt_required"}[30m]) > 20
+        for: 5m
+        labels:
+          severity: info
+          module: python-ai-runtime
+          category: multi-agent-turn-runner
+        annotations:
+          summary: "多 Agent Turn Runner worker receipt 证据缺口较多"
+          description: "最近 30 分钟 Turn Runner 产生较多 worker_receipt_required 证据缺口。少量出现是正常控制面保护；如果持续升高，请检查 Java outbox dispatcher、worker 回执投影、Kafka 消费组和 agent_turn_runner_recorded 投影是否滞后。"
+
+      - alert: PythonAiMultiAgentTurnRunnerManagerToolsSurge
+        expr: increase(datasmart_ai_multi_agent_turn_runner_manager_tools_total[15m]) > 50
+        for: 5m
+        labels:
+          severity: info
+          module: python-ai-runtime
+          category: multi-agent-turn-runner
+        annotations:
+          summary: "多 Agent manager-as-tools 描述数量升高"
+          description: "最近 15 分钟 manager-as-tools 描述数量超过 50。请确认是否存在过度拆分、循环策略过宽、Agent 名册误激活或某类请求持续触发大量 specialist turn attempt。Prometheus 只给出聚合趋势，单次排障请查看 Java Turn Runner projection。"

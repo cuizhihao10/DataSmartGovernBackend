@@ -63,6 +63,10 @@ class PrometheusAlertRuleContractTest(unittest.TestCase):
             "PythonAiMemoryMaterializationWorkerNoSuccessfulRun",
             "PythonAiMemoryMaterializationRequeueSurge",
             "PythonAiMemoryMaterializationDryRunOnly",
+            "PythonAiMultiAgentTurnRunnerSideEffectViolation",
+            "PythonAiMultiAgentTurnRunnerBlockedIncreasing",
+            "PythonAiMultiAgentTurnRunnerWorkerReceiptRequiredHigh",
+            "PythonAiMultiAgentTurnRunnerManagerToolsSurge",
         ]
 
         for alert_name in expected_alerts:
@@ -78,7 +82,7 @@ class PrometheusAlertRuleContractTest(unittest.TestCase):
 
         rules = self._read_alert_rules()
         forbidden_selector = re.compile(
-            r"\{[^}\n]*(tenantId|projectId|candidateId|leaseId|requestId|runId|sessionId|traceId|workspaceKey)\s*="
+            r"\{[^}\n]*(tenantId|projectId|candidateId|leaseId|requestId|runId|sessionId|traceId|workspaceKey|turnId|workItemId|managerToolName|checkpointId|commandId)\s*="
         )
 
         self.assertIsNone(forbidden_selector.search(rules))

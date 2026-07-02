@@ -10,6 +10,7 @@
 - LangGraph execution gate 工具执行前门禁指标；
 - LangGraph memory retrieval 长期记忆检索观察图指标。
 - 受控多 Agent 执行会话 session/work item/roster 指标。
+- 受控多 Agent Turn Runner attempt/evidence/manager-as-tools/副作用边界指标。
 
 安全边界：
 - 指标文本不输出 providerName、tenantId、projectId、runId、traceId、URL、prompt、工具参数或模型正文；
@@ -34,6 +35,7 @@ def register_agent_metrics_route(
     tool_action_checkpoint_metrics: Any,
     langgraph_execution_gate_metrics: Any,
     multi_agent_execution_session_metrics: Any,
+    multi_agent_turn_runner_metrics: Any,
 ) -> None:
     """注册 `/agent/metrics` Prometheus 文本指标端点。
 
@@ -45,6 +47,7 @@ def register_agent_metrics_route(
     - `tool_action_checkpoint_metrics`：checkpoint query/resume-preview 的访问结果与恢复事实状态；
     - `langgraph_execution_gate_metrics`：工具执行前 LangGraph dominant gate、fallback、readiness 和 resume fact 指标。
     - `multi_agent_execution_session_metrics`：受控多 Agent 会话状态、工作项状态和 active/standby roster 指标。
+    - `multi_agent_turn_runner_metrics`：受控 turn attempt、requiredEvidence、manager-as-tools 和副作用边界指标。
 
     该函数只注册只读路由，不触发探测、不刷新远端、不执行工具，也不访问任何业务数据源。
     """
@@ -60,6 +63,7 @@ def register_agent_metrics_route(
             tool_action_checkpoint_metrics.render_prometheus().rstrip(),
             langgraph_execution_gate_metrics.render_prometheus().rstrip(),
             multi_agent_execution_session_metrics.render_prometheus().rstrip(),
+            multi_agent_turn_runner_metrics.render_prometheus().rstrip(),
             "",
         )
 

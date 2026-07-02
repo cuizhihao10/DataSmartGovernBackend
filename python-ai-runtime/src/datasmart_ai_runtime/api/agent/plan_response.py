@@ -85,6 +85,7 @@ def build_plan_response(
     langgraph_execution_gate_metrics: Any | None = None,
     langgraph_memory_retrieval_metrics: Any | None = None,
     multi_agent_execution_session_metrics: Any | None = None,
+    multi_agent_turn_runner_metrics: Any | None = None,
     multi_agent_turn_runner_workflow: Any | None = None,
 ) -> dict[str, Any]:
     """构建同步 HTTP 风格的 Agent 计划响应。
@@ -313,6 +314,8 @@ def build_plan_response(
         durable_loop=durable_loop_checkpoint.to_summary() if durable_loop_checkpoint is not None else None,
     )
     agent_turn_runner_summary = agent_turn_runner.to_summary()
+    if multi_agent_turn_runner_metrics is not None:
+        multi_agent_turn_runner_metrics.record_summary(agent_turn_runner_summary)
     plan = attach_agent_turn_runner_event(
         plan,
         request=request,
