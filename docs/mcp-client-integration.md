@@ -344,3 +344,48 @@ POST /api/internal/agent/mcp/durable-worker/run
 2. Java 根据返回 receipt 更新 command/outbox/task projection；
 3. Python 侧把 `modelFeedback.feedback` 接入真实多步 Agent loop 的二轮模型调用；
 4. 大结果接 MinIO artifact writer 与授权 resolver 后，再做全平台 E2E smoke。
+
+## 14. Java Agent Runtime MCP Durable Worker Client
+
+当前已新增 Java 侧 `AgentMcpDurableWorkerClient` 边界，用于让后续 outbox dispatcher 以稳定接口调用 Python 内部
+`/internal/agent/mcp/durable-worker/run`，而不是在 dispatcher 中直接拼 HTTP。
+
+核心类：
+- `AgentMcpDurableWorkerClientProperties`：配置开关、Python Runtime baseUrl、内部路由、连接/读取超时、是否请求模型二轮反馈、是否让 Python 直接回写 Java、服务账户认证头与令牌；
+- `AgentMcpDurableWorkerRunRequest`：Java -> Python 请求合同，包含 `serverId`、`internalToolName`、短生命周期 `arguments`、可信 `controlFacts`、低敏 `fallbackContext`、`sessionId`、`traceId`、`toolCallId` 和工作区边界；
+- `AgentMcpDurableWorkerRunResponse`：Python -> Java 低敏响应合同，只接收 `workerResult`、`receipt`、`modelFeedback` 与 `payloadPolicy`，不接收 MCP arguments 或工具正文；
+- `AgentMcpDurableWorkerCallResult`：Java HTTP 调用视角的低敏结果，用于后续 dispatcher 判断是否重试、失败、跳过或继续写 receipt；
+- `HttpAgentMcpDurableWorkerClient`：当前 HTTP 实现，使用 Spring `RestClient`，支持短超时、trace/source header、可选服务账户 token，并隐藏 URL、参数、token 和原始响应正文。
+
+配置入口：
+```yaml
+datasmart:
+  agent-runtime:
+    mcp-durable-worker:
+      enabled: false
+      base-url: http://localhost:8090
+      run-path: /internal/agent/mcp/durable-worker/run
+      connect-timeout-ms: 1500
+      read-timeout-ms: 30000
+      include-model-feedback: true
+      post-to-java: false
+      auth-header-name: Authorization
+      service-account-token:
+```
+
+Compose 环境已显式设置：
+- `DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_ENABLED=true`
+- `DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_BASE_URL=http://python-ai-runtime:8090`
+- `DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_POST_TO_JAVA=false`
+
+设计边界：
+- Java 侧 client 不读取 outbox、不声明 command 已发布、不写 receipt，也不更新 task projection；
+- Python 侧仍只返回低敏 summary/receipt/modelFeedback，不返回工具参数和工具正文；
+- 当前只是 Java 控制面到 Python worker 的可测通信边界，dispatcher 自动消费、receipt 写入和 outbox 状态推进仍需后续接入；
+- 生产部署应把该内部 API 放在 gateway/service account/OIDC、mTLS 或等价企业内网认证之后，不能作为公开工具调用接口。
+
+下一步收敛路线：
+1. 在 Java agent-runtime outbox dispatcher 中识别 MCP command，并调用 `AgentMcpDurableWorkerClient.run(...)`；
+2. 将 `AgentMcpDurableWorkerRunResponse.receipt` 映射到现有 worker receipt 写入服务；
+3. 根据 `AgentMcpDurableWorkerCallResult` 推进 outbox 状态、失败重试和死信治理；
+4. 再把 Python 返回的安全 `modelFeedback` 接入真实多步 Agent loop 二轮模型调用。

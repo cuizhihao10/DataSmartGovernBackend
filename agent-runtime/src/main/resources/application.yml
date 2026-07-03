@@ -427,6 +427,25 @@ datasmart:
         dispatcher-http-enabled: ${DATASMART_AGENT_RUNTIME_ASYNC_COMMAND_DISPATCHER_HTTP_ENABLED:false}
         task-management-consume-url: ${DATASMART_TASK_MANAGEMENT_AGENT_COMMAND_CONSUME_URL:http://localhost:8081/internal/agent-async-task-commands/consume}
         dispatcher-http-timeout-ms: 3000
+    mcp-durable-worker:
+      # Java agent-runtime -> Python Runtime MCP Durable Worker 的内部调用开关。
+      # 默认关闭，避免只启动 Java 控制面时因为 Python Runtime 未启动而失败；完整 Compose/E2E 环境会通过环境变量显式打开。
+      enabled: ${DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_ENABLED:false}
+      # Python Runtime 内部 baseUrl。生产环境建议替换为内部 gateway、服务网格或服务发现地址，并叠加 mTLS/OIDC 服务账户保护。
+      base-url: ${DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_BASE_URL:http://localhost:8090}
+      # Python 侧 MCP Durable Worker 内部 API 路径。保留为配置项，便于未来灰度到 /api 前缀、网关重写或版本化路由。
+      run-path: ${DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_RUN_PATH:/internal/agent/mcp/durable-worker/run}
+      # 连接超时要短：Python Runtime 不可达时应交给 outbox 重试，而不是长时间占用 dispatcher。
+      connect-timeout-ms: ${DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_CONNECT_TIMEOUT_MS:1500}
+      # 读取超时覆盖 Python admission、MCP tools/call 和摘要生成；长耗时工具后续应走异步 worker 与 artifact 引用。
+      read-timeout-ms: ${DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_READ_TIMEOUT_MS:30000}
+      # 是否请求 Python 返回安全模型二轮反馈摘要；真正能否内联短结果仍由 Python 的敏感字段与大小预算判断。
+      include-model-feedback: ${DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_INCLUDE_MODEL_FEEDBACK:true}
+      # 当前推荐由 Java dispatcher 统一写 receipt/outbox/task projection，所以默认不让 Python 直接回写 Java。
+      post-to-java: ${DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_POST_TO_JAVA:false}
+      # 服务间认证头与令牌。令牌必须从环境变量/Secret 注入，不应写入仓库、日志、runtime event 或 API 响应。
+      auth-header-name: ${DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_AUTH_HEADER_NAME:Authorization}
+      service-account-token: ${DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_SERVICE_ACCOUNT_TOKEN:}
     # 会话绑定工具时强制从工具目录继承元数据。
     # 生产环境建议保持 true，避免调用方伪造 toolType、targetService、riskLevel 或审批要求。
     strict-tool-registry-binding: true

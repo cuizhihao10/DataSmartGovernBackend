@@ -263,6 +263,13 @@ services:
       # dispatcher 默认关闭，避免容器启动后自动派发历史 outbox 或执行真实工具。
       DATASMART_AGENT_RUNTIME_OUTBOX_DISPATCHER_ENABLED: "false"
       DATASMART_AGENT_RUNTIME_ASYNC_COMMAND_DISPATCHER_ENABLED: "false"
+      # MCP Durable Worker 是 agent-runtime 调用 Python Runtime 执行真实 MCP tools/call 的内部桥接。
+      # 当前只打开 client 配置，不打开 outbox 自动消费；后续 dispatcher 接入后再由 outbox 状态机受控触发。
+      DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_ENABLED: "true"
+      DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_BASE_URL: http://python-ai-runtime:8090
+      DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_RUN_PATH: /internal/agent/mcp/durable-worker/run
+      DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_INCLUDE_MODEL_FEEDBACK: "true"
+      DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_POST_TO_JAVA: "false"
     ports:
       - "8091:8091"
     depends_on:
