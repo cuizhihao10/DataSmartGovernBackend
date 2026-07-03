@@ -30,6 +30,7 @@ from datasmart_ai_runtime.services.tools.mcp.contracts import (
     McpToolCallRequest,
     McpToolCallResult,
 )
+from datasmart_ai_runtime.services.tools.mcp.admission import McpToolCallAdmissionBuilder
 from datasmart_ai_runtime.services.tools.mcp.runtime import McpClientRuntime
 
 
@@ -186,6 +187,49 @@ class McpDurableToolExecutionService:
 
     def __init__(self, runtime: McpClientRuntime) -> None:
         self._runtime = runtime
+        self._admission_builder = McpToolCallAdmissionBuilder()
+
+    def request_from_control_facts(
+        self,
+        *,
+        server_id: str,
+        internal_tool_name: str,
+        arguments: Mapping[str, Any],
+        control_facts: Mapping[str, Any],
+        fallback_context: Mapping[str, Any] | None = None,
+        execution_node_id: str = "mcp_tools_call",
+        trace_id: str | None = None,
+    ) -> McpDurableToolExecutionRequest:
+        """从 Java/permission/readiness/outbox 事实构造 durable 执行请求。
+
+        这是后续 worker/outbox consumer 最应该复用的入口。调用方只需要提供：
+        - 目标 MCP Server 与内部工具名；
+        - 短生命周期 arguments；
+        - Java 控制面事实；
+        - 可选的可信上下文补齐字段。
+
+        方法内部会调用 `McpToolCallAdmissionBuilder` 生成 admission。构造失败时会抛出
+        `McpAdmissionBuildError`，调用方应把它转换为失败 receipt，而不是继续调用 MCP Server。
+        """
+
+        admission = self._admission_builder.build_or_raise(
+            tool_name=internal_tool_name,
+            control_facts=control_facts,
+            fallback_context=fallback_context,
+        )
+        return McpDurableToolExecutionRequest(
+            server_id=server_id,
+            internal_tool_name=internal_tool_name,
+            arguments=arguments,
+            admission=admission,
+            execution_node_id=execution_node_id,
+            checkpoint_id=_optional_text(_first(control_facts, "checkpointId", "checkpoint_id")),
+            command_proposal_id=_optional_text(
+                _first(control_facts, "commandProposalId", "command_proposal_id", "proposalId")
+            ),
+            outbox_message_id=_optional_text(_first(control_facts, "outboxMessageId", "outbox_id", "outboxId")),
+            trace_id=trace_id or _optional_text(_first(control_facts, "traceId", "trace_id")),
+        )
 
     async def execute(self, request: McpDurableToolExecutionRequest) -> McpDurableToolExecutionResult:
         """异步执行一次 MCP durable 工具节点。
@@ -317,6 +361,24 @@ def _receipt_draft(
         checkpoint_id=request.checkpoint_id,
         trace_id=request.trace_id,
     )
+
+
+def _first(mapping: Mapping[str, Any], *keys: str) -> Any:
+    """读取第一个存在的控制面事实键，保留 False/0 等显式值。"""
+
+    for key in keys:
+        if key in mapping:
+            return mapping[key]
+    return None
+
+
+def _optional_text(value: Any) -> str | None:
+    """读取非空字符串。"""
+
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 __all__ = [

@@ -23,6 +23,12 @@ from datasmart_ai_runtime.services.tools.mcp.contracts import (
     McpTransportType,
     namespaced_tool_name,
 )
+from datasmart_ai_runtime.services.tools.mcp.admission import (
+    MCP_ADMISSION_BUILDER_SCHEMA_VERSION,
+    McpAdmissionBuildError,
+    McpAdmissionBuildResult,
+    McpToolCallAdmissionBuilder,
+)
 from datasmart_ai_runtime.services.tools.mcp.official_sdk import open_official_mcp_session
 from datasmart_ai_runtime.services.tools.mcp.runtime import McpClientRuntime, McpSessionOpener
 from datasmart_ai_runtime.services.tools.mcp.execution import (
@@ -36,7 +42,10 @@ from datasmart_ai_runtime.services.tools.mcp.execution import (
 
 __all__ = [
     "MCP_CLIENT_SCHEMA_VERSION",
+    "MCP_ADMISSION_BUILDER_SCHEMA_VERSION",
     "MCP_DURABLE_EXECUTION_SCHEMA_VERSION",
+    "McpAdmissionBuildError",
+    "McpAdmissionBuildResult",
     "McpClientError",
     "McpClientRuntime",
     "McpClientRuntimeSettings",
@@ -52,6 +61,7 @@ __all__ = [
     "McpToolCallRequest",
     "McpToolCallResult",
     "McpToolCatalogSnapshot",
+    "McpToolCallAdmissionBuilder",
     "McpTransportType",
     "McpWorkerReceiptDraft",
     "mcp_client_runtime_settings_from_env",

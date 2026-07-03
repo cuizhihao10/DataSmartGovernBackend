@@ -219,3 +219,23 @@ MCP Marketplace。
 2. worker 消费 outbox 后调用 `McpDurableToolExecutionService.execute(...)`；
 3. 调用完成后把 `worker_receipt_draft` 写回 Java agent-runtime；
 4. 对可安全回填的短结果直接进入模型 tool message，对大结果写 MinIO 并只返回 artifactReference。
+
+## 10. Java 控制面 Facts 到 Admission 的映射
+
+当前已新增 `McpToolCallAdmissionBuilder`，用于把 Java command proposal、outbox、permission-admin、readiness graph 和审批事实转换为 `McpToolCallAdmission`。这一步非常关键，因为 admission 不能由模型、MCP 客户端或普通请求自称已经授权。
+
+推荐 Java/Python worker 传入的低敏事实字段：
+- `tenantId`、`projectId`、`workspaceKey`、`actorId`：确定租户、项目、工作区和操作者边界；
+- `runId`、`callId` 或 `commandId`：确定本次 Agent run 与工具调用；
+- `readinessDecision=READY` 或兼容值 `ready_to_execute`；
+- `permissionGranted=true`：必须来自 permission-admin 或 Java 控制面；
+- `approvalVerified=true`：高风险工具需要，最终仍由 MCP Runtime 根据工具目录判断是否必须审批；
+- `allowedInternalToolNames`：本轮允许调用的 MCP 内部工具名列表；
+- `commandProposalId`、`outboxMessageId`、`checkpointId`、`traceId`：低敏关联引用。
+
+`McpDurableToolExecutionService.request_from_control_facts(...)` 会使用上述 facts 构造完整 `McpDurableToolExecutionRequest`。如果事实不完整，会抛出 `McpAdmissionBuildError`，调用方应该写失败 receipt 或进入补偿流程，而不是继续调用外部 MCP Server。
+
+当前边界：
+- facts -> admission -> durable request 已完成；
+- 还没有实现 Java outbox consumer 自动投递这些 facts；
+- admission builder 不读取 payloadReference 正文，也不读取工具 arguments，arguments 仍由短生命周期执行请求单独传入。

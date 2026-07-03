@@ -17,6 +17,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from datasmart_ai_runtime.services.tools.mcp import (
+    McpAdmissionBuildError,
     McpClientRuntime,
     McpClientRuntimeSettings,
     McpDurableExecutionStatus,
@@ -109,6 +110,71 @@ class McpDurableToolExecutionServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(McpDurableExecutionStatus.FAILED_TOOL_CALL, result.status)
         self.assertEqual("MCP_TOOL_CALL_FAILED", result.error_code)
         self.assertNotIn("remote stack trace", str(result.to_summary()))
+
+    async def test_request_from_control_facts_builds_trusted_admission_and_executes(self) -> None:
+        """Java 控制面 facts 应能转换为 admission，并驱动 MCP durable 执行桥。"""
+
+        session = FakeMcpSession(
+            tools=(fake_tool("search", read_only=True, destructive=False, open_world=False),)
+        )
+        service = McpDurableToolExecutionService(self._runtime(session))
+        request = service.request_from_control_facts(
+            server_id="enterprise",
+            internal_tool_name="mcp.enterprise.search",
+            arguments={"query": "quality rules"},
+            control_facts={
+                "tenantId": "tenant-a",
+                "projectId": "project-a",
+                "workspaceKey": "tenant:tenant-a:project:project-a",
+                "actorId": "actor-a",
+                "runId": "run-a",
+                "callId": "call-a",
+                "readinessDecision": "ready_to_execute",
+                "permissionGranted": True,
+                "allowedInternalToolNames": ["mcp.enterprise.search"],
+                "source": "MCP_TOOLS_CALL",
+                "commandProposalId": "proposal-a",
+                "outboxMessageId": "outbox-a",
+                "checkpointId": "checkpoint-a",
+            },
+        )
+
+        result = await service.execute(request)
+
+        self.assertEqual(McpDurableExecutionStatus.SUCCEEDED, result.status)
+        self.assertEqual("MCP_TOOLS_CALL", request.admission.source)
+        self.assertEqual("proposal-a", result.worker_receipt_draft.command_proposal_id)
+        self.assertEqual("outbox-a", result.worker_receipt_draft.outbox_message_id)
+        self.assertEqual([("search", {"query": "quality rules"})], session.calls)
+
+    async def test_request_from_control_facts_rejects_incomplete_permission_facts(self) -> None:
+        """缺少权限事实时不能构造 admission，也不能进入 MCP 调用。"""
+
+        session = FakeMcpSession(
+            tools=(fake_tool("search", read_only=True, destructive=False, open_world=False),)
+        )
+        service = McpDurableToolExecutionService(self._runtime(session))
+
+        with self.assertRaises(McpAdmissionBuildError) as raised:
+            service.request_from_control_facts(
+                server_id="enterprise",
+                internal_tool_name="mcp.enterprise.search",
+                arguments={"query": "quality rules"},
+                control_facts={
+                    "tenantId": "tenant-a",
+                    "projectId": "project-a",
+                    "workspaceKey": "tenant:tenant-a:project:project-a",
+                    "actorId": "actor-a",
+                    "runId": "run-a",
+                    "callId": "call-a",
+                    "readinessDecision": "READY",
+                    "allowedInternalToolNames": [],
+                },
+            )
+
+        self.assertIn("PERMISSION_NOT_GRANTED", raised.exception.issue_codes)
+        self.assertIn("TOOL_NOT_IN_ADMISSION_ALLOWLIST", raised.exception.issue_codes)
+        self.assertEqual([], session.calls)
 
     @staticmethod
     def _request(
