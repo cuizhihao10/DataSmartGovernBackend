@@ -389,3 +389,29 @@ Compose 环境已显式设置：
 2. 将 `AgentMcpDurableWorkerRunResponse.receipt` 映射到现有 worker receipt 写入服务；
 3. 根据 `AgentMcpDurableWorkerCallResult` 推进 outbox 状态、失败重试和死信治理；
 4. 再把 Python 返回的安全 `modelFeedback` 接入真实多步 Agent loop 二轮模型调用。
+
+## 15. MCP Command Outbox Dispatch Target
+
+Java agent-runtime 现已新增 `McpAgentAsyncTaskCommandDispatchTarget`，把 MCP command 接入已有
+`AgentAsyncTaskCommandOutboxDispatcher`，不再另建一套重试状态机。
+
+路由规则：
+- `toolCode` 以 `mcp.` 开头时识别为 MCP command；
+- 或 `targetService/consumerService=python-ai-runtime-mcp-client` 时识别为 MCP command；
+- `AgentAsyncTaskCommandDispatchTarget` 新增 `supports(record)`，dispatcher 只调用匹配当前记录的 target；
+- task-management HTTP/Kafka target 会排除 MCP command，避免同一命令被错误广播到任务中心。
+
+请求映射：
+- `serverId` 优先读取 payload 的 `serverId/mcpServerId`，否则从 `mcp.<serverId>.<toolName>` 解析；
+- `arguments/toolArguments` 仅作为短生命周期 JSON object 传给 Python，不进入 Java 调用结果或异常；
+- `tenantId/projectId/workspaceKey/actorId/runId/callId/commandId/auditId/outboxMessageId` 来自 outbox record 和白名单字段；
+- `allowedInternalToolNames` 固定为当前内部工具名，避免 worker 扩大本轮工具权限；
+- `permissionGranted/approvalVerified` 只读取显式布尔事实，不根据 confirmationId 猜测；
+- 只有 Java dispatcher pre-check 已开启并通过时，缺失的 readiness 才补为 `READY`；
+- payload 其他字段不会被整体复制到 `controlFacts`。
+
+状态语义：
+- Python API `accepted=true` 且响应声明 `MCP_ARGUMENTS_NEVER_RETURNED` 后，target 正常返回，dispatcher 标记 outbox 为 `PUBLISHED`；
+- client 关闭、HTTP 失败、Python 未接受、响应缺少安全策略声明时，target 抛出低敏异常；
+- dispatcher 继续复用既有 `FAILED -> backoff retry -> BLOCKED -> 人工 requeue/dead-letter/ignore` 流程；
+- Python 返回的 FAILED_PRECHECK/EXECUTION_FAILED receipt 尚未在本阶段写入 Java receipt index，下一阶段单独完成映射与幂等写入。

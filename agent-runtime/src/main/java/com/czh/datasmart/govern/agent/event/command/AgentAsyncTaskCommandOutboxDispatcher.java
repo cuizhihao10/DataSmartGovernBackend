@@ -170,12 +170,15 @@ public class AgentAsyncTaskCommandOutboxDispatcher {
         if (preCheckOutcome != null) {
             return preCheckOutcome;
         }
-        if (dispatchTargets.isEmpty() && !properties.isDispatcherAllowNoTargetsAsPublished()) {
+        List<AgentAsyncTaskCommandDispatchTarget> applicableTargets = dispatchTargets.stream()
+                .filter(target -> target.supports(record))
+                .toList();
+        if (applicableTargets.isEmpty() && !properties.isDispatcherAllowNoTargetsAsPublished()) {
             markFailed(record, "未配置异步命令投递目标，不能标记为已发布。", now);
             return DispatchOutcome.failedOutcome();
         }
         try {
-            for (AgentAsyncTaskCommandDispatchTarget target : dispatchTargets) {
+            for (AgentAsyncTaskCommandDispatchTarget target : applicableTargets) {
                 target.dispatch(record);
             }
             outboxStore.markPublished(record.outboxId(), Instant.now());

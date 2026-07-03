@@ -60,6 +60,21 @@ public class KafkaAgentAsyncTaskCommandDispatchTarget implements AgentAsyncTaskC
     }
 
     /**
+     * 当前 Kafka target 只承担 task-management 异步任务命令，不重复投递 MCP 专用命令。
+     *
+     * <p>未来如果 MCP 执行切换为 Kafka，可以新增独立 topic、consumer group 与 MCP Kafka target，而不是让通用
+     * task-management topic 同时承载两套完全不同的消费语义。</p>
+     */
+    @Override
+    public boolean supports(AgentAsyncTaskCommandOutboxRecord record) {
+        return record == null || !(
+                startsWithMcp(record.toolCode())
+                        || "python-ai-runtime-mcp-client".equalsIgnoreCase(record.targetService())
+                        || "python-ai-runtime-mcp-client".equalsIgnoreCase(record.consumerService())
+        );
+    }
+
+    /**
      * 将一条 command outbox 记录投递到 Kafka。
      *
      * @param record command outbox 记录，必须包含 commandTopic、partitionKey 和 payloadJson。
@@ -112,5 +127,9 @@ public class KafkaAgentAsyncTaskCommandDispatchTarget implements AgentAsyncTaskC
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private boolean startsWithMcp(String value) {
+        return value != null && value.trim().toLowerCase().startsWith("mcp.");
     }
 }
