@@ -39,11 +39,18 @@ from datasmart_ai_runtime.services.tools.mcp.execution import (
     McpDurableToolExecutionService,
     McpWorkerReceiptDraft,
 )
+from datasmart_ai_runtime.services.tools.mcp.worker import (
+    MCP_DURABLE_WORKER_SCHEMA_VERSION,
+    McpDurableWorkerAdapter,
+    McpDurableWorkerRunRequest,
+    McpDurableWorkerRunResult,
+)
 
 __all__ = [
     "MCP_CLIENT_SCHEMA_VERSION",
     "MCP_ADMISSION_BUILDER_SCHEMA_VERSION",
     "MCP_DURABLE_EXECUTION_SCHEMA_VERSION",
+    "MCP_DURABLE_WORKER_SCHEMA_VERSION",
     "McpAdmissionBuildError",
     "McpAdmissionBuildResult",
     "McpClientError",
@@ -54,6 +61,9 @@ __all__ = [
     "McpDurableToolExecutionRequest",
     "McpDurableToolExecutionResult",
     "McpDurableToolExecutionService",
+    "McpDurableWorkerAdapter",
+    "McpDurableWorkerRunRequest",
+    "McpDurableWorkerRunResult",
     "McpServerConfiguration",
     "McpSessionOpener",
     "McpSessionPort",

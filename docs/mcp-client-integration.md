@@ -239,3 +239,34 @@ MCP Marketplace。
 - facts -> admission -> durable request 已完成；
 - 还没有实现 Java outbox consumer 自动投递这些 facts；
 - admission builder 不读取 payloadReference 正文，也不读取工具 arguments，arguments 仍由短生命周期执行请求单独传入。
+
+## 11. MCP Durable Worker Adapter
+
+当前已新增 `McpDurableWorkerAdapter`，用于把“拿到一条 Java outbox/facts 后如何执行 MCP 并生成 worker receipt”固定为可测试合同。
+
+输入 `McpDurableWorkerRunRequest`：
+- `server_id`、`internal_tool_name`：定位 MCP Server 与工具；
+- `arguments`：短生命周期实参，只进入 MCP SDK，不进入 receipt/event/checkpoint；
+- `control_facts`：Java command proposal、outbox、permission、readiness、approval 的低敏事实；
+- `fallback_context`：可选可信上下文，只用于补齐 tenant/project/workspace 等范围字段；
+- `post_to_java`：是否通过现有 `JavaCommandWorkerReceiptClient` 写回 Java，默认关闭；
+- `session_id`、`trace_id`：Java receipt 路由与链路追踪所需的低敏定位字段。
+
+Worker 执行语义：
+- admission 构造失败：不调用外部 MCP Server，生成 `FAILED_PRECHECK` receipt；
+- MCP 执行成功：生成 `EXECUTION_SUCCEEDED` receipt，结果正文只留在 `execution_result.runtime_result`；
+- MCP 执行失败：生成 `EXECUTION_FAILED` receipt，不回显远端错误正文；
+- 显式开启 `post_to_java=true` 且具备 `sessionId/runId` 时，才 POST 到 Java worker receipt 接口。
+
+Receipt 映射：
+- 使用现有 `ControlledCommandWorkerReceipt` 合同，不新增临时私有 DTO；
+- `targetService=python-ai-runtime-mcp-client`；
+- `toolCode` 使用 `mcp.<serverId>.<toolName>` 内部工具名；
+- `mcpResultSummary` 只包含结果摘要、哈希、大小、截断标记和状态，不包含工具正文；
+- `artifactReference` 当前只是 `agent-artifact:<run>/<tool>/mcp-result-<digest>` 低敏占位，真实大结果落盘仍需要后续 MinIO writer。
+
+当前边界：
+- Python 侧 “facts -> admission -> durable request -> MCP execute -> receipt” 最小闭环已完成；
+- Java 侧 outbox dispatcher 尚未自动调用该 adapter；
+- Java receipt schema 当前复用 command worker receipt，后续可以根据产品需要新增更专用的 MCP receipt DTO；
+- 模型第二轮 tool message 回填仍未消费 `execution_result.runtime_result`。
