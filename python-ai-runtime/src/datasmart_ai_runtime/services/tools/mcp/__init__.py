@@ -25,13 +25,26 @@ from datasmart_ai_runtime.services.tools.mcp.contracts import (
 )
 from datasmart_ai_runtime.services.tools.mcp.official_sdk import open_official_mcp_session
 from datasmart_ai_runtime.services.tools.mcp.runtime import McpClientRuntime, McpSessionOpener
+from datasmart_ai_runtime.services.tools.mcp.execution import (
+    MCP_DURABLE_EXECUTION_SCHEMA_VERSION,
+    McpDurableExecutionStatus,
+    McpDurableToolExecutionRequest,
+    McpDurableToolExecutionResult,
+    McpDurableToolExecutionService,
+    McpWorkerReceiptDraft,
+)
 
 __all__ = [
     "MCP_CLIENT_SCHEMA_VERSION",
+    "MCP_DURABLE_EXECUTION_SCHEMA_VERSION",
     "McpClientError",
     "McpClientRuntime",
     "McpClientRuntimeSettings",
     "McpDiscoveredTool",
+    "McpDurableExecutionStatus",
+    "McpDurableToolExecutionRequest",
+    "McpDurableToolExecutionResult",
+    "McpDurableToolExecutionService",
     "McpServerConfiguration",
     "McpSessionOpener",
     "McpSessionPort",
@@ -40,6 +53,7 @@ __all__ = [
     "McpToolCallResult",
     "McpToolCatalogSnapshot",
     "McpTransportType",
+    "McpWorkerReceiptDraft",
     "mcp_client_runtime_settings_from_env",
     "mcp_configuration_diagnostics",
     "mcp_server_configurations_from_env",

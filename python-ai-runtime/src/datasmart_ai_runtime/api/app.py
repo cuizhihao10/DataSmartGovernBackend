@@ -100,6 +100,7 @@ from datasmart_ai_runtime.services.tools import (
 )
 from datasmart_ai_runtime.services.tools.mcp import (
     McpClientRuntime,
+    McpDurableToolExecutionService,
     mcp_client_runtime_settings_from_env,
     mcp_server_configurations_from_env,
 )
@@ -172,6 +173,13 @@ def create_app() -> Any:
         configurations=mcp_server_configurations,
     )
     app.state.mcp_client_runtime = mcp_client_runtime
+    # MCP Durable Tool Execution Service 是“真实 tools/call”进入 Agent 执行闭环的内部桥接点。
+    # 它不会新增一个绕过审批的 HTTP 调用入口，而是要求调用方提供 Java/permission/readiness 链路生成的
+    # McpToolCallAdmission。这样后续 LangGraph 节点、worker 或 command outbox 消费者可以复用同一个实例：
+    # - Runtime 负责官方 MCP SDK 协议调用；
+    # - Durable Bridge 负责低敏执行摘要、receipt draft 和状态分类；
+    # - Java 控制面仍负责 durable outbox、worker receipt、审计与任务状态投影。
+    app.state.mcp_durable_tool_execution_service = McpDurableToolExecutionService(mcp_client_runtime)
     # 工具目录在启动阶段集中加载一次，并同时供主 orchestrator 与协议适配 preview 入口使用。
     # 这样可以避免 `/agent/plans`、MCP tools/call preview 和未来确认页在同一进程里看到不同版本的工具目录：
     # - 生产环境可优先从 Java agent-runtime 动态读取；

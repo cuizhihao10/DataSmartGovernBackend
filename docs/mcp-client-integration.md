@@ -184,3 +184,38 @@ initialize -> tools/list -> ToolDefinition 映射 -> admission -> tools/call
 
 为了项目收敛，下一批只推进第 1-3 项的最小闭环，不同时扩展 resources、prompts、sampling、elicitation 和
 MCP Marketplace。
+
+## 9. Durable Agent Loop 执行桥
+
+当前已新增 `McpDurableToolExecutionService`，用于把 MCP `tools/call` 接入 Agent 执行闭环的内部节点。它不是一个新的公开调用接口，而是给 LangGraph 节点、command worker 或后续 outbox consumer 复用的执行桥。
+
+执行桥的输入是 `McpDurableToolExecutionRequest`：
+- `server_id` 与 `internal_tool_name` 定位已发现的 MCP 工具；
+- `arguments` 仅在本轮内存中传给 MCP SDK，不写 checkpoint、event 或 receipt；
+- `McpToolCallAdmission` 必须由 Java/permission/readiness 链路形成，不能由模型或外部请求自称已授权；
+- `execution_node_id` 用于挂接 LangGraph/Durable Loop 可观测节点；
+- `checkpoint_id`、`command_proposal_id`、`outbox_message_id`、`trace_id` 只作为低敏关联引用。
+
+执行桥的输出是 `McpDurableToolExecutionResult`：
+- `runtime_result` 可以包含工具正文，只允许本轮 Agent 二次推理使用；
+- `to_summary()` 只输出状态、错误码、结果大小、哈希、截断标记和低敏引用；
+- `worker_receipt_draft` 固定了后续写 Java worker receipt 所需的最小字段，但当前版本仍不直接写 Java receipt；
+- `sideEffectBoundary` 明确标记是否调用了 MCP、是否写入 Java receipt、是否持久化参数或结果正文。
+
+状态分类：
+- `SUCCEEDED`：MCP 工具真实调用成功，结果正文仅保留在运行时对象中；
+- `FAILED_PRECHECK`：admission、权限、审批、allowlist、参数大小或 inline secret 等执行前条件失败；
+- `FAILED_TOOL_CALL`：通过执行前检查后，远端 MCP Server 或 SDK 调用失败。
+
+当前边界：
+- 已完成 MCP Runtime 到 Durable 执行桥的代码路径；
+- FastAPI `app.state.mcp_durable_tool_execution_service` 已统一装配；
+- 尚未把 Java outbox consumer 自动接到该服务；
+- 尚未把 `worker_receipt_draft` 提交给 `JavaCommandWorkerReceiptClient`；
+- 尚未把 `runtime_result` 通过二轮模型回填服务统一消费。
+
+下一步收敛路线：
+1. 由 Java command proposal/outbox facts 生成可信 `McpToolCallAdmission`；
+2. worker 消费 outbox 后调用 `McpDurableToolExecutionService.execute(...)`；
+3. 调用完成后把 `worker_receipt_draft` 写回 Java agent-runtime；
+4. 对可安全回填的短结果直接进入模型 tool message，对大结果写 MinIO 并只返回 artifactReference。
