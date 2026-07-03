@@ -1,5 +1,44 @@
 # MySQL 到 PostgreSQL 渐进迁移路线
 
+## 2026-07-03 更新：Python Runtime AI Memory PostgreSQL store 真实 smoke
+
+本阶段完成 `ai_memory` V1 的运行时读写验收，不再只停留在 schema、配置装配和存量迁移脚手架层面。
+
+已完成：
+
+- 新增 `scripts/ai-memory-postgresql-store-smoke.py`：
+  - 默认只读检查 `ai_memory` 必要表，必须显式传入 `--apply` 才写入；
+  - 支持 `DATASMART_AI_MEMORY_POSTGRESQL_DSN` 或 `--postgresql-dsn`；
+  - 显式设置 `search_path=ai_memory,public`，避免同名表导致误写其他 schema；
+  - 使用项目真实 SQL store 覆盖 candidate、candidate audit、formal memory、receipt、lease、audit outbox；
+  - 验证候选审批版本推进、正式记忆重复写入幂等、tenant/project/namespace 范围检索、lease fencing 和 outbox 回读；
+  - 所有测试数据带 runId 前缀，默认执行前后清理；失败时先 rollback 再清理；
+  - 只输出低敏错误摘要，不在普通终端日志打印 DSN 密码、SQL 参数或完整堆栈。
+- 修复 PostgreSQL DB-API 类型兼容：
+  - candidate/formal memory store 现在同时兼容 SQLite/MySQL 返回的 JSON 字符串与 psycopg3 返回的 JSONB list/dict；
+  - candidate store 同时兼容字符串时间与 psycopg3 直接返回的 timezone-aware `datetime`，并统一到 UTC；
+  - candidate `approval_required` 与 audit outbox `dry_run` 改为传 Python bool，兼容 PostgreSQL BOOLEAN、MySQL tinyint 和 SQLite 0/1。
+- 真实容器验证：
+  - 重建 Python Runtime，镜像内安装 `psycopg 3.3.4`；
+  - 只读 schema 检查通过；
+  - `--apply` 真实 smoke 通过，覆盖 6 张核心表和 5 类 store；
+  - smoke 后 candidate/formal/receipt/lease/outbox 前缀记录均为 0，确认自动清理生效；
+  - 定向 memory store 单元测试 29 个全部通过。
+
+当前边界：
+
+- 该 smoke 证明 Python Runtime 的关系型 AI Memory 主路径可用，不等价于 pgvector embedding adapter 已经完成；
+- LangGraph durable checkpoint 仍未切换到 PostgreSQL checkpointer；
+- 全量 Python 单测在 Compose 环境下有 18 个既有失败，原因是 gateway HMAC 强制环境变量和 Provider 配置污染默认测试假设；本批定向 29 个测试与真实 PostgreSQL smoke 均通过，后续应单独补全量测试环境隔离；
+- MySQL 初始化脚本中的 `agent_memory_*` 仍暂时保留，必须等 pgvector、LangGraph PostgreSQL checkpoint 和全平台 smoke 完成后再清理。
+
+下一步推荐路线：
+
+1. 接入 pgvector embedding 写入与检索 adapter，固定 metadata filter、模型版本、content fingerprint 和降级全文召回语义；
+2. 接入 LangGraph PostgreSQL durable checkpointer，验证暂停、恢复、分支、循环和多 Agent 状态恢复；
+3. AI Memory 两条剩余主链通过后，切换预生产 store 默认值并执行全平台 smoke；
+4. 最后清理 MySQL 初始化脚本中的 Agent Memory 表，进入 MySQL 最终下线批次。
+
 ## 2026-07-03 更新：ai_memory 存量迁移脚手架
 
 本阶段承接 `ai_memory` PostgreSQL/pgvector V1 基线与 Python Runtime PostgreSQL store 装配入口，补齐旧 MySQL 中 `agent_memory_*` 历史表搬迁到 PostgreSQL `ai_memory` schema 的运维脚手架。

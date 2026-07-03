@@ -110,7 +110,9 @@ class SqlAgentMemoryMaterializationAuditOutboxStore:
             record.session_id,
             record.severity,
             record.action,
-            1 if record.dry_run else 0,
+            # PostgreSQL 目标表使用 BOOLEAN 类型，因此这里传 Python bool。
+            # SQLite 会把 bool 当作 0/1 保存，MySQL 也兼容 tinyint 映射；避免继续把目标架构锁在 MySQL 习惯上。
+            bool(record.dry_run),
             self._json(record.payload),
             record.delivery_status.value,
             record.attempt_count,

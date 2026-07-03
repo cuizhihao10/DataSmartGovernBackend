@@ -232,7 +232,11 @@ class SqlAgentMemoryWriteCandidateStore:
             candidate.source_audit_id,
             candidate.source_run_id,
             candidate.output_ref,
-            1 if candidate.approval_required else 0,
+            # 这里故意传入 Python bool，而不是 MySQL/SQLite 时代常见的 1/0。
+            # 原因是 AI Memory 已经把 PostgreSQL/pgvector 作为目标事实库，
+            # PostgreSQL 的 BOOLEAN 列由驱动接收 True/False 最稳定；SQLite 会自动按 0/1 保存，
+            # MySQL 驱动也能把 bool 映射为 tinyint，因此这是三类 DB-API 路径都兼容的写法。
+            bool(candidate.approval_required),
             candidate.retention_days,
             candidate.sensitivity_level,
             self._json(candidate.privacy_notes),
@@ -289,10 +293,17 @@ class SqlAgentMemoryWriteCandidateStore:
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
     @staticmethod
-    def _loads(value: str | None) -> Any:
+    def _loads(value: Any) -> Any:
+        """读取候选表中的 JSON/JSONB 字段。
+
+        SQLite 和多数 MySQL 配置返回 JSON 字符串，而 psycopg3 会把 PostgreSQL JSONB
+        自动解码成 list/dict。这里同时兼容两类返回值，并统一恢复领域对象偏好的不可变 tuple。
+        """
+
         if not value:
             return None
-        return SqlAgentMemoryWriteCandidateStore._restore_json_value(json.loads(value))
+        decoded = value if isinstance(value, (dict, list, tuple)) else json.loads(value)
+        return SqlAgentMemoryWriteCandidateStore._restore_json_value(decoded)
 
     @staticmethod
     def _restore_json_value(value: Any) -> Any:
@@ -307,5 +318,15 @@ class SqlAgentMemoryWriteCandidateStore:
         return value.astimezone(timezone.utc).isoformat() if value else None
 
     @staticmethod
-    def _parse_datetime(value: str | None) -> datetime | None:
-        return datetime.fromisoformat(value) if value else None
+    def _parse_datetime(value: str | datetime | None) -> datetime | None:
+        """解析 SQLite/MySQL/PostgreSQL 驱动返回的时间值。
+
+        SQLite 测试夹具和部分 MySQL 驱动返回字符串，psycopg3 对 TIMESTAMPTZ 会直接返回
+        timezone-aware datetime。统一接受两种形态并转换到 UTC，避免候选审批排序和保留期判断
+        因驱动差异出现时区漂移。
+        """
+
+        if value is None:
+            return None
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(value)
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)

@@ -295,7 +295,7 @@ class SqlAgentMemoryStore:
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
     @staticmethod
-    def _loads(value: str | None) -> Any:
+    def _loads(value: Any) -> Any:
         """读取 JSON 字段并恢复不可变 tuple 结构。
 
         JSON 天然没有 tuple，写入时 tuple 会变成 list。长期记忆领域对象使用 tuple 表达“调用方不应随意修改
@@ -304,7 +304,10 @@ class SqlAgentMemoryStore:
 
         if not value:
             return None
-        return SqlAgentMemoryStore._restore_json_value(json.loads(value))
+        # SQLite/MySQL 通常返回 JSON 字符串，psycopg3 则会把 JSONB 直接解码成 list/dict。
+        # 统一兼容两种形态，避免 PostgreSQL 主路径在回读 tags、attributes、namespace 时再次 json.loads。
+        decoded = value if isinstance(value, (dict, list, tuple)) else json.loads(value)
+        return SqlAgentMemoryStore._restore_json_value(decoded)
 
     @staticmethod
     def _restore_json_value(value: Any) -> Any:

@@ -61,6 +61,32 @@ DATASMART_AI_MEMORY_POSTGRESQL_DSN=postgresql://datasmart:***@postgresql:5432/da
 尚未手工应用到旧数据卷时启动失败。后续完成存量迁移脚手架和 smoke 后，可以逐步把生产/预生产默认改为
 `postgresql + fail_open=false`。
 
+## 真实 store smoke
+
+项目提供 `scripts/ai-memory-postgresql-store-smoke.py`，用于验证 Python Runtime 的真实 SQL store，而不是只验证
+手写 SQL 或表结构。它覆盖以下运行时语义：
+
+- 候选记忆首次写入、审批状态推进、乐观版本号和决策审计；
+- 正式记忆首次写入、重复写入幂等、按候选反查和 tenant/project/namespace 范围检索；
+- materialization receipt 的 `started -> succeeded` 状态流转；
+- materialization lease 的领取、fencing token 条件完成和终态回读；
+- materialization audit outbox 的低敏写入与最近记录回读。
+
+脚本默认只做 schema 检查，必须显式增加 `--apply` 才会写入。所有测试 ID 都带 runId 前缀，默认在执行前后清理；
+只有显式增加 `--keep-records` 才保留测试记录。测试数据只包含低敏摘要，不包含真实 prompt、SQL、样本数据、
+工具原始输出、密钥或完整异常堆栈。
+
+推荐从已安装 `postgresql` extra 的 Python Runtime 容器执行：
+
+```powershell
+docker compose -f docker-compose.yml -f docker-compose.application.yml run --rm --no-deps `
+  -v "${PWD}:/workspace:ro" `
+  python-ai-runtime python /workspace/scripts/ai-memory-postgresql-store-smoke.py --apply
+```
+
+如果 PostgreSQL 使用已有数据卷且缺少 `ai_memory` 表，应先显式执行
+`docker/postgresql/init/10-ai-memory-schema.sql`，不能让 Runtime 在启动时静默建表或掩盖 schema 漂移。
+
 ## 安全约束
 
 这些表都只能保存低敏摘要和治理元数据。禁止写入：
@@ -78,8 +104,7 @@ DATASMART_AI_MEMORY_POSTGRESQL_DSN=postgresql://datasmart:***@postgresql:5432/da
 
 ## 下一步
 
-1. 为 `agent_memory_*` 补 MySQL 到 PostgreSQL `ai_memory` 的存量迁移脚手架。
-2. 为 Python Runtime 增加真实 PostgreSQL store smoke，覆盖候选、正式记忆、receipt、lease、audit outbox。
-3. 增加 pgvector embedding 写入/检索 adapter，使 Chroma 成为兼容路径而不是目标路径。
-4. 把 LangGraph checkpoint 从 Redis 低敏 checkpoint 扩展为 PostgreSQL durable checkpoint 可选实现。
-5. 通过全平台 smoke 后，再清理 MySQL 初始化脚本中的 Agent Memory 表。
+1. 增加 pgvector embedding 写入/检索 adapter，使 Chroma 成为兼容路径而不是目标路径。
+2. 把 LangGraph checkpoint 从 Redis 低敏 checkpoint 扩展为 PostgreSQL durable checkpoint 可选实现。
+3. 在预生产配置中把 memory stores 切换为 `postgresql + fail_open=false`，验证多实例、重启恢复与容量边界。
+4. 通过全平台 smoke 后，清理 MySQL 初始化脚本中的 Agent Memory 表并停止新增 MySQL 专属耦合。
