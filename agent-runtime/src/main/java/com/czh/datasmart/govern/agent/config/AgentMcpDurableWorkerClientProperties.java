@@ -85,6 +85,16 @@ public class AgentMcpDurableWorkerClientProperties {
     private boolean postToJava = false;
 
     /**
+     * 执行瞬间从审计快照解析出的 MCP arguments 最大字节数。
+     *
+     * <p>outbox 的 {@code maxPayloadBytes} 只能限制低敏命令信封，无法限制 payloadReference 指向的真实参数。
+     * 因此在 Java 把参数交给 Python 前还要独立执行一次 UTF-8 JSON 大小检查。默认 256 KiB 足以覆盖常规
+     * 查询条件、文件引用和结构化工具参数；更大的正文应先写入 MinIO，再以受控 artifact reference 传递，
+     * 而不是把大对象塞进 MCP tools/call。</p>
+     */
+    private int maxResolvedArgumentsBytes = 256 * 1024;
+
+    /**
      * 服务间认证使用的 HTTP Header 名称。
      *
      * <p>默认使用 {@code Authorization}，并在 {@link #serviceAccountToken} 存在时发送

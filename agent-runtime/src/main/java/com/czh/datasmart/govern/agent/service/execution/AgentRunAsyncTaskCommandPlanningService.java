@@ -55,6 +55,9 @@ public class AgentRunAsyncTaskCommandPlanningService {
 
     private static final String COMMAND_TYPE = "AGENT_TOOL_ASYNC_TASK_REQUESTED";
     private static final String DISPATCH_CHANNEL = "KAFKA_COMMAND";
+    private static final String MCP_COMMAND_TYPE = "AGENT_MCP_TOOL_CALL_REQUESTED";
+    private static final String MCP_COMMAND_TOPIC = "datasmart.agent.mcp.commands";
+    private static final String MCP_CONSUMER_SERVICE = "python-ai-runtime-mcp-client";
 
     private final AgentRuntimeProperties properties;
     private final AgentRunToolExecutionPolicyService policyService;
@@ -135,10 +138,14 @@ public class AgentRunAsyncTaskCommandPlanningService {
                 dispatchable,
                 stableCommandId(audit),
                 stableIdempotencyKey(audit),
-                COMMAND_TYPE,
+                isMcpTool(audit.toolCode()) ? MCP_COMMAND_TYPE : COMMAND_TYPE,
                 DISPATCH_CHANNEL,
-                normalizeText(properties.getAsyncTaskCommandTopic(), "datasmart.agent.tool.async.commands"),
-                normalizeText(properties.getAsyncTaskCommandConsumerService(), "task-management"),
+                isMcpTool(audit.toolCode())
+                        ? MCP_COMMAND_TOPIC
+                        : normalizeText(properties.getAsyncTaskCommandTopic(), "datasmart.agent.tool.async.commands"),
+                isMcpTool(audit.toolCode())
+                        ? MCP_CONSUMER_SERVICE
+                        : normalizeText(properties.getAsyncTaskCommandConsumerService(), "task-management"),
                 audit.targetService(),
                 audit.targetEndpoint(),
                 audit.tenantId(),
@@ -164,6 +171,17 @@ public class AgentRunAsyncTaskCommandPlanningService {
 
     private boolean isAsyncTask(AgentToolExecutionAuditView audit) {
         return AgentToolExecutionMode.ASYNC_TASK.name().equals(normalizeEnumName(audit.executionMode()));
+    }
+
+    /**
+     * 判断工具是否属于 MCP 出站命名空间。
+     *
+     * <p>统一使用 {@code mcp.<serverId>.<toolName>}，让规划、outbox、dispatcher 与 Python Runtime
+     * 在不传递外部 endpoint 的情况下识别同一个工具。这里只做协议分类；server 与 tool 是否真实注册，
+     * 仍由 Python MCP registry 和执行时 admission allowlist 最终校验。</p>
+     */
+    private boolean isMcpTool(String toolCode) {
+        return toolCode != null && toolCode.trim().toLowerCase(Locale.ROOT).startsWith("mcp.");
     }
 
     private List<String> buildSummaryReasons(int totalAsyncTools,

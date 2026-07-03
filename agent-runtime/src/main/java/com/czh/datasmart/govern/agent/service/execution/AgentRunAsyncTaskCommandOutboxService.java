@@ -29,6 +29,7 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -46,6 +47,9 @@ import java.util.Set;
 @Service
 @RequiredArgsConstructor
 public class AgentRunAsyncTaskCommandOutboxService {
+
+    private static final String MCP_PERMISSION_DECISION_ALLOWED = "PERMISSION_ADMIN_ALLOWED";
+    private static final String MCP_CONSUMER_SERVICE = "python-ai-runtime-mcp-client";
 
     private final AgentAsyncTaskCommandOutboxProperties properties;
     private final AgentRunAsyncTaskCommandPlanningService planningService;
@@ -142,7 +146,20 @@ public class AgentRunAsyncTaskCommandOutboxService {
                 blocked++;
                 continue;
             }
-            AgentAsyncTaskCommandOutboxRecord record = buildRecord(plan, item, evidenceFor(item, executionEvidenceByAuditId));
+            AgentAsyncTaskCommandExecutionEvidence executionEvidence =
+                    evidenceFor(item, executionEvidenceByAuditId);
+            /*
+             * MCP 是对外部工具系统的真实调用，不允许复用“Run 级兼容入箱”这种缺少确认事实的旧路径。
+             *
+             * selected-node 服务会重新执行 DAG dry-run，并把 permission-admin 决策、策略版本、委托证据和
+             * confirmationId 一起传入。只有这些证据完整时，Java 才能把 permissionGranted=true 写入
+             * 低敏 command envelope；否则宁可把当前节点计为 blocked，也不能让 Python 根据调用方自报放行。
+             */
+            if (isMcpTool(item.toolCode()) && !isTrustedMcpExecutionEvidence(executionEvidence)) {
+                blocked++;
+                continue;
+            }
+            AgentAsyncTaskCommandOutboxRecord record = buildRecord(plan, item, executionEvidence);
             boolean appended = outboxStore.append(record);
             AgentAsyncTaskCommandOutboxRecord current = appended
                     ? record
@@ -212,8 +229,8 @@ public class AgentRunAsyncTaskCommandOutboxService {
                 plan.runId(),
                 item.auditId(),
                 item.toolCode(),
-                item.targetService(),
-                item.targetEndpoint(),
+                isMcpTool(item.toolCode()) ? MCP_CONSUMER_SERVICE : item.targetService(),
+                isMcpTool(item.toolCode()) ? null : item.targetEndpoint(),
                 item.tenantId(),
                 item.projectId(),
                 item.workspaceId(),
@@ -245,8 +262,10 @@ public class AgentRunAsyncTaskCommandOutboxService {
         payload.put("sessionId", plan.sessionId());
         payload.put("runId", plan.runId());
         payload.put("toolCode", item.toolCode());
-        payload.put("targetService", item.targetService());
-        payload.put("targetEndpoint", item.targetEndpoint());
+        payload.put("targetService", isMcpTool(item.toolCode()) ? MCP_CONSUMER_SERVICE : item.targetService());
+        if (!isMcpTool(item.toolCode())) {
+            payload.put("targetEndpoint", item.targetEndpoint());
+        }
         payload.put("tenantId", item.tenantId());
         payload.put("projectId", item.projectId());
         payload.put("workspaceId", item.workspaceId());
@@ -268,6 +287,21 @@ public class AgentRunAsyncTaskCommandOutboxService {
                 payload.put("bridgeSourceEvidence", executionEvidence.bridgeSourceEvidence());
             }
         }
+        if (isMcpTool(item.toolCode())) {
+            /*
+             * 这些布尔值不是 HTTP 调用方提交的自由字段，而是本服务在验证 selected-node 与
+             * permission-admin 证据后生成的派生事实。真实 arguments 不会进入该 Map；dispatcher 执行前
+             * 才按 payloadReference 从工具审计快照读取，并在本次 Java -> Python 请求结束后释放。
+             */
+            payload.put("serverId", mcpServerId(item.toolCode()));
+            payload.put("internalToolName", item.toolCode());
+            payload.put("readinessDecision", "READY");
+            payload.put("permissionGranted", true);
+            payload.put("approvalVerified", true);
+            payload.put("approvalConfirmationId", executionEvidence.confirmationId());
+            payload.put("serviceAuthorizationDecision", executionEvidence.serviceAuthorizationDecision());
+            payload.put("argumentsResolutionMode", "AUDIT_REFERENCE_JUST_IN_TIME");
+        }
         payload.put("priority", properties.getDefaultPriority());
         payload.put("maxRetryCount", properties.getDefaultMaxRetryCount());
         payload.put("maxDeferCount", properties.getDefaultMaxDeferCount());
@@ -281,6 +315,50 @@ public class AgentRunAsyncTaskCommandOutboxService {
             return AgentAsyncTaskCommandExecutionEvidence.empty();
         }
         return executionEvidenceByAuditId.getOrDefault(item.auditId(), AgentAsyncTaskCommandExecutionEvidence.empty());
+    }
+
+    /**
+     * 验证 MCP 命令是否携带可被 Java 控制面信任的完整执行证据。
+     *
+     * <p>这里有意不接受 {@code LOCAL_PREVIEW_ALLOWED}。本地预览只能证明字段结构完整，无法证明企业 IdP
+     * 下的服务账户、角色、路由策略和数据范围真的允许调用。生产级 MCP 调用至少需要：</p>
+     * <p>1. selected-node confirmation，证明用户确认的是最新 dry-run 预案；</p>
+     * <p>2. permission-admin 明确允许，而不是 fail-open 或本地推测；</p>
+     * <p>3. policyVersion，支持执行前检测策略漂移；</p>
+     * <p>4. delegationEvidence，说明服务账户代表哪个 actor 发起调用。</p>
+     */
+    private boolean isTrustedMcpExecutionEvidence(AgentAsyncTaskCommandExecutionEvidence evidence) {
+        return evidence != null
+                && hasText(evidence.confirmationId())
+                && Boolean.TRUE.equals(evidence.serviceAuthorizationAllowed())
+                && MCP_PERMISSION_DECISION_ALLOWED.equals(evidence.serviceAuthorizationDecision())
+                && !evidence.policyVersions().isEmpty()
+                && !evidence.delegationEvidence().isEmpty();
+    }
+
+    /**
+     * 从 {@code mcp.<serverId>.<toolName>} 提取 MCP Server ID。
+     *
+     * <p>Server ID 是 MCP registry 中的逻辑标识，不是 URL。command 不保存远端 endpoint，可以避免
+     * SSRF、环境地址泄漏和测试/生产地址混用；Python Runtime 会按该逻辑 ID 查询受控 registry。</p>
+     */
+    private String mcpServerId(String toolCode) {
+        String[] parts = toolCode == null ? new String[0] : toolCode.trim().split("\\.");
+        if (parts.length < 3 || !hasText(parts[1])) {
+            throw new PlatformBusinessException(
+                    PlatformErrorCode.BAD_REQUEST,
+                    "MCP 工具编码必须符合 mcp.<serverId>.<toolName>，toolCode=" + normalizeText(toolCode)
+            );
+        }
+        return parts[1];
+    }
+
+    private boolean isMcpTool(String toolCode) {
+        return toolCode != null && toolCode.trim().toLowerCase(Locale.ROOT).startsWith("mcp.");
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private String payloadReference(String sessionId, String runId, String auditId) {

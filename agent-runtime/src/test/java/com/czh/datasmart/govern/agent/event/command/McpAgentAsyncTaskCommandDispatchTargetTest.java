@@ -7,6 +7,8 @@
 package com.czh.datasmart.govern.agent.event.command;
 
 import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
+import com.czh.datasmart.govern.agent.config.AgentMcpDurableWorkerClientProperties;
+import com.czh.datasmart.govern.agent.service.AgentToolPlanArgumentsPayloadService;
 import com.czh.datasmart.govern.agent.service.runtime.AgentCommandWorkerLeaseClaimResult;
 import com.czh.datasmart.govern.agent.service.runtime.AgentCommandWorkerLeaseRecord;
 import com.czh.datasmart.govern.agent.service.runtime.AgentCommandWorkerLeaseService;
@@ -15,6 +17,7 @@ import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpDurableWorkerC
 import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpDurableWorkerClient;
 import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpDurableWorkerRunRequest;
 import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpDurableWorkerRunResponse;
+import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpCommandArgumentsResolver;
 import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpWorkerReceiptIngestionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -29,6 +32,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -57,6 +61,7 @@ class McpAgentAsyncTaskCommandDispatchTargetTest {
                 request -> accepted(),
                 mock(AgentCommandWorkerLeaseService.class),
                 mock(AgentMcpWorkerReceiptIngestionService.class),
+                argumentsResolver(),
                 new ObjectMapper()
         );
 
@@ -76,6 +81,36 @@ class McpAgentAsyncTaskCommandDispatchTargetTest {
         assertFalse(request.controlFacts().containsKey("permissionGranted"));
         assertFalse(request.controlFacts().containsKey("approvalVerified"));
         assertFalse(request.controlFacts().containsKey("untrustedExtraField"));
+    }
+
+    @Test
+    void shouldUseJustInTimeArgumentsResolverForFormalMcpCommand() {
+        AgentMcpCommandArgumentsResolver resolver = mock(AgentMcpCommandArgumentsResolver.class);
+        when(resolver.resolve(any(), eq("mcp.enterprise.search"), any()))
+                .thenReturn(Map.of("query", "resolved-at-dispatch-time"));
+        McpAgentAsyncTaskCommandDispatchTarget target = new McpAgentAsyncTaskCommandDispatchTarget(
+                new AgentAsyncTaskCommandOutboxProperties(),
+                request -> accepted(),
+                mock(AgentCommandWorkerLeaseService.class),
+                mock(AgentMcpWorkerReceiptIngestionService.class),
+                resolver,
+                new ObjectMapper()
+        );
+
+        AgentMcpDurableWorkerRunRequest request = target.toWorkerRequest(
+                record("mcp.enterprise.search", """
+                        {
+                          "serverId": "enterprise",
+                          "internalToolName": "mcp.enterprise.search",
+                          "readinessDecision": "READY",
+                          "permissionGranted": true,
+                          "approvalVerified": true,
+                          "argumentsResolutionMode": "AUDIT_REFERENCE_JUST_IN_TIME"
+                        }
+                        """)
+        );
+
+        assertEquals("resolved-at-dispatch-time", request.arguments().get("query"));
     }
 
     @Test
@@ -132,6 +167,19 @@ class McpAgentAsyncTaskCommandDispatchTargetTest {
                 client,
                 leaseService,
                 mock(AgentMcpWorkerReceiptIngestionService.class),
+                argumentsResolver(),
+                new ObjectMapper()
+        );
+    }
+
+    /**
+     * 当前测试中的 command 使用历史内联 arguments，因此解析器不会访问 mock payload service。
+     * 单独保留真实解析器实例，可以同时保护“旧命令兼容”与“新命令引用解析”采用同一个入口。
+     */
+    private AgentMcpCommandArgumentsResolver argumentsResolver() {
+        return new AgentMcpCommandArgumentsResolver(
+                mock(AgentToolPlanArgumentsPayloadService.class),
+                new AgentMcpDurableWorkerClientProperties(),
                 new ObjectMapper()
         );
     }

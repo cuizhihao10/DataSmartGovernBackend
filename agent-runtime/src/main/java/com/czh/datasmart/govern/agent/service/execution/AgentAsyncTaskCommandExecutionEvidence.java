@@ -25,6 +25,22 @@ public record AgentAsyncTaskCommandExecutionEvidence(
         String confirmationId,
         List<String> policyVersions,
         List<String> delegationEvidence,
+        /**
+         * selected-node dry-run 时由 Java 授权预检服务生成的决策码。
+         *
+         * <p>MCP 命令只接受 {@code PERMISSION_ADMIN_ALLOWED}。本地结构预览
+         * {@code LOCAL_PREVIEW_ALLOWED} 只能帮助开发者检查上下文字段是否完整，不能被升级为真实外部工具权限。</p>
+         */
+        String serviceAuthorizationDecision,
+
+        /**
+         * 授权预检的显式布尔结果。
+         *
+         * <p>该字段必须与授权决策码、策略版本和委托证据一起判断，不能单独作为放行依据。这样可以避免
+         * 调用方仅提交一个 {@code true} 就伪造 permission-admin 已经授权的事实。</p>
+         */
+        Boolean serviceAuthorizationAllowed,
+
         /*
          * 可选的 handoff DAG bridge preview 来源证据。
          *
@@ -54,11 +70,27 @@ public record AgentAsyncTaskCommandExecutionEvidence(
                 .map(String::trim)
                 .distinct()
                 .toList();
+        serviceAuthorizationDecision = normalize(serviceAuthorizationDecision);
+        serviceAuthorizationAllowed = Boolean.TRUE.equals(serviceAuthorizationAllowed);
         /*
          * bridgeSourceEvidence 允许为空，原因是历史 command、Run 级兼容入口和直接 Tool DAG dry-run 入口
          * 可能没有 handoff bridge 来源。它一旦存在，也只作为低敏审计上下文进入 payload；worker 仍必须
          * 通过 confirmationId 回查 confirmation 表，不能只凭该来源证据执行真实副作用。
          */
+    }
+
+    /**
+     * 兼容历史调用方的四参数构造器。
+     *
+     * <p>旧调用方没有授权决策快照时按“未验证”处理，而不是默认放行。普通异步任务仍可沿用旧合同，
+     * MCP 外部工具调用则会在入箱前 fail-closed，直到它走完整 selected-node + permission-admin 链路。</p>
+     */
+    public AgentAsyncTaskCommandExecutionEvidence(
+            String confirmationId,
+            List<String> policyVersions,
+            List<String> delegationEvidence,
+            AgentHandoffDagBridgeSourceEvidence bridgeSourceEvidence) {
+        this(confirmationId, policyVersions, delegationEvidence, null, false, bridgeSourceEvidence);
     }
 
     /**
@@ -69,7 +101,7 @@ public record AgentAsyncTaskCommandExecutionEvidence(
      * payload 组装时再根据 confirmationId 是否存在决定是否写入证据字段。</p>
      */
     public static AgentAsyncTaskCommandExecutionEvidence empty() {
-        return new AgentAsyncTaskCommandExecutionEvidence(null, List.of(), List.of(), null);
+        return new AgentAsyncTaskCommandExecutionEvidence(null, List.of(), List.of(), null, false, null);
     }
 
     /**

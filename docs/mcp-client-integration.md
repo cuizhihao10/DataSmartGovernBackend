@@ -369,6 +369,7 @@ datasmart:
       read-timeout-ms: 30000
       include-model-feedback: true
       post-to-java: false
+      max-resolved-arguments-bytes: 262144
       auth-header-name: Authorization
       service-account-token:
 ```
@@ -379,14 +380,55 @@ Compose 环境已显式设置：
 - `DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_POST_TO_JAVA=false`
 
 设计边界：
-- Java 侧 client 不读取 outbox、不声明 command 已发布、不写 receipt，也不更新 task projection；
-- Python 侧仍只返回低敏 summary/receipt/modelFeedback，不返回工具参数和工具正文；
-- 当前只是 Java 控制面到 Python worker 的可测通信边界，dispatcher 自动消费、receipt 写入和 outbox 状态推进仍需后续接入；
-- 生产部署应把该内部 API 放在 gateway/service account/OIDC、mTLS 或等价企业内网认证之后，不能作为公开工具调用接口。
+- Java client 只负责受控 HTTP 通信；outbox 领取、lease、receipt、状态推进仍由 dispatcher 和控制面服务负责；
+- Python 侧只返回低敏 summary/receipt/modelFeedback，不返回 MCP arguments；
+- 生产部署必须把内部 API 放在 gateway/service account/OIDC、mTLS 或等价企业内网认证之后，不能作为公开工具调用接口。
 
-下一步收敛路线：
-1. 在 Java agent-runtime outbox dispatcher 中识别 MCP command，并调用 `AgentMcpDurableWorkerClient.run(...)`；
-2. 将 `AgentMcpDurableWorkerRunResponse.receipt` 映射到现有 worker receipt 写入服务；
+## MCP 正式命令生产与参数临执行解析
+
+MCP command 不新增一个允许调用方直接提交 `permissionGranted=true` 的自由写入口，而是复用已有生产链：
+
+1. Java 重新执行 DAG dry-run；
+2. 调用方显式选择节点并提交最新 selection fingerprint；
+3. selected-node 服务验证节点仍为 `ASYNC_OUTBOX_ENQUEUE_PREVIEW`；
+4. 对 MCP 节点强制要求 permission-admin 返回 `PERMISSION_ADMIN_ALLOWED`；
+5. 同时要求 policyVersion、SERVICE_ACCOUNT delegationEvidence 和稳定 confirmationId；
+6. Java 才派生 `readinessDecision=READY`、`permissionGranted=true`、`approvalVerified=true`；
+7. command 以 `AGENT_MCP_TOOL_CALL_REQUESTED`、`datasmart.agent.mcp.commands`、
+   `python-ai-runtime-mcp-client` 进入既有 durable outbox。
+
+这条链路刻意不接受 `LOCAL_PREVIEW_ALLOWED`。本地预览只能证明授权上下文字段大体完整，不能证明企业权限中心已经允许真实外部调用。
+
+### 为什么 outbox 不保存 arguments
+
+正式 producer 的 payload 只保存：
+
+- `serverId` 与 `internalToolName`；
+- session/run/audit/tenant/project/workspace/actor 等隔离字段；
+- confirmation、permission policy、delegation 与 readiness 低敏事实；
+- `agent-tool-audit://.../plan-arguments` 引用；
+- 参数名和敏感参数名，不保存参数值。
+
+dispatcher 即将调用 Python Runtime 时，`AgentMcpCommandArgumentsResolver` 才读取审计快照，并逐项复核：
+
+- payloadReference；
+- sessionId、runId、auditId；
+- toolCode；
+- tenantId、projectId、workspaceId、actorId；
+- 审计状态仍为 `PLANNED`；
+- 参数序列化大小不超过 `max-resolved-arguments-bytes`。
+
+任一字段不一致都会 fail-closed。解析出的 Map 只存在于当前 Java -> Python 请求生命周期，不写回 outbox、日志、runtime event 或 receipt。历史 command 的内联 `arguments/toolArguments` 暂时保留兼容读取，新的正式 producer 不再生成这种记录。
+
+当前 MCP 控制面闭环为：
+
+`DAG dry-run -> permission-admin -> selected-node confirmation -> durable outbox -> just-in-time arguments -> claim lease -> Python MCP tools/call -> Java receipt ingestion -> release lease -> PUBLISHED`
+
+剩余收敛项：
+
+1. 把安全 `modelFeedback` 接入真实 Agent loop 的二轮模型调用；
+2. 为超大 MCP 结果接入 MinIO artifact writer 与授权 resolver；
+3. 完成包含 permission-admin、agent-runtime、Python Runtime 和测试 MCP Server 的真实 E2E smoke。
 3. 根据 `AgentMcpDurableWorkerCallResult` 推进 outbox 状态、失败重试和死信治理；
 4. 再把 Python 返回的安全 `modelFeedback` 接入真实多步 Agent loop 二轮模型调用。
 

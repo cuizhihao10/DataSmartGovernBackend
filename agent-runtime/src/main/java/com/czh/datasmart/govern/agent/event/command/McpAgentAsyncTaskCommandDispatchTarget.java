@@ -15,6 +15,7 @@ import com.czh.datasmart.govern.agent.service.runtime.AgentCommandWorkerLeaseSer
 import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpDurableWorkerCallResult;
 import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpDurableWorkerClient;
 import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpDurableWorkerRunRequest;
+import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpCommandArgumentsResolver;
 import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpWorkerReceiptIngestionService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -60,6 +61,7 @@ public class McpAgentAsyncTaskCommandDispatchTarget implements AgentAsyncTaskCom
     private final AgentMcpDurableWorkerClient workerClient;
     private final AgentCommandWorkerLeaseService workerLeaseService;
     private final AgentMcpWorkerReceiptIngestionService receiptIngestionService;
+    private final AgentMcpCommandArgumentsResolver argumentsResolver;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -205,6 +207,11 @@ public class McpAgentAsyncTaskCommandDispatchTarget implements AgentAsyncTaskCom
      */
     AgentMcpDurableWorkerRunRequest toWorkerRequest(AgentAsyncTaskCommandOutboxRecord record) {
         Map<String, Object> payload = parsePayload(record.payloadJson());
+        /*
+         * 正式 MCP command 的 payload 只包含低敏控制事实和 payloadReference，不包含 arguments。
+         * argumentsResolver 会在这一刻回读审计快照并重验租户/项目/workspace/actor/tool/state；解析结果只进入
+         * 当前 worker request。历史 command 的内联参数兼容也集中在 resolver 内，避免传输层继续扩散两套逻辑。
+         */
         String internalToolName = firstText(payload, "internalToolName", "toolCode");
         if (!hasText(internalToolName)) {
             internalToolName = record.toolCode();
@@ -216,6 +223,7 @@ public class McpAgentAsyncTaskCommandDispatchTarget implements AgentAsyncTaskCom
         if (!hasText(serverId)) {
             serverId = serverIdFromToolName(internalToolName);
         }
+        Map<String, Object> arguments = argumentsResolver.resolve(record, internalToolName, payload);
 
         Map<String, Object> controlFacts = new LinkedHashMap<>();
         putText(controlFacts, "tenantId", record.tenantId());
@@ -253,7 +261,7 @@ public class McpAgentAsyncTaskCommandDispatchTarget implements AgentAsyncTaskCom
         return new AgentMcpDurableWorkerRunRequest(
                 requireText(serverId, "serverId"),
                 internalToolName,
-                objectMap(payload, "arguments", "toolArguments"),
+                arguments,
                 controlFacts,
                 fallbackContext,
                 null,

@@ -267,6 +267,8 @@ public class AgentRunToolDagSelectedNodeOutboxService {
                     confirmationId,
                     item.serviceAuthorizationPolicyVersions(),
                     item.serviceAuthorizationDelegationEvidence(),
+                    item.serviceAuthorizationDecision(),
+                    item.serviceAuthorizationAllowed(),
                     bridgeSourceEvidence
             ));
         }

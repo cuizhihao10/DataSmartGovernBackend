@@ -131,6 +131,67 @@ class AgentRunAsyncTaskCommandOutboxServiceTest {
         assertFalse(record.payloadJson().contains("\"datasourceId\":1001"));
     }
 
+    /**
+     * MCP 命令必须由 selected-node + permission-admin 证据驱动，并且 outbox 中不能出现真实参数。
+     *
+     * <p>该测试同时保护三个商业化边界：MCP 使用独立 command type/topic/consumer；permissionGranted
+     * 由 Java 根据服务端证据派生；真实 query 只留在审计快照，dispatcher 之后按引用临时解析。</p>
+     */
+    @Test
+    void trustedSelectedNodeMcpCommandShouldUseControlledEnvelopeWithoutArguments() {
+        TestFixture fixture = newFixture();
+        fixture.saveAudits(mcpAudit(
+                "atea-mcp-trusted",
+                Map.of("query", "private-catalog-query")
+        ));
+        Map<String, AgentAsyncTaskCommandExecutionEvidence> evidence = Map.of(
+                "atea-mcp-trusted",
+                new AgentAsyncTaskCommandExecutionEvidence(
+                        "dag-confirmation:mcp-001",
+                        List.of("permission-policy:2026-07-03"),
+                        List.of("delegation:mcp-001"),
+                        "PERMISSION_ADMIN_ALLOWED",
+                        true,
+                        null
+                )
+        );
+
+        AgentRunAsyncTaskCommandOutboxEnqueueResponse response =
+                fixture.service.enqueueSelectedRunAsyncTaskCommands(
+                        "session-outbox-001",
+                        "run-outbox-001",
+                        List.of("atea-mcp-trusted"),
+                        evidence
+                );
+
+        assertEquals(1, response.enqueuedCount());
+        AgentAsyncTaskCommandOutboxRecord record = fixture.store.list("run-outbox-001", null, 10).getFirst();
+        assertEquals("AGENT_MCP_TOOL_CALL_REQUESTED", record.commandType());
+        assertEquals("datasmart.agent.mcp.commands", record.commandTopic());
+        assertEquals("python-ai-runtime-mcp-client", record.consumerService());
+        assertEquals("python-ai-runtime-mcp-client", record.targetService());
+        assertEquals(null, record.targetEndpoint());
+        assertTrue(record.payloadJson().contains("\"serverId\":\"enterprise\""));
+        assertTrue(record.payloadJson().contains("\"permissionGranted\":true"));
+        assertTrue(record.payloadJson().contains("\"approvalVerified\":true"));
+        assertTrue(record.payloadJson().contains("\"argumentsResolutionMode\":\"AUDIT_REFERENCE_JUST_IN_TIME\""));
+        assertFalse(record.payloadJson().contains("private-catalog-query"));
+        assertFalse(record.payloadJson().contains("\"arguments\""));
+    }
+
+    @Test
+    void mcpCommandWithoutPermissionAdminEvidenceShouldRemainBlocked() {
+        TestFixture fixture = newFixture();
+        fixture.saveAudits(mcpAudit("atea-mcp-untrusted", Map.of("query", "must-not-leave-audit")));
+
+        AgentRunAsyncTaskCommandOutboxEnqueueResponse response =
+                fixture.service.enqueueRunAsyncTaskCommands("session-outbox-001", "run-outbox-001");
+
+        assertEquals(0, response.enqueuedCount());
+        assertEquals(1, response.blockedCount());
+        assertTrue(fixture.store.list("run-outbox-001", null, 10).isEmpty());
+    }
+
     @Test
     void blockedAsyncCommandShouldNotEnterOutbox() {
         TestFixture fixture = newFixture();
@@ -297,6 +358,38 @@ class AgentRunAsyncTaskCommandOutboxServiceTest {
                 state,
                 "trace-outbox",
                 "工具计划已生成。",
+                LocalDateTime.now()
+        );
+    }
+
+    private AgentToolExecutionAuditRecord mcpAudit(String auditId, Map<String, Object> arguments) {
+        return new AgentToolExecutionAuditRecord(
+                auditId,
+                "session-outbox-001",
+                "run-outbox-001",
+                "binding-" + auditId,
+                "mcp.enterprise.search",
+                "MCP",
+                "python-ai-runtime-mcp-client",
+                null,
+                null,
+                10L,
+                20L,
+                30L,
+                "actor-outbox",
+                AgentToolRiskLevel.MEDIUM.name(),
+                AgentToolExecutionMode.ASYNC_TASK.name(),
+                false,
+                true,
+                true,
+                List.of("EXECUTE"),
+                "MCP 外部工具调用测试",
+                arguments,
+                Map.of(),
+                Map.of(),
+                AgentToolExecutionState.PLANNED,
+                "trace-outbox",
+                "MCP 工具计划已生成。",
                 LocalDateTime.now()
         );
     }

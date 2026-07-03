@@ -443,6 +443,9 @@ datasmart:
       include-model-feedback: ${DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_INCLUDE_MODEL_FEEDBACK:true}
       # 当前推荐由 Java dispatcher 统一写 receipt/outbox/task projection，所以默认不让 Python 直接回写 Java。
       post-to-java: ${DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_POST_TO_JAVA:false}
+      # 临执行时从 Agent 工具审计快照解析出的 arguments 最大 JSON 字节数。
+      # 超过该值应改用 MinIO artifact reference，避免大参数同时放大 Java dispatcher、HTTP client 和 Python Runtime 内存。
+      max-resolved-arguments-bytes: ${DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_MAX_RESOLVED_ARGUMENTS_BYTES:262144}
       # 服务间认证头与令牌。令牌必须从环境变量/Secret 注入，不应写入仓库、日志、runtime event 或 API 响应。
       auth-header-name: ${DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_AUTH_HEADER_NAME:Authorization}
       service-account-token: ${DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_SERVICE_ACCOUNT_TOKEN:}
