@@ -78,9 +78,15 @@ def register_mcp_durable_worker_routes(
             "accepted": True,
             "workerResult": worker_result.to_summary(),
             "receipt": worker_result.receipt.to_summary(),
+            # 这是仅供 Java agent-runtime 内部 service-to-service 调用消费的 receipt 写回载荷。
+            # 与 receipt.to_summary() 不同，它必须保留 fencingToken，Java 才能验证当前 lease；
+            # 但 java_payload 本身已经由 ControlledCommandWorkerReceipt 合同治理，不包含 MCP arguments、
+            # 工具结果正文、远端 endpoint、prompt、SQL 或凭据正文。
+            "javaReceiptPayload": dict(worker_result.receipt.java_payload),
             "modelFeedback": model_feedback,
             "payloadPolicy": (
-                "MCP_ARGUMENTS_NEVER_RETURNED;TOOL_RESULT_BODY_RETURNED_ONLY_IF_FEEDBACK_ADAPTER_ALLOWED_SAFE_INLINE"
+                "MCP_ARGUMENTS_NEVER_RETURNED;JAVA_RECEIPT_PAYLOAD_INTERNAL_ONLY;"
+                "TOOL_RESULT_BODY_RETURNED_ONLY_IF_FEEDBACK_ADAPTER_ALLOWED_SAFE_INLINE"
             ),
         }
 

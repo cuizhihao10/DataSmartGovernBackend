@@ -7,10 +7,15 @@
 package com.czh.datasmart.govern.agent.event.command;
 
 import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
+import com.czh.datasmart.govern.agent.service.runtime.AgentCommandWorkerLeaseClaimResult;
+import com.czh.datasmart.govern.agent.service.runtime.AgentCommandWorkerLeaseRecord;
+import com.czh.datasmart.govern.agent.service.runtime.AgentCommandWorkerLeaseService;
+import com.czh.datasmart.govern.agent.service.runtime.AgentCommandWorkerLeaseState;
 import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpDurableWorkerCallResult;
 import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpDurableWorkerClient;
 import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpDurableWorkerRunRequest;
 import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpDurableWorkerRunResponse;
+import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpWorkerReceiptIngestionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -22,6 +27,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * MCP command outbox target 测试。
@@ -46,6 +55,8 @@ class McpAgentAsyncTaskCommandDispatchTargetTest {
         McpAgentAsyncTaskCommandDispatchTarget target = new McpAgentAsyncTaskCommandDispatchTarget(
                 properties,
                 request -> accepted(),
+                mock(AgentCommandWorkerLeaseService.class),
+                mock(AgentMcpWorkerReceiptIngestionService.class),
                 new ObjectMapper()
         );
 
@@ -80,6 +91,8 @@ class McpAgentAsyncTaskCommandDispatchTargetTest {
         assertEquals("mcp.enterprise.search", captured.get().internalToolName());
         assertEquals(true, captured.get().controlFacts().get("permissionGranted"));
         assertEquals(true, captured.get().controlFacts().get("approvalVerified"));
+        assertEquals("cmd-lease:1:0123456789abcdef", captured.get().controlFacts().get("fencingToken"));
+        assertEquals(1L, captured.get().controlFacts().get("workerLeaseVersion"));
     }
 
     @Test
@@ -104,7 +117,42 @@ class McpAgentAsyncTaskCommandDispatchTargetTest {
     private McpAgentAsyncTaskCommandDispatchTarget target(AgentMcpDurableWorkerClient client) {
         AgentAsyncTaskCommandOutboxProperties properties = new AgentAsyncTaskCommandOutboxProperties();
         properties.setDispatcherPreCheckEnabled(true);
-        return new McpAgentAsyncTaskCommandDispatchTarget(properties, client, new ObjectMapper());
+        AgentCommandWorkerLeaseService leaseService = mock(AgentCommandWorkerLeaseService.class);
+        when(leaseService.claim(anyString(), anyString(), any())).thenReturn(
+                AgentCommandWorkerLeaseClaimResult.of(
+                        true,
+                        AgentCommandWorkerLeaseState.ACQUIRED,
+                        lease(),
+                        true,
+                        "acquired"
+                )
+        );
+        return new McpAgentAsyncTaskCommandDispatchTarget(
+                properties,
+                client,
+                leaseService,
+                mock(AgentMcpWorkerReceiptIngestionService.class),
+                new ObjectMapper()
+        );
+    }
+
+    private AgentCommandWorkerLeaseRecord lease() {
+        Instant now = Instant.now();
+        return new AgentCommandWorkerLeaseRecord(
+                "session-mcp-001:run-mcp-001:cmd-mcp-001",
+                "session-mcp-001",
+                "run-mcp-001",
+                "cmd-mcp-001",
+                "python-mcp-durable-worker",
+                "10",
+                "20",
+                "1001",
+                "cmd-lease:1:0123456789abcdef",
+                1L,
+                now.plusSeconds(120),
+                now,
+                now
+        );
     }
 
     private AgentMcpDurableWorkerCallResult accepted() {

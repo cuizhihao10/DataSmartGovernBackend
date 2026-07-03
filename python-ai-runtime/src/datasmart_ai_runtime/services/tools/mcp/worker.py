@@ -264,6 +264,16 @@ def _base_java_payload(
     command_id = _optional_text(
         _first(request.control_facts, "commandId", "command_id", "callId", "call_id", "auditId", "audit_id")
     ) or request.internal_tool_name
+    fencing_token = _optional_text(_first(request.control_facts, "fencingToken", "fencing_token"))
+    worker_lease_version = _optional_int(
+        _first(request.control_facts, "workerLeaseVersion", "worker_lease_version")
+    )
+    worker_lease_expires_at_ms = _optional_int(
+        _first(request.control_facts, "workerLeaseExpiresAtMs", "worker_lease_expires_at_ms")
+    )
+    worker_lease_required = bool(
+        fencing_token and worker_lease_version and worker_lease_expires_at_ms
+    )
     return _drop_none(
         {
             "commandId": command_id,
@@ -276,7 +286,12 @@ def _base_java_payload(
             "preCheckPassed": pre_check_passed,
             "sideEffectStarted": side_effect_started,
             "sideEffectExecuted": side_effect_executed,
-            "workerLeaseRequired": False,
+            # MCP worker 不自行签发 lease。Java dispatcher 在执行前领取 lease，并把 token/version/expiresAt
+            # 作为短生命周期控制事实传入；Python 只原样回传，让 Java receipt service 完成最终 fencing 校验。
+            "workerLeaseRequired": worker_lease_required,
+            "fencingToken": fencing_token,
+            "workerLeaseVersion": worker_lease_version,
+            "workerLeaseExpiresAtMs": worker_lease_expires_at_ms,
             "commandSafetyDecision": "ALLOW_CONTROLLED_EXECUTION" if pre_check_passed else "MCP_ADMISSION_REJECTED",
             "commandSafetyPolicyVersion": _optional_text(
                 _first(request.control_facts, "policyVersion", "policy_version")

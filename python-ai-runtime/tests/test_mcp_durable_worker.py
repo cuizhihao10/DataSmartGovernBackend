@@ -48,6 +48,10 @@ class McpDurableWorkerAdapterTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(CommandWorkerReceiptOutcome.EXECUTION_SUCCEEDED, result.receipt.outcome)
         self.assertTrue(result.receipt.java_payload["preCheckPassed"])
         self.assertTrue(result.receipt.java_payload["sideEffectExecuted"])
+        self.assertTrue(result.receipt.java_payload["workerLeaseRequired"])
+        self.assertEqual("cmd-lease:7:0123456789abcdef", result.receipt.java_payload["fencingToken"])
+        self.assertEqual(7, result.receipt.java_payload["workerLeaseVersion"])
+        self.assertEqual(4102444800000, result.receipt.java_payload["workerLeaseExpiresAtMs"])
         self.assertEqual("python-ai-runtime-mcp-client", result.receipt.java_payload["targetService"])
         self.assertEqual([("search", {"query": "quality rules"})], session.calls)
         summary_text = str(result.to_summary())
@@ -118,6 +122,10 @@ class McpDurableWorkerAdapterTest(unittest.IsolatedAsyncioTestCase):
             "outboxMessageId": "outbox-a",
             "checkpointId": "checkpoint-a",
             "policyVersion": "tool-readiness-policy.v1",
+            # lease 由 Java agent-runtime 在调用 Python 前签发；Python 只原样回传到 receipt。
+            "fencingToken": "cmd-lease:7:0123456789abcdef",
+            "workerLeaseVersion": 7,
+            "workerLeaseExpiresAtMs": 4102444800000,
         }
 
     def _request(

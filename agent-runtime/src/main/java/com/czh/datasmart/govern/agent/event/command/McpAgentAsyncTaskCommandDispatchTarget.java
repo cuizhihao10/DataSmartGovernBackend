@@ -7,9 +7,15 @@
 package com.czh.datasmart.govern.agent.event.command;
 
 import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
+import com.czh.datasmart.govern.agent.controller.dto.AgentCommandWorkerLeaseClaimRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentCommandWorkerLeaseReleaseRequest;
+import com.czh.datasmart.govern.agent.service.runtime.AgentCommandWorkerLeaseClaimResult;
+import com.czh.datasmart.govern.agent.service.runtime.AgentCommandWorkerLeaseRecord;
+import com.czh.datasmart.govern.agent.service.runtime.AgentCommandWorkerLeaseService;
 import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpDurableWorkerCallResult;
 import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpDurableWorkerClient;
 import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpDurableWorkerRunRequest;
+import com.czh.datasmart.govern.agent.service.runtime.mcp.AgentMcpWorkerReceiptIngestionService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -52,6 +58,8 @@ public class McpAgentAsyncTaskCommandDispatchTarget implements AgentAsyncTaskCom
 
     private final AgentAsyncTaskCommandOutboxProperties outboxProperties;
     private final AgentMcpDurableWorkerClient workerClient;
+    private final AgentCommandWorkerLeaseService workerLeaseService;
+    private final AgentMcpWorkerReceiptIngestionService receiptIngestionService;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -86,18 +94,107 @@ public class McpAgentAsyncTaskCommandDispatchTarget implements AgentAsyncTaskCom
         if (!supports(record)) {
             return;
         }
-        AgentMcpDurableWorkerCallResult result = workerClient.run(toWorkerRequest(record));
-        if (!result.attempted() || result.skipped()) {
-            throw new IllegalStateException("MCP Durable Worker 未执行，errorCode=" + safeCode(result.errorCode()));
+        AgentCommandWorkerLeaseRecord lease = claimLease(record);
+        boolean completed = false;
+        try {
+            AgentMcpDurableWorkerCallResult result = workerClient.run(
+                    withLeaseFacts(toWorkerRequest(record), lease)
+            );
+            if (!result.attempted() || result.skipped()) {
+                throw new IllegalStateException("MCP Durable Worker 未执行，errorCode=" + safeCode(result.errorCode()));
+            }
+            if (!result.accepted()) {
+                throw new IllegalStateException("MCP Durable Worker 未接受命令，errorCode=" + safeCode(result.errorCode())
+                        + ", statusCode=" + result.statusCode());
+            }
+            if (result.response() == null
+                    || !containsArgumentsNeverReturnedPolicy(result.response().payloadPolicy())) {
+                throw new IllegalStateException("MCP Durable Worker 响应缺少参数不回显安全策略声明");
+            }
+            /*
+             * 必须先写 receipt 再返回。dispatcher 只有在本方法正常返回后才会把 outbox 标记为 PUBLISHED，
+             * 因此 PUBLISHED 现在表示“Python 已处理 + Java 已完成 lease/status 校验并物化 receipt”，而不只是 HTTP 200。
+             */
+            receiptIngestionService.ingest(record, result.response());
+            completed = true;
+        } finally {
+            releaseLease(record, lease, completed ? "COMPLETED" : "FAILED");
         }
-        if (!result.accepted()) {
-            throw new IllegalStateException("MCP Durable Worker 未接受命令，errorCode=" + safeCode(result.errorCode())
-                    + ", statusCode=" + result.statusCode());
+    }
+
+    /**
+     * 在真实 MCP 调用前领取 Java command worker lease。
+     *
+     * <p>lease 是防止 dispatcher 重试、旧实例恢复或多副本并发时重复执行同一 MCP command 的 fencing 边界。
+     * 只有当前 lease 持有者才能让 Java receipt service 接受 sideEffectStarted/Executed=true 的回执。</p>
+     */
+    private AgentCommandWorkerLeaseRecord claimLease(AgentAsyncTaskCommandOutboxRecord record) {
+        AgentCommandWorkerLeaseClaimResult result = workerLeaseService.claim(
+                record.sessionId(),
+                record.runId(),
+                new AgentCommandWorkerLeaseClaimRequest(
+                        record.commandId(),
+                        "python-mcp-durable-worker",
+                        record.tenantId(),
+                        record.projectId(),
+                        parseLong(record.actorId()),
+                        120
+                )
+        );
+        if (!result.acquired() || !result.tokenVisible() || result.record() == null
+                || !hasText(result.record().fencingToken())) {
+            throw new IllegalStateException("MCP command worker lease 当前不可获取，等待 outbox 退避重试");
         }
-        if (result.response() == null
-                || !containsArgumentsNeverReturnedPolicy(result.response().payloadPolicy())) {
-            throw new IllegalStateException("MCP Durable Worker 响应缺少参数不回显安全策略声明");
-        }
+        return result.record();
+    }
+
+    /**
+     * 把 Java 签发的 lease 证据加入本次 Python control facts。
+     *
+     * <p>这些字段只存在于 Java -> Python 请求和 Python -> Java receipt 回程，不进入普通 API、runtime event 明文或
+     * Prometheus label。Python 不修改、不生成 token，只负责原样回传。</p>
+     */
+    private AgentMcpDurableWorkerRunRequest withLeaseFacts(
+            AgentMcpDurableWorkerRunRequest request,
+            AgentCommandWorkerLeaseRecord lease) {
+        Map<String, Object> facts = new LinkedHashMap<>(request.controlFacts());
+        facts.put("fencingToken", lease.fencingToken());
+        facts.put("workerLeaseVersion", lease.leaseVersion());
+        facts.put("workerLeaseExpiresAtMs", lease.leaseExpiresAt().toEpochMilli());
+        facts.put("workerLeaseRequired", true);
+        return new AgentMcpDurableWorkerRunRequest(
+                request.serverId(),
+                request.internalToolName(),
+                request.arguments(),
+                facts,
+                request.fallbackContext(),
+                request.postToJava(),
+                request.sessionId(),
+                request.traceId(),
+                request.toolCallId(),
+                request.workspaceKey(),
+                request.currentWorkspaceKey(),
+                request.includeModelFeedback()
+        );
+    }
+
+    private void releaseLease(AgentAsyncTaskCommandOutboxRecord record,
+                              AgentCommandWorkerLeaseRecord lease,
+                              String reason) {
+        workerLeaseService.release(
+                record.sessionId(),
+                record.runId(),
+                new AgentCommandWorkerLeaseReleaseRequest(
+                        record.commandId(),
+                        lease.executorId(),
+                        lease.fencingToken(),
+                        lease.leaseVersion(),
+                        reason,
+                        record.tenantId(),
+                        record.projectId(),
+                        parseLong(record.actorId())
+                )
+        );
     }
 
     /**
@@ -273,5 +370,16 @@ public class McpAgentAsyncTaskCommandDispatchTarget implements AgentAsyncTaskCom
         }
         String normalized = value.trim().toUpperCase();
         return normalized.matches("[A-Z0-9_\\-]{1,120}") ? normalized : "UNKNOWN";
+    }
+
+    private Long parseLong(String value) {
+        if (!hasText(value)) {
+            return null;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException exception) {
+            return null;
+        }
     }
 }

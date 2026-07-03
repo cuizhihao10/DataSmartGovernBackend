@@ -21,6 +21,7 @@ import java.util.Map;
  * @param accepted Python worker 是否接受并处理了请求。
  * @param workerResult MCP worker 的低敏运行摘要，包含状态、大小、哈希、截断标记等，不包含正文。
  * @param receipt 可写回 Java receipt 的低敏摘要。
+ * @param javaReceiptPayload 仅内部链路使用的 Java receipt 白名单载荷；可包含 fencing token，但不包含 MCP 参数或结果正文。
  * @param modelFeedback 可选的模型二轮反馈摘要，只有 Python 判定安全时才可能含短结果。
  * @param payloadPolicy Python 声明的载荷策略，例如 MCP_ARGUMENTS_NEVER_RETURNED。
  */
@@ -29,6 +30,7 @@ public record AgentMcpDurableWorkerRunResponse(
         Boolean accepted,
         Map<String, Object> workerResult,
         Map<String, Object> receipt,
+        Map<String, Object> javaReceiptPayload,
         Map<String, Object> modelFeedback,
         String payloadPolicy
 ) {
@@ -36,7 +38,24 @@ public record AgentMcpDurableWorkerRunResponse(
     public AgentMcpDurableWorkerRunResponse {
         workerResult = copyMap(workerResult);
         receipt = copyMap(receipt);
+        javaReceiptPayload = copyMap(javaReceiptPayload);
         modelFeedback = copyMap(modelFeedback);
+    }
+
+    /**
+     * 兼容内部 API 增加 javaReceiptPayload 之前的构造调用。
+     *
+     * <p>旧响应只能用于低敏诊断，不能完成真实 lease receipt 写入；ingestion service 会优先要求新字段，
+     * 仅在测试或历史响应明确把 javaPayload 放在 receipt 中时兼容读取。</p>
+     */
+    public AgentMcpDurableWorkerRunResponse(
+            String schemaVersion,
+            Boolean accepted,
+            Map<String, Object> workerResult,
+            Map<String, Object> receipt,
+            Map<String, Object> modelFeedback,
+            String payloadPolicy) {
+        this(schemaVersion, accepted, workerResult, receipt, Map.of(), modelFeedback, payloadPolicy);
     }
 
     private static Map<String, Object> copyMap(Map<String, Object> source) {

@@ -415,3 +415,35 @@ Java agent-runtime 现已新增 `McpAgentAsyncTaskCommandDispatchTarget`，把 M
 - client 关闭、HTTP 失败、Python 未接受、响应缺少安全策略声明时，target 抛出低敏异常；
 - dispatcher 继续复用既有 `FAILED -> backoff retry -> BLOCKED -> 人工 requeue/dead-letter/ignore` 流程；
 - Python 返回的 FAILED_PRECHECK/EXECUTION_FAILED receipt 尚未在本阶段写入 Java receipt index，下一阶段单独完成映射与幂等写入。
+
+## 16. MCP Worker Lease 与 Java Receipt 写回闭环
+
+MCP command 现在已完成受控执行回执闭环：
+
+```text
+outbox PUBLISHING
+  -> Java claim command worker lease
+  -> lease facts 注入 Python controlFacts
+  -> Python MCP admission/tools/call
+  -> Python 生成低敏 receipt + javaReceiptPayload
+  -> Java receipt service 校验 fencing/status/artifact
+  -> runtime event projection + receipt index 幂等物化
+  -> Java release lease
+  -> dispatcher 标记 PUBLISHED
+```
+
+关键安全设计：
+- fencing token 只由 Java `AgentCommandWorkerLeaseService` 签发，Python 不生成也不修改；
+- Python `receipt.to_summary()` 继续隐藏 token，只显示 `fencingTokenPresent=true`；
+- 内部 API 新增 `javaReceiptPayload`，仅用于 Java service-to-service receipt 写回，其中不包含 MCP arguments、工具结果正文、远端 endpoint、prompt 或 SQL；
+- Java `AgentMcpWorkerReceiptIngestionService` 只做字段白名单映射，最终仍调用现有 `AgentToolActionCommandWorkerReceiptService`；
+- 真实执行回执必须通过 session/run/command/executor/token/version/expiresAt 一致性校验；
+- receipt 写入失败、lease 不可获取、Python 调用失败或 lease 释放失败都会让 dispatcher 把 outbox 写回 FAILED 并退避重试；
+- receipt identity/idempotencyKey 保证重试不会重复污染 timeline 与 receipt index。
+
+完成该阶段后，`PUBLISHED` 不再只代表 Python HTTP 200，而代表 Python 已处理且 Java 已接受并物化 worker receipt。
+
+当前剩余边界：
+- 尚缺正式 MCP command producer，把 Agent tool plan/command proposal 转为带显式 permission/approval/readiness 的 MCP outbox payload；
+- `modelFeedback` 尚未自动进入真实多步 Agent loop 的二轮模型调用；
+- `agent-artifact:` 仍是低敏占位引用，大结果尚未由 MinIO writer 真正落盘。

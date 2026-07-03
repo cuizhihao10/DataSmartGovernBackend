@@ -89,6 +89,9 @@ class McpDurableWorkerApiTest(unittest.TestCase):
         self.assertTrue(response["accepted"])
         self.assertEqual("datasmart.mcp-durable-worker-api.v1", response["schemaVersion"])
         self.assertEqual("LOW_SENSITIVE_MCP_WORKER_SUMMARY_ONLY", response["workerResult"]["payloadPolicy"])
+        self.assertEqual("cmd-lease:3:0123456789abcdef", response["javaReceiptPayload"]["fencingToken"])
+        self.assertNotIn("fencingToken", response["receipt"]["javaPayload"])
+        self.assertTrue(response["receipt"]["javaPayload"]["fencingTokenPresent"])
         self.assertEqual("succeeded", response["modelFeedback"]["feedback"]["status"])
         self.assertTrue(response["modelFeedback"]["summary"]["inlineResultAllowed"])
         self.assertEqual("已找到质量规则说明。", response["modelFeedback"]["feedback"]["result"]["contentBlocks"][0]["text"])
@@ -207,6 +210,10 @@ class FakeWorkerAdapter:
                 "outcome": "EXECUTION_SUCCEEDED",
                 "auditId": "audit-a",
                 "artifactReference": "agent-artifact:run-a/mcp.enterprise.search/mcp-result-dddddddd",
+                "workerLeaseRequired": True,
+                "fencingToken": "cmd-lease:3:0123456789abcdef",
+                "workerLeaseVersion": 3,
+                "workerLeaseExpiresAtMs": 4102444800000,
             },
             execution_performed=True,
         )
