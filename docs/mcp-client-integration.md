@@ -305,3 +305,42 @@ Receipt 映射：
 2. 将 MCP worker 结果通过 `McpToolFeedbackAdapter` 接入真实多步 Agent loop 的二轮模型调用；
 3. 为大结果补 MinIO artifact writer 与授权读取 resolver；
 4. 完成该链路后，不继续发散 MCP resources/prompts/sampling，转向全平台 Agent 闭环 smoke。
+
+## 13. MCP Durable Worker 内部 API
+
+当前已新增内部执行路由，用于让 Java outbox consumer、受控 worker 或后续 Kafka/gRPC adapter 触发 Python
+侧 MCP durable worker：
+
+```text
+POST /internal/agent/mcp/durable-worker/run
+POST /api/internal/agent/mcp/durable-worker/run
+```
+
+请求字段：
+- `serverId/server_id`：目标 MCP Server ID；
+- `internalToolName/internal_tool_name/toolCode`：DataSmart 内部 MCP 工具名，例如 `mcp.enterprise.search`；
+- `arguments`：短生命周期 MCP 实参，只进入本轮内存执行，不进入响应 summary、event、checkpoint 或 receipt；
+- `controlFacts/control_facts`：Java command proposal、outbox、permission、readiness、approval 的低敏 facts；
+- `fallbackContext/fallback_context`：可选可信上下文补齐字段；
+- `postToJava/post_to_java`：是否通过现有 `JavaCommandWorkerReceiptClient` 写回 Java receipt；
+- `sessionId/session_id`、`traceId/trace_id`：Java 路由和链路追踪低敏字段；
+- `includeModelFeedback`：是否返回 `McpToolFeedbackAdapter` 生成的模型二轮 feedback，默认开启。
+
+响应字段：
+- `workerResult`：`McpDurableWorkerRunResult.to_summary()`，不包含 arguments 或 MCP 工具正文；
+- `receipt`：低敏 worker receipt summary；
+- `modelFeedback`：可选的模型二轮 feedback。只有 feedback adapter 判定安全的小结果才会进入
+  `modelFeedback.feedback.result`；
+- `payloadPolicy`：明确标记 `MCP_ARGUMENTS_NEVER_RETURNED`。
+
+设计边界：
+- 该路由是内部执行合同，不是前端或模型直连工具的公开入口；
+- 生产部署必须放在 gateway/service account/OIDC、mTLS 或等价企业内网认证之后；
+- Python 仍不领取 Java outbox、不管理 visibility timeout、不做死信重试；这些仍属于 Java 控制面或后续 worker runtime；
+- 当前完成的是 HTTP 调用合同，后续可在不改变 payload 语义的前提下迁移到 Kafka/gRPC。
+
+下一步收敛路线：
+1. Java agent-runtime outbox consumer 读取 MCP command 后调用该内部 API；
+2. Java 根据返回 receipt 更新 command/outbox/task projection；
+3. Python 侧把 `modelFeedback.feedback` 接入真实多步 Agent loop 的二轮模型调用；
+4. 大结果接 MinIO artifact writer 与授权 resolver 后，再做全平台 E2E smoke。

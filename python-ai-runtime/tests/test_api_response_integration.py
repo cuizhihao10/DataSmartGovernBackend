@@ -152,6 +152,7 @@ class ApiResponseIntegrationTest(unittest.TestCase):
         self.assertIn("/agent/capabilities/closure-readiness", route_paths)
         self.assertIn("/agent/skills/publication/diagnostics", route_paths)
         self.assertIn("/agent/models/inference-optimization/diagnostics", route_paths)
+        self.assertIn("/internal/agent/mcp/durable-worker/run", route_paths)
 
 
 if __name__ == "__main__":

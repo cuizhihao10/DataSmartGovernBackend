@@ -7,6 +7,7 @@
 
 from datasmart_ai_runtime.api.agent.a2a_task_planning import build_a2a_task_planning_preview_response
 from datasmart_ai_runtime.api.agent.mcp_tool_call_intake import build_mcp_tool_call_intake_preview_response
+from datasmart_ai_runtime.api.agent.mcp_worker import register_mcp_durable_worker_routes
 from datasmart_ai_runtime.api.agent.orchestrator_factory import (
     build_context_selection_policy,
     build_default_orchestrator,
@@ -32,5 +33,6 @@ __all__ = [
     "build_tool_execution_readiness_policy_provider",
     "load_skill_registry",
     "load_tool_registry",
+    "register_mcp_durable_worker_routes",
     "register_agent_runtime_routes",
 ]

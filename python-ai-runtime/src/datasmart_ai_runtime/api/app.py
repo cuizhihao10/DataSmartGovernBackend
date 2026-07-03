@@ -45,6 +45,7 @@ from datasmart_ai_runtime.api.agent.orchestrator_factory import (
     truthy_env as _truthy_env,
 )
 from datasmart_ai_runtime.api.agent.capabilities import register_agent_capability_routes
+from datasmart_ai_runtime.api.agent.mcp_worker import register_mcp_durable_worker_routes
 from datasmart_ai_runtime.api.agent.routes import register_agent_runtime_routes
 from datasmart_ai_runtime.api.agent.plan_response import build_plan_response
 from datasmart_ai_runtime.api.lifecycle import register_lifecycle_handler
@@ -101,6 +102,8 @@ from datasmart_ai_runtime.services.tools import (
 from datasmart_ai_runtime.services.tools.mcp import (
     McpClientRuntime,
     McpDurableToolExecutionService,
+    McpDurableWorkerAdapter,
+    McpToolFeedbackAdapter,
     mcp_client_runtime_settings_from_env,
     mcp_server_configurations_from_env,
 )
@@ -180,6 +183,20 @@ def create_app() -> Any:
     # - Durable Bridge 负责低敏执行摘要、receipt draft 和状态分类；
     # - Java 控制面仍负责 durable outbox、worker receipt、审计与任务状态投影。
     app.state.mcp_durable_tool_execution_service = McpDurableToolExecutionService(mcp_client_runtime)
+    # MCP Durable Worker Adapter 是 Java outbox/内部 worker 进入 Python MCP Client 的受控执行入口。
+    #
+    # 与 `mcp_client_runtime` 的区别：
+    # - runtime 只知道如何连接 MCP Server 和调用 tools/call；
+    # - durable execution service 只知道如何在可信 admission 后执行单次 tools/call；
+    # - worker adapter 负责把 Java facts -> admission -> execution -> worker receipt 串成可消费闭环；
+    # - feedback adapter 负责把执行结果安全转换成模型二轮 ToolExecutionFeedback。
+    #
+    # 它们统一放入 app.state，是为了让 HTTP 内部路由、未来 Kafka consumer 和 LangGraph 节点复用同一套实例，
+    # 避免每次请求临时创建不同的 MCP catalog/runtime，从而出现目录版本、receipt 策略或反馈预算漂移。
+    app.state.mcp_durable_worker_adapter = McpDurableWorkerAdapter(
+        app.state.mcp_durable_tool_execution_service
+    )
+    app.state.mcp_tool_feedback_adapter = McpToolFeedbackAdapter()
     # 工具目录在启动阶段集中加载一次，并同时供主 orchestrator 与协议适配 preview 入口使用。
     # 这样可以避免 `/agent/plans`、MCP tools/call preview 和未来确认页在同一进程里看到不同版本的工具目录：
     # - 生产环境可优先从 Java agent-runtime 动态读取；
@@ -537,6 +554,11 @@ def create_app() -> Any:
     )
     register_platform_convergence_routes(app, diagnostics_service=platform_convergence_diagnostics)
     register_agent_capability_routes(app, capability_matrix_service=agent_capability_matrix)
+    register_mcp_durable_worker_routes(
+        app,
+        worker_adapter=app.state.mcp_durable_worker_adapter,
+        feedback_adapter=app.state.mcp_tool_feedback_adapter,
+    )
 
     return app
 
