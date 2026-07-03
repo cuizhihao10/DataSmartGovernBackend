@@ -143,12 +143,33 @@ from datasmart_ai_runtime.services.memory.memory_secondary_index_sync import (
     NoopAgentMemorySecondaryIndexSyncAdapter,
     secondary_index_sync_diagnostics,
 )
-from datasmart_ai_runtime.services.memory.memory_chroma_adapter import (
+from datasmart_ai_runtime.services.memory.memory_embedding_provider import (
     AgentMemoryEmbeddingProvider,
+    DeterministicHashEmbeddingProvider,
+    MemoryEmbeddingProviderSettings,
+    MemoryEmbeddingProviderType,
+    OpenAICompatibleMemoryEmbeddingProvider,
+    build_memory_embedding_provider,
+    memory_embedding_provider_diagnostics,
+    memory_embedding_provider_settings_from_env,
+    validate_embedding_vector,
+)
+from datasmart_ai_runtime.services.memory.memory_chroma_adapter import (
     ChromaCollectionPort,
     ChromaSemanticMemoryAdapterSettings,
     ChromaSemanticMemorySyncAdapter,
-    DeterministicHashEmbeddingProvider,
+)
+from datasmart_ai_runtime.services.memory.memory_pgvector_adapter import (
+    PgvectorAgentMemorySecondaryIndex,
+    PgvectorMemoryIndexSettings,
+    PgvectorMemoryIndexUpsertResult,
+)
+from datasmart_ai_runtime.services.memory.memory_pgvector_components import (
+    PgvectorMemoryIndexRuntime,
+    PgvectorMemoryIndexRuntimeSettings,
+    build_pgvector_memory_index_runtime,
+    pgvector_memory_index_diagnostics,
+    pgvector_memory_index_runtime_settings_from_env,
 )
 from datasmart_ai_runtime.services.memory.memory_sqlite_fts_adapter import (
     SQLiteFtsAgentMemorySecondaryIndex,
@@ -257,10 +278,18 @@ __all__ = [
     "AgentMemorySecondaryIndexSyncWorker",
     "AgentMemorySecondaryIndexSyncWorkerReport",
     "AgentMemoryEmbeddingProvider",
+    "MemoryEmbeddingProviderSettings",
+    "MemoryEmbeddingProviderType",
+    "OpenAICompatibleMemoryEmbeddingProvider",
     "ChromaCollectionPort",
     "ChromaSemanticMemoryAdapterSettings",
     "ChromaSemanticMemorySyncAdapter",
     "DeterministicHashEmbeddingProvider",
+    "PgvectorAgentMemorySecondaryIndex",
+    "PgvectorMemoryIndexRuntime",
+    "PgvectorMemoryIndexRuntimeSettings",
+    "PgvectorMemoryIndexSettings",
+    "PgvectorMemoryIndexUpsertResult",
     "SQLiteFtsAgentMemorySecondaryIndex",
     "SQLiteFtsMemoryIndexSettings",
     "SQLiteFtsMemoryIndexUpsertResult",
@@ -306,6 +335,8 @@ __all__ = [
     "build_memory_materialization_audit_outbox_runtime",
     "decide_materialization_retry",
     "build_memory_store_runtime",
+    "build_memory_embedding_provider",
+    "build_pgvector_memory_index_runtime",
     "build_memory_write_store_runtime",
     "default_store_backed_secondary_indexes",
     "memory_materialization_receipt_store_diagnostics",
@@ -319,9 +350,14 @@ __all__ = [
     "memory_materialization_worker_settings_from_env",
     "memory_store_diagnostics",
     "memory_store_settings_from_env",
+    "memory_embedding_provider_diagnostics",
+    "memory_embedding_provider_settings_from_env",
+    "pgvector_memory_index_diagnostics",
+    "pgvector_memory_index_runtime_settings_from_env",
     "secondary_index_runtime_diagnostics",
     "secondary_index_sync_diagnostics",
     "memory_write_store_diagnostics",
     "memory_write_store_settings_from_env",
     "reject_memory_write_candidate",
+    "validate_embedding_vector",
 ]

@@ -41,6 +41,38 @@
 - 模型升级时允许同一 `memory_id` 并存多个 `embedding_model + content_fingerprint` 版本。
 - 不要把模型名称写死进业务合同，应该通过 provider/router 配置决定。
 
+### pgvector 运行时适配器
+
+Python Runtime 已实现 `PgvectorAgentMemorySecondaryIndex`，同一个适配器同时承担两条链路：
+
+- materializer 创建的 `VECTOR/UPSERT` 同步任务会回查正式记忆、生成 embedding，并按
+  `memory_id + embedding_model + content_fingerprint` 幂等写入；
+- Agent 检索语义记忆时，会先在 SQL 中过滤 tenant/project/session/workspace/namespace/type/scope/model/dimension/
+  status/expiry，再执行余弦距离排序；命中后仍回查正式 store 并再次校验边界；
+- 同模型正文变化会把旧 fingerprint 标记为 `stale`；删除或过期动作会清空向量并标记 `deleted`；
+- 诊断只展示模型、维度、状态计数和相似度摘要，不返回记忆正文、查询文本或向量。
+
+运行时默认关闭，避免本地环境因缺少 Embedding 服务而无法启动。主要配置如下：
+
+```text
+DATASMART_AI_MEMORY_PGVECTOR_ENABLED=true
+DATASMART_AI_MEMORY_PGVECTOR_FAIL_OPEN=false
+DATASMART_AI_MEMORY_PGVECTOR_POSTGRESQL_DSN=postgresql://...
+DATASMART_AI_MEMORY_PGVECTOR_SCHEMA=ai_memory
+DATASMART_AI_MEMORY_PGVECTOR_DOCUMENT_MAX_CHARS=4000
+DATASMART_AI_MEMORY_PGVECTOR_MINIMUM_SIMILARITY=0.2
+
+DATASMART_AI_MEMORY_EMBEDDING_PROVIDER=openai-compatible
+DATASMART_AI_MEMORY_EMBEDDING_ENDPOINT=http://embedding-provider:8000/v1
+DATASMART_AI_MEMORY_EMBEDDING_API_KEY=由 Secret Manager 注入
+DATASMART_AI_MEMORY_EMBEDDING_MODEL=企业批准的 embedding 模型
+DATASMART_AI_MEMORY_EMBEDDING_DIMENSIONS=1024
+DATASMART_AI_MEMORY_EMBEDDING_TIMEOUT_SECONDS=30
+```
+
+`deterministic` Provider 只用于单元测试与 smoke；它能证明 pgvector 数据路径，却不能证明真实语义召回质量。
+生产必须使用独立 Embedding 服务，并以业务语料验收 recall@k、MRR、P95/P99 延迟、吞吐、成本和租户公平性。
+
 ## Python Runtime 接入
 
 本阶段已经让 Python 记忆组件识别 `postgresql` store 类型，并新增全局 DSN：
@@ -71,6 +103,7 @@ DATASMART_AI_MEMORY_POSTGRESQL_DSN=postgresql://datasmart:***@postgresql:5432/da
 - materialization receipt 的 `started -> succeeded` 状态流转；
 - materialization lease 的领取、fencing token 条件完成和终态回读；
 - materialization audit outbox 的低敏写入与最近记录回读。
+- pgvector 向量首次写入、重复同步幂等、距离检索和 workspace 硬隔离。
 
 脚本默认只做 schema 检查，必须显式增加 `--apply` 才会写入。所有测试 ID 都带 runId 前缀，默认在执行前后清理；
 只有显式增加 `--keep-records` 才保留测试记录。测试数据只包含低敏摘要，不包含真实 prompt、SQL、样本数据、
@@ -104,7 +137,7 @@ docker compose -f docker-compose.yml -f docker-compose.application.yml run --rm 
 
 ## 下一步
 
-1. 增加 pgvector embedding 写入/检索 adapter，使 Chroma 成为兼容路径而不是目标路径。
-2. 把 LangGraph checkpoint 从 Redis 低敏 checkpoint 扩展为 PostgreSQL durable checkpoint 可选实现。
-3. 在预生产配置中把 memory stores 切换为 `postgresql + fail_open=false`，验证多实例、重启恢复与容量边界。
+1. 把 LangGraph checkpoint 从 Redis 低敏 checkpoint 扩展为 PostgreSQL durable checkpoint 可选实现。
+2. 增加真实 Embedding Provider 集成环境与语义召回评测集，并按固定模型维度建立 HNSW/IVFFLAT 索引。
+3. 在预生产配置中把 memory stores 和 pgvector 切换为 `postgresql + fail_open=false`，验证多实例、重启恢复与容量边界。
 4. 通过全平台 smoke 后，清理 MySQL 初始化脚本中的 Agent Memory 表并停止新增 MySQL 专属耦合。

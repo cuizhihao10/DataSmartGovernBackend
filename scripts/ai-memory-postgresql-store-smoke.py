@@ -40,10 +40,14 @@ if str(PYTHON_RUNTIME_SRC) not in sys.path:
 
 from datasmart_ai_runtime.domain.memory import (  # noqa: E402
     AgentMemoryRecord,
+    AgentMemoryRetrievalTarget,
     AgentMemoryScope,
     AgentMemoryType,
     AgentMemoryWriteCandidate,
     AgentMemoryWriteCandidateStatus,
+)
+from datasmart_ai_runtime.services.memory.memory_embedding_provider import (  # noqa: E402
+    DeterministicHashEmbeddingProvider,
 )
 from datasmart_ai_runtime.services.memory.memory_materialization_audit_outbox import (  # noqa: E402
     AgentMemoryMaterializationAuditOutboxRecord,
@@ -61,6 +65,18 @@ from datasmart_ai_runtime.services.memory.memory_sql_connection import (  # noqa
     build_postgresql_connection,
     mask_postgresql_dsn,
 )
+from datasmart_ai_runtime.services.memory.memory_pgvector_adapter import (  # noqa: E402
+    PgvectorAgentMemorySecondaryIndex,
+    PgvectorMemoryIndexSettings,
+)
+from datasmart_ai_runtime.services.memory.memory_secondary_index import (  # noqa: E402
+    AgentMemorySecondaryIndexKind,
+    AgentMemorySecondaryIndexQuery,
+)
+from datasmart_ai_runtime.services.memory.memory_secondary_index_sync import (  # noqa: E402
+    AgentMemorySecondaryIndexSyncAction,
+    AgentMemorySecondaryIndexSyncTask,
+)
 from datasmart_ai_runtime.services.memory.memory_sql_store import SqlAgentMemoryStore  # noqa: E402
 from datasmart_ai_runtime.services.memory.memory_store import AgentMemoryStoreEntry  # noqa: E402
 from datasmart_ai_runtime.services.memory.memory_write_sql_store import (  # noqa: E402
@@ -72,6 +88,7 @@ REQUIRED_TABLES = (
     "agent_memory_write_candidate",
     "agent_memory_write_candidate_audit",
     "agent_memory_store_entry",
+    "agent_memory_embedding_index",
     "agent_memory_materialization_receipt",
     "agent_memory_materialization_lease",
     "agent_memory_materialization_audit_outbox",
@@ -127,7 +144,7 @@ def main(argv: list[str] | None = None) -> int:
 
         cleanup_smoke_records(connection, run_id)
         cleanup_after_run = not args.keep_records
-        summary = run_store_smoke(connection, run_id)
+        summary = run_store_smoke(connection, run_id, schema=args.schema)
         if args.keep_records:
             print("[WARN] 已按 --keep-records 保留 smoke 数据，仅建议用于人工排查。")
         print_success(summary)
@@ -212,8 +229,8 @@ def verify_required_tables(connection: Any) -> None:
         )
 
 
-def run_store_smoke(connection: Any, run_id: str) -> dict[str, Any]:
-    """执行五段 store 真实读写验证。
+def run_store_smoke(connection: Any, run_id: str, *, schema: str) -> dict[str, Any]:
+    """执行 store + pgvector 六段真实读写验证。
 
     本函数刻意使用项目现有 SQL store，而不是直接写 SQL：
     - 如果 store 与 PostgreSQL 的参数占位符、BOOLEAN、JSONB、TIMESTAMPTZ 不兼容，smoke 会直接失败；
@@ -254,7 +271,7 @@ def run_store_smoke(connection: Any, run_id: str) -> dict[str, Any]:
     retrieved = formal_store.get_by_candidate_id(candidate.candidate_id)
     assert_condition(retrieved is not None, "正式记忆应能按 source_candidate_id 回读。")
     search_results = formal_store.search(
-        memory_type=AgentMemoryType.EPISODIC,
+        memory_type=AgentMemoryType.SEMANTIC,
         scope=AgentMemoryScope.PROJECT,
         tenant_id=f"{run_id}-tenant",
         project_id=f"{run_id}-project",
@@ -263,6 +280,64 @@ def run_store_smoke(connection: Any, run_id: str) -> dict[str, Any]:
         limit=10,
     )
     assert_condition(len(search_results) == 1, "正式记忆应能按租户/项目/namespace 检索到 1 条结果。")
+
+    # 使用确定性向量仅验证 pgvector 数据路径和范围隔离，不把 smoke 结果解释为真实语义质量。
+    # 生产必须切换到独立 Embedding 服务，并用业务语料评测 recall@k、MRR、延迟和成本。
+    embedding_model = "datasmart-smoke-hash-v1"
+    pgvector_index = PgvectorAgentMemorySecondaryIndex(
+        connection=connection,
+        memory_store=formal_store,
+        embedding_provider=DeterministicHashEmbeddingProvider(dimensions=16),
+        settings=PgvectorMemoryIndexSettings(
+            schema_name=require_safe_identifier(schema, "schema"),
+            embedding_model=embedding_model,
+            minimum_similarity=-1.0,
+        ),
+    )
+    vector_task = AgentMemorySecondaryIndexSyncTask(
+        task_id=f"{run_id}-vector-sync",
+        memory_id=formal_entry.memory.memory_id,
+        source_candidate_id=formal_entry.source_candidate_id,
+        memory_type=formal_entry.memory.memory_type,
+        index_kind=AgentMemorySecondaryIndexKind.VECTOR,
+        action=AgentMemorySecondaryIndexSyncAction.UPSERT,
+        tenant_id=formal_entry.memory.tenant_id,
+        project_id=formal_entry.memory.project_id,
+        session_id=formal_entry.memory.session_id,
+        workspace_key=formal_entry.workspace_key,
+        memory_namespace=formal_entry.memory_namespace,
+    )
+    first_vector_sync = pgvector_index.sync(vector_task)
+    second_vector_sync = pgvector_index.sync(vector_task)
+    assert_condition(first_vector_sync.synced, "pgvector 首次同步任务应成功。")
+    assert_condition(second_vector_sync.synced, "pgvector 重复同步应按唯一键幂等成功。")
+
+    vector_query = AgentMemorySecondaryIndexQuery(
+        target=AgentMemoryRetrievalTarget(
+            memory_type=AgentMemoryType.SEMANTIC,
+            scope=AgentMemoryScope.PROJECT,
+            query_hint="PostgreSQL 长期记忆向量索引验证",
+            reason="验证真实 pgvector 写入、距离计算与范围过滤。",
+            max_items=5,
+        ),
+        tenant_id=f"{run_id}-tenant",
+        project_id=f"{run_id}-project",
+        session_id=None,
+        workspace_key=f"workspace:{run_id}",
+        memory_namespace=f"memory:{run_id}",
+        objective="检索本次低敏 AI Memory smoke 记忆",
+        index_kind=AgentMemorySecondaryIndexKind.VECTOR,
+        candidate_limit=10,
+    )
+    vector_results = pgvector_index.search(vector_query)
+    assert_condition(len(vector_results.entries) == 1, "pgvector 应在正确 workspace 中召回 1 条正式记忆。")
+    wrong_workspace_results = pgvector_index.search(
+        replace(vector_query, workspace_key=f"workspace:{run_id}-other")
+    )
+    assert_condition(
+        len(wrong_workspace_results.entries) == 0,
+        "pgvector workspace 硬边界失效：错误 workspace 不应召回任何记忆。",
+    )
 
     receipt = receipt_store.begin(
         candidate_id=candidate.candidate_id,
@@ -317,6 +392,9 @@ def run_store_smoke(connection: Any, run_id: str) -> dict[str, Any]:
         "auditOutboxId": audit_record.outbox_id,
         "candidateAuditCount": len(audits),
         "formalMemorySearchCount": len(search_results),
+        "pgvectorSearchCount": len(vector_results.entries),
+        "pgvectorWrongWorkspaceCount": len(wrong_workspace_results.entries),
+        "pgvectorEmbeddingModel": embedding_model,
     }
 
 
@@ -329,7 +407,7 @@ def build_candidate(run_id: str, now: datetime) -> AgentMemoryWriteCandidate:
 
     return AgentMemoryWriteCandidate(
         candidate_id=f"{run_id}-candidate",
-        memory_type=AgentMemoryType.EPISODIC,
+        memory_type=AgentMemoryType.SEMANTIC,
         scope=AgentMemoryScope.PROJECT,
         status=AgentMemoryWriteCandidateStatus.DRAFT,
         tenant_id=f"{run_id}-tenant",
@@ -369,7 +447,7 @@ def build_formal_memory(run_id: str, candidate_id: str, now: datetime) -> AgentM
     return AgentMemoryStoreEntry(
         memory=AgentMemoryRecord(
             memory_id=f"{run_id}-memory",
-            memory_type=AgentMemoryType.EPISODIC,
+            memory_type=AgentMemoryType.SEMANTIC,
             scope=AgentMemoryScope.PROJECT,
             tenant_id=f"{run_id}-tenant",
             project_id=f"{run_id}-project",
@@ -440,6 +518,10 @@ def cleanup_smoke_records(connection: Any, run_id: str) -> None:
     like_prefix = f"{run_id}%"
     contains_prefix = f"%{run_id}%"
     statements = (
+        (
+            "DELETE FROM agent_memory_embedding_index WHERE memory_id LIKE %s",
+            (like_prefix,),
+        ),
         (
             "DELETE FROM agent_memory_materialization_audit_outbox "
             "WHERE outbox_id LIKE %s OR aggregate_id LIKE %s OR run_id = %s",

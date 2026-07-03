@@ -16,28 +16,20 @@ Chroma Python SDK 版本。这样做有三个原因：
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from typing import Protocol, Sequence
 
 from datasmart_ai_runtime.domain.memory import AgentMemoryType
+from datasmart_ai_runtime.services.memory.memory_embedding_provider import (
+    AgentMemoryEmbeddingProvider,
+    DeterministicHashEmbeddingProvider,
+)
 from datasmart_ai_runtime.services.memory.memory_secondary_index import AgentMemorySecondaryIndexKind
 from datasmart_ai_runtime.services.memory.memory_secondary_index_sync import (
     AgentMemorySecondaryIndexSyncAdapterResult,
     AgentMemorySecondaryIndexSyncTask,
 )
 from datasmart_ai_runtime.services.memory.memory_store import AgentMemoryStore, AgentMemoryStoreEntry
-
-
-class AgentMemoryEmbeddingProvider(Protocol):
-    """语义记忆 embedding provider 协议。
-
-    生产环境可以把该协议接到模型网关的 embedding route、vLLM embedding endpoint、SGLang embedding
-    服务或企业内部向量化平台。协议只返回浮点数组，避免 Chroma adapter 直接依赖某个模型 SDK。
-    """
-
-    def embed_text(self, text: str) -> tuple[float, ...]:
-        """把低敏记忆文本转换为向量。"""
 
 
 class ChromaCollectionPort(Protocol):
@@ -68,27 +60,6 @@ class ChromaSemanticMemoryAdapterSettings:
 
     document_max_chars: int = 4000
     payload_policy: str = "SUMMARY_ONLY_NO_RAW_TOOL_RESULT_NO_SQL_NO_SAMPLE_DATA"
-
-
-class DeterministicHashEmbeddingProvider:
-    """确定性测试 embedding provider。
-
-    该实现不是生产 embedding 模型，只用于本地测试、离线演示和 SDK 未配置时的端到端状态机验证。
-    生产环境应显式注入模型网关 embedding provider。
-    """
-
-    def __init__(self, *, dimensions: int = 16) -> None:
-        self._dimensions = max(4, min(dimensions, 256))
-
-    def embed_text(self, text: str) -> tuple[float, ...]:
-        """基于 SHA-256 生成稳定伪向量。"""
-
-        digest = hashlib.sha256(text.encode("utf-8")).digest()
-        values = []
-        for index in range(self._dimensions):
-            byte_value = digest[index % len(digest)]
-            values.append(round((byte_value / 255.0) * 2 - 1, 6))
-        return tuple(values)
 
 
 class ChromaSemanticMemorySyncAdapter:

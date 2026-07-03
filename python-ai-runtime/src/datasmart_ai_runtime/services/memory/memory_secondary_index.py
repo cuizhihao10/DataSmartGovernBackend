@@ -46,7 +46,8 @@ class AgentMemorySecondaryIndexQuery:
     字段说明：
     - `target`：原始记忆检索目标，保留 memoryType、scope、queryHint 和 maxItems；
     - `tenant_id/project_id/session_id`：范围隔离字段，必须在索引层参与过滤；
-    - `memory_namespace`：workspace 级命名空间，是同项目内不同 Agent 工作区的硬边界；
+    - `workspace_key`：工作区稳定标识，用于关系表、全文索引和向量索引的结构化等值过滤；
+    - `memory_namespace`：workspace 级记忆命名空间，用于进一步隔离不同记忆用途和演进版本；
     - `objective`：用户目标，只用于相关性提示，不应被索引实现写入持久日志；
     - `index_kind`：本次实际选择的索引类型；
     - `candidate_limit`：候选窗口上限，防止索引层无界扫描。
@@ -56,6 +57,7 @@ class AgentMemorySecondaryIndexQuery:
     tenant_id: str
     project_id: str
     session_id: str | None
+    workspace_key: str
     memory_namespace: str
     objective: str
     index_kind: AgentMemorySecondaryIndexKind

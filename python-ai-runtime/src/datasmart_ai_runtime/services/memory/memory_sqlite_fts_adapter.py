@@ -302,6 +302,7 @@ class SQLiteFtsAgentMemorySecondaryIndex:
             f"WHERE {self._settings.fts_table_name} MATCH ?",
             "AND meta.memory_type = ?",
             "AND meta.scope = ?",
+            "AND meta.workspace_key = ?",
             "AND meta.memory_namespace = ?",
             "AND meta.expires_at > ?",
         ]
@@ -309,6 +310,7 @@ class SQLiteFtsAgentMemorySecondaryIndex:
             _fts_match_expression(terms),
             query.target.memory_type.value,
             query.target.scope.value,
+            query.workspace_key,
             query.memory_namespace,
             _format_datetime(datetime.now(timezone.utc)),
         ]
@@ -436,7 +438,7 @@ def _entry_matches_query(entry: AgentMemoryStoreEntry, query: AgentMemorySeconda
         return False
     if memory.memory_type != query.target.memory_type or memory.scope != query.target.scope:
         return False
-    if entry.memory_namespace != query.memory_namespace:
+    if entry.workspace_key != query.workspace_key or entry.memory_namespace != query.memory_namespace:
         return False
     if memory.scope == AgentMemoryScope.SESSION:
         return memory.tenant_id == query.tenant_id and memory.project_id == query.project_id and memory.session_id == query.session_id

@@ -43,7 +43,16 @@ from datasmart_ai_runtime.services.memory.memory_store_components import (
     memory_store_diagnostics,
 )
 from datasmart_ai_runtime.services.memory.memory_store_retriever import StoreBackedAgentMemoryRetriever
-from datasmart_ai_runtime.services.memory.memory_secondary_index import secondary_index_runtime_diagnostics
+from datasmart_ai_runtime.services.memory.memory_secondary_index import (
+    AgentMemorySecondaryIndexKind,
+    default_store_backed_secondary_indexes,
+    secondary_index_runtime_diagnostics,
+)
+from datasmart_ai_runtime.services.memory.memory_pgvector_components import (
+    PgvectorMemoryIndexRuntime,
+    build_pgvector_memory_index_runtime,
+    pgvector_memory_index_diagnostics,
+)
 from datasmart_ai_runtime.services.memory.memory_secondary_index_sync import (
     AgentMemorySecondaryIndexSyncScheduler,
     AgentMemorySecondaryIndexSyncWorker,
@@ -71,6 +80,7 @@ class ApiMemoryRuntimeComponents:
     - `receipt_store_runtime`：落成 receipt store 运行时，影响 materializer 的执行证据持久化；
     - `lease_store_runtime`：落成 lease store 运行时，影响多 worker 是否可以安全竞争同一候选；
     - `audit_outbox_runtime`：审计 outbox 运行时，影响 worker 批次和管理员补偿是否形成持久审计事实；
+    - `pgvector_runtime`：可选 PostgreSQL/pgvector 向量索引，负责语义记忆的同步与相似度召回；
     - `memory_write_governance`：候选治理服务，接入 API 路由和 plan response 的候选生成；
     - `memory_materializer`：APPROVED 候选落成服务，当前主要供未来 worker/补偿入口复用；
     - `memory_materialization_runner`：APPROVED 候选有界批处理入口，负责失败隔离和低敏批次报告；
@@ -86,6 +96,7 @@ class ApiMemoryRuntimeComponents:
     receipt_store_runtime: AgentMemoryMaterializationReceiptStoreRuntime
     lease_store_runtime: AgentMemoryMaterializationLeaseStoreRuntime
     audit_outbox_runtime: AgentMemoryMaterializationAuditOutboxRuntime
+    pgvector_runtime: PgvectorMemoryIndexRuntime
     memory_write_governance: AgentMemoryWriteGovernanceService
     memory_materializer: AgentApprovedMemoryWriteMaterializer
     memory_materialization_runner: AgentMemoryMaterializationRunner
@@ -116,6 +127,7 @@ def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
     receipt_store_runtime = build_memory_materialization_receipt_store_runtime()
     lease_store_runtime = build_memory_materialization_lease_store_runtime()
     audit_outbox_runtime = build_memory_materialization_audit_outbox_runtime()
+    pgvector_runtime = build_pgvector_memory_index_runtime(memory_store=formal_store_runtime.store)
     secondary_index_sync_store = InMemoryAgentMemorySecondaryIndexSyncTaskStore()
     secondary_index_sync_scheduler = AgentMemorySecondaryIndexSyncScheduler(store=secondary_index_sync_store)
     governance = AgentMemoryWriteGovernanceService(store=write_store_runtime.store)
@@ -135,14 +147,28 @@ def build_api_memory_runtime() -> ApiMemoryRuntimeComponents:
         retry_max_seconds=lease_store_runtime.settings.retry_max_seconds,
     )
     materialization_admin = AgentMemoryMaterializationAdminService(lease_store_runtime.store)
-    retriever = StoreBackedAgentMemoryRetriever(formal_store_runtime.store)
-    secondary_index_sync_worker = AgentMemorySecondaryIndexSyncWorker(store=secondary_index_sync_store)
+    secondary_indexes = default_store_backed_secondary_indexes(formal_store_runtime.store)
+    sync_adapters = {}
+    if pgvector_runtime.index is not None:
+        # 只替换 VECTOR 通道。KEYWORD/GRAPH/RESOURCE 继续使用既有实现或安全 fallback，
+        # 避免启用 pgvector 后意外改变其他记忆类型的召回语义。
+        secondary_indexes[AgentMemorySecondaryIndexKind.VECTOR] = pgvector_runtime.index
+        sync_adapters[AgentMemorySecondaryIndexKind.VECTOR] = pgvector_runtime.index
+    retriever = StoreBackedAgentMemoryRetriever(
+        formal_store_runtime.store,
+        secondary_indexes=secondary_indexes,
+    )
+    secondary_index_sync_worker = AgentMemorySecondaryIndexSyncWorker(
+        store=secondary_index_sync_store,
+        adapters=sync_adapters,
+    )
     return ApiMemoryRuntimeComponents(
         write_store_runtime=write_store_runtime,
         formal_store_runtime=formal_store_runtime,
         receipt_store_runtime=receipt_store_runtime,
         lease_store_runtime=lease_store_runtime,
         audit_outbox_runtime=audit_outbox_runtime,
+        pgvector_runtime=pgvector_runtime,
         memory_write_governance=governance,
         memory_materializer=materializer,
         memory_materialization_runner=runner,
@@ -168,6 +194,7 @@ def api_memory_runtime_diagnostics(components: ApiMemoryRuntimeComponents) -> di
         "receiptStore": memory_materialization_receipt_store_diagnostics(components.receipt_store_runtime),
         "leaseStore": memory_materialization_lease_store_diagnostics(components.lease_store_runtime),
         "materializationAuditOutbox": memory_materialization_audit_outbox_diagnostics(components.audit_outbox_runtime),
+        "pgvectorIndex": pgvector_memory_index_diagnostics(components.pgvector_runtime),
         "retriever": {
             "implementation": "StoreBackedAgentMemoryRetriever",
             "usesFormalStore": True,
@@ -183,9 +210,15 @@ def api_memory_runtime_diagnostics(components: ApiMemoryRuntimeComponents) -> di
             "worker": {
                 "implementation": "AgentMemorySecondaryIndexSyncWorker",
                 "defaultAdapter": "NoopAgentMemorySecondaryIndexSyncAdapter",
+                "vectorAdapter": (
+                    type(components.pgvector_runtime.index).__name__
+                    if components.pgvector_runtime.index is not None
+                    else "NoopAgentMemorySecondaryIndexSyncAdapter"
+                ),
                 "notes": (
-                    "当前同步 worker 默认使用 no-op adapter 验证任务状态机。生产接入 Chroma/Neo4j/MinIO 时，"
-                    "应按 indexKind 替换 adapter，并补充持久化任务 store、指标和管理员重排入口。"
+                    "pgvector active=true 时，vector 同步任务会真实写入 PostgreSQL 向量索引；"
+                    "未启用时仍使用 no-op 验证任务状态机。Graph/Resource 后续需接入独立适配器，"
+                    "并继续补充持久化任务 store、指标和管理员重排入口。"
                 ),
             },
         },

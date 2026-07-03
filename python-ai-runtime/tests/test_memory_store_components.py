@@ -147,6 +147,8 @@ class AgentMemoryStoreComponentsTest(unittest.TestCase):
         self.assertIn("receiptStore", diagnostics)
         self.assertIn("leaseStore", diagnostics)
         self.assertIn("materializationAuditOutbox", diagnostics)
+        self.assertIn("pgvectorIndex", diagnostics)
+        self.assertFalse(diagnostics["pgvectorIndex"]["active"])
         self.assertIn("secondaryIndexSync", diagnostics)
         self.assertIn("materializationRunner", diagnostics)
         self.assertEqual("StoreBackedAgentMemoryRetriever", diagnostics["retriever"]["implementation"])
@@ -282,6 +284,21 @@ class AgentMemoryStoreComponentsTest(unittest.TestCase):
                 "DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_STORE",
                 "DATASMART_AI_MEMORY_MATERIALIZATION_AUDIT_OUTBOX_POSTGRESQL_DSN",
                 "DATASMART_AI_MEMORY_POSTGRESQL_DSN",
+                "DATASMART_AI_MEMORY_PGVECTOR_ENABLED",
+                "DATASMART_AI_MEMORY_PGVECTOR_POSTGRESQL_DSN",
+                "DATASMART_AI_MEMORY_PGVECTOR_SCHEMA",
+                "DATASMART_AI_MEMORY_PGVECTOR_CONNECT_TIMEOUT_SECONDS",
+                "DATASMART_AI_MEMORY_PGVECTOR_FAIL_OPEN",
+                "DATASMART_AI_MEMORY_PGVECTOR_DOCUMENT_MAX_CHARS",
+                "DATASMART_AI_MEMORY_PGVECTOR_MINIMUM_SIMILARITY",
+                "DATASMART_AI_MEMORY_EMBEDDING_PROVIDER",
+                "DATASMART_AI_MEMORY_EMBEDDING_ENDPOINT",
+                "DATASMART_AI_MEMORY_EMBEDDING_API_KEY",
+                "DATASMART_AI_MEMORY_EMBEDDING_MODEL",
+                "DATASMART_AI_MEMORY_EMBEDDING_DIMENSIONS",
+                "DATASMART_AI_MEMORY_EMBEDDING_TIMEOUT_SECONDS",
+                "DATASMART_AI_MEMORY_EMBEDDING_ORGANIZATION",
+                "DATASMART_AI_MEMORY_EMBEDDING_MAX_INPUT_CHARS",
                 "DATASMART_AI_MEMORY_LEASE_SECONDS",
                 "DATASMART_AI_MEMORY_MATERIALIZATION_MAX_ATTEMPTS",
                 "DATASMART_AI_MEMORY_MATERIALIZATION_RETRY_BASE_SECONDS",

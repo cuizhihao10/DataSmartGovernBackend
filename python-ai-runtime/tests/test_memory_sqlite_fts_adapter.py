@@ -186,6 +186,7 @@ class SQLiteFtsAgentMemorySecondaryIndexTest(unittest.TestCase):
             tenant_id="tenant-a",
             project_id="project-a",
             session_id=None,
+            workspace_key=memory_namespace.removeprefix("memory:"),
             memory_namespace=memory_namespace,
             objective=objective,
             index_kind=AgentMemorySecondaryIndexKind.KEYWORD,

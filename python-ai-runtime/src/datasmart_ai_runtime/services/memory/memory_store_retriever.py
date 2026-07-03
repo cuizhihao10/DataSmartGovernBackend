@@ -68,6 +68,7 @@ class StoreBackedAgentMemoryRetriever:
                     tenant_id=request.tenant_id,
                     project_id=request.project_id,
                     session_id=session_id,
+                    workspace_key=workspace.workspace_key,
                     memory_namespace=workspace.memory_namespace,
                     objective=request.objective,
                     index_kind=route.actual_index_kind,

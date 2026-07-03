@@ -1,5 +1,39 @@
 # MySQL 到 PostgreSQL 渐进迁移路线
 
+## 2026-07-03 更新：AI Memory pgvector 运行时与真实召回闭环
+
+本阶段把 `agent_memory_embedding_index` 从 PostgreSQL DDL 规划表推进为 Python Runtime 可真实同步、检索和诊断的
+VECTOR 二级索引，Chroma 保留为兼容适配路径，不再作为目标事实底座。
+
+已完成：
+
+- 新增独立 `AgentMemoryEmbeddingProvider` 抽象，支持 `disabled`、测试专用 `deterministic` 和
+  `openai-compatible`，不把主聊天模型、Embedding 模型或具体 Qwen/BGE/Jina 厂商写死进业务代码；
+- 新增 `PgvectorAgentMemorySecondaryIndex`，同时实现二级索引同步与查询协议；
+- upsert 使用 `memory_id + embedding_model + content_fingerprint` 幂等键，同模型旧正文版本标记 `stale`，
+  DELETE/EXPIRE 清空向量并标记 `deleted`；
+- 查询在向量排序前硬过滤 tenant/project/session/workspace/memoryNamespace/type/scope/model/dimension/status/expiry，
+  命中后再回查正式 store 复核，避免跨工作区或残留索引泄漏；
+- API memory runtime 可选装配真实 pgvector VECTOR 通道，并把同一适配器注册给同步 worker；默认关闭，
+  开发支持 fail-open 回退，生产可设置 fail-open=false 阻断错误配置；
+- 修复 PostgreSQL/libpq 空格分隔 DSN 的诊断脱敏，连接失败或回退诊断不再泄露 `password=...`；
+- `scripts/ai-memory-postgresql-store-smoke.py` 扩展 pgvector 表检查、真实向量写入、重复同步幂等、
+  正确 workspace 召回和错误 workspace 零召回，并在正式记忆删除前清理向量索引。
+
+验证结果：
+
+- 真实 PostgreSQL/pgvector smoke 通过：正确 workspace 召回 1 条、错误 workspace 召回 0 条；
+- smoke 后 candidate、formal memory、embedding、receipt、lease、audit outbox 残留均为 0；
+- Python Runtime 全量 `636` 个测试全部通过；
+- `psycopg 3.3.4` 与 Docker PostgreSQL/pgvector 真实链路已验收。
+
+当前边界与下一步：
+
+1. deterministic embedding 只证明数据路径，不代表语义质量；预生产必须接真实 Embedding Provider 和评测集；
+2. 下一主线转向 LangGraph PostgreSQL durable checkpointer，完成暂停、恢复、分支、循环和多 Agent 状态恢复；
+3. 固定主力 embedding 模型后再按维度建立 HNSW/IVFFLAT，不在模型未定时盲目建索引；
+4. AI Memory 主链闭环后切换预生产 fail-fast 配置，执行全平台 smoke，再清理 MySQL `agent_memory_*`。
+
 ## 2026-07-03 更新：Python Runtime AI Memory PostgreSQL store 真实 smoke
 
 本阶段完成 `ai_memory` V1 的运行时读写验收，不再只停留在 schema、配置装配和存量迁移脚手架层面。
