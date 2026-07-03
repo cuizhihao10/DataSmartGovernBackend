@@ -10,12 +10,14 @@ ARG PYTHON_IMAGE=docker.m.daocloud.io/library/python:3.11-slim-bookworm
 
 FROM ${PYTHON_IMAGE} AS builder
 
-ARG PYTHON_RUNTIME_EXTRAS=api,rag,kafka,redis,postgresql
+ARG PYTHON_RUNTIME_EXTRAS=api,rag,kafka,redis,postgresql,mcp
+# Python 包下载与 Docker 基础镜像是两条链路：基础镜像走 DaoCloud，pip 默认走可覆盖的国内 PyPI 镜像。
+# 企业环境可以在 Compose/build pipeline 中把该参数替换为内网制品库，不需要修改 Dockerfile。
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 
 ENV VIRTUAL_ENV=/opt/venv \
     PATH=/opt/venv/bin:${PATH} \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /build/python-ai-runtime
 
@@ -24,9 +26,11 @@ RUN python -m venv "${VIRTUAL_ENV}"
 COPY python-ai-runtime/pyproject.toml ./pyproject.toml
 COPY python-ai-runtime/src ./src
 
-# extras 由构建参数控制；默认镜像包含当前商用闭环需要的 LangGraph、Chroma、Kafka、Redis 与 PostgreSQL 客户端。
-RUN pip install --upgrade pip setuptools wheel \
-    && pip install ".[${PYTHON_RUNTIME_EXTRAS}]"
+# extras 由构建参数控制；默认镜像包含当前商用闭环需要的 LangGraph、Chroma、Kafka、Redis、PostgreSQL 与 MCP Client。
+# BuildKit cache 会在重复构建间复用已下载 wheel；网络瞬断时 pip 会重试，避免一次大 wheel 下载失败导致全量重来。
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --index-url "${PIP_INDEX_URL}" --retries 10 --timeout 120 --upgrade pip setuptools wheel \
+    && pip install --index-url "${PIP_INDEX_URL}" --retries 10 --timeout 120 ".[${PYTHON_RUNTIME_EXTRAS}]"
 
 FROM ${PYTHON_IMAGE} AS runtime
 

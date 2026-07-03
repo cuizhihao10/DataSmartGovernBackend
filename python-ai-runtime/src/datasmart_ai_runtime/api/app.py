@@ -98,6 +98,11 @@ from datasmart_ai_runtime.services.tools import (
     tool_action_execution_checkpoint_store_diagnostics,
     tool_action_execution_checkpoint_store_settings_from_env,
 )
+from datasmart_ai_runtime.services.tools.mcp import (
+    McpClientRuntime,
+    mcp_client_runtime_settings_from_env,
+    mcp_server_configurations_from_env,
+)
 
 
 def create_app() -> Any:
@@ -153,12 +158,29 @@ def create_app() -> Any:
         build_durable_agent_loop_store(durable_agent_loop_store_settings)
     )
     agent_runtime_base_url = os.getenv("DATASMART_AGENT_RUNTIME_BASE_URL")
+    # 出站 MCP Client 是外部工具生态的连接层，不等同于已有 MCP preview 接口。
+    #
+    # 安全与启动策略：
+    # - 默认 DATASMART_AI_MCP_ENABLED=false，不访问网络也不启动 stdio 子进程；
+    # - 只有同时开启 DISCOVERY_ON_STARTUP 才在应用装配阶段执行 initialize + tools/list；
+    # - 发现出的工具使用 `mcp.<serverId>.<toolName>` 命名空间，并继续进入 ToolPlanner/readiness/权限链；
+    # - Runtime 放入 app.state，后续 durable worker 可以调用真实 tools/call，但不能从普通 HTTP 路由绕过准入。
+    mcp_client_settings = mcp_client_runtime_settings_from_env()
+    mcp_server_configurations = mcp_server_configurations_from_env()
+    mcp_client_runtime = McpClientRuntime(
+        settings=mcp_client_settings,
+        configurations=mcp_server_configurations,
+    )
+    app.state.mcp_client_runtime = mcp_client_runtime
     # 工具目录在启动阶段集中加载一次，并同时供主 orchestrator 与协议适配 preview 入口使用。
     # 这样可以避免 `/agent/plans`、MCP tools/call preview 和未来确认页在同一进程里看到不同版本的工具目录：
     # - 生产环境可优先从 Java agent-runtime 动态读取；
     # - 本地学习或 Java 服务不可用时回退到 Python 默认工具目录；
     # - 后续如果要引入工具目录缓存、灰度版本或租户能力包，也可以先在这里统一形成快照。
     tool_registry = load_tool_registry(tool_registry_base_url=agent_runtime_base_url)
+    if mcp_client_settings.enabled and mcp_client_settings.discovery_on_startup:
+        mcp_client_runtime.discover_all_sync()
+        tool_registry = mcp_client_runtime.merged_tool_definitions(tool_registry)
     orchestrator = build_default_orchestrator(
         model_gateway=model_gateway,
         memory_retriever=memory_runtime.memory_retriever,
@@ -321,6 +343,17 @@ def create_app() -> Any:
             gateway_signature_nonce_store,
             gateway_signature_nonce_settings,
         )
+
+    @app.get("/agent/mcp/diagnostics")
+    @app.get("/api/agent/mcp/diagnostics")
+    def outbound_mcp_client_diagnostics() -> dict[str, Any]:
+        """查询出站 MCP Client 的低敏运行诊断。
+
+        该接口不会连接 Server、刷新目录或调用工具，只展示启用状态、传输类型、配置有效性、目录数量和
+        错误码。它不返回 endpoint、Authorization、stdio 命令参数、工具 JSON Schema 或结果正文。
+        """
+
+        return mcp_client_runtime.diagnostics()
 
     @app.get("/agent/tool-actions/checkpoints/diagnostics")
     def tool_action_checkpoint_store_runtime_diagnostics() -> dict[str, Any]:

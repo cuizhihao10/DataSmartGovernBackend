@@ -324,7 +324,9 @@ services:
         # postgresql extra 安装 psycopg3，用于 AI Memory 迁入 PostgreSQL/pgvector 后的长期记忆、receipt、
         # lease、审计 outbox 和 LangGraph durable state 持久化。默认仍不强制开启各 store，避免本地学习环境
         # 因未完成 schema 应用或数据库凭据而无法启动。
-        PYTHON_RUNTIME_EXTRAS: api,rag,kafka,redis,postgresql
+        PYTHON_RUNTIME_EXTRAS: api,rag,kafka,redis,postgresql,mcp
+        # pip 包默认使用国内镜像；企业部署可注入内网 PyPI/制品库地址。该参数不影响 DaoCloud 基础镜像前缀。
+        PIP_INDEX_URL: ${DATASMART_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
     environment:
       DATASMART_AGENT_RUNTIME_BASE_URL: http://agent-runtime:8091
       DATASMART_PERMISSION_ADMIN_BASE_URL: http://permission-admin:8085
