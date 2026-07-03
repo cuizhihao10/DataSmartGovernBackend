@@ -45,12 +45,20 @@ from datasmart_ai_runtime.services.tools.mcp.worker import (
     McpDurableWorkerRunRequest,
     McpDurableWorkerRunResult,
 )
+from datasmart_ai_runtime.services.tools.mcp.feedback import (
+    MCP_TOOL_FEEDBACK_SCHEMA_VERSION,
+    McpToolFeedbackAdapter,
+    McpToolFeedbackAdapterSettings,
+    McpToolFeedbackBuildResult,
+    mcp_feedback_summary_json,
+)
 
 __all__ = [
     "MCP_CLIENT_SCHEMA_VERSION",
     "MCP_ADMISSION_BUILDER_SCHEMA_VERSION",
     "MCP_DURABLE_EXECUTION_SCHEMA_VERSION",
     "MCP_DURABLE_WORKER_SCHEMA_VERSION",
+    "MCP_TOOL_FEEDBACK_SCHEMA_VERSION",
     "McpAdmissionBuildError",
     "McpAdmissionBuildResult",
     "McpClientError",
@@ -64,6 +72,9 @@ __all__ = [
     "McpDurableWorkerAdapter",
     "McpDurableWorkerRunRequest",
     "McpDurableWorkerRunResult",
+    "McpToolFeedbackAdapter",
+    "McpToolFeedbackAdapterSettings",
+    "McpToolFeedbackBuildResult",
     "McpServerConfiguration",
     "McpSessionOpener",
     "McpSessionPort",
@@ -77,6 +88,7 @@ __all__ = [
     "mcp_client_runtime_settings_from_env",
     "mcp_configuration_diagnostics",
     "mcp_server_configurations_from_env",
+    "mcp_feedback_summary_json",
     "namespaced_tool_name",
     "open_official_mcp_session",
     "validate_mcp_server_configuration",

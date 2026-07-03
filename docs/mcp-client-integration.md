@@ -270,3 +270,38 @@ Receipt 映射：
 - Java 侧 outbox dispatcher 尚未自动调用该 adapter；
 - Java receipt schema 当前复用 command worker receipt，后续可以根据产品需要新增更专用的 MCP receipt DTO；
 - 模型第二轮 tool message 回填仍未消费 `execution_result.runtime_result`。
+
+## 12. MCP Worker 结果到模型二轮 Tool Feedback
+
+当前已新增 `McpToolFeedbackAdapter`，用于把 `McpDurableWorkerRunResult` 转换为项目统一的
+`ToolExecutionFeedback`。这一层的意义是把“工具已经真实执行”推进为“模型可以基于受控工具结果继续
+推理”，同时继续遵守 DataSmart 的治理边界。
+
+输入与输出：
+- 输入是 `McpDurableWorkerRunResult`，包含低敏 `ControlledCommandWorkerReceipt` 和可选
+  `execution_result.runtime_result`；
+- 输出是 `ToolExecutionFeedback`，可直接交给 `ModelToolResultFeedbackBuilder` 构建 OpenAI-compatible
+  assistant/tool messages；
+- 诊断输出 `McpToolFeedbackBuildResult.summary` 只包含状态、决策原因、大小、digest 和引用存在性，不包含
+  MCP 工具正文。
+
+安全回填规则：
+- 只有 MCP 执行成功、`runtime_result.is_error=false`、结果未截断、大小小于模型反馈预算、且 content/structured
+  content 未命中敏感字段或敏感文本时，才允许把短结果放入 `feedback.result`；
+- 短结果使用 `agent-runtime://tool-results/{callId}` 作为上下文引用，并标记
+  `output_context_policy=model_summary_allowed`，让统一 builder 继续执行 workspace 与字段级过滤；
+- 大结果、截断结果、疑似敏感结果、远端错误结果和 admission/precheck 失败结果，均不会把正文放入模型；
+- 这类结果只保留低敏摘要与 `artifactReference`，并标记 `output_context_policy=audit_only`；
+- adapter 不读取 MinIO、不读取 Java 审计表、不反查 checkpoint，也不会从 worker receipt 中重建工具正文。
+
+当前边界：
+- Python 侧已完成“真实 MCP 执行结果 -> 统一 ToolExecutionFeedback -> 模型二轮消息构建器”的代码合同；
+- Java outbox dispatcher 仍未自动调用 Python MCP worker；
+- `agent-artifact:` 当前仍是低敏占位引用，真实大结果落盘仍需后续 MinIO artifact writer；
+- MCP feedback adapter 当前只允许 text content block 进入模型，image/resource 等类型应先进入 artifact/resolver 链路。
+
+下一步收敛路线：
+1. 在 Java agent-runtime outbox consumer 或内部 worker API 中自动调用 Python `McpDurableWorkerAdapter`；
+2. 将 MCP worker 结果通过 `McpToolFeedbackAdapter` 接入真实多步 Agent loop 的二轮模型调用；
+3. 为大结果补 MinIO artifact writer 与授权读取 resolver；
+4. 完成该链路后，不继续发散 MCP resources/prompts/sampling，转向全平台 Agent 闭环 smoke。
