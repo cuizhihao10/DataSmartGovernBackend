@@ -218,3 +218,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\production-readine
 7. 在隔离预生产环境执行故障演练并归档事故复盘证据。
 
 只要这些生产交付项没有稳定，就不建议再继续扩展新的 Agent、ETL、数据资产或合规脱敏大功能。现在最重要的不是“项目还能变多复杂”，而是“项目能不能被客户安全地部署和长期运维”。
+## 11. 最终闭环总闸门（2026-07-05）
+
+当前生产化加固不再只依赖单个脚本，而是通过最终交付总闸门统一编排：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-delivery-closure-check.ps1
+```
+
+该总闸门会串联生产就绪、Helm 交付、SBOM、镜像签名准入、备份恢复、容量基线、故障演练和最终平台闭环审计；需要本地真实只读链路证据时追加 `-RunLiveSmoke -WriteEvidence`。如果 Zookeeper/Kafka/Python Runtime 出现依赖漂移，先使用：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-dependency-recovery-drill.ps1 `
+  -RecoverKafkaChain `
+  -RestartPythonRuntime
+```
+
+这两个脚本的设计原则都是“默认低风险、显式开启真实运行、证据写入 target、禁止泄露密钥和业务数据”。更详细的闭环收口说明见 [final-delivery-closure-runbook.md](final-delivery-closure-runbook.md)。

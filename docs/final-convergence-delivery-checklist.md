@@ -159,3 +159,39 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 ## 7. 完成度判断
 
 当前项目可以判断为“本地完整闭环已完成，具备继续做生产化交付的基础”。它不应再被视为简单 demo，也不应继续无边界扩写局部模块；接下来的价值主要来自生产可部署性、可靠性、安全合规和可运维性，而不是继续堆叠新的 Agent 名称或控制面字段。
+## 8. 最新总闸门入口（2026-07-05）
+
+当前项目已经从“持续补功能”进入“闭环交付候选”阶段。后续不建议再分散记忆多条验收命令，而应优先使用最终交付总闸门：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-delivery-closure-check.ps1
+```
+
+如果本地 Compose 全平台服务已经启动，可以追加真实只读 E2E smoke，并把低敏证据写入 `target/final-delivery-closure`：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-delivery-closure-check.ps1 `
+  -RunLiveSmoke `
+  -WriteEvidence
+```
+
+如果要做最终候选版本验收，可以追加容器化交付、全量测试和严格模式：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-delivery-closure-check.ps1 `
+  -RunContainerizedDelivery `
+  -RunLiveSmoke `
+  -RunFullTests `
+  -WriteEvidence `
+  -Strict
+```
+
+依赖恢复演练入口为：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-dependency-recovery-drill.ps1 `
+  -RecoverKafkaChain `
+  -RestartPythonRuntime
+```
+
+该恢复脚本只处理 Zookeeper/Kafka/Python Runtime 这类本地依赖漂移，不删除 volume、不重置数据库、不清空 Kafka topic、不触发 worker，也不读取业务数据。详细说明见 [final-delivery-closure-runbook.md](final-delivery-closure-runbook.md)。

@@ -983,7 +983,419 @@ API 能力：
 - 本地仍使用 `start-dev` 作为学习/E2E 模式。
 - 生产仍需要 TLS、固定 hostname、HA/集群、Secret 轮换、最小权限管理员、正式 confidential client、数据库备份和故障演练。
 
-## 12. 深水区学习任务
+## 12. 面向深水区能力的实现原理学习路线
+
+这一节把当前系统能力按 AI Agent 面试最容易深挖的方向重新组织。学习时不要只记“用了 LangGraph、RAG、Memory”，而要能讲清楚一次请求从入口到控制面、再到 Python Runtime、工具执行、回执、评测和上线排障的完整机制。
+
+推荐总路线：
+
+1. 先学可信入口：Gateway 如何生成身份、权限、数据范围、Skill 可见性和 HMAC 可信上下文。
+2. 再学 Agent 规划：Python Runtime 如何构建上下文、压缩上下文、做 Intent 和 ToolPlan。
+3. 再学工具治理：Tool registry、tool budget、Skill admission、readiness、approval、outbox、worker receipt。
+4. 再学可恢复工作流：LangGraph checkpoint、execution gate、Java host facts、租约、幂等、dead letter。
+5. 再学 Memory：候选、审批、物化、检索、冲突、污染、防越权召回。
+6. 再学 RAG：文档治理、chunk、hybrid retrieval、rerank、证据门控、artifact、grant/final-check。
+7. 最后学评测和上线：golden eval、CI、shadow/canary、观测指标、故障演练。
+
+### 12.1 上下文压缩：从“塞全文”到“保状态、保决策”
+
+当前实现入口：
+
+- `python-ai-runtime/src/datasmart_ai_runtime/services/hybrid_context_builder.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/context_micro_compactor.py`
+- runtime event：`CONTEXT_MICRO_COMPACTED`
+
+实现过程：
+
+1. `HybridContextBuilder` 接收多来源上下文，包括用户目标、工具候选、记忆摘要、RAG 摘要、治理上下文。
+2. 先过滤过期、越权或敏感级别不允许的上下文。
+3. 再去重，避免同一事实从 session、memory、runtime event 重复进入模型。
+4. 再排序，优先保留和当前目标、当前工作区、当前工具计划相关的块。
+5. 在总 token 预算前调用 `ContextMicroCompactor`，对单块长文本做确定性微压缩。
+6. 压缩报告只记录低敏计数、来源类型、token 节省和原因码。
+7. 最后再按 token 预算裁剪，生成进入模型的上下文块。
+
+核心原理：
+
+- 上下文压缩不是文学摘要，而是决策状态压缩。
+- 要保留能影响下一步决策的事实，例如审批状态、工具风险、runId、commandId、errorCode、checkpoint locator、evidence count。
+- 对正文级内容只保留 locator、hash、count、policyVersion，不把正文扩散到 checkpoint、event、metric 和日志。
+- 微压缩优先用确定性抽取和字段白名单，因为它比 LLM 摘要更适合作为执行前控制事实。
+
+学习重点：
+
+- 读 `HybridContextBuilder.build(...)`，画出过滤、去重、压缩、预算裁剪顺序。
+- 读 `ContextMicroCompactor` 的 token 估算、敏感片段规避、可信度标记和报告字段。
+- 对比“压缩进入模型的内容”和“runtime event 可见内容”，理解为什么 event 只能存低敏摘要。
+
+练习：
+
+1. 构造一个包含长工具返回、RAG 摘要、记忆摘要和审批事实的上下文，手动判断哪些字段能保留。
+2. 设计一个压缩评测样本：压缩前后 ToolPlan、approvalRequired 和 fail-closed 结果必须一致。
+3. 解释为什么“已审批”不能由摘要模型生成，必须来自 Java approval fact。
+
+生产增强方向：
+
+- 接真实 tokenizer，而不是只用启发式估算。
+- 增加长会话历史摘要、工具结果 tool-compact、RAG citation compact。
+- 对压缩结果做 replay eval，评估关键事实保留率、决策一致性和幻觉事实率。
+
+### 12.2 工作流编排：模型规划、LangGraph 和 Java 控制面的分工
+
+当前实现入口：
+
+- `python-ai-runtime/src/datasmart_ai_runtime/services/agent_orchestrator.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/langgraph_planning_workflow.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/tools/langgraph_execution_gate.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/agent_execution/langgraph_durable_checkpointer.py`
+- `agent-runtime/src/main/java/.../AgentToolExecutionAuditService.java`
+- `agent-runtime/src/main/java/.../AgentAsyncTaskCommandOutboxController.java`
+
+实现过程：
+
+1. Gateway 把可信控制上下文透传给 Python Runtime。
+2. Python 编排器先运行 LangGraph planning workflow 外壳，生成低敏 workflow diagnostics。
+3. Intent、context、ToolPlanner 和 Skill admission 生成计划。
+4. execution gate 根据 readiness 决定是可以继续、等待审批、等待预算、需要澄清还是需要 resume preflight。
+5. 如果需要真实副作用，Python 只生成计划和低敏合同，不直接写业务表。
+6. Java agent-runtime 接收计划后创建 tool execution audit。
+7. 高风险工具进入 WAITING_APPROVAL，审批通过后才可能进入 PLANNED。
+8. 可执行命令写入 command outbox，由 dispatcher/worker 异步执行。
+9. worker 回写 receipt，Java projection/replay 展示状态。
+
+核心原理：
+
+- LangGraph 适合表达节点、边、条件路由和 checkpoint，但不能替代业务事实源。
+- Java 控制面负责“已经发生什么”和“是否允许继续”，Python 负责“下一步建议怎么走”。
+- checkpoint 只保存低敏恢复摘要；恢复时必须回查 Java host facts。
+- 工作流每个节点都要能回答：输入是什么、输出是什么、是否有副作用、失败如何重试、是否能恢复。
+
+关键状态：
+
+- 规划态：PLANNING、READY、WAITING_CLARIFICATION。
+- 审批态：WAITING_APPROVAL、APPROVED、REJECTED。
+- 执行态：PLANNED、EXECUTING、SUCCEEDED、FAILED、SKIPPED、CANCELLED。
+- 异步投递态：PENDING、DELIVERING、RETRY_WAIT、DELIVERED、DEAD_LETTER。
+
+学习重点：
+
+- 读 `LangGraphExecutionGateWorkflow`，理解 readiness 如何转成条件路由。
+- 读 `LangGraphDurableCheckpoint`，理解 checkpoint 保存哪些低敏字段。
+- 读 `AgentToolExecutionAuditService`，理解高风险工具如何让 run/tool audit 进入等待人工状态。
+- 读 outbox controller 和 writer，理解为什么写 outbox 前要再次复核 readiness、容量和幂等。
+
+练习：
+
+1. 画出一个高风险工具从 ToolPlan 到 WAITING_APPROVAL，再到 outbox，再到 receipt 的状态图。
+2. 设计一个节点失败分类表：参数错、权限错、审批缺失、下游 503、超时、幂等冲突分别如何处理。
+3. 解释为什么工作流升级要保留 graphVersion、schemaVersion 和 policyVersion。
+
+生产增强方向：
+
+- 持久化更多 Java turn fact，支持真实 pause/resume/fork/recover。
+- execution gate 增加低基数指标：route、fallback、failure reason、duration。
+- 对旧 checkpoint 做版本兼容和迁移演练。
+
+### 12.3 Agent Memory：从聊天记录到受治理长期记忆
+
+当前实现入口：
+
+- `python-ai-runtime/src/datasmart_ai_runtime/api/memory/write.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/api/memory/materialization_admin.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/api/memory/runtime.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/memory/memory_write_candidate_factory.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/memory/memory_write_materializer.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/memory/memory_materialization_runner.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/memory/memory_store_retriever.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/memory/memory_write_workspace.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/memory/user_profile_memory.py`
+
+实现过程：
+
+1. 模型、工具或运行时观察只生成 memory write candidate。
+2. candidate 携带 tenantId、projectId、workspaceKey、memoryNamespace、memoryType、sensitivity、retentionDays、sourceRunId。
+3. 管理员或策略通过 `/agent/memory/write-candidates/{candidateId}/approve|reject` 决策。
+4. `AgentMemoryMaterializationRunner` 有界扫描 APPROVED 候选，领取 lease，逐条物化。
+5. `AgentApprovedMemoryWriteMaterializer` 校验 scope、sensitivity、retentionDays、contentSummary 和 workspace 绑定。
+6. 正式记忆写入 store，并记录 materialization receipt。
+7. `StoreBackedAgentMemoryRetriever` 在 `/agent/plans` 构建上下文时按 tenant/project/workspace/memoryNamespace 过滤召回。
+8. SQLite FTS 二级索引只作为检索加速，命中后仍要回查正式 store 和范围。
+
+核心原理：
+
+- Memory 不是历史消息。历史消息是发生过的对话，Memory 是经过治理后可复用的长期事实。
+- 写入必须从 candidate 开始，不能让模型直接写正式记忆。
+- 检索必须先做范围过滤，再做相关性排序。
+- 记忆正文、候选正文、lease token、工具原始输出不能进入 runtime event 或指标。
+
+冲突治理：
+
+- 新记忆不直接覆盖旧记忆，而是通过 superseded、expired、rejected、active 等状态表达。
+- 用户明确纠正优先级高于模型推断。
+- 管理员 reject 的记忆不能被下一次自动观察直接复活。
+- 跨 workspace 的 memoryNamespace 不匹配时禁止生成或召回。
+
+防污染机制：
+
+- 低置信度候选停留在 candidate。
+- 高敏内容没有脱敏流水线时不允许物化。
+- 写入前校验 `workspaceKey` 和 `memoryNamespace`。
+- worker 失败进入退避、DLQ 和管理员补偿，不让坏候选热循环。
+- 审计 outbox 记录物化和补偿事件。
+
+学习重点：
+
+- 读 `AgentMemoryWorkspaceSupport`，理解为什么 namespace 是防越权召回核心。
+- 读 `AgentApprovedMemoryWriteMaterializer._validate_candidate(...)`，理解正式记忆写入前的安全门。
+- 读 `AgentMemoryMaterializationRunner`，理解 lease、批次报告、失败隔离和低敏输出。
+- 读 `user_profile_memory`，理解 candidate、active、rejected、superseded、expired 的状态意义。
+
+练习：
+
+1. 设计一个“用户纠正旧偏好”的记忆冲突处理流程。
+2. 设计一个“删除某用户偏好”的流程，覆盖正式 store、FTS、缓存和审计。
+3. 构造一个跨 workspace 召回测试，验证记忆不会串到另一个工作区。
+
+生产增强方向：
+
+- 将正式 store 和 pgvector 结合，增加语义检索但保留 SQL 范围过滤。
+- 增加记忆删除、修订、冲突合并管理 API。
+- 建立多轮记忆 eval：正确召回、错误拒召回、删除后不召回、冲突不污染。
+
+### 12.4 大模型工具调用：从 ToolPlan 到受控执行
+
+当前实现入口：
+
+- Python：`ToolPlanner`、tool readiness、MCP worker、RAG command worker、model tool feedback。
+- Java：tool registry、tool execution audit、approval、command proposal、command outbox、worker receipt。
+- Gateway/permission-admin：tool budget、Skill admission、route permission、数据范围。
+
+实现过程：
+
+1. Tool registry 定义工具 schema、风险、执行模式、目标服务、是否审批。
+2. Gateway/permission-admin 生成工具预算和可见 Skill。
+3. Python Runtime 基于 Intent 和上下文生成 ToolPlan。
+4. ToolPlan 做参数 schema 校验和预算校验。
+5. readiness 判断缺哪些事实：approval、payloadReference、resume fact、budget、worker capacity。
+6. Java 创建 tool audit，低风险进入 PLANNED，高风险进入 WAITING_APPROVAL。
+7. 审批通过后 writer 复核条件，写 command outbox。
+8. dispatcher 投递给 task-management、MCP worker、RAG worker 或受控命令 worker。
+9. worker 回写 receipt，Java 用 receiptId/idempotencyKey 幂等接收。
+10. 大结果通过 artifactReference 和 grant/final-check 控制读取。
+
+核心原理：
+
+- 模型可以建议工具，但不能成为执行权限来源。
+- 工具 schema 解决参数结构，tool budget 解决调用膨胀，approval fact 解决高风险授权，outbox 解决异步可靠投递，receipt 解决执行证据。
+- 写操作必须和幂等键绑定；下游重试和 worker 重启不能创建重复业务对象。
+- 工具失败要分类，不同错误对应澄清、拒绝、重试、defer、dead letter 或人工介入。
+
+学习重点：
+
+- 读 `AgentToolExecutionAuditService.requiresApprovalBeforeExecution(...)`，理解风险判断。
+- 读 `AgentToolActionCommandOutboxWriterService`，理解写 outbox 前的容量保护、payload 大小限制和幂等复用。
+- 读 `AgentRagCommandWorkerReceiptIngestionService` 和 MCP receipt ingestion，理解 Python worker response 如何被收敛成 Java receipt。
+- 读工具结果 feedback 相关测试，理解模型二轮不能直接消费完整工具正文。
+
+练习：
+
+1. 把“下单扣库存”映射成 DataSmart 的“创建同步任务/提交质量修复任务”，设计幂等键、outbox、receipt。
+2. 设计一个参数缺失场景：缺 datasourceId 时应该澄清，而不是让模型猜。
+3. 设计一个模型选错高风险工具的拦截链路。
+
+生产增强方向：
+
+- 为更多真实工具补 durable worker 和 receipt。
+- 增加统一错误码和工具失败样本回流。
+- 对工具选择、参数生成、审批判断做离线 eval。
+
+### 12.5 Agent 评测系统：从答案评测到过程评测
+
+当前项目已有基础：
+
+- Python Runtime 大量单元测试覆盖 RAG、memory、tool schema、runtime event、MCP、context、closure readiness。
+- Java Maven reactor、agent-runtime、gateway、permission-admin 有模块测试和静态门禁。
+- RAG MinIO smoke、Keycloak smoke、本地只读 E2E smoke 提供工程闭环证据。
+
+应该补齐的评测体系：
+
+1. 离线 golden eval：覆盖意图、工具、参数、审批、RAG、Memory、上下文压缩、工作流恢复。
+2. 过程指标：ToolPlan 准确率、参数完整率、approval hit rate、fail-closed rate、no evidence rate。
+3. 安全指标：敏感泄露、越权召回、高风险自动执行、伪造 approval。
+4. 工程指标：P95/P99、token 成本、重试次数、outbox backlog、worker heartbeat、dead letter。
+5. 线上反馈：用户负反馈、人工复盘、告警样本回流。
+
+实现做法：
+
+- 每条 eval 样本保存低敏输入，不保存客户真实 prompt 或工具正文。
+- 期望输出不只写 final answer，还写 expectedTool、expectedArguments、expectedDecision、forbiddenActions。
+- 安全项用规则判定，比如不允许出现 token、sourceUri、bucket/key、SQL 样本。
+- 文本质量可用 LLM-as-judge，但安全、权限、幂等必须用确定性检查。
+- CI 中跑小型关键样本集；夜间或发布前跑完整回归。
+- 灰度时先 shadow mode，只记录新策略会怎么选工具、怎么审批，不直接执行。
+
+学习重点：
+
+- 把现有单元测试按能力分类：context、memory、tool、RAG、runtime event、gateway auth。
+- 把 `scripts/local-e2e-smoke-check.ps1` 当成工程验收范式，理解 smoke 和生产上线验收的区别。
+- 设计一张 eval 样本表，字段包括 userGoal、trustedContext、expectedTool、expectedDecision、expectedNoLeakFields、expectedMetrics。
+
+练习：
+
+1. 构造 20 条工具调用 eval：10 条正常、5 条参数缺失、3 条权限不足、2 条恶意绕审批。
+2. 构造 20 条 RAG eval：有证据、无证据、证据冲突、过期文档、跨 workspace。
+3. 构造 10 条 Memory eval：正确召回、冲突、删除、污染、跨租户隔离。
+
+生产增强方向：
+
+- 建立 eval dashboard，按模型版本、prompt 版本、retrieval 版本、tool schema 版本对比。
+- 失败样本自动脱敏入库，人工标注根因后转成回归集。
+- 把 eval 门禁接入 release pipeline，关键安全项必须 100% 通过。
+
+### 12.6 企业级 RAG：从知识库治理到低敏 Artifact
+
+当前实现入口：
+
+- `python-ai-runtime/src/datasmart_ai_runtime/services/rag/text.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/rag/knowledge_base.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/rag/pipeline.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/rag/command_worker.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/rag/artifact_writer.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/rag/s3_artifact_writer.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/rag/langgraph_checkpoint.py`
+- `agent-runtime/src/main/java/.../runtime/rag/AgentRagCommandWorkerReceiptIngestionService.java`
+
+实现过程：
+
+1. 文档进入轻量 knowledge base，按 tenant/project/workspace 控制可见范围。
+2. `chunk_document` 按段落优先、长段落滑窗、overlap 切 chunk。
+3. 检索时先做 metadata 可见性过滤。
+4. 召回结合 lexical 和可选 vector score。
+5. 使用 Reciprocal Rank Fusion 融合多路排序。
+6. 使用 MMR 思路降低重复 chunk。
+7. `RagHeuristicReranker` 叠加词项、标题和治理文档 boost。
+8. evidence gate 根据 lexical score、match terms、vector score 判断是否足以回答。
+9. `RagContextCompressor` 生成 compressedContext 和 citation。
+10. 无证据时 fail-closed 或 evidence-only fallback。
+11. 有答案时写入 artifact，控制面只保留 artifactReference、hash、计数和策略版本。
+12. LangGraph checkpoint 记录 retrieve -> evidence_gate -> grounded_answer/no_evidence 低敏节点。
+13. Java receipt ingestion 把 Python worker 结果纳入统一 worker receipt index。
+
+核心原理：
+
+- RAG 的核心不是“召回 topK 后让模型回答”，而是证据治理。
+- 向量库会尽力返回最近邻，但最近不等于有证据，所以必须有 evidence gate。
+- citation 是回答可信度的接口，不能只让模型口头说“根据资料”。
+- answer、citations、compressedContext 属于正文级结果，应该进对象存储 artifact，而不是进 Java 控制面。
+- 读 artifact 正文要走 `RAG_ANSWER_VIEW`、grant、probe、final-check。
+
+学习重点：
+
+- 读 `text.py`，理解 chunk、overlap、query 相关压缩。
+- 读 `knowledge_base.py`，理解 metadata filter、lexical/vector、RRF、MMR。
+- 读 `pipeline.py`，理解 rerank、evidence gate、fallback 和生成。
+- 读 `command_worker.py`，理解 `/internal/agent/rag/command-worker/run` 为什么只返回低敏 receipt。
+- 读 `artifact_writer.py` 和 `s3_artifact_writer.py`，理解 Local writer 和 MinIO writer 的共同协议。
+- 读 Java grant/final-check 相关服务，理解为什么控制面不暴露 bucket/key/signed URL。
+
+多类型文档增强路线：
+
+- PDF/Word：需要 layout parser，保留标题层级、页码和段落。
+- 表格：按表头、行组、主键字段切片，避免表头和数据分离。
+- Runbook：按现象、原因、处理步骤、验证命令切片。
+- API 文档：按 endpoint、参数、错误码、示例切片。
+- 数据标准：按主题域、指标、字段、口径版本切片。
+
+线上效果评估：
+
+- Recall@K、MRR、nDCG。
+- citation precision、grounded answer rate。
+- no evidence rate 和错误拒答率。
+- 越权召回率、敏感泄露率。
+- P95/P99 检索、rerank、生成和 artifact 写入耗时。
+- 按租户、知识库、文档类型拆分失败样本。
+
+生产增强方向：
+
+- PostgreSQL/pgvector Knowledge Store。
+- MinIO 文档解析和增量索引。
+- 专用 reranker。
+- 文档 ACL、版本、生效时间、过期时间治理。
+- 对象存储 DLP、下载审计、水印和限速。
+- Neo4j GraphRAG 用于实体关系和血缘推理。
+
+### 12.7 一条完整学习主线：从用户一句话到可审计执行
+
+可以用下面这条主线把所有能力串起来：
+
+1. 用户说：“帮我检查这个项目的数据同步为什么卡住，并给出处理建议。”
+2. Gateway 校验 OIDC/JWT，生成租户、角色、workspace、数据范围和 HMAC 可信上下文。
+3. permission-admin 返回 route permission、tool budget、Skill admission 和可能的审批要求。
+4. Python Runtime 构建上下文，召回正式记忆，必要时做 ContextMicroCompactor。
+5. Intent 识别为 data-sync 运维诊断，ToolPlanner 选择只读诊断工具和可选 RAG runbook。
+6. Readiness 判断当前是只读诊断，不需要审批；如果要执行重试/取消/补偿，则需要审批。
+7. LangGraph execution gate 生成低敏 route 和 resume requirement。
+8. RAG 查询 runbook，证据不足则 fail-closed，证据充分则生成带 citation 的 answer artifact。
+9. Java agent-runtime 接收计划，记录 tool execution audit。
+10. 如果进入真实工具，写 command outbox，dispatcher 投递，worker 带 lease 执行。
+11. worker 写 receipt，Java projection 展示执行结果。
+12. 如果用户要查看 RAG answer 正文，走 `RAG_ANSWER_VIEW` grant/final-check。
+13. 运行中所有 event/checkpoint/metric/log 只保存低敏状态、计数、locator、hash 和 reason code。
+14. 失败样本进入 eval 回流，补充工具、RAG、Memory 或上下文压缩回归集。
+
+掌握这条主线后，面试官无论问上下文压缩、工作流、工具调用、Memory、RAG、评测还是上线排障，都能回到同一个项目事实链路上回答。
+
+### 12.8 最终交付闭环与本地依赖恢复
+
+当前新增交付能力：
+
+- `docs/final-delivery-closure-runbook.md`
+- `scripts/final-delivery-closure-check.ps1`
+- `scripts/local-dependency-recovery-drill.ps1`
+
+`final-delivery-closure-check.ps1` 的定位：
+
+- 它是收敛阶段的总闸门，不是新业务功能。
+- 它把生产就绪、Helm、SBOM、镜像签名、备份恢复、容量基线、故障演练、最终闭环审计和可选只读 E2E smoke 串起来。
+- 它通过解析子脚本统一的 `[SUMMARY] PASS=..., WARN=..., FAIL=...` 输出形成总结果。
+- 默认不运行真实 worker、不执行 Agent 工具、不创建任务、不读写业务数据。
+- `-RunLiveSmoke` 才调用本地只读 E2E smoke。
+- `-RunFullTests` 才让最终闭环审计复跑 Python/Maven 全量测试。
+- `-Strict` 把 warning 当作发布阻断项。
+- `-WriteEvidence` 把低敏 JSON 证据写入 `target/final-delivery-closure`，该目录不进入 Git。
+
+实现原理：
+
+- 总闸门不重新实现每个检查项，而是复用已有脚本，避免验收逻辑分叉。
+- 子门禁只通过 summary、exitCode、warning/fail 计数汇总，不把大量子脚本正文扩散到证据文件。
+- 它把“当前仓库是否是交付候选”变成可重复命令，而不是靠口头记忆一堆脚本。
+- 它仍明确区分本地交付候选和客户生产上线，生产上线需要客户环境提供 TLS/mTLS、Secret Manager、企业 IdP、镜像签名、K8s、压测、备份恢复和故障注入证据。
+
+`local-dependency-recovery-drill.ps1` 的定位：
+
+- 它解决本地长期运行后的依赖漂移，例如 Zookeeper 退出、Kafka 连不上 Zookeeper、Python Runtime Kafka bootstrap 失败。
+- 默认只诊断 Docker、Compose、Zookeeper、Kafka、Python Runtime 状态。
+- 只有显式 `-RecoverKafkaChain` 才拉起 Zookeeper/Kafka。
+- 只有显式 `-RestartPythonRuntime` 才尝试重启 Python Runtime。
+- 它不会删除 volume、不会重置数据库、不会重建 Keycloak realm、不会清空 topic、不会执行 worker loop。
+
+实现原理：
+
+- 本地恢复首先保护状态事实，尤其 Keycloak 已迁到 PostgreSQL-backed database 后，不能用“删卷重来”伪装修复。
+- 恢复动作必须有界：拉起依赖、等待健康、重连 runtime、再跑只读 smoke。
+- Python Runtime 重启优先走 Compose service，如果当前 compose overlay 未加载，再回退到固定容器名，避免把“服务名不在当前 compose 文件中”误判为恢复失败。
+
+学习重点：
+
+- 读总闸门脚本，理解交付门禁如何组合静态检查、只读 smoke、全量测试和低敏证据。
+- 读依赖恢复脚本，理解本地恢复为什么不能删除 volume。
+- 把“服务 running”与“只读 smoke 通过”区分开：前者只是容器状态，后者才说明鉴权、路由、Java 控制面和 Python Runtime 诊断链路恢复。
+
+面试讲法：
+
+> 我把项目交付收敛成一个总闸门，而不是让验收依赖一堆散落命令。默认只跑静态和只读门禁，真实副作用全部关闭；如果要加强证据，可以显式打开 live smoke、full tests 和 evidence 输出。依赖恢复也遵循同样原则：不删 volume、不重置状态，只做 Zookeeper/Kafka/Python Runtime 的有界恢复，然后继续跑只读 smoke 验证。
+
+## 13. 深水区学习任务
 
 为了把项目学到能应对 AI Agent 开发面试的程度，建议继续按以下任务练习：
 
