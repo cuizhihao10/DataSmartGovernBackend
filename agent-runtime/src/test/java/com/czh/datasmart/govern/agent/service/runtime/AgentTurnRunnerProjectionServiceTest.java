@@ -57,7 +57,12 @@ class AgentTurnRunnerProjectionServiceTest {
         assertEquals(0L, response.blockedAttemptTotal());
         assertEquals(2L, response.controlPlaneHandoffAttemptTotal());
         assertEquals(2L, response.managerAsToolsTotal());
+        assertEquals(1L, response.checkpointLinkedCount());
         assertEquals(1L, response.runStatusCounts().get("WAITING_CONTROL_PLANE_FEEDBACK"));
+        assertEquals(1L, response.checkpointStatusCounts().get("waiting_human"));
+        assertEquals(1L, response.checkpointNodeCounts().get("multi_agent_turn_wait_human"));
+        assertEquals(1L, response.checkpointGraphCounts().get("datasmart.agent.multi-agent-turn-runner"));
+        assertEquals(1L, response.checkpointResumeRequirementCounts().get("requiredEvidenceCodes"));
         assertEquals(1L, response.turnStatusCounts().get("READY_FOR_CONTROL_PLANE_HANDOFF"));
         assertEquals(1L, response.turnStatusCounts().get("WAITING_APPROVAL"));
         assertEquals(2L, response.requiredEvidenceCounts().get("WORKER_RECEIPT_REQUIRED"));
@@ -75,6 +80,19 @@ class AgentTurnRunnerProjectionServiceTest {
         assertTrue(snapshot.workerReceiptRequiredForSideEffects());
         assertFalse(snapshot.toolExecutedByPython());
         assertFalse(snapshot.modelCalledByTurnRunner());
+        assertEquals("turn-runner:session-agent", snapshot.turnRunnerCheckpoint().threadId());
+        assertEquals("lgcp:turn:session-agent:001", snapshot.turnRunnerCheckpoint().checkpointId());
+        assertEquals("datasmart.agent.multi-agent-turn-runner", snapshot.turnRunnerCheckpoint().graphName());
+        assertEquals("multi_agent_turn_wait_human", snapshot.turnRunnerCheckpoint().nodeName());
+        assertEquals("waiting_human", snapshot.turnRunnerCheckpoint().checkpointStatus());
+        assertEquals(List.of("wait_approval_fact", "resume_after_human_decision"),
+                snapshot.turnRunnerCheckpoint().nextNodes());
+        assertEquals(List.of("requiredEvidenceCodes", "javaControlPlaneRequired", "workerReceiptRequired"),
+                snapshot.turnRunnerCheckpoint().resumeRequirementKeys());
+        assertEquals("WAITING_APPROVAL", snapshot.turnRunnerCheckpoint()
+                .recoveryAgentStatuses()
+                .get("DATA_QUALITY_AGENT"));
+        assertTrue(snapshot.turnRunnerCheckpoint().handoffRequired());
 
         AgentTurnRunnerAttemptProjectionView attempt = snapshot.turnAttempts().get(1);
         assertEquals("DATA_QUALITY_AGENT", attempt.agentRole());
@@ -184,7 +202,48 @@ class AgentTurnRunnerProjectionServiceTest {
         attributes.put("workerReceiptRequiredForSideEffects", true);
         attributes.put("executionBoundary", "CONTROLLED_MULTI_AGENT_TURN_RUNNER_NO_SIDE_EFFECTS");
         attributes.put("payloadPolicy", "LOW_SENSITIVE_MULTI_AGENT_TURN_RUNNER_ONLY");
+        attributes.put("turnRunnerCheckpoint", checkpointLocator(runStatus));
         return attributes;
+    }
+
+    private Map<String, Object> checkpointLocator(String runStatus) {
+        Map<String, Object> recoveryStatuses = new LinkedHashMap<>();
+        recoveryStatuses.put("MASTER_ORCHESTRATOR", "OBSERVING_TURN_RUNNER");
+        recoveryStatuses.put("DATA_QUALITY_AGENT", runStatus.startsWith("BLOCKED")
+                ? "BLOCKED_BY_RUNTIME_POLICY"
+                : "WAITING_APPROVAL");
+
+        Map<String, Object> checkpoint = new LinkedHashMap<>();
+        checkpoint.put("threadId", "turn-runner:session-agent");
+        checkpoint.put("checkpointId", runStatus.startsWith("BLOCKED")
+                ? "lgcp:turn:session-agent:blocked-001"
+                : "lgcp:turn:session-agent:001");
+        checkpoint.put("parentCheckpointId", null);
+        checkpoint.put("graphName", "datasmart.agent.multi-agent-turn-runner");
+        checkpoint.put("graphVersion", "v1");
+        checkpoint.put("nodeName", runStatus.startsWith("BLOCKED")
+                ? "multi_agent_turn_blocked"
+                : "multi_agent_turn_wait_human");
+        checkpoint.put("checkpointStatus", runStatus.startsWith("BLOCKED") ? "failed" : "waiting_human");
+        checkpoint.put("checkpointVersion", 1);
+        checkpoint.put("nextNodes", List.of("wait_approval_fact", "resume_after_human_decision"));
+        checkpoint.put("resumeRequirementKeys", List.of(
+                "requiredEvidenceCodes",
+                "javaControlPlaneRequired",
+                "workerReceiptRequired"
+        ));
+        checkpoint.put("stateTopLevelKeys", List.of(
+                "multiAgentState",
+                "turnRunner",
+                "resumeRequirements"
+        ));
+        checkpoint.put("recoveryFound", true);
+        checkpoint.put("recoveryStatus", runStatus.startsWith("BLOCKED") ? "failed" : "waiting_human");
+        checkpoint.put("recoveryAgentRoles", List.of("MASTER_ORCHESTRATOR", "DATA_QUALITY_AGENT"));
+        checkpoint.put("recoveryAgentStatuses", recoveryStatuses);
+        checkpoint.put("handoffRequired", true);
+        checkpoint.put("payloadPolicy", "LOW_SENSITIVE_MULTI_AGENT_TURN_RUNNER_CHECKPOINT_LOCATOR_ONLY");
+        return checkpoint;
     }
 
     private Map<String, Object> turnAttempt(String turnId,

@@ -33,7 +33,9 @@ import org.springframework.web.bind.annotation.RestController;
  *
  * <p>安全边界：该接口固定查询 `agent_turn_runner_recorded` 事件，所有数据范围仍由
  * `AgentRuntimeEventProjectionAccessSupport` 收口，不返回 prompt、SQL、工具参数、样本数据、模型输出、
- * token、内部 endpoint、payloadReference 正文、checkpointId 或 commandId。</p>
+ * token、内部 endpoint、payloadReference 正文或 commandId。checkpointId 只在
+ * `turnRunnerCheckpoint` 子视图中以低敏 LangGraph 恢复 locator 形式返回，用于 pause/resume/fork/recover
+ * 定位，不代表暴露 checkpoint state 正文。</p>
  */
 @RestController
 @RequestMapping({"/agent-runtime/runtime-events", "/api/agent/runtime-events"})

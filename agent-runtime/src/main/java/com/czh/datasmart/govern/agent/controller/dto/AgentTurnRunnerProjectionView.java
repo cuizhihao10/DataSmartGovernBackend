@@ -53,6 +53,7 @@ public record AgentTurnRunnerProjectionView(
         Integer managerAsToolsCount,
         List<AgentTurnRunnerAttemptProjectionView> turnAttempts,
         Integer turnAttemptsTruncatedCount,
+        AgentTurnRunnerCheckpointProjectionView turnRunnerCheckpoint,
         Map<String, Integer> turnStatusCounts,
         Map<String, Integer> deliveryTierCounts,
         Map<String, Integer> resumeActionCounts,

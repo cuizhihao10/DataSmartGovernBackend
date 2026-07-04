@@ -334,6 +334,7 @@ def build_plan_response(
         plan,
         request=request,
         agent_turn_runner=agent_turn_runner_summary,
+        agent_turn_runner_checkpoint=agent_turn_runner_checkpoint,
     )
     # 长期记忆检索以前只作为 `AgentOrchestrator` 内部的 `retrieve_memory` 顺序步骤存在。
     # 这里新增的 LangGraph workflow 不重复召回记忆、不读取正文、不修改记忆 store，而是把已经生成的

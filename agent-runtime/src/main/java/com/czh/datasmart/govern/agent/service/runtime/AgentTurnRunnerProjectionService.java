@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.service.runtime;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentTurnRunnerAttemptProjectionView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentTurnRunnerCheckpointProjectionView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentTurnRunnerProjectionQueryResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentTurnRunnerProjectionView;
 import lombok.RequiredArgsConstructor;
@@ -96,10 +97,23 @@ public class AgentTurnRunnerProjectionService {
                 sumInt(snapshots.stream().map(AgentTurnRunnerProjectionView::blockedAttemptCount).toList()),
                 sumInt(snapshots.stream().map(AgentTurnRunnerProjectionView::controlPlaneHandoffCount).toList()),
                 sumInt(snapshots.stream().map(AgentTurnRunnerProjectionView::managerAsToolsCount).toList()),
+                countCheckpointLinked(snapshots),
                 countScalar(snapshots.stream().map(AgentTurnRunnerProjectionView::status).toList()),
                 countScalar(snapshots.stream().map(AgentTurnRunnerProjectionView::runStatus).toList()),
                 countScalar(snapshots.stream().map(AgentTurnRunnerProjectionView::sessionStatus).toList()),
                 countScalar(snapshots.stream().map(AgentTurnRunnerProjectionView::durablePhase).toList()),
+                countScalar(snapshots.stream()
+                        .map(snapshot -> checkpointText(snapshot.turnRunnerCheckpoint(), "status"))
+                        .toList()),
+                countScalar(snapshots.stream()
+                        .map(snapshot -> checkpointText(snapshot.turnRunnerCheckpoint(), "node"))
+                        .toList()),
+                countScalar(snapshots.stream()
+                        .map(snapshot -> checkpointText(snapshot.turnRunnerCheckpoint(), "graph"))
+                        .toList()),
+                countList(snapshots.stream()
+                        .map(snapshot -> checkpointList(snapshot.turnRunnerCheckpoint()))
+                        .toList()),
                 countMapValues(snapshots.stream().map(AgentTurnRunnerProjectionView::turnStatusCounts).toList()),
                 countMapValues(snapshots.stream().map(AgentTurnRunnerProjectionView::deliveryTierCounts).toList()),
                 countMapValues(snapshots.stream().map(AgentTurnRunnerProjectionView::resumeActionCounts).toList()),
@@ -112,6 +126,7 @@ public class AgentTurnRunnerProjectionService {
     private AgentTurnRunnerProjectionView toView(AgentRuntimeEventProjectionRecord record) {
         Map<String, Object> attributes = safeAttributes(record);
         List<AgentTurnRunnerAttemptProjectionView> attempts = turnAttempts(attributes);
+        AgentTurnRunnerCheckpointProjectionView checkpoint = turnRunnerCheckpoint(attributes);
         return new AgentTurnRunnerProjectionView(
                 record.identityKey(),
                 record.schemaVersion(),
@@ -145,6 +160,7 @@ public class AgentTurnRunnerProjectionService {
                 integer(attributes, "managerAsToolsCount"),
                 attempts,
                 integer(attributes, "turnAttemptsTruncatedCount"),
+                checkpoint,
                 countAttemptScalar(attempts.stream().map(AgentTurnRunnerAttemptProjectionView::turnStatus).toList()),
                 countAttemptScalar(attempts.stream().map(AgentTurnRunnerAttemptProjectionView::deliveryTier).toList()),
                 countAttemptScalar(attempts.stream().map(AgentTurnRunnerAttemptProjectionView::resumeAction).toList()),
@@ -159,6 +175,44 @@ public class AgentTurnRunnerProjectionService {
                 bool(attributes, "workerReceiptRequiredForSideEffects"),
                 text(attributes, "executionBoundary"),
                 text(attributes, "payloadPolicy")
+        );
+    }
+
+    private AgentTurnRunnerCheckpointProjectionView turnRunnerCheckpoint(Map<String, Object> attributes) {
+        /*
+         * 只解析嵌套的 turnRunnerCheckpoint 白名单对象，而不是读取 attributes 顶层 checkpointId。
+         * 顶层 checkpointId 可能来自旧调试字段、第三方误传或恶意注入；如果直接读取，就会破坏“只有 Python
+         * 事件构建器裁剪后的 LangGraph locator 才能进入 Java 控制面”的边界。
+         */
+        Object raw = attributes.get("turnRunnerCheckpoint");
+        if (!(raw instanceof Map<?, ?> map)) {
+            return null;
+        }
+        Map<String, Object> item = normalizeMap(map);
+        String threadId = text(item, "threadId");
+        String checkpointId = text(item, "checkpointId");
+        if (threadId == null || checkpointId == null) {
+            return null;
+        }
+        return new AgentTurnRunnerCheckpointProjectionView(
+                threadId,
+                checkpointId,
+                text(item, "parentCheckpointId"),
+                text(item, "graphName"),
+                text(item, "graphVersion"),
+                text(item, "nodeName"),
+                text(item, "checkpointStatus"),
+                integer(item, "checkpointVersion"),
+                stringList(item, "nextNodes"),
+                stringList(item, "resumeRequirementKeys"),
+                stringList(item, "stateTopLevelKeys"),
+                bool(item, "recoveryFound"),
+                text(item, "recoveryStatus"),
+                stringList(item, "recoveryAgentRoles"),
+                stringMap(item, "recoveryAgentStatuses"),
+                bool(item, "handoffRequired"),
+                defaultedText(item, "payloadPolicy",
+                        "LOW_SENSITIVE_MULTI_AGENT_TURN_RUNNER_CHECKPOINT_LOCATOR_ONLY")
         );
     }
 
@@ -213,6 +267,29 @@ public class AgentTurnRunnerProjectionService {
                 .filter(snapshot -> !prefix(snapshot.runStatus(), "WAITING") && !prefix(snapshot.runStatus(), "BLOCKED"))
                 .filter(snapshot -> snapshot.controlPlaneHandoffCount() != null && snapshot.controlPlaneHandoffCount() > 0)
                 .count();
+    }
+
+    private long countCheckpointLinked(List<AgentTurnRunnerProjectionView> snapshots) {
+        return snapshots.stream().filter(snapshot -> snapshot.turnRunnerCheckpoint() != null).count();
+    }
+
+    private String checkpointText(AgentTurnRunnerCheckpointProjectionView checkpoint, String field) {
+        if (checkpoint == null) {
+            return null;
+        }
+        return switch (field) {
+            case "status" -> checkpoint.checkpointStatus();
+            case "node" -> checkpoint.nodeName();
+            case "graph" -> checkpoint.graphName();
+            default -> null;
+        };
+    }
+
+    private List<String> checkpointList(AgentTurnRunnerCheckpointProjectionView checkpoint) {
+        if (checkpoint == null) {
+            return List.of();
+        }
+        return checkpoint.resumeRequirementKeys();
     }
 
     private long countRunStatusPrefix(List<AgentTurnRunnerProjectionView> snapshots, String prefix) {
@@ -373,6 +450,22 @@ public class AgentTurnRunnerProjectionService {
             appendString(values, value);
         }
         return List.copyOf(values);
+    }
+
+    private Map<String, String> stringMap(Map<String, Object> attributes, String key) {
+        Object value = attributes.get(key);
+        if (!(value instanceof Map<?, ?> raw)) {
+            return Map.of();
+        }
+        Map<String, String> result = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            String mapKey = Objects.toString(entry.getKey(), "").trim();
+            String mapValue = Objects.toString(entry.getValue(), "").trim();
+            if (!mapKey.isEmpty() && !mapValue.isEmpty()) {
+                result.put(mapKey, mapValue);
+            }
+        }
+        return Collections.unmodifiableMap(result);
     }
 
     private void appendString(List<String> values, Object value) {

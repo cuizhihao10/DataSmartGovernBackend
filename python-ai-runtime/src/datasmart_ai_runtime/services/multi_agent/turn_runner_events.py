@@ -26,8 +26,15 @@ def build_multi_agent_turn_runner_runtime_event(
     plan: AgentPlan,
     request: AgentRequest,
     turn_runner: Mapping[str, Any],
+    turn_runner_checkpoint: Mapping[str, Any] | None = None,
 ) -> AgentRuntimeEvent:
-    """把 `agentTurnRunner` 低敏摘要转换为可投递 runtime event。"""
+    """把 `agentTurnRunner` 低敏摘要转换为可投递 runtime event。
+
+    `turn_runner_checkpoint` 是可选的 LangGraph durable checkpoint 摘要。这里刻意只接收已经由
+    `LangGraphDurableCheckpoint.to_summary()` 和 `recover_multi_agent_state(...).to_summary()` 生成的
+    低敏 locator，不读取 checkpoint state 正文。这样 Java 控制面可以知道“后续恢复应定位到哪个
+    thread/checkpoint/node”，但仍然看不到 prompt、工具参数、SQL、样本数据或模型输出。
+    """
 
     first_event = plan.runtime_events[0] if plan.runtime_events else None
     return AgentRuntimeEvent(
@@ -42,11 +49,14 @@ def build_multi_agent_turn_runner_runtime_event(
         run_id=_string_value(turn_runner.get("runId")) or (first_event.run_id if first_event else None),
         session_id=_request_session_id(request) or (first_event.session_id if first_event else None),
         sequence=_next_runtime_event_sequence(plan),
-        attributes=_event_attributes(turn_runner),
+        attributes=_event_attributes(turn_runner, turn_runner_checkpoint),
     )
 
 
-def _event_attributes(turn_runner: Mapping[str, Any]) -> dict[str, Any]:
+def _event_attributes(
+    turn_runner: Mapping[str, Any],
+    turn_runner_checkpoint: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """生成 runtime event attributes 的白名单字段。"""
 
     attempts = tuple(item for item in _sequence(turn_runner.get("turnAttempts")) if isinstance(item, Mapping))
@@ -91,6 +101,44 @@ def _event_attributes(turn_runner: Mapping[str, Any]) -> dict[str, Any]:
         ),
         "executionBoundary": _string_value(turn_runner.get("executionBoundary")),
         "payloadPolicy": _string_value(turn_runner.get("payloadPolicy")),
+        "turnRunnerCheckpoint": _checkpoint_locator_attributes(turn_runner_checkpoint),
+    }
+
+
+def _checkpoint_locator_attributes(turn_runner_checkpoint: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """裁剪可进入 runtime event 的 LangGraph checkpoint locator。
+
+    为什么不直接把 `/agent/plans.agentTurnRunnerCheckpoint` 原样放进事件：
+    - API 响应未来可能为了前端诊断增加更多字段，如果事件构建器直接透传，就会破坏“事件字段白名单”；
+    - Java 控制面只需要恢复定位字段和多 Agent 角色状态摘要，不需要 checkpoint state 正文；
+    - checkpointId/threadId 虽然是低敏控制面定位符，但仍应集中裁剪，避免外部调用方伪造额外 payload。
+    """
+
+    checkpoint_view = _mapping(turn_runner_checkpoint)
+    checkpoint = _mapping(checkpoint_view.get("checkpoint"))
+    recovery = _mapping(checkpoint_view.get("multiAgentRecovery"))
+    checkpoint_id = _string_value(checkpoint.get("checkpointId"))
+    thread_id = _string_value(checkpoint_view.get("threadId")) or _string_value(checkpoint.get("threadId"))
+    if not checkpoint_id or not thread_id:
+        return None
+    return {
+        "threadId": thread_id,
+        "checkpointId": checkpoint_id,
+        "parentCheckpointId": _string_value(checkpoint.get("parentCheckpointId")),
+        "graphName": _string_value(checkpoint.get("graphName")),
+        "graphVersion": _string_value(checkpoint.get("graphVersion")),
+        "nodeName": _string_value(checkpoint.get("nodeName")),
+        "checkpointStatus": _string_value(checkpoint.get("status")),
+        "checkpointVersion": _non_negative_int(checkpoint.get("checkpointVersion")),
+        "nextNodes": _limited_string_tuple(checkpoint.get("nextNodes"), limit=12),
+        "resumeRequirementKeys": _limited_string_tuple(checkpoint.get("resumeRequirementKeys"), limit=20),
+        "stateTopLevelKeys": _limited_string_tuple(checkpoint.get("stateTopLevelKeys"), limit=20),
+        "recoveryFound": bool(recovery.get("found")),
+        "recoveryStatus": _string_value(recovery.get("status")),
+        "recoveryAgentRoles": _limited_string_tuple(recovery.get("agentRoles"), limit=16),
+        "recoveryAgentStatuses": _limited_string_map(recovery.get("agentStatuses"), limit=16),
+        "handoffRequired": bool(recovery.get("handoffRequired")),
+        "payloadPolicy": "LOW_SENSITIVE_MULTI_AGENT_TURN_RUNNER_CHECKPOINT_LOCATOR_ONLY",
     }
 
 
@@ -151,6 +199,26 @@ def _limited_string_tuple(value: Any, *, limit: int) -> tuple[str, ...]:
         if len(cleaned) >= limit:
             break
     return tuple(cleaned)
+
+
+def _limited_string_map(value: Any, *, limit: int) -> dict[str, str]:
+    """读取低敏字符串映射，主要用于 role -> status 这类可观测控制面摘要。
+
+    这里不接受嵌套对象，也不保留超长文本；如果未来恢复摘要需要更多结构，应显式新增白名单字段，
+    而不是把任意 map 透传到 runtime event。
+    """
+
+    if not isinstance(value, Mapping):
+        return {}
+    cleaned: dict[str, str] = {}
+    for raw_key, raw_value in value.items():
+        key = _string_value(raw_key)
+        item = _string_value(raw_value)
+        if key and item:
+            cleaned[key] = item
+        if len(cleaned) >= limit:
+            break
+    return cleaned
 
 
 def _string_value(value: Any) -> str | None:

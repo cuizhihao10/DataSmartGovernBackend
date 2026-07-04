@@ -178,6 +178,7 @@ def attach_agent_turn_runner_event(
     *,
     request: AgentRequest,
     agent_turn_runner: dict[str, Any],
+    agent_turn_runner_checkpoint: dict[str, Any] | None = None,
 ) -> AgentPlan:
     """把受控多 Agent turn runner 合同追加到 runtime event 流。
 
@@ -186,6 +187,10 @@ def attach_agent_turn_runner_event(
     控制面或人工补齐。事件化后，Java projection、WebSocket replay 和审计系统才能复原 turn 层合同。
 
     该事件只记录低敏控制面字段，不包含 prompt、SQL、工具参数、payloadReference 正文、模型输出或样本数据。
+
+    如果已经写入 LangGraph durable checkpoint，调用方会把 `agent_turn_runner_checkpoint` 传进来。
+    本函数不会读取 checkpoint state，也不会触发 pause/resume/fork/recover；它只把白名单 locator 交给
+    事件构建器，便于 Java 控制面知道“后续恢复应该找哪个 thread/checkpoint/node”。
     """
 
     if any(
@@ -195,7 +200,12 @@ def attach_agent_turn_runner_event(
         return plan
     if not isinstance(agent_turn_runner, dict):
         return plan
-    turn_runner_event = build_multi_agent_turn_runner_runtime_event(plan, request, agent_turn_runner)
+    turn_runner_event = build_multi_agent_turn_runner_runtime_event(
+        plan,
+        request,
+        agent_turn_runner,
+        turn_runner_checkpoint=agent_turn_runner_checkpoint,
+    )
     return replace(plan, runtime_events=plan.runtime_events + (turn_runner_event,))
 
 

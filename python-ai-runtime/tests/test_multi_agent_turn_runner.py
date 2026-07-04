@@ -227,13 +227,32 @@ class MultiAgentTurnRunnerTest(unittest.TestCase):
         thread_id = checkpoint_view["threadId"]
         latest = checkpointer.latest_for_thread(thread_id)
         recovered = checkpointer.recover_multi_agent_state(thread_id).to_summary()
-        serialized = str(checkpoint_view) + str(latest.state if latest is not None else {}) + str(recovered)
+        events = [
+            event
+            for event in response["plan"]["runtime_events"]
+            if event["event_type"] == AgentRuntimeEventType.AGENT_TURN_RUNNER_RECORDED
+        ]
+        event_checkpoint = events[0]["attributes"]["turnRunnerCheckpoint"]
+        serialized = (
+            str(checkpoint_view)
+            + str(latest.state if latest is not None else {})
+            + str(recovered)
+            + str(event_checkpoint)
+        )
 
         self.assertIsNotNone(latest)
+        self.assertEqual(1, len(events))
         self.assertEqual("datasmart.agent.multi-agent-turn-runner", checkpoint_view["checkpoint"]["graphName"])
         self.assertEqual("multi_agent_turn_wait_human", checkpoint_view["checkpoint"]["nodeName"])
         self.assertEqual("waiting_human", checkpoint_view["checkpoint"]["status"])
         self.assertIn("wait_approval_fact", checkpoint_view["checkpoint"]["nextNodes"])
+        self.assertEqual(thread_id, event_checkpoint["threadId"])
+        self.assertEqual(checkpoint_view["checkpoint"]["checkpointId"], event_checkpoint["checkpointId"])
+        self.assertEqual("datasmart.agent.multi-agent-turn-runner", event_checkpoint["graphName"])
+        self.assertEqual("multi_agent_turn_wait_human", event_checkpoint["nodeName"])
+        self.assertEqual("waiting_human", event_checkpoint["checkpointStatus"])
+        self.assertIn("wait_approval_fact", event_checkpoint["nextNodes"])
+        self.assertIn("DATA_QUALITY_AGENT", event_checkpoint["recoveryAgentRoles"])
         self.assertTrue(recovered["found"])
         self.assertIn("DATA_QUALITY_AGENT", recovered["agentRoles"])
         self.assertTrue(recovered["handoffRequired"])
