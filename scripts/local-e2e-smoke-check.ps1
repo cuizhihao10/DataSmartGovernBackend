@@ -432,7 +432,7 @@ Test-FileContains -RelativePath "python-ai-runtime/src/datasmart_ai_runtime/serv
 Test-FileContains -RelativePath "python-ai-runtime/src/datasmart_ai_runtime/services/agent_capability/agent_capability_matrix.py" -ExpectedText "datasmart_ai_langgraph_memory_retrieval_*" -Purpose "能力矩阵必须记录 LangGraph 记忆检索指标证据，避免闭口诊断落后于真实实现"
 Test-FileContains -RelativePath "data-quality/src/main/java/com/czh/datasmart/govern/quality/controller/QualityReportExportController.java" -ExpectedText "low-sensitive-csv" -Purpose "data-quality 必须提供低敏质量报告导出入口，避免质量报告能力只停留在在线查询"
 Test-FileContains -RelativePath "observability/src/main/java/com/czh/datasmart/govern/observability/controller/ObservabilityPlatformController.java" -ExpectedText "alert-coverage" -Purpose "observability 必须提供平台基础告警覆盖视图，避免可观测性只停留在 health 探活"
-Test-FileContains -RelativePath "gateway/src/main/java/com/czh/datasmart/govern/gateway/config/GatewayAuthorizationProperties.java" -ExpectedText "setAllowedActorTypes(List.of(`"SERVICE_ACCOUNT`"))" -Purpose "默认内部端点同时要求服务账号角色和服务账号主体类型"
+Test-FileContains -RelativePath "gateway/src/main/java/com/czh/datasmart/govern/gateway/config/GatewayAuthorizationDefaultCatalog.java" -ExpectedText "setAllowedActorTypes(List.of(`"SERVICE_ACCOUNT`"))" -Purpose "默认内部端点同时要求服务账号角色和服务账号主体类型"
 Test-FileContains -RelativePath "gateway/src/main/java/com/czh/datasmart/govern/gateway/authorization/GatewayInternalServiceEndpointGuard.java" -ExpectedText "actorTypeAllowed" -Purpose "内部端点守卫必须校验 actorType，避免人类用户 role-only 误入机器协议"
 Test-FileContains -RelativePath "docker/keycloak/import/datasmart-realm.json" -ExpectedText '"username": "sync-service"' -Purpose "本地 realm 必须保留服务账号样例，用于验证 OIDC -> gateway 身份映射"
 
