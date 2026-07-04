@@ -609,7 +609,15 @@ def create_app() -> Any:
     )
     register_platform_convergence_routes(app, diagnostics_service=platform_convergence_diagnostics)
     register_agent_capability_routes(app, capability_matrix_service=agent_capability_matrix)
-    register_rag_routes(app, rag_pipeline=rag_pipeline)
+    # RAG 也纳入同一个 LangGraph durable checkpointer：
+    # - RAG API 仍然返回原有 answer/citations/retrievalSummary，保持调用方兼容；
+    # - 同时额外写入 `rag_retrieve_knowledge -> rag_evidence_gate -> rag_*_completed` 低敏节点链路；
+    # - state 不保存 question、answer、compressedContext 或文档正文，只保存计数、策略和多 Agent 状态摘要。
+    register_rag_routes(
+        app,
+        rag_pipeline=rag_pipeline,
+        langgraph_checkpointer_service=langgraph_checkpointer_service,
+    )
     # LangGraph checkpoint 控制面在这里集中挂载，并复用启动期创建的同一个 checkpointer service。
     # 这样 MCP worker、长期记忆节点、多 Agent runner 和后续 Java/gateway 查询看到的是同一条 thread/event
     # 时间线，而不是每个路由各自维护一份不可恢复的内存状态。

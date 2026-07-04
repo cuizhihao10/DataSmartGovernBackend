@@ -27,6 +27,16 @@ API 已接入：
 - `GET /agent/rag/diagnostics`
 - `GET /api/agent/rag/diagnostics`
 
+LangGraph durable checkpoint 已接入：
+
+- `rag_retrieve_knowledge`：记录召回候选数、证据数量、lexical/vector 信号和 scope；
+- `rag_evidence_gate`：记录证据门控接受/拒绝数量、fail-closed 决策和引用要求；
+- `rag_grounded_answer_completed`：记录有证据约束的回答或证据摘要已完成；
+- `rag_no_evidence_completed`：记录无合格证据时已按 fail-closed 策略收口。
+
+这些 checkpoint 只保存低敏计数、策略、状态码和多 Agent 角色状态，不保存用户问题、答案、compressedContext、
+文档正文、sourceUri、prompt 或模型原始响应。
+
 ## 2. 当前管线阶段
 
 一次 RAG 问答会经过以下阶段：
@@ -43,6 +53,7 @@ API 已接入：
 10. `context compression`：按问题相关词压缩 chunk，优先保留命中句子，控制进入模型的上下文长度。
 11. `model generation`：通过统一 `ModelQueryEngine` 调用治理问答模型，继承模型路由、限流、预算、fallback 和低敏错误处理。
 12. `citation binding`：答案必须绑定 `[C1]`、`[C2]` 这类引用编号，方便审计和回溯。
+13. `langgraph checkpoint`：把 RAG 的检索、证据门控和最终收口写入 durable checkpoint，支持后续暂停、恢复、分支和多 Agent 状态恢复。
 
 ## 3. 为什么要做证据门控
 
@@ -93,6 +104,7 @@ MASTER_ORCHESTRATOR
 - 证据门控、弱证据拒绝、无证据 fail-closed。
 - 统一模型查询引擎生成。
 - API 查询和诊断路由。
+- LangGraph checkpoint 节点化，已形成 `retrieve -> evidence_gate -> completed/no_evidence` 低敏状态链路。
 - 单元测试覆盖召回、租户隔离、无证据拒绝和 API 合同。
 
 尚未完成但已预留接口：
@@ -101,7 +113,7 @@ MASTER_ORCHESTRATOR
 - Neo4j GraphRAG，用于血缘、表关系、业务口径和资产图谱推理。
 - 专用 embedding/reranker 模型，例如当前一代 Qwen embedding/reranker、BGE 或 Jina reranker。
 - MinIO 文档解析、增量索引、删除重建和索引版本管理。
-- LangGraph 节点化，把 RAG 检索、证据门控和生成状态写入 durable checkpoint。
+- RAG 与真实多 Agent runner 的自动 handoff，例如 DATA_QUALITY_AGENT 基于 RAG 证据生成规则草案。
 
 ## 6. 面试讲解要点
 

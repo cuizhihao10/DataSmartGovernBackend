@@ -14,6 +14,11 @@ from datasmart_ai_runtime.services.rag.knowledge_base import (
     RagHybridRetrieverSettings,
     RagKnowledgeBase,
 )
+from datasmart_ai_runtime.services.rag.langgraph_checkpoint import (
+    LANGGRAPH_RAG_GRAPH_NAME,
+    LANGGRAPH_RAG_GRAPH_VERSION,
+    record_rag_pipeline_checkpoints,
+)
 from datasmart_ai_runtime.services.rag.models import (
     RAG_PIPELINE_SCHEMA_VERSION,
     RagChunk,
@@ -42,6 +47,8 @@ from datasmart_ai_runtime.services.rag.text import (
 __all__ = [
     "RAG_PIPELINE_SCHEMA_VERSION",
     "InMemoryRagKnowledgeBase",
+    "LANGGRAPH_RAG_GRAPH_NAME",
+    "LANGGRAPH_RAG_GRAPH_VERSION",
     "RagChunk",
     "RagChunkSourceType",
     "RagCitation",
@@ -63,5 +70,6 @@ __all__ = [
     "default_governance_rag_documents",
     "jaccard_similarity",
     "lexical_score",
+    "record_rag_pipeline_checkpoints",
     "tokenize_for_rag",
 ]

@@ -9,10 +9,21 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from datasmart_ai_runtime.services.rag import RagPipeline, RagQuery
+from datasmart_ai_runtime.services.agent_execution import LangGraphDurableCheckpointerService
+from datasmart_ai_runtime.services.rag import (
+    LANGGRAPH_RAG_GRAPH_NAME,
+    RagPipeline,
+    RagQuery,
+    record_rag_pipeline_checkpoints,
+)
 
 
-def register_rag_routes(app: Any, *, rag_pipeline: RagPipeline) -> None:
+def register_rag_routes(
+    app: Any,
+    *,
+    rag_pipeline: RagPipeline,
+    langgraph_checkpointer_service: LangGraphDurableCheckpointerService | None = None,
+) -> None:
     """注册 RAG 查询与诊断路由。
 
     路由：
@@ -20,6 +31,11 @@ def register_rag_routes(app: Any, *, rag_pipeline: RagPipeline) -> None:
     - `POST /api/agent/rag/query`：统一 gateway 路径；
     - `GET /agent/rag/diagnostics`：低敏运行诊断；
     - `GET /api/agent/rag/diagnostics`：统一 gateway 路径。
+
+    `langgraph_checkpointer_service` 是可选的：
+    - 本地单测或只想验证 RAG 算法时可以不传，响应中 `langGraphCheckpoint=None`；
+    - 应用启动时传入统一 checkpointer 后，每次 RAG 查询都会写入低敏 LangGraph 节点链路；
+    - 这样 RAG 能逐步纳入 Agent 状态机，而不是作为旁路 HTTP 能力游离在 durable loop 外。
     """
 
     @app.post("/agent/rag/query")
@@ -36,14 +52,38 @@ def register_rag_routes(app: Any, *, rag_pipeline: RagPipeline) -> None:
         """
 
         query = rag_query_from_payload(payload)
-        return rag_pipeline.answer(query).to_summary()
+        result = rag_pipeline.answer(query)
+        response = result.to_summary()
+        response["langGraphCheckpoint"] = (
+            record_rag_pipeline_checkpoints(
+                langgraph_checkpointer_service,
+                query=query,
+                result=result,
+                payload=payload,
+            )
+            if langgraph_checkpointer_service is not None
+            else None
+        )
+        return response
 
     @app.get("/agent/rag/diagnostics")
     @app.get("/api/agent/rag/diagnostics")
     def governance_rag_diagnostics() -> dict[str, Any]:
         """查询 RAG 管线诊断，不返回问题或文档正文。"""
 
-        return rag_pipeline.diagnostics()
+        diagnostics = rag_pipeline.diagnostics()
+        diagnostics["langGraphCheckpointing"] = {
+            "enabled": langgraph_checkpointer_service is not None,
+            "graphName": LANGGRAPH_RAG_GRAPH_NAME,
+            "nodes": (
+                "rag_retrieve_knowledge",
+                "rag_evidence_gate",
+                "rag_grounded_answer_completed",
+                "rag_no_evidence_completed",
+            ),
+            "payloadPolicy": "LOW_SENSITIVE_RAG_LANGGRAPH_CHECKPOINT_SUMMARY_ONLY",
+        }
+        return diagnostics
 
 
 def rag_query_from_payload(payload: Mapping[str, Any]) -> RagQuery:
