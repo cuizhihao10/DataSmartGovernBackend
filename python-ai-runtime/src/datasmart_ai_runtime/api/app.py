@@ -33,6 +33,7 @@ from datasmart_ai_runtime.api.memory.runtime import api_memory_runtime_diagnosti
 from datasmart_ai_runtime.api.memory.write import register_memory_write_routes
 from datasmart_ai_runtime.api.metrics import register_agent_metrics_route
 from datasmart_ai_runtime.api.platform import register_platform_convergence_routes
+from datasmart_ai_runtime.api.rag import register_rag_routes
 from datasmart_ai_runtime.api.agent.orchestrator_factory import (
     build_context_selection_policy,
     build_default_orchestrator,
@@ -75,6 +76,8 @@ from datasmart_ai_runtime.services.memory import (
     AgentMemoryMaterializationMetrics,
     LangGraphMemoryRetrievalMetrics,
     UserProfileMemoryService,
+    build_memory_embedding_provider,
+    memory_embedding_provider_settings_from_env,
 )
 from datasmart_ai_runtime.services.memory.memory_materialization_worker import (
     AgentMemoryMaterializationWorker,
@@ -92,6 +95,7 @@ from datasmart_ai_runtime.services.model_gateway import (
 from datasmart_ai_runtime.services.model_gateway.model_provider import model_provider_registry_from_env
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.platform_convergence import default_platform_convergence_diagnostics_service
+from datasmart_ai_runtime.services.rag import build_default_governance_rag_pipeline
 from datasmart_ai_runtime.services.runtime_events.runtime_event_components import (
     build_runtime_event_components,
     runtime_event_component_diagnostics,
@@ -163,6 +167,18 @@ def create_app() -> Any:
     model_provider_registry = model_provider_registry_from_env()
     memory_runtime = build_api_memory_runtime()
     user_profile_memory = UserProfileMemoryService.default()
+    # RAG 与 Agent Memory 共用“embedding provider 抽象”，但不是同一类业务数据：
+    # - Agent Memory 负责用户画像、任务历史和长期经验；
+    # - RAG 负责企业知识、产品文档、规则说明和可引用证据。
+    # 这里复用同一 provider 配置，是为了避免本地/生产各自维护两套 embedding endpoint；后续如果治理知识库
+    # 需要独立模型，可以新增 DATASMART_AI_RAG_EMBEDDING_* 覆盖，而不改变 RagPipeline 契约。
+    rag_embedding_provider = build_memory_embedding_provider(memory_embedding_provider_settings_from_env())
+    rag_pipeline = build_default_governance_rag_pipeline(
+        model_routes=model_route_registry,
+        model_gateway=model_gateway,
+        model_providers=model_provider_registry,
+        embedding_provider=rag_embedding_provider,
+    )
     # Durable Agent Loop 的状态仓储必须在应用启动时统一装配，不能让每个请求临时创建 store：
     # - 默认 in-memory 兼容本地学习与单测；
     # - 生产设置 DATASMART_AGENT_DURABLE_LOOP_STORE=redis 后，同一 run 可跨实例、跨重启恢复；
@@ -593,6 +609,7 @@ def create_app() -> Any:
     )
     register_platform_convergence_routes(app, diagnostics_service=platform_convergence_diagnostics)
     register_agent_capability_routes(app, capability_matrix_service=agent_capability_matrix)
+    register_rag_routes(app, rag_pipeline=rag_pipeline)
     # LangGraph checkpoint 控制面在这里集中挂载，并复用启动期创建的同一个 checkpointer service。
     # 这样 MCP worker、长期记忆节点、多 Agent runner 和后续 Java/gateway 查询看到的是同一条 thread/event
     # 时间线，而不是每个路由各自维护一份不可恢复的内存状态。
