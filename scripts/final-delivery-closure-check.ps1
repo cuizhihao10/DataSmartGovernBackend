@@ -22,27 +22,23 @@
 #>
 [CmdletBinding()]
 param(
-    # 严格模式会把任意子门禁 warning 也视为最终失败，适合 CI 发布前或客户验收前使用。
     [switch]$Strict,
-
-    # 默认不跑容器化交付脚本，避免在未构建 jar 的干净工作区误报；开启后会执行快速容器化合同校验。
     [switch]$RunContainerizedDelivery,
-
-    # 开启后会让容器化交付脚本构建 gateway 与 Python Runtime 两个代表镜像，耗时更长但证据更强。
     [switch]$BuildContainerImages,
-
-    # 开启后会调用真实本地只读 E2E smoke，要求本地 Docker/Java/Python/Keycloak/gateway 等服务已经启动。
     [switch]$RunLiveSmoke,
-
-    # 开启后会让 final-platform-closure-audit 复跑 Python 与 Maven 全量测试；耗时较长，适合最终候选版本。
     [switch]$RunFullTests,
-
-    # 开启后写入低敏 JSON 证据到 target/，该目录已被 Git 忽略，不会污染源码提交。
     [switch]$WriteEvidence,
-
-    # 所有证据统一写入该目录，方便 CI、面试展示或客户交付时归档。
     [string]$OutputDirectory = "target/final-delivery-closure"
 )
+
+# 参数说明：
+# - Strict：把任意子门禁 warning 视为最终失败，适合发布前或客户验收前使用。
+# - RunContainerizedDelivery：执行快速容器化合同校验，默认复用已有 jar，不重新构建全量模块。
+# - BuildContainerImages：构建 gateway 与 Python Runtime 两个代表镜像，增强容器交付证据。
+# - RunLiveSmoke：调用真实本地只读 E2E smoke，要求本地 Compose 服务已经启动。
+# - RunFullTests：让最终审计脚本复跑 Python 与 Maven 全量测试。
+# - WriteEvidence：写入低敏 JSON 证据到 target/，不会记录 token、secret、prompt、模型输出或业务数据。
+# - OutputDirectory：最终总闸门证据输出目录。
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path

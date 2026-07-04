@@ -19,24 +19,21 @@
 #>
 [CmdletBinding()]
 param(
-    # 开启后按依赖顺序拉起 Zookeeper 与 Kafka。
     [switch]$RecoverKafkaChain,
-
-    # 开启后在 Kafka 链路恢复后重启 Python Runtime，优先走 compose service，失败再回退到容器名。
     [switch]$RestartPythonRuntime,
-
-    # 严格模式下，只要关键容器不存在、未运行或恢复失败就返回非 0。
     [switch]$Strict,
-
-    # 等待 Kafka/Python Runtime 恢复的最长秒数。
     [int]$WaitSeconds = 90,
-
-    # Compose service 名称，应用 overlay 启动时通常存在；仅基础 Compose 时可能不存在。
     [string]$PythonComposeService = "python-ai-runtime",
-
-    # 兜底容器名，处理 `docker compose restart python-ai-runtime` 因 overlay 未加载而报 no such service 的情况。
     [string]$PythonContainerName = "datasmart-python-ai-runtime"
 )
+
+# 参数说明：
+# - RecoverKafkaChain：显式拉起 Zookeeper/Kafka，解决本地依赖链漂移。
+# - RestartPythonRuntime：Kafka 恢复后重启 Python Runtime，让 runtime 重新建立 bootstrap 连接。
+# - Strict：把 warning 也作为演练阻断，适合 CI 或正式恢复演练 runner。
+# - WaitSeconds：等待 Kafka/Python Runtime 恢复的最长秒数。
+# - PythonComposeService：Compose overlay 中的 Python Runtime service 名称。
+# - PythonContainerName：Compose service 不可用时的兜底容器名。
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
