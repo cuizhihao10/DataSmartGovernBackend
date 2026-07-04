@@ -17,6 +17,12 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from datasmart_ai_runtime.api.agent.mcp_worker_langgraph import (
+    record_mcp_model_feedback_checkpoint,
+    record_mcp_model_second_turn_final,
+    record_mcp_model_second_turn_loop,
+)
+from datasmart_ai_runtime.services.agent_execution import LangGraphDurableCheckpointerService
 from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import (
     ToolExecutionFeedback,
 )
@@ -39,6 +45,7 @@ def register_mcp_durable_worker_routes(
     worker_adapter: McpDurableWorkerAdapter,
     feedback_adapter: McpToolFeedbackAdapter | None = None,
     second_turn_service: McpModelFeedbackSecondTurnService | None = None,
+    langgraph_checkpointer_service: LangGraphDurableCheckpointerService | None = None,
 ) -> None:
     """注册 MCP durable worker 内部执行路由。
 
@@ -51,6 +58,8 @@ def register_mcp_durable_worker_routes(
     - `arguments` 只进入 `McpDurableWorkerRunRequest` 的短生命周期内存对象，不会出现在响应 summary 中；
     - 响应中的 `workerResult` 来自 `to_summary()`，不会包含 MCP 工具正文；
     - 如开启 model feedback，只有 `McpToolFeedbackAdapter` 判定安全的小结果才会进入 `modelFeedback.feedback.result`；
+    - 如装配 LangGraph checkpointer，本路由只把执行阶段、角色状态、错误码、Provider 摘要等低敏状态写入
+      checkpoint，不保存 MCP arguments、tool result 正文、二轮 prompt/messages 或 Java lease token；
     - 真正生产部署时，该路由仍应置于 gateway/service-account/OIDC 或 mTLS 保护之后，本模块只固定业务合同。
     """
 
@@ -65,6 +74,8 @@ def register_mcp_durable_worker_routes(
         include_model_feedback = _bool(payload.get("includeModelFeedback"), default=True)
         model_feedback = None
         model_second_turn = None
+        langgraph_checkpoint = None
+        initial_checkpoint = None
         if include_model_feedback and feedback_adapter is not None:
             build_result = feedback_adapter.build(
                 worker_result,
@@ -78,22 +89,86 @@ def register_mcp_durable_worker_routes(
                 "summary": build_result.summary,
                 "feedback": tool_execution_feedback_to_payload(build_result.feedback),
             }
+            if langgraph_checkpointer_service is not None:
+                initial_checkpoint = record_mcp_model_feedback_checkpoint(
+                    langgraph_checkpointer_service,
+                    request=request,
+                    payload=payload,
+                    worker_result=worker_result,
+                    feedback=build_result.feedback,
+                    feedback_summary=build_result.summary,
+                )
+                langgraph_checkpoint = {
+                    "threadId": initial_checkpoint.thread_id,
+                    "initial": initial_checkpoint.to_summary(),
+                    "loop": None,
+                    "final": None,
+                    "multiAgentRecovery": langgraph_checkpointer_service.recover_multi_agent_state(
+                        initial_checkpoint.thread_id
+                    ).to_summary(),
+                    "payloadPolicy": "LOW_SENSITIVE_LANGGRAPH_CHECKPOINT_SUMMARY_ONLY",
+                }
             # `modelFeedback` 只是把工具结果变成“可给模型看的消息材料”，并不等于模型已经看过。
             # 这里在显式装配 `second_turn_service` 后才继续推进真实二轮模型调用：
             # - 服务只接收 McpToolFeedbackAdapter 产出的安全 feedback，不接触 MCP arguments；
             # - controlFacts 只用于 tenant/project/actor/run/session/trace 路由与审计标签；
             # - 返回值只保留低敏摘要，不把二轮 prompt/messages、工具 result 正文或 Provider 原始响应暴露给 API。
             if second_turn_service is not None:
-                model_second_turn = second_turn_service.run(
-                    feedback=build_result.feedback,
-                    feedback_summary=build_result.summary,
-                    control_facts=request.control_facts,
-                    trace_id=_optional_text(payload.get("traceId") or payload.get("trace_id")),
-                    workspace_key=_optional_text(payload.get("workspaceKey") or payload.get("workspace_key")),
-                    current_workspace_key=_optional_text(
-                        payload.get("currentWorkspaceKey") or payload.get("current_workspace_key")
-                    ),
-                ).to_summary()
+                loop_checkpoint = None
+                if langgraph_checkpointer_service is not None and initial_checkpoint is not None:
+                    loop_checkpoint = record_mcp_model_second_turn_loop(
+                        langgraph_checkpointer_service,
+                        initial_checkpoint=initial_checkpoint,
+                        feedback=build_result.feedback,
+                    )
+                    if langgraph_checkpoint is not None:
+                        langgraph_checkpoint["loop"] = loop_checkpoint.to_summary()
+                try:
+                    model_second_turn = second_turn_service.run(
+                        feedback=build_result.feedback,
+                        feedback_summary=build_result.summary,
+                        control_facts=request.control_facts,
+                        trace_id=_optional_text(payload.get("traceId") or payload.get("trace_id")),
+                        workspace_key=_optional_text(payload.get("workspaceKey") or payload.get("workspace_key")),
+                        current_workspace_key=_optional_text(
+                            payload.get("currentWorkspaceKey") or payload.get("current_workspace_key")
+                        ),
+                    ).to_summary()
+                except Exception:
+                    if langgraph_checkpointer_service is not None and (loop_checkpoint or initial_checkpoint) is not None:
+                        final_checkpoint = record_mcp_model_second_turn_final(
+                            langgraph_checkpointer_service,
+                            parent_checkpoint=loop_checkpoint or initial_checkpoint,
+                            feedback=build_result.feedback,
+                            model_second_turn_summary={
+                                "executed": False,
+                                "skipped": False,
+                                "reason": "model_second_turn_exception",
+                                "errorCode": "MCP_MODEL_SECOND_TURN_EXCEPTION",
+                            },
+                        )
+                        if langgraph_checkpoint is not None:
+                            langgraph_checkpoint["final"] = final_checkpoint.to_summary()
+                            langgraph_checkpoint["multiAgentRecovery"] = (
+                                langgraph_checkpointer_service.recover_multi_agent_state(
+                                    final_checkpoint.thread_id
+                                ).to_summary()
+                            )
+                    raise
+                if langgraph_checkpointer_service is not None and (loop_checkpoint or initial_checkpoint) is not None:
+                    final_checkpoint = record_mcp_model_second_turn_final(
+                        langgraph_checkpointer_service,
+                        parent_checkpoint=loop_checkpoint or initial_checkpoint,
+                        feedback=build_result.feedback,
+                        model_second_turn_summary=model_second_turn,
+                    )
+                    if langgraph_checkpoint is not None:
+                        langgraph_checkpoint["final"] = final_checkpoint.to_summary()
+                        langgraph_checkpoint["multiAgentRecovery"] = (
+                            langgraph_checkpointer_service.recover_multi_agent_state(
+                                final_checkpoint.thread_id
+                            ).to_summary()
+                        )
         return {
             "schemaVersion": MCP_DURABLE_WORKER_API_SCHEMA_VERSION,
             "accepted": True,
@@ -106,10 +181,12 @@ def register_mcp_durable_worker_routes(
             "javaReceiptPayload": dict(worker_result.receipt.java_payload),
             "modelFeedback": model_feedback,
             "modelSecondTurn": model_second_turn,
+            "langGraphCheckpoint": langgraph_checkpoint,
             "payloadPolicy": (
                 "MCP_ARGUMENTS_NEVER_RETURNED;JAVA_RECEIPT_PAYLOAD_INTERNAL_ONLY;"
                 "TOOL_RESULT_BODY_RETURNED_ONLY_IF_FEEDBACK_ADAPTER_ALLOWED_SAFE_INLINE;"
-                "MODEL_SECOND_TURN_SUMMARY_ONLY_WHEN_CONFIGURED"
+                "MODEL_SECOND_TURN_SUMMARY_ONLY_WHEN_CONFIGURED;"
+                "LANGGRAPH_CHECKPOINT_SUMMARY_ONLY_WHEN_CONFIGURED"
             ),
         }
 

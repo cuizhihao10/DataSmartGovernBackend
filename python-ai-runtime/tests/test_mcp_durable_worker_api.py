@@ -20,6 +20,7 @@ from datasmart_ai_runtime.api.agent.mcp_worker import (
     mcp_worker_request_from_payload,
     register_mcp_durable_worker_routes,
 )
+from datasmart_ai_runtime.services.agent_execution import LangGraphDurableCheckpointerService
 from datasmart_ai_runtime.services.tools.controlled_command_worker_runner import (
     COMMAND_WORKER_RECEIPT_SCHEMA_VERSION,
     CommandWorkerReceiptOutcome,
@@ -96,6 +97,40 @@ class McpDurableWorkerApiTest(unittest.TestCase):
         self.assertTrue(response["modelFeedback"]["summary"]["inlineResultAllowed"])
         self.assertEqual("已找到质量规则说明。", response["modelFeedback"]["feedback"]["result"]["contentBlocks"][0]["text"])
         self.assertEqual(1, len(worker_adapter.calls))
+        response_text = str(response)
+        self.assertNotIn("quality rules", response_text)
+        self.assertNotIn("private-search-argument", response_text)
+
+    def test_route_records_langgraph_checkpoint_for_second_turn_state_machine(self) -> None:
+        """二轮模型调用应进入 LangGraph checkpoint，使节点、边和多 Agent 状态可恢复。"""
+
+        app = FakeApp()
+        second_turn_service = FakeSecondTurnService()
+        checkpointer_service = LangGraphDurableCheckpointerService()
+        register_mcp_durable_worker_routes(
+            app,
+            worker_adapter=FakeWorkerAdapter(),
+            feedback_adapter=McpToolFeedbackAdapter(),
+            second_turn_service=second_turn_service,
+            langgraph_checkpointer_service=checkpointer_service,
+        )
+
+        response = asyncio.run(app.post_routes["/internal/agent/mcp/durable-worker/run"](self._payload()))
+
+        checkpoint = response["langGraphCheckpoint"]
+        self.assertIsNotNone(checkpoint)
+        self.assertEqual("mcp-feedback:run-a:call-a", checkpoint["threadId"])
+        self.assertEqual("mcp_model_feedback", checkpoint["initial"]["nodeName"])
+        self.assertEqual("mcp_model_second_turn", checkpoint["loop"]["nodeName"])
+        self.assertEqual("mcp_model_second_turn_completed", checkpoint["final"]["nodeName"])
+        self.assertEqual("completed", checkpoint["final"]["status"])
+        self.assertIn("MASTER_ORCHESTRATOR", checkpoint["multiAgentRecovery"]["agentRoles"])
+        self.assertIn("DATA_QUALITY_AGENT", checkpoint["multiAgentRecovery"]["agentRoles"])
+        events = checkpointer_service.events_for_thread("mcp-feedback:run-a:call-a")
+        self.assertEqual(
+            ("mcp_model_feedback_prepared", "loop_iteration", "mcp_model_second_turn_completed"),
+            tuple(event.event_type for event in events),
+        )
         response_text = str(response)
         self.assertNotIn("quality rules", response_text)
         self.assertNotIn("private-search-argument", response_text)

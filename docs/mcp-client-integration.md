@@ -334,18 +334,22 @@ POST /api/internal/agent/mcp/durable-worker/run
 - `modelSecondTurn`：可选的真实二轮模型调用摘要。它只在 Python Runtime 装配
   `McpModelFeedbackSecondTurnService` 且 `includeModelFeedback=true` 时生成；二轮调用走统一
   `ModelQueryEngine`，继承模型路由、预算、限流、fallback、token-limit 和低敏 Provider 错误处理；
+- `langGraphCheckpoint`：可选的 LangGraph durable checkpoint 摘要。它只在 Python Runtime 装配
+  `LangGraphDurableCheckpointerService` 时生成，包含 `initial/loop/final/multiAgentRecovery`，用于表达
+  `mcp_model_feedback -> mcp_model_second_turn -> mcp_model_second_turn_completed` 的节点、边、终态和
+  多 Agent 恢复摘要；
 - `payloadPolicy`：明确标记 `MCP_ARGUMENTS_NEVER_RETURNED`。
 
 设计边界：
 - 该路由是内部执行合同，不是前端或模型直连工具的公开入口；
 - 生产部署必须放在 gateway/service account/OIDC、mTLS 或等价企业内网认证之后；
 - Python 仍不领取 Java outbox、不管理 visibility timeout、不做死信重试；这些仍属于 Java 控制面或后续 worker runtime；
-- 当前完成的是 HTTP 调用合同和安全 `modelFeedback -> modelSecondTurn` 最小真实闭环，后续可在不改变 payload
-  语义的前提下迁移到 Kafka/gRPC 或 LangGraph 节点。
+- 当前完成的是 HTTP 调用合同、安全 `modelFeedback -> modelSecondTurn` 真实闭环，以及 LangGraph checkpoint
+  节点记录；后续可在不改变 payload 语义的前提下迁移到 Kafka/gRPC 或真实多 Agent runner。
 
 下一步收敛路线：
-1. 把 MCP `modelSecondTurn` 节点迁入 LangGraph PostgreSQL Durable Checkpointer，支持暂停、恢复、分支和循环；
-2. 大结果接 MinIO artifact writer 与授权 resolver；
+1. 大结果接 MinIO artifact writer 与授权 resolver；
+2. 把真实多 Agent runner 的 MASTER_ORCHESTRATOR、DATASOURCE_AGENT、DATA_QUALITY_AGENT、PERMISSION_AGENT、TASK_AGENT 状态写入 LangGraph checkpoint；
 3. 完成包含 permission-admin、agent-runtime、Python Runtime 和测试 MCP Server 的真实 E2E smoke。
 
 ## 14. Java Agent Runtime MCP Durable Worker Client
@@ -490,5 +494,5 @@ outbox PUBLISHING
 当前剩余边界：
 - 尚缺正式 MCP command producer，把 Agent tool plan/command proposal 转为带显式 permission/approval/readiness 的 MCP outbox payload；
 - `modelFeedback` 已能通过 Python Runtime 的 `McpModelFeedbackSecondTurnService` 进入受治理二轮模型调用，
-  但尚未迁入 LangGraph PostgreSQL Durable Checkpointer 节点；
+  并已写入 LangGraph durable checkpoint 节点链路；
 - `agent-artifact:` 仍是低敏占位引用，大结果尚未由 MinIO writer 真正落盘。

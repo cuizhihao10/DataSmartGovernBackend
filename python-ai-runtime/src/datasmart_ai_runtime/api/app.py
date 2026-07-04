@@ -45,6 +45,7 @@ from datasmart_ai_runtime.api.agent.orchestrator_factory import (
     truthy_env as _truthy_env,
 )
 from datasmart_ai_runtime.api.agent.capabilities import register_agent_capability_routes
+from datasmart_ai_runtime.api.agent.langgraph_checkpoints import register_langgraph_checkpoint_routes
 from datasmart_ai_runtime.api.agent.mcp_worker import register_mcp_durable_worker_routes
 from datasmart_ai_runtime.api.agent.routes import register_agent_runtime_routes
 from datasmart_ai_runtime.api.agent.plan_response import build_plan_response
@@ -592,11 +593,20 @@ def create_app() -> Any:
     )
     register_platform_convergence_routes(app, diagnostics_service=platform_convergence_diagnostics)
     register_agent_capability_routes(app, capability_matrix_service=agent_capability_matrix)
+    # LangGraph checkpoint 控制面在这里集中挂载，并复用启动期创建的同一个 checkpointer service。
+    # 这样 MCP worker、长期记忆节点、多 Agent runner 和后续 Java/gateway 查询看到的是同一条 thread/event
+    # 时间线，而不是每个路由各自维护一份不可恢复的内存状态。
+    register_langgraph_checkpoint_routes(
+        app,
+        checkpointer_service=langgraph_checkpointer_service,
+        error_factory=lambda status_code, detail: HTTPException(status_code=status_code, detail=detail),
+    )
     register_mcp_durable_worker_routes(
         app,
         worker_adapter=app.state.mcp_durable_worker_adapter,
         feedback_adapter=app.state.mcp_tool_feedback_adapter,
         second_turn_service=app.state.mcp_model_feedback_second_turn_service,
+        langgraph_checkpointer_service=langgraph_checkpointer_service,
     )
 
     return app
