@@ -3,6 +3,7 @@
 import json
 import os
 import sys
+import tempfile
 import unittest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -21,6 +22,7 @@ from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteR
 from datasmart_ai_runtime.services.rag import (
     RAG_COMMAND_WORKER_API_PAYLOAD_POLICY,
     RAG_COMMAND_WORKER_RUNNER_SCHEMA_VERSION,
+    LocalFileRagAnswerArtifactWriter,
     RagCommandWorkerRunner,
     build_default_governance_rag_pipeline,
 )
@@ -144,14 +146,69 @@ class RagCommandWorkerApiTest(unittest.TestCase):
         self.assertTrue(response["postResult"]["posted"])
         self.assertNotIn("INTERNAL_POST_SECRET", json.dumps(fake_client.receipt.java_payload, ensure_ascii=False))
 
-    def _runner(self) -> RagCommandWorkerRunner:
+    def test_internal_route_writes_answer_artifact_and_keeps_response_metadata_only(self) -> None:
+        """启用 artifact writer 后，worker route 应只返回 artifact 元数据，不返回答案正文。"""
+
+        app = FakeApp()
+        checkpointer = LangGraphDurableCheckpointerService()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            register_rag_command_worker_routes(
+                app,
+                worker_runner=self._runner(artifact_root=temp_dir),
+                langgraph_checkpointer_service=checkpointer,
+            )
+
+            response = app.post_routes["/internal/agent/rag/command-worker/run"](
+                {
+                    "arguments": {
+                        "question": "DataSmart RAG 管线有哪些阶段？INTERNAL_ARTIFACT_SECRET",
+                        "generateAnswer": False,
+                    },
+                    "controlFacts": {
+                        "commandId": "taoc_rag_worker_artifact",
+                        "runId": "run-rag-worker-artifact",
+                        "sessionId": "session-rag-worker-artifact",
+                        "tenantId": "10",
+                        "projectId": "20",
+                        "actorId": "30",
+                        "langGraphThreadId": "rag-worker-artifact-thread",
+                    },
+                }
+            )
+            serialized = json.dumps(response, ensure_ascii=False)
+            artifact_files = [
+                path for path in os.listdir(temp_dir)
+            ]
+
+            artifact_write = response["artifactWrite"]
+            self.assertIsNotNone(artifact_write)
+            self.assertEqual(artifact_write["artifactReference"], response["javaReceiptPayload"]["artifactReference"])
+            self.assertTrue(response["javaReceiptPayload"]["artifactAvailable"])
+            self.assertTrue(response["workerResult"]["ragExecutionSummary"]["artifactReferencePresent"])
+            self.assertNotIn("INTERNAL_ARTIFACT_SECRET", serialized)
+            self.assertNotIn('"compressedContext":', serialized)
+            self.assertNotIn('"answer":', serialized)
+            self.assertGreaterEqual(len(artifact_files), 1)
+            latest = checkpointer.latest_for_thread("rag-worker-artifact-thread")
+            self.assertIsNotNone(latest)
+            self.assertTrue(latest.state["generation"]["answerStored"])
+            self.assertIn("artifact", latest.state["generation"])
+            self.assertEqual(
+                artifact_write["artifactReference"],
+                latest.state["generation"]["artifact"]["artifactReference"],
+            )
+
+    def _runner(self, *, artifact_root: str | None = None) -> RagCommandWorkerRunner:
         routes = ModelRouteRegistry(default_model_routes())
         pipeline = build_default_governance_rag_pipeline(
             model_routes=routes,
             model_gateway=ModelGatewayGovernanceService(routes),
             model_providers=ModelProviderRegistry(),
         )
-        return RagCommandWorkerRunner(rag_pipeline=pipeline)
+        return RagCommandWorkerRunner(
+            rag_pipeline=pipeline,
+            artifact_writer=LocalFileRagAnswerArtifactWriter(artifact_root) if artifact_root else None,
+        )
 
 
 class FakeReceiptClient:

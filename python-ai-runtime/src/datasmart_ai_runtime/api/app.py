@@ -96,7 +96,11 @@ from datasmart_ai_runtime.services.model_gateway import (
 from datasmart_ai_runtime.services.model_gateway.model_provider import model_provider_registry_from_env
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.platform_convergence import default_platform_convergence_diagnostics_service
-from datasmart_ai_runtime.services.rag import RagCommandWorkerRunner, build_default_governance_rag_pipeline
+from datasmart_ai_runtime.services.rag import (
+    RagCommandWorkerRunner,
+    build_default_governance_rag_pipeline,
+    rag_answer_artifact_writer_from_env,
+)
 from datasmart_ai_runtime.services.runtime_events.runtime_event_components import (
     build_runtime_event_components,
     runtime_event_component_diagnostics,
@@ -185,8 +189,18 @@ def create_app() -> Any:
     # RAG command worker 是 Java command outbox -> Python Runtime 的内部消费入口：
     # - 普通 `/agent/rag/query` 仍保留学习/调试友好的 answer/citations 返回；
     # - command worker 只返回低敏 receipt、javaReceiptPayload 与 LangGraph checkpoint locator；
-    # - 真实答案正文后续应写入 MinIO/受控 artifact，再通过 artifact grant 二次授权读取。
-    rag_command_worker_runner = RagCommandWorkerRunner(rag_pipeline=rag_pipeline)
+    # - 真实答案正文在启用 artifact writer 后写入受控 artifact，再通过 artifact grant 二次授权读取。
+    #
+    # writer 默认关闭，是为了避免本地学习和单元测试在未配置对象存储/落盘目录时产生副作用。联调或预生产可设置：
+    # - DATASMART_RAG_ARTIFACT_WRITER_ENABLED=true
+    # - DATASMART_RAG_ARTIFACT_STORE_BACKEND=local
+    # - DATASMART_RAG_ARTIFACT_LOCAL_ROOT=.datasmart-ai-runtime/artifacts/rag
+    # 后续接入 MinIO 时，只需要实现同一个 RagAnswerArtifactWriter 协议，不需要改 RAG pipeline 或 Java receipt 合同。
+    rag_answer_artifact_writer = rag_answer_artifact_writer_from_env()
+    rag_command_worker_runner = RagCommandWorkerRunner(
+        rag_pipeline=rag_pipeline,
+        artifact_writer=rag_answer_artifact_writer,
+    )
     # Durable Agent Loop 的状态仓储必须在应用启动时统一装配，不能让每个请求临时创建 store：
     # - 默认 in-memory 兼容本地学习与单测；
     # - 生产设置 DATASMART_AGENT_DURABLE_LOOP_STORE=redis 后，同一 run 可跨实例、跨重启恢复；

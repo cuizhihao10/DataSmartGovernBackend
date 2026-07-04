@@ -67,6 +67,7 @@ def register_rag_command_worker_routes(
             "workerResult": summary,
             "receipt": summary["receipt"],
             "javaReceiptPayload": summary["javaReceiptPayload"],
+            "artifactWrite": summary["artifactWrite"],
             "postResult": summary["postResult"],
             "langGraphCheckpoint": summary["langGraphCheckpoint"],
             "payloadPolicy": summary["payloadPolicy"],

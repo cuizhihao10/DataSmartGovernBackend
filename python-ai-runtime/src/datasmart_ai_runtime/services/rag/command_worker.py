@@ -28,6 +28,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from datasmart_ai_runtime.services.agent_execution import LangGraphDurableCheckpointerService
+from datasmart_ai_runtime.services.rag.artifact_writer import (
+    RagAnswerArtifactWriteInput,
+    RagAnswerArtifactWriteResult,
+    RagAnswerArtifactWriter,
+)
 from datasmart_ai_runtime.services.rag.command_worker_receipt import (
     RagCommandWorkerReceipt,
     RagCommandWorkerReceiptBuilder,
@@ -103,6 +108,7 @@ class RagCommandWorkerRunResult:
     query_ref: str
     pipeline_result: RagPipelineResult
     receipt: RagCommandWorkerReceipt
+    artifact_write: RagAnswerArtifactWriteResult | None = None
     langgraph_checkpoint: dict[str, Any] | None = None
     post_result: CommandWorkerReceiptPostResult | None = None
 
@@ -143,6 +149,7 @@ class RagCommandWorkerRunResult:
             },
             "receipt": self.receipt.to_summary(),
             "javaReceiptPayload": dict(self.receipt.java_payload),
+            "artifactWrite": self.artifact_write.to_summary() if self.artifact_write else None,
             "postResult": self.post_result.to_summary() if self.post_result else None,
             "langGraphCheckpoint": self.langgraph_checkpoint,
             "payloadPolicy": RAG_COMMAND_WORKER_API_PAYLOAD_POLICY,
@@ -152,12 +159,13 @@ class RagCommandWorkerRunResult:
 class RagCommandWorkerRunner:
     """执行 `knowledge.rag.query` command 并生成低敏 worker receipt。
 
-    该 runner 不负责 claim Java outbox、续租 worker lease 或写 MinIO artifact。原因是这些能力分别属于：
+    该 runner 不负责 claim Java outbox 或续租 worker lease。原因是这些能力分别属于：
     - Java dispatcher / Kafka consumer：负责 command 领取、重试、死信和并发控制；
     - Java/Redis lease：负责 fencing token 与多实例互斥；
-    - artifact writer：负责答案正文写入对象存储和二次授权。
+    - artifact writer：作为可选依赖注入，只负责把答案正文写入受控产物，不负责授权读取。
 
-    本 runner 的职责保持收敛：消费可信 command payload，执行 RAG，生成 receipt，必要时 POST 回 Java。
+    本 runner 的职责保持收敛：消费可信 command payload，执行 RAG，必要时写 artifact，生成 receipt，
+    必要时 POST 回 Java。artifact 读取授权仍由 Java artifact grant/权限链路处理。
     """
 
     def __init__(
@@ -165,9 +173,11 @@ class RagCommandWorkerRunner:
         *,
         rag_pipeline: RagPipeline,
         receipt_builder: RagCommandWorkerReceiptBuilder | None = None,
+        artifact_writer: RagAnswerArtifactWriter | None = None,
     ) -> None:
         self._rag_pipeline = rag_pipeline
         self._receipt_builder = receipt_builder or RagCommandWorkerReceiptBuilder()
+        self._artifact_writer = artifact_writer
 
     def run(
         self,
@@ -181,9 +191,10 @@ class RagCommandWorkerRunner:
         执行顺序是固定的：
         1. 规范化 question 并生成/校验 queryRef；
         2. 调用 `RagPipeline.answer(...)` 完成检索、门控、压缩、生成和引用绑定；
-        3. 可选写入 LangGraph checkpoint，记录 retrieve -> evidence gate -> final 节点；
-        4. 构造 Java worker receipt 低敏 payload；
-        5. 如果 request.post_to_java=true，则调用 Java worker receipt endpoint。
+        3. 如果配置了 artifact writer，先把 answer/citations/compressedContext 写入受控 artifact；
+        4. 可选写入 LangGraph checkpoint，记录 retrieve -> evidence gate -> final 节点；
+        5. 构造 Java worker receipt 低敏 payload；
+        6. 如果 request.post_to_java=true，则调用 Java worker receipt endpoint。
 
         注意：即使 `post_to_java=false`，返回中仍包含 `javaReceiptPayload`，便于 Java dispatcher
         或测试环境自行决定何时写回；这不会泄露正文，因为 payload 已由 receipt builder 白名单治理。
@@ -192,13 +203,24 @@ class RagCommandWorkerRunner:
         query = self._query_from_request(request)
         query_ref = request.query_ref or _query_ref_from_question(query)
         pipeline_result = self._rag_pipeline.answer(query)
+        artifact_write = self._write_artifact_if_configured(
+            request,
+            query_ref=query_ref,
+            result=pipeline_result,
+        )
         checkpoint = self._record_checkpoint(
             request,
             query=query,
             result=pipeline_result,
+            artifact_write=artifact_write,
             langgraph_checkpointer_service=langgraph_checkpointer_service,
         )
-        receipt = self._receipt_for(request, query_ref=query_ref, result=pipeline_result)
+        receipt = self._receipt_for(
+            request,
+            query_ref=query_ref,
+            result=pipeline_result,
+            artifact_write=artifact_write,
+        )
         post_result = None
         if request.post_to_java:
             client = receipt_client or JavaCommandWorkerReceiptClient()
@@ -213,6 +235,7 @@ class RagCommandWorkerRunner:
             query_ref=query_ref,
             pipeline_result=pipeline_result,
             receipt=receipt,
+            artifact_write=artifact_write,
             langgraph_checkpoint=checkpoint,
             post_result=post_result,
         )
@@ -243,6 +266,7 @@ class RagCommandWorkerRunner:
         *,
         query: RagQuery,
         result: RagPipelineResult,
+        artifact_write: RagAnswerArtifactWriteResult | None,
         langgraph_checkpointer_service: LangGraphDurableCheckpointerService | None,
     ) -> dict[str, Any] | None:
         """按同一 RAG LangGraph 合同记录低敏节点链路。"""
@@ -262,6 +286,39 @@ class RagCommandWorkerRunner:
             query=query,
             result=result,
             payload={key: value for key, value in payload.items() if value},
+            artifact_summary=artifact_write.to_summary() if artifact_write else None,
+        )
+
+    def _write_artifact_if_configured(
+        self,
+        request: RagCommandWorkerRunRequest,
+        *,
+        query_ref: str,
+        result: RagPipelineResult,
+    ) -> RagAnswerArtifactWriteResult | None:
+        """在配置了 artifact writer 时，把答案正文写入受控产物。
+
+        这里刻意放在 receipt 构造之前执行：receipt 必须记录最终可读的 artifactReference，而不是记录一个
+        “未来可能存在”的占位值。若 writer 配置后写入失败，本方法会让异常向外抛出，由 Java dispatcher
+        按 outbox 失败/重试/死信策略处理，避免出现 receipt 已成功但 artifact 正文丢失的不一致状态。
+        """
+
+        if self._artifact_writer is None:
+            return None
+        return self._artifact_writer.write(
+            write_input=RagAnswerArtifactWriteInput(
+                command_id=request.command_id,
+                run_id=request.run_id,
+                session_id=request.session_id,
+                query_ref=query_ref,
+                tenant_id=request.tenant_id,
+                project_id=request.project_id,
+                workspace_key=request.workspace_key,
+                actor_id=request.actor_id,
+                requested_artifact_reference=request.answer_artifact_reference,
+                trace_id=request.trace_id,
+            ),
+            result=result,
         )
 
     def _receipt_for(
@@ -270,10 +327,14 @@ class RagCommandWorkerRunner:
         *,
         query_ref: str,
         result: RagPipelineResult,
+        artifact_write: RagAnswerArtifactWriteResult | None,
     ) -> RagCommandWorkerReceipt:
         """根据 RAG 结果生成 Java command worker receipt。"""
 
         retrieval_summary = result.retrieval_summary
+        answer_artifact_reference = (
+            artifact_write.artifact_reference if artifact_write else request.answer_artifact_reference
+        )
         return self._receipt_builder.build_receipt(
             RagCommandWorkerReceiptEvidence(
                 command_id=request.command_id,
@@ -285,7 +346,7 @@ class RagCommandWorkerRunner:
                 actor_id=_optional_int(request.actor_id),
                 task_id=request.task_id,
                 task_run_id=request.task_run_id,
-                answer_artifact_reference=request.answer_artifact_reference,
+                answer_artifact_reference=answer_artifact_reference,
                 artifact_reference_type=request.artifact_reference_type,
                 candidate_count=_safe_int(retrieval_summary.get("candidateCount")),
                 selected_chunk_count=len(result.selected_chunks),
@@ -342,6 +403,7 @@ def low_sensitive_rag_worker_summary(summary: Mapping[str, Any]) -> dict[str, An
         "toolCode": summary.get("toolCode"),
         "queryRef": summary.get("queryRef"),
         "ragExecutionSummary": dict(summary.get("ragExecutionSummary") or {}),
+        "artifactWrite": dict(summary.get("artifactWrite") or {}),
         "payloadPolicy": RAG_COMMAND_WORKER_API_PAYLOAD_POLICY,
     }
 

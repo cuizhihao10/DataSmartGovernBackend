@@ -8,6 +8,15 @@ from datasmart_ai_runtime.services.rag.components import (
     build_default_governance_rag_pipeline,
     default_governance_rag_documents,
 )
+from datasmart_ai_runtime.services.rag.artifact_writer import (
+    RAG_ANSWER_ARTIFACT_PAYLOAD_POLICY,
+    RAG_ANSWER_ARTIFACT_SCHEMA_VERSION,
+    LocalFileRagAnswerArtifactWriter,
+    RagAnswerArtifactWriteInput,
+    RagAnswerArtifactWriteResult,
+    RagAnswerArtifactWriter,
+    rag_answer_artifact_writer_from_env,
+)
 from datasmart_ai_runtime.services.rag.command_worker_receipt import (
     RAG_COMMAND_WORKER_RECEIPT_PAYLOAD_POLICY,
     RAG_COMMAND_WORKER_RECEIPT_SCHEMA_VERSION,
@@ -63,6 +72,8 @@ from datasmart_ai_runtime.services.rag.text import (
 
 __all__ = [
     "RAG_PIPELINE_SCHEMA_VERSION",
+    "RAG_ANSWER_ARTIFACT_PAYLOAD_POLICY",
+    "RAG_ANSWER_ARTIFACT_SCHEMA_VERSION",
     "RAG_COMMAND_WORKER_RECEIPT_PAYLOAD_POLICY",
     "RAG_COMMAND_WORKER_RECEIPT_SCHEMA_VERSION",
     "RAG_COMMAND_WORKER_API_PAYLOAD_POLICY",
@@ -71,6 +82,7 @@ __all__ = [
     "InMemoryRagKnowledgeBase",
     "LANGGRAPH_RAG_GRAPH_NAME",
     "LANGGRAPH_RAG_GRAPH_VERSION",
+    "LocalFileRagAnswerArtifactWriter",
     "RagChunk",
     "RagChunkSourceType",
     "RagCommandWorkerReceipt",
@@ -87,6 +99,9 @@ __all__ = [
     "RagHybridRetriever",
     "RagHybridRetrieverSettings",
     "RagKnowledgeBase",
+    "RagAnswerArtifactWriteInput",
+    "RagAnswerArtifactWriteResult",
+    "RagAnswerArtifactWriter",
     "RagPipeline",
     "RagPipelineResult",
     "RagPipelineSettings",
@@ -100,6 +115,7 @@ __all__ = [
     "jaccard_similarity",
     "lexical_score",
     "low_sensitive_rag_worker_summary",
+    "rag_answer_artifact_writer_from_env",
     "record_rag_pipeline_checkpoints",
     "tokenize_for_rag",
 ]

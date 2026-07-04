@@ -34,6 +34,7 @@ def record_rag_pipeline_checkpoints(
     query: RagQuery,
     result: RagPipelineResult,
     payload: Mapping[str, Any] | None = None,
+    artifact_summary: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """把一次 RAG 查询投影成 LangGraph 节点链路。
 
@@ -49,7 +50,13 @@ def record_rag_pipeline_checkpoints(
     safe_payload = payload or {}
     initial = _record_retrieval_checkpoint(service, query=query, result=result, payload=safe_payload)
     gate = _record_evidence_gate_checkpoint(service, query=query, result=result, parent=initial)
-    final = _record_final_checkpoint(service, query=query, result=result, parent=gate)
+    final = _record_final_checkpoint(
+        service,
+        query=query,
+        result=result,
+        parent=gate,
+        artifact_summary=artifact_summary,
+    )
     recovered = service.recover_multi_agent_state(final.thread_id)
     return {
         "threadId": final.thread_id,
@@ -176,6 +183,7 @@ def _record_final_checkpoint(
     query: RagQuery,
     result: RagPipelineResult,
     parent: LangGraphDurableCheckpoint,
+    artifact_summary: Mapping[str, Any] | None,
 ) -> LangGraphDurableCheckpoint:
     """记录 RAG 生成或安全 fallback 的最终节点。"""
 
@@ -184,6 +192,7 @@ def _record_final_checkpoint(
     status = LangGraphCheckpointStatus.FAILED if error_code else LangGraphCheckpointStatus.COMPLETED
     no_evidence = len(result.citations) == 0 and not result.generated
     node_name = "rag_no_evidence_completed" if no_evidence else "rag_grounded_answer_completed"
+    artifact_state = _artifact_state(artifact_summary)
     state = dict(parent.state)
     state.update(
         {
@@ -194,8 +203,9 @@ def _record_final_checkpoint(
                 "modelErrorCode": error_code,
                 "citationCount": len(result.citations),
                 "selectedEvidenceCount": len(result.selected_chunks),
-                "answerStored": False,
-                "compressedContextStored": False,
+                "answerStored": bool(artifact_state),
+                "compressedContextStored": bool(artifact_state and result.compressed_context),
+                "artifact": artifact_state,
                 "payloadPolicy": "RAG_GENERATION_SUMMARY_ONLY_NO_ANSWER_NO_CONTEXT",
             },
             "multiAgentState": _rag_multi_agent_state(
@@ -250,6 +260,29 @@ def _retrieval_state(summary: Mapping[str, Any]) -> dict[str, Any]:
         "hasLexicalSignal": bool(summary.get("hasLexicalSignal")),
         "hasVectorSignal": bool(summary.get("hasVectorSignal")),
         "payloadPolicy": "LOW_SENSITIVE_RAG_RETRIEVAL_NUMERIC_SUMMARY_ONLY",
+    }
+
+
+def _artifact_state(summary: Mapping[str, Any] | None) -> dict[str, Any]:
+    """把 artifact 写入结果裁剪成 checkpoint 可保存的低敏状态。
+
+    checkpoint 只需要知道“正文是否已经落到受控 artifact、hash 是什么、大小是多少、后端是什么”，不需要知道
+    answer、compressedContext、citation snippet、sourceUri、真实本地路径或对象存储 bucket/key。后续恢复时，
+    Agent 可以先根据 artifactReference 走 Java grant，而不是从 checkpoint state 里读取正文。
+    """
+
+    if not summary:
+        return {}
+    return {
+        "artifactReference": _optional_text(summary.get("artifactReference")),
+        "artifactReferenceType": _optional_text(summary.get("artifactReferenceType")),
+        "storageBackend": _optional_text(summary.get("storageBackend")),
+        "byteSize": int(summary.get("byteSize") or 0),
+        "contentSha256": _optional_text(summary.get("contentSha256")),
+        "citationCount": int(summary.get("citationCount") or 0),
+        "selectedChunkCount": int(summary.get("selectedChunkCount") or 0),
+        "objectKeyDigest": _optional_text(summary.get("objectKeyDigest")),
+        "payloadPolicy": "RAG_ARTIFACT_CHECKPOINT_METADATA_ONLY_NO_BODY_NO_PATH",
     }
 
 
