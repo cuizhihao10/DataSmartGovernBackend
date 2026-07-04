@@ -281,6 +281,18 @@ public class GatewayAuthorizationProperties {
                 "任务草稿、审批和转换真实任务入口；草稿不会直接进入执行队列"));
         defaults.add(route("/api/task/**", "TASK", "全平台任务编排、调度、重试、取消和执行记录"));
         GatewayAuthorizationDefaultCatalog.addDataQualityRouteMetadata(defaults);
+        defaults.add(route("/api/identity/users/register", "IDENTITY_USER",
+                "Keycloak/企业 IdP 账号供应创建入口；密码只转发给 IdP，DataSmart 只保存影子身份和审计",
+                Map.of("POST", "CREATE")));
+        defaults.add(route("/api/identity/users/*/disable", "IDENTITY_USER",
+                "禁用外部身份账号并同步本地影子状态，属于高风险账号生命周期动作",
+                Map.of("POST", "DISABLE")));
+        defaults.add(route("/api/identity/users/*/password/reset", "IDENTITY_USER",
+                "重置 Keycloak/企业 IdP 密码；响应和审计均不得包含密码明文",
+                Map.of("POST", "RESET_PASSWORD")));
+        defaults.add(route("/api/identity/**", "IDENTITY_USER",
+                "身份账号供应兜底入口，覆盖能力查询、账号生命周期和影子身份治理",
+                defaultMethodActions()));
         defaults.add(route("/api/permission/**", "SYSTEM_SETTING", "角色、菜单、路由策略、数据范围和平台管理能力"));
         defaults.add(route("/api/observability/**", "AUDIT_LOG", "审计、日志、指标、告警和运维视角"));
         return defaults;

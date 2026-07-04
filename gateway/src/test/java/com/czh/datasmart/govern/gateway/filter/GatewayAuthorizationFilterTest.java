@@ -316,6 +316,59 @@ class GatewayAuthorizationFilterTest {
     }
 
     /**
+     * 身份账号创建入口应按 IDENTITY_USER + CREATE 进入权限中心。
+     *
+     * <p>这条用例保护 Keycloak/企业 IdP 账号供应链路：
+     * 管理员创建用户看起来像一个普通 POST 请求，但它实际会在外部 IdP 中创建可登录身份，
+     * 并在 permission-admin 中写入 DataSmart 影子身份。因此 gateway 不能把它归到默认 CREATE 或
+     * SYSTEM_SETTING，而要明确标记为“身份用户创建”动作，方便 permission-admin 设置更严格的角色策略和审计。
+     */
+    @Test
+    void identityRegisterEndpointShouldUseIdentityUserCreateAuthorization() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = exchangeWithRole("/api/identity/users/register", "POST", "TENANT_ADMINISTRATOR");
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
+
+        filter.filter(exchange, chain).block();
+
+        ArgumentCaptor<GatewayPermissionDecisionRequest> captor = forClass(GatewayPermissionDecisionRequest.class);
+        verify(decisionClient).evaluate(captor.capture(), eq("trace-test-001"));
+        assertThat(chain.called()).isTrue();
+        assertThat(captor.getValue().getResourceType()).isEqualTo("IDENTITY_USER");
+        assertThat(captor.getValue().getAction()).isEqualTo("CREATE");
+        assertThat(captor.getValue().getActorRole()).isEqualTo("TENANT_ADMINISTRATOR");
+    }
+
+    /**
+     * 身份密码重置入口应按 IDENTITY_USER + RESET_PASSWORD 进入权限中心。
+     *
+     * <p>重置密码属于高风险管理动作：它不会由 DataSmart 保存密码，但会让 Keycloak/企业 IdP 修改用户凭据。
+     * 因此它不能被普通 PATCH/POST 语义吞掉，必须拥有独立动作码，后续才能绑定 MFA、审批、告警和审计策略。
+     */
+    @Test
+    void identityPasswordResetEndpointShouldUseResetPasswordAuthorization() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = exchangeWithRole(
+                "/api/identity/users/kc-user-001/password/reset", "POST", "TENANT_ADMINISTRATOR");
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
+
+        filter.filter(exchange, chain).block();
+
+        ArgumentCaptor<GatewayPermissionDecisionRequest> captor = forClass(GatewayPermissionDecisionRequest.class);
+        verify(decisionClient).evaluate(captor.capture(), eq("trace-test-001"));
+        assertThat(chain.called()).isTrue();
+        assertThat(captor.getValue().getResourceType()).isEqualTo("IDENTITY_USER");
+        assertThat(captor.getValue().getAction()).isEqualTo("RESET_PASSWORD");
+        assertThat(captor.getValue().getActorRole()).isEqualTo("TENANT_ADMINISTRATOR");
+    }
+
+    /**
      * 非服务账号调用 AgentPlan 接入口时，应在 gateway 本地保护阶段被拒绝。
      *
      * <p>这里故意不让请求进入 permission-admin，是为了更早阻断明显违反内部协议的调用。

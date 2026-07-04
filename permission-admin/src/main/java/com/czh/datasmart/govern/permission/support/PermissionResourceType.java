@@ -125,6 +125,14 @@ public enum PermissionResourceType {
      * 因此把它单独建模，后续可以配置项目成员导入、启用、禁用、导出审计等按钮级权限。
      */
     PROJECT_MEMBERSHIP,
+    /**
+     * 身份账号资源。
+     *
+     * <p>该资源保护的是 DataSmart 与 Keycloak/企业 IdP 之间的账号供应边界，包括创建账号、禁用账号、
+     * 重置密码和查看身份供应能力。它不能简单归类为 SYSTEM_SETTING，因为身份账号直接影响谁可以登录系统、
+     * 哪个 actorId 被写入审计、哪个租户可以访问哪些业务数据。
+     */
+    IDENTITY_USER,
     AUDIT_LOG,
     SYSTEM_SETTING,
     TENANT_SETTING,

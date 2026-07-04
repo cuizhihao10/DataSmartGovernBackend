@@ -39,6 +39,13 @@ public enum PermissionAction {
      * <p>禁用通常保留历史记录但停止生效，适合成员离开项目、连接器下线或策略暂挂。
      */
     DISABLE,
+    /**
+     * 重置身份账号密码。
+     *
+     * <p>该动作专门用于 Keycloak/企业 IdP 密码重置，不复用 UPDATE。原因是密码重置虽然在技术上也是更新，
+     * 但业务风险更高：它会改变用户登录凭据，必须有独立审计、独立路由策略和更严格的管理员授权。
+     */
+    RESET_PASSWORD,
     VALIDATE,
     RUN,
     PAUSE,

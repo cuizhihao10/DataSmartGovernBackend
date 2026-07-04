@@ -91,6 +91,29 @@ management:
 
 datasmart:
   permission:
+    identity-provisioning:
+      # 身份供应不是“DataSmart 自己保存密码并签发登录态”，而是由 permission-admin 通过 Keycloak/企业 IdP Admin API
+      # 创建、禁用、重置外部账号，再把低敏影子身份写入 PostgreSQL，供权限、审计、租户隔离和用户画像使用。
+      enabled: ${DATASMART_PERMISSION_IDENTITY_PROVISIONING_ENABLED:true}
+      # 当前默认接 Keycloak Admin API；后续企业 IdP、SCIM、LDAP bridge 可在不改变 controller/service 契约的前提下增加适配器。
+      provider-mode: ${DATASMART_PERMISSION_IDENTITY_PROVIDER_MODE:KEYCLOAK_ADMIN_API}
+      keycloak:
+        # 本地开发默认访问宿主机 Keycloak；容器内通过 docker-compose.application.yml 覆盖为 http://keycloak:18080。
+        base-url: ${DATASMART_KEYCLOAK_BASE_URL:http://localhost:18080}
+        # admin-realm 用于获取管理 token；本地默认 master，生产建议使用专用 confidential client 最小授权。
+        admin-realm: ${DATASMART_KEYCLOAK_ADMIN_REALM:master}
+        # target-realm 是 DataSmart 用户真正登录的 realm，需要与 gateway OIDC issuer 对齐。
+        target-realm: ${DATASMART_KEYCLOAK_TARGET_REALM:datasmart}
+        admin-client-id: ${DATASMART_KEYCLOAK_ADMIN_CLIENT_ID:admin-cli}
+        # 非空时使用 client_credentials；为空时使用 admin username/password，仅建议本地 smoke 使用。
+        admin-client-secret: ${DATASMART_KEYCLOAK_ADMIN_CLIENT_SECRET:}
+        admin-username: ${DATASMART_KEYCLOAK_ADMIN_USERNAME:admin}
+        admin-password: ${DATASMART_KEYCLOAK_ADMIN_PASSWORD:admin}
+        # 创建账号时同步绑定 DATASMART_* realm role，便于 gateway 从 JWT claim 中还原 actorRole。
+        assign-realm-role: ${DATASMART_KEYCLOAK_ASSIGN_REALM_ROLE:true}
+        realm-role-prefix: ${DATASMART_KEYCLOAK_REALM_ROLE_PREFIX:DATASMART_}
+        connect-timeout: ${DATASMART_KEYCLOAK_ADMIN_CONNECT_TIMEOUT:2s}
+        read-timeout: ${DATASMART_KEYCLOAK_ADMIN_READ_TIMEOUT:5s}
     policy-cache:
       # permission-admin 内部权限事实缓存开关。
       # 它缓存的是 evaluate 需要读取的路由策略和数据范围策略，不是 gateway 那一层最终 allow/deny 判定结果。

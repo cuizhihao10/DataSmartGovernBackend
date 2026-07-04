@@ -56,6 +56,14 @@ public class GatewayContractController {
                         "权限与管理中心入口，负责角色、菜单、路由策略、数据范围和权限审计"
                 ),
                 new GatewayRouteContract(
+                        "identity-provisioning",
+                        "/api/identity/**",
+                        "lb://permission-admin",
+                        "/identity/**",
+                        "必须经 OIDC 身份解析、gateway route-metadata 授权和 permission-admin 租户边界校验",
+                        "身份账号供应入口，负责通过 Keycloak/企业 IdP 创建账号、禁用账号、重置密码和维护低敏影子身份"
+                ),
+                new GatewayRouteContract(
                         "datasource-management",
                         "/api/datasource/**",
                         "lb://datasource-management",

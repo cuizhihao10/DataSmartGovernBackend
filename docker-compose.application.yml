@@ -91,6 +91,14 @@ services:
       SPRING_DATASOURCE_USERNAME: datasmart
       SPRING_DATASOURCE_PASSWORD: ${DATASMART_POSTGRES_PASSWORD:-password}
       SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
+      # permission-admin 通过 Keycloak Admin API 做账号供应；容器内必须访问 keycloak 服务名，不能使用宿主机 localhost。
+      DATASMART_KEYCLOAK_BASE_URL: http://keycloak:18080
+      DATASMART_KEYCLOAK_ADMIN_REALM: ${DATASMART_KEYCLOAK_ADMIN_REALM:-master}
+      DATASMART_KEYCLOAK_TARGET_REALM: ${DATASMART_KEYCLOAK_TARGET_REALM:-datasmart}
+      DATASMART_KEYCLOAK_ADMIN_CLIENT_ID: ${DATASMART_KEYCLOAK_ADMIN_CLIENT_ID:-admin-cli}
+      DATASMART_KEYCLOAK_ADMIN_CLIENT_SECRET: ${DATASMART_KEYCLOAK_ADMIN_CLIENT_SECRET:-}
+      DATASMART_KEYCLOAK_ADMIN_USERNAME: ${DATASMART_KEYCLOAK_ADMIN_USERNAME:-admin}
+      DATASMART_KEYCLOAK_ADMIN_PASSWORD: ${DATASMART_KEYCLOAK_ADMIN_PASSWORD:-admin}
     ports:
       - "8085:8085"
     depends_on:
@@ -98,6 +106,7 @@ services:
       - redis
       - kafka
       - nacos
+      - keycloak
 
   task-management:
     <<: *java-common

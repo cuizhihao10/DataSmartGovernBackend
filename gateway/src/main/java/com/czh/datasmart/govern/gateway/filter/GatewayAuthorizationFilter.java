@@ -396,6 +396,9 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
         if (path.startsWith("/api/quality/")) {
             return "QUALITY_RULE";
         }
+        if (path.startsWith("/api/identity/")) {
+            return "IDENTITY_USER";
+        }
         if (path.startsWith("/api/permission/")) {
             return "SYSTEM_SETTING";
         }

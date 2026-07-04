@@ -34,6 +34,14 @@ spring:
             # permission-admin 内部主路径是 /permissions/**。
             # 当前 Controller 同时兼容 /api/permission/**，但网关侧仍推荐显式改写，避免下游长期感知外部 API 前缀。
             - RewritePath=/api/permission/(?<segment>.*), /permissions/$\{segment}
+        - id: identity-provisioning
+          uri: lb://permission-admin
+          predicates:
+            - Path=/api/identity/**
+          filters:
+            # 身份供应属于 permission-admin 的账号治理能力，但外部 API 独立使用 /api/identity/**。
+            # 网关在这里改写为 /identity/**，让下游 controller 保持身份中心语义而不是感知外部前缀。
+            - RewritePath=/api/identity/(?<segment>.*), /identity/$\{segment}
         - id: datasource-management
           uri: lb://datasource-management
           predicates:
@@ -1189,6 +1197,38 @@ datasmart:
           resource-type: PROJECT_MEMBERSHIP
           default-action: UPDATE
           description: 项目成员授权管理；它决定 PROJECT 数据范围会把哪些 projectId 下发给业务模块。
+          method-actions:
+            GET: VIEW
+            POST: CREATE
+            PUT: UPDATE
+            PATCH: UPDATE
+            DELETE: DISABLE
+
+        - path-pattern: /api/identity/users/register
+          resource-type: IDENTITY_USER
+          default-action: CREATE
+          description: Keycloak/企业 IdP 账号供应创建入口；密码只转发给 IdP，DataSmart 只保存影子身份和审计。
+          method-actions:
+            POST: CREATE
+
+        - path-pattern: /api/identity/users/*/disable
+          resource-type: IDENTITY_USER
+          default-action: DISABLE
+          description: 禁用外部身份账号并同步本地影子状态，属于高风险账号生命周期动作。
+          method-actions:
+            POST: DISABLE
+
+        - path-pattern: /api/identity/users/*/password/reset
+          resource-type: IDENTITY_USER
+          default-action: RESET_PASSWORD
+          description: 重置 Keycloak/企业 IdP 密码；响应和审计均不得包含密码明文。
+          method-actions:
+            POST: RESET_PASSWORD
+
+        - path-pattern: /api/identity/**
+          resource-type: IDENTITY_USER
+          default-action: EXECUTE
+          description: 身份账号供应兜底入口，覆盖能力查询、账号生命周期和影子身份治理。
           method-actions:
             GET: VIEW
             POST: CREATE

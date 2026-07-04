@@ -246,6 +246,9 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
         if (path.startsWith("/api/permission/")) {
             return "/api/permission/**";
         }
+        if (path.startsWith("/api/identity/")) {
+            return "/api/identity/**";
+        }
         if (path.startsWith("/api/datasource/")) {
             return "/api/datasource/**";
         }
