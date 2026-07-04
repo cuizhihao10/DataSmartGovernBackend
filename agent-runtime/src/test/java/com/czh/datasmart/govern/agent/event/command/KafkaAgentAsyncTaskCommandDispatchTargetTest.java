@@ -14,6 +14,7 @@ import org.springframework.kafka.support.SendResult;
 import java.time.Instant;
 import java.util.concurrent.CompletableFuture;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -30,6 +31,26 @@ import static org.mockito.Mockito.when;
  * - 缺少 topic 这类契约错误必须在发送前阻断，不能把坏消息交给 Kafka。</p>
  */
 class KafkaAgentAsyncTaskCommandDispatchTargetTest {
+
+    @Test
+    void supportsShouldExcludeRagCommandAndKeepGenericCommand() {
+        AgentAsyncTaskCommandOutboxProperties properties = new AgentAsyncTaskCommandOutboxProperties();
+        KafkaAgentAsyncTaskCommandDispatchTarget target =
+                new KafkaAgentAsyncTaskCommandDispatchTarget(properties, kafkaTemplate());
+
+        assertFalse(target.supports(record(
+                "datasmart.agent.rag.commands",
+                RagAgentAsyncTaskCommandDispatchTarget.RAG_TOOL_CODE,
+                RagAgentAsyncTaskCommandDispatchTarget.RAG_CONSUMER_SERVICE,
+                RagAgentAsyncTaskCommandDispatchTarget.RAG_CONSUMER_SERVICE
+        )));
+        assertTrue(target.supports(record(
+                "datasmart.agent.tool.async.commands",
+                "data-sync.execute",
+                "task-management",
+                "data-sync"
+        )));
+    }
 
     @Test
     void dispatchShouldSendPayloadToKafkaWithRecordTopicAndPartitionKey() {
@@ -83,6 +104,20 @@ class KafkaAgentAsyncTaskCommandDispatchTargetTest {
     }
 
     private AgentAsyncTaskCommandOutboxRecord record(String topic) {
+        return record(topic, "data-sync.execute", "task-management", "data-sync");
+    }
+
+    /**
+     * 构造 Kafka target 测试专用的 outbox record。
+     *
+     * <p>这里把 topic、toolCode、consumerService、targetService 都作为参数暴露出来，是为了明确验证路由边界：
+     * Kafka target 只负责把通用 task-management 异步任务命令写入 Kafka；RAG/MCP 这类拥有独立 Python worker
+     * 语义、低敏回执策略和权限边界的命令，必须被排除在通用投递目标之外。</p>
+     */
+    private AgentAsyncTaskCommandOutboxRecord record(String topic,
+                                                     String toolCode,
+                                                     String consumerService,
+                                                     String targetService) {
         Instant now = Instant.now();
         return new AgentAsyncTaskCommandOutboxRecord(
                 "async-command-outbox:aatc-kafka-target",
@@ -96,8 +131,8 @@ class KafkaAgentAsyncTaskCommandDispatchTargetTest {
                 "session-kafka-target",
                 "run-kafka-target",
                 "audit-kafka-target",
-                "data-sync.execute",
-                "data-sync",
+                toolCode,
+                targetService,
                 "/sync-tasks",
                 10L,
                 20L,

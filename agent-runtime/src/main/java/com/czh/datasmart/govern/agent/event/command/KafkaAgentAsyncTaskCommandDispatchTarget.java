@@ -71,6 +71,9 @@ public class KafkaAgentAsyncTaskCommandDispatchTarget implements AgentAsyncTaskC
                 startsWithMcp(record.toolCode())
                         || "python-ai-runtime-mcp-client".equalsIgnoreCase(record.targetService())
                         || "python-ai-runtime-mcp-client".equalsIgnoreCase(record.consumerService())
+                        || "knowledge.rag.query".equalsIgnoreCase(trim(record.toolCode()))
+                        || "python-ai-runtime-rag".equalsIgnoreCase(record.targetService())
+                        || "python-ai-runtime-rag".equalsIgnoreCase(record.consumerService())
         );
     }
 
@@ -131,5 +134,9 @@ public class KafkaAgentAsyncTaskCommandDispatchTarget implements AgentAsyncTaskC
 
     private boolean startsWithMcp(String value) {
         return value != null && value.trim().toLowerCase().startsWith("mcp.");
+    }
+
+    private String trim(String value) {
+        return value == null ? null : value.trim();
     }
 }

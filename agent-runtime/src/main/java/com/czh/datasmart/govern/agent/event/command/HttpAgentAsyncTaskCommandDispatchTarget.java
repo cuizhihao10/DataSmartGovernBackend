@@ -44,7 +44,7 @@ public class HttpAgentAsyncTaskCommandDispatchTarget implements AgentAsyncTaskCo
      */
     @Override
     public boolean supports(AgentAsyncTaskCommandOutboxRecord record) {
-        return !isMcpCommand(record);
+        return !isMcpCommand(record) && !isRagCommand(record);
     }
 
     @Override
@@ -66,7 +66,26 @@ public class HttpAgentAsyncTaskCommandDispatchTarget implements AgentAsyncTaskCo
         );
     }
 
+    /**
+     * RAG 查询命令必须交给 Python RAG Command Worker，而不是 task-management 通用 inbox。
+     *
+     * <p>RAG worker 会执行检索、证据门控、LangGraph checkpoint 和低敏 receipt 生成；
+     * 如果误投给通用 task-management inbox，下游既无法得到 question 的短生命周期执行语义，
+     * 也无法保证 answer/context 不进入控制面。</p>
+     */
+    private boolean isRagCommand(AgentAsyncTaskCommandOutboxRecord record) {
+        return record != null && (
+                "knowledge.rag.query".equalsIgnoreCase(trim(record.toolCode()))
+                        || "python-ai-runtime-rag".equalsIgnoreCase(record.targetService())
+                        || "python-ai-runtime-rag".equalsIgnoreCase(record.consumerService())
+        );
+    }
+
     private boolean startsWithMcp(String value) {
         return value != null && value.trim().toLowerCase().startsWith("mcp.");
+    }
+
+    private String trim(String value) {
+        return value == null ? null : value.trim();
     }
 }

@@ -449,6 +449,23 @@ datasmart:
       # 服务间认证头与令牌。令牌必须从环境变量/Secret 注入，不应写入仓库、日志、runtime event 或 API 响应。
       auth-header-name: ${DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_AUTH_HEADER_NAME:Authorization}
       service-account-token: ${DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_SERVICE_ACCOUNT_TOKEN:}
+    rag-command-worker:
+      # Java agent-runtime -> Python Runtime RAG Command Worker 的内部调用开关。
+      # 默认关闭，避免本地只启动 Java 控制面时后台 dispatcher 误调用 Python；完整 E2E/Compose/生产环境再显式打开。
+      enabled: ${DATASMART_AGENT_RUNTIME_RAG_COMMAND_WORKER_ENABLED:false}
+      # Python Runtime 内部 baseUrl。生产环境建议替换为内部 gateway、服务网格或服务发现地址，并叠加 OIDC/mTLS 服务账号保护。
+      base-url: ${DATASMART_AGENT_RUNTIME_RAG_COMMAND_WORKER_BASE_URL:http://localhost:8090}
+      # Python 侧 RAG Command Worker 内部 API 路径。保留为配置项，便于未来灰度到 /api 前缀、网关重写或版本化路由。
+      run-path: ${DATASMART_AGENT_RUNTIME_RAG_COMMAND_WORKER_RUN_PATH:/internal/agent/rag/command-worker/run}
+      # 连接超时要短：Python Runtime 不可达时应交给 outbox 重试，而不是长时间占用 dispatcher。
+      connect-timeout-ms: ${DATASMART_AGENT_RUNTIME_RAG_COMMAND_WORKER_CONNECT_TIMEOUT_MS:1500}
+      # 读取超时覆盖 RAG 检索、证据门控、可选生成、LangGraph checkpoint 和低敏 receipt 生成。
+      read-timeout-ms: ${DATASMART_AGENT_RUNTIME_RAG_COMMAND_WORKER_READ_TIMEOUT_MS:30000}
+      # 当前推荐由 Java dispatcher 统一写 receipt，所以默认不让 Python 直接回写 Java。
+      post-to-java: ${DATASMART_AGENT_RUNTIME_RAG_COMMAND_WORKER_POST_TO_JAVA:false}
+      # 服务间认证头与令牌。令牌必须从环境变量/Secret 注入，不应写入仓库、日志、runtime event 或 API 响应。
+      auth-header-name: ${DATASMART_AGENT_RUNTIME_RAG_COMMAND_WORKER_AUTH_HEADER_NAME:Authorization}
+      service-account-token: ${DATASMART_AGENT_RUNTIME_RAG_COMMAND_WORKER_SERVICE_ACCOUNT_TOKEN:}
     # 会话绑定工具时强制从工具目录继承元数据。
     # 生产环境建议保持 true，避免调用方伪造 toolType、targetService、riskLevel 或审批要求。
     strict-tool-registry-binding: true

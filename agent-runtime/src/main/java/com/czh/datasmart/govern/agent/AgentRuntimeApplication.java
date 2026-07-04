@@ -10,6 +10,7 @@ import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
 import com.czh.datasmart.govern.agent.config.AgentArtifactBodyReadGrantStoreProperties;
 import com.czh.datasmart.govern.agent.config.AgentArtifactObjectStoreMinioProperties;
 import com.czh.datasmart.govern.agent.config.AgentMcpDurableWorkerClientProperties;
+import com.czh.datasmart.govern.agent.config.AgentRagCommandWorkerClientProperties;
 import com.czh.datasmart.govern.agent.config.AgentCommandSafetyPrecheckProperties;
 import com.czh.datasmart.govern.agent.config.AgentAsyncTaskCommandOutboxProperties;
 import com.czh.datasmart.govern.agent.config.AgentRuntimeEventConsumerProperties;
@@ -52,7 +53,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
         AgentToolRuntimeProtectionProperties.class,
         AgentArtifactBodyReadGrantStoreProperties.class,
         AgentArtifactObjectStoreMinioProperties.class,
-        AgentMcpDurableWorkerClientProperties.class
+        AgentMcpDurableWorkerClientProperties.class,
+        AgentRagCommandWorkerClientProperties.class
 })
 public class AgentRuntimeApplication {
 
