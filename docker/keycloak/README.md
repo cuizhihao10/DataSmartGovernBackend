@@ -16,6 +16,8 @@
 docker compose up -d keycloak
 ```
 
+该命令会自动拉起 `postgresql` 和一次性的 `keycloak-db-bootstrap` 服务。`keycloak-db-bootstrap` 会在 PostgreSQL 中幂等创建 `keycloak` database 和 `keycloak` 登录角色，然后 Keycloak 通过 JDBC 连接该 database。也就是说，本地 Keycloak 虽然仍使用 `start-dev` 简化启动参数，但 realm、client、用户、角色、服务账号和密钥轮换历史不再保存到 Keycloak 容器文件目录，而是保存到 PostgreSQL。
+
 Keycloak Admin Console：
 
 ```text
@@ -30,6 +32,22 @@ password: admin
 ```
 
 这些值只用于本地容器。生产必须使用环境变量、Secret Manager、Kubernetes Secret 或企业密码库注入，不允许使用默认密码。
+
+## PostgreSQL 持久化边界
+
+当前 Compose 已把 Keycloak 从开发态文件卷切换为 PostgreSQL-backed 存储：
+
+- `docker/postgresql/init/01-keycloak-database.sh`：首次创建 `postgresql_data` 卷时自动创建 Keycloak database 和角色。
+- `keycloak-db-bootstrap`：面向已有 `postgresql_data` 卷的补偿服务。因为 PostgreSQL init 脚本只在首次建库时执行，所以旧本地环境需要这个一次性服务在 Keycloak 启动前补齐 database。
+- `KC_DB=postgres` 与 `KC_DB_URL=jdbc:postgresql://postgresql:5432/${DATASMART_KEYCLOAK_DB_NAME:-keycloak}`：明确 Keycloak 使用 PostgreSQL，而不是 dev 文件存储。
+- `.env.application.example` 中的 `DATASMART_KEYCLOAK_DB_NAME`、`DATASMART_KEYCLOAK_DB_USERNAME`、`DATASMART_KEYCLOAK_DB_PASSWORD` 只是本地样例值。生产必须改为 Secret Manager、Kubernetes Secret、Docker secret 或企业密码库注入。
+
+需要特别区分两类“账号数据”：
+
+- Keycloak 数据库保存真正的登录账号、密码哈希、realm、client、角色、mapper、服务账号和会话/密钥相关状态。
+- DataSmart 的 `permission_identity_user` 只保存低敏影子身份映射，例如 `providerUserId`、`tenantId`、`actorId`、`actorRole`、`actorType`、`workspaceId` 和 `status`。它用于平台授权、审计和租户上下文关联，不是密码登录库。
+
+如果本机曾经使用旧版 `keycloak_data` 文件卷创建过用户，这些用户不会自动迁移到 PostgreSQL。推荐路径是从旧 Keycloak 导出 realm/users，再导入新的 PostgreSQL-backed Keycloak；如果只是本地学习数据，也可以在新 Keycloak 中重新执行账号供应或重新导入仓库内 realm 样板。不要直接删除旧卷来“修复”问题，除非确认其中没有需要保留的本地账号。
 
 ## 样例用户
 
@@ -117,4 +135,4 @@ realm 样板通过 client protocol mapper 把用户属性映射为 DataSmart 所
 - 不要使用仓库内样例用户和样例密码。
 - 不要在 Git 中保存 client secret、管理员密码或服务账号密钥。
 - 服务到服务调用应使用独立 confidential client、Client Credentials、mTLS 或 service mesh 身份。
-- 若修改 realm JSON 后已有 `keycloak_data` 卷，Keycloak 不一定重新覆盖现有 realm；本地可删除卷后重新导入。
+- 若修改 realm JSON 后 PostgreSQL 中已经存在同名 realm，Keycloak import 通常不会覆盖现有 realm；本地可通过 Admin Console 调整、删除目标 realm 后重启导入，或在受控环境中执行正式 realm 迁移。

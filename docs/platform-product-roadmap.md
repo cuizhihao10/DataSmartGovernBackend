@@ -1,5 +1,33 @@
 # DataSmart Govern 全平台产品能力蓝图与模块边界规划
 
+## 2026-07-05 追加落地进展：Keycloak PostgreSQL-backed 身份存储闭环
+- 本阶段没有新增登录产品线，也没有回退到自研账号密码体系，而是把既有 OIDC/Keycloak 路线的底层持久化补齐为更接近商用部署的形态：Keycloak 的 realm、client、用户、角色、服务账号、mapper、密码哈希和密钥轮换历史进入 PostgreSQL 独立 `keycloak` database，不再依赖开发态容器文件卷。
+- 已落地能力：
+  - `docker/postgresql/init/01-keycloak-database.sh` 新增幂等建库脚本，负责创建/更新 Keycloak 专用 database、登录角色和 schema 权限；
+  - `docker-compose.yml` 新增一次性 `keycloak-db-bootstrap` 服务，用同一份脚本补偿已有 `postgresql_data` 卷不会重跑 initdb 脚本的问题；
+  - Keycloak 服务新增 `KC_DB=postgres`、`KC_DB_URL`、`KC_DB_USERNAME`、`KC_DB_PASSWORD`，并移除旧的 Keycloak 文件数据卷；
+  - `.env.application.example` 新增 Keycloak database 名称、账号和密码样例变量，生产仍要求 Secret Manager 或企业密钥系统注入；
+  - `backup-restore-check.ps1` 从检查 Keycloak 文件卷改为检查 PostgreSQL-backed 身份存储契约、bootstrap 服务和建库脚本。
+- 架构价值：
+  - 认证中心的真实身份数据现在可以进入 PostgreSQL 备份、恢复、PITR、容量和故障演练边界；
+  - DataSmart 业务库中的 `permission_identity_user` 继续只保存低敏影子身份映射，不保存用户密码、refresh token、Keycloak admin token 或 client secret；
+  - 本地 `start-dev` 仍用于简化学习和 E2E 启动，但不再意味着使用容器文件目录作为身份事实存储。
+- 当前边界：
+  - 旧本地文件卷中的 Keycloak 用户不会自动迁移到 PostgreSQL，需要通过 realm export/import、Admin Console 或重新执行账号供应处理；
+  - 这不是生产级 Keycloak 集群方案，生产仍需 TLS、固定 hostname、HA、Secret 轮换、数据库备份、最小权限 admin、正式 client credentials 和故障演练；
+  - 本阶段已完成本机真实 smoke，但仍只代表单机开发栈验证通过，不等同于企业预生产 Keycloak HA/备份恢复演练。
+- 验证结果：
+  - `docker compose config` 已通过，解析后的 Keycloak 服务使用 `KC_DB=postgres` 和 `jdbc:postgresql://postgresql:5432/keycloak`；
+  - `docker compose up -d postgresql keycloak` 已通过，`datasmart-keycloak-db-bootstrap` 正常退出，Keycloak 容器启动成功；
+  - bootstrap 日志确认执行 `CREATE ROLE`、`CREATE DATABASE`、`GRANT` 和默认权限授权；
+  - PostgreSQL `keycloak` database 已创建，Keycloak public schema 下可见 90 张表；
+  - Keycloak 日志确认安装特性包含 `jdbc-postgresql`，`datasmart` realm 导入成功；
+  - 使用本地样例用户 `project-owner` 获取 access token 成功，验证过程未打印 token。
+- 下一步推荐路线：
+  1. 把认证中心基础设施冻结为当前基线，继续回到全平台只读 E2E 和生产交付脚本收口；
+  2. 后续若需要预生产验收，再补 Keycloak PostgreSQL 备份/恢复演练、TLS hostname、正式 confidential client、Secret 轮换和 HA；
+  3. 不建议继续扩展自研登录注册功能，除非用户明确要求非 IdP 的私有化轻量登录模式。
+
 ## 2026-07-01 追加落地进展：Gateway LoadBalancer And Real Platform Smoke Closure
 - 本阶段按“真实全平台 smoke 优先”的收敛路线执行，没有新增 Agent、LangGraph 节点或业务 API，而是运行真实认证链路并修复暴露出的入口层基础设施缺口。
 - 真实故障与根因：
@@ -926,7 +954,7 @@
 ## 2026-06-29 追加落地进展：Gateway Keycloak 本地 OIDC 联调闭环
 - 本阶段承接上一阶段 Gateway OIDC 认证中心收敛，把“gateway 能校验标准 JWT”继续推进为“本地环境能用真实 Keycloak access token 进行端到端联调”。这一步仍然不自研登录系统，而是用主流 IdP 方式补齐开发、测试、学习环境的身份基础设施。
 - 产品价值：
-  - `docker-compose.yml` 新增 `keycloak` 服务，使用官方 Keycloak 镜像、realm import 和独立 `keycloak_data` 数据卷；
+  - `docker-compose.yml` 新增 `keycloak` 服务，使用官方 Keycloak 镜像、realm import 和开发态独立数据卷；该早期实现后来已迁移为 PostgreSQL-backed 身份存储；
   - 新增 `docker/keycloak/import/datasmart-realm.json`，内置 `datasmart` realm、`datasmart-gateway` client、audience mapper、DataSmart 平台 claim mapper、角色和样例用户；
   - 新增 `docker/keycloak/README.md`，说明本地启动方式、样例用户、access token 获取方式、gateway `/auth/session` 验证方式和生产注意事项；
   - `docs/gateway-oidc-keycloak-integration.md` 更新为“仓库已提供本地 realm 样板”，不再把 Keycloak realm 导入文件列为缺口；

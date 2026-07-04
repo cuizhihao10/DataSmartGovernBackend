@@ -11,6 +11,7 @@
 ### 2.1 平台入口与认证授权
 
 - Keycloak 已作为本地 OIDC 身份中心接入，支持服务账号 token 获取、issuer 校验和 gateway 资源服务器验签。
+- Keycloak 的 realm、用户、client、角色和服务账号已切换到 PostgreSQL-backed 存储；本地 `start-dev` 只表示开发启动模式，不再表示身份事实保存在容器文件卷。
 - Gateway 已实现 OIDC issuer 与容器内 JWKS 地址拆分：宿主机 token 的 `iss` 继续保持 `http://localhost:18080/realms/datasmart`，gateway 容器通过 `http://keycloak:18080/.../certs` 拉取签名公钥，避免容器内误连自身 `localhost`。
 - Gateway 已具备基于权限元数据的路由授权、内部服务账号入口保护、Agent Runtime 控制面授权、Python Runtime 指标与诊断入口授权。
 - Gateway 已补齐 Reactive LoadBalancer，能够通过 Nacos 服务发现执行 `lb://` 路由，不再只停留在静态直连或发现注册层。
@@ -36,7 +37,7 @@
 ### 2.4 容器化交付闭环
 
 - 8 个 Java 服务和 Python Runtime 均已有可执行构建、应用镜像、健康检查、非 root 运行用户和 Compose 应用层。
-- 基础 Compose 负责 MySQL、Redis、Kafka、Nacos、Keycloak、Prometheus、Grafana、Neo4j、Chroma、MinIO、Alertmanager 等依赖。
+- 基础 Compose 负责 PostgreSQL、MySQL、Redis、Kafka、Nacos、Keycloak、Prometheus、Grafana、Neo4j、Chroma、MinIO、Alertmanager 等依赖。
 - 应用 Compose overlay 负责 Java/Python 服务容器、内部服务 DNS、OIDC/JWKS 分离、Prometheus 容器抓取配置和安全默认开关。
 - DaoCloud 已作为默认国内镜像加速路径，其中 Docker Hub 体系使用 `docker.m.daocloud.io`，Quay 体系 Keycloak 使用 `quay.m.daocloud.io`。
 
@@ -109,7 +110,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify-image-signa
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\backup-restore-check.ps1
 ```
 
-结果口径：默认模式只验证备份恢复交付边界，不连接数据库、不读取 Secret、不导出业务数据、不执行恢复覆盖；它会检查 [backup-restore-runbook.md](backup-restore-runbook.md)、有状态 Compose volume、config-as-code 路径和恢复清单输出边界。恢复演练环境可追加 `-CheckLocalTools` 检查工具链，或追加 `-WriteRecoveryInventory` 生成不含 Secret 的恢复范围清单。
+结果口径：默认模式只验证备份恢复交付边界，不连接数据库、不读取 Secret、不导出业务数据、不执行恢复覆盖；它会检查 [backup-restore-runbook.md](backup-restore-runbook.md)、有状态 Compose volume、Keycloak PostgreSQL-backed 存储契约、config-as-code 路径和恢复清单输出边界。恢复演练环境可追加 `-CheckLocalTools` 检查工具链，或追加 `-WriteRecoveryInventory` 生成不含 Secret 的恢复范围清单。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\capacity-baseline-check.ps1
@@ -139,7 +140,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 - 安全：接入正式企业 IdP 或 Keycloak 集群，启用 HTTPS、证书信任链、mTLS、Secret Manager、密钥轮换和最小权限服务账号。
 - 供应链：补齐 SBOM、镜像签名、漏洞扫描、基础镜像升级策略和企业私有镜像仓库发布流程。
 - 部署：从 Compose 推进到 Kubernetes/Helm 或客户认可的编排平台，配置资源 requests/limits、探针、滚动升级、回滚和多环境分层。
-- 数据可靠性：补齐 MySQL、Redis、Kafka、MinIO、Neo4j、Chroma 的备份恢复、容量规划、数据保留、恢复演练和灾备策略。
+- 数据可靠性：补齐 PostgreSQL、MySQL、Redis、Kafka、MinIO、Neo4j、Chroma 的备份恢复、容量规划、数据保留、恢复演练和灾备策略；Keycloak 自建场景必须纳入 PostgreSQL 独立库备份与 realm/config-as-code 恢复。
 - 可观测性：将当前健康快照和告警覆盖进一步接入真实告警路由、值班流程、SLO、错误预算和事故复盘。
 - 性能：形成 gateway、Java 服务、Python Runtime、向量检索、Kafka 消费、数据库查询和 Agent plan 的最小容量基线。
 - 审计与合规：补齐敏感操作审计留存、管理员行为审计、导出审计、工具执行审计、合规脱敏链路和租户边界证明。

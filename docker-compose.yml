@@ -16,6 +16,12 @@ services:
       POSTGRES_DB: datasmart_govern
       POSTGRES_USER: datasmart
       POSTGRES_PASSWORD: ${DATASMART_POSTGRES_PASSWORD:-password}
+      # Keycloak 作为 OIDC 身份中心时会维护 realm、client、用户、角色、服务账号、密钥轮换历史等身份事实。
+      # 这些事实不应该继续落在 Keycloak dev 文件目录里，而是进入 PostgreSQL 独立 database，方便备份恢复、
+      # 权限隔离和未来迁移到客户托管 PostgreSQL。这里把变量传给 init 脚本，首次创建 postgresql_data 卷时自动建库。
+      DATASMART_KEYCLOAK_DB_NAME: ${DATASMART_KEYCLOAK_DB_NAME:-keycloak}
+      DATASMART_KEYCLOAK_DB_USERNAME: ${DATASMART_KEYCLOAK_DB_USERNAME:-keycloak}
+      DATASMART_KEYCLOAK_DB_PASSWORD: ${DATASMART_KEYCLOAK_DB_PASSWORD:-keycloak}
     ports:
       - "${DATASMART_LOCAL_POSTGRES_PORT:-5432}:5432"
     volumes:
@@ -30,6 +36,36 @@ services:
     networks:
       - datasmart-network
     restart: unless-stopped
+
+  # Keycloak PostgreSQL bootstrap 是一个一次性补偿服务。
+  #
+  # 为什么还需要它：
+  # - PostgreSQL 官方 init 脚本只在数据目录第一次创建时运行；
+  # - 很多开发机已经存在 postgresql_data 卷，如果只新增 init 脚本，旧卷不会自动拥有 keycloak database；
+  # - 该服务每次启动 Keycloak 前都幂等执行同一份建库脚本，确保新旧本地环境都能补齐数据库契约；
+  # - 它只创建/更新角色密码和 database，不删除、不导出、不覆盖任何 Keycloak realm 或用户数据。
+  keycloak-db-bootstrap:
+    image: ${DATASMART_POSTGRES_IMAGE:-docker.m.daocloud.io/pgvector/pgvector:0.8.3-pg17}
+    container_name: datasmart-keycloak-db-bootstrap
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgresql
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: datasmart
+      POSTGRES_PASSWORD: ${DATASMART_POSTGRES_PASSWORD:-password}
+      DATASMART_KEYCLOAK_DB_NAME: ${DATASMART_KEYCLOAK_DB_NAME:-keycloak}
+      DATASMART_KEYCLOAK_DB_USERNAME: ${DATASMART_KEYCLOAK_DB_USERNAME:-keycloak}
+      DATASMART_KEYCLOAK_DB_PASSWORD: ${DATASMART_KEYCLOAK_DB_PASSWORD:-keycloak}
+    volumes:
+      - ./docker/postgresql/init/01-keycloak-database.sh:/docker-entrypoint-initdb.d/01-keycloak-database.sh:ro
+    entrypoint:
+      - /bin/sh
+      - /docker-entrypoint-initdb.d/01-keycloak-database.sh
+    networks:
+      - datasmart-network
+    restart: "no"
 
   # MySQL 是迁移期兼容数据库，不再是目标架构。
   # 它只服务于尚未完成 PostgreSQL schema/SQL 转换的历史模块以及当前 Nacos 外置存储。
@@ -181,11 +217,21 @@ services:
       - start-dev
       - --http-port=18080
       - --import-realm
+    depends_on:
+      keycloak-db-bootstrap:
+        condition: service_completed_successfully
     environment:
       # Keycloak 26+ 推荐使用 KC_BOOTSTRAP_ADMIN_* 初始化本地管理员。
       # 这些默认值只用于本地容器；生产不能把 admin/admin 或任何固定密码写入部署配置。
       KC_BOOTSTRAP_ADMIN_USERNAME: ${DATASMART_KEYCLOAK_ADMIN_USERNAME:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${DATASMART_KEYCLOAK_ADMIN_PASSWORD:-admin}
+      # Keycloak 的身份事实数据现在进入 PostgreSQL 独立 database。
+      # start-dev 仍只代表“本地开发启动模式”，不再代表使用容器文件目录保存用户/realm。
+      # 生产环境应继续替换为正式 hostname、TLS、集群化 Keycloak、受控 Secret 和高可用 PostgreSQL。
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgresql:5432/${DATASMART_KEYCLOAK_DB_NAME:-keycloak}
+      KC_DB_USERNAME: ${DATASMART_KEYCLOAK_DB_USERNAME:-keycloak}
+      KC_DB_PASSWORD: ${DATASMART_KEYCLOAK_DB_PASSWORD:-keycloak}
       # 打开健康和指标端点，便于后续 Prometheus 或运维脚本对认证中心做存活检查。
       KC_HEALTH_ENABLED: "true"
       KC_METRICS_ENABLED: "true"
@@ -195,9 +241,6 @@ services:
     volumes:
       # realm import 只读挂载，防止容器运行时误改仓库内的身份样板。
       - ./docker/keycloak/import:/opt/keycloak/data/import:ro
-      # Keycloak dev 模式默认使用本地存储。保留数据卷后，realm 修改不会自动覆盖既有 realm；
-      # 需要重新导入时可删除 keycloak_data 卷或在 Admin Console 手动调整。
-      - keycloak_data:/opt/keycloak/data
     networks:
       - datasmart-network
     restart: unless-stopped
@@ -277,7 +320,6 @@ volumes:
   minio_data:
   nacos_logs:
   nacos_data:
-  keycloak_data:
   prometheus_data:
   alertmanager_data:
   grafana_data:

@@ -14,7 +14,7 @@
 
 ### 2.2 Secret 配置
 
-Secret 配置包括数据库密码、OIDC client secret、HMAC secret、模型 API Key、MinIO secret、Grafana admin 密码、Keycloak admin 密码、私有镜像仓库凭据、TLS 私钥等。它们不得提交到 Git，不得写入普通 ConfigMap，不得出现在日志、事件、Prometheus label、Agent runtime event attributes 或 smoke 输出中。
+Secret 配置包括数据库密码、OIDC client secret、HMAC secret、模型 API Key、MinIO secret、Grafana admin 密码、Keycloak admin 密码、Keycloak 数据库密码、私有镜像仓库凭据、TLS 私钥等。它们不得提交到 Git，不得写入普通 ConfigMap，不得出现在日志、事件、Prometheus label、Agent runtime event attributes 或 smoke 输出中。
 
 ### 2.3 运行态开关
 
@@ -35,6 +35,7 @@ worker、dispatcher、真实工具提交、DataSync run-once、DataQuality execu
 
 | 变量 | 类型 | 生产来源 | 说明 |
 | --- | --- | --- | --- |
+| `DATASMART_POSTGRES_PASSWORD` | Secret | Secret Manager / Kubernetes Secret | PostgreSQL 目标库密码。本地 Compose 同时承载已迁移业务 schema、AI Memory、LangGraph durable state 和 Keycloak 独立库；生产建议拆分服务账号和最小权限。 |
 | `DATASMART_MYSQL_PASSWORD` | Secret | Secret Manager / Kubernetes Secret | MySQL 业务库密码。生产建议使用独立账号、最小权限、定期轮换，并避免复用 root。 |
 | `DATASMART_NEO4J_PASSWORD` | Secret | Secret Manager / Kubernetes Secret | Neo4j 图谱库密码。若客户使用托管图数据库，应改由托管服务凭据注入。 |
 | `DATASMART_MINIO_ACCESS_KEY` | Secret | Secret Manager / Kubernetes Secret | MinIO 访问 key。生产建议按服务账号拆分权限，不使用示例值。 |
@@ -42,8 +43,11 @@ worker、dispatcher、真实工具提交、DataSync run-once、DataQuality execu
 | `DATASMART_GRAFANA_ADMIN_PASSWORD` | Secret | Secret Manager / Kubernetes Secret | Grafana 管理员初始密码。生产建议接入企业 SSO 并关闭长期共享管理员账号。 |
 | `DATASMART_KEYCLOAK_ADMIN_USERNAME` | Secret/受控配置 | Secret Manager / Kubernetes Secret | Keycloak 管理员用户名。生产不应长期暴露默认 admin。 |
 | `DATASMART_KEYCLOAK_ADMIN_PASSWORD` | Secret | Secret Manager / Kubernetes Secret | Keycloak 管理员密码。生产应启用轮换和审计。 |
+| `DATASMART_KEYCLOAK_DB_NAME` | 普通配置 | Helm values / ConfigMap | Keycloak 独立 database 名称。本地默认 `keycloak`；生产可按客户数据库命名规范调整。 |
+| `DATASMART_KEYCLOAK_DB_USERNAME` | Secret/受控配置 | Secret Manager / Kubernetes Secret | Keycloak 数据库账号。生产应使用专用账号，不复用 DataSmart 业务服务账号或 PostgreSQL 管理员。 |
+| `DATASMART_KEYCLOAK_DB_PASSWORD` | Secret | Secret Manager / Kubernetes Secret | Keycloak 数据库密码。不得进入 Git、日志、指标、runtime event 或 smoke 输出。 |
 
-如果客户环境已经提供 MySQL、Redis、Kafka、MinIO、Neo4j、Chroma 或 Keycloak 托管服务，优先接入客户托管服务，而不是在业务 chart 中自建所有中间件。这样更符合企业运维边界，也更容易满足备份、HA、审计和容量要求。
+如果客户环境已经提供 PostgreSQL、MySQL、Redis、Kafka、MinIO、Neo4j、Chroma 或 Keycloak 托管服务，优先接入客户托管服务，而不是在业务 chart 中自建所有中间件。这样更符合企业运维边界，也更容易满足备份、HA、审计和容量要求。自建 Keycloak 时，Keycloak 的 PostgreSQL database 必须进入同一套备份、恢复、PITR、审计和容量规划。
 
 ## 5. Gateway、OIDC 与 TLS
 
