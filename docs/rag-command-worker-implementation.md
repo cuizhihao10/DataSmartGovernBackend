@@ -83,6 +83,46 @@ DATASMART_COMMAND_WORKER_RECEIPT_FAIL_CLOSED=true
 - `DATASMART_COMMAND_WORKER_RECEIPT_BASE_URL`：专门覆盖 worker receipt 写回地址。
 - `DATASMART_COMMAND_WORKER_RECEIPT_FAIL_CLOSED`：为 true 时，写回失败交给外层队列重试或死信，不在 Python 侧吞掉失败。
 
+### 5.1 RAG answer artifact writer
+
+RAG command worker 已支持把 answer、citations、compressedContext 写入受控 artifact。控制面响应、Java worker receipt
+和 LangGraph checkpoint 仍只保存 `artifactReference`、`contentSha256`、`byteSize`、计数和存储后端摘要，不返回正文、
+bucket/key、endpoint、签名 URL、sourceUri、prompt、SQL、token 或 secret。
+
+本地闭环配置：
+
+```text
+DATASMART_RAG_ARTIFACT_WRITER_ENABLED=true
+DATASMART_RAG_ARTIFACT_STORE_BACKEND=local
+DATASMART_RAG_ARTIFACT_LOCAL_ROOT=.datasmart-ai-runtime/artifacts/rag
+```
+
+MinIO/S3-compatible 配置：
+
+```text
+DATASMART_RAG_ARTIFACT_WRITER_ENABLED=true
+DATASMART_RAG_ARTIFACT_STORE_BACKEND=minio
+DATASMART_RAG_ARTIFACT_MINIO_ENDPOINT=http://localhost:9000
+DATASMART_RAG_ARTIFACT_MINIO_BUCKET=datasmart-agent-artifacts
+DATASMART_RAG_ARTIFACT_MINIO_ACCESS_KEY=...
+DATASMART_RAG_ARTIFACT_MINIO_SECRET_KEY=...
+DATASMART_RAG_ARTIFACT_MINIO_OBJECT_ROOT_PREFIX=agent-runtime/artifacts
+```
+
+生产镜像如果启用 MinIO/S3-compatible writer，需要安装可选依赖：
+
+```text
+pip install -e "python-ai-runtime[object-store]"
+```
+
+设计要点：
+
+- Python writer 生成的默认 `artifactReference` 形如 `agent-artifact:{runId}/{commandId}/rag-answer-{hash}.json`。
+- MinIO objectName 按 Java `AgentToolActionArtifactMinioObjectLocator` 同款规则生成：
+  `{objectRootPrefix}/{prefixMapping}/{logicalPath}`。
+- 这意味着 Python 写入对象后，Java artifact grant/final-check 可以用 receipt 中同一个低敏 `artifactReference` 定位对象。
+- 调用方不能提交 bucket/key、URL、本机路径或路径逃逸；不符合映射规则的引用会 fail-closed。
+
 ## 6. 当前边界与下一步
 
 当前已经完成：
@@ -92,12 +132,11 @@ DATASMART_COMMAND_WORKER_RECEIPT_FAIL_CLOSED=true
 - RAG worker 可以生成 Java receipt payload；
 - RAG worker 可以写入 LangGraph checkpoint summary；
 - RAG worker route 已接入 FastAPI `create_app()`；
+- RAG answer artifact writer 已支持 local 与 MinIO/S3-compatible backend；
 - 单元测试覆盖低敏响应、Java receipt payload、可选 Java post 和 checkpoint recovery。
 
 尚未完成：
 
-- 真实 Java outbox dispatcher 自动调用该 route；
-- RAG answer body 写入 MinIO/受控 artifact store；
-- Java artifact grant 二次授权读取 answer body；
+- RAG answer artifact 的 Java grant/read 真实正文读取链路；
 - PostgreSQL LangGraph store 真实 smoke；
 - gateway + Keycloak + agent-runtime + Python Runtime + task/data-sync/data-quality/observability 全平台 E2E。

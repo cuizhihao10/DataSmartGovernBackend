@@ -26,7 +26,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 from uuid import uuid4
 
 from datasmart_ai_runtime.services.rag.models import RagPipelineResult
@@ -38,7 +38,14 @@ RAG_ANSWER_ARTIFACT_PAYLOAD_POLICY = (
 )
 
 _SAFE_REFERENCE_PATTERN = re.compile(r"^[a-zA-Z0-9_.:/=@+-]{1,240}$")
-_SAFE_REFERENCE_PREFIXES = ("agent-artifact:", "artifact:", "minio-object:")
+_SAFE_REFERENCE_PREFIXES = (
+    "agent-artifact:",
+    "artifact:",
+    "artifact-ref:",
+    "command-output:",
+    "task-artifact:",
+    "minio-object:",
+)
 
 
 @dataclass(frozen=True)
@@ -184,22 +191,67 @@ class LocalFileRagAnswerArtifactWriter:
         return target
 
 
-def rag_answer_artifact_writer_from_env() -> RagAnswerArtifactWriter | None:
+def rag_answer_artifact_writer_from_env(environ: Mapping[str, str] | None = None) -> RagAnswerArtifactWriter | None:
     """从环境变量构建 RAG answer artifact writer。
 
     支持的最小配置：
     - `DATASMART_RAG_ARTIFACT_WRITER_ENABLED=true`：启用 writer；
-    - `DATASMART_RAG_ARTIFACT_STORE_BACKEND=local`：当前唯一实现，后续可扩展 `minio`；
-    - `DATASMART_RAG_ARTIFACT_LOCAL_ROOT=.datasmart-ai-runtime/artifacts/rag`：本地落盘根目录。
+    - `DATASMART_RAG_ARTIFACT_STORE_BACKEND=local|minio|s3-compatible`：选择本地 writer 或真实对象存储 writer；
+    - `DATASMART_RAG_ARTIFACT_LOCAL_ROOT=.datasmart-ai-runtime/artifacts/rag`：local backend 的本地落盘根目录；
+    - `DATASMART_RAG_ARTIFACT_MINIO_*`：MinIO/S3-compatible backend 的 endpoint、bucket、凭据与 object root。
     """
 
-    if not _truthy(os.getenv("DATASMART_RAG_ARTIFACT_WRITER_ENABLED")):
+    env = os.environ if environ is None else environ
+    if not _truthy(env.get("DATASMART_RAG_ARTIFACT_WRITER_ENABLED")):
         return None
-    backend = (os.getenv("DATASMART_RAG_ARTIFACT_STORE_BACKEND") or "local").strip().lower()
-    if backend != "local":
-        raise ValueError("当前仅实现 local RAG artifact writer；MinIO/S3 adapter 应实现同一协议后再启用")
-    root_dir = os.getenv("DATASMART_RAG_ARTIFACT_LOCAL_ROOT") or ".datasmart-ai-runtime/artifacts/rag"
-    return LocalFileRagAnswerArtifactWriter(root_dir)
+    backend = (env.get("DATASMART_RAG_ARTIFACT_STORE_BACKEND") or "local").strip().lower()
+    if backend == "local":
+        root_dir = env.get("DATASMART_RAG_ARTIFACT_LOCAL_ROOT") or ".datasmart-ai-runtime/artifacts/rag"
+        return LocalFileRagAnswerArtifactWriter(root_dir)
+    if backend in {"minio", "s3", "s3-compatible", "s3_compatible"}:
+        from datasmart_ai_runtime.services.rag.s3_artifact_writer import (
+            S3CompatibleRagAnswerArtifactWriter,
+            reference_prefix_mapping_from_env,
+        )
+
+        return S3CompatibleRagAnswerArtifactWriter(
+            endpoint_url=_first_env(
+                env,
+                "DATASMART_RAG_ARTIFACT_MINIO_ENDPOINT",
+                "DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_ENDPOINT",
+            ),
+            bucket=_first_env(
+                env,
+                "DATASMART_RAG_ARTIFACT_MINIO_BUCKET",
+                "DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_BUCKET",
+            )
+            or "datasmart-agent-artifacts",
+            access_key_id=_first_env(
+                env,
+                "DATASMART_RAG_ARTIFACT_MINIO_ACCESS_KEY",
+                "DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_ACCESS_KEY",
+            ),
+            secret_access_key=_first_env(
+                env,
+                "DATASMART_RAG_ARTIFACT_MINIO_SECRET_KEY",
+                "DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_SECRET_KEY",
+            ),
+            region_name=_first_env(
+                env,
+                "DATASMART_RAG_ARTIFACT_MINIO_REGION",
+                "DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_REGION",
+            ),
+            object_key_root_prefix=(
+                _first_env(
+                    env,
+                    "DATASMART_RAG_ARTIFACT_MINIO_OBJECT_ROOT_PREFIX",
+                    "DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_OBJECT_ROOT_PREFIX",
+                )
+                or "agent-runtime/artifacts"
+            ),
+            reference_prefix_object_key_prefixes=reference_prefix_mapping_from_env(env),
+        )
+    raise ValueError("不支持的 RAG artifact writer backend，请使用 local、minio 或 s3-compatible")
 
 
 def _artifact_document(write_input: RagAnswerArtifactWriteInput, result: RagPipelineResult) -> dict[str, Any]:
@@ -299,8 +351,18 @@ def _safe_reference_part(value: Any) -> str:
     """把 run/command ID 压成 artifactReference 可用片段。"""
 
     text = _optional_text(value) or "unknown"
-    safe = "".join(ch if ch.isalnum() or ch in "_.=-" else "-" for ch in text)
+    safe = "".join(ch if ch.isalnum() or ch in "_.-" else "-" for ch in text)
     return safe[:96] or "unknown"
+
+
+def _first_env(env: Mapping[str, str], *names: str) -> str | None:
+    """按优先级读取环境变量。"""
+
+    for name in names:
+        value = _optional_text(env.get(name))
+        if value is not None:
+            return value
+    return None
 
 
 def _optional_text(value: Any) -> str | None:

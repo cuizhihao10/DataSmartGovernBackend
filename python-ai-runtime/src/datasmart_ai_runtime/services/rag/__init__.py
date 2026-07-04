@@ -17,6 +17,7 @@ from datasmart_ai_runtime.services.rag.artifact_writer import (
     RagAnswerArtifactWriter,
     rag_answer_artifact_writer_from_env,
 )
+from datasmart_ai_runtime.services.rag.s3_artifact_writer import S3CompatibleRagAnswerArtifactWriter
 from datasmart_ai_runtime.services.rag.command_worker_receipt import (
     RAG_COMMAND_WORKER_RECEIPT_PAYLOAD_POLICY,
     RAG_COMMAND_WORKER_RECEIPT_SCHEMA_VERSION,
@@ -102,6 +103,7 @@ __all__ = [
     "RagAnswerArtifactWriteInput",
     "RagAnswerArtifactWriteResult",
     "RagAnswerArtifactWriter",
+    "S3CompatibleRagAnswerArtifactWriter",
     "RagPipeline",
     "RagPipelineResult",
     "RagPipelineSettings",

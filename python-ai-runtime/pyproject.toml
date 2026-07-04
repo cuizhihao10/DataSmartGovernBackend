@@ -24,6 +24,10 @@ redis = ["redis>=5.0"]
 # 这里使用 psycopg3，并单独作为可选 extra 暴露：本地离线单测仍可零数据库依赖运行，
 # 容器或预生产环境需要启用 `ai_memory` schema 时再安装该 extra。
 postgresql = ["psycopg[binary]>=3.2,<4.0"]
+# 对象存储依赖只在启用 RAG/MCP 大结果 MinIO/S3-compatible artifact writer 时需要。
+# 默认不安装 boto3，是为了让离线 Agent 编排、LangGraph checkpoint、RAG 算法单测和本地学习环境继续保持轻量；
+# 生产镜像如设置 DATASMART_RAG_ARTIFACT_STORE_BACKEND=minio，应安装：pip install -e "python-ai-runtime[object-store]"
+object-store = ["boto3>=1.34,<2.0"]
 # MCP 官方 Python SDK 当前稳定线为 1.x；2.x 在 2026-07 仍是预发布并包含破坏性重构。
 # 固定 `<2` 可以避免生产镜像在重新构建时无意跨大版本。SDK 仅由 services/tools/mcp/official_sdk.py
 # 直接依赖，其他 Agent/ToolPlan 代码继续使用项目内部协议，便于未来受控升级。

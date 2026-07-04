@@ -18,6 +18,8 @@ from datasmart_ai_runtime.services.rag import (
     RagAnswerArtifactWriteInput,
     RagCitation,
     RagPipelineResult,
+    S3CompatibleRagAnswerArtifactWriter,
+    rag_answer_artifact_writer_from_env,
 )
 
 
@@ -86,6 +88,92 @@ class RagAnswerArtifactWriterTest(unittest.TestCase):
                     result=_pipeline_result(),
                 )
 
+    def test_s3_writer_puts_object_with_java_locator_compatible_key_and_metadata_only_summary(self) -> None:
+        """MinIO/S3 writer 应与 Java locator 使用同一 objectName 规则，并且 summary 不泄露对象定位。"""
+
+        fake_client = FakeS3Client()
+        writer = S3CompatibleRagAnswerArtifactWriter(
+            bucket="datasmart-agent-artifacts",
+            s3_client=fake_client,
+            object_key_root_prefix="agent-runtime/artifacts",
+        )
+
+        write_result = writer.write(
+            write_input=RagAnswerArtifactWriteInput(
+                command_id="cmd-rag-s3-001",
+                run_id="run-rag-s3",
+                session_id="session-rag-s3",
+                query_ref="rag-query:sha256:s3queryref",
+                tenant_id="10",
+                project_id="20",
+                workspace_key="30",
+                actor_id="1001",
+            ),
+            result=_pipeline_result(),
+        )
+
+        self.assertEqual(1, len(fake_client.put_object_calls))
+        call = fake_client.put_object_calls[0]
+        body_text = call["Body"].decode("utf-8")
+        summary_text = json.dumps(write_result.to_summary(), ensure_ascii=False)
+
+        self.assertEqual("datasmart-agent-artifacts", call["Bucket"])
+        self.assertTrue(call["Key"].startswith("agent-runtime/artifacts/agent-artifact/run-rag-s3/cmd-rag-s3-001/"))
+        self.assertTrue(call["Key"].endswith(".json"))
+        self.assertEqual("application/json; charset=utf-8", call["ContentType"])
+        self.assertEqual(hashlib.sha256(call["Body"]).hexdigest(), call["Metadata"]["content-sha256"])
+        self.assertIn("模型答案正文 SECRET_ANSWER_BODY", body_text)
+        self.assertNotIn("datasmart-agent-artifacts", summary_text)
+        self.assertNotIn(call["Key"], summary_text)
+        self.assertNotIn("SECRET_ANSWER_BODY", summary_text)
+        self.assertEqual("minio-s3-compatible-controlled-artifact", write_result.storage_backend)
+
+    def test_s3_writer_rejects_reference_that_java_locator_cannot_map(self) -> None:
+        """MinIO/S3 writer 必须拒绝 URL、bucket/key 明文和 Java locator 不接受的 logical path。"""
+
+        fake_client = FakeS3Client()
+        writer = S3CompatibleRagAnswerArtifactWriter(
+            bucket="datasmart-agent-artifacts",
+            s3_client=fake_client,
+        )
+
+        with self.assertRaises(ValueError):
+            writer.write(
+                write_input=RagAnswerArtifactWriteInput(
+                    command_id="cmd-rag-s3-unsafe",
+                    run_id="run-rag-s3",
+                    session_id="session-rag-s3",
+                    query_ref="rag-query:sha256:s3queryref",
+                    requested_artifact_reference="agent-artifact:bucket/object-key/secret.json",
+                ),
+                result=_pipeline_result(),
+            )
+
+        self.assertEqual(0, len(fake_client.put_object_calls))
+
+    def test_environment_factory_builds_minio_writer_without_exposing_endpoint(self) -> None:
+        """环境变量启用 minio backend 时，应装配 S3 writer，诊断信息仍不暴露 endpoint/bucket 明文。"""
+
+        writer = rag_answer_artifact_writer_from_env(
+            {
+                "DATASMART_RAG_ARTIFACT_WRITER_ENABLED": "true",
+                "DATASMART_RAG_ARTIFACT_STORE_BACKEND": "minio",
+                "DATASMART_RAG_ARTIFACT_MINIO_ENDPOINT": "http://minio.internal:9000",
+                "DATASMART_RAG_ARTIFACT_MINIO_BUCKET": "datasmart-agent-artifacts",
+                "DATASMART_RAG_ARTIFACT_MINIO_ACCESS_KEY": "minio-access",
+                "DATASMART_RAG_ARTIFACT_MINIO_SECRET_KEY": "minio-secret",
+            }
+        )
+
+        self.assertIsInstance(writer, S3CompatibleRagAnswerArtifactWriter)
+        diagnostics = writer.diagnostics()
+        serialized = json.dumps(diagnostics, ensure_ascii=False)
+        self.assertTrue(diagnostics["endpointConfigured"])
+        self.assertNotIn("http://minio.internal:9000", serialized)
+        self.assertNotIn("datasmart-agent-artifacts", serialized)
+        self.assertNotIn("minio-access", serialized)
+        self.assertNotIn("minio-secret", serialized)
+
 
 def _pipeline_result() -> RagPipelineResult:
     """构造包含正文级信息的 RAG 结果，用来验证 writer 的正文/摘要边界。"""
@@ -115,6 +203,19 @@ def _pipeline_result() -> RagPipelineResult:
         model_summary={"provider": "dry-run"},
         generated=True,
     )
+
+
+class FakeS3Client:
+    """极简 S3 client 替身，用来验证 writer 与 boto3/MinIO SDK 的调用契约。"""
+
+    def __init__(self) -> None:
+        self.put_object_calls = []
+
+    def put_object(self, **kwargs):
+        """记录 put_object 参数；真实 SDK 会把这些参数发送给 MinIO/S3-compatible endpoint。"""
+
+        self.put_object_calls.append(kwargs)
+        return {"ETag": '"fake-etag"'}
 
 
 if __name__ == "__main__":
