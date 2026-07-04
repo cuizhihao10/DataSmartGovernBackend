@@ -8,6 +8,15 @@ from datasmart_ai_runtime.services.rag.components import (
     build_default_governance_rag_pipeline,
     default_governance_rag_documents,
 )
+from datasmart_ai_runtime.services.rag.command_worker_receipt import (
+    RAG_COMMAND_WORKER_RECEIPT_PAYLOAD_POLICY,
+    RAG_COMMAND_WORKER_RECEIPT_SCHEMA_VERSION,
+    RAG_TOOL_CODE,
+    RagCommandWorkerReceipt,
+    RagCommandWorkerReceiptBuilder,
+    RagCommandWorkerReceiptEvidence,
+    RagCommandWorkerReceiptOutcome,
+)
 from datasmart_ai_runtime.services.rag.knowledge_base import (
     InMemoryRagKnowledgeBase,
     RagHybridRetriever,
@@ -46,11 +55,18 @@ from datasmart_ai_runtime.services.rag.text import (
 
 __all__ = [
     "RAG_PIPELINE_SCHEMA_VERSION",
+    "RAG_COMMAND_WORKER_RECEIPT_PAYLOAD_POLICY",
+    "RAG_COMMAND_WORKER_RECEIPT_SCHEMA_VERSION",
+    "RAG_TOOL_CODE",
     "InMemoryRagKnowledgeBase",
     "LANGGRAPH_RAG_GRAPH_NAME",
     "LANGGRAPH_RAG_GRAPH_VERSION",
     "RagChunk",
     "RagChunkSourceType",
+    "RagCommandWorkerReceipt",
+    "RagCommandWorkerReceiptBuilder",
+    "RagCommandWorkerReceiptEvidence",
+    "RagCommandWorkerReceiptOutcome",
     "RagCitation",
     "RagContextCompressor",
     "RagDocument",

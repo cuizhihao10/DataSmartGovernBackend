@@ -13,6 +13,8 @@ from datasmart_ai_runtime.api.agent.tool_action_control_flow import (
 from datasmart_ai_runtime.config import default_tool_registry
 from datasmart_ai_runtime.services.tools import (
     JavaToolActionCommandProposalClient,
+    JavaToolActionCommandOutboxClient,
+    ToolActionCommandOutboxClientSettings,
     ToolActionCommandProposalClientSettings,
     ToolActionExecutionGraphRunner,
 )
@@ -134,6 +136,139 @@ class ToolActionExecutionGraphRunnerTest(unittest.TestCase):
         self.assertEqual("CALL_JAVA_OUTBOX_WRITER_AFTER_OPERATOR_OR_GRAPH_CONFIRMATION", graph_run["steps"][0]["nextAction"])
         self.assertFalse(graph_run["sideEffectBoundary"]["checkpointPersisted"])
         self.assertNotIn("checkpoint", graph_run)
+        self.assertNotIn("ds-runner-secret", str(graph_run))
+
+    def test_runner_with_disabled_outbox_client_stops_at_outbox_client_disabled(self) -> None:
+        """proposal 已允许 outbox，但 outbox client 未启用时，应停在可恢复的客户端关闭节点。"""
+
+        def fake_proposal_urlopen(request, timeout: int):
+            return FakeHttpResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "proposalId": "proposal-runner-002",
+                        "proposalState": "READY_FOR_OUTBOX_CONFIRMATION",
+                        "outboxWriteAllowedByPreflight": True,
+                        "graphId": "graph-runner-001",
+                        "toolName": "datasource.metadata.read",
+                        "payloadReference": "agent-payload:runner/datasource-metadata-read",
+                        "payloadPolicy": "REFERENCE_ONLY",
+                        "workerReceiptRequired": True,
+                        "workerReceiptMode": "REQUIRED",
+                    },
+                }
+            )
+
+        runner = ToolActionExecutionGraphRunner(
+            proposal_client=JavaToolActionCommandProposalClient(
+                ToolActionCommandProposalClientSettings(enabled=True),
+                urlopen_func=fake_proposal_urlopen,
+            ),
+            outbox_client=JavaToolActionCommandOutboxClient(urlopen_func=self._failing_urlopen),
+        )
+        response = build_tool_action_control_flow_preview_response(
+            {
+                **self._ready_payload(),
+                "commandProposalEvidence": self._complete_evidence(),
+            },
+            registered_tools=self.tools,
+            execution_graph_runner=runner,
+        )
+        graph_run = response["toolActionExecutionGraphRun"]
+
+        self.assertEqual("OUTBOX_CLIENT_DISABLED", graph_run["steps"][0]["stepStatus"])
+        self.assertEqual(
+            "ENABLE_JAVA_OUTBOX_CLIENT_WHEN_OPERATOR_CONFIRMS_SIDE_EFFECT_BOUNDARY",
+            graph_run["steps"][0]["nextAction"],
+        )
+        self.assertEqual("OUTBOX_CLIENT_DISABLED", graph_run["steps"][0]["outboxWrite"]["writeState"])
+        self.assertFalse(graph_run["sideEffectBoundary"]["outboxWritten"])
+
+    def test_runner_can_submit_proposal_and_write_outbox_when_clients_are_enabled(self) -> None:
+        """显式启用 proposal + outbox client 后，READY 节点可以进入 Java outbox writer。"""
+
+        captured: dict[str, object] = {}
+
+        def fake_proposal_urlopen(request, timeout: int):
+            captured["proposalUrl"] = request.full_url
+            return FakeHttpResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "proposalId": "proposal-runner-003",
+                        "proposalState": "READY_FOR_OUTBOX_CONFIRMATION",
+                        "outboxWriteAllowedByPreflight": True,
+                        "graphId": "graph-runner-001",
+                        "contractId": "contract-runner-001",
+                        "runId": "run-runner",
+                        "toolName": "datasource.metadata.read",
+                        "payloadReference": "agent-payload:runner/datasource-metadata-read",
+                        "payloadPolicy": "REFERENCE_ONLY",
+                        "workerReceiptRequired": True,
+                        "workerReceiptMode": "REQUIRED",
+                    },
+                }
+            )
+
+        def fake_outbox_urlopen(request, timeout: int):
+            captured["outboxUrl"] = request.full_url
+            captured["outboxPayload"] = json.loads(request.data.decode("utf-8"))
+            return FakeHttpResponse(
+                {
+                    "code": 0,
+                    "data": {
+                        "writerState": "ENQUEUED",
+                        "enqueued": True,
+                        "duplicate": False,
+                        "commandId": "taoc_runner_001",
+                        "proposalId": "proposal-runner-003",
+                        "graphId": "graph-runner-001",
+                        "contractId": "contract-runner-001",
+                        "runId": "run-runner",
+                        "payloadReference": "agent-payload:runner/datasource-metadata-read",
+                        "proposalState": "READY_FOR_OUTBOX_CONFIRMATION",
+                        "record": {
+                            "commandId": "taoc_runner_001",
+                            "consumerService": "task-management",
+                            "payloadJson": "{\"arguments\":{\"datasourceId\":\"ds-runner-secret\"}}",
+                        },
+                    },
+                }
+            )
+
+        runner = ToolActionExecutionGraphRunner(
+            proposal_client=JavaToolActionCommandProposalClient(
+                ToolActionCommandProposalClientSettings(
+                    enabled=True,
+                    base_url="http://agent-runtime.test",
+                ),
+                urlopen_func=fake_proposal_urlopen,
+            ),
+            outbox_client=JavaToolActionCommandOutboxClient(
+                ToolActionCommandOutboxClientSettings(
+                    enabled=True,
+                    base_url="http://agent-runtime.test",
+                ),
+                urlopen_func=fake_outbox_urlopen,
+            ),
+        )
+        response = build_tool_action_control_flow_preview_response(
+            {
+                **self._ready_payload(),
+                "commandProposalEvidence": self._complete_evidence(),
+            },
+            registered_tools=self.tools,
+            execution_graph_runner=runner,
+        )
+        graph_run = response["toolActionExecutionGraphRun"]
+
+        self.assertEqual("http://agent-runtime.test/agent-runtime/tool-action-commands/proposals", captured["proposalUrl"])
+        self.assertEqual("http://agent-runtime.test/agent-runtime/tool-action-commands/outbox/write", captured["outboxUrl"])
+        self.assertEqual("graph-runner-001", captured["outboxPayload"]["graphId"])
+        self.assertEqual("OUTBOX_ENQUEUED", graph_run["steps"][0]["stepStatus"])
+        self.assertEqual("WAIT_FOR_DISPATCHER_AND_WORKER_RECEIPT", graph_run["steps"][0]["nextAction"])
+        self.assertEqual("taoc_runner_001", graph_run["steps"][0]["outboxWrite"]["javaOutbox"]["commandId"])
+        self.assertNotIn("payloadJson", str(graph_run))
         self.assertNotIn("ds-runner-secret", str(graph_run))
 
     def test_draft_branch_does_not_call_java_proposal(self) -> None:

@@ -21,6 +21,10 @@ from datasmart_ai_runtime.services.tools.tool_action_command_proposal_client imp
     ToolActionCommandProposalClientError,
     ToolActionCommandProposalEvidence,
 )
+from datasmart_ai_runtime.services.tools.tool_action_command_outbox_client import (
+    JavaToolActionCommandOutboxClient,
+    ToolActionCommandOutboxClientError,
+)
 from datasmart_ai_runtime.services.tools.tool_action_execution_checkpoint import (
     ToolActionExecutionCheckpointStore,
 )
@@ -71,21 +75,30 @@ class ToolActionExecutionGraphRunResult:
 
         status_counts = _count_by_key(self.steps, "stepStatus")
         checkpoint_persisted = self.checkpoint is not None
+        outbox_written = any(_step_wrote_outbox(step) for step in self.steps)
         summary = {
             "schemaVersion": "datasmart.python-ai-runtime.tool-action-execution-graph-runner.v1",
-            "previewOnly": True,
-            "executionBoundary": "PRE_EXECUTION_GRAPH_RUNNER_ONLY",
+            "previewOnly": not outbox_written,
+            "executionBoundary": (
+                "PRE_EXECUTION_GRAPH_RUNNER_WITH_JAVA_OUTBOX_WRITE"
+                if outbox_written
+                else "PRE_EXECUTION_GRAPH_RUNNER_ONLY"
+            ),
             "stepCount": len(self.steps),
             "truncatedCount": self.truncated_count,
             "statusCounts": status_counts,
             "steps": self.steps,
             "sideEffectBoundary": {
                 "toolExecuted": False,
-                "outboxWritten": False,
+                "outboxWritten": outbox_written,
                 "workerDispatched": False,
                 "approvalCreated": False,
                 "checkpointPersisted": checkpoint_persisted,
-                "meaning": "本 runner 只推进执行前节点，不代表工具、outbox、worker 或审批事实已经创建。",
+                "meaning": (
+                    "runner 已显式调用 Java outbox writer 并获得 commandId，但仍未执行工具、未派发 worker、未创建审批。"
+                    if outbox_written
+                    else "本 runner 只推进执行前节点，不代表工具、outbox、worker 或审批事实已经创建。"
+                ),
             },
             "resumeRequirements": _resume_requirements(self.steps),
         }
@@ -105,10 +118,14 @@ class ToolActionExecutionGraphRunner:
         self,
         *,
         proposal_client: JavaToolActionCommandProposalClient | None = None,
+        outbox_client: JavaToolActionCommandOutboxClient | None = None,
         checkpoint_store: ToolActionExecutionCheckpointStore | None = None,
         max_templates_per_run: int = 20,
     ) -> None:
         self._proposal_client = proposal_client or JavaToolActionCommandProposalClient()
+        # outbox client 不默认创建启用态实例。None 表示 runner 仍停在“等待 outbox 确认”的执行图节点；
+        # 显式注入 disabled client 时，节点会变成 OUTBOX_CLIENT_DISABLED；显式注入 enabled client 时才真正 POST。
+        self._outbox_client = outbox_client
         self._checkpoint_store = checkpoint_store
         self._max_templates_per_run = max(1, max_templates_per_run)
 
@@ -170,11 +187,14 @@ class ToolActionExecutionGraphRunner:
                 trace_id=trace_id,
             )
             proposal_summary = proposal_result.to_summary()
+            outbox_write = self._maybe_write_outbox(proposal_summary, trace_id=trace_id)
+            combined_summary = {**proposal_summary, "outboxWrite": outbox_write}
             return {
                 **base_step,
-                "stepStatus": _proposal_step_status(proposal_summary),
+                "stepStatus": self._step_status_after_proposal(combined_summary),
                 "proposalSubmission": proposal_summary,
-                "nextAction": _next_action_after_proposal(proposal_summary),
+                "outboxWrite": outbox_write,
+                "nextAction": self._next_action_after_proposal(combined_summary),
             }
         except ToolActionCommandProposalClientError as exc:
             # 不把 Java 原始错误消息透传到图结果里，避免远端异常文本携带内部状态或路径。
@@ -187,6 +207,76 @@ class ToolActionExecutionGraphRunner:
                 },
                 "nextAction": "RETRY_AFTER_CONTROL_PLANE_RECOVERY_OR_SWITCH_TO_MANUAL_REVIEW",
             }
+
+    def _maybe_write_outbox(self, proposal_summary: Mapping[str, Any], *, trace_id: str | None) -> dict[str, Any]:
+        """在 proposal 允许且调用方显式装配 outbox client 时推进 writer。
+
+        这里刻意不把 outbox writer 放进 proposal client 里，是为了让执行图状态更清晰：
+        - 没有配置 outbox client：说明系统仍停在人工/控制面确认节点，返回空对象；
+        - 配置了 disabled client：说明链路已经准备好但环境未打开真实写入，返回 OUTBOX_CLIENT_DISABLED；
+        - 配置了 enabled client：才真正调用 Java writer，并把结果映射为 OUTBOX_ENQUEUED/OUTBOX_WRITE_BLOCKED 等节点。
+        """
+
+        if _proposal_step_status(proposal_summary) != "WAITING_OUTBOX_CONFIRMATION":
+            return {}
+        if self._outbox_client is None:
+            return {}
+        request_payload = proposal_summary.get("requestPayload")
+        java_proposal = proposal_summary.get("javaProposal")
+        if not isinstance(request_payload, Mapping) or not isinstance(java_proposal, Mapping):
+            return {
+                "writeState": "OUTBOX_WRITE_BLOCKED",
+                "skipReason": "PROPOSAL_SUMMARY_MISSING_REQUEST_OR_RESPONSE",
+            }
+        try:
+            return self._outbox_client.write(
+                request_payload,
+                java_proposal=java_proposal,
+                trace_id=trace_id,
+            ).to_summary()
+        except ToolActionCommandOutboxClientError:
+            return {
+                "writeState": "OUTBOX_WRITE_CLIENT_ERROR",
+                "errorCode": "JAVA_COMMAND_OUTBOX_CLIENT_ERROR",
+            }
+
+    def _step_status_after_proposal(self, proposal_summary: Mapping[str, Any]) -> str:
+        """把 proposal 和可选 outbox 写入结果合并成执行图节点状态。"""
+
+        outbox_write = self._extract_outbox_write(proposal_summary)
+        if outbox_write:
+            write_state = _text(outbox_write.get("writeState")) or ""
+            java_outbox = outbox_write.get("javaOutbox")
+            if write_state in {"ENQUEUED", "DUPLICATE_REUSED"}:
+                return "OUTBOX_ENQUEUED"
+            if write_state == "OUTBOX_CLIENT_DISABLED":
+                return "OUTBOX_CLIENT_DISABLED"
+            if write_state.startswith("BLOCKED") or write_state == "OUTBOX_WRITE_BLOCKED":
+                return "OUTBOX_WRITE_BLOCKED"
+            if write_state == "OUTBOX_WRITE_CLIENT_ERROR":
+                return "OUTBOX_WRITE_CLIENT_ERROR"
+            if isinstance(java_outbox, Mapping) and java_outbox.get("commandId"):
+                return "OUTBOX_ENQUEUED"
+        return _proposal_step_status(proposal_summary)
+
+    def _next_action_after_proposal(self, proposal_summary: Mapping[str, Any]) -> str:
+        """根据 proposal/outbox 综合状态给出下一跳建议。"""
+
+        status = self._step_status_after_proposal(proposal_summary)
+        mapping = {
+            "OUTBOX_ENQUEUED": "WAIT_FOR_DISPATCHER_AND_WORKER_RECEIPT",
+            "OUTBOX_CLIENT_DISABLED": "ENABLE_JAVA_OUTBOX_CLIENT_WHEN_OPERATOR_CONFIRMS_SIDE_EFFECT_BOUNDARY",
+            "OUTBOX_WRITE_BLOCKED": "INSPECT_JAVA_OUTBOX_BLOCK_REASONS_AND_REGENERATE_EVIDENCE",
+            "OUTBOX_WRITE_CLIENT_ERROR": "RETRY_AFTER_CONTROL_PLANE_RECOVERY_OR_MANUAL_REVIEW",
+        }
+        return mapping.get(status, _next_action_after_proposal(proposal_summary))
+
+    @staticmethod
+    def _extract_outbox_write(proposal_summary: Mapping[str, Any]) -> Mapping[str, Any]:
+        """读取 proposalSubmission 中的 outboxWrite 摘要。"""
+
+        outbox_write = proposal_summary.get("outboxWrite")
+        return outbox_write if isinstance(outbox_write, Mapping) else {}
 
 
 def evidence_selection_from_payload(payload: Mapping[str, Any] | None) -> ToolActionCommandProposalEvidenceSelection:
@@ -329,6 +419,9 @@ def _resume_requirements(steps: tuple[Mapping[str, Any], ...]) -> tuple[str, ...
         "WAITING_TOOL_BUDGET": "TOOL_BUDGET_OR_WORKER_CAPACITY_RECOVERY",
         "COMMAND_PROPOSAL_CLIENT_DISABLED": "CONTROL_PLANE_CLIENT_ENABLEMENT",
         "WAITING_OUTBOX_CONFIRMATION": "OUTBOX_WRITE_CONFIRMATION",
+        "OUTBOX_CLIENT_DISABLED": "JAVA_OUTBOX_CLIENT_ENABLEMENT",
+        "OUTBOX_WRITE_BLOCKED": "OUTBOX_BLOCK_REASON_REVIEW",
+        "OUTBOX_WRITE_CLIENT_ERROR": "JAVA_OUTBOX_CLIENT_RECOVERY",
     }
     for step in steps:
         requirement = status_to_requirement.get(str(step.get("stepStatus") or ""))
@@ -345,6 +438,20 @@ def _count_by_key(items: tuple[Mapping[str, Any], ...], key: str) -> dict[str, i
         value = _text(item.get(key)) or "UNKNOWN"
         counts[value] = counts.get(value, 0) + 1
     return counts
+
+
+def _step_wrote_outbox(step: Mapping[str, Any]) -> bool:
+    """判断某个执行图步骤是否已经获得 Java outbox commandId。
+
+    这里不只看 stepStatus，是为了兼容 Java writer 幂等复用、未来状态重命名或局部失败重试场景：只要
+    `outboxWrite.javaOutbox.commandId` 存在，就说明 Java 控制面已经形成 durable command 定位点。
+    """
+
+    outbox_write = step.get("outboxWrite")
+    if not isinstance(outbox_write, Mapping):
+        return False
+    java_outbox = outbox_write.get("javaOutbox")
+    return isinstance(java_outbox, Mapping) and bool(_text(java_outbox.get("commandId")))
 
 
 def _first(mapping: Mapping[str, Any], *keys: str) -> Any:

@@ -143,3 +143,13 @@ MASTER_ORCHESTRATOR
 - 引用绑定让答案可追溯，适合治理、权限、质量规则这类需要审计的场景。
 - 当前实现把模型生成、embedding、reranker、知识库都隔离成可替换组件，后续可平滑接入 pgvector、GraphRAG 和专用模型。
 - 在 Agent 层，RAG 已不是孤立 API：`KNOWLEDGE_AGENT` 能通过 turn runner 暴露 `knowledge.rag.query` 能力，且 turn runner 状态可进入 durable checkpoint；但执行副作用继续由 Java 控制面、RAG pipeline 和 worker receipt 承接。
+
+## 2026-07-05 补充：RAG 进入 Java outbox / worker receipt 低敏闭环
+
+本阶段把 RAG 从“多 Agent 能力合同 + LangGraph checkpoint”继续推进到 Java 控制面闭环：
+
+- `ToolActionExecutionGraphRunner` 已支持显式注入 `JavaToolActionCommandOutboxClient`，当 Java proposal 返回 `outboxWriteAllowedByPreflight=true` 时，可以继续调用 `/agent-runtime/tool-action-commands/outbox/write`。
+- outbox writer 默认仍是 disabled/fail-closed；未配置时停在 `WAITING_OUTBOX_CONFIRMATION`，配置但未启用时停在 `OUTBOX_CLIENT_DISABLED`，真实写入成功后进入 `OUTBOX_ENQUEUED`。
+- `services/rag/command_worker_receipt.py` 新增 RAG 专用 worker receipt helper，把 `knowledge.rag.query` 的执行结果裁剪成 Java `AgentToolActionCommandWorkerReceiptRequest` 可消费的低敏 payload。
+- RAG receipt 只保存 `queryRef`、`commandId`、`artifactReference`、候选数、选中 chunk 数和引用数，不保存 question、answer、compressedContext、document body、chunk text、sourceUri、prompt、SQL、endpoint、token 或 secret。
+- 这一步仍不代表 dispatcher/worker 已经完整自动消费 outbox；它完成的是 `proposal -> outbox/write -> worker receipt payload` 的 Python/Java 控制面契约闭环，为后续真实 E2E worker 消费铺路。

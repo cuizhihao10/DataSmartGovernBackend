@@ -52,6 +52,8 @@ DATASMART_LANGGRAPH_CHECKPOINT_FAIL_OPEN=false
 4. 已完成：`KNOWLEDGE_AGENT` 的 RAG 能力已进入 `agentTurnRunner`，形成可调度、可观测、可替换的能力合同。
 5. 已完成：`agentTurnRunner` 低敏摘要可通过 `turn_runner_checkpoint.py` 写入统一 LangGraph checkpointer，并通过 `recover_multi_agent_state` 恢复多 Agent role/status 与 handoff 状态。
 6. 已完成：`agentTurnRunnerCheckpoint` 的 threadId/checkpointId/graph/node/status/role summary 已进入 Python runtime event，并可由 Java `agent-runtime` turn runner projection 查询。
-7. 下一步：把 RAG/工具 outbox、worker receipt 与 PostgreSQL store smoke 接起来，让 checkpoint 不只记录执行前状态，也能串到真实执行结果。
-8. 将现有 `DurableAgentLoopService` 的 Redis/内存 checkpoint 逐步迁到 LangGraph checkpointer，保留兼容查询期。
-9. 完成 MCP 大结果 MinIO artifact writer 与全平台 E2E，进入项目最终闭环验收。
+7. 已完成：`ToolActionExecutionGraphRunner` 可显式调用 Java outbox writer，并把 `WAITING_OUTBOX_CONFIRMATION`、`OUTBOX_CLIENT_DISABLED`、`OUTBOX_ENQUEUED`、`OUTBOX_WRITE_BLOCKED` 等状态映射为可恢复执行图节点。
+8. 已完成：RAG 专用 worker receipt helper 已能把 `knowledge.rag.query` 结果裁剪为低敏 Java receipt payload，只保留 `queryRef`、计数和 artifact 引用，不保存 question、answer、compressedContext 或文档正文。
+9. 下一步：做 PostgreSQL store smoke 与真实 outbox dispatcher/worker 消费，让 checkpoint、outbox commandId、worker receipt index 和 RAG artifact 形成真实 E2E。
+10. 将现有 `DurableAgentLoopService` 的 Redis/内存 checkpoint 逐步迁到 LangGraph checkpointer，保留兼容查询期。
+11. 完成 MCP 大结果 MinIO artifact writer 与全平台 E2E，进入项目最终闭环验收。
