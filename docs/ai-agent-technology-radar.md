@@ -12,14 +12,16 @@
   - `RuleBasedIntentAnalyzer` 与 `ToolPlanner` 已支持治理知识 RAG 意图和低敏 ToolPlan，解释型知识请求不会再误触发质量规则草案；
   - `AgentSessionScheduler` 支持 `knowledge.`、`rag.`、`web.search.` 前缀激活 `KNOWLEDGE_AGENT`；
   - `agentTurnRunner` 新增 `bind_knowledge_agent_rag_capabilities` 节点，输出 `knowledgeAgentCapabilities`，声明 RAG graph、节点、证据编码、可调用角色和副作用边界；
+  - `turn_runner_checkpoint.py` 已把 `agentTurnRunner` 低敏摘要写入统一 LangGraph durable checkpoint，支持多 Agent role/status、required evidence、RAG capability code 和 handoff 状态恢复；
   - 多 Agent 执行前计划已把 `KNOWLEDGE_AGENT` 到业务 Agent 的关系建模为 `supports_context` 协作边。
 - 安全判断：
   - RAG 能力合同不保存用户问题、文档正文、sourceUri、compressedContext、模型回答、embedding 向量、Provider 原始响应或工具参数正文；
+  - turn runner checkpoint 不保存用户目标、prompt、ToolPlan.arguments、SQL、样本数据、模型输出或内部 endpoint；
   - turn runner 仍不执行 RAG、不调用模型、不写 outbox、不创建审批、不派发 worker；
   - 真实 RAG 执行继续由 `/agent/rag/query`、LangGraph checkpoint、Java 控制面 proposal/outbox 和 worker receipt 承接。
 - 产品判断：
-  - 这一步让 RAG 从“独立 API 能力”推进到“真实多 Agent runner 可调度能力”，但仍保持项目收敛边界；
-  - 下一步不建议继续扩散 RAG 算法特性，优先把 Java turn fact、PostgreSQL checkpoint、RAG worker receipt 和全平台 E2E 串起来。
+  - 这一步让 RAG 从“独立 API 能力”推进到“真实多 Agent runner 可调度能力 + 可恢复 checkpoint 状态”，但仍保持项目收敛边界；
+  - 下一步不建议继续扩散 RAG 算法特性，优先把 Java turn fact、RAG/工具 outbox、worker receipt、PostgreSQL store smoke 和全平台 E2E 串起来。
 
 ## 2026-07-01 落地补充：Agent gateway needs a real reactive service-discovery data plane
 

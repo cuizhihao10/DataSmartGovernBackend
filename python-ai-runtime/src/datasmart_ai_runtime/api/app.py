@@ -590,6 +590,7 @@ def create_app() -> Any:
         langgraph_memory_retrieval_metrics=langgraph_memory_retrieval_metrics,
         multi_agent_execution_session_metrics=multi_agent_execution_session_metrics,
         multi_agent_turn_runner_metrics=multi_agent_turn_runner_metrics,
+        langgraph_checkpointer_service=langgraph_checkpointer_service,
         tool_action_checkpoint_gateway_signature_required=tool_action_checkpoint_gateway_signature_required,
         tool_registry=tool_registry,
         gateway_signature_error_factory=lambda detail: HTTPException(status_code=401, detail=detail),

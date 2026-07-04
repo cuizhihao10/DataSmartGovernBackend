@@ -10,7 +10,7 @@ from datasmart_ai_runtime.api import build_default_orchestrator
 from datasmart_ai_runtime.api.agent.plan_response import build_plan_response
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
-from datasmart_ai_runtime.services.agent_execution import DurableAgentLoopService
+from datasmart_ai_runtime.services.agent_execution import DurableAgentLoopService, LangGraphDurableCheckpointerService
 from datasmart_ai_runtime.services.langgraph_planning_workflow import LangGraphApi
 from datasmart_ai_runtime.services.multi_agent import LangGraphMultiAgentTurnRunnerWorkflow
 
@@ -186,6 +186,57 @@ class MultiAgentTurnRunnerTest(unittest.TestCase):
         self.assertFalse(turn_runner["sideEffectBoundary"]["toolExecutedByPython"])
         self.assertFalse(turn_runner["sideEffectBoundary"]["outboxWrittenByPython"])
         self.assertTrue(turn_runner["sideEffectBoundary"]["workerReceiptRequiredForSideEffects"])
+        self.assertNotIn("secret objective", serialized)
+        self.assertNotIn("secret-datasource-id", serialized)
+        self.assertNotIn("hidden_customer", serialized)
+
+    def test_plan_response_records_turn_runner_langgraph_checkpoint(self) -> None:
+        """注入 LangGraph checkpointer 后，turn runner 应写入可恢复 checkpoint。
+
+        这个用例保护的是“多 Agent runner 不只是一段响应 JSON”：当应用启动期提供统一
+        `LangGraphDurableCheckpointerService` 时，`/agent/plans` 应把 turn runner 的低敏状态写入同一条
+        durable thread。后续 pause/resume/fork/recover 才能基于真实 checkpoint 工作，而不是只依赖 HTTP
+        调用方记住上一次响应。
+        """
+
+        workflow = LangGraphMultiAgentTurnRunnerWorkflow(
+            langgraph_api=LangGraphApi(state_graph=FakeStateGraph, start="START", end="END")
+        )
+        checkpointer = LangGraphDurableCheckpointerService()
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="quality-owner",
+            objective="secret objective: 请分析客户订单表并生成质量同步方案。",
+            variables={
+                "sessionId": "session-turn-runner-checkpoint",
+                "datasourceId": "secret-datasource-id",
+                "sql": "select * from hidden_customer",
+            },
+        )
+
+        response = build_plan_response(
+            request,
+            build_default_orchestrator(),
+            durable_agent_loop_service=DurableAgentLoopService(),
+            multi_agent_turn_runner_workflow=workflow,
+            langgraph_checkpointer_service=checkpointer,
+        )
+
+        checkpoint_view = response["agentTurnRunnerCheckpoint"]
+        thread_id = checkpoint_view["threadId"]
+        latest = checkpointer.latest_for_thread(thread_id)
+        recovered = checkpointer.recover_multi_agent_state(thread_id).to_summary()
+        serialized = str(checkpoint_view) + str(latest.state if latest is not None else {}) + str(recovered)
+
+        self.assertIsNotNone(latest)
+        self.assertEqual("datasmart.agent.multi-agent-turn-runner", checkpoint_view["checkpoint"]["graphName"])
+        self.assertEqual("multi_agent_turn_wait_human", checkpoint_view["checkpoint"]["nodeName"])
+        self.assertEqual("waiting_human", checkpoint_view["checkpoint"]["status"])
+        self.assertIn("wait_approval_fact", checkpoint_view["checkpoint"]["nextNodes"])
+        self.assertTrue(recovered["found"])
+        self.assertIn("DATA_QUALITY_AGENT", recovered["agentRoles"])
+        self.assertTrue(recovered["handoffRequired"])
         self.assertNotIn("secret objective", serialized)
         self.assertNotIn("secret-datasource-id", serialized)
         self.assertNotIn("hidden_customer", serialized)

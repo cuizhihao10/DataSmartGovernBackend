@@ -45,6 +45,7 @@ LangGraph durable checkpoint 已接入：
 - `AgentSessionScheduler` 可根据 `knowledge.`、`rag.`、`web.search.` 前缀或 `KNOWLEDGE_QA` 意图激活 `KNOWLEDGE_AGENT`。
 - `agentTurnRunner` 新增 `bind_knowledge_agent_rag_capabilities` 节点，当 `KNOWLEDGE_AGENT` 参与时输出 `knowledgeAgentCapabilities`。
 - `knowledgeAgentCapabilities` 只声明 RAG graph、节点、证据门控、checkpoint 和 Java 控制面边界，不执行 RAG、不调用模型、不保存证据正文。
+- `agentTurnRunner` 低敏摘要已可写入 LangGraph durable checkpoint，恢复时可以看到 `KNOWLEDGE_AGENT` 是否具备 RAG 能力、当前是否需要 Java 控制面或 worker receipt。
 
 ## 2. 当前管线阶段
 
@@ -64,6 +65,7 @@ LangGraph durable checkpoint 已接入：
 12. `citation binding`：答案必须绑定 `[C1]`、`[C2]` 这类引用编号，方便审计和回溯。
 13. `langgraph checkpoint`：把 RAG 的检索、证据门控和最终收口写入 durable checkpoint，支持后续暂停、恢复、分支和多 Agent 状态恢复。
 14. `multi-agent capability binding`：当用户目标属于治理知识问答时，`KNOWLEDGE_AGENT` 会把 `knowledge.rag.query` 作为 manager-as-tools 能力暴露给主控；真实执行仍需 Java 控制面、checkpoint 和 worker receipt 补齐。
+15. `turn runner checkpoint`：把本轮多 Agent turn 的 role/status、required evidence、RAG capability code 和下一步动作写入 durable checkpoint；该状态不包含用户问题、证据正文或模型回答。
 
 ## 3. 为什么要做证据门控
 
@@ -117,6 +119,7 @@ MASTER_ORCHESTRATOR
 - LangGraph checkpoint 节点化，已形成 `retrieve -> evidence_gate -> completed/no_evidence` 低敏状态链路。
 - `knowledge.rag.query` 工具定义、`knowledge.rag.answer` Skill、意图识别、ToolPlan 低敏 `queryRef` 规划。
 - `KNOWLEDGE_AGENT` RAG 能力合同已进入 `agentTurnRunner.knowledgeAgentCapabilities`，可被主控以 manager-as-tools 方式调度。
+- `agentTurnRunner` 已可把 RAG 能力、Agent role/status、requiredEvidenceCodes 和 handoff 状态写入 LangGraph durable checkpoint。
 - 多 Agent 执行前计划已把 `KNOWLEDGE_AGENT -> DATA_QUALITY_AGENT/PERMISSION_AGENT/TASK_AGENT/...` 建模为 `supports_context` 协作边。
 - 单元测试覆盖召回、租户隔离、无证据拒绝和 API 合同。
 
@@ -126,7 +129,7 @@ MASTER_ORCHESTRATOR
 - Neo4j GraphRAG，用于血缘、表关系、业务口径和资产图谱推理。
 - 专用 embedding/reranker 模型，例如当前一代 Qwen embedding/reranker、BGE 或 Jina reranker。
 - MinIO 文档解析、增量索引、删除重建和索引版本管理。
-- RAG 的真实执行 handoff：当前 runner 只输出低敏能力合同，尚未自动创建 Java outbox、派发 worker 或把 RAG 结果作为低敏 specialist summary 回填给 DATA_QUALITY_AGENT/PERMISSION_AGENT/TASK_AGENT。
+- RAG 的真实执行 handoff：当前 runner 已输出低敏能力合同并写入 durable checkpoint，但尚未自动创建 Java outbox、派发 worker 或把 RAG 结果作为低敏 specialist summary 回填给 DATA_QUALITY_AGENT/PERMISSION_AGENT/TASK_AGENT。
 
 ## 6. 面试讲解要点
 
@@ -139,4 +142,4 @@ MASTER_ORCHESTRATOR
 - 证据门控解决“弱命中也生成”的问题，是降低幻觉和误导的关键。
 - 引用绑定让答案可追溯，适合治理、权限、质量规则这类需要审计的场景。
 - 当前实现把模型生成、embedding、reranker、知识库都隔离成可替换组件，后续可平滑接入 pgvector、GraphRAG 和专用模型。
-- 在 Agent 层，RAG 已不是孤立 API：`KNOWLEDGE_AGENT` 能通过 turn runner 暴露 `knowledge.rag.query` 能力，但执行副作用继续由 Java 控制面和 RAG pipeline 承接。
+- 在 Agent 层，RAG 已不是孤立 API：`KNOWLEDGE_AGENT` 能通过 turn runner 暴露 `knowledge.rag.query` 能力，且 turn runner 状态可进入 durable checkpoint；但执行副作用继续由 Java 控制面、RAG pipeline 和 worker receipt 承接。

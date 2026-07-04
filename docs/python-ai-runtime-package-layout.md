@@ -68,6 +68,10 @@ datasmart_ai_runtime/
   - 它只声明 `knowledge.rag.query` 的图名、节点、证据门控、checkpoint、可调用角色和副作用边界；
   - 它不执行 RAG、不读取用户问题、不保存文档正文、不调用模型；
   - 这样 `controlled_turn_runner.py` 可以继续专注于 LangGraph turn 状态机，而 RAG 能力细节保持在独立文件中。
+- `services/multi_agent/turn_runner_checkpoint.py` 已新增为多 Agent turn runner checkpoint 适配模块：
+  - 它只消费 `agentTurnRunner` 低敏摘要，并写入统一 `LangGraphDurableCheckpointerService`；
+  - 它不执行工具、不调用模型、不写 Java outbox，也不保存用户目标、ToolPlan.arguments、SQL、样本数据或模型输出；
+  - 它让 `MASTER_ORCHESTRATOR`、`DATA_QUALITY_AGENT`、`DATASOURCE_AGENT`、`PERMISSION_AGENT`、`KNOWLEDGE_AGENT` 等角色状态可以通过 checkpoint 控制面恢复，而不把恢复逻辑塞回 `controlled_turn_runner.py`。
 - `services/agent_graph/` 已作为跨领域 LangGraph 运行标准包建立：
   - `runtime_contracts.py` 统一定义可复用/可观测/可替换节点、固定/条件/循环/终止边、低敏可恢复状态
     以及图合同自动审计；
@@ -120,7 +124,7 @@ datasmart_ai_runtime/
 
 - `services/multi_agent/handoff_contracts.py` 已新增为多 Agent handoff 合同生成规则模块。
 - `services/multi_agent/knowledge_agent_capability.py` 已新增为 KNOWLEDGE_AGENT RAG 能力合同模块。
-- 该模块放在 `multi_agent/` 而不是 `tools/` 或 `runtime_events/` 下，是因为它描述的是 Agent 之间以及 Agent 到 Java 控制面的交接合同，不是工具执行器，也不是事件存储实现。
-- 这两个模块都放在 `multi_agent/` 而不是 `tools/` 或 `runtime_events/` 下，是因为它们描述的是 Agent 协作与宿主控制面合同，不是工具执行器，也不是事件存储实现。
+- `services/multi_agent/turn_runner_checkpoint.py` 已新增为 turn runner 到 LangGraph durable checkpoint 的低敏适配模块。
+- 这些模块都放在 `multi_agent/` 而不是 `tools/` 或 `runtime_events/` 下，是因为它们描述的是 Agent 协作、宿主控制面合同和多 Agent 状态恢复，不是工具执行器，也不是事件存储实现。
 - `langgraph_execution_plan.py` 继续只负责编排 LangGraph 节点流转；handoff 与 knowledge capability 规则拆到独立文件后，主 workflow 更容易保持可读。
 - 后续如果继续补 handoff 指标、Java projection adapter、RAG turn fact 或 durable checkpoint 对齐，应优先在 `multi_agent/` 下继续分文件扩展，避免把多 Agent 逻辑重新堆回 `services/` 根目录。

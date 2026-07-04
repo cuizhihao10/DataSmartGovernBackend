@@ -48,6 +48,7 @@ from datasmart_ai_runtime.services.multi_agent.langgraph_execution_plan import (
 from datasmart_ai_runtime.services.multi_agent import (
     LangGraphMultiAgentTurnRunnerWorkflow,
     MultiAgentExecutionSessionService,
+    record_multi_agent_turn_runner_checkpoint,
 )
 from datasmart_ai_runtime.services.memory import LangGraphMemoryRetrievalWorkflow
 from datasmart_ai_runtime.services.runtime_events.runtime_event_live_push import RuntimeEventLivePushHub
@@ -87,6 +88,7 @@ def build_plan_response(
     multi_agent_execution_session_metrics: Any | None = None,
     multi_agent_turn_runner_metrics: Any | None = None,
     multi_agent_turn_runner_workflow: Any | None = None,
+    langgraph_checkpointer_service: Any | None = None,
 ) -> dict[str, Any]:
     """构建同步 HTTP 风格的 Agent 计划响应。
 
@@ -133,6 +135,7 @@ def build_plan_response(
     loop_control_decision = None
     second_turn_result = None
     durable_loop_checkpoint = None
+    agent_turn_runner_checkpoint = None
     memory_write_proposal = None
 
     if plan_ingestion_client is not None:
@@ -316,6 +319,17 @@ def build_plan_response(
     agent_turn_runner_summary = agent_turn_runner.to_summary()
     if multi_agent_turn_runner_metrics is not None:
         multi_agent_turn_runner_metrics.record_summary(agent_turn_runner_summary)
+    if langgraph_checkpointer_service is not None:
+        # turn runner checkpoint 是多 Agent 状态机从“响应里的诊断字段”走向“可暂停/恢复现场”的关键一步。
+        # 这里消费的是已经低敏化的 `agent_turn_runner_summary`，不会重新读取 ToolPlan.arguments，也不会把
+        # 用户目标、prompt、模型输出或工具参数写入 durable state。真实工具执行仍必须等 Java 控制面 outbox
+        # 与 worker receipt，因此该 checkpoint 只表示“下一步应该如何安全推进”，不是“Python 已执行副作用”。
+        agent_turn_runner_checkpoint = record_multi_agent_turn_runner_checkpoint(
+            langgraph_checkpointer_service,
+            request=request,
+            plan=plan,
+            agent_turn_runner=agent_turn_runner_summary,
+        )
     plan = attach_agent_turn_runner_event(
         plan,
         request=request,
@@ -362,6 +376,8 @@ def build_plan_response(
     response["agentCollaborationExecutionPlan"] = agent_collaboration_execution_plan_summary
     response["agentExecutionSession"] = agent_execution_session.to_summary()
     response["agentTurnRunner"] = agent_turn_runner_summary
+    if agent_turn_runner_checkpoint is not None:
+        response["agentTurnRunnerCheckpoint"] = agent_turn_runner_checkpoint
     response["agentMemoryRetrievalWorkflow"] = agent_memory_retrieval_workflow_summary
     response["userProfileMemory"] = plan.user_profile_context
     response["agentWorkspace"] = workspace_context.to_summary()

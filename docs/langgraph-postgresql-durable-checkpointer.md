@@ -13,6 +13,7 @@
 - `mcp_worker_langgraph.py`：把 MCP durable worker 的安全 `modelFeedback -> modelSecondTurn` 迁入 LangGraph 节点链路，形成 `mcp_model_feedback -> mcp_model_second_turn -> mcp_model_second_turn_completed` 的可观测状态机。
 - `services/rag/langgraph_checkpoint.py`：把 RAG 管线迁入 LangGraph 低敏节点链路，形成 `rag_retrieve_knowledge -> rag_evidence_gate -> rag_grounded_answer_completed/rag_no_evidence_completed`。
 - `agentTurnRunner.bind_knowledge_agent_rag_capabilities`：当 `KNOWLEDGE_AGENT` 参与时，把 `knowledge.rag.query` 暴露为低敏 RAG 能力合同，并声明 RAG scope、证据门控、checkpoint 与 Java 控制面边界。
+- `services/multi_agent/turn_runner_checkpoint.py`：把 `agentTurnRunner` 的低敏摘要写入 LangGraph checkpoint，使 MASTER_ORCHESTRATOR、DATA_QUALITY_AGENT、DATASOURCE_AGENT、PERMISSION_AGENT、KNOWLEDGE_AGENT 等角色状态可以通过统一 checkpointer 恢复。
 - `/agent/langgraph/checkpoints/latest`：按 `threadId` 查询最新 checkpoint 摘要。
 - `/agent/langgraph/checkpoints/events`：按 `threadId` 查询低敏事件流。
 - `/agent/langgraph/checkpoints/pause`：暂停 thread，用于人工审批、容量保护或运维冻结。
@@ -29,6 +30,7 @@
 - MCP 二轮模型节点的 checkpoint 只保存工具名、toolCallId、状态码、Provider/模型名、错误码、多 Agent 状态和策略 key，不保存 MCP arguments、tool result 正文、二轮 messages 或 Java lease token。
 - RAG 节点的 checkpoint 只保存召回数量、弱证据拒绝数量、引用数量、模型错误码、多 Agent 状态和安全策略 key，不保存用户问题、答案、compressedContext、文档正文、sourceUri 或模型原始响应。
 - KNOWLEDGE_AGENT 的 RAG 能力合同只保存工具名、图名、节点名、证据编码、可调用角色和副作用边界，不保存用户问题、知识正文、引用 URL、模型回答、embedding 向量或 Provider 原始响应。
+- 多 Agent turn runner checkpoint 只保存 runStatus、runnerRoute、turn 深度、Agent role/status、requiredEvidenceCodes、能力 code 和 nextActions，不保存用户目标、prompt、ToolPlan.arguments、SQL、样本数据、模型输出或内部 endpoint。
 
 ## 配置
 
@@ -47,6 +49,7 @@ DATASMART_LANGGRAPH_CHECKPOINT_FAIL_OPEN=false
 2. 已完成：RAG 检索、证据门控和生成/fail-closed 收口已包装为 LangGraph 节点，并写入同一个 checkpointer service。
 3. 已完成：长期记忆 `retrieve_memory` 已从内部编排步骤迁入可观测图节点，并具备低基数指标。
 4. 已完成：`KNOWLEDGE_AGENT` 的 RAG 能力已进入 `agentTurnRunner`，形成可调度、可观测、可替换的能力合同。
-5. 下一步：把多 Agent turn runner 的 MASTER_ORCHESTRATOR、DATA_QUALITY_AGENT、DATASOURCE_AGENT、PERMISSION_AGENT 等角色状态进一步写入 PostgreSQL checkpoint，并让 runner 直接使用 pause/resume/fork/recover 控制面。
-6. 将现有 `DurableAgentLoopService` 的 Redis/内存 checkpoint 逐步迁到 LangGraph checkpointer，保留兼容查询期。
-7. 完成 PostgreSQL store smoke、MCP 大结果 MinIO artifact writer 与全平台 E2E，进入项目最终闭环验收。
+5. 已完成：`agentTurnRunner` 低敏摘要可通过 `turn_runner_checkpoint.py` 写入统一 LangGraph checkpointer，并通过 `recover_multi_agent_state` 恢复多 Agent role/status 与 handoff 状态。
+6. 下一步：把 Java turn fact、RAG/工具 outbox、worker receipt 与 PostgreSQL store smoke 接起来，让 checkpoint 不只记录执行前状态，也能串到真实执行结果。
+7. 将现有 `DurableAgentLoopService` 的 Redis/内存 checkpoint 逐步迁到 LangGraph checkpointer，保留兼容查询期。
+8. 完成 MCP 大结果 MinIO artifact writer 与全平台 E2E，进入项目最终闭环验收。

@@ -73,6 +73,7 @@ def register_agent_runtime_routes(
     langgraph_memory_retrieval_metrics: Any | None = None,
     multi_agent_execution_session_metrics: Any | None = None,
     multi_agent_turn_runner_metrics: Any | None = None,
+    langgraph_checkpointer_service: Any | None = None,
     tool_action_checkpoint_gateway_signature_required: bool = False,
     tool_registry: tuple[Any, ...] | None = None,
     gateway_signature_error_factory: Callable[[dict[str, Any]], Exception] | None = None,
@@ -143,6 +144,10 @@ def register_agent_runtime_routes(
     `multi_agent_turn_runner_metrics` 是受控多 Agent Turn Runner 的低基数指标记录器。它只消费
     `agentTurnRunner` 低敏摘要，按 runStatus、turnStatus、requiredEvidence、manager-as-tools 数量和
     副作用边界聚合，不把 turnId、workItemId、managerToolName、prompt、SQL、工具参数或 checkpointId 写入指标标签。
+
+    `langgraph_checkpointer_service` 是统一 LangGraph durable checkpoint 服务。注入后，`/agent/plans`
+    会把 `agentTurnRunner` 的低敏摘要写入 checkpoint，使多 Agent turn 具备 pause/resume/fork/recover
+    的恢复锚点；未注入时保持旧行为，只返回响应和事件，不写 durable state。
 
     `tool_action_checkpoint_gateway_signature_required` 是 checkpoint 子路由自己的渐进式安全开关：
     - 默认 false，保证本地学习环境和历史测试不需要先启动完整 gateway；
@@ -217,6 +222,7 @@ def register_agent_runtime_routes(
             langgraph_memory_retrieval_metrics=langgraph_memory_retrieval_metrics,
             multi_agent_execution_session_metrics=multi_agent_execution_session_metrics,
             multi_agent_turn_runner_metrics=multi_agent_turn_runner_metrics,
+            langgraph_checkpointer_service=langgraph_checkpointer_service,
         )
 
     if durable_agent_loop_service is not None:
