@@ -32,6 +32,24 @@ from datasmart_ai_runtime.services.agent_execution.durable_agent_loop_components
 from datasmart_ai_runtime.services.agent_execution.durable_agent_loop_redis import (
     RedisDurableAgentLoopStore,
 )
+from datasmart_ai_runtime.services.agent_execution.langgraph_durable_checkpointer import (
+    InMemoryLangGraphCheckpointStore,
+    LangGraphCheckpointEvent,
+    LangGraphCheckpointStatus,
+    LangGraphCheckpointStore,
+    LangGraphDurableCheckpoint,
+    LangGraphDurableCheckpointerService,
+    MultiAgentRecoveredState,
+)
+from datasmart_ai_runtime.services.agent_execution.langgraph_durable_checkpointer_components import (
+    LangGraphDurableCheckpointerSettings,
+    build_langgraph_checkpoint_store,
+    langgraph_checkpoint_store_diagnostics,
+    langgraph_durable_checkpointer_settings_from_env,
+)
+from datasmart_ai_runtime.services.agent_execution.langgraph_durable_checkpointer_postgresql import (
+    PostgresLangGraphCheckpointStore,
+)
 
 __all__ = (
     "AgentExecutionClosureReport",
@@ -43,6 +61,18 @@ __all__ = (
     "DurableAgentLoopStore",
     "InMemoryDurableAgentLoopStore",
     "RedisDurableAgentLoopStore",
+    "LangGraphCheckpointEvent",
+    "LangGraphCheckpointStatus",
+    "LangGraphCheckpointStore",
+    "LangGraphDurableCheckpoint",
+    "LangGraphDurableCheckpointerService",
+    "LangGraphDurableCheckpointerSettings",
+    "InMemoryLangGraphCheckpointStore",
+    "MultiAgentRecoveredState",
+    "PostgresLangGraphCheckpointStore",
+    "build_langgraph_checkpoint_store",
+    "langgraph_checkpoint_store_diagnostics",
+    "langgraph_durable_checkpointer_settings_from_env",
     "DurableAgentLoopStoreSettings",
     "build_durable_agent_loop_store",
     "durable_agent_loop_store_diagnostics",

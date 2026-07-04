@@ -52,6 +52,13 @@ from datasmart_ai_runtime.services.tools.mcp.feedback import (
     McpToolFeedbackBuildResult,
     mcp_feedback_summary_json,
 )
+from datasmart_ai_runtime.services.tools.mcp.model_feedback_second_turn import (
+    MCP_MODEL_FEEDBACK_SECOND_TURN_SCHEMA_VERSION,
+    McpModelFeedbackSecondTurnResult,
+    McpModelFeedbackSecondTurnService,
+    McpModelFeedbackSecondTurnSettings,
+    mcp_model_feedback_second_turn_settings_from_env,
+)
 
 __all__ = [
     "MCP_CLIENT_SCHEMA_VERSION",
@@ -59,6 +66,7 @@ __all__ = [
     "MCP_DURABLE_EXECUTION_SCHEMA_VERSION",
     "MCP_DURABLE_WORKER_SCHEMA_VERSION",
     "MCP_TOOL_FEEDBACK_SCHEMA_VERSION",
+    "MCP_MODEL_FEEDBACK_SECOND_TURN_SCHEMA_VERSION",
     "McpAdmissionBuildError",
     "McpAdmissionBuildResult",
     "McpClientError",
@@ -75,6 +83,9 @@ __all__ = [
     "McpToolFeedbackAdapter",
     "McpToolFeedbackAdapterSettings",
     "McpToolFeedbackBuildResult",
+    "McpModelFeedbackSecondTurnResult",
+    "McpModelFeedbackSecondTurnService",
+    "McpModelFeedbackSecondTurnSettings",
     "McpServerConfiguration",
     "McpSessionOpener",
     "McpSessionPort",
@@ -89,6 +100,7 @@ __all__ = [
     "mcp_configuration_diagnostics",
     "mcp_server_configurations_from_env",
     "mcp_feedback_summary_json",
+    "mcp_model_feedback_second_turn_settings_from_env",
     "namespaced_tool_name",
     "open_official_mcp_session",
     "validate_mcp_server_configuration",

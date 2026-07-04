@@ -25,6 +25,9 @@ from datasmart_ai_runtime.services.tools.mcp import (
     McpDurableWorkerRunRequest,
     McpToolFeedbackAdapter,
 )
+from datasmart_ai_runtime.services.tools.mcp.model_feedback_second_turn import (
+    McpModelFeedbackSecondTurnService,
+)
 
 
 MCP_DURABLE_WORKER_API_SCHEMA_VERSION = "datasmart.mcp-durable-worker-api.v1"
@@ -35,6 +38,7 @@ def register_mcp_durable_worker_routes(
     *,
     worker_adapter: McpDurableWorkerAdapter,
     feedback_adapter: McpToolFeedbackAdapter | None = None,
+    second_turn_service: McpModelFeedbackSecondTurnService | None = None,
 ) -> None:
     """注册 MCP durable worker 内部执行路由。
 
@@ -60,6 +64,7 @@ def register_mcp_durable_worker_routes(
         worker_result = await worker_adapter.run(request)
         include_model_feedback = _bool(payload.get("includeModelFeedback"), default=True)
         model_feedback = None
+        model_second_turn = None
         if include_model_feedback and feedback_adapter is not None:
             build_result = feedback_adapter.build(
                 worker_result,
@@ -73,6 +78,22 @@ def register_mcp_durable_worker_routes(
                 "summary": build_result.summary,
                 "feedback": tool_execution_feedback_to_payload(build_result.feedback),
             }
+            # `modelFeedback` 只是把工具结果变成“可给模型看的消息材料”，并不等于模型已经看过。
+            # 这里在显式装配 `second_turn_service` 后才继续推进真实二轮模型调用：
+            # - 服务只接收 McpToolFeedbackAdapter 产出的安全 feedback，不接触 MCP arguments；
+            # - controlFacts 只用于 tenant/project/actor/run/session/trace 路由与审计标签；
+            # - 返回值只保留低敏摘要，不把二轮 prompt/messages、工具 result 正文或 Provider 原始响应暴露给 API。
+            if second_turn_service is not None:
+                model_second_turn = second_turn_service.run(
+                    feedback=build_result.feedback,
+                    feedback_summary=build_result.summary,
+                    control_facts=request.control_facts,
+                    trace_id=_optional_text(payload.get("traceId") or payload.get("trace_id")),
+                    workspace_key=_optional_text(payload.get("workspaceKey") or payload.get("workspace_key")),
+                    current_workspace_key=_optional_text(
+                        payload.get("currentWorkspaceKey") or payload.get("current_workspace_key")
+                    ),
+                ).to_summary()
         return {
             "schemaVersion": MCP_DURABLE_WORKER_API_SCHEMA_VERSION,
             "accepted": True,
@@ -84,9 +105,11 @@ def register_mcp_durable_worker_routes(
             # 工具结果正文、远端 endpoint、prompt、SQL 或凭据正文。
             "javaReceiptPayload": dict(worker_result.receipt.java_payload),
             "modelFeedback": model_feedback,
+            "modelSecondTurn": model_second_turn,
             "payloadPolicy": (
                 "MCP_ARGUMENTS_NEVER_RETURNED;JAVA_RECEIPT_PAYLOAD_INTERNAL_ONLY;"
-                "TOOL_RESULT_BODY_RETURNED_ONLY_IF_FEEDBACK_ADAPTER_ALLOWED_SAFE_INLINE"
+                "TOOL_RESULT_BODY_RETURNED_ONLY_IF_FEEDBACK_ADAPTER_ALLOWED_SAFE_INLINE;"
+                "MODEL_SECOND_TURN_SUMMARY_ONLY_WHEN_CONFIGURED"
             ),
         }
 

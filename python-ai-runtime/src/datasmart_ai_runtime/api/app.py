@@ -64,6 +64,10 @@ from datasmart_ai_runtime.services.agent_execution import (
     DurableAgentLoopService,
     build_durable_agent_loop_store,
     durable_agent_loop_store_settings_from_env,
+    LangGraphDurableCheckpointerService,
+    build_langgraph_checkpoint_store,
+    langgraph_checkpoint_store_diagnostics,
+    langgraph_durable_checkpointer_settings_from_env,
 )
 from datasmart_ai_runtime.services.agent_second_turn_orchestrator import AgentSecondTurnOrchestrator
 from datasmart_ai_runtime.services.memory import (
@@ -103,8 +107,10 @@ from datasmart_ai_runtime.services.tools.mcp import (
     McpClientRuntime,
     McpDurableToolExecutionService,
     McpDurableWorkerAdapter,
+    McpModelFeedbackSecondTurnService,
     McpToolFeedbackAdapter,
     mcp_client_runtime_settings_from_env,
+    mcp_model_feedback_second_turn_settings_from_env,
     mcp_server_configurations_from_env,
 )
 
@@ -151,6 +157,9 @@ def create_app() -> Any:
         model_route_registry,
         health_registry=model_provider_health_registry,
     )
+    # 模型 Provider 注册表在应用级只创建一次，避免 `/agent/plans`、MCP worker 二轮调用和后续 LangGraph
+    # 节点各自拥有不同 Provider 实例。这样 token 预算、健康回写和测试 fake provider 都更容易形成统一视图。
+    model_provider_registry = model_provider_registry_from_env()
     memory_runtime = build_api_memory_runtime()
     user_profile_memory = UserProfileMemoryService.default()
     # Durable Agent Loop 的状态仓储必须在应用启动时统一装配，不能让每个请求临时创建 store：
@@ -161,6 +170,13 @@ def create_app() -> Any:
     durable_agent_loop_service = DurableAgentLoopService(
         build_durable_agent_loop_store(durable_agent_loop_store_settings)
     )
+    # LangGraph PostgreSQL Durable Checkpointer 是下一阶段 Agent 状态机闭环的目标底座：
+    # - 当前先独立装配并暴露诊断，不直接替换既有 DurableAgentLoopService，避免一次迁移影响 `/agent/plans`；
+    # - 它已经具备暂停、恢复、分支、循环和多 Agent 状态恢复合同；
+    # - 后续会把 MCP modelFeedback 二轮节点、长期记忆检索节点和多 Agent turn runner 逐步迁入该 store。
+    langgraph_checkpoint_store_settings = langgraph_durable_checkpointer_settings_from_env()
+    langgraph_checkpoint_store = build_langgraph_checkpoint_store(langgraph_checkpoint_store_settings)
+    langgraph_checkpointer_service = LangGraphDurableCheckpointerService(langgraph_checkpoint_store)
     agent_runtime_base_url = os.getenv("DATASMART_AGENT_RUNTIME_BASE_URL")
     # 出站 MCP Client 是外部工具生态的连接层，不等同于已有 MCP preview 接口。
     #
@@ -197,6 +213,12 @@ def create_app() -> Any:
         app.state.mcp_durable_tool_execution_service
     )
     app.state.mcp_tool_feedback_adapter = McpToolFeedbackAdapter()
+    app.state.mcp_model_feedback_second_turn_service = McpModelFeedbackSecondTurnService(
+        model_routes=model_route_registry,
+        model_gateway=model_gateway,
+        model_providers=model_provider_registry,
+        settings=mcp_model_feedback_second_turn_settings_from_env(),
+    )
     # 工具目录在启动阶段集中加载一次，并同时供主 orchestrator 与协议适配 preview 入口使用。
     # 这样可以避免 `/agent/plans`、MCP tools/call preview 和未来确认页在同一进程里看到不同版本的工具目录：
     # - 生产环境可优先从 Java agent-runtime 动态读取；
@@ -232,7 +254,7 @@ def create_app() -> Any:
     loop_control_evaluator = AgentLoopControlPolicyEvaluator() if control_plane_feedback_collector else None
     second_turn_orchestrator = (
         AgentSecondTurnOrchestrator(
-            model_providers=model_provider_registry_from_env(),
+            model_providers=model_provider_registry,
             model_gateway=model_gateway,
         )
         if control_plane_feedback_collector and _truthy_env("DATASMART_AGENT_RUNTIME_SECOND_TURN_ENABLED")
@@ -393,6 +415,22 @@ def create_app() -> Any:
             tool_action_checkpoint_store,
             tool_action_checkpoint_store_settings,
         )
+
+    @app.get("/agent/langgraph/checkpoints/diagnostics")
+    @app.get("/api/agent/langgraph/checkpoints/diagnostics")
+    def langgraph_checkpoint_store_runtime_diagnostics() -> dict[str, Any]:
+        """查询 LangGraph durable checkpointer 启动诊断。
+
+        该接口只说明当前使用 in-memory 还是 PostgreSQL store，以及是否支持 pause/resume/branch/loop/
+        multi-agent recovery。它不读取 checkpoint state_json，不返回 prompt、工具参数、模型输出或审批正文。
+        """
+
+        diagnostics = langgraph_checkpoint_store_diagnostics(
+            langgraph_checkpoint_store,
+            langgraph_checkpoint_store_settings,
+        )
+        diagnostics["service"] = langgraph_checkpointer_service.diagnostics()
+        return diagnostics
 
     @app.get("/agent/skills/publication/diagnostics")
     def skill_publication_manifest_runtime_diagnostics() -> dict[str, Any]:
@@ -558,6 +596,7 @@ def create_app() -> Any:
         app,
         worker_adapter=app.state.mcp_durable_worker_adapter,
         feedback_adapter=app.state.mcp_tool_feedback_adapter,
+        second_turn_service=app.state.mcp_model_feedback_second_turn_service,
     )
 
     return app

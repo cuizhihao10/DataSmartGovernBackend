@@ -28,6 +28,21 @@
 - `langgraph_thread_checkpoint`：LangGraph durable checkpoint，让 Agent 图可恢复、可暂停、可分支、可循环。
 - `langgraph_checkpoint_event`：LangGraph 节点/边/恢复事件，用于审计回放和可观测图执行。
 
+## LangGraph Durable Checkpointer
+
+Python Runtime 已新增 LangGraph durable checkpointer 组件，目标落点就是上面的两张 PostgreSQL 表。
+
+- `LangGraphDurableCheckpointerService` 提供暂停、恢复、分支、循环和多 Agent 状态恢复方法。
+- `InMemoryLangGraphCheckpointStore` 用于本地学习和单元测试。
+- `PostgresLangGraphCheckpointStore` 对齐 `langgraph_thread_checkpoint` 与 `langgraph_checkpoint_event`。
+- `DATASMART_LANGGRAPH_CHECKPOINT_STORE=postgresql` 可切到 PostgreSQL durable state。
+- `/agent/langgraph/checkpoints/diagnostics` 只返回 store 类型、能力开关和安全策略，不读取 `state_json` 正文。
+
+该 checkpointer 的设计目标是把 Agent 从固定流水线升级为可恢复状态机：节点负责可替换工作单元，边负责分支/
+循环/暂停/恢复控制，状态负责保存低敏执行现场。它禁止保存完整 prompt、工具参数、SQL、模型输出、凭据或大对象正文。
+
+下一步会把 MCP 安全 `modelFeedback -> modelSecondTurn`、长期记忆检索节点和多 Agent turn runner 逐步迁入该 checkpointer。
+
 ## pgvector 策略
 
 `agent_memory_embedding_index.embedding` 使用未固定维度的 `vector` 类型，而不是直接写死 `vector(1024)` 或

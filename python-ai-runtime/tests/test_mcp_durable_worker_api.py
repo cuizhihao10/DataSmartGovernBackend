@@ -114,7 +114,31 @@ class McpDurableWorkerApiTest(unittest.TestCase):
         response = asyncio.run(app.post_routes["/api/internal/agent/mcp/durable-worker/run"](payload))
 
         self.assertIsNone(response["modelFeedback"])
+        self.assertIsNone(response["modelSecondTurn"])
         self.assertEqual("SUCCEEDED", response["workerResult"]["executionResult"]["status"])
+
+    def test_route_invokes_second_turn_service_with_safe_model_feedback(self) -> None:
+        """开启二轮服务时，内部路由应只把安全 feedback 交给模型二轮调用链。"""
+
+        app = FakeApp()
+        second_turn_service = FakeSecondTurnService()
+        register_mcp_durable_worker_routes(
+            app,
+            worker_adapter=FakeWorkerAdapter(),
+            feedback_adapter=McpToolFeedbackAdapter(),
+            second_turn_service=second_turn_service,
+        )
+
+        response = asyncio.run(app.post_routes["/internal/agent/mcp/durable-worker/run"](self._payload()))
+
+        self.assertEqual(1, len(second_turn_service.calls))
+        self.assertEqual("call-a", second_turn_service.calls[0]["feedback"].tool_call_id)
+        self.assertEqual("safe_small_result", second_turn_service.calls[0]["feedback_summary"]["inlineDecisionReason"])
+        self.assertEqual("trace-a", second_turn_service.calls[0]["trace_id"])
+        self.assertTrue(response["modelSecondTurn"]["executed"])
+        response_text = str(response)
+        self.assertNotIn("quality rules", response_text)
+        self.assertNotIn("private-search-argument", response_text)
 
     @staticmethod
     def _payload() -> dict[str, object]:
@@ -218,6 +242,35 @@ class FakeWorkerAdapter:
             execution_performed=True,
         )
         return McpDurableWorkerRunResult(receipt=receipt, execution_result=execution_result)
+
+
+class FakeSecondTurnResult:
+    """二轮模型服务返回值替身，只暴露 API 层需要的 to_summary。"""
+
+    def to_summary(self):
+        """返回低敏二轮摘要。"""
+
+        return {
+            "schemaVersion": "datasmart.mcp-model-feedback-second-turn.v1",
+            "executed": True,
+            "skipped": False,
+            "reason": "model_second_turn_completed",
+            "summary": "二轮模型已根据安全 MCP 反馈生成总结。",
+            "payloadPolicy": "LOW_SENSITIVE_MODEL_SECOND_TURN_SUMMARY_ONLY",
+        }
+
+
+class FakeSecondTurnService:
+    """记录 API 层传入二轮服务的安全 feedback。"""
+
+    def __init__(self) -> None:
+        self.calls = []
+
+    def run(self, **kwargs):
+        """保存调用参数并返回固定二轮摘要。"""
+
+        self.calls.append(kwargs)
+        return FakeSecondTurnResult()
 
 
 if __name__ == "__main__":
