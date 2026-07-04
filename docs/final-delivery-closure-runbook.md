@@ -93,3 +93,31 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-dependency-r
 - 不再为了“看起来更完整”继续横向新增 Agent 名称、连接器名称或局部控制面字段。
 - 如果新增功能不可避免，必须先说明它属于 P0/P1 闭环缺口，而不是新版本扩展项。
 - 所有真实副作用能力继续默认关闭，只有在权限、审计、幂等、回滚、容量和故障演练就绪后才能启用。
+
+## 7. 最近一次本地验证结果
+
+截至 2026-07-05，本地已完成一次完整收口验证：
+
+```powershell
+.\mvnw.cmd -DskipTests package "-Dmaven.repo.local=D:\Desktop\DataSmart-Govern\DataSmartGovernBackend\.m2"
+```
+
+结果：Maven reactor 10 个模块全部 `BUILD SUCCESS`，并确认编译使用 Java 21。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-dependency-recovery-drill.ps1 `
+  -RecoverKafkaChain `
+  -RestartPythonRuntime `
+  -WaitSeconds 90
+```
+
+结果：`PASS=11, WARN=0, FAIL=0`。脚本按依赖顺序确认 Zookeeper/Kafka 可恢复，并在 Compose service 不可用时按容器名 `datasmart-python-ai-runtime` 兜底重启 Python Runtime，最终恢复到 healthy。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-delivery-closure-check.ps1 `
+  -RunContainerizedDelivery `
+  -RunLiveSmoke `
+  -WriteEvidence
+```
+
+结果：`failedGates=0, gatesWithWarnings=7`，真实只读 E2E smoke 为 `PASS=89, WARN=0, FAIL=0`。warning 来自 Helm/SBOM/镜像签名/备份恢复/容量基线/故障演练/final audit 中尚未在本机强制完成的发布前增强项，例如 Helm 工具链、Cosign/Syft、真实容量压测、真实故障注入和全量测试复跑；这些属于客户或 CI 发布环境应继续补证的生产化事项，不是当前本地闭环失败。

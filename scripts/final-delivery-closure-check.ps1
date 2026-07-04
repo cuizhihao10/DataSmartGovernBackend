@@ -78,7 +78,7 @@ function Convert-GateSummary {
         [int]$ExitCode
     )
 
-    $summaryLine = ($Output | Select-String "\[SUMMARY\]" | Select-Object -Last 1).Line
+    $summaryLine = ($Output | Select-String "PASS=\d+,\s*WARN=\d+,\s*FAIL=\d+" | Select-Object -Last 1).Line
     $pass = $null
     $warn = $null
     $fail = $null
