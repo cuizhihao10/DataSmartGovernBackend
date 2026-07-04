@@ -62,8 +62,16 @@ public class AgentToolActionArtifactBodyReadGrantService {
     private static final int HARD_MAX_READABLE_BYTES = 1024 * 1024;
     private static final Duration DEFAULT_GRANT_TTL = Duration.ofMinutes(10);
 
+    /**
+     * 允许的正文读取目的。
+     *
+     * <p>读取目的不是展示文案，而是安全策略输入：不同目的后续可以绑定不同的脱敏策略、审计等级、
+     * 字节上限和人工复核要求。`RAG_ANSWER_VIEW` 单独列出，是为了让 RAG 答案预览不再借用任务结果查看语义，
+     * 后续对象存储服务可以按“模型答案产物”套用更严格的 prompt/context 泄露检查。</p>
+     */
     private static final Set<String> ALLOWED_PURPOSES = Set.of(
             "TASK_RESULT_VIEW",
+            "RAG_ANSWER_VIEW",
             "AGENT_REVIEW",
             "OPERATOR_DIAGNOSTIC",
             "AUDIT_REVIEW",
@@ -249,7 +257,7 @@ public class AgentToolActionArtifactBodyReadGrantService {
                 null,
                 metadataDecision.evidenceCodes(),
                 List.of("READ_PURPOSE_NOT_ALLOWED"),
-                List.of("将 readPurpose 调整为 TASK_RESULT_VIEW、AGENT_REVIEW、OPERATOR_DIAGNOSTIC、AUDIT_REVIEW 或 HUMAN_APPROVAL_REVIEW。")
+                List.of("将 readPurpose 调整为 TASK_RESULT_VIEW、RAG_ANSWER_VIEW、AGENT_REVIEW、OPERATOR_DIAGNOSTIC、AUDIT_REVIEW 或 HUMAN_APPROVAL_REVIEW。")
         );
     }
 

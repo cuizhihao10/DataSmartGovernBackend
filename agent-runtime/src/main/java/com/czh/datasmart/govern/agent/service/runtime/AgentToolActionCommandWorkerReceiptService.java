@@ -304,6 +304,7 @@ public class AgentToolActionCommandWorkerReceiptService {
             case "WORKER_PRECHECK_PASSED" -> "command_worker_precheck_passed";
             case "EXECUTION_SUCCEEDED" -> "command_worker_execution_succeeded";
             case "EXECUTION_FAILED" -> "command_worker_execution_failed";
+            case "RAG_QUERY_COMPLETED" -> "command_worker_rag_query_completed";
             case "EXECUTION_SKIPPED" -> "command_worker_execution_skipped";
             case "CAPACITY_LIMITED" -> "command_worker_capacity_limited";
             case "COMPENSATION_REQUIRED" -> "command_worker_compensation_required";
@@ -330,6 +331,7 @@ public class AgentToolActionCommandWorkerReceiptService {
             case "WORKER_PRECHECK_PASSED" -> "AGENT_COMMAND_WORKER_PRECHECK_PASSED";
             case "EXECUTION_SUCCEEDED" -> "AGENT_COMMAND_WORKER_EXECUTION_SUCCEEDED";
             case "EXECUTION_FAILED" -> "AGENT_COMMAND_WORKER_EXECUTION_FAILED";
+            case "RAG_QUERY_COMPLETED" -> "AGENT_RAG_QUERY_COMPLETED";
             case "EXECUTION_SKIPPED" -> "AGENT_COMMAND_WORKER_EXECUTION_SKIPPED";
             case "CAPACITY_LIMITED" -> "AGENT_COMMAND_WORKER_CAPACITY_LIMITED";
             case "COMPENSATION_REQUIRED" -> "AGENT_COMMAND_WORKER_COMPENSATION_REQUIRED";
@@ -341,6 +343,7 @@ public class AgentToolActionCommandWorkerReceiptService {
         return switch (outcome) {
             case "WORKER_PRECHECK_PASSED", "FAILED_PRECHECK" -> "PRECHECK_ONLY";
             case "EXECUTION_SUCCEEDED", "EXECUTION_FAILED" -> "EXECUTION_RESULT";
+            case "RAG_QUERY_COMPLETED" -> "READ_ONLY_QUERY_SUMMARY";
             case "COMPENSATION_REQUIRED" -> "COMPENSATION_REQUIRED";
             default -> "RECEIPT_SUMMARY";
         };
@@ -352,6 +355,7 @@ public class AgentToolActionCommandWorkerReceiptService {
             case "WORKER_PRECHECK_PASSED" -> "受控命令 worker 侧复核已通过，尚未进入真实副作用执行。";
             case "EXECUTION_SUCCEEDED" -> "受控命令 worker 已完成受控执行，并写回低敏执行成功回执。";
             case "EXECUTION_FAILED" -> "受控命令 worker 执行失败，已写回低敏失败摘要，正文输出不进入 timeline。";
+            case "RAG_QUERY_COMPLETED" -> "RAG 只读查询已完成，答案正文必须继续通过 artifact grant 与 final-check 受控读取。";
             case "EXECUTION_SKIPPED" -> "受控命令 worker 跳过执行，等待后续调度或人工处理。";
             case "CAPACITY_LIMITED" -> "受控命令 worker 受容量保护限制，暂未进入真实执行。";
             case "COMPENSATION_REQUIRED" -> "受控命令 worker 声明需要补偿处理，请进入任务运维流程。";
@@ -423,7 +427,6 @@ public class AgentToolActionCommandWorkerReceiptService {
         }
         return text;
     }
-
     private void validatePath(String value, String fieldName) {
         if (value == null || value.isBlank()) {
             throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST, fieldName + " 不能为空");

@@ -39,6 +39,10 @@ class AgentToolActionArtifactBodyReadFinalCheckServiceTest {
     private static final String COMMAND_ID = "cmd-worker-001";
     private static final String EXECUTOR_ID = "agent-command-worker";
     private static final String ARTIFACT_REFERENCE = "agent-artifact:run-command/receipt-001";
+    private static final String RAG_SESSION_ID = "session-rag-001";
+    private static final String RAG_RUN_ID = "run-rag-001";
+    private static final String RAG_COMMAND_ID = "cmd-rag-001";
+    private static final String RAG_ARTIFACT_REFERENCE = "agent-artifact:run-rag-001/cmd-rag-001/rag-answer";
 
     @Test
     void shouldReturnOnlyClippedSafePreviewAfterGrantRecheck() throws JsonProcessingException {
@@ -89,6 +93,51 @@ class AgentToolActionArtifactBodyReadFinalCheckServiceTest {
         assertFalse(json.contains("cmd-lease:"));
         assertFalse(json.contains("fencingToken"));
         assertFalse(json.contains("commandLine"));
+    }
+
+    @Test
+    void shouldAllowRagAnswerSafePreviewAfterGrantAndFinalCheck() throws JsonProcessingException {
+        InMemoryAgentRuntimeEventProjectionStore projectionStore =
+                new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        InMemoryAgentToolActionArtifactBodyReadGrantStore grantStore = grantStore();
+        appendRagCommandWorkerReceipt(projectionStore);
+        AgentToolActionArtifactBodyReadGrantResponse grant = issueRagGrant(projectionStore, grantStore,
+                "TRUNCATED_TEXT_PREVIEW", 64 * 1024);
+        AgentToolActionArtifactBodyReadFinalCheckService service = finalCheckService(projectionStore, grantStore);
+
+        AgentToolActionArtifactBodyReadFinalCheckResponse response = service.finalCheck(
+                ragFinalCheckRequest(grant.grantDecisionReference(), "TRUNCATED_TEXT_PREVIEW",
+                        64 * 1024, 256,
+                        "RAG 答案摘要：检索阶段命中 4 个候选片段，最终引用 2 个片段，建议继续查看来源摘要。"),
+                projectOwnerContext(List.of(20L))
+        );
+
+        assertTrue(response.allowed());
+        assertEquals("ALLOWED_SAFE_PREVIEW_AFTER_FINAL_CHECK", response.decision());
+        assertEquals(RAG_COMMAND_ID, response.commandId());
+        assertEquals(RAG_ARTIFACT_REFERENCE, response.artifactReference());
+        assertEquals("AGENT_RAG_ANSWER_ARTIFACT", response.artifactReferenceType());
+        assertEquals("RAG_ANSWER_VIEW", response.readPurpose());
+        assertEquals("RAG_QUERY_COMPLETED", response.receiptOutcome());
+        assertEquals("knowledge.rag.query", response.toolCode());
+        assertTrue(response.safePreviewReturned());
+        assertNotNull(response.safePreviewText());
+        assertFalse(response.bodyContentReturned());
+        assertFalse(response.signedUrlIssued());
+        assertFalse(response.bearerTokenIssued());
+        assertTrue(response.evidenceCodes().contains("RAG_READ_ONLY_ANSWER_ARTIFACT_ELIGIBLE"));
+        assertTrue(response.evidenceCodes().contains("SAFE_PREVIEW_CLIPPED_BY_HOST_POLICY"));
+
+        /*
+         * 这里允许返回的是对象存储服务已脱敏后的短预览，不允许携带压缩上下文、sourceUri、
+         * bucket/key、签名 URL、token 或完整模型输出正文。artifactReference 本身是低敏逻辑引用。
+         */
+        String json = new ObjectMapper().findAndRegisterModules().writeValueAsString(response);
+        assertFalse(json.contains("compressedContext"));
+        assertFalse(json.contains("sourceUri"));
+        assertFalse(json.contains("https://"));
+        assertFalse(json.contains("bucketName"));
+        assertFalse(json.contains("objectKey"));
     }
 
     @Test
@@ -223,6 +272,17 @@ class AgentToolActionArtifactBodyReadFinalCheckServiceTest {
         );
     }
 
+    private AgentToolActionArtifactBodyReadGrantResponse issueRagGrant(
+            InMemoryAgentRuntimeEventProjectionStore projectionStore,
+            AgentToolActionArtifactBodyReadGrantStore grantStore,
+            String contentMode,
+            Integer maxReadableBytes) {
+        return bodyReadGrantService(projectionStore, grantStore).grantBodyRead(
+                ragBodyReadGrantRequest(contentMode, maxReadableBytes),
+                projectOwnerContext(List.of(20L))
+        );
+    }
+
     private void appendSuccessfulCommandWorkerReceipt(InMemoryAgentRuntimeEventProjectionStore projectionStore) {
         AgentToolActionWorkerReceiptIndexService indexService =
                 new AgentToolActionWorkerReceiptIndexService(
@@ -234,6 +294,20 @@ class AgentToolActionArtifactBodyReadFinalCheckServiceTest {
                 new AgentToolActionCommandWorkerReceiptService(projectionStore, indexService, leaseService);
 
         receiptService.receive(SESSION_ID, RUN_ID, "trace-artifact-body-final-check", successRequest(lease));
+    }
+
+    private void appendRagCommandWorkerReceipt(InMemoryAgentRuntimeEventProjectionStore projectionStore) {
+        AgentToolActionWorkerReceiptIndexService indexService =
+                new AgentToolActionWorkerReceiptIndexService(
+                        new InMemoryAgentToolActionWorkerReceiptIndexStore(100));
+        AgentToolActionCommandWorkerReceiptService receiptService =
+                new AgentToolActionCommandWorkerReceiptService(
+                        projectionStore,
+                        indexService,
+                        new AgentCommandWorkerLeaseService(new InMemoryAgentCommandWorkerLeaseStore())
+                );
+
+        receiptService.receive(RAG_SESSION_ID, RAG_RUN_ID, "trace-rag-body-final-check", ragReceiptRequest());
     }
 
     private AgentToolActionCommandWorkerReceiptRequest successRequest(AgentCommandWorkerLeaseRecord lease) {
@@ -273,6 +347,43 @@ class AgentToolActionArtifactBodyReadFinalCheckServiceTest {
         );
     }
 
+    private AgentToolActionCommandWorkerReceiptRequest ragReceiptRequest() {
+        return new AgentToolActionCommandWorkerReceiptRequest(
+                RAG_COMMAND_ID,
+                null,
+                null,
+                "python-rag-query-worker",
+                10L,
+                20L,
+                30L,
+                "SUCCEEDED",
+                "RAG_QUERY_COMPLETED",
+                true,
+                false,
+                false,
+                false,
+                null,
+                null,
+                null,
+                "ALLOW_READ_ONLY_RAG_QUERY",
+                "rag-policy.v1",
+                List.of(),
+                0,
+                0,
+                "AGENT_RAG_ANSWER_ARTIFACT",
+                RAG_ARTIFACT_REFERENCE,
+                true,
+                null,
+                "rag-query:sha256:abcdef123456",
+                "knowledge.rag.query",
+                "python-ai-runtime-rag",
+                "READ_ONLY_QUERY_SUMMARY",
+                "RAG 查询已完成低敏回执，答案正文需通过 artifact grant 读取。",
+                List.of("通过 artifact grant 读取答案正文。"),
+                "rag-worker:run-rag-001:cmd-rag-001"
+        );
+    }
+
     private AgentCommandWorkerLeaseRecord claimLease(AgentCommandWorkerLeaseService leaseService) {
         AgentCommandWorkerLeaseClaimResult result = leaseService.claim(
                 SESSION_ID,
@@ -306,6 +417,26 @@ class AgentToolActionArtifactBodyReadFinalCheckServiceTest {
         );
     }
 
+    private AgentToolActionArtifactBodyReadGrantRequest ragBodyReadGrantRequest(
+            String contentMode,
+            Integer maxReadableBytes) {
+        return new AgentToolActionArtifactBodyReadGrantRequest(
+                RAG_COMMAND_ID,
+                RAG_ARTIFACT_REFERENCE,
+                "AGENT_RAG_ANSWER_ARTIFACT",
+                "RAG_ANSWER_VIEW",
+                contentMode,
+                maxReadableBytes,
+                "10",
+                "20",
+                null,
+                RAG_RUN_ID,
+                RAG_SESSION_ID,
+                "knowledge.rag.query",
+                "agent-runtime"
+        );
+    }
+
     private AgentToolActionArtifactBodyReadFinalCheckRequest finalCheckRequest(
             String commandId,
             String grantDecisionReference,
@@ -331,6 +462,34 @@ class AgentToolActionArtifactBodyReadFinalCheckServiceTest {
                 RUN_ID,
                 SESSION_ID,
                 "command.run-program",
+                "agent-runtime"
+        );
+    }
+
+    private AgentToolActionArtifactBodyReadFinalCheckRequest ragFinalCheckRequest(
+            String grantDecisionReference,
+            String contentMode,
+            Integer maxReadableBytes,
+            Integer requestedMaxPreviewBytes,
+            String sanitizedPreviewText) {
+        return new AgentToolActionArtifactBodyReadFinalCheckRequest(
+                RAG_COMMAND_ID,
+                RAG_ARTIFACT_REFERENCE,
+                "AGENT_RAG_ANSWER_ARTIFACT",
+                grantDecisionReference,
+                "RAG_ANSWER_VIEW",
+                contentMode,
+                maxReadableBytes,
+                requestedMaxPreviewBytes,
+                "text/plain; charset=utf-8",
+                sanitizedPreviewText == null ? 0L : (long) sanitizedPreviewText.length(),
+                sanitizedPreviewText,
+                "10",
+                "20",
+                null,
+                RAG_RUN_ID,
+                RAG_SESSION_ID,
+                "knowledge.rag.query",
                 "agent-runtime"
         );
     }

@@ -232,6 +232,58 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
     }
 
     @Test
+    void ragQueryCompletedShouldUseReadOnlyReceiptModeWithoutWorkerLease() {
+        InMemoryAgentRuntimeEventProjectionStore projectionStore =
+                new InMemoryAgentRuntimeEventProjectionStore(10, 100);
+        InMemoryAgentToolActionWorkerReceiptIndexStore indexStore =
+                new InMemoryAgentToolActionWorkerReceiptIndexStore(100);
+        AgentToolActionWorkerReceiptIndexService indexService =
+                new AgentToolActionWorkerReceiptIndexService(indexStore);
+        AgentToolActionCommandWorkerReceiptService service =
+                new AgentToolActionCommandWorkerReceiptService(projectionStore, indexService, leaseService());
+
+        AgentToolActionCommandWorkerReceiptResponse response = service.receive(
+                "session-rag-001",
+                "run-rag-001",
+                "trace-rag-receipt",
+                ragQueryCompletedRequest()
+        );
+
+        assertTrue(response.accepted());
+        assertFalse(response.sideEffectExecuted());
+        assertEquals("RAG_QUERY_COMPLETED", response.outcome());
+
+        AgentRuntimeEventProjectionRecord record = projectionStore.listByRunId("run-rag-001").getFirst();
+        assertEquals("command_worker_rag_query_completed", record.stage());
+        assertEquals(true, record.attributes().get("preCheckPassed"));
+        assertEquals(false, record.attributes().get("sideEffectStarted"));
+        assertEquals(false, record.attributes().get("sideEffectExecuted"));
+        assertEquals(false, record.attributes().get("workerLeaseRequired"));
+        assertEquals(false, record.attributes().get("workerLeaseTokenPresent"));
+        assertEquals("AGENT_RAG_QUERY_COMPLETED", record.attributes().get("errorCode"));
+        assertEquals("READ_ONLY_QUERY_SUMMARY", record.attributes().get("workerReceiptMode"));
+        assertEquals("AGENT_RAG_ANSWER_ARTIFACT", record.attributes().get("artifactReferenceType"));
+        assertEquals("knowledge.rag.query", record.attributes().get("toolCode"));
+
+        List<AgentToolActionWorkerReceiptIndexRecord> indexRecords = indexStore.queryByCommandId(
+                new AgentToolActionWorkerReceiptIndexQuery(
+                        "cmd-rag-001",
+                        "knowledge.rag.query",
+                        "10",
+                        "20",
+                        "30",
+                        "run-rag-001",
+                        "session-rag-001",
+                        List.of("20"),
+                        10
+                )
+        );
+        assertEquals(1, indexRecords.size());
+        assertEquals("RAG_QUERY_COMPLETED", indexRecords.getFirst().outcome());
+        assertEquals(false, indexRecords.getFirst().sideEffectExecuted());
+    }
+
+    @Test
     void sensitiveMessageShouldBeRejectedBeforeEnteringTimeline() {
         AgentCommandWorkerLeaseService leaseService = leaseService();
         AgentCommandWorkerLeaseRecord lease = claimLease(leaseService, EXECUTOR_ID);
@@ -324,6 +376,43 @@ class AgentToolActionCommandWorkerReceiptServiceTest {
     private AgentToolActionCommandWorkerReceiptRequest successRequest(AgentCommandWorkerLeaseRecord lease) {
         return request("EXECUTION_SUCCEEDED", true, true, true,
                 "ALLOW_CONTROLLED_EXECUTION", List.of(), lease);
+    }
+
+    private AgentToolActionCommandWorkerReceiptRequest ragQueryCompletedRequest() {
+        return new AgentToolActionCommandWorkerReceiptRequest(
+                "cmd-rag-001",
+                null,
+                null,
+                "python-rag-query-worker",
+                10L,
+                20L,
+                30L,
+                "SUCCEEDED",
+                "RAG_QUERY_COMPLETED",
+                true,
+                false,
+                false,
+                false,
+                null,
+                null,
+                null,
+                "ALLOW_READ_ONLY_RAG_QUERY",
+                "rag-policy.v1",
+                List.of(),
+                0,
+                0,
+                "AGENT_RAG_ANSWER_ARTIFACT",
+                "agent-artifact:run-rag-001/cmd-rag-001/rag-answer",
+                true,
+                null,
+                "rag-query:sha256:abcdef123456",
+                "knowledge.rag.query",
+                "python-ai-runtime-rag",
+                null,
+                null,
+                List.of("通过 artifact grant 读取答案正文。"),
+                "rag-worker:run-rag-001:cmd-rag-001"
+        );
     }
 
     private AgentToolActionCommandWorkerReceiptRequest request(String outcome,

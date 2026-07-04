@@ -16,6 +16,7 @@ import org.springframework.stereotype.Service;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
@@ -53,6 +54,9 @@ public class AgentToolActionArtifactAccessAuthorizationService {
 
     private static final int HOT_WINDOW_QUERY_LIMIT = 1000;
     private static final String DEFAULT_ACCESS_MODE = "METADATA_ONLY";
+    private static final String RAG_QUERY_COMPLETED_OUTCOME = "RAG_QUERY_COMPLETED";
+    private static final String RAG_ANSWER_ARTIFACT_TYPE = "AGENT_RAG_ANSWER_ARTIFACT";
+    private static final String RAG_QUERY_TOOL_CODE = "knowledge.rag.query";
 
     private final AgentRuntimeEventProjectionStore projectionStore;
     private final AgentRuntimeEventProjectionAccessSupport accessSupport;
@@ -177,15 +181,33 @@ public class AgentToolActionArtifactAccessAuthorizationService {
      * 判断 artifact 所属生命周期是否已经进入可查询阶段。
      *
      * <p>执行前预检通过并不等于产物已经生成。当前允许 EXECUTION_SUCCEEDED、EXECUTION_FAILED、
-     * COMPENSATION_REQUIRED 这类执行后或补偿相关状态进入 metadata-only 访问预授权；FAILED_PRECHECK
-     * 和 WORKER_PRECHECK_PASSED 则不应开放 artifact 读取链路。</p>
+     * COMPENSATION_REQUIRED 这类执行后或补偿相关状态进入 metadata-only 访问预授权；RAG_QUERY_COMPLETED
+     * 只有在 toolCode/artifactReferenceType 同时表明它是只读 RAG answer artifact 时才允许进入下一道门。
+     * FAILED_PRECHECK 和 WORKER_PRECHECK_PASSED 则不应开放 artifact 读取链路。</p>
      */
     private boolean artifactLifecycleEligible(AgentRuntimeEventProjectionRecord record) {
         String outcome = text(record.attributes(), "outcome");
         return "EXECUTION_SUCCEEDED".equals(outcome)
                 || "EXECUTION_FAILED".equals(outcome)
                 || "COMPENSATION_REQUIRED".equals(outcome)
+                || ragReadOnlyAnswerArtifactEligible(record, outcome)
                 || bool(record.attributes(), "sideEffectExecuted");
+    }
+
+    /**
+     * RAG answer artifact 的生命周期例外。
+     *
+     * <p>RAG 查询是典型的只读 Agent 能力：Python worker 不应该声明 sideEffectStarted/sideEffectExecuted，
+     * 否则会把“读取知识并生成答案”误解释成“执行了命令或写入了业务系统”。但它确实会把答案正文写入 MinIO/S3
+     * 这类受控 artifact store，所以 Java 控制面需要允许 `RAG_QUERY_COMPLETED` 在 artifactAvailable=true 后
+     * 进入 metadata-only 预授权链路。这里同时收口 toolCode 与 artifactReferenceType，避免任意自定义 outcome
+     * 伪装成 RAG 查询来绕过普通命令产物生命周期门禁。</p>
+     */
+    private boolean ragReadOnlyAnswerArtifactEligible(AgentRuntimeEventProjectionRecord record, String outcome) {
+        Map<String, Object> attributes = record.attributes();
+        return RAG_QUERY_COMPLETED_OUTCOME.equals(outcome)
+                && RAG_ANSWER_ARTIFACT_TYPE.equals(text(attributes, "artifactReferenceType"))
+                && RAG_QUERY_TOOL_CODE.equals(text(attributes, "toolCode"));
     }
 
     private AgentToolActionArtifactAccessAuthorizationResponse authorizedMetadataOnly(
@@ -200,20 +222,35 @@ public class AgentToolActionArtifactAccessAuthorizationService {
                 artifactReference,
                 requestedAccessMode,
                 record,
-                List.of(
-                        "RUNTIME_EVENT_SCOPE_RESTRICTED",
-                        "ARTIFACT_REFERENCE_SAFE_SCHEME",
-                        "COMMAND_WORKER_RECEIPT_MATCHED",
-                        "ARTIFACT_AVAILABLE_DECLARED",
-                        "ARTIFACT_BODY_NOT_RETURNED",
-                        "SIGNED_URL_NOT_ISSUED"
-                ),
+                authorizedEvidenceCodes(record),
                 List.of(),
                 List.of(
                         "可以进入对象存储/制品服务的下一段鉴权，但当前接口不返回正文或签名 URL。",
                         "正文读取仍需校验对象存储权限、DLP/恶意内容扫描、下载审计和保留期策略。"
                 )
         );
+    }
+
+    /**
+     * 构造授权通过证据码。
+     *
+     * <p>普通命令 artifact 和 RAG answer artifact 共用同一条响应 DTO，但 RAG 的产品语义不同：
+     * 它不是“副作用执行成功后的输出”，而是“只读检索/生成完成后的受控答案产物”。额外证据码能帮助前端、
+     * 审计系统和回归测试识别这条路径，后续排查时也不用反推 outcome/toolCode/artifactType 的组合含义。</p>
+     */
+    private List<String> authorizedEvidenceCodes(AgentRuntimeEventProjectionRecord record) {
+        List<String> evidenceCodes = new ArrayList<>(List.of(
+                "RUNTIME_EVENT_SCOPE_RESTRICTED",
+                "ARTIFACT_REFERENCE_SAFE_SCHEME",
+                "COMMAND_WORKER_RECEIPT_MATCHED",
+                "ARTIFACT_AVAILABLE_DECLARED",
+                "ARTIFACT_BODY_NOT_RETURNED",
+                "SIGNED_URL_NOT_ISSUED"
+        ));
+        if (ragReadOnlyAnswerArtifactEligible(record, text(record.attributes(), "outcome"))) {
+            evidenceCodes.add("RAG_READ_ONLY_ANSWER_ARTIFACT_ELIGIBLE");
+        }
+        return List.copyOf(evidenceCodes);
     }
 
     private AgentToolActionArtifactAccessAuthorizationResponse deniedNoReceipt(
@@ -268,7 +305,7 @@ public class AgentToolActionArtifactAccessAuthorizationService {
                 record,
                 List.of("RUNTIME_EVENT_SCOPE_RESTRICTED", "COMMAND_WORKER_RECEIPT_MATCHED"),
                 List.of("COMMAND_WORKER_RECEIPT_BEFORE_ARTIFACT_READABLE_STAGE"),
-                List.of("只有执行成功、执行失败或补偿相关 receipt 才能进入 artifact 元数据访问预授权。")
+                List.of("只有执行成功、执行失败、补偿相关 receipt，或 RAG_QUERY_COMPLETED 的只读答案 artifact 才能进入 artifact 元数据访问预授权。")
         );
     }
 
