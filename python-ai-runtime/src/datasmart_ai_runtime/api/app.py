@@ -48,6 +48,7 @@ from datasmart_ai_runtime.api.agent.orchestrator_factory import (
 from datasmart_ai_runtime.api.agent.capabilities import register_agent_capability_routes
 from datasmart_ai_runtime.api.agent.langgraph_checkpoints import register_langgraph_checkpoint_routes
 from datasmart_ai_runtime.api.agent.mcp_worker import register_mcp_durable_worker_routes
+from datasmart_ai_runtime.api.agent.rag_command_worker import register_rag_command_worker_routes
 from datasmart_ai_runtime.api.agent.routes import register_agent_runtime_routes
 from datasmart_ai_runtime.api.agent.plan_response import build_plan_response
 from datasmart_ai_runtime.api.lifecycle import register_lifecycle_handler
@@ -95,13 +96,15 @@ from datasmart_ai_runtime.services.model_gateway import (
 from datasmart_ai_runtime.services.model_gateway.model_provider import model_provider_registry_from_env
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.platform_convergence import default_platform_convergence_diagnostics_service
-from datasmart_ai_runtime.services.rag import build_default_governance_rag_pipeline
+from datasmart_ai_runtime.services.rag import RagCommandWorkerRunner, build_default_governance_rag_pipeline
 from datasmart_ai_runtime.services.runtime_events.runtime_event_components import (
     build_runtime_event_components,
     runtime_event_component_diagnostics,
 )
 from datasmart_ai_runtime.services.skills import build_skill_publication_manifest_diagnostics_service
 from datasmart_ai_runtime.services.tools import (
+    JavaCommandWorkerReceiptClient,
+    JavaCommandWorkerReceiptClientSettings,
     LangGraphExecutionGateMetrics,
     ToolActionCheckpointMetrics,
     build_tool_action_execution_checkpoint_store,
@@ -179,6 +182,11 @@ def create_app() -> Any:
         model_providers=model_provider_registry,
         embedding_provider=rag_embedding_provider,
     )
+    # RAG command worker 是 Java command outbox -> Python Runtime 的内部消费入口：
+    # - 普通 `/agent/rag/query` 仍保留学习/调试友好的 answer/citations 返回；
+    # - command worker 只返回低敏 receipt、javaReceiptPayload 与 LangGraph checkpoint locator；
+    # - 真实答案正文后续应写入 MinIO/受控 artifact，再通过 artifact grant 二次授权读取。
+    rag_command_worker_runner = RagCommandWorkerRunner(rag_pipeline=rag_pipeline)
     # Durable Agent Loop 的状态仓储必须在应用启动时统一装配，不能让每个请求临时创建 store：
     # - 默认 in-memory 兼容本地学习与单测；
     # - 生产设置 DATASMART_AGENT_DURABLE_LOOP_STORE=redis 后，同一 run 可跨实例、跨重启恢复；
@@ -195,6 +203,22 @@ def create_app() -> Any:
     langgraph_checkpoint_store = build_langgraph_checkpoint_store(langgraph_checkpoint_store_settings)
     langgraph_checkpointer_service = LangGraphDurableCheckpointerService(langgraph_checkpoint_store)
     agent_runtime_base_url = os.getenv("DATASMART_AGENT_RUNTIME_BASE_URL")
+    # Java command worker receipt client 默认关闭，避免本地学习或单元测试因为传入 postToJava=true
+    # 就误写真实 Java 控制面。E2E/生产环境可以显式设置：
+    # - DATASMART_COMMAND_WORKER_RECEIPT_CLIENT_ENABLED=true
+    # - DATASMART_AGENT_RUNTIME_BASE_URL=http://agent-runtime:8091
+    # - DATASMART_COMMAND_WORKER_RECEIPT_FAIL_CLOSED=true 让写回失败交给外层队列重试/死信。
+    command_worker_receipt_client = JavaCommandWorkerReceiptClient(
+        JavaCommandWorkerReceiptClientSettings(
+            enabled=_truthy_env("DATASMART_COMMAND_WORKER_RECEIPT_CLIENT_ENABLED"),
+            base_url=(
+                os.getenv("DATASMART_COMMAND_WORKER_RECEIPT_BASE_URL")
+                or agent_runtime_base_url
+                or "http://localhost:8091"
+            ),
+            fail_open=not _truthy_env("DATASMART_COMMAND_WORKER_RECEIPT_FAIL_CLOSED"),
+        )
+    )
     # 出站 MCP Client 是外部工具生态的连接层，不等同于已有 MCP preview 接口。
     #
     # 安全与启动策略：
@@ -618,6 +642,12 @@ def create_app() -> Any:
         app,
         rag_pipeline=rag_pipeline,
         langgraph_checkpointer_service=langgraph_checkpointer_service,
+    )
+    register_rag_command_worker_routes(
+        app,
+        worker_runner=rag_command_worker_runner,
+        langgraph_checkpointer_service=langgraph_checkpointer_service,
+        receipt_client=command_worker_receipt_client,
     )
     # LangGraph checkpoint 控制面在这里集中挂载，并复用启动期创建的同一个 checkpointer service。
     # 这样 MCP worker、长期记忆节点、多 Agent runner 和后续 Java/gateway 查询看到的是同一条 thread/event
