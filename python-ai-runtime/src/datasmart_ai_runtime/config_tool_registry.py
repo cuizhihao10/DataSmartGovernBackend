@@ -131,6 +131,60 @@ def default_tool_registry() -> tuple[ToolDefinition, ...]:
             cache_policy="session_only",
         ),
         ToolDefinition(
+            name="knowledge.rag.query",
+            description=(
+                "执行受控治理知识 RAG 查询。该工具只接收 queryRef、scopePolicy、evidencePolicy 等低敏引用，"
+                "真实用户问题、检索正文、引用 URL、压缩上下文和模型回答只能在 RAG 执行器内部处理，"
+                "并通过 LangGraph checkpoint 写入低敏节点摘要。"
+            ),
+            risk_level=ToolRiskLevel.LOW,
+            execution_mode=ToolExecutionMode.SYNC,
+            required_permissions=("agent:rag:query",),
+            target_service="python-ai-runtime",
+            target_endpoint="/agent/rag/query",
+            input_schema={
+                "queryRef": {
+                    "type": "object",
+                    "required": True,
+                    "sensitive": True,
+                    "resolution": "derived",
+                    "description": (
+                        "RAG 查询的低敏引用，包含 queryDigest、长度、来源和物化策略；"
+                        "不得把用户原始问题写入 AgentPlan、runtime event 或 Java projection。"
+                    ),
+                },
+                "scopePolicy": {
+                    "type": "object",
+                    "required": True,
+                    "sensitive": False,
+                    "resolution": "system_injected",
+                    "description": "租户、项目、workspace、sourceTypes 和标签过滤策略摘要，用于检索前先做权限范围收敛。",
+                },
+                "evidencePolicy": {
+                    "type": "object",
+                    "required": True,
+                    "sensitive": False,
+                    "resolution": "derived",
+                    "description": "证据门控策略，例如最少匹配词、最少证据数、是否允许无证据生成和 citation 约束。",
+                },
+            },
+            output_schema={
+                "retrievalSummary": {
+                    "type": "object",
+                    "description": "只允许返回候选数、接受证据数、弱证据拒绝数、citation 数和 failClosed 等摘要。",
+                }
+            },
+            read_only=True,
+            idempotent=True,
+            allowed_actions=("QUERY_RAG", "RETRIEVE_WITH_EVIDENCE_GATE", "ANSWER_WITH_CITATIONS"),
+            tool_type="GOVERNANCE_RAG",
+            tenant_scoped=True,
+            project_scoped=True,
+            sensitive_fields=("queryRef",),
+            memory_write_policy="none",
+            cache_policy="project_safe",
+        ),
+        ToolDefinition(
             name="web.search.query",
             description=(
                 "生成受控网页搜索请求草案。该工具只产生 searchQueryRef、Provider allowlist、缓存 TTL、"

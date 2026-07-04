@@ -48,6 +48,7 @@ class MultiAgentTurnRunnerTest(unittest.TestCase):
                 "langgraph.multi_agent_turn.load_execution_session",
                 "langgraph.multi_agent_turn.select_turn_candidates",
                 "langgraph.multi_agent_turn.build_manager_as_tools",
+                "langgraph.multi_agent_turn.bind_knowledge_agent_rag_capabilities",
                 "langgraph.multi_agent_turn.enforce_runner_policy",
                 "langgraph.multi_agent_turn.prepare_control_plane_handoff",
                 "langgraph.multi_agent_turn.finalize_turn_runner",
@@ -71,7 +72,9 @@ class MultiAgentTurnRunnerTest(unittest.TestCase):
         self.assertTrue(summary["capabilities"]["managerAsToolsPlanning"])
         self.assertTrue(summary["capabilities"]["controlPlaneHandoffPlanning"])
         self.assertTrue(summary["capabilities"]["sideEffectGuardrails"])
+        self.assertFalse(summary["capabilities"]["knowledgeRagPlanning"])
         self.assertEqual(2, summary["turnAttemptCount"])
+        self.assertEqual(0, summary["knowledgeAgentCapabilityCount"])
         self.assertEqual(2, summary["controlPlaneHandoffCount"])
         self.assertFalse(summary["sideEffectBoundary"]["toolExecutedByPython"])
         self.assertFalse(summary["sideEffectBoundary"]["modelCalledByTurnRunner"])
@@ -89,6 +92,58 @@ class MultiAgentTurnRunnerTest(unittest.TestCase):
         self.assertNotIn("secret-datasource-id", serialized)
         self.assertNotIn("select * from hidden_customer", serialized)
         self.assertNotIn("toolArguments", serialized)
+
+    def test_knowledge_agent_turn_binds_rag_capability_contract(self) -> None:
+        """KNOWLEDGE_AGENT 参与时，turn runner 应输出 RAG 可调度能力合同。
+
+        这里验证的不是 RAG 算法效果，而是多 Agent 执行层是否真正认识“知识 Agent 可以被主控调度
+        去执行受控 RAG”。合同必须声明 LangGraph 节点、证据门控和 Java 控制面边界，同时不能泄露
+        用户问题、知识正文、sourceUri 或模型回答。
+        """
+
+        workflow = LangGraphMultiAgentTurnRunnerWorkflow(
+            langgraph_api=LangGraphApi(state_graph=FakeStateGraph, start="START", end="END")
+        )
+
+        diagnostics = workflow.run(
+            request=_request(),
+            plan=_plan(),
+            execution_session={
+                "status": "READY_FOR_CONTROL_PLANE_HANDOFF",
+                "durablePhase": "ready_for_second_turn",
+                "workItems": (
+                    {
+                        "workItemId": "workitem-knowledge-rag",
+                        "agentRole": "KNOWLEDGE_AGENT",
+                        "deliveryTier": "controlled_scope",
+                        "sessionStatus": "READY_FOR_AGENT_TURN",
+                        "resumeAction": "PREPARE_RAG_EVIDENCE_TURN",
+                        "executionLane": "DOMAIN_SPECIALIST_DRAFT",
+                        "plannedToolCount": 1,
+                        "visibleSkillCount": 1,
+                        "toolArguments": {"question": "secret rag question", "sourceUri": "internal://hidden-doc"},
+                    },
+                ),
+            },
+            command_proposal_templates=_command_templates(),
+            durable_loop={"runId": "run-rag", "phase": "ready_for_second_turn", "attributes": {"turnDepth": 1}},
+        )
+        summary = diagnostics.to_summary()
+        capability = summary["knowledgeAgentCapabilities"][0]
+        serialized = str(summary)
+
+        self.assertTrue(summary["capabilities"]["knowledgeRagPlanning"])
+        self.assertEqual(1, summary["knowledgeAgentCapabilityCount"])
+        self.assertEqual("knowledge.rag.query", capability["capabilityCode"])
+        self.assertEqual("datasmart.agent.governance-rag", capability["langGraphGraphName"])
+        self.assertIn("rag_retrieve_knowledge", capability["langGraphNodes"])
+        self.assertIn("rag_evidence_gate", capability["langGraphNodes"])
+        self.assertIn("RAG_EVIDENCE_GATE_REQUIRED", capability["requiredEvidenceCodes"])
+        self.assertFalse(capability["sideEffectBoundary"]["ragExecutedByTurnRunner"])
+        self.assertFalse(capability["sideEffectBoundary"]["modelCalledByTurnRunner"])
+        self.assertTrue(capability["sideEffectBoundary"]["javaControlPlaneRequiredForSideEffects"])
+        self.assertNotIn("secret rag question", serialized)
+        self.assertNotIn("internal://hidden-doc", serialized)
 
     def test_plan_response_contains_turn_runner_and_runtime_event(self) -> None:
         """`/agent/plans` 应返回 turn runner，并把合同写入 runtime event envelope。"""

@@ -8,6 +8,7 @@
 - `langgraph_execution_plan`：把会话调度事实转换为执行前多 Agent 工作项和协作边；
 - `controlled_execution_session`：把执行前工作项转换为可恢复、可观察、无副作用的受控多 Agent 会话；
 - `controlled_turn_runner`：把受控会话继续推进为 turn attempt、manager-as-tools 和 Java 控制面 handoff 合同；
+- `knowledge_agent_capability`：把治理知识 RAG 暴露为 KNOWLEDGE_AGENT 的低敏可调度能力合同；
 - 后续如果补真实 checkpoint store、Agent host 或 worker handoff，也应优先放在本包下。
 
 当前包内模块仍然只处理低敏控制面事实，不执行工具、不调用模型、不写 outbox。
@@ -30,6 +31,10 @@ from datasmart_ai_runtime.services.multi_agent.controlled_turn_runner import (
 from datasmart_ai_runtime.services.multi_agent.turn_runner_events import (
     build_multi_agent_turn_runner_runtime_event,
 )
+from datasmart_ai_runtime.services.multi_agent.knowledge_agent_capability import (
+    KNOWLEDGE_RAG_CAPABILITY_CODE,
+    build_knowledge_agent_rag_capabilities,
+)
 
 __all__ = [
     "ControlledMultiAgentExecutionSession",
@@ -41,4 +46,6 @@ __all__ = [
     "LangGraphMultiAgentTurnRunnerWorkflow",
     "build_agent_execution_session_runtime_event",
     "build_multi_agent_turn_runner_runtime_event",
+    "KNOWLEDGE_RAG_CAPABILITY_CODE",
+    "build_knowledge_agent_rag_capabilities",
 ]

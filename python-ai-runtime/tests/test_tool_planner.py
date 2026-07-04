@@ -207,6 +207,42 @@ class ToolPlannerTest(unittest.TestCase):
         self.assertNotIn(raw_query, serialized)
         self.assertNotIn("最新资料", serialized)
 
+    def test_governance_rag_plan_uses_query_ref_and_evidence_policy(self) -> None:
+        """治理 RAG 计划只能携带 queryRef 和证据策略，不能携带原始问题。"""
+
+        raw_question = "质量规则为什么需要先读取元数据证据"
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="analyst-a",
+            objective="请从治理知识库解释质量规则为什么需要元数据证据",
+            variables={"knowledgeQuery": raw_question, "sessionId": "session-rag-plan"},
+        )
+        intent_analysis = IntentAnalysis(
+            summary="识别为治理知识 RAG 问答",
+            governance_domains=(GovernanceDomain.KNOWLEDGE_QA,),
+            candidate_tools=("knowledge.rag.query",),
+            risk_tags=(IntentRiskTag.READ_ONLY,),
+            confidence=0.88,
+        )
+
+        plans = ToolPlanner(default_tool_registry()).plan(request=request, intent_analysis=intent_analysis)
+
+        plan = next(plan for plan in plans if plan.tool_name == "knowledge.rag.query")
+        serialized = str(plan.arguments)
+        self.assertEqual(ToolExecutionMode.SYNC, plan.execution_mode)
+        self.assertFalse(plan.requires_human_approval)
+        self.assertTrue(plan.parameter_validation.can_execute)
+        self.assertEqual("LOW_SENSITIVE_RAG_QUERY_REFERENCE_ONLY", plan.arguments["payloadPolicy"])
+        self.assertIn("queryRef", plan.arguments)
+        self.assertIn("scopePolicy", plan.arguments)
+        self.assertIn("evidencePolicy", plan.arguments)
+        self.assertEqual("ragEvidence", plan.governance_hints["resultAlias"])
+        self.assertTrue(plan.arguments["evidencePolicy"]["failClosedWhenNoEvidence"])
+        self.assertTrue(plan.arguments["evidencePolicy"]["langGraphCheckpointRequired"])
+        self.assertNotIn(raw_question, serialized)
+        self.assertNotIn("元数据证据", serialized)
+
     def test_task_plan_carries_high_risk_intent_tags(self) -> None:
         request = AgentRequest(
             tenant_id="tenant-a",

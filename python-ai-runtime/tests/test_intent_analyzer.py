@@ -163,6 +163,24 @@ class RuleBasedIntentAnalyzerTest(unittest.TestCase):
         self.assertIn("web.search.query", analysis.candidate_tools)
         self.assertIn(IntentRiskTag.READ_ONLY, analysis.risk_tags)
 
+    def test_governance_rag_intent_targets_knowledge_tool(self) -> None:
+        """平台内部知识库/RAG 请求应命中 KNOWLEDGE_QA 和 RAG 查询工具。"""
+
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="analyst-a",
+            objective="请从治理知识库解释质量规则为什么需要元数据证据",
+            variables={"useRag": True},
+        )
+        context_blocks = DefaultContextBuilder().build(request)
+
+        analysis = RuleBasedIntentAnalyzer().analyze(request, context_blocks)
+
+        self.assertIn(GovernanceDomain.KNOWLEDGE_QA, analysis.governance_domains)
+        self.assertIn("knowledge.rag.query", analysis.candidate_tools)
+        self.assertIn(IntentRiskTag.READ_ONLY, analysis.risk_tags)
+
 
 if __name__ == "__main__":
     unittest.main()

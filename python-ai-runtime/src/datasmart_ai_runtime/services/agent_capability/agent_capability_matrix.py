@@ -288,6 +288,35 @@ def _default_capability_domains() -> tuple[AgentCapabilityDomain, ...]:
                 _cap("tool.file-read-write", "文件读写工具", S.PARTIAL_CLOSED_LOOP, "python-ai-runtime/services/tools + agent-runtime worker", "已有 `workspace.file.read` 与 `workspace.file.write` 默认工具定义、规则式意图识别、低敏 ToolPlan 规划、受控 WorkspaceFileToolService、workspace root allowlist、相对路径逃逸阻断、隐藏/凭据路径 denylist、读写字节预算、contentSha256、pathDigest 和 metadata-only summary。", "当前只是 Python Runtime 内部受控文件工具闭环，尚未接 Java durable outbox/worker receipt、对象存储 artifact grant、DLP/恶意内容扫描、下载审计、TTL 和管理台恢复流程。", "下一步只补 Java command/tool durable runner 对 workspace.file.read/write 的 outbox + worker receipt + artifact grant，不继续扩展任意文件系统能力。", "大文件读取需要分块、offset、摘要缓存、限速和 backpressure；写入需要幂等键、expectedSha256、并发覆盖冲突处理和对象存储落盘。", "禁止越权路径、隐藏文件、凭据文件和敏感正文进入 summary/event/projection；写入正文必须走 payloadReference 或受控执行区，不能进入 `/agent/plans`、runtime event 或 Java projection。"),
                 _cap("tool.exec-run-program", "命令执行与程序运行", S.CONTROL_PLANE_READY, "agent-runtime command/outbox", "已有 command proposal、checkpoint、resume gate、handoff 摘要、Java command safety precheck、worker precheck 低敏安全证据复核、command worker receipt 写回合同、Python 受控 runner、Python 进程内 worker lease/token fencing 合同、Java command worker lease claim/renew/release 路由、memory/mysql lease fact store、Java receipt 对当前 lease fact 的 token/version/expiresAt 校验与 digest 投影、Java sandbox run admission 准入合同、Python runner 调用 Java sandbox admission 并在拒绝/未启用时 fail-closed、host-local 最小受控进程外壳、command worker artifact metadata-only 预授权闸门、artifact 正文读取 grant 决策门、服务端 memory/mysql grant fact store、final-check 安全预览回查、grant fact 管理员低敏查询/撤销 API、command worker 输出片段净化/敏感行重写/64KB Host 预览裁剪、Java 对象存储服务端探针抽象、默认禁用 adapter 与可配置 MinIO/S3-compatible adapter，Java command outbox dead-letter/requeue/ignore/note 人工补偿，Java command task final-state reconciliation 只读对账接口，以及默认 dry-run 的受控 task-management final-state callback dispatch 入口。", "尚未落地容器/namespace/cgroup 级隔离、对象级 DLP/恶意内容扫描、下载审计、artifact grant TTL 归档、队列 visibility timeout 自动对齐、持久化投递历史/服务账号签名和自动调度型终态回调 worker。", "下一步不再继续堆 artifact、输出预览、admission、进程或对账字段，转向容器级沙箱替换、持久化 dispatch history/outbox + 自动 worker + 服务账号签名、TTL/DLP/下载审计或整体业务闭环。", "命令执行必须有超时、输出大小限制、并发队列、重试退避、lease 续租心跳、receipt 幂等键和 artifact 访问预授权缓存/过期策略；对象存储探针必须限制 sample 字节数并只返回哈希指纹。", "默认拒绝危险命令；即使 worker 回写副作用已发生，也只能记录低敏 outcome、decision、issueCode 计数、leaseVersion、token digest 和 artifactReference；sandbox admission、对象存储探针和输出净化响应只返回安全短预览候选/准入合同/低敏指纹，不返回完整正文、签名 URL、bearer token、bucket/key 或原始输出通道。"),
                 _cap("tool.web-search", "网页搜索工具", S.PARTIAL_CLOSED_LOOP, "python-ai-runtime/services/tools", "已有 `web.search.query` 默认工具定义、RuleBasedIntentAnalyzer 触发、ToolPlanner 接入、WebSearchGovernanceService、searchQueryRef、Provider allowlist、network policy、SESSION_ONLY cache TTL、固定窗口 rate-limit 摘要、citation-first result policy 和低敏 ToolPlan。", "尚未接真实搜索 Provider、结果抓取、引用验证、结果去重、Redis/网关级限流、持久化缓存、搜索结果 tool context 注入和 Java worker receipt。", "下一步只接受控 Provider adapter 与引用化结果缓存，不开放任意 URL fetch 或模型直接联网。", "需要 Provider 超时、rate limit、结果去重、缓存命中率、引用验证和慢搜索降级；当前只是计划层治理契约。", "搜索计划不保存原始 query、URL、HTML、API Key、endpoint 或结果正文；真实结果必须带来源引用并按租户/project/session 隔离缓存。"),
+                _cap(
+                    "tool.rag-query",
+                    "治理知识 RAG 查询工具",
+                    S.PARTIAL_CLOSED_LOOP,
+                    "python-ai-runtime/services/rag + services/multi_agent",
+                    (
+                        "已有 `knowledge.rag.query` 默认工具定义、`knowledge.rag.answer` Skill、"
+                        "RuleBasedIntentAnalyzer 触发、ToolPlanner 低敏 `queryRef/scopePolicy/evidencePolicy` "
+                        "规划、RAG pipeline、LangGraph RAG checkpoint 和 "
+                        "`agentTurnRunner.knowledgeAgentCapabilities`。"
+                    ),
+                    (
+                        "当前 RAG 已可被 KNOWLEDGE_AGENT 作为 manager-as-tools 能力调度，但尚未把真实执行 "
+                        "proposal/outbox、worker receipt、PostgreSQL/pgvector 知识库和 Java turn fact "
+                        "串成完整 durable runner。"
+                    ),
+                    (
+                        "下一步只接 Java turn fact、RAG outbox/worker receipt 与 PostgreSQL checkpoint，"
+                        "不继续发散新的 RAG 算法特性。"
+                    ),
+                    (
+                        "RAG 需要控制 topK、候选窗口、上下文预算、证据门控阈值、rerank 延迟、"
+                        "embedding 超时和 cache 命中率；当前规划层只输出执行前合同。"
+                    ),
+                    (
+                        "RAG 计划和能力合同不保存用户问题、文档正文、sourceUri、compressedContext、"
+                        "模型回答、embedding 向量、Provider 原始响应或工具参数正文。"
+                    ),
+                ),
                 _cap("tool.quality-remediation-task-draft", "质量异常治理任务草案工具", S.PARTIAL_CLOSED_LOOP, "python-ai-runtime + agent-runtime + data-quality + task-management", "data-quality 已提供低敏治理任务创建契约；Python Runtime 已有 quality.remediation.task.draft 工具定义、Skill 依赖、意图识别和 ToolPlan 草案参数；Java agent-runtime 已补 readiness 投影、payloadReference、人审确认、Host submit、提交事实、下游任务创建幂等和 UNKNOWN 人工恢复入口。", "质量治理垂直链路已从 dry-run 推进到部分真实闭环，但尚未抽象为所有工具通用的 durable runner，也未覆盖质量规则发布、质量 run 历史和报告生命周期。", "停止继续扩展单个治理草案字段，把这条链路沉淀为统一 ToolPlan -> readiness -> approval -> outbox -> worker receipt -> recovery 的可复用模板。", "治理任务草案应按 reportId/ruleId/severity/anomalyType 等低敏范围分页、聚合和限流；真实提交必须依赖业务幂等键、提交事实和人工恢复，避免重复副作用。", "只允许返回低敏筛选条件、计数、taskId 引用和建议编码；不得暴露异常样本、observedValue、SQL、prompt、模型输出、工具参数正文、凭据或内部接口地址。"),
                 _cap("tool.readiness-checkpoint", "执行前准备度与恢复点", S.PARTIAL_CLOSED_LOOP, "python-ai-runtime/services/tools", "已有 readiness、readiness graph、LangGraph execution gate 条件图、execution gate runtime event、checkpoint query/resume-preview、controlPlaneHandoff；`RESUME_PREFLIGHT` 已新增 `resumePreflightContract`，显式对齐 Java checkpoint locator、resume fact bundle、resume gate graph、worker receipt 写入路由与 worker receipt index 字段；质量治理链路已接入 Java payloadReference、outbox、worker receipt、提交事实和 UNKNOWN 恢复入口。", "通用工具仍缺真实 durable runner、跨实例 Redis/MySQL checkpoint store、自动 outbox 派发和统一 worker receipt 对账；LangGraph execution gate 目前只做执行前路由、低敏事件化和 Java 预检合同声明，不直接恢复 checkpoint 或派发 worker。", "下一步把 `resumePreflightContract` 作为所有高风险工具的统一 host fact 合同，先接低基数指标和最小 handoff fact，再进入最终全平台 E2E。", "checkpoint store 需支持 Redis、多实例、TTL 清理和按 runId/commandId 快速查询；execution gate 后续应记录低敏耗时、route 计数、fallback 指标和 Java fact bundle 命中率。", "恢复事实只能采信 Java host facts，不能采信请求自报；LangGraph gate 状态、合同和事件只能返回字段名、路由名与事实类型，不能保存工具参数、prompt、SQL、样本数据、模型输出、token 或 artifact 正文。"),
             ),

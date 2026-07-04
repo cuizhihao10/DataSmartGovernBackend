@@ -30,6 +30,9 @@ from datasmart_ai_runtime.services.agent_graph.multi_agent_turn_runner_contract 
 )
 from datasmart_ai_runtime.services.langgraph_planning_workflow import LangGraphApi
 from datasmart_ai_runtime.services.multi_agent.execution_plan_rules import string_tuple, string_value, truthy_env
+from datasmart_ai_runtime.services.multi_agent.knowledge_agent_capability import (
+    build_knowledge_agent_rag_capabilities,
+)
 from datasmart_ai_runtime.services.multi_agent.turn_runner_models import (
     ControlledAgentTurnAttempt,
     ControlledMultiAgentTurnRunnerDiagnostics,
@@ -78,6 +81,7 @@ class LangGraphMultiAgentTurnRunnerWorkflow:
     - `load_execution_session`：读取 `agentExecutionSession` 的低敏 work item；
     - `select_turn_candidates`：按最大并发和状态选择本轮可推进 attempt；
     - `build_manager_as_tools`：把 specialist Agent 转换成 manager-as-tools 的低敏描述；
+    - `bind_knowledge_agent_rag_capabilities`：当 KNOWLEDGE_AGENT 参与时绑定 RAG 能力合同；
     - `enforce_runner_policy`：应用最大 turn 深度、Java 控制面、worker receipt 和无副作用边界；
     - `finalize_turn_runner`：生成全局 runStatus 与下一步动作。
     """
@@ -86,6 +90,7 @@ class LangGraphMultiAgentTurnRunnerWorkflow:
         "load_execution_session",
         "select_turn_candidates",
         "build_manager_as_tools",
+        "bind_knowledge_agent_rag_capabilities",
         "enforce_runner_policy",
         "wait_approval_fact",
         "wait_control_plane_feedback",
@@ -106,7 +111,8 @@ class LangGraphMultiAgentTurnRunnerWorkflow:
         "START->load_execution_session",
         "load_execution_session->select_turn_candidates",
         "select_turn_candidates->build_manager_as_tools",
-        "build_manager_as_tools->enforce_runner_policy",
+        "build_manager_as_tools->bind_knowledge_agent_rag_capabilities",
+        "bind_knowledge_agent_rag_capabilities->enforce_runner_policy",
         "enforce_runner_policy--WAIT_APPROVAL-->wait_approval_fact",
         "enforce_runner_policy--WAIT_CONTROL_PLANE-->wait_control_plane_feedback",
         "enforce_runner_policy--READY_CONTROL_PLANE_HANDOFF-->prepare_control_plane_handoff",
@@ -242,6 +248,7 @@ class LangGraphMultiAgentTurnRunnerWorkflow:
         builder.add_node("load_execution_session", self._load_execution_session)
         builder.add_node("select_turn_candidates", self._select_turn_candidates)
         builder.add_node("build_manager_as_tools", self._build_manager_as_tools)
+        builder.add_node("bind_knowledge_agent_rag_capabilities", self._bind_knowledge_agent_rag_capabilities)
         builder.add_node("enforce_runner_policy", self._enforce_runner_policy)
         builder.add_node("wait_approval_fact", self._wait_approval_fact)
         builder.add_node("wait_control_plane_feedback", self._wait_control_plane_feedback)
@@ -252,7 +259,8 @@ class LangGraphMultiAgentTurnRunnerWorkflow:
         builder.add_edge(api.start, "load_execution_session")
         builder.add_edge("load_execution_session", "select_turn_candidates")
         builder.add_edge("select_turn_candidates", "build_manager_as_tools")
-        builder.add_edge("build_manager_as_tools", "enforce_runner_policy")
+        builder.add_edge("build_manager_as_tools", "bind_knowledge_agent_rag_capabilities")
+        builder.add_edge("bind_knowledge_agent_rag_capabilities", "enforce_runner_policy")
         builder.add_conditional_edges("enforce_runner_policy", self._select_runner_route, self.CONDITIONAL_ROUTES)
         for branch_node in set(self.CONDITIONAL_ROUTES.values()) - {"finalize_turn_runner"}:
             builder.add_edge(branch_node, "finalize_turn_runner")
@@ -335,6 +343,27 @@ class LangGraphMultiAgentTurnRunnerWorkflow:
             manager_tool_descriptor(attempt)
             for attempt in tuple(state.get("turnAttempts") or ())
             if attempt.agent_role != "MASTER_ORCHESTRATOR"
+        )
+        return updated
+
+    def _bind_knowledge_agent_rag_capabilities(self, state: MultiAgentTurnRunnerState) -> MultiAgentTurnRunnerState:
+        """为 `KNOWLEDGE_AGENT` 绑定可调度 RAG 能力合同。
+
+        这个节点是“RAG 进入真实多 Agent runner”的收敛点，但它仍然不执行 RAG：
+        - 不读取用户问题正文；
+        - 不检索知识库；
+        - 不调用模型；
+        - 不保存 citation/sourceUri/document body；
+        - 只把已经存在的 KNOWLEDGE_AGENT turn attempt 转换成低敏能力合同。
+
+        后续 Java 控制面可以根据该合同创建 command proposal 或 worker outbox；RAG 执行器完成后再由
+        `services/rag/langgraph_checkpoint.py` 写入 `rag_retrieve_knowledge -> rag_evidence_gate -> final`
+        的可恢复 checkpoint。
+        """
+
+        updated = self._append_trace(state, "langgraph.multi_agent_turn.bind_knowledge_agent_rag_capabilities")
+        updated["knowledgeAgentCapabilities"] = build_knowledge_agent_rag_capabilities(
+            tuple(state.get("turnAttempts") or ())
         )
         return updated
 
@@ -521,6 +550,7 @@ class LangGraphMultiAgentTurnRunnerWorkflow:
             max_concurrent_agent_turns=int(state.get("maxConcurrentAgentTurns") or self._max_concurrent_agent_turns),
             turn_attempts=tuple(state.get("turnAttempts") or ()),
             manager_as_tools=tuple(state.get("managerAsTools") or ()),
+            knowledge_agent_capabilities=tuple(state.get("knowledgeAgentCapabilities") or ()),
             runner_policy=dict(state.get("runnerPolicy") or {}),
             next_actions=tuple(state.get("nextActions") or ()),
             runtime_graph_contract=build_multi_agent_turn_runner_graph_contract().to_summary(),

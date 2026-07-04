@@ -51,6 +51,9 @@ def _event_attributes(turn_runner: Mapping[str, Any]) -> dict[str, Any]:
 
     attempts = tuple(item for item in _sequence(turn_runner.get("turnAttempts")) if isinstance(item, Mapping))
     limited_attempts = attempts[:20]
+    knowledge_capabilities = tuple(
+        item for item in _sequence(turn_runner.get("knowledgeAgentCapabilities")) if isinstance(item, Mapping)
+    )
     return {
         "eventPayloadVersion": "v1",
         "snapshotType": "CONTROLLED_MULTI_AGENT_TURN_RUNNER_VIEW",
@@ -67,6 +70,11 @@ def _event_attributes(turn_runner: Mapping[str, Any]) -> dict[str, Any]:
         "blockedAttemptCount": _non_negative_int(turn_runner.get("blockedAttemptCount")),
         "controlPlaneHandoffCount": _non_negative_int(turn_runner.get("controlPlaneHandoffCount")),
         "managerAsToolsCount": len(_sequence(turn_runner.get("managerAsTools"))),
+        "knowledgeAgentCapabilityCount": _non_negative_int(turn_runner.get("knowledgeAgentCapabilityCount")),
+        "knowledgeAgentCapabilityCodes": _limited_string_tuple(
+            tuple(item.get("capabilityCode") for item in knowledge_capabilities),
+            limit=10,
+        ),
         "turnAttempts": tuple(_attempt_attributes(item) for item in limited_attempts),
         "turnAttemptsTruncatedCount": max(0, len(attempts) - len(limited_attempts)),
         "nextActions": _limited_string_tuple(turn_runner.get("nextActions"), limit=20),

@@ -51,11 +51,16 @@ class RuleBasedIntentAnalyzer:
             self._append_unique(candidate_tools, "datasource.metadata.read")
             self._append_unique(risk_tags, IntentRiskTag.READ_ONLY)
 
+        governance_rag_requested = self._wants_governance_rag(request, objective)
         remediation_requested = self._wants_quality_remediation(request, objective)
+        quality_rule_action_requested = self._contains_any(
+            objective,
+            ("生成", "设计", "创建", "草案", "suggest", "generate", "design"),
+        )
         quality_rule_requested = self._contains_any(
             objective,
             ("quality", "rule", "校验", "质量", "规则", "异常", "清洗", "完整性"),
-        )
+        ) and (quality_rule_action_requested or not governance_rag_requested)
 
         if quality_rule_requested and not remediation_requested:
             self._append_unique(domains, GovernanceDomain.DATA_QUALITY)
@@ -98,6 +103,11 @@ class RuleBasedIntentAnalyzer:
             self._append_unique(domains, GovernanceDomain.KNOWLEDGE_QA)
             self._append_unique(domains, GovernanceDomain.GENERAL_GOVERNANCE)
             self._append_unique(candidate_tools, "web.search.query")
+            self._append_unique(risk_tags, IntentRiskTag.READ_ONLY)
+
+        if governance_rag_requested:
+            self._append_unique(domains, GovernanceDomain.KNOWLEDGE_QA)
+            self._append_unique(candidate_tools, "knowledge.rag.query")
             self._append_unique(risk_tags, IntentRiskTag.READ_ONLY)
 
         workspace_file_operation = self._workspace_file_operation(request, objective)
@@ -199,6 +209,39 @@ class RuleBasedIntentAnalyzer:
                 "最新资料",
                 "外部资料",
                 "引用来源",
+            ),
+        )
+
+    def _wants_governance_rag(self, request: AgentRequest, objective: str) -> bool:
+        """判断用户是否需要平台内部治理知识 RAG。
+
+        RAG 与 web-search 的边界不同：
+        - web-search 面向外部网络资料和“最新/联网/引用来源”；
+        - governance RAG 面向平台内置治理知识、业务口径、规则说明、Runbook、项目文档和可复用经验。
+
+        这里仅生成候选工具，不执行检索。真实检索必须继续经过工具规划、权限、scopePolicy、证据门控和
+        LangGraph checkpoint，避免把用户问题或文档正文直接写进普通计划响应。
+        """
+
+        if request.variables.get("useRag") or request.variables.get("use_rag") or request.variables.get("knowledgeQuery"):
+            return True
+        if request.variables.get("ragQuestion") or request.variables.get("rag_question"):
+            return True
+        return self._contains_any(
+            objective,
+            (
+                "rag",
+                "知识库",
+                "知识问答",
+                "治理知识",
+                "业务口径",
+                "数据标准",
+                "runbook",
+                "术语",
+                "解释",
+                "说明",
+                "为什么",
+                "怎么",
             ),
         )
 

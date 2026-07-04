@@ -11,7 +11,9 @@ from datasmart_ai_runtime.config import default_model_routes, default_skill_regi
 from datasmart_ai_runtime.domain.contracts import AgentRequest, ModelInvocationResult, ModelToolCall
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
+from datasmart_ai_runtime.services.langgraph_planning_workflow import LangGraphApi
 from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
+from datasmart_ai_runtime.services.multi_agent import LangGraphMultiAgentTurnRunnerWorkflow
 from datasmart_ai_runtime.services.skill_registry import AgentSkillRegistry
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 
@@ -52,6 +54,9 @@ class AgentSessionSchedulerTest(unittest.TestCase):
                 },
             ),
             self._orchestrator(),
+            multi_agent_turn_runner_workflow=LangGraphMultiAgentTurnRunnerWorkflow(
+                langgraph_api=LangGraphApi(state_graph=FakeStateGraph, start="START", end="END")
+            ),
         )
 
         scheduling = response["intelligentGatewayGovernance"]["agentSessionScheduling"]
@@ -103,6 +108,43 @@ class AgentSessionSchedulerTest(unittest.TestCase):
         self.assertIn("PERMISSION_AGENT", roles)
         self.assertTrue(any(agent["requiresHandoff"] for agent in scheduling["participatingAgents"]))
         self.assertTrue(any("审批" in action or "handoff" in action for action in scheduling["recommendedActions"]))
+
+    def test_governance_rag_session_schedules_knowledge_agent_and_turn_capability(self) -> None:
+        """治理知识 RAG 场景应激活 KNOWLEDGE_AGENT，并进入 turn runner 能力合同。
+
+        这个用例保护的是“RAG 不只是独立 HTTP API”：当用户请求平台内部知识问答时，智能网关应调度
+        `KNOWLEDGE_AGENT`，执行前计划应出现对应工具名，turn runner 应暴露 `knowledge.rag.query`
+        能力合同，后续 Java 控制面才能按同一合同创建 proposal、checkpoint 和 worker receipt。
+        """
+
+        raw_question = "质量规则为什么需要元数据证据"
+        response = build_plan_response(
+            AgentRequest(
+                tenant_id="tenant-a",
+                project_id="project-a",
+                actor_id="analyst-a",
+                objective="请从治理知识库解释质量规则为什么需要元数据证据",
+                variables={
+                    "knowledgeQuery": raw_question,
+                    "grantedPermissions": ("agent:rag:query",),
+                    "sessionId": "session-knowledge-rag",
+                },
+            ),
+            self._orchestrator(),
+        )
+
+        scheduling = response["intelligentGatewayGovernance"]["agentSessionScheduling"]
+        roles = {agent["role"] for agent in scheduling["participatingAgents"]}
+        turn_runner = response["agentTurnRunner"]
+        serialized = str(scheduling) + str(turn_runner) + str(response["plan"]["tool_plans"])
+
+        self.assertIn("KNOWLEDGE_AGENT", roles)
+        self.assertIn("knowledge.rag.query", scheduling["policyAxes"]["plannedToolNames"])
+        self.assertIn("knowledge.rag.answer", scheduling["policyAxes"]["selectedSkillCodes"])
+        self.assertTrue(turn_runner["capabilities"]["knowledgeRagPlanning"])
+        self.assertEqual(1, turn_runner["knowledgeAgentCapabilityCount"])
+        self.assertEqual("knowledge.rag.query", turn_runner["knowledgeAgentCapabilities"][0]["capabilityCode"])
+        self.assertNotIn(raw_question, serialized)
 
     def test_tool_budget_degradation_schedules_ops_agent_without_sensitive_payload(self) -> None:
         """工具预算降级应调度运行治理 Agent，且不泄露敏感内容。
@@ -379,6 +421,55 @@ class ToolCallingProvider:
             content="tool calling",
             tool_calls=self._tool_calls,
         )
+
+
+class FakeStateGraph:
+    """测试用 LangGraph StateGraph 替身，只模拟 turn runner 需要的节点、边和条件边。"""
+
+    def __init__(self, schema) -> None:  # noqa: ANN001 - fake 只记录协议形状
+        self.schema = schema
+        self.nodes = {}
+        self.edges = {}
+        self.conditional_edges = {}
+
+    def add_node(self, node: str, action) -> None:  # noqa: ANN001 - fake 只记录协议形状
+        self.nodes[node] = action
+
+    def add_edge(self, start_key: str, end_key: str) -> None:
+        self.edges[start_key] = end_key
+
+    def add_conditional_edges(self, source: str, path, path_map) -> None:  # noqa: ANN001
+        self.conditional_edges[source] = (path, dict(path_map))
+
+    def compile(self) -> "FakeCompiledGraph":
+        return FakeCompiledGraph(
+            nodes=self.nodes,
+            edges=self.edges,
+            conditional_edges=self.conditional_edges,
+        )
+
+
+class FakeCompiledGraph:
+    """编译后图替身，按固定边和条件边推进到 END。"""
+
+    def __init__(self, *, nodes, edges, conditional_edges) -> None:  # noqa: ANN001
+        self.nodes = nodes
+        self.edges = edges
+        self.conditional_edges = conditional_edges
+
+    def invoke(self, input):  # noqa: A002, ANN001, ANN201 - 与 LangGraph API 同名
+        state = dict(input)
+        current = "START"
+        while True:
+            if current in self.conditional_edges:
+                route_selector, route_map = self.conditional_edges[current]
+                next_node = route_map[route_selector(state)]
+            else:
+                next_node = self.edges[current]
+            if next_node == "END":
+                return state
+            state = self.nodes[next_node](state)
+            current = next_node
 
 
 if __name__ == "__main__":

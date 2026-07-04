@@ -18,6 +18,7 @@ DataSmart 的 AI 层现在同时存在两类“知识”：
 - `python-ai-runtime/src/datasmart_ai_runtime/services/rag/knowledge_base.py`
 - `python-ai-runtime/src/datasmart_ai_runtime/services/rag/pipeline.py`
 - `python-ai-runtime/src/datasmart_ai_runtime/services/rag/components.py`
+- `python-ai-runtime/src/datasmart_ai_runtime/services/multi_agent/knowledge_agent_capability.py`
 - `python-ai-runtime/src/datasmart_ai_runtime/api/rag.py`
 
 API 已接入：
@@ -37,6 +38,14 @@ LangGraph durable checkpoint 已接入：
 这些 checkpoint 只保存低敏计数、策略、状态码和多 Agent 角色状态，不保存用户问题、答案、compressedContext、
 文档正文、sourceUri、prompt 或模型原始响应。
 
+多 Agent runner 已接入：
+
+- 默认工具目录新增 `knowledge.rag.query`，该工具只携带 `queryRef`、`scopePolicy` 和 `evidencePolicy` 等低敏参数。
+- 默认 Skill 注册表新增 `knowledge.rag.answer`，用于把治理知识库、业务口径、规则说明和 runbook 问答交给 `KNOWLEDGE_AGENT`。
+- `AgentSessionScheduler` 可根据 `knowledge.`、`rag.`、`web.search.` 前缀或 `KNOWLEDGE_QA` 意图激活 `KNOWLEDGE_AGENT`。
+- `agentTurnRunner` 新增 `bind_knowledge_agent_rag_capabilities` 节点，当 `KNOWLEDGE_AGENT` 参与时输出 `knowledgeAgentCapabilities`。
+- `knowledgeAgentCapabilities` 只声明 RAG graph、节点、证据门控、checkpoint 和 Java 控制面边界，不执行 RAG、不调用模型、不保存证据正文。
+
 ## 2. 当前管线阶段
 
 一次 RAG 问答会经过以下阶段：
@@ -54,6 +63,7 @@ LangGraph durable checkpoint 已接入：
 11. `model generation`：通过统一 `ModelQueryEngine` 调用治理问答模型，继承模型路由、限流、预算、fallback 和低敏错误处理。
 12. `citation binding`：答案必须绑定 `[C1]`、`[C2]` 这类引用编号，方便审计和回溯。
 13. `langgraph checkpoint`：把 RAG 的检索、证据门控和最终收口写入 durable checkpoint，支持后续暂停、恢复、分支和多 Agent 状态恢复。
+14. `multi-agent capability binding`：当用户目标属于治理知识问答时，`KNOWLEDGE_AGENT` 会把 `knowledge.rag.query` 作为 manager-as-tools 能力暴露给主控；真实执行仍需 Java 控制面、checkpoint 和 worker receipt 补齐。
 
 ## 3. 为什么要做证据门控
 
@@ -105,6 +115,9 @@ MASTER_ORCHESTRATOR
 - 统一模型查询引擎生成。
 - API 查询和诊断路由。
 - LangGraph checkpoint 节点化，已形成 `retrieve -> evidence_gate -> completed/no_evidence` 低敏状态链路。
+- `knowledge.rag.query` 工具定义、`knowledge.rag.answer` Skill、意图识别、ToolPlan 低敏 `queryRef` 规划。
+- `KNOWLEDGE_AGENT` RAG 能力合同已进入 `agentTurnRunner.knowledgeAgentCapabilities`，可被主控以 manager-as-tools 方式调度。
+- 多 Agent 执行前计划已把 `KNOWLEDGE_AGENT -> DATA_QUALITY_AGENT/PERMISSION_AGENT/TASK_AGENT/...` 建模为 `supports_context` 协作边。
 - 单元测试覆盖召回、租户隔离、无证据拒绝和 API 合同。
 
 尚未完成但已预留接口：
@@ -113,7 +126,7 @@ MASTER_ORCHESTRATOR
 - Neo4j GraphRAG，用于血缘、表关系、业务口径和资产图谱推理。
 - 专用 embedding/reranker 模型，例如当前一代 Qwen embedding/reranker、BGE 或 Jina reranker。
 - MinIO 文档解析、增量索引、删除重建和索引版本管理。
-- RAG 与真实多 Agent runner 的自动 handoff，例如 DATA_QUALITY_AGENT 基于 RAG 证据生成规则草案。
+- RAG 的真实执行 handoff：当前 runner 只输出低敏能力合同，尚未自动创建 Java outbox、派发 worker 或把 RAG 结果作为低敏 specialist summary 回填给 DATA_QUALITY_AGENT/PERMISSION_AGENT/TASK_AGENT。
 
 ## 6. 面试讲解要点
 
@@ -126,3 +139,4 @@ MASTER_ORCHESTRATOR
 - 证据门控解决“弱命中也生成”的问题，是降低幻觉和误导的关键。
 - 引用绑定让答案可追溯，适合治理、权限、质量规则这类需要审计的场景。
 - 当前实现把模型生成、embedding、reranker、知识库都隔离成可替换组件，后续可平滑接入 pgvector、GraphRAG 和专用模型。
+- 在 Agent 层，RAG 已不是孤立 API：`KNOWLEDGE_AGENT` 能通过 turn runner 暴露 `knowledge.rag.query` 能力，但执行副作用继续由 Java 控制面和 RAG pipeline 承接。

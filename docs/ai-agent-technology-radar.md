@@ -1,5 +1,26 @@
 # DataSmart Govern AI Agent 技术雷达
 
+## 2026-07-04 落地补充：RAG should be a schedulable KNOWLEDGE_AGENT capability, not an isolated API
+
+- 本轮趋势校准：
+  - Codex、Claude Code、OpenClaw、LangGraph 类 Agent Host 中，RAG 不应只是一个“问答 HTTP 接口”，而应成为主控可调度、可观测、可恢复、可替换的工具化能力；
+  - 知识检索能力进入多 Agent runner 时，最重要的是先稳定低敏控制面合同：queryRef、scopePolicy、evidencePolicy、checkpoint、证据门控和 worker receipt，而不是让 Python 同步规划路径直接执行检索或暴露证据正文；
+  - DataSmart 当前已经有 RAG pipeline 和 LangGraph checkpoint，因此本轮不继续发散 pgvector，而是把 RAG 绑定到 `KNOWLEDGE_AGENT` 与 `agentTurnRunner`。
+- 本轮落地到代码的能力：
+  - 默认工具目录新增 `knowledge.rag.query`，只接收低敏 `queryRef`、`scopePolicy` 和 `evidencePolicy`；
+  - 默认 Skill 注册表新增 `knowledge.rag.answer`，将治理知识库、业务口径、规则说明和 runbook 问答归入 `KNOWLEDGE_AGENT`；
+  - `RuleBasedIntentAnalyzer` 与 `ToolPlanner` 已支持治理知识 RAG 意图和低敏 ToolPlan，解释型知识请求不会再误触发质量规则草案；
+  - `AgentSessionScheduler` 支持 `knowledge.`、`rag.`、`web.search.` 前缀激活 `KNOWLEDGE_AGENT`；
+  - `agentTurnRunner` 新增 `bind_knowledge_agent_rag_capabilities` 节点，输出 `knowledgeAgentCapabilities`，声明 RAG graph、节点、证据编码、可调用角色和副作用边界；
+  - 多 Agent 执行前计划已把 `KNOWLEDGE_AGENT` 到业务 Agent 的关系建模为 `supports_context` 协作边。
+- 安全判断：
+  - RAG 能力合同不保存用户问题、文档正文、sourceUri、compressedContext、模型回答、embedding 向量、Provider 原始响应或工具参数正文；
+  - turn runner 仍不执行 RAG、不调用模型、不写 outbox、不创建审批、不派发 worker；
+  - 真实 RAG 执行继续由 `/agent/rag/query`、LangGraph checkpoint、Java 控制面 proposal/outbox 和 worker receipt 承接。
+- 产品判断：
+  - 这一步让 RAG 从“独立 API 能力”推进到“真实多 Agent runner 可调度能力”，但仍保持项目收敛边界；
+  - 下一步不建议继续扩散 RAG 算法特性，优先把 Java turn fact、PostgreSQL checkpoint、RAG worker receipt 和全平台 E2E 串起来。
+
 ## 2026-07-01 落地补充：Agent gateway needs a real reactive service-discovery data plane
 
 - 本轮趋势校准：

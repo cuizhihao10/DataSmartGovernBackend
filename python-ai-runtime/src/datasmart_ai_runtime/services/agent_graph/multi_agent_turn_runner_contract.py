@@ -52,6 +52,10 @@ def build_multi_agent_turn_runner_graph_contract() -> AgentGraphRuntimeContract:
                 "把 specialist Agent 映射为 manager-as-tools 描述，但不注册成 Python 可执行工具。",
             ),
             _node(
+                "bind_knowledge_agent_rag_capabilities",
+                "当 KNOWLEDGE_AGENT 参与时绑定 RAG 能力合同，声明证据门控、checkpoint 和调用边界。",
+            ),
+            _node(
                 "enforce_runner_policy",
                 "应用最大循环深度、Java 控制面、worker receipt、checkpoint 和无副作用边界。",
             ),
@@ -101,9 +105,15 @@ def build_multi_agent_turn_runner_graph_contract() -> AgentGraphRuntimeContract:
             ),
             AgentGraphEdgeContract(
                 source="build_manager_as_tools",
+                target="bind_knowledge_agent_rag_capabilities",
+                kind=AgentGraphEdgeKind.DIRECT,
+                control_meaning="虚拟调度能力生成后，补充 KNOWLEDGE_AGENT 的 RAG 低敏能力合同。",
+            ),
+            AgentGraphEdgeContract(
+                source="bind_knowledge_agent_rag_capabilities",
                 target="enforce_runner_policy",
                 kind=AgentGraphEdgeKind.DIRECT,
-                control_meaning="虚拟调度能力生成后进入策略约束节点。",
+                control_meaning="RAG 能力合同绑定完成后进入策略约束节点。",
             ),
             _route("WAIT_APPROVAL", "wait_approval_fact", "runnerRoute", "需要审批或人工 handoff fact。"),
             _route(
@@ -165,6 +175,7 @@ def build_multi_agent_turn_runner_graph_contract() -> AgentGraphRuntimeContract:
                 "maxConcurrentAgentTurns",
                 "requiredEvidenceCodes",
                 "javaProposalRoutes",
+                "knowledgeAgentCapabilities",
             ),
             forbidden_payloads=(
                 "prompt",

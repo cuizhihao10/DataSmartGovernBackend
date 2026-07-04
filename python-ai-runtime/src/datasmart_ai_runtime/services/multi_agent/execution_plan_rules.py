@@ -66,7 +66,7 @@ def responsibility_for_role(role: str) -> str:
         "PERMISSION_AGENT": "校验权限、审批、租户/项目边界和高风险动作守门。",
         "MEMORY_AGENT": "提供短期/长期记忆依赖说明和低敏上下文边界。",
         "OPS_AGENT": "观察降级、预算、队列和运行风险并给出运维建议。",
-        "KNOWLEDGE_AGENT": "准备治理知识、资产口径和业务术语上下文。",
+        "KNOWLEDGE_AGENT": "准备治理知识 RAG 证据、资产口径、业务术语和规则说明上下文。",
     }.get(role, "承接当前会话调度指定的低敏协作职责。")
 
 
@@ -94,6 +94,9 @@ def depends_on_roles(role: str, all_roles: tuple[str, ...]) -> tuple[str, ...]:
         for dependency in ("DATASOURCE_AGENT", "DATA_QUALITY_AGENT"):
             if dependency in all_roles:
                 dependencies.append(dependency)
+    if role in {"DATASOURCE_AGENT", "DATA_QUALITY_AGENT", "DATA_SYNC_AGENT", "TASK_AGENT", "PERMISSION_AGENT"}:
+        if "KNOWLEDGE_AGENT" in all_roles:
+            dependencies.append("KNOWLEDGE_AGENT")
     return tuple(dict.fromkeys(dependencies))
 
 

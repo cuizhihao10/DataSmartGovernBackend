@@ -274,6 +274,9 @@ class LangGraphMultiAgentExecutionPlanWorkflow:
         if "MEMORY_AGENT" in roles:
             for role in sorted(roles - {"MEMORY_AGENT"}):
                 append_edge(edges, "MEMORY_AGENT", role, "supports_context", "MEMORY_CONTEXT_AVAILABLE_AS_SUMMARY")
+        if "KNOWLEDGE_AGENT" in roles:
+            for role in sorted(roles - {"MASTER_ORCHESTRATOR", "KNOWLEDGE_AGENT"}):
+                append_edge(edges, "KNOWLEDGE_AGENT", role, "supports_context", "RAG_EVIDENCE_AVAILABLE_AS_SUMMARY")
         if "OPS_AGENT" in roles:
             for role in sorted(roles - {"OPS_AGENT"}):
                 append_edge(edges, role, "OPS_AGENT", "observed_by", "RUNTIME_DEGRADATION_OBSERVED")

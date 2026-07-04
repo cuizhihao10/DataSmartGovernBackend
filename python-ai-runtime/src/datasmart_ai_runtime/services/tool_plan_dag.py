@@ -43,6 +43,7 @@ class ToolPlanDagAnnotator:
         "task.create.draft": "taskDraft",
         "task.draft.persist": "persistedTaskDraft",
         "data-sync.execute": "dataSyncExecution",
+        "knowledge.rag.query": "ragEvidence",
         "web.search.query": "webSearchResults",
     }
 

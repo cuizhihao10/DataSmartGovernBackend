@@ -160,6 +160,22 @@ def default_skill_registry() -> tuple[AgentSkillDescriptor, ...]:
 
     return (
         AgentSkillDescriptor(
+            skill_code="knowledge.rag.answer",
+            display_name="治理知识 RAG 问答 Skill",
+            description=(
+                "用于从平台治理知识库、业务口径、规则说明、Runbook 和项目文档中检索证据，"
+                "再通过证据门控和 citation 约束生成可解释回答。"
+            ),
+            domain=GovernanceDomain.KNOWLEDGE_QA,
+            required_tools=("knowledge.rag.query",),
+            required_permissions=("agent:rag:query",),
+            memory_dependencies=(AgentMemoryType.SEMANTIC, AgentMemoryType.PROCEDURAL),
+            risk_level="low",
+            approval_policy="NONE",
+            trigger_keywords=("rag", "知识库", "知识问答", "治理知识", "业务口径", "数据标准", "解释", "说明", "为什么", "怎么"),
+            examples=("请解释数据质量规则生成为什么需要先读取元数据，并给出证据来源",),
+        ),
+        AgentSkillDescriptor(
             skill_code="datasource.profiling",
             display_name="数据源画像分析 Skill",
             description="用于分析数据源结构、字段画像、主键索引和基础元数据风险。",

@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
+
 from datasmart_ai_runtime.domain.context import ContextBlock, ContextSourceType
 from datasmart_ai_runtime.domain.contracts import (
     AgentRequest,
@@ -122,10 +124,37 @@ class ToolPlanner:
         plans.extend(web_search_plans)
         planned_tool_names.update(plan.tool_name for plan in web_search_plans)
 
+        wants_knowledge_rag = (
+            "knowledge.rag.query" in candidate_tools
+            or bool(request.variables.get("useRag") or request.variables.get("use_rag"))
+            or bool(request.variables.get("knowledgeQuery") or request.variables.get("ragQuestion"))
+        )
+        if wants_knowledge_rag and "knowledge.rag.query" in self._tools:
+            tool = self._tools["knowledge.rag.query"]
+            plans.append(
+                self._build_plan(
+                    tool=tool,
+                    reason=(
+                        "结构化意图显示本轮需要平台内部治理知识证据。RAG 查询计划只携带低敏 queryRef、"
+                        "scopePolicy 和 evidencePolicy，真实问题正文、检索结果和模型回答由 RAG 执行器内部处理。"
+                    ),
+                    arguments=self._knowledge_rag_arguments(request),
+                )
+            )
+            planned_tool_names.add("knowledge.rag.query")
+
         quality_keywords = ("quality", "rule", "校验", "质量", "规则", "异常", "清洗")
+        quality_rule_action_requested = self._contains_any(
+            objective,
+            ("生成", "设计", "创建", "草案", "suggest", "generate", "design"),
+        )
         wants_quality_rule = (
             "quality.rule.suggest" in candidate_tools
-            or (self._contains_any(objective, quality_keywords) and not wants_quality_remediation)
+            or (
+                self._contains_any(objective, quality_keywords)
+                and not wants_quality_remediation
+                and (quality_rule_action_requested or not wants_knowledge_rag)
+            )
         )
         if wants_quality_rule and "quality.rule.suggest" in self._tools:
             tool = self._tools["quality.rule.suggest"]
@@ -344,6 +373,50 @@ class ToolPlanner:
         """
 
         return any(keyword in text for keyword in keywords)
+
+    def _knowledge_rag_arguments(self, request: AgentRequest) -> dict[str, object]:
+        """构造 RAG 工具的低敏参数。
+
+        为什么不直接把 `request.objective` 作为 `question` 放进工具参数：
+        - AgentPlan、runtime event、Java projection 和审计日志都会传播工具参数；
+        - 用户问题可能包含数据源 ID、表名、内部术语、故障描述甚至敏感样本；
+        - 因此计划阶段只保存 hash、长度、来源和物化策略，真实 RAG 执行器在受控边界内再解析原文。
+
+        这种做法牺牲了一点本地可读性，但换来更好的商业化安全边界。面试时可以把它解释为：
+        “规划层传引用，执行层取正文，事件层只记证据摘要”。
+        """
+
+        raw_query = str(
+            request.variables.get("knowledgeQuery")
+            or request.variables.get("ragQuestion")
+            or request.variables.get("rag_question")
+            or request.objective
+        )
+        query_digest = sha256(raw_query.encode("utf-8")).hexdigest()
+        return {
+            "queryRef": {
+                "kind": "rag_query_ref",
+                "queryDigest": f"sha256:{query_digest}",
+                "queryLength": len(raw_query),
+                "source": "request_variable" if request.variables.get("knowledgeQuery") or request.variables.get("ragQuestion") else "request_objective",
+                "materializationPolicy": "RESOLVE_INSIDE_RAG_PIPELINE_ONLY",
+            },
+            "scopePolicy": {
+                "tenantScoped": bool(request.tenant_id),
+                "projectScoped": bool(request.project_id),
+                "workspaceScoped": True,
+                "sourceTypes": ("runbook", "policy", "glossary", "quality_rule", "datasource_metadata"),
+                "preFilterBeforeVectorSearch": True,
+            },
+            "evidencePolicy": {
+                "minimumAcceptedEvidence": 1,
+                "minimumMatchTerms": 2,
+                "failClosedWhenNoEvidence": True,
+                "citationsRequired": True,
+                "langGraphCheckpointRequired": True,
+            },
+            "payloadPolicy": "LOW_SENSITIVE_RAG_QUERY_REFERENCE_ONLY",
+        }
 
     def _wants_quality_remediation(
         self,

@@ -41,6 +41,7 @@ class MultiAgentTurnRunnerState(TypedDict, total=False):
     loopDecision: str
     turnAttempts: tuple["ControlledAgentTurnAttempt", ...]
     managerAsTools: tuple[dict[str, Any], ...]
+    knowledgeAgentCapabilities: tuple[dict[str, Any], ...]
     runnerPolicy: dict[str, Any]
     runStatus: str
     nextActions: tuple[str, ...]
@@ -127,6 +128,7 @@ class ControlledMultiAgentTurnRunnerDiagnostics:
     max_concurrent_agent_turns: int
     turn_attempts: tuple[ControlledAgentTurnAttempt, ...]
     manager_as_tools: tuple[dict[str, Any], ...]
+    knowledge_agent_capabilities: tuple[dict[str, Any], ...]
     runner_policy: dict[str, Any]
     next_actions: tuple[str, ...]
     runtime_graph_contract: Mapping[str, Any] | None = None
@@ -155,6 +157,7 @@ class ControlledMultiAgentTurnRunnerDiagnostics:
                 "controlPlaneHandoffPlanning": self.executed and any(
                     attempt["controlPlaneRouteHints"] for attempt in attempts
                 ),
+                "knowledgeRagPlanning": self.executed and bool(self.knowledge_agent_capabilities),
                 "sideEffectGuardrails": bool(self.runner_policy.get("javaControlPlaneRequiredForSideEffects")),
             },
             "runStatus": self.run_status,
@@ -172,8 +175,10 @@ class ControlledMultiAgentTurnRunnerDiagnostics:
             "controlPlaneHandoffCount": sum(
                 1 for item in attempts if "JAVA_COMMAND_PROPOSAL_OR_OUTBOX_REQUIRED" in item["requiredEvidenceCodes"]
             ),
+            "knowledgeAgentCapabilityCount": len(self.knowledge_agent_capabilities),
             "turnAttempts": attempts,
             "managerAsTools": self.manager_as_tools,
+            "knowledgeAgentCapabilities": self.knowledge_agent_capabilities,
             "runnerPolicy": self.runner_policy,
             "nextActions": self.next_actions,
             "sideEffectBoundary": side_effect_boundary(),
