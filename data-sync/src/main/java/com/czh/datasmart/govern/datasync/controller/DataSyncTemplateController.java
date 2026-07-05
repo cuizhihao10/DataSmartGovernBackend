@@ -11,6 +11,7 @@ import com.czh.datasmart.govern.common.api.PlatformPageResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTemplateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncOfflineJobPlanResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplatePlanningPreviewResponse;
@@ -159,6 +160,32 @@ public class DataSyncTemplateController {
             @RequestHeader HttpHeaders headers) {
         return PlatformApiResponse.success("同步模板执行前预检查完成",
                 dataSyncService.precheckTemplate(id, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * 生成 DataX 风格离线作业计划。
+     *
+     * <p>该接口服务“离线 runner 规划”，不是执行入口。它会根据模板推导 Reader/Writer 家族、模式族、分片策略、
+     * 调度语义、statementRef 策略、checkpoint handoff、审批要求和 fail-closed 原因，但不会：</p>
+     * <p>1. 创建同步任务；</p>
+     * <p>2. 把任务推进 QUEUED；</p>
+     * <p>3. 连接源端或目标端；</p>
+     * <p>4. 执行 SQL 或读取样本；</p>
+     * <p>5. 返回 SQL、字段映射、对象映射、过滤条件、分区配置、连接串或凭据正文。</p>
+     *
+     * <p>为什么使用 POST 而不是 GET：虽然该接口是只读规划，但它可能在未来接收更复杂的低敏规划上下文
+     * 或 agent planning options；保持 POST 可避免把复杂参数和潜在敏感上下文放进 URL、代理日志和浏览器历史。</p>
+     */
+    @PostMapping("/{id}/offline-job-plan")
+    public PlatformApiResponse<SyncOfflineJobPlanResponse> buildOfflineJobPlan(
+            @PathVariable Long id,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步模板离线作业计划生成成功",
+                dataSyncService.buildOfflineJobPlan(id, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
     }
 
     private SyncActorContext actorContext(Long tenantId, Long actorId, String actorRole, String traceId, HttpHeaders headers) {

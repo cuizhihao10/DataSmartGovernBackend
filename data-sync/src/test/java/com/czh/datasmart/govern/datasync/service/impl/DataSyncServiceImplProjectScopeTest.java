@@ -26,6 +26,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncAuditSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncDataScopeSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionCreationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLifecycleSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncOfflineJobPlanSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskRecoveryOperationSupport;
@@ -203,7 +204,8 @@ class DataSyncServiceImplProjectScopeTest {
                 mock(SyncTaskRecoveryOperationSupport.class),
                 templateCreationSupport(templateMapper, auditSupport, dataScopeSupport, querySupport, templateValidationSupport),
                 new SyncTemplatePlanningPreviewSupport(new SyncConnectorCapabilityRegistry()),
-                templateExecutionPrecheckSupport()
+                templateExecutionPrecheckSupport(),
+                offlineJobPlanSupport()
         );
     }
 
@@ -262,7 +264,8 @@ class DataSyncServiceImplProjectScopeTest {
                 mock(SyncTaskRecoveryOperationSupport.class),
                 templateCreationSupport(templateMapper, auditSupport, dataScopeSupport, querySupport, templateValidationSupport),
                 new SyncTemplatePlanningPreviewSupport(new SyncConnectorCapabilityRegistry()),
-                templateExecutionPrecheckSupport()
+                templateExecutionPrecheckSupport(),
+                offlineJobPlanSupport()
         );
     }
 
@@ -272,6 +275,16 @@ class DataSyncServiceImplProjectScopeTest {
                 new SyncConnectorCapabilityRegistry(),
                 new SyncTemplateScopeContractSupport(objectMapper),
                 new SyncFieldMappingExecutionContractSupport(objectMapper)
+        );
+    }
+
+    private SyncOfflineJobPlanSupport offlineJobPlanSupport() {
+        ObjectMapper objectMapper = new ObjectMapper();
+        return new SyncOfflineJobPlanSupport(
+                new SyncConnectorCapabilityRegistry(),
+                new SyncTemplateScopeContractSupport(objectMapper),
+                new SyncFieldMappingExecutionContractSupport(objectMapper),
+                objectMapper
         );
     }
 

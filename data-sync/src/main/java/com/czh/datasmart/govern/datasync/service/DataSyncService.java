@@ -18,6 +18,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCompleteReq
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionStartRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncOfflineJobPlanResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
@@ -64,6 +65,15 @@ public interface DataSyncService {
      * 不执行 SQL，只返回低敏状态、问题码和建议。</p>
      */
     SyncTemplateExecutionPrecheckResponse precheckTemplate(Long id, SyncActorContext actorContext);
+
+    /**
+     * 生成 DataX 风格离线作业计划。
+     *
+     * <p>离线作业计划用于帮助 UI、Agent、审批流和运维人员理解“这份模板如果交给专用离线 runner，
+     * 应该使用哪类 Reader/Writer、需要什么分片/调度/checkpoint/审批能力”。它不是执行入口：
+     * 不创建任务、不入队、不连接源端、不执行 SQL、不返回 objectMapping/fieldMapping/filter/SQL 原文。</p>
+     */
+    SyncOfflineJobPlanResponse buildOfflineJobPlan(Long id, SyncActorContext actorContext);
 
     SyncTask createTask(CreateSyncTaskRequest request, SyncActorContext actorContext);
 

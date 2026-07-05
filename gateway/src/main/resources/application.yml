@@ -491,6 +491,13 @@ datasmart:
           method-actions:
             POST: VALIDATE
 
+        - path-pattern: /api/sync/sync-templates/*/offline-job-plan
+          resource-type: SYNC_TEMPLATE
+          default-action: VIEW
+          description: data-sync 同步模板离线作业计划接口，只返回低敏 Reader/Writer、调度、checkpoint 和审批规划，不触发真实执行。
+          method-actions:
+            POST: VIEW
+
         - path-pattern: /api/sync/sync-tasks/*/run
           resource-type: SYNC_TASK
           default-action: RUN

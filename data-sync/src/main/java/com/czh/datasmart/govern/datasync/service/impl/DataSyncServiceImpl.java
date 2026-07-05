@@ -22,6 +22,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCompleteReq
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionStartRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncOfflineJobPlanResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
@@ -47,6 +48,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncDataScopeSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncDataVisibility;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionCreationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLifecycleSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncOfflineJobPlanSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskRecoveryOperationSupport;
@@ -99,6 +101,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncTemplateCreationSupport templateCreationSupport;
     private final SyncTemplatePlanningPreviewSupport templatePlanningPreviewSupport;
     private final SyncTemplateExecutionPrecheckSupport templateExecutionPrecheckSupport;
+    private final SyncOfflineJobPlanSupport offlineJobPlanSupport;
 
     @Override
     @Transactional
@@ -163,6 +166,19 @@ public class DataSyncServiceImpl implements DataSyncService {
     public SyncTemplateExecutionPrecheckResponse precheckTemplate(Long id, SyncActorContext actorContext) {
         SyncTemplate template = getTemplate(id, actorContext);
         return templateExecutionPrecheckSupport.precheck(template);
+    }
+
+    /**
+     * 生成同步模板的离线作业计划。
+     *
+     * <p>主 Service 只负责复用 {@link #getTemplate(Long, SyncActorContext)} 做租户、项目、SELF 数据范围校验，
+     * 然后把 Reader/Writer、调度语义、checkpoint、审批和 fail-closed 细节委托给
+     * {@link SyncOfflineJobPlanSupport}。这样可以避免 DataSyncServiceImpl 再次堆积大段规则判断。</p>
+     */
+    @Override
+    public SyncOfflineJobPlanResponse buildOfflineJobPlan(Long id, SyncActorContext actorContext) {
+        SyncTemplate template = getTemplate(id, actorContext);
+        return offlineJobPlanSupport.buildPlan(template);
     }
 
     @Override
