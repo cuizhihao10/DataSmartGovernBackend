@@ -23,6 +23,7 @@ import org.mockito.ArgumentCaptor;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -63,6 +64,8 @@ class SyncOfflineRunnerReportCallbackServiceTest {
         assertThat(executionCaptor.getValue().getCheckpointRef()).isEqualTo("digest:sha256-progress");
         verify(fixture.lifecycleSupport(), never()).completeExecution(any(), any(), any(), any());
         verify(fixture.lifecycleSupport(), never()).failExecution(any(), any(), any(), any());
+        verify(fixture.reportMetrics()).recordReport(any(SyncOfflineRunnerReportRequest.class),
+                any(SyncOfflineRunnerReportResult.class));
     }
 
     @Test
@@ -89,6 +92,8 @@ class SyncOfflineRunnerReportCallbackServiceTest {
         assertThat(checkpointCaptor.getValue().getCheckpointValue())
                 .isEqualTo("checkpointRef=runner-checkpoint-001;checkpointDigest=sha256-window");
         assertThat(checkpointCaptor.getValue().getShardOrPartition()).isEqualTo("runner-shard-01");
+        verify(fixture.reportMetrics()).recordReport(any(SyncOfflineRunnerReportRequest.class),
+                any(SyncOfflineRunnerReportResult.class));
     }
 
     @Test
@@ -115,6 +120,8 @@ class SyncOfflineRunnerReportCallbackServiceTest {
         assertThat(completeCaptor.getValue().getCheckpointRef()).isEqualTo("digest:sha256-final");
         verify(fixture.receiptPublisher()).publishComplete(any(SyncTask.class), any(SyncExecution.class),
                 any(SyncActorContext.class), any());
+        verify(fixture.reportMetrics()).recordReport(any(SyncOfflineRunnerReportRequest.class),
+                any(SyncOfflineRunnerReportResult.class));
     }
 
     @Test
@@ -145,6 +152,22 @@ class SyncOfflineRunnerReportCallbackServiceTest {
         assertThat(failCaptor.getValue().getTargetRecordKey()).isNull();
         verify(fixture.receiptPublisher()).publishFailed(any(SyncTask.class), any(SyncExecution.class),
                 any(SyncActorContext.class), any(), any());
+        verify(fixture.reportMetrics()).recordReport(any(SyncOfflineRunnerReportRequest.class),
+                any(SyncOfflineRunnerReportResult.class));
+    }
+
+    @Test
+    void unsupportedRunnerStatusShouldRecordFailureMetricBeforeRethrow() {
+        Fixture fixture = fixture();
+        SyncOfflineRunnerReportRequest request = baseRequest("UNKNOWN_STATUS");
+
+        assertThatThrownBy(() -> fixture.service().applyReport(11L, 88L, request, actor()))
+                .hasMessageContaining("不支持的离线 Runner 报告状态");
+
+        verify(fixture.reportMetrics()).recordFailure(any(SyncOfflineRunnerReportRequest.class),
+                any(RuntimeException.class));
+        verify(fixture.reportMetrics(), never()).recordReport(any(SyncOfflineRunnerReportRequest.class),
+                any(SyncOfflineRunnerReportResult.class));
     }
 
     private Fixture fixture() {
@@ -153,11 +176,13 @@ class SyncOfflineRunnerReportCallbackServiceTest {
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
         SyncCallbackIdempotencySupport idempotencySupport = mock(SyncCallbackIdempotencySupport.class);
         DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
+        SyncOfflineRunnerReportMetrics reportMetrics = mock(SyncOfflineRunnerReportMetrics.class);
         when(taskMapper.selectById(11L)).thenReturn(task());
         when(executionMapper.selectById(88L)).thenReturn(execution());
         SyncOfflineRunnerReportCallbackService service = new SyncOfflineRunnerReportCallbackService(
-                taskMapper, executionMapper, lifecycleSupport, idempotencySupport, receiptPublisher);
-        return new Fixture(service, taskMapper, executionMapper, lifecycleSupport, idempotencySupport, receiptPublisher);
+                taskMapper, executionMapper, lifecycleSupport, idempotencySupport, receiptPublisher, reportMetrics);
+        return new Fixture(service, taskMapper, executionMapper, lifecycleSupport, idempotencySupport,
+                receiptPublisher, reportMetrics);
     }
 
     private SyncOfflineRunnerReportRequest baseRequest(String status) {
@@ -204,6 +229,7 @@ class SyncOfflineRunnerReportCallbackServiceTest {
                            SyncExecutionMapper executionMapper,
                            SyncExecutionLifecycleSupport lifecycleSupport,
                            SyncCallbackIdempotencySupport idempotencySupport,
-                           DataSyncTaskManagementReceiptPublisher receiptPublisher) {
+                           DataSyncTaskManagementReceiptPublisher receiptPublisher,
+                           SyncOfflineRunnerReportMetrics reportMetrics) {
     }
 }

@@ -54,6 +54,7 @@ public class SyncOfflineRunnerReportCallbackService {
     private final SyncExecutionLifecycleSupport lifecycleSupport;
     private final SyncCallbackIdempotencySupport idempotencySupport;
     private final DataSyncTaskManagementReceiptPublisher receiptPublisher;
+    private final SyncOfflineRunnerReportMetrics reportMetrics;
 
     /**
      * 应用一份专用离线 Runner 低敏报告。
@@ -69,17 +70,32 @@ public class SyncOfflineRunnerReportCallbackService {
                                                      Long executionId,
                                                      SyncOfflineRunnerReportRequest request,
                                                      SyncActorContext actorContext) {
-        SyncTask task = loadTask(taskId);
-        SyncExecution execution = loadExecution(task, executionId);
-        String status = normalizeStatus(request.getRunnerStatus());
-        return switch (status) {
-            case "QUEUED", "RUNNING", "PROGRESS" -> acceptProgress(task, execution, request, actorContext, status);
-            case "CHECKPOINT" -> writeLowSensitiveCheckpoint(task, execution, request, actorContext);
-            case "SUCCEEDED", "SUCCESS", "COMPLETED" -> completeFromReport(task, execution, request, actorContext);
-            case "FAILED", "FAIL" -> failFromReport(task, execution, request, actorContext);
-            default -> throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "不支持的离线 Runner 报告状态: " + request.getRunnerStatus());
-        };
+        try {
+            /*
+             * 把任务加载、执行记录加载和状态分发都放进同一个 try 块。
+             * 这样无论失败发生在“资源不存在”“执行不属于任务”“runnerStatus 非法”，
+             * 还是后面的 lifecycle 委托阶段，都会进入同一条 failure 指标链路。
+             * 这对生产排障很重要：运维人员看到 failure 指标上升后，才能知道 callback 入口确实收到了报告，
+             * 只是被 data-sync 的权限、状态机或校验规则拒绝，而不是 Runner 完全没有回调。
+             */
+            SyncTask task = loadTask(taskId);
+            SyncExecution execution = loadExecution(task, executionId);
+            String status = normalizeStatus(request == null ? null : request.getRunnerStatus());
+            SyncOfflineRunnerReportResult result = switch (status) {
+                case "QUEUED", "RUNNING", "PROGRESS" -> acceptProgress(task, execution, request, actorContext, status);
+                case "CHECKPOINT" -> writeLowSensitiveCheckpoint(task, execution, request, actorContext);
+                case "SUCCEEDED", "SUCCESS", "COMPLETED" -> completeFromReport(task, execution, request, actorContext);
+                case "FAILED", "FAIL" -> failFromReport(task, execution, request, actorContext);
+                default -> throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                        "不支持的离线 Runner 报告状态: "
+                                + (request == null ? null : request.getRunnerStatus()));
+            };
+            reportMetrics.recordReport(request, result);
+            return result;
+        } catch (RuntimeException exception) {
+            reportMetrics.recordFailure(request, exception);
+            throw exception;
+        }
     }
 
     /**
@@ -286,7 +302,7 @@ public class SyncOfflineRunnerReportCallbackService {
     }
 
     private String normalizeStatus(String value) {
-        return value == null ? null : value.trim().toUpperCase(Locale.ROOT);
+        return value == null || value.isBlank() ? "UNKNOWN" : value.trim().toUpperCase(Locale.ROOT);
     }
 
     private String safeText(String value) {
