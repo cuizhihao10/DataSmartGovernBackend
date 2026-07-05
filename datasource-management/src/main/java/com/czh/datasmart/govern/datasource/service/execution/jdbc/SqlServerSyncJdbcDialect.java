@@ -26,19 +26,46 @@ public class SqlServerSyncJdbcDialect extends AbstractSyncJdbcDialect {
     }
 
     @Override
-    protected String buildFullReadSql(String projection, String qualifiedObject, int limit) {
-        return "SELECT TOP (?) " + projection + " FROM " + qualifiedObject;
+    protected String buildFullReadSql(String projection,
+                                      String qualifiedObject,
+                                      String whereClause,
+                                      String orderClause,
+                                      int limit) {
+        String safeOrderClause = orderClause == null || orderClause.isBlank() ? " ORDER BY (SELECT NULL)" : orderClause;
+        return "SELECT " + projection + " FROM " + qualifiedObject + whereClause
+                + safeOrderClause + " OFFSET ? ROWS FETCH NEXT ? ROWS ONLY";
     }
 
     @Override
-    protected String buildIncrementalReadSql(String projection, String qualifiedObject, String checkpointColumn, int limit) {
+    protected String buildIncrementalReadSql(String projection,
+                                             String qualifiedObject,
+                                             String whereClause,
+                                             String checkpointColumn,
+                                             int limit) {
+        String prefix = whereClause == null || whereClause.isBlank() ? " WHERE " : whereClause + " AND ";
         return "SELECT TOP (?) " + projection + " FROM " + qualifiedObject
-                + " WHERE " + checkpointColumn + " > ? ORDER BY " + checkpointColumn + " ASC";
+                + prefix + checkpointColumn + " > ? ORDER BY " + checkpointColumn + " ASC";
+    }
+
+    @Override
+    protected List<String> fullReadParameterNames(List<SyncJdbcFilterCondition> filters) {
+        return merge(filterParameterNames(filters), List.of("offset", "limit"));
+    }
+
+    @Override
+    protected List<String> incrementalReadParameterNames(List<SyncJdbcFilterCondition> filters) {
+        return merge(merge(List.of("limit"), filterParameterNames(filters)), List.of("checkpointValue"));
     }
 
     @Override
     protected List<String> incrementalReadParameterNames() {
-        return List.of("limit", "checkpointValue");
+        return incrementalReadParameterNames(List.of());
+    }
+
+    private List<String> merge(List<String> left, List<String> right) {
+        java.util.ArrayList<String> values = new java.util.ArrayList<>(left);
+        values.addAll(right);
+        return List.copyOf(values);
     }
 
     @Override

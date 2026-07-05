@@ -48,6 +48,7 @@ public class SyncTemplateExecutionPrecheckSupport {
     private final SyncConnectorCapabilityRegistry connectorCapabilityRegistry;
     private final SyncTemplateScopeContractSupport scopeContractSupport;
     private final SyncFieldMappingExecutionContractSupport fieldMappingExecutionContractSupport;
+    private final SyncFilterExecutionContractSupport filterExecutionContractSupport;
 
     /**
      * 执行模板预检查。
@@ -75,6 +76,9 @@ public class SyncTemplateExecutionPrecheckSupport {
                 template.getFieldMappingConfig(), template.getPrimaryKeyField());
         issueCodes.addAll(fieldMappingContract.getIssueCodes());
         safetyNotes.addAll(fieldMappingContract.getWarnings());
+        SyncFilterExecutionContract filterContract = filterExecutionContractSupport.parse(template.getFilterConfig());
+        issueCodes.addAll(filterContract.getIssueCodes());
+        safetyNotes.addAll(filterContract.getWarnings());
 
         boolean connectorFactsComplete = hasText(template.getSourceConnectorType())
                 && hasText(template.getTargetConnectorType())
@@ -83,11 +87,12 @@ public class SyncTemplateExecutionPrecheckSupport {
         boolean checkpointRequired = compatibility != null && compatibility.checkpointRequired();
         boolean checkpointHandoffSupported = !checkpointRequired;
         boolean fieldMappingRunnable = fieldMappingContract.directlyRunnableByMinimalBridge();
+        boolean filterRunnable = filterContract.directlyRunnableByMinimalBridge();
         boolean customSqlSafetyPassed = !scopeContract.customSqlScope()
                 || !scopeContract.hasIssue("CUSTOM_SQL_RAW_SQL_UNSAFE");
 
         evaluateWriteStrategy(template, writeStrategy, issueCodes, recommendedActions, safetyNotes);
-        evaluateRunnerBoundary(syncMode, scopeContract, fieldMappingRunnable, checkpointRequired,
+        evaluateRunnerBoundary(syncMode, scopeContract, fieldMappingRunnable, filterRunnable, checkpointRequired,
                 issueCodes, recommendedActions, performanceNotes, safetyNotes);
 
         List<String> distinctIssues = distinct(issueCodes);
@@ -96,6 +101,7 @@ public class SyncTemplateExecutionPrecheckSupport {
                 && modeExecutableByMinimalBridge(syncMode)
                 && checkpointHandoffSupported
                 && fieldMappingRunnable
+                && filterRunnable
                 && connectorCompatibilitySupported
                 && !hasHardBlockingIssue(distinctIssues);
         boolean approvalRequired = scopeContract.requiresApproval()
@@ -220,6 +226,7 @@ public class SyncTemplateExecutionPrecheckSupport {
     private void evaluateRunnerBoundary(SyncMode syncMode,
                                         SyncTemplateScopeContract scopeContract,
                                         boolean fieldMappingRunnable,
+                                        boolean filterRunnable,
                                         boolean checkpointRequired,
                                         List<String> issueCodes,
                                         List<String> recommendedActions,
@@ -239,7 +246,11 @@ public class SyncTemplateExecutionPrecheckSupport {
         }
         if (!fieldMappingRunnable) {
             issueCodes.add("FIELD_MAPPING_CONTRACT_NOT_RUNNABLE_BY_MINIMAL_BRIDGE");
-            recommendedActions.add("字段映射必须声明为最小 bridge 可执行的同名字段映射；字段改名、表达式、类型转换需要后续 transform runner");
+            recommendedActions.add("字段映射必须声明为最小 bridge 可执行的字段映射；当前已支持字段改名，但表达式、类型转换、默认值和脱敏计算仍需要后续 transform runner");
+        }
+        if (!filterRunnable) {
+            issueCodes.add("FILTER_CONTRACT_NOT_RUNNABLE_BY_MINIMAL_BRIDGE");
+            recommendedActions.add("filterConfig 必须使用结构化 AND 条件、受控操作符和安全字段名；不要把 where SQL 字符串直接写入过滤配置");
         }
         performanceNotes.add("当前预检查不做真实行数估算、索引扫描、DDL 兼容比对或 explain；这些能力应在 metadata-aware runner 接入后补充");
         safetyNotes.add("预检查通过只表示控制面允许入队，不代表源端连接、目标端写入、网络、锁等待或下游容量一定成功");
@@ -314,7 +325,15 @@ public class SyncTemplateExecutionPrecheckSupport {
                         || "CUSTOM_SQL_RAW_SQL_UNSAFE".equals(issueCode)
                         || "CUSTOM_SQL_TARGET_OBJECT_REQUIRED".equals(issueCode)
                         || "CUSTOM_SQL_FIELD_MAPPING_REQUIRED".equals(issueCode)
-                        || "PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE".equals(issueCode));
+                        || "PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE".equals(issueCode)
+                        || "FILTER_CONFIG_PARSE_FAILED".equals(issueCode)
+                        || "FILTER_CONFIG_SCHEMA_UNSUPPORTED".equals(issueCode)
+                        || "FILTER_CONDITION_COUNT_EXCEEDED".equals(issueCode)
+                        || "FILTER_LOGIC_ONLY_AND_SUPPORTED".equals(issueCode)
+                        || "FILTER_CONDITION_SCHEMA_UNSUPPORTED".equals(issueCode)
+                        || "FILTER_COLUMN_IDENTIFIER_UNSAFE".equals(issueCode)
+                        || "FILTER_OPERATOR_UNSUPPORTED".equals(issueCode)
+                        || "FILTER_VALUE_REQUIRED".equals(issueCode));
     }
 
     private List<String> distinct(List<String> values) {

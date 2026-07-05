@@ -100,6 +100,62 @@ class SyncBatchConnectorRuntimeRunOnceServiceTest {
     }
 
     @Test
+    void fullRunOnceShouldBindPreviousReadCountAsOffset() {
+        StaticReader reader = new StaticReader(new SyncBatchReadResult(
+                1L,
+                true,
+                false,
+                null,
+                new SyncBatchRecordBatch(
+                        List.of("id", "amount"),
+                        List.of(Map.of("id", 11L, "amount", 300))
+                )
+        ));
+        StaticWriter writer = new StaticWriter(new SyncBatchWriteResult(1L, 0L, true, null));
+
+        SyncBatchRunOnceInternalRequest request = runRequest(10L, 10L, 0L, null);
+        request.setExecutionPlan(fullPlan());
+        request.setSelectedColumns(List.of("id", "amount"));
+        request.setWriteColumns(List.of("id", "amount"));
+        request.setPrimaryKeyColumns(List.of("id"));
+
+        SyncBatchRunOnceInternalResponse response = service(reader, writer).runOnce(request);
+
+        assertEquals("SOURCE_EXHAUSTED_COMPLETE_REQUIRED", response.getRunStatus());
+        assertEquals(10L, reader.capturedContext.getParameterValues().get("offset"));
+        assertTrue(reader.capturedContext.getReadStatement().getParameterNames().contains("offset"));
+    }
+
+    @Test
+    void runOnceShouldRenameSourceColumnsToTargetColumnsBeforeWriting() {
+        StaticReader reader = new StaticReader(new SyncBatchReadResult(
+                1L,
+                true,
+                false,
+                null,
+                new SyncBatchRecordBatch(
+                        List.of("customer_id", "customer_name"),
+                        List.of(Map.of("customer_id", 1001L, "customer_name", "Alice"))
+                )
+        ));
+        StaticWriter writer = new StaticWriter(new SyncBatchWriteResult(1L, 0L, true, null));
+
+        SyncBatchRunOnceInternalRequest request = runRequest(0L, 0L, 0L, "2026-06-20T16:21:00");
+        request.setSelectedColumns(List.of("customer_id", "customer_name"));
+        request.setWriteColumns(List.of("id", "name"));
+        request.setPrimaryKeyColumns(List.of("id"));
+
+        SyncBatchRunOnceInternalResponse response = service(reader, writer).runOnce(request);
+
+        assertEquals("SOURCE_EXHAUSTED_COMPLETE_REQUIRED", response.getRunStatus());
+        assertTrue(writer.invoked);
+        assertEquals(List.of("id", "name"), writer.capturedBatch.getColumns());
+        assertEquals(1001L, writer.capturedBatch.getRows().get(0).get("id"));
+        assertEquals("Alice", writer.capturedBatch.getRows().get(0).get("name"));
+        assertFalse(writer.capturedBatch.getRows().get(0).containsKey("customer_id"));
+    }
+
+    @Test
     void readerErrorShouldNotCallWriterAndShouldScrubSensitiveSummary() {
         StaticReader reader = new StaticReader(new SyncBatchReadResult(
                 0L,
@@ -216,6 +272,16 @@ class SyncBatchConnectorRuntimeRunOnceServiceTest {
         );
     }
 
+    private SyncBatchExecutionPlan fullPlan() {
+        SyncBatchExecutionPlan plan = incrementalPlan();
+        plan.getReadPlan().setReadStrategy("FULL_OBJECT_SCAN");
+        plan.getReadPlan().setSyncMode("FULL");
+        plan.getReadPlan().setIncrementalField(null);
+        plan.getCheckpointPlan().setCheckpointType("NONE_OR_FINAL_WATERMARK");
+        plan.getCheckpointPlan().setResumeRequired(false);
+        return plan;
+    }
+
     /**
      * 静态 reader 测试替身。
      */
@@ -223,6 +289,7 @@ class SyncBatchConnectorRuntimeRunOnceServiceTest {
 
         private final SyncBatchReadResult result;
         private boolean invoked;
+        private SyncBatchReadContext capturedContext;
 
         private StaticReader(SyncBatchReadResult result) {
             this.result = result;
@@ -231,6 +298,7 @@ class SyncBatchConnectorRuntimeRunOnceServiceTest {
         @Override
         public SyncBatchReadResult readNextBatch(SyncBatchReadContext context) {
             invoked = true;
+            capturedContext = context;
             return result;
         }
     }
@@ -242,6 +310,7 @@ class SyncBatchConnectorRuntimeRunOnceServiceTest {
 
         private final SyncBatchWriteResult result;
         private boolean invoked;
+        private SyncBatchRecordBatch capturedBatch;
 
         private StaticWriter(SyncBatchWriteResult result) {
             this.result = result;
@@ -250,6 +319,7 @@ class SyncBatchConnectorRuntimeRunOnceServiceTest {
         @Override
         public SyncBatchWriteResult writeBatch(SyncBatchWriteContext context, SyncBatchRecordBatch recordBatch) {
             invoked = true;
+            capturedBatch = recordBatch;
             return result;
         }
     }

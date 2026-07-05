@@ -9,6 +9,7 @@ package com.czh.datasmart.govern.datasource.service.execution;
 import com.czh.datasmart.govern.datasource.controller.dto.SyncBatchExecutionPlan;
 import com.czh.datasmart.govern.datasource.service.execution.jdbc.SyncJdbcDialect;
 import com.czh.datasmart.govern.datasource.service.execution.jdbc.SyncJdbcDialectRegistry;
+import com.czh.datasmart.govern.datasource.service.execution.jdbc.SyncJdbcFilterCondition;
 import com.czh.datasmart.govern.datasource.service.execution.jdbc.SyncJdbcReadStatementSpec;
 import com.czh.datasmart.govern.datasource.service.execution.jdbc.SyncJdbcWriteStatementSpec;
 import com.czh.datasmart.govern.datasource.service.execution.jdbc.SyncPreparedJdbcStatement;
@@ -18,6 +19,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -57,7 +59,8 @@ public class SyncBatchExecutionPreparationService {
     public SyncBatchWorkerExecutionBundle prepareJdbcExecution(SyncBatchExecutionPreparationRequest request) {
         validateRequest(request);
         SyncBatchExecutionPlan plan = request.getExecutionPlan();
-        SyncPreparedJdbcStatement readStatement = buildReadStatement(plan.getReadPlan(), request.getSelectedColumns());
+        SyncPreparedJdbcStatement readStatement = buildReadStatement(
+                plan.getReadPlan(), request.getSelectedColumns(), request.getWriteColumns(), request.getPrimaryKeyColumns());
         SyncPreparedJdbcStatement writeStatement = buildWriteStatement(plan.getWritePlan(), request.getWriteColumns(), request.getPrimaryKeyColumns());
 
         return new SyncBatchWorkerExecutionBundle(
@@ -77,12 +80,17 @@ public class SyncBatchExecutionPreparationService {
     /**
      * 构建读取语句。
      */
-    private SyncPreparedJdbcStatement buildReadStatement(SyncBatchExecutionPlan.ReadPlan readPlan, List<String> selectedColumns) {
+    private SyncPreparedJdbcStatement buildReadStatement(SyncBatchExecutionPlan.ReadPlan readPlan,
+                                                         List<String> selectedColumns,
+                                                         List<String> writeColumns,
+                                                         List<String> primaryKeyColumns) {
         SyncJdbcDialect dialect = syncJdbcDialectRegistry.getRequiredDialect(readPlan.getConnectorType());
         SyncJdbcReadStatementSpec spec = new SyncJdbcReadStatementSpec(
                 readPlan.getObjectLocator(),
                 selectedColumns,
                 readPlan.getIncrementalField(),
+                filterConditions(readPlan),
+                stableSortColumns(selectedColumns, writeColumns, primaryKeyColumns),
                 readPlan.getReadStrategy(),
                 readPlan.getRecommendedFetchSize()
         );
@@ -119,6 +127,18 @@ public class SyncBatchExecutionPreparationService {
      * 构建读取上下文。
      */
     private SyncBatchReadContext buildReadContext(SyncBatchExecutionPlan plan, SyncPreparedJdbcStatement readStatement) {
+        Map<String, Object> parameterValues = new HashMap<>();
+        parameterValues.put("limit", plan.getReadPlan().getRecommendedFetchSize());
+        parameterValues.put("offset", 0L);
+        List<SyncBatchExecutionPlan.ReadFilterCondition> conditions = plan.getReadPlan().getFilterConditions();
+        if (conditions != null) {
+            for (int index = 0; index < conditions.size(); index++) {
+                SyncBatchExecutionPlan.ReadFilterCondition condition = conditions.get(index);
+                if (condition != null && Boolean.TRUE.equals(condition.getValueRequired())) {
+                    parameterValues.put("filter_" + index, condition.getValue());
+                }
+            }
+        }
         return new SyncBatchReadContext(
                 plan.getTaskId(),
                 plan.getExecutionId(),
@@ -126,8 +146,54 @@ public class SyncBatchExecutionPreparationService {
                 plan.getCheckpointPlan().getCheckpointType(),
                 plan.getReadPlan().getRecommendedFetchSize(),
                 readStatement,
-                Map.of("limit", plan.getReadPlan().getRecommendedFetchSize())
+                parameterValues
         );
+    }
+
+    /**
+     * 将执行计划中的 internal 过滤条件转换为 JDBC 方言规格。
+     *
+     * <p>这里不拼接 SQL，只复制结构化字段。字段名、操作符和参数顺序仍由方言层二次校验和生成。</p>
+     */
+    private List<SyncJdbcFilterCondition> filterConditions(SyncBatchExecutionPlan.ReadPlan readPlan) {
+        if (readPlan.getFilterConditions() == null || readPlan.getFilterConditions().isEmpty()) {
+            return List.of();
+        }
+        return readPlan.getFilterConditions().stream()
+                .map(condition -> new SyncJdbcFilterCondition(
+                        condition.getColumn(),
+                        condition.getOperator(),
+                        condition.getValue(),
+                        condition.getValueRequired()
+                ))
+                .toList();
+    }
+
+    /**
+     * 根据目标端主键反推出源端稳定排序列。
+     *
+     * <p>字段映射允许 {@code sourceField -> targetField} 改名，例如源端 {@code customer_id} 写入目标端 {@code id}。
+     * 如果全量多批次扫描直接拿目标端主键 {@code id} 去源端排序，源端 SQL 会找不到列。
+     * 因此这里按字段映射顺序把目标主键映射回源字段，作为 reader 的稳定排序列。</p>
+     */
+    private List<String> stableSortColumns(List<String> selectedColumns,
+                                           List<String> writeColumns,
+                                           List<String> primaryKeyColumns) {
+        if (selectedColumns == null || selectedColumns.isEmpty()) {
+            return List.of();
+        }
+        if (primaryKeyColumns == null || primaryKeyColumns.isEmpty()
+                || writeColumns == null || writeColumns.isEmpty()) {
+            return List.copyOf(selectedColumns);
+        }
+        List<String> sourceSortColumns = new ArrayList<>();
+        for (String primaryKeyColumn : primaryKeyColumns) {
+            int index = writeColumns.indexOf(primaryKeyColumn);
+            if (index >= 0 && index < selectedColumns.size()) {
+                sourceSortColumns.add(selectedColumns.get(index));
+            }
+        }
+        return sourceSortColumns.isEmpty() ? List.copyOf(selectedColumns) : List.copyOf(sourceSortColumns);
     }
 
     /**

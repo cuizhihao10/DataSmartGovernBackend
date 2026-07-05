@@ -82,6 +82,15 @@ public class DataSyncDatasourceRunOnceProperties {
     /**
      * 默认写入批大小。
      */
+    /**
+     * 单次 data-sync 派发允许连续调用 datasource-management run-once 的最大批次数。
+     *
+     * <p>该配置用于模拟 DataX 风格的受控批次循环：data-sync 负责调度和状态机，
+     * datasource-management 负责 Java Reader/Writer 的真实抽取与写入。设置上限可以避免
+     * offset、where 条件或方言实现异常时形成无限重复读写。</p>
+     */
+    private int maxRunOnceBatches = 100;
+
     private int defaultWriteBatchSize = 256;
 
     /**

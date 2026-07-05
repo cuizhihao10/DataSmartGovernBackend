@@ -63,7 +63,7 @@ class SyncFieldMappingExecutionContractSupportTest {
         assertThat(contract.getPrimaryKeyColumns()).containsExactly("id");
         assertThat(contract.isRequiresFieldRenameTransform()).isTrue();
         assertThat(contract.getWarnings()).contains("FIELD_RENAME_TRANSFORM_REQUIRED");
-        assertThat(contract.directlyRunnableByMinimalBridge()).isFalse();
+        assertThat(contract.directlyRunnableByMinimalBridge()).isTrue();
     }
 
     @Test

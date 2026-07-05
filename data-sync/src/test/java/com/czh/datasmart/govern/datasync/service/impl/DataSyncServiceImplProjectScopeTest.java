@@ -33,6 +33,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncTaskRecoveryOperati
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskStateMachineSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncConnectorCapabilityRegistry;
 import com.czh.datasmart.govern.datasync.service.support.SyncFieldMappingExecutionContractSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncFilterExecutionContractSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateConnectorFactResolver;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateCreationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateExecutionPrecheckSupport;
@@ -274,7 +275,8 @@ class DataSyncServiceImplProjectScopeTest {
         return new SyncTemplateExecutionPrecheckSupport(
                 new SyncConnectorCapabilityRegistry(),
                 new SyncTemplateScopeContractSupport(objectMapper),
-                new SyncFieldMappingExecutionContractSupport(objectMapper)
+                new SyncFieldMappingExecutionContractSupport(objectMapper),
+                new SyncFilterExecutionContractSupport(objectMapper)
         );
     }
 

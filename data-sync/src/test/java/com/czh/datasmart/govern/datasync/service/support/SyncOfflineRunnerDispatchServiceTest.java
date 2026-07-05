@@ -201,6 +201,7 @@ class SyncOfflineRunnerDispatchServiceTest {
                                                      List<SyncOfflineRunnerAdapter> adapters) {
         SyncBatchRunnerBridgePlanSupport bridgePlanSupport = new SyncBatchRunnerBridgePlanSupport(
                 new SyncFieldMappingExecutionContractSupport(objectMapper),
+                new SyncFilterExecutionContractSupport(objectMapper),
                 new SyncTemplateScopeContractSupport(objectMapper),
                 new SyncOfflineRunnerContractSupport());
         SyncOfflineRunnerAdapterRegistry runnerAdapterRegistry = new SyncOfflineRunnerAdapterRegistry(adapters);

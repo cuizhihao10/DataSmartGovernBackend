@@ -127,8 +127,7 @@ public class SyncBatchRunOnceDispatchService {
 
         DatasourceRunOnceRequest request = buildRequest(bridgePlan, execution, safeActorContext);
         try {
-            DatasourceRunOnceResponse response = datasourceRunOnceClient.runOnce(request, safeActorContext);
-            return handleRemoteResponse(task, execution, safeActorContext, response);
+            return dispatchDataXStyleBatchLoop(task, execution, safeActorContext, request);
         } catch (PlatformBusinessException exception) {
             return failAfterRemoteCallException(task, execution, safeActorContext, exception);
         }
@@ -241,10 +240,33 @@ public class SyncBatchRunOnceDispatchService {
         readPlan.setReadStrategy(bridgePlan.getReadStrategy());
         readPlan.setSyncMode(bridgePlan.getSyncMode());
         readPlan.setIncrementalField(bridgePlan.getIncrementalField());
+        readPlan.setFilterConditions(filterConditions(bridgePlan));
         readPlan.setPartitionConfigured(false);
         readPlan.setRecommendedFetchSize(properties.getDefaultFetchSize());
         readPlan.setRequiredWorkerCapabilities(readCapabilities(bridgePlan));
         return readPlan;
+    }
+
+    /**
+     * 将 data-sync 内部过滤契约映射为 datasource-management internal 请求。
+     *
+     * <p>跨服务传递的是结构化条件而非 SQL 字符串；字段名、操作符和值绑定仍由 datasource-management 方言层兜底。</p>
+     */
+    private List<DatasourceRunOnceRequest.ReadFilterCondition> filterConditions(SyncBatchRunnerBridgePlan bridgePlan) {
+        if (bridgePlan.getFilterConditions().isEmpty()) {
+            return List.of();
+        }
+        return bridgePlan.getFilterConditions().stream()
+                .map(condition -> {
+                    DatasourceRunOnceRequest.ReadFilterCondition target =
+                            new DatasourceRunOnceRequest.ReadFilterCondition();
+                    target.setColumn(condition.getColumn());
+                    target.setOperator(condition.getOperator());
+                    target.setValue(condition.getValue());
+                    target.setValueRequired(condition.isValueRequired());
+                    return target;
+                })
+                .toList();
     }
 
     private DatasourceRunOnceRequest.WritePlan writePlan(SyncBatchRunnerBridgePlan bridgePlan) {
@@ -287,7 +309,42 @@ public class SyncBatchRunOnceDispatchService {
     }
 
     /**
-     * 将远端 run-once 结果转换为 data-sync 生命周期动作。
+     * 按 DataX-style 批次模型循环调用 Java Reader/Writer 执行面。
+     *
+     * <p>DataX 的核心不是让 Python 搬运数据，而是控制面拆 Job、Java Reader/Writer 执行数据抽取和写入。
+     * 本项目当前也保持这个边界：data-sync 负责派发、累计计数和终态回写；datasource-management 执行每个受控批次。</p>
+     */
+    private SyncBatchRunOnceDispatchResult dispatchDataXStyleBatchLoop(SyncTask task,
+                                                                       SyncExecution execution,
+                                                                       SyncActorContext actorContext,
+                                                                       DatasourceRunOnceRequest request) {
+        int maxBatches = Math.max(1, properties.getMaxRunOnceBatches());
+        DatasourceRunOnceResponse lastResponse = null;
+        for (int batchIndex = 1; batchIndex <= maxBatches; batchIndex++) {
+            DatasourceRunOnceResponse response = datasourceRunOnceClient.runOnce(request, actorContext);
+            lastResponse = response;
+            SyncBatchRunOnceDispatchResult terminal = handleRemoteResponse(task, execution, actorContext, response);
+            if (terminal != null) {
+                return terminal;
+            }
+            if (!hasForwardProgress(request, response)) {
+                return failAfterRemoteResult(task, execution, actorContext,
+                        "REMOTE_RUN_ONCE_NO_FORWARD_PROGRESS",
+                        "datasource-management run-once 返回仍有后续批次，但累计计数未推进，已按 fail-closed 终止以避免重复读写",
+                        response == null ? null : response.getRunStatus());
+            }
+            request.setPreviousRecordsRead(zeroIfNull(response.getTotalRecordsRead()));
+            request.setPreviousRecordsWritten(zeroIfNull(response.getTotalRecordsWritten()));
+            request.setPreviousFailedRecordCount(zeroIfNull(response.getTotalFailedRecordCount()));
+        }
+        return failAfterRemoteResult(task, execution, actorContext,
+                "MAX_RUN_ONCE_BATCHES_EXCEEDED",
+                "datasource-management run-once 连续批次数超过安全上限，已按 fail-closed 终止；请调大批大小或切换专用离线 Runner",
+                lastResponse == null ? null : lastResponse.getRunStatus());
+    }
+
+    /**
+     * 将远端 run-once 结果转换为 data-sync 生命周期动作；返回 null 表示应继续下一批。
      */
     private SyncBatchRunOnceDispatchResult handleRemoteResponse(SyncTask task,
                                                                 SyncExecution execution,
@@ -311,15 +368,27 @@ public class SyncBatchRunOnceDispatchService {
                     execution.getId(), response.getRunStatus(), List.of());
         }
         if (Boolean.TRUE.equals(response.getProgressCallbackRecommended()) || !Boolean.TRUE.equals(response.getEndOfSource())) {
-            return failAfterRemoteResult(task, execution, actorContext,
-                    "OUTER_BATCH_LOOP_NOT_IMPLEMENTED",
-                    "单批执行后仍有后续批次，但 data-sync 外层多批循环尚未实现，本次执行先按 fail-closed 终止",
-                    response.getRunStatus());
+            return null;
         }
         return failAfterRemoteResult(task, execution, actorContext,
                 "RUN_ONCE_CALLBACK_DECISION_MISSING",
                 "datasource-management run-once 未给出 complete/fail/progress 决策，本次执行按 fail-closed 终止",
                 response.getRunStatus());
+    }
+
+    /**
+     * 判断连续批次是否真的向前推进。
+     *
+     * <p>这里只依赖低敏计数，不依赖行样本、SQL、主键值或 checkpoint 原始值；
+     * 若远端持续未结束但累计计数不变，必须终止以防重复写入。</p>
+     */
+    private boolean hasForwardProgress(DatasourceRunOnceRequest request, DatasourceRunOnceResponse response) {
+        if (response == null) {
+            return false;
+        }
+        return zeroIfNull(response.getTotalRecordsRead()) > zeroIfNull(request.getPreviousRecordsRead())
+                || zeroIfNull(response.getTotalRecordsWritten()) > zeroIfNull(request.getPreviousRecordsWritten())
+                || zeroIfNull(response.getTotalFailedRecordCount()) > zeroIfNull(request.getPreviousFailedRecordCount());
     }
 
     private SyncBatchRunOnceDispatchResult failBeforeRemote(SyncTask task,

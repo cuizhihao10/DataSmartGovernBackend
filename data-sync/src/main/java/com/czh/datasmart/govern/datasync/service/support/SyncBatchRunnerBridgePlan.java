@@ -141,6 +141,15 @@ public class SyncBatchRunnerBridgePlan {
     private final SyncFieldMappingExecutionContract fieldMappingContract;
 
     /**
+     * 过滤条件内部执行契约。
+     *
+     * <p>这些条件来自模板 filterConfig，并且已经被解析成安全字段名、标准化操作符和值。
+     * 由于 value 可能包含业务范围信息，它只能进入 internal run-once 请求，最终由 datasource-management
+     * 通过 PreparedStatement 绑定，不能进入普通响应、日志、审计摘要或 runtime event。</p>
+     */
+    private final List<SyncFilterExecutionCondition> filterConditions;
+
+    /**
      * 离线 Runner 作业合同。
      *
      * <p>该字段是本阶段新增的“执行器调度面低敏合同”。它比普通 workerPlan 更接近未来专用 DataX-style Runner，
@@ -211,6 +220,7 @@ public class SyncBatchRunnerBridgePlan {
                                      String sourceObjectLocator,
                                      String targetObjectLocator,
                                      SyncFieldMappingExecutionContract fieldMappingContract,
+                                     List<SyncFilterExecutionCondition> filterConditions,
                                      SyncOfflineRunnerJobContract offlineRunnerContract,
                                      String incrementalField,
                                      Long previousRecordsRead,
@@ -238,6 +248,7 @@ public class SyncBatchRunnerBridgePlan {
         this.sourceObjectLocator = sourceObjectLocator;
         this.targetObjectLocator = targetObjectLocator;
         this.fieldMappingContract = fieldMappingContract;
+        this.filterConditions = filterConditions == null ? List.of() : List.copyOf(filterConditions);
         this.offlineRunnerContract = offlineRunnerContract;
         this.incrementalField = incrementalField;
         this.previousRecordsRead = previousRecordsRead;

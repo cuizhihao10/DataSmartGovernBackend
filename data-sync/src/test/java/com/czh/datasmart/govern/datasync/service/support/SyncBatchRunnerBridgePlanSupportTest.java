@@ -59,20 +59,69 @@ class SyncBatchRunnerBridgePlanSupportTest {
     }
 
     @Test
-    void fieldRenameShouldBlockMinimalBridgeUntilTransformLayerExists() {
+    void fieldRenameShouldBeDispatchableBecauseRunOnceCanAlignRowKeys() {
         SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
                 .fieldMapping("""
-                        [{"sourceField":"customer_id","targetField":"id"}]
+                        [
+                          {"sourceField":"customer_id","targetField":"id"},
+                          {"sourceField":"customer_name","targetField":"name"}
+                        ]
+                        """);
+
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+                workerPlan("READY_TO_RUN", List.of()));
+
+        assertThat(plan.isDispatchable()).isTrue();
+        assertThat(plan.getDispatchStatus()).isEqualTo("READY_TO_DISPATCH");
+        assertThat(plan.getFieldMappingContract().isRequiresFieldRenameTransform()).isTrue();
+        assertThat(plan.getFieldMappingContract().getSelectedColumns()).containsExactly("customer_id", "customer_name");
+        assertThat(plan.getFieldMappingContract().getWriteColumns()).containsExactly("id", "name");
+        assertThat(plan.getIssueCodes()).doesNotContain("FIELD_MAPPING_CONTRACT_NOT_RUNNABLE_BY_MINIMAL_BRIDGE");
+    }
+
+    @Test
+    void safeFilterConfigShouldBeCarriedByBridgePlan() {
+        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+                .filter("""
+                        {
+                          "logic": "AND",
+                          "conditions": [
+                            {"field":"status","operator":"=","value":"ACTIVE"},
+                            {"field":"biz_date","operator":">=","value":"2026-01-01"}
+                          ]
+                        }
+                        """)
+                .fieldMapping("""
+                        [{"sourceField":"id","targetField":"id"}]
+                        """);
+
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+                workerPlan("READY_TO_RUN", List.of()));
+
+        assertThat(plan.isDispatchable()).isTrue();
+        assertThat(plan.getFilterConditions()).hasSize(2);
+        assertThat(plan.getFilterConditions().get(0).getColumn()).isEqualTo("status");
+        assertThat(plan.getFilterConditions().get(0).getOperator()).isEqualTo("EQ");
+        assertThat(plan.getFilterConditions().get(0).getValue()).isEqualTo("ACTIVE");
+        assertThat(plan.getIssueCodes()).doesNotContain("FILTER_CONTRACT_NOT_RUNNABLE_BY_MINIMAL_BRIDGE");
+    }
+
+    @Test
+    void unsafeFilterConfigShouldBlockBridgeBeforeRealRead() {
+        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+                .filter("""
+                        [{"field":"status or 1=1","operator":"=","value":"ACTIVE"}]
+                        """)
+                .fieldMapping("""
+                        [{"sourceField":"id","targetField":"id"}]
                         """);
 
         SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
                 workerPlan("READY_TO_RUN", List.of()));
 
         assertThat(plan.isDispatchable()).isFalse();
-        assertThat(plan.getDispatchStatus()).isEqualTo("BLOCKED");
-        assertThat(plan.getIssueCodes())
-                .contains("FIELD_RENAME_TRANSFORM_NOT_SUPPORTED_BY_MINIMAL_BRIDGE",
-                        "FIELD_MAPPING_CONTRACT_NOT_RUNNABLE_BY_MINIMAL_BRIDGE");
+        assertThat(plan.getIssueCodes()).contains("FILTER_COLUMN_IDENTIFIER_UNSAFE",
+                "FILTER_CONTRACT_NOT_RUNNABLE_BY_MINIMAL_BRIDGE");
         assertThat(plan.getNextActions()).contains("DO_NOT_DISPATCH_BATCH_RUNNER");
     }
 
@@ -263,6 +312,11 @@ class SyncBatchRunnerBridgePlanSupportTest {
 
         private TestTemplate writeStrategy(String value) {
             setWriteStrategy(value);
+            return this;
+        }
+
+        private TestTemplate filter(String value) {
+            setFilterConfig(value);
             return this;
         }
     }

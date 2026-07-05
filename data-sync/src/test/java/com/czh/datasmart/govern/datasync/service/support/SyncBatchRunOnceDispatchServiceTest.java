@@ -24,6 +24,8 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -64,6 +66,7 @@ class SyncBatchRunOnceDispatchServiceTest {
         assertThat(client.capturedRequest().getCheckpointValue()).isNull();
         assertThat(client.capturedRequest().getSelectedColumns()).containsExactly("id", "name");
         assertThat(client.capturedRequest().getExecutionPlan().getReadPlan().getReadStrategy()).isEqualTo("FULL_OBJECT_SCAN");
+        assertThat(client.capturedRequest().getExecutionPlan().getReadPlan().getFilterConditions()).isEmpty();
         assertThat(client.capturedRequest().getExecutionPlan().getCheckpointPlan().getCheckpointType())
                 .isEqualTo("NONE_OR_FINAL_WATERMARK");
 
@@ -104,7 +107,7 @@ class SyncBatchRunOnceDispatchServiceTest {
      * 字段重命名需要 transform 层；当前最小 JDBC bridge 不能把 sourceField 改名为 targetField 后直接写入。
      */
     @Test
-    void fieldRenameShouldFailBeforeRemoteCallUntilTransformLayerExists() {
+    void fieldRenameShouldBePassedToDatasourceRuntimeForRowKeyAlignment() {
         FakeDatasourceRunOnceClient client = new FakeDatasourceRunOnceClient(completeResponse());
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
         DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
@@ -114,13 +117,41 @@ class SyncBatchRunOnceDispatchServiceTest {
         SyncBatchRunOnceDispatchResult result = service.dispatchRunOnce(execution, task(),
                 template("FULL", renameMapping()), workerPlan("FULL", "READY_TO_RUN", List.of()), actor());
 
-        assertThat(result.dispatched()).isFalse();
-        assertThat(result.failed()).isTrue();
-        assertThat(result.issueCodes()).contains("FIELD_RENAME_TRANSFORM_NOT_SUPPORTED_BY_MINIMAL_BRIDGE");
-        assertThat(client.calls()).isZero();
-        assertFail(lifecycleSupport, execution, "BRIDGE_PLAN_BLOCKED");
-        verify(receiptPublisher).publishFailed(eq(task()), eq(execution), any(SyncActorContext.class),
-                eq("BRIDGE_PLAN_BLOCKED"), any());
+        assertThat(result.dispatched()).isTrue();
+        assertThat(result.completed()).isTrue();
+        assertThat(client.calls()).isEqualTo(1);
+        assertThat(client.capturedRequest().getSelectedColumns()).containsExactly("customer_id");
+        assertThat(client.capturedRequest().getWriteColumns()).containsExactly("id");
+        verify(lifecycleSupport).completeExecution(eq(task()), eq(execution), any(), any(SyncActorContext.class));
+        verify(lifecycleSupport, never()).failExecution(any(), any(), any(), any());
+    }
+
+    @Test
+    void safeFilterConfigShouldBeSentAsStructuredInternalConditions() {
+        FakeDatasourceRunOnceClient client = new FakeDatasourceRunOnceClient(completeResponse());
+        SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
+        DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
+        SyncBatchRunOnceDispatchService service = service(client, lifecycleSupport, properties(true), receiptPublisher);
+        SyncTemplate template = template("FULL", directMapping());
+        template.setFilterConfig("""
+                {
+                  "conditions": [
+                    {"field":"status","operator":"=","value":"ACTIVE"}
+                  ]
+                }
+                """);
+
+        SyncBatchRunOnceDispatchResult result = service.dispatchRunOnce(execution("FULL"), task(),
+                template, workerPlan("FULL", "READY_TO_RUN", List.of()), actor());
+
+        assertThat(result.dispatched()).isTrue();
+        assertThat(client.capturedRequest().getExecutionPlan().getReadPlan().getFilterConditions()).hasSize(1);
+        assertThat(client.capturedRequest().getExecutionPlan().getReadPlan().getFilterConditions().get(0).getColumn())
+                .isEqualTo("status");
+        assertThat(client.capturedRequest().getExecutionPlan().getReadPlan().getFilterConditions().get(0).getOperator())
+                .isEqualTo("EQ");
+        assertThat(client.capturedRequest().getExecutionPlan().getReadPlan().getFilterConditions().get(0).getValue())
+                .isEqualTo("ACTIVE");
     }
 
     /**
@@ -130,8 +161,8 @@ class SyncBatchRunOnceDispatchServiceTest {
      * 如果此时把 execution 留在 RUNNING，会让用户和运营侧误以为任务仍在执行，最终形成不可解释的悬挂状态。</p>
      */
     @Test
-    void moreBatchesShouldFailClosedUntilOuterLoopExists() {
-        FakeDatasourceRunOnceClient client = new FakeDatasourceRunOnceClient(moreBatchesResponse());
+    void moreBatchesShouldContinueUntilSourceExhausted() {
+        FakeDatasourceRunOnceClient client = new FakeDatasourceRunOnceClient(moreBatchesResponse(), completeResponse(14L, 12L));
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
         DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
         SyncBatchRunOnceDispatchService service = service(client, lifecycleSupport, properties(true), receiptPublisher);
@@ -141,12 +172,13 @@ class SyncBatchRunOnceDispatchServiceTest {
                 workerPlan("FULL", "READY_TO_RUN", List.of()), actor());
 
         assertThat(result.dispatched()).isTrue();
-        assertThat(result.failed()).isTrue();
-        assertThat(result.remoteRunStatus()).isEqualTo("BATCH_WRITTEN_MORE_REMAIN");
-        assertThat(client.calls()).isEqualTo(1);
-        assertFail(lifecycleSupport, execution, "OUTER_BATCH_LOOP_NOT_IMPLEMENTED");
-        verify(receiptPublisher).publishFailed(eq(task()), eq(execution), any(SyncActorContext.class),
-                eq("OUTER_BATCH_LOOP_NOT_IMPLEMENTED"), any());
+        assertThat(result.completed()).isTrue();
+        assertThat(result.failed()).isFalse();
+        assertThat(result.remoteRunStatus()).isEqualTo("SOURCE_EXHAUSTED_COMPLETE_REQUIRED");
+        assertThat(client.calls()).isEqualTo(2);
+        assertThat(client.previousRecordsReadSnapshots()).containsExactly(10L, 12L);
+        verify(lifecycleSupport).completeExecution(eq(task()), eq(execution), any(), any(SyncActorContext.class));
+        verify(lifecycleSupport, never()).failExecution(any(), any(), any(), any());
     }
 
     private SyncBatchRunOnceDispatchService service(FakeDatasourceRunOnceClient client,
@@ -179,12 +211,16 @@ class SyncBatchRunOnceDispatchServiceTest {
     }
 
     private DatasourceRunOnceResponse completeResponse() {
+        return completeResponse(12L, 10L);
+    }
+
+    private DatasourceRunOnceResponse completeResponse(Long totalRecordsRead, Long totalRecordsWritten) {
         DatasourceRunOnceResponse response = new DatasourceRunOnceResponse();
         response.setRunStatus("SOURCE_EXHAUSTED_COMPLETE_REQUIRED");
         response.setBatchRecordsRead(2L);
         response.setBatchRecordsWritten(2L);
-        response.setTotalRecordsRead(12L);
-        response.setTotalRecordsWritten(10L);
+        response.setTotalRecordsRead(totalRecordsRead);
+        response.setTotalRecordsWritten(totalRecordsWritten);
         response.setTotalFailedRecordCount(1L);
         response.setEndOfSource(true);
         response.setFailed(false);
@@ -339,19 +375,24 @@ class SyncBatchRunOnceDispatchServiceTest {
      */
     private static class FakeDatasourceRunOnceClient implements DatasourceRunOnceClient {
 
-        private final DatasourceRunOnceResponse response;
+        private final List<DatasourceRunOnceResponse> responses;
         private int calls;
         private DatasourceRunOnceRequest capturedRequest;
+        private final List<DatasourceRunOnceRequest> capturedRequests = new ArrayList<>();
+        private final List<Long> previousRecordsReadSnapshots = new ArrayList<>();
 
-        private FakeDatasourceRunOnceClient(DatasourceRunOnceResponse response) {
-            this.response = response;
+        private FakeDatasourceRunOnceClient(DatasourceRunOnceResponse... responses) {
+            this.responses = Arrays.asList(responses);
         }
 
         @Override
         public DatasourceRunOnceResponse runOnce(DatasourceRunOnceRequest request, SyncActorContext actorContext) {
             calls++;
             capturedRequest = request;
-            return response;
+            capturedRequests.add(request);
+            previousRecordsReadSnapshots.add(request.getPreviousRecordsRead());
+            int responseIndex = Math.min(calls - 1, responses.size() - 1);
+            return responses.get(responseIndex);
         }
 
         private int calls() {
@@ -360,6 +401,14 @@ class SyncBatchRunOnceDispatchServiceTest {
 
         private DatasourceRunOnceRequest capturedRequest() {
             return capturedRequest;
+        }
+
+        private List<DatasourceRunOnceRequest> capturedRequests() {
+            return capturedRequests;
+        }
+
+        private List<Long> previousRecordsReadSnapshots() {
+            return previousRecordsReadSnapshots;
         }
     }
 }

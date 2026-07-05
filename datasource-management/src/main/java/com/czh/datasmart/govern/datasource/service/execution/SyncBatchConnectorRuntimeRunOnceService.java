@@ -39,6 +39,7 @@ public class SyncBatchConnectorRuntimeRunOnceService {
 
     private static final String CHECKPOINT_VALUE_PARAMETER = "checkpointValue";
     private static final String LIMIT_PARAMETER = "limit";
+    private static final String OFFSET_PARAMETER = "offset";
     private static final String CHECKPOINT_HANDOFF_NOT_RETURNED =
             "CHECKPOINT_VALUE_NOT_RETURNED_USE_SECURE_HANDOFF_BEFORE_INCREMENTAL_CLOSURE";
     private static final int MAX_ERROR_SUMMARY_LENGTH = 260;
@@ -80,7 +81,7 @@ public class SyncBatchConnectorRuntimeRunOnceService {
             }
 
             SyncBatchRecordBatch recordBatch = requireConsistentRecordBatch(readResult);
-            SyncBatchWriteResult writeResult = writeIfNecessary(bundle.getWriteContext(), recordBatch);
+            SyncBatchWriteResult writeResult = writeIfNecessary(bundle.getWriteContext(), recordBatch, request);
             if (hasText(writeResult.getErrorSummary())) {
                 return failureResponse(plan, bundle, request, safeLong(readResult.getRecordsRead()),
                         safeLong(writeResult.getRecordsWritten()), safeLong(writeResult.getFailedRecordCount()),
@@ -128,6 +129,9 @@ public class SyncBatchConnectorRuntimeRunOnceService {
         if (!parameterValues.containsKey(LIMIT_PARAMETER) && readContext.getFetchSize() != null) {
             parameterValues.put(LIMIT_PARAMETER, readContext.getFetchSize());
         }
+        if (parameterNames.contains(OFFSET_PARAMETER)) {
+            parameterValues.put(OFFSET_PARAMETER, safeLong(request.getPreviousRecordsRead()));
+        }
         if (parameterNames.contains(CHECKPOINT_VALUE_PARAMETER) && !parameterValues.containsKey(CHECKPOINT_VALUE_PARAMETER)) {
             throw new IllegalStateException("增量读取需要 checkpointValue，当前 run-once 请求未提供内部起点水位");
         }
@@ -159,15 +163,50 @@ public class SyncBatchConnectorRuntimeRunOnceService {
     /**
      * 空批次不触发写入器。
      */
-    private SyncBatchWriteResult writeIfNecessary(SyncBatchWriteContext writeContext, SyncBatchRecordBatch recordBatch) {
+    private SyncBatchWriteResult writeIfNecessary(SyncBatchWriteContext writeContext,
+                                                  SyncBatchRecordBatch recordBatch,
+                                                  SyncBatchRunOnceInternalRequest request) {
         if (recordBatch == null || recordBatch.isEmpty()) {
             return new SyncBatchWriteResult(0L, 0L, true, null);
         }
-        SyncBatchWriteResult writeResult = syncBatchWriter.writeBatch(writeContext, recordBatch);
+        SyncBatchRecordBatch writableBatch = alignRecordBatchForWrite(recordBatch, request);
+        SyncBatchWriteResult writeResult = syncBatchWriter.writeBatch(writeContext, writableBatch);
         if (writeResult == null) {
             throw new IllegalStateException("写入器返回空结果，无法判断本批写入状态");
         }
         return writeResult;
+    }
+
+    /**
+     * 根据字段映射把 reader 行键转换为 writer 行键。
+     *
+     * <p>reader 从源端 SELECT 出来的列名使用 selectedColumns，例如 {@code customer_id}；
+     * writer 生成 INSERT/UPSERT 时使用 writeColumns，例如 {@code id}。
+     * 如果两者不同而不做转换，writer 会在绑定参数时找不到目标字段，导致“字段映射配置存在但真实执行失败”。
+     * 因此这里按相同下标建立 source -> target 映射，在内存中构造目标端行。</p>
+     *
+     * <p>这个转换只支持字段改名，不支持表达式、类型转换、默认值、脱敏计算或多源字段合并。
+     * 更复杂的 transform 应放到后续专用 ETL/transform runner，而不是塞进最小 run-once。</p>
+     */
+    private SyncBatchRecordBatch alignRecordBatchForWrite(SyncBatchRecordBatch recordBatch,
+                                                          SyncBatchRunOnceInternalRequest request) {
+        List<String> selectedColumns = nullToEmpty(request.getSelectedColumns());
+        List<String> writeColumns = nullToEmpty(request.getWriteColumns());
+        if (selectedColumns.isEmpty() || selectedColumns.equals(writeColumns)) {
+            return recordBatch;
+        }
+        if (selectedColumns.size() != writeColumns.size()) {
+            throw new IllegalStateException("字段映射源字段和目标字段数量不一致，无法执行最小字段改名转换");
+        }
+        List<Map<String, Object>> transformedRows = new java.util.ArrayList<>();
+        for (Map<String, Object> sourceRow : recordBatch.getRows()) {
+            Map<String, Object> targetRow = new java.util.LinkedHashMap<>();
+            for (int index = 0; index < selectedColumns.size(); index++) {
+                targetRow.put(writeColumns.get(index), sourceRow == null ? null : sourceRow.get(selectedColumns.get(index)));
+            }
+            transformedRows.add(targetRow);
+        }
+        return new SyncBatchRecordBatch(writeColumns, transformedRows);
     }
 
     /**

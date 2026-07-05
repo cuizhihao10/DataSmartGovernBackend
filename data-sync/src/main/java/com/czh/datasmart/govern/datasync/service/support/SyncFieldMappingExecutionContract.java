@@ -20,8 +20,9 @@ import java.util.List;
  * <p>为什么不直接让 worker 读取 {@code fieldMappingConfig} 原始 JSON：</p>
  * <p>1. 原始 JSON 未来可能包含转换表达式、默认值、脱敏规则、字段级异常处理和用户注释，敏感面比字段名更大；</p>
  * <p>2. 执行器真正需要的是“读哪些源字段、写哪些目标字段、冲突键是什么”，先解析为结构化契约可以避免每个 runner 重复解析；</p>
- * <p>3. 当前最小 JDBC bridge 尚不支持源字段改名到目标字段的中间转换，所以必须显式标记 {@code requiresFieldRenameTransform}，
- * 防止控制面误以为“字段映射已声明”就一定可以直接跑通真实读写。</p>
+ * <p>3. {@code requiresFieldRenameTransform} 会明确告诉后续 connector runtime 是否需要在内存中把
+ * {@code sourceField} 行键转换为 {@code targetField} 行键。这样字段改名可以被真实执行，但转换仍然发生在受控 worker 内部，
+ * 不需要把原始字段映射 JSON 下发给 JDBC 方言。</p>
  *
  * <p>本类刻意不使用 Java record，也不生成 Lombok {@code @ToString}：默认 {@code Object#toString()} 不会输出字段内容，
  * 可以降低被误打日志时泄露字段模型的概率。真正需要调试时，应只打印 issueCodes、mappingCount 等低敏摘要。</p>
@@ -68,8 +69,8 @@ public class SyncFieldMappingExecutionContract {
     /**
      * 目标端写入字段列表。
      *
-     * <p>JDBC 批量写入器会根据该列表生成参数顺序。当前最小 bridge 要求源字段名和目标字段名一致，
-     * 否则读取出的 row key 与写入参数无法直接匹配，需要后续增加字段重命名/转换层。</p>
+     * <p>JDBC 批量写入器会根据该列表生成参数顺序。如果源字段名和目标字段名不一致，
+     * datasource-management run-once 会在写入前根据 selectedColumns/writeColumns 的相同顺序做一次内存行键转换。</p>
      */
     private final List<String> writeColumns;
 
@@ -84,8 +85,8 @@ public class SyncFieldMappingExecutionContract {
     /**
      * 是否需要字段改名或转换层。
      *
-     * <p>当 sourceField 与 targetField 不一致时，该值为 true。当前最小 JDBC bridge 不支持中间 row key 改写，
-     * 因此桥接计划会 fail-closed，并提示后续应实现 transform hook 后再放行。</p>
+     * <p>当 sourceField 与 targetField 不一致时，该值为 true。
+     * 当前 connector runtime 已支持按字段映射顺序做最小 row key 改名，但仍不支持表达式、函数、类型转换、默认值或脱敏计算。</p>
      */
     private final boolean requiresFieldRenameTransform;
 
@@ -138,8 +139,9 @@ public class SyncFieldMappingExecutionContract {
     public boolean directlyRunnableByMinimalBridge() {
         return parseable
                 && hasMappings
+                && !selectedColumns.isEmpty()
                 && !writeColumns.isEmpty()
-                && !requiresFieldRenameTransform
+                && selectedColumns.size() == writeColumns.size()
                 && issueCodes.isEmpty();
     }
 }

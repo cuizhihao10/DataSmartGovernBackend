@@ -45,6 +45,7 @@ public class SyncBatchRunnerBridgePlanSupport {
     private static final Set<String> MINIMAL_JDBC_CONNECTORS = Set.of("MYSQL", "POSTGRESQL", "SQL_SERVER");
 
     private final SyncFieldMappingExecutionContractSupport fieldMappingExecutionContractSupport;
+    private final SyncFilterExecutionContractSupport filterExecutionContractSupport;
     private final SyncTemplateScopeContractSupport scopeContractSupport;
     private final SyncOfflineRunnerContractSupport offlineRunnerContractSupport;
 
@@ -56,7 +57,8 @@ public class SyncBatchRunnerBridgePlanSupport {
      * {@link SyncTemplateScopeContractSupport}。生产环境仍优先走下面的 Spring 注入构造器，保证 ObjectMapper 等依赖可统一管理。</p>
      */
     public SyncBatchRunnerBridgePlanSupport(SyncFieldMappingExecutionContractSupport fieldMappingExecutionContractSupport) {
-        this(fieldMappingExecutionContractSupport, new SyncTemplateScopeContractSupport(),
+        this(fieldMappingExecutionContractSupport, new SyncFilterExecutionContractSupport(),
+                new SyncTemplateScopeContractSupport(),
                 new SyncOfflineRunnerContractSupport());
     }
 
@@ -68,9 +70,11 @@ public class SyncBatchRunnerBridgePlanSupport {
      */
     @Autowired
     public SyncBatchRunnerBridgePlanSupport(SyncFieldMappingExecutionContractSupport fieldMappingExecutionContractSupport,
+                                            SyncFilterExecutionContractSupport filterExecutionContractSupport,
                                             SyncTemplateScopeContractSupport scopeContractSupport,
                                             SyncOfflineRunnerContractSupport offlineRunnerContractSupport) {
         this.fieldMappingExecutionContractSupport = fieldMappingExecutionContractSupport;
+        this.filterExecutionContractSupport = filterExecutionContractSupport;
         this.scopeContractSupport = scopeContractSupport;
         this.offlineRunnerContractSupport = offlineRunnerContractSupport;
     }
@@ -92,7 +96,7 @@ public class SyncBatchRunnerBridgePlanSupport {
         List<String> warnings = new ArrayList<>();
         if (execution == null || task == null || template == null || workerPlan == null) {
             issueCodes.add("BRIDGE_INPUT_CONTEXT_MISSING");
-            return blockedPlan(execution, task, template, workerPlan, null, null, issueCodes, warnings);
+            return blockedPlan(execution, task, template, workerPlan, null, null, null, issueCodes, warnings);
         }
 
         issueCodes.addAll(workerPlan.issueCodes());
@@ -131,17 +135,26 @@ public class SyncBatchRunnerBridgePlanSupport {
                 fieldMappingExecutionContractSupport.parse(template.getFieldMappingConfig(), template.getPrimaryKeyField());
         issueCodes.addAll(fieldMappingContract.getIssueCodes());
         warnings.addAll(fieldMappingContract.getWarnings());
-        if (fieldMappingContract.isRequiresFieldRenameTransform()) {
-            issueCodes.add("FIELD_RENAME_TRANSFORM_NOT_SUPPORTED_BY_MINIMAL_BRIDGE");
-        }
         if (!fieldMappingContract.directlyRunnableByMinimalBridge()) {
             issueCodes.add("FIELD_MAPPING_CONTRACT_NOT_RUNNABLE_BY_MINIMAL_BRIDGE");
+        }
+
+        /*
+         * filterConfig 是用户真正关心的“where 条件”。以前它只停留在模板字段里，最小 run-once 实际读取时没有消费，
+         * 这会造成“配置页看起来设置了过滤条件，但真实同步全表读取”的严重产品风险。
+         * 这里把 filterConfig 解析成内部执行契约：字段名和操作符必须安全，值只通过 internal 请求进入 PreparedStatement。
+         */
+        SyncFilterExecutionContract filterContract = filterExecutionContractSupport.parse(template.getFilterConfig());
+        issueCodes.addAll(filterContract.getIssueCodes());
+        warnings.addAll(filterContract.getWarnings());
+        if (!filterContract.directlyRunnableByMinimalBridge()) {
+            issueCodes.add("FILTER_CONTRACT_NOT_RUNNABLE_BY_MINIMAL_BRIDGE");
         }
 
         List<String> distinctIssues = distinct(issueCodes);
         List<String> distinctWarnings = distinct(warnings);
         if (!blockingIssues(distinctIssues).isEmpty()) {
-            return blockedPlan(execution, task, template, workerPlan, fieldMappingContract, scopeContract,
+            return blockedPlan(execution, task, template, workerPlan, fieldMappingContract, filterContract, scopeContract,
                     distinctIssues, distinctWarnings);
         }
         SyncOfflineRunnerJobContract offlineRunnerContract = offlineRunnerContractSupport.buildFromBridgeFacts(
@@ -168,6 +181,7 @@ public class SyncBatchRunnerBridgePlanSupport {
                 objectLocator(template.getSourceSchemaName(), template.getSourceObjectName()),
                 objectLocator(template.getTargetSchemaName(), template.getTargetObjectName()),
                 fieldMappingContract,
+                filterContract.getConditions(),
                 offlineRunnerContract,
                 template.getIncrementalField(),
                 zeroIfNull(execution.getRecordsRead()),
@@ -189,6 +203,7 @@ public class SyncBatchRunnerBridgePlanSupport {
                                                   SyncTemplate template,
                                                   SyncWorkerExecutionPlanView workerPlan,
                                                   SyncFieldMappingExecutionContract fieldMappingContract,
+                                                  SyncFilterExecutionContract filterContract,
                                                   SyncTemplateScopeContract scopeContract,
                                                   List<String> issueCodes,
                                                   List<String> warnings) {
@@ -215,6 +230,7 @@ public class SyncBatchRunnerBridgePlanSupport {
                 template == null ? null : objectLocator(template.getSourceSchemaName(), template.getSourceObjectName()),
                 template == null ? null : objectLocator(template.getTargetSchemaName(), template.getTargetObjectName()),
                 fieldMappingContract,
+                filterContract == null ? List.of() : filterContract.getConditions(),
                 offlineRunnerContract,
                 template == null ? null : template.getIncrementalField(),
                 zeroIfNull(execution == null ? null : execution.getRecordsRead()),

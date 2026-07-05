@@ -71,9 +71,25 @@ public class DatasourceRunOnceRequest {
         private String readStrategy;
         private String syncMode;
         private String incrementalField;
+        private List<ReadFilterCondition> filterConditions;
         private Boolean partitionConfigured;
         private Integer recommendedFetchSize;
         private List<String> requiredWorkerCapabilities;
+    }
+
+    /**
+     * 受控读取过滤条件镜像。
+     *
+     * <p>该对象只通过 data-sync -> datasource-management 的 internal run-once 请求传输。
+     * value 可能包含业务范围信息，因此不能打印请求体，也不能把该对象返回给普通 API。</p>
+     */
+    @Getter
+    @Setter
+    public static class ReadFilterCondition {
+        private String column;
+        private String operator;
+        private Object value;
+        private Boolean valueRequired;
     }
 
     /**

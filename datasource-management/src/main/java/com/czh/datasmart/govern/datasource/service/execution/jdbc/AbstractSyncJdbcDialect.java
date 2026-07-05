@@ -52,21 +52,30 @@ public abstract class AbstractSyncJdbcDialect implements SyncJdbcDialect {
     @Override
     public SyncPreparedJdbcStatement buildFullReadStatement(SyncJdbcReadStatementSpec spec) {
         requireReadSpec(spec);
-        String sql = buildFullReadSql(projection(spec.getSelectedColumns()), qualifiedObject(spec.getObjectLocator()), positiveLimit(spec.getLimit()));
-        return statement("FULL_READ", sql, List.of("limit"));
+        List<SyncJdbcFilterCondition> filters = safeFilters(spec.getFilterConditions());
+        String sql = buildFullReadSql(
+                projection(spec.getSelectedColumns()),
+                qualifiedObject(spec.getObjectLocator()),
+                whereClause(filters),
+                orderClause(spec.getStableSortColumns(), spec.getSelectedColumns()),
+                positiveLimit(spec.getLimit())
+        );
+        return statement("FULL_READ", sql, fullReadParameterNames(filters));
     }
 
     @Override
     public SyncPreparedJdbcStatement buildIncrementalReadStatement(SyncJdbcReadStatementSpec spec) {
         requireReadSpec(spec);
+        List<SyncJdbcFilterCondition> filters = safeFilters(spec.getFilterConditions());
         String checkpointColumn = quoteIdentifier(requiredIdentifier(spec.getCheckpointColumn(), "checkpointColumn"));
         String sql = buildIncrementalReadSql(
                 projection(spec.getSelectedColumns()),
                 qualifiedObject(spec.getObjectLocator()),
+                whereClause(filters),
                 checkpointColumn,
                 positiveLimit(spec.getLimit())
         );
-        return statement("INCREMENTAL_READ", sql, incrementalReadParameterNames());
+        return statement("INCREMENTAL_READ", sql, incrementalReadParameterNames(filters));
     }
 
     @Override
@@ -92,24 +101,159 @@ public abstract class AbstractSyncJdbcDialect implements SyncJdbcDialect {
     /**
      * 构建当前数据库的全量读取 SQL。
      */
+    protected String buildFullReadSql(String projection,
+                                      String qualifiedObject,
+                                      String whereClause,
+                                      String orderClause,
+                                      int limit) {
+        return "SELECT " + projection + " FROM " + qualifiedObject + whereClause + orderClause + " LIMIT ? OFFSET ?";
+    }
+
+    /**
+     * 兼容旧子类覆盖点。
+     */
     protected String buildFullReadSql(String projection, String qualifiedObject, int limit) {
-        return "SELECT " + projection + " FROM " + qualifiedObject + " LIMIT ?";
+        return buildFullReadSql(projection, qualifiedObject, "", "", limit);
     }
 
     /**
      * 构建当前数据库的增量读取 SQL。
      */
-    protected String buildIncrementalReadSql(String projection, String qualifiedObject, String checkpointColumn, int limit) {
+    protected String buildIncrementalReadSql(String projection,
+                                             String qualifiedObject,
+                                             String whereClause,
+                                             String checkpointColumn,
+                                             int limit) {
+        String prefix = whereClause == null || whereClause.isBlank() ? " WHERE " : whereClause + " AND ";
         return "SELECT " + projection + " FROM " + qualifiedObject
-                + " WHERE " + checkpointColumn + " > ? ORDER BY " + checkpointColumn + " ASC LIMIT ?";
+                + prefix + checkpointColumn + " > ? ORDER BY " + checkpointColumn + " ASC LIMIT ?";
+    }
+
+    /**
+     * 兼容旧子类覆盖点。
+     */
+    protected String buildIncrementalReadSql(String projection, String qualifiedObject, String checkpointColumn, int limit) {
+        return buildIncrementalReadSql(projection, qualifiedObject, "", checkpointColumn, limit);
     }
 
     /**
      * 增量读取参数顺序。
      * MySQL/PostgreSQL 是 checkpointValue 在前、limit 在后；SQL Server 的 TOP 语义会覆盖该顺序。
      */
+    protected List<String> incrementalReadParameterNames(List<SyncJdbcFilterCondition> filters) {
+        List<String> parameterNames = new ArrayList<>(filterParameterNames(filters));
+        parameterNames.add("checkpointValue");
+        parameterNames.add("limit");
+        return List.copyOf(parameterNames);
+    }
+
+    /**
+     * 全量读取参数顺序。
+     */
+    protected List<String> fullReadParameterNames(List<SyncJdbcFilterCondition> filters) {
+        List<String> parameterNames = new ArrayList<>(filterParameterNames(filters));
+        parameterNames.add("limit");
+        parameterNames.add("offset");
+        return List.copyOf(parameterNames);
+    }
+
+    /**
+     * 兼容旧子类覆盖点。
+     */
     protected List<String> incrementalReadParameterNames() {
-        return List.of("checkpointValue", "limit");
+        return incrementalReadParameterNames(List.of());
+    }
+
+    /**
+     * 生成过滤条件 SQL 片段。
+     *
+     * <p>这里仅拼接经过白名单校验的字段名和操作符；业务值不进入 SQL 字符串，
+     * 而是通过 {@link #filterParameterNames(List)} 声明为 filter_0、filter_1 等参数名。</p>
+     */
+    protected String whereClause(List<SyncJdbcFilterCondition> filters) {
+        if (filters == null || filters.isEmpty()) {
+            return "";
+        }
+        List<String> clauses = new ArrayList<>();
+        for (int index = 0; index < filters.size(); index++) {
+            SyncJdbcFilterCondition condition = filters.get(index);
+            String column = quoteIdentifier(requiredIdentifier(condition.getColumn(), "filterColumn"));
+            String operator = sqlOperator(condition.getOperator());
+            if (Boolean.TRUE.equals(condition.getValueRequired())) {
+                clauses.add(column + " " + operator + " ?");
+            } else {
+                clauses.add(column + " " + operator);
+            }
+        }
+        return " WHERE " + String.join(" AND ", clauses);
+    }
+
+    /**
+     * 生成全量扫描的稳定排序片段。
+     *
+     * <p>这里的排序不是为了业务展示，而是为了让多批次同步具备可重复的读取顺序。
+     * DataX 风格批量同步的核心原则之一是 reader 每次只拉取一个受控批次，
+     * writer 写入后再推进下一批；如果没有稳定排序，下一批 offset 可能落到不确定的位置。</p>
+     */
+    protected String orderClause(List<String> stableSortColumns, List<String> selectedColumns) {
+        List<String> orderColumns = stableSortColumns == null || stableSortColumns.isEmpty()
+                ? selectedColumns
+                : stableSortColumns;
+        if (orderColumns == null || orderColumns.isEmpty()) {
+            return "";
+        }
+        return " ORDER BY " + orderColumns.stream()
+                .map(column -> quoteIdentifier(requiredIdentifier(column, "orderColumn")) + " ASC")
+                .collect(Collectors.joining(", "));
+    }
+
+    /**
+     * 过滤条件参数名顺序。
+     */
+    protected List<String> filterParameterNames(List<SyncJdbcFilterCondition> filters) {
+        if (filters == null || filters.isEmpty()) {
+            return List.of();
+        }
+        List<String> parameterNames = new ArrayList<>();
+        for (int index = 0; index < filters.size(); index++) {
+            SyncJdbcFilterCondition condition = filters.get(index);
+            if (Boolean.TRUE.equals(condition.getValueRequired())) {
+                parameterNames.add("filter_" + index);
+            }
+        }
+        return parameterNames;
+    }
+
+    private List<SyncJdbcFilterCondition> safeFilters(List<SyncJdbcFilterCondition> filters) {
+        if (filters == null) {
+            return List.of();
+        }
+        filters.forEach(condition -> {
+            if (condition == null) {
+                throw new IllegalArgumentException("filter condition 不能为空");
+            }
+            requiredIdentifier(condition.getColumn(), "filterColumn");
+            sqlOperator(condition.getOperator());
+        });
+        return List.copyOf(filters);
+    }
+
+    private String sqlOperator(String operator) {
+        if (operator == null || operator.isBlank()) {
+            throw new IllegalArgumentException("filterOperator 不能为空");
+        }
+        return switch (operator.trim().toUpperCase()) {
+            case "EQ" -> "=";
+            case "NE" -> "<>";
+            case "GT" -> ">";
+            case "GTE" -> ">=";
+            case "LT" -> "<";
+            case "LTE" -> "<=";
+            case "LIKE" -> "LIKE";
+            case "IS_NULL" -> "IS NULL";
+            case "IS_NOT_NULL" -> "IS NOT NULL";
+            default -> throw new IllegalArgumentException("filterOperator 不支持: " + operator);
+        };
     }
 
     /**

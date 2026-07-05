@@ -84,6 +84,33 @@ class SyncBatchExecutionPreparationServiceTest {
     }
 
     @Test
+    void prepareJdbcExecutionShouldBindStructuredFilterParameters() {
+        SyncBatchExecutionPlan plan = incrementalPlan("MYSQL", "POSTGRESQL", "FULL_OBJECT_SCAN", "APPEND");
+        plan.getReadPlan().setFilterConditions(List.of(
+                new SyncBatchExecutionPlan.ReadFilterCondition("status", "EQ", "ACTIVE", true),
+                new SyncBatchExecutionPlan.ReadFilterCondition("biz_date", "GTE", "2026-01-01", true)
+        ));
+
+        SyncBatchWorkerExecutionBundle bundle = service.prepareJdbcExecution(new SyncBatchExecutionPreparationRequest(
+                plan,
+                List.of("id", "status", "biz_date"),
+                List.of("id", "status", "biz_date"),
+                List.of()
+        ));
+
+        assertEquals(List.of("filter_0", "filter_1", "limit", "offset"),
+                bundle.getReadContext().getReadStatement().getParameterNames());
+        assertTrue(bundle.getReadContext().getReadStatement().getSql()
+                .contains("WHERE `status` = ? AND `biz_date` >= ?"));
+        assertTrue(bundle.getReadContext().getReadStatement().getSql()
+                .contains("ORDER BY `id` ASC, `status` ASC, `biz_date` ASC"));
+        assertFalse(bundle.getReadContext().getReadStatement().getSql().contains("ACTIVE"));
+        assertEquals("ACTIVE", bundle.getReadContext().getParameterValues().get("filter_0"));
+        assertEquals("2026-01-01", bundle.getReadContext().getParameterValues().get("filter_1"));
+        assertEquals(0L, bundle.getReadContext().getParameterValues().get("offset"));
+    }
+
+    @Test
     void prepareJdbcExecutionShouldRejectMissingWriteColumns() {
         SyncBatchExecutionPreparationRequest request = new SyncBatchExecutionPreparationRequest(
                 incrementalPlan("MYSQL", "MYSQL", "FULL_OBJECT_SCAN", "APPEND"),

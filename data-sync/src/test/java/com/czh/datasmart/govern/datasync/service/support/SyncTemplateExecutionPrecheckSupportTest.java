@@ -25,7 +25,8 @@ class SyncTemplateExecutionPrecheckSupportTest {
     private final SyncTemplateExecutionPrecheckSupport support = new SyncTemplateExecutionPrecheckSupport(
             new SyncConnectorCapabilityRegistry(),
             new SyncTemplateScopeContractSupport(new ObjectMapper()),
-            new SyncFieldMappingExecutionContractSupport(new ObjectMapper())
+            new SyncFieldMappingExecutionContractSupport(new ObjectMapper()),
+            new SyncFilterExecutionContractSupport(new ObjectMapper())
     );
 
     @Test

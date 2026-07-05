@@ -81,6 +81,31 @@ class SyncJdbcDialectRegistryTest {
     }
 
     @Test
+    void mysqlDialectShouldBuildSafeParameterizedFilterClause() {
+        SyncJdbcDialect dialect = registry.getRequiredDialect("MYSQL");
+
+        SyncPreparedJdbcStatement readStatement = dialect.buildFullReadStatement(new SyncJdbcReadStatementSpec(
+                "ods.orders",
+                List.of("id", "status", "biz_date"),
+                null,
+                List.of(
+                        new SyncJdbcFilterCondition("status", "EQ", "ACTIVE", true),
+                        new SyncJdbcFilterCondition("biz_date", "GTE", "2026-01-01", true)
+                ),
+                "FULL_OBJECT_SCAN",
+                500
+        ));
+
+        assertEquals("FULL_READ", readStatement.getExecutionIntent());
+        assertEquals(List.of("filter_0", "filter_1", "limit", "offset"), readStatement.getParameterNames());
+        assertTrue(readStatement.getSql().contains("WHERE `status` = ? AND `biz_date` >= ?"));
+        assertTrue(readStatement.getSql().contains("ORDER BY `id` ASC, `status` ASC, `biz_date` ASC"));
+        assertTrue(readStatement.getSql().contains("LIMIT ? OFFSET ?"));
+        assertFalse(readStatement.getSql().contains("ACTIVE"));
+        assertFalse(readStatement.getSql().contains("2026-01-01"));
+    }
+
+    @Test
     void sqlServerDialectShouldUseTopAndMergeTemplates() {
         SyncJdbcDialect dialect = registry.getRequiredDialect("SQL_SERVER");
 

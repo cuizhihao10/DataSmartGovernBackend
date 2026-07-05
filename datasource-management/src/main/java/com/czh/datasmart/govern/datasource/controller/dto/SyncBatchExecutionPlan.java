@@ -132,6 +132,16 @@ public class SyncBatchExecutionPlan {
         private String incrementalField;
 
         /**
+         * 结构化过滤条件。
+         *
+         * <p>该字段只用于 internal worker 执行链路，不属于普通管理 API 的公开响应。
+         * 它表达用户配置的 where 条件，但不是 SQL 字符串：字段名和操作符会由 JDBC 方言层再次校验，
+         * value 只能通过 PreparedStatement 绑定。这样可以让“按状态/日期/租户字段过滤同步数据”进入真实执行路径，
+         * 同时避免把 filterConfig 退化成任意 SQL 注入入口。</p>
+         */
+        private List<ReadFilterCondition> filterConditions;
+
+        /**
          * 是否配置了分区/分片。
          * 当前不回传 partitionConfig 原文，避免把复杂过滤条件或业务范围暴露到 claim 响应中。
          */
@@ -148,6 +158,57 @@ public class SyncBatchExecutionPlan {
          * 例如 JDBC_BATCH_READ、CHECKPOINT_AWARE_READ。
          */
         private List<String> requiredWorkerCapabilities;
+
+        /**
+         * 兼容旧测试和旧计划生成器的构造器。
+         *
+         * <p>新增 filterConditions 后，旧代码仍可以使用原来的参数列表创建 ReadPlan；
+         * 此时默认表示“不追加 where 条件”。这样滚动升级期间不会因为 JSON 缺少新字段而破坏 run-once 契约。</p>
+         */
+        public ReadPlan(String connectorType,
+                        Long datasourceId,
+                        String objectLocator,
+                        String readStrategy,
+                        String syncMode,
+                        String incrementalField,
+                        Boolean partitionConfigured,
+                        Integer recommendedFetchSize,
+                        List<String> requiredWorkerCapabilities) {
+            this(connectorType, datasourceId, objectLocator, readStrategy, syncMode, incrementalField,
+                    List.of(), partitionConfigured, recommendedFetchSize, requiredWorkerCapabilities);
+        }
+    }
+
+    /**
+     * internal 读取过滤条件。
+     *
+     * <p>value 可能包含业务过滤范围，因此该对象只能在服务间 internal 请求、worker 内存和 PreparedStatement 参数绑定中使用。
+     * 不要把它写入普通日志、公开响应、runtime event 或审计摘要。</p>
+     */
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class ReadFilterCondition {
+
+        /**
+         * 源端字段名。
+         */
+        private String column;
+
+        /**
+         * 标准操作符，例如 EQ、GTE、LIKE。
+         */
+        private String operator;
+
+        /**
+         * 参数值。
+         */
+        private Object value;
+
+        /**
+         * 当前条件是否需要绑定参数。
+         */
+        private Boolean valueRequired;
     }
 
     /**
