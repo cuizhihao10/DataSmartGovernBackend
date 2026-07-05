@@ -32,6 +32,8 @@ public record SyncConnectorCompatibilityView(
         String sourceConnectorType,
         String targetConnectorType,
         String syncMode,
+        String transferChannel,
+        String referenceRuntime,
         boolean supported,
         String consistencyGoal,
         boolean checkpointRequired,

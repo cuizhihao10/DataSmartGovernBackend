@@ -26,6 +26,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperati
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperationRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplatePlanningPreviewResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateQueryCriteria;
 import com.czh.datasmart.govern.datasync.entity.SyncAuditRecord;
@@ -51,6 +52,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperat
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskRecoveryOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskStateMachineSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateCreationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTemplateExecutionPrecheckSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplatePlanningPreviewSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateValidationSupport;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
@@ -96,6 +98,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncTaskRecoveryOperationSupport taskRecoveryOperationSupport;
     private final SyncTemplateCreationSupport templateCreationSupport;
     private final SyncTemplatePlanningPreviewSupport templatePlanningPreviewSupport;
+    private final SyncTemplateExecutionPrecheckSupport templateExecutionPrecheckSupport;
 
     @Override
     @Transactional
@@ -154,6 +157,12 @@ public class DataSyncServiceImpl implements DataSyncService {
     public SyncTemplatePlanningPreviewResponse previewTemplate(Long id, SyncActorContext actorContext) {
         SyncTemplate template = getTemplate(id, actorContext);
         return templatePlanningPreviewSupport.preview(template);
+    }
+
+    @Override
+    public SyncTemplateExecutionPrecheckResponse precheckTemplate(Long id, SyncActorContext actorContext) {
+        SyncTemplate template = getTemplate(id, actorContext);
+        return templateExecutionPrecheckSupport.precheck(template);
     }
 
     @Override
@@ -229,6 +238,14 @@ public class DataSyncServiceImpl implements DataSyncService {
     @Transactional
     public SyncTaskOperationResult runTask(Long id, SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
+        SyncTemplate template = getTemplateForTask(task);
+        SyncTemplateExecutionPrecheckResponse precheck = templateExecutionPrecheckSupport.precheck(template);
+        if (!precheck.canStartExecution()) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    "同步任务执行前预检查未通过，precheckStatus=" + precheck.precheckStatus()
+                            + "，issueCodes=" + precheck.issueCodes()
+                            + "，recommendedActions=" + precheck.recommendedActions());
+        }
         stateMachineSupport.assertCanQueue(task.getCurrentState());
         SyncExecution execution = executionCreationSupport.createQueuedExecution(task, actorContext);
         task.setCurrentState(SyncTaskState.QUEUED.name());
@@ -459,6 +476,29 @@ public class DataSyncServiceImpl implements DataSyncService {
         return execution;
     }
 
+    /**
+     * 按任务读取关联模板。
+     *
+     * <p>运行任务时，入口已经通过 {@link #getTask(Long, SyncActorContext)} 完成了任务维度的数据范围校验。
+     * 模板的 createdBy 不一定等于任务 owner，如果这里复用 {@link #getTemplate(Long, SyncActorContext)}，
+     * SELF 数据范围下可能会误拒绝“我有权运行这个任务，但模板最初由项目负责人创建”的合法场景。
+     * 因此这里改为校验任务和模板的租户/项目/工作空间归属一致，避免越权引用其它模板。</p>
+     */
+    private SyncTemplate getTemplateForTask(SyncTask task) {
+        SyncTemplate template = templateMapper.selectById(task.getTemplateId());
+        if (template == null) {
+            throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND,
+                    "同步任务关联的模板不存在，templateId=" + task.getTemplateId());
+        }
+        if (!task.getTenantId().equals(template.getTenantId())
+                || !sameNullable(task.getProjectId(), template.getProjectId())
+                || !sameNullable(task.getWorkspaceId(), template.getWorkspaceId())) {
+            throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
+                    "同步任务与模板归属不一致，拒绝执行，taskId=" + task.getId() + ", templateId=" + template.getId());
+        }
+        return template;
+    }
+
     private <T, V> void eqIfPresent(LambdaQueryWrapper<T> wrapper,
                                     com.baomidou.mybatisplus.core.toolkit.support.SFunction<T, V> column,
                                     V value) {
@@ -468,6 +508,10 @@ public class DataSyncServiceImpl implements DataSyncService {
             }
             wrapper.eq(column, value);
         }
+    }
+
+    private boolean sameNullable(Long left, Long right) {
+        return left == null ? right == null : left.equals(right);
     }
 
     private String normalizeCode(String value) {

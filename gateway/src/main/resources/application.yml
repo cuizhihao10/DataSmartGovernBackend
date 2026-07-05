@@ -87,6 +87,16 @@ spring:
             - Path=/api/agent/plans
           filters:
             - RewritePath=/api/agent/plans, /agent/plans
+        - id: python-ai-runtime-rag
+          # RAG 查询与诊断由 Python AI Runtime 承担。
+          # 该路由必须放在通用 /api/agent/** -> Java agent-runtime 之前，否则前端通过统一 /api
+          # 调用 /api/agent/rag/query 时会被错误转发到 Java 控制面，导致已经实现的 Python RAG
+          # 产品查询入口无法形成真实闭环。
+          uri: ${DATASMART_PYTHON_AI_RUNTIME_URI:http://localhost:8090}
+          predicates:
+            - Path=/api/agent/rag/query,/api/agent/rag/diagnostics
+          filters:
+            - RewritePath=/api/agent/rag/(?<segment>.*), /agent/rag/$\{segment}
         - id: python-ai-runtime-runtime-diagnostics
           # Python Runtime 低敏诊断与闭口检查入口。
           #
@@ -898,6 +908,20 @@ datasmart:
         # 模型输出、内部 endpoint、artifact 正文或长期记忆正文。metrics 也只能输出固定枚举 label，
         # 不能把 tenant/project/run/memoryId 等高基数字段放入 Prometheus。POST refresh 只归为 DIAGNOSE，
         # 因为它刷新的是运行时诊断缓存，不创建业务对象、不触发工具执行、不写 worker outbox。
+        - path-pattern: /api/agent/rag/query
+          resource-type: AI_RUNTIME
+          default-action: EXECUTE
+          description: Python Runtime RAG 产品查询入口，用于治理知识问答和调试检索、压缩、引用绑定链路；响应仍必须遵守低敏引用与上下文摘要策略。
+          method-actions:
+            POST: EXECUTE
+
+        - path-pattern: /api/agent/rag/diagnostics
+          resource-type: AI_RUNTIME
+          default-action: DIAGNOSE
+          description: Python Runtime RAG 管线诊断入口，用于确认检索、证据门禁、LangGraph checkpoint 和模型生成摘要是否闭合。
+          method-actions:
+            GET: DIAGNOSE
+
         - path-pattern: /api/agent/capabilities/**
           resource-type: AI_RUNTIME
           default-action: DIAGNOSE

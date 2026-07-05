@@ -43,6 +43,8 @@ class SyncWorkerExecutionPlanSupportTest {
 
         assertThat(plan.available()).isTrue();
         assertThat(plan.planStatus()).isEqualTo("READY_TO_RUN");
+        assertThat(plan.transferChannel()).isEqualTo("OFFLINE");
+        assertThat(plan.referenceRuntime()).isEqualTo("DATAX_STYLE_OFFLINE_READER_WRITER_RUNNER");
         assertThat(plan.connectorCompatibilitySupported()).isTrue();
         assertThat(plan.checkpointRequired()).isFalse();
         assertThat(plan.sourceObjectDeclared()).isTrue();
@@ -67,6 +69,7 @@ class SyncWorkerExecutionPlanSupportTest {
         SyncWorkerExecutionPlanView plan = fixture.support().buildPlan(execution(), task());
 
         assertThat(plan.planStatus()).isEqualTo("READY_WITH_WARNINGS");
+        assertThat(plan.transferChannel()).isEqualTo("OFFLINE");
         assertThat(plan.checkpointRequired()).isTrue();
         assertThat(plan.issueCodes()).contains("CHECKPOINT_BOUNDARY_NOT_DECLARED");
         assertThat(plan.workerActions()).contains("WRITE_CHECKPOINT_AFTER_EACH_SAFE_BATCH");

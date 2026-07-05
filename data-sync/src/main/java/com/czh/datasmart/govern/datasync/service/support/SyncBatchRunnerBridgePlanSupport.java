@@ -11,7 +11,7 @@ import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -34,7 +34,6 @@ import java.util.Set;
  * <p>3. 为后续 HTTP/gRPC/SDK batch runner 留出稳定契约，让执行器只负责受控读写，data-sync 仍负责状态机、checkpoint 和回调。</p>
  */
 @Component
-@RequiredArgsConstructor
 public class SyncBatchRunnerBridgePlanSupport {
 
     /**
@@ -46,6 +45,31 @@ public class SyncBatchRunnerBridgePlanSupport {
     private static final Set<String> MINIMAL_JDBC_CONNECTORS = Set.of("MYSQL", "POSTGRESQL", "SQL_SERVER");
 
     private final SyncFieldMappingExecutionContractSupport fieldMappingExecutionContractSupport;
+    private final SyncTemplateScopeContractSupport scopeContractSupport;
+
+    /**
+     * 兼容既有单元测试的构造器。
+     *
+     * <p>早期测试只关心字段映射执行合同，因此只传入
+     * {@link SyncFieldMappingExecutionContractSupport}。现在 bridge 还必须理解同步范围合同，所以这里补一个默认
+     * {@link SyncTemplateScopeContractSupport}。生产环境仍优先走下面的 Spring 注入构造器，保证 ObjectMapper 等依赖可统一管理。</p>
+     */
+    public SyncBatchRunnerBridgePlanSupport(SyncFieldMappingExecutionContractSupport fieldMappingExecutionContractSupport) {
+        this(fieldMappingExecutionContractSupport, new SyncTemplateScopeContractSupport());
+    }
+
+    /**
+     * Spring 注入构造器。
+     *
+     * <p>将“字段映射是否可直接执行”和“模板范围是否允许被最小 run-once bridge 执行”放在同一个组件里判断，是为了把执行前
+     * 最后一层 fail-closed 门禁固定在 data-sync 控制面，而不是把安全判断下放给 datasource-management 或具体 JDBC worker。</p>
+     */
+    @Autowired
+    public SyncBatchRunnerBridgePlanSupport(SyncFieldMappingExecutionContractSupport fieldMappingExecutionContractSupport,
+                                            SyncTemplateScopeContractSupport scopeContractSupport) {
+        this.fieldMappingExecutionContractSupport = fieldMappingExecutionContractSupport;
+        this.scopeContractSupport = scopeContractSupport;
+    }
 
     /**
      * 构建内部批量执行器桥接计划。
@@ -80,6 +104,23 @@ public class SyncBatchRunnerBridgePlanSupport {
         }
         if ("OVERWRITE".equals(normalize(template.getWriteStrategy()))) {
             issueCodes.add("DESTRUCTIVE_WRITE_STRATEGY_REQUIRES_APPROVED_BRIDGE_POLICY");
+        }
+
+        /*
+         * workerPlan 是 worker claim 阶段生成的低敏执行计划，但 bridge 不能完全依赖它。
+         * 原因有三点：
+         * 1. 老版本 workerPlan 可能还没有携带 syncScopeType；
+         * 2. 单元测试、灰度实例或跨版本滚动发布期间可能出现“模板已升级、workerPlan 仍旧”的短窗口；
+         * 3. 真正派发 datasource-management run-once 前，data-sync 必须自己做最后一次范围合同校验。
+         *
+         * 因此这里再次解析 template 的范围合同：只有 SINGLE_OBJECT 且非 CUSTOM_SQL_QUERY 的模板才允许进入当前最小 bridge。
+         * 多表、整 schema、整库迁移和自定义 SQL 可以被保存、预览、审批和生成任务草稿，但不能被这个单对象 run-once runner 偷偷执行。
+         */
+        SyncTemplateScopeContract scopeContract = scopeContractSupport.evaluate(template);
+        issueCodes.addAll(scopeContract.issueCodes());
+        warnings.addAll(scopeContract.warnings());
+        if (!scopeContract.executableByMinimalBridge()) {
+            issueCodes.add("SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE");
         }
 
         SyncFieldMappingExecutionContract fieldMappingContract =
@@ -233,6 +274,7 @@ public class SyncBatchRunnerBridgePlanSupport {
             case BACKFILL -> "BACKFILL_RANGE";
             case CDC_STREAMING -> "STREAMING_OFFSET";
             case OFFLINE_IMPORT, OFFLINE_EXPORT -> "ARTIFACT_STAGE";
+            case CUSTOM_SQL_QUERY -> "CUSTOM_SQL_RESULT_SET";
         };
     }
 
@@ -250,6 +292,7 @@ public class SyncBatchRunnerBridgePlanSupport {
             case BACKFILL -> "BACKFILL_RANGE";
             case CDC_STREAMING -> "STREAMING_OFFSET";
             case OFFLINE_IMPORT, OFFLINE_EXPORT -> "ARTIFACT_STAGE";
+            case CUSTOM_SQL_QUERY -> "QUERY_RESULT_BOUNDARY";
         };
     }
 

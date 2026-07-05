@@ -12,6 +12,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncConnectorCapabilityV
 import com.czh.datasmart.govern.datasync.controller.dto.SyncConnectorCompatibilityView;
 import com.czh.datasmart.govern.datasync.support.SyncConnectorType;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
+import com.czh.datasmart.govern.datasync.support.SyncTransferChannel;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -120,11 +121,17 @@ public class SyncConnectorCapabilityRegistry {
         } else {
             recommendedActions.add("请调整连接器类型、同步模式或补充 worker 支持后再创建生产任务。");
         }
+        SyncTransferChannel transferChannel = SyncTransferChannelSupport.resolve(mode);
+        List<String> performanceNotes = new ArrayList<>();
+        performanceNotes.add(SyncTransferChannelSupport.explanation(transferChannel));
+        performanceNotes.addAll(mergeNotes(source.performanceNotes(), target.performanceNotes()));
 
         return new SyncConnectorCompatibilityView(
                 source.connectorType().name(),
                 target.connectorType().name(),
                 mode.name(),
+                transferChannel == null ? null : transferChannel.name(),
+                SyncTransferChannelSupport.referenceRuntime(transferChannel),
                 issueCodes.isEmpty(),
                 consistencyGoal(mode),
                 requiresCheckpoint(mode),
@@ -132,7 +139,7 @@ public class SyncConnectorCapabilityRegistry {
                 List.copyOf(issueCodes),
                 List.copyOf(recommendedActions),
                 PAYLOAD_POLICY,
-                mergeNotes(source.performanceNotes(), target.performanceNotes()),
+                List.copyOf(performanceNotes),
                 mergeNotes(source.safetyNotes(), target.safetyNotes())
         );
     }
@@ -185,6 +192,7 @@ public class SyncConnectorCapabilityRegistry {
             case INCREMENTAL_TIME, INCREMENTAL_ID, SCHEDULED_BATCH, BACKFILL, REPLAY -> "AT_LEAST_ONCE_DEDUP_AWARE";
             case CDC_STREAMING -> "LOW_LATENCY_EVENTUAL_CONSISTENCY";
             case OFFLINE_IMPORT -> "FILE_BOUNDED_WITH_ARTIFACT_INTEGRITY";
+            case CUSTOM_SQL_QUERY -> "QUERY_BOUNDED_READ_ONLY";
         };
     }
 
@@ -198,6 +206,7 @@ public class SyncConnectorCapabilityRegistry {
             case REPLAY -> "CHECKPOINT_REPLAY";
             case BACKFILL -> "RANGE_BACKFILL_RETRY";
             case OFFLINE_IMPORT, OFFLINE_EXPORT -> "ARTIFACT_STAGE_RETRY";
+            case CUSTOM_SQL_QUERY -> "QUERY_RESULT_RETRY_WITH_APPROVAL";
         };
     }
 
@@ -217,7 +226,7 @@ public class SyncConnectorCapabilityRegistry {
         Set<SyncMode> relationalModes = Set.of(
                 SyncMode.FULL, SyncMode.INCREMENTAL_TIME, SyncMode.INCREMENTAL_ID,
                 SyncMode.CDC_STREAMING, SyncMode.SCHEDULED_BATCH, SyncMode.ONE_TIME_MIGRATION,
-                SyncMode.REPLAY, SyncMode.BACKFILL
+                SyncMode.REPLAY, SyncMode.BACKFILL, SyncMode.CUSTOM_SQL_QUERY
         );
         register(map, profile(SyncConnectorType.MYSQL, "MySQL", "PRIMARY", relationalModes,
                 List.of("PAGE_CURSOR", "TIME_WINDOW", "ID_RANGE", "BINLOG_POSITION"),

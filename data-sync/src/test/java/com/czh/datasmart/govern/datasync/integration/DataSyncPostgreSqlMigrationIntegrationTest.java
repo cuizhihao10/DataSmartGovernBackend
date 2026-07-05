@@ -143,6 +143,7 @@ class DataSyncPostgreSqlMigrationIntegrationTest {
 
             assertThat(template.getId()).isPositive();
             assertThat(template.getEnabled()).isTrue();
+            assertTemplateScopeColumnsAreMapped(template);
             assertThat(task.getId()).isPositive();
             assertThat(task.getAttentionRequired()).isFalse();
             assertThat(execution.getId()).isPositive();
@@ -169,6 +170,10 @@ class DataSyncPostgreSqlMigrationIntegrationTest {
                 "SELECT count(*) FROM flyway_schema_history WHERE version = '1' AND success = true",
                 Integer.class
         );
+        Integer flywayV2SuccessCount = jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM flyway_schema_history WHERE version = '2' AND success = true",
+                Integer.class
+        );
         Integer tableCount = jdbcTemplate.queryForObject("""
                 SELECT count(*)
                 FROM information_schema.tables
@@ -189,7 +194,20 @@ class DataSyncPostgreSqlMigrationIntegrationTest {
 
         assertThat(currentSchema).isEqualTo("data_sync");
         assertThat(flywaySuccessCount).isEqualTo(1);
+        assertThat(flywayV2SuccessCount).isEqualTo(1);
         assertThat(tableCount).isEqualTo(10);
+        assertTemplateScopeColumnsExist();
+    }
+
+    private void assertTemplateScopeColumnsExist() {
+        Integer columnCount = jdbcTemplate.queryForObject("""
+                SELECT count(*)
+                FROM information_schema.columns
+                WHERE table_schema = 'data_sync'
+                  AND table_name = 'data_sync_template'
+                  AND column_name IN ('sync_scope_type', 'object_mapping_config', 'custom_sql_config')
+                """, Integer.class);
+        assertThat(columnCount).isEqualTo(3);
     }
 
     /**
@@ -210,11 +228,14 @@ class DataSyncPostgreSqlMigrationIntegrationTest {
         template.setTargetObjectName("customer_target");
         template.setSourceConnectorType("MYSQL");
         template.setTargetConnectorType("POSTGRESQL");
-        template.setSyncMode("FULL");
+        template.setSyncMode("CUSTOM_SQL_QUERY");
+        template.setSyncScopeType("CUSTOM_SQL_QUERY");
         template.setWriteStrategy("UPSERT");
         template.setPrimaryKeyField("id");
         template.setIncrementalField("updated_at");
         template.setFieldMappingConfig("{\"id\":\"id\",\"name\":\"name\"}");
+        template.setObjectMappingConfig("{\"mappings\":[]}");
+        template.setCustomSqlConfig("{\"statementRef\":\"integration.customer_safe_select\",\"digest\":\"low-sensitive\"}");
         template.setFilterConfig("{\"safePreview\":true}");
         template.setPartitionConfig("{\"partition\":\"single\"}");
         template.setRetryPolicy("{\"maxAttempts\":3}");
@@ -224,6 +245,13 @@ class DataSyncPostgreSqlMigrationIntegrationTest {
         template.setUpdatedBy(930401L);
         templateMapper.insert(template);
         return template;
+    }
+
+    private void assertTemplateScopeColumnsAreMapped(SyncTemplate template) {
+        SyncTemplate persisted = templateMapper.selectById(template.getId());
+        assertThat(persisted.getSyncScopeType()).isEqualTo("CUSTOM_SQL_QUERY");
+        assertThat(persisted.getObjectMappingConfig()).contains("\"mappings\"");
+        assertThat(persisted.getCustomSqlConfig()).contains("integration.customer_safe_select");
     }
 
     /**

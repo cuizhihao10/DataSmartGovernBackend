@@ -68,5 +68,18 @@ public enum SyncMode {
     /**
      * 离线导出：例如表到文件、查询结果到对象存储。
      */
-    OFFLINE_EXPORT
+    OFFLINE_EXPORT,
+
+    /**
+     * 自定义 SQL 查询结果同步。
+     *
+     * <p>该模式只表示“以受控只读 SQL 查询结果作为源端数据集”，不表示允许任意 SQL。
+     * 生产实现必须至少满足这些约束：</p>
+     * <p>1. 只允许 SELECT/WITH 只读查询，禁止 INSERT/UPDATE/DELETE/MERGE/DDL/存储过程等有副作用语句；</p>
+     * <p>2. SQL 正文不应出现在普通日志、预览响应、审计摘要或 worker plan 低敏响应中；</p>
+     * <p>3. 需要强制审批、字段映射、目标对象声明、行数/成本预估和超时/限流策略；</p>
+     * <p>4. 真正执行时应使用 datasource-management 受控连接与 PreparedStatement 参数绑定，
+     * 不允许前端、Agent 或 worker 直接拼接 SQL。</p>
+     */
+    CUSTOM_SQL_QUERY
 }

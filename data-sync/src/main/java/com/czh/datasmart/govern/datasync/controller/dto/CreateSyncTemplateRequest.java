@@ -108,6 +108,16 @@ public class CreateSyncTemplateRequest {
     private String syncMode;
 
     /**
+     * 同步范围类型。
+     *
+     * <p>为空时服务端按 SINGLE_OBJECT 兼容历史调用方。
+     * 当用户选择“多表同步”“全库/全 schema 迁移”或“自定义 SQL 查询传输”时，前端或 Agent
+     * 应显式传入 OBJECT_LIST、SCHEMA_FULL、DATABASE_FULL 或 CUSTOM_SQL_QUERY。
+     * 该字段不替代 syncMode：syncMode 仍然表示全量/增量/定时/CDC 等执行方式，syncScopeType 表示对象范围。</p>
+     */
+    private String syncScopeType;
+
+    /**
      * 目标端写入策略。
      *
      * <p>可选值包括 APPEND、UPSERT、INSERT_IGNORE、REPLACE、OVERWRITE。为空时服务端会按历史兼容回落到 APPEND，
@@ -133,7 +143,28 @@ public class CreateSyncTemplateRequest {
     private String incrementalField;
 
     private String fieldMappingConfig;
+
+    /**
+     * 多对象/全库范围映射配置。
+     *
+     * <p>用于表达“选择哪些表”“源表到目标表如何映射”“是否按通配符包含/排除对象”“目标命名策略是什么”。
+     * 该字段必须是 JSON 文本，普通预览和审计不会回显原文。
+     * 单表同步时可以为空；OBJECT_LIST、SCHEMA_FULL、DATABASE_FULL 则应至少声明映射清单或发现策略。</p>
+     */
+    private String objectMappingConfig;
+
     private String filterConfig;
+
+    /**
+     * 自定义 SQL 查询配置。
+     *
+     * <p>只适用于 CUSTOM_SQL_QUERY 范围/模式。
+     * 当前允许以 JSON 形式传入只读 SQL 或 statementRef，例如：
+     * {"sql":"select id,name from customer where status = :status","parameters":[{"name":"status","type":"STRING"}]}。
+     * 服务端会做只读 SQL 安全校验，但不会在响应、审计、worker plan 中回显 SQL 正文。</p>
+     */
+    private String customSqlConfig;
+
     private String partitionConfig;
     private String retryPolicy;
     private String timeoutPolicy;

@@ -19,58 +19,76 @@ import java.util.Locale;
 import java.util.regex.Pattern;
 
 /**
- * 同步模板校验支撑组件。
+ * 同步模板业务校验支撑组件。
  *
- * <p>模板校验不只是 Bean Validation。
- * Bean Validation 能判断“字段有没有传”，但产品校验还要判断“这种同步模式是否需要 field mapping、是否允许源和目标相同、
- * 是否需要 checkpoint 配置、是否需要审批”等更靠近业务的规则。
+ * <p>这个类负责“模板是否具备合法业务语义”的 fail-fast 校验，不直接读取源库、不连接目标库、
+ * 不执行 SQL，也不解析真实字段元数据。它处在模板创建、模板校验、任务创建等控制面入口之前，
+ * 用来保证明显危险或明显不完整的配置不会进入后续任务状态机。</p>
  *
- * <p>当前已经接入连接器能力矩阵；模板创建链路会先通过 {@link SyncTemplateConnectorFactResolver}
- * 尝试从 datasource-management 低敏能力快照补全 sourceConnectorType/targetConnectorType，再进入本校验组件。
- * 后续仍可继续接入字段映射、checkpoint 策略、写入策略和元数据发现结果。
+ * <p>校验分为三层：</p>
+ * <p>1. 基础结构校验：源/目标 datasourceId 必须存在且不能相同，同步模式必须是平台认识的枚举；</p>
+ * <p>2. 同步范围校验：单对象、多对象、整 schema、整库、自定义 SQL 各自需要不同配置，统一交给
+ * {@link SyncTemplateScopeContractSupport} 解析，避免多个入口各写一套规则；</p>
+ * <p>3. 能力矩阵校验：当模板携带源端/目标端 connector type 时，检查当前连接器组合是否支持该同步模式。</p>
+ *
+ * <p>非常重要的边界：{@code SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE} 不会在模板创建阶段阻断。
+ * 原因是产品需要允许用户先配置“多表/全库/自定义 SQL”草稿、走审批、做预检查；真正执行时，
+ * worker plan 和 run-once bridge 会继续 fail-closed，直到专用 runner 完成。</p>
  */
 @Component
 public class SyncTemplateValidationSupport {
 
+    /**
+     * 当前阶段采用保守标识符白名单。
+     *
+     * <p>这不是说所有数据库对象名只能这样命名，而是因为当前最小 runner 还没有完整的方言级 quote/escape
+     * 与元数据白名单能力。没有这些保护之前，允许点号、引号、空格或表达式进入对象名字段，会把 SQL 注入风险
+     * 推给底层 runner，因此这里先收紧。</p>
+     */
     private static final Pattern SAFE_IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_]{0,127}");
 
     private final SyncConnectorCapabilityRegistry connectorCapabilityRegistry;
+    private final SyncTemplateScopeContractSupport scopeContractSupport;
 
     /**
-     * 默认构造器主要服务于现有单元测试和极简本地启动。
+     * 测试兼容构造器。
      *
-     * <p>Spring 正常运行时会优先使用带 {@link Autowired} 的构造器注入同一个
-     * SyncConnectorCapabilityRegistry Bean；这里保留无参构造，是为了不让大量已有 service 测试因为新增能力矩阵而被迫重写夹具。
-     * 这也是一种渐进式收敛策略：先把产品规则接进校验链路，同时不破坏既有测试和调用方。</p>
+     * <p>部分旧单元测试会直接 new 本类，因此保留无参构造器，内部使用默认能力矩阵和默认范围契约解析器。
+     * Spring 运行时会优先使用带参数构造器注入容器 Bean。</p>
      */
     public SyncTemplateValidationSupport() {
-        this(new SyncConnectorCapabilityRegistry());
+        this(new SyncConnectorCapabilityRegistry(), new SyncTemplateScopeContractSupport());
+    }
+
+    /**
+     * 兼容旧测试的构造器。
+     *
+     * @param connectorCapabilityRegistry 连接器能力注册表。
+     */
+    public SyncTemplateValidationSupport(SyncConnectorCapabilityRegistry connectorCapabilityRegistry) {
+        this(connectorCapabilityRegistry, new SyncTemplateScopeContractSupport());
     }
 
     /**
      * Spring 注入构造器。
      *
-     * @param connectorCapabilityRegistry 连接器能力注册表，负责判断源端、目标端和同步模式是否兼容。
+     * @param connectorCapabilityRegistry 连接器能力注册表，判断源端、目标端、同步模式是否兼容。
+     * @param scopeContractSupport 同步范围契约解析器，判断单对象、多对象、全库、自定义 SQL 配置是否安全完整。
      */
     @Autowired
-    public SyncTemplateValidationSupport(SyncConnectorCapabilityRegistry connectorCapabilityRegistry) {
+    public SyncTemplateValidationSupport(SyncConnectorCapabilityRegistry connectorCapabilityRegistry,
+                                         SyncTemplateScopeContractSupport scopeContractSupport) {
         this.connectorCapabilityRegistry = connectorCapabilityRegistry;
+        this.scopeContractSupport = scopeContractSupport;
     }
 
     /**
-     * 创建或运行前校验模板。
+     * 创建任务或执行前校验同步模板。
      *
-     * <p>当前校验分两层：</p>
-     * <ul>
-     *     <li>基础结构校验：源/目标 datasourceId、源目标不能相同、syncMode 必须是平台认识的枚举；</li>
-     *     <li>连接器能力校验：当模板携带 sourceConnectorType/targetConnectorType 时，进一步检查该连接器组合是否支持 syncMode。</li>
-     * </ul>
+     * <p>该方法会直接抛出业务异常，因此适合用于“必须通过才能继续”的入口，例如创建任务、手动校验、
+     * 执行前二次确认。面向前端展示的“列出所有问题”场景应使用 preview/precheck，它们会返回 issueCodes。</p>
      *
-     * <p>为什么连接器字段仍然保持兼容可选：
-     * 创建模板时如果启用了 datasource-management 能力快照，服务端会按 datasourceId 自动补全 connector type；
-     * 如果本地开发或历史调用方临时关闭了快照补全，两端都缺省时仍只执行基础校验，避免旧模板立即不可用。
-     * 但只要进入本方法时只剩一端 connector type，就说明能力事实不完整，必须 fail-closed 拒绝；
-     * 两端都有 connector type 时则必须通过能力矩阵预检。</p>
+     * @param template 待校验模板，必须已经过租户/项目可见性检查。
      */
     public void validateTemplate(SyncTemplate template) {
         if (template == null) {
@@ -82,15 +100,19 @@ public class SyncTemplateValidationSupport {
         if (template.getSourceDatasourceId().equals(template.getTargetDatasourceId())) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR, "源数据源和目标数据源不能相同");
         }
+
         SyncMode mode = resolveMode(template.getSyncMode());
         SyncWriteStrategy writeStrategy = resolveWriteStrategy(template.getWriteStrategy());
-        validateExecutableObjectBinding(template);
+        validateScopeAndObjectBinding(template);
         validateCheckpointAndWriteStrategy(template, mode, writeStrategy);
         validateConnectorCompatibility(template, mode);
     }
 
     /**
      * 解析同步模式。
+     *
+     * <p>同步模式决定“怎么搬数据”：全量、增量、CDC、回放、补数、自定义 SQL 等。它与
+     * {@code syncScopeType} 不同，后者决定“搬哪些对象”。两者都必须明确，避免后续 runner 猜测。</p>
      */
     public SyncMode resolveMode(String syncMode) {
         if (syncMode == null || syncMode.isBlank()) {
@@ -105,11 +127,10 @@ public class SyncTemplateValidationSupport {
     }
 
     /**
-     * 解析并归一化写入策略。
+     * 解析写入策略。
      *
-     * <p>写入策略会影响目标端冲突处理、幂等、回放和补数行为，因此不能让执行器在运行时自行猜测。
-     * 这里允许空值回落到 APPEND，是为了兼容历史模板；但如果传入了未知策略，则必须 fail-fast，避免后续 runner
-     * 因为不认识策略而走到错误的写入语义。</p>
+     * <p>写入策略影响目标端冲突处理、幂等性、回放和补数语义。空值会按历史兼容回落到 APPEND，
+     * 但未知值必须 fail-fast，不能交给 worker 猜测。</p>
      */
     public SyncWriteStrategy resolveWriteStrategy(String writeStrategy) {
         try {
@@ -120,28 +141,30 @@ public class SyncTemplateValidationSupport {
     }
 
     /**
-     * 校验执行必需的对象定位字段。
+     * 校验同步范围和对象定位字段。
      *
-     * <p>data-sync 过去只校验 datasourceId 和 syncMode，这只能证明“源端/目标端数据源存在引用”，不能证明真实 worker
-     * 知道读哪个对象、写哪个对象。商业化同步平台必须在进入任务创建或执行前明确对象定位，否则 worker 只能从 JSON 配置、
-     * 前端约定或人工说明里猜测，最终会导致不可审计、不可复现和难以排障。</p>
-     *
-     * <p>这里采用保守的安全标识符规则：只允许字母、数字和下划线，并要求以字母或下划线开头。原因不是所有数据库都只能这样命名，
-     * 而是当前阶段还没有引入统一的 identifier quote/escape 层；在没有安全转义抽象前，宁可限制输入，也不能把复杂对象名直接交给
-     * 后续 SQL 生成器。</p>
+     * <p>单对象同步必须声明 sourceObjectName/targetObjectName；多对象和全库同步则依赖 objectMappingConfig；
+     * 自定义 SQL 同步依赖 customSqlConfig 和 targetObjectName。这里不再“一刀切”要求 sourceObjectName，
+     * 否则会把合法的多表/SQL 配置错误地当成单表模板处理。</p>
      */
-    private void validateExecutableObjectBinding(SyncTemplate template) {
-        requireObjectName("源端对象名称", template.getSourceObjectName());
-        requireObjectName("目标端对象名称", template.getTargetObjectName());
+    private void validateScopeAndObjectBinding(SyncTemplate template) {
+        SyncTemplateScopeContract scopeContract = scopeContractSupport.evaluate(template);
+        if (scopeContract.hasBlockingIssues()) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    "同步范围配置未通过安全校验，issueCodes=" + scopeContract.blockingIssueCodes()
+                            + "，recommendedActions=" + scopeContract.recommendedActions());
+        }
+        validateOptionalIdentifier("源端对象名称", template.getSourceObjectName());
+        validateOptionalIdentifier("目标端对象名称", template.getTargetObjectName());
         validateOptionalIdentifier("源端 schema 名称", template.getSourceSchemaName());
         validateOptionalIdentifier("目标端 schema 名称", template.getTargetSchemaName());
     }
 
     /**
-     * 校验 checkpoint 与写入策略之间的必备字段。
+     * 校验 checkpoint 与写入策略所需字段。
      *
-     * <p>增量同步没有 incrementalField 就无法推进 checkpoint；UPSERT/INSERT_IGNORE/REPLACE 没有 primaryKeyField
-     * 就无法做冲突判断。与其让 worker 在执行中失败，不如在模板校验阶段就返回明确的业务错误。</p>
+     * <p>增量同步必须有 incrementalField，否则无法推进 checkpoint；UPSERT/INSERT_IGNORE/REPLACE 等
+     * 冲突感知写入必须有 primaryKeyField，否则无法判断目标端幂等写入边界。</p>
      */
     private void validateCheckpointAndWriteStrategy(SyncTemplate template,
                                                     SyncMode mode,
@@ -160,11 +183,11 @@ public class SyncTemplateValidationSupport {
     }
 
     /**
-     * 校验连接器能力与同步模式是否匹配。
+     * 校验连接器能力矩阵。
      *
-     * <p>这个方法只消费 connector type 和 syncMode，不读取 datasource 实例、不读取连接串、不做真实连接测试。
-     * 它的定位是“产品能力预检”：例如 Kafka 不适合传统 FULL 表同步、文件目标不适合 CDC_STREAMING。
-     * 真正执行前还需要 datasource-management 连接测试、permission-admin 权限、字段映射、任务状态机和 worker lease。</p>
+     * <p>能力矩阵只消费 connector type 和 syncMode，不读取真实 datasource 凭据。它用于回答：
+     * “这类源端、这类目标端、这种同步模式，在产品能力上是否允许”。真实连接测试、权限、元数据比对和行数估算
+     * 属于后续 precheck/runner 的职责。</p>
      */
     private void validateConnectorCompatibility(SyncTemplate template, SyncMode mode) {
         String sourceConnectorType = normalizeOptionalCode(template.getSourceConnectorType());
@@ -189,14 +212,6 @@ public class SyncTemplateValidationSupport {
 
     private String normalizeOptionalCode(String value) {
         return value == null || value.isBlank() ? null : value.trim().toUpperCase(Locale.ROOT);
-    }
-
-    private void requireObjectName(String fieldName, String value) {
-        if (!hasText(value)) {
-            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    fieldName + "不能为空，真实执行器必须明确源端和目标端对象定位");
-        }
-        validateOptionalIdentifier(fieldName, value);
     }
 
     private void validateOptionalIdentifier(String fieldName, String value) {

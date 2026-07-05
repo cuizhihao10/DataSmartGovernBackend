@@ -33,11 +33,47 @@ class SyncTemplatePlanningPreviewSupportTest {
                 .build());
 
         assertThat(response.previewStatus()).isEqualTo("READY");
+        assertThat(response.transferChannel()).isEqualTo("OFFLINE");
+        assertThat(response.referenceRuntime()).isEqualTo("DATAX_STYLE_OFFLINE_READER_WRITER_RUNNER");
         assertThat(response.canProceedToTaskDraft()).isTrue();
         assertThat(response.executionPrecheckReady()).isTrue();
         assertThat(response.connectorCompatibilitySupported()).isTrue();
         assertThat(response.issueCodes()).isEmpty();
         assertThat(response.payloadPolicy()).isEqualTo("LOW_SENSITIVE_TEMPLATE_PLANNING_PREVIEW");
+    }
+
+    @Test
+    void previewShouldExposeOfflineChannelForScheduledBatchAndCustomSql() {
+        SyncTemplatePlanningPreviewResponse scheduledBatch = support.preview(template("MYSQL", "POSTGRESQL", "SCHEDULED_BATCH")
+                .fieldMappingConfig("{}")
+                .retryPolicy("{}")
+                .timeoutPolicy("{}")
+                .build());
+        SyncTemplatePlanningPreviewResponse customSql = support.preview(template("MYSQL", "POSTGRESQL", "CUSTOM_SQL_QUERY")
+                .syncScopeType("CUSTOM_SQL_QUERY")
+                .fieldMappingConfig("{}")
+                .customSqlConfig("{\"sql\":\"select id, name from customer where status = :status\"}")
+                .retryPolicy("{}")
+                .timeoutPolicy("{}")
+                .build());
+
+        assertThat(scheduledBatch.transferChannel()).isEqualTo("OFFLINE");
+        assertThat(customSql.transferChannel()).isEqualTo("OFFLINE");
+        assertThat(customSql.referenceRuntime()).isEqualTo("DATAX_STYLE_OFFLINE_READER_WRITER_RUNNER");
+        assertThat(customSql.requiresApproval()).isTrue();
+        assertThat(customSql.performanceNotes()).anyMatch(note -> note.contains("SQL 自定义传输"));
+    }
+
+    @Test
+    void previewShouldExposeRealtimeChannelOnlyForCdcStreaming() {
+        SyncTemplatePlanningPreviewResponse response = support.preview(template("MYSQL", "POSTGRESQL", "CDC_STREAMING")
+                .fieldMappingConfig("{}")
+                .retryPolicy("{}")
+                .timeoutPolicy("{}")
+                .build());
+
+        assertThat(response.transferChannel()).isEqualTo("REALTIME");
+        assertThat(response.referenceRuntime()).isEqualTo("DEBEZIUM_KAFKA_CONNECT_CDC_PIPELINE");
     }
 
     @Test
@@ -180,6 +216,16 @@ class SyncTemplatePlanningPreviewSupportTest {
 
         private TemplateBuilder fieldMappingConfig(String value) {
             template.setFieldMappingConfig(value);
+            return this;
+        }
+
+        private TemplateBuilder syncScopeType(String value) {
+            template.setSyncScopeType(value);
+            return this;
+        }
+
+        private TemplateBuilder customSqlConfig(String value) {
+            template.setCustomSqlConfig(value);
             return this;
         }
 

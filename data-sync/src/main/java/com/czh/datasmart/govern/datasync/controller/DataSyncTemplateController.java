@@ -12,6 +12,7 @@ import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTemplateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplatePlanningPreviewResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.support.SyncActorContextHeaderSupport;
@@ -32,8 +33,9 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * 同步模板 API。
  *
- * <p>模板 API 面向“同步配置定义”，不直接执行数据搬运。
- * 这样做的好处是：用户可以先创建模板、校验模板、预览影响范围，再决定是否创建任务或提交审批。
+ * <p>同步模板负责保存“可复用同步配置”，不直接代表一次运行。真实产品中，模板通常会经历：
+ * 创建 -> 规划预览 -> 执行前预检查 -> 创建任务 -> 审批/调度 -> worker 执行。把这些入口拆开，
+ * 能让用户、Agent 和运维人员清楚知道每一步的职责，而不是把“保存配置”和“开始搬数据”混在一起。</p>
  */
 @RestController
 @RequestMapping({"/sync-templates", "/api/sync-templates"})
@@ -44,6 +46,9 @@ public class DataSyncTemplateController {
 
     /**
      * 创建同步模板。
+     *
+     * <p>该接口只保存配置，不触发真实读写。请求体中的 datasourceId 是对 datasource-management 的引用，
+     * 本服务不会保存连接串、账号、密码或密钥。</p>
      */
     @PostMapping
     public PlatformApiResponse<SyncTemplate> createTemplate(
@@ -59,6 +64,8 @@ public class DataSyncTemplateController {
 
     /**
      * 分页查询同步模板。
+     *
+     * <p>列表接口用于控制台和 Agent 查询模板目录，只按低敏条件筛选，不返回任何连接凭据。</p>
      */
     @GetMapping
     public PlatformApiResponse<PlatformPageResponse<SyncTemplate>> pageTemplates(
@@ -84,6 +91,8 @@ public class DataSyncTemplateController {
 
     /**
      * 查询同步模板详情。
+     *
+     * <p>模板详情属于配置控制面数据，仍然要经过租户、项目和 SELF 数据范围校验。</p>
      */
     @GetMapping("/{id}")
     public PlatformApiResponse<SyncTemplate> getTemplate(
@@ -99,6 +108,9 @@ public class DataSyncTemplateController {
 
     /**
      * 校验同步模板。
+     *
+     * <p>validate 是 fail-fast 接口：只要模板存在硬性配置错误，就直接抛业务异常。它适合按钮“校验模板”，
+     * 不适合一次性展示所有改进建议；展示建议请使用 preview。</p>
      */
     @PostMapping("/{id}/validate")
     public PlatformApiResponse<SyncTaskOperationResult> validateTemplate(
@@ -115,9 +127,8 @@ public class DataSyncTemplateController {
     /**
      * 生成同步模板规划预览。
      *
-     * <p>该接口面向“创建任务前的低敏配置健康检查”。它不会执行同步，不会读取源端样本，不会返回字段映射、
-     * 过滤条件、分区窗口、SQL、checkpoint 原文或连接配置，只返回 issueCodes、recommendedActions、
-     * 性能提示和安全提示，便于用户或 Agent 判断下一步是补配置、发起审批还是创建任务草稿。</p>
+     * <p>preview 面向“配置是否清晰、是否建议进入任务草稿、是否需要补充策略”的低敏报告。
+     * 它不会执行同步，不会读取源端样本，不会返回字段映射、过滤条件、分区窗口、自定义 SQL、checkpoint 原文或连接配置。</p>
      */
     @PostMapping("/{id}/preview")
     public PlatformApiResponse<SyncTemplatePlanningPreviewResponse> previewTemplate(
@@ -129,6 +140,25 @@ public class DataSyncTemplateController {
             @RequestHeader HttpHeaders headers) {
         return PlatformApiResponse.success("同步模板规划预览生成成功",
                 dataSyncService.previewTemplate(id, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * 生成同步模板执行前预检查。
+     *
+     * <p>precheck 面向“能不能真实入队执行”的准入判断。它比 preview 更严格：如果当前最小 runner 不支持多对象、
+     * 全库、自定义 SQL、checkpoint handoff 或字段转换，就会返回 NOT_SUPPORTED_BY_CURRENT_RUNNER 或 BLOCKED，
+     * 并且 {@code runTask} 也会复用同一套预检查结果阻止入队。</p>
+     */
+    @PostMapping("/{id}/precheck")
+    public PlatformApiResponse<SyncTemplateExecutionPrecheckResponse> precheckTemplate(
+            @PathVariable Long id,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步模板执行前预检查完成",
+                dataSyncService.precheckTemplate(id, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
     }
 
     private SyncActorContext actorContext(Long tenantId, Long actorId, String actorRole, String traceId, HttpHeaders headers) {

@@ -135,6 +135,22 @@ public class SyncTemplate {
     private String syncMode;
 
     /**
+     * 同步范围类型。
+     *
+     * <p>syncMode 解决“如何同步”，syncScopeType 解决“同步哪些对象”。
+     * 历史模板没有该字段时会按 SINGLE_OBJECT 兼容处理，即使用 sourceObjectName 与 targetObjectName
+     * 表示单表/单对象同步。新增该字段后，产品可以明确表达：</p>
+     * <p>1. OBJECT_LIST：用户勾选多张表并逐表配置映射；</p>
+     * <p>2. SCHEMA_FULL：迁移整个 schema；</p>
+     * <p>3. DATABASE_FULL：迁移整个数据源/数据库，通常需要更强审批；</p>
+     * <p>4. CUSTOM_SQL_QUERY：把受控只读 SQL 查询结果写入目标对象。</p>
+     *
+     * <p>执行器暂时没有实现的范围会在 worker bridge 中 fail-closed，
+     * 但控制面必须先把范围语义建模清楚，避免继续把“单表同步”误当成整个数据同步产品。</p>
+     */
+    private String syncScopeType;
+
+    /**
      * 目标端写入策略。
      *
      * <p>常见值包括 APPEND、UPSERT、INSERT_IGNORE、REPLACE、OVERWRITE。该字段决定 runner 如何处理目标端冲突：
@@ -166,10 +182,45 @@ public class SyncTemplate {
     private String fieldMappingConfig;
 
     /**
+     * 对象映射配置 JSON。
+     *
+     * <p>当 syncScopeType 为 OBJECT_LIST、SCHEMA_FULL 或 DATABASE_FULL 时，单独的 sourceObjectName/targetObjectName
+     * 已经不足以表达用户在创建任务阶段选择的多张表、排除规则、目标命名策略和逐表字段映射。
+     * 因此这里保存一个受控 JSON 配置，例如：</p>
+     * <pre>
+     * {
+     *   "mappings": [
+     *     {"sourceObject": "orders", "targetObject": "ods_orders"},
+     *     {"sourceObject": "customers", "targetObject": "ods_customers"}
+     *   ],
+     *   "includePatterns": ["biz_*"],
+     *   "excludeObjects": ["tmp_table"],
+     *   "targetNamingStrategy": "KEEP_NAME"
+     * }
+     * </pre>
+     *
+     * <p>该字段仍然不能保存连接串、账号、密码、样本数据或完整导出文件路径。
+     * 普通预览和审计只返回“是否声明”和对象数量摘要，不返回 JSON 正文。</p>
+     */
+    private String objectMappingConfig;
+
+    /**
      * 过滤条件配置 JSON。
      * 例如按业务日期、租户字段、状态字段过滤源端数据。
      */
     private String filterConfig;
+
+    /**
+     * 自定义 SQL 配置 JSON。
+     *
+     * <p>该字段只用于 syncScopeType=CUSTOM_SQL_QUERY 或 syncMode=CUSTOM_SQL_QUERY。
+     * 自定义 SQL 比普通 where/filterConfig 风险更高，必须独立存储、独立校验、独立审批：</p>
+     * <p>1. 只允许只读 SELECT/WITH 查询；</p>
+     * <p>2. 禁止 DDL/DML、存储过程、COPY、分号多语句和注释逃逸；</p>
+     * <p>3. 预检响应、审计摘要、worker plan 不返回 SQL 正文，只返回 digest/声明状态/风险码；</p>
+     * <p>4. 真实执行时仍应由 datasource-management 读取受控 datasource 凭据并参数化执行。</p>
+     */
+    private String customSqlConfig;
 
     /**
      * 分区与并发配置 JSON。

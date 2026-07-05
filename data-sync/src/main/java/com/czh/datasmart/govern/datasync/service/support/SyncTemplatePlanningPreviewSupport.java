@@ -10,28 +10,29 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncConnectorCompatibili
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplatePlanningPreviewResponse;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
+import com.czh.datasmart.govern.datasync.support.SyncTransferChannel;
 import com.czh.datasmart.govern.datasync.support.SyncWriteStrategy;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 
 /**
  * 同步模板规划预览支撑组件。
  *
- * <p>本组件不执行同步、不访问源端或目标端、不解析真实字段映射内容，只根据模板已经保存的低敏配置事实生成
- * “下一步是否建议进入任务草稿/执行前预检”的报告。它的定位介于 validateTemplate 和真实 worker 之间：</p>
- * <p>1. validateTemplate 负责 fail-fast 的基础校验；</p>
- * <p>2. preview 负责把缺失配置、连接器兼容性、checkpoint 建议和性能/安全提醒以列表形式返回；</p>
- * <p>3. worker 负责真实读取、写入、checkpoint 和错误样本采集。</p>
+ * <p>预览接口处在“模板保存”和“执行预检查”之间：它不访问真实数据源，也不执行 SQL，只根据模板中已经保存的
+ * 低敏配置事实生成一份可解释报告。这样用户和 Agent 可以在创建任务前看到：配置缺了什么、是否需要审批、
+ * 当前最小 runner 能否执行、哪些性能或安全风险需要补充。</p>
  *
- * <p>低敏原则：只返回“配置是否声明”和“问题码/建议”，不返回 fieldMappingConfig、filterConfig、partitionConfig、
- * retryPolicy、timeoutPolicy 的原文，因为这些 JSON 将来可能包含业务字段名、过滤条件、时间窗口、分片规则甚至敏感描述。</p>
+ * <p>为什么不把 preview 做成 validate 的别名：</p>
+ * <p>1. validate 是 fail-fast，适合阻断继续操作；preview 是问题清单，适合一次性展示多个缺口；</p>
+ * <p>2. preview 需要区分“可进入任务草稿但暂不能执行”的高级范围，例如整库迁移、自定义 SQL；</p>
+ * <p>3. preview 的返回值必须遵循低敏原则，不返回字段映射、对象映射、SQL、过滤条件、分区窗口或连接配置原文。</p>
  */
 @Component
-@RequiredArgsConstructor
 public class SyncTemplatePlanningPreviewSupport {
 
     private static final String PAYLOAD_POLICY = "LOW_SENSITIVE_TEMPLATE_PLANNING_PREVIEW";
@@ -40,6 +41,24 @@ public class SyncTemplatePlanningPreviewSupport {
     private static final String BLOCKED = "BLOCKED";
 
     private final SyncConnectorCapabilityRegistry connectorCapabilityRegistry;
+    private final SyncTemplateScopeContractSupport scopeContractSupport;
+
+    /**
+     * 兼容旧测试的构造器。
+     */
+    public SyncTemplatePlanningPreviewSupport(SyncConnectorCapabilityRegistry connectorCapabilityRegistry) {
+        this(connectorCapabilityRegistry, new SyncTemplateScopeContractSupport());
+    }
+
+    /**
+     * Spring 注入构造器。
+     */
+    @Autowired
+    public SyncTemplatePlanningPreviewSupport(SyncConnectorCapabilityRegistry connectorCapabilityRegistry,
+                                              SyncTemplateScopeContractSupport scopeContractSupport) {
+        this.connectorCapabilityRegistry = connectorCapabilityRegistry;
+        this.scopeContractSupport = scopeContractSupport;
+    }
 
     /**
      * 生成同步模板规划预览。
@@ -52,9 +71,17 @@ public class SyncTemplatePlanningPreviewSupport {
         List<String> recommendedActions = new ArrayList<>();
         List<String> performanceNotes = new ArrayList<>();
         List<String> safetyNotes = new ArrayList<>();
+
+        SyncTemplateScopeContract scopeContract = scopeContractSupport.evaluate(template);
+        issueCodes.addAll(scopeContract.issueCodes());
+        recommendedActions.addAll(scopeContract.recommendedActions());
+        safetyNotes.addAll(scopeContract.warnings());
+
         SyncMode syncMode = resolveMode(template, issueCodes, recommendedActions);
         SyncWriteStrategy writeStrategy = resolveWriteStrategy(template, issueCodes, recommendedActions);
         SyncConnectorCompatibilityView compatibility = resolveCompatibility(template, syncMode, issueCodes, recommendedActions);
+        SyncTransferChannel transferChannel = SyncTransferChannelSupport.resolve(syncMode);
+        performanceNotes.add(SyncTransferChannelSupport.explanation(transferChannel));
 
         boolean sourceObjectDeclared = hasText(template.getSourceObjectName());
         boolean targetObjectDeclared = hasText(template.getTargetObjectName());
@@ -65,11 +92,21 @@ public class SyncTemplatePlanningPreviewSupport {
         boolean partitionDeclared = hasText(template.getPartitionConfig());
         boolean retryPolicyDeclared = hasText(template.getRetryPolicy());
         boolean timeoutPolicyDeclared = hasText(template.getTimeoutPolicy());
-        evaluateConfigurationHints(syncMode, writeStrategy, compatibility, sourceObjectDeclared, targetObjectDeclared,
-                primaryKeyDeclared, incrementalFieldDeclared, fieldMappingDeclared, filterDeclared, partitionDeclared,
-                retryPolicyDeclared, timeoutPolicyDeclared, issueCodes, recommendedActions, performanceNotes, safetyNotes);
 
-        String previewStatus = resolvePreviewStatus(issueCodes);
+        evaluateConfigurationHints(syncMode, writeStrategy, compatibility, scopeContract,
+                sourceObjectDeclared, targetObjectDeclared, primaryKeyDeclared, incrementalFieldDeclared,
+                fieldMappingDeclared, filterDeclared, partitionDeclared, retryPolicyDeclared, timeoutPolicyDeclared,
+                issueCodes, recommendedActions, performanceNotes, safetyNotes);
+
+        List<String> distinctIssues = distinct(issueCodes);
+        String previewStatus = resolvePreviewStatus(distinctIssues);
+        boolean connectorSupported = compatibility != null && compatibility.supported();
+        boolean executionPrecheckReady = READY.equals(previewStatus)
+                && connectorSupported
+                && scopeContract.executableByMinimalBridge()
+                && fieldMappingDeclared
+                && !scopeContract.requiresApproval();
+
         return new SyncTemplatePlanningPreviewResponse(
                 template.getId(),
                 template.getTenantId(),
@@ -80,6 +117,17 @@ public class SyncTemplatePlanningPreviewSupport {
                 normalize(template.getSourceConnectorType()),
                 normalize(template.getTargetConnectorType()),
                 normalize(template.getSyncMode()),
+                transferChannel == null ? null : transferChannel.name(),
+                SyncTransferChannelSupport.referenceRuntime(transferChannel),
+                scopeContract.scopeType(),
+                scopeContract.singleObjectScope(),
+                scopeContract.multiObjectScope(),
+                scopeContract.customSqlScope(),
+                scopeContract.selectedObjectCount(),
+                scopeContract.objectMappingDeclared(),
+                scopeContract.customSqlDeclared(),
+                scopeContract.requiresApproval(),
+                scopeContract.executableByMinimalBridge(),
                 sourceObjectDeclared,
                 targetObjectDeclared,
                 writeStrategy == null ? null : writeStrategy.name(),
@@ -88,18 +136,18 @@ public class SyncTemplatePlanningPreviewSupport {
                 incrementalFieldDeclared,
                 previewStatus,
                 !BLOCKED.equals(previewStatus),
-                READY.equals(previewStatus),
-                compatibility != null && compatibility.supported(),
+                executionPrecheckReady,
+                connectorSupported,
                 compatibility != null && compatibility.checkpointRequired(),
                 fieldMappingDeclared,
                 filterDeclared,
                 partitionDeclared,
                 retryPolicyDeclared,
                 timeoutPolicyDeclared,
-                List.copyOf(issueCodes),
-                List.copyOf(recommendedActions),
-                List.copyOf(performanceNotes),
-                List.copyOf(safetyNotes),
+                distinctIssues,
+                distinct(recommendedActions),
+                distinct(performanceNotes),
+                distinct(safetyNotes),
                 PAYLOAD_POLICY
         );
     }
@@ -107,14 +155,13 @@ public class SyncTemplatePlanningPreviewSupport {
     /**
      * 解析同步模式。
      *
-     * <p>预览接口不直接抛出校验异常，而是把问题转换成 issueCodes，便于前端一次性展示多个缺口。
-     * 资源不存在、无权限这类边界仍由上层 getTemplate 负责抛异常。</p>
+     * <p>预览接口不直接抛出异常，而是把问题压缩成 issueCode，便于前端一次性展示多类缺口。</p>
      */
     private SyncMode resolveMode(SyncTemplate template, List<String> issueCodes, List<String> recommendedActions) {
         String syncMode = normalize(template.getSyncMode());
         if (syncMode == null) {
             issueCodes.add("SYNC_MODE_MISSING");
-            recommendedActions.add("先为同步模板选择 FULL、INCREMENTAL_TIME、CDC_STREAMING 等平台支持的同步模式");
+            recommendedActions.add("先为同步模板选择 FULL、INCREMENTAL_TIME、CDC_STREAMING、CUSTOM_SQL_QUERY 等平台支持的同步模式");
             return null;
         }
         try {
@@ -127,11 +174,7 @@ public class SyncTemplatePlanningPreviewSupport {
     }
 
     /**
-     * 解析写入策略并把未知策略压缩为低敏 issueCode。
-     *
-     * <p>预览接口的职责是“一次性列出配置问题”，因此这里不直接抛异常。真正创建任务或执行前校验仍会在
-     * {@link SyncTemplateValidationSupport} 中 fail-fast。这样前端和 Agent 可以在一个响应里同时看到对象定位、
-     * 写入策略、checkpoint、重试和超时等多类缺口。</p>
+     * 解析写入策略，并将未知策略压缩为低敏 issueCode。
      */
     private SyncWriteStrategy resolveWriteStrategy(SyncTemplate template,
                                                    List<String> issueCodes,
@@ -175,15 +218,12 @@ public class SyncTemplatePlanningPreviewSupport {
     }
 
     /**
-     * 根据同步模式和已声明配置生成规划建议。
-     *
-     * <p>这些判断当前是轻量启发式规则，目的是在真实执行前暴露常见缺口。它不解析配置 JSON 的正文，
-     * 所以不会泄露 SQL、字段名、业务过滤条件或分片窗口。后续可以在这里继续接入安全 JSON Schema 校验，
-     * 但仍应只返回低敏摘要。</p>
+     * 根据同步模式、范围契约和已声明配置生成规划建议。
      */
     private void evaluateConfigurationHints(SyncMode syncMode,
                                             SyncWriteStrategy writeStrategy,
                                             SyncConnectorCompatibilityView compatibility,
+                                            SyncTemplateScopeContract scopeContract,
                                             boolean sourceObjectDeclared,
                                             boolean targetObjectDeclared,
                                             boolean primaryKeyDeclared,
@@ -197,13 +237,13 @@ public class SyncTemplatePlanningPreviewSupport {
                                             List<String> recommendedActions,
                                             List<String> performanceNotes,
                                             List<String> safetyNotes) {
-        if (!sourceObjectDeclared) {
+        if (scopeContract.singleObjectScope() && !sourceObjectDeclared) {
             issueCodes.add("SOURCE_OBJECT_NOT_DECLARED");
-            recommendedActions.add("声明 sourceObjectName，真实执行器必须知道从哪个表、视图、topic 或逻辑资源读取");
+            recommendedActions.add("声明 sourceObjectName，单对象 runner 必须知道从哪个表、视图、topic 或逻辑资源读取");
         }
-        if (!targetObjectDeclared) {
+        if (scopeContract.singleObjectScope() && !targetObjectDeclared) {
             issueCodes.add("TARGET_OBJECT_NOT_DECLARED");
-            recommendedActions.add("声明 targetObjectName，真实执行器必须知道写入哪个目标对象");
+            recommendedActions.add("声明 targetObjectName，单对象 runner 必须知道写入哪个目标对象");
         }
         if (writeStrategy != null && writeStrategy.requiresConflictKey() && !primaryKeyDeclared) {
             issueCodes.add("PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE");
@@ -211,7 +251,7 @@ public class SyncTemplatePlanningPreviewSupport {
         }
         if (writeStrategy != null && writeStrategy.isDestructiveRewrite()) {
             issueCodes.add("DESTRUCTIVE_WRITE_STRATEGY_REQUIRES_REVIEW");
-            recommendedActions.add("OVERWRITE 属于覆盖式高风险写入，建议接入 permission-admin 审批、影响范围预估和回滚预案后再运行");
+            recommendedActions.add("OVERWRITE 属于覆盖式高风险写入，建议接入 permission-admin 审批、影响范围评估和回滚预案后再运行");
             safetyNotes.add("覆盖式写入不应由普通 worker 静默执行，应在执行前完成人审、审计和备份策略确认");
         }
         if ((syncMode == SyncMode.INCREMENTAL_TIME || syncMode == SyncMode.INCREMENTAL_ID) && !incrementalFieldDeclared) {
@@ -220,7 +260,7 @@ public class SyncTemplatePlanningPreviewSupport {
         }
         if (!fieldMappingDeclared) {
             issueCodes.add("FIELD_MAPPING_NOT_DECLARED");
-            recommendedActions.add("如果源端和目标端 schema 不完全一致，请补充 fieldMappingConfig；预览不会返回字段映射原文");
+            recommendedActions.add("建议补充 fieldMappingConfig；真实执行需要明确源字段、目标字段、类型兼容和主键/冲突字段位置");
         }
         if (syncMode == SyncMode.INCREMENTAL_TIME || syncMode == SyncMode.INCREMENTAL_ID) {
             addIncrementalHints(filterDeclared, partitionDeclared, issueCodes, recommendedActions);
@@ -240,7 +280,13 @@ public class SyncTemplatePlanningPreviewSupport {
         if (!partitionDeclared) {
             performanceNotes.add("未声明 partitionConfig：小表或低频任务可以接受，大表/高并发场景建议补充分片或批量策略");
         }
-        safetyNotes.add("预览结果不代表真实执行已通过；执行前仍需要权限、审批、连接测试、worker 租约和 checkpoint 回调共同满足");
+        if (!scopeContract.executableByMinimalBridge()) {
+            safetyNotes.add("当前同步范围已完成控制面建模，但现有最小 run-once bridge 不会执行该范围，避免在 runner 未成熟时误读写真实数据");
+        }
+        if (scopeContract.requiresApproval()) {
+            safetyNotes.add("当前模板涉及高影响范围或高风险写入，建议在执行前进入审批或人工确认流程");
+        }
+        safetyNotes.add("预览结果不代表真实执行已经通过；执行前仍需要权限、审批、连接测试、元数据兼容、worker 租约和 checkpoint 回调共同满足");
     }
 
     private void addIncrementalHints(boolean filterDeclared,
@@ -263,6 +309,12 @@ public class SyncTemplatePlanningPreviewSupport {
         return NEEDS_REVIEW;
     }
 
+    /**
+     * 预览层的阻断问题。
+     *
+     * <p>注意：SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE 不在这里阻断任务草稿，因为高级范围可以先保存和审批；
+     * 它会在执行预检查和 worker bridge 阶段阻断真实读写。</p>
+     */
     private boolean isBlockingIssue(String issueCode) {
         return "SYNC_MODE_MISSING".equals(issueCode)
                 || "SYNC_MODE_UNSUPPORTED".equals(issueCode)
@@ -281,7 +333,28 @@ public class SyncTemplatePlanningPreviewSupport {
                 || "TARGET_OBJECT_NOT_DECLARED".equals(issueCode)
                 || "WRITE_STRATEGY_UNSUPPORTED".equals(issueCode)
                 || "PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE".equals(issueCode)
-                || "INCREMENTAL_FIELD_NOT_DECLARED".equals(issueCode);
+                || "INCREMENTAL_FIELD_NOT_DECLARED".equals(issueCode)
+                || "SYNC_SCOPE_TYPE_UNSUPPORTED".equals(issueCode)
+                || "SYNC_SCOPE_MODE_MISMATCH".equals(issueCode)
+                || "SINGLE_OBJECT_SOURCE_NOT_DECLARED".equals(issueCode)
+                || "SINGLE_OBJECT_TARGET_NOT_DECLARED".equals(issueCode)
+                || "OBJECT_MAPPING_CONFIG_REQUIRED".equals(issueCode)
+                || "OBJECT_MAPPING_JSON_INVALID".equals(issueCode)
+                || "OBJECT_MAPPING_EMPTY".equals(issueCode)
+                || "OBJECT_MAPPING_TOO_LARGE".equals(issueCode)
+                || "OBJECT_MAPPING_IDENTIFIER_UNSAFE".equals(issueCode)
+                || "SCHEMA_FULL_REQUIRES_SCHEMA_PAIR".equals(issueCode)
+                || "DATABASE_FULL_REQUIRES_DISCOVERY_POLICY".equals(issueCode)
+                || "CUSTOM_SQL_CONFIG_REQUIRED".equals(issueCode)
+                || "CUSTOM_SQL_JSON_INVALID".equals(issueCode)
+                || "CUSTOM_SQL_QUERY_MISSING".equals(issueCode)
+                || "CUSTOM_SQL_RAW_SQL_UNSAFE".equals(issueCode)
+                || "CUSTOM_SQL_TARGET_OBJECT_REQUIRED".equals(issueCode)
+                || "CUSTOM_SQL_FIELD_MAPPING_REQUIRED".equals(issueCode);
+    }
+
+    private List<String> distinct(List<String> values) {
+        return new ArrayList<>(new LinkedHashSet<>(values));
     }
 
     private boolean hasText(String value) {

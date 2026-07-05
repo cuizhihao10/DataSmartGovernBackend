@@ -31,10 +31,14 @@ import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperat
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskRecoveryOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskStateMachineSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncConnectorCapabilityRegistry;
+import com.czh.datasmart.govern.datasync.service.support.SyncFieldMappingExecutionContractSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateConnectorFactResolver;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateCreationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTemplateExecutionPrecheckSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplatePlanningPreviewSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTemplateScopeContractSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateValidationSupport;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -198,7 +202,8 @@ class DataSyncServiceImplProjectScopeTest {
                 mock(SyncTaskLifecycleOperationSupport.class),
                 mock(SyncTaskRecoveryOperationSupport.class),
                 templateCreationSupport(templateMapper, auditSupport, dataScopeSupport, querySupport, templateValidationSupport),
-                new SyncTemplatePlanningPreviewSupport(new SyncConnectorCapabilityRegistry())
+                new SyncTemplatePlanningPreviewSupport(new SyncConnectorCapabilityRegistry()),
+                templateExecutionPrecheckSupport()
         );
     }
 
@@ -256,7 +261,17 @@ class DataSyncServiceImplProjectScopeTest {
                 mock(SyncTaskLifecycleOperationSupport.class),
                 mock(SyncTaskRecoveryOperationSupport.class),
                 templateCreationSupport(templateMapper, auditSupport, dataScopeSupport, querySupport, templateValidationSupport),
-                new SyncTemplatePlanningPreviewSupport(new SyncConnectorCapabilityRegistry())
+                new SyncTemplatePlanningPreviewSupport(new SyncConnectorCapabilityRegistry()),
+                templateExecutionPrecheckSupport()
+        );
+    }
+
+    private SyncTemplateExecutionPrecheckSupport templateExecutionPrecheckSupport() {
+        ObjectMapper objectMapper = new ObjectMapper();
+        return new SyncTemplateExecutionPrecheckSupport(
+                new SyncConnectorCapabilityRegistry(),
+                new SyncTemplateScopeContractSupport(objectMapper),
+                new SyncFieldMappingExecutionContractSupport(objectMapper)
         );
     }
 

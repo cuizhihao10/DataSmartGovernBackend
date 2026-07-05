@@ -56,9 +56,32 @@ class SyncConnectorCapabilityRegistryTest {
                 registry.checkCompatibility("mysql", "postgresql", "full");
 
         assertThat(result.supported()).isTrue();
+        assertThat(result.transferChannel()).isEqualTo("OFFLINE");
+        assertThat(result.referenceRuntime()).isEqualTo("DATAX_STYLE_OFFLINE_READER_WRITER_RUNNER");
         assertThat(result.consistencyGoal()).isEqualTo("SNAPSHOT_BOUNDED");
         assertThat(result.issueCodes()).isEmpty();
         assertThat(result.recommendedActions()).anyMatch(action -> action.contains("连接测试"));
+    }
+
+    /**
+     * 传输通道是执行路线的顶层分类：非 CDC 的有界同步作业都走 OFFLINE，CDC 才走 REALTIME。
+     *
+     * <p>这里特别覆盖 SCHEDULED_BATCH 和 CUSTOM_SQL_QUERY，是为了防止后续把“定时批量”和“SQL 自定义传输”
+     * 从 DataX-style 离线通道里漏掉。注意：OFFLINE 不等于所有模式都叫“批量传输”，真正的批量语义仍由
+     * SCHEDULED_BATCH 表达。</p>
+     */
+    @Test
+    void transferChannelShouldSeparateBoundedOfflineJobsFromCdcStreaming() {
+        assertThat(registry.checkCompatibility("mysql", "postgresql", "full").transferChannel())
+                .isEqualTo("OFFLINE");
+        assertThat(registry.checkCompatibility("mysql", "postgresql", "scheduled_batch").transferChannel())
+                .isEqualTo("OFFLINE");
+        assertThat(registry.checkCompatibility("mysql", "postgresql", "custom_sql_query").transferChannel())
+                .isEqualTo("OFFLINE");
+        assertThat(registry.checkCompatibility("mysql", "postgresql", "cdc_streaming").transferChannel())
+                .isEqualTo("REALTIME");
+        assertThat(registry.checkCompatibility("mysql", "postgresql", "cdc_streaming").referenceRuntime())
+                .isEqualTo("DEBEZIUM_KAFKA_CONNECT_CDC_PIPELINE");
     }
 
     /**

@@ -91,6 +91,30 @@ class SyncBatchRunnerBridgePlanSupportTest {
     }
 
     @Test
+    void multiObjectScopeShouldBeBlockedEvenWhenWorkerPlanLooksReady() {
+        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+                .scope("OBJECT_LIST")
+                .objectMapping("""
+                        {
+                          "mappings": [
+                            {"sourceObject":"customer","targetObject":"customer"},
+                            {"sourceObject":"orders","targetObject":"orders"}
+                          ]
+                        }
+                        """)
+                .fieldMapping("""
+                        [{"sourceField":"id","targetField":"id"}]
+                        """);
+
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+                workerPlan("READY_TO_RUN", List.of()));
+
+        assertThat(plan.isDispatchable()).isFalse();
+        assertThat(plan.getIssueCodes()).contains("SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE");
+        assertThat(plan.getNextActions()).contains("DO_NOT_DISPATCH_BATCH_RUNNER");
+    }
+
+    @Test
     void destructiveOverwriteShouldWaitForApprovedBridgePolicy() {
         SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
                 .writeStrategy("OVERWRITE")
@@ -176,6 +200,15 @@ class SyncBatchRunnerBridgePlanSupportTest {
                 "MYSQL",
                 "POSTGRESQL",
                 "FULL",
+                "OFFLINE",
+                "DATAX_STYLE_OFFLINE_READER_WRITER_RUNNER",
+                "SINGLE_OBJECT",
+                true,
+                false,
+                false,
+                1,
+                false,
+                true,
                 true,
                 true,
                 "APPEND",
@@ -187,6 +220,8 @@ class SyncBatchRunnerBridgePlanSupportTest {
                 false,
                 "SEGMENT_RETRY",
                 true,
+                false,
+                false,
                 false,
                 false,
                 false,
@@ -207,6 +242,16 @@ class SyncBatchRunnerBridgePlanSupportTest {
 
         private TestTemplate fieldMapping(String value) {
             setFieldMappingConfig(value);
+            return this;
+        }
+
+        private TestTemplate objectMapping(String value) {
+            setObjectMappingConfig(value);
+            return this;
+        }
+
+        private TestTemplate scope(String value) {
+            setSyncScopeType(value);
             return this;
         }
 

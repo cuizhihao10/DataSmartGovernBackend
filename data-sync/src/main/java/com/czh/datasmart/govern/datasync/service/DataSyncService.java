@@ -22,6 +22,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperati
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperationRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplatePlanningPreviewResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateQueryCriteria;
 import com.czh.datasmart.govern.datasync.entity.SyncAuditRecord;
@@ -54,6 +55,15 @@ public interface DataSyncService {
      * 它用于帮助用户、Agent 或运营人员理解“这个模板是否适合进入任务草稿/执行前预检”。</p>
      */
     SyncTemplatePlanningPreviewResponse previewTemplate(Long id, SyncActorContext actorContext);
+
+    /**
+     * 生成同步模板执行前预检查。
+     *
+     * <p>预检查比 preview 更接近真实运行入口：它会判断当前模板是否能被现有 runner 入队执行，
+     * 并把“配置非法”“需要审批”“当前 runner 暂不支持”区分开。该方法仍然不读取源端数据、不写目标端、
+     * 不执行 SQL，只返回低敏状态、问题码和建议。</p>
+     */
+    SyncTemplateExecutionPrecheckResponse precheckTemplate(Long id, SyncActorContext actorContext);
 
     SyncTask createTask(CreateSyncTaskRequest request, SyncActorContext actorContext);
 

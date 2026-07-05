@@ -91,11 +91,14 @@ public class SyncTemplateCreationSupport {
         template.setSourceConnectorType(querySupport.normalizeCode(request.getSourceConnectorType()));
         template.setTargetConnectorType(querySupport.normalizeCode(request.getTargetConnectorType()));
         template.setSyncMode(querySupport.normalizeCode(request.getSyncMode()));
+        template.setSyncScopeType(querySupport.normalizeCode(request.getSyncScopeType()));
         template.setWriteStrategy(querySupport.normalizeCode(request.getWriteStrategy()));
         template.setPrimaryKeyField(querySupport.trimToNull(request.getPrimaryKeyField()));
         template.setIncrementalField(querySupport.trimToNull(request.getIncrementalField()));
         template.setFieldMappingConfig(querySupport.trimToNull(request.getFieldMappingConfig()));
+        template.setObjectMappingConfig(querySupport.trimToNull(request.getObjectMappingConfig()));
         template.setFilterConfig(querySupport.trimToNull(request.getFilterConfig()));
+        template.setCustomSqlConfig(querySupport.trimToNull(request.getCustomSqlConfig()));
         template.setPartitionConfig(querySupport.trimToNull(request.getPartitionConfig()));
         template.setRetryPolicy(querySupport.trimToNull(request.getRetryPolicy()));
         template.setTimeoutPolicy(querySupport.trimToNull(request.getTimeoutPolicy()));
@@ -118,11 +121,14 @@ public class SyncTemplateCreationSupport {
     private String auditSummary(SyncTemplate template) {
         return "templateId=" + template.getId()
                 + ",syncMode=" + template.getSyncMode()
+                + ",syncScopeType=" + template.getSyncScopeType()
                 + ",sourceConnectorType=" + template.getSourceConnectorType()
                 + ",targetConnectorType=" + template.getTargetConnectorType()
                 + ",writeStrategy=" + template.getWriteStrategy()
                 + ",sourceObjectDeclared=" + hasText(template.getSourceObjectName())
                 + ",targetObjectDeclared=" + hasText(template.getTargetObjectName())
+                + ",objectMappingDeclared=" + hasText(template.getObjectMappingConfig())
+                + ",customSqlDeclared=" + hasText(template.getCustomSqlConfig())
                 + ",primaryKeyDeclared=" + hasText(template.getPrimaryKeyField())
                 + ",incrementalFieldDeclared=" + hasText(template.getIncrementalField());
     }
