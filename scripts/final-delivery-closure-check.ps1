@@ -42,6 +42,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+# Keep child gates runnable from both Windows PowerShell and PowerShell Core runners.
+$script:powerShellExecutable = "powershell"
+if ($PSVersionTable.PSEdition -eq "Core") {
+    $script:powerShellExecutable = "pwsh"
+}
 $gateResults = New-Object System.Collections.Generic.List[object]
 $failedGateCount = 0
 $warnGateCount = 0
@@ -138,7 +143,7 @@ function Invoke-ClosureGate {
     Write-GateLine -Level "INFO" -Message "$Name"
     $ErrorActionPreference = "Continue"
     try {
-        $output = & powershell -NoProfile -ExecutionPolicy Bypass -File $resolvedScript @Arguments 2>&1
+        $output = & $script:powerShellExecutable -NoProfile -ExecutionPolicy Bypass -File $resolvedScript @Arguments 2>&1
         $exitCode = $LASTEXITCODE
     }
     finally {

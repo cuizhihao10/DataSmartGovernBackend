@@ -19,6 +19,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+# Keep nested production-readiness gates runnable from both local Windows and CI runners.
+$script:powerShellExecutable = "powershell"
+if ($PSVersionTable.PSEdition -eq "Core") {
+    $script:powerShellExecutable = "pwsh"
+}
 $passCount = 0
 $warnCount = 0
 $failCount = 0
@@ -180,7 +185,7 @@ try {
     )) {
         Test-RequiredFile $file "final closure requires deployable and operable evidence"
     }
-    $productionOutput = & powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\production-readiness-check.ps1" 2>&1
+    $productionOutput = & $script:powerShellExecutable -NoProfile -ExecutionPolicy Bypass -File ".\scripts\production-readiness-check.ps1" 2>&1
     $productionExitCode = $LASTEXITCODE
     $productionSummary = ($productionOutput | Select-String "\[SUMMARY\]" | Select-Object -Last 1).Line
     $validationResults.productionReadiness = [ordered]@{ exitCode = $productionExitCode; summary = $productionSummary }
@@ -198,8 +203,11 @@ try {
     $sourceFiles = @(
         Get-ChildItem -LiteralPath $repositoryRoot -Recurse -File |
             Where-Object {
+                # PowerShell 在 Windows 与 Linux 下返回的 FullName 路径分隔符不同。
+                # 这里先归一化为 `/`，再过滤 target/.m2/缓存目录，避免 CI 在 Linux 上把构建产物误当成源码扫描。
+                $normalizedPath = $_.FullName -replace "\\", "/"
                 $_.Extension -in @(".java", ".py") -and
-                $_.FullName -notmatch "\\target\\|\\.m2\\|\\.pytest_cache\\|\\__pycache__\\"
+                $normalizedPath -notmatch "/target/|/\.m2/|/\.pytest_cache/|/__pycache__/"
             }
     )
     if ($sourceFiles.Count -eq 0) {

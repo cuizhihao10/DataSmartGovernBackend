@@ -121,3 +121,40 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-delivery-clo
 ```
 
 结果：`failedGates=0, gatesWithWarnings=7`，真实只读 E2E smoke 为 `PASS=89, WARN=0, FAIL=0`。warning 来自 Helm/SBOM/镜像签名/备份恢复/容量基线/故障演练/final audit 中尚未在本机强制完成的发布前增强项，例如 Helm 工具链、Cosign/Syft、真实容量压测、真实故障注入和全量测试复跑；这些属于客户或 CI 发布环境应继续补证的生产化事项，不是当前本地闭环失败。
+
+## 8. GitHub Actions 发布候选门禁
+
+仓库新增 `.github/workflows/release-candidate.yml`，用于把“本地能跑通的收敛脚本”升级为“每次 push、pull_request 和手动发布候选都能复跑的工程门禁”。这条 workflow 的定位不是替代真实客户/预生产验收，而是提前发现源码、构建、Python Runtime 语法、Docker Compose 合同、生产化脚本和最终闭环审计的漂移。
+
+默认门禁包含：
+
+- 固定 `ubuntu-latest` runner、Temurin JDK 21、Python 3.11，避免旧 JDK 或旧 Python 造成误报。
+- 执行 `python -m compileall python-ai-runtime/src python-ai-runtime/tests`，只做源码编译检查，不启动 API、不连接数据库、不调用模型、不执行工具。
+- 执行 `./mvnw -B -DskipTests package`，验证 10 个 Maven 模块可以在 JDK 21 下完成发布候选打包。
+- 执行 `scripts/final-delivery-closure-check.ps1 -RunContainerizedDelivery -WriteEvidence`，默认只做静态/只读交付门禁和容器化合同检查，不启动真实业务服务。
+- 上传 `target/final-delivery-closure/*.json` 与 `target/final-platform-closure/*.json` 低敏证据，证据中不包含 token、secret、prompt、模型输出、SQL 行数据、对象正文或客户数据。
+
+手动触发 `workflow_dispatch` 时可以选择：
+
+- `run_full_tests`：复跑 Maven 与 Python 全量测试。默认关闭，因为它更耗时，也更容易受可选依赖下载速度影响。
+- `run_containerized_delivery`：是否执行容器化交付合同检查。默认开启；排查纯源码问题时可临时关闭。
+- `build_representative_images`：是否构建 gateway 与 Python Runtime 代表镜像。默认关闭；正式发布候选或 Dockerfile/镜像链路变更时建议开启。
+- `strict_release_gate`：是否把 warning 也视为失败。日常开发默认关闭；正式发布前或客户验收前建议开启。
+
+边界说明：
+
+- workflow 不运行 `-RunLiveSmoke`，因为真实只读 E2E 需要本地或预生产环境已经启动 Keycloak、gateway、Java 服务、Python Runtime、Redis、Kafka、Nacos、PostgreSQL 等组件。
+- workflow 不创建任务、不触发 data-sync worker、不执行 Agent 工具、不访问真实源端或目标端业务数据。
+- workflow 默认使用仓库 Dockerfile/Compose 中已经约定的 DaoCloud 镜像前缀；如果未来企业客户使用私有 Harbor，应在企业 CI/CD 中覆盖镜像源，而不是改动业务代码。
+
+推荐使用方式：
+
+```powershell
+# 日常提交由 push / pull_request 自动触发即可。
+
+# 发布候选前，手动触发 workflow_dispatch：
+# 1. 打开 run_full_tests；
+# 2. 打开 build_representative_images；
+# 3. 打开 strict_release_gate；
+# 4. 确认 warning 是否都属于客户/预生产环境才能补证的事项。
+```

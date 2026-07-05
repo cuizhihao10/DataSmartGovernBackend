@@ -1,0 +1,164 @@
+# DataSmart Govern 发布候选门禁
+#
+# 设计意图：
+# 1. 让仓库每次 push / pull_request 都具备一条可重复的工程交付证据链，而不是只依赖本机手动 smoke。
+# 2. 默认只运行安全、低副作用的检查：Java 编译打包、Python 语法编译、静态生产化门禁、容器化合同检查。
+# 3. 不在默认 CI 中启动真实 Keycloak/gateway/Java 服务/Python Runtime 全栈，也不触发 data-sync worker、Agent 工具执行或真实 E2E 写入链路。
+# 4. 真实只读 E2E 仍保留在本地 runbook 或后续客户/预生产环境中执行，因为它依赖 Docker Desktop、端口、OIDC 样例账号和本机服务状态。
+name: DataSmart Release Candidate Gate
+
+on:
+  push:
+    branches:
+      - master
+      - main
+  pull_request:
+    branches:
+      - master
+      - main
+  workflow_dispatch:
+    inputs:
+      run_full_tests:
+        description: "是否复跑 Maven 与 Python 全量测试；默认关闭以保持发布候选门禁快速、稳定。"
+        required: false
+        type: boolean
+        default: false
+      run_containerized_delivery:
+        description: "是否执行容器化交付合同检查；默认开启，但不会启动真实业务服务。"
+        required: false
+        type: boolean
+        default: true
+      build_representative_images:
+        description: "是否构建 gateway 与 Python Runtime 代表镜像；默认关闭以避免普通提交被镜像构建耗时阻塞。"
+        required: false
+        type: boolean
+        default: false
+      strict_release_gate:
+        description: "是否把 warning 也视为发布阻断；正式发布候选或客户验收前再开启。"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # 同一分支只保留最新一次门禁，避免连续 push 时旧门禁占用 runner。
+  group: datasmart-release-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-candidate:
+    name: Build And Delivery Gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # 固定 UTF-8，避免中文注释、中文 runbook、PowerShell 输出在 CI 中出现编码漂移。
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+      PYTHONUTF8: "1"
+      MAVEN_OPTS: "-Dfile.encoding=UTF-8 -Xmx2g"
+      # Dockerfile 与 Compose 已默认使用 DaoCloud 镜像前缀；这里保留同名环境标识，方便日志中明确 CI 遵循国内镜像策略。
+      DATASMART_DEFAULT_DOCKER_MIRROR: "docker.m.daocloud.io"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: python-ai-runtime/pyproject.toml
+
+      - name: Show Toolchain Versions
+        shell: pwsh
+        run: |
+          chmod +x ./mvnw
+          java -version
+          ./mvnw -version
+          python --version
+          docker --version
+          docker compose version
+          Write-Host "DataSmart Docker mirror baseline: $env:DATASMART_DEFAULT_DOCKER_MIRROR"
+
+      - name: Install Python Runtime Minimal Test Dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          # 默认安装 api/dev extra：覆盖 FastAPI、LangGraph 与测试框架，足够支撑语法编译和常规单元测试入口。
+          # RAG、MCP、Redis、Kafka、PostgreSQL、MinIO 等重依赖只在全量测试输入开启时安装，避免普通门禁过慢。
+          python -m pip install -e "python-ai-runtime[api,dev]"
+
+      - name: Compile Python Runtime Sources
+        shell: pwsh
+        run: |
+          # compileall 只检查 Python 源码是否可导入编译，不连接数据库、不启动 API、不调用模型、不执行工具。
+          python -m compileall python-ai-runtime/src python-ai-runtime/tests
+
+      - name: Build Java Reactor With JDK 21
+        shell: pwsh
+        run: |
+          # 这里执行 package 而不是直接全量 test，是为了让默认 CI 保持“发布候选快速门禁”定位。
+          # 如需完整测试证据，可在 workflow_dispatch 中打开 run_full_tests。
+          ./mvnw -B -DskipTests package
+
+      - name: Run Optional Full Maven Tests
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_full_tests }}
+        shell: pwsh
+        run: |
+          ./mvnw -B test
+
+      - name: Install Python Heavy Extras For Full Tests
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_full_tests }}
+        shell: pwsh
+        run: |
+          # 全量 Python 测试才安装重依赖，覆盖 RAG、对象存储、MCP、Redis/Kafka 客户端和 PostgreSQL/pgvector 适配层。
+          python -m pip install -e "python-ai-runtime[api,rag,kafka,redis,postgresql,object-store,mcp,dev]"
+
+      - name: Run Optional Full Python Tests
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_full_tests }}
+        shell: pwsh
+        run: |
+          python -m pytest python-ai-runtime/tests -q
+
+      - name: Run Final Delivery Closure Gate
+        shell: pwsh
+        run: |
+          $closureArgs = @("-WriteEvidence")
+
+          # push/pull_request 默认执行容器化交付合同检查；手动触发时允许临时关闭，便于排查纯源码问题。
+          if ("${{ github.event_name != 'workflow_dispatch' || inputs.run_containerized_delivery }}" -eq "true") {
+            $closureArgs += "-RunContainerizedDelivery"
+          }
+
+          # 代表镜像构建属于较重的交付证据，默认不打开；正式发布候选或镜像链路变更时再手动开启。
+          if ("${{ github.event_name == 'workflow_dispatch' && inputs.build_representative_images }}" -eq "true") {
+            $closureArgs += "-BuildContainerImages"
+          }
+
+          # strict 模式会把 warning 也视为失败，适合发布前最后一道门，而不是日常开发分支默认门禁。
+          if ("${{ github.event_name == 'workflow_dispatch' && inputs.strict_release_gate }}" -eq "true") {
+            $closureArgs += "-Strict"
+          }
+
+          & ./scripts/final-delivery-closure-check.ps1 @closureArgs
+
+      - name: Upload Low-Sensitive Closure Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: datasmart-final-delivery-closure-evidence
+          path: |
+            target/final-delivery-closure/*.json
+            target/final-platform-closure/*.json
+          if-no-files-found: warn
+          retention-days: 14
