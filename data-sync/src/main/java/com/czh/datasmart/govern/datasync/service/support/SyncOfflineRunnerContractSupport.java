@@ -42,6 +42,16 @@ public class SyncOfflineRunnerContractSupport {
     public static final String PAYLOAD_POLICY = "LOW_SENSITIVE_OFFLINE_RUNNER_CONTRACT_NO_SQL_NO_CREDENTIALS_NO_MAPPING_BODY";
 
     /**
+     * DataX-style 执行拓扑生成器。
+     *
+     * <p>该生成器没有外部依赖、没有状态，也不访问数据库或远端服务；它只把 Runner 合同中的低敏事实进一步翻译成
+     * Job/TaskGroup/Channel/Reader/Writer 拓扑。这里保持为普通对象，可以兼容既有无参构造测试，并且避免为纯函数辅助类
+     * 引入额外 Spring Bean 生命周期。</p>
+     */
+    private final SyncDataXExecutionContractSupport dataXExecutionContractSupport =
+            new SyncDataXExecutionContractSupport();
+
+    /**
      * 从面向 UI/Agent 的离线作业计划生成 Runner 合同。
      *
      * <p>该方法适合“模板阶段”使用：此时还没有具体 task/execution，所以合同中的 syncTaskId、executionId 可以为空。
@@ -71,6 +81,8 @@ public class SyncOfflineRunnerContractSupport {
         );
         SyncOfflineRunnerExecutionReport reportContract =
                 SyncOfflineRunnerContractPolicySupport.reportContract(plan.checkpointRequired());
+        SyncDataXJobExecutionContract dataXJobExecutionContract =
+                dataXExecutionContractSupport.buildFromOfflinePlan(plan, shardPlan, reportContract);
         String contractStatus = SyncOfflineRunnerContractPolicySupport.contractStatus(plan.offlineChannel(),
                 plan.planReady(), plan.approvalRequired(),
                 plan.dedicatedOfflineRunnerRequired(), plan.executableByMinimalBridge(), minimalEndToEndSupported,
@@ -111,6 +123,7 @@ public class SyncOfflineRunnerContractSupport {
                 plan.fieldMappingRunnableByMinimalBridge(),
                 shardPlan,
                 reportContract,
+                dataXJobExecutionContract,
                 copy(plan.issueCodes()),
                 copy(plan.failClosedReasons()),
                 copy(plan.recommendedActions()),
@@ -186,6 +199,22 @@ public class SyncOfflineRunnerContractSupport {
         );
         SyncOfflineRunnerExecutionReport reportContract =
                 SyncOfflineRunnerContractPolicySupport.reportContract(checkpointRequired);
+        String customSqlStatementPolicy = customSqlPolicy(syncMode, hasText(template.getCustomSqlConfig()));
+        SyncDataXJobExecutionContract dataXJobExecutionContract =
+                dataXExecutionContractSupport.buildFromBridgeFacts(
+                        template,
+                        workerPlan,
+                        fieldMappingContract,
+                        scopeContract,
+                        shardPlan,
+                        reportContract,
+                        minimalEndToEndSupported,
+                        dedicatedRunnerRequired,
+                        approvalRequired,
+                        checkpointRequired,
+                        taskLevelScheduleRequired,
+                        customSqlStatementPolicy,
+                        distinct(issueCodes));
         String contractStatus = SyncOfflineRunnerContractPolicySupport.contractStatus(offlineChannel, planReady,
                 approvalRequired,
                 dedicatedRunnerRequired, bridgeDispatchable, minimalEndToEndSupported, checkpointRequired, issueCodes);
@@ -221,11 +250,12 @@ public class SyncOfflineRunnerContractSupport {
                 dedicatedRunnerRequired,
                 bridgeDispatchable,
                 minimalEndToEndSupported,
-                customSqlPolicy(syncMode, hasText(template.getCustomSqlConfig())),
+                customSqlStatementPolicy,
                 hasText(template.getFieldMappingConfig()),
                 fieldMappingRunnable,
                 shardPlan,
                 reportContract,
+                dataXJobExecutionContract,
                 distinct(issueCodes),
                 SyncOfflineRunnerContractPolicySupport.failClosedReasons(offlineChannel, dedicatedRunnerRequired,
                         minimalEndToEndSupported, checkpointRequired, issueCodes),
@@ -243,6 +273,21 @@ public class SyncOfflineRunnerContractSupport {
                                                          List<String> issueCodes,
                                                          List<String> warnings) {
         SyncOfflineRunnerExecutionReport reportContract = SyncOfflineRunnerContractPolicySupport.reportContract(false);
+        SyncDataXJobExecutionContract dataXJobExecutionContract =
+                dataXExecutionContractSupport.buildFromBridgeFacts(
+                        null,
+                        workerPlan,
+                        null,
+                        null,
+                        shardPlan,
+                        reportContract,
+                        false,
+                        false,
+                        false,
+                        false,
+                        false,
+                        "UNKNOWN",
+                        issueCodes);
         return new SyncOfflineRunnerJobContract(
                 CONTRACT_VERSION,
                 "BLOCKED_BEFORE_RUNNER_CONTRACT",
@@ -278,6 +323,7 @@ public class SyncOfflineRunnerContractSupport {
                 false,
                 shardPlan == null ? SyncOfflineRunnerContractPolicySupport.emptyShardPlan() : shardPlan,
                 reportContract,
+                dataXJobExecutionContract,
                 distinct(issueCodes),
                 distinct(issueCodes),
                 List.of("补齐模板、任务、执行记录和 worker plan 上下文后再生成离线 Runner 合同"),

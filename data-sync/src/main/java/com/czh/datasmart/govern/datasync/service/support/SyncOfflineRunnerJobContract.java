@@ -56,6 +56,10 @@ import java.util.List;
  * @param fieldMappingRunnableByMinimalBridge 字段映射是否可被当前最小 bridge 直接执行。
  * @param shardPlan 分片计划摘要。
  * @param reportContract 执行报告合同。
+ * @param dataXJobExecutionContract DataX-style Job/TaskGroup/Channel/Reader/Writer 执行拓扑合同。
+ *                                  它把“未来执行器如何拆作业、如何选择 Reader/Writer、如何管理通道和安全策略”
+ *                                  固定成低敏结构，但仍不包含 SQL 正文、凭据、对象映射原文、字段映射原文、
+ *                                  过滤条件原文、checkpoint 原始值或行样本。
  * @param issueCodes 问题码。
  * @param failClosedReasons fail-closed 原因。
  * @param recommendedActions 推荐动作。
@@ -97,6 +101,7 @@ public record SyncOfflineRunnerJobContract(
         boolean fieldMappingRunnableByMinimalBridge,
         SyncOfflineRunnerShardPlan shardPlan,
         SyncOfflineRunnerExecutionReport reportContract,
+        SyncDataXJobExecutionContract dataXJobExecutionContract,
         List<String> issueCodes,
         List<String> failClosedReasons,
         List<String> recommendedActions,

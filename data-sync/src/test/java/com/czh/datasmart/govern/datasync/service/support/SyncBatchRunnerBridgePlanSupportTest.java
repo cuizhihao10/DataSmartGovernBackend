@@ -54,6 +54,11 @@ class SyncBatchRunnerBridgePlanSupportTest {
         assertThat(plan.getOfflineRunnerContract().contractStatus())
                 .isEqualTo("MINIMAL_BRIDGE_END_TO_END_SUPPORTED");
         assertThat(plan.getOfflineRunnerContract().shardPlan().shardKind()).isEqualTo("SINGLE_OBJECT");
+        assertThat(plan.getOfflineRunnerContract().dataXJobExecutionContract().topologyStatus())
+                .isEqualTo("MINIMAL_SINGLE_CHANNEL_RUN_ONCE_TOPOLOGY");
+        assertThat(plan.getOfflineRunnerContract().dataXJobExecutionContract().taskGroups().get(0)
+                .channels().get(0).writerContract().writeStrategy())
+                .isEqualTo("APPEND");
         assertThat(plan.getIssueCodes()).containsExactly("RETRY_POLICY_NOT_DECLARED");
         assertThat(plan.getNextActions()).contains("DISPATCH_TO_CONNECTOR_RUNTIME_RUN_ONCE");
     }
@@ -166,6 +171,10 @@ class SyncBatchRunnerBridgePlanSupportTest {
         assertThat(plan.getOfflineRunnerContract().contractStatus())
                 .isEqualTo("WAITING_APPROVAL_BEFORE_RUNNER_DISPATCH");
         assertThat(plan.getOfflineRunnerContract().shardPlan().shardKind()).isEqualTo("OBJECT_FAN_OUT_EXPLICIT");
+        assertThat(plan.getOfflineRunnerContract().dataXJobExecutionContract().jobKind())
+                .isEqualTo("MULTI_OBJECT_FAN_OUT_JOB");
+        assertThat(plan.getOfflineRunnerContract().dataXJobExecutionContract().estimatedChannelCount())
+                .isEqualTo(2);
         assertThat(plan.getNextActions()).contains("DO_NOT_DISPATCH_BATCH_RUNNER");
     }
 

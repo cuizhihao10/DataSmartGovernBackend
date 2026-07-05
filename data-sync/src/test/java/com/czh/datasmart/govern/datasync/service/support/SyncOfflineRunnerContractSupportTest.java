@@ -48,6 +48,18 @@ class SyncOfflineRunnerContractSupportTest {
         assertThat(contract.shardPlan().shardKind()).isEqualTo("SINGLE_OBJECT");
         assertThat(contract.shardPlan().estimatedShardCount()).isEqualTo(1);
         assertThat(contract.reportContract().lowCardinalityMetricsRequired()).isTrue();
+        assertThat(contract.dataXJobExecutionContract().topologyStatus())
+                .isEqualTo("MINIMAL_SINGLE_CHANNEL_RUN_ONCE_TOPOLOGY");
+        assertThat(contract.dataXJobExecutionContract().jobKind()).isEqualTo("SINGLE_OBJECT_JOB");
+        assertThat(contract.dataXJobExecutionContract().estimatedTaskGroupCount()).isEqualTo(1);
+        assertThat(contract.dataXJobExecutionContract().estimatedChannelCount()).isEqualTo(1);
+        assertThat(contract.dataXJobExecutionContract().taskGroups()).hasSize(1);
+        assertThat(contract.dataXJobExecutionContract().taskGroups().get(0).channels()).hasSize(1);
+        assertThat(contract.dataXJobExecutionContract().taskGroups().get(0).channels().get(0)
+                .readerContract().fetchPolicy())
+                .isEqualTo("LIMIT_OFFSET_WITH_STABLE_ORDER_AND_MAX_BATCH_GUARD");
+        assertThat(contract.dataXJobExecutionContract().runtimeSafetyPolicy().forbiddenPayloads())
+                .contains("rawSql", "connectionUrl", "rowPayload");
     }
 
     @Test
@@ -65,6 +77,12 @@ class SyncOfflineRunnerContractSupportTest {
                 .contains("CHECKPOINT_HANDOFF", "TASK_LEVEL_SCHEDULE_WINDOW");
         assertThat(contract.reportContract().checkpointReportPolicy())
                 .isEqualTo("CHECKPOINT_REF_OR_DIGEST_ONLY_NO_RAW_VALUE");
+        assertThat(contract.dataXJobExecutionContract().topologyStatus())
+                .isEqualTo("DATAX_TOPOLOGY_REQUIRES_CHECKPOINT_HANDOFF");
+        assertThat(contract.dataXJobExecutionContract().requiredRunnerCapabilities())
+                .contains("DURABLE_CHECKPOINT_HANDOFF", "DATAX_JOB_TASKGROUP_CHANNEL_TOPOLOGY");
+        assertThat(contract.dataXJobExecutionContract().taskGroups().get(0).schedulingPolicy())
+                .isEqualTo("TASK_LEVEL_SCHEDULE_WINDOW_REQUIRED");
     }
 
     @Test
@@ -87,6 +105,10 @@ class SyncOfflineRunnerContractSupportTest {
         assertThat(contract.customSqlStatementPolicy()).isEqualTo("STATEMENT_REF_DECLARED_LOW_SENSITIVE");
         assertThat(contract.shardPlan().requiredRunnerCapabilities())
                 .contains("MANAGED_STATEMENT_REF_OR_READ_ONLY_SQL_EXECUTION");
+        assertThat(contract.dataXJobExecutionContract().jobKind()).isEqualTo("CUSTOM_SQL_RESULT_SET_JOB");
+        assertThat(contract.dataXJobExecutionContract().taskGroups().get(0).channels().get(0)
+                .readerContract().customSqlPolicy())
+                .isEqualTo("STATEMENT_REF_DECLARED_LOW_SENSITIVE");
         assertThat(contract.toString())
                 .doesNotContain("select id")
                 .doesNotContain("customer-active")
