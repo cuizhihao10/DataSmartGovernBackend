@@ -47,11 +47,14 @@ public class SyncOfflineRunnerDispatchService {
     private static final String OFFLINE_RUNNER_CHECKPOINT_HANDOFF_REQUIRED =
             "OFFLINE_RUNNER_CHECKPOINT_HANDOFF_REQUIRED";
     private static final String DEDICATED_OFFLINE_RUNNER_REQUIRED = "DEDICATED_OFFLINE_RUNNER_REQUIRED";
+    private static final String OFFLINE_RUNNER_ADAPTER_DISPATCH_FAILED = "OFFLINE_RUNNER_ADAPTER_DISPATCH_FAILED";
+    private static final String OFFLINE_RUNNER_ADAPTER_RESULT_EMPTY = "OFFLINE_RUNNER_ADAPTER_RESULT_EMPTY";
     private static final String OFFLINE_RUNNER_POLICY_NOT_READY = "OFFLINE_RUNNER_POLICY_NOT_READY";
     private static final String USE_REALTIME_CDC_PIPELINE = "USE_REALTIME_CDC_PIPELINE";
 
     private final SyncBatchRunnerBridgePlanSupport bridgePlanSupport;
     private final SyncBatchRunOnceDispatchService runOnceDispatchService;
+    private final SyncOfflineRunnerAdapterRegistry runnerAdapterRegistry;
     private final SyncExecutionLifecycleSupport lifecycleSupport;
     private final DataSyncTaskManagementReceiptPublisher receiptPublisher;
 
@@ -112,6 +115,11 @@ public class SyncOfflineRunnerDispatchService {
                     contract);
         }
         if (!contract.minimalBridgeEndToEndSupported()) {
+            SyncOfflineRunnerAdapter dedicatedRunnerAdapter = runnerAdapterRegistry.select(contract).orElse(null);
+            if (dedicatedRunnerAdapter != null) {
+                return dispatchDedicatedRunner(dedicatedRunnerAdapter, task, execution, template, workerPlan,
+                        safeActorContext, bridgePlan, contract);
+            }
             return failUnsupportedContractBeforeDelegate(task, execution, safeActorContext, bridgePlan, contract);
         }
 
@@ -133,6 +141,50 @@ public class SyncOfflineRunnerDispatchService {
         if (execution == null || task == null || template == null || workerPlan == null) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
                     "离线 Runner 调度缺少 execution/task/template/workerPlan 上下文，无法安全推进状态机");
+        }
+    }
+
+    /**
+     * 将合同派发给专用离线 Runner adapter。
+     *
+     * <p>这是 data-sync 从“只能识别需要专用 Runner”走向“可以真正接入专用 Runner”的最小执行循环。
+     * 当前仓库还没有注册真实 DataX adapter 时，本方法不会被调用；一旦后续新增 adapter Bean，
+     * 调度门面就会把 bridge plan、低敏 Runner 合同、execution、task、template 和 actor 上下文统一交给 adapter。</p>
+     *
+     * <p>这里不直接做 DataX job 拼装，原因有两个：</p>
+     * <p>1. 拼装 reader/writer、并发、限流、checkpoint 和回调协议属于具体 runner 实现，不能写死在调度门面；</p>
+     * <p>2. 调度门面应该保持稳定，只负责选择执行路径、处理 adapter 异常、转换低敏结果和 fail-closed。</p>
+     */
+    private SyncOfflineRunnerDispatchResult dispatchDedicatedRunner(SyncOfflineRunnerAdapter adapter,
+                                                                    SyncTask task,
+                                                                    SyncExecution execution,
+                                                                    SyncTemplate template,
+                                                                    SyncWorkerExecutionPlanView workerPlan,
+                                                                    SyncActorContext actorContext,
+                                                                    SyncBatchRunnerBridgePlan bridgePlan,
+                                                                    SyncOfflineRunnerJobContract contract) {
+        SyncOfflineRunnerExecutionRequest request = new SyncOfflineRunnerExecutionRequest(
+                bridgePlan, contract, execution, task, template, workerPlan, actorContext);
+        try {
+            SyncOfflineRunnerAdapterResult adapterResult = adapter.dispatch(request);
+            if (adapterResult == null) {
+                return failBeforeDelegate(task, execution, actorContext,
+                        "DEDICATED_RUNNER_RESULT_EMPTY",
+                        contract.contractStatus(),
+                        OFFLINE_RUNNER_ADAPTER_RESULT_EMPTY,
+                        "专用离线 Runner adapter 未返回低敏派发结果，本次执行按 fail-closed 终止",
+                        mergeIssues(bridgePlan, contract, OFFLINE_RUNNER_ADAPTER_RESULT_EMPTY),
+                        contract);
+            }
+            return fromDedicatedRunnerResult(adapterResult, contract);
+        } catch (RuntimeException exception) {
+            return failBeforeDelegate(task, execution, actorContext,
+                    "DEDICATED_RUNNER_DISPATCH_FAILED",
+                    contract.contractStatus(),
+                    OFFLINE_RUNNER_ADAPTER_DISPATCH_FAILED,
+                    "专用离线 Runner adapter 派发失败，本次执行按低敏 fail-closed 终止，异常详情请查看受控服务端日志",
+                    mergeIssues(bridgePlan, contract, OFFLINE_RUNNER_ADAPTER_DISPATCH_FAILED),
+                    contract);
         }
     }
 
@@ -216,6 +268,28 @@ public class SyncOfflineRunnerDispatchService {
     }
 
     /**
+     * 将专用 Runner adapter 结果转换为 worker loop 能理解的低敏调度结果。
+     *
+     * <p>注意：adapter 返回 {@code dispatched=true} 只表示专用 Runner 已经接收或排队任务，
+     * 不等同于数据同步已完成。对于异步 DataX-style Runner，后续应该通过 callback、Kafka 事件或执行报告继续推进
+     * complete/fail/checkpoint，而不是在 worker loop 本次调用里假装同步完成。</p>
+     */
+    private SyncOfflineRunnerDispatchResult fromDedicatedRunnerResult(SyncOfflineRunnerAdapterResult adapterResult,
+                                                                      SyncOfflineRunnerJobContract contract) {
+        return new SyncOfflineRunnerDispatchResult(
+                adapterResult.dispatched(),
+                adapterResult.completed(),
+                adapterResult.failed(),
+                adapterResult.dispatchStatus(),
+                adapterResult.executionId() == null ? contract.executionId() : adapterResult.executionId(),
+                adapterResult.runnerStatus(),
+                contract.contractStatus(),
+                mergeIssueCodes(adapterResult.issueCodes(), contract.issueCodes(), adapterResult.adapterCode()),
+                SyncOfflineRunnerDispatchResult.PAYLOAD_POLICY
+        );
+    }
+
+    /**
      * 将最小 run-once 结果包一层 Runner 合同状态。
      */
     private SyncOfflineRunnerDispatchResult fromRunOnceResult(SyncBatchRunOnceDispatchResult runOnceResult,
@@ -283,7 +357,9 @@ public class SyncOfflineRunnerDispatchService {
         List<String> values = new ArrayList<>();
         values.addAll(first == null ? List.of() : first);
         values.addAll(second == null ? List.of() : second);
-        values.add(issueCode);
+        if (hasText(issueCode)) {
+            values.add(issueCode);
+        }
         return distinct(values);
     }
 

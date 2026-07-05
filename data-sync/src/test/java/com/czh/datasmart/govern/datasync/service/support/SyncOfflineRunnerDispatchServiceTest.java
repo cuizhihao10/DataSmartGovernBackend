@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -95,6 +96,67 @@ class SyncOfflineRunnerDispatchServiceTest {
     }
 
     @Test
+    void scheduledBatchShouldUseDedicatedAdapterWhenRunnerIsRegistered() {
+        SyncBatchRunOnceDispatchService runOnceDispatchService = mock(SyncBatchRunOnceDispatchService.class);
+        SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
+        DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
+        List<SyncOfflineRunnerExecutionRequest> capturedRequests = new ArrayList<>();
+        SyncOfflineRunnerAdapter adapter = new SyncOfflineRunnerAdapter() {
+            @Override
+            public String adapterCode() {
+                return "TEST_DATAX_STYLE_RUNNER";
+            }
+
+            @Override
+            public boolean supports(SyncOfflineRunnerJobContract contract) {
+                return contract != null
+                        && contract.offlineChannel()
+                        && contract.checkpointRequired()
+                        && contract.dedicatedOfflineRunnerRequired();
+            }
+
+            @Override
+            public SyncOfflineRunnerAdapterResult dispatch(SyncOfflineRunnerExecutionRequest request) {
+                capturedRequests.add(request);
+                return new SyncOfflineRunnerAdapterResult(
+                        true,
+                        false,
+                        false,
+                        "DEDICATED_RUNNER_DISPATCHED",
+                        request.execution().getId(),
+                        "QUEUED",
+                        adapterCode(),
+                        List.of("DEDICATED_RUNNER_ACCEPTED"),
+                        SyncOfflineRunnerAdapterResult.PAYLOAD_POLICY
+                );
+            }
+        };
+        SyncOfflineRunnerDispatchService service = service(runOnceDispatchService, lifecycleSupport,
+                receiptPublisher, List.of(adapter));
+        SyncExecution execution = execution("SCHEDULED_BATCH");
+        SyncTask task = task();
+        task.setScheduleConfig("{\"cron\":\"0 0 * * * ?\"}");
+        SyncTemplate template = template("SCHEDULED_BATCH");
+        SyncWorkerExecutionPlanView workerPlan = workerPlan("SCHEDULED_BATCH", true, false, false);
+
+        SyncOfflineRunnerDispatchResult result =
+                service.dispatchOffline(execution, task, template, workerPlan, actor());
+
+        assertThat(result.dispatched()).isTrue();
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failed()).isFalse();
+        assertThat(result.dispatchStatus()).isEqualTo("DEDICATED_RUNNER_DISPATCHED");
+        assertThat(result.remoteRunStatus()).isEqualTo("QUEUED");
+        assertThat(result.issueCodes()).contains("DEDICATED_RUNNER_ACCEPTED", "TEST_DATAX_STYLE_RUNNER");
+        assertThat(capturedRequests).hasSize(1);
+        assertThat(capturedRequests.get(0).runnerContract().checkpointRequired()).isTrue();
+        assertThat(capturedRequests.get(0).bridgePlan().getOfflineRunnerContract()).isNotNull();
+        verify(runOnceDispatchService, never()).dispatchPreparedRunOnce(any(), any(), any(), any());
+        verify(lifecycleSupport, never()).failExecution(any(), any(), any(), any());
+        verify(receiptPublisher, never()).publishFailed(any(), any(), any(), any(), any());
+    }
+
+    @Test
     void customSqlShouldFailForApprovalWithoutLeakingSqlText() {
         SyncBatchRunOnceDispatchService runOnceDispatchService = mock(SyncBatchRunOnceDispatchService.class);
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
@@ -130,12 +192,20 @@ class SyncOfflineRunnerDispatchServiceTest {
     private SyncOfflineRunnerDispatchService service(SyncBatchRunOnceDispatchService runOnceDispatchService,
                                                      SyncExecutionLifecycleSupport lifecycleSupport,
                                                      DataSyncTaskManagementReceiptPublisher receiptPublisher) {
+        return service(runOnceDispatchService, lifecycleSupport, receiptPublisher, List.of());
+    }
+
+    private SyncOfflineRunnerDispatchService service(SyncBatchRunOnceDispatchService runOnceDispatchService,
+                                                     SyncExecutionLifecycleSupport lifecycleSupport,
+                                                     DataSyncTaskManagementReceiptPublisher receiptPublisher,
+                                                     List<SyncOfflineRunnerAdapter> adapters) {
         SyncBatchRunnerBridgePlanSupport bridgePlanSupport = new SyncBatchRunnerBridgePlanSupport(
                 new SyncFieldMappingExecutionContractSupport(objectMapper),
                 new SyncTemplateScopeContractSupport(objectMapper),
                 new SyncOfflineRunnerContractSupport());
+        SyncOfflineRunnerAdapterRegistry runnerAdapterRegistry = new SyncOfflineRunnerAdapterRegistry(adapters);
         return new SyncOfflineRunnerDispatchService(bridgePlanSupport, runOnceDispatchService,
-                lifecycleSupport, receiptPublisher);
+                runnerAdapterRegistry, lifecycleSupport, receiptPublisher);
     }
 
     private void assertFailRequest(SyncExecutionLifecycleSupport lifecycleSupport, String expectedCode) {
