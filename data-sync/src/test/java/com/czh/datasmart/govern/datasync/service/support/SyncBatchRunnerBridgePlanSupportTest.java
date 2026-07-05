@@ -51,6 +51,9 @@ class SyncBatchRunnerBridgePlanSupportTest {
         assertThat(plan.getSourceObjectLocator()).isEqualTo("ods.customer");
         assertThat(plan.getTargetObjectLocator()).isEqualTo("dwd.customer");
         assertThat(plan.getFieldMappingContract().getSelectedColumns()).containsExactly("id", "name");
+        assertThat(plan.getOfflineRunnerContract().contractStatus())
+                .isEqualTo("MINIMAL_BRIDGE_END_TO_END_SUPPORTED");
+        assertThat(plan.getOfflineRunnerContract().shardPlan().shardKind()).isEqualTo("SINGLE_OBJECT");
         assertThat(plan.getIssueCodes()).containsExactly("RETRY_POLICY_NOT_DECLARED");
         assertThat(plan.getNextActions()).contains("DISPATCH_TO_CONNECTOR_RUNTIME_RUN_ONCE");
     }
@@ -111,6 +114,9 @@ class SyncBatchRunnerBridgePlanSupportTest {
 
         assertThat(plan.isDispatchable()).isFalse();
         assertThat(plan.getIssueCodes()).contains("SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE");
+        assertThat(plan.getOfflineRunnerContract().contractStatus())
+                .isEqualTo("WAITING_APPROVAL_BEFORE_RUNNER_DISPATCH");
+        assertThat(plan.getOfflineRunnerContract().shardPlan().shardKind()).isEqualTo("OBJECT_FAN_OUT_EXPLICIT");
         assertThat(plan.getNextActions()).contains("DO_NOT_DISPATCH_BATCH_RUNNER");
     }
 

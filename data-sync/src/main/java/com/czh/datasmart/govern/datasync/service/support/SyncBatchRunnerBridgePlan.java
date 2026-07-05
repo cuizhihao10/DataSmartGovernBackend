@@ -141,6 +141,16 @@ public class SyncBatchRunnerBridgePlan {
     private final SyncFieldMappingExecutionContract fieldMappingContract;
 
     /**
+     * 离线 Runner 作业合同。
+     *
+     * <p>该字段是本阶段新增的“执行器调度面低敏合同”。它比普通 workerPlan 更接近未来专用 DataX-style Runner，
+     * 但仍然不包含 SQL 正文、连接凭据、对象映射原文、字段映射原文、过滤条件、分区条件或 checkpoint 原始值。
+     * 现有最小 run-once bridge 仍只读取本类中原有的对象定位和字段映射字段；后续真正接入专用 Runner 时，
+     * 可以优先消费该合同判断是否需要对象 fan-out、调度窗口、checkpoint handoff、审批和低敏执行报告。</p>
+     */
+    private final SyncOfflineRunnerJobContract offlineRunnerContract;
+
+    /**
      * 增量字段。
      *
      * <p>它是字段名而不是 checkpoint 值；真实水位值仍由 checkpoint 表或执行器回调维护。</p>
@@ -201,6 +211,7 @@ public class SyncBatchRunnerBridgePlan {
                                      String sourceObjectLocator,
                                      String targetObjectLocator,
                                      SyncFieldMappingExecutionContract fieldMappingContract,
+                                     SyncOfflineRunnerJobContract offlineRunnerContract,
                                      String incrementalField,
                                      Long previousRecordsRead,
                                      Long previousRecordsWritten,
@@ -227,6 +238,7 @@ public class SyncBatchRunnerBridgePlan {
         this.sourceObjectLocator = sourceObjectLocator;
         this.targetObjectLocator = targetObjectLocator;
         this.fieldMappingContract = fieldMappingContract;
+        this.offlineRunnerContract = offlineRunnerContract;
         this.incrementalField = incrementalField;
         this.previousRecordsRead = previousRecordsRead;
         this.previousRecordsWritten = previousRecordsWritten;

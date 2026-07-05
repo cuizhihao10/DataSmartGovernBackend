@@ -46,6 +46,7 @@ public class SyncBatchRunnerBridgePlanSupport {
 
     private final SyncFieldMappingExecutionContractSupport fieldMappingExecutionContractSupport;
     private final SyncTemplateScopeContractSupport scopeContractSupport;
+    private final SyncOfflineRunnerContractSupport offlineRunnerContractSupport;
 
     /**
      * 兼容既有单元测试的构造器。
@@ -55,7 +56,8 @@ public class SyncBatchRunnerBridgePlanSupport {
      * {@link SyncTemplateScopeContractSupport}。生产环境仍优先走下面的 Spring 注入构造器，保证 ObjectMapper 等依赖可统一管理。</p>
      */
     public SyncBatchRunnerBridgePlanSupport(SyncFieldMappingExecutionContractSupport fieldMappingExecutionContractSupport) {
-        this(fieldMappingExecutionContractSupport, new SyncTemplateScopeContractSupport());
+        this(fieldMappingExecutionContractSupport, new SyncTemplateScopeContractSupport(),
+                new SyncOfflineRunnerContractSupport());
     }
 
     /**
@@ -66,9 +68,11 @@ public class SyncBatchRunnerBridgePlanSupport {
      */
     @Autowired
     public SyncBatchRunnerBridgePlanSupport(SyncFieldMappingExecutionContractSupport fieldMappingExecutionContractSupport,
-                                            SyncTemplateScopeContractSupport scopeContractSupport) {
+                                            SyncTemplateScopeContractSupport scopeContractSupport,
+                                            SyncOfflineRunnerContractSupport offlineRunnerContractSupport) {
         this.fieldMappingExecutionContractSupport = fieldMappingExecutionContractSupport;
         this.scopeContractSupport = scopeContractSupport;
+        this.offlineRunnerContractSupport = offlineRunnerContractSupport;
     }
 
     /**
@@ -88,7 +92,7 @@ public class SyncBatchRunnerBridgePlanSupport {
         List<String> warnings = new ArrayList<>();
         if (execution == null || task == null || template == null || workerPlan == null) {
             issueCodes.add("BRIDGE_INPUT_CONTEXT_MISSING");
-            return blockedPlan(execution, task, template, null, issueCodes, warnings);
+            return blockedPlan(execution, task, template, workerPlan, null, null, issueCodes, warnings);
         }
 
         issueCodes.addAll(workerPlan.issueCodes());
@@ -137,8 +141,12 @@ public class SyncBatchRunnerBridgePlanSupport {
         List<String> distinctIssues = distinct(issueCodes);
         List<String> distinctWarnings = distinct(warnings);
         if (!blockingIssues(distinctIssues).isEmpty()) {
-            return blockedPlan(execution, task, template, fieldMappingContract, distinctIssues, distinctWarnings);
+            return blockedPlan(execution, task, template, workerPlan, fieldMappingContract, scopeContract,
+                    distinctIssues, distinctWarnings);
         }
+        SyncOfflineRunnerJobContract offlineRunnerContract = offlineRunnerContractSupport.buildFromBridgeFacts(
+                execution, task, template, workerPlan, fieldMappingContract, scopeContract,
+                distinctIssues, distinctWarnings, true);
 
         return new SyncBatchRunnerBridgePlan(
                 true,
@@ -160,6 +168,7 @@ public class SyncBatchRunnerBridgePlanSupport {
                 objectLocator(template.getSourceSchemaName(), template.getSourceObjectName()),
                 objectLocator(template.getTargetSchemaName(), template.getTargetObjectName()),
                 fieldMappingContract,
+                offlineRunnerContract,
                 template.getIncrementalField(),
                 zeroIfNull(execution.getRecordsRead()),
                 zeroIfNull(execution.getRecordsWritten()),
@@ -178,9 +187,14 @@ public class SyncBatchRunnerBridgePlanSupport {
     private SyncBatchRunnerBridgePlan blockedPlan(SyncExecution execution,
                                                   SyncTask task,
                                                   SyncTemplate template,
+                                                  SyncWorkerExecutionPlanView workerPlan,
                                                   SyncFieldMappingExecutionContract fieldMappingContract,
+                                                  SyncTemplateScopeContract scopeContract,
                                                   List<String> issueCodes,
                                                   List<String> warnings) {
+        SyncOfflineRunnerJobContract offlineRunnerContract = offlineRunnerContractSupport.buildFromBridgeFacts(
+                execution, task, template, workerPlan, fieldMappingContract, scopeContract,
+                issueCodes, warnings, false);
         return new SyncBatchRunnerBridgePlan(
                 false,
                 "BLOCKED",
@@ -201,6 +215,7 @@ public class SyncBatchRunnerBridgePlanSupport {
                 template == null ? null : objectLocator(template.getSourceSchemaName(), template.getSourceObjectName()),
                 template == null ? null : objectLocator(template.getTargetSchemaName(), template.getTargetObjectName()),
                 fieldMappingContract,
+                offlineRunnerContract,
                 template == null ? null : template.getIncrementalField(),
                 zeroIfNull(execution == null ? null : execution.getRecordsRead()),
                 zeroIfNull(execution == null ? null : execution.getRecordsWritten()),
