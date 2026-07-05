@@ -7,11 +7,13 @@
 package com.czh.datasmart.govern.datasync.service.support;
 
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCompleteRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanView;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
 import com.czh.datasmart.govern.datasync.support.SyncExecutionState;
 import com.czh.datasmart.govern.datasync.support.SyncTriggerType;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -27,6 +29,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -157,6 +160,81 @@ class SyncOfflineRunnerDispatchServiceTest {
     }
 
     @Test
+    void objectListFullModeShouldFanOutObjectsSeriallyAndCompleteOnce() {
+        SyncBatchRunOnceDispatchService runOnceDispatchService = mock(SyncBatchRunOnceDispatchService.class);
+        SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
+        DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
+        SyncOfflineRunnerDispatchService service = service(runOnceDispatchService, lifecycleSupport, receiptPublisher);
+        SyncExecution execution = execution("FULL");
+        SyncTask task = task();
+        SyncTemplate template = objectListTemplate("FULL");
+        SyncWorkerExecutionPlanView workerPlan = workerPlan("FULL", false, false, false);
+        when(runOnceDispatchService.executePreparedRunOnceRemoteOnly(any(SyncBatchRunnerBridgePlan.class),
+                any(SyncExecution.class), eq(task), any(SyncActorContext.class)))
+                .thenReturn(remoteComplete(3L, 3L), remoteComplete(4L, 4L));
+
+        SyncOfflineRunnerDispatchResult result =
+                service.dispatchOffline(execution, task, template, workerPlan, actor());
+
+        assertThat(result.dispatched()).isTrue();
+        assertThat(result.completed()).isTrue();
+        assertThat(result.failed()).isFalse();
+        assertThat(result.dispatchStatus()).isEqualTo("OBJECT_LIST_SERIAL_FAN_OUT_COMPLETED");
+        assertThat(result.remoteRunStatus()).isEqualTo("OBJECT_LIST_ALL_OBJECTS_COMPLETED");
+
+        ArgumentCaptor<SyncBatchRunnerBridgePlan> bridgePlanCaptor =
+                ArgumentCaptor.forClass(SyncBatchRunnerBridgePlan.class);
+        verify(runOnceDispatchService, times(2)).executePreparedRunOnceRemoteOnly(
+                bridgePlanCaptor.capture(), any(SyncExecution.class), eq(task), any(SyncActorContext.class));
+        assertThat(bridgePlanCaptor.getAllValues())
+                .extracting(SyncBatchRunnerBridgePlan::getSourceObjectLocator)
+                .containsExactly("ods.orders", "ods.customers");
+        assertThat(bridgePlanCaptor.getAllValues())
+                .extracting(SyncBatchRunnerBridgePlan::getTargetObjectLocator)
+                .containsExactly("dwd.dwd_orders", "dwd.dwd_customers");
+
+        ArgumentCaptor<SyncExecutionCompleteRequest> completeCaptor =
+                ArgumentCaptor.forClass(SyncExecutionCompleteRequest.class);
+        verify(lifecycleSupport).completeExecution(eq(task), eq(execution),
+                completeCaptor.capture(), any(SyncActorContext.class));
+        assertThat(completeCaptor.getValue().getRecordsRead()).isEqualTo(7L);
+        assertThat(completeCaptor.getValue().getRecordsWritten()).isEqualTo(7L);
+        verify(receiptPublisher).publishComplete(eq(task), eq(execution),
+                any(SyncActorContext.class), any(DatasourceRunOnceResponse.class));
+        verify(lifecycleSupport, never()).failExecution(any(), any(), any(), any());
+    }
+
+    @Test
+    void objectListShouldStopLaterObjectsAndFailWholeExecutionWhenOneObjectFails() {
+        SyncBatchRunOnceDispatchService runOnceDispatchService = mock(SyncBatchRunOnceDispatchService.class);
+        SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
+        DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
+        SyncOfflineRunnerDispatchService service = service(runOnceDispatchService, lifecycleSupport, receiptPublisher);
+        SyncExecution execution = execution("FULL");
+        SyncTask task = task();
+        SyncTemplate template = objectListTemplate("FULL");
+        SyncWorkerExecutionPlanView workerPlan = workerPlan("FULL", false, false, false);
+        when(runOnceDispatchService.executePreparedRunOnceRemoteOnly(any(SyncBatchRunnerBridgePlan.class),
+                any(SyncExecution.class), eq(task), any(SyncActorContext.class)))
+                .thenReturn(remoteFailed("REMOTE_OBJECT_BATCH_FAILED"));
+
+        SyncOfflineRunnerDispatchResult result =
+                service.dispatchOffline(execution, task, template, workerPlan, actor());
+
+        assertThat(result.dispatched()).isTrue();
+        assertThat(result.completed()).isFalse();
+        assertThat(result.failed()).isTrue();
+        assertThat(result.dispatchStatus()).isEqualTo("OBJECT_LIST_CHILD_RUN_ONCE_FAILED");
+        assertThat(result.issueCodes()).contains("OBJECT_LIST_CHILD_RUN_ONCE_FAILED");
+        verify(runOnceDispatchService, times(1)).executePreparedRunOnceRemoteOnly(
+                any(SyncBatchRunnerBridgePlan.class), any(SyncExecution.class), eq(task), any(SyncActorContext.class));
+        assertFailRequest(lifecycleSupport, "REMOTE_OBJECT_BATCH_FAILED");
+        verify(lifecycleSupport, never()).completeExecution(any(), any(), any(), any());
+        verify(receiptPublisher).publishFailed(eq(task), eq(execution), any(SyncActorContext.class),
+                eq("REMOTE_OBJECT_BATCH_FAILED"), any());
+    }
+
+    @Test
     void customSqlShouldFailForApprovalWithoutLeakingSqlText() {
         SyncBatchRunOnceDispatchService runOnceDispatchService = mock(SyncBatchRunOnceDispatchService.class);
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
@@ -205,8 +283,14 @@ class SyncOfflineRunnerDispatchServiceTest {
                 new SyncTemplateScopeContractSupport(objectMapper),
                 new SyncOfflineRunnerContractSupport());
         SyncOfflineRunnerAdapterRegistry runnerAdapterRegistry = new SyncOfflineRunnerAdapterRegistry(adapters);
+        SyncObjectListFanOutDispatchService objectListFanOutDispatchService = new SyncObjectListFanOutDispatchService(
+                new SyncObjectMappingExecutionContractSupport(objectMapper),
+                bridgePlanSupport,
+                runOnceDispatchService,
+                lifecycleSupport,
+                receiptPublisher);
         return new SyncOfflineRunnerDispatchService(bridgePlanSupport, runOnceDispatchService,
-                runnerAdapterRegistry, lifecycleSupport, receiptPublisher);
+                runnerAdapterRegistry, objectListFanOutDispatchService, lifecycleSupport, receiptPublisher);
     }
 
     private void assertFailRequest(SyncExecutionLifecycleSupport lifecycleSupport, String expectedCode) {
@@ -273,6 +357,62 @@ class SyncOfflineRunnerDispatchServiceTest {
                 """);
         template.setEnabled(true);
         return template;
+    }
+
+    private SyncTemplate objectListTemplate(String syncMode) {
+        SyncTemplate template = template(syncMode);
+        template.setSyncScopeType("OBJECT_LIST");
+        template.setSourceObjectName(null);
+        template.setTargetObjectName(null);
+        template.setObjectMappingConfig("""
+                {
+                  "mappings": [
+                    {"sourceObject": "orders", "targetObject": "dwd_orders"},
+                    {"sourceObject": "customers", "targetObject": "dwd_customers"}
+                  ]
+                }
+                """);
+        return template;
+    }
+
+    private SyncBatchRunOnceRemoteExecutionResult remoteComplete(Long recordsRead, Long recordsWritten) {
+        return new SyncBatchRunOnceRemoteExecutionResult(
+                true,
+                true,
+                false,
+                "DISPATCHED_AND_COMPLETED",
+                88L,
+                "SOURCE_EXHAUSTED_COMPLETE_REQUIRED",
+                recordsRead,
+                recordsWritten,
+                0L,
+                null,
+                null,
+                null,
+                false,
+                List.of(),
+                SyncBatchRunOnceRemoteExecutionResult.PAYLOAD_POLICY
+        );
+    }
+
+    private SyncBatchRunOnceRemoteExecutionResult remoteFailed(String errorCode) {
+        return new SyncBatchRunOnceRemoteExecutionResult(
+                true,
+                false,
+                true,
+                "DISPATCHED_AND_FAILED_BY_REMOTE_RESULT",
+                88L,
+                "REMOTE_FAILED",
+                0L,
+                0L,
+                0L,
+                "CONNECTOR_RUNTIME_RUN_ONCE_FAILED",
+                errorCode,
+                "datasource-management run-once 报告子对象失败",
+                false,
+                List.of(errorCode),
+                SyncBatchRunOnceRemoteExecutionResult.PAYLOAD_POLICY
+        );
     }
 
     private SyncWorkerExecutionPlanView workerPlan(String syncMode,

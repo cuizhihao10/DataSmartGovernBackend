@@ -100,6 +100,36 @@ public class SyncBatchRunOnceDispatchService {
                                                                   SyncExecution execution,
                                                                   SyncTask task,
                                                                   SyncActorContext actorContext) {
+        SyncActorContext safeActorContext = ensureActorContext(execution, task, actorContext);
+        SyncBatchRunOnceRemoteExecutionResult remoteResult =
+                executePreparedRunOnceRemoteOnly(bridgePlan, execution, task, safeActorContext);
+        return applyRemoteExecutionResult(task, execution, safeActorContext, remoteResult);
+    }
+
+    /**
+     * 只执行 datasource-management run-once 远端批次循环，不直接回写 data-sync execution 终态。
+     *
+     * <p>这个入口是 OBJECT_LIST 串行 fan-out 的关键复用点。多对象同步需要把一个模板拆成多个单对象子计划，
+     * 每个子计划都应复用同一套 datasource-management Java Reader/Writer 批处理逻辑；但每个子对象完成时不能立刻
+     * complete 整个 execution，否则后续对象尚未处理，用户却会看到任务成功。</p>
+     *
+     * <p>因此本方法只返回低敏远端执行结果：</p>
+     * <p>1. 本地配置关闭、bridge 阻断、checkpoint handoff 未实现时，返回 failed=true，但不写状态机；</p>
+     * <p>2. 远端多批次循环成功结束时，返回 completed=true 和累计计数；</p>
+     * <p>3. 远端失败、空响应、无前进进度或超过批次数上限时，返回 failed=true 和低敏错误码；</p>
+     * <p>4. 调用方负责决定是立即 complete/fail，还是在更大的 fan-out 编排中累加结果后统一回写。</p>
+     *
+     * @param bridgePlan 已准备好的内部桥接计划。
+     * @param execution 当前执行记录，仅用于生成请求、执行边界和低敏结果。
+     * @param task 当前任务，用于兜底构造服务账号上下文。
+     * @param actorContext 当前操作者或服务账号上下文。
+     * @return 远端执行结果，不包含 SQL、连接串、行样本、字段值或 checkpoint 原始值。
+     */
+    public SyncBatchRunOnceRemoteExecutionResult executePreparedRunOnceRemoteOnly(
+            SyncBatchRunnerBridgePlan bridgePlan,
+            SyncExecution execution,
+            SyncTask task,
+            SyncActorContext actorContext) {
         requirePreparedDispatchInputs(bridgePlan, execution, task);
         SyncActorContext safeActorContext = ensureActorContext(execution, task, actorContext);
 
@@ -131,6 +161,44 @@ public class SyncBatchRunOnceDispatchService {
         } catch (PlatformBusinessException exception) {
             return failAfterRemoteCallException(task, execution, safeActorContext, exception);
         }
+    }
+
+    /**
+     * 将远端执行结果应用到 data-sync 生命周期。
+     *
+     * <p>单对象 run-once 路径会调用本方法，因此对外行为仍然和改造前一致：远端完成则 complete，远端失败则 fail。
+     * 多对象 fan-out 路径不会调用本方法，而是聚合多个
+     * {@link SyncBatchRunOnceRemoteExecutionResult} 后由 fan-out 服务统一回写终态。</p>
+     */
+    private SyncBatchRunOnceDispatchResult applyRemoteExecutionResult(SyncTask task,
+                                                                      SyncExecution execution,
+                                                                      SyncActorContext actorContext,
+                                                                      SyncBatchRunOnceRemoteExecutionResult remoteResult) {
+        if (remoteResult == null) {
+            failExecution(task, execution, actorContext,
+                    "CONNECTOR_RUNTIME_RUN_ONCE_FAILED",
+                    "RUN_ONCE_REMOTE_RESULT_EMPTY",
+                    "datasource-management run-once 未返回低敏执行结果，本次执行按 fail-closed 终止",
+                    false);
+            return result(false, false, true, "RUN_ONCE_REMOTE_RESULT_EMPTY",
+                    execution.getId(), null, List.of("RUN_ONCE_REMOTE_RESULT_EMPTY"));
+        }
+        if (remoteResult.completed()) {
+            completeExecution(task, execution, actorContext, responseFromRemoteResult(remoteResult));
+            return result(remoteResult.remoteCalled(), true, false, remoteResult.dispatchStatus(),
+                    execution.getId(), remoteResult.remoteRunStatus(), remoteResult.issueCodes());
+        }
+        if (remoteResult.failed()) {
+            failExecution(task, execution, actorContext,
+                    firstText(remoteResult.errorType(), "CONNECTOR_RUNTIME_RUN_ONCE_FAILED"),
+                    firstText(remoteResult.errorCode(), "RUN_ONCE_REMOTE_FAILED"),
+                    firstText(remoteResult.errorMessage(), "datasource-management run-once 执行失败，本次执行已按 fail-closed 终止"),
+                    remoteResult.retryable());
+            return result(remoteResult.remoteCalled(), false, true, remoteResult.dispatchStatus(),
+                    execution.getId(), remoteResult.remoteRunStatus(), remoteResult.issueCodes());
+        }
+        return result(remoteResult.remoteCalled(), false, false, remoteResult.dispatchStatus(),
+                execution.getId(), remoteResult.remoteRunStatus(), remoteResult.issueCodes());
     }
 
     /**
@@ -314,16 +382,16 @@ public class SyncBatchRunOnceDispatchService {
      * <p>DataX 的核心不是让 Python 搬运数据，而是控制面拆 Job、Java Reader/Writer 执行数据抽取和写入。
      * 本项目当前也保持这个边界：data-sync 负责派发、累计计数和终态回写；datasource-management 执行每个受控批次。</p>
      */
-    private SyncBatchRunOnceDispatchResult dispatchDataXStyleBatchLoop(SyncTask task,
-                                                                       SyncExecution execution,
-                                                                       SyncActorContext actorContext,
-                                                                       DatasourceRunOnceRequest request) {
+    private SyncBatchRunOnceRemoteExecutionResult dispatchDataXStyleBatchLoop(SyncTask task,
+                                                                              SyncExecution execution,
+                                                                              SyncActorContext actorContext,
+                                                                              DatasourceRunOnceRequest request) {
         int maxBatches = Math.max(1, properties.getMaxRunOnceBatches());
         DatasourceRunOnceResponse lastResponse = null;
         for (int batchIndex = 1; batchIndex <= maxBatches; batchIndex++) {
             DatasourceRunOnceResponse response = datasourceRunOnceClient.runOnce(request, actorContext);
             lastResponse = response;
-            SyncBatchRunOnceDispatchResult terminal = handleRemoteResponse(task, execution, actorContext, response);
+            SyncBatchRunOnceRemoteExecutionResult terminal = handleRemoteResponse(task, execution, actorContext, response);
             if (terminal != null) {
                 return terminal;
             }
@@ -346,10 +414,10 @@ public class SyncBatchRunOnceDispatchService {
     /**
      * 将远端 run-once 结果转换为 data-sync 生命周期动作；返回 null 表示应继续下一批。
      */
-    private SyncBatchRunOnceDispatchResult handleRemoteResponse(SyncTask task,
-                                                                SyncExecution execution,
-                                                                SyncActorContext actorContext,
-                                                                DatasourceRunOnceResponse response) {
+    private SyncBatchRunOnceRemoteExecutionResult handleRemoteResponse(SyncTask task,
+                                                                       SyncExecution execution,
+                                                                       SyncActorContext actorContext,
+                                                                       DatasourceRunOnceResponse response) {
         if (response == null) {
             return failAfterRemoteResult(task, execution, actorContext,
                     "REMOTE_RUN_ONCE_EMPTY_RESPONSE",
@@ -363,9 +431,16 @@ public class SyncBatchRunOnceDispatchService {
                     response.getRunStatus());
         }
         if (Boolean.TRUE.equals(response.getCompleteCallbackRecommended())) {
-            completeExecution(task, execution, actorContext, response);
-            return result(true, true, false, "DISPATCHED_AND_COMPLETED",
-                    execution.getId(), response.getRunStatus(), List.of());
+            return remoteResult(true, true, false, "DISPATCHED_AND_COMPLETED",
+                    execution.getId(), response.getRunStatus(),
+                    zeroIfNull(response.getTotalRecordsRead()),
+                    zeroIfNull(response.getTotalRecordsWritten()),
+                    zeroIfNull(response.getTotalFailedRecordCount()),
+                    null,
+                    null,
+                    null,
+                    false,
+                    List.of());
         }
         if (Boolean.TRUE.equals(response.getProgressCallbackRecommended()) || !Boolean.TRUE.equals(response.getEndOfSource())) {
             return null;
@@ -391,44 +466,39 @@ public class SyncBatchRunOnceDispatchService {
                 || zeroIfNull(response.getTotalFailedRecordCount()) > zeroIfNull(request.getPreviousFailedRecordCount());
     }
 
-    private SyncBatchRunOnceDispatchResult failBeforeRemote(SyncTask task,
-                                                            SyncExecution execution,
-                                                            SyncActorContext actorContext,
-                                                            String errorType,
-                                                            String errorCode,
-                                                            String errorMessage,
-                                                            List<String> issueCodes) {
-        failExecution(task, execution, actorContext, errorType, errorCode, errorMessage, false);
-        return result(false, false, true, "FAILED_BEFORE_REMOTE_CALL",
-                execution.getId(), null, issueCodes);
+    private SyncBatchRunOnceRemoteExecutionResult failBeforeRemote(SyncTask task,
+                                                                   SyncExecution execution,
+                                                                   SyncActorContext actorContext,
+                                                                   String errorType,
+                                                                   String errorCode,
+                                                                   String errorMessage,
+                                                                   List<String> issueCodes) {
+        return remoteResult(false, false, true, "FAILED_BEFORE_REMOTE_CALL",
+                execution.getId(), null, 0L, 0L, 0L, errorType, errorCode, errorMessage, false, issueCodes);
     }
 
-    private SyncBatchRunOnceDispatchResult failAfterRemoteCallException(SyncTask task,
-                                                                        SyncExecution execution,
-                                                                        SyncActorContext actorContext,
-                                                                        PlatformBusinessException exception) {
-        failExecution(task, execution, actorContext,
+    private SyncBatchRunOnceRemoteExecutionResult failAfterRemoteCallException(SyncTask task,
+                                                                               SyncExecution execution,
+                                                                               SyncActorContext actorContext,
+                                                                               PlatformBusinessException exception) {
+        return remoteResult(true, false, true, "DISPATCHED_AND_FAILED_BY_CLIENT_EXCEPTION",
+                execution.getId(), null, 0L, 0L, 0L,
                 "CONNECTOR_RUNTIME_RUN_ONCE_CALL_FAILED",
                 "DATASOURCE_RUN_ONCE_UNAVAILABLE",
                 "datasource-management run-once 调用不可用，本次执行已按 fail-closed 终止",
-                false);
-        return result(true, false, true, "DISPATCHED_AND_FAILED_BY_CLIENT_EXCEPTION",
-                execution.getId(), null, List.of("DATASOURCE_RUN_ONCE_UNAVAILABLE"));
+                false,
+                List.of("DATASOURCE_RUN_ONCE_UNAVAILABLE"));
     }
 
-    private SyncBatchRunOnceDispatchResult failAfterRemoteResult(SyncTask task,
-                                                                 SyncExecution execution,
-                                                                 SyncActorContext actorContext,
-                                                                 String errorCode,
-                                                                 String errorMessage,
-                                                                 String remoteRunStatus) {
-        failExecution(task, execution, actorContext,
-                "CONNECTOR_RUNTIME_RUN_ONCE_FAILED",
-                errorCode,
-                errorMessage,
-                false);
-        return result(true, false, true, "DISPATCHED_AND_FAILED_BY_REMOTE_RESULT",
-                execution.getId(), remoteRunStatus, List.of(errorCode));
+    private SyncBatchRunOnceRemoteExecutionResult failAfterRemoteResult(SyncTask task,
+                                                                        SyncExecution execution,
+                                                                        SyncActorContext actorContext,
+                                                                        String errorCode,
+                                                                        String errorMessage,
+                                                                        String remoteRunStatus) {
+        return remoteResult(true, false, true, "DISPATCHED_AND_FAILED_BY_REMOTE_RESULT",
+                execution.getId(), remoteRunStatus, 0L, 0L, 0L,
+                "CONNECTOR_RUNTIME_RUN_ONCE_FAILED", errorCode, errorMessage, false, List.of(errorCode));
     }
 
     private void completeExecution(SyncTask task,
@@ -497,6 +567,50 @@ public class SyncBatchRunOnceDispatchService {
             return "REPLACE_ON_CONFLICT";
         }
         return "NO_CONFLICT_HANDLING";
+    }
+
+    /**
+     * 把远端低敏结果转换为 receipt 发布器可以复用的 datasource-management 响应镜像。
+     *
+     * <p>这里不会补任何 SQL、对象名、字段名或样本，只把计数和状态映射回原有 receipt 发布入口，
+     * 避免为了 fan-out 再实现一套 task-management 回执协议。</p>
+     */
+    private DatasourceRunOnceResponse responseFromRemoteResult(SyncBatchRunOnceRemoteExecutionResult remoteResult) {
+        DatasourceRunOnceResponse response = new DatasourceRunOnceResponse();
+        response.setRunStatus(remoteResult.remoteRunStatus());
+        response.setBatchRecordsRead(zeroIfNull(remoteResult.totalRecordsRead()));
+        response.setBatchRecordsWritten(zeroIfNull(remoteResult.totalRecordsWritten()));
+        response.setBatchFailedRecordCount(zeroIfNull(remoteResult.totalFailedRecordCount()));
+        response.setTotalRecordsRead(zeroIfNull(remoteResult.totalRecordsRead()));
+        response.setTotalRecordsWritten(zeroIfNull(remoteResult.totalRecordsWritten()));
+        response.setTotalFailedRecordCount(zeroIfNull(remoteResult.totalFailedRecordCount()));
+        response.setEndOfSource(Boolean.TRUE);
+        response.setFailed(Boolean.FALSE);
+        response.setCompleteCallbackRecommended(Boolean.TRUE);
+        response.setFailCallbackRecommended(Boolean.FALSE);
+        response.setProgressCallbackRecommended(Boolean.FALSE);
+        response.setCheckpointCandidateProduced(Boolean.FALSE);
+        response.setPayloadPolicy(SyncBatchRunOnceRemoteExecutionResult.PAYLOAD_POLICY);
+        return response;
+    }
+
+    private SyncBatchRunOnceRemoteExecutionResult remoteResult(boolean remoteCalled,
+                                                              boolean completed,
+                                                              boolean failed,
+                                                              String dispatchStatus,
+                                                              Long executionId,
+                                                              String remoteRunStatus,
+                                                              Long totalRecordsRead,
+                                                              Long totalRecordsWritten,
+                                                              Long totalFailedRecordCount,
+                                                              String errorType,
+                                                              String errorCode,
+                                                              String errorMessage,
+                                                              boolean retryable,
+                                                              List<String> issueCodes) {
+        return new SyncBatchRunOnceRemoteExecutionResult(remoteCalled, completed, failed, dispatchStatus, executionId,
+                remoteRunStatus, totalRecordsRead, totalRecordsWritten, totalFailedRecordCount, errorType, errorCode,
+                errorMessage, retryable, issueCodes, SyncBatchRunOnceRemoteExecutionResult.PAYLOAD_POLICY);
     }
 
     private SyncBatchRunOnceDispatchResult result(boolean dispatched,

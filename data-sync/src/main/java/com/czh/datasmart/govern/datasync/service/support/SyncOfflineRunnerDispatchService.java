@@ -55,6 +55,7 @@ public class SyncOfflineRunnerDispatchService {
     private final SyncBatchRunnerBridgePlanSupport bridgePlanSupport;
     private final SyncBatchRunOnceDispatchService runOnceDispatchService;
     private final SyncOfflineRunnerAdapterRegistry runnerAdapterRegistry;
+    private final SyncObjectListFanOutDispatchService objectListFanOutDispatchService;
     private final SyncExecutionLifecycleSupport lifecycleSupport;
     private final DataSyncTaskManagementReceiptPublisher receiptPublisher;
 
@@ -95,6 +96,10 @@ public class SyncOfflineRunnerDispatchService {
                     "当前任务属于实时 CDC 通道，应进入 Debezium/Kafka Connect pipeline，不能由离线 Runner 执行",
                     mergeIssues(bridgePlan, contract, USE_REALTIME_CDC_PIPELINE),
                     contract);
+        }
+        if (objectListFanOutDispatchService.supports(contract, safeActorContext)) {
+            return objectListFanOutDispatchService.dispatchObjectList(execution, task, template, workerPlan,
+                    safeActorContext, contract);
         }
         if (contract.approvalRequired()) {
             return failBeforeDelegate(task, execution, safeActorContext,
