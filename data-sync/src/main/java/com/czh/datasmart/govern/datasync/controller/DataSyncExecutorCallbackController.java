@@ -13,11 +13,14 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCheckpointR
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCompleteRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionStartRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncOfflineRunnerReportRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncOfflineRunnerReportResult;
 import com.czh.datasmart.govern.datasync.entity.SyncCheckpoint;
 import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.service.DataSyncService;
 import com.czh.datasmart.govern.datasync.service.support.DataSyncExecutorServiceAccountSignatureSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncOfflineRunnerReportCallbackService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -47,6 +50,7 @@ public class DataSyncExecutorCallbackController {
 
     private final DataSyncService dataSyncService;
     private final DataSyncExecutorServiceAccountSignatureSupport signatureSupport;
+    private final SyncOfflineRunnerReportCallbackService offlineRunnerReportCallbackService;
 
     /**
      * 执行器开始处理 execution。
@@ -130,6 +134,36 @@ public class DataSyncExecutorCallbackController {
         signatureSupport.verify(servletRequest, traceId, "FAIL");
         return PlatformApiResponse.success("同步执行已失败并记录错误样本",
                 dataSyncService.failExecution(taskId, executionId, request, actorContext(tenantId, actorId, actorRole, traceId)), traceId);
+    }
+
+    /**
+     * 专用离线 Runner 低敏执行报告回调。
+     *
+     * <p>该接口是 DataX-style 专用 Runner adapter 的后半段闭环：worker loop 把合同派发给专用 Runner 后，
+     * Runner 可以通过本接口回传 QUEUED、RUNNING、CHECKPOINT、SUCCEEDED、FAILED 等结构化状态。
+     * 与普通 checkpoint/complete/fail 的区别是，本接口的请求体只允许携带低敏报告事实：
+     * 计数、状态码、checkpointRef/checkpointDigest、低敏错误码和低敏 issueCodes。</p>
+     *
+     * <p>为什么仍放在 execution callback controller 下：
+     * 1. 它仍然是机器协议入口，必须复用服务账号签名校验；
+     * 2. 它仍然围绕 taskId/executionId 推进 data-sync 生命周期；
+     * 3. gateway 和 permission-admin 已经用 data-sync execution callback 通配策略统一保护执行器回调，
+     *    新增子路径不会额外扩大人类用户权限面。</p>
+     */
+    @PostMapping("/offline-runner/reports")
+    public PlatformApiResponse<SyncOfflineRunnerReportResult> reportOfflineRunnerExecution(
+            @PathVariable Long taskId,
+            @PathVariable Long executionId,
+            @Valid @RequestBody SyncOfflineRunnerReportRequest request,
+            HttpServletRequest servletRequest,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        signatureSupport.verify(servletRequest, traceId, "OFFLINE_RUNNER_REPORT");
+        return PlatformApiResponse.success("离线 Runner 执行报告已处理",
+                offlineRunnerReportCallbackService.applyReport(taskId, executionId, request,
+                        actorContext(tenantId, actorId, actorRole, traceId)), traceId);
     }
 
     private SyncActorContext actorContext(Long tenantId, Long actorId, String actorRole, String traceId) {
