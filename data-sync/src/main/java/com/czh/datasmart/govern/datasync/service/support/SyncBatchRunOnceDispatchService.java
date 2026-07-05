@@ -74,8 +74,34 @@ public class SyncBatchRunOnceDispatchService {
                                                           SyncWorkerExecutionPlanView workerPlan,
                                                           SyncActorContext actorContext) {
         requireDispatchInputs(execution, task, template, workerPlan);
-        SyncActorContext safeActorContext = ensureActorContext(execution, task, actorContext);
         SyncBatchRunnerBridgePlan bridgePlan = bridgePlanSupport.buildPlan(execution, task, template, workerPlan);
+        return dispatchPreparedRunOnce(bridgePlan, execution, task, actorContext);
+    }
+
+    /**
+     * 派发已经生成好的 bridge plan。
+     *
+     * <p>这个入口是为新的离线 Runner 调度门面准备的。上一阶段开始，bridge plan 已经携带
+     * {@link SyncOfflineRunnerJobContract}，专用门面会先读取合同判断是否应该进入最小 run-once、等待专用 Runner、
+     * 等待审批或按 checkpoint handoff 阻断。如果合同判断允许进入当前最小闭环，就通过本方法复用原有
+     * datasource-management run-once 请求构造、远端调用、complete/fail 回写和 task-management receipt 发布逻辑。</p>
+     *
+     * <p>为什么不让门面直接调用 datasource-management：data-sync 的 run-once 调用里已经沉淀了低敏失败回写、
+     * 远端响应处理、外层多批循环阻断、receipt 发布和 checkpoint 安全边界。如果绕开这里，会形成第二套执行闭环，
+     * 后续排查和审计都会变复杂。</p>
+     *
+     * @param bridgePlan 已经由 data-sync 控制面生成的内部桥接计划。
+     * @param execution 当前执行记录。
+     * @param task 当前任务。
+     * @param actorContext 当前操作者或服务账号上下文。
+     * @return 低敏 run-once 派发结果。
+     */
+    public SyncBatchRunOnceDispatchResult dispatchPreparedRunOnce(SyncBatchRunnerBridgePlan bridgePlan,
+                                                                  SyncExecution execution,
+                                                                  SyncTask task,
+                                                                  SyncActorContext actorContext) {
+        requirePreparedDispatchInputs(bridgePlan, execution, task);
+        SyncActorContext safeActorContext = ensureActorContext(execution, task, actorContext);
 
         if (!properties.isEnabled()) {
             return failBeforeRemote(task, execution, safeActorContext,
@@ -121,6 +147,22 @@ public class SyncBatchRunOnceDispatchService {
         if (execution == null || task == null || template == null || workerPlan == null) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
                     "run-once 派发缺少 execution/task/template/workerPlan 上下文，无法安全推进状态机");
+        }
+    }
+
+    /**
+     * 校验“已准备计划”派发所需的最小上下文。
+     *
+     * <p>和 {@link #requireDispatchInputs(SyncExecution, SyncTask, SyncTemplate, SyncWorkerExecutionPlanView)} 不同，
+     * 该入口不再要求 template/workerPlan，因为上游离线 Runner 门面已经用它们生成了 bridge plan 和合同。
+     * 这里仅确认真正回写状态机所需的 bridgePlan、execution、task 存在。</p>
+     */
+    private void requirePreparedDispatchInputs(SyncBatchRunnerBridgePlan bridgePlan,
+                                               SyncExecution execution,
+                                               SyncTask task) {
+        if (bridgePlan == null || execution == null || task == null) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    "run-once 已准备计划派发缺少 bridgePlan/execution/task 上下文，无法安全推进状态机");
         }
     }
 

@@ -20,9 +20,9 @@ import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
 import com.czh.datasmart.govern.datasync.service.DataSyncExecutorLeaseService;
 import com.czh.datasmart.govern.datasync.service.DataSyncWorkerLoopService;
-import com.czh.datasmart.govern.datasync.service.support.SyncBatchRunOnceDispatchResult;
-import com.czh.datasmart.govern.datasync.service.support.SyncBatchRunOnceDispatchService;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLifecycleSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncOfflineRunnerDispatchResult;
+import com.czh.datasmart.govern.datasync.service.support.SyncOfflineRunnerDispatchService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -40,7 +40,7 @@ import java.util.Set;
  * <p>本类刻意只做编排，不把同步执行细节重新写一遍：</p>
  * <p>1. 认领和租约并发裁决交给 {@link DataSyncExecutorLeaseService}；</p>
  * <p>2. 模板读取只通过 {@link SyncTemplateMapper} 拿到当前 execution 所属配置；</p>
- * <p>3. bridge plan、run-once HTTP 调用和 complete/fail 回写交给 {@link SyncBatchRunOnceDispatchService}；</p>
+ * <p>3. 离线 Runner 合同裁决、最小 run-once 委托和 complete/fail 回写交给 {@link SyncOfflineRunnerDispatchService}；</p>
  * <p>4. 只有在模板缺失或编排异常时，本类才通过 {@link SyncExecutionLifecycleSupport} 主动 fail-closed，
  *    避免 execution 被 claim 后长期停在 RUNNING。</p>
  *
@@ -60,7 +60,7 @@ public class DataSyncWorkerLoopServiceImpl implements DataSyncWorkerLoopService 
 
     private final DataSyncExecutorLeaseService leaseService;
     private final SyncTemplateMapper templateMapper;
-    private final SyncBatchRunOnceDispatchService dispatchService;
+    private final SyncOfflineRunnerDispatchService dispatchService;
     private final SyncExecutionLifecycleSupport lifecycleSupport;
     private final DataSyncWorkerLoopProperties properties;
 
@@ -148,7 +148,7 @@ public class DataSyncWorkerLoopServiceImpl implements DataSyncWorkerLoopService 
         }
 
         try {
-            SyncBatchRunOnceDispatchResult dispatchResult = dispatchService.dispatchRunOnce(
+            SyncOfflineRunnerDispatchResult dispatchResult = dispatchService.dispatchOffline(
                     execution, task, template, claimResult.workerPlan(), actorContext);
             return fromDispatchResult(task, execution, claimResult, dispatchResult);
         } catch (Exception exception) {
@@ -165,7 +165,7 @@ public class DataSyncWorkerLoopServiceImpl implements DataSyncWorkerLoopService 
     private SyncWorkerLoopExecutionResult fromDispatchResult(SyncTask task,
                                                             SyncExecution execution,
                                                             SyncExecutionClaimResult claimResult,
-                                                            SyncBatchRunOnceDispatchResult dispatchResult) {
+                                                            SyncOfflineRunnerDispatchResult dispatchResult) {
         boolean dispatched = dispatchResult != null && dispatchResult.dispatched();
         boolean completed = dispatchResult != null && dispatchResult.completed();
         boolean failed = dispatchResult != null && dispatchResult.failed();
