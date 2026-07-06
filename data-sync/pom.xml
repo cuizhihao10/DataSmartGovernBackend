@@ -109,5 +109,17 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <!--
+              仅用于 data-sync 真实 E2E 测试复用 datasource-management 的 JDBC Reader/Writer 执行面。
+              生产代码仍然通过 HTTP internal client 调用 datasource-management，不能因为测试便利而形成生产期 Java 强耦合。
+              这条 test-scope 依赖的意义是：在同一个 JVM 内构造“data-sync 控制面 + datasource-management 数据面”的真实链路，
+              从而验证 AUTO_SPLIT_PK、分片账本、脏数据样本和 replay，而不需要同时启动两个 Spring Boot 进程。
+            -->
+            <groupId>com.czh.datasmart</groupId>
+            <artifactId>datasource-management</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>

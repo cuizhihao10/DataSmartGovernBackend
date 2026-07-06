@@ -312,7 +312,8 @@ public class SyncPartitionShardFanOutDispatchService {
                 List<Future<ShardDispatchOutcome>> futures = new ArrayList<>();
                 for (ShardExecutionBundle bundle : bundles.subList(start, end)) {
                     futures.add(executorService.submit(() -> dispatchOneShardWithRetry(
-                            task, execution, template, workerPlan, actorContext, bundle.shard(), bundle.row())));
+                            task, execution, template, workerPlan, actorContext,
+                            partitionContract, bundle.shard(), bundle.row())));
                 }
                 for (Future<ShardDispatchOutcome> future : futures) {
                     outcomes.add(awaitShardOutcome(future));
@@ -333,6 +334,7 @@ public class SyncPartitionShardFanOutDispatchService {
                                                            SyncTemplate template,
                                                            SyncWorkerExecutionPlanView workerPlan,
                                                            SyncActorContext actorContext,
+                                                           SyncPartitionShardExecutionContract partitionContract,
                                                            SyncPartitionShardExecutionItem shard,
                                                            SyncObjectExecution shardExecution) {
         if (SyncObjectExecutionState.SUCCEEDED.name().equals(shardExecution.getObjectState())) {
@@ -366,7 +368,9 @@ public class SyncPartitionShardFanOutDispatchService {
                                 task,
                                 actorContext,
                                 shard.shardOrPartition(),
-                                shard.filterConditions());
+                                shard.filterConditions(),
+                                partitionContract.maxDirtyRecordCount(),
+                                partitionContract.maxDirtyRecordRatio());
                 remoteCalled = remoteCalled || remoteResult != null && remoteResult.remoteCalled();
                 if (remoteResult != null && remoteResult.completed() && !remoteResult.failed()) {
                     objectExecutionLifecycleSupport.markObjectSucceeded(shardExecution, remoteResult);

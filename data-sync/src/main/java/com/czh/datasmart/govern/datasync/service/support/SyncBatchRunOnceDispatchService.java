@@ -150,6 +150,33 @@ public class SyncBatchRunOnceDispatchService {
             SyncActorContext actorContext,
             String shardOrPartition,
             List<SyncFilterExecutionCondition> additionalFilterConditions) {
+        return executePreparedRunOnceRemoteOnly(bridgePlan, execution, task, actorContext,
+                shardOrPartition, additionalFilterConditions, null, null);
+    }
+
+    /**
+     * 带运行期脏数据阈值覆盖的 run-once 远程执行入口。
+     *
+     * <p>普通 run-once 任务会使用 {@link DataSyncDatasourceRunOnceProperties} 中的全局默认阈值；
+     * 但 DataX-style 分片任务通常会在 {@code partitionConfig} 中显式声明
+     * {@code maxDirtyRecordCount/maxDirtyRecordRatio}，这是用户对当前大表任务的容忍策略。
+     * 如果不把该策略继续传给 datasource-management，控制面看起来“配置了脏数据阈值”，
+     * 执行面却仍按全局默认值裁决，会造成产品语义不一致。</p>
+     *
+     * <p>这里没有把覆盖值塞进 {@link SyncBatchRunnerBridgePlan}，是因为 bridge plan 描述的是
+     * 模板、字段映射、过滤条件和最小 runner 可执行性；分片阈值来自 fan-out 解析后的执行合同，
+     * 更适合作为本次派发的运行期控制参数传入。这样普通任务、dirty replay 和未来非分片 runner
+     * 不会被迫理解 partitionConfig 的细节。</p>
+     */
+    public SyncBatchRunOnceRemoteExecutionResult executePreparedRunOnceRemoteOnly(
+            SyncBatchRunnerBridgePlan bridgePlan,
+            SyncExecution execution,
+            SyncTask task,
+            SyncActorContext actorContext,
+            String shardOrPartition,
+            List<SyncFilterExecutionCondition> additionalFilterConditions,
+            Long maxDirtyRecordCountOverride,
+            Double maxDirtyRecordRatioOverride) {
         requirePreparedDispatchInputs(bridgePlan, execution, task);
         SyncActorContext safeActorContext = ensureActorContext(execution, task, actorContext);
 
@@ -176,7 +203,8 @@ public class SyncBatchRunOnceDispatchService {
         }
 
         DatasourceRunOnceRequest request = buildRequest(bridgePlan, execution, safeActorContext,
-                shardOrPartition, additionalFilterConditions);
+                shardOrPartition, additionalFilterConditions,
+                maxDirtyRecordCountOverride, maxDirtyRecordRatioOverride);
         try {
             return dispatchDataXStyleBatchLoop(task, execution, safeActorContext, request);
         } catch (PlatformBusinessException exception) {
@@ -293,9 +321,12 @@ public class SyncBatchRunOnceDispatchService {
                                                   SyncExecution execution,
                                                   SyncActorContext actorContext,
                                                   String shardOrPartition,
-                                                  List<SyncFilterExecutionCondition> additionalFilterConditions) {
+                                                  List<SyncFilterExecutionCondition> additionalFilterConditions,
+                                                  Long maxDirtyRecordCountOverride,
+                                                  Double maxDirtyRecordRatioOverride) {
         DatasourceRunOnceRequest request = new DatasourceRunOnceRequest();
-        request.setExecutionPlan(executionPlan(bridgePlan, execution, shardOrPartition, additionalFilterConditions));
+        request.setExecutionPlan(executionPlan(bridgePlan, execution, shardOrPartition, additionalFilterConditions,
+                maxDirtyRecordCountOverride, maxDirtyRecordRatioOverride));
         request.setSelectedColumns(bridgePlan.getFieldMappingContract().getSelectedColumns());
         request.setWriteColumns(bridgePlan.getFieldMappingContract().getWriteColumns());
         request.setPrimaryKeyColumns(bridgePlan.getFieldMappingContract().getPrimaryKeyColumns());
@@ -313,7 +344,9 @@ public class SyncBatchRunOnceDispatchService {
     private DatasourceRunOnceRequest.ExecutionPlan executionPlan(SyncBatchRunnerBridgePlan bridgePlan,
                                                                 SyncExecution execution,
                                                                 String shardOrPartition,
-                                                                List<SyncFilterExecutionCondition> additionalFilterConditions) {
+                                                                List<SyncFilterExecutionCondition> additionalFilterConditions,
+                                                                Long maxDirtyRecordCountOverride,
+                                                                Double maxDirtyRecordRatioOverride) {
         DatasourceRunOnceRequest.ExecutionPlan plan = new DatasourceRunOnceRequest.ExecutionPlan();
         plan.setPlanVersion(PLAN_VERSION);
         plan.setExecutionBoundary(EXECUTION_BOUNDARY);
@@ -322,7 +355,8 @@ public class SyncBatchRunOnceDispatchService {
         plan.setReadPlan(readPlan(bridgePlan, shardOrPartition, additionalFilterConditions));
         plan.setWritePlan(writePlan(bridgePlan));
         plan.setCheckpointPlan(checkpointPlan(bridgePlan, shardOrPartition));
-        plan.setRuntimeControlPlan(runtimeControlPlan(bridgePlan, execution, shardOrPartition));
+        plan.setRuntimeControlPlan(runtimeControlPlan(bridgePlan, execution, shardOrPartition,
+                maxDirtyRecordCountOverride, maxDirtyRecordRatioOverride));
         plan.setWarnings(bridgePlan.getWarnings());
         plan.setGeneratedAt(LocalDateTime.now());
         return plan;
@@ -403,15 +437,17 @@ public class SyncBatchRunOnceDispatchService {
 
     private DatasourceRunOnceRequest.RuntimeControlPlan runtimeControlPlan(SyncBatchRunnerBridgePlan bridgePlan,
                                                                           SyncExecution execution,
-                                                                          String shardOrPartition) {
+                                                                          String shardOrPartition,
+                                                                          Long maxDirtyRecordCountOverride,
+                                                                          Double maxDirtyRecordRatioOverride) {
         DatasourceRunOnceRequest.RuntimeControlPlan runtimeControlPlan = new DatasourceRunOnceRequest.RuntimeControlPlan();
         runtimeControlPlan.setExecutorId(execution.getExecutorId());
         runtimeControlPlan.setLeaseExpireAt(execution.getLeaseExpireTime());
         runtimeControlPlan.setHeartbeatRequired(true);
         runtimeControlPlan.setTimeoutSeconds(properties.getDefaultTimeoutSeconds());
         runtimeControlPlan.setMaxRetryCount(properties.getDefaultMaxRetryCount());
-        runtimeControlPlan.setMaxDirtyRecordCount(properties.getDefaultMaxDirtyRecordCount());
-        runtimeControlPlan.setMaxDirtyRecordRatio(properties.getDefaultMaxDirtyRecordRatio());
+        runtimeControlPlan.setMaxDirtyRecordCount(chooseMaxDirtyRecordCount(maxDirtyRecordCountOverride));
+        runtimeControlPlan.setMaxDirtyRecordRatio(chooseMaxDirtyRecordRatio(maxDirtyRecordRatioOverride));
         String idempotencyScope = "task:" + bridgePlan.getSyncTaskId() + ":execution:" + bridgePlan.getExecutionId();
         if (hasText(shardOrPartition)) {
             idempotencyScope = idempotencyScope + ":shard:" + shardOrPartition;
@@ -419,6 +455,24 @@ public class SyncBatchRunOnceDispatchService {
         runtimeControlPlan.setIdempotencyScope(idempotencyScope);
         runtimeControlPlan.setRequiredCallbacks(List.of("COMPLETE_OR_FAIL"));
         return runtimeControlPlan;
+    }
+
+    private Long chooseMaxDirtyRecordCount(Long override) {
+        /*
+         * 分片合同传入的阈值已经在 SyncPartitionShardExecutionContractSupport 中做过范围裁剪。
+         * 这里仍然做一次非负兜底，避免未来新增调用方绕过合同解析后把负值传入执行面。
+         */
+        if (override != null) {
+            return Math.max(0L, override);
+        }
+        return properties.getDefaultMaxDirtyRecordCount();
+    }
+
+    private Double chooseMaxDirtyRecordRatio(Double override) {
+        if (override != null) {
+            return Math.max(0D, override);
+        }
+        return properties.getDefaultMaxDirtyRecordRatio();
     }
 
     /**

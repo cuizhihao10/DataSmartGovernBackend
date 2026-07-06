@@ -18,6 +18,7 @@ import java.sql.BatchUpdateException;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
+import java.sql.Savepoint;
 import java.sql.Statement;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -106,11 +107,26 @@ public class JdbcSyncBatchWriter implements SyncBatchWriter {
             try (PreparedStatement preparedStatement = isolationConnection.prepareStatement(context.getWriteStatement().getSql())) {
                 for (int rowIndex = 0; rowIndex < recordBatch.getRows().size(); rowIndex++) {
                     Map<String, Object> row = recordBatch.getRows().get(rowIndex);
+                    /*
+                     * PostgreSQL 在事务内某一行写入失败后，会把整个事务标记为 aborted。
+                     * 如果不回滚到失败语句之前的 savepoint，后续好行也会被连带判成失败。
+                     *
+                     * DataX-style dirty record 的目标是“少量坏行隔离为脏样本，好行继续提交”，
+                     * 所以每一行都用一个 savepoint 包住：
+                     * 1. 行成功：释放 savepoint，保留当前行写入；
+                     * 2. 行失败：回滚到 savepoint，只撤销当前坏行，不污染后续行；
+                     * 3. 批次结束：统一 commit 本批所有成功行。
+                     *
+                     * savepoint 是 writer 内部事务机制，不进入响应、审计或公开日志。
+                     */
+                    Savepoint rowSavepoint = isolationConnection.setSavepoint("datasmart_dirty_row_" + rowIndex);
                     try {
                         bindRow(preparedStatement, context.getWriteStatement().getParameterNames(), row);
                         preparedStatement.executeUpdate();
+                        releaseSavepointQuietly(isolationConnection, rowSavepoint);
                         recordsWritten++;
                     } catch (SQLException | RuntimeException rowException) {
+                        rollbackToSavepointQuietly(isolationConnection, rowSavepoint);
                         failedRecords++;
                         if (dirtySamples.size() < MAX_DIRTY_SAMPLE_COUNT) {
                             dirtySamples.add(toDirtySample(context, rowIndex, row, rowException));
@@ -314,6 +330,41 @@ public class JdbcSyncBatchWriter implements SyncBatchWriter {
     /**
      * 静默关闭连接。
      */
+    /**
+     * 回滚到行级 savepoint，隔离当前坏行对事务的影响。
+     *
+     * <p>如果这里失败，通常意味着连接或事务本身已经不可恢复；主错误已经被转换成 dirty sample，
+     * 外层事务最终 commit/close 仍会给出受控失败摘要。因此这里不把驱动细节拼进低敏响应，
+     * 避免泄露 SQL、连接或数据库内部信息。</p>
+     */
+    private void rollbackToSavepointQuietly(Connection connection, Savepoint savepoint) {
+        if (connection == null || savepoint == null) {
+            return;
+        }
+        try {
+            connection.rollback(savepoint);
+        } catch (SQLException ignored) {
+            // 行级回滚失败不覆盖原始坏行错误，保持脏数据诊断的主因清晰。
+        }
+    }
+
+    /**
+     * 释放成功行的 savepoint，减少大批量写入时数据库端事务元数据占用。
+     *
+     * <p>释放 savepoint 属于资源优化，不改变业务结果；如果驱动不支持或释放失败，
+     * 当前行仍然已经成功写入，后续统一 commit 即可。</p>
+     */
+    private void releaseSavepointQuietly(Connection connection, Savepoint savepoint) {
+        if (connection == null || savepoint == null) {
+            return;
+        }
+        try {
+            connection.releaseSavepoint(savepoint);
+        } catch (SQLException ignored) {
+            // savepoint 释放失败不影响当前事务后续提交，保持低噪声处理。
+        }
+    }
+
     private void closeQuietly(Connection connection) {
         if (connection == null) {
             return;
