@@ -235,6 +235,12 @@ public class GatewayAuthorizationProperties {
                 "data-sync 同步模板校验接口，校验源端、目标端、字段映射和写入策略是否可运行", Map.of("POST", "VALIDATE")));
         defaults.add(route("/api/sync/sync-tasks/*/run", "SYNC_TASK",
                 "data-sync 同步任务手动运行接口，属于显式触发执行动作", Map.of("POST", "RUN")));
+        defaults.add(route("/api/sync/sync-tasks/*/executions/*/objects", "SYNC_EXECUTION",
+                "data-sync 对象级执行账本查询入口，用于查看 OBJECT_LIST 父 execution 内部每个对象的状态、尝试次数和低敏失败摘要",
+                Map.of("GET", "VIEW")));
+        defaults.add(route("/api/sync/sync-tasks/*/executions/*/objects/retry", "SYNC_EXECUTION",
+                "data-sync 失败对象选择性重试入口，会把 FAILED 对象重置为 PENDING 并重新排队父 execution，属于运维恢复动作",
+                Map.of("POST", "RECOVER")));
         defaults.add(route("/api/sync/sync-tasks/*/executions/*/**", "SYNC_EXECUTION",
                 "data-sync 执行器回调接口，通常由服务账号调用，需要区别于人工任务操作", Map.of("POST", "CALLBACK")));
         defaults.add(route("/api/sync/sync-tasks/*/attention/acknowledge", "SYNC_OPERATION",

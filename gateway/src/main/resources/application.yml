@@ -505,6 +505,20 @@ datasmart:
           method-actions:
             POST: RUN
 
+        - path-pattern: /api/sync/sync-tasks/*/executions/*/objects
+          resource-type: SYNC_EXECUTION
+          default-action: VIEW
+          description: data-sync 对象级执行账本查询入口，用于查看 OBJECT_LIST 父 execution 内部每个对象的状态、尝试次数和低敏失败摘要。
+          method-actions:
+            GET: VIEW
+
+        - path-pattern: /api/sync/sync-tasks/*/executions/*/objects/retry
+          resource-type: SYNC_EXECUTION
+          default-action: RECOVER
+          description: data-sync 失败对象选择性重试入口，会把 FAILED 对象重置为 PENDING 并重新排队父 execution，属于运维恢复动作。
+          method-actions:
+            POST: RECOVER
+
         - path-pattern: /api/sync/sync-tasks/*/executions/*/**
           resource-type: SYNC_EXECUTION
           default-action: CALLBACK

@@ -38,6 +38,14 @@ public enum SyncAuditActionType {
      */
     RETRY_TASK,
     /**
+     * 针对 OBJECT_LIST 父 execution 内部 FAILED 对象发起选择性重试。
+     *
+     * <p>它和 {@link #RETRY_TASK} 的区别是：RETRY_TASK 是任务级整单重跑，通常会创建新的 execution；
+     * RETRY_OBJECT_EXECUTIONS 是对象级恢复，会复用同一个父 execution 的对象账本，只重置失败对象，
+     * 让已成功对象在 fan-out 重入时被跳过。</p>
+     */
+    RETRY_OBJECT_EXECUTIONS,
+    /**
      * 普通生命周期取消动作。
      *
      * <p>该动作面向非人工介入任务；人工介入任务关闭到取消态时使用 CANCEL_ATTENTION_TASK。

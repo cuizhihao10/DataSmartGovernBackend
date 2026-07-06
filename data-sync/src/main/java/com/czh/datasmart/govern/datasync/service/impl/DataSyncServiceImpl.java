@@ -23,6 +23,10 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionStartRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncOfflineJobPlanResponse;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionQueryCriteria;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
@@ -48,6 +52,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncDataScopeSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncDataVisibility;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionCreationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLifecycleSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncObjectExecutionOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncOfflineJobPlanSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
@@ -102,6 +107,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncTemplatePlanningPreviewSupport templatePlanningPreviewSupport;
     private final SyncTemplateExecutionPrecheckSupport templateExecutionPrecheckSupport;
     private final SyncOfflineJobPlanSupport offlineJobPlanSupport;
+    private final SyncObjectExecutionOperationSupport objectExecutionOperationSupport;
 
     @Override
     @Transactional
@@ -401,6 +407,38 @@ public class DataSyncServiceImpl implements DataSyncService {
         eqIfPresent(wrapper, SyncExecution::getTriggerType, normalizeCode(criteria.triggerType()));
         Page<SyncExecution> page = executionMapper.selectPage(querySupport.page(criteria.current(), criteria.size()), wrapper);
         return PlatformPageResponse.of(page.getCurrent(), page.getSize(), page.getTotal(), page.getRecords());
+    }
+
+    /**
+     * 查询父 execution 下的对象级执行明细。
+     *
+     * <p>Service 层在这里先复用 {@link #getTask(Long, SyncActorContext)} 和
+     * {@link #getExecutionForTask(Long, SyncTask)} 完成数据范围与父子归属校验，再委托 support 查询对象账本。
+     * 这样 Controller 不需要理解权限细节，support 也不需要重复读取任务做入口级授权。</p>
+     */
+    @Override
+    public PlatformPageResponse<SyncObjectExecutionView> pageObjectExecutions(SyncObjectExecutionQueryCriteria criteria,
+                                                                              SyncActorContext actorContext) {
+        SyncTask task = getTask(criteria.syncTaskId(), actorContext);
+        SyncExecution execution = getExecutionForTask(criteria.executionId(), task);
+        return objectExecutionOperationSupport.pageObjectExecutions(task, execution, criteria);
+    }
+
+    /**
+     * 发起对象级失败重试。
+     *
+     * <p>这不是普通整单 retry，而是 DataX-style “失败对象/分片重传”。因此入口先校验 task/execution 的可见性和归属，
+     * 再由 {@link SyncObjectExecutionOperationSupport} 重置 FAILED 对象、重新排队父 execution 并写审计。</p>
+     */
+    @Override
+    @Transactional
+    public SyncObjectRetryResult retryObjectExecutions(Long taskId,
+                                                       Long executionId,
+                                                       SyncObjectRetryRequest request,
+                                                       SyncActorContext actorContext) {
+        SyncTask task = getTask(taskId, actorContext);
+        SyncExecution execution = getExecutionForTask(executionId, task);
+        return objectExecutionOperationSupport.retryFailedObjects(task, execution, request, actorContext);
     }
 
     @Override

@@ -19,6 +19,10 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionStartRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncOfflineJobPlanResponse;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionQueryCriteria;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
@@ -137,6 +141,26 @@ public interface DataSyncService {
     SyncErrorSample failExecution(Long taskId, Long executionId, SyncExecutionFailRequest request, SyncActorContext actorContext);
 
     PlatformPageResponse<SyncExecution> pageExecutions(SyncExecutionQueryCriteria criteria, SyncActorContext actorContext);
+
+    /**
+     * 查询某次 execution 内部的对象级执行账本。
+     *
+     * <p>该接口是 OBJECT_LIST 部分成功闭环的运维入口：用户或运营人员能看到哪些对象成功、哪些失败、
+     * 尝试次数、低敏错误码和计数信息，然后再决定是否走对象级选择性重试。</p>
+     */
+    PlatformPageResponse<SyncObjectExecutionView> pageObjectExecutions(SyncObjectExecutionQueryCriteria criteria,
+                                                                       SyncActorContext actorContext);
+
+    /**
+     * 对某次 execution 下的 FAILED 对象发起选择性重试。
+     *
+     * <p>该动作不会直接搬运数据，而是重置失败对象账本并重新排队父 execution。真实执行仍由 worker 认领后完成，
+     * 因此它和现有租约、回调、审计、可观测链路保持一致。</p>
+     */
+    SyncObjectRetryResult retryObjectExecutions(Long taskId,
+                                                Long executionId,
+                                                SyncObjectRetryRequest request,
+                                                SyncActorContext actorContext);
 
     PlatformPageResponse<SyncCheckpoint> pageCheckpoints(SyncCheckpointQueryCriteria criteria, SyncActorContext actorContext);
 

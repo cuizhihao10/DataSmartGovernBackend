@@ -196,4 +196,33 @@ public interface SyncExecutionMapper extends BaseMapper<SyncExecution> {
     int requeueExpiredLease(@Param("executionId") Long executionId,
                             @Param("reason") String reason,
                             @Param("maxDeferCount") int maxDeferCount);
+
+    /**
+     * 将已经终结的父 execution 重新放回队列，用于对象级失败重试。
+     *
+     * <p>该方法只服务于 OBJECT_LIST 对象级账本恢复，不是通用 retry：</p>
+     * <p>1. WHERE 条件只允许 PARTIALLY_SUCCEEDED/FAILED，避免把仍在 RUNNING 的 execution 被人工重置；</p>
+     * <p>2. executor_id、heartbeat_time、lease_expire_time 必须清空，否则 worker 可能误判该 execution 仍被旧执行器持有；</p>
+     * <p>3. finished_at 必须清空，因为这条 execution 即将重新进入运行窗口，不再是完整终态事实；</p>
+     * <p>4. queued_at 写当前时间，让普通 worker claim 查询可以立即认领。</p>
+     *
+     * <p>为什么不新建 execution：对象级恢复要复用同一父 execution 下的对象账本，fan-out 才能跳过已成功对象。
+     * 如果新建 execution，就需要复制成功/失败对象账本、建立 parentExecutionId 关系和新的汇总语义，当前收敛阶段
+     * 会明显增加控制面复杂度。</p>
+     */
+    @Update("""
+            UPDATE data_sync_execution
+            SET execution_state = 'QUEUED',
+                queued_at = LOCALTIMESTAMP,
+                finished_at = NULL,
+                executor_id = NULL,
+                heartbeat_time = NULL,
+                lease_expire_time = NULL,
+                error_summary = #{reason},
+                update_time = LOCALTIMESTAMP
+            WHERE id = #{executionId}
+              AND execution_state IN ('PARTIALLY_SUCCEEDED', 'FAILED')
+            """)
+    int requeueTerminalObjectLevelRetry(@Param("executionId") Long executionId,
+                                        @Param("reason") String reason);
 }
