@@ -40,6 +40,9 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class SyncObjectExecutionLifecycleSupport {
 
+    public static final String WORK_UNIT_TYPE_OBJECT = "OBJECT";
+    public static final String WORK_UNIT_TYPE_PARTITION_SHARD = "PARTITION_SHARD";
+
     /**
      * 对象级账本是内部控制面事实表；普通公开事件和日志不能直接暴露对象名、字段名、SQL、凭据或行样本。
      */
@@ -91,6 +94,10 @@ public class SyncObjectExecutionLifecycleSupport {
             row.setExecutionId(execution.getId());
             row.setTemplateId(template.getId());
             row.setObjectOrdinal(item.ordinal());
+            row.setWorkUnitType(WORK_UNIT_TYPE_OBJECT);
+            row.setShardOrPartition(null);
+            row.setPartitionStrategy(null);
+            row.setPartitionField(null);
             row.setSourceSchemaName(item.sourceSchemaName());
             row.setSourceObjectName(item.sourceObjectName());
             row.setTargetSchemaName(item.targetSchemaName());
@@ -98,6 +105,75 @@ public class SyncObjectExecutionLifecycleSupport {
             row.setObjectState(SyncObjectExecutionState.PENDING.name());
             row.setAttemptCount(0);
             row.setMaxAttemptCount(maxAttemptCount);
+            row.setRecordsRead(0L);
+            row.setRecordsWritten(0L);
+            row.setFailedRecordCount(0L);
+            row.setPayloadPolicy(PAYLOAD_POLICY);
+            row.setCreateTime(LocalDateTime.now());
+            row.setUpdateTime(LocalDateTime.now());
+            objectExecutionMapper.insert(row);
+            rows.add(row);
+        }
+        rows.sort(Comparator.comparing(SyncObjectExecution::getObjectOrdinal));
+        return rows;
+    }
+
+    /**
+     * 初始化单表分片级执行账本。
+     *
+     * <p>该方法服务于大表离线同步的 DataX-style 拆分场景：一张源表可能被 partitionConfig 拆成多个 ID range
+     * 分片，每个分片都要拥有独立状态、尝试次数和计数。它复用 {@code data_sync_object_execution}，而不是
+     * 另建一张 shard 表，原因是“对象级可恢复”和“分片级可恢复”的状态机高度一致：</p>
+     * <p>1. 成功工作单元后续恢复时跳过；</p>
+     * <p>2. 失败工作单元可以单独重置为 PENDING；</p>
+     * <p>3. 父 execution 最终根据全部工作单元聚合为 SUCCEEDED、PARTIALLY_SUCCEEDED 或 FAILED。</p>
+     *
+     * <p>幂等性说明：如果 worker 在部分分片完成后崩溃，恢复时本方法会复用已存在的分片账本，只补齐缺失分片，
+     * 不会重建整批记录，也不会把 SUCCEEDED 分片重置。</p>
+     *
+     * @param task 当前同步任务。
+     * @param execution 父级执行记录。
+     * @param template 同步模板。
+     * @param contract 已解析的分片合同。
+     * @return 当前 execution 下完整的分片账本，按 objectOrdinal 排序。
+     */
+    public List<SyncObjectExecution> initializePartitionShardExecutions(SyncTask task,
+                                                                        SyncExecution execution,
+                                                                        SyncTemplate template,
+                                                                        SyncPartitionShardExecutionContract contract) {
+        List<SyncObjectExecution> existingRows =
+                objectExecutionMapper.selectByExecutionId(execution.getId());
+        Map<Integer, SyncObjectExecution> existingByOrdinal = existingRows == null
+                ? Map.of()
+                : existingRows.stream().collect(Collectors.toMap(
+                        SyncObjectExecution::getObjectOrdinal,
+                        Function.identity(),
+                        (left, right) -> left
+                ));
+        List<SyncObjectExecution> rows = new ArrayList<>(existingRows == null ? List.of() : existingRows);
+        for (SyncPartitionShardExecutionItem shard : contract.shards()) {
+            if (existingByOrdinal.containsKey(shard.ordinal())) {
+                continue;
+            }
+            SyncObjectExecution row = new SyncObjectExecution();
+            row.setTenantId(execution.getTenantId());
+            row.setProjectId(execution.getProjectId());
+            row.setWorkspaceId(execution.getWorkspaceId());
+            row.setSyncTaskId(task.getId());
+            row.setExecutionId(execution.getId());
+            row.setTemplateId(template.getId());
+            row.setObjectOrdinal(shard.ordinal());
+            row.setWorkUnitType(WORK_UNIT_TYPE_PARTITION_SHARD);
+            row.setShardOrPartition(shard.shardOrPartition());
+            row.setPartitionStrategy(shard.partitionStrategy());
+            row.setPartitionField(shard.partitionField());
+            row.setSourceSchemaName(template.getSourceSchemaName());
+            row.setSourceObjectName(template.getSourceObjectName());
+            row.setTargetSchemaName(template.getTargetSchemaName());
+            row.setTargetObjectName(template.getTargetObjectName());
+            row.setObjectState(SyncObjectExecutionState.PENDING.name());
+            row.setAttemptCount(0);
+            row.setMaxAttemptCount(contract.maxAttemptCount());
             row.setRecordsRead(0L);
             row.setRecordsWritten(0L);
             row.setFailedRecordCount(0L);

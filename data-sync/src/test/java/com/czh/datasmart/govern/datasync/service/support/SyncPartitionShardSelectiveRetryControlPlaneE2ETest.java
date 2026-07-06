@@ -1,7 +1,7 @@
 /**
  * @Author : Cui
- * @Date: 2026/07/07 00:19
- * @Description DataSmart Govern Backend - SyncObjectListSelectiveRetryControlPlaneE2ETest.java
+ * @Date: 2026/07/08 00:06
+ * @Description DataSmart Govern Backend - SyncPartitionShardSelectiveRetryControlPlaneE2ETest.java
  * @Version:1.0.0
  */
 package com.czh.datasmart.govern.datasync.service.support;
@@ -33,47 +33,37 @@ import org.mockito.ArgumentCaptor;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
- * OBJECT_LIST 对象级账本与失败对象选择性重试的控制面 E2E 测试。
+ * 单表 ID_RANGE 分片失败选择性重试控制面 E2E 测试。
  *
- * <p>这个测试覆盖的是 DataX-style “一个大任务拆成多个对象级执行单元”的恢复语义：
- * 一个对象成功后应该写入对象账本并在后续恢复时跳过；另一个对象失败后，运营侧可以选择性重试失败对象，
- * worker 再次进入 fan-out 时只重跑失败对象，不应该把已经成功的对象再写一遍。</p>
+ * <p>这个测试覆盖的是用户关心的“大数据量离线任务是否会拆成多个小任务；某个小任务失败后，是否不会回退整个大任务，
+ * 而是后续只重传失败分片”的闭环。测试不连接真实数据库，而是用 fake datasource-management run-once client
+ * 模拟两个分片：第一个分片成功，第二个分片第一次失败、重试后成功。</p>
  *
- * <p>为什么这一步很关键：如果只有父 execution 的 SUCCEEDED/FAILED 状态，平台只能整单重跑或整单失败；
- * 但真实商业化数据同步工具必须支持“部分成功、失败分片/对象重传、成功分片不重复写入”。这也是用户前面提到的
- * DataX Job/Task 思路在当前项目里的最小落地形态。</p>
+ * <p>由于生产实现使用有界并发，本测试的 fake client 不依赖调用顺序，而是按 {@code shardOrPartition} 返回结果。
+ * 这样即使两个分片并发调度，测试仍能稳定验证业务语义：成功分片只执行一次，失败分片重置后只执行失败分片。</p>
  */
-class SyncObjectListSelectiveRetryControlPlaneE2ETest {
+class SyncPartitionShardSelectiveRetryControlPlaneE2ETest {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    /**
-     * 验证两表 OBJECT_LIST 的部分成功与失败对象选择性重试闭环。
-     *
-     * <p>第一次运行：orders 成功，customers 失败，父 execution 进入 PARTIALLY_SUCCEEDED。
-     * 选择性重试：只把 customers 对象账本从 FAILED 重置为 PENDING，orders 继续保持 SUCCEEDED。
-     * 第二次运行：fan-out 应跳过 orders，只调用 datasource run-once 处理 customers，最终父 execution complete。</p>
-     */
     @Test
-    void objectListShouldRetryOnlyFailedObjectAndSkipSucceededObject() {
-        FakeDatasourceRunOnceClient datasourceClient = new FakeDatasourceRunOnceClient(
-                completeResponse(3L, 3L),
-                failedResponse(),
-                completeResponse(4L, 4L)
-        );
+    void partitionShardShouldRetryOnlyFailedShardAndSkipSucceededShard() {
+        FakeDatasourceRunOnceClient datasourceClient = new FakeDatasourceRunOnceClient();
         ObjectExecutionMapperFixture objectMapperFixture = objectExecutionMapperFixture();
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
         DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
@@ -82,7 +72,7 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
         SyncObjectExecutionOperationSupport retrySupport = retrySupport(objectMapperFixture.mapper());
         SyncExecution execution = execution(SyncExecutionState.RUNNING);
         SyncTask task = task("RUNNING");
-        SyncTemplate template = objectListTemplate();
+        SyncTemplate template = partitionedSingleObjectTemplate();
 
         SyncOfflineRunnerDispatchResult firstResult =
                 dispatchService.dispatchOffline(execution, task, template, workerPlan(), actor());
@@ -90,42 +80,49 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
         assertThat(firstResult.dispatched()).isTrue();
         assertThat(firstResult.completed()).isFalse();
         assertThat(firstResult.failed()).isFalse();
-        assertThat(firstResult.dispatchStatus()).isEqualTo("OBJECT_LIST_OBJECT_LEVEL_FAN_OUT_PARTIALLY_SUCCEEDED");
-        assertThat(firstResult.remoteRunStatus()).isEqualTo("OBJECT_LIST_PARTIALLY_SUCCEEDED_RETRY_FAILED_OBJECTS");
-        assertThat(datasourceClient.sourceObjectLocators()).containsExactly("ods.orders", "ods.customers");
-        assertThat(objectMapperFixture.rows()).hasSize(2);
-        assertObjectState(objectMapperFixture.rows(), 0, SyncObjectExecutionState.SUCCEEDED, 3L, 3L, 1);
-        assertObjectState(objectMapperFixture.rows(), 1, SyncObjectExecutionState.FAILED, 0L, 0L, 1);
+        assertThat(firstResult.dispatchStatus()).isEqualTo("PARTITION_SHARD_FAN_OUT_PARTIALLY_SUCCEEDED");
+        assertThat(firstResult.remoteRunStatus()).isEqualTo("PARTITION_SHARD_PARTIALLY_SUCCEEDED_RETRY_FAILED_SHARDS");
+        assertThat(datasourceClient.callCount("id-range-0000")).isEqualTo(1);
+        assertThat(datasourceClient.callCount("id-range-0001")).isEqualTo(1);
+        assertShardState(objectMapperFixture.rows(), 0, SyncObjectExecutionState.SUCCEEDED, "id-range-0000", 5L, 5L, 1);
+        assertShardState(objectMapperFixture.rows(), 1, SyncObjectExecutionState.FAILED, "id-range-0001", 0L, 0L, 1);
+        assertThat(objectMapperFixture.rows())
+                .allSatisfy(row -> assertThat(row.getWorkUnitType())
+                        .isEqualTo(SyncObjectExecutionLifecycleSupport.WORK_UNIT_TYPE_PARTITION_SHARD));
+
+        DatasourceRunOnceRequest firstShardRequest = datasourceClient.firstRequestFor("id-range-0000");
+        assertThat(firstShardRequest.getExecutionPlan().getReadPlan().getPartitionConfigured()).isTrue();
+        assertThat(firstShardRequest.getExecutionPlan().getReadPlan().getRequiredWorkerCapabilities())
+                .contains("PARTITION_AWARE_READ");
+        assertThat(firstShardRequest.getExecutionPlan().getReadPlan().getFilterConditions())
+                .extracting(DatasourceRunOnceRequest.ReadFilterCondition::getColumn)
+                .containsExactly("status", "id", "id");
+        assertThat(firstShardRequest.getExecutionPlan().getReadPlan().getFilterConditions())
+                .extracting(DatasourceRunOnceRequest.ReadFilterCondition::getOperator)
+                .containsExactly("EQ", "GTE", "LT");
 
         ArgumentCaptor<SyncExecutionPartialSuccessRequest> partialCaptor =
                 ArgumentCaptor.forClass(SyncExecutionPartialSuccessRequest.class);
         verify(lifecycleSupport).partiallySucceedExecution(eq(task), eq(execution),
                 partialCaptor.capture(), any(SyncActorContext.class));
-        assertThat(partialCaptor.getValue().getRecordsRead()).isEqualTo(3L);
-        assertThat(partialCaptor.getValue().getRecordsWritten()).isEqualTo(3L);
+        assertThat(partialCaptor.getValue().getRecordsRead()).isEqualTo(5L);
+        assertThat(partialCaptor.getValue().getRecordsWritten()).isEqualTo(5L);
         assertThat(partialCaptor.getValue().getFailedRecordCount()).isEqualTo(1L);
-        verify(receiptPublisher).publishPartiallySucceeded(eq(task), eq(execution),
-                any(SyncActorContext.class), any(DatasourceRunOnceResponse.class), any());
 
         execution.setExecutionState(SyncExecutionState.PARTIALLY_SUCCEEDED.name());
         task.setCurrentState(SyncTaskState.PARTIALLY_SUCCEEDED.name());
         SyncObjectRetryRequest retryRequest = new SyncObjectRetryRequest();
-        /*
-         * objectOrdinal 使用 objectMappingConfig.mappings 的数组下标，因此 customers 是第 2 个配置项但 ordinal=1。
-         * 这里显式按 ordinal 选择失败对象，可以验证运营侧不会误把已经成功的 orders 重新置为 PENDING。
-         */
         retryRequest.setObjectOrdinals(List.of(1));
         retryRequest.setRetryAttemptBudget(3);
         retryRequest.setResetAttemptCount(true);
-        retryRequest.setReason("重试 customers 失败对象，验证成功对象不会重复执行");
+        retryRequest.setReason("重试第二个 ID_RANGE 分片，验证成功分片不会重跑");
 
         SyncObjectRetryResult retryResult = retrySupport.retryFailedObjects(task, execution, retryRequest, actor());
 
         assertThat(retryResult.retryObjectCount()).isEqualTo(1);
         assertThat(retryResult.executionState()).isEqualTo(SyncExecutionState.QUEUED.name());
-        assertThat(retryResult.taskState()).isEqualTo(SyncTaskState.RETRYING.name());
-        assertObjectState(objectMapperFixture.rows(), 0, SyncObjectExecutionState.SUCCEEDED, 3L, 3L, 1);
-        assertObjectState(objectMapperFixture.rows(), 1, SyncObjectExecutionState.PENDING, 0L, 0L, 0);
+        assertShardState(objectMapperFixture.rows(), 0, SyncObjectExecutionState.SUCCEEDED, "id-range-0000", 5L, 5L, 1);
+        assertShardState(objectMapperFixture.rows(), 1, SyncObjectExecutionState.PENDING, "id-range-0001", 0L, 0L, 0);
 
         execution.setExecutionState(SyncExecutionState.RUNNING.name());
         task.setCurrentState(SyncTaskState.RETRYING.name());
@@ -135,20 +132,18 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
         assertThat(retryDispatchResult.dispatched()).isTrue();
         assertThat(retryDispatchResult.completed()).isTrue();
         assertThat(retryDispatchResult.failed()).isFalse();
-        assertThat(retryDispatchResult.dispatchStatus()).isEqualTo("OBJECT_LIST_OBJECT_LEVEL_FAN_OUT_COMPLETED");
-        assertThat(datasourceClient.sourceObjectLocators())
-                .containsExactly("ods.orders", "ods.customers", "ods.customers");
-        assertObjectState(objectMapperFixture.rows(), 0, SyncObjectExecutionState.SUCCEEDED, 3L, 3L, 1);
-        assertObjectState(objectMapperFixture.rows(), 1, SyncObjectExecutionState.SUCCEEDED, 4L, 4L, 1);
+        assertThat(retryDispatchResult.dispatchStatus()).isEqualTo("PARTITION_SHARD_FAN_OUT_COMPLETED");
+        assertThat(datasourceClient.callCount("id-range-0000")).isEqualTo(1);
+        assertThat(datasourceClient.callCount("id-range-0001")).isEqualTo(2);
+        assertShardState(objectMapperFixture.rows(), 0, SyncObjectExecutionState.SUCCEEDED, "id-range-0000", 5L, 5L, 1);
+        assertShardState(objectMapperFixture.rows(), 1, SyncObjectExecutionState.SUCCEEDED, "id-range-0001", 6L, 6L, 1);
 
         ArgumentCaptor<SyncExecutionCompleteRequest> completeCaptor =
                 ArgumentCaptor.forClass(SyncExecutionCompleteRequest.class);
         verify(lifecycleSupport).completeExecution(eq(task), eq(execution),
                 completeCaptor.capture(), any(SyncActorContext.class));
-        assertThat(completeCaptor.getValue().getRecordsRead()).isEqualTo(7L);
-        assertThat(completeCaptor.getValue().getRecordsWritten()).isEqualTo(7L);
-        verify(receiptPublisher).publishComplete(eq(task), eq(execution),
-                any(SyncActorContext.class), any(DatasourceRunOnceResponse.class));
+        assertThat(completeCaptor.getValue().getRecordsRead()).isEqualTo(11L);
+        assertThat(completeCaptor.getValue().getRecordsWritten()).isEqualTo(11L);
         verify(lifecycleSupport, never()).failExecution(any(), any(), any(), any());
     }
 
@@ -163,14 +158,8 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
                 runOnceProperties(),
                 lifecycleSupport,
                 receiptPublisher);
-        SyncObjectListFanOutDispatchService objectListFanOutDispatchService = new SyncObjectListFanOutDispatchService(
-                new SyncObjectMappingExecutionContractSupport(objectMapper),
-                new SyncObjectExecutionLifecycleSupport(objectExecutionMapper),
-                bridgePlanSupport,
-                runOnceDispatchService,
-                lifecycleSupport,
-                receiptPublisher,
-                objectMapper);
+        SyncObjectListFanOutDispatchService objectListFanOutDispatchService =
+                mock(SyncObjectListFanOutDispatchService.class);
         SyncPartitionShardFanOutDispatchService partitionShardFanOutDispatchService =
                 new SyncPartitionShardFanOutDispatchService(
                         new SyncPartitionShardExecutionContractSupport(objectMapper),
@@ -224,7 +213,7 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
 
     private ObjectExecutionMapperFixture objectExecutionMapperFixture() {
         SyncObjectExecutionMapper mapper = mock(SyncObjectExecutionMapper.class);
-        List<SyncObjectExecution> rows = new ArrayList<>();
+        List<SyncObjectExecution> rows = Collections.synchronizedList(new ArrayList<>());
         when(mapper.selectByExecutionId(eq(88L))).thenAnswer(invocation -> new ArrayList<>(rows));
         when(mapper.insert(any(SyncObjectExecution.class))).thenAnswer(invocation -> {
             SyncObjectExecution row = invocation.getArgument(0);
@@ -236,17 +225,21 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
         return new ObjectExecutionMapperFixture(mapper, rows);
     }
 
-    private void assertObjectState(List<SyncObjectExecution> rows,
-                                   int objectOrdinal,
-                                   SyncObjectExecutionState expectedState,
-                                   Long expectedRecordsRead,
-                                   Long expectedRecordsWritten,
-                                   Integer expectedAttemptCount) {
+    private void assertShardState(List<SyncObjectExecution> rows,
+                                  int objectOrdinal,
+                                  SyncObjectExecutionState expectedState,
+                                  String expectedShard,
+                                  Long expectedRecordsRead,
+                                  Long expectedRecordsWritten,
+                                  Integer expectedAttemptCount) {
         assertThat(rows)
                 .filteredOn(row -> row.getObjectOrdinal() == objectOrdinal)
                 .singleElement()
                 .satisfies(row -> {
                     assertThat(row.getObjectState()).isEqualTo(expectedState.name());
+                    assertThat(row.getShardOrPartition()).isEqualTo(expectedShard);
+                    assertThat(row.getPartitionStrategy()).isEqualTo("ID_RANGE");
+                    assertThat(row.getPartitionField()).isEqualTo("id");
                     assertThat(row.getRecordsRead()).isEqualTo(expectedRecordsRead);
                     assertThat(row.getRecordsWritten()).isEqualTo(expectedRecordsWritten);
                     assertThat(row.getAttemptCount()).isEqualTo(expectedAttemptCount);
@@ -280,7 +273,7 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
         return task;
     }
 
-    private SyncTemplate objectListTemplate() {
+    private SyncTemplate partitionedSingleObjectTemplate() {
         SyncTemplate template = new SyncTemplate();
         template.setId(22L);
         template.setTenantId(7L);
@@ -291,22 +284,34 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
         template.setSourceConnectorType("MYSQL");
         template.setTargetConnectorType("POSTGRESQL");
         template.setSourceSchemaName("ods");
+        template.setSourceObjectName("huge_customer");
         template.setTargetSchemaName("dwd");
+        template.setTargetObjectName("huge_customer");
         template.setSyncMode("FULL");
-        template.setSyncScopeType("OBJECT_LIST");
+        template.setSyncScopeType("SINGLE_OBJECT");
         template.setWriteStrategy("UPSERT");
         template.setPrimaryKeyField("id");
         template.setFieldMappingConfig("""
                 [
                   {"sourceField":"id","targetField":"id"},
-                  {"sourceField":"name","targetField":"name"}
+                  {"sourceField":"name","targetField":"name"},
+                  {"sourceField":"status","targetField":"status"}
                 ]
                 """);
-        template.setObjectMappingConfig("""
+        template.setFilterConfig("""
+                [
+                  {"field":"status","operator":"=","value":"ACTIVE"}
+                ]
+                """);
+        template.setPartitionConfig("""
                 {
-                  "mappings": [
-                    {"sourceObject": "orders", "targetObject": "dwd_orders"},
-                    {"sourceObject": "customers", "targetObject": "dwd_customers"}
+                  "strategy": "ID_RANGE",
+                  "partitionField": "id",
+                  "maxParallelism": 2,
+                  "maxShardAttempts": 1,
+                  "ranges": [
+                    {"startInclusive": 1, "endExclusive": 100},
+                    {"startInclusive": 100, "endExclusive": 200}
                   ]
                 }
                 """);
@@ -340,7 +345,7 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
                 true,
                 false,
                 false,
-                2,
+                1,
                 false,
                 true,
                 true,
@@ -356,19 +361,19 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
                 true,
                 false,
                 false,
-                false,
-                false,
+                true,
+                true,
                 false,
                 false,
                 List.of(),
                 List.of("CLAIM_ALREADY_MARKED_RUNNING_DO_NOT_CALL_START"),
-                List.of(),
+                List.of("PARTITION_PARALLELISM_DECLARED"),
                 List.of(),
                 "LOW_SENSITIVE_WORKER_PLAN_METADATA_ONLY");
     }
 
     private SyncActorContext actor() {
-        return new SyncActorContext(7L, 1001L, "SERVICE_ACCOUNT", "trace-object-list-retry-e2e",
+        return new SyncActorContext(7L, 1001L, "SERVICE_ACCOUNT", "trace-partition-shard-retry-e2e",
                 "PROJECT", "project_id IN ${actorProjectIds}", List.of(101L), false);
     }
 
@@ -385,7 +390,7 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
 
     private DatasourceRunOnceResponse failedResponse() {
         DatasourceRunOnceResponse response = baseResponse(0L, 0L);
-        response.setRunStatus("REMOTE_OBJECT_BATCH_FAILED");
+        response.setRunStatus("REMOTE_PARTITION_SHARD_FAILED");
         response.setTotalFailedRecordCount(1L);
         response.setBatchFailedRecordCount(1L);
         response.setEndOfSource(true);
@@ -411,41 +416,38 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
         return response;
     }
 
-    /**
-     * datasource-management run-once 的内存替身。
-     *
-     * <p>它按调用顺序返回预设结果，同时记录每次真正被派发的源对象定位。第二次 worker 重入后，
-     * 如果 fan-out 错误地重跑了已经成功的 orders，这里的对象定位序列会立即暴露问题。</p>
-     */
-    private static class FakeDatasourceRunOnceClient implements DatasourceRunOnceClient {
+    private class FakeDatasourceRunOnceClient implements DatasourceRunOnceClient {
 
-        private final List<DatasourceRunOnceResponse> responses;
-        private final List<String> sourceObjectLocators = new ArrayList<>();
-        private int calls;
-
-        private FakeDatasourceRunOnceClient(DatasourceRunOnceResponse... responses) {
-            this.responses = Arrays.asList(responses);
-        }
+        private final ConcurrentHashMap<String, AtomicInteger> callCounts = new ConcurrentHashMap<>();
+        private final CopyOnWriteArrayList<DatasourceRunOnceRequest> requests = new CopyOnWriteArrayList<>();
 
         @Override
         public DatasourceRunOnceResponse runOnce(DatasourceRunOnceRequest request, SyncActorContext actorContext) {
-            calls++;
-            sourceObjectLocators.add(request.getExecutionPlan().getReadPlan().getObjectLocator());
-            int responseIndex = Math.min(calls - 1, responses.size() - 1);
-            return responses.get(responseIndex);
+            requests.add(request);
+            String shard = request.getShardOrPartition();
+            int attempt = callCounts.computeIfAbsent(shard, ignored -> new AtomicInteger()).incrementAndGet();
+            if ("id-range-0000".equals(shard)) {
+                return completeResponse(5L, 5L);
+            }
+            if ("id-range-0001".equals(shard) && attempt == 1) {
+                return failedResponse();
+            }
+            return completeResponse(6L, 6L);
         }
 
-        private List<String> sourceObjectLocators() {
-            return sourceObjectLocators;
+        private int callCount(String shardOrPartition) {
+            AtomicInteger count = callCounts.get(shardOrPartition);
+            return count == null ? 0 : count.get();
+        }
+
+        private DatasourceRunOnceRequest firstRequestFor(String shardOrPartition) {
+            return requests.stream()
+                    .filter(request -> shardOrPartition.equals(request.getShardOrPartition()))
+                    .findFirst()
+                    .orElseThrow();
         }
     }
 
-    /**
-     * 对象账本 mapper 夹具。
-     *
-     * <p>这里不用真实数据库，是为了让测试聚焦业务状态流转。Mockito 返回的是同一批对象引用，
-     * 因此 lifecycle support 对 row 的状态修改会自然反映到 rows 列表中，足以模拟对象账本的核心行为。</p>
-     */
     private record ObjectExecutionMapperFixture(SyncObjectExecutionMapper mapper, List<SyncObjectExecution> rows) {
     }
 }

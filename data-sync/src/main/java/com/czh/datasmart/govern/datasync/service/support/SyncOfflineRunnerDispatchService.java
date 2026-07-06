@@ -56,6 +56,7 @@ public class SyncOfflineRunnerDispatchService {
     private final SyncBatchRunOnceDispatchService runOnceDispatchService;
     private final SyncOfflineRunnerAdapterRegistry runnerAdapterRegistry;
     private final SyncObjectListFanOutDispatchService objectListFanOutDispatchService;
+    private final SyncPartitionShardFanOutDispatchService partitionShardFanOutDispatchService;
     private final SyncExecutionLifecycleSupport lifecycleSupport;
     private final DataSyncTaskManagementReceiptPublisher receiptPublisher;
 
@@ -99,6 +100,15 @@ public class SyncOfflineRunnerDispatchService {
         }
         if (objectListFanOutDispatchService.supports(contract, safeActorContext)) {
             return objectListFanOutDispatchService.dispatchObjectList(execution, task, template, workerPlan,
+                    safeActorContext, contract);
+        }
+        if (partitionShardFanOutDispatchService.supports(contract, template, safeActorContext)) {
+            /*
+             * partitionConfig 一旦声明，就不能继续落到普通 minimal run-once。
+             * 否则用户配置了“大表分片”，系统却仍按单通道全表扫描执行，会造成性能误判和恢复语义缺失。
+             * 分片合同即使解析失败，也由分片 fan-out 服务负责 fail-closed，避免静默忽略配置错误。
+             */
+            return partitionShardFanOutDispatchService.dispatchPartitionShards(execution, task, template, workerPlan,
                     safeActorContext, contract);
         }
         if (contract.approvalRequired()) {

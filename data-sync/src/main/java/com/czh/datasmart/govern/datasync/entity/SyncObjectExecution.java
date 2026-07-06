@@ -77,6 +77,44 @@ public class SyncObjectExecution {
     private Integer objectOrdinal;
 
     /**
+     * 工作单元类型。
+     *
+     * <p>当前主要有两类：</p>
+     * <p>1. OBJECT：OBJECT_LIST 中的一张表或一个逻辑对象；</p>
+     * <p>2. PARTITION_SHARD：单张大表按照 partitionConfig 拆出的 ID range 分片。</p>
+     *
+     * <p>为什么要显式落这个字段：同一张表被拆成多个分片后，sourceObjectName/targetObjectName 可能完全相同，
+     * 仅靠 objectOrdinal 很难让运维人员判断“这是多表 fan-out 还是单表分片 fan-out”。workUnitType 让账本语义
+     * 更清楚，也方便后续做分片级统计、重试筛选和 UI 分组。</p>
+     */
+    private String workUnitType;
+
+    /**
+     * 分片或分区低敏标识。
+     *
+     * <p>OBJECT 工作单元通常为空；PARTITION_SHARD 工作单元会写入类似 {@code id-range-0000} 的低敏标识。
+     * 这里刻意不保存 {@code id >= 1 AND id < 100000} 这种真实边界表达式，因为边界值可能带有业务规模、
+     * 时间窗口或客户范围含义。真实边界只在 internal run-once 请求中作为 PreparedStatement 参数短暂流转。</p>
+     */
+    private String shardOrPartition;
+
+    /**
+     * 分片策略。
+     *
+     * <p>当前闭环优先支持 ID_RANGE。后续如果扩展 HASH_BUCKET、TIME_WINDOW、FILE_CHUNK，也应先在
+     * partitionConfig 合同解析层完成白名单校验，再写入该字段作为低敏分类，而不是把原始表达式落表。</p>
+     */
+    private String partitionStrategy;
+
+    /**
+     * 分片字段。
+     *
+     * <p>例如 {@code id}、{@code customer_id}。字段名属于内部执行元数据，允许在受权限保护的运维视图中展示，
+     * 但不应进入普通 receipt、Prometheus 高基数标签或公开事件。</p>
+     */
+    private String partitionField;
+
+    /**
      * 源端 schema 或命名空间。
      */
     private String sourceSchemaName;

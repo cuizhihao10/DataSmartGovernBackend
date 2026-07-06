@@ -167,11 +167,14 @@ class SyncOfflineRunnerRunOnceControlPlaneE2ETest {
          */
         SyncObjectListFanOutDispatchService objectListFanOutDispatchService =
                 mock(SyncObjectListFanOutDispatchService.class);
+        SyncPartitionShardFanOutDispatchService partitionShardFanOutDispatchService =
+                mock(SyncPartitionShardFanOutDispatchService.class);
         return new SyncOfflineRunnerDispatchService(
                 bridgePlanSupport,
                 runOnceDispatchService,
                 new SyncOfflineRunnerAdapterRegistry(List.of()),
                 objectListFanOutDispatchService,
+                partitionShardFanOutDispatchService,
                 lifecycleSupport,
                 receiptPublisher);
     }

@@ -840,6 +840,10 @@ CREATE TABLE IF NOT EXISTS data_sync_object_execution (
     execution_id BIGINT NOT NULL COMMENT '父级 data_sync_execution ID',
     template_id BIGINT COMMENT '同步模板 ID',
     object_ordinal INT NOT NULL COMMENT '对象在 objectMappingConfig.mappings 中的顺序号，从 0 开始',
+    work_unit_type VARCHAR(32) NOT NULL DEFAULT 'OBJECT' COMMENT '工作单元类型：OBJECT 表示多对象任务中的对象；PARTITION_SHARD 表示单表大数据量分片',
+    shard_or_partition VARCHAR(128) COMMENT '低敏分片或分区标识，例如 id-range-0000；禁止保存真实边界值、where 条件、SQL 或样本数据',
+    partition_strategy VARCHAR(64) COMMENT '分片策略低敏分类，当前主要为 ID_RANGE',
+    partition_field VARCHAR(128) COMMENT '分片字段名，例如 id 或 customer_id；字段名必须经过安全标识符校验',
     source_schema_name VARCHAR(128) COMMENT '源端 schema 或命名空间，内部恢复和排障使用',
     source_object_name VARCHAR(256) COMMENT '源端对象名，内部恢复和排障使用，普通 API/日志/指标/receipt 不应直接暴露',
     target_schema_name VARCHAR(128) COMMENT '目标端 schema 或命名空间，内部恢复和排障使用',
@@ -862,7 +866,9 @@ CREATE TABLE IF NOT EXISTS data_sync_object_execution (
     INDEX idx_data_sync_object_execution_parent_state (execution_id, object_state, object_ordinal),
     INDEX idx_data_sync_object_execution_task_state (sync_task_id, object_state, create_time),
     INDEX idx_data_sync_object_execution_scope_state (tenant_id, project_id, workspace_id, object_state, update_time),
-    INDEX idx_data_sync_object_execution_retry (object_state, attempt_count, max_attempt_count, update_time)
+    INDEX idx_data_sync_object_execution_retry (object_state, attempt_count, max_attempt_count, update_time),
+    INDEX idx_data_sync_object_execution_work_unit_state (execution_id, work_unit_type, object_state, object_ordinal),
+    INDEX idx_data_sync_object_execution_shard_retry (work_unit_type, object_state, shard_or_partition, update_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='data-sync OBJECT_LIST 对象级执行账本';
 
 CREATE TABLE IF NOT EXISTS data_sync_callback_idempotency (

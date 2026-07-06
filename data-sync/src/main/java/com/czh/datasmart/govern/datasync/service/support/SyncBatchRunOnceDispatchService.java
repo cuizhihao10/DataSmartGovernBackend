@@ -130,6 +130,26 @@ public class SyncBatchRunOnceDispatchService {
             SyncExecution execution,
             SyncTask task,
             SyncActorContext actorContext) {
+        return executePreparedRunOnceRemoteOnly(bridgePlan, execution, task, actorContext, null, List.of());
+    }
+
+    /**
+     * 带分片上下文的 run-once 远程执行入口。
+     *
+     * <p>普通单对象同步不需要 shard；但单张大表被 partitionConfig 拆分后，每个分片都必须把自己的
+     * shardOrPartition 和 range filter 传给 datasource-management。这里不重新实现一套 runner，而是在
+     * 既有 run-once 请求上增加受控上下文：</p>
+     * <p>1. shardOrPartition 只使用低敏编号，例如 id-range-0000；</p>
+     * <p>2. additionalFilterConditions 是已经由 data-sync 校验过的结构化条件，最终仍由 JDBC 方言层二次校验；</p>
+     * <p>3. 分片请求使用 child execution 视图中的 0 起始计数，避免不同分片之间的 offset/累计计数互相污染。</p>
+     */
+    public SyncBatchRunOnceRemoteExecutionResult executePreparedRunOnceRemoteOnly(
+            SyncBatchRunnerBridgePlan bridgePlan,
+            SyncExecution execution,
+            SyncTask task,
+            SyncActorContext actorContext,
+            String shardOrPartition,
+            List<SyncFilterExecutionCondition> additionalFilterConditions) {
         requirePreparedDispatchInputs(bridgePlan, execution, task);
         SyncActorContext safeActorContext = ensureActorContext(execution, task, actorContext);
 
@@ -155,7 +175,8 @@ public class SyncBatchRunOnceDispatchService {
                     withIssue(bridgePlan.getIssueCodes(), "CHECKPOINT_HANDOFF_NOT_IMPLEMENTED"));
         }
 
-        DatasourceRunOnceRequest request = buildRequest(bridgePlan, execution, safeActorContext);
+        DatasourceRunOnceRequest request = buildRequest(bridgePlan, execution, safeActorContext,
+                shardOrPartition, additionalFilterConditions);
         try {
             return dispatchDataXStyleBatchLoop(task, execution, safeActorContext, request);
         } catch (PlatformBusinessException exception) {
@@ -267,40 +288,46 @@ public class SyncBatchRunOnceDispatchService {
      */
     private DatasourceRunOnceRequest buildRequest(SyncBatchRunnerBridgePlan bridgePlan,
                                                   SyncExecution execution,
-                                                  SyncActorContext actorContext) {
+                                                  SyncActorContext actorContext,
+                                                  String shardOrPartition,
+                                                  List<SyncFilterExecutionCondition> additionalFilterConditions) {
         DatasourceRunOnceRequest request = new DatasourceRunOnceRequest();
-        request.setExecutionPlan(executionPlan(bridgePlan, execution));
+        request.setExecutionPlan(executionPlan(bridgePlan, execution, shardOrPartition, additionalFilterConditions));
         request.setSelectedColumns(bridgePlan.getFieldMappingContract().getSelectedColumns());
         request.setWriteColumns(bridgePlan.getFieldMappingContract().getWriteColumns());
         request.setPrimaryKeyColumns(bridgePlan.getFieldMappingContract().getPrimaryKeyColumns());
         request.setActorId(actorContext.actorId());
         request.setActorRole(actorContext.actorRole());
         request.setActorTenantId(actorContext.tenantId());
-        request.setShardOrPartition(null);
+        request.setShardOrPartition(shardOrPartition);
         request.setCheckpointValue(null);
-        request.setPreviousRecordsRead(bridgePlan.getPreviousRecordsRead());
-        request.setPreviousRecordsWritten(bridgePlan.getPreviousRecordsWritten());
-        request.setPreviousFailedRecordCount(bridgePlan.getPreviousFailedRecordCount());
+        request.setPreviousRecordsRead(zeroIfNull(execution.getRecordsRead()));
+        request.setPreviousRecordsWritten(zeroIfNull(execution.getRecordsWritten()));
+        request.setPreviousFailedRecordCount(zeroIfNull(execution.getFailedRecordCount()));
         return request;
     }
 
     private DatasourceRunOnceRequest.ExecutionPlan executionPlan(SyncBatchRunnerBridgePlan bridgePlan,
-                                                                SyncExecution execution) {
+                                                                SyncExecution execution,
+                                                                String shardOrPartition,
+                                                                List<SyncFilterExecutionCondition> additionalFilterConditions) {
         DatasourceRunOnceRequest.ExecutionPlan plan = new DatasourceRunOnceRequest.ExecutionPlan();
         plan.setPlanVersion(PLAN_VERSION);
         plan.setExecutionBoundary(EXECUTION_BOUNDARY);
         plan.setTaskId(bridgePlan.getSyncTaskId());
         plan.setExecutionId(bridgePlan.getExecutionId());
-        plan.setReadPlan(readPlan(bridgePlan));
+        plan.setReadPlan(readPlan(bridgePlan, shardOrPartition, additionalFilterConditions));
         plan.setWritePlan(writePlan(bridgePlan));
-        plan.setCheckpointPlan(checkpointPlan(bridgePlan));
-        plan.setRuntimeControlPlan(runtimeControlPlan(bridgePlan, execution));
+        plan.setCheckpointPlan(checkpointPlan(bridgePlan, shardOrPartition));
+        plan.setRuntimeControlPlan(runtimeControlPlan(bridgePlan, execution, shardOrPartition));
         plan.setWarnings(bridgePlan.getWarnings());
         plan.setGeneratedAt(LocalDateTime.now());
         return plan;
     }
 
-    private DatasourceRunOnceRequest.ReadPlan readPlan(SyncBatchRunnerBridgePlan bridgePlan) {
+    private DatasourceRunOnceRequest.ReadPlan readPlan(SyncBatchRunnerBridgePlan bridgePlan,
+                                                       String shardOrPartition,
+                                                       List<SyncFilterExecutionCondition> additionalFilterConditions) {
         DatasourceRunOnceRequest.ReadPlan readPlan = new DatasourceRunOnceRequest.ReadPlan();
         readPlan.setConnectorType(bridgePlan.getSourceConnectorType());
         readPlan.setDatasourceId(bridgePlan.getSourceDatasourceId());
@@ -308,10 +335,11 @@ public class SyncBatchRunOnceDispatchService {
         readPlan.setReadStrategy(bridgePlan.getReadStrategy());
         readPlan.setSyncMode(bridgePlan.getSyncMode());
         readPlan.setIncrementalField(bridgePlan.getIncrementalField());
-        readPlan.setFilterConditions(filterConditions(bridgePlan));
-        readPlan.setPartitionConfigured(false);
+        readPlan.setFilterConditions(filterConditions(bridgePlan, additionalFilterConditions));
+        readPlan.setPartitionConfigured(hasText(shardOrPartition)
+                || additionalFilterConditions != null && !additionalFilterConditions.isEmpty());
         readPlan.setRecommendedFetchSize(properties.getDefaultFetchSize());
-        readPlan.setRequiredWorkerCapabilities(readCapabilities(bridgePlan));
+        readPlan.setRequiredWorkerCapabilities(readCapabilities(bridgePlan, shardOrPartition));
         return readPlan;
     }
 
@@ -320,11 +348,17 @@ public class SyncBatchRunOnceDispatchService {
      *
      * <p>跨服务传递的是结构化条件而非 SQL 字符串；字段名、操作符和值绑定仍由 datasource-management 方言层兜底。</p>
      */
-    private List<DatasourceRunOnceRequest.ReadFilterCondition> filterConditions(SyncBatchRunnerBridgePlan bridgePlan) {
-        if (bridgePlan.getFilterConditions().isEmpty()) {
+    private List<DatasourceRunOnceRequest.ReadFilterCondition> filterConditions(
+            SyncBatchRunnerBridgePlan bridgePlan,
+            List<SyncFilterExecutionCondition> additionalFilterConditions) {
+        List<SyncFilterExecutionCondition> mergedConditions = new ArrayList<>(bridgePlan.getFilterConditions());
+        if (additionalFilterConditions != null) {
+            mergedConditions.addAll(additionalFilterConditions);
+        }
+        if (mergedConditions.isEmpty()) {
             return List.of();
         }
-        return bridgePlan.getFilterConditions().stream()
+        return mergedConditions.stream()
                 .map(condition -> {
                     DatasourceRunOnceRequest.ReadFilterCondition target =
                             new DatasourceRunOnceRequest.ReadFilterCondition();
@@ -352,26 +386,32 @@ public class SyncBatchRunOnceDispatchService {
         return writePlan;
     }
 
-    private DatasourceRunOnceRequest.CheckpointPlan checkpointPlan(SyncBatchRunnerBridgePlan bridgePlan) {
+    private DatasourceRunOnceRequest.CheckpointPlan checkpointPlan(SyncBatchRunnerBridgePlan bridgePlan,
+                                                                  String shardOrPartition) {
         DatasourceRunOnceRequest.CheckpointPlan checkpointPlan = new DatasourceRunOnceRequest.CheckpointPlan();
         checkpointPlan.setCheckpointType(bridgePlan.getCheckpointType());
         checkpointPlan.setInitialCheckpointPolicy("NO_CHECKPOINT_REQUIRED_FOR_FULL_RUN_ONCE");
         checkpointPlan.setResumeRequired(false);
-        checkpointPlan.setShardAware(false);
+        checkpointPlan.setShardAware(hasText(shardOrPartition));
         checkpointPlan.setPersistEveryRecords(properties.getDefaultFetchSize());
         checkpointPlan.setCheckpointValueVisibility("WORKER_INTERNAL_AND_SYNC_CHECKPOINT_TABLE_ONLY");
         return checkpointPlan;
     }
 
     private DatasourceRunOnceRequest.RuntimeControlPlan runtimeControlPlan(SyncBatchRunnerBridgePlan bridgePlan,
-                                                                          SyncExecution execution) {
+                                                                          SyncExecution execution,
+                                                                          String shardOrPartition) {
         DatasourceRunOnceRequest.RuntimeControlPlan runtimeControlPlan = new DatasourceRunOnceRequest.RuntimeControlPlan();
         runtimeControlPlan.setExecutorId(execution.getExecutorId());
         runtimeControlPlan.setLeaseExpireAt(execution.getLeaseExpireTime());
         runtimeControlPlan.setHeartbeatRequired(true);
         runtimeControlPlan.setTimeoutSeconds(properties.getDefaultTimeoutSeconds());
         runtimeControlPlan.setMaxRetryCount(properties.getDefaultMaxRetryCount());
-        runtimeControlPlan.setIdempotencyScope("task:" + bridgePlan.getSyncTaskId() + ":execution:" + bridgePlan.getExecutionId());
+        String idempotencyScope = "task:" + bridgePlan.getSyncTaskId() + ":execution:" + bridgePlan.getExecutionId();
+        if (hasText(shardOrPartition)) {
+            idempotencyScope = idempotencyScope + ":shard:" + shardOrPartition;
+        }
+        runtimeControlPlan.setIdempotencyScope(idempotencyScope);
         runtimeControlPlan.setRequiredCallbacks(List.of("COMPLETE_OR_FAIL"));
         return runtimeControlPlan;
     }
@@ -536,9 +576,17 @@ public class SyncBatchRunOnceDispatchService {
         receiptPublisher.publishFailed(task, execution, actorContext, errorCode, List.of(errorCode));
     }
 
-    private List<String> readCapabilities(SyncBatchRunnerBridgePlan bridgePlan) {
+    private List<String> readCapabilities(SyncBatchRunnerBridgePlan bridgePlan, String shardOrPartition) {
         List<String> capabilities = new ArrayList<>();
         capabilities.add("JDBC_BATCH_READ");
+        if (hasText(shardOrPartition)) {
+            /*
+             * 分片读并不是新的连接器类型，而是同一套 JDBC Reader 在 WHERE 条件上额外叠加受控 range。
+             * 这里显式声明 PARTITION_AWARE_READ，便于 datasource-management、审计和后续真实专用 Runner
+             * 区分“普通单表全量读”和“单表大数据量分片读”，同时不把真实边界值放入 capability。
+             */
+            capabilities.add("PARTITION_AWARE_READ");
+        }
         if (!FULL_CHECKPOINT_TYPE.equals(bridgePlan.getCheckpointType())) {
             capabilities.add("CHECKPOINT_AWARE_READ");
         }

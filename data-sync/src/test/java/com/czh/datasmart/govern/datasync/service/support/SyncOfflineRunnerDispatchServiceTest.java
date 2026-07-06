@@ -343,8 +343,17 @@ class SyncOfflineRunnerDispatchServiceTest {
                 lifecycleSupport,
                 receiptPublisher,
                 objectMapper);
+        SyncPartitionShardFanOutDispatchService partitionShardFanOutDispatchService =
+                new SyncPartitionShardFanOutDispatchService(
+                        new SyncPartitionShardExecutionContractSupport(objectMapper),
+                        objectExecutionLifecycleSupport(),
+                        bridgePlanSupport,
+                        runOnceDispatchService,
+                        lifecycleSupport,
+                        receiptPublisher);
         return new SyncOfflineRunnerDispatchService(bridgePlanSupport, runOnceDispatchService,
-                runnerAdapterRegistry, objectListFanOutDispatchService, lifecycleSupport, receiptPublisher);
+                runnerAdapterRegistry, objectListFanOutDispatchService, partitionShardFanOutDispatchService,
+                lifecycleSupport, receiptPublisher);
     }
 
     private SyncObjectExecutionLifecycleSupport objectExecutionLifecycleSupport() {

@@ -248,7 +248,7 @@ function Write-ClosurePlan {
     Write-Host "Repo root: $script:RepoRoot"
     Write-Host ""
     Write-Host "Planned quick gates:" -ForegroundColor Cyan
-    Write-Host "1. data-sync control-plane run-once and object retry E2E tests"
+    Write-Host "1. data-sync control-plane run-once, object retry, and partition-shard retry E2E tests"
     Write-Host "2. data-sync -> datasource-management HTTP contract E2E test"
     Write-Host "3. datasource-management H2/JDBC connector runtime E2E test"
     if (-not $SkipCompile) {
@@ -288,12 +288,12 @@ $allPassed = (Invoke-ClosureMavenStep `
     -Arguments @(
         "-pl", "data-sync",
         "-am",
-        "-Dtest=SyncOfflineRunnerRunOnceControlPlaneE2ETest,SyncObjectListSelectiveRetryControlPlaneE2ETest",
+        "-Dtest=SyncOfflineRunnerRunOnceControlPlaneE2ETest,SyncObjectListSelectiveRetryControlPlaneE2ETest,SyncPartitionShardExecutionContractSupportTest,SyncPartitionShardSelectiveRetryControlPlaneE2ETest",
         "-Dsurefire.failIfNoSpecifiedTests=false",
         "test",
         "-DskipTests=false"
     ) `
-    -PassDetail "run-once control-plane and OBJECT_LIST selective retry E2E passed" `
+    -PassDetail "run-once control-plane, OBJECT_LIST selective retry, and partition-shard selective retry E2E passed" `
     -FailDetail "data-sync control-plane closure tests failed") -and $allPassed
 
 <#
