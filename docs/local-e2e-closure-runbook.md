@@ -278,6 +278,61 @@ GET http://localhost:8090/agent/metrics
 - 两个数据库的 E2E 用户均可执行 `SELECT 1`；
 - `mvn -pl datasource-management -am -Dtest=SyncBatchConnectorRuntimeExternalJdbcE2ETest -Dsurefire.failIfNoSpecifiedTests=false test -DskipTests=false` 通过。
 
+### 4.6 数据同步闭环验收总入口
+
+当只想确认“数据同步主链路是否仍然闭合”，但暂时不想启动 Docker、Nacos、真实 Java 服务进程或真实数据库写入时，建议优先运行统一闭环验收脚本：
+
+```powershell
+.\scripts\local-data-sync-closure-suite.ps1
+```
+
+该脚本默认按以下顺序运行快速、稳定、低副作用的守门项：
+
+- `data-sync` 控制面 run-once 闭环与 OBJECT_LIST 失败对象选择性重试 E2E；
+- `data-sync -> datasource-management` run-once HTTP 契约 E2E；
+- `datasource-management` H2/JDBC connector runtime E2E；
+- `data-sync + datasource-management` 编译守门。
+
+这四层验证的含义不同：
+
+- 控制面 E2E 证明 `data-sync` 能把模板、execution、worker plan 转换为可执行计划，并正确处理多批次、对象账本、部分成功和选择性重试；
+- HTTP 契约 E2E 证明 `HttpDatasourceRunOnceClient` 会用真实 `RestClient` 发出 internal Header、JSON 请求体并消费 datasource-management 风格的 `code/message/data` envelope；
+- H2/JDBC 执行面 E2E 证明 datasource-management 的 Java Reader/Writer 真的可以在 JDBC 路径上执行过滤、字段映射、批次推进和目标写入；
+- 编译守门用于发现接口、DTO、依赖或 JDK 21 语法层面的破坏性变更。
+
+脚本安全边界：
+
+- 默认不启动 Docker；
+- 默认不连接真实 MySQL/PostgreSQL；
+- 默认不创建任务、不触发 worker loop、不读取源端业务数据、不写入目标业务数据；
+- 默认不打印数据库密码、完整 JDBC URL、SQL 正文、样本行、token、内部响应正文或敏感诊断信息。
+
+如果只想查看脚本计划，不执行 Maven：
+
+```powershell
+.\scripts\local-data-sync-closure-suite.ps1 -PlanOnly
+```
+
+如果希望把 `data-sync` 与 `datasource-management` 的模块全量测试也纳入同一次验收：
+
+```powershell
+.\scripts\local-data-sync-closure-suite.ps1 -IncludeModuleTestSuites
+```
+
+如果已经准备好 Docker 与专用 E2E 数据库，并且明确接受“创建/覆盖专用 E2E 表”的写入行为，可以显式开启真实 MySQL -> PostgreSQL JDBC 验收：
+
+```powershell
+.\scripts\local-data-sync-closure-suite.ps1 -IncludeRealJdbc
+```
+
+如果真实数据库容器已经由其他流程启动，只希望复用现有依赖：
+
+```powershell
+.\scripts\local-data-sync-closure-suite.ps1 -IncludeRealJdbc -SkipDependencyStartForRealJdbc
+```
+
+当前脚本仍然不是“完整多服务启动型 E2E”。它不会启动 `data-sync`、`datasource-management`、`task-management` 的真实服务进程，也不会通过网关创建任务并触发 worker loop。它的定位是多服务真实联调前的自动化守门：先证明控制面、HTTP 合同和执行面分别可靠，再进入更重的本地服务进程联调。
+
 ## 5. Smoke Check
 
 仓库提供了只读 smoke 脚本：
