@@ -116,5 +116,15 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <!--
+              H2 只作为测试期内存数据库使用，用来验证 datasource-management 的 JDBC reader/writer
+              是否真的能执行 SQL、绑定参数、提交事务和写入目标表。它不会进入生产包，也不改变项目
+              PostgreSQL/MySQL/SQL Server 等真实连接器的生产依赖边界。
+            -->
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 </project>
