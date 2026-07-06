@@ -244,6 +244,40 @@ GET http://localhost:8090/agent/metrics
 - `datasource-management` 应先于触发 data-sync worker loop 运行，否则 run-once dispatch 会 fail-closed。
 - `data-sync` 的 worker loop scheduler 默认不建议开启，避免服务启动后无意触发真实数据搬运。
 
+### 4.5 数据同步真实数据库 E2E（显式写入验收）
+
+当只读 smoke check 通过后，如果需要进一步确认“数据同步执行面真的能搬运数据”，可以运行专用脚本：
+
+```powershell
+.\scripts\local-data-sync-real-e2e.ps1
+```
+
+该脚本会执行以下动作：
+
+- 启动或复用 `docker-compose.yml + docker-compose.local-e2e.yml` 中的 `postgresql` 与 `mysql` 容器，其中 MySQL 默认暴露在 `13306`，用于避开 Windows 本机 `MySQL80` 常见的 `3306` 占用。
+- 等待 TCP 端口可达后，再继续等待容器内 `SELECT 1` 凭据探针成功，避免 MySQL 端口刚打开但 database/user/permission 还没初始化完成时抢跑。
+- 只为当前 Maven 进程注入 `DATASMART_E2E_REAL_JDBC=true`、MySQL/PostgreSQL JDBC URL、账号和密码，不把凭据写入仓库文件。
+- 运行 `SyncBatchConnectorRuntimeExternalJdbcE2ETest`，验证 MySQL 源表到 PostgreSQL 目标表的真实 JDBC 同步链路。
+
+安全边界：
+
+- 该脚本不是只读检查，会创建/覆盖专用 E2E 表：MySQL `datasmart_e2e_source_customers` 与 PostgreSQL `datasmart_e2e.customers_clean`。
+- 脚本和测试不会打印密码、完整 JDBC URL、SQL 正文、源端样本行、目标端样本行、JWT 或 token。
+- 该脚本只验证 datasource-management Java Reader/Writer 执行面；data-sync 控制面、对象账本、选择性重试已经由独立 E2E 测试覆盖。
+- 如果只想检查脚本计划，不启动容器、不运行 Maven，可以使用：
+
+```powershell
+.\scripts\local-data-sync-real-e2e.ps1 -PlanOnly
+```
+
+当前通过标准：
+
+- Docker daemon 可用；
+- `datasmart-mysql` 与 `datasmart-postgresql` 可启动或已运行；
+- MySQL `127.0.0.1:13306`、PostgreSQL `127.0.0.1:5432` 可达；
+- 两个数据库的 E2E 用户均可执行 `SELECT 1`；
+- `mvn -pl datasource-management -am -Dtest=SyncBatchConnectorRuntimeExternalJdbcE2ETest -Dsurefire.failIfNoSpecifiedTests=false test -DskipTests=false` 通过。
+
 ## 5. Smoke Check
 
 仓库提供了只读 smoke 脚本：
