@@ -101,6 +101,48 @@ public class DataSyncTaskManagementReceiptPublisher {
         outboxService.enqueueAndDispatch(task, execution, request, actorContext);
     }
 
+    /**
+     * 发布 execution 部分成功 receipt。
+     *
+     * <p>部分成功是对象级 fan-out 的重要状态：它不是 COMPLETE，因为仍有对象失败；也不应伪装成 FAILED，因为已有对象成功落地，
+     * 后续运营动作应优先选择“只重试失败对象/分片”，而不是整任务盲目重跑。这里显式使用 PARTIALLY_SUCCEEDED 事件类型，
+     * 让 task-management 和 Agent timeline 可以把它展示为“已完成但需处理失败分片”的状态。</p>
+     */
+    public void publishPartiallySucceeded(SyncTask task,
+                                          SyncExecution execution,
+                                          SyncActorContext actorContext,
+                                          DatasourceRunOnceResponse response,
+                                          List<String> issueCodes) {
+        if (!properties.isEnabled()) {
+            return;
+        }
+        TaskManagementExecutionReceiptRequest request = baseRequest(task, execution, "PARTIALLY_SUCCEEDED");
+        request.setBatchRecordsRead(zeroIfNull(response == null ? null : response.getBatchRecordsRead()));
+        request.setBatchRecordsWritten(zeroIfNull(response == null ? null : response.getBatchRecordsWritten()));
+        request.setBatchFailedRecordCount(zeroIfNull(response == null
+                ? execution.getFailedRecordCount()
+                : response.getBatchFailedRecordCount()));
+        request.setTotalRecordsRead(zeroIfNull(response == null ? execution.getRecordsRead() : response.getTotalRecordsRead()));
+        request.setTotalRecordsWritten(zeroIfNull(response == null ? execution.getRecordsWritten() : response.getTotalRecordsWritten()));
+        request.setTotalFailedRecordCount(zeroIfNull(response == null
+                ? execution.getFailedRecordCount()
+                : response.getTotalFailedRecordCount()));
+        request.setProgressPercent(100);
+        request.setEndOfSource(false);
+        request.setCompleted(false);
+        request.setFailed(false);
+        request.setProgressReported(false);
+        request.setCheckpointPersisted(false);
+        request.setCheckpointType(null);
+        request.setCheckpointValueVisibility(CHECKPOINT_VISIBILITY);
+        request.setErrorSummary("data-sync execution partially succeeded, failedObjectCount="
+                + zeroIfNull(execution.getFailedRecordCount()));
+        request.setWarnings(issueCodes == null || issueCodes.isEmpty()
+                ? List.of("data-sync OBJECT_LIST 部分成功；失败对象可按对象级执行账本选择性重试")
+                : issueCodes.stream().map(code -> "issueCode=" + safeCode(code)).toList());
+        outboxService.enqueueAndDispatch(task, execution, request, actorContext);
+    }
+
     private TaskManagementExecutionReceiptRequest baseRequest(SyncTask task,
                                                               SyncExecution execution,
                                                               String eventType) {

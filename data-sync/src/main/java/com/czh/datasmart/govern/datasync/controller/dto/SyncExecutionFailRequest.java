@@ -28,6 +28,28 @@ public class SyncExecutionFailRequest {
     private String sourceRecordKey;
     private String targetRecordKey;
     private String samplePayload;
+
+    /**
+     * 失败发生前已经读取的记录数。
+     *
+     * <p>普通单对象失败可以为空，由生命周期组件沿用 execution 已有计数；
+     * OBJECT_LIST 这类父任务汇总失败时会传入聚合值，避免父 execution 只记录“失败样本 +1”而丢失已成功对象的读写计数。</p>
+     */
+    private Long recordsRead;
+
+    /**
+     * 失败发生前已经写入的记录数。
+     */
+    private Long recordsWritten;
+
+    /**
+     * 聚合失败记录数或失败对象数。
+     *
+     * <p>对象级 fan-out 场景下，该字段通常表示失败对象数量；行级错误样本场景下可以表示失败行数。
+     * 当前 DTO 允许为空是为了保持旧回调兼容。</p>
+     */
+    private Long failedRecordCount;
+
     private Boolean retryable;
     private String idempotencyKey;
 }

@@ -375,14 +375,14 @@ CREATE TABLE IF NOT EXISTS task_data_sync_worker_execution_receipt (
         AND warning_count >= 0
     ),
     CONSTRAINT ck_task_datasync_exec_progress CHECK (progress_percent IS NULL OR (progress_percent >= 0 AND progress_percent <= 100)),
-    CONSTRAINT ck_task_datasync_exec_event_type CHECK (event_type IN ('PROGRESS', 'CHECKPOINT', 'COMPLETE', 'FAILED'))
+    CONSTRAINT ck_task_datasync_exec_event_type CHECK (event_type IN ('PROGRESS', 'CHECKPOINT', 'COMPLETE', 'PARTIALLY_SUCCEEDED', 'FAILED'))
 );
 
 COMMENT ON TABLE task_data_sync_worker_execution_receipt IS 'task-management 保存 data-sync/datasource-management Runner 低敏执行回执投影，用于任务中心和 Agent timeline 还原端到端历史';
 COMMENT ON COLUMN task_data_sync_worker_execution_receipt.receipt_id IS '执行回执幂等 ID；同一个下游事件重试回写必须复用该值';
 COMMENT ON COLUMN task_data_sync_worker_execution_receipt.command_id IS 'Agent Runtime command ID，用于从工具命令维度串联端到端历史';
 COMMENT ON COLUMN task_data_sync_worker_execution_receipt.outbox_id IS 'task-management 本地 DataSync worker outbox ID';
-COMMENT ON COLUMN task_data_sync_worker_execution_receipt.event_type IS '执行事件类型：PROGRESS、CHECKPOINT、COMPLETE、FAILED';
+COMMENT ON COLUMN task_data_sync_worker_execution_receipt.event_type IS '执行事件类型：PROGRESS、CHECKPOINT、COMPLETE、PARTIALLY_SUCCEEDED、FAILED；部分成功表示已有对象完成但仍有失败对象需要选择性重试';
 COMMENT ON COLUMN task_data_sync_worker_execution_receipt.event_time IS '下游事件发生时间；缺省时由服务层使用 task-management 接收时间';
 COMMENT ON COLUMN task_data_sync_worker_execution_receipt.executor_id IS '下游 Runner/worker 执行器 ID，用于排障定位，不作为权限判断依据';
 COMMENT ON COLUMN task_data_sync_worker_execution_receipt.progress_percent IS '进度百分比；流式、CDC 或未知总量任务允许为空';

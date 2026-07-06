@@ -314,6 +314,9 @@ public class DataSyncWorkerExecutionReceiptService {
         if (eventType == DataSyncWorkerExecutionReceiptEventType.FAILED) {
             warnings.add("收到 FAILED execution receipt；任务中心仅记录低敏投影，不直接改写已完成的投递任务状态");
         }
+        if (eventType == DataSyncWorkerExecutionReceiptEventType.PARTIALLY_SUCCEEDED) {
+            warnings.add("收到 PARTIALLY_SUCCEEDED execution receipt；该状态表示下游已完成可完成部分，但仍存在失败对象或分片需要选择性重试");
+        }
         if (!request.getSyncTaskId().equals(outbox.getSyncTaskId())
                 || !request.getSyncExecutionId().equals(outbox.getSyncExecutionId())) {
             warnings.add("execution receipt 的 sync 引用与 outbox 快照存在差异，请检查下游回执链路是否存在重放或旧执行引用");

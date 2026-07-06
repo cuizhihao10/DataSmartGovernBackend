@@ -13,6 +13,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCheckpointRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCompleteRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionPartialSuccessRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionStartRequest;
 import com.czh.datasmart.govern.datasync.entity.SyncCheckpoint;
 import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
@@ -163,6 +164,54 @@ public class SyncExecutionLifecycleSupport {
     }
 
     /**
+     * 标记父 execution 为部分成功。
+     *
+     * <p>部分成功是多对象/多分片同步的真实生产语义：一部分对象已经成功写入目标端，另一部分对象失败且需要后续选择性重试。
+     * 如果把这种情况粗暴标记为 FAILED，用户会以为所有对象都失败；如果标记为 SUCCEEDED，又会掩盖失败对象。
+     * 因此这里单独使用 PARTIALLY_SUCCEEDED，同时把成功计数、失败对象数和低敏错误摘要写回父 execution。</p>
+     *
+     * <p>该方法仍然沿用 callback 幂等和租约控制：</p>
+     * <p>1. executorId 必须匹配当前持有租约的执行器，防止旧 worker 回写污染新执行；</p>
+     * <p>2. idempotencyKey 防止 outbox、HTTP 重试或 worker 重启导致重复终态推进；</p>
+     * <p>3. task 主状态同步更新为 PARTIALLY_SUCCEEDED，便于运营台展示“可选择性重试”的任务。</p>
+     */
+    public SyncExecution partiallySucceedExecution(SyncTask task,
+                                                   SyncExecution execution,
+                                                   SyncExecutionPartialSuccessRequest request,
+                                                   SyncActorContext actorContext) {
+        String action = "PARTIAL_COMPLETE";
+        String scopeKey = executionScope(task, execution);
+        callbackControlSignalSupport.assertNoStoppedControlSignal(execution, request.getExecutorId(), action);
+        if (idempotencySupport.isDuplicate(task.getTenantId(), task.getId(), execution.getId(), action, scopeKey,
+                request.getIdempotencyKey(), request.getExecutorId(),
+                "partial,recordsRead=" + request.getRecordsRead()
+                        + ",recordsWritten=" + request.getRecordsWritten()
+                        + ",failedRecordCount=" + request.getFailedRecordCount())) {
+            return executionMapper.selectById(execution.getId());
+        }
+        callbackControlSignalSupport.assertActiveCallbackAllowed(execution, request.getExecutorId(), action);
+        execution.setExecutionState(SyncExecutionState.PARTIALLY_SUCCEEDED.name());
+        execution.setRecordsRead(safeLong(request.getRecordsRead()));
+        execution.setRecordsWritten(safeLong(request.getRecordsWritten()));
+        execution.setFailedRecordCount(safeLong(request.getFailedRecordCount()));
+        execution.setErrorSummary(truncate(trimToNull(request.getErrorSummary()), 1000));
+        execution.setFinishedAt(LocalDateTime.now());
+        execution.setUpdateTime(LocalDateTime.now());
+        executionMapper.updateById(execution);
+
+        task.setCurrentState(SyncTaskState.PARTIALLY_SUCCEEDED.name());
+        task.setUpdateTime(LocalDateTime.now());
+        taskMapper.updateById(task);
+        auditSupport.saveAudit(task.getTenantId(), task.getId(), execution.getId(), SyncAuditActionType.RUN_TASK,
+                actorContext, "partialExecution,recordsRead=" + execution.getRecordsRead()
+                        + ",recordsWritten=" + execution.getRecordsWritten()
+                        + ",failedRecordCount=" + execution.getFailedRecordCount());
+        idempotencySupport.markSucceeded(task.getTenantId(), action, scopeKey, request.getIdempotencyKey(),
+                "state=" + execution.getExecutionState());
+        return execution;
+    }
+
+    /**
      * 标记执行失败并记录错误样本。
      */
     public SyncErrorSample failExecution(SyncTask task,
@@ -195,7 +244,15 @@ public class SyncExecutionLifecycleSupport {
         errorSampleMapper.insert(errorSample);
 
         execution.setExecutionState(SyncExecutionState.FAILED.name());
-        execution.setFailedRecordCount(safeLong(execution.getFailedRecordCount()) + 1L);
+        execution.setRecordsRead(request.getRecordsRead() == null
+                ? safeLong(execution.getRecordsRead())
+                : safeLong(request.getRecordsRead()));
+        execution.setRecordsWritten(request.getRecordsWritten() == null
+                ? safeLong(execution.getRecordsWritten())
+                : safeLong(request.getRecordsWritten()));
+        execution.setFailedRecordCount(request.getFailedRecordCount() == null
+                ? safeLong(execution.getFailedRecordCount()) + 1L
+                : Math.max(1L, safeLong(request.getFailedRecordCount())));
         execution.setErrorSummary(errorSample.getErrorMessage());
         execution.setFinishedAt(LocalDateTime.now());
         execution.setUpdateTime(LocalDateTime.now());

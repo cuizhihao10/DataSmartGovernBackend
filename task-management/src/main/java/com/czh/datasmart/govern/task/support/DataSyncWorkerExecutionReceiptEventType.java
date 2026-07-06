@@ -25,15 +25,24 @@ public enum DataSyncWorkerExecutionReceiptEventType {
     /**
      * 检查点事件，表示 Runner 已把某个低敏检查点语义持久化。
      *
-     * <p>注意：这里只允许保存 checkpointType 和 checkpointValueVisibility，
-     * 不能保存真实 checkpointValue，因为真实值可能包含业务主键、时间窗口、分区路径或上游 offset。</p>
+     * <p>注意：这里只允许保存 checkpointType 和 checkpointValueVisibility，不能保存真实 checkpointValue，
+     * 因为真实值可能包含业务主键、时间窗口、分区路径或上游 offset。</p>
      */
     CHECKPOINT,
 
     /**
-     * 完成事件，表示 datasource-management 认为本次 syncExecution 已经到达可结束状态。
+     * 完成事件，表示 datasource-management 认为本次 syncExecution 已经达到可结束状态。
      */
     COMPLETE,
+
+    /**
+     * 部分成功事件。
+     *
+     * <p>OBJECT_LIST、多分片或未来 DataX-style TaskGroup 场景下，父 execution 可能出现“部分对象已经成功、
+     * 部分对象失败”的状态。该事件不等价于 COMPLETE，也不应被压扁成 FAILED；任务中心记录它后，Agent timeline
+     * 和运营台可以提示用户只重试失败对象。</p>
+     */
+    PARTIALLY_SUCCEEDED,
 
     /**
      * 失败事件，表示 datasource-management Runner 在执行阶段失败。
@@ -56,6 +65,10 @@ public enum DataSyncWorkerExecutionReceiptEventType {
         String normalized = value.trim().toUpperCase();
         if ("FAIL".equals(normalized)) {
             return FAILED;
+        }
+        if ("PARTIAL_SUCCESS".equals(normalized) || "PARTIAL_SUCCEEDED".equals(normalized)
+                || "PARTIALLY_SUCCESS".equals(normalized)) {
+            return PARTIALLY_SUCCEEDED;
         }
         try {
             return valueOf(normalized);
