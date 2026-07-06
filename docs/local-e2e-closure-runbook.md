@@ -313,6 +313,25 @@ GET http://localhost:8090/agent/metrics
 .\scripts\local-data-sync-closure-suite.ps1 -PlanOnly
 ```
 
+如果本地已经通过 `local-e2e-start-runtime.ps1` 或手动方式启动了 `task-management`、`datasource-management` 与 `data-sync`，可以追加服务进程 readiness 探针：
+
+```powershell
+.\scripts\local-data-sync-closure-suite.ps1 -CheckServiceReadiness
+```
+
+该探针会做以下只读/无副作用检查：
+
+- `GET /actuator/health` 验证三个服务进程是否可访问；
+- `GET /internal/sync-batch-runs/run-once` 验证 datasource-management 的 internal run-once POST 路由是否存在，预期返回 `405/401/403`；
+- `GET /internal/sync-workers/run-once` 验证 data-sync 的 internal worker POST 路由是否存在，预期返回 `405/401/403`；
+- `GET /internal/data-sync-worker-execution-receipts?limit=1` 验证 task-management 的 data-sync receipt 查询入口是否可访问或被保护。
+
+为什么这里使用 `GET` 而不是 `POST`：
+
+- `POST /internal/sync-workers/run-once` 会真实触发 worker loop，可能认领 execution；
+- `POST /internal/sync-batch-runs/run-once` 会真实触发 datasource-management 读写；
+- readiness 阶段只应该确认服务进程与路由合同存在，不能把有副作用的业务动作伪装成健康检查。
+
 如果希望把 `data-sync` 与 `datasource-management` 的模块全量测试也纳入同一次验收：
 
 ```powershell

@@ -19,6 +19,8 @@
       .\scripts\local-data-sync-closure-suite.ps1 -PlanOnly
     - 快速闭环守门：
       .\scripts\local-data-sync-closure-suite.ps1
+    - 本地服务已经启动后，附加真实服务进程 readiness 探针：
+      .\scripts\local-data-sync-closure-suite.ps1 -CheckServiceReadiness
     - 加上 data-sync/datasource-management 模块全量测试：
       .\scripts\local-data-sync-closure-suite.ps1 -IncludeModuleTestSuites
     - 加上真实 MySQL/PostgreSQL 写入验收：
@@ -28,11 +30,15 @@
 #>
 param(
     [switch]$PlanOnly,
+    [switch]$CheckServiceReadiness,
     [switch]$IncludeModuleTestSuites,
     [switch]$IncludeRealJdbc,
     [switch]$SkipCompile,
     [switch]$SkipDependencyStartForRealJdbc,
-    [switch]$Strict
+    [switch]$Strict,
+    [string]$TaskManagementBaseUrl = "http://localhost:8081",
+    [string]$DatasourceManagementBaseUrl = "http://localhost:8082",
+    [string]$DataSyncBaseUrl = "http://localhost:8086"
 )
 
 $ErrorActionPreference = "Stop"
@@ -130,6 +136,113 @@ function Invoke-RealJdbcStep {
     return $false
 }
 
+function Get-HttpStatusCode {
+    param(
+        [string]$Uri,
+        [string]$Method = "GET"
+    )
+
+    try {
+        $response = Invoke-WebRequest -Uri $Uri -Method $Method -UseBasicParsing -TimeoutSec 5
+        return [int]$response.StatusCode
+    } catch {
+        <#
+            Invoke-WebRequest 在 Windows PowerShell 中遇到 4xx/5xx 会抛异常；但对本脚本来说，
+            405/401/403 这类状态反而可能是“路由存在但方法不允许/需要身份”的正确信号。
+            因此这里只抽取 HTTP 状态码，不打印响应正文，避免把内部错误、SQL、token 或服务详情带到终端。
+        #>
+        $response = $_.Exception.Response
+        if ($null -ne $response -and $null -ne $response.StatusCode) {
+            return [int]$response.StatusCode
+        }
+        return $null
+    }
+}
+
+function Invoke-HttpProbe {
+    param(
+        [string]$Name,
+        [string]$Uri,
+        [int[]]$ExpectedStatusCodes,
+        [string]$PassDetail,
+        [string]$FailDetail
+    )
+
+    $statusCode = Get-HttpStatusCode -Uri $Uri
+    if ($null -ne $statusCode -and $ExpectedStatusCodes -contains $statusCode) {
+        Add-ClosureCheck -Name $Name -Status "PASS" -Detail ("{0}; status={1}" -f $PassDetail, $statusCode)
+        return $true
+    }
+    $actual = if ($null -eq $statusCode) { "NO_RESPONSE" } else { [string]$statusCode }
+    Add-ClosureCheck -Name $Name -Status "FAIL" -Detail ("{0}; status={1}" -f $FailDetail, $actual)
+    if ($Strict) {
+        exit 1
+    }
+    return $false
+}
+
+function Invoke-ServiceReadinessStep {
+    <#
+        服务进程级 readiness 是“完整多服务 E2E”之前的安全前置检查。
+
+        它只做 GET 探测：
+        - health 端点返回 200，说明服务进程已启动；
+        - 对只有 POST 的 internal 路由发 GET，期望 405、401 或 403：
+          405 表示路由存在但方法不允许，401/403 表示路由存在且被安全边界保护。
+
+        为什么不直接 POST：
+        - POST /internal/sync-workers/run-once 会真实触发 data-sync worker loop，可能认领 execution；
+        - POST /internal/sync-batch-runs/run-once 会真实触发 datasource-management 读写；
+        - 因此 readiness 只能确认“服务和路由已就绪”，不能把读写动作伪装成健康检查。
+    #>
+    Write-Host ""
+    Write-Host ">>> service readiness probes" -ForegroundColor Cyan
+    $allReady = $true
+    $allReady = (Invoke-HttpProbe `
+        -Name "task-management health" `
+        -Uri "$TaskManagementBaseUrl/actuator/health" `
+        -ExpectedStatusCodes @(200) `
+        -PassDetail "task-management service process is reachable" `
+        -FailDetail "task-management health endpoint is not reachable") -and $allReady
+
+    $allReady = (Invoke-HttpProbe `
+        -Name "datasource-management health" `
+        -Uri "$DatasourceManagementBaseUrl/actuator/health" `
+        -ExpectedStatusCodes @(200) `
+        -PassDetail "datasource-management service process is reachable" `
+        -FailDetail "datasource-management health endpoint is not reachable") -and $allReady
+
+    $allReady = (Invoke-HttpProbe `
+        -Name "data-sync health" `
+        -Uri "$DataSyncBaseUrl/actuator/health" `
+        -ExpectedStatusCodes @(200) `
+        -PassDetail "data-sync service process is reachable" `
+        -FailDetail "data-sync health endpoint is not reachable") -and $allReady
+
+    $allReady = (Invoke-HttpProbe `
+        -Name "datasource-management run-once route" `
+        -Uri "$DatasourceManagementBaseUrl/internal/sync-batch-runs/run-once" `
+        -ExpectedStatusCodes @(405, 401, 403) `
+        -PassDetail "internal run-once route exists and was not executed by GET" `
+        -FailDetail "internal run-once route is missing or service is unavailable") -and $allReady
+
+    $allReady = (Invoke-HttpProbe `
+        -Name "data-sync worker route" `
+        -Uri "$DataSyncBaseUrl/internal/sync-workers/run-once" `
+        -ExpectedStatusCodes @(405, 401, 403) `
+        -PassDetail "internal worker route exists and was not executed by GET" `
+        -FailDetail "internal worker route is missing or service is unavailable") -and $allReady
+
+    $allReady = (Invoke-HttpProbe `
+        -Name "task-management receipt query" `
+        -Uri "$TaskManagementBaseUrl/internal/data-sync-worker-execution-receipts?limit=1" `
+        -ExpectedStatusCodes @(200, 401, 403) `
+        -PassDetail "receipt query route is reachable or protected" `
+        -FailDetail "receipt query route is unavailable") -and $allReady
+
+    return $allReady
+}
+
 function Write-ClosurePlan {
     Write-Host "DataSmart Govern data-sync closure suite" -ForegroundColor Cyan
     Write-Host "Repo root: $script:RepoRoot"
@@ -141,11 +254,14 @@ function Write-ClosurePlan {
     if (-not $SkipCompile) {
         Write-Host "4. data-sync + datasource-management compile gate"
     }
+    if ($CheckServiceReadiness) {
+        Write-Host "5. service-process readiness probes for task-management, datasource-management, and data-sync"
+    }
     if ($IncludeModuleTestSuites) {
-        Write-Host "5. full data-sync and datasource-management module test suites"
+        Write-Host "6. full data-sync and datasource-management module test suites"
     }
     if ($IncludeRealJdbc) {
-        Write-Host "6. explicit real MySQL -> PostgreSQL JDBC E2E via local-data-sync-real-e2e.ps1"
+        Write-Host "7. explicit real MySQL -> PostgreSQL JDBC E2E via local-data-sync-real-e2e.ps1"
     }
     Write-Host ""
     Write-Host "Safety boundaries:" -ForegroundColor Yellow
@@ -230,6 +346,12 @@ if (-not $SkipCompile) {
         -FailDetail "compile gate failed") -and $allPassed
 } else {
     Add-ClosureCheck -Name "compile gate" -Status "WARN" -Detail "Skipped by parameter"
+}
+
+if ($CheckServiceReadiness) {
+    $allPassed = (Invoke-ServiceReadinessStep) -and $allPassed
+} else {
+    Add-ClosureCheck -Name "service readiness" -Status "WARN" -Detail "Skipped by default; pass -CheckServiceReadiness after local services are started"
 }
 
 if ($IncludeModuleTestSuites) {
