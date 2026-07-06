@@ -49,6 +49,15 @@ public class DataSyncDatasourceRunOnceProperties {
     private String runOncePath = "/internal/sync-batch-runs/run-once";
 
     /**
+     * datasource-management 的内部 splitPk 范围探测路径。
+     *
+     * <p>AUTO_SPLIT_PK 需要先知道源端 splitPk 的 min/max，才能生成确定的 ID_RANGE 分片账本。
+     * 该路径只做只读探测，不执行目标端写入；仍然必须走服务账号 internal 路由，避免普通用户绕过 data-sync
+     * 状态机直接探测业务表范围。</p>
+     */
+    private String partitionRangeProbePath = "/internal/sync-partitions/range-probe";
+
+    /**
      * 发送给 datasource-management 的服务名 Header。
      */
     private String sourceService = "data-sync";
@@ -109,4 +118,19 @@ public class DataSyncDatasourceRunOnceProperties {
      * <p>当前 data-sync 尚未实现外层多批循环和退避重试，因此先设为 0。后续接 worker loop 后再统一纳入 retryPolicy。</p>
      */
     private int defaultMaxRetryCount = 0;
+
+    /**
+     * 默认脏数据数量阈值。
+     *
+     * <p>对齐 DataX 的 maxDirtyNumber 思路：少量坏数据可以结构化落盘并继续处理，超过阈值则让任务失败或转人工。
+     * 生产环境应按租户、连接器、任务类型配置更精细的策略。</p>
+     */
+    private long defaultMaxDirtyRecordCount = 100L;
+
+    /**
+     * 默认脏数据比例阈值。
+     *
+     * <p>例如 0.01 表示当前批次或累计上下文中脏数据比例超过 1% 时，执行面应建议 fail-closed。</p>
+     */
+    private double defaultMaxDirtyRecordRatio = 0.01D;
 }

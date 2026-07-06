@@ -214,7 +214,10 @@ public class SyncBatchRunOnceDispatchService {
                     firstText(remoteResult.errorType(), "CONNECTOR_RUNTIME_RUN_ONCE_FAILED"),
                     firstText(remoteResult.errorCode(), "RUN_ONCE_REMOTE_FAILED"),
                     firstText(remoteResult.errorMessage(), "datasource-management run-once 执行失败，本次执行已按 fail-closed 终止"),
-                    remoteResult.retryable());
+                    remoteResult.retryable(),
+                    remoteResult.totalRecordsRead(),
+                    remoteResult.totalRecordsWritten(),
+                    remoteResult.totalFailedRecordCount());
             return result(remoteResult.remoteCalled(), false, true, remoteResult.dispatchStatus(),
                     execution.getId(), remoteResult.remoteRunStatus(), remoteResult.issueCodes());
         }
@@ -407,6 +410,8 @@ public class SyncBatchRunOnceDispatchService {
         runtimeControlPlan.setHeartbeatRequired(true);
         runtimeControlPlan.setTimeoutSeconds(properties.getDefaultTimeoutSeconds());
         runtimeControlPlan.setMaxRetryCount(properties.getDefaultMaxRetryCount());
+        runtimeControlPlan.setMaxDirtyRecordCount(properties.getDefaultMaxDirtyRecordCount());
+        runtimeControlPlan.setMaxDirtyRecordRatio(properties.getDefaultMaxDirtyRecordRatio());
         String idempotencyScope = "task:" + bridgePlan.getSyncTaskId() + ":execution:" + bridgePlan.getExecutionId();
         if (hasText(shardOrPartition)) {
             idempotencyScope = idempotencyScope + ":shard:" + shardOrPartition;
@@ -464,11 +469,15 @@ public class SyncBatchRunOnceDispatchService {
                     "datasource-management run-once 返回空执行摘要，本次执行按 fail-closed 终止",
                     null);
         }
+        recordDirtySamples(task, execution, actorContext, response);
         if (Boolean.TRUE.equals(response.getFailed()) || Boolean.TRUE.equals(response.getFailCallbackRecommended())) {
             return failAfterRemoteResult(task, execution, actorContext,
                     firstText(response.getRunStatus(), "REMOTE_RUN_ONCE_FAILED"),
                     "datasource-management run-once 报告执行失败，本次执行已回写 fail",
-                    response.getRunStatus());
+                    response.getRunStatus(),
+                    zeroIfNull(response.getTotalRecordsRead()),
+                    zeroIfNull(response.getTotalRecordsWritten()),
+                    zeroIfNull(response.getTotalFailedRecordCount()));
         }
         if (Boolean.TRUE.equals(response.getCompleteCallbackRecommended())) {
             return remoteResult(true, true, false, "DISPATCHED_AND_COMPLETED",
@@ -536,9 +545,38 @@ public class SyncBatchRunOnceDispatchService {
                                                                         String errorCode,
                                                                         String errorMessage,
                                                                         String remoteRunStatus) {
+        return failAfterRemoteResult(task, execution, actorContext, errorCode, errorMessage, remoteRunStatus,
+                0L, 0L, 0L);
+    }
+
+    private SyncBatchRunOnceRemoteExecutionResult failAfterRemoteResult(SyncTask task,
+                                                                        SyncExecution execution,
+                                                                        SyncActorContext actorContext,
+                                                                        String errorCode,
+                                                                        String errorMessage,
+                                                                        String remoteRunStatus,
+                                                                        Long totalRecordsRead,
+                                                                        Long totalRecordsWritten,
+                                                                        Long totalFailedRecordCount) {
         return remoteResult(true, false, true, "DISPATCHED_AND_FAILED_BY_REMOTE_RESULT",
-                execution.getId(), remoteRunStatus, 0L, 0L, 0L,
+                execution.getId(), remoteRunStatus, totalRecordsRead, totalRecordsWritten, totalFailedRecordCount,
                 "CONNECTOR_RUNTIME_RUN_ONCE_FAILED", errorCode, errorMessage, false, List.of(errorCode));
+    }
+
+    /**
+     * 将 datasource-management 返回的结构化脏样本落到 data-sync 错误样本表。
+     *
+     * <p>这里不改变 execution 状态，只把样本变成可查询、可审计、可保留期管理的产品数据。状态机是否 complete
+     * 或 fail 仍由 response 的 callback 建议和阈值裁决决定。</p>
+     */
+    private void recordDirtySamples(SyncTask task,
+                                    SyncExecution execution,
+                                    SyncActorContext actorContext,
+                                    DatasourceRunOnceResponse response) {
+        if (response == null || response.getDirtySamples() == null || response.getDirtySamples().isEmpty()) {
+            return;
+        }
+        lifecycleSupport.recordDirtySamples(task, execution, response.getDirtySamples(), actorContext);
     }
 
     private void completeExecution(SyncTask task,
@@ -562,6 +600,19 @@ public class SyncBatchRunOnceDispatchService {
                                String errorCode,
                                String errorMessage,
                                boolean retryable) {
+        failExecution(task, execution, actorContext, errorType, errorCode, errorMessage, retryable, null, null, null);
+    }
+
+    private void failExecution(SyncTask task,
+                               SyncExecution execution,
+                               SyncActorContext actorContext,
+                               String errorType,
+                               String errorCode,
+                               String errorMessage,
+                               boolean retryable,
+                               Long recordsRead,
+                               Long recordsWritten,
+                               Long failedRecordCount) {
         SyncExecutionFailRequest request = new SyncExecutionFailRequest();
         request.setExecutorId(execution.getExecutorId());
         request.setErrorType(errorType);
@@ -570,6 +621,9 @@ public class SyncBatchRunOnceDispatchService {
         request.setSourceRecordKey(null);
         request.setTargetRecordKey(null);
         request.setSamplePayload(null);
+        request.setRecordsRead(recordsRead);
+        request.setRecordsWritten(recordsWritten);
+        request.setFailedRecordCount(failedRecordCount);
         request.setRetryable(retryable);
         request.setIdempotencyKey("datasource-run-once-fail-" + execution.getId() + "-" + errorCode);
         lifecycleSupport.failExecution(task, execution, request, actorContext);

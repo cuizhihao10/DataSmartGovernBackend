@@ -349,6 +349,7 @@ class SyncOfflineRunnerDispatchServiceTest {
                         objectExecutionLifecycleSupport(),
                         bridgePlanSupport,
                         runOnceDispatchService,
+                        null,
                         lifecycleSupport,
                         receiptPublisher);
         return new SyncOfflineRunnerDispatchService(bridgePlanSupport, runOnceDispatchService,

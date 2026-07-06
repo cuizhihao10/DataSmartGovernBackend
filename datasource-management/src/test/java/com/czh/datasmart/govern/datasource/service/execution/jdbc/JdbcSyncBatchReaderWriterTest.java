@@ -121,7 +121,7 @@ class JdbcSyncBatchReaderWriterTest {
     }
 
     @Test
-    void writerShouldRollbackWhenRowMissesRequiredColumn() {
+    void writerShouldIsolateDirtyRowWhenRowMissesRequiredColumn() {
         RecordingJdbc jdbc = new RecordingJdbc(List.of(), new int[]{1}, false);
         JdbcSyncBatchWriter writer = new JdbcSyncBatchWriter(jdbc);
 
@@ -132,10 +132,14 @@ class JdbcSyncBatchReaderWriterTest {
 
         assertEquals(0L, result.getRecordsWritten());
         assertEquals(1L, result.getFailedRecordCount());
-        assertFalse(result.getCommitRecommended());
-        assertFalse(jdbc.committed);
+        assertTrue(result.getCommitRecommended());
+        assertTrue(jdbc.committed);
         assertTrue(jdbc.rolledBack);
-        assertTrue(result.getErrorSummary().contains("写入行缺少字段"));
+        assertTrue(result.getErrorSummary().contains("行级隔离"));
+        assertEquals(1, result.getDirtySamples().size());
+        assertEquals("FIELD_MAPPING_ERROR", result.getDirtySamples().get(0).getErrorType());
+        assertTrue(result.getDirtySamples().get(0).getSourceRecordKey().contains("PRIMARY_KEY_EQ"));
+        assertTrue(result.getDirtySamples().get(0).getSamplePayload().contains("sourceRecordKey"));
     }
 
     private SyncBatchWriteContext writeContext() {
@@ -146,6 +150,7 @@ class JdbcSyncBatchReaderWriterTest {
                 "APPEND",
                 100,
                 100,
+                List.of("id"),
                 new SyncPreparedJdbcStatement(
                         "APPEND_WRITE",
                         "INSERT INTO dwd.orders (id, amount) VALUES (?, ?)",

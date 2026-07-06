@@ -11,6 +11,9 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionClaimRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionClaimResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncRecoveryPlanWorkerRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncRecoveryPlanWorkerResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanView;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerLoopExecutionResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerLoopRunRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerLoopRunResult;
@@ -19,10 +22,13 @@ import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
 import com.czh.datasmart.govern.datasync.service.DataSyncExecutorLeaseService;
+import com.czh.datasmart.govern.datasync.service.DataSyncRecoveryPlanWorkerService;
 import com.czh.datasmart.govern.datasync.service.DataSyncWorkerLoopService;
+import com.czh.datasmart.govern.datasync.service.support.SyncDirtyRecordReplayExecutionSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLifecycleSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncOfflineRunnerDispatchResult;
 import com.czh.datasmart.govern.datasync.service.support.SyncOfflineRunnerDispatchService;
+import com.czh.datasmart.govern.datasync.support.SyncTriggerType;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -61,6 +67,8 @@ public class DataSyncWorkerLoopServiceImpl implements DataSyncWorkerLoopService 
     private final DataSyncExecutorLeaseService leaseService;
     private final SyncTemplateMapper templateMapper;
     private final SyncOfflineRunnerDispatchService dispatchService;
+    private final DataSyncRecoveryPlanWorkerService recoveryPlanWorkerService;
+    private final SyncDirtyRecordReplayExecutionSupport dirtyRecordReplayExecutionSupport;
     private final SyncExecutionLifecycleSupport lifecycleSupport;
     private final DataSyncWorkerLoopProperties properties;
 
@@ -148,7 +156,7 @@ public class DataSyncWorkerLoopServiceImpl implements DataSyncWorkerLoopService 
         }
 
         try {
-            SyncOfflineRunnerDispatchResult dispatchResult = dispatchService.dispatchOffline(
+            SyncOfflineRunnerDispatchResult dispatchResult = dispatchClaimedExecution(
                     execution, task, template, claimResult.workerPlan(), actorContext);
             return fromDispatchResult(task, execution, claimResult, dispatchResult);
         } catch (Exception exception) {
@@ -157,6 +165,65 @@ public class DataSyncWorkerLoopServiceImpl implements DataSyncWorkerLoopService 
             return failClaimedExecution(task, execution, actorContext, DISPATCH_EXCEPTION_ERROR,
                     "worker loop 派发阶段出现内部异常，本次执行按 fail-closed 终止");
         }
+    }
+
+    /**
+     * 按 execution 类型选择真实派发路径。
+     *
+     * <p>普通 MANUAL/SCHEDULED execution 继续进入离线 Runner 调度门面。对 REPLAY/BACKFILL execution，
+     * worker loop 会先尝试读取恢复计划；如果计划中存在 {@code errorSampleSelector}，说明这是“脏数据修复重放”，
+     * 此时必须先确认消费恢复计划，再按错误样本主键逐条重放。</p>
+     *
+     * <p>这一层判断很重要：如果 dirty replay 不被识别而直接落到普通 run-once，
+     * 系统就可能重新扫描整张表，而不是只重放用户选择并确认修复的错误样本。</p>
+     */
+    private SyncOfflineRunnerDispatchResult dispatchClaimedExecution(SyncExecution execution,
+                                                                     SyncTask task,
+                                                                     SyncTemplate template,
+                                                                     SyncWorkerExecutionPlanView workerPlan,
+                                                                     SyncActorContext actorContext) {
+        SyncRecoveryPlanWorkerResult recoveryPlan = claimRecoveryPlanIfNecessary(execution, actorContext);
+        if (dirtyRecordReplayExecutionSupport.supports(recoveryPlan)) {
+            consumeRecoveryPlan(execution, actorContext);
+            return dirtyRecordReplayExecutionSupport.dispatchDirtyRecordReplay(
+                    execution, task, template, workerPlan, recoveryPlan, actorContext);
+        }
+        return dispatchService.dispatchOffline(execution, task, template, workerPlan, actorContext);
+    }
+
+    /**
+     * 恢复类 execution 读取恢复计划。
+     *
+     * <p>普通 execution 不读取计划，避免每个任务都多一次数据库查询。REPLAY/BACKFILL 读取计划后，
+     * 如果不是 dirty-record replay，当前仍保持原有离线 Runner 路径，后续 checkpoint/window backfill 可以继续在这里扩展。</p>
+     */
+    private SyncRecoveryPlanWorkerResult claimRecoveryPlanIfNecessary(SyncExecution execution,
+                                                                      SyncActorContext actorContext) {
+        if (!isRecoveryExecution(execution)) {
+            return null;
+        }
+        return recoveryPlanWorkerService.claimPlan(execution.getId(), recoveryPlanRequest(execution, "claim"),
+                actorContext);
+    }
+
+    private void consumeRecoveryPlan(SyncExecution execution, SyncActorContext actorContext) {
+        recoveryPlanWorkerService.consumePlan(execution.getId(), recoveryPlanRequest(execution, "consume"),
+                actorContext);
+    }
+
+    private SyncRecoveryPlanWorkerRequest recoveryPlanRequest(SyncExecution execution, String action) {
+        SyncRecoveryPlanWorkerRequest request = new SyncRecoveryPlanWorkerRequest();
+        request.setExecutorId(execution.getExecutorId());
+        request.setIdempotencyKey("worker-loop-recovery-plan-" + action + "-" + execution.getId());
+        return request;
+    }
+
+    private boolean isRecoveryExecution(SyncExecution execution) {
+        if (execution == null || execution.getTriggerType() == null) {
+            return false;
+        }
+        String triggerType = execution.getTriggerType().trim();
+        return SyncTriggerType.REPLAY.name().equals(triggerType) || SyncTriggerType.BACKFILL.name().equals(triggerType);
     }
 
     /**

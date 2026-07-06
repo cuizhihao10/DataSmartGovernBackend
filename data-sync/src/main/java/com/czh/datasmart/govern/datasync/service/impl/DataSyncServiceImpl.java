@@ -16,6 +16,8 @@ import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTemplateReques
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncAuditQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncCheckpointQueryCriteria;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordReplayRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordReplayResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncErrorSampleQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCheckpointRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCompleteRequest;
@@ -50,6 +52,7 @@ import com.czh.datasmart.govern.datasync.service.DataSyncService;
 import com.czh.datasmart.govern.datasync.service.support.SyncAuditSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncDataScopeSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncDataVisibility;
+import com.czh.datasmart.govern.datasync.service.support.SyncDirtyRecordReplaySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionCreationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLifecycleSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncObjectExecutionOperationSupport;
@@ -108,6 +111,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncTemplateExecutionPrecheckSupport templateExecutionPrecheckSupport;
     private final SyncOfflineJobPlanSupport offlineJobPlanSupport;
     private final SyncObjectExecutionOperationSupport objectExecutionOperationSupport;
+    private final SyncDirtyRecordReplaySupport dirtyRecordReplaySupport;
 
     @Override
     @Transactional
@@ -478,6 +482,22 @@ public class DataSyncServiceImpl implements DataSyncService {
         }
         Page<SyncErrorSample> page = errorSampleMapper.selectPage(querySupport.page(criteria.current(), criteria.size()), wrapper);
         return PlatformPageResponse.of(page.getCurrent(), page.getSize(), page.getTotal(), page.getRecords());
+    }
+
+    /**
+     * 基于错误样本创建脏数据修复重放计划。
+     *
+     * <p>Service 仍然只做入口级任务读取和权限收敛：先通过 {@link #getTask(Long, SyncActorContext)}
+     * 校验租户、项目、SELF 范围，再把“错误样本选择、retryable 校验、修复确认、恢复计划创建、审计”等复杂规则委托给
+     * {@link SyncDirtyRecordReplaySupport}。这样可以避免 DataSyncServiceImpl 因为数据治理细节继续膨胀。</p>
+     */
+    @Override
+    @Transactional
+    public SyncDirtyRecordReplayResult replayDirtyRecords(Long taskId,
+                                                          SyncDirtyRecordReplayRequest request,
+                                                          SyncActorContext actorContext) {
+        SyncTask task = getTask(taskId, actorContext);
+        return dirtyRecordReplaySupport.replayDirtyRecords(task, request, actorContext);
     }
 
     @Override

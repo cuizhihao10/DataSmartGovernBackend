@@ -15,6 +15,9 @@ import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncObjectExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeClient;
+import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeRequest;
+import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeResponse;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
 import com.czh.datasmart.govern.datasync.support.SyncObjectExecutionState;
 import lombok.RequiredArgsConstructor;
@@ -41,13 +44,13 @@ import java.util.stream.Collectors;
  * 对当前项目而言，OBJECT_LIST 已经解决了“多张表分别执行、失败表可重试”的问题，本类进一步解决
  * “同一张大表按 partitionConfig 拆成多个 ID range 分片，每个分片独立执行、独立计数、独立失败和独立重试”的问题。</p>
  *
- * <p>当前闭环范围刻意收敛在 {@code FULL}/{@code ONE_TIME_MIGRATION + SINGLE_OBJECT + ID_RANGE}：</p>
+ * <p>当前闭环范围刻意收敛在 {@code FULL}/{@code ONE_TIME_MIGRATION + SINGLE_OBJECT + ID_RANGE/AUTO_SPLIT_PK}：</p>
  * <p>1. FULL/ONE_TIME_MIGRATION 不需要 checkpoint 原始水位交接，适合先做端到端闭环；</p>
  * <p>2. SINGLE_OBJECT 表示用户同步的是一张源表到一张目标表，分片只发生在这张表内部；</p>
  * <p>3. ID_RANGE 使用结构化过滤条件表达 {@code id >= ? AND id < ?} 这类边界，边界值只进入 internal run-once
  * 请求并通过 PreparedStatement 绑定，不写入公开日志、receipt 或指标；</p>
- * <p>4. HASH_BUCKET、TIME_WINDOW、动态 min/max 探测、文件 chunk 暂不在本轮扩散，避免闭环阶段引入新的连接器统计接口、
- * 方言差异和额外一致性语义。</p>
+ * <p>4. AUTO_SPLIT_PK 会先调用 datasource-management 的只读 range-probe 探测 min/max，再转换成 ID_RANGE；
+ * HASH_BUCKET、TIME_WINDOW、文件 chunk 暂不在本轮扩散，避免闭环阶段引入更多方言一致性语义。</p>
  *
  * <p>并行执行说明：</p>
  * <p>本类会按照 {@link SyncPartitionShardExecutionContract#maxParallelism()} 对分片做有界并发。也就是说，
@@ -74,6 +77,7 @@ public class SyncPartitionShardFanOutDispatchService {
     private final SyncObjectExecutionLifecycleSupport objectExecutionLifecycleSupport;
     private final SyncBatchRunnerBridgePlanSupport bridgePlanSupport;
     private final SyncBatchRunOnceDispatchService runOnceDispatchService;
+    private final DatasourcePartitionRangeProbeClient rangeProbeClient;
     private final SyncExecutionLifecycleSupport lifecycleSupport;
     private final DataSyncTaskManagementReceiptPublisher receiptPublisher;
 
@@ -120,7 +124,8 @@ public class SyncPartitionShardFanOutDispatchService {
                                                                    SyncWorkerExecutionPlanView workerPlan,
                                                                    SyncActorContext actorContext,
                                                                    SyncOfflineRunnerJobContract parentContract) {
-        SyncPartitionShardExecutionContract partitionContract = partitionContractSupport.parse(template);
+        SyncPartitionShardExecutionContract partitionContract = resolvePartitionContract(task, execution, template,
+                actorContext, parentContract);
         if (!partitionContract.executableByPartitionFanOut()) {
             return failFanOut(task, execution, actorContext, parentContract,
                     false,
@@ -157,7 +162,7 @@ public class SyncPartitionShardFanOutDispatchService {
             bundles.add(new ShardExecutionBundle(shard, shardExecution));
         }
 
-        List<ShardDispatchOutcome> outcomes = dispatchShardBatches(
+        List<ShardDispatchOutcome> outcomes = dispatchShardTaskGroups(
                 task, execution, template, workerPlan, actorContext, partitionContract, bundles);
         boolean remoteCalled = outcomes.stream().anyMatch(ShardDispatchOutcome::remoteCalled);
         List<String> accumulatedIssues = outcomes.stream()
@@ -210,10 +215,85 @@ public class SyncPartitionShardFanOutDispatchService {
     }
 
     /**
-     * 按 maxParallelism 对分片执行有界并发。
+     * 解析分片合同，并在 AUTO_SPLIT_PK 场景下触发 datasource-management range-probe。
      *
-     * <p>这里没有把所有 shard 一次性无限提交，是为了保护源库和目标库。数据同步任务的瓶颈通常在数据库 IO、
-     * 网络和目标端写入冲突上，而不是 Java 线程创建成本；因此“可控并发”比“越多越快”更接近生产系统。</p>
+     * <p>这个步骤对应 DataX 的 splitPk min/max 探测，但职责边界更清晰：data-sync 只负责控制面合同和账本，
+     * datasource-management 负责真实源库连接和只读探测。探测到的 min/max 只用于生成 internal range filter，
+     * 不进入普通日志、receipt 或指标。</p>
+     */
+    private SyncPartitionShardExecutionContract resolvePartitionContract(SyncTask task,
+                                                                         SyncExecution execution,
+                                                                         SyncTemplate template,
+                                                                         SyncActorContext actorContext,
+                                                                         SyncOfflineRunnerJobContract parentContract) {
+        SyncPartitionShardExecutionContract parsed = partitionContractSupport.parse(template);
+        if (!parsed.autoRangeProbeRequired()) {
+            return parsed;
+        }
+        try {
+            DatasourcePartitionRangeProbeRequest request = new DatasourcePartitionRangeProbeRequest();
+            request.setDatasourceId(template.getSourceDatasourceId());
+            request.setConnectorType(template.getSourceConnectorType());
+            request.setObjectLocator(objectLocator(template.getSourceSchemaName(), template.getSourceObjectName()));
+            request.setSplitPk(parsed.partitionField());
+            DatasourcePartitionRangeProbeResponse response = rangeProbeClient.probeRange(request, actorContext);
+            return partitionContractSupport.buildAutoRangeContract(parsed, response);
+        } catch (RuntimeException exception) {
+            return new SyncPartitionShardExecutionContract(
+                    true,
+                    true,
+                    false,
+                    "AUTO_SPLIT_PK",
+                    parsed.partitionField(),
+                    parsed.requestedShardCount(),
+                    parsed.maxParallelism(),
+                    parsed.taskGroupSize(),
+                    parsed.maxAttemptCount(),
+                    true,
+                    parsed.maxDirtyRecordCount(),
+                    parsed.maxDirtyRecordRatio(),
+                    List.of(),
+                    mergeIssueCodes(parsed.issueCodes(), List.of(), "PARTITION_AUTO_RANGE_PROBE_FAILED"),
+                    mergeIssueCodes(parsed.warnings(), parentContract == null ? List.of() : parentContract.issueCodes(),
+                            "PARTITION_AUTO_RANGE_PROBE_FAILED"),
+                    SyncPartitionShardExecutionContract.PAYLOAD_POLICY
+            );
+        }
+    }
+
+    private String objectLocator(String schemaName, String objectName) {
+        if (!hasText(schemaName)) {
+            return objectName;
+        }
+        return schemaName + "." + objectName;
+    }
+
+    /**
+     * 按 TaskGroup 分组，再在组内按 channel 执行有界并发。
+     *
+     * <p>DataX 中 TaskGroup 是分片任务的小调度容器，channel 是该容器里同时运行的 Reader/Writer 通道数量。
+     * 本项目的第一阶段实现采用“TaskGroup 顺序推进、组内 channel 并发”的保守策略：这样可以先获得清晰账本和
+     * 失败重试语义，避免一次性把所有分片同时压到源库/目标库。</p>
+     */
+    private List<ShardDispatchOutcome> dispatchShardTaskGroups(SyncTask task,
+                                                               SyncExecution execution,
+                                                               SyncTemplate template,
+                                                               SyncWorkerExecutionPlanView workerPlan,
+                                                               SyncActorContext actorContext,
+                                                               SyncPartitionShardExecutionContract partitionContract,
+                                                               List<ShardExecutionBundle> bundles) {
+        List<ShardDispatchOutcome> outcomes = new ArrayList<>();
+        int taskGroupSize = effectiveTaskGroupSize(partitionContract, bundles.size());
+        for (int groupStart = 0; groupStart < bundles.size(); groupStart += taskGroupSize) {
+            int groupEnd = Math.min(groupStart + taskGroupSize, bundles.size());
+            outcomes.addAll(dispatchShardBatches(task, execution, template, workerPlan, actorContext,
+                    partitionContract, bundles.subList(groupStart, groupEnd), groupStart / taskGroupSize));
+        }
+        return outcomes;
+    }
+
+    /**
+     * 按 channel 对一个 TaskGroup 内的分片执行有界并发。
      */
     private List<ShardDispatchOutcome> dispatchShardBatches(SyncTask task,
                                                             SyncExecution execution,
@@ -221,11 +301,12 @@ public class SyncPartitionShardFanOutDispatchService {
                                                             SyncWorkerExecutionPlanView workerPlan,
                                                             SyncActorContext actorContext,
                                                             SyncPartitionShardExecutionContract partitionContract,
-                                                            List<ShardExecutionBundle> bundles) {
+                                                            List<ShardExecutionBundle> bundles,
+                                                            int taskGroupOrdinal) {
         int parallelism = effectiveParallelism(partitionContract, bundles.size());
         List<ShardDispatchOutcome> outcomes = new ArrayList<>();
         try (ExecutorService executorService = Executors.newFixedThreadPool(
-                parallelism, Thread.ofVirtual().name("data-sync-partition-shard-", 0).factory())) {
+                parallelism, Thread.ofVirtual().name("data-sync-partition-tg-" + taskGroupOrdinal + "-", 0).factory())) {
             for (int start = 0; start < bundles.size(); start += parallelism) {
                 int end = Math.min(start + parallelism, bundles.size());
                 List<Future<ShardDispatchOutcome>> futures = new ArrayList<>();
@@ -569,6 +650,11 @@ public class SyncPartitionShardFanOutDispatchService {
     private int effectiveParallelism(SyncPartitionShardExecutionContract partitionContract, int shardCount) {
         int configured = partitionContract == null ? 1 : partitionContract.maxParallelism();
         return Math.max(1, Math.min(Math.min(configured, MAX_EFFECTIVE_PARALLELISM), Math.max(1, shardCount)));
+    }
+
+    private int effectiveTaskGroupSize(SyncPartitionShardExecutionContract partitionContract, int shardCount) {
+        int configured = partitionContract == null ? shardCount : partitionContract.taskGroupSize();
+        return Math.max(1, Math.min(configured, Math.max(1, shardCount)));
     }
 
     private int safeInt(Integer value) {

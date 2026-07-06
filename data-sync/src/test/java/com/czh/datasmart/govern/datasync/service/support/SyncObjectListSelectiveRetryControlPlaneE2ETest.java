@@ -177,6 +177,7 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
                         new SyncObjectExecutionLifecycleSupport(objectExecutionMapper),
                         bridgePlanSupport,
                         runOnceDispatchService,
+                        null,
                         lifecycleSupport,
                         receiptPublisher);
         return new SyncOfflineRunnerDispatchService(

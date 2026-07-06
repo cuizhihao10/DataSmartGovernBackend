@@ -308,6 +308,7 @@ CREATE TABLE IF NOT EXISTS data_sync_execution_recovery_plan (
     window_start VARCHAR(128),
     window_end VARCHAR(128),
     shard_or_partition VARCHAR(256),
+    error_sample_selector TEXT,
     reason VARCHAR(500),
     plan_state VARCHAR(32) NOT NULL DEFAULT 'CREATED',
     create_time TIMESTAMP WITHOUT TIME ZONE NOT NULL,
@@ -321,6 +322,7 @@ COMMENT ON TABLE data_sync_execution_recovery_plan IS '数据同步 replay/backf
 COMMENT ON COLUMN data_sync_execution_recovery_plan.recovery_type IS '恢复类型：REPLAY 表示从历史执行或 checkpoint 回放，BACKFILL 表示按窗口或分区补数';
 COMMENT ON COLUMN data_sync_execution_recovery_plan.execution_id IS '本恢复计划驱动的新 executionId，worker 认领 execution 后按该字段读取计划';
 COMMENT ON COLUMN data_sync_execution_recovery_plan.source_checkpoint_id IS 'replay 来源 checkpointId；为空表示从来源 execution 起点回放或由 worker 选择安全起点';
+COMMENT ON COLUMN data_sync_execution_recovery_plan.error_sample_selector IS '脏数据修复重放 selector，只保存错误样本 ID、数量、来源 execution 和修复策略摘要，不保存原始坏行、SQL 或凭据';
 COMMENT ON COLUMN data_sync_execution_recovery_plan.reason IS '低敏操作原因，禁止保存 SQL、连接串、密码、token、prompt、样本数据或完整工具参数';
 COMMENT ON COLUMN data_sync_execution_recovery_plan.plan_state IS '计划状态：CREATED、CLAIMED、CONSUMED、CANCELLED';
 

@@ -966,6 +966,7 @@ CREATE TABLE IF NOT EXISTS data_sync_execution_recovery_plan (
     window_start VARCHAR(128) COMMENT 'backfill 窗口开始边界；保持低敏字符串以兼容时间戳、offset 时间、目录日期等连接器差异',
     window_end VARCHAR(128) COMMENT 'backfill 窗口结束边界；不保存 SQL where 片段或样本数据',
     shard_or_partition VARCHAR(256) COMMENT 'backfill 分片或分区选择器，例如日期分区、Kafka partition、文件目录或业务哈希桶',
+    error_sample_selector TEXT COMMENT '脏数据修复重放 selector，只保存错误样本 ID、数量、来源 execution 和修复策略摘要，不保存原始坏行、SQL 或凭据',
     reason VARCHAR(500) COMMENT '低敏操作原因；禁止保存 SQL、连接串、密码、token、prompt、样本数据或完整工具参数',
     plan_state VARCHAR(32) NOT NULL DEFAULT 'CREATED' COMMENT '计划状态：CREATED、CLAIMED、CONSUMED、CANCELLED；当前阶段先写 CREATED，后续 worker 消费时推进',
     create_time DATETIME NOT NULL COMMENT '创建时间',

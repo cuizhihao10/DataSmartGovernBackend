@@ -92,6 +92,8 @@ class SyncBatchConnectorRuntimeInternalControllerTest {
                     "WORKER_INTERNAL_AND_SYNC_CHECKPOINT_TABLE_ONLY",
                     null,
                     List.of(),
+                    false,
+                    List.of(),
                     SyncBatchRunOnceInternalResponse.PAYLOAD_POLICY
             );
         }

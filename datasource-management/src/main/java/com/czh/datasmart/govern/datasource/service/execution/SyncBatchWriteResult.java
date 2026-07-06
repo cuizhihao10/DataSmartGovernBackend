@@ -10,6 +10,8 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
+
 /**
  * 批处理写入结果摘要。
  *
@@ -41,4 +43,27 @@ public class SyncBatchWriteResult {
      * 低敏错误摘要。
      */
     private String errorSummary;
+
+    /**
+     * 结构化脏数据样本。
+     *
+     * <p>该列表只保存低敏样本，不保存完整原始行。run-once 会把它们返回给 data-sync，由 data-sync
+     * 写入错误样本表并应用权限、保留期和后续修复重放策略。</p>
+     */
+    private List<SyncDirtyRecordSample> dirtySamples;
+
+    /**
+     * 是否已经触发脏数据阈值。
+     *
+     * <p>Writer 负责识别行级失败和采样；是否超过阈值由 run-once 根据 RuntimeControlPlan 判断。
+     * 该字段用于把裁决结果一起传回上层，便于测试和后续指标统计。</p>
+     */
+    private Boolean dirtyThresholdExceeded;
+
+    public SyncBatchWriteResult(Long recordsWritten,
+                                Long failedRecordCount,
+                                Boolean commitRecommended,
+                                String errorSummary) {
+        this(recordsWritten, failedRecordCount, commitRecommended, errorSummary, List.of(), false);
+    }
 }

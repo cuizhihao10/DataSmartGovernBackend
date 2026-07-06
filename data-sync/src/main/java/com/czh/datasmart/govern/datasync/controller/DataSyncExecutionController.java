@@ -12,6 +12,8 @@ import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncAuditQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncCheckpointQueryCriteria;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordReplayRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordReplayResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncErrorSampleQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionQueryCriteria;
@@ -166,6 +168,36 @@ public class DataSyncExecutionController {
         SyncErrorSampleQueryCriteria criteria = new SyncErrorSampleQueryCriteria(taskId, executionId, errorType, retryable, current, size);
         return PlatformApiResponse.success(dataSyncService.pageErrorSamples(
                 criteria, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * 基于错误样本发起脏数据修复重放。
+     *
+     * <p>路由语义：</p>
+     * <p>1. {@code taskId} 表示当前修复动作归属的同步任务，服务层会先按任务做租户、项目、SELF 数据范围校验；</p>
+     * <p>2. 请求体中的 {@code executionId} 表示错误样本来源 execution，服务端会校验它确实属于该任务；</p>
+     * <p>3. {@code errorSampleIds} 表示精确重放一批错误样本；如果想重放全部可重试样本，必须显式传
+     * {@code replayAllRetryableInExecution=true}；</p>
+     * <p>4. {@code repairConfirmed=true} 是安全闸门，用来表达操作者已经修复字段映射、目标约束、重复主键、
+     * 数据格式等根因，不允许“还没修就盲目重跑”。</p>
+     *
+     * <p>权限边界：该接口应由 gateway/permission-admin 标记为 {@code SYNC_TASK + REPLAY_DIRTY_RECORDS}。
+     * 普通查询错误样本是 VIEW，修复重放会创建新的 replay execution，属于写操作和高影响恢复动作，必须单独授权和审计。</p>
+     *
+     * <p>低敏边界：响应只返回新 executionId、recoveryPlanId、样本数量和 selector 模式，不返回错误样本原文、
+     * SQL、连接串、凭据、where 条件、字段映射正文或 worker 内部参数。</p>
+     */
+    @PostMapping("/errors/replay")
+    public PlatformApiResponse<SyncDirtyRecordReplayResult> replayDirtyRecords(
+            @PathVariable Long taskId,
+            @RequestBody(required = false) SyncDirtyRecordReplayRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success(dataSyncService.replayDirtyRecords(
+                taskId, request, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
     }
 
     /**

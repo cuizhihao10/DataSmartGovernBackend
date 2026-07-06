@@ -34,6 +34,8 @@ import java.util.Set;
  * @param windowStart backfill 窗口开始边界，低敏字符串。
  * @param windowEnd backfill 窗口结束边界，低敏字符串。
  * @param shardOrPartition backfill 分片或分区选择器，不能存放 SQL 片段或完整 WHERE 条件。
+ * @param errorSampleSelector 脏数据修复重放 selector，低敏 JSON 文本；只允许包含错误样本 ID、数量、来源 execution
+ *                            和修复策略摘要，不允许包含原始坏行或 SQL。
  * @param reason 低敏操作原因摘要，主要用于 worker 日志，不应包含业务样本和敏感参数。
  * @param planState 返回给 worker 的计划状态。
  * @param message 低敏人类可读说明，用于 worker 日志和排障。
@@ -52,6 +54,7 @@ public record SyncRecoveryPlanWorkerResult(
         String windowStart,
         String windowEnd,
         String shardOrPartition,
+        String errorSampleSelector,
         String reason,
         String planState,
         String message
@@ -71,6 +74,7 @@ public record SyncRecoveryPlanWorkerResult(
                 execution.getWorkspaceId(),
                 execution.getSyncTaskId(),
                 execution.getId(),
+                null,
                 null,
                 null,
                 null,
@@ -105,6 +109,7 @@ public record SyncRecoveryPlanWorkerResult(
                 safeLowSensitiveText(plan.getWindowStart(), 128),
                 safeLowSensitiveText(plan.getWindowEnd(), 128),
                 safeLowSensitiveText(plan.getShardOrPartition(), 256),
+                safeSelectorText(plan.getErrorSampleSelector(), 4000),
                 safeLowSensitiveText(plan.getReason(), 300),
                 plan.getPlanState(),
                 message
@@ -145,5 +150,34 @@ public record SyncRecoveryPlanWorkerResult(
             }
         }
         return false;
+    }
+
+    /**
+     * 对错误样本 selector 做专用低敏校验。
+     *
+     * <p>不能直接复用 {@link #safeLowSensitiveText(String, int)}，因为 selector 的合法字段名本身就会出现
+     * errorSampleIds/sampleCount。如果把 sample 当作敏感词，会导致 worker 永远拿不到修复重放选择器。
+     * 这里仅拦截真正高风险的 SQL、连接串、凭据和 payload 词汇。</p>
+     */
+    private static String safeSelectorText(String value, int maxLength) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String compact = value.trim().replaceAll("\\s+", " ");
+        String lower = compact.toLowerCase(Locale.ROOT);
+        Set<String> keywords = Set.of(
+                "password", "passwd", "token", "secret", "credential", "access_key", "private_key",
+                "jdbc:", "select ", "insert ", "update ", "delete ", "where ", " sql", "payload",
+                "密码", "密钥", "令牌", "凭据", "连接串"
+        );
+        for (String keyword : keywords) {
+            if (lower.contains(keyword.toLowerCase(Locale.ROOT))) {
+                return "错误样本 selector 包含潜在敏感内容，已在 worker 响应中脱敏";
+            }
+        }
+        if (compact.length() <= maxLength) {
+            return compact;
+        }
+        return compact.substring(0, maxLength);
     }
 }

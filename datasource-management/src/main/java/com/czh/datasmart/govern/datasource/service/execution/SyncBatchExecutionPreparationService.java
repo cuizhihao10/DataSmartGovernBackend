@@ -69,7 +69,7 @@ public class SyncBatchExecutionPreparationService {
                 plan.getTaskId(),
                 plan.getExecutionId(),
                 buildReadContext(plan, readStatement),
-                buildWriteContext(plan, writeStatement),
+                buildWriteContext(plan, writeStatement, request.getPrimaryKeyColumns()),
                 buildCheckpointPlan(plan.getCheckpointPlan()),
                 buildCallbackPlan(plan.getRuntimeControlPlan()),
                 mergeWarnings(plan),
@@ -199,7 +199,9 @@ public class SyncBatchExecutionPreparationService {
     /**
      * 构建写入上下文。
      */
-    private SyncBatchWriteContext buildWriteContext(SyncBatchExecutionPlan plan, SyncPreparedJdbcStatement writeStatement) {
+    private SyncBatchWriteContext buildWriteContext(SyncBatchExecutionPlan plan,
+                                                    SyncPreparedJdbcStatement writeStatement,
+                                                    List<String> primaryKeyColumns) {
         return new SyncBatchWriteContext(
                 plan.getTaskId(),
                 plan.getExecutionId(),
@@ -207,6 +209,7 @@ public class SyncBatchExecutionPreparationService {
                 plan.getWritePlan().getWriteStrategy(),
                 plan.getWritePlan().getRecommendedWriteBatchSize(),
                 plan.getWritePlan().getRecommendedCommitIntervalRecords(),
+                resolvePrimaryKeyColumns(plan.getWritePlan(), primaryKeyColumns),
                 writeStatement
         );
     }

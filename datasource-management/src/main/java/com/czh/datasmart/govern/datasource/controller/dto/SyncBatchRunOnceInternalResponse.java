@@ -12,6 +12,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.util.List;
+import com.czh.datasmart.govern.datasource.service.execution.SyncDirtyRecordSample;
 
 /**
  * 内部单批同步执行响应。
@@ -144,6 +145,19 @@ public class SyncBatchRunOnceInternalResponse {
      * 低敏错误摘要。
      */
     private String errorSummary;
+
+    /**
+     * 结构化脏数据样本。
+     *
+     * <p>只有在 writer 已经做过行级隔离时才可能返回。样本不包含完整原始行，只包含低敏定位和错误分类，
+     * data-sync 会把它写入错误样本表，供权限受控查询和后续修复重放。</p>
+     */
+    private List<SyncDirtyRecordSample> dirtySamples;
+
+    /**
+     * 本批是否超过脏数据阈值。
+     */
+    private Boolean dirtyThresholdExceeded;
 
     /**
      * 执行准备阶段继承的低敏警告。

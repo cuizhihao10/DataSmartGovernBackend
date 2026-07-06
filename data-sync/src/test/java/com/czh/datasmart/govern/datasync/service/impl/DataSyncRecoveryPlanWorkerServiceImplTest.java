@@ -184,6 +184,30 @@ class DataSyncRecoveryPlanWorkerServiceImplTest {
         assertThat(result.shardOrPartition()).contains("脱敏");
     }
 
+    /**
+     * 脏数据修复重放 selector 应原样提供给 worker。
+     *
+     * <p>selector 字段天然包含 errorSampleIds/sampleCount，如果复用普通自由文本的 sample 敏感词规则，
+     * worker 会拿不到要重放哪批错误样本。这里验证 selector 走专用低敏校验，不因 sample 字段名被误脱敏。</p>
+     */
+    @Test
+    void claimDirtyRecordReplayPlanShouldReturnErrorSampleSelector() {
+        Fixture fixture = fixture();
+        SyncExecution execution = runningExecution("worker-1");
+        SyncExecutionRecoveryPlan claimed = recoveryPlan(SyncRecoveryPlanState.CLAIMED);
+        claimed.setErrorSampleSelector("""
+                {"selectorMode":"SELECTED_IDS","sourceExecutionId":70,"sampleCount":2,"errorSampleIds":[501,502]}
+                """);
+        when(fixture.executionMapper().selectById(88L)).thenReturn(execution);
+        when(fixture.recoveryPlanMapper().selectByExecutionId(88L)).thenReturn(claimed);
+
+        SyncRecoveryPlanWorkerResult result = fixture.service().claimPlan(88L, request("worker-1"), actor());
+
+        assertThat(result.errorSampleSelector()).contains("\"selectorMode\":\"SELECTED_IDS\"");
+        assertThat(result.errorSampleSelector()).contains("\"errorSampleIds\":[501,502]");
+        assertThat(result.errorSampleSelector()).doesNotContain("脱敏");
+    }
+
     private Fixture fixture() {
         SyncExecutionMapper executionMapper = mock(SyncExecutionMapper.class);
         SyncExecutionRecoveryPlanMapper recoveryPlanMapper = mock(SyncExecutionRecoveryPlanMapper.class);

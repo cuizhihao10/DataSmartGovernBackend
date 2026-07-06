@@ -101,6 +101,52 @@ class SyncPartitionShardExecutionContractSupportTest {
         assertThat(contract.parseable()).isTrue();
         assertThat(contract.executableByPartitionFanOut()).isFalse();
         assertThat(contract.issueCodes()).contains("PARTITION_STRATEGY_UNSUPPORTED");
-        assertThat(contract.warnings()).contains("PARTITION_SUPPORTED_STRATEGY_ID_RANGE_ONLY");
+        assertThat(contract.warnings()).contains("PARTITION_SUPPORTED_STRATEGY_ID_RANGE_OR_AUTO_SPLIT_PK_ONLY");
+    }
+
+    @Test
+    void autoSplitPkShouldRequireProbeAndBuildIdRangeShardsAfterProbe() {
+        SyncTemplate template = new SyncTemplate();
+        template.setPartitionConfig("""
+                {
+                  "strategy": "AUTO_SPLIT_PK",
+                  "splitPk": "id",
+                  "shardCount": 4,
+                  "channel": 2,
+                  "taskGroupSize": 2,
+                  "maxDirtyRecordCount": 10,
+                  "maxDirtyRecordRatio": 0.05
+                }
+                """);
+
+        SyncPartitionShardExecutionContract probeRequired = support.parse(template);
+
+        assertThat(probeRequired.autoRangeProbeRequired()).isTrue();
+        assertThat(probeRequired.executableByPartitionFanOut()).isFalse();
+        assertThat(probeRequired.partitionField()).isEqualTo("id");
+        assertThat(probeRequired.requestedShardCount()).isEqualTo(4);
+        assertThat(probeRequired.maxParallelism()).isEqualTo(2);
+        assertThat(probeRequired.taskGroupSize()).isEqualTo(2);
+        assertThat(probeRequired.maxDirtyRecordCount()).isEqualTo(10L);
+        assertThat(probeRequired.maxDirtyRecordRatio()).isEqualTo(0.05D);
+
+        com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeResponse probe =
+                new com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeResponse();
+        probe.setProbeStatus("RANGE_PROBED");
+        probe.setNumericRange(true);
+        probe.setMinValue(1L);
+        probe.setMaxValue(10L);
+        probe.setRowCount(10L);
+        probe.setWarnings(java.util.List.of("SPLIT_PK_MIN_MAX_PROBED_BY_DATASOURCE_MANAGEMENT"));
+
+        SyncPartitionShardExecutionContract executable = support.buildAutoRangeContract(probeRequired, probe);
+
+        assertThat(executable.executableByPartitionFanOut()).isTrue();
+        assertThat(executable.autoRangeProbeRequired()).isFalse();
+        assertThat(executable.partitionStrategy()).isEqualTo("ID_RANGE");
+        assertThat(executable.shardCount()).isEqualTo(4);
+        assertThat(executable.shards())
+                .extracting(SyncPartitionShardExecutionItem::shardOrPartition)
+                .containsExactly("splitpk-range-0000", "splitpk-range-0001", "splitpk-range-0002", "splitpk-range-0003");
     }
 }

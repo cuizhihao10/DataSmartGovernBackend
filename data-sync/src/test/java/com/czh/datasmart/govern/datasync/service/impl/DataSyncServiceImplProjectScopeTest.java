@@ -24,6 +24,7 @@ import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
 import com.czh.datasmart.govern.datasync.service.support.SyncAuditSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncDataScopeSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncDirtyRecordReplaySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionCreationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLifecycleSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncObjectExecutionOperationSupport;
@@ -208,7 +209,8 @@ class DataSyncServiceImplProjectScopeTest {
                 new SyncTemplatePlanningPreviewSupport(new SyncConnectorCapabilityRegistry()),
                 templateExecutionPrecheckSupport(),
                 offlineJobPlanSupport(),
-                mock(SyncObjectExecutionOperationSupport.class)
+                mock(SyncObjectExecutionOperationSupport.class),
+                mock(SyncDirtyRecordReplaySupport.class)
         );
     }
 
@@ -269,7 +271,8 @@ class DataSyncServiceImplProjectScopeTest {
                 new SyncTemplatePlanningPreviewSupport(new SyncConnectorCapabilityRegistry()),
                 templateExecutionPrecheckSupport(),
                 offlineJobPlanSupport(),
-                mock(SyncObjectExecutionOperationSupport.class)
+                mock(SyncObjectExecutionOperationSupport.class),
+                mock(SyncDirtyRecordReplaySupport.class)
         );
     }
 

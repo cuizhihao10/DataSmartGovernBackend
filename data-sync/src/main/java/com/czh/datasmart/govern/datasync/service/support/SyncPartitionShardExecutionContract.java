@@ -17,18 +17,22 @@ import java.util.List;
  * <p>3. 每个分片的低敏标识、结构化过滤条件、并发度和重试次数分别是什么。</p>
  *
  * <p>设计边界说明：</p>
- * <p>当前版本先闭环显式 ID_RANGE 分片，不做动态 min/max 探测，也不做 hash 分桶自动均衡。原因是动态探测
- * 需要 datasource-management 暴露元数据/统计信息执行接口，hash 分桶还涉及数据库函数方言差异。先支持显式
- * range，可以让用户在创建任务阶段或 Agent 规划阶段明确声明业务可接受的分片边界，并快速获得“成功分片跳过、
- * 失败分片可重传”的生产闭环。</p>
+ * <p>当前版本支持两类 DataX-style 范围切分：显式 ID_RANGE，以及通过 datasource-management range-probe
+ * 探测 min/max 后生成的 AUTO_SPLIT_PK。hash bucket、时间窗口和文件 chunk 暂不混入本合同，避免一个字段同时表达
+ * 多种一致性语义。</p>
  *
  * @param declared 是否声明了 partitionConfig。
  * @param parseable JSON 是否可以解析成受支持的结构。
  * @param executableByPartitionFanOut 是否可由当前分片 fan-out 调度器真实执行。
  * @param partitionStrategy 分片策略，当前主要为 ID_RANGE。
  * @param partitionField 分片字段。
+ * @param requestedShardCount AUTO_SPLIT_PK 期望生成的分片数量；显式 ID_RANGE 时通常等于 ranges 数量。
  * @param maxParallelism 当前 execution 允许的最大并行分片数。
+ * @param taskGroupSize 每个 TaskGroup 包含的分片数量，用于把大量 shard 分成更可观测的小组。
  * @param maxAttemptCount 每个分片允许的最大尝试次数。
+ * @param autoRangeProbeRequired 当前合同是否需要先调用 datasource-management 探测 min/max。
+ * @param maxDirtyRecordCount DataX-style 脏数据数量阈值，超过后应 fail-closed 或转人工。
+ * @param maxDirtyRecordRatio DataX-style 脏数据比例阈值，超过后应 fail-closed 或转人工。
  * @param shards 可执行分片清单。
  * @param issueCodes 阻断或风险问题码。
  * @param warnings 非阻断提示。
@@ -40,8 +44,13 @@ public record SyncPartitionShardExecutionContract(
         boolean executableByPartitionFanOut,
         String partitionStrategy,
         String partitionField,
+        int requestedShardCount,
         int maxParallelism,
+        int taskGroupSize,
         int maxAttemptCount,
+        boolean autoRangeProbeRequired,
+        long maxDirtyRecordCount,
+        double maxDirtyRecordRatio,
         List<SyncPartitionShardExecutionItem> shards,
         List<String> issueCodes,
         List<String> warnings,
@@ -52,8 +61,12 @@ public record SyncPartitionShardExecutionContract(
             "INTERNAL_PARTITION_SHARD_CONTRACT_NO_RAW_SQL_NO_BOUNDARY_VALUES_IN_PUBLIC_EVENTS";
 
     public SyncPartitionShardExecutionContract {
+        requestedShardCount = Math.max(0, requestedShardCount);
         maxParallelism = Math.max(1, maxParallelism);
+        taskGroupSize = Math.max(1, taskGroupSize);
         maxAttemptCount = Math.max(1, maxAttemptCount);
+        maxDirtyRecordCount = Math.max(0L, maxDirtyRecordCount);
+        maxDirtyRecordRatio = Math.max(0D, maxDirtyRecordRatio);
         shards = shards == null ? List.of() : List.copyOf(shards);
         issueCodes = issueCodes == null ? List.of() : List.copyOf(issueCodes);
         warnings = warnings == null ? List.of() : List.copyOf(warnings);

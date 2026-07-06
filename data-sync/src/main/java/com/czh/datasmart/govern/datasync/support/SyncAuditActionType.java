@@ -80,6 +80,14 @@ public enum SyncAuditActionType {
     CREATE_EXECUTION,
     UPDATE_CHECKPOINT,
     RECORD_ERROR_SAMPLE,
+    /**
+     * 基于结构化错误样本发起脏数据修复重放。
+     *
+     * <p>该动作区别于普通 REPLAY_TASK：
+     * REPLAY_TASK 主要按 execution/checkpoint 回放整段执行上下文；
+     * REPLAY_DIRTY_RECORDS 则明确表示“操作者已经处理某批 dirty record，并只希望按错误样本 selector 重放”。</p>
+     */
+    REPLAY_DIRTY_RECORDS,
     ACKNOWLEDGE_ATTENTION,
     RESOLVE_ATTENTION,
     RERUN_ATTENTION_TASK,

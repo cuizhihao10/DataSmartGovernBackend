@@ -19,6 +19,7 @@ import com.czh.datasmart.govern.datasync.entity.SyncCheckpoint;
 import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
+import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceDirtyRecordSample;
 import com.czh.datasmart.govern.datasync.mapper.SyncCheckpointMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncErrorSampleMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncExecutionMapper;
@@ -30,6 +31,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -269,6 +271,52 @@ public class SyncExecutionLifecycleSupport {
     }
 
     /**
+     * 记录 run-once 执行面上报的结构化脏数据样本。
+     *
+     * <p>该方法只写 {@code data_sync_error_sample}，不改变 execution/task 终态。这样当脏数据数量在阈值内时，
+     * 同步任务可以继续完成，但运营人员仍然能通过错误样本查询接口看到坏数据、定位原因，并在后续修复重放。</p>
+     *
+     * <p>为什么不把脏数据只写日志：日志适合排查系统异常，但不适合做产品能力。结构化样本可以按租户、项目、
+     * execution、错误类型、是否可重试查询，也能设置保留期、权限和后续重放流程。</p>
+     */
+    public int recordDirtySamples(SyncTask task,
+                                  SyncExecution execution,
+                                  List<DatasourceDirtyRecordSample> dirtySamples,
+                                  SyncActorContext actorContext) {
+        if (task == null || execution == null || dirtySamples == null || dirtySamples.isEmpty()) {
+            return 0;
+        }
+        int inserted = 0;
+        for (DatasourceDirtyRecordSample sample : dirtySamples) {
+            if (sample == null) {
+                continue;
+            }
+            SyncErrorSample errorSample = new SyncErrorSample();
+            errorSample.setTenantId(task.getTenantId());
+            errorSample.setProjectId(task.getProjectId());
+            errorSample.setWorkspaceId(task.getWorkspaceId());
+            errorSample.setSyncTaskId(task.getId());
+            errorSample.setExecutionId(execution.getId());
+            errorSample.setErrorType(normalizeCode(firstText(sample.getErrorType(), "DIRTY_RECORD")));
+            errorSample.setErrorCode(trimToNull(sample.getErrorCode()));
+            errorSample.setErrorMessage(truncate(trimToNull(sample.getErrorMessage()), 1000));
+            errorSample.setSourceRecordKey(trimToNull(sample.getSourceRecordKey()));
+            errorSample.setTargetRecordKey(trimToNull(sample.getTargetRecordKey()));
+            errorSample.setSamplePayload(truncate(trimToNull(sample.getSamplePayload()), 4000));
+            errorSample.setRetryable(Boolean.TRUE.equals(sample.getRetryable()));
+            errorSample.setCreateTime(LocalDateTime.now());
+            errorSampleMapper.insert(errorSample);
+            inserted++;
+        }
+        if (inserted > 0) {
+            auditSupport.saveAudit(task.getTenantId(), task.getId(), execution.getId(),
+                    SyncAuditActionType.RECORD_ERROR_SAMPLE, actorContext,
+                    "dirtySampleCount=" + inserted + ",source=DATASOURCE_RUN_ONCE");
+        }
+        return inserted;
+    }
+
+    /**
      * 生成 execution 级幂等作用域。
      *
      * <p>幂等键本身由调用方生成，但服务端仍然需要把它绑定到具体 task/execution。
@@ -323,6 +371,10 @@ public class SyncExecutionLifecycleSupport {
 
     private String trimToNull(String value) {
         return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private String firstText(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value.trim();
     }
 
     private Long safeLong(Long value) {

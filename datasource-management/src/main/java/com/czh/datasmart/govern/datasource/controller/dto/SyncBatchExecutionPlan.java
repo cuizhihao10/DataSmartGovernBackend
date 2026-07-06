@@ -323,6 +323,22 @@ public class SyncBatchExecutionPlan {
     @AllArgsConstructor
     public static class RuntimeControlPlan {
 
+        public RuntimeControlPlan(String executorId,
+                                  LocalDateTime leaseExpireAt,
+                                  Boolean heartbeatRequired,
+                                  Integer timeoutSeconds,
+                                  Integer maxRetryCount,
+                                  String idempotencyScope,
+                                  List<String> requiredCallbacks) {
+            this.executorId = executorId;
+            this.leaseExpireAt = leaseExpireAt;
+            this.heartbeatRequired = heartbeatRequired;
+            this.timeoutSeconds = timeoutSeconds;
+            this.maxRetryCount = maxRetryCount;
+            this.idempotencyScope = idempotencyScope;
+            this.requiredCallbacks = requiredCallbacks;
+        }
+
         /**
          * 执行器实例标识。
          */
@@ -347,6 +363,22 @@ public class SyncBatchExecutionPlan {
          * 最大重试次数。
          */
         private Integer maxRetryCount;
+
+        /**
+         * DataX-style 脏数据数量阈值。
+         *
+         * <p>执行面发现行级写入失败后，会先把失败行隔离为结构化脏样本。如果失败行数不超过该阈值，
+         * 本批可以继续提交成功行；超过阈值则建议上游 fail-closed，避免大量坏数据静默丢失。</p>
+         */
+        private Long maxDirtyRecordCount;
+
+        /**
+         * DataX-style 脏数据比例阈值。
+         *
+         * <p>该比例用于防止“小批次失败数量不大但比例异常高”的场景。例如一批 10 条失败 2 条，数量没有超过
+         * 100，但比例已经达到 20%，可能说明字段映射或目标约束整体配置有问题。</p>
+         */
+        private Double maxDirtyRecordRatio;
 
         /**
          * 幂等范围说明。

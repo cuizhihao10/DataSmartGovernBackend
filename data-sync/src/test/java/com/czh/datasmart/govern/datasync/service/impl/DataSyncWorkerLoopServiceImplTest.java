@@ -11,6 +11,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionClaimRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionClaimResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncRecoveryPlanWorkerResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanView;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerLoopRunRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerLoopRunResult;
@@ -19,6 +20,8 @@ import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
 import com.czh.datasmart.govern.datasync.service.DataSyncExecutorLeaseService;
+import com.czh.datasmart.govern.datasync.service.DataSyncRecoveryPlanWorkerService;
+import com.czh.datasmart.govern.datasync.service.support.SyncDirtyRecordReplayExecutionSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLifecycleSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncOfflineRunnerDispatchResult;
 import com.czh.datasmart.govern.datasync.service.support.SyncOfflineRunnerDispatchService;
@@ -112,6 +115,69 @@ class DataSyncWorkerLoopServiceImplTest {
     }
 
     /**
+     * 脏数据修复重放必须消费恢复计划并走专用 replay 执行器。
+     *
+     * <p>这个测试防止回归成“REPLAY execution 被当成普通 FULL 全表 run-once”。如果那样，用户只想重放 2 条坏数据，
+     * 系统却可能重新扫描整张表，既不安全也不符合 DataX-style dirty record 修复语义。</p>
+     */
+    @Test
+    void runOnceShouldDispatchDirtyRecordReplayThroughRecoveryPlan() {
+        DataSyncExecutorLeaseService leaseService = mock(DataSyncExecutorLeaseService.class);
+        SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
+        SyncOfflineRunnerDispatchService dispatchService = mock(SyncOfflineRunnerDispatchService.class);
+        DataSyncRecoveryPlanWorkerService recoveryPlanWorkerService = mock(DataSyncRecoveryPlanWorkerService.class);
+        SyncDirtyRecordReplayExecutionSupport dirtyReplaySupport = mock(SyncDirtyRecordReplayExecutionSupport.class);
+        SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
+        SyncExecution execution = execution();
+        execution.setTriggerType(SyncTriggerType.REPLAY.name());
+        SyncTask task = task();
+        SyncTemplate template = template();
+        SyncWorkerExecutionPlanView plan = workerPlan();
+        SyncRecoveryPlanWorkerResult recoveryPlan = new SyncRecoveryPlanWorkerResult(
+                true,
+                7L,
+                101L,
+                301L,
+                11L,
+                88L,
+                7001L,
+                "REPLAY",
+                77L,
+                null,
+                null,
+                null,
+                "DIRTY_RECORD_REPLAY",
+                "{\"selectorVersion\":\"1.0\",\"sourceExecutionId\":77,\"errorSampleIds\":[501]}",
+                "repair confirmed",
+                "CLAIMED",
+                "ok");
+        when(leaseService.claimNext(any(SyncExecutionClaimRequest.class), any(SyncActorContext.class)))
+                .thenReturn(new SyncExecutionClaimResult(true, "claimed", execution, task, plan));
+        when(templateMapper.selectById(22L)).thenReturn(template);
+        when(recoveryPlanWorkerService.claimPlan(eq(88L), any(), any())).thenReturn(recoveryPlan);
+        when(dirtyReplaySupport.supports(recoveryPlan)).thenReturn(true);
+        when(dirtyReplaySupport.dispatchDirtyRecordReplay(eq(execution), eq(task), eq(template), eq(plan),
+                eq(recoveryPlan), any(SyncActorContext.class)))
+                .thenReturn(new SyncOfflineRunnerDispatchResult(true, true, false,
+                        "DIRTY_RECORD_REPLAY_COMPLETED", 88L, "DIRTY_RECORD_REPLAY_ALL_SAMPLES_COMPLETED",
+                        "DIRTY_RECORD_REPLAY", List.of("DIRTY_RECORD_REPLAY_COMPLETED"),
+                        SyncOfflineRunnerDispatchResult.PAYLOAD_POLICY));
+        DataSyncWorkerLoopServiceImpl service = service(leaseService, templateMapper, dispatchService,
+                recoveryPlanWorkerService, dirtyReplaySupport, lifecycleSupport);
+
+        SyncWorkerLoopRunResult result = service.runOnce(request(), actor());
+
+        assertThat(result.completedCount()).isEqualTo(1);
+        assertThat(result.executions()).singleElement()
+                .satisfies(item -> assertThat(item.dispatchStatus()).isEqualTo("DIRTY_RECORD_REPLAY_COMPLETED"));
+        verify(recoveryPlanWorkerService).claimPlan(eq(88L), any(), any());
+        verify(recoveryPlanWorkerService).consumePlan(eq(88L), any(), any());
+        verify(dirtyReplaySupport).dispatchDirtyRecordReplay(eq(execution), eq(task), eq(template), eq(plan),
+                eq(recoveryPlan), any(SyncActorContext.class));
+        verify(dispatchService, never()).dispatchOffline(any(), any(), any(), any(), any());
+    }
+
+    /**
      * 模板缺失属于结构性配置问题；worker loop 应立即 fail-closed，不能等待租约过期才恢复。
      */
     @Test
@@ -167,10 +233,23 @@ class DataSyncWorkerLoopServiceImplTest {
                                                   SyncTemplateMapper templateMapper,
                                                   SyncOfflineRunnerDispatchService dispatchService,
                                                   SyncExecutionLifecycleSupport lifecycleSupport) {
+        return service(leaseService, templateMapper, dispatchService,
+                mock(DataSyncRecoveryPlanWorkerService.class),
+                mock(SyncDirtyRecordReplayExecutionSupport.class),
+                lifecycleSupport);
+    }
+
+    private DataSyncWorkerLoopServiceImpl service(DataSyncExecutorLeaseService leaseService,
+                                                  SyncTemplateMapper templateMapper,
+                                                  SyncOfflineRunnerDispatchService dispatchService,
+                                                  DataSyncRecoveryPlanWorkerService recoveryPlanWorkerService,
+                                                  SyncDirtyRecordReplayExecutionSupport dirtyReplaySupport,
+                                                  SyncExecutionLifecycleSupport lifecycleSupport) {
         DataSyncWorkerLoopProperties properties = new DataSyncWorkerLoopProperties();
         properties.setExecutorId("worker-loop-test");
         properties.setTenantId(7L);
-        return new DataSyncWorkerLoopServiceImpl(leaseService, templateMapper, dispatchService, lifecycleSupport, properties);
+        return new DataSyncWorkerLoopServiceImpl(leaseService, templateMapper, dispatchService,
+                recoveryPlanWorkerService, dirtyReplaySupport, lifecycleSupport, properties);
     }
 
     private void assertFailRequest(SyncExecutionLifecycleSupport lifecycleSupport, String expectedCode) {

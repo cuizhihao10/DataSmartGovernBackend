@@ -82,10 +82,11 @@ public class SyncBatchConnectorRuntimeRunOnceService {
 
             SyncBatchRecordBatch recordBatch = requireConsistentRecordBatch(readResult);
             SyncBatchWriteResult writeResult = writeIfNecessary(bundle.getWriteContext(), recordBatch, request);
-            if (hasText(writeResult.getErrorSummary())) {
+            if (hasText(writeResult.getErrorSummary()) && dirtyThresholdExceeded(writeResult, request)) {
                 return failureResponse(plan, bundle, request, safeLong(readResult.getRecordsRead()),
                         safeLong(writeResult.getRecordsWritten()), safeLong(writeResult.getFailedRecordCount()),
-                        "WRITE_FAILED", true, stageError("写入阶段失败", writeResult.getErrorSummary()));
+                        "WRITE_FAILED", true, stageError("写入阶段失败", writeResult.getErrorSummary()),
+                        writeResult.getDirtySamples(), true);
             }
 
             boolean checkpointCandidateProduced = resolveCheckpointCandidate(request, readResult) != null;
@@ -253,7 +254,9 @@ public class SyncBatchConnectorRuntimeRunOnceService {
                 checkpointCandidateProduced,
                 endOfSource,
                 false,
-                null);
+                null,
+                writeResult.getDirtySamples(),
+                Boolean.TRUE.equals(writeResult.getDirtyThresholdExceeded()));
     }
 
     private SyncBatchRunOnceInternalResponse failureResponse(SyncBatchExecutionPlan plan,
@@ -265,6 +268,21 @@ public class SyncBatchConnectorRuntimeRunOnceService {
                                                              String runStatus,
                                                              boolean progressRecommended,
                                                              String errorSummary) {
+        return failureResponse(plan, bundle, request, batchRecordsRead, batchRecordsWritten, batchFailedRecordCount,
+                runStatus, progressRecommended, errorSummary, List.of(), false);
+    }
+
+    private SyncBatchRunOnceInternalResponse failureResponse(SyncBatchExecutionPlan plan,
+                                                             SyncBatchWorkerExecutionBundle bundle,
+                                                             SyncBatchRunOnceInternalRequest request,
+                                                             Long batchRecordsRead,
+                                                             Long batchRecordsWritten,
+                                                             Long batchFailedRecordCount,
+                                                             String runStatus,
+                                                             boolean progressRecommended,
+                                                             String errorSummary,
+                                                             List<SyncDirtyRecordSample> dirtySamples,
+                                                             boolean dirtyThresholdExceeded) {
         return response(plan, bundle, request,
                 runStatus,
                 safeLong(batchRecordsRead),
@@ -277,7 +295,9 @@ public class SyncBatchConnectorRuntimeRunOnceService {
                 false,
                 false,
                 true,
-                errorSummary);
+                errorSummary,
+                dirtySamples,
+                dirtyThresholdExceeded);
     }
 
     private SyncBatchRunOnceInternalResponse response(SyncBatchExecutionPlan plan,
@@ -294,7 +314,9 @@ public class SyncBatchConnectorRuntimeRunOnceService {
                                                       boolean checkpointCandidateProduced,
                                                       boolean completeCallbackRecommended,
                                                       boolean failCallbackRecommended,
-                                                      String errorSummary) {
+                                                      String errorSummary,
+                                                      List<SyncDirtyRecordSample> dirtySamples,
+                                                      boolean dirtyThresholdExceeded) {
         return new SyncBatchRunOnceInternalResponse(
                 plan.getTaskId(),
                 plan.getExecutionId(),
@@ -316,6 +338,8 @@ public class SyncBatchConnectorRuntimeRunOnceService {
                 checkpointType(bundle, plan),
                 checkpointValueVisibility(bundle, plan),
                 errorSummary,
+                dirtySamples == null ? List.of() : dirtySamples,
+                dirtyThresholdExceeded,
                 bundle == null ? List.of() : bundle.getWarnings(),
                 SyncBatchRunOnceInternalResponse.PAYLOAD_POLICY
         );
@@ -372,6 +396,34 @@ public class SyncBatchConnectorRuntimeRunOnceService {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    /**
+     * 判断本批脏数据是否超过 DataX-style 阈值。
+     *
+     * <p>DataX 的 errorLimit/maxDirtyNumber 思路不是“一条坏数据就让整个任务失败”，而是允许用户设置容忍阈值。
+     * 本项目同样采用这个策略：writer 负责隔离失败行并返回结构化样本；run-once 根据阈值决定是否继续推进。
+     * 阈值来自 RuntimeControlPlan，当前如果上游还没有传入，则使用保守默认值。</p>
+     */
+    private boolean dirtyThresholdExceeded(SyncBatchWriteResult writeResult, SyncBatchRunOnceInternalRequest request) {
+        long failed = safeLong(writeResult == null ? null : writeResult.getFailedRecordCount());
+        long read = safeLong(request == null ? null : request.getPreviousRecordsRead()) + failed;
+        long maxDirtyCount = request == null || request.getExecutionPlan() == null
+                || request.getExecutionPlan().getRuntimeControlPlan() == null
+                || request.getExecutionPlan().getRuntimeControlPlan().getMaxDirtyRecordCount() == null
+                ? 0L
+                : Math.max(0L, request.getExecutionPlan().getRuntimeControlPlan().getMaxDirtyRecordCount());
+        Double maxDirtyRatio = request == null || request.getExecutionPlan() == null
+                || request.getExecutionPlan().getRuntimeControlPlan() == null
+                ? null
+                : request.getExecutionPlan().getRuntimeControlPlan().getMaxDirtyRecordRatio();
+        boolean countExceeded = failed > maxDirtyCount;
+        boolean ratioExceeded = maxDirtyRatio != null && maxDirtyRatio >= 0D && read > 0L
+                && ((double) failed / (double) read) > maxDirtyRatio;
+        if (writeResult != null) {
+            writeResult.setDirtyThresholdExceeded(countExceeded || ratioExceeded);
+        }
+        return countExceeded || ratioExceeded;
     }
 
     private String stageError(String stage, String summary) {

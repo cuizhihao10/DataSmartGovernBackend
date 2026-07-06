@@ -70,6 +70,19 @@ public class SyncExecutionRecoveryPlan {
     /** backfill 分片或分区选择器。 */
     private String shardOrPartition;
 
+    /**
+     * 错误样本选择器。
+     *
+     * <p>该字段用于“脏数据修复重放”场景，保存低敏 JSON selector，例如：
+     * 1. selectorMode=SELECTED_IDS，表示只重放用户勾选的 errorSampleIds；
+     * 2. selectorMode=ALL_RETRYABLE_IN_EXECUTION，表示重放某个来源 execution 下的全部可重试错误样本；
+     * 3. sampleCount/sourceExecutionId/repairStrategy 等低敏控制信息。
+     *
+     * <p>它不能保存原始坏行、SQL、连接串、凭据、完整 where 条件或目标端响应。
+     * worker 后续会用 selector 重新查询受权限约束的 {@code data_sync_error_sample}，再按模板和连接器能力执行修复重放。</p>
+     */
+    private String errorSampleSelector;
+
     /** 低敏操作原因，禁止保存 SQL、样本、凭据或连接串。 */
     private String reason;
 

@@ -41,6 +41,8 @@ public class DatasourceRunOnceResponse {
     private String checkpointType;
     private String checkpointValueVisibility;
     private String errorSummary;
+    private List<DatasourceDirtyRecordSample> dirtySamples;
+    private Boolean dirtyThresholdExceeded;
     private List<String> warnings;
     private String payloadPolicy;
 }

@@ -12,6 +12,8 @@ import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTemplateReques
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncAuditQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncCheckpointQueryCriteria;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordReplayRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordReplayResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncErrorSampleQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCheckpointRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCompleteRequest;
@@ -165,6 +167,16 @@ public interface DataSyncService {
     PlatformPageResponse<SyncCheckpoint> pageCheckpoints(SyncCheckpointQueryCriteria criteria, SyncActorContext actorContext);
 
     PlatformPageResponse<SyncErrorSample> pageErrorSamples(SyncErrorSampleQueryCriteria criteria, SyncActorContext actorContext);
+
+    /**
+     * 基于结构化错误样本创建脏数据修复重放计划。
+     *
+     * <p>该方法不是直接在 HTTP 线程里改写目标表，而是创建新的 REPLAY execution 和恢复计划。
+     * 真正的数据重放仍由 worker 按租约、checkpoint、模板配置、连接器能力和幂等策略执行。</p>
+     */
+    SyncDirtyRecordReplayResult replayDirtyRecords(Long taskId,
+                                                   SyncDirtyRecordReplayRequest request,
+                                                   SyncActorContext actorContext);
 
     PlatformPageResponse<SyncAuditRecord> pageAuditRecords(SyncAuditQueryCriteria criteria, SyncActorContext actorContext);
 }

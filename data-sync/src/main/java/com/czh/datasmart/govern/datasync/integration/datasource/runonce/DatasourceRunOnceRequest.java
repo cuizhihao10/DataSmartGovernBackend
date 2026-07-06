@@ -135,6 +135,8 @@ public class DatasourceRunOnceRequest {
         private Boolean heartbeatRequired;
         private Integer timeoutSeconds;
         private Integer maxRetryCount;
+        private Long maxDirtyRecordCount;
+        private Double maxDirtyRecordRatio;
         private String idempotencyScope;
         private List<String> requiredCallbacks;
     }

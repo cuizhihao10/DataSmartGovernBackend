@@ -7,12 +7,14 @@
 package com.czh.datasmart.govern.datasync.service.support;
 
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeResponse;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -23,17 +25,17 @@ import java.util.regex.Pattern;
 /**
  * partitionConfig 分片执行合同解析器。
  *
- * <p>本组件把模板里的 {@code partitionConfig} 从“性能建议 JSON”推进为“可执行分片合同”。用户前面问到：
- * 大数据量离线任务是否应该拆成多个小任务并行执行、失败小任务是否可以单独重传。答案在代码层面就落在这里：
- * 只有 partitionConfig 被解析成安全、明确、可审计的分片合同后，调度器才能把单张大表拆成多个
- * {@link SyncPartitionShardExecutionItem}。</p>
+ * <p>本组件把模板里的 {@code partitionConfig} 从“性能建议 JSON”推进为“可执行分片合同”。它对齐 DataX 的
+ * splitPk 思路，但把 DataX 没有产品化完整覆盖的部分继续补齐：分片会进入账本、失败分片可以选择性重试，
+ * channel 和 TaskGroup 会成为调度合同，脏数据阈值会进入执行策略。</p>
  *
- * <p>当前支持的最小生产闭环配置示例：</p>
+ * <p>显式 ID_RANGE 配置示例：</p>
  * <pre>
  * {
  *   "strategy": "ID_RANGE",
  *   "partitionField": "id",
- *   "maxParallelism": 4,
+ *   "channel": 4,
+ *   "taskGroupSize": 8,
  *   "maxShardAttempts": 3,
  *   "ranges": [
  *     {"startInclusive": 1, "endExclusive": 100000},
@@ -42,11 +44,25 @@ import java.util.regex.Pattern;
  * }
  * </pre>
  *
- * <p>重要安全原则：</p>
- * <p>1. {@code partitionField} 必须是安全字段名，不能是表达式、函数、带点号的限定名或 SQL 片段；</p>
- * <p>2. 边界值只进入 {@link SyncFilterExecutionCondition#value()}，最终通过 PreparedStatement 绑定；</p>
- * <p>3. 分片标识默认使用 {@code id-range-0000} 这类低敏编号，不把真实业务边界写进 public event；</p>
- * <p>4. 当前不做自动 min/max 探测，避免 data-sync 控制面跨边界读取源端统计数据。</p>
+ * <p>自动 splitPk 配置示例：</p>
+ * <pre>
+ * {
+ *   "strategy": "AUTO_SPLIT_PK",
+ *   "splitPk": "id",
+ *   "shardCount": 32,
+ *   "channel": 4,
+ *   "taskGroupSize": 8,
+ *   "maxDirtyRecordCount": 100,
+ *   "maxDirtyRecordRatio": 0.01
+ * }
+ * </pre>
+ *
+ * <p>安全原则：</p>
+ * <p>1. splitPk/partitionField 必须是安全字段名，不允许表达式、函数、点号限定名或 SQL 片段；</p>
+ * <p>2. 分片边界值只进入结构化 {@link SyncFilterExecutionCondition}，最终由 datasource-management 方言层
+ * 通过 PreparedStatement 参数绑定；</p>
+ * <p>3. 分片标识使用 {@code id-range-0000} 或 {@code splitpk-range-0000} 这类低敏编号；</p>
+ * <p>4. AUTO_SPLIT_PK 的 min/max 探测由 datasource-management internal range-probe 完成，data-sync 不直接连接源库。</p>
  */
 @Component
 @RequiredArgsConstructor
@@ -55,11 +71,18 @@ public class SyncPartitionShardExecutionContractSupport {
     private static final Pattern SAFE_IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_]{0,127}");
     private static final Pattern SAFE_SHARD_LABEL = Pattern.compile("[A-Za-z0-9_\\-:.]{1,128}");
     private static final String STRATEGY_ID_RANGE = "ID_RANGE";
+    private static final String STRATEGY_AUTO_SPLIT_PK = "AUTO_SPLIT_PK";
+    private static final Set<String> AUTO_SPLIT_PK_ALIASES = Set.of("AUTO_SPLIT_PK", "SPLIT_PK", "AUTO_ID_RANGE");
     private static final int DEFAULT_MAX_PARALLELISM = 2;
     private static final int MAX_PARALLELISM = 16;
+    private static final int DEFAULT_TASK_GROUP_SIZE = 8;
+    private static final int MAX_TASK_GROUP_SIZE = 128;
+    private static final int DEFAULT_AUTO_SHARD_COUNT = 8;
     private static final int DEFAULT_MAX_ATTEMPTS = 3;
     private static final int MAX_ATTEMPTS = 10;
     private static final int MAX_SHARD_COUNT = 128;
+    private static final long DEFAULT_MAX_DIRTY_RECORD_COUNT = 100L;
+    private static final double DEFAULT_MAX_DIRTY_RECORD_RATIO = 0.01D;
     private static final int MAX_TEXT_BOUNDARY_LENGTH = 128;
 
     private final ObjectMapper objectMapper;
@@ -72,40 +95,52 @@ public class SyncPartitionShardExecutionContractSupport {
      * 解析模板分片配置。
      *
      * @param template 同步模板；本方法只读取 partitionConfig，不读取数据源凭据或真实业务数据。
-     * @return 分片执行合同。即使配置错误，也返回带 issueCodes 的合同，而不是抛异常中断上层状态回写。
+     * @return 分片执行合同。配置错误时返回 issueCodes，避免上层无法回写失败状态。
      */
     public SyncPartitionShardExecutionContract parse(SyncTemplate template) {
         if (template == null || !hasText(template.getPartitionConfig())) {
-            return contract(false, true, false, null, null, DEFAULT_MAX_PARALLELISM,
-                    DEFAULT_MAX_ATTEMPTS, List.of(), List.of(), List.of());
+            return contract(false, true, false, null, null, 0,
+                    DEFAULT_MAX_PARALLELISM, DEFAULT_TASK_GROUP_SIZE, DEFAULT_MAX_ATTEMPTS,
+                    false, DEFAULT_MAX_DIRTY_RECORD_COUNT, DEFAULT_MAX_DIRTY_RECORD_RATIO,
+                    List.of(), List.of(), List.of());
         }
-
         List<String> issueCodes = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
         JsonNode root = readRoot(template.getPartitionConfig(), issueCodes);
         if (root == null) {
-            return contract(true, false, false, null, null, DEFAULT_MAX_PARALLELISM,
-                    DEFAULT_MAX_ATTEMPTS, List.of(), issueCodes, warnings);
+            return contract(true, false, false, null, null, 0,
+                    DEFAULT_MAX_PARALLELISM, DEFAULT_TASK_GROUP_SIZE, DEFAULT_MAX_ATTEMPTS,
+                    false, DEFAULT_MAX_DIRTY_RECORD_COUNT, DEFAULT_MAX_DIRTY_RECORD_RATIO,
+                    List.of(), issueCodes, warnings);
         }
 
         String strategy = normalize(firstText(root, "strategy", "type", "mode"));
+        if (AUTO_SPLIT_PK_ALIASES.contains(strategy)) {
+            return parseAutoSplitPk(root, issueCodes, warnings);
+        }
         if (!STRATEGY_ID_RANGE.equals(strategy)) {
             issueCodes.add("PARTITION_STRATEGY_UNSUPPORTED");
-            warnings.add("PARTITION_SUPPORTED_STRATEGY_ID_RANGE_ONLY");
-            return contract(true, true, false, strategy, null, DEFAULT_MAX_PARALLELISM,
-                    DEFAULT_MAX_ATTEMPTS, List.of(), issueCodes, warnings);
+            warnings.add("PARTITION_SUPPORTED_STRATEGY_ID_RANGE_OR_AUTO_SPLIT_PK_ONLY");
+            return contract(true, true, false, strategy, null, 0,
+                    DEFAULT_MAX_PARALLELISM, DEFAULT_TASK_GROUP_SIZE, DEFAULT_MAX_ATTEMPTS,
+                    false, dirtyCount(root), dirtyRatio(root), List.of(), issueCodes, warnings);
         }
+        return parseExplicitIdRange(root, issueCodes, warnings);
+    }
 
+    private SyncPartitionShardExecutionContract parseExplicitIdRange(JsonNode root,
+                                                                     List<String> issueCodes,
+                                                                     List<String> warnings) {
         String partitionField = firstText(root, "partitionField", "partitionKey", "splitPk", "field", "column");
         if (!safeIdentifier(partitionField)) {
             issueCodes.add("PARTITION_FIELD_IDENTIFIER_UNSAFE");
         }
-
         JsonNode rangesNode = root.path("ranges");
         if (!rangesNode.isArray()) {
             issueCodes.add("PARTITION_RANGES_REQUIRED");
-            return contract(true, true, false, strategy, partitionField, DEFAULT_MAX_PARALLELISM,
-                    DEFAULT_MAX_ATTEMPTS, List.of(), issueCodes, warnings);
+            return contract(true, true, false, STRATEGY_ID_RANGE, partitionField, 0,
+                    maxParallelism(root), taskGroupSize(root), maxAttemptCount(root),
+                    false, dirtyCount(root), dirtyRatio(root), List.of(), issueCodes, warnings);
         }
         if (rangesNode.isEmpty()) {
             issueCodes.add("PARTITION_RANGES_EMPTY");
@@ -114,11 +149,6 @@ public class SyncPartitionShardExecutionContractSupport {
             issueCodes.add("PARTITION_SHARD_COUNT_EXCEEDED");
         }
 
-        int maxParallelism = clamp(firstPositiveInt(root, "maxParallelism", "parallelism", "concurrency"),
-                DEFAULT_MAX_PARALLELISM, 1, MAX_PARALLELISM);
-        int maxAttemptCount = clamp(firstPositiveInt(root, "maxShardAttempts", "maxShardRetries", "maxAttempts"),
-                DEFAULT_MAX_ATTEMPTS, 1, MAX_ATTEMPTS);
-
         List<SyncPartitionShardExecutionItem> shards = new ArrayList<>();
         for (int index = 0; index < Math.min(rangesNode.size(), MAX_SHARD_COUNT); index++) {
             SyncPartitionShardExecutionItem item = parseRange(index, partitionField, rangesNode.get(index), issueCodes);
@@ -126,13 +156,105 @@ public class SyncPartitionShardExecutionContractSupport {
                 shards.add(item);
             }
         }
-
         boolean executable = issueCodes.isEmpty() && !shards.isEmpty();
         if (executable) {
             warnings.add("PARTITION_ID_RANGE_SHARDS_READY");
         }
-        return contract(true, true, executable, strategy, partitionField, maxParallelism,
-                maxAttemptCount, shards, issueCodes, warnings);
+        return contract(true, true, executable, STRATEGY_ID_RANGE, partitionField, shards.size(),
+                maxParallelism(root), taskGroupSize(root), maxAttemptCount(root),
+                false, dirtyCount(root), dirtyRatio(root), shards, issueCodes, warnings);
+    }
+
+    private SyncPartitionShardExecutionContract parseAutoSplitPk(JsonNode root,
+                                                                  List<String> issueCodes,
+                                                                  List<String> warnings) {
+        String splitPk = firstText(root, "splitPk", "partitionField", "partitionKey", "field", "column");
+        if (!safeIdentifier(splitPk)) {
+            issueCodes.add("PARTITION_FIELD_IDENTIFIER_UNSAFE");
+        }
+        int requestedShardCount = clamp(firstPositiveInt(root, "shardCount", "splitCount", "rangeCount", "taskCount"),
+                DEFAULT_AUTO_SHARD_COUNT, 1, MAX_SHARD_COUNT);
+        if (issueCodes.isEmpty()) {
+            warnings.add("PARTITION_AUTO_SPLIT_PK_RANGE_PROBE_REQUIRED");
+        }
+        return contract(true, true, false, STRATEGY_AUTO_SPLIT_PK, splitPk, requestedShardCount,
+                maxParallelism(root), taskGroupSize(root), maxAttemptCount(root), true,
+                dirtyCount(root), dirtyRatio(root), List.of(), issueCodes, warnings);
+    }
+
+    /**
+     * 根据 datasource-management range-probe 结果生成可执行 ID_RANGE 合同。
+     *
+     * <p>range-probe 只提供 min/max/count，真正的 shard 数量、channel、TaskGroup、重试次数和脏数据阈值
+     * 仍来自用户模板合同。这样后续审计时可以区分“用户声明的策略”和“源库探测到的事实”。</p>
+     */
+    public SyncPartitionShardExecutionContract buildAutoRangeContract(SyncPartitionShardExecutionContract base,
+                                                                       DatasourcePartitionRangeProbeResponse probe) {
+        List<String> issueCodes = new ArrayList<>(base == null ? List.of() : base.issueCodes());
+        List<String> warnings = new ArrayList<>(base == null ? List.of() : base.warnings());
+        if (base == null || !base.autoRangeProbeRequired()) {
+            issueCodes.add("PARTITION_AUTO_RANGE_BASE_CONTRACT_REQUIRED");
+            return contract(true, true, false, null, null, 0,
+                    DEFAULT_MAX_PARALLELISM, DEFAULT_TASK_GROUP_SIZE, DEFAULT_MAX_ATTEMPTS,
+                    false, DEFAULT_MAX_DIRTY_RECORD_COUNT, DEFAULT_MAX_DIRTY_RECORD_RATIO,
+                    List.of(), issueCodes, warnings);
+        }
+        if (probe == null || !"RANGE_PROBED".equals(normalize(probe.getProbeStatus()))
+                || !Boolean.TRUE.equals(probe.getNumericRange())
+                || probe.getMinValue() == null || probe.getMaxValue() == null) {
+            issueCodes.add("PARTITION_AUTO_RANGE_PROBE_UNAVAILABLE");
+            return contract(true, true, false, STRATEGY_AUTO_SPLIT_PK, base.partitionField(), base.requestedShardCount(),
+                    base.maxParallelism(), base.taskGroupSize(), base.maxAttemptCount(), true,
+                    base.maxDirtyRecordCount(), base.maxDirtyRecordRatio(), List.of(), issueCodes, warnings);
+        }
+        if (probe.getMaxValue() < probe.getMinValue()) {
+            issueCodes.add("PARTITION_AUTO_RANGE_PROBE_INVALID_BOUNDARY");
+            return contract(true, true, false, STRATEGY_AUTO_SPLIT_PK, base.partitionField(), base.requestedShardCount(),
+                    base.maxParallelism(), base.taskGroupSize(), base.maxAttemptCount(), true,
+                    base.maxDirtyRecordCount(), base.maxDirtyRecordRatio(), List.of(), issueCodes, warnings);
+        }
+        if (probe.getWarnings() != null) {
+            warnings.addAll(probe.getWarnings());
+        }
+        warnings.add("PARTITION_AUTO_SPLIT_PK_SHARDS_READY");
+        List<SyncPartitionShardExecutionItem> shards = autoRangeShards(base, probe.getMinValue(), probe.getMaxValue());
+        return contract(true, true, !shards.isEmpty(), STRATEGY_ID_RANGE, base.partitionField(), shards.size(),
+                base.maxParallelism(), base.taskGroupSize(), base.maxAttemptCount(), false,
+                base.maxDirtyRecordCount(), base.maxDirtyRecordRatio(), shards, issueCodes, warnings);
+    }
+
+    private List<SyncPartitionShardExecutionItem> autoRangeShards(SyncPartitionShardExecutionContract base,
+                                                                  long minValue,
+                                                                  long maxValue) {
+        BigInteger start = BigInteger.valueOf(minValue);
+        BigInteger inclusiveEnd = BigInteger.valueOf(maxValue);
+        BigInteger total = inclusiveEnd.subtract(start).add(BigInteger.ONE);
+        int requested = Math.max(1, Math.min(base.requestedShardCount(), MAX_SHARD_COUNT));
+        int shardCount = total.compareTo(BigInteger.valueOf(requested)) < 0 ? Math.max(1, total.intValue()) : requested;
+        BigInteger shardSize = total.add(BigInteger.valueOf(shardCount - 1L)).divide(BigInteger.valueOf(shardCount));
+        List<SyncPartitionShardExecutionItem> shards = new ArrayList<>();
+        BigInteger lower = start;
+        for (int index = 0; index < shardCount && lower.compareTo(inclusiveEnd) <= 0; index++) {
+            BigInteger upperExclusive = lower.add(shardSize);
+            BigInteger hardEndExclusive = inclusiveEnd.add(BigInteger.ONE);
+            if (index == shardCount - 1 || upperExclusive.compareTo(hardEndExclusive) > 0) {
+                upperExclusive = hardEndExclusive;
+            }
+            List<SyncFilterExecutionCondition> conditions = List.of(
+                    new SyncFilterExecutionCondition(base.partitionField(), "GTE", lower.longValue(), true),
+                    new SyncFilterExecutionCondition(base.partitionField(), "LT", upperExclusive.longValue(), true)
+            );
+            shards.add(new SyncPartitionShardExecutionItem(
+                    index,
+                    "splitpk-range-" + String.format(Locale.ROOT, "%04d", index),
+                    STRATEGY_ID_RANGE,
+                    base.partitionField(),
+                    conditions,
+                    List.of("PARTITION_RANGE_VALUES_INTERNAL_ONLY", "PARTITION_RANGE_AUTO_GENERATED_FROM_SPLIT_PK")
+            ));
+            lower = upperExclusive;
+        }
+        return shards;
     }
 
     private SyncPartitionShardExecutionItem parseRange(int ordinal,
@@ -239,11 +361,50 @@ public class SyncPartitionShardExecutionContractSupport {
         return null;
     }
 
+    private int maxParallelism(JsonNode root) {
+        return clamp(firstPositiveInt(root, "channel", "channelCount", "maxParallelism", "parallelism", "concurrency"),
+                DEFAULT_MAX_PARALLELISM, 1, MAX_PARALLELISM);
+    }
+
+    private int taskGroupSize(JsonNode root) {
+        return clamp(firstPositiveInt(root, "taskGroupSize", "taskGroupShardCount", "tasksPerGroup"),
+                DEFAULT_TASK_GROUP_SIZE, 1, MAX_TASK_GROUP_SIZE);
+    }
+
+    private int maxAttemptCount(JsonNode root) {
+        return clamp(firstPositiveInt(root, "maxShardAttempts", "maxShardRetries", "maxAttempts"),
+                DEFAULT_MAX_ATTEMPTS, 1, MAX_ATTEMPTS);
+    }
+
+    private long dirtyCount(JsonNode node) {
+        JsonNode dirtyNode = node == null ? null : node.path("dirtyRecordThreshold");
+        Integer nested = firstPositiveInt(dirtyNode, "maxCount", "maxDirtyRecordCount", "maxDirtyNumber");
+        Integer direct = firstPositiveInt(node, "maxDirtyRecordCount", "maxDirtyNumber", "maxDirtyCount");
+        return nested == null ? (direct == null ? DEFAULT_MAX_DIRTY_RECORD_COUNT : direct.longValue()) : nested.longValue();
+    }
+
+    private double dirtyRatio(JsonNode node) {
+        Double nested = firstPositiveDouble(node == null ? null : node.path("dirtyRecordThreshold"),
+                "maxRatio", "maxPercentage", "maxDirtyRecordRatio");
+        Double direct = firstPositiveDouble(node, "maxDirtyRecordRatio", "maxDirtyPercentage");
+        return nested == null ? (direct == null ? DEFAULT_MAX_DIRTY_RECORD_RATIO : direct) : nested;
+    }
+
     private Integer firstPositiveInt(JsonNode node, String... fields) {
         for (String field : fields) {
-            JsonNode value = node.get(field);
+            JsonNode value = node == null ? null : node.get(field);
             if (value != null && value.canConvertToInt() && value.asInt() > 0) {
                 return value.asInt();
+            }
+        }
+        return null;
+    }
+
+    private Double firstPositiveDouble(JsonNode node, String... fields) {
+        for (String field : fields) {
+            JsonNode value = node == null ? null : node.get(field);
+            if (value != null && value.isNumber() && value.asDouble() >= 0D) {
+                return value.asDouble();
             }
         }
         return null;
@@ -254,8 +415,13 @@ public class SyncPartitionShardExecutionContractSupport {
                                                          boolean executable,
                                                          String strategy,
                                                          String partitionField,
+                                                         int requestedShardCount,
                                                          int maxParallelism,
+                                                         int taskGroupSize,
                                                          int maxAttemptCount,
+                                                         boolean autoRangeProbeRequired,
+                                                         long maxDirtyRecordCount,
+                                                         double maxDirtyRecordRatio,
                                                          List<SyncPartitionShardExecutionItem> shards,
                                                          List<String> issueCodes,
                                                          List<String> warnings) {
@@ -265,8 +431,13 @@ public class SyncPartitionShardExecutionContractSupport {
                 executable,
                 strategy,
                 partitionField,
+                requestedShardCount,
                 maxParallelism,
+                taskGroupSize,
                 maxAttemptCount,
+                autoRangeProbeRequired,
+                maxDirtyRecordCount,
+                maxDirtyRecordRatio,
                 shards,
                 distinct(issueCodes),
                 distinct(warnings),
