@@ -82,7 +82,7 @@ public class SyncBatchConnectorRuntimeRunOnceService {
 
             SyncBatchRecordBatch recordBatch = requireConsistentRecordBatch(readResult);
             SyncBatchWriteResult writeResult = writeIfNecessary(bundle.getWriteContext(), recordBatch, request);
-            if (hasText(writeResult.getErrorSummary()) && dirtyThresholdExceeded(writeResult, request)) {
+            if (hasText(writeResult.getErrorSummary()) && dirtyThresholdExceeded(writeResult, request, readResult)) {
                 return failureResponse(plan, bundle, request, safeLong(readResult.getRecordsRead()),
                         safeLong(writeResult.getRecordsWritten()), safeLong(writeResult.getFailedRecordCount()),
                         "WRITE_FAILED", true, stageError("写入阶段失败", writeResult.getErrorSummary()),
@@ -405,9 +405,15 @@ public class SyncBatchConnectorRuntimeRunOnceService {
      * 本项目同样采用这个策略：writer 负责隔离失败行并返回结构化样本；run-once 根据阈值决定是否继续推进。
      * 阈值来自 RuntimeControlPlan，当前如果上游还没有传入，则使用保守默认值。</p>
      */
-    private boolean dirtyThresholdExceeded(SyncBatchWriteResult writeResult, SyncBatchRunOnceInternalRequest request) {
+    private boolean dirtyThresholdExceeded(SyncBatchWriteResult writeResult,
+                                           SyncBatchRunOnceInternalRequest request,
+                                           SyncBatchReadResult readResult) {
         long failed = safeLong(writeResult == null ? null : writeResult.getFailedRecordCount());
-        long read = safeLong(request == null ? null : request.getPreviousRecordsRead()) + failed;
+        long previousFailed = safeLong(request == null ? null : request.getPreviousFailedRecordCount());
+        long totalFailed = previousFailed + failed;
+        long batchRead = safeLong(readResult == null ? null : readResult.getRecordsRead());
+        long previousRead = safeLong(request == null ? null : request.getPreviousRecordsRead());
+        long totalRead = previousRead + batchRead;
         long maxDirtyCount = request == null || request.getExecutionPlan() == null
                 || request.getExecutionPlan().getRuntimeControlPlan() == null
                 || request.getExecutionPlan().getRuntimeControlPlan().getMaxDirtyRecordCount() == null
@@ -417,9 +423,27 @@ public class SyncBatchConnectorRuntimeRunOnceService {
                 || request.getExecutionPlan().getRuntimeControlPlan() == null
                 ? null
                 : request.getExecutionPlan().getRuntimeControlPlan().getMaxDirtyRecordRatio();
-        boolean countExceeded = failed > maxDirtyCount;
-        boolean ratioExceeded = maxDirtyRatio != null && maxDirtyRatio >= 0D && read > 0L
-                && ((double) failed / (double) read) > maxDirtyRatio;
+        boolean countExceeded = totalFailed > maxDirtyCount;
+        /*
+         * 脏数据比例必须以“读到的业务行数”为分母，而不是用 failed 本身兜底。
+         * 之前的实现只知道 failed，却不知道本批 read，在首批 1 条坏数据、0 条历史读取时会退化为 1/1，
+         * 导致少量坏行被误判为 100% 脏数据。这里同时计算两个视角：
+         * 1. batchDirtyRatio：当前批次失败行 / 当前批次读取行，快速识别“这一批整体异常”；
+         * 2. cumulativeDirtyRatio：累计失败行 / 累计读取行，防止每批都少量失败但长期累积超过产品阈值。
+         * 如果 reader 没有返回读取数但 writer 又报告失败，说明执行合同异常或读写计数不一致，按 fail-closed 处理。
+         */
+        boolean ratioExceeded = false;
+        if (maxDirtyRatio != null && maxDirtyRatio >= 0D) {
+            if (batchRead > 0L) {
+                ratioExceeded = ((double) failed / (double) batchRead) > maxDirtyRatio;
+            }
+            if (!ratioExceeded && totalRead > 0L) {
+                ratioExceeded = ((double) totalFailed / (double) totalRead) > maxDirtyRatio;
+            }
+            if (!ratioExceeded && batchRead <= 0L && failed > 0L) {
+                ratioExceeded = true;
+            }
+        }
         if (writeResult != null) {
             writeResult.setDirtyThresholdExceeded(countExceeded || ratioExceeded);
         }

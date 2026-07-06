@@ -16,6 +16,7 @@ import com.czh.datasmart.govern.datasource.service.execution.jdbc.SyncJdbcDialec
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -156,6 +157,86 @@ class SyncBatchConnectorRuntimeRunOnceServiceTest {
     }
 
     @Test
+    void dirtyRatioShouldUseReadRowsAsDenominatorAndAllowSmallDirtyBatch() {
+        StaticReader reader = new StaticReader(new SyncBatchReadResult(
+                1000L,
+                true,
+                false,
+                null,
+                new SyncBatchRecordBatch(
+                        List.of("id", "amount"),
+                        testRows(1000)
+                )
+        ));
+        StaticWriter writer = new StaticWriter(new SyncBatchWriteResult(
+                990L,
+                10L,
+                true,
+                "batch write isolated dirtyRecords=10",
+                List.of(dirtySample(1L)),
+                false
+        ));
+        SyncBatchRunOnceInternalRequest request = runRequest(0L, 0L, 0L, null);
+        request.setExecutionPlan(fullPlan());
+        request.getExecutionPlan().getRuntimeControlPlan().setMaxDirtyRecordCount(100L);
+        request.getExecutionPlan().getRuntimeControlPlan().setMaxDirtyRecordRatio(0.02D);
+        request.setSelectedColumns(List.of("id", "amount"));
+        request.setWriteColumns(List.of("id", "amount"));
+
+        SyncBatchRunOnceInternalResponse response = service(reader, writer).runOnce(request);
+
+        assertEquals("SOURCE_EXHAUSTED_COMPLETE_REQUIRED", response.getRunStatus());
+        assertFalse(response.getFailed());
+        assertTrue(response.getCompleteCallbackRecommended());
+        assertFalse(response.getFailCallbackRecommended());
+        assertEquals(1000L, response.getBatchRecordsRead());
+        assertEquals(10L, response.getBatchFailedRecordCount());
+        assertEquals(10L, response.getTotalFailedRecordCount());
+        assertFalse(response.getDirtyThresholdExceeded());
+        assertEquals(1, response.getDirtySamples().size());
+    }
+
+    @Test
+    void dirtyRatioShouldFailClosedWhenMostRowsAreDirty() {
+        StaticReader reader = new StaticReader(new SyncBatchReadResult(
+                1000L,
+                false,
+                false,
+                null,
+                new SyncBatchRecordBatch(
+                        List.of("id", "amount"),
+                        testRows(1000)
+                )
+        ));
+        StaticWriter writer = new StaticWriter(new SyncBatchWriteResult(
+                0L,
+                1000L,
+                true,
+                "batch write isolated dirtyRecords=1000",
+                List.of(dirtySample(1L)),
+                false
+        ));
+        SyncBatchRunOnceInternalRequest request = runRequest(0L, 0L, 0L, null);
+        request.setExecutionPlan(fullPlan());
+        request.getExecutionPlan().getRuntimeControlPlan().setMaxDirtyRecordCount(100L);
+        request.getExecutionPlan().getRuntimeControlPlan().setMaxDirtyRecordRatio(0.01D);
+        request.setSelectedColumns(List.of("id", "amount"));
+        request.setWriteColumns(List.of("id", "amount"));
+
+        SyncBatchRunOnceInternalResponse response = service(reader, writer).runOnce(request);
+
+        assertEquals("WRITE_FAILED", response.getRunStatus());
+        assertTrue(response.getFailed());
+        assertTrue(response.getFailCallbackRecommended());
+        assertTrue(response.getProgressCallbackRecommended());
+        assertEquals(1000L, response.getBatchRecordsRead());
+        assertEquals(1000L, response.getBatchFailedRecordCount());
+        assertEquals(1000L, response.getTotalFailedRecordCount());
+        assertTrue(response.getDirtyThresholdExceeded());
+        assertEquals(1, response.getDirtySamples().size());
+    }
+
+    @Test
     void readerErrorShouldNotCallWriterAndShouldScrubSensitiveSummary() {
         StaticReader reader = new StaticReader(new SyncBatchReadResult(
                 0L,
@@ -199,6 +280,33 @@ class SyncBatchConnectorRuntimeRunOnceServiceTest {
 
     private SyncBatchConnectorRuntimeRunOnceService service(SyncBatchReader reader, SyncBatchWriter writer) {
         return new SyncBatchConnectorRuntimeRunOnceService(preparationService, reader, writer);
+    }
+
+    private SyncDirtyRecordSample dirtySample(Long id) {
+        return new SyncDirtyRecordSample(
+                "DUPLICATE_KEY",
+                "23505",
+                "duplicate key",
+                "{\"strategy\":\"PRIMARY_KEY_EQ\",\"column\":\"id\",\"value\":" + id + ",\"valueType\":\"Long\"}",
+                null,
+                "{\"columns\":\"id,amount\"}",
+                true
+        );
+    }
+
+    /**
+     * 构造与 `recordsRead` 一致的测试批次。
+     *
+     * <p>dirty ratio 的核心业务含义是“失败行 / 读取行”，因此测试数据也要让读取行数和批次行数保持一致。
+     * 如果测试只返回 1 行却声明 recordsRead=1000，虽然当前执行器不会强制校验二者完全相等，
+     * 但会让后续阅读者误以为脏数据比例只依赖计数字段、不关心真实批次规模。</p>
+     */
+    private List<Map<String, Object>> testRows(int count) {
+        List<Map<String, Object>> rows = new ArrayList<>(count);
+        for (int index = 1; index <= count; index++) {
+            rows.add(Map.of("id", (long) index, "amount", index * 10));
+        }
+        return rows;
     }
 
     private SyncBatchRunOnceInternalRequest runRequest(Long previousRecordsRead,
