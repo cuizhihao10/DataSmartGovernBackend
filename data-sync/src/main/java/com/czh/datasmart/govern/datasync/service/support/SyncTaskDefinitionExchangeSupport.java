@@ -34,6 +34,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -54,6 +55,7 @@ public class SyncTaskDefinitionExchangeSupport {
 
     private static final int DEFAULT_EXPORT_SIZE = 500;
     private static final int MAX_EXPORT_SIZE = 1000;
+    private static final int MAX_BATCH_EXPORT_IDS = 1000;
     private static final int MAX_IMPORT_ROWS = 500;
     private static final DateTimeFormatter FILE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
     private static final Set<String> ALLOWED_PRIORITIES = Set.of("LOW", "MEDIUM", "HIGH", "URGENT");
@@ -91,6 +93,46 @@ public class SyncTaskDefinitionExchangeSupport {
                 "format=" + format + ",exportedRows=" + tasks.size()
                         + ",currentState=" + (criteria == null ? null : criteria.currentState())
                         + ",groupCode=" + (criteria == null ? null : criteria.groupCode()));
+        return new SyncTaskExportFile(fileName, codecSupport.contentType(format), content);
+    }
+
+    /**
+     * 按用户或 Agent 明确选中的任务 ID 批量导出任务定义。
+     *
+     * <p>该方法和 {@link #exportTasks(SyncTaskQueryCriteria, String, SyncActorContext)} 的核心区别是导出范围来源不同：</p>
+     * <p>1. 普通导出：通过查询条件导出一个列表视图，例如某个项目、分组或状态下的任务；</p>
+     * <p>2. 批量导出：通过 taskId 列表导出明确选中的任务，适合前端复选框、Agent 工具确认后的精确导出。</p>
+     *
+     * <p>批量导出采用 fail-closed 策略：只要任意 taskId 不存在、已彻底删除或当前操作者不可见，就拒绝生成文件。
+     * 这样可以避免“文件生成成功但悄悄漏掉某些任务”导致用户误以为备份完整。</p>
+     */
+    public SyncTaskExportFile exportTasksByIds(List<Long> taskIds,
+                                               String requestedFormat,
+                                               SyncActorContext actorContext) {
+        String format = codecSupport.resolveFormat(requestedFormat, null);
+        List<Long> safeTaskIds = normalizeBatchExportTaskIds(taskIds);
+        List<SyncTask> tasks = new ArrayList<>();
+        for (Long taskId : safeTaskIds) {
+            SyncTask task = taskMapper.selectById(taskId);
+            if (task == null) {
+                throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND, "同步任务不存在: " + taskId);
+            }
+            if (SyncTaskState.DELETED.name().equals(task.getCurrentState())) {
+                throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND, "同步任务已彻底删除，不能导出: " + taskId);
+            }
+            dataScopeSupport.validateOwnedReadable(task.getTenantId(), task.getProjectId(),
+                    task.getOwnerId(), actorContext, "同步任务");
+            tasks.add(task);
+        }
+
+        byte[] content = codecSupport.encodeTasks(tasks, format);
+        String fileName = "datasmart-sync-tasks-selected-"
+                + FILE_TIME_FORMATTER.format(LocalDateTime.now())
+                + "." + codecSupport.fileExtension(format);
+        auditSupport.saveAudit(resolveBatchAuditTenant(tasks, actorContext), null, null,
+                SyncAuditActionType.BATCH_EXPORT_TASKS, actorContext,
+                "format=" + format + ",requestedTaskCount=" + safeTaskIds.size()
+                        + ",exportedRows=" + tasks.size());
         return new SyncTaskExportFile(fileName, codecSupport.contentType(format), content);
     }
 
@@ -384,6 +426,39 @@ public class SyncTaskDefinitionExchangeSupport {
         }
         Long actorTenantId = actorContext == null ? null : actorContext.tenantId();
         return actorTenantId == null ? 0L : actorTenantId;
+    }
+
+    private List<Long> normalizeBatchExportTaskIds(List<Long> taskIds) {
+        if (taskIds == null || taskIds.isEmpty()) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR, "批量导出任务 ID 列表不能为空");
+        }
+        if (taskIds.size() > MAX_BATCH_EXPORT_IDS) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    "单次批量导出最多支持 " + MAX_BATCH_EXPORT_IDS + " 个同步任务，当前数量=" + taskIds.size());
+        }
+        Set<Long> deduplicated = new LinkedHashSet<>();
+        for (Long taskId : taskIds) {
+            if (taskId == null || taskId <= 0) {
+                throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                        "批量导出任务 ID 必须是正整数，当前值=" + taskId);
+            }
+            if (!deduplicated.add(taskId)) {
+                throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                        "批量导出任务 ID 不能重复，重复值=" + taskId);
+            }
+        }
+        return deduplicated.stream().toList();
+    }
+
+    private Long resolveBatchAuditTenant(List<SyncTask> tasks, SyncActorContext actorContext) {
+        Long actorTenantId = actorContext == null ? null : actorContext.tenantId();
+        if (actorTenantId != null) {
+            return actorTenantId;
+        }
+        if (tasks != null && !tasks.isEmpty() && tasks.get(0).getTenantId() != null) {
+            return tasks.get(0).getTenantId();
+        }
+        return 0L;
     }
 
     private String normalizeName(String name, int rowNumber) {

@@ -526,6 +526,48 @@ datasmart:
           method-actions:
             POST: IMPORT
 
+        - path-pattern: /api/sync/sync-tasks/batch/export
+          resource-type: SYNC_TASK
+          default-action: BATCH_EXPORT
+          description: data-sync 同步任务按选中 ID 批量导出接口，下载低敏 CSV/XLSX 任务定义包，不包含连接串、密码、SQL 正文或样本数据。
+          method-actions:
+            POST: BATCH_EXPORT
+
+        - path-pattern: /api/sync/sync-tasks/batch/import
+          resource-type: SYNC_TASK
+          default-action: BATCH_IMPORT
+          description: data-sync 同步任务批量导入语义入口，复用 CSV/XLSX 多行导入、dry-run、冲突检测和导入后立即执行规则。
+          method-actions:
+            POST: BATCH_IMPORT
+
+        - path-pattern: /api/sync/sync-tasks/batch/manual-dispatch
+          resource-type: SYNC_TASK
+          default-action: BATCH_MANUAL_DISPATCH
+          description: data-sync 同步任务批量手工调度接口，逐个任务创建 MANUAL execution 并返回逐条结果。
+          method-actions:
+            POST: BATCH_MANUAL_DISPATCH
+
+        - path-pattern: /api/sync/sync-tasks/batch/offline
+          resource-type: SYNC_TASK
+          default-action: BATCH_OFFLINE
+          description: data-sync 同步任务批量下线接口，逐个关闭自动调度并清空 nextFireTime，是批量删除前置动作。
+          method-actions:
+            POST: BATCH_OFFLINE
+
+        - path-pattern: /api/sync/sync-tasks/batch/recycle
+          resource-type: SYNC_TASK
+          default-action: BATCH_RECYCLE
+          description: data-sync 同步任务批量移入回收站接口，仅允许已下线任务进入 RECYCLED。
+          method-actions:
+            POST: BATCH_RECYCLE
+
+        - path-pattern: /api/sync/sync-tasks/batch/hard-delete
+          resource-type: SYNC_TASK
+          default-action: BATCH_HARD_DELETE
+          description: data-sync 同步任务批量彻底删除接口，当前为逻辑 DELETED 并保留历史审计证据。
+          method-actions:
+            POST: BATCH_HARD_DELETE
+
         - path-pattern: /api/sync/sync-tasks/recycle-bin
           resource-type: SYNC_TASK
           default-action: VIEW_RECYCLE_BIN

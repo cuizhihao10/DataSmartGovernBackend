@@ -45,6 +45,38 @@ public enum SyncAuditActionType {
      */
     IMPORT_TASKS,
     /**
+     * 按选中任务 ID 批量导出同步任务定义。
+     *
+     * <p>该动作与普通 EXPORT_TASKS 的区别是：普通导出通常来自筛选条件，批量导出来自用户或 Agent 明确选中的 taskId 列表。
+     * 生产排查时需要知道“导出了一个视图范围”还是“导出了这批指定任务”，因此单独审计。</p>
+     */
+    BATCH_EXPORT_TASKS,
+    /**
+     * 批量手工调度同步任务。
+     *
+     * <p>每个任务仍会单独记录 MANUAL_DISPATCH_TASK；该批量动作记录本次批处理汇总，
+     * 便于运营台回答“这次批量操作一共成功/失败/跳过多少条”。</p>
+     */
+    BATCH_MANUAL_DISPATCH_TASKS,
+    /**
+     * 批量下线同步任务。
+     *
+     * <p>批量下线会关闭每个任务的自动调度，是批量删除到回收站之前的治理前置步骤。</p>
+     */
+    BATCH_OFFLINE_TASKS,
+    /**
+     * 批量删除同步任务到回收站。
+     *
+     * <p>每条任务仍必须满足 OFFLINE -> RECYCLED 状态流转，批量入口不会绕过删除前置条件。</p>
+     */
+    BATCH_RECYCLE_TASKS,
+    /**
+     * 批量彻底删除回收站同步任务。
+     *
+     * <p>当前彻底删除仍是逻辑 DELETED，保留 execution、checkpoint、错误样本和审计证据。</p>
+     */
+    BATCH_HARD_DELETE_TASKS,
+    /**
      * 普通运行或执行器生命周期回调。
      *
      * <p>该动作覆盖手动入队、执行器认领、心跳、退避、开始执行、完成执行等“运行链路”事件。

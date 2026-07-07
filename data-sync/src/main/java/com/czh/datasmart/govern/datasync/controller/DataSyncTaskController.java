@@ -13,6 +13,9 @@ import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTaskRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchExportRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExportFile;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupSummary;
@@ -139,13 +142,7 @@ public class DataSyncTaskController {
                 currentState, approvalState, triggerType, current, size);
         SyncTaskExportFile file = dataSyncService.exportTasks(
                 criteria, format, actorContext(actorTenantId, actorId, actorRole, traceId, headers));
-        return ResponseEntity.ok()
-                .contentType(MediaType.parseMediaType(file.getContentType()))
-                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
-                        .filename(file.getFileName(), StandardCharsets.UTF_8)
-                        .build()
-                        .toString())
-                .body(file.getContent());
+        return exportFileResponse(file);
     }
 
     /**
@@ -178,6 +175,126 @@ public class DataSyncTaskController {
         SyncTaskImportResult result = dataSyncService.importTasks(
                 readMultipartFile(file), options, actorContext(actorTenantId, actorId, actorRole, traceId, headers));
         return PlatformApiResponse.success("同步任务导入处理完成", result, traceId);
+    }
+
+    /**
+     * 按选中的任务 ID 批量导出同步任务定义。
+     *
+     * <p>该接口用于前端复选框和 Agent 精确选择场景：
+     * - 普通 {@code GET /sync-tasks/export} 适合按筛选条件导出一个列表视图；
+     * - {@code POST /sync-tasks/batch/export} 适合导出用户明确勾选的任务 ID 集合。</p>
+     *
+     * <p>安全边界：
+     * 服务层会逐个校验 taskId 是否存在、是否已彻底删除、当前操作者是否可见。
+     * 只要任意一条不合法，就不会生成文件，避免“导出成功但漏了几条”的误导性结果。</p>
+     */
+    @PostMapping("/batch/export")
+    public ResponseEntity<byte[]> batchExportTasks(
+            @Valid @RequestBody SyncTaskBatchExportRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        SyncTaskExportFile file = dataSyncService.exportTasksByIds(
+                request.getTaskIds(), request.getFormat(), actorContext(actorTenantId, actorId, actorRole, traceId, headers));
+        return exportFileResponse(file);
+    }
+
+    /**
+     * 批量导入同步任务定义。
+     *
+     * <p>该接口是 {@code /sync-tasks/import} 的语义化别名。现有导入文件本身已经支持多行任务，
+     * 所以“批量导入”不需要再设计新的文件协议，而是复用同一套 CSV/XLSX、dry-run、冲突检测和立即执行规则。</p>
+     */
+    @PostMapping(value = "/batch/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public PlatformApiResponse<SyncTaskImportResult> batchImportTasks(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(required = false) String format,
+            @RequestParam(defaultValue = "false") Boolean dryRun,
+            @RequestParam(defaultValue = "false") Boolean runImmediately,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return importTasks(file, format, dryRun, runImmediately, actorTenantId, actorId, actorRole, traceId, headers);
+    }
+
+    /**
+     * 批量手工调度同步任务。
+     *
+     * <p>每个任务会独立创建 MANUAL execution，并进入 QUEUED 等待 worker loop 认领。
+     * 批量接口只做控制面编排，不直接读取源端、不写目标端。</p>
+     */
+    @PostMapping("/batch/manual-dispatch")
+    public PlatformApiResponse<SyncTaskBatchOperationResult> batchManualDispatchTasks(
+            @Valid @RequestBody SyncTaskBatchOperationRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务批量手工调度处理完成",
+                dataSyncService.batchManualDispatchTasks(request, actorContext(tenantId, actorId, actorRole, traceId, headers)),
+                traceId);
+    }
+
+    /**
+     * 批量下线同步任务。
+     *
+     * <p>下线是停止周期任务继续调度的正式动作，也是进入回收站之前的强制前置步骤。
+     * 活跃执行中的任务仍需要先暂停、取消或手工结束，不能通过批量下线绕过 worker 协作停止。</p>
+     */
+    @PostMapping("/batch/offline")
+    public PlatformApiResponse<SyncTaskBatchOperationResult> batchOfflineTasks(
+            @Valid @RequestBody SyncTaskBatchOperationRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务批量下线处理完成",
+                dataSyncService.batchOfflineTasks(request, actorContext(tenantId, actorId, actorRole, traceId, headers)),
+                traceId);
+    }
+
+    /**
+     * 批量删除同步任务到回收站。
+     *
+     * <p>该接口不会自动下线任务；如果某条任务仍处于 SCHEDULED、RUNNING、QUEUED 等状态，
+     * 它会在明细中失败并提示调用方先下线或结束任务。这样可以保留“下线”和“删除”的独立审计语义。</p>
+     */
+    @PostMapping("/batch/recycle")
+    public PlatformApiResponse<SyncTaskBatchOperationResult> batchRecycleTasks(
+            @Valid @RequestBody SyncTaskBatchOperationRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务批量移入回收站处理完成",
+                dataSyncService.batchRecycleTasks(request, actorContext(tenantId, actorId, actorRole, traceId, headers)),
+                traceId);
+    }
+
+    /**
+     * 批量彻底删除回收站同步任务。
+     *
+     * <p>当前彻底删除是逻辑 DELETED：任务不再出现在普通列表和详情中，
+     * 但 execution、checkpoint、错误样本和审计证据仍保留，便于后续合规追溯和数据保留策略统一清理。</p>
+     */
+    @PostMapping("/batch/hard-delete")
+    public PlatformApiResponse<SyncTaskBatchOperationResult> batchHardDeleteTasks(
+            @Valid @RequestBody SyncTaskBatchOperationRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务批量彻底删除处理完成",
+                dataSyncService.batchHardDeleteTasks(request, actorContext(tenantId, actorId, actorRole, traceId, headers)),
+                traceId);
     }
 
     /**
@@ -608,6 +725,16 @@ public class DataSyncTaskController {
 
     private SyncActorContext actorContext(Long tenantId, Long actorId, String actorRole, String traceId, HttpHeaders headers) {
         return SyncActorContextHeaderSupport.fromHeaders(tenantId, actorId, actorRole, traceId, headers);
+    }
+
+    private ResponseEntity<byte[]> exportFileResponse(SyncTaskExportFile file) {
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(file.getContentType()))
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                        .filename(file.getFileName(), StandardCharsets.UTF_8)
+                        .build()
+                        .toString())
+                .body(file.getContent());
     }
 
     private byte[] readMultipartFile(MultipartFile file) {

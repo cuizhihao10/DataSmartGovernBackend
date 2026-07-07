@@ -25,6 +25,8 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionQuery
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExportFile;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupSummary;
@@ -128,11 +130,28 @@ public interface DataSyncService {
     SyncTaskExportFile exportTasks(SyncTaskQueryCriteria criteria, String format, SyncActorContext actorContext);
 
     /**
+     * 按选中的任务 ID 批量导出同步任务定义文件。
+     *
+     * <p>该方法面向“前端复选框/Agent 精确选择”的场景，不依赖分页筛选条件。
+     * 服务层仍会逐条校验任务是否存在、是否已彻底删除、当前操作者是否可见，避免批量文件越权或静默漏导。</p>
+     */
+    SyncTaskExportFile exportTasksByIds(List<Long> taskIds, String format, SyncActorContext actorContext);
+
+    /**
      * 导入同步任务定义文件。
      *
      * <p>导入采用“先全量校验、再统一写入”的策略。dryRun=true 时只做校验；runImmediately=true 时会发布并手工执行一次。</p>
      */
     SyncTaskImportResult importTasks(byte[] content, SyncTaskImportOptions options, SyncActorContext actorContext);
+
+    /**
+     * 批量手工调度同步任务。
+     *
+     * <p>每个任务仍会创建独立 MANUAL execution，并复用现有手工调度状态机。
+     * 批量结果只负责汇总每条 taskId 的成功、失败或跳过情况。</p>
+     */
+    SyncTaskBatchOperationResult batchManualDispatchTasks(SyncTaskBatchOperationRequest request,
+                                                          SyncActorContext actorContext);
 
     /**
      * 查询同步任务分组汇总。
@@ -161,6 +180,14 @@ public interface DataSyncService {
      * 定时任务在手工调度完成后仍应回到 SCHEDULED 等待下一次计划触发。</p>
      */
     SyncTaskOperationResult manualDispatchTask(Long id, SyncActorContext actorContext);
+
+    /**
+     * 批量下线同步任务。
+     *
+     * <p>下线会关闭自动调度并清空 nextFireTime，是批量删除进回收站之前的强制前置动作。</p>
+     */
+    SyncTaskBatchOperationResult batchOfflineTasks(SyncTaskBatchOperationRequest request,
+                                                   SyncActorContext actorContext);
 
     /**
      * 暂停同步任务。
@@ -204,11 +231,27 @@ public interface DataSyncService {
     SyncTaskOperationResult offlineTask(Long id, SyncTaskLifecycleOperationRequest request, SyncActorContext actorContext);
 
     /**
+     * 批量删除同步任务到回收站。
+     *
+     * <p>该方法不会自动下线任务；每条任务仍必须已经处于 OFFLINE，避免后台 scheduler 继续触发已删除任务。</p>
+     */
+    SyncTaskBatchOperationResult batchRecycleTasks(SyncTaskBatchOperationRequest request,
+                                                   SyncActorContext actorContext);
+
+    /**
      * 删除任务到回收站。
      *
      * <p>只有已下线任务可以进入回收站；回收站内任务仍可查看详情和克隆，但不能运行或调度。</p>
      */
     SyncTaskOperationResult recycleTask(Long id, SyncTaskLifecycleOperationRequest request, SyncActorContext actorContext);
+
+    /**
+     * 批量彻底删除回收站同步任务。
+     *
+     * <p>当前彻底删除仍是逻辑 DELETED，保留执行历史、checkpoint、错误样本和审计证据。</p>
+     */
+    SyncTaskBatchOperationResult batchHardDeleteTasks(SyncTaskBatchOperationRequest request,
+                                                      SyncActorContext actorContext);
 
     /**
      * 从回收站彻底删除任务。

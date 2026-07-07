@@ -29,6 +29,8 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionQuery
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExportFile;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupSummary;
@@ -66,6 +68,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLifecycleS
 import com.czh.datasmart.govern.datasync.service.support.SyncObjectExecutionOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncOfflineJobPlanSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskBatchOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskDefinitionOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskDefinitionExchangeSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
@@ -120,6 +123,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncAuditSupport auditSupport;
     private final SyncExecutionLifecycleSupport executionLifecycleSupport;
     private final SyncExecutionCreationSupport executionCreationSupport;
+    private final SyncTaskBatchOperationSupport taskBatchOperationSupport;
     private final SyncTaskDefinitionOperationSupport taskDefinitionOperationSupport;
     private final SyncTaskDefinitionExchangeSupport taskDefinitionExchangeSupport;
     private final SyncTaskLifecycleOperationSupport taskLifecycleOperationSupport;
@@ -401,6 +405,19 @@ public class DataSyncServiceImpl implements DataSyncService {
     }
 
     /**
+     * 按选中的任务 ID 批量导出任务定义。
+     *
+     * <p>主 Service 仍然只做委托，具体的 ID 去重、可见性校验、低敏文件编码和审计写入都在
+     * {@link SyncTaskDefinitionExchangeSupport} 内部完成，避免 Controller 或 ServiceImpl 直接拼导出规则。</p>
+     */
+    @Override
+    public SyncTaskExportFile exportTasksByIds(List<Long> taskIds,
+                                               String format,
+                                               SyncActorContext actorContext) {
+        return taskDefinitionExchangeSupport.exportTasksByIds(taskIds, format, actorContext);
+    }
+
+    /**
      * 导入任务定义文件。
      *
      * <p>导入可能批量创建任务，或在 runImmediately=true 时创建 execution，因此必须处于事务中。
@@ -412,6 +429,18 @@ public class DataSyncServiceImpl implements DataSyncService {
                                             SyncTaskImportOptions options,
                                             SyncActorContext actorContext) {
         return taskDefinitionExchangeSupport.importTasks(content, options, actorContext);
+    }
+
+    /**
+     * 批量手工调度同步任务。
+     *
+     * <p>批量动作不在这里直接循环调用单任务方法，而是交给 {@link SyncTaskBatchOperationSupport} 使用逐条事务执行。
+     * 这样某一条失败时只回滚该任务，已成功的任务仍能保留并返回清晰明细。</p>
+     */
+    @Override
+    public SyncTaskBatchOperationResult batchManualDispatchTasks(SyncTaskBatchOperationRequest request,
+                                                                 SyncActorContext actorContext) {
+        return taskBatchOperationSupport.manualDispatchTasks(request, actorContext);
     }
 
     /**
@@ -487,6 +516,18 @@ public class DataSyncServiceImpl implements DataSyncService {
     public SyncTaskOperationResult manualDispatchTask(Long id, SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
         return taskManagementOperationSupport.manualDispatchTask(task, actorContext);
+    }
+
+    /**
+     * 批量下线同步任务。
+     *
+     * <p>批量下线是批量删除前的正式治理入口：它会关闭自动调度，避免周期任务继续被 scheduler 扫描。
+     * 逐条准入规则仍由单任务下线动作维护，例如活跃执行中的任务不能直接下线。</p>
+     */
+    @Override
+    public SyncTaskBatchOperationResult batchOfflineTasks(SyncTaskBatchOperationRequest request,
+                                                          SyncActorContext actorContext) {
+        return taskBatchOperationSupport.offlineTasks(request, actorContext);
     }
 
     /**
@@ -707,6 +748,18 @@ public class DataSyncServiceImpl implements DataSyncService {
         return taskManagementOperationSupport.offlineTask(task, request, actorContext);
     }
 
+    /**
+     * 批量删除同步任务到回收站。
+     *
+     * <p>该入口不会自动把任务下线后再删除，因为“下线”和“删除到回收站”在审计、告警和用户确认上是两件事。
+     * 如果任务尚未 OFFLINE，单条结果会失败并提示调用方先执行批量下线。</p>
+     */
+    @Override
+    public SyncTaskBatchOperationResult batchRecycleTasks(SyncTaskBatchOperationRequest request,
+                                                          SyncActorContext actorContext) {
+        return taskBatchOperationSupport.recycleTasks(request, actorContext);
+    }
+
     @Override
     @Transactional
     public SyncTaskOperationResult recycleTask(Long id,
@@ -714,6 +767,18 @@ public class DataSyncServiceImpl implements DataSyncService {
                                                SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
         return taskManagementOperationSupport.recycleTask(task, request, actorContext);
+    }
+
+    /**
+     * 批量彻底删除回收站任务。
+     *
+     * <p>彻底删除仍采用逻辑 DELETED，且只允许 RECYCLED 任务进入该状态。
+     * 这样可以兼顾“普通列表不可见”和“历史执行/审计证据可追溯”。</p>
+     */
+    @Override
+    public SyncTaskBatchOperationResult batchHardDeleteTasks(SyncTaskBatchOperationRequest request,
+                                                             SyncActorContext actorContext) {
+        return taskBatchOperationSupport.hardDeleteTasks(request, actorContext);
     }
 
     @Override
