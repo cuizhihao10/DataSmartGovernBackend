@@ -80,6 +80,7 @@ class PermissionAdminPostgreSqlMigrationIntegrationTest {
     void shouldApplyPermissionAdminSchemaAndRunCorePostgreSqlPaths() {
         assertPostgreSqlSchemaBaseline();
         assertSeedRolesAndPagination();
+        assertFlashSyncTenantBootstrap();
 
         String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         PermissionAuditRecord auditRecord = null;
@@ -114,13 +115,18 @@ class PermissionAdminPostgreSqlMigrationIntegrationTest {
                       'permission_data_scope_policy',
                       'permission_project_membership',
                       'permission_audit_record',
-                      'permission_event_outbox'
+                      'permission_event_outbox',
+                      'permission_identity_user',
+                      'permission_tenant',
+                      'permission_application',
+                      'permission_project',
+                      'permission_workspace'
                   )
                 """, Integer.class);
 
         assertThat(currentSchema).isEqualTo("permission_admin");
         assertThat(flywaySuccessCount).isEqualTo(1);
-        assertThat(tableCount).isEqualTo(8);
+        assertThat(tableCount).isEqualTo(13);
     }
 
     /**
@@ -148,6 +154,48 @@ class PermissionAdminPostgreSqlMigrationIntegrationTest {
         assertThat(page.getRecords()).hasSizeLessThanOrEqualTo(3);
         assertThat(page.getRecords()).extracting(PermissionRole::getRoleCode)
                 .containsAnyOf("AUDITOR", "OPERATOR", "ORDINARY_USER", "PLATFORM_ADMINISTRATOR");
+    }
+
+    /**
+     * 验证 FlashSync 开租基线是否随 PostgreSQL 迁移一起落库。
+     *
+     * <p>这不是普通的“有没有插入样例数据”检查，而是在保护一条产品级约定：
+     * tenantId、applicationId、projectId、workspaceId 应由平台开租流程生成，
+     * 业务用户不应该在创建同步任务时手工猜这些内部 ID。</p>
+     */
+    private void assertFlashSyncTenantBootstrap() {
+        String tenantName = jdbcTemplate.queryForObject(
+                "SELECT tenant_name FROM permission_tenant WHERE tenant_id = 10 AND tenant_code = 'FLASHSYNC'",
+                String.class
+        );
+        String applicationName = jdbcTemplate.queryForObject(
+                "SELECT application_name FROM permission_application WHERE application_id = 10010 AND tenant_id = 10",
+                String.class
+        );
+        String workspaceKey = jdbcTemplate.queryForObject(
+                "SELECT external_workspace_key FROM permission_workspace WHERE workspace_id = 10001 AND tenant_id = 10",
+                String.class
+        );
+        List<Long> projectOwnerProjectIds = jdbcTemplate.queryForList("""
+                SELECT project_id
+                FROM permission_project_membership
+                WHERE tenant_id = 10
+                  AND actor_id = 1001
+                  AND enabled = true
+                """, Long.class);
+        Integer shadowIdentityCount = jdbcTemplate.queryForObject("""
+                SELECT count(*)
+                FROM permission_identity_user
+                WHERE tenant_id = 10
+                  AND actor_id IN (1001, 1002, 1003, 9101)
+                  AND status = 'ACTIVE'
+                """, Integer.class);
+
+        assertThat(tenantName).isEqualTo("FlashSync");
+        assertThat(applicationName).isEqualTo("FlashSync");
+        assertThat(workspaceKey).isEqualTo("workspace-a");
+        assertThat(projectOwnerProjectIds).contains(101L);
+        assertThat(shadowIdentityCount).isEqualTo(4);
     }
 
     /**

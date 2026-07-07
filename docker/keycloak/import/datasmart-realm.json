@@ -150,6 +150,34 @@
             "access.token.claim": "true",
             "userinfo.token.claim": "true"
           }
+        },
+        {
+          "name": "datasmart-application-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "datasmart_application_id",
+            "claim.name": "datasmart_application_id",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "datasmart-application-code",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "datasmart_application_code",
+            "claim.name": "datasmart_application_code",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
         }
       ]
     }
@@ -177,6 +205,12 @@
         ],
         "datasmart_workspace_id": [
           "workspace-a"
+        ],
+        "datasmart_application_id": [
+          "10010"
+        ],
+        "datasmart_application_code": [
+          "FLASHSYNC"
         ]
       },
       "realmRoles": [
@@ -212,6 +246,12 @@
         ],
         "datasmart_workspace_id": [
           "workspace-a"
+        ],
+        "datasmart_application_id": [
+          "10010"
+        ],
+        "datasmart_application_code": [
+          "FLASHSYNC"
         ]
       },
       "realmRoles": [
@@ -247,6 +287,12 @@
         ],
         "datasmart_workspace_id": [
           "workspace-a"
+        ],
+        "datasmart_application_id": [
+          "10010"
+        ],
+        "datasmart_application_code": [
+          "FLASHSYNC"
         ]
       },
       "realmRoles": [
@@ -282,6 +328,12 @@
         ],
         "datasmart_workspace_id": [
           "platform"
+        ],
+        "datasmart_application_id": [
+          "9000"
+        ],
+        "datasmart_application_code": [
+          "DATASMART_PLATFORM"
         ]
       },
       "realmRoles": [
@@ -317,6 +369,12 @@
         ],
         "datasmart_workspace_id": [
           "system-sync"
+        ],
+        "datasmart_application_id": [
+          "10010"
+        ],
+        "datasmart_application_code": [
+          "FLASHSYNC"
         ]
       },
       "realmRoles": [
