@@ -350,7 +350,45 @@ GET http://localhost:8090/agent/metrics
 .\scripts\local-data-sync-closure-suite.ps1 -IncludeRealJdbc -SkipDependencyStartForRealJdbc
 ```
 
-当前脚本仍然不是“完整多服务启动型 E2E”。它不会启动 `data-sync`、`datasource-management`、`task-management` 的真实服务进程，也不会通过网关创建任务并触发 worker loop。它的定位是多服务真实联调前的自动化守门：先证明控制面、HTTP 合同和执行面分别可靠，再进入更重的本地服务进程联调。
+如果已经启动 `datasource-management`、`data-sync`，并且希望进一步把“创建数据源 -> 创建同步模板 -> 预检查 -> 创建任务 -> 触发 worker loop -> 分片账本 -> 失败分片重试 -> dirty replay -> PostgreSQL 目标表最终断言”串成一条平台/API 级 E2E，可以显式开启：
+
+```powershell
+.\scripts\local-data-sync-closure-suite.ps1 -IncludePlatformApiE2E -UseDirectServiceUrlsForPlatformApiE2E
+```
+
+也可以直接运行专用脚本：
+
+```powershell
+.\scripts\local-data-sync-platform-e2e.ps1 -UseDirectServiceUrls
+```
+
+平台/API 级 E2E 的设计含义：
+
+- 它通过 HTTP API 创建 MySQL 源端数据源与 PostgreSQL 目标端数据源，不再只依赖同 JVM 测试或 datasource-management 单模块 runner。
+- 它创建 `FULL + SINGLE_OBJECT + AUTO_SPLIT_PK` 同步模板，并携带字段映射、where/filter 条件、`splitPk=id`、`shardCount`、`channel`、`taskGroupSize`、脏数据条数阈值与脏数据比例阈值。
+- 它调用 data-sync 预检查，确认模板能进入 worker 执行链路，再创建任务并触发 `POST /internal/sync-workers/run-once`。
+- 首轮执行会故意制造一个失败分片和一个少量 dirty row：`id=11..15` 因目标端 `CHECK(amount >= 0)` 超过 dirty ratio 进入失败分片，`id=7` 因目标端 `name NOT NULL` 形成结构化 dirty sample。
+- 脚本随后修复源端 `id=11..15`，只重试失败分片，不重跑已成功分片；再修复 `id=7`，通过 `PRIMARY_KEY_EQ` dirty replay 精确重放该坏行。
+- 最终断言 PostgreSQL 目标表包含 20 条完整数据，并且 `id=7` 写入修复后的值。
+
+平台/API 级 E2E 的安全边界：
+
+- 这不是只读 smoke check，会创建/覆盖专用 E2E 表：MySQL `datasmart_govern.datasmart_e2e_platform_orders` 与 PostgreSQL `datasmart_e2e.orders_platform_clean`。
+- 它会在平台数据库中创建数据源、同步模板、同步任务、execution、分片账本、错误样本和 replay execution 等测试对象。
+- 它会真实触发 data-sync worker loop，因此只能在本地测试库、可回滚环境或专用 E2E 环境执行。
+- 脚本不会打印数据库密码、完整 JDBC URL、SQL 正文、样本行、token、HTTP 响应正文或底层堆栈。
+
+直连模式与网关模式的选择：
+
+- `-UseDirectServiceUrls` 适合本地服务联调早期阶段，脚本直接访问 `datasource-management:8082` 与 `data-sync:8086`，并注入本地 E2E Header；它绕过 gateway/Keycloak，但能最快验证多服务 HTTP 合同与真实 JDBC 数据面。
+- 不加 `-UseDirectServiceUrls` 时，脚本会走 `gateway:8080 + Keycloak:18080`，更接近真实认证授权入口；该模式要求 gateway、Keycloak、permission-admin、data-sync、datasource-management 均已启动且路由策略可用。
+- 如果只想确认脚本计划，不启动容器、不写库、不调用 API，可以运行：
+
+```powershell
+.\scripts\local-data-sync-platform-e2e.ps1 -PlanOnly
+```
+
+当前默认闭环套件仍然不是“完整多服务启动型 E2E”。它不会自动启动 `data-sync`、`datasource-management`、`task-management` 的真实服务进程；平台/API 级 E2E 是显式 opt-in 阶段，要求服务进程已由 `local-e2e-start-runtime.ps1` 或手动方式启动。这样设计是为了把低副作用守门和真实写入验收分开，避免开发者只想快速回归时意外触发 worker loop 或覆盖测试表。
 
 ## 5. Smoke Check
 

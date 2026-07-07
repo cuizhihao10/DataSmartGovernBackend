@@ -25,6 +25,8 @@
       .\scripts\local-data-sync-closure-suite.ps1 -IncludeModuleTestSuites
     - 加上真实 MySQL/PostgreSQL 写入验收：
       .\scripts\local-data-sync-closure-suite.ps1 -IncludeRealJdbc
+    - 加上平台/API 级真实 E2E：创建数据源、创建模板、预检查、创建任务、触发 worker loop、失败分片重试、dirty replay：
+      .\scripts\local-data-sync-closure-suite.ps1 -IncludePlatformApiE2E -UseDirectServiceUrlsForPlatformApiE2E
     - 严格模式，任一阶段失败即退出非 0：
       .\scripts\local-data-sync-closure-suite.ps1 -Strict
 #>
@@ -33,9 +35,17 @@ param(
     [switch]$CheckServiceReadiness,
     [switch]$IncludeModuleTestSuites,
     [switch]$IncludeRealJdbc,
+    [switch]$IncludePlatformApiE2E,
+    [switch]$UseDirectServiceUrlsForPlatformApiE2E,
+    [switch]$UseContainerJdbcUrlsForPlatformApiE2E,
     [switch]$SkipCompile,
     [switch]$SkipDependencyStartForRealJdbc,
+    [switch]$SkipDependencyStartForPlatformApiE2E,
+    [switch]$SkipDatabasePrepareForPlatformApiE2E,
+    [switch]$SkipTaskReceiptProbeForPlatformApiE2E,
     [switch]$Strict,
+    [string]$GatewayBaseUrl = "http://localhost:8080",
+    [string]$KeycloakBaseUrl = "http://localhost:18080",
     [string]$TaskManagementBaseUrl = "http://localhost:8081",
     [string]$DatasourceManagementBaseUrl = "http://localhost:8082",
     [string]$DataSyncBaseUrl = "http://localhost:8086"
@@ -130,6 +140,65 @@ function Invoke-RealJdbcStep {
         return $true
     }
     Add-ClosureCheck -Name "Real JDBC E2E" -Status "FAIL" -Detail "Real JDBC E2E failed; inspect the previous low-sensitive output"
+    if ($Strict) {
+        exit 1
+    }
+    return $false
+}
+
+function Invoke-PlatformApiE2EStep {
+    <#
+        平台/API 级 E2E 是当前 data-sync 闭环套件里“最接近真实用户路径”的一层：
+        - 它不再只跑 JUnit 或单模块 JDBC runner，而是通过 HTTP API 创建数据源、同步模板和同步任务；
+        - 它会真实触发 data-sync worker loop，并让 worker 调用 datasource-management run-once；
+        - 它会在同一条链路中验证 AUTO_SPLIT_PK、TaskGroup/channel、分片账本、失败分片选择性 retry、
+          结构化脏数据样本、源端修复、PRIMARY_KEY_EQ dirty replay 和 PostgreSQL 目标表最终断言。
+
+        为什么默认不执行：
+        这一步会创建/覆盖专用 E2E 表，并触发真实 worker loop，属于有副作用验收。为了避免开发者只是想做
+        快速守门却意外写库或认领 execution，必须显式传入 -IncludePlatformApiE2E。
+    #>
+    $scriptPath = Join-Path $script:RepoRoot "scripts\local-data-sync-platform-e2e.ps1"
+    if (-not (Test-Path -LiteralPath $scriptPath)) {
+        Add-ClosureCheck -Name "Platform API E2E" -Status "FAIL" -Detail "local-data-sync-platform-e2e.ps1 is missing"
+        if ($Strict) {
+            exit 1
+        }
+        return $false
+    }
+
+    $arguments = @(
+        "-Strict",
+        "-GatewayBaseUrl", $GatewayBaseUrl,
+        "-KeycloakBaseUrl", $KeycloakBaseUrl,
+        "-TaskManagementBaseUrl", $TaskManagementBaseUrl,
+        "-DatasourceManagementBaseUrl", $DatasourceManagementBaseUrl,
+        "-DataSyncBaseUrl", $DataSyncBaseUrl
+    )
+    if ($UseDirectServiceUrlsForPlatformApiE2E) {
+        $arguments += "-UseDirectServiceUrls"
+    }
+    if ($UseContainerJdbcUrlsForPlatformApiE2E) {
+        $arguments += "-UseContainerJdbcUrls"
+    }
+    if ($SkipDependencyStartForPlatformApiE2E) {
+        $arguments += "-SkipDependencyStart"
+    }
+    if ($SkipDatabasePrepareForPlatformApiE2E) {
+        $arguments += "-SkipDatabasePrepare"
+    }
+    if ($SkipTaskReceiptProbeForPlatformApiE2E) {
+        $arguments += "-SkipTaskReceiptProbe"
+    }
+
+    Write-Host ""
+    Write-Host ">>> Platform API E2E" -ForegroundColor Cyan
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $scriptPath @arguments
+    if ($LASTEXITCODE -eq 0) {
+        Add-ClosureCheck -Name "Platform API E2E" -Status "PASS" -Detail "Platform/API MySQL -> PostgreSQL sync E2E passed"
+        return $true
+    }
+    Add-ClosureCheck -Name "Platform API E2E" -Status "FAIL" -Detail "Platform/API E2E failed; inspect the previous low-sensitive output"
     if ($Strict) {
         exit 1
     }
@@ -248,25 +317,35 @@ function Write-ClosurePlan {
     Write-Host "Repo root: $script:RepoRoot"
     Write-Host ""
     Write-Host "Planned quick gates:" -ForegroundColor Cyan
-    Write-Host "1. data-sync control-plane run-once, object retry, and partition-shard retry E2E tests"
-    Write-Host "2. data-sync -> datasource-management HTTP contract E2E test"
-    Write-Host "3. datasource-management H2/JDBC connector runtime E2E test"
+    $script:ClosurePlanStageNumber = 1
+    function Write-PlanStage {
+        param([string]$Text)
+        Write-Host ("{0}. {1}" -f $script:ClosurePlanStageNumber, $Text)
+        $script:ClosurePlanStageNumber++
+    }
+    Write-PlanStage "data-sync control-plane run-once, object retry, and partition-shard retry E2E tests"
+    Write-PlanStage "data-sync -> datasource-management HTTP contract E2E test"
+    Write-PlanStage "datasource-management H2/JDBC connector runtime E2E test"
     if (-not $SkipCompile) {
-        Write-Host "4. data-sync + datasource-management compile gate"
+        Write-PlanStage "data-sync + datasource-management compile gate"
     }
     if ($CheckServiceReadiness) {
-        Write-Host "5. service-process readiness probes for task-management, datasource-management, and data-sync"
+        Write-PlanStage "service-process readiness probes for task-management, datasource-management, and data-sync"
     }
     if ($IncludeModuleTestSuites) {
-        Write-Host "6. full data-sync and datasource-management module test suites"
+        Write-PlanStage "full data-sync and datasource-management module test suites"
     }
     if ($IncludeRealJdbc) {
-        Write-Host "7. explicit real MySQL -> PostgreSQL JDBC E2E via local-data-sync-real-e2e.ps1"
+        Write-PlanStage "explicit real MySQL -> PostgreSQL JDBC E2E via local-data-sync-real-e2e.ps1"
+    }
+    if ($IncludePlatformApiE2E) {
+        Write-PlanStage "explicit platform/API E2E via local-data-sync-platform-e2e.ps1"
     }
     Write-Host ""
     Write-Host "Safety boundaries:" -ForegroundColor Yellow
     Write-Host "- Default gates do not start Docker and do not write external databases."
     Write-Host "- Real JDBC E2E is opt-in and only overwrites dedicated E2E tables."
+    Write-Host "- Platform API E2E is opt-in because it creates sync objects, triggers worker loop, and overwrites dedicated E2E tables."
     Write-Host "- The suite does not print database passwords, JDBC URLs, SQL bodies, row samples, tokens, or raw response bodies."
 }
 
@@ -382,6 +461,12 @@ if ($IncludeRealJdbc) {
     $allPassed = (Invoke-RealJdbcStep) -and $allPassed
 } else {
     Add-ClosureCheck -Name "Real JDBC E2E" -Status "WARN" -Detail "Skipped by default; pass -IncludeRealJdbc to run the explicit write E2E"
+}
+
+if ($IncludePlatformApiE2E) {
+    $allPassed = (Invoke-PlatformApiE2EStep) -and $allPassed
+} else {
+    Add-ClosureCheck -Name "Platform API E2E" -Status "WARN" -Detail "Skipped by default; pass -IncludePlatformApiE2E after local services are started"
 }
 
 Write-Host ""
