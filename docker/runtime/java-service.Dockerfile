@@ -38,9 +38,21 @@ RUN case "${MODULE}" in \
       *) echo "Unsupported DataSmart Java module: ${MODULE}" >&2; exit 64 ;; \
     esac
 
-# platform-common 是所有 Java 服务共享的契约库；业务模块源码只复制当前构建目标。
+# Maven 使用 `-pl "${MODULE}" -am` 打包单个微服务时，并不是只编译当前模块：
+# `-am` 会把当前模块依赖的上游模块一起放进 reactor 中构建。例如 data-sync 会依赖
+# datasource-management 提供的执行面契约，datasource-management 又是一个 Spring Boot
+# 应用模块。如果这里只复制当前模块源码，上游模块只有 pom、没有 src，Spring Boot
+# repackage 阶段就可能因为找不到 main class 而失败。这里显式复制所有 Java 服务源码，
+# 牺牲一点构建上下文体积，换取本地 E2E 和 CI 构建的一致性、可解释性和可维护性。
 COPY platform-common/src ./platform-common/src
-COPY ${MODULE}/src ./${MODULE}/src
+COPY gateway/src ./gateway/src
+COPY permission-admin/src ./permission-admin/src
+COPY task-management/src ./task-management/src
+COPY datasource-management/src ./datasource-management/src
+COPY data-sync/src ./data-sync/src
+COPY data-quality/src ./data-quality/src
+COPY agent-runtime/src ./agent-runtime/src
+COPY observability/src ./observability/src
 
 RUN --mount=type=cache,target=/root/.m2 \
     mvn -B -ntp -pl "${MODULE}" -am package -DskipTests \

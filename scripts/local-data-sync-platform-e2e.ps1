@@ -180,6 +180,37 @@ function Test-CommandExists {
     return $null -ne (Get-Command $CommandName -ErrorAction SilentlyContinue)
 }
 
+function Invoke-NativeCommandSafely {
+    param(
+        [string]$Name,
+        [scriptblock]$Command
+    )
+
+    <#
+        Windows PowerShell 5.1 对 native command 的 stderr 处理比较“敏感”：
+        Docker Compose 在命令成功时也可能把 warning 写到 stderr，例如提示存在 orphan containers。
+        如果全局 $ErrorActionPreference=Stop，这类非致命 warning 可能被 PowerShell 包装成
+        NativeCommandError，从而让脚本在 Docker 已经成功执行后提前中断。
+
+        因此这里专门为 docker/docker compose/mysql/psql 这类外部命令建立一个安全执行器：
+        - 临时把 ErrorActionPreference 调整为 Continue，避免 stderr warning 直接变成终止异常；
+        - 捕获 stdout/stderr，但调用方默认不打印，继续遵守低敏输出策略；
+        - 只使用 $LASTEXITCODE 判断 native 命令是否真正失败。
+    #>
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & $Command 2>&1
+        return [pscustomobject]@{
+            Name = $Name
+            ExitCode = $LASTEXITCODE
+            Output = $output
+        }
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+}
+
 function Assert-SafeIdentifier {
     param(
         [string]$Name,
@@ -260,8 +291,10 @@ function Invoke-DependencyStart {
         if (-not $UseDirectServiceUrls) {
             $services += @("keycloak-db-bootstrap", "keycloak")
         }
-        docker compose -f docker-compose.yml -f docker-compose.local-e2e.yml up -d @services
-        if ($LASTEXITCODE -ne 0) {
+        $composeResult = Invoke-NativeCommandSafely -Name "Docker compose up" -Command {
+            docker compose -f docker-compose.yml -f docker-compose.local-e2e.yml up -d @services
+        }
+        if ($composeResult.ExitCode -ne 0) {
             Fail-Step -Name "Docker compose up" -Detail "基础依赖容器启动失败，请检查镜像拉取、端口占用和 Docker Desktop 状态"
         }
         Add-Check -Name "Docker compose up" -Status "PASS" -Detail "已请求启动 E2E 所需基础依赖容器"
@@ -273,7 +306,13 @@ function Invoke-DependencyStart {
 function Test-DockerContainerExists {
     param([string]$ContainerName)
 
-    $containerId = docker ps --filter "name=^/${ContainerName}$" --format "{{.ID}}" 2>$null
+    $psResult = Invoke-NativeCommandSafely -Name "Docker ps: $ContainerName" -Command {
+        docker ps --filter "name=^/${ContainerName}$" --format "{{.ID}}"
+    }
+    if ($psResult.ExitCode -ne 0) {
+        return $false
+    }
+    $containerId = ($psResult.Output | Select-Object -First 1) -as [string]
     return -not [string]::IsNullOrWhiteSpace($containerId)
 }
 
@@ -283,18 +322,20 @@ function Invoke-MySqlNonQuery {
     if (-not (Test-DockerContainerExists -ContainerName $MySqlContainerName)) {
         Fail-Step -Name "MySQL 容器" -Detail "未发现运行中的 $MySqlContainerName，无法准备源端 E2E 表"
     }
-    $Sql | docker exec -i `
-        -e "MYSQL_PWD=$MySqlPassword" `
-        $MySqlContainerName `
-        mysql `
-        --host=127.0.0.1 `
-        --port=3306 `
-        --user=$MySqlUser `
-        --database=$MySqlDatabase `
-        --batch `
-        --raw `
-        --skip-column-names *> $null
-    if ($LASTEXITCODE -ne 0) {
+    $mysqlResult = Invoke-NativeCommandSafely -Name "MySQL E2E SQL" -Command {
+        $Sql | docker exec -i `
+            -e "MYSQL_PWD=$MySqlPassword" `
+            $MySqlContainerName `
+            mysql `
+            --host=127.0.0.1 `
+            --port=3306 `
+            --user=$MySqlUser `
+            --database=$MySqlDatabase `
+            --batch `
+            --raw `
+            --skip-column-names
+    }
+    if ($mysqlResult.ExitCode -ne 0) {
         Fail-Step -Name "MySQL E2E SQL" -Detail "源端 E2E 表准备或修复失败；为低敏输出，脚本不打印 SQL 正文和底层错误正文"
     }
 }
@@ -305,15 +346,17 @@ function Invoke-PostgresNonQuery {
     if (-not (Test-DockerContainerExists -ContainerName $PostgresContainerName)) {
         Fail-Step -Name "PostgreSQL 容器" -Detail "未发现运行中的 $PostgresContainerName，无法准备目标端 E2E 表"
     }
-    $Sql | docker exec -i `
-        -e "PGPASSWORD=$PostgresPassword" `
-        $PostgresContainerName `
-        psql `
-        -U $PostgresUser `
-        -d $PostgresDatabase `
-        -v ON_ERROR_STOP=1 `
-        -q *> $null
-    if ($LASTEXITCODE -ne 0) {
+    $postgresResult = Invoke-NativeCommandSafely -Name "PostgreSQL E2E SQL" -Command {
+        $Sql | docker exec -i `
+            -e "PGPASSWORD=$PostgresPassword" `
+            $PostgresContainerName `
+            psql `
+            -U $PostgresUser `
+            -d $PostgresDatabase `
+            -v ON_ERROR_STOP=1 `
+            -q
+    }
+    if ($postgresResult.ExitCode -ne 0) {
         Fail-Step -Name "PostgreSQL E2E SQL" -Detail "目标端 E2E 表准备或修复失败；为低敏输出，脚本不打印 SQL 正文和底层错误正文"
     }
 }
@@ -321,17 +364,19 @@ function Invoke-PostgresNonQuery {
 function Invoke-PostgresScalar {
     param([string]$Sql)
 
-    $output = $Sql | docker exec -i `
-        -e "PGPASSWORD=$PostgresPassword" `
-        $PostgresContainerName `
-        psql `
-        -U $PostgresUser `
-        -d $PostgresDatabase `
-        -Atq 2>$null
-    if ($LASTEXITCODE -ne 0) {
+    $postgresResult = Invoke-NativeCommandSafely -Name "PostgreSQL scalar SQL" -Command {
+        $Sql | docker exec -i `
+            -e "PGPASSWORD=$PostgresPassword" `
+            $PostgresContainerName `
+            psql `
+            -U $PostgresUser `
+            -d $PostgresDatabase `
+            -Atq
+    }
+    if ($postgresResult.ExitCode -ne 0) {
         Fail-Step -Name "PostgreSQL 结果断言" -Detail "目标端断言查询失败；脚本不打印 SQL 正文和底层错误正文"
     }
-    return (($output | Select-Object -First 1) -as [string]).Trim()
+    return (($postgresResult.Output | Select-Object -First 1) -as [string]).Trim()
 }
 
 function Initialize-E2EDatabase {
@@ -582,6 +627,36 @@ function Get-PageRecords {
     return @($PageData.records)
 }
 
+function Assert-DatasourceConnectionTestSuccess {
+    param(
+        [object]$ConnectionTestData,
+        [string]$Name
+    )
+
+    <#
+        datasource-management 的连接测试接口采用“HTTP 调用成功 + data.testStatus 表达连接结果”的产品语义：
+        - HTTP 200/code=0：表示平台接口完成了一次测试动作，服务没有崩溃；
+        - data.testStatus=SUCCESS：才表示 datasource-management 所在运行环境真的连上了用户配置的 JDBC。
+
+        这个区分对容器化 E2E 很关键：当 Java 服务运行在 Docker 网络里时，JDBC 写成 127.0.0.1
+        实际会指向 Java 容器自身，而不是 Windows 宿主机或数据库容器。此时接口仍可能返回 code=0，
+        但 data.testStatus 会是 FAILED。脚本必须在这里 fail-fast，并提示使用 -UseContainerJdbcUrls，
+        否则后续 AUTO_SPLIT_PK range-probe 才暴露问题，排障成本会高很多。
+    #>
+    if ($null -eq $ConnectionTestData -or -not ($ConnectionTestData.PSObject.Properties.Name -contains "testStatus")) {
+        Fail-Step -Name $Name -Detail "连接测试响应缺少 testStatus，无法确认执行器所在环境是否能访问该数据源"
+    }
+    if ("SUCCESS" -ne ([string]$ConnectionTestData.testStatus).ToUpperInvariant()) {
+        $hint = if ($UseContainerJdbcUrls) {
+            "当前已使用 -UseContainerJdbcUrls，请检查数据库容器、凭据、网络别名和 datasource-management 日志"
+        } else {
+            "如果 Java 服务运行在 Docker 容器内，请追加 -UseContainerJdbcUrls，让 JDBC 使用 mysql/postgresql 服务名"
+        }
+        Fail-Step -Name $Name -Detail "连接测试结果不是 SUCCESS；$hint"
+    }
+    Add-Check -Name $Name -Status "PASS" -Detail "连接测试返回 SUCCESS"
+}
+
 function Invoke-HealthProbe {
     param(
         [string]$Name,
@@ -794,16 +869,22 @@ function Main {
     }
     Add-Check -Name "数据源 ID" -Status "PASS" -Detail "已获得源端/目标端 datasourceId，具体 ID 仅用于本轮内部调用"
 
-    Invoke-Api `
+    $sourceConnectionTestResponse = Invoke-Api `
         -Name "源数据源连接测试" `
         -Method "POST" `
         -Url "$($apiRoots.Datasource)/datasources/$sourceDatasourceId/test" `
-        -Headers $userHeaders | Out-Null
-    Invoke-Api `
+        -Headers $userHeaders
+    Assert-DatasourceConnectionTestSuccess `
+        -ConnectionTestData (Get-EnvelopeData -Response $sourceConnectionTestResponse -Name "源数据源连接测试 envelope") `
+        -Name "源数据源连接测试结果"
+    $targetConnectionTestResponse = Invoke-Api `
         -Name "目标数据源连接测试" `
         -Method "POST" `
         -Url "$($apiRoots.Datasource)/datasources/$targetDatasourceId/test" `
-        -Headers $userHeaders | Out-Null
+        -Headers $userHeaders
+    Assert-DatasourceConnectionTestSuccess `
+        -ConnectionTestData (Get-EnvelopeData -Response $targetConnectionTestResponse -Name "目标数据源连接测试 envelope") `
+        -Name "目标数据源连接测试结果"
 
     $fieldMappingConfig = @(
         @{ sourceField = "id"; targetField = "id" },
@@ -811,9 +892,20 @@ function Main {
         @{ sourceField = "amount"; targetField = "amount" },
         @{ sourceField = "region"; targetField = "region" }
     ) | ConvertTo-Json -Depth 10 -Compress
-    $filterConfig = @(
-        @{ field = "region"; operator = "="; value = "EAST" }
-    ) | ConvertTo-Json -Depth 10 -Compress
+    <#
+        filterConfig 不能直接保存 where SQL 字符串，而要保存结构化条件合同：
+        1. Java 侧 SyncFilterExecutionContractSupport 会把条件解析成安全字段名、受控操作符和参数值；
+        2. datasource-management 真正执行读取时再通过 PreparedStatement 绑定参数，避免 SQL 注入和审计不可解释；
+        3. 这里故意使用 { logic, conditions } 包装，而不是单元素数组管道写法。Windows PowerShell 会把
+           单元素数组通过管道展开成对象，导致 JSON 从 `[{"field":...}]` 退化为 `{"field":...}`，
+           从而触发 FILTER_CONFIG_SCHEMA_UNSUPPORTED。
+    #>
+    $filterConfig = @{
+        logic = "AND"
+        conditions = @(
+            @{ field = "region"; operator = "="; value = "EAST" }
+        )
+    } | ConvertTo-Json -Depth 10 -Compress
     $partitionConfig = @{
         strategy = "AUTO_SPLIT_PK"
         splitPk = "id"
