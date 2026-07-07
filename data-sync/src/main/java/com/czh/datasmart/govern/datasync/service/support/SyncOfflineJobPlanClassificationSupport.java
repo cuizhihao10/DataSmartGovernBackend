@@ -76,8 +76,9 @@ final class SyncOfflineJobPlanClassificationSupport {
     /**
      * 将细粒度 syncMode 归入 runner 模式族。
      *
-     * <p>模式族用于未来离线 runner 选择执行模板。比如 FULL 与 SCHEDULED_BATCH 都属于 OFFLINE 通道，
-     * 但 FULL 是全量扫描，SCHEDULED_BATCH 是定时窗口作业，两者的调度、checkpoint 和运行报告语义不同。</p>
+     * <p>模式族用于未来离线 runner 选择执行模板。比如 FULL、SCHEDULED_FULL 与 SCHEDULED_BATCH 都属于
+     * OFFLINE 通道，但 FULL 是手工/一次性全量扫描，SCHEDULED_FULL 是由任务调度器周期触发的全量扫描，
+     * SCHEDULED_BATCH 则是定时窗口作业。三者底层都可能复用 Reader/Writer，但调度、checkpoint 和运行报告语义不同。</p>
      */
     static String modeFamily(SyncMode syncMode) {
         if (syncMode == null) {
@@ -85,6 +86,7 @@ final class SyncOfflineJobPlanClassificationSupport {
         }
         return switch (syncMode) {
             case FULL -> "FULL_OBJECT_SCAN";
+            case SCHEDULED_FULL -> "SCHEDULED_FULL_OBJECT_SCAN";
             case INCREMENTAL_TIME -> "INCREMENTAL_TIME_WINDOW";
             case INCREMENTAL_ID -> "INCREMENTAL_ID_RANGE";
             case CDC_STREAMING -> "REALTIME_CDC_STREAM";
@@ -122,6 +124,9 @@ final class SyncOfflineJobPlanClassificationSupport {
         if (syncMode == SyncMode.INCREMENTAL_ID) {
             return "ID_RANGE_SHARD";
         }
+        if (syncMode == SyncMode.SCHEDULED_FULL) {
+            return "SCHEDULED_FULL_PAGE_OR_PK_RANGE_SHARD";
+        }
         if (syncMode == SyncMode.SCHEDULED_BATCH) {
             return "SCHEDULED_WINDOW_SHARD";
         }
@@ -140,13 +145,18 @@ final class SyncOfflineJobPlanClassificationSupport {
     /**
      * 推导调度语义。
      *
-     * <p>这里特别区分“定时全量”和“SCHEDULED_BATCH”：定时全量不是新的 syncMode，
-     * 而是 FULL 模板在创建任务时配置 scheduleConfig；SCHEDULED_BATCH 才表示按批处理窗口周期运行。</p>
+     * <p>这里特别区分“手工全量”“定期全量”和“定期批量”：
+     * FULL 只表达手工或一次性全量，不再允许通过额外塞入 scheduleConfig 变成定期全量；
+     * SCHEDULED_FULL 才是用户可见的定期全量模式；SCHEDULED_BATCH 则表示按批处理窗口周期运行。</p>
      */
     static String scheduleSemantics(SyncMode syncMode, List<String> recommendedActions) {
         if (syncMode == SyncMode.FULL) {
-            recommendedActions.add("如果需要定时全量，不新增 syncMode；请用 FULL 模板创建任务，并在任务层配置 scheduleConfig");
-            return "MANUAL_FULL_OR_TASK_LEVEL_SCHEDULED_FULL";
+            recommendedActions.add("FULL 仅表示手工或一次性全量；如果需要定期全量，请把模板 syncMode 改为 SCHEDULED_FULL，并在任务层配置 scheduleConfig");
+            return "MANUAL_FULL";
+        }
+        if (syncMode == SyncMode.SCHEDULED_FULL) {
+            recommendedActions.add("SCHEDULED_FULL 必须在创建任务时提供 scheduleConfig；每次触发都会执行完整范围扫描，需要评估源端压力、目标端写入策略和维护窗口");
+            return "TASK_LEVEL_SCHEDULE_REQUIRED_FOR_FULL_SCAN";
         }
         if (syncMode == SyncMode.SCHEDULED_BATCH) {
             recommendedActions.add("SCHEDULED_BATCH 必须在创建任务时提供 scheduleConfig，并声明批处理窗口、重试和超时策略");

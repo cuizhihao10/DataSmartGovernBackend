@@ -616,7 +616,7 @@ public class DataSyncServiceImpl implements DataSyncService {
      * 判断新任务是否应进入“自动调度”生命周期。
      *
      * <p>当前收敛阶段只把两类离线场景纳入自动调度：</p>
-     * <p>1. {@code FULL + scheduleConfig}：定期全量，例如每天凌晨全表重刷；</p>
+     * <p>1. {@code SCHEDULED_FULL + scheduleConfig}：定期全量，例如每天凌晨全表重刷；</p>
      * <p>2. {@code SCHEDULED_BATCH + scheduleConfig}：定期批量，例如每 15 分钟同步一个有界业务窗口。</p>
      *
      * <p>为什么不把所有 syncMode 都直接允许调度：</p>
@@ -628,19 +628,20 @@ public class DataSyncServiceImpl implements DataSyncService {
         String syncMode = normalizeCode(template.getSyncMode());
         String runMode = normalizeCode(request.getRunMode());
         boolean hasScheduleConfig = scheduleConfigSupport.hasScheduleConfig(request.getScheduleConfig());
+        boolean scheduledFull = SyncMode.SCHEDULED_FULL.name().equals(syncMode);
         boolean scheduledBatch = SyncMode.SCHEDULED_BATCH.name().equals(syncMode);
-        boolean scheduledFull = SyncMode.FULL.name().equals(syncMode) && hasScheduleConfig;
         boolean explicitlyScheduledRunMode = "SCHEDULED".equals(runMode) || "SCHEDULE".equals(runMode);
 
-        if (scheduledBatch || explicitlyScheduledRunMode) {
+        if (scheduledFull || scheduledBatch || explicitlyScheduledRunMode) {
             if (!hasScheduleConfig) {
                 throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
                         "定时全量或定时批量任务必须提供 scheduleConfig");
             }
         }
-        if (hasScheduleConfig && !SyncMode.FULL.name().equals(syncMode) && !SyncMode.SCHEDULED_BATCH.name().equals(syncMode)) {
+        if (hasScheduleConfig && !SyncMode.SCHEDULED_FULL.name().equals(syncMode)
+                && !SyncMode.SCHEDULED_BATCH.name().equals(syncMode)) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "当前自动调度仅支持 FULL 定期全量和 SCHEDULED_BATCH 定期批量，syncMode=" + syncMode);
+                    "当前自动调度仅支持 SCHEDULED_FULL 定期全量和 SCHEDULED_BATCH 定期批量，syncMode=" + syncMode);
         }
         if (hasScheduleConfig) {
             /*

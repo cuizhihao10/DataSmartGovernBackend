@@ -16,9 +16,11 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplatePlanningPreviewResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateQueryCriteria;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTransferModeOption;
 import com.czh.datasmart.govern.datasync.controller.support.SyncActorContextHeaderSupport;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasync.service.DataSyncService;
+import com.czh.datasmart.govern.datasync.service.support.SyncTransferModeCatalogSupport;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
@@ -30,6 +32,8 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 /**
  * 同步模板 API。
@@ -44,6 +48,24 @@ import org.springframework.web.bind.annotation.RestController;
 public class DataSyncTemplateController {
 
     private final DataSyncService dataSyncService;
+    private final SyncTransferModeCatalogSupport transferModeCatalogSupport;
+
+    /**
+     * 查询用户可选择的同步任务传输模式。
+     *
+     * <p>该接口是前端“新建同步模板/新建同步任务”页面的模式下拉框权威来源，只返回 5 个主模式：
+     * FULL、SCHEDULED_FULL、SCHEDULED_BATCH、CUSTOM_SQL_QUERY、CDC_STREAMING。</p>
+     *
+     * <p>为什么不直接让前端从 {@code SyncMode.values()} 或连接器能力矩阵里取值：
+     * SyncMode 内部仍保留 REPLAY、BACKFILL、OFFLINE_IMPORT、OFFLINE_EXPORT 等运行期能力，用于恢复、补数、
+     * 导入导出等专用流程；如果把这些内部能力直接展示为任务传输模式，用户会误以为它们可以像“全量”一样
+     * 被新建为普通同步任务，从而造成产品语义混乱。</p>
+     */
+    @GetMapping("/transfer-modes")
+    public PlatformApiResponse<List<SyncTransferModeOption>> listTransferModes(
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(transferModeCatalogSupport.listUserSelectableModes(), traceId);
+    }
 
     /**
      * 创建同步模板。

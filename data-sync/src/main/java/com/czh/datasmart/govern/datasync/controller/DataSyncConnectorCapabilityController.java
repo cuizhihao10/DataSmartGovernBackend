@@ -60,7 +60,8 @@ public class DataSyncConnectorCapabilityController {
      *
      * @param sourceConnectorType 源端连接器类型，例如 MYSQL。
      * @param targetConnectorType 目标端连接器类型，例如 POSTGRESQL。
-     * @param syncMode 同步模式，例如 FULL、INCREMENTAL_TIME、CDC_STREAMING。
+     * @param syncMode 同步模式。用户新建任务时推荐只传 FULL、SCHEDULED_FULL、SCHEDULED_BATCH、
+     *                 CUSTOM_SQL_QUERY、CDC_STREAMING 五个一级传输模式；历史增量、回放、补数等能力应走专用流程。
      */
     @GetMapping({"/sync-connectors/compatibility", "/api/sync-connectors/compatibility"})
     public PlatformApiResponse<SyncConnectorCompatibilityView> checkCompatibility(

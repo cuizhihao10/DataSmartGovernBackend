@@ -19,9 +19,9 @@ import java.util.Locale;
  *
  * <p>当前项目的产品口径采用“两层语义”：</p>
  * <p>1. transferChannel 是顶层技术路线：CDC_STREAMING 归入 REALTIME，其余有明确开始、结束、窗口或制品边界的任务归入 OFFLINE；</p>
- * <p>2. syncMode 是细粒度业务模式：FULL 表示全量，FULL + 调度配置表示定时全量，SCHEDULED_BATCH 表示定时批量，
- * CUSTOM_SQL_QUERY 表示 SQL 自定义传输，ONE_TIME_MIGRATION/REPLAY/BACKFILL/OFFLINE_IMPORT/OFFLINE_EXPORT
- * 分别表示迁移、恢复、补数、导入和导出。</p>
+     * <p>2. syncMode 是用户可见的传输模式时，只保留 FULL、SCHEDULED_FULL、SCHEDULED_BATCH、CUSTOM_SQL_QUERY、
+     * CDC_STREAMING 五类。ONE_TIME_MIGRATION/REPLAY/BACKFILL/OFFLINE_IMPORT/OFFLINE_EXPORT 等历史枚举仍可被
+     * 内部恢复、制品或兼容流程引用，但不再作为新建任务的一等模式暴露。</p>
  *
  * <p>这个分层能兼顾两件事：一方面让网关、Agent、监控和执行器可以快速判断“走离线作业还是实时 CDC”；
  * 另一方面又不会把所有 OFFLINE 都误称为“批量传输”。在本项目语义中，批量传输只对应 SCHEDULED_BATCH，
@@ -91,7 +91,7 @@ public final class SyncTransferChannelSupport {
             return "尚未选择同步模式，无法判断传输大类";
         }
         return switch (channel) {
-            case OFFLINE -> "离线传输：对齐 DataX 式 Reader/Writer 有界作业路线，覆盖全量、定时全量、定时批量、SQL 自定义传输、一次性迁移、回放、补数、离线导入和离线导出；注意只有 SCHEDULED_BATCH 才表示定时批量，不能把所有离线作业都叫批量传输";
+            case OFFLINE -> "离线传输：对齐 DataX 式 Reader/Writer 有界作业路线，用户主模式只覆盖全量、定期全量、定期批量和 SQL 自定义传输；失败回放、历史补数、离线导入导出属于恢复或制品能力，不应出现在新建任务模式下拉框";
             case REALTIME -> "实时传输：对齐 Debezium/Kafka Connect 式 CDC 路线，持续捕获 binlog/WAL/change stream 并通过 Kafka topic 推进下游消费";
         };
     }

@@ -102,6 +102,12 @@ public class SyncTemplateValidationSupport {
         }
 
         SyncMode mode = resolveMode(template.getSyncMode());
+        if (!mode.isUserSelectableTransferMode()) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    "syncMode 不是可新建任务的一级传输模式: " + mode.name()
+                            + "；当前仅支持 FULL、SCHEDULED_FULL、SCHEDULED_BATCH、CUSTOM_SQL_QUERY、CDC_STREAMING。"
+                            + " 失败回放、历史补数、离线导入和离线导出应走任务详情、执行历史、错误样本或制品流程的专用入口。");
+        }
         SyncWriteStrategy writeStrategy = resolveWriteStrategy(template.getWriteStrategy());
         validateScopeAndObjectBinding(template);
         validateCheckpointAndWriteStrategy(template, mode, writeStrategy);

@@ -129,7 +129,7 @@ final class SyncOfflineRunnerContractPolicySupport {
      * 计算 Runner 合同状态。
      *
      * <p>该状态是给执行调度看的，不是给普通用户看的自然语言。它刻意区分“bridge 预派发可行”和
-     * “最小 bridge 端到端支持”：增量、定时批量、回放等场景可能通过部分预检查，但只要缺 checkpoint handoff，
+     * “最小 bridge 端到端支持”：增量、恢复回放等场景可能通过部分预检查，但只要缺 checkpoint handoff，
      * 就不能宣称端到端完成。</p>
      */
     static String contractStatus(boolean offlineChannel,
@@ -216,7 +216,7 @@ final class SyncOfflineRunnerContractPolicySupport {
             actions.add("补齐 checkpointRef/checkpointDigest 安全交接、恢复单元和幂等写入后再执行需要水位的离线作业");
         }
         if (taskLevelScheduleRequired) {
-            actions.add("在任务层声明 scheduleConfig、批处理窗口、超时、重试和维护窗口，避免 Runner 自行推断调度语义");
+            actions.add("在任务层声明 scheduleConfig、超时、重试和维护窗口；定期批量还必须声明批处理窗口，避免 Runner 自行推断调度语义");
         }
         if (syncMode == SyncMode.CUSTOM_SQL_QUERY) {
             actions.add("自定义 SQL 应优先使用 statementRef 托管，只读校验和审批通过后再进入 Runner");
@@ -231,6 +231,7 @@ final class SyncOfflineRunnerContractPolicySupport {
         String mode = normalize(syncMode);
         return "FULL".equals(mode)
                 || "ONE_TIME_MIGRATION".equals(mode)
+                || "SCHEDULED_FULL".equals(mode)
                 || "SCHEDULED_BATCH".equals(mode)
                 || "CUSTOM_SQL_QUERY".equals(mode);
     }
@@ -265,6 +266,9 @@ final class SyncOfflineRunnerContractPolicySupport {
         }
         if ("SCHEMA_FULL".equals(scope) || "DATABASE_FULL".equals(scope)) {
             return "SCHEMA_OR_DATABASE_DISCOVERY_FAN_OUT";
+        }
+        if ("SCHEDULED_FULL".equals(mode)) {
+            return "SCHEDULED_FULL_SCAN";
         }
         if ("SCHEDULED_BATCH".equals(mode)) {
             return "SCHEDULED_WINDOW";

@@ -101,14 +101,14 @@ class SyncTemplateValidationSupportTest {
     }
 
     @Test
-    void validateTemplateShouldRejectIncrementalModeWithoutIncrementalField() {
+    void validateTemplateShouldRejectInternalLegacyModeAsUserTransferMode() {
         SyncTemplate template = template("INCREMENTAL_TIME", "MYSQL", "POSTGRESQL");
 
         PlatformBusinessException exception = assertThrows(PlatformBusinessException.class,
                 () -> validationSupport.validateTemplate(template));
 
         org.assertj.core.api.Assertions.assertThat(exception.getMessage())
-                .contains("incrementalField");
+                .contains("不是可新建任务的一级传输模式");
     }
 
     private SyncTemplate template(String syncMode, String sourceConnectorType, String targetConnectorType) {

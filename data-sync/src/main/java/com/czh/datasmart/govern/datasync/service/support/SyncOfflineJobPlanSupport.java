@@ -159,7 +159,7 @@ public class SyncOfflineJobPlanSupport {
                 checkpointPolicy,
                 approvalPolicy,
                 runnerBoundary,
-                syncMode == SyncMode.SCHEDULED_BATCH,
+                syncMode != null && syncMode.requiresTaskScheduleConfig(),
                 sqlStatementPolicy.statementRefDeclared(),
                 sqlStatementPolicy.inlineSqlDeclared(),
                 checkpointRequired,
@@ -190,7 +190,7 @@ public class SyncOfflineJobPlanSupport {
         String syncMode = normalize(template.getSyncMode());
         if (syncMode == null) {
             issueCodes.add("SYNC_MODE_MISSING");
-            recommendedActions.add("离线作业计划必须先声明 syncMode，例如 FULL、SCHEDULED_BATCH 或 CUSTOM_SQL_QUERY");
+            recommendedActions.add("离线作业计划必须先声明用户可选传输模式，例如 FULL、SCHEDULED_FULL、SCHEDULED_BATCH 或 CUSTOM_SQL_QUERY");
             return null;
         }
         try {
@@ -346,7 +346,7 @@ public class SyncOfflineJobPlanSupport {
         }
         if (!modeExecutableByMinimalBridge(syncMode)) {
             failClosedReasons.add("DEDICATED_OFFLINE_RUNNER_REQUIRED_FOR_MODE");
-            recommendedActions.add("增量、回放、补数、导入导出仍需要专用离线 runner 的水位、分片、审批和报告能力；当前最小 bridge 只覆盖全量、一次性迁移、定时批量窗口和受控只读 SQL 结果集");
+            recommendedActions.add("增量、回放、补数、导入导出仍需要专用离线 runner 的水位、分片、审批和报告能力；当前最小 bridge 只覆盖用户主模式中的 FULL、SCHEDULED_FULL、SCHEDULED_BATCH、CUSTOM_SQL_QUERY，以及历史兼容 ONE_TIME_MIGRATION");
         }
         if (checkpointRequired) {
             failClosedReasons.add("CHECKPOINT_HANDOFF_REQUIRED_FOR_OFFLINE_RUNNER");
@@ -398,13 +398,15 @@ public class SyncOfflineJobPlanSupport {
         /*
          * 这里定义“规划层认为当前 v1 可以进入最小 bridge 的模式边界”。
          *
-         * FULL / ONE_TIME_MIGRATION：天然是有界读写；
+         * FULL / SCHEDULED_FULL / ONE_TIME_MIGRATION：单次 execution 天然是有界读写；
+         * SCHEDULED_FULL：调度频率由 task.scheduleConfig 控制，单次触发仍然复用 FULL_OBJECT_SCAN；
          * SCHEDULED_BATCH：调度频率由 task.scheduleConfig 控制，单次触发仍是一段有界批处理窗口，因此不再要求
          * 专用 runner 才能执行；
          * CUSTOM_SQL_QUERY：只允许只读 SQL/statementRef，结果集会被 datasource-management 包装为受控 Reader，
          * 但仍然需要审批上下文放行，避免用户直接绕过对象/字段权限。
          */
         return syncMode == SyncMode.FULL
+                || syncMode == SyncMode.SCHEDULED_FULL
                 || syncMode == SyncMode.ONE_TIME_MIGRATION
                 || syncMode == SyncMode.SCHEDULED_BATCH
                 || syncMode == SyncMode.CUSTOM_SQL_QUERY;

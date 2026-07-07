@@ -395,7 +395,7 @@ public class SyncWorkerExecutionPlanSupport {
 
     private boolean isFullLikeMode(String syncMode) {
         String mode = normalize(syncMode);
-        return "FULL".equals(mode) || "ONE_TIME_MIGRATION".equals(mode);
+        return "FULL".equals(mode) || "SCHEDULED_FULL".equals(mode) || "ONE_TIME_MIGRATION".equals(mode);
     }
 
     private SyncMode resolveModeOrNull(String syncMode) {

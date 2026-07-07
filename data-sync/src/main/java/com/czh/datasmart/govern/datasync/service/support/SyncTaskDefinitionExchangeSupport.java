@@ -392,13 +392,19 @@ public class SyncTaskDefinitionExchangeSupport {
 
     private void validateScheduleConfig(SyncTemplate template, String scheduleConfig, int rowNumber) {
         String config = querySupport.trimToNull(scheduleConfig);
+        String syncMode = querySupport.normalizeCode(template.getSyncMode());
+        boolean scheduledMode = SyncMode.SCHEDULED_FULL.name().equals(syncMode)
+                || SyncMode.SCHEDULED_BATCH.name().equals(syncMode);
+        if (scheduledMode && config == null) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    "第 " + rowNumber + " 行对应的是定期全量或定期批量模板，导入任务时必须提供 scheduleConfig");
+        }
         if (config == null) {
             return;
         }
-        String syncMode = querySupport.normalizeCode(template.getSyncMode());
-        if (!SyncMode.FULL.name().equals(syncMode) && !SyncMode.SCHEDULED_BATCH.name().equals(syncMode)) {
+        if (!SyncMode.SCHEDULED_FULL.name().equals(syncMode) && !SyncMode.SCHEDULED_BATCH.name().equals(syncMode)) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "第 " + rowNumber + " 行声明了 scheduleConfig，但当前自动调度仅支持 FULL 和 SCHEDULED_BATCH，syncMode=" + syncMode);
+                    "第 " + rowNumber + " 行声明了 scheduleConfig，但当前自动调度仅支持 SCHEDULED_FULL 和 SCHEDULED_BATCH，syncMode=" + syncMode);
         }
         /*
          * 这里不是简单判断字符串非空，而是复用现有调度配置解析器检查 cron/interval/timezone/misfirePolicy。

@@ -41,10 +41,16 @@ class SyncConnectorCapabilityRegistryTest {
                 "MYSQL", "POSTGRESQL", "SQL_SERVER", "ORACLE", "MONGODB", "KAFKA",
                 "HIVE", "CLICKHOUSE", "FILE", "OBJECT_STORAGE", "REST_API"
         );
-        assertThat(capabilities.get("MYSQL").supportedModes()).contains("FULL", "INCREMENTAL_TIME", "CDC_STREAMING");
-        assertThat(capabilities.get("POSTGRESQL").supportedModes()).contains("FULL", "INCREMENTAL_ID", "CDC_STREAMING");
+        assertThat(capabilities.get("MYSQL").supportedModes())
+                .contains("FULL", "SCHEDULED_FULL", "SCHEDULED_BATCH", "CUSTOM_SQL_QUERY", "CDC_STREAMING")
+                .doesNotContain("INCREMENTAL_TIME", "INCREMENTAL_ID", "REPLAY", "BACKFILL");
+        assertThat(capabilities.get("POSTGRESQL").supportedModes())
+                .contains("FULL", "SCHEDULED_FULL", "SCHEDULED_BATCH", "CUSTOM_SQL_QUERY", "CDC_STREAMING")
+                .doesNotContain("INCREMENTAL_TIME", "INCREMENTAL_ID");
         assertThat(capabilities.get("KAFKA").supportedModes()).doesNotContain("FULL");
-        assertThat(capabilities.get("OBJECT_STORAGE").supportedModes()).contains("OFFLINE_IMPORT", "OFFLINE_EXPORT");
+        assertThat(capabilities.get("OBJECT_STORAGE").supportedModes())
+                .contains("FULL", "SCHEDULED_FULL", "SCHEDULED_BATCH")
+                .doesNotContain("OFFLINE_IMPORT", "OFFLINE_EXPORT", "REPLAY", "BACKFILL");
     }
 
     /**
@@ -73,6 +79,8 @@ class SyncConnectorCapabilityRegistryTest {
     @Test
     void transferChannelShouldSeparateBoundedOfflineJobsFromCdcStreaming() {
         assertThat(registry.checkCompatibility("mysql", "postgresql", "full").transferChannel())
+                .isEqualTo("OFFLINE");
+        assertThat(registry.checkCompatibility("mysql", "postgresql", "scheduled_full").transferChannel())
                 .isEqualTo("OFFLINE");
         assertThat(registry.checkCompatibility("mysql", "postgresql", "scheduled_batch").transferChannel())
                 .isEqualTo("OFFLINE");

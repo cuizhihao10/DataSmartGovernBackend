@@ -161,11 +161,16 @@ public class SyncTemplatePlanningPreviewSupport {
         String syncMode = normalize(template.getSyncMode());
         if (syncMode == null) {
             issueCodes.add("SYNC_MODE_MISSING");
-            recommendedActions.add("先为同步模板选择 FULL、INCREMENTAL_TIME、CDC_STREAMING、CUSTOM_SQL_QUERY 等平台支持的同步模式");
+            recommendedActions.add("先为同步模板选择 FULL、SCHEDULED_FULL、SCHEDULED_BATCH、CUSTOM_SQL_QUERY、CDC_STREAMING 五个用户可选传输模式之一");
             return null;
         }
         try {
-            return SyncMode.valueOf(syncMode);
+            SyncMode mode = SyncMode.valueOf(syncMode);
+            if (!mode.isUserSelectableTransferMode()) {
+                issueCodes.add("SYNC_MODE_NOT_USER_SELECTABLE_TRANSFER_MODE");
+                recommendedActions.add("该 syncMode 属于内部/历史能力，不能出现在新建任务传输模式中；失败回放、历史补数、离线导入导出应改走专用流程入口");
+            }
+            return mode;
         } catch (IllegalArgumentException exception) {
             issueCodes.add("SYNC_MODE_UNSUPPORTED");
             recommendedActions.add("将 syncMode 调整为平台 SyncMode 枚举支持的值");
@@ -318,6 +323,7 @@ public class SyncTemplatePlanningPreviewSupport {
     private boolean isBlockingIssue(String issueCode) {
         return "SYNC_MODE_MISSING".equals(issueCode)
                 || "SYNC_MODE_UNSUPPORTED".equals(issueCode)
+                || "SYNC_MODE_NOT_USER_SELECTABLE_TRANSFER_MODE".equals(issueCode)
                 || "UNKNOWN_CONNECTOR_TYPE".equals(issueCode)
                 || "UNKNOWN_SYNC_MODE".equals(issueCode)
                 || "SOURCE_CONNECTOR_NOT_FOUND".equals(issueCode)

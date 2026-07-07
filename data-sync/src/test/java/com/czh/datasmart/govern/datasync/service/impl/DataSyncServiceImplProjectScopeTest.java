@@ -31,7 +31,13 @@ import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLifecycleS
 import com.czh.datasmart.govern.datasync.service.support.SyncObjectExecutionOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncOfflineJobPlanSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskBatchOperationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskDefinitionExchangeSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskDefinitionOperationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskGroupOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskManagementOperationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskMetadataConfigurationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskRecoveryOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskScheduleConfigSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskStateMachineSupport;
@@ -211,11 +217,11 @@ class DataSyncServiceImplProjectScopeTest {
     }
 
     /**
-     * FULL + scheduleConfig 应创建为定期全量任务。
+     * SCHEDULED_FULL + scheduleConfig 应创建为定期全量任务。
      *
-     * <p>这个用例固定本轮新增的核心产品语义：FULL 本身仍然表示全量同步，
-     * 但当任务级 scheduleConfig 存在时，它就从“手动全量”变成“定期全量”。
-     * 创建后的任务应停在 SCHEDULED，写入 nextFireTime，并等待后台 task scheduler 到点生成 SCHEDULED execution。</p>
+     * <p>这个用例固定最新产品语义：定期全量必须是用户显式选择的传输模式，不能再由
+     * FULL + scheduleConfig 隐式推导。创建后的任务应停在 SCHEDULED，写入 nextFireTime，
+     * 并等待后台 task scheduler 到点生成 SCHEDULED execution。</p>
      */
     @Test
     void createTaskShouldCreateScheduledFullTaskWhenScheduleConfigProvided() {
@@ -255,6 +261,48 @@ class DataSyncServiceImplProjectScopeTest {
         assertThat(task.getScheduleDispatchCount()).isZero();
         assertThat(task.getTriggerType()).isEqualTo("SCHEDULED");
         verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("scheduleEnabled=true"));
+    }
+
+    /**
+     * FULL 不能再携带 scheduleConfig 伪装成定期全量。
+     *
+     * <p>这个负向用例保护前端和 Agent 的统一心智：全量、定期全量是两个用户可见模式。
+     * 如果用户需要周期执行全量扫描，应把模板 syncMode 设为 SCHEDULED_FULL；否则任务导入、克隆、
+     * API 创建和前端新建页会出现同一个需求两种表达方式，后续审计和统计也会变得混乱。</p>
+     */
+    @Test
+    void createTaskShouldRejectFullTaskWhenScheduleConfigProvided() {
+        SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
+        SyncTaskMapper taskMapper = mock(SyncTaskMapper.class);
+        SyncAuditSupport auditSupport = mock(SyncAuditSupport.class);
+        DataSyncServiceImpl service = service(templateMapper, taskMapper,
+                mock(SyncExecutionMapper.class),
+                mock(SyncCheckpointMapper.class),
+                mock(SyncErrorSampleMapper.class),
+                mock(SyncAuditRecordMapper.class),
+                auditSupport);
+        SyncTemplate template = scheduledFullTemplate();
+        template.setSyncMode("FULL");
+        when(templateMapper.selectById(7201L)).thenReturn(template);
+
+        CreateSyncTaskRequest request = new CreateSyncTaskRequest();
+        request.setTemplateId(7201L);
+        request.setTenantId(7L);
+        request.setProjectId(101L);
+        request.setWorkspaceId(301L);
+        request.setName("invalid scheduled full task");
+        request.setRunMode("SCHEDULED");
+        request.setScheduleConfig("""
+                {"type":"FIXED_RATE","intervalSeconds":3600,"misfirePolicy":"FIRE_ONCE","timezone":"Asia/Shanghai"}
+                """);
+
+        PlatformBusinessException exception = assertThrows(PlatformBusinessException.class,
+                () -> service.createTask(request, projectScopedActor(List.of(101L, 102L))));
+
+        org.assertj.core.api.Assertions.assertThat(exception.getMessage())
+                .contains("当前自动调度仅支持 SCHEDULED_FULL 定期全量和 SCHEDULED_BATCH 定期批量");
+        verify(taskMapper, never()).insert(any(SyncTask.class));
+        verify(auditSupport, never()).saveAudit(any(), any(), any(), any(), any(), any());
     }
 
     /**
@@ -348,7 +396,13 @@ class DataSyncServiceImplProjectScopeTest {
                 auditSupport,
                 mock(SyncExecutionLifecycleSupport.class),
                 mock(SyncExecutionCreationSupport.class),
+                mock(SyncTaskBatchOperationSupport.class),
+                mock(SyncTaskDefinitionOperationSupport.class),
+                mock(SyncTaskDefinitionExchangeSupport.class),
                 mock(SyncTaskLifecycleOperationSupport.class),
+                defaultTaskGroupOperationSupport(),
+                mock(SyncTaskManagementOperationSupport.class),
+                mock(SyncTaskMetadataConfigurationSupport.class),
                 mock(SyncTaskRecoveryOperationSupport.class),
                 templateCreationSupport(templateMapper, auditSupport, dataScopeSupport, querySupport, templateValidationSupport),
                 new SyncTemplatePlanningPreviewSupport(new SyncConnectorCapabilityRegistry()),
@@ -411,7 +465,13 @@ class DataSyncServiceImplProjectScopeTest {
                 auditSupport,
                 mock(SyncExecutionLifecycleSupport.class),
                 mock(SyncExecutionCreationSupport.class),
+                mock(SyncTaskBatchOperationSupport.class),
+                mock(SyncTaskDefinitionOperationSupport.class),
+                mock(SyncTaskDefinitionExchangeSupport.class),
                 mock(SyncTaskLifecycleOperationSupport.class),
+                defaultTaskGroupOperationSupport(),
+                mock(SyncTaskManagementOperationSupport.class),
+                mock(SyncTaskMetadataConfigurationSupport.class),
                 mock(SyncTaskRecoveryOperationSupport.class),
                 templateCreationSupport(templateMapper, auditSupport, dataScopeSupport, querySupport, templateValidationSupport),
                 new SyncTemplatePlanningPreviewSupport(new SyncConnectorCapabilityRegistry()),
@@ -441,6 +501,15 @@ class DataSyncServiceImplProjectScopeTest {
                 new SyncFieldMappingExecutionContractSupport(objectMapper),
                 objectMapper
         );
+    }
+
+    private SyncTaskGroupOperationSupport defaultTaskGroupOperationSupport() {
+        SyncTaskGroupOperationSupport support = mock(SyncTaskGroupOperationSupport.class);
+        when(support.resolveAssignmentForTask(any(), any(), any(), any(), any(), any()))
+                .thenReturn(new SyncTaskGroupOperationSupport.TaskGroupAssignment(
+                        SyncTaskGroupOperationSupport.DEFAULT_GROUP_CODE,
+                        SyncTaskGroupOperationSupport.DEFAULT_GROUP_NAME));
+        return support;
     }
 
     private SyncTemplateCreationSupport templateCreationSupport(SyncTemplateMapper templateMapper,
@@ -547,7 +616,7 @@ class DataSyncServiceImplProjectScopeTest {
         template.setTargetObjectName("orders");
         template.setSourceConnectorType("MYSQL");
         template.setTargetConnectorType("POSTGRESQL");
-        template.setSyncMode("FULL");
+        template.setSyncMode("SCHEDULED_FULL");
         template.setWriteStrategy("APPEND");
         template.setEnabled(true);
         return template;

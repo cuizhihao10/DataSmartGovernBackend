@@ -168,7 +168,7 @@ public class SyncOfflineRunnerContractSupport {
         SyncTransferChannel transferChannel = SyncTransferChannelSupport.resolve(syncMode);
         boolean offlineChannel = transferChannel == SyncTransferChannel.OFFLINE;
         boolean checkpointRequired = workerPlan != null && workerPlan.checkpointRequired();
-        boolean taskLevelScheduleRequired = syncMode == SyncMode.SCHEDULED_BATCH
+        boolean taskLevelScheduleRequired = syncMode != null && syncMode.requiresTaskScheduleConfig()
                 || task != null && hasText(task.getScheduleConfig());
         boolean fieldMappingRunnable = fieldMappingContract != null
                 && fieldMappingContract.directlyRunnableByMinimalBridge();

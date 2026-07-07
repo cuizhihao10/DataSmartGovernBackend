@@ -102,7 +102,11 @@ public class CreateSyncTemplateRequest {
     private String targetConnectorType;
 
     /**
-     * 同步模式编码，例如 FULL、INCREMENTAL_TIME、CDC_STREAMING。
+     * 同步模式编码。
+     *
+     * <p>新建模板时只允许提交 FULL、SCHEDULED_FULL、SCHEDULED_BATCH、CUSTOM_SQL_QUERY、CDC_STREAMING。
+     * 失败回放、历史补数、离线导入导出、按时间/主键增量等能力不再作为一级模式提交，
+     * 而应通过任务详情、执行历史、恢复计划、窗口策略或制品流程入口表达。</p>
      */
     @NotBlank(message = "同步模式不能为空")
     private String syncMode;

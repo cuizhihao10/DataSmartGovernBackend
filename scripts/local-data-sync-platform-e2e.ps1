@@ -624,7 +624,7 @@ function Initialize-TaskSchedulerWorkerLoopE2EDatabase {
 
     <#
         这一组表专门服务“task-scheduler + worker-loop”的真实多服务验收：
-        - scheduler_full 表验证 FULL + scheduleConfig，也就是“定期全量”；
+        - scheduler_full 表验证 SCHEDULED_FULL + scheduleConfig，也就是“定期全量”；
         - scheduler_batch 表验证 SCHEDULED_BATCH + scheduleConfig，也就是“定期批量”；
         - 表数据保持很小，是为了把关注点放在调度器是否创建 SCHEDULED execution、worker-loop 是否真实调用
           datasource-management run-once，而不是把本地 E2E 变成容量压测。
@@ -1709,7 +1709,7 @@ function Invoke-TaskSchedulerWorkerLoopE2E {
         “任务创建为 SCHEDULED 后，是否真的由 task scheduler 到点生成 execution，再由 worker-loop 执行？”
 
         验收顺序严格拆开：
-        1. 创建 FULL + scheduleConfig 定期全量任务；
+        1. 创建 SCHEDULED_FULL + scheduleConfig 定期全量任务；
         2. 仅调整 next_fire_time 做测试时钟控制；
         3. dry-run 调度器，确认扫描/计划但不写库；
         4. 正式 dispatch-due，确认创建 triggerType=SCHEDULED 的 QUEUED execution；
@@ -1748,8 +1748,8 @@ function Invoke-TaskSchedulerWorkerLoopE2E {
             tenantId = $TenantId
             projectId = $ProjectId
             workspaceId = $WorkspaceId
-            name = "E2E scheduler FULL $script:RunId"
-            description = "local task scheduler to worker loop full sync E2E"
+            name = "E2E scheduler SCHEDULED_FULL $script:RunId"
+            description = "local task scheduler to worker loop scheduled full sync E2E"
             sourceDatasourceId = $SourceDatasourceId
             targetDatasourceId = $TargetDatasourceId
             sourceSchemaName = $MySqlDatabase
@@ -1758,7 +1758,7 @@ function Invoke-TaskSchedulerWorkerLoopE2E {
             targetObjectName = $script:SchedulerFullTargetTable
             sourceConnectorType = "MYSQL"
             targetConnectorType = "POSTGRESQL"
-            syncMode = "FULL"
+            syncMode = "SCHEDULED_FULL"
             syncScopeType = "SINGLE_OBJECT"
             writeStrategy = "UPSERT"
             primaryKeyField = "id"

@@ -27,7 +27,8 @@ import java.util.List;
  * @param targetDatasourceId 目标数据源 ID，只是平台内部引用，不包含连接信息。
  * @param sourceConnectorType 源端连接器类型低敏枚举，例如 MYSQL、POSTGRESQL。
  * @param targetConnectorType 目标端连接器类型低敏枚举。
- * @param syncMode 同步模式，例如 FULL、INCREMENTAL_TIME、CUSTOM_SQL_QUERY。
+ * @param syncMode 同步模式。用户可新建的一级传输模式只包括 FULL、SCHEDULED_FULL、SCHEDULED_BATCH、
+ *                 CUSTOM_SQL_QUERY、CDC_STREAMING。
  * @param syncScopeType 同步范围类型，例如 SINGLE_OBJECT、OBJECT_LIST、DATABASE_FULL。
  * @param singleObjectScope 是否单对象同步。
  * @param multiObjectScope 是否多对象、整 schema 或整库同步。

@@ -159,11 +159,16 @@ public class SyncTemplateExecutionPrecheckSupport {
         String syncMode = normalize(template.getSyncMode());
         if (syncMode == null) {
             issueCodes.add("SYNC_MODE_MISSING");
-            recommendedActions.add("执行前必须声明同步模式，例如 FULL、ONE_TIME_MIGRATION、INCREMENTAL_TIME 或 CUSTOM_SQL_QUERY");
+            recommendedActions.add("执行前必须声明用户可选传输模式，例如 FULL、SCHEDULED_FULL、SCHEDULED_BATCH、CUSTOM_SQL_QUERY 或 CDC_STREAMING");
             return null;
         }
         try {
-            return SyncMode.valueOf(syncMode);
+            SyncMode mode = SyncMode.valueOf(syncMode);
+            if (!mode.isUserSelectableTransferMode()) {
+                issueCodes.add("SYNC_MODE_NOT_USER_SELECTABLE_TRANSFER_MODE");
+                recommendedActions.add("当前 syncMode 属于内部/历史能力，不应作为新建任务传输模式；请改为 FULL、SCHEDULED_FULL、SCHEDULED_BATCH、CUSTOM_SQL_QUERY 或 CDC_STREAMING");
+            }
+            return mode;
         } catch (IllegalArgumentException exception) {
             issueCodes.add("SYNC_MODE_UNSUPPORTED");
             recommendedActions.add("将 syncMode 调整为平台 SyncMode 枚举支持的值");
@@ -250,7 +255,7 @@ public class SyncTemplateExecutionPrecheckSupport {
         }
         if (!modeExecutableByCurrentRunner(syncMode)) {
             issueCodes.add("MODE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE");
-            recommendedActions.add("当前 run-once/fan-out 执行入口支持 FULL、ONE_TIME_MIGRATION、SCHEDULED_BATCH 和 CUSTOM_SQL_QUERY；其他模式需要 checkpoint、CDC 或专用 runner");
+            recommendedActions.add("当前 run-once/fan-out 执行入口支持用户主模式中的 FULL、SCHEDULED_FULL、SCHEDULED_BATCH 和 CUSTOM_SQL_QUERY；CDC_STREAMING 应走实时通道，恢复/补数/导入导出应走专用入口");
         }
         if (checkpointRequired) {
             issueCodes.add("CHECKPOINT_HANDOFF_NOT_IMPLEMENTED");
@@ -271,7 +276,7 @@ public class SyncTemplateExecutionPrecheckSupport {
     /**
      * 当前最小 bridge 的模式边界。
      *
-     * <p>FULL/ONE_TIME_MIGRATION 仍然只适合单批小表或演示级闭环；如果源端行数超过 fetchSize，底层 runner 会返回
+     * <p>FULL/SCHEDULED_FULL/ONE_TIME_MIGRATION 仍然只适合单批小表或已声明分片的有界闭环；如果源端行数超过 fetchSize，底层 runner 会返回
      * endOfSource=false。由于 full 模式尚无稳定 offset/checkpoint 翻页语义，data-sync 不会伪造多批循环。</p>
      */
     private boolean scopeExecutableByCurrentRunner(SyncTemplateScopeContract scopeContract) {
@@ -287,6 +292,7 @@ public class SyncTemplateExecutionPrecheckSupport {
 
     private boolean modeExecutableByCurrentRunner(SyncMode syncMode) {
         return syncMode == SyncMode.FULL
+                || syncMode == SyncMode.SCHEDULED_FULL
                 || syncMode == SyncMode.ONE_TIME_MIGRATION
                 || syncMode == SyncMode.SCHEDULED_BATCH
                 || syncMode == SyncMode.CUSTOM_SQL_QUERY;
@@ -344,6 +350,7 @@ public class SyncTemplateExecutionPrecheckSupport {
         return issueCodes.stream().anyMatch(issueCode ->
                 "SYNC_MODE_MISSING".equals(issueCode)
                         || "SYNC_MODE_UNSUPPORTED".equals(issueCode)
+                        || "SYNC_MODE_NOT_USER_SELECTABLE_TRANSFER_MODE".equals(issueCode)
                         || "WRITE_STRATEGY_UNSUPPORTED".equals(issueCode)
                         || "CONNECTOR_FACTS_INCOMPLETE".equals(issueCode)
                         || "CONNECTOR_COMPATIBILITY_UNSUPPORTED".equals(issueCode)

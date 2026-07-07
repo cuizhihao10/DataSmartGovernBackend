@@ -130,7 +130,11 @@ public class SyncTemplate {
     private String targetConnectorType;
 
     /**
-     * 同步模式，例如 FULL、INCREMENTAL_TIME、CDC_STREAMING。
+     * 同步模式。
+     *
+     * <p>面向新建任务/模板的一级传输模式只允许 FULL、SCHEDULED_FULL、SCHEDULED_BATCH、
+     * CUSTOM_SQL_QUERY、CDC_STREAMING。历史增量、回放、补数、离线导入导出等枚举只作为内部恢复、
+     * 运维动作或兼容数据存在，不能再由前端新建任务页面直接选择。</p>
      */
     private String syncMode;
 

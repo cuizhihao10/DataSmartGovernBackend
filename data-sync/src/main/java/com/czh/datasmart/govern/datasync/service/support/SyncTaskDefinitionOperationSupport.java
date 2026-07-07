@@ -314,9 +314,9 @@ public class SyncTaskDefinitionOperationSupport {
             return;
         }
         String syncMode = normalizeCode(template.getSyncMode());
-        if (!SyncMode.FULL.name().equals(syncMode) && !SyncMode.SCHEDULED_BATCH.name().equals(syncMode)) {
+        if (!SyncMode.SCHEDULED_FULL.name().equals(syncMode) && !SyncMode.SCHEDULED_BATCH.name().equals(syncMode)) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "当前自动调度仅支持 FULL 定期全量和 SCHEDULED_BATCH 定期批量，syncMode=" + syncMode);
+                    "当前自动调度仅支持 SCHEDULED_FULL 定期全量和 SCHEDULED_BATCH 定期批量，syncMode=" + syncMode);
         }
         scheduleConfigSupport.parseRequired(scheduleConfig);
     }
@@ -349,10 +349,11 @@ public class SyncTaskDefinitionOperationSupport {
         String scheduleConfig = querySupport.trimToNull(task.getScheduleConfig());
         String syncMode = normalizeCode(template.getSyncMode());
         boolean hasScheduleConfig = scheduleConfigSupport.hasScheduleConfig(scheduleConfig);
-        boolean scheduledBatch = SyncMode.SCHEDULED_BATCH.name().equals(syncMode);
-        if (scheduledBatch && !hasScheduleConfig) {
+        boolean scheduledMode = SyncMode.SCHEDULED_FULL.name().equals(syncMode)
+                || SyncMode.SCHEDULED_BATCH.name().equals(syncMode);
+        if (scheduledMode && !hasScheduleConfig) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "SCHEDULED_BATCH 定时批量任务发布前必须配置 scheduleConfig");
+                    "定期全量或定期批量任务发布前必须配置 scheduleConfig");
         }
         if (Boolean.TRUE.equals(request.getEnableSchedule()) && !hasScheduleConfig) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,

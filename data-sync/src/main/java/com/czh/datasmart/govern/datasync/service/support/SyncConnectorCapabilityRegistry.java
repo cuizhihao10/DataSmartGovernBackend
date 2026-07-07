@@ -187,7 +187,7 @@ public class SyncConnectorCapabilityRegistry {
 
     private String consistencyGoal(SyncMode mode) {
         return switch (mode) {
-            case FULL, ONE_TIME_MIGRATION, OFFLINE_EXPORT -> "SNAPSHOT_BOUNDED";
+            case FULL, SCHEDULED_FULL, ONE_TIME_MIGRATION, OFFLINE_EXPORT -> "SNAPSHOT_BOUNDED";
             case INCREMENTAL_TIME, INCREMENTAL_ID, SCHEDULED_BATCH, BACKFILL, REPLAY -> "AT_LEAST_ONCE_DEDUP_AWARE";
             case CDC_STREAMING -> "LOW_LATENCY_EVENTUAL_CONSISTENCY";
             case OFFLINE_IMPORT -> "FILE_BOUNDED_WITH_ARTIFACT_INTEGRITY";
@@ -197,7 +197,7 @@ public class SyncConnectorCapabilityRegistry {
 
     private String retryPattern(SyncMode mode) {
         return switch (mode) {
-            case FULL, ONE_TIME_MIGRATION -> "SEGMENT_RETRY";
+            case FULL, SCHEDULED_FULL, ONE_TIME_MIGRATION -> "SEGMENT_RETRY";
             case INCREMENTAL_TIME -> "WINDOW_RETRY";
             case INCREMENTAL_ID -> "RANGE_RETRY";
             case CDC_STREAMING -> "OFFSET_RECOVERY";
@@ -223,7 +223,7 @@ public class SyncConnectorCapabilityRegistry {
     private Map<SyncConnectorType, ConnectorCapabilityProfile> defaultProfiles() {
         Map<SyncConnectorType, ConnectorCapabilityProfile> map = new EnumMap<>(SyncConnectorType.class);
         Set<SyncMode> relationalModes = Set.of(
-                SyncMode.FULL, SyncMode.INCREMENTAL_TIME, SyncMode.INCREMENTAL_ID,
+                SyncMode.FULL, SyncMode.SCHEDULED_FULL, SyncMode.INCREMENTAL_TIME, SyncMode.INCREMENTAL_ID,
                 SyncMode.CDC_STREAMING, SyncMode.SCHEDULED_BATCH, SyncMode.ONE_TIME_MIGRATION,
                 SyncMode.REPLAY, SyncMode.BACKFILL, SyncMode.CUSTOM_SQL_QUERY
         );
@@ -244,7 +244,7 @@ public class SyncConnectorCapabilityRegistry {
                 List.of("Oracle 大表同步需要关注 undo、归档日志和分区裁剪。"),
                 List.of("归档日志/CDC 权限敏感，必须审计。")));
         register(map, profile(SyncConnectorType.MONGODB, "MongoDB", "PREPARED",
-                Set.of(SyncMode.FULL, SyncMode.INCREMENTAL_TIME, SyncMode.CDC_STREAMING,
+                Set.of(SyncMode.FULL, SyncMode.SCHEDULED_FULL, SyncMode.INCREMENTAL_TIME, SyncMode.CDC_STREAMING,
                         SyncMode.SCHEDULED_BATCH, SyncMode.ONE_TIME_MIGRATION, SyncMode.REPLAY, SyncMode.BACKFILL),
                 List.of("DOCUMENT_CURSOR", "TIME_WINDOW", "CHANGE_STREAM_RESUME_TOKEN"),
                 List.of("文档库需要处理 schema drift、嵌套字段映射和单文档大小限制。"),
@@ -255,30 +255,30 @@ public class SyncConnectorCapabilityRegistry {
                 List.of("Kafka 不适合传统全表 FULL，同步语义应围绕 offset、分区和消费组。"),
                 List.of("消息体样本不能直接进入诊断响应，schema 信息应走低敏摘要。")));
         register(map, profile(SyncConnectorType.HIVE, "Hive", "PREPARED",
-                Set.of(SyncMode.FULL, SyncMode.INCREMENTAL_TIME, SyncMode.SCHEDULED_BATCH,
+                Set.of(SyncMode.FULL, SyncMode.SCHEDULED_FULL, SyncMode.INCREMENTAL_TIME, SyncMode.SCHEDULED_BATCH,
                         SyncMode.ONE_TIME_MIGRATION, SyncMode.REPLAY, SyncMode.BACKFILL),
                 List.of("PARTITION_CURSOR", "BATCH_WINDOW"),
                 List.of("Hive 更适合批量窗口同步，不适合低延迟流式任务。"),
                 List.of("分区路径和表位置可能暴露存储结构，诊断中只返回分区策略摘要。")));
         register(map, profile(SyncConnectorType.CLICKHOUSE, "ClickHouse", "PREPARED",
-                Set.of(SyncMode.FULL, SyncMode.INCREMENTAL_TIME, SyncMode.INCREMENTAL_ID,
+                Set.of(SyncMode.FULL, SyncMode.SCHEDULED_FULL, SyncMode.INCREMENTAL_TIME, SyncMode.INCREMENTAL_ID,
                         SyncMode.SCHEDULED_BATCH, SyncMode.ONE_TIME_MIGRATION, SyncMode.REPLAY, SyncMode.BACKFILL),
                 List.of("PARTITION_CURSOR", "TIME_WINDOW", "ID_RANGE"),
                 List.of("ClickHouse 写入建议按批次合并，避免过小批次影响 merge。"),
                 List.of("分析侧导入仍需遵守租户和项目边界。")));
         register(map, profile(SyncConnectorType.FILE, "File", "PRIMARY",
-                Set.of(SyncMode.FULL, SyncMode.ONE_TIME_MIGRATION, SyncMode.OFFLINE_IMPORT, SyncMode.OFFLINE_EXPORT),
+                Set.of(SyncMode.FULL, SyncMode.SCHEDULED_FULL, SyncMode.ONE_TIME_MIGRATION, SyncMode.OFFLINE_IMPORT, SyncMode.OFFLINE_EXPORT),
                 List.of("FILE_CHUNK", "PACKAGE_STAGE"),
                 List.of("大文件需要分片、格式探测和导入阶段状态。"),
                 List.of("文件名、路径和样本内容都可能敏感，API 只能返回 artifactReference 或摘要。")));
         register(map, profile(SyncConnectorType.OBJECT_STORAGE, "Object Storage", "PRIMARY",
-                Set.of(SyncMode.FULL, SyncMode.SCHEDULED_BATCH, SyncMode.ONE_TIME_MIGRATION,
+                Set.of(SyncMode.FULL, SyncMode.SCHEDULED_FULL, SyncMode.SCHEDULED_BATCH, SyncMode.ONE_TIME_MIGRATION,
                         SyncMode.OFFLINE_IMPORT, SyncMode.OFFLINE_EXPORT, SyncMode.REPLAY, SyncMode.BACKFILL),
                 List.of("OBJECT_MANIFEST", "OBJECT_PREFIX_CURSOR", "PACKAGE_STAGE"),
                 List.of("对象存储适合离线导入导出和 lake-style 批同步，需要 manifest 去重。"),
                 List.of("不得返回 bucket/key、签名 URL 或 bearer token，统一使用低敏对象引用。")));
         register(map, profile(SyncConnectorType.REST_API, "REST API", "PREPARED",
-                Set.of(SyncMode.FULL, SyncMode.INCREMENTAL_TIME, SyncMode.SCHEDULED_BATCH,
+                Set.of(SyncMode.FULL, SyncMode.SCHEDULED_FULL, SyncMode.INCREMENTAL_TIME, SyncMode.SCHEDULED_BATCH,
                         SyncMode.ONE_TIME_MIGRATION, SyncMode.REPLAY, SyncMode.BACKFILL),
                 List.of("PAGE_TOKEN", "CURSOR_TOKEN", "TIME_WINDOW"),
                 List.of("REST API 需要严格 rate limit、分页游标、重试退避和上游错误映射。"),
@@ -373,7 +373,11 @@ public class SyncConnectorCapabilityRegistry {
                     supportsTransformationHook,
                     supportsDataValidation,
                     supportsAdminThrottling,
-                    supportedModes.stream().map(Enum::name).sorted().toList(),
+                    supportedModes.stream()
+                            .filter(SyncMode::isUserSelectableTransferMode)
+                            .map(Enum::name)
+                            .sorted()
+                            .toList(),
                     recommendedCheckpointTypes,
                     performanceNotes,
                     safetyNotes

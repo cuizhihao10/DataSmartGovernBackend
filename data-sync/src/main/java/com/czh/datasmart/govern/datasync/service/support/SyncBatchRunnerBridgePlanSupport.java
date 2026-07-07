@@ -313,6 +313,7 @@ public class SyncBatchRunnerBridgePlanSupport {
         return mode == SyncMode.FULL
                 || mode == SyncMode.INCREMENTAL_TIME
                 || mode == SyncMode.INCREMENTAL_ID
+                || mode == SyncMode.SCHEDULED_FULL
                 || mode == SyncMode.SCHEDULED_BATCH
                 || mode == SyncMode.ONE_TIME_MIGRATION
                 || mode == SyncMode.REPLAY
@@ -326,7 +327,7 @@ public class SyncBatchRunnerBridgePlanSupport {
             return "UNKNOWN";
         }
         return switch (mode) {
-            case FULL, ONE_TIME_MIGRATION -> "FULL_OBJECT_SCAN";
+            case FULL, SCHEDULED_FULL, ONE_TIME_MIGRATION -> "FULL_OBJECT_SCAN";
             case INCREMENTAL_TIME -> "INCREMENTAL_TIME_WINDOW";
             case INCREMENTAL_ID -> "INCREMENTAL_ID_RANGE";
             case SCHEDULED_BATCH -> "SCHEDULED_BATCH_WINDOW";
@@ -344,7 +345,7 @@ public class SyncBatchRunnerBridgePlanSupport {
             return "UNKNOWN";
         }
         return switch (mode) {
-            case FULL, ONE_TIME_MIGRATION -> "NONE_OR_FINAL_WATERMARK";
+            case FULL, SCHEDULED_FULL, ONE_TIME_MIGRATION -> "NONE_OR_FINAL_WATERMARK";
             case INCREMENTAL_TIME -> "TIME_FIELD";
             case INCREMENTAL_ID -> "ID_FIELD";
             case SCHEDULED_BATCH -> "BATCH_WINDOW";

@@ -74,9 +74,9 @@ public class SyncTaskScheduleConfigSupport {
     /**
      * 判断请求是否显式声明了调度配置。
      *
-     * <p>调用方会用这个方法区分普通全量和定期全量：
-     * FULL + 无 scheduleConfig 是手动或一次性全量；
-     * FULL + 有 scheduleConfig 才表示定期全量。</p>
+     * <p>调用方会用这个方法判断任务是否声明了调度配置。当前产品已经把“定期全量”独立为
+     * SCHEDULED_FULL，不再允许用 {@code FULL + scheduleConfig} 隐式表达。也就是说：
+     * FULL 只能是手工/一次性全量；SCHEDULED_FULL 与 SCHEDULED_BATCH 才能携带 scheduleConfig。</p>
      */
     public boolean hasScheduleConfig(String scheduleConfig) {
         return StringUtils.hasText(scheduleConfig);
