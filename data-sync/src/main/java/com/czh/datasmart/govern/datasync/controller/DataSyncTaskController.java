@@ -9,11 +9,16 @@ package com.czh.datasmart.govern.datasync.controller;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.api.PlatformPageResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
+import com.czh.datasmart.govern.common.error.PlatformBusinessException;
+import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTaskRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExportFile;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupSummary;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupUpdateRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskImportOptions;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskImportResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskPublishRequest;
@@ -25,7 +30,10 @@ import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.service.DataSyncService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -35,7 +43,10 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 /**
@@ -93,6 +104,80 @@ public class DataSyncTaskController {
                 currentState, approvalState, triggerType, current, size);
         return PlatformApiResponse.success(dataSyncService.pageTasks(
                 criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * 导出同步任务定义。
+     *
+     * <p>导出是低敏任务定义包，不是数据导出：它只包含任务 ID、模板 ID、名称、负责人、分组、调度配置等控制面字段，
+     * 不包含连接串、密码、完整 SQL、字段映射正文、样本数据或 worker 内部计划。</p>
+     *
+     * <p>为什么该接口返回 {@code ResponseEntity<byte[]>} 而不是 {@code PlatformApiResponse}：
+     * 浏览器、脚本和运营工具需要直接下载 CSV/XLSX 文件；如果再包一层 JSON，用户拿到的就不是标准表格文件。</p>
+     */
+    @GetMapping("/export")
+    public ResponseEntity<byte[]> exportTasks(
+            @RequestParam(required = false) Long tenantId,
+            @RequestParam(required = false) Long projectId,
+            @RequestParam(required = false) Long workspaceId,
+            @RequestParam(required = false) Long templateId,
+            @RequestParam(required = false) Long ownerId,
+            @RequestParam(required = false) String groupCode,
+            @RequestParam(required = false) String currentState,
+            @RequestParam(required = false) String approvalState,
+            @RequestParam(required = false) String triggerType,
+            @RequestParam(defaultValue = "1") Long current,
+            @RequestParam(defaultValue = "500") Long size,
+            @RequestParam(defaultValue = "CSV") String format,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
+                tenantId, projectId, workspaceId, templateId, ownerId, groupCode,
+                currentState, approvalState, triggerType, current, size);
+        SyncTaskExportFile file = dataSyncService.exportTasks(
+                criteria, format, actorContext(actorTenantId, actorId, actorRole, traceId, headers));
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(file.getContentType()))
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                        .filename(file.getFileName(), StandardCharsets.UTF_8)
+                        .build()
+                        .toString())
+                .body(file.getContent());
+    }
+
+    /**
+     * 导入同步任务定义。
+     *
+     * <p>导入采用 multipart 文件上传，支持 CSV 和 XLSX：</p>
+     * <p>1. dryRun=true：只解析和校验，不创建任务；</p>
+     * <p>2. runImmediately=false：校验通过后创建 DRAFT，用户后续编辑/发布；</p>
+     * <p>3. runImmediately=true：校验通过后发布任务并立即创建一次 MANUAL execution。</p>
+     *
+     * <p>安全边界：导入文件里的 currentState、approvalState、triggerType 只作为导出上下文，不会被导入为新任务事实。
+     * 新任务状态只能由服务端状态机决定，避免旧环境状态污染新环境。</p>
+     */
+    @PostMapping(value = "/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public PlatformApiResponse<SyncTaskImportResult> importTasks(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(required = false) String format,
+            @RequestParam(defaultValue = "false") Boolean dryRun,
+            @RequestParam(defaultValue = "false") Boolean runImmediately,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        SyncTaskImportOptions options = new SyncTaskImportOptions();
+        options.setFileName(file == null ? null : file.getOriginalFilename());
+        options.setFormat(format);
+        options.setDryRun(dryRun);
+        options.setRunImmediately(runImmediately);
+        SyncTaskImportResult result = dataSyncService.importTasks(
+                readMultipartFile(file), options, actorContext(actorTenantId, actorId, actorRole, traceId, headers));
+        return PlatformApiResponse.success("同步任务导入处理完成", result, traceId);
     }
 
     /**
@@ -523,5 +608,17 @@ public class DataSyncTaskController {
 
     private SyncActorContext actorContext(Long tenantId, Long actorId, String actorRole, String traceId, HttpHeaders headers) {
         return SyncActorContextHeaderSupport.fromHeaders(tenantId, actorId, actorRole, traceId, headers);
+    }
+
+    private byte[] readMultipartFile(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR, "同步任务导入文件不能为空");
+        }
+        try {
+            return file.getBytes();
+        } catch (IOException exception) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    "读取同步任务导入文件失败: " + exception.getMessage());
+        }
     }
 }

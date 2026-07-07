@@ -30,8 +30,11 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExportFile;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupSummary;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupUpdateRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskImportOptions;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskImportResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskPublishRequest;
@@ -64,6 +67,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncObjectExecutionOper
 import com.czh.datasmart.govern.datasync.service.support.SyncOfflineJobPlanSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskDefinitionOperationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskDefinitionExchangeSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskGroupOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskManagementOperationSupport;
@@ -117,6 +121,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncExecutionLifecycleSupport executionLifecycleSupport;
     private final SyncExecutionCreationSupport executionCreationSupport;
     private final SyncTaskDefinitionOperationSupport taskDefinitionOperationSupport;
+    private final SyncTaskDefinitionExchangeSupport taskDefinitionExchangeSupport;
     private final SyncTaskLifecycleOperationSupport taskLifecycleOperationSupport;
     private final SyncTaskGroupOperationSupport taskGroupOperationSupport;
     private final SyncTaskManagementOperationSupport taskManagementOperationSupport;
@@ -380,6 +385,33 @@ public class DataSyncServiceImpl implements DataSyncService {
         SyncTask task = getTask(id, actorContext);
         SyncTemplate template = getTemplateForTask(task);
         return taskDefinitionOperationSupport.publishTaskDefinition(task, template, request, actorContext);
+    }
+
+    /**
+     * 导出任务定义文件。
+     *
+     * <p>Service 继续保持“入口编排”职责：Controller 负责 HTTP 文件响应，ExchangeSupport 负责文件编码和数据范围过滤。
+     * 这样后续如果 Agent 工具也要导出任务定义，可以直接调用同一个 support，而不是复制 Controller 逻辑。</p>
+     */
+    @Override
+    public SyncTaskExportFile exportTasks(SyncTaskQueryCriteria criteria,
+                                          String format,
+                                          SyncActorContext actorContext) {
+        return taskDefinitionExchangeSupport.exportTasks(criteria, format, actorContext);
+    }
+
+    /**
+     * 导入任务定义文件。
+     *
+     * <p>导入可能批量创建任务，或在 runImmediately=true 时创建 execution，因此必须处于事务中。
+     * 如果写入阶段出现异常，已插入的任务和执行记录会回滚，避免半批导入成功。</p>
+     */
+    @Override
+    @Transactional
+    public SyncTaskImportResult importTasks(byte[] content,
+                                            SyncTaskImportOptions options,
+                                            SyncActorContext actorContext) {
+        return taskDefinitionExchangeSupport.importTasks(content, options, actorContext);
     }
 
     /**

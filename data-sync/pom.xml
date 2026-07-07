@@ -95,6 +95,16 @@
             <artifactId>spring-kafka</artifactId>
         </dependency>
         <dependency>
+            <!--
+              任务定义导入/导出需要真实支持 Excel xlsx 文件，而不是把 CSV 改个后缀伪装成 Excel。
+              Apache POI 只在 data-sync 模块引入，用于控制面批量运营能力：读取/生成任务定义表格，
+              不参与真实数据搬运 worker，也不处理客户源端/目标端业务数据。
+            -->
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.2.5</version>
+        </dependency>
+        <dependency>
             <groupId>com.alibaba.cloud</groupId>
             <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
         </dependency>

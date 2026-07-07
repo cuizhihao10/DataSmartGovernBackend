@@ -26,8 +26,11 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExportFile;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupSummary;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupUpdateRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskImportOptions;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskImportResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskPublishRequest;
@@ -116,6 +119,20 @@ public interface DataSyncService {
      * <p>发布会重新执行预检查和审批判断，并根据调度配置决定任务进入 CONFIGURED、SCHEDULED 或 PENDING_APPROVAL。</p>
      */
     SyncTaskOperationResult publishTask(Long id, SyncTaskPublishRequest request, SyncActorContext actorContext);
+
+    /**
+     * 导出同步任务定义文件。
+     *
+     * <p>导出只返回低敏任务定义字段和模板引用，不返回连接串、密码、完整 SQL、样本数据或执行器内部计划。</p>
+     */
+    SyncTaskExportFile exportTasks(SyncTaskQueryCriteria criteria, String format, SyncActorContext actorContext);
+
+    /**
+     * 导入同步任务定义文件。
+     *
+     * <p>导入采用“先全量校验、再统一写入”的策略。dryRun=true 时只做校验；runImmediately=true 时会发布并手工执行一次。</p>
+     */
+    SyncTaskImportResult importTasks(byte[] content, SyncTaskImportOptions options, SyncActorContext actorContext);
 
     /**
      * 查询同步任务分组汇总。

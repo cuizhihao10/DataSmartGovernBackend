@@ -512,6 +512,20 @@ datasmart:
           method-actions:
             POST: VIEW
 
+        - path-pattern: /api/sync/sync-tasks/export
+          resource-type: SYNC_TASK
+          default-action: EXPORT
+          description: data-sync 同步任务定义导出接口，下载低敏 CSV/XLSX 任务定义包，不包含连接串、密码、SQL 正文或样本数据。
+          method-actions:
+            GET: EXPORT
+
+        - path-pattern: /api/sync/sync-tasks/import
+          resource-type: SYNC_TASK
+          default-action: IMPORT
+          description: data-sync 同步任务定义导入接口，支持 dry-run、冲突检测、导入为 DRAFT 或立即创建 MANUAL execution。
+          method-actions:
+            POST: IMPORT
+
         - path-pattern: /api/sync/sync-tasks/recycle-bin
           resource-type: SYNC_TASK
           default-action: VIEW_RECYCLE_BIN
