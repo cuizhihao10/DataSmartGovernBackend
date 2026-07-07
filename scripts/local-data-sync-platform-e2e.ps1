@@ -33,6 +33,8 @@
         再由 worker-loop 执行真实 MySQL -> PostgreSQL 搬运”的多服务闭环。
     14. gateway 模式会在链路末尾查询 permission-admin 授权审计，确认本轮 traceId 确实进入
         /permissions/evaluate，避免“只验证 rewrite、没有验证授权中心参与”的假闭环。
+    15. gateway 模式还会做一组负向权限验收：用人类用户 token 调用内部 worker-loop / scheduler
+        机器协议，必须返回 403，并且 permission-admin 必须记录 DENIED 审计。
 
     安全边界：
     - 不打印 access token、refresh token、数据库密码、完整 JDBC URL、SQL 正文、样本行、错误堆栈或响应正文。
@@ -820,6 +822,55 @@ function Invoke-Api {
     }
 }
 
+function Invoke-ApiExpectForbidden {
+    param(
+        [string]$Name,
+        [ValidateSet("GET", "POST", "PUT", "DELETE")]
+        [string]$Method,
+        [string]$Url,
+        [hashtable]$Headers,
+        [object]$Body = $null
+    )
+
+    <#
+        负向权限测试为什么要单独封装：
+        - 普通 Invoke-Api 把所有非 2xx 都视为失败，而这里恰恰“期望”gateway 返回 403；
+        - 403 代表请求在 gateway 授权过滤器处被拦截，没有进入 data-sync 真实执行层；
+        - 如果返回 2xx，说明内部机器协议被人类角色误放行，脚本必须立即 fail-fast；
+        - 响应正文、token、权限细节仍然不打印，避免把安全策略细节扩散到控制台。
+    #>
+    try {
+        $parameters = @{
+            Method = $Method
+            Uri = $Url
+            Headers = $Headers
+            TimeoutSec = $TimeoutSeconds
+            UseBasicParsing = $true
+        }
+        if ($null -ne $Body) {
+            $parameters["ContentType"] = "application/json; charset=utf-8"
+            $parameters["Body"] = ($Body | ConvertTo-Json -Depth 30 -Compress)
+        }
+        $response = Invoke-WebRequest @parameters
+        Fail-Step -Name $Name -Detail "内部机器协议被人类角色意外放行，status=$([int]$response.StatusCode)；这是权限边界缺陷"
+    } catch {
+        $statusCode = $null
+        if ($_.Exception.Response -ne $null) {
+            try {
+                $statusCode = [int]$_.Exception.Response.StatusCode
+            } catch {
+                $statusCode = $null
+            }
+        }
+        if ($statusCode -eq 403) {
+            Add-Check -Name $Name -Status "PASS" -Detail "gateway 返回 403，内部机器协议未被人类角色放行"
+            return
+        }
+        $statusText = if ($null -eq $statusCode) { "NO_RESPONSE" } else { [string]$statusCode }
+        Fail-Step -Name $Name -Detail "期望 gateway 返回 403，但实际 status=$statusText；脚本不打印响应正文、token 或底层堆栈"
+    }
+}
+
 function Get-EnvelopeData {
     param(
         [object]$Response,
@@ -985,6 +1036,78 @@ WHERE trace_id LIKE '$escapedTracePrefix%'
     Add-Check -Name "permission-admin 授权审计" -Status "PASS" -Detail "已查到 $actual 条本轮 gateway 授权判定审计，证明 permission-admin 参与了写链路"
 }
 
+function Assert-HumanRoleCannotCallInternalSyncProtocols {
+    param(
+        [hashtable]$Headers,
+        [string]$SyncApiRoot
+    )
+
+    if ($UseDirectServiceUrls) {
+        Add-Check -Name "内部机器协议负向授权" -Status "WARN" -Detail "直连模式不经过 gateway 授权过滤器，已跳过 403 与 DENIED 审计断言"
+        return
+    }
+
+    <#
+        为什么要在正向数据同步前先做这组负向测试：
+        1. `/internal/sync-workers/run-once` 会认领 execution 并可能触发真实 JDBC 读写；
+        2. `/internal/sync-task-schedulers/dispatch-due` 会把到期任务转换为 execution；
+        3. 这两个入口都属于“机器协议”，只能由服务账号、调度器或未来受控 worker 调用；
+        4. 如果人类 PROJECT_OWNER、TENANT_ADMINISTRATOR、OPERATOR 等角色能直接调用，就等于绕过任务审批、
+           调度窗口、容量控制、执行器租约和审计职责分离。
+
+        为了让负向测试本身也安全：
+        - worker-loop 请求使用一个不存在的 tenantId；即使策略被误配放行，也尽量不会认领真实队列；
+        - scheduler 请求使用 dryRun=true；即使误放行，也不推进 next_fire_time、不创建 execution；
+        - 但只要出现 2xx，脚本仍然立即失败，因为“没有副作用”不等于“权限设计正确”。
+    #>
+    $negativeTraceId = New-TraceId "negative-human-internal-protocol"
+    $negativeHeaders = @{}
+    foreach ($key in $Headers.Keys) {
+        $negativeHeaders[$key] = $Headers[$key]
+    }
+    $negativeHeaders["X-DataSmart-Trace-Id"] = $negativeTraceId
+
+    Invoke-ApiExpectForbidden `
+        -Name "负向授权: 人类角色禁止 worker-loop" `
+        -Method "POST" `
+        -Url "$SyncApiRoot/internal/sync-workers/run-once" `
+        -Headers $negativeHeaders `
+        -Body @{
+            executorId = "negative-auth-e2e-human-must-not-run-worker"
+            tenantId = -999999
+            maxExecutions = 1
+            leaseSeconds = 30
+        }
+
+    Invoke-ApiExpectForbidden `
+        -Name "负向授权: 人类角色禁止 task-scheduler" `
+        -Method "POST" `
+        -Url "$SyncApiRoot/internal/sync-task-schedulers/dispatch-due" `
+        -Headers $negativeHeaders `
+        -Body @{
+            tenantId = -999999
+            limit = 1
+            dryRun = $true
+        }
+
+    $escapedTraceId = $negativeTraceId.Replace("'", "''")
+    $auditSql = @"
+SELECT COUNT(*)
+FROM permission_admin.permission_audit_record
+WHERE trace_id = '$escapedTraceId'
+  AND result = 'DENIED'
+  AND (
+      (resource_type = 'SYNC_EXECUTION' AND action = 'CLAIM')
+      OR (resource_type = 'SYNC_TASK' AND action = 'SCHEDULE_DISPATCH')
+  );
+"@
+    $deniedCount = [long](Invoke-PostgresScalar -Sql $auditSql)
+    if ($deniedCount -lt 2) {
+        Fail-Step -Name "内部机器协议 DENIED 审计" -Detail "未查到两条内部 worker/scheduler 的 DENIED 授权审计，请确认 permission-admin 审计落库和 gateway 强制授权配置"
+    }
+    Add-Check -Name "内部机器协议 DENIED 审计" -Status "PASS" -Detail "已查到 $deniedCount 条 DENIED 审计，证明人类角色无法调用内部机器协议"
+}
+
 function Write-ExecutionPlan {
     $sourceJdbc = Resolve-SourceJdbcUrl
     $targetJdbc = Resolve-TargetJdbcUrl
@@ -1011,6 +1134,7 @@ function Write-ExecutionPlan {
     Write-PlatformPlanStage "Assert PostgreSQL target table reaches 20 complete rows."
     if (-not $UseDirectServiceUrls) {
         Write-PlatformPlanStage "Assert permission-admin authorization audit records exist for this gateway trace prefix."
+        Write-PlatformPlanStage "Assert human-role calls to internal worker/scheduler protocols are denied with permission-admin DENIED audit."
     }
     if ($IncludeOfflineModeClosureE2E) {
         Write-PlatformPlanStage "Additionally verify SCHEDULED_BATCH, CUSTOM_SQL_QUERY, and SCHEMA_FULL platform/API closure."
@@ -1748,6 +1872,8 @@ function Main {
         -Role "SERVICE_ACCOUNT" `
         -ActorType "SERVICE_ACCOUNT" `
         -CurrentActorId 9101
+
+    Assert-HumanRoleCannotCallInternalSyncProtocols -Headers $userHeaders -SyncApiRoot $apiRoots.Sync
 
     $sourceJdbc = Resolve-SourceJdbcUrl
     $targetJdbc = Resolve-TargetJdbcUrl
