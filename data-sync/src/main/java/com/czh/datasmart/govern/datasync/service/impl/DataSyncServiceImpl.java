@@ -33,11 +33,17 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationRe
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExportFile;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskFieldMappingSuggestionRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskFieldMappingSuggestionResponse;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupCreateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupSummary;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupTreeNode;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupUpdateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskImportOptions;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskImportResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskMetadataDiscoveryRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskMetadataDiscoveryResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskPublishRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
@@ -51,6 +57,7 @@ import com.czh.datasmart.govern.datasync.entity.SyncCheckpoint;
 import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskGroup;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasync.mapper.SyncAuditRecordMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncCheckpointMapper;
@@ -74,6 +81,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncTaskDefinitionExcha
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskGroupOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskManagementOperationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskMetadataConfigurationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskRecoveryOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskScheduleConfigSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskStateMachineSupport;
@@ -129,6 +137,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncTaskLifecycleOperationSupport taskLifecycleOperationSupport;
     private final SyncTaskGroupOperationSupport taskGroupOperationSupport;
     private final SyncTaskManagementOperationSupport taskManagementOperationSupport;
+    private final SyncTaskMetadataConfigurationSupport taskMetadataConfigurationSupport;
     private final SyncTaskRecoveryOperationSupport taskRecoveryOperationSupport;
     private final SyncTemplateCreationSupport templateCreationSupport;
     private final SyncTemplatePlanningPreviewSupport templatePlanningPreviewSupport;
@@ -247,7 +256,13 @@ public class DataSyncServiceImpl implements DataSyncService {
         task.setWorkspaceId(resolveScopeValue("workspaceId", request.getWorkspaceId(), template.getWorkspaceId()));
         task.setTemplateId(template.getId());
         SyncTaskGroupOperationSupport.TaskGroupAssignment groupAssignment =
-                taskGroupOperationSupport.resolveAssignment(request.getGroupCode(), request.getGroupName());
+                taskGroupOperationSupport.resolveAssignmentForTask(
+                        tenantId,
+                        task.getProjectId(),
+                        task.getWorkspaceId(),
+                        request.getGroupCode(),
+                        request.getGroupName(),
+                        actorContext);
         task.setGroupCode(groupAssignment.groupCode());
         task.setGroupName(groupAssignment.groupName());
         task.setName(querySupport.defaultText(request.getName(), template.getName()));
@@ -300,7 +315,7 @@ public class DataSyncServiceImpl implements DataSyncService {
         querySupport.eqIfPresent(wrapper, SyncTask::getTemplateId, criteria.templateId());
         querySupport.eqIfPresent(wrapper, SyncTask::getOwnerId, criteria.ownerId());
         querySupport.eqIfPresent(wrapper, SyncTask::getGroupCode,
-                taskGroupOperationSupport.resolveAssignment(criteria.groupCode(), null).groupCode());
+                taskGroupOperationSupport.normalizeGroupCodeForFilter(criteria.groupCode()));
         String requestedState = querySupport.normalizeCode(criteria.currentState());
         if (requestedState == null) {
             /*
@@ -453,6 +468,73 @@ public class DataSyncServiceImpl implements DataSyncService {
     @Override
     public List<SyncTaskGroupSummary> listTaskGroups(SyncTaskQueryCriteria criteria, SyncActorContext actorContext) {
         return taskGroupOperationSupport.listTaskGroups(criteria, actorContext);
+    }
+
+    /**
+     * 查询可渲染为树形菜单的同步任务分组。
+     *
+     * <p>该方法面向前端“左侧导航栏 + 内容页中间分组菜单栏”的双菜单场景：
+     * Service 层只负责暴露稳定契约，真正的默认分组兜底、历史分组合并、父子关系构建和任务数量聚合都由
+     * {@link SyncTaskGroupOperationSupport} 统一处理，避免列表页、创建页、导入页各自解释一套分组规则。</p>
+     */
+    @Override
+    public List<SyncTaskGroupTreeNode> listTaskGroupTree(SyncTaskQueryCriteria criteria,
+                                                         SyncActorContext actorContext) {
+        return taskGroupOperationSupport.listTaskGroupTree(criteria, actorContext);
+    }
+
+    /**
+     * 创建同步任务分组资源。
+     *
+     * <p>新增分组会立即参与任务创建、任务编辑、克隆和导入校验；这意味着后端不能只把它当作 UI 菜单项，
+     * 而要把它作为可审计、可删除、可迁移任务归属的业务资源落库。</p>
+     */
+    @Override
+    @Transactional
+    public SyncTaskGroup createTaskGroup(SyncTaskGroupCreateRequest request,
+                                         SyncActorContext actorContext) {
+        return taskGroupOperationSupport.createTaskGroup(request, actorContext);
+    }
+
+    /**
+     * 删除同步任务分组，并把受影响任务迁回默认分组。
+     *
+     * <p>删除分组属于高影响控制面动作：它不会删除任务，也不会停止执行中的任务，只改变运营归属。
+     * 因此这里保留事务边界，保证“归档分组”和“任务迁回 DEFAULT”要么同时成功，要么同时回滚。</p>
+     */
+    @Override
+    @Transactional
+    public SyncTaskOperationResult deleteTaskGroup(String groupCode,
+                                                   Long tenantId,
+                                                   Long projectId,
+                                                   Long workspaceId,
+                                                   String reason,
+                                                   SyncActorContext actorContext) {
+        return taskGroupOperationSupport.deleteTaskGroup(groupCode, tenantId, projectId, workspaceId, reason, actorContext);
+    }
+
+    /**
+     * 自动发现创建同步任务时可选的 schema/table/field 元数据。
+     *
+     * <p>data-sync 不直接连接源库或目标库，而是通过 datasource-management 的低敏元数据接口读取结构信息；
+     * 这样数据源凭据、连接池和连接诊断仍然留在 datasource-management 模块内，data-sync 只负责同步配置语义。</p>
+     */
+    @Override
+    public SyncTaskMetadataDiscoveryResponse discoverTaskMetadata(SyncTaskMetadataDiscoveryRequest request,
+                                                                  SyncActorContext actorContext) {
+        return taskMetadataConfigurationSupport.discoverTaskMetadata(request, actorContext);
+    }
+
+    /**
+     * 根据源表和目标表生成字段映射建议。
+     *
+     * <p>字段映射建议只给出“默认是否同步”的保守判断，前端和 Agent 仍然需要允许用户最终确认。
+     * 这样既能减少手工配置成本，又不会因为自动映射过于激进而把不兼容字段直接写入生产任务。</p>
+     */
+    @Override
+    public SyncTaskFieldMappingSuggestionResponse suggestFieldMappings(SyncTaskFieldMappingSuggestionRequest request,
+                                                                       SyncActorContext actorContext) {
+        return taskMetadataConfigurationSupport.suggestFieldMappings(request, actorContext);
     }
 
     /**

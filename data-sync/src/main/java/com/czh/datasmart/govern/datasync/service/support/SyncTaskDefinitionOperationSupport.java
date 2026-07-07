@@ -100,7 +100,8 @@ public class SyncTaskDefinitionOperationSupport {
                 : querySupport.trimToNull(safeRequest.getDescription());
         String priority = resolvePriority(task.getPriority(), safeRequest.getPriority());
         Long ownerId = resolveOwnerId(task.getOwnerId(), safeRequest.getOwnerId());
-        SyncTaskGroupOperationSupport.TaskGroupAssignment groupAssignment = resolveGroupAssignment(task, safeRequest);
+        SyncTaskGroupOperationSupport.TaskGroupAssignment groupAssignment =
+                resolveGroupAssignment(task, safeRequest, actorContext);
         ScheduleEditResult scheduleEditResult = resolveScheduleEdit(task, template, safeRequest);
         String runMode = resolveRunMode(task.getRunMode(), safeRequest.getRunMode());
 
@@ -244,12 +245,30 @@ public class SyncTaskDefinitionOperationSupport {
     }
 
     private SyncTaskGroupOperationSupport.TaskGroupAssignment resolveGroupAssignment(SyncTask task,
-                                                                                     SyncTaskUpdateRequest request) {
+                                                                                     SyncTaskUpdateRequest request,
+                                                                                     SyncActorContext actorContext) {
         if (Boolean.TRUE.equals(request.getClearGroup())) {
-            return new SyncTaskGroupOperationSupport.TaskGroupAssignment(null, null);
+            /*
+             * 早期“清空分组”会把 group_code/group_name 写成 NULL，但当前产品已经把 DEFAULT/默认分组建模为
+             * 一个真实资源。编辑页点击“清空分组”时，用户真正想表达的是“不要放在当前业务分组里”，而不是让任务
+             * 变成前端分组树不可见的游离记录。因此这里统一回落到默认分组，和删除分组后的任务迁移规则保持一致。
+             */
+            return taskGroupOperationSupport.resolveAssignmentForTask(
+                    task.getTenantId(),
+                    task.getProjectId(),
+                    task.getWorkspaceId(),
+                    null,
+                    null,
+                    actorContext);
         }
         if (request.getGroupCode() != null || request.getGroupName() != null) {
-            return taskGroupOperationSupport.resolveAssignment(request.getGroupCode(), request.getGroupName());
+            return taskGroupOperationSupport.resolveAssignmentForTask(
+                    task.getTenantId(),
+                    task.getProjectId(),
+                    task.getWorkspaceId(),
+                    request.getGroupCode(),
+                    request.getGroupName(),
+                    actorContext);
         }
         return new SyncTaskGroupOperationSupport.TaskGroupAssignment(task.getGroupCode(), task.getGroupName());
     }

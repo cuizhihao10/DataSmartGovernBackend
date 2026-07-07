@@ -29,11 +29,17 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationRe
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExportFile;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskFieldMappingSuggestionRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskFieldMappingSuggestionResponse;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupCreateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupSummary;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupTreeNode;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupUpdateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskImportOptions;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskImportResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskMetadataDiscoveryRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskMetadataDiscoveryResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskPublishRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
@@ -47,6 +53,7 @@ import com.czh.datasmart.govern.datasync.entity.SyncCheckpoint;
 import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskGroup;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 
 import java.util.List;
@@ -163,12 +170,55 @@ public interface DataSyncService {
     List<SyncTaskGroupSummary> listTaskGroups(SyncTaskQueryCriteria criteria, SyncActorContext actorContext);
 
     /**
+     * 查询同步任务分组树。
+     *
+     * <p>该接口服务前端左侧导航栏和内容页中间分组菜单栏，返回完整父子结构、默认分组标记和任务计数。
+     * 它不会创建、删除或移动任务，只是把当前操作者可见的正式分组与历史任务分组聚合成可渲染树。</p>
+     */
+    List<SyncTaskGroupTreeNode> listTaskGroupTree(SyncTaskQueryCriteria criteria, SyncActorContext actorContext);
+
+    /**
+     * 创建同步任务分组。
+     *
+     * <p>创建后的分组会立刻出现在创建同步任务时的分组下拉/树选择控件中。服务端会自动确保同一作用域下存在默认分组。</p>
+     */
+    SyncTaskGroup createTaskGroup(SyncTaskGroupCreateRequest request, SyncActorContext actorContext);
+
+    /**
+     * 删除同步任务分组。
+     *
+     * <p>删除普通分组不会删除任务，而是把该分组及子分组下的任务迁回 DEFAULT/默认分组；默认分组本身不可删除。</p>
+     */
+    SyncTaskOperationResult deleteTaskGroup(String groupCode,
+                                            Long tenantId,
+                                            Long projectId,
+                                            Long workspaceId,
+                                            String reason,
+                                            SyncActorContext actorContext);
+
+    /**
      * 调整单个同步任务所属分组。
      *
      * <p>该动作属于任务定义管理，不会触发执行、不修改模板、不影响已有 execution 历史。
      * 它会写审计记录，用于后续排查“为什么这个任务出现在某个业务分组下”。</p>
      */
     SyncTaskOperationResult updateTaskGroup(Long id, SyncTaskGroupUpdateRequest request, SyncActorContext actorContext);
+
+    /**
+     * 发现创建任务配置阶段可选择的 schema/table/field 元数据。
+     *
+     * <p>data-sync 通过 datasource-management 读取低敏结构信息，并在本服务内处理 MySQL 与 PostgreSQL 等连接器的筛选差异。</p>
+     */
+    SyncTaskMetadataDiscoveryResponse discoverTaskMetadata(SyncTaskMetadataDiscoveryRequest request,
+                                                           SyncActorContext actorContext);
+
+    /**
+     * 根据已选源表和目标表生成字段映射建议。
+     *
+     * <p>该接口不会创建模板或任务，只返回字段级低敏结构信息和默认 syncEnabled 建议，供用户最终确认。</p>
+     */
+    SyncTaskFieldMappingSuggestionResponse suggestFieldMappings(SyncTaskFieldMappingSuggestionRequest request,
+                                                                SyncActorContext actorContext);
 
     SyncTaskOperationResult runTask(Long id, SyncActorContext actorContext);
 

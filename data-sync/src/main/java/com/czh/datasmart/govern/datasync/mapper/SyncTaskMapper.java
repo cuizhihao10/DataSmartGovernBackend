@@ -75,8 +75,8 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
                 tenant_id AS tenantId,
                 project_id AS projectId,
                 workspace_id AS workspaceId,
-                group_code AS groupCode,
-                MAX(group_name) AS groupName,
+                COALESCE(NULLIF(group_code, ''), 'DEFAULT') AS groupCode,
+                COALESCE(MAX(NULLIF(group_name, '')), '默认分组') AS groupName,
                 COUNT(*) AS taskCount,
                 SUM(CASE WHEN current_state NOT IN ('OFFLINE', 'RECYCLED', 'DELETED', 'ARCHIVED') THEN 1 ELSE 0 END) AS activeTaskCount,
                 SUM(CASE WHEN current_state = 'SCHEDULED' THEN 1 ELSE 0 END) AS scheduledTaskCount,
@@ -85,9 +85,7 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
                 SUM(CASE WHEN current_state = 'RECYCLED' THEN 1 ELSE 0 END) AS recycledTaskCount,
                 MAX(update_time) AS lastUpdateTime
             FROM data_sync_task
-            WHERE group_code IS NOT NULL
-              AND group_code &lt;&gt; ''
-              AND current_state &lt;&gt; 'DELETED'
+            WHERE current_state &lt;&gt; 'DELETED'
             <if test="tenantId != null">
               AND tenant_id = #{tenantId}
             </if>
@@ -106,11 +104,14 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
             <if test="ownerId != null">
               AND owner_id = #{ownerId}
             </if>
-            <if test="groupCode != null and groupCode != ''">
+            <if test="groupCode != null and groupCode != '' and groupCode != 'DEFAULT'">
               AND group_code = #{groupCode}
             </if>
-            GROUP BY tenant_id, project_id, workspace_id, group_code
-            ORDER BY MAX(update_time) DESC, group_code ASC
+            <if test="groupCode != null and groupCode == 'DEFAULT'">
+              AND (group_code = 'DEFAULT' OR group_code IS NULL OR group_code = '')
+            </if>
+            GROUP BY tenant_id, project_id, workspace_id, COALESCE(NULLIF(group_code, ''), 'DEFAULT')
+            ORDER BY MAX(update_time) DESC, COALESCE(NULLIF(group_code, ''), 'DEFAULT') ASC
             LIMIT #{limit}
             </script>
             """)
@@ -139,6 +140,49 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
     int updateTaskGroup(@Param("taskId") Long taskId,
                         @Param("groupCode") String groupCode,
                         @Param("groupName") String groupName);
+
+    /**
+     * 删除分组时把任务批量迁回默认分组。
+     *
+     * <p>这是“删除分组不删除任务”的核心保护 SQL。分组只是运营组织视图，任务本身可能仍在等待调度、运行、失败待重试或已进入回收站；
+     * 因此删除分组不能级联删除任务，也不能把任务 groupCode 置空导致前端不可见，而是统一回收到默认分组。</p>
+     */
+    @Update("""
+            <script>
+            UPDATE data_sync_task
+            SET group_code = #{defaultGroupCode},
+                group_name = #{defaultGroupName},
+                update_time = LOCALTIMESTAMP
+            WHERE tenant_id = #{tenantId}
+              AND current_state &lt;&gt; 'DELETED'
+              AND group_code IN
+              <foreach collection="sourceGroupCodes" item="groupCode" open="(" separator="," close=")">
+                #{groupCode}
+              </foreach>
+            <choose>
+              <when test="projectId == null">
+                AND project_id IS NULL
+              </when>
+              <otherwise>
+                AND project_id = #{projectId}
+              </otherwise>
+            </choose>
+            <choose>
+              <when test="workspaceId == null">
+                AND workspace_id IS NULL
+              </when>
+              <otherwise>
+                AND workspace_id = #{workspaceId}
+              </otherwise>
+            </choose>
+            </script>
+            """)
+    int reassignGroupsToDefault(@Param("tenantId") Long tenantId,
+                                @Param("projectId") Long projectId,
+                                @Param("workspaceId") Long workspaceId,
+                                @Param("sourceGroupCodes") List<String> sourceGroupCodes,
+                                @Param("defaultGroupCode") String defaultGroupCode,
+                                @Param("defaultGroupName") String defaultGroupName);
 
     /**
      * 更新任务定义字段。

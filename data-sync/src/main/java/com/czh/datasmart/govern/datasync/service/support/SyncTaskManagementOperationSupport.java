@@ -212,7 +212,8 @@ public class SyncTaskManagementOperationSupport {
         cloned.setProjectId(sourceTask.getProjectId());
         cloned.setWorkspaceId(sourceTask.getWorkspaceId());
         cloned.setTemplateId(sourceTask.getTemplateId());
-        SyncTaskGroupOperationSupport.TaskGroupAssignment groupAssignment = resolveCloneGroup(sourceTask, request);
+        SyncTaskGroupOperationSupport.TaskGroupAssignment groupAssignment =
+                resolveCloneGroup(sourceTask, request, actorContext);
         cloned.setGroupCode(groupAssignment.groupCode());
         cloned.setGroupName(groupAssignment.groupName());
         cloned.setName(name);
@@ -391,13 +392,26 @@ public class SyncTaskManagementOperationSupport {
      * 清空分组应使用专门的移组接口，语义更清楚，也能独立审计。</p>
      */
     private SyncTaskGroupOperationSupport.TaskGroupAssignment resolveCloneGroup(SyncTask sourceTask,
-                                                                                SyncTaskCloneRequest request) {
+                                                                                SyncTaskCloneRequest request,
+                                                                                SyncActorContext actorContext) {
         String requestedGroupCode = request == null ? null : trimToNull(request.getGroupCode());
         String requestedGroupName = request == null ? null : trimToNull(request.getGroupName());
         if (requestedGroupCode == null && requestedGroupName == null) {
-            return taskGroupOperationSupport.resolveAssignment(sourceTask.getGroupCode(), sourceTask.getGroupName());
+            return taskGroupOperationSupport.resolveAssignmentForTask(
+                    sourceTask.getTenantId(),
+                    sourceTask.getProjectId(),
+                    sourceTask.getWorkspaceId(),
+                    sourceTask.getGroupCode(),
+                    sourceTask.getGroupName(),
+                    actorContext);
         }
-        return taskGroupOperationSupport.resolveAssignment(requestedGroupCode, requestedGroupName);
+        return taskGroupOperationSupport.resolveAssignmentForTask(
+                sourceTask.getTenantId(),
+                sourceTask.getProjectId(),
+                sourceTask.getWorkspaceId(),
+                requestedGroupCode,
+                requestedGroupName,
+                actorContext);
     }
 
     private Long resolveCloneOwner(SyncTask sourceTask, SyncTaskCloneRequest request, SyncActorContext actorContext) {

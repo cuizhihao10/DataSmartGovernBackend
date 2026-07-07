@@ -248,6 +248,21 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/sync/sync-tasks/recycle-bin", "SYNC_TASK",
                 "data-sync 同步任务回收站列表接口，只展示已进入 RECYCLED 的任务，用于查看、克隆或彻底删除前复核",
                 Map.of("GET", "VIEW_RECYCLE_BIN")));
+        defaults.add(route("/api/sync/sync-tasks/groups", "SYNC_TASK_GROUP",
+                "data-sync 同步任务分组汇总与创建入口；GET 返回低敏分组计数，POST 创建正式分组资源，因此必须在 /api/sync/sync-tasks/* 前声明，避免被单任务详情通配路由抢先命中。",
+                Map.of("GET", "LIST_GROUPS", "POST", "CREATE_GROUP")));
+        defaults.add(route("/api/sync/sync-tasks/groups/tree", "SYNC_TASK_GROUP",
+                "data-sync 同步任务分组树入口；服务前端左侧导航栏和内容页中间分组菜单栏，返回多级父子结构、默认分组标记和任务计数。",
+                Map.of("GET", "LIST_GROUP_TREE")));
+        defaults.add(route("/api/sync/sync-tasks/groups/*", "SYNC_TASK_GROUP",
+                "data-sync 同步任务分组删除入口；删除普通分组会把任务迁回 DEFAULT/默认分组，属于高影响管理动作，必须独立授权。",
+                Map.of("DELETE", "DELETE_GROUP")));
+        defaults.add(route("/api/sync/sync-tasks/metadata/objects/discover", "SYNC_TASK_METADATA",
+                "data-sync 创建同步任务阶段的低敏元数据发现入口；通过 datasource-management 获取 schema/table/field 摘要，不返回样本数据、凭据或连接串。",
+                Map.of("POST", "DISCOVER_METADATA")));
+        defaults.add(route("/api/sync/sync-tasks/metadata/field-mappings/suggest", "SYNC_TASK_METADATA",
+                "data-sync 字段映射建议入口；根据已选择的源表和目标表自动匹配字段名称、类型兼容性和默认同步勾选状态，最终仍由用户确认。",
+                Map.of("POST", "SUGGEST_FIELD_MAPPING")));
         defaults.add(route("/api/sync/sync-tasks/*/publish", "SYNC_TASK",
                 "data-sync 同步任务定义发布接口，会重新预检、审批判断并进入 CONFIGURED/SCHEDULED/PENDING_APPROVAL",
                 Map.of("POST", "PUBLISH")));
@@ -274,9 +289,6 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/sync/sync-tasks/*/clone", "SYNC_TASK",
                 "data-sync 同步任务克隆接口，只复制任务定义，不复制执行历史、checkpoint 或审批事实",
                 Map.of("POST", "CLONE")));
-        defaults.add(route("/api/sync/sync-tasks/groups", "SYNC_TASK",
-                "data-sync 同步任务分组汇总查询接口，只返回低敏分组编码、展示名和状态计数",
-                Map.of("GET", "LIST_GROUPS")));
         defaults.add(route("/api/sync/sync-tasks/*/group", "SYNC_TASK",
                 "data-sync 同步任务移组接口，只调整任务定义的 groupCode/groupName，不触发真实执行",
                 Map.of("POST", "UPDATE_GROUP")));

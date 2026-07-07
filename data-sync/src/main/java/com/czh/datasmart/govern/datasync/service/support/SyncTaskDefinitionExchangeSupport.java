@@ -235,7 +235,7 @@ public class SyncTaskDefinitionExchangeSupport {
         querySupport.eqIfPresent(wrapper, SyncTask::getTemplateId, safeCriteria.templateId());
         querySupport.eqIfPresent(wrapper, SyncTask::getOwnerId, safeCriteria.ownerId());
         querySupport.eqIfPresent(wrapper, SyncTask::getGroupCode,
-                taskGroupOperationSupport.resolveAssignment(safeCriteria.groupCode(), null).groupCode());
+                taskGroupOperationSupport.normalizeGroupCodeForFilter(safeCriteria.groupCode()));
         String requestedState = querySupport.normalizeCode(safeCriteria.currentState());
         if (requestedState == null) {
             wrapper.notIn(SyncTask::getCurrentState, SyncTaskState.RECYCLED.name(), SyncTaskState.DELETED.name());
@@ -307,7 +307,13 @@ public class SyncTaskDefinitionExchangeSupport {
         }
         validateScheduleConfig(template, row.scheduleConfig(), row.rowNumber());
         SyncTaskGroupOperationSupport.TaskGroupAssignment groupAssignment =
-                taskGroupOperationSupport.resolveAssignment(row.groupCode(), row.groupName());
+                taskGroupOperationSupport.resolveAssignmentForTask(
+                        template.getTenantId(),
+                        template.getProjectId(),
+                        template.getWorkspaceId(),
+                        row.groupCode(),
+                        row.groupName(),
+                        actorContext);
         String uniqueKey = uniqueKey(template.getTenantId(), template.getProjectId(), name);
         if (!namesInFile.add(uniqueKey)) {
             throw new ImportRowConflictException("第 " + row.rowNumber()

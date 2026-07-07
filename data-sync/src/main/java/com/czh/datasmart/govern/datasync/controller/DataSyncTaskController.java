@@ -18,11 +18,17 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationRe
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExportFile;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskFieldMappingSuggestionRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskFieldMappingSuggestionResponse;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupCreateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupSummary;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupTreeNode;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupUpdateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskImportOptions;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskImportResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskMetadataDiscoveryRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskMetadataDiscoveryResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskPublishRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
@@ -30,6 +36,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperatio
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskUpdateRequest;
 import com.czh.datasmart.govern.datasync.controller.support.SyncActorContextHeaderSupport;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskGroup;
 import com.czh.datasmart.govern.datasync.service.DataSyncService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -37,6 +44,7 @@ import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -337,6 +345,116 @@ public class DataSyncTaskController {
      * <p>2. 回收站任务仍可查看详情、克隆和彻底删除，但不能直接运行或调度；</p>
      * <p>3. 服务层仍会按租户、项目、工作空间、负责人和 SELF 范围收口，避免普通用户看到他人的已删除任务。</p>
      */
+    /**
+     * 查询同步任务分组树。
+     *
+     * <p>该路由服务前端左侧导航栏和内容页中间分组菜单栏。后端返回父子关系、默认分组标记、
+     * 历史兼容分组标记和任务状态数量；展开/折叠属于前端 UI 状态，不在后端保存。</p>
+     */
+    @GetMapping("/groups/tree")
+    public PlatformApiResponse<List<SyncTaskGroupTreeNode>> listTaskGroupTree(
+            @RequestParam(required = false) Long tenantId,
+            @RequestParam(required = false) Long projectId,
+            @RequestParam(required = false) Long workspaceId,
+            @RequestParam(required = false) Long ownerId,
+            @RequestParam(required = false) String groupCode,
+            @RequestParam(defaultValue = "200") Long size,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
+                tenantId, projectId, workspaceId, null, ownerId, groupCode,
+                null, null, null, 1L, size);
+        return PlatformApiResponse.success(dataSyncService.listTaskGroupTree(
+                criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * 创建同步任务分组。
+     *
+     * <p>该接口对应前端分组菜单栏的“加号”入口。新增分组会作为正式资源落库，
+     * 创建同步任务、编辑任务、克隆任务和导入任务时都只能选择已存在且未归档的分组。</p>
+     */
+    @PostMapping("/groups")
+    public PlatformApiResponse<SyncTaskGroup> createTaskGroup(
+            @Valid @RequestBody SyncTaskGroupCreateRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务分组创建成功",
+                dataSyncService.createTaskGroup(request, actorContext(actorTenantId, actorId, actorRole, traceId, headers)),
+                traceId);
+    }
+
+    /**
+     * 删除同步任务分组。
+     *
+     * <p>该接口对应前端分组菜单栏的“垃圾桶”入口。删除普通分组时，后端会逻辑归档该分组及其子分组，
+     * 并把原本属于这些分组的任务统一迁回 DEFAULT/默认分组。分组只是运营视图，不能级联删除任务。</p>
+     */
+    @DeleteMapping("/groups/{groupCode}")
+    public PlatformApiResponse<SyncTaskOperationResult> deleteTaskGroup(
+            @PathVariable String groupCode,
+            @RequestParam(required = false) Long tenantId,
+            @RequestParam(required = false) Long projectId,
+            @RequestParam(required = false) Long workspaceId,
+            @RequestParam(required = false) String reason,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务分组删除完成",
+                dataSyncService.deleteTaskGroup(groupCode, tenantId, projectId, workspaceId, reason,
+                        actorContext(actorTenantId, actorId, actorRole, traceId, headers)),
+                traceId);
+    }
+
+    /**
+     * 自动发现创建同步任务时可选择的元数据对象。
+     *
+     * <p>用户选择源端或目标端数据源后调用该接口，后端通过 datasource-management 获取低敏
+     * schema/table/field 摘要。MySQL/MariaDB 不具备 PostgreSQL 风格 schema，选择 SCHEMA
+     * 或 SCHEMA_AND_TABLE 时会返回空列表和 warning；选择 TABLE 时可正常展示 MySQL 表。</p>
+     */
+    @PostMapping("/metadata/objects/discover")
+    public PlatformApiResponse<SyncTaskMetadataDiscoveryResponse> discoverTaskMetadata(
+            @Valid @RequestBody SyncTaskMetadataDiscoveryRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务元数据发现完成",
+                dataSyncService.discoverTaskMetadata(request,
+                        actorContext(actorTenantId, actorId, actorRole, traceId, headers)),
+                traceId);
+    }
+
+    /**
+     * 自动生成字段映射建议。
+     *
+     * <p>该接口不创建模板、不创建任务、不写入字段映射正文。它只按同名字段和类型家族兼容性生成
+     * 默认 syncEnabled 建议，前端仍应允许用户逐列勾选是否同步。</p>
+     */
+    @PostMapping("/metadata/field-mappings/suggest")
+    public PlatformApiResponse<SyncTaskFieldMappingSuggestionResponse> suggestFieldMappings(
+            @Valid @RequestBody SyncTaskFieldMappingSuggestionRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务字段映射建议生成完成",
+                dataSyncService.suggestFieldMappings(request,
+                        actorContext(actorTenantId, actorId, actorRole, traceId, headers)),
+                traceId);
+    }
+
     @GetMapping("/recycle-bin")
     public PlatformApiResponse<PlatformPageResponse<SyncTask>> pageRecycledTasks(
             @RequestParam(required = false) Long tenantId,
