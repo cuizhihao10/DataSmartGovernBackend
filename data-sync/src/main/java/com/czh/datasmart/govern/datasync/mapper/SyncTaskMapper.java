@@ -10,7 +10,11 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
+
+import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 同步任务 Mapper。
@@ -21,6 +25,93 @@ import org.apache.ibatis.annotations.Update;
  */
 @Mapper
 public interface SyncTaskMapper extends BaseMapper<SyncTask> {
+
+    /**
+     * 扫描已经到期的定时同步任务。
+     *
+     * <p>该查询只找 {@code schedule_enabled=true + current_state=SCHEDULED + next_fire_time<=now} 的任务。
+     * 这样可以清晰区分三类对象：</p>
+     * <p>1. 普通手动任务：没有启用调度，不会被后台误触发；</p>
+     * <p>2. 待审批或暂停任务：即使有 scheduleConfig，也不会在审批/暂停期间被触发；</p>
+     * <p>3. 真正可调度任务：由后续 {@link #advanceScheduledTaskAfterDispatch} 使用 schedule_version 原子抢占。</p>
+     *
+     * <p>limit 由配置裁剪，避免一次扫描拉出过多任务造成调度抖动。多实例部署时，每个实例都可以扫描，
+     * 但最终只有原子更新成功的实例能创建 execution。</p>
+     */
+    @Select("""
+            <script>
+            SELECT *
+            FROM data_sync_task
+            WHERE schedule_enabled = TRUE
+              AND current_state = 'SCHEDULED'
+              AND next_fire_time IS NOT NULL
+              AND next_fire_time &lt;= #{now}
+            <if test="tenantId != null">
+              AND tenant_id = #{tenantId}
+            </if>
+            ORDER BY next_fire_time ASC, id ASC
+            LIMIT #{limit}
+            </script>
+            """)
+    List<SyncTask> selectDueScheduledTasks(@Param("tenantId") Long tenantId,
+                                           @Param("now") LocalDateTime now,
+                                           @Param("limit") int limit);
+
+    /**
+     * 抢占并推进一个到期定时任务的调度游标。
+     *
+     * <p>这是定时任务防重复触发的关键 SQL。服务层读取任务时拿到 scheduleVersion=N，
+     * 只有仍然满足以下条件的实例才能更新成功：</p>
+     * <p>1. 任务仍处于 SCHEDULED 且调度仍启用；</p>
+     * <p>2. next_fire_time 仍然到期，说明没有其它实例已经把游标推进；</p>
+     * <p>3. schedule_version 仍等于读取时的版本 N，说明没有其它调度器或运营动作改过调度状态。</p>
+     *
+     * <p>该方法既用于“创建 SCHEDULED execution 前的抢占”，也用于 misfirePolicy=SKIP 这类只推进游标、不创建
+     * execution 的场景。lastExecutionId 允许为空，因为真正 execution ID 要在抢占成功后才能创建。</p>
+     */
+    @Update("""
+            <script>
+            UPDATE data_sync_task
+            SET trigger_type = 'SCHEDULED',
+                last_execution_id = COALESCE(#{lastExecutionId}, last_execution_id),
+                last_fire_time = COALESCE(#{lastFireTime}, last_fire_time),
+                next_fire_time = #{nextFireTime},
+                schedule_misfire_count = COALESCE(schedule_misfire_count, 0) + #{misfireIncrement},
+                schedule_dispatch_count = COALESCE(schedule_dispatch_count, 0) + #{dispatchIncrement},
+                schedule_version = COALESCE(schedule_version, 0) + 1,
+                update_time = LOCALTIMESTAMP
+            WHERE id = #{taskId}
+              AND schedule_enabled = TRUE
+              AND current_state = 'SCHEDULED'
+              AND next_fire_time IS NOT NULL
+              AND next_fire_time &lt;= #{dueCutoff}
+              AND COALESCE(schedule_version, 0) = #{expectedScheduleVersion}
+            </script>
+            """)
+    int advanceScheduledTaskAfterDispatch(@Param("taskId") Long taskId,
+                                          @Param("expectedScheduleVersion") Long expectedScheduleVersion,
+                                          @Param("dueCutoff") LocalDateTime dueCutoff,
+                                          @Param("lastFireTime") LocalDateTime lastFireTime,
+                                          @Param("nextFireTime") LocalDateTime nextFireTime,
+                                          @Param("lastExecutionId") Long lastExecutionId,
+                                          @Param("dispatchIncrement") long dispatchIncrement,
+                                          @Param("misfireIncrement") long misfireIncrement);
+
+    /**
+     * 在 SCHEDULED execution 创建成功后回写最近执行记录 ID。
+     *
+     * <p>调度服务先用 {@link #advanceScheduledTaskAfterDispatch} 推进游标并抢占任务，再创建 execution。
+     * execution ID 只有插入后才能获得，因此需要第二步回写 last_execution_id。
+     * 两步都处于同一个事务中：如果 execution 创建失败，前面的游标推进也会回滚。</p>
+     */
+    @Update("""
+            UPDATE data_sync_task
+            SET last_execution_id = #{lastExecutionId},
+                update_time = LOCALTIMESTAMP
+            WHERE id = #{taskId}
+            """)
+    int markScheduledExecutionCreated(@Param("taskId") Long taskId,
+                                      @Param("lastExecutionId") Long lastExecutionId);
 
     /**
      * 将任务标记为重新排队。

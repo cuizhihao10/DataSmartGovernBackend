@@ -83,6 +83,56 @@ public class SyncTask {
     private String scheduleConfig;
 
     /**
+     * 是否启用任务级自动调度。
+     *
+     * <p>该字段不是简单等同于 scheduleConfig 是否为空。真实生产系统里可能存在“先保存调度配置，但暂不启用”的场景，
+     * 例如等待审批、等待维护窗口、等待源端授权或等待容量评估。只有 scheduleEnabled=true 且 currentState=SCHEDULED
+     * 的任务，才会被后台 task scheduler 扫描并自动生成 SCHEDULED execution。</p>
+     */
+    private Boolean scheduleEnabled;
+
+    /**
+     * 下一次计划触发时间。
+     *
+     * <p>调度器只扫描 nextFireTime 小于等于当前时间的任务。把下一次触发时间持久化到任务表，而不是每轮都从 cron
+     * 或 interval 重新推导，有两个好处：一是查询可以走索引，二是错过触发、跳过补偿、catch-up 等策略有稳定状态。</p>
+     */
+    private LocalDateTime nextFireTime;
+
+    /**
+     * 上一次成功派发 execution 的计划触发时间。
+     *
+     * <p>注意它表达的是“计划窗口的 fire time”，不是 worker 真正开始执行的 startedAt。这样排查定时任务时可以区分：
+     * 任务原本几点该触发、调度器几点生成 execution、worker 几点认领并真正写入数据。</p>
+     */
+    private LocalDateTime lastFireTime;
+
+    /**
+     * 调度错过次数。
+     *
+     * <p>当服务停机、任务仍在运行导致不能并发触发、或 misfirePolicy=SKIP 明确跳过过期窗口时，该计数会增长。
+     * 它用于运营台和告警判断“这个定时任务是不是长期跟不上计划节奏”。</p>
+     */
+    private Integer scheduleMisfireCount;
+
+    /**
+     * 调度派发次数。
+     *
+     * <p>每成功创建一条 SCHEDULED execution，该计数增加。它和 data_sync_execution 历史记录互相印证：
+     * task 表用于列表快速展示，execution 表用于完整历史追踪。</p>
+     */
+    private Long scheduleDispatchCount;
+
+    /**
+     * 调度版本号。
+     *
+     * <p>多实例 data-sync 同时扫描到同一个 due task 时，必须通过数据库条件更新完成抢占裁决。
+     * scheduleVersion 就是这把“乐观锁”：调度器读取到版本 N 后，只有还能用 N 更新成功的实例可以创建 execution；
+     * 其它实例更新 0 行后直接跳过，避免重复触发。</p>
+     */
+    private Long scheduleVersion;
+
+    /**
      * 运行模式，例如 TEMPLATE、MANUAL、BACKFILL、REPLAY。
      */
     private String runMode;

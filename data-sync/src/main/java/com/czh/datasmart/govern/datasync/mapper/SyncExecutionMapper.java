@@ -22,6 +22,24 @@ import java.util.List;
 public interface SyncExecutionMapper extends BaseMapper<SyncExecution> {
 
     /**
+     * 统计某个任务当前仍在占用执行窗口的 execution 数量。
+     *
+     * <p>定时任务默认不允许并发运行。原因是离线同步通常会写目标表，如果上一轮还在 QUEUED/RUNNING/RETRYING/PAUSED，
+     * 下一轮又开始写同一目标对象，就可能造成重复写入、锁等待、目标端唯一键冲突或 checkpoint 语义混乱。</p>
+     *
+     * <p>因此 task scheduler 在创建新的 SCHEDULED execution 前会先查这个计数：
+     * 1. 返回 0：可以按调度策略创建 execution；</p>
+     * <p>2. 大于 0 且 allowConcurrentRuns=false：本次触发需要按 misfirePolicy 处理，通常跳过或等待下一轮补偿。</p>
+     */
+    @Select("""
+            SELECT COUNT(1)
+            FROM data_sync_execution
+            WHERE sync_task_id = #{taskId}
+              AND execution_state IN ('QUEUED', 'RUNNING', 'RETRYING', 'PAUSED')
+            """)
+    Long countActiveExecutionsForTask(@Param("taskId") Long taskId);
+
+    /**
      * 查询下一条可认领的同步执行记录。
      *
      * <p>当前以 execution 表作为轻量队列：

@@ -777,6 +777,12 @@ CREATE TABLE IF NOT EXISTS data_sync_task (
     approval_state VARCHAR(64) NOT NULL COMMENT '审批状态：NOT_REQUIRED、PENDING、APPROVED、REJECTED',
     priority VARCHAR(32) NOT NULL DEFAULT 'MEDIUM' COMMENT '任务优先级：HIGH、MEDIUM、LOW',
     schedule_config TEXT COMMENT '调度配置 JSON，例如 cron、固定间隔、维护窗口、时区和错峰策略',
+    schedule_enabled TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否启用任务级自动调度；只有 true 且 current_state=SCHEDULED 的任务才会被 task scheduler 扫描',
+    next_fire_time DATETIME COMMENT '下一次计划触发时间，task scheduler 依据该字段扫描到期任务',
+    last_fire_time DATETIME COMMENT '最近一次成功派发 execution 的计划触发时间，不等同于 worker started_at',
+    schedule_misfire_count INT NOT NULL DEFAULT 0 COMMENT '调度错过次数，包括 skip、服务停机或并发冲突导致的跳过窗口',
+    schedule_dispatch_count BIGINT NOT NULL DEFAULT 0 COMMENT '调度器已成功创建 SCHEDULED execution 的累计次数',
+    schedule_version BIGINT NOT NULL DEFAULT 0 COMMENT '调度乐观锁版本，多实例扫描时用于原子抢占并避免重复触发',
     run_mode VARCHAR(64) NOT NULL DEFAULT 'TEMPLATE' COMMENT '运行模式，例如 TEMPLATE、MANUAL、BACKFILL、REPLAY',
     trigger_type VARCHAR(64) NOT NULL DEFAULT 'MANUAL' COMMENT '最近触发方式：MANUAL、SCHEDULED、API、SYSTEM、BACKFILL、REPLAY',
     owner_id BIGINT COMMENT '负责人 ID，用于我的同步任务、项目运营、失败通知和 SLA 归属',
@@ -793,7 +799,9 @@ CREATE TABLE IF NOT EXISTS data_sync_task (
     INDEX idx_data_sync_task_owner_state (tenant_id, owner_id, current_state),
     INDEX idx_data_sync_task_approval (tenant_id, approval_state, update_time),
     INDEX idx_data_sync_task_trigger (trigger_type, update_time),
-    INDEX idx_data_sync_task_attention (tenant_id, attention_required, update_time)
+    INDEX idx_data_sync_task_attention (tenant_id, attention_required, update_time),
+    INDEX idx_data_sync_task_schedule_due (schedule_enabled, current_state, next_fire_time, id),
+    INDEX idx_data_sync_task_schedule_version (id, schedule_version, next_fire_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据同步任务表';
 
 CREATE TABLE IF NOT EXISTS data_sync_execution (

@@ -154,7 +154,7 @@ public class SyncExecutionLifecycleSupport {
         execution.setUpdateTime(LocalDateTime.now());
         executionMapper.updateById(execution);
 
-        task.setCurrentState(SyncTaskState.SUCCEEDED.name());
+        task.setCurrentState(terminalTaskState(task, SyncTaskState.SUCCEEDED));
         task.setUpdateTime(LocalDateTime.now());
         taskMapper.updateById(task);
         auditSupport.saveAudit(task.getTenantId(), task.getId(), execution.getId(), SyncAuditActionType.RUN_TASK,
@@ -201,7 +201,7 @@ public class SyncExecutionLifecycleSupport {
         execution.setUpdateTime(LocalDateTime.now());
         executionMapper.updateById(execution);
 
-        task.setCurrentState(SyncTaskState.PARTIALLY_SUCCEEDED.name());
+        task.setCurrentState(terminalTaskState(task, SyncTaskState.PARTIALLY_SUCCEEDED));
         task.setUpdateTime(LocalDateTime.now());
         taskMapper.updateById(task);
         auditSupport.saveAudit(task.getTenantId(), task.getId(), execution.getId(), SyncAuditActionType.RUN_TASK,
@@ -260,7 +260,7 @@ public class SyncExecutionLifecycleSupport {
         execution.setUpdateTime(LocalDateTime.now());
         executionMapper.updateById(execution);
 
-        task.setCurrentState(SyncTaskState.FAILED.name());
+        task.setCurrentState(terminalTaskState(task, SyncTaskState.FAILED));
         task.setUpdateTime(LocalDateTime.now());
         taskMapper.updateById(task);
         auditSupport.saveAudit(task.getTenantId(), task.getId(), execution.getId(), SyncAuditActionType.RECORD_ERROR_SAMPLE,
@@ -367,6 +367,25 @@ public class SyncExecutionLifecycleSupport {
 
     private String normalizeCode(String value) {
         return value == null ? null : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    /**
+     * 解析 execution 终态回写到任务主表时的状态。
+     *
+     * <p>普通任务和定时任务的运营语义不同：</p>
+     * <p>1. 普通手动任务完成后，任务主表展示 SUCCEEDED/FAILED/PARTIALLY_SUCCEEDED，方便用户判断这一次运行结果；</p>
+     * <p>2. 定时任务完成的是“某一次 execution”，任务本身仍然代表一个长期计划，应该回到 SCHEDULED 等待下一次 fire time；</p>
+     * <p>3. 单次运行结果不会丢失，因为 execution 表已经保存 SUCCEEDED/FAILED/PARTIALLY_SUCCEEDED，列表页可以通过
+     * lastExecutionId 展示最近一次运行结果。</p>
+     *
+     * <p>如果不做这个区分，定期全量或定期批量在第一次成功后会变成 SUCCEEDED，后台 task scheduler
+     * 就再也扫描不到 current_state=SCHEDULED 的任务，结果就是“看似支持定时，实际只跑一次”。</p>
+     */
+    private String terminalTaskState(SyncTask task, SyncTaskState executionOutcome) {
+        if (Boolean.TRUE.equals(task.getScheduleEnabled())) {
+            return SyncTaskState.SCHEDULED.name();
+        }
+        return executionOutcome.name();
     }
 
     private String trimToNull(String value) {

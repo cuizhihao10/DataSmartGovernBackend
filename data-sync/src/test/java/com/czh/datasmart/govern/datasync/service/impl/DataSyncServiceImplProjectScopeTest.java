@@ -33,6 +33,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncOfflineJobPlanSuppo
 import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskRecoveryOperationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskScheduleConfigSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskStateMachineSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncConnectorCapabilityRegistry;
 import com.czh.datasmart.govern.datasync.service.support.SyncFieldMappingExecutionContractSupport;
@@ -210,6 +211,53 @@ class DataSyncServiceImplProjectScopeTest {
     }
 
     /**
+     * FULL + scheduleConfig 应创建为定期全量任务。
+     *
+     * <p>这个用例固定本轮新增的核心产品语义：FULL 本身仍然表示全量同步，
+     * 但当任务级 scheduleConfig 存在时，它就从“手动全量”变成“定期全量”。
+     * 创建后的任务应停在 SCHEDULED，写入 nextFireTime，并等待后台 task scheduler 到点生成 SCHEDULED execution。</p>
+     */
+    @Test
+    void createTaskShouldCreateScheduledFullTaskWhenScheduleConfigProvided() {
+        SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
+        SyncTaskMapper taskMapper = mock(SyncTaskMapper.class);
+        SyncAuditSupport auditSupport = mock(SyncAuditSupport.class);
+        DataSyncServiceImpl service = service(templateMapper, taskMapper,
+                mock(SyncExecutionMapper.class),
+                mock(SyncCheckpointMapper.class),
+                mock(SyncErrorSampleMapper.class),
+                mock(SyncAuditRecordMapper.class),
+                auditSupport);
+        when(templateMapper.selectById(7201L)).thenReturn(scheduledFullTemplate());
+        when(taskMapper.insert(any(SyncTask.class))).thenAnswer(invocation -> {
+            SyncTask task = invocation.getArgument(0);
+            task.setId(8201L);
+            return 1;
+        });
+
+        CreateSyncTaskRequest request = new CreateSyncTaskRequest();
+        request.setTemplateId(7201L);
+        request.setTenantId(7L);
+        request.setProjectId(101L);
+        request.setWorkspaceId(301L);
+        request.setName("daily full sync task");
+        request.setRunMode("SCHEDULED");
+        request.setScheduleConfig("""
+                {"type":"FIXED_RATE","intervalSeconds":3600,"misfirePolicy":"FIRE_ONCE","timezone":"Asia/Shanghai"}
+                """);
+
+        SyncTask task = service.createTask(request, projectScopedActor(List.of(101L, 102L)));
+
+        assertThat(task.getCurrentState()).isEqualTo(SyncTaskState.SCHEDULED.name());
+        assertThat(task.getScheduleEnabled()).isTrue();
+        assertThat(task.getNextFireTime()).isNotNull();
+        assertThat(task.getScheduleVersion()).isZero();
+        assertThat(task.getScheduleDispatchCount()).isZero();
+        assertThat(task.getTriggerType()).isEqualTo("SCHEDULED");
+        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("scheduleEnabled=true"));
+    }
+
+    /**
      * 执行历史列表如果指定了 taskId，必须先校验任务归属项目。
      *
      * <p>这个场景对应前端从“同步任务详情页”进入执行历史。
@@ -307,7 +355,8 @@ class DataSyncServiceImplProjectScopeTest {
                 templateExecutionPrecheckSupport(),
                 offlineJobPlanSupport(),
                 mock(SyncObjectExecutionOperationSupport.class),
-                mock(SyncDirtyRecordReplaySupport.class)
+                mock(SyncDirtyRecordReplaySupport.class),
+                new SyncTaskScheduleConfigSupport(new ObjectMapper())
         );
     }
 
@@ -369,7 +418,8 @@ class DataSyncServiceImplProjectScopeTest {
                 templateExecutionPrecheckSupport(),
                 offlineJobPlanSupport(),
                 mock(SyncObjectExecutionOperationSupport.class),
-                mock(SyncDirtyRecordReplaySupport.class)
+                mock(SyncDirtyRecordReplaySupport.class),
+                new SyncTaskScheduleConfigSupport(new ObjectMapper())
         );
     }
 
@@ -477,6 +527,28 @@ class DataSyncServiceImplProjectScopeTest {
                   {"sourceField":"name","targetField":"name"}
                 ]
                 """);
+        template.setEnabled(true);
+        return template;
+    }
+
+    private SyncTemplate scheduledFullTemplate() {
+        SyncTemplate template = new SyncTemplate();
+        template.setId(7201L);
+        template.setTenantId(7L);
+        template.setProjectId(101L);
+        template.setWorkspaceId(301L);
+        template.setName("scheduled full template");
+        template.setDescription("scheduled full sync template");
+        template.setSourceDatasourceId(10001L);
+        template.setTargetDatasourceId(20001L);
+        template.setSourceSchemaName("ods");
+        template.setSourceObjectName("orders");
+        template.setTargetSchemaName("dwd");
+        template.setTargetObjectName("orders");
+        template.setSourceConnectorType("MYSQL");
+        template.setTargetConnectorType("POSTGRESQL");
+        template.setSyncMode("FULL");
+        template.setWriteStrategy("APPEND");
         template.setEnabled(true);
         return template;
     }

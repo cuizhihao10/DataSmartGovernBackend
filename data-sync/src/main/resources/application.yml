@@ -211,6 +211,36 @@ datasmart:
         system-actor-role: SERVICE_ACCOUNT
         # 自动生成 traceId 的前缀，不承载业务参数、SQL、样本或内部 endpoint。
         trace-id-prefix: data-sync-task-management-receipt-outbox
+    task-scheduler:
+      # 是否启用 data-sync 任务级定时调度器。
+      # task scheduler 只负责扫描 SCHEDULED 任务并创建 triggerType=SCHEDULED 的 execution，
+      # 不直接读取源库、不写目标库、不调用 datasource-management。
+      #
+      # 它和 worker-loop 的区别非常重要：
+      # 1. task-scheduler.enabled=true 只代表“到点生成执行记录”；
+      # 2. worker-loop.scheduler-enabled=true 才代表“认领执行记录并触发真实数据搬运”；
+      # 3. 预生产环境可以先打开 task-scheduler 验证多次执行历史、misfire 和并发冲突控制，
+      #    再打开 worker-loop 验证真实 MySQL -> PostgreSQL 写入。
+      scheduler-enabled: false
+      # 单轮最多扫描多少个到期定时任务。
+      # 这是任务数上限，不是 execution 数上限；CATCH_UP_LIMITED 任务可能在单轮创建多条 execution，
+      # 但仍会受 max-catch-up-runs-per-task 保护。
+      batch-size: 20
+      # 单个任务单轮最多补偿多少个历史触发窗口。
+      # 服务停机或队列阻塞后，不能无限制补出所有错过窗口，否则会造成执行队列风暴。
+      max-catch-up-runs-per-task: 3
+      # 可选租户过滤。为空表示平台级扫描所有租户；租户专属部署可指定 tenant-id。
+      tenant-id:
+      # 服务启动后首次扫描延迟，避免刚启动时数据库连接池、服务注册和下游依赖尚未稳定。
+      initial-delay-ms: 30000
+      # 上一轮扫描完成后多久启动下一轮。fixedDelay 可以避免单实例内调度重叠。
+      fixed-delay-ms: 15000
+      # 后台调度写审计时使用的平台系统 actorId。
+      system-actor-id: 0
+      # 后台调度写审计时使用的平台系统角色。
+      system-actor-role: SERVICE_ACCOUNT
+      # 自动生成 traceId 的前缀，不承载 scheduleConfig、SQL、对象清单或连接信息。
+      trace-id-prefix: data-sync-task-scheduler
     worker-loop:
       # 是否启用 data-sync 内嵌 worker loop 定时调度。
       # worker loop 会真实认领 QUEUED execution，并可能触发 datasource-management 读取源端、写入目标端，

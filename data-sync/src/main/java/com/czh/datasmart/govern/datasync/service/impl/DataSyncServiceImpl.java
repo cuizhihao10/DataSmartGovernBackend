@@ -60,6 +60,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncOfflineJobPlanSuppo
 import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskRecoveryOperationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskScheduleConfigSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskStateMachineSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateCreationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateExecutionPrecheckSupport;
@@ -67,6 +68,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncTemplatePlanningPre
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateValidationSupport;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
 import com.czh.datasmart.govern.datasync.support.SyncApprovalState;
+import com.czh.datasmart.govern.datasync.support.SyncMode;
 import com.czh.datasmart.govern.datasync.support.SyncTaskState;
 import com.czh.datasmart.govern.datasync.support.SyncTriggerType;
 import lombok.RequiredArgsConstructor;
@@ -114,6 +116,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncOfflineJobPlanSupport offlineJobPlanSupport;
     private final SyncObjectExecutionOperationSupport objectExecutionOperationSupport;
     private final SyncDirtyRecordReplaySupport dirtyRecordReplaySupport;
+    private final SyncTaskScheduleConfigSupport scheduleConfigSupport;
 
     @Override
     @Transactional
@@ -211,6 +214,12 @@ public class DataSyncServiceImpl implements DataSyncService {
                     "同步任务租户必须与模板租户一致，templateTenantId=" + template.getTenantId() + ", taskTenantId=" + tenantId);
         }
         String approvalState = resolveApprovalStateForNewTask(precheck, request, actorContext);
+        boolean scheduledTask = isScheduledTask(template, request);
+        LocalDateTime firstFireTime = scheduledTask
+                ? scheduleConfigSupport.initialNextFireTime(request.getScheduleConfig(), LocalDateTime.now())
+                : null;
+        String runMode = querySupport.defaultText(request.getRunMode(), scheduledTask ? "SCHEDULED" : "TEMPLATE")
+                .toUpperCase(java.util.Locale.ROOT);
 
         SyncTask task = new SyncTask();
         task.setTenantId(tenantId);
@@ -227,14 +236,18 @@ public class DataSyncServiceImpl implements DataSyncService {
          * 因此需要审批但尚未确认的任务进入 PENDING_APPROVAL，避免 runTask 绕过审批；
          * 已确认或无需审批的任务保持 CONFIGURED，后续才能进入 QUEUED。
          */
-        task.setCurrentState(SyncApprovalState.PENDING.name().equals(approvalState)
-                ? SyncTaskState.PENDING_APPROVAL.name()
-                : SyncTaskState.CONFIGURED.name());
+        task.setCurrentState(resolveInitialTaskState(approvalState, scheduledTask));
         task.setApprovalState(approvalState);
         task.setPriority(querySupport.defaultText(request.getPriority(), "MEDIUM").toUpperCase(java.util.Locale.ROOT));
         task.setScheduleConfig(querySupport.trimToNull(request.getScheduleConfig()));
-        task.setRunMode(querySupport.defaultText(request.getRunMode(), "TEMPLATE").toUpperCase(java.util.Locale.ROOT));
-        task.setTriggerType(SyncTriggerType.MANUAL.name());
+        task.setScheduleEnabled(scheduledTask && !SyncApprovalState.PENDING.name().equals(approvalState));
+        task.setNextFireTime(scheduledTask && !SyncApprovalState.PENDING.name().equals(approvalState) ? firstFireTime : null);
+        task.setLastFireTime(null);
+        task.setScheduleMisfireCount(0);
+        task.setScheduleDispatchCount(0L);
+        task.setScheduleVersion(0L);
+        task.setRunMode(runMode);
+        task.setTriggerType(scheduledTask ? SyncTriggerType.SCHEDULED.name() : SyncTriggerType.MANUAL.name());
         task.setOwnerId(request.getOwnerId() == null ? querySupport.actorId(actorContext) : request.getOwnerId());
         task.setCreateTime(LocalDateTime.now());
         task.setUpdateTime(LocalDateTime.now());
@@ -312,6 +325,60 @@ public class DataSyncServiceImpl implements DataSyncService {
                 actorContext, "taskId=" + task.getId() + ",executionId=" + execution.getId());
         return new SyncTaskOperationResult(task.getId(), task.getCurrentState(),
                 "同步任务已进入待执行队列，执行记录 ID=" + execution.getId() + "；后续将接入执行器、checkpoint 和任务中心协议");
+    }
+
+    /**
+     * 判断新任务是否应进入“自动调度”生命周期。
+     *
+     * <p>当前收敛阶段只把两类离线场景纳入自动调度：</p>
+     * <p>1. {@code FULL + scheduleConfig}：定期全量，例如每天凌晨全表重刷；</p>
+     * <p>2. {@code SCHEDULED_BATCH + scheduleConfig}：定期批量，例如每 15 分钟同步一个有界业务窗口。</p>
+     *
+     * <p>为什么不把所有 syncMode 都直接允许调度：</p>
+     * <p>自定义 SQL、全库迁移、回放、补数、离线导入导出等模式虽然未来也可能需要调度，
+     * 但它们的审批、容量评估、对象发现和目标覆盖风险更高。当前用户要求优先补齐定期全量和定期批量，
+     * 因此先把自动调度范围收敛在这两类，避免为了“看起来泛化”把高风险动作变成后台自动执行。</p>
+     */
+    private boolean isScheduledTask(SyncTemplate template, CreateSyncTaskRequest request) {
+        String syncMode = normalizeCode(template.getSyncMode());
+        String runMode = normalizeCode(request.getRunMode());
+        boolean hasScheduleConfig = scheduleConfigSupport.hasScheduleConfig(request.getScheduleConfig());
+        boolean scheduledBatch = SyncMode.SCHEDULED_BATCH.name().equals(syncMode);
+        boolean scheduledFull = SyncMode.FULL.name().equals(syncMode) && hasScheduleConfig;
+        boolean explicitlyScheduledRunMode = "SCHEDULED".equals(runMode) || "SCHEDULE".equals(runMode);
+
+        if (scheduledBatch || explicitlyScheduledRunMode) {
+            if (!hasScheduleConfig) {
+                throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                        "定时全量或定时批量任务必须提供 scheduleConfig");
+            }
+        }
+        if (hasScheduleConfig && !SyncMode.FULL.name().equals(syncMode) && !SyncMode.SCHEDULED_BATCH.name().equals(syncMode)) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    "当前自动调度仅支持 FULL 定期全量和 SCHEDULED_BATCH 定期批量，syncMode=" + syncMode);
+        }
+        if (hasScheduleConfig) {
+            /*
+             * 主动解析一次，让非法 cron、非法时区、intervalSeconds<=0 等问题在创建任务阶段暴露，
+             * 而不是等到后台调度器反复跳过历史任务。
+             */
+            scheduleConfigSupport.parseRequired(request.getScheduleConfig());
+        }
+        return scheduledBatch || scheduledFull || explicitlyScheduledRunMode;
+    }
+
+    /**
+     * 解析新任务的初始生命周期状态。
+     *
+     * <p>审批状态和调度状态必须解耦：需要审批的任务即使提供了 scheduleConfig，也不能立即进入 SCHEDULED，
+     * 否则后台调度器可能绕过人工审批自动生成 execution。只有审批已通过或无需审批时，定时任务才会进入
+     * SCHEDULED 并写入 nextFireTime。</p>
+     */
+    private String resolveInitialTaskState(String approvalState, boolean scheduledTask) {
+        if (SyncApprovalState.PENDING.name().equals(approvalState)) {
+            return SyncTaskState.PENDING_APPROVAL.name();
+        }
+        return scheduledTask ? SyncTaskState.SCHEDULED.name() : SyncTaskState.CONFIGURED.name();
     }
 
     /**
@@ -413,7 +480,10 @@ public class DataSyncServiceImpl implements DataSyncService {
                 + ",templateId=" + task.getTemplateId()
                 + ",precheckStatus=" + precheck.precheckStatus()
                 + ",approvalRequired=" + precheck.approvalRequired()
-                + ",approvalState=" + task.getApprovalState();
+                + ",approvalState=" + task.getApprovalState()
+                + ",scheduleEnabled=" + task.getScheduleEnabled()
+                + ",nextFireTime=" + task.getNextFireTime()
+                + ",runMode=" + task.getRunMode();
         if (approvalFactId != null) {
             payload = payload + ",approvalFactId=" + querySupport.truncate(approvalFactId, APPROVAL_FACT_ID_MAX_LENGTH);
         }
