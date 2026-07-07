@@ -1,3 +1,8 @@
+x-runtime-timezone-environment: &runtime-timezone-environment
+  # 本地开发、演示和 E2E 环境默认按北京时间展示容器日志、数据库 CURRENT_TIMESTAMP、Java/Python 本地时间。
+  # 生产环境如果需要 UTC 统一存储，可以通过 DATASMART_TIME_ZONE 显式覆盖，并在前端展示层转换。
+  TZ: ${DATASMART_TIME_ZONE:-Asia/Shanghai}
+
 services:
   # PostgreSQL 是 DataSmart 的目标事务数据库、Agent 长期记忆库和 LangGraph durable state 候选底座。
   #
@@ -13,6 +18,7 @@ services:
     image: ${DATASMART_POSTGRES_IMAGE:-docker.m.daocloud.io/pgvector/pgvector:0.8.3-pg17}
     container_name: datasmart-postgresql
     environment:
+      <<: *runtime-timezone-environment
       POSTGRES_DB: datasmart_govern
       POSTGRES_USER: datasmart
       POSTGRES_PASSWORD: ${DATASMART_POSTGRES_PASSWORD:-password}
@@ -27,6 +33,15 @@ services:
     volumes:
       - postgresql_data:/var/lib/postgresql/data
       - ./docker/postgresql/init:/docker-entrypoint-initdb.d:ro
+    command:
+      # PostgreSQL 的 `TIMESTAMPTZ` 底层仍按绝对时间存储；这里设置的是会话展示与
+      # `localtimestamp` 这类“本地墙钟时间”函数的默认时区，避免本地页面、审计和 Flyway
+      # 记录看起来慢 8 小时。
+      - postgres
+      - -c
+      - timezone=${DATASMART_TIME_ZONE:-Asia/Shanghai}
+      - -c
+      - log_timezone=${DATASMART_TIME_ZONE:-Asia/Shanghai}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U datasmart -d datasmart_govern"]
       interval: 10s
@@ -51,6 +66,7 @@ services:
       postgresql:
         condition: service_healthy
     environment:
+      <<: *runtime-timezone-environment
       POSTGRES_HOST: postgresql
       POSTGRES_PORT: 5432
       POSTGRES_USER: datasmart
@@ -74,10 +90,15 @@ services:
     image: ${DATASMART_MYSQL_IMAGE:-docker.m.daocloud.io/library/mysql:8.0}
     container_name: datasmart-mysql
     environment:
+      <<: *runtime-timezone-environment
       MYSQL_ROOT_PASSWORD: ${DATASMART_MYSQL_PASSWORD:-password}
       MYSQL_DATABASE: datasmart_govern
       MYSQL_USER: datasmart
       MYSQL_PASSWORD: ${DATASMART_MYSQL_PASSWORD:-password}
+    command:
+      # MySQL 的 DATETIME 没有时区信息，默认时区会影响 NOW()/CURRENT_TIMESTAMP 写入的墙钟时间。
+      # 本地闭环按北京时间运行，因此显式使用 +08:00，避免 JDBC、Nacos 和历史兼容表出现 UTC 偏移。
+      - --default-time-zone=+08:00
     ports:
       - "3306:3306"
     volumes:
@@ -91,6 +112,8 @@ services:
   redis:
     image: ${DATASMART_REDIS_IMAGE:-docker.m.daocloud.io/library/redis:7.2-alpine}
     container_name: datasmart-redis
+    environment:
+      <<: *runtime-timezone-environment
     ports:
       - "6379:6379"
     volumes:
@@ -104,6 +127,7 @@ services:
     image: ${DATASMART_ZOOKEEPER_IMAGE:-docker.m.daocloud.io/confluentinc/cp-zookeeper:7.6.0}
     container_name: datasmart-zookeeper
     environment:
+      <<: *runtime-timezone-environment
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
     networks:
@@ -117,6 +141,7 @@ services:
     ports:
       - "9092:9092"
     environment:
+      <<: *runtime-timezone-environment
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
@@ -135,6 +160,7 @@ services:
     image: ${DATASMART_NEO4J_IMAGE:-docker.m.daocloud.io/library/neo4j:5.20}
     container_name: datasmart-neo4j
     environment:
+      <<: *runtime-timezone-environment
       NEO4J_AUTH: neo4j/${DATASMART_NEO4J_PASSWORD:-password}
       NEO4J_PLUGINS: '["graph-data-science"]'
     ports:
@@ -152,6 +178,7 @@ services:
     image: ${DATASMART_MINIO_IMAGE:-docker.m.daocloud.io/minio/minio:latest}
     container_name: datasmart-minio
     environment:
+      <<: *runtime-timezone-environment
       MINIO_ACCESS_KEY: ${DATASMART_MINIO_ACCESS_KEY:-datasmart}
       MINIO_SECRET_KEY: ${DATASMART_MINIO_SECRET_KEY:-datasmart123}
     ports:
@@ -169,13 +196,14 @@ services:
     image: ${DATASMART_NACOS_IMAGE:-docker.m.daocloud.io/nacos/nacos-server:v2.3.0}
     container_name: datasmart-nacos
     environment:
+      <<: *runtime-timezone-environment
       MODE: standalone
       # Nacos 2.3 镜像的配置模板已经从旧的 spring.datasource.platform 迁移到 spring.sql.init.platform，
       # 但部分启动路径和排障资料仍会同时参考旧属性。这里同时提供环境变量和 JVM system property，
       # 让本地 E2E 明确进入 MySQL 外置存储模式，避免出现 "No DataSource set" 的重启循环。
       SPRING_DATASOURCE_PLATFORM: mysql
       SPRING_SQL_INIT_PLATFORM: mysql
-      JAVA_OPT_EXT: "-Dspring.datasource.platform=mysql -Dspring.sql.init.platform=mysql"
+      JAVA_OPT_EXT: "-Dspring.datasource.platform=mysql -Dspring.sql.init.platform=mysql -Duser.timezone=${DATASMART_TIME_ZONE:-Asia/Shanghai}"
       MYSQL_SERVICE_HOST: mysql
       MYSQL_SERVICE_PORT: 3306
       MYSQL_SERVICE_DB_NAME: nacos
@@ -223,6 +251,7 @@ services:
     environment:
       # Keycloak 26+ 推荐使用 KC_BOOTSTRAP_ADMIN_* 初始化本地管理员。
       # 这些默认值只用于本地容器；生产不能把 admin/admin 或任何固定密码写入部署配置。
+      <<: *runtime-timezone-environment
       KC_BOOTSTRAP_ADMIN_USERNAME: ${DATASMART_KEYCLOAK_ADMIN_USERNAME:-admin}
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${DATASMART_KEYCLOAK_ADMIN_PASSWORD:-admin}
       # Keycloak 的身份事实数据现在进入 PostgreSQL 独立 database。
@@ -235,6 +264,7 @@ services:
       # 打开健康和指标端点，便于后续 Prometheus 或运维脚本对认证中心做存活检查。
       KC_HEALTH_ENABLED: "true"
       KC_METRICS_ENABLED: "true"
+      JAVA_OPTS_APPEND: "-Duser.timezone=${DATASMART_TIME_ZONE:-Asia/Shanghai}"
     ports:
       # 对外使用 18080，避免与 gateway 8080、Nacos 8848、Chroma 8000 等端口冲突。
       - "18080:18080"
@@ -249,6 +279,8 @@ services:
   prometheus:
     image: ${DATASMART_PROMETHEUS_IMAGE:-docker.m.daocloud.io/prom/prometheus:latest}
     container_name: datasmart-prometheus
+    environment:
+      <<: *runtime-timezone-environment
     ports:
       - "9090:9090"
     volumes:
@@ -265,6 +297,8 @@ services:
   alertmanager:
     image: ${DATASMART_ALERTMANAGER_IMAGE:-docker.m.daocloud.io/prom/alertmanager:latest}
     container_name: datasmart-alertmanager
+    environment:
+      <<: *runtime-timezone-environment
     ports:
       - "9093:9093"
     volumes:
@@ -284,6 +318,7 @@ services:
     image: ${DATASMART_GRAFANA_IMAGE:-docker.m.daocloud.io/grafana/grafana:latest}
     container_name: datasmart-grafana
     environment:
+      <<: *runtime-timezone-environment
       GF_SECURITY_ADMIN_PASSWORD: ${DATASMART_GRAFANA_ADMIN_PASSWORD:-admin}
     ports:
       - "3000:3000"
@@ -302,6 +337,8 @@ services:
   chroma:
     image: ${DATASMART_CHROMA_IMAGE:-docker.m.daocloud.io/chromadb/chroma:latest}
     container_name: datasmart-chroma
+    environment:
+      <<: *runtime-timezone-environment
     ports:
       - "8000:8000"
     volumes:

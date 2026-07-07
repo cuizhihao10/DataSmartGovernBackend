@@ -10,6 +10,14 @@
 # 3. 生产部署迁移到 Kubernetes/Helm 时，应用镜像与基础设施边界更清晰。
 
 x-java-common-environment: &java-common-environment
+  # 本地开发、演示和全平台 E2E 默认使用北京时间。
+  # `TZ` 影响容器内系统时间和部分 native 库；`-Duser.timezone` 明确约束 JVM 默认时区，
+  # 避免 Spring Boot 日志、LocalDateTime.now()、MyBatis 自动填充时间和调度计算继续按 UTC 慢 8 小时。
+  TZ: ${DATASMART_TIME_ZONE:-Asia/Shanghai}
+  JAVA_OPTS: "-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError -Dfile.encoding=UTF-8 -Duser.timezone=${DATASMART_TIME_ZONE:-Asia/Shanghai}"
+  # Jackson 的时区主要影响 Date/Calendar/部分 Offset 类型的 JSON 展示；LocalDateTime 本身不带时区，
+  # 仍依赖 JVM 默认时区和业务层写入策略，因此这里与 JVM 时区保持一致。
+  SPRING_JACKSON_TIME_ZONE: ${DATASMART_TIME_ZONE:-Asia/Shanghai}
   # container profile 当前用于标识运行环境；没有同名配置文件时，仍以 application.yml 为基础。
   SPRING_PROFILES_ACTIVE: ${DATASMART_RUNTIME_PROFILE:-container}
   # 所有业务服务共享治理库。密码只提供本地默认值，生产必须由 Secret Manager 注入。
@@ -352,6 +360,7 @@ services:
         # pip 包默认使用国内镜像；企业部署可注入内网 PyPI/制品库地址。该参数不影响 DaoCloud 基础镜像前缀。
         PIP_INDEX_URL: ${DATASMART_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
     environment:
+      TZ: ${DATASMART_TIME_ZONE:-Asia/Shanghai}
       DATASMART_AGENT_RUNTIME_BASE_URL: http://agent-runtime:8091
       DATASMART_PERMISSION_ADMIN_BASE_URL: http://permission-admin:8085
       DATASMART_AI_RUNTIME_REDIS_URL: redis://redis:6379/0

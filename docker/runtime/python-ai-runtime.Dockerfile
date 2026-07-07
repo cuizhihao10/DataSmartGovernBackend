@@ -36,6 +36,7 @@ FROM ${PYTHON_IMAGE} AS runtime
 
 ENV VIRTUAL_ENV=/opt/venv \
     PATH=/opt/venv/bin:${PATH} \
+    TZ=Asia/Shanghai \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 

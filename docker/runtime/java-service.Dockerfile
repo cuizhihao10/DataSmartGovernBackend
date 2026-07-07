@@ -81,7 +81,8 @@ WORKDIR /opt/datasmart
 COPY --from=builder --chown=datasmart:datasmart /workspace/app.jar ./app.jar
 
 ENV SERVER_PORT=${SERVER_PORT} \
-    JAVA_OPTS="-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError -Dfile.encoding=UTF-8"
+    TZ=Asia/Shanghai \
+    JAVA_OPTS="-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError -Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai"
 
 EXPOSE ${SERVER_PORT}
 

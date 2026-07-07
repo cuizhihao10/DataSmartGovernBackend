@@ -141,7 +141,12 @@ function Set-LocalE2eEnvironment {
     $env:DATASMART_LOCAL_MYSQL_PORT = [string]$ResolvedMySqlPort
     $env:DATASMART_MYSQL_USER = $ResolvedMySqlUser
     $env:DATASMART_MYSQL_PASSWORD = $ResolvedMySqlPassword
-    $env:SPRING_DATASOURCE_URL = "jdbc:mysql://localhost:{0}/datasmart_govern?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&characterEncoding=utf8" -f $ResolvedMySqlPort
+    # 本地 E2E 直接从 Windows 宿主机启动 Java 进程，不会继承 Docker Compose 的 TZ/JAVA_OPTS。
+    # 这里显式指定 JVM、Jackson 和 JDBC 时区，避免宿主机启动路径仍按 UTC 写入 LocalDateTime。
+    $env:TZ = "Asia/Shanghai"
+    $env:JAVA_TOOL_OPTIONS = "-Duser.timezone=Asia/Shanghai -Dfile.encoding=UTF-8"
+    $env:SPRING_JACKSON_TIME_ZONE = "Asia/Shanghai"
+    $env:SPRING_DATASOURCE_URL = "jdbc:mysql://localhost:{0}/datasmart_govern?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=utf8" -f $ResolvedMySqlPort
     $env:SPRING_DATASOURCE_USERNAME = $ResolvedMySqlUser
     $env:SPRING_DATASOURCE_PASSWORD = $ResolvedMySqlPassword
     $env:SPRING_CLOUD_NACOS_DISCOVERY_SERVER_ADDR = "localhost:8848"
