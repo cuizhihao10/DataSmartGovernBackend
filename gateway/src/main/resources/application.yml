@@ -519,6 +519,48 @@ datasmart:
           method-actions:
             POST: RUN
 
+        - path-pattern: /api/sync/sync-tasks/*/manual-dispatch
+          resource-type: SYNC_TASK
+          default-action: MANUAL_DISPATCH
+          description: data-sync 同步任务手工调度接口，用于用户或 Agent 在权限允许后立即触发一次 MANUAL execution。
+          method-actions:
+            POST: MANUAL_DISPATCH
+
+        - path-pattern: /api/sync/sync-tasks/*/terminate
+          resource-type: SYNC_TASK
+          default-action: MANUAL_TERMINATE
+          description: data-sync 同步任务手工结束接口，会写入任务和 execution 控制面停止信号。
+          method-actions:
+            POST: MANUAL_TERMINATE
+
+        - path-pattern: /api/sync/sync-tasks/*/offline
+          resource-type: SYNC_TASK
+          default-action: OFFLINE
+          description: data-sync 同步任务下线接口，会关闭自动调度并清空 nextFireTime，是删除前置动作。
+          method-actions:
+            POST: OFFLINE
+
+        - path-pattern: /api/sync/sync-tasks/*/recycle
+          resource-type: SYNC_TASK
+          default-action: RECYCLE
+          description: data-sync 同步任务删除进回收站接口，仅允许已下线任务进入回收站。
+          method-actions:
+            POST: RECYCLE
+
+        - path-pattern: /api/sync/sync-tasks/*/hard-delete
+          resource-type: SYNC_TASK
+          default-action: HARD_DELETE
+          description: data-sync 同步任务回收站彻底删除接口，当前实现为逻辑 DELETED。
+          method-actions:
+            POST: HARD_DELETE
+
+        - path-pattern: /api/sync/sync-tasks/*/clone
+          resource-type: SYNC_TASK
+          default-action: CLONE
+          description: data-sync 同步任务克隆接口，只复制任务定义，不复制执行历史、checkpoint 或审批事实。
+          method-actions:
+            POST: CLONE
+
         - path-pattern: /api/sync/sync-tasks/*/executions/*/objects
           resource-type: SYNC_EXECUTION
           default-action: VIEW

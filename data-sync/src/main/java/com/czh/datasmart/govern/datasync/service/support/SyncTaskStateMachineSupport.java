@@ -91,6 +91,56 @@ public class SyncTaskStateMachineSupport {
     );
 
     /**
+     * 允许手工结束的任务状态。
+     *
+     * <p>手工结束主要面向“任务已经进入或接近执行窗口”的场景，因此允许 QUEUED/RUNNING/RETRYING/PAUSED。
+     * 对 SCHEDULED 等待调度的长期任务，如果用户想让它不再自动触发，应使用 offline 下线；
+     * 对 FAILED/SUCCEEDED 这类已经有执行结论的任务，不应该再把历史结果改写成人工结束。</p>
+     */
+    private static final Set<SyncTaskState> MANUAL_TERMINATE_ALLOWED_STATES = Set.of(
+            SyncTaskState.QUEUED,
+            SyncTaskState.RUNNING,
+            SyncTaskState.RETRYING,
+            SyncTaskState.PAUSED
+    );
+
+    /**
+     * 允许下线的任务状态。
+     *
+     * <p>下线是“停止后续调度与管理面删除前置”的动作，不负责强杀运行中的 execution。
+     * 因此 QUEUED/RUNNING/RETRYING 这类活跃状态必须先 pause/cancel/terminate，避免后台仍有执行器写入时把任务从正常列表移走。</p>
+     */
+    private static final Set<SyncTaskState> OFFLINE_ALLOWED_STATES = Set.of(
+            SyncTaskState.DRAFT,
+            SyncTaskState.CONFIGURED,
+            SyncTaskState.PENDING_APPROVAL,
+            SyncTaskState.SCHEDULED,
+            SyncTaskState.PAUSED,
+            SyncTaskState.PARTIALLY_SUCCEEDED,
+            SyncTaskState.SUCCEEDED,
+            SyncTaskState.FAILED,
+            SyncTaskState.AWAITING_OPERATOR_ACTION,
+            SyncTaskState.CANCELLED,
+            SyncTaskState.MANUALLY_TERMINATED,
+            SyncTaskState.ARCHIVED
+    );
+
+    /**
+     * 允许进入回收站的任务状态。
+     *
+     * <p>删除前必须先下线，是为了让用户和系统都明确经历“停止调度 -> 移入回收站 -> 彻底删除”的三段式流程。
+     * 这比直接删除更适合商用产品，因为它给误操作、审计复核和配置克隆留下安全窗口。</p>
+     */
+    private static final Set<SyncTaskState> RECYCLE_ALLOWED_STATES = Set.of(SyncTaskState.OFFLINE);
+
+    /**
+     * 允许彻底删除的任务状态。
+     *
+     * <p>当前彻底删除采用逻辑 DELETED。只有 RECYCLED 可以进入 DELETED，避免用户绕过回收站直接让任务从普通列表消失。</p>
+     */
+    private static final Set<SyncTaskState> HARD_DELETE_ALLOWED_STATES = Set.of(SyncTaskState.RECYCLED);
+
+    /**
      * 校验任务是否允许进入队列。
      */
     public void assertCanQueue(String currentState) {
@@ -130,6 +180,34 @@ public class SyncTaskStateMachineSupport {
      */
     public void assertCanCancel(String currentState) {
         assertAllowed(currentState, CANCEL_ALLOWED_STATES, "当前状态不允许取消同步任务");
+    }
+
+    /**
+     * 校验任务是否允许手工结束。
+     */
+    public void assertCanManualTerminate(String currentState) {
+        assertAllowed(currentState, MANUAL_TERMINATE_ALLOWED_STATES, "当前状态不允许手工结束同步任务");
+    }
+
+    /**
+     * 校验任务是否允许下线。
+     */
+    public void assertCanOffline(String currentState) {
+        assertAllowed(currentState, OFFLINE_ALLOWED_STATES, "当前状态不允许下线同步任务");
+    }
+
+    /**
+     * 校验任务是否允许进入回收站。
+     */
+    public void assertCanRecycle(String currentState) {
+        assertAllowed(currentState, RECYCLE_ALLOWED_STATES, "同步任务必须先下线后才能删除进回收站");
+    }
+
+    /**
+     * 校验任务是否允许彻底删除。
+     */
+    public void assertCanHardDelete(String currentState) {
+        assertAllowed(currentState, HARD_DELETE_ALLOWED_STATES, "同步任务必须位于回收站后才能彻底删除");
     }
 
     /**

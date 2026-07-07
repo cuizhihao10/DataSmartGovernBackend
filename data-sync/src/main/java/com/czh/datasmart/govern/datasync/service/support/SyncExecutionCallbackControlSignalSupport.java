@@ -17,7 +17,7 @@ import java.util.Set;
 /**
  * 同步执行器回调控制信号支撑组件。
  *
- * <p>本组件处理的是 worker 在 checkpoint、complete、fail 等“写入型回调”阶段遇到控制面暂停/取消时的语义。
+ * <p>本组件处理的是 worker 在 checkpoint、complete、fail 等“写入型回调”阶段遇到控制面暂停/取消/手工结束时的语义。
  * 前一阶段 heartbeat 已经能返回 {@code STOP_FOR_PAUSE}/{@code STOP_FOR_CANCEL}，但真实 worker 可能存在网络延迟、
  * 本地批处理缓冲或最后一次回调重试，因此即使 heartbeat 已经补齐，checkpoint/complete/fail 仍必须再次 fail-closed。
  *
@@ -29,7 +29,7 @@ import java.util.Set;
  * <p>安全原则：
  * 1. 只有当前 execution 的 executorId 持有者才能读取暂停/取消控制信号；
  * 2. executorId 不匹配时返回 FORBIDDEN，不透露 execution 是否暂停或取消，避免通过 executionId 枚举探测状态；
- * 3. 状态是 PAUSED/CANCELLED 时不允许再写 checkpoint、成功态或失败样本，防止用户已停止任务后仍有数据继续落地。
+ * 3. 状态是 PAUSED/CANCELLED/MANUALLY_TERMINATED 时不允许再写 checkpoint、成功态或失败样本，防止用户已停止任务后仍有数据继续落地。
  */
 @Component
 public class SyncExecutionCallbackControlSignalSupport {
@@ -61,6 +61,11 @@ public class SyncExecutionCallbackControlSignalSupport {
             throw stoppedControlException(execution, callbackAction, "STOP_FOR_CANCEL",
                     "同步任务已被取消，执行器应停止当前回调写入并释放本地资源");
         }
+        if (SyncExecutionState.MANUALLY_TERMINATED.name().equals(execution.getExecutionState())) {
+            requireExecutorForControlSignal(execution, executorId);
+            throw stoppedControlException(execution, callbackAction, "STOP_FOR_MANUAL_TERMINATE",
+                    "同步任务已被手工结束，执行器应停止当前回调写入并保留人工终止证据");
+        }
     }
 
     /**
@@ -80,7 +85,7 @@ public class SyncExecutionCallbackControlSignalSupport {
      *
      * <p>fail 比 checkpoint/complete 特殊：QUEUED 阶段也可能出现执行前失败，
      * 例如 worker 做预检时发现连接器配置缺失、凭据不可用或依赖容量不足。
-     * 因此 QUEUED 可以写失败；但 PAUSED/CANCELLED 已由 {@link #assertNoStoppedControlSignal} 处理，
+     * 因此 QUEUED 可以写失败；但 PAUSED/CANCELLED/MANUALLY_TERMINATED 已由 {@link #assertNoStoppedControlSignal} 处理，
      * 其它非活跃状态仍然拒绝。
      */
     public void assertFailureCallbackAllowed(SyncExecution execution, String executorId) {

@@ -26,7 +26,8 @@ import java.time.LocalDateTime;
  * 1. CONTINUE：租约已续期，继续读取、写入、checkpoint；
  * 2. STOP_FOR_PAUSE：控制台要求暂停，worker 应尽快安全停止，不再写业务结果；
  * 3. STOP_FOR_CANCEL：控制台要求取消，worker 应停止执行并释放本地资源；
- * 4. CONFLICT：当前请求不是合法执行器或状态已经不适合心跳，服务端会通过异常表达，不会返回成功结果。
+ * 4. STOP_FOR_MANUAL_TERMINATE：操作者手工结束当前运行，worker 应停止执行并保留可审计的人工终止证据；
+ * 5. CONFLICT：当前请求不是合法执行器或状态已经不适合心跳，服务端会通过异常表达，不会返回成功结果。
  *
  * @param executionId 执行记录 ID，worker 用它确认本次响应对应哪条 execution
  * @param syncTaskId 所属同步任务 ID，用于 worker 日志与本地状态索引，不包含任务配置明细
@@ -41,7 +42,7 @@ import java.time.LocalDateTime;
  * @param leaseExpireTime 当前租约过期时间；暂停/取消响应不会延长租约
  * @param leaseExtended 本次请求是否成功延长了租约
  * @param shouldContinue worker 是否应该继续执行当前 execution
- * @param controlAction 面向 worker 的控制动作：CONTINUE、STOP_FOR_PAUSE、STOP_FOR_CANCEL
+ * @param controlAction 面向 worker 的控制动作：CONTINUE、STOP_FOR_PAUSE、STOP_FOR_CANCEL、STOP_FOR_MANUAL_TERMINATE
  * @param message 给 worker 日志和运维台展示的低敏解释，不包含 SQL、凭据、样本、内部 URL 或工具参数
  */
 public record SyncExecutionHeartbeatResult(
@@ -90,6 +91,18 @@ public record SyncExecutionHeartbeatResult(
      */
     public static SyncExecutionHeartbeatResult stopForCancel(SyncExecution execution) {
         return from(execution, false, false, "STOP_FOR_CANCEL", "同步任务已被取消，执行器应停止当前执行并释放本地资源");
+    }
+
+    /**
+     * 构造“操作者已手工结束，worker 应停止”的心跳结果。
+     *
+     * <p>手工结束和取消的 worker 行为都要求停止，但产品语义不同：
+     * 取消常用于撤销执行意图，手工结束常用于运行中人工止血、客户确认不再继续、或运营人员判断继续执行会扩大影响。
+     * 因此心跳协议保留独立 controlAction，便于 worker 日志、可观测指标和事故复盘区分。</p>
+     */
+    public static SyncExecutionHeartbeatResult stopForManualTerminate(SyncExecution execution) {
+        return from(execution, false, false, "STOP_FOR_MANUAL_TERMINATE",
+                "同步任务已被手工结束，执行器应停止当前执行并保留人工终止证据");
     }
 
     /**

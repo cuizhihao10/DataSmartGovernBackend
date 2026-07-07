@@ -241,6 +241,24 @@ public class GatewayAuthorizationProperties {
                 "data-sync 同步模板校验接口，校验源端、目标端、字段映射和写入策略是否可运行", Map.of("POST", "VALIDATE")));
         defaults.add(route("/api/sync/sync-tasks/*/run", "SYNC_TASK",
                 "data-sync 同步任务手动运行接口，属于显式触发执行动作", Map.of("POST", "RUN")));
+        defaults.add(route("/api/sync/sync-tasks/*/manual-dispatch", "SYNC_TASK",
+                "data-sync 同步任务手工调度接口，用于用户或 Agent 在权限允许后立即触发一次 MANUAL execution",
+                Map.of("POST", "MANUAL_DISPATCH")));
+        defaults.add(route("/api/sync/sync-tasks/*/terminate", "SYNC_TASK",
+                "data-sync 同步任务手工结束接口，会写入任务和 execution 控制面停止信号",
+                Map.of("POST", "MANUAL_TERMINATE")));
+        defaults.add(route("/api/sync/sync-tasks/*/offline", "SYNC_TASK",
+                "data-sync 同步任务下线接口，会关闭自动调度并清空 nextFireTime，是删除前置动作",
+                Map.of("POST", "OFFLINE")));
+        defaults.add(route("/api/sync/sync-tasks/*/recycle", "SYNC_TASK",
+                "data-sync 同步任务删除进回收站接口，仅允许已下线任务进入回收站",
+                Map.of("POST", "RECYCLE")));
+        defaults.add(route("/api/sync/sync-tasks/*/hard-delete", "SYNC_TASK",
+                "data-sync 同步任务回收站彻底删除接口，当前实现为逻辑 DELETED",
+                Map.of("POST", "HARD_DELETE")));
+        defaults.add(route("/api/sync/sync-tasks/*/clone", "SYNC_TASK",
+                "data-sync 同步任务克隆接口，只复制任务定义，不复制执行历史、checkpoint 或审批事实",
+                Map.of("POST", "CLONE")));
         defaults.add(route("/api/sync/sync-tasks/*/executions/*/objects", "SYNC_EXECUTION",
                 "data-sync 对象级执行账本查询入口，用于查看 OBJECT_LIST 父 execution 内部每个对象的状态、尝试次数和低敏失败摘要",
                 Map.of("GET", "VIEW")));

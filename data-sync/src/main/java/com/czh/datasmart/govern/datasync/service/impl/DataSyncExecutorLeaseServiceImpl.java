@@ -255,13 +255,13 @@ public class DataSyncExecutorLeaseServiceImpl implements DataSyncExecutorLeaseSe
     /**
      * 解析心跳阶段的控制面停止信号。
      *
-     * <p>pause/cancel 是控制台、调度器或运营人员对运行中 execution 发出的协作式控制信号。
+     * <p>pause/cancel/manual terminate 是控制台、调度器或运营人员对运行中 execution 发出的协作式控制信号。
      * 它们和普通 heartbeat 最大的差异是：服务端不应该再延长租约，否则 worker 会继续认为自己有权写入。
      * 因此本方法在幂等判断和数据库续租之前执行，确保即使 worker 使用了重复的 idempotencyKey，
-     * 也能优先看到最新的暂停/取消状态，而不是因为幂等命中而拿到旧的“继续执行”响应。
+     * 也能优先看到最新的暂停、取消或手工结束状态，而不是因为幂等命中而拿到旧的“继续执行”响应。
      *
      * <p>安全边界：
-     * 1. 只有原 executorId 匹配的 worker 才能收到暂停/取消原因，避免其它 worker 通过猜 executionId 探测状态；
+     * 1. 只有原 executorId 匹配的 worker 才能收到暂停、取消或手工结束原因，避免其它 worker 通过猜 executionId 探测状态；
      * 2. 返回值只包含低敏控制动作和计数，不暴露 checkpoint、错误摘要、SQL、样本数据、连接信息或凭据；
      * 3. 每次收到停止心跳会写入低敏审计摘要，方便后续排查“worker 是否收到过停止信号”。
      */
@@ -278,6 +278,11 @@ public class DataSyncExecutorLeaseServiceImpl implements DataSyncExecutorLeaseSe
             auditHeartbeatControlSignal(execution, request, actorContext, "STOP_FOR_CANCEL");
             return SyncExecutionHeartbeatResult.stopForCancel(execution);
         }
+        if (SyncExecutionState.MANUALLY_TERMINATED.name().equals(execution.getExecutionState())) {
+            requireExecutorOwnershipForControlSignal(execution, request.getExecutorId(), "手工结束");
+            auditHeartbeatControlSignal(execution, request, actorContext, "STOP_FOR_MANUAL_TERMINATE");
+            return SyncExecutionHeartbeatResult.stopForManualTerminate(execution);
+        }
         return null;
     }
 
@@ -287,7 +292,7 @@ public class DataSyncExecutorLeaseServiceImpl implements DataSyncExecutorLeaseSe
      * <p>即使方法开始时看到 execution 仍是 RUNNING，也可能在执行 UPDATE 之前被控制台暂停或取消。
      * 如果这里仍然只抛“状态不是 RUNNING”，worker 会把暂停/取消误判为普通失败并可能触发错误重试。
      * 因此更新失败后重新读取一次最新状态：
-     * 1. 最新状态是 PAUSED/CANCELLED：返回明确停止指令；
+     * 1. 最新状态是 PAUSED/CANCELLED/MANUALLY_TERMINATED：返回明确停止指令；
      * 2. 最新状态仍是 RUNNING 但 executor 不匹配：按权限错误处理；
      * 3. 其它状态：说明 execution 已完成、失败或被其它流程接管，返回状态冲突。
      */

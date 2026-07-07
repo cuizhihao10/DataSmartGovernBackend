@@ -11,6 +11,7 @@ import com.czh.datasmart.govern.common.api.PlatformPageResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTaskRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
@@ -119,6 +120,29 @@ public class DataSyncTaskController {
     }
 
     /**
+     * 手工调度同步任务。
+     *
+     * <p>业务语义：
+     * 用户在任务详情或调度台点击“立即执行一次”时调用该接口。它会创建一条 triggerType=MANUAL 的 execution，
+     * 并把任务主状态推进到 QUEUED，随后由 worker loop 按租约协议认领执行。</p>
+     *
+     * <p>和 {@code /run} 的关系：
+     * {@code /run} 是历史兼容运行入口；{@code /manual-dispatch} 是更贴近产品调度台语义的显式入口。
+     * 对定期任务而言，单次手工调度成功或失败会写入 execution 历史，任务本身在执行终态回调后仍会回到 SCHEDULED。</p>
+     */
+    @PostMapping("/{id}/manual-dispatch")
+    public PlatformApiResponse<SyncTaskOperationResult> manualDispatchTask(
+            @PathVariable Long id,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务已手工调度",
+                dataSyncService.manualDispatchTask(id, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
      * 暂停同步任务。
      *
      * <p>路由语义：
@@ -200,6 +224,108 @@ public class DataSyncTaskController {
             @RequestHeader HttpHeaders headers) {
         return PlatformApiResponse.success("同步任务已提交取消",
                 dataSyncService.cancelTask(id, request, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * 手工结束同步任务。
+     *
+     * <p>路由语义：
+     * - path 中的 id 表示被结束的任务；
+     * - request.reason 是低敏原因，会进入审计摘要；
+     * - 服务端会把任务主状态置为 MANUALLY_TERMINATED，并尽量把最近活跃 execution 置为 MANUALLY_TERMINATED。</p>
+     *
+     * <p>执行器影响：
+     * 如果 worker 已经启动，下一次 heartbeat 会收到 STOP_FOR_MANUAL_TERMINATE；
+     * 如果 worker 延迟提交 checkpoint/complete/fail，回调保护会拒绝继续写入，避免“前端显示已结束但目标端继续变化”。</p>
+     */
+    @PostMapping("/{id}/terminate")
+    public PlatformApiResponse<SyncTaskOperationResult> manualTerminateTask(
+            @PathVariable Long id,
+            @Valid @RequestBody(required = false) SyncTaskLifecycleOperationRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务已手工结束",
+                dataSyncService.manualTerminateTask(id, request, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * 下线同步任务。
+     *
+     * <p>下线会关闭自动调度并清空下一次触发时间，是删除进回收站之前的强制前置动作。
+     * 活跃任务不能直接下线，调用方需要先暂停、取消或手工结束，避免后台仍有 execution 继续写入。</p>
+     */
+    @PostMapping("/{id}/offline")
+    public PlatformApiResponse<SyncTaskOperationResult> offlineTask(
+            @PathVariable Long id,
+            @Valid @RequestBody(required = false) SyncTaskLifecycleOperationRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务已下线",
+                dataSyncService.offlineTask(id, request, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * 删除任务到回收站。
+     *
+     * <p>该接口要求任务已处于 OFFLINE。回收站中的任务不能运行或调度，但仍能查看详情与克隆，
+     * 便于误删除后的配置参考和快速派生新任务。</p>
+     */
+    @PostMapping("/{id}/recycle")
+    public PlatformApiResponse<SyncTaskOperationResult> recycleTask(
+            @PathVariable Long id,
+            @Valid @RequestBody(required = false) SyncTaskLifecycleOperationRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务已移入回收站",
+                dataSyncService.recycleTask(id, request, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * 彻底删除回收站任务。
+     *
+     * <p>当前实现是逻辑彻底删除：任务进入 DELETED 后不再出现在普通列表和详情中，
+     * 但 execution、checkpoint、错误样本和审计证据仍保留，后续由数据保留策略统一清理。</p>
+     */
+    @PostMapping("/{id}/hard-delete")
+    public PlatformApiResponse<SyncTaskOperationResult> hardDeleteTask(
+            @PathVariable Long id,
+            @Valid @RequestBody(required = false) SyncTaskLifecycleOperationRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务已彻底删除",
+                dataSyncService.hardDeleteTask(id, request, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * 克隆同步任务。
+     *
+     * <p>克隆只复制任务定义字段，不复制 execution、checkpoint、错误样本、对象账本或审批事实。
+     * 默认克隆结果进入 DRAFT，适合用户或 Agent 再次确认配置；如果 request.runImmediately=true，
+     * 服务端会在预检通过后立即创建 MANUAL execution。</p>
+     */
+    @PostMapping("/{id}/clone")
+    public PlatformApiResponse<SyncTaskOperationResult> cloneTask(
+            @PathVariable Long id,
+            @Valid @RequestBody(required = false) SyncTaskCloneRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务已克隆",
+                dataSyncService.cloneTask(id, request, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
     }
 
     /**

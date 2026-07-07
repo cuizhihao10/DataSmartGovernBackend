@@ -160,6 +160,36 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
                            @Param("lastExecutionId") Long lastExecutionId);
 
     /**
+     * 按管理面动作刷新任务主状态。
+     *
+     * <p>该方法服务于 offline、recycle、hard-delete、manual-terminate 等“任务定义管理”动作，
+     * 和 {@link #markLifecycleState} 的区别是它会显式控制 schedule_enabled、next_fire_time 和人工介入字段：</p>
+     * <p>1. 下线、回收站、彻底删除、手工结束都不应继续被 task scheduler 扫描；</p>
+     * <p>2. next_fire_time 必须允许写 NULL，否则一个已下线任务仍然携带旧调度游标，后续恢复/克隆时容易误触发；</p>
+     * <p>3. attention_required/reason 在这些管理动作完成后应清理，避免回收站或下线列表继续显示“待人工处理”。</p>
+     */
+    @Update("""
+            UPDATE data_sync_task
+            SET current_state = #{targetState},
+                schedule_enabled = #{scheduleEnabled},
+                next_fire_time = #{nextFireTime},
+                trigger_type = COALESCE(#{triggerType}, trigger_type),
+                last_execution_id = COALESCE(#{lastExecutionId}, last_execution_id),
+                attention_required = #{attentionRequired},
+                attention_reason = #{attentionReason},
+                update_time = LOCALTIMESTAMP
+            WHERE id = #{taskId}
+            """)
+    int markManagementState(@Param("taskId") Long taskId,
+                            @Param("targetState") String targetState,
+                            @Param("scheduleEnabled") Boolean scheduleEnabled,
+                            @Param("nextFireTime") LocalDateTime nextFireTime,
+                            @Param("triggerType") String triggerType,
+                            @Param("lastExecutionId") Long lastExecutionId,
+                            @Param("attentionRequired") Boolean attentionRequired,
+                            @Param("attentionReason") String attentionReason);
+
+    /**
      * 将任务标记为需要人工介入。
      *
      * <p>该状态通常意味着自动执行已经不再安全或不再经济，例如超过最大退避次数、worker 反复失联、

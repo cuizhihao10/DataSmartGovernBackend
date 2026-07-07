@@ -29,6 +29,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionQuery
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
@@ -59,6 +60,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncObjectExecutionOper
 import com.czh.datasmart.govern.datasync.service.support.SyncOfflineJobPlanSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskManagementOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskRecoveryOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskScheduleConfigSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskStateMachineSupport;
@@ -109,6 +111,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncExecutionLifecycleSupport executionLifecycleSupport;
     private final SyncExecutionCreationSupport executionCreationSupport;
     private final SyncTaskLifecycleOperationSupport taskLifecycleOperationSupport;
+    private final SyncTaskManagementOperationSupport taskManagementOperationSupport;
     private final SyncTaskRecoveryOperationSupport taskRecoveryOperationSupport;
     private final SyncTemplateCreationSupport templateCreationSupport;
     private final SyncTemplatePlanningPreviewSupport templatePlanningPreviewSupport;
@@ -275,7 +278,17 @@ public class DataSyncServiceImpl implements DataSyncService {
         }
         querySupport.eqIfPresent(wrapper, SyncTask::getTemplateId, criteria.templateId());
         querySupport.eqIfPresent(wrapper, SyncTask::getOwnerId, criteria.ownerId());
-        querySupport.eqIfPresent(wrapper, SyncTask::getCurrentState, querySupport.normalizeCode(criteria.currentState()));
+        String requestedState = querySupport.normalizeCode(criteria.currentState());
+        if (requestedState == null) {
+            /*
+             * 普通任务列表默认不展示回收站和已彻底删除任务。
+             * 回收站本身仍可通过 currentState=RECYCLED 显式查询，便于前端单独做“回收站”视图；
+             * DELETED 则只保留给审计、历史执行和后续数据保留策略，不应出现在日常运营列表中。
+             */
+            wrapper.notIn(SyncTask::getCurrentState, SyncTaskState.RECYCLED.name(), SyncTaskState.DELETED.name());
+        } else {
+            querySupport.eqIfPresent(wrapper, SyncTask::getCurrentState, requestedState);
+        }
         querySupport.eqIfPresent(wrapper, SyncTask::getApprovalState, querySupport.normalizeCode(criteria.approvalState()));
         querySupport.eqIfPresent(wrapper, SyncTask::getTriggerType, querySupport.normalizeCode(criteria.triggerType()));
         Page<SyncTask> page = taskMapper.selectPage(querySupport.page(criteria.current(), criteria.size()), wrapper);
@@ -287,6 +300,9 @@ public class DataSyncServiceImpl implements DataSyncService {
         SyncTask task = taskMapper.selectById(id);
         if (task == null) {
             throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND, "同步任务不存在: " + id);
+        }
+        if (SyncTaskState.DELETED.name().equals(task.getCurrentState())) {
+            throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND, "同步任务已彻底删除: " + id);
         }
         dataScopeSupport.validateOwnedReadable(task.getTenantId(), task.getProjectId(),
                 task.getOwnerId(), actorContext, "同步任务");
@@ -325,6 +341,20 @@ public class DataSyncServiceImpl implements DataSyncService {
                 actorContext, "taskId=" + task.getId() + ",executionId=" + execution.getId());
         return new SyncTaskOperationResult(task.getId(), task.getCurrentState(),
                 "同步任务已进入待执行队列，执行记录 ID=" + execution.getId() + "；后续将接入执行器、checkpoint 和任务中心协议");
+    }
+
+    /**
+     * 手工调度同步任务。
+     *
+     * <p>这里继续复用 getTask(...) 作为入口级数据范围校验，然后把“预检、状态机、execution 创建、审计”委托给
+     * {@link SyncTaskManagementOperationSupport}。这样 runTask 的历史兼容语义不被破坏，同时新路由可以拥有更准确的
+     * MANUAL_DISPATCH_TASK 审计动作。</p>
+     */
+    @Override
+    @Transactional
+    public SyncTaskOperationResult manualDispatchTask(Long id, SyncActorContext actorContext) {
+        SyncTask task = getTask(id, actorContext);
+        return taskManagementOperationSupport.manualDispatchTask(task, actorContext);
     }
 
     /**
@@ -524,6 +554,55 @@ public class DataSyncServiceImpl implements DataSyncService {
                                               SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
         return taskLifecycleOperationSupport.cancelTask(task, request, actorContext);
+    }
+
+    @Override
+    @Transactional
+    public SyncTaskOperationResult manualTerminateTask(Long id,
+                                                       SyncTaskLifecycleOperationRequest request,
+                                                       SyncActorContext actorContext) {
+        SyncTask task = getTask(id, actorContext);
+        return taskManagementOperationSupport.manualTerminateTask(task, request, actorContext);
+    }
+
+    @Override
+    @Transactional
+    public SyncTaskOperationResult offlineTask(Long id,
+                                               SyncTaskLifecycleOperationRequest request,
+                                               SyncActorContext actorContext) {
+        SyncTask task = getTask(id, actorContext);
+        return taskManagementOperationSupport.offlineTask(task, request, actorContext);
+    }
+
+    @Override
+    @Transactional
+    public SyncTaskOperationResult recycleTask(Long id,
+                                               SyncTaskLifecycleOperationRequest request,
+                                               SyncActorContext actorContext) {
+        SyncTask task = getTask(id, actorContext);
+        return taskManagementOperationSupport.recycleTask(task, request, actorContext);
+    }
+
+    @Override
+    @Transactional
+    public SyncTaskOperationResult hardDeleteTask(Long id,
+                                                  SyncTaskLifecycleOperationRequest request,
+                                                  SyncActorContext actorContext) {
+        /*
+         * hard-delete 必须能读取 RECYCLED 任务，但不能读取 DELETED 任务。
+         * getTask(...) 已经会对 DELETED 返回 NOT_FOUND；RECYCLED 仍可通过数据范围校验后进入这里。
+         */
+        SyncTask task = getTask(id, actorContext);
+        return taskManagementOperationSupport.hardDeleteTask(task, request, actorContext);
+    }
+
+    @Override
+    @Transactional
+    public SyncTaskOperationResult cloneTask(Long id,
+                                             SyncTaskCloneRequest request,
+                                             SyncActorContext actorContext) {
+        SyncTask task = getTask(id, actorContext);
+        return taskManagementOperationSupport.cloneTask(task, request, actorContext);
     }
 
     /**

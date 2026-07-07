@@ -24,5 +24,20 @@ public enum SyncExecutionState {
     PARTIALLY_SUCCEEDED,
     SUCCEEDED,
     FAILED,
-    CANCELLED
+    CANCELLED,
+    /**
+     * 手工结束。
+     *
+     * <p>execution 级 MANUALLY_TERMINATED 用于记录“某一次真实运行被人工终止”。
+     * 它不同于任务主状态：任务主状态回答任务定义后续是否还能调度，execution 状态回答这一次运行为何停止。
+     * worker 心跳和写入型回调看到该状态时必须停止，不允许继续写 checkpoint、complete 或 fail。</p>
+     */
+    MANUALLY_TERMINATED,
+    /**
+     * 已跳过。
+     *
+     * <p>SKIPPED 预留给调度 misfire、依赖未满足、容量窗口冲突或对象级 fan-out 汇总时的“本次不执行”记录。
+     * 它可以让执行历史区分“失败”和“按策略跳过”，避免调度看板把有意跳过误判为运行故障。</p>
+     */
+    SKIPPED
 }

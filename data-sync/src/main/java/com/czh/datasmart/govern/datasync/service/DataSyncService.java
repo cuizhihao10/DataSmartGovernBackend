@@ -25,6 +25,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionQuery
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
@@ -90,6 +91,15 @@ public interface DataSyncService {
     SyncTaskOperationResult runTask(Long id, SyncActorContext actorContext);
 
     /**
+     * 手工调度同步任务立即执行一次。
+     *
+     * <p>该动作和 runTask 的底层效果都是创建 MANUAL execution，但产品语义更清晰：
+     * runTask 是通用运行入口，manualDispatchTask 对应用户在调度台点击“立即调度一次”。
+     * 定时任务在手工调度完成后仍应回到 SCHEDULED 等待下一次计划触发。</p>
+     */
+    SyncTaskOperationResult manualDispatchTask(Long id, SyncActorContext actorContext);
+
+    /**
      * 暂停同步任务。
      *
      * <p>暂停属于可恢复的生命周期控制动作，通常用于维护窗口、下游限流、字段映射待确认等场景。
@@ -115,6 +125,41 @@ public interface DataSyncService {
      * <p>取消会终止任务继续执行的业务意图；已经完成的执行历史不会被篡改。
      */
     SyncTaskOperationResult cancelTask(Long id, SyncTaskLifecycleOperationRequest request, SyncActorContext actorContext);
+
+    /**
+     * 手工结束正在排队、运行、重试或暂停中的同步任务。
+     *
+     * <p>手工结束会写入 execution 控制信号，后续 worker 心跳或写入型回调都会停止，适合人工止血和客户要求立即结束的场景。</p>
+     */
+    SyncTaskOperationResult manualTerminateTask(Long id, SyncTaskLifecycleOperationRequest request, SyncActorContext actorContext);
+
+    /**
+     * 下线同步任务。
+     *
+     * <p>下线会关闭自动调度并清空 nextFireTime，是删除进回收站之前的强制前置动作。</p>
+     */
+    SyncTaskOperationResult offlineTask(Long id, SyncTaskLifecycleOperationRequest request, SyncActorContext actorContext);
+
+    /**
+     * 删除任务到回收站。
+     *
+     * <p>只有已下线任务可以进入回收站；回收站内任务仍可查看详情和克隆，但不能运行或调度。</p>
+     */
+    SyncTaskOperationResult recycleTask(Long id, SyncTaskLifecycleOperationRequest request, SyncActorContext actorContext);
+
+    /**
+     * 从回收站彻底删除任务。
+     *
+     * <p>当前采用逻辑 DELETED，保留 execution、checkpoint、错误样本和审计证据的历史归属。</p>
+     */
+    SyncTaskOperationResult hardDeleteTask(Long id, SyncTaskLifecycleOperationRequest request, SyncActorContext actorContext);
+
+    /**
+     * 克隆同步任务。
+     *
+     * <p>克隆只复制任务定义字段，不复制执行历史；新任务默认进入 DRAFT，可选择立即手工执行一次。</p>
+     */
+    SyncTaskOperationResult cloneTask(Long id, SyncTaskCloneRequest request, SyncActorContext actorContext);
 
     /**
      * 从历史 execution 或 checkpoint 发起同步回放。
