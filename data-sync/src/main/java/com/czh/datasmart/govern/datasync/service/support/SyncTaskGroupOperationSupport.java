@@ -90,6 +90,7 @@ public class SyncTaskGroupOperationSupport {
     private final SyncDataScopeSupport dataScopeSupport;
     private final SyncQuerySupport querySupport;
     private final SyncAuditSupport auditSupport;
+    private final SyncTaskGroupDisplayContractSupport displayContractSupport;
 
     /**
      * 创建任务分组。
@@ -169,7 +170,7 @@ public class SyncTaskGroupOperationSupport {
             return List.of();
         }
         int limit = normalizeLimit(safeCriteria.size());
-        return taskMapper.selectTaskGroupSummaries(
+        List<SyncTaskGroupSummary> summaries = taskMapper.selectTaskGroupSummaries(
                 visibility.tenantId(),
                 visibility.projectId(),
                 visibility.workspaceId(),
@@ -178,6 +179,8 @@ public class SyncTaskGroupOperationSupport {
                 ownerId,
                 normalizeGroupCodeForFilter(safeCriteria.groupCode()),
                 limit);
+        displayContractSupport.enrichSummaries(summaries);
+        return summaries;
     }
 
     /**
@@ -499,6 +502,7 @@ public class SyncTaskGroupOperationSupport {
             }
         }
         sortTree(roots);
+        displayContractSupport.enrichTreeNodes(roots);
         return roots;
     }
 
@@ -562,6 +566,12 @@ public class SyncTaskGroupOperationSupport {
         node.setRunningTaskCount(0L);
         node.setFailedTaskCount(0L);
         node.setRecycledTaskCount(0L);
+        node.setSubtreeTaskCount(0L);
+        node.setSubtreeActiveTaskCount(0L);
+        node.setSubtreeScheduledTaskCount(0L);
+        node.setSubtreeRunningTaskCount(0L);
+        node.setSubtreeFailedTaskCount(0L);
+        node.setSubtreeRecycledTaskCount(0L);
     }
 
     private Long resolveOwnerFilter(Long requestedOwnerId, SyncDataVisibility visibility, SyncActorContext actorContext) {

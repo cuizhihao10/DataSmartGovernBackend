@@ -40,14 +40,54 @@ public class SyncTaskGroupSummary {
     private Long workspaceId;
 
     /**
+     * 分组摘要稳定唯一键。
+     *
+     * <p>该字段与分组树节点的 treeKey 采用同一套组合规则：tenantId/projectId/workspaceId/groupCode。
+     * 旧前端如果只使用 groupCode，在跨项目、跨工作空间或平台管理员视角下会把多个 DEFAULT 误认为同一个分组；
+     * 新前端可以用 treeKey 做列表 key、下拉选项 value 或诊断定位字段。</p>
+     */
+    private String treeKey;
+
+    /**
+     * 分组作用域类型。
+     *
+     * <p>可能值包括 GLOBAL、TENANT、PROJECT、WORKSPACE，用于解释这个摘要代表的是租户级、项目级还是工作空间级分组。</p>
+     */
+    private String scopeType;
+
+    /**
+     * 分组作用域低敏展示标签。
+     *
+     * <p>示例：“项目级：租户 10 / 项目 101”。当同一响应中出现多个同名默认分组时，前端可以直接展示或作为 tooltip。</p>
+     */
+    private String scopeLabel;
+
+    /**
      * 稳定分组编码。
      */
     private String groupCode;
 
     /**
      * 分组展示名称。
+     *
+     * <p>保留原始名称，兼容历史调用方。新前端展示时推荐优先使用 displayName。</p>
      */
     private String groupName;
+
+    /**
+     * 前端推荐展示名称。
+     *
+     * <p>后端会对同一响应内重复出现的 groupCode/groupName 自动追加范围后缀，例如“默认分组（项目 101）”，
+     * 避免分组列表或下拉框出现两个完全相同的“默认分组”。</p>
+     */
+    private String displayName;
+
+    /**
+     * 前端推荐展示路径。
+     *
+     * <p>用于面包屑、搜索结果、Agent 确认话术和问题排查日志，格式为“作用域标签 / 展示名称”。</p>
+     */
+    private String displayPath;
 
     /**
      * 分组内任务总数。

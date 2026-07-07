@@ -24,13 +24,49 @@ public class SyncTaskGroupTreeNode {
     /**
      * 分组资源 ID。
      *
-     * <p>历史任务聚合出来但尚未创建分组资源的 legacy 节点可能没有 ID，前端此时应使用 groupCode 作为 key。</p>
+     * <p>历史任务聚合出来但尚未创建分组资源的 legacy 节点可能没有 ID。旧版本前端通常会退化使用 groupCode 做 key，
+     * 但 groupCode 只在同一个 tenant/project/workspace 作用域内唯一，跨项目或跨工作空间查询时会发生 DEFAULT 等编码重复。
+     * 新前端应优先使用 {@link #treeKey}，把 id 只作为资源详情或调试字段。</p>
      */
     private Long id;
+
+    /**
+     * 前端树节点稳定唯一键。
+     *
+     * <p>生成规则由后端统一维护，语义等价于 tenantId/projectId/workspaceId/groupCode 的组合键。
+     * 它解决的是“多个作用域都存在 DEFAULT 时，前端不能再只拿 groupCode 当 React/Vue tree key”的问题。
+     * 该字段只用于展示树、选中态、展开折叠态和诊断定位；写接口仍继续传 groupCode 以及必要的租户/项目/工作空间范围。</p>
+     */
+    private String treeKey;
+
+    /**
+     * 父节点稳定唯一键。
+     *
+     * <p>当节点存在 parentGroupCode 时，后端会在相同 tenant/project/workspace 作用域内生成父节点 treeKey。
+     * 前端通常可以直接使用 children 渲染树，不需要 parentTreeKey；但在虚拟树、扁平化列表、拖拽排序或调试父子关系时，
+     * 该字段可以避免前端重新拼接父节点作用域。</p>
+     */
+    private String parentTreeKey;
 
     private Long tenantId;
     private Long projectId;
     private Long workspaceId;
+
+    /**
+     * 分组作用域类型。
+     *
+     * <p>可能值包括 GLOBAL、TENANT、PROJECT、WORKSPACE。它说明同一个 groupCode 到底属于哪个业务边界：
+     * 租户级默认分组、项目级默认分组、工作空间级默认分组在数据库里可以同时存在，不能在前端被误认为同一个节点。</p>
+     */
+    private String scopeType;
+
+    /**
+     * 分组作用域展示标签。
+     *
+     * <p>这是面向用户和调试的低敏说明，例如“项目级：租户 10 / 项目 101”。
+     * 当前端选择不聚合多个 DEFAULT 节点时，可以把该字段作为 tooltip、次级说明或同名节点后缀来源。</p>
+     */
+    private String scopeLabel;
 
     /**
      * 父分组编码。
@@ -44,8 +80,28 @@ public class SyncTaskGroupTreeNode {
 
     /**
      * 分组展示名称。
+     *
+     * <p>保留原始业务名称，兼容旧前端和导入导出逻辑。新前端实际渲染时应优先使用 {@link #displayName}：
+     * 当同一批返回结果中存在多个“默认分组”时，displayName 会自动补充范围后缀，避免用户看到无法区分的重复菜单。</p>
      */
     private String groupName;
+
+    /**
+     * 前端推荐展示名称。
+     *
+     * <p>displayName 是后端已经结合重复检测和作用域语义处理过的名称。
+     * 例如只返回一个 DEFAULT 时它仍是“默认分组”；如果同一棵可见树中同时返回项目级 DEFAULT 与工作空间级 DEFAULT，
+     * 它会变成“默认分组（项目 101）”“默认分组（工作空间 10001）”这类可区分名称。</p>
+     */
+    private String displayName;
+
+    /**
+     * 前端推荐展示路径。
+     *
+     * <p>displayPath 用来说明节点在“作用域 + 分组树”中的完整位置，例如“项目级：租户 10 / 项目 101 / 默认分组”。
+     * 它适合用于面包屑、下拉框选中项、搜索结果、Agent 工具确认语句和问题排查日志。</p>
+     */
+    private String displayPath;
 
     /**
      * 分组说明。
@@ -76,6 +132,41 @@ public class SyncTaskGroupTreeNode {
     private Long runningTaskCount;
     private Long failedTaskCount;
     private Long recycledTaskCount;
+
+    /**
+     * 当前节点及全部子节点的任务总数。
+     *
+     * <p>taskCount 只表示“直接归属到当前 groupCode 的任务数”；subtreeTaskCount 表示“当前分组树分支的汇总任务数”。
+     * 前端左侧“全部同步任务”数量应优先汇总根节点的 subtreeTaskCount，而不是使用当前任务列表分页 total，
+     * 否则在搜索、状态筛选或分页后会把全局统计错误地显示成当前筛选结果。</p>
+     */
+    private Long subtreeTaskCount;
+
+    /**
+     * 当前节点及全部子节点的活跃任务数。
+     */
+    private Long subtreeActiveTaskCount;
+
+    /**
+     * 当前节点及全部子节点的等待调度任务数。
+     */
+    private Long subtreeScheduledTaskCount;
+
+    /**
+     * 当前节点及全部子节点的运行中任务数。
+     */
+    private Long subtreeRunningTaskCount;
+
+    /**
+     * 当前节点及全部子节点的失败或待人工介入任务数。
+     */
+    private Long subtreeFailedTaskCount;
+
+    /**
+     * 当前节点及全部子节点的回收站任务数。
+     */
+    private Long subtreeRecycledTaskCount;
+
     private LocalDateTime lastUpdateTime;
 
     /**
