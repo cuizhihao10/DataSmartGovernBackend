@@ -27,6 +27,8 @@
       .\scripts\local-data-sync-closure-suite.ps1 -IncludeRealJdbc
     - 加上平台/API 级真实 E2E：创建数据源、创建模板、预检查、创建任务、触发 worker loop、失败分片重试、dirty replay：
       .\scripts\local-data-sync-closure-suite.ps1 -IncludePlatformApiE2E -UseDirectServiceUrlsForPlatformApiE2E
+    - 平台/API E2E 中追加 SCHEDULED_BATCH、CUSTOM_SQL_QUERY、SCHEMA_FULL 离线模式验收：
+      .\scripts\local-data-sync-closure-suite.ps1 -IncludePlatformApiE2E -IncludeOfflineModeClosureE2EForPlatformApiE2E -UseDirectServiceUrlsForPlatformApiE2E
     - 严格模式，任一阶段失败即退出非 0：
       .\scripts\local-data-sync-closure-suite.ps1 -Strict
 #>
@@ -36,6 +38,7 @@ param(
     [switch]$IncludeModuleTestSuites,
     [switch]$IncludeRealJdbc,
     [switch]$IncludePlatformApiE2E,
+    [switch]$IncludeOfflineModeClosureE2EForPlatformApiE2E,
     [switch]$UseDirectServiceUrlsForPlatformApiE2E,
     [switch]$UseContainerJdbcUrlsForPlatformApiE2E,
     [switch]$SkipCompile,
@@ -190,6 +193,9 @@ function Invoke-PlatformApiE2EStep {
     if ($SkipTaskReceiptProbeForPlatformApiE2E) {
         $arguments += "-SkipTaskReceiptProbe"
     }
+    if ($IncludeOfflineModeClosureE2EForPlatformApiE2E) {
+        $arguments += "-IncludeOfflineModeClosureE2E"
+    }
 
     Write-Host ""
     Write-Host ">>> Platform API E2E" -ForegroundColor Cyan
@@ -340,12 +346,16 @@ function Write-ClosurePlan {
     }
     if ($IncludePlatformApiE2E) {
         Write-PlanStage "explicit platform/API E2E via local-data-sync-platform-e2e.ps1"
+        if ($IncludeOfflineModeClosureE2EForPlatformApiE2E) {
+            Write-PlanStage "platform/API E2E also covers SCHEDULED_BATCH, CUSTOM_SQL_QUERY, and SCHEMA_FULL"
+        }
     }
     Write-Host ""
     Write-Host "Safety boundaries:" -ForegroundColor Yellow
     Write-Host "- Default gates do not start Docker and do not write external databases."
     Write-Host "- Real JDBC E2E is opt-in and only overwrites dedicated E2E tables."
     Write-Host "- Platform API E2E is opt-in because it creates sync objects, triggers worker loop, and overwrites dedicated E2E tables."
+    Write-Host "- Offline-mode Platform API extension is also opt-in because it creates extra SCHEDULED/CUSTOM_SQL/SCHEMA_FULL E2E objects and tables."
     Write-Host "- The suite does not print database passwords, JDBC URLs, SQL bodies, row samples, tokens, or raw response bodies."
 }
 

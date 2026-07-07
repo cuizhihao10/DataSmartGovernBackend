@@ -27,6 +27,8 @@
     9. 故意让 id=7 因目标 NOT NULL 约束落为少量脏数据样本；
     10. 修复 id=7 后，通过 PRIMARY_KEY_EQ dirty replay 只重放该坏行；
     11. 最终断言 PostgreSQL 目标表包含 1..20 全量数据。
+    12. 可选追加 -IncludeOfflineModeClosureE2E，继续验证 SCHEDULED_BATCH、CUSTOM_SQL_QUERY、SCHEMA_FULL
+        三类离线模式的真实 API 创建、预检、审批确认、worker 执行和 PostgreSQL 行数断言。
 
     安全边界：
     - 不打印 access token、refresh token、数据库密码、完整 JDBC URL、SQL 正文、样本行、错误堆栈或响应正文。
@@ -52,6 +54,7 @@ param(
     [switch]$SkipDependencyStart,
     [switch]$SkipDatabasePrepare,
     [switch]$SkipTaskReceiptProbe,
+    [switch]$IncludeOfflineModeClosureE2E,
     [switch]$Strict,
 
     [string]$GatewayBaseUrl = "http://localhost:8080",
@@ -103,6 +106,14 @@ $script:RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $script:Checks = New-Object System.Collections.Generic.List[object]
 $script:FailureCount = 0
 $script:RunId = (Get-Date).ToString("yyyyMMddHHmmss")
+$script:ScheduledBatchSourceTable = "datasmart_e2e_scheduled_orders"
+$script:ScheduledBatchTargetTable = "orders_scheduled_batch"
+$script:CustomSqlSourceTable = "datasmart_e2e_sql_orders"
+$script:CustomSqlTargetTable = "orders_custom_sql_clean"
+$script:SchemaFullSourceOrdersTable = "datasmart_e2e_schema_orders"
+$script:SchemaFullSourceCustomersTable = "datasmart_e2e_schema_customers"
+$script:SchemaFullTargetOrdersTable = "datasmart_e2e_schema_orders"
+$script:SchemaFullTargetCustomersTable = "datasmart_e2e_schema_customers"
 
 if (-not $PSBoundParameters.ContainsKey("MySqlPort") -and -not [string]::IsNullOrWhiteSpace($env:DATASMART_LOCAL_MYSQL_PORT)) {
     $MySqlPort = [int]$env:DATASMART_LOCAL_MYSQL_PORT
@@ -462,6 +473,125 @@ function Repair-DirtySourceRow {
     Add-Check -Name "脏数据源行修复" -Status "PASS" -Detail "已修复 id=7 的源端姓名，后续通过 PRIMARY_KEY_EQ replay 精确重放"
 }
 
+function Initialize-OfflineModeE2EDatabase {
+    if (-not $IncludeOfflineModeClosureE2E) {
+        return
+    }
+    if ($SkipDatabasePrepare) {
+        Add-Check -Name "离线模式 E2E 表准备" -Status "WARN" -Detail "已通过 -SkipDatabasePrepare 跳过，要求外部已准备 SCHEDULED/CUSTOM_SQL/SCHEMA_FULL 专用表"
+        return
+    }
+
+    $offlineIdentifiers = @(
+        $script:ScheduledBatchSourceTable,
+        $script:ScheduledBatchTargetTable,
+        $script:CustomSqlSourceTable,
+        $script:CustomSqlTargetTable,
+        $script:SchemaFullSourceOrdersTable,
+        $script:SchemaFullSourceCustomersTable,
+        $script:SchemaFullTargetOrdersTable,
+        $script:SchemaFullTargetCustomersTable
+    )
+    foreach ($identifier in $offlineIdentifiers) {
+        Assert-SafeIdentifier -Name "OfflineModeTable" -Value $identifier
+    }
+
+    <#
+        离线模式闭环表设计原则：
+        - SCHEDULED_BATCH 使用单表、单次有界窗口，证明“定时批量”可以由任务调度层触发，执行面复用 run-once；
+        - CUSTOM_SQL_QUERY 使用只读 SELECT 结果集，目标字段按 SQL alias 映射，不把 SQL 正文打印到终端；
+        - SCHEMA_FULL 使用两张同构小表，让 datasource-management metadata discovery 枚举表/字段后转 OBJECT_LIST fan-out。
+
+        这里仍然只创建专用 E2E 表，不碰业务表；目标端先清表重建，保证每次验收结果可重复。
+    #>
+    $mysqlSql = @"
+DROP TABLE IF EXISTS $($script:ScheduledBatchSourceTable);
+CREATE TABLE $($script:ScheduledBatchSourceTable) (
+    id BIGINT PRIMARY KEY,
+    customer_name VARCHAR(128) NOT NULL,
+    amount DECIMAL(18, 2) NOT NULL,
+    region VARCHAR(32) NOT NULL
+);
+INSERT INTO $($script:ScheduledBatchSourceTable) (id, customer_name, amount, region) VALUES
+(101, 'Scheduled-Customer-101', 201.00, 'NORTH'),
+(102, 'Scheduled-Customer-102', 202.00, 'NORTH'),
+(103, 'Scheduled-Customer-103', 203.00, 'NORTH');
+
+DROP TABLE IF EXISTS $($script:CustomSqlSourceTable);
+CREATE TABLE $($script:CustomSqlSourceTable) (
+    id BIGINT PRIMARY KEY,
+    customer_name VARCHAR(128) NOT NULL,
+    amount DECIMAL(18, 2) NOT NULL,
+    region VARCHAR(32) NOT NULL
+);
+INSERT INTO $($script:CustomSqlSourceTable) (id, customer_name, amount, region) VALUES
+(201, 'Sql-Customer-201', 301.00, 'EAST'),
+(202, 'Sql-Customer-202', 302.00, 'WEST'),
+(203, 'Sql-Customer-203', 303.00, 'EAST');
+
+DROP TABLE IF EXISTS $($script:SchemaFullSourceOrdersTable);
+CREATE TABLE $($script:SchemaFullSourceOrdersTable) (
+    id BIGINT PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    amount DECIMAL(18, 2) NOT NULL,
+    region VARCHAR(32) NOT NULL
+);
+INSERT INTO $($script:SchemaFullSourceOrdersTable) (id, name, amount, region) VALUES
+(301, 'Schema-Order-301', 401.00, 'SOUTH'),
+(302, 'Schema-Order-302', 402.00, 'SOUTH');
+
+DROP TABLE IF EXISTS $($script:SchemaFullSourceCustomersTable);
+CREATE TABLE $($script:SchemaFullSourceCustomersTable) (
+    id BIGINT PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    amount DECIMAL(18, 2) NOT NULL,
+    region VARCHAR(32) NOT NULL
+);
+INSERT INTO $($script:SchemaFullSourceCustomersTable) (id, name, amount, region) VALUES
+(401, 'Schema-Customer-401', 501.00, 'SOUTH'),
+(402, 'Schema-Customer-402', 502.00, 'SOUTH');
+"@
+
+    $postgresSql = @"
+CREATE SCHEMA IF NOT EXISTS $TargetSchema;
+DROP TABLE IF EXISTS $TargetSchema.$($script:ScheduledBatchTargetTable);
+CREATE TABLE $TargetSchema.$($script:ScheduledBatchTargetTable) (
+    id BIGINT PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    amount NUMERIC(18, 2) NOT NULL,
+    region VARCHAR(32) NOT NULL
+);
+
+DROP TABLE IF EXISTS $TargetSchema.$($script:CustomSqlTargetTable);
+CREATE TABLE $TargetSchema.$($script:CustomSqlTargetTable) (
+    id BIGINT PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    amount NUMERIC(18, 2) NOT NULL,
+    region VARCHAR(32) NOT NULL
+);
+
+DROP TABLE IF EXISTS $TargetSchema.$($script:SchemaFullTargetOrdersTable);
+CREATE TABLE $TargetSchema.$($script:SchemaFullTargetOrdersTable) (
+    id BIGINT PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    amount NUMERIC(18, 2) NOT NULL,
+    region VARCHAR(32) NOT NULL
+);
+
+DROP TABLE IF EXISTS $TargetSchema.$($script:SchemaFullTargetCustomersTable);
+CREATE TABLE $TargetSchema.$($script:SchemaFullTargetCustomersTable) (
+    id BIGINT PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    amount NUMERIC(18, 2) NOT NULL,
+    region VARCHAR(32) NOT NULL
+);
+"@
+
+    Invoke-MySqlNonQuery -Sql $mysqlSql
+    Invoke-PostgresNonQuery -Sql $postgresSql
+    Add-Check -Name "离线模式 E2E 表准备" -Status "PASS" -Detail "已创建 SCHEDULED_BATCH、CUSTOM_SQL_QUERY、SCHEMA_FULL 专用源表和目标表"
+}
+
 function Resolve-SourceJdbcUrl {
     if (-not [string]::IsNullOrWhiteSpace($SourceJdbcUrl)) {
         return $SourceJdbcUrl
@@ -712,6 +842,22 @@ function Assert-TargetCount {
     Add-Check -Name "目标表行数断言: $Stage" -Status "PASS" -Detail "目标表达到预期行数 $Expected"
 }
 
+function Assert-TargetTableCount {
+    param(
+        [string]$TableName,
+        [int]$Expected,
+        [string]$Stage
+    )
+
+    Assert-SafeIdentifier -Name "TargetTable:$Stage" -Value $TableName
+    $countSql = "SELECT COUNT(*) FROM $TargetSchema.$TableName;"
+    $actual = [int](Invoke-PostgresScalar -Sql $countSql)
+    if ($actual -ne $Expected) {
+        Fail-Step -Name "目标表行数断言: $Stage" -Detail "期望 $Expected 条，实际 $actual 条"
+    }
+    Add-Check -Name "目标表行数断言: $Stage" -Status "PASS" -Detail "目标表达到预期行数 $Expected"
+}
+
 function Assert-ReplayedRow {
     $nameSql = "SELECT name FROM $TargetSchema.$TargetTable WHERE id = 7;"
     $actualName = Invoke-PostgresScalar -Sql $nameSql
@@ -739,6 +885,9 @@ function Write-ExecutionPlan {
     Write-Host "4. Create FULL/SINGLE_OBJECT/AUTO_SPLIT_PK sync template and run precheck."
     Write-Host "5. Create task, run worker loop, retry only failed shard, then replay repaired dirty row."
     Write-Host "6. Assert PostgreSQL target table reaches 20 complete rows."
+    if ($IncludeOfflineModeClosureE2E) {
+        Write-Host "7. Additionally verify SCHEDULED_BATCH, CUSTOM_SQL_QUERY, and SCHEMA_FULL platform/API closure."
+    }
 }
 
 function Resolve-ApiRoots {
@@ -776,6 +925,275 @@ function Invoke-WorkerLoop {
     return Get-EnvelopeData -Response $response -Name "worker loop envelope: $Stage"
 }
 
+function Assert-OfflinePrecheckRunnable {
+    param(
+        [object]$Precheck,
+        [string]$Stage,
+        [switch]$ApprovalExpected
+    )
+
+    if ($ApprovalExpected) {
+        if ([string]$Precheck.precheckStatus -ne "REQUIRES_APPROVAL" -or -not [bool]$Precheck.approvalRequired) {
+            Fail-Step -Name "离线模式预检查: $Stage" -Detail "预期该模式需要审批，但 precheck 未返回 REQUIRES_APPROVAL"
+        }
+        Add-Check -Name "离线模式预检查: $Stage" -Status "PASS" -Detail "precheck 已识别为可执行但需要审批确认"
+        return
+    }
+    if (-not [bool]$Precheck.canStartExecution) {
+        Fail-Step -Name "离线模式预检查: $Stage" -Detail "预期该模式可直接启动，但 precheck 未放行"
+    }
+    Add-Check -Name "离线模式预检查: $Stage" -Status "PASS" -Detail "precheck 已允许当前 runner 启动"
+}
+
+function Invoke-OfflineModeTemplateTaskRun {
+    param(
+        [string]$Stage,
+        [object]$ApiRoots,
+        [hashtable]$TemplateHeaders,
+        [hashtable]$TaskHeaders,
+        [hashtable]$RunHeaders,
+        [hashtable]$WorkerHeaders,
+        [hashtable]$TemplateBody,
+        [hashtable]$TaskBody,
+        [switch]$ApprovalExpected
+    )
+
+    $templateResponse = Invoke-Api `
+        -Name "创建离线模式模板: $Stage" `
+        -Method "POST" `
+        -Url "$($ApiRoots.Sync)/sync-templates" `
+        -Headers $TemplateHeaders `
+        -Body $TemplateBody
+    $template = Get-EnvelopeData -Response $templateResponse -Name "离线模式模板 envelope: $Stage"
+    $templateId = [long]$template.id
+    if ($templateId -le 0) {
+        Fail-Step -Name "离线模式模板 ID: $Stage" -Detail "创建模板后未拿到有效 ID"
+    }
+
+    $precheckResponse = Invoke-Api `
+        -Name "离线模式模板预检查: $Stage" `
+        -Method "POST" `
+        -Url "$($ApiRoots.Sync)/sync-templates/$templateId/precheck" `
+        -Headers $TemplateHeaders
+    $precheck = Get-EnvelopeData -Response $precheckResponse -Name "离线模式预检查 envelope: $Stage"
+    Assert-OfflinePrecheckRunnable -Precheck $precheck -Stage $Stage -ApprovalExpected:$ApprovalExpected
+
+    $TaskBody.templateId = $templateId
+    $taskResponse = Invoke-Api `
+        -Name "创建离线模式任务: $Stage" `
+        -Method "POST" `
+        -Url "$($ApiRoots.Sync)/sync-tasks" `
+        -Headers $TaskHeaders `
+        -Body $TaskBody
+    $task = Get-EnvelopeData -Response $taskResponse -Name "离线模式任务 envelope: $Stage"
+    $taskId = [long]$task.id
+    if ($taskId -le 0) {
+        Fail-Step -Name "离线模式任务 ID: $Stage" -Detail "创建任务后未拿到有效 ID"
+    }
+
+    Invoke-Api `
+        -Name "提交离线模式任务运行: $Stage" `
+        -Method "POST" `
+        -Url "$($ApiRoots.Sync)/sync-tasks/$taskId/run" `
+        -Headers $RunHeaders | Out-Null
+
+    Invoke-WorkerLoop -Stage "offline-mode-$Stage" -Headers $WorkerHeaders -SyncApiRoot $ApiRoots.Sync | Out-Null
+    return [pscustomobject]@{
+        TemplateId = $templateId
+        TaskId = $taskId
+    }
+}
+
+function Invoke-OfflineModeClosureE2E {
+    param(
+        [object]$ApiRoots,
+        [hashtable]$UserHeaders,
+        [hashtable]$ApprovalHeaders,
+        [hashtable]$WorkerHeaders,
+        [long]$SourceDatasourceId,
+        [long]$TargetDatasourceId
+    )
+
+    if (-not $IncludeOfflineModeClosureE2E) {
+        return
+    }
+
+    <#
+        这一组 E2E 专门证明“规划上已经支持的离线模式”真的能从 API 链路落到执行面：
+        1. SCHEDULED_BATCH：任务层持有 scheduleConfig，本次 worker loop 只代表一个有界批处理窗口；
+        2. CUSTOM_SQL_QUERY：只读 SQL 正文只进入 internal run-once 请求，不在脚本输出、审计摘要或响应正文中展开；
+        3. SCHEMA_FULL：data-sync 不直连源库，而是调用 datasource-management metadata discovery，再转 OBJECT_LIST fan-out。
+
+        这里没有额外实现 DATABASE_FULL 的真实表写入，是因为它与 SCHEMA_FULL 使用同一个 discovery fan-out 执行器。
+        在本地 E2E 中用两张专用表验证 schema 级发现、对象列表生成和多对象写入，已经覆盖核心执行链路；
+        真正全库迁移在客户环境应额外加入 include/exclude、容量评估、目标命名和审批演练。
+    #>
+    Add-Check -Name "离线模式闭环 E2E" -Status "PASS" -Detail "开始执行 SCHEDULED_BATCH、CUSTOM_SQL_QUERY、SCHEMA_FULL 可选验收"
+
+    $scheduledFieldMappingConfig = @(
+        @{ sourceField = "id"; targetField = "id" },
+        @{ sourceField = "customer_name"; targetField = "name" },
+        @{ sourceField = "amount"; targetField = "amount" },
+        @{ sourceField = "region"; targetField = "region" }
+    ) | ConvertTo-Json -Depth 10 -Compress
+    $scheduledFilterConfig = @{
+        logic = "AND"
+        conditions = @(
+            @{ field = "region"; operator = "="; value = "NORTH" }
+        )
+    } | ConvertTo-Json -Depth 10 -Compress
+    $scheduledTaskScheduleConfig = @{
+        type = "CRON"
+        cron = "0 0/30 * * * ?"
+        timezone = "Asia/Shanghai"
+        windowPolicy = "BOUNDED_WINDOW_PER_TRIGGER"
+    } | ConvertTo-Json -Depth 10 -Compress
+    Invoke-OfflineModeTemplateTaskRun `
+        -Stage "scheduled-batch" `
+        -ApiRoots $ApiRoots `
+        -TemplateHeaders $UserHeaders `
+        -TaskHeaders $UserHeaders `
+        -RunHeaders $UserHeaders `
+        -WorkerHeaders $WorkerHeaders `
+        -TemplateBody @{
+            tenantId = $TenantId
+            projectId = $ProjectId
+            workspaceId = $WorkspaceId
+            name = "E2E SCHEDULED_BATCH $script:RunId"
+            description = "local platform offline mode scheduled batch E2E"
+            sourceDatasourceId = $SourceDatasourceId
+            targetDatasourceId = $TargetDatasourceId
+            sourceSchemaName = $MySqlDatabase
+            sourceObjectName = $script:ScheduledBatchSourceTable
+            targetSchemaName = $TargetSchema
+            targetObjectName = $script:ScheduledBatchTargetTable
+            sourceConnectorType = "MYSQL"
+            targetConnectorType = "POSTGRESQL"
+            syncMode = "SCHEDULED_BATCH"
+            syncScopeType = "SINGLE_OBJECT"
+            writeStrategy = "UPSERT"
+            primaryKeyField = "id"
+            fieldMappingConfig = $scheduledFieldMappingConfig
+            filterConfig = $scheduledFilterConfig
+        } `
+        -TaskBody @{
+            tenantId = $TenantId
+            projectId = $ProjectId
+            workspaceId = $WorkspaceId
+            name = "E2E scheduled batch task $script:RunId"
+            description = "local scheduled batch offline mode E2E task"
+            priority = "HIGH"
+            runMode = "SCHEDULED"
+            scheduleConfig = $scheduledTaskScheduleConfig
+            ownerId = $ActorId
+        } | Out-Null
+    Assert-TargetTableCount -TableName $script:ScheduledBatchTargetTable -Expected 3 -Stage "SCHEDULED_BATCH"
+
+    $customSqlConfig = @{
+        sql = "select id, customer_name as name, amount, region from $($script:CustomSqlSourceTable) where region = 'EAST'"
+        statementRef = "local-e2e.custom-sql.$script:RunId"
+    } | ConvertTo-Json -Depth 10 -Compress
+    $customSqlFieldMappingConfig = @(
+        @{ sourceField = "id"; targetField = "id" },
+        @{ sourceField = "name"; targetField = "name" },
+        @{ sourceField = "amount"; targetField = "amount" },
+        @{ sourceField = "region"; targetField = "region" }
+    ) | ConvertTo-Json -Depth 10 -Compress
+    Invoke-OfflineModeTemplateTaskRun `
+        -Stage "custom-sql-query" `
+        -ApiRoots $ApiRoots `
+        -TemplateHeaders $UserHeaders `
+        -TaskHeaders $ApprovalHeaders `
+        -RunHeaders $ApprovalHeaders `
+        -WorkerHeaders $WorkerHeaders `
+        -ApprovalExpected `
+        -TemplateBody @{
+            tenantId = $TenantId
+            projectId = $ProjectId
+            workspaceId = $WorkspaceId
+            name = "E2E CUSTOM_SQL_QUERY $script:RunId"
+            description = "local platform offline mode custom SQL E2E"
+            sourceDatasourceId = $SourceDatasourceId
+            targetDatasourceId = $TargetDatasourceId
+            sourceSchemaName = $MySqlDatabase
+            targetSchemaName = $TargetSchema
+            targetObjectName = $script:CustomSqlTargetTable
+            sourceConnectorType = "MYSQL"
+            targetConnectorType = "POSTGRESQL"
+            syncMode = "CUSTOM_SQL_QUERY"
+            syncScopeType = "CUSTOM_SQL_QUERY"
+            writeStrategy = "UPSERT"
+            primaryKeyField = "id"
+            fieldMappingConfig = $customSqlFieldMappingConfig
+            customSqlConfig = $customSqlConfig
+        } `
+        -TaskBody @{
+            tenantId = $TenantId
+            projectId = $ProjectId
+            workspaceId = $WorkspaceId
+            name = "E2E custom SQL task $script:RunId"
+            description = "local custom SQL offline mode E2E task"
+            priority = "HIGH"
+            runMode = "MANUAL"
+            ownerId = $ActorId
+            approvalConfirmed = $true
+            approvalFactId = "approval:local-e2e-$script:RunId-custom-sql"
+        } | Out-Null
+    Assert-TargetTableCount -TableName $script:CustomSqlTargetTable -Expected 2 -Stage "CUSTOM_SQL_QUERY"
+
+    $schemaDiscoveryConfig = @{
+        discoveryPolicy = @{
+            catalog = $MySqlDatabase
+            includePatterns = @(
+                $script:SchemaFullSourceOrdersTable,
+                $script:SchemaFullSourceCustomersTable
+            )
+            maxObjects = 5
+            includeViews = $false
+        }
+    } | ConvertTo-Json -Depth 10 -Compress
+    Invoke-OfflineModeTemplateTaskRun `
+        -Stage "schema-full" `
+        -ApiRoots $ApiRoots `
+        -TemplateHeaders $UserHeaders `
+        -TaskHeaders $ApprovalHeaders `
+        -RunHeaders $ApprovalHeaders `
+        -WorkerHeaders $WorkerHeaders `
+        -ApprovalExpected `
+        -TemplateBody @{
+            tenantId = $TenantId
+            projectId = $ProjectId
+            workspaceId = $WorkspaceId
+            name = "E2E SCHEMA_FULL $script:RunId"
+            description = "local platform offline mode schema full E2E"
+            sourceDatasourceId = $SourceDatasourceId
+            targetDatasourceId = $TargetDatasourceId
+            sourceSchemaName = $MySqlDatabase
+            targetSchemaName = $TargetSchema
+            sourceConnectorType = "MYSQL"
+            targetConnectorType = "POSTGRESQL"
+            syncMode = "FULL"
+            syncScopeType = "SCHEMA_FULL"
+            writeStrategy = "UPSERT"
+            primaryKeyField = "id"
+            objectMappingConfig = $schemaDiscoveryConfig
+        } `
+        -TaskBody @{
+            tenantId = $TenantId
+            projectId = $ProjectId
+            workspaceId = $WorkspaceId
+            name = "E2E schema full task $script:RunId"
+            description = "local schema full offline mode E2E task"
+            priority = "HIGH"
+            runMode = "MANUAL"
+            ownerId = $ActorId
+            approvalConfirmed = $true
+            approvalFactId = "approval:local-e2e-$script:RunId-schema-full"
+        } | Out-Null
+    Assert-TargetTableCount -TableName $script:SchemaFullTargetOrdersTable -Expected 2 -Stage "SCHEMA_FULL orders"
+    Assert-TargetTableCount -TableName $script:SchemaFullTargetCustomersTable -Expected 2 -Stage "SCHEMA_FULL customers"
+}
+
 function Main {
     Assert-SafeIdentifier -Name "SourceTable" -Value $SourceTable
     Assert-SafeIdentifier -Name "TargetSchema" -Value $TargetSchema
@@ -794,6 +1212,7 @@ function Main {
         Wait-TcpPort -Name "Keycloak" -HostName "127.0.0.1" -Port 18080 | Out-Null
     }
     Initialize-E2EDatabase
+    Initialize-OfflineModeE2EDatabase
 
     $apiRoots = Resolve-ApiRoots
     if ($UseDirectServiceUrls) {
@@ -1078,6 +1497,13 @@ function Main {
     Invoke-WorkerLoop -Stage "dirty-record-primary-key-replay" -Headers $workerHeaders -SyncApiRoot $apiRoots.Sync | Out-Null
     Assert-TargetCount -Expected 20 -Stage "dirty replay completed"
     Assert-ReplayedRow
+    Invoke-OfflineModeClosureE2E `
+        -ApiRoots $apiRoots `
+        -UserHeaders $userHeaders `
+        -ApprovalHeaders $workerHeaders `
+        -WorkerHeaders $workerHeaders `
+        -SourceDatasourceId $sourceDatasourceId `
+        -TargetDatasourceId $targetDatasourceId
     Invoke-OptionalReceiptProbe -Headers $workerHeaders
 }
 

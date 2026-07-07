@@ -87,20 +87,32 @@ public class SyncTemplateExecutionPrecheckSupport {
         boolean checkpointRequired = compatibility != null && compatibility.checkpointRequired();
         boolean checkpointHandoffSupported = !checkpointRequired;
         boolean fieldMappingRunnable = fieldMappingContract.directlyRunnableByMinimalBridge();
+        /*
+         * 多对象、整 schema、整库场景的字段映射不一定来自模板顶层 fieldMappingConfig：
+         * - OBJECT_LIST 可以在 objectMappingConfig.mappings[n].fieldMappings 内声明对象级覆盖；
+         * - SCHEMA_FULL/DATABASE_FULL 会先走 datasource-management metadata discovery，再由发现到的字段清单生成对象级映射；
+         * - 因此不能继续用“顶层 fieldMappingConfig 是否可被最小 bridge 直接执行”来阻断 fan-out 类范围。
+         *
+         * 这里保留 fieldMappingDeclared/fieldMappingRunnableByMinimalBridge 的原始布尔值用于诊断，
+         * 但真正判断“当前 runner 能不能启动”时使用 fieldMappingRunnableForCurrentRunner。
+         */
+        boolean fieldMappingRunnableForCurrentRunner = scopeContract.multiObjectScope()
+                || fieldMappingRunnable;
         boolean filterRunnable = filterContract.directlyRunnableByMinimalBridge();
         boolean customSqlSafetyPassed = !scopeContract.customSqlScope()
                 || !scopeContract.hasIssue("CUSTOM_SQL_RAW_SQL_UNSAFE");
 
         evaluateWriteStrategy(template, writeStrategy, issueCodes, recommendedActions, safetyNotes);
-        evaluateRunnerBoundary(syncMode, scopeContract, fieldMappingRunnable, filterRunnable, checkpointRequired,
+        evaluateRunnerBoundary(syncMode, scopeContract, fieldMappingRunnableForCurrentRunner, filterRunnable, checkpointRequired,
                 issueCodes, recommendedActions, performanceNotes, safetyNotes);
+        removeLegacyMinimalBridgeScopeWarningWhenFanOutIsExecutable(scopeContract, issueCodes, recommendedActions);
 
         List<String> distinctIssues = distinct(issueCodes);
         boolean scopeContractValid = !scopeContract.hasBlockingIssues();
-        boolean executableByCurrentRunner = scopeContract.executableByMinimalBridge()
-                && modeExecutableByMinimalBridge(syncMode)
+        boolean executableByCurrentRunner = scopeExecutableByCurrentRunner(scopeContract)
+                && modeExecutableByCurrentRunner(syncMode)
                 && checkpointHandoffSupported
-                && fieldMappingRunnable
+                && fieldMappingRunnableForCurrentRunner
                 && filterRunnable
                 && connectorCompatibilitySupported
                 && !hasHardBlockingIssue(distinctIssues);
@@ -232,13 +244,13 @@ public class SyncTemplateExecutionPrecheckSupport {
                                         List<String> recommendedActions,
                                         List<String> performanceNotes,
                                         List<String> safetyNotes) {
-        if (!scopeContract.executableByMinimalBridge()) {
+        if (!scopeExecutableByCurrentRunner(scopeContract)) {
             issueCodes.add("SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE");
             recommendedActions.add("当前范围可作为任务草稿和审批对象保存，但执行前需要专用多对象/全库/自定义 SQL runner");
         }
-        if (!modeExecutableByMinimalBridge(syncMode)) {
+        if (!modeExecutableByCurrentRunner(syncMode)) {
             issueCodes.add("MODE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE");
-            recommendedActions.add("当前最小 run-once bridge 只安全支持 FULL 和 ONE_TIME_MIGRATION 的单对象小批量场景");
+            recommendedActions.add("当前 run-once/fan-out 执行入口支持 FULL、ONE_TIME_MIGRATION、SCHEDULED_BATCH 和 CUSTOM_SQL_QUERY；其他模式需要 checkpoint、CDC 或专用 runner");
         }
         if (checkpointRequired) {
             issueCodes.add("CHECKPOINT_HANDOFF_NOT_IMPLEMENTED");
@@ -262,8 +274,41 @@ public class SyncTemplateExecutionPrecheckSupport {
      * <p>FULL/ONE_TIME_MIGRATION 仍然只适合单批小表或演示级闭环；如果源端行数超过 fetchSize，底层 runner 会返回
      * endOfSource=false。由于 full 模式尚无稳定 offset/checkpoint 翻页语义，data-sync 不会伪造多批循环。</p>
      */
-    private boolean modeExecutableByMinimalBridge(SyncMode syncMode) {
-        return syncMode == SyncMode.FULL || syncMode == SyncMode.ONE_TIME_MIGRATION;
+    private boolean scopeExecutableByCurrentRunner(SyncTemplateScopeContract scopeContract) {
+        /*
+         * “最小 bridge 可执行”和“当前 runner 可执行”不能再画等号：
+         * - SINGLE_OBJECT / CUSTOM_SQL_QUERY 仍然由 data-sync -> datasource-management run-once 直接完成；
+         * - OBJECT_LIST / SCHEMA_FULL / DATABASE_FULL 会先由 data-sync 做对象级 fan-out，再把每个对象降级为 SINGLE_OBJECT；
+         * - 因此预检需要允许 fan-out 范围入队，否则真实执行链路已经实现却会被 runTask 的旧门禁挡住。
+         */
+        return scopeContract != null
+                && (scopeContract.executableByMinimalBridge() || scopeContract.multiObjectScope());
+    }
+
+    private boolean modeExecutableByCurrentRunner(SyncMode syncMode) {
+        return syncMode == SyncMode.FULL
+                || syncMode == SyncMode.ONE_TIME_MIGRATION
+                || syncMode == SyncMode.SCHEDULED_BATCH
+                || syncMode == SyncMode.CUSTOM_SQL_QUERY;
+    }
+
+    /**
+     * 清理“最小 bridge 不支持”的历史诊断。
+     *
+     * <p>{@link SyncTemplateScopeContractSupport} 仍然站在“单次 run-once bridge”的视角，会为 OBJECT_LIST、
+     * SCHEMA_FULL 和 DATABASE_FULL 生成 {@code SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE}。但当前执行链路
+     * 已经不再只等同于单次 bridge：data-sync 会先做对象级或元数据发现 fan-out，再把每个对象降级为 SINGLE_OBJECT
+     * 交给 run-once。预检响应面向“当前 runner 能不能启动”，所以在 fan-out 范围已经可执行时，需要移除这条旧提示。</p>
+     */
+    private void removeLegacyMinimalBridgeScopeWarningWhenFanOutIsExecutable(SyncTemplateScopeContract scopeContract,
+                                                                             List<String> issueCodes,
+                                                                             List<String> recommendedActions) {
+        if (!scopeExecutableByCurrentRunner(scopeContract)) {
+            return;
+        }
+        issueCodes.removeIf("SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE"::equals);
+        recommendedActions.removeIf(action -> action != null
+                && action.contains("最小 run-once 执行桥只支持 SINGLE_OBJECT"));
     }
 
     private String resolveStatus(List<String> issueCodes,

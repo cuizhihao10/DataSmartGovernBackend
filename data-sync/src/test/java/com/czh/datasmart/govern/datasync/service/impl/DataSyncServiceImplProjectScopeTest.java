@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.datasync.service.impl;
 
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
+import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTaskRequest;
 import com.czh.datasmart.govern.datasync.config.DataSyncDatasourceCapabilityProperties;
 import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTemplateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
@@ -42,6 +43,8 @@ import com.czh.datasmart.govern.datasync.service.support.SyncTemplateExecutionPr
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplatePlanningPreviewSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateScopeContractSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateValidationSupport;
+import com.czh.datasmart.govern.datasync.support.SyncApprovalState;
+import com.czh.datasmart.govern.datasync.support.SyncTaskState;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -50,6 +53,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -110,6 +114,99 @@ class DataSyncServiceImplProjectScopeTest {
         assertThat(template.getProjectId()).isEqualTo(101L);
         verify(templateMapper).insert(any(SyncTemplate.class));
         verify(auditSupport).saveTemplateAudit(any(SyncTemplate.class), any(), any(), any());
+    }
+
+    /**
+     * 普通项目角色不能仅靠请求体里的 approvalConfirmed=true 绕过高风险审批。
+     *
+     * <p>这个用例固定的是商业化系统里非常重要的一条边界：自定义 SQL、全库迁移等高风险任务可以先创建草稿，
+     * 但“审批已完成”必须来自可信角色或后续正式审批中心。否则攻击者只要构造一个布尔字段，就能把任意只读 SQL
+     * 结果集搬到目标端，审批流就形同虚设。</p>
+     */
+    @Test
+    void createTaskShouldRejectApprovalConfirmationFromUntrustedRole() {
+        SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
+        SyncTaskMapper taskMapper = mock(SyncTaskMapper.class);
+        SyncAuditSupport auditSupport = mock(SyncAuditSupport.class);
+        DataSyncServiceImpl service = service(templateMapper, taskMapper,
+                mock(SyncExecutionMapper.class),
+                mock(SyncCheckpointMapper.class),
+                mock(SyncErrorSampleMapper.class),
+                mock(SyncAuditRecordMapper.class),
+                auditSupport);
+        when(templateMapper.selectById(7001L)).thenReturn(highRiskCustomSqlTemplate());
+
+        CreateSyncTaskRequest request = createTaskRequest(true, "approval:test-001");
+
+        assertThrows(PlatformBusinessException.class,
+                () -> service.createTask(request, projectScopedActor(List.of(101L, 102L))));
+
+        verify(taskMapper, never()).insert(any(SyncTask.class));
+        verify(auditSupport, never()).saveAudit(any(), any(), any(), any(), any(), any());
+    }
+
+    /**
+     * 高风险任务未提交审批事实时，应允许创建但停留在 PENDING_APPROVAL。
+     *
+     * <p>这样前端或运营台可以看到“配置已经保存、但不能执行”的明确状态，而不是让用户反复创建失败。
+     * 真正运行仍会被 runTask 的预检与状态机拦住，直到审批中心或可信服务账号写入 APPROVED 事实。</p>
+     */
+    @Test
+    void createTaskShouldParkHighRiskTaskInPendingApprovalWhenApprovalMissing() {
+        SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
+        SyncTaskMapper taskMapper = mock(SyncTaskMapper.class);
+        SyncAuditSupport auditSupport = mock(SyncAuditSupport.class);
+        DataSyncServiceImpl service = service(templateMapper, taskMapper,
+                mock(SyncExecutionMapper.class),
+                mock(SyncCheckpointMapper.class),
+                mock(SyncErrorSampleMapper.class),
+                mock(SyncAuditRecordMapper.class),
+                auditSupport);
+        when(templateMapper.selectById(7001L)).thenReturn(highRiskCustomSqlTemplate());
+        when(taskMapper.insert(any(SyncTask.class))).thenAnswer(invocation -> {
+            SyncTask task = invocation.getArgument(0);
+            task.setId(8101L);
+            return 1;
+        });
+
+        SyncTask task = service.createTask(createTaskRequest(false, null), projectScopedActor(List.of(101L, 102L)));
+
+        assertThat(task.getCurrentState()).isEqualTo(SyncTaskState.PENDING_APPROVAL.name());
+        assertThat(task.getApprovalState()).isEqualTo(SyncApprovalState.PENDING.name());
+        verify(taskMapper).insert(any(SyncTask.class));
+        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("approvalRequired=true"));
+    }
+
+    /**
+     * 可信服务账号提交低敏审批事实后，高风险任务才允许进入 CONFIGURED。
+     *
+     * <p>这里同时验证审计摘要只记录 approvalFactId 这类低敏引用。SQL 正文、字段映射和连接信息仍留在受控配置或
+     * datasource-management 执行面，不能被普通审计 payload 扩散。</p>
+     */
+    @Test
+    void createTaskShouldAcceptTrustedApprovalFactAndWriteLowSensitiveAudit() {
+        SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
+        SyncTaskMapper taskMapper = mock(SyncTaskMapper.class);
+        SyncAuditSupport auditSupport = mock(SyncAuditSupport.class);
+        DataSyncServiceImpl service = service(templateMapper, taskMapper,
+                mock(SyncExecutionMapper.class),
+                mock(SyncCheckpointMapper.class),
+                mock(SyncErrorSampleMapper.class),
+                mock(SyncAuditRecordMapper.class),
+                auditSupport);
+        when(templateMapper.selectById(7001L)).thenReturn(highRiskCustomSqlTemplate());
+        when(taskMapper.insert(any(SyncTask.class))).thenAnswer(invocation -> {
+            SyncTask task = invocation.getArgument(0);
+            task.setId(8102L);
+            return 1;
+        });
+
+        SyncTask task = service.createTask(createTaskRequest(true, "approval:test-002"), trustedApprovalActor());
+
+        assertThat(task.getCurrentState()).isEqualTo(SyncTaskState.CONFIGURED.name());
+        assertThat(task.getApprovalState()).isEqualTo(SyncApprovalState.APPROVED.name());
+        verify(taskMapper).insert(any(SyncTask.class));
+        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("approvalFactId=approval:test-002"));
     }
 
     /**
@@ -336,6 +433,54 @@ class DataSyncServiceImplProjectScopeTest {
         return request;
     }
 
+    private CreateSyncTaskRequest createTaskRequest(boolean approvalConfirmed, String approvalFactId) {
+        CreateSyncTaskRequest request = new CreateSyncTaskRequest();
+        request.setTemplateId(7001L);
+        request.setTenantId(7L);
+        request.setProjectId(101L);
+        request.setWorkspaceId(301L);
+        request.setName("high risk custom sql task");
+        request.setDescription("task used to verify approval gate");
+        request.setPriority("HIGH");
+        request.setRunMode("MANUAL");
+        request.setOwnerId(1001L);
+        request.setApprovalConfirmed(approvalConfirmed);
+        request.setApprovalFactId(approvalFactId);
+        return request;
+    }
+
+    private SyncTemplate highRiskCustomSqlTemplate() {
+        SyncTemplate template = new SyncTemplate();
+        template.setId(7001L);
+        template.setTenantId(7L);
+        template.setProjectId(101L);
+        template.setWorkspaceId(301L);
+        template.setName("high risk custom sql template");
+        template.setDescription("custom sql approval test template");
+        template.setSourceDatasourceId(10001L);
+        template.setTargetDatasourceId(20001L);
+        template.setSourceSchemaName("ods");
+        template.setTargetSchemaName("dwd");
+        template.setTargetObjectName("customer_clean");
+        template.setSourceConnectorType("MYSQL");
+        template.setTargetConnectorType("POSTGRESQL");
+        template.setSyncMode("CUSTOM_SQL_QUERY");
+        template.setSyncScopeType("CUSTOM_SQL_QUERY");
+        template.setWriteStrategy("UPSERT");
+        template.setPrimaryKeyField("id");
+        template.setCustomSqlConfig("""
+                {"sql":"select id, name from customer where status = 'ACTIVE'","statementRef":"approval-test.sql"}
+                """);
+        template.setFieldMappingConfig("""
+                [
+                  {"sourceField":"id","targetField":"id"},
+                  {"sourceField":"name","targetField":"name"}
+                ]
+                """);
+        template.setEnabled(true);
+        return template;
+    }
+
     private SyncActorContext projectScopedActor(List<Long> projectIds) {
         return new SyncActorContext(
                 7L,
@@ -345,6 +490,19 @@ class DataSyncServiceImplProjectScopeTest {
                 "PROJECT",
                 "project_id IN ${actorProjectIds}",
                 projectIds,
+                false
+        );
+    }
+
+    private SyncActorContext trustedApprovalActor() {
+        return new SyncActorContext(
+                7L,
+                9001L,
+                "SERVICE_ACCOUNT",
+                "trace-sync-approval",
+                "PLATFORM",
+                "all",
+                List.of(),
                 false
         );
     }

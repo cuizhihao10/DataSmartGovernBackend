@@ -43,4 +43,21 @@ public class CreateSyncTaskRequest {
     private String scheduleConfig;
     private String runMode;
     private Long ownerId;
+
+    /**
+     * 高风险任务是否已经完成外部审批确认。
+     *
+     * <p>该字段只用于当前闭环版本承接“已经由运营台、审批流或受控本地 E2E 环境确认”的事实，
+     * 不是让普通用户绕过审批。Service 层仍会结合 actorRole 判断调用方是否具备提交批准事实的权限；
+     * 后续正式接入 permission-admin 的 approvalFactId 后，应优先以服务端审批事实为准，而不是只相信布尔值。</p>
+     */
+    private Boolean approvalConfirmed;
+
+    /**
+     * 审批事实 ID。
+     *
+     * <p>这里保存低敏引用，例如 {@code approval:sync-local-e2e-001}，用于审计时说明本次高风险任务
+     * 为什么被允许入队。它不应该包含 SQL、表名、字段映射、连接串、token、密码或任何业务样本数据。</p>
+     */
+    private String approvalFactId;
 }

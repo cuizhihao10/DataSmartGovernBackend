@@ -91,6 +91,8 @@ import java.util.Locale;
 @RequiredArgsConstructor
 public class DataSyncServiceImpl implements DataSyncService {
 
+    private static final int APPROVAL_FACT_ID_MAX_LENGTH = 160;
+
     private final SyncTemplateMapper templateMapper;
     private final SyncTaskMapper taskMapper;
     private final SyncExecutionMapper executionMapper;
@@ -196,11 +198,19 @@ public class DataSyncServiceImpl implements DataSyncService {
     public SyncTask createTask(CreateSyncTaskRequest request, SyncActorContext actorContext) {
         SyncTemplate template = getTemplate(request.getTemplateId(), actorContext);
         templateValidationSupport.validateTemplate(template);
+        SyncTemplateExecutionPrecheckResponse precheck = templateExecutionPrecheckSupport.precheck(template);
+        if (!precheck.canCreateTaskDraft()) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    "同步任务创建前预检查未通过，precheckStatus=" + precheck.precheckStatus()
+                            + "，issueCodes=" + precheck.issueCodes()
+                            + "，recommendedActions=" + precheck.recommendedActions());
+        }
         Long tenantId = dataScopeSupport.resolveTenantForCreate(request.getTenantId(), actorContext);
         if (!tenantId.equals(template.getTenantId())) {
             throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
                     "同步任务租户必须与模板租户一致，templateTenantId=" + template.getTenantId() + ", taskTenantId=" + tenantId);
         }
+        String approvalState = resolveApprovalStateForNewTask(precheck, request, actorContext);
 
         SyncTask task = new SyncTask();
         task.setTenantId(tenantId);
@@ -209,8 +219,18 @@ public class DataSyncServiceImpl implements DataSyncService {
         task.setTemplateId(template.getId());
         task.setName(querySupport.defaultText(request.getName(), template.getName()));
         task.setDescription(querySupport.defaultText(request.getDescription(), template.getDescription()));
-        task.setCurrentState(SyncTaskState.CONFIGURED.name());
-        task.setApprovalState(SyncApprovalState.NOT_REQUIRED.name());
+        /*
+         * 审批状态与任务主状态保持解耦：
+         * - approvalState 只回答“这类高风险同步是否已经批准”；
+         * - currentState 只回答“任务生命周期当前停在哪里”。
+         *
+         * 因此需要审批但尚未确认的任务进入 PENDING_APPROVAL，避免 runTask 绕过审批；
+         * 已确认或无需审批的任务保持 CONFIGURED，后续才能进入 QUEUED。
+         */
+        task.setCurrentState(SyncApprovalState.PENDING.name().equals(approvalState)
+                ? SyncTaskState.PENDING_APPROVAL.name()
+                : SyncTaskState.CONFIGURED.name());
+        task.setApprovalState(approvalState);
         task.setPriority(querySupport.defaultText(request.getPriority(), "MEDIUM").toUpperCase(java.util.Locale.ROOT));
         task.setScheduleConfig(querySupport.trimToNull(request.getScheduleConfig()));
         task.setRunMode(querySupport.defaultText(request.getRunMode(), "TEMPLATE").toUpperCase(java.util.Locale.ROOT));
@@ -220,7 +240,7 @@ public class DataSyncServiceImpl implements DataSyncService {
         task.setUpdateTime(LocalDateTime.now());
         taskMapper.insert(task);
         auditSupport.saveAudit(task.getTenantId(), task.getId(), null, SyncAuditActionType.CREATE_TASK,
-                actorContext, "taskId=" + task.getId() + ",templateId=" + task.getTemplateId());
+                actorContext, buildCreateTaskAuditPayload(task, precheck, request));
         return task;
     }
 
@@ -266,11 +286,20 @@ public class DataSyncServiceImpl implements DataSyncService {
         SyncTask task = getTask(id, actorContext);
         SyncTemplate template = getTemplateForTask(task);
         SyncTemplateExecutionPrecheckResponse precheck = templateExecutionPrecheckSupport.precheck(template);
-        if (!precheck.canStartExecution()) {
+        if (!canRunAfterPrecheck(precheck, task)) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
                     "同步任务执行前预检查未通过，precheckStatus=" + precheck.precheckStatus()
                             + "，issueCodes=" + precheck.issueCodes()
                             + "，recommendedActions=" + precheck.recommendedActions());
+        }
+        if (SyncTaskState.PENDING_APPROVAL.name().equals(task.getCurrentState())
+                && SyncApprovalState.APPROVED.name().equals(task.getApprovalState())) {
+            /*
+             * 外部正式审批流接入后，审批中心可能只把 approvalState 写成 APPROVED。
+             * runTask 在这里把“已批准但主状态仍停留在 PENDING_APPROVAL”的任务安全推进回 CONFIGURED，
+             * 再交给统一状态机判断，避免审批状态和生命周期状态短暂不一致导致合法运行被误挡。
+             */
+            task.setCurrentState(SyncTaskState.CONFIGURED.name());
         }
         stateMachineSupport.assertCanQueue(task.getCurrentState());
         SyncExecution execution = executionCreationSupport.createQueuedExecution(task, actorContext);
@@ -283,6 +312,112 @@ public class DataSyncServiceImpl implements DataSyncService {
                 actorContext, "taskId=" + task.getId() + ",executionId=" + execution.getId());
         return new SyncTaskOperationResult(task.getId(), task.getCurrentState(),
                 "同步任务已进入待执行队列，执行记录 ID=" + execution.getId() + "；后续将接入执行器、checkpoint 和任务中心协议");
+    }
+
+    /**
+     * 根据预检查结果和请求中的低敏审批事实决定新任务审批状态。
+     *
+     * <p>这里没有把 approvalFactId 存进任务表，是有意的阶段性收敛：
+     * 1. data-sync 当前只需要知道任务是否允许入队；
+     * 2. 正式审批事实应由 permission-admin/审批中心持久化，data-sync 保存引用或审计摘要即可；
+     * 3. 审计摘要必须低敏，不能包含 SQL、表名、字段映射、连接串、token、密码或业务样本。</p>
+     */
+    private String resolveApprovalStateForNewTask(SyncTemplateExecutionPrecheckResponse precheck,
+                                                  CreateSyncTaskRequest request,
+                                                  SyncActorContext actorContext) {
+        if (!precheck.approvalRequired()) {
+            if (Boolean.TRUE.equals(request.getApprovalConfirmed()) || hasText(request.getApprovalFactId())) {
+                /*
+                 * 非高风险任务不需要提交审批事实。这里不直接失败，是为了兼容本地 E2E 或上游审批流的统一表单；
+                 * 但最终状态仍以 NOT_REQUIRED 为准，避免把普通任务误标成“已审批”。
+                 */
+                assertTrustedApprovalSubmitter(actorContext, "SUBMIT_UNUSED_APPROVAL_FACT");
+                validateApprovalFactId(request.getApprovalFactId(), false);
+            }
+            return SyncApprovalState.NOT_REQUIRED.name();
+        }
+        if (Boolean.TRUE.equals(request.getApprovalConfirmed())) {
+            assertTrustedApprovalSubmitter(actorContext, "CONFIRM_SYNC_TASK_APPROVAL");
+            validateApprovalFactId(request.getApprovalFactId(), true);
+            return SyncApprovalState.APPROVED.name();
+        }
+        if (hasText(request.getApprovalFactId())) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    "已提供审批事实 ID，但 approvalConfirmed 未显式为 true；高风险同步任务不能只凭事实引用入队");
+        }
+        return SyncApprovalState.PENDING.name();
+    }
+
+    /**
+     * 判断任务是否允许越过 REQUIRES_APPROVAL 预检查状态进入队列。
+     *
+     * <p>预检查返回 REQUIRES_APPROVAL 时，说明模板配置本身可执行，但属于高风险动作，例如自定义 SQL、
+     * 全库/全 schema 迁移或覆盖式写入。它不能像 READY_TO_EXECUTE 一样直接入队，必须看到任务上的
+     * approvalState=APPROVED。这样能让 API、worker 和 E2E 都共享同一条审批闸门。</p>
+     */
+    private boolean canRunAfterPrecheck(SyncTemplateExecutionPrecheckResponse precheck, SyncTask task) {
+        if (precheck.canStartExecution()) {
+            return true;
+        }
+        return SyncTemplateExecutionPrecheckSupport.REQUIRES_APPROVAL.equals(precheck.precheckStatus())
+                && SyncApprovalState.APPROVED.name().equals(task.getApprovalState());
+    }
+
+    /**
+     * 校验谁可以向 data-sync 提交“审批已完成”这一低敏事实。
+     *
+     * <p>当前仓库还没有把正式 approval service 远程接入 data-sync，所以先使用角色白名单做本地兜底。
+     * 普通用户、项目成员或只读角色不能通过请求体里的布尔值绕过审批；只有平台管理员、租户管理员、
+     * 运营人员和受控服务账号可以提交审批事实。后续接入 permission-admin 后，这里应替换为策略引擎调用。</p>
+     */
+    private void assertTrustedApprovalSubmitter(SyncActorContext actorContext, String operation) {
+        String role = normalizeRole(actorContext);
+        if (!"PLATFORM_ADMINISTRATOR".equals(role)
+                && !"TENANT_ADMINISTRATOR".equals(role)
+                && !"OPERATOR".equals(role)
+                && !"SERVICE_ACCOUNT".equals(role)) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "当前角色无权提交 data-sync 审批确认事实，operation=" + operation + ", role=" + role);
+        }
+    }
+
+    /**
+     * 校验审批事实 ID 是否保持低敏。
+     *
+     * <p>审批事实 ID 应该像 {@code approval:sync-local-e2e-001} 这类引用，而不是审批正文、SQL、对象清单或字段映射。
+     * 因此这里只允许短的字母、数字、冒号、下划线、短横线、点和斜杠；如果未来审批中心使用 UUID、ULID、工单号或
+     * trace-like 编码，都可以落在这个安全字符集内。</p>
+     */
+    private void validateApprovalFactId(String approvalFactId, boolean required) {
+        String factId = querySupport.trimToNull(approvalFactId);
+        if (factId == null) {
+            if (required) {
+                throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                        "高风险同步任务确认审批时必须提供低敏 approvalFactId");
+            }
+            return;
+        }
+        if (factId.length() > APPROVAL_FACT_ID_MAX_LENGTH
+                || !factId.matches("[A-Za-z0-9:_./-]+")) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    "approvalFactId 只能是低敏短引用，允许字母、数字、冒号、下划线、短横线、点和斜杠，且长度不超过 "
+                            + APPROVAL_FACT_ID_MAX_LENGTH);
+        }
+    }
+
+    private String buildCreateTaskAuditPayload(SyncTask task,
+                                               SyncTemplateExecutionPrecheckResponse precheck,
+                                               CreateSyncTaskRequest request) {
+        String approvalFactId = querySupport.trimToNull(request.getApprovalFactId());
+        String payload = "taskId=" + task.getId()
+                + ",templateId=" + task.getTemplateId()
+                + ",precheckStatus=" + precheck.precheckStatus()
+                + ",approvalRequired=" + precheck.approvalRequired()
+                + ",approvalState=" + task.getApprovalState();
+        if (approvalFactId != null) {
+            payload = payload + ",approvalFactId=" + querySupport.truncate(approvalFactId, APPROVAL_FACT_ID_MAX_LENGTH);
+        }
+        return payload;
     }
 
     @Override
@@ -590,6 +725,15 @@ public class DataSyncServiceImpl implements DataSyncService {
 
     private String normalizeCode(String value) {
         return value == null ? null : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private String normalizeRole(SyncActorContext actorContext) {
+        String role = actorContext == null ? null : actorContext.actorRole();
+        return role == null || role.isBlank() ? "USER" : role.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     /**
