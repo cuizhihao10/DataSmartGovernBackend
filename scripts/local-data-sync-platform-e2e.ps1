@@ -29,6 +29,8 @@
     11. 最终断言 PostgreSQL 目标表包含 1..20 全量数据。
     12. 可选追加 -IncludeOfflineModeClosureE2E，继续验证 SCHEDULED_BATCH、CUSTOM_SQL_QUERY、SCHEMA_FULL
         三类离线模式的真实 API 创建、预检、审批确认、worker 执行和 PostgreSQL 行数断言。
+    13. 可选追加 -IncludeTaskSchedulerWorkerLoopE2E，继续验证“任务级 scheduler 到期派发 execution，
+        再由 worker-loop 执行真实 MySQL -> PostgreSQL 搬运”的多服务闭环。
 
     安全边界：
     - 不打印 access token、refresh token、数据库密码、完整 JDBC URL、SQL 正文、样本行、错误堆栈或响应正文。
@@ -55,6 +57,7 @@ param(
     [switch]$SkipDatabasePrepare,
     [switch]$SkipTaskReceiptProbe,
     [switch]$IncludeOfflineModeClosureE2E,
+    [switch]$IncludeTaskSchedulerWorkerLoopE2E,
     [switch]$Strict,
 
     [string]$GatewayBaseUrl = "http://localhost:8080",
@@ -114,6 +117,10 @@ $script:SchemaFullSourceOrdersTable = "datasmart_e2e_schema_orders"
 $script:SchemaFullSourceCustomersTable = "datasmart_e2e_schema_customers"
 $script:SchemaFullTargetOrdersTable = "datasmart_e2e_schema_orders"
 $script:SchemaFullTargetCustomersTable = "datasmart_e2e_schema_customers"
+$script:SchedulerFullSourceTable = "datasmart_e2e_scheduler_full_orders"
+$script:SchedulerFullTargetTable = "orders_scheduler_full"
+$script:SchedulerBatchSourceTable = "datasmart_e2e_scheduler_batch_orders"
+$script:SchedulerBatchTargetTable = "orders_scheduler_batch"
 
 if (-not $PSBoundParameters.ContainsKey("MySqlPort") -and -not [string]::IsNullOrWhiteSpace($env:DATASMART_LOCAL_MYSQL_PORT)) {
     $MySqlPort = [int]$env:DATASMART_LOCAL_MYSQL_PORT
@@ -592,6 +599,84 @@ CREATE TABLE $TargetSchema.$($script:SchemaFullTargetCustomersTable) (
     Add-Check -Name "离线模式 E2E 表准备" -Status "PASS" -Detail "已创建 SCHEDULED_BATCH、CUSTOM_SQL_QUERY、SCHEMA_FULL 专用源表和目标表"
 }
 
+function Initialize-TaskSchedulerWorkerLoopE2EDatabase {
+    if (-not $IncludeTaskSchedulerWorkerLoopE2E) {
+        return
+    }
+    if ($SkipDatabasePrepare) {
+        Add-Check -Name "调度器 + worker-loop E2E 表准备" -Status "WARN" -Detail "已通过 -SkipDatabasePrepare 跳过，要求外部已准备 scheduler 专用源表和目标表"
+        return
+    }
+
+    $schedulerIdentifiers = @(
+        $script:SchedulerFullSourceTable,
+        $script:SchedulerFullTargetTable,
+        $script:SchedulerBatchSourceTable,
+        $script:SchedulerBatchTargetTable
+    )
+    foreach ($identifier in $schedulerIdentifiers) {
+        Assert-SafeIdentifier -Name "TaskSchedulerWorkerLoopTable" -Value $identifier
+    }
+
+    <#
+        这一组表专门服务“task-scheduler + worker-loop”的真实多服务验收：
+        - scheduler_full 表验证 FULL + scheduleConfig，也就是“定期全量”；
+        - scheduler_batch 表验证 SCHEDULED_BATCH + scheduleConfig，也就是“定期批量”；
+        - 表数据保持很小，是为了把关注点放在调度器是否创建 SCHEDULED execution、worker-loop 是否真实调用
+          datasource-management run-once，而不是把本地 E2E 变成容量压测。
+
+        注意：后续调度触发阶段只会修改 data_sync.data_sync_task.next_fire_time 做测试时钟控制，
+        不会直接插入 execution、不改 execution 状态，也不会绕过 worker-loop。
+    #>
+    $mysqlSql = @"
+DROP TABLE IF EXISTS $($script:SchedulerFullSourceTable);
+CREATE TABLE $($script:SchedulerFullSourceTable) (
+    id BIGINT PRIMARY KEY,
+    customer_name VARCHAR(128) NOT NULL,
+    amount DECIMAL(18, 2) NOT NULL,
+    region VARCHAR(32) NOT NULL
+);
+INSERT INTO $($script:SchedulerFullSourceTable) (id, customer_name, amount, region) VALUES
+(501, 'Scheduler-Full-Customer-501', 601.00, 'CENTRAL'),
+(502, 'Scheduler-Full-Customer-502', 602.00, 'CENTRAL');
+
+DROP TABLE IF EXISTS $($script:SchedulerBatchSourceTable);
+CREATE TABLE $($script:SchedulerBatchSourceTable) (
+    id BIGINT PRIMARY KEY,
+    customer_name VARCHAR(128) NOT NULL,
+    amount DECIMAL(18, 2) NOT NULL,
+    region VARCHAR(32) NOT NULL
+);
+INSERT INTO $($script:SchedulerBatchSourceTable) (id, customer_name, amount, region) VALUES
+(601, 'Scheduler-Batch-Customer-601', 701.00, 'WEST'),
+(602, 'Scheduler-Batch-Customer-602', 702.00, 'WEST'),
+(603, 'Scheduler-Batch-Customer-603', 703.00, 'EAST');
+"@
+
+    $postgresSql = @"
+CREATE SCHEMA IF NOT EXISTS $TargetSchema;
+DROP TABLE IF EXISTS $TargetSchema.$($script:SchedulerFullTargetTable);
+CREATE TABLE $TargetSchema.$($script:SchedulerFullTargetTable) (
+    id BIGINT PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    amount NUMERIC(18, 2) NOT NULL,
+    region VARCHAR(32) NOT NULL
+);
+
+DROP TABLE IF EXISTS $TargetSchema.$($script:SchedulerBatchTargetTable);
+CREATE TABLE $TargetSchema.$($script:SchedulerBatchTargetTable) (
+    id BIGINT PRIMARY KEY,
+    name VARCHAR(128) NOT NULL,
+    amount NUMERIC(18, 2) NOT NULL,
+    region VARCHAR(32) NOT NULL
+);
+"@
+
+    Invoke-MySqlNonQuery -Sql $mysqlSql
+    Invoke-PostgresNonQuery -Sql $postgresSql
+    Add-Check -Name "调度器 + worker-loop E2E 表准备" -Status "PASS" -Detail "已创建 task-scheduler 专用 MySQL 源表和 PostgreSQL 目标表"
+}
+
 function Resolve-SourceJdbcUrl {
     if (-not [string]::IsNullOrWhiteSpace($SourceJdbcUrl)) {
         return $SourceJdbcUrl
@@ -879,14 +964,23 @@ function Write-ExecutionPlan {
     Write-Host "Password, token, full JDBC URL, SQL bodies, row samples, and raw responses are never printed." -ForegroundColor Yellow
     Write-Host ""
     Write-Host "Planned stages:" -ForegroundColor Cyan
-    Write-Host "1. Start or reuse MySQL/PostgreSQL dependency containers unless skipped."
-    Write-Host "2. Prepare dedicated E2E source/target tables with one dirty row and one failed shard scenario."
-    Write-Host "3. Create datasource records through API and test both connections."
-    Write-Host "4. Create FULL/SINGLE_OBJECT/AUTO_SPLIT_PK sync template and run precheck."
-    Write-Host "5. Create task, run worker loop, retry only failed shard, then replay repaired dirty row."
-    Write-Host "6. Assert PostgreSQL target table reaches 20 complete rows."
+    $script:PlatformPlanStageNumber = 1
+    function Write-PlatformPlanStage {
+        param([string]$Text)
+        Write-Host ("{0}. {1}" -f $script:PlatformPlanStageNumber, $Text)
+        $script:PlatformPlanStageNumber++
+    }
+    Write-PlatformPlanStage "Start or reuse MySQL/PostgreSQL dependency containers unless skipped."
+    Write-PlatformPlanStage "Prepare dedicated E2E source/target tables with one dirty row and one failed shard scenario."
+    Write-PlatformPlanStage "Create datasource records through API and test both connections."
+    Write-PlatformPlanStage "Create FULL/SINGLE_OBJECT/AUTO_SPLIT_PK sync template and run precheck."
+    Write-PlatformPlanStage "Create task, run worker loop, retry only failed shard, then replay repaired dirty row."
+    Write-PlatformPlanStage "Assert PostgreSQL target table reaches 20 complete rows."
     if ($IncludeOfflineModeClosureE2E) {
-        Write-Host "7. Additionally verify SCHEDULED_BATCH, CUSTOM_SQL_QUERY, and SCHEMA_FULL platform/API closure."
+        Write-PlatformPlanStage "Additionally verify SCHEDULED_BATCH, CUSTOM_SQL_QUERY, and SCHEMA_FULL platform/API closure."
+    }
+    if ($IncludeTaskSchedulerWorkerLoopE2E) {
+        Write-PlatformPlanStage "Additionally verify task-scheduler dispatch-due + worker-loop real MySQL to PostgreSQL closure."
     }
 }
 
@@ -907,13 +1001,14 @@ function Invoke-WorkerLoop {
     param(
         [string]$Stage,
         [hashtable]$Headers,
-        [string]$SyncApiRoot
+        [string]$SyncApiRoot,
+        [int]$MaxExecutions = 1
     )
 
     $body = @{
         executorId = "local-platform-api-e2e"
         tenantId = $TenantId
-        maxExecutions = 1
+        maxExecutions = $MaxExecutions
         leaseSeconds = 600
     }
     $response = Invoke-Api `
@@ -923,6 +1018,146 @@ function Invoke-WorkerLoop {
         -Headers $Headers `
         -Body $body
     return Get-EnvelopeData -Response $response -Name "worker loop envelope: $Stage"
+}
+
+function Invoke-TaskSchedulerDispatchDue {
+    param(
+        [string]$Stage,
+        [hashtable]$Headers,
+        [string]$SyncApiRoot,
+        [switch]$DryRun
+    )
+
+    <#
+        task scheduler 和 worker loop 是两个不同的副作用边界：
+        - scheduler dispatch-due 只扫描 SCHEDULED 且 next_fire_time 到期的任务，并创建 triggerType=SCHEDULED 的 execution；
+        - worker-loop 才认领 QUEUED execution，并调用 datasource-management run-once 执行真实 JDBC 读写。
+
+        因此 E2E 必须分别调用这两个入口，不能只靠“创建任务后直接 runTask”来证明定时能力。
+    #>
+    $body = @{
+        tenantId = $TenantId
+        limit = 10
+        dryRun = [bool]$DryRun
+    }
+    $response = Invoke-Api `
+        -Name "task scheduler dispatch-due: $Stage" `
+        -Method "POST" `
+        -Url "$SyncApiRoot/internal/sync-task-schedulers/dispatch-due" `
+        -Headers $Headers `
+        -Body $body
+    return Get-EnvelopeData -Response $response -Name "task scheduler envelope: $Stage"
+}
+
+function Set-ScheduledTaskDueForE2E {
+    param(
+        [long]$TaskId,
+        [string]$Stage
+    )
+
+    <#
+        为什么这里允许测试脚本直写 data_sync.data_sync_task.next_fire_time：
+        1. 正式产品逻辑中 next_fire_time 由 createTask 和 task scheduler 自己维护；
+        2. 本地 E2E 需要“可重复地让刚创建的定时任务立即到期”，否则 FIXED_RATE/CRON 会把首次触发点算到未来；
+        3. 这里仅做测试时钟控制，只改 next_fire_time，不插入 execution、不改 execution 状态、不伪造 worker 结果；
+        4. 后续仍然必须调用 /internal/sync-task-schedulers/dispatch-due 和 /internal/sync-workers/run-once，
+           所以业务状态机、乐观锁、triggerType=SCHEDULED、worker 租约和 datasource-management 真实读写都会被完整验证。
+    #>
+    $sql = @"
+WITH updated AS (
+    UPDATE data_sync.data_sync_task
+    SET next_fire_time = LOCALTIMESTAMP - INTERVAL '1 second',
+        update_time = LOCALTIMESTAMP
+    WHERE id = $TaskId
+      AND tenant_id = $TenantId
+      AND schedule_enabled = TRUE
+      AND current_state = 'SCHEDULED'
+    RETURNING id
+)
+SELECT COUNT(*) FROM updated;
+"@
+    $updatedCount = [int](Invoke-PostgresScalar -Sql $sql)
+    if ($updatedCount -ne 1) {
+        Fail-Step -Name "调度任务到期控制: $Stage" -Detail "未能把刚创建的 SCHEDULED 任务推进到到期窗口，请检查任务状态和 data_sync schema"
+    }
+    Add-Check -Name "调度任务到期控制: $Stage" -Status "PASS" -Detail "已仅调整 next_fire_time 作为测试时钟控制"
+}
+
+function Assert-ScheduledTaskCreated {
+    param(
+        [object]$Task,
+        [string]$Stage
+    )
+
+    if ($null -eq $Task -or [long]$Task.id -le 0) {
+        Fail-Step -Name "定时任务创建: $Stage" -Detail "未拿到有效 taskId"
+    }
+    if ([string]$Task.currentState -ne "SCHEDULED") {
+        Fail-Step -Name "定时任务状态: $Stage" -Detail "任务创建后不是 SCHEDULED，说明 scheduleConfig 或审批门禁未进入自动调度生命周期"
+    }
+    if (-not [bool]$Task.scheduleEnabled) {
+        Fail-Step -Name "定时任务调度开关: $Stage" -Detail "任务未启用 scheduleEnabled，调度器不会扫描它"
+    }
+    Add-Check -Name "定时任务创建: $Stage" -Status "PASS" -Detail "任务已进入 SCHEDULED 且 scheduleEnabled=true"
+}
+
+function Assert-TaskSchedulerDispatchResult {
+    param(
+        [object]$Result,
+        [string]$Stage,
+        [switch]$DryRun
+    )
+
+    if ($null -eq $Result) {
+        Fail-Step -Name "调度器派发结果: $Stage" -Detail "dispatch-due 未返回结果"
+    }
+    if ([bool]$Result.dryRun -ne [bool]$DryRun) {
+        Fail-Step -Name "调度器 dryRun 标记: $Stage" -Detail "dispatch-due 返回的 dryRun 与请求不一致"
+    }
+    if ([int]$Result.scannedTaskCount -lt 1) {
+        Fail-Step -Name "调度器扫描结果: $Stage" -Detail "调度器没有扫描到任何到期任务"
+    }
+    if ([int]$Result.createdExecutionCount -lt 1) {
+        Fail-Step -Name "调度器 execution 计划: $Stage" -Detail "调度器没有计划或创建 SCHEDULED execution"
+    }
+    Add-Check -Name "调度器派发结果: $Stage" -Status "PASS" -Detail "调度器扫描到到期任务并返回 execution 计数，低敏结果通过"
+}
+
+function Get-ScheduledExecutionsForTask {
+    param(
+        [object]$ApiRoots,
+        [hashtable]$Headers,
+        [long]$TaskId,
+        [string]$Stage
+    )
+
+    $executionsResponse = Invoke-Api `
+        -Name "查询 SCHEDULED execution: $Stage" `
+        -Method "GET" `
+        -Url "$($ApiRoots.Sync)/sync-tasks/$TaskId/executions?triggerType=SCHEDULED&current=1&size=10" `
+        -Headers $Headers
+    $executionsPage = Get-EnvelopeData -Response $executionsResponse -Name "SCHEDULED execution envelope: $Stage"
+    return Get-PageRecords -PageData $executionsPage
+}
+
+function Assert-ScheduledExecutionHistory {
+    param(
+        [object[]]$Executions,
+        [string]$Stage,
+        [string]$ExpectedState = ""
+    )
+
+    $scheduledExecutions = @($Executions | Where-Object { [string]$_.triggerType -eq "SCHEDULED" })
+    if ($scheduledExecutions.Count -lt 1) {
+        Fail-Step -Name "SCHEDULED execution 历史: $Stage" -Detail "未查询到 triggerType=SCHEDULED 的 execution"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedState)) {
+        $matched = @($scheduledExecutions | Where-Object { [string]$_.executionState -eq $ExpectedState })
+        if ($matched.Count -lt 1) {
+            Fail-Step -Name "SCHEDULED execution 状态: $Stage" -Detail "未查询到期望状态 $ExpectedState 的 SCHEDULED execution"
+        }
+    }
+    Add-Check -Name "SCHEDULED execution 历史: $Stage" -Status "PASS" -Detail "已确认 execution 由 task scheduler 触发"
 }
 
 function Assert-OfflinePrecheckRunnable {
@@ -1194,6 +1429,242 @@ function Invoke-OfflineModeClosureE2E {
     Assert-TargetTableCount -TableName $script:SchemaFullTargetCustomersTable -Expected 2 -Stage "SCHEMA_FULL customers"
 }
 
+function Invoke-ScheduledTemplateTaskRun {
+    param(
+        [string]$Stage,
+        [object]$ApiRoots,
+        [hashtable]$TemplateHeaders,
+        [hashtable]$TaskHeaders,
+        [hashtable]$SchedulerHeaders,
+        [hashtable]$WorkerHeaders,
+        [hashtable]$TemplateBody,
+        [hashtable]$TaskBody,
+        [string]$TargetTableName,
+        [int]$ExpectedTargetCount
+    )
+
+    $templateResponse = Invoke-Api `
+        -Name "创建调度闭环模板: $Stage" `
+        -Method "POST" `
+        -Url "$($ApiRoots.Sync)/sync-templates" `
+        -Headers $TemplateHeaders `
+        -Body $TemplateBody
+    $template = Get-EnvelopeData -Response $templateResponse -Name "调度闭环模板 envelope: $Stage"
+    $templateId = [long]$template.id
+    if ($templateId -le 0) {
+        Fail-Step -Name "调度闭环模板 ID: $Stage" -Detail "创建模板后未拿到有效 ID"
+    }
+
+    $precheckResponse = Invoke-Api `
+        -Name "调度闭环模板预检查: $Stage" `
+        -Method "POST" `
+        -Url "$($ApiRoots.Sync)/sync-templates/$templateId/precheck" `
+        -Headers $TemplateHeaders
+    $precheck = Get-EnvelopeData -Response $precheckResponse -Name "调度闭环预检查 envelope: $Stage"
+    Assert-OfflinePrecheckRunnable -Precheck $precheck -Stage $Stage
+
+    $TaskBody.templateId = $templateId
+    $taskResponse = Invoke-Api `
+        -Name "创建调度闭环任务: $Stage" `
+        -Method "POST" `
+        -Url "$($ApiRoots.Sync)/sync-tasks" `
+        -Headers $TaskHeaders `
+        -Body $TaskBody
+    $task = Get-EnvelopeData -Response $taskResponse -Name "调度闭环任务 envelope: $Stage"
+    Assert-ScheduledTaskCreated -Task $task -Stage $Stage
+    $taskId = [long]$task.id
+
+    Set-ScheduledTaskDueForE2E -TaskId $taskId -Stage $Stage
+
+    $dryRunResult = Invoke-TaskSchedulerDispatchDue `
+        -Stage "$Stage-dry-run" `
+        -Headers $SchedulerHeaders `
+        -SyncApiRoot $ApiRoots.Sync `
+        -DryRun
+    Assert-TaskSchedulerDispatchResult -Result $dryRunResult -Stage "$Stage-dry-run" -DryRun
+
+    $dispatchResult = Invoke-TaskSchedulerDispatchDue `
+        -Stage "$Stage-dispatch" `
+        -Headers $SchedulerHeaders `
+        -SyncApiRoot $ApiRoots.Sync
+    Assert-TaskSchedulerDispatchResult -Result $dispatchResult -Stage "$Stage-dispatch"
+
+    $queuedExecutions = Get-ScheduledExecutionsForTask `
+        -ApiRoots $ApiRoots `
+        -Headers $TemplateHeaders `
+        -TaskId $taskId `
+        -Stage "$Stage-after-dispatch"
+    Assert-ScheduledExecutionHistory -Executions $queuedExecutions -Stage "$Stage-after-dispatch" -ExpectedState "QUEUED"
+
+    Invoke-WorkerLoop `
+        -Stage "task-scheduler-worker-loop-$Stage" `
+        -Headers $WorkerHeaders `
+        -SyncApiRoot $ApiRoots.Sync `
+        -MaxExecutions 1 | Out-Null
+    Assert-TargetTableCount -TableName $TargetTableName -Expected $ExpectedTargetCount -Stage "task-scheduler-worker-loop-$Stage"
+
+    $finishedExecutions = Get-ScheduledExecutionsForTask `
+        -ApiRoots $ApiRoots `
+        -Headers $TemplateHeaders `
+        -TaskId $taskId `
+        -Stage "$Stage-after-worker"
+    Assert-ScheduledExecutionHistory -Executions $finishedExecutions -Stage "$Stage-after-worker" -ExpectedState "SUCCEEDED"
+
+    $taskDetailResponse = Invoke-Api `
+        -Name "查询调度任务终态: $Stage" `
+        -Method "GET" `
+        -Url "$($ApiRoots.Sync)/sync-tasks/$taskId" `
+        -Headers $TemplateHeaders
+    $taskDetail = Get-EnvelopeData -Response $taskDetailResponse -Name "调度任务终态 envelope: $Stage"
+    if ([string]$taskDetail.currentState -ne "SCHEDULED") {
+        Fail-Step -Name "调度任务终态: $Stage" -Detail "SCHEDULED execution 完成后任务未回到 SCHEDULED，后续计划无法继续触发"
+    }
+    if ([long]$taskDetail.scheduleDispatchCount -lt 1) {
+        Fail-Step -Name "调度任务派发计数: $Stage" -Detail "任务未累计 scheduleDispatchCount，运营台无法追踪调度次数"
+    }
+    Add-Check -Name "调度任务终态: $Stage" -Status "PASS" -Detail "execution 成功后任务回到 SCHEDULED，后续计划可继续触发"
+
+    return [pscustomobject]@{
+        TemplateId = $templateId
+        TaskId = $taskId
+    }
+}
+
+function Invoke-TaskSchedulerWorkerLoopE2E {
+    param(
+        [object]$ApiRoots,
+        [hashtable]$UserHeaders,
+        [hashtable]$SchedulerHeaders,
+        [hashtable]$WorkerHeaders,
+        [long]$SourceDatasourceId,
+        [long]$TargetDatasourceId
+    )
+
+    if (-not $IncludeTaskSchedulerWorkerLoopE2E) {
+        return
+    }
+
+    <#
+        该 E2E 专门回答一个容易被“手动 runTask”掩盖的问题：
+        “任务创建为 SCHEDULED 后，是否真的由 task scheduler 到点生成 execution，再由 worker-loop 执行？”
+
+        验收顺序严格拆开：
+        1. 创建 FULL + scheduleConfig 定期全量任务；
+        2. 仅调整 next_fire_time 做测试时钟控制；
+        3. dry-run 调度器，确认扫描/计划但不写库；
+        4. 正式 dispatch-due，确认创建 triggerType=SCHEDULED 的 QUEUED execution；
+        5. worker-loop 认领 execution，调用 datasource-management run-once 完成真实 MySQL -> PostgreSQL 写入；
+        6. 验证 execution=SUCCEEDED、任务回到 SCHEDULED、目标表行数正确；
+        7. 对 SCHEDULED_BATCH 重复同样链路，证明“定期批量”也不是靠手动任务伪装出来的。
+    #>
+    Add-Check -Name "task-scheduler + worker-loop E2E" -Status "PASS" -Detail "开始执行定期全量与定期批量多服务验收"
+
+    $scheduleConfig = @{
+        type = "FIXED_RATE"
+        intervalSeconds = 3600
+        timezone = "Asia/Shanghai"
+        misfirePolicy = "FIRE_ONCE"
+        allowConcurrentRuns = $false
+        maxCatchUpRuns = 1
+    } | ConvertTo-Json -Depth 10 -Compress
+
+    $fieldMappingConfig = @(
+        @{ sourceField = "id"; targetField = "id" },
+        @{ sourceField = "customer_name"; targetField = "name" },
+        @{ sourceField = "amount"; targetField = "amount" },
+        @{ sourceField = "region"; targetField = "region" }
+    ) | ConvertTo-Json -Depth 10 -Compress
+
+    Invoke-ScheduledTemplateTaskRun `
+        -Stage "scheduled-full" `
+        -ApiRoots $ApiRoots `
+        -TemplateHeaders $UserHeaders `
+        -TaskHeaders $UserHeaders `
+        -SchedulerHeaders $SchedulerHeaders `
+        -WorkerHeaders $WorkerHeaders `
+        -TargetTableName $script:SchedulerFullTargetTable `
+        -ExpectedTargetCount 2 `
+        -TemplateBody @{
+            tenantId = $TenantId
+            projectId = $ProjectId
+            workspaceId = $WorkspaceId
+            name = "E2E scheduler FULL $script:RunId"
+            description = "local task scheduler to worker loop full sync E2E"
+            sourceDatasourceId = $SourceDatasourceId
+            targetDatasourceId = $TargetDatasourceId
+            sourceSchemaName = $MySqlDatabase
+            sourceObjectName = $script:SchedulerFullSourceTable
+            targetSchemaName = $TargetSchema
+            targetObjectName = $script:SchedulerFullTargetTable
+            sourceConnectorType = "MYSQL"
+            targetConnectorType = "POSTGRESQL"
+            syncMode = "FULL"
+            syncScopeType = "SINGLE_OBJECT"
+            writeStrategy = "UPSERT"
+            primaryKeyField = "id"
+            fieldMappingConfig = $fieldMappingConfig
+        } `
+        -TaskBody @{
+            tenantId = $TenantId
+            projectId = $ProjectId
+            workspaceId = $WorkspaceId
+            name = "E2E scheduled full task $script:RunId"
+            description = "local scheduled full task scheduler E2E"
+            priority = "HIGH"
+            runMode = "SCHEDULED"
+            scheduleConfig = $scheduleConfig
+            ownerId = $ActorId
+        } | Out-Null
+
+    $scheduledBatchFilterConfig = @{
+        logic = "AND"
+        conditions = @(
+            @{ field = "region"; operator = "="; value = "WEST" }
+        )
+    } | ConvertTo-Json -Depth 10 -Compress
+    Invoke-ScheduledTemplateTaskRun `
+        -Stage "scheduled-batch" `
+        -ApiRoots $ApiRoots `
+        -TemplateHeaders $UserHeaders `
+        -TaskHeaders $UserHeaders `
+        -SchedulerHeaders $SchedulerHeaders `
+        -WorkerHeaders $WorkerHeaders `
+        -TargetTableName $script:SchedulerBatchTargetTable `
+        -ExpectedTargetCount 2 `
+        -TemplateBody @{
+            tenantId = $TenantId
+            projectId = $ProjectId
+            workspaceId = $WorkspaceId
+            name = "E2E scheduler SCHEDULED_BATCH $script:RunId"
+            description = "local task scheduler to worker loop scheduled batch E2E"
+            sourceDatasourceId = $SourceDatasourceId
+            targetDatasourceId = $TargetDatasourceId
+            sourceSchemaName = $MySqlDatabase
+            sourceObjectName = $script:SchedulerBatchSourceTable
+            targetSchemaName = $TargetSchema
+            targetObjectName = $script:SchedulerBatchTargetTable
+            sourceConnectorType = "MYSQL"
+            targetConnectorType = "POSTGRESQL"
+            syncMode = "SCHEDULED_BATCH"
+            syncScopeType = "SINGLE_OBJECT"
+            writeStrategy = "UPSERT"
+            primaryKeyField = "id"
+            fieldMappingConfig = $fieldMappingConfig
+            filterConfig = $scheduledBatchFilterConfig
+        } `
+        -TaskBody @{
+            tenantId = $TenantId
+            projectId = $ProjectId
+            workspaceId = $WorkspaceId
+            name = "E2E scheduled batch scheduler task $script:RunId"
+            description = "local scheduled batch task scheduler E2E"
+            priority = "HIGH"
+            runMode = "SCHEDULED"
+            scheduleConfig = $scheduleConfig
+            ownerId = $ActorId
+        } | Out-Null
+}
+
 function Main {
     Assert-SafeIdentifier -Name "SourceTable" -Value $SourceTable
     Assert-SafeIdentifier -Name "TargetSchema" -Value $TargetSchema
@@ -1213,6 +1684,7 @@ function Main {
     }
     Initialize-E2EDatabase
     Initialize-OfflineModeE2EDatabase
+    Initialize-TaskSchedulerWorkerLoopE2EDatabase
 
     $apiRoots = Resolve-ApiRoots
     if ($UseDirectServiceUrls) {
@@ -1501,6 +1973,13 @@ function Main {
         -ApiRoots $apiRoots `
         -UserHeaders $userHeaders `
         -ApprovalHeaders $workerHeaders `
+        -WorkerHeaders $workerHeaders `
+        -SourceDatasourceId $sourceDatasourceId `
+        -TargetDatasourceId $targetDatasourceId
+    Invoke-TaskSchedulerWorkerLoopE2E `
+        -ApiRoots $apiRoots `
+        -UserHeaders $userHeaders `
+        -SchedulerHeaders $workerHeaders `
         -WorkerHeaders $workerHeaders `
         -SourceDatasourceId $sourceDatasourceId `
         -TargetDatasourceId $targetDatasourceId

@@ -14,7 +14,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanV
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
-import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -38,7 +38,6 @@ import java.util.List;
  * <p>这就是“合同驱动执行循环”的意义：执行入口由合同状态决定，而不是由散落在各处的 if/else 猜测任务类型。</p>
  */
 @Component
-@RequiredArgsConstructor
 public class SyncOfflineRunnerDispatchService {
 
     private static final String OFFLINE_RUNNER_CONTRACT_MISSING = "OFFLINE_RUNNER_CONTRACT_MISSING";
@@ -62,6 +61,37 @@ public class SyncOfflineRunnerDispatchService {
     private final DataSyncTaskManagementReceiptPublisher receiptPublisher;
 
     /**
+     * Spring 生产运行时使用的完整构造器。
+     *
+     * <p>这里显式使用 {@link Autowired}，而不是继续依赖 Lombok 自动生成构造器，是为了解决“生产构造器”和
+     * “历史单元测试兼容构造器”同时存在时的 Spring 注入歧义。Spring 在发现多个构造器且没有明确注入点时，
+     * 会尝试寻找无参构造器；本类全部依赖都是 final 字段，不应该也不能提供无参构造器，否则会把关键执行组件置空。
+     * 因此生产构造器必须显式标注，告诉 Spring：运行时应注入包含 discoveredObject fan-out 的完整依赖集合。</p>
+     *
+     * <p>{@code discoveredObjectFanOutDispatchService} 用于 SCHEMA_FULL / DATABASE_FULL：
+     * data-sync 不直接连接源库，而是通过 datasource-management 的元数据发现生成对象清单，再复用 OBJECT_LIST/fan-out
+     * 执行链路。把它纳入生产构造器，可以保证真实容器启动时不会退化成“只支持单对象 run-once”。</p>
+     */
+    @Autowired
+    public SyncOfflineRunnerDispatchService(SyncBatchRunnerBridgePlanSupport bridgePlanSupport,
+                                            SyncBatchRunOnceDispatchService runOnceDispatchService,
+                                            SyncOfflineRunnerAdapterRegistry runnerAdapterRegistry,
+                                            SyncObjectListFanOutDispatchService objectListFanOutDispatchService,
+                                            SyncDiscoveredObjectFanOutDispatchService discoveredObjectFanOutDispatchService,
+                                            SyncPartitionShardFanOutDispatchService partitionShardFanOutDispatchService,
+                                            SyncExecutionLifecycleSupport lifecycleSupport,
+                                            DataSyncTaskManagementReceiptPublisher receiptPublisher) {
+        this.bridgePlanSupport = bridgePlanSupport;
+        this.runOnceDispatchService = runOnceDispatchService;
+        this.runnerAdapterRegistry = runnerAdapterRegistry;
+        this.objectListFanOutDispatchService = objectListFanOutDispatchService;
+        this.discoveredObjectFanOutDispatchService = discoveredObjectFanOutDispatchService;
+        this.partitionShardFanOutDispatchService = partitionShardFanOutDispatchService;
+        this.lifecycleSupport = lifecycleSupport;
+        this.receiptPublisher = receiptPublisher;
+    }
+
+    /**
      * 兼容旧单元测试的构造器。
      *
      * <p>新增 discoveredObject fan-out 后，Spring 运行时会使用 Lombok 生成的完整构造器注入真实 Bean；
@@ -75,14 +105,14 @@ public class SyncOfflineRunnerDispatchService {
                                             SyncPartitionShardFanOutDispatchService partitionShardFanOutDispatchService,
                                             SyncExecutionLifecycleSupport lifecycleSupport,
                                             DataSyncTaskManagementReceiptPublisher receiptPublisher) {
-        this.bridgePlanSupport = bridgePlanSupport;
-        this.runOnceDispatchService = runOnceDispatchService;
-        this.runnerAdapterRegistry = runnerAdapterRegistry;
-        this.objectListFanOutDispatchService = objectListFanOutDispatchService;
-        this.discoveredObjectFanOutDispatchService = null;
-        this.partitionShardFanOutDispatchService = partitionShardFanOutDispatchService;
-        this.lifecycleSupport = lifecycleSupport;
-        this.receiptPublisher = receiptPublisher;
+        this(bridgePlanSupport,
+                runOnceDispatchService,
+                runnerAdapterRegistry,
+                objectListFanOutDispatchService,
+                null,
+                partitionShardFanOutDispatchService,
+                lifecycleSupport,
+                receiptPublisher);
     }
 
     /**

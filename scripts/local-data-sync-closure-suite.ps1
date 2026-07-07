@@ -39,6 +39,7 @@ param(
     [switch]$IncludeRealJdbc,
     [switch]$IncludePlatformApiE2E,
     [switch]$IncludeOfflineModeClosureE2EForPlatformApiE2E,
+    [switch]$IncludeTaskSchedulerWorkerLoopE2EForPlatformApiE2E,
     [switch]$UseDirectServiceUrlsForPlatformApiE2E,
     [switch]$UseContainerJdbcUrlsForPlatformApiE2E,
     [switch]$SkipCompile,
@@ -196,6 +197,9 @@ function Invoke-PlatformApiE2EStep {
     if ($IncludeOfflineModeClosureE2EForPlatformApiE2E) {
         $arguments += "-IncludeOfflineModeClosureE2E"
     }
+    if ($IncludeTaskSchedulerWorkerLoopE2EForPlatformApiE2E) {
+        $arguments += "-IncludeTaskSchedulerWorkerLoopE2E"
+    }
 
     Write-Host ""
     Write-Host ">>> Platform API E2E" -ForegroundColor Cyan
@@ -349,6 +353,9 @@ function Write-ClosurePlan {
         if ($IncludeOfflineModeClosureE2EForPlatformApiE2E) {
             Write-PlanStage "platform/API E2E also covers SCHEDULED_BATCH, CUSTOM_SQL_QUERY, and SCHEMA_FULL"
         }
+        if ($IncludeTaskSchedulerWorkerLoopE2EForPlatformApiE2E) {
+            Write-PlanStage "platform/API E2E also covers task-scheduler dispatch-due plus worker-loop real MySQL -> PostgreSQL"
+        }
     }
     Write-Host ""
     Write-Host "Safety boundaries:" -ForegroundColor Yellow
@@ -356,6 +363,7 @@ function Write-ClosurePlan {
     Write-Host "- Real JDBC E2E is opt-in and only overwrites dedicated E2E tables."
     Write-Host "- Platform API E2E is opt-in because it creates sync objects, triggers worker loop, and overwrites dedicated E2E tables."
     Write-Host "- Offline-mode Platform API extension is also opt-in because it creates extra SCHEDULED/CUSTOM_SQL/SCHEMA_FULL E2E objects and tables."
+    Write-Host "- Task-scheduler Platform API extension is opt-in because it creates scheduled tasks, forces next_fire_time for test clock control, dispatches due executions, and triggers worker loop."
     Write-Host "- The suite does not print database passwords, JDBC URLs, SQL bodies, row samples, tokens, or raw response bodies."
 }
 
