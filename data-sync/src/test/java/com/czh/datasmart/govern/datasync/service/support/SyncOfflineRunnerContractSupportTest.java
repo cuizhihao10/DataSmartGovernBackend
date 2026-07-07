@@ -18,7 +18,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>这组测试证明新增合同不是“又一个 DTO”，而是把 DataX-style 离线执行器接入前必须明确的调度事实固定下来：</p>
  * <p>1. FULL 单对象可以被当前最小 run-once bridge 端到端处理；</p>
- * <p>2. SCHEDULED_BATCH 虽然属于 OFFLINE，但需要调度窗口与 checkpoint handoff，因此必须等待专用 Runner 或补齐交接机制；</p>
+ * <p>2. SCHEDULED_BATCH 在 v1 中被收敛为“任务层调度 + 单次有界批处理窗口”，调度由 task/scheduleConfig 负责，
+ * 本次 execution 仍可复用最小 run-once bridge 完成真实 JDBC 读写；</p>
  * <p>3. CUSTOM_SQL_QUERY 必须保留低敏边界，合同中只出现策略，不出现 SQL 正文或 statementRef 值。</p>
  */
 class SyncOfflineRunnerContractSupportTest {
@@ -63,24 +64,27 @@ class SyncOfflineRunnerContractSupportTest {
     }
 
     @Test
-    void scheduledBatchContractShouldRequireCheckpointAndScheduleAwareRunner() {
+    void scheduledBatchContractShouldUseTaskScheduleAndMinimalBoundedRunner() {
         SyncOfflineJobPlanResponse plan = offlineJobPlanSupport.buildPlan(template("SCHEDULED_BATCH"));
 
         SyncOfflineRunnerJobContract contract = contractSupport.buildFromOfflinePlan(plan);
 
-        assertThat(contract.contractStatus()).isEqualTo("DEDICATED_OFFLINE_RUNNER_REQUIRED");
-        assertThat(contract.checkpointRequired()).isTrue();
+        assertThat(contract.contractStatus()).isEqualTo("MINIMAL_BRIDGE_END_TO_END_SUPPORTED");
+        assertThat(contract.checkpointRequired()).isFalse();
         assertThat(contract.taskLevelScheduleRequired()).isTrue();
-        assertThat(contract.minimalBridgeEndToEndSupported()).isFalse();
+        assertThat(contract.minimalBridgeEndToEndSupported()).isTrue();
         assertThat(contract.shardPlan().shardKind()).isEqualTo("SCHEDULED_WINDOW");
         assertThat(contract.shardPlan().requiredRunnerCapabilities())
-                .contains("CHECKPOINT_HANDOFF", "TASK_LEVEL_SCHEDULE_WINDOW");
+                .contains("TASK_LEVEL_SCHEDULE_WINDOW")
+                .doesNotContain("CHECKPOINT_HANDOFF");
         assertThat(contract.reportContract().checkpointReportPolicy())
-                .isEqualTo("CHECKPOINT_REF_OR_DIGEST_ONLY_NO_RAW_VALUE");
+                .isEqualTo("FINAL_WATERMARK_OPTIONAL_NO_RAW_VALUE");
         assertThat(contract.dataXJobExecutionContract().topologyStatus())
-                .isEqualTo("DATAX_TOPOLOGY_REQUIRES_CHECKPOINT_HANDOFF");
+                .isEqualTo("MINIMAL_SINGLE_CHANNEL_RUN_ONCE_TOPOLOGY");
+        assertThat(contract.dataXJobExecutionContract().jobKind()).isEqualTo("SCHEDULED_BATCH_WINDOW_JOB");
         assertThat(contract.dataXJobExecutionContract().requiredRunnerCapabilities())
-                .contains("DURABLE_CHECKPOINT_HANDOFF", "DATAX_JOB_TASKGROUP_CHANNEL_TOPOLOGY");
+                .contains("DATAX_JOB_TASKGROUP_CHANNEL_TOPOLOGY", "TASK_LEVEL_SCHEDULE_WINDOW")
+                .doesNotContain("DURABLE_CHECKPOINT_HANDOFF");
         assertThat(contract.dataXJobExecutionContract().taskGroups().get(0).schedulingPolicy())
                 .isEqualTo("TASK_LEVEL_SCHEDULE_WINDOW_REQUIRED");
     }

@@ -62,6 +62,30 @@ public class SqlServerSyncJdbcDialect extends AbstractSyncJdbcDialect {
         return incrementalReadParameterNames(List.of());
     }
 
+    @Override
+    protected String buildCustomSqlResultSetSql(String projection, String customSql, int limit) {
+        return "SELECT " + projection + " FROM (" + customSql + ") AS datasmart_custom_sql_result "
+                + "ORDER BY (SELECT NULL) OFFSET ? ROWS FETCH NEXT ? ROWS ONLY";
+    }
+
+    @Override
+    public SyncPreparedJdbcStatement buildCustomSqlReadStatement(SyncJdbcReadStatementSpec spec) {
+        requireCustomSqlProjection(spec);
+        String sql = buildCustomSqlResultSetSql(
+                projection(spec.getSelectedColumns()),
+                requiredReadOnlySql(spec.getCustomSql()),
+                0
+        );
+        return statement("CUSTOM_SQL_RESULT_SET_READ", sql, List.of("offset", "limit"));
+    }
+
+    private void requireCustomSqlProjection(SyncJdbcReadStatementSpec spec) {
+        if (spec == null || spec.getSelectedColumns() == null || spec.getSelectedColumns().isEmpty()) {
+            throw new IllegalArgumentException("SQL Server CUSTOM_SQL_RESULT_SET 必须声明 selectedColumns");
+        }
+        spec.getSelectedColumns().forEach(column -> requiredIdentifier(column, "customSqlSelectedColumn"));
+    }
+
     private List<String> merge(List<String> left, List<String> right) {
         java.util.ArrayList<String> values = new java.util.ArrayList<>(left);
         values.addAll(right);

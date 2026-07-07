@@ -342,11 +342,11 @@ public class SyncOfflineJobPlanSupport {
         }
         if (!scopeContract.executableByMinimalBridge()) {
             failClosedReasons.add("DEDICATED_OFFLINE_RUNNER_REQUIRED_FOR_SCOPE");
-            recommendedActions.add("多对象、整 schema、整库和自定义 SQL 计划应由专用离线 runner 承接，不能交给单对象最小 bridge");
+            recommendedActions.add("多对象、整 schema、整库计划需要先做对象级 fan-out 或元数据发现，再把子对象交给最小 run-once bridge；不能把父级范围直接交给单对象 runner");
         }
         if (!modeExecutableByMinimalBridge(syncMode)) {
             failClosedReasons.add("DEDICATED_OFFLINE_RUNNER_REQUIRED_FOR_MODE");
-            recommendedActions.add("SCHEDULED_BATCH、CUSTOM_SQL_QUERY、增量、回放、补数、导入导出需要专用离线 runner 的窗口、分片、审批和报告能力");
+            recommendedActions.add("增量、回放、补数、导入导出仍需要专用离线 runner 的水位、分片、审批和报告能力；当前最小 bridge 只覆盖全量、一次性迁移、定时批量窗口和受控只读 SQL 结果集");
         }
         if (checkpointRequired) {
             failClosedReasons.add("CHECKPOINT_HANDOFF_REQUIRED_FOR_OFFLINE_RUNNER");
@@ -395,7 +395,19 @@ public class SyncOfflineJobPlanSupport {
     }
 
     private boolean modeExecutableByMinimalBridge(SyncMode syncMode) {
-        return syncMode == SyncMode.FULL || syncMode == SyncMode.ONE_TIME_MIGRATION;
+        /*
+         * 这里定义“规划层认为当前 v1 可以进入最小 bridge 的模式边界”。
+         *
+         * FULL / ONE_TIME_MIGRATION：天然是有界读写；
+         * SCHEDULED_BATCH：调度频率由 task.scheduleConfig 控制，单次触发仍是一段有界批处理窗口，因此不再要求
+         * 专用 runner 才能执行；
+         * CUSTOM_SQL_QUERY：只允许只读 SQL/statementRef，结果集会被 datasource-management 包装为受控 Reader，
+         * 但仍然需要审批上下文放行，避免用户直接绕过对象/字段权限。
+         */
+        return syncMode == SyncMode.FULL
+                || syncMode == SyncMode.ONE_TIME_MIGRATION
+                || syncMode == SyncMode.SCHEDULED_BATCH
+                || syncMode == SyncMode.CUSTOM_SQL_QUERY;
     }
 
     private boolean hasHardBlockingIssue(List<String> issueCodes, boolean offlineChannel) {

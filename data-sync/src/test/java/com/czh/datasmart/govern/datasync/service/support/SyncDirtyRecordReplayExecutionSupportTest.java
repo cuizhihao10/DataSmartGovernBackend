@@ -171,6 +171,8 @@ class SyncDirtyRecordReplayExecutionSupportTest {
                 List.of(),
                 null,
                 null,
+                null,
+                null,
                 0L,
                 0L,
                 0L,

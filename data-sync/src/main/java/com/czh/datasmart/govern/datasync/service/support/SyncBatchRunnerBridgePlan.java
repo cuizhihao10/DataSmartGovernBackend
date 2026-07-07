@@ -150,6 +150,24 @@ public class SyncBatchRunnerBridgePlan {
     private final List<SyncFilterExecutionCondition> filterConditions;
 
     /**
+     * 自定义 SQL 查询正文。
+     *
+     * <p>该字段只在 {@code syncMode=CUSTOM_SQL_QUERY} 且只读校验通过后存在，并且只允许在
+     * data-sync -> datasource-management 的 internal 服务账号调用中流转。它不会进入普通 API、低敏事件、
+     * receipt 或审计投影。之所以仍需要放进 bridge plan，是因为 datasource-management 的 JDBC reader
+     * 需要把它包装成只读结果集 SQL，再把结果按字段映射写入目标表。</p>
+     */
+    private final String customSql;
+
+    /**
+     * 自定义 SQL 指纹。
+     *
+     * <p>指纹用于后续审计、指标和排障聚合。相比 SQL 正文，指纹不会泄露表名、条件和值，
+     * 但能让运维知道多次执行是否来自同一条托管查询。</p>
+     */
+    private final String customSqlFingerprint;
+
+    /**
      * 离线 Runner 作业合同。
      *
      * <p>该字段是本阶段新增的“执行器调度面低敏合同”。它比普通 workerPlan 更接近未来专用 DataX-style Runner，
@@ -221,6 +239,8 @@ public class SyncBatchRunnerBridgePlan {
                                      String targetObjectLocator,
                                      SyncFieldMappingExecutionContract fieldMappingContract,
                                      List<SyncFilterExecutionCondition> filterConditions,
+                                     String customSql,
+                                     String customSqlFingerprint,
                                      SyncOfflineRunnerJobContract offlineRunnerContract,
                                      String incrementalField,
                                      Long previousRecordsRead,
@@ -249,6 +269,8 @@ public class SyncBatchRunnerBridgePlan {
         this.targetObjectLocator = targetObjectLocator;
         this.fieldMappingContract = fieldMappingContract;
         this.filterConditions = filterConditions == null ? List.of() : List.copyOf(filterConditions);
+        this.customSql = customSql;
+        this.customSqlFingerprint = customSqlFingerprint;
         this.offlineRunnerContract = offlineRunnerContract;
         this.incrementalField = incrementalField;
         this.previousRecordsRead = previousRecordsRead;

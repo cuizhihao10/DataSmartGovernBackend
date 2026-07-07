@@ -48,6 +48,7 @@ public class SyncBatchRunnerBridgePlanSupport {
     private final SyncFilterExecutionContractSupport filterExecutionContractSupport;
     private final SyncTemplateScopeContractSupport scopeContractSupport;
     private final SyncOfflineRunnerContractSupport offlineRunnerContractSupport;
+    private final SyncCustomSqlExecutionContractSupport customSqlExecutionContractSupport;
 
     /**
      * 兼容既有单元测试的构造器。
@@ -59,7 +60,8 @@ public class SyncBatchRunnerBridgePlanSupport {
     public SyncBatchRunnerBridgePlanSupport(SyncFieldMappingExecutionContractSupport fieldMappingExecutionContractSupport) {
         this(fieldMappingExecutionContractSupport, new SyncFilterExecutionContractSupport(),
                 new SyncTemplateScopeContractSupport(),
-                new SyncOfflineRunnerContractSupport());
+                new SyncOfflineRunnerContractSupport(),
+                new SyncCustomSqlExecutionContractSupport());
     }
 
     /**
@@ -72,11 +74,28 @@ public class SyncBatchRunnerBridgePlanSupport {
     public SyncBatchRunnerBridgePlanSupport(SyncFieldMappingExecutionContractSupport fieldMappingExecutionContractSupport,
                                             SyncFilterExecutionContractSupport filterExecutionContractSupport,
                                             SyncTemplateScopeContractSupport scopeContractSupport,
-                                            SyncOfflineRunnerContractSupport offlineRunnerContractSupport) {
+                                            SyncOfflineRunnerContractSupport offlineRunnerContractSupport,
+                                            SyncCustomSqlExecutionContractSupport customSqlExecutionContractSupport) {
         this.fieldMappingExecutionContractSupport = fieldMappingExecutionContractSupport;
         this.filterExecutionContractSupport = filterExecutionContractSupport;
         this.scopeContractSupport = scopeContractSupport;
         this.offlineRunnerContractSupport = offlineRunnerContractSupport;
+        this.customSqlExecutionContractSupport = customSqlExecutionContractSupport;
+    }
+
+    /**
+     * 兼容旧单元测试和少量手工构造调用点的构造器。
+     *
+     * <p>本轮新增 {@link SyncCustomSqlExecutionContractSupport} 后，Spring 会优先使用上面的完整构造器；
+     * 但仓库里还有一些测试直接 new 四参数构造器。保留该重载可以让老测试继续聚焦 bridge 行为，
+     * 同时默认给它补一个无状态的自定义 SQL 解析器。</p>
+     */
+    public SyncBatchRunnerBridgePlanSupport(SyncFieldMappingExecutionContractSupport fieldMappingExecutionContractSupport,
+                                            SyncFilterExecutionContractSupport filterExecutionContractSupport,
+                                            SyncTemplateScopeContractSupport scopeContractSupport,
+                                            SyncOfflineRunnerContractSupport offlineRunnerContractSupport) {
+        this(fieldMappingExecutionContractSupport, filterExecutionContractSupport, scopeContractSupport,
+                offlineRunnerContractSupport, new SyncCustomSqlExecutionContractSupport());
     }
 
     /**
@@ -151,6 +170,11 @@ public class SyncBatchRunnerBridgePlanSupport {
             issueCodes.add("FILTER_CONTRACT_NOT_RUNNABLE_BY_MINIMAL_BRIDGE");
         }
 
+        SyncCustomSqlExecutionContract customSqlContract =
+                customSqlExecutionContractSupport.parse(template.getSyncMode(), template.getCustomSqlConfig());
+        issueCodes.addAll(customSqlContract.issueCodes());
+        warnings.addAll(customSqlContract.warnings());
+
         List<String> distinctIssues = distinct(issueCodes);
         List<String> distinctWarnings = distinct(warnings);
         if (!blockingIssues(distinctIssues).isEmpty()) {
@@ -182,6 +206,8 @@ public class SyncBatchRunnerBridgePlanSupport {
                 objectLocator(template.getTargetSchemaName(), template.getTargetObjectName()),
                 fieldMappingContract,
                 filterContract.getConditions(),
+                customSqlContract.sql(),
+                customSqlContract.sqlFingerprint(),
                 offlineRunnerContract,
                 template.getIncrementalField(),
                 zeroIfNull(execution.getRecordsRead()),
@@ -231,6 +257,8 @@ public class SyncBatchRunnerBridgePlanSupport {
                 template == null ? null : objectLocator(template.getTargetSchemaName(), template.getTargetObjectName()),
                 fieldMappingContract,
                 filterContract == null ? List.of() : filterContract.getConditions(),
+                null,
+                null,
                 offlineRunnerContract,
                 template == null ? null : template.getIncrementalField(),
                 zeroIfNull(execution == null ? null : execution.getRecordsRead()),
@@ -288,7 +316,8 @@ public class SyncBatchRunnerBridgePlanSupport {
                 || mode == SyncMode.SCHEDULED_BATCH
                 || mode == SyncMode.ONE_TIME_MIGRATION
                 || mode == SyncMode.REPLAY
-                || mode == SyncMode.BACKFILL;
+                || mode == SyncMode.BACKFILL
+                || mode == SyncMode.CUSTOM_SQL_QUERY;
     }
 
     private String readStrategy(String syncMode) {

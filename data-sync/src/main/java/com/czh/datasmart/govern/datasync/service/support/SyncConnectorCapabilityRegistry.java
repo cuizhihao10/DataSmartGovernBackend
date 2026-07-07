@@ -181,7 +181,6 @@ public class SyncConnectorCapabilityRegistry {
         return mode == SyncMode.INCREMENTAL_TIME
                 || mode == SyncMode.INCREMENTAL_ID
                 || mode == SyncMode.CDC_STREAMING
-                || mode == SyncMode.SCHEDULED_BATCH
                 || mode == SyncMode.REPLAY
                 || mode == SyncMode.BACKFILL;
     }

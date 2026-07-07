@@ -87,7 +87,16 @@ public class SyncTemplateScopeContractSupport {
                 || scopeType == SyncScopeType.DATABASE_FULL;
         boolean customSqlScope = scopeType == SyncScopeType.CUSTOM_SQL_QUERY;
         boolean requiresApproval = multiObjectScope || customSqlScope || "OVERWRITE".equals(normalize(template.getWriteStrategy()));
-        boolean executableByMinimalBridge = scopeType == SyncScopeType.SINGLE_OBJECT;
+        /*
+         * 最小 run-once bridge 的“可执行”边界已经从最早的单表 FULL 扩展到两类受控离线能力：
+         * 1. SINGLE_OBJECT：按源对象/目标对象做普通 Reader -> Writer；
+         * 2. CUSTOM_SQL_QUERY：不再要求 sourceObjectName，而是把只读 SQL 结果集当作 Reader 输出。
+         *
+         * 注意这里没有把 OBJECT_LIST/SCHEMA_FULL/DATABASE_FULL 也标为 true，因为它们不是“单次 run-once”
+         * 能完成的范围；它们需要先由 data-sync 做对象级 fan-out，再把每个对象转换成 SINGLE_OBJECT 子计划。
+         */
+        boolean executableByMinimalBridge = scopeType == SyncScopeType.SINGLE_OBJECT
+                || scopeType == SyncScopeType.CUSTOM_SQL_QUERY;
         if (!executableByMinimalBridge) {
             issueCodes.add("SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE");
             recommendedActions.add("当前范围已经完成控制面建模，但最小 run-once 执行桥只支持 SINGLE_OBJECT；执行前需要专用多对象/自定义 SQL runner");
@@ -176,8 +185,8 @@ public class SyncTemplateScopeContractSupport {
                                      List<String> warnings,
                                      List<String> recommendedActions) {
         if (!hasText(template.getObjectMappingConfig())) {
-            issueCodes.add("DATABASE_FULL_REQUIRES_DISCOVERY_POLICY");
-            recommendedActions.add("整库迁移必须声明 objectMappingConfig，至少包含 discoveryPolicy、include/exclude 策略或对象映射清单，不能无边界扫描整个数据源");
+            warnings.add("DATABASE_FULL_DISCOVERY_POLICY_DEFAULTED");
+            recommendedActions.add("整库迁移未声明 objectMappingConfig 时会使用受控默认发现策略：只返回有限数量表、不采样业务数据、需要审批/服务账号上下文；生产建议补充 include/exclude 和 maxObjects");
             return 0;
         }
         warnings.add("DATABASE_FULL_SCOPE_REQUIRES_OPERATOR_APPROVAL");

@@ -25,6 +25,7 @@ import org.springframework.stereotype.Component;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * data-sync 到 datasource-management run-once 的执行派发服务。
@@ -51,6 +52,11 @@ public class SyncBatchRunOnceDispatchService {
     private static final String PLAN_VERSION = "datasmart.datasource.sync-batch-plan.v1";
     private static final String EXECUTION_BOUNDARY = "DATA_SYNC_TO_DATASOURCE_RUN_ONCE_NO_RAW_SQL_NO_CREDENTIALS";
     private static final String FULL_CHECKPOINT_TYPE = "NONE_OR_FINAL_WATERMARK";
+    private static final Set<String> RUN_ONCE_SAFE_CHECKPOINT_TYPES = Set.of(
+            "NONE_OR_FINAL_WATERMARK",
+            "BATCH_WINDOW",
+            "QUERY_RESULT_BOUNDARY"
+    );
 
     private final SyncBatchRunnerBridgePlanSupport bridgePlanSupport;
     private final DatasourceRunOnceClient datasourceRunOnceClient;
@@ -194,7 +200,7 @@ public class SyncBatchRunOnceDispatchService {
                     "同步执行器桥接计划被阻断，本次执行未触发真实读写",
                     bridgePlan.getIssueCodes());
         }
-        if (!FULL_CHECKPOINT_TYPE.equals(bridgePlan.getCheckpointType())) {
+        if (!RUN_ONCE_SAFE_CHECKPOINT_TYPES.contains(bridgePlan.getCheckpointType())) {
             return failBeforeRemote(task, execution, safeActorContext,
                     "CONNECTOR_RUNTIME_CHECKPOINT_HANDOFF_BLOCKED",
                     "CHECKPOINT_HANDOFF_NOT_IMPLEMENTED",
@@ -373,6 +379,8 @@ public class SyncBatchRunOnceDispatchService {
         readPlan.setSyncMode(bridgePlan.getSyncMode());
         readPlan.setIncrementalField(bridgePlan.getIncrementalField());
         readPlan.setFilterConditions(filterConditions(bridgePlan, additionalFilterConditions));
+        readPlan.setCustomSql(bridgePlan.getCustomSql());
+        readPlan.setCustomSqlFingerprint(bridgePlan.getCustomSqlFingerprint());
         readPlan.setPartitionConfigured(hasText(shardOrPartition)
                 || additionalFilterConditions != null && !additionalFilterConditions.isEmpty());
         readPlan.setRecommendedFetchSize(properties.getDefaultFetchSize());
@@ -697,6 +705,9 @@ public class SyncBatchRunOnceDispatchService {
         }
         if (!FULL_CHECKPOINT_TYPE.equals(bridgePlan.getCheckpointType())) {
             capabilities.add("CHECKPOINT_AWARE_READ");
+        }
+        if ("CUSTOM_SQL_RESULT_SET".equals(bridgePlan.getReadStrategy())) {
+            capabilities.add("CUSTOM_SQL_READ_ONLY_RESULT_SET");
         }
         return List.copyOf(capabilities);
     }

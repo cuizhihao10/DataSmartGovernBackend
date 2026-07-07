@@ -54,7 +54,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class SyncObjectListFanOutDispatchService {
 
-    private static final Set<String> SUPPORTED_SYNC_MODES = Set.of("FULL", "ONE_TIME_MIGRATION");
+    private static final Set<String> SUPPORTED_SYNC_MODES = Set.of("FULL", "ONE_TIME_MIGRATION", "SCHEDULED_BATCH");
     private static final String OBJECT_LIST = "OBJECT_LIST";
     private static final String SINGLE_OBJECT = "SINGLE_OBJECT";
     private static final int DEFAULT_OBJECT_MAX_ATTEMPT_COUNT = 3;

@@ -11,6 +11,7 @@ import com.czh.datasmart.govern.datasource.support.SyncWriteStrategy;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -34,6 +35,9 @@ public abstract class AbstractSyncJdbcDialect implements SyncJdbcDialect {
      * 这会牺牲一部分非常规表名兼容性，但换来第一阶段更安全、更容易审计的 SQL 生成边界。
      */
     private static final Pattern SAFE_IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
+    private static final Pattern SQL_DANGEROUS_TOKEN = Pattern.compile(
+            "\\b(insert|update|delete|merge|drop|alter|create|truncate|grant|revoke|call|exec|execute|copy|load|replace)\\b",
+            Pattern.CASE_INSENSITIVE);
 
     /**
      * 内部 SQL 安全说明。
@@ -76,6 +80,17 @@ public abstract class AbstractSyncJdbcDialect implements SyncJdbcDialect {
                 positiveLimit(spec.getLimit())
         );
         return statement("INCREMENTAL_READ", sql, incrementalReadParameterNames(filters));
+    }
+
+    @Override
+    public SyncPreparedJdbcStatement buildCustomSqlReadStatement(SyncJdbcReadStatementSpec spec) {
+        requireCustomSqlReadSpec(spec);
+        String sql = buildCustomSqlResultSetSql(
+                projection(spec.getSelectedColumns()),
+                requiredReadOnlySql(spec.getCustomSql()),
+                positiveLimit(spec.getLimit())
+        );
+        return statement("CUSTOM_SQL_RESULT_SET_READ", sql, List.of("limit", "offset"));
     }
 
     @Override
@@ -162,6 +177,17 @@ public abstract class AbstractSyncJdbcDialect implements SyncJdbcDialect {
      */
     protected List<String> incrementalReadParameterNames() {
         return incrementalReadParameterNames(List.of());
+    }
+
+    /**
+     * 将自定义 SQL 包装成可分页结果集。
+     *
+     * <p>包装的原因有两个：第一，用户 SQL 只负责描述“读什么”，批量执行器仍要控制“每批读多少”；
+     * 第二，外层 projection 使用字段映射声明的安全列名，可以让结果集字段顺序更稳定。这里不向 SQL 中拼接任何业务值，
+     * 只拼接经过白名单校验的列名和已经通过只读门禁的查询正文。</p>
+     */
+    protected String buildCustomSqlResultSetSql(String projection, String customSql, int limit) {
+        return "SELECT " + projection + " FROM (" + customSql + ") datasmart_custom_sql_result LIMIT ? OFFSET ?";
     }
 
     /**
@@ -380,6 +406,24 @@ public abstract class AbstractSyncJdbcDialect implements SyncJdbcDialect {
     }
 
     /**
+     * 自定义 SQL 读取规格校验。
+     *
+     * <p>与普通表读取不同，自定义 SQL 不需要 objectLocator；它的源对象已经被 SQL 查询表达。
+     * 但它必须声明 selectedColumns，因为 writer 需要根据字段映射把 SQL 别名写入目标字段。
+     * 这里同时做二次只读 SQL 校验，防止未来某个调用方绕过 data-sync 门禁直接访问 datasource-management internal 路由。</p>
+     */
+    private void requireCustomSqlReadSpec(SyncJdbcReadStatementSpec spec) {
+        if (spec == null) {
+            throw new IllegalArgumentException("custom sql read statement spec 不能为空");
+        }
+        if (spec.getSelectedColumns() == null || spec.getSelectedColumns().isEmpty()) {
+            throw new IllegalArgumentException("CUSTOM_SQL_RESULT_SET 必须声明 selectedColumns，用于绑定 SQL 别名与目标字段");
+        }
+        spec.getSelectedColumns().forEach(column -> requiredIdentifier(column, "customSqlSelectedColumn"));
+        requiredReadOnlySql(spec.getCustomSql());
+    }
+
+    /**
      * 写入规格基础校验。
      */
     private void requireWriteSpec(SyncJdbcWriteStatementSpec spec) {
@@ -416,5 +460,20 @@ public abstract class AbstractSyncJdbcDialect implements SyncJdbcDialect {
      */
     private int positiveLimit(Integer limit) {
         return limit == null || limit <= 0 ? 1000 : limit;
+    }
+
+    protected String requiredReadOnlySql(String sql) {
+        String required = requiredText(sql, "customSql");
+        String normalized = required.strip().replaceAll("\\s+", " ");
+        String lower = normalized.toLowerCase(Locale.ROOT);
+        if (normalized.contains(";")
+                || normalized.contains("--")
+                || normalized.contains("/*")
+                || normalized.contains("*/")
+                || (!lower.startsWith("select ") && !lower.startsWith("with "))
+                || SQL_DANGEROUS_TOKEN.matcher(lower).find()) {
+            throw new IllegalArgumentException("customSql 只允许单条 SELECT/WITH 只读查询");
+        }
+        return normalized;
     }
 }

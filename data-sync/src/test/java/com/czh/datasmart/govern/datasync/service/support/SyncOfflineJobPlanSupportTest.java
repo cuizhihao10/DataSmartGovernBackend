@@ -19,7 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>这组测试关注“控制面规划是否诚实”。所谓诚实，指的是：</p>
  * <p>1. FULL 单对象可以形成 DataX-style 全量扫描计划，并且当前最小 bridge 可执行；</p>
  * <p>2. SCHEDULED_BATCH 属于离线通道，但必须由任务层调度配置驱动，不能被误称为普通全量；</p>
- * <p>3. CUSTOM_SQL_QUERY 可以形成离线查询结果集计划，但必须审批，并且不能泄露 SQL 正文；</p>
+ * <p>3. CUSTOM_SQL_QUERY 可以形成离线查询结果集计划，审批通过后可复用最小 bridge，但不能泄露 SQL 正文；</p>
  * <p>4. CDC_STREAMING 是实时通道，不应被塞进离线 runner；</p>
  * <p>5. 多对象同步可以建模和规划，但当前最小 run-once bridge 必须 fail-closed。</p>
  */
@@ -50,16 +50,18 @@ class SyncOfflineJobPlanSupportTest {
     }
 
     @Test
-    void scheduledBatchShouldRequireTaskLevelScheduleAndDedicatedRunner() {
+    void scheduledBatchShouldRequireTaskLevelScheduleAndUseMinimalBridge() {
         SyncOfflineJobPlanResponse response = support.buildPlan(executableSingleObjectTemplate("SCHEDULED_BATCH"));
 
-        assertThat(response.planStatus()).isEqualTo(SyncOfflineJobPlanSupport.PLAN_READY_DEDICATED_RUNNER_REQUIRED);
+        assertThat(response.planStatus()).isEqualTo(SyncOfflineJobPlanSupport.PLAN_READY);
         assertThat(response.transferChannel()).isEqualTo("OFFLINE");
         assertThat(response.modeFamily()).isEqualTo("SCHEDULED_BATCH_WINDOW");
         assertThat(response.taskLevelScheduleRequired()).isTrue();
         assertThat(response.scheduleSemantics()).isEqualTo("TASK_LEVEL_SCHEDULE_REQUIRED_FOR_BATCH_WINDOW");
-        assertThat(response.checkpointRequired()).isTrue();
-        assertThat(response.failClosedReasons()).contains(
+        assertThat(response.checkpointRequired()).isFalse();
+        assertThat(response.executableByMinimalBridge()).isTrue();
+        assertThat(response.dedicatedOfflineRunnerRequired()).isFalse();
+        assertThat(response.failClosedReasons()).doesNotContain(
                 "DEDICATED_OFFLINE_RUNNER_REQUIRED_FOR_MODE",
                 "CHECKPOINT_HANDOFF_REQUIRED_FOR_OFFLINE_RUNNER"
         );
@@ -84,8 +86,9 @@ class SyncOfflineJobPlanSupportTest {
         assertThat(response.customSqlStatementRefDeclared()).isTrue();
         assertThat(response.customSqlInlineSqlDeclared()).isTrue();
         assertThat(response.sqlStatementPolicy()).isEqualTo("STATEMENT_REF_DECLARED_LOW_SENSITIVE");
-        assertThat(response.executableByMinimalBridge()).isFalse();
-        assertThat(response.failClosedReasons()).contains("DEDICATED_OFFLINE_RUNNER_REQUIRED_FOR_SCOPE");
+        assertThat(response.executableByMinimalBridge()).isTrue();
+        assertThat(response.dedicatedOfflineRunnerRequired()).isFalse();
+        assertThat(response.failClosedReasons()).doesNotContain("DEDICATED_OFFLINE_RUNNER_REQUIRED_FOR_SCOPE");
         assertThat(response.toString())
                 .doesNotContain("select id")
                 .doesNotContain("customer-active")

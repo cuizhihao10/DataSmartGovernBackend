@@ -56,9 +56,34 @@ public class SyncOfflineRunnerDispatchService {
     private final SyncBatchRunOnceDispatchService runOnceDispatchService;
     private final SyncOfflineRunnerAdapterRegistry runnerAdapterRegistry;
     private final SyncObjectListFanOutDispatchService objectListFanOutDispatchService;
+    private final SyncDiscoveredObjectFanOutDispatchService discoveredObjectFanOutDispatchService;
     private final SyncPartitionShardFanOutDispatchService partitionShardFanOutDispatchService;
     private final SyncExecutionLifecycleSupport lifecycleSupport;
     private final DataSyncTaskManagementReceiptPublisher receiptPublisher;
+
+    /**
+     * 兼容旧单元测试的构造器。
+     *
+     * <p>新增 discoveredObject fan-out 后，Spring 运行时会使用 Lombok 生成的完整构造器注入真实 Bean；
+     * 但部分历史测试直接 new 本类且不关注 SCHEMA_FULL/DATABASE_FULL。这里允许传入 null discovered 服务，
+     * 调度时会跳过该路径，避免为了新能力大面积改动无关测试。</p>
+     */
+    public SyncOfflineRunnerDispatchService(SyncBatchRunnerBridgePlanSupport bridgePlanSupport,
+                                            SyncBatchRunOnceDispatchService runOnceDispatchService,
+                                            SyncOfflineRunnerAdapterRegistry runnerAdapterRegistry,
+                                            SyncObjectListFanOutDispatchService objectListFanOutDispatchService,
+                                            SyncPartitionShardFanOutDispatchService partitionShardFanOutDispatchService,
+                                            SyncExecutionLifecycleSupport lifecycleSupport,
+                                            DataSyncTaskManagementReceiptPublisher receiptPublisher) {
+        this.bridgePlanSupport = bridgePlanSupport;
+        this.runOnceDispatchService = runOnceDispatchService;
+        this.runnerAdapterRegistry = runnerAdapterRegistry;
+        this.objectListFanOutDispatchService = objectListFanOutDispatchService;
+        this.discoveredObjectFanOutDispatchService = null;
+        this.partitionShardFanOutDispatchService = partitionShardFanOutDispatchService;
+        this.lifecycleSupport = lifecycleSupport;
+        this.receiptPublisher = receiptPublisher;
+    }
 
     /**
      * 按离线 Runner 合同调度一次已 claim 的 execution。
@@ -98,6 +123,11 @@ public class SyncOfflineRunnerDispatchService {
                     mergeIssues(bridgePlan, contract, USE_REALTIME_CDC_PIPELINE),
                     contract);
         }
+        if (discoveredObjectFanOutDispatchService != null
+                && discoveredObjectFanOutDispatchService.supports(contract, safeActorContext)) {
+            return discoveredObjectFanOutDispatchService.dispatchDiscoveredObjects(execution, task, template, workerPlan,
+                    safeActorContext, contract);
+        }
         if (objectListFanOutDispatchService.supports(contract, safeActorContext)) {
             return objectListFanOutDispatchService.dispatchObjectList(execution, task, template, workerPlan,
                     safeActorContext, contract);
@@ -111,7 +141,7 @@ public class SyncOfflineRunnerDispatchService {
             return partitionShardFanOutDispatchService.dispatchPartitionShards(execution, task, template, workerPlan,
                     safeActorContext, contract);
         }
-        if (contract.approvalRequired()) {
+        if (Boolean.TRUE.equals(safeActorContext.approvalRequired())) {
             return failBeforeDelegate(task, execution, safeActorContext,
                     "WAITING_APPROVAL_BEFORE_RUNNER_DISPATCH",
                     contract.contractStatus(),

@@ -229,7 +229,10 @@ final class SyncOfflineRunnerContractPolicySupport {
 
     static boolean minimalBridgeMode(String syncMode) {
         String mode = normalize(syncMode);
-        return "FULL".equals(mode) || "ONE_TIME_MIGRATION".equals(mode);
+        return "FULL".equals(mode)
+                || "ONE_TIME_MIGRATION".equals(mode)
+                || "SCHEDULED_BATCH".equals(mode)
+                || "CUSTOM_SQL_QUERY".equals(mode);
     }
 
     static boolean hasHardBlockingIssue(List<String> issueCodes) {

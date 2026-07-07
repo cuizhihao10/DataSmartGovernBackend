@@ -15,6 +15,9 @@ import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncObjectExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryClient;
+import com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryRequest;
+import com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryResponse;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
 import com.czh.datasmart.govern.datasync.mapper.SyncObjectExecutionMapper;
 import com.czh.datasmart.govern.datasync.support.SyncExecutionState;
@@ -41,8 +44,10 @@ import static org.mockito.Mockito.when;
  *
  * <p>本测试验证“合同驱动执行循环”的核心分支：</p>
  * <p>1. 合同确认 FULL 单对象可由最小 bridge 端到端执行时，门面才委托 run-once；</p>
- * <p>2. 定时批量虽然属于 OFFLINE，但需要 checkpoint handoff，当前阶段必须提前 fail-closed；</p>
- * <p>3. 自定义 SQL 即使已经建模，也必须先审批，且任何结果都不能泄露 SQL 正文或 statementRef 值。</p>
+ * <p>2. 定时批量在当前 v1 中由任务层 scheduleConfig 决定触发频率，本次执行仍是一段有界批处理窗口，
+ * 因此可以复用最小 run-once bridge 进入真实 JDBC 读写；</p>
+ * <p>3. 自定义 SQL 即使已经支持只读结果集搬运，也必须区分“未审批阻断”和“已审批放行”，且任何公开结果都不能泄露 SQL 正文或 statementRef 值；</p>
+ * <p>4. 全 schema/全库迁移不由 data-sync 直连源库，而是先调用 datasource-management 元数据发现，再转换成 OBJECT_LIST 复用对象级 fan-out。</p>
  */
 class SyncOfflineRunnerDispatchServiceTest {
 
@@ -77,7 +82,7 @@ class SyncOfflineRunnerDispatchServiceTest {
     }
 
     @Test
-    void scheduledBatchShouldFailBeforeRunOnceUntilCheckpointHandoffExists() {
+    void scheduledBatchShouldDelegateToRunOnceAsBoundedBatchWindow() {
         SyncBatchRunOnceDispatchService runOnceDispatchService = mock(SyncBatchRunOnceDispatchService.class);
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
         DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
@@ -86,23 +91,29 @@ class SyncOfflineRunnerDispatchServiceTest {
         SyncTask task = task();
         task.setScheduleConfig("{\"cron\":\"0 0 * * * ?\"}");
         SyncTemplate template = template("SCHEDULED_BATCH");
-        SyncWorkerExecutionPlanView workerPlan = workerPlan("SCHEDULED_BATCH", true, false, false);
+        SyncWorkerExecutionPlanView workerPlan = workerPlan("SCHEDULED_BATCH", false, false, false);
+        when(runOnceDispatchService.dispatchPreparedRunOnce(any(SyncBatchRunnerBridgePlan.class),
+                eq(execution), eq(task), any(SyncActorContext.class)))
+                .thenReturn(new SyncBatchRunOnceDispatchResult(true, true, false,
+                        "DISPATCHED_AND_COMPLETED", 88L, "SOURCE_EXHAUSTED_COMPLETE_REQUIRED",
+                        List.of("SCHEDULED_BATCH_WINDOW_COMPLETED"), SyncBatchRunOnceDispatchResult.PAYLOAD_POLICY));
 
         SyncOfflineRunnerDispatchResult result =
                 service.dispatchOffline(execution, task, template, workerPlan, actor());
 
-        assertThat(result.dispatched()).isFalse();
-        assertThat(result.failed()).isTrue();
-        assertThat(result.dispatchStatus()).isEqualTo("CHECKPOINT_HANDOFF_REQUIRED_BEFORE_RUN_ONCE");
-        assertThat(result.issueCodes()).contains("OFFLINE_RUNNER_CHECKPOINT_HANDOFF_REQUIRED");
-        verify(runOnceDispatchService, never()).dispatchPreparedRunOnce(any(), any(), any(), any());
-        assertFailRequest(lifecycleSupport, "OFFLINE_RUNNER_CHECKPOINT_HANDOFF_REQUIRED");
-        verify(receiptPublisher).publishFailed(eq(task), eq(execution), any(SyncActorContext.class),
-                eq("OFFLINE_RUNNER_CHECKPOINT_HANDOFF_REQUIRED"), any());
+        assertThat(result.dispatched()).isTrue();
+        assertThat(result.completed()).isTrue();
+        assertThat(result.failed()).isFalse();
+        assertThat(result.runnerContractStatus()).isEqualTo("MINIMAL_BRIDGE_END_TO_END_SUPPORTED");
+        assertThat(result.issueCodes()).contains("SCHEDULED_BATCH_WINDOW_COMPLETED");
+        verify(runOnceDispatchService).dispatchPreparedRunOnce(any(SyncBatchRunnerBridgePlan.class),
+                eq(execution), eq(task), any(SyncActorContext.class));
+        verify(lifecycleSupport, never()).failExecution(any(), any(), any(), any());
+        verify(receiptPublisher, never()).publishFailed(any(), any(), any(), any(), any());
     }
 
     @Test
-    void scheduledBatchShouldUseDedicatedAdapterWhenRunnerIsRegistered() {
+    void checkpointModeShouldUseDedicatedAdapterWhenRunnerIsRegistered() {
         SyncBatchRunOnceDispatchService runOnceDispatchService = mock(SyncBatchRunOnceDispatchService.class);
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
         DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
@@ -139,11 +150,10 @@ class SyncOfflineRunnerDispatchServiceTest {
         };
         SyncOfflineRunnerDispatchService service = service(runOnceDispatchService, lifecycleSupport,
                 receiptPublisher, List.of(adapter));
-        SyncExecution execution = execution("SCHEDULED_BATCH");
+        SyncExecution execution = execution("INCREMENTAL_TIME");
         SyncTask task = task();
-        task.setScheduleConfig("{\"cron\":\"0 0 * * * ?\"}");
-        SyncTemplate template = template("SCHEDULED_BATCH");
-        SyncWorkerExecutionPlanView workerPlan = workerPlan("SCHEDULED_BATCH", true, false, false);
+        SyncTemplate template = template("INCREMENTAL_TIME");
+        SyncWorkerExecutionPlanView workerPlan = workerPlan("INCREMENTAL_TIME", true, false, false);
 
         SyncOfflineRunnerDispatchResult result =
                 service.dispatchOffline(execution, task, template, workerPlan, actor());
@@ -287,7 +297,78 @@ class SyncOfflineRunnerDispatchServiceTest {
     }
 
     @Test
-    void customSqlShouldFailForApprovalWithoutLeakingSqlText() {
+    void schemaFullShouldDiscoverMetadataThenFanOutAsObjectList() {
+        SyncBatchRunOnceDispatchService runOnceDispatchService = mock(SyncBatchRunOnceDispatchService.class);
+        SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
+        DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
+        DatasourceMetadataDiscoveryClient metadataDiscoveryClient = mock(DatasourceMetadataDiscoveryClient.class);
+        SyncOfflineRunnerDispatchService service = service(runOnceDispatchService, lifecycleSupport,
+                receiptPublisher, List.of(), metadataDiscoveryClient);
+        SyncExecution execution = execution("FULL");
+        SyncTask task = task();
+        SyncTemplate template = template("FULL");
+        template.setSyncScopeType("SCHEMA_FULL");
+        template.setSourceObjectName(null);
+        template.setTargetObjectName(null);
+        template.setObjectMappingConfig("""
+                {
+                  "discoveryPolicy": {
+                    "includePatterns": ["orders", "customers"],
+                    "targetNamePrefix": "dwd_",
+                    "maxObjects": 10
+                  }
+                }
+                """);
+        SyncWorkerExecutionPlanView workerPlan = workerPlan("FULL", false, false, false);
+        when(metadataDiscoveryClient.discover(eq(10001L), any(DatasourceMetadataDiscoveryRequest.class),
+                any(SyncActorContext.class)))
+                .thenReturn(metadataResponse());
+        when(runOnceDispatchService.executePreparedRunOnceRemoteOnly(any(SyncBatchRunnerBridgePlan.class),
+                any(SyncExecution.class), eq(task), any(SyncActorContext.class)))
+                .thenReturn(remoteComplete(5L, 5L), remoteComplete(4L, 4L));
+
+        SyncOfflineRunnerDispatchResult result =
+                service.dispatchOffline(execution, task, template, workerPlan, actor(false));
+
+        assertThat(result.dispatched()).isTrue();
+        assertThat(result.completed()).isTrue();
+        assertThat(result.failed()).isFalse();
+        assertThat(result.dispatchStatus()).isEqualTo("OBJECT_LIST_OBJECT_LEVEL_FAN_OUT_COMPLETED");
+        assertThat(result.issueCodes()).contains("OBJECT_LIST_OBJECT_LEVEL_FAN_OUT_COMPLETED");
+
+        ArgumentCaptor<DatasourceMetadataDiscoveryRequest> discoveryRequestCaptor =
+                ArgumentCaptor.forClass(DatasourceMetadataDiscoveryRequest.class);
+        verify(metadataDiscoveryClient).discover(eq(10001L), discoveryRequestCaptor.capture(),
+                any(SyncActorContext.class));
+        assertThat(discoveryRequestCaptor.getValue().getSchemaPattern()).isEqualTo("ods");
+        assertThat(discoveryRequestCaptor.getValue().getMaxTables()).isEqualTo(10);
+        assertThat(discoveryRequestCaptor.getValue().getIncludeColumns()).isTrue();
+        assertThat(discoveryRequestCaptor.getValue().getIncludeSampleRows()).isFalse();
+
+        ArgumentCaptor<SyncBatchRunnerBridgePlan> bridgePlanCaptor =
+                ArgumentCaptor.forClass(SyncBatchRunnerBridgePlan.class);
+        verify(runOnceDispatchService, times(2)).executePreparedRunOnceRemoteOnly(
+                bridgePlanCaptor.capture(), any(SyncExecution.class), eq(task), any(SyncActorContext.class));
+        assertThat(bridgePlanCaptor.getAllValues())
+                .extracting(SyncBatchRunnerBridgePlan::getSourceObjectLocator)
+                .containsExactly("ods.orders", "ods.customers");
+        assertThat(bridgePlanCaptor.getAllValues())
+                .extracting(SyncBatchRunnerBridgePlan::getTargetObjectLocator)
+                .containsExactly("dwd.dwd_orders", "dwd.dwd_customers");
+
+        ArgumentCaptor<SyncExecutionCompleteRequest> completeCaptor =
+                ArgumentCaptor.forClass(SyncExecutionCompleteRequest.class);
+        verify(lifecycleSupport).completeExecution(eq(task), eq(execution),
+                completeCaptor.capture(), any(SyncActorContext.class));
+        assertThat(completeCaptor.getValue().getRecordsRead()).isEqualTo(9L);
+        assertThat(completeCaptor.getValue().getRecordsWritten()).isEqualTo(9L);
+        verify(receiptPublisher).publishComplete(eq(task), eq(execution),
+                any(SyncActorContext.class), any(DatasourceRunOnceResponse.class));
+        verify(lifecycleSupport, never()).failExecution(any(), any(), any(), any());
+    }
+
+    @Test
+    void customSqlShouldFailForHumanApprovalContextWithoutLeakingSqlText() {
         SyncBatchRunOnceDispatchService runOnceDispatchService = mock(SyncBatchRunOnceDispatchService.class);
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
         DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
@@ -302,10 +383,10 @@ class SyncOfflineRunnerDispatchServiceTest {
                   "sql": "select id, name from customer where status = :status"
                 }
                 """);
-        SyncWorkerExecutionPlanView workerPlan = workerPlan("CUSTOM_SQL_QUERY", true, true, true);
+        SyncWorkerExecutionPlanView workerPlan = workerPlan("CUSTOM_SQL_QUERY", false, true, true);
 
         SyncOfflineRunnerDispatchResult result =
-                service.dispatchOffline(execution, task, template, workerPlan, actor());
+                service.dispatchOffline(execution, task, template, workerPlan, actor(true));
 
         assertThat(result.dispatched()).isFalse();
         assertThat(result.failed()).isTrue();
@@ -319,6 +400,48 @@ class SyncOfflineRunnerDispatchServiceTest {
         assertFailRequest(lifecycleSupport, "OFFLINE_RUNNER_APPROVAL_REQUIRED");
     }
 
+    @Test
+    void customSqlShouldDispatchReadOnlyResultSetAfterApprovalContextIsCleared() {
+        SyncBatchRunOnceDispatchService runOnceDispatchService = mock(SyncBatchRunOnceDispatchService.class);
+        SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
+        DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
+        SyncOfflineRunnerDispatchService service = service(runOnceDispatchService, lifecycleSupport, receiptPublisher);
+        SyncExecution execution = execution("CUSTOM_SQL_QUERY");
+        SyncTask task = task();
+        SyncTemplate template = template("CUSTOM_SQL_QUERY");
+        template.setSyncScopeType("CUSTOM_SQL_QUERY");
+        template.setCustomSqlConfig("""
+                {
+                  "sql": "select id, name from customer where status = 'ACTIVE'"
+                }
+                """);
+        SyncWorkerExecutionPlanView workerPlan = workerPlan("CUSTOM_SQL_QUERY", false, true, false);
+        when(runOnceDispatchService.dispatchPreparedRunOnce(any(SyncBatchRunnerBridgePlan.class),
+                eq(execution), eq(task), any(SyncActorContext.class)))
+                .thenReturn(new SyncBatchRunOnceDispatchResult(true, true, false,
+                        "DISPATCHED_AND_COMPLETED", 88L, "SOURCE_EXHAUSTED_COMPLETE_REQUIRED",
+                        List.of("CUSTOM_SQL_READ_ONLY_RESULT_SET_DISPATCHED"),
+                        SyncBatchRunOnceDispatchResult.PAYLOAD_POLICY));
+
+        SyncOfflineRunnerDispatchResult result =
+                service.dispatchOffline(execution, task, template, workerPlan, actor(false));
+
+        assertThat(result.dispatched()).isTrue();
+        assertThat(result.completed()).isTrue();
+        assertThat(result.failed()).isFalse();
+        assertThat(result.issueCodes()).contains("CUSTOM_SQL_READ_ONLY_RESULT_SET_DISPATCHED");
+        assertThat(result.toString()).doesNotContain("select id");
+
+        ArgumentCaptor<SyncBatchRunnerBridgePlan> bridgePlanCaptor =
+                ArgumentCaptor.forClass(SyncBatchRunnerBridgePlan.class);
+        verify(runOnceDispatchService).dispatchPreparedRunOnce(bridgePlanCaptor.capture(),
+                eq(execution), eq(task), any(SyncActorContext.class));
+        assertThat(bridgePlanCaptor.getValue().getReadStrategy()).isEqualTo("CUSTOM_SQL_RESULT_SET");
+        assertThat(bridgePlanCaptor.getValue().getCustomSql()).contains("select id, name");
+        assertThat(bridgePlanCaptor.getValue().getCustomSqlFingerprint()).isNotBlank();
+        verify(lifecycleSupport, never()).failExecution(any(), any(), any(), any());
+    }
+
     private SyncOfflineRunnerDispatchService service(SyncBatchRunOnceDispatchService runOnceDispatchService,
                                                      SyncExecutionLifecycleSupport lifecycleSupport,
                                                      DataSyncTaskManagementReceiptPublisher receiptPublisher) {
@@ -329,6 +452,14 @@ class SyncOfflineRunnerDispatchServiceTest {
                                                      SyncExecutionLifecycleSupport lifecycleSupport,
                                                      DataSyncTaskManagementReceiptPublisher receiptPublisher,
                                                      List<SyncOfflineRunnerAdapter> adapters) {
+        return service(runOnceDispatchService, lifecycleSupport, receiptPublisher, adapters, null);
+    }
+
+    private SyncOfflineRunnerDispatchService service(SyncBatchRunOnceDispatchService runOnceDispatchService,
+                                                     SyncExecutionLifecycleSupport lifecycleSupport,
+                                                     DataSyncTaskManagementReceiptPublisher receiptPublisher,
+                                                     List<SyncOfflineRunnerAdapter> adapters,
+                                                     DatasourceMetadataDiscoveryClient metadataDiscoveryClient) {
         SyncBatchRunnerBridgePlanSupport bridgePlanSupport = new SyncBatchRunnerBridgePlanSupport(
                 new SyncFieldMappingExecutionContractSupport(objectMapper),
                 new SyncFilterExecutionContractSupport(objectMapper),
@@ -352,9 +483,14 @@ class SyncOfflineRunnerDispatchServiceTest {
                         null,
                         lifecycleSupport,
                         receiptPublisher);
+        SyncDiscoveredObjectFanOutDispatchService discoveredObjectFanOutDispatchService =
+                metadataDiscoveryClient == null
+                        ? null
+                        : new SyncDiscoveredObjectFanOutDispatchService(metadataDiscoveryClient,
+                        objectListFanOutDispatchService, lifecycleSupport, receiptPublisher, objectMapper);
         return new SyncOfflineRunnerDispatchService(bridgePlanSupport, runOnceDispatchService,
-                runnerAdapterRegistry, objectListFanOutDispatchService, partitionShardFanOutDispatchService,
-                lifecycleSupport, receiptPublisher);
+                runnerAdapterRegistry, objectListFanOutDispatchService, discoveredObjectFanOutDispatchService,
+                partitionShardFanOutDispatchService, lifecycleSupport, receiptPublisher);
     }
 
     private SyncObjectExecutionLifecycleSupport objectExecutionLifecycleSupport() {
@@ -493,6 +629,42 @@ class SyncOfflineRunnerDispatchServiceTest {
         );
     }
 
+    private DatasourceMetadataDiscoveryResponse metadataResponse() {
+        DatasourceMetadataDiscoveryResponse response = new DatasourceMetadataDiscoveryResponse();
+        response.setDatasourceId(10001L);
+        response.setDatasourceType("MYSQL");
+        response.setTableCount(2);
+        response.setTables(List.of(
+                table("ods", "orders", column("id", true), column("amount", false)),
+                table("ods", "customers", column("id", true), column("name", false))
+        ));
+        response.setWarnings(List.of());
+        return response;
+    }
+
+    private DatasourceMetadataDiscoveryResponse.TableSummary table(
+            String schemaName,
+            String tableName,
+            DatasourceMetadataDiscoveryResponse.ColumnSummary... columns) {
+        DatasourceMetadataDiscoveryResponse.TableSummary table = new DatasourceMetadataDiscoveryResponse.TableSummary();
+        table.setSchemaName(schemaName);
+        table.setTableName(tableName);
+        table.setTableType("TABLE");
+        table.setPrimaryKeys(List.of("id"));
+        table.setColumns(List.of(columns));
+        return table;
+    }
+
+    private DatasourceMetadataDiscoveryResponse.ColumnSummary column(String columnName, boolean primaryKey) {
+        DatasourceMetadataDiscoveryResponse.ColumnSummary column = new DatasourceMetadataDiscoveryResponse.ColumnSummary();
+        column.setColumnName(columnName);
+        column.setDataTypeName(primaryKey ? "BIGINT" : "VARCHAR");
+        column.setNullable(!primaryKey);
+        column.setPrimaryKey(primaryKey);
+        column.setOrdinalPosition(primaryKey ? 1 : 2);
+        return column;
+    }
+
     private SyncWorkerExecutionPlanView workerPlan(String syncMode,
                                                    boolean checkpointRequired,
                                                    boolean customSqlScope,
@@ -550,7 +722,11 @@ class SyncOfflineRunnerDispatchServiceTest {
     }
 
     private SyncActorContext actor() {
+        return actor(false);
+    }
+
+    private SyncActorContext actor(boolean approvalRequired) {
         return new SyncActorContext(7L, 1001L, "SERVICE_ACCOUNT", "trace-offline-runner-dispatch",
-                "PROJECT", "project_id IN ${actorProjectIds}", List.of(101L), false);
+                "PROJECT", "project_id IN ${actorProjectIds}", List.of(101L), approvalRequired);
     }
 }

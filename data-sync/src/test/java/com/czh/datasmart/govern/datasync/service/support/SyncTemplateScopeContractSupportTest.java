@@ -60,16 +60,18 @@ class SyncTemplateScopeContractSupportTest {
     }
 
     @Test
-    void databaseFullShouldRequireDiscoveryPolicyOrMappingBoundary() {
+    void databaseFullShouldDefaultToControlledDiscoveryPolicy() {
         SyncTemplate template = baseTemplate();
         template.setSyncScopeType("DATABASE_FULL");
         template.setObjectMappingConfig(null);
 
         SyncTemplateScopeContract contract = support.evaluate(template);
 
-        assertThat(contract.blockingIssueCodes()).contains("DATABASE_FULL_REQUIRES_DISCOVERY_POLICY");
+        assertThat(contract.blockingIssueCodes()).isEmpty();
+        assertThat(contract.warnings()).contains("DATABASE_FULL_DISCOVERY_POLICY_DEFAULTED");
+        assertThat(contract.issueCodes()).contains("SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE");
         assertThat(contract.recommendedActions()).anySatisfy(action ->
-                assertThat(action).contains("objectMappingConfig"));
+                assertThat(action).contains("受控默认发现策略"));
     }
 
     @Test
@@ -90,7 +92,8 @@ class SyncTemplateScopeContractSupportTest {
         assertThat(contract.customSqlDeclared()).isTrue();
         assertThat(contract.requiresApproval()).isTrue();
         assertThat(contract.blockingIssueCodes()).isEmpty();
-        assertThat(contract.issueCodes()).contains("SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE");
+        assertThat(contract.issueCodes()).doesNotContain("SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE");
+        assertThat(contract.executableByMinimalBridge()).isTrue();
     }
 
     @Test

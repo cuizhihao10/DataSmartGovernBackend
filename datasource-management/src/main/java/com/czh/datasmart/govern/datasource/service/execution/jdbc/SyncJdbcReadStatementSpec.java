@@ -76,6 +76,26 @@ public class SyncJdbcReadStatementSpec {
     private Integer limit;
 
     /**
+     * 自定义 SQL 查询正文。
+     *
+     * <p>只有 {@code readStrategy=CUSTOM_SQL_RESULT_SET} 时才使用该字段。它不来自普通对象定位符，
+     * 而是由 data-sync 在执行前完成只读 SQL 校验后通过 internal 服务账号链路传入。方言层会再次做
+     * 防御性只读校验，并把它包装为可分页结果集。</p>
+     */
+    private String customSql;
+
+    public SyncJdbcReadStatementSpec(String objectLocator,
+                                     List<String> selectedColumns,
+                                     String checkpointColumn,
+                                     List<SyncJdbcFilterCondition> filterConditions,
+                                     List<String> stableSortColumns,
+                                     String readStrategy,
+                                     Integer limit) {
+        this(objectLocator, selectedColumns, checkpointColumn, filterConditions, stableSortColumns,
+                readStrategy, limit, null);
+    }
+
+    /**
      * 兼容旧构造器。
      */
     public SyncJdbcReadStatementSpec(String objectLocator,
@@ -83,7 +103,7 @@ public class SyncJdbcReadStatementSpec {
                                      String checkpointColumn,
                                      String readStrategy,
                                      Integer limit) {
-        this(objectLocator, selectedColumns, checkpointColumn, List.of(), List.of(), readStrategy, limit);
+        this(objectLocator, selectedColumns, checkpointColumn, List.of(), List.of(), readStrategy, limit, null);
     }
 
     /**
@@ -95,6 +115,6 @@ public class SyncJdbcReadStatementSpec {
                                      List<SyncJdbcFilterCondition> filterConditions,
                                      String readStrategy,
                                      Integer limit) {
-        this(objectLocator, selectedColumns, checkpointColumn, filterConditions, List.of(), readStrategy, limit);
+        this(objectLocator, selectedColumns, checkpointColumn, filterConditions, List.of(), readStrategy, limit, null);
     }
 }

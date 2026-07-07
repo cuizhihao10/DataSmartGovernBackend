@@ -58,6 +58,15 @@ public class DataSyncDatasourceRunOnceProperties {
     private String partitionRangeProbePath = "/internal/sync-partitions/range-probe";
 
     /**
+     * datasource-management 的元数据发现路径模板。
+     *
+     * <p>SCHEMA_FULL 和 DATABASE_FULL 不应该由 data-sync 自己直连源库扫描表清单，
+     * 因为 datasource-management 才是数据源连接、权限、缓存和元数据能力的所有者。
+     * data-sync 只通过该路径请求“低敏表结构摘要”，再把结果转换为 OBJECT_LIST 执行计划。</p>
+     */
+    private String metadataDiscoveryPathTemplate = "/datasources/{datasourceId}/metadata/discover";
+
+    /**
      * 发送给 datasource-management 的服务名 Header。
      */
     private String sourceService = "data-sync";

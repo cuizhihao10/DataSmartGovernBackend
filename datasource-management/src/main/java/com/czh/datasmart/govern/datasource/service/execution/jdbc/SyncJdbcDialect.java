@@ -44,6 +44,14 @@ public interface SyncJdbcDialect {
     SyncPreparedJdbcStatement buildIncrementalReadStatement(SyncJdbcReadStatementSpec spec);
 
     /**
+     * 构建自定义 SQL 结果集读取 SQL。
+     *
+     * <p>该能力只用于 {@code CUSTOM_SQL_QUERY} 离线传输。传入 SQL 必须已经由 data-sync 做过只读门禁，
+     * 方言层仍会进行防御性校验，并把查询包装成分页结果集，避免一次性把大结果集全部加载到内存。</p>
+     */
+    SyncPreparedJdbcStatement buildCustomSqlReadStatement(SyncJdbcReadStatementSpec spec);
+
+    /**
      * 构建追加写入 SQL。
      */
     SyncPreparedJdbcStatement buildAppendWriteStatement(SyncJdbcWriteStatementSpec spec);

@@ -92,12 +92,14 @@ public class SyncBatchExecutionPreparationService {
                 filterConditions(readPlan),
                 stableSortColumns(selectedColumns, writeColumns, primaryKeyColumns),
                 readPlan.getReadStrategy(),
-                readPlan.getRecommendedFetchSize()
+                readPlan.getRecommendedFetchSize(),
+                readPlan.getCustomSql()
         );
         return switch (readPlan.getReadStrategy()) {
-            case "FULL_OBJECT_SCAN" -> dialect.buildFullReadStatement(spec);
+            case "FULL_OBJECT_SCAN", "SCHEDULED_BATCH_WINDOW" -> dialect.buildFullReadStatement(spec);
             case "INCREMENTAL_TIME_WINDOW", "INCREMENTAL_ID_RANGE" -> dialect.buildIncrementalReadStatement(spec);
             case "REPLAY_FROM_CHECKPOINT", "BACKFILL_PARTITION_RANGE" -> dialect.buildIncrementalReadStatement(spec);
+            case "CUSTOM_SQL_RESULT_SET" -> dialect.buildCustomSqlReadStatement(spec);
             default -> throw new UnsupportedOperationException("当前 JDBC 准备层暂不支持读取策略: " + readPlan.getReadStrategy());
         };
     }

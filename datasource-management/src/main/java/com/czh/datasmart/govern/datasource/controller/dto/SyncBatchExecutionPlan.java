@@ -142,6 +142,22 @@ public class SyncBatchExecutionPlan {
         private List<ReadFilterCondition> filterConditions;
 
         /**
+         * 自定义 SQL 查询正文。
+         *
+         * <p>该字段只允许在 internal run-once 请求中出现，且只在 {@code readStrategy=CUSTOM_SQL_RESULT_SET}
+         * 时被执行准备层消费。普通管理 API、任务回执、审计摘要和事件投影都不应返回它。</p>
+         */
+        private String customSql;
+
+        /**
+         * 自定义 SQL 指纹。
+         *
+         * <p>指纹用于低敏审计聚合。执行层可以用它记录“同一条托管查询被执行了几次”，
+         * 但不能通过它还原 SQL 正文。</p>
+         */
+        private String customSqlFingerprint;
+
+        /**
          * 是否配置了分区/分片。
          * 当前不回传 partitionConfig 原文，避免把复杂过滤条件或业务范围暴露到 claim 响应中。
          */
@@ -175,7 +191,21 @@ public class SyncBatchExecutionPlan {
                         Integer recommendedFetchSize,
                         List<String> requiredWorkerCapabilities) {
             this(connectorType, datasourceId, objectLocator, readStrategy, syncMode, incrementalField,
-                    List.of(), partitionConfigured, recommendedFetchSize, requiredWorkerCapabilities);
+                    List.of(), null, null, partitionConfigured, recommendedFetchSize, requiredWorkerCapabilities);
+        }
+
+        public ReadPlan(String connectorType,
+                        Long datasourceId,
+                        String objectLocator,
+                        String readStrategy,
+                        String syncMode,
+                        String incrementalField,
+                        List<ReadFilterCondition> filterConditions,
+                        Boolean partitionConfigured,
+                        Integer recommendedFetchSize,
+                        List<String> requiredWorkerCapabilities) {
+            this(connectorType, datasourceId, objectLocator, readStrategy, syncMode, incrementalField,
+                    filterConditions, null, null, partitionConfigured, recommendedFetchSize, requiredWorkerCapabilities);
         }
     }
 

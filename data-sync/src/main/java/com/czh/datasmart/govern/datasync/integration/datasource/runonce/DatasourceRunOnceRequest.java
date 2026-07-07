@@ -72,6 +72,8 @@ public class DatasourceRunOnceRequest {
         private String syncMode;
         private String incrementalField;
         private List<ReadFilterCondition> filterConditions;
+        private String customSql;
+        private String customSqlFingerprint;
         private Boolean partitionConfigured;
         private Integer recommendedFetchSize;
         private List<String> requiredWorkerCapabilities;
