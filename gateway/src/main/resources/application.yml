@@ -561,6 +561,20 @@ datasmart:
           method-actions:
             POST: CLONE
 
+        - path-pattern: /api/sync/sync-tasks/groups
+          resource-type: SYNC_TASK
+          default-action: LIST_GROUPS
+          description: data-sync 同步任务分组汇总查询接口，只返回低敏分组编码、展示名和状态计数。
+          method-actions:
+            GET: LIST_GROUPS
+
+        - path-pattern: /api/sync/sync-tasks/*/group
+          resource-type: SYNC_TASK
+          default-action: UPDATE_GROUP
+          description: data-sync 同步任务移组接口，只调整任务定义的 groupCode/groupName，不触发真实执行。
+          method-actions:
+            POST: UPDATE_GROUP
+
         - path-pattern: /api/sync/sync-tasks/*/executions/*/objects
           resource-type: SYNC_EXECUTION
           default-action: VIEW

@@ -259,6 +259,12 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/sync/sync-tasks/*/clone", "SYNC_TASK",
                 "data-sync 同步任务克隆接口，只复制任务定义，不复制执行历史、checkpoint 或审批事实",
                 Map.of("POST", "CLONE")));
+        defaults.add(route("/api/sync/sync-tasks/groups", "SYNC_TASK",
+                "data-sync 同步任务分组汇总查询接口，只返回低敏分组编码、展示名和状态计数",
+                Map.of("GET", "LIST_GROUPS")));
+        defaults.add(route("/api/sync/sync-tasks/*/group", "SYNC_TASK",
+                "data-sync 同步任务移组接口，只调整任务定义的 groupCode/groupName，不触发真实执行",
+                Map.of("POST", "UPDATE_GROUP")));
         defaults.add(route("/api/sync/sync-tasks/*/executions/*/objects", "SYNC_EXECUTION",
                 "data-sync 对象级执行账本查询入口，用于查看 OBJECT_LIST 父 execution 内部每个对象的状态、尝试次数和低敏失败摘要",
                 Map.of("GET", "VIEW")));

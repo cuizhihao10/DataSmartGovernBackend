@@ -30,6 +30,8 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupSummary;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupUpdateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
@@ -60,6 +62,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncObjectExecutionOper
 import com.czh.datasmart.govern.datasync.service.support.SyncOfflineJobPlanSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskGroupOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskManagementOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskRecoveryOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskScheduleConfigSupport;
@@ -111,6 +114,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncExecutionLifecycleSupport executionLifecycleSupport;
     private final SyncExecutionCreationSupport executionCreationSupport;
     private final SyncTaskLifecycleOperationSupport taskLifecycleOperationSupport;
+    private final SyncTaskGroupOperationSupport taskGroupOperationSupport;
     private final SyncTaskManagementOperationSupport taskManagementOperationSupport;
     private final SyncTaskRecoveryOperationSupport taskRecoveryOperationSupport;
     private final SyncTemplateCreationSupport templateCreationSupport;
@@ -229,6 +233,10 @@ public class DataSyncServiceImpl implements DataSyncService {
         task.setProjectId(resolveScopeValue("projectId", request.getProjectId(), template.getProjectId()));
         task.setWorkspaceId(resolveScopeValue("workspaceId", request.getWorkspaceId(), template.getWorkspaceId()));
         task.setTemplateId(template.getId());
+        SyncTaskGroupOperationSupport.TaskGroupAssignment groupAssignment =
+                taskGroupOperationSupport.resolveAssignment(request.getGroupCode(), request.getGroupName());
+        task.setGroupCode(groupAssignment.groupCode());
+        task.setGroupName(groupAssignment.groupName());
         task.setName(querySupport.defaultText(request.getName(), template.getName()));
         task.setDescription(querySupport.defaultText(request.getDescription(), template.getDescription()));
         /*
@@ -278,6 +286,8 @@ public class DataSyncServiceImpl implements DataSyncService {
         }
         querySupport.eqIfPresent(wrapper, SyncTask::getTemplateId, criteria.templateId());
         querySupport.eqIfPresent(wrapper, SyncTask::getOwnerId, criteria.ownerId());
+        querySupport.eqIfPresent(wrapper, SyncTask::getGroupCode,
+                taskGroupOperationSupport.resolveAssignment(criteria.groupCode(), null).groupCode());
         String requestedState = querySupport.normalizeCode(criteria.currentState());
         if (requestedState == null) {
             /*
@@ -307,6 +317,33 @@ public class DataSyncServiceImpl implements DataSyncService {
         dataScopeSupport.validateOwnedReadable(task.getTenantId(), task.getProjectId(),
                 task.getOwnerId(), actorContext, "同步任务");
         return task;
+    }
+
+    /**
+     * 查询任务分组汇总。
+     *
+     * <p>主 Service 不直接写聚合 SQL，而是委托给 {@link SyncTaskGroupOperationSupport}：
+     * 分组能力后续会继续扩展到批量移组、组级导出、组级手工调度和 Agent 查询工具，把规则集中在 support
+     * 里更容易保持编码规范、SELF 数据范围和审计口径一致。</p>
+     */
+    @Override
+    public List<SyncTaskGroupSummary> listTaskGroups(SyncTaskQueryCriteria criteria, SyncActorContext actorContext) {
+        return taskGroupOperationSupport.listTaskGroups(criteria, actorContext);
+    }
+
+    /**
+     * 调整任务所属分组。
+     *
+     * <p>入口仍然先调用 getTask(...)，保证租户、项目和 SELF 范围校验一致；
+     * 真正的分组编码规范化、持久化和审计由分组 support 负责。</p>
+     */
+    @Override
+    @Transactional
+    public SyncTaskOperationResult updateTaskGroup(Long id,
+                                                   SyncTaskGroupUpdateRequest request,
+                                                   SyncActorContext actorContext) {
+        SyncTask task = getTask(id, actorContext);
+        return taskGroupOperationSupport.updateTaskGroup(task, request, actorContext);
     }
 
     @Override
@@ -513,6 +550,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                 + ",approvalState=" + task.getApprovalState()
                 + ",scheduleEnabled=" + task.getScheduleEnabled()
                 + ",nextFireTime=" + task.getNextFireTime()
+                + ",groupCode=" + task.getGroupCode()
                 + ",runMode=" + task.getRunMode();
         if (approvalFactId != null) {
             payload = payload + ",approvalFactId=" + querySupport.truncate(approvalFactId, APPROVAL_FACT_ID_MAX_LENGTH);

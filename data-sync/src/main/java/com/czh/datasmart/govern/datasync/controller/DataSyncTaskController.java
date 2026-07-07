@@ -12,6 +12,8 @@ import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTaskRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupSummary;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupUpdateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
@@ -30,6 +32,8 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 /**
  * 同步任务 API。
@@ -70,6 +74,7 @@ public class DataSyncTaskController {
             @RequestParam(required = false) Long workspaceId,
             @RequestParam(required = false) Long templateId,
             @RequestParam(required = false) Long ownerId,
+            @RequestParam(required = false) String groupCode,
             @RequestParam(required = false) String currentState,
             @RequestParam(required = false) String approvalState,
             @RequestParam(required = false) String triggerType,
@@ -81,8 +86,41 @@ public class DataSyncTaskController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
-                tenantId, projectId, workspaceId, templateId, ownerId, currentState, approvalState, triggerType, current, size);
+                tenantId, projectId, workspaceId, templateId, ownerId, groupCode,
+                currentState, approvalState, triggerType, current, size);
         return PlatformApiResponse.success(dataSyncService.pageTasks(
+                criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * 查询同步任务分组汇总。
+     *
+     * <p>路由语义：
+     * - GET /sync-tasks/groups 是只读分组列表，不创建任务、不执行任务；
+     * - tenant/project/workspace 仍只是请求过滤条件，最终可见范围由服务层结合权限上下文二次收口；
+     * - groupCode 可用于只查某个稳定分组，适合 Agent 在拿到用户口令后先做分组摘要确认。</p>
+     *
+     * <p>返回内容：
+     * 返回每个 groupCode 下的任务数量、活跃任务数量、等待调度数量、运行中数量、失败数量和回收站数量。
+     * 它用于运营台分组卡片和 Agent 总结，不返回 SQL、映射配置、连接串或样本数据。</p>
+     */
+    @GetMapping("/groups")
+    public PlatformApiResponse<List<SyncTaskGroupSummary>> listTaskGroups(
+            @RequestParam(required = false) Long tenantId,
+            @RequestParam(required = false) Long projectId,
+            @RequestParam(required = false) Long workspaceId,
+            @RequestParam(required = false) Long ownerId,
+            @RequestParam(required = false) String groupCode,
+            @RequestParam(defaultValue = "100") Long size,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
+                tenantId, projectId, workspaceId, null, ownerId, groupCode,
+                null, null, null, 1L, size);
+        return PlatformApiResponse.success(dataSyncService.listTaskGroups(
                 criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
     }
 
@@ -99,6 +137,30 @@ public class DataSyncTaskController {
             @RequestHeader HttpHeaders headers) {
         return PlatformApiResponse.success(dataSyncService.getTask(
                 id, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * 调整同步任务分组。
+     *
+     * <p>该接口只改变任务定义的 groupCode/groupName，不会触发执行、不会修改模板、不会改写历史 execution。
+     * 如果 request.groupCode 为空，表示把任务移出分组；如果非空，服务端会规范化编码并写入审计。</p>
+     *
+     * <p>为什么这是 POST 而不是 PATCH：
+     * 当前项目接口习惯把“有业务审计语义的管理动作”建模为 POST 子资源，例如 pause、offline、clone。
+     * 这里延续同一风格，便于 gateway 和 permission-admin 把它识别为 UPDATE_GROUP 动作。</p>
+     */
+    @PostMapping("/{id}/group")
+    public PlatformApiResponse<SyncTaskOperationResult> updateTaskGroup(
+            @PathVariable Long id,
+            @Valid @RequestBody(required = false) SyncTaskGroupUpdateRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务分组已更新",
+                dataSyncService.updateTaskGroup(id, request, actorContext(tenantId, actorId, actorRole, traceId, headers)),
+                traceId);
     }
 
     /**

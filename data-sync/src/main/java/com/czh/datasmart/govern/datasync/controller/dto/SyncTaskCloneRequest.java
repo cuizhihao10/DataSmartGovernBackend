@@ -41,6 +41,23 @@ public class SyncTaskCloneRequest {
     private Long ownerId;
 
     /**
+     * 克隆后任务所属分组编码。
+     *
+     * <p>为空时默认继承来源任务分组。这样用户在“订单域同步任务”详情中克隆新任务时，新任务仍在同一业务分组下，
+     * 便于后续组级查看、导出和批量运营。如果希望把克隆任务放到新分组，可显式传入新的 groupCode；
+     * 如果希望取消分组，后续应通过专门的移组接口执行，避免克隆请求里 null 的含义变得模糊。</p>
+     */
+    private String groupCode;
+
+    /**
+     * 克隆后任务所属分组展示名称。
+     *
+     * <p>为空时默认继承来源任务分组名称；如果指定 groupCode 但未指定 groupName，服务端会使用 groupCode
+     * 作为展示名称兜底。展示名称不作为稳定引用，后续允许通过分组重命名接口统一调整。</p>
+     */
+    private String groupName;
+
+    /**
      * 是否保留来源任务调度配置。
      *
      * <p>默认 false。克隆出来的任务通常先进入 DRAFT，让用户确认目标表、where 条件、调度窗口和容量风险。

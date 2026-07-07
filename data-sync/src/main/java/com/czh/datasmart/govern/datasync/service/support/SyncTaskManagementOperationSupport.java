@@ -78,6 +78,7 @@ public class SyncTaskManagementOperationSupport {
     private final SyncTaskStateMachineSupport stateMachineSupport;
     private final SyncTemplateExecutionPrecheckSupport templateExecutionPrecheckSupport;
     private final SyncExecutionCreationSupport executionCreationSupport;
+    private final SyncTaskGroupOperationSupport taskGroupOperationSupport;
     private final SyncAuditSupport auditSupport;
 
     /**
@@ -211,6 +212,9 @@ public class SyncTaskManagementOperationSupport {
         cloned.setProjectId(sourceTask.getProjectId());
         cloned.setWorkspaceId(sourceTask.getWorkspaceId());
         cloned.setTemplateId(sourceTask.getTemplateId());
+        SyncTaskGroupOperationSupport.TaskGroupAssignment groupAssignment = resolveCloneGroup(sourceTask, request);
+        cloned.setGroupCode(groupAssignment.groupCode());
+        cloned.setGroupName(groupAssignment.groupName());
         cloned.setName(name);
         cloned.setDescription(resolveCloneDescription(sourceTask, request));
         cloned.setCurrentState(SyncTaskState.DRAFT.name());
@@ -257,6 +261,7 @@ public class SyncTaskManagementOperationSupport {
         auditSupport.saveAudit(cloned.getTenantId(), cloned.getId(), null, SyncAuditActionType.CLONE_TASK,
                 actorContext, "sourceTaskId=" + sourceTask.getId()
                         + ",clonedTaskId=" + cloned.getId()
+                        + ",groupCode=" + cloned.getGroupCode()
                         + ",keepScheduleConfig=" + keepScheduleConfig(request)
                         + ",runImmediately=false");
         return new SyncTaskOperationResult(cloned.getId(), SyncTaskState.DRAFT.name(),
@@ -375,6 +380,24 @@ public class SyncTaskManagementOperationSupport {
     private String resolveCloneDescription(SyncTask sourceTask, SyncTaskCloneRequest request) {
         String requested = request == null ? null : trimToNull(request.getDescription());
         return requested == null ? sourceTask.getDescription() : truncate(requested, 512);
+    }
+
+    /**
+     * 解析克隆任务的分组归属。
+     *
+     * <p>默认继承来源任务分组，是为了让用户从某个业务域分组里克隆任务时，新任务仍然留在同一个运营视图下。
+     * 如果请求显式传入 groupCode，则表示把克隆任务放到另一个分组；此时 groupName 可选，缺省时由分组支撑组件用
+     * groupCode 兜底。这里不支持“通过克隆请求传 null 清空分组”，因为 request 为空本身已经表示继承，
+     * 清空分组应使用专门的移组接口，语义更清楚，也能独立审计。</p>
+     */
+    private SyncTaskGroupOperationSupport.TaskGroupAssignment resolveCloneGroup(SyncTask sourceTask,
+                                                                                SyncTaskCloneRequest request) {
+        String requestedGroupCode = request == null ? null : trimToNull(request.getGroupCode());
+        String requestedGroupName = request == null ? null : trimToNull(request.getGroupName());
+        if (requestedGroupCode == null && requestedGroupName == null) {
+            return taskGroupOperationSupport.resolveAssignment(sourceTask.getGroupCode(), sourceTask.getGroupName());
+        }
+        return taskGroupOperationSupport.resolveAssignment(requestedGroupCode, requestedGroupName);
     }
 
     private Long resolveCloneOwner(SyncTask sourceTask, SyncTaskCloneRequest request, SyncActorContext actorContext) {

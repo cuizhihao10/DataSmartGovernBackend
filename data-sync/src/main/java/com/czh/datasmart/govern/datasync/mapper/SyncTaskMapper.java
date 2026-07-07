@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.datasync.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupSummary;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -56,6 +57,88 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
     List<SyncTask> selectDueScheduledTasks(@Param("tenantId") Long tenantId,
                                            @Param("now") LocalDateTime now,
                                            @Param("limit") int limit);
+
+    /**
+     * 聚合同步任务分组汇总。
+     *
+     * <p>该 SQL 直接从任务主表聚合，不引入额外分组表。这样当前版本可以快速支撑任务分组卡片、
+     * Agent “按业务域找任务” 和导入导出前的分组预览。查询层面仍然接收租户、项目、工作空间、SELF owner
+     * 和 authorizedProjectIds，避免分组列表绕过数据范围。</p>
+     *
+     * <p>为什么只统计 group_code 非空的任务：
+     * 未分组任务通常在普通任务列表中查看；分组列表关注“已经被用户或 Agent 归入某个业务集合”的任务。
+     * 后续如果前端需要“未分组”卡片，可以增加一个显式 includeUngrouped 参数，而不是把 null 编码伪装成真实分组。</p>
+     */
+    @Select("""
+            <script>
+            SELECT
+                tenant_id AS tenantId,
+                project_id AS projectId,
+                workspace_id AS workspaceId,
+                group_code AS groupCode,
+                MAX(group_name) AS groupName,
+                COUNT(*) AS taskCount,
+                SUM(CASE WHEN current_state NOT IN ('OFFLINE', 'RECYCLED', 'DELETED', 'ARCHIVED') THEN 1 ELSE 0 END) AS activeTaskCount,
+                SUM(CASE WHEN current_state = 'SCHEDULED' THEN 1 ELSE 0 END) AS scheduledTaskCount,
+                SUM(CASE WHEN current_state IN ('QUEUED', 'RUNNING', 'RETRYING') THEN 1 ELSE 0 END) AS runningTaskCount,
+                SUM(CASE WHEN current_state IN ('FAILED', 'PARTIALLY_SUCCEEDED', 'AWAITING_OPERATOR_ACTION') THEN 1 ELSE 0 END) AS failedTaskCount,
+                SUM(CASE WHEN current_state = 'RECYCLED' THEN 1 ELSE 0 END) AS recycledTaskCount,
+                MAX(update_time) AS lastUpdateTime
+            FROM data_sync_task
+            WHERE group_code IS NOT NULL
+              AND group_code &lt;&gt; ''
+              AND current_state &lt;&gt; 'DELETED'
+            <if test="tenantId != null">
+              AND tenant_id = #{tenantId}
+            </if>
+            <if test="projectId != null">
+              AND project_id = #{projectId}
+            </if>
+            <if test="workspaceId != null">
+              AND workspace_id = #{workspaceId}
+            </if>
+            <if test="projectScopeEnforced and projectId == null">
+              AND project_id IN
+              <foreach collection="authorizedProjectIds" item="projectIdItem" open="(" separator="," close=")">
+                #{projectIdItem}
+              </foreach>
+            </if>
+            <if test="ownerId != null">
+              AND owner_id = #{ownerId}
+            </if>
+            <if test="groupCode != null and groupCode != ''">
+              AND group_code = #{groupCode}
+            </if>
+            GROUP BY tenant_id, project_id, workspace_id, group_code
+            ORDER BY MAX(update_time) DESC, group_code ASC
+            LIMIT #{limit}
+            </script>
+            """)
+    List<SyncTaskGroupSummary> selectTaskGroupSummaries(@Param("tenantId") Long tenantId,
+                                                        @Param("projectId") Long projectId,
+                                                        @Param("workspaceId") Long workspaceId,
+                                                        @Param("projectScopeEnforced") boolean projectScopeEnforced,
+                                                        @Param("authorizedProjectIds") List<Long> authorizedProjectIds,
+                                                        @Param("ownerId") Long ownerId,
+                                                        @Param("groupCode") String groupCode,
+                                                        @Param("limit") int limit);
+
+    /**
+     * 更新任务分组字段。
+     *
+     * <p>这里显式使用 SQL 而不是 updateById，是因为“移出分组”需要把 group_code/group_name 写成 NULL。
+     * MyBatis-Plus 默认更新策略可能跳过 null 字段，导致用户认为已经移出分组，但数据库仍保留旧 groupCode。</p>
+     */
+    @Update("""
+            UPDATE data_sync_task
+            SET group_code = #{groupCode},
+                group_name = #{groupName},
+                update_time = LOCALTIMESTAMP
+            WHERE id = #{taskId}
+            """)
+    int updateTaskGroup(@Param("taskId") Long taskId,
+                        @Param("groupCode") String groupCode,
+                        @Param("groupName") String groupName);
 
     /**
      * 抢占并推进一个到期定时任务的调度游标。

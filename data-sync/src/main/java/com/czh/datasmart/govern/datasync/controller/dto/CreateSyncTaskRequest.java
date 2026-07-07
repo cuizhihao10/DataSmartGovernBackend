@@ -37,6 +37,24 @@ public class CreateSyncTaskRequest {
     @NotNull(message = "模板 ID 不能为空")
     private Long templateId;
 
+    /**
+     * 任务分组编码。
+     *
+     * <p>可选字段。适合前端、导入工具或 Agent 在创建任务时把一批任务归入同一个业务分组。
+     * 例如一次全库迁移可能会生成多张表的多个同步任务，它们可以共享同一个 groupCode，便于后续批量查看、
+     * 批量下线、导出、故障定位和组级调度能力扩展。服务端会把编码规范化为大写并限制字符集，避免导入导出时
+     * 出现大小写、空格或特殊字符导致的重复分组。</p>
+     */
+    private String groupCode;
+
+    /**
+     * 任务分组展示名称。
+     *
+     * <p>可选字段。为空时服务端会使用 groupCode 作为展示名。groupName 只用于展示和低敏审计摘要，
+     * 不作为稳定引用；稳定引用始终使用 groupCode。</p>
+     */
+    private String groupName;
+
     private String name;
     private String description;
     private String priority;

@@ -87,6 +87,13 @@ public enum SyncAuditActionType {
      */
     MANUAL_DISPATCH_TASK,
     /**
+     * 调整同步任务分组。
+     *
+     * <p>分组不会改变执行事实，但会改变运营视图、导入导出范围、Agent 批量编排范围和后续告警聚合范围，
+     * 因此仍需要独立审计。事故复盘时可以据此回答“这个任务为什么被归到某个业务域或迁移批次”。</p>
+     */
+    UPDATE_TASK_GROUP,
+    /**
      * 从历史 execution 或 checkpoint 发起回放。
      *
      * <p>回放常用于失败恢复、下游重建或修复错误写入，必须和普通 retry 区分审计口径。

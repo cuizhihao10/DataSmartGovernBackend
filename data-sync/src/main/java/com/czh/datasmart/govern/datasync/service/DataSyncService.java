@@ -26,6 +26,8 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupSummary;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupUpdateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
@@ -39,6 +41,8 @@ import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+
+import java.util.List;
 
 /**
  * 数据同步服务契约。
@@ -87,6 +91,23 @@ public interface DataSyncService {
     PlatformPageResponse<SyncTask> pageTasks(SyncTaskQueryCriteria criteria, SyncActorContext actorContext);
 
     SyncTask getTask(Long id, SyncActorContext actorContext);
+
+    /**
+     * 查询同步任务分组汇总。
+     *
+     * <p>分组汇总不是独立资源表，而是从 data_sync_task 聚合出来的只读视图。
+     * 服务层必须先按租户、项目、工作空间和 SELF 范围收口，再返回 groupCode/groupName 以及状态计数，
+     * 避免普通用户通过分组列表推断其它项目或其它用户的任务存在。</p>
+     */
+    List<SyncTaskGroupSummary> listTaskGroups(SyncTaskQueryCriteria criteria, SyncActorContext actorContext);
+
+    /**
+     * 调整单个同步任务所属分组。
+     *
+     * <p>该动作属于任务定义管理，不会触发执行、不修改模板、不影响已有 execution 历史。
+     * 它会写审计记录，用于后续排查“为什么这个任务出现在某个业务分组下”。</p>
+     */
+    SyncTaskOperationResult updateTaskGroup(Long id, SyncTaskGroupUpdateRequest request, SyncActorContext actorContext);
 
     SyncTaskOperationResult runTask(Long id, SyncActorContext actorContext);
 

@@ -57,6 +57,24 @@ public class SyncTask {
     private Long templateId;
 
     /**
+     * 任务分组编码。
+     *
+     * <p>任务分组用于把一批业务相关的同步任务组织在一起，例如“订单域离线同步”“会员域定时批量同步”
+     * 或“某次客户迁移项目”。这里使用编码而不是只使用名称，是因为编码更适合作为导入导出、Agent 工具调用、
+     * 批量调度、组级配额和告警规则中的稳定引用。当前版本先把分组字段直接放在任务表中，后续如果需要组级 SLA、
+     * 并发配额、负责人、描述、冻结状态等更复杂能力，可以平滑升级为独立 sync_task_group 表。</p>
+     */
+    private String groupCode;
+
+    /**
+     * 任务分组展示名称。
+     *
+     * <p>groupName 主要给前端列表、运营台和 Agent 回复使用。它可以比 groupCode 更友好，
+     * 但不建议作为唯一键或外部引用，因为名称可能被运营人员重命名。</p>
+     */
+    private String groupName;
+
+    /**
      * 任务名称。
      */
     private String name;

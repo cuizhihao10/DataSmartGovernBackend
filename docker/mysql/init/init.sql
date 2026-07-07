@@ -772,6 +772,8 @@ CREATE TABLE IF NOT EXISTS data_sync_task (
     project_id BIGINT COMMENT '项目 ID，通常继承自同步模板，用于项目负责人可见性、项目级配额、项目级 SLA 和成本统计',
     workspace_id BIGINT COMMENT '工作空间 ID，通常继承自同步模板，用于空间级运营台筛选和多团队协作',
     template_id BIGINT NOT NULL COMMENT '关联同步模板 ID',
+    group_code VARCHAR(64) COMMENT '任务分组稳定编码，用于业务域、迁移批次、Agent 编排、导入导出和后续组级批量操作',
+    group_name VARCHAR(128) COMMENT '任务分组展示名称，用于前端分组卡片、运营台和 Agent 低敏回复，不作为稳定唯一标识',
     name VARCHAR(128) NOT NULL COMMENT '同步任务名称',
     current_state VARCHAR(64) NOT NULL COMMENT '任务主状态：DRAFT 编辑中、CONFIGURED 已配置、PENDING_APPROVAL 待审批、SCHEDULED 等待调度、QUEUED/RUNNING/RETRYING 执行窗口、SUCCEEDED/FAILED/PARTIALLY_SUCCEEDED 最近结论、MANUALLY_TERMINATED 手工结束、OFFLINE 已下线、RECYCLED 回收站、DELETED 逻辑彻底删除',
     approval_state VARCHAR(64) NOT NULL COMMENT '审批状态：NOT_REQUIRED、PENDING、APPROVED、REJECTED',
@@ -800,6 +802,8 @@ CREATE TABLE IF NOT EXISTS data_sync_task (
     INDEX idx_data_sync_task_approval (tenant_id, approval_state, update_time),
     INDEX idx_data_sync_task_trigger (trigger_type, update_time),
     INDEX idx_data_sync_task_attention (tenant_id, attention_required, update_time),
+    INDEX idx_data_sync_task_group_state (tenant_id, project_id, group_code, current_state, update_time),
+    INDEX idx_data_sync_task_workspace_group (tenant_id, workspace_id, group_code, update_time),
     INDEX idx_data_sync_task_schedule_due (schedule_enabled, current_state, next_fire_time, id),
     INDEX idx_data_sync_task_schedule_version (id, schedule_version, next_fire_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='数据同步任务表';
