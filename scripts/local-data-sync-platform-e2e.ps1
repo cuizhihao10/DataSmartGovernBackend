@@ -31,6 +31,8 @@
         三类离线模式的真实 API 创建、预检、审批确认、worker 执行和 PostgreSQL 行数断言。
     13. 可选追加 -IncludeTaskSchedulerWorkerLoopE2E，继续验证“任务级 scheduler 到期派发 execution，
         再由 worker-loop 执行真实 MySQL -> PostgreSQL 搬运”的多服务闭环。
+    14. gateway 模式会在链路末尾查询 permission-admin 授权审计，确认本轮 traceId 确实进入
+        /permissions/evaluate，避免“只验证 rewrite、没有验证授权中心参与”的假闭环。
 
     安全边界：
     - 不打印 access token、refresh token、数据库密码、完整 JDBC URL、SQL 正文、样本行、错误堆栈或响应正文。
@@ -952,6 +954,37 @@ function Assert-ReplayedRow {
     Add-Check -Name "脏数据 replay 断言" -Status "PASS" -Detail "id=7 已通过 PRIMARY_KEY_EQ replay 写入修复后的值"
 }
 
+function Assert-PermissionAuthorizationAudit {
+    if ($UseDirectServiceUrls) {
+        Add-Check -Name "permission-admin 授权审计" -Status "WARN" -Detail "直连模式不经过 gateway 授权过滤器，已跳过权限中心审计断言"
+        return
+    }
+
+    <#
+        为什么要直接查询 permission-admin 审计表：
+        - HTTP 200 只能说明 gateway 成功转发到了下游服务，不能证明 GatewayAuthorizationFilter
+          是否真的调用了 permission-admin；
+        - permission-admin 的 evaluate 会为每一次路由判定写入 permission_audit_record，
+          审计记录包含 traceId、actor、resourceType、action 和结果，是“权限中心参与过”的低敏事实；
+        - 这里按本脚本统一生成的 trace 前缀查询，只统计资源类型为 DATASOURCE / SYNC_* 的业务判定，
+          避免把健康检查、token 获取或其他历史请求误算进来。
+    #>
+    $tracePrefix = "local-data-sync-platform-e2e-$script:RunId-"
+    $escapedTracePrefix = $tracePrefix.Replace("'", "''")
+    $auditSql = @"
+SELECT COUNT(*)
+FROM permission_admin.permission_audit_record
+WHERE trace_id LIKE '$escapedTracePrefix%'
+  AND resource_type IN ('DATASOURCE', 'SYNC_TEMPLATE', 'SYNC_TASK', 'SYNC_EXECUTION')
+  AND result = 'SUCCESS';
+"@
+    $actual = [long](Invoke-PostgresScalar -Sql $auditSql)
+    if ($actual -le 0) {
+        Fail-Step -Name "permission-admin 授权审计" -Detail "gateway 模式未查到本轮 trace 的权限判定审计；请确认 gateway authorization.enabled=true 且 permission-admin 可达"
+    }
+    Add-Check -Name "permission-admin 授权审计" -Status "PASS" -Detail "已查到 $actual 条本轮 gateway 授权判定审计，证明 permission-admin 参与了写链路"
+}
+
 function Write-ExecutionPlan {
     $sourceJdbc = Resolve-SourceJdbcUrl
     $targetJdbc = Resolve-TargetJdbcUrl
@@ -976,6 +1009,9 @@ function Write-ExecutionPlan {
     Write-PlatformPlanStage "Create FULL/SINGLE_OBJECT/AUTO_SPLIT_PK sync template and run precheck."
     Write-PlatformPlanStage "Create task, run worker loop, retry only failed shard, then replay repaired dirty row."
     Write-PlatformPlanStage "Assert PostgreSQL target table reaches 20 complete rows."
+    if (-not $UseDirectServiceUrls) {
+        Write-PlatformPlanStage "Assert permission-admin authorization audit records exist for this gateway trace prefix."
+    }
     if ($IncludeOfflineModeClosureE2E) {
         Write-PlatformPlanStage "Additionally verify SCHEDULED_BATCH, CUSTOM_SQL_QUERY, and SCHEMA_FULL platform/API closure."
     }
@@ -1984,6 +2020,7 @@ function Main {
         -SourceDatasourceId $sourceDatasourceId `
         -TargetDatasourceId $targetDatasourceId
     Invoke-OptionalReceiptProbe -Headers $workerHeaders
+    Assert-PermissionAuthorizationAudit
 }
 
 try {

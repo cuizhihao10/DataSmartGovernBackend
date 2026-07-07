@@ -484,6 +484,20 @@ datasmart:
         # data-sync 的端点需要比普通模块更细，因为同一微服务内同时包含：
         # 模板配置、任务运行、执行器租约、执行器回调、事故工作台和人工介入运营动作。
         # 这些动作的调用主体、风险等级、审计要求和未来审批策略都不一样。
+        - path-pattern: /api/sync/internal/sync-workers/run-once
+          resource-type: SYNC_EXECUTION
+          default-action: CLAIM
+          description: data-sync 本地/受控 worker-loop 单次执行入口；只能由服务账号调用，用于 E2E、补偿或受控执行器认领并处理 execution。
+          method-actions:
+            POST: CLAIM
+
+        - path-pattern: /api/sync/internal/sync-task-schedulers/dispatch-due
+          resource-type: SYNC_TASK
+          default-action: SCHEDULE_DISPATCH
+          description: data-sync 任务级调度器到期派发入口；只能由服务账号或未来受控调度器调用，把 SCHEDULED 任务转换为 execution。
+          method-actions:
+            POST: SCHEDULE_DISPATCH
+
         - path-pattern: /api/sync/sync-templates/*/validate
           resource-type: SYNC_TEMPLATE
           default-action: VALIDATE

@@ -53,6 +53,14 @@ services:
       <<: *java-common-environment
       DATASMART_PYTHON_AI_RUNTIME_URI: http://python-ai-runtime:8090
       DATASMART_PYTHON_AI_RUNTIME_WS_URI: ws://python-ai-runtime:8090
+      # 应用层 Compose 用于“全平台闭环验收”，不同于只启动单个模块的开发模式。
+      # 因此这里显式开启 gateway -> permission-admin 的强制授权：
+      # 1. OIDC 只回答“你是谁”，不能回答“你能否创建数据源、触发同步或调用 worker 协议”；
+      # 2. permission-admin 负责路由策略、动作语义、数据范围和审计事实；
+      # 3. shadow-mode=false 与 fail-open=false 可以避免 E2E 在权限中心不可用时假绿。
+      DATASMART_GATEWAY_AUTHORIZATION_ENABLED: "true"
+      DATASMART_GATEWAY_AUTHORIZATION_SHADOW_MODE: "false"
+      DATASMART_GATEWAY_AUTHORIZATION_FAIL_OPEN_ON_ERROR: "false"
       DATASMART_GATEWAY_AUTHORIZATION_DECISION_ENDPOINT: http://permission-admin:8085/permissions/evaluate
       DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_REMOTE_ENABLED: "true"
       DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_EVALUATE_URL: http://permission-admin:8085/permissions/agent/tool-budget-policies/evaluate

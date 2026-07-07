@@ -719,6 +719,18 @@ VALUES
 (0, '运营人员确认同步人工介入', 'OPERATOR', 'POST', '/api/sync/sync-tasks/*/attention/acknowledge', 'SYNC_OPERATION', 'ACKNOWLEDGE', 'ALLOW', 780, 1, '运营人员可确认人工介入任务已经接手。', NOW(), NOW()),
 (0, '运营人员重跑同步人工介入任务', 'OPERATOR', 'POST', '/api/sync/sync-tasks/*/attention/rerun', 'SYNC_OPERATION', 'RETRY', 'ALLOW', 780, 1, '运营人员可在处理人工介入后重新入队执行同步任务。', NOW(), NOW()),
 (0, '运营人员取消同步人工介入任务', 'OPERATOR', 'POST', '/api/sync/sync-tasks/*/attention/cancel', 'SYNC_OPERATION', 'CANCEL', 'ALLOW', 780, 1, '运营人员可取消无法继续执行的人工介入任务。', NOW(), NOW()),
+(0, '服务账号运行同步 worker-loop', 'SERVICE_ACCOUNT', 'POST', '/api/sync/internal/sync-workers/run-once', 'SYNC_EXECUTION', 'CLAIM', 'ALLOW', 805, 1, '服务账号可调用受控 worker-loop 单次执行入口；data-sync 服务层仍会校验租约、幂等、执行器身份和任务状态。', NOW(), NOW()),
+(0, '普通用户禁止运行同步 worker-loop', 'ORDINARY_USER', 'POST', '/api/sync/internal/sync-workers/run-once', 'SYNC_EXECUTION', 'CLAIM', 'DENY', 830, 1, 'worker-loop 是机器协议，普通用户不能直接认领或推进 execution。', NOW(), NOW()),
+(0, '项目负责人禁止运行同步 worker-loop', 'PROJECT_OWNER', 'POST', '/api/sync/internal/sync-workers/run-once', 'SYNC_EXECUTION', 'CLAIM', 'DENY', 830, 1, '项目负责人可以创建和运行自己的同步任务，但不能伪造执行器协议推进 execution。', NOW(), NOW()),
+(0, '运营人员禁止直接运行同步 worker-loop', 'OPERATOR', 'POST', '/api/sync/internal/sync-workers/run-once', 'SYNC_EXECUTION', 'CLAIM', 'DENY', 830, 1, '运营人员应通过恢复、重试或运维审批入口处理任务，不直接调用机器 worker-loop。', NOW(), NOW()),
+(0, '审计员禁止运行同步 worker-loop', 'AUDITOR', 'POST', '/api/sync/internal/sync-workers/run-once', 'SYNC_EXECUTION', 'CLAIM', 'DENY', 830, 1, '审计员只能查看证据，不能触发真实数据搬运。', NOW(), NOW()),
+(0, '租户管理员禁止运行同步 worker-loop', 'TENANT_ADMINISTRATOR', 'POST', '/api/sync/internal/sync-workers/run-once', 'SYNC_EXECUTION', 'CLAIM', 'DENY', 830, 1, '租户管理员可以管理租户同步任务，但不能直接伪造机器执行协议。', NOW(), NOW()),
+(0, '服务账号派发到期同步任务', 'SERVICE_ACCOUNT', 'POST', '/api/sync/internal/sync-task-schedulers/dispatch-due', 'SYNC_TASK', 'SCHEDULE_DISPATCH', 'ALLOW', 805, 1, '服务账号可调用任务级 scheduler 到期派发入口，把 SCHEDULED 任务转换为受控 execution。', NOW(), NOW()),
+(0, '普通用户禁止派发到期同步任务', 'ORDINARY_USER', 'POST', '/api/sync/internal/sync-task-schedulers/dispatch-due', 'SYNC_TASK', 'SCHEDULE_DISPATCH', 'DENY', 830, 1, '任务调度派发属于后台调度器协议，普通用户不能人为推进调度游标。', NOW(), NOW()),
+(0, '项目负责人禁止派发到期同步任务', 'PROJECT_OWNER', 'POST', '/api/sync/internal/sync-task-schedulers/dispatch-due', 'SYNC_TASK', 'SCHEDULE_DISPATCH', 'DENY', 830, 1, '项目负责人可以配置定时任务，但不能直接调用后台派发协议。', NOW(), NOW()),
+(0, '运营人员禁止直接派发到期同步任务', 'OPERATOR', 'POST', '/api/sync/internal/sync-task-schedulers/dispatch-due', 'SYNC_TASK', 'SCHEDULE_DISPATCH', 'DENY', 830, 1, '运营人员应通过调度控制台或审批后的运维动作处理，不直接调用内部派发协议。', NOW(), NOW()),
+(0, '审计员禁止派发到期同步任务', 'AUDITOR', 'POST', '/api/sync/internal/sync-task-schedulers/dispatch-due', 'SYNC_TASK', 'SCHEDULE_DISPATCH', 'DENY', 830, 1, '审计员不能触发后台调度写入。', NOW(), NOW()),
+(0, '租户管理员禁止派发到期同步任务', 'TENANT_ADMINISTRATOR', 'POST', '/api/sync/internal/sync-task-schedulers/dispatch-due', 'SYNC_TASK', 'SCHEDULE_DISPATCH', 'DENY', 830, 1, '租户管理员不能直接推进后台调度游标，避免绕过计划窗口和容量控制。', NOW(), NOW()),
 (0, '服务账号认领同步执行', 'SERVICE_ACCOUNT', 'POST', '/api/sync/sync-executions/claim', 'SYNC_EXECUTION', 'CLAIM', 'ALLOW', 800, 1, '服务账号可代表受控 worker 认领下一条同步 execution。', NOW(), NOW()),
 (0, '服务账号同步执行心跳', 'SERVICE_ACCOUNT', 'POST', '/api/sync/sync-executions/*/heartbeat', 'SYNC_EXECUTION', 'HEARTBEAT', 'ALLOW', 800, 1, '服务账号可代表受控 worker 续租并上报执行进度。', NOW(), NOW()),
 (0, '服务账号同步执行延期', 'SERVICE_ACCOUNT', 'POST', '/api/sync/sync-executions/*/defer', 'SYNC_EXECUTION', 'DEFER', 'ALLOW', 800, 1, '服务账号可因容量、配额或维护窗口将 execution 延迟回队列。', NOW(), NOW()),
@@ -775,7 +787,8 @@ VALUES
 (0, 'PLATFORM_ADMINISTRATOR', 'AUDIT_LOG', 'PLATFORM', '1 = 1', 0, 1, '平台管理员可查看全平台审计。', NOW(), NOW()),
 (0, 'PLATFORM_ADMINISTRATOR', 'TASK_OPERATION', 'PLATFORM', '1 = 1', 0, 1, '平台管理员可跨租户查看任务运营状态，用于全局容量治理、队列压测、死信恢复和事故复盘。', NOW(), NOW()),
 (0, 'SERVICE_ACCOUNT', 'AI_RUNTIME', 'TENANT', 'tenant_id = ${tenantId}', 0, 1, '服务账号接入 AgentPlan、模型 usage 写回和内部智能运行时协议时，默认限制在调用上下文租户内。', NOW(), NOW()),
-(0, 'SERVICE_ACCOUNT', 'SYNC_TASK', 'TENANT', 'tenant_id = ${tenantId}', 0, 1, '服务账号默认只在调用上下文租户内执行任务。', NOW(), NOW());
+(0, 'SERVICE_ACCOUNT', 'SYNC_TASK', 'TENANT', 'tenant_id = ${tenantId}', 0, 1, '服务账号默认只在调用上下文租户内执行任务。', NOW(), NOW()),
+(0, 'SERVICE_ACCOUNT', 'SYNC_EXECUTION', 'TENANT', 'tenant_id = ${tenantId}', 0, 1, '服务账号执行同步 worker 协议时默认限制在当前租户范围，避免机器身份跨租户认领 execution。', NOW(), NOW());
 
 -- 项目授权样例数据。
 -- 这些记录用于本地联调和学习理解：当 actorId=1001 且角色为 PROJECT_OWNER 时，
@@ -786,7 +799,8 @@ INSERT IGNORE INTO permission_project_membership
 VALUES
 (0, 1001, 101, 10001, 'OWNER', 'BOOTSTRAP', 1, NOW(), NOW()),
 (0, 1001, 102, 10001, 'OWNER', 'BOOTSTRAP', 1, NOW(), NOW()),
-(0, 1002, 201, 20001, 'MAINTAINER', 'BOOTSTRAP', 1, NOW(), NOW());
+(0, 1002, 201, 20001, 'MAINTAINER', 'BOOTSTRAP', 1, NOW(), NOW()),
+(10, 1001, 101, 301, 'OWNER', 'LOCAL_E2E_SEED', 1, NOW(), NOW());
 
 -- Agent 长期记忆写入候选持久化表。
 -- 这两张表虽然暂时放在 permission-admin 初始化脚本中创建，但业务语义属于 AI Runtime / Memory Governance：

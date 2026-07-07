@@ -231,6 +231,12 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/agent/async-task-commands/outbox/diagnostics", "AI_RUNTIME", "Agent Runtime 异步命令 outbox 诊断接口，用于查看待投递、失败、死信和恢复状态", Map.of("GET", "DIAGNOSE")));
         defaults.add(route("/api/agent/**", "AI_RUNTIME",
                 "Agent Runtime 模型、工具、Skill、会话、Run、计划接入和工具审计控制面"));
+        defaults.add(route("/api/sync/internal/sync-workers/run-once", "SYNC_EXECUTION",
+                "data-sync 本地/受控 worker-loop 单次执行入口；只能由服务账号调用，用于 E2E、补偿或受控执行器认领并处理 execution",
+                Map.of("POST", "CLAIM")));
+        defaults.add(route("/api/sync/internal/sync-task-schedulers/dispatch-due", "SYNC_TASK",
+                "data-sync 任务级调度器到期派发入口；只能由服务账号或未来受控调度器调用，把 SCHEDULED 任务转换为 execution",
+                Map.of("POST", "SCHEDULE_DISPATCH")));
         defaults.add(route("/api/sync/sync-templates/*/validate", "SYNC_TEMPLATE",
                 "data-sync 同步模板校验接口，校验源端、目标端、字段映射和写入策略是否可运行", Map.of("POST", "VALIDATE")));
         defaults.add(route("/api/sync/sync-tasks/*/run", "SYNC_TASK",
