@@ -34,8 +34,10 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupSummary;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupUpdateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskPublishRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperationRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskUpdateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplatePlanningPreviewResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateQueryCriteria;
@@ -61,6 +63,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLifecycleS
 import com.czh.datasmart.govern.datasync.service.support.SyncObjectExecutionOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncOfflineJobPlanSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskDefinitionOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskGroupOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskManagementOperationSupport;
@@ -113,6 +116,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncAuditSupport auditSupport;
     private final SyncExecutionLifecycleSupport executionLifecycleSupport;
     private final SyncExecutionCreationSupport executionCreationSupport;
+    private final SyncTaskDefinitionOperationSupport taskDefinitionOperationSupport;
     private final SyncTaskLifecycleOperationSupport taskLifecycleOperationSupport;
     private final SyncTaskGroupOperationSupport taskGroupOperationSupport;
     private final SyncTaskManagementOperationSupport taskManagementOperationSupport;
@@ -317,6 +321,65 @@ public class DataSyncServiceImpl implements DataSyncService {
         dataScopeSupport.validateOwnedReadable(task.getTenantId(), task.getProjectId(),
                 task.getOwnerId(), actorContext, "同步任务");
         return task;
+    }
+
+    /**
+     * 查询回收站任务。
+     *
+     * <p>普通 pageTasks 在 currentState 为空时会主动排除 RECYCLED/DELETED。
+     * 这里构造一个强制 currentState=RECYCLED 的查询条件，让前端和 Agent 拥有清晰的回收站入口，
+     * 不需要知道“普通列表传 currentState=RECYCLED 也能查到”这种内部兼容细节。</p>
+     */
+    @Override
+    public PlatformPageResponse<SyncTask> pageRecycledTasks(SyncTaskQueryCriteria criteria,
+                                                            SyncActorContext actorContext) {
+        SyncTaskQueryCriteria safeCriteria = criteria == null
+                ? new SyncTaskQueryCriteria(null, null, null, null, null, null,
+                SyncTaskState.RECYCLED.name(), null, null, null, null)
+                : new SyncTaskQueryCriteria(
+                criteria.tenantId(),
+                criteria.projectId(),
+                criteria.workspaceId(),
+                criteria.templateId(),
+                criteria.ownerId(),
+                criteria.groupCode(),
+                SyncTaskState.RECYCLED.name(),
+                criteria.approvalState(),
+                criteria.triggerType(),
+                criteria.current(),
+                criteria.size());
+        return pageTasks(safeCriteria, actorContext);
+    }
+
+    /**
+     * 编辑任务定义。
+     *
+     * <p>主 Service 只负责复用 getTask(...) 与 getTemplateForTask(...) 完成入口校验。
+     * 具体“哪些状态可编辑、调度字段如何退回草稿、审计如何低敏记录”交给
+     * {@link SyncTaskDefinitionOperationSupport}，避免 Impl 继续堆积任务定义细节。</p>
+     */
+    @Override
+    @Transactional
+    public SyncTask updateTask(Long id, SyncTaskUpdateRequest request, SyncActorContext actorContext) {
+        SyncTask task = getTask(id, actorContext);
+        SyncTemplate template = getTemplateForTask(task);
+        return taskDefinitionOperationSupport.updateTaskDefinition(task, template, request, actorContext);
+    }
+
+    /**
+     * 发布任务定义。
+     *
+     * <p>发布不是运行任务，而是把任务重新推进到 CONFIGURED/SCHEDULED/PENDING_APPROVAL。
+     * 真正创建 execution 仍然由 run/manual-dispatch/scheduler 完成，这样任务定义状态和执行历史能保持清晰分离。</p>
+     */
+    @Override
+    @Transactional
+    public SyncTaskOperationResult publishTask(Long id,
+                                               SyncTaskPublishRequest request,
+                                               SyncActorContext actorContext) {
+        SyncTask task = getTask(id, actorContext);
+        SyncTemplate template = getTemplateForTask(task);
+        return taskDefinitionOperationSupport.publishTaskDefinition(task, template, request, actorContext);
     }
 
     /**

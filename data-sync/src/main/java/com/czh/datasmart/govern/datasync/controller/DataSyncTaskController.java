@@ -16,8 +16,10 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupSummary;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupUpdateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskPublishRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperationRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskUpdateRequest;
 import com.czh.datasmart.govern.datasync.controller.support.SyncActorContextHeaderSupport;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.service.DataSyncService;
@@ -27,6 +29,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -125,6 +128,38 @@ public class DataSyncTaskController {
     }
 
     /**
+     * 查询同步任务回收站。
+     *
+     * <p>路由语义：</p>
+     * <p>1. GET /sync-tasks/recycle-bin 是显式回收站视图，不要求调用方了解 currentState=RECYCLED 的内部状态值；</p>
+     * <p>2. 回收站任务仍可查看详情、克隆和彻底删除，但不能直接运行或调度；</p>
+     * <p>3. 服务层仍会按租户、项目、工作空间、负责人和 SELF 范围收口，避免普通用户看到他人的已删除任务。</p>
+     */
+    @GetMapping("/recycle-bin")
+    public PlatformApiResponse<PlatformPageResponse<SyncTask>> pageRecycledTasks(
+            @RequestParam(required = false) Long tenantId,
+            @RequestParam(required = false) Long projectId,
+            @RequestParam(required = false) Long workspaceId,
+            @RequestParam(required = false) Long templateId,
+            @RequestParam(required = false) Long ownerId,
+            @RequestParam(required = false) String groupCode,
+            @RequestParam(required = false) String approvalState,
+            @RequestParam(required = false) String triggerType,
+            @RequestParam(defaultValue = "1") Long current,
+            @RequestParam(defaultValue = "20") Long size,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
+                tenantId, projectId, workspaceId, templateId, ownerId, groupCode,
+                null, approvalState, triggerType, current, size);
+        return PlatformApiResponse.success(dataSyncService.pageRecycledTasks(
+                criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
      * 查询同步任务详情。
      */
     @GetMapping("/{id}")
@@ -137,6 +172,49 @@ public class DataSyncTaskController {
             @RequestHeader HttpHeaders headers) {
         return PlatformApiResponse.success(dataSyncService.getTask(
                 id, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * 编辑同步任务定义。
+     *
+     * <p>该接口只修改任务定义，不触发执行：</p>
+     * <p>1. 修改名称、说明、负责人、分组等低风险字段时，任务保持原状态；</p>
+     * <p>2. 修改或清空 scheduleConfig 时，任务会退回 DRAFT，并关闭 scheduleEnabled 与 nextFireTime；</p>
+     * <p>3. 后续必须调用发布接口，任务才会重新进入 CONFIGURED、SCHEDULED 或 PENDING_APPROVAL。</p>
+     */
+    @PutMapping("/{id}")
+    public PlatformApiResponse<SyncTask> updateTask(
+            @PathVariable Long id,
+            @Valid @RequestBody(required = false) SyncTaskUpdateRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务定义已编辑",
+                dataSyncService.updateTask(id, request, actorContext(tenantId, actorId, actorRole, traceId, headers)),
+                traceId);
+    }
+
+    /**
+     * 发布同步任务定义。
+     *
+     * <p>发布会重新执行模板预检、审批判断和调度配置解析。它不创建 execution，不搬运数据；
+     * 只是把任务从 DRAFT/非活跃状态推进到可手工调度的 CONFIGURED、等待计划触发的 SCHEDULED，
+     * 或因高风险需要审批的 PENDING_APPROVAL。</p>
+     */
+    @PostMapping("/{id}/publish")
+    public PlatformApiResponse<SyncTaskOperationResult> publishTask(
+            @PathVariable Long id,
+            @Valid @RequestBody(required = false) SyncTaskPublishRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务定义已发布",
+                dataSyncService.publishTask(id, request, actorContext(tenantId, actorId, actorRole, traceId, headers)),
+                traceId);
     }
 
     /**

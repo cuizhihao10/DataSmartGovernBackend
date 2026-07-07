@@ -512,6 +512,28 @@ datasmart:
           method-actions:
             POST: VIEW
 
+        - path-pattern: /api/sync/sync-tasks/recycle-bin
+          resource-type: SYNC_TASK
+          default-action: VIEW_RECYCLE_BIN
+          description: data-sync 同步任务回收站列表接口，只展示已进入 RECYCLED 的任务，用于查看、克隆或彻底删除前复核。
+          method-actions:
+            GET: VIEW_RECYCLE_BIN
+
+        - path-pattern: /api/sync/sync-tasks/*/publish
+          resource-type: SYNC_TASK
+          default-action: PUBLISH
+          description: data-sync 同步任务定义发布接口，会重新预检、审批判断并进入 CONFIGURED/SCHEDULED/PENDING_APPROVAL。
+          method-actions:
+            POST: PUBLISH
+
+        - path-pattern: /api/sync/sync-tasks/*
+          resource-type: SYNC_TASK
+          default-action: VIEW
+          description: data-sync 同步任务详情与定义编辑接口；GET 查看详情，PUT 编辑定义且不触发真实执行。
+          method-actions:
+            GET: VIEW
+            PUT: UPDATE
+
         - path-pattern: /api/sync/sync-tasks/*/run
           resource-type: SYNC_TASK
           default-action: RUN

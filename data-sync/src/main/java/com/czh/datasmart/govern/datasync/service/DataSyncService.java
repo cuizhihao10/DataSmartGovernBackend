@@ -30,8 +30,10 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupSummary;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskGroupUpdateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskPublishRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperationRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskUpdateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplatePlanningPreviewResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateQueryCriteria;
@@ -91,6 +93,29 @@ public interface DataSyncService {
     PlatformPageResponse<SyncTask> pageTasks(SyncTaskQueryCriteria criteria, SyncActorContext actorContext);
 
     SyncTask getTask(Long id, SyncActorContext actorContext);
+
+    /**
+     * 查询回收站内的同步任务。
+     *
+     * <p>普通任务列表默认隐藏 RECYCLED/DELETED，避免用户在日常运营页面看到已删除对象。
+     * 回收站列表是显式入口：它只展示 RECYCLED，支持继续查看详情、克隆或彻底删除，不能直接运行。</p>
+     */
+    PlatformPageResponse<SyncTask> pageRecycledTasks(SyncTaskQueryCriteria criteria, SyncActorContext actorContext);
+
+    /**
+     * 编辑同步任务定义。
+     *
+     * <p>编辑不会触发真实同步，不会创建 execution。若修改 scheduleConfig，任务会退回 DRAFT 并关闭自动调度，
+     * 后续必须通过 publishTask 重新进入 CONFIGURED / SCHEDULED / PENDING_APPROVAL。</p>
+     */
+    SyncTask updateTask(Long id, SyncTaskUpdateRequest request, SyncActorContext actorContext);
+
+    /**
+     * 发布同步任务定义。
+     *
+     * <p>发布会重新执行预检查和审批判断，并根据调度配置决定任务进入 CONFIGURED、SCHEDULED 或 PENDING_APPROVAL。</p>
+     */
+    SyncTaskOperationResult publishTask(Long id, SyncTaskPublishRequest request, SyncActorContext actorContext);
 
     /**
      * 查询同步任务分组汇总。

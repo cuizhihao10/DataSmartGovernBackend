@@ -33,6 +33,52 @@ public class SyncTaskStateMachineSupport {
     );
 
     /**
+     * 允许编辑任务定义的状态。
+     *
+     * <p>编辑动作只修改任务定义字段，例如名称、负责人、分组、调度配置和说明，不直接创建 execution。
+     * 因此它可以覆盖多数非活跃状态；但 QUEUED/RUNNING/RETRYING 这类活跃窗口不允许编辑，原因是 worker
+     * 可能已经读取了旧配置或正在按旧租约执行，边执行边改定义会让审计、恢复和用户预期都变得混乱。</p>
+     *
+     * <p>RECYCLED/DELETED/ARCHIVED 也不允许编辑：回收站只提供查看、克隆和彻底删除；归档/彻底删除属于历史证据，
+     * 不应再被改写。</p>
+     */
+    private static final Set<SyncTaskState> EDIT_ALLOWED_STATES = Set.of(
+            SyncTaskState.DRAFT,
+            SyncTaskState.CONFIGURED,
+            SyncTaskState.PENDING_APPROVAL,
+            SyncTaskState.SCHEDULED,
+            SyncTaskState.PAUSED,
+            SyncTaskState.PARTIALLY_SUCCEEDED,
+            SyncTaskState.SUCCEEDED,
+            SyncTaskState.FAILED,
+            SyncTaskState.AWAITING_OPERATOR_ACTION,
+            SyncTaskState.MANUALLY_TERMINATED,
+            SyncTaskState.OFFLINE,
+            SyncTaskState.CANCELLED
+    );
+
+    /**
+     * 允许发布任务定义的状态。
+     *
+     * <p>发布表示“重新经过预检、审批和调度判断，进入可运行生命周期”。它通常从 DRAFT 出发，
+     * 但商用产品里还会出现下线后重新启用、失败后修正配置再发布、人工结束后复用配置等场景，
+     * 因此这里允许一组非活跃终态重新发布。活跃态、回收站和历史归档仍然禁止。</p>
+     */
+    private static final Set<SyncTaskState> PUBLISH_ALLOWED_STATES = Set.of(
+            SyncTaskState.DRAFT,
+            SyncTaskState.CONFIGURED,
+            SyncTaskState.PENDING_APPROVAL,
+            SyncTaskState.PAUSED,
+            SyncTaskState.PARTIALLY_SUCCEEDED,
+            SyncTaskState.SUCCEEDED,
+            SyncTaskState.FAILED,
+            SyncTaskState.AWAITING_OPERATOR_ACTION,
+            SyncTaskState.MANUALLY_TERMINATED,
+            SyncTaskState.OFFLINE,
+            SyncTaskState.CANCELLED
+    );
+
+    /**
      * 允许被用户主动暂停的任务状态。
      *
      * <p>暂停不是“删除任务”，而是一个可恢复的运营控制动作：
@@ -149,6 +195,25 @@ public class SyncTaskStateMachineSupport {
             throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
                     "当前状态不允许进入同步队列: " + state.name());
         }
+    }
+
+    /**
+     * 校验任务是否允许编辑定义。
+     *
+     * <p>该方法给“编辑接口、导入覆盖草稿、Agent 草拟修正”等定义类操作复用。
+     * 只要任务处于活跃执行窗口，就必须先暂停、取消或手工结束，再进入编辑，避免执行器和控制面看到两套配置。</p>
+     */
+    public void assertCanEditDefinition(String currentState) {
+        assertAllowed(currentState, EDIT_ALLOWED_STATES, "当前状态不允许编辑同步任务定义");
+    }
+
+    /**
+     * 校验任务是否允许发布定义。
+     *
+     * <p>发布会改变任务是否可运行或是否等待调度，因此不能对回收站、已删除、已归档或活跃执行中的任务开放。</p>
+     */
+    public void assertCanPublishDefinition(String currentState) {
+        assertAllowed(currentState, PUBLISH_ALLOWED_STATES, "当前状态不允许发布同步任务定义");
     }
 
     /**

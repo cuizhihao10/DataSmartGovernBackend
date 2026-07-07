@@ -141,6 +141,54 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
                         @Param("groupName") String groupName);
 
     /**
+     * 更新任务定义字段。
+     *
+     * <p>编辑/发布任务时不能简单调用 {@code updateById}，主要有三个原因：</p>
+     * <p>1. 用户可能显式清空调度配置、分组或人工介入原因，需要把字段写成 NULL；</p>
+     * <p>2. 调度字段是一组一致性字段，schedule_enabled=false 时 next_fire_time 必须同步清空；</p>
+     * <p>3. 编辑调度配置后任务会退回 DRAFT，必须和 schedule_enabled、trigger_type、attention 标记在一个 SQL 里落地。</p>
+     *
+     * <p>该方法看起来参数较多，但它把“任务定义的一致性写入”集中在一个受控 SQL 入口里，
+     * 比在多个 service 方法中散落实体 set + updateById 更可审计，也更方便后续加乐观锁或版本号。</p>
+     */
+    @Update("""
+            UPDATE data_sync_task
+            SET name = #{name},
+                description = #{description},
+                priority = #{priority},
+                owner_id = #{ownerId},
+                group_code = #{groupCode},
+                group_name = #{groupName},
+                schedule_config = #{scheduleConfig},
+                schedule_enabled = #{scheduleEnabled},
+                next_fire_time = #{nextFireTime},
+                run_mode = #{runMode},
+                trigger_type = #{triggerType},
+                current_state = #{currentState},
+                approval_state = #{approvalState},
+                attention_required = #{attentionRequired},
+                attention_reason = #{attentionReason},
+                update_time = LOCALTIMESTAMP
+            WHERE id = #{taskId}
+            """)
+    int updateTaskDefinition(@Param("taskId") Long taskId,
+                             @Param("name") String name,
+                             @Param("description") String description,
+                             @Param("priority") String priority,
+                             @Param("ownerId") Long ownerId,
+                             @Param("groupCode") String groupCode,
+                             @Param("groupName") String groupName,
+                             @Param("scheduleConfig") String scheduleConfig,
+                             @Param("scheduleEnabled") Boolean scheduleEnabled,
+                             @Param("nextFireTime") LocalDateTime nextFireTime,
+                             @Param("runMode") String runMode,
+                             @Param("triggerType") String triggerType,
+                             @Param("currentState") String currentState,
+                             @Param("approvalState") String approvalState,
+                             @Param("attentionRequired") Boolean attentionRequired,
+                             @Param("attentionReason") String attentionReason);
+
+    /**
      * 抢占并推进一个到期定时任务的调度游标。
      *
      * <p>这是定时任务防重复触发的关键 SQL。服务层读取任务时拿到 scheduleVersion=N，

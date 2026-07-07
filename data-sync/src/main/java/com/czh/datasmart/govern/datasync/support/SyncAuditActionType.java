@@ -16,6 +16,21 @@ public enum SyncAuditActionType {
     VALIDATE_TEMPLATE,
     CREATE_TASK,
     /**
+     * 编辑同步任务定义。
+     *
+     * <p>该动作只覆盖名称、说明、负责人、分组、调度配置、运行模式等任务定义字段；
+     * 不创建 execution、不读取源端数据、不写目标端数据。它和 UPDATE_TASK_GROUP 分开，是因为完整编辑可能导致任务退回 DRAFT，
+     * 并关闭 scheduleEnabled，影响后续是否能被调度器扫描。</p>
+     */
+    UPDATE_TASK,
+    /**
+     * 发布同步任务定义。
+     *
+     * <p>发布会重新执行预检、审批判断和调度配置解析，并把任务推进到 CONFIGURED、SCHEDULED 或 PENDING_APPROVAL。
+     * 该动作是“编辑态”和“可执行态”之间的安全闸门，需要独立审计。</p>
+     */
+    PUBLISH_TASK,
+    /**
      * 普通运行或执行器生命周期回调。
      *
      * <p>该动作覆盖手动入队、执行器认领、心跳、退避、开始执行、完成执行等“运行链路”事件。

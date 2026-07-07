@@ -239,6 +239,15 @@ public class GatewayAuthorizationProperties {
                 Map.of("POST", "SCHEDULE_DISPATCH")));
         defaults.add(route("/api/sync/sync-templates/*/validate", "SYNC_TEMPLATE",
                 "data-sync 同步模板校验接口，校验源端、目标端、字段映射和写入策略是否可运行", Map.of("POST", "VALIDATE")));
+        defaults.add(route("/api/sync/sync-tasks/recycle-bin", "SYNC_TASK",
+                "data-sync 同步任务回收站列表接口，只展示已进入 RECYCLED 的任务，用于查看、克隆或彻底删除前复核",
+                Map.of("GET", "VIEW_RECYCLE_BIN")));
+        defaults.add(route("/api/sync/sync-tasks/*/publish", "SYNC_TASK",
+                "data-sync 同步任务定义发布接口，会重新预检、审批判断并进入 CONFIGURED/SCHEDULED/PENDING_APPROVAL",
+                Map.of("POST", "PUBLISH")));
+        defaults.add(route("/api/sync/sync-tasks/*", "SYNC_TASK",
+                "data-sync 同步任务详情与定义编辑接口；GET 查看详情，PUT 编辑定义且不触发真实执行",
+                Map.of("GET", "VIEW", "PUT", "UPDATE")));
         defaults.add(route("/api/sync/sync-tasks/*/run", "SYNC_TASK",
                 "data-sync 同步任务手动运行接口，属于显式触发执行动作", Map.of("POST", "RUN")));
         defaults.add(route("/api/sync/sync-tasks/*/manual-dispatch", "SYNC_TASK",
