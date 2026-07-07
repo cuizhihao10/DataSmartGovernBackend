@@ -184,6 +184,47 @@
   ],
   "users": [
     {
+      "username": "ordinary-user",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Ordinary",
+      "lastName": "User",
+      "email": "ordinary-user@example.local",
+      "attributes": {
+        "datasmart_tenant_id": [
+          "10"
+        ],
+        "datasmart_actor_id": [
+          "1004"
+        ],
+        "datasmart_actor_role": [
+          "ORDINARY_USER"
+        ],
+        "datasmart_actor_type": [
+          "USER"
+        ],
+        "datasmart_workspace_id": [
+          "workspace-a"
+        ],
+        "datasmart_application_id": [
+          "10010"
+        ],
+        "datasmart_application_code": [
+          "FLASHSYNC"
+        ]
+      },
+      "realmRoles": [
+        "DATASMART_ORDINARY_USER"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "DataSmart@123",
+          "temporary": false
+        }
+      ]
+    },
+    {
       "username": "project-owner",
       "enabled": true,
       "emailVerified": true,

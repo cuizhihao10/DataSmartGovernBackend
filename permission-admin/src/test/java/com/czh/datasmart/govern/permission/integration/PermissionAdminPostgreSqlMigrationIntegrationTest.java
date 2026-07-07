@@ -187,15 +187,32 @@ class PermissionAdminPostgreSqlMigrationIntegrationTest {
                 SELECT count(*)
                 FROM permission_identity_user
                 WHERE tenant_id = 10
-                  AND actor_id IN (1001, 1002, 1003, 9101)
+                  AND actor_id IN (1001, 1002, 1003, 1004, 9101)
                   AND status = 'ACTIVE'
                 """, Integer.class);
+        String ordinaryUserRole = jdbcTemplate.queryForObject("""
+                SELECT actor_role
+                FROM permission_identity_user
+                WHERE tenant_id = 10
+                  AND actor_id = 1004
+                  AND username = 'ordinary-user'
+                """, String.class);
+        List<Long> ordinaryUserProjectIds = jdbcTemplate.queryForList("""
+                SELECT project_id
+                FROM permission_project_membership
+                WHERE tenant_id = 10
+                  AND actor_id = 1004
+                  AND project_role = 'MEMBER'
+                  AND enabled = true
+                """, Long.class);
 
         assertThat(tenantName).isEqualTo("FlashSync");
         assertThat(applicationName).isEqualTo("FlashSync");
         assertThat(workspaceKey).isEqualTo("workspace-a");
         assertThat(projectOwnerProjectIds).contains(101L);
-        assertThat(shadowIdentityCount).isEqualTo(4);
+        assertThat(shadowIdentityCount).isEqualTo(5);
+        assertThat(ordinaryUserRole).isEqualTo("ORDINARY_USER");
+        assertThat(ordinaryUserProjectIds).contains(101L);
     }
 
     /**

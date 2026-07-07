@@ -6,6 +6,23 @@
 
 这个过程可以称为“开租”或“租户初始化”。它的含义不是单纯插入一条租户记录，而是一次性建立“谁是这个租户、开通了哪个应用、默认项目和工作空间是什么、哪些账号拥有初始权限、这些事实如何被审计”的完整基线。
 
+## 1.1 Application、Project、Workspace 的层级关系
+
+本项目后续统一采用下面这套领域语言，避免把 `application_id` 和 `project_id` 混成同一个概念：
+
+```text
+Tenant 租户
+  -> Application 应用/产品能力
+      -> Project 业务项目/数据域/实施项目
+          -> Workspace 工作空间/环境/执行空间
+```
+
+- `Application` 表示租户开通的产品或应用能力，例如 `FlashSync`、数据质量、资产目录、合规脱敏。它更偏产品入口、菜单、套餐、配额、能力开关、路由和应用级审计。
+- `Project` 表示某个应用下的一组业务资源边界，例如“ERP 到数仓同步项目”“CRM 历史数据迁移项目”“财务主数据治理项目”。它更偏数据源、同步任务、质量规则、Agent 会话和成员授权的归属范围。
+- `Workspace` 表示项目内进一步隔离的空间，例如开发空间、测试空间、生产空间、系统执行空间。它更偏环境隔离、风险隔离、Agent 工作区和机器任务隔离。
+
+因此，`application_id=10010` 表示 FlashSync 这个产品能力，`project_id=101` 表示 FlashSync 下的默认业务项目/数据域，两者不应合并。
+
 ## 2. FlashSync 本次初始化结果
 
 本次已经把开租基线固化到 permission-admin 迁移中，应用名称为 `FlashSync`。
@@ -13,8 +30,8 @@
 | 对象 | ID / 编码 | 说明 |
 |---|---:|---|
 | 租户 | `tenant_id=10`，`tenant_code=FLASHSYNC` | FlashSync 业务租户，对齐本地 Keycloak 样例用户的 `datasmart_tenant_id=10`。 |
-| 应用 | `application_id=10010`，`application_code=FLASHSYNC` | FlashSync 数据同步应用，承载数据源、同步任务、质量校验和 Agent 辅助配置入口。 |
-| 默认项目 | `project_id=101`，`project_code=FLASHSYNC_DEFAULT` | 用户首次创建数据源、同步模板、同步任务、质量规则或 Agent 会话时的默认业务项目。 |
+| 应用 | `application_id=10010`，`application_code=FLASHSYNC` | FlashSync 数据同步产品能力，承载数据源、同步任务、质量校验和 Agent 辅助配置入口。 |
+| 默认项目 | `project_id=101`，`project_code=FLASHSYNC_DEFAULT` | FlashSync 应用下的默认业务项目/数据域，用户首次创建数据源、同步模板、同步任务、质量规则或 Agent 会话时默认落在这里。 |
 | 默认工作空间 | `workspace_id=10001`，`external_workspace_key=workspace-a` | 对齐本地 Keycloak 样例用户的 `datasmart_workspace_id=workspace-a`。 |
 | 系统同步空间 | `workspace_id=10002`，`external_workspace_key=system-sync` | 给同步 worker、调度器、服务账号等机器主体使用，避免和人工配置空间混杂。 |
 | 平台管理租户 | `tenant_id=1`，`application_id=9000`，`workspace_id=90001` | 给 `platform-admin` 这类平台管理员使用，不承载客户业务数据。 |
@@ -54,13 +71,16 @@ DataSmart 自己的 `permission_identity_user` 只保存低敏影子身份映射
 
 | 用户名 | tenantId | actorId | role | workspace | application |
 |---|---:|---:|---|---|---|
+| `ordinary-user` | `10` | `1004` | `ORDINARY_USER` | `workspace-a` | `FLASHSYNC` |
 | `project-owner` | `10` | `1001` | `PROJECT_OWNER` | `workspace-a` | `FLASHSYNC` |
 | `operator` | `10` | `1002` | `OPERATOR` | `workspace-a` | `FLASHSYNC` |
 | `auditor` | `10` | `1003` | `AUDITOR` | `workspace-a` | `FLASHSYNC` |
 | `sync-service` | `10` | `9101` | `SERVICE_ACCOUNT` | `system-sync` | `FLASHSYNC` |
 | `platform-admin` | `1` | `9001` | `PLATFORM_ADMINISTRATOR` | `platform` | `DATASMART_PLATFORM` |
 
-其中 `project-owner/operator/auditor/sync-service` 都会被授予 FlashSync 默认项目 `project_id=101` 的项目成员关系。这样 permission-admin 在 PROJECT 数据范围判定时，可以把授权项目集合物化给 gateway，再由 gateway 透传给 data-sync、data-quality、agent-runtime 等服务。
+其中 `ordinary-user/project-owner/operator/auditor/sync-service` 都会被授予 FlashSync 默认项目 `project_id=101` 的项目成员关系。`ordinary-user` 的项目内角色是 `MEMBER`，用于验证普通用户视角；它不具备项目负责人、运营、审计或平台管理员权限。这样 permission-admin 在 PROJECT 数据范围判定时，可以把授权项目集合物化给 gateway，再由 gateway 透传给 data-sync、data-quality、agent-runtime 等服务。
+
+本地样例账号的统一密码提示为 `DataSmart@123`。这个密码只存在于 Keycloak realm import 或 Keycloak 自身数据库中，permission-admin 不保存密码。
 
 ## 6. 本次落地文件
 
@@ -68,12 +88,16 @@ PostgreSQL 主路径：
 
 ```text
 permission-admin/src/main/resources/db/migration/postgresql/permission-admin/V12__tenant_application_workspace_bootstrap.sql
+permission-admin/src/main/resources/db/migration/postgresql/permission-admin/V13__clarify_application_project_semantics.sql
+permission-admin/src/main/resources/db/migration/postgresql/permission-admin/V14__flashsync_ordinary_user_bootstrap.sql
 ```
 
 MySQL 兼容增量：
 
 ```text
 docker/mysql/migrations/20260718_tenant_application_workspace_bootstrap.sql
+docker/mysql/migrations/20260719_application_project_semantics_comments.sql
+docker/mysql/migrations/20260720_flashsync_ordinary_user_bootstrap.sql
 ```
 
 MySQL fresh init 后置脚本：
