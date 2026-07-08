@@ -354,8 +354,7 @@ public class DataSyncServiceImpl implements DataSyncService {
         }
         querySupport.eqIfPresent(wrapper, SyncTask::getTemplateId, criteria.templateId());
         querySupport.eqIfPresent(wrapper, SyncTask::getOwnerId, criteria.ownerId());
-        querySupport.eqIfPresent(wrapper, SyncTask::getGroupCode,
-                taskGroupOperationSupport.normalizeGroupCodeForFilter(criteria.groupCode()));
+        applyTaskGroupFilter(wrapper, criteria.groupCode());
         String requestedState = querySupport.normalizeCode(criteria.currentState());
         if (requestedState == null) {
             /*
@@ -1191,6 +1190,35 @@ public class DataSyncServiceImpl implements DataSyncService {
             }
             wrapper.eq(column, value);
         }
+    }
+
+    /**
+     * 给任务列表追加分组筛选条件。
+     *
+     * <p>这里不能把“默认分组”简单写成 {@code group_code = 'DEFAULT'}。原因是项目在持续演进过程中，
+     * 历史草稿、导入任务、旧版未分组任务以及删除分组后迁回的任务，可能分别留下 {@code NULL}、空字符串
+     * 或 {@code DEFAULT} 三种存储形态。分组树和分组汇总已经把它们聚合成一个“默认分组”节点；
+     * 如果列表接口仍只精确匹配 {@code DEFAULT}，页面就会出现“左侧默认分组 22 条，点击后列表只有 2 条”
+     * 这种前后端语义错位。</p>
+     *
+     * <p>因此当筛选值为默认分组时，列表、回收站和导出等任务明细入口必须统一采用
+     * {@code DEFAULT OR NULL OR ''} 的等价条件。普通业务分组仍然使用精确匹配，避免不同业务分组互相串数据。</p>
+     */
+    private void applyTaskGroupFilter(LambdaQueryWrapper<SyncTask> wrapper, String rawGroupCode) {
+        String groupCode = taskGroupOperationSupport.normalizeGroupCodeForFilter(rawGroupCode);
+        if (!hasText(groupCode)) {
+            return;
+        }
+        if (SyncTaskGroupOperationSupport.DEFAULT_GROUP_CODE.equals(groupCode)) {
+            wrapper.and(groupWrapper -> groupWrapper
+                    .eq(SyncTask::getGroupCode, SyncTaskGroupOperationSupport.DEFAULT_GROUP_CODE)
+                    .or()
+                    .isNull(SyncTask::getGroupCode)
+                    .or()
+                    .eq(SyncTask::getGroupCode, ""));
+            return;
+        }
+        wrapper.eq(SyncTask::getGroupCode, groupCode);
     }
 
     private boolean sameNullable(Long left, Long right) {

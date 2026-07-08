@@ -6,6 +6,9 @@
  */
 package com.czh.datasmart.govern.datasync.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTaskRequest;
 import com.czh.datasmart.govern.datasync.config.DataSyncDatasourceCapabilityProperties;
@@ -55,7 +58,9 @@ import com.czh.datasmart.govern.datasync.support.SyncApprovalState;
 import com.czh.datasmart.govern.datasync.support.SyncTaskState;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 
+import java.lang.reflect.Method;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -123,6 +128,31 @@ class DataSyncServiceImplProjectScopeTest {
         assertThat(template.getProjectId()).isEqualTo(101L);
         verify(templateMapper).insert(any(SyncTemplate.class));
         verify(auditSupport).saveTemplateAudit(any(SyncTemplate.class), any(), any(), any());
+    }
+
+    /**
+     * 默认分组的任务列表筛选必须和分组树聚合口径保持一致。
+     *
+     * <p>真实页面左侧分组树会把历史未分组任务、空分组任务和显式 DEFAULT 任务聚合成一个“默认分组”节点。
+     * 如果列表接口点击 DEFAULT 时只查 {@code group_code = 'DEFAULT'}，就会出现树上统计 22 条、列表只有新增 2 条的错位。
+     * 这里不搭数据库，而是直接验证 Service 层追加的 wrapper SQL 片段包含 DEFAULT、NULL 和空字符串三种等价形态。</p>
+     */
+    @Test
+    void defaultGroupFilterShouldIncludeLegacyEmptyAndNullGroupCodes() throws Exception {
+        DataSyncServiceImpl service = service(mock(SyncTemplateMapper.class), mock(SyncAuditSupport.class));
+        LambdaQueryWrapper<SyncTask> wrapper = new LambdaQueryWrapper<>();
+        TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), ""), SyncTask.class);
+        Method method = DataSyncServiceImpl.class.getDeclaredMethod(
+                "applyTaskGroupFilter", LambdaQueryWrapper.class, String.class);
+        method.setAccessible(true);
+
+        method.invoke(service, wrapper, SyncTaskGroupOperationSupport.DEFAULT_GROUP_CODE);
+
+        String sqlSegment = wrapper.getCustomSqlSegment();
+        assertThat(sqlSegment).contains("group_code");
+        assertThat(sqlSegment).contains("IS NULL");
+        assertThat(wrapper.getParamNameValuePairs()).containsValue(SyncTaskGroupOperationSupport.DEFAULT_GROUP_CODE);
+        assertThat(wrapper.getParamNameValuePairs()).containsValue("");
     }
 
     /**
@@ -519,6 +549,12 @@ class DataSyncServiceImplProjectScopeTest {
 
     private SyncTaskGroupOperationSupport defaultTaskGroupOperationSupport() {
         SyncTaskGroupOperationSupport support = mock(SyncTaskGroupOperationSupport.class);
+        when(support.normalizeGroupCodeForFilter(any())).thenAnswer(invocation -> {
+            String rawGroupCode = invocation.getArgument(0);
+            return rawGroupCode == null || rawGroupCode.isBlank()
+                    ? null
+                    : rawGroupCode.trim().toUpperCase();
+        });
         when(support.resolveAssignmentForTask(any(), any(), any(), any(), any(), any()))
                 .thenReturn(new SyncTaskGroupOperationSupport.TaskGroupAssignment(
                         SyncTaskGroupOperationSupport.DEFAULT_GROUP_CODE,
