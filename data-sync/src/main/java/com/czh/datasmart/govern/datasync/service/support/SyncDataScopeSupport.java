@@ -42,6 +42,9 @@ import java.util.Set;
 public class SyncDataScopeSupport {
 
     private static final long PLATFORM_TENANT_ID = 0L;
+    private static final long DEFAULT_FLASHSYNC_TENANT_ID = 10L;
+    private static final long DEFAULT_FLASHSYNC_PROJECT_ID = 101L;
+    private static final long DEFAULT_FLASHSYNC_WORKSPACE_ID = 10001L;
 
     private static final Set<String> CROSS_TENANT_ROLES = Set.of(
             "PLATFORM_ADMINISTRATOR",
@@ -68,14 +71,77 @@ public class SyncDataScopeSupport {
     public Long resolveTenantForCreate(Long requestedTenantId, SyncActorContext actorContext) {
         String role = normalizeRole(actorContext);
         if (CROSS_TENANT_ROLES.contains(role)) {
-            return requestedTenantId == null ? normalizeTenant(actorContext == null ? null : actorContext.tenantId()) : requestedTenantId;
+            Long actorTenantId = actorContext == null ? null : actorContext.tenantId();
+            if (requestedTenantId == null && actorTenantId == null) {
+                return DEFAULT_FLASHSYNC_TENANT_ID;
+            }
+            return requestedTenantId == null ? normalizeTenant(actorTenantId) : requestedTenantId;
         }
-        Long actorTenantId = normalizeTenant(actorContext == null ? null : actorContext.tenantId());
+        Long actorTenantId = actorContext == null || actorContext.tenantId() == null
+                ? DEFAULT_FLASHSYNC_TENANT_ID
+                : normalizeTenant(actorContext.tenantId());
         if (requestedTenantId != null && !actorTenantId.equals(requestedTenantId)) {
             throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
                     "当前身份不能为其他租户创建同步对象，actorTenantId=" + actorTenantId + ", requestedTenantId=" + requestedTenantId);
         }
         return actorTenantId;
+    }
+
+    /**
+     * 解析创建模板/任务时应写入的项目 ID。
+     *
+     * <p>产品交互上，项目应来自“当前项目切换器”和登录上下文，而不是让用户在表单里填写一个数字 ID。这里的优先级是：</p>
+     * <p>1. 网关或受信服务间调用注入的 {@code X-DataSmart-Project-Id}；</p>
+     * <p>2. 旧接口 request body 中的 projectId，作为历史兼容入口；</p>
+     * <p>3. 如果权限中心只给了一个授权项目，则自动落到该项目；</p>
+     * <p>4. 本地 FlashSync 默认开租项目 {@code 101}。</p>
+     *
+     * <p>如果 Header 和 request body 同时存在但不一致，必须拒绝。原因是 request body 来自浏览器或脚本，不应该覆盖可信上下文；
+     * 否则用户切换在 A 项目，却通过接口参数把资源写到 B 项目，会破坏项目级隔离和后续审计。</p>
+     */
+    public Long resolveProjectForCreate(Long requestedProjectId, SyncActorContext actorContext) {
+        Long contextProjectId = actorContext == null ? null : actorContext.projectId();
+        if (contextProjectId != null) {
+            if (requestedProjectId != null && !contextProjectId.equals(requestedProjectId)) {
+                throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
+                        "请求项目与当前上下文项目不一致，contextProjectId=" + contextProjectId
+                                + ", requestedProjectId=" + requestedProjectId);
+            }
+            return contextProjectId;
+        }
+        if (requestedProjectId != null) {
+            validateRequestedProjectInAuthorizedSet(requestedProjectId, actorContext);
+            return requestedProjectId;
+        }
+        List<Long> authorizedProjectIds = actorContext == null || actorContext.authorizedProjectIds() == null
+                ? List.of()
+                : actorContext.authorizedProjectIds().stream()
+                .filter(id -> id != null && id > 0)
+                .distinct()
+                .toList();
+        if (authorizedProjectIds.size() == 1) {
+            return authorizedProjectIds.get(0);
+        }
+        return DEFAULT_FLASHSYNC_PROJECT_ID;
+    }
+
+    /**
+     * 解析创建模板/任务时应写入的工作空间 ID。
+     *
+     * <p>工作空间用于项目内的环境/团队隔离，例如开发、测试、生产、系统执行空间。它和 projectId 一样属于上下文，不应出现在普通用户表单中。
+     * 本方法优先使用可信 Header，其次兼容旧请求体字段，最后落到 FlashSync 默认工作空间 {@code 10001}。</p>
+     */
+    public Long resolveWorkspaceForCreate(Long requestedWorkspaceId, SyncActorContext actorContext) {
+        Long contextWorkspaceId = actorContext == null ? null : actorContext.workspaceId();
+        if (contextWorkspaceId != null) {
+            if (requestedWorkspaceId != null && !contextWorkspaceId.equals(requestedWorkspaceId)) {
+                throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
+                        "请求工作空间与当前上下文工作空间不一致，contextWorkspaceId=" + contextWorkspaceId
+                                + ", requestedWorkspaceId=" + requestedWorkspaceId);
+            }
+            return contextWorkspaceId;
+        }
+        return requestedWorkspaceId == null ? DEFAULT_FLASHSYNC_WORKSPACE_ID : requestedWorkspaceId;
     }
 
     /**
@@ -295,6 +361,25 @@ public class SyncDataScopeSupport {
         throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
                 "当前身份只能访问本人相关的" + resourceName + "，actorId="
                         + (actorContext == null ? null : actorContext.actorId()));
+    }
+
+    /**
+     * 校验旧 request body 中显式传入的 projectId 是否落在权限中心授权项目集合内。
+     *
+     * <p>只有当 gateway 明确声明当前是 PROJECT 范围时才强制校验授权集合；本地开发、服务账号或迁移脚本没有注入 dataScopeLevel 时，
+     * 仍允许按默认开租上下文继续运行，避免把本地闭环调试误判成权限异常。</p>
+     */
+    private void validateRequestedProjectInAuthorizedSet(Long requestedProjectId, SyncActorContext actorContext) {
+        if (!isExplicitGatewayProjectScope(actorContext)) {
+            return;
+        }
+        List<Long> authorizedProjectIds = actorContext == null || actorContext.authorizedProjectIds() == null
+                ? List.of()
+                : actorContext.authorizedProjectIds();
+        if (!authorizedProjectIds.contains(requestedProjectId)) {
+            throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
+                    "当前身份不能在未授权项目下创建同步对象，requestedProjectId=" + requestedProjectId);
+        }
     }
 
     private boolean isExplicitGatewayProjectScope(SyncActorContext actorContext) {

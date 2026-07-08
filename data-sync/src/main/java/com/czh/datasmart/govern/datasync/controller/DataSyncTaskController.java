@@ -17,6 +17,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchExportReque
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCreateWizardContractResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExportFile;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskFieldMappingSuggestionRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskFieldMappingSuggestionResponse;
@@ -34,10 +35,13 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskPublishRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskUpdateRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskWizardStepValidationRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskWizardStepValidationResponse;
 import com.czh.datasmart.govern.datasync.controller.support.SyncActorContextHeaderSupport;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTaskGroup;
 import com.czh.datasmart.govern.datasync.service.DataSyncService;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskCreateWizardContractSupport;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ContentDisposition;
@@ -73,6 +77,41 @@ import java.util.List;
 public class DataSyncTaskController {
 
     private final DataSyncService dataSyncService;
+    private final SyncTaskCreateWizardContractSupport createWizardContractSupport;
+
+    /**
+     * 查询同步任务创建向导合同。
+     *
+     * <p>该接口专门服务前端“新建同步任务”弹窗和 Agent 创建任务工具。它告诉调用方：哪些字段由上下文自动填充、哪些模式可选、
+     * 哪些执行器/恢复/审批字段不应出现在创建页面，以及源端/目标端数据源应如何按用途筛选。</p>
+     *
+     * <p>注意：该接口不读取源端或目标端真实数据，也不会创建模板/任务；它只是低敏控制面合同。</p>
+     */
+    @GetMapping("/create-wizard/contract")
+    public PlatformApiResponse<SyncTaskCreateWizardContractResponse> createWizardContract(
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        SyncActorContext actorContext = actorContext(tenantId, actorId, actorRole, traceId, headers);
+        return PlatformApiResponse.success("同步任务创建向导合同查询成功",
+                createWizardContractSupport.buildContract(actorContext), traceId);
+    }
+
+    /**
+     * 校验同步任务创建向导当前步骤。
+     *
+     * <p>前端在点击“下一步”或“保存并进入下一步”时调用该接口，后端返回阻断项和非阻断提示。它不会替代最终预检查，
+     * 但可以尽早拦截明显错误，例如源端/目标端为空、源端目标端相同、非定时模式携带 scheduleConfig、SQL 模式缺失 SQL 配置等。</p>
+     */
+    @PostMapping("/create-wizard/validate-step")
+    public PlatformApiResponse<SyncTaskWizardStepValidationResponse> validateCreateWizardStep(
+            @RequestBody SyncTaskWizardStepValidationRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success("同步任务创建向导步骤校验完成",
+                createWizardContractSupport.validateStep(request), traceId);
+    }
 
     /**
      * 创建同步任务。

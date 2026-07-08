@@ -11,6 +11,7 @@ import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
+import com.czh.datasmart.govern.datasync.support.SyncWriteStrategy;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -129,7 +130,7 @@ public class SyncBatchRunnerBridgePlanSupport {
         if (!isMinimalJdbcBatchMode(template.getSyncMode())) {
             issueCodes.add("MINIMAL_JDBC_BATCH_BRIDGE_MODE_UNSUPPORTED");
         }
-        if ("OVERWRITE".equals(normalize(template.getWriteStrategy()))) {
+        if (SyncWriteStrategy.OVERWRITE == resolveWriteStrategy(template.getWriteStrategy())) {
             issueCodes.add("DESTRUCTIVE_WRITE_STRATEGY_REQUIRES_APPROVED_BRIDGE_POLICY");
         }
 
@@ -200,7 +201,7 @@ public class SyncBatchRunnerBridgePlanSupport {
                 normalize(template.getTargetConnectorType()),
                 normalize(template.getSyncMode()),
                 readStrategy(template.getSyncMode()),
-                normalizeOrDefault(template.getWriteStrategy(), "APPEND"),
+                runnerWriteStrategy(template.getWriteStrategy()),
                 checkpointType(template.getSyncMode()),
                 objectLocator(template.getSourceSchemaName(), template.getSourceObjectName()),
                 objectLocator(template.getTargetSchemaName(), template.getTargetObjectName()),
@@ -251,7 +252,7 @@ public class SyncBatchRunnerBridgePlanSupport {
                 template == null ? null : normalize(template.getTargetConnectorType()),
                 template == null ? null : normalize(template.getSyncMode()),
                 template == null ? null : readStrategy(template.getSyncMode()),
-                template == null ? null : normalizeOrDefault(template.getWriteStrategy(), "APPEND"),
+                template == null ? null : runnerWriteStrategy(template.getWriteStrategy()),
                 template == null ? null : checkpointType(template.getSyncMode()),
                 template == null ? null : objectLocator(template.getSourceSchemaName(), template.getSourceObjectName()),
                 template == null ? null : objectLocator(template.getTargetSchemaName(), template.getTargetObjectName()),
@@ -390,6 +391,24 @@ public class SyncBatchRunnerBridgePlanSupport {
     private String normalizeOrDefault(String value, String defaultValue) {
         String normalized = normalize(value);
         return normalized == null ? defaultValue : normalized;
+    }
+
+    /**
+     * 把控制面保存的产品级写入策略翻译成 runner 可执行策略。
+     *
+     * <p>当前新建向导只暴露 INSERT/UPDATE，但最小 JDBC runner 的合同仍沿用 APPEND/UPSERT。这里集中做翻译，避免在 Controller、
+     * Service、workerPlan、offline job plan 多处散落 if/else。后续当真实 runner 也升级为 INSERT/UPDATE 语义时，只需要调整这一个方法。</p>
+     */
+    private String runnerWriteStrategy(String value) {
+        return resolveWriteStrategy(value).toRunnerStrategy();
+    }
+
+    private SyncWriteStrategy resolveWriteStrategy(String value) {
+        try {
+            return SyncWriteStrategy.fromValue(value);
+        } catch (IllegalArgumentException exception) {
+            return SyncWriteStrategy.INSERT;
+        }
     }
 
     private String normalize(String value) {

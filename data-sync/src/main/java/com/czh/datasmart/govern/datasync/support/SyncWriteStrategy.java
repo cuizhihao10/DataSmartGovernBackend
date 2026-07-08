@@ -11,77 +11,107 @@ import java.util.Arrays;
 /**
  * data-sync 写入策略枚举。
  *
- * <p>写入策略回答的是“目标端如何接纳源端同步过来的记录”。它不是单纯的前端下拉选项，而是后续
- * batch runner、冲突处理、重试、回放、补数和审计解释都会依赖的执行语义。</p>
+ * <p>写入策略回答的是“目标端如何接纳源端同步过来的记录”。它同时服务两个层面：</p>
+ * <p>1. 产品层：前端创建向导只应展示 INSERT 和 UPDATE 两种用户可理解的意图；</p>
+ * <p>2. 执行层：历史 runner 和桥接计划仍可能使用 APPEND、UPSERT、INSERT_IGNORE、REPLACE、OVERWRITE 等更细的内部策略。</p>
  *
- * <p>为什么在 data-sync 模块内独立定义，而不是直接复用 datasource-management 的同名枚举：</p>
- * <p>1. data-sync 是同步任务控制面，datasource-management 是数据源与连接器运行时，两者应通过显式契约交互，
- * 不应为了一个枚举把模块边界耦合起来；</p>
- * <p>2. 当前两边枚举值保持一致，后续如果 datasource-management 内部 runner 需要新增某个数据库私有策略，
- * data-sync 也可以先通过兼容性矩阵决定是否对外开放，而不是被内部实现牵着走；</p>
- * <p>3. 该枚举只包含低敏执行语义，不包含 SQL、字段映射正文、样本数据、连接地址或凭据。</p>
+ * <p>为什么不直接删除历史策略：已有模板、测试、导入导出文件、审计记录和最小 JDBC runner 仍可能引用这些编码。
+ * 因此当前采用“新建入口收口、内部兼容保留”的方式：新创建的模板保存 INSERT/UPDATE，派发执行时再通过
+ * {@link #toRunnerStrategy()} 翻译成 runner 可理解的编码。</p>
  */
 public enum SyncWriteStrategy {
 
     /**
+     * 插入写入。
+     *
+     * <p>这是普通创建向导默认展示的策略，表达“把读取到的新数据写入目标表”。用户不需要手填主键、冲突字段或增量字段；
+     * 目标表是否具备主键、唯一约束、外键、非空约束、字段兼容性等，应在预检查阶段由系统基于目标元数据自动判断。</p>
+     *
+     * <p>执行兼容：当前最小 JDBC runner 使用 APPEND 表达追加写入，因此派发前会翻译为 APPEND。</p>
+     */
+    INSERT(false, false, true, "APPEND"),
+
+    /**
+     * 更新/合并写入。
+     *
+     * <p>这是普通创建向导展示的第二种策略，表达“目标端已有记录则更新，没有记录则插入”的业务意图。
+     * 它不再要求用户手填 primaryKeyField/conflictField，因为主键、唯一键或可冲突判断字段应该由预检查读取目标元数据后确认。</p>
+     *
+     * <p>执行兼容：当前最小 JDBC runner 使用 UPSERT 表达冲突更新，因此派发前会翻译为 UPSERT。</p>
+     */
+    UPDATE(false, false, true, "UPSERT"),
+
+    /**
      * 追加写入。
      *
-     * <p>APPEND 不主动处理冲突，适合日志、流水、离线导出导入等天然可追加场景。它的风险是重试或回放时可能产生重复数据，
-     * 因此高价值业务表通常需要搭配下游去重、幂等键或更严格的写入策略。</p>
+     * <p>APPEND 是历史执行器策略，适合日志、流水、离线导入等天然可追加场景。它现在不再作为普通创建向导的展示项；
+     * 如果旧脚本仍提交 APPEND，模板创建会兼容折叠为 INSERT。</p>
      */
-    APPEND(false, false),
+    APPEND(false, false, false, "APPEND"),
 
     /**
      * 冲突时更新，不冲突时插入。
      *
-     * <p>UPSERT 适合主数据、维表、用户画像等“同一业务主键只保留一份最新记录”的场景。它必须依赖目标端主键或唯一键，
-     * 否则 runner 无法判断哪一行算冲突。</p>
+     * <p>UPSERT 是历史执行器策略，适合主数据、维表、用户画像等“同一业务主键保留一份最新记录”的场景。
+     * 新建入口会把旧 UPSERT 输入折叠为 UPDATE，由预检查自动确认目标表是否具备冲突判断能力。</p>
      */
-    UPSERT(true, false),
+    UPSERT(true, false, false, "UPSERT"),
 
     /**
      * 冲突时忽略。
      *
-     * <p>INSERT_IGNORE 适合“先到先得”或历史事实不可覆盖的场景，例如已经入仓的订单快照不希望被后续重复消息覆盖。
-     * 它同样需要目标端具备可判断冲突的唯一约束。</p>
+     * <p>该策略属于更细的执行器能力，普通创建向导不展示。后续如果要开放，应放入高级策略或管理员控制面，并要求明确审计和风险提示。</p>
      */
-    INSERT_IGNORE(true, false),
+    INSERT_IGNORE(true, false, false, "INSERT_IGNORE"),
 
     /**
      * 冲突时替换。
      *
-     * <p>REPLACE 通常比 UPSERT 更激进，可能表现为删除旧行再插入新行。不同数据库语义不完全一致，
-     * 因此后续接入真实 runner 时应在 connector capability 中再次确认支持程度。</p>
+     * <p>REPLACE 在不同数据库中的语义差异较大，有些实现接近“删除旧行再插入新行”，因此不适合作为普通用户创建任务时的默认选择。</p>
      */
-    REPLACE(true, false),
+    REPLACE(true, false, false, "REPLACE"),
 
     /**
      * 覆盖式写入。
      *
-     * <p>OVERWRITE 通常意味着清空或替换目标范围，破坏性最强。当前枚举先保留该能力，方便产品设计支持离线重建、
-     * 全量重刷和紧急修复，但真正执行前应接入审批、权限、备份和影响范围预估。</p>
+     * <p>OVERWRITE 通常意味着清空或替换目标范围，破坏性最强。它可以作为未来离线重建、紧急修复或管理员运维动作的能力，
+     * 但不应出现在普通创建向导中。</p>
      */
-    OVERWRITE(false, true);
+    OVERWRITE(false, true, false, "OVERWRITE");
 
     /**
      * 当前策略是否要求目标端具备冲突判断键。
      *
-     * <p>如果该值为 true，模板必须声明 primaryKeyField。否则即使源端和目标端连接器兼容，也不应该进入真实执行，
-     * 因为写入器无法保证幂等、去重或冲突处理。</p>
+     * <p>历史 UPSERT/INSERT_IGNORE/REPLACE 仍然保留该语义，便于旧模板和内部执行计划继续 fail-fast。新的 UPDATE 用户策略
+     * 不要求用户手填主键字段，而是把判断职责移到预检查阶段。</p>
      */
     private final boolean requiresConflictKey;
 
     /**
      * 当前策略是否具有明显覆盖/破坏风险。
      *
-     * <p>该字段用于预览、审批和 workerPlan 风险提示。它不代表禁止使用，而是提醒平台在进入执行前补足权限、
-     * 审批、审计和恢复方案。</p>
+     * <p>该字段用于预览、审批和 workerPlan 风险提示。它不代表永久禁止使用，而是提醒平台在进入执行前补足权限、审计和恢复方案。</p>
      */
     private final boolean destructiveRewrite;
 
-    SyncWriteStrategy(boolean requiresConflictKey, boolean destructiveRewrite) {
+    /**
+     * 是否属于普通创建向导可展示的产品级策略。
+     */
+    private final boolean userFacingStrategy;
+
+    /**
+     * 发送给现有 runner 的兼容策略编码。
+     */
+    private final String runnerStrategy;
+
+    SyncWriteStrategy(boolean requiresConflictKey,
+                      boolean destructiveRewrite,
+                      boolean userFacingStrategy,
+                      String runnerStrategy) {
         this.requiresConflictKey = requiresConflictKey;
         this.destructiveRewrite = destructiveRewrite;
+        this.userFacingStrategy = userFacingStrategy;
+        this.runnerStrategy = runnerStrategy;
     }
 
     public boolean requiresConflictKey() {
@@ -92,18 +122,26 @@ public enum SyncWriteStrategy {
         return destructiveRewrite;
     }
 
+    public boolean isUserFacingStrategy() {
+        return userFacingStrategy;
+    }
+
+    public String toRunnerStrategy() {
+        return runnerStrategy;
+    }
+
     /**
      * 将外部输入归一化为平台内部写入策略。
      *
-     * <p>空值默认回落到 APPEND，是为了兼容历史模板和最小迁移成本；但预览和 workerPlan 会对默认策略做风险提示，
-     * 防止用户误以为平台已经配置了幂等写入。</p>
+     * <p>空值现在默认回落到 INSERT，而不是历史 APPEND。这样新建任务在没有显式策略时会得到更符合用户心智的“插入写入”；
+     * 执行层仍会把 INSERT 翻译为 APPEND，从而兼容现有最小 runner。</p>
      *
-     * @param value 请求体、数据库或旧模板中的策略字符串。
-     * @return 归一化后的写入策略。
+     * @param value 请求体、数据库或旧模板中的策略字符串
+     * @return 归一化后的写入策略
      */
     public static SyncWriteStrategy fromValue(String value) {
         if (value == null || value.isBlank()) {
-            return APPEND;
+            return INSERT;
         }
         return Arrays.stream(values())
                 .filter(item -> item.name().equalsIgnoreCase(value.trim()))

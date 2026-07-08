@@ -60,6 +60,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -131,7 +132,7 @@ class DataSyncServiceImplProjectScopeTest {
      * 结果集搬到目标端，审批流就形同虚设。</p>
      */
     @Test
-    void createTaskShouldRejectApprovalConfirmationFromUntrustedRole() {
+    void createTaskShouldIgnoreApprovalConfirmationInCreateWizard() {
         SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
         SyncTaskMapper taskMapper = mock(SyncTaskMapper.class);
         SyncAuditSupport auditSupport = mock(SyncAuditSupport.class);
@@ -142,14 +143,21 @@ class DataSyncServiceImplProjectScopeTest {
                 mock(SyncAuditRecordMapper.class),
                 auditSupport);
         when(templateMapper.selectById(7001L)).thenReturn(highRiskCustomSqlTemplate());
+        when(taskMapper.insert(any(SyncTask.class))).thenAnswer(invocation -> {
+            SyncTask task = invocation.getArgument(0);
+            task.setId(8100L);
+            return 1;
+        });
 
         CreateSyncTaskRequest request = createTaskRequest(true, "approval:test-001");
 
-        assertThrows(PlatformBusinessException.class,
-                () -> service.createTask(request, projectScopedActor(List.of(101L, 102L))));
+        SyncTask task = service.createTask(request, projectScopedActor(List.of(101L, 102L)));
 
-        verify(taskMapper, never()).insert(any(SyncTask.class));
-        verify(auditSupport, never()).saveAudit(any(), any(), any(), any(), any(), any());
+        assertThat(task.getCurrentState()).isEqualTo(SyncTaskState.CONFIGURED.name());
+        assertThat(task.getApprovalState()).isEqualTo(SyncApprovalState.NOT_REQUIRED.name());
+        verify(taskMapper).insert(any(SyncTask.class));
+        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("creationApprovalPolicy=NOT_USED_IN_CREATE_WIZARD"));
+        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), argThat(payload -> !payload.contains("approvalFactId")));
     }
 
     /**
@@ -159,7 +167,7 @@ class DataSyncServiceImplProjectScopeTest {
      * 真正运行仍会被 runTask 的预检与状态机拦住，直到审批中心或可信服务账号写入 APPROVED 事实。</p>
      */
     @Test
-    void createTaskShouldParkHighRiskTaskInPendingApprovalWhenApprovalMissing() {
+    void createTaskShouldKeepHighRiskApprovalOutOfCreateWizardWhenApprovalMissing() {
         SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
         SyncTaskMapper taskMapper = mock(SyncTaskMapper.class);
         SyncAuditSupport auditSupport = mock(SyncAuditSupport.class);
@@ -178,10 +186,11 @@ class DataSyncServiceImplProjectScopeTest {
 
         SyncTask task = service.createTask(createTaskRequest(false, null), projectScopedActor(List.of(101L, 102L)));
 
-        assertThat(task.getCurrentState()).isEqualTo(SyncTaskState.PENDING_APPROVAL.name());
-        assertThat(task.getApprovalState()).isEqualTo(SyncApprovalState.PENDING.name());
+        assertThat(task.getCurrentState()).isEqualTo(SyncTaskState.CONFIGURED.name());
+        assertThat(task.getApprovalState()).isEqualTo(SyncApprovalState.NOT_REQUIRED.name());
         verify(taskMapper).insert(any(SyncTask.class));
         verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("approvalRequired=true"));
+        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("creationApprovalPolicy=NOT_USED_IN_CREATE_WIZARD"));
     }
 
     /**
@@ -191,7 +200,7 @@ class DataSyncServiceImplProjectScopeTest {
      * datasource-management 执行面，不能被普通审计 payload 扩散。</p>
      */
     @Test
-    void createTaskShouldAcceptTrustedApprovalFactAndWriteLowSensitiveAudit() {
+    void createTaskShouldIgnoreTrustedApprovalFactInCreateWizardAudit() {
         SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
         SyncTaskMapper taskMapper = mock(SyncTaskMapper.class);
         SyncAuditSupport auditSupport = mock(SyncAuditSupport.class);
@@ -211,9 +220,10 @@ class DataSyncServiceImplProjectScopeTest {
         SyncTask task = service.createTask(createTaskRequest(true, "approval:test-002"), trustedApprovalActor());
 
         assertThat(task.getCurrentState()).isEqualTo(SyncTaskState.CONFIGURED.name());
-        assertThat(task.getApprovalState()).isEqualTo(SyncApprovalState.APPROVED.name());
+        assertThat(task.getApprovalState()).isEqualTo(SyncApprovalState.NOT_REQUIRED.name());
         verify(taskMapper).insert(any(SyncTask.class));
-        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("approvalFactId=approval:test-002"));
+        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("creationApprovalPolicy=NOT_USED_IN_CREATE_WIZARD"));
+        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), argThat(payload -> !payload.contains("approvalFactId")));
     }
 
     /**

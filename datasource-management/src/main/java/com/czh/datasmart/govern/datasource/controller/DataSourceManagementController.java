@@ -19,6 +19,7 @@ import com.czh.datasmart.govern.datasource.service.DataSourceManagementService;
 import com.czh.datasmart.govern.datasource.service.support.DatasourceProjectScopeSupport;
 import com.czh.datasmart.govern.datasource.service.support.DatasourceProjectVisibility;
 import com.czh.datasmart.govern.datasource.support.DataSourceStatus;
+import com.czh.datasmart.govern.datasource.support.DataSourceUsagePurpose;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
@@ -46,14 +47,11 @@ import java.util.NoSuchElementException;
  * 数据源管理控制器。
  *
  * <p>这个控制器暴露的是“连接配置治理接口”，不是直接读取外部业务库的普通业务接口。
- * 它负责管理一个外部数据源如何被登记、查看、更新、启停、测试连接、发现元数据，以及在受控边界下执行只读 SQL。
- * 对商业化数据治理平台来说，数据源配置本身就是敏感资产：连接地址、用户名、元数据结构、样例数据访问能力都可能暴露企业数据边界。</p>
+ * 它负责管理外部数据源如何被登记、查看、更新、启停、测试连接、发现元数据，以及在受控边界下执行只读 SQL。</p>
  *
- * <p>本轮新增项目/工作空间范围控制后，控制器额外承担一项入口职责：
- * 把 gateway 透传的 `X-DataSmart-Data-Scope-Level` 和 `X-DataSmart-Authorized-Project-Ids`
- * 翻译为 datasource-management 可落地的查询条件和详情校验。
- * 列表接口通过 `project_id IN (...)` 收敛结果；详情、更新、启停、连接测试、元数据发现和只读 SQL 等按 ID 访问的接口，
- * 必须在执行业务动作前校验资源 projectId，防止通过猜测 ID 越权访问其他项目的数据源。</p>
+ * <p>本次调整的核心原则是：租户、项目、工作空间属于系统上下文，不能继续作为普通表单字段让用户手填。
+ * 页面在哪个 FlashSync 项目和工作空间下打开，就应该由 gateway 或前端上下文把对应 Header 传给后端；
+ * 后端优先使用可信 Header，只有本地调试或旧脚本缺少 Header 时才兼容请求体/查询参数。</p>
  */
 @RestController
 @RequestMapping("/datasources")
@@ -61,36 +59,67 @@ import java.util.NoSuchElementException;
 public class DataSourceManagementController {
 
     /**
+     * FlashSync 本地开租默认租户。
+     *
+     * <p>正式生产环境里，tenant/project/workspace 应由 gateway 根据登录态和项目切换上下文注入。
+     * 这里保留默认值，是为了本地开发、接口调试和没有完整登录态的 E2E 能继续落在用户已经初始化好的
+     * FlashSync 租户空间，而不是要求页面暴露内部 ID。</p>
+     */
+    private static final Long DEFAULT_FLASHSYNC_TENANT_ID = 10L;
+
+    /**
+     * FlashSync 默认项目 ID，对应 permission-admin 初始化脚本里的 FLASHSYNC_DEFAULT。
+     */
+    private static final Long DEFAULT_FLASHSYNC_PROJECT_ID = 101L;
+
+    /**
+     * FlashSync 默认工作空间 ID，对应 workspace-a / FlashSync 默认工作空间。
+     */
+    private static final Long DEFAULT_FLASHSYNC_WORKSPACE_ID = 10001L;
+
+    /**
      * 数据源业务服务。
-     * Controller 只声明 HTTP 路由、参数和入口级权限收敛；真正的生命周期、连接测试和 SQL 审计逻辑仍交给 Service。
+     *
+     * <p>Controller 只负责 HTTP 路由、参数装配和入口级范围收口；真正的生命周期、连接测试、
+     * 元数据发现和 SQL 审计逻辑仍然在 Service 层，避免把业务规则散落到路由方法里。</p>
      */
     private final DataSourceManagementService dataSourceManagementService;
 
     /**
      * 项目级数据范围支撑组件。
-     * 该组件集中解释 PROJECT 范围、授权项目集合和详情资源校验，避免每个路由重复实现安全规则。
+     *
+     * <p>它负责把 gateway 透传的数据范围 Header 转换成 datasource-management 可落地的查询条件，
+     * 并在详情类接口中校验资源 projectId，避免用户通过猜测 ID 越权读取其他项目的数据源。</p>
      */
     private final DatasourceProjectScopeSupport datasourceProjectScopeSupport;
 
     /**
      * 创建数据源登记记录。
      *
-     * <p>新建数据源时要求请求体显式携带 tenantId、projectId 和可选 workspaceId。
-     * 这样数据源从落库第一天起就具备租户内项目隔离能力，而不是等权限系统上线后再大规模补数。</p>
+     * <p>新前端不需要提交 tenantId/projectId/workspaceId。服务端会优先使用 Header 中的当前上下文，
+     * 如果 Header 缺失才读取请求体里的兼容字段；如果两者同时存在但不一致，会直接拒绝请求。</p>
      */
     @PostMapping
     public ResponseEntity<ApiResponse<DataSourceConfig>> createDataSource(
-            @Valid @RequestBody CreateDataSourceRequest request) {
+            @Valid @RequestBody CreateDataSourceRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantHeader,
+            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectHeader,
+            @RequestHeader(value = PlatformContextHeaders.WORKSPACE_ID, required = false) Long workspaceHeader) {
+        Long tenantId = resolveScopeValue("tenantId", tenantHeader, request.getTenantId(), DEFAULT_FLASHSYNC_TENANT_ID);
+        Long projectId = resolveScopeValue("projectId", projectHeader, request.getProjectId(), DEFAULT_FLASHSYNC_PROJECT_ID);
+        Long workspaceId = resolveScopeValue(
+                "workspaceId", workspaceHeader, request.getWorkspaceId(), DEFAULT_FLASHSYNC_WORKSPACE_ID);
         DataSourceConfig config = dataSourceManagementService.createDataSource(
-                request.getTenantId(),
-                request.getProjectId(),
-                request.getWorkspaceId(),
+                tenantId,
+                projectId,
+                workspaceId,
                 request.getName(),
                 request.getType(),
                 request.getJdbcUrl(),
                 request.getUsername(),
                 request.getPassword(),
-                request.getDescription()
+                request.getDescription(),
+                request.getUsagePurpose()
         );
         return ResponseEntity.ok(ApiResponse.success("数据源创建成功", config));
     }
@@ -98,9 +127,9 @@ public class DataSourceManagementController {
     /**
      * 分页查询数据源。
      *
-     * <p>常规筛选维度包括 tenantId、projectId、workspaceId、type、status。
-     * 当 gateway 明确声明当前身份是 PROJECT 数据范围时，即使调用方不传 projectId，后端也会自动追加授权项目集合过滤。
-     * 如果授权项目集合为空，查询会追加 `1 = 0`，让结果安全地收敛为空，而不是退回整个租户。</p>
+     * <p>前端新建同步任务时，可以通过 {@code usagePurpose=SOURCE} 获取源端候选，通过
+     * {@code usagePurpose=TARGET} 获取目标端候选。后端会把 BOTH 数据源一并纳入候选，表示该连接
+     * 同时允许作为源端和目标端。</p>
      */
     @GetMapping
     public ResponseEntity<ApiResponse<IPage<DataSourceConfig>>> listDataSources(
@@ -110,17 +139,26 @@ public class DataSourceManagementController {
             @RequestParam(required = false) Long projectId,
             @RequestParam(required = false) Long workspaceId,
             @RequestParam(required = false) String type,
+            @RequestParam(required = false) String usagePurpose,
             @RequestParam(required = false) String status,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantHeader,
+            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectHeader,
+            @RequestHeader(value = PlatformContextHeaders.WORKSPACE_ID, required = false) Long workspaceHeader,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+        Long effectiveTenantId = resolveScopeValue("tenantId", tenantHeader, tenantId, DEFAULT_FLASHSYNC_TENANT_ID);
+        Long effectiveProjectId = resolveScopeValue("projectId", projectHeader, projectId, DEFAULT_FLASHSYNC_PROJECT_ID);
+        Long effectiveWorkspaceId = resolveScopeValue(
+                "workspaceId", workspaceHeader, workspaceId, null);
         DatasourceProjectVisibility visibility = datasourceProjectScopeSupport.resolveVisibility(
-                projectId, workspaceId, dataScopeLevel, authorizedProjectIds);
+                effectiveProjectId, effectiveWorkspaceId, dataScopeLevel, authorizedProjectIds);
         LambdaQueryWrapper<DataSourceConfig> wrapper = new LambdaQueryWrapper<>();
         wrapper.ne(DataSourceConfig::getStatus, DataSourceStatus.DELETED);
-        applyDatasourceScope(wrapper, tenantId, visibility);
+        applyDatasourceScope(wrapper, effectiveTenantId, visibility);
         if (hasText(type)) {
             wrapper.eq(DataSourceConfig::getType, type.toUpperCase());
         }
+        applyUsagePurposeFilter(wrapper, usagePurpose);
         if (hasText(status)) {
             wrapper.eq(DataSourceConfig::getStatus, status.toUpperCase());
         }
@@ -132,9 +170,6 @@ public class DataSourceManagementController {
 
     /**
      * 查询单个数据源详情。
-     *
-     * <p>详情接口只传资源 ID，不能依赖列表页已经过滤过。这里会在返回前再次校验资源 projectId，
-     * 防止项目负责人通过猜测 ID 读取其他项目的数据源连接配置。</p>
      */
     @GetMapping("/{id}")
     public ResponseEntity<ApiResponse<DataSourceConfig>> getDataSource(
@@ -148,8 +183,8 @@ public class DataSourceManagementController {
     /**
      * 更新数据源配置。
      *
-     * <p>本接口暂不允许修改 tenant/project/workspace 归属。
-     * 资源归属迁移在商业化产品中通常需要审批和审计，后续应单独提供“转移项目/空间”治理接口，而不是混入普通编辑。</p>
+     * <p>本接口不允许修改租户、项目和工作空间归属。资源归属迁移在商业化产品中通常需要审计，
+     * 后续应由单独的“转移项目/空间”治理接口承载。</p>
      */
     @PutMapping("/{id}")
     public ResponseEntity<ApiResponse<DataSourceConfig>> updateDataSource(
@@ -164,14 +199,14 @@ public class DataSourceManagementController {
                 request.getJdbcUrl(),
                 request.getUsername(),
                 request.getPassword(),
-                request.getDescription()
+                request.getDescription(),
+                request.getUsagePurpose()
         );
         return ResponseEntity.ok(ApiResponse.success("数据源更新成功", config));
     }
 
     /**
      * 启用数据源。
-     * 启用后，元数据发现、模板创建和只读 SQL 等能力才应该继续使用该数据源。
      */
     @PostMapping("/{id}/enable")
     public ResponseEntity<ApiResponse<DataSourceConfig>> enableDataSource(
@@ -184,7 +219,6 @@ public class DataSourceManagementController {
 
     /**
      * 停用数据源。
-     * 停用不会删除历史配置，而是阻止后续业务继续把它作为可用连接使用。
      */
     @PostMapping("/{id}/disable")
     public ResponseEntity<ApiResponse<DataSourceConfig>> disableDataSource(
@@ -197,7 +231,6 @@ public class DataSourceManagementController {
 
     /**
      * 逻辑删除数据源。
-     * 使用逻辑删除是为了保留历史配置、审计记录和同步任务引用，不让历史证据因为物理删除而断链。
      */
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<DataSourceConfig>> deleteDataSource(
@@ -210,7 +243,6 @@ public class DataSourceManagementController {
 
     /**
      * 执行数据源连接测试。
-     * 连接测试会真实触达外部系统，因此也必须先校验项目可见性，避免用户测试未授权项目的数据源。
      */
     @PostMapping("/{id}/test")
     public ResponseEntity<ApiResponse<DataSourceConnectionTestResult>> testConnection(
@@ -223,7 +255,6 @@ public class DataSourceManagementController {
 
     /**
      * 查询数据源能力画像。
-     * 能力画像用于告诉前端和模板校验层该连接器理论上支持哪些治理能力，例如全量同步、增量同步、元数据发现和采样预览。
      */
     @GetMapping("/{id}/capabilities")
     public ResponseEntity<ApiResponse<DataSourceCapabilityProfile>> getCapabilities(
@@ -236,7 +267,6 @@ public class DataSourceManagementController {
 
     /**
      * 发现数据源元数据。
-     * 元数据结构本身可能暴露业务表名、字段名、索引和样例结构，因此进入发现流程前也要做项目级详情校验。
      */
     @PostMapping("/{id}/metadata/discover")
     public ResponseEntity<ApiResponse<DataSourceMetadataDiscoveryResult>> discoverMetadata(
@@ -251,9 +281,6 @@ public class DataSourceManagementController {
 
     /**
      * 执行受控只读 SQL。
-     *
-     * <p>这是 datasource-management 从“连接配置管理”走向“安全数据访问代理”的关键入口。
-     * 因为该接口会真实读取外部数据，所以在执行 SQL 安全校验、行数限制和审计写入之前，必须先确认当前身份可以访问该数据源所属项目。</p>
      */
     @PostMapping("/{id}/sql/read-only/execute")
     public ResponseEntity<ApiResponse<ReadOnlySqlExecutionResult>> executeReadOnlySql(
@@ -275,7 +302,6 @@ public class DataSourceManagementController {
 
     /**
      * 分页查询受控只读 SQL 执行审计。
-     * 当前审计表仍按访问人租户、角色、数据源和 SQL 指纹查询；后续应继续补 datasource projectId 快照，支持项目级审计过滤。
      */
     @GetMapping("/sql/read-only/audits")
     public ResponseEntity<ApiResponse<IPage<DataSourceReadOnlySqlExecutionAudit>>> pageReadOnlySqlExecutionAudits(
@@ -332,6 +358,27 @@ public class DataSourceManagementController {
         }
     }
 
+    /**
+     * 按源端/目标端用途过滤数据源候选列表。
+     */
+    private void applyUsagePurposeFilter(LambdaQueryWrapper<DataSourceConfig> wrapper, String usagePurpose) {
+        if (!hasText(usagePurpose)) {
+            return;
+        }
+        DataSourceUsagePurpose purpose = DataSourceUsagePurpose.fromValue(usagePurpose);
+        if (purpose == DataSourceUsagePurpose.SOURCE) {
+            wrapper.in(DataSourceConfig::getUsagePurpose,
+                    DataSourceUsagePurpose.SOURCE.name(), DataSourceUsagePurpose.BOTH.name());
+            return;
+        }
+        if (purpose == DataSourceUsagePurpose.TARGET) {
+            wrapper.in(DataSourceConfig::getUsagePurpose,
+                    DataSourceUsagePurpose.TARGET.name(), DataSourceUsagePurpose.BOTH.name());
+            return;
+        }
+        wrapper.eq(DataSourceConfig::getUsagePurpose, DataSourceUsagePurpose.BOTH.name());
+    }
+
     private DataSourceConfig getRequiredVisibleDataSource(Long id, String dataScopeLevel, String authorizedProjectIds) {
         DataSourceConfig config = dataSourceManagementService.getById(id);
         if (config == null || DataSourceStatus.DELETED.equals(config.getStatus())) {
@@ -344,8 +391,7 @@ public class DataSourceManagementController {
     }
 
     /**
-     * 把可信平台 Header 合并到请求体。
-     * gateway 注入的身份上下文优先级高于请求体字段，用于逐步从“调用方自带身份”迁移到“网关注入身份”。
+     * 把可信平台 Header 合并到只读 SQL 请求体。
      */
     private void applyTrustedPlatformContext(ReadOnlySqlExecutionRequest request,
                                              String tenantId,
@@ -372,6 +418,27 @@ public class DataSourceManagementController {
         if (hasText(traceId)) {
             request.setTraceId(traceId);
         }
+    }
+
+    /**
+     * 解析租户、项目、工作空间这类“系统上下文字段”。
+     *
+     * <p>可信 Header 优先级最高，请求体/查询参数只是兼容入口。如果 Header 和请求体同时存在但值不同，
+     * 说明调用方试图把当前页面上下文和写入归属拆开，这在多租户产品里属于高风险行为，因此直接拒绝。
+     * 当两者都不存在时，本地开发默认落到 FlashSync 初始化上下文。</p>
+     */
+    private Long resolveScopeValue(String fieldName, Long headerValue, Long requestValue, Long defaultValue) {
+        if (headerValue != null && requestValue != null && !headerValue.equals(requestValue)) {
+            throw new IllegalArgumentException(fieldName + " 与当前系统上下文不一致，headerValue="
+                    + headerValue + ", requestValue=" + requestValue);
+        }
+        if (headerValue != null) {
+            return headerValue;
+        }
+        if (requestValue != null) {
+            return requestValue;
+        }
+        return defaultValue;
     }
 
     private Long parseLongHeader(String headerName, String value) {

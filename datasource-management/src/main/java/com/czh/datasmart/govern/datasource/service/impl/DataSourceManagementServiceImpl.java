@@ -21,6 +21,7 @@ import com.czh.datasmart.govern.datasource.service.support.DatasourceProjectVisi
 import com.czh.datasmart.govern.datasource.support.ConnectionTestStatus;
 import com.czh.datasmart.govern.datasource.support.DataSourceStatus;
 import com.czh.datasmart.govern.datasource.support.DataSourceType;
+import com.czh.datasmart.govern.datasource.support.DataSourceUsagePurpose;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -83,9 +84,10 @@ public class DataSourceManagementServiceImpl extends ServiceImpl<DataSourceConfi
     @Transactional
     public DataSourceConfig createDataSource(Long tenantId, Long projectId, Long workspaceId,
                                              String name, String type, String jdbcUrl, String username,
-                                             String password, String description) {
+                                             String password, String description, String usagePurpose) {
         ensureNameNotDuplicated(name, tenantId, projectId, null);
         DataSourceType dataSourceType = DataSourceType.fromValue(type);
+        DataSourceUsagePurpose normalizedPurpose = DataSourceUsagePurpose.fromValue(usagePurpose);
 
         DataSourceConfig config = new DataSourceConfig();
         config.setTenantId(tenantId);
@@ -93,6 +95,7 @@ public class DataSourceManagementServiceImpl extends ServiceImpl<DataSourceConfi
         config.setWorkspaceId(workspaceId);
         config.setName(name);
         config.setType(dataSourceType.name());
+        config.setUsagePurpose(normalizedPurpose.name());
         config.setJdbcUrl(jdbcUrl);
         config.setUsername(username);
         config.setPassword(password);
@@ -116,12 +119,16 @@ public class DataSourceManagementServiceImpl extends ServiceImpl<DataSourceConfi
     @Override
     @Transactional
     public DataSourceConfig updateDataSource(Long id, String name, String jdbcUrl, String username,
-                                             String password, String description) {
+                                             String password, String description, String usagePurpose) {
         DataSourceConfig config = getRequiredDataSource(id);
         ensureNotDeleted(config);
         ensureNameNotDuplicated(name, config.getTenantId(), config.getProjectId(), id);
+        DataSourceUsagePurpose normalizedPurpose = usagePurpose == null || usagePurpose.isBlank()
+                ? DataSourceUsagePurpose.fromValue(config.getUsagePurpose())
+                : DataSourceUsagePurpose.fromValue(usagePurpose);
 
         config.setName(name);
+        config.setUsagePurpose(normalizedPurpose.name());
         config.setJdbcUrl(jdbcUrl);
         config.setUsername(username);
         config.setPassword(password);

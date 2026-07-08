@@ -30,13 +30,13 @@ public interface DataSourceManagementService extends IService<DataSourceConfig> 
      */
     DataSourceConfig createDataSource(Long tenantId, Long projectId, Long workspaceId,
                                       String name, String type, String jdbcUrl, String username,
-                                      String password, String description);
+                                      String password, String description, String usagePurpose);
 
     /**
      * 更新数据源。
      */
     DataSourceConfig updateDataSource(Long id, String name, String jdbcUrl, String username,
-                                      String password, String description);
+                                      String password, String description, String usagePurpose);
 
     /**
      * 启用数据源。

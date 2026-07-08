@@ -242,13 +242,27 @@ public class DataSyncServiceImpl implements DataSyncService {
             throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
                     "同步任务租户必须与模板租户一致，templateTenantId=" + template.getTenantId() + ", taskTenantId=" + tenantId);
         }
-        String approvalState = resolveApprovalStateForNewTask(precheck, request, actorContext);
+        /*
+         * 新建任务向导不再承载“审批确认”。
+         *
+         * 用户创建同步任务本质是配置数据搬运工具：选择源端、目标端、对象映射、字段映射、过滤条件并运行预检查。
+         * 高风险审批、回放、补数、导出等治理动作应放在任务详情、执行恢复或运营控制台的专用流程中，不能让普通创建页面出现
+         * approvalConfirmed / approvalFactId 这类让用户难以理解的字段。
+         *
+         * 因此创建阶段统一写入 NOT_REQUIRED；如果后续预检查发现需要高风险确认，应由发布、执行或恢复动作再进入审批策略。
+         */
+        String approvalState = SyncApprovalState.NOT_REQUIRED.name();
         boolean scheduledTask = isScheduledTask(template, request);
         LocalDateTime firstFireTime = scheduledTask
                 ? scheduleConfigSupport.initialNextFireTime(request.getScheduleConfig(), LocalDateTime.now())
                 : null;
-        String runMode = querySupport.defaultText(request.getRunMode(), scheduledTask ? "SCHEDULED" : "TEMPLATE")
-                .toUpperCase(java.util.Locale.ROOT);
+        /*
+         * 运行模式不再由用户手填。
+         *
+         * - SCHEDULED_FULL / SCHEDULED_BATCH 且 scheduleConfig 合法时，任务主状态进入 SCHEDULED，等待调度器到点创建 execution；
+         * - FULL / CUSTOM_SQL_QUERY / CDC_STREAMING 等非定时模式在创建后保持 CONFIGURED，由“立即执行/手工调度/发布”动作触发。
+         */
+        String runMode = scheduledTask ? "SCHEDULED" : "MANUAL";
 
         SyncTask task = new SyncTask();
         task.setTenantId(tenantId);
@@ -279,8 +293,8 @@ public class DataSyncServiceImpl implements DataSyncService {
         task.setApprovalState(approvalState);
         task.setPriority(querySupport.defaultText(request.getPriority(), "MEDIUM").toUpperCase(java.util.Locale.ROOT));
         task.setScheduleConfig(querySupport.trimToNull(request.getScheduleConfig()));
-        task.setScheduleEnabled(scheduledTask && !SyncApprovalState.PENDING.name().equals(approvalState));
-        task.setNextFireTime(scheduledTask && !SyncApprovalState.PENDING.name().equals(approvalState) ? firstFireTime : null);
+        task.setScheduleEnabled(scheduledTask);
+        task.setNextFireTime(scheduledTask ? firstFireTime : null);
         task.setLastFireTime(null);
         task.setScheduleMisfireCount(0);
         task.setScheduleDispatchCount(0L);
@@ -626,13 +640,16 @@ public class DataSyncServiceImpl implements DataSyncService {
      */
     private boolean isScheduledTask(SyncTemplate template, CreateSyncTaskRequest request) {
         String syncMode = normalizeCode(template.getSyncMode());
-        String runMode = normalizeCode(request.getRunMode());
         boolean hasScheduleConfig = scheduleConfigSupport.hasScheduleConfig(request.getScheduleConfig());
         boolean scheduledFull = SyncMode.SCHEDULED_FULL.name().equals(syncMode);
         boolean scheduledBatch = SyncMode.SCHEDULED_BATCH.name().equals(syncMode);
-        boolean explicitlyScheduledRunMode = "SCHEDULED".equals(runMode) || "SCHEDULE".equals(runMode);
 
-        if (scheduledFull || scheduledBatch || explicitlyScheduledRunMode) {
+        /*
+         * 是否定时调度已经由第一步选择的传输模式决定，不再允许前端通过 runMode 手工覆盖。
+         * 这样可以避免“普通全量 + runMode=SCHEDULED”和“定期全量”形成两套表达，也能让表单必填校验更清晰：
+         * 只有 SCHEDULED_FULL / SCHEDULED_BATCH 才必须填写 scheduleConfig。
+         */
+        if (scheduledFull || scheduledBatch) {
             if (!hasScheduleConfig) {
                 throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
                         "定时全量或定时批量任务必须提供 scheduleConfig");
@@ -650,7 +667,7 @@ public class DataSyncServiceImpl implements DataSyncService {
              */
             scheduleConfigSupport.parseRequired(request.getScheduleConfig());
         }
-        return scheduledBatch || scheduledFull || explicitlyScheduledRunMode;
+        return scheduledBatch || scheduledFull;
     }
 
     /**
@@ -761,20 +778,21 @@ public class DataSyncServiceImpl implements DataSyncService {
     private String buildCreateTaskAuditPayload(SyncTask task,
                                                SyncTemplateExecutionPrecheckResponse precheck,
                                                CreateSyncTaskRequest request) {
-        String approvalFactId = querySupport.trimToNull(request.getApprovalFactId());
-        String payload = "taskId=" + task.getId()
+        /*
+         * 创建任务审计只记录低敏配置事实，不再记录 request.approvalFactId。
+         * 审批事实应属于后续“发布/执行/恢复/高风险运营动作”的专用流程；如果仍把它放在创建审计里，前端和用户会误以为
+         * 新建同步任务本身需要审批，这与当前产品口径不一致。
+         */
+        return "taskId=" + task.getId()
                 + ",templateId=" + task.getTemplateId()
                 + ",precheckStatus=" + precheck.precheckStatus()
                 + ",approvalRequired=" + precheck.approvalRequired()
+                + ",creationApprovalPolicy=NOT_USED_IN_CREATE_WIZARD"
                 + ",approvalState=" + task.getApprovalState()
                 + ",scheduleEnabled=" + task.getScheduleEnabled()
                 + ",nextFireTime=" + task.getNextFireTime()
                 + ",groupCode=" + task.getGroupCode()
                 + ",runMode=" + task.getRunMode();
-        if (approvalFactId != null) {
-            payload = payload + ",approvalFactId=" + querySupport.truncate(approvalFactId, APPROVAL_FACT_ID_MAX_LENGTH);
-        }
-        return payload;
     }
 
     @Override

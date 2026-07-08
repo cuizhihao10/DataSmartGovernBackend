@@ -6,11 +6,14 @@
  */
 package com.czh.datasmart.govern.datasync.service.support;
 
+import com.czh.datasmart.govern.common.error.PlatformBusinessException;
+import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTemplateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
+import com.czh.datasmart.govern.datasync.support.SyncWriteStrategy;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -78,8 +81,14 @@ public class SyncTemplateCreationSupport {
     private SyncTemplate buildTemplate(CreateSyncTemplateRequest request, SyncActorContext actorContext) {
         SyncTemplate template = new SyncTemplate();
         template.setTenantId(dataScopeSupport.resolveTenantForCreate(request.getTenantId(), actorContext));
-        template.setProjectId(request.getProjectId());
-        template.setWorkspaceId(request.getWorkspaceId());
+        /*
+         * 项目和工作空间属于系统上下文，不属于普通业务表单字段。
+         *
+         * 这里优先使用 gateway/权限中心注入的 Header，再兼容旧 request body 字段，最后落到 FlashSync 本地默认开租数据。
+         * 这样前端可以把“租户 ID / 项目 ID / 工作空间 ID”从新建任务、新建数据源页面彻底隐藏，只保留项目切换器和工作空间切换器。
+         */
+        template.setProjectId(dataScopeSupport.resolveProjectForCreate(request.getProjectId(), actorContext));
+        template.setWorkspaceId(dataScopeSupport.resolveWorkspaceForCreate(request.getWorkspaceId(), actorContext));
         template.setName(request.getName().trim());
         template.setDescription(querySupport.trimToNull(request.getDescription()));
         template.setSourceDatasourceId(request.getSourceDatasourceId());
@@ -92,7 +101,7 @@ public class SyncTemplateCreationSupport {
         template.setTargetConnectorType(querySupport.normalizeCode(request.getTargetConnectorType()));
         template.setSyncMode(querySupport.normalizeCode(request.getSyncMode()));
         template.setSyncScopeType(querySupport.normalizeCode(request.getSyncScopeType()));
-        template.setWriteStrategy(querySupport.normalizeCode(request.getWriteStrategy()));
+        template.setWriteStrategy(normalizeUserFacingWriteStrategy(request.getWriteStrategy()));
         template.setPrimaryKeyField(querySupport.trimToNull(request.getPrimaryKeyField()));
         template.setIncrementalField(querySupport.trimToNull(request.getIncrementalField()));
         template.setFieldMappingConfig(querySupport.trimToNull(request.getFieldMappingConfig()));
@@ -109,6 +118,37 @@ public class SyncTemplateCreationSupport {
         template.setCreateTime(now);
         template.setUpdateTime(now);
         return template;
+    }
+
+    /**
+     * 把前端可见写入策略收口为 INSERT / UPDATE。
+     *
+     * <p>历史版本曾把 APPEND、UPSERT、INSERT_IGNORE、REPLACE、OVERWRITE 都暴露给新建表单，导致用户需要理解执行器内部策略，
+     * 还需要手填主键/冲突字段。当前产品口径更清晰：用户只选择“插入”和“更新/合并”两类意图；目标表主键、外键、字段数量、
+     * 字段兼容性和冲突字段应在预检查阶段由系统根据目标元数据自动判断。</p>
+     *
+     * <p>为了兼容已有脚本和测试，APPEND 会被折叠为 INSERT，UPSERT 会被折叠为 UPDATE。其他破坏性或数据库私有策略暂不允许
+     * 通过新建入口写入，后续如果要支持，应放到高风险运营动作、执行器高级策略或管理员能力中，而不是出现在普通创建向导里。</p>
+     */
+    private String normalizeUserFacingWriteStrategy(String writeStrategy) {
+        SyncWriteStrategy strategy;
+        try {
+            strategy = SyncWriteStrategy.fromValue(writeStrategy);
+        } catch (IllegalArgumentException exception) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR, exception.getMessage());
+        }
+        if (strategy == SyncWriteStrategy.APPEND) {
+            return SyncWriteStrategy.INSERT.name();
+        }
+        if (strategy == SyncWriteStrategy.UPSERT) {
+            return SyncWriteStrategy.UPDATE.name();
+        }
+        if (strategy.isUserFacingStrategy()) {
+            return strategy.name();
+        }
+        throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                "新建同步任务写入策略只支持 INSERT 或 UPDATE；"
+                        + "INSERT_IGNORE、REPLACE、OVERWRITE 等策略属于执行器高级能力或高风险运营动作，不应出现在普通创建向导中");
     }
 
     /**
