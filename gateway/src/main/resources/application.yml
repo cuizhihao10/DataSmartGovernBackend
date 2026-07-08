@@ -1476,6 +1476,13 @@ datasmart:
           method-actions:
             POST: RESET_PASSWORD
 
+        - path-pattern: /api/identity/authorization-subjects
+          resource-type: IDENTITY_USER
+          default-action: VIEW
+          description: 授权弹窗用户/角色候选查询入口，只返回低敏主体信息，供数据源、同步任务等资源 ACL 管理复用。
+          method-actions:
+            GET: VIEW
+
         - path-pattern: /api/identity/**
           resource-type: IDENTITY_USER
           default-action: EXECUTE

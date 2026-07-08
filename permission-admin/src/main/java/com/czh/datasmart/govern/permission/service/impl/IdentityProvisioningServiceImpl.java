@@ -7,9 +7,14 @@
 package com.czh.datasmart.govern.permission.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.metadata.IPage;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.czh.datasmart.govern.common.api.PlatformPageResponse;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.permission.config.IdentityProvisioningProperties;
+import com.czh.datasmart.govern.permission.controller.dto.AuthorizationSubjectCandidateQueryCriteria;
+import com.czh.datasmart.govern.permission.controller.dto.AuthorizationSubjectCandidateView;
 import com.czh.datasmart.govern.permission.controller.dto.IdentityProvisioningCapabilityView;
 import com.czh.datasmart.govern.permission.controller.dto.IdentityUserDisableRequest;
 import com.czh.datasmart.govern.permission.controller.dto.IdentityUserPasswordResetRequest;
@@ -17,7 +22,11 @@ import com.czh.datasmart.govern.permission.controller.dto.IdentityUserProvisionR
 import com.czh.datasmart.govern.permission.controller.dto.IdentityUserRegisterRequest;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionActorContext;
 import com.czh.datasmart.govern.permission.entity.PermissionIdentityUser;
+import com.czh.datasmart.govern.permission.entity.PermissionProjectMembership;
+import com.czh.datasmart.govern.permission.entity.PermissionRole;
 import com.czh.datasmart.govern.permission.mapper.PermissionIdentityUserMapper;
+import com.czh.datasmart.govern.permission.mapper.PermissionProjectMembershipMapper;
+import com.czh.datasmart.govern.permission.mapper.PermissionRoleMapper;
 import com.czh.datasmart.govern.permission.service.IdentityProvisioningService;
 import com.czh.datasmart.govern.permission.service.identity.IdentityProviderAdminClient;
 import com.czh.datasmart.govern.permission.service.identity.IdentityProviderOperationResult;
@@ -33,6 +42,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.czh.datasmart.govern.permission.service.support.PermissionAdminSupport.normalizeTenantId;
 
@@ -55,6 +65,8 @@ public class IdentityProvisioningServiceImpl implements IdentityProvisioningServ
     private static final String STATUS_DISABLED = "DISABLED";
     private static final String ACTOR_TYPE_USER = "USER";
     private static final String PAYLOAD_POLICY = "NO_PASSWORD_NO_TOKEN_NO_SECRET";
+    private static final long DEFAULT_PAGE_SIZE = 10L;
+    private static final long MAX_CANDIDATE_PAGE_SIZE = 100L;
 
     /**
      * 允许执行账号供应写动作的角色。
@@ -66,9 +78,26 @@ public class IdentityProvisioningServiceImpl implements IdentityProvisioningServ
             PermissionRoleCode.PLATFORM_ADMINISTRATOR.name()
     );
 
+    /**
+     * 允许读取低敏授权候选的角色集合。
+     *
+     * <p>候选查询不是账号生命周期写操作，因此比 {@link #MUTATION_ROLES} 更宽：
+     * 项目负责人需要在项目内把数据源、同步任务等资源授权给项目成员；
+     * 审计员需要只读复盘“授权弹窗当时为什么能选到某个主体”；
+     * 租户管理员和平台管理员则用于账号治理与排障。</p>
+     */
+    private static final Set<String> CANDIDATE_READ_ROLES = Set.of(
+            PermissionRoleCode.PROJECT_OWNER.name(),
+            PermissionRoleCode.TENANT_ADMINISTRATOR.name(),
+            PermissionRoleCode.PLATFORM_ADMINISTRATOR.name(),
+            PermissionRoleCode.AUDITOR.name()
+    );
+
     private final IdentityProvisioningProperties properties;
     private final IdentityProviderAdminClient identityProviderAdminClient;
     private final PermissionIdentityUserMapper identityUserMapper;
+    private final PermissionRoleMapper roleMapper;
+    private final PermissionProjectMembershipMapper projectMembershipMapper;
     private final PermissionIdentityAuditSupport auditSupport;
 
     /**
@@ -88,6 +117,34 @@ public class IdentityProvisioningServiceImpl implements IdentityProvisioningServ
                 List.of("REGISTER_USER", "DISABLE_USER", "RESET_PASSWORD", "SHADOW_IDENTITY_AUDIT"),
                 List.of("OIDC_RESOURCE_SERVER_LOGIN", "IDP_OWNS_PASSWORD", "DATASMART_STORES_SHADOW_IDENTITY"),
                 "用户登录发生在 Keycloak/企业 IdP；DataSmart 只保存低敏影子身份、权限和审计事实。");
+    }
+
+    /**
+     * 查询授权弹窗使用的用户/角色候选。
+     *
+     * <p>为什么把该能力放在 identity service，而不是放在 datasource-management？
+     * 数据源授权只是“资源授权”的一个消费者，真正的用户、角色、项目成员关系事实源属于 permission-admin。
+     * 如果每个业务服务都自己查身份表，就会形成跨服务数据库耦合，未来接入企业 IdP、SCIM、组织同步或角色体系重构时会非常难迁移。
+     * 因此这里提供一个稳定 HTTP 合同：业务页面先查候选，再把候选的 subjectType/subjectId 写入各自领域的 ACL 表。</p>
+     */
+    @Override
+    public PlatformPageResponse<AuthorizationSubjectCandidateView> pageAuthorizationSubjectCandidates(
+            AuthorizationSubjectCandidateQueryCriteria criteria,
+            PermissionActorContext actorContext) {
+        requireCandidateReadRole(actorContext);
+        AuthorizationSubjectCandidateQueryCriteria safeCriteria = criteria == null
+                ? new AuthorizationSubjectCandidateQueryCriteria(null, null, null, null, null, null, null, null)
+                : criteria;
+        String subjectType = defaultText(normalizeCode(safeCriteria.subjectType()), "USER");
+        Long tenantId = resolveReadableTenantId(safeCriteria.tenantId(), actorContext);
+        Long projectId = safeCriteria.projectId();
+        validateCandidateProjectBoundary(tenantId, projectId, actorContext);
+        return switch (subjectType) {
+            case "USER" -> pageUserCandidates(safeCriteria, tenantId, projectId);
+            case "ROLE" -> pageRoleCandidates(safeCriteria, tenantId, projectId);
+            default -> throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    "授权主体候选只支持 USER 或 ROLE，当前 subjectType=" + subjectType);
+        };
     }
 
     /**
@@ -151,6 +208,91 @@ public class IdentityProvisioningServiceImpl implements IdentityProvisioningServ
                 "身份账号已在外部 IdP 创建并写入 DataSmart 影子身份", identityUser, username, reason);
         return result("REGISTER_USER", identityUser, "账号已创建，用户应通过 Keycloak/企业 IdP 登录",
                 providerResult.evidenceCodes());
+    }
+
+    /**
+     * 查询 USER 类型候选。
+     *
+     * <p>默认策略：如果调用方传入 projectId，则只返回该项目的启用成员。这样数据源授权弹窗不会把整个租户用户都暴露出来，
+     * 也不会让项目负责人误把项目外用户授权到当前项目数据源。租户管理员/平台管理员如果确实需要租户级账号检索，
+     * 可以传 {@code projectMembersOnly=false} 做治理排查。</p>
+     */
+    private PlatformPageResponse<AuthorizationSubjectCandidateView> pageUserCandidates(
+            AuthorizationSubjectCandidateQueryCriteria criteria,
+            Long tenantId,
+            Long projectId) {
+        boolean activeOnly = criteria.activeOnly() == null || criteria.activeOnly();
+        boolean projectMembersOnly = criteria.projectMembersOnly() == null
+                ? projectId != null
+                : criteria.projectMembersOnly();
+        Set<Long> projectActorIds = projectMembersOnly
+                ? findProjectMemberActorIds(tenantId, projectId)
+                : Set.of();
+        if (projectMembersOnly && projectActorIds.isEmpty()) {
+            return PlatformPageResponse.of(normalizeCurrent(criteria.current()), normalizeSize(criteria.size()), 0L, List.of());
+        }
+
+        LambdaQueryWrapper<PermissionIdentityUser> wrapper = new LambdaQueryWrapper<PermissionIdentityUser>()
+                .eq(PermissionIdentityUser::getTenantId, tenantId)
+                .eq(activeOnly, PermissionIdentityUser::getStatus, STATUS_ACTIVE)
+                .in(projectMembersOnly, PermissionIdentityUser::getActorId, projectActorIds)
+                .and(hasText(criteria.keyword()), query -> applyUserKeyword(query, criteria.keyword()))
+                .orderByAsc(PermissionIdentityUser::getUsername)
+                .orderByDesc(PermissionIdentityUser::getUpdateTime);
+
+        IPage<PermissionIdentityUser> page = identityUserMapper.selectPage(
+                new Page<>(normalizeCurrent(criteria.current()), normalizeSize(criteria.size())), wrapper);
+        List<AuthorizationSubjectCandidateView> records = page.getRecords().stream()
+                .map(user -> AuthorizationSubjectCandidateView.fromUser(user, projectId, maskEmail(user.getEmail())))
+                .toList();
+        return PlatformPageResponse.of(page.getCurrent(), page.getSize(), page.getTotal(), records);
+    }
+
+    /**
+     * 查询 ROLE 类型候选。
+     *
+     * <p>角色授权适合“项目内所有项目负责人都能使用某条数据源”这类场景。这里会同时查询平台内置角色 tenantId=0
+     * 和当前租户自定义角色 tenantId=当前租户。若后续角色体系支持应用级、项目级角色覆盖，可以继续在这里扩展作用域字段，
+     * 但对外仍保持 subjectType=ROLE、subjectId=roleCode 的稳定授权合同。</p>
+     */
+    private PlatformPageResponse<AuthorizationSubjectCandidateView> pageRoleCandidates(
+            AuthorizationSubjectCandidateQueryCriteria criteria,
+            Long tenantId,
+            Long projectId) {
+        boolean activeOnly = criteria.activeOnly() == null || criteria.activeOnly();
+        LambdaQueryWrapper<PermissionRole> wrapper = new LambdaQueryWrapper<PermissionRole>()
+                .in(PermissionRole::getTenantId, List.of(0L, tenantId))
+                .eq(activeOnly, PermissionRole::getEnabled, true)
+                .and(hasText(criteria.keyword()), query -> applyRoleKeyword(query, criteria.keyword()))
+                .orderByAsc(PermissionRole::getTenantId)
+                .orderByAsc(PermissionRole::getRoleCode);
+        IPage<PermissionRole> page = roleMapper.selectPage(
+                new Page<>(normalizeCurrent(criteria.current()), normalizeSize(criteria.size())), wrapper);
+        List<AuthorizationSubjectCandidateView> records = page.getRecords().stream()
+                .map(role -> AuthorizationSubjectCandidateView.fromRole(role, projectId))
+                .toList();
+        return PlatformPageResponse.of(page.getCurrent(), page.getSize(), page.getTotal(), records);
+    }
+
+    /**
+     * 查询某项目已启用成员 actorId 集合。
+     *
+     * <p>当前先使用同步查询并把 actorId 放入内存集合，足够支撑授权弹窗分页搜索。
+     * 如果客户单项目成员达到数十万级，后续应改为自定义 SQL join identity_user + project_membership，
+     * 或把项目成员候选沉淀成搜索索引，避免 IN 列表过大。</p>
+     */
+    private Set<Long> findProjectMemberActorIds(Long tenantId, Long projectId) {
+        if (tenantId == null || projectId == null) {
+            return Set.of();
+        }
+        return projectMembershipMapper.selectList(new LambdaQueryWrapper<PermissionProjectMembership>()
+                        .eq(PermissionProjectMembership::getTenantId, tenantId)
+                        .eq(PermissionProjectMembership::getProjectId, projectId)
+                        .eq(PermissionProjectMembership::getEnabled, true))
+                .stream()
+                .map(PermissionProjectMembership::getActorId)
+                .filter(actorId -> actorId != null && actorId > 0)
+                .collect(Collectors.toSet());
     }
 
     /**
@@ -228,6 +370,125 @@ public class IdentityProvisioningServiceImpl implements IdentityProvisioningServ
         if (!MUTATION_ROLES.contains(actorRole)) {
             throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
                     "当前角色无权管理身份账号，actorRole=" + actorRole);
+        }
+    }
+
+    /**
+     * 校验当前操作者是否可以读取授权候选。
+     *
+     * <p>该校验是 service 层的二次防线。gateway/permission-admin 路由策略负责“请求能否进入接口”，
+     * service 层继续负责“即使本地直连接口，也不能绕过身份候选的租户和项目边界”。</p>
+     */
+    private void requireCandidateReadRole(PermissionActorContext actorContext) {
+        String actorRole = normalizeCode(actorContext == null ? null : actorContext.actorRole());
+        if (!CANDIDATE_READ_ROLES.contains(actorRole)) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "当前角色无权查询授权主体候选，actorRole=" + actorRole);
+        }
+    }
+
+    /**
+     * 解析候选查询租户。
+     *
+     * <p>平台管理员可以显式传 tenantId 做跨租户排障；其他角色只能查询自己所在租户。
+     * 如果非平台角色试图传入其他 tenantId，会触发 {@link #validateTenantBoundary(Long, PermissionActorContext)}。</p>
+     */
+    private Long resolveReadableTenantId(Long requestedTenantId, PermissionActorContext actorContext) {
+        Long targetTenantId = normalizeTenantId(requestedTenantId == null
+                ? actorContext == null ? null : actorContext.tenantId()
+                : requestedTenantId);
+        validateTenantBoundary(targetTenantId, actorContext);
+        return targetTenantId;
+    }
+
+    /**
+     * 校验项目级候选查询边界。
+     *
+     * <p>项目负责人只能查询自己已启用成员关系所在的项目。租户管理员、平台管理员和审计员不在这里强制项目成员校验，
+     * 但仍受租户边界保护；后续如果客户要求审计员也只能看授权项目，可以在这里继续收紧。</p>
+     */
+    private void validateCandidateProjectBoundary(Long tenantId, Long projectId, PermissionActorContext actorContext) {
+        String actorRole = normalizeCode(actorContext == null ? null : actorContext.actorRole());
+        if (!PermissionRoleCode.PROJECT_OWNER.name().equals(actorRole)) {
+            return;
+        }
+        if (projectId == null) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "项目负责人查询授权候选时必须指定 projectId，避免越权搜索整个租户用户");
+        }
+        Long actorId = actorContext == null ? null : actorContext.actorId();
+        if (actorId == null || actorId <= 0) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "项目负责人查询授权候选时必须携带有效 actorId");
+        }
+        Long count = projectMembershipMapper.selectCount(new LambdaQueryWrapper<PermissionProjectMembership>()
+                .eq(PermissionProjectMembership::getTenantId, tenantId)
+                .eq(PermissionProjectMembership::getProjectId, projectId)
+                .eq(PermissionProjectMembership::getActorId, actorId)
+                .eq(PermissionProjectMembership::getEnabled, true));
+        if (count == null || count <= 0) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "项目负责人只能查询自己已授权项目内的主体候选，projectId=" + projectId);
+        }
+    }
+
+    /**
+     * 给 USER 候选追加关键字过滤。
+     *
+     * <p>actorId 是数字字段，因此仅当关键字可以解析为正整数时才追加精确匹配；
+     * username/email/actorRole 是字符串字段，使用 LIKE 支撑授权弹窗的模糊搜索。</p>
+     */
+    private void applyUserKeyword(LambdaQueryWrapper<PermissionIdentityUser> query, String keyword) {
+        String safeKeyword = keyword.trim();
+        query.like(PermissionIdentityUser::getUsername, safeKeyword)
+                .or()
+                .like(PermissionIdentityUser::getEmail, safeKeyword)
+                .or()
+                .like(PermissionIdentityUser::getActorRole, normalizeCode(safeKeyword));
+        Long actorId = parsePositiveLong(safeKeyword);
+        if (actorId != null) {
+            query.or().eq(PermissionIdentityUser::getActorId, actorId);
+        }
+    }
+
+    /**
+     * 给 ROLE 候选追加关键字过滤。
+     */
+    private void applyRoleKeyword(LambdaQueryWrapper<PermissionRole> query, String keyword) {
+        String safeKeyword = keyword.trim();
+        query.like(PermissionRole::getRoleCode, normalizeCode(safeKeyword))
+                .or()
+                .like(PermissionRole::getRoleName, safeKeyword)
+                .or()
+                .like(PermissionRole::getDescription, safeKeyword);
+    }
+
+    /**
+     * 规范化候选查询页码。
+     */
+    private long normalizeCurrent(Long current) {
+        return current == null || current <= 0 ? 1L : current;
+    }
+
+    /**
+     * 规范化候选查询分页大小，并限制最大值。
+     *
+     * <p>授权弹窗属于高频管理交互，如果允许任意 size，会导致一次请求把大量身份数据拉到浏览器和网关链路上；
+     * 因此这里限制最大 100 条，后续如需批量授权应走异步导入或批量接口，而不是靠超大分页。</p>
+     */
+    private long normalizeSize(Long size) {
+        if (size == null || size <= 0) {
+            return DEFAULT_PAGE_SIZE;
+        }
+        return Math.min(size, MAX_CANDIDATE_PAGE_SIZE);
+    }
+
+    private Long parsePositiveLong(String value) {
+        try {
+            long parsed = Long.parseLong(value);
+            return parsed > 0 ? parsed : null;
+        } catch (NumberFormatException exception) {
+            return null;
         }
     }
 
@@ -386,6 +647,10 @@ public class IdentityProvisioningServiceImpl implements IdentityProvisioningServ
 
     private String defaultText(String value, String defaultValue) {
         return value == null || value.isBlank() ? defaultValue : value.trim();
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private String normalizeCode(String value) {

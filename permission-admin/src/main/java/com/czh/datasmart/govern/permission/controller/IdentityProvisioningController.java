@@ -7,7 +7,10 @@
 package com.czh.datasmart.govern.permission.controller;
 
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
+import com.czh.datasmart.govern.common.api.PlatformPageResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
+import com.czh.datasmart.govern.permission.controller.dto.AuthorizationSubjectCandidateQueryCriteria;
+import com.czh.datasmart.govern.permission.controller.dto.AuthorizationSubjectCandidateView;
 import com.czh.datasmart.govern.permission.controller.dto.IdentityProvisioningCapabilityView;
 import com.czh.datasmart.govern.permission.controller.dto.IdentityUserDisableRequest;
 import com.czh.datasmart.govern.permission.controller.dto.IdentityUserPasswordResetRequest;
@@ -23,6 +26,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -53,6 +57,41 @@ public class IdentityProvisioningController {
     public PlatformApiResponse<IdentityProvisioningCapabilityView> capabilities(
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success(identityProvisioningService.capabilities(), traceId);
+    }
+
+    /**
+     * 查询业务资源授权弹窗可选择的用户/角色候选。
+     *
+     * <p>典型使用方式：
+     * 1. 数据源管理页面点击“授权”；
+     * 2. 前端根据当前项目 projectId 调用本接口搜索 USER 或 ROLE；
+     * 3. 用户选择候选后，把响应里的 subjectType、subjectId、subjectName、subjectRole 原样写入
+     * datasource-management 的实例级授权请求；
+     * 4. datasource-management 再保存自己的资源 ACL 账本。</p>
+     *
+     * <p>该接口只返回低敏候选信息，不返回密码、token、Keycloak 管理凭据或完整邮箱。
+     * 它也不替代业务服务的最终授权写入与资源访问校验。</p>
+     */
+    @GetMapping("/authorization-subjects")
+    public PlatformApiResponse<PlatformPageResponse<AuthorizationSubjectCandidateView>> pageAuthorizationSubjectCandidates(
+            @RequestParam(required = false) Long tenantId,
+            @RequestParam(required = false) Long projectId,
+            @RequestParam(required = false) String subjectType,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) Boolean activeOnly,
+            @RequestParam(required = false) Boolean projectMembersOnly,
+            @RequestParam(required = false) Long current,
+            @RequestParam(required = false) Long size,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        AuthorizationSubjectCandidateQueryCriteria criteria = new AuthorizationSubjectCandidateQueryCriteria(
+                tenantId, projectId, subjectType, keyword, activeOnly, projectMembersOnly, current, size);
+        return PlatformApiResponse.success("授权主体候选查询成功",
+                identityProvisioningService.pageAuthorizationSubjectCandidates(
+                        criteria, actorContext(actorTenantId, actorId, actorRole, traceId)),
+                traceId);
     }
 
     /**

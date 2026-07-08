@@ -362,6 +362,9 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/identity/users/*/password/reset", "IDENTITY_USER",
                 "重置 Keycloak/企业 IdP 密码；响应和审计均不得包含密码明文",
                 Map.of("POST", "RESET_PASSWORD")));
+        defaults.add(route("/api/identity/authorization-subjects", "IDENTITY_USER",
+                "授权弹窗用户/角色候选查询入口，只返回低敏主体信息，供数据源、同步任务等资源 ACL 管理复用",
+                Map.of("GET", "VIEW")));
         defaults.add(route("/api/identity/**", "IDENTITY_USER",
                 "身份账号供应兜底入口，覆盖能力查询、账号生命周期和影子身份治理",
                 defaultMethodActions()));
