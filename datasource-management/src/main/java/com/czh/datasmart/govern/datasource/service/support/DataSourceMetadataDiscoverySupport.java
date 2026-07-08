@@ -101,7 +101,7 @@ public class DataSourceMetadataDiscoverySupport {
             throw new IllegalStateException("当前数据源类型暂不支持元数据发现: " + type.name());
         }
 
-        String cacheKey = buildDiscoveryCacheKey(config.getId(), request);
+        String cacheKey = buildDiscoveryCacheKey(config, request);
         DataSourceMetadataDiscoveryResult cachedResult =
                 metadataDiscoveryCacheSupport.getCachedDiscoveryResult(cacheKey,
                         metadataDiscoveryProperties.getCacheTtlSeconds());
@@ -139,10 +139,11 @@ public class DataSourceMetadataDiscoverySupport {
 
         try (Connection connection = openConnection(config)) {
             DatabaseMetaData metaData = connection.getMetaData();
+            MetadataDiscoveryJdbcScope jdbcScope = resolveJdbcScope(connection, type, request, warnings);
             String[] tableTypes = includeViews ? new String[]{"TABLE", "VIEW"} : new String[]{"TABLE"};
             try (ResultSet tablesResultSet = metaData.getTables(
-                    request.getCatalog(),
-                    request.getSchemaPattern(),
+                    jdbcScope.catalog(),
+                    jdbcScope.schemaPattern(),
                     request.getTableNamePattern(),
                     tableTypes)) {
                 while (tablesResultSet.next() && tables.size() < maxTables) {
@@ -164,11 +165,15 @@ public class DataSourceMetadataDiscoverySupport {
                     warnings.add("本次只返回前 " + maxTables + " 张表，如需更多请增大 maxTables 或缩小过滤范围");
                 }
             }
+            if (tables.isEmpty()) {
+                addEmptyDiscoveryWarning(type, jdbcScope, request, warnings);
+            }
 
             addDiscoveryOptionWarnings(includeColumns, includeViews, includePrimaryKeys, includeIndexes, includeSampleRows, warnings);
             DataSourceMetadataDiscoveryResult result = buildDiscoveryResult(
                     config,
                     request,
+                    jdbcScope,
                     type,
                     metaData,
                     tables,
@@ -375,8 +380,65 @@ public class DataSourceMetadataDiscoverySupport {
         return String.join(".", parts);
     }
 
+    /**
+     * 把产品层的 catalog/schema 筛选条件转换成 JDBC DatabaseMetaData 能正确理解的参数。
+     *
+     * <p>这里是“连接测试成功但创建任务查不到表”的关键修复点。JDBC 的 {@code getTables(catalog, schemaPattern, ...)}
+     * 看起来是统一接口，但不同数据库的语义差别很大：</p>
+     * <p>1. MySQL/MariaDB 把业务数据库 database 放在 catalog 上，schemaPattern 通常应为 null；</p>
+     * <p>2. PostgreSQL 更常用 schemaPattern 表示 public、业务 schema 等命名空间；</p>
+     * <p>3. SQL Server 同时存在 database/catalog 与 schema，因此两者都可能有意义。</p>
+     *
+     * <p>因此后端不能把前端传来的 schemaPattern 原样丢给 MySQL。否则用户在页面上按 schema 操作或历史草稿残留
+     * schemaPattern 时，MySQL 驱动会按错误维度过滤，表现就是“数据源测试成功，但任务页面没有表”。</p>
+     */
+    private MetadataDiscoveryJdbcScope resolveJdbcScope(Connection connection,
+                                                        DataSourceType dataSourceType,
+                                                        MetadataDiscoveryRequest request,
+                                                        List<String> warnings) throws SQLException {
+        String requestCatalog = blankToNull(request.getCatalog());
+        String requestSchema = blankToNull(request.getSchemaPattern());
+        if (dataSourceType == DataSourceType.MYSQL) {
+            String catalog = firstNonBlank(requestCatalog, requestSchema, connection.getCatalog());
+            if (requestCatalog == null && requestSchema != null) {
+                warnings.add("MySQL/MariaDB 使用 database/catalog 语义，本次已把 schemaPattern="
+                        + requestSchema + " 作为 catalog 进行元数据发现。");
+            }
+            if (catalog == null) {
+                warnings.add("MySQL 连接当前没有选中 database/catalog。请确认 JDBC URL 包含具体库名，例如 jdbc:mysql://host:3306/database。");
+            }
+            return new MetadataDiscoveryJdbcScope(catalog, null);
+        }
+        if (dataSourceType == DataSourceType.SQLSERVER) {
+            return new MetadataDiscoveryJdbcScope(firstNonBlank(requestCatalog, connection.getCatalog()), requestSchema);
+        }
+        return new MetadataDiscoveryJdbcScope(requestCatalog, requestSchema);
+    }
+
+    /**
+     * 当元数据发现返回空表时，生成可以直接展示给用户的排障提示。
+     */
+    private void addEmptyDiscoveryWarning(DataSourceType dataSourceType,
+                                          MetadataDiscoveryJdbcScope jdbcScope,
+                                          MetadataDiscoveryRequest request,
+                                          List<String> warnings) {
+        warnings.add("本次元数据发现未返回 TABLE/VIEW 对象。请检查数据源账号是否拥有元数据读取权限、目标库表是否存在、筛选条件是否过窄。");
+        if (dataSourceType == DataSourceType.MYSQL) {
+            warnings.add("当前连接器是 MySQL/MariaDB，任务对象选择应使用“按表选择”；如果需要限定数据库，请在 JDBC URL 或 catalog 中指定 database。");
+        }
+        if (blankToNull(request.getTableNamePattern()) != null) {
+            warnings.add("当前携带 tableNamePattern=" + request.getTableNamePattern()
+                    + "，如果页面期望展示所有表，请清空表名筛选后重新发现。");
+        }
+        if (blankToNull(jdbcScope.schemaPattern()) != null) {
+            warnings.add("当前携带 schemaPattern=" + jdbcScope.schemaPattern()
+                    + "，请确认该 schema 存在且当前账号可见。");
+        }
+    }
+
     private DataSourceMetadataDiscoveryResult buildDiscoveryResult(DataSourceConfig config,
                                                                    MetadataDiscoveryRequest request,
+                                                                   MetadataDiscoveryJdbcScope jdbcScope,
                                                                    DataSourceType type,
                                                                    DatabaseMetaData metaData,
                                                                    List<TableMetadataSummary> tables,
@@ -392,8 +454,8 @@ public class DataSourceMetadataDiscoverySupport {
         result.setProductName(metaData.getDatabaseProductName());
         result.setProductVersion(metaData.getDatabaseProductVersion());
         result.setDriverName(metaData.getDriverName());
-        result.setCatalog(request.getCatalog());
-        result.setSchemaPattern(request.getSchemaPattern());
+        result.setCatalog(jdbcScope.catalog());
+        result.setSchemaPattern(jdbcScope.schemaPattern());
         result.setTableNamePattern(request.getTableNamePattern());
         result.setTableCount(tables.size());
         result.setAppliedMaxTables(maxTables);
@@ -445,8 +507,9 @@ public class DataSourceMetadataDiscoverySupport {
         }
     }
 
-    private String buildDiscoveryCacheKey(Long datasourceId, MetadataDiscoveryRequest request) {
-        return datasourceId + "|" +
+    private String buildDiscoveryCacheKey(DataSourceConfig config, MetadataDiscoveryRequest request) {
+        return config.getId() + "|" +
+                safe(config.getUpdateTime()) + "|" +
                 safe(request.getCatalog()) + "|" +
                 safe(request.getSchemaPattern()) + "|" +
                 safe(request.getTableNamePattern()) + "|" +
@@ -471,6 +534,23 @@ public class DataSourceMetadataDiscoverySupport {
         return value == null ? "" : String.valueOf(value);
     }
 
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            String normalized = blankToNull(value);
+            if (normalized != null) {
+                return normalized;
+            }
+        }
+        return null;
+    }
+
     private record ColumnDiscoverySnapshot(List<ColumnMetadataSummary> columns, int totalColumnCount, boolean truncated) {
+    }
+
+    private record MetadataDiscoveryJdbcScope(String catalog, String schemaPattern) {
     }
 }

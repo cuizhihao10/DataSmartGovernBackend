@@ -28,9 +28,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.sql.Connection;
+import java.sql.DatabaseMetaData;
 import java.sql.DriverManager;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.NoSuchElementException;
 
 /**
@@ -131,7 +135,16 @@ public class DataSourceManagementServiceImpl extends ServiceImpl<DataSourceConfi
         config.setUsagePurpose(normalizedPurpose.name());
         config.setJdbcUrl(jdbcUrl);
         config.setUsername(username);
-        config.setPassword(password);
+        /*
+         * 编辑数据源时密码为空表示“不轮换凭据”。
+         *
+         * 这是连接配置管理里的重要安全/体验边界：后端不应该为了改名称、用途或描述，要求前端重新展示或回传旧密码；
+         * 旧密码也不应该因为列表接口被低敏化后丢失而被误写成空值。只有用户在编辑弹窗里明确填写新密码时，
+         * 才把它视为一次凭据更新。
+         */
+        if (password != null && !password.isBlank()) {
+            config.setPassword(password);
+        }
         config.setDescription(description);
         config.setUpdateTime(LocalDateTime.now());
         updateById(config);
@@ -206,21 +219,23 @@ public class DataSourceManagementServiceImpl extends ServiceImpl<DataSourceConfi
 
         LocalDateTime testedAt = LocalDateTime.now();
         try {
+            DataSourceConnectionTestResult result;
             try (Connection connection = openConnection(config)) {
                 boolean valid = connection.isValid(5);
                 if (!valid) {
                     throw new SQLException("connection validation failed");
                 }
+                result = buildConnectionTestSuccessResult(config, connection, testedAt);
             }
 
             config.setLastTestStatus(ConnectionTestStatus.SUCCESS);
-            config.setLastTestMessage("连接测试成功");
+            config.setLastTestMessage(result.getMessage());
             config.setLastTestTime(testedAt);
             config.setUpdateTime(testedAt);
             updateById(config);
 
             log.info("数据源连接测试成功，datasourceId={}", id);
-            return new DataSourceConnectionTestResult(id, ConnectionTestStatus.SUCCESS, "连接测试成功", testedAt);
+            return result;
         } catch (ClassNotFoundException | SQLException exception) {
             String message = truncateMessage(exception.getMessage());
             config.setLastTestStatus(ConnectionTestStatus.FAILED);
@@ -354,6 +369,121 @@ public class DataSourceManagementServiceImpl extends ServiceImpl<DataSourceConfi
     }
 
     /**
+     * 构造连接测试成功响应，并顺带执行一次轻量元数据探测。
+     *
+     * <p>为什么“连接测试成功”还要探测元数据：</p>
+     * <p>JDBC 连接成功只证明网络、端口、账号、密码和驱动基本可用；数据同步创建任务还需要能读取库表结构。
+     * MySQL 尤其容易出现“能连上 MySQL Server，但 JDBC URL 没有指定 database/catalog，或者账号没有目标库表权限”的情况。
+     * 如果前端只显示一个绿色成功，用户就会误以为后续一定能选到表。</p>
+     *
+     * <p>这里的元数据探测故意保持“轻量”：
+     * 1. 只读取产品名、驱动名、当前 catalog/schema；
+     * 2. 只统计少量 TABLE 类型对象，用于判断是否至少能发现表；
+     * 3. 不读取字段、不采样业务行，不扩大敏感数据接触面；
+     * 4. 探测异常不推翻 JDBC 连通性成功，但会写入 warnings，让前端把风险展示出来。</p>
+     */
+    private DataSourceConnectionTestResult buildConnectionTestSuccessResult(DataSourceConfig config,
+                                                                            Connection connection,
+                                                                            LocalDateTime testedAt) throws SQLException {
+        DatabaseMetaData metaData = connection.getMetaData();
+        DataSourceType dataSourceType = DataSourceType.fromValue(config.getType());
+        List<String> warnings = new ArrayList<>();
+        String currentCatalog = safeConnectionCatalog(connection, warnings);
+        String currentSchema = safeConnectionSchema(connection, warnings);
+        Integer discoveredTableCount = null;
+        boolean metadataDiscoverable = false;
+        try {
+            discoveredTableCount = countDiscoverableTables(metaData, dataSourceType, currentCatalog, currentSchema);
+            metadataDiscoverable = discoveredTableCount > 0;
+            appendMetadataProbeWarnings(config, dataSourceType, currentCatalog, currentSchema, discoveredTableCount, warnings);
+        } catch (SQLException exception) {
+            warnings.add("JDBC 已连通，但轻量元数据探测失败，通常是账号缺少元数据权限、catalog/schema 不正确或数据库拒绝 DatabaseMetaData 查询："
+                    + truncateMessage(exception.getMessage()));
+        }
+
+        String message = metadataDiscoverable
+                ? "连接测试成功，且可发现 " + discoveredTableCount + " 张用户表"
+                : "连接测试成功，但未发现可用于任务配置的用户表，请检查 database/catalog、schema、表权限或筛选条件";
+        DataSourceConnectionTestResult result =
+                new DataSourceConnectionTestResult(config.getId(), ConnectionTestStatus.SUCCESS, message, testedAt);
+        result.setProductName(metaData.getDatabaseProductName());
+        result.setProductVersion(metaData.getDatabaseProductVersion());
+        result.setDriverName(metaData.getDriverName());
+        result.setCurrentCatalog(currentCatalog);
+        result.setCurrentSchema(currentSchema);
+        result.setMetadataDiscoverable(metadataDiscoverable);
+        result.setDiscoveredTableCount(discoveredTableCount);
+        result.setWarnings(warnings);
+        return result;
+    }
+
+    /**
+     * 统计连接当前上下文下可发现的用户表数量。
+     *
+     * <p>这里要特别照顾 MySQL：在 JDBC 语义里 MySQL 的 database 对应 catalog，而不是 PostgreSQL 风格 schema。
+     * 因此 MySQL 使用 {@code connection.getCatalog()} 作为 getTables 的第一个参数，并把 schemaPattern 置空；
+     * PostgreSQL/SQL Server 则优先使用当前 schema。这个差异正是很多“能连上但查不到表”的根因。</p>
+     */
+    private int countDiscoverableTables(DatabaseMetaData metaData,
+                                        DataSourceType dataSourceType,
+                                        String currentCatalog,
+                                        String currentSchema) throws SQLException {
+        String catalogPattern = dataSourceType == DataSourceType.MYSQL ? blankToNull(currentCatalog) : null;
+        String schemaPattern = dataSourceType == DataSourceType.MYSQL ? null : blankToNull(currentSchema);
+        int count = 0;
+        try (ResultSet tables = metaData.getTables(catalogPattern, schemaPattern, "%", new String[]{"TABLE"})) {
+            while (tables.next()) {
+                count++;
+                if (count >= 200) {
+                    return count;
+                }
+            }
+        }
+        return count;
+    }
+
+    /**
+     * 根据轻量探测结果生成面向用户的诊断提示。
+     */
+    private void appendMetadataProbeWarnings(DataSourceConfig config,
+                                             DataSourceType dataSourceType,
+                                             String currentCatalog,
+                                             String currentSchema,
+                                             Integer discoveredTableCount,
+                                             List<String> warnings) {
+        if (dataSourceType == DataSourceType.MYSQL && !hasText(currentCatalog)) {
+            warnings.add("MySQL 连接当前没有选中 database/catalog。请确认 JDBC URL 形如 jdbc:mysql://host:3306/database，否则任务创建时无法稳定列出业务表。");
+        }
+        if (dataSourceType != DataSourceType.MYSQL && !hasText(currentSchema)) {
+            warnings.add("当前连接未返回默认 schema。PostgreSQL/SQL Server 场景下，请确认 search_path、schema 权限或连接用户默认 schema。");
+        }
+        if (discoveredTableCount != null && discoveredTableCount == 0) {
+            warnings.add("JDBC URL 已连通，但当前账号在当前 catalog/schema 下没有发现 TABLE 类型对象。请检查表是否存在、账号是否拥有元数据读取权限，或创建任务时是否误用了 schema 筛选。");
+        }
+        if (config.getJdbcUrl() != null && config.getJdbcUrl().contains("localhost")) {
+            warnings.add("当前 JDBC URL 包含 localhost。如果服务运行在 Docker 容器内，localhost 指向容器自身，生产/Compose 环境建议使用服务名或内网域名。");
+        }
+    }
+
+    private String safeConnectionCatalog(Connection connection, List<String> warnings) {
+        try {
+            return connection.getCatalog();
+        } catch (SQLException exception) {
+            warnings.add("读取当前 catalog 失败：" + truncateMessage(exception.getMessage()));
+            return null;
+        }
+    }
+
+    private String safeConnectionSchema(Connection connection, List<String> warnings) {
+        try {
+            return connection.getSchema();
+        } catch (SQLException exception) {
+            warnings.add("读取当前 schema 失败：" + truncateMessage(exception.getMessage()));
+            return null;
+        }
+    }
+
+    /**
      * 查询必须存在的数据源。
      */
     private DataSourceConfig getRequiredDataSource(Long id) {
@@ -398,6 +528,14 @@ public class DataSourceManagementServiceImpl extends ServiceImpl<DataSourceConfi
             return "未知连接错误";
         }
         return message.length() > 500 ? message.substring(0, 500) : message;
+    }
+
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value;
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     /**
