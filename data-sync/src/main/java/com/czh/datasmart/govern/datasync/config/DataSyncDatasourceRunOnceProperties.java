@@ -67,6 +67,16 @@ public class DataSyncDatasourceRunOnceProperties {
     private String metadataDiscoveryPathTemplate = "/datasources/{datasourceId}/metadata/discover";
 
     /**
+     * datasource-management 的受控只读 SQL 执行路径模板。
+     *
+     * <p>该路径当前主要服务 {@code CUSTOM_SQL_QUERY} 创建向导的 SQL 检查：
+     * data-sync 不直接持有数据源密码、不直接打开 JDBC 连接，而是把“只读 SQL 是否安全、语法是否可执行、
+     * SQL 中引用的源端表/字段是否存在、最终输出列名/别名是什么”委托给 datasource-management。
+     * 这样可以让数据源连接、权限、审计、SQL 脱敏和查询超时继续集中在 datasource-management 中治理。</p>
+     */
+    private String readOnlySqlExecutePathTemplate = "/datasources/{datasourceId}/sql/read-only/execute";
+
+    /**
      * 发送给 datasource-management 的服务名 Header。
      */
     private String sourceService = "data-sync";

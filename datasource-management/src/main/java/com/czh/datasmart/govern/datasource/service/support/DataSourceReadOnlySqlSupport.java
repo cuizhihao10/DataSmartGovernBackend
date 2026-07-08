@@ -371,8 +371,12 @@ public class DataSourceReadOnlySqlSupport {
         }
         String normalizedSql = sql.trim();
         String lowerCaseSql = normalizedSql.toLowerCase();
-        if (!lowerCaseSql.startsWith("select ")) {
-            throw new IllegalArgumentException("当前只允许执行单条 SELECT 查询");
+        /*
+         * SELECT 是最基础的只读查询形态；WITH 用于 CTE（公共表表达式），在 SQL 语句模式里很常见。
+         * 这里允许 WITH，但后续仍会继续拦截分号、注释和 DDL/DML/过程调用关键字，确保 CTE 最终仍是只读查询。
+         */
+        if (!lowerCaseSql.startsWith("select ") && !lowerCaseSql.startsWith("with ")) {
+            throw new IllegalArgumentException("当前只允许执行单条 SELECT/WITH 只读查询");
         }
         if (normalizedSql.contains(";")) {
             throw new IllegalArgumentException("只读 SQL 不允许包含分号或多语句");

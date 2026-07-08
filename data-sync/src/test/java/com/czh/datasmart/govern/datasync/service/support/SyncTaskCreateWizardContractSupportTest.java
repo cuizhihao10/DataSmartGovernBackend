@@ -42,12 +42,14 @@ class SyncTaskCreateWizardContractSupportTest {
 
         SyncTaskCreateWizardContractResponse contract = support.buildContract(projectActorContext());
 
-        assertThat(contract.contractVersion()).isEqualTo("datasmart.sync-task.create-wizard.v3");
+        assertThat(contract.contractVersion()).isEqualTo("datasmart.sync-task.create-wizard.v4");
         assertThat(contract.metadataDiscovery()).isNotNull();
         assertThat(contract.metadataDiscovery().objectDiscoveryApi())
                 .isEqualTo("POST /sync-tasks/create-wizard/metadata/objects/discover");
         assertThat(contract.metadataDiscovery().fieldMappingSuggestionApi())
                 .isEqualTo("POST /sync-tasks/create-wizard/metadata/field-mappings/suggest");
+        assertThat(contract.metadataDiscovery().customSqlCheckApi())
+                .isEqualTo("POST /sync-tasks/create-wizard/sql/check");
         assertThat(contract.metadataDiscovery().filterModes())
                 .containsExactly("TABLE", "SCHEMA", "SCHEMA_AND_TABLE", "CATALOG", "ALL");
         assertThat(contract.metadataDiscovery().customSqlRules())

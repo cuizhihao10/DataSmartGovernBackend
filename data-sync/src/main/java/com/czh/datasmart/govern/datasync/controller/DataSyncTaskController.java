@@ -18,6 +18,8 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationRe
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCreateWizardContractResponse;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCustomSqlCheckRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCustomSqlCheckResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExportFile;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskFieldMappingSuggestionRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskFieldMappingSuggestionResponse;
@@ -42,6 +44,7 @@ import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTaskGroup;
 import com.czh.datasmart.govern.datasync.service.DataSyncService;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskCreateWizardContractSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskCustomSqlCheckSupport;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ContentDisposition;
@@ -78,6 +81,7 @@ public class DataSyncTaskController {
 
     private final DataSyncService dataSyncService;
     private final SyncTaskCreateWizardContractSupport createWizardContractSupport;
+    private final SyncTaskCustomSqlCheckSupport customSqlCheckSupport;
 
     /**
      * 查询同步任务创建向导合同。
@@ -111,6 +115,31 @@ public class DataSyncTaskController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success("同步任务创建向导步骤校验完成",
                 createWizardContractSupport.validateStep(request), traceId);
+    }
+
+    /**
+     * SQL 语句模式创建向导的 SQL 检查入口。
+     *
+     * <p>该接口专门服务 {@code CUSTOM_SQL_QUERY / SQL语句} 模式：
+     * 前端在用户填写 SQL 后调用它，后端先做本地静态安全检查，再按需调用 datasource-management 的受控只读 SQL 能力，
+     * 验证 SQL 是否能在源端数据源上执行，并提取 SELECT 输出列或 alias 供字段映射步骤使用。</p>
+     *
+     * <p>重要边界：</p>
+     * <p>1. 该接口不是任务创建入口，不会保存 SQL、不会创建模板、不会创建任务；</p>
+     * <p>2. 该接口不是数据预览入口，即使 datasource-management 返回 rows，data-sync 也只返回列名和低敏诊断；</p>
+     * <p>3. 目标表主键、外键、字段类型、字段数量是否匹配，仍由后续预检查结合目标端元数据统一判断。</p>
+     */
+    @PostMapping("/create-wizard/sql/check")
+    public PlatformApiResponse<SyncTaskCustomSqlCheckResponse> checkCreateWizardCustomSql(
+            @Valid @RequestBody(required = false) SyncTaskCustomSqlCheckRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        SyncActorContext actorContext = actorContext(tenantId, actorId, actorRole, traceId, headers);
+        return PlatformApiResponse.success("SQL 语句模式检查完成",
+                customSqlCheckSupport.check(request, actorContext), traceId);
     }
 
     /**

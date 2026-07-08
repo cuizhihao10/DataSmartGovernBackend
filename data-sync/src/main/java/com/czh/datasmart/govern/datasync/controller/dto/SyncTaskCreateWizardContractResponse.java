@@ -119,10 +119,13 @@ public record SyncTaskCreateWizardContractResponse(
      *
      * <p>安全边界：这些接口只返回 schema、表、字段、类型、主键等低敏结构信息，不返回样本数据、连接串、账号、
      * 密码、完整 SQL、where 条件正文或执行器内部计划。真正的读取数据与写入目标端仍由预检查和 worker 执行链路保护。</p>
+     *
+     * @param customSqlCheckApi SQL 语句模式的 SQL 检查入口，用于只读性、语法、源端对象存在性和输出列/别名探测
      */
     public record MetadataDiscoveryContract(
             String objectDiscoveryApi,
             String fieldMappingSuggestionApi,
+            String customSqlCheckApi,
             List<String> filterModes,
             List<String> supportedSides,
             List<String> objectMappingRules,

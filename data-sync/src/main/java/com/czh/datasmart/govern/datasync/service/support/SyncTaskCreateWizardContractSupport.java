@@ -53,7 +53,7 @@ public class SyncTaskCreateWizardContractSupport {
         Long projectId = dataScopeSupport.resolveProjectForCreate(null, actorContext);
         Long workspaceId = dataScopeSupport.resolveWorkspaceForCreate(null, actorContext);
         return new SyncTaskCreateWizardContractResponse(
-                "datasmart.sync-task.create-wizard.v3",
+                "datasmart.sync-task.create-wizard.v4",
                 new SyncTaskCreateWizardContractResponse.ScopeBinding(
                         tenantId,
                         projectId,
@@ -187,6 +187,7 @@ public class SyncTaskCreateWizardContractSupport {
         return new SyncTaskCreateWizardContractResponse.MetadataDiscoveryContract(
                 "POST /sync-tasks/create-wizard/metadata/objects/discover",
                 "POST /sync-tasks/create-wizard/metadata/field-mappings/suggest",
+                "POST /sync-tasks/create-wizard/sql/check",
                 List.of("TABLE", "SCHEMA", "SCHEMA_AND_TABLE", "CATALOG", "ALL"),
                 List.of("SOURCE", "TARGET"),
                 List.of(
@@ -200,7 +201,7 @@ public class SyncTaskCreateWizardContractSupport {
                         "主键、冲突字段、外键、字段数量匹配不要求用户手填，应由预检查读取目标表约束后自动判断"),
                 List.of(
                         "CUSTOM_SQL_QUERY 模式在对象映射步骤只要求选择目标表，源表和输出字段由只读 SQL 的 SELECT 列与别名决定",
-                        "SQL 输入区应调用后续 SQL 检查能力完成只读性、语法、库表存在性和输出列别名检查",
+                        "SQL 输入区应调用 POST /sync-tasks/create-wizard/sql/check 完成只读性、语法、源端库表字段存在性和输出列别名检查",
                         "SQL 模式字段映射应基于 SQL 输出列名或别名与目标表字段建立映射，不要求用户选择源端表"));
     }
 
