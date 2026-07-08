@@ -16,7 +16,7 @@ import java.util.List;
  *
  * <p>关键设计原则：</p>
  * <p>1. 租户、项目、工作空间来自登录/网关上下文，不要求用户填写数字 ID；</p>
- * <p>2. 新建同步任务只展示 FULL、SCHEDULED_FULL、SCHEDULED_BATCH、CUSTOM_SQL_QUERY、CDC_STREAMING 五种传输模式；</p>
+ * <p>2. 新建同步任务只展示 FULL、SCHEDULED_BATCH、SCHEDULED_FULL、CUSTOM_SQL_QUERY、CDC_STREAMING 五种传输模式；</p>
  * <p>3. 写入策略只展示 INSERT 和 UPDATE，主键、外键、字段兼容性、对象存在性放到预检查阶段自动判断；</p>
  * <p>4. 失败回放、历史补数、脏数据修复重放、离线导入导出属于任务详情/执行历史/恢复运营台能力，不污染新建任务模式。</p>
  *
@@ -97,13 +97,13 @@ public record SyncTaskCreateWizardContractResponse(
     /**
      * 数据源用途筛选合同。
      *
-     * <p>datasource-management 已支持 usagePurpose。前端在源端选择框只请求 SOURCE/BOTH，在目标端选择框只请求 TARGET/BOTH，
-     * 这样可以避免用户把“只读源端库”误选为目标端写入库，或把“只写目标端库”误选为源端读取库。</p>
+     * <p>datasource-management 已支持 usagePurpose。前端在源端选择框只请求 SOURCE，在目标端选择框只请求 TARGET。
+     * 后端不再支持 BOTH，这样可以避免用户把“只读源端库”误选为目标端写入库，或把“只写目标端库”误选为源端读取库。</p>
      */
     public record DatasourceUsageContract(
             String sourceSelectorUsage,
             String targetSelectorUsage,
-            String bothUsageValue,
+            List<String> allowedUsageValues,
             String datasourceListApiHint,
             List<String> usageRules
     ) {

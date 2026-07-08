@@ -128,7 +128,7 @@ public class DataSourceManagementController {
      * 分页查询数据源。
      *
      * <p>前端新建同步任务时，可以通过 {@code usagePurpose=SOURCE} 获取源端候选，通过
-     * {@code usagePurpose=TARGET} 获取目标端候选。后端会把 BOTH 数据源一并纳入候选，表示该连接
+     * {@code usagePurpose=TARGET} 获取目标端候选。后端会严格按 SOURCE/TARGET 精确过滤，不再把同一条连接
      * 同时允许作为源端和目标端。</p>
      */
     @GetMapping
@@ -360,23 +360,16 @@ public class DataSourceManagementController {
 
     /**
      * 按源端/目标端用途过滤数据源候选列表。
+     *
+     * <p>当前产品只允许数据源被登记为 SOURCE 或 TARGET，不再支持 BOTH。因此这里使用精确相等过滤：
+     * 源端选择器不会再混入目标端数据源，目标端选择器也不会再混入源端数据源。</p>
      */
     private void applyUsagePurposeFilter(LambdaQueryWrapper<DataSourceConfig> wrapper, String usagePurpose) {
         if (!hasText(usagePurpose)) {
             return;
         }
         DataSourceUsagePurpose purpose = DataSourceUsagePurpose.fromValue(usagePurpose);
-        if (purpose == DataSourceUsagePurpose.SOURCE) {
-            wrapper.in(DataSourceConfig::getUsagePurpose,
-                    DataSourceUsagePurpose.SOURCE.name(), DataSourceUsagePurpose.BOTH.name());
-            return;
-        }
-        if (purpose == DataSourceUsagePurpose.TARGET) {
-            wrapper.in(DataSourceConfig::getUsagePurpose,
-                    DataSourceUsagePurpose.TARGET.name(), DataSourceUsagePurpose.BOTH.name());
-            return;
-        }
-        wrapper.eq(DataSourceConfig::getUsagePurpose, DataSourceUsagePurpose.BOTH.name());
+        wrapper.eq(DataSourceConfig::getUsagePurpose, purpose.name());
     }
 
     private DataSourceConfig getRequiredVisibleDataSource(Long id, String dataScopeLevel, String authorizedProjectIds) {

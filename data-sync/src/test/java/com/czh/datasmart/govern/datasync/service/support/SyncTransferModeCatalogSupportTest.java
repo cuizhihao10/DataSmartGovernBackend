@@ -33,10 +33,19 @@ class SyncTransferModeCatalogSupportTest {
                 .extracting(SyncTransferModeOption::mode)
                 .containsExactly(
                         "FULL",
-                        "SCHEDULED_FULL",
                         "SCHEDULED_BATCH",
+                        "SCHEDULED_FULL",
                         "CUSTOM_SQL_QUERY",
                         "CDC_STREAMING"
+                );
+        assertThat(modes)
+                .extracting(SyncTransferModeOption::displayName)
+                .containsExactly(
+                        "全量传输",
+                        "定期批量",
+                        "定期全量",
+                        "SQL语句",
+                        "实时"
                 );
         assertThat(modes)
                 .extracting(SyncTransferModeOption::mode)

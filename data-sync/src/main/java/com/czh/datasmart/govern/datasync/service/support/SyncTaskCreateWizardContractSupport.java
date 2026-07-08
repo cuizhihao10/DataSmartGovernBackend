@@ -53,7 +53,7 @@ public class SyncTaskCreateWizardContractSupport {
         Long projectId = dataScopeSupport.resolveProjectForCreate(null, actorContext);
         Long workspaceId = dataScopeSupport.resolveWorkspaceForCreate(null, actorContext);
         return new SyncTaskCreateWizardContractResponse(
-                "datasmart.sync-task.create-wizard.v2",
+                "datasmart.sync-task.create-wizard.v3",
                 new SyncTaskCreateWizardContractResponse.ScopeBinding(
                         tenantId,
                         projectId,
@@ -165,12 +165,12 @@ public class SyncTaskCreateWizardContractSupport {
         return new SyncTaskCreateWizardContractResponse.DatasourceUsageContract(
                 "SOURCE",
                 "TARGET",
-                "BOTH",
+                List.of("SOURCE", "TARGET"),
                 "GET /datasources?usagePurpose=SOURCE 用于源端选择；GET /datasources?usagePurpose=TARGET 用于目标端选择",
                 List.of(
                         "SOURCE 数据源只能作为源端读取",
                         "TARGET 数据源只能作为目标端写入",
-                        "BOTH 数据源可同时出现在源端和目标端候选列表",
+                        "后端不再返回或接受 BOTH；如果同一个物理库既要读又要写，应分别登记源端连接和目标端连接",
                         "创建任务时源端和目标端数据源不能是同一个登记实例"));
     }
 
@@ -329,7 +329,7 @@ public class SyncTaskCreateWizardContractSupport {
         try {
             SyncMode mode = SyncMode.valueOf(syncMode.trim().toUpperCase(Locale.ROOT));
             if (!mode.isUserSelectableTransferMode()) {
-                blocking.add("同步模式只能选择 FULL、SCHEDULED_FULL、SCHEDULED_BATCH、CUSTOM_SQL_QUERY、CDC_STREAMING");
+                blocking.add("同步模式只能选择 FULL、SCHEDULED_BATCH、SCHEDULED_FULL、CUSTOM_SQL_QUERY、CDC_STREAMING");
                 return null;
             }
             return mode;

@@ -32,12 +32,12 @@ public class SyncTaskWizardStepValidationRequest {
     private String syncMode;
 
     /**
-     * 源端数据源 ID；前端应只从 usagePurpose=SOURCE/BOTH 的数据源列表中选择。
+     * 源端数据源 ID；前端应只从 usagePurpose=SOURCE 的数据源列表中选择。
      */
     private Long sourceDatasourceId;
 
     /**
-     * 目标端数据源 ID；前端应只从 usagePurpose=TARGET/BOTH 的数据源列表中选择。
+     * 目标端数据源 ID；前端应只从 usagePurpose=TARGET 的数据源列表中选择。
      */
     private Long targetDatasourceId;
 

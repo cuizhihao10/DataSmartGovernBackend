@@ -22,10 +22,10 @@ import java.util.List;
  * 也能像“全量”一样新建为普通同步任务。</p>
  *
  * <p>因此这里故意只返回 5 个主模式：</p>
- * <p>1. FULL：全量；</p>
- * <p>2. SCHEDULED_FULL：定期全量；</p>
- * <p>3. SCHEDULED_BATCH：定期批量；</p>
- * <p>4. CUSTOM_SQL_QUERY：SQL 语句自定义；</p>
+ * <p>1. FULL：全量传输；</p>
+ * <p>2. SCHEDULED_BATCH：定期批量；</p>
+ * <p>3. SCHEDULED_FULL：定期全量；</p>
+ * <p>4. CUSTOM_SQL_QUERY：SQL语句；</p>
  * <p>5. CDC_STREAMING：实时。</p>
  *
  * <p>失败回放、补数、脏数据修复重放继续通过任务详情页、执行历史页、错误样本页或运维动作入口触发；
@@ -36,8 +36,8 @@ public class SyncTransferModeCatalogSupport {
 
     private static final List<SyncMode> USER_MODE_ORDER = List.of(
             SyncMode.FULL,
-            SyncMode.SCHEDULED_FULL,
             SyncMode.SCHEDULED_BATCH,
+            SyncMode.SCHEDULED_FULL,
             SyncMode.CUSTOM_SQL_QUERY,
             SyncMode.CDC_STREAMING
     );
@@ -57,7 +57,7 @@ public class SyncTransferModeCatalogSupport {
         SyncTransferChannel transferChannel = SyncTransferChannelSupport.resolve(mode);
         return new SyncTransferModeOption(
                 mode.name(),
-                mode.displayName(),
+                productDisplayName(mode),
                 transferChannel == null ? null : transferChannel.name(),
                 mode.requiresTaskScheduleConfig(),
                 mode.allowsTaskScheduleConfig(),
@@ -66,6 +66,23 @@ public class SyncTransferModeCatalogSupport {
                 mode.description(),
                 recommendedActions(mode)
         );
+    }
+
+    /**
+     * 返回创建任务页面使用的产品化展示名。
+     *
+     * <p>{@link SyncMode} 枚举中保留了一些内部说明和历史兼容描述，而创建向导需要的是更贴近用户语言的
+     * 五个一级模式名称。这里单独收口展示名，可以避免为了调整 UI 文案去改动底层枚举语义。</p>
+     */
+    private String productDisplayName(SyncMode mode) {
+        return switch (mode) {
+            case FULL -> "全量传输";
+            case SCHEDULED_BATCH -> "定期批量";
+            case SCHEDULED_FULL -> "定期全量";
+            case CUSTOM_SQL_QUERY -> "SQL语句";
+            case CDC_STREAMING -> "实时";
+            default -> mode.displayName();
+        };
     }
 
     private String defaultScopeType(SyncMode mode) {

@@ -68,7 +68,7 @@ public class DataSourceConfig {
     private String type;
 
     /**
-     * 数据源用途：SOURCE / TARGET / BOTH。
+     * 数据源用途：SOURCE / TARGET。
      *
      * <p>该字段是给数据同步产品使用的“业务角色”标记，而不是数据库连接能力本身。比如同样是 PostgreSQL，
      * 一个只读账号可以登记为 SOURCE，一个数据仓库写入账号可以登记为 TARGET。新建同步任务时，

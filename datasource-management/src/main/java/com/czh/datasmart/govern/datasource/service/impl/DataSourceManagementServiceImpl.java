@@ -124,7 +124,7 @@ public class DataSourceManagementServiceImpl extends ServiceImpl<DataSourceConfi
         ensureNotDeleted(config);
         ensureNameNotDuplicated(name, config.getTenantId(), config.getProjectId(), id);
         DataSourceUsagePurpose normalizedPurpose = usagePurpose == null || usagePurpose.isBlank()
-                ? DataSourceUsagePurpose.fromValue(config.getUsagePurpose())
+                ? DataSourceUsagePurpose.fromPersistedValueOrDefault(config.getUsagePurpose())
                 : DataSourceUsagePurpose.fromValue(usagePurpose);
 
         config.setName(name);

@@ -42,6 +42,7 @@ class SyncTaskCreateWizardContractSupportTest {
 
         SyncTaskCreateWizardContractResponse contract = support.buildContract(projectActorContext());
 
+        assertThat(contract.contractVersion()).isEqualTo("datasmart.sync-task.create-wizard.v3");
         assertThat(contract.metadataDiscovery()).isNotNull();
         assertThat(contract.metadataDiscovery().objectDiscoveryApi())
                 .isEqualTo("POST /sync-tasks/create-wizard/metadata/objects/discover");
@@ -51,6 +52,19 @@ class SyncTaskCreateWizardContractSupportTest {
                 .containsExactly("TABLE", "SCHEMA", "SCHEMA_AND_TABLE", "CATALOG", "ALL");
         assertThat(contract.metadataDiscovery().customSqlRules())
                 .anySatisfy(rule -> assertThat(rule).contains("CUSTOM_SQL_QUERY").contains("目标表"));
+        assertThat(contract.datasourceUsage().allowedUsageValues())
+                .containsExactly("SOURCE", "TARGET");
+        assertThat(contract.datasourceUsage().usageRules())
+                .noneSatisfy(rule -> assertThat(rule).contains("可同时出现在源端和目标端候选列表"));
+        assertThat(contract.transferModes())
+                .extracting(item -> item.mode(), item -> item.displayName())
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple("FULL", "全量传输"),
+                        org.assertj.core.groups.Tuple.tuple("SCHEDULED_BATCH", "定期批量"),
+                        org.assertj.core.groups.Tuple.tuple("SCHEDULED_FULL", "定期全量"),
+                        org.assertj.core.groups.Tuple.tuple("CUSTOM_SQL_QUERY", "SQL语句"),
+                        org.assertj.core.groups.Tuple.tuple("CDC_STREAMING", "实时")
+                );
         assertThat(contract.hiddenLowLevelFields())
                 .contains("rawObjectMappingJsonEditor", "rawFieldMappingJsonEditor");
     }
