@@ -39,6 +39,7 @@ public record SyncTaskCreateWizardContractResponse(
         List<SyncTransferModeOption> transferModes,
         List<WriteStrategyOption> writeStrategies,
         DatasourceUsageContract datasourceUsage,
+        MetadataDiscoveryContract metadataDiscovery,
         List<String> hiddenLowLevelFields,
         List<String> backendValidationPrinciples,
         boolean approvalInCreateWizard,
@@ -105,6 +106,28 @@ public record SyncTaskCreateWizardContractResponse(
             String bothUsageValue,
             String datasourceListApiHint,
             List<String> usageRules
+    ) {
+    }
+
+    /**
+     * 创建向导使用的元数据发现与字段映射合同。
+     *
+     * <p>这里刻意把“接口路径、筛选模式、步骤依赖、SQL 模式差异”放进后端合同，而不是让前端硬编码：
+     * 创建任务页面需要先选源端/目标端数据源，再进入对象映射和字段映射步骤；如果前端只知道某个裸接口存在，
+     * 很容易在 MySQL、PostgreSQL、SQL 自定义传输等场景下把参数传错。该合同相当于后端把产品规则显式公布出来，
+     * 前端和 Agent 工具都能按同一套规则编排调用。</p>
+     *
+     * <p>安全边界：这些接口只返回 schema、表、字段、类型、主键等低敏结构信息，不返回样本数据、连接串、账号、
+     * 密码、完整 SQL、where 条件正文或执行器内部计划。真正的读取数据与写入目标端仍由预检查和 worker 执行链路保护。</p>
+     */
+    public record MetadataDiscoveryContract(
+            String objectDiscoveryApi,
+            String fieldMappingSuggestionApi,
+            List<String> filterModes,
+            List<String> supportedSides,
+            List<String> objectMappingRules,
+            List<String> fieldMappingRules,
+            List<String> customSqlRules
     ) {
     }
 }

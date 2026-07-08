@@ -460,6 +460,24 @@ public class DataSyncTaskController {
      * schema/table/field 摘要。MySQL/MariaDB 不具备 PostgreSQL 风格 schema，选择 SCHEMA
      * 或 SCHEMA_AND_TABLE 时会返回空列表和 warning；选择 TABLE 时可正常展示 MySQL 表。</p>
      */
+    /**
+     * 创建向导语义下的对象元数据发现入口。
+     *
+     * <p>该路径是 {@code /metadata/objects/discover} 的产品化别名，专门服务“新建同步任务”页面。
+     * 前端进入对象映射步骤后应自动调用该接口分别加载源端和目标端的 schema/table/field 摘要，
+     * 而不是让用户点击“手动获取元数据”按钮或直接填写 JSON。保留旧路径是为了兼容历史调用方和 Agent 工具。</p>
+     */
+    @PostMapping("/create-wizard/metadata/objects/discover")
+    public PlatformApiResponse<SyncTaskMetadataDiscoveryResponse> discoverCreateWizardTaskMetadata(
+            @Valid @RequestBody SyncTaskMetadataDiscoveryRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return discoverTaskMetadata(request, actorTenantId, actorId, actorRole, traceId, headers);
+    }
+
     @PostMapping("/metadata/objects/discover")
     public PlatformApiResponse<SyncTaskMetadataDiscoveryResponse> discoverTaskMetadata(
             @Valid @RequestBody SyncTaskMetadataDiscoveryRequest request,
@@ -480,6 +498,24 @@ public class DataSyncTaskController {
      * <p>该接口不创建模板、不创建任务、不写入字段映射正文。它只按同名字段和类型家族兼容性生成
      * 默认 syncEnabled 建议，前端仍应允许用户逐列勾选是否同步。</p>
      */
+    /**
+     * 创建向导语义下的字段映射建议入口。
+     *
+     * <p>该路径是 {@code /metadata/field-mappings/suggest} 的产品化别名。用户选定源端对象与目标端对象后，
+     * 前端应调用该接口生成一份可编辑的初始字段映射表：同名且类型家族兼容的字段默认勾选，缺失或不兼容字段默认不勾选并给出提示。
+     * 这样页面展示的是“字段选择、搜索、编辑、是否同步”，而不是把 fieldMappingConfig 的 JSON 正文暴露给用户。</p>
+     */
+    @PostMapping("/create-wizard/metadata/field-mappings/suggest")
+    public PlatformApiResponse<SyncTaskFieldMappingSuggestionResponse> suggestCreateWizardFieldMappings(
+            @Valid @RequestBody SyncTaskFieldMappingSuggestionRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return suggestFieldMappings(request, actorTenantId, actorId, actorRole, traceId, headers);
+    }
+
     @PostMapping("/metadata/field-mappings/suggest")
     public PlatformApiResponse<SyncTaskFieldMappingSuggestionResponse> suggestFieldMappings(
             @Valid @RequestBody SyncTaskFieldMappingSuggestionRequest request,

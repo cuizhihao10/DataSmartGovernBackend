@@ -67,6 +67,7 @@ public class SyncTaskCreateWizardContractSupport {
                 transferModeCatalogSupport.listUserSelectableModes(),
                 writeStrategies(),
                 datasourceUsageContract(),
+                metadataDiscoveryContract(),
                 hiddenLowLevelFields(),
                 backendValidationPrinciples(),
                 false,
@@ -171,6 +172,36 @@ public class SyncTaskCreateWizardContractSupport {
                         "TARGET 数据源只能作为目标端写入",
                         "BOTH 数据源可同时出现在源端和目标端候选列表",
                         "创建任务时源端和目标端数据源不能是同一个登记实例"));
+    }
+
+    /**
+     * 构建创建向导的元数据发现合同。
+     *
+     * <p>这段合同解决的是“前端不应该手写 JSON、也不应该手动点击裸元数据请求按钮”的问题。
+     * 前端进入对象映射步骤后，可以直接按 {@code objectDiscoveryApi} 对源端和目标端分别发起低敏元数据发现；
+     * 用户选择表或目标表后，再按 {@code fieldMappingSuggestionApi} 生成字段映射建议。这样后端把
+     * MySQL 无 PostgreSQL 风格 schema、SQL 自定义模式只选目标表、普通模式源表/目标表都要选择等规则集中声明，
+     * 避免每个页面、Agent 工具或测试脚本各自猜一套流程。</p>
+     */
+    private SyncTaskCreateWizardContractResponse.MetadataDiscoveryContract metadataDiscoveryContract() {
+        return new SyncTaskCreateWizardContractResponse.MetadataDiscoveryContract(
+                "POST /sync-tasks/create-wizard/metadata/objects/discover",
+                "POST /sync-tasks/create-wizard/metadata/field-mappings/suggest",
+                List.of("TABLE", "SCHEMA", "SCHEMA_AND_TABLE", "CATALOG", "ALL"),
+                List.of("SOURCE", "TARGET"),
+                List.of(
+                        "进入对象映射步骤后自动按 SOURCE/TARGET 两侧数据源拉取低敏 schema/table/field 摘要，不要求用户手动请求元数据",
+                        "MySQL/MariaDB 使用 database/catalog/table 语义，不具备 PostgreSQL 风格 schema；选择 SCHEMA 或 SCHEMA_AND_TABLE 时应提示用户改用 TABLE 或 CATALOG",
+                        "普通 FULL/SCHEDULED_FULL/SCHEDULED_BATCH 模式需要选择源端对象和目标端对象，支持按表、按 schema、按 schema+表搜索、勾选、排除和改名",
+                        "选择整个 schema 或全库范围时，前端应允许用户排除部分表，后端后续预检查再判断对象是否存在、字段是否兼容和目标约束是否满足"),
+                List.of(
+                        "普通表到表模式下，字段映射建议接口基于同名字段和类型家族兼容性生成默认 syncEnabled 建议",
+                        "字段是否同步、目标字段名、目标类型兼容性应以表格方式呈现并允许用户编辑，不应让用户直接编辑 fieldMappingConfig JSON",
+                        "主键、冲突字段、外键、字段数量匹配不要求用户手填，应由预检查读取目标表约束后自动判断"),
+                List.of(
+                        "CUSTOM_SQL_QUERY 模式在对象映射步骤只要求选择目标表，源表和输出字段由只读 SQL 的 SELECT 列与别名决定",
+                        "SQL 输入区应调用后续 SQL 检查能力完成只读性、语法、库表存在性和输出列别名检查",
+                        "SQL 模式字段映射应基于 SQL 输出列名或别名与目标表字段建立映射，不要求用户选择源端表"));
     }
 
     private List<String> hiddenLowLevelFields() {
