@@ -58,6 +58,15 @@ public class DataSyncDatasourceRunOnceProperties {
     private String partitionRangeProbePath = "/internal/sync-partitions/range-probe";
 
     /**
+     * datasource-management 的内部表行数探测路径。
+     *
+     * <p>该路径服务创建任务预检查中的“全量 INSERT 目标表是否为空”判断。
+     * data-sync 不直接拼接 SQL、不打开目标库连接，只把 datasourceId、connectorType 和对象定位交给
+     * datasource-management，由后者在受控只读连接中执行 {@code COUNT(*)} 并返回低敏行数事实。</p>
+     */
+    private String tableRowCountProbePath = "/internal/sync-tables/row-count-probe";
+
+    /**
      * datasource-management 的元数据发现路径模板。
      *
      * <p>SCHEMA_FULL 和 DATABASE_FULL 不应该由 data-sync 自己直连源库扫描表清单，

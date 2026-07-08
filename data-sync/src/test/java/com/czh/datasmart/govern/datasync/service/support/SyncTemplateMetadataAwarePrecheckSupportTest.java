@@ -10,6 +10,8 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryClient;
 import com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryResponse;
+import com.czh.datasmart.govern.datasync.integration.datasource.tableprobe.DatasourceTableRowCountProbeClient;
+import com.czh.datasmart.govern.datasync.integration.datasource.tableprobe.DatasourceTableRowCountProbeResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -33,8 +35,7 @@ class SyncTemplateMetadataAwarePrecheckSupportTest {
     @Test
     void customTargetTableShouldBeRejectedByPrecheckWhenMetadataCannotFindIt() {
         DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
-        SyncTemplateMetadataAwarePrecheckSupport support =
-                new SyncTemplateMetadataAwarePrecheckSupport(metadataClient, new ObjectMapper());
+        SyncTemplateMetadataAwarePrecheckSupport support = support(metadataClient, emptyTargetProbe());
         when(metadataClient.discover(eq(23L), any(), any())).thenReturn(responseWithTable(null, "task",
                 column("id", "BIGINT", true),
                 column("task_name", "VARCHAR", false)));
@@ -50,8 +51,7 @@ class SyncTemplateMetadataAwarePrecheckSupportTest {
     @Test
     void uncheckedSourceOnlyAndTargetOnlyFieldsShouldNotBlockMetadataPrecheck() {
         DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
-        SyncTemplateMetadataAwarePrecheckSupport support =
-                new SyncTemplateMetadataAwarePrecheckSupport(metadataClient, new ObjectMapper());
+        SyncTemplateMetadataAwarePrecheckSupport support = support(metadataClient, emptyTargetProbe());
         when(metadataClient.discover(eq(23L), any(), any())).thenReturn(responseWithTable(null, "task",
                 column("id", "BIGINT", true),
                 column("source_only", "VARCHAR", false)));
@@ -73,8 +73,7 @@ class SyncTemplateMetadataAwarePrecheckSupportTest {
     @Test
     void updateWriteStrategyShouldRequireTargetPrimaryKeyFromMetadata() {
         DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
-        SyncTemplateMetadataAwarePrecheckSupport support =
-                new SyncTemplateMetadataAwarePrecheckSupport(metadataClient, new ObjectMapper());
+        SyncTemplateMetadataAwarePrecheckSupport support = support(metadataClient, emptyTargetProbe());
         when(metadataClient.discover(eq(23L), any(), any())).thenReturn(responseWithTable(null, "task",
                 column("id", "BIGINT", true),
                 column("task_name", "VARCHAR", false)));
@@ -97,8 +96,7 @@ class SyncTemplateMetadataAwarePrecheckSupportTest {
     @Test
     void customSqlModeShouldValidateTargetFieldWithoutRequiringSourceObject() {
         DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
-        SyncTemplateMetadataAwarePrecheckSupport support =
-                new SyncTemplateMetadataAwarePrecheckSupport(metadataClient, new ObjectMapper());
+        SyncTemplateMetadataAwarePrecheckSupport support = support(metadataClient, emptyTargetProbe());
         when(metadataClient.discover(eq(24L), any(), any())).thenReturn(responseWithTable("dwd", "sql_target",
                 column("id", "BIGINT", true),
                 column("member_name", "VARCHAR", false)));
@@ -114,8 +112,7 @@ class SyncTemplateMetadataAwarePrecheckSupportTest {
     @Test
     void customSqlModeShouldRejectMissingTargetObjectByMetadata() {
         DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
-        SyncTemplateMetadataAwarePrecheckSupport support =
-                new SyncTemplateMetadataAwarePrecheckSupport(metadataClient, new ObjectMapper());
+        SyncTemplateMetadataAwarePrecheckSupport support = support(metadataClient, emptyTargetProbe());
         when(metadataClient.discover(eq(24L), any(), any())).thenReturn(emptyResponse());
 
         SyncTemplateMetadataAwarePrecheckSupport.MetadataAwarePrecheckResult result =
@@ -123,6 +120,38 @@ class SyncTemplateMetadataAwarePrecheckSupportTest {
 
         assertThat(result.issueCodes()).contains("METADATA_TARGET_OBJECT_NOT_FOUND");
         assertThat(result.recommendedActions()).anyMatch(action -> action.contains("dwd.sql_target"));
+    }
+
+    @Test
+    void fullInsertShouldRejectNonEmptyTargetTable() {
+        DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
+        SyncTemplateMetadataAwarePrecheckSupport support = support(metadataClient, targetProbe(12L));
+        when(metadataClient.discover(eq(23L), any(), any())).thenReturn(responseWithTable(null, "task",
+                column("id", "BIGINT", true),
+                column("task_name", "VARCHAR", false)));
+        when(metadataClient.discover(eq(24L), any(), any())).thenReturn(responseWithTable("target_schema", "target_task",
+                column("id", "BIGINT", true),
+                column("task_name", "VARCHAR", false)));
+
+        SyncTemplateMetadataAwarePrecheckSupport.MetadataAwarePrecheckResult result =
+                support.evaluate(templateWithCustomTarget("target_schema", "target_task"), actor());
+
+        assertThat(result.issueCodes()).contains("METADATA_TARGET_NOT_EMPTY_FOR_INSERT_FULL");
+        assertThat(result.recommendedActions()).anyMatch(action -> action.contains("当前行数为 12"));
+    }
+
+    @Test
+    void postgresqlTargetShouldRequireSchemaBeforeMetadataLookup() {
+        DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
+        SyncTemplateMetadataAwarePrecheckSupport support = support(metadataClient, emptyTargetProbe());
+        when(metadataClient.discover(eq(23L), any(), any())).thenReturn(responseWithTable(null, "task",
+                column("id", "BIGINT", true)));
+
+        SyncTemplateMetadataAwarePrecheckSupport.MetadataAwarePrecheckResult result =
+                support.evaluate(templateWithCustomTarget("", "target_task"), actor());
+
+        assertThat(result.issueCodes()).contains("METADATA_TARGET_SCHEMA_REQUIRED");
+        assertThat(result.recommendedActions()).anyMatch(action -> action.contains("目标端连接器 POSTGRESQL"));
     }
 
     private SyncTemplate templateWithCustomTarget(String targetSchema, String targetTable) {
@@ -236,5 +265,29 @@ class SyncTemplateMetadataAwarePrecheckSupportTest {
         column.setPrimaryKey(primaryKey);
         column.setNullable(!primaryKey);
         return column;
+    }
+
+    private SyncTemplateMetadataAwarePrecheckSupport support(DatasourceMetadataDiscoveryClient metadataClient,
+                                                            DatasourceTableRowCountProbeClient rowCountProbeClient) {
+        return new SyncTemplateMetadataAwarePrecheckSupport(metadataClient, rowCountProbeClient, new ObjectMapper());
+    }
+
+    private DatasourceTableRowCountProbeClient emptyTargetProbe() {
+        return targetProbe(0L);
+    }
+
+    private DatasourceTableRowCountProbeClient targetProbe(Long rowCount) {
+        DatasourceTableRowCountProbeClient client = mock(DatasourceTableRowCountProbeClient.class);
+        when(client.probeRowCount(any(), any())).thenReturn(rowCountResponse(rowCount));
+        return client;
+    }
+
+    private DatasourceTableRowCountProbeResponse rowCountResponse(Long rowCount) {
+        DatasourceTableRowCountProbeResponse response = new DatasourceTableRowCountProbeResponse();
+        response.setProbeStatus("ROW_COUNT_PROBED");
+        response.setRowCount(rowCount);
+        response.setEmpty(rowCount == null ? null : rowCount <= 0L);
+        response.setWarnings(List.of());
+        return response;
     }
 }

@@ -129,6 +129,12 @@ datasmart:
       # datasource-management 暴露给 data-sync 的 internal 单批执行路径。
       # 该路径只允许 SOURCE_SERVICE=data-sync 且 ACTOR_ROLE=SERVICE_ACCOUNT 的服务账号调用。
       run-once-path: /internal/sync-batch-runs/run-once
+      # datasource-management 的目标表行数探测路径。
+      # 创建同步任务预检查会在“全量/定期全量 + INSERT”时调用该路径判断目标表是否为空：
+      # - 空表：INSERT 可以进入执行准入；
+      # - 非空：预检查阻断，避免执行阶段才发生主键冲突、唯一键冲突或重复写入；
+      # - 探测失败：fail-closed，因为无法证明目标表为空时不应冒险放行。
+      table-row-count-probe-path: /internal/sync-tables/row-count-probe
       # 服务账号来源标识，会写入 X-DataSmart-Source-Service。
       source-service: data-sync
       # 服务账号角色标识，会写入 X-DataSmart-Actor-Role。

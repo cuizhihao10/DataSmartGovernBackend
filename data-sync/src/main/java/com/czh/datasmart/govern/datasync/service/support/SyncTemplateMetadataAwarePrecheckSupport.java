@@ -12,6 +12,9 @@ import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryClient;
 import com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryRequest;
 import com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryResponse;
+import com.czh.datasmart.govern.datasync.integration.datasource.tableprobe.DatasourceTableRowCountProbeClient;
+import com.czh.datasmart.govern.datasync.integration.datasource.tableprobe.DatasourceTableRowCountProbeRequest;
+import com.czh.datasmart.govern.datasync.integration.datasource.tableprobe.DatasourceTableRowCountProbeResponse;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -54,6 +57,7 @@ public class SyncTemplateMetadataAwarePrecheckSupport {
     private static final int MAX_COLUMNS_PER_TABLE = 500;
 
     private final DatasourceMetadataDiscoveryClient metadataDiscoveryClient;
+    private final DatasourceTableRowCountProbeClient rowCountProbeClient;
     private final ObjectMapper objectMapper;
 
     /**
@@ -127,10 +131,16 @@ public class SyncTemplateMetadataAwarePrecheckSupport {
         boolean customSqlMode = isCustomSqlMode(template);
         DatasourceMetadataDiscoveryResponse.TableSummary sourceTable = null;
         if (!customSqlMode) {
+            boolean sourceSchemaMissing = requiresSchemaName(template.getSourceConnectorType()) && !hasText(mapping.sourceSchema());
+            if (sourceSchemaMissing) {
+                issueCodes.add("METADATA_SOURCE_SCHEMA_REQUIRED");
+                recommendedActions.add("源端连接器 " + safeConnector(template.getSourceConnectorType())
+                        + " 使用 schema 命名空间；请回到对象映射步骤填写源端 schema。MySQL/MariaDB 不需要填写 schema。");
+            }
             if (!hasText(mapping.sourceObject())) {
                 issueCodes.add("METADATA_SOURCE_OBJECT_REQUIRED");
                 recommendedActions.add("非 SQL 自定义传输必须声明源端表/对象；请回到对象映射步骤选择源端对象。");
-            } else {
+            } else if (!sourceSchemaMissing) {
                 sourceTable = discoverTable(template.getSourceDatasourceId(), template.getSourceConnectorType(),
                         mapping.sourceSchema(), mapping.sourceObject(), "SOURCE", actorContext,
                         issueCodes, recommendedActions);
@@ -138,10 +148,16 @@ public class SyncTemplateMetadataAwarePrecheckSupport {
         }
 
         DatasourceMetadataDiscoveryResponse.TableSummary targetTable = null;
+        boolean targetSchemaMissing = requiresSchemaName(template.getTargetConnectorType()) && !hasText(mapping.targetSchema());
+        if (targetSchemaMissing) {
+            issueCodes.add("METADATA_TARGET_SCHEMA_REQUIRED");
+            recommendedActions.add("目标端连接器 " + safeConnector(template.getTargetConnectorType())
+                    + " 使用 schema 命名空间；请回到对象映射步骤填写目标端 schema。MySQL/MariaDB 不需要填写 schema。");
+        }
         if (!hasText(mapping.targetObject())) {
             issueCodes.add("METADATA_TARGET_OBJECT_REQUIRED");
             recommendedActions.add("必须声明目标端表/对象；目标 schema/table 可以自定义填写，但不能为空。");
-        } else {
+        } else if (!targetSchemaMissing) {
             targetTable = discoverTable(template.getTargetDatasourceId(), template.getTargetConnectorType(),
                     mapping.targetSchema(), mapping.targetObject(), "TARGET", actorContext,
                     issueCodes, recommendedActions);
@@ -164,12 +180,16 @@ public class SyncTemplateMetadataAwarePrecheckSupport {
         }
         if (targetTable != null && isInsertWriteStrategy(template) && isFullLikeMode(template)) {
             /*
-             * 当前低敏 metadata discovery 合同只返回 schema/table/field/primaryKey，不读取真实业务行，
-             * 因此无法在 data-sync 控制面直接判断“目标表是否为空”。这里不能伪造通过，只能把风险说清楚：
-             * 后续应在 datasource-management 增加受权限保护的 row-count/estimate 预检能力，或在执行前 dry-run 中完成。
+             * INSERT 的语义必须说清楚：它不会覆盖已有行；如果目标表已有相同主键或唯一键，数据库会直接报错。
+             * 因此 FULL/SCHEDULED_FULL 这类“把源端当前范围整体写入目标”的场景，必须在执行前确认目标表为空，
+             * 否则用户以为“全量传输会自动覆盖/清空”就非常危险。
+             *
+             * 这里仍然遵守微服务边界：data-sync 不直接连接目标库，而是调用 datasource-management 的 internal
+             * row-count probe。datasource-management 才持有 JDBC 凭据和只读连接能力，返回给 data-sync 的只是低敏
+             * rowCount/empty 事实。
              */
-            safetyNotes.add("INSERT + 全量/定期全量场景已确认目标对象存在，但当前元数据合同尚未返回目标表行数；"
-                    + "生产执行前建议补充目标表空表/行数探测，避免重复插入或与既有数据冲突。");
+            probeTargetRowCountForInsert(template, mapping, targetTable, actorContext,
+                    issueCodes, recommendedActions, safetyNotes);
         }
         if (targetTable == null) {
             return;
@@ -363,6 +383,81 @@ public class SyncTemplateMetadataAwarePrecheckSupport {
         return null;
     }
 
+    /**
+     * 对全量 INSERT 目标表做行数探测。
+     *
+     * <p>这是本轮预检查收敛的关键点：过去系统只能说“当前元数据合同没有目标表行数，因此需要确认”；
+     * 现在改为在服务端主动获取 row-count 事实。对于商用数据同步产品来说，这比单纯提示风险更重要，
+     * 因为用户往往会把“全量传输”理解成“目标端可以被安全重建”，但 INSERT 实际上既不清空目标表，也不覆盖已有行。</p>
+     *
+     * <p>判断策略采用 fail-closed：</p>
+     * <p>1. row-count 成功且为 0：允许继续预检查；</p>
+     * <p>2. row-count 成功且大于 0：硬阻断，要求用户清空目标表、改为 UPDATE/merge 或重新选择目标表；</p>
+     * <p>3. row-count 探测失败：硬阻断，因为系统无法证明目标表为空，不应冒险放行。</p>
+     */
+    private void probeTargetRowCountForInsert(SyncTemplate template,
+                                              ObjectMapping mapping,
+                                              DatasourceMetadataDiscoveryResponse.TableSummary targetTable,
+                                              SyncActorContext actorContext,
+                                              List<String> issueCodes,
+                                              List<String> recommendedActions,
+                                              List<String> safetyNotes) {
+        if (rowCountProbeClient == null) {
+            issueCodes.add("METADATA_TARGET_ROW_COUNT_PROBE_UNAVAILABLE");
+            recommendedActions.add("全量 INSERT 需要目标表空表检查，但当前 data-sync 未注入 row-count probe 客户端；请检查服务配置。");
+            return;
+        }
+        DatasourceTableRowCountProbeRequest request = new DatasourceTableRowCountProbeRequest();
+        request.setDatasourceId(template.getTargetDatasourceId());
+        request.setConnectorType(template.getTargetConnectorType());
+        request.setObjectLocator(targetObjectLocator(template.getTargetConnectorType(), mapping, targetTable));
+        request.setPurpose("PRECHECK_INSERT_TARGET_EMPTY");
+        try {
+            DatasourceTableRowCountProbeResponse response = rowCountProbeClient.probeRowCount(request, actorContext);
+            if (response == null || !response.probed() || response.getRowCount() == null) {
+                issueCodes.add("METADATA_TARGET_ROW_COUNT_PROBE_FAILED");
+                recommendedActions.add("全量 INSERT 需要确认目标对象为空，但目标表行数探测未成功；请检查目标库权限、表名/schema 或稍后重试。");
+                return;
+            }
+            Long rowCount = response.getRowCount();
+            if (rowCount > 0L) {
+                issueCodes.add("METADATA_TARGET_NOT_EMPTY_FOR_INSERT_FULL");
+                recommendedActions.add("目标对象 " + lowSensitiveObject(mapping.targetSchema(), mapping.targetObject())
+                        + " 当前行数为 " + rowCount + "。全量 INSERT 不会覆盖旧行，可能发生主键冲突或重复写入；"
+                        + "请先清空/新建目标表，或把写入策略改为 UPDATE/merge。");
+            } else {
+                safetyNotes.add("目标对象 " + lowSensitiveObject(mapping.targetSchema(), mapping.targetObject())
+                        + " 已通过 row-count 探测确认为空，全量 INSERT 不会与既有目标数据冲突。");
+            }
+            if (response.getWarnings() != null) {
+                response.getWarnings().stream()
+                        .filter(Objects::nonNull)
+                        .map(warning -> "目标表行数探测：" + warning)
+                        .forEach(safetyNotes::add);
+            }
+        } catch (RuntimeException exception) {
+            issueCodes.add("METADATA_TARGET_ROW_COUNT_PROBE_FAILED");
+            recommendedActions.add("全量 INSERT 目标表行数探测失败，已按 fail-closed 阻断执行准入；低敏原因="
+                    + lowSensitiveException(exception));
+        }
+    }
+
+    private String targetObjectLocator(String connectorType,
+                                       ObjectMapping mapping,
+                                       DatasourceMetadataDiscoveryResponse.TableSummary targetTable) {
+        String table = firstNonBlank(targetTable == null ? null : targetTable.getTableName(), mapping.targetObject());
+        if (isMysqlFamily(connectorType)) {
+            /*
+             * MySQL 的“库名”是 catalog，不是 PostgreSQL 风格 schema。
+             * 如果 metadata discovery 返回了 catalog，则使用 database.table；否则使用 table，让连接当前 catalog 决定。
+             */
+            String catalog = targetTable == null ? null : targetTable.getCatalog();
+            return firstNonBlank(catalog) == null ? table : catalog + "." + table;
+        }
+        String schema = firstNonBlank(mapping.targetSchema(), targetTable == null ? null : targetTable.getSchemaName());
+        return schema == null ? table : schema + "." + table;
+    }
+
     private List<ObjectMapping> parseObjectMappings(SyncTemplate template, JsonNode objectRoot, JsonNode fieldRoot) {
         List<ObjectMapping> mappings = new ArrayList<>();
         appendObjectMappings(mappings, firstArray(objectRoot, "mappings", "objectMappings"));
@@ -552,6 +647,16 @@ public class SyncTemplateMetadataAwarePrecheckSupport {
         return normalized.contains("MYSQL") || normalized.contains("MARIADB");
     }
 
+    private boolean requiresSchemaName(String connectorType) {
+        String normalized = connectorType == null ? "" : connectorType.toUpperCase(Locale.ROOT);
+        /*
+         * MySQL/MariaDB 的业务命名空间是 database/catalog，创建任务页面已经不再暴露 schema 必填。
+         * PostgreSQL 和 SQL Server 则存在真实 schema 命名空间；如果不要求用户填写 schema，
+         * 后端可能在多个 schema 中误命中同名表，也可能因为 search_path 不同导致预检查和执行阶段结果不一致。
+         */
+        return hasText(normalized) && !isMysqlFamily(normalized);
+    }
+
     private boolean typeCompatible(String sourceType, String targetType) {
         String sourceFamily = typeFamily(sourceType);
         String targetFamily = typeFamily(targetType);
@@ -607,6 +712,19 @@ public class SyncTemplateMetadataAwarePrecheckSupport {
         return value == null || value.isBlank() ? null : value.trim();
     }
 
+    private String firstNonBlank(String... values) {
+        if (values == null) {
+            return null;
+        }
+        for (String value : values) {
+            String normalized = trimToNull(value);
+            if (normalized != null) {
+                return normalized;
+            }
+        }
+        return null;
+    }
+
     private String safeField(String fieldName) {
         String normalized = trimToNull(fieldName);
         if (normalized == null) {
@@ -619,6 +737,11 @@ public class SyncTemplateMetadataAwarePrecheckSupport {
         String schema = trimToNull(schemaName);
         String table = trimToNull(tableName);
         return schema == null ? String.valueOf(table) : schema + "." + table;
+    }
+
+    private String safeConnector(String connectorType) {
+        String normalized = trimToNull(connectorType);
+        return normalized == null ? "<UNKNOWN>" : normalized.toUpperCase(Locale.ROOT);
     }
 
     private String lowSensitiveException(RuntimeException exception) {
