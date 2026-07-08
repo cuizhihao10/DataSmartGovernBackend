@@ -20,16 +20,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>这组测试不是为了验证 UI，而是为了保护后端给前端和 Agent 工具输出的“产品合同”。
  * 新建任务页面已经不应该暴露 tenantId/projectId/workspaceId、raw JSON、审批事实、runMode 等内部概念；
- * 同时它又需要知道如何自动拉取元数据、如何生成字段映射建议、SQL 自定义模式有哪些差异。
+ * 同时它又需要知道如何自动拉取元数据、如何基于源/目标元数据在前端生成字段映射、SQL 自定义模式有哪些差异。
  * 如果这些规则只写在口头说明或前端代码里，后端后续重构时很容易漏掉，因此这里用单测把合同固定下来。</p>
  */
 class SyncTaskCreateWizardContractSupportTest {
 
     /**
-     * 创建向导合同必须显式暴露元数据发现与字段映射建议入口。
+     * 创建向导合同必须显式暴露元数据发现入口，并明确字段映射建议接口已经退场。
      *
      * <p>业务意义：前端进入对象映射步骤后应自动调用这些接口加载 schema/table/field 摘要，
      * 而不是让用户手动点击“获取元数据”或直接填写 objectMappingConfig/fieldMappingConfig JSON。
+     * 字段映射现在由前端基于源端字段和目标端字段元数据生成，同名字段只做默认预填，最终由预检查判断可执行性。
      * 这也是本项目把 DataX 风格底层执行计划和用户可理解表单解耦的重要边界。</p>
      */
     @Test
@@ -42,18 +43,19 @@ class SyncTaskCreateWizardContractSupportTest {
 
         SyncTaskCreateWizardContractResponse contract = support.buildContract(projectActorContext());
 
-        assertThat(contract.contractVersion()).isEqualTo("datasmart.sync-task.create-wizard.v5");
+        assertThat(contract.contractVersion()).isEqualTo("datasmart.sync-task.create-wizard.v6");
         assertThat(contract.metadataDiscovery()).isNotNull();
         assertThat(contract.metadataDiscovery().objectDiscoveryApi())
                 .isEqualTo("POST /sync-tasks/create-wizard/metadata/objects/discover");
-        assertThat(contract.metadataDiscovery().fieldMappingSuggestionApi())
-                .isEqualTo("POST /sync-tasks/create-wizard/metadata/field-mappings/suggest");
+        assertThat(contract.metadataDiscovery().fieldMappingSuggestionApi()).isNull();
         assertThat(contract.metadataDiscovery().customSqlCheckApi())
                 .isEqualTo("POST /sync-tasks/create-wizard/sql/check");
         assertThat(contract.metadataDiscovery().filterModes())
                 .containsExactly("TABLE", "SCHEMA", "SCHEMA_AND_TABLE", "CATALOG", "ALL");
         assertThat(contract.metadataDiscovery().customSqlRules())
                 .anySatisfy(rule -> assertThat(rule).contains("CUSTOM_SQL_QUERY").contains("目标表"));
+        assertThat(contract.metadataDiscovery().fieldMappingRules())
+                .anySatisfy(rule -> assertThat(rule).contains("不再依赖后端建议接口"));
         assertThat(contract.datasourceUsage().allowedUsageValues())
                 .containsExactly("SOURCE", "TARGET");
         assertThat(contract.datasourceUsage().usageRules())

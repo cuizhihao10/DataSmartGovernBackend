@@ -32,6 +32,26 @@ public class SyncTaskWizardStepValidationRequest {
     private String syncMode;
 
     /**
+     * 创建向导第一步填写的任务名称。
+     *
+     * <p>任务名称不再放到第四步；因为第二步开始任务就会保存为 DRAFT，
+     * 如果第一步没有名称，任务列表就无法展示可识别的“编辑中”草稿。</p>
+     */
+    private String taskName;
+
+    /**
+     * 已保存草稿任务 ID。
+     *
+     * <p>第四步预检查必须基于已经保存的草稿任务和模板运行，不能再让前端提交一份悬空配置。</p>
+     */
+    private Long taskId;
+
+    /**
+     * 已保存草稿模板 ID。
+     */
+    private Long templateId;
+
+    /**
      * 源端数据源 ID；前端应只从 usagePurpose=SOURCE 的数据源列表中选择。
      */
     private Long sourceDatasourceId;

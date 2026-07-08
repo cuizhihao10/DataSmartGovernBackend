@@ -17,6 +17,8 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchExportReque
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCreateWizardDraftSaveRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCreateWizardDraftSaveResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCreateWizardContractResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCustomSqlCheckRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCustomSqlCheckResponse;
@@ -115,6 +117,27 @@ public class DataSyncTaskController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         return PlatformApiResponse.success("同步任务创建向导步骤校验完成",
                 createWizardContractSupport.validateStep(request), traceId);
+    }
+
+    /**
+     * 保存同步任务创建向导草稿。
+     *
+     * <p>该路由是“第二步以后任务视为已保存”的后端闭环入口。它和 {@code POST /sync-tasks} 的职责不同：</p>
+     * <p>1. 本接口只创建或更新 DRAFT，不触发预检查、不发布、不入队、不启用定时调度；</p>
+     * <p>2. 第一次保存会返回 taskId/templateId，后续对象映射、字段映射和 SQL 配置继续覆盖同一条草稿；</p>
+     * <p>3. 第四步进入预检查时，前端再基于返回的 templateId 调用模板预检查接口，预检查结果负责判断目标表、字段、约束是否正确。</p>
+     */
+    @PostMapping("/create-wizard/drafts")
+    public PlatformApiResponse<SyncTaskCreateWizardDraftSaveResponse> saveCreateWizardDraft(
+            @RequestBody SyncTaskCreateWizardDraftSaveRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        SyncActorContext actorContext = actorContext(tenantId, actorId, actorRole, traceId, headers);
+        return PlatformApiResponse.success("同步任务创建向导草稿已保存",
+                dataSyncService.saveCreateWizardDraft(request, actorContext), traceId);
     }
 
     /**

@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.datasync.service.support;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -89,6 +90,15 @@ public class SyncFieldMappingExecutionContractSupport {
         int mappingCount = 0;
 
         for (JsonNode mappingNode : mappingsNode) {
+            /*
+             * 新版创建向导会把“源端独有字段”和“目标端独有字段”也写入 fieldMappingConfig，
+             * 目的是让用户完整看到两端表结构差异。此类行通常 syncEnabled=false，表示仅用于展示，
+             * 不参与真实 reader -> writer 搬运；旧执行合同必须跳过它们，避免把空 sourceField/targetField
+             * 误判成字段映射错误。
+             */
+            if (!mappingSyncEnabled(mappingNode)) {
+                continue;
+            }
             FieldMappingPair pair = readPair(mappingNode);
             if (!hasText(pair.sourceField()) || !hasText(pair.targetField())) {
                 issueCodes.add("FIELD_MAPPING_PAIR_INCOMPLETE");
@@ -139,7 +149,32 @@ public class SyncFieldMappingExecutionContractSupport {
     private JsonNode readMappingsNode(String fieldMappingConfig, List<String> issueCodes) {
         try {
             JsonNode rootNode = objectMapper.readTree(fieldMappingConfig);
-            return rootNode.isArray() ? rootNode : rootNode.path("mappings");
+            if (rootNode.isArray()) {
+                return rootNode;
+            }
+            JsonNode topLevelMappings = firstArray(rootNode, "mappings", "fieldMappings");
+            if (topLevelMappings != null) {
+                return topLevelMappings;
+            }
+            /*
+             * 创建向导 v2 的字段映射是“对象级”的：每一张源表到目标表的映射都有自己的 mappings。
+             * 旧的最小执行合同只需要知道“是否存在可执行字段映射”，因此这里构造一个扁平化视图。
+             * 真正的逐对象校验，例如目标表是否存在、源字段/目标字段是否存在、类型是否兼容，
+             * 由 SyncTemplateMetadataAwarePrecheckSupport 读取两端真实元数据后完成。
+             */
+            JsonNode objectMappings = rootNode.path("objectMappings");
+            if (objectMappings.isArray()) {
+                ArrayNode flattenedMappings = objectMapper.createArrayNode();
+                for (JsonNode objectMapping : objectMappings) {
+                    JsonNode objectLevelMappings = firstArray(objectMapping, "mappings", "fieldMappings");
+                    if (objectLevelMappings == null) {
+                        continue;
+                    }
+                    objectLevelMappings.forEach(flattenedMappings::add);
+                }
+                return flattenedMappings;
+            }
+            return rootNode.path("mappings");
         } catch (Exception exception) {
             issueCodes.add("FIELD_MAPPING_PARSE_FAILED");
             return null;
@@ -160,6 +195,24 @@ public class SyncFieldMappingExecutionContractSupport {
                 firstText(mappingNode, "sourceField", "source", "from", "sourceColumn"),
                 firstText(mappingNode, "targetField", "target", "to", "targetColumn")
         );
+    }
+
+    /**
+     * 判断字段映射行是否真的参与同步。
+     *
+     * <p>历史字段映射没有 {@code syncEnabled} 字段，默认视为参与同步，保证旧模板不需要迁移；
+     * 新版创建向导会把源端独有、目标端独有字段以 {@code syncEnabled=false} 保存，用于字段映射页展示两端差异，
+     * 这些行不应进入最小执行合同。</p>
+     */
+    private boolean mappingSyncEnabled(JsonNode mappingNode) {
+        if (mappingNode == null || !mappingNode.isObject()) {
+            return true;
+        }
+        JsonNode syncEnabledNode = mappingNode.get("syncEnabled");
+        if (syncEnabledNode == null || syncEnabledNode.isNull()) {
+            return true;
+        }
+        return syncEnabledNode.asBoolean(true);
     }
 
     /**
@@ -197,6 +250,25 @@ public class SyncFieldMappingExecutionContractSupport {
             JsonNode fieldNode = node.get(fieldName);
             if (fieldNode != null && !fieldNode.isNull() && hasText(fieldNode.asText())) {
                 return fieldNode.asText().trim();
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 从若干候选字段名中读取第一个数组节点。
+     *
+     * <p>创建向导、导入文件和历史模板可能分别使用 {@code mappings} 或 {@code fieldMappings}。
+     * 在这里集中做兼容，可以避免同一种字段映射语义散落到多个分支里。</p>
+     */
+    private JsonNode firstArray(JsonNode node, String... fieldNames) {
+        if (node == null || !node.isObject()) {
+            return null;
+        }
+        for (String fieldName : fieldNames) {
+            JsonNode candidate = node.get(fieldName);
+            if (candidate != null && candidate.isArray()) {
+                return candidate;
             }
         }
         return null;

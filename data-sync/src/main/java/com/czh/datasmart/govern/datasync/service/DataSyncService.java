@@ -28,6 +28,8 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCreateWizardDraftSaveRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCreateWizardDraftSaveResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExportFile;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskFieldMappingSuggestionRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskFieldMappingSuggestionResponse;
@@ -101,6 +103,16 @@ public interface DataSyncService {
     SyncOfflineJobPlanResponse buildOfflineJobPlan(Long id, SyncActorContext actorContext);
 
     SyncTask createTask(CreateSyncTaskRequest request, SyncActorContext actorContext);
+
+    /**
+     * 保存同步任务创建向导草稿。
+     *
+     * <p>该方法是新建任务四步向导的“渐进式持久化”入口：第一步校验通过并进入第二步时创建 DRAFT 任务，
+     * 第二步和第三步继续更新同一条任务与模板配置。它不会执行预检查、不会发布任务、不会创建 execution，
+     * 只保证用户关闭页面后还能在任务列表中看到“编辑中”并继续编辑。</p>
+     */
+    SyncTaskCreateWizardDraftSaveResponse saveCreateWizardDraft(SyncTaskCreateWizardDraftSaveRequest request,
+                                                                SyncActorContext actorContext);
 
     PlatformPageResponse<SyncTask> pageTasks(SyncTaskQueryCriteria criteria, SyncActorContext actorContext);
 

@@ -32,6 +32,8 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCreateWizardDraftSaveRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCreateWizardDraftSaveResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExportFile;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskFieldMappingSuggestionRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskFieldMappingSuggestionResponse;
@@ -76,6 +78,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncObjectExecutionOper
 import com.czh.datasmart.govern.datasync.service.support.SyncOfflineJobPlanSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskBatchOperationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskCreateWizardDraftSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskDefinitionOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskDefinitionExchangeSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskLifecycleOperationSupport;
@@ -146,6 +149,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncObjectExecutionOperationSupport objectExecutionOperationSupport;
     private final SyncDirtyRecordReplaySupport dirtyRecordReplaySupport;
     private final SyncTaskScheduleConfigSupport scheduleConfigSupport;
+    private final SyncTaskCreateWizardDraftSupport createWizardDraftSupport;
 
     @Override
     @Transactional
@@ -209,7 +213,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     @Override
     public SyncTemplateExecutionPrecheckResponse precheckTemplate(Long id, SyncActorContext actorContext) {
         SyncTemplate template = getTemplate(id, actorContext);
-        return templateExecutionPrecheckSupport.precheck(template);
+        return templateExecutionPrecheckSupport.precheck(template, actorContext);
     }
 
     /**
@@ -230,7 +234,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     public SyncTask createTask(CreateSyncTaskRequest request, SyncActorContext actorContext) {
         SyncTemplate template = getTemplate(request.getTemplateId(), actorContext);
         templateValidationSupport.validateTemplate(template);
-        SyncTemplateExecutionPrecheckResponse precheck = templateExecutionPrecheckSupport.precheck(template);
+        SyncTemplateExecutionPrecheckResponse precheck = templateExecutionPrecheckSupport.precheck(template, actorContext);
         if (!precheck.canCreateTaskDraft()) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
                     "同步任务创建前预检查未通过，precheckStatus=" + precheck.precheckStatus()
@@ -316,6 +320,20 @@ public class DataSyncServiceImpl implements DataSyncService {
         auditSupport.saveAudit(task.getTenantId(), task.getId(), null, SyncAuditActionType.CREATE_TASK,
                 actorContext, buildCreateTaskAuditPayload(task, precheck, request));
         return task;
+    }
+
+    /**
+     * 保存创建向导草稿。
+     *
+     * <p>主 Service 只负责声明事务边界并委托给 {@link SyncTaskCreateWizardDraftSupport}。
+     * 这样“创建/更新 DRAFT 模板与任务”的规则不会继续塞进已经很重的 ServiceImpl，也方便后续单独补草稿恢复、草稿发布、
+     * 草稿超期清理等能力。</p>
+     */
+    @Override
+    @Transactional
+    public SyncTaskCreateWizardDraftSaveResponse saveCreateWizardDraft(SyncTaskCreateWizardDraftSaveRequest request,
+                                                                       SyncActorContext actorContext) {
+        return createWizardDraftSupport.saveDraft(request, actorContext);
     }
 
     @Override

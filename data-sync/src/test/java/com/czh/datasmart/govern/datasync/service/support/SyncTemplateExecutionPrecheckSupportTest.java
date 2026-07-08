@@ -26,7 +26,8 @@ class SyncTemplateExecutionPrecheckSupportTest {
             new SyncConnectorCapabilityRegistry(),
             new SyncTemplateScopeContractSupport(new ObjectMapper()),
             new SyncFieldMappingExecutionContractSupport(new ObjectMapper()),
-            new SyncFilterExecutionContractSupport(new ObjectMapper())
+            new SyncFilterExecutionContractSupport(new ObjectMapper()),
+            null
     );
 
     @Test
@@ -67,17 +68,19 @@ class SyncTemplateExecutionPrecheckSupportTest {
     }
 
     @Test
-    void incrementalModeShouldBeBlockedFromCurrentRunnerByCheckpointHandoff() {
+    void incrementalModeShouldBeBlockedBecauseItIsNoLongerUserSelectableTransferMode() {
         SyncTemplate template = executableSingleObjectTemplate("INCREMENTAL_TIME");
         template.setIncrementalField("updated_at");
 
         SyncTemplateExecutionPrecheckResponse response = support.precheck(template);
 
-        assertThat(response.precheckStatus()).isEqualTo(SyncTemplateExecutionPrecheckSupport.NOT_SUPPORTED_BY_CURRENT_RUNNER);
+        assertThat(response.precheckStatus()).isEqualTo(SyncTemplateExecutionPrecheckSupport.BLOCKED);
         assertThat(response.transferChannel()).isEqualTo("OFFLINE");
         assertThat(response.checkpointRequired()).isTrue();
         assertThat(response.checkpointHandoffSupported()).isFalse();
-        assertThat(response.issueCodes()).contains("CHECKPOINT_HANDOFF_NOT_IMPLEMENTED");
+        assertThat(response.issueCodes()).contains(
+                "SYNC_MODE_NOT_USER_SELECTABLE_TRANSFER_MODE",
+                "CHECKPOINT_HANDOFF_NOT_IMPLEMENTED");
     }
 
     @Test

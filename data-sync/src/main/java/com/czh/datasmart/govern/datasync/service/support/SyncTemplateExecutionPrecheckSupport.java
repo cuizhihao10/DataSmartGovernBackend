@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.datasync.service.support;
 
+import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncConnectorCompatibilityView;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
@@ -49,6 +50,7 @@ public class SyncTemplateExecutionPrecheckSupport {
     private final SyncTemplateScopeContractSupport scopeContractSupport;
     private final SyncFieldMappingExecutionContractSupport fieldMappingExecutionContractSupport;
     private final SyncFilterExecutionContractSupport filterExecutionContractSupport;
+    private final SyncTemplateMetadataAwarePrecheckSupport metadataAwarePrecheckSupport;
 
     /**
      * 执行模板预检查。
@@ -57,6 +59,21 @@ public class SyncTemplateExecutionPrecheckSupport {
      * @return 低敏预检查报告。
      */
     public SyncTemplateExecutionPrecheckResponse precheck(SyncTemplate template) {
+        return precheck(template, null);
+    }
+
+    /**
+     * 执行携带操作者上下文的模板预检查。
+     *
+     * <p>创建向导第四步和正式创建任务入口应优先调用这个方法。它会在原有能力矩阵、范围合同、字段合同和过滤合同
+     * 之外，继续调用 datasource-management 的低敏元数据发现能力，检查源表、目标 schema/table 和已勾选字段映射
+     * 是否真实存在。这样用户自定义填写目标对象名后，不会在真正执行时才发现目标表不存在。</p>
+     *
+     * @param template 已通过租户/项目数据范围校验的同步模板。
+     * @param actorContext 当前操作者上下文，用于下游元数据发现权限与审计。
+     * @return 低敏预检查报告。
+     */
+    public SyncTemplateExecutionPrecheckResponse precheck(SyncTemplate template, SyncActorContext actorContext) {
         List<String> issueCodes = new ArrayList<>();
         List<String> recommendedActions = new ArrayList<>();
         List<String> performanceNotes = new ArrayList<>();
@@ -79,6 +96,13 @@ public class SyncTemplateExecutionPrecheckSupport {
         SyncFilterExecutionContract filterContract = filterExecutionContractSupport.parse(template.getFilterConfig());
         issueCodes.addAll(filterContract.getIssueCodes());
         safetyNotes.addAll(filterContract.getWarnings());
+        if (metadataAwarePrecheckSupport != null) {
+            SyncTemplateMetadataAwarePrecheckSupport.MetadataAwarePrecheckResult metadataPrecheck =
+                    metadataAwarePrecheckSupport.evaluate(template, actorContext);
+            issueCodes.addAll(metadataPrecheck.issueCodes());
+            recommendedActions.addAll(metadataPrecheck.recommendedActions());
+            safetyNotes.addAll(metadataPrecheck.safetyNotes());
+        }
 
         boolean connectorFactsComplete = hasText(template.getSourceConnectorType())
                 && hasText(template.getTargetConnectorType())
@@ -385,7 +409,21 @@ public class SyncTemplateExecutionPrecheckSupport {
                         || "FILTER_CONDITION_SCHEMA_UNSUPPORTED".equals(issueCode)
                         || "FILTER_COLUMN_IDENTIFIER_UNSAFE".equals(issueCode)
                         || "FILTER_OPERATOR_UNSUPPORTED".equals(issueCode)
-                        || "FILTER_VALUE_REQUIRED".equals(issueCode));
+                        || "FILTER_VALUE_REQUIRED".equals(issueCode)
+                        || "METADATA_OBJECT_MAPPING_JSON_INVALID".equals(issueCode)
+                        || "METADATA_FIELD_MAPPING_JSON_INVALID".equals(issueCode)
+                        || "METADATA_OBJECT_MAPPING_EMPTY".equals(issueCode)
+                        || "METADATA_SOURCE_DATASOURCE_MISSING".equals(issueCode)
+                        || "METADATA_TARGET_DATASOURCE_MISSING".equals(issueCode)
+                        || "METADATA_SOURCE_OBJECT_REQUIRED".equals(issueCode)
+                        || "METADATA_TARGET_OBJECT_REQUIRED".equals(issueCode)
+                        || "METADATA_SOURCE_OBJECT_NOT_FOUND".equals(issueCode)
+                        || "METADATA_TARGET_OBJECT_NOT_FOUND".equals(issueCode)
+                        || "METADATA_DISCOVERY_FAILED".equals(issueCode)
+                        || "METADATA_FIELD_MAPPING_SELECTED_EMPTY".equals(issueCode)
+                        || "METADATA_SOURCE_FIELD_NOT_FOUND".equals(issueCode)
+                        || "METADATA_TARGET_FIELD_NOT_FOUND".equals(issueCode)
+                        || "METADATA_FIELD_MAPPING_TYPE_INCOMPATIBLE".equals(issueCode));
     }
 
     private List<String> distinct(List<String> values) {

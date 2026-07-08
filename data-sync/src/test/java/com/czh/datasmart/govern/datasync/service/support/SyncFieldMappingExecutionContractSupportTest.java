@@ -67,6 +67,43 @@ class SyncFieldMappingExecutionContractSupportTest {
     }
 
     @Test
+    void createWizardV2ObjectMappingsShouldFlattenOnlyEnabledRows() {
+        String config = """
+                {
+                  "version": "datasmart.sync-field-mapping.v2",
+                  "objectMappings": [
+                    {
+                      "sourceObject": "task",
+                      "targetSchema": "task_management",
+                      "targetObject": "task",
+                      "mappings": [
+                        {"sourceField": "id", "targetField": "id", "syncEnabled": true},
+                        {"sourceField": "source_only", "targetField": "", "syncEnabled": false},
+                        {"sourceField": "", "targetField": "target_only", "syncEnabled": false}
+                      ]
+                    }
+                  ]
+                }
+                """;
+
+        SyncFieldMappingExecutionContract contract = support.parse(config, "id");
+
+        /*
+         * 新建任务向导第三步需要展示源端独有/目标端独有字段，但这些展示行不能污染执行合同。
+         * 这里固定两个行为：
+         * 1. objectMappings v2 不再被旧解析器误判成 FIELD_MAPPING_SCHEMA_UNSUPPORTED；
+         * 2. syncEnabled=false 的展示行不会被当成 FIELD_MAPPING_PAIR_INCOMPLETE。
+         */
+        assertThat(contract.isParseable()).isTrue();
+        assertThat(contract.isHasMappings()).isTrue();
+        assertThat(contract.getMappingCount()).isEqualTo(1);
+        assertThat(contract.getSelectedColumns()).containsExactly("id");
+        assertThat(contract.getWriteColumns()).containsExactly("id");
+        assertThat(contract.getIssueCodes()).isEmpty();
+        assertThat(contract.directlyRunnableByMinimalBridge()).isTrue();
+    }
+
+    @Test
     void invalidJsonShouldReturnIssueCodeWithoutLeakingOriginalPayload() {
         String unsafePayload = "{ \"mappings\": [ { \"sourceField\": \"secret_phone\", ";
 

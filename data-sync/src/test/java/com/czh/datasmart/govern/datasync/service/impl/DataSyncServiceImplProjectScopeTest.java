@@ -32,6 +32,7 @@ import com.czh.datasmart.govern.datasync.service.support.SyncObjectExecutionOper
 import com.czh.datasmart.govern.datasync.service.support.SyncOfflineJobPlanSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskBatchOperationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskCreateWizardDraftSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskDefinitionExchangeSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskDefinitionOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskGroupOperationSupport;
@@ -420,7 +421,8 @@ class DataSyncServiceImplProjectScopeTest {
                 offlineJobPlanSupport(),
                 mock(SyncObjectExecutionOperationSupport.class),
                 mock(SyncDirtyRecordReplaySupport.class),
-                new SyncTaskScheduleConfigSupport(new ObjectMapper())
+                new SyncTaskScheduleConfigSupport(new ObjectMapper()),
+                mock(SyncTaskCreateWizardDraftSupport.class)
         );
     }
 
@@ -489,7 +491,8 @@ class DataSyncServiceImplProjectScopeTest {
                 offlineJobPlanSupport(),
                 mock(SyncObjectExecutionOperationSupport.class),
                 mock(SyncDirtyRecordReplaySupport.class),
-                new SyncTaskScheduleConfigSupport(new ObjectMapper())
+                new SyncTaskScheduleConfigSupport(new ObjectMapper()),
+                mock(SyncTaskCreateWizardDraftSupport.class)
         );
     }
 
@@ -499,7 +502,8 @@ class DataSyncServiceImplProjectScopeTest {
                 new SyncConnectorCapabilityRegistry(),
                 new SyncTemplateScopeContractSupport(objectMapper),
                 new SyncFieldMappingExecutionContractSupport(objectMapper),
-                new SyncFilterExecutionContractSupport(objectMapper)
+                new SyncFilterExecutionContractSupport(objectMapper),
+                null
         );
     }
 

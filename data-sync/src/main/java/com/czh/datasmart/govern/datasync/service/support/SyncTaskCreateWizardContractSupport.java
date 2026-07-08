@@ -52,7 +52,7 @@ public class SyncTaskCreateWizardContractSupport {
         Long tenantId = dataScopeSupport.resolveTenantForCreate(null, actorContext);
         Long projectId = dataScopeSupport.resolveProjectForCreate(null, actorContext);
         return new SyncTaskCreateWizardContractResponse(
-                "datasmart.sync-task.create-wizard.v5",
+                "datasmart.sync-task.create-wizard.v6",
                 new SyncTaskCreateWizardContractResponse.ScopeBinding(
                         tenantId,
                         projectId,
@@ -112,8 +112,8 @@ public class SyncTaskCreateWizardContractSupport {
                         "SOURCE_TARGET",
                         "源端/目标端",
                         1,
-                        List.of("syncMode", "sourceDatasourceId", "targetDatasourceId"),
-                        "校验通过后进入第二步时保存模板草稿，后续任务归属于当前项目上下文",
+                        List.of("taskName", "syncMode", "sourceDatasourceId", "targetDatasourceId"),
+                        "校验通过并进入第二步时创建 DRAFT 草稿任务；任务列表立即可见且归属于当前项目上下文",
                         List.of("源端和目标端不能相同", "数据源用途必须匹配源端/目标端角色", "定时模式不在本步骤手填 runMode"),
                         List.of("tenantId", "projectId", "workspaceId", "runMode")),
                 new SyncTaskCreateWizardContractResponse.WizardStep(
@@ -121,23 +121,23 @@ public class SyncTaskCreateWizardContractSupport {
                         "对象映射",
                         2,
                         List.of("syncScopeType", "objectMappingConfig 或 source/target object"),
-                        "保存并进入下一步",
-                        List.of("自动发现源端/目标端 schema、表、字段", "按 schema/表/schema+表筛选", "支持选择整个 schema 后排除部分表", "SQL 自定义模式只选择目标表"),
+                        "保存对象映射草稿并进入字段/SQL；目标 schema/table 允许用户自定义填写，存在性由预检查判断",
+                        List.of("自动发现源端/目标端 schema、表、字段", "按 schema/表/schema+表筛选", "支持批量勾选、分页大小切换和选择整个 schema 后排除部分表", "SQL 自定义模式只选择目标表"),
                         List.of("rawJsonEditorForObjectMapping")),
                 new SyncTaskCreateWizardContractResponse.WizardStep(
                         "FIELD_SQL",
                         "字段/SQL",
                         3,
                         List.of("writeStrategy", "fieldMappingConfig 或 customSqlConfig"),
-                        "保存并进入下一步",
-                        List.of("普通模式校验字段映射数量和类型兼容", "SQL 模式校验只读 SQL、语法、库表存在性和别名字段映射"),
+                        "保存逐对象字段映射/SQL/where 条件草稿并进入自动预检查",
+                        List.of("字段映射以源端和目标端真实元数据为准，同名字段只做默认预填", "多表模式必须支持每个对象映射单独维护字段映射和 where 条件", "SQL 模式校验只读 SQL、语法、库表存在性和别名字段映射"),
                         List.of("primaryKeyField", "incrementalField", "partitionConfig", "retryPolicy", "timeoutPolicy")),
                 new SyncTaskCreateWizardContractResponse.WizardStep(
                         "PRECHECK",
-                        "预检与创建",
+                        "预检查",
                         4,
-                        List.of("taskName", "groupCode"),
-                        "运行预检查并创建任务",
+                        List.of("taskId", "templateId"),
+                        "进入本步骤后自动运行预检查；预检查通过后再发布/执行，草稿保存不等于立即执行",
                         List.of("连接器兼容性", "对象存在性", "目标主键/外键/约束", "字段数量和类型兼容", "SQL 安全", "调度配置合法性"),
                         List.of("approvalConfirmed", "approvalFactId", "manualRunModeSelector")));
     }
@@ -183,7 +183,7 @@ public class SyncTaskCreateWizardContractSupport {
     private SyncTaskCreateWizardContractResponse.MetadataDiscoveryContract metadataDiscoveryContract() {
         return new SyncTaskCreateWizardContractResponse.MetadataDiscoveryContract(
                 "POST /sync-tasks/create-wizard/metadata/objects/discover",
-                "POST /sync-tasks/create-wizard/metadata/field-mappings/suggest",
+                null,
                 "POST /sync-tasks/create-wizard/sql/check",
                 List.of("TABLE", "SCHEMA", "SCHEMA_AND_TABLE", "CATALOG", "ALL"),
                 List.of("SOURCE", "TARGET"),
@@ -191,10 +191,13 @@ public class SyncTaskCreateWizardContractSupport {
                         "进入对象映射步骤后自动按 SOURCE/TARGET 两侧数据源拉取低敏 schema/table/field 摘要，不要求用户手动请求元数据",
                         "MySQL/MariaDB 使用 database/catalog/table 语义，不具备 PostgreSQL 风格 schema；选择 SCHEMA 或 SCHEMA_AND_TABLE 时应提示用户改用 TABLE 或 CATALOG",
                         "普通 FULL/SCHEDULED_FULL/SCHEDULED_BATCH 模式需要选择源端对象和目标端对象，支持按表、按 schema、按 schema+表搜索、勾选、排除和改名",
+                        "目标 schema/table 不要求与源端同名，也不要求必须从目标列表选择；用户可以手工编辑目标映射名，后端在预检查阶段判断目标对象是否存在",
                         "选择整个 schema 或全库范围时，前端应允许用户排除部分表，后端后续预检查再判断对象是否存在、字段是否兼容和目标约束是否满足"),
                 List.of(
-                        "普通表到表模式下，字段映射建议接口基于同名字段和类型家族兼容性生成默认 syncEnabled 建议",
-                        "字段是否同步、目标字段名、目标类型兼容性应以表格方式呈现并允许用户编辑，不应让用户直接编辑 fieldMappingConfig JSON",
+                        "字段映射不再依赖后端建议接口；前端应以源端字段元数据和目标端字段元数据为准构建映射表",
+                        "源端存在但目标端不存在的字段必须展示出来，默认可视为不同步；目标端存在但源端不存在的字段也必须展示出来，由目标表默认值或 nullable 规则决定是否可行",
+                        "同名字段可以默认预填，但不能把源字段直接强行照搬为目标字段；字段数量、非空、类型、主键、外键和约束由预检查判断",
+                        "多表模式下字段映射必须按每一组源端对象 -> 目标对象分别维护，where 条件支持逐对象编辑和批量套用",
                         "主键、冲突字段、外键、字段数量匹配不要求用户手填，应由预检查读取目标表约束后自动判断"),
                 List.of(
                         "CUSTOM_SQL_QUERY 模式在对象映射步骤只要求选择目标表，源表和输出字段由只读 SQL 的 SELECT 列与别名决定",
@@ -244,6 +247,9 @@ public class SyncTaskCreateWizardContractSupport {
         if (request.getTargetDatasourceId() == null) {
             blocking.add("必须选择目标端数据源");
         }
+        if (!hasText(request.getTaskName())) {
+            blocking.add("必须填写同步任务名称；进入第二步后系统会保存 DRAFT 草稿任务");
+        }
         if (request.getSourceDatasourceId() != null
                 && request.getSourceDatasourceId().equals(request.getTargetDatasourceId())) {
             blocking.add("源端和目标端数据源不能相同");
@@ -270,11 +276,10 @@ public class SyncTaskCreateWizardContractSupport {
             return;
         }
         if (!hasText(request == null ? null : request.getObjectMappingConfig())
-                && (!hasText(request == null ? null : request.getSourceObjectName())
-                || !hasText(request == null ? null : request.getTargetObjectName()))) {
-            blocking.add("必须完成源端对象到目标端对象的映射；可以选择单表，也可以通过对象映射配置表达多表、schema 或全库范围");
+                && !hasText(request == null ? null : request.getSourceObjectName())) {
+            blocking.add("必须至少选择源端对象；目标 schema/table 可由用户自定义填写，最终存在性由预检查判断");
         }
-        nextActions.add("对象选择完成后，调用字段映射建议接口生成同名字段和类型兼容建议");
+        nextActions.add("对象选择完成后，前端应按每组源/目标对象的真实元数据构建字段映射表；同名字段只做默认预填");
     }
 
     private void validateFieldSqlStep(SyncTaskWizardStepValidationRequest request,
@@ -294,7 +299,7 @@ public class SyncTaskCreateWizardContractSupport {
             return;
         }
         if (!hasText(request == null ? null : request.getFieldMappingConfig())) {
-            warnings.add("尚未提交字段映射配置；如果前端已选择源/目标对象，应调用字段映射建议接口自动生成初始映射");
+            warnings.add("尚未提交字段映射配置；前端应基于源端字段和目标端字段元数据生成初始映射，而不是调用后端字段映射建议接口");
         }
         nextActions.add("预检查阶段将校验字段数量、字段类型、目标约束和 INSERT/UPDATE 写入策略可行性");
     }
@@ -315,8 +320,11 @@ public class SyncTaskCreateWizardContractSupport {
                 && hasText(request == null ? null : request.getScheduleConfig())) {
             blocking.add("非定时传输模式不能携带 scheduleConfig；请改用 SCHEDULED_FULL 或 SCHEDULED_BATCH");
         }
+        if (request == null || request.getTaskId() == null || request.getTemplateId() == null) {
+            blocking.add("进入预检查步骤前必须先保存草稿并获得 taskId/templateId");
+        }
         warnings.add("预检查不再要求用户填写审批确认；高风险执行审批应进入后续发布/执行/恢复的专用流程");
-        nextActions.add("调用模板预检查，确认连接器兼容性、对象存在性、字段映射、SQL 安全和目标表约束");
+        nextActions.add("进入预检查步骤后自动调用模板预检查，确认连接器兼容性、对象存在性、字段映射、SQL 安全和目标表约束");
     }
 
     private SyncMode resolveMode(String syncMode, List<String> blocking) {

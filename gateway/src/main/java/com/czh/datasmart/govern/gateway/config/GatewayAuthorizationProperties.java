@@ -263,6 +263,9 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/sync/sync-tasks/metadata/field-mappings/suggest", "SYNC_TASK_METADATA",
                 "data-sync 字段映射建议入口；根据已选择的源表和目标表自动匹配字段名称、类型兼容性和默认同步勾选状态，最终仍由用户确认。",
                 Map.of("POST", "SUGGEST_FIELD_MAPPING")));
+        defaults.add(route("/api/sync/sync-tasks/create-wizard/drafts", "SYNC_TASK",
+                "data-sync 创建向导草稿保存入口；进入第二步即创建 DRAFT 任务，后续对象映射、字段映射和 SQL 配置继续更新同一条草稿，不触发执行。",
+                Map.of("POST", "SAVE_DRAFT")));
         defaults.add(route("/api/sync/sync-tasks/*/publish", "SYNC_TASK",
                 "data-sync 同步任务定义发布接口，会重新预检、审批判断并进入 CONFIGURED/SCHEDULED/PENDING_APPROVAL",
                 Map.of("POST", "PUBLISH")));
