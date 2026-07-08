@@ -15,6 +15,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncCheckpointQueryCrite
 import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordReplayRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordReplayResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncErrorSampleQueryCriteria;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionLogQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
@@ -25,6 +26,7 @@ import com.czh.datasmart.govern.datasync.entity.SyncAuditRecord;
 import com.czh.datasmart.govern.datasync.entity.SyncCheckpoint;
 import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
+import com.czh.datasmart.govern.datasync.entity.SyncExecutionLog;
 import com.czh.datasmart.govern.datasync.service.DataSyncService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpHeaders;
@@ -100,6 +102,36 @@ public class DataSyncExecutionController {
         SyncObjectExecutionQueryCriteria criteria = new SyncObjectExecutionQueryCriteria(
                 taskId, executionId, objectState, objectOrdinal, current, size);
         return PlatformApiResponse.success(dataSyncService.pageObjectExecutions(
+                criteria, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * 查询某次 execution 的运行日志。
+     *
+     * <p>路由语义：</p>
+     * <p>1. {@code taskId} 用于先锁定同步任务和权限范围；</p>
+     * <p>2. {@code executionId} 用于锁定某一次真实运行；</p>
+     * <p>3. {@code logs} 表示该运行内部按时间排序的阶段事件，例如入队、认领、计划生成、创建通道、批次同步、checkpoint 和终态。</p>
+     *
+     * <p>与普通应用日志不同，本接口返回的是低敏产品日志：可以展示给任务负责人、运营人员和 Agent，
+     * 但不会返回 SQL 正文、连接串、凭据、样本行、where 原文或真实分片边界。</p>
+     */
+    @GetMapping("/executions/{executionId}/logs")
+    public PlatformApiResponse<PlatformPageResponse<SyncExecutionLog>> pageExecutionLogs(
+            @PathVariable Long taskId,
+            @PathVariable Long executionId,
+            @RequestParam(required = false) String logStage,
+            @RequestParam(required = false) String logLevel,
+            @RequestParam(defaultValue = "1") Long current,
+            @RequestParam(defaultValue = "100") Long size,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        SyncExecutionLogQueryCriteria criteria = new SyncExecutionLogQueryCriteria(
+                taskId, executionId, logStage, logLevel, current, size);
+        return PlatformApiResponse.success(dataSyncService.pageExecutionLogs(
                 criteria, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
     }
 

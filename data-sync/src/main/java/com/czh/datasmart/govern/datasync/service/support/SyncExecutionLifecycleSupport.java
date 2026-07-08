@@ -55,6 +55,7 @@ public class SyncExecutionLifecycleSupport {
     private final SyncAuditSupport auditSupport;
     private final SyncCallbackIdempotencySupport idempotencySupport;
     private final SyncExecutionCallbackControlSignalSupport callbackControlSignalSupport;
+    private final SyncExecutionLogSupport executionLogSupport;
 
     /**
      * 启动执行记录。
@@ -83,6 +84,15 @@ public class SyncExecutionLifecycleSupport {
                 actorContext, "startExecution,executorId=" + request.getExecutorId() + ",idempotencyKey=" + request.getIdempotencyKey());
         idempotencySupport.markSucceeded(task.getTenantId(), action, scopeKey, request.getIdempotencyKey(),
                 "state=" + execution.getExecutionState());
+        executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                "START",
+                "INFO",
+                "EXECUTION_STARTED",
+                "STARTED",
+                "同步执行已启动，执行器开始处理任务",
+                "executorId=" + request.getExecutorId()
+                        + ", state=" + execution.getExecutionState()
+                        + ", idempotencyKey=" + request.getIdempotencyKey());
         return execution;
     }
 
@@ -127,6 +137,17 @@ public class SyncExecutionLifecycleSupport {
                 actorContext, "checkpointId=" + checkpoint.getId() + ",type=" + checkpoint.getCheckpointType());
         idempotencySupport.markSucceeded(task.getTenantId(), action, scopeKey, request.getIdempotencyKey(),
                 "checkpointId=" + checkpoint.getId());
+        executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                "CHECKPOINT",
+                "INFO",
+                "CHECKPOINT_COMMITTED",
+                "PROGRESS",
+                "同步断点已写入，后续可基于该位置恢复或排障",
+                "checkpointId=" + checkpoint.getId()
+                        + ", checkpointType=" + checkpoint.getCheckpointType()
+                        + ", shardOrPartition=" + checkpoint.getShardOrPartition()
+                        + ", recordsRead=" + checkpoint.getRecordsRead()
+                        + ", recordsWritten=" + checkpoint.getRecordsWritten());
         return checkpoint;
     }
 
@@ -162,6 +183,24 @@ public class SyncExecutionLifecycleSupport {
                         + ",recordsWritten=" + execution.getRecordsWritten());
         idempotencySupport.markSucceeded(task.getTenantId(), action, scopeKey, request.getIdempotencyKey(),
                 "state=" + execution.getExecutionState());
+        executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                "COMPLETE",
+                "INFO",
+                "EXECUTION_SUCCEEDED",
+                "SUCCEEDED",
+                "同步执行完成",
+                "recordsRead=" + execution.getRecordsRead()
+                        + ", recordsWritten=" + execution.getRecordsWritten()
+                        + ", failedRecordCount=" + execution.getFailedRecordCount()
+                        + ", checkpointRef=" + execution.getCheckpointRef(),
+                SyncExecutionLogSupport.ExecutionMetricSnapshot.of(
+                        execution.getRecordsRead(),
+                        execution.getRecordsWritten(),
+                        safeLong(execution.getFailedRecordCount()),
+                        null,
+                        null,
+                        null,
+                        java.math.BigDecimal.valueOf(100)));
         return execution;
     }
 
@@ -210,6 +249,16 @@ public class SyncExecutionLifecycleSupport {
                         + ",failedRecordCount=" + execution.getFailedRecordCount());
         idempotencySupport.markSucceeded(task.getTenantId(), action, scopeKey, request.getIdempotencyKey(),
                 "state=" + execution.getExecutionState());
+        executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                "COMPLETE",
+                "WARN",
+                "EXECUTION_PARTIALLY_SUCCEEDED",
+                "SUCCEEDED",
+                "同步执行部分成功，存在失败对象或失败记录需要后续处理",
+                "recordsRead=" + execution.getRecordsRead()
+                        + ", recordsWritten=" + execution.getRecordsWritten()
+                        + ", failedRecordCount=" + execution.getFailedRecordCount()
+                        + ", errorSummary=" + truncate(execution.getErrorSummary(), 300));
         return execution;
     }
 
@@ -267,6 +316,19 @@ public class SyncExecutionLifecycleSupport {
                 actorContext, "errorSampleId=" + errorSample.getId() + ",errorType=" + errorSample.getErrorType());
         idempotencySupport.markSucceeded(task.getTenantId(), action, scopeKey, request.getIdempotencyKey(),
                 "errorSampleId=" + errorSample.getId());
+        executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                "FAILED",
+                "ERROR",
+                "EXECUTION_FAILED",
+                "FAILED",
+                "同步执行失败，已记录低敏错误样本",
+                "errorSampleId=" + errorSample.getId()
+                        + ", errorType=" + errorSample.getErrorType()
+                        + ", errorCode=" + errorSample.getErrorCode()
+                        + ", retryable=" + errorSample.getRetryable()
+                        + ", recordsRead=" + execution.getRecordsRead()
+                        + ", recordsWritten=" + execution.getRecordsWritten()
+                        + ", failedRecordCount=" + execution.getFailedRecordCount());
         return errorSample;
     }
 
@@ -312,6 +374,13 @@ public class SyncExecutionLifecycleSupport {
             auditSupport.saveAudit(task.getTenantId(), task.getId(), execution.getId(),
                     SyncAuditActionType.RECORD_ERROR_SAMPLE, actorContext,
                     "dirtySampleCount=" + inserted + ",source=DATASOURCE_RUN_ONCE");
+            executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                    "DIRTY_RECORD",
+                    "WARN",
+                    "DIRTY_RECORD_SAMPLES_RECORDED",
+                    "PROGRESS",
+                    "同步过程中发现脏数据样本，已结构化落库用于修复和回放",
+                    "dirtySampleCount=" + inserted + ", source=DATASOURCE_RUN_ONCE");
         }
         return inserted;
     }

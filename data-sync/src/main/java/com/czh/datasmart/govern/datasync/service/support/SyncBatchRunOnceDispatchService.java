@@ -63,6 +63,7 @@ public class SyncBatchRunOnceDispatchService {
     private final DataSyncDatasourceRunOnceProperties properties;
     private final SyncExecutionLifecycleSupport lifecycleSupport;
     private final DataSyncTaskManagementReceiptPublisher receiptPublisher;
+    private final SyncExecutionLogSupport executionLogSupport;
 
     /**
      * 生成 bridge plan、调用 datasource-management run-once，并把结果回写到 data-sync 生命周期。
@@ -81,6 +82,18 @@ public class SyncBatchRunOnceDispatchService {
                                                           SyncActorContext actorContext) {
         requireDispatchInputs(execution, task, template, workerPlan);
         SyncBatchRunnerBridgePlan bridgePlan = bridgePlanSupport.buildPlan(execution, task, template, workerPlan);
+        executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                "PLAN",
+                bridgePlan.isDispatchable() ? "INFO" : "WARN",
+                "BATCH_RUN_ONCE_BRIDGE_PLAN_BUILT",
+                bridgePlan.isDispatchable() ? "SUCCEEDED" : "BLOCKED",
+                bridgePlan.isDispatchable() ? "同步执行计划已生成" : "同步执行计划被阻断，未触发真实读写",
+                "dispatchStatus=" + bridgePlan.getDispatchStatus()
+                        + ", syncMode=" + bridgePlan.getSyncMode()
+                        + ", readStrategy=" + bridgePlan.getReadStrategy()
+                        + ", writeStrategy=" + bridgePlan.getWriteStrategy()
+                        + ", checkpointType=" + bridgePlan.getCheckpointType()
+                        + ", issueCodes=" + bridgePlan.getIssueCodes());
         return dispatchPreparedRunOnce(bridgePlan, execution, task, actorContext);
     }
 
@@ -187,6 +200,13 @@ public class SyncBatchRunOnceDispatchService {
         SyncActorContext safeActorContext = ensureActorContext(execution, task, actorContext);
 
         if (!properties.isEnabled()) {
+            executionLogSupport.recordExecutionEvent(task, execution, safeActorContext,
+                    "CHANNEL",
+                    "ERROR",
+                    "RUN_ONCE_RUNTIME_DISABLED",
+                    "BLOCKED",
+                    "connector runtime 单批执行开关已关闭，本次不会读取或写入数据",
+                    "请检查 datasmart.data-sync.datasource-run-once.enabled 配置");
             return failBeforeRemote(task, execution, safeActorContext,
                     "CONNECTOR_RUNTIME_RUN_ONCE_DISABLED",
                     "DATASOURCE_RUN_ONCE_DISABLED",
@@ -194,6 +214,13 @@ public class SyncBatchRunOnceDispatchService {
                     List.of("DATASOURCE_RUN_ONCE_DISABLED"));
         }
         if (!bridgePlan.isDispatchable()) {
+            executionLogSupport.recordExecutionEvent(task, execution, safeActorContext,
+                    "PLAN",
+                    "ERROR",
+                    "RUN_ONCE_BRIDGE_PLAN_BLOCKED",
+                    "BLOCKED",
+                    "同步执行计划未通过，已阻断真实读写",
+                    "issueCodes=" + bridgePlan.getIssueCodes());
             return failBeforeRemote(task, execution, safeActorContext,
                     "CONNECTOR_RUNTIME_BRIDGE_BLOCKED",
                     "BRIDGE_PLAN_BLOCKED",
@@ -201,6 +228,14 @@ public class SyncBatchRunOnceDispatchService {
                     bridgePlan.getIssueCodes());
         }
         if (!RUN_ONCE_SAFE_CHECKPOINT_TYPES.contains(bridgePlan.getCheckpointType())) {
+            executionLogSupport.recordExecutionEvent(task, execution, safeActorContext,
+                    "CHECKPOINT",
+                    "ERROR",
+                    "CHECKPOINT_HANDOFF_BLOCKED",
+                    "BLOCKED",
+                    "当前同步模式需要 checkpoint 原始值安全交接，最小 run-once 暂不放行",
+                    "checkpointType=" + bridgePlan.getCheckpointType()
+                            + ", supportedTypes=" + RUN_ONCE_SAFE_CHECKPOINT_TYPES);
             return failBeforeRemote(task, execution, safeActorContext,
                     "CONNECTOR_RUNTIME_CHECKPOINT_HANDOFF_BLOCKED",
                     "CHECKPOINT_HANDOFF_NOT_IMPLEMENTED",
@@ -211,6 +246,19 @@ public class SyncBatchRunOnceDispatchService {
         DatasourceRunOnceRequest request = buildRequest(bridgePlan, execution, safeActorContext,
                 shardOrPartition, additionalFilterConditions,
                 maxDirtyRecordCountOverride, maxDirtyRecordRatioOverride);
+        executionLogSupport.recordExecutionEvent(task, execution, safeActorContext,
+                "CHANNEL",
+                "INFO",
+                "RUN_ONCE_CHANNEL_PREPARED",
+                "STARTED",
+                "读写通道已准备，开始调用 datasource-management 执行受控批次",
+                "sourceConnectorType=" + bridgePlan.getSourceConnectorType()
+                        + ", targetConnectorType=" + bridgePlan.getTargetConnectorType()
+                        + ", syncMode=" + bridgePlan.getSyncMode()
+                        + ", writeStrategy=" + bridgePlan.getWriteStrategy()
+                        + ", fetchSize=" + recommendedFetchSize(request)
+                        + ", writeBatchSize=" + recommendedWriteBatchSize(request)
+                        + ", shardOrPartition=" + (hasText(shardOrPartition) ? shardOrPartition : "-"));
         try {
             return dispatchDataXStyleBatchLoop(task, execution, safeActorContext, request);
         } catch (PlatformBusinessException exception) {
@@ -496,13 +544,32 @@ public class SyncBatchRunOnceDispatchService {
         int maxBatches = Math.max(1, properties.getMaxRunOnceBatches());
         DatasourceRunOnceResponse lastResponse = null;
         for (int batchIndex = 1; batchIndex <= maxBatches; batchIndex++) {
+            executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                    "REMOTE_BATCH",
+                    "INFO",
+                    "RUN_ONCE_BATCH_STARTED",
+                    "STARTED",
+                    "开始执行第 " + batchIndex + " 个同步批次",
+                    "maxBatches=" + maxBatches
+                            + ", previousRecordsRead=" + zeroIfNull(request.getPreviousRecordsRead())
+                            + ", previousRecordsWritten=" + zeroIfNull(request.getPreviousRecordsWritten())
+                            + ", previousFailedRecordCount=" + zeroIfNull(request.getPreviousFailedRecordCount()));
             DatasourceRunOnceResponse response = datasourceRunOnceClient.runOnce(request, actorContext);
             lastResponse = response;
+            recordRemoteBatchResult(task, execution, actorContext, batchIndex, response);
             SyncBatchRunOnceRemoteExecutionResult terminal = handleRemoteResponse(task, execution, actorContext, response);
             if (terminal != null) {
                 return terminal;
             }
             if (!hasForwardProgress(request, response)) {
+                executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                        "REMOTE_BATCH",
+                        "ERROR",
+                        "RUN_ONCE_NO_FORWARD_PROGRESS",
+                        "FAILED",
+                        "远端批次返回未结束，但累计计数没有推进，已阻断继续循环",
+                        "batchIndex=" + batchIndex
+                                + ", runStatus=" + (response == null ? "EMPTY_RESPONSE" : response.getRunStatus()));
                 return failAfterRemoteResult(task, execution, actorContext,
                         "REMOTE_RUN_ONCE_NO_FORWARD_PROGRESS",
                         "datasource-management run-once 返回仍有后续批次，但累计计数未推进，已按 fail-closed 终止以避免重复读写",
@@ -512,6 +579,14 @@ public class SyncBatchRunOnceDispatchService {
             request.setPreviousRecordsWritten(zeroIfNull(response.getTotalRecordsWritten()));
             request.setPreviousFailedRecordCount(zeroIfNull(response.getTotalFailedRecordCount()));
         }
+        executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                "REMOTE_BATCH",
+                "ERROR",
+                "MAX_RUN_ONCE_BATCHES_EXCEEDED",
+                "FAILED",
+                "同步批次数超过安全上限，已停止继续调用远端执行器",
+                "maxBatches=" + maxBatches
+                        + ", lastRunStatus=" + (lastResponse == null ? "EMPTY_RESPONSE" : lastResponse.getRunStatus()));
         return failAfterRemoteResult(task, execution, actorContext,
                 "MAX_RUN_ONCE_BATCHES_EXCEEDED",
                 "datasource-management run-once 连续批次数超过安全上限，已按 fail-closed 终止；请调大批大小或切换专用离线 Runner",
@@ -526,6 +601,13 @@ public class SyncBatchRunOnceDispatchService {
                                                                        SyncActorContext actorContext,
                                                                        DatasourceRunOnceResponse response) {
         if (response == null) {
+            executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                    "REMOTE_BATCH",
+                    "ERROR",
+                    "RUN_ONCE_EMPTY_RESPONSE",
+                    "FAILED",
+                    "datasource-management 未返回执行摘要，本次同步无法继续",
+                    "远端响应为空，无法判断读写进度或失败原因");
             return failAfterRemoteResult(task, execution, actorContext,
                     "REMOTE_RUN_ONCE_EMPTY_RESPONSE",
                     "datasource-management run-once 返回空执行摘要，本次执行按 fail-closed 终止",
@@ -533,6 +615,16 @@ public class SyncBatchRunOnceDispatchService {
         }
         recordDirtySamples(task, execution, actorContext, response);
         if (Boolean.TRUE.equals(response.getFailed()) || Boolean.TRUE.equals(response.getFailCallbackRecommended())) {
+            executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                    "REMOTE_BATCH",
+                    "ERROR",
+                    "RUN_ONCE_REMOTE_REPORTED_FAILED",
+                    "FAILED",
+                    "datasource-management 报告批次执行失败",
+                    "runStatus=" + response.getRunStatus()
+                            + ", recordsRead=" + zeroIfNull(response.getTotalRecordsRead())
+                            + ", recordsWritten=" + zeroIfNull(response.getTotalRecordsWritten())
+                            + ", failedRecordCount=" + zeroIfNull(response.getTotalFailedRecordCount()));
             return failAfterRemoteResult(task, execution, actorContext,
                     firstText(response.getRunStatus(), "REMOTE_RUN_ONCE_FAILED"),
                     "datasource-management run-once 报告执行失败，本次执行已回写 fail",
@@ -542,6 +634,24 @@ public class SyncBatchRunOnceDispatchService {
                     zeroIfNull(response.getTotalFailedRecordCount()));
         }
         if (Boolean.TRUE.equals(response.getCompleteCallbackRecommended())) {
+            executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                    "REMOTE_BATCH",
+                    "INFO",
+                    "RUN_ONCE_REMOTE_REPORTED_COMPLETE",
+                    "SUCCEEDED",
+                    "远端批次执行完成，准备回写同步执行成功",
+                    "runStatus=" + response.getRunStatus()
+                            + ", recordsRead=" + zeroIfNull(response.getTotalRecordsRead())
+                            + ", recordsWritten=" + zeroIfNull(response.getTotalRecordsWritten())
+                            + ", failedRecordCount=" + zeroIfNull(response.getTotalFailedRecordCount()),
+                    SyncExecutionLogSupport.ExecutionMetricSnapshot.of(
+                            zeroIfNull(response.getTotalRecordsRead()),
+                            zeroIfNull(response.getTotalRecordsWritten()),
+                            zeroIfNull(response.getTotalFailedRecordCount()),
+                            null,
+                            null,
+                            null,
+                            java.math.BigDecimal.valueOf(100)));
             return remoteResult(true, true, false, "DISPATCHED_AND_COMPLETED",
                     execution.getId(), response.getRunStatus(),
                     zeroIfNull(response.getTotalRecordsRead()),
@@ -556,6 +666,17 @@ public class SyncBatchRunOnceDispatchService {
         if (Boolean.TRUE.equals(response.getProgressCallbackRecommended()) || !Boolean.TRUE.equals(response.getEndOfSource())) {
             return null;
         }
+        executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                "REMOTE_BATCH",
+                "ERROR",
+                "RUN_ONCE_CALLBACK_DECISION_MISSING",
+                "FAILED",
+                "远端没有给出继续、完成或失败决策，系统按安全策略终止本次执行",
+                "runStatus=" + response.getRunStatus()
+                        + ", endOfSource=" + response.getEndOfSource()
+                        + ", completeCallbackRecommended=" + response.getCompleteCallbackRecommended()
+                        + ", failCallbackRecommended=" + response.getFailCallbackRecommended()
+                        + ", progressCallbackRecommended=" + response.getProgressCallbackRecommended());
         return failAfterRemoteResult(task, execution, actorContext,
                 "RUN_ONCE_CALLBACK_DECISION_MISSING",
                 "datasource-management run-once 未给出 complete/fail/progress 决策，本次执行按 fail-closed 终止",
@@ -575,6 +696,66 @@ public class SyncBatchRunOnceDispatchService {
         return zeroIfNull(response.getTotalRecordsRead()) > zeroIfNull(request.getPreviousRecordsRead())
                 || zeroIfNull(response.getTotalRecordsWritten()) > zeroIfNull(request.getPreviousRecordsWritten())
                 || zeroIfNull(response.getTotalFailedRecordCount()) > zeroIfNull(request.getPreviousFailedRecordCount());
+    }
+
+    private Integer recommendedFetchSize(DatasourceRunOnceRequest request) {
+        if (request == null
+                || request.getExecutionPlan() == null
+                || request.getExecutionPlan().getReadPlan() == null) {
+            return null;
+        }
+        return request.getExecutionPlan().getReadPlan().getRecommendedFetchSize();
+    }
+
+    private Integer recommendedWriteBatchSize(DatasourceRunOnceRequest request) {
+        if (request == null
+                || request.getExecutionPlan() == null
+                || request.getExecutionPlan().getWritePlan() == null) {
+            return null;
+        }
+        return request.getExecutionPlan().getWritePlan().getRecommendedWriteBatchSize();
+    }
+
+    /**
+     * 记录单批 run-once 的低敏结果。
+     *
+     * <p>该日志是运行历史页面展示“实时已完成数量、成功/失败数量、同步速度”的主要来源。
+     * 它只记录批次序号、累计读写数、失败数和远端低敏状态，不记录 SQL、字段值、连接信息或样本行。</p>
+     */
+    private void recordRemoteBatchResult(SyncTask task,
+                                         SyncExecution execution,
+                                         SyncActorContext actorContext,
+                                         int batchIndex,
+                                         DatasourceRunOnceResponse response) {
+        if (response == null) {
+            return;
+        }
+        String level = Boolean.TRUE.equals(response.getFailed()) ? "ERROR" : "INFO";
+        String status = Boolean.TRUE.equals(response.getFailed())
+                ? "FAILED"
+                : Boolean.TRUE.equals(response.getEndOfSource()) ? "SUCCEEDED" : "PROGRESS";
+        executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                "REMOTE_BATCH",
+                level,
+                "RUN_ONCE_BATCH_REPORTED",
+                status,
+                "第 " + batchIndex + " 个同步批次返回执行结果",
+                "runStatus=" + response.getRunStatus()
+                        + ", batchRecordsRead=" + zeroIfNull(response.getBatchRecordsRead())
+                        + ", batchRecordsWritten=" + zeroIfNull(response.getBatchRecordsWritten())
+                        + ", batchFailedRecordCount=" + zeroIfNull(response.getBatchFailedRecordCount())
+                        + ", totalRecordsRead=" + zeroIfNull(response.getTotalRecordsRead())
+                        + ", totalRecordsWritten=" + zeroIfNull(response.getTotalRecordsWritten())
+                        + ", totalFailedRecordCount=" + zeroIfNull(response.getTotalFailedRecordCount())
+                        + ", endOfSource=" + response.getEndOfSource(),
+                SyncExecutionLogSupport.ExecutionMetricSnapshot.of(
+                        zeroIfNull(response.getTotalRecordsRead()),
+                        zeroIfNull(response.getTotalRecordsWritten()),
+                        zeroIfNull(response.getTotalFailedRecordCount()),
+                        null,
+                        null,
+                        null,
+                        Boolean.TRUE.equals(response.getEndOfSource()) ? java.math.BigDecimal.valueOf(100) : null));
     }
 
     private SyncBatchRunOnceRemoteExecutionResult failBeforeRemote(SyncTask task,

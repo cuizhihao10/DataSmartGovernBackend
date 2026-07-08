@@ -263,7 +263,8 @@ class SyncBatchRunOnceHttpContractE2ETest {
                 httpClient,
                 properties,
                 lifecycleSupport,
-                receiptPublisher);
+                receiptPublisher,
+                mock(SyncExecutionLogSupport.class));
     }
 
     private SyncBatchRunnerBridgePlanSupport bridgePlanSupport() {

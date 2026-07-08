@@ -16,6 +16,7 @@ import com.czh.datasmart.govern.datasync.mapper.SyncExecutionMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.service.support.SyncAuditSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncCallbackIdempotencySupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLogSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncWorkerExecutionPlanSupport;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
 import com.czh.datasmart.govern.datasync.support.SyncExecutionState;
@@ -178,7 +179,8 @@ class DataSyncExecutorLeaseServiceImplHeartbeatControlTest {
                 auditSupport,
                 new DataSyncExecutorProperties(),
                 idempotencySupport,
-                mock(SyncWorkerExecutionPlanSupport.class));
+                mock(SyncWorkerExecutionPlanSupport.class),
+                mock(SyncExecutionLogSupport.class));
         return new Fixture(service, executionMapper, auditSupport, idempotencySupport);
     }
 

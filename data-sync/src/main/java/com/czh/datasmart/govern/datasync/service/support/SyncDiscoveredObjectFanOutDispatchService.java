@@ -58,6 +58,7 @@ public class SyncDiscoveredObjectFanOutDispatchService {
     private final SyncObjectListFanOutDispatchService objectListFanOutDispatchService;
     private final SyncExecutionLifecycleSupport lifecycleSupport;
     private final DataSyncTaskManagementReceiptPublisher receiptPublisher;
+    private final SyncExecutionLogSupport executionLogSupport;
     private final ObjectMapper objectMapper;
 
     /**
@@ -84,12 +85,30 @@ public class SyncDiscoveredObjectFanOutDispatchService {
                                                                      SyncActorContext actorContext,
                                                                      SyncOfflineRunnerJobContract parentContract) {
         DiscoveryPolicy policy = parseDiscoveryPolicy(template);
+        recordDiscoveryEvent(task, execution, actorContext,
+                "INFO",
+                "SCHEMA_DATABASE_DISCOVERY_STARTED",
+                "STARTED",
+                "元数据发现已开始",
+                "系统正在从源端读取低敏表结构摘要，用于生成全库/全 schema 搬迁的对象清单。");
         DatasourceMetadataDiscoveryResponse discoveryResponse = metadataDiscoveryClient.discover(
                 template.getSourceDatasourceId(),
                 discoveryRequest(template, actorContext, policy),
                 actorContext);
         List<DatasourceMetadataDiscoveryResponse.TableSummary> tables = filterTables(discoveryResponse, policy);
+        recordDiscoveryEvent(task, execution, actorContext,
+                "INFO",
+                "SCHEMA_DATABASE_DISCOVERY_COMPLETED",
+                "SUCCEEDED",
+                "元数据发现已完成",
+                "系统已筛选出 " + tables.size() + " 个可迁移对象，并将转换为对象级工作单元继续执行。");
         if (tables.isEmpty()) {
+            recordDiscoveryEvent(task, execution, actorContext,
+                    "WARN",
+                    "SCHEMA_DATABASE_DISCOVERY_EMPTY",
+                    "BLOCKED",
+                    "未发现可迁移对象",
+                    "源端元数据发现没有返回可执行表清单，请检查 schema/table 筛选条件、数据源权限或连接器元数据能力。");
             return failDiscoveryFanOut(task, execution, actorContext, parentContract,
                     "DISCOVERY_OBJECT_LIST_EMPTY",
                     "元数据发现未得到可执行表清单，SCHEMA_FULL/DATABASE_FULL 未触发真实读写",
@@ -101,11 +120,41 @@ public class SyncDiscoveredObjectFanOutDispatchService {
             return objectListFanOutDispatchService.dispatchObjectList(execution, task, objectListTemplate,
                     objectListWorkerPlan, actorContext, parentContract);
         } catch (Exception exception) {
+            recordDiscoveryEvent(task, execution, actorContext,
+                    "ERROR",
+                    "SCHEMA_DATABASE_DISCOVERY_OBJECT_LIST_BUILD_FAILED",
+                    "FAILED",
+                    "发现结果转换失败",
+                    "元数据发现结果无法转换为对象级执行配置，请检查目标命名规则、字段映射生成规则或对象数量上限。");
             return failDiscoveryFanOut(task, execution, actorContext, parentContract,
                     "DISCOVERY_OBJECT_LIST_BUILD_FAILED",
                     "元数据发现结果无法转换为 OBJECT_LIST 执行配置，已按 fail-closed 终止",
                     List.of("DISCOVERY_OBJECT_LIST_BUILD_FAILED"));
         }
+    }
+
+    /**
+     * 记录 SCHEMA_FULL / DATABASE_FULL 元数据发现阶段日志。
+     *
+     * <p>全库/全 schema 搬迁不是直接进入 Reader/Writer，而是先由控制面发现源端对象，再转换成 OBJECT_LIST。
+     * 如果缺少这个日志，用户只能看到最后的对象同步结果，看不到“为什么系统选了这些对象、为什么没有对象可执行”。
+     * 本方法只记录低敏阶段结果，不写表名清单、字段清单、SQL、连接串或凭据。</p>
+     */
+    private void recordDiscoveryEvent(SyncTask task,
+                                      SyncExecution execution,
+                                      SyncActorContext actorContext,
+                                      String level,
+                                      String eventType,
+                                      String status,
+                                      String message,
+                                      String detailSummary) {
+        executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                "METADATA_DISCOVERY",
+                level,
+                eventType,
+                status,
+                message,
+                detailSummary);
     }
 
     private DatasourceMetadataDiscoveryRequest discoveryRequest(SyncTemplate template,

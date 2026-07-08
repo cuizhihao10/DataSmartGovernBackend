@@ -22,6 +22,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -66,6 +68,7 @@ public class SyncObjectListFanOutDispatchService {
     private final SyncBatchRunOnceDispatchService runOnceDispatchService;
     private final SyncExecutionLifecycleSupport lifecycleSupport;
     private final DataSyncTaskManagementReceiptPublisher receiptPublisher;
+    private final SyncExecutionLogSupport executionLogSupport;
     private final ObjectMapper objectMapper;
 
     /**
@@ -120,6 +123,7 @@ public class SyncObjectListFanOutDispatchService {
         int maxAttemptCount = resolveObjectMaxAttemptCount(template);
         List<SyncObjectExecution> objectExecutions = objectExecutionLifecycleSupport.initializeObjectExecutions(
                 task, execution, template, objectContract, maxAttemptCount);
+        recordFanOutStarted(task, execution, actorContext, objectExecutions.size(), maxAttemptCount);
         Map<Integer, SyncObjectExecution> objectExecutionByOrdinal = objectExecutions.stream()
                 .collect(Collectors.toMap(SyncObjectExecution::getObjectOrdinal, Function.identity(), (left, right) -> left));
         boolean remoteCalled = false;
@@ -148,6 +152,9 @@ public class SyncObjectListFanOutDispatchService {
         List<String> summaryIssues = mergeIssueCodes(summary.issueCodes(), accumulatedIssues,
                 "OBJECT_LIST_OBJECT_LEVEL_SUMMARY_READY");
         if (summary.allSucceeded()) {
+            recordFanOutFinished(task, execution, actorContext, summary, "SUCCEEDED",
+                    "多对象同步已全部完成",
+                    "所有对象均已成功写入，父级执行记录即将进入成功状态。");
             completeFanOut(task, execution, actorContext, summary);
             return new SyncOfflineRunnerDispatchResult(
                     remoteCalled,
@@ -162,6 +169,9 @@ public class SyncObjectListFanOutDispatchService {
             );
         }
         if (summary.partiallySucceeded()) {
+            recordFanOutFinished(task, execution, actorContext, summary, "PARTIALLY_SUCCEEDED",
+                    "多对象同步已部分完成",
+                    "部分对象同步失败，成功对象会保留结果，失败对象可在运行历史中选择性重试。");
             partialFanOut(task, execution, actorContext, summary);
             return new SyncOfflineRunnerDispatchResult(
                     remoteCalled,
@@ -175,6 +185,9 @@ public class SyncObjectListFanOutDispatchService {
                     SyncOfflineRunnerDispatchResult.PAYLOAD_POLICY
             );
         }
+        recordFanOutFinished(task, execution, actorContext, summary, "FAILED",
+                "多对象同步未成功完成",
+                "所有对象均未成功或关键账本异常，请查看对象级执行账本和错误样本后重试。");
         return failFanOut(task, execution, actorContext, parentContract,
                 remoteCalled,
                 summary.recordsRead(),
@@ -212,6 +225,10 @@ public class SyncObjectListFanOutDispatchService {
         List<String> issueCodes = new ArrayList<>(item.warnings());
         while (safeInt(objectExecution.getAttemptCount()) < effectiveMaxAttemptCount(objectExecution)) {
             objectExecutionLifecycleSupport.markObjectRunning(objectExecution);
+            recordObjectDispatchEvent(task, execution, objectExecution, actorContext,
+                    "INFO", "OBJECT_LIST_CHILD_STARTED", "STARTED",
+                    "对象工作单元开始同步",
+                    "系统已为当前对象创建单对象执行计划，并准备调用受控 run-once 执行器。", null);
             SyncTemplate childTemplate = singleObjectTemplate(template, item);
             SyncExecution childExecution = childExecutionView(execution);
             SyncWorkerExecutionPlanView childWorkerPlan = singleObjectWorkerPlan(workerPlan, item);
@@ -222,6 +239,10 @@ public class SyncObjectListFanOutDispatchService {
                         "OBJECT_LIST_CHILD_BRIDGE_PLAN_BLOCKED",
                         "OBJECT_LIST_CHILD_BRIDGE_PLAN_BLOCKED",
                         "OBJECT_LIST 子对象桥接计划被阻断，请修复对象级字段映射、过滤条件或写入策略");
+                recordObjectDispatchEvent(task, execution, objectExecution, actorContext,
+                        "WARN", "OBJECT_LIST_CHILD_BRIDGE_PLAN_BLOCKED", "BLOCKED",
+                        "对象工作单元暂时不能执行",
+                        "当前对象的字段映射、过滤条件、写入策略或连接器能力未通过执行计划检查，请返回对象/字段映射修复。", null);
                 issueCodes = mergeIssueCodes(issueCodes, childBridgePlan.getIssueCodes(),
                         "OBJECT_LIST_CHILD_BRIDGE_PLAN_BLOCKED");
                 break;
@@ -232,6 +253,11 @@ public class SyncObjectListFanOutDispatchService {
             remoteCalled = remoteCalled || remoteResult != null && remoteResult.remoteCalled();
             if (remoteResult != null && remoteResult.completed() && !remoteResult.failed()) {
                 objectExecutionLifecycleSupport.markObjectSucceeded(objectExecution, remoteResult);
+                recordObjectDispatchEvent(task, execution, objectExecution, actorContext,
+                        "INFO", "OBJECT_LIST_CHILD_COMPLETED", "SUCCEEDED",
+                        "对象工作单元同步完成",
+                        "当前对象已完成读取与写入，累计读写数量已刷新到对象账本。",
+                        SyncExecutionLogSupport.ExecutionMetricSnapshot.fromObject(objectExecution));
                 issueCodes = mergeIssueCodes(issueCodes, remoteResult.issueCodes(), "OBJECT_LIST_CHILD_COMPLETED");
                 break;
             }
@@ -240,6 +266,15 @@ public class SyncObjectListFanOutDispatchService {
                     "OBJECT_LIST_CHILD_RUN_ONCE_FAILED",
                     firstText(remoteResult == null ? null : remoteResult.errorCode(), "OBJECT_LIST_CHILD_RUN_ONCE_FAILED"),
                     "OBJECT_LIST 子对象 run-once 执行失败；已按对象级尝试次数判断是否继续重试");
+            recordObjectDispatchEvent(task, execution, objectExecution, actorContext,
+                    retrying ? "WARN" : "ERROR",
+                    retrying ? "OBJECT_LIST_CHILD_RETRYING" : "OBJECT_LIST_CHILD_FAILED",
+                    retrying ? "RETRYING" : "FAILED",
+                    retrying ? "对象工作单元同步失败，系统将继续重试" : "对象工作单元同步失败",
+                    retrying
+                            ? "当前错误被判定为可重试，且对象级尝试次数尚未耗尽，系统会继续处理该对象。"
+                            : "当前对象已经达到重试上限或错误不可重试，可在运行历史中查看详情后选择性重试。",
+                    SyncExecutionLogSupport.ExecutionMetricSnapshot.fromObject(objectExecution));
             issueCodes = mergeIssueCodes(issueCodes,
                     remoteResult == null ? List.of() : remoteResult.issueCodes(),
                     retrying ? "OBJECT_LIST_CHILD_RETRYING" : "OBJECT_LIST_CHILD_FAILED_ATTEMPTS_EXHAUSTED");
@@ -253,9 +288,97 @@ public class SyncObjectListFanOutDispatchService {
                     "OBJECT_LIST_CHILD_ATTEMPT_POLICY_EXHAUSTED",
                     "OBJECT_LIST_CHILD_ATTEMPT_POLICY_EXHAUSTED",
                     "OBJECT_LIST 子对象尝试次数已耗尽或状态无法继续推进，已转为失败对象等待后续选择性重试");
+            recordObjectDispatchEvent(task, execution, objectExecution, actorContext,
+                    "ERROR", "OBJECT_LIST_CHILD_ATTEMPT_POLICY_EXHAUSTED", "FAILED",
+                    "对象工作单元已耗尽尝试次数",
+                    "系统无法继续自动推进该对象，请查看对象级错误原因并在修复后触发选择性重试。",
+                    SyncExecutionLogSupport.ExecutionMetricSnapshot.fromObject(objectExecution));
             issueCodes = mergeIssueCodes(issueCodes, List.of(), "OBJECT_LIST_CHILD_ATTEMPT_POLICY_EXHAUSTED");
         }
         return new ObjectDispatchOutcome(remoteCalled, issueCodes);
+    }
+
+    /**
+     * 记录 OBJECT_LIST 父级 fan-out 开始事件。
+     *
+     * <p>这里记录的是“控制面已经把多表/多对象任务拆成可恢复工作单元”的事实。它不会改变执行状态，也不会泄露真实表名，
+     * 只告诉前端和运维人员：本次执行一共准备处理多少个对象、对象级最多允许尝试几次。</p>
+     */
+    private void recordFanOutStarted(SyncTask task,
+                                     SyncExecution execution,
+                                     SyncActorContext actorContext,
+                                     int objectCount,
+                                     int maxAttemptCount) {
+        executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                "OBJECT_FAN_OUT",
+                "INFO",
+                "OBJECT_LIST_FAN_OUT_STARTED",
+                "STARTED",
+                "多对象同步计划已生成",
+                "系统已生成 " + objectCount + " 个对象级工作单元；每个对象最多尝试 " + maxAttemptCount + " 次。",
+                SyncExecutionLogSupport.ExecutionMetricSnapshot.of(0L, 0L, 0L,
+                        0, 0, 0, BigDecimal.ZERO));
+    }
+
+    /**
+     * 记录 OBJECT_LIST 父级 fan-out 汇总事件。
+     *
+     * <p>父级汇总日志用于解释最终状态为什么是成功、失败或部分成功。对象明细仍由 data_sync_object_execution 和对象级日志承载，
+     * 父级日志只展示低敏聚合计数，方便用户在运行历史中快速判断“整体走到哪一步”。</p>
+     */
+    private void recordFanOutFinished(SyncTask task,
+                                      SyncExecution execution,
+                                      SyncActorContext actorContext,
+                                      SyncObjectExecutionSummary summary,
+                                      String status,
+                                      String message,
+                                      String detailPrefix) {
+        int completedCount = summary.succeededCount() + summary.failedCount();
+        int totalCount = Math.max(1, summary.totalCount());
+        BigDecimal progress = BigDecimal.valueOf(completedCount)
+                .multiply(BigDecimal.valueOf(100))
+                .divide(BigDecimal.valueOf(totalCount), 2, RoundingMode.HALF_UP);
+        executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                "OBJECT_FAN_OUT",
+                "FAILED".equals(status) ? "ERROR" : "PARTIALLY_SUCCEEDED".equals(status) ? "WARN" : "INFO",
+                "OBJECT_LIST_FAN_OUT_FINISHED",
+                status,
+                message,
+                detailPrefix + " 对象总数=" + summary.totalCount()
+                        + "，成功=" + summary.succeededCount()
+                        + "，失败=" + summary.failedCount()
+                        + "，累计读取=" + summary.recordsRead()
+                        + "，累计写入=" + summary.recordsWritten()
+                        + "，失败行=" + summary.failedRecordCount() + "。",
+                SyncExecutionLogSupport.ExecutionMetricSnapshot.of(summary.recordsRead(), summary.recordsWritten(),
+                        summary.failedRecordCount(), completedCount, summary.succeededCount(),
+                        summary.failedCount(), progress));
+    }
+
+    /**
+     * 记录对象级工作单元事件。
+     *
+     * <p>调用方传入的 message/detail 必须是面向用户的中文说明，不直接拼接表名、where、SQL 或分片真实范围。
+     * 真正需要定位对象时，前端可以用 objectOrdinal/objectExecutionId 与对象级账本表关联，而不是依赖日志正文泄露业务对象名。</p>
+     */
+    private void recordObjectDispatchEvent(SyncTask task,
+                                           SyncExecution execution,
+                                           SyncObjectExecution objectExecution,
+                                           SyncActorContext actorContext,
+                                           String level,
+                                           String eventType,
+                                           String status,
+                                           String message,
+                                           String detailSummary,
+                                           SyncExecutionLogSupport.ExecutionMetricSnapshot metrics) {
+        executionLogSupport.recordObjectEvent(task, execution, objectExecution, actorContext,
+                "OBJECT",
+                level,
+                eventType,
+                status,
+                message,
+                detailSummary,
+                metrics);
     }
 
     /**

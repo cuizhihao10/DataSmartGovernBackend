@@ -80,6 +80,7 @@ public class SyncPartitionShardFanOutDispatchService {
     private final DatasourcePartitionRangeProbeClient rangeProbeClient;
     private final SyncExecutionLifecycleSupport lifecycleSupport;
     private final DataSyncTaskManagementReceiptPublisher receiptPublisher;
+    private final SyncExecutionLogSupport executionLogSupport;
 
     /**
      * 判断当前父 execution 是否必须进入单表分片 fan-out。
@@ -142,6 +143,17 @@ public class SyncPartitionShardFanOutDispatchService {
         List<SyncObjectExecution> shardExecutions =
                 objectExecutionLifecycleSupport.initializePartitionShardExecutions(
                         task, execution, template, partitionContract);
+        executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                "SHARD",
+                "INFO",
+                "PARTITION_SHARD_LEDGER_INITIALIZED",
+                "STARTED",
+                "分片账本已初始化，开始按 TaskGroup 和 channel 执行",
+                "partitionStrategy=" + partitionContract.partitionStrategy()
+                        + ", shardCount=" + shardExecutions.size()
+                        + ", taskGroupSize=" + partitionContract.taskGroupSize()
+                        + ", channel=" + partitionContract.maxParallelism()
+                        + ", maxAttemptCount=" + partitionContract.maxAttemptCount());
         Map<Integer, SyncObjectExecution> shardExecutionByOrdinal = shardExecutions.stream()
                 .collect(Collectors.toMap(SyncObjectExecution::getObjectOrdinal, Function.identity(), (left, right) -> left));
         List<ShardExecutionBundle> bundles = new ArrayList<>();
@@ -173,6 +185,25 @@ public class SyncPartitionShardFanOutDispatchService {
         List<String> summaryIssues = mergeIssueCodes(summary.issueCodes(), accumulatedIssues,
                 "PARTITION_SHARD_LEVEL_SUMMARY_READY");
         if (summary.allSucceeded()) {
+            executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                    "SHARD",
+                    "INFO",
+                    "PARTITION_SHARD_FAN_OUT_SUMMARY_SUCCEEDED",
+                    "SUCCEEDED",
+                    "所有分片均已完成，准备回写父级执行成功",
+                    "totalShards=" + summary.totalCount()
+                            + ", succeededShards=" + summary.succeededCount()
+                            + ", failedShards=" + summary.failedCount()
+                            + ", recordsRead=" + summary.recordsRead()
+                            + ", recordsWritten=" + summary.recordsWritten(),
+                    SyncExecutionLogSupport.ExecutionMetricSnapshot.of(
+                            summary.recordsRead(),
+                            summary.recordsWritten(),
+                            summary.failedRecordCount(),
+                            summary.succeededCount() + summary.failedCount(),
+                            summary.succeededCount(),
+                            summary.failedCount(),
+                            java.math.BigDecimal.valueOf(100)));
             completeFanOut(task, execution, actorContext, summary);
             return new SyncOfflineRunnerDispatchResult(
                     remoteCalled,
@@ -188,6 +219,17 @@ public class SyncPartitionShardFanOutDispatchService {
             );
         }
         if (summary.partiallySucceeded()) {
+            executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                    "SHARD",
+                    "WARN",
+                    "PARTITION_SHARD_FAN_OUT_SUMMARY_PARTIAL",
+                    "SUCCEEDED",
+                    "部分分片成功，失败分片可在运行详情中选择性重试",
+                    "totalShards=" + summary.totalCount()
+                            + ", succeededShards=" + summary.succeededCount()
+                            + ", failedShards=" + summary.failedCount()
+                            + ", recordsRead=" + summary.recordsRead()
+                            + ", recordsWritten=" + summary.recordsWritten());
             partialFanOut(task, execution, actorContext, summary);
             return new SyncOfflineRunnerDispatchResult(
                     remoteCalled,
@@ -286,6 +328,15 @@ public class SyncPartitionShardFanOutDispatchService {
         int taskGroupSize = effectiveTaskGroupSize(partitionContract, bundles.size());
         for (int groupStart = 0; groupStart < bundles.size(); groupStart += taskGroupSize) {
             int groupEnd = Math.min(groupStart + taskGroupSize, bundles.size());
+            executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                    "TASK_GROUP",
+                    "INFO",
+                    "PARTITION_TASK_GROUP_STARTED",
+                    "STARTED",
+                    "开始执行第 " + (groupStart / taskGroupSize + 1) + " 个分片 TaskGroup",
+                    "taskGroupOrdinal=" + (groupStart / taskGroupSize)
+                            + ", shardRange=[" + groupStart + "," + groupEnd + ")"
+                            + ", taskGroupSize=" + taskGroupSize);
             outcomes.addAll(dispatchShardBatches(task, execution, template, workerPlan, actorContext,
                     partitionContract, bundles.subList(groupStart, groupEnd), groupStart / taskGroupSize));
         }
@@ -304,6 +355,15 @@ public class SyncPartitionShardFanOutDispatchService {
                                                             List<ShardExecutionBundle> bundles,
                                                             int taskGroupOrdinal) {
         int parallelism = effectiveParallelism(partitionContract, bundles.size());
+        executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                "CHANNEL",
+                "INFO",
+                "PARTITION_CHANNEL_PREPARED",
+                "STARTED",
+                "分片 TaskGroup 已创建有界并发 channel",
+                "taskGroupOrdinal=" + taskGroupOrdinal
+                        + ", channel=" + parallelism
+                        + ", shardCountInGroup=" + bundles.size());
         List<ShardDispatchOutcome> outcomes = new ArrayList<>();
         try (ExecutorService executorService = Executors.newFixedThreadPool(
                 parallelism, Thread.ofVirtual().name("data-sync-partition-tg-" + taskGroupOrdinal + "-", 0).factory())) {
@@ -338,6 +398,14 @@ public class SyncPartitionShardFanOutDispatchService {
                                                            SyncPartitionShardExecutionItem shard,
                                                            SyncObjectExecution shardExecution) {
         if (SyncObjectExecutionState.SUCCEEDED.name().equals(shardExecution.getObjectState())) {
+            executionLogSupport.recordObjectEvent(task, execution, shardExecution, actorContext,
+                    "SHARD",
+                    "INFO",
+                    "PARTITION_SHARD_ALREADY_SUCCEEDED_SKIPPED",
+                    "SKIPPED",
+                    "该分片此前已经成功，本次恢复执行将跳过",
+                    "shardOrPartition=" + shard.shardOrPartition(),
+                    SyncExecutionLogSupport.ExecutionMetricSnapshot.fromObject(shardExecution));
             return new ShardDispatchOutcome(false,
                     mergeIssueCodes(shard.warnings(), List.of(), "PARTITION_SHARD_ALREADY_SUCCEEDED_SKIPPED"));
         }
@@ -345,6 +413,16 @@ public class SyncPartitionShardFanOutDispatchService {
         List<String> issueCodes = new ArrayList<>(shard.warnings());
         while (safeInt(shardExecution.getAttemptCount()) < effectiveMaxAttemptCount(shardExecution)) {
             objectExecutionLifecycleSupport.markObjectRunning(shardExecution);
+            executionLogSupport.recordObjectEvent(task, execution, shardExecution, actorContext,
+                    "SHARD",
+                    "INFO",
+                    "PARTITION_SHARD_STARTED",
+                    "STARTED",
+                    "开始执行分片",
+                    "shardOrPartition=" + shard.shardOrPartition()
+                            + ", attempt=" + shardExecution.getAttemptCount()
+                            + ", maxAttemptCount=" + effectiveMaxAttemptCount(shardExecution),
+                    SyncExecutionLogSupport.ExecutionMetricSnapshot.fromObject(shardExecution));
             SyncTemplate childTemplate = singleObjectTemplate(template);
             SyncExecution childExecution = childExecutionView(execution);
             SyncWorkerExecutionPlanView childWorkerPlan = singleObjectWorkerPlan(workerPlan, shard);
@@ -357,6 +435,14 @@ public class SyncPartitionShardFanOutDispatchService {
                         "分片子计划桥接被阻断，请修复字段映射、过滤条件、连接器兼容性或写入策略");
                 issueCodes = mergeIssueCodes(issueCodes, childBridgePlan.getIssueCodes(),
                         "PARTITION_SHARD_BRIDGE_PLAN_BLOCKED");
+                executionLogSupport.recordObjectEvent(task, execution, shardExecution, actorContext,
+                        "SHARD",
+                        "ERROR",
+                        "PARTITION_SHARD_BRIDGE_PLAN_BLOCKED",
+                        "FAILED",
+                        "分片子计划被预检查阻断，未触发真实读写",
+                        "issueCodes=" + childBridgePlan.getIssueCodes(),
+                        SyncExecutionLogSupport.ExecutionMetricSnapshot.fromObject(shardExecution));
                 break;
             }
 
@@ -376,6 +462,16 @@ public class SyncPartitionShardFanOutDispatchService {
                     objectExecutionLifecycleSupport.markObjectSucceeded(shardExecution, remoteResult);
                     issueCodes = mergeIssueCodes(issueCodes, remoteResult.issueCodes(),
                             "PARTITION_SHARD_COMPLETED");
+                    executionLogSupport.recordObjectEvent(task, execution, shardExecution, actorContext,
+                            "SHARD",
+                            "INFO",
+                            "PARTITION_SHARD_SUCCEEDED",
+                            "SUCCEEDED",
+                            "分片同步完成",
+                            "recordsRead=" + shardExecution.getRecordsRead()
+                                    + ", recordsWritten=" + shardExecution.getRecordsWritten()
+                                    + ", failedRecordCount=" + shardExecution.getFailedRecordCount(),
+                            SyncExecutionLogSupport.ExecutionMetricSnapshot.fromObject(shardExecution));
                     break;
                 }
                 boolean retrying = shouldRetryShard(remoteResult, shardExecution);
@@ -387,6 +483,19 @@ public class SyncPartitionShardFanOutDispatchService {
                 issueCodes = mergeIssueCodes(issueCodes,
                         remoteResult == null ? List.of() : remoteResult.issueCodes(),
                         retrying ? "PARTITION_SHARD_RETRYING" : "PARTITION_SHARD_FAILED_ATTEMPTS_EXHAUSTED");
+                executionLogSupport.recordObjectEvent(task, execution, shardExecution, actorContext,
+                        "SHARD",
+                        retrying ? "WARN" : "ERROR",
+                        retrying ? "PARTITION_SHARD_RETRYING" : "PARTITION_SHARD_FAILED",
+                        retrying ? "RETRYING" : "FAILED",
+                        retrying ? "分片同步失败，仍在尝试次数内，将继续重试" : "分片同步失败，已耗尽尝试次数",
+                        "errorCode=" + shardExecution.getLastErrorCode()
+                                + ", attempt=" + shardExecution.getAttemptCount()
+                                + ", maxAttemptCount=" + effectiveMaxAttemptCount(shardExecution)
+                                + ", recordsRead=" + shardExecution.getRecordsRead()
+                                + ", recordsWritten=" + shardExecution.getRecordsWritten()
+                                + ", failedRecordCount=" + shardExecution.getFailedRecordCount(),
+                        SyncExecutionLogSupport.ExecutionMetricSnapshot.fromObject(shardExecution));
                 if (!retrying) {
                     break;
                 }
@@ -396,6 +505,14 @@ public class SyncPartitionShardFanOutDispatchService {
                         "PARTITION_SHARD_DISPATCH_EXCEPTION",
                         "分片派发发生受控异常，异常详情请查看服务端日志，公开结果仅保留低敏错误码");
                 issueCodes = mergeIssueCodes(issueCodes, List.of(), "PARTITION_SHARD_DISPATCH_EXCEPTION");
+                executionLogSupport.recordObjectEvent(task, execution, shardExecution, actorContext,
+                        "SHARD",
+                        "ERROR",
+                        "PARTITION_SHARD_DISPATCH_EXCEPTION",
+                        "FAILED",
+                        "分片派发发生受控异常，已记录为失败分片",
+                        "errorCode=PARTITION_SHARD_DISPATCH_EXCEPTION",
+                        SyncExecutionLogSupport.ExecutionMetricSnapshot.fromObject(shardExecution));
                 break;
             }
         }
@@ -406,6 +523,15 @@ public class SyncPartitionShardFanOutDispatchService {
                     "PARTITION_SHARD_ATTEMPT_POLICY_EXHAUSTED",
                     "分片尝试次数已耗尽或状态无法继续推进，已转为失败分片等待后续选择性重试");
             issueCodes = mergeIssueCodes(issueCodes, List.of(), "PARTITION_SHARD_ATTEMPT_POLICY_EXHAUSTED");
+            executionLogSupport.recordObjectEvent(task, execution, shardExecution, actorContext,
+                    "SHARD",
+                    "ERROR",
+                    "PARTITION_SHARD_ATTEMPT_POLICY_EXHAUSTED",
+                    "FAILED",
+                    "分片尝试策略已耗尽，等待后续选择性重试",
+                    "attempt=" + shardExecution.getAttemptCount()
+                            + ", maxAttemptCount=" + effectiveMaxAttemptCount(shardExecution),
+                    SyncExecutionLogSupport.ExecutionMetricSnapshot.fromObject(shardExecution));
         }
         return new ShardDispatchOutcome(remoteCalled, issueCodes);
     }

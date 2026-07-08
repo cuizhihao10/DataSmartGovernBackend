@@ -59,6 +59,7 @@ public class SyncOfflineRunnerDispatchService {
     private final SyncPartitionShardFanOutDispatchService partitionShardFanOutDispatchService;
     private final SyncExecutionLifecycleSupport lifecycleSupport;
     private final DataSyncTaskManagementReceiptPublisher receiptPublisher;
+    private final SyncExecutionLogSupport executionLogSupport;
 
     /**
      * Spring 生产运行时使用的完整构造器。
@@ -80,7 +81,8 @@ public class SyncOfflineRunnerDispatchService {
                                             SyncDiscoveredObjectFanOutDispatchService discoveredObjectFanOutDispatchService,
                                             SyncPartitionShardFanOutDispatchService partitionShardFanOutDispatchService,
                                             SyncExecutionLifecycleSupport lifecycleSupport,
-                                            DataSyncTaskManagementReceiptPublisher receiptPublisher) {
+                                            DataSyncTaskManagementReceiptPublisher receiptPublisher,
+                                            SyncExecutionLogSupport executionLogSupport) {
         this.bridgePlanSupport = bridgePlanSupport;
         this.runOnceDispatchService = runOnceDispatchService;
         this.runnerAdapterRegistry = runnerAdapterRegistry;
@@ -89,6 +91,7 @@ public class SyncOfflineRunnerDispatchService {
         this.partitionShardFanOutDispatchService = partitionShardFanOutDispatchService;
         this.lifecycleSupport = lifecycleSupport;
         this.receiptPublisher = receiptPublisher;
+        this.executionLogSupport = executionLogSupport;
     }
 
     /**
@@ -112,7 +115,33 @@ public class SyncOfflineRunnerDispatchService {
                 null,
                 partitionShardFanOutDispatchService,
                 lifecycleSupport,
-                receiptPublisher);
+                receiptPublisher,
+                null);
+    }
+
+    /**
+     * 兼容已经传入 discoveredObject fan-out、但尚未注入运行日志组件的测试构造器。
+     *
+     * <p>真实应用启动不会走这个构造器，因为完整生产构造器已经标注 {@link Autowired}。
+     * 这里的存在只是为了降低本次“运行日志能力”对历史单元测试的侵入性。</p>
+     */
+    public SyncOfflineRunnerDispatchService(SyncBatchRunnerBridgePlanSupport bridgePlanSupport,
+                                            SyncBatchRunOnceDispatchService runOnceDispatchService,
+                                            SyncOfflineRunnerAdapterRegistry runnerAdapterRegistry,
+                                            SyncObjectListFanOutDispatchService objectListFanOutDispatchService,
+                                            SyncDiscoveredObjectFanOutDispatchService discoveredObjectFanOutDispatchService,
+                                            SyncPartitionShardFanOutDispatchService partitionShardFanOutDispatchService,
+                                            SyncExecutionLifecycleSupport lifecycleSupport,
+                                            DataSyncTaskManagementReceiptPublisher receiptPublisher) {
+        this(bridgePlanSupport,
+                runOnceDispatchService,
+                runnerAdapterRegistry,
+                objectListFanOutDispatchService,
+                discoveredObjectFanOutDispatchService,
+                partitionShardFanOutDispatchService,
+                lifecycleSupport,
+                receiptPublisher,
+                null);
     }
 
     /**
@@ -134,6 +163,18 @@ public class SyncOfflineRunnerDispatchService {
         SyncActorContext safeActorContext = ensureActorContext(execution, task, actorContext);
         SyncBatchRunnerBridgePlan bridgePlan = bridgePlanSupport.buildPlan(execution, task, template, workerPlan);
         SyncOfflineRunnerJobContract contract = bridgePlan.getOfflineRunnerContract();
+        recordRunnerEvent(task, execution, safeActorContext,
+                "PLAN",
+                bridgePlan.isDispatchable() ? "INFO" : "WARN",
+                "OFFLINE_RUNNER_CONTRACT_EVALUATED",
+                bridgePlan.isDispatchable() ? "SUCCEEDED" : "BLOCKED",
+                "离线 Runner 合同已完成评估",
+                "dispatchStatus=" + bridgePlan.getDispatchStatus()
+                        + ", contractStatus=" + (contract == null ? "MISSING" : contract.contractStatus())
+                        + ", syncMode=" + bridgePlan.getSyncMode()
+                        + ", syncScopeType=" + (contract == null ? "-" : contract.syncScopeType())
+                        + ", minimalBridgeSupported=" + (contract != null && contract.minimalBridgeEndToEndSupported())
+                        + ", dedicatedRunnerRequired=" + (contract != null && contract.dedicatedOfflineRunnerRequired()));
 
         if (contract == null) {
             return failBeforeDelegate(task, execution, safeActorContext,
@@ -155,10 +196,24 @@ public class SyncOfflineRunnerDispatchService {
         }
         if (discoveredObjectFanOutDispatchService != null
                 && discoveredObjectFanOutDispatchService.supports(contract, safeActorContext)) {
+            recordRunnerEvent(task, execution, safeActorContext,
+                    "PLAN",
+                    "INFO",
+                    "OFFLINE_RUNNER_ROUTE_DISCOVERED_OBJECT_FAN_OUT",
+                    "STARTED",
+                    "全 schema/全库任务将先发现对象清单，再进入对象级 fan-out 执行",
+                    "contractStatus=" + contract.contractStatus());
             return discoveredObjectFanOutDispatchService.dispatchDiscoveredObjects(execution, task, template, workerPlan,
                     safeActorContext, contract);
         }
         if (objectListFanOutDispatchService.supports(contract, safeActorContext)) {
+            recordRunnerEvent(task, execution, safeActorContext,
+                    "PLAN",
+                    "INFO",
+                    "OFFLINE_RUNNER_ROUTE_OBJECT_LIST_FAN_OUT",
+                    "STARTED",
+                    "多对象同步将按对象账本逐个执行，失败对象可选择性重试",
+                    "contractStatus=" + contract.contractStatus());
             return objectListFanOutDispatchService.dispatchObjectList(execution, task, template, workerPlan,
                     safeActorContext, contract);
         }
@@ -168,6 +223,13 @@ public class SyncOfflineRunnerDispatchService {
              * 否则用户配置了“大表分片”，系统却仍按单通道全表扫描执行，会造成性能误判和恢复语义缺失。
              * 分片合同即使解析失败，也由分片 fan-out 服务负责 fail-closed，避免静默忽略配置错误。
              */
+            recordRunnerEvent(task, execution, safeActorContext,
+                    "PLAN",
+                    "INFO",
+                    "OFFLINE_RUNNER_ROUTE_PARTITION_SHARD_FAN_OUT",
+                    "STARTED",
+                    "单表大数据量同步将进入 splitPk 分片 fan-out 执行",
+                    "contractStatus=" + contract.contractStatus());
             return partitionShardFanOutDispatchService.dispatchPartitionShards(execution, task, template, workerPlan,
                     safeActorContext, contract);
         }
@@ -317,6 +379,16 @@ public class SyncOfflineRunnerDispatchService {
                                                                String errorMessage,
                                                                List<String> issueCodes,
                                                                SyncOfflineRunnerJobContract contract) {
+        recordRunnerEvent(task, execution, actorContext,
+                "PLAN",
+                "ERROR",
+                "OFFLINE_RUNNER_FAIL_CLOSED",
+                "FAILED",
+                "离线 Runner 合同无法安全执行，系统已阻断真实读写",
+                "dispatchStatus=" + dispatchStatus
+                        + ", contractStatus=" + contractStatus
+                        + ", errorCode=" + errorCode
+                        + ", issueCodes=" + issueCodes);
         SyncExecutionFailRequest request = new SyncExecutionFailRequest();
         request.setExecutorId(execution.getExecutorId());
         request.setErrorType("OFFLINE_RUNNER_CONTRACT_FAIL_CLOSED");
@@ -448,5 +520,27 @@ public class SyncOfflineRunnerDispatchService {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    /**
+     * 记录离线 Runner 门面的路径选择日志。
+     *
+     * <p>该方法允许 executionLogSupport 为空，是为了兼容历史单元测试中直接调用旧构造器 new 本类的场景。
+     * Spring 生产运行时会注入真实日志组件，因此不会丢失运行日志。</p>
+     */
+    private void recordRunnerEvent(SyncTask task,
+                                   SyncExecution execution,
+                                   SyncActorContext actorContext,
+                                   String stage,
+                                   String level,
+                                   String eventType,
+                                   String status,
+                                   String message,
+                                   String detailSummary) {
+        if (executionLogSupport == null) {
+            return;
+        }
+        executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                stage, level, eventType, status, message, detailSummary);
     }
 }

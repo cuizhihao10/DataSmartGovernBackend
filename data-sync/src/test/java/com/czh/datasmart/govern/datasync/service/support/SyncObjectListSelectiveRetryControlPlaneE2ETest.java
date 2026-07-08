@@ -162,7 +162,8 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
                 datasourceClient,
                 runOnceProperties(),
                 lifecycleSupport,
-                receiptPublisher);
+                receiptPublisher,
+                mock(SyncExecutionLogSupport.class));
         SyncObjectListFanOutDispatchService objectListFanOutDispatchService = new SyncObjectListFanOutDispatchService(
                 new SyncObjectMappingExecutionContractSupport(objectMapper),
                 new SyncObjectExecutionLifecycleSupport(objectExecutionMapper),
@@ -170,6 +171,7 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
                 runOnceDispatchService,
                 lifecycleSupport,
                 receiptPublisher,
+                mock(SyncExecutionLogSupport.class),
                 objectMapper);
         SyncPartitionShardFanOutDispatchService partitionShardFanOutDispatchService =
                 new SyncPartitionShardFanOutDispatchService(
@@ -179,7 +181,8 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
                         runOnceDispatchService,
                         null,
                         lifecycleSupport,
-                        receiptPublisher);
+                        receiptPublisher,
+                        mock(SyncExecutionLogSupport.class));
         return new SyncOfflineRunnerDispatchService(
                 bridgePlanSupport,
                 runOnceDispatchService,

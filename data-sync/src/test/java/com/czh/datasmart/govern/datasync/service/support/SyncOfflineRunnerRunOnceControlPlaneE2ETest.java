@@ -159,7 +159,8 @@ class SyncOfflineRunnerRunOnceControlPlaneE2ETest {
                 datasourceClient,
                 runOnceProperties(),
                 lifecycleSupport,
-                receiptPublisher);
+                receiptPublisher,
+                mock(SyncExecutionLogSupport.class));
         /*
          * 本测试聚焦 SINGLE_OBJECT 最小 run-once 闭环，不验证 OBJECT_LIST fan-out。
          * 因此这里用 mock 固定让 object-list 门面返回 false，避免把对象级账本夹具也拉入本测试。

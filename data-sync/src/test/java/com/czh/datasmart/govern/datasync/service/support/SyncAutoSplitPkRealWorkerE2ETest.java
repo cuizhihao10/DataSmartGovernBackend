@@ -137,7 +137,8 @@ class SyncAutoSplitPkRealWorkerE2ETest {
                 runOnceClient,
                 runOnceProperties(),
                 lifecycleFixture.lifecycleSupport(),
-                receiptPublisher);
+                receiptPublisher,
+                mock(SyncExecutionLogSupport.class));
         SyncOfflineRunnerDispatchService dispatchService = dispatchService(
                 bridgePlanSupport,
                 runOnceDispatchService,
@@ -247,7 +248,8 @@ class SyncAutoSplitPkRealWorkerE2ETest {
                         runOnceDispatchService,
                         rangeProbeClient,
                         lifecycleSupport,
-                        receiptPublisher);
+                        receiptPublisher,
+                        mock(SyncExecutionLogSupport.class));
         return new SyncOfflineRunnerDispatchService(
                 bridgePlanSupport,
                 runOnceDispatchService,
@@ -292,7 +294,8 @@ class SyncAutoSplitPkRealWorkerE2ETest {
                 errorSampleMapper,
                 mock(SyncAuditSupport.class),
                 mock(SyncCallbackIdempotencySupport.class),
-                mock(SyncExecutionCallbackControlSignalSupport.class)));
+                mock(SyncExecutionCallbackControlSignalSupport.class),
+                mock(SyncExecutionLogSupport.class)));
     }
 
     private SyncBatchConnectorRuntimeRunOnceService runOnceService(ExternalJdbcSettings settings) {

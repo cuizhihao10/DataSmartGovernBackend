@@ -17,6 +17,7 @@ import com.czh.datasmart.govern.datasync.mapper.SyncExecutionMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.service.support.SyncAuditSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncCallbackIdempotencySupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLogSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncWorkerExecutionPlanSupport;
 import com.czh.datasmart.govern.datasync.support.SyncExecutionState;
 import com.czh.datasmart.govern.datasync.support.SyncTaskState;
@@ -53,7 +54,8 @@ class DataSyncExecutorLeaseServiceImplClaimPlanTest {
                 auditSupport,
                 new DataSyncExecutorProperties(),
                 idempotencySupport,
-                planSupport);
+                planSupport,
+                mock(SyncExecutionLogSupport.class));
 
         SyncExecution queued = execution(SyncExecutionState.QUEUED);
         SyncExecution claimed = execution(SyncExecutionState.RUNNING);

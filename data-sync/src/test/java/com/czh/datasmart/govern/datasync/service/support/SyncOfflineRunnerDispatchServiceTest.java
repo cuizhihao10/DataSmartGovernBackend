@@ -473,6 +473,7 @@ class SyncOfflineRunnerDispatchServiceTest {
                 runOnceDispatchService,
                 lifecycleSupport,
                 receiptPublisher,
+                mock(SyncExecutionLogSupport.class),
                 objectMapper);
         SyncPartitionShardFanOutDispatchService partitionShardFanOutDispatchService =
                 new SyncPartitionShardFanOutDispatchService(
@@ -482,12 +483,14 @@ class SyncOfflineRunnerDispatchServiceTest {
                         runOnceDispatchService,
                         null,
                         lifecycleSupport,
-                        receiptPublisher);
+                        receiptPublisher,
+                        mock(SyncExecutionLogSupport.class));
         SyncDiscoveredObjectFanOutDispatchService discoveredObjectFanOutDispatchService =
                 metadataDiscoveryClient == null
                         ? null
                         : new SyncDiscoveredObjectFanOutDispatchService(metadataDiscoveryClient,
-                        objectListFanOutDispatchService, lifecycleSupport, receiptPublisher, objectMapper);
+                        objectListFanOutDispatchService, lifecycleSupport, receiptPublisher,
+                        mock(SyncExecutionLogSupport.class), objectMapper);
         return new SyncOfflineRunnerDispatchService(bridgePlanSupport, runOnceDispatchService,
                 runnerAdapterRegistry, objectListFanOutDispatchService, discoveredObjectFanOutDispatchService,
                 partitionShardFanOutDispatchService, lifecycleSupport, receiptPublisher);

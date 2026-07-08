@@ -104,7 +104,8 @@ class SyncExecutionLifecycleSupportCallbackControlTest {
                 errorSampleMapper,
                 auditSupport,
                 idempotencySupport,
-                new SyncExecutionCallbackControlSignalSupport());
+                new SyncExecutionCallbackControlSignalSupport(),
+                mock(SyncExecutionLogSupport.class));
         return new Fixture(support, executionMapper, taskMapper, checkpointMapper, errorSampleMapper, idempotencySupport);
     }
 

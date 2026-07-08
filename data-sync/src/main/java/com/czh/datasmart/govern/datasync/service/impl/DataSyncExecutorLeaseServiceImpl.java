@@ -24,6 +24,7 @@ import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.service.DataSyncExecutorLeaseService;
 import com.czh.datasmart.govern.datasync.service.support.SyncAuditSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncCallbackIdempotencySupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLogSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncWorkerExecutionPlanSupport;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
 import com.czh.datasmart.govern.datasync.support.SyncExecutionState;
@@ -62,6 +63,7 @@ public class DataSyncExecutorLeaseServiceImpl implements DataSyncExecutorLeaseSe
     private final DataSyncExecutorProperties executorProperties;
     private final SyncCallbackIdempotencySupport idempotencySupport;
     private final SyncWorkerExecutionPlanSupport workerExecutionPlanSupport;
+    private final SyncExecutionLogSupport executionLogSupport;
 
     @Override
     @Transactional
@@ -84,8 +86,25 @@ public class DataSyncExecutorLeaseServiceImpl implements DataSyncExecutorLeaseSe
         taskMapper.updateById(task);
         auditSupport.saveAudit(task.getTenantId(), task.getId(), claimed.getId(), SyncAuditActionType.RUN_TASK,
                 actorContext, "claimExecution,executorId=" + request.getExecutorId() + ",leaseSeconds=" + leaseSeconds);
-        return new SyncExecutionClaimResult(true, "同步执行记录认领成功",
+        SyncExecutionClaimResult result = new SyncExecutionClaimResult(true, "同步执行记录认领成功",
                 claimed, task, workerExecutionPlanSupport.buildPlan(claimed, task));
+        /*
+         * 认领日志是执行时间线里从“排队”到“真正开始运行”的分界点。
+         *
+         * 后续如果用户看到任务长时间没有数据写入，可以先看是否已经出现 WORKER_CLAIMED：
+         * - 没有出现：说明队列、调度器或 worker 扫描有问题；
+         * - 已经出现：说明 worker 已经拿到租约，应继续看计划、通道和远端批次日志。
+         */
+        executionLogSupport.recordExecutionEvent(task, claimed, actorContext,
+                "CLAIM",
+                "INFO",
+                "WORKER_CLAIMED",
+                "STARTED",
+                "执行记录已被 worker 认领，开始进入执行链路",
+                "executorId=" + request.getExecutorId()
+                        + ", leaseSeconds=" + leaseSeconds
+                        + ", workerPlanStatus=" + (result.workerPlan() == null ? "UNKNOWN" : result.workerPlan().planStatus()));
+        return result;
     }
 
     @Override
@@ -121,6 +140,16 @@ public class DataSyncExecutorLeaseServiceImpl implements DataSyncExecutorLeaseSe
                 actorContext, "heartbeat,executorId=" + request.getExecutorId() + ",leaseSeconds=" + leaseSeconds);
         idempotencySupport.markSucceeded(refreshed.getTenantId(), action, scopeKey, request.getIdempotencyKey(),
                 "leaseExpireTime=" + refreshed.getLeaseExpireTime());
+        executionLogSupport.recordExecutionEvent(requireTask(refreshed.getSyncTaskId()), refreshed, actorContext,
+                "HEARTBEAT",
+                "INFO",
+                "WORKER_HEARTBEAT",
+                "PROGRESS",
+                "worker 心跳续租成功，执行仍在推进",
+                "executorId=" + request.getExecutorId()
+                        + ", leaseSeconds=" + leaseSeconds
+                        + ", recordsRead=" + safeLong(request.getRecordsRead())
+                        + ", recordsWritten=" + safeLong(request.getRecordsWritten()));
         return SyncExecutionHeartbeatResult.leaseExtended(refreshed);
     }
 
@@ -162,6 +191,17 @@ public class DataSyncExecutorLeaseServiceImpl implements DataSyncExecutorLeaseSe
                         + ",reason=" + truncate(reason, 200));
         idempotencySupport.markSucceeded(deferred.getTenantId(), action, scopeKey, request.getIdempotencyKey(),
                 "state=" + deferred.getExecutionState() + ",deferCount=" + deferred.getDeferCount());
+        executionLogSupport.recordExecutionEvent(task, deferred, actorContext,
+                "DEFER",
+                SyncExecutionState.FAILED.name().equals(deferred.getExecutionState()) ? "ERROR" : "WARN",
+                "WORKER_DEFERRED",
+                SyncExecutionState.FAILED.name().equals(deferred.getExecutionState()) ? "FAILED" : "RETRYING",
+                "worker 主动退避，本次执行暂时无法继续",
+                "delaySeconds=" + delaySeconds
+                        + ", deferCount=" + deferred.getDeferCount()
+                        + ", maxDeferCount=" + maxDeferCount
+                        + ", state=" + deferred.getExecutionState()
+                        + ", reason=" + truncate(reason, 300));
         return deferred;
     }
 
@@ -210,6 +250,16 @@ public class DataSyncExecutorLeaseServiceImpl implements DataSyncExecutorLeaseSe
             } else {
                 recoveredIds.add(recovered.getId());
             }
+            executionLogSupport.recordExecutionEvent(task, recovered, actorContext,
+                    "LEASE_RECOVERY",
+                    SyncExecutionState.FAILED.name().equals(recovered.getExecutionState()) ? "ERROR" : "WARN",
+                    "EXPIRED_LEASE_RECOVERED",
+                    SyncExecutionState.FAILED.name().equals(recovered.getExecutionState()) ? "FAILED" : "RETRYING",
+                    "系统发现 worker 租约过期并执行恢复处理",
+                    "state=" + recovered.getExecutionState()
+                            + ", deferCount=" + recovered.getDeferCount()
+                            + ", maxDeferCount=" + maxDeferCount
+                            + ", reason=" + truncate(reason, 300));
         }
         SyncExpiredLeaseRecoveryResult result = new SyncExpiredLeaseRecoveryResult(
                 expiredExecutions.size(),

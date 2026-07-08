@@ -35,6 +35,7 @@ public class SyncExecutionCreationSupport {
 
     private final SyncExecutionMapper executionMapper;
     private final SyncAuditSupport auditSupport;
+    private final SyncExecutionLogSupport executionLogSupport;
 
     /**
      * 创建一条待执行同步记录。
@@ -76,6 +77,21 @@ public class SyncExecutionCreationSupport {
                 actorContext, "executionNo=" + execution.getExecutionNo()
                         + ",state=" + execution.getExecutionState()
                         + ",triggerType=" + execution.getTriggerType());
+        /*
+         * 运行日志从 execution 创建开始记录。
+         *
+         * 这条日志的产品价值是让用户在“执行历史 -> 运行日志”中看到：
+         * 任务已经进入执行队列，并且当前只是等待 worker 认领，而不是页面卡住或后端无响应。
+         */
+        executionLogSupport.recordExecutionEvent(task, execution, actorContext,
+                "QUEUE",
+                "INFO",
+                "EXECUTION_QUEUED",
+                "STARTED",
+                "同步执行记录已创建并进入队列",
+                "executionNo=" + execution.getExecutionNo()
+                        + ", triggerType=" + execution.getTriggerType()
+                        + ", state=" + execution.getExecutionState());
         return execution;
     }
 

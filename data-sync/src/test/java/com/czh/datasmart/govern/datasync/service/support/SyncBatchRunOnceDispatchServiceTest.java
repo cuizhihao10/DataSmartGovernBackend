@@ -190,7 +190,8 @@ class SyncBatchRunOnceDispatchServiceTest {
                 client,
                 properties,
                 lifecycleSupport,
-                receiptPublisher);
+                receiptPublisher,
+                mock(SyncExecutionLogSupport.class));
     }
 
     private DataSyncDatasourceRunOnceProperties properties(boolean enabled) {

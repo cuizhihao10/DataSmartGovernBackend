@@ -17,6 +17,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncAuditQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncCheckpointQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncErrorSampleQueryCriteria;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionLogQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
@@ -24,6 +25,7 @@ import com.czh.datasmart.govern.datasync.mapper.SyncAuditRecordMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncCheckpointMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncErrorSampleMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncExecutionMapper;
+import com.czh.datasmart.govern.datasync.mapper.SyncExecutionLogMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
 import com.czh.datasmart.govern.datasync.service.support.SyncAuditSupport;
@@ -169,6 +171,7 @@ class DataSyncServiceImplProjectScopeTest {
         SyncAuditSupport auditSupport = mock(SyncAuditSupport.class);
         DataSyncServiceImpl service = service(templateMapper, taskMapper,
                 mock(SyncExecutionMapper.class),
+                mock(SyncExecutionLogMapper.class),
                 mock(SyncCheckpointMapper.class),
                 mock(SyncErrorSampleMapper.class),
                 mock(SyncAuditRecordMapper.class),
@@ -204,6 +207,7 @@ class DataSyncServiceImplProjectScopeTest {
         SyncAuditSupport auditSupport = mock(SyncAuditSupport.class);
         DataSyncServiceImpl service = service(templateMapper, taskMapper,
                 mock(SyncExecutionMapper.class),
+                mock(SyncExecutionLogMapper.class),
                 mock(SyncCheckpointMapper.class),
                 mock(SyncErrorSampleMapper.class),
                 mock(SyncAuditRecordMapper.class),
@@ -237,6 +241,7 @@ class DataSyncServiceImplProjectScopeTest {
         SyncAuditSupport auditSupport = mock(SyncAuditSupport.class);
         DataSyncServiceImpl service = service(templateMapper, taskMapper,
                 mock(SyncExecutionMapper.class),
+                mock(SyncExecutionLogMapper.class),
                 mock(SyncCheckpointMapper.class),
                 mock(SyncErrorSampleMapper.class),
                 mock(SyncAuditRecordMapper.class),
@@ -271,6 +276,7 @@ class DataSyncServiceImplProjectScopeTest {
         SyncAuditSupport auditSupport = mock(SyncAuditSupport.class);
         DataSyncServiceImpl service = service(templateMapper, taskMapper,
                 mock(SyncExecutionMapper.class),
+                mock(SyncExecutionLogMapper.class),
                 mock(SyncCheckpointMapper.class),
                 mock(SyncErrorSampleMapper.class),
                 mock(SyncAuditRecordMapper.class),
@@ -318,6 +324,7 @@ class DataSyncServiceImplProjectScopeTest {
         SyncAuditSupport auditSupport = mock(SyncAuditSupport.class);
         DataSyncServiceImpl service = service(templateMapper, taskMapper,
                 mock(SyncExecutionMapper.class),
+                mock(SyncExecutionLogMapper.class),
                 mock(SyncCheckpointMapper.class),
                 mock(SyncErrorSampleMapper.class),
                 mock(SyncAuditRecordMapper.class),
@@ -363,6 +370,25 @@ class DataSyncServiceImplProjectScopeTest {
                         projectScopedActor(List.of(101L, 102L))));
 
         verify(fixture.executionMapper(), never()).selectPage(any(), any());
+    }
+
+    /**
+     * 运行日志列表同样必须先校验任务项目归属。
+     *
+     * <p>运行日志只保存低敏事实，但它仍然会暴露某次同步执行的阶段、速度、成功/失败数量、对象顺序和失败位置。
+     * 对商业化数据同步产品来说，这些属于“运营证据”，不能让未授权用户通过猜测 executionId 直接枚举。
+     * 因此 service 层查询日志前必须先读取任务并执行项目数据范围校验；校验不通过时，日志表 mapper 不应被调用。</p>
+     */
+    @Test
+    void pageExecutionLogsShouldRejectUnauthorizedTaskProjectBeforeQueryChildTable() {
+        ServiceFixture fixture = serviceFixtureWithUnauthorizedTask();
+
+        assertThrows(PlatformBusinessException.class,
+                () -> fixture.service().pageExecutionLogs(
+                        new SyncExecutionLogQueryCriteria(9001L, 9101L, null, null, 1L, 20L),
+                        projectScopedActor(List.of(101L, 102L))));
+
+        verify(fixture.executionLogMapper(), never()).selectPage(any(), any());
     }
 
     /**
@@ -427,6 +453,7 @@ class DataSyncServiceImplProjectScopeTest {
                 templateMapper,
                 mock(SyncTaskMapper.class),
                 mock(SyncExecutionMapper.class),
+                mock(SyncExecutionLogMapper.class),
                 mock(SyncCheckpointMapper.class),
                 mock(SyncErrorSampleMapper.class),
                 mock(SyncAuditRecordMapper.class),
@@ -460,6 +487,7 @@ class DataSyncServiceImplProjectScopeTest {
         SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
         SyncTaskMapper taskMapper = mock(SyncTaskMapper.class);
         SyncExecutionMapper executionMapper = mock(SyncExecutionMapper.class);
+        SyncExecutionLogMapper executionLogMapper = mock(SyncExecutionLogMapper.class);
         SyncCheckpointMapper checkpointMapper = mock(SyncCheckpointMapper.class);
         SyncErrorSampleMapper errorSampleMapper = mock(SyncErrorSampleMapper.class);
         SyncAuditRecordMapper auditRecordMapper = mock(SyncAuditRecordMapper.class);
@@ -468,6 +496,7 @@ class DataSyncServiceImplProjectScopeTest {
                 templateMapper,
                 taskMapper,
                 executionMapper,
+                executionLogMapper,
                 checkpointMapper,
                 errorSampleMapper,
                 auditRecordMapper,
@@ -480,12 +509,13 @@ class DataSyncServiceImplProjectScopeTest {
         task.setWorkspaceId(301L);
         task.setOwnerId(2002L);
         when(taskMapper.selectById(9001L)).thenReturn(task);
-        return new ServiceFixture(service, executionMapper, checkpointMapper, errorSampleMapper, auditRecordMapper);
+        return new ServiceFixture(service, executionMapper, executionLogMapper, checkpointMapper, errorSampleMapper, auditRecordMapper);
     }
 
     private DataSyncServiceImpl service(SyncTemplateMapper templateMapper,
                                         SyncTaskMapper taskMapper,
                                         SyncExecutionMapper executionMapper,
+                                        SyncExecutionLogMapper executionLogMapper,
                                         SyncCheckpointMapper checkpointMapper,
                                         SyncErrorSampleMapper errorSampleMapper,
                                         SyncAuditRecordMapper auditRecordMapper,
@@ -497,6 +527,7 @@ class DataSyncServiceImplProjectScopeTest {
                 templateMapper,
                 taskMapper,
                 executionMapper,
+                executionLogMapper,
                 checkpointMapper,
                 errorSampleMapper,
                 auditRecordMapper,
@@ -706,6 +737,7 @@ class DataSyncServiceImplProjectScopeTest {
      */
     private record ServiceFixture(DataSyncServiceImpl service,
                                   SyncExecutionMapper executionMapper,
+                                  SyncExecutionLogMapper executionLogMapper,
                                   SyncCheckpointMapper checkpointMapper,
                                   SyncErrorSampleMapper errorSampleMapper,
                                   SyncAuditRecordMapper auditRecordMapper) {

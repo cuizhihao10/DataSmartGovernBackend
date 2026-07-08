@@ -22,6 +22,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncErrorSampleQueryCrit
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCheckpointRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCompleteRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionLogQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionStartRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncOfflineJobPlanResponse;
@@ -58,6 +59,7 @@ import com.czh.datasmart.govern.datasync.entity.SyncAuditRecord;
 import com.czh.datasmart.govern.datasync.entity.SyncCheckpoint;
 import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
+import com.czh.datasmart.govern.datasync.entity.SyncExecutionLog;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTaskGroup;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
@@ -65,6 +67,7 @@ import com.czh.datasmart.govern.datasync.mapper.SyncAuditRecordMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncCheckpointMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncErrorSampleMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncExecutionMapper;
+import com.czh.datasmart.govern.datasync.mapper.SyncExecutionLogMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
 import com.czh.datasmart.govern.datasync.service.DataSyncService;
@@ -124,6 +127,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncTemplateMapper templateMapper;
     private final SyncTaskMapper taskMapper;
     private final SyncExecutionMapper executionMapper;
+    private final SyncExecutionLogMapper executionLogMapper;
     private final SyncCheckpointMapper checkpointMapper;
     private final SyncErrorSampleMapper errorSampleMapper;
     private final SyncAuditRecordMapper auditRecordMapper;
@@ -1018,6 +1022,33 @@ public class DataSyncServiceImpl implements DataSyncService {
         eqIfPresent(wrapper, SyncExecution::getExecutionState, normalizeCode(criteria.executionState()));
         eqIfPresent(wrapper, SyncExecution::getTriggerType, normalizeCode(criteria.triggerType()));
         Page<SyncExecution> page = executionMapper.selectPage(querySupport.page(criteria.current(), criteria.size()), wrapper);
+        return PlatformPageResponse.of(page.getCurrent(), page.getSize(), page.getTotal(), page.getRecords());
+    }
+
+    /**
+     * 查询某次执行的运行日志。
+     *
+     * <p>这里故意不直接按 executionId 查询，而是先执行两步校验：</p>
+     * <p>1. {@link #getTask(Long, SyncActorContext)} 校验调用者是否能读取该任务；</p>
+     * <p>2. {@link #getExecutionForTask(Long, SyncTask)} 校验 execution 是否确实属于该任务。</p>
+     *
+     * <p>完成这两步后，再从日志表查询。这样即使调用者猜到了别的 executionId，也无法绕过任务级数据范围。
+     * 日志表虽然只保存低敏信息，但运行速度、对象顺序、失败阶段仍属于运营证据，不能变成无权限可枚举资源。</p>
+     */
+    @Override
+    public PlatformPageResponse<SyncExecutionLog> pageExecutionLogs(SyncExecutionLogQueryCriteria criteria,
+                                                                    SyncActorContext actorContext) {
+        SyncTask task = getTask(criteria.syncTaskId(), actorContext);
+        SyncExecution execution = getExecutionForTask(criteria.executionId(), task);
+        LambdaQueryWrapper<SyncExecutionLog> wrapper = new LambdaQueryWrapper<SyncExecutionLog>()
+                .eq(SyncExecutionLog::getSyncTaskId, task.getId())
+                .eq(SyncExecutionLog::getExecutionId, execution.getId())
+                .orderByAsc(SyncExecutionLog::getEventTime)
+                .orderByAsc(SyncExecutionLog::getId);
+        eqIfPresent(wrapper, SyncExecutionLog::getLogStage, normalizeCode(criteria.logStage()));
+        eqIfPresent(wrapper, SyncExecutionLog::getLogLevel, normalizeCode(criteria.logLevel()));
+        Page<SyncExecutionLog> page = executionLogMapper.selectPage(
+                querySupport.page(criteria.current(), criteria.size()), wrapper);
         return PlatformPageResponse.of(page.getCurrent(), page.getSize(), page.getTotal(), page.getRecords());
     }
 

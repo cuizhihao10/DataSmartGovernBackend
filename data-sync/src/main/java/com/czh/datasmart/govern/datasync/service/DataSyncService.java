@@ -18,6 +18,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncErrorSampleQueryCrit
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCheckpointRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCompleteRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionLogQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionStartRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncOfflineJobPlanResponse;
@@ -54,6 +55,7 @@ import com.czh.datasmart.govern.datasync.entity.SyncAuditRecord;
 import com.czh.datasmart.govern.datasync.entity.SyncCheckpoint;
 import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
+import com.czh.datasmart.govern.datasync.entity.SyncExecutionLog;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTaskGroup;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
@@ -356,6 +358,15 @@ public interface DataSyncService {
     SyncErrorSample failExecution(Long taskId, Long executionId, SyncExecutionFailRequest request, SyncActorContext actorContext);
 
     PlatformPageResponse<SyncExecution> pageExecutions(SyncExecutionQueryCriteria criteria, SyncActorContext actorContext);
+
+    /**
+     * 查询某次 execution 的运行日志。
+     *
+     * <p>运行日志是“阶段时间线”，用于回答“这次同步执行过程中每一步发生了什么、读写了多少、速度如何、哪里失败”。
+     * 它和 execution 列表不同：execution 列表只展示最终或当前状态，运行日志展示过程。</p>
+     */
+    PlatformPageResponse<SyncExecutionLog> pageExecutionLogs(SyncExecutionLogQueryCriteria criteria,
+                                                            SyncActorContext actorContext);
 
     /**
      * 查询某次 execution 内部的对象级执行账本。
