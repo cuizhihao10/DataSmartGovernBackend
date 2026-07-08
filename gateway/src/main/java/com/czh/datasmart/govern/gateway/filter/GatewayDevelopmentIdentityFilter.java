@@ -46,9 +46,9 @@ import java.util.Locale;
  * 当前类只服务本地和测试联调，令牌格式简单、没有签名，不具备生产安全性。
  * 生产链路已经由 GatewayOidcAuthenticationContextFilter 接入 OIDC/JWT Resource Server；
  * 本过滤器必须保持默认关闭，且不应在生产配置中覆盖 OIDC 写入的身份 Header。
- * 两条链路最终都写入 X-DataSmart-Tenant-Id、X-DataSmart-Actor-Id、X-DataSmart-Actor-Role、
- * X-DataSmart-Actor-Type、X-DataSmart-Workspace-Id，是为了让 permission-admin、task-management、
- * datasource-management 等下游模块稳定消费同一套平台身份上下文。
+ * 两条链路最终都会写入 X-DataSmart-Tenant-Id、X-DataSmart-Actor-Id、X-DataSmart-Actor-Role、
+ * X-DataSmart-Actor-Type。X-DataSmart-Workspace-Id 现在只对 Agent 路由继续传播，用于运行时沙箱和工具上下文；
+ * 数据同步、数据源、任务等普通业务模块已经改为项目级作用域，不再消费工作空间 Header。
  */
 @Slf4j
 @Component
@@ -91,8 +91,9 @@ public class GatewayDevelopmentIdentityFilter implements GlobalFilter, Ordered {
             return chain.filter(exchange);
         }
 
+        boolean workspaceContextRequired = shouldPropagateWorkspaceContext(request.getPath().value());
         ServerHttpRequest mutatedRequest = request.mutate()
-                .headers(headers -> writeIdentityHeaders(headers, identityContext))
+                .headers(headers -> writeIdentityHeaders(headers, identityContext, workspaceContextRequired))
                 .build();
         return chain.filter(exchange.mutate().request(mutatedRequest).build());
     }
@@ -185,13 +186,33 @@ public class GatewayDevelopmentIdentityFilter implements GlobalFilter, Ordered {
      *
      * <p>这里使用 set 而不是 add，是为了确保一个 Header 只有一个可信值。
      * 多值 Header 在安全领域很危险，因为不同框架可能读取第一个值或最后一个值，导致审计和授权结果不一致。
+     *
+     * <p>workspaceHeader 采用按路由传播的策略：数据同步、数据源、任务、质量等业务路由已经收敛为项目级作用域，
+     * 不能继续把开发令牌里的 workspace-a 写给下游；Agent 路由仍保留 workspace，用于工具执行沙箱、文件区和运行时隔离。</p>
      */
-    private void writeIdentityHeaders(HttpHeaders headers, IdentityContext identityContext) {
+    private void writeIdentityHeaders(HttpHeaders headers,
+                                      IdentityContext identityContext,
+                                      boolean workspaceContextRequired) {
         headers.set(PlatformContextHeaders.TENANT_ID, String.valueOf(identityContext.tenantId()));
         headers.set(PlatformContextHeaders.ACTOR_ID, String.valueOf(identityContext.actorId()));
         headers.set(PlatformContextHeaders.ACTOR_ROLE, identityContext.actorRole());
         headers.set(PlatformContextHeaders.ACTOR_TYPE, identityContext.actorType());
-        headers.set(PlatformContextHeaders.WORKSPACE_ID, identityContext.workspaceId());
+        if (workspaceContextRequired) {
+            headers.set(PlatformContextHeaders.WORKSPACE_ID, identityContext.workspaceId());
+        } else {
+            headers.remove(PlatformContextHeaders.WORKSPACE_ID);
+        }
+    }
+
+    /**
+     * 只有 Agent 运行时路由继续需要 workspace。
+     *
+     * <p>这里不把判断放到配置里，是因为当前产品层级已经明确：普通业务模块不再暴露工作空间；
+     * Agent 路由保留 workspace 则是运行时沙箱概念，不等同于数据同步任务归属层级。</p>
+     */
+    private boolean shouldPropagateWorkspaceContext(String path) {
+        return path != null
+                && (path.startsWith("/api/agent/") || path.startsWith("/api/internal/agent-runtime/"));
     }
 
     /**

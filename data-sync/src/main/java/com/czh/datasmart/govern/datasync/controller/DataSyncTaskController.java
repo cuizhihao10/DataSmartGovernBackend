@@ -164,7 +164,6 @@ public class DataSyncTaskController {
     public PlatformApiResponse<PlatformPageResponse<SyncTask>> pageTasks(
             @RequestParam(required = false) Long tenantId,
             @RequestParam(required = false) Long projectId,
-            @RequestParam(required = false) Long workspaceId,
             @RequestParam(required = false) Long templateId,
             @RequestParam(required = false) Long ownerId,
             @RequestParam(required = false) String groupCode,
@@ -179,7 +178,7 @@ public class DataSyncTaskController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
-                tenantId, projectId, workspaceId, templateId, ownerId, groupCode,
+                tenantId, projectId, null, templateId, ownerId, groupCode,
                 currentState, approvalState, triggerType, current, size);
         return PlatformApiResponse.success(dataSyncService.pageTasks(
                 criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
@@ -198,7 +197,6 @@ public class DataSyncTaskController {
     public ResponseEntity<byte[]> exportTasks(
             @RequestParam(required = false) Long tenantId,
             @RequestParam(required = false) Long projectId,
-            @RequestParam(required = false) Long workspaceId,
             @RequestParam(required = false) Long templateId,
             @RequestParam(required = false) Long ownerId,
             @RequestParam(required = false) String groupCode,
@@ -214,7 +212,7 @@ public class DataSyncTaskController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
-                tenantId, projectId, workspaceId, templateId, ownerId, groupCode,
+                tenantId, projectId, null, templateId, ownerId, groupCode,
                 currentState, approvalState, triggerType, current, size);
         SyncTaskExportFile file = dataSyncService.exportTasks(
                 criteria, format, actorContext(actorTenantId, actorId, actorRole, traceId, headers));
@@ -378,7 +376,8 @@ public class DataSyncTaskController {
      *
      * <p>路由语义：
      * - GET /sync-tasks/groups 是只读分组列表，不创建任务、不执行任务；
-     * - tenant/project/workspace 仍只是请求过滤条件，最终可见范围由服务层结合权限上下文二次收口；
+     * - tenant/project 仍只是请求过滤条件，最终可见范围由服务层结合权限上下文二次收口；
+     * - workspace 已经从用户侧任务分组视图退场，即使旧请求带 workspaceId，也不再影响分组聚合；
      * - groupCode 可用于只查某个稳定分组，适合 Agent 在拿到用户口令后先做分组摘要确认。</p>
      *
      * <p>返回内容：
@@ -389,7 +388,6 @@ public class DataSyncTaskController {
     public PlatformApiResponse<List<SyncTaskGroupSummary>> listTaskGroups(
             @RequestParam(required = false) Long tenantId,
             @RequestParam(required = false) Long projectId,
-            @RequestParam(required = false) Long workspaceId,
             @RequestParam(required = false) Long ownerId,
             @RequestParam(required = false) String groupCode,
             @RequestParam(defaultValue = "100") Long size,
@@ -399,7 +397,7 @@ public class DataSyncTaskController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
-                tenantId, projectId, workspaceId, null, ownerId, groupCode,
+                tenantId, projectId, null, null, ownerId, groupCode,
                 null, null, null, 1L, size);
         return PlatformApiResponse.success(dataSyncService.listTaskGroups(
                 criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
@@ -411,7 +409,7 @@ public class DataSyncTaskController {
      * <p>路由语义：</p>
      * <p>1. GET /sync-tasks/recycle-bin 是显式回收站视图，不要求调用方了解 currentState=RECYCLED 的内部状态值；</p>
      * <p>2. 回收站任务仍可查看详情、克隆和彻底删除，但不能直接运行或调度；</p>
-     * <p>3. 服务层仍会按租户、项目、工作空间、负责人和 SELF 范围收口，避免普通用户看到他人的已删除任务。</p>
+     * <p>3. 服务层仍会按租户、项目、负责人和 SELF 范围收口，避免普通用户看到他人的已删除任务。</p>
      */
     /**
      * 查询同步任务分组树。
@@ -423,7 +421,6 @@ public class DataSyncTaskController {
     public PlatformApiResponse<List<SyncTaskGroupTreeNode>> listTaskGroupTree(
             @RequestParam(required = false) Long tenantId,
             @RequestParam(required = false) Long projectId,
-            @RequestParam(required = false) Long workspaceId,
             @RequestParam(required = false) Long ownerId,
             @RequestParam(required = false) String groupCode,
             @RequestParam(defaultValue = "200") Long size,
@@ -433,7 +430,7 @@ public class DataSyncTaskController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
-                tenantId, projectId, workspaceId, null, ownerId, groupCode,
+                tenantId, projectId, null, null, ownerId, groupCode,
                 null, null, null, 1L, size);
         return PlatformApiResponse.success(dataSyncService.listTaskGroupTree(
                 criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
@@ -469,7 +466,6 @@ public class DataSyncTaskController {
             @PathVariable String groupCode,
             @RequestParam(required = false) Long tenantId,
             @RequestParam(required = false) Long projectId,
-            @RequestParam(required = false) Long workspaceId,
             @RequestParam(required = false) String reason,
             @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
@@ -477,7 +473,7 @@ public class DataSyncTaskController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader HttpHeaders headers) {
         return PlatformApiResponse.success("同步任务分组删除完成",
-                dataSyncService.deleteTaskGroup(groupCode, tenantId, projectId, workspaceId, reason,
+                dataSyncService.deleteTaskGroup(groupCode, tenantId, projectId, null, reason,
                         actorContext(actorTenantId, actorId, actorRole, traceId, headers)),
                 traceId);
     }
@@ -563,7 +559,6 @@ public class DataSyncTaskController {
     public PlatformApiResponse<PlatformPageResponse<SyncTask>> pageRecycledTasks(
             @RequestParam(required = false) Long tenantId,
             @RequestParam(required = false) Long projectId,
-            @RequestParam(required = false) Long workspaceId,
             @RequestParam(required = false) Long templateId,
             @RequestParam(required = false) Long ownerId,
             @RequestParam(required = false) String groupCode,
@@ -577,7 +572,7 @@ public class DataSyncTaskController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
-                tenantId, projectId, workspaceId, templateId, ownerId, groupCode,
+                tenantId, projectId, null, templateId, ownerId, groupCode,
                 null, approvalState, triggerType, current, size);
         return PlatformApiResponse.success(dataSyncService.pageRecycledTasks(
                 criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);

@@ -76,4 +76,57 @@ class GatewayContractFilterTest {
         assertThat(rawProjectId).isEqualTo("not-a-number");
         assertThat(requestedProjectId).isNull();
     }
+
+    /**
+     * 可信上游模式下，业务路由也不能继续透传 workspace Header。
+     *
+     * <p>这个测试覆盖用户截图里的根因之一：开发期或企业网关可能仍携带
+     * {@code X-DataSmart-Workspace-Id=workspace-a}，但 data-sync 已经是项目级产品链路。
+     * ContractFilter 必须在第一道网关边界就把它从业务路由里剔除，避免后续过滤器或下游服务再次误用。</p>
+     */
+    @Test
+    void shouldNotCopyTrustedWorkspaceHeaderForBusinessRoutes() {
+        GatewayContextProperties properties = new GatewayContextProperties();
+        properties.setTrustIncomingPlatformContext(true);
+        GatewayContractFilter filter = new GatewayContractFilter(properties);
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/api/sync/sync-tasks")
+                        .header(PlatformContextHeaders.TENANT_ID, "10")
+                        .header(PlatformContextHeaders.ACTOR_ID, "1001")
+                        .header(PlatformContextHeaders.ACTOR_ROLE, "PROJECT_OWNER")
+                        .header(PlatformContextHeaders.WORKSPACE_ID, "workspace-a")
+                        .build()
+        );
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(chain.called()).isTrue();
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.TENANT_ID))
+                .isEqualTo("10");
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.WORKSPACE_ID))
+                .isNull();
+    }
+
+    /**
+     * Agent 路由保留 workspace Header，用于运行时沙箱和工具调用隔离。
+     */
+    @Test
+    void shouldCopyTrustedWorkspaceHeaderForAgentRoutes() {
+        GatewayContextProperties properties = new GatewayContextProperties();
+        properties.setTrustIncomingPlatformContext(true);
+        GatewayContractFilter filter = new GatewayContractFilter(properties);
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/api/agent/plans")
+                        .header(PlatformContextHeaders.WORKSPACE_ID, "workspace-a")
+                        .build()
+        );
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(chain.called()).isTrue();
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.WORKSPACE_ID))
+                .isEqualTo("workspace-a");
+    }
 }

@@ -54,7 +54,6 @@ public class DataSyncIncidentController {
     public PlatformApiResponse<PlatformPageResponse<SyncIncidentRecord>> pageIncidents(
             @RequestParam(required = false) Long tenantId,
             @RequestParam(required = false) Long projectId,
-            @RequestParam(required = false) Long workspaceId,
             @RequestParam(required = false) Long syncTaskId,
             @RequestParam(required = false) Long executionId,
             @RequestParam(required = false) String incidentType,
@@ -70,7 +69,7 @@ public class DataSyncIncidentController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader HttpHeaders headers) {
         SyncIncidentQueryCriteria criteria = new SyncIncidentQueryCriteria(
-                tenantId, projectId, workspaceId, syncTaskId, executionId, incidentType, severity, incidentStatus,
+                tenantId, projectId, null, syncTaskId, executionId, incidentType, severity, incidentStatus,
                 operatorId, assignedOperatorId, current, size);
         return PlatformApiResponse.success(incidentService.pageIncidents(
                 criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);

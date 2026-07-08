@@ -27,8 +27,8 @@ import reactor.core.publisher.Mono;
  *
  * <p>该过滤器是“生产认证中心”真正进入网关请求链路的位置：</p>
  * <p>1. Spring Security OAuth2 Resource Server 先校验 Authorization: Bearer JWT；</p>
- * <p>2. 本过滤器从已经认证的 Authentication/Jwt 中提取租户、操作者、角色、类型和 workspace；</p>
- * <p>3. 写入统一的 X-DataSmart-* Header；</p>
+ * <p>2. 本过滤器从已经认证的 Authentication/Jwt 中提取租户、操作者、角色、类型，以及可选的 Agent workspace；</p>
+ * <p>3. 写入统一的 X-DataSmart-* Header；其中 workspace 只会继续传播到 Agent 路由，普通业务路由按项目级作用域运行；</p>
  * <p>4. 后续 GatewayAuthorizationFilter 读取这些 Header，再调用 permission-admin 做 RBAC/数据范围授权。</p>
  *
  * <p>它排在 GatewayContractFilter 之后、GatewayDevelopmentIdentityFilter 和 GatewayAuthorizationFilter 之前。
@@ -92,9 +92,30 @@ public class GatewayOidcAuthenticationContextFilter implements GlobalFilter, Ord
         authenticationAuditSupport.recordResolved(exchange.getRequest(), principal);
         ServerHttpRequest authenticatedRequest = exchange.getRequest()
                 .mutate()
-                .headers(headers -> authenticationCenterService.writePlatformIdentityHeaders(headers, principal))
+                .headers(headers -> {
+                    authenticationCenterService.writePlatformIdentityHeaders(headers, principal);
+                    if (!shouldPropagateWorkspaceContext(exchange.getRequest().getPath().value())) {
+                        /*
+                         * OIDC/Keycloak claim 中可能仍然存在 datasmart_workspace_id。它对 Agent 沙箱有价值，
+                         * 但对 FlashSync 数据同步、数据源管理、任务管理等用户侧业务已经是历史字段。
+                         * 在网关认证层统一移除，可以避免每个业务服务重复理解“哪些路由还需要 workspace”。
+                         */
+                        headers.remove(PlatformContextHeaders.WORKSPACE_ID);
+                    }
+                })
                 .build();
         return chain.filter(exchange.mutate().request(authenticatedRequest).build());
+    }
+
+    /**
+     * 判断当前请求是否仍需要 workspace Header。
+     *
+     * <p>Agent 路由中的 workspace 表示工具执行沙箱、文件区或长期会话工作目录；
+     * 普通业务路由中的 workspace 曾经表示产品层级，但当前已被项目概念替代。因此只对 Agent 相关入口保留。</p>
+     */
+    private boolean shouldPropagateWorkspaceContext(String path) {
+        return path != null
+                && (path.startsWith("/api/agent/") || path.startsWith("/api/internal/agent-runtime/"));
     }
 
     /**

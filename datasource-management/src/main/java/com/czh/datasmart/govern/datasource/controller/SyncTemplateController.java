@@ -94,17 +94,15 @@ public class SyncTemplateController {
             @RequestParam(defaultValue = "10") Integer size,
             @RequestParam Long tenantId,
             @RequestParam(required = false) Long projectId,
-            @RequestParam(required = false) Long workspaceId,
             @RequestParam(required = false) Boolean enabled,
             @RequestParam(required = false) String syncMode,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
         DatasourceProjectVisibility visibility = datasourceProjectScopeSupport.resolveVisibility(
-                projectId, workspaceId, dataScopeLevel, authorizedProjectIds);
+                projectId, null, dataScopeLevel, authorizedProjectIds);
         LambdaQueryWrapper<SyncTemplate> wrapper = new LambdaQueryWrapper<SyncTemplate>()
                 .eq(SyncTemplate::getTenantId, tenantId)
                 .eq(visibility.requestedProjectId() != null, SyncTemplate::getProjectId, visibility.requestedProjectId())
-                .eq(visibility.requestedWorkspaceId() != null, SyncTemplate::getWorkspaceId, visibility.requestedWorkspaceId())
                 .eq(enabled != null, SyncTemplate::getEnabled, enabled)
                 .eq(hasText(syncMode), SyncTemplate::getSyncMode, hasText(syncMode) ? syncMode.toUpperCase() : null)
                 .orderByDesc(SyncTemplate::getCreateTime);

@@ -131,7 +131,6 @@ public class DataSourceManagementController {
             @RequestParam(defaultValue = "10") Integer size,
             @RequestParam(required = false) Long tenantId,
             @RequestParam(required = false) Long projectId,
-            @RequestParam(required = false) Long workspaceId,
             @RequestParam(required = false) String type,
             @RequestParam(required = false) String usagePurpose,
             @RequestParam(required = false) String status,
@@ -141,8 +140,16 @@ public class DataSourceManagementController {
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
         Long effectiveTenantId = resolveScopeValue("tenantId", tenantHeader, tenantId, DEFAULT_FLASHSYNC_TENANT_ID);
         Long effectiveProjectId = resolveScopeValue("projectId", projectHeader, projectId, DEFAULT_FLASHSYNC_PROJECT_ID);
+        /*
+         * 数据源管理页也已经收敛为项目级作用域。
+         *
+         * 数据库字段 workspace_id 暂时保留给历史数据、审计和 Agent 内部语义，但普通数据源列表不再接受 workspace 过滤。
+         * 如果继续把 workspaceId 作为查询条件，用户在项目 101 下创建的数据源可能因为不可见 workspace 维度而消失；
+         * 更糟的是，旧前端或旧身份 Header 中的 workspace-a 还可能触发 Long 类型转换错误。这里统一传 null，
+         * 表示 datasource-management 的用户侧读路径只按 tenant/project/authorizedProjects 收口。
+         */
         DatasourceProjectVisibility visibility = datasourceProjectScopeSupport.resolveVisibility(
-                effectiveProjectId, workspaceId, dataScopeLevel, authorizedProjectIds);
+                effectiveProjectId, null, dataScopeLevel, authorizedProjectIds);
         LambdaQueryWrapper<DataSourceConfig> wrapper = new LambdaQueryWrapper<>();
         wrapper.ne(DataSourceConfig::getStatus, DataSourceStatus.DELETED);
         applyDatasourceScope(wrapper, effectiveTenantId, visibility);
@@ -303,7 +310,6 @@ public class DataSourceManagementController {
             @RequestParam(required = false) String actorRole,
             @RequestParam(required = false) Long actorTenantId,
             @RequestParam(required = false) Long projectId,
-            @RequestParam(required = false) Long workspaceId,
             @RequestParam(required = false) String executionStatus,
             @RequestParam(required = false) String sqlFingerprint,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime startTime,
@@ -314,7 +320,7 @@ public class DataSourceManagementController {
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
         String effectiveQueryActorRole = hasText(headerActorRole) ? headerActorRole : queryActorRole;
         DatasourceProjectVisibility visibility = datasourceProjectScopeSupport.resolveVisibility(
-                projectId, workspaceId, dataScopeLevel, authorizedProjectIds);
+                projectId, null, dataScopeLevel, authorizedProjectIds);
         return ResponseEntity.ok(ApiResponse.success("受控只读 SQL 执行审计查询成功",
                 dataSourceManagementService.pageReadOnlySqlExecutionAudits(
                         current,

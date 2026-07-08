@@ -18,10 +18,12 @@ import org.springframework.http.HttpHeaders;
  * 租户、项目、工作空间、操作者、数据范围等信息放到统一的 {@code X-DataSmart-*} Header 中；Controller 不应该在每个接口里
  * 重复解析这些 Header，而是统一委托给这里生成 {@link SyncActorContext}。</p>
  *
- * <p>为什么现在要把 projectId/workspaceId 也纳入上下文：</p>
+ * <p>为什么现在要把 projectId 纳入上下文，而不再读取 workspaceId：</p>
  * <p>1. 对用户来说，“当前在哪个项目/工作空间下创建数据源或同步任务”应由页面顶部项目切换器和登录上下文决定，不应该在业务表单里手工填写数字 ID；</p>
- * <p>2. 对后端来说，项目和工作空间属于权限边界，必须优先相信网关/权限中心注入的可信上下文，而不是浏览器随意提交的 request body 字段；</p>
- * <p>3. 旧接口仍可能携带 projectId/workspaceId，所以领域层会继续做兼容校验，但新的前端合同应优先依赖 Header。</p>
+ * <p>2. 对后端来说，项目属于权限边界，必须优先相信网关/权限中心注入的可信上下文，而不是浏览器随意提交的 request body 字段；</p>
+ * <p>3. 工作空间已经从 FlashSync 数据同步产品层级退场。网关、OIDC 或开发期身份仍可能因为历史 claim
+ * 带上 {@code X-DataSmart-Workspace-Id=workspace-a} 这类字符串，但 data-sync 用户侧接口必须把它视为 legacy no-op。
+ * 否则页面已经只展示“项目”，后端却仍按不可见的工作空间校验，会导致创建向导、任务列表和分组树出现难以理解的错误。</p>
  */
 public final class SyncActorContextHeaderSupport {
 
@@ -36,7 +38,7 @@ public final class SyncActorContextHeaderSupport {
      * @param actorId 网关注入的操作者 ID；用于 owner、审计、SELF 范围过滤
      * @param actorRole 网关注入的角色编码；用于本地兜底权限判断
      * @param traceId 链路追踪 ID；贯穿日志、审计和响应 envelope
-     * @param headers 完整请求 Header；用于读取项目、工作空间、数据范围、审批标记和授权项目集合
+     * @param headers 完整请求 Header；用于读取项目、数据范围、审批标记和授权项目集合；工作空间 Header 只做历史兼容忽略
      * @return 可交给 Service 层使用的领域上下文
      */
     public static SyncActorContext fromHeaders(Long tenantId,
@@ -47,7 +49,7 @@ public final class SyncActorContextHeaderSupport {
         return new SyncActorContext(
                 tenantId,
                 parseLongHeader(headers, PlatformContextHeaders.PROJECT_ID),
-                parseLongHeader(headers, PlatformContextHeaders.WORKSPACE_ID),
+                ignoreLegacyWorkspaceHeader(headers),
                 actorId,
                 actorRole,
                 traceId,
@@ -55,6 +57,23 @@ public final class SyncActorContextHeaderSupport {
                 firstHeader(headers, PlatformContextHeaders.DATA_SCOPE_EXPRESSION),
                 parseAuthorizedProjectIds(firstHeader(headers, PlatformContextHeaders.AUTHORIZED_PROJECT_IDS)),
                 Boolean.valueOf(firstHeader(headers, PlatformContextHeaders.APPROVAL_REQUIRED)));
+    }
+
+    /**
+     * 忽略历史工作空间 Header。
+     *
+     * <p>这段看起来像“什么都没做”，但它是本轮项目级收敛的关键保护点：</p>
+     * <p>1. 早期网关、开发期身份令牌和 OIDC claim 中都曾把 workspace 当作通用身份上下文写入 Header；</p>
+     * <p>2. 当前 FlashSync 数据同步已经明确收敛为“租户 -> 项目 -> 数据源/任务”，用户页面不再选择工作空间；</p>
+     * <p>3. 因此即使 Header 里出现 {@code workspace-a}、{@code default} 或历史数字 ID，data-sync 用户侧链路也不能再解析、
+     * 校验或参与查询过滤。</p>
+     *
+     * <p>这里仍然显式读取一次 Header，是为了让维护者知道该字段不是遗漏，而是有意做 legacy no-op。Agent 沙箱、
+     * Python Runtime 或内部 worker 如果未来仍需要 workspace key，应使用各自的专用合同字段，不应让它重新污染数据同步业务范围。</p>
+     */
+    private static Long ignoreLegacyWorkspaceHeader(HttpHeaders headers) {
+        firstHeader(headers, PlatformContextHeaders.WORKSPACE_ID);
+        return null;
     }
 
     /**
@@ -70,8 +89,9 @@ public final class SyncActorContextHeaderSupport {
     /**
      * 解析 Long 类型上下文 Header。
      *
-     * <p>项目 ID、工作空间 ID 属于后端可信上下文；如果上游传入了非数字，说明网关或调用方协议错误，应尽早失败，而不是悄悄按空值处理。
-     * 悄悄吞掉错误会让任务落到默认项目，后续排查会非常困难。</p>
+     * <p>项目 ID 属于后端可信上下文；如果上游传入了非数字，说明网关或调用方协议错误，应尽早失败，而不是悄悄按空值处理。
+     * 悄悄吞掉错误会让任务落到默认项目，后续排查会非常困难。工作空间不再走这个方法，避免历史字符串 workspace key
+     * 继续触发用户侧数据同步接口失败。</p>
      */
     private static Long parseLongHeader(HttpHeaders headers, String headerName) {
         String value = firstHeader(headers, headerName);

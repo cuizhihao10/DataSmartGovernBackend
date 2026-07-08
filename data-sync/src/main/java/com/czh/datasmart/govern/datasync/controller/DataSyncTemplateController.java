@@ -94,7 +94,6 @@ public class DataSyncTemplateController {
     public PlatformApiResponse<PlatformPageResponse<SyncTemplate>> pageTemplates(
             @RequestParam(required = false) Long tenantId,
             @RequestParam(required = false) Long projectId,
-            @RequestParam(required = false) Long workspaceId,
             @RequestParam(required = false) Long sourceDatasourceId,
             @RequestParam(required = false) Long targetDatasourceId,
             @RequestParam(required = false) String syncMode,
@@ -107,7 +106,7 @@ public class DataSyncTemplateController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader HttpHeaders headers) {
         SyncTemplateQueryCriteria criteria = new SyncTemplateQueryCriteria(
-                tenantId, projectId, workspaceId, sourceDatasourceId, targetDatasourceId, syncMode, enabled, current, size);
+                tenantId, projectId, null, sourceDatasourceId, targetDatasourceId, syncMode, enabled, current, size);
         return PlatformApiResponse.success(dataSyncService.pageTemplates(
                 criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
     }

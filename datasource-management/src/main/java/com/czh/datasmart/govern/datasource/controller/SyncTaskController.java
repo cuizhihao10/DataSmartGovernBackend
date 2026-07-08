@@ -46,7 +46,7 @@ import java.util.NoSuchElementException;
  * 同步任务控制器。
  *
  * <p>同步任务是模板在运营层面的实例化，承载审批、调度、运行、暂停、恢复、重试、取消、进度回写和审计查询。
- * 本轮补齐 projectId/workspaceId 后，任务会继承模板的项目归属；所有任务列表和按 ID 访问的入口都需要校验项目范围，
+ * 本轮收敛后，任务会继承模板的项目归属；所有任务列表和按 ID 访问的入口都需要校验项目范围，
  * 否则项目负责人可能通过任务 ID 读取或操作其他项目的同步任务。</p>
  */
 @RestController
@@ -59,7 +59,7 @@ public class SyncTaskController {
 
     /**
      * 创建同步任务。
-     * 任务项目/空间由模板继承，避免调用方把同一个模板实例化到另一个项目导致权限和审计口径错乱。
+     * 任务项目由模板继承，避免调用方把同一个模板实例化到另一个项目导致权限和审计口径错乱。
      */
     @PostMapping
     public ResponseEntity<ApiResponse<SyncTask>> createTask(@Valid @RequestBody CreateSyncTaskRequest request) {
@@ -94,7 +94,7 @@ public class SyncTaskController {
 
     /**
      * 分页查询任务。
-     * 支持租户、项目、空间、模板、状态、审批状态、负责人、优先级、启用状态和人工关注标记等运营常用筛选维度。
+     * 支持租户、项目、模板、状态、审批状态、负责人、优先级、启用状态和人工关注标记等运营常用筛选维度。
      */
     @GetMapping
     public ResponseEntity<ApiResponse<IPage<SyncTask>>> listTasks(
@@ -102,7 +102,6 @@ public class SyncTaskController {
             @RequestParam(defaultValue = "10") Integer size,
             @RequestParam Long tenantId,
             @RequestParam(required = false) Long projectId,
-            @RequestParam(required = false) Long workspaceId,
             @RequestParam(required = false) Long templateId,
             @RequestParam(required = false) String currentState,
             @RequestParam(required = false) String approvalState,
@@ -113,11 +112,10 @@ public class SyncTaskController {
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
         DatasourceProjectVisibility visibility = datasourceProjectScopeSupport.resolveVisibility(
-                projectId, workspaceId, dataScopeLevel, authorizedProjectIds);
+                projectId, null, dataScopeLevel, authorizedProjectIds);
         LambdaQueryWrapper<SyncTask> wrapper = new LambdaQueryWrapper<SyncTask>()
                 .eq(SyncTask::getTenantId, tenantId)
                 .eq(visibility.requestedProjectId() != null, SyncTask::getProjectId, visibility.requestedProjectId())
-                .eq(visibility.requestedWorkspaceId() != null, SyncTask::getWorkspaceId, visibility.requestedWorkspaceId())
                 .eq(templateId != null, SyncTask::getTemplateId, templateId)
                 .eq(hasText(currentState), SyncTask::getCurrentState, hasText(currentState) ? currentState.toUpperCase() : null)
                 .eq(hasText(approvalState), SyncTask::getApprovalState, hasText(approvalState) ? approvalState.toUpperCase() : null)

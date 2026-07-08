@@ -47,7 +47,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 class GatewayOidcAuthenticationContextFilterTest {
 
     /**
-     * 已验证 JWT 携带完整 DataSmart claim 时，gateway 应写入下游服务消费的身份上下文 Header。
+     * 已验证 JWT 携带完整 DataSmart claim 时，gateway 应写入业务服务消费的身份上下文 Header。
+     *
+     * <p>注意：这里请求路径是 `/api/task/tasks`，属于普通业务路由。即使 JWT 中有 datasmart_workspace_id，
+     * 网关也不会再把工作空间 Header 传给下游，避免数据同步、数据源、任务等项目级业务继续被历史 workspace 维度影响。</p>
      */
     @Test
     void verifiedJwtShouldWritePlatformIdentityHeaders() {
@@ -81,7 +84,7 @@ class GatewayOidcAuthenticationContextFilterTest {
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.ACTOR_TYPE))
                 .isEqualTo("USER");
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.WORKSPACE_ID))
-                .isEqualTo("workspace-a");
+                .isNull();
         assertThat(fixture.auditSink().events()).hasSize(1);
         GatewayAuthenticationAuditEvent auditEvent = fixture.auditSink().events().getFirst();
         assertThat(auditEvent.outcome()).isEqualTo("RESOLVED");
@@ -97,6 +100,32 @@ class GatewayOidcAuthenticationContextFilterTest {
                 .tag("actor_type", "USER")
                 .tag("primary_issue", "NONE")
                 .counter().count()).isEqualTo(1.0d);
+    }
+
+    /**
+     * Agent 路由仍然需要保留 workspace Header。
+     *
+     * <p>这里的 workspace 不再是数据同步产品层级，而是 Agent 执行沙箱、文件区、长期会话和工具预算策略会使用的运行时概念。
+     * 因此网关只在 Agent 入口保留该字段，普通业务路由则移除它。</p>
+     */
+    @Test
+    void agentRouteShouldKeepWorkspaceHeaderForRuntimeIsolation() {
+        FilterFixture fixture = filterFixture();
+        GatewayOidcAuthenticationContextFilter filter = fixture.filter();
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+        ServerWebExchange exchange = exchange("/api/agent/plans", jwt(Map.of(
+                "datasmart_tenant_id", 10L,
+                "datasmart_actor_id", 1001L,
+                "datasmart_actor_role", "PROJECT_OWNER",
+                "datasmart_actor_type", "USER",
+                "datasmart_workspace_id", "workspace-a"
+        )));
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(chain.called()).isTrue();
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.WORKSPACE_ID))
+                .isEqualTo("workspace-a");
     }
 
     /**
@@ -119,7 +148,7 @@ class GatewayOidcAuthenticationContextFilterTest {
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.ACTOR_ROLE))
                 .isEqualTo("OPERATOR");
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.WORKSPACE_ID))
-                .isEqualTo("default");
+                .isNull();
         assertThat(fixture.auditSink().events())
                 .extracting(GatewayAuthenticationAuditEvent::outcome)
                 .containsExactly("RESOLVED");
@@ -185,10 +214,14 @@ class GatewayOidcAuthenticationContextFilterTest {
     }
 
     private ServerWebExchange exchange(Jwt jwt) {
+        return exchange("/api/task/tasks", jwt);
+    }
+
+    private ServerWebExchange exchange(String path, Jwt jwt) {
         JwtAuthenticationToken authentication = new JwtAuthenticationToken(jwt, List.of());
         authentication.setAuthenticated(true);
         MockServerWebExchange exchange = MockServerWebExchange.from(
-                MockServerHttpRequest.get("/api/task/tasks")
+                MockServerHttpRequest.get(path)
                         .header(PlatformContextHeaders.TRACE_ID, "trace-oidc-test")
                         .build()
         );

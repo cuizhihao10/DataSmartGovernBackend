@@ -15,6 +15,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -66,5 +67,25 @@ class SyncActorContextHeaderSupportTest {
 
         assertEquals(List.of(), context.authorizedProjectIds());
         assertFalse(context.approvalRequired());
+    }
+
+    /**
+     * 验证历史工作空间 Header 已经从 data-sync 用户侧链路退场。
+     *
+     * <p>真实问题来自前端截图：网关/开发身份仍把 {@code X-DataSmart-Workspace-Id=workspace-a}
+     * 带给 data-sync，而旧实现会把它当 Long 解析，导致“保存并进入对象映射”时源端、目标端元数据发现各报一次错。
+     * 当前产品口径已经只保留项目，不再让用户选择工作空间；因此该 Header 必须被安全忽略，而不是继续参与解析、查询或创建。</p>
+     */
+    @Test
+    void shouldIgnoreLegacyWorkspaceHeaderWhenItIsNotNumeric() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(PlatformContextHeaders.PROJECT_ID, "101");
+        headers.set(PlatformContextHeaders.WORKSPACE_ID, "workspace-a");
+
+        SyncActorContext context = SyncActorContextHeaderSupport.fromHeaders(
+                10L, 1001L, "PROJECT_OWNER", "trace-workspace-legacy", headers);
+
+        assertEquals(101L, context.projectId());
+        assertNull(context.workspaceId());
     }
 }

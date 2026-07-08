@@ -112,7 +112,7 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
                     writeGatewayOwnedHeaders(request, headers, traceId, routePrefix);
 
                     if (contextProperties.isTrustIncomingPlatformContext()) {
-                        copyTrustedIncomingContext(request, headers);
+                        copyTrustedIncomingContext(request, headers, routePrefix);
                     }
                 })
                 .build();
@@ -241,18 +241,35 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
      * <p>生产环境更推荐由认证过滤器解析 JWT/服务账号凭证后写入这些 Header，
      * 而不是直接信任客户端原样传入的身份字段。
      */
-    private void copyTrustedIncomingContext(ServerHttpRequest request, HttpHeaders headers) {
+    private void copyTrustedIncomingContext(ServerHttpRequest request, HttpHeaders headers, String routePrefix) {
         copyIfPresent(request, headers, PlatformContextHeaders.TENANT_ID);
         copyIfPresent(request, headers, PlatformContextHeaders.ACTOR_ID);
         copyIfPresent(request, headers, PlatformContextHeaders.ACTOR_ROLE);
         copyIfPresent(request, headers, PlatformContextHeaders.ACTOR_TYPE);
-        copyIfPresent(request, headers, PlatformContextHeaders.WORKSPACE_ID);
+        if (shouldPropagateWorkspaceContext(routePrefix)) {
+            copyIfPresent(request, headers, PlatformContextHeaders.WORKSPACE_ID);
+        }
         copyIfPresent(request, headers, PlatformContextHeaders.SERVICE_ACCOUNT_ACTOR_ID);
         copyIfPresent(request, headers, PlatformContextHeaders.SERVICE_ACCOUNT_CODE);
         copyIfPresent(request, headers, PlatformContextHeaders.REPRESENTED_ACTOR_ID);
         copyIfPresent(request, headers, PlatformContextHeaders.DELEGATION_TYPE);
         copyIfPresent(request, headers, PlatformContextHeaders.DELEGATION_REASON);
         copyIfPresent(request, headers, PlatformContextHeaders.REQUESTED_POLICY_VERSION);
+    }
+
+    /**
+     * 判断当前路由是否仍然需要传播 workspace Header。
+     *
+     * <p>FlashSync 数据同步、数据源管理、任务管理等用户侧业务已经收敛为“租户 -> 项目 -> 资源”，
+     * 工作空间不再是用户可见层级，也不应继续出现在业务服务 Header 中。否则旧值如 {@code workspace-a}
+     * 会让下游误以为还存在一个需要筛选或校验的维度。</p>
+     *
+     * <p>Agent Runtime 是例外：它的 workspace 更接近“工具执行沙箱 / 文件区 / 长期会话工作目录”概念，
+     * 与数据同步产品里的工作空间层级不是同一件事。因此只对 Agent 路由保留传播，避免削弱后续类 Codex
+     * Agent 的隔离与运行时治理能力。</p>
+     */
+    private boolean shouldPropagateWorkspaceContext(String routePrefix) {
+        return "/api/agent/**".equals(routePrefix) || "/api/internal/agent-runtime/**".equals(routePrefix);
     }
 
     /**
@@ -310,6 +327,9 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
         }
         if (path.startsWith("/api/agent/")) {
             return "/api/agent/**";
+        }
+        if (path.startsWith("/api/internal/agent-runtime/")) {
+            return "/api/internal/agent-runtime/**";
         }
         return "/**";
     }
