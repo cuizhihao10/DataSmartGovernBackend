@@ -11,6 +11,8 @@ import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionActorContext;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionProjectCreateRequest;
+import com.czh.datasmart.govern.permission.controller.dto.PermissionProjectStatusChangeRequest;
+import com.czh.datasmart.govern.permission.controller.dto.PermissionProjectUpdateRequest;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionProjectMutationResult;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionProjectQueryCriteria;
 import com.czh.datasmart.govern.permission.entity.PermissionProject;
@@ -156,6 +158,66 @@ class PermissionProjectServiceImplTest {
 
         assertThat(page.getRecords()).hasSize(1);
         assertThat(page.getRecords().get(0).projectCode()).isEqualTo("FLASHSYNC_DEFAULT");
+    }
+
+    /**
+     * 租户管理员可以禁用本租户项目；禁用只改变项目状态，不删除历史数据。
+     */
+    @Test
+    void tenantAdministratorCanDisableProject() {
+        PermissionProject project = project(10L, 101L, "FLASHSYNC_DEFAULT");
+        when(projectMapper.selectById(101L)).thenReturn(project);
+
+        PermissionProjectMutationResult result = service.disableProject(101L,
+                new PermissionProjectStatusChangeRequest("客户暂停使用 FlashSync"),
+                actor(10L, 1001L, PermissionRoleCode.TENANT_ADMINISTRATOR));
+
+        assertThat(result.status()).isEqualTo("DISABLED");
+        assertThat(project.getStatus()).isEqualTo("DISABLED");
+        verify(projectMapper).updateById(project);
+        verify(projectAuditSupport).saveMutationAudit(any(), any(), any(), any(), any(), any());
+    }
+
+    /**
+     * 项目负责人必须拥有该项目 OWNER 成员关系才能编辑项目，不能只凭全局 PROJECT_OWNER 角色跨项目修改。
+     */
+    @Test
+    void projectOwnerMustHaveOwnerMembershipToUpdateProject() {
+        PermissionProject project = project(10L, 101L, "FLASHSYNC_DEFAULT");
+        when(projectMapper.selectById(101L)).thenReturn(project);
+        when(membershipMapper.selectOne(any())).thenReturn(null);
+
+        assertThatThrownBy(() -> service.updateProject(101L,
+                new PermissionProjectUpdateRequest(null, "新名称", null, null, null, "测试越权编辑"),
+                actor(10L, 1001L, PermissionRoleCode.PROJECT_OWNER)))
+                .isInstanceOfSatisfying(PlatformBusinessException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(PlatformErrorCode.FORBIDDEN));
+
+        verify(projectMapper, never()).updateById(any(PermissionProject.class));
+    }
+
+    /**
+     * 项目删除前如果仍有活动数据源、启用模板或未归档任务，必须阻断，避免项目归属上下文丢失。
+     */
+    @Test
+    void deleteProjectIsBlockedWhenBusinessResourcesStillExist() {
+        PermissionProject project = project(10L, 101L, "FLASHSYNC_DEFAULT");
+        when(projectMapper.selectById(101L)).thenReturn(project);
+        when(projectMapper.countActiveDatasources(10L, 101L)).thenReturn(1L);
+        when(projectMapper.countEnabledSyncTemplates(10L, 101L)).thenReturn(2L);
+        when(projectMapper.countActiveSyncTasks(10L, 101L)).thenReturn(3L);
+
+        var check = service.checkProjectDeletion(101L,
+                actor(10L, 1001L, PermissionRoleCode.TENANT_ADMINISTRATOR));
+        assertThat(check.deletable()).isFalse();
+        assertThat(check.blockers()).hasSize(3);
+
+        assertThatThrownBy(() -> service.deleteProject(101L,
+                new PermissionProjectStatusChangeRequest("删除测试项目"),
+                actor(10L, 1001L, PermissionRoleCode.TENANT_ADMINISTRATOR)))
+                .isInstanceOfSatisfying(PlatformBusinessException.class, exception ->
+                        assertThat(exception.getErrorCode()).isEqualTo(PlatformErrorCode.BUSINESS_STATE_CONFLICT));
+        verify(projectMapper, never()).updateById(any(PermissionProject.class));
     }
 
     private PermissionActorContext actor(Long tenantId, Long actorId, PermissionRoleCode role) {

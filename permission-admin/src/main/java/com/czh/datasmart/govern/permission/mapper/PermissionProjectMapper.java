@@ -72,4 +72,53 @@ public interface PermissionProjectMapper extends BaseMapper<PermissionProject> {
             """)
     long countActiveApplication(@Param("tenantId") Long tenantId,
                                 @Param("applicationId") Long applicationId);
+
+    /**
+     * 统计项目下仍处于活动状态的数据源数量。
+     *
+     * <p>permission-admin 不引入 datasource-management 的 Java 实体，是为了避免模块编译期耦合。
+     * 这里使用 schema 限定的只读 count SQL，表达的是“删除/归档项目前的控制面占用检查”：
+     * 只要还有未删除数据源，就说明项目仍承载可被同步任务引用的连接配置，不能直接归档式删除。</p>
+     */
+    @Select("""
+            SELECT COUNT(1)
+            FROM datasource_management.datasource_config
+            WHERE tenant_id = #{tenantId}
+              AND project_id = #{projectId}
+              AND COALESCE(status, 'ACTIVE') <> 'DELETED'
+            """)
+    long countActiveDatasources(@Param("tenantId") Long tenantId,
+                                @Param("projectId") Long projectId);
+
+    /**
+     * 统计项目下仍启用的数据同步模板数量。
+     *
+     * <p>模板是可复用的同步配置。即使当前没有任务正在运行，只要模板仍启用，用户或 Agent 就可能继续基于模板创建任务，
+     * 因此归档项目之前必须先禁用或迁移模板。</p>
+     */
+    @Select("""
+            SELECT COUNT(1)
+            FROM data_sync.data_sync_template
+            WHERE tenant_id = #{tenantId}
+              AND project_id = #{projectId}
+              AND enabled = TRUE
+            """)
+    long countEnabledSyncTemplates(@Param("tenantId") Long tenantId,
+                                   @Param("projectId") Long projectId);
+
+    /**
+     * 统计项目下未归档的数据同步任务数量。
+     *
+     * <p>任务是用户可见的执行与调度主对象。只要任务还不是 ARCHIVED，就可能处于编辑、等待调度、运行、失败待处理、
+     * 回收站查看或人工介入等状态，删除项目会让任务失去归属上下文，所以必须先由 data-sync 完成任务下线/归档。</p>
+     */
+    @Select("""
+            SELECT COUNT(1)
+            FROM data_sync.data_sync_task
+            WHERE tenant_id = #{tenantId}
+              AND project_id = #{projectId}
+              AND current_state <> 'ARCHIVED'
+            """)
+    long countActiveSyncTasks(@Param("tenantId") Long tenantId,
+                              @Param("projectId") Long projectId);
 }
