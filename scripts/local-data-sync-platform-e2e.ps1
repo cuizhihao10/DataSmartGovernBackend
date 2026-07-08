@@ -1890,6 +1890,9 @@ function Main {
             workspaceId = $WorkspaceId
             name = "E2E MySQL source $script:RunId"
             type = "MYSQL"
+            # 数据源用途必须显式声明。SOURCE 只允许作为同步任务源端读取，
+            # 避免源端只读账号被误放到目标端候选列表中。
+            usagePurpose = "SOURCE"
             jdbcUrl = $sourceJdbc
             username = $MySqlUser
             password = $MySqlPassword
@@ -1908,6 +1911,9 @@ function Main {
             workspaceId = $WorkspaceId
             name = "E2E PostgreSQL target $script:RunId"
             type = "POSTGRESQL"
+            # 目标端必须显式保存为 TARGET。此前脚本未传该字段时会落到后端默认 SOURCE，
+            # 导致新建任务页面按 usagePurpose=TARGET 查询不到目标端数据源。
+            usagePurpose = "TARGET"
             jdbcUrl = $targetJdbc
             username = $PostgresUser
             password = $PostgresPassword

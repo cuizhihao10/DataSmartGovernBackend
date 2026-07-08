@@ -18,8 +18,11 @@ import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.time.Duration;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * datasource-management 元数据发现 HTTP 客户端。
@@ -31,6 +34,15 @@ import java.time.Duration;
 @Component
 @RequiredArgsConstructor
 public class HttpDatasourceMetadataDiscoveryClient implements DatasourceMetadataDiscoveryClient {
+
+    /**
+     * 只提取 datasource-management 本地 ApiResponse 中的 message 字段。
+     *
+     * <p>这里没有把远端响应体整体透出，是因为未来远端错误体可能包含内部字段、路径或排障上下文。
+     * 但 message 字段本身是 datasource-management 已经面向调用方准备的低敏提示，保留下来可以让前端弹窗
+     * 展示“actorTenantId 不能为空”“数据源不存在”“maxTables 不能大于 200”这类具体原因。</p>
+     */
+    private static final Pattern REMOTE_MESSAGE_PATTERN = Pattern.compile("\"message\"\\s*:\\s*\"([^\"]*)\"");
 
     private final RestClient.Builder restClientBuilder;
     private final DataSyncDatasourceRunOnceProperties properties;
@@ -55,11 +67,22 @@ public class HttpDatasourceMetadataDiscoveryClient implements DatasourceMetadata
                     .retrieve()
                     .body(DatasourceMetadataDiscoveryEnvelope.class);
             return unwrap(datasourceId, response);
+        } catch (RestClientResponseException exception) {
+            /*
+             * 远端返回 4xx/5xx 时，RestClient 会直接抛 RestClientResponseException。
+             * 旧逻辑把所有这类异常折叠成“元数据发现暂不可用”，前端只能看到 500 或 502。
+             * 现在按远端 HTTP 语义做低敏映射：参数/权限/不存在类错误返回给用户修正，真正 5xx 才视为外部依赖失败。
+             */
+            log.warn("调用 datasource-management metadata discovery 返回错误: datasourceId={}, traceId={}, httpStatus={}",
+                    datasourceId, traceId(actorContext), exception.getStatusCode().value());
+            throw new PlatformBusinessException(errorCodeForRemoteStatus(exception.getStatusCode().value()),
+                    "datasource-management 元数据发现未通过，datasourceId=" + datasourceId
+                            + remoteMessageSuffix(exception.getResponseBodyAsString()));
         } catch (RestClientException exception) {
             log.warn("调用 datasource-management metadata discovery 失败: datasourceId={}, traceId={}, exceptionType={}",
                     datasourceId, traceId(actorContext), exception.getClass().getSimpleName());
             throw new PlatformBusinessException(PlatformErrorCode.EXTERNAL_DEPENDENCY_FAILED,
-                    "datasource-management 元数据发现暂不可用，SCHEMA_FULL/DATABASE_FULL 已按 fail-closed 终止");
+                    "datasource-management 元数据发现服务暂不可用，已按 fail-closed 终止，datasourceId=" + datasourceId);
         }
     }
 
@@ -89,6 +112,40 @@ public class HttpDatasourceMetadataDiscoveryClient implements DatasourceMetadata
                     "datasource-management 元数据发现响应不可用，datasourceId=" + datasourceId);
         }
         return response.getData();
+    }
+
+    private PlatformErrorCode errorCodeForRemoteStatus(int httpStatus) {
+        return switch (httpStatus) {
+            case 400 -> PlatformErrorCode.VALIDATION_ERROR;
+            case 401 -> PlatformErrorCode.UNAUTHORIZED;
+            case 403 -> PlatformErrorCode.FORBIDDEN;
+            case 404 -> PlatformErrorCode.NOT_FOUND;
+            case 409 -> PlatformErrorCode.BUSINESS_STATE_CONFLICT;
+            case 504 -> PlatformErrorCode.DEPENDENCY_TIMEOUT;
+            default -> PlatformErrorCode.EXTERNAL_DEPENDENCY_FAILED;
+        };
+    }
+
+    private String remoteMessageSuffix(String responseBody) {
+        String remoteMessage = extractRemoteMessage(responseBody);
+        return remoteMessage == null ? "" : "，下游提示：" + remoteMessage;
+    }
+
+    private String extractRemoteMessage(String responseBody) {
+        if (responseBody == null || responseBody.isBlank()) {
+            return null;
+        }
+        Matcher matcher = REMOTE_MESSAGE_PATTERN.matcher(responseBody);
+        if (!matcher.find()) {
+            return null;
+        }
+        String message = matcher.group(1)
+                .replace("\\\"", "\"")
+                .replace("\\n", " ")
+                .replace("\\r", " ")
+                .replace("\\t", " ")
+                .trim();
+        return message.length() <= 300 ? message : message.substring(0, 300) + "...";
     }
 
     private String traceId(SyncActorContext actorContext) {

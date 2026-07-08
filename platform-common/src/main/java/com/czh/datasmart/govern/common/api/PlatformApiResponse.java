@@ -104,4 +104,29 @@ public class PlatformApiResponse<T> {
         String resolvedMessage = message == null || message.trim().isEmpty() ? errorCode.getDefaultMessage() : message;
         return new PlatformApiResponse<>(errorCode.getCode(), errorCode.name(), resolvedMessage, null, traceId, LocalDateTime.now());
     }
+
+    /**
+     * 带结构化错误详情的失败响应工厂方法。
+     *
+     * <p>历史 error(...) 方法会把 data 置空，适合只有一句提示的场景。
+     * 但创建任务、数据源连接、元数据发现、字段映射、SQL 检查等交互式接口，经常需要把多条字段错误、
+     * 阻断项和修复建议返回给前端弹窗或表单定位。如果仍然只返回 message，用户会看到“HTTP 500/400”或一段很长的拼接文本。</p>
+     *
+     * <p>该方法保持响应 envelope 不变，只允许失败时把低敏详情放入 data。
+     * 这样前端可以优先展示 message，再展开 data.details / data.fieldErrors / data.suggestions；
+     * 同时旧前端如果只读取 message，也不会因为多了 data 字段而解析失败。</p>
+     *
+     * @param errorCode 平台统一错误码
+     * @param message 面向用户的摘要说明
+     * @param data 结构化错误详情，通常使用 {@link PlatformApiErrorDetail}
+     * @param traceId 当前请求链路 ID
+     * @return 标准失败响应
+     */
+    public static <T> PlatformApiResponse<T> error(PlatformErrorCode errorCode,
+                                                   String message,
+                                                   T data,
+                                                   String traceId) {
+        String resolvedMessage = message == null || message.trim().isEmpty() ? errorCode.getDefaultMessage() : message;
+        return new PlatformApiResponse<>(errorCode.getCode(), errorCode.name(), resolvedMessage, data, traceId, LocalDateTime.now());
+    }
 }

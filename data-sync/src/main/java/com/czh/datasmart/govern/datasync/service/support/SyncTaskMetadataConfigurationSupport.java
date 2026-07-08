@@ -66,7 +66,15 @@ public class SyncTaskMetadataConfigurationSupport {
      */
     private static final int DEFAULT_MAX_COLUMNS = 200;
 
-    private static final int HARD_MAX_TABLES = 500;
+    /*
+     * 这里必须和 datasource-management 的 MetadataDiscoveryRequest 上限保持一致。
+     *
+     * data-sync 是“创建任务向导”的产品语义层，datasource-management 是“真实连接与元数据读取”的能力层。
+     * 如果 data-sync 允许 500，而下游 DTO @Max 只允许 200，用户在前端只会看到一次下游 400，
+     * 很难理解到底是哪个模块限制了元数据扫描规模。因此这里在进入远端调用前就收口到 200，
+     * 让调用合同在两个微服务之间保持一致。
+     */
+    private static final int HARD_MAX_TABLES = 200;
     private static final int HARD_MAX_COLUMNS = 500;
 
     private static final Set<String> SUPPORTED_FILTER_MODES = Set.of(
@@ -110,7 +118,7 @@ public class SyncTaskMetadataConfigurationSupport {
         }
 
         com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryRequest remoteRequest =
-                buildRemoteDiscoveryRequest(request, connectorType, filterMode, warnings);
+                buildRemoteDiscoveryRequest(request, connectorType, filterMode, actorContext, warnings);
         DatasourceMetadataDiscoveryResponse remoteResponse =
                 metadataDiscoveryClient.discover(request.getDatasourceId(), remoteRequest, actorContext);
         auditSupport.saveAudit(snapshot.getTenantId(), null, null, SyncAuditActionType.DISCOVER_TASK_METADATA,
@@ -234,9 +242,21 @@ public class SyncTaskMetadataConfigurationSupport {
     buildRemoteDiscoveryRequest(SyncTaskMetadataDiscoveryRequest request,
                                 String connectorType,
                                 String filterMode,
+                                SyncActorContext actorContext,
                                 List<String> warnings) {
         com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryRequest remote =
                 new com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryRequest();
+        /*
+         * datasource-management 的元数据发现接口历史上要求 actorId、actorRole、actorTenantId 放在请求体里，
+         * 而不是只读 X-DataSmart-* Header。创建向导本轮接入自动元数据发现后，data-sync 之前只传了服务账号 Header，
+         * 导致下游 @Valid 返回 400，data-sync 又因为缺少统一异常处理把它漏成 500。
+         *
+         * 这里明确把“代表用户发起创建向导元数据发现”的低敏主体写进请求体：
+         * - actorId/actorRole/actorTenantId 用于 datasource-management 审计和权限语义；
+         * - Header 仍然用于服务间调用来源识别、traceId 串联和未来 mTLS/HMAC 强化；
+         * - 两者不是重复，而是分别服务“业务责任人”和“机器调用链路”。
+         */
+        applyActorContext(remote, actorContext);
         remote.setCatalog(trimToNull(request.getCatalog()));
         if (isMysqlFamily(connectorType) && trimToNull(request.getSchemaPattern()) != null) {
             warnings.add("MySQL/MariaDB 不使用 PostgreSQL 风格 schemaPattern，本次发现已忽略 schemaPattern。");
@@ -254,7 +274,12 @@ public class SyncTaskMetadataConfigurationSupport {
         remote.setIncludePrimaryKeys(Boolean.TRUE);
         remote.setIncludeIndexes(Boolean.FALSE);
         remote.setIncludeSampleRows(Boolean.FALSE);
-        remote.setSampleRowLimit(0);
+        /*
+         * 下游 DTO 对 sampleRowLimit 有 @Min(1) 约束。includeSampleRows=false 时继续传 0 会触发无意义的
+         * 参数校验失败；正确表达方式是“不需要样本行，因此不传 sampleRowLimit”。
+         * 这也符合低敏原则：创建同步任务只需要 schema/table/field 摘要，不应该在第一步拉取业务样本值。
+         */
+        remote.setSampleRowLimit(null);
         return remote;
     }
 
@@ -359,6 +384,7 @@ public class SyncTaskMetadataConfigurationSupport {
                                                                                  SyncActorContext actorContext) {
         com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryRequest remote =
                 new com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryRequest();
+        applyActorContext(remote, actorContext);
         remote.setCatalog(trimToNull(catalog));
         remote.setSchemaPattern(isMysqlFamily(connectorType) ? null : trimToNull(schema));
         remote.setTableNamePattern(tableName);
@@ -367,7 +393,7 @@ public class SyncTaskMetadataConfigurationSupport {
         remote.setIncludeViews(Boolean.TRUE);
         remote.setIncludeIndexes(Boolean.FALSE);
         remote.setIncludeSampleRows(Boolean.FALSE);
-        remote.setSampleRowLimit(0);
+        remote.setSampleRowLimit(null);
         remote.setMaxTables(10);
         remote.setMaxColumnsPerTable(maxColumns);
         DatasourceMetadataDiscoveryResponse response = metadataDiscoveryClient.discover(datasourceId, remote, actorContext);
@@ -504,6 +530,28 @@ public class SyncTaskMetadataConfigurationSupport {
             return DEFAULT_MAX_TABLES;
         }
         return Math.min(requestedLimit, HARD_MAX_TABLES);
+    }
+
+    /**
+     * 将 data-sync 的可信调用上下文转换为 datasource-management 当前元数据发现请求体所需的 actor 字段。
+     *
+     * <p>为什么不直接在 HTTP Header 中透传就结束：datasource-management 的旧元数据接口把 actor 字段建模在 DTO 中，
+     * 并通过 Bean Validation 强制校验。为了保持两个微服务独立演进，本轮不把 datasource-management DTO 直接抽到
+     * platform-common，也不临时放宽下游校验，而是在 data-sync 的适配层补齐 JSON 合同。</p>
+     *
+     * <p>默认值策略：</p>
+     * <p>1. 如果 gateway/dev identity 已经注入真实 actor，就使用真实 actor，便于审计“谁在创建向导中探查元数据”；</p>
+     * <p>2. 如果后台补偿或测试场景没有 actorId，则使用 0L + SERVICE_ACCOUNT，表达这是系统内调用，而不是匿名用户；</p>
+     * <p>3. actorTenantId 必须尽力保留，缺失时使用 0L 只作为 fail-safe，避免下游 400 掩盖真正的调用链问题。</p>
+     */
+    private void applyActorContext(
+            com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryRequest remote,
+            SyncActorContext actorContext) {
+        remote.setActorId(actorContext == null || actorContext.actorId() == null ? 0L : actorContext.actorId());
+        remote.setActorRole(actorContext == null || trimToNull(actorContext.actorRole()) == null
+                ? "SERVICE_ACCOUNT"
+                : actorContext.actorRole().trim());
+        remote.setActorTenantId(actorContext == null || actorContext.tenantId() == null ? 0L : actorContext.tenantId());
     }
 
     private int normalizeColumnLimit(Integer requestedLimit) {
