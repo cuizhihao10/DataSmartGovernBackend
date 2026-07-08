@@ -15,9 +15,12 @@ import com.czh.datasmart.govern.datasource.entity.DataSourceConfig;
 import com.czh.datasmart.govern.datasource.entity.DataSourceConnectionTestResult;
 import com.czh.datasmart.govern.datasource.entity.DataSourceMetadataDiscoveryResult;
 import com.czh.datasmart.govern.datasource.entity.DataSourceReadOnlySqlExecutionAudit;
+import com.czh.datasmart.govern.datasource.service.DataSourceAuthorizationService;
 import com.czh.datasmart.govern.datasource.service.DataSourceManagementService;
+import com.czh.datasmart.govern.datasource.service.support.DatasourceAuthorizationActorContext;
 import com.czh.datasmart.govern.datasource.service.support.DatasourceProjectScopeSupport;
 import com.czh.datasmart.govern.datasource.service.support.DatasourceProjectVisibility;
+import com.czh.datasmart.govern.datasource.support.DataSourceAuthorizationAction;
 import com.czh.datasmart.govern.datasource.support.DataSourceStatus;
 import com.czh.datasmart.govern.datasource.support.DataSourceUsagePurpose;
 import jakarta.validation.Valid;
@@ -36,6 +39,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.NoSuchElementException;
 
 /**
@@ -49,10 +53,13 @@ import java.util.NoSuchElementException;
  * <p>这个控制器暴露的是“连接配置治理接口”，不是直接读取外部业务库的普通业务接口。
  * 它负责管理外部数据源如何被登记、查看、更新、启停、测试连接、发现元数据，以及在受控边界下执行只读 SQL。</p>
  *
- * <p>本次调整的核心原则是：租户、项目属于系统上下文，不能继续作为普通表单字段让用户手填。
- * 页面当前切换到哪个 FlashSync 项目，就应该由 gateway 或前端上下文把对应 Header 传给后端；
- * 后端优先使用可信 Header，只有本地调试或旧脚本缺少 Header 时才兼容请求体/查询参数。
- * 工作空间已经从产品可见层级退场，因此新建数据源不再写入默认 workspaceId。</p>
+ * <p>本控制器同时处理两类权限边界：</p>
+ * <p>1. 项目范围权限：由 gateway/permission-admin 计算后通过数据范围 Header 透传，回答“当前 actor 能不能访问这个项目里的资源”。</p>
+ * <p>2. 数据源实例授权：由 datasource-management 自己维护 ACL 账本，回答“即使 actor 不是项目负责人，是否被单独授权使用某条数据源”。</p>
+ *
+ * <p>两者不能互相替代：项目范围适合管理者和项目成员的天然可见性，实例授权适合把某条源端/目标端连接临时共享给其他用户、
+ * 服务账号或角色。列表接口会把二者做并集；详情、连接测试、元数据发现和只读 SQL 等按 ID 操作的接口会先检查项目范围，
+ * 项目范围不通过时再检查实例级授权，避免用户猜 ID 越权。</p>
  */
 @RestController
 @RequestMapping("/datasources")
@@ -80,6 +87,15 @@ public class DataSourceManagementController {
      * 元数据发现和 SQL 审计逻辑仍然在 Service 层，避免把业务规则散落到路由方法里。</p>
      */
     private final DataSourceManagementService dataSourceManagementService;
+
+    /**
+     * 数据源实例级授权服务。
+     *
+     * <p>它维护“某个用户/角色/服务账号被授予某条数据源的 VIEW、USE、MANAGE 能力”这一类 ACL 事实。
+     * 这里之所以放在 datasource-management 内部，而不是直接写到 permission-admin 的路由策略里，是因为路由策略只能描述
+     * “谁能访问某类 API”，不能高效表达“谁能访问第 123 条数据源”。实例级授权必须靠业务表保存和查询。</p>
+     */
+    private final DataSourceAuthorizationService dataSourceAuthorizationService;
 
     /**
      * 项目级数据范围支撑组件。
@@ -124,6 +140,9 @@ public class DataSourceManagementController {
      * <p>前端新建同步任务时，可以通过 {@code usagePurpose=SOURCE} 获取源端候选，通过
      * {@code usagePurpose=TARGET} 获取目标端候选。后端会严格按 SOURCE/TARGET 精确过滤，不再把同一条连接
      * 同时允许作为源端和目标端。</p>
+     *
+     * <p>可见性口径是“项目范围可见的数据源 ∪ 显式授权给当前 actor 的数据源”。这样授权给其他用户后，
+     * 被授权用户不需要成为项目负责人，也能在新建同步任务的源端/目标端选择器中看到那条数据源。</p>
      */
     @GetMapping
     public ResponseEntity<ApiResponse<IPage<DataSourceConfig>>> listDataSources(
@@ -136,23 +155,28 @@ public class DataSourceManagementController {
             @RequestParam(required = false) String status,
             @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantHeader,
             @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectHeader,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
         Long effectiveTenantId = resolveScopeValue("tenantId", tenantHeader, tenantId, DEFAULT_FLASHSYNC_TENANT_ID);
         Long effectiveProjectId = resolveScopeValue("projectId", projectHeader, projectId, DEFAULT_FLASHSYNC_PROJECT_ID);
+        DatasourceAuthorizationActorContext actorContext = resolveActorContext(actorId, actorRole, actorType);
+        List<Long> authorizedDatasourceIds = dataSourceAuthorizationService.findAuthorizedDatasourceIds(
+                effectiveTenantId, effectiveProjectId, actorContext, DataSourceAuthorizationAction.VIEW);
+
         /*
-         * 数据源管理页也已经收敛为项目级作用域。
+         * 数据源管理页已经收敛为项目级作用域。
          *
          * 数据库字段 workspace_id 暂时保留给历史数据、审计和 Agent 内部语义，但普通数据源列表不再接受 workspace 过滤。
-         * 如果继续把 workspaceId 作为查询条件，用户在项目 101 下创建的数据源可能因为不可见 workspace 维度而消失；
-         * 更糟的是，旧前端或旧身份 Header 中的 workspace-a 还可能触发 Long 类型转换错误。这里统一传 null，
-         * 表示 datasource-management 的用户侧读路径只按 tenant/project/authorizedProjects 收口。
+         * 如果继续把 workspaceId 作为查询条件，用户在项目 101 下创建的数据源可能因为不可见 workspace 维度而消失。
          */
         DatasourceProjectVisibility visibility = datasourceProjectScopeSupport.resolveVisibility(
                 effectiveProjectId, null, dataScopeLevel, authorizedProjectIds);
         LambdaQueryWrapper<DataSourceConfig> wrapper = new LambdaQueryWrapper<>();
         wrapper.ne(DataSourceConfig::getStatus, DataSourceStatus.DELETED);
-        applyDatasourceScope(wrapper, effectiveTenantId, visibility);
+        applyDatasourceScope(wrapper, effectiveTenantId, visibility, authorizedDatasourceIds);
         if (hasText(type)) {
             wrapper.eq(DataSourceConfig::getType, type.toUpperCase());
         }
@@ -168,13 +192,23 @@ public class DataSourceManagementController {
 
     /**
      * 查询单个数据源详情。
+     *
+     * <p>详情页只展示低敏配置字段，但仍然是按 ID 访问，所以必须二次校验项目范围或实例 VIEW 授权。</p>
      */
     @GetMapping("/{id}")
     public ResponseEntity<ApiResponse<DataSourceConfig>> getDataSource(
             @PathVariable Long id,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
-        DataSourceConfig config = getRequiredVisibleDataSource(id, dataScopeLevel, authorizedProjectIds);
+        DataSourceConfig config = getRequiredVisibleDataSource(
+                id,
+                dataScopeLevel,
+                authorizedProjectIds,
+                resolveActorContext(actorId, actorRole, actorType),
+                DataSourceAuthorizationAction.VIEW);
         return ResponseEntity.ok(ApiResponse.success(config));
     }
 
@@ -182,15 +216,23 @@ public class DataSourceManagementController {
      * 更新数据源配置。
      *
      * <p>本接口不允许修改租户、项目和工作空间归属。资源归属迁移在商业化产品中通常需要审计，
-     * 后续应由单独的“转移项目/空间”治理接口承载。</p>
+     * 后续应由单独的“转移项目”治理接口承载。更新连接信息属于高风险管理动作，因此要求项目范围通过或具备实例 MANAGE 授权。</p>
      */
     @PutMapping("/{id}")
     public ResponseEntity<ApiResponse<DataSourceConfig>> updateDataSource(
             @PathVariable Long id,
             @Valid @RequestBody UpdateDataSourceRequest request,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
-        getRequiredVisibleDataSource(id, dataScopeLevel, authorizedProjectIds);
+        getRequiredVisibleDataSource(
+                id,
+                dataScopeLevel,
+                authorizedProjectIds,
+                resolveActorContext(actorId, actorRole, actorType),
+                DataSourceAuthorizationAction.MANAGE);
         DataSourceConfig config = dataSourceManagementService.updateDataSource(
                 id,
                 request.getName(),
@@ -205,80 +247,143 @@ public class DataSourceManagementController {
 
     /**
      * 启用数据源。
+     *
+     * <p>启用会让同步任务、质量扫描、元数据发现重新具备调用该连接的可能性，因此按 MANAGE 动作校验。</p>
      */
     @PostMapping("/{id}/enable")
     public ResponseEntity<ApiResponse<DataSourceConfig>> enableDataSource(
             @PathVariable Long id,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
-        getRequiredVisibleDataSource(id, dataScopeLevel, authorizedProjectIds);
+        getRequiredVisibleDataSource(
+                id,
+                dataScopeLevel,
+                authorizedProjectIds,
+                resolveActorContext(actorId, actorRole, actorType),
+                DataSourceAuthorizationAction.MANAGE);
         return ResponseEntity.ok(ApiResponse.success("数据源已启用", dataSourceManagementService.enableDataSource(id)));
     }
 
     /**
      * 停用数据源。
+     *
+     * <p>停用会影响后续同步任务能否继续使用该连接，属于管理动作，因此同样按 MANAGE 校验。</p>
      */
     @PostMapping("/{id}/disable")
     public ResponseEntity<ApiResponse<DataSourceConfig>> disableDataSource(
             @PathVariable Long id,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
-        getRequiredVisibleDataSource(id, dataScopeLevel, authorizedProjectIds);
+        getRequiredVisibleDataSource(
+                id,
+                dataScopeLevel,
+                authorizedProjectIds,
+                resolveActorContext(actorId, actorRole, actorType),
+                DataSourceAuthorizationAction.MANAGE);
         return ResponseEntity.ok(ApiResponse.success("数据源已停用", dataSourceManagementService.disableDataSource(id)));
     }
 
     /**
      * 逻辑删除数据源。
+     *
+     * <p>删除采用逻辑删除，历史任务、审计和授权事实仍可追溯。删除同样属于 MANAGE 动作。</p>
      */
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<DataSourceConfig>> deleteDataSource(
             @PathVariable Long id,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
-        getRequiredVisibleDataSource(id, dataScopeLevel, authorizedProjectIds);
+        getRequiredVisibleDataSource(
+                id,
+                dataScopeLevel,
+                authorizedProjectIds,
+                resolveActorContext(actorId, actorRole, actorType),
+                DataSourceAuthorizationAction.MANAGE);
         return ResponseEntity.ok(ApiResponse.success("数据源已删除", dataSourceManagementService.deleteDataSource(id)));
     }
 
     /**
      * 执行数据源连接测试。
+     *
+     * <p>连接测试会真实触达外部数据库或中间件，所以不能只要求 VIEW；用户必须在项目范围内可使用该数据源，或具备实例 USE/MANAGE 授权。</p>
      */
     @PostMapping("/{id}/test")
     public ResponseEntity<ApiResponse<DataSourceConnectionTestResult>> testConnection(
             @PathVariable Long id,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
-        getRequiredVisibleDataSource(id, dataScopeLevel, authorizedProjectIds);
+        getRequiredVisibleDataSource(
+                id,
+                dataScopeLevel,
+                authorizedProjectIds,
+                resolveActorContext(actorId, actorRole, actorType),
+                DataSourceAuthorizationAction.USE);
         return ResponseEntity.ok(ApiResponse.success("数据源连接测试完成", dataSourceManagementService.testConnection(id)));
     }
 
     /**
      * 查询数据源能力画像。
+     *
+     * <p>能力画像是低敏元数据，查看详情即可读取，因此按 VIEW 校验。</p>
      */
     @GetMapping("/{id}/capabilities")
     public ResponseEntity<ApiResponse<DataSourceCapabilityProfile>> getCapabilities(
             @PathVariable Long id,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
-        getRequiredVisibleDataSource(id, dataScopeLevel, authorizedProjectIds);
+        getRequiredVisibleDataSource(
+                id,
+                dataScopeLevel,
+                authorizedProjectIds,
+                resolveActorContext(actorId, actorRole, actorType),
+                DataSourceAuthorizationAction.VIEW);
         return ResponseEntity.ok(ApiResponse.success("数据源能力画像获取成功", dataSourceManagementService.getCapabilityProfile(id)));
     }
 
     /**
      * 发现数据源元数据。
+     *
+     * <p>元数据发现会连接源端系统并读取库表结构，虽然不读取业务行数据，但仍属于“使用数据源”的动作，因此按 USE 校验。</p>
      */
     @PostMapping("/{id}/metadata/discover")
     public ResponseEntity<ApiResponse<DataSourceMetadataDiscoveryResult>> discoverMetadata(
             @PathVariable Long id,
             @Valid @RequestBody MetadataDiscoveryRequest request,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
-        getRequiredVisibleDataSource(id, dataScopeLevel, authorizedProjectIds);
+        getRequiredVisibleDataSource(
+                id,
+                dataScopeLevel,
+                authorizedProjectIds,
+                resolveActorContext(actorId, actorRole, actorType),
+                DataSourceAuthorizationAction.USE);
         return ResponseEntity.ok(ApiResponse.success("数据源元数据发现完成",
                 dataSourceManagementService.discoverMetadata(id, request)));
     }
 
     /**
      * 执行受控只读 SQL。
+     *
+     * <p>只读 SQL 是最敏感的数据源使用入口之一：它必须经过 SQL 安全解析、审计落库和数据源 USE 授权三层约束。
+     * Controller 在这里负责补齐可信平台 Header，Service 层负责只读 SQL 的语法与风险控制。</p>
      */
     @PostMapping("/{id}/sql/read-only/execute")
     public ResponseEntity<ApiResponse<ReadOnlySqlExecutionResult>> executeReadOnlySql(
@@ -292,7 +397,12 @@ public class DataSourceManagementController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
-        getRequiredVisibleDataSource(id, dataScopeLevel, authorizedProjectIds);
+        getRequiredVisibleDataSource(
+                id,
+                dataScopeLevel,
+                authorizedProjectIds,
+                resolveActorContext(actorId, actorRole, actorType),
+                DataSourceAuthorizationAction.USE);
         applyTrustedPlatformContext(request, tenantId, actorId, actorRole, actorType, sourceService, traceId);
         return ResponseEntity.ok(ApiResponse.success("受控只读 SQL 执行完成",
                 dataSourceManagementService.executeReadOnlySql(id, request)));
@@ -300,6 +410,9 @@ public class DataSourceManagementController {
 
     /**
      * 分页查询受控只读 SQL 执行审计。
+     *
+     * <p>该接口主要给管理员、运维和审计员排查使用，继续沿用项目范围可见性，而不是实例授权。
+     * 原因是审计视图关注“谁做过什么”，不是“当前用户能不能复用这条数据源”。</p>
      */
     @GetMapping("/sql/read-only/audits")
     public ResponseEntity<ApiResponse<IPage<DataSourceReadOnlySqlExecutionAudit>>> pageReadOnlySqlExecutionAudits(
@@ -337,11 +450,41 @@ public class DataSourceManagementController {
                         effectiveQueryActorRole)));
     }
 
+    /**
+     * 给数据源列表追加租户与项目/授权范围过滤。
+     *
+     * <p>当 permission-admin 明确要求 PROJECT 范围时，列表必须限制在授权项目集合内；
+     * 如果当前 actor 还被单独授予了某些数据源实例的 VIEW/USE/MANAGE 权限，则把这些数据源 ID 与项目范围做并集。
+     * 当不是 PROJECT 强制范围时，仍然尊重显式 projectId 过滤，但不额外用实例授权缩小或放大范围，避免平台管理员/租户管理员视图被误裁剪。</p>
+     */
     private void applyDatasourceScope(LambdaQueryWrapper<DataSourceConfig> wrapper,
                                       Long tenantId,
-                                      DatasourceProjectVisibility visibility) {
-        wrapper.eq(tenantId != null, DataSourceConfig::getTenantId, tenantId)
-                .eq(visibility.requestedProjectId() != null, DataSourceConfig::getProjectId, visibility.requestedProjectId())
+                                      DatasourceProjectVisibility visibility,
+                                      List<Long> authorizedDatasourceIds) {
+        wrapper.eq(tenantId != null, DataSourceConfig::getTenantId, tenantId);
+        if (authorizedDatasourceIds == null || authorizedDatasourceIds.isEmpty()) {
+            applyProjectVisibilityOnly(wrapper, visibility);
+            return;
+        }
+        if (visibility == null || !visibility.projectScopeEnforced()) {
+            applyProjectVisibilityOnly(wrapper, visibility);
+            return;
+        }
+        wrapper.and(scope -> {
+            applyProjectVisibilityOnly(scope, visibility);
+            scope.or().in(DataSourceConfig::getId, authorizedDatasourceIds);
+        });
+    }
+
+    /**
+     * 仅应用项目范围，不混入实例级授权。
+     */
+    private void applyProjectVisibilityOnly(LambdaQueryWrapper<DataSourceConfig> wrapper,
+                                            DatasourceProjectVisibility visibility) {
+        if (visibility == null) {
+            return;
+        }
+        wrapper.eq(visibility.requestedProjectId() != null, DataSourceConfig::getProjectId, visibility.requestedProjectId())
                 .eq(visibility.requestedWorkspaceId() != null, DataSourceConfig::getWorkspaceId, visibility.requestedWorkspaceId());
         if (!visibility.projectScopeEnforced()) {
             return;
@@ -369,15 +512,40 @@ public class DataSourceManagementController {
         wrapper.eq(DataSourceConfig::getUsagePurpose, purpose.name());
     }
 
-    private DataSourceConfig getRequiredVisibleDataSource(Long id, String dataScopeLevel, String authorizedProjectIds) {
+    /**
+     * 读取并校验某条数据源是否对当前 actor 可见或可用。
+     *
+     * <p>校验顺序故意设计为“项目范围优先，实例授权兜底”：
+     * 项目负责人、租户管理员、平台管理员通常不需要每条数据源都有 ACL 记录；
+     * 普通用户或服务账号如果不在项目范围内，则可以依赖明确授权进入 VIEW/USE/MANAGE 能力边界。</p>
+     */
+    private DataSourceConfig getRequiredVisibleDataSource(Long id,
+                                                          String dataScopeLevel,
+                                                          String authorizedProjectIds,
+                                                          DatasourceAuthorizationActorContext actorContext,
+                                                          DataSourceAuthorizationAction requiredAction) {
         DataSourceConfig config = dataSourceManagementService.getById(id);
         if (config == null || DataSourceStatus.DELETED.equals(config.getStatus())) {
-            throw new NoSuchElementException("数据源不存在: " + id);
+            throw new NoSuchElementException("数据源不存在或已删除: " + id);
         }
         DatasourceProjectVisibility visibility = datasourceProjectScopeSupport.resolveVisibility(
                 null, null, dataScopeLevel, authorizedProjectIds);
-        datasourceProjectScopeSupport.validateProjectReadable(config.getProjectId(), visibility, "数据源");
-        return config;
+        try {
+            datasourceProjectScopeSupport.validateProjectReadable(config.getProjectId(), visibility, "数据源");
+            return config;
+        } catch (IllegalArgumentException exception) {
+            if (dataSourceAuthorizationService.hasActiveAuthorization(config.getId(), actorContext, requiredAction)) {
+                return config;
+            }
+            throw exception;
+        }
+    }
+
+    /**
+     * 把 gateway 透传的 actor Header 收敛为授权服务可识别的上下文对象。
+     */
+    private DatasourceAuthorizationActorContext resolveActorContext(String actorId, String actorRole, String actorType) {
+        return new DatasourceAuthorizationActorContext(actorId, actorRole, actorType);
     }
 
     /**
@@ -411,7 +579,7 @@ public class DataSourceManagementController {
     }
 
     /**
-     * 解析租户、项目、工作空间这类“系统上下文字段”。
+     * 解析租户、项目这类“系统上下文字段”。
      *
      * <p>可信 Header 优先级最高，请求体/查询参数只是兼容入口。如果 Header 和请求体同时存在但值不同，
      * 说明调用方试图把当前页面上下文和写入归属拆开，这在多租户产品里属于高风险行为，因此直接拒绝。
@@ -431,6 +599,9 @@ public class DataSourceManagementController {
         return defaultValue;
     }
 
+    /**
+     * 解析需要写入审计字段的数字型 Header。
+     */
     private Long parseLongHeader(String headerName, String value) {
         try {
             return Long.valueOf(value);

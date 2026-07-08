@@ -470,6 +470,21 @@ datasmart:
       # default-action：当 method-actions 没有命中时的兜底动作。
       # method-actions：HTTP 方法到平台动作的映射，当前先采用通用 REST 语义。
       route-metadata:
+        - path-pattern: /api/datasource/datasources/*/authorizations
+          resource-type: DATASOURCE
+          default-action: ASSIGN
+          description: 数据源实例授权清单与授权创建入口；GET/POST 都属于授权关系治理，不应退化为普通数据源查看或创建。
+          method-actions:
+            GET: ASSIGN
+            POST: ASSIGN
+
+        - path-pattern: /api/datasource/datasources/*/authorizations/*
+          resource-type: DATASOURCE
+          default-action: ASSIGN
+          description: 数据源实例授权撤销入口；撤销授权会改变其他用户或服务账号能否使用该连接，因此按 ASSIGN 高风险动作治理。
+          method-actions:
+            DELETE: ASSIGN
+
         - path-pattern: /api/datasource/**
           resource-type: DATASOURCE
           default-action: EXECUTE

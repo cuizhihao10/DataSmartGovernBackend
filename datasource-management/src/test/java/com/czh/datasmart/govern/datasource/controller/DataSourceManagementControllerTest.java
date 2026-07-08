@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.datasource.controller;
 
 import com.czh.datasmart.govern.datasource.controller.dto.CreateDataSourceRequest;
 import com.czh.datasmart.govern.datasource.entity.DataSourceConfig;
+import com.czh.datasmart.govern.datasource.service.DataSourceAuthorizationService;
 import com.czh.datasmart.govern.datasource.service.DataSourceManagementService;
 import com.czh.datasmart.govern.datasource.service.support.DatasourceProjectScopeSupport;
 import org.junit.jupiter.api.Test;
@@ -40,8 +41,10 @@ class DataSourceManagementControllerTest {
     @Test
     void createDataSourceShouldUseProjectHeaderAndWriteNullWorkspace() {
         DataSourceManagementService service = mock(DataSourceManagementService.class);
+        DataSourceAuthorizationService authorizationService = mock(DataSourceAuthorizationService.class);
         DataSourceManagementController controller = new DataSourceManagementController(
                 service,
+                authorizationService,
                 new DatasourceProjectScopeSupport()
         );
         CreateDataSourceRequest request = new CreateDataSourceRequest();

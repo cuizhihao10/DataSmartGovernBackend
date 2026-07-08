@@ -174,6 +174,12 @@ public class GatewayAuthorizationProperties {
      */
     private static List<RouteAuthorizationMetadata> defaultRouteMetadata() {
         List<RouteAuthorizationMetadata> defaults = new ArrayList<>();
+        defaults.add(route("/api/datasource/datasources/*/authorizations", "DATASOURCE",
+                "数据源实例授权清单与授权创建入口；授权关系治理必须命中 ASSIGN，而不是退化为普通 VIEW/CREATE。",
+                Map.of("GET", "ASSIGN", "POST", "ASSIGN")));
+        defaults.add(route("/api/datasource/datasources/*/authorizations/*", "DATASOURCE",
+                "数据源实例授权撤销入口；撤销会改变其他主体能否使用该连接，因此按 ASSIGN 高风险动作治理。",
+                Map.of("DELETE", "ASSIGN")));
         defaults.add(route("/api/datasource/**", "DATASOURCE", "数据源、连接器、元数据与同步控制面"));
         defaults.add(route("/api/agent/plan-ingestions", "AI_RUNTIME",
                 "Python AI Runtime 向 Java agent-runtime 提交 AgentPlan 的内部控制面入口", Map.of("POST", "INGEST_PLAN")));
