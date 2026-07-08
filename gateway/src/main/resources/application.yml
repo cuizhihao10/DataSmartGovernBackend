@@ -604,6 +604,13 @@ datasmart:
           method-actions:
             POST: DISCOVER_METADATA
 
+        - path-pattern: /api/sync/sync-tasks/create-wizard/metadata/objects/discover
+          resource-type: SYNC_TASK_METADATA
+          default-action: DISCOVER_METADATA
+          description: data-sync 创建向导低敏元数据发现别名；语义必须与正式 metadata 路径一致，避免别名落入 /api/sync/** 兜底权限后绕过 SYNC_TASK_METADATA 数据范围策略。
+          method-actions:
+            POST: DISCOVER_METADATA
+
         - path-pattern: /api/sync/sync-tasks/metadata/field-mappings/suggest
           resource-type: SYNC_TASK_METADATA
           default-action: SUGGEST_FIELD_MAPPING

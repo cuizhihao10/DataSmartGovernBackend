@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.gateway.authorization;
 
+import com.czh.datasmart.govern.common.api.PlatformApiErrorDetail;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -20,6 +21,7 @@ import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 /**
  * 网关授权错误响应写出器。
@@ -98,22 +100,76 @@ public class GatewayAuthorizationErrorWriter {
      *
      * <p>权限拒绝、内部端点保护和限流都应该使用平台统一响应体。
      * 这样前端、Python Runtime 或其他服务账号都可以按 `code/reason/traceId` 做统一处理。
+     * 本轮额外把低敏结构化详情写入 data：
+     * 1. `details` 解释本次拒绝的直接原因，例如项目上下文未授权；
+     * 2. `suggestions` 给页面或实施人员一个可操作的检查清单；
+     * 3. 顶层 `traceId` 仍然用于日志和审计串联，避免把堆栈、token 或下游内部信息暴露给浏览器。
      */
     private Mono<Void> writeError(ServerHttpResponse response,
                                   String traceId,
                                   PlatformErrorCode errorCode,
                                   String message) {
         response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
-        PlatformApiResponse<Void> body = PlatformApiResponse.error(errorCode, message, traceId);
+        PlatformApiErrorDetail detail = buildDetail(errorCode, message);
+        PlatformApiResponse<PlatformApiErrorDetail> body = PlatformApiResponse.error(errorCode, message, detail, traceId);
         byte[] bytes = serialize(body);
         DataBuffer buffer = response.bufferFactory().wrap(bytes);
         return response.writeWith(Mono.just(buffer));
     }
 
     /**
+     * 为网关直接写出的错误补充结构化说明。
+     *
+     * <p>为什么这里不直接复用各业务服务的全局异常处理器？
+     * 网关过滤器发生在请求转发之前，此时还没有进入下游 Spring MVC/WebFlux Controller，
+     * 因此不会触发业务服务的 `@RestControllerAdvice`。如果这里仍然只返回 code/message，
+     * 前端就会在“认证、授权、限流、内部端点保护”这些最常见入口错误上继续看到不友好的提示。</p>
+     *
+     * <p>这里的建议必须保持低敏：只能说明检查登录态、项目授权、角色策略、请求参数格式和重试窗口，
+     * 不能回显 JWT、权限矩阵完整内容、下游服务地址、内部异常堆栈或用户提交的敏感 payload。</p>
+     */
+    private PlatformApiErrorDetail buildDetail(PlatformErrorCode errorCode, String message) {
+        String safeMessage = message == null || message.isBlank()
+                ? errorCode.getDefaultMessage()
+                : message.trim();
+        return switch (errorCode) {
+            case BAD_REQUEST -> PlatformApiErrorDetail.of(
+                    List.of(safeMessage),
+                    List.of(),
+                    List.of(
+                            "请检查请求参数或请求头格式是否符合接口合同，例如项目 ID 必须是数字。",
+                            "如果页面已经不再展示工作空间，请确认浏览器缓存、旧链接或旧请求状态没有继续携带 workspaceId。"
+                    )
+            );
+            case RATE_LIMITED -> PlatformApiErrorDetail.of(
+                    List.of(safeMessage),
+                    List.of(),
+                    List.of(
+                            "请稍后重试，或降低自动刷新、批量操作、Agent 工具调用的频率。",
+                            "如果这是后台任务或执行器回调，请检查是否存在重试风暴、循环调用或并发配置过高。"
+                    )
+            );
+            case FORBIDDEN -> PlatformApiErrorDetail.of(
+                    List.of(safeMessage),
+                    List.of(),
+                    List.of(
+                            "请确认当前账号已经登录，并且属于页面当前选中的项目。",
+                            "请确认角色具备该接口的路由权限，并且 permission-admin 中存在对应资源类型的数据范围策略。",
+                            "如果刚调整过项目成员或权限策略，请刷新页面、重新登录，或等待网关权限缓存失效后重试。"
+                    )
+            );
+            default -> PlatformApiErrorDetail.of(
+                    List.of(safeMessage),
+                    List.of(),
+                    List.of("请记录 traceId 并联系管理员查看 gateway 与 permission-admin 日志。")
+            );
+        };
+    }
+
+    /**
      * 序列化响应体。
      */
-    private byte[] serialize(PlatformApiResponse<Void> body) {
+    private byte[] serialize(PlatformApiResponse<?> body) {
         try {
             return objectMapper.writeValueAsBytes(body);
         } catch (JsonProcessingException exception) {
