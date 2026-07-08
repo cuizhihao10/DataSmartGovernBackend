@@ -7,6 +7,8 @@
 package com.czh.datasmart.govern.quality.service.support;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.czh.datasmart.govern.common.error.PlatformBusinessException;
+import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.quality.controller.dto.QualityRuleTargetValidationResult;
 import com.czh.datasmart.govern.quality.controller.dto.QualityScanPlan;
 import com.czh.datasmart.govern.quality.controller.dto.QualityScanPlanRequest;
@@ -21,6 +23,7 @@ import com.czh.datasmart.govern.quality.support.QualitySeverity;
 import com.czh.datasmart.govern.quality.support.QualityTargetValidationStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -84,7 +87,7 @@ public class QualityRuleLifecycleSupport {
         rule.setTargetValidationStatus(QualityTargetValidationStatus.UNVALIDATED);
         rule.setCreateTime(LocalDateTime.now());
         rule.setUpdateTime(LocalDateTime.now());
-        qualityRuleMapper.insert(rule);
+        persistNewRule(rule);
         applyValidationResult(rule, qualityScanStrategyRegistry.validate(rule));
         log.info("创建质量规则成功，ruleId={}", rule.getId());
         return rule;
@@ -96,7 +99,9 @@ public class QualityRuleLifecycleSupport {
                                   BigDecimal expectedValue, String severity, String description) {
         QualityRule rule = getRequiredRule(id);
         ensureNotDeleted(rule);
-        ensureRuleNameNotDuplicated(rule.getTenantId(), rule.getProjectId(), name, id);
+        if (!QualityRuleStatus.ARCHIVED.equals(rule.getStatus())) {
+            ensureRuleNameNotDuplicated(rule.getTenantId(), rule.getProjectId(), name, id);
+        }
         rule.setName(name);
         rule.setTargetObject(targetObject);
         applyTargetFields(rule, targetType, dataSourceId, databaseName, schemaName, tableName, fieldName);
@@ -109,7 +114,7 @@ public class QualityRuleLifecycleSupport {
         rule.setTargetValidationMessage("规则目标已更新，等待重新校验");
         rule.setTargetValidatedTime(null);
         rule.setUpdateTime(LocalDateTime.now());
-        qualityRuleMapper.updateById(rule);
+        persistUpdatedRule(rule);
         applyValidationResult(rule, qualityScanStrategyRegistry.validate(rule));
         log.info("更新质量规则成功，ruleId={}", id);
         return rule;
@@ -118,13 +123,16 @@ public class QualityRuleLifecycleSupport {
     public QualityRule enableRule(Long id, String reason) {
         QualityRule rule = getRequiredRule(id);
         ensureNotDeleted(rule);
+        if (QualityRuleStatus.ARCHIVED.equals(rule.getStatus())) {
+            ensureRuleNameNotDuplicated(rule.getTenantId(), rule.getProjectId(), rule.getName(), rule.getId());
+        }
         QualityRuleTargetValidationResult validationResult = qualityScanStrategyRegistry.validate(rule);
         applyValidationResult(rule, validationResult);
         ensureTargetCanBeActivated(validationResult);
         rule.setStatus(QualityRuleStatus.ACTIVE);
         rule.setArchivedTime(null);
         rule.setUpdateTime(LocalDateTime.now());
-        qualityRuleMapper.updateById(rule);
+        persistUpdatedRule(rule);
         log.info("启用质量规则成功，ruleId={}, reason={}", id, reason);
         return rule;
     }
@@ -160,10 +168,11 @@ public class QualityRuleLifecycleSupport {
         if (!QualityRuleStatus.ARCHIVED.equals(rule.getStatus())) {
             throw new IllegalStateException("只有已归档规则才能恢复");
         }
+        ensureRuleNameNotDuplicated(rule.getTenantId(), rule.getProjectId(), rule.getName(), rule.getId());
         rule.setStatus(QualityRuleStatus.INACTIVE);
         rule.setArchivedTime(null);
         rule.setUpdateTime(LocalDateTime.now());
-        qualityRuleMapper.updateById(rule);
+        persistUpdatedRule(rule);
         log.info("恢复归档质量规则成功，ruleId={}, reason={}", id, reason);
         return rule;
     }
@@ -258,10 +267,32 @@ public class QualityRuleLifecycleSupport {
                 .eq(QualityRule::getProjectId, projectId)
                 .eq(QualityRule::getName, name)
                 .ne(currentId != null, QualityRule::getId, currentId)
-                .ne(QualityRule::getStatus, QualityRuleStatus.DELETED);
+                .notIn(QualityRule::getStatus, QualityRuleStatus.ARCHIVED, QualityRuleStatus.DELETED);
         if (qualityRuleMapper.selectCount(wrapper) > 0) {
-            throw new IllegalArgumentException("质量规则名称已存在: " + name);
+            throw duplicateRuleName(name);
         }
+    }
+
+    private void persistNewRule(QualityRule rule) {
+        try {
+            qualityRuleMapper.insert(rule);
+        } catch (DuplicateKeyException exception) {
+            throw duplicateRuleName(rule.getName());
+        }
+    }
+
+    private void persistUpdatedRule(QualityRule rule) {
+        try {
+            qualityRuleMapper.updateById(rule);
+        } catch (DuplicateKeyException exception) {
+            throw duplicateRuleName(rule.getName());
+        }
+    }
+
+    private PlatformBusinessException duplicateRuleName(String name) {
+        return new PlatformBusinessException(
+                PlatformErrorCode.DUPLICATE_OPERATION,
+                "当前项目下已存在同名质量规则，请修改名称后再保存；已归档/已删除规则不会占用名称: " + name);
     }
 
     private boolean hasText(String value) {

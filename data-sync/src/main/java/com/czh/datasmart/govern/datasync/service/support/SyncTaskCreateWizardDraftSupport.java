@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.datasync.service.support;
 
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
@@ -93,6 +94,7 @@ public class SyncTaskCreateWizardDraftSupport {
     private SyncTaskCreateWizardDraftSaveResponse createDraft(SyncTaskCreateWizardDraftSaveRequest request,
                                                               SyncActorContext actorContext) {
         DraftBasics basics = resolveBasics(request, actorContext);
+        assertTaskNameAvailable(basics.tenantId(), basics.projectId(), basics.taskName(), null);
         SyncTemplate template = buildTemplate(null, request, basics, actorContext);
         connectorFactResolver.resolveConnectorFacts(template, actorContext);
         templateMapper.insert(template);
@@ -139,6 +141,7 @@ public class SyncTaskCreateWizardDraftSupport {
 
         DraftBasics basics = resolveBasics(request, actorContext);
         assertScopeConsistent(existingTask, existingTemplate, basics);
+        assertTaskNameAvailable(basics.tenantId(), basics.projectId(), basics.taskName(), existingTask.getId());
 
         SyncTemplate template = buildTemplate(existingTemplate, request, basics, actorContext);
         connectorFactResolver.resolveConnectorFacts(template, actorContext);
@@ -364,6 +367,25 @@ public class SyncTaskCreateWizardDraftSupport {
             throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
                     "草稿项目不能在编辑过程中变更，taskProjectId=" + task.getProjectId()
                             + ", requestedProjectId=" + basics.projectId());
+        }
+    }
+
+    private void assertTaskNameAvailable(Long tenantId, Long projectId, String name, Long currentTaskId) {
+        LambdaQueryWrapper<SyncTask> wrapper = new LambdaQueryWrapper<SyncTask>()
+                .eq(SyncTask::getTenantId, tenantId)
+                .eq(SyncTask::getName, name)
+                .ne(currentTaskId != null, SyncTask::getId, currentTaskId)
+                .ne(SyncTask::getCurrentState, SyncTaskState.DELETED.name());
+        if (projectId == null) {
+            wrapper.isNull(SyncTask::getProjectId);
+        } else {
+            wrapper.eq(SyncTask::getProjectId, projectId);
+        }
+        Long count = taskMapper.selectCount(wrapper);
+        if (count != null && count > 0) {
+            throw new PlatformBusinessException(
+                    PlatformErrorCode.DUPLICATE_OPERATION,
+                    "当前项目下已存在同名同步任务，请修改任务名称后再保存；已彻底删除的任务不会占用名称: " + name);
         }
     }
 

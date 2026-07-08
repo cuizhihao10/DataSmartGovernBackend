@@ -193,6 +193,7 @@ public class DataSyncTaskController {
             @RequestParam(required = false) String currentState,
             @RequestParam(required = false) String approvalState,
             @RequestParam(required = false) String triggerType,
+            @RequestParam(required = false) String keyword,
             @RequestParam(defaultValue = "1") Long current,
             @RequestParam(defaultValue = "20") Long size,
             @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
@@ -202,7 +203,7 @@ public class DataSyncTaskController {
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
                 tenantId, projectId, null, templateId, ownerId, groupCode,
-                currentState, approvalState, triggerType, current, size);
+                currentState, approvalState, triggerType, current, size, keyword);
         return PlatformApiResponse.success(dataSyncService.pageTasks(
                 criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
     }
@@ -226,6 +227,7 @@ public class DataSyncTaskController {
             @RequestParam(required = false) String currentState,
             @RequestParam(required = false) String approvalState,
             @RequestParam(required = false) String triggerType,
+            @RequestParam(required = false) String keyword,
             @RequestParam(defaultValue = "1") Long current,
             @RequestParam(defaultValue = "500") Long size,
             @RequestParam(defaultValue = "CSV") String format,
@@ -236,7 +238,7 @@ public class DataSyncTaskController {
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
                 tenantId, projectId, null, templateId, ownerId, groupCode,
-                currentState, approvalState, triggerType, current, size);
+                currentState, approvalState, triggerType, current, size, keyword);
         SyncTaskExportFile file = dataSyncService.exportTasks(
                 criteria, format, actorContext(actorTenantId, actorId, actorRole, traceId, headers));
         return exportFileResponse(file);
@@ -587,6 +589,7 @@ public class DataSyncTaskController {
             @RequestParam(required = false) String groupCode,
             @RequestParam(required = false) String approvalState,
             @RequestParam(required = false) String triggerType,
+            @RequestParam(required = false) String keyword,
             @RequestParam(defaultValue = "1") Long current,
             @RequestParam(defaultValue = "20") Long size,
             @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
@@ -596,7 +599,7 @@ public class DataSyncTaskController {
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
                 tenantId, projectId, null, templateId, ownerId, groupCode,
-                null, approvalState, triggerType, current, size);
+                null, approvalState, triggerType, current, size, keyword);
         return PlatformApiResponse.success(dataSyncService.pageRecycledTasks(
                 criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
     }

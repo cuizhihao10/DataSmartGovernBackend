@@ -152,9 +152,9 @@ class DataSyncServiceImplProjectScopeTest {
 
         String sqlSegment = wrapper.getCustomSqlSegment();
         assertThat(sqlSegment).contains("group_code");
-        assertThat(sqlSegment).contains("IS NULL");
+        assertThat(sqlSegment).contains("COALESCE");
+        assertThat(sqlSegment).contains("NULLIF");
         assertThat(wrapper.getParamNameValuePairs()).containsValue(SyncTaskGroupOperationSupport.DEFAULT_GROUP_CODE);
-        assertThat(wrapper.getParamNameValuePairs()).containsValue("");
     }
 
     /**

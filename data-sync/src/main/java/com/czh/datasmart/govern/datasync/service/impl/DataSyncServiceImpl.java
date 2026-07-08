@@ -295,7 +295,9 @@ public class DataSyncServiceImpl implements DataSyncService {
                         actorContext);
         task.setGroupCode(groupAssignment.groupCode());
         task.setGroupName(groupAssignment.groupName());
-        task.setName(querySupport.defaultText(request.getName(), template.getName()));
+        String taskName = querySupport.defaultText(request.getName(), template.getName());
+        assertTaskNameAvailable(tenantId, task.getProjectId(), taskName, null);
+        task.setName(taskName);
         task.setDescription(querySupport.defaultText(request.getDescription(), template.getDescription()));
         /*
          * 审批状态与任务主状态保持解耦：
@@ -372,7 +374,9 @@ public class DataSyncServiceImpl implements DataSyncService {
         }
         querySupport.eqIfPresent(wrapper, SyncTask::getApprovalState, querySupport.normalizeCode(criteria.approvalState()));
         querySupport.eqIfPresent(wrapper, SyncTask::getTriggerType, querySupport.normalizeCode(criteria.triggerType()));
+        applyTaskKeywordFilter(wrapper, criteria.keyword());
         Page<SyncTask> page = taskMapper.selectPage(querySupport.page(criteria.current(), criteria.size()), wrapper);
+        page.getRecords().forEach(this::normalizeDefaultGroupForResponse);
         return PlatformPageResponse.of(page.getCurrent(), page.getSize(), page.getTotal(), page.getRecords());
     }
 
@@ -414,7 +418,8 @@ public class DataSyncServiceImpl implements DataSyncService {
                 criteria.approvalState(),
                 criteria.triggerType(),
                 criteria.current(),
-                criteria.size());
+                criteria.size(),
+                criteria.keyword());
         return pageTasks(safeCriteria, actorContext);
     }
 
@@ -1241,15 +1246,76 @@ public class DataSyncServiceImpl implements DataSyncService {
             return;
         }
         if (SyncTaskGroupOperationSupport.DEFAULT_GROUP_CODE.equals(groupCode)) {
-            wrapper.and(groupWrapper -> groupWrapper
-                    .eq(SyncTask::getGroupCode, SyncTaskGroupOperationSupport.DEFAULT_GROUP_CODE)
-                    .or()
-                    .isNull(SyncTask::getGroupCode)
-                    .or()
-                    .eq(SyncTask::getGroupCode, ""));
+            /*
+             * MyBatis-Plus can be configured to ignore empty-string equality conditions.
+             * Use one explicit SQL expression so legacy '' and NULL rows are guaranteed
+             * to be treated exactly like DEFAULT on PostgreSQL and MySQL.
+             */
+            wrapper.and(groupWrapper -> groupWrapper.apply(
+                    "COALESCE(NULLIF(group_code, ''), {0}) = {0}",
+                    SyncTaskGroupOperationSupport.DEFAULT_GROUP_CODE));
             return;
         }
         wrapper.eq(SyncTask::getGroupCode, groupCode);
+    }
+
+    /**
+     * Normalize legacy default-group storage before returning task records.
+     *
+     * <p>Older task rows may store the default group as {@code NULL} or an empty string.
+     * The query layer already treats those rows as DEFAULT; the response should do the same
+     * so table rendering, export previews, and keyword search do not show an apparently
+     * ungrouped task after the user has selected "默认分组".</p>
+     */
+    private void normalizeDefaultGroupForResponse(SyncTask task) {
+        if (task == null || hasText(task.getGroupCode())) {
+            return;
+        }
+        task.setGroupCode(SyncTaskGroupOperationSupport.DEFAULT_GROUP_CODE);
+        if (!hasText(task.getGroupName())) {
+            task.setGroupName(SyncTaskGroupOperationSupport.DEFAULT_GROUP_NAME);
+        }
+    }
+
+    /**
+     * Apply the list search box as a backend filter so pagination and search share one total.
+     */
+    private void applyTaskKeywordFilter(LambdaQueryWrapper<SyncTask> wrapper, String rawKeyword) {
+        String keyword = querySupport.trimToNull(rawKeyword);
+        if (keyword == null) {
+            return;
+        }
+        wrapper.and(keywordWrapper -> keywordWrapper
+                .like(SyncTask::getName, keyword)
+                .or()
+                .like(SyncTask::getGroupCode, keyword)
+                .or()
+                .like(SyncTask::getGroupName, keyword)
+                .or()
+                .like(SyncTask::getCurrentState, keyword)
+                .or()
+                .like(SyncTask::getApprovalState, keyword)
+                .or()
+                .like(SyncTask::getRunMode, keyword));
+    }
+
+    private void assertTaskNameAvailable(Long tenantId, Long projectId, String name, Long currentTaskId) {
+        LambdaQueryWrapper<SyncTask> wrapper = new LambdaQueryWrapper<SyncTask>()
+                .eq(SyncTask::getTenantId, tenantId)
+                .eq(SyncTask::getName, name)
+                .ne(currentTaskId != null, SyncTask::getId, currentTaskId)
+                .ne(SyncTask::getCurrentState, SyncTaskState.DELETED.name());
+        if (projectId == null) {
+            wrapper.isNull(SyncTask::getProjectId);
+        } else {
+            wrapper.eq(SyncTask::getProjectId, projectId);
+        }
+        Long count = taskMapper.selectCount(wrapper);
+        if (count != null && count > 0) {
+            throw new PlatformBusinessException(
+                    PlatformErrorCode.DUPLICATE_OPERATION,
+                    "当前项目下已存在同名同步任务，请修改任务名称后再保存；已彻底删除的任务不会占用名称: " + name);
+        }
     }
 
     private boolean sameNullable(Long left, Long right) {

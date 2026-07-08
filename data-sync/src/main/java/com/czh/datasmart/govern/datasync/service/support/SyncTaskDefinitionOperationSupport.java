@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.datasync.service.support;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
@@ -95,6 +96,7 @@ public class SyncTaskDefinitionOperationSupport {
         stateMachineSupport.assertCanEditDefinition(task.getCurrentState());
 
         String name = resolveName(task.getName(), safeRequest.getName());
+        assertTaskNameAvailable(task, name);
         String description = safeRequest.getDescription() == null
                 ? task.getDescription()
                 : querySupport.trimToNull(safeRequest.getDescription());
@@ -215,6 +217,25 @@ public class SyncTaskDefinitionOperationSupport {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR, "同步任务名称不能为空");
         }
         return querySupport.truncate(name, 160);
+    }
+
+    private void assertTaskNameAvailable(SyncTask task, String name) {
+        LambdaQueryWrapper<SyncTask> wrapper = new LambdaQueryWrapper<SyncTask>()
+                .eq(SyncTask::getTenantId, task.getTenantId())
+                .eq(SyncTask::getName, name)
+                .ne(SyncTask::getId, task.getId())
+                .ne(SyncTask::getCurrentState, SyncTaskState.DELETED.name());
+        if (task.getProjectId() == null) {
+            wrapper.isNull(SyncTask::getProjectId);
+        } else {
+            wrapper.eq(SyncTask::getProjectId, task.getProjectId());
+        }
+        Long count = taskMapper.selectCount(wrapper);
+        if (count != null && count > 0) {
+            throw new PlatformBusinessException(
+                    PlatformErrorCode.DUPLICATE_OPERATION,
+                    "当前项目下已存在同名同步任务，请修改任务名称后再保存；已彻底删除的任务不会占用名称: " + name);
+        }
     }
 
     private String resolvePriority(String currentPriority, String requestedPriority) {

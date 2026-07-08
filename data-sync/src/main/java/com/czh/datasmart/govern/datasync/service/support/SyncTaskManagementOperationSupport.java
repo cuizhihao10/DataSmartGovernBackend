@@ -438,7 +438,8 @@ public class SyncTaskManagementOperationSupport {
     private boolean taskNameExists(Long tenantId, Long projectId, String name) {
         LambdaQueryWrapper<SyncTask> wrapper = new LambdaQueryWrapper<SyncTask>()
                 .eq(SyncTask::getTenantId, tenantId)
-                .eq(SyncTask::getName, name);
+                .eq(SyncTask::getName, name)
+                .ne(SyncTask::getCurrentState, SyncTaskState.DELETED.name());
         if (projectId == null) {
             wrapper.isNull(SyncTask::getProjectId);
         } else {

@@ -7,6 +7,8 @@
 package com.czh.datasmart.govern.datasource.service.support;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.czh.datasmart.govern.common.error.PlatformBusinessException;
+import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.datasource.controller.dto.CreateSyncTaskRequest;
 import com.czh.datasmart.govern.datasource.controller.dto.SyncActionRequest;
 import com.czh.datasmart.govern.datasource.controller.dto.SyncApprovalRequest;
@@ -24,6 +26,7 @@ import com.czh.datasmart.govern.datasource.support.SyncTaskState;
 import com.czh.datasmart.govern.datasource.support.TriggerType;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
@@ -115,7 +118,7 @@ public class SyncTaskLifecycleSupport {
         task.setIncidentNote(syncAuditSupport.truncate(request.getIncidentNote()));
         task.setCreatedBy(request.getCreatedBy());
         task.setUpdatedBy(request.getCreatedBy());
-        syncTaskMapper.insert(task);
+        persistNewTask(task);
         syncAuditSupport.recordAudit(task, null, SyncAuditAction.CREATE_TASK, request.getCreatedBy(), request.getActorRole(),
                 syncAuditSupport.buildPayload(
                         "taskId", task.getId(),
@@ -149,7 +152,7 @@ public class SyncTaskLifecycleSupport {
         task.setMaxRetryCount(request.getMaxRetryCount());
         task.setIncidentNote(syncAuditSupport.truncate(request.getIncidentNote()));
         task.setUpdatedBy(request.getUpdatedBy());
-        syncTaskMapper.updateById(task);
+        persistUpdatedTaskDefinition(task);
         syncAuditSupport.recordAudit(task, null, SyncAuditAction.UPDATE_TASK, request.getUpdatedBy(), request.getActorRole(),
                 syncAuditSupport.buildPayload("taskId", task.getId(), "name", task.getName(), "priority", task.getPriority()));
         return task;
@@ -322,7 +325,29 @@ public class SyncTaskLifecycleSupport {
                 .ne(currentId != null, SyncTask::getId, currentId)
                 .ne(SyncTask::getCurrentState, SyncTaskState.ARCHIVED.name());
         if (syncTaskMapper.selectCount(wrapper) > 0) {
-            throw new IllegalArgumentException("同步任务名称已存在: " + name);
+            throw duplicateTaskName(name);
         }
+    }
+
+    private void persistNewTask(SyncTask task) {
+        try {
+            syncTaskMapper.insert(task);
+        } catch (DuplicateKeyException exception) {
+            throw duplicateTaskName(task.getName());
+        }
+    }
+
+    private void persistUpdatedTaskDefinition(SyncTask task) {
+        try {
+            syncTaskMapper.updateById(task);
+        } catch (DuplicateKeyException exception) {
+            throw duplicateTaskName(task.getName());
+        }
+    }
+
+    private PlatformBusinessException duplicateTaskName(String name) {
+        return new PlatformBusinessException(
+                PlatformErrorCode.DUPLICATE_OPERATION,
+                "当前项目下已存在同名同步任务，请修改名称后再保存: " + name);
     }
 }

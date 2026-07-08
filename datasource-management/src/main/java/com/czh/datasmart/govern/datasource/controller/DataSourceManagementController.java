@@ -9,6 +9,8 @@ import com.czh.datasmart.govern.datasource.controller.dto.CreateDataSourceReques
 import com.czh.datasmart.govern.datasource.controller.dto.MetadataDiscoveryRequest;
 import com.czh.datasmart.govern.datasource.controller.dto.ReadOnlySqlExecutionRequest;
 import com.czh.datasmart.govern.datasource.controller.dto.ReadOnlySqlExecutionResult;
+import com.czh.datasmart.govern.datasource.controller.dto.TestDataSourceConnectionRequest;
+import com.czh.datasmart.govern.datasource.controller.dto.TestExistingDataSourceConnectionRequest;
 import com.czh.datasmart.govern.datasource.controller.dto.UpdateDataSourceRequest;
 import com.czh.datasmart.govern.datasource.entity.DataSourceCapabilityProfile;
 import com.czh.datasmart.govern.datasource.entity.DataSourceConfig;
@@ -135,6 +137,24 @@ public class DataSourceManagementController {
     }
 
     /**
+     * 测试一组尚未保存的数据源连接参数。
+     *
+     * <p>新建数据源页面使用该接口先验证 JDBC URL、用户名和连接密码是否可用。
+     * 这不是修改数据库账号密码，也不会创建或更新平台内的数据源记录；只有用户点击保存时才会持久化连接配置。</p>
+     */
+    @PostMapping("/connection-test")
+    public ResponseEntity<ApiResponse<DataSourceConnectionTestResult>> testConnectionBeforeCreate(
+            @Valid @RequestBody TestDataSourceConnectionRequest request) {
+        DataSourceConnectionTestResult result = dataSourceManagementService.testConnection(
+                request.getType(),
+                request.getJdbcUrl(),
+                request.getUsername(),
+                request.getPassword()
+        );
+        return ResponseEntity.ok(ApiResponse.success("数据源连接测试完成", result));
+    }
+
+    /**
      * 分页查询数据源。
      *
      * <p>前端新建同步任务时，可以通过 {@code usagePurpose=SOURCE} 获取源端候选，通过
@@ -243,6 +263,36 @@ public class DataSourceManagementController {
                 request.getUsagePurpose()
         );
         return ResponseEntity.ok(ApiResponse.success("数据源更新成功", config));
+    }
+
+    /**
+     * 测试编辑表单中的数据源连接参数。
+     *
+     * <p>本接口用于“保存前测试”：它会读取已保存的数据源类型和旧连接密码，再叠加当前表单里的 JDBC URL、用户名和可选密码。
+     * 因为密码留空时会复用已保存凭据，所以这里和更新接口一样要求 MANAGE 权限，避免只有使用权的用户拿平台保存的凭据去探测任意地址。</p>
+     */
+    @PostMapping("/{id}/connection-test")
+    public ResponseEntity<ApiResponse<DataSourceConnectionTestResult>> testConnectionBeforeUpdate(
+            @PathVariable Long id,
+            @Valid @RequestBody TestExistingDataSourceConnectionRequest request,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
+            @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+        getRequiredVisibleDataSource(
+                id,
+                dataScopeLevel,
+                authorizedProjectIds,
+                resolveActorContext(actorId, actorRole, actorType),
+                DataSourceAuthorizationAction.MANAGE);
+        DataSourceConnectionTestResult result = dataSourceManagementService.testConnection(
+                id,
+                request.getJdbcUrl(),
+                request.getUsername(),
+                request.getPassword()
+        );
+        return ResponseEntity.ok(ApiResponse.success("数据源连接测试完成", result));
     }
 
     /**

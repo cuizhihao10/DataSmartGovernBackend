@@ -8,6 +8,8 @@ package com.czh.datasmart.govern.datasource.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.czh.datasmart.govern.common.error.PlatformBusinessException;
+import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.datasource.controller.dto.CreateSyncTemplateRequest;
 import com.czh.datasmart.govern.datasource.controller.dto.UpdateSyncTemplateRequest;
 import com.czh.datasmart.govern.datasource.entity.DataSourceConfig;
@@ -27,6 +29,7 @@ import com.czh.datasmart.govern.datasource.support.SyncPermissionEvaluator;
 import com.czh.datasmart.govern.datasource.support.SyncPermissionResource;
 import com.czh.datasmart.govern.datasource.support.SyncWriteStrategy;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -135,7 +138,7 @@ public class SyncTemplateServiceImpl extends ServiceImpl<SyncTemplateMapper, Syn
         template.setEnabled(request.getEnabled() == null || request.getEnabled());
         template.setCreatedBy(request.getCreatedBy());
         template.setUpdatedBy(request.getCreatedBy());
-        save(template);
+        persistNewTemplate(template);
 
         recordTemplateAudit(template, SyncAuditAction.CREATE_TEMPLATE, request.getCreatedBy(), request.getActorRole());
         return template;
@@ -179,7 +182,7 @@ public class SyncTemplateServiceImpl extends ServiceImpl<SyncTemplateMapper, Syn
         template.setTimeoutPolicy(request.getTimeoutPolicy());
         template.setEnabled(request.getEnabled());
         template.setUpdatedBy(request.getUpdatedBy());
-        updateById(template);
+        persistUpdatedTemplate(template);
 
         recordTemplateAudit(template, SyncAuditAction.UPDATE_TEMPLATE, request.getUpdatedBy(), request.getActorRole());
         return template;
@@ -304,8 +307,30 @@ public class SyncTemplateServiceImpl extends ServiceImpl<SyncTemplateMapper, Syn
                 .eq(SyncTemplate::getName, name)
                 .ne(currentId != null, SyncTemplate::getId, currentId);
         if (count(wrapper) > 0) {
-            throw new IllegalArgumentException("同步模板名称已存在: " + name);
+            throw duplicateTemplateName(name);
         }
+    }
+
+    private void persistNewTemplate(SyncTemplate template) {
+        try {
+            save(template);
+        } catch (DuplicateKeyException exception) {
+            throw duplicateTemplateName(template.getName());
+        }
+    }
+
+    private void persistUpdatedTemplate(SyncTemplate template) {
+        try {
+            updateById(template);
+        } catch (DuplicateKeyException exception) {
+            throw duplicateTemplateName(template.getName());
+        }
+    }
+
+    private PlatformBusinessException duplicateTemplateName(String name) {
+        return new PlatformBusinessException(
+                PlatformErrorCode.DUPLICATE_OPERATION,
+                "当前项目下已存在同名同步模板，请修改名称后再保存: " + name);
     }
 
     private DatasourcePair validateDatasourcePair(Long sourceDatasourceId, Long targetDatasourceId) {

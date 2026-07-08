@@ -100,7 +100,9 @@ services:
       # 本地闭环按北京时间运行，因此显式使用 +08:00，避免 JDBC、Nacos 和历史兼容表出现 UTC 偏移。
       - --default-time-zone=+08:00
     ports:
-      - "3306:3306"
+      # 宿主机常见会安装本地 MySQL 并占用 3306；本地工具（Navicat/DataGrip）默认走 13306，
+      # 容器网络内的 Nacos 和业务服务仍通过 mysql:3306 访问，不受宿主机端口调整影响。
+      - "${DATASMART_LOCAL_MYSQL_PORT:-13306}:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - ./docker/mysql/init:/docker-entrypoint-initdb.d

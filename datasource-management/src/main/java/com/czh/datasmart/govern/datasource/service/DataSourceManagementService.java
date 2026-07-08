@@ -59,6 +59,22 @@ public interface DataSourceManagementService extends IService<DataSourceConfig> 
     DataSourceConnectionTestResult testConnection(Long id);
 
     /**
+     * 测试一组尚未保存的数据源连接参数。
+     *
+     * <p>新建数据源页面会先提交用户填写的 JDBC 地址、账号和连接密码做临时连通性校验。
+     * 这个方法不会落库，也不会写入 lastTestStatus，避免“测试失败但留下无效数据源”的体验问题。</p>
+     */
+    DataSourceConnectionTestResult testConnection(String type, String jdbcUrl, String username, String password);
+
+    /**
+     * 测试一条已保存数据源在编辑表单中的连接参数。
+     *
+     * <p>编辑页面允许密码留空，表示继续使用已保存的连接密码。本方法会把表单中的 JDBC URL、用户名和可选密码
+     * 与已保存的数据源类型、旧密码合并后执行一次临时测试，不会修改数据源主记录。</p>
+     */
+    DataSourceConnectionTestResult testConnection(Long id, String jdbcUrl, String username, String password);
+
+    /**
      * 获取数据源能力画像。
      * 这一步解决的是“这个数据源理论上支持哪些平台能力”，
      * 而不是去真实扫描外部库中有哪些表和字段。

@@ -234,8 +234,7 @@ public class SyncTaskDefinitionExchangeSupport {
         }
         querySupport.eqIfPresent(wrapper, SyncTask::getTemplateId, safeCriteria.templateId());
         querySupport.eqIfPresent(wrapper, SyncTask::getOwnerId, safeCriteria.ownerId());
-        querySupport.eqIfPresent(wrapper, SyncTask::getGroupCode,
-                taskGroupOperationSupport.normalizeGroupCodeForFilter(safeCriteria.groupCode()));
+        applyTaskGroupFilter(wrapper, safeCriteria.groupCode());
         String requestedState = querySupport.normalizeCode(safeCriteria.currentState());
         if (requestedState == null) {
             wrapper.notIn(SyncTask::getCurrentState, SyncTaskState.RECYCLED.name(), SyncTaskState.DELETED.name());
@@ -244,11 +243,69 @@ public class SyncTaskDefinitionExchangeSupport {
         }
         querySupport.eqIfPresent(wrapper, SyncTask::getApprovalState, querySupport.normalizeCode(safeCriteria.approvalState()));
         querySupport.eqIfPresent(wrapper, SyncTask::getTriggerType, querySupport.normalizeCode(safeCriteria.triggerType()));
+        applyTaskKeywordFilter(wrapper, safeCriteria.keyword());
         long safeCurrent = safeCriteria.current() == null || safeCriteria.current() <= 0 ? 1L : safeCriteria.current();
         long requestedSize = safeCriteria.size() == null || safeCriteria.size() <= 0 ? DEFAULT_EXPORT_SIZE : safeCriteria.size();
         long safeSize = Math.min(requestedSize, MAX_EXPORT_SIZE);
         Page<SyncTask> page = taskMapper.selectPage(new Page<>(safeCurrent, safeSize), wrapper);
+        page.getRecords().forEach(this::normalizeDefaultGroupForExport);
         return page.getRecords();
+    }
+
+    /**
+     * Apply the same group filter semantics as the task list endpoint.
+     *
+     * <p>Export is another task-detail entrance, so DEFAULT must include historical
+     * {@code NULL} and empty-string group codes. Otherwise the UI list and exported
+     * file would disagree for exactly the same selected group.</p>
+     */
+    private void applyTaskGroupFilter(LambdaQueryWrapper<SyncTask> wrapper, String rawGroupCode) {
+        String groupCode = taskGroupOperationSupport.normalizeGroupCodeForFilter(rawGroupCode);
+        if (groupCode == null) {
+            return;
+        }
+        if (SyncTaskGroupOperationSupport.DEFAULT_GROUP_CODE.equals(groupCode)) {
+            wrapper.and(groupWrapper -> groupWrapper.apply(
+                    "COALESCE(NULLIF(group_code, ''), {0}) = {0}",
+                    SyncTaskGroupOperationSupport.DEFAULT_GROUP_CODE));
+            return;
+        }
+        wrapper.eq(SyncTask::getGroupCode, groupCode);
+    }
+
+    /**
+     * Keep task definition export aligned with the on-screen task list search.
+     */
+    private void applyTaskKeywordFilter(LambdaQueryWrapper<SyncTask> wrapper, String rawKeyword) {
+        String keyword = querySupport.trimToNull(rawKeyword);
+        if (keyword == null) {
+            return;
+        }
+        wrapper.and(keywordWrapper -> keywordWrapper
+                .like(SyncTask::getName, keyword)
+                .or()
+                .like(SyncTask::getGroupCode, keyword)
+                .or()
+                .like(SyncTask::getGroupName, keyword)
+                .or()
+                .like(SyncTask::getCurrentState, keyword)
+                .or()
+                .like(SyncTask::getApprovalState, keyword)
+                .or()
+                .like(SyncTask::getRunMode, keyword));
+    }
+
+    /**
+     * Keep exported control-plane definitions readable for legacy default-group rows.
+     */
+    private void normalizeDefaultGroupForExport(SyncTask task) {
+        if (task == null || task.getGroupCode() != null && !task.getGroupCode().isBlank()) {
+            return;
+        }
+        task.setGroupCode(SyncTaskGroupOperationSupport.DEFAULT_GROUP_CODE);
+        if (task.getGroupName() == null || task.getGroupName().isBlank()) {
+            task.setGroupName(SyncTaskGroupOperationSupport.DEFAULT_GROUP_NAME);
+        }
     }
 
     private List<ValidatedImportTask> validateImportRows(List<SyncTaskDefinitionExchangeCodecSupport.TaskDefinitionImportRow> rows,

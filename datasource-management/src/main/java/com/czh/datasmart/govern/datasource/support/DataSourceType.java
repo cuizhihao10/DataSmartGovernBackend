@@ -1,6 +1,8 @@
 package com.czh.datasmart.govern.datasource.support;
 
 import java.util.Arrays;
+import java.util.List;
+import java.util.Locale;
 
 /**
  * @Author : Cui
@@ -9,27 +11,46 @@ import java.util.Arrays;
  * @Version:1.0.0
  *
  * 数据源类型枚举。
- * 当前先支持 MySQL、PostgreSQL、SQL Server 三类 JDBC 数据源，
- * 因为它们是最常见的结构化数据源，也是当前 pom 已具备驱动支持的第一批对象。
  *
- * 这个枚举现在不只负责“把 type 映射成驱动类名”，还开始承载第一版连接器能力画像。
- * 这样做的目的，是把“当前这个数据源理论上支持哪些平台能力”沉淀到统一入口，便于：
- * 1. 前端在创建同步模板时做能力提示；
- * 2. 后端在未来做模板校验、字段映射、增量模式限制时直接复用；
- * 3. 逐步从“只是能连数据库”演进到“知道连接器能做什么”的产品形态。
+ * <p>这个枚举不只负责把页面传入的类型映射为 JDBC Driver，也作为连接器类型校验的单一事实源。
+ * 创建、编辑和临时连接测试都必须使用这里的 JDBC URL 前缀与数据库产品名规则，避免出现“页面选择 PostgreSQL，
+ * 实际 URL 却连接到 MySQL”的脏配置。</p>
  */
 public enum DataSourceType {
-    MYSQL("com.mysql.cj.jdbc.Driver", true, true, true, true,
+    MYSQL("MySQL", "jdbc:mysql:", "jdbc:mysql://host:3306/database",
+            "com.mysql.cj.jdbc.Driver", List.of("mysql", "mariadb"), true, true, true, true,
             false, true, true, true, true, true),
-    POSTGRESQL("org.postgresql.Driver", true, true, true, true,
+    POSTGRESQL("PostgreSQL", "jdbc:postgresql:", "jdbc:postgresql://host:5432/database",
+            "org.postgresql.Driver", List.of("postgresql"), true, true, true, true,
             false, true, true, true, true, true),
-    SQLSERVER("com.microsoft.sqlserver.jdbc.SQLServerDriver", true, true, true, true,
+    SQLSERVER("SQL Server", "jdbc:sqlserver:", "jdbc:sqlserver://host:1433;databaseName=database",
+            "com.microsoft.sqlserver.jdbc.SQLServerDriver", List.of("microsoft sql server", "sql server"), true, true, true, true,
             false, true, true, true, true, true);
+
+    /**
+     * 面向用户展示的连接器名称。
+     */
+    private final String displayName;
+
+    /**
+     * 该连接器允许的 JDBC URL 前缀。前缀校验发生在真正建连之前，避免 DriverManager 按 URL 选择到别的驱动。
+     */
+    private final String jdbcUrlPrefix;
+
+    /**
+     * 面向错误提示的低敏 JDBC URL 示例，不包含真实主机、账号或密码。
+     */
+    private final String jdbcUrlExample;
 
     /**
      * 对应 JDBC 驱动类名。
      */
     private final String driverClassName;
+
+    /**
+     * DatabaseMetaData 返回的产品名关键字，用于建连后做二次兜底校验。
+     */
+    private final List<String> databaseProductNameTokens;
 
     /**
      * 是否支持读取。
@@ -48,18 +69,16 @@ public enum DataSourceType {
 
     /**
      * 是否支持增量同步。
-     * 这里表达的是“具备实现增量抽取的基础”，而不是当前仓库已经把所有增量逻辑都写完。
      */
     private final boolean supportsIncrementalSync;
 
     /**
      * 是否支持流式或 CDC 场景。
-     * 对纯 JDBC 连接来说，这里先保守标记为 false，后续如果接 binlog、logical decoding 或 CDC 组件再独立建模。
      */
     private final boolean supportsStreaming;
 
     /**
-     * 是否支持模式/表/字段发现。
+     * 是否支持模式、表、字段发现。
      */
     private final boolean supportsSchemaDiscovery;
 
@@ -80,11 +99,14 @@ public enum DataSourceType {
 
     /**
      * 是否支持分区并行。
-     * 对关系型数据库来说，这里先给出产品层面的可实现判断，后续真正的并发策略还要结合表结构、索引和分片键决定。
      */
     private final boolean supportsPartitionParallelism;
 
-    DataSourceType(String driverClassName,
+    DataSourceType(String displayName,
+                   String jdbcUrlPrefix,
+                   String jdbcUrlExample,
+                   String driverClassName,
+                   List<String> databaseProductNameTokens,
                    boolean canRead,
                    boolean canWrite,
                    boolean supportsFullSync,
@@ -95,7 +117,11 @@ public enum DataSourceType {
                    boolean supportsCheckpointResume,
                    boolean supportsPreviewSampling,
                    boolean supportsPartitionParallelism) {
+        this.displayName = displayName;
+        this.jdbcUrlPrefix = jdbcUrlPrefix;
+        this.jdbcUrlExample = jdbcUrlExample;
         this.driverClassName = driverClassName;
+        this.databaseProductNameTokens = databaseProductNameTokens;
         this.canRead = canRead;
         this.canWrite = canWrite;
         this.supportsFullSync = supportsFullSync;
@@ -108,8 +134,24 @@ public enum DataSourceType {
         this.supportsPartitionParallelism = supportsPartitionParallelism;
     }
 
+    public String getDisplayName() {
+        return displayName;
+    }
+
+    public String getJdbcUrlPrefix() {
+        return jdbcUrlPrefix;
+    }
+
+    public String getJdbcUrlExample() {
+        return jdbcUrlExample;
+    }
+
     public String getDriverClassName() {
         return driverClassName;
+    }
+
+    public List<String> getDatabaseProductNameTokens() {
+        return databaseProductNameTokens;
     }
 
     public boolean isCanRead() {
@@ -153,12 +195,53 @@ public enum DataSourceType {
     }
 
     /**
+     * 判断 JDBC URL 是否符合当前连接器类型。
+     */
+    public boolean matchesJdbcUrl(String jdbcUrl) {
+        if (jdbcUrl == null || jdbcUrl.isBlank()) {
+            return false;
+        }
+        return jdbcUrl.trim().toLowerCase(Locale.ROOT).startsWith(jdbcUrlPrefix);
+    }
+
+    /**
+     * 判断真实连接返回的数据库产品名是否符合当前连接器类型。
+     */
+    public boolean matchesDatabaseProductName(String productName) {
+        if (productName == null || productName.isBlank()) {
+            return false;
+        }
+        String normalizedProductName = productName.toLowerCase(Locale.ROOT);
+        return databaseProductNameTokens.stream().anyMatch(normalizedProductName::contains);
+    }
+
+    /**
+     * 给错误响应生成低敏、可操作的 URL 格式提示。
+     */
+    public String describeExpectedJdbcUrl() {
+        return jdbcUrlExample + "，前缀必须是 " + jdbcUrlPrefix;
+    }
+
+    /**
      * 将外部输入归一化为标准数据源类型。
      */
     public static DataSourceType fromValue(String value) {
+        String normalizedValue = normalizeTypeValue(value);
         return Arrays.stream(values())
-                .filter(item -> item.name().equalsIgnoreCase(value))
+                .filter(item -> item.name().equals(normalizedValue)
+                        || normalizeTypeValue(item.displayName).equals(normalizedValue))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("不支持的数据源类型: " + value));
+    }
+
+    private static String normalizeTypeValue(String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("数据源类型不能为空");
+        }
+        return value.trim()
+                .replace(" ", "")
+                .replace("-", "")
+                .replace("_", "")
+                .toUpperCase(Locale.ROOT);
     }
 }

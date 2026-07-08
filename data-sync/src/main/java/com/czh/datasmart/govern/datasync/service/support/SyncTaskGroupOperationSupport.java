@@ -21,6 +21,7 @@ import com.czh.datasmart.govern.datasync.mapper.SyncTaskGroupMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
@@ -131,13 +132,12 @@ public class SyncTaskGroupOperationSupport {
         SyncTaskGroup saved;
         if (existing == null) {
             saved = newGroup(tenantId, request, groupCode, parentGroupCode, actorContext);
-            groupMapper.insert(saved);
+            saved = insertNewGroupOrResolveConcurrentDuplicate(saved, request, parentGroupCode, actorContext);
         } else if (Boolean.TRUE.equals(existing.getArchived())) {
             saved = restoreArchivedGroup(existing, request, parentGroupCode, actorContext);
             groupMapper.updateById(saved);
         } else {
-            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "同一作用域下分组编码已存在，groupCode=" + groupCode);
+            throw duplicateGroupCode(groupCode);
         }
 
         auditSupport.saveAudit(tenantId, null, null, SyncAuditActionType.CREATE_TASK_GROUP,
@@ -405,7 +405,7 @@ public class SyncTaskGroupOperationSupport {
         group.setUpdateTime(LocalDateTime.now());
         try {
             groupMapper.insert(group);
-        } catch (RuntimeException duplicateOrConcurrentCreate) {
+        } catch (DuplicateKeyException duplicateOrConcurrentCreate) {
             SyncTaskGroup reloaded = groupMapper.selectByScopeAndCode(
                     safeTenantId, projectId, workspaceId, DEFAULT_GROUP_CODE, false);
             if (reloaded != null) {
@@ -414,6 +414,34 @@ public class SyncTaskGroupOperationSupport {
             throw duplicateOrConcurrentCreate;
         }
         return group;
+    }
+
+    private SyncTaskGroup insertNewGroupOrResolveConcurrentDuplicate(SyncTaskGroup group,
+                                                                     SyncTaskGroupCreateRequest request,
+                                                                     String parentGroupCode,
+                                                                     SyncActorContext actorContext) {
+        try {
+            groupMapper.insert(group);
+            return group;
+        } catch (DuplicateKeyException exception) {
+            SyncTaskGroup existing = groupMapper.selectByScopeAndCode(
+                    group.getTenantId(), group.getProjectId(), group.getWorkspaceId(), group.getGroupCode(), true);
+            if (existing == null) {
+                throw duplicateGroupCode(group.getGroupCode());
+            }
+            if (Boolean.TRUE.equals(existing.getArchived())) {
+                SyncTaskGroup restored = restoreArchivedGroup(existing, request, parentGroupCode, actorContext);
+                groupMapper.updateById(restored);
+                return restored;
+            }
+            throw duplicateGroupCode(group.getGroupCode());
+        }
+    }
+
+    private PlatformBusinessException duplicateGroupCode(String groupCode) {
+        return new PlatformBusinessException(
+                PlatformErrorCode.DUPLICATE_OPERATION,
+                "同一作用域下分组编码已存在，请修改分组编码后再保存，groupCode=" + groupCode);
     }
 
     private SyncTaskGroup assertActiveGroupExists(Long tenantId,

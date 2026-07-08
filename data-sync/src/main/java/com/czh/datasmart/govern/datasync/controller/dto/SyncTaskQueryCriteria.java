@@ -27,6 +27,7 @@ package com.czh.datasmart.govern.datasync.controller.dto;
  * @param triggerType 最近触发方式过滤条件，例如 MANUAL、SCHEDULED
  * @param current 当前页码
  * @param size 每页条数
+ * @param keyword 列表搜索关键字，用于任务名称、分组、状态和运行模式的轻量模糊匹配
  */
 public record SyncTaskQueryCriteria(
         Long tenantId,
@@ -39,6 +40,21 @@ public record SyncTaskQueryCriteria(
         String approvalState,
         String triggerType,
         Long current,
-        Long size
+        Long size,
+        String keyword
 ) {
+    public SyncTaskQueryCriteria(Long tenantId,
+                                 Long projectId,
+                                 Long workspaceId,
+                                 Long templateId,
+                                 Long ownerId,
+                                 String groupCode,
+                                 String currentState,
+                                 String approvalState,
+                                 String triggerType,
+                                 Long current,
+                                 Long size) {
+        this(tenantId, projectId, workspaceId, templateId, ownerId, groupCode,
+                currentState, approvalState, triggerType, current, size, null);
+    }
 }
