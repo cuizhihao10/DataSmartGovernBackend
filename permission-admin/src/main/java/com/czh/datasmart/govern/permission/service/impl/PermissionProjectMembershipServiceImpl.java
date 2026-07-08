@@ -18,6 +18,7 @@ import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipMutat
 import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipQueryCriteria;
 import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipStateChangeRequest;
 import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipUpdateRequest;
+import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipView;
 import com.czh.datasmart.govern.permission.entity.PermissionProjectMembership;
 import com.czh.datasmart.govern.permission.event.PermissionProjectMembershipChangedEventPublisher;
 import com.czh.datasmart.govern.permission.mapper.PermissionProjectMembershipMapper;
@@ -100,14 +101,16 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
      *
      * <p>查询逻辑不仅按请求条件过滤，还会根据操作者角色追加安全边界：
      * 平台管理员可跨租户；租户管理员、运营、审计只看本租户；项目负责人只看自己拥有 OWNER 的项目。
+     * 返回值在 service 层转换为 {@link ProjectMembershipView}，避免 Controller 直接暴露持久化实体中的
+     * workspaceId 兼容字段。
      */
     @Override
-    public PlatformPageResponse<PermissionProjectMembership> pageProjectMemberships(ProjectMembershipQueryCriteria criteria,
-                                                                                   PermissionActorContext actorContext) {
+    public PlatformPageResponse<ProjectMembershipView> pageProjectMemberships(ProjectMembershipQueryCriteria criteria,
+                                                                              PermissionActorContext actorContext) {
         String actorRole = requireRole(actorContext);
         requireAnyRole(actorRole, VIEW_ROLES, "当前角色无权查看项目成员授权");
         ProjectMembershipQueryCriteria safeCriteria = criteria == null
-                ? new ProjectMembershipQueryCriteria(null, null, null, null, null, null, null, null, null)
+                ? new ProjectMembershipQueryCriteria(null, null, null, null, null, null, null, null)
                 : criteria;
 
         LambdaQueryWrapper<PermissionProjectMembership> wrapper = new LambdaQueryWrapper<PermissionProjectMembership>()
@@ -116,7 +119,6 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
 
         applyReadableScope(wrapper, safeCriteria, actorContext, actorRole);
         eqIfPresent(wrapper, PermissionProjectMembership::getActorId, safeCriteria.actorId());
-        eqIfPresent(wrapper, PermissionProjectMembership::getWorkspaceId, safeCriteria.workspaceId());
         eqIfPresent(wrapper, PermissionProjectMembership::getProjectRole, normalizeCode(safeCriteria.projectRole()));
         eqIfPresent(wrapper, PermissionProjectMembership::getGrantSource, normalizeCode(safeCriteria.grantSource()));
         if (safeCriteria.enabled() != null) {
@@ -124,17 +126,20 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
         }
 
         Page<PermissionProjectMembership> page = membershipMapper.selectPage(page(safeCriteria.current(), safeCriteria.size()), wrapper);
-        return PlatformPageResponse.of(page.getCurrent(), page.getSize(), page.getTotal(), page.getRecords());
+        List<ProjectMembershipView> records = page.getRecords().stream()
+                .map(ProjectMembershipView::from)
+                .toList();
+        return PlatformPageResponse.of(page.getCurrent(), page.getSize(), page.getTotal(), records);
     }
 
     /**
      * 查询单条项目成员授权。
      */
     @Override
-    public PermissionProjectMembership getProjectMembership(Long membershipId, PermissionActorContext actorContext) {
+    public ProjectMembershipView getProjectMembership(Long membershipId, PermissionActorContext actorContext) {
         PermissionProjectMembership membership = findByIdOrThrow(membershipId);
         validateReadableMembership(membership, actorContext);
-        return membership;
+        return ProjectMembershipView.from(membership);
     }
 
     /**
@@ -175,6 +180,11 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
 
     /**
      * 更新项目成员授权。
+     *
+     * <p>更新路径只处理项目内角色、授权来源和启用状态。
+     * workspaceId 不再属于用户可见产品层级，因此这里不会读取或修改实体里的 workspaceId。
+     * 如果历史数据中已有 workspaceId，会继续保留在数据库中用于审计和兼容；
+     * 但普通管理页面不再具备改变它的能力，避免新旧产品模型混在一起。</p>
      */
     @Override
     @Transactional
@@ -190,11 +200,6 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
         PermissionProjectMembership before = copyOf(membership);
         if (request.projectRole() != null && !request.projectRole().isBlank()) {
             membership.setProjectRole(normalizeCode(request.projectRole()));
-        }
-        if (request.workspaceId() != null) {
-            membership.setWorkspaceId(request.workspaceId());
-        } else if (Boolean.TRUE.equals(request.clearWorkspace())) {
-            membership.setWorkspaceId(null);
         }
         if (request.grantSource() != null && !request.grantSource().isBlank()) {
             membership.setGrantSource(normalizeCode(request.grantSource()));
@@ -255,7 +260,16 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
         target.setTenantId(tenantId);
         target.setActorId(actorId);
         target.setProjectId(projectId);
-        target.setWorkspaceId(request.workspaceId());
+        /*
+         * 用户可见授权已经收敛到项目级。
+         *
+         * 这里故意把 workspaceId 固定写为 null，而不是保留请求字段或沿用历史默认值：
+         * 1. 前端页面不再展示工作空间选择器；
+         * 2. 数据源、同步任务、质量规则等业务资源都按 projectId 归属；
+         * 3. 数据库列暂时保留只是为了兼容旧审计、旧 claim 和 Agent 内部 workspace 语义；
+         * 4. 对既有记录做幂等 upsert 时也清空 workspaceId，可以逐步把“用户项目成员授权”迁移到目标模型。
+         */
+        target.setWorkspaceId(null);
         target.setProjectRole(projectRole);
         target.setGrantSource(normalizeGrantSource(request.grantSource()));
         target.setEnabled(request.enabled() == null || request.enabled());

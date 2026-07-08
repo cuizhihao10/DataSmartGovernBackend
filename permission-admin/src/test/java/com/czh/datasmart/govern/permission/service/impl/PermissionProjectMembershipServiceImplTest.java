@@ -21,6 +21,7 @@ import com.czh.datasmart.govern.permission.service.support.PermissionProjectMemb
 import com.czh.datasmart.govern.permission.support.PermissionRoleCode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -68,6 +69,10 @@ class PermissionProjectMembershipServiceImplTest {
 
     /**
      * 租户管理员在本租户内新增成员应该成功，并写入审计。
+     *
+     * <p>这里额外断言 workspaceId 必须为空。它对应最新产品模型中的关键收敛规则：
+     * 项目成员授权属于“租户 -> 项目 -> 成员”，不再让用户选择工作空间；
+     * 数据库列保留只是为了兼容旧数据和 Agent 内部空间语义。</p>
      */
     @Test
     void tenantAdministratorCanGrantMemberInOwnTenantAndWritesAudit() {
@@ -86,6 +91,10 @@ class PermissionProjectMembershipServiceImplTest {
         assertThat(result.tenantId()).isEqualTo(10L);
         assertThat(result.projectId()).isEqualTo(101L);
         assertThat(result.enabled()).isTrue();
+        ArgumentCaptor<PermissionProjectMembership> insertedCaptor =
+                ArgumentCaptor.forClass(PermissionProjectMembership.class);
+        verify(membershipMapper).insert(insertedCaptor.capture());
+        assertThat(insertedCaptor.getValue().getWorkspaceId()).isNull();
         verify(auditSupport).saveMutationAudit(any(), any(), any(), any(), any(), any());
         verify(membershipChangedEventPublisher).publishProjectMembershipChanged(any(), any(), any(), any());
     }
@@ -213,11 +222,11 @@ class PermissionProjectMembershipServiceImplTest {
     }
 
     private ProjectMembershipQueryCriteria queryTenant(Long tenantId) {
-        return new ProjectMembershipQueryCriteria(tenantId, null, null, null, null, null, null, 1L, 20L);
+        return new ProjectMembershipQueryCriteria(tenantId, null, null, null, null, null, 1L, 20L);
     }
 
     private ProjectMembershipCreateRequest createRequest(Long tenantId, Long actorId, Long projectId, String role) {
-        return new ProjectMembershipCreateRequest(tenantId, actorId, projectId, 10001L, role, "MANUAL", true, "测试授权");
+        return new ProjectMembershipCreateRequest(tenantId, actorId, projectId, role, "MANUAL", true, "测试授权");
     }
 
     private PermissionActorContext actor(Long tenantId, Long actorId, PermissionRoleCode role) {

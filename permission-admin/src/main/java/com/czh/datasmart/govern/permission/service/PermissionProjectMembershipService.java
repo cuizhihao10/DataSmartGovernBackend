@@ -14,7 +14,7 @@ import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipMutat
 import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipQueryCriteria;
 import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipStateChangeRequest;
 import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipUpdateRequest;
-import com.czh.datasmart.govern.permission.entity.PermissionProjectMembership;
+import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipView;
 
 import java.util.List;
 
@@ -27,9 +27,12 @@ import java.util.List;
  * 本服务正是对 `permission_project_membership` 的控制面封装。
  *
  * <p>服务边界：
- * 1. 只管理“actor 与 project/workspace 的授权关系”；
+ * 1. 用户可见层只管理“actor 与 project 的授权关系”；
  * 2. 不直接管理项目基础资料，项目名称、项目状态、项目负责人画像应属于未来 project-service 或 tenant-service；
  * 3. 不直接下发 gateway 缓存事件，当前权限判定会实时查询成员表；后续如果引入授权快照缓存，再在这里补 outbox 事件。
+ *
+ * <p>数据库表仍保留 workspace_id，但 service 对外返回 {@link ProjectMembershipView}，
+ * 这是为了把历史兼容字段隔离在内部持久化层，避免前端继续出现工作空间输入或筛选。</p>
  */
 public interface PermissionProjectMembershipService {
 
@@ -38,19 +41,19 @@ public interface PermissionProjectMembershipService {
      *
      * @param criteria 查询条件。
      * @param actorContext 当前操作者上下文，用于控制租户边界和项目负责人可见范围。
-     * @return 项目成员授权分页。
+     * @return 不含 workspace 兼容字段的项目成员授权分页。
      */
-    PlatformPageResponse<PermissionProjectMembership> pageProjectMemberships(ProjectMembershipQueryCriteria criteria,
-                                                                             PermissionActorContext actorContext);
+    PlatformPageResponse<ProjectMembershipView> pageProjectMemberships(ProjectMembershipQueryCriteria criteria,
+                                                                       PermissionActorContext actorContext);
 
     /**
      * 查询项目成员授权详情。
      *
      * @param membershipId 成员关系主键。
      * @param actorContext 当前操作者上下文。
-     * @return 成员关系详情。
+     * @return 不含 workspace 兼容字段的成员关系详情。
      */
-    PermissionProjectMembership getProjectMembership(Long membershipId, PermissionActorContext actorContext);
+    ProjectMembershipView getProjectMembership(Long membershipId, PermissionActorContext actorContext);
 
     /**
      * 新增或幂等更新项目成员授权。

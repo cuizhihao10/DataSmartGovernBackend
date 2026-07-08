@@ -13,9 +13,13 @@ import jakarta.validation.constraints.Size;
  * 新增或幂等更新项目成员授权请求。
  *
  * <p>本接口采用“按 tenantId + actorId + projectId 幂等 upsert”的语义：
- * 如果关系不存在则创建；如果关系已经存在则更新角色、空间、来源和启用状态。
+ * 如果关系不存在则创建；如果关系已经存在则更新角色、来源和启用状态。
  * 这样适合管理后台重复提交、批量导入重跑、组织同步补偿等真实生产场景，
  * 不会因为一次网络超时后重试就产生重复成员。
+ *
+ * <p>重要收敛规则：用户可见产品层级已经确定为“租户 -> 项目 -> 资源”，
+ * 因此创建项目成员授权时不再接收 workspaceId。数据库表中的 workspace_id 仅作为历史兼容字段保留，
+ * 由服务层在新增/幂等更新时统一写入 null，避免前端继续出现工作空间输入框。</p>
  */
 public record ProjectMembershipCreateRequest(
         /**
@@ -40,13 +44,6 @@ public record ProjectMembershipCreateRequest(
          */
         @NotNull(message = "projectId 不能为空")
         Long projectId,
-
-        /**
-         * 工作空间 ID。
-         *
-         * <p>可为空。当前先做项目级授权，后续需要空间级菜单、空间级看板或空间级审批时可以启用该字段。
-         */
-        Long workspaceId,
 
         /**
          * 项目内角色。

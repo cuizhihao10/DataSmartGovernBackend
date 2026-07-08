@@ -16,7 +16,7 @@ import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipMutat
 import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipQueryCriteria;
 import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipStateChangeRequest;
 import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipUpdateRequest;
-import com.czh.datasmart.govern.permission.entity.PermissionProjectMembership;
+import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipView;
 import com.czh.datasmart.govern.permission.service.PermissionProjectMembershipService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -59,13 +59,15 @@ public class PermissionProjectMembershipController {
      * 2. 审计员按 actorId 追踪某人为什么能访问某些项目；
      * 3. 运营人员排查 PROJECT 数据范围为空导致用户看不到数据的问题；
      * 4. 平台管理员跨租户抽样检查授权来源和禁用状态。
+     *
+     * <p>接口合同刻意不暴露 workspaceId。数据库中的 workspace_id 仍用于历史兼容，
+     * 但普通页面只应该理解“租户 -> 项目 -> 成员”，避免再次把工作空间误设计为用户必须选择的层级。
      */
     @GetMapping
-    public PlatformApiResponse<PlatformPageResponse<PermissionProjectMembership>> pageProjectMemberships(
+    public PlatformApiResponse<PlatformPageResponse<ProjectMembershipView>> pageProjectMemberships(
             @RequestParam(required = false) Long tenantId,
             @RequestParam(required = false) Long actorId,
             @RequestParam(required = false) Long projectId,
-            @RequestParam(required = false) Long workspaceId,
             @RequestParam(required = false) String projectRole,
             @RequestParam(required = false) String grantSource,
             @RequestParam(required = false) Boolean enabled,
@@ -76,7 +78,7 @@ public class PermissionProjectMembershipController {
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String requestActorRole,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
         ProjectMembershipQueryCriteria criteria = new ProjectMembershipQueryCriteria(
-                tenantId, actorId, projectId, workspaceId, projectRole, grantSource, enabled, current, size);
+                tenantId, actorId, projectId, projectRole, grantSource, enabled, current, size);
         return PlatformApiResponse.success(projectMembershipService.pageProjectMemberships(criteria,
                 actorContext(actorTenantId, requestActorId, requestActorRole, traceId)), traceId);
     }
@@ -85,9 +87,10 @@ public class PermissionProjectMembershipController {
      * 查询项目成员授权详情。
      *
      * <p>详情接口会在服务层重新校验租户和项目范围，不能因为调用者知道主键就绕过列表过滤。
+     * 返回值同样使用不含 workspaceId 的页面视图，避免内部兼容字段泄漏到管理后台。
      */
     @GetMapping("/{membershipId}")
-    public PlatformApiResponse<PermissionProjectMembership> getProjectMembership(
+    public PlatformApiResponse<ProjectMembershipView> getProjectMembership(
             @PathVariable Long membershipId,
             @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long requestActorId,
@@ -138,8 +141,9 @@ public class PermissionProjectMembershipController {
     /**
      * 更新项目成员授权。
      *
-     * <p>该接口只修改角色、空间、来源和启用状态，不修改 tenantId/actorId/projectId。
+     * <p>该接口只修改角色、来源和启用状态，不修改 tenantId/actorId/projectId。
      * 这种约束能保证历史审计记录始终指向同一条授权关系。
+     * workspaceId 不再属于用户可见产品层级，因此也不再允许通过普通成员管理接口修改。
      */
     @PutMapping("/{membershipId}")
     public PlatformApiResponse<ProjectMembershipMutationResult> updateProjectMembership(
