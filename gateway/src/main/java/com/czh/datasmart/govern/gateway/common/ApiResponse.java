@@ -50,8 +50,28 @@ public class ApiResponse<T> {
 
     /**
      * 失败响应。
+     *
+     * <p>该方法保留历史简单错误响应。对于 gateway 入口层来说，
+     * 只返回一个状态码会让用户误以为“系统完全不可用”，因此全局异常处理器会优先使用
+     * 带 data 的重载，把低敏原因和排查建议返回给前端。</p>
      */
     public static <T> ApiResponse<T> error(Integer code, String message) {
         return new ApiResponse<>(code, message, null);
+    }
+
+    /**
+     * 带结构化错误明细的失败响应。
+     *
+     * <p>gateway 是统一入口，既要告诉前端请求为什么失败，又不能泄露下游服务名、实例地址、
+     * 路由表达式或认证内部细节。因此 data 只应放置低敏、可展示的错误详情，
+     * 完整异常仍然写入服务端日志。</p>
+     *
+     * @param code 失败码；本模块历史上使用 HTTP 状态码
+     * @param message 顶层错误摘要
+     * @param data 结构化错误详情，通常为 PlatformApiErrorDetail
+     * @return 统一失败响应
+     */
+    public static <T> ApiResponse<T> error(Integer code, String message, T data) {
+        return new ApiResponse<>(code, message, data);
     }
 }

@@ -71,8 +71,28 @@ public class ApiResponse<T> {
     /**
      * 失败响应工厂方法。
      * 主要由全局异常处理器统一调用，避免 Controller 到处手写错误返回。
+     *
+     * <p>这个重载保留历史行为：失败时 data 为 null。
+     * 对于只需要一句话即可解释清楚的旧接口，它仍然足够；但新建任务、批量导入、
+     * 调度配置校验这类交互式场景，推荐使用下面带 data 的重载返回结构化错误明细。</p>
      */
     public static <T> ApiResponse<T> error(Integer code, String message) {
         return new ApiResponse<>(code, message, null);
+    }
+
+    /**
+     * 带结构化错误明细的失败响应工厂方法。
+     *
+     * <p>当前 task-management 仍使用模块本地 {@code ApiResponse}，尚未一次性迁移到
+     * {@code PlatformApiResponse}。为了不破坏历史接口 envelope，又能让前端弹窗展示
+     * details、fieldErrors 和 suggestions，这里允许失败响应把低敏错误详情放入 data。</p>
+     *
+     * @param code 失败码；本模块历史上使用 HTTP 状态码，后续可逐步切换平台错误码
+     * @param message 顶层错误摘要
+     * @param data 结构化错误详情，通常为 PlatformApiErrorDetail
+     * @return 统一失败响应
+     */
+    public static <T> ApiResponse<T> error(Integer code, String message, T data) {
+        return new ApiResponse<>(code, message, data);
     }
 }

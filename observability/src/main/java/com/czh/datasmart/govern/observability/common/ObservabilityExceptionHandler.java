@@ -1,10 +1,10 @@
 /**
  * @Author : Cui
- * @Date: 2026/04/25 23:00
- * @Description DataSmart Govern Backend - PermissionAdminExceptionHandler.java
+ * @Date: 2026/07/08 19:10
+ * @Description DataSmart Govern Backend - ObservabilityExceptionHandler.java
  * @Version:1.0.0
  */
-package com.czh.datasmart.govern.permission.common;
+package com.czh.datasmart.govern.observability.common;
 
 import com.czh.datasmart.govern.common.api.PlatformApiErrorDescriptor;
 import com.czh.datasmart.govern.common.api.PlatformApiErrorDetail;
@@ -28,24 +28,21 @@ import org.springframework.web.server.ResponseStatusException;
 import java.util.NoSuchElementException;
 
 /**
- * permission-admin 全局异常处理器。
+ * observability 全局异常处理器。
  *
- * <p>权限中心是平台安全边界：项目、角色、菜单、路由策略、Keycloak/IdP 映射和授权判断都从这里发出。
- * 如果这里只返回一个错误码，前端无法区分是未登录、无权限、项目不存在、成员关系缺失，
- * 还是字段校验失败；实施人员也很难快速定位“应该改账号、改项目授权，还是改请求参数”。</p>
+ * <p>可观测性模块负责健康快照、告警覆盖、闭环诊断和后续运维视图。
+ * 它的错误提示需要能帮助实施/运维人员判断是探测目标不可达、配置不完整、权限不足，
+ * 还是平台服务自身异常，而不能只返回一个 500。</p>
  *
- * <p>本处理器统一返回 {@link PlatformApiResponse}，并把低敏结构化错误放入 data。
- * 同时保留 traceId，方便前端弹窗、gateway 日志、permission-admin 日志和审计事件串联排障。</p>
+ * <p>本处理器与其他 Spring MVC 微服务保持同一套结构化错误合同：
+ * 业务错误返回具体低敏原因，参数错误返回字段级明细，未知错误返回模块级摘要和排障建议。</p>
  */
 @Slf4j
 @RestControllerAdvice
-public class PermissionAdminExceptionHandler {
+public class ObservabilityExceptionHandler {
 
     /**
      * 处理平台业务异常。
-     *
-     * <p>权限模块主动抛出的 {@link PlatformBusinessException} 通常已经包含准确业务语义，
-     * 例如未认证、无权限、租户范围拒绝、项目状态冲突等。这里只做统一 envelope 包装。</p>
      */
     @ExceptionHandler(PlatformBusinessException.class)
     public ResponseEntity<PlatformApiResponse<PlatformApiErrorDetail>> handlePlatformBusinessException(
@@ -65,10 +62,7 @@ public class PermissionAdminExceptionHandler {
     }
 
     /**
-     * 处理请求体参数校验异常。
-     *
-     * <p>旧实现只返回第一条字段错误，用户修完一个字段后可能又弹出下一条，体验很差。
-     * 新实现收集全部字段错误，便于前端一次性展示完整修复清单。</p>
+     * 处理请求体字段校验失败。
      */
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<PlatformApiResponse<PlatformApiErrorDetail>> handleMethodArgumentNotValid(
@@ -78,7 +72,7 @@ public class PermissionAdminExceptionHandler {
     }
 
     /**
-     * 处理查询参数、路径参数或表单参数绑定异常。
+     * 处理查询参数、路径参数或表单参数绑定失败。
      */
     @ExceptionHandler(BindException.class)
     public ResponseEntity<PlatformApiResponse<PlatformApiErrorDetail>> handleBindException(
@@ -88,7 +82,7 @@ public class PermissionAdminExceptionHandler {
     }
 
     /**
-     * 处理方法级参数约束异常。
+     * 处理方法级参数约束失败。
      */
     @ExceptionHandler(ConstraintViolationException.class)
     public ResponseEntity<PlatformApiResponse<PlatformApiErrorDetail>> handleConstraintViolation(
@@ -98,7 +92,7 @@ public class PermissionAdminExceptionHandler {
     }
 
     /**
-     * 处理 JSON 请求体解析异常。
+     * 处理 JSON 请求体解析失败。
      */
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<PlatformApiResponse<PlatformApiErrorDetail>> handleHttpMessageNotReadable(
@@ -128,7 +122,7 @@ public class PermissionAdminExceptionHandler {
     }
 
     /**
-     * 处理少量历史代码直接抛出的非法参数异常。
+     * 处理非法参数异常。
      */
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<PlatformApiResponse<PlatformApiErrorDetail>> handleIllegalArgumentException(
@@ -138,7 +132,7 @@ public class PermissionAdminExceptionHandler {
     }
 
     /**
-     * 处理少量历史代码直接抛出的状态冲突异常。
+     * 处理状态冲突异常。
      */
     @ExceptionHandler(IllegalStateException.class)
     public ResponseEntity<PlatformApiResponse<PlatformApiErrorDetail>> handleIllegalStateException(
@@ -158,29 +152,22 @@ public class PermissionAdminExceptionHandler {
     }
 
     /**
-     * 兜底异常处理。
-     *
-     * <p>权限模块一旦出现未预期异常，不能把堆栈、SQL、IdP 细节或内部权限策略直接暴露给调用方。
-     * 对外返回统一低敏详情，对内记录完整日志。</p>
+     * 兜底处理未预期异常。
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<PlatformApiResponse<PlatformApiErrorDetail>> handleException(
             Exception exception,
             HttpServletRequest request) {
-        log.error("permission-admin 模块发生未预期异常，traceId={}, path={}",
+        log.error("observability 模块发生未预期异常，traceId={}, path={}",
                 traceId(request), request.getRequestURI(), exception);
         return toResponse(PlatformApiErrorDetailFactory.internalError(
-                "permission-admin",
-                "如果这是登录、项目切换、角色授权或路由鉴权失败，请查看 permission-admin 日志、Keycloak/IdP 配置和项目成员授权。"
+                "observability",
+                "如果这是健康探测、告警覆盖、闭环诊断或运维视图失败，请查看 observability 日志、Prometheus 抓取状态和目标服务健康端点。"
         ), request);
     }
 
     /**
      * 将公共错误描述转换为平台统一响应。
-     *
-     * @param descriptor 公共错误构建器生成的错误描述
-     * @param request 当前请求，用于读取 traceId
-     * @return permission-admin 失败响应
      */
     private ResponseEntity<PlatformApiResponse<PlatformApiErrorDetail>> toResponse(
             PlatformApiErrorDescriptor descriptor,
@@ -196,9 +183,6 @@ public class PermissionAdminExceptionHandler {
 
     /**
      * 从请求 Header 中读取 traceId。
-     *
-     * <p>traceId 由 gateway 生成或透传，下游服务只负责继续返回与写日志。
-     * 当前本地调试可能没有 gateway，因此这里允许为空，避免因为缺少 traceId 影响业务错误展示。</p>
      */
     private String traceId(HttpServletRequest request) {
         return request.getHeader(PlatformContextHeaders.TRACE_ID);

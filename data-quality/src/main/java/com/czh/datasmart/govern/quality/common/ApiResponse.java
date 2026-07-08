@@ -57,8 +57,28 @@ public class ApiResponse<T> {
 
     /**
      * 失败响应。
+     *
+     * <p>该方法保留旧接口的简单失败形态，适合只需要顶层 message 的场景。
+     * 对规则配置、扫描计划、SQL 生成、质量执行等需要多条错误明细的场景，
+     * 应使用带 data 的重载返回结构化详情。</p>
      */
     public static <T> ApiResponse<T> error(Integer code, String message) {
         return new ApiResponse<>(code, message, null);
+    }
+
+    /**
+     * 带结构化错误明细的失败响应。
+     *
+     * <p>数据质量模块的规则与执行错误往往不是一句话能解释清楚：
+     * 例如字段不存在、规则参数缺失、数据源只读 SQL 被拒绝、异常样本采集失败等。
+     * data 中放置低敏错误详情后，前端可以展示完整修复清单，同时不泄露 SQL 正文或堆栈。</p>
+     *
+     * @param code 失败码；本模块历史上使用 HTTP 状态码
+     * @param message 顶层错误摘要
+     * @param data 结构化错误详情，通常为 PlatformApiErrorDetail
+     * @return 统一失败响应
+     */
+    public static <T> ApiResponse<T> error(Integer code, String message, T data) {
+        return new ApiResponse<>(code, message, data);
     }
 }

@@ -10,4 +10,29 @@
     <artifactId>platform-common</artifactId>
     <name>Platform Common Contracts</name>
     <description>DataSmart Govern 平台级公共契约模块，承载 API 响应、错误码、请求上下文和审计事件等跨微服务基础模型</description>
+    <dependencies>
+        <!--
+            平台公共错误详情构建器需要识别 Spring Web / Validation 的常见异常类型，
+            例如请求体字段校验失败、JSON 解析失败、缺少查询参数、参数类型转换失败等。
+            这里引入的是底层 spring-web 与 spring-context，不是 spring-boot-starter-web，
+            因此不会把 Servlet/MVC 启动模型强行带入 gateway 的 WebFlux 运行时。
+        -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-web</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-context</artifactId>
+        </dependency>
+        <!--
+            ConstraintViolationException 属于 Jakarta Validation 标准异常。
+            平台层只读取字段路径与提示文本，不依赖 Hibernate Validator 的具体实现，
+            这样各微服务可以继续由自己的 starter 决定实际校验器。
+        -->
+        <dependency>
+            <groupId>jakarta.validation</groupId>
+            <artifactId>jakarta.validation-api</artifactId>
+        </dependency>
+    </dependencies>
 </project>
