@@ -42,7 +42,7 @@ class SyncTaskCreateWizardContractSupportTest {
 
         SyncTaskCreateWizardContractResponse contract = support.buildContract(projectActorContext());
 
-        assertThat(contract.contractVersion()).isEqualTo("datasmart.sync-task.create-wizard.v4");
+        assertThat(contract.contractVersion()).isEqualTo("datasmart.sync-task.create-wizard.v5");
         assertThat(contract.metadataDiscovery()).isNotNull();
         assertThat(contract.metadataDiscovery().objectDiscoveryApi())
                 .isEqualTo("POST /sync-tasks/create-wizard/metadata/objects/discover");

@@ -35,15 +35,18 @@ public class SyncTaskGroupSummary {
     private Long projectId;
 
     /**
-     * 工作空间 ID。
+     * 历史工作空间 ID。
+     *
+     * <p>当前正式分组摘要已经按 tenant/project/groupCode 聚合，workspaceId 通常为空。
+     * 字段保留只是为了兼容旧调用方和旧 JSON 契约，不再作为前端分组唯一身份的一部分。</p>
      */
     private Long workspaceId;
 
     /**
      * 分组摘要稳定唯一键。
      *
-     * <p>该字段与分组树节点的 treeKey 采用同一套组合规则：tenantId/projectId/workspaceId/groupCode。
-     * 旧前端如果只使用 groupCode，在跨项目、跨工作空间或平台管理员视角下会把多个 DEFAULT 误认为同一个分组；
+     * <p>该字段与分组树节点的 treeKey 采用同一套组合规则：tenantId/projectId/groupCode。
+     * 旧前端如果只使用 groupCode，在跨项目或平台管理员视角下会把多个 DEFAULT 误认为同一个分组；
      * 新前端可以用 treeKey 做列表 key、下拉选项 value 或诊断定位字段。</p>
      */
     private String treeKey;
@@ -51,7 +54,7 @@ public class SyncTaskGroupSummary {
     /**
      * 分组作用域类型。
      *
-     * <p>可能值包括 GLOBAL、TENANT、PROJECT、WORKSPACE，用于解释这个摘要代表的是租户级、项目级还是工作空间级分组。</p>
+     * <p>可能值包括 GLOBAL、TENANT、PROJECT，用于解释这个摘要代表的是全局、租户级还是项目级分组。</p>
      */
     private String scopeType;
 

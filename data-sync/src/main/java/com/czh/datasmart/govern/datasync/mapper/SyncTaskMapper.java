@@ -62,8 +62,12 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
      * 聚合同步任务分组汇总。
      *
      * <p>该 SQL 直接从任务主表聚合，不引入额外分组表。这样当前版本可以快速支撑任务分组卡片、
-     * Agent “按业务域找任务” 和导入导出前的分组预览。查询层面仍然接收租户、项目、工作空间、SELF owner
+     * Agent “按业务域找任务” 和导入导出前的分组预览。查询层面仍然接收租户、项目、SELF owner
      * 和 authorizedProjectIds，避免分组列表绕过数据范围。</p>
+     *
+     * <p>当前产品层级已经从 tenant/project/workspace 收敛为 tenant/project。这里仍然兼容历史
+     * {@code workspace_id} 数据，但展示聚合不再按 workspace 分组，而是把同一项目下的 DEFAULT 或同名分组
+     * 汇总成一个项目级节点。这样前端左侧菜单不会因为旧数据里存在多个 workspace_id 而显示多个“默认分组”。</p>
      *
      * <p>为什么只统计 group_code 非空的任务：
      * 未分组任务通常在普通任务列表中查看；分组列表关注“已经被用户或 Agent 归入某个业务集合”的任务。
@@ -74,7 +78,7 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
             SELECT
                 tenant_id AS tenantId,
                 project_id AS projectId,
-                workspace_id AS workspaceId,
+                NULL AS workspaceId,
                 COALESCE(NULLIF(group_code, ''), 'DEFAULT') AS groupCode,
                 COALESCE(MAX(NULLIF(group_name, '')), '默认分组') AS groupName,
                 COUNT(*) AS taskCount,
@@ -92,9 +96,6 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
             <if test="projectId != null">
               AND project_id = #{projectId}
             </if>
-            <if test="workspaceId != null">
-              AND workspace_id = #{workspaceId}
-            </if>
             <if test="projectScopeEnforced and projectId == null">
               AND project_id IN
               <foreach collection="authorizedProjectIds" item="projectIdItem" open="(" separator="," close=")">
@@ -110,7 +111,7 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
             <if test="groupCode != null and groupCode == 'DEFAULT'">
               AND (group_code = 'DEFAULT' OR group_code IS NULL OR group_code = '')
             </if>
-            GROUP BY tenant_id, project_id, workspace_id, COALESCE(NULLIF(group_code, ''), 'DEFAULT')
+            GROUP BY tenant_id, project_id, COALESCE(NULLIF(group_code, ''), 'DEFAULT')
             ORDER BY MAX(update_time) DESC, COALESCE(NULLIF(group_code, ''), 'DEFAULT') ASC
             LIMIT #{limit}
             </script>

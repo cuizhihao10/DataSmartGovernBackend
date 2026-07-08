@@ -117,6 +117,14 @@ public enum PermissionResourceType {
      */
     TASK_DRAFT,
     /**
+     * 项目主数据资源。
+     *
+     * <p>该资源保护 `permission_project` 管理面。当前产品已经把用户可见层级收敛为“租户 -> 项目”，
+     * 因此项目创建、项目查询、项目切换和项目负责人自动授权都不能继续混在普通 SYSTEM_SETTING 下。
+     * 独立建模后，gateway 可以给项目查询、项目创建、项目归档等动作分别配置角色和数据范围。</p>
+     */
+    PROJECT,
+    /**
      * 项目成员授权资源。
      *
      * <p>该资源保护 `permission_project_membership` 管理面。

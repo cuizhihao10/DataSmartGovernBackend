@@ -13,6 +13,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -46,7 +47,12 @@ class DatasourceProjectScopeSupportTest {
 
         assertTrue(visibility.projectScopeEnforced());
         assertEquals(List.of(101L, 102L), visibility.authorizedProjectIds());
-        assertEquals(301L, visibility.requestedWorkspaceId());
+        /*
+         * 当前产品已经去掉用户可见的工作空间层级。即使旧前端、旧脚本或历史 E2E 仍然把 workspaceId
+         * 传给后端，datasource-management 也不再把它传播到查询条件，否则用户在项目维度下创建的数据源
+         * 可能因为不可见 workspace 过滤而“创建成功但列表看不到”。这里固定该兼容策略：读参数、忽略值。
+         */
+        assertNull(visibility.requestedWorkspaceId());
     }
 
     @Test

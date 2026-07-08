@@ -15,13 +15,13 @@ import java.util.List;
  * 这些产品规则从代码和口头约定中显式暴露出来。前端可以用它驱动表单渲染，Agent 工具也可以用它生成更可靠的任务创建计划。</p>
  *
  * <p>关键设计原则：</p>
- * <p>1. 租户、项目、工作空间来自登录/网关上下文，不要求用户填写数字 ID；</p>
+ * <p>1. 租户、项目来自登录/网关上下文，不要求用户填写数字 ID；</p>
  * <p>2. 新建同步任务只展示 FULL、SCHEDULED_BATCH、SCHEDULED_FULL、CUSTOM_SQL_QUERY、CDC_STREAMING 五种传输模式；</p>
  * <p>3. 写入策略只展示 INSERT 和 UPDATE，主键、外键、字段兼容性、对象存在性放到预检查阶段自动判断；</p>
  * <p>4. 失败回放、历史补数、脏数据修复重放、离线导入导出属于任务详情/执行历史/恢复运营台能力，不污染新建任务模式。</p>
  *
  * @param contractVersion 合同版本；前端可以用它做灰度兼容或调试展示
- * @param scopeBinding 当前请求可感知的租户/项目/工作空间绑定
+ * @param scopeBinding 当前请求可感知的租户/项目绑定
  * @param wizardSteps 创建向导步骤定义和每一步的保存语义
  * @param transferModes 用户可选择的传输模式
  * @param writeStrategies 用户可选择的写入策略
@@ -48,18 +48,19 @@ public record SyncTaskCreateWizardContractResponse(
 ) {
 
     /**
-     * 当前请求在多租户、多项目、多工作空间下的归属。
+     * 当前请求在多租户、多项目下的归属。
      *
-     * <p>名称字段当前先返回通用展示名，后续可以由 permission-admin 提供“当前可用应用/项目/工作空间”接口后再补成真实名称。
-     * 即使名称暂时不完整，前端也不应该再让用户手填 ID，而是通过项目切换器和工作空间切换器改变上下文。</p>
+     * <p>名称字段当前先返回通用展示名，后续可以由 permission-admin 提供“当前可用应用/项目”接口后再补成真实名称。
+     * 即使名称暂时不完整，前端也不应该再让用户手填 ID，而是通过项目切换器改变上下文。</p>
+     *
+     * <p>{@code workspaceId/workspaceDisplayName} 已从该合同中移除。数据库层面的 {@code workspace_id}
+     * 暂时仍作为历史兼容字段保留，但新建同步任务页面不再展示、传递或依赖工作空间概念。</p>
      */
     public record ScopeBinding(
             Long tenantId,
             Long projectId,
-            Long workspaceId,
             String tenantDisplayName,
             String projectDisplayName,
-            String workspaceDisplayName,
             boolean derivedFromTrustedHeader,
             boolean requestBodyScopeFieldsDeprecated
     ) {

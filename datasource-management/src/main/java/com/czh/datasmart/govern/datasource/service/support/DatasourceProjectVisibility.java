@@ -17,7 +17,8 @@ import java.util.List;
  * PROJECT 范围下“空授权集合退化成全租户可见”的严重越权问题。</p>
  *
  * @param requestedProjectId 调用方主动传入的 projectId；为空表示列表接口希望查看当前身份可见的所有项目
- * @param requestedWorkspaceId 调用方主动传入的 workspaceId；为空表示当前查询不按工作空间进一步收敛
+ * @param requestedWorkspaceId 历史兼容字段。当前产品层级已经收敛为租户 -> 项目 -> 数据源/同步任务，
+ *                             因此正式页面不再用 workspaceId 过滤；该值默认保持为空，仅为旧脚本或历史审计保留扩展位。
  * @param authorizedProjectIds gateway 从 permission-admin 透传的授权项目集合
  * @param projectScopeEnforced 是否必须按 authorizedProjectIds 强制过滤；只有 Header 明确声明 PROJECT 时才为 true
  */

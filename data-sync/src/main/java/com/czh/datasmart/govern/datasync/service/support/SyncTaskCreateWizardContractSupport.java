@@ -27,7 +27,7 @@ import java.util.Locale;
  * 只返回低敏合同和单步校验结果。这样前端可以同步修复 UI，同时后端也不会把旧的执行器字段、审批字段、恢复动作继续暴露成表单项。</p>
  *
  * <p>当前合同重点解决用户指出的几个产品问题：</p>
- * <p>1. 租户/项目/工作空间由上下文自动推导，普通表单不填写数字 ID；</p>
+ * <p>1. 租户/项目由上下文自动推导，普通表单不填写数字 ID；</p>
  * <p>2. 源端和目标端数据源按 usagePurpose 分流；</p>
  * <p>3. 传输模式只保留全量、定期批量、定期全量、SQL 自定义、实时五类；</p>
  * <p>4. 对象映射和字段映射由元数据发现、选择、搜索、排除、改名、字段勾选生成，不让用户直接编辑大段 JSON；</p>
@@ -51,17 +51,14 @@ public class SyncTaskCreateWizardContractSupport {
     public SyncTaskCreateWizardContractResponse buildContract(SyncActorContext actorContext) {
         Long tenantId = dataScopeSupport.resolveTenantForCreate(null, actorContext);
         Long projectId = dataScopeSupport.resolveProjectForCreate(null, actorContext);
-        Long workspaceId = dataScopeSupport.resolveWorkspaceForCreate(null, actorContext);
         return new SyncTaskCreateWizardContractResponse(
-                "datasmart.sync-task.create-wizard.v4",
+                "datasmart.sync-task.create-wizard.v5",
                 new SyncTaskCreateWizardContractResponse.ScopeBinding(
                         tenantId,
                         projectId,
-                        workspaceId,
                         tenantId == null ? null : "租户 " + tenantId,
                         projectId == null ? null : "FlashSync 默认项目",
-                        workspaceId == null ? null : "默认工作空间",
-                        actorContext != null && (actorContext.projectId() != null || actorContext.workspaceId() != null),
+                        actorContext != null && actorContext.projectId() != null,
                         true),
                 wizardSteps(),
                 transferModeCatalogSupport.listUserSelectableModes(),
@@ -116,7 +113,7 @@ public class SyncTaskCreateWizardContractSupport {
                         "源端/目标端",
                         1,
                         List.of("syncMode", "sourceDatasourceId", "targetDatasourceId"),
-                        "校验通过后进入第二步时保存模板草稿，后续任务归属于当前项目/工作空间上下文",
+                        "校验通过后进入第二步时保存模板草稿，后续任务归属于当前项目上下文",
                         List.of("源端和目标端不能相同", "数据源用途必须匹配源端/目标端角色", "定时模式不在本步骤手填 runMode"),
                         List.of("tenantId", "projectId", "workspaceId", "runMode")),
                 new SyncTaskCreateWizardContractResponse.WizardStep(
@@ -224,7 +221,7 @@ public class SyncTaskCreateWizardContractSupport {
 
     private List<String> backendValidationPrinciples() {
         return List.of(
-                "项目、工作空间和租户由可信上下文推导，request body 中的同名字段仅作为旧接口兼容兜底",
+                "项目和租户由可信上下文推导；workspaceId 是历史兼容字段，新建链路不再写入或依赖工作空间",
                 "对象映射和字段映射应由元数据发现、搜索、勾选、排除、改名等交互生成，后端继续以结构化配置保存",
                 "CUSTOM_SQL_QUERY 只要求选择目标对象，源端字段由 SQL select 列和别名决定",
                 "定期全量和定期批量必须携带 scheduleConfig，其他模式不能通过 runMode 或 scheduleConfig 伪装成定时任务",

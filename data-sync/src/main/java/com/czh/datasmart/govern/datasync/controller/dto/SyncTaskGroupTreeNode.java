@@ -25,7 +25,7 @@ public class SyncTaskGroupTreeNode {
      * 分组资源 ID。
      *
      * <p>历史任务聚合出来但尚未创建分组资源的 legacy 节点可能没有 ID。旧版本前端通常会退化使用 groupCode 做 key，
-     * 但 groupCode 只在同一个 tenant/project/workspace 作用域内唯一，跨项目或跨工作空间查询时会发生 DEFAULT 等编码重复。
+     * 但 groupCode 只在同一个 tenant/project 展示作用域内唯一，跨项目查询时会发生 DEFAULT 等编码重复。
      * 新前端应优先使用 {@link #treeKey}，把 id 只作为资源详情或调试字段。</p>
      */
     private Long id;
@@ -33,16 +33,16 @@ public class SyncTaskGroupTreeNode {
     /**
      * 前端树节点稳定唯一键。
      *
-     * <p>生成规则由后端统一维护，语义等价于 tenantId/projectId/workspaceId/groupCode 的组合键。
-     * 它解决的是“多个作用域都存在 DEFAULT 时，前端不能再只拿 groupCode 当 React/Vue tree key”的问题。
-     * 该字段只用于展示树、选中态、展开折叠态和诊断定位；写接口仍继续传 groupCode 以及必要的租户/项目/工作空间范围。</p>
+     * <p>生成规则由后端统一维护，当前语义等价于 tenantId/projectId/groupCode 的组合键。
+     * 它解决的是“多个项目都存在 DEFAULT 时，前端不能再只拿 groupCode 当 React/Vue tree key”的问题。
+     * 该字段只用于展示树、选中态、展开折叠态和诊断定位；写接口仍继续传 groupCode 以及必要的租户/项目范围。</p>
      */
     private String treeKey;
 
     /**
      * 父节点稳定唯一键。
      *
-     * <p>当节点存在 parentGroupCode 时，后端会在相同 tenant/project/workspace 作用域内生成父节点 treeKey。
+     * <p>当节点存在 parentGroupCode 时，后端会在相同 tenant/project 展示作用域内生成父节点 treeKey。
      * 前端通常可以直接使用 children 渲染树，不需要 parentTreeKey；但在虚拟树、扁平化列表、拖拽排序或调试父子关系时，
      * 该字段可以避免前端重新拼接父节点作用域。</p>
      */
@@ -55,8 +55,8 @@ public class SyncTaskGroupTreeNode {
     /**
      * 分组作用域类型。
      *
-     * <p>可能值包括 GLOBAL、TENANT、PROJECT、WORKSPACE。它说明同一个 groupCode 到底属于哪个业务边界：
-     * 租户级默认分组、项目级默认分组、工作空间级默认分组在数据库里可以同时存在，不能在前端被误认为同一个节点。</p>
+     * <p>可能值包括 GLOBAL、TENANT、PROJECT。它说明同一个 groupCode 到底属于哪个业务边界。
+     * 数据库里历史 workspace 分组会在后端读路径归一化到项目级展示，避免前端继续暴露工作空间层级。</p>
      */
     private String scopeType;
 
@@ -90,8 +90,8 @@ public class SyncTaskGroupTreeNode {
      * 前端推荐展示名称。
      *
      * <p>displayName 是后端已经结合重复检测和作用域语义处理过的名称。
-     * 例如只返回一个 DEFAULT 时它仍是“默认分组”；如果同一棵可见树中同时返回项目级 DEFAULT 与工作空间级 DEFAULT，
-     * 它会变成“默认分组（项目 101）”“默认分组（工作空间 10001）”这类可区分名称。</p>
+     * 例如只返回一个 DEFAULT 时它仍是“默认分组”；如果同一批响应中跨项目返回多个 DEFAULT，
+     * 它会变成“默认分组（项目 101）”“默认分组（项目 102）”这类可区分名称。</p>
      */
     private String displayName;
 

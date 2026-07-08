@@ -25,9 +25,10 @@ import java.util.Map;
  * <p>1. 降低耦合：分组 CRUD 和分组树展示是两个变化方向。以后如果前端需要 breadcrumb、虚拟树、拖拽排序、
  * 国际化显示名或聚合默认分组，只需要改这里，不必触碰删除分组和任务迁移这类高风险业务逻辑。</p>
  *
- * <p>2. 明确合同：data_sync_task_group 允许 tenant/project/workspace 多作用域共存，同一个 groupCode 只在单个作用域内唯一。
- * 因此前端不能继续把 groupCode 当树节点唯一 key。这里统一生成 treeKey、parentTreeKey、scopeLabel、displayName、
- * displayPath 和 subtree* 汇总字段，让前端不用再根据零散字段猜测范围语义。</p>
+ * <p>2. 明确合同：当前产品层级已经从“租户 -> 项目 -> 工作空间 -> 资源”收敛为“租户 -> 项目 -> 资源”。
+ * 数据库里仍然保留 workspace_id，是为了历史任务、审计事实和 Agent 内部 workspace key 兼容；但是前端菜单、分组树、
+ * 新建任务和新建数据源不再把工作空间当成用户可感知层级。因此这里生成的 treeKey、scopeLabel、displayName、
+ * displayPath 都只使用 tenant/project/group 这条产品主线，让前端不必再猜测 workspace 的历史语义。</p>
  */
 @Component
 public class SyncTaskGroupDisplayContractSupport {
@@ -50,13 +51,12 @@ public class SyncTaskGroupDisplayContractSupport {
             duplicateCounter.merge(displayKey, 1, Integer::sum);
         }
         for (SyncTaskGroupSummary summary : summaries) {
-            summary.setTreeKey(treeKey(summary.getTenantId(), summary.getProjectId(),
-                    summary.getWorkspaceId(), summary.getGroupCode()));
-            summary.setScopeType(scopeType(summary.getTenantId(), summary.getProjectId(), summary.getWorkspaceId()));
-            summary.setScopeLabel(scopeLabel(summary.getTenantId(), summary.getProjectId(), summary.getWorkspaceId()));
+            summary.setTreeKey(treeKey(summary.getTenantId(), summary.getProjectId(), summary.getGroupCode()));
+            summary.setScopeType(scopeType(summary.getTenantId(), summary.getProjectId()));
+            summary.setScopeLabel(scopeLabel(summary.getTenantId(), summary.getProjectId()));
             String baseName = resolveGroupName(summary.getGroupName(), summary.getGroupCode());
             summary.setDisplayName(displayName(baseName, summary.getGroupCode(),
-                    summary.getTenantId(), summary.getProjectId(), summary.getWorkspaceId(), duplicateCounter));
+                    summary.getTenantId(), summary.getProjectId(), duplicateCounter));
             summary.setDisplayPath(summary.getScopeLabel() + " / " + summary.getDisplayName());
         }
     }
@@ -81,15 +81,15 @@ public class SyncTaskGroupDisplayContractSupport {
         }
         for (SyncTaskGroupTreeNode node : flattened) {
             String parentGroupCode = trimToNull(node.getParentGroupCode());
-            node.setTreeKey(treeKey(node.getTenantId(), node.getProjectId(), node.getWorkspaceId(), node.getGroupCode()));
+            node.setTreeKey(treeKey(node.getTenantId(), node.getProjectId(), node.getGroupCode()));
             node.setParentTreeKey(parentGroupCode == null
                     ? null
-                    : treeKey(node.getTenantId(), node.getProjectId(), node.getWorkspaceId(), parentGroupCode));
-            node.setScopeType(scopeType(node.getTenantId(), node.getProjectId(), node.getWorkspaceId()));
-            node.setScopeLabel(scopeLabel(node.getTenantId(), node.getProjectId(), node.getWorkspaceId()));
+                    : treeKey(node.getTenantId(), node.getProjectId(), parentGroupCode));
+            node.setScopeType(scopeType(node.getTenantId(), node.getProjectId()));
+            node.setScopeLabel(scopeLabel(node.getTenantId(), node.getProjectId()));
             String baseName = resolveGroupName(node.getGroupName(), node.getGroupCode());
             node.setDisplayName(displayName(baseName, node.getGroupCode(),
-                    node.getTenantId(), node.getProjectId(), node.getWorkspaceId(), duplicateCounter));
+                    node.getTenantId(), node.getProjectId(), duplicateCounter));
         }
         for (SyncTaskGroupTreeNode root : roots) {
             fillDisplayPath(root, root.getScopeLabel());
@@ -111,7 +111,7 @@ public class SyncTaskGroupDisplayContractSupport {
      * 递归生成展示路径。
      *
      * <p>根节点路径以作用域标签开头，子节点在父路径后追加自身 displayName。
-     * 这样前端搜索到任意子分组时，都可以展示“这个分组到底属于哪个项目/工作空间、位于哪条分组链路下”。</p>
+     * 这样前端搜索到任意子分组时，都可以展示“这个分组到底属于哪个项目、位于哪条分组链路下”。</p>
      */
     private void fillDisplayPath(SyncTaskGroupTreeNode node, String parentPath) {
         String currentPath = parentPath + " / " + node.getDisplayName();
@@ -153,13 +153,13 @@ public class SyncTaskGroupDisplayContractSupport {
      * 生成前端稳定树 key。
      *
      * <p>key 中显式写出字段名而不是只用斜杠拼值，是为了让排查日志更直观：
-     * tenant:10/project:101/workspace:_/group:DEFAULT 一眼就能看出 DEFAULT 属于哪个范围。
-     * 空值统一写成下划线，避免字符串 null 与真实文本混淆。</p>
+     * tenant:10/project:101/group:DEFAULT 一眼就能看出 DEFAULT 属于哪个项目范围。
+     * 这里故意不再拼入 workspaceId：工作空间已经从产品可见层级退场，如果继续把历史 workspace_id 放进
+     * UI key，同一个项目下的历史 DEFAULT 会被前端误判成多个默认分组，用户也会看到自己不需要理解的内部维度。</p>
      */
-    private String treeKey(Long tenantId, Long projectId, Long workspaceId, String groupCode) {
+    private String treeKey(Long tenantId, Long projectId, String groupCode) {
         return "tenant:" + keyPart(tenantId)
                 + "/project:" + keyPart(projectId)
-                + "/workspace:" + keyPart(workspaceId)
                 + "/group:" + keyPart(groupCode);
     }
 
@@ -172,10 +172,7 @@ public class SyncTaskGroupDisplayContractSupport {
         return normalized == null ? "_" : normalized.toUpperCase(Locale.ROOT);
     }
 
-    private String scopeType(Long tenantId, Long projectId, Long workspaceId) {
-        if (workspaceId != null) {
-            return "WORKSPACE";
-        }
+    private String scopeType(Long tenantId, Long projectId) {
         if (projectId != null) {
             return "PROJECT";
         }
@@ -185,30 +182,24 @@ public class SyncTaskGroupDisplayContractSupport {
         return "GLOBAL";
     }
 
-    private String scopeLabel(Long tenantId, Long projectId, Long workspaceId) {
-        String type = scopeType(tenantId, projectId, workspaceId);
-        if ("WORKSPACE".equals(type)) {
-            return "工作空间级：" + scopeParts(tenantId, projectId, workspaceId);
-        }
+    private String scopeLabel(Long tenantId, Long projectId) {
+        String type = scopeType(tenantId, projectId);
         if ("PROJECT".equals(type)) {
-            return "项目级：" + scopeParts(tenantId, projectId, null);
+            return "项目级：" + scopeParts(tenantId, projectId);
         }
         if ("TENANT".equals(type)) {
-            return "租户级：" + scopeParts(tenantId, null, null);
+            return "租户级：" + scopeParts(tenantId, null);
         }
         return "全局级";
     }
 
-    private String scopeParts(Long tenantId, Long projectId, Long workspaceId) {
+    private String scopeParts(Long tenantId, Long projectId) {
         List<String> parts = new ArrayList<>();
         if (tenantId != null) {
             parts.add("租户 " + tenantId);
         }
         if (projectId != null) {
             parts.add("项目 " + projectId);
-        }
-        if (workspaceId != null) {
-            parts.add("工作空间 " + workspaceId);
         }
         return parts.isEmpty() ? "未限定范围" : String.join(" / ", parts);
     }
@@ -224,19 +215,15 @@ public class SyncTaskGroupDisplayContractSupport {
                                String groupCode,
                                Long tenantId,
                                Long projectId,
-                               Long workspaceId,
                                Map<String, Integer> duplicateCounter) {
         String displayKey = displayCollisionKey(groupCode, baseName);
         if (duplicateCounter.getOrDefault(displayKey, 0) <= 1) {
             return baseName;
         }
-        return baseName + "（" + scopeShortLabel(tenantId, projectId, workspaceId) + "）";
+        return baseName + "（" + scopeShortLabel(tenantId, projectId) + "）";
     }
 
-    private String scopeShortLabel(Long tenantId, Long projectId, Long workspaceId) {
-        if (workspaceId != null) {
-            return "工作空间 " + workspaceId;
-        }
+    private String scopeShortLabel(Long tenantId, Long projectId) {
         if (projectId != null) {
             return "项目 " + projectId;
         }

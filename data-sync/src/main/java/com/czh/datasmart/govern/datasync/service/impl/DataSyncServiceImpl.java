@@ -267,7 +267,15 @@ public class DataSyncServiceImpl implements DataSyncService {
         SyncTask task = new SyncTask();
         task.setTenantId(tenantId);
         task.setProjectId(resolveScopeValue("projectId", request.getProjectId(), template.getProjectId()));
-        task.setWorkspaceId(resolveScopeValue("workspaceId", request.getWorkspaceId(), template.getWorkspaceId()));
+        /*
+         * 工作空间已经从用户侧产品层级中退场，新建任务页面不会再展示或提交 workspaceId。
+         *
+         * 这里保留“继承历史模板 workspaceId”的兼容行为，是为了避免老模板、老执行记录、审计记录在迁移期突然出现
+         * 任务和模板归属不一致；但我们不再读取 request.getWorkspaceId()，这样旧前端、脚本或网关 Header 即使仍携带
+         * workspaceId，也不会把新任务写入用户不可见的工作空间。新建模板的 workspaceId 已经由 SyncDataScopeSupport
+         * 收敛为 null，因此新链路天然就是项目级归属。
+         */
+        task.setWorkspaceId(template.getWorkspaceId());
         task.setTemplateId(template.getId());
         SyncTaskGroupOperationSupport.TaskGroupAssignment groupAssignment =
                 taskGroupOperationSupport.resolveAssignmentForTask(
@@ -1185,10 +1193,14 @@ public class DataSyncServiceImpl implements DataSyncService {
     }
 
     /**
-     * 解析任务应继承的项目/空间值。
+     * 解析任务应继承的项目值。
      *
-     * <p>任务来自模板，因此项目和空间默认继承模板。允许请求显式传入，是为了前端表单可以做“确认所属项目/空间”的显式表达；
-     * 但如果传入值与模板不一致，说明调用方试图把同一个模板挂到另一个项目/空间下，这会破坏 PROJECT 数据范围和后续项目级统计。
+     * <p>任务来自模板，因此项目默认继承模板。允许请求显式传入 projectId，是为了兼容旧脚本或导入链路中
+     * “确认所属项目”的显式表达；但如果传入值与模板不一致，说明调用方试图把同一个模板挂到另一个项目下，
+     * 这会破坏 PROJECT 数据范围和后续项目级统计。
+     *
+     * <p>注意：workspaceId 已不再通过该方法解析。工作空间属于历史兼容字段，新建链路只允许从历史模板继承，
+     * 不允许请求体重新指定。</p>
      */
     private Long resolveScopeValue(String fieldName, Long requestedValue, Long templateValue) {
         if (requestedValue == null) {

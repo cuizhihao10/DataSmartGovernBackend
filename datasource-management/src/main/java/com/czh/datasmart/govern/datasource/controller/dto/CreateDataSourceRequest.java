@@ -14,8 +14,9 @@ import lombok.Data;
  * <p>新建数据源页面只应该让用户填写“业务可理解”的连接信息，例如名称、类型、用途、JDBC 地址和账号密码。
  * tenantId、projectId、workspaceId 属于系统治理上下文，不应该暴露成普通表单字段让用户手填。服务端仍保留这三个
  * 兼容字段，是为了旧脚本、本地 E2E 或暂未接入网关注入上下文的调用方可以继续运行；正式页面应优先通过
- * {@code X-DataSmart-Tenant-Id}、{@code X-DataSmart-Project-Id}、{@code X-DataSmart-Workspace-Id}
- * 这类 Header 表达“当前在哪个租户/项目/工作空间下创建”。</p>
+ * {@code X-DataSmart-Tenant-Id}、{@code X-DataSmart-Project-Id}
+ * 这类 Header 表达“当前在哪个租户/项目下创建”。workspaceId 已经退为历史兼容字段，
+ * 正式页面不再传递，也不应作为数据源列表过滤维度。</p>
  */
 @Data
 public class CreateDataSourceRequest {
@@ -37,10 +38,10 @@ public class CreateDataSourceRequest {
     private Long projectId;
 
     /**
-     * 兼容字段：工作空间 ID。
+     * 兼容字段：历史工作空间 ID。
      *
-     * <p>工作空间用于区分开发、测试、生产或团队协作空间。它同样应该由系统上下文自动填充，而不是让业务用户
-     * 理解并输入数据库主键。</p>
+     * <p>当前产品已经去掉用户可见工作空间层级，新建数据源时服务端会忽略该字段并写入 null。
+     * 保留字段只是为了旧脚本、旧请求体或迁移期 E2E 不立即报 JSON 反序列化错误。</p>
      */
     private Long workspaceId;
 

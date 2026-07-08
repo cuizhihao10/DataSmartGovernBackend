@@ -26,7 +26,7 @@ import static org.mockito.Mockito.when;
  * 同步任务分组支撑组件测试。
  *
  * <p>这组测试关注“后端返回给前端的分组树合同”，而不是数据库 SQL 本身。
- * 当前产品已经支持 tenant/project/workspace 多作用域分组，因此同一个 groupCode 只在单个作用域内唯一；
+ * 当前产品层级已经收敛为 tenant/project 分组，因此同一个 groupCode 只在单个项目作用域内唯一；
  * 如果后端 DTO 不提供组合 key 和范围展示字段，前端就容易把多个 DEFAULT 渲染成重复的“默认分组”。
  * 这里用 mock 数据复现跨项目 DEFAULT 场景，保证后端输出对前端足够友好。</p>
  */
@@ -71,8 +71,8 @@ class SyncTaskGroupOperationSupportTest {
                 .findFirst()
                 .orElseThrow();
 
-        assertThat(project101Default.getTreeKey()).isEqualTo("tenant:10/project:101/workspace:_/group:DEFAULT");
-        assertThat(project102Default.getTreeKey()).isEqualTo("tenant:10/project:102/workspace:_/group:DEFAULT");
+        assertThat(project101Default.getTreeKey()).isEqualTo("tenant:10/project:101/group:DEFAULT");
+        assertThat(project102Default.getTreeKey()).isEqualTo("tenant:10/project:102/group:DEFAULT");
         assertThat(project101Default.getTreeKey()).isNotEqualTo(project102Default.getTreeKey());
         assertThat(project101Default.getDisplayName()).isEqualTo("默认分组（项目 101）");
         assertThat(project102Default.getDisplayName()).isEqualTo("默认分组（项目 102）");
@@ -107,10 +107,10 @@ class SyncTaskGroupOperationSupportTest {
         List<SyncTaskGroupSummary> summaries = fixture.support().listTaskGroups(criteria(), actor);
 
         assertThat(summaries).hasSize(2);
-        assertThat(summaries.get(0).getTreeKey()).isEqualTo("tenant:10/project:101/workspace:_/group:DEFAULT");
+        assertThat(summaries.get(0).getTreeKey()).isEqualTo("tenant:10/project:101/group:DEFAULT");
         assertThat(summaries.get(0).getDisplayName()).isEqualTo("默认分组（项目 101）");
         assertThat(summaries.get(0).getDisplayPath()).isEqualTo("项目级：租户 10 / 项目 101 / 默认分组（项目 101）");
-        assertThat(summaries.get(1).getTreeKey()).isEqualTo("tenant:10/project:102/workspace:_/group:DEFAULT");
+        assertThat(summaries.get(1).getTreeKey()).isEqualTo("tenant:10/project:102/group:DEFAULT");
         assertThat(summaries.get(1).getDisplayName()).isEqualTo("默认分组（项目 102）");
     }
 

@@ -49,9 +49,10 @@ import java.util.NoSuchElementException;
  * <p>这个控制器暴露的是“连接配置治理接口”，不是直接读取外部业务库的普通业务接口。
  * 它负责管理外部数据源如何被登记、查看、更新、启停、测试连接、发现元数据，以及在受控边界下执行只读 SQL。</p>
  *
- * <p>本次调整的核心原则是：租户、项目、工作空间属于系统上下文，不能继续作为普通表单字段让用户手填。
- * 页面在哪个 FlashSync 项目和工作空间下打开，就应该由 gateway 或前端上下文把对应 Header 传给后端；
- * 后端优先使用可信 Header，只有本地调试或旧脚本缺少 Header 时才兼容请求体/查询参数。</p>
+ * <p>本次调整的核心原则是：租户、项目属于系统上下文，不能继续作为普通表单字段让用户手填。
+ * 页面当前切换到哪个 FlashSync 项目，就应该由 gateway 或前端上下文把对应 Header 传给后端；
+ * 后端优先使用可信 Header，只有本地调试或旧脚本缺少 Header 时才兼容请求体/查询参数。
+ * 工作空间已经从产品可见层级退场，因此新建数据源不再写入默认 workspaceId。</p>
  */
 @RestController
 @RequestMapping("/datasources")
@@ -61,7 +62,7 @@ public class DataSourceManagementController {
     /**
      * FlashSync 本地开租默认租户。
      *
-     * <p>正式生产环境里，tenant/project/workspace 应由 gateway 根据登录态和项目切换上下文注入。
+     * <p>正式生产环境里，tenant/project 应由 gateway 根据登录态和项目切换上下文注入。
      * 这里保留默认值，是为了本地开发、接口调试和没有完整登录态的 E2E 能继续落在用户已经初始化好的
      * FlashSync 租户空间，而不是要求页面暴露内部 ID。</p>
      */
@@ -71,11 +72,6 @@ public class DataSourceManagementController {
      * FlashSync 默认项目 ID，对应 permission-admin 初始化脚本里的 FLASHSYNC_DEFAULT。
      */
     private static final Long DEFAULT_FLASHSYNC_PROJECT_ID = 101L;
-
-    /**
-     * FlashSync 默认工作空间 ID，对应 workspace-a / FlashSync 默认工作空间。
-     */
-    private static final Long DEFAULT_FLASHSYNC_WORKSPACE_ID = 10001L;
 
     /**
      * 数据源业务服务。
@@ -96,23 +92,21 @@ public class DataSourceManagementController {
     /**
      * 创建数据源登记记录。
      *
-     * <p>新前端不需要提交 tenantId/projectId/workspaceId。服务端会优先使用 Header 中的当前上下文，
-     * 如果 Header 缺失才读取请求体里的兼容字段；如果两者同时存在但不一致，会直接拒绝请求。</p>
+     * <p>新前端不需要提交 tenantId/projectId，更不需要提交 workspaceId。服务端会优先使用 Header 中的当前租户/项目上下文，
+     * 如果 Header 缺失才读取请求体里的兼容字段；如果两者同时存在但不一致，会直接拒绝请求。
+     * workspaceId 已降级为历史兼容字段，新建数据源统一写入 {@code null}，让资源直接归属项目。</p>
      */
     @PostMapping
     public ResponseEntity<ApiResponse<DataSourceConfig>> createDataSource(
             @Valid @RequestBody CreateDataSourceRequest request,
             @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantHeader,
-            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectHeader,
-            @RequestHeader(value = PlatformContextHeaders.WORKSPACE_ID, required = false) Long workspaceHeader) {
+            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectHeader) {
         Long tenantId = resolveScopeValue("tenantId", tenantHeader, request.getTenantId(), DEFAULT_FLASHSYNC_TENANT_ID);
         Long projectId = resolveScopeValue("projectId", projectHeader, request.getProjectId(), DEFAULT_FLASHSYNC_PROJECT_ID);
-        Long workspaceId = resolveScopeValue(
-                "workspaceId", workspaceHeader, request.getWorkspaceId(), DEFAULT_FLASHSYNC_WORKSPACE_ID);
         DataSourceConfig config = dataSourceManagementService.createDataSource(
                 tenantId,
                 projectId,
-                workspaceId,
+                null,
                 request.getName(),
                 request.getType(),
                 request.getJdbcUrl(),
@@ -143,15 +137,12 @@ public class DataSourceManagementController {
             @RequestParam(required = false) String status,
             @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantHeader,
             @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectHeader,
-            @RequestHeader(value = PlatformContextHeaders.WORKSPACE_ID, required = false) Long workspaceHeader,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
         Long effectiveTenantId = resolveScopeValue("tenantId", tenantHeader, tenantId, DEFAULT_FLASHSYNC_TENANT_ID);
         Long effectiveProjectId = resolveScopeValue("projectId", projectHeader, projectId, DEFAULT_FLASHSYNC_PROJECT_ID);
-        Long effectiveWorkspaceId = resolveScopeValue(
-                "workspaceId", workspaceHeader, workspaceId, null);
         DatasourceProjectVisibility visibility = datasourceProjectScopeSupport.resolveVisibility(
-                effectiveProjectId, effectiveWorkspaceId, dataScopeLevel, authorizedProjectIds);
+                effectiveProjectId, workspaceId, dataScopeLevel, authorizedProjectIds);
         LambdaQueryWrapper<DataSourceConfig> wrapper = new LambdaQueryWrapper<>();
         wrapper.ne(DataSourceConfig::getStatus, DataSourceStatus.DELETED);
         applyDatasourceScope(wrapper, effectiveTenantId, visibility);

@@ -82,10 +82,10 @@ public class SyncTemplateCreationSupport {
         SyncTemplate template = new SyncTemplate();
         template.setTenantId(dataScopeSupport.resolveTenantForCreate(request.getTenantId(), actorContext));
         /*
-         * 项目和工作空间属于系统上下文，不属于普通业务表单字段。
+         * 租户和项目属于系统上下文，不属于普通业务表单字段；工作空间已经退为历史兼容字段。
          *
          * 这里优先使用 gateway/权限中心注入的 Header，再兼容旧 request body 字段，最后落到 FlashSync 本地默认开租数据。
-         * 这样前端可以把“租户 ID / 项目 ID / 工作空间 ID”从新建任务、新建数据源页面彻底隐藏，只保留项目切换器和工作空间切换器。
+         * 这样前端可以把“租户 ID / 项目 ID / 工作空间 ID”从新建任务、新建数据源页面彻底隐藏，只保留项目切换器。
          */
         template.setProjectId(dataScopeSupport.resolveProjectForCreate(request.getProjectId(), actorContext));
         template.setWorkspaceId(dataScopeSupport.resolveWorkspaceForCreate(request.getWorkspaceId(), actorContext));

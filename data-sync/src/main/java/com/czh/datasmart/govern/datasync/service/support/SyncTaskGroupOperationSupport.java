@@ -221,8 +221,15 @@ public class SyncTaskGroupOperationSupport {
                 limit);
         Map<GroupKey, SyncTaskGroupTreeNode> nodes = new LinkedHashMap<>();
         for (SyncTaskGroup group : groups) {
-            SyncTaskGroupTreeNode node = toNode(group);
-            nodes.put(GroupKey.of(group), node);
+            /*
+             * 读路径采用“项目级归一化”，这是工作空间从用户可见产品层级退场后的关键兼容点：
+             *
+             * 1. 写路径仍然使用 tenant/project/workspace/groupCode 精确查找，避免删除、迁移、恢复历史分组时误伤旧数据；
+             * 2. 读路径面向前端菜单，只展示 tenant/project/groupCode，不再让用户看到历史 workspace 维度；
+             * 3. 如果数据库中曾经存在多个 workspace 下的 DEFAULT，它们会合并成同一个项目级 DEFAULT 节点，
+             *    后续任务计数来自 taskMapper 的项目级聚合结果，避免页面重复显示多个“默认分组”。
+             */
+            nodes.computeIfAbsent(GroupKey.of(group), ignored -> toNode(group));
         }
         for (SyncTaskGroupSummary summary : listTaskGroups(safeCriteria, actorContext)) {
             GroupKey key = GroupKey.of(summary);
@@ -521,7 +528,12 @@ public class SyncTaskGroupOperationSupport {
         node.setId(group.getId());
         node.setTenantId(group.getTenantId());
         node.setProjectId(group.getProjectId());
-        node.setWorkspaceId(group.getWorkspaceId());
+        /*
+         * 分组树是“给人看的项目级菜单”，不是执行层的历史事实快照。
+         * 数据库里的 workspace_id 暂时保留给旧任务、审计和 Agent 内部 workspace key 使用，但在树节点 DTO 中置空，
+         * 可以让前端、导出和问题排查都沿着“租户 -> 项目 -> 分组”这条主线理解资源归属。
+         */
+        node.setWorkspaceId(null);
         node.setParentGroupCode(group.getParentGroupCode());
         node.setGroupCode(group.getGroupCode());
         node.setGroupName(group.getGroupName());
@@ -663,21 +675,21 @@ public class SyncTaskGroupOperationSupport {
     public record TaskGroupAssignment(String groupCode, String groupName) {
     }
 
-    private record ScopeKey(Long tenantId, Long projectId, Long workspaceId) {
+    private record ScopeKey(Long tenantId, Long projectId) {
     }
 
-    private record GroupKey(Long tenantId, Long projectId, Long workspaceId, String groupCode) {
+    private record GroupKey(Long tenantId, Long projectId, String groupCode) {
 
         private static GroupKey of(SyncTaskGroup group) {
-            return new GroupKey(group.getTenantId(), group.getProjectId(), group.getWorkspaceId(), group.getGroupCode());
+            return new GroupKey(group.getTenantId(), group.getProjectId(), group.getGroupCode());
         }
 
         private static GroupKey of(SyncTaskGroupSummary summary) {
-            return new GroupKey(summary.getTenantId(), summary.getProjectId(), summary.getWorkspaceId(), summary.getGroupCode());
+            return new GroupKey(summary.getTenantId(), summary.getProjectId(), summary.getGroupCode());
         }
 
         private ScopeKey scopeKey() {
-            return new ScopeKey(tenantId, projectId, workspaceId);
+            return new ScopeKey(tenantId, projectId);
         }
 
         @Override
@@ -690,13 +702,12 @@ public class SyncTaskGroupOperationSupport {
             }
             return Objects.equals(tenantId, other.tenantId)
                     && Objects.equals(projectId, other.projectId)
-                    && Objects.equals(workspaceId, other.workspaceId)
                     && Objects.equals(groupCode, other.groupCode);
         }
 
         @Override
         public int hashCode() {
-            return Objects.hash(tenantId, projectId, workspaceId, groupCode);
+            return Objects.hash(tenantId, projectId, groupCode);
         }
     }
 }

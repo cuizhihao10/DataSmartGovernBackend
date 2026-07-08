@@ -44,8 +44,6 @@ public class SyncDataScopeSupport {
     private static final long PLATFORM_TENANT_ID = 0L;
     private static final long DEFAULT_FLASHSYNC_TENANT_ID = 10L;
     private static final long DEFAULT_FLASHSYNC_PROJECT_ID = 101L;
-    private static final long DEFAULT_FLASHSYNC_WORKSPACE_ID = 10001L;
-
     private static final Set<String> CROSS_TENANT_ROLES = Set.of(
             "PLATFORM_ADMINISTRATOR",
             "SERVICE_ACCOUNT"
@@ -126,22 +124,19 @@ public class SyncDataScopeSupport {
     }
 
     /**
-     * 解析创建模板/任务时应写入的工作空间 ID。
+     * 解析创建模板/任务时的历史工作空间字段。
      *
-     * <p>工作空间用于项目内的环境/团队隔离，例如开发、测试、生产、系统执行空间。它和 projectId 一样属于上下文，不应出现在普通用户表单中。
-     * 本方法优先使用可信 Header，其次兼容旧请求体字段，最后落到 FlashSync 默认工作空间 {@code 10001}。</p>
+     * <p>当前产品层级已经收敛为“租户 -> 项目 -> 数据源/同步任务”，工作空间不再作为用户创建资源时需要感知、
+     * 选择或填写的业务层级。因此新建资源不再写入默认 {@code workspaceId=10001}，而是统一返回 {@code null}。
+     * 数据库表中的 {@code workspace_id} 暂时保留，是为了兼容历史执行记录、审计表、迁移脚本和部分 Agent 内部
+     * workspace key 语义；但它已经不是新建数据同步资源的产品归属维度。</p>
+     *
+     * <p>这里采用“读兼容、写收敛”的迁移策略：旧请求体或旧 Header 即使仍携带 workspaceId，也不会继续影响
+     * 新创建的模板和任务。这样可以避免页面已经隐藏工作空间后，后端仍然把资源写入某个不可见空间，最终造成
+     * “我切到项目里却看不到自己刚创建的数据源/任务”的体验问题。</p>
      */
     public Long resolveWorkspaceForCreate(Long requestedWorkspaceId, SyncActorContext actorContext) {
-        Long contextWorkspaceId = actorContext == null ? null : actorContext.workspaceId();
-        if (contextWorkspaceId != null) {
-            if (requestedWorkspaceId != null && !contextWorkspaceId.equals(requestedWorkspaceId)) {
-                throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
-                        "请求工作空间与当前上下文工作空间不一致，contextWorkspaceId=" + contextWorkspaceId
-                                + ", requestedWorkspaceId=" + requestedWorkspaceId);
-            }
-            return contextWorkspaceId;
-        }
-        return requestedWorkspaceId == null ? DEFAULT_FLASHSYNC_WORKSPACE_ID : requestedWorkspaceId;
+        return null;
     }
 
     /**
@@ -177,7 +172,7 @@ public class SyncDataScopeSupport {
         String scopeExpression = actorContext == null ? null : actorContext.dataScopeExpression();
 
         if ("PLATFORM".equals(scopeLevel)) {
-            return new SyncDataVisibility(requestedTenantId, requestedProjectId, List.of(), requestedWorkspaceId,
+            return new SyncDataVisibility(requestedTenantId, requestedProjectId, List.of(), null,
                     false, false, scopeLevel, scopeExpression, approvalRequired);
         }
 
@@ -189,7 +184,7 @@ public class SyncDataScopeSupport {
         boolean selfOnly = "SELF".equals(scopeLevel);
         boolean projectScopeEnforced = isExplicitGatewayProjectScope(actorContext);
         List<Long> authorizedProjectIds = resolveAuthorizedProjectIds(scopeLevel, requestedProjectId, actorContext);
-        return new SyncDataVisibility(actorTenantId, requestedProjectId, authorizedProjectIds, requestedWorkspaceId,
+        return new SyncDataVisibility(actorTenantId, requestedProjectId, authorizedProjectIds, null,
                 projectScopeEnforced, selfOnly, scopeLevel, scopeExpression, approvalRequired);
     }
 

@@ -15,9 +15,14 @@ import java.util.List;
  * datasource-management 项目级数据范围支撑组件。
  *
  * <p>本模块管理的是数据源连接、元数据发现、受控 SQL 访问和旧版同步控制面。真实商用场景中，
- * 数据源往往属于某个项目或工作空间，例如“零售项目 A 的订单库”“风控空间的标签库”。
+ * 数据源往往属于某个项目，例如“零售项目 A 的订单库”“风控项目的标签库”。
  * 如果只有 tenantId 而没有 projectId，项目负责人就可能看到同一租户内其他项目的数据源连接信息，
  * 甚至进一步触发元数据探查或只读 SQL，这在安全和合规上都不可接受。</p>
+ *
+ * <p>关于 workspace 的迁移说明：
+ * 早期模型曾把数据源挂在 tenant/project/workspace 三层下，但当前产品已经决定只保留“租户 -> 项目”
+ * 这一条用户可见业务层级。数据库列和部分历史审计仍保留 workspace_id 兼容旧数据；本组件从当前版本开始
+ * 不再把请求里的 workspaceId 传播到查询条件，避免用户切到某个项目后因为不可见 workspace 过滤而看不到资源。</p>
  *
  * <p>当前组件遵循和 data-sync 一致的 PROJECT 范围语义：</p>
  * <p>1. 只有当 gateway 明确透传 `dataScopeLevel=PROJECT` 时，才强制使用授权项目集合过滤；</p>
@@ -35,7 +40,7 @@ public class DatasourceProjectScopeSupport {
      * 把 HTTP Header 和查询参数解析成模块内部可使用的可见范围。
      *
      * @param requestedProjectId 查询参数中的项目 ID，可为空
-     * @param requestedWorkspaceId 查询参数中的工作空间 ID，可为空
+     * @param requestedWorkspaceId 历史兼容工作空间 ID。当前正式产品链路忽略该值，不再按 workspace 过滤。
      * @param dataScopeLevel gateway 透传的数据范围级别，例如 SELF、PROJECT、TENANT、PLATFORM
      * @param authorizedProjectIdsHeader gateway 透传的授权项目集合 Header
      * @return 可供 Controller 追加查询条件或详情校验使用的范围对象
@@ -53,7 +58,7 @@ public class DatasourceProjectScopeSupport {
         }
         return new DatasourceProjectVisibility(
                 requestedProjectId,
-                requestedWorkspaceId,
+                null,
                 authorizedProjectIds,
                 projectScopeEnforced
         );
