@@ -50,6 +50,7 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
     private static final List<String> PLATFORM_CONTEXT_HEADERS = List.of(
             PlatformContextHeaders.TRACE_ID,
             PlatformContextHeaders.TENANT_ID,
+            PlatformContextHeaders.PROJECT_ID,
             PlatformContextHeaders.ACTOR_ID,
             PlatformContextHeaders.ACTOR_ROLE,
             PlatformContextHeaders.ACTOR_TYPE,
@@ -103,6 +104,7 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
         ServerHttpRequest request = exchange.getRequest();
         String traceId = resolveTraceId(request);
         String routePrefix = resolveRoutePrefix(request.getPath().value());
+        rememberRequestedProjectId(exchange, request);
 
         ServerHttpRequest mutatedRequest = request.mutate()
                 .headers(headers -> {
@@ -116,6 +118,36 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
                 .build();
 
         return chain.filter(exchange.mutate().request(mutatedRequest).build());
+    }
+
+    /**
+     * 在清理 Header 之前记录“用户当前选中的项目”。
+     *
+     * <p>这是项目切换器与 gateway 安全边界之间的折中设计：
+     * 前端确实需要告诉后端“当前页面选中了哪个项目”，否则创建数据源、创建同步任务时无法知道资源归属；
+     * 但浏览器传来的 {@code X-DataSmart-Project-Id} 不能被下游服务直接信任，否则用户可以手工改 Header
+     * 尝试把资源创建到不属于自己的项目。</p>
+     *
+     * <p>因此本方法只把原始项目选择保存到 exchange attribute，并在后续 {@link #clearUnsafeContextHeaders(HttpHeaders)}
+     * 中清理外部 Header。真正写回下游 Header 的动作由 {@link GatewayAuthorizationFilter} 完成，
+     * 它会先拿 permission-admin 返回的 {@code authorizedProjectIds} 做包含性校验。</p>
+     */
+    private void rememberRequestedProjectId(ServerWebExchange exchange, ServerHttpRequest request) {
+        String rawProjectId = request.getHeaders().getFirst(PlatformContextHeaders.PROJECT_ID);
+        if (rawProjectId == null || rawProjectId.isBlank()) {
+            exchange.getAttributes().remove(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID_RAW);
+            exchange.getAttributes().remove(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID);
+            return;
+        }
+
+        String trimmed = rawProjectId.trim();
+        exchange.getAttributes().put(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID_RAW, trimmed);
+        Long parsedProjectId = parsePositiveLong(trimmed);
+        if (parsedProjectId == null) {
+            exchange.getAttributes().remove(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID);
+            return;
+        }
+        exchange.getAttributes().put(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID, parsedProjectId);
     }
 
     /**
@@ -221,6 +253,21 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
         copyIfPresent(request, headers, PlatformContextHeaders.DELEGATION_TYPE);
         copyIfPresent(request, headers, PlatformContextHeaders.DELEGATION_REASON);
         copyIfPresent(request, headers, PlatformContextHeaders.REQUESTED_POLICY_VERSION);
+    }
+
+    /**
+     * 安全解析正整数 Long。
+     *
+     * <p>这里只做格式解析，不在契约过滤器里返回错误响应。原因是本过滤器只负责“清理和记录上下文”，
+     * 不掌握当前路径是否需要项目上下文，也不掌握授权项目集合。格式错误会在授权过滤器中统一转成 400。</p>
+     */
+    private Long parsePositiveLong(String value) {
+        try {
+            long parsed = Long.parseLong(value);
+            return parsed > 0 ? parsed : null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     /**

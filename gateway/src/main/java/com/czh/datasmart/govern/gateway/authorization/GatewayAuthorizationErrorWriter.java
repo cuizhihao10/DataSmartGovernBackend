@@ -58,6 +58,22 @@ public class GatewayAuthorizationErrorWriter {
     }
 
     /**
+     * 写出请求合同错误响应。
+     *
+     * <p>网关授权链路里有一类错误并不是“当前身份没有权限”，而是“调用方传来的控制面参数格式不合法”。
+     * 例如项目切换器传入的 {@code X-DataSmart-Project-Id=abc}，这种情况应该让前端修正请求，
+     * 而不是展示无权限页面。因此单独提供 400 输出，避免把格式问题和权限问题混在一起。</p>
+     *
+     * @param response 当前网关响应对象。
+     * @param traceId 本次请求追踪 ID。
+     * @param message 面向调用方的合同错误说明。
+     */
+    public Mono<Void> writeBadRequest(ServerHttpResponse response, String traceId, String message) {
+        response.setStatusCode(HttpStatus.BAD_REQUEST);
+        return writeError(response, traceId, PlatformErrorCode.BAD_REQUEST, message);
+    }
+
+    /**
      * 写出内部服务端点保护拒绝响应。
      *
      * <p>内部服务端点保护发生在 permission-admin 远程判定之前。

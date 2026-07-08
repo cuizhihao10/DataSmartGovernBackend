@@ -82,6 +82,106 @@ class GatewayAuthorizationFilterTest {
     }
 
     /**
+     * 当前端选择的项目在授权项目集合内时，gateway 应把它重新写成可信项目 Header。
+     *
+     * <p>这条测试对应“项目切换器 -> gateway -> datasource/data-sync”的真实产品链路：
+     * 前端传入的项目 Header 已经被 GatewayContractFilter 清掉，只剩 exchange attribute；
+     * 授权过滤器必须用 permission-admin 返回的 authorizedProjectIds 校验通过后，才把项目 ID 写给下游。</p>
+     */
+    @Test
+    void allowedDecisionShouldPropagateRequestedProjectWhenAuthorized() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = exchange("/api/datasource/datasources", "POST");
+        exchange.getAttributes().put(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID_RAW, "101");
+        exchange.getAttributes().put(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID, 101L);
+        GatewayPermissionDecisionResult allowedDecision = allowedDecision();
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision));
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(chain.called()).isTrue();
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.PROJECT_ID))
+                .isEqualTo("101");
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS))
+                .isEqualTo("101,102");
+    }
+
+    /**
+     * 当前端选择的项目不在授权集合内时，gateway 必须拒绝，不能把请求转给业务服务。
+     */
+    @Test
+    void selectedProjectOutsideAuthorizedProjectsShouldReturnForbidden() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = exchange("/api/sync/sync-tasks", "POST");
+        exchange.getAttributes().put(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID_RAW, "999");
+        exchange.getAttributes().put(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID, 999L);
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(chain.called()).isFalse();
+        assertThat(exchange.getResponse().getStatusCode().value()).isEqualTo(403);
+    }
+
+    /**
+     * 项目 Header 格式不合法属于请求合同错误，应返回 400，而不是伪装成无权限。
+     */
+    @Test
+    void malformedSelectedProjectHeaderShouldReturnBadRequest() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = exchange("/api/datasource/datasources", "POST");
+        exchange.getAttributes().put(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID_RAW, "abc");
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(chain.called()).isFalse();
+        assertThat(exchange.getResponse().getStatusCode().value()).isEqualTo(400);
+    }
+
+    /**
+     * TENANT/PLATFORM 这类更高数据范围没有必要强制依赖 authorizedProjectIds。
+     *
+     * <p>租户管理员和平台管理员常常拥有更宽的数据范围，permission-admin 可能不返回具体项目集合。
+     * 只要路由策略已经允许访问，gateway 可以把选中项目继续传给下游，由项目主数据和租户边界做进一步约束。</p>
+     */
+    @Test
+    void tenantScopeDecisionCanPropagateRequestedProjectWithoutAuthorizedProjectList() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = exchangeWithRole("/api/datasource/datasources", "POST", "TENANT_ADMINISTRATOR");
+        exchange.getAttributes().put(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID_RAW, "205");
+        exchange.getAttributes().put(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID, 205L);
+        GatewayPermissionDecisionResult decision = allowedDecision();
+        decision.setDataScopeLevel("TENANT");
+        decision.setAuthorizedProjectIds(List.of());
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(decision));
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(chain.called()).isTrue();
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.PROJECT_ID))
+                .isEqualTo("205");
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS))
+                .isNull();
+    }
+
+    /**
      * 强制模式下，如果权限中心明确拒绝，网关必须直接返回 403。
      *
      * <p>这是生产环境最关键的安全行为：只要策略已经判定拒绝，后端业务服务就不应该再收到请求。

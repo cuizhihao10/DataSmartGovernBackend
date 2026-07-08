@@ -15,6 +15,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -155,6 +156,35 @@ class SyncDataScopeSupportTest {
         SyncActorContext actor = projectOwnerWithProjects(List.of(101L, 102L));
 
         assertDoesNotThrow(() -> support.validateProjectWritable(7L, 101L, null, actor, "同步模板"));
+    }
+
+    /**
+     * 创建同步模板/任务时应优先使用 gateway 重建的当前项目，并且不再写入 workspace。
+     *
+     * <p>这条用例和 gateway 项目 Header 校验配套：gateway 已经确认 {@code X-DataSmart-Project-Id=205}
+     * 属于当前用户可访问范围，data-sync 领域层就应该把新资源写入该项目。
+     * 如果请求体里又带了不同 projectId，说明页面上下文和表单参数冲突，应拒绝；workspace 则不再作为用户可见归属，
+     * 即使旧调用仍传 workspace，也必须返回 null。</p>
+     */
+    @Test
+    void createScopeShouldUseGatewayProjectHeaderAndIgnoreWorkspace() {
+        SyncActorContext actor = new SyncActorContext(
+                7L,
+                205L,
+                10001L,
+                1001L,
+                "PROJECT_OWNER",
+                "trace-create-project",
+                "PROJECT",
+                "project_id IN ${authorizedProjectIds}",
+                List.of(205L),
+                false);
+
+        assertEquals(205L, support.resolveProjectForCreate(null, actor));
+        assertEquals(205L, support.resolveProjectForCreate(205L, actor));
+        assertThrows(PlatformBusinessException.class,
+                () -> support.resolveProjectForCreate(999L, actor));
+        assertNull(support.resolveWorkspaceForCreate(10001L, actor));
     }
 
     /**

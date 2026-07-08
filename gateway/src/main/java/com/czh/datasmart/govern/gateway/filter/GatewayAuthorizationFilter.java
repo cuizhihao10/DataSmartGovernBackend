@@ -151,7 +151,7 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
             authorizationMetrics.recordDecisionOutcome(decisionSource, "ALLOW");
             log.debug("网关权限判定通过，traceId={}, role={}, path={}, policyId={}",
                     traceId, decisionRequest.getActorRole(), decisionRequest.getRequestPath(), decision.getMatchedRoutePolicyId());
-            return chain.filter(exchangeWithDataScope(exchange, decision));
+            return validateAndPropagateProjectContext(exchange, chain, decision, traceId);
         }
 
         if (authorizationProperties.isShadowMode()) {
@@ -168,6 +168,66 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
     }
 
     /**
+     * 校验并透传当前选中项目上下文。
+     *
+     * <p>项目切换器会把当前选中的项目 ID 放在 {@code X-DataSmart-Project-Id}。
+     * 但这个 Header 来自浏览器，不能被业务服务直接信任。完整链路是：</p>
+     *
+     * <p>1. {@link GatewayContractFilter} 先把原始项目 Header 保存到 exchange attribute，并清理外部 Header；</p>
+     * <p>2. 本过滤器调用 permission-admin，得到当前 actor 的授权项目集合；</p>
+     * <p>3. 如果用户传了项目 ID，则校验它在授权集合内，或者当前数据范围是 TENANT/PLATFORM 这类更高范围；</p>
+     * <p>4. 校验通过后才把项目 ID 作为 gateway 重建的可信 Header 写给下游服务。</p>
+     *
+     * <p>这样既满足前端“切换哪个项目就在哪个项目下创建资源”的产品体验，
+     * 又避免调用方通过手工改 Header 把数据源、同步任务创建到未授权项目。</p>
+     */
+    private Mono<Void> validateAndPropagateProjectContext(ServerWebExchange exchange,
+                                                          GatewayFilterChain chain,
+                                                          GatewayPermissionDecisionResult decision,
+                                                          String traceId) {
+        String rawRequestedProjectId = exchange.getAttribute(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID_RAW);
+        Long requestedProjectId = exchange.getAttribute(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID);
+        if (rawRequestedProjectId != null && requestedProjectId == null) {
+            return authorizationErrorWriter.writeBadRequest(
+                    exchange.getResponse(),
+                    traceId,
+                    "X-DataSmart-Project-Id 必须是正整数项目 ID");
+        }
+
+        if (requestedProjectId != null && !requestedProjectAllowed(requestedProjectId, decision)) {
+            log.warn("网关拒绝未授权项目上下文，traceId={}, requestedProjectId={}, dataScopeLevel={}, authorizedProjectIds={}",
+                    traceId, requestedProjectId, decision.getDataScopeLevel(), decision.getAuthorizedProjectIds());
+            return authorizationErrorWriter.writeForbidden(
+                    exchange.getResponse(),
+                    traceId,
+                    "当前身份无权在所选项目下执行该操作，projectId=" + requestedProjectId);
+        }
+
+        return chain.filter(exchangeWithDataScope(exchange, decision, requestedProjectId));
+    }
+
+    /**
+     * 判断请求选择的项目是否可用。
+     *
+     * <p>PROJECT 数据范围下，permission-admin 应返回已物化的 authorizedProjectIds；
+     * 此时必须要求 requestedProjectId 命中集合。TENANT/PLATFORM 范围属于更高层级授权，
+     * 网关不掌握项目主数据归属，不在这里做项目是否属于租户的数据库校验，
+     * 而是允许下游在自身 project_id/tenant_id 约束和项目控制面中继续校验。</p>
+     */
+    private boolean requestedProjectAllowed(Long requestedProjectId, GatewayPermissionDecisionResult decision) {
+        if (requestedProjectId == null) {
+            return true;
+        }
+        List<Long> authorizedProjectIds = decision.getAuthorizedProjectIds();
+        if (authorizedProjectIds != null && !authorizedProjectIds.isEmpty()) {
+            return authorizedProjectIds.contains(requestedProjectId);
+        }
+        String dataScopeLevel = decision.getDataScopeLevel();
+        return dataScopeLevel != null
+                && ("TENANT".equalsIgnoreCase(dataScopeLevel) || "PLATFORM".equalsIgnoreCase(dataScopeLevel));
+    }
+
+    /**
      * 把 permission-admin 的数据范围判定结果透传给下游业务服务。
      *
      * <p>路由授权只能回答“这个角色是否允许访问这个入口”，但真正的商业化权限还必须回答
@@ -181,13 +241,18 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
      * 3. 把表达式解析下沉到业务模块，可以让 data-sync、datasource-management、data-quality 各自选择最合适的查询条件。
      */
     private ServerWebExchange exchangeWithDataScope(ServerWebExchange exchange,
-                                                    GatewayPermissionDecisionResult decision) {
+                                                    GatewayPermissionDecisionResult decision,
+                                                    Long requestedProjectId) {
         ServerHttpRequest scopedRequest = exchange.getRequest()
                 .mutate()
                 .headers(headers -> {
+                    headers.remove(PlatformContextHeaders.PROJECT_ID);
                     setHeaderIfPresent(headers, PlatformContextHeaders.DATA_SCOPE_LEVEL, decision.getDataScopeLevel());
                     setHeaderIfPresent(headers, PlatformContextHeaders.DATA_SCOPE_EXPRESSION, decision.getDataScopeExpression());
                     setAuthorizedProjectIds(headers, decision.getAuthorizedProjectIds());
+                    if (requestedProjectId != null) {
+                        headers.set(PlatformContextHeaders.PROJECT_ID, requestedProjectId.toString());
+                    }
                     if (decision.getApprovalRequired() != null) {
                         headers.set(PlatformContextHeaders.APPROVAL_REQUIRED, decision.getApprovalRequired().toString());
                     }
