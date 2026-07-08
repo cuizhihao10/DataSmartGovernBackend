@@ -423,6 +423,7 @@ public class SyncTemplateExecutionPrecheckSupport {
                         || "METADATA_FIELD_MAPPING_SELECTED_EMPTY".equals(issueCode)
                         || "METADATA_SOURCE_FIELD_NOT_FOUND".equals(issueCode)
                         || "METADATA_TARGET_FIELD_NOT_FOUND".equals(issueCode)
+                        || "METADATA_TARGET_PRIMARY_KEY_REQUIRED_FOR_UPDATE".equals(issueCode)
                         || "METADATA_FIELD_MAPPING_TYPE_INCOMPATIBLE".equals(issueCode));
     }
 

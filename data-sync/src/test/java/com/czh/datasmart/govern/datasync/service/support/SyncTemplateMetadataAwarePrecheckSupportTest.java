@@ -70,6 +70,61 @@ class SyncTemplateMetadataAwarePrecheckSupportTest {
         assertThat(result.safetyNotes()).anyMatch(note -> note.contains("未由源端写入的目标字段"));
     }
 
+    @Test
+    void updateWriteStrategyShouldRequireTargetPrimaryKeyFromMetadata() {
+        DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
+        SyncTemplateMetadataAwarePrecheckSupport support =
+                new SyncTemplateMetadataAwarePrecheckSupport(metadataClient, new ObjectMapper());
+        when(metadataClient.discover(eq(23L), any(), any())).thenReturn(responseWithTable(null, "task",
+                column("id", "BIGINT", true),
+                column("task_name", "VARCHAR", false)));
+        when(metadataClient.discover(eq(24L), any(), any())).thenReturn(responseWithTableWithoutPrimaryKey(
+                "target_schema",
+                "target_task",
+                column("id", "BIGINT", false),
+                column("task_name", "VARCHAR", false)));
+
+        SyncTemplate template = templateWithCustomTarget("target_schema", "target_task");
+        template.setWriteStrategy("UPDATE");
+
+        SyncTemplateMetadataAwarePrecheckSupport.MetadataAwarePrecheckResult result =
+                support.evaluate(template, actor());
+
+        assertThat(result.issueCodes()).contains("METADATA_TARGET_PRIMARY_KEY_REQUIRED_FOR_UPDATE");
+        assertThat(result.recommendedActions()).anyMatch(action -> action.contains("update/merge"));
+    }
+
+    @Test
+    void customSqlModeShouldValidateTargetFieldWithoutRequiringSourceObject() {
+        DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
+        SyncTemplateMetadataAwarePrecheckSupport support =
+                new SyncTemplateMetadataAwarePrecheckSupport(metadataClient, new ObjectMapper());
+        when(metadataClient.discover(eq(24L), any(), any())).thenReturn(responseWithTable("dwd", "sql_target",
+                column("id", "BIGINT", true),
+                column("member_name", "VARCHAR", false)));
+
+        SyncTemplateMetadataAwarePrecheckSupport.MetadataAwarePrecheckResult result =
+                support.evaluate(templateWithCustomSqlTarget("dwd", "sql_target", "missing_column"), actor());
+
+        assertThat(result.issueCodes()).contains("METADATA_TARGET_FIELD_NOT_FOUND");
+        assertThat(result.issueCodes()).doesNotContain("METADATA_SOURCE_OBJECT_REQUIRED");
+        assertThat(result.recommendedActions()).anyMatch(action -> action.contains("missing_column"));
+    }
+
+    @Test
+    void customSqlModeShouldRejectMissingTargetObjectByMetadata() {
+        DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
+        SyncTemplateMetadataAwarePrecheckSupport support =
+                new SyncTemplateMetadataAwarePrecheckSupport(metadataClient, new ObjectMapper());
+        when(metadataClient.discover(eq(24L), any(), any())).thenReturn(emptyResponse());
+
+        SyncTemplateMetadataAwarePrecheckSupport.MetadataAwarePrecheckResult result =
+                support.evaluate(templateWithCustomSqlTarget("dwd", "sql_target", "member_name"), actor());
+
+        assertThat(result.issueCodes()).contains("METADATA_TARGET_OBJECT_NOT_FOUND");
+        assertThat(result.recommendedActions()).anyMatch(action -> action.contains("dwd.sql_target"));
+    }
+
     private SyncTemplate templateWithCustomTarget(String targetSchema, String targetTable) {
         SyncTemplate template = new SyncTemplate();
         template.setId(1001L);
@@ -85,9 +140,9 @@ class SyncTemplateMetadataAwarePrecheckSupportTest {
                   "version": "datasmart.sync-object-mapping.v1",
                   "mappings": [
                     {
-                      "sourceObject": "task",
+                      "sourceObjectName": "task",
                       "targetSchema": "%s",
-                      "targetObject": "%s"
+                      "targetObjectName": "%s"
                     }
                   ]
                 }
@@ -97,9 +152,9 @@ class SyncTemplateMetadataAwarePrecheckSupportTest {
                   "version": "datasmart.sync-field-mapping.v2",
                   "objectMappings": [
                     {
-                      "sourceObject": "task",
+                      "sourceObjectName": "task",
                       "targetSchema": "%s",
-                      "targetObject": "%s",
+                      "targetObjectName": "%s",
                       "mappings": [
                         {"sourceField": "id", "targetField": "id", "syncEnabled": true},
                         {"sourceField": "source_only", "targetField": "", "syncEnabled": false},
@@ -109,6 +164,30 @@ class SyncTemplateMetadataAwarePrecheckSupportTest {
                   ]
                 }
                 """.formatted(targetSchema, targetTable));
+        return template;
+    }
+
+    private SyncTemplate templateWithCustomSqlTarget(String targetSchema, String targetTable, String targetField) {
+        SyncTemplate template = new SyncTemplate();
+        template.setId(1002L);
+        template.setTenantId(10L);
+        template.setProjectId(101L);
+        template.setSourceDatasourceId(23L);
+        template.setTargetDatasourceId(24L);
+        template.setSourceConnectorType("MYSQL");
+        template.setTargetConnectorType("POSTGRESQL");
+        template.setSyncMode("CUSTOM_SQL_QUERY");
+        template.setWriteStrategy("INSERT");
+        template.setTargetSchemaName(targetSchema);
+        template.setTargetObjectName(targetTable);
+        template.setFieldMappingConfig("""
+                {
+                  "version": "datasmart.sync-field-mapping.v2",
+                  "mappings": [
+                    {"sourceField": "member_name", "targetField": "%s", "syncEnabled": true}
+                  ]
+                }
+                """.formatted(targetField));
         return template;
     }
 
@@ -135,6 +214,15 @@ class SyncTemplateMetadataAwarePrecheckSupportTest {
         table.setPrimaryKeys(List.of("id"));
         table.setColumns(List.of(columns));
         response.setTables(List.of(table));
+        return response;
+    }
+
+    private DatasourceMetadataDiscoveryResponse responseWithTableWithoutPrimaryKey(
+            String schema,
+            String tableName,
+            DatasourceMetadataDiscoveryResponse.ColumnSummary... columns) {
+        DatasourceMetadataDiscoveryResponse response = responseWithTable(schema, tableName, columns);
+        response.getTables().getFirst().setPrimaryKeys(List.of());
         return response;
     }
 

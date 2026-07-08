@@ -147,11 +147,31 @@ public class SyncTemplateMetadataAwarePrecheckSupport {
                     issueCodes, recommendedActions);
         }
 
-        if (targetTable != null && targetTable.getPrimaryKeys() != null && targetTable.getPrimaryKeys().isEmpty()) {
+        if (targetTable != null && isConflictWriteStrategy(template) && !hasText(template.getPrimaryKeyField())
+                && !hasPrimaryKey(targetTable)) {
+            /*
+             * 用户创建向导只暴露 INSERT / UPDATE 两种产品语义，不再让普通用户手填 primaryKeyField/conflictField。
+             * 因此 UPDATE/merge 的幂等边界必须由系统自动读取目标表元数据来判断：目标表如果没有主键，
+             * runner 就无法稳定知道“哪一行是同一条业务记录”，继续执行会演变成重复写入、全表扫描或不可预期覆盖。
+             */
+            issueCodes.add("METADATA_TARGET_PRIMARY_KEY_REQUIRED_FOR_UPDATE");
+            recommendedActions.add("写入策略为 update/merge 时，目标对象 "
+                    + lowSensitiveObject(mapping.targetSchema(), mapping.targetObject())
+                    + " 必须具备主键或显式冲突字段；请先为目标表建立主键/唯一约束，或将写入策略改为 INSERT。");
+        } else if (targetTable != null && !hasPrimaryKey(targetTable)) {
             safetyNotes.add("目标对象 " + lowSensitiveObject(mapping.targetSchema(), mapping.targetObject())
-                    + " 未发现主键信息；INSERT 可继续预检，UPDATE/merge 场景后续需要冲突字段或目标约束支持。");
+                    + " 未发现主键信息；INSERT 可继续预检，但未来如果改为 UPDATE/merge 将需要主键或唯一约束。");
         }
-        if (sourceTable == null || targetTable == null) {
+        if (targetTable != null && isInsertWriteStrategy(template) && isFullLikeMode(template)) {
+            /*
+             * 当前低敏 metadata discovery 合同只返回 schema/table/field/primaryKey，不读取真实业务行，
+             * 因此无法在 data-sync 控制面直接判断“目标表是否为空”。这里不能伪造通过，只能把风险说清楚：
+             * 后续应在 datasource-management 增加受权限保护的 row-count/estimate 预检能力，或在执行前 dry-run 中完成。
+             */
+            safetyNotes.add("INSERT + 全量/定期全量场景已确认目标对象存在，但当前元数据合同尚未返回目标表行数；"
+                    + "生产执行前建议补充目标表空表/行数探测，避免重复插入或与既有数据冲突。");
+        }
+        if (targetTable == null) {
             return;
         }
 
@@ -159,9 +179,73 @@ public class SyncTemplateMetadataAwarePrecheckSupport {
         if ((mappings == null || mappings.isEmpty()) && fieldMappingsByObject.size() == 1) {
             mappings = fieldMappingsByObject.values().iterator().next();
         }
+        if (customSqlMode) {
+            /*
+             * CUSTOM_SQL_QUERY 的 Reader 输出不是一张固定源表，而是一段只读 SQL 的结果集。
+             * 因此这里不能拿 sourceTable 去校验“源字段是否存在于源表”，否则 SQL alias、表达式列、
+             * 聚合列都会被误判为源字段不存在。正确边界是：
+             * 1. SQL 自身的只读性、危险关键字、源表引用由 SQL 合同和后续 SQL 检查负责；
+             * 2. 目标表是否存在、目标字段是否存在、UPDATE 是否具备主键由 metadata-aware precheck 负责；
+             * 3. sourceField 在该模式下表示 SQL 结果集列名或别名，只要求用户明确填写，供执行器按 ResultSet 列名读取。
+             */
+            validateCustomSqlFieldMappings(mapping, targetTable,
+                    mappings == null ? List.of() : mappings,
+                    issueCodes, recommendedActions, safetyNotes);
+            return;
+        }
+        if (sourceTable == null) {
+            return;
+        }
         validateFieldMappings(mapping, sourceTable, targetTable,
                 mappings == null ? List.of() : mappings,
                 issueCodes, recommendedActions, safetyNotes);
+    }
+
+    /**
+     * 校验自定义 SQL 结果集到目标表字段的映射。
+     *
+     * <p>普通表同步可以同时读取源表和目标表元数据，因此 {@link #validateFieldMappings(ObjectMapping,
+     * DatasourceMetadataDiscoveryResponse.TableSummary, DatasourceMetadataDiscoveryResponse.TableSummary, List, List, List, List)}
+     * 能同时验证源字段、目标字段和类型兼容性。CUSTOM_SQL_QUERY 不同：源端是一段 SELECT 结果，
+     * 结果列可能来自别名、函数、表达式或多表 join，控制面在不执行 SQL 的前提下无法稳定获得 ResultSet metadata。
+     * 所以这里采取更安全也更产品化的策略：只把 sourceField 当作“SQL 输出列/别名声明”检查是否为空，
+     * 把 targetField 按目标表真实元数据严格校验是否存在。这样既不误伤合法 SQL alias，又能保证写入端不会因为字段不存在而炸在执行阶段。</p>
+     */
+    private void validateCustomSqlFieldMappings(ObjectMapping objectMapping,
+                                                DatasourceMetadataDiscoveryResponse.TableSummary targetTable,
+                                                List<FieldMapping> mappings,
+                                                List<String> issueCodes,
+                                                List<String> recommendedActions,
+                                                List<String> safetyNotes) {
+        Map<String, DatasourceMetadataDiscoveryResponse.ColumnSummary> targetColumns = columnsByName(targetTable);
+        List<FieldMapping> enabledMappings = mappings.stream()
+                .filter(FieldMapping::syncEnabled)
+                .toList();
+        if (enabledMappings.isEmpty()) {
+            issueCodes.add("METADATA_FIELD_MAPPING_SELECTED_EMPTY");
+            recommendedActions.add("SQL 自定义传输必须至少声明一个 SQL 输出列/别名 -> 目标字段的映射；"
+                    + "请在字段映射步骤中把 SELECT 结果列映射到目标表字段。");
+            return;
+        }
+        for (FieldMapping mapping : enabledMappings) {
+            if (!hasText(mapping.sourceField())) {
+                issueCodes.add("METADATA_SOURCE_FIELD_NOT_FOUND");
+                recommendedActions.add("SQL 自定义传输中存在未填写的 SQL 输出列/别名；"
+                        + "sourceField 应填写 SELECT 输出字段名或别名，例如 member_name。");
+            }
+            DatasourceMetadataDiscoveryResponse.ColumnSummary targetColumn =
+                    targetColumns.get(normalizeKey(mapping.targetField()));
+            if (!hasText(mapping.targetField()) || targetColumn == null) {
+                issueCodes.add("METADATA_TARGET_FIELD_NOT_FOUND");
+                recommendedActions.add("SQL 自定义传输的目标字段不存在于目标对象 "
+                        + lowSensitiveObject(objectMapping.targetSchema(), objectMapping.targetObject())
+                        + "；字段名=" + safeField(mapping.targetField()));
+            }
+        }
+        if (enabledMappings.size() < targetColumns.size()) {
+            safetyNotes.add("SQL 自定义传输未覆盖目标表的全部字段；预检查允许该场景，"
+                    + "未写入字段的最终值由目标表 NULL/DEFAULT/触发器等结构约束决定。");
+        }
     }
 
     /**
@@ -285,6 +369,18 @@ public class SyncTemplateMetadataAwarePrecheckSupport {
         if (mappings.isEmpty()) {
             appendObjectMappings(mappings, firstArray(fieldRoot, "objectMappings"));
         }
+        if (mappings.isEmpty() && isCustomSqlMode(template) && hasText(template.getTargetObjectName())) {
+            /*
+             * SQL 自定义传输只有目标写入对象，源端对象由 SQL 文本决定。
+             * 如果仍然要求 sourceObjectName 和 targetObjectName 同时存在，metadata-aware precheck
+             * 就会跳过 SQL 模式的目标表存在性检查，导致“目标表不存在”只能在执行阶段暴露。
+             */
+            mappings.add(new ObjectMapping(
+                    null,
+                    null,
+                    trimToNull(template.getTargetSchemaName()),
+                    trimToNull(template.getTargetObjectName())));
+        }
         if (mappings.isEmpty() && hasText(template.getSourceObjectName()) && hasText(template.getTargetObjectName())) {
             mappings.add(new ObjectMapping(
                     trimToNull(template.getSourceSchemaName()),
@@ -305,9 +401,9 @@ public class SyncTemplateMetadataAwarePrecheckSupport {
         for (JsonNode node : arrayNode) {
             mappings.add(new ObjectMapping(
                     firstText(node, "sourceSchema", "sourceSchemaName"),
-                    firstText(node, "sourceObject", "sourceTable", "sourceTableName"),
+                    firstText(node, "sourceObject", "sourceObjectName", "sourceTable", "sourceTableName"),
                     firstText(node, "targetSchema", "targetSchemaName"),
-                    firstText(node, "targetObject", "targetTable", "targetTableName")));
+                    firstText(node, "targetObject", "targetObjectName", "targetTable", "targetTableName")));
         }
     }
 
@@ -321,9 +417,9 @@ public class SyncTemplateMetadataAwarePrecheckSupport {
             for (JsonNode objectNode : objectMappings) {
                 ObjectMapping objectMapping = new ObjectMapping(
                         firstText(objectNode, "sourceSchema", "sourceSchemaName"),
-                        firstText(objectNode, "sourceObject", "sourceTable", "sourceTableName"),
+                        firstText(objectNode, "sourceObject", "sourceObjectName", "sourceTable", "sourceTableName"),
                         firstText(objectNode, "targetSchema", "targetSchemaName"),
-                        firstText(objectNode, "targetObject", "targetTable", "targetTableName"));
+                        firstText(objectNode, "targetObject", "targetObjectName", "targetTable", "targetTableName"));
                 result.put(objectMapping.key(), parseFieldMappingRows(firstArray(objectNode, "mappings", "fieldMappings")));
             }
             return result;
@@ -417,6 +513,38 @@ public class SyncTemplateMetadataAwarePrecheckSupport {
 
     private boolean isCustomSqlMode(SyncTemplate template) {
         return SyncMode.CUSTOM_SQL_QUERY.name().equalsIgnoreCase(trimToNull(template.getSyncMode()));
+    }
+
+    private boolean isInsertWriteStrategy(SyncTemplate template) {
+        String writeStrategy = trimToNull(template.getWriteStrategy());
+        return writeStrategy == null
+                || "INSERT".equalsIgnoreCase(writeStrategy)
+                || "APPEND".equalsIgnoreCase(writeStrategy);
+    }
+
+    private boolean isConflictWriteStrategy(SyncTemplate template) {
+        String writeStrategy = trimToNull(template.getWriteStrategy());
+        return "UPDATE".equalsIgnoreCase(writeStrategy)
+                || "UPSERT".equalsIgnoreCase(writeStrategy)
+                || "INSERT_IGNORE".equalsIgnoreCase(writeStrategy)
+                || "REPLACE".equalsIgnoreCase(writeStrategy);
+    }
+
+    private boolean isFullLikeMode(SyncTemplate template) {
+        String syncMode = trimToNull(template.getSyncMode());
+        return SyncMode.FULL.name().equalsIgnoreCase(syncMode)
+                || SyncMode.SCHEDULED_FULL.name().equalsIgnoreCase(syncMode);
+    }
+
+    private boolean hasPrimaryKey(DatasourceMetadataDiscoveryResponse.TableSummary table) {
+        if (table == null) {
+            return false;
+        }
+        if (table.getPrimaryKeys() != null && !table.getPrimaryKeys().isEmpty()) {
+            return true;
+        }
+        return table.getColumns() != null && table.getColumns().stream()
+                .anyMatch(column -> column != null && column.isPrimaryKey());
     }
 
     private boolean isMysqlFamily(String connectorType) {
