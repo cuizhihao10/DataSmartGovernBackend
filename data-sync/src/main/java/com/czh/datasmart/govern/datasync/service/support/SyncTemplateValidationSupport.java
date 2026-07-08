@@ -108,7 +108,7 @@ public class SyncTemplateValidationSupport {
                             + "；当前仅支持 FULL、SCHEDULED_BATCH、SCHEDULED_FULL、CUSTOM_SQL_QUERY、CDC_STREAMING。"
                             + " 失败回放、历史补数、离线导入和离线导出应走任务详情、执行历史、错误样本或制品流程的专用入口。");
         }
-        SyncWriteStrategy writeStrategy = resolveWriteStrategy(template.getWriteStrategy());
+        SyncWriteStrategy writeStrategy = resolveWriteStrategy(template.getWriteStrategy(), mode);
         validateScopeAndObjectBinding(template);
         validateCheckpointAndWriteStrategy(template, mode, writeStrategy);
         validateConnectorCompatibility(template, mode);
@@ -135,12 +135,24 @@ public class SyncTemplateValidationSupport {
     /**
      * 解析写入策略。
      *
-     * <p>写入策略影响目标端冲突处理、幂等性、回放和补数语义。空值会按历史兼容回落到 APPEND，
-     * 但未知值必须 fail-fast，不能交给 worker 猜测。</p>
+     * <p>写入策略影响目标端冲突处理、幂等性、回放和补数语义。单参数方法不知道 syncMode，
+     * 因此只适合作为旧兼容入口；新链路应调用带 {@link SyncMode} 的重载，让离线空值默认 INSERT、
+     * 实时空值默认 UPDATE/merge。未知值必须 fail-fast，不能交给 worker 猜测。</p>
      */
     public SyncWriteStrategy resolveWriteStrategy(String writeStrategy) {
+        return resolveWriteStrategy(writeStrategy, null);
+    }
+
+    /**
+     * 按同步模式解析写入策略。
+     *
+     * <p>保留单参数方法是为了兼容旧测试和内部工具；新建任务、草稿保存和执行预检查这类知道 syncMode 的入口，
+     * 应优先调用本方法。原因是实时 CDC 的默认写入策略和离线模式不同：离线可以默认 INSERT，实时必须默认
+     * UPDATE/merge，才能保证持续事件流在目标端具备幂等更新语义。</p>
+     */
+    public SyncWriteStrategy resolveWriteStrategy(String writeStrategy, SyncMode syncMode) {
         try {
-            return SyncWriteStrategy.fromValue(writeStrategy);
+            return SyncWriteStrategy.fromValueForMode(writeStrategy, syncMode == null ? null : syncMode.name());
         } catch (IllegalArgumentException exception) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR, exception.getMessage());
         }
@@ -184,6 +196,11 @@ public class SyncTemplateValidationSupport {
         if (writeStrategy.requiresConflictKey() && !hasText(template.getPrimaryKeyField())) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
                     writeStrategy.name() + " 写入策略必须声明 primaryKeyField，用于目标端冲突判断和幂等写入");
+        }
+        if (mode == SyncMode.CDC_STREAMING && writeStrategy.insertLike()) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    "实时同步模式不允许使用 INSERT/APPEND 写入语义；实时链路默认使用 UPDATE/merge，"
+                            + "用于按目标主键或唯一约束幂等落地 binlog/WAL/change stream 事件");
         }
         validateOptionalIdentifier("主键或冲突字段", template.getPrimaryKeyField());
     }

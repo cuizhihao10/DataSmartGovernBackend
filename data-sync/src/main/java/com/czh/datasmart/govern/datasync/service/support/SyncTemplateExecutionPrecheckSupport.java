@@ -85,7 +85,7 @@ public class SyncTemplateExecutionPrecheckSupport {
         safetyNotes.addAll(scopeContract.warnings());
 
         SyncMode syncMode = resolveMode(template, issueCodes, recommendedActions);
-        SyncWriteStrategy writeStrategy = resolveWriteStrategy(template, issueCodes, recommendedActions);
+        SyncWriteStrategy writeStrategy = resolveWriteStrategy(template, syncMode, issueCodes, recommendedActions);
         SyncConnectorCompatibilityView compatibility = resolveCompatibility(template, syncMode, issueCodes, recommendedActions);
         SyncTransferChannel transferChannel = SyncTransferChannelSupport.resolve(syncMode);
         performanceNotes.add(SyncTransferChannelSupport.explanation(transferChannel));
@@ -126,7 +126,9 @@ public class SyncTemplateExecutionPrecheckSupport {
         boolean customSqlSafetyPassed = !scopeContract.customSqlScope()
                 || !scopeContract.hasIssue("CUSTOM_SQL_RAW_SQL_UNSAFE");
 
-        evaluateWriteStrategy(template, writeStrategy, issueCodes, recommendedActions, safetyNotes);
+        evaluateWriteStrategy(template, syncMode, writeStrategy, issueCodes, recommendedActions, safetyNotes);
+        evaluateModeWriteStrategyMatrix(template, syncMode, writeStrategy, filterContract,
+                issueCodes, recommendedActions, safetyNotes);
         evaluateRunnerBoundary(syncMode, scopeContract, fieldMappingRunnableForCurrentRunner, filterRunnable, checkpointRequired,
                 issueCodes, recommendedActions, performanceNotes, safetyNotes);
         removeLegacyMinimalBridgeScopeWarningWhenFanOutIsExecutable(scopeContract, issueCodes, recommendedActions);
@@ -204,13 +206,19 @@ public class SyncTemplateExecutionPrecheckSupport {
      * 解析写入策略，错误转为 issueCode。
      */
     private SyncWriteStrategy resolveWriteStrategy(SyncTemplate template,
+                                                   SyncMode syncMode,
                                                    List<String> issueCodes,
                                                    List<String> recommendedActions) {
         try {
-            return SyncWriteStrategy.fromValue(template.getWriteStrategy());
+            SyncWriteStrategy strategy = SyncWriteStrategy.fromValueForMode(
+                    template.getWriteStrategy(), syncMode == null ? null : syncMode.name());
+            if (syncMode == SyncMode.CDC_STREAMING && !hasText(template.getWriteStrategy())) {
+                safetyDefaultRealtimeWriteStrategy(recommendedActions);
+            }
+            return strategy;
         } catch (IllegalArgumentException exception) {
             issueCodes.add("WRITE_STRATEGY_UNSUPPORTED");
-            recommendedActions.add("将 writeStrategy 调整为 APPEND、UPSERT、INSERT_IGNORE、REPLACE 或 OVERWRITE");
+            recommendedActions.add("将 writeStrategy 调整为 INSERT 或 UPDATE；实时 CDC 模式可省略 writeStrategy，由后端默认 UPDATE/merge");
             return null;
         }
     }
@@ -243,12 +251,18 @@ public class SyncTemplateExecutionPrecheckSupport {
      * 根据写入策略补充执行前硬性要求。
      */
     private void evaluateWriteStrategy(SyncTemplate template,
+                                       SyncMode syncMode,
                                        SyncWriteStrategy writeStrategy,
                                        List<String> issueCodes,
                                        List<String> recommendedActions,
                                        List<String> safetyNotes) {
         if (writeStrategy == null) {
             return;
+        }
+        if (syncMode == SyncMode.CDC_STREAMING && writeStrategy.insertLike()) {
+            issueCodes.add("REALTIME_WRITE_STRATEGY_MUST_BE_MERGE");
+            recommendedActions.add("实时同步模式不需要用户选择写入策略；请省略 writeStrategy，或使用 UPDATE/merge。"
+                    + "INSERT/APPEND 无法正确表达同一业务主键的持续 update/delete 事件。");
         }
         if (writeStrategy.requiresConflictKey() && !hasText(template.getPrimaryKeyField())) {
             issueCodes.add("PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE");
@@ -259,6 +273,59 @@ public class SyncTemplateExecutionPrecheckSupport {
             recommendedActions.add("OVERWRITE 执行前必须完成审批、影响范围评估和回滚预案确认");
             safetyNotes.add("覆盖式写入属于高风险动作，当前预检查不会允许它静默进入普通 run-once bridge");
         }
+    }
+
+    /**
+     * 评估“同步模式 × 写入策略”的产品规则矩阵。
+     *
+     * <p>这一层不是连接器能力矩阵，也不是字段元数据检查，而是把用户能理解的业务组合先拦一遍：
+     * 比如“定期批量”必须有批处理窗口，“定期全量 + INSERT”不能长期复用同一张目标表，“实时”固定使用 merge。
+     * 这些规则如果只依赖 worker 执行时报错，用户会在调度历史里看到一串失败，却不知道根因是创建阶段的模式组合不成立。</p>
+     *
+     * <p>该方法故意只返回 issueCode、建议动作和低敏说明，不读取业务数据、不拼接 SQL。真实对象是否存在、目标表是否为空、
+     * 目标主键是否存在等更接近数据库事实的检查，继续由 metadata-aware precheck 负责。</p>
+     */
+    private void evaluateModeWriteStrategyMatrix(SyncTemplate template,
+                                                 SyncMode syncMode,
+                                                 SyncWriteStrategy writeStrategy,
+                                                 SyncFilterExecutionContract filterContract,
+                                                 List<String> issueCodes,
+                                                 List<String> recommendedActions,
+                                                 List<String> safetyNotes) {
+        if (syncMode == null || writeStrategy == null) {
+            return;
+        }
+        boolean partitionDeclared = hasText(template.getPartitionConfig());
+        boolean filterDeclared = hasText(template.getFilterConfig())
+                && filterContract != null
+                && filterContract.directlyRunnableByMinimalBridge();
+
+        if (syncMode == SyncMode.SCHEDULED_BATCH && !filterDeclared && !partitionDeclared) {
+            issueCodes.add("SCHEDULED_BATCH_WINDOW_NOT_DECLARED");
+            recommendedActions.add("定期批量必须声明有界批处理窗口，例如时间范围、分区范围、ID 范围或结构化 where 条件；"
+                    + "否则每次调度都会退化成全表扫描，应改为 SCHEDULED_FULL 或补充 filterConfig/partitionConfig。");
+        }
+        if (syncMode == SyncMode.SCHEDULED_FULL && writeStrategy.insertLike() && !partitionDeclared) {
+            issueCodes.add("SCHEDULED_FULL_INSERT_TARGET_REUSE_UNSAFE");
+            recommendedActions.add("定期全量不建议使用 INSERT 写入同一张目标表：第一次执行后目标表会变为非空，下一次调度容易主键冲突或重复写入。"
+                    + "请改为 UPDATE/merge，或后续设计按周期生成快照目标表/分区的高级方案。");
+        }
+        if (syncMode == SyncMode.FULL && writeStrategy.insertLike()) {
+            safetyNotes.add("全量 + INSERT 只适合首次初始化或目标空表场景；本轮预检查会继续通过 row-count probe 校验目标表是否为空。");
+        }
+        if (syncMode == SyncMode.FULL && writeStrategy.mergeLike()) {
+            safetyNotes.add("全量 + UPDATE/merge 会用源端当前范围刷新目标端已有记录；预检查必须确认目标表存在主键或唯一约束，避免不可控覆盖。");
+        }
+        if (syncMode == SyncMode.CUSTOM_SQL_QUERY && writeStrategy.mergeLike()) {
+            safetyNotes.add("SQL 语句 + UPDATE/merge 要求 SQL 输出列能映射到目标端主键或唯一约束字段；否则执行器无法判断同一业务记录。");
+        }
+        if (syncMode == SyncMode.CDC_STREAMING && !hasText(template.getWriteStrategy())) {
+            safetyNotes.add("实时模式未提交 writeStrategy，后端已按 UPDATE/merge 解释；前端无需展示写入策略选择框。");
+        }
+    }
+
+    private void safetyDefaultRealtimeWriteStrategy(List<String> recommendedActions) {
+        recommendedActions.add("实时 CDC 未显式声明 writeStrategy 时，后端默认按 UPDATE/merge 处理；前端可以隐藏写入策略字段。");
     }
 
     /**
@@ -402,6 +469,9 @@ public class SyncTemplateExecutionPrecheckSupport {
                         || "CUSTOM_SQL_TARGET_OBJECT_REQUIRED".equals(issueCode)
                         || "CUSTOM_SQL_FIELD_MAPPING_REQUIRED".equals(issueCode)
                         || "PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE".equals(issueCode)
+                        || "REALTIME_WRITE_STRATEGY_MUST_BE_MERGE".equals(issueCode)
+                        || "SCHEDULED_BATCH_WINDOW_NOT_DECLARED".equals(issueCode)
+                        || "SCHEDULED_FULL_INSERT_TARGET_REUSE_UNSAFE".equals(issueCode)
                         || "FILTER_CONFIG_PARSE_FAILED".equals(issueCode)
                         || "FILTER_CONFIG_SCHEMA_UNSUPPORTED".equals(issueCode)
                         || "FILTER_CONDITION_COUNT_EXCEEDED".equals(issueCode)
@@ -429,6 +499,7 @@ public class SyncTemplateExecutionPrecheckSupport {
                         || "METADATA_SOURCE_FIELD_NOT_FOUND".equals(issueCode)
                         || "METADATA_TARGET_FIELD_NOT_FOUND".equals(issueCode)
                         || "METADATA_TARGET_PRIMARY_KEY_REQUIRED_FOR_UPDATE".equals(issueCode)
+                        || "METADATA_TARGET_PRIMARY_KEY_FIELD_NOT_MAPPED_FOR_UPDATE".equals(issueCode)
                         || "METADATA_FIELD_MAPPING_TYPE_INCOMPATIBLE".equals(issueCode));
     }
 

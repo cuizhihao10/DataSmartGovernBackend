@@ -13,6 +13,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
+import com.czh.datasmart.govern.datasync.support.SyncMode;
 import com.czh.datasmart.govern.datasync.support.SyncWriteStrategy;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -99,9 +100,10 @@ public class SyncTemplateCreationSupport {
         template.setTargetObjectName(querySupport.trimToNull(request.getTargetObjectName()));
         template.setSourceConnectorType(querySupport.normalizeCode(request.getSourceConnectorType()));
         template.setTargetConnectorType(querySupport.normalizeCode(request.getTargetConnectorType()));
-        template.setSyncMode(querySupport.normalizeCode(request.getSyncMode()));
+        String syncMode = querySupport.normalizeCode(request.getSyncMode());
+        template.setSyncMode(syncMode);
         template.setSyncScopeType(querySupport.normalizeCode(request.getSyncScopeType()));
-        template.setWriteStrategy(normalizeUserFacingWriteStrategy(request.getWriteStrategy()));
+        template.setWriteStrategy(normalizeUserFacingWriteStrategy(request.getWriteStrategy(), syncMode));
         template.setPrimaryKeyField(querySupport.trimToNull(request.getPrimaryKeyField()));
         template.setIncrementalField(querySupport.trimToNull(request.getIncrementalField()));
         template.setFieldMappingConfig(querySupport.trimToNull(request.getFieldMappingConfig()));
@@ -130,12 +132,23 @@ public class SyncTemplateCreationSupport {
      * <p>为了兼容已有脚本和测试，APPEND 会被折叠为 INSERT，UPSERT 会被折叠为 UPDATE。其他破坏性或数据库私有策略暂不允许
      * 通过新建入口写入，后续如果要支持，应放到高风险运营动作、执行器高级策略或管理员能力中，而不是出现在普通创建向导里。</p>
      */
-    private String normalizeUserFacingWriteStrategy(String writeStrategy) {
+    private String normalizeUserFacingWriteStrategy(String writeStrategy, String syncMode) {
         SyncWriteStrategy strategy;
         try {
-            strategy = SyncWriteStrategy.fromValue(writeStrategy);
+            strategy = SyncWriteStrategy.fromValueForMode(writeStrategy, syncMode);
         } catch (IllegalArgumentException exception) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR, exception.getMessage());
+        }
+        if (SyncMode.CDC_STREAMING.name().equalsIgnoreCase(syncMode) && strategy.insertLike()) {
+            /*
+             * 实时 CDC 不把写入策略暴露给普通用户选择，而是固定使用 UPDATE/merge。
+             * 原因是实时事件会持续携带同一业务主键的多次变化：如果让实时链路按 INSERT 追加，
+             * update/delete 事件就无法幂等落地，目标端很容易出现主键冲突或重复行。这里在创建入口直接 fail-fast，
+             * 可以避免前端隐藏字段后仍把旧默认 INSERT 提交进数据库。
+             */
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    "实时同步模式的写入策略由系统固定为 UPDATE/merge，创建请求不应提交 INSERT 或 APPEND；"
+                            + "如果前端隐藏写入策略，请直接省略 writeStrategy 字段");
         }
         if (strategy == SyncWriteStrategy.APPEND) {
             return SyncWriteStrategy.INSERT.name();

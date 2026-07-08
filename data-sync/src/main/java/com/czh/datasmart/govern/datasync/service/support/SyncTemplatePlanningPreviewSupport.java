@@ -78,7 +78,7 @@ public class SyncTemplatePlanningPreviewSupport {
         safetyNotes.addAll(scopeContract.warnings());
 
         SyncMode syncMode = resolveMode(template, issueCodes, recommendedActions);
-        SyncWriteStrategy writeStrategy = resolveWriteStrategy(template, issueCodes, recommendedActions);
+        SyncWriteStrategy writeStrategy = resolveWriteStrategy(template, syncMode, issueCodes, recommendedActions);
         SyncConnectorCompatibilityView compatibility = resolveCompatibility(template, syncMode, issueCodes, recommendedActions);
         SyncTransferChannel transferChannel = SyncTransferChannelSupport.resolve(syncMode);
         performanceNotes.add(SyncTransferChannelSupport.explanation(transferChannel));
@@ -182,18 +182,24 @@ public class SyncTemplatePlanningPreviewSupport {
      * 解析写入策略，并将未知策略压缩为低敏 issueCode。
      */
     private SyncWriteStrategy resolveWriteStrategy(SyncTemplate template,
+                                                   SyncMode syncMode,
                                                    List<String> issueCodes,
                                                    List<String> recommendedActions) {
         try {
-            SyncWriteStrategy writeStrategy = SyncWriteStrategy.fromValue(template.getWriteStrategy());
+            SyncWriteStrategy writeStrategy = SyncWriteStrategy.fromValueForMode(
+                    template.getWriteStrategy(), syncMode == null ? null : syncMode.name());
             if (!hasText(template.getWriteStrategy())) {
-                issueCodes.add("WRITE_STRATEGY_DEFAULTED_TO_APPEND");
-                recommendedActions.add("建议显式声明 writeStrategy；默认 APPEND 能兼容历史模板，但重试、回放或补数时更容易产生重复记录");
+                if (syncMode == SyncMode.CDC_STREAMING) {
+                    recommendedActions.add("实时 CDC 可不展示写入策略，后端会默认按 UPDATE/merge 解释，保证同一业务主键的变更事件幂等落地");
+                } else {
+                    issueCodes.add("WRITE_STRATEGY_DEFAULTED_TO_INSERT");
+                    recommendedActions.add("未显式声明 writeStrategy 时，离线模式默认 INSERT；如果目标表已有数据，请在预检查中重点确认目标表空表或改为 UPDATE/merge");
+                }
             }
             return writeStrategy;
         } catch (IllegalArgumentException exception) {
             issueCodes.add("WRITE_STRATEGY_UNSUPPORTED");
-            recommendedActions.add("将 writeStrategy 调整为 APPEND、UPSERT、INSERT_IGNORE、REPLACE 或 OVERWRITE 之一");
+            recommendedActions.add("将 writeStrategy 调整为 INSERT 或 UPDATE；实时 CDC 模式可省略 writeStrategy，由后端默认 UPDATE/merge");
             return null;
         }
     }
@@ -253,6 +259,18 @@ public class SyncTemplatePlanningPreviewSupport {
         if (writeStrategy != null && writeStrategy.requiresConflictKey() && !primaryKeyDeclared) {
             issueCodes.add("PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE");
             recommendedActions.add(writeStrategy.name() + " 写入策略需要 primaryKeyField，用于目标端冲突判断和幂等写入");
+        }
+        if (syncMode == SyncMode.CDC_STREAMING && writeStrategy != null && writeStrategy.insertLike()) {
+            issueCodes.add("REALTIME_WRITE_STRATEGY_MUST_BE_MERGE");
+            recommendedActions.add("实时模式不应选择 INSERT/APPEND；前端应隐藏写入策略字段，后端默认 UPDATE/merge。");
+        }
+        if (syncMode == SyncMode.SCHEDULED_BATCH && !filterDeclared && !partitionDeclared) {
+            issueCodes.add("SCHEDULED_BATCH_WINDOW_NOT_DECLARED");
+            recommendedActions.add("定期批量必须声明批处理窗口，例如时间范围、分区范围、ID 范围或结构化 where 条件，否则应改为定期全量。");
+        }
+        if (syncMode == SyncMode.SCHEDULED_FULL && writeStrategy != null && writeStrategy.insertLike() && !partitionDeclared) {
+            issueCodes.add("SCHEDULED_FULL_INSERT_TARGET_REUSE_UNSAFE");
+            recommendedActions.add("定期全量 + INSERT 会在第二次调度时复用非空目标表，容易主键冲突或重复写入；建议改为 UPDATE/merge。");
         }
         if (writeStrategy != null && writeStrategy.isDestructiveRewrite()) {
             issueCodes.add("DESTRUCTIVE_WRITE_STRATEGY_REQUIRES_REVIEW");
@@ -339,6 +357,9 @@ public class SyncTemplatePlanningPreviewSupport {
                 || "TARGET_OBJECT_NOT_DECLARED".equals(issueCode)
                 || "WRITE_STRATEGY_UNSUPPORTED".equals(issueCode)
                 || "PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE".equals(issueCode)
+                || "REALTIME_WRITE_STRATEGY_MUST_BE_MERGE".equals(issueCode)
+                || "SCHEDULED_BATCH_WINDOW_NOT_DECLARED".equals(issueCode)
+                || "SCHEDULED_FULL_INSERT_TARGET_REUSE_UNSAFE".equals(issueCode)
                 || "INCREMENTAL_FIELD_NOT_DECLARED".equals(issueCode)
                 || "SYNC_SCOPE_TYPE_UNSUPPORTED".equals(issueCode)
                 || "SYNC_SCOPE_MODE_MISMATCH".equals(issueCode)

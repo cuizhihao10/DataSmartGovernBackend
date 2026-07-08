@@ -86,6 +86,7 @@ class SyncTemplateExecutionPrecheckSupportTest {
     @Test
     void cdcStreamingShouldBeRealtimeChannelButNotExecutableByMinimalBridge() {
         SyncTemplate template = executableSingleObjectTemplate("CDC_STREAMING");
+        template.setWriteStrategy(null);
 
         SyncTemplateExecutionPrecheckResponse response = support.precheck(template);
 
@@ -93,6 +94,41 @@ class SyncTemplateExecutionPrecheckSupportTest {
         assertThat(response.referenceRuntime()).isEqualTo("DEBEZIUM_KAFKA_CONNECT_CDC_PIPELINE");
         assertThat(response.precheckStatus()).isEqualTo(SyncTemplateExecutionPrecheckSupport.NOT_SUPPORTED_BY_CURRENT_RUNNER);
         assertThat(response.canStartExecution()).isFalse();
+        assertThat(response.issueCodes()).doesNotContain("REALTIME_WRITE_STRATEGY_MUST_BE_MERGE");
+    }
+
+    @Test
+    void cdcStreamingShouldRejectExplicitInsertWriteStrategy() {
+        SyncTemplate template = executableSingleObjectTemplate("CDC_STREAMING");
+        template.setWriteStrategy("INSERT");
+
+        SyncTemplateExecutionPrecheckResponse response = support.precheck(template);
+
+        assertThat(response.precheckStatus()).isEqualTo(SyncTemplateExecutionPrecheckSupport.BLOCKED);
+        assertThat(response.issueCodes()).contains("REALTIME_WRITE_STRATEGY_MUST_BE_MERGE");
+        assertThat(response.recommendedActions()).anyMatch(action -> action.contains("实时同步模式不需要用户选择写入策略"));
+    }
+
+    @Test
+    void scheduledBatchShouldRequireWindowBoundary() {
+        SyncTemplate template = executableSingleObjectTemplate("SCHEDULED_BATCH");
+        template.setWriteStrategy("UPDATE");
+
+        SyncTemplateExecutionPrecheckResponse response = support.precheck(template);
+
+        assertThat(response.precheckStatus()).isEqualTo(SyncTemplateExecutionPrecheckSupport.BLOCKED);
+        assertThat(response.issueCodes()).contains("SCHEDULED_BATCH_WINDOW_NOT_DECLARED");
+    }
+
+    @Test
+    void scheduledFullInsertShouldBeBlockedWhenTargetIsReusedWithoutSnapshotPolicy() {
+        SyncTemplate template = executableSingleObjectTemplate("SCHEDULED_FULL");
+        template.setWriteStrategy("INSERT");
+
+        SyncTemplateExecutionPrecheckResponse response = support.precheck(template);
+
+        assertThat(response.precheckStatus()).isEqualTo(SyncTemplateExecutionPrecheckSupport.BLOCKED);
+        assertThat(response.issueCodes()).contains("SCHEDULED_FULL_INSERT_TARGET_REUSE_UNSAFE");
     }
 
     @Test

@@ -205,17 +205,18 @@ public class SyncOfflineJobPlanSupport {
     /**
      * 解析写入策略。
      *
-     * <p>写入策略影响幂等、重试、回放和审批。这里沿用 SyncWriteStrategy 的历史兼容规则：
-     * 空值按 APPEND 处理，但真正执行前仍建议用户显式声明策略。</p>
+     * <p>写入策略影响幂等、重试、回放和审批。离线计划一般只接收 OFFLINE 通道模式，
+     * 但这里仍使用模式感知解析，保证如果未来有实时/离线混合预览入口复用本组件，
+     * “实时空写入策略默认 UPDATE/merge”的产品语义不会被旧的 INSERT/APPEND 默认值覆盖。</p>
      */
     private SyncWriteStrategy resolveWriteStrategy(SyncTemplate template,
                                                    List<String> issueCodes,
                                                    List<String> recommendedActions) {
         try {
-            return SyncWriteStrategy.fromValue(template.getWriteStrategy());
+            return SyncWriteStrategy.fromValueForMode(template.getWriteStrategy(), template.getSyncMode());
         } catch (IllegalArgumentException exception) {
             issueCodes.add("WRITE_STRATEGY_UNSUPPORTED");
-            recommendedActions.add("将 writeStrategy 调整为 APPEND、UPSERT、INSERT_IGNORE、REPLACE 或 OVERWRITE");
+            recommendedActions.add("将 writeStrategy 调整为 INSERT 或 UPDATE；实时 CDC 模式可省略 writeStrategy，由后端默认 UPDATE/merge");
             return null;
         }
     }

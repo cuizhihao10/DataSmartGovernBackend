@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.datasync.support;
 
 import java.util.Arrays;
+import java.util.Locale;
 
 /**
  * data-sync 写入策略枚举。
@@ -147,5 +148,52 @@ public enum SyncWriteStrategy {
                 .filter(item -> item.name().equalsIgnoreCase(value.trim()))
                 .findFirst()
                 .orElseThrow(() -> new IllegalArgumentException("不支持的同步写入策略: " + value));
+    }
+
+    /**
+     * 按同步模式解析写入策略。
+     *
+     * <p>普通离线模式在用户没有显式选择时仍默认 INSERT，这是为了保持“全量传输首次落目标表”的直观体验。
+     * 但实时 CDC 不同：实时链路消费的是持续变化事件，天然会遇到同一主键的 insert/update/delete 多次变化。
+     * 如果把实时默认成 INSERT，第二次捕获同一业务主键时就很容易产生主键冲突或重复行；因此实时模式在写入策略为空时
+     * 统一默认 UPDATE，也就是产品语义里的 merge/upsert。</p>
+     *
+     * <p>这个方法只负责“默认值”解析，不负责判断某个显式策略是否允许用于某个模式。
+     * 例如调用方显式传入 INSERT + CDC_STREAMING 时，本方法会尊重输入返回 INSERT，随后由创建向导或执行预检查给出
+     * {@code REALTIME_WRITE_STRATEGY_MUST_BE_MERGE} 这类更清晰的业务错误。这样既方便兼容旧数据，也便于前端展示精确原因。</p>
+     *
+     * @param value 请求体、数据库或旧模板中的策略字符串。
+     * @param syncMode 当前同步模式字符串，可为空；为空时按普通离线模式默认 INSERT。
+     * @return 结合模式默认值后的写入策略。
+     */
+    public static SyncWriteStrategy fromValueForMode(String value, String syncMode) {
+        if (value == null || value.isBlank()) {
+            return isRealtimeMode(syncMode) ? UPDATE : INSERT;
+        }
+        return fromValue(value);
+    }
+
+    /**
+     * 判断当前策略是否表达“插入/追加”语义。
+     *
+     * <p>该方法用于模式矩阵预检查。INSERT 和历史 APPEND 都属于“只新增，不处理已有行”的语义，
+     * 在全量传输中要求目标表为空，在实时 CDC 中通常不应开放给普通创建向导。</p>
+     */
+    public boolean insertLike() {
+        return this == INSERT || this == APPEND;
+    }
+
+    /**
+     * 判断当前策略是否表达“更新/合并”语义。
+     *
+     * <p>UPDATE 是当前用户可见的 merge 语义，UPSERT 是历史执行器语义。二者都要求目标端能识别同一业务记录，
+     * 因此前置预检查需要关注目标主键、唯一键或可冲突判断字段。</p>
+     */
+    public boolean mergeLike() {
+        return this == UPDATE || this == UPSERT || this == INSERT_IGNORE || this == REPLACE;
+    }
+
+    private static boolean isRealtimeMode(String syncMode) {
+        return syncMode != null && "CDC_STREAMING".equals(syncMode.trim().toUpperCase(Locale.ROOT));
     }
 }

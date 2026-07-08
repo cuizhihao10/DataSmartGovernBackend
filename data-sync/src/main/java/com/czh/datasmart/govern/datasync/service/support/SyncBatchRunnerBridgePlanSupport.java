@@ -130,7 +130,7 @@ public class SyncBatchRunnerBridgePlanSupport {
         if (!isMinimalJdbcBatchMode(template.getSyncMode())) {
             issueCodes.add("MINIMAL_JDBC_BATCH_BRIDGE_MODE_UNSUPPORTED");
         }
-        if (SyncWriteStrategy.OVERWRITE == resolveWriteStrategy(template.getWriteStrategy())) {
+        if (SyncWriteStrategy.OVERWRITE == resolveWriteStrategy(template)) {
             issueCodes.add("DESTRUCTIVE_WRITE_STRATEGY_REQUIRES_APPROVED_BRIDGE_POLICY");
         }
 
@@ -201,7 +201,7 @@ public class SyncBatchRunnerBridgePlanSupport {
                 normalize(template.getTargetConnectorType()),
                 normalize(template.getSyncMode()),
                 readStrategy(template.getSyncMode()),
-                runnerWriteStrategy(template.getWriteStrategy()),
+                runnerWriteStrategy(template),
                 checkpointType(template.getSyncMode()),
                 objectLocator(template.getSourceSchemaName(), template.getSourceObjectName()),
                 objectLocator(template.getTargetSchemaName(), template.getTargetObjectName()),
@@ -252,7 +252,7 @@ public class SyncBatchRunnerBridgePlanSupport {
                 template == null ? null : normalize(template.getTargetConnectorType()),
                 template == null ? null : normalize(template.getSyncMode()),
                 template == null ? null : readStrategy(template.getSyncMode()),
-                template == null ? null : runnerWriteStrategy(template.getWriteStrategy()),
+                template == null ? null : runnerWriteStrategy(template),
                 template == null ? null : checkpointType(template.getSyncMode()),
                 template == null ? null : objectLocator(template.getSourceSchemaName(), template.getSourceObjectName()),
                 template == null ? null : objectLocator(template.getTargetSchemaName(), template.getTargetObjectName()),
@@ -399,13 +399,15 @@ public class SyncBatchRunnerBridgePlanSupport {
      * <p>当前新建向导只暴露 INSERT/UPDATE，但最小 JDBC runner 的合同仍沿用 APPEND/UPSERT。这里集中做翻译，避免在 Controller、
      * Service、workerPlan、offline job plan 多处散落 if/else。后续当真实 runner 也升级为 INSERT/UPDATE 语义时，只需要调整这一个方法。</p>
      */
-    private String runnerWriteStrategy(String value) {
-        return resolveWriteStrategy(value).toRunnerStrategy();
+    private String runnerWriteStrategy(SyncTemplate template) {
+        return resolveWriteStrategy(template).toRunnerStrategy();
     }
 
-    private SyncWriteStrategy resolveWriteStrategy(String value) {
+    private SyncWriteStrategy resolveWriteStrategy(SyncTemplate template) {
         try {
-            return SyncWriteStrategy.fromValue(value);
+            return SyncWriteStrategy.fromValueForMode(
+                    template == null ? null : template.getWriteStrategy(),
+                    template == null ? null : template.getSyncMode());
         } catch (IllegalArgumentException exception) {
             return SyncWriteStrategy.INSERT;
         }

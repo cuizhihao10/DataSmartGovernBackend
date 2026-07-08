@@ -193,9 +193,12 @@ public class SyncWorkerExecutionPlanSupport {
      */
     private SyncWriteStrategy resolveWriteStrategy(SyncTemplate template, List<String> issueCodes) {
         try {
-            SyncWriteStrategy writeStrategy = SyncWriteStrategy.fromValue(template.getWriteStrategy());
+            SyncWriteStrategy writeStrategy = SyncWriteStrategy.fromValueForMode(
+                    template.getWriteStrategy(), template.getSyncMode());
             if (!hasText(template.getWriteStrategy())) {
-                issueCodes.add("WRITE_STRATEGY_DEFAULTED_TO_APPEND");
+                issueCodes.add(writeStrategy == SyncWriteStrategy.UPDATE
+                        ? "WRITE_STRATEGY_DEFAULTED_TO_UPDATE_FOR_REALTIME"
+                        : "WRITE_STRATEGY_DEFAULTED_TO_INSERT");
             }
             return writeStrategy;
         } catch (IllegalArgumentException exception) {

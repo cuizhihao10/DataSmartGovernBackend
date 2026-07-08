@@ -205,7 +205,7 @@ public class SyncTaskCreateWizardDraftSupport {
         }
 
         SyncMode syncMode = resolveSyncMode(request.getSyncMode());
-        SyncWriteStrategy writeStrategy = resolveWriteStrategy(request.getWriteStrategy());
+        SyncWriteStrategy writeStrategy = resolveWriteStrategy(request.getWriteStrategy(), syncMode);
         return new DraftBasics(tenantId, projectId, workspaceId, taskName, syncMode, writeStrategy);
     }
 
@@ -384,9 +384,20 @@ public class SyncTaskCreateWizardDraftSupport {
         }
     }
 
-    private SyncWriteStrategy resolveWriteStrategy(String writeStrategy) {
+    private SyncWriteStrategy resolveWriteStrategy(String writeStrategy, SyncMode syncMode) {
         try {
-            SyncWriteStrategy strategy = SyncWriteStrategy.fromValue(writeStrategy);
+            SyncWriteStrategy strategy = SyncWriteStrategy.fromValueForMode(
+                    writeStrategy, syncMode == null ? null : syncMode.name());
+            if (syncMode == SyncMode.CDC_STREAMING && strategy.insertLike()) {
+                /*
+                 * 创建向导草稿在第二步前就会保存任务；如果这里允许 CDC + INSERT 落库，
+                 * 后续预检查虽然能阻断，但任务列表里会保留一个先天不合法的草稿。
+                 * 因此草稿入口直接把实时模式收敛为“省略 writeStrategy 或显式 UPDATE/UPSERT”，
+                 * 前端隐藏写入策略时只需要不提交该字段即可。
+                 */
+                throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                        "实时同步模式不需要选择写入策略，后端默认 UPDATE/merge；请不要提交 INSERT 或 APPEND");
+            }
             if (strategy == SyncWriteStrategy.APPEND) {
                 return SyncWriteStrategy.INSERT;
             }

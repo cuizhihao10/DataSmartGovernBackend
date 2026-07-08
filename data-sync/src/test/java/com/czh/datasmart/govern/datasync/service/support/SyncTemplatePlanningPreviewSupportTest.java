@@ -67,6 +67,7 @@ class SyncTemplatePlanningPreviewSupportTest {
     @Test
     void previewShouldExposeRealtimeChannelOnlyForCdcStreaming() {
         SyncTemplatePlanningPreviewResponse response = support.preview(template("MYSQL", "POSTGRESQL", "CDC_STREAMING")
+                .writeStrategy(null)
                 .fieldMappingConfig("{}")
                 .retryPolicy("{}")
                 .timeoutPolicy("{}")
@@ -74,24 +75,26 @@ class SyncTemplatePlanningPreviewSupportTest {
 
         assertThat(response.transferChannel()).isEqualTo("REALTIME");
         assertThat(response.referenceRuntime()).isEqualTo("DEBEZIUM_KAFKA_CONNECT_CDC_PIPELINE");
+        assertThat(response.writeStrategy()).isEqualTo("UPDATE");
+        assertThat(response.issueCodes()).doesNotContain("REALTIME_WRITE_STRATEGY_MUST_BE_MERGE");
     }
 
     @Test
-    void previewShouldReturnNeedsReviewWhenIncrementalBoundaryAndPoliciesAreMissing() {
+    void previewShouldBlockHistoricalIncrementalModeBecauseItIsNoLongerUserSelectable() {
         SyncTemplatePlanningPreviewResponse response = support.preview(template("MYSQL", "POSTGRESQL", "INCREMENTAL_TIME")
                 .incrementalField("updated_at")
                 .fieldMappingConfig("{}")
                 .build());
 
-        assertThat(response.previewStatus()).isEqualTo("NEEDS_REVIEW");
-        assertThat(response.canProceedToTaskDraft()).isTrue();
+        assertThat(response.previewStatus()).isEqualTo("BLOCKED");
+        assertThat(response.canProceedToTaskDraft()).isFalse();
         assertThat(response.executionPrecheckReady()).isFalse();
         assertThat(response.issueCodes()).contains(
-                "INCREMENTAL_BOUNDARY_NOT_DECLARED",
+                "SYNC_MODE_NOT_USER_SELECTABLE_TRANSFER_MODE",
                 "RETRY_POLICY_NOT_DECLARED",
                 "TIMEOUT_POLICY_NOT_DECLARED"
         );
-        assertThat(response.recommendedActions()).anyMatch(action -> action.contains("增量同步"));
+        assertThat(response.recommendedActions()).anyMatch(action -> action.contains("内部/历史能力"));
     }
 
     @Test

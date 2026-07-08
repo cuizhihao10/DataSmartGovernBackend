@@ -16,6 +16,7 @@ import com.czh.datasmart.govern.datasync.integration.datasource.tableprobe.Datas
 import com.czh.datasmart.govern.datasync.integration.datasource.tableprobe.DatasourceTableRowCountProbeRequest;
 import com.czh.datasmart.govern.datasync.integration.datasource.tableprobe.DatasourceTableRowCountProbeResponse;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
+import com.czh.datasmart.govern.datasync.support.SyncWriteStrategy;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -199,6 +200,9 @@ public class SyncTemplateMetadataAwarePrecheckSupport {
         if ((mappings == null || mappings.isEmpty()) && fieldMappingsByObject.size() == 1) {
             mappings = fieldMappingsByObject.values().iterator().next();
         }
+        validateTargetPrimaryKeyMappedForUpdate(mapping, targetTable,
+                mappings == null ? List.of() : mappings,
+                template, issueCodes, recommendedActions);
         if (customSqlMode) {
             /*
              * CUSTOM_SQL_QUERY 的 Reader 输出不是一张固定源表，而是一段只读 SQL 的结果集。
@@ -219,6 +223,48 @@ public class SyncTemplateMetadataAwarePrecheckSupport {
         validateFieldMappings(mapping, sourceTable, targetTable,
                 mappings == null ? List.of() : mappings,
                 issueCodes, recommendedActions, safetyNotes);
+    }
+
+    /**
+     * 校验 UPDATE/merge 场景是否把目标主键纳入字段映射。
+     *
+     * <p>目标表“有主键”和“本次同步能使用主键”是两件事。前者表示数据库结构具备幂等写入边界，
+     * 后者要求本次 reader 输出中真的包含能写入该主键字段的值。举例：目标表主键是 {@code id}，
+     * 但字段映射只同步了 {@code name/status}，runner 即使想做 merge，也不知道应该更新哪一行。
+     * 因此这里要求 UPDATE/merge 至少勾选一个目标主键字段映射。</p>
+     *
+     * <p>该检查同样适用于 CUSTOM_SQL_QUERY：SQL 结果集可以没有固定源表，但只要选择 UPDATE/merge，
+     * SELECT 输出列或别名就必须映射到目标主键字段，否则 SQL 结果集无法被安全合并进目标表。</p>
+     */
+    private void validateTargetPrimaryKeyMappedForUpdate(ObjectMapping objectMapping,
+                                                         DatasourceMetadataDiscoveryResponse.TableSummary targetTable,
+                                                         List<FieldMapping> mappings,
+                                                         SyncTemplate template,
+                                                         List<String> issueCodes,
+                                                         List<String> recommendedActions) {
+        if (!isConflictWriteStrategy(template) || targetTable == null || !hasPrimaryKey(targetTable)) {
+            return;
+        }
+        List<String> targetPrimaryKeys = targetPrimaryKeys(targetTable);
+        if (targetPrimaryKeys.isEmpty()) {
+            return;
+        }
+        List<String> enabledTargetFields = mappings.stream()
+                .filter(FieldMapping::syncEnabled)
+                .map(FieldMapping::targetField)
+                .map(this::normalizeKey)
+                .filter(Objects::nonNull)
+                .toList();
+        boolean primaryKeyMapped = targetPrimaryKeys.stream()
+                .map(this::normalizeKey)
+                .anyMatch(enabledTargetFields::contains);
+        if (!primaryKeyMapped) {
+            issueCodes.add("METADATA_TARGET_PRIMARY_KEY_FIELD_NOT_MAPPED_FOR_UPDATE");
+            recommendedActions.add("写入策略为 UPDATE/merge 时，字段映射必须包含目标对象 "
+                    + lowSensitiveObject(objectMapping.targetSchema(), objectMapping.targetObject())
+                    + " 的主键字段 " + targetPrimaryKeys
+                    + "；否则执行器无法判断 SQL/源端记录应该合并到目标表的哪一行。");
+        }
     }
 
     /**
@@ -611,18 +657,19 @@ public class SyncTemplateMetadataAwarePrecheckSupport {
     }
 
     private boolean isInsertWriteStrategy(SyncTemplate template) {
-        String writeStrategy = trimToNull(template.getWriteStrategy());
-        return writeStrategy == null
-                || "INSERT".equalsIgnoreCase(writeStrategy)
-                || "APPEND".equalsIgnoreCase(writeStrategy);
+        try {
+            return SyncWriteStrategy.fromValueForMode(template.getWriteStrategy(), template.getSyncMode()).insertLike();
+        } catch (IllegalArgumentException exception) {
+            return false;
+        }
     }
 
     private boolean isConflictWriteStrategy(SyncTemplate template) {
-        String writeStrategy = trimToNull(template.getWriteStrategy());
-        return "UPDATE".equalsIgnoreCase(writeStrategy)
-                || "UPSERT".equalsIgnoreCase(writeStrategy)
-                || "INSERT_IGNORE".equalsIgnoreCase(writeStrategy)
-                || "REPLACE".equalsIgnoreCase(writeStrategy);
+        try {
+            return SyncWriteStrategy.fromValueForMode(template.getWriteStrategy(), template.getSyncMode()).mergeLike();
+        } catch (IllegalArgumentException exception) {
+            return false;
+        }
     }
 
     private boolean isFullLikeMode(SyncTemplate template) {
@@ -640,6 +687,25 @@ public class SyncTemplateMetadataAwarePrecheckSupport {
         }
         return table.getColumns() != null && table.getColumns().stream()
                 .anyMatch(column -> column != null && column.isPrimaryKey());
+    }
+
+    private List<String> targetPrimaryKeys(DatasourceMetadataDiscoveryResponse.TableSummary table) {
+        if (table == null) {
+            return List.of();
+        }
+        if (table.getPrimaryKeys() != null && !table.getPrimaryKeys().isEmpty()) {
+            return table.getPrimaryKeys().stream()
+                    .filter(this::hasText)
+                    .toList();
+        }
+        if (table.getColumns() == null) {
+            return List.of();
+        }
+        return table.getColumns().stream()
+                .filter(column -> column != null && column.isPrimaryKey())
+                .map(DatasourceMetadataDiscoveryResponse.ColumnSummary::getColumnName)
+                .filter(this::hasText)
+                .toList();
     }
 
     private boolean isMysqlFamily(String connectorType) {

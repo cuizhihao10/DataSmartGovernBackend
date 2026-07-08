@@ -85,7 +85,8 @@ public class SyncTaskCreateWizardContractSupport {
         List<String> nextActions = new ArrayList<>();
 
         SyncMode mode = resolveMode(request == null ? null : request.getSyncMode(), blocking);
-        SyncWriteStrategy writeStrategy = resolveWriteStrategy(request == null ? null : request.getWriteStrategy(), blocking);
+        SyncWriteStrategy writeStrategy = resolveWriteStrategy(
+                request == null ? null : request.getWriteStrategy(), mode, blocking);
         String derivedRunMode = mode != null && mode.requiresTaskScheduleConfig() ? "SCHEDULED" : "MANUAL";
 
         switch (stepCode) {
@@ -100,7 +101,9 @@ public class SyncTaskCreateWizardContractSupport {
                 blocking.isEmpty(),
                 stepCode,
                 derivedRunMode,
-                writeStrategy == null ? SyncWriteStrategy.INSERT.name() : normalizeUserFacingStrategy(writeStrategy),
+                writeStrategy == null
+                        ? (mode == SyncMode.CDC_STREAMING ? SyncWriteStrategy.UPDATE.name() : SyncWriteStrategy.INSERT.name())
+                        : normalizeUserFacingStrategy(writeStrategy),
                 List.copyOf(blocking),
                 List.copyOf(warnings),
                 List.copyOf(nextActions));
@@ -129,7 +132,7 @@ public class SyncTaskCreateWizardContractSupport {
                         "字段/SQL",
                         3,
                         List.of("writeStrategy", "fieldMappingConfig 或 customSqlConfig"),
-                        "保存逐对象字段映射/SQL/where 条件草稿并进入自动预检查",
+                        "保存逐对象字段映射/SQL/where 条件草稿并进入自动预检查；实时模式不展示写入策略，后端固定 UPDATE/merge",
                         List.of("字段映射以源端和目标端真实元数据为准，同名字段只做默认预填", "多表模式必须支持每个对象映射单独维护字段映射和 where 条件", "SQL 模式校验只读 SQL、语法、库表存在性和别名字段映射"),
                         List.of("primaryKeyField", "incrementalField", "partitionConfig", "retryPolicy", "timeoutPolicy")),
                 new SyncTaskCreateWizardContractResponse.WizardStep(
@@ -228,6 +231,7 @@ public class SyncTaskCreateWizardContractSupport {
                 "对象映射和字段映射应由元数据发现、搜索、勾选、排除、改名等交互生成，后端继续以结构化配置保存",
                 "CUSTOM_SQL_QUERY 只要求选择目标对象，源端字段由 SQL select 列和别名决定",
                 "定期全量和定期批量必须携带 scheduleConfig，其他模式不能通过 runMode 或 scheduleConfig 伪装成定时任务",
+                "实时 CDC 模式不要求用户选择写入策略，后端默认 UPDATE/merge；INSERT/APPEND 这类追加语义不适合普通实时表同步",
                 "主键、外键、目标约束、字段数量、字段类型、对象存在性和 SQL 安全在预检查阶段自动判断",
                 "失败回放、历史补数、脏数据修复重放属于任务运行期恢复能力，不作为新建任务模式展示");
     }
@@ -345,9 +349,14 @@ public class SyncTaskCreateWizardContractSupport {
         }
     }
 
-    private SyncWriteStrategy resolveWriteStrategy(String writeStrategy, List<String> blocking) {
+    private SyncWriteStrategy resolveWriteStrategy(String writeStrategy, SyncMode mode, List<String> blocking) {
         try {
-            SyncWriteStrategy strategy = SyncWriteStrategy.fromValue(writeStrategy);
+            SyncWriteStrategy strategy = SyncWriteStrategy.fromValueForMode(
+                    writeStrategy, mode == null ? null : mode.name());
+            if (mode == SyncMode.CDC_STREAMING && strategy.insertLike()) {
+                blocking.add("实时同步模式不需要选择写入策略，后端默认 UPDATE/merge；请不要提交 INSERT 或 APPEND");
+                return null;
+            }
             if (strategy == SyncWriteStrategy.APPEND) {
                 return SyncWriteStrategy.INSERT;
             }

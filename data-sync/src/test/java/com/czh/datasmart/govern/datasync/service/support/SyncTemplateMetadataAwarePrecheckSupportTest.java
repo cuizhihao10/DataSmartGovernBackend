@@ -94,6 +94,42 @@ class SyncTemplateMetadataAwarePrecheckSupportTest {
     }
 
     @Test
+    void updateWriteStrategyShouldRequireMappedTargetPrimaryKeyField() {
+        DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
+        SyncTemplateMetadataAwarePrecheckSupport support = support(metadataClient, emptyTargetProbe());
+        when(metadataClient.discover(eq(23L), any(), any())).thenReturn(responseWithTable(null, "task",
+                column("id", "BIGINT", true),
+                column("task_name", "VARCHAR", false)));
+        when(metadataClient.discover(eq(24L), any(), any())).thenReturn(responseWithTable("target_schema", "target_task",
+                column("id", "BIGINT", true),
+                column("task_name", "VARCHAR", false)));
+
+        SyncTemplate template = templateWithCustomTarget("target_schema", "target_task");
+        template.setWriteStrategy("UPDATE");
+        template.setFieldMappingConfig("""
+                {
+                  "version": "datasmart.sync-field-mapping.v2",
+                  "objectMappings": [
+                    {
+                      "sourceObjectName": "task",
+                      "targetSchema": "target_schema",
+                      "targetObjectName": "target_task",
+                      "mappings": [
+                        {"sourceField": "task_name", "targetField": "task_name", "syncEnabled": true}
+                      ]
+                    }
+                  ]
+                }
+                """);
+
+        SyncTemplateMetadataAwarePrecheckSupport.MetadataAwarePrecheckResult result =
+                support.evaluate(template, actor());
+
+        assertThat(result.issueCodes()).contains("METADATA_TARGET_PRIMARY_KEY_FIELD_NOT_MAPPED_FOR_UPDATE");
+        assertThat(result.recommendedActions()).anyMatch(action -> action.contains("主键字段"));
+    }
+
+    @Test
     void customSqlModeShouldValidateTargetFieldWithoutRequiringSourceObject() {
         DatasourceMetadataDiscoveryClient metadataClient = mock(DatasourceMetadataDiscoveryClient.class);
         SyncTemplateMetadataAwarePrecheckSupport support = support(metadataClient, emptyTargetProbe());
