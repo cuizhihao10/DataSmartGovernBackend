@@ -718,6 +718,13 @@ datasmart:
           method-actions:
             GET: VIEW
 
+        - path-pattern: /api/sync/sync-tasks/*/executions/*/logs
+          resource-type: SYNC_EXECUTION
+          default-action: VIEW
+          description: data-sync 运行日志查询入口，用于查看任务入队、执行器认领、计划生成、通道创建、批次回执和最终状态等低敏执行证据。
+          method-actions:
+            GET: VIEW
+
         - path-pattern: /api/sync/sync-tasks/*/executions/*/objects/retry
           resource-type: SYNC_EXECUTION
           default-action: RECOVER

@@ -304,6 +304,9 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/sync/sync-tasks/*/executions/*/objects", "SYNC_EXECUTION",
                 "data-sync 对象级执行账本查询入口，用于查看 OBJECT_LIST 父 execution 内部每个对象的状态、尝试次数和低敏失败摘要",
                 Map.of("GET", "VIEW")));
+        defaults.add(route("/api/sync/sync-tasks/*/executions/*/logs", "SYNC_EXECUTION",
+                "data-sync 运行日志查询入口，用于查看入队、认领、计划、通道、批次回执和完成状态等低敏执行证据",
+                Map.of("GET", "VIEW")));
         defaults.add(route("/api/sync/sync-tasks/*/executions/*/objects/retry", "SYNC_EXECUTION",
                 "data-sync 失败对象选择性重试入口，会把 FAILED 对象重置为 PENDING 并重新排队父 execution，属于运维恢复动作",
                 Map.of("POST", "RECOVER")));
