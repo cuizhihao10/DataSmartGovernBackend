@@ -149,11 +149,29 @@ public class DataSourceAuthorizationController {
             datasourceProjectScopeSupport.validateProjectManageable(datasource.getProjectId(), visibility, "数据源授权");
             return datasource;
         } catch (IllegalArgumentException exception) {
-            if (dataSourceAuthorizationService.hasActiveAuthorization(
-                    datasourceId, actorContext, DataSourceAuthorizationAction.MANAGE)) {
+            if (!visibility.canReachProject(datasource.getProjectId())) {
+                throw exception;
+            }
+            if (isDatasourceOwner(datasource, actorContext)) {
                 return datasource;
             }
             throw exception;
+        }
+    }
+
+    private boolean isDatasourceOwner(DataSourceConfig datasource, DatasourceAuthorizationActorContext actorContext) {
+        Long actorId = parseActorId(actorContext == null ? null : actorContext.actorId());
+        return actorId != null && actorId.equals(datasource.getOwnerId());
+    }
+
+    private Long parseActorId(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.valueOf(value.trim());
+        } catch (NumberFormatException exception) {
+            return null;
         }
     }
 }

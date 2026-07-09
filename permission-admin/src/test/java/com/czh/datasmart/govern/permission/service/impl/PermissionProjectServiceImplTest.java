@@ -72,7 +72,7 @@ class PermissionProjectServiceImplTest {
      * 项目负责人自助创建项目时，系统应自动生成 projectId，并给本人授予 OWNER。
      */
     @Test
-    void projectOwnerCanCreateProjectAndReceiveOwnerMembershipWithoutWorkspace() {
+    void tenantAdministratorCanCreateProjectAndReceiveOwnerMembershipWithoutWorkspace() {
         when(projectMapper.nextProjectId()).thenReturn(100000L);
         when(projectMapper.selectDefaultApplicationId(10L)).thenReturn(10010L);
         when(projectMapper.selectCount(any())).thenReturn(0L);
@@ -86,7 +86,7 @@ class PermissionProjectServiceImplTest {
         PermissionProjectMutationResult result = service.createProject(
                 new PermissionProjectCreateRequest(10L, null, "CUSTOMER_SYNC", "客户同步项目",
                         null, null, "用于客户库到数仓的同步任务", "创建客户同步项目"),
-                actor(10L, 1001L, PermissionRoleCode.PROJECT_OWNER));
+                actor(10L, 1001L, PermissionRoleCode.TENANT_ADMINISTRATOR));
 
         assertThat(result.projectId()).isEqualTo(100000L);
         assertThat(result.tenantId()).isEqualTo(10L);
@@ -113,10 +113,10 @@ class PermissionProjectServiceImplTest {
      * 项目负责人只能创建自己负责的新项目，不能把别人设为 OWNER。
      */
     @Test
-    void projectOwnerCannotCreateProjectForAnotherOwner() {
+    void projectOwnerCannotCreateProjectDirectly() {
         assertThatThrownBy(() -> service.createProject(
-                new PermissionProjectCreateRequest(10L, null, "OTHER_OWNER", "其他负责人项目",
-                        null, 2002L, null, "测试越权"),
+                new PermissionProjectCreateRequest(10L, null, "PROJECT_OWNER_DIRECT", "直接创建项目",
+                        null, null, null, "测试越权"),
                 actor(10L, 1001L, PermissionRoleCode.PROJECT_OWNER)))
                 .isInstanceOfSatisfying(PlatformBusinessException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(PlatformErrorCode.FORBIDDEN));

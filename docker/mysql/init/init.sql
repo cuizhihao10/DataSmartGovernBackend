@@ -374,6 +374,8 @@ CREATE TABLE IF NOT EXISTS datasource_config (
     tenant_id BIGINT NOT NULL DEFAULT 1 COMMENT '租户 ID，用于多租户隔离、审计、配额和成本统计',
     project_id BIGINT NOT NULL DEFAULT 1 COMMENT '项目 ID，用于 PROJECT 数据范围、项目级数据源列表和项目级权限边界',
     workspace_id BIGINT COMMENT '工作空间 ID，用于项目内研发/测试/生产等协作空间隔离',
+    owner_id BIGINT NOT NULL DEFAULT 0 COMMENT '数据源所有者 actorId；实例授权可编辑/使用但不能删除，删除仅允许 owner 或项目管理者',
+    created_by BIGINT NOT NULL DEFAULT 0 COMMENT '数据源创建人 actorId；通常等于 owner_id，后续用于代创建或所有权转移审计',
     name VARCHAR(128) NOT NULL COMMENT '唯一数据源名称',
     type VARCHAR(32) NOT NULL COMMENT '数据源类型，例如 MYSQL、POSTGRESQL',
     jdbc_url VARCHAR(512) NOT NULL COMMENT '连接地址',
@@ -390,6 +392,8 @@ CREATE TABLE IF NOT EXISTS datasource_config (
     UNIQUE KEY uk_datasource_tenant_project_name (tenant_id, project_id, name),
     INDEX idx_datasource_tenant_project (tenant_id, project_id, status),
     INDEX idx_datasource_project_id_desc (tenant_id, project_id, id),
+    INDEX idx_datasource_owner_project (tenant_id, project_id, owner_id, status, id),
+    INDEX idx_datasource_created_by (tenant_id, created_by, id),
     INDEX idx_datasource_workspace (tenant_id, workspace_id, status),
     INDEX idx_datasource_type (type),
     INDEX idx_datasource_status (status)

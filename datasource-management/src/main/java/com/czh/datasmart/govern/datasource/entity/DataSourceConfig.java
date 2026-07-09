@@ -9,6 +9,7 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Data;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * @Author : Cui
@@ -56,6 +57,34 @@ public class DataSourceConfig {
      * 当前先作为可选字段保留，后续可以继续扩展为空间级配额、空间级元数据缓存和空间级访问审计。
      */
     private Long workspaceId;
+
+    /**
+     * 数据源所有者 actorId。
+     *
+     * <p>数据源虽然挂在项目下用于项目级隔离，但它仍然有明确的个人所有者。所有者可以在
+     * 已加入该项目的前提下维护连接信息、授权协作者使用数据源，并在需要时删除自己的数据源。
+     * 这与项目 MANAGER/OWNER 的项目级管理权形成双保险：普通被授权用户可以协作使用或编辑，
+     * 但不会因为拿到实例授权就自动获得删除能力。</p>
+     */
+    private Long ownerId;
+
+    /**
+     * 创建人 actorId。
+     *
+     * <p>通常与 ownerId 相同，单独保留是为了后续支持管理员代创建、Agent 代创建或资源转移：
+     * createdBy 记录“谁创建了这条记录”，ownerId 记录“当前谁对这条数据源负主要责任”。</p>
+     */
+    private Long createdBy;
+
+    /**
+     * 当前请求 actor 对这条数据源实际可执行的低敏动作快照。
+     *
+     * <p>该字段不是数据库列，而是 Controller 根据项目角色、owner 关系和实例级授权动态计算后返回给前端。
+     * 它只表达 VIEW/USE/MANAGE 这类实例能力：MANAGE 允许编辑和受控使用，但删除仍由后端单独要求 owner
+     * 或项目 MANAGER/OWNER，避免前端把“可维护连接”误解成“可删除资源”。</p>
+     */
+    @TableField(exist = false)
+    private List<String> effectiveActions;
 
     /**
      * 数据源名称。

@@ -7,19 +7,26 @@
 package com.czh.datasmart.govern.datasource.controller;
 
 import com.czh.datasmart.govern.datasource.controller.dto.CreateDataSourceRequest;
+import com.czh.datasmart.govern.datasource.controller.dto.UpdateDataSourceRequest;
 import com.czh.datasmart.govern.datasource.entity.DataSourceConfig;
 import com.czh.datasmart.govern.datasource.service.DataSourceAuthorizationService;
 import com.czh.datasmart.govern.datasource.service.DataSourceManagementService;
 import com.czh.datasmart.govern.datasource.service.support.DataSourceCredentialCipherSupport;
 import com.czh.datasmart.govern.datasource.service.support.DatasourceProjectScopeSupport;
+import com.czh.datasmart.govern.datasource.support.DataSourceAuthorizationAction;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -67,6 +74,8 @@ class DataSourceManagementControllerTest {
                 eq(10L),
                 eq(205L),
                 isNull(),
+                eq(1002L),
+                eq(1002L),
                 any(),
                 any(),
                 any(),
@@ -76,13 +85,15 @@ class DataSourceManagementControllerTest {
                 any()
         )).thenReturn(saved);
 
-        controller.createDataSource(request, 10L, 205L, null, null, null);
+        controller.createDataSource(request, 10L, 205L, "1002", null, null, null);
 
         ArgumentCaptor<Long> workspaceCaptor = ArgumentCaptor.forClass(Long.class);
         verify(service).createDataSource(
                 eq(10L),
                 eq(205L),
                 workspaceCaptor.capture(),
+                eq(1002L),
+                eq(1002L),
                 eq("订单库源端"),
                 eq("MYSQL"),
                 eq("jdbc:mysql://localhost:3306/order_db"),
@@ -92,5 +103,114 @@ class DataSourceManagementControllerTest {
                 eq("SOURCE")
         );
         assertThat(workspaceCaptor.getValue()).isNull();
+    }
+
+    @Test
+    void datasourceOwnerShouldEditWithReaderProjectRole() {
+        DataSourceManagementService service = mock(DataSourceManagementService.class);
+        DataSourceAuthorizationService authorizationService = mock(DataSourceAuthorizationService.class);
+        DataSourceManagementController controller = new DataSourceManagementController(
+                service,
+                authorizationService,
+                new DatasourceProjectScopeSupport(),
+                mock(DataSourceCredentialCipherSupport.class)
+        );
+        DataSourceConfig saved = activeDatasource(88L, 205L, 1002L);
+        when(service.getById(88L)).thenReturn(saved);
+        when(service.updateDataSource(eq(88L), any(), any(), any(), any(), any(), any())).thenReturn(saved);
+
+        controller.updateDataSource(88L, updateRequest(), "1002", "ORDINARY_USER", "USER",
+                "PROJECT", "205", "205:READER");
+
+        verify(service).updateDataSource(eq(88L), eq("order-source"), eq("jdbc:mysql://localhost:3306/order_db"),
+                eq("readonly_user"), isNull(), eq("updated"), eq("SOURCE"));
+    }
+
+    @Test
+    void instanceManageAuthorizationShouldNotDeleteDatasource() {
+        DataSourceManagementService service = mock(DataSourceManagementService.class);
+        DataSourceAuthorizationService authorizationService = mock(DataSourceAuthorizationService.class);
+        DataSourceManagementController controller = new DataSourceManagementController(
+                service,
+                authorizationService,
+                new DatasourceProjectScopeSupport(),
+                mock(DataSourceCredentialCipherSupport.class)
+        );
+        DataSourceConfig saved = activeDatasource(89L, 205L, 1002L);
+        when(service.getById(89L)).thenReturn(saved);
+        when(authorizationService.hasActiveAuthorization(eq(89L), any(), eq(DataSourceAuthorizationAction.MANAGE)))
+                .thenReturn(true);
+
+        assertThatThrownBy(() -> controller.deleteDataSource(89L, "1003", "ORDINARY_USER", "USER",
+                "PROJECT", "205", "205:READER"))
+                .isInstanceOf(IllegalArgumentException.class);
+        verify(service, never()).deleteDataSource(89L);
+    }
+
+    @Test
+    void instanceManageAuthorizationShouldEditDatasourceWhenActorJoinedProject() {
+        DataSourceManagementService service = mock(DataSourceManagementService.class);
+        DataSourceAuthorizationService authorizationService = mock(DataSourceAuthorizationService.class);
+        DataSourceManagementController controller = new DataSourceManagementController(
+                service,
+                authorizationService,
+                new DatasourceProjectScopeSupport(),
+                mock(DataSourceCredentialCipherSupport.class)
+        );
+        DataSourceConfig saved = activeDatasource(90L, 205L, 1002L);
+        when(service.getById(90L)).thenReturn(saved);
+        when(authorizationService.hasActiveAuthorization(eq(90L), any(), eq(DataSourceAuthorizationAction.MANAGE)))
+                .thenReturn(true);
+        when(service.updateDataSource(eq(90L), any(), any(), any(), any(), any(), any())).thenReturn(saved);
+
+        controller.updateDataSource(90L, updateRequest(), "1003", "ORDINARY_USER", "USER",
+                "PROJECT", "205", "205:READER");
+
+        verify(service).updateDataSource(eq(90L), eq("order-source"), eq("jdbc:mysql://localhost:3306/order_db"),
+                eq("readonly_user"), isNull(), eq("updated"), eq("SOURCE"));
+    }
+
+    @Test
+    void listDataSourcesShouldNotMergeInstanceAuthorizationAcrossProjects() {
+        DataSourceManagementService service = mock(DataSourceManagementService.class);
+        DataSourceAuthorizationService authorizationService = mock(DataSourceAuthorizationService.class);
+        DataSourceCredentialCipherSupport cipherSupport = mock(DataSourceCredentialCipherSupport.class);
+        DataSourceManagementController controller = new DataSourceManagementController(
+                service,
+                authorizationService,
+                new DatasourceProjectScopeSupport(),
+                cipherSupport
+        );
+        Page<DataSourceConfig> emptyPage = new Page<>(1, 10, 0);
+        when(service.page(any(), any())).thenReturn(emptyPage);
+        when(cipherSupport.sanitizeForApi(org.mockito.ArgumentMatchers.<List<DataSourceConfig>>any()))
+                .thenReturn(List.of());
+
+        controller.listDataSources(1, 10, 10L, 205L, null, null, null, null,
+                10L, 205L, "1003", "ORDINARY_USER", "USER", "PROJECT", "205", null);
+
+        verify(authorizationService, never()).findAuthorizedDatasourceIds(
+                any(), any(), any(), eq(DataSourceAuthorizationAction.VIEW));
+    }
+
+    private DataSourceConfig activeDatasource(Long id, Long projectId, Long ownerId) {
+        DataSourceConfig saved = new DataSourceConfig();
+        saved.setId(id);
+        saved.setTenantId(10L);
+        saved.setProjectId(projectId);
+        saved.setOwnerId(ownerId);
+        saved.setStatus("ACTIVE");
+        return saved;
+    }
+
+    private UpdateDataSourceRequest updateRequest() {
+        UpdateDataSourceRequest request = new UpdateDataSourceRequest();
+        request.setName("order-source");
+        request.setJdbcUrl("jdbc:mysql://localhost:3306/order_db");
+        request.setUsername("readonly_user");
+        request.setPassword(null);
+        request.setDescription("updated");
+        request.setUsagePurpose("SOURCE");
+        return request;
     }
 }

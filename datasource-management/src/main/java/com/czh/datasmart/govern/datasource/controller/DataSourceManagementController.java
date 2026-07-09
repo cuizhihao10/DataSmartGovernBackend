@@ -42,8 +42,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDateTime;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * @Author : Cui
@@ -82,6 +84,15 @@ public class DataSourceManagementController {
      * FlashSync 默认项目 ID，对应 permission-admin 初始化脚本里的 FLASHSYNC_DEFAULT。
      */
     private static final Long DEFAULT_FLASHSYNC_PROJECT_ID = 101L;
+
+    /**
+     * 本地开发兜底 actor。
+     *
+     * <p>生产链路中 ownerId/createdBy 应由 gateway 从 Keycloak/企业 IdP 解析后写入
+     * {@code X-DataSmart-Actor-Id}。保留这个兜底值只是为了本地直连接口、历史 smoke 和未登录调试
+     * 不会创建出 ownerId 为空的资源；它不代表生产环境允许匿名创建数据源。</p>
+     */
+    private static final Long LOCAL_DEVELOPMENT_ACTOR_ID = 1001L;
 
     /**
      * 数据源业务服务。
@@ -129,11 +140,13 @@ public class DataSourceManagementController {
             @Valid @RequestBody CreateDataSourceRequest request,
             @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantHeader,
             @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectHeader,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
         Long tenantId = resolveScopeValue("tenantId", tenantHeader, request.getTenantId(), DEFAULT_FLASHSYNC_TENANT_ID);
         Long projectId = resolveScopeValue("projectId", projectHeader, request.getProjectId(), DEFAULT_FLASHSYNC_PROJECT_ID);
+        Long ownerId = parseActorIdOrDefault(actorId);
         DatasourceProjectVisibility visibility = datasourceProjectScopeSupport.resolveVisibility(
                 projectId, null, dataScopeLevel, authorizedProjectIds, authorizedProjectRoles);
         datasourceProjectScopeSupport.validateProjectManageable(projectId, visibility, "数据源");
@@ -141,6 +154,8 @@ public class DataSourceManagementController {
                 tenantId,
                 projectId,
                 null,
+                ownerId,
+                ownerId,
                 request.getName(),
                 request.getType(),
                 request.getJdbcUrl(),
@@ -178,8 +193,9 @@ public class DataSourceManagementController {
      * {@code usagePurpose=TARGET} 获取目标端候选。后端会严格按 SOURCE/TARGET 精确过滤，不再把同一条连接
      * 同时允许作为源端和目标端。</p>
      *
-     * <p>可见性口径是“项目范围可见的数据源 ∪ 显式授权给当前 actor 的数据源”。这样授权给其他用户后，
-     * 被授权用户不需要成为项目负责人，也能在新建同步任务的源端/目标端选择器中看到那条数据源。</p>
+     * <p>可见性口径先看项目成员资格：数据源列表只展示当前项目可达范围内的数据源。
+     * 实例级 VIEW/USE/MANAGE 授权不会绕过项目隔离，它只在详情、编辑、元数据发现、创建同步任务引用等具体动作中，
+     * 让项目内协作者获得更高的数据源使用能力。</p>
      */
     @GetMapping
     public ResponseEntity<ApiResponse<IPage<DataSourceConfig>>> listDataSources(
@@ -197,13 +213,11 @@ public class DataSourceManagementController {
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
-            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
         Long effectiveTenantId = resolveScopeValue("tenantId", tenantHeader, tenantId, DEFAULT_FLASHSYNC_TENANT_ID);
         Long effectiveProjectId = resolveScopeValue("projectId", projectHeader, projectId, DEFAULT_FLASHSYNC_PROJECT_ID);
         DatasourceAuthorizationActorContext actorContext = resolveActorContext(actorId, actorRole, actorType);
-        List<Long> authorizedDatasourceIds = dataSourceAuthorizationService.findAuthorizedDatasourceIds(
-                effectiveTenantId, effectiveProjectId, actorContext, DataSourceAuthorizationAction.VIEW);
-
         /*
          * 数据源管理页已经收敛为项目级作用域。
          *
@@ -211,10 +225,10 @@ public class DataSourceManagementController {
          * 如果继续把 workspaceId 作为查询条件，用户在项目 101 下创建的数据源可能因为不可见 workspace 维度而消失。
          */
         DatasourceProjectVisibility visibility = datasourceProjectScopeSupport.resolveVisibility(
-                effectiveProjectId, null, dataScopeLevel, authorizedProjectIds);
+                effectiveProjectId, null, dataScopeLevel, authorizedProjectIds, authorizedProjectRoles);
         LambdaQueryWrapper<DataSourceConfig> wrapper = new LambdaQueryWrapper<>();
         wrapper.ne(DataSourceConfig::getStatus, DataSourceStatus.DELETED);
-        applyDatasourceScope(wrapper, effectiveTenantId, visibility, authorizedDatasourceIds);
+        applyDatasourceScope(wrapper, effectiveTenantId, visibility);
         if (hasText(type)) {
             wrapper.eq(DataSourceConfig::getType, type.toUpperCase());
         }
@@ -238,14 +252,15 @@ public class DataSourceManagementController {
         wrapper.orderByDesc(DataSourceConfig::getId);
 
         IPage<DataSourceConfig> result = dataSourceManagementService.page(new Page<>(safeCurrent(current), safeSize(size)), wrapper);
-        result.setRecords(dataSourceCredentialCipherSupport.sanitizeForApi(result.getRecords()));
+        result.setRecords(sanitizeForApiWithEffectiveActions(result.getRecords(), visibility, actorContext));
         return ResponseEntity.ok(ApiResponse.success(result));
     }
 
     /**
      * 查询单个数据源详情。
      *
-     * <p>详情页只展示低敏配置字段，但仍然是按 ID 访问，所以必须二次校验项目范围或实例 VIEW 授权。</p>
+     * <p>详情页只展示低敏配置字段，但仍然是按 ID 访问，所以必须二次校验项目范围；
+     * 实例 VIEW 授权只在 actor 已经属于该数据源项目时生效。</p>
      */
     @GetMapping("/{id}")
     public ResponseEntity<ApiResponse<DataSourceConfig>> getDataSource(
@@ -387,7 +402,8 @@ public class DataSourceManagementController {
     /**
      * 逻辑删除数据源。
      *
-     * <p>删除采用逻辑删除，历史任务、审计和授权事实仍可追溯。删除同样属于 MANAGE 动作。</p>
+     * <p>删除采用逻辑删除，历史任务、审计和授权事实仍可追溯。删除比普通编辑更敏感：
+     * 数据源实例级 MANAGE 授权只能让协作者维护连接配置，不能扩大成删除权。</p>
      */
     @DeleteMapping("/{id}")
     public ResponseEntity<ApiResponse<DataSourceConfig>> deleteDataSource(
@@ -398,13 +414,12 @@ public class DataSourceManagementController {
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
-        getRequiredVisibleDataSource(
+        getRequiredDeletableDataSource(
                 id,
                 dataScopeLevel,
                 authorizedProjectIds,
                 authorizedProjectRoles,
-                resolveActorContext(actorId, actorRole, actorType),
-                DataSourceAuthorizationAction.MANAGE);
+                resolveActorContext(actorId, actorRole, actorType));
         return ResponseEntity.ok(ApiResponse.success("数据源已删除",
                 dataSourceCredentialCipherSupport.sanitizeForApi(dataSourceManagementService.deleteDataSource(id))));
     }
@@ -557,29 +572,17 @@ public class DataSourceManagementController {
     }
 
     /**
-     * 给数据源列表追加租户与项目/授权范围过滤。
+     * 给数据源列表追加租户与项目范围过滤。
      *
      * <p>当 permission-admin 明确要求 PROJECT 范围时，列表必须限制在授权项目集合内；
-     * 如果当前 actor 还被单独授予了某些数据源实例的 VIEW/USE/MANAGE 权限，则把这些数据源 ID 与项目范围做并集。
-     * 当不是 PROJECT 强制范围时，仍然尊重显式 projectId 过滤，但不额外用实例授权缩小或放大范围，避免平台管理员/租户管理员视图被误裁剪。</p>
+     * 实例级数据源授权必须建立在项目成员资格之上，不能把其他项目的数据源并入当前列表。
+     * 当不是 PROJECT 强制范围时，仍然尊重显式 projectId 过滤，避免平台管理员/租户管理员视图被误裁剪。</p>
      */
     private void applyDatasourceScope(LambdaQueryWrapper<DataSourceConfig> wrapper,
                                       Long tenantId,
-                                      DatasourceProjectVisibility visibility,
-                                      List<Long> authorizedDatasourceIds) {
+                                      DatasourceProjectVisibility visibility) {
         wrapper.eq(tenantId != null, DataSourceConfig::getTenantId, tenantId);
-        if (authorizedDatasourceIds == null || authorizedDatasourceIds.isEmpty()) {
-            applyProjectVisibilityOnly(wrapper, visibility);
-            return;
-        }
-        if (visibility == null || !visibility.projectScopeEnforced()) {
-            applyProjectVisibilityOnly(wrapper, visibility);
-            return;
-        }
-        wrapper.and(scope -> {
-            applyProjectVisibilityOnly(scope, visibility);
-            scope.or().in(DataSourceConfig::getId, authorizedDatasourceIds);
-        });
+        applyProjectVisibilityOnly(wrapper, visibility);
     }
 
     /**
@@ -641,7 +644,50 @@ public class DataSourceManagementController {
             validateDatasourceProjectAction(config.getProjectId(), visibility, requiredAction);
             return config;
         } catch (IllegalArgumentException exception) {
+            /*
+             * Instance-level authorization is an extension of project membership, not a replacement for it.
+             * A user must still be inside the datasource project before an explicit VIEW/USE/MANAGE grant
+             * can unlock this concrete datasource.
+             */
+            if (!visibility.canReachProject(config.getProjectId())) {
+                throw exception;
+            }
+            if (isDatasourceOwner(config, actorContext)) {
+                return config;
+            }
             if (dataSourceAuthorizationService.hasActiveAuthorization(config.getId(), actorContext, requiredAction)) {
+                return config;
+            }
+            throw exception;
+        }
+    }
+
+    /**
+     * Read and validate whether the current actor can delete a datasource.
+     *
+     * <p>Delete is intentionally stricter than edit. Instance MANAGE authorization lets a collaborator
+     * maintain connection settings, but it must not become a hidden delete permission. Deletion is limited
+     * to the datasource owner or project MANAGER/OWNER.</p>
+     */
+    private DataSourceConfig getRequiredDeletableDataSource(Long id,
+                                                            String dataScopeLevel,
+                                                            String authorizedProjectIds,
+                                                            String authorizedProjectRoles,
+                                                            DatasourceAuthorizationActorContext actorContext) {
+        DataSourceConfig config = dataSourceManagementService.getById(id);
+        if (config == null || DataSourceStatus.DELETED.equals(config.getStatus())) {
+            throw new NoSuchElementException("鏁版嵁婧愪笉瀛樺湪鎴栧凡鍒犻櫎: " + id);
+        }
+        DatasourceProjectVisibility visibility = datasourceProjectScopeSupport.resolveVisibility(
+                null, null, dataScopeLevel, authorizedProjectIds, authorizedProjectRoles);
+        try {
+            datasourceProjectScopeSupport.validateProjectManageable(config.getProjectId(), visibility, "数据源");
+            return config;
+        } catch (IllegalArgumentException exception) {
+            if (!visibility.canReachProject(config.getProjectId())) {
+                throw exception;
+            }
+            if (isDatasourceOwner(config, actorContext)) {
                 return config;
             }
             throw exception;
@@ -676,6 +722,81 @@ public class DataSourceManagementController {
      */
     private DatasourceAuthorizationActorContext resolveActorContext(String actorId, String actorRole, String actorType) {
         return new DatasourceAuthorizationActorContext(actorId, actorRole, actorType);
+    }
+
+    private boolean isDatasourceOwner(DataSourceConfig config, DatasourceAuthorizationActorContext actorContext) {
+        Long actorId = parseActorId(actorContext == null ? null : actorContext.actorId());
+        return actorId != null && actorId.equals(config.getOwnerId());
+    }
+
+    /**
+     * Build API-safe datasource records and attach the current actor's effective datasource actions.
+     *
+     * <p>The action snapshot is a UI convenience contract, not the security boundary. Each mutating or sensitive
+     * endpoint still repeats its own authorization check. Keeping the snapshot here lets datasource list, task wizard
+     * datasource selectors and detail buttons all reason from the same backend-computed permissions.</p>
+     */
+    private List<DataSourceConfig> sanitizeForApiWithEffectiveActions(List<DataSourceConfig> sources,
+                                                                      DatasourceProjectVisibility visibility,
+                                                                      DatasourceAuthorizationActorContext actorContext) {
+        if (sources == null || sources.isEmpty()) {
+            return List.of();
+        }
+        return sources.stream()
+                .map(source -> sanitizeForApiWithEffectiveActions(source, visibility, actorContext))
+                .toList();
+    }
+
+    private DataSourceConfig sanitizeForApiWithEffectiveActions(DataSourceConfig source,
+                                                                DatasourceProjectVisibility visibility,
+                                                                DatasourceAuthorizationActorContext actorContext) {
+        DataSourceConfig sanitized = dataSourceCredentialCipherSupport.sanitizeForApi(source);
+        if (sanitized != null) {
+            sanitized.setEffectiveActions(resolveEffectiveActions(source, visibility, actorContext));
+        }
+        return sanitized;
+    }
+
+    /**
+     * Resolve VIEW/USE/MANAGE for one datasource under the already trusted project scope.
+     *
+     * <p>Instance authorization only becomes effective after the user has joined the datasource project. That product
+     * rule prevents a leaked or stale datasource ACL row from becoming a cross-project data access channel.</p>
+     */
+    private List<String> resolveEffectiveActions(DataSourceConfig source,
+                                                 DatasourceProjectVisibility visibility,
+                                                 DatasourceAuthorizationActorContext actorContext) {
+        if (source == null) {
+            return List.of();
+        }
+        Set<String> actions = new LinkedHashSet<>();
+        if (visibility == null || !visibility.projectScopeEnforced()) {
+            actions.add(DataSourceAuthorizationAction.VIEW.name());
+            actions.add(DataSourceAuthorizationAction.USE.name());
+            actions.add(DataSourceAuthorizationAction.MANAGE.name());
+            return List.copyOf(actions);
+        }
+        Long projectId = source.getProjectId();
+        if (!visibility.canReachProject(projectId)) {
+            return List.of();
+        }
+
+        actions.add(DataSourceAuthorizationAction.VIEW.name());
+        boolean owner = isDatasourceOwner(source, actorContext);
+        boolean projectManageable = visibility.canManageProject(projectId);
+        boolean projectUsable = visibility.canUseProject(projectId);
+        boolean instanceManage = dataSourceAuthorizationService.hasActiveAuthorization(
+                source.getId(), actorContext, DataSourceAuthorizationAction.MANAGE);
+        boolean instanceUse = instanceManage || dataSourceAuthorizationService.hasActiveAuthorization(
+                source.getId(), actorContext, DataSourceAuthorizationAction.USE);
+
+        if (projectUsable || projectManageable || owner || instanceUse) {
+            actions.add(DataSourceAuthorizationAction.USE.name());
+        }
+        if (projectManageable || owner || instanceManage) {
+            actions.add(DataSourceAuthorizationAction.MANAGE.name());
+        }
+        return List.copyOf(actions);
     }
 
     /**
@@ -746,6 +867,22 @@ public class DataSourceManagementController {
      * <p>数据源会随着项目使用持续增长，列表接口必须由服务端兜底分页边界：
      * 页码小于 1 时统一回到第 1 页，避免前端缓存、手工拼 URL 或自动化脚本传入非法页码后得到不可解释的结果。</p>
      */
+    private Long parseActorIdOrDefault(String value) {
+        Long parsed = parseActorId(value);
+        return parsed == null ? LOCAL_DEVELOPMENT_ACTOR_ID : parsed;
+    }
+
+    private Long parseActorId(String value) {
+        if (!hasText(value)) {
+            return null;
+        }
+        try {
+            return Long.valueOf(value.trim());
+        } catch (NumberFormatException exception) {
+            return null;
+        }
+    }
+
     private long safeCurrent(Integer current) {
         return current == null || current <= 0 ? 1L : current.longValue();
     }

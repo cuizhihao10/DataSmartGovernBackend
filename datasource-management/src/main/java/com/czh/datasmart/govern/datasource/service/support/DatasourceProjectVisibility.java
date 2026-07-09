@@ -52,6 +52,22 @@ public record DatasourceProjectVisibility(Long requestedProjectId,
     }
 
     /**
+     * 判断当前请求是否已经处在某个项目成员范围内。
+     *
+     * <p>实例级数据源授权不能绕过项目成员资格：用户即使被授予了某条数据源的 VIEW/USE/MANAGE，
+     * 也必须先加入该数据源所在项目，授权才会生效。这个方法把“是否属于项目”的判断集中起来，
+     * 避免列表、详情、编辑、元数据发现等入口各自解释项目范围。</p>
+     */
+    public boolean canReachProject(Long projectId) {
+        if (!projectScopeEnforced) {
+            return true;
+        }
+        return projectId != null
+                && authorizedProjectIds != null
+                && authorizedProjectIds.contains(projectId);
+    }
+
+    /**
      * 判断当前 actor 是否拥有项目内管理能力。
      *
      * <p>MANAGER 和 OWNER 可以创建、编辑、删除和授权数据源；READER 只能查看。

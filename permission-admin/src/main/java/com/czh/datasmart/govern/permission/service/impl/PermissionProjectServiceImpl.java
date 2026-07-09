@@ -94,7 +94,6 @@ public class PermissionProjectServiceImpl implements PermissionProjectService {
      * 运营和审计保持只读，避免排障角色无意间扩展资源边界。</p>
      */
     private static final Set<String> CREATE_ROLES = Set.of(
-            PermissionRoleCode.PROJECT_OWNER.name(),
             PermissionRoleCode.TENANT_ADMINISTRATOR.name(),
             PermissionRoleCode.PLATFORM_ADMINISTRATOR.name()
     );

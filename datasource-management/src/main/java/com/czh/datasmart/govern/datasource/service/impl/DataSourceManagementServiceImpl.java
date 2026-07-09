@@ -100,6 +100,7 @@ public class DataSourceManagementServiceImpl extends ServiceImpl<DataSourceConfi
     @Override
     @Transactional
     public DataSourceConfig createDataSource(Long tenantId, Long projectId, Long workspaceId,
+                                             Long ownerId, Long createdBy,
                                              String name, String type, String jdbcUrl, String username,
                                              String password, String description, String usagePurpose) {
         ensureNameNotDuplicated(name, tenantId, projectId, null);
@@ -111,6 +112,8 @@ public class DataSourceManagementServiceImpl extends ServiceImpl<DataSourceConfi
         config.setTenantId(tenantId);
         config.setProjectId(projectId);
         config.setWorkspaceId(workspaceId);
+        config.setOwnerId(ownerId == null ? 0L : ownerId);
+        config.setCreatedBy(createdBy == null ? config.getOwnerId() : createdBy);
         config.setName(name);
         config.setType(dataSourceType.name());
         config.setUsagePurpose(normalizedPurpose.name());

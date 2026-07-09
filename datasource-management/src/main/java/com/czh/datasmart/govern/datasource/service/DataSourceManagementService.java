@@ -29,6 +29,7 @@ public interface DataSourceManagementService extends IService<DataSourceConfig> 
      * 创建数据源。
      */
     DataSourceConfig createDataSource(Long tenantId, Long projectId, Long workspaceId,
+                                      Long ownerId, Long createdBy,
                                       String name, String type, String jdbcUrl, String username,
                                       String password, String description, String usagePurpose);
 
