@@ -53,7 +53,7 @@ class SyncBatchConnectorRuntimeJdbcE2ETest {
      * 这个场景覆盖真实产品中最常见的配置项：源端表、目标端表、字段映射、where 过滤、批次大小和完成判断。</p>
      */
     @Test
-    void fullRunOnceShouldFilterMapFieldsPageByOffsetAndWriteTargetRows() throws Exception {
+    void fullRunOnceShouldFilterByComplexWhereMapFieldsPageByOffsetAndWriteTargetRows() throws Exception {
         String jdbcUrl = "jdbc:h2:mem:datasmart_sync_e2e_" + UUID.randomUUID()
                 + ";MODE=PostgreSQL;DATABASE_TO_UPPER=false;DB_CLOSE_DELAY=-1";
         Class.forName("org.h2.Driver");
@@ -140,10 +140,18 @@ class SyncBatchConnectorRuntimeJdbcE2ETest {
                         "FULL_OBJECT_SCAN",
                         "FULL",
                         null,
-                        List.of(new SyncBatchExecutionPlan.ReadFilterCondition("region", "EQ", "EAST", true)),
+                        List.of(),
+                        """
+                                ("region" = 'EAST' OR "amount" > 999)
+                                AND "customer_id" IN (
+                                    SELECT "customer_id"
+                                    FROM "ods"."customers"
+                                    WHERE LOWER("customer_name") <> 'bob'
+                                )
+                                """,
                         false,
                         2,
-                        List.of("JDBC_BATCH_READ", "FILTER_AWARE_READ", "OFFSET_PAGE_READ")
+                        List.of("JDBC_BATCH_READ", "SQL_PREDICATE_FILTER_READ", "OFFSET_PAGE_READ")
                 ),
                 new SyncBatchExecutionPlan.WritePlan(
                         "POSTGRESQL",

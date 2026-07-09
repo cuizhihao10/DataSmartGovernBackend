@@ -142,6 +142,16 @@ public class SyncBatchExecutionPlan {
         private List<ReadFilterCondition> filterConditions;
 
         /**
+         * 复杂 where 谓词片段。
+         *
+         * <p>结构化 filterConditions 适合字段、操作符、参数值都能拆开的简单条件；真实数据同步场景还需要
+         * OR、括号、函数、EXISTS/IN 子查询等复杂谓词。该字段只允许承载 {@code WHERE} 后面的谓词片段，
+         * 不允许完整 SQL、多语句、DDL/DML 或注释。它只在 internal worker 执行链路中流转，普通接口、审计摘要
+         * 和运行日志都不应展示原文。</p>
+         */
+        private String wherePredicate;
+
+        /**
          * 自定义 SQL 查询正文。
          *
          * <p>该字段只允许在 internal run-once 请求中出现，且只在 {@code readStrategy=CUSTOM_SQL_RESULT_SET}
@@ -191,7 +201,7 @@ public class SyncBatchExecutionPlan {
                         Integer recommendedFetchSize,
                         List<String> requiredWorkerCapabilities) {
             this(connectorType, datasourceId, objectLocator, readStrategy, syncMode, incrementalField,
-                    List.of(), null, null, partitionConfigured, recommendedFetchSize, requiredWorkerCapabilities);
+                    List.of(), null, null, null, partitionConfigured, recommendedFetchSize, requiredWorkerCapabilities);
         }
 
         public ReadPlan(String connectorType,
@@ -205,7 +215,22 @@ public class SyncBatchExecutionPlan {
                         Integer recommendedFetchSize,
                         List<String> requiredWorkerCapabilities) {
             this(connectorType, datasourceId, objectLocator, readStrategy, syncMode, incrementalField,
-                    filterConditions, null, null, partitionConfigured, recommendedFetchSize, requiredWorkerCapabilities);
+                    filterConditions, null, null, null, partitionConfigured, recommendedFetchSize, requiredWorkerCapabilities);
+        }
+
+        public ReadPlan(String connectorType,
+                        Long datasourceId,
+                        String objectLocator,
+                        String readStrategy,
+                        String syncMode,
+                        String incrementalField,
+                        List<ReadFilterCondition> filterConditions,
+                        String wherePredicate,
+                        Boolean partitionConfigured,
+                        Integer recommendedFetchSize,
+                        List<String> requiredWorkerCapabilities) {
+            this(connectorType, datasourceId, objectLocator, readStrategy, syncMode, incrementalField,
+                    filterConditions, wherePredicate, null, null, partitionConfigured, recommendedFetchSize, requiredWorkerCapabilities);
         }
     }
 

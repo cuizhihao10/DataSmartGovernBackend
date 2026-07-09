@@ -427,6 +427,7 @@ public class SyncBatchRunOnceDispatchService {
         readPlan.setSyncMode(bridgePlan.getSyncMode());
         readPlan.setIncrementalField(bridgePlan.getIncrementalField());
         readPlan.setFilterConditions(filterConditions(bridgePlan, additionalFilterConditions));
+        readPlan.setWherePredicate(bridgePlan.getWherePredicate());
         readPlan.setCustomSql(bridgePlan.getCustomSql());
         readPlan.setCustomSqlFingerprint(bridgePlan.getCustomSqlFingerprint());
         readPlan.setPartitionConfigured(hasText(shardOrPartition)
@@ -889,6 +890,9 @@ public class SyncBatchRunOnceDispatchService {
         }
         if ("CUSTOM_SQL_RESULT_SET".equals(bridgePlan.getReadStrategy())) {
             capabilities.add("CUSTOM_SQL_READ_ONLY_RESULT_SET");
+        }
+        if (hasText(bridgePlan.getWherePredicate())) {
+            capabilities.add("SQL_PREDICATE_FILTER_READ");
         }
         return List.copyOf(capabilities);
     }

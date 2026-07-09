@@ -6,7 +6,6 @@
  */
 package com.czh.datasmart.govern.datasource.service.execution.jdbc;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -24,7 +23,6 @@ import java.util.List;
  */
 @Data
 @NoArgsConstructor
-@AllArgsConstructor
 public class SyncJdbcReadStatementSpec {
 
     /**
@@ -52,6 +50,16 @@ public class SyncJdbcReadStatementSpec {
      * 条件值不会拼入 SQL，只会通过 parameterNames 和 readContext.parameterValues 绑定到 PreparedStatement。</p>
      */
     private List<SyncJdbcFilterCondition> filterConditions;
+
+    /**
+     * 复杂 where 谓词片段。
+     *
+     * <p>当用户在对象映射里配置了 OR、括号、函数或子查询时，控制面无法安全地拆成
+     * {@link #filterConditions} 这种参数化条件。该字段只保存 {@code WHERE} 后面的谓词片段，
+     * 由 JDBC 方言层二次校验后拼接为 {@code WHERE (...)}。它属于 internal SQL 生成输入，
+     * 不能进入普通日志或公开响应。</p>
+     */
+    private String wherePredicate;
 
     /**
      * 全量扫描时用于稳定翻页的排序列。
@@ -91,8 +99,28 @@ public class SyncJdbcReadStatementSpec {
                                      List<String> stableSortColumns,
                                      String readStrategy,
                                      Integer limit) {
-        this(objectLocator, selectedColumns, checkpointColumn, filterConditions, stableSortColumns,
+        this(objectLocator, selectedColumns, checkpointColumn, filterConditions, null, stableSortColumns,
                 readStrategy, limit, null);
+    }
+
+    public SyncJdbcReadStatementSpec(String objectLocator,
+                                     List<String> selectedColumns,
+                                     String checkpointColumn,
+                                     List<SyncJdbcFilterCondition> filterConditions,
+                                     String wherePredicate,
+                                     List<String> stableSortColumns,
+                                     String readStrategy,
+                                     Integer limit,
+                                     String customSql) {
+        this.objectLocator = objectLocator;
+        this.selectedColumns = selectedColumns;
+        this.checkpointColumn = checkpointColumn;
+        this.filterConditions = filterConditions;
+        this.wherePredicate = wherePredicate;
+        this.stableSortColumns = stableSortColumns;
+        this.readStrategy = readStrategy;
+        this.limit = limit;
+        this.customSql = customSql;
     }
 
     /**
@@ -103,7 +131,7 @@ public class SyncJdbcReadStatementSpec {
                                      String checkpointColumn,
                                      String readStrategy,
                                      Integer limit) {
-        this(objectLocator, selectedColumns, checkpointColumn, List.of(), List.of(), readStrategy, limit, null);
+        this(objectLocator, selectedColumns, checkpointColumn, List.of(), null, List.of(), readStrategy, limit, null);
     }
 
     /**
@@ -115,6 +143,6 @@ public class SyncJdbcReadStatementSpec {
                                      List<SyncJdbcFilterCondition> filterConditions,
                                      String readStrategy,
                                      Integer limit) {
-        this(objectLocator, selectedColumns, checkpointColumn, filterConditions, List.of(), readStrategy, limit, null);
+        this(objectLocator, selectedColumns, checkpointColumn, filterConditions, null, List.of(), readStrategy, limit, null);
     }
 }

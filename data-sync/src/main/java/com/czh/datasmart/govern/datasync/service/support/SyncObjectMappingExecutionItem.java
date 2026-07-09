@@ -26,6 +26,10 @@ import java.util.List;
  * @param targetObjectName 目标端对象名。
  * @param fieldMappingConfigOverride 当前对象自己的字段映射 JSON；为空时复用模板级 fieldMappingConfig。
  * @param fieldMappingOverridden 是否声明了对象级字段映射覆盖。
+ * @param whereCondition 当前对象自己的 where 条件。该字段来自“对象映射”步骤中某一行的过滤条件，
+ *                       只允许在 data-sync 内部被解析为结构化过滤条件后下发给受控执行器，不能直接拼接 SQL。
+ *                       设计上它区别于模板级 filterConfig：filterConfig 是历史/导入兼容的任务级过滤配置，
+ *                       whereCondition 才是当前创建向导里用户面向某张表配置的主要过滤入口。
  * @param warnings 当前条目的非阻断提示。只允许低敏原因码或学习说明，不包含 JSON 原文。
  */
 public record SyncObjectMappingExecutionItem(
@@ -36,6 +40,7 @@ public record SyncObjectMappingExecutionItem(
         String targetObjectName,
         String fieldMappingConfigOverride,
         boolean fieldMappingOverridden,
+        String whereCondition,
         List<String> warnings
 ) {
 

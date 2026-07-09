@@ -890,6 +890,9 @@ class SyncAutoSplitPkRealWorkerE2ETest {
                             condition.getValue(),
                             condition.getValueRequired()))
                     .toList());
+            target.setWherePredicate(source.getWherePredicate());
+            target.setCustomSql(source.getCustomSql());
+            target.setCustomSqlFingerprint(source.getCustomSqlFingerprint());
             target.setPartitionConfigured(source.getPartitionConfigured());
             target.setRecommendedFetchSize(source.getRecommendedFetchSize());
             target.setRequiredWorkerCapabilities(source.getRequiredWorkerCapabilities());

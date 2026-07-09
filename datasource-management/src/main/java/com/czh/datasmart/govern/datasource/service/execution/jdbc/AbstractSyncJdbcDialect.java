@@ -60,7 +60,7 @@ public abstract class AbstractSyncJdbcDialect implements SyncJdbcDialect {
         String sql = buildFullReadSql(
                 projection(spec.getSelectedColumns()),
                 qualifiedObject(spec.getObjectLocator()),
-                whereClause(filters),
+                whereClause(filters, spec.getWherePredicate()),
                 orderClause(spec.getStableSortColumns(), spec.getSelectedColumns()),
                 positiveLimit(spec.getLimit())
         );
@@ -75,7 +75,7 @@ public abstract class AbstractSyncJdbcDialect implements SyncJdbcDialect {
         String sql = buildIncrementalReadSql(
                 projection(spec.getSelectedColumns()),
                 qualifiedObject(spec.getObjectLocator()),
-                whereClause(filters),
+                whereClause(filters, spec.getWherePredicate()),
                 checkpointColumn,
                 positiveLimit(spec.getLimit())
         );
@@ -197,8 +197,13 @@ public abstract class AbstractSyncJdbcDialect implements SyncJdbcDialect {
      * 而是通过 {@link #filterParameterNames(List)} 声明为 filter_0、filter_1 等参数名。</p>
      */
     protected String whereClause(List<SyncJdbcFilterCondition> filters) {
+        return whereClause(filters, null);
+    }
+
+    protected String whereClause(List<SyncJdbcFilterCondition> filters, String wherePredicate) {
         if (filters == null || filters.isEmpty()) {
-            return "";
+            String predicate = safeWherePredicate(wherePredicate);
+            return predicate.isBlank() ? "" : " WHERE (" + predicate + ")";
         }
         List<String> clauses = new ArrayList<>();
         for (int index = 0; index < filters.size(); index++) {
@@ -211,7 +216,64 @@ public abstract class AbstractSyncJdbcDialect implements SyncJdbcDialect {
                 clauses.add(column + " " + operator);
             }
         }
+        String predicate = safeWherePredicate(wherePredicate);
+        if (!predicate.isBlank()) {
+            clauses.add("(" + predicate + ")");
+        }
         return " WHERE " + String.join(" AND ", clauses);
+    }
+
+    /**
+     * 校验复杂 where 谓词片段。
+     *
+     * <p>复杂 where 是为了支持真实业务筛选能力：OR、括号、函数、EXISTS/IN 子查询等。如果完全禁止，
+     * 数据同步工具会退化成只能做玩具级筛选；如果完全放开，又会把普通任务配置变成 SQL 注入入口。
+     * 因此这里采用“谓词片段白边界 + 危险语句黑名单 + 括号/引号平衡”的折中方案：</p>
+     *
+     * <p>1. 只允许 {@code WHERE} 后面的谓词，不允许完整 SELECT/WITH 作为顶层语句；</p>
+     * <p>2. 允许子查询中的 SELECT，因为 {@code id IN (SELECT ...)} 是数据同步常见需求；</p>
+     * <p>3. 拒绝多语句、注释、DDL/DML、存储过程、导入导出等高风险关键字；</p>
+     * <p>4. 不在日志或响应中输出原文，真正错误只返回低敏摘要。</p>
+     */
+    protected String safeWherePredicate(String wherePredicate) {
+        if (wherePredicate == null || wherePredicate.isBlank()) {
+            return "";
+        }
+        String predicate = wherePredicate.trim();
+        if (predicate.regionMatches(true, 0, "WHERE", 0, "WHERE".length())) {
+            predicate = predicate.substring("WHERE".length()).trim();
+        }
+        if (predicate.endsWith(";")) {
+            predicate = predicate.substring(0, predicate.length() - 1).trim();
+        }
+        String lower = predicate.toLowerCase(Locale.ROOT);
+        if (predicate.contains(";")
+                || predicate.contains("--")
+                || predicate.contains("/*")
+                || predicate.contains("*/")
+                /*
+                 * wherePredicate 只承载 WHERE 后面的谓词片段。
+                 *
+                 * 用户可以在谓词内部使用子查询，例如：
+                 *   id IN (SELECT customer_id FROM vip_customer)
+                 *   EXISTS (SELECT 1 FROM order_item oi WHERE oi.customer_id = customer_id)
+                 *
+                 * 但不能把完整 SELECT/WITH 当成 wherePredicate 传进来。这里使用 token 边界判断，
+                 * 而不是 lower.startsWith("select ")，是为了同时拦截 SELECT 换行、SELECT\t 等变体。
+                 */
+                || tokenAt(predicate, 0, "SELECT")
+                || tokenAt(predicate, 0, "WITH")
+                || topLevelKeyword(predicate, "ORDER")
+                || topLevelKeyword(predicate, "GROUP")
+                || topLevelKeyword(predicate, "HAVING")
+                || topLevelKeyword(predicate, "LIMIT")
+                || topLevelKeyword(predicate, "OFFSET")
+                || topLevelKeyword(predicate, "UNION")
+                || SQL_DANGEROUS_TOKEN.matcher(lower).find()
+                || !balancedQuotesAndParentheses(predicate)) {
+            throw new IllegalArgumentException("wherePredicate 只允许单个只读 WHERE 谓词片段");
+        }
+        return predicate;
     }
 
     /**
@@ -475,5 +537,91 @@ public abstract class AbstractSyncJdbcDialect implements SyncJdbcDialect {
             throw new IllegalArgumentException("customSql 只允许单条 SELECT/WITH 只读查询");
         }
         return normalized;
+    }
+
+    private boolean topLevelKeyword(String sqlFragment, String keyword) {
+        boolean singleQuoted = false;
+        boolean doubleQuoted = false;
+        int parenthesesDepth = 0;
+        for (int index = 0; index < sqlFragment.length(); index++) {
+            char currentChar = sqlFragment.charAt(index);
+            if (currentChar == '\'' && !doubleQuoted) {
+                if (singleQuoted && index + 1 < sqlFragment.length() && sqlFragment.charAt(index + 1) == '\'') {
+                    index++;
+                    continue;
+                }
+                singleQuoted = !singleQuoted;
+                continue;
+            }
+            if (currentChar == '"' && !singleQuoted) {
+                doubleQuoted = !doubleQuoted;
+                continue;
+            }
+            if (singleQuoted || doubleQuoted) {
+                continue;
+            }
+            if (currentChar == '(') {
+                parenthesesDepth++;
+                continue;
+            }
+            if (currentChar == ')') {
+                parenthesesDepth--;
+                continue;
+            }
+            if (parenthesesDepth == 0 && tokenAt(sqlFragment, index, keyword)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean balancedQuotesAndParentheses(String value) {
+        boolean singleQuoted = false;
+        boolean doubleQuoted = false;
+        int parenthesesDepth = 0;
+        for (int index = 0; index < value.length(); index++) {
+            char currentChar = value.charAt(index);
+            if (currentChar == '\'' && !doubleQuoted) {
+                if (singleQuoted && index + 1 < value.length() && value.charAt(index + 1) == '\'') {
+                    index++;
+                    continue;
+                }
+                singleQuoted = !singleQuoted;
+                continue;
+            }
+            if (currentChar == '"' && !singleQuoted) {
+                doubleQuoted = !doubleQuoted;
+                continue;
+            }
+            if (singleQuoted || doubleQuoted) {
+                continue;
+            }
+            if (currentChar == '(') {
+                parenthesesDepth++;
+            } else if (currentChar == ')') {
+                parenthesesDepth--;
+                if (parenthesesDepth < 0) {
+                    return false;
+                }
+            }
+        }
+        return !singleQuoted && !doubleQuoted && parenthesesDepth == 0;
+    }
+
+    private boolean tokenAt(String value, int index, String token) {
+        if (index < 0 || index + token.length() > value.length()) {
+            return false;
+        }
+        if (!value.regionMatches(true, index, token, 0, token.length())) {
+            return false;
+        }
+        boolean leftBoundary = index == 0 || !isIdentifierPart(value.charAt(index - 1));
+        int rightIndex = index + token.length();
+        boolean rightBoundary = rightIndex >= value.length() || !isIdentifierPart(value.charAt(rightIndex));
+        return leftBoundary && rightBoundary;
+    }
+
+    private boolean isIdentifierPart(char value) {
+        return Character.isLetterOrDigit(value) || value == '_';
     }
 }

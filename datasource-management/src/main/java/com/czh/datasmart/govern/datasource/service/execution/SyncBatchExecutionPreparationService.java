@@ -90,6 +90,7 @@ public class SyncBatchExecutionPreparationService {
                 selectedColumns,
                 readPlan.getIncrementalField(),
                 filterConditions(readPlan),
+                readPlan.getWherePredicate(),
                 stableSortColumns(selectedColumns, writeColumns, primaryKeyColumns),
                 readPlan.getReadStrategy(),
                 readPlan.getRecommendedFetchSize(),

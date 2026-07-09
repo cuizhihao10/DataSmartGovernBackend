@@ -150,6 +150,16 @@ public class SyncBatchRunnerBridgePlan {
     private final List<SyncFilterExecutionCondition> filterConditions;
 
     /**
+     * 复杂 where 谓词片段。
+     *
+     * <p>结构化 {@link #filterConditions} 适合简单 AND 条件；但真实数据同步场景经常需要 OR、括号、
+     * 函数、EXISTS/IN 子查询等复杂表达式。该字段用于在 internal 执行链路中承载这类对象级 where。
+     * 它不是完整 SQL，只能作为 {@code WHERE (...)} 中的谓词片段使用，并且必须已经经过 data-sync
+     * 第一层安全门禁；datasource-management 方言层仍会做第二层只读谓词校验。</p>
+     */
+    private final String wherePredicate;
+
+    /**
      * 自定义 SQL 查询正文。
      *
      * <p>该字段只在 {@code syncMode=CUSTOM_SQL_QUERY} 且只读校验通过后存在，并且只允许在
@@ -249,6 +259,45 @@ public class SyncBatchRunnerBridgePlan {
                                      List<String> issueCodes,
                                      List<String> warnings,
                                      List<String> nextActions) {
+        this(dispatchable, dispatchStatus, tenantId, projectId, workspaceId, syncTaskId, executionId, templateId,
+                sourceDatasourceId, targetDatasourceId, sourceConnectorType, targetConnectorType, syncMode,
+                readStrategy, writeStrategy, checkpointType, sourceObjectLocator, targetObjectLocator,
+                fieldMappingContract, filterConditions, null, customSql, customSqlFingerprint, offlineRunnerContract,
+                incrementalField, previousRecordsRead, previousRecordsWritten, previousFailedRecordCount,
+                issueCodes, warnings, nextActions);
+    }
+
+    public SyncBatchRunnerBridgePlan(boolean dispatchable,
+                                     String dispatchStatus,
+                                     Long tenantId,
+                                     Long projectId,
+                                     Long workspaceId,
+                                     Long syncTaskId,
+                                     Long executionId,
+                                     Long templateId,
+                                     Long sourceDatasourceId,
+                                     Long targetDatasourceId,
+                                     String sourceConnectorType,
+                                     String targetConnectorType,
+                                     String syncMode,
+                                     String readStrategy,
+                                     String writeStrategy,
+                                     String checkpointType,
+                                     String sourceObjectLocator,
+                                     String targetObjectLocator,
+                                     SyncFieldMappingExecutionContract fieldMappingContract,
+                                     List<SyncFilterExecutionCondition> filterConditions,
+                                     String wherePredicate,
+                                     String customSql,
+                                     String customSqlFingerprint,
+                                     SyncOfflineRunnerJobContract offlineRunnerContract,
+                                     String incrementalField,
+                                     Long previousRecordsRead,
+                                     Long previousRecordsWritten,
+                                     Long previousFailedRecordCount,
+                                     List<String> issueCodes,
+                                     List<String> warnings,
+                                     List<String> nextActions) {
         this.dispatchable = dispatchable;
         this.dispatchStatus = dispatchStatus;
         this.tenantId = tenantId;
@@ -269,6 +318,7 @@ public class SyncBatchRunnerBridgePlan {
         this.targetObjectLocator = targetObjectLocator;
         this.fieldMappingContract = fieldMappingContract;
         this.filterConditions = filterConditions == null ? List.of() : List.copyOf(filterConditions);
+        this.wherePredicate = wherePredicate == null || wherePredicate.isBlank() ? null : wherePredicate.trim();
         this.customSql = customSql;
         this.customSqlFingerprint = customSqlFingerprint;
         this.offlineRunnerContract = offlineRunnerContract;

@@ -111,6 +111,57 @@ class SyncBatchExecutionPreparationServiceTest {
     }
 
     @Test
+    void prepareJdbcExecutionShouldCarryComplexWherePredicateWithoutParameterizingBusinessSql() {
+        SyncBatchExecutionPlan plan = incrementalPlan("MYSQL", "POSTGRESQL", "FULL_OBJECT_SCAN", "APPEND");
+        plan.getReadPlan().setFilterConditions(List.of());
+        plan.getReadPlan().setWherePredicate("""
+                (status = 'ACTIVE' OR amount > 100)
+                AND id IN (SELECT customer_id FROM vip_customer WHERE enabled = 1)
+                AND LOWER(region) = 'east'
+                """);
+
+        SyncBatchWorkerExecutionBundle bundle = service.prepareJdbcExecution(new SyncBatchExecutionPreparationRequest(
+                plan,
+                List.of("id", "status", "amount", "region"),
+                List.of("id", "status", "amount", "region"),
+                List.of("id")
+        ));
+
+        /*
+         * 复杂 where 无法拆成字段、操作符、参数值三元组，因此这里不会生成 filter_0/filter_1。
+         * 它会作为受控 SQL 谓词片段进入 Reader SQL，并继续由 safeWherePredicate 做二次只读防护。
+         */
+        assertEquals(List.of("limit", "offset"), bundle.getReadContext().getReadStatement().getParameterNames());
+        assertTrue(bundle.getReadContext().getReadStatement().getSql()
+                .contains("WHERE ((status = 'ACTIVE' OR amount > 100)"));
+        assertTrue(bundle.getReadContext().getReadStatement().getSql()
+                .contains("id IN (SELECT customer_id FROM vip_customer WHERE enabled = 1)"));
+        assertTrue(bundle.getReadContext().getReadStatement().getSql()
+                .contains("LOWER(region) = 'east'"));
+        assertFalse(bundle.getReadContext().getParameterValues().containsKey("filter_0"));
+    }
+
+    @Test
+    void prepareJdbcExecutionShouldRejectTopLevelQueryAsWherePredicate() {
+        SyncBatchExecutionPlan plan = incrementalPlan("MYSQL", "POSTGRESQL", "FULL_OBJECT_SCAN", "APPEND");
+        plan.getReadPlan().setWherePredicate("""
+                SELECT *
+                FROM ods.orders
+                """);
+
+        /*
+         * 子查询可以出现在谓词内部，但 wherePredicate 不能是完整查询。
+         * 这个二次防护保证即便上游控制面出现疏漏，执行层也不会把任意 SQL 当成 where 拼接。
+         */
+        assertThrows(IllegalArgumentException.class, () -> service.prepareJdbcExecution(new SyncBatchExecutionPreparationRequest(
+                plan,
+                List.of("id", "status", "amount"),
+                List.of("id", "status", "amount"),
+                List.of("id")
+        )));
+    }
+
+    @Test
     void prepareJdbcExecutionShouldRejectMissingWriteColumns() {
         SyncBatchExecutionPreparationRequest request = new SyncBatchExecutionPreparationRequest(
                 incrementalPlan("MYSQL", "MYSQL", "FULL_OBJECT_SCAN", "APPEND"),

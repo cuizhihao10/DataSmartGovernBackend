@@ -192,6 +192,25 @@ public class SyncBatchRunnerBridgePlanSupport {
         if (!filterContract.directlyRunnableByMinimalBridge()) {
             issueCodes.add("FILTER_CONTRACT_NOT_RUNNABLE_BY_MINIMAL_BRIDGE");
         }
+        /*
+         * 新版创建向导把 where 条件放在 objectMappingConfig.mappings[i].whereCondition 上。
+         * 这里必须把对象级 where 合并进执行计划，否则页面上看到“只同步 id > 1”，真实 runner 却会全表读取。
+         *
+         * 合并规则：
+         * 1. 模板级 filterConfig 继续作为历史兼容/导入兼容的结构化过滤条件；
+         * 2. 对象级 where 是当前用户界面的主要过滤入口，单对象 bridge 会把它解析为结构化条件或复杂 wherePredicate；
+         * 3. 二者同时存在时执行层按 AND 语义叠加，避免任何一侧被静默覆盖。
+         */
+        SyncFilterExecutionContract objectWhereContract = filterExecutionContractSupport.parseObjectWhereCondition(
+                objectLocators.objectMappingItem() == null ? null : objectLocators.objectMappingItem().whereCondition());
+        issueCodes.addAll(objectWhereContract.getIssueCodes());
+        warnings.addAll(objectWhereContract.getWarnings());
+        if (!objectWhereContract.directlyRunnableByMinimalBridge()) {
+            issueCodes.add("OBJECT_WHERE_CONTRACT_NOT_RUNNABLE_BY_MINIMAL_BRIDGE");
+        }
+        List<SyncFilterExecutionCondition> mergedFilterConditions =
+                mergeFilterConditions(filterContract, objectWhereContract);
+        String wherePredicate = mergeWherePredicates(filterContract.getWherePredicate(), objectWhereContract.getWherePredicate());
 
         SyncCustomSqlExecutionContract customSqlContract =
                 customSqlExecutionContractSupport.parse(template.getSyncMode(), template.getCustomSqlConfig());
@@ -228,7 +247,8 @@ public class SyncBatchRunnerBridgePlanSupport {
                 objectLocators.sourceObjectLocator(),
                 objectLocators.targetObjectLocator(),
                 fieldMappingContract,
-                filterContract.getConditions(),
+                mergedFilterConditions,
+                wherePredicate,
                 customSqlContract.sql(),
                 customSqlContract.sqlFingerprint(),
                 offlineRunnerContract,
@@ -280,6 +300,7 @@ public class SyncBatchRunnerBridgePlanSupport {
                 template == null ? null : objectLocator(template.getTargetSchemaName(), template.getTargetObjectName()),
                 fieldMappingContract,
                 filterContract == null ? List.of() : filterContract.getConditions(),
+                filterContract == null ? null : filterContract.getWherePredicate(),
                 null,
                 null,
                 offlineRunnerContract,
@@ -390,6 +411,34 @@ public class SyncBatchRunnerBridgePlanSupport {
         return schemaName.trim() + "." + objectName.trim();
     }
 
+    private List<SyncFilterExecutionCondition> mergeFilterConditions(SyncFilterExecutionContract first,
+                                                                     SyncFilterExecutionContract second) {
+        List<SyncFilterExecutionCondition> conditions = new ArrayList<>();
+        if (first != null && first.getConditions() != null) {
+            conditions.addAll(first.getConditions());
+        }
+        if (second != null && second.getConditions() != null) {
+            conditions.addAll(second.getConditions());
+        }
+        return List.copyOf(conditions);
+    }
+
+    /**
+     * 合并复杂 where 谓词。
+     *
+     * <p>当前模板级 filterConfig 默认不会生成 wherePredicate，但保留该合并方法是为了未来支持“任务级复杂 where”
+     * 或 Agent 生成的受控谓词。多个谓词之间使用 AND 叠加，避免后声明的条件覆盖先声明的条件。</p>
+     */
+    private String mergeWherePredicates(String first, String second) {
+        if (!hasText(first)) {
+            return hasText(second) ? second.trim() : null;
+        }
+        if (!hasText(second)) {
+            return first.trim();
+        }
+        return "(" + first.trim() + ") AND (" + second.trim() + ")";
+    }
+
     /**
      * 解析真实执行应该使用的源/目标对象定位。
      *
@@ -405,11 +454,12 @@ public class SyncBatchRunnerBridgePlanSupport {
                                                          List<String> issueCodes,
                                                          List<String> warnings) {
         if (template == null) {
-            return new ResolvedObjectLocators(null, null);
+            return new ResolvedObjectLocators(null, null, null);
         }
         ResolvedObjectLocators legacyLocators = new ResolvedObjectLocators(
                 objectLocator(template.getSourceSchemaName(), template.getSourceObjectName()),
-                objectLocator(template.getTargetSchemaName(), template.getTargetObjectName()));
+                objectLocator(template.getTargetSchemaName(), template.getTargetObjectName()),
+                null);
         if (!hasText(template.getObjectMappingConfig())) {
             return legacyLocators;
         }
@@ -437,7 +487,7 @@ public class SyncBatchRunnerBridgePlanSupport {
             return legacyLocators;
         }
         warnings.add("OBJECT_MAPPING_USED_AS_SINGLE_OBJECT_BRIDGE_LOCATOR");
-        return new ResolvedObjectLocators(sourceObjectLocator, targetObjectLocator);
+        return new ResolvedObjectLocators(sourceObjectLocator, targetObjectLocator, item);
     }
 
     private SyncMode resolveMode(String syncMode) {
@@ -493,6 +543,8 @@ public class SyncBatchRunnerBridgePlanSupport {
         return value != null && !value.isBlank();
     }
 
-    private record ResolvedObjectLocators(String sourceObjectLocator, String targetObjectLocator) {
+    private record ResolvedObjectLocators(String sourceObjectLocator,
+                                          String targetObjectLocator,
+                                          SyncObjectMappingExecutionItem objectMappingItem) {
     }
 }

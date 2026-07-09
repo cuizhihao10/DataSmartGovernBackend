@@ -132,6 +132,15 @@ public class SyncObjectMappingExecutionContractSupport {
                 "sourceSchemaName", "sourceSchema", "sourceNamespace", "sourceCatalog");
         String targetSchemaName = firstText(mappingNode,
                 "targetSchemaName", "targetSchema", "targetNamespace", "targetCatalog");
+        /*
+         * whereCondition 是当前创建向导里“每个对象一条过滤条件”的用户入口。
+         * 它和历史模板级 filterConfig 不同：filterConfig 更像任务级兜底配置，而对象级 where 可以做到
+         * “表 A 用 id > 100，表 B 用 biz_date >= '2026-07-01'”。这里只读取原文并保持低敏内部流转，
+         * 真正的 SQL 安全校验和结构化转换放到 SyncFilterExecutionContractSupport 中完成，避免在对象映射解析层
+         * 同时承担 JSON 解析、SQL 语法和执行安全三种职责。
+         */
+        String whereCondition = firstText(mappingNode,
+                "whereCondition", "where", "filterCondition", "filterExpression");
 
         if (!safeIdentifier(sourceObjectName) || !safeIdentifier(targetObjectName)) {
             issueCodes.add("OBJECT_MAPPING_IDENTIFIER_UNSAFE");
@@ -168,6 +177,7 @@ public class SyncObjectMappingExecutionContractSupport {
                 targetObjectName.trim(),
                 fieldMappingOverride,
                 hasText(fieldMappingOverride),
+                trimToNull(whereCondition),
                 itemWarnings
         );
     }

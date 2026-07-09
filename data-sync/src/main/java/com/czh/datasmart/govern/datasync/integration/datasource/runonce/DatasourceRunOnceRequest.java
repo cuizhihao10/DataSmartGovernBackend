@@ -72,6 +72,13 @@ public class DatasourceRunOnceRequest {
         private String syncMode;
         private String incrementalField;
         private List<ReadFilterCondition> filterConditions;
+        /**
+         * 复杂 where 谓词片段。
+         *
+         * <p>用于对象级 where 中无法转换为结构化 filterConditions 的高级表达式，例如 OR、函数和子查询。
+         * 该字段只能在 internal run-once 请求中出现，不允许打印请求体，也不允许返回给普通 API。</p>
+         */
+        private String wherePredicate;
         private String customSql;
         private String customSqlFingerprint;
         private Boolean partitionConfigured;

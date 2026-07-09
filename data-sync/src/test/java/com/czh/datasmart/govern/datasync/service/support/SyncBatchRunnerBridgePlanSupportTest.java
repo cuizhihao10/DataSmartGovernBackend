@@ -155,6 +155,130 @@ class SyncBatchRunnerBridgePlanSupportTest {
     }
 
     @Test
+    void simpleObjectWhereConditionShouldBeCarriedAsStructuredFilter() {
+        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+                .objectMapping("""
+                        {
+                          "mappings": [
+                            {
+                              "sourceSchemaName": "ods",
+                              "sourceObjectName": "customer",
+                              "targetSchemaName": "dwd",
+                              "targetObjectName": "customer",
+                              "whereCondition": "id > 1;"
+                            }
+                          ]
+                        }
+                        """)
+                .fieldMapping("""
+                        [{"sourceField":"id","targetField":"id"}]
+                        """);
+
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+                workerPlan("READY_TO_RUN", List.of()));
+
+        assertThat(plan.isDispatchable()).isTrue();
+        assertThat(plan.getFilterConditions()).hasSize(1);
+        assertThat(plan.getFilterConditions().get(0).getColumn()).isEqualTo("id");
+        assertThat(plan.getFilterConditions().get(0).getOperator()).isEqualTo("GT");
+        assertThat(plan.getFilterConditions().get(0).getValue()).isEqualTo(1L);
+        assertThat(plan.getWherePredicate()).isNull();
+        assertThat(plan.getWarnings()).contains("OBJECT_WHERE_CONDITION_USED_AS_STRUCTURED_FILTER");
+    }
+
+    @Test
+    void complexObjectWhereConditionShouldBeCarriedAsSqlPredicate() {
+        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+                .objectMapping("""
+                        {
+                          "mappings": [
+                            {
+                              "sourceSchemaName": "ods",
+                              "sourceObjectName": "customer",
+                              "targetSchemaName": "dwd",
+                              "targetObjectName": "customer",
+                              "whereCondition": "(status = 'ACTIVE' OR amount > 100) AND id IN (SELECT customer_id FROM vip_customer)"
+                            }
+                          ]
+                        }
+                        """)
+                .fieldMapping("""
+                        [{"sourceField":"id","targetField":"id"}]
+                        """);
+
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+                workerPlan("READY_TO_RUN", List.of()));
+
+        assertThat(plan.isDispatchable()).isTrue();
+        assertThat(plan.getFilterConditions()).isEmpty();
+        assertThat(plan.getWherePredicate())
+                .contains("status = 'ACTIVE' OR amount > 100")
+                .contains("SELECT customer_id FROM vip_customer");
+        assertThat(plan.getWarnings()).contains("OBJECT_WHERE_COMPLEX_PREDICATE_USED_AS_SQL_PREDICATE");
+    }
+
+    @Test
+    void unsafeObjectWhereConditionShouldBlockBridgeBeforeRealRead() {
+        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+                .objectMapping("""
+                        {
+                          "mappings": [
+                            {
+                              "sourceObjectName": "customer",
+                              "targetObjectName": "customer",
+                              "whereCondition": "id > 1; delete from customer"
+                            }
+                          ]
+                        }
+                        """)
+                .fieldMapping("""
+                        [{"sourceField":"id","targetField":"id"}]
+                        """);
+
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+                workerPlan("READY_TO_RUN", List.of()));
+
+        assertThat(plan.isDispatchable()).isFalse();
+        assertThat(plan.getIssueCodes()).contains(
+                "OBJECT_WHERE_MULTIPLE_STATEMENTS_UNSUPPORTED",
+                "OBJECT_WHERE_DML_DDL_TOKEN_UNSUPPORTED",
+                "OBJECT_WHERE_CONTRACT_NOT_RUNNABLE_BY_MINIMAL_BRIDGE");
+        assertThat(plan.getNextActions()).contains("DO_NOT_DISPATCH_BATCH_RUNNER");
+    }
+
+    @Test
+    void topLevelQueryObjectWhereShouldBlockButNestedSubqueryShouldRemainSupported() {
+        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+                .objectMapping("""
+                        {
+                          "mappings": [
+                            {
+                              "sourceObjectName": "customer",
+                              "targetObjectName": "customer",
+                              "whereCondition": "SELECT *\\nFROM customer"
+                            }
+                          ]
+                        }
+                        """)
+                .fieldMapping("""
+                        [{"sourceField":"id","targetField":"id"}]
+                        """);
+
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+                workerPlan("READY_TO_RUN", List.of()));
+
+        /*
+         * 这个用例刻意把“完整查询”塞进 whereCondition，验证控制面不会因为支持子查询就放开任意 SELECT。
+         * 真正允许的是 complex predicate，例如 id IN (SELECT ...)，而不是 SELECT ... FROM ... 这种完整 SQL。
+         */
+        assertThat(plan.isDispatchable()).isFalse();
+        assertThat(plan.getIssueCodes()).contains(
+                "OBJECT_WHERE_TOP_LEVEL_QUERY_UNSUPPORTED",
+                "OBJECT_WHERE_CONTRACT_NOT_RUNNABLE_BY_MINIMAL_BRIDGE");
+        assertThat(plan.getNextActions()).contains("DO_NOT_DISPATCH_BATCH_RUNNER");
+    }
+
+    @Test
     void unsafeFilterConfigShouldBlockBridgeBeforeRealRead() {
         SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
                 .filter("""

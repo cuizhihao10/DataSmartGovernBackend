@@ -409,6 +409,16 @@ public class SyncObjectListFanOutDispatchService {
         child.setPrimaryKeyField(template.getPrimaryKeyField());
         child.setIncrementalField(template.getIncrementalField());
         child.setFieldMappingConfig(firstText(item.fieldMappingConfigOverride(), template.getFieldMappingConfig()));
+        /*
+         * 多对象 fan-out 拆成单对象子任务后，不能只把 source/target 顶层字段写入 child template。
+         * 对象级 whereCondition 是用户在“对象映射”列表里针对每张表单独配置的过滤条件；
+         * 如果这里不继续携带 objectMappingConfig，子 bridge plan 只能看到顶层 filterConfig，
+         * 最终会出现“父任务详情中每张表都有 where，但真实执行每张表都全量读取”的产品缺陷。
+         *
+         * 因此每个子模板都保留一个只含当前对象的 objectMappingConfig。它不入库，只在本次内存调度中流转，
+         * 既能让 bridge plan 继续复用统一的对象定位/where 解析逻辑，也不会把对象名、where 原文写入日志。
+         */
+        child.setObjectMappingConfig(singleObjectMappingConfig(item));
         child.setFilterConfig(template.getFilterConfig());
         child.setPartitionConfig(null);
         child.setRetryPolicy(template.getRetryPolicy());
@@ -419,6 +429,26 @@ public class SyncObjectListFanOutDispatchService {
         child.setCreateTime(template.getCreateTime());
         child.setUpdateTime(template.getUpdateTime());
         return child;
+    }
+
+    private String singleObjectMappingConfig(SyncObjectMappingExecutionItem item) {
+        try {
+            Map<String, Object> mapping = new java.util.LinkedHashMap<>();
+            mapping.put("sourceSchemaName", item.sourceSchemaName());
+            mapping.put("sourceObjectName", item.sourceObjectName());
+            mapping.put("targetSchemaName", item.targetSchemaName());
+            mapping.put("targetObjectName", item.targetObjectName());
+            if (hasText(item.whereCondition())) {
+                mapping.put("whereCondition", item.whereCondition());
+            }
+            Map<String, Object> root = new java.util.LinkedHashMap<>();
+            root.put("mappings", List.of(mapping));
+            root.put("generatedBy", "OBJECT_LIST_FAN_OUT_CHILD_TEMPLATE");
+            root.put("payloadPolicy", "INTERNAL_SINGLE_OBJECT_MAPPING_NO_ROWS_NO_CREDENTIALS");
+            return objectMapper.writeValueAsString(root);
+        } catch (Exception exception) {
+            throw new IllegalStateException("OBJECT_LIST 子对象映射配置序列化失败，已按 fail-closed 终止当前对象调度", exception);
+        }
     }
 
     /**

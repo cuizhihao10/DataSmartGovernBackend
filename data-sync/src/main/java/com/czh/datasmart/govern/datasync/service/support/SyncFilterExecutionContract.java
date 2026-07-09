@@ -43,6 +43,17 @@ public class SyncFilterExecutionContract {
     private final List<SyncFilterExecutionCondition> conditions;
 
     /**
+     * 受控 SQL 谓词片段。
+     *
+     * <p>该字段用于承载对象级 where 中无法表达为简单结构化条件的高级筛选能力，例如
+     * {@code (status = 'ACTIVE' OR amount > 100)}、函数调用、{@code EXISTS/IN} 子查询等。
+     * 它不是完整 SQL，也不允许包含 {@code WHERE} 前缀之外的多语句、DDL/DML、注释或存储过程调用。
+     * 由于谓词里可能包含业务值，它只能进入 data-sync -> datasource-management 的 internal 执行链路，
+     * 不能进入普通接口、运行日志、审计摘要或 runtime event。</p>
+     */
+    private final String wherePredicate;
+
+    /**
      * 阻断问题码。
      */
     private final List<String> issueCodes;
@@ -59,9 +70,19 @@ public class SyncFilterExecutionContract {
                                        List<SyncFilterExecutionCondition> conditions,
                                        List<String> issueCodes,
                                        List<String> warnings) {
+        this(declared, parseable, conditions, null, issueCodes, warnings);
+    }
+
+    public SyncFilterExecutionContract(boolean declared,
+                                       boolean parseable,
+                                       List<SyncFilterExecutionCondition> conditions,
+                                       String wherePredicate,
+                                       List<String> issueCodes,
+                                       List<String> warnings) {
         this.declared = declared;
         this.parseable = parseable;
         this.conditions = List.copyOf(conditions);
+        this.wherePredicate = wherePredicate == null || wherePredicate.isBlank() ? null : wherePredicate.trim();
         this.issueCodes = List.copyOf(issueCodes);
         this.warnings = List.copyOf(warnings);
         this.payloadPolicy = PAYLOAD_POLICY;
