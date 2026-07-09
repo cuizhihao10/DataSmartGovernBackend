@@ -88,8 +88,8 @@ public class DataSyncTaskController {
     /**
      * 查询同步任务创建向导合同。
      *
-     * <p>该接口专门服务前端“新建同步任务”弹窗和 Agent 创建任务工具。它告诉调用方：哪些字段由上下文自动填充、哪些模式可选、
-     * 哪些执行器/恢复/审批字段不应出现在创建页面，以及源端/目标端数据源应如何按用途筛选。</p>
+     * <p>该接口专门服务前端“新建同步任务”页面和 Agent 创建任务工具。它告诉调用方：哪些字段由上下文自动填充、哪些模式可选、
+     * 哪些执行器、恢复、回放、补数和管理员策略字段不应出现在创建页面，以及源端/目标端数据源应如何按用途筛选。</p>
      *
      * <p>注意：该接口不读取源端或目标端真实数据，也不会创建模板/任务；它只是低敏控制面合同。</p>
      */
@@ -191,7 +191,6 @@ public class DataSyncTaskController {
             @RequestParam(required = false) Long ownerId,
             @RequestParam(required = false) String groupCode,
             @RequestParam(required = false) String currentState,
-            @RequestParam(required = false) String approvalState,
             @RequestParam(required = false) String triggerType,
             @RequestParam(required = false) String keyword,
             @RequestParam(defaultValue = "1") Long current,
@@ -203,7 +202,7 @@ public class DataSyncTaskController {
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
                 tenantId, projectId, null, templateId, ownerId, groupCode,
-                currentState, approvalState, triggerType, current, size, keyword);
+                currentState, triggerType, current, size, keyword);
         return PlatformApiResponse.success(dataSyncService.pageTasks(
                 criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
     }
@@ -225,7 +224,6 @@ public class DataSyncTaskController {
             @RequestParam(required = false) Long ownerId,
             @RequestParam(required = false) String groupCode,
             @RequestParam(required = false) String currentState,
-            @RequestParam(required = false) String approvalState,
             @RequestParam(required = false) String triggerType,
             @RequestParam(required = false) String keyword,
             @RequestParam(defaultValue = "1") Long current,
@@ -238,7 +236,7 @@ public class DataSyncTaskController {
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
                 tenantId, projectId, null, templateId, ownerId, groupCode,
-                currentState, approvalState, triggerType, current, size, keyword);
+                currentState, triggerType, current, size, keyword);
         SyncTaskExportFile file = dataSyncService.exportTasks(
                 criteria, format, actorContext(actorTenantId, actorId, actorRole, traceId, headers));
         return exportFileResponse(file);
@@ -252,7 +250,7 @@ public class DataSyncTaskController {
      * <p>2. runImmediately=false：校验通过后创建 DRAFT，用户后续编辑/发布；</p>
      * <p>3. runImmediately=true：校验通过后发布任务并立即创建一次 MANUAL execution。</p>
      *
-     * <p>安全边界：导入文件里的 currentState、approvalState、triggerType 只作为导出上下文，不会被导入为新任务事实。
+     * <p>安全边界：导入文件里的 currentState、triggerType 只作为导出上下文，不会被导入为新任务事实。
      * 新任务状态只能由服务端状态机决定，避免旧环境状态污染新环境。</p>
      */
     @PostMapping(value = "/import", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -423,7 +421,7 @@ public class DataSyncTaskController {
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
                 tenantId, projectId, null, null, ownerId, groupCode,
-                null, null, null, 1L, size);
+                null, null, 1L, size);
         return PlatformApiResponse.success(dataSyncService.listTaskGroups(
                 criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
     }
@@ -448,7 +446,7 @@ public class DataSyncTaskController {
             @RequestParam(required = false) Long projectId,
             @RequestParam(required = false) Long ownerId,
             @RequestParam(required = false) String groupCode,
-            @RequestParam(defaultValue = "200") Long size,
+            @RequestParam(defaultValue = "100") Long size,
             @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
@@ -456,7 +454,7 @@ public class DataSyncTaskController {
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
                 tenantId, projectId, null, null, ownerId, groupCode,
-                null, null, null, 1L, size);
+                null, null, 1L, size);
         return PlatformApiResponse.success(dataSyncService.listTaskGroupTree(
                 criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
     }
@@ -587,7 +585,6 @@ public class DataSyncTaskController {
             @RequestParam(required = false) Long templateId,
             @RequestParam(required = false) Long ownerId,
             @RequestParam(required = false) String groupCode,
-            @RequestParam(required = false) String approvalState,
             @RequestParam(required = false) String triggerType,
             @RequestParam(required = false) String keyword,
             @RequestParam(defaultValue = "1") Long current,
@@ -599,7 +596,7 @@ public class DataSyncTaskController {
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
                 tenantId, projectId, null, templateId, ownerId, groupCode,
-                null, approvalState, triggerType, current, size, keyword);
+                null, triggerType, current, size, keyword);
         return PlatformApiResponse.success(dataSyncService.pageRecycledTasks(
                 criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
     }
@@ -644,9 +641,9 @@ public class DataSyncTaskController {
     /**
      * 发布同步任务定义。
      *
-     * <p>发布会重新执行模板预检、审批判断和调度配置解析。它不创建 execution，不搬运数据；
+     * <p>发布会重新执行模板预检和调度配置解析。它不创建 execution，不搬运数据；
      * 只是把任务从 DRAFT/非活跃状态推进到可手工调度的 CONFIGURED、等待计划触发的 SCHEDULED，
-     * 或因高风险需要审批的 PENDING_APPROVAL。</p>
+     * 或在配置不完整时直接返回可读的预检查错误。普通同步任务不再通过任务表审批字段进入 PENDING_APPROVAL。</p>
      */
     @PostMapping("/{id}/publish")
     public PlatformApiResponse<SyncTaskOperationResult> publishTask(
@@ -896,7 +893,7 @@ public class DataSyncTaskController {
     /**
      * 克隆同步任务。
      *
-     * <p>克隆只复制任务定义字段，不复制 execution、checkpoint、错误样本、对象账本或审批事实。
+     * <p>克隆只复制任务定义字段，不复制 execution、checkpoint、错误样本、对象账本或历史治理事实。
      * 默认克隆结果进入 DRAFT，适合用户或 Agent 再次确认配置；如果 request.runImmediately=true，
      * 服务端会在预检通过后立即创建 MANUAL execution。</p>
      */

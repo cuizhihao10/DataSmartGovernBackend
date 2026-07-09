@@ -22,7 +22,6 @@ import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
-import com.czh.datasmart.govern.datasync.support.SyncApprovalState;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
 import com.czh.datasmart.govern.datasync.support.SyncTaskState;
@@ -216,12 +215,11 @@ public class SyncTaskDefinitionExchangeSupport {
 
     private List<SyncTask> queryExportTasks(SyncTaskQueryCriteria criteria, SyncActorContext actorContext) {
         SyncTaskQueryCriteria safeCriteria = criteria == null
-                ? new SyncTaskQueryCriteria(null, null, null, null, null, null, null, null, null, 1L, (long) DEFAULT_EXPORT_SIZE)
+                ? new SyncTaskQueryCriteria(null, null, null, null, null, null, null, null, 1L, (long) DEFAULT_EXPORT_SIZE)
                 : criteria;
         SyncDataVisibility visibility = dataScopeSupport.resolveVisibility(
                 safeCriteria.tenantId(), safeCriteria.projectId(), safeCriteria.workspaceId(), actorContext);
         LambdaQueryWrapper<SyncTask> wrapper = new LambdaQueryWrapper<SyncTask>()
-                .orderByDesc(SyncTask::getUpdateTime)
                 .orderByDesc(SyncTask::getId);
         if (visibility.tenantId() != null) {
             wrapper.eq(SyncTask::getTenantId, visibility.tenantId());
@@ -241,7 +239,6 @@ public class SyncTaskDefinitionExchangeSupport {
         } else {
             wrapper.eq(SyncTask::getCurrentState, requestedState);
         }
-        querySupport.eqIfPresent(wrapper, SyncTask::getApprovalState, querySupport.normalizeCode(safeCriteria.approvalState()));
         querySupport.eqIfPresent(wrapper, SyncTask::getTriggerType, querySupport.normalizeCode(safeCriteria.triggerType()));
         applyTaskKeywordFilter(wrapper, safeCriteria.keyword());
         long safeCurrent = safeCriteria.current() == null || safeCriteria.current() <= 0 ? 1L : safeCriteria.current();
@@ -289,8 +286,6 @@ public class SyncTaskDefinitionExchangeSupport {
                 .like(SyncTask::getGroupName, keyword)
                 .or()
                 .like(SyncTask::getCurrentState, keyword)
-                .or()
-                .like(SyncTask::getApprovalState, keyword)
                 .or()
                 .like(SyncTask::getRunMode, keyword));
     }
@@ -405,9 +400,12 @@ public class SyncTaskDefinitionExchangeSupport {
         task.setName(validatedTask.name());
         task.setDescription(validatedTask.description());
         task.setCurrentState(SyncTaskState.DRAFT.name());
-        task.setApprovalState(validatedTask.precheck().approvalRequired()
-                ? SyncApprovalState.PENDING.name()
-                : SyncApprovalState.NOT_REQUIRED.name());
+        /*
+         * 导入任务定义也遵循“普通同步任务属于项目内用户自有资源”的口径。
+         * 旧版本会把高风险预检映射成 PENDING 审批态，导致导入后的任务在前端看起来像还需要额外审批。
+         * 当前只保留 NOT_REQUIRED 作为历史数据库列的兼容值，真正风险由预检诊断、执行策略和审计解释。
+         */
+        task.setApprovalState("NOT_REQUIRED");
         task.setPriority(validatedTask.priority());
         task.setScheduleConfig(validatedTask.scheduleConfig());
         task.setScheduleEnabled(false);

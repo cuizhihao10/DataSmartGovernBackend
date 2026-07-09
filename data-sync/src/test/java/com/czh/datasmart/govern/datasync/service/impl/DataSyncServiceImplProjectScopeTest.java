@@ -57,7 +57,6 @@ import com.czh.datasmart.govern.datasync.service.support.SyncTemplateExecutionPr
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplatePlanningPreviewSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateScopeContractSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateValidationSupport;
-import com.czh.datasmart.govern.datasync.support.SyncApprovalState;
 import com.czh.datasmart.govern.datasync.support.SyncTaskState;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -159,14 +158,14 @@ class DataSyncServiceImplProjectScopeTest {
     }
 
     /**
-     * 普通项目角色不能仅靠请求体里的 approvalConfirmed=true 绕过高风险审批。
+     * 创建任务接口不再接收审批确认字段。
      *
-     * <p>这个用例固定的是商业化系统里非常重要的一条边界：自定义 SQL、全库迁移等高风险任务可以先创建草稿，
-     * 但“审批已完成”必须来自可信角色或后续正式审批中心。否则攻击者只要构造一个布尔字段，就能把任意只读 SQL
-     * 结果集搬到目标端，审批流就形同虚设。</p>
+     * <p>普通同步任务已经收敛为项目内用户自有资源。即使模板属于自定义 SQL 这类高风险配置，
+     * 创建接口也只保存任务定义并记录高风险提示，不再通过 approvalConfirmed / approvalFactId 改变生命周期。
+     * 这样可以避免前端表单、导入工具和 Agent 工具继续暴露“新建任务需要审批”的旧语义。</p>
      */
     @Test
-    void createTaskShouldIgnoreApprovalConfirmationInCreateWizard() {
+    void createTaskShouldCreateConfiguredTaskWithoutApprovalFields() {
         SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
         SyncTaskMapper taskMapper = mock(SyncTaskMapper.class);
         SyncAuditSupport auditSupport = mock(SyncAuditSupport.class);
@@ -184,25 +183,25 @@ class DataSyncServiceImplProjectScopeTest {
             return 1;
         });
 
-        CreateSyncTaskRequest request = createTaskRequest(true, "approval:test-001");
+        CreateSyncTaskRequest request = createTaskRequest();
 
         SyncTask task = service.createTask(request, projectScopedActor(List.of(101L, 102L)));
 
         assertThat(task.getCurrentState()).isEqualTo(SyncTaskState.CONFIGURED.name());
-        assertThat(task.getApprovalState()).isEqualTo(SyncApprovalState.NOT_REQUIRED.name());
+        assertThat(task.getApprovalState()).isEqualTo("NOT_REQUIRED");
         verify(taskMapper).insert(any(SyncTask.class));
-        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("creationApprovalPolicy=NOT_USED_IN_CREATE_WIZARD"));
-        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), argThat(payload -> !payload.contains("approvalFactId")));
+        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("highRiskReviewSuggested=true"));
+        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), argThat(payload -> !payload.contains("approval")));
     }
 
     /**
-     * 高风险任务未提交审批事实时，应允许创建但停留在 PENDING_APPROVAL。
+     * 高风险任务未提交任何额外确认事实时，也应允许保存为普通配置态。
      *
-     * <p>这样前端或运营台可以看到“配置已经保存、但不能执行”的明确状态，而不是让用户反复创建失败。
-     * 真正运行仍会被 runTask 的预检与状态机拦住，直到审批中心或可信服务账号写入 APPROVED 事实。</p>
+     * <p>预检查的高风险提示是“需要重点展示风险、执行策略和审计提示”，不是普通用户创建任务的审批状态。
+     * 真正的阻断仍由预检查失败、权限拒绝、执行策略准入失败或 worker 执行异常负责。</p>
      */
     @Test
-    void createTaskShouldKeepHighRiskApprovalOutOfCreateWizardWhenApprovalMissing() {
+    void createTaskShouldKeepHighRiskReviewAsAuditHintOnly() {
         SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
         SyncTaskMapper taskMapper = mock(SyncTaskMapper.class);
         SyncAuditSupport auditSupport = mock(SyncAuditSupport.class);
@@ -220,23 +219,22 @@ class DataSyncServiceImplProjectScopeTest {
             return 1;
         });
 
-        SyncTask task = service.createTask(createTaskRequest(false, null), projectScopedActor(List.of(101L, 102L)));
+        SyncTask task = service.createTask(createTaskRequest(), projectScopedActor(List.of(101L, 102L)));
 
         assertThat(task.getCurrentState()).isEqualTo(SyncTaskState.CONFIGURED.name());
-        assertThat(task.getApprovalState()).isEqualTo(SyncApprovalState.NOT_REQUIRED.name());
+        assertThat(task.getApprovalState()).isEqualTo("NOT_REQUIRED");
         verify(taskMapper).insert(any(SyncTask.class));
-        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("approvalRequired=true"));
-        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("creationApprovalPolicy=NOT_USED_IN_CREATE_WIZARD"));
+        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("highRiskReviewSuggested=true"));
     }
 
     /**
-     * 可信服务账号提交低敏审批事实后，高风险任务才允许进入 CONFIGURED。
+     * 可信服务账号创建高风险任务时也不再写入审批字段。
      *
-     * <p>这里同时验证审计摘要只记录 approvalFactId 这类低敏引用。SQL 正文、字段映射和连接信息仍留在受控配置或
-     * datasource-management 执行面，不能被普通审计 payload 扩散。</p>
+     * <p>服务账号和普通用户都走同一套创建合同：任务进入 CONFIGURED，审计记录高风险提示，
+     * 但不会把审批事实、SQL 正文、字段映射和连接信息扩散到普通任务审计摘要。</p>
      */
     @Test
-    void createTaskShouldIgnoreTrustedApprovalFactInCreateWizardAudit() {
+    void createTaskShouldNotPersistApprovalFactForServiceAccount() {
         SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
         SyncTaskMapper taskMapper = mock(SyncTaskMapper.class);
         SyncAuditSupport auditSupport = mock(SyncAuditSupport.class);
@@ -254,13 +252,13 @@ class DataSyncServiceImplProjectScopeTest {
             return 1;
         });
 
-        SyncTask task = service.createTask(createTaskRequest(true, "approval:test-002"), trustedApprovalActor());
+        SyncTask task = service.createTask(createTaskRequest(), trustedServiceActor());
 
         assertThat(task.getCurrentState()).isEqualTo(SyncTaskState.CONFIGURED.name());
-        assertThat(task.getApprovalState()).isEqualTo(SyncApprovalState.NOT_REQUIRED.name());
+        assertThat(task.getApprovalState()).isEqualTo("NOT_REQUIRED");
         verify(taskMapper).insert(any(SyncTask.class));
-        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("creationApprovalPolicy=NOT_USED_IN_CREATE_WIZARD"));
-        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), argThat(payload -> !payload.contains("approvalFactId")));
+        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("highRiskReviewSuggested=true"));
+        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), argThat(payload -> !payload.contains("approval")));
     }
 
     /**
@@ -634,19 +632,17 @@ class DataSyncServiceImplProjectScopeTest {
         return request;
     }
 
-    private CreateSyncTaskRequest createTaskRequest(boolean approvalConfirmed, String approvalFactId) {
+    private CreateSyncTaskRequest createTaskRequest() {
         CreateSyncTaskRequest request = new CreateSyncTaskRequest();
         request.setTemplateId(7001L);
         request.setTenantId(7L);
         request.setProjectId(101L);
         request.setWorkspaceId(301L);
         request.setName("high risk custom sql task");
-        request.setDescription("task used to verify approval gate");
+        request.setDescription("task used to verify high risk review hint");
         request.setPriority("HIGH");
         request.setRunMode("MANUAL");
         request.setOwnerId(1001L);
-        request.setApprovalConfirmed(approvalConfirmed);
-        request.setApprovalFactId(approvalFactId);
         return request;
     }
 
@@ -657,7 +653,7 @@ class DataSyncServiceImplProjectScopeTest {
         template.setProjectId(101L);
         template.setWorkspaceId(301L);
         template.setName("high risk custom sql template");
-        template.setDescription("custom sql approval test template");
+        template.setDescription("custom sql high risk review test template");
         template.setSourceDatasourceId(10001L);
         template.setTargetDatasourceId(20001L);
         template.setSourceSchemaName("ods");
@@ -670,7 +666,7 @@ class DataSyncServiceImplProjectScopeTest {
         template.setWriteStrategy("UPSERT");
         template.setPrimaryKeyField("id");
         template.setCustomSqlConfig("""
-                {"sql":"select id, name from customer where status = 'ACTIVE'","statementRef":"approval-test.sql"}
+                {"sql":"select id, name from customer where status = 'ACTIVE'","statementRef":"high-risk-review-test.sql"}
                 """);
         template.setFieldMappingConfig("""
                 [
@@ -723,12 +719,12 @@ class DataSyncServiceImplProjectScopeTest {
         );
     }
 
-    private SyncActorContext trustedApprovalActor() {
+    private SyncActorContext trustedServiceActor() {
         return new SyncActorContext(
                 7L,
                 9001L,
                 "SERVICE_ACCOUNT",
-                "trace-sync-approval",
+                "trace-sync-service",
                 "PLATFORM",
                 "all",
                 List.of(),

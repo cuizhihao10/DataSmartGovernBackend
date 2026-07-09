@@ -153,7 +153,7 @@ public class DataQualityController {
         QualityProjectVisibility visibility = qualityProjectScopeSupport.resolveVisibility(
                 projectId, workspaceId, dataScopeLevel, authorizedProjectIds);
         if (visibility.projectScopeEnforced() && visibility.authorizedProjectIds().isEmpty()) {
-            return ResponseEntity.ok(ApiResponse.success(new Page<>(current, size)));
+            return ResponseEntity.ok(ApiResponse.success(new Page<>(safeCurrent(current), safeSize(size))));
         }
         LambdaQueryWrapper<QualityRule> wrapper = new LambdaQueryWrapper<>();
         wrapper.ne(QualityRule::getStatus, QualityRuleStatus.DELETED);
@@ -164,8 +164,14 @@ public class DataQualityController {
         if (status != null && !status.isBlank()) {
             wrapper.eq(QualityRule::getStatus, status.toUpperCase());
         }
-        wrapper.orderByDesc(QualityRule::getCreateTime);
-        return ResponseEntity.ok(ApiResponse.success(dataQualityService.page(new Page<>(current, size), wrapper)));
+        /*
+         * 质量规则也属于会随着项目使用持续增长的业务数据。
+         * 用户在列表页最关心“最近创建的规则是否已经出现、能不能马上编辑或运行”，因此默认按数据库主键倒序返回。
+         * createTime 可能因为导入、迁移或人工修复被保留历史时间，不适合作为唯一的新旧判断口径。
+         */
+        wrapper.orderByDesc(QualityRule::getId);
+        return ResponseEntity.ok(ApiResponse.success(
+                dataQualityService.page(new Page<>(safeCurrent(current), safeSize(size)), wrapper)));
     }
 
     /**
@@ -431,5 +437,28 @@ public class DataQualityController {
         QualityProjectVisibility visibility = qualityProjectScopeSupport.resolveVisibility(
                 null, null, dataScopeLevel, authorizedProjectIds);
         qualityProjectScopeSupport.validateProjectReadable(rule.getProjectId(), visibility, "质量规则");
+    }
+
+    /**
+     * 规整用户侧列表页码。
+     *
+     * <p>质量规则列表同样可能被前端缓存、浏览器地址栏或自动化脚本传入非法页码。
+     * Controller 兜底能保证所有调用方得到一致的分页行为，而不是把非法参数继续传给数据库分页插件。</p>
+     */
+    private long safeCurrent(Integer current) {
+        return current == null || current < 1 ? 1L : current.longValue();
+    }
+
+    /**
+     * 规整用户侧列表每页数量。
+     *
+     * <p>前端统一最多展示 100 条，后端同步限制到 100 条。这样即使有人绕过前端直接调接口，
+     * 也不会一次性拉取过多规则配置，影响页面体验或服务稳定性。</p>
+     */
+    private long safeSize(Integer size) {
+        if (size == null || size < 1) {
+            return 10L;
+        }
+        return Math.min(size.longValue(), 100L);
     }
 }

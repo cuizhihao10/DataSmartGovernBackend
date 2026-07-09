@@ -96,7 +96,6 @@ import com.czh.datasmart.govern.datasync.service.support.SyncTemplateExecutionPr
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplatePlanningPreviewSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTemplateValidationSupport;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
-import com.czh.datasmart.govern.datasync.support.SyncApprovalState;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
 import com.czh.datasmart.govern.datasync.support.SyncTaskState;
 import com.czh.datasmart.govern.datasync.support.SyncTriggerType;
@@ -121,8 +120,6 @@ import java.util.Locale;
 @Service
 @RequiredArgsConstructor
 public class DataSyncServiceImpl implements DataSyncService {
-
-    private static final int APPROVAL_FACT_ID_MAX_LENGTH = 160;
 
     private final SyncTemplateMapper templateMapper;
     private final SyncTaskMapper taskMapper;
@@ -167,7 +164,6 @@ public class DataSyncServiceImpl implements DataSyncService {
         SyncDataVisibility visibility = dataScopeSupport.resolveVisibility(
                 criteria.tenantId(), criteria.projectId(), criteria.workspaceId(), actorContext);
         LambdaQueryWrapper<SyncTemplate> wrapper = new LambdaQueryWrapper<SyncTemplate>()
-                .orderByDesc(SyncTemplate::getUpdateTime)
                 .orderByDesc(SyncTemplate::getId);
         if (visibility.tenantId() != null) {
             wrapper.eq(SyncTemplate::getTenantId, visibility.tenantId());
@@ -250,16 +246,6 @@ public class DataSyncServiceImpl implements DataSyncService {
             throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
                     "同步任务租户必须与模板租户一致，templateTenantId=" + template.getTenantId() + ", taskTenantId=" + tenantId);
         }
-        /*
-         * 新建任务向导不再承载“审批确认”。
-         *
-         * 用户创建同步任务本质是配置数据搬运工具：选择源端、目标端、对象映射、字段映射、过滤条件并运行预检查。
-         * 高风险审批、回放、补数、导出等治理动作应放在任务详情、执行恢复或运营控制台的专用流程中，不能让普通创建页面出现
-         * approvalConfirmed / approvalFactId 这类让用户难以理解的字段。
-         *
-         * 因此创建阶段统一写入 NOT_REQUIRED；如果后续预检查发现需要高风险确认，应由发布、执行或恢复动作再进入审批策略。
-         */
-        String approvalState = SyncApprovalState.NOT_REQUIRED.name();
         boolean scheduledTask = isScheduledTask(template, request);
         LocalDateTime firstFireTime = scheduledTask
                 ? scheduleConfigSupport.initialNextFireTime(request.getScheduleConfig(), LocalDateTime.now())
@@ -302,15 +288,12 @@ public class DataSyncServiceImpl implements DataSyncService {
         task.setName(taskName);
         task.setDescription(querySupport.defaultText(request.getDescription(), template.getDescription()));
         /*
-         * 审批状态与任务主状态保持解耦：
-         * - approvalState 只回答“这类高风险同步是否已经批准”；
-         * - currentState 只回答“任务生命周期当前停在哪里”。
-         *
-         * 因此需要审批但尚未确认的任务进入 PENDING_APPROVAL，避免 runTask 绕过审批；
-         * 已确认或无需审批的任务保持 CONFIGURED，后续才能进入 QUEUED。
+         * 普通同步任务已经收敛为“项目内用户自有资源”，创建和发布不再进入审批态。
+         * 高风险写入、SQL 自定义、整库迁移等场景由预检查、权限、执行策略、审计和失败恢复入口约束，
+         * 不再把 approvalConfirmed / approvalFactId 暴露给用户创建页面。
          */
-        task.setCurrentState(resolveInitialTaskState(approvalState, scheduledTask));
-        task.setApprovalState(approvalState);
+        task.setCurrentState(scheduledTask ? SyncTaskState.SCHEDULED.name() : SyncTaskState.CONFIGURED.name());
+        task.setApprovalState("NOT_REQUIRED");
         task.setPriority(querySupport.defaultText(request.getPriority(), "MEDIUM").toUpperCase(java.util.Locale.ROOT));
         task.setScheduleConfig(querySupport.trimToNull(request.getScheduleConfig()));
         task.setScheduleEnabled(scheduledTask);
@@ -349,7 +332,6 @@ public class DataSyncServiceImpl implements DataSyncService {
         SyncDataVisibility visibility = dataScopeSupport.resolveVisibility(
                 criteria.tenantId(), criteria.projectId(), criteria.workspaceId(), actorContext);
         LambdaQueryWrapper<SyncTask> wrapper = new LambdaQueryWrapper<SyncTask>()
-                .orderByDesc(SyncTask::getUpdateTime)
                 .orderByDesc(SyncTask::getId);
         if (visibility.tenantId() != null) {
             wrapper.eq(SyncTask::getTenantId, visibility.tenantId());
@@ -374,7 +356,6 @@ public class DataSyncServiceImpl implements DataSyncService {
         } else {
             querySupport.eqIfPresent(wrapper, SyncTask::getCurrentState, requestedState);
         }
-        querySupport.eqIfPresent(wrapper, SyncTask::getApprovalState, querySupport.normalizeCode(criteria.approvalState()));
         querySupport.eqIfPresent(wrapper, SyncTask::getTriggerType, querySupport.normalizeCode(criteria.triggerType()));
         applyTaskKeywordFilter(wrapper, criteria.keyword());
         Page<SyncTask> page = taskMapper.selectPage(querySupport.page(criteria.current(), criteria.size()), wrapper);
@@ -408,7 +389,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                                                             SyncActorContext actorContext) {
         SyncTaskQueryCriteria safeCriteria = criteria == null
                 ? new SyncTaskQueryCriteria(null, null, null, null, null, null,
-                SyncTaskState.RECYCLED.name(), null, null, null, null)
+                SyncTaskState.RECYCLED.name(), null, null, null)
                 : new SyncTaskQueryCriteria(
                 criteria.tenantId(),
                 criteria.projectId(),
@@ -417,7 +398,6 @@ public class DataSyncServiceImpl implements DataSyncService {
                 criteria.ownerId(),
                 criteria.groupCode(),
                 SyncTaskState.RECYCLED.name(),
-                criteria.approvalState(),
                 criteria.triggerType(),
                 criteria.current(),
                 criteria.size(),
@@ -618,15 +598,6 @@ public class DataSyncServiceImpl implements DataSyncService {
                             + "，issueCodes=" + precheck.issueCodes()
                             + "，recommendedActions=" + precheck.recommendedActions());
         }
-        if (SyncTaskState.PENDING_APPROVAL.name().equals(task.getCurrentState())
-                && SyncApprovalState.APPROVED.name().equals(task.getApprovalState())) {
-            /*
-             * 外部正式审批流接入后，审批中心可能只把 approvalState 写成 APPROVED。
-             * runTask 在这里把“已批准但主状态仍停留在 PENDING_APPROVAL”的任务安全推进回 CONFIGURED，
-             * 再交给统一状态机判断，避免审批状态和生命周期状态短暂不一致导致合法运行被误挡。
-             */
-            task.setCurrentState(SyncTaskState.CONFIGURED.name());
-        }
         stateMachineSupport.assertCanQueue(task.getCurrentState());
         SyncExecution execution = executionCreationSupport.createQueuedExecution(task, actorContext);
         task.setCurrentState(SyncTaskState.QUEUED.name());
@@ -712,124 +683,31 @@ public class DataSyncServiceImpl implements DataSyncService {
     }
 
     /**
-     * 解析新任务的初始生命周期状态。
+     * 判断任务是否允许越过高风险提示状态进入队列。
      *
-     * <p>审批状态和调度状态必须解耦：需要审批的任务即使提供了 scheduleConfig，也不能立即进入 SCHEDULED，
-     * 否则后台调度器可能绕过人工审批自动生成 execution。只有审批已通过或无需审批时，定时任务才会进入
-     * SCHEDULED 并写入 nextFireTime。</p>
-     */
-    private String resolveInitialTaskState(String approvalState, boolean scheduledTask) {
-        if (SyncApprovalState.PENDING.name().equals(approvalState)) {
-            return SyncTaskState.PENDING_APPROVAL.name();
-        }
-        return scheduledTask ? SyncTaskState.SCHEDULED.name() : SyncTaskState.CONFIGURED.name();
-    }
-
-    /**
-     * 根据预检查结果和请求中的低敏审批事实决定新任务审批状态。
-     *
-     * <p>这里没有把 approvalFactId 存进任务表，是有意的阶段性收敛：
-     * 1. data-sync 当前只需要知道任务是否允许入队；
-     * 2. 正式审批事实应由 permission-admin/审批中心持久化，data-sync 保存引用或审计摘要即可；
-     * 3. 审计摘要必须低敏，不能包含 SQL、表名、字段映射、连接串、token、密码或业务样本。</p>
-     */
-    private String resolveApprovalStateForNewTask(SyncTemplateExecutionPrecheckResponse precheck,
-                                                  CreateSyncTaskRequest request,
-                                                  SyncActorContext actorContext) {
-        if (!precheck.approvalRequired()) {
-            if (Boolean.TRUE.equals(request.getApprovalConfirmed()) || hasText(request.getApprovalFactId())) {
-                /*
-                 * 非高风险任务不需要提交审批事实。这里不直接失败，是为了兼容本地 E2E 或上游审批流的统一表单；
-                 * 但最终状态仍以 NOT_REQUIRED 为准，避免把普通任务误标成“已审批”。
-                 */
-                assertTrustedApprovalSubmitter(actorContext, "SUBMIT_UNUSED_APPROVAL_FACT");
-                validateApprovalFactId(request.getApprovalFactId(), false);
-            }
-            return SyncApprovalState.NOT_REQUIRED.name();
-        }
-        if (Boolean.TRUE.equals(request.getApprovalConfirmed())) {
-            assertTrustedApprovalSubmitter(actorContext, "CONFIRM_SYNC_TASK_APPROVAL");
-            validateApprovalFactId(request.getApprovalFactId(), true);
-            return SyncApprovalState.APPROVED.name();
-        }
-        if (hasText(request.getApprovalFactId())) {
-            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "已提供审批事实 ID，但 approvalConfirmed 未显式为 true；高风险同步任务不能只凭事实引用入队");
-        }
-        return SyncApprovalState.PENDING.name();
-    }
-
-    /**
-     * 判断任务是否允许越过 REQUIRES_APPROVAL 预检查状态进入队列。
-     *
-     * <p>预检查返回 REQUIRES_APPROVAL 时，说明模板配置本身可执行，但属于高风险动作，例如自定义 SQL、
-     * 全库/全 schema 迁移或覆盖式写入。它不能像 READY_TO_EXECUTE 一样直接入队，必须看到任务上的
-     * approvalState=APPROVED。这样能让 API、worker 和 E2E 都共享同一条审批闸门。</p>
+     * <p>当前产品口径下，新建同步任务不再要求用户填写审批事实。预检查如果返回 REQUIRES_APPROVAL，
+     * 在用户界面应解释为“高风险但配置具备运行前提，需要重点展示风险、执行策略和审计提示”，而不是阻塞创建流程。
+     * 真正阻断仍由 canStartExecution=false、权限拒绝、执行策略准入失败或 worker 执行异常负责。</p>
      */
     private boolean canRunAfterPrecheck(SyncTemplateExecutionPrecheckResponse precheck, SyncTask task) {
         if (precheck.canStartExecution()) {
             return true;
         }
-        return SyncTemplateExecutionPrecheckSupport.REQUIRES_APPROVAL.equals(precheck.precheckStatus())
-                && SyncApprovalState.APPROVED.name().equals(task.getApprovalState());
-    }
-
-    /**
-     * 校验谁可以向 data-sync 提交“审批已完成”这一低敏事实。
-     *
-     * <p>当前仓库还没有把正式 approval service 远程接入 data-sync，所以先使用角色白名单做本地兜底。
-     * 普通用户、项目成员或只读角色不能通过请求体里的布尔值绕过审批；只有平台管理员、租户管理员、
-     * 运营人员和受控服务账号可以提交审批事实。后续接入 permission-admin 后，这里应替换为策略引擎调用。</p>
-     */
-    private void assertTrustedApprovalSubmitter(SyncActorContext actorContext, String operation) {
-        String role = normalizeRole(actorContext);
-        if (!"PLATFORM_ADMINISTRATOR".equals(role)
-                && !"TENANT_ADMINISTRATOR".equals(role)
-                && !"OPERATOR".equals(role)
-                && !"SERVICE_ACCOUNT".equals(role)) {
-            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
-                    "当前角色无权提交 data-sync 审批确认事实，operation=" + operation + ", role=" + role);
-        }
-    }
-
-    /**
-     * 校验审批事实 ID 是否保持低敏。
-     *
-     * <p>审批事实 ID 应该像 {@code approval:sync-local-e2e-001} 这类引用，而不是审批正文、SQL、对象清单或字段映射。
-     * 因此这里只允许短的字母、数字、冒号、下划线、短横线、点和斜杠；如果未来审批中心使用 UUID、ULID、工单号或
-     * trace-like 编码，都可以落在这个安全字符集内。</p>
-     */
-    private void validateApprovalFactId(String approvalFactId, boolean required) {
-        String factId = querySupport.trimToNull(approvalFactId);
-        if (factId == null) {
-            if (required) {
-                throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                        "高风险同步任务确认审批时必须提供低敏 approvalFactId");
-            }
-            return;
-        }
-        if (factId.length() > APPROVAL_FACT_ID_MAX_LENGTH
-                || !factId.matches("[A-Za-z0-9:_./-]+")) {
-            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "approvalFactId 只能是低敏短引用，允许字母、数字、冒号、下划线、短横线、点和斜杠，且长度不超过 "
-                            + APPROVAL_FACT_ID_MAX_LENGTH);
-        }
+        return SyncTemplateExecutionPrecheckSupport.REQUIRES_APPROVAL.equals(precheck.precheckStatus());
     }
 
     private String buildCreateTaskAuditPayload(SyncTask task,
                                                SyncTemplateExecutionPrecheckResponse precheck,
                                                CreateSyncTaskRequest request) {
         /*
-         * 创建任务审计只记录低敏配置事实，不再记录 request.approvalFactId。
-         * 审批事实应属于后续“发布/执行/恢复/高风险运营动作”的专用流程；如果仍把它放在创建审计里，前端和用户会误以为
-         * 新建同步任务本身需要审批，这与当前产品口径不一致。
+         * 创建任务审计只记录低敏配置事实，不记录 SQL、连接串、字段映射全文或样本数据。
+         * 如果预检查认为任务属于高风险配置，这里只记录 highRiskReviewSuggested=true，供运营排障和审计复盘使用，
+         * 不再把它表达成“新建任务需要审批”。
          */
         return "taskId=" + task.getId()
                 + ",templateId=" + task.getTemplateId()
                 + ",precheckStatus=" + precheck.precheckStatus()
-                + ",approvalRequired=" + precheck.approvalRequired()
-                + ",creationApprovalPolicy=NOT_USED_IN_CREATE_WIZARD"
-                + ",approvalState=" + task.getApprovalState()
+                + ",highRiskReviewSuggested=" + precheck.approvalRequired()
                 + ",scheduleEnabled=" + task.getScheduleEnabled()
                 + ",nextFireTime=" + task.getNextFireTime()
                 + ",groupCode=" + task.getGroupCode()
@@ -1332,8 +1210,6 @@ public class DataSyncServiceImpl implements DataSyncService {
                 .or()
                 .like(SyncTask::getCurrentState, keyword)
                 .or()
-                .like(SyncTask::getApprovalState, keyword)
-                .or()
                 .like(SyncTask::getRunMode, keyword));
     }
 
@@ -1362,11 +1238,6 @@ public class DataSyncServiceImpl implements DataSyncService {
 
     private String normalizeCode(String value) {
         return value == null ? null : value.trim().toUpperCase(Locale.ROOT);
-    }
-
-    private String normalizeRole(SyncActorContext actorContext) {
-        String role = actorContext == null ? null : actorContext.actorRole();
-        return role == null || role.isBlank() ? "USER" : role.trim().toUpperCase(Locale.ROOT);
     }
 
     private boolean hasText(String value) {

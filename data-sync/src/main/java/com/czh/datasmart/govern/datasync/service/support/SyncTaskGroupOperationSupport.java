@@ -627,9 +627,14 @@ public class SyncTaskGroupOperationSupport {
 
     private int normalizeLimit(Long requestedSize) {
         if (requestedSize == null || requestedSize <= 0) {
-            return 200;
+            return 100;
         }
-        return Math.toIntExact(Math.min(requestedSize, 500));
+        /*
+         * 分组树虽然不是传统 Table，但它仍是用户会持续增长的业务导航列表。
+         * 后端和前端统一限制 100，可以避免一个项目下分组过多时一次性渲染过重，
+         * 也避免直接调接口绕过前端每页最大 100 条的展示策略。
+         */
+        return Math.toIntExact(Math.min(requestedSize, 100));
     }
 
     private String normalizeRequiredGroupCode(String rawGroupCode) {

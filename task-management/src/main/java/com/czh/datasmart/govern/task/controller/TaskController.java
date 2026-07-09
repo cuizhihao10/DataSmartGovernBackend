@@ -100,8 +100,9 @@ public class TaskController {
             @RequestParam(required = false) Long tenantId,
             @RequestParam(required = false) Long ownerId,
             @RequestParam(required = false) Long projectId,
+            @RequestParam(required = false) String keyword,
             HttpServletRequest httpRequest) {
-        IPage<Task> page = taskService.listTasks(current, size, status, type, tenantId, ownerId, projectId,
+        IPage<Task> page = taskService.listTasks(current, size, status, type, tenantId, ownerId, projectId, keyword,
                 actorContext(httpRequest));
         return ResponseEntity.ok(ApiResponse.success("任务列表查询成功", page));
     }

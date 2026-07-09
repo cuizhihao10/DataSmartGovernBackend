@@ -45,9 +45,13 @@ import java.util.NoSuchElementException;
  *
  * 同步任务控制器。
  *
- * <p>同步任务是模板在运营层面的实例化，承载审批、调度、运行、暂停、恢复、重试、取消、进度回写和审计查询。
+ * <p>同步任务是模板在运营层面的实例化，承载调度、运行、暂停、恢复、重试、取消、进度回写和审计查询。
  * 本轮收敛后，任务会继承模板的项目归属；所有任务列表和按 ID 访问的入口都需要校验项目范围，
  * 否则项目负责人可能通过任务 ID 读取或操作其他项目的同步任务。</p>
+ *
+ * <p>注意：这是 datasource-management 中的历史兼容同步任务控制面，主数据同步产品已经迁移到 data-sync 模块。
+ * 普通用户侧任务是项目内自有资源，不再把任务表审批字段作为创建、列表或执行入口；权限绑定、Agent 受控工具等高风险审批
+ * 仍保留在独立治理控制器中，不能和普通同步任务生命周期混用。</p>
  */
 @RestController
 @RequestMapping("/sync/tasks")
@@ -94,7 +98,7 @@ public class SyncTaskController {
 
     /**
      * 分页查询任务。
-     * 支持租户、项目、模板、状态、审批状态、负责人、优先级、启用状态和人工关注标记等运营常用筛选维度。
+     * 支持租户、项目、模板、状态、负责人、优先级、启用状态和人工关注标记等运营常用筛选维度。
      */
     @GetMapping
     public ResponseEntity<ApiResponse<IPage<SyncTask>>> listTasks(
@@ -104,7 +108,6 @@ public class SyncTaskController {
             @RequestParam(required = false) Long projectId,
             @RequestParam(required = false) Long templateId,
             @RequestParam(required = false) String currentState,
-            @RequestParam(required = false) String approvalState,
             @RequestParam(required = false) Long ownerId,
             @RequestParam(required = false) String priority,
             @RequestParam(required = false) Boolean enabled,
@@ -118,14 +121,13 @@ public class SyncTaskController {
                 .eq(visibility.requestedProjectId() != null, SyncTask::getProjectId, visibility.requestedProjectId())
                 .eq(templateId != null, SyncTask::getTemplateId, templateId)
                 .eq(hasText(currentState), SyncTask::getCurrentState, hasText(currentState) ? currentState.toUpperCase() : null)
-                .eq(hasText(approvalState), SyncTask::getApprovalState, hasText(approvalState) ? approvalState.toUpperCase() : null)
                 .eq(ownerId != null, SyncTask::getOwnerId, ownerId)
                 .eq(hasText(priority), SyncTask::getPriority, hasText(priority) ? priority.toUpperCase() : null)
                 .eq(enabled != null, SyncTask::getEnabled, enabled)
                 .eq(operatorAttentionRequired != null, SyncTask::getOperatorAttentionRequired, operatorAttentionRequired)
-                .orderByDesc(SyncTask::getCreateTime);
+                .orderByDesc(SyncTask::getId);
         applyProjectScope(wrapper, visibility);
-        return ResponseEntity.ok(ApiResponse.success(syncTaskService.page(new Page<>(current, size), wrapper)));
+        return ResponseEntity.ok(ApiResponse.success(syncTaskService.page(new Page<>(safeCurrent(current), safeSize(size)), wrapper)));
     }
 
     @PostMapping("/{id}/submit-approval")
@@ -305,5 +307,22 @@ public class SyncTaskController {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    /**
+     * 规整页码。
+     *
+     * <p>历史接口过去直接信任前端 current/size。当前普通业务列表已经统一要求最大展示 100 条，
+     * 因此旧控制面也需要同步做后端兜底，避免脚本或旧页面绕过前端限制一次拉取过多任务定义。</p>
+     */
+    private long safeCurrent(Integer current) {
+        return current == null || current <= 0 ? 1L : current.longValue();
+    }
+
+    private long safeSize(Integer size) {
+        if (size == null || size <= 0) {
+            return 10L;
+        }
+        return Math.min(size.longValue(), 100L);
     }
 }

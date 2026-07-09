@@ -17,7 +17,6 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateExecutionPre
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
-import com.czh.datasmart.govern.datasync.support.SyncApprovalState;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
 import com.czh.datasmart.govern.datasync.support.SyncTaskState;
@@ -39,13 +38,11 @@ import java.util.Set;
  * <p>2. 执行管理：run、manual-dispatch、worker claim、checkpoint、complete/fail，核心目标是搬运数据并记录执行事实。</p>
  *
  * <p>把二者分开后，后续 Agent 能更安全地调用控制面工具：Agent 可以先生成草稿、解释预检、请求用户确认发布，
- * 但不能因为“改了一个字段”就绕过审批或调度器直接执行真实数据同步。</p>
+ * 但不能因为“改了一个字段”就绕过预检查或调度器直接执行真实数据同步。</p>
  */
 @Component
 @RequiredArgsConstructor
 public class SyncTaskDefinitionOperationSupport {
-
-    private static final int APPROVAL_FACT_ID_MAX_LENGTH = 160;
 
     /**
      * 支持的任务优先级。
@@ -151,7 +148,7 @@ public class SyncTaskDefinitionOperationSupport {
      * 发布同步任务定义。
      *
      * <p>发布会重新执行模板校验和执行前预检查，而不是相信任务创建时的旧结果。
-     * 原因是模板、连接器能力矩阵、runner 支持边界或审批规则都可能在任务草稿保存后发生变化。
+     * 原因是模板、连接器能力矩阵、runner 支持边界或执行策略都可能在任务草稿保存后发生变化。
      * 只有发布时重新检查，才能避免旧草稿在系统升级后绕过新的安全规则。</p>
      */
     public SyncTaskOperationResult publishTaskDefinition(SyncTask task,
@@ -169,10 +166,9 @@ public class SyncTaskDefinitionOperationSupport {
                             + "，recommendedActions=" + precheck.recommendedActions());
         }
 
-        String approvalState = resolveApprovalStateForPublish(precheck, safeRequest, actorContext);
         boolean scheduled = resolveScheduledOnPublish(template, task, safeRequest);
-        String targetState = resolvePublishedTaskState(approvalState, scheduled);
-        Boolean scheduleEnabled = scheduled && !SyncApprovalState.PENDING.name().equals(approvalState);
+        String targetState = resolvePublishedTaskState(scheduled);
+        Boolean scheduleEnabled = scheduled;
         LocalDateTime nextFireTime = scheduleEnabled
                 ? scheduleConfigSupport.initialNextFireTime(task.getScheduleConfig(), LocalDateTime.now())
                 : null;
@@ -195,7 +191,7 @@ public class SyncTaskDefinitionOperationSupport {
                 runMode,
                 triggerType,
                 targetState,
-                approvalState,
+                "NOT_REQUIRED",
                 Boolean.FALSE,
                 null);
         if (updated == 0) {
@@ -204,7 +200,7 @@ public class SyncTaskDefinitionOperationSupport {
         }
         auditSupport.saveAudit(task.getTenantId(), task.getId(), task.getLastExecutionId(),
                 SyncAuditActionType.PUBLISH_TASK, actorContext,
-                buildPublishAuditPayload(task, precheck, approvalState, targetState, scheduleEnabled, nextFireTime, safeRequest));
+                buildPublishAuditPayload(task, precheck, targetState, scheduleEnabled, nextFireTime, safeRequest));
         return new SyncTaskOperationResult(task.getId(), targetState, "同步任务已发布，当前状态=" + targetState);
     }
 
@@ -342,28 +338,6 @@ public class SyncTaskDefinitionOperationSupport {
         scheduleConfigSupport.parseRequired(scheduleConfig);
     }
 
-    private String resolveApprovalStateForPublish(SyncTemplateExecutionPrecheckResponse precheck,
-                                                  SyncTaskPublishRequest request,
-                                                  SyncActorContext actorContext) {
-        if (!precheck.approvalRequired()) {
-            if (Boolean.TRUE.equals(request.getApprovalConfirmed()) || hasText(request.getApprovalFactId())) {
-                assertTrustedApprovalSubmitter(actorContext, "SUBMIT_UNUSED_APPROVAL_FACT_FOR_PUBLISH");
-                validateApprovalFactId(request.getApprovalFactId(), false);
-            }
-            return SyncApprovalState.NOT_REQUIRED.name();
-        }
-        if (Boolean.TRUE.equals(request.getApprovalConfirmed())) {
-            assertTrustedApprovalSubmitter(actorContext, "CONFIRM_SYNC_TASK_PUBLISH_APPROVAL");
-            validateApprovalFactId(request.getApprovalFactId(), true);
-            return SyncApprovalState.APPROVED.name();
-        }
-        if (hasText(request.getApprovalFactId())) {
-            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "已提供审批事实 ID，但 approvalConfirmed 未显式为 true；高风险同步任务不能只凭事实引用发布");
-        }
-        return SyncApprovalState.PENDING.name();
-    }
-
     private boolean resolveScheduledOnPublish(SyncTemplate template,
                                               SyncTask task,
                                               SyncTaskPublishRequest request) {
@@ -389,39 +363,8 @@ public class SyncTaskDefinitionOperationSupport {
         return hasScheduleConfig && !Boolean.FALSE.equals(request.getEnableSchedule());
     }
 
-    private String resolvePublishedTaskState(String approvalState, boolean scheduled) {
-        if (SyncApprovalState.PENDING.name().equals(approvalState)) {
-            return SyncTaskState.PENDING_APPROVAL.name();
-        }
+    private String resolvePublishedTaskState(boolean scheduled) {
         return scheduled ? SyncTaskState.SCHEDULED.name() : SyncTaskState.CONFIGURED.name();
-    }
-
-    private void assertTrustedApprovalSubmitter(SyncActorContext actorContext, String operation) {
-        String role = normalizeRole(actorContext);
-        if (!"PLATFORM_ADMINISTRATOR".equals(role)
-                && !"TENANT_ADMINISTRATOR".equals(role)
-                && !"OPERATOR".equals(role)
-                && !"SERVICE_ACCOUNT".equals(role)) {
-            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
-                    "当前角色无权提交 data-sync 审批确认事实，operation=" + operation + ", role=" + role);
-        }
-    }
-
-    private void validateApprovalFactId(String approvalFactId, boolean required) {
-        String factId = querySupport.trimToNull(approvalFactId);
-        if (factId == null) {
-            if (required) {
-                throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                        "高风险同步任务发布确认审批时必须提供低敏 approvalFactId");
-            }
-            return;
-        }
-        if (factId.length() > APPROVAL_FACT_ID_MAX_LENGTH
-                || !factId.matches("[A-Za-z0-9:_./-]+")) {
-            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "approvalFactId 只能是低敏短引用，允许字母、数字、冒号、下划线、短横线、点和斜杠，且长度不超过 "
-                            + APPROVAL_FACT_ID_MAX_LENGTH);
-        }
     }
 
     private SyncTask reloadTask(Long taskId) {
@@ -449,7 +392,6 @@ public class SyncTaskDefinitionOperationSupport {
 
     private String buildPublishAuditPayload(SyncTask task,
                                             SyncTemplateExecutionPrecheckResponse precheck,
-                                            String approvalState,
                                             String targetState,
                                             Boolean scheduleEnabled,
                                             LocalDateTime nextFireTime,
@@ -457,16 +399,11 @@ public class SyncTaskDefinitionOperationSupport {
         String payload = "taskId=" + task.getId()
                 + ",templateId=" + task.getTemplateId()
                 + ",precheckStatus=" + precheck.precheckStatus()
-                + ",approvalRequired=" + precheck.approvalRequired()
-                + ",approvalState=" + approvalState
+                + ",highRiskReviewSuggested=" + precheck.approvalRequired()
                 + ",newState=" + targetState
                 + ",scheduleEnabled=" + scheduleEnabled
                 + ",nextFireTime=" + nextFireTime
                 + ",reason=" + sanitizeReason(request.getReason(), "用户发布同步任务定义");
-        String approvalFactId = querySupport.trimToNull(request.getApprovalFactId());
-        if (approvalFactId != null) {
-            payload = payload + ",approvalFactId=" + querySupport.truncate(approvalFactId, APPROVAL_FACT_ID_MAX_LENGTH);
-        }
         return payload;
     }
 
@@ -486,11 +423,6 @@ public class SyncTaskDefinitionOperationSupport {
 
     private String normalizeCode(String value) {
         return value == null ? null : value.trim().toUpperCase(Locale.ROOT);
-    }
-
-    private String normalizeRole(SyncActorContext actorContext) {
-        String role = actorContext == null ? null : actorContext.actorRole();
-        return role == null || role.isBlank() ? "USER" : role.trim().toUpperCase(Locale.ROOT);
     }
 
     private boolean hasText(String value) {

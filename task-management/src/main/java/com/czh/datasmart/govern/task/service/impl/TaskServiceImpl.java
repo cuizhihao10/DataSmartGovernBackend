@@ -118,7 +118,8 @@ public class TaskServiceImpl extends ServiceImpl<TaskMapper, Task> implements Ta
 
     @Override
     public IPage<Task> listTasks(Integer current, Integer size, String status, String type,
-                                 Long tenantId, Long ownerId, Long projectId, TaskActorContext actorContext) {
+                                 Long tenantId, Long ownerId, Long projectId, String keyword,
+                                 TaskActorContext actorContext) {
         LambdaQueryWrapper<Task> wrapper = new LambdaQueryWrapper<>();
         if (status != null && !status.isBlank()) {
             wrapper.eq(Task::getStatus, status);
@@ -127,10 +128,21 @@ public class TaskServiceImpl extends ServiceImpl<TaskMapper, Task> implements Ta
             wrapper.eq(Task::getType, type);
         }
         dataScopeSupport.applyListScope(wrapper, tenantId, ownerId, projectId, actorContext);
-        wrapper.orderByDesc(Task::getCreateTime);
+        if (keyword != null && !keyword.isBlank()) {
+            String likeKeyword = keyword.trim();
+            wrapper.and(nested -> nested
+                    .like(Task::getName, likeKeyword)
+                    .or()
+                    .like(Task::getType, likeKeyword)
+                    .or()
+                    .like(Task::getDescription, likeKeyword)
+                    .or()
+                    .like(Task::getCreationIdempotencyKey, likeKeyword));
+        }
+        wrapper.orderByDesc(Task::getId);
 
         int safeCurrent = Math.max(1, current == null ? 1 : current);
-        int safeSize = Math.max(1, Math.min(size == null ? 10 : size, 200));
+        int safeSize = Math.max(1, Math.min(size == null ? 10 : size, 100));
         return page(new Page<>(safeCurrent, safeSize), wrapper);
     }
 

@@ -24,7 +24,7 @@ import java.util.Locale;
  * 同步任务创建向导合同支撑组件。
  *
  * <p>这个组件专门负责“创建同步任务页面应该遵守什么后端规则”。它不创建模板、不创建任务、不触碰真实源端或目标端数据，
- * 只返回低敏合同和单步校验结果。这样前端可以同步修复 UI，同时后端也不会把旧的执行器字段、审批字段、恢复动作继续暴露成表单项。</p>
+ * 只返回低敏合同和单步校验结果。这样前端可以同步修复 UI，同时后端也不会把旧的执行器字段、风险确认字段、恢复动作继续暴露成表单项。</p>
  *
  * <p>当前合同重点解决用户指出的几个产品问题：</p>
  * <p>1. 租户/项目由上下文自动推导，普通表单不填写数字 ID；</p>
@@ -32,7 +32,7 @@ import java.util.Locale;
  * <p>3. 传输模式只保留全量、定期批量、定期全量、SQL 自定义、实时五类；</p>
  * <p>4. 对象映射和字段映射由元数据发现、选择、搜索、排除、改名、字段勾选生成，不让用户直接编辑大段 JSON；</p>
  * <p>5. 写入策略只保留 INSERT 和 UPDATE，主键/外键/字段数量/对象存在性在预检查阶段自动判断；</p>
- * <p>6. 审批确认、补数、回放、脏数据重放属于运行期运营能力，不属于新建任务向导。</p>
+ * <p>6. 高风险人工确认、补数、回放、脏数据重放属于运行期运营能力，不属于新建任务向导。</p>
  */
 @Component
 @RequiredArgsConstructor
@@ -142,7 +142,7 @@ public class SyncTaskCreateWizardContractSupport {
                         List.of("taskId", "templateId"),
                         "进入本步骤后自动运行预检查；预检查通过后再发布/执行，草稿保存不等于立即执行",
                         List.of("连接器兼容性", "对象存在性", "目标主键/外键/约束", "字段数量和类型兼容", "SQL 安全", "调度配置合法性"),
-                        List.of("approvalConfirmed", "approvalFactId", "manualRunModeSelector")));
+                        List.of("manualRunModeSelector")));
     }
 
     private List<SyncTaskCreateWizardContractResponse.WriteStrategyOption> writeStrategies() {
@@ -214,8 +214,6 @@ public class SyncTaskCreateWizardContractSupport {
                 "projectId",
                 "workspaceId",
                 "runMode",
-                "approvalConfirmed",
-                "approvalFactId",
                 "primaryKeyField",
                 "incrementalField",
                 "partitionConfig",
@@ -327,7 +325,7 @@ public class SyncTaskCreateWizardContractSupport {
         if (request == null || request.getTaskId() == null || request.getTemplateId() == null) {
             blocking.add("进入预检查步骤前必须先保存草稿并获得 taskId/templateId");
         }
-        warnings.add("预检查不再要求用户填写审批确认；高风险执行审批应进入后续发布/执行/恢复的专用流程");
+        warnings.add("预检查不再要求用户填写额外确认字段；高风险配置只在预检查结果中给出风险提示，实际阻断由权限、执行策略和运行期错误处理负责");
         nextActions.add("进入预检查步骤后自动调用模板预检查，确认连接器兼容性、对象存在性、字段映射、SQL 安全和目标表约束");
     }
 

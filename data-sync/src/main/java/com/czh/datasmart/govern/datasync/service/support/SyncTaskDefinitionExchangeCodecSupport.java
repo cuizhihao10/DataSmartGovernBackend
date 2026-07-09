@@ -51,8 +51,11 @@ public class SyncTaskDefinitionExchangeCodecSupport {
     /**
      * 任务定义交换表头。
      *
-     * <p>其中 taskId/currentState/approvalState/triggerType 是导出时给人看的上下文字段，导入时会被忽略。
+     * <p>其中 taskId/currentState/triggerType 是导出时给人看的上下文字段，导入时会被忽略。
      * 新建任务的真实状态由导入选项决定：不立即执行则 DRAFT，立即执行则先发布再创建 MANUAL execution。</p>
+     *
+     * <p>注意：历史导出文件可能仍包含 approvalState 列。导入时 headerIndex 会容忍该旧列，但新的导出合同不再生成它，
+     * 因为普通同步任务已经定义为项目内用户自有资源，不应在任务交换文件里暴露审批字段。</p>
      */
     private static final List<String> HEADERS = List.of(
             "taskId",
@@ -69,7 +72,6 @@ public class SyncTaskDefinitionExchangeCodecSupport {
             "scheduleConfig",
             "runMode",
             "currentState",
-            "approvalState",
             "triggerType",
             "createTime",
             "updateTime"
@@ -299,7 +301,6 @@ public class SyncTaskDefinitionExchangeCodecSupport {
                 text(task.getScheduleConfig()),
                 text(task.getRunMode()),
                 text(task.getCurrentState()),
-                text(task.getApprovalState()),
                 text(task.getTriggerType()),
                 task.getCreateTime() == null ? "" : TIME_FORMATTER.format(task.getCreateTime()),
                 task.getUpdateTime() == null ? "" : TIME_FORMATTER.format(task.getUpdateTime())

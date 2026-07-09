@@ -33,7 +33,7 @@ public class SyncQuerySupport {
 
     private static final long DEFAULT_CURRENT = 1L;
     private static final long DEFAULT_PAGE_SIZE = 20L;
-    private static final long MAX_PAGE_SIZE = 200L;
+    private static final long MAX_PAGE_SIZE = 100L;
 
     /**
      * 构建安全分页对象。

@@ -179,6 +179,7 @@ public class DataSourceManagementController {
             @RequestParam(required = false) String type,
             @RequestParam(required = false) String usagePurpose,
             @RequestParam(required = false) String status,
+            @RequestParam(required = false) String keyword,
             @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantHeader,
             @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectHeader,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
@@ -210,9 +211,22 @@ public class DataSourceManagementController {
         if (hasText(status)) {
             wrapper.eq(DataSourceConfig::getStatus, status.toUpperCase());
         }
-        wrapper.orderByDesc(DataSourceConfig::getCreateTime);
+        if (hasText(keyword)) {
+            String likeKeyword = keyword.trim();
+            wrapper.and(nested -> nested
+                    .like(DataSourceConfig::getName, likeKeyword)
+                    .or()
+                    .like(DataSourceConfig::getType, likeKeyword)
+                    .or()
+                    .like(DataSourceConfig::getUsername, likeKeyword)
+                    .or()
+                    .like(DataSourceConfig::getDescription, likeKeyword)
+                    .or()
+                    .like(DataSourceConfig::getJdbcUrl, likeKeyword));
+        }
+        wrapper.orderByDesc(DataSourceConfig::getId);
 
-        IPage<DataSourceConfig> result = dataSourceManagementService.page(new Page<>(current, size), wrapper);
+        IPage<DataSourceConfig> result = dataSourceManagementService.page(new Page<>(safeCurrent(current), safeSize(size)), wrapper);
         return ResponseEntity.ok(ApiResponse.success(result));
     }
 
@@ -708,6 +722,29 @@ public class DataSourceManagementController {
         } catch (NumberFormatException exception) {
             throw new IllegalArgumentException(headerName + " 必须是数字: " + value);
         }
+    }
+
+    /**
+     * 规整用户侧列表页码。
+     *
+     * <p>数据源会随着项目使用持续增长，列表接口必须由服务端兜底分页边界：
+     * 页码小于 1 时统一回到第 1 页，避免前端缓存、手工拼 URL 或自动化脚本传入非法页码后得到不可解释的结果。</p>
+     */
+    private long safeCurrent(Integer current) {
+        return current == null || current <= 0 ? 1L : current.longValue();
+    }
+
+    /**
+     * 规整用户侧列表每页数量。
+     *
+     * <p>前端最多展示 100 条，后端也同步限制到 100 条，避免“前端看起来限制了，
+     * 但直接调接口仍能一次拉取大量数据源连接低敏信息”的体验和安全不一致问题。</p>
+     */
+    private long safeSize(Integer size) {
+        if (size == null || size <= 0) {
+            return 10L;
+        }
+        return Math.min(size.longValue(), 100L);
     }
 
     private boolean hasText(String value) {

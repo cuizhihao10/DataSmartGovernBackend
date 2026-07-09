@@ -54,7 +54,7 @@ public class DataSourceAuthorizationServiceImpl implements DataSourceAuthorizati
                 .eq(DataSourceAuthorization::getDatasourceId, datasource.getId())
                 .eq(DataSourceAuthorization::getTenantId, datasource.getTenantId())
                 .eq(DataSourceAuthorization::getProjectId, datasource.getProjectId())
-                .orderByDesc(DataSourceAuthorization::getUpdateTime);
+                .orderByDesc(DataSourceAuthorization::getId);
         if (hasText(subjectType)) {
             wrapper.eq(DataSourceAuthorization::getSubjectType,
                     DataSourceAuthorizationSubjectType.fromValue(subjectType).name());

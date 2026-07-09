@@ -69,7 +69,8 @@ public interface TaskService extends IService<Task> {
      * 服务层会把两者叠加，保证请求参数只能缩小结果集，不能扩大操作者权限。
      */
     IPage<Task> listTasks(Integer current, Integer size, String status, String type,
-                          Long tenantId, Long ownerId, Long projectId, TaskActorContext actorContext);
+                          Long tenantId, Long ownerId, Long projectId, String keyword,
+                          TaskActorContext actorContext);
 
     /**
      * 查询任务详情。

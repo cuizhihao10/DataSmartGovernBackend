@@ -11,6 +11,7 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Data;
 
 import java.time.LocalDateTime;
@@ -87,6 +88,11 @@ public class SyncTask {
     /**
      * 审批状态。
      */
+    /*
+     * 兼容字段：普通数据同步任务已经按“用户/项目自有资源”处理，不再在用户侧列表、详情和筛选条件中展示审批状态。
+     * 该列暂时保留给历史发布、恢复和高风险治理流程读取；等审批事实独立表完全闭环后，再通过迁移物理下线。
+     */
+    @JsonIgnore
     private String approvalState;
 
     /**

@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Data;
 
 import java.time.LocalDateTime;
@@ -89,6 +90,12 @@ public class SyncTask {
      * 审批状态。
      * 它不是执行状态，而是治理状态，用来表达任务是否已经通过授权进入执行流程。
      */
+    /*
+     * 兼容字段：datasource-management 早期曾内置一套同步任务表。
+     * 当前正式数据同步任务已经迁移到 data-sync 微服务，普通用户侧不再展示审批状态；
+     * 该字段只为历史治理链路和旧表兼容保留，避免旧接口 JSON 继续把“审批”暴露为任务列表字段。
+     */
+    @JsonIgnore
     private String approvalState;
 
     /**

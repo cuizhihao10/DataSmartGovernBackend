@@ -219,7 +219,12 @@ public class SyncTaskManagementOperationSupport {
         cloned.setName(name);
         cloned.setDescription(resolveCloneDescription(sourceTask, request));
         cloned.setCurrentState(SyncTaskState.DRAFT.name());
-        cloned.setApprovalState(resolveApprovalStateForClone(precheck));
+        /*
+         * 普通同步任务现在是项目内用户自有资源，克隆结果只进入 DRAFT 等待用户继续编辑。
+         * 即使预检查提示“高风险建议人工确认”，也不再把克隆任务写成 PENDING 审批状态，避免前端没有审批入口时
+         * 旧兼容字段反过来阻塞任务发布或执行。真正的高风险治理应沉淀到独立审计/权限事实，而不是任务表审批列。
+         */
+        cloned.setApprovalState(SyncApprovalState.NOT_REQUIRED.name());
         cloned.setPriority(sourceTask.getPriority());
         cloned.setScheduleConfig(keepScheduleConfig(request) ? sourceTask.getScheduleConfig() : null);
         cloned.setScheduleEnabled(false);
@@ -272,10 +277,6 @@ public class SyncTaskManagementOperationSupport {
     private SyncExecution queueManualExecution(SyncTask task,
                                                SyncActorContext actorContext,
                                                SyncAuditActionType auditActionType) {
-        if (SyncTaskState.PENDING_APPROVAL.name().equals(task.getCurrentState())
-                && SyncApprovalState.APPROVED.name().equals(task.getApprovalState())) {
-            task.setCurrentState(SyncTaskState.CONFIGURED.name());
-        }
         stateMachineSupport.assertCanQueue(task.getCurrentState());
         SyncExecution execution = executionCreationSupport.createQueuedExecution(task, actorContext, SyncTriggerType.MANUAL);
         task.setCurrentState(SyncTaskState.QUEUED.name());
@@ -355,12 +356,12 @@ public class SyncTaskManagementOperationSupport {
         if (precheck.canStartExecution()) {
             return true;
         }
-        return SyncTemplateExecutionPrecheckSupport.REQUIRES_APPROVAL.equals(precheck.precheckStatus())
-                && SyncApprovalState.APPROVED.name().equals(task.getApprovalState());
-    }
-
-    private String resolveApprovalStateForClone(SyncTemplateExecutionPrecheckResponse precheck) {
-        return precheck.approvalRequired() ? SyncApprovalState.PENDING.name() : SyncApprovalState.NOT_REQUIRED.name();
+        /*
+         * REQUIRES_APPROVAL 在当前普通任务链路里只代表“需要在预检查结果中高亮风险并保留审计提示”，
+         * 不再要求任务表里的 approvalState=APPROVED。这样可以和创建向导保持一致：页面不展示审批字段，
+         * 后端也不能因为兼容列没有人工改写而把用户任务卡死。
+         */
+        return SyncTemplateExecutionPrecheckSupport.REQUIRES_APPROVAL.equals(precheck.precheckStatus());
     }
 
     private String resolveCloneName(SyncTask sourceTask, SyncTaskCloneRequest request) {

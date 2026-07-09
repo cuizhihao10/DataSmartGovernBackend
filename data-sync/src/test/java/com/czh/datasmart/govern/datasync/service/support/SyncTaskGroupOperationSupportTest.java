@@ -46,14 +46,14 @@ class SyncTaskGroupOperationSupportTest {
         SyncActorContext actor = actor();
         SyncDataVisibility visibility = projectVisibility();
         when(fixture.dataScopeSupport().resolveVisibility(any(), any(), any(), any())).thenReturn(visibility);
-        when(fixture.groupMapper().selectVisibleGroups(10L, null, null, true, List.of(101L, 102L), null, 200))
+        when(fixture.groupMapper().selectVisibleGroups(10L, null, null, true, List.of(101L, 102L), null, 100))
                 .thenReturn(List.of(
                         group(1L, 10L, 101L, null, null, "DEFAULT", "默认分组", 0, true),
                         group(2L, 10L, 101L, null, "DEFAULT", "TEST", "测试", 100, false),
                         group(3L, 10L, 102L, null, null, "DEFAULT", "默认分组", 0, true)
                 ));
         when(fixture.taskMapper().selectTaskGroupSummaries(10L, null, null, true, List.of(101L, 102L),
-                null, null, 200)).thenReturn(List.of(
+                null, null, 100)).thenReturn(List.of(
                 summary(10L, 101L, null, "DEFAULT", "默认分组", 20L, 20L, 1L, 0L, 0L, 0L),
                 summary(10L, 101L, null, "TEST", "测试", 3L, 2L, 0L, 1L, 0L, 0L),
                 summary(10L, 102L, null, "DEFAULT", "默认分组", 0L, 0L, 0L, 0L, 0L, 0L)
@@ -99,7 +99,7 @@ class SyncTaskGroupOperationSupportTest {
         SyncActorContext actor = actor();
         when(fixture.dataScopeSupport().resolveVisibility(any(), any(), any(), any())).thenReturn(projectVisibility());
         when(fixture.taskMapper().selectTaskGroupSummaries(10L, null, null, true, List.of(101L, 102L),
-                null, null, 200)).thenReturn(List.of(
+                null, null, 100)).thenReturn(List.of(
                 summary(10L, 101L, null, "DEFAULT", "默认分组", 20L, 20L, 1L, 0L, 0L, 0L),
                 summary(10L, 102L, null, "DEFAULT", "默认分组", 0L, 0L, 0L, 0L, 0L, 0L)
         ));
@@ -135,7 +135,7 @@ class SyncTaskGroupOperationSupportTest {
 
     private SyncTaskQueryCriteria criteria() {
         return new SyncTaskQueryCriteria(10L, null, null, null, null, null,
-                null, null, null, 1L, 200L);
+                null, null, 1L, 100L, null);
     }
 
     private SyncDataVisibility projectVisibility() {

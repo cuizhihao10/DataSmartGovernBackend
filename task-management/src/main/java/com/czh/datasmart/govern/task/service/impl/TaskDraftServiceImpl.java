@@ -89,10 +89,10 @@ public class TaskDraftServiceImpl extends ServiceImpl<TaskDraftMapper, TaskDraft
             wrapper.eq(TaskDraft::getType, type);
         }
         scopeSupport.applyListScope(wrapper, tenantId, ownerId, projectId, actorContext);
-        wrapper.orderByDesc(TaskDraft::getCreateTime);
+        wrapper.orderByDesc(TaskDraft::getId);
 
         int safeCurrent = Math.max(1, current == null ? 1 : current);
-        int safeSize = Math.max(1, Math.min(size == null ? 10 : size, 200));
+        int safeSize = Math.max(1, Math.min(size == null ? 10 : size, 100));
         return page(new Page<>(safeCurrent, safeSize), wrapper);
     }
 }

@@ -105,7 +105,7 @@ public class SyncTemplateController {
                 .eq(visibility.requestedProjectId() != null, SyncTemplate::getProjectId, visibility.requestedProjectId())
                 .eq(enabled != null, SyncTemplate::getEnabled, enabled)
                 .eq(hasText(syncMode), SyncTemplate::getSyncMode, hasText(syncMode) ? syncMode.toUpperCase() : null)
-                .orderByDesc(SyncTemplate::getCreateTime);
+                .orderByDesc(SyncTemplate::getId);
         applyProjectScope(wrapper, visibility);
         return ResponseEntity.ok(ApiResponse.success(syncTemplateService.page(new Page<>(current, size), wrapper)));
     }
