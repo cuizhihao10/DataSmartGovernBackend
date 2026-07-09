@@ -385,14 +385,36 @@ public class SyncExecutionPolicyService {
     private boolean connectorMatches(SyncExecutionPolicy policy, ExecutionPolicyFacts facts) {
         String connectorType = normalizeCode(policy.getConnectorType());
         String role = defaultText(normalizeCode(policy.getConnectorRole()), "ANY");
+        /*
+         * connectorType 为空不是“脏数据”，而是执行策略体系里的通用读写默认层：
+         * - connectorRole=SOURCE + connectorType=null 表示任意源端连接器的默认读取策略；
+         * - connectorRole=TARGET + connectorType=null 表示任意目标端连接器的默认写入策略；
+         * - 后续如果管理员新增 MYSQL/ORACLE/KAFKA 等具体 connectorType 策略，会在同一 CONNECTOR 层按
+         *   priority 和 id 顺序继续覆盖通用默认值。
+         *
+         * 这样设计的原因是用户提到的“MySQL 源端默认读取、PostgreSQL 目标端默认写入”只是示例，而不是产品边界。
+         * 商业化数据同步工具必须先有跨连接器的默认读写治理，再允许特定连接器做容量和稳定性例外。
+         */
         if ("SOURCE".equals(role)) {
-            return same(connectorType, facts.sourceConnectorType());
+            return hasSourceSide(facts) && connectorTypeMatches(connectorType, facts.sourceConnectorType());
         }
         if ("TARGET".equals(role)) {
-            return same(connectorType, facts.targetConnectorType());
+            return hasTargetSide(facts) && connectorTypeMatches(connectorType, facts.targetConnectorType());
         }
-        return same(connectorType, facts.sourceConnectorType())
-                || same(connectorType, facts.targetConnectorType());
+        return (hasSourceSide(facts) && connectorTypeMatches(connectorType, facts.sourceConnectorType()))
+                || (hasTargetSide(facts) && connectorTypeMatches(connectorType, facts.targetConnectorType()));
+    }
+
+    private boolean connectorTypeMatches(String policyConnectorType, String actualConnectorType) {
+        return policyConnectorType == null || same(policyConnectorType, actualConnectorType);
+    }
+
+    private boolean hasSourceSide(ExecutionPolicyFacts facts) {
+        return facts.sourceDatasourceId() != null || trimToNull(facts.sourceConnectorType()) != null;
+    }
+
+    private boolean hasTargetSide(ExecutionPolicyFacts facts) {
+        return facts.targetDatasourceId() != null || trimToNull(facts.targetConnectorType()) != null;
     }
 
     private SyncExecutionPolicy getPolicyForUpdate(Long id, SyncActorContext actorContext) {
@@ -563,9 +585,11 @@ public class SyncExecutionPolicyService {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR, "PROJECT 策略必须归属到具体项目");
         }
         if ("CONNECTOR".equals(scopeType)) {
-            if (trimToNull(request.getConnectorType()) == null) {
-                throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR, "CONNECTOR 策略必须填写 connectorType");
-            }
+            /*
+             * 连接器作用域允许 connectorType 留空，表示“任意连接器类型”的通用源端/目标端策略。
+             * 例如 DEFAULT_SOURCE_READ 只关心 SOURCE 读取方向，不应该被绑定到 MySQL；否则 PostgreSQL、Oracle、
+             * SQL Server、文件、API 等新连接器上线时都会缺少基础治理参数，和真实可商用产品的扩展目标冲突。
+             */
             if (!SUPPORTED_CONNECTOR_ROLES.contains(defaultText(normalizeCode(request.getConnectorRole()), "ANY"))) {
                 throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
                         "connectorRole 必须是 SOURCE、TARGET 或 ANY");
@@ -613,7 +637,7 @@ public class SyncExecutionPolicyService {
             case "PROJECT" -> "PROJECT:" + projectId;
             case "CONNECTOR" -> "CONNECTOR:"
                     + defaultText(normalizeCode(request.getConnectorRole()), "ANY")
-                    + ":" + normalizeCode(request.getConnectorType());
+                    + ":" + defaultText(normalizeCode(request.getConnectorType()), "ANY");
             case "DATASOURCE" -> "DATASOURCE:" + request.getDatasourceId();
             case "TASK" -> "TASK:" + request.getSyncTaskId();
             default -> scopeType;

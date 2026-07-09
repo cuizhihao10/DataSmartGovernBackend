@@ -45,7 +45,12 @@ public class SyncExecutionPolicySnapshot {
     /** 执行记录 ID。 */
     private Long executionId;
 
-    /** 命中的策略编码摘要，例如 SYSTEM_DEFAULT > MYSQL_SOURCE_DEFAULT > TASK_OVERRIDE。 */
+    /**
+     * 命中的策略编码摘要，例如 SYSTEM_DEFAULT > DEFAULT_SOURCE_READ > DEFAULT_TARGET_WRITE > TASK_OVERRIDE。
+     *
+     * <p>这里刻意不再使用 MYSQL_SOURCE_DEFAULT/POSTGRESQL_TARGET_DEFAULT 这类示例编码作为注释样例，
+     * 因为执行策略的基础层应该表达“通用读取/通用写入”，具体数据库类型只是在连接器策略中进一步覆盖的例外。</p>
+     */
     private String policyCodeSummary;
 
     /** 策略解析顺序说明，当前固定为 TASK > PROJECT > DATASOURCE/CONNECTOR > SYSTEM。 */

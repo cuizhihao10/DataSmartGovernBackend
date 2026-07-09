@@ -54,9 +54,11 @@ class SyncExecutionPolicyServiceTest {
                         null, 4, null, 750, null),
                 policy(3L, "DATASOURCE", "SOURCE_11_LIMIT", 10L, null, 11L, null, "SOURCE", null,
                         null, 5, null, null, null),
-                policy(4L, "CONNECTOR", "MYSQL_SOURCE_DEFAULT", 0L, null, null, "MYSQL", "SOURCE", null,
+                policy(4L, "CONNECTOR", "DEFAULT_SOURCE_READ", 0L, null, null, null, "SOURCE", null,
                         null, 6, 1000, null, null),
-                policy(5L, "SYSTEM", "SYSTEM_DEFAULT", 0L, null, null, null, "ANY", null,
+                policy(5L, "CONNECTOR", "DEFAULT_TARGET_WRITE", 0L, null, null, null, "TARGET", null,
+                        null, 7, null, 900, null),
+                policy(6L, "SYSTEM", "SYSTEM_DEFAULT", 0L, null, null, null, "ANY", null,
                         500000L, 8, null, null, 600)
         ));
 
@@ -80,7 +82,8 @@ class SyncExecutionPolicyServiceTest {
         assertThat(effective.matchedPolicyCodes()).containsExactly(
                 "BUILTIN_DEFAULT",
                 "SYSTEM:SYSTEM_DEFAULT",
-                "CONNECTOR:MYSQL_SOURCE_DEFAULT",
+                "CONNECTOR:DEFAULT_SOURCE_READ",
+                "CONNECTOR:DEFAULT_TARGET_WRITE",
                 "DATASOURCE:SOURCE_11_LIMIT",
                 "PROJECT:PROJECT_DEFAULT",
                 "TASK:TASK_OVERRIDE"
@@ -90,6 +93,59 @@ class SyncExecutionPolicyServiceTest {
         assertThat(effective.writeBatchSize()).isEqualTo(750);
         assertThat(effective.maxChannel()).isEqualTo(2);
         assertThat(effective.timeoutSeconds()).isEqualTo(900);
+    }
+
+    @Test
+    void genericSourceAndTargetPoliciesShouldMatchAnyConnectorFamily() {
+        SyncExecutionPolicyMapper policyMapper = mock(SyncExecutionPolicyMapper.class);
+        SyncExecutionPolicyService service = new SyncExecutionPolicyService(
+                policyMapper,
+                mock(SyncExecutionPolicySnapshotMapper.class),
+                mock(SyncTaskMapper.class),
+                mock(SyncTemplateMapper.class),
+                mock(SyncExecutionMapper.class),
+                mock(SyncDataScopeSupport.class),
+                new ObjectMapper()
+        );
+
+        when(policyMapper.selectList(any())).thenReturn(List.of(
+                policy(1L, "SYSTEM", "SYSTEM_DEFAULT", 0L, null, null, null, "ANY", null,
+                        200000L, 2, 128, 128, 600),
+                policy(2L, "CONNECTOR", "DEFAULT_SOURCE_READ", 0L, null, null, null, "SOURCE", null,
+                        null, 3, 2048, null, null),
+                policy(3L, "CONNECTOR", "DEFAULT_TARGET_WRITE", 0L, null, null, null, "TARGET", null,
+                        null, 4, null, 1024, null)
+        ));
+
+        SyncTask task = new SyncTask();
+        task.setId(88L);
+        task.setTenantId(10L);
+        task.setProjectId(101L);
+
+        SyncTemplate template = new SyncTemplate();
+        template.setSourceDatasourceId(31L);
+        template.setTargetDatasourceId(32L);
+        template.setSourceConnectorType("ORACLE");
+        template.setTargetConnectorType("SQLSERVER");
+
+        SyncEffectiveExecutionPolicy effective = service.resolveEffectivePolicy(
+                task,
+                template,
+                new SyncActorContext(10L, 9001L, "PLATFORM_ADMINISTRATOR", "trace-generic-policy-test")
+        );
+
+        /*
+         * 这个断言保护的是产品语义，而不是单纯的代码分支：
+         * 默认读取/默认写入策略必须跨连接器生效，不能因为当前测试任务不是 MySQL -> PostgreSQL 就退回内置默认值。
+         */
+        assertThat(effective.matchedPolicyCodes()).containsExactly(
+                "BUILTIN_DEFAULT",
+                "SYSTEM:SYSTEM_DEFAULT",
+                "CONNECTOR:DEFAULT_SOURCE_READ",
+                "CONNECTOR:DEFAULT_TARGET_WRITE"
+        );
+        assertThat(effective.readBatchSize()).isEqualTo(2048);
+        assertThat(effective.writeBatchSize()).isEqualTo(1024);
     }
 
     private SyncExecutionPolicy policy(Long id,
