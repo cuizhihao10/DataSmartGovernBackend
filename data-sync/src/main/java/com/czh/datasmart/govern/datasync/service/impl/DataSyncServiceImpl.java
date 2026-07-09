@@ -275,6 +275,8 @@ public class DataSyncServiceImpl implements DataSyncService {
         SyncTask task = new SyncTask();
         task.setTenantId(tenantId);
         task.setProjectId(resolveScopeValue("projectId", request.getProjectId(), template.getProjectId()));
+        dataScopeSupport.validateProjectManageable(
+                tenantId, task.getProjectId(), template.getWorkspaceId(), actorContext, "同步任务");
         /*
          * 工作空间已经从用户侧产品层级中退场，新建任务页面不会再展示或提交 workspaceId。
          *
@@ -434,6 +436,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     @Transactional
     public SyncTask updateTask(Long id, SyncTaskUpdateRequest request, SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
+        assertTaskManageable(task, actorContext, "编辑同步任务");
         SyncTemplate template = getTemplateForTask(task);
         return taskDefinitionOperationSupport.updateTaskDefinition(task, template, request, actorContext);
     }
@@ -450,6 +453,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                                                SyncTaskPublishRequest request,
                                                SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
+        assertTaskManageable(task, actorContext, "发布同步任务");
         SyncTemplate template = getTemplateForTask(task);
         return taskDefinitionOperationSupport.publishTaskDefinition(task, template, request, actorContext);
     }
@@ -597,6 +601,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                                                    SyncTaskGroupUpdateRequest request,
                                                    SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
+        assertTaskManageable(task, actorContext, "调整同步任务分组");
         return taskGroupOperationSupport.updateTaskGroup(task, request, actorContext);
     }
 
@@ -604,6 +609,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     @Transactional
     public SyncTaskOperationResult runTask(Long id, SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
+        assertTaskManageable(task, actorContext, "运行同步任务");
         SyncTemplate template = getTemplateForTask(task);
         SyncTemplateExecutionPrecheckResponse precheck = templateExecutionPrecheckSupport.precheck(template);
         if (!canRunAfterPrecheck(precheck, task)) {
@@ -645,6 +651,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     @Transactional
     public SyncTaskOperationResult manualDispatchTask(Long id, SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
+        assertTaskManageable(task, actorContext, "手工调度同步任务");
         return taskManagementOperationSupport.manualDispatchTask(task, actorContext);
     }
 
@@ -835,6 +842,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                                              SyncTaskLifecycleOperationRequest request,
                                              SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
+        assertTaskManageable(task, actorContext, "暂停同步任务");
         return taskLifecycleOperationSupport.pauseTask(task, request, actorContext);
     }
 
@@ -844,6 +852,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                                               SyncTaskLifecycleOperationRequest request,
                                               SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
+        assertTaskManageable(task, actorContext, "恢复同步任务");
         return taskLifecycleOperationSupport.resumeTask(task, request, actorContext);
     }
 
@@ -853,6 +862,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                                              SyncTaskLifecycleOperationRequest request,
                                              SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
+        assertTaskManageable(task, actorContext, "重试同步任务");
         return taskLifecycleOperationSupport.retryTask(task, request, actorContext);
     }
 
@@ -862,6 +872,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                                               SyncTaskLifecycleOperationRequest request,
                                               SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
+        assertTaskManageable(task, actorContext, "取消同步任务");
         return taskLifecycleOperationSupport.cancelTask(task, request, actorContext);
     }
 
@@ -871,6 +882,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                                                        SyncTaskLifecycleOperationRequest request,
                                                        SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
+        assertTaskManageable(task, actorContext, "手工结束同步任务");
         return taskManagementOperationSupport.manualTerminateTask(task, request, actorContext);
     }
 
@@ -880,6 +892,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                                                SyncTaskLifecycleOperationRequest request,
                                                SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
+        assertTaskManageable(task, actorContext, "下线同步任务");
         return taskManagementOperationSupport.offlineTask(task, request, actorContext);
     }
 
@@ -901,6 +914,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                                                SyncTaskLifecycleOperationRequest request,
                                                SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
+        assertTaskManageable(task, actorContext, "删除同步任务到回收站");
         return taskManagementOperationSupport.recycleTask(task, request, actorContext);
     }
 
@@ -926,6 +940,7 @@ public class DataSyncServiceImpl implements DataSyncService {
          * getTask(...) 已经会对 DELETED 返回 NOT_FOUND；RECYCLED 仍可通过数据范围校验后进入这里。
          */
         SyncTask task = getTask(id, actorContext);
+        assertTaskManageable(task, actorContext, "彻底删除同步任务");
         return taskManagementOperationSupport.hardDeleteTask(task, request, actorContext);
     }
 
@@ -935,6 +950,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                                              SyncTaskCloneRequest request,
                                              SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
+        assertTaskManageable(task, actorContext, "克隆同步任务");
         return taskManagementOperationSupport.cloneTask(task, request, actorContext);
     }
 
@@ -950,6 +966,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                                               SyncTaskRecoveryOperationRequest request,
                                               SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
+        assertTaskManageable(task, actorContext, "回放同步任务");
         return taskRecoveryOperationSupport.replayTask(task, request, actorContext);
     }
 
@@ -965,6 +982,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                                                 SyncTaskRecoveryOperationRequest request,
                                                 SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
+        assertTaskManageable(task, actorContext, "补数同步任务");
         return taskRecoveryOperationSupport.backfillTask(task, request, actorContext);
     }
 
@@ -1085,6 +1103,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                                                        SyncObjectRetryRequest request,
                                                        SyncActorContext actorContext) {
         SyncTask task = getTask(taskId, actorContext);
+        assertTaskManageable(task, actorContext, "重试失败分片/对象");
         SyncExecution execution = getExecutionForTask(executionId, task);
         return objectExecutionOperationSupport.retryFailedObjects(task, execution, request, actorContext);
     }
@@ -1141,6 +1160,7 @@ public class DataSyncServiceImpl implements DataSyncService {
                                                           SyncDirtyRecordReplayRequest request,
                                                           SyncActorContext actorContext) {
         SyncTask task = getTask(taskId, actorContext);
+        assertTaskManageable(task, actorContext, "重放脏数据记录");
         return dirtyRecordReplaySupport.replayDirtyRecords(task, request, actorContext);
     }
 
@@ -1180,6 +1200,24 @@ public class DataSyncServiceImpl implements DataSyncService {
                     false, false, "TASK_SCOPED", null, false);
         }
         return dataScopeSupport.resolveVisibility(null, null, null, actorContext);
+    }
+
+    /**
+     * 校验当前操作者是否可以管理指定同步任务。
+     *
+     * <p>{@link #getTask(Long, SyncActorContext)} 只回答“是否可读”：它保护任务详情、运行历史、日志、
+     * 错误样本等低敏读取入口，允许 READER 在授权项目内查看。运行、编辑、删除、回放、补数、失败对象重试等动作
+     * 会改变任务生命周期或真实数据同步结果，因此必须额外要求项目内 MANAGER/OWNER/SERVICE 角色。</p>
+     *
+     * <p>把校验集中在这个方法里还有一个好处：后续如果项目角色模型扩展出 OPERATOR、DATA_STEWARD、
+     * CONNECTOR_ADMIN 等更细角色，只需要在 data-scope support 的角色集合中调整，不必到每个业务入口里改判断。</p>
+     */
+    private void assertTaskManageable(SyncTask task, SyncActorContext actorContext, String actionName) {
+        if (task == null) {
+            return;
+        }
+        dataScopeSupport.validateProjectManageable(
+                task.getTenantId(), task.getProjectId(), task.getWorkspaceId(), actorContext, actionName);
     }
 
     private SyncExecution getExecutionForTask(Long executionId, SyncTask task) {

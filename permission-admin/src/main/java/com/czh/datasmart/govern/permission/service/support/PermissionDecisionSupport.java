@@ -1,5 +1,6 @@
 package com.czh.datasmart.govern.permission.service.support;
 
+import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionDecisionRequest;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionDecisionResult;
 import com.czh.datasmart.govern.permission.entity.PermissionDataScopePolicy;
@@ -73,7 +74,11 @@ public class PermissionDecisionSupport {
         }
 
         PermissionDataScopePolicy dataScope = findBestDataScope(request);
-        List<Long> authorizedProjectIds = resolveAuthorizedProjectIds(request, dataScope);
+        List<PlatformAuthorizedProjectRole> authorizedProjectRoles = resolveAuthorizedProjectRoles(request, dataScope);
+        List<Long> authorizedProjectIds = authorizedProjectRoles.stream()
+                .map(PlatformAuthorizedProjectRole::projectId)
+                .distinct()
+                .toList();
         String policyVersion = policyVersion(matchedRoute);
         boolean delegated = delegated(request);
         PermissionDecisionResult result = new PermissionDecisionResult(
@@ -84,6 +89,7 @@ public class PermissionDecisionSupport {
                 dataScope == null ? null : dataScope.getScopeLevel(),
                 dataScope == null ? null : dataScope.getScopeExpression(),
                 authorizedProjectIds,
+                authorizedProjectRoles,
                 dataScope != null && Boolean.TRUE.equals(dataScope.getApprovalRequired()),
                 policyVersion,
                 delegated,
@@ -135,13 +141,13 @@ public class PermissionDecisionSupport {
      * 如果项目负责人暂时没有任何项目授权，则返回空集合；下游 data-sync 会把这解释为 PROJECT 范围下无可见项目，
      * 这比退化成租户范围更安全。
      */
-    private List<Long> resolveAuthorizedProjectIds(PermissionDecisionRequest request,
-                                                   PermissionDataScopePolicy dataScope) {
+    private List<PlatformAuthorizedProjectRole> resolveAuthorizedProjectRoles(PermissionDecisionRequest request,
+                                                                              PermissionDataScopePolicy dataScope) {
         if (dataScope == null || dataScope.getScopeLevel() == null
                 || !"PROJECT".equalsIgnoreCase(dataScope.getScopeLevel())) {
             return List.of();
         }
-        return querySupport.listActorProjectIds(request.getTenantId(), request.getActorId());
+        return querySupport.listActorProjectRoles(request.getTenantId(), request.getActorId());
     }
 
     private boolean methodMatches(String configuredMethod, String requestMethod) {
@@ -204,6 +210,7 @@ public class PermissionDecisionSupport {
                 routePolicy == null ? null : routePolicy.getEffect(),
                 dataScopePolicy == null ? null : dataScopePolicy.getScopeLevel(),
                 dataScopePolicy == null ? null : dataScopePolicy.getScopeExpression(),
+                List.of(),
                 List.of(),
                 dataScopePolicy != null && Boolean.TRUE.equals(dataScopePolicy.getApprovalRequired()),
                 policyVersion,

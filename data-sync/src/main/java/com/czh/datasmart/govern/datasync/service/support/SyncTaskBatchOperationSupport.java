@@ -168,6 +168,14 @@ public class SyncTaskBatchOperationSupport {
         }
         dataScopeSupport.validateOwnedReadable(task.getTenantId(), task.getProjectId(),
                 task.getOwnerId(), actorContext, "同步任务");
+        /*
+         * 批量操作必须和单任务操作使用同一套项目内角色规则。
+         * validateOwnedReadable 只保证当前账号能看到任务；但批量手工调度、批量下线、批量回收、
+         * 批量彻底删除都会改变任务生命周期。显式 PROJECT 范围下，如果用户只是 READER，
+         * 即使前端按钮被误放开，后端也必须逐条拒绝，避免一个批量请求跨多个项目造成越权变更。
+         */
+        dataScopeSupport.validateProjectManageable(task.getTenantId(), task.getProjectId(),
+                task.getWorkspaceId(), actorContext, "批量同步任务操作");
         return task;
     }
 

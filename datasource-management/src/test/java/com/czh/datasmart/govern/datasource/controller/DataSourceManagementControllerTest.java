@@ -74,7 +74,7 @@ class DataSourceManagementControllerTest {
                 any()
         )).thenReturn(saved);
 
-        controller.createDataSource(request, 10L, 205L);
+        controller.createDataSource(request, 10L, 205L, null, null, null);
 
         ArgumentCaptor<Long> workspaceCaptor = ArgumentCaptor.forClass(Long.class);
         verify(service).createDataSource(

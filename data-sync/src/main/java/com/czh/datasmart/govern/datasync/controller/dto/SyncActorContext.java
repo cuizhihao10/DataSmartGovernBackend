@@ -6,6 +6,8 @@
  */
 package com.czh.datasmart.govern.datasync.controller.dto;
 
+import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole;
+
 import java.util.List;
 
 /**
@@ -24,7 +26,9 @@ import java.util.List;
  * @param traceId 当前请求链路 ID。
  * @param dataScopeLevel gateway 从 permission-admin 透传的数据范围级别，例如 SELF、PROJECT、TENANT、PLATFORM。
  * @param dataScopeExpression 数据范围表达式；当前仅作为审计和后续策略 DSL 预留，不直接拼接 SQL。
- * @param authorizedProjectIds PROJECT 范围下已经物化的授权项目集合。
+ * @param authorizedProjectIds PROJECT 范围下已经物化的授权项目集合；它主要用于列表过滤和详情可读性校验。
+ * @param authorizedProjectRoles PROJECT 范围下已经物化的“项目 -> 项目内角色”集合；它用于判断当前用户在某项目下
+ *                               是 READER 只读，还是 MANAGER/OWNER 可管理，避免前端隐藏按钮后仍可直调写接口。
  * @param approvalRequired 当前访问是否被上游标记为需要审批；新建普通同步任务不直接使用该字段进入审批流。
  */
 public record SyncActorContext(Long tenantId,
@@ -36,7 +40,21 @@ public record SyncActorContext(Long tenantId,
                                String dataScopeLevel,
                                String dataScopeExpression,
                                List<Long> authorizedProjectIds,
+                               List<PlatformAuthorizedProjectRole> authorizedProjectRoles,
                                Boolean approvalRequired) {
+
+    /**
+     * record 主构造的轻量规整。
+     *
+     * <p>权限 Header 解析遵循“安全容错、业务处 fail-closed”的策略：
+     * 如果上游没有传项目集合或项目角色集合，这里统一变成空集合，避免下游出现空指针。
+     * 真正需要写入、执行、删除、回放等管理动作时，{@code SyncDataScopeSupport}
+     * 会根据是否处于显式 PROJECT 范围决定是否必须存在 MANAGER/OWNER/SERVICE 角色。</p>
+     */
+    public SyncActorContext {
+        authorizedProjectIds = authorizedProjectIds == null ? List.of() : List.copyOf(authorizedProjectIds);
+        authorizedProjectRoles = authorizedProjectRoles == null ? List.of() : List.copyOf(authorizedProjectRoles);
+    }
 
     /**
      * 兼容旧调用点的四参构造方法。
@@ -45,7 +63,7 @@ public record SyncActorContext(Long tenantId,
      * 对这些调用点而言，项目可以为空，由业务对象自身的 projectId 继续约束读写范围；workspaceId 在用户侧新链路中保持为空。</p>
      */
     public SyncActorContext(Long tenantId, Long actorId, String actorRole, String traceId) {
-        this(tenantId, null, null, actorId, actorRole, traceId, null, null, List.of(), null);
+        this(tenantId, null, null, actorId, actorRole, traceId, null, null, List.of(), List.of(), null);
     }
 
     /**
@@ -59,7 +77,7 @@ public record SyncActorContext(Long tenantId,
                             String dataScopeExpression,
                             Boolean approvalRequired) {
         this(tenantId, null, null, actorId, actorRole, traceId,
-                dataScopeLevel, dataScopeExpression, List.of(), approvalRequired);
+                dataScopeLevel, dataScopeExpression, List.of(), List.of(), approvalRequired);
     }
 
     /**
@@ -77,6 +95,29 @@ public record SyncActorContext(Long tenantId,
                             List<Long> authorizedProjectIds,
                             Boolean approvalRequired) {
         this(tenantId, null, null, actorId, actorRole, traceId,
-                dataScopeLevel, dataScopeExpression, authorizedProjectIds, approvalRequired);
+                dataScopeLevel, dataScopeExpression, authorizedProjectIds, List.of(), approvalRequired);
+    }
+
+    /**
+     * 兼容历史十参构造方法。
+     *
+     * <p>项目里已有不少测试、调度器和 worker 支撑类直接构造
+     * {@code SyncActorContext(tenantId, projectId, workspaceId, ...)}。
+     * 本轮新增项目角色快照不能强迫这些内部调用点立刻全部改造，否则会把“权限模型增强”
+     * 扩散成大规模无关重构。因此保留旧签名，并把项目角色集合置为空；
+     * 显式经过 gateway 的 HTTP 请求会由 Header 解析器填充真实角色。</p>
+     */
+    public SyncActorContext(Long tenantId,
+                            Long projectId,
+                            Long workspaceId,
+                            Long actorId,
+                            String actorRole,
+                            String traceId,
+                            String dataScopeLevel,
+                            String dataScopeExpression,
+                            List<Long> authorizedProjectIds,
+                            Boolean approvalRequired) {
+        this(tenantId, projectId, workspaceId, actorId, actorRole, traceId,
+                dataScopeLevel, dataScopeExpression, authorizedProjectIds, List.of(), approvalRequired);
     }
 }

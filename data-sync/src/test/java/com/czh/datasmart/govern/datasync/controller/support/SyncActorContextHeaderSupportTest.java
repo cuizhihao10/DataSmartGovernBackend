@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.datasync.controller.support;
 
+import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import org.junit.jupiter.api.Test;
@@ -76,6 +77,31 @@ class SyncActorContextHeaderSupportTest {
      * 带给 data-sync，而旧实现会把它当 Long 解析，导致“保存并进入对象映射”时源端、目标端元数据发现各报一次错。
      * 当前产品口径已经只保留项目，不再让用户选择工作空间；因此该 Header 必须被安全忽略，而不是继续参与解析、查询或创建。</p>
      */
+    /**
+     * 验证项目内角色 Header 的解析、归一化和去重。
+     *
+     * <p>项目 ID 集合只能回答“能看哪些项目”，项目角色集合才能回答“在项目内能不能管理资源”。
+     * 因此 data-sync 的 Header 解析必须同时消费 `X-DataSmart-Authorized-Project-Roles`，
+     * 并把历史角色 MEMBER/MAINTAINER/VIEWER 归一成 MANAGER/READER，避免每个业务模块各自解释旧角色。</p>
+     */
+    @Test
+    void shouldParseAuthorizedProjectRolesFromTrustedGatewayHeader() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(PlatformContextHeaders.DATA_SCOPE_LEVEL, "PROJECT");
+        headers.set(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, "101,102,205");
+        headers.set(PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES,
+                "101:reader,102:member,102:READER,bad,205:OWNER,0:MANAGER,abc:OWNER");
+
+        SyncActorContext context = SyncActorContextHeaderSupport.fromHeaders(
+                7L, 1001L, "PROJECT_OWNER", "trace-project-roles", headers);
+
+        assertEquals(List.of(
+                new PlatformAuthorizedProjectRole(101L, "READER"),
+                new PlatformAuthorizedProjectRole(102L, "MANAGER"),
+                new PlatformAuthorizedProjectRole(205L, "OWNER")
+        ), context.authorizedProjectRoles());
+    }
+
     @Test
     void shouldIgnoreLegacyWorkspaceHeaderWhenItIsNotNumeric() {
         HttpHeaders headers = new HttpHeaders();

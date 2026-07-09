@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.permission.controller.dto;
 
+import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -61,6 +62,19 @@ public class PermissionDecisionResult {
      * 下游 data-sync 等模块只需要把该集合转换成 `project_id IN (...)` 这样的安全查询条件。
      */
     private List<Long> authorizedProjectIds;
+
+    /**
+     * 当前操作者在授权项目集合中的项目内角色快照。
+     *
+     * <p>`authorizedProjectIds` 只说明“能访问哪些项目”，本字段进一步说明“在每个项目里是什么角色”。
+     * 例如 `projectId=101, projectRole=MANAGER` 表示可在该项目内创建、编辑、授权数据源或管理同步任务；
+     * `projectRole=READER` 则只应允许查看，不应允许直接调用写接口。</p>
+     *
+     * <p>该字段只在 PROJECT 数据范围下返回；TENANT/PLATFORM 范围由更高层路由策略和租户/平台边界控制，
+     * 不要求枚举所有项目角色。gateway 会把本字段编码为 `X-DataSmart-Authorized-Project-Roles`，
+     * 下游服务据此做按钮级、动作级和资源级的二次权限校验。</p>
+     */
+    private List<PlatformAuthorizedProjectRole> authorizedProjectRoles;
 
     /**
      * 当前动作是否需要审批。

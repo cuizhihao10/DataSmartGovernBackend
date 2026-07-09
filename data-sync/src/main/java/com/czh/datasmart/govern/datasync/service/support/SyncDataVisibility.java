@@ -6,6 +6,8 @@
  */
 package com.czh.datasmart.govern.datasync.service.support;
 
+import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole;
+
 import java.util.List;
 
 /**
@@ -17,6 +19,7 @@ import java.util.List;
  * @param tenantId 最终租户范围；为空表示允许跨租户查询，通常只应授予平台管理员
  * @param projectId 最终项目范围；为空表示当前阶段不按项目收敛
  * @param authorizedProjectIds PROJECT 范围下 permission-admin 物化出的项目集合；为空集合表示无授权项目或未启用物化链路
+ * @param authorizedProjectRoles PROJECT 范围下 permission-admin 物化出的项目内角色集合；用于写入、运行、删除、回放等管理动作校验
  * @param workspaceId 最终工作空间范围；为空表示当前阶段不按工作空间收敛
  * @param projectScopeEnforced 是否必须按 authorizedProjectIds 强制收敛；只有 gateway 明确透传 PROJECT 范围时才为 true
  * @param selfOnly 是否只能访问自己创建、负责或被分派的资源
@@ -27,10 +30,43 @@ import java.util.List;
 public record SyncDataVisibility(Long tenantId,
                                  Long projectId,
                                  List<Long> authorizedProjectIds,
+                                 List<PlatformAuthorizedProjectRole> authorizedProjectRoles,
                                  Long workspaceId,
                                  boolean projectScopeEnforced,
                                  boolean selfOnly,
                                  String scopeLevel,
                                  String scopeExpression,
                                  boolean approvalRequired) {
+
+    /**
+     * 兼容旧的可见性构造签名。
+     *
+     * <p>项目角色是本轮新增的写权限语义；大量历史查询测试只关心“哪些项目可见”，
+     * 不需要显式传入角色集合。保留旧构造方法可以把修改范围控制在真正需要角色判断的链路上，
+     * 同时避免把只读查询和执行器内部回调一并重构。</p>
+     */
+    public SyncDataVisibility(Long tenantId,
+                              Long projectId,
+                              List<Long> authorizedProjectIds,
+                              Long workspaceId,
+                              boolean projectScopeEnforced,
+                              boolean selfOnly,
+                              String scopeLevel,
+                              String scopeExpression,
+                              boolean approvalRequired) {
+        this(tenantId, projectId, authorizedProjectIds, List.of(), workspaceId,
+                projectScopeEnforced, selfOnly, scopeLevel, scopeExpression, approvalRequired);
+    }
+
+    /**
+     * record 主构造的空集合规整。
+     *
+     * <p>权限集合不允许在 Service 层以 null 传播。null 和空集合在安全语义上差异很大：
+     * null 容易被调用方误解为“未启用限制”，空集合则明确表示“显式没有授权”。
+     * 因此这里统一把缺失集合转成空集合，再由 data-scope 支撑类决定是否 fail-closed。</p>
+     */
+    public SyncDataVisibility {
+        authorizedProjectIds = authorizedProjectIds == null ? List.of() : List.copyOf(authorizedProjectIds);
+        authorizedProjectRoles = authorizedProjectRoles == null ? List.of() : List.copyOf(authorizedProjectRoles);
+    }
 }

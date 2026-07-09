@@ -255,10 +255,12 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
                     headers.remove(PlatformContextHeaders.DATA_SCOPE_LEVEL);
                     headers.remove(PlatformContextHeaders.DATA_SCOPE_EXPRESSION);
                     headers.remove(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS);
+                    headers.remove(PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES);
                     headers.remove(PlatformContextHeaders.APPROVAL_REQUIRED);
                     setHeaderIfPresent(headers, PlatformContextHeaders.DATA_SCOPE_LEVEL, decision.getDataScopeLevel());
                     setHeaderIfPresent(headers, PlatformContextHeaders.DATA_SCOPE_EXPRESSION, decision.getDataScopeExpression());
                     setAuthorizedProjectIds(headers, decision.getAuthorizedProjectIds());
+                    setAuthorizedProjectRoles(headers, decision);
                     if (requestedProjectId != null) {
                         headers.set(PlatformContextHeaders.PROJECT_ID, requestedProjectId.toString());
                     }
@@ -297,6 +299,23 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
         String value = PlatformAuthorizedProjectHeaderSupport.format(authorizedProjectIds);
         if (!value.isBlank()) {
             headers.set(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, value);
+        }
+    }
+
+    /**
+     * 透传权限中心已经物化的项目角色集合。
+     *
+     * <p>与项目 ID Header 一样，项目角色 Header 也必须由 gateway 在授权判定之后重建。
+     * 它不能从浏览器、企业代理或旧调试脚本中继承，因为只读用户如果能伪造 `101:MANAGER`，
+     * 就可以绕过前端按钮隐藏直接调用下游写接口。</p>
+     */
+    private void setAuthorizedProjectRoles(HttpHeaders headers, GatewayPermissionDecisionResult decision) {
+        if (decision.getAuthorizedProjectRoles() == null || decision.getAuthorizedProjectRoles().isEmpty()) {
+            return;
+        }
+        String value = PlatformAuthorizedProjectHeaderSupport.formatRoles(decision.getAuthorizedProjectRoles());
+        if (!value.isBlank()) {
+            headers.set(PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, value);
         }
     }
 

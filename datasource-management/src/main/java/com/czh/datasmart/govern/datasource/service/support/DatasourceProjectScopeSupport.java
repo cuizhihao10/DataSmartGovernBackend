@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.datasource.service.support;
 
 import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectHeaderSupport;
+import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -46,13 +47,45 @@ public class DatasourceProjectScopeSupport {
      * @return 可供 Controller 追加查询条件或详情校验使用的范围对象
      */
     public DatasourceProjectVisibility resolveVisibility(Long requestedProjectId,
+                                                        Long requestedWorkspaceId,
+                                                        String dataScopeLevel,
+                                                        String authorizedProjectIdsHeader) {
+        return resolveVisibility(requestedProjectId, requestedWorkspaceId, dataScopeLevel,
+                authorizedProjectIdsHeader, null);
+    }
+
+    /**
+     * 把 HTTP Header 和查询参数解析成包含项目角色的可见范围。
+     *
+     * <p>相比旧版方法，本重载会同时解析 `X-DataSmart-Authorized-Project-Roles`。
+     * 列表查询仍主要依赖 projectId 集合；创建、编辑、删除、授权、连接测试和元数据发现等动作会继续检查项目角色，
+     * 从而实现“前端隐藏按钮 + 后端拒绝越权接口”的闭环。</p>
+     */
+    public DatasourceProjectVisibility resolveVisibility(Long requestedProjectId,
                                                          Long requestedWorkspaceId,
                                                          String dataScopeLevel,
-                                                         String authorizedProjectIdsHeader) {
+                                                         String authorizedProjectIdsHeader,
+                                                         String authorizedProjectRolesHeader) {
         boolean projectScopeEnforced = PROJECT_SCOPE.equalsIgnoreCase(trimToEmpty(dataScopeLevel));
         List<Long> authorizedProjectIds = projectScopeEnforced
                 ? PlatformAuthorizedProjectHeaderSupport.parse(authorizedProjectIdsHeader)
                 : List.of();
+        List<PlatformAuthorizedProjectRole> authorizedProjectRoles = projectScopeEnforced
+                ? PlatformAuthorizedProjectHeaderSupport.parseRoles(authorizedProjectRolesHeader)
+                : List.of();
+        if (authorizedProjectIds.isEmpty() && !authorizedProjectRoles.isEmpty()) {
+            /*
+             * 项目角色 Header 的每个片段都包含 projectId，例如 `101:MANAGER`。
+             * 正常情况下 gateway 会同时下发“授权项目 ID 集合”和“项目内角色集合”，但灰度发布或测试构造请求时
+             * 可能只携带后者。由于角色 Header 仍然由 gateway/permission-admin 重建，属于可信控制面事实，
+             * 这里可以安全地从角色集合推导 projectId，避免数据源列表、详情和创建入口被误判为无项目授权。
+             */
+            authorizedProjectIds = authorizedProjectRoles.stream()
+                    .map(PlatformAuthorizedProjectRole::projectId)
+                    .filter(projectId -> projectId != null && projectId > 0)
+                    .distinct()
+                    .toList();
+        }
         if (projectScopeEnforced && requestedProjectId != null && !authorizedProjectIds.contains(requestedProjectId)) {
             throw new IllegalArgumentException("当前身份不能访问未授权项目的数据源资源，requestedProjectId=" + requestedProjectId);
         }
@@ -60,6 +93,7 @@ public class DatasourceProjectScopeSupport {
                 requestedProjectId,
                 null,
                 authorizedProjectIds,
+                authorizedProjectRoles,
                 projectScopeEnforced
         );
     }
@@ -84,6 +118,45 @@ public class DatasourceProjectScopeSupport {
         if (resourceProjectId == null || !visibility.authorizedProjectIds().contains(resourceProjectId)) {
             throw new IllegalArgumentException("当前身份不能访问未授权项目的" + resourceName
                     + "，resourceProjectId=" + resourceProjectId);
+        }
+    }
+
+    /**
+     * 校验当前 actor 是否可以使用某个项目内的数据源。
+     *
+     * <p>“使用”比“查看”更敏感。只读用户可以看到数据源名称、类型、描述等低敏配置，但不应该直接拿平台保存的凭据去测试连接、
+     * 发现元数据或作为同步任务的源端/目标端。MANAGER/OWNER 可以使用，SERVICE 用于受控机器执行链路。</p>
+     */
+    public void validateProjectUsable(Long resourceProjectId,
+                                      DatasourceProjectVisibility visibility,
+                                      String resourceName) {
+        validateProjectReadable(resourceProjectId, visibility, resourceName);
+        if (visibility == null || !visibility.projectScopeEnforced()) {
+            return;
+        }
+        if (!visibility.canUseProject(resourceProjectId)) {
+            throw new IllegalArgumentException("当前身份在项目 " + resourceProjectId + " 下没有使用" + resourceName
+                    + "的权限，请联系项目管理员授予 MANAGER/OWNER 角色，或通过数据源实例授权获得 USE 权限");
+        }
+    }
+
+    /**
+     * 校验当前 actor 是否可以管理某个项目内的数据源。
+     *
+     * <p>管理动作包括创建、编辑、启停、删除和授权。这里要求项目角色为 MANAGER 或 OWNER。
+     * 这一步不是为了替代 permission-admin 的路由授权，而是在资源 ID 已经落到具体项目后做最后一公里校验，
+     * 防止用户绕过前端按钮直接调用写接口。</p>
+     */
+    public void validateProjectManageable(Long resourceProjectId,
+                                          DatasourceProjectVisibility visibility,
+                                          String resourceName) {
+        validateProjectReadable(resourceProjectId, visibility, resourceName);
+        if (visibility == null || !visibility.projectScopeEnforced()) {
+            return;
+        }
+        if (!visibility.canManageProject(resourceProjectId)) {
+            throw new IllegalArgumentException("当前身份在项目 " + resourceProjectId + " 下没有管理" + resourceName
+                    + "的权限，只有 MANAGER 或 OWNER 可以执行该操作");
         }
     }
 

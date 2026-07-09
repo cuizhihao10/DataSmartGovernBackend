@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.datasync.controller.support;
 
 import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectHeaderSupport;
+import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import org.springframework.http.HttpHeaders;
@@ -56,6 +57,7 @@ public final class SyncActorContextHeaderSupport {
                 firstHeader(headers, PlatformContextHeaders.DATA_SCOPE_LEVEL),
                 firstHeader(headers, PlatformContextHeaders.DATA_SCOPE_EXPRESSION),
                 parseAuthorizedProjectIds(firstHeader(headers, PlatformContextHeaders.AUTHORIZED_PROJECT_IDS)),
+                parseAuthorizedProjectRoles(firstHeader(headers, PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES)),
                 Boolean.valueOf(firstHeader(headers, PlatformContextHeaders.APPROVAL_REQUIRED)));
     }
 
@@ -113,5 +115,19 @@ public final class SyncActorContextHeaderSupport {
      */
     private static java.util.List<Long> parseAuthorizedProjectIds(String value) {
         return PlatformAuthorizedProjectHeaderSupport.parse(value);
+    }
+
+    /**
+     * 解析 gateway 透传的项目内角色快照。
+     *
+     * <p>{@code X-DataSmart-Authorized-Project-Ids} 只能回答“能不能看这个项目”，
+     * 不能回答“能不能在这个项目里创建任务、运行任务、删除任务或发起失败重放”。
+     * 因此 permission-admin 会把项目成员关系进一步物化成
+     * {@code projectId:role} 形式的低敏 Header，例如 {@code 101:MANAGER,205:READER}。
+     * data-sync 只信任该 Header 做写权限判断，不信任前端表单里传来的角色字段，
+     * 这样即使前端按钮被人为打开，后端仍能正确拒绝 READER 的写操作。</p>
+     */
+    private static java.util.List<PlatformAuthorizedProjectRole> parseAuthorizedProjectRoles(String value) {
+        return PlatformAuthorizedProjectHeaderSupport.parseRoles(value);
     }
 }

@@ -118,9 +118,15 @@ public class DataSourceManagementController {
     public ResponseEntity<ApiResponse<DataSourceConfig>> createDataSource(
             @Valid @RequestBody CreateDataSourceRequest request,
             @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantHeader,
-            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectHeader) {
+            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectHeader,
+            @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
         Long tenantId = resolveScopeValue("tenantId", tenantHeader, request.getTenantId(), DEFAULT_FLASHSYNC_TENANT_ID);
         Long projectId = resolveScopeValue("projectId", projectHeader, request.getProjectId(), DEFAULT_FLASHSYNC_PROJECT_ID);
+        DatasourceProjectVisibility visibility = datasourceProjectScopeSupport.resolveVisibility(
+                projectId, null, dataScopeLevel, authorizedProjectIds, authorizedProjectRoles);
+        datasourceProjectScopeSupport.validateProjectManageable(projectId, visibility, "数据源");
         DataSourceConfig config = dataSourceManagementService.createDataSource(
                 tenantId,
                 projectId,
@@ -222,11 +228,13 @@ public class DataSourceManagementController {
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
-            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
         DataSourceConfig config = getRequiredVisibleDataSource(
                 id,
                 dataScopeLevel,
                 authorizedProjectIds,
+                authorizedProjectRoles,
                 resolveActorContext(actorId, actorRole, actorType),
                 DataSourceAuthorizationAction.VIEW);
         return ResponseEntity.ok(ApiResponse.success(config));
@@ -246,11 +254,13 @@ public class DataSourceManagementController {
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
-            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
         getRequiredVisibleDataSource(
                 id,
                 dataScopeLevel,
                 authorizedProjectIds,
+                authorizedProjectRoles,
                 resolveActorContext(actorId, actorRole, actorType),
                 DataSourceAuthorizationAction.MANAGE);
         DataSourceConfig config = dataSourceManagementService.updateDataSource(
@@ -279,11 +289,13 @@ public class DataSourceManagementController {
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
-            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
         getRequiredVisibleDataSource(
                 id,
                 dataScopeLevel,
                 authorizedProjectIds,
+                authorizedProjectRoles,
                 resolveActorContext(actorId, actorRole, actorType),
                 DataSourceAuthorizationAction.MANAGE);
         DataSourceConnectionTestResult result = dataSourceManagementService.testConnection(
@@ -307,11 +319,13 @@ public class DataSourceManagementController {
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
-            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
         getRequiredVisibleDataSource(
                 id,
                 dataScopeLevel,
                 authorizedProjectIds,
+                authorizedProjectRoles,
                 resolveActorContext(actorId, actorRole, actorType),
                 DataSourceAuthorizationAction.MANAGE);
         return ResponseEntity.ok(ApiResponse.success("数据源已启用", dataSourceManagementService.enableDataSource(id)));
@@ -329,11 +343,13 @@ public class DataSourceManagementController {
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
-            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
         getRequiredVisibleDataSource(
                 id,
                 dataScopeLevel,
                 authorizedProjectIds,
+                authorizedProjectRoles,
                 resolveActorContext(actorId, actorRole, actorType),
                 DataSourceAuthorizationAction.MANAGE);
         return ResponseEntity.ok(ApiResponse.success("数据源已停用", dataSourceManagementService.disableDataSource(id)));
@@ -351,11 +367,13 @@ public class DataSourceManagementController {
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
-            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
         getRequiredVisibleDataSource(
                 id,
                 dataScopeLevel,
                 authorizedProjectIds,
+                authorizedProjectRoles,
                 resolveActorContext(actorId, actorRole, actorType),
                 DataSourceAuthorizationAction.MANAGE);
         return ResponseEntity.ok(ApiResponse.success("数据源已删除", dataSourceManagementService.deleteDataSource(id)));
@@ -373,11 +391,13 @@ public class DataSourceManagementController {
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
-            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
         getRequiredVisibleDataSource(
                 id,
                 dataScopeLevel,
                 authorizedProjectIds,
+                authorizedProjectRoles,
                 resolveActorContext(actorId, actorRole, actorType),
                 DataSourceAuthorizationAction.USE);
         return ResponseEntity.ok(ApiResponse.success("数据源连接测试完成", dataSourceManagementService.testConnection(id)));
@@ -395,11 +415,13 @@ public class DataSourceManagementController {
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
-            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
         getRequiredVisibleDataSource(
                 id,
                 dataScopeLevel,
                 authorizedProjectIds,
+                authorizedProjectRoles,
                 resolveActorContext(actorId, actorRole, actorType),
                 DataSourceAuthorizationAction.VIEW);
         return ResponseEntity.ok(ApiResponse.success("数据源能力画像获取成功", dataSourceManagementService.getCapabilityProfile(id)));
@@ -418,11 +440,13 @@ public class DataSourceManagementController {
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
-            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
         getRequiredVisibleDataSource(
                 id,
                 dataScopeLevel,
                 authorizedProjectIds,
+                authorizedProjectRoles,
                 resolveActorContext(actorId, actorRole, actorType),
                 DataSourceAuthorizationAction.USE);
         return ResponseEntity.ok(ApiResponse.success("数据源元数据发现完成",
@@ -446,11 +470,13 @@ public class DataSourceManagementController {
             @RequestHeader(value = PlatformContextHeaders.SOURCE_SERVICE, required = false) String sourceService,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
-            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
         getRequiredVisibleDataSource(
                 id,
                 dataScopeLevel,
                 authorizedProjectIds,
+                authorizedProjectRoles,
                 resolveActorContext(actorId, actorRole, actorType),
                 DataSourceAuthorizationAction.USE);
         applyTrustedPlatformContext(request, tenantId, actorId, actorRole, actorType, sourceService, traceId);
@@ -572,6 +598,7 @@ public class DataSourceManagementController {
     private DataSourceConfig getRequiredVisibleDataSource(Long id,
                                                           String dataScopeLevel,
                                                           String authorizedProjectIds,
+                                                          String authorizedProjectRoles,
                                                           DatasourceAuthorizationActorContext actorContext,
                                                           DataSourceAuthorizationAction requiredAction) {
         DataSourceConfig config = dataSourceManagementService.getById(id);
@@ -579,9 +606,9 @@ public class DataSourceManagementController {
             throw new NoSuchElementException("数据源不存在或已删除: " + id);
         }
         DatasourceProjectVisibility visibility = datasourceProjectScopeSupport.resolveVisibility(
-                null, null, dataScopeLevel, authorizedProjectIds);
+                null, null, dataScopeLevel, authorizedProjectIds, authorizedProjectRoles);
         try {
-            datasourceProjectScopeSupport.validateProjectReadable(config.getProjectId(), visibility, "数据源");
+            validateDatasourceProjectAction(config.getProjectId(), visibility, requiredAction);
             return config;
         } catch (IllegalArgumentException exception) {
             if (dataSourceAuthorizationService.hasActiveAuthorization(config.getId(), actorContext, requiredAction)) {
@@ -589,6 +616,29 @@ public class DataSourceManagementController {
             }
             throw exception;
         }
+    }
+
+    /**
+     * 根据接口所需动作执行项目角色校验。
+     *
+     * <p>项目角色与实例授权是两个层级：
+     * 项目 MANAGER/OWNER 对项目内所有数据源天然具备管理能力；
+     * 项目 READER 只能查看低敏信息；
+     * 如果 READER 或其他用户被单独授予某条数据源的 USE/MANAGE 实例授权，外层 catch 分支仍允许其通过。
+     * 这种设计既保留“项目内角色”的主边界，又支持用户把自己创建的数据源授权给其他协作者使用。</p>
+     */
+    private void validateDatasourceProjectAction(Long projectId,
+                                                 DatasourceProjectVisibility visibility,
+                                                 DataSourceAuthorizationAction requiredAction) {
+        if (requiredAction == DataSourceAuthorizationAction.MANAGE) {
+            datasourceProjectScopeSupport.validateProjectManageable(projectId, visibility, "数据源");
+            return;
+        }
+        if (requiredAction == DataSourceAuthorizationAction.USE) {
+            datasourceProjectScopeSupport.validateProjectUsable(projectId, visibility, "数据源");
+            return;
+        }
+        datasourceProjectScopeSupport.validateProjectReadable(projectId, visibility, "数据源");
     }
 
     /**

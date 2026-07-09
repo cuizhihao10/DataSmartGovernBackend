@@ -56,7 +56,8 @@ public class DataSourceAuthorizationController {
      * 分页查看某个数据源的授权清单。
      *
      * <p>授权清单本身会暴露“哪些用户/角色可以访问该数据源”，属于治理信息，因此需要管理权限。
-     * 当前规则是：项目范围可读者可以查看；如果项目范围不可读，但该 actor 具有该数据源 MANAGE 实例级授权，也可以查看。</p>
+     * 当前规则是：项目 MANAGER/OWNER 可以查看；如果项目角色不足，但该 actor 具有该数据源 MANAGE 实例级授权，也可以查看。
+     * 只读 READER 不应看到授权账本，避免把协作者名单、服务账号授权和治理职责暴露给无管理职责的人。</p>
      */
     @GetMapping
     public ResponseEntity<ApiResponse<IPage<DataSourceAuthorizationView>>> pageAuthorizations(
@@ -69,9 +70,11 @@ public class DataSourceAuthorizationController {
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
-            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
         DatasourceAuthorizationActorContext actorContext = new DatasourceAuthorizationActorContext(actorId, actorRole, actorType);
-        DataSourceConfig datasource = getManageableDataSource(datasourceId, dataScopeLevel, authorizedProjectIds, actorContext);
+        DataSourceConfig datasource = getManageableDataSource(
+                datasourceId, dataScopeLevel, authorizedProjectIds, authorizedProjectRoles, actorContext);
         return ResponseEntity.ok(ApiResponse.success("数据源授权清单查询成功",
                 dataSourceAuthorizationService.pageAuthorizations(
                         datasource, new Page<>(current, size), subjectType, status)));
@@ -91,9 +94,11 @@ public class DataSourceAuthorizationController {
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
-            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
         DatasourceAuthorizationActorContext actorContext = new DatasourceAuthorizationActorContext(actorId, actorRole, actorType);
-        DataSourceConfig datasource = getManageableDataSource(datasourceId, dataScopeLevel, authorizedProjectIds, actorContext);
+        DataSourceConfig datasource = getManageableDataSource(
+                datasourceId, dataScopeLevel, authorizedProjectIds, authorizedProjectRoles, actorContext);
         return ResponseEntity.ok(ApiResponse.success("数据源授权保存成功",
                 dataSourceAuthorizationService.grantAuthorization(datasource, request, actorContext)));
     }
@@ -113,28 +118,35 @@ public class DataSourceAuthorizationController {
             @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
-            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds) {
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
         DatasourceAuthorizationActorContext actorContext = new DatasourceAuthorizationActorContext(actorId, actorRole, actorType);
-        DataSourceConfig datasource = getManageableDataSource(datasourceId, dataScopeLevel, authorizedProjectIds, actorContext);
+        DataSourceConfig datasource = getManageableDataSource(
+                datasourceId, dataScopeLevel, authorizedProjectIds, authorizedProjectRoles, actorContext);
         return ResponseEntity.ok(ApiResponse.success("数据源授权已撤销",
                 dataSourceAuthorizationService.revokeAuthorization(datasource, authorizationId, request, actorContext)));
     }
 
     /**
      * 读取并校验当前 actor 是否可以管理该数据源授权。
+     *
+     * <p>这里故意调用 validateProjectManageable，而不是 validateProjectReadable。
+     * 因为“授权给其他用户”本质上是改变资源访问边界，比普通详情查看更敏感；
+     * 即便前端隐藏授权按钮，后端也必须在直接调接口时拒绝 READER 越权。</p>
      */
     private DataSourceConfig getManageableDataSource(Long datasourceId,
                                                      String dataScopeLevel,
                                                      String authorizedProjectIds,
+                                                     String authorizedProjectRoles,
                                                      DatasourceAuthorizationActorContext actorContext) {
         DataSourceConfig datasource = dataSourceManagementService.getById(datasourceId);
         if (datasource == null || DataSourceStatus.DELETED.equals(datasource.getStatus())) {
             throw new NoSuchElementException("数据源不存在或已删除: " + datasourceId);
         }
         DatasourceProjectVisibility visibility = datasourceProjectScopeSupport.resolveVisibility(
-                null, null, dataScopeLevel, authorizedProjectIds);
+                null, null, dataScopeLevel, authorizedProjectIds, authorizedProjectRoles);
         try {
-            datasourceProjectScopeSupport.validateProjectReadable(datasource.getProjectId(), visibility, "数据源授权");
+            datasourceProjectScopeSupport.validateProjectManageable(datasource.getProjectId(), visibility, "数据源授权");
             return datasource;
         } catch (IllegalArgumentException exception) {
             if (dataSourceAuthorizationService.hasActiveAuthorization(

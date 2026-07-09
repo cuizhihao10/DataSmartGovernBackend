@@ -1,6 +1,8 @@
 package com.czh.datasmart.govern.permission.service.support;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectHeaderSupport;
+import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionMatrixView;
 import com.czh.datasmart.govern.permission.entity.PermissionDataScopePolicy;
 import com.czh.datasmart.govern.permission.entity.PermissionMenu;
@@ -144,6 +146,28 @@ public class PermissionQuerySupport {
      * 也应该在本方法集中处理，保持判定结果对 gateway 和业务模块稳定。
      */
     public List<Long> listActorProjectIds(Long tenantId, Long actorId) {
+        return listActorProjectRoles(tenantId, actorId)
+                .stream()
+                .map(PlatformAuthorizedProjectRole::projectId)
+                .distinct()
+                .toList();
+    }
+
+    /**
+     * 查询当前操作者被授权访问的项目及其项目内角色。
+     *
+     * <p>这是“租户 -> 应用 -> 项目 -> 资源”权限模型落到业务服务的关键事实。
+     * 单纯返回 projectId 只能让业务模块过滤列表，但无法判断某个用户是否可以创建、编辑、删除或授权资源。
+     * 因此本方法把项目成员表中的 projectRole 一并物化出来，由 permission-admin 作为唯一解释者完成旧角色归一化：</p>
+     *
+     * <p>1. OWNER 保持 OWNER，代表项目最高负责人；</p>
+     * <p>2. MAINTAINER、MEMBER 统一降落到 MANAGER，代表可管理项目内资源；</p>
+     * <p>3. VIEWER 统一降落到 READER，代表只读查看；</p>
+     * <p>4. SERVICE 保持 SERVICE，代表受控机器身份，可用于 worker、Agent 或调度器协议。</p>
+     *
+     * <p>如果同一 actor 因历史数据出现多条同项目授权，最终取权限更强角色，避免下游服务面对重复角色时各自决策。</p>
+     */
+    public List<PlatformAuthorizedProjectRole> listActorProjectRoles(Long tenantId, Long actorId) {
         if (actorId == null) {
             return List.of();
         }
@@ -154,8 +178,17 @@ public class PermissionQuerySupport {
                         .isNotNull(PermissionProjectMembership::getProjectId)
                         .orderByAsc(PermissionProjectMembership::getProjectId))
                 .stream()
-                .map(PermissionProjectMembership::getProjectId)
-                .distinct()
+                .map(membership -> new PlatformAuthorizedProjectRole(
+                        membership.getProjectId(),
+                        PlatformAuthorizedProjectHeaderSupport.normalizeProjectRole(membership.getProjectRole())))
+                .collect(java.util.stream.Collectors.toMap(
+                        PlatformAuthorizedProjectRole::projectId,
+                        PlatformAuthorizedProjectRole::projectRole,
+                        PlatformAuthorizedProjectHeaderSupport::strongerProjectRole,
+                        java.util.LinkedHashMap::new))
+                .entrySet()
+                .stream()
+                .map(entry -> new PlatformAuthorizedProjectRole(entry.getKey(), entry.getValue()))
                 .toList();
     }
 

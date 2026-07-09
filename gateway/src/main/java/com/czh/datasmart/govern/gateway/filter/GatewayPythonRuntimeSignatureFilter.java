@@ -94,6 +94,7 @@ public class GatewayPythonRuntimeSignatureFilter implements GlobalFilter, Ordere
             PlatformContextHeaders.DATA_SCOPE_LEVEL,
             PlatformContextHeaders.DATA_SCOPE_EXPRESSION,
             PlatformContextHeaders.AUTHORIZED_PROJECT_IDS,
+            PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES,
             PlatformContextHeaders.APPROVAL_REQUIRED
     );
 

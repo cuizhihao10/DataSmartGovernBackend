@@ -222,6 +222,20 @@ public final class PlatformContextHeaders {
     public static final String AUTHORIZED_PROJECT_IDS = "X-DataSmart-Authorized-Project-Ids";
 
     /**
+     * 权限中心物化后的“项目 -> 项目内角色”授权快照。
+     *
+     * <p>`AUTHORIZED_PROJECT_IDS` 只能回答“当前 actor 能访问哪些项目”，但商业化权限还必须继续回答
+     * “当前 actor 在每个项目中是只读、可管理，还是服务账号”。例如同一个用户可以在项目 101 是 MANAGER，
+     * 在项目 205 只是 READER；如果下游服务只看项目 ID，就无法阻止只读用户直接调用创建、编辑、删除接口。</p>
+     *
+     * <p>该 Header 由 gateway 根据 permission-admin 判定结果重建，格式由
+     * {@link PlatformAuthorizedProjectHeaderSupport#formatRoles(java.util.List)} 统一生成，例如：
+     * `101:MANAGER,205:READER`。业务服务只能消费 gateway 写入的可信 Header，不允许相信浏览器、
+     * OpenAPI 调用方或普通服务直传的同名 Header。</p>
+     */
+    public static final String AUTHORIZED_PROJECT_ROLES = "X-DataSmart-Authorized-Project-Roles";
+
+    /**
      * 当前访问是否需要审批。
      *
      * <p>查询链路可以先把它作为上下文透传和审计字段；高风险写操作后续可以用它进入审批流。

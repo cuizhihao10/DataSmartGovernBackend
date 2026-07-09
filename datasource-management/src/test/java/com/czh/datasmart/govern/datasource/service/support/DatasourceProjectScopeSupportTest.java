@@ -42,11 +42,14 @@ class DatasourceProjectScopeSupportTest {
                 null,
                 301L,
                 "PROJECT",
-                "101, 102, bad, -1, 102"
+                "101, 102, bad, -1, 102",
+                "101:MANAGER,102:READER,bad:OWNER,102:VIEWER"
         );
 
         assertTrue(visibility.projectScopeEnforced());
         assertEquals(List.of(101L, 102L), visibility.authorizedProjectIds());
+        assertEquals("MANAGER", visibility.projectRole(101L).orElseThrow());
+        assertEquals("READER", visibility.projectRole(102L).orElseThrow());
         /*
          * 当前产品已经去掉用户可见的工作空间层级。即使旧前端、旧脚本或历史 E2E 仍然把 workspaceId
          * 传给后端，datasource-management 也不再把它传播到查询条件，否则用户在项目维度下创建的数据源
@@ -55,13 +58,39 @@ class DatasourceProjectScopeSupportTest {
         assertNull(visibility.requestedWorkspaceId());
     }
 
+    /**
+     * 验证项目角色 Header 可以作为项目 ID Header 的安全兜底。
+     *
+     * <p>datasource-management 和 data-sync 必须保持同一套权限语义：
+     * authorizedProjectIds 负责“可见哪些项目”，authorizedProjectRoles 负责“在项目里能做什么”。
+     * 正常 gateway 会同时下发两者；如果灰度发布、测试请求或中间代理导致项目 ID Header 缺失，
+     * 角色 Header 中仍然有 `projectId:role` 可信事实，因此可以推导出项目集合。
+     * 这不会造成提权，因为 USE/MANAGE 动作还会继续检查角色强度。</p>
+     */
+    @Test
+    void resolveVisibilityShouldDeriveAuthorizedProjectsFromRoleHeaderWhenIdHeaderMissing() {
+        DatasourceProjectVisibility visibility = support.resolveVisibility(
+                null,
+                null,
+                "PROJECT",
+                "",
+                "101:MANAGER,102:READER"
+        );
+
+        assertTrue(visibility.projectScopeEnforced());
+        assertEquals(List.of(101L, 102L), visibility.authorizedProjectIds());
+        assertEquals("MANAGER", visibility.projectRole(101L).orElseThrow());
+        assertEquals("READER", visibility.projectRole(102L).orElseThrow());
+    }
+
     @Test
     void resolveVisibilityShouldAllowRequestedProjectInsideAuthorizedSet() {
         DatasourceProjectVisibility visibility = support.resolveVisibility(
                 102L,
                 null,
                 "PROJECT",
-                "101,102"
+                "101,102",
+                "101:OWNER,102:MANAGER"
         );
 
         assertTrue(visibility.projectScopeEnforced());
@@ -74,7 +103,8 @@ class DatasourceProjectScopeSupportTest {
                 999L,
                 null,
                 "PROJECT",
-                "101,102"
+                "101,102",
+                "101:MANAGER,102:READER"
         ));
     }
 
@@ -84,6 +114,7 @@ class DatasourceProjectScopeSupportTest {
                 null,
                 null,
                 "PROJECT",
+                "",
                 ""
         );
 
@@ -97,7 +128,8 @@ class DatasourceProjectScopeSupportTest {
                 null,
                 null,
                 "TENANT",
-                "bad,101"
+                "bad,101",
+                "101:OWNER"
         );
 
         assertFalse(visibility.projectScopeEnforced());
@@ -110,6 +142,9 @@ class DatasourceProjectScopeSupportTest {
                 null,
                 null,
                 List.of(101L, 102L),
+                List.of(
+                        new com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole(101L, "MANAGER"),
+                        new com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole(102L, "READER")),
                 true
         );
 
@@ -118,5 +153,24 @@ class DatasourceProjectScopeSupportTest {
                 () -> support.validateProjectReadable(999L, visibility, "数据源"));
         assertThrows(IllegalArgumentException.class,
                 () -> support.validateProjectReadable(null, visibility, "数据源"));
+    }
+
+    @Test
+    void validateProjectActionsShouldRespectProjectRoles() {
+        DatasourceProjectVisibility visibility = support.resolveVisibility(
+                null,
+                null,
+                "PROJECT",
+                "101,102,103",
+                "101:OWNER,102:MANAGER,103:READER"
+        );
+
+        assertDoesNotThrow(() -> support.validateProjectManageable(101L, visibility, "数据源"));
+        assertDoesNotThrow(() -> support.validateProjectManageable(102L, visibility, "数据源"));
+        assertDoesNotThrow(() -> support.validateProjectReadable(103L, visibility, "数据源"));
+        assertThrows(IllegalArgumentException.class,
+                () -> support.validateProjectUsable(103L, visibility, "数据源"));
+        assertThrows(IllegalArgumentException.class,
+                () -> support.validateProjectManageable(103L, visibility, "数据源"));
     }
 }

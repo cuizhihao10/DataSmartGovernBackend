@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.permission.service.support;
 
+import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionDecisionRequest;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionDecisionResult;
 import com.czh.datasmart.govern.permission.entity.PermissionDataScopePolicy;
@@ -184,6 +185,37 @@ class PermissionDecisionSupportTest {
         assertThat(result.getReason()).contains("显式拒绝");
     }
 
+    /**
+     * 验证 PROJECT 数据范围会返回项目 ID 与项目角色双重快照。
+     *
+     * <p>这条测试保护本轮权限体系收敛的核心语义：
+     * gateway 和业务服务不能只知道“用户属于项目 101”，还必须知道“用户在项目 101 是 MANAGER 还是 READER”。
+     * 否则只读用户可以绕过前端按钮隐藏，直接调用创建、编辑或授权接口。</p>
+     */
+    @Test
+    void projectScopeShouldReturnProjectIdsAndProjectRoles() {
+        PermissionDecisionRequest request = decisionRequest("PROJECT_OWNER");
+        request.setRequestPath("/api/datasource/datasources");
+        request.setResourceType("DATASOURCE");
+        request.setAction("CREATE");
+        when(querySupport.listRoutePolicies(10L, "PROJECT_OWNER"))
+                .thenReturn(List.of(datasourceCreatePolicy("ALLOW", 150)));
+        when(querySupport.listDataScopePolicies(10L, "PROJECT_OWNER", "DATASOURCE"))
+                .thenReturn(List.of(dataScope("PROJECT_OWNER", "DATASOURCE", "PROJECT", "project_id IN ${actorProjectIds}")));
+        when(querySupport.listActorProjectRoles(10L, 1001L))
+                .thenReturn(List.of(
+                        new PlatformAuthorizedProjectRole(101L, "OWNER"),
+                        new PlatformAuthorizedProjectRole(205L, "MANAGER")));
+
+        PermissionDecisionResult result = decisionSupport.evaluate(request, "trace-project-role");
+
+        assertThat(result.getAllowed()).isTrue();
+        assertThat(result.getAuthorizedProjectIds()).containsExactly(101L, 205L);
+        assertThat(result.getAuthorizedProjectRoles())
+                .extracting(PlatformAuthorizedProjectRole::projectRole)
+                .containsExactly("OWNER", "MANAGER");
+    }
+
     private PermissionDecisionRequest decisionRequest(String actorRole) {
         PermissionDecisionRequest request = new PermissionDecisionRequest();
         request.setTenantId(10L);
@@ -234,6 +266,15 @@ class PermissionDecisionSupportTest {
         policy.setPolicyName("服务账号执行已确认 Agent 异步工具");
         policy.setPathPattern("/internal/task-management/agent-async-tools/*/execute");
         policy.setAction("EXECUTE_CONFIRMED_ASYNC_TOOL");
+        return policy;
+    }
+
+    private PermissionRoutePolicy datasourceCreatePolicy(String effect, int priority) {
+        PermissionRoutePolicy policy = routePolicy("PROJECT_OWNER", effect, priority);
+        policy.setPolicyName("项目负责人创建数据源");
+        policy.setPathPattern("/api/datasource/datasources");
+        policy.setResourceType("DATASOURCE");
+        policy.setAction("CREATE");
         return policy;
     }
 

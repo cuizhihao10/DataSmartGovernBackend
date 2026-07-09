@@ -8,6 +8,8 @@ package com.czh.datasmart.govern.datasync.service.support;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.support.SFunction;
+import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectHeaderSupport;
+import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
@@ -47,6 +49,11 @@ public class SyncDataScopeSupport {
     private static final Set<String> CROSS_TENANT_ROLES = Set.of(
             "PLATFORM_ADMINISTRATOR",
             "SERVICE_ACCOUNT"
+    );
+    private static final Set<String> PROJECT_MANAGE_ROLES = Set.of(
+            "OWNER",
+            "MANAGER",
+            "SERVICE"
     );
 
     private static final Map<String, String> FALLBACK_SCOPE_BY_ROLE = Map.of(
@@ -184,7 +191,8 @@ public class SyncDataScopeSupport {
         boolean selfOnly = "SELF".equals(scopeLevel);
         boolean projectScopeEnforced = isExplicitGatewayProjectScope(actorContext);
         List<Long> authorizedProjectIds = resolveAuthorizedProjectIds(scopeLevel, requestedProjectId, actorContext);
-        return new SyncDataVisibility(actorTenantId, requestedProjectId, authorizedProjectIds, null,
+        List<PlatformAuthorizedProjectRole> authorizedProjectRoles = resolveAuthorizedProjectRoles(scopeLevel, actorContext);
+        return new SyncDataVisibility(actorTenantId, requestedProjectId, authorizedProjectIds, authorizedProjectRoles, null,
                 projectScopeEnforced, selfOnly, scopeLevel, scopeExpression, approvalRequired);
     }
 
@@ -212,6 +220,24 @@ public class SyncDataScopeSupport {
                 .filter(id -> id != null && id > 0)
                 .distinct()
                 .toList();
+        if (authorizedProjectIds.isEmpty()) {
+            /*
+             * 项目角色 Header 本身也包含 projectId，例如 `101:MANAGER,205:READER`。
+             * 正常情况下 gateway 会同时下发 Authorized-Project-Ids 和 Authorized-Project-Roles；
+             * 但在灰度发布、旧网关重启顺序、测试构造 Header 或某些企业代理裁剪 Header 的场景中，
+             * 可能出现“角色集合存在、ID 集合缺失”的短暂不一致。
+             *
+             * 这里选择从角色集合安全推导 projectId，而不是直接判定无项目：
+             * 1. 角色集合仍然来自 gateway/permission-admin 的可信链路，不来自 request body；
+             * 2. 推导结果只包含正整数 projectId，坏片段会被 platform-common 解析器过滤；
+             * 3. 后续管理动作仍会继续检查 MANAGER/OWNER/SERVICE，不会因为能推导 projectId 就获得写权限。
+             */
+            authorizedProjectIds = resolveAuthorizedProjectRoles(scopeLevel, actorContext).stream()
+                    .map(PlatformAuthorizedProjectRole::projectId)
+                    .filter(id -> id != null && id > 0)
+                    .distinct()
+                    .toList();
+        }
 
         if (!explicitGatewayScope) {
             return List.of();
@@ -253,6 +279,15 @@ public class SyncDataScopeSupport {
                                         String resourceName) {
         SyncDataVisibility visibility = resolveVisibility(
                 requestedTenantId, requestedProjectId, requestedWorkspaceId, actorContext);
+        if (visibility.projectScopeEnforced()
+                && requestedProjectId != null) {
+            /*
+             * 旧版 validateProjectWritable 只校验“项目是否在授权集合内”，这只能保证能看，
+             * 不能保证能写。这里先补一层角色校验：显式 PROJECT 范围下，只有 MANAGER/OWNER/SERVICE
+             * 可以写入或管理 data-sync 资源；READER 只能读，不能靠直调接口绕过前端按钮控制。
+             */
+            assertManageRoleForProject(requestedProjectId, visibility.authorizedProjectRoles(), resourceName);
+        }
         if (!visibility.projectScopeEnforced()) {
             return;
         }
@@ -263,8 +298,23 @@ public class SyncDataScopeSupport {
     }
 
     /**
-     * 校验某条资源是否对当前操作者可见。
+     * 校验项目级管理权限。
+     *
+     * <p>该方法是 {@link #validateProjectWritable(Long, Long, Long, SyncActorContext, String)}
+     * 的业务语义化别名。data-sync 的“管理”不仅包括数据库写入，还包括运行任务、暂停任务、下线任务、
+     * 删除任务、失败对象重试和脏数据重放等会改变任务生命周期或真实数据同步结果的动作。</p>
+     *
+     * <p>保留单独方法的原因是让 Service 层代码更像业务语言：读详情调用 readable，运行/编辑/删除调用 manageable。
+     * 这样后续排查权限问题时，不需要反复猜测 “writable” 是否覆盖了运行、回放、批量治理这类动作。</p>
      */
+    public void validateProjectManageable(Long requestedTenantId,
+                                          Long requestedProjectId,
+                                          Long requestedWorkspaceId,
+                                          SyncActorContext actorContext,
+                                          String resourceName) {
+        validateProjectWritable(requestedTenantId, requestedProjectId, requestedWorkspaceId, actorContext, resourceName);
+    }
+
     public void validateTenantReadable(Long resourceTenantId, SyncActorContext actorContext) {
         SyncDataVisibility visibility = resolveVisibility(resourceTenantId, actorContext);
         if (visibility.tenantId() == null) {
@@ -368,9 +418,7 @@ public class SyncDataScopeSupport {
         if (!isExplicitGatewayProjectScope(actorContext)) {
             return;
         }
-        List<Long> authorizedProjectIds = actorContext == null || actorContext.authorizedProjectIds() == null
-                ? List.of()
-                : actorContext.authorizedProjectIds();
+        List<Long> authorizedProjectIds = resolveAuthorizedProjectIds("PROJECT", null, actorContext);
         if (!authorizedProjectIds.contains(requestedProjectId)) {
             throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
                     "当前身份不能在未授权项目下创建同步对象，requestedProjectId=" + requestedProjectId);
@@ -390,6 +438,39 @@ public class SyncDataScopeSupport {
         if (resourceProjectId == null || !visibility.authorizedProjectIds().contains(resourceProjectId)) {
             throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
                     "当前身份不能访问未授权项目的" + resourceName + "，resourceProjectId=" + resourceProjectId);
+        }
+    }
+
+    private List<PlatformAuthorizedProjectRole> resolveAuthorizedProjectRoles(String scopeLevel,
+                                                                              SyncActorContext actorContext) {
+        if (!"PROJECT".equals(scopeLevel) || actorContext == null || actorContext.authorizedProjectRoles() == null) {
+            return List.of();
+        }
+        /*
+         * Header 进入业务服务后仍要做一次归一化：网关或权限中心可能因为历史数据返回 MEMBER、
+         * MAINTAINER、VIEWER 等旧角色，platform-common 会统一映射到 MANAGER/READER。
+         * 业务层只消费归一化结果，避免每个模块维护一套角色同义词。
+         */
+        return actorContext.authorizedProjectRoles().stream()
+                .filter(role -> role != null && role.projectId() != null && role.projectId() > 0)
+                .map(role -> new PlatformAuthorizedProjectRole(
+                        role.projectId(),
+                        PlatformAuthorizedProjectHeaderSupport.normalizeProjectRole(role.projectRole())))
+                .filter(role -> role.projectRole() != null)
+                .distinct()
+                .toList();
+    }
+
+    private void assertManageRoleForProject(Long requestedProjectId,
+                                            List<PlatformAuthorizedProjectRole> authorizedProjectRoles,
+                                            String resourceName) {
+        boolean manageable = authorizedProjectRoles != null && authorizedProjectRoles.stream()
+                .anyMatch(role -> requestedProjectId.equals(role.projectId())
+                        && PROJECT_MANAGE_ROLES.contains(role.projectRole()));
+        if (!manageable) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "当前账号在项目 " + requestedProjectId + " 下没有管理 " + resourceName
+                            + " 的权限。请确认已被授予 MANAGER/OWNER 角色；READER 只能查看，不能新增、编辑、运行、下线、删除或恢复任务。");
         }
     }
 

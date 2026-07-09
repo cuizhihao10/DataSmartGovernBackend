@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.gateway.filter;
 
+import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.gateway.authorization.GatewayAuthorizationDecisionCache;
 import com.czh.datasmart.govern.gateway.authorization.GatewayAuthorizationErrorWriter;
@@ -77,6 +78,8 @@ class GatewayAuthorizationFilterTest {
                 .isEqualTo("project_id in ${authorizedProjectIds}");
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS))
                 .isEqualTo("101,102");
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES))
+                .isEqualTo("101:OWNER,102:MANAGER");
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.APPROVAL_REQUIRED))
                 .isEqualTo("false");
     }
@@ -168,6 +171,7 @@ class GatewayAuthorizationFilterTest {
         GatewayPermissionDecisionResult decision = allowedDecision();
         decision.setDataScopeLevel("TENANT");
         decision.setAuthorizedProjectIds(List.of());
+        decision.setAuthorizedProjectRoles(List.of());
         RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
 
         when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(decision));
@@ -203,6 +207,7 @@ class GatewayAuthorizationFilterTest {
                 .header(PlatformContextHeaders.DATA_SCOPE_LEVEL, "PROJECT")
                 .header(PlatformContextHeaders.DATA_SCOPE_EXPRESSION, "project_id in (999)")
                 .header(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, "999")
+                .header(PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, "999:OWNER")
                 .header(PlatformContextHeaders.APPROVAL_REQUIRED, "true")
                 .build();
         MockServerWebExchange exchange = MockServerWebExchange.from(request);
@@ -210,6 +215,7 @@ class GatewayAuthorizationFilterTest {
         decision.setDataScopeLevel("TENANT");
         decision.setDataScopeExpression("tenant_id = ${tenantId}");
         decision.setAuthorizedProjectIds(List.of());
+        decision.setAuthorizedProjectRoles(List.of());
         decision.setApprovalRequired(false);
         RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
 
@@ -223,6 +229,8 @@ class GatewayAuthorizationFilterTest {
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.DATA_SCOPE_EXPRESSION))
                 .isEqualTo("tenant_id = ${tenantId}");
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS))
+                .isNull();
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES))
                 .isNull();
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.APPROVAL_REQUIRED))
                 .isEqualTo("false");
@@ -659,6 +667,9 @@ class GatewayAuthorizationFilterTest {
         decision.setDataScopeLevel("PROJECT");
         decision.setDataScopeExpression("project_id in ${authorizedProjectIds}");
         decision.setAuthorizedProjectIds(List.of(101L, 102L));
+        decision.setAuthorizedProjectRoles(List.of(
+                new PlatformAuthorizedProjectRole(101L, "OWNER"),
+                new PlatformAuthorizedProjectRole(102L, "MANAGER")));
         decision.setApprovalRequired(false);
         return decision;
     }

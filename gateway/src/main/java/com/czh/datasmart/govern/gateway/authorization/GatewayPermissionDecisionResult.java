@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.gateway.authorization;
 
+import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole;
 import lombok.Data;
 
 import java.util.List;
@@ -59,6 +60,15 @@ public class GatewayPermissionDecisionResult {
      * 它只把权限中心返回的项目 ID 集合转换为统一 Header，交给 data-sync 等业务模块按自身字段落地。
      */
     private List<Long> authorizedProjectIds;
+
+    /**
+     * permission-admin 已经计算出的项目角色授权快照。
+     *
+     * <p>该字段用于补齐项目级动作权限：项目 ID 只解决“能不能看见”，项目角色解决“能不能写入、授权、执行”。
+     * gateway 不解释角色强度，只把它转换成可信 Header 交给业务服务；业务服务根据自身资源动作判断
+     * READER、MANAGER、OWNER、SERVICE 分别能做什么。</p>
+     */
+    private List<PlatformAuthorizedProjectRole> authorizedProjectRoles;
 
     /**
      * 是否需要审批。

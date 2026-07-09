@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.datasync.service.support;
 
+import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import org.junit.jupiter.api.Test;
@@ -45,6 +46,30 @@ class SyncDataScopeSupportTest {
         assertEquals(List.of(101L, 102L), visibility.authorizedProjectIds());
         assertTrue(visibility.projectScopeEnforced());
         assertFalse(visibility.selfOnly());
+    }
+
+    /**
+     * 验证项目角色 Header 可以作为项目 ID Header 的安全兜底。
+     *
+     * <p>真实生产链路中，gateway 会同时写入 authorizedProjectIds 和 authorizedProjectRoles。
+     * 但在灰度发布、测试构造 Header 或某些中间代理裁剪 Header 时，可能暂时只剩 `101:MANAGER` 这类角色快照。
+     * 角色快照仍然来自 permission-admin，不是用户 request body，因此可以从中推导 projectId；
+     * 这样只读查询不会误变成空列表，写入动作仍会继续检查 MANAGER/OWNER/SERVICE。</p>
+     */
+    @Test
+    void shouldDeriveAuthorizedProjectIdsFromProjectRolesWhenProjectIdHeaderIsMissing() {
+        SyncActorContext actor = projectScopedActorWithRoles(
+                List.of(),
+                List.of(
+                        new PlatformAuthorizedProjectRole(101L, "MANAGER"),
+                        new PlatformAuthorizedProjectRole(102L, "READER")));
+
+        SyncDataVisibility visibility = support.resolveVisibility(null, null, null, actor);
+
+        assertTrue(visibility.projectScopeEnforced());
+        assertEquals(List.of(101L, 102L), visibility.authorizedProjectIds());
+        assertEquals("MANAGER", visibility.authorizedProjectRoles().get(0).projectRole());
+        assertEquals("READER", visibility.authorizedProjectRoles().get(1).projectRole());
     }
 
     /**
@@ -205,15 +230,43 @@ class SyncDataScopeSupportTest {
         assertEquals(List.of(), visibility.authorizedProjectIds());
     }
 
+    /**
+     * 验证 PROJECT 范围下 READER 只能查看，不能执行写入或管理动作。
+     *
+     * <p>该用例保护的是后端兜底权限：前端可以根据菜单/按钮权限隐藏“运行、编辑、删除”等入口，
+     * 但真正的安全边界必须在后端。只要用户在项目内不是 MANAGER/OWNER/SERVICE，
+     * 就算他能看到项目内任务，也不能通过直调接口改变任务生命周期。</p>
+     */
+    @Test
+    void shouldRejectProjectReaderWhenManagingProjectResource() {
+        SyncActorContext actor = projectScopedActorWithRoles(
+                List.of(101L),
+                List.of(new PlatformAuthorizedProjectRole(101L, "READER")));
+
+        assertThrows(PlatformBusinessException.class,
+                () -> support.validateProjectManageable(7L, 101L, null, actor, "同步任务"));
+    }
+
     private SyncActorContext projectOwnerWithProjects(List<Long> projectIds) {
+        List<PlatformAuthorizedProjectRole> projectRoles = projectIds.stream()
+                .map(projectId -> new PlatformAuthorizedProjectRole(projectId, "MANAGER"))
+                .toList();
+        return projectScopedActorWithRoles(projectIds, projectRoles);
+    }
+
+    private SyncActorContext projectScopedActorWithRoles(List<Long> projectIds,
+                                                         List<PlatformAuthorizedProjectRole> projectRoles) {
         return new SyncActorContext(
                 7L,
+                null,
+                null,
                 1001L,
                 "PROJECT_OWNER",
                 "trace-project",
                 "PROJECT",
                 "project_id IN ${actorProjectIds}",
                 projectIds,
+                projectRoles,
                 false);
     }
 }

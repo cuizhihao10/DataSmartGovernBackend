@@ -9,6 +9,7 @@ package com.czh.datasmart.govern.datasync.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTaskRequest;
 import com.czh.datasmart.govern.datasync.config.DataSyncDatasourceCapabilityProperties;
@@ -704,14 +705,20 @@ class DataSyncServiceImplProjectScopeTest {
     }
 
     private SyncActorContext projectScopedActor(List<Long> projectIds) {
+        List<PlatformAuthorizedProjectRole> projectRoles = projectIds.stream()
+                .map(projectId -> new PlatformAuthorizedProjectRole(projectId, "MANAGER"))
+                .toList();
         return new SyncActorContext(
                 7L,
+                null,
+                null,
                 1001L,
                 "PROJECT_OWNER",
                 "trace-sync-project",
                 "PROJECT",
                 "project_id IN ${actorProjectIds}",
                 projectIds,
+                projectRoles,
                 false
         );
     }
