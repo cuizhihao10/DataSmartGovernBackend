@@ -182,6 +182,53 @@ class GatewayAuthorizationFilterTest {
     }
 
     /**
+     * 授权过滤器必须清理进入本阶段前残留的数据范围 Header。
+     *
+     * <p>项目集合可能来自 OIDC token、受信企业网关或本地开发调试 Header，但这些值都只能作为“登录态候选范围”。
+     * 业务服务真正应该信任的是 permission-admin 针对“当前路径、当前动作、当前角色、当前资源类型”返回的结果。
+     * 因此即使上游已经带了 `X-DataSmart-Authorized-Project-Ids=999`，只要本次授权中心没有返回项目集合，
+     * gateway 就不能把旧值继续透传给下游。</p>
+     */
+    @Test
+    void authorizationFilterShouldDropStaleDataScopeHeadersBeforeWritingDecisionResult() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerHttpRequest request = MockServerHttpRequest
+                .method(org.springframework.http.HttpMethod.GET, "/api/sync/sync-tasks")
+                .header(PlatformContextHeaders.TRACE_ID, "trace-test-001")
+                .header(PlatformContextHeaders.TENANT_ID, "10")
+                .header(PlatformContextHeaders.ACTOR_ID, "1002")
+                .header(PlatformContextHeaders.ACTOR_ROLE, "OPERATOR")
+                .header(PlatformContextHeaders.DATA_SCOPE_LEVEL, "PROJECT")
+                .header(PlatformContextHeaders.DATA_SCOPE_EXPRESSION, "project_id in (999)")
+                .header(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, "999")
+                .header(PlatformContextHeaders.APPROVAL_REQUIRED, "true")
+                .build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+        GatewayPermissionDecisionResult decision = allowedDecision();
+        decision.setDataScopeLevel("TENANT");
+        decision.setDataScopeExpression("tenant_id = ${tenantId}");
+        decision.setAuthorizedProjectIds(List.of());
+        decision.setApprovalRequired(false);
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(decision));
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(chain.called()).isTrue();
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.DATA_SCOPE_LEVEL))
+                .isEqualTo("TENANT");
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.DATA_SCOPE_EXPRESSION))
+                .isEqualTo("tenant_id = ${tenantId}");
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS))
+                .isNull();
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.APPROVAL_REQUIRED))
+                .isEqualTo("false");
+    }
+
+    /**
      * 强制模式下，如果权限中心明确拒绝，网关必须直接返回 403。
      *
      * <p>这是生产环境最关键的安全行为：只要策略已经判定拒绝，后端业务服务就不应该再收到请求。

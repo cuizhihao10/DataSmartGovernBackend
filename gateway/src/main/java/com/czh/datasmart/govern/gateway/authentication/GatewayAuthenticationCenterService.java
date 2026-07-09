@@ -147,9 +147,19 @@ public class GatewayAuthenticationCenterService {
         String actorRole = resolveActorRole(jwt, authentication.getAuthorities(), oidc);
         String actorType = normalizeActorType(textClaim(jwt, oidc.getActorTypeClaim()), oidc.getDefaultActorType());
         String workspaceId = firstText(textClaim(jwt, oidc.getWorkspaceIdClaim()), oidc.getDefaultWorkspaceId());
+        List<Long> tokenProjectIds = parseLongListClaim(jwt, oidc.getProjectIdsClaim());
 
         List<String> issueCodes = new ArrayList<>();
         issueCodes.add("OIDC_JWT_RESOLVED");
+        if (!tokenProjectIds.isEmpty()) {
+            /*
+             * 这里记录的是“认证中心声明过的项目候选集合”，不是最终数据范围授权。
+             * 真正进入业务路由前，GatewayAuthorizationFilter 仍会调用 permission-admin，
+             * 使用数据库里的项目成员关系和资源级数据范围策略重新计算 authorizedProjectIds。
+             * 这样可以让 /auth/session 给前端提供项目切换提示，同时避免旧 token 中的项目集合越权生效。
+             */
+            issueCodes.add("OIDC_JWT_PROJECT_IDS_RESOLVED");
+        }
         if (tenantId == null || actorId == null || actorRole == null) {
             issueCodes.add("OIDC_JWT_CONTEXT_INCOMPLETE");
         }
@@ -167,7 +177,7 @@ public class GatewayAuthenticationCenterService {
                 actorType,
                 workspaceId,
                 headers.getFirst(PlatformContextHeaders.DATA_SCOPE_LEVEL),
-                PlatformAuthorizedProjectHeaderSupport.parse(headers.getFirst(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS)),
+                tokenProjectIds,
                 traceId(headers),
                 issueCodes
         );
@@ -242,6 +252,58 @@ public class GatewayAuthenticationCenterService {
             return List.of(text);
         }
         return List.of();
+    }
+
+    /**
+     * 解析 JWT 中的项目集合 claim。
+     *
+     * <p>不同 IdP 对“多值用户属性”的输出格式并不完全一致：
+     * 1. Keycloak 在开启 multivalued mapper 后通常会输出 JSON 数组；
+     * 2. 某些企业 IdP 或历史 mapper 可能输出 `101,102` 这种逗号分隔字符串；
+     * 3. 本地调试或脚本烟测也可能只输出单个数字或字符串。
+     *
+     * <p>gateway 在这里做宽松解析，但只保留正整数并去重；坏片段会被忽略而不是抛出异常。
+     * 这样既能兼容不同认证中心，又不会因为一个异常项目片段导致整个登录态解析失败。
+     * 需要特别注意的是，本方法解析出的项目集合只用于认证身份视图和低敏诊断，
+     * 最终业务请求仍以后续 permission-admin 判定结果为准。</p>
+     */
+    private List<Long> parseLongListClaim(Jwt jwt, String claimName) {
+        Object value = jwt.getClaim(claimName);
+        List<Long> projectIds = new ArrayList<>();
+        if (value instanceof Collection<?> collection) {
+            for (Object item : collection) {
+                appendProjectId(projectIds, item);
+            }
+            return List.copyOf(projectIds);
+        }
+        appendProjectId(projectIds, value);
+        return List.copyOf(projectIds);
+    }
+
+    private void appendProjectId(List<Long> projectIds, Object value) {
+        if (value == null) {
+            return;
+        }
+        if (value instanceof Number number) {
+            appendDistinctPositive(projectIds, number.longValue());
+            return;
+        }
+        String text = value.toString();
+        if (text == null || text.isBlank()) {
+            return;
+        }
+        for (String segment : text.split(",")) {
+            Long parsed = parsePositiveLong(segment);
+            if (parsed != null) {
+                appendDistinctPositive(projectIds, parsed);
+            }
+        }
+    }
+
+    private void appendDistinctPositive(List<Long> projectIds, long value) {
+        if (value > 0 && !projectIds.contains(value)) {
+            projectIds.add(value);
+        }
     }
 
     private GatewayAuthenticationPrincipalView trustedPlatformContext(HttpHeaders headers) {

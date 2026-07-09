@@ -141,12 +141,24 @@ mvn -pl gateway spring-boot:run
 
 如果 JWT 签名合法但缺少 `tenantId`、`actorId` 或角色，gateway 默认失败关闭并返回 403。原因是“token 合法”不等于“可以进入多租户业务系统”。
 
+## 项目集合 Claim
+
+本地 Keycloak 和建议的企业 IdP mapper 可以额外提供 `datasmart_project_ids`，表示认证中心侧声明的项目候选集合。它主要服务三个场景：
+
+- `/api/auth/session` 向前端返回当前登录用户可切换项目的低敏提示。
+- 前端项目切换器可以据此减少无效项目选择，但不能把它当作最终授权。
+- 本地 smoke 或排障时可以快速确认 Keycloak 用户属性、User Profile 和 mapper 是否同步到运行态。
+
+需要强调的是：`datasmart_project_ids` 不替代 permission-admin。业务请求带上
+`X-DataSmart-Project-Id: 101` 后，gateway 仍会调用 permission-admin，按数据库中的项目成员关系、路由策略和数据范围策略重新物化可信的
+`X-DataSmart-Authorized-Project-Ids`，再传给下游服务。这样即使 access token 在有效期内，项目成员关系被撤销后，也不会因为旧 token 中还残留 `101` 而绕过授权中心。
+
 ## Keycloak 建议配置
 
 - Realm：建议使用 `datasmart` 或企业统一命名。
 - Client：建议为 gateway 创建独立 client，例如 `datasmart-gateway`。
 - Audience Mapper：把 `datasmart-gateway` 写入 access token 的 `aud`。
-- Client Scope Mapper：把 `datasmart_tenant_id`、`datasmart_actor_id`、`datasmart_actor_role`、`datasmart_actor_type`、`datasmart_workspace_id` 写入 access token。
+- Client Scope Mapper：把 `datasmart_tenant_id`、`datasmart_actor_id`、`datasmart_actor_role`、`datasmart_actor_type`、`datasmart_workspace_id` 写入 access token；如需前端项目切换提示，再额外映射 `datasmart_application_id`、`datasmart_application_code` 和 `datasmart_project_ids`。
 - 角色来源：可以直接写 `datasmart_actor_role`，也可以复用 Keycloak `realm_access.roles`，gateway 会裁剪 `ROLE_` 和 `DATASMART_` 前缀。
 - 服务账号：机器调用应使用独立 service account，并映射为 `actorType=SERVICE_ACCOUNT`、`actorRole=SERVICE_ACCOUNT` 或更细粒度平台角色。
 

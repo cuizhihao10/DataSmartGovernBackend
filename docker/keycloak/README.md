@@ -33,6 +33,30 @@ password: admin
 
 这些值只用于本地容器。生产必须使用环境变量、Secret Manager、Kubernetes Secret 或企业密码库注入，不允许使用默认密码。
 
+## 运行态 claim 同步
+
+如果本地已经存在 PostgreSQL-backed Keycloak 数据库，仅修改
+`docker/keycloak/import/datasmart-realm.json` 并重启容器通常不会覆盖已有
+`datasmart` realm。Keycloak 的 realm import 更适合“首次创建 realm”场景；
+已有 realm 需要通过 Admin API 做受控迁移或补丁。
+
+本仓库提供幂等同步脚本，用于补齐运行态 Keycloak 中的 DataSmart claim mapper、
+样例用户属性、realm role，以及 Keycloak 26 User Profile 中的受管理自定义属性：
+
+```powershell
+.\scripts\keycloak-datasmart-claim-sync.ps1
+.\scripts\keycloak-datasmart-claim-sync.ps1 -Apply
+```
+
+脚本默认 dry-run，只有传入 `-Apply` 才会写入 Keycloak。它不会打印 admin token、
+access token、refresh token、密码、client secret 或完整 JWT。执行后必须重新获取
+access token，旧 token 不会自动追加新 claim。
+
+特别注意：`datasmart_project_ids` 只是认证中心侧声明的“项目候选集合”，用于
+`/api/auth/session`、前端项目切换提示和本地闭环诊断；业务请求是否允许访问
+`projectId=101` 仍由 gateway 调用 permission-admin 后，根据数据库中的项目成员关系、
+路由策略和数据范围策略重新判定。
+
 ## PostgreSQL 持久化边界
 
 当前 Compose 已把 Keycloak 从开发态文件卷切换为 PostgreSQL-backed 存储：
@@ -53,6 +77,7 @@ password: admin
 
 | 用户名 | 本地密码 | 角色 | actorType | tenantId | actorId | workspace |
 |---|---|---|---|---|---|---|
+| `ordinary-user` | `DataSmart@123` | `ORDINARY_USER` | `USER` | `10` | `1004` | `workspace-a` |
 | `project-owner` | `DataSmart@123` | `PROJECT_OWNER` | `USER` | `10` | `1001` | `workspace-a` |
 | `operator` | `DataSmart@123` | `OPERATOR` | `USER` | `10` | `1002` | `workspace-a` |
 | `auditor` | `DataSmart@123` | `AUDITOR` | `USER` | `10` | `1003` | `workspace-a` |
@@ -126,6 +151,9 @@ realm 样板通过 client protocol mapper 把用户属性映射为 DataSmart 所
 - `datasmart_actor_role`
 - `datasmart_actor_type`
 - `datasmart_workspace_id`
+- `datasmart_application_id`
+- `datasmart_application_code`
+- `datasmart_project_ids`
 
 同时通过 audience mapper 把 `datasmart-gateway` 写入 access token 的 `aud`，让 gateway 的 `GatewayJwtAudienceValidator` 能确认 token 是签发给 DataSmart gateway 的。
 

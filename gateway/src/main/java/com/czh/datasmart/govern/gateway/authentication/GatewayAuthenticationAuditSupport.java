@@ -153,7 +153,16 @@ public class GatewayAuthenticationAuditSupport {
         }
         return issueCodes.stream()
                 .filter(issue -> issue != null && !issue.isBlank())
+                /*
+                 * 认证中心解析过程中有两类 code：
+                 * 1. 真正的问题，例如 OIDC_JWT_CONTEXT_INCOMPLETE，应该进入 primary_issue 指标，便于告警和排障；
+                 * 2. 成功路径的低敏诊断提示，例如 OIDC_JWT_RESOLVED、OIDC_JWT_PROJECT_IDS_RESOLVED。
+                 *
+                 * datasmart_project_ids 只是说明“token 中携带了项目候选集合”，不是异常，也不是最终业务授权结果。
+                 * 如果把它作为 primary_issue，就会让 Prometheus 看起来像成功登录也存在问题，从而污染认证健康度指标。
+                 */
                 .filter(issue -> !"OIDC_JWT_RESOLVED".equalsIgnoreCase(issue))
+                .filter(issue -> !"OIDC_JWT_PROJECT_IDS_RESOLVED".equalsIgnoreCase(issue))
                 .findFirst()
                 .orElse("NONE");
     }

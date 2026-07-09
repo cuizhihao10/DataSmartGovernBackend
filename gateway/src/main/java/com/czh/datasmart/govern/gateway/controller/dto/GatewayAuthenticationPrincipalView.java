@@ -22,7 +22,10 @@ import java.util.List;
  * @param actorType 操作者类型。
  * @param workspaceId 工作空间 ID。
  * @param dataScopeLevel permission-admin 或可信上游下发的数据范围级别。
- * @param authorizedProjectIds permission-admin 物化后的项目授权集合。
+ * @param authorizedProjectIds 项目集合视图。对于 `/auth/session` 这类认证中心视图，它表示 OIDC/Keycloak token
+ *                             中声明的项目候选集合，主要用于前端项目切换提示和登录态诊断；对于经过
+ *                             GatewayAuthorizationFilter 写入下游 Header 的业务请求，才表示 permission-admin
+ *                             根据项目成员关系和数据范围策略物化后的可信授权集合。
  * @param traceId 当前链路追踪 ID。
  * @param issueCodes 解析过程中的低敏提示码。
  * @param payloadPolicy 载荷策略说明，提醒调用方不要扩展敏感字段。

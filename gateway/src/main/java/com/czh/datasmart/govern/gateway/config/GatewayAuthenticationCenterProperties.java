@@ -132,6 +132,18 @@ public class GatewayAuthenticationCenterProperties {
         /** workspace claim，用于 Agent 工作区、任务隔离和资产目录边界。 */
         private String workspaceIdClaim = "datasmart_workspace_id";
 
+        /**
+         * 项目集合 claim，用于让 gateway 的会话视图知道当前登录主体在 IdP 侧声明的项目候选范围。
+         *
+         * <p>注意：该字段不是最终授权裁决。真实业务请求仍必须经过 permission-admin，
+         * 由 permission-admin 基于 `permission_project_membership`、角色、路由策略和数据范围策略
+         * 重新物化 `authorizedProjectIds`，再由 gateway 写入下游可信 Header。这样设计的原因是：
+         * 1. Keycloak/企业 IdP 的 access token 通常有有效期，项目成员关系变更后不会立即刷新旧 token；
+         * 2. permission-admin 才是 DataSmart 的业务授权事实源，能审计、撤销和按资源类型差异化裁决；
+         * 3. token 中保留项目集合主要服务前端项目切换、登录态诊断和本地闭环 smoke，不应绕过授权中心。</p>
+         */
+        private String projectIdsClaim = "datasmart_project_ids";
+
         /** 角色数组 claim。若 actorRoleClaim 为空，则从该数组选择第一个可识别平台角色。 */
         private String rolesClaim = "datasmart_roles";
 

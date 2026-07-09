@@ -247,6 +247,15 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
                 .mutate()
                 .headers(headers -> {
                     headers.remove(PlatformContextHeaders.PROJECT_ID);
+                    /*
+                     * 数据范围 Header 必须只代表本次 permission-admin 判定结果。
+                     * 认证中心 token、受信上游或开发态 Header 可能携带项目候选集合，但那些只能作为登录态/项目切换提示，
+                     * 不能残留到下游业务服务成为事实授权。这里先统一清理，再按本次判定结果重建。
+                     */
+                    headers.remove(PlatformContextHeaders.DATA_SCOPE_LEVEL);
+                    headers.remove(PlatformContextHeaders.DATA_SCOPE_EXPRESSION);
+                    headers.remove(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS);
+                    headers.remove(PlatformContextHeaders.APPROVAL_REQUIRED);
                     setHeaderIfPresent(headers, PlatformContextHeaders.DATA_SCOPE_LEVEL, decision.getDataScopeLevel());
                     setHeaderIfPresent(headers, PlatformContextHeaders.DATA_SCOPE_EXPRESSION, decision.getDataScopeExpression());
                     setAuthorizedProjectIds(headers, decision.getAuthorizedProjectIds());

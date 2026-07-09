@@ -62,7 +62,8 @@ class GatewayOidcAuthenticationContextFilterTest {
                 "datasmart_actor_id", 1001L,
                 "datasmart_actor_role", "PROJECT_OWNER",
                 "datasmart_actor_type", "USER",
-                "datasmart_workspace_id", "workspace-a"
+                "datasmart_workspace_id", "workspace-a",
+                "datasmart_project_ids", List.of("101", "102", "101")
         )));
         Principal principal = exchange.getPrincipal().block();
         assertThat(principal).isInstanceOf(JwtAuthenticationToken.class);
@@ -71,6 +72,8 @@ class GatewayOidcAuthenticationContextFilterTest {
                 .currentPrincipal((Authentication) principal, exchange.getRequest().getHeaders());
         assertThat(view.authenticated()).isTrue();
         assertThat(view.actorRole()).isEqualTo("PROJECT_OWNER");
+        assertThat(view.authorizedProjectIds()).containsExactly(101L, 102L);
+        assertThat(view.issueCodes()).contains("OIDC_JWT_PROJECT_IDS_RESOLVED");
 
         filter.filter(exchange, chain).block();
 
@@ -84,6 +87,8 @@ class GatewayOidcAuthenticationContextFilterTest {
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.ACTOR_TYPE))
                 .isEqualTo("USER");
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.WORKSPACE_ID))
+                .isNull();
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS))
                 .isNull();
         assertThat(fixture.auditSink().events()).hasSize(1);
         GatewayAuthenticationAuditEvent auditEvent = fixture.auditSink().events().getFirst();

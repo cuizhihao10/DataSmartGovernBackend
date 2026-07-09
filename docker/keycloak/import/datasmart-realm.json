@@ -11,7 +11,7 @@
     "realm": [
       {
         "name": "DATASMART_ORDINARY_USER",
-        "description": "DataSmart 普通用户，本地样板角色。"
+        "description": "DataSmart 普通用户，本地样例角色。"
       },
       {
         "name": "DATASMART_PROJECT_OWNER",
@@ -31,7 +31,7 @@
       },
       {
         "name": "DATASMART_PLATFORM_ADMINISTRATOR",
-        "description": "DataSmart 平台管理员，本地样板最高权限用户。"
+        "description": "DataSmart 平台管理员，本地样例最高权限用户。"
       },
       {
         "name": "DATASMART_SERVICE_ACCOUNT",
@@ -178,6 +178,22 @@
             "access.token.claim": "true",
             "userinfo.token.claim": "true"
           }
+        },
+        {
+          "name": "datasmart-project-ids",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "datasmart_project_ids",
+            "claim.name": "datasmart_project_ids",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "aggregate.attrs": "true",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
         }
       ]
     }
@@ -211,6 +227,9 @@
         ],
         "datasmart_application_code": [
           "FLASHSYNC"
+        ],
+        "datasmart_project_ids": [
+          "101"
         ]
       },
       "realmRoles": [
@@ -252,6 +271,9 @@
         ],
         "datasmart_application_code": [
           "FLASHSYNC"
+        ],
+        "datasmart_project_ids": [
+          "101"
         ]
       },
       "realmRoles": [
@@ -293,6 +315,9 @@
         ],
         "datasmart_application_code": [
           "FLASHSYNC"
+        ],
+        "datasmart_project_ids": [
+          "101"
         ]
       },
       "realmRoles": [
@@ -334,6 +359,9 @@
         ],
         "datasmart_application_code": [
           "FLASHSYNC"
+        ],
+        "datasmart_project_ids": [
+          "101"
         ]
       },
       "realmRoles": [
@@ -375,6 +403,9 @@
         ],
         "datasmart_application_code": [
           "DATASMART_PLATFORM"
+        ],
+        "datasmart_project_ids": [
+          "900"
         ]
       },
       "realmRoles": [
@@ -416,6 +447,9 @@
         ],
         "datasmart_application_code": [
           "FLASHSYNC"
+        ],
+        "datasmart_project_ids": [
+          "101"
         ]
       },
       "realmRoles": [
