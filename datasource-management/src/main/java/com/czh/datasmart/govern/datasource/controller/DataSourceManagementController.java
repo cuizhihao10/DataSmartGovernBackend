@@ -19,6 +19,7 @@ import com.czh.datasmart.govern.datasource.entity.DataSourceMetadataDiscoveryRes
 import com.czh.datasmart.govern.datasource.entity.DataSourceReadOnlySqlExecutionAudit;
 import com.czh.datasmart.govern.datasource.service.DataSourceAuthorizationService;
 import com.czh.datasmart.govern.datasource.service.DataSourceManagementService;
+import com.czh.datasmart.govern.datasource.service.support.DataSourceCredentialCipherSupport;
 import com.czh.datasmart.govern.datasource.service.support.DatasourceAuthorizationActorContext;
 import com.czh.datasmart.govern.datasource.service.support.DatasourceProjectScopeSupport;
 import com.czh.datasmart.govern.datasource.service.support.DatasourceProjectVisibility;
@@ -108,6 +109,15 @@ public class DataSourceManagementController {
     private final DatasourceProjectScopeSupport datasourceProjectScopeSupport;
 
     /**
+     * 数据源凭据脱敏支撑组件。
+     *
+     * <p>Controller 是 HTTP 响应离开服务前的最后一道安全边界。即使 Service 层内部实体包含可用于 JDBC 的存储密码，
+     * 对外接口也只能返回低敏副本。这里统一把 password 清空，而不是返回 {@code ******}，避免前端编辑保存时
+     * 把星号误当成真实密码回写，造成数据源凭据被破坏。</p>
+     */
+    private final DataSourceCredentialCipherSupport dataSourceCredentialCipherSupport;
+
+    /**
      * 创建数据源登记记录。
      *
      * <p>新前端不需要提交 tenantId/projectId，更不需要提交 workspaceId。服务端会优先使用 Header 中的当前租户/项目上下文，
@@ -139,7 +149,8 @@ public class DataSourceManagementController {
                 request.getDescription(),
                 request.getUsagePurpose()
         );
-        return ResponseEntity.ok(ApiResponse.success("数据源创建成功", config));
+        return ResponseEntity.ok(ApiResponse.success("数据源创建成功",
+                dataSourceCredentialCipherSupport.sanitizeForApi(config)));
     }
 
     /**
@@ -227,6 +238,7 @@ public class DataSourceManagementController {
         wrapper.orderByDesc(DataSourceConfig::getId);
 
         IPage<DataSourceConfig> result = dataSourceManagementService.page(new Page<>(safeCurrent(current), safeSize(size)), wrapper);
+        result.setRecords(dataSourceCredentialCipherSupport.sanitizeForApi(result.getRecords()));
         return ResponseEntity.ok(ApiResponse.success(result));
     }
 
@@ -251,7 +263,7 @@ public class DataSourceManagementController {
                 authorizedProjectRoles,
                 resolveActorContext(actorId, actorRole, actorType),
                 DataSourceAuthorizationAction.VIEW);
-        return ResponseEntity.ok(ApiResponse.success(config));
+        return ResponseEntity.ok(ApiResponse.success(dataSourceCredentialCipherSupport.sanitizeForApi(config)));
     }
 
     /**
@@ -286,7 +298,8 @@ public class DataSourceManagementController {
                 request.getDescription(),
                 request.getUsagePurpose()
         );
-        return ResponseEntity.ok(ApiResponse.success("数据源更新成功", config));
+        return ResponseEntity.ok(ApiResponse.success("数据源更新成功",
+                dataSourceCredentialCipherSupport.sanitizeForApi(config)));
     }
 
     /**
@@ -342,7 +355,8 @@ public class DataSourceManagementController {
                 authorizedProjectRoles,
                 resolveActorContext(actorId, actorRole, actorType),
                 DataSourceAuthorizationAction.MANAGE);
-        return ResponseEntity.ok(ApiResponse.success("数据源已启用", dataSourceManagementService.enableDataSource(id)));
+        return ResponseEntity.ok(ApiResponse.success("数据源已启用",
+                dataSourceCredentialCipherSupport.sanitizeForApi(dataSourceManagementService.enableDataSource(id))));
     }
 
     /**
@@ -366,7 +380,8 @@ public class DataSourceManagementController {
                 authorizedProjectRoles,
                 resolveActorContext(actorId, actorRole, actorType),
                 DataSourceAuthorizationAction.MANAGE);
-        return ResponseEntity.ok(ApiResponse.success("数据源已停用", dataSourceManagementService.disableDataSource(id)));
+        return ResponseEntity.ok(ApiResponse.success("数据源已停用",
+                dataSourceCredentialCipherSupport.sanitizeForApi(dataSourceManagementService.disableDataSource(id))));
     }
 
     /**
@@ -390,7 +405,8 @@ public class DataSourceManagementController {
                 authorizedProjectRoles,
                 resolveActorContext(actorId, actorRole, actorType),
                 DataSourceAuthorizationAction.MANAGE);
-        return ResponseEntity.ok(ApiResponse.success("数据源已删除", dataSourceManagementService.deleteDataSource(id)));
+        return ResponseEntity.ok(ApiResponse.success("数据源已删除",
+                dataSourceCredentialCipherSupport.sanitizeForApi(dataSourceManagementService.deleteDataSource(id))));
     }
 
     /**

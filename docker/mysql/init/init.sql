@@ -378,7 +378,7 @@ CREATE TABLE IF NOT EXISTS datasource_config (
     type VARCHAR(32) NOT NULL COMMENT '数据源类型，例如 MYSQL、POSTGRESQL',
     jdbc_url VARCHAR(512) NOT NULL COMMENT '连接地址',
     username VARCHAR(128) NOT NULL COMMENT '连接用户名',
-    password VARCHAR(256) NOT NULL COMMENT '连接密码，当前阶段先明文保存，后续应升级到密钥中心',
+    password TEXT NOT NULL COMMENT '外部数据源连接凭据存储值。新写入必须为 ENC[v1] AES-GCM 密文；历史明文仅用于启动迁移兼容。接口、日志和审计禁止返回明文或密文正文',
     driver_class_name VARCHAR(256) NOT NULL COMMENT 'JDBC 驱动类名',
     description VARCHAR(512) COMMENT '便于人工理解的数据源说明',
     status VARCHAR(32) NOT NULL COMMENT '生命周期状态',

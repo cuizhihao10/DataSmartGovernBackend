@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.Data;
 
 import java.time.LocalDateTime;
@@ -87,9 +88,15 @@ public class DataSourceConfig {
     private String username;
 
     /**
-     * 密码。
-     * 当前开发阶段先明文保存，后续生产化应升级为加密或密钥管理方案。
+     * 外部数据源连接密码的存储值。
+     *
+     * <p>安全边界说明：</p>
+     * <p>1. 该字段在数据库中应保存为 {@code ENC[v1]} 格式的 AES-GCM 密文，历史明文仅作为升级兼容对象存在；</p>
+     * <p>2. 运行时只有 datasource-management 内部连接测试、元数据发现、只读 SQL 和同步执行链路允许解密使用；</p>
+     * <p>3. REST API 绝不能返回明文或密文，因此这里加 {@link JsonIgnore}，Controller 也会额外返回 password=null 的低敏副本；</p>
+     * <p>4. 该字段不能改成 bcrypt/Argon2 哈希，因为 JDBC 连接必须拿到可还原的真实密码。</p>
      */
+    @JsonIgnore
     private String password;
 
     /**

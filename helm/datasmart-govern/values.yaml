@@ -40,6 +40,7 @@ secretContract:
     - minio-access-key
     - minio-secret-key
     - gateway-signature-secret
+    - datasource-credential-master-key
     - model-api-key
 
 imagePullSecrets: []
@@ -161,7 +162,10 @@ services:
       repository: datasmart/datasource-management
     env:
       DATASMART_TASK_MANAGEMENT_BASE_URL: http://datasmart-govern-task-management:8081
-    secretEnv: []
+      DATASMART_DATASOURCE_CREDENTIAL_KEY_ID: datasource-prod-v1
+    secretEnv:
+      - name: DATASMART_DATASOURCE_CREDENTIAL_MASTER_KEY
+        key: datasource-credential-master-key
     probe:
       readinessPath: /actuator/health
       livenessPath: /actuator/health

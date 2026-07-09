@@ -10,6 +10,7 @@ import com.czh.datasmart.govern.datasource.controller.dto.CreateDataSourceReques
 import com.czh.datasmart.govern.datasource.entity.DataSourceConfig;
 import com.czh.datasmart.govern.datasource.service.DataSourceAuthorizationService;
 import com.czh.datasmart.govern.datasource.service.DataSourceManagementService;
+import com.czh.datasmart.govern.datasource.service.support.DataSourceCredentialCipherSupport;
 import com.czh.datasmart.govern.datasource.service.support.DatasourceProjectScopeSupport;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -45,7 +46,8 @@ class DataSourceManagementControllerTest {
         DataSourceManagementController controller = new DataSourceManagementController(
                 service,
                 authorizationService,
-                new DatasourceProjectScopeSupport()
+                new DatasourceProjectScopeSupport(),
+                mock(DataSourceCredentialCipherSupport.class)
         );
         CreateDataSourceRequest request = new CreateDataSourceRequest();
         request.setName("订单库源端");

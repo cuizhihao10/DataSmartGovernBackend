@@ -218,6 +218,10 @@ services:
       SPRING_DATASOURCE_USERNAME: datasmart
       SPRING_DATASOURCE_PASSWORD: ${DATASMART_POSTGRES_PASSWORD:-password}
       SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
+      # 数据源连接密码会以 AES-GCM 密文写入 datasource_config.password。
+      # 本地 Compose 给出可重复的开发 key，便于容器重建后仍能解密；生产环境必须改用 Secret Manager/KMS/集群 Secret。
+      DATASMART_DATASOURCE_CREDENTIAL_MASTER_KEY: ${DATASMART_DATASOURCE_CREDENTIAL_MASTER_KEY:-local-compose-datasource-credential-master-key-change-before-production}
+      DATASMART_DATASOURCE_CREDENTIAL_KEY_ID: ${DATASMART_DATASOURCE_CREDENTIAL_KEY_ID:-compose-local-v1}
       DATASMART_TASK_MANAGEMENT_BASE_URL: http://task-management:8081
     ports:
       - "8082:8082"

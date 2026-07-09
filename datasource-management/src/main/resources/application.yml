@@ -77,6 +77,21 @@ management:
 
 datasmart:
   datasource:
+    credential:
+      # 数据源连接密码属于“运行时必须可还原”的外部系统凭据，因此不能像用户登录密码一样使用 bcrypt/Argon2。
+      # 当前采用 AES-GCM 字段级加密，后续可在 DataSourceCredentialCipherSupport 背后替换为 Vault/KMS/Secret Manager。
+      encryption-enabled: ${DATASMART_DATASOURCE_CREDENTIAL_ENCRYPTION_ENABLED:true}
+      # 生产环境必须通过 Secret Manager、Kubernetes Secret、Docker secret 或安全环境变量注入 32 字节随机 master key。
+      # 支持 Base64/Hex 原始 key，也兼容高强度口令派生；禁止把真实值写入 Git 或前端构建产物。
+      master-key: ${DATASMART_DATASOURCE_CREDENTIAL_MASTER_KEY:}
+      # key-id 会进入密文前缀，便于未来做密钥轮换、双读旧 key 和重加密。
+      key-id: ${DATASMART_DATASOURCE_CREDENTIAL_KEY_ID:local-dev-v1}
+      # 启动时自动把历史明文 password 重写为 ENC[v1] 密文；迁移日志只输出低敏统计，不输出明文或密文正文。
+      migrate-legacy-plaintext-on-startup: ${DATASMART_DATASOURCE_CREDENTIAL_MIGRATE_LEGACY_ON_STARTUP:true}
+      # 本地开发允许兜底 key，方便学习和 E2E；prod/production profile 下缺少 master-key 仍会失败启动。
+      allow-local-fallback-key: ${DATASMART_DATASOURCE_CREDENTIAL_ALLOW_LOCAL_FALLBACK_KEY:true}
+      fail-on-missing-master-key-in-production: ${DATASMART_DATASOURCE_CREDENTIAL_FAIL_ON_MISSING_MASTER_KEY_IN_PRODUCTION:true}
+
     read-only-sql:
       # 是否启用 datasource-management 的受控只读 SQL 执行代理。
       # 这个入口面向 data-quality、data-asset、字段画像、异常样本诊断等平台内部场景，

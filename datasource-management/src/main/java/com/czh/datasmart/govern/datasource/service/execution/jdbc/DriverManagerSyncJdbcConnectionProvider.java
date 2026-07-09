@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.datasource.service.execution.jdbc;
 
 import com.czh.datasmart.govern.datasource.entity.DataSourceConfig;
 import com.czh.datasmart.govern.datasource.mapper.DataSourceConfigMapper;
+import com.czh.datasmart.govern.datasource.service.support.DataSourceCredentialCipherSupport;
 import com.czh.datasmart.govern.datasource.support.DataSourceStatus;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -34,6 +35,14 @@ public class DriverManagerSyncJdbcConnectionProvider implements SyncJdbcConnecti
      */
     private final DataSourceConfigMapper dataSourceConfigMapper;
 
+    /**
+     * 数据源凭据解密组件。
+     *
+     * <p>同步执行器是最需要真实密码的链路，但它也不应该理解“密码字段如何加密存储”。
+     * 这里保持 provider 只负责打开连接，密钥版本、历史明文兼容和未来 KMS 替换都由独立组件承担。</p>
+     */
+    private final DataSourceCredentialCipherSupport credentialCipherSupport;
+
     @Override
     public Connection openConnection(Long datasourceId, boolean readOnly) throws SQLException, ClassNotFoundException {
         DataSourceConfig datasource = dataSourceConfigMapper.selectById(datasourceId);
@@ -46,7 +55,8 @@ public class DriverManagerSyncJdbcConnectionProvider implements SyncJdbcConnecti
         }
         Class.forName(datasource.getDriverClassName());
         DriverManager.setLoginTimeout(5);
-        Connection connection = DriverManager.getConnection(datasource.getJdbcUrl(), datasource.getUsername(), datasource.getPassword());
+        String connectionPassword = credentialCipherSupport.decryptForUse(datasource.getPassword());
+        Connection connection = DriverManager.getConnection(datasource.getJdbcUrl(), datasource.getUsername(), connectionPassword);
         connection.setReadOnly(readOnly);
         return connection;
     }

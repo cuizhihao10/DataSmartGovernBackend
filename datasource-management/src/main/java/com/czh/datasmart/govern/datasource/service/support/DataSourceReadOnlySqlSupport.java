@@ -88,6 +88,14 @@ public class DataSourceReadOnlySqlSupport {
     private final DataSourceReadOnlySqlExecutionAuditMapper readOnlySqlExecutionAuditMapper;
 
     /**
+     * 数据源凭据解密组件。
+     *
+     * <p>只读 SQL 是触达客户业务数据的高敏链路，不能直接读取或返回 password 存储值。
+     * 本组件只在打开 JDBC 连接前拿到短生命周期明文，随后由 JDBC 驱动使用；审计表、异常摘要和响应都不得落入密码。</p>
+     */
+    private final DataSourceCredentialCipherSupport credentialCipherSupport;
+
+    /**
      * 只读 SQL 的危险关键字匹配。
      */
     private static final Pattern FORBIDDEN_SQL_KEYWORD_PATTERN = Pattern.compile(
@@ -355,7 +363,8 @@ public class DataSourceReadOnlySqlSupport {
     private Connection openConnection(DataSourceConfig config) throws SQLException, ClassNotFoundException {
         Class.forName(config.getDriverClassName());
         DriverManager.setLoginTimeout(5);
-        Connection connection = DriverManager.getConnection(config.getJdbcUrl(), config.getUsername(), config.getPassword());
+        String connectionPassword = credentialCipherSupport.decryptForUse(config.getPassword());
+        Connection connection = DriverManager.getConnection(config.getJdbcUrl(), config.getUsername(), connectionPassword);
         connection.setReadOnly(true);
         return connection;
     }

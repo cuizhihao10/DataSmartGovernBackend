@@ -17,6 +17,7 @@ import com.czh.datasmart.govern.datasource.entity.DataSourceReadOnlySqlExecution
 import com.czh.datasmart.govern.datasource.mapper.DataSourceConfigMapper;
 import com.czh.datasmart.govern.datasource.service.DataSourceManagementService;
 import com.czh.datasmart.govern.datasource.service.support.ConnectorCapabilityRegistry;
+import com.czh.datasmart.govern.datasource.service.support.DataSourceCredentialCipherSupport;
 import com.czh.datasmart.govern.datasource.service.support.DataSourceMetadataDiscoverySupport;
 import com.czh.datasmart.govern.datasource.service.support.DataSourceReadOnlySqlSupport;
 import com.czh.datasmart.govern.datasource.service.support.DatasourceProjectVisibility;
@@ -83,6 +84,15 @@ public class DataSourceManagementServiceImpl extends ServiceImpl<DataSourceConfi
     private final ConnectorCapabilityRegistry connectorCapabilityRegistry;
 
     /**
+     * 数据源连接凭据加密与解密支撑组件。
+     *
+     * <p>数据源密码是“运行时必须可还原”的外部系统凭据，不能像用户登录密码一样做不可逆哈希。
+     * Service 层所有落库前的密码都必须先经过该组件加密；所有 JDBC 建连前都必须通过该组件解密。
+     * 这样后续把 AES-GCM 替换为 Vault/KMS 时，主流程不需要理解密钥系统细节。</p>
+     */
+    private final DataSourceCredentialCipherSupport dataSourceCredentialCipherSupport;
+
+    /**
      * 创建数据源。
      * 这里会把 type 解析成 driverClassName 并固化到数据库中，
      * 后面执行连接测试或元数据采集时就不需要每次重新推导。
@@ -106,7 +116,7 @@ public class DataSourceManagementServiceImpl extends ServiceImpl<DataSourceConfi
         config.setUsagePurpose(normalizedPurpose.name());
         config.setJdbcUrl(jdbcUrl);
         config.setUsername(username);
-        config.setPassword(password);
+        config.setPassword(dataSourceCredentialCipherSupport.encryptForStorage(password));
         config.setDriverClassName(dataSourceType.getDriverClassName());
         config.setDescription(description);
         config.setStatus(DataSourceStatus.ACTIVE);
@@ -157,7 +167,7 @@ public class DataSourceManagementServiceImpl extends ServiceImpl<DataSourceConfi
          * 才把它视为一次凭据更新。
          */
         if (password != null && !password.isBlank()) {
-            config.setPassword(password);
+            config.setPassword(dataSourceCredentialCipherSupport.encryptForStorage(password));
         }
         config.setDescription(description);
         LocalDateTime testedAt = LocalDateTime.now();
@@ -786,7 +796,8 @@ public class DataSourceManagementServiceImpl extends ServiceImpl<DataSourceConfi
     private Connection openConnection(DataSourceConfig config) throws SQLException, ClassNotFoundException {
         Class.forName(config.getDriverClassName());
         DriverManager.setLoginTimeout(5);
-        Connection connection = DriverManager.getConnection(config.getJdbcUrl(), config.getUsername(), config.getPassword());
+        String connectionPassword = dataSourceCredentialCipherSupport.decryptForUse(config.getPassword());
+        Connection connection = DriverManager.getConnection(config.getJdbcUrl(), config.getUsername(), connectionPassword);
         connection.setReadOnly(true);
         return connection;
     }

@@ -73,6 +73,14 @@ public class DataSourceMetadataDiscoverySupport {
     private final DataSourceMetadataDiscoveryCacheSupport metadataDiscoveryCacheSupport;
 
     /**
+     * 数据源凭据解密组件。
+     *
+     * <p>元数据发现只需要短暂打开 JDBC 只读连接，不应该知道 password 字段到底是历史明文、
+     * AES-GCM 密文还是未来的 Vault/KMS 引用。这里统一交给凭据组件还原，保持连接器读取逻辑和密钥治理解耦。</p>
+     */
+    private final DataSourceCredentialCipherSupport credentialCipherSupport;
+
+    /**
      * 执行数据源元数据发现。
      *
      * <p>完整流程被刻意拆得比较清楚，方便后续学习和扩展：
@@ -491,7 +499,8 @@ public class DataSourceMetadataDiscoverySupport {
     private Connection openConnection(DataSourceConfig config) throws SQLException, ClassNotFoundException {
         Class.forName(config.getDriverClassName());
         DriverManager.setLoginTimeout(5);
-        Connection connection = DriverManager.getConnection(config.getJdbcUrl(), config.getUsername(), config.getPassword());
+        String connectionPassword = credentialCipherSupport.decryptForUse(config.getPassword());
+        Connection connection = DriverManager.getConnection(config.getJdbcUrl(), config.getUsername(), connectionPassword);
         connection.setReadOnly(true);
         return connection;
     }

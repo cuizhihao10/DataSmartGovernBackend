@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.datasource.service.impl;
 
 import com.czh.datasmart.govern.datasource.entity.DataSourceConnectionTestResult;
 import com.czh.datasmart.govern.datasource.service.support.ConnectorCapabilityRegistry;
+import com.czh.datasmart.govern.datasource.service.support.DataSourceCredentialCipherSupport;
 import com.czh.datasmart.govern.datasource.service.support.DataSourceMetadataDiscoverySupport;
 import com.czh.datasmart.govern.datasource.service.support.DataSourceReadOnlySqlSupport;
 import com.czh.datasmart.govern.datasource.support.ConnectionTestStatus;
@@ -56,7 +57,8 @@ class DataSourceManagementServiceImplTest {
         return new DataSourceManagementServiceImpl(
                 mock(DataSourceReadOnlySqlSupport.class),
                 mock(DataSourceMetadataDiscoverySupport.class),
-                mock(ConnectorCapabilityRegistry.class)
+                mock(ConnectorCapabilityRegistry.class),
+                mock(DataSourceCredentialCipherSupport.class)
         );
     }
 }
