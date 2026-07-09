@@ -64,6 +64,49 @@ class SyncBatchRunnerBridgePlanSupportTest {
     }
 
     @Test
+    void singleObjectBridgeShouldPreferObjectMappingConfigWhenTopLevelLocatorIsStale() {
+        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+                .objectMapping("""
+                        {
+                          "version": "datasmart.sync.object-mapping.v1",
+                          "mappings": [
+                            {
+                              "sourceSchemaName": "public",
+                              "sourceObjectName": "fs_test_customer_source",
+                              "targetSchemaName": "public",
+                              "targetObjectName": "fs_test_customer_source",
+                              "objectType": "TABLE"
+                            }
+                          ]
+                        }
+                        """)
+                .fieldMapping("""
+                        [
+                          {"sourceField":"id","targetField":"id"},
+                          {"sourceField":"customer_name","targetField":"customer_name"}
+                        ]
+                        """);
+        /*
+         * 这里故意把模板顶层对象字段设置成旧值，模拟用户编辑对象映射后只更新了 objectMappingConfig，
+         * 但历史兼容字段尚未同步刷新的真实问题。执行计划必须相信用户最后保存的对象映射，
+         * 否则 worker 会把正确字段写入错误目标表，最终表现为“目标表不存在某字段”。
+         */
+        template.setSourceSchemaName("legacy_source");
+        template.setSourceObjectName("legacy_customer");
+        template.setTargetSchemaName("agent_runtime");
+        template.setTargetObjectName("agent_tool_action_worker_receipt_index");
+
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+                workerPlan("READY_TO_RUN", List.of()));
+
+        assertThat(plan.isDispatchable()).isTrue();
+        assertThat(plan.getSourceObjectLocator()).isEqualTo("public.fs_test_customer_source");
+        assertThat(plan.getTargetObjectLocator()).isEqualTo("public.fs_test_customer_source");
+        assertThat(plan.getWarnings()).contains("OBJECT_MAPPING_USED_AS_SINGLE_OBJECT_BRIDGE_LOCATOR");
+        assertThat(plan.getTargetObjectLocator()).doesNotContain("agent_tool_action_worker_receipt_index");
+    }
+
+    @Test
     void fieldRenameShouldBeDispatchableBecauseRunOnceCanAlignRowKeys() {
         SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
                 .fieldMapping("""

@@ -50,6 +50,7 @@ public class SyncBatchRunnerBridgePlanSupport {
     private final SyncTemplateScopeContractSupport scopeContractSupport;
     private final SyncOfflineRunnerContractSupport offlineRunnerContractSupport;
     private final SyncCustomSqlExecutionContractSupport customSqlExecutionContractSupport;
+    private final SyncObjectMappingExecutionContractSupport objectMappingExecutionContractSupport;
 
     /**
      * 兼容既有单元测试的构造器。
@@ -62,7 +63,8 @@ public class SyncBatchRunnerBridgePlanSupport {
         this(fieldMappingExecutionContractSupport, new SyncFilterExecutionContractSupport(),
                 new SyncTemplateScopeContractSupport(),
                 new SyncOfflineRunnerContractSupport(),
-                new SyncCustomSqlExecutionContractSupport());
+                new SyncCustomSqlExecutionContractSupport(),
+                new SyncObjectMappingExecutionContractSupport());
     }
 
     /**
@@ -76,12 +78,31 @@ public class SyncBatchRunnerBridgePlanSupport {
                                             SyncFilterExecutionContractSupport filterExecutionContractSupport,
                                             SyncTemplateScopeContractSupport scopeContractSupport,
                                             SyncOfflineRunnerContractSupport offlineRunnerContractSupport,
-                                            SyncCustomSqlExecutionContractSupport customSqlExecutionContractSupport) {
+                                            SyncCustomSqlExecutionContractSupport customSqlExecutionContractSupport,
+                                            SyncObjectMappingExecutionContractSupport objectMappingExecutionContractSupport) {
         this.fieldMappingExecutionContractSupport = fieldMappingExecutionContractSupport;
         this.filterExecutionContractSupport = filterExecutionContractSupport;
         this.scopeContractSupport = scopeContractSupport;
         this.offlineRunnerContractSupport = offlineRunnerContractSupport;
         this.customSqlExecutionContractSupport = customSqlExecutionContractSupport;
+        this.objectMappingExecutionContractSupport = objectMappingExecutionContractSupport;
+    }
+
+    /**
+     * 兼容新增对象映射解析器之前的五参数构造方式。
+     *
+     * <p>很多单元测试会直接 new 本类，只关心字段映射、过滤条件或 Runner 合同分支。保留该构造器可以让测试不用为了
+     * Spring 依赖演进而批量改造，同时生产环境仍通过上面的完整构造器注入同一个
+     * {@link SyncObjectMappingExecutionContractSupport} Bean。</p>
+     */
+    public SyncBatchRunnerBridgePlanSupport(SyncFieldMappingExecutionContractSupport fieldMappingExecutionContractSupport,
+                                            SyncFilterExecutionContractSupport filterExecutionContractSupport,
+                                            SyncTemplateScopeContractSupport scopeContractSupport,
+                                            SyncOfflineRunnerContractSupport offlineRunnerContractSupport,
+                                            SyncCustomSqlExecutionContractSupport customSqlExecutionContractSupport) {
+        this(fieldMappingExecutionContractSupport, filterExecutionContractSupport, scopeContractSupport,
+                offlineRunnerContractSupport, customSqlExecutionContractSupport,
+                new SyncObjectMappingExecutionContractSupport());
     }
 
     /**
@@ -150,6 +171,7 @@ public class SyncBatchRunnerBridgePlanSupport {
         if (!scopeContract.executableByMinimalBridge()) {
             issueCodes.add("SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE");
         }
+        ResolvedObjectLocators objectLocators = resolveObjectLocators(template, issueCodes, warnings);
 
         SyncFieldMappingExecutionContract fieldMappingContract =
                 fieldMappingExecutionContractSupport.parse(template.getFieldMappingConfig(), template.getPrimaryKeyField());
@@ -203,8 +225,8 @@ public class SyncBatchRunnerBridgePlanSupport {
                 readStrategy(template.getSyncMode()),
                 runnerWriteStrategy(template),
                 checkpointType(template.getSyncMode()),
-                objectLocator(template.getSourceSchemaName(), template.getSourceObjectName()),
-                objectLocator(template.getTargetSchemaName(), template.getTargetObjectName()),
+                objectLocators.sourceObjectLocator(),
+                objectLocators.targetObjectLocator(),
                 fieldMappingContract,
                 filterContract.getConditions(),
                 customSqlContract.sql(),
@@ -368,6 +390,56 @@ public class SyncBatchRunnerBridgePlanSupport {
         return schemaName.trim() + "." + objectName.trim();
     }
 
+    /**
+     * 解析真实执行应该使用的源/目标对象定位。
+     *
+     * <p>历史模板会把单对象同步的源表和目标表分别保存到 {@code sourceObjectName/targetObjectName} 顶层字段；
+     * 新版创建向导则以 {@code objectMappingConfig.mappings} 作为用户选择对象的事实来源。两者同时存在时，必须优先使用
+     * objectMappingConfig，因为它是用户在第二步“对象映射”里最后确认的配置。否则就会出现页面显示目标表 A，
+     * 但 worker 实际写入旧目标表 B 的严重错写风险。</p>
+     *
+     * <p>当前最小 run-once bridge 只执行单对象，所以这里仅在 objectMappingConfig 恰好解析出一条映射时覆盖顶层字段。
+     * 多条映射应由 OBJECT_LIST fan-out 或 DataX-style Runner 处理，而不是由单对象 bridge 私自取第一条。</p>
+     */
+    private ResolvedObjectLocators resolveObjectLocators(SyncTemplate template,
+                                                         List<String> issueCodes,
+                                                         List<String> warnings) {
+        if (template == null) {
+            return new ResolvedObjectLocators(null, null);
+        }
+        ResolvedObjectLocators legacyLocators = new ResolvedObjectLocators(
+                objectLocator(template.getSourceSchemaName(), template.getSourceObjectName()),
+                objectLocator(template.getTargetSchemaName(), template.getTargetObjectName()));
+        if (!hasText(template.getObjectMappingConfig())) {
+            return legacyLocators;
+        }
+
+        SyncObjectMappingExecutionContract objectContract = objectMappingExecutionContractSupport.parse(template);
+        issueCodes.addAll(objectContract.issueCodes());
+        warnings.addAll(objectContract.warnings());
+        if (!objectContract.issueCodes().isEmpty()) {
+            return legacyLocators;
+        }
+        if (objectContract.mappings().isEmpty()) {
+            issueCodes.add("OBJECT_MAPPING_EXECUTABLE_ITEMS_EMPTY");
+            return legacyLocators;
+        }
+        if (objectContract.mappings().size() > 1) {
+            issueCodes.add("OBJECT_MAPPING_MULTIPLE_ITEMS_REQUIRE_FAN_OUT_RUNNER");
+            return legacyLocators;
+        }
+
+        SyncObjectMappingExecutionItem item = objectContract.mappings().get(0);
+        String sourceObjectLocator = objectLocator(item.sourceSchemaName(), item.sourceObjectName());
+        String targetObjectLocator = objectLocator(item.targetSchemaName(), item.targetObjectName());
+        if (!hasText(sourceObjectLocator) || !hasText(targetObjectLocator)) {
+            issueCodes.add("OBJECT_MAPPING_LOCATOR_UNRESOLVED");
+            return legacyLocators;
+        }
+        warnings.add("OBJECT_MAPPING_USED_AS_SINGLE_OBJECT_BRIDGE_LOCATOR");
+        return new ResolvedObjectLocators(sourceObjectLocator, targetObjectLocator);
+    }
+
     private SyncMode resolveMode(String syncMode) {
         String normalized = normalize(syncMode);
         if (normalized == null) {
@@ -419,5 +491,8 @@ public class SyncBatchRunnerBridgePlanSupport {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private record ResolvedObjectLocators(String sourceObjectLocator, String targetObjectLocator) {
     }
 }

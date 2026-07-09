@@ -134,6 +134,38 @@ class DataSyncWorkerExecutionReceiptServiceTest {
     }
 
     @Test
+    void recordShouldAcceptStandaloneDataSyncReceiptWhenCommandAndOutboxMissing() {
+        /*
+         * 普通用户在数据同步页面直接创建、执行任务时，并不会先在 task-management 生成 Agent command outbox。
+         * data-sync 仍然会在执行完成后投递低敏 execution receipt。这个用例验证 task-management 不再把
+         * “没有 commandId/outbox”误判为非法回执，而是使用 standalone 关联键保存投影。
+         */
+        when(outboxMapper.selectOne(any())).thenReturn(null);
+        when(receiptMapper.insert(any(DataSyncWorkerExecutionReceipt.class))).thenAnswer(invocation -> {
+            DataSyncWorkerExecutionReceipt receipt = invocation.getArgument(0);
+            receipt.setId(4L);
+            return 1;
+        });
+        DataSyncWorkerExecutionReceiptRecordRequest request = checkpointRequest(null);
+        request.setReceiptId("receipt-standalone-data-sync");
+        request.setEventType("COMPLETE");
+        request.setCompleted(true);
+        request.setEndOfSource(true);
+        request.setCheckpointPersisted(false);
+
+        DataSyncWorkerExecutionReceiptRecordResult result = service.recordReceipt(request);
+
+        assertTrue(result.accepted());
+        assertFalse(result.duplicate());
+        assertEquals("standalone-data-sync-task:7001:execution:8001", result.record().commandId());
+        assertEquals("standalone-data-sync-execution:8001", result.record().outboxId());
+        assertEquals(7001L, result.record().taskId());
+        assertEquals(7001L, result.record().syncTaskId());
+        assertEquals(8001L, result.record().syncExecutionId());
+        assertTrue(result.warnings().stream().anyMatch(warning -> warning.contains("standalone")));
+    }
+
+    @Test
     void recordShouldRejectUnknownOutbox() {
         when(outboxMapper.selectOne(any())).thenReturn(null);
 

@@ -118,10 +118,20 @@ public class SyncObjectMappingExecutionContractSupport {
             issueCodes.add("OBJECT_MAPPING_ITEM_SCHEMA_UNSUPPORTED");
             return null;
         }
-        String sourceObjectName = firstText(mappingNode, "sourceObject", "sourceTable", "source", "from");
-        String targetObjectName = firstText(mappingNode, "targetObject", "targetTable", "target", "to");
-        String sourceSchemaName = firstText(mappingNode, "sourceSchema", "sourceNamespace");
-        String targetSchemaName = firstText(mappingNode, "targetSchema", "targetNamespace");
+        /*
+         * 创建向导和导入导出合同已经逐步从早期的 sourceObject/targetObject 演进为
+         * sourceObjectName/targetObjectName。执行解析器必须兼容这些字段名，否则会出现一个很隐蔽的生产问题：
+         * 页面、预检查和任务详情都显示用户选的是 A -> B，但 worker 进入最小 run-once bridge 时仍然回退到
+         * 模板顶层旧字段，最终把数据写到旧目标表。这里把两套命名都纳入解析，保证“用户保存的对象映射”优先成为执行事实。
+         */
+        String sourceObjectName = firstText(mappingNode,
+                "sourceObjectName", "sourceObject", "sourceTableName", "sourceTable", "source", "from");
+        String targetObjectName = firstText(mappingNode,
+                "targetObjectName", "targetObject", "targetTableName", "targetTable", "target", "to");
+        String sourceSchemaName = firstText(mappingNode,
+                "sourceSchemaName", "sourceSchema", "sourceNamespace", "sourceCatalog");
+        String targetSchemaName = firstText(mappingNode,
+                "targetSchemaName", "targetSchema", "targetNamespace", "targetCatalog");
 
         if (!safeIdentifier(sourceObjectName) || !safeIdentifier(targetObjectName)) {
             issueCodes.add("OBJECT_MAPPING_IDENTIFIER_UNSAFE");

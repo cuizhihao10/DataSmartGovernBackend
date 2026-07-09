@@ -51,6 +51,20 @@ public class DataSyncWorkerExecutionReceiptService {
     private static final String QUERY_SCHEMA_VERSION =
             "datasmart.task.data-sync-worker-execution-receipt.query.v1";
     private static final String DEFAULT_SOURCE_SERVICE = "datasource-management";
+    /**
+     * 普通 data-sync 任务没有 Agent command/outbox 时使用的低敏虚拟 commandId 前缀。
+     *
+     * <p>task-management 最早只从 Agent 工具命令角度接收 data-sync 回执，因此 execution receipt 会强制关联
+     * task_data_sync_worker_command_outbox。现在数据同步任务也可以由页面直接创建和执行，这类任务没有 Agent command。
+     * 如果继续强制查 outbox，就会出现 data-sync 已经成功、但 task-management receipt 一直 Conflict/RETRY_WAIT 的断点。</p>
+     *
+     * <p>该前缀只用于投影检索和问题诊断，不表示系统真实创建了 Agent command。</p>
+     */
+    private static final String STANDALONE_COMMAND_ID_PREFIX = "standalone-data-sync-task:";
+    /**
+     * 普通 data-sync 任务没有 task-management outbox 时使用的低敏虚拟 outboxId 前缀。
+     */
+    private static final String STANDALONE_OUTBOX_ID_PREFIX = "standalone-data-sync-execution:";
     private static final int DEFAULT_QUERY_LIMIT = 50;
     private static final int MAX_QUERY_LIMIT = 200;
     private static final int MAX_SUMMARY_LENGTH = 500;
@@ -222,9 +236,36 @@ public class DataSyncWorkerExecutionReceiptService {
                         .eq(DataSyncWorkerCommandOutbox::getSyncExecutionId, request.getSyncExecutionId())
                         .last("LIMIT 1")
         );
-        if (outbox == null) {
+        if (outbox == null && request.getCommandId() != null && !request.getCommandId().isBlank()) {
             throw new IllegalStateException("未找到可关联的 DataSync worker outbox，拒绝记录孤立 execution receipt");
         }
+        if (outbox == null) {
+            return standaloneOutbox(request);
+        }
+        return outbox;
+    }
+
+    /**
+     * 为页面/调度器直接创建的 data-sync 任务构造虚拟关联上下文。
+     *
+     * <p>这里不把 receipt 直接丢弃，也不要求 data-sync 反向伪造一个 Agent command。原因是普通同步任务已经是
+     * data-sync 自己的一等业务对象，它的执行事实应该能进入 task-management 的跨模块投影视图。虚拟 outbox 只解决
+     * 旧表结构中的非空字段和查询维度问题，不会触发任何真实下游投递、重试或 Agent timeline 副作用。</p>
+     *
+     * <p>taskId 暂时用 syncTaskId 兜底，是兼容现有 NOT NULL 约束的折中；真正的业务归属仍以 syncTaskId 和
+     * syncExecutionId 为准，后续如果 task-management 建立正式的“外部任务引用表”，可以再把这里替换为真实关联。</p>
+     */
+    private DataSyncWorkerCommandOutbox standaloneOutbox(DataSyncWorkerExecutionReceiptRecordRequest request) {
+        DataSyncWorkerCommandOutbox outbox = new DataSyncWorkerCommandOutbox();
+        outbox.setCommandId(STANDALONE_COMMAND_ID_PREFIX + request.getSyncTaskId()
+                + ":execution:" + request.getSyncExecutionId());
+        outbox.setOutboxId(STANDALONE_OUTBOX_ID_PREFIX + request.getSyncExecutionId());
+        outbox.setTaskId(request.getSyncTaskId());
+        outbox.setTargetService(trimToDefault(request.getSourceService(), DEFAULT_SOURCE_SERVICE));
+        outbox.setOperation("DATA_SYNC_STANDALONE_EXECUTION_RECEIPT");
+        outbox.setStatus("RECEIPT_ONLY");
+        outbox.setSyncTaskId(request.getSyncTaskId());
+        outbox.setSyncExecutionId(request.getSyncExecutionId());
         return outbox;
     }
 
@@ -308,7 +349,11 @@ public class DataSyncWorkerExecutionReceiptService {
                                              DataSyncWorkerCommandOutbox outbox,
                                              DataSyncWorkerExecutionReceiptEventType eventType) {
         List<String> warnings = new ArrayList<>();
-        if (request.getCommandId() == null || request.getCommandId().isBlank()) {
+        if ((request.getCommandId() == null || request.getCommandId().isBlank()) && isStandaloneOutbox(outbox)) {
+            warnings.add("本次 execution receipt 来自普通 data-sync 任务，没有 Agent command/outbox；"
+                    + "task-management 已使用 standalone 关联键保存低敏执行投影");
+        }
+        if ((request.getCommandId() == null || request.getCommandId().isBlank()) && !isStandaloneOutbox(outbox)) {
             warnings.add("本次 execution receipt 未携带 commandId，已通过 syncTaskId/syncExecutionId 回查 outbox 关联上下文");
         }
         if (eventType == DataSyncWorkerExecutionReceiptEventType.FAILED) {
@@ -326,6 +371,12 @@ public class DataSyncWorkerExecutionReceiptService {
             warnings.add("errorSummary/warnings 已执行敏感片段脱敏和长度裁剪，API 响应不会返回正文");
         }
         return warnings;
+    }
+
+    private boolean isStandaloneOutbox(DataSyncWorkerCommandOutbox outbox) {
+        return outbox != null
+                && outbox.getCommandId() != null
+                && outbox.getCommandId().startsWith(STANDALONE_COMMAND_ID_PREFIX);
     }
 
     private List<String> buildQueryWarnings(long totalCount, int returnedCount, int effectiveLimit) {
