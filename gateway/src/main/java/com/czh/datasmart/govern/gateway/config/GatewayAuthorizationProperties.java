@@ -301,11 +301,20 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/sync/sync-tasks/*/group", "SYNC_TASK",
                 "data-sync 同步任务移组接口，只调整任务定义的 groupCode/groupName，不触发真实执行",
                 Map.of("POST", "UPDATE_GROUP")));
+        defaults.add(route("/api/sync/sync-execution-policies", "SYNC_OPERATION",
+                "data-sync 管理员执行策略列表与创建入口；用于维护全局、项目、连接器、数据源和任务级 channel、批大小、超时、重试、脏数据阈值等运行治理参数",
+                Map.of("GET", "VIEW", "POST", "CONFIGURE")));
+        defaults.add(route("/api/sync/sync-execution-policies/*", "SYNC_OPERATION",
+                "data-sync 管理员执行策略详情更新与禁用入口；策略变更会影响后续 execution，但不会改写历史策略快照",
+                Map.of("GET", "VIEW", "PUT", "CONFIGURE", "DELETE", "DELETE")));
         defaults.add(route("/api/sync/sync-tasks/*/executions/*/objects", "SYNC_EXECUTION",
                 "data-sync 对象级执行账本查询入口，用于查看 OBJECT_LIST 父 execution 内部每个对象的状态、尝试次数和低敏失败摘要",
                 Map.of("GET", "VIEW")));
         defaults.add(route("/api/sync/sync-tasks/*/executions/*/logs", "SYNC_EXECUTION",
                 "data-sync 运行日志查询入口，用于查看入队、认领、计划、通道、批次回执和完成状态等低敏执行证据",
+                Map.of("GET", "VIEW")));
+        defaults.add(route("/api/sync/sync-tasks/*/executions/*/policy-snapshot", "SYNC_EXECUTION",
+                "data-sync 执行策略快照查询入口，用于解释某次 execution 实际采用的分片、channel、批大小、超时、重试和脏数据阈值",
                 Map.of("GET", "VIEW")));
         defaults.add(route("/api/sync/sync-tasks/*/executions/*/objects/retry", "SYNC_EXECUTION",
                 "data-sync 失败对象选择性重试入口，会把 FAILED 对象重置为 PENDING 并重新排队父 execution，属于运维恢复动作",

@@ -190,46 +190,125 @@ public class SyncPartitionShardExecutionContractSupport {
      */
     public SyncPartitionShardExecutionContract buildAutoRangeContract(SyncPartitionShardExecutionContract base,
                                                                        DatasourcePartitionRangeProbeResponse probe) {
+        return buildAutoRangeContract(base, probe, null);
+    }
+
+    /**
+     * 根据 datasource-management 的 range-probe 结果和管理员执行策略生成可执行分片合同。
+     *
+     * <p>这里是“自动分片”真正生效的地方：普通用户不需要在任务向导里填写 shardCount。系统会先让
+     * datasource-management 对源表执行低敏 range-probe，拿到 splitPk 的 min/max/count；然后按照管理员策略中的
+     * targetRowsPerShard、minShardCount、maxShardCount 计算本次 execution 的分片数量。</p>
+     *
+     * <p>这样设计的好处是：同一个任务在 1 万行、100 万行、1 亿行数据下可以自动调整分片数量；管理员只需要维护
+     * “每片目标行数”和“上限/下限”，而不是让普通用户猜一个固定分片数。</p>
+     */
+    public SyncPartitionShardExecutionContract buildAutoRangeContract(SyncPartitionShardExecutionContract base,
+                                                                       DatasourcePartitionRangeProbeResponse probe,
+                                                                       SyncEffectiveExecutionPolicy policy) {
         List<String> issueCodes = new ArrayList<>(base == null ? List.of() : base.issueCodes());
         List<String> warnings = new ArrayList<>(base == null ? List.of() : base.warnings());
+        SyncEffectiveExecutionPolicy safePolicy = policy == null
+                ? SyncEffectiveExecutionPolicy.defaults(null, null, null)
+                : policy;
         if (base == null || !base.autoRangeProbeRequired()) {
             issueCodes.add("PARTITION_AUTO_RANGE_BASE_CONTRACT_REQUIRED");
             return contract(true, true, false, null, null, 0,
-                    DEFAULT_MAX_PARALLELISM, DEFAULT_TASK_GROUP_SIZE, DEFAULT_MAX_ATTEMPTS,
-                    false, DEFAULT_MAX_DIRTY_RECORD_COUNT, DEFAULT_MAX_DIRTY_RECORD_RATIO,
+                    safePolicy.effectiveChannel(1),
+                    safePolicy.effectiveTaskGroupSize(1),
+                    effectiveAttemptCount(safePolicy),
+                    false,
+                    safePolicy.effectiveMaxDirtyRecordCount(),
+                    safePolicy.effectiveMaxDirtyRecordRatio(),
                     List.of(), issueCodes, warnings);
         }
+        int adaptiveShardCount = safePolicy.adaptiveShardCount(probe == null ? null : probe.getRowCount(),
+                base.requestedShardCount());
         if (probe == null || !"RANGE_PROBED".equals(normalize(probe.getProbeStatus()))
                 || !Boolean.TRUE.equals(probe.getNumericRange())
                 || probe.getMinValue() == null || probe.getMaxValue() == null) {
             issueCodes.add("PARTITION_AUTO_RANGE_PROBE_UNAVAILABLE");
-            return contract(true, true, false, STRATEGY_AUTO_SPLIT_PK, base.partitionField(), base.requestedShardCount(),
-                    base.maxParallelism(), base.taskGroupSize(), base.maxAttemptCount(), true,
-                    base.maxDirtyRecordCount(), base.maxDirtyRecordRatio(), List.of(), issueCodes, warnings);
+            return contract(true, true, false, STRATEGY_AUTO_SPLIT_PK, base.partitionField(), adaptiveShardCount,
+                    safePolicy.effectiveChannel(adaptiveShardCount),
+                    safePolicy.effectiveTaskGroupSize(adaptiveShardCount),
+                    effectiveAttemptCount(safePolicy),
+                    true,
+                    safePolicy.effectiveMaxDirtyRecordCount(),
+                    safePolicy.effectiveMaxDirtyRecordRatio(),
+                    List.of(), issueCodes, warnings);
         }
         if (probe.getMaxValue() < probe.getMinValue()) {
             issueCodes.add("PARTITION_AUTO_RANGE_PROBE_INVALID_BOUNDARY");
-            return contract(true, true, false, STRATEGY_AUTO_SPLIT_PK, base.partitionField(), base.requestedShardCount(),
-                    base.maxParallelism(), base.taskGroupSize(), base.maxAttemptCount(), true,
-                    base.maxDirtyRecordCount(), base.maxDirtyRecordRatio(), List.of(), issueCodes, warnings);
+            return contract(true, true, false, STRATEGY_AUTO_SPLIT_PK, base.partitionField(), adaptiveShardCount,
+                    safePolicy.effectiveChannel(adaptiveShardCount),
+                    safePolicy.effectiveTaskGroupSize(adaptiveShardCount),
+                    effectiveAttemptCount(safePolicy),
+                    true,
+                    safePolicy.effectiveMaxDirtyRecordCount(),
+                    safePolicy.effectiveMaxDirtyRecordRatio(),
+                    List.of(), issueCodes, warnings);
         }
         if (probe.getWarnings() != null) {
             warnings.addAll(probe.getWarnings());
         }
         warnings.add("PARTITION_AUTO_SPLIT_PK_SHARDS_READY");
-        List<SyncPartitionShardExecutionItem> shards = autoRangeShards(base, probe.getMinValue(), probe.getMaxValue());
+        warnings.add("PARTITION_AUTO_SPLIT_PK_ADAPTIVE_SHARD_COUNT_APPLIED");
+        List<SyncPartitionShardExecutionItem> shards = autoRangeShards(base, probe.getMinValue(), probe.getMaxValue(),
+                adaptiveShardCount);
         return contract(true, true, !shards.isEmpty(), STRATEGY_ID_RANGE, base.partitionField(), shards.size(),
-                base.maxParallelism(), base.taskGroupSize(), base.maxAttemptCount(), false,
-                base.maxDirtyRecordCount(), base.maxDirtyRecordRatio(), shards, issueCodes, warnings);
+                safePolicy.effectiveChannel(shards.size()),
+                safePolicy.effectiveTaskGroupSize(shards.size()),
+                effectiveAttemptCount(safePolicy),
+                false,
+                safePolicy.effectiveMaxDirtyRecordCount(),
+                safePolicy.effectiveMaxDirtyRecordRatio(),
+                shards, issueCodes, warnings);
+    }
+
+    /**
+     * 将管理员执行策略覆盖到已经解析出的显式分片合同上。
+     *
+     * <p>显式 ID_RANGE 场景下，分片边界来自模板或后续失败分片重试入口，不能由策略服务重新生成；但 channel、
+     * TaskGroup、最大尝试次数和脏数据阈值属于运行治理参数，应该由统一执行策略接管。这样普通用户不需要理解
+     * DataX channel、TaskGroup 或 dirty threshold 的底层概念，管理员仍能在统一页面控制生产资源消耗。</p>
+     */
+    public SyncPartitionShardExecutionContract applyExecutionPolicy(SyncPartitionShardExecutionContract base,
+                                                                     SyncEffectiveExecutionPolicy policy) {
+        if (base == null || policy == null) {
+            return base;
+        }
+        int workUnitCount = base.shards() == null || base.shards().isEmpty()
+                ? Math.max(1, base.requestedShardCount())
+                : base.shards().size();
+        List<String> warnings = new ArrayList<>(base.warnings());
+        warnings.add("EXECUTION_POLICY_APPLIED");
+        return contract(
+                base.declared(),
+                base.parseable(),
+                base.executableByPartitionFanOut(),
+                base.partitionStrategy(),
+                base.partitionField(),
+                base.requestedShardCount(),
+                policy.effectiveChannel(workUnitCount),
+                policy.effectiveTaskGroupSize(workUnitCount),
+                effectiveAttemptCount(policy),
+                base.autoRangeProbeRequired(),
+                policy.effectiveMaxDirtyRecordCount(),
+                policy.effectiveMaxDirtyRecordRatio(),
+                base.shards(),
+                base.issueCodes(),
+                warnings
+        );
     }
 
     private List<SyncPartitionShardExecutionItem> autoRangeShards(SyncPartitionShardExecutionContract base,
                                                                   long minValue,
-                                                                  long maxValue) {
+                                                                  long maxValue,
+                                                                  int requestedShardCount) {
         BigInteger start = BigInteger.valueOf(minValue);
         BigInteger inclusiveEnd = BigInteger.valueOf(maxValue);
         BigInteger total = inclusiveEnd.subtract(start).add(BigInteger.ONE);
-        int requested = Math.max(1, Math.min(base.requestedShardCount(), MAX_SHARD_COUNT));
+        int requested = Math.max(1, Math.min(requestedShardCount, MAX_SHARD_COUNT));
         int shardCount = total.compareTo(BigInteger.valueOf(requested)) < 0 ? Math.max(1, total.intValue()) : requested;
         BigInteger shardSize = total.add(BigInteger.valueOf(shardCount - 1L)).divide(BigInteger.valueOf(shardCount));
         List<SyncPartitionShardExecutionItem> shards = new ArrayList<>();
@@ -255,6 +334,11 @@ public class SyncPartitionShardExecutionContractSupport {
             lower = upperExclusive;
         }
         return shards;
+    }
+
+    private int effectiveAttemptCount(SyncEffectiveExecutionPolicy policy) {
+        return clamp(policy == null ? null : policy.effectiveMaxRetryCount() + 1,
+                DEFAULT_MAX_ATTEMPTS, 1, MAX_ATTEMPTS);
     }
 
     private SyncPartitionShardExecutionItem parseRange(int ordinal,

@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.datasync.service.support;
 
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncExecutionPolicy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -144,9 +145,53 @@ class SyncPartitionShardExecutionContractSupportTest {
         assertThat(executable.executableByPartitionFanOut()).isTrue();
         assertThat(executable.autoRangeProbeRequired()).isFalse();
         assertThat(executable.partitionStrategy()).isEqualTo("ID_RANGE");
-        assertThat(executable.shardCount()).isEqualTo(4);
+        assertThat(executable.shardCount())
+                .as("旧模板中的 shardCount 只保留兼容解析；10 行小表按默认每片目标行数自动收敛为 1 片")
+                .isEqualTo(1);
         assertThat(executable.shards())
                 .extracting(SyncPartitionShardExecutionItem::shardOrPartition)
-                .containsExactly("splitpk-range-0000", "splitpk-range-0001", "splitpk-range-0002", "splitpk-range-0003");
+                .containsExactly("splitpk-range-0000");
+    }
+
+    @Test
+    void autoSplitPkShouldUseRangeProbeRowCountAndAdministratorPolicyInsteadOfUserShardCount() {
+        SyncTemplate template = new SyncTemplate();
+        template.setPartitionConfig("""
+                {
+                  "strategy": "AUTO_SPLIT_PK",
+                  "splitPk": "id",
+                  "shardCount": 32
+                }
+                """);
+        SyncPartitionShardExecutionContract probeRequired = support.parse(template);
+
+        com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeResponse probe =
+                new com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeResponse();
+        probe.setProbeStatus("RANGE_PROBED");
+        probe.setNumericRange(true);
+        probe.setMinValue(1L);
+        probe.setMaxValue(1000000L);
+        probe.setRowCount(1000000L);
+
+        SyncExecutionPolicy administratorOverride = new SyncExecutionPolicy();
+        administratorOverride.setScopeType("PROJECT");
+        administratorOverride.setPolicyCode("PROJECT_AUTO_SHARD");
+        administratorOverride.setTargetRowsPerShard(200000L);
+        administratorOverride.setMinShardCount(1);
+        administratorOverride.setMaxShardCount(64);
+        administratorOverride.setMaxChannel(3);
+        SyncEffectiveExecutionPolicy effectivePolicy =
+                SyncEffectiveExecutionPolicy.defaults(10L, 101L, 1001L).merge(administratorOverride);
+
+        SyncPartitionShardExecutionContract executable =
+                support.buildAutoRangeContract(probeRequired, probe, effectivePolicy);
+
+        assertThat(executable.shardCount())
+                .as("一百万行按每片二十万行自动计算为五片，而不是继续采用旧模板中的固定 32 片")
+                .isEqualTo(5);
+        assertThat(executable.maxParallelism())
+                .as("channel 是并发上限，不等于分片数")
+                .isEqualTo(3);
+        assertThat(executable.warnings()).contains("PARTITION_AUTO_SPLIT_PK_ADAPTIVE_SHARD_COUNT_APPLIED");
     }
 }

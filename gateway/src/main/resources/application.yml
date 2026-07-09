@@ -711,6 +711,23 @@ datasmart:
           method-actions:
             POST: UPDATE_GROUP
 
+        - path-pattern: /api/sync/sync-execution-policies
+          resource-type: SYNC_OPERATION
+          default-action: VIEW
+          description: data-sync 管理员执行策略列表与创建入口；用于维护全局、项目、连接器、数据源和任务级 channel、批大小、超时、重试、脏数据阈值等运行治理参数。
+          method-actions:
+            GET: VIEW
+            POST: CONFIGURE
+
+        - path-pattern: /api/sync/sync-execution-policies/*
+          resource-type: SYNC_OPERATION
+          default-action: VIEW
+          description: data-sync 管理员执行策略详情更新与禁用入口；策略变更只影响后续 execution，不改写历史策略快照。
+          method-actions:
+            GET: VIEW
+            PUT: CONFIGURE
+            DELETE: DELETE
+
         - path-pattern: /api/sync/sync-tasks/*/executions/*/objects
           resource-type: SYNC_EXECUTION
           default-action: VIEW
@@ -722,6 +739,13 @@ datasmart:
           resource-type: SYNC_EXECUTION
           default-action: VIEW
           description: data-sync 运行日志查询入口，用于查看任务入队、执行器认领、计划生成、通道创建、批次回执和最终状态等低敏执行证据。
+          method-actions:
+            GET: VIEW
+
+        - path-pattern: /api/sync/sync-tasks/*/executions/*/policy-snapshot
+          resource-type: SYNC_EXECUTION
+          default-action: VIEW
+          description: data-sync 执行策略快照查询入口，用于解释某次 execution 实际采用的分片、channel、批大小、超时、重试和脏数据阈值。
           method-actions:
             GET: VIEW
 

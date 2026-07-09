@@ -179,12 +179,12 @@ public class SyncWorkerExecutionPlanSupport {
         if (!hasText(template.getFieldMappingConfig())) {
             issueCodes.add("FIELD_MAPPING_NOT_DECLARED");
         }
-        if (!hasText(template.getRetryPolicy())) {
-            issueCodes.add("RETRY_POLICY_NOT_DECLARED");
-        }
-        if (!hasText(template.getTimeoutPolicy())) {
-            issueCodes.add("TIMEOUT_POLICY_NOT_DECLARED");
-        }
+        /*
+         * retryPolicy/timeoutPolicy 已从普通任务配置中收敛到“管理员执行策略”。
+         * 因此这里不能再因为模板没有显式填写 retry/timeout 就阻断 worker plan，否则用户会在预检查阶段看到
+         * “自己无法配置、但系统又要求配置”的矛盾提示。真正生效的重试、超时、批大小、channel 会在执行前由
+         * SyncExecutionPolicyService 解析，并保存到 execution policy snapshot 供运行详情排查。
+         */
         return new PlanFacts(issueCodes, workerActions);
     }
 

@@ -20,6 +20,7 @@ import com.czh.datasmart.govern.datasync.integration.datasource.runonce.Datasour
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceRequest;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
@@ -64,6 +65,19 @@ public class SyncBatchRunOnceDispatchService {
     private final SyncExecutionLifecycleSupport lifecycleSupport;
     private final DataSyncTaskManagementReceiptPublisher receiptPublisher;
     private final SyncExecutionLogSupport executionLogSupport;
+    private SyncExecutionPolicyService executionPolicyService;
+
+    /**
+     * 可选注入执行策略服务。
+     *
+     * <p>data-sync 的 run-once 派发服务早于执行策略模块存在，很多单元测试直接 new 该服务并传入 mock 依赖。
+     * 因此这里用 setter 可选注入：生产环境会解析管理员策略；测试或降级场景如果没有策略服务，则回退到
+     * {@link SyncEffectiveExecutionPolicy#defaults(Long, Long, Long)}，保证执行链路仍然可用。</p>
+     */
+    @Autowired(required = false)
+    public void setExecutionPolicyService(SyncExecutionPolicyService executionPolicyService) {
+        this.executionPolicyService = executionPolicyService;
+    }
 
     /**
      * 生成 bridge plan、调用 datasource-management run-once，并把结果回写到 data-sync 生命周期。
@@ -243,9 +257,12 @@ public class SyncBatchRunOnceDispatchService {
                     withIssue(bridgePlan.getIssueCodes(), "CHECKPOINT_HANDOFF_NOT_IMPLEMENTED"));
         }
 
+        SyncEffectiveExecutionPolicy effectivePolicy = resolveExecutionPolicy(bridgePlan, task, safeActorContext);
+        savePolicySnapshot(task, execution, effectivePolicy, shardOrPartition, "RUN_ONCE_CHANNEL_PREPARED");
+
         DatasourceRunOnceRequest request = buildRequest(bridgePlan, execution, safeActorContext,
                 shardOrPartition, additionalFilterConditions,
-                maxDirtyRecordCountOverride, maxDirtyRecordRatioOverride);
+                maxDirtyRecordCountOverride, maxDirtyRecordRatioOverride, effectivePolicy);
         executionLogSupport.recordExecutionEvent(task, execution, safeActorContext,
                 "CHANNEL",
                 "INFO",
@@ -377,10 +394,11 @@ public class SyncBatchRunOnceDispatchService {
                                                   String shardOrPartition,
                                                   List<SyncFilterExecutionCondition> additionalFilterConditions,
                                                   Long maxDirtyRecordCountOverride,
-                                                  Double maxDirtyRecordRatioOverride) {
+                                                  Double maxDirtyRecordRatioOverride,
+                                                  SyncEffectiveExecutionPolicy effectivePolicy) {
         DatasourceRunOnceRequest request = new DatasourceRunOnceRequest();
         request.setExecutionPlan(executionPlan(bridgePlan, execution, shardOrPartition, additionalFilterConditions,
-                maxDirtyRecordCountOverride, maxDirtyRecordRatioOverride));
+                maxDirtyRecordCountOverride, maxDirtyRecordRatioOverride, effectivePolicy));
         request.setSelectedColumns(bridgePlan.getFieldMappingContract().getSelectedColumns());
         request.setWriteColumns(bridgePlan.getFieldMappingContract().getWriteColumns());
         request.setPrimaryKeyColumns(bridgePlan.getFieldMappingContract().getPrimaryKeyColumns());
@@ -400,17 +418,18 @@ public class SyncBatchRunOnceDispatchService {
                                                                 String shardOrPartition,
                                                                 List<SyncFilterExecutionCondition> additionalFilterConditions,
                                                                 Long maxDirtyRecordCountOverride,
-                                                                Double maxDirtyRecordRatioOverride) {
+                                                                Double maxDirtyRecordRatioOverride,
+                                                                SyncEffectiveExecutionPolicy effectivePolicy) {
         DatasourceRunOnceRequest.ExecutionPlan plan = new DatasourceRunOnceRequest.ExecutionPlan();
         plan.setPlanVersion(PLAN_VERSION);
         plan.setExecutionBoundary(EXECUTION_BOUNDARY);
         plan.setTaskId(bridgePlan.getSyncTaskId());
         plan.setExecutionId(bridgePlan.getExecutionId());
-        plan.setReadPlan(readPlan(bridgePlan, shardOrPartition, additionalFilterConditions));
-        plan.setWritePlan(writePlan(bridgePlan));
-        plan.setCheckpointPlan(checkpointPlan(bridgePlan, shardOrPartition));
+        plan.setReadPlan(readPlan(bridgePlan, shardOrPartition, additionalFilterConditions, effectivePolicy));
+        plan.setWritePlan(writePlan(bridgePlan, effectivePolicy));
+        plan.setCheckpointPlan(checkpointPlan(bridgePlan, shardOrPartition, effectivePolicy));
         plan.setRuntimeControlPlan(runtimeControlPlan(bridgePlan, execution, shardOrPartition,
-                maxDirtyRecordCountOverride, maxDirtyRecordRatioOverride));
+                maxDirtyRecordCountOverride, maxDirtyRecordRatioOverride, effectivePolicy));
         plan.setWarnings(bridgePlan.getWarnings());
         plan.setGeneratedAt(LocalDateTime.now());
         return plan;
@@ -418,7 +437,8 @@ public class SyncBatchRunOnceDispatchService {
 
     private DatasourceRunOnceRequest.ReadPlan readPlan(SyncBatchRunnerBridgePlan bridgePlan,
                                                        String shardOrPartition,
-                                                       List<SyncFilterExecutionCondition> additionalFilterConditions) {
+                                                       List<SyncFilterExecutionCondition> additionalFilterConditions,
+                                                       SyncEffectiveExecutionPolicy effectivePolicy) {
         DatasourceRunOnceRequest.ReadPlan readPlan = new DatasourceRunOnceRequest.ReadPlan();
         readPlan.setConnectorType(bridgePlan.getSourceConnectorType());
         readPlan.setDatasourceId(bridgePlan.getSourceDatasourceId());
@@ -432,7 +452,7 @@ public class SyncBatchRunOnceDispatchService {
         readPlan.setCustomSqlFingerprint(bridgePlan.getCustomSqlFingerprint());
         readPlan.setPartitionConfigured(hasText(shardOrPartition)
                 || additionalFilterConditions != null && !additionalFilterConditions.isEmpty());
-        readPlan.setRecommendedFetchSize(properties.getDefaultFetchSize());
+        readPlan.setRecommendedFetchSize(effectivePolicy.effectiveReadBatchSize());
         readPlan.setRequiredWorkerCapabilities(readCapabilities(bridgePlan, shardOrPartition));
         return readPlan;
     }
@@ -465,7 +485,8 @@ public class SyncBatchRunOnceDispatchService {
                 .toList();
     }
 
-    private DatasourceRunOnceRequest.WritePlan writePlan(SyncBatchRunnerBridgePlan bridgePlan) {
+    private DatasourceRunOnceRequest.WritePlan writePlan(SyncBatchRunnerBridgePlan bridgePlan,
+                                                        SyncEffectiveExecutionPolicy effectivePolicy) {
         DatasourceRunOnceRequest.WritePlan writePlan = new DatasourceRunOnceRequest.WritePlan();
         writePlan.setConnectorType(bridgePlan.getTargetConnectorType());
         writePlan.setDatasourceId(bridgePlan.getTargetDatasourceId());
@@ -474,20 +495,21 @@ public class SyncBatchRunOnceDispatchService {
         writePlan.setConflictPolicy(conflictPolicy(bridgePlan.getWriteStrategy()));
         writePlan.setPrimaryKeyRequired(!bridgePlan.getFieldMappingContract().getPrimaryKeyColumns().isEmpty());
         writePlan.setPrimaryKeyField(firstOrNull(bridgePlan.getFieldMappingContract().getPrimaryKeyColumns()));
-        writePlan.setRecommendedWriteBatchSize(properties.getDefaultWriteBatchSize());
-        writePlan.setRecommendedCommitIntervalRecords(properties.getDefaultCommitIntervalRecords());
+        writePlan.setRecommendedWriteBatchSize(effectivePolicy.effectiveWriteBatchSize());
+        writePlan.setRecommendedCommitIntervalRecords(effectivePolicy.effectiveCommitIntervalRecords());
         writePlan.setRequiredWorkerCapabilities(writeCapabilities(bridgePlan));
         return writePlan;
     }
 
     private DatasourceRunOnceRequest.CheckpointPlan checkpointPlan(SyncBatchRunnerBridgePlan bridgePlan,
-                                                                  String shardOrPartition) {
+                                                                  String shardOrPartition,
+                                                                  SyncEffectiveExecutionPolicy effectivePolicy) {
         DatasourceRunOnceRequest.CheckpointPlan checkpointPlan = new DatasourceRunOnceRequest.CheckpointPlan();
         checkpointPlan.setCheckpointType(bridgePlan.getCheckpointType());
         checkpointPlan.setInitialCheckpointPolicy("NO_CHECKPOINT_REQUIRED_FOR_FULL_RUN_ONCE");
         checkpointPlan.setResumeRequired(false);
         checkpointPlan.setShardAware(hasText(shardOrPartition));
-        checkpointPlan.setPersistEveryRecords(properties.getDefaultFetchSize());
+        checkpointPlan.setPersistEveryRecords(effectivePolicy.effectiveReadBatchSize());
         checkpointPlan.setCheckpointValueVisibility("WORKER_INTERNAL_AND_SYNC_CHECKPOINT_TABLE_ONLY");
         return checkpointPlan;
     }
@@ -496,15 +518,18 @@ public class SyncBatchRunOnceDispatchService {
                                                                           SyncExecution execution,
                                                                           String shardOrPartition,
                                                                           Long maxDirtyRecordCountOverride,
-                                                                          Double maxDirtyRecordRatioOverride) {
+                                                                          Double maxDirtyRecordRatioOverride,
+                                                                          SyncEffectiveExecutionPolicy effectivePolicy) {
         DatasourceRunOnceRequest.RuntimeControlPlan runtimeControlPlan = new DatasourceRunOnceRequest.RuntimeControlPlan();
         runtimeControlPlan.setExecutorId(execution.getExecutorId());
         runtimeControlPlan.setLeaseExpireAt(execution.getLeaseExpireTime());
         runtimeControlPlan.setHeartbeatRequired(true);
-        runtimeControlPlan.setTimeoutSeconds(properties.getDefaultTimeoutSeconds());
-        runtimeControlPlan.setMaxRetryCount(properties.getDefaultMaxRetryCount());
-        runtimeControlPlan.setMaxDirtyRecordCount(chooseMaxDirtyRecordCount(maxDirtyRecordCountOverride));
-        runtimeControlPlan.setMaxDirtyRecordRatio(chooseMaxDirtyRecordRatio(maxDirtyRecordRatioOverride));
+        runtimeControlPlan.setTimeoutSeconds(effectivePolicy.effectiveTimeoutSeconds());
+        runtimeControlPlan.setMaxRetryCount(effectivePolicy.effectiveMaxRetryCount());
+        runtimeControlPlan.setMaxDirtyRecordCount(chooseMaxDirtyRecordCount(maxDirtyRecordCountOverride,
+                effectivePolicy));
+        runtimeControlPlan.setMaxDirtyRecordRatio(chooseMaxDirtyRecordRatio(maxDirtyRecordRatioOverride,
+                effectivePolicy));
         String idempotencyScope = "task:" + bridgePlan.getSyncTaskId() + ":execution:" + bridgePlan.getExecutionId();
         if (hasText(shardOrPartition)) {
             idempotencyScope = idempotencyScope + ":shard:" + shardOrPartition;
@@ -514,7 +539,7 @@ public class SyncBatchRunOnceDispatchService {
         return runtimeControlPlan;
     }
 
-    private Long chooseMaxDirtyRecordCount(Long override) {
+    private Long chooseMaxDirtyRecordCount(Long override, SyncEffectiveExecutionPolicy effectivePolicy) {
         /*
          * 分片合同传入的阈值已经在 SyncPartitionShardExecutionContractSupport 中做过范围裁剪。
          * 这里仍然做一次非负兜底，避免未来新增调用方绕过合同解析后把负值传入执行面。
@@ -522,14 +547,40 @@ public class SyncBatchRunOnceDispatchService {
         if (override != null) {
             return Math.max(0L, override);
         }
-        return properties.getDefaultMaxDirtyRecordCount();
+        return effectivePolicy.effectiveMaxDirtyRecordCount();
     }
 
-    private Double chooseMaxDirtyRecordRatio(Double override) {
+    private Double chooseMaxDirtyRecordRatio(Double override, SyncEffectiveExecutionPolicy effectivePolicy) {
         if (override != null) {
             return Math.max(0D, override);
         }
-        return properties.getDefaultMaxDirtyRecordRatio();
+        return effectivePolicy.effectiveMaxDirtyRecordRatio();
+    }
+
+    private SyncEffectiveExecutionPolicy resolveExecutionPolicy(SyncBatchRunnerBridgePlan bridgePlan,
+                                                                SyncTask task,
+                                                                SyncActorContext actorContext) {
+        if (executionPolicyService == null) {
+            return SyncEffectiveExecutionPolicy.defaults(
+                    task == null ? null : task.getTenantId(),
+                    task == null ? null : task.getProjectId(),
+                    task == null ? null : task.getId());
+        }
+        return executionPolicyService.resolveEffectivePolicy(bridgePlan, task, actorContext);
+    }
+
+    private void savePolicySnapshot(SyncTask task,
+                                    SyncExecution execution,
+                                    SyncEffectiveExecutionPolicy effectivePolicy,
+                                    String shardOrPartition,
+                                    String triggerStage) {
+        if (executionPolicyService == null) {
+            return;
+        }
+        executionPolicyService.saveSnapshot(task, execution, effectivePolicy,
+                hasText(shardOrPartition) ? 1 : null,
+                effectivePolicy.effectiveChannel(1),
+                triggerStage);
     }
 
     /**

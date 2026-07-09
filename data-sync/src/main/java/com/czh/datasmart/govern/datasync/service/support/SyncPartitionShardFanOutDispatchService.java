@@ -21,6 +21,7 @@ import com.czh.datasmart.govern.datasync.integration.datasource.partition.Dataso
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
 import com.czh.datasmart.govern.datasync.support.SyncObjectExecutionState;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -81,6 +82,19 @@ public class SyncPartitionShardFanOutDispatchService {
     private final SyncExecutionLifecycleSupport lifecycleSupport;
     private final DataSyncTaskManagementReceiptPublisher receiptPublisher;
     private final SyncExecutionLogSupport executionLogSupport;
+    private SyncExecutionPolicyService executionPolicyService;
+
+    /**
+     * 可选注入执行策略服务。
+     *
+     * <p>这里不把 {@link SyncExecutionPolicyService} 放进构造器，是为了兼容已有单元测试和早期最小闭环：
+     * 没有策略表或测试上下文未加载策略服务时，分片 fan-out 仍然可以使用内置默认策略运行；生产环境中 Spring 会自动注入该服务，
+     * 从而启用“任务级 > 项目级 > 数据源/连接器级 > 系统默认”的正式策略解析。</p>
+     */
+    @Autowired(required = false)
+    public void setExecutionPolicyService(SyncExecutionPolicyService executionPolicyService) {
+        this.executionPolicyService = executionPolicyService;
+    }
 
     /**
      * 判断当前父 execution 是否必须进入单表分片 fan-out。
@@ -269,7 +283,10 @@ public class SyncPartitionShardFanOutDispatchService {
                                                                          SyncActorContext actorContext,
                                                                          SyncOfflineRunnerJobContract parentContract) {
         SyncPartitionShardExecutionContract parsed = partitionContractSupport.parse(template);
+        SyncEffectiveExecutionPolicy effectivePolicy = resolveExecutionPolicy(task, template, actorContext);
+        parsed = partitionContractSupport.applyExecutionPolicy(parsed, effectivePolicy);
         if (!parsed.autoRangeProbeRequired()) {
+            savePolicySnapshot(task, execution, effectivePolicy, parsed, "PARTITION_SHARD_DECLARED");
             return parsed;
         }
         try {
@@ -279,9 +296,12 @@ public class SyncPartitionShardFanOutDispatchService {
             request.setObjectLocator(objectLocator(template.getSourceSchemaName(), template.getSourceObjectName()));
             request.setSplitPk(parsed.partitionField());
             DatasourcePartitionRangeProbeResponse response = rangeProbeClient.probeRange(request, actorContext);
-            return partitionContractSupport.buildAutoRangeContract(parsed, response);
+            SyncPartitionShardExecutionContract resolved = partitionContractSupport.buildAutoRangeContract(
+                    parsed, response, effectivePolicy);
+            savePolicySnapshot(task, execution, effectivePolicy, resolved, "PARTITION_SHARD_AUTO_SPLIT_PK");
+            return resolved;
         } catch (RuntimeException exception) {
-            return new SyncPartitionShardExecutionContract(
+            SyncPartitionShardExecutionContract blocked = new SyncPartitionShardExecutionContract(
                     true,
                     true,
                     false,
@@ -300,7 +320,38 @@ public class SyncPartitionShardFanOutDispatchService {
                             "PARTITION_AUTO_RANGE_PROBE_FAILED"),
                     SyncPartitionShardExecutionContract.PAYLOAD_POLICY
             );
+            savePolicySnapshot(task, execution, effectivePolicy, blocked, "PARTITION_SHARD_AUTO_SPLIT_PK_FAILED");
+            return blocked;
         }
+    }
+
+    private SyncEffectiveExecutionPolicy resolveExecutionPolicy(SyncTask task,
+                                                                SyncTemplate template,
+                                                                SyncActorContext actorContext) {
+        if (executionPolicyService == null) {
+            return SyncEffectiveExecutionPolicy.defaults(
+                    task == null ? null : task.getTenantId(),
+                    task == null ? null : task.getProjectId(),
+                    task == null ? null : task.getId());
+        }
+        return executionPolicyService.resolveEffectivePolicy(task, template, actorContext);
+    }
+
+    private void savePolicySnapshot(SyncTask task,
+                                    SyncExecution execution,
+                                    SyncEffectiveExecutionPolicy policy,
+                                    SyncPartitionShardExecutionContract contract,
+                                    String triggerStage) {
+        if (executionPolicyService == null || contract == null) {
+            return;
+        }
+        Integer resolvedShardCount = contract.shards() == null || contract.shards().isEmpty()
+                ? contract.requestedShardCount()
+                : contract.shards().size();
+        executionPolicyService.saveSnapshot(task, execution, policy,
+                resolvedShardCount,
+                contract.maxParallelism(),
+                triggerStage);
     }
 
     private String objectLocator(String schemaName, String objectName) {
