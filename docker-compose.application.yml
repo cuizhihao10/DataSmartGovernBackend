@@ -89,6 +89,47 @@ services:
       - permission-admin
       - python-ai-runtime
 
+  frontend:
+    restart: unless-stopped
+    image: datasmart/frontend:${DATASMART_IMAGE_TAG:-local}
+    container_name: datasmart-frontend
+    build:
+      # 前端已经拆成独立仓库，因此这里使用后端仓库的兄弟目录作为构建上下文。
+      # 这让本地全平台 Compose 可以一次性拉起前后端，同时仍然保留“前端仓库独立提交、独立演进”的边界。
+      # 如果在 CI 中只 checkout 后端仓库，需要额外 checkout DataSmartGovernFrontend 到同级目录，或改用已发布的前端镜像。
+      context: ../DataSmartGovernFrontend
+      dockerfile: Dockerfile
+      args:
+        # Vite 会在构建期固化 VITE_* 变量，因此 Compose 通过 build args 明确传入本地联调所需配置。
+        # `/api` 由前端容器内的 Nginx 代理到 gateway:8080，浏览器不需要知道容器网络里的服务名。
+        VITE_API_BASE_URL: /api
+        # 全平台 Compose 默认走真实 gateway/Keycloak 链路，关闭 mock fallback，避免后端异常被前端 mock 数据掩盖。
+        VITE_ENABLE_MOCK_FALLBACK: ${DATASMART_FRONTEND_ENABLE_MOCK_FALLBACK:-false}
+        VITE_APP_TITLE: ${DATASMART_FRONTEND_APP_TITLE:-DataSmart Govern}
+        VITE_AUTH_MODE: ${DATASMART_FRONTEND_AUTH_MODE:-oidc}
+        VITE_OIDC_AUTHORITY: ${DATASMART_FRONTEND_OIDC_AUTHORITY:-http://localhost:18080/realms/datasmart}
+        VITE_OIDC_CLIENT_ID: ${DATASMART_FRONTEND_OIDC_CLIENT_ID:-datasmart-gateway}
+        VITE_OIDC_SCOPE: ${DATASMART_FRONTEND_OIDC_SCOPE:-openid profile email}
+        VITE_OIDC_REDIRECT_URI: ${DATASMART_FRONTEND_OIDC_REDIRECT_URI:-http://localhost:5173/auth/callback}
+        VITE_OIDC_POST_LOGOUT_REDIRECT_URI: ${DATASMART_FRONTEND_OIDC_POST_LOGOUT_REDIRECT_URI:-http://localhost:5173/login}
+    ports:
+      # 对外仍使用 5173，是为了兼容当前 Keycloak client redirect URI 和用户已有访问习惯。
+      # 容器内部是 Nginx 80 端口，不再运行 Vite dev server。
+      - "5173:80"
+    networks:
+      - datasmart-network
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      # Nginx 运行时需要写临时缓存、PID/socket 与临时文件；把这些目录挂成 tmpfs 后，
+      # 既能保持根文件系统只读，也不会把运行态文件落到镜像层或宿主机。
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    depends_on:
+      - gateway
+
   permission-admin:
     <<: *java-common
     image: datasmart/permission-admin:${DATASMART_IMAGE_TAG:-local}
