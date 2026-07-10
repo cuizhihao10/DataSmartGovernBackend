@@ -123,6 +123,23 @@ class DatasourceProjectScopeSupportTest {
     }
 
     @Test
+    void resolveVisibilityShouldEnforceProjectMembershipAndSelfScopeTogether() {
+        DatasourceProjectVisibility visibility = support.resolveVisibility(
+                101L,
+                null,
+                "SELF",
+                "101",
+                "101:READER"
+        );
+
+        assertTrue(visibility.projectScopeEnforced());
+        assertTrue(visibility.selfOnly());
+        assertEquals("SELF", visibility.scopeLevel());
+        assertEquals(List.of(101L), visibility.authorizedProjectIds());
+        assertEquals("READER", visibility.projectRole(101L).orElseThrow());
+    }
+
+    @Test
     void resolveVisibilityShouldNotEnforceProjectFilterForTenantScope() {
         DatasourceProjectVisibility visibility = support.resolveVisibility(
                 null,

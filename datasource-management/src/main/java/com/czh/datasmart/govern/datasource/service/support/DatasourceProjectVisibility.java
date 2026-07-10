@@ -32,7 +32,23 @@ public record DatasourceProjectVisibility(Long requestedProjectId,
                                           Long requestedWorkspaceId,
                                           List<Long> authorizedProjectIds,
                                           List<PlatformAuthorizedProjectRole> authorizedProjectRoles,
-                                          boolean projectScopeEnforced) {
+                                          boolean projectScopeEnforced,
+                                          boolean selfOnly,
+                                          String scopeLevel) {
+
+    public DatasourceProjectVisibility(Long requestedProjectId,
+                                       Long requestedWorkspaceId,
+                                       List<Long> authorizedProjectIds,
+                                       List<PlatformAuthorizedProjectRole> authorizedProjectRoles,
+                                       boolean projectScopeEnforced) {
+        this(requestedProjectId, requestedWorkspaceId, authorizedProjectIds, authorizedProjectRoles,
+                projectScopeEnforced, false, projectScopeEnforced ? "PROJECT" : null);
+    }
+
+    public DatasourceProjectVisibility {
+        authorizedProjectIds = authorizedProjectIds == null ? List.of() : List.copyOf(authorizedProjectIds);
+        authorizedProjectRoles = authorizedProjectRoles == null ? List.of() : List.copyOf(authorizedProjectRoles);
+    }
 
     /**
      * 查询某个项目在当前请求中的项目内角色。

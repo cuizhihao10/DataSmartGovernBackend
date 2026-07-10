@@ -165,8 +165,8 @@ public final class PlatformAuthorizedProjectHeaderSupport {
         String normalized = projectRole.trim().toUpperCase();
         return switch (normalized) {
             case "OWNER" -> "OWNER";
-            case "MANAGER", "MAINTAINER", "MEMBER" -> "MANAGER";
-            case "READER", "VIEWER" -> "READER";
+            case "MANAGER", "MAINTAINER" -> "MANAGER";
+            case "READER", "VIEWER", "MEMBER" -> "READER";
             case "SERVICE", "SERVICE_ACCOUNT" -> "SERVICE";
             default -> "READER";
         };

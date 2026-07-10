@@ -228,7 +228,7 @@ public class DataSourceManagementController {
                 effectiveProjectId, null, dataScopeLevel, authorizedProjectIds, authorizedProjectRoles);
         LambdaQueryWrapper<DataSourceConfig> wrapper = new LambdaQueryWrapper<>();
         wrapper.ne(DataSourceConfig::getStatus, DataSourceStatus.DELETED);
-        applyDatasourceScope(wrapper, effectiveTenantId, visibility);
+        applyDatasourceScope(wrapper, effectiveTenantId, visibility, actorContext);
         if (hasText(type)) {
             wrapper.eq(DataSourceConfig::getType, type.toUpperCase());
         }
@@ -271,14 +271,18 @@ public class DataSourceManagementController {
             @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
             @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
+        DatasourceAuthorizationActorContext actorContext = resolveActorContext(actorId, actorRole, actorType);
         DataSourceConfig config = getRequiredVisibleDataSource(
                 id,
                 dataScopeLevel,
                 authorizedProjectIds,
                 authorizedProjectRoles,
-                resolveActorContext(actorId, actorRole, actorType),
+                actorContext,
                 DataSourceAuthorizationAction.VIEW);
-        return ResponseEntity.ok(ApiResponse.success(dataSourceCredentialCipherSupport.sanitizeForApi(config)));
+        DatasourceProjectVisibility visibility = datasourceProjectScopeSupport.resolveVisibility(
+                null, null, dataScopeLevel, authorizedProjectIds, authorizedProjectRoles);
+        return ResponseEntity.ok(ApiResponse.success(
+                sanitizeForApiWithEffectiveActions(config, visibility, actorContext)));
     }
 
     /**
@@ -580,9 +584,75 @@ public class DataSourceManagementController {
      */
     private void applyDatasourceScope(LambdaQueryWrapper<DataSourceConfig> wrapper,
                                       Long tenantId,
-                                      DatasourceProjectVisibility visibility) {
+                                      DatasourceProjectVisibility visibility,
+                                      DatasourceAuthorizationActorContext actorContext) {
         wrapper.eq(tenantId != null, DataSourceConfig::getTenantId, tenantId);
         applyProjectVisibilityOnly(wrapper, visibility);
+        applyDatasourceInstanceVisibility(wrapper, tenantId, visibility, actorContext);
+    }
+
+    /**
+     * Apply datasource ownership and instance ACL filtering for SELF-scoped actors.
+     *
+     * <p>Project membership only establishes the isolation boundary. It must not make every personal connection in
+     * the project visible to every member. A SELF-scoped actor can see a datasource only when the actor owns it or
+     * receives an explicit VIEW/USE/MANAGE datasource authorization. Project OWNER/MANAGER roles are the deliberate
+     * administrative exception and can inspect all datasource records in the managed project.</p>
+     */
+    private void applyDatasourceInstanceVisibility(LambdaQueryWrapper<DataSourceConfig> wrapper,
+                                                   Long tenantId,
+                                                   DatasourceProjectVisibility visibility,
+                                                   DatasourceAuthorizationActorContext actorContext) {
+        if (visibility == null || !visibility.selfOnly()) {
+            return;
+        }
+        Long actorId = parseActorId(actorContext == null ? null : actorContext.actorId());
+        List<Long> authorizedDatasourceIds = findVisibleDatasourceIds(tenantId, visibility, actorContext);
+        List<Long> manageableProjectIds = visibility.authorizedProjectRoles().stream()
+                .filter(role -> role != null && role.projectId() != null)
+                .filter(role -> "OWNER".equalsIgnoreCase(role.projectRole())
+                        || "MANAGER".equalsIgnoreCase(role.projectRole()))
+                .map(role -> role.projectId())
+                .distinct()
+                .toList();
+        if (actorId == null && authorizedDatasourceIds.isEmpty() && manageableProjectIds.isEmpty()) {
+            wrapper.apply("1 = 0");
+            return;
+        }
+        wrapper.and(visible -> {
+            boolean hasCondition = false;
+            if (!manageableProjectIds.isEmpty()) {
+                visible.in(DataSourceConfig::getProjectId, manageableProjectIds);
+                hasCondition = true;
+            }
+            if (actorId != null) {
+                if (hasCondition) {
+                    visible.or();
+                }
+                visible.eq(DataSourceConfig::getOwnerId, actorId);
+                hasCondition = true;
+            }
+            if (!authorizedDatasourceIds.isEmpty()) {
+                if (hasCondition) {
+                    visible.or();
+                }
+                visible.in(DataSourceConfig::getId, authorizedDatasourceIds);
+            }
+        });
+    }
+
+    private List<Long> findVisibleDatasourceIds(Long tenantId,
+                                                DatasourceProjectVisibility visibility,
+                                                DatasourceAuthorizationActorContext actorContext) {
+        if (visibility.requestedProjectId() != null) {
+            return dataSourceAuthorizationService.findAuthorizedDatasourceIds(
+                    tenantId, visibility.requestedProjectId(), actorContext, DataSourceAuthorizationAction.VIEW);
+        }
+        return visibility.authorizedProjectIds().stream()
+                .flatMap(projectId -> dataSourceAuthorizationService.findAuthorizedDatasourceIds(
+                        tenantId, projectId, actorContext, DataSourceAuthorizationAction.VIEW).stream())
+                .distinct()
+                .toList();
     }
 
     /**
@@ -640,26 +710,18 @@ public class DataSourceManagementController {
         }
         DatasourceProjectVisibility visibility = datasourceProjectScopeSupport.resolveVisibility(
                 null, null, dataScopeLevel, authorizedProjectIds, authorizedProjectRoles);
-        try {
-            validateDatasourceProjectAction(config.getProjectId(), visibility, requiredAction);
+        if (!visibility.projectScopeEnforced()) {
             return config;
-        } catch (IllegalArgumentException exception) {
-            /*
-             * Instance-level authorization is an extension of project membership, not a replacement for it.
-             * A user must still be inside the datasource project before an explicit VIEW/USE/MANAGE grant
-             * can unlock this concrete datasource.
-             */
-            if (!visibility.canReachProject(config.getProjectId())) {
-                throw exception;
-            }
-            if (isDatasourceOwner(config, actorContext)) {
-                return config;
-            }
-            if (dataSourceAuthorizationService.hasActiveAuthorization(config.getId(), actorContext, requiredAction)) {
-                return config;
-            }
-            throw exception;
         }
+        datasourceProjectScopeSupport.validateProjectReadable(config.getProjectId(), visibility, "数据源");
+        if (visibility.canManageProject(config.getProjectId()) || isDatasourceOwner(config, actorContext)) {
+            return config;
+        }
+        if (dataSourceAuthorizationService.hasActiveAuthorization(config.getId(), actorContext, requiredAction)) {
+            return config;
+        }
+        throw new IllegalArgumentException("当前账号没有访问该数据源的实例授权，datasourceId=" + id
+                + "。请由数据源所有者授予 VIEW/USE/MANAGE 权限，或联系项目 OWNER/MANAGER 处理。");
     }
 
     /**
@@ -676,7 +738,7 @@ public class DataSourceManagementController {
                                                             DatasourceAuthorizationActorContext actorContext) {
         DataSourceConfig config = dataSourceManagementService.getById(id);
         if (config == null || DataSourceStatus.DELETED.equals(config.getStatus())) {
-            throw new NoSuchElementException("鏁版嵁婧愪笉瀛樺湪鎴栧凡鍒犻櫎: " + id);
+            throw new NoSuchElementException("数据源不存在或已删除: " + id);
         }
         DatasourceProjectVisibility visibility = datasourceProjectScopeSupport.resolveVisibility(
                 null, null, dataScopeLevel, authorizedProjectIds, authorizedProjectRoles);
@@ -781,16 +843,19 @@ public class DataSourceManagementController {
             return List.of();
         }
 
-        actions.add(DataSourceAuthorizationAction.VIEW.name());
         boolean owner = isDatasourceOwner(source, actorContext);
         boolean projectManageable = visibility.canManageProject(projectId);
-        boolean projectUsable = visibility.canUseProject(projectId);
         boolean instanceManage = dataSourceAuthorizationService.hasActiveAuthorization(
                 source.getId(), actorContext, DataSourceAuthorizationAction.MANAGE);
         boolean instanceUse = instanceManage || dataSourceAuthorizationService.hasActiveAuthorization(
                 source.getId(), actorContext, DataSourceAuthorizationAction.USE);
+        boolean instanceView = instanceUse || dataSourceAuthorizationService.hasActiveAuthorization(
+                source.getId(), actorContext, DataSourceAuthorizationAction.VIEW);
 
-        if (projectUsable || projectManageable || owner || instanceUse) {
+        if (projectManageable || owner || instanceView) {
+            actions.add(DataSourceAuthorizationAction.VIEW.name());
+        }
+        if (projectManageable || owner || instanceUse) {
             actions.add(DataSourceAuthorizationAction.USE.name());
         }
         if (projectManageable || owner || instanceManage) {

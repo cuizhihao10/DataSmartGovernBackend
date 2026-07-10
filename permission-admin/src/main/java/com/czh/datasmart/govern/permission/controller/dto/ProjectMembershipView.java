@@ -7,6 +7,8 @@
 package com.czh.datasmart.govern.permission.controller.dto;
 
 import com.czh.datasmart.govern.permission.entity.PermissionProjectMembership;
+import com.czh.datasmart.govern.permission.entity.PermissionIdentityUser;
+import com.czh.datasmart.govern.permission.entity.PermissionProject;
 
 import java.time.LocalDateTime;
 
@@ -49,6 +51,18 @@ public record ProjectMembershipView(
          */
         Long actorId,
 
+        Long identityUserId,
+
+        String username,
+
+        String email,
+
+        String actorRole,
+
+        String actorType,
+
+        String userStatus,
+
         /**
          * 项目 ID。
          *
@@ -56,6 +70,12 @@ public record ProjectMembershipView(
          * 最终都会使用授权项目集合完成 {@code project_id} 数据范围过滤。</p>
          */
         Long projectId,
+
+        String projectCode,
+
+        String projectName,
+
+        String projectStatus,
 
         /**
          * 项目内角色。
@@ -104,6 +124,15 @@ public record ProjectMembershipView(
      * @return 不含 workspace 兼容字段的页面视图；入参为空时返回空，方便调用方做空安全转换。
      */
     public static ProjectMembershipView from(PermissionProjectMembership membership) {
+        return from(membership, null, null);
+    }
+
+    /**
+     * Build the project member console view from the membership fact and authoritative identity/project records.
+     */
+    public static ProjectMembershipView from(PermissionProjectMembership membership,
+                                             PermissionIdentityUser identityUser,
+                                             PermissionProject project) {
         if (membership == null) {
             return null;
         }
@@ -111,7 +140,16 @@ public record ProjectMembershipView(
                 membership.getId(),
                 membership.getTenantId(),
                 membership.getActorId(),
+                identityUser == null ? null : identityUser.getId(),
+                identityUser == null ? null : identityUser.getUsername(),
+                identityUser == null ? null : identityUser.getEmail(),
+                identityUser == null ? null : identityUser.getActorRole(),
+                identityUser == null ? null : identityUser.getActorType(),
+                identityUser == null ? null : identityUser.getStatus(),
                 membership.getProjectId(),
+                project == null ? null : project.getProjectCode(),
+                project == null ? null : project.getProjectName(),
+                project == null ? null : project.getStatus(),
                 membership.getProjectRole(),
                 membership.getGrantSource(),
                 membership.getEnabled(),

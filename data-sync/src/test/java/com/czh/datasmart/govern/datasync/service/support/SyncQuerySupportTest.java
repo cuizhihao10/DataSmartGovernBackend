@@ -30,7 +30,7 @@ class SyncQuerySupportTest {
     void shouldClampPageValuesSafely() {
         Page<Object> page = support.page(0L, 9999L);
         assertEquals(1L, page.getCurrent());
-        assertEquals(200L, page.getSize());
+        assertEquals(100L, page.getSize());
     }
 
     /**

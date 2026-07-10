@@ -20,7 +20,11 @@ import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipState
 import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipUpdateRequest;
 import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipView;
 import com.czh.datasmart.govern.permission.entity.PermissionProjectMembership;
+import com.czh.datasmart.govern.permission.entity.PermissionIdentityUser;
+import com.czh.datasmart.govern.permission.entity.PermissionProject;
 import com.czh.datasmart.govern.permission.event.PermissionProjectMembershipChangedEventPublisher;
+import com.czh.datasmart.govern.permission.mapper.PermissionIdentityUserMapper;
+import com.czh.datasmart.govern.permission.mapper.PermissionProjectMapper;
 import com.czh.datasmart.govern.permission.mapper.PermissionProjectMembershipMapper;
 import com.czh.datasmart.govern.permission.service.PermissionProjectMembershipService;
 import com.czh.datasmart.govern.permission.service.support.PermissionProjectMembershipAuditSupport;
@@ -33,7 +37,10 @@ import java.time.LocalDateTime;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import static com.czh.datasmart.govern.permission.service.impl.PermissionProjectMembershipCopySupport.copyOf;
 
@@ -59,7 +66,7 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
     private static final long DEFAULT_PAGE_SIZE = 20L;
     private static final long MAX_PAGE_SIZE = 200L;
     private static final int MAX_BATCH_SIZE = 200;
-    private static final String DEFAULT_PROJECT_ROLE = "MEMBER";
+    private static final String DEFAULT_PROJECT_ROLE = "READER";
     private static final String DEFAULT_GRANT_SOURCE = "MANUAL";
     private static final String OWNER_PROJECT_ROLE = "OWNER";
     private static final String EVENT_PROJECT_MEMBERSHIP_UPSERTED = "PROJECT_MEMBERSHIP_UPSERTED";
@@ -95,6 +102,8 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
     );
 
     private final PermissionProjectMembershipMapper membershipMapper;
+    private final PermissionIdentityUserMapper identityUserMapper;
+    private final PermissionProjectMapper projectMapper;
     private final PermissionProjectMembershipAuditSupport auditSupport;
     private final PermissionProjectMembershipChangedEventPublisher membershipChangedEventPublisher;
 
@@ -128,9 +137,7 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
         }
 
         Page<PermissionProjectMembership> page = membershipMapper.selectPage(page(safeCriteria.current(), safeCriteria.size()), wrapper);
-        List<ProjectMembershipView> records = page.getRecords().stream()
-                .map(ProjectMembershipView::from)
-                .toList();
+        List<ProjectMembershipView> records = enrichMemberships(page.getRecords());
         return PlatformPageResponse.of(page.getCurrent(), page.getSize(), page.getTotal(), records);
     }
 
@@ -141,7 +148,7 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
     public ProjectMembershipView getProjectMembership(Long membershipId, PermissionActorContext actorContext) {
         PermissionProjectMembership membership = findByIdOrThrow(membershipId);
         validateReadableMembership(membership, actorContext);
-        return ProjectMembershipView.from(membership);
+        return enrichMembership(membership);
     }
 
     /**
@@ -341,20 +348,20 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
         }
         wrapper.eq(PermissionProjectMembership::getTenantId, actorTenantId);
 
-        if (isProjectOwnerScopedRole(actorRole)) {
-            Set<Long> manageableProjectIds = ownerProjectIds(actorTenantId, actorContext.actorId());
-            if (manageableProjectIds.isEmpty()) {
+        if (isProjectMemberScopedRole(actorRole)) {
+            Set<Long> visibleProjectIds = memberProjectIds(actorTenantId, actorContext.actorId());
+            if (visibleProjectIds.isEmpty()) {
                 wrapper.eq(PermissionProjectMembership::getProjectId, -1L);
                 return;
             }
             if (criteria.projectId() != null) {
-                if (!manageableProjectIds.contains(criteria.projectId())) {
+                if (!visibleProjectIds.contains(criteria.projectId())) {
                     throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
-                            "项目负责人只能查看自己拥有 OWNER 授权的项目成员，projectId=" + criteria.projectId());
+                            "当前账号只能查看自己已加入项目的成员，projectId=" + criteria.projectId());
                 }
                 wrapper.eq(PermissionProjectMembership::getProjectId, criteria.projectId());
             } else {
-                wrapper.in(PermissionProjectMembership::getProjectId, manageableProjectIds);
+                wrapper.in(PermissionProjectMembership::getProjectId, visibleProjectIds);
             }
             return;
         }
@@ -371,9 +378,9 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
         if (!actorTenantId.equals(normalizeTenantId(membership.getTenantId()))) {
             throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED, "当前身份不能查看其他租户的项目成员授权");
         }
-        if (isProjectOwnerScopedRole(actorRole)
-                && !ownerProjectIds(actorTenantId, actorContext.actorId()).contains(membership.getProjectId())) {
-            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN, "项目负责人只能查看自己负责项目的成员授权");
+        if (isProjectMemberScopedRole(actorRole)
+                && !memberProjectIds(actorTenantId, actorContext.actorId()).contains(membership.getProjectId())) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN, "当前账号只能查看自己已加入项目的成员授权");
         }
     }
     private void validateMutableMembership(PermissionProjectMembership membership,
@@ -426,6 +433,75 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
     }
 
+    private Set<Long> memberProjectIds(Long tenantId, Long actorId) {
+        if (actorId == null) {
+            return Set.of();
+        }
+        return membershipMapper.selectList(new LambdaQueryWrapper<PermissionProjectMembership>()
+                        .eq(PermissionProjectMembership::getTenantId, normalizeTenantId(tenantId))
+                        .eq(PermissionProjectMembership::getActorId, actorId)
+                        .eq(PermissionProjectMembership::getEnabled, true)
+                        .isNotNull(PermissionProjectMembership::getProjectId))
+                .stream()
+                .map(PermissionProjectMembership::getProjectId)
+                .filter(projectId -> projectId != null && projectId > 0)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    /**
+     * Enrich a page in batches so the console never has to guess user names or project names from numeric IDs.
+     */
+    private List<ProjectMembershipView> enrichMemberships(List<PermissionProjectMembership> memberships) {
+        if (memberships == null || memberships.isEmpty()) {
+            return List.of();
+        }
+        Set<Long> actorIds = memberships.stream()
+                .map(PermissionProjectMembership::getActorId)
+                .filter(id -> id != null && id > 0)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        Set<Long> projectIds = memberships.stream()
+                .map(PermissionProjectMembership::getProjectId)
+                .filter(id -> id != null && id > 0)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        List<PermissionIdentityUser> identities = actorIds.isEmpty()
+                ? List.of()
+                : identityUserMapper.selectList(new LambdaQueryWrapper<PermissionIdentityUser>()
+                        .in(PermissionIdentityUser::getActorId, actorIds));
+        List<PermissionProject> projects = projectIds.isEmpty() ? List.of() : projectMapper.selectBatchIds(projectIds);
+        Map<String, PermissionIdentityUser> identityByScope = nullSafe(identities).stream()
+                .collect(Collectors.toMap(
+                        identity -> identityKey(identity.getTenantId(), identity.getActorId()),
+                        Function.identity(),
+                        (left, right) -> left));
+        Map<Long, PermissionProject> projectById = nullSafe(projects).stream()
+                .collect(Collectors.toMap(PermissionProject::getProjectId, Function.identity(), (left, right) -> left));
+        return memberships.stream()
+                .map(membership -> ProjectMembershipView.from(
+                        membership,
+                        identityByScope.get(identityKey(membership.getTenantId(), membership.getActorId())),
+                        projectById.get(membership.getProjectId())))
+                .toList();
+    }
+
+    private ProjectMembershipView enrichMembership(PermissionProjectMembership membership) {
+        PermissionIdentityUser identity = identityUserMapper.selectOne(new LambdaQueryWrapper<PermissionIdentityUser>()
+                .eq(PermissionIdentityUser::getTenantId, membership.getTenantId())
+                .eq(PermissionIdentityUser::getActorId, membership.getActorId())
+                .last("LIMIT 1"));
+        PermissionProject project = membership.getProjectId() == null
+                ? null
+                : projectMapper.selectById(membership.getProjectId());
+        return ProjectMembershipView.from(membership, identity, project);
+    }
+
+    private String identityKey(Long tenantId, Long actorId) {
+        return normalizeTenantId(tenantId) + ":" + actorId;
+    }
+
+    private <T> List<T> nullSafe(List<T> values) {
+        return values == null ? List.of() : values;
+    }
+
     /**
      * 判断当前平台身份是否需要按项目 OWNER 成员事实收口。
      *
@@ -433,7 +509,7 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
      * 其项目管理能力来自 permission_project_membership.project_role=OWNER。PROJECT_OWNER 仅保留给历史
      * Keycloak claim 和迁移期账号兼容，两种身份都必须继续经过数据库 OWNER 成员关系校验。</p>
      */
-    private boolean isProjectOwnerScopedRole(String actorRole) {
+    private boolean isProjectMemberScopedRole(String actorRole) {
         return PermissionRoleCode.PROJECT_OWNER.name().equals(actorRole)
                 || PermissionRoleCode.ORDINARY_USER.name().equals(actorRole);
     }

@@ -17,6 +17,8 @@ import com.czh.datasmart.govern.permission.controller.dto.ProjectMembershipQuery
 import com.czh.datasmart.govern.permission.entity.PermissionProjectMembership;
 import com.czh.datasmart.govern.permission.event.PermissionProjectMembershipChangedEventPublisher;
 import com.czh.datasmart.govern.permission.mapper.PermissionProjectMembershipMapper;
+import com.czh.datasmart.govern.permission.mapper.PermissionIdentityUserMapper;
+import com.czh.datasmart.govern.permission.mapper.PermissionProjectMapper;
 import com.czh.datasmart.govern.permission.service.support.PermissionProjectMembershipAuditSupport;
 import com.czh.datasmart.govern.permission.support.PermissionRoleCode;
 import org.junit.jupiter.api.BeforeEach;
@@ -52,6 +54,8 @@ import static org.mockito.Mockito.when;
 class PermissionProjectMembershipServiceImplTest {
 
     private PermissionProjectMembershipMapper membershipMapper;
+    private PermissionIdentityUserMapper identityUserMapper;
+    private PermissionProjectMapper projectMapper;
     private PermissionProjectMembershipAuditSupport auditSupport;
     private PermissionProjectMembershipChangedEventPublisher membershipChangedEventPublisher;
     private PermissionProjectMembershipServiceImpl service;
@@ -62,9 +66,12 @@ class PermissionProjectMembershipServiceImplTest {
     @BeforeEach
     void setUp() {
         membershipMapper = mock(PermissionProjectMembershipMapper.class);
+        identityUserMapper = mock(PermissionIdentityUserMapper.class);
+        projectMapper = mock(PermissionProjectMapper.class);
         auditSupport = mock(PermissionProjectMembershipAuditSupport.class);
         membershipChangedEventPublisher = mock(PermissionProjectMembershipChangedEventPublisher.class);
-        service = new PermissionProjectMembershipServiceImpl(membershipMapper, auditSupport, membershipChangedEventPublisher);
+        service = new PermissionProjectMembershipServiceImpl(
+                membershipMapper, identityUserMapper, projectMapper, auditSupport, membershipChangedEventPublisher);
     }
 
     /**

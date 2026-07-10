@@ -199,41 +199,13 @@ public class DataSourceAuthorizationServiceImpl implements DataSourceAuthorizati
                                                                         Long projectId,
                                                                         Long datasourceId,
                                                                         DatasourceAuthorizationActorContext actorContext) {
-        LambdaQueryWrapper<DataSourceAuthorization> wrapper = new LambdaQueryWrapper<DataSourceAuthorization>()
-                .eq(DataSourceAuthorization::getStatus, DataSourceAuthorizationStatus.ACTIVE)
-                .eq(tenantId != null, DataSourceAuthorization::getTenantId, tenantId)
-                .eq(projectId != null, DataSourceAuthorization::getProjectId, projectId)
-                .eq(datasourceId != null, DataSourceAuthorization::getDatasourceId, datasourceId)
-                .and(subject -> {
-                    boolean hasPreviousCondition = false;
-                    if (hasText(actorContext.actorId())) {
-                        subject.and(user -> user.eq(DataSourceAuthorization::getSubjectType,
-                                        DataSourceAuthorizationSubjectType.USER.name())
-                                .eq(DataSourceAuthorization::getSubjectId, actorContext.actorId().trim()));
-                        hasPreviousCondition = true;
-                    }
-                    if (hasText(actorContext.actorRole())) {
-                        if (hasPreviousCondition) {
-                            subject.or();
-                        }
-                        subject.and(role -> role.eq(DataSourceAuthorization::getSubjectType,
-                                        DataSourceAuthorizationSubjectType.ROLE.name())
-                                .and(roleValue -> roleValue
-                                        .eq(DataSourceAuthorization::getSubjectId, actorContext.actorRole().trim())
-                                        .or()
-                                        .eq(DataSourceAuthorization::getSubjectRole, actorContext.actorRole().trim())));
-                        hasPreviousCondition = true;
-                    }
-                    if (actorContext.isServiceAccount() && hasText(actorContext.actorId())) {
-                        if (hasPreviousCondition) {
-                            subject.or();
-                        }
-                        subject.and(serviceAccount -> serviceAccount.eq(DataSourceAuthorization::getSubjectType,
-                                        DataSourceAuthorizationSubjectType.SERVICE_ACCOUNT.name())
-                                .eq(DataSourceAuthorization::getSubjectId, actorContext.actorId().trim()));
-                    }
-                });
-        return authorizationMapper.selectList(wrapper);
+        return authorizationMapper.selectAuthorizationCandidates(
+                tenantId,
+                projectId,
+                datasourceId,
+                trimToNull(actorContext.actorId()),
+                trimToNull(actorContext.actorRole()),
+                actorContext.isServiceAccount());
     }
 
     /**

@@ -36,6 +36,7 @@ import java.util.List;
 public class DatasourceProjectScopeSupport {
 
     private static final String PROJECT_SCOPE = "PROJECT";
+    private static final String SELF_SCOPE = "SELF";
 
     /**
      * 把 HTTP Header 和查询参数解析成模块内部可使用的可见范围。
@@ -66,7 +67,9 @@ public class DatasourceProjectScopeSupport {
                                                          String dataScopeLevel,
                                                          String authorizedProjectIdsHeader,
                                                          String authorizedProjectRolesHeader) {
-        boolean projectScopeEnforced = PROJECT_SCOPE.equalsIgnoreCase(trimToEmpty(dataScopeLevel));
+        String scopeLevel = trimToEmpty(dataScopeLevel).toUpperCase();
+        boolean selfOnly = SELF_SCOPE.equals(scopeLevel);
+        boolean projectScopeEnforced = PROJECT_SCOPE.equals(scopeLevel) || selfOnly;
         List<Long> authorizedProjectIds = projectScopeEnforced
                 ? PlatformAuthorizedProjectHeaderSupport.parse(authorizedProjectIdsHeader)
                 : List.of();
@@ -94,7 +97,9 @@ public class DatasourceProjectScopeSupport {
                 null,
                 authorizedProjectIds,
                 authorizedProjectRoles,
-                projectScopeEnforced
+                projectScopeEnforced,
+                selfOnly,
+                scopeLevel
         );
     }
 

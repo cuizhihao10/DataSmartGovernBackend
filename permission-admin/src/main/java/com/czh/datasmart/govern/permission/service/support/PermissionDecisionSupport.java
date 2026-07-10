@@ -166,23 +166,27 @@ public class PermissionDecisionSupport {
     }
 
     /**
-     * 物化 PROJECT 数据范围所需的项目授权集合。
+     * 物化项目边界数据范围所需的项目授权集合。
      *
      * <p>数据范围策略中的 `project_id IN ${actorProjectIds}` 是给管理员和审计人员看的规则表达式，
      * 但业务服务真正需要的是“本次请求允许哪些 projectId”。如果不在 permission-admin 这里物化，
      * 就会迫使 gateway 或 data-sync 去理解权限中心的项目成员表，造成跨模块耦合。
      *
-     * <p>只有命中的数据范围是 PROJECT 时才查询成员表，避免 SELF/TENANT/PLATFORM 的高频判定多一次无意义数据库访问。
-     * 如果项目负责人暂时没有任何项目授权，则返回空集合；下游 data-sync 会把这解释为 PROJECT 范围下无可见项目，
-     * 这比退化成租户范围更安全。
+     * <p>PROJECT 和 SELF 都必须查询项目成员表。PROJECT 用项目集合限制项目级资源，SELF 则先用项目集合确认
+     * 当前用户确实加入了目标项目，再由业务服务继续叠加 ownerId 或实例 ACL。若 SELF 不返回项目集合，
+     * gateway 会清理登录态携带的项目 Header，下游服务就无法区分“项目成员但没有实例授权”和“根本未加入项目”。
+     * TENANT/PLATFORM 不需要额外查询成员表，继续由更高层级数据范围约束。
      */
     private List<PlatformAuthorizedProjectRole> resolveAuthorizedProjectRoles(PermissionDecisionRequest request,
                                                                               PermissionDataScopePolicy dataScope) {
-        if (dataScope == null || dataScope.getScopeLevel() == null
-                || !"PROJECT".equalsIgnoreCase(dataScope.getScopeLevel())) {
+        if (dataScope == null || !isProjectBoundScope(dataScope.getScopeLevel())) {
             return List.of();
         }
         return querySupport.listActorProjectRoles(request.getTenantId(), request.getActorId());
+    }
+
+    private boolean isProjectBoundScope(String scopeLevel) {
+        return "PROJECT".equalsIgnoreCase(scopeLevel) || "SELF".equalsIgnoreCase(scopeLevel);
     }
 
     private boolean methodMatches(String configuredMethod, String requestMethod) {
@@ -216,6 +220,12 @@ public class PermissionDecisionSupport {
     private boolean pathMatches(String pattern, String requestPath) {
         if (pattern == null || requestPath == null) {
             return false;
+        }
+        if (pattern.endsWith("/**")) {
+            String collectionRoot = pattern.substring(0, pattern.length() - 3);
+            if (requestPath.equals(collectionRoot)) {
+                return true;
+            }
         }
         try {
             return PATH_PATTERN_PARSER.parse(pattern).matches(PathContainer.parsePath(requestPath));

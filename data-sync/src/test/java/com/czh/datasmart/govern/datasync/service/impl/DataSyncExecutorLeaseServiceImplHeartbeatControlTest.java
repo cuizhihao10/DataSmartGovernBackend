@@ -12,6 +12,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionHeartbeatRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionHeartbeatResult;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
+import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.mapper.SyncExecutionMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.service.support.SyncAuditSupport;
@@ -181,6 +182,11 @@ class DataSyncExecutorLeaseServiceImplHeartbeatControlTest {
                 idempotencySupport,
                 mock(SyncWorkerExecutionPlanSupport.class),
                 mock(SyncExecutionLogSupport.class));
+        SyncTask task = new SyncTask();
+        task.setId(1L);
+        task.setTenantId(7L);
+        task.setProjectId(101L);
+        when(taskMapper.selectById(1L)).thenReturn(task);
         return new Fixture(service, executionMapper, auditSupport, idempotencySupport);
     }
 

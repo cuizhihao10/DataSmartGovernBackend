@@ -82,7 +82,8 @@ class SyncActorContextHeaderSupportTest {
      *
      * <p>项目 ID 集合只能回答“能看哪些项目”，项目角色集合才能回答“在项目内能不能管理资源”。
      * 因此 data-sync 的 Header 解析必须同时消费 `X-DataSmart-Authorized-Project-Roles`，
-     * 并把历史角色 MEMBER/MAINTAINER/VIEWER 归一成 MANAGER/READER，避免每个业务模块各自解释旧角色。</p>
+     * 并把历史角色 MEMBER/VIEWER 归一成 READER、MAINTAINER 归一成 MANAGER，
+     * 避免旧 MEMBER 被错误提升为可管理项目资源的角色。</p>
      */
     @Test
     void shouldParseAuthorizedProjectRolesFromTrustedGatewayHeader() {
@@ -97,7 +98,7 @@ class SyncActorContextHeaderSupportTest {
 
         assertEquals(List.of(
                 new PlatformAuthorizedProjectRole(101L, "READER"),
-                new PlatformAuthorizedProjectRole(102L, "MANAGER"),
+                new PlatformAuthorizedProjectRole(102L, "READER"),
                 new PlatformAuthorizedProjectRole(205L, "OWNER")
         ), context.authorizedProjectRoles());
     }

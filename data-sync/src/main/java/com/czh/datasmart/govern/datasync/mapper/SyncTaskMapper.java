@@ -81,7 +81,7 @@ public interface SyncTaskMapper extends BaseMapper<SyncTask> {
                 NULL AS workspaceId,
                 COALESCE(NULLIF(group_code, ''), 'DEFAULT') AS groupCode,
                 COALESCE(MAX(NULLIF(group_name, '')), '默认分组') AS groupName,
-                COUNT(*) AS taskCount,
+                SUM(CASE WHEN current_state &lt;&gt; 'RECYCLED' THEN 1 ELSE 0 END) AS taskCount,
                 SUM(CASE WHEN current_state NOT IN ('OFFLINE', 'RECYCLED', 'DELETED', 'ARCHIVED') THEN 1 ELSE 0 END) AS activeTaskCount,
                 SUM(CASE WHEN current_state = 'SCHEDULED' THEN 1 ELSE 0 END) AS scheduledTaskCount,
                 SUM(CASE WHEN current_state IN ('QUEUED', 'RUNNING', 'RETRYING') THEN 1 ELSE 0 END) AS runningTaskCount,

@@ -19,7 +19,10 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -114,6 +117,24 @@ class SyncTaskGroupOperationSupportTest {
         assertThat(summaries.get(1).getDisplayName()).isEqualTo("默认分组（项目 102）");
     }
 
+    @Test
+    void selfScopedGroupCountsShouldUseTheSameOwnerFilterAsTaskList() {
+        Fixture fixture = fixture();
+        SyncActorContext actor = new SyncActorContext(10L, 1004L, "ORDINARY_USER", "trace-self-groups");
+        SyncDataVisibility visibility = new SyncDataVisibility(
+                10L, 101L, List.of(101L), null, true, true,
+                "SELF", "owner_id = 1004", false);
+        when(fixture.dataScopeSupport().resolveVisibility(any(), any(), any(), any())).thenReturn(visibility);
+        when(fixture.querySupport().actorId(actor)).thenReturn(1004L);
+        when(fixture.taskMapper().selectTaskGroupSummaries(
+                10L, 101L, null, true, List.of(101L), 1004L, null, 100)).thenReturn(List.of());
+
+        assertThat(fixture.support().listTaskGroups(criteria(), actor)).isEmpty();
+
+        verify(fixture.taskMapper()).selectTaskGroupSummaries(
+                eq(10L), eq(101L), isNull(), eq(true), eq(List.of(101L)), eq(1004L), isNull(), eq(100));
+    }
+
     private Fixture fixture() {
         SyncTaskMapper taskMapper = mock(SyncTaskMapper.class);
         SyncTaskGroupMapper groupMapper = mock(SyncTaskGroupMapper.class);
@@ -125,7 +146,8 @@ class SyncTaskGroupOperationSupportTest {
                         new SyncTaskGroupDisplayContractSupport()),
                 taskMapper,
                 groupMapper,
-                dataScopeSupport
+                dataScopeSupport,
+                querySupport
         );
     }
 
@@ -195,6 +217,7 @@ class SyncTaskGroupOperationSupportTest {
     private record Fixture(SyncTaskGroupOperationSupport support,
                            SyncTaskMapper taskMapper,
                            SyncTaskGroupMapper groupMapper,
-                           SyncDataScopeSupport dataScopeSupport) {
+                           SyncDataScopeSupport dataScopeSupport,
+                           SyncQuerySupport querySupport) {
     }
 }

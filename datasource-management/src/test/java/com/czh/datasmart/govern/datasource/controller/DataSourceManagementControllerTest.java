@@ -171,7 +171,31 @@ class DataSourceManagementControllerTest {
     }
 
     @Test
-    void listDataSourcesShouldNotMergeInstanceAuthorizationAcrossProjects() {
+    void datasourceDetailShouldReturnBackendComputedEffectiveActions() {
+        DataSourceManagementService service = mock(DataSourceManagementService.class);
+        DataSourceAuthorizationService authorizationService = mock(DataSourceAuthorizationService.class);
+        DataSourceCredentialCipherSupport cipherSupport = mock(DataSourceCredentialCipherSupport.class);
+        DataSourceManagementController controller = new DataSourceManagementController(
+                service,
+                authorizationService,
+                new DatasourceProjectScopeSupport(),
+                cipherSupport
+        );
+        DataSourceConfig saved = activeDatasource(91L, 205L, 1002L);
+        when(service.getById(91L)).thenReturn(saved);
+        when(cipherSupport.sanitizeForApi(saved)).thenReturn(saved);
+        when(authorizationService.hasActiveAuthorization(eq(91L), any(), any())).thenReturn(true);
+
+        DataSourceConfig response = controller.getDataSource(
+                        91L, "1003", "ORDINARY_USER", "USER", "SELF", "205", "205:READER")
+                .getBody()
+                .getData();
+
+        assertThat(response.getEffectiveActions()).containsExactly("VIEW", "USE", "MANAGE");
+    }
+
+    @Test
+    void listDataSourcesShouldRestrictSelfScopeToOwnerOrInstanceAuthorization() {
         DataSourceManagementService service = mock(DataSourceManagementService.class);
         DataSourceAuthorizationService authorizationService = mock(DataSourceAuthorizationService.class);
         DataSourceCredentialCipherSupport cipherSupport = mock(DataSourceCredentialCipherSupport.class);
@@ -183,14 +207,18 @@ class DataSourceManagementControllerTest {
         );
         Page<DataSourceConfig> emptyPage = new Page<>(1, 10, 0);
         when(service.page(any(), any())).thenReturn(emptyPage);
+        when(authorizationService.findAuthorizedDatasourceIds(
+                eq(10L), eq(205L), any(), eq(DataSourceAuthorizationAction.VIEW)))
+                .thenReturn(List.of(89L));
         when(cipherSupport.sanitizeForApi(org.mockito.ArgumentMatchers.<List<DataSourceConfig>>any()))
                 .thenReturn(List.of());
 
         controller.listDataSources(1, 10, 10L, 205L, null, null, null, null,
-                10L, 205L, "1003", "ORDINARY_USER", "USER", "PROJECT", "205", null);
+                10L, 205L, "1003", "ORDINARY_USER", "USER", "SELF", "205", "205:READER");
 
-        verify(authorizationService, never()).findAuthorizedDatasourceIds(
-                any(), any(), any(), eq(DataSourceAuthorizationAction.VIEW));
+        verify(authorizationService).findAuthorizedDatasourceIds(
+                eq(10L), eq(205L), any(), eq(DataSourceAuthorizationAction.VIEW));
+        verify(service).page(any(), any());
     }
 
     private DataSourceConfig activeDatasource(Long id, Long projectId, Long ownerId) {

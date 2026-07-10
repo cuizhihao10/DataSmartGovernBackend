@@ -241,6 +241,55 @@ class PermissionDecisionSupportTest {
                 .containsExactly("OWNER", "MANAGER");
     }
 
+    /**
+     * SELF 只收口资源实例，不代表用户脱离项目边界。
+     * gateway 必须继续拿到项目成员快照，才能把可信 projectId 和项目角色传给 datasource/data-sync。
+     */
+    @Test
+    void selfScopeShouldReturnJoinedProjectIdsAndRoles() {
+        PermissionDecisionRequest request = decisionRequest("ORDINARY_USER");
+        request.setHttpMethod("GET");
+        request.setRequestPath("/api/datasource/datasources");
+        request.setResourceType("DATASOURCE");
+        request.setAction("VIEW");
+        when(querySupport.listRoutePolicies(10L, "ORDINARY_USER"))
+                .thenReturn(List.of(datasourceListPolicy("ORDINARY_USER", "ALLOW", 151)));
+        when(querySupport.listDataScopePolicies(10L, "ORDINARY_USER", "DATASOURCE"))
+                .thenReturn(List.of(dataScope("ORDINARY_USER", "DATASOURCE", "SELF", "owner_id = ${actorId}")));
+        when(querySupport.listActorProjectRoles(10L, 1001L))
+                .thenReturn(List.of(new PlatformAuthorizedProjectRole(101L, "READER")));
+
+        PermissionDecisionResult result = decisionSupport.evaluate(request, "trace-self-project-role");
+
+        assertThat(result.getAllowed()).isTrue();
+        assertThat(result.getDataScopeLevel()).isEqualTo("SELF");
+        assertThat(result.getAuthorizedProjectIds()).containsExactly(101L);
+        assertThat(result.getAuthorizedProjectRoles())
+                .containsExactly(new PlatformAuthorizedProjectRole(101L, "READER"));
+    }
+
+    /**
+     * 集合策略使用 / ** 后缀时必须同时覆盖集合根路径，否则列表页会被默认拒绝，
+     * 但 /{id} 详情又能通过，形成同一资源前后不一致的权限体验。
+     */
+    @Test
+    void wildcardCollectionPolicyShouldMatchCollectionRoot() {
+        PermissionDecisionRequest request = decisionRequest("PROJECT_OWNER");
+        request.setHttpMethod("GET");
+        request.setRequestPath("/api/permission/project-memberships");
+        request.setResourceType("PROJECT_MEMBERSHIP");
+        request.setAction("VIEW");
+        when(querySupport.listRoutePolicies(10L, "PROJECT_OWNER"))
+                .thenReturn(List.of(projectMembershipPolicy("ALLOW", 152)));
+        when(querySupport.listDataScopePolicies(10L, "PROJECT_OWNER", "PROJECT_MEMBERSHIP"))
+                .thenReturn(List.of());
+
+        PermissionDecisionResult result = decisionSupport.evaluate(request, "trace-membership-root");
+
+        assertThat(result.getAllowed()).isTrue();
+        assertThat(result.getMatchedRoutePolicyId()).isEqualTo(152L);
+    }
+
     private PermissionDecisionRequest decisionRequest(String actorRole) {
         PermissionDecisionRequest request = new PermissionDecisionRequest();
         request.setTenantId(10L);
@@ -300,6 +349,26 @@ class PermissionDecisionSupportTest {
         policy.setPathPattern("/api/datasource/datasources");
         policy.setResourceType("DATASOURCE");
         policy.setAction("CREATE");
+        return policy;
+    }
+
+    private PermissionRoutePolicy datasourceListPolicy(String roleCode, String effect, int priority) {
+        PermissionRoutePolicy policy = routePolicy(roleCode, effect, priority);
+        policy.setPolicyName("普通用户查看可见数据源");
+        policy.setHttpMethod("GET");
+        policy.setPathPattern("/api/datasource/**");
+        policy.setResourceType("DATASOURCE");
+        policy.setAction("VIEW");
+        return policy;
+    }
+
+    private PermissionRoutePolicy projectMembershipPolicy(String effect, int priority) {
+        PermissionRoutePolicy policy = routePolicy("PROJECT_OWNER", effect, priority);
+        policy.setPolicyName("项目负责人查看项目成员");
+        policy.setHttpMethod("GET");
+        policy.setPathPattern("/api/permission/project-memberships/**");
+        policy.setResourceType("PROJECT_MEMBERSHIP");
+        policy.setAction("VIEW");
         return policy;
     }
 
