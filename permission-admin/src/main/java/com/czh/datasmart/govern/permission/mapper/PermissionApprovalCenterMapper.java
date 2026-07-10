@@ -75,6 +75,18 @@ public interface PermissionApprovalCenterMapper {
             WHERE 1 = 1
             <if test="tenantId != null">AND tenant_id = #{tenantId}</if>
             <if test="applicantActorId != null">AND applicant_actor_id = #{applicantActorId}</if>
+            <if test="ownerReviewerActorId != null">
+                AND request_type = 'PROJECT_JOIN'
+                AND EXISTS (
+                    SELECT 1
+                    FROM permission_project_membership owner_membership
+                    WHERE owner_membership.tenant_id = approval_item.tenant_id
+                      AND owner_membership.project_id = approval_item.project_id
+                      AND owner_membership.actor_id = #{ownerReviewerActorId}
+                      AND owner_membership.enabled = TRUE
+                      AND owner_membership.project_role = 'OWNER'
+                )
+            </if>
             <if test="requestType != null and requestType != ''">AND request_type = #{requestType}</if>
             <if test="status != null and status != ''">AND status = #{status}</if>
             ORDER BY update_time DESC, request_id DESC
@@ -83,6 +95,7 @@ public interface PermissionApprovalCenterMapper {
             """)
     List<ApprovalCenterItemView> selectApprovalPage(@Param("tenantId") Long tenantId,
                                                     @Param("applicantActorId") Long applicantActorId,
+                                                    @Param("ownerReviewerActorId") Long ownerReviewerActorId,
                                                     @Param("requestType") String requestType,
                                                     @Param("status") String status,
                                                     @Param("limit") long limit,
@@ -94,12 +107,14 @@ public interface PermissionApprovalCenterMapper {
             FROM (
                 SELECT 'PROJECT_CREATION' AS request_type,
                        tenant_id,
+                       created_project_id AS project_id,
                        applicant_actor_id,
                        status
                 FROM permission_project_creation_request
                 UNION ALL
                 SELECT 'PROJECT_JOIN' AS request_type,
                        tenant_id,
+                       project_id,
                        applicant_actor_id,
                        status
                 FROM permission_project_join_request
@@ -107,12 +122,25 @@ public interface PermissionApprovalCenterMapper {
             WHERE 1 = 1
             <if test="tenantId != null">AND tenant_id = #{tenantId}</if>
             <if test="applicantActorId != null">AND applicant_actor_id = #{applicantActorId}</if>
+            <if test="ownerReviewerActorId != null">
+                AND request_type = 'PROJECT_JOIN'
+                AND EXISTS (
+                    SELECT 1
+                    FROM permission_project_membership owner_membership
+                    WHERE owner_membership.tenant_id = approval_item.tenant_id
+                      AND owner_membership.project_id = approval_item.project_id
+                      AND owner_membership.actor_id = #{ownerReviewerActorId}
+                      AND owner_membership.enabled = TRUE
+                      AND owner_membership.project_role = 'OWNER'
+                )
+            </if>
             <if test="requestType != null and requestType != ''">AND request_type = #{requestType}</if>
             <if test="status != null and status != ''">AND status = #{status}</if>
             </script>
             """)
     long countApprovals(@Param("tenantId") Long tenantId,
                         @Param("applicantActorId") Long applicantActorId,
+                        @Param("ownerReviewerActorId") Long ownerReviewerActorId,
                         @Param("requestType") String requestType,
                         @Param("status") String status);
 }

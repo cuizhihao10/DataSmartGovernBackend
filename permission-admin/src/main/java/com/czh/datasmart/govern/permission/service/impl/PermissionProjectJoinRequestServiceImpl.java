@@ -64,6 +64,7 @@ public class PermissionProjectJoinRequestServiceImpl implements PermissionProjec
     private static final String ROLE_READER = "READER";
     private static final Set<String> REVIEW_GLOBAL_ROLES = Set.of(
             PermissionRoleCode.PROJECT_OWNER.name(),
+            PermissionRoleCode.ORDINARY_USER.name(),
             PermissionRoleCode.TENANT_ADMINISTRATOR.name(),
             PermissionRoleCode.PLATFORM_ADMINISTRATOR.name()
     );
@@ -370,7 +371,8 @@ public class PermissionProjectJoinRequestServiceImpl implements PermissionProjec
                     "Approved project role must be READER, MANAGER or OWNER");
         }
         if (ROLE_OWNER.equals(role)
-                && PermissionRoleCode.PROJECT_OWNER.name().equals(reviewerRole)) {
+                && !PermissionRoleCode.TENANT_ADMINISTRATOR.name().equals(reviewerRole)
+                && !PermissionRoleCode.PLATFORM_ADMINISTRATOR.name().equals(reviewerRole)) {
             throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
                     "Project owners cannot approve another OWNER; tenant or platform administrator is required");
         }

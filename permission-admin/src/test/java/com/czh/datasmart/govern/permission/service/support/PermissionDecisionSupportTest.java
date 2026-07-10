@@ -11,6 +11,8 @@ import com.czh.datasmart.govern.permission.controller.dto.PermissionDecisionRequ
 import com.czh.datasmart.govern.permission.controller.dto.PermissionDecisionResult;
 import com.czh.datasmart.govern.permission.entity.PermissionDataScopePolicy;
 import com.czh.datasmart.govern.permission.entity.PermissionRoutePolicy;
+import com.czh.datasmart.govern.permission.entity.PermissionTenant;
+import com.czh.datasmart.govern.permission.mapper.PermissionTenantMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -36,13 +38,36 @@ class PermissionDecisionSupportTest {
 
     private PermissionQuerySupport querySupport;
     private PermissionAuditSupport auditSupport;
+    private PermissionTenantMapper tenantMapper;
     private PermissionDecisionSupport decisionSupport;
 
     @BeforeEach
     void setUp() {
         querySupport = mock(PermissionQuerySupport.class);
         auditSupport = mock(PermissionAuditSupport.class);
-        decisionSupport = new PermissionDecisionSupport(querySupport, auditSupport);
+        tenantMapper = mock(PermissionTenantMapper.class);
+        when(tenantMapper.selectById(10L)).thenReturn(activeTenant());
+        decisionSupport = new PermissionDecisionSupport(querySupport, auditSupport, tenantMapper);
+    }
+
+    @Test
+    void suspendedTenantShouldBeDeniedBeforeRoutePolicyEvaluation() {
+        PermissionTenant tenant = activeTenant();
+        tenant.setStatus("SUSPENDED");
+        when(tenantMapper.selectById(10L)).thenReturn(tenant);
+
+        PermissionDecisionResult result = decisionSupport.evaluate(
+                decisionRequest("ORDINARY_USER"), "trace-suspended-tenant");
+
+        assertThat(result.getAllowed()).isFalse();
+        assertThat(result.getReason()).contains("SUSPENDED");
+    }
+
+    private PermissionTenant activeTenant() {
+        PermissionTenant tenant = new PermissionTenant();
+        tenant.setTenantId(10L);
+        tenant.setStatus("ACTIVE");
+        return tenant;
     }
 
     /**

@@ -5,6 +5,9 @@ import com.czh.datasmart.govern.permission.controller.dto.PermissionDecisionRequ
 import com.czh.datasmart.govern.permission.controller.dto.PermissionDecisionResult;
 import com.czh.datasmart.govern.permission.entity.PermissionDataScopePolicy;
 import com.czh.datasmart.govern.permission.entity.PermissionRoutePolicy;
+import com.czh.datasmart.govern.permission.entity.PermissionTenant;
+import com.czh.datasmart.govern.permission.mapper.PermissionTenantMapper;
+import com.czh.datasmart.govern.permission.support.PermissionRoleCode;
 import com.czh.datasmart.govern.permission.support.PermissionRouteEffect;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.server.PathContainer;
@@ -52,6 +55,7 @@ public class PermissionDecisionSupport {
 
     private final PermissionQuerySupport querySupport;
     private final PermissionAuditSupport auditSupport;
+    private final PermissionTenantMapper tenantMapper;
 
     /**
      * 判定一次访问是否允许。
@@ -60,6 +64,11 @@ public class PermissionDecisionSupport {
      * @param traceId 链路追踪 ID，用于把网关请求、业务服务请求和权限审计串联起来。
      */
     public PermissionDecisionResult evaluate(PermissionDecisionRequest request, String traceId) {
+        PermissionDecisionResult tenantStatusDenial = denyInactiveTenant(request);
+        if (tenantStatusDenial != null) {
+            auditSupport.saveDecisionAudit(request, traceId, tenantStatusDenial);
+            return tenantStatusDenial;
+        }
         PermissionRoutePolicy matchedRoute = findMatchedRoutePolicy(request);
         if (matchedRoute == null) {
             PermissionDecisionResult result = denied("没有命中任何启用的路由策略，按默认拒绝处理", null, null, request);
@@ -97,6 +106,32 @@ public class PermissionDecisionSupport {
         );
         auditSupport.saveDecisionAudit(request, traceId, result);
         return result;
+    }
+
+    /**
+     * 在路由策略之前执行租户生命周期闸门。
+     *
+     * <p>如果只在 permission_tenant 中把状态改成 SUSPENDED/CLOSED，而网关判定仍继续放行，暂停租户就只是
+     * 管理页面上的文字。这里把主数据状态接入高频权限判定：非平台管理员只能使用 ACTIVE 租户；平台超级管理员
+     * 始终绕过该闸门，才能在租户暂停后继续进入管理接口执行恢复、审计和故障处置。</p>
+     */
+    private PermissionDecisionResult denyInactiveTenant(PermissionDecisionRequest request) {
+        if (request == null
+                || PermissionRoleCode.PLATFORM_ADMINISTRATOR.name().equalsIgnoreCase(request.getActorRole())) {
+            return null;
+        }
+        Long tenantId = request.getTenantId();
+        if (tenantId == null || tenantId <= 0) {
+            return denied("当前身份缺少有效租户上下文", null, null, request);
+        }
+        PermissionTenant tenant = tenantMapper.selectById(tenantId);
+        if (tenant == null) {
+            return denied("当前租户不存在或尚未完成开租", null, null, request);
+        }
+        if (!"ACTIVE".equalsIgnoreCase(tenant.getStatus())) {
+            return denied("当前租户状态为 " + tenant.getStatus() + "，平台已暂停业务访问", null, null, request);
+        }
+        return null;
     }
 
     private PermissionRoutePolicy findMatchedRoutePolicy(PermissionDecisionRequest request) {

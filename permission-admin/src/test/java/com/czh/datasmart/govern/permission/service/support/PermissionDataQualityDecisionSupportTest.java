@@ -6,10 +6,13 @@
  */
 package com.czh.datasmart.govern.permission.service.support;
 
+import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionDecisionRequest;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionDecisionResult;
 import com.czh.datasmart.govern.permission.entity.PermissionDataScopePolicy;
 import com.czh.datasmart.govern.permission.entity.PermissionRoutePolicy;
+import com.czh.datasmart.govern.permission.entity.PermissionTenant;
+import com.czh.datasmart.govern.permission.mapper.PermissionTenantMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -36,13 +39,19 @@ class PermissionDataQualityDecisionSupportTest {
 
     private PermissionQuerySupport querySupport;
     private PermissionAuditSupport auditSupport;
+    private PermissionTenantMapper tenantMapper;
     private PermissionDecisionSupport decisionSupport;
 
     @BeforeEach
     void setUp() {
         querySupport = mock(PermissionQuerySupport.class);
         auditSupport = mock(PermissionAuditSupport.class);
-        decisionSupport = new PermissionDecisionSupport(querySupport, auditSupport);
+        tenantMapper = mock(PermissionTenantMapper.class);
+        PermissionTenant tenant = new PermissionTenant();
+        tenant.setTenantId(10L);
+        tenant.setStatus("ACTIVE");
+        when(tenantMapper.selectById(10L)).thenReturn(tenant);
+        decisionSupport = new PermissionDecisionSupport(querySupport, auditSupport, tenantMapper);
     }
 
     /**
@@ -69,7 +78,9 @@ class PermissionDataQualityDecisionSupportTest {
         when(querySupport.listDataScopePolicies(10L, "ORDINARY_USER", "QUALITY_GOVERNANCE"))
                 .thenReturn(List.of(dataScope("ORDINARY_USER", "QUALITY_GOVERNANCE",
                         "PROJECT", "project_id IN ${actorProjectIds}")));
-        when(querySupport.listActorProjectIds(10L, 1001L)).thenReturn(List.of(101L, 102L));
+        when(querySupport.listActorProjectRoles(10L, 1001L)).thenReturn(List.of(
+                new PlatformAuthorizedProjectRole(101L, "READER"),
+                new PlatformAuthorizedProjectRole(102L, "READER")));
 
         PermissionDecisionResult result = decisionSupport.evaluate(request, "trace-quality-governance");
 
@@ -205,7 +216,9 @@ class PermissionDataQualityDecisionSupportTest {
         when(querySupport.listDataScopePolicies(10L, "PROJECT_OWNER", "QUALITY_ANOMALY"))
                 .thenReturn(List.of(dataScope("PROJECT_OWNER", "QUALITY_ANOMALY",
                         "PROJECT", "project_id IN ${actorProjectIds}")));
-        when(querySupport.listActorProjectIds(10L, 1001L)).thenReturn(List.of(101L, 102L));
+        when(querySupport.listActorProjectRoles(10L, 1001L)).thenReturn(List.of(
+                new PlatformAuthorizedProjectRole(101L, "OWNER"),
+                new PlatformAuthorizedProjectRole(102L, "OWNER")));
 
         PermissionDecisionResult result = decisionSupport.evaluate(request, "trace-quality-remediation-create");
 

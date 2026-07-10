@@ -144,6 +144,27 @@ class PermissionProjectMembershipServiceImplTest {
     }
 
     /**
+     * 新角色模型中，全局身份仍是普通用户，项目 OWNER 来自成员关系；不能再要求 Keycloak 额外签发 PROJECT_OWNER。
+     */
+    @Test
+    void ordinaryIdentityWithOwnerMembershipCanManageOwnedProjectMembers() {
+        when(membershipMapper.selectList(any())).thenReturn(List.of(ownerMembership(10L, 1001L, 101L)));
+        when(membershipMapper.selectOne(any())).thenReturn(null);
+        doAnswer(invocation -> {
+            PermissionProjectMembership inserted = invocation.getArgument(0);
+            inserted.setId(9003L);
+            return 1;
+        }).when(membershipMapper).insert(any(PermissionProjectMembership.class));
+
+        ProjectMembershipMutationResult result = service.grantOrUpdateProjectMembership(
+                createRequest(10L, 2003L, 101L, "MANAGER"),
+                actor(10L, 1001L, PermissionRoleCode.ORDINARY_USER));
+
+        assertThat(result.membershipId()).isEqualTo(9003L);
+        verify(auditSupport).saveMutationAudit(any(), any(), any(), any(), any(), any());
+    }
+
+    /**
      * 项目负责人不能授予 OWNER。
      *
      * <p>这是防止项目内自扩权的关键规则：如果项目负责人可以再创建 OWNER，

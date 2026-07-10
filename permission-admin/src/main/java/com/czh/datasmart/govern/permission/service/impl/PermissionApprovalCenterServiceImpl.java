@@ -65,23 +65,31 @@ public class PermissionApprovalCenterServiceImpl implements PermissionApprovalCe
         String actorRole = requireRole(actorContext);
         ApprovalCenterQueryCriteria safeCriteria = safeCriteria(criteria);
         Long tenantId = resolveQueryTenant(safeCriteria.tenantId(), actorContext, actorRole);
-        return page(tenantId, actorId, safeCriteria, List.of("CANCEL"));
+        return page(tenantId, actorId, null, safeCriteria, List.of("CANCEL"));
     }
 
     @Override
     public PlatformPageResponse<ApprovalCenterItemView> pagePendingApprovals(ApprovalCenterQueryCriteria criteria,
                                                                              PermissionActorContext actorContext) {
         String actorRole = requireRole(actorContext);
-        requireReviewerRole(actorRole);
         ApprovalCenterQueryCriteria safeCriteria = safeCriteria(criteria);
         Long tenantId = resolveQueryTenant(safeCriteria.tenantId(), actorContext, actorRole);
+        boolean administrator = REVIEW_ROLES.contains(actorRole);
+        Long ownerReviewerActorId = administrator
+                ? null
+                : requirePositive(actorContext == null ? null : actorContext.actorId(), "actorId");
+        String requestType = safeCriteria.requestType();
+        if (!administrator && requestType != null && !TYPE_PROJECT_JOIN.equals(normalizeType(requestType))) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "Project owners can only review project join requests");
+        }
         ApprovalCenterQueryCriteria pendingCriteria = new ApprovalCenterQueryCriteria(
                 tenantId,
-                safeCriteria.requestType(),
+                administrator ? requestType : TYPE_PROJECT_JOIN,
                 defaultText(normalizeStatus(safeCriteria.status()), STATUS_PENDING),
                 safeCriteria.current(),
                 safeCriteria.size());
-        return page(tenantId, null, pendingCriteria, List.of("APPROVE", "REJECT"));
+        return page(tenantId, null, ownerReviewerActorId, pendingCriteria, List.of("APPROVE", "REJECT"));
     }
 
     @Override
@@ -90,8 +98,8 @@ public class PermissionApprovalCenterServiceImpl implements PermissionApprovalCe
                                                 ApprovalCenterReviewRequest request,
                                                 PermissionActorContext actorContext) {
         String type = normalizeType(requestType);
-        requireReviewerRole(requireRole(actorContext));
         if (TYPE_PROJECT_CREATION.equals(type)) {
+            requireReviewerRole(requireRole(actorContext));
             ProjectCreationRequestMutationResult result = creationRequestService.approve(
                     requestId,
                     new ProjectCreationRequestReviewRequest(
@@ -122,8 +130,8 @@ public class PermissionApprovalCenterServiceImpl implements PermissionApprovalCe
                                                ApprovalCenterReviewRequest request,
                                                PermissionActorContext actorContext) {
         String type = normalizeType(requestType);
-        requireReviewerRole(requireRole(actorContext));
         if (TYPE_PROJECT_CREATION.equals(type)) {
+            requireReviewerRole(requireRole(actorContext));
             ProjectCreationRequestMutationResult result = creationRequestService.reject(
                     requestId,
                     new ProjectCreationRequestReviewRequest(null, null, null, null, null, null,
@@ -157,6 +165,7 @@ public class PermissionApprovalCenterServiceImpl implements PermissionApprovalCe
 
     private PlatformPageResponse<ApprovalCenterItemView> page(Long tenantId,
                                                               Long applicantActorId,
+                                                              Long ownerReviewerActorId,
                                                               ApprovalCenterQueryCriteria criteria,
                                                               List<String> pendingActions) {
         long current = safeCurrent(criteria.current());
@@ -164,10 +173,11 @@ public class PermissionApprovalCenterServiceImpl implements PermissionApprovalCe
         String requestType = normalizeOptionalType(criteria.requestType());
         String status = normalizeStatus(criteria.status());
         List<ApprovalCenterItemView> records = approvalCenterMapper.selectApprovalPage(
-                tenantId, applicantActorId, requestType, status, size, (current - 1) * size);
+                tenantId, applicantActorId, ownerReviewerActorId, requestType, status, size, (current - 1) * size);
         records.forEach(item -> item.setAvailableActions(
                 STATUS_PENDING.equals(normalizeStatus(item.getStatus())) ? pendingActions : List.of()));
-        long total = approvalCenterMapper.countApprovals(tenantId, applicantActorId, requestType, status);
+        long total = approvalCenterMapper.countApprovals(
+                tenantId, applicantActorId, ownerReviewerActorId, requestType, status);
         return PlatformPageResponse.of(current, size, total, records);
     }
 

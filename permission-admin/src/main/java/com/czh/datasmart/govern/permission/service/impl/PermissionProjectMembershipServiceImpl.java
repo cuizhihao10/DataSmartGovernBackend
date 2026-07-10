@@ -77,6 +77,7 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
             PermissionRoleCode.PLATFORM_ADMINISTRATOR.name(),
             PermissionRoleCode.TENANT_ADMINISTRATOR.name(),
             PermissionRoleCode.PROJECT_OWNER.name(),
+            PermissionRoleCode.ORDINARY_USER.name(),
             PermissionRoleCode.OPERATOR.name(),
             PermissionRoleCode.AUDITOR.name()
     );
@@ -89,7 +90,8 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
     private static final Set<String> MUTATION_ROLES = Set.of(
             PermissionRoleCode.PLATFORM_ADMINISTRATOR.name(),
             PermissionRoleCode.TENANT_ADMINISTRATOR.name(),
-            PermissionRoleCode.PROJECT_OWNER.name()
+            PermissionRoleCode.PROJECT_OWNER.name(),
+            PermissionRoleCode.ORDINARY_USER.name()
     );
 
     private final PermissionProjectMembershipMapper membershipMapper;
@@ -339,7 +341,7 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
         }
         wrapper.eq(PermissionProjectMembership::getTenantId, actorTenantId);
 
-        if (PermissionRoleCode.PROJECT_OWNER.name().equals(actorRole)) {
+        if (isProjectOwnerScopedRole(actorRole)) {
             Set<Long> manageableProjectIds = ownerProjectIds(actorTenantId, actorContext.actorId());
             if (manageableProjectIds.isEmpty()) {
                 wrapper.eq(PermissionProjectMembership::getProjectId, -1L);
@@ -369,7 +371,7 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
         if (!actorTenantId.equals(normalizeTenantId(membership.getTenantId()))) {
             throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED, "当前身份不能查看其他租户的项目成员授权");
         }
-        if (PermissionRoleCode.PROJECT_OWNER.name().equals(actorRole)
+        if (isProjectOwnerScopedRole(actorRole)
                 && !ownerProjectIds(actorTenantId, actorContext.actorId()).contains(membership.getProjectId())) {
             throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN, "项目负责人只能查看自己负责项目的成员授权");
         }
@@ -422,6 +424,18 @@ public class PermissionProjectMembershipServiceImpl implements PermissionProject
                 .stream()
                 .map(PermissionProjectMembership::getProjectId)
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    /**
+     * 判断当前平台身份是否需要按项目 OWNER 成员事实收口。
+     *
+     * <p>新的角色模型把登录身份和项目角色分开：普通用户的全局 actorRole 仍是 ORDINARY_USER，
+     * 其项目管理能力来自 permission_project_membership.project_role=OWNER。PROJECT_OWNER 仅保留给历史
+     * Keycloak claim 和迁移期账号兼容，两种身份都必须继续经过数据库 OWNER 成员关系校验。</p>
+     */
+    private boolean isProjectOwnerScopedRole(String actorRole) {
+        return PermissionRoleCode.PROJECT_OWNER.name().equals(actorRole)
+                || PermissionRoleCode.ORDINARY_USER.name().equals(actorRole);
     }
 
     private PermissionProjectMembership findByIdOrThrow(Long membershipId) {

@@ -55,9 +55,9 @@ class PermissionApprovalCenterServiceImplTest {
     @Test
     void ordinaryUserOnlyReceivesOwnRequestsWithCancelAction() {
         ApprovalCenterItemView item = item("PROJECT_CREATION", 11L, "PENDING");
-        when(approvalCenterMapper.selectApprovalPage(eq(10L), eq(1001L), isNull(), isNull(), eq(20L), eq(0L)))
+        when(approvalCenterMapper.selectApprovalPage(eq(10L), eq(1001L), isNull(), isNull(), isNull(), eq(20L), eq(0L)))
                 .thenReturn(List.of(item));
-        when(approvalCenterMapper.countApprovals(10L, 1001L, null, null)).thenReturn(1L);
+        when(approvalCenterMapper.countApprovals(10L, 1001L, null, null, null)).thenReturn(1L);
 
         var page = service.pageMyRequests(
                 new ApprovalCenterQueryCriteria(null, null, null, 1L, 20L),
@@ -65,13 +65,29 @@ class PermissionApprovalCenterServiceImplTest {
 
         assertThat(page.getRecords()).hasSize(1);
         assertThat(page.getRecords().get(0).getAvailableActions()).containsExactly("CANCEL");
-        verify(approvalCenterMapper).selectApprovalPage(10L, 1001L, null, null, 20L, 0L);
+        verify(approvalCenterMapper).selectApprovalPage(10L, 1001L, null, null, null, 20L, 0L);
     }
 
     @Test
-    void ordinaryUserCannotReadAdministratorPendingWork() {
-        assertThatThrownBy(() -> service.pagePendingApprovals(
+    void ordinaryProjectOwnerReadsOnlyOwnedProjectJoinPendingWork() {
+        when(approvalCenterMapper.selectApprovalPage(
+                eq(10L), isNull(), eq(1001L), eq("PROJECT_JOIN"), eq("PENDING"), eq(20L), eq(0L)))
+                .thenReturn(List.of(item("PROJECT_JOIN", 22L, "PENDING")));
+        when(approvalCenterMapper.countApprovals(10L, null, 1001L, "PROJECT_JOIN", "PENDING"))
+                .thenReturn(1L);
+
+        var page = service.pagePendingApprovals(
                 new ApprovalCenterQueryCriteria(null, null, "PENDING", 1L, 20L),
+                actor(10L, 1001L, PermissionRoleCode.ORDINARY_USER));
+
+        assertThat(page.getRecords()).hasSize(1);
+        assertThat(page.getRecords().get(0).getAvailableActions()).containsExactly("APPROVE", "REJECT");
+    }
+
+    @Test
+    void projectOwnerCannotReviewProjectCreationRequest() {
+        assertThatThrownBy(() -> service.pagePendingApprovals(
+                new ApprovalCenterQueryCriteria(null, "PROJECT_CREATION", "PENDING", 1L, 20L),
                 actor(10L, 1001L, PermissionRoleCode.ORDINARY_USER)))
                 .isInstanceOfSatisfying(PlatformBusinessException.class, exception ->
                         assertThat(exception.getErrorCode()).isEqualTo(PlatformErrorCode.FORBIDDEN));
