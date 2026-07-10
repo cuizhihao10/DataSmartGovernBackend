@@ -16,12 +16,14 @@ import com.czh.datasmart.govern.permission.controller.dto.ProjectJoinRequestMuta
 import com.czh.datasmart.govern.permission.mapper.PermissionApprovalCenterMapper;
 import com.czh.datasmart.govern.permission.service.PermissionProjectCreationRequestService;
 import com.czh.datasmart.govern.permission.service.PermissionProjectJoinRequestService;
+import com.czh.datasmart.govern.permission.service.support.PermissionIdentityDisplaySupport;
 import com.czh.datasmart.govern.permission.support.PermissionRoleCode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -41,6 +43,7 @@ class PermissionApprovalCenterServiceImplTest {
     private PermissionApprovalCenterMapper approvalCenterMapper;
     private PermissionProjectCreationRequestService creationRequestService;
     private PermissionProjectJoinRequestService joinRequestService;
+    private PermissionIdentityDisplaySupport identityDisplaySupport;
     private PermissionApprovalCenterServiceImpl service;
 
     @BeforeEach
@@ -48,13 +51,18 @@ class PermissionApprovalCenterServiceImplTest {
         approvalCenterMapper = mock(PermissionApprovalCenterMapper.class);
         creationRequestService = mock(PermissionProjectCreationRequestService.class);
         joinRequestService = mock(PermissionProjectJoinRequestService.class);
+        identityDisplaySupport = mock(PermissionIdentityDisplaySupport.class);
+        when(identityDisplaySupport.usernames(any())).thenReturn(Map.of());
         service = new PermissionApprovalCenterServiceImpl(
-                approvalCenterMapper, creationRequestService, joinRequestService);
+                approvalCenterMapper, creationRequestService, joinRequestService, identityDisplaySupport);
     }
 
     @Test
     void ordinaryUserOnlyReceivesOwnRequestsWithCancelAction() {
         ApprovalCenterItemView item = item("PROJECT_CREATION", 11L, "PENDING");
+        item.setApplicantActorId(1001L);
+        item.setOwnerActorId(1001L);
+        when(identityDisplaySupport.usernames(any())).thenReturn(Map.of(1001L, "project-owner"));
         when(approvalCenterMapper.selectApprovalPage(eq(10L), eq(1001L), isNull(), isNull(), isNull(), eq(20L), eq(0L)))
                 .thenReturn(List.of(item));
         when(approvalCenterMapper.countApprovals(10L, 1001L, null, null, null)).thenReturn(1L);
@@ -65,6 +73,8 @@ class PermissionApprovalCenterServiceImplTest {
 
         assertThat(page.getRecords()).hasSize(1);
         assertThat(page.getRecords().get(0).getAvailableActions()).containsExactly("CANCEL");
+        assertThat(page.getRecords().get(0).getApplicantUsername()).isEqualTo("project-owner");
+        assertThat(page.getRecords().get(0).getOwnerUsername()).isEqualTo("project-owner");
         verify(approvalCenterMapper).selectApprovalPage(10L, 1001L, null, null, null, 20L, 0L);
     }
 

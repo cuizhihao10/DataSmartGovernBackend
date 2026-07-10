@@ -9,6 +9,7 @@ package com.czh.datasmart.govern.permission.controller.dto;
 import com.czh.datasmart.govern.permission.entity.PermissionProjectCreationRequest;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 
 /**
  * Low-sensitive project creation request view returned to the console.
@@ -21,11 +22,14 @@ public record ProjectCreationRequestView(Long id,
                                          String projectType,
                                          Long applicantActorId,
                                          String applicantName,
+                                         String applicantUsername,
                                          Long ownerActorId,
+                                         String ownerUsername,
                                          String description,
                                          String requestReason,
                                          String status,
                                          Long reviewerActorId,
+                                         String reviewerUsername,
                                          String reviewerActorRole,
                                          String reviewComment,
                                          LocalDateTime reviewTime,
@@ -34,6 +38,11 @@ public record ProjectCreationRequestView(Long id,
                                          LocalDateTime updateTime) {
 
     public static ProjectCreationRequestView from(PermissionProjectCreationRequest request) {
+        return from(request, Map.of());
+    }
+
+    public static ProjectCreationRequestView from(PermissionProjectCreationRequest request,
+                                                  Map<Long, String> usernames) {
         if (request == null) {
             return null;
         }
@@ -46,11 +55,14 @@ public record ProjectCreationRequestView(Long id,
                 request.getProjectType(),
                 request.getApplicantActorId(),
                 request.getApplicantName(),
+                username(usernames, request.getApplicantActorId()),
                 request.getOwnerActorId(),
+                username(usernames, request.getOwnerActorId()),
                 request.getDescription(),
                 request.getRequestReason(),
                 request.getStatus(),
                 request.getReviewerActorId(),
+                username(usernames, request.getReviewerActorId()),
                 request.getReviewerActorRole(),
                 request.getReviewComment(),
                 request.getReviewTime(),
@@ -58,5 +70,9 @@ public record ProjectCreationRequestView(Long id,
                 request.getCreateTime(),
                 request.getUpdateTime()
         );
+    }
+
+    private static String username(Map<Long, String> usernames, Long actorId) {
+        return actorId == null || usernames == null ? null : usernames.get(actorId);
     }
 }

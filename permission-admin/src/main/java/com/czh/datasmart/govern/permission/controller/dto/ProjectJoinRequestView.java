@@ -10,6 +10,7 @@ import com.czh.datasmart.govern.permission.entity.PermissionProject;
 import com.czh.datasmart.govern.permission.entity.PermissionProjectJoinRequest;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 
 /**
  * Low-sensitive project join request view returned to the console.
@@ -21,10 +22,12 @@ public record ProjectJoinRequestView(Long id,
                                      String projectName,
                                      Long applicantActorId,
                                      String applicantName,
+                                     String applicantUsername,
                                      String requestedProjectRole,
                                      String requestReason,
                                      String status,
                                      Long reviewerActorId,
+                                     String reviewerUsername,
                                      String reviewerActorRole,
                                      String reviewComment,
                                      LocalDateTime reviewTime,
@@ -33,7 +36,7 @@ public record ProjectJoinRequestView(Long id,
                                      LocalDateTime updateTime) {
 
     public static ProjectJoinRequestView from(PermissionProjectJoinRequest request) {
-        return from(request, null);
+        return from(request, null, Map.of());
     }
 
     /**
@@ -45,6 +48,12 @@ public record ProjectJoinRequestView(Long id,
      */
     public static ProjectJoinRequestView from(PermissionProjectJoinRequest request,
                                               PermissionProject project) {
+        return from(request, project, Map.of());
+    }
+
+    public static ProjectJoinRequestView from(PermissionProjectJoinRequest request,
+                                              PermissionProject project,
+                                              Map<Long, String> usernames) {
         if (request == null) {
             return null;
         }
@@ -56,10 +65,12 @@ public record ProjectJoinRequestView(Long id,
                 project == null ? null : project.getProjectName(),
                 request.getApplicantActorId(),
                 request.getApplicantName(),
+                username(usernames, request.getApplicantActorId()),
                 request.getRequestedProjectRole(),
                 request.getRequestReason(),
                 request.getStatus(),
                 request.getReviewerActorId(),
+                username(usernames, request.getReviewerActorId()),
                 request.getReviewerActorRole(),
                 request.getReviewComment(),
                 request.getReviewTime(),
@@ -67,5 +78,9 @@ public record ProjectJoinRequestView(Long id,
                 request.getCreateTime(),
                 request.getUpdateTime()
         );
+    }
+
+    private static String username(Map<Long, String> usernames, Long actorId) {
+        return actorId == null || usernames == null ? null : usernames.get(actorId);
     }
 }

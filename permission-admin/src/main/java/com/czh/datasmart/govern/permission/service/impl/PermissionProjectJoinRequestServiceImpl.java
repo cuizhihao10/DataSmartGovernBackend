@@ -28,6 +28,7 @@ import com.czh.datasmart.govern.permission.mapper.PermissionProjectMapper;
 import com.czh.datasmart.govern.permission.mapper.PermissionProjectMembershipMapper;
 import com.czh.datasmart.govern.permission.service.PermissionProjectJoinRequestService;
 import com.czh.datasmart.govern.permission.service.PermissionProjectMembershipService;
+import com.czh.datasmart.govern.permission.service.support.PermissionIdentityDisplaySupport;
 import com.czh.datasmart.govern.permission.support.PermissionRoleCode;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -41,6 +42,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Implementation of the project join approval workflow.
@@ -90,6 +92,7 @@ public class PermissionProjectJoinRequestServiceImpl implements PermissionProjec
     private final PermissionProjectMapper projectMapper;
     private final PermissionProjectMembershipMapper membershipMapper;
     private final PermissionProjectMembershipService membershipService;
+    private final PermissionIdentityDisplaySupport identityDisplaySupport;
 
     @Override
     public PlatformPageResponse<ProjectJoinCandidateView> pageJoinCandidates(Long tenantId,
@@ -391,8 +394,12 @@ public class PermissionProjectJoinRequestServiceImpl implements PermissionProjec
                                                               Long size) {
         Page<PermissionProjectJoinRequest> page = joinRequestMapper.selectPage(pageRequest(current, size), wrapper);
         Map<Long, PermissionProject> projects = loadProjects(page.getRecords());
+        Map<Long, String> usernames = identityDisplaySupport.usernames(page.getRecords().stream()
+                .flatMap(request -> Stream.of(request.getApplicantActorId(), request.getReviewerActorId()))
+                .toList());
         List<ProjectJoinRequestView> records = page.getRecords().stream()
-                .map(request -> ProjectJoinRequestView.from(request, projects.get(request.getProjectId())))
+                .map(request -> ProjectJoinRequestView.from(
+                        request, projects.get(request.getProjectId()), usernames))
                 .toList();
         return PlatformPageResponse.of(page.getCurrent(), page.getSize(), page.getTotal(), records);
     }

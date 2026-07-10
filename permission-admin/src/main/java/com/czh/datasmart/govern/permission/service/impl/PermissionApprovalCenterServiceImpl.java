@@ -22,13 +22,16 @@ import com.czh.datasmart.govern.permission.mapper.PermissionApprovalCenterMapper
 import com.czh.datasmart.govern.permission.service.PermissionApprovalCenterService;
 import com.czh.datasmart.govern.permission.service.PermissionProjectCreationRequestService;
 import com.czh.datasmart.govern.permission.service.PermissionProjectJoinRequestService;
+import com.czh.datasmart.govern.permission.service.support.PermissionIdentityDisplaySupport;
 import com.czh.datasmart.govern.permission.support.PermissionRoleCode;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 
 /**
  * Unified approval-center service.
@@ -57,6 +60,7 @@ public class PermissionApprovalCenterServiceImpl implements PermissionApprovalCe
     private final PermissionApprovalCenterMapper approvalCenterMapper;
     private final PermissionProjectCreationRequestService creationRequestService;
     private final PermissionProjectJoinRequestService joinRequestService;
+    private final PermissionIdentityDisplaySupport identityDisplaySupport;
 
     @Override
     public PlatformPageResponse<ApprovalCenterItemView> pageMyRequests(ApprovalCenterQueryCriteria criteria,
@@ -174,11 +178,24 @@ public class PermissionApprovalCenterServiceImpl implements PermissionApprovalCe
         String status = normalizeStatus(criteria.status());
         List<ApprovalCenterItemView> records = approvalCenterMapper.selectApprovalPage(
                 tenantId, applicantActorId, ownerReviewerActorId, requestType, status, size, (current - 1) * size);
-        records.forEach(item -> item.setAvailableActions(
-                STATUS_PENDING.equals(normalizeStatus(item.getStatus())) ? pendingActions : List.of()));
+        Map<Long, String> usernames = identityDisplaySupport.usernames(records.stream()
+                .flatMap(item -> Stream.of(
+                        item.getApplicantActorId(), item.getOwnerActorId(), item.getReviewerActorId()))
+                .toList());
+        records.forEach(item -> {
+            item.setApplicantUsername(username(usernames, item.getApplicantActorId()));
+            item.setOwnerUsername(username(usernames, item.getOwnerActorId()));
+            item.setReviewerUsername(username(usernames, item.getReviewerActorId()));
+            item.setAvailableActions(
+                    STATUS_PENDING.equals(normalizeStatus(item.getStatus())) ? pendingActions : List.of());
+        });
         long total = approvalCenterMapper.countApprovals(
                 tenantId, applicantActorId, ownerReviewerActorId, requestType, status);
         return PlatformPageResponse.of(current, size, total, records);
+    }
+
+    private String username(Map<Long, String> usernames, Long actorId) {
+        return actorId == null || usernames == null ? null : usernames.get(actorId);
     }
 
     private Long resolveQueryTenant(Long requestedTenantId,

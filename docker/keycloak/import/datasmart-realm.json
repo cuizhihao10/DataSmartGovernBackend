@@ -244,6 +244,123 @@
       ]
     },
     {
+      "id": "00000000-0000-0000-0000-000000010010",
+      "username": "test10",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Test",
+      "lastName": "10",
+      "email": "test10@example.local",
+      "attributes": {
+        "datasmart_tenant_id": [
+          "10"
+        ],
+        "datasmart_actor_id": [
+          "100001"
+        ],
+        "datasmart_actor_role": [
+          "ORDINARY_USER"
+        ],
+        "datasmart_actor_type": [
+          "USER"
+        ],
+        "datasmart_application_id": [
+          "10010"
+        ],
+        "datasmart_application_code": [
+          "FLASHSYNC"
+        ]
+      },
+      "realmRoles": [
+        "DATASMART_ORDINARY_USER"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "DataSmart@123",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000010007",
+      "username": "test7",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Test",
+      "lastName": "7",
+      "email": "test7@example.local",
+      "attributes": {
+        "datasmart_tenant_id": [
+          "10"
+        ],
+        "datasmart_actor_id": [
+          "100002"
+        ],
+        "datasmart_actor_role": [
+          "ORDINARY_USER"
+        ],
+        "datasmart_actor_type": [
+          "USER"
+        ],
+        "datasmart_application_id": [
+          "10010"
+        ],
+        "datasmart_application_code": [
+          "FLASHSYNC"
+        ]
+      },
+      "realmRoles": [
+        "DATASMART_ORDINARY_USER"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "DataSmart@123",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000010037",
+      "username": "test37",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Test",
+      "lastName": "37",
+      "email": "test37@example.local",
+      "attributes": {
+        "datasmart_tenant_id": [
+          "10"
+        ],
+        "datasmart_actor_id": [
+          "100003"
+        ],
+        "datasmart_actor_role": [
+          "ORDINARY_USER"
+        ],
+        "datasmart_actor_type": [
+          "USER"
+        ],
+        "datasmart_application_id": [
+          "10010"
+        ],
+        "datasmart_application_code": [
+          "FLASHSYNC"
+        ]
+      },
+      "realmRoles": [
+        "DATASMART_ORDINARY_USER"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "DataSmart@123",
+          "temporary": false
+        }
+      ]
+    },
+    {
       "username": "project-owner",
       "enabled": true,
       "emailVerified": true,

@@ -63,6 +63,11 @@ public record PermissionProjectView(
         Long ownerActorId,
 
         /**
+         * 面向控制台展示的负责人用户名。Actor ID 仍用于授权和审计，但不作为用户可读名称。
+         */
+        String ownerUsername,
+
+        /**
          * 项目描述。
          */
         String description,
@@ -84,10 +89,16 @@ public record PermissionProjectView(
      * 也应该在这里逐一判断是否适合暴露给页面，而不是让 Controller 直接返回实体。</p>
      */
     public static PermissionProjectView from(PermissionProject project) {
-        return from(project, null);
+        return from(project, null, null);
     }
 
     public static PermissionProjectView from(PermissionProject project, String tenantName) {
+        return from(project, tenantName, null);
+    }
+
+    public static PermissionProjectView from(PermissionProject project,
+                                             String tenantName,
+                                             String ownerUsername) {
         if (project == null) {
             return null;
         }
@@ -100,6 +111,7 @@ public record PermissionProjectView(
                 project.getProjectType(),
                 project.getStatus(),
                 project.getOwnerActorId(),
+                ownerUsername,
                 project.getDescription(),
                 project.getCreateTime(),
                 project.getUpdateTime()

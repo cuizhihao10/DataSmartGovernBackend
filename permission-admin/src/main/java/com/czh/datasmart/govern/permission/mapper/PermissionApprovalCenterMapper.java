@@ -25,7 +25,7 @@ public interface PermissionApprovalCenterMapper {
     @Select("""
             <script>
             SELECT request_type, request_id, tenant_id, application_id, project_id, project_code, project_name,
-                   applicant_actor_id, applicant_name, requested_project_role, request_reason, status,
+                   applicant_actor_id, applicant_name, owner_actor_id, requested_project_role, request_reason, status,
                    reviewer_actor_id, reviewer_actor_role, review_comment, review_time, result_resource_id,
                    create_time, update_time
             FROM (
@@ -38,6 +38,7 @@ public interface PermissionApprovalCenterMapper {
                        creation.project_name,
                        creation.applicant_actor_id,
                        creation.applicant_name,
+                       creation.owner_actor_id,
                        'OWNER' AS requested_project_role,
                        creation.request_reason,
                        creation.status,
@@ -59,6 +60,7 @@ public interface PermissionApprovalCenterMapper {
                        project.project_name,
                        join_request.applicant_actor_id,
                        join_request.applicant_name,
+                       CAST(NULL AS BIGINT) AS owner_actor_id,
                        join_request.requested_project_role,
                        join_request.request_reason,
                        join_request.status,

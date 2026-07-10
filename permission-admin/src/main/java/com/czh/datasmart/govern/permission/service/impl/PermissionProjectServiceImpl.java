@@ -31,6 +31,7 @@ import com.czh.datasmart.govern.permission.mapper.PermissionTenantMapper;
 import com.czh.datasmart.govern.permission.service.PermissionProjectService;
 import com.czh.datasmart.govern.permission.service.support.PermissionProjectAuditSupport;
 import com.czh.datasmart.govern.permission.service.support.PermissionProjectMembershipAuditSupport;
+import com.czh.datasmart.govern.permission.service.support.PermissionIdentityDisplaySupport;
 import com.czh.datasmart.govern.permission.support.PermissionRoleCode;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -119,6 +120,7 @@ public class PermissionProjectServiceImpl implements PermissionProjectService {
     private final PermissionProjectMapper projectMapper;
     private final PermissionProjectMembershipMapper membershipMapper;
     private final PermissionTenantMapper tenantMapper;
+    private final PermissionIdentityDisplaySupport identityDisplaySupport;
     private final PermissionProjectAuditSupport projectAuditSupport;
     private final PermissionProjectMembershipAuditSupport membershipAuditSupport;
     private final PermissionProjectMembershipChangedEventPublisher membershipChangedEventPublisher;
@@ -171,7 +173,9 @@ public class PermissionProjectServiceImpl implements PermissionProjectService {
         PermissionProject project = findProjectByIdOrThrow(projectId);
         validateReadableProject(project, actorContext);
         PermissionTenant tenant = tenantMapper.selectById(project.getTenantId());
-        return PermissionProjectView.from(project, tenant == null ? null : tenant.getTenantName());
+        return PermissionProjectView.from(project,
+                tenant == null ? null : tenant.getTenantName(),
+                identityDisplaySupport.username(project.getOwnerActorId()));
     }
 
     private List<PermissionProjectView> projectViews(List<PermissionProject> projects) {
@@ -187,11 +191,15 @@ public class PermissionProjectServiceImpl implements PermissionProjectService {
                 ? Map.of()
                 : tenantRows.stream()
                 .collect(Collectors.toMap(PermissionTenant::getTenantId, Function.identity(), (left, right) -> left));
+        Map<Long, String> ownerUsernames = identityDisplaySupport.usernames(projects.stream()
+                .map(PermissionProject::getOwnerActorId)
+                .toList());
         return projects.stream()
                 .map(project -> PermissionProjectView.from(project,
                         java.util.Optional.ofNullable(tenants.get(project.getTenantId()))
                                 .map(PermissionTenant::getTenantName)
-                                .orElse(null)))
+                                .orElse(null),
+                        project.getOwnerActorId() == null ? null : ownerUsernames.get(project.getOwnerActorId())))
                 .toList();
     }
 

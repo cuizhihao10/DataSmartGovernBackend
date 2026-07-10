@@ -26,6 +26,7 @@ import com.czh.datasmart.govern.permission.mapper.PermissionProjectCreationReque
 import com.czh.datasmart.govern.permission.mapper.PermissionProjectMapper;
 import com.czh.datasmart.govern.permission.service.PermissionProjectCreationRequestService;
 import com.czh.datasmart.govern.permission.service.PermissionProjectService;
+import com.czh.datasmart.govern.permission.service.support.PermissionIdentityDisplaySupport;
 import com.czh.datasmart.govern.permission.support.PermissionRoleCode;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -33,7 +34,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.stream.Stream;
 import java.util.regex.Pattern;
 
 /**
@@ -71,6 +74,7 @@ public class PermissionProjectCreationRequestServiceImpl implements PermissionPr
     private final PermissionProjectCreationRequestMapper creationRequestMapper;
     private final PermissionProjectMapper projectMapper;
     private final PermissionProjectService projectService;
+    private final PermissionIdentityDisplaySupport identityDisplaySupport;
 
     @Override
     @Transactional
@@ -357,11 +361,17 @@ public class PermissionProjectCreationRequestServiceImpl implements PermissionPr
             Long size) {
         Page<PermissionProjectCreationRequest> page =
                 creationRequestMapper.selectPage(pageRequest(current, size), wrapper);
+        Map<Long, String> usernames = identityDisplaySupport.usernames(page.getRecords().stream()
+                .flatMap(request -> Stream.of(
+                        request.getApplicantActorId(), request.getOwnerActorId(), request.getReviewerActorId()))
+                .toList());
         return PlatformPageResponse.of(
                 page.getCurrent(),
                 page.getSize(),
                 page.getTotal(),
-                page.getRecords().stream().map(ProjectCreationRequestView::from).toList());
+                page.getRecords().stream()
+                        .map(request -> ProjectCreationRequestView.from(request, usernames))
+                        .toList());
     }
 
     private ProjectCreationRequestMutationResult result(PermissionProjectCreationRequest request, String message) {

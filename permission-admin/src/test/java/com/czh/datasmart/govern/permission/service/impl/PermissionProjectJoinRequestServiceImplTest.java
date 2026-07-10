@@ -17,6 +17,7 @@ import com.czh.datasmart.govern.permission.mapper.PermissionProjectJoinRequestMa
 import com.czh.datasmart.govern.permission.mapper.PermissionProjectMapper;
 import com.czh.datasmart.govern.permission.mapper.PermissionProjectMembershipMapper;
 import com.czh.datasmart.govern.permission.service.PermissionProjectMembershipService;
+import com.czh.datasmart.govern.permission.service.support.PermissionIdentityDisplaySupport;
 import com.czh.datasmart.govern.permission.support.PermissionRoleCode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,6 +25,7 @@ import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.mockito.ArgumentCaptor;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -49,8 +51,10 @@ class PermissionProjectJoinRequestServiceImplTest {
         projectMapper = mock(PermissionProjectMapper.class);
         PermissionProjectMembershipMapper membershipMapper = mock(PermissionProjectMembershipMapper.class);
         PermissionProjectMembershipService membershipService = mock(PermissionProjectMembershipService.class);
+        PermissionIdentityDisplaySupport identityDisplaySupport = mock(PermissionIdentityDisplaySupport.class);
+        when(identityDisplaySupport.usernames(any())).thenReturn(Map.of());
         service = new PermissionProjectJoinRequestServiceImpl(
-                joinRequestMapper, projectMapper, membershipMapper, membershipService);
+                joinRequestMapper, projectMapper, membershipMapper, membershipService, identityDisplaySupport);
     }
 
     @Test

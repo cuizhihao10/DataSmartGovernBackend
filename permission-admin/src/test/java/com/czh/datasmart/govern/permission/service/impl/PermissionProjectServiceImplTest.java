@@ -22,6 +22,7 @@ import com.czh.datasmart.govern.permission.mapper.PermissionProjectMapper;
 import com.czh.datasmart.govern.permission.mapper.PermissionProjectMembershipMapper;
 import com.czh.datasmart.govern.permission.mapper.PermissionTenantMapper;
 import com.czh.datasmart.govern.permission.service.support.PermissionProjectAuditSupport;
+import com.czh.datasmart.govern.permission.service.support.PermissionIdentityDisplaySupport;
 import com.czh.datasmart.govern.permission.service.support.PermissionProjectMembershipAuditSupport;
 import com.czh.datasmart.govern.permission.support.PermissionRoleCode;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -55,6 +57,7 @@ class PermissionProjectServiceImplTest {
     private PermissionProjectMembershipMapper membershipMapper;
     private PermissionTenantMapper tenantMapper;
     private PermissionProjectAuditSupport projectAuditSupport;
+    private PermissionIdentityDisplaySupport identityDisplaySupport;
     private PermissionProjectMembershipAuditSupport membershipAuditSupport;
     private PermissionProjectMembershipChangedEventPublisher membershipChangedEventPublisher;
     private PermissionProjectServiceImpl service;
@@ -64,11 +67,13 @@ class PermissionProjectServiceImplTest {
         projectMapper = mock(PermissionProjectMapper.class);
         membershipMapper = mock(PermissionProjectMembershipMapper.class);
         tenantMapper = mock(PermissionTenantMapper.class);
+        identityDisplaySupport = mock(PermissionIdentityDisplaySupport.class);
+        when(identityDisplaySupport.usernames(any())).thenReturn(Map.of());
         projectAuditSupport = mock(PermissionProjectAuditSupport.class);
         membershipAuditSupport = mock(PermissionProjectMembershipAuditSupport.class);
         membershipChangedEventPublisher = mock(PermissionProjectMembershipChangedEventPublisher.class);
-        service = new PermissionProjectServiceImpl(projectMapper, membershipMapper, tenantMapper, projectAuditSupport,
-                membershipAuditSupport, membershipChangedEventPublisher);
+        service = new PermissionProjectServiceImpl(projectMapper, membershipMapper, tenantMapper,
+                identityDisplaySupport, projectAuditSupport, membershipAuditSupport, membershipChangedEventPublisher);
     }
 
     /**

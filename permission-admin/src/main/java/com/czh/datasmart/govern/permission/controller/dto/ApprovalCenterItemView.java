@@ -29,10 +29,14 @@ public class ApprovalCenterItemView {
     private String projectName;
     private Long applicantActorId;
     private String applicantName;
+    private String applicantUsername;
+    private Long ownerActorId;
+    private String ownerUsername;
     private String requestedProjectRole;
     private String requestReason;
     private String status;
     private Long reviewerActorId;
+    private String reviewerUsername;
     private String reviewerActorRole;
     private String reviewComment;
     private LocalDateTime reviewTime;

@@ -15,12 +15,14 @@ import com.czh.datasmart.govern.permission.entity.PermissionProjectCreationReque
 import com.czh.datasmart.govern.permission.mapper.PermissionProjectCreationRequestMapper;
 import com.czh.datasmart.govern.permission.mapper.PermissionProjectMapper;
 import com.czh.datasmart.govern.permission.service.PermissionProjectService;
+import com.czh.datasmart.govern.permission.service.support.PermissionIdentityDisplaySupport;
 import com.czh.datasmart.govern.permission.support.PermissionRoleCode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -39,6 +41,7 @@ class PermissionProjectCreationRequestServiceImplTest {
     private PermissionProjectCreationRequestMapper creationRequestMapper;
     private PermissionProjectMapper projectMapper;
     private PermissionProjectService projectService;
+    private PermissionIdentityDisplaySupport identityDisplaySupport;
     private PermissionProjectCreationRequestServiceImpl service;
 
     @BeforeEach
@@ -46,7 +49,10 @@ class PermissionProjectCreationRequestServiceImplTest {
         creationRequestMapper = mock(PermissionProjectCreationRequestMapper.class);
         projectMapper = mock(PermissionProjectMapper.class);
         projectService = mock(PermissionProjectService.class);
-        service = new PermissionProjectCreationRequestServiceImpl(creationRequestMapper, projectMapper, projectService);
+        identityDisplaySupport = mock(PermissionIdentityDisplaySupport.class);
+        when(identityDisplaySupport.usernames(any())).thenReturn(Map.of());
+        service = new PermissionProjectCreationRequestServiceImpl(
+                creationRequestMapper, projectMapper, projectService, identityDisplaySupport);
     }
 
     @Test
