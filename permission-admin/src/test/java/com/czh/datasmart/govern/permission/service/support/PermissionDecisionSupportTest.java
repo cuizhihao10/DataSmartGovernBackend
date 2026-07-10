@@ -10,8 +10,10 @@ import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionDecisionRequest;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionDecisionResult;
 import com.czh.datasmart.govern.permission.entity.PermissionDataScopePolicy;
+import com.czh.datasmart.govern.permission.entity.PermissionProject;
 import com.czh.datasmart.govern.permission.entity.PermissionRoutePolicy;
 import com.czh.datasmart.govern.permission.entity.PermissionTenant;
+import com.czh.datasmart.govern.permission.mapper.PermissionProjectMapper;
 import com.czh.datasmart.govern.permission.mapper.PermissionTenantMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -39,6 +41,7 @@ class PermissionDecisionSupportTest {
     private PermissionQuerySupport querySupport;
     private PermissionAuditSupport auditSupport;
     private PermissionTenantMapper tenantMapper;
+    private PermissionProjectMapper projectMapper;
     private PermissionDecisionSupport decisionSupport;
 
     @BeforeEach
@@ -46,8 +49,9 @@ class PermissionDecisionSupportTest {
         querySupport = mock(PermissionQuerySupport.class);
         auditSupport = mock(PermissionAuditSupport.class);
         tenantMapper = mock(PermissionTenantMapper.class);
+        projectMapper = mock(PermissionProjectMapper.class);
         when(tenantMapper.selectById(10L)).thenReturn(activeTenant());
-        decisionSupport = new PermissionDecisionSupport(querySupport, auditSupport, tenantMapper);
+        decisionSupport = new PermissionDecisionSupport(querySupport, auditSupport, tenantMapper, projectMapper);
     }
 
     @Test
@@ -288,6 +292,46 @@ class PermissionDecisionSupportTest {
 
         assertThat(result.getAllowed()).isTrue();
         assertThat(result.getMatchedRoutePolicyId()).isEqualTo(152L);
+    }
+
+    @Test
+    void platformScopeShouldResolveEffectiveTenantFromSelectedProject() {
+        PermissionDecisionRequest request = decisionRequest("PLATFORM_ADMINISTRATOR");
+        request.setRequestedProjectId(101L);
+        when(querySupport.listRoutePolicies(10L, "PLATFORM_ADMINISTRATOR"))
+                .thenReturn(List.of(routePolicy("PLATFORM_ADMINISTRATOR", "ALLOW", 900)));
+        when(querySupport.listDataScopePolicies(10L, "PLATFORM_ADMINISTRATOR", "AI_RUNTIME"))
+                .thenReturn(List.of(dataScope("PLATFORM_ADMINISTRATOR", "AI_RUNTIME", "PLATFORM", "1 = 1")));
+        PermissionProject project = new PermissionProject();
+        project.setProjectId(101L);
+        project.setTenantId(20L);
+        project.setStatus("ACTIVE");
+        when(projectMapper.selectById(101L)).thenReturn(project);
+
+        PermissionDecisionResult result = decisionSupport.evaluate(request, "trace-platform-project");
+
+        assertThat(result.getAllowed()).isTrue();
+        assertThat(result.getEffectiveTenantId()).isEqualTo(20L);
+    }
+
+    @Test
+    void tenantScopeShouldRejectProjectFromAnotherTenant() {
+        PermissionDecisionRequest request = decisionRequest("TENANT_ADMINISTRATOR");
+        request.setRequestedProjectId(101L);
+        when(querySupport.listRoutePolicies(10L, "TENANT_ADMINISTRATOR"))
+                .thenReturn(List.of(routePolicy("TENANT_ADMINISTRATOR", "ALLOW", 800)));
+        when(querySupport.listDataScopePolicies(10L, "TENANT_ADMINISTRATOR", "AI_RUNTIME"))
+                .thenReturn(List.of(dataScope("TENANT_ADMINISTRATOR", "AI_RUNTIME", "TENANT", "tenant_id = ${tenantId}")));
+        PermissionProject project = new PermissionProject();
+        project.setProjectId(101L);
+        project.setTenantId(20L);
+        project.setStatus("ACTIVE");
+        when(projectMapper.selectById(101L)).thenReturn(project);
+
+        PermissionDecisionResult result = decisionSupport.evaluate(request, "trace-tenant-project");
+
+        assertThat(result.getAllowed()).isFalse();
+        assertThat(result.getReason()).contains("不属于当前租户");
     }
 
     private PermissionDecisionRequest decisionRequest(String actorRole) {

@@ -33,6 +33,11 @@ public record PermissionProjectView(
         Long tenantId,
 
         /**
+         * 租户名称。平台管理员跨租户切换项目时用于区分同名项目，页面无需把 tenantId 当显示名称。
+         */
+        String tenantName,
+
+        /**
          * 项目编码。
          */
         String projectCode,
@@ -79,12 +84,17 @@ public record PermissionProjectView(
      * 也应该在这里逐一判断是否适合暴露给页面，而不是让 Controller 直接返回实体。</p>
      */
     public static PermissionProjectView from(PermissionProject project) {
+        return from(project, null);
+    }
+
+    public static PermissionProjectView from(PermissionProject project, String tenantName) {
         if (project == null) {
             return null;
         }
         return new PermissionProjectView(
                 project.getProjectId(),
                 project.getTenantId(),
+                tenantName,
                 project.getProjectCode(),
                 project.getProjectName(),
                 project.getProjectType(),

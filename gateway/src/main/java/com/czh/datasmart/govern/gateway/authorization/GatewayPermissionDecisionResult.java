@@ -54,6 +54,14 @@ public class GatewayPermissionDecisionResult {
     private String dataScopeExpression;
 
     /**
+     * 本次项目上下文对应的可信租户 ID。
+     *
+     * <p>普通用户和租户管理员通常等于登录租户；平台管理员选择跨租户项目时由 permission-admin
+     * 根据项目主数据返回目标租户，gateway 再用它重建下游租户 Header。</p>
+     */
+    private Long effectiveTenantId;
+
+    /**
      * permission-admin 已经计算出的项目授权快照。
      *
      * <p>网关不理解项目成员表，也不解析 `${actorProjectIds}` 占位符。

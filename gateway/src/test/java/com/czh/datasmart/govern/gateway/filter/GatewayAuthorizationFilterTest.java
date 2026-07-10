@@ -253,6 +253,7 @@ class GatewayAuthorizationFilterTest {
         exchange.getAttributes().put(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID, 205L);
         GatewayPermissionDecisionResult decision = allowedDecision();
         decision.setDataScopeLevel("TENANT");
+        decision.setEffectiveTenantId(10L);
         decision.setAuthorizedProjectIds(List.of());
         decision.setAuthorizedProjectRoles(List.of());
         RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
@@ -264,8 +265,47 @@ class GatewayAuthorizationFilterTest {
         assertThat(chain.called()).isTrue();
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.PROJECT_ID))
                 .isEqualTo("205");
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.TENANT_ID))
+                .isEqualTo("10");
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AUTHORIZED_PROJECT_IDS))
                 .isNull();
+    }
+
+    @Test
+    void platformScopeShouldRewriteTenantFromPermissionValidatedProjectContext() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerHttpRequest request = MockServerHttpRequest
+                .method(org.springframework.http.HttpMethod.GET, "/api/datasource/datasources")
+                .header(PlatformContextHeaders.TRACE_ID, "trace-test-001")
+                .header(PlatformContextHeaders.TENANT_ID, "1")
+                .header(PlatformContextHeaders.ACTOR_ID, "9001")
+                .header(PlatformContextHeaders.ACTOR_ROLE, "PLATFORM_ADMINISTRATOR")
+                .build();
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+        exchange.getAttributes().put(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID_RAW, "101");
+        exchange.getAttributes().put(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID, 101L);
+        GatewayPermissionDecisionResult decision = allowedDecision();
+        decision.setDataScopeLevel("PLATFORM");
+        decision.setEffectiveTenantId(10L);
+        decision.setAuthorizedProjectIds(List.of());
+        decision.setAuthorizedProjectRoles(List.of());
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(decision));
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(chain.called()).isTrue();
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.TENANT_ID))
+                .isEqualTo("10");
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.PROJECT_ID))
+                .isEqualTo("101");
+        ArgumentCaptor<GatewayPermissionDecisionRequest> captor = forClass(GatewayPermissionDecisionRequest.class);
+        verify(decisionClient).evaluate(captor.capture(), eq("trace-test-001"));
+        assertThat(captor.getValue().getTenantId()).isEqualTo(1L);
+        assertThat(captor.getValue().getRequestedProjectId()).isEqualTo(101L);
     }
 
     /**

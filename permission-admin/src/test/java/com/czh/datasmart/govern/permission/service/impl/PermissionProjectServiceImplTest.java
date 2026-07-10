@@ -20,6 +20,7 @@ import com.czh.datasmart.govern.permission.entity.PermissionProjectMembership;
 import com.czh.datasmart.govern.permission.event.PermissionProjectMembershipChangedEventPublisher;
 import com.czh.datasmart.govern.permission.mapper.PermissionProjectMapper;
 import com.czh.datasmart.govern.permission.mapper.PermissionProjectMembershipMapper;
+import com.czh.datasmart.govern.permission.mapper.PermissionTenantMapper;
 import com.czh.datasmart.govern.permission.service.support.PermissionProjectAuditSupport;
 import com.czh.datasmart.govern.permission.service.support.PermissionProjectMembershipAuditSupport;
 import com.czh.datasmart.govern.permission.support.PermissionRoleCode;
@@ -52,6 +53,7 @@ class PermissionProjectServiceImplTest {
 
     private PermissionProjectMapper projectMapper;
     private PermissionProjectMembershipMapper membershipMapper;
+    private PermissionTenantMapper tenantMapper;
     private PermissionProjectAuditSupport projectAuditSupport;
     private PermissionProjectMembershipAuditSupport membershipAuditSupport;
     private PermissionProjectMembershipChangedEventPublisher membershipChangedEventPublisher;
@@ -61,10 +63,11 @@ class PermissionProjectServiceImplTest {
     void setUp() {
         projectMapper = mock(PermissionProjectMapper.class);
         membershipMapper = mock(PermissionProjectMembershipMapper.class);
+        tenantMapper = mock(PermissionTenantMapper.class);
         projectAuditSupport = mock(PermissionProjectAuditSupport.class);
         membershipAuditSupport = mock(PermissionProjectMembershipAuditSupport.class);
         membershipChangedEventPublisher = mock(PermissionProjectMembershipChangedEventPublisher.class);
-        service = new PermissionProjectServiceImpl(projectMapper, membershipMapper, projectAuditSupport,
+        service = new PermissionProjectServiceImpl(projectMapper, membershipMapper, tenantMapper, projectAuditSupport,
                 membershipAuditSupport, membershipChangedEventPublisher);
     }
 

@@ -23,9 +23,11 @@ import com.czh.datasmart.govern.permission.controller.dto.PermissionProjectUpdat
 import com.czh.datasmart.govern.permission.controller.dto.PermissionProjectView;
 import com.czh.datasmart.govern.permission.entity.PermissionProject;
 import com.czh.datasmart.govern.permission.entity.PermissionProjectMembership;
+import com.czh.datasmart.govern.permission.entity.PermissionTenant;
 import com.czh.datasmart.govern.permission.event.PermissionProjectMembershipChangedEventPublisher;
 import com.czh.datasmart.govern.permission.mapper.PermissionProjectMapper;
 import com.czh.datasmart.govern.permission.mapper.PermissionProjectMembershipMapper;
+import com.czh.datasmart.govern.permission.mapper.PermissionTenantMapper;
 import com.czh.datasmart.govern.permission.service.PermissionProjectService;
 import com.czh.datasmart.govern.permission.service.support.PermissionProjectAuditSupport;
 import com.czh.datasmart.govern.permission.service.support.PermissionProjectMembershipAuditSupport;
@@ -39,7 +41,10 @@ import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import java.util.regex.Pattern;
 
 /**
@@ -113,6 +118,7 @@ public class PermissionProjectServiceImpl implements PermissionProjectService {
 
     private final PermissionProjectMapper projectMapper;
     private final PermissionProjectMembershipMapper membershipMapper;
+    private final PermissionTenantMapper tenantMapper;
     private final PermissionProjectAuditSupport projectAuditSupport;
     private final PermissionProjectMembershipAuditSupport membershipAuditSupport;
     private final PermissionProjectMembershipChangedEventPublisher membershipChangedEventPublisher;
@@ -150,9 +156,7 @@ public class PermissionProjectServiceImpl implements PermissionProjectService {
         }
 
         Page<PermissionProject> page = projectMapper.selectPage(page(safeCriteria.current(), safeCriteria.size()), wrapper);
-        List<PermissionProjectView> views = page.getRecords().stream()
-                .map(PermissionProjectView::from)
-                .toList();
+        List<PermissionProjectView> views = projectViews(page.getRecords());
         return PlatformPageResponse.of(page.getCurrent(), page.getSize(), page.getTotal(), views);
     }
 
@@ -166,7 +170,29 @@ public class PermissionProjectServiceImpl implements PermissionProjectService {
     public PermissionProjectView getProject(Long projectId, PermissionActorContext actorContext) {
         PermissionProject project = findProjectByIdOrThrow(projectId);
         validateReadableProject(project, actorContext);
-        return PermissionProjectView.from(project);
+        PermissionTenant tenant = tenantMapper.selectById(project.getTenantId());
+        return PermissionProjectView.from(project, tenant == null ? null : tenant.getTenantName());
+    }
+
+    private List<PermissionProjectView> projectViews(List<PermissionProject> projects) {
+        if (projects == null || projects.isEmpty()) {
+            return List.of();
+        }
+        Set<Long> tenantIds = projects.stream()
+                .map(PermissionProject::getTenantId)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toSet());
+        List<PermissionTenant> tenantRows = tenantIds.isEmpty() ? List.of() : tenantMapper.selectBatchIds(tenantIds);
+        Map<Long, PermissionTenant> tenants = tenantRows == null
+                ? Map.of()
+                : tenantRows.stream()
+                .collect(Collectors.toMap(PermissionTenant::getTenantId, Function.identity(), (left, right) -> left));
+        return projects.stream()
+                .map(project -> PermissionProjectView.from(project,
+                        java.util.Optional.ofNullable(tenants.get(project.getTenantId()))
+                                .map(PermissionTenant::getTenantName)
+                                .orElse(null)))
+                .toList();
     }
 
     /**

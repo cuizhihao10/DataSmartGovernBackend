@@ -55,6 +55,14 @@ public class PermissionDecisionResult {
     private String dataScopeExpression;
 
     /**
+     * 当前项目选择解析出的有效租户 ID。
+     *
+     * <p>该字段只来自 permission_project 主数据，不能由浏览器直接指定。平台管理员跨租户选择项目时，
+     * gateway 使用它重建可信租户上下文；没有项目上下文时为空。</p>
+     */
+    private Long effectiveTenantId;
+
+    /**
      * 当前操作者在本次判定资源下可访问的项目 ID 集合。
      *
      * <p>当数据范围为 PROJECT 时，`dataScopeExpression` 通常会包含 `${actorProjectIds}` 占位符。

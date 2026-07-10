@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.permission.controller.dto;
 
 import com.czh.datasmart.govern.permission.entity.PermissionApplication;
 import com.czh.datasmart.govern.permission.entity.PermissionTenant;
+import com.czh.datasmart.govern.permission.entity.PermissionIdentityUser;
 
 import java.time.LocalDateTime;
 
@@ -31,10 +32,19 @@ public record PermissionTenantView(
         String applicationCode,
         String applicationName,
         String applicationStatus,
+        Long administratorActorId,
+        String administratorUsername,
+        String administratorStatus,
         LocalDateTime createTime,
         LocalDateTime updateTime) {
 
     public static PermissionTenantView from(PermissionTenant tenant, PermissionApplication application) {
+        return from(tenant, application, null);
+    }
+
+    public static PermissionTenantView from(PermissionTenant tenant,
+                                            PermissionApplication application,
+                                            PermissionIdentityUser administrator) {
         return new PermissionTenantView(
                 tenant.getTenantId(),
                 tenant.getTenantCode(),
@@ -50,6 +60,9 @@ public record PermissionTenantView(
                 application == null ? tenant.getDefaultApplicationCode() : application.getApplicationCode(),
                 application == null ? null : application.getApplicationName(),
                 application == null ? null : application.getStatus(),
+                administrator == null ? tenant.getOwnerActorId() : administrator.getActorId(),
+                administrator == null ? null : administrator.getUsername(),
+                administrator == null ? null : administrator.getStatus(),
                 tenant.getCreateTime(),
                 tenant.getUpdateTime());
     }

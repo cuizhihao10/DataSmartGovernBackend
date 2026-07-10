@@ -68,6 +68,7 @@ class PermissionProjectJoinRequestServiceImplTest {
 
         assertThat(result.getRecords()).singleElement().satisfies(candidate -> {
             assertThat(candidate.projectId()).isEqualTo(101L);
+            assertThat(candidate.tenantId()).isEqualTo(10L);
             assertThat(candidate.projectName()).isEqualTo("FlashSync 默认项目");
             assertThat(candidate.projectCode()).isEqualTo("FLASHSYNC_DEFAULT");
         });
@@ -114,6 +115,29 @@ class PermissionProjectJoinRequestServiceImplTest {
         verify(projectMapper).selectPage(pageCaptor.capture(), any(LambdaQueryWrapper.class));
         assertThat(pageCaptor.getValue().getCurrent()).isEqualTo(3L);
         assertThat(pageCaptor.getValue().getSize()).isEqualTo(100L);
+    }
+
+    @Test
+    void platformAdministratorCanDiscoverActiveProjectsAcrossTenantsWithoutJoining() {
+        when(projectMapper.selectPage(any(Page.class), any(LambdaQueryWrapper.class))).thenAnswer(invocation -> {
+            Page<PermissionProject> requestedPage = invocation.getArgument(0);
+            requestedPage.setRecords(List.of(
+                    project(900L, 1L, "PLATFORM_ADMINISTRATION", "平台管理项目", "ACTIVE"),
+                    project(101L, 10L, "FLASHSYNC_DEFAULT", "FlashSync 默认项目", "ACTIVE")));
+            requestedPage.setTotal(2L);
+            return requestedPage;
+        });
+
+        var result = service.pageJoinCandidates(null, null, 1L, 100L,
+                actor(1L, 9001L, PermissionRoleCode.PLATFORM_ADMINISTRATOR));
+
+        assertThat(result.getRecords()).extracting(candidate -> candidate.tenantId())
+                .containsExactly(1L, 10L);
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        ArgumentCaptor<LambdaQueryWrapper<PermissionProject>> wrapperCaptor =
+                ArgumentCaptor.forClass((Class) LambdaQueryWrapper.class);
+        verify(projectMapper).selectPage(any(Page.class), wrapperCaptor.capture());
+        assertThat(wrapperCaptor.getValue().getSqlSegment()).doesNotContain("tenant_id");
     }
 
     private PermissionProject project(Long projectId,

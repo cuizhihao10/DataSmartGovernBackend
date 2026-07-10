@@ -57,6 +57,14 @@ public class GatewayPermissionDecisionRequest {
     private String action;
 
     /**
+     * 浏览器当前选择的项目 ID。
+     *
+     * <p>该值仍然只是待校验输入。permission-admin 会根据项目主数据、角色数据范围和成员关系确认它是否可用，
+     * 平台管理员跨租户切换时还会据此返回可信的有效租户 ID。</p>
+     */
+    private Long requestedProjectId;
+
+    /**
      * 服务账号 actorId。
      *
      * <p>当 actorType 或 actorRole 为 SERVICE_ACCOUNT 时，gateway 会把当前 actorId 同步写入该字段。

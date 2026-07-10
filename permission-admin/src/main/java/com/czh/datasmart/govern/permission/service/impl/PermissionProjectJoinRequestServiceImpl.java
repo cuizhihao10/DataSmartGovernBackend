@@ -80,6 +80,11 @@ public class PermissionProjectJoinRequestServiceImpl implements PermissionProjec
             PermissionRoleCode.TENANT_ADMINISTRATOR.name(),
             PermissionRoleCode.PLATFORM_ADMINISTRATOR.name()
     );
+    private static final Set<String> APPLICANT_ROLES = Set.of(
+            PermissionRoleCode.ORDINARY_USER.name(),
+            PermissionRoleCode.PROJECT_OWNER.name(),
+            PermissionRoleCode.OPERATOR.name()
+    );
 
     private final PermissionProjectJoinRequestMapper joinRequestMapper;
     private final PermissionProjectMapper projectMapper;
@@ -99,7 +104,7 @@ public class PermissionProjectJoinRequestServiceImpl implements PermissionProjec
         }
         Long targetTenantId = resolveCandidateTenantId(tenantId, actorContext, actorRole);
         LambdaQueryWrapper<PermissionProject> wrapper = new LambdaQueryWrapper<PermissionProject>()
-                .eq(PermissionProject::getTenantId, targetTenantId)
+                .eq(targetTenantId != null, PermissionProject::getTenantId, targetTenantId)
                 .eq(PermissionProject::getStatus, PROJECT_STATUS_ACTIVE)
                 .orderByAsc(PermissionProject::getProjectName)
                 .orderByDesc(PermissionProject::getProjectId);
@@ -127,6 +132,10 @@ public class PermissionProjectJoinRequestServiceImpl implements PermissionProjec
         }
         Long applicantActorId = requirePositive(actorContext == null ? null : actorContext.actorId(), "actorId");
         String actorRole = requireRole(actorContext);
+        if (!APPLICANT_ROLES.contains(actorRole)) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "平台管理员和租户管理员已拥有管理范围内项目的隐式权限，无需也不能提交项目加入申请");
+        }
         Long targetTenantId = resolveTargetTenantId(request.tenantId(), actorContext, actorRole);
         Long projectId = requirePositive(request.projectId(), "projectId");
         PermissionProject project = findActiveProject(targetTenantId, projectId);
@@ -468,8 +477,8 @@ public class PermissionProjectJoinRequestServiceImpl implements PermissionProjec
                                           String actorRole) {
         Long actorTenantId = normalizeTenantId(actorContext == null ? null : actorContext.tenantId());
         if (PermissionRoleCode.PLATFORM_ADMINISTRATOR.name().equals(actorRole)) {
-            Long targetTenantId = requestedTenantId == null ? actorTenantId : requestedTenantId;
-            return requirePositive(targetTenantId, "tenantId");
+            // 不指定 tenantId 时返回全平台启用项目目录；显式指定时用于平台级治理排障筛选。
+            return requestedTenantId == null ? null : requirePositive(requestedTenantId, "tenantId");
         }
         actorTenantId = requirePositive(actorTenantId, "actorTenantId");
         if (requestedTenantId != null && !actorTenantId.equals(requestedTenantId)) {

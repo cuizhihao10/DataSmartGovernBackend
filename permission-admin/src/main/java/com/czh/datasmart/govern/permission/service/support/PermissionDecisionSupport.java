@@ -4,8 +4,10 @@ import com.czh.datasmart.govern.common.context.PlatformAuthorizedProjectRole;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionDecisionRequest;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionDecisionResult;
 import com.czh.datasmart.govern.permission.entity.PermissionDataScopePolicy;
+import com.czh.datasmart.govern.permission.entity.PermissionProject;
 import com.czh.datasmart.govern.permission.entity.PermissionRoutePolicy;
 import com.czh.datasmart.govern.permission.entity.PermissionTenant;
+import com.czh.datasmart.govern.permission.mapper.PermissionProjectMapper;
 import com.czh.datasmart.govern.permission.mapper.PermissionTenantMapper;
 import com.czh.datasmart.govern.permission.support.PermissionRoleCode;
 import com.czh.datasmart.govern.permission.support.PermissionRouteEffect;
@@ -56,6 +58,7 @@ public class PermissionDecisionSupport {
     private final PermissionQuerySupport querySupport;
     private final PermissionAuditSupport auditSupport;
     private final PermissionTenantMapper tenantMapper;
+    private final PermissionProjectMapper projectMapper;
 
     /**
      * 判定一次访问是否允许。
@@ -88,6 +91,12 @@ public class PermissionDecisionSupport {
                 .map(PlatformAuthorizedProjectRole::projectId)
                 .distinct()
                 .toList();
+        ProjectContextResolution projectContext = resolveProjectContext(request, dataScope, authorizedProjectIds);
+        if (!projectContext.allowed()) {
+            PermissionDecisionResult result = denied(projectContext.reason(), matchedRoute, dataScope, request);
+            auditSupport.saveDecisionAudit(request, traceId, result);
+            return result;
+        }
         String policyVersion = policyVersion(matchedRoute);
         boolean delegated = delegated(request);
         PermissionDecisionResult result = new PermissionDecisionResult(
@@ -97,6 +106,7 @@ public class PermissionDecisionSupport {
                 matchedRoute.getEffect(),
                 dataScope == null ? null : dataScope.getScopeLevel(),
                 dataScope == null ? null : dataScope.getScopeExpression(),
+                projectContext.effectiveTenantId(),
                 authorizedProjectIds,
                 authorizedProjectRoles,
                 dataScope != null && Boolean.TRUE.equals(dataScope.getApprovalRequired()),
@@ -189,6 +199,51 @@ public class PermissionDecisionSupport {
         return "PROJECT".equalsIgnoreCase(scopeLevel) || "SELF".equalsIgnoreCase(scopeLevel);
     }
 
+    /**
+     * 根据权威项目主数据校验浏览器选择，并解析本次请求真正作用的租户。
+     *
+     * <p>平台管理员的登录 Token 归属平台租户，但选择业务租户项目后，下游数据源、任务和 Agent 服务必须使用
+     * 目标项目所属租户进行查询。这个租户不能让前端直接传入，因此在权限中心读取 permission_project 后返回。
+     * 租户管理员仍严格限制在登录租户；PROJECT/SELF 范围还必须命中显式成员项目集合。</p>
+     */
+    private ProjectContextResolution resolveProjectContext(PermissionDecisionRequest request,
+                                                            PermissionDataScopePolicy dataScope,
+                                                            List<Long> authorizedProjectIds) {
+        Long requestedProjectId = request == null ? null : request.getRequestedProjectId();
+        if (requestedProjectId == null) {
+            return ProjectContextResolution.allowed(null);
+        }
+        PermissionProject project = projectMapper.selectById(requestedProjectId);
+        if (project == null) {
+            return ProjectContextResolution.denied("所选项目不存在，projectId=" + requestedProjectId);
+        }
+        if (!"ACTIVE".equalsIgnoreCase(project.getStatus())) {
+            return ProjectContextResolution.denied("所选项目当前不是启用状态，projectId=" + requestedProjectId
+                    + "，status=" + project.getStatus());
+        }
+        if (dataScope == null || dataScope.getScopeLevel() == null) {
+            return ProjectContextResolution.denied("当前资源没有可用于校验项目选择的数据范围策略");
+        }
+
+        String scopeLevel = dataScope.getScopeLevel();
+        if ("PLATFORM".equalsIgnoreCase(scopeLevel)) {
+            return ProjectContextResolution.allowed(project.getTenantId());
+        }
+        Long actorTenantId = request.getTenantId();
+        if (actorTenantId == null || !actorTenantId.equals(project.getTenantId())) {
+            return ProjectContextResolution.denied("所选项目不属于当前租户，projectId=" + requestedProjectId);
+        }
+        if ("TENANT".equalsIgnoreCase(scopeLevel)) {
+            return ProjectContextResolution.allowed(project.getTenantId());
+        }
+        if (isProjectBoundScope(scopeLevel)
+                && authorizedProjectIds != null
+                && authorizedProjectIds.contains(requestedProjectId)) {
+            return ProjectContextResolution.allowed(project.getTenantId());
+        }
+        return ProjectContextResolution.denied("当前身份没有所选项目的成员或资源访问权限，projectId=" + requestedProjectId);
+    }
+
     private boolean methodMatches(String configuredMethod, String requestMethod) {
         if (configuredMethod == null || configuredMethod.isBlank()) {
             return false;
@@ -255,6 +310,7 @@ public class PermissionDecisionSupport {
                 routePolicy == null ? null : routePolicy.getEffect(),
                 dataScopePolicy == null ? null : dataScopePolicy.getScopeLevel(),
                 dataScopePolicy == null ? null : dataScopePolicy.getScopeExpression(),
+                null,
                 List.of(),
                 List.of(),
                 dataScopePolicy != null && Boolean.TRUE.equals(dataScopePolicy.getApprovalRequired()),
@@ -329,5 +385,16 @@ public class PermissionDecisionSupport {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private record ProjectContextResolution(boolean allowed, Long effectiveTenantId, String reason) {
+
+        private static ProjectContextResolution allowed(Long effectiveTenantId) {
+            return new ProjectContextResolution(true, effectiveTenantId, null);
+        }
+
+        private static ProjectContextResolution denied(String reason) {
+            return new ProjectContextResolution(false, null, reason);
+        }
     }
 }

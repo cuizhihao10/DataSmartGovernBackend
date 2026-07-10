@@ -16,6 +16,7 @@ import com.czh.datasmart.govern.permission.entity.PermissionProject;
  * excludes owners, descriptions, member lists and every business resource inside the project.</p>
  */
 public record ProjectJoinCandidateView(Long projectId,
+                                       Long tenantId,
                                        String projectCode,
                                        String projectName,
                                        String projectType) {
@@ -26,6 +27,7 @@ public record ProjectJoinCandidateView(Long projectId,
         }
         return new ProjectJoinCandidateView(
                 project.getProjectId(),
+                project.getTenantId(),
                 project.getProjectCode(),
                 project.getProjectName(),
                 project.getProjectType()

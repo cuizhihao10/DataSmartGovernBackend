@@ -17,10 +17,15 @@ import com.czh.datasmart.govern.permission.controller.dto.PermissionTenantQueryC
 import com.czh.datasmart.govern.permission.controller.dto.PermissionTenantStatusChangeRequest;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionTenantUpdateRequest;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionTenantView;
+import com.czh.datasmart.govern.permission.controller.dto.IdentityUserProvisionResult;
+import com.czh.datasmart.govern.permission.controller.dto.IdentityUserRegisterRequest;
 import com.czh.datasmart.govern.permission.entity.PermissionApplication;
 import com.czh.datasmart.govern.permission.entity.PermissionTenant;
+import com.czh.datasmart.govern.permission.entity.PermissionIdentityUser;
 import com.czh.datasmart.govern.permission.mapper.PermissionApplicationMapper;
 import com.czh.datasmart.govern.permission.mapper.PermissionTenantMapper;
+import com.czh.datasmart.govern.permission.mapper.PermissionIdentityUserMapper;
+import com.czh.datasmart.govern.permission.service.IdentityProvisioningService;
 import com.czh.datasmart.govern.permission.service.PermissionTenantService;
 import com.czh.datasmart.govern.permission.service.support.PermissionTenantAuditSupport;
 import com.czh.datasmart.govern.permission.support.PermissionRoleCode;
@@ -40,8 +45,8 @@ import java.util.regex.Pattern;
 /**
  * 平台租户控制面实现。
  *
- * <p>服务层固定只接受平台超级管理员。开租在同一事务中写入 permission_tenant 与 permission_application，
- * 任一写入失败都会回滚，避免出现“租户存在但 FlashSync 应用缺失”的半开通状态。</p>
+ * <p>服务层固定只接受平台超级管理员。开租写入 permission_tenant、permission_application，
+ * 并通过身份供应服务创建首个租户管理员。PostgreSQL 写入在同一事务中回滚，外部 IdP 调用保留独立审计证据。</p>
  */
 @Service
 @RequiredArgsConstructor
@@ -64,6 +69,8 @@ public class PermissionTenantServiceImpl implements PermissionTenantService {
 
     private final PermissionTenantMapper tenantMapper;
     private final PermissionApplicationMapper applicationMapper;
+    private final PermissionIdentityUserMapper identityUserMapper;
+    private final IdentityProvisioningService identityProvisioningService;
     private final PermissionTenantAuditSupport auditSupport;
 
     @Override
@@ -116,7 +123,7 @@ public class PermissionTenantServiceImpl implements PermissionTenantService {
         tenant.setPlanCode(normalizeCode(defaultText(request.planCode(), "STANDARD")));
         tenant.setStatus(STATUS_ACTIVE);
         tenant.setDefaultApplicationCode(applicationCode);
-        tenant.setOwnerActorId(request.ownerActorId());
+        tenant.setOwnerActorId(null);
         tenant.setOpenedBy(requirePositive(actorContext.actorId(), "actorId"));
         tenant.setOpenedAt(now);
         tenant.setDescription(trimToNull(request.description()));
@@ -132,15 +139,47 @@ public class PermissionTenantServiceImpl implements PermissionTenantService {
         application.setApplicationType("DATA_SYNC_AGENT_APP");
         application.setStatus(APPLICATION_ACTIVE);
         application.setHomepagePath("/dashboard");
-        application.setOwnerActorId(request.ownerActorId());
+        application.setOwnerActorId(null);
         application.setDescription("FlashSync 数据同步与 Agent 应用，由平台开租流程自动创建。");
         application.setCreateTime(now);
         application.setUpdateTime(now);
         applicationMapper.insert(application);
 
+        IdentityUserProvisionResult administratorResult = identityProvisioningService.registerUser(
+                new IdentityUserRegisterRequest(
+                        request.administratorUsername(),
+                        request.administratorEmail(),
+                        request.administratorFirstName(),
+                        request.administratorLastName(),
+                        request.administratorInitialPassword(),
+                        request.administratorTemporaryPassword() == null || request.administratorTemporaryPassword(),
+                        tenantId,
+                        request.ownerActorId(),
+                        PermissionRoleCode.TENANT_ADMINISTRATOR.name(),
+                        "USER",
+                        null,
+                        true,
+                        false,
+                        defaultText(request.reason(), "开租时创建首个租户管理员")),
+                actorContext);
+
+        tenant.setOwnerActorId(administratorResult.actorId());
+        tenant.setUpdateTime(LocalDateTime.now());
+        tenantMapper.updateById(tenant);
+        application.setOwnerActorId(administratorResult.actorId());
+        application.setUpdateTime(LocalDateTime.now());
+        applicationMapper.updateById(application);
+
+        PermissionIdentityUser administrator = new PermissionIdentityUser();
+        administrator.setTenantId(tenantId);
+        administrator.setActorId(administratorResult.actorId());
+        administrator.setUsername(administratorResult.username());
+        administrator.setActorRole(administratorResult.actorRole());
+        administrator.setStatus(administratorResult.status());
+
         auditSupport.saveMutationAudit(actorContext, "OPEN_TENANT",
                 defaultText(request.reason(), "平台开通租户及 FlashSync 应用"), null, tenant, application);
-        return PermissionTenantView.from(tenant, application);
+        return PermissionTenantView.from(tenant, application, administrator);
     }
 
     @Override
@@ -180,7 +219,7 @@ public class PermissionTenantServiceImpl implements PermissionTenantService {
         }
         auditSupport.saveMutationAudit(actorContext, "UPDATE_TENANT",
                 defaultText(request.reason(), "平台修改租户基础资料"), before, tenant, application);
-        return PermissionTenantView.from(tenant, application);
+        return PermissionTenantView.from(tenant, application, administrator(tenant));
     }
 
     @Override
@@ -237,7 +276,7 @@ public class PermissionTenantServiceImpl implements PermissionTenantService {
             applicationMapper.updateById(application);
         }
         auditSupport.saveMutationAudit(actorContext, action, request.reason(), before, tenant, application);
-        return PermissionTenantView.from(tenant, application);
+        return PermissionTenantView.from(tenant, application, administrator(tenant));
     }
 
     private PermissionTenant findAndRequirePlatform(Long tenantId, PermissionActorContext actorContext) {
@@ -254,7 +293,7 @@ public class PermissionTenantServiceImpl implements PermissionTenantService {
     }
 
     private PermissionTenantView view(PermissionTenant tenant) {
-        return PermissionTenantView.from(tenant, defaultApplication(tenant));
+        return PermissionTenantView.from(tenant, defaultApplication(tenant), administrator(tenant));
     }
 
     /**
@@ -278,10 +317,52 @@ public class PermissionTenantServiceImpl implements PermissionTenantService {
                         application -> applicationKey(application.getTenantId(), application.getApplicationCode()),
                         Function.identity(),
                         (left, right) -> left.getApplicationId() <= right.getApplicationId() ? left : right));
+        Map<String, PermissionIdentityUser> administrators = administrators(tenants);
         return tenants.stream()
                 .map(tenant -> PermissionTenantView.from(tenant, applications.get(
-                        applicationKey(tenant.getTenantId(), tenant.getDefaultApplicationCode()))))
+                                applicationKey(tenant.getTenantId(), tenant.getDefaultApplicationCode())),
+                        administrators.get(administratorKey(tenant.getTenantId(), tenant.getOwnerActorId()))))
                 .toList();
+    }
+
+    private PermissionIdentityUser administrator(PermissionTenant tenant) {
+        if (tenant == null || tenant.getOwnerActorId() == null) {
+            return null;
+        }
+        return identityUserMapper.selectOne(new LambdaQueryWrapper<PermissionIdentityUser>()
+                .eq(PermissionIdentityUser::getTenantId, tenant.getTenantId())
+                .eq(PermissionIdentityUser::getActorId, tenant.getOwnerActorId())
+                .in(PermissionIdentityUser::getActorRole,
+                        PermissionRoleCode.TENANT_ADMINISTRATOR.name(),
+                        PermissionRoleCode.PLATFORM_ADMINISTRATOR.name())
+                .last("LIMIT 1"));
+    }
+
+    private Map<String, PermissionIdentityUser> administrators(List<PermissionTenant> tenants) {
+        Set<Long> ownerActorIds = tenants.stream()
+                .map(PermissionTenant::getOwnerActorId)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (ownerActorIds.isEmpty()) {
+            return Map.of();
+        }
+        List<PermissionIdentityUser> identities = identityUserMapper.selectList(new LambdaQueryWrapper<PermissionIdentityUser>()
+                        .in(PermissionIdentityUser::getActorId, ownerActorIds)
+                        .in(PermissionIdentityUser::getActorRole,
+                                PermissionRoleCode.TENANT_ADMINISTRATOR.name(),
+                                PermissionRoleCode.PLATFORM_ADMINISTRATOR.name()));
+        if (identities == null) {
+            return Map.of();
+        }
+        return identities.stream()
+                .collect(Collectors.toMap(
+                        identity -> administratorKey(identity.getTenantId(), identity.getActorId()),
+                        Function.identity(),
+                        (left, right) -> left.getId() <= right.getId() ? left : right));
+    }
+
+    private String administratorKey(Long tenantId, Long actorId) {
+        return tenantId + ":" + actorId;
     }
 
     private PermissionApplication defaultApplication(PermissionTenant tenant) {

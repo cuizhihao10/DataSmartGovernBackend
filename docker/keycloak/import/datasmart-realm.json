@@ -376,6 +376,44 @@
       ]
     },
     {
+      "username": "tenant-admin",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Tenant",
+      "lastName": "Administrator",
+      "email": "tenant-admin@example.local",
+      "attributes": {
+        "datasmart_tenant_id": [
+          "10"
+        ],
+        "datasmart_actor_id": [
+          "100000"
+        ],
+        "datasmart_actor_role": [
+          "TENANT_ADMINISTRATOR"
+        ],
+        "datasmart_actor_type": [
+          "USER"
+        ],
+        "datasmart_application_id": [
+          "10010"
+        ],
+        "datasmart_application_code": [
+          "FLASHSYNC"
+        ]
+      },
+      "realmRoles": [
+        "DATASMART_TENANT_ADMINISTRATOR"
+      ],
+      "credentials": [
+        {
+          "type": "password",
+          "value": "DataSmart@123",
+          "temporary": false
+        }
+      ]
+    },
+    {
       "username": "platform-admin",
       "enabled": true,
       "emailVerified": true,

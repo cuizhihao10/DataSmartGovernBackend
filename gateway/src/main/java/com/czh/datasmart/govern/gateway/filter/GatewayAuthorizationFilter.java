@@ -109,7 +109,7 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
             authorizationMetrics.recordInternalEndpointGuard(guardDecision.endpointName(), "ALLOW");
         }
 
-        GatewayPermissionDecisionRequest decisionRequest = buildDecisionRequest(request);
+        GatewayPermissionDecisionRequest decisionRequest = buildDecisionRequest(exchange);
         Optional<GatewayPermissionDecisionResult> cachedDecision = authorizationDecisionCache.get(decisionRequest);
         if (cachedDecision.isPresent()) {
             authorizationMetrics.recordCacheAccess(true);
@@ -218,13 +218,17 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
         if (requestedProjectId == null) {
             return true;
         }
+        String dataScopeLevel = decision.getDataScopeLevel();
+        if (dataScopeLevel != null
+                && ("TENANT".equalsIgnoreCase(dataScopeLevel) || "PLATFORM".equalsIgnoreCase(dataScopeLevel))) {
+            // permission-admin 已结合 permission_project 主数据校验租户边界，不再被成员集合错误降级。
+            return decision.getEffectiveTenantId() != null;
+        }
         List<Long> authorizedProjectIds = decision.getAuthorizedProjectIds();
         if (authorizedProjectIds != null && !authorizedProjectIds.isEmpty()) {
             return authorizedProjectIds.contains(requestedProjectId);
         }
-        String dataScopeLevel = decision.getDataScopeLevel();
-        return dataScopeLevel != null
-                && ("TENANT".equalsIgnoreCase(dataScopeLevel) || "PLATFORM".equalsIgnoreCase(dataScopeLevel));
+        return false;
     }
 
     /**
@@ -262,6 +266,9 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
                     setAuthorizedProjectIds(headers, decision.getAuthorizedProjectIds());
                     setAuthorizedProjectRoles(headers, decision);
                     if (requestedProjectId != null) {
+                        if (decision.getEffectiveTenantId() != null) {
+                            headers.set(PlatformContextHeaders.TENANT_ID, decision.getEffectiveTenantId().toString());
+                        }
                         headers.set(PlatformContextHeaders.PROJECT_ID, requestedProjectId.toString());
                     }
                     if (decision.getApprovalRequired() != null) {
@@ -360,7 +367,8 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
      * 3. workspace 是 Agent 记忆、工具和数据范围的重要隔离边界；
      * 4. requestSource 可用于区分 Web UI、OpenAPI、调度器和 Agent 工具调用。
      */
-    private GatewayPermissionDecisionRequest buildDecisionRequest(ServerHttpRequest request) {
+    private GatewayPermissionDecisionRequest buildDecisionRequest(ServerWebExchange exchange) {
+        ServerHttpRequest request = exchange.getRequest();
         HttpHeaders headers = request.getHeaders();
         String path = request.getPath().value();
         String method = request.getMethod().name();
@@ -383,6 +391,7 @@ public class GatewayAuthorizationFilter implements GlobalFilter, Ordered {
         decisionRequest.setRequestPath(path);
         decisionRequest.setResourceType(authorizationMetadata.resourceType());
         decisionRequest.setAction(authorizationMetadata.action());
+        decisionRequest.setRequestedProjectId(exchange.getAttribute(GatewayExchangeAttributeNames.REQUESTED_PROJECT_ID));
         decisionRequest.setRequestedPolicyVersion(trimToNull(headers.getFirst(PlatformContextHeaders.REQUESTED_POLICY_VERSION)));
         serviceAccountDelegationSupport.populate(headers, decisionRequest, actorId);
         return decisionRequest;

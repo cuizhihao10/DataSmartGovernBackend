@@ -13,6 +13,7 @@ import com.czh.datasmart.govern.permission.entity.PermissionDataScopePolicy;
 import com.czh.datasmart.govern.permission.entity.PermissionRoutePolicy;
 import com.czh.datasmart.govern.permission.entity.PermissionTenant;
 import com.czh.datasmart.govern.permission.mapper.PermissionTenantMapper;
+import com.czh.datasmart.govern.permission.mapper.PermissionProjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -40,6 +41,7 @@ class PermissionDataQualityDecisionSupportTest {
     private PermissionQuerySupport querySupport;
     private PermissionAuditSupport auditSupport;
     private PermissionTenantMapper tenantMapper;
+    private PermissionProjectMapper projectMapper;
     private PermissionDecisionSupport decisionSupport;
 
     @BeforeEach
@@ -47,11 +49,12 @@ class PermissionDataQualityDecisionSupportTest {
         querySupport = mock(PermissionQuerySupport.class);
         auditSupport = mock(PermissionAuditSupport.class);
         tenantMapper = mock(PermissionTenantMapper.class);
+        projectMapper = mock(PermissionProjectMapper.class);
         PermissionTenant tenant = new PermissionTenant();
         tenant.setTenantId(10L);
         tenant.setStatus("ACTIVE");
         when(tenantMapper.selectById(10L)).thenReturn(tenant);
-        decisionSupport = new PermissionDecisionSupport(querySupport, auditSupport, tenantMapper);
+        decisionSupport = new PermissionDecisionSupport(querySupport, auditSupport, tenantMapper, projectMapper);
     }
 
     /**

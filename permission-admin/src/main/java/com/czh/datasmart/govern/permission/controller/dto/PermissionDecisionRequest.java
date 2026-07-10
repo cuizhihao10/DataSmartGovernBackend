@@ -81,6 +81,14 @@ public class PermissionDecisionRequest {
     private String action;
 
     /**
+     * 调用方当前选择的项目 ID。
+     *
+     * <p>该字段来自 gateway 保存并清洗后的项目选择，仍不能直接信任。权限中心会读取 permission_project，
+     * 校验项目状态、租户归属和当前数据范围，并为平台管理员解析跨租户操作的有效租户。</p>
+     */
+    private Long requestedProjectId;
+
+    /**
      * 发起服务间调用的服务账号 actorId。
      *
      * <p>普通网关请求通常只需要 {@link #actorId}，但 Agent Runtime、Task Worker、异步调度器这类
