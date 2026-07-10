@@ -25,6 +25,7 @@ from datasmart_ai_runtime.services.quality_remediation_tool_plan_builder import 
 )
 from datasmart_ai_runtime.services.tools.workspace_file_plan_builder import WorkspaceFileToolPlanBuilder
 from datasmart_ai_runtime.services.tools.web_search_tool import WebSearchToolPlanBuilder
+from datasmart_ai_runtime.services.tools.data_sync_plan_builder import DataSyncToolPlanBuilder
 from datasmart_ai_runtime.services.tool_plan_dag import ToolPlanDagAnnotator
 from datasmart_ai_runtime.services.tool_parameter_validator import ToolParameterValidator
 
@@ -54,6 +55,7 @@ class ToolPlanner:
         self._quality_remediation_arguments = QualityRemediationToolPlanArgumentBuilder()
         self._workspace_file_plans = WorkspaceFileToolPlanBuilder()
         self._web_search_plans = WebSearchToolPlanBuilder()
+        self._data_sync_plans = DataSyncToolPlanBuilder()
 
     def plan(
         self,
@@ -80,6 +82,21 @@ class ToolPlanner:
         business_goal = self._resolve_business_goal(request, context_blocks)
         planned_tool_names: set[str] = set()
         wants_quality_remediation = self._wants_quality_remediation(request, objective, candidate_tools)
+
+        data_sync_plans = self._data_sync_plans.build(
+            request=request,
+            objective=objective,
+            candidate_tools=candidate_tools,
+            tools=self._tools,
+            plan_factory=lambda tool, reason, arguments: self._build_plan(
+                tool=tool,
+                reason=reason,
+                arguments=arguments,
+            ),
+        )
+        plans.extend(data_sync_plans)
+        planned_tool_names.update(plan.tool_name for plan in data_sync_plans)
+        wants_data_sync_workflow = bool(data_sync_plans)
 
         wants_datasource_metadata = (
             "datasource.metadata.read" in candidate_tools
@@ -202,6 +219,7 @@ class ToolPlanner:
         create_task_requested = bool(request.variables.get("createTask") or request.variables.get("create_task"))
         wants_task_draft = (
             not wants_quality_remediation
+            and not wants_data_sync_workflow
             and (
                 "task.create.draft" in candidate_tools
                 or create_task_requested
@@ -238,6 +256,7 @@ class ToolPlanner:
 
         wants_task_draft_persist = (
             not wants_quality_remediation
+            and not wants_data_sync_workflow
             and (
                 "task.draft.persist" in candidate_tools
                 or create_task_requested

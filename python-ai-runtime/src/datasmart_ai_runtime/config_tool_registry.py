@@ -14,6 +14,171 @@ from __future__ import annotations
 from datasmart_ai_runtime.domain.contracts import ToolDefinition, ToolExecutionMode, ToolRiskLevel
 
 
+def _data_sync_agent_tools() -> tuple[ToolDefinition, ...]:
+    """返回数据同步 Agent 的真实业务工具影子契约。
+
+    数据源凭据不属于 Agent 参数。用户必须先在 datasource-management 的可信表单中创建数据源，
+    Python 计划只携带 datasourceId、对象映射和工具输出引用。
+    """
+
+    datasource_tools = tuple(
+        ToolDefinition(
+            name=name,
+            description=description,
+            risk_level=ToolRiskLevel.LOW,
+            execution_mode=ToolExecutionMode.SYNC,
+            required_permissions=(permission,),
+            target_service="datasource-management",
+            target_endpoint=endpoint,
+            input_schema={
+                "datasourceId": {
+                    "type": "number",
+                    "required": True,
+                    "sensitive": False,
+                    "resolution": "user_required",
+                    "description": "用户已通过可信数据源管理页面安全创建并选择的数据源 ID。",
+                }
+            },
+            read_only=True,
+            idempotent=True,
+            allowed_actions=(action,),
+            tool_type="DATASOURCE_METADATA",
+            tenant_scoped=True,
+            project_scoped=True,
+            memory_write_policy="semantic" if "metadata" in name else "none",
+            cache_policy="project_safe" if "metadata" in name else "no_cache",
+        )
+        for name, description, permission, endpoint, action in (
+            (
+                "datasource.source.connection.test",
+                "测试用户已选择源端数据源的真实连接，不读取或返回数据库密码。",
+                "datasource:connection:test",
+                "/datasources/{datasourceId}/test",
+                "TEST_CONNECTION",
+            ),
+            (
+                "datasource.target.connection.test",
+                "测试用户已选择目标端数据源的真实连接，不读取或返回数据库密码。",
+                "datasource:connection:test",
+                "/datasources/{datasourceId}/test",
+                "TEST_CONNECTION",
+            ),
+            (
+                "datasource.source.metadata.read",
+                "读取源端表、字段、主键和索引，为同步对象与字段映射提供真实依据。",
+                "datasource:metadata:read",
+                "/datasources/{datasourceId}/metadata/discover",
+                "USE",
+            ),
+            (
+                "datasource.target.metadata.read",
+                "读取目标端表、字段、主键和索引，为映射和预检查提供真实依据。",
+                "datasource:metadata:read",
+                "/datasources/{datasourceId}/metadata/discover",
+                "USE",
+            ),
+        )
+    )
+    sync_tools = (
+        ToolDefinition(
+            name="sync.task.draft.save",
+            description="根据两端真实元数据生成字段映射，并通过 data-sync 创建向导保存同步任务草稿。",
+            risk_level=ToolRiskLevel.HIGH,
+            execution_mode=ToolExecutionMode.APPROVAL_REQUIRED,
+            required_permissions=("sync:task:create",),
+            target_service="data-sync",
+            target_endpoint="/sync-tasks/create-wizard/drafts",
+            input_schema={
+                "sourceDatasourceId": {"type": "number", "required": True, "sensitive": False, "resolution": "user_required"},
+                "targetDatasourceId": {"type": "number", "required": True, "sensitive": False, "resolution": "user_required"},
+                "objectMappings": {"type": "array", "required": True, "sensitive": True, "resolution": "user_required"},
+            },
+            requires_approval=True,
+            idempotent=False,
+            allowed_actions=("CREATE_DRAFT",),
+            tool_type="DATA_SYNC",
+            tenant_scoped=True,
+            project_scoped=True,
+            sensitive_fields=("objectMappings",),
+            memory_write_policy="episodic",
+            cache_policy="session_only",
+        ),
+        ToolDefinition(
+            name="sync.task.precheck",
+            description="调用 data-sync 真实预检查，验证对象、字段、目标约束和执行器准入。",
+            risk_level=ToolRiskLevel.LOW,
+            execution_mode=ToolExecutionMode.SYNC,
+            required_permissions=("sync:task:precheck",),
+            target_service="data-sync",
+            target_endpoint="/sync-templates/{templateId}/precheck",
+            input_schema={"draftRef": {"type": "object", "required": True, "sensitive": False, "resolution": "derived"}},
+            read_only=True,
+            idempotent=True,
+            allowed_actions=("PRECHECK",),
+            tool_type="DATA_SYNC",
+            tenant_scoped=True,
+            project_scoped=True,
+            memory_write_policy="episodic",
+            cache_policy="no_cache",
+        ),
+        ToolDefinition(
+            name="sync.task.publish",
+            description="预检查通过后发布同步任务定义，不直接搬运数据。",
+            risk_level=ToolRiskLevel.HIGH,
+            execution_mode=ToolExecutionMode.APPROVAL_REQUIRED,
+            required_permissions=("sync:task:publish",),
+            target_service="data-sync",
+            target_endpoint="/sync-tasks/{taskId}/publish",
+            input_schema={"draftRef": {"type": "object", "required": True, "sensitive": False, "resolution": "derived"}},
+            requires_approval=True,
+            idempotent=False,
+            allowed_actions=("PUBLISH",),
+            tool_type="DATA_SYNC",
+            tenant_scoped=True,
+            project_scoped=True,
+            memory_write_policy="episodic",
+            cache_policy="no_cache",
+        ),
+        ToolDefinition(
+            name="sync.task.run",
+            description="对已发布同步任务创建 execution 并提交真实 worker 队列。",
+            risk_level=ToolRiskLevel.HIGH,
+            execution_mode=ToolExecutionMode.APPROVAL_REQUIRED,
+            required_permissions=("sync:task:run",),
+            target_service="data-sync",
+            target_endpoint="/sync-tasks/{taskId}/run",
+            input_schema={"taskRef": {"type": "object", "required": True, "sensitive": False, "resolution": "derived"}},
+            requires_approval=True,
+            idempotent=False,
+            allowed_actions=("RUN",),
+            tool_type="DATA_SYNC",
+            tenant_scoped=True,
+            project_scoped=True,
+            memory_write_policy="episodic",
+            cache_policy="no_cache",
+        ),
+        ToolDefinition(
+            name="sync.execution.status",
+            description="查询本次 Agent 创建任务的最新 execution 状态和低敏进度计数。",
+            risk_level=ToolRiskLevel.LOW,
+            execution_mode=ToolExecutionMode.SYNC,
+            required_permissions=("sync:execution:view",),
+            target_service="data-sync",
+            target_endpoint="/sync-tasks/{taskId}/executions",
+            input_schema={"taskRef": {"type": "object", "required": True, "sensitive": False, "resolution": "derived"}},
+            read_only=True,
+            idempotent=True,
+            allowed_actions=("VIEW",),
+            tool_type="DATA_SYNC",
+            tenant_scoped=True,
+            project_scoped=True,
+            memory_write_policy="episodic",
+            cache_policy="no_cache",
+        ),
+    )
+    return (*datasource_tools, *sync_tools)
+
+
 def default_tool_registry() -> tuple[ToolDefinition, ...]:
     """返回默认工具注册表。
 
@@ -23,6 +188,7 @@ def default_tool_registry() -> tuple[ToolDefinition, ...]:
     """
 
     return (
+        *_data_sync_agent_tools(),
         ToolDefinition(
             name="datasource.metadata.read",
             description="读取指定数据源的库表字段、字段类型、主键、索引和基础统计信息。",

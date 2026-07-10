@@ -38,9 +38,10 @@ public class AgentToolExecutionOutputStore {
     private final List<AgentToolExecutionOutputRecord> records = new CopyOnWriteArrayList<>();
 
     /**
-     * 保存工具成功输出。
+     * 保存工具结构化输出。
      *
-     * <p>只保存成功输出，失败输出通常只用于错误提示，不应被后续工具当作可信上下文继续使用。</p>
+     * <p>成功输出可被后续节点通过 outputRef 使用；失败输出仅用于结果查询和用户诊断，编排器仍会依据 FAILED
+     * 审计状态阻断依赖节点，因此不会把预检问题项误当作成功上下文继续执行。</p>
      */
     public void save(AgentToolExecutionAuditSnapshot audit, Map<String, Object> output) {
         if (output == null || output.isEmpty()) {

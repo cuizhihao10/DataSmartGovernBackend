@@ -15,6 +15,67 @@ from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 
 
 class ToolPlannerTest(unittest.TestCase):
+    def test_full_sync_assistant_builds_nine_node_governed_dag_without_credentials(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective="把 MySQL 两张客户表全量同步到 PostgreSQL public schema 的同名表",
+            variables={
+                "dataSyncRequest": {
+                    "taskName": "客户表全量同步",
+                    "sourceDatasourceId": 23,
+                    "targetDatasourceId": 24,
+                    "syncMode": "FULL",
+                    "writeStrategy": "INSERT",
+                    "objectMappings": [
+                        {
+                            "objectKey": "customers",
+                            "sourceObjectName": "fs_test_customer_source",
+                            "targetSchemaName": "public",
+                            "targetObjectName": "fs_test_customer_source",
+                        },
+                        {
+                            "objectKey": "customer-target",
+                            "sourceObjectName": "fs_test_customer_target",
+                            "targetSchemaName": "public",
+                            "targetObjectName": "fs_test_customer_target",
+                        },
+                    ],
+                }
+            },
+        )
+
+        plans = ToolPlanner(default_tool_registry()).plan(request=request)
+
+        self.assertEqual(
+            (
+                "datasource.source.connection.test",
+                "datasource.target.connection.test",
+                "datasource.source.metadata.read",
+                "datasource.target.metadata.read",
+                "sync.task.draft.save",
+                "sync.task.precheck",
+                "sync.task.publish",
+                "sync.task.run",
+                "sync.execution.status",
+            ),
+            tuple(plan.tool_name for plan in plans),
+        )
+        by_name = {plan.tool_name: plan for plan in plans}
+        self.assertEqual(
+            ("datasource-source-metadata-read", "datasource-target-metadata-read"),
+            by_name["sync.task.draft.save"].governance_hints["dependsOn"],
+        )
+        self.assertEqual(
+            ("sync-task-draft-save", "sync-task-precheck"),
+            by_name["sync.task.publish"].governance_hints["dependsOn"],
+        )
+        serialized = str(tuple(plan.arguments for plan in plans)).lower()
+        self.assertNotIn("password", serialized)
+        self.assertNotIn("jdbcurl", serialized)
+        self.assertNotIn("credential", serialized)
+
     def test_uses_intent_candidate_tools_even_when_objective_has_no_quality_keyword(self) -> None:
         request = AgentRequest(
             tenant_id="tenant-a",

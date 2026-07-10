@@ -105,5 +105,41 @@ public record IngestAgentPlanRequest(
         Map<@Size(max = 128, message = "记忆计划字段名最多 128 个字符") String, Object> memoryPlan,
 
         @Size(max = 50, message = "memoryRetrievalReport 最多 50 个键")
-        Map<@Size(max = 128, message = "记忆检索字段名最多 128 个字符") String, Object> memoryRetrievalReport) {
+        Map<@Size(max = 128, message = "记忆检索字段名最多 128 个字符") String, Object> memoryRetrievalReport,
+
+        @Size(max = 64, message = "actorRole 最多 64 个字符")
+        String actorRole,
+
+        @Size(max = 64, message = "actorType 最多 64 个字符")
+        String actorType,
+
+        @Size(max = 4000, message = "authorizedProjectRoles 最多 4000 个字符")
+        String authorizedProjectRoles) {
+
+    /** 保留旧构造签名，避免本次可信身份增强扩散到既有测试和内部调用方。 */
+    public IngestAgentPlanRequest(
+            String sessionId,
+            Long tenantId,
+            Long projectId,
+            Long workspaceId,
+            String actorId,
+            String channel,
+            String objective,
+            String userInput,
+            String workloadType,
+            String idempotencyKey,
+            String pythonRequestId,
+            List<String> stateTrace,
+            String responseSummary,
+            Boolean requiresHumanApproval,
+            WorkspaceIsolationLevel isolationLevel,
+            List<IngestAgentPlanToolRequest> toolPlans,
+            Map<String, Object> modelGatewayGovernance,
+            Map<String, Object> memoryPlan,
+            Map<String, Object> memoryRetrievalReport) {
+        this(sessionId, tenantId, projectId, workspaceId, actorId, channel, objective, userInput,
+                workloadType, idempotencyKey, pythonRequestId, stateTrace, responseSummary,
+                requiresHumanApproval, isolationLevel, toolPlans, modelGatewayGovernance, memoryPlan,
+                memoryRetrievalReport, null, null, null);
+    }
 }

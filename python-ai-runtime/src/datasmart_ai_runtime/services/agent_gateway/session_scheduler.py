@@ -304,7 +304,7 @@ class AgentSessionScheduler:
         domain_prefixes = {
             GovernanceDomain.DATASOURCE: ("datasource.",),
             GovernanceDomain.DATA_QUALITY: ("quality.",),
-            GovernanceDomain.TASK_MANAGEMENT: ("task.",),
+            GovernanceDomain.TASK_MANAGEMENT: ("task.", "sync.task."),
             GovernanceDomain.PERMISSION_ADMIN: ("permission.",),
             GovernanceDomain.DATA_SYNC: ("sync.", "data_sync."),
             GovernanceDomain.KNOWLEDGE_QA: ("knowledge.", "rag.", "web.search."),
@@ -337,7 +337,7 @@ class AgentSessionScheduler:
         prefixes = {
             GovernanceDomain.DATASOURCE: ("datasource.",),
             GovernanceDomain.DATA_QUALITY: ("quality.",),
-            GovernanceDomain.TASK_MANAGEMENT: ("governed.task.", "task."),
+            GovernanceDomain.TASK_MANAGEMENT: ("governed.task.", "task.", "sync.task."),
             GovernanceDomain.PERMISSION_ADMIN: ("permission.",),
             GovernanceDomain.DATA_SYNC: ("sync.", "data_sync."),
             GovernanceDomain.KNOWLEDGE_QA: ("knowledge.", "rag."),
@@ -351,7 +351,7 @@ class AgentSessionScheduler:
         prefixes = {
             GovernanceDomain.DATASOURCE: ("datasource.",),
             GovernanceDomain.DATA_QUALITY: ("quality.",),
-            GovernanceDomain.TASK_MANAGEMENT: ("task.",),
+            GovernanceDomain.TASK_MANAGEMENT: ("task.", "sync.task."),
             GovernanceDomain.PERMISSION_ADMIN: ("permission.",),
             GovernanceDomain.DATA_SYNC: ("sync.", "data_sync."),
             GovernanceDomain.KNOWLEDGE_QA: ("knowledge.", "rag.", "web.search."),

@@ -28,6 +28,71 @@ class AgentSessionSchedulerTest(unittest.TestCase):
     - 响应不能泄露 prompt、工具原始参数、记忆正文或样本数据。
     """
 
+    def test_full_sync_assistant_schedules_real_multi_agent_roster_and_langgraph_plan(self) -> None:
+        response = build_plan_response(
+            AgentRequest(
+                tenant_id="10",
+                project_id="101",
+                actor_id="1001",
+                objective="把 MySQL 两张客户表全量同步到 PostgreSQL public schema 的同名表",
+                variables={
+                    "runtimeProfile": "production",
+                    "sessionId": "session-full-sync-agents",
+                    "grantedPermissions": (
+                        "datasource:connection:test",
+                        "datasource:metadata:read",
+                        "sync:task:create",
+                        "sync:task:precheck",
+                        "sync:task:publish",
+                        "sync:task:run",
+                        "sync:execution:view",
+                    ),
+                    "dataSyncRequest": {
+                        "taskName": "客户表全量同步",
+                        "sourceDatasourceId": 23,
+                        "targetDatasourceId": 24,
+                        "syncMode": "FULL",
+                        "writeStrategy": "INSERT",
+                        "objectMappings": (
+                            {
+                                "sourceObjectName": "fs_test_customer_source",
+                                "targetSchemaName": "public",
+                                "targetObjectName": "fs_test_customer_source",
+                            },
+                            {
+                                "sourceObjectName": "fs_test_customer_target",
+                                "targetSchemaName": "public",
+                                "targetObjectName": "fs_test_customer_target",
+                            },
+                        ),
+                    },
+                },
+            ),
+            self._orchestrator(),
+        )
+
+        scheduling = response["intelligentGatewayGovernance"]["agentSessionScheduling"]
+        roles = {agent["role"] for agent in scheduling["participatingAgents"]}
+        execution_roles = {
+            item["agentRole"]
+            for item in response["agentCollaborationExecutionPlan"]["workItems"]
+        }
+
+        self.assertTrue(
+            {
+                "MASTER_ORCHESTRATOR",
+                "DATASOURCE_AGENT",
+                "DATA_SYNC_AGENT",
+                "TASK_AGENT",
+                "PERMISSION_AGENT",
+                "OPS_AGENT",
+            }.issubset(roles)
+        )
+        self.assertTrue(roles.issubset(execution_roles))
+        self.assertTrue(scheduling["handoffRequired"])
+        self.assertIn("sync.task.run", scheduling["policyAxes"]["plannedToolNames"])
+        self.assertIn("sync.execution.status", scheduling["policyAxes"]["plannedToolNames"])
+
     def test_data_quality_session_schedules_master_quality_datasource_and_memory_agents(self) -> None:
         """数据质量场景应调度主控、数据源、质量和记忆 Agent。
 

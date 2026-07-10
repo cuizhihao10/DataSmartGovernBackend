@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.datasync.service.support;
 
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncObjectExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
@@ -230,6 +231,15 @@ public class SyncObjectExecutionLifecycleSupport {
         row.setFinishedAt(LocalDateTime.now());
         row.setUpdateTime(LocalDateTime.now());
         objectExecutionMapper.updateById(row);
+        /*
+         * updateById 默认忽略 null。对象从 FAILED 重试为 SUCCEEDED 时必须显式清空旧错误字段，
+         * 否则运行详情会出现“状态成功但仍显示 RUNNER_FAILED”的矛盾信息。
+         */
+        objectExecutionMapper.update(null, new UpdateWrapper<SyncObjectExecution>()
+                .eq("id", row.getId())
+                .set("last_error_type", null)
+                .set("last_error_code", null)
+                .set("last_error_message", null));
         return row;
     }
 

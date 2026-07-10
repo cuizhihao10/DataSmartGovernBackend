@@ -667,6 +667,24 @@ class GatewayAuthorizationFilterTest {
         verify(decisionClient, never()).evaluate(any(), any());
     }
 
+    @Test
+    void userFacingAgentPlanShouldUsePlanAuthorizationAction() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = exchangeWithRole("/api/agent/plans", "POST", "PROJECT_OWNER");
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
+
+        filter.filter(exchange, chain).block();
+
+        ArgumentCaptor<GatewayPermissionDecisionRequest> captor = forClass(GatewayPermissionDecisionRequest.class);
+        verify(decisionClient).evaluate(captor.capture(), eq("trace-test-001"));
+        assertThat(captor.getValue().getResourceType()).isEqualTo("AI_RUNTIME");
+        assertThat(captor.getValue().getAction()).isEqualTo("PLAN");
+        assertThat(chain.called()).isTrue();
+    }
+
     /**
      * AgentPlan 内部接入口应具备本地限流保护。
      *

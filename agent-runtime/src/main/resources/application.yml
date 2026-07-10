@@ -659,8 +659,10 @@ datasmart:
       # task-management 用于保存任务草稿、提交审批以及后续转换真实任务。
       # 当前 `task.draft.persist` 只调用 /task-drafts 保存 DRAFT，不会直接写入 /tasks 队列。
       task-management: http://localhost:8081
+      # data-sync 承担同步任务草稿、预检查、发布、运行和执行状态事实；Agent 不直接写 data_sync 数据库。
+      data-sync: http://localhost:8086
     tool-registry:
-      datasource.metadata.read:
+      "[datasource.metadata.read]":
         enabled: true
         tool-code: datasource.metadata.read
         tool-type: DATASOURCE_METADATA
@@ -680,7 +682,7 @@ datasmart:
         timeout-ms: 10000
         max-retries: 1
         allowed-actions:
-          - VIEW
+          - USE
         input-schema:
           - name: datasourceId
             type: number
@@ -689,7 +691,243 @@ datasmart:
             example: "1001"
             sensitive: false
             resolution: CAN_FILL_FROM_CONTEXT
-      quality.rule.suggest:
+      "[datasource.source.connection.test]":
+        enabled: true
+        tool-code: datasource.source.connection.test
+        tool-type: DATASOURCE_METADATA
+        display-name: 源端数据源连接测试
+        description: 对用户已安全登记并选择的源端数据源执行真实连接测试；不读取或返回数据库密码。
+        target-service: datasource-management
+        target-endpoint: /datasources/{datasourceId}/test
+        read-only: true
+        risk-level: LOW
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: NONE
+        cache-policy: NO_CACHE
+        timeout-ms: 10000
+        max-retries: 1
+        allowed-actions:
+          - TEST_CONNECTION
+        input-schema:
+          - name: datasourceId
+            type: number
+            required: true
+            description: 已由用户在数据源管理中安全创建并选中的源端数据源 ID。
+            sensitive: false
+            resolution: USER_REQUIRED
+      "[datasource.target.connection.test]":
+        enabled: true
+        tool-code: datasource.target.connection.test
+        tool-type: DATASOURCE_METADATA
+        display-name: 目标端数据源连接测试
+        description: 对用户已安全登记并选择的目标端数据源执行真实连接测试；不读取或返回数据库密码。
+        target-service: datasource-management
+        target-endpoint: /datasources/{datasourceId}/test
+        read-only: true
+        risk-level: LOW
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: NONE
+        cache-policy: NO_CACHE
+        timeout-ms: 10000
+        max-retries: 1
+        allowed-actions:
+          - TEST_CONNECTION
+        input-schema:
+          - name: datasourceId
+            type: number
+            required: true
+            description: 已由用户在数据源管理中安全创建并选中的目标端数据源 ID。
+            sensitive: false
+            resolution: USER_REQUIRED
+      "[datasource.source.metadata.read]":
+        enabled: true
+        tool-code: datasource.source.metadata.read
+        tool-type: DATASOURCE_METADATA
+        display-name: 源端表结构读取
+        description: 读取选定源端的表、字段、主键和索引，为对象与字段映射提供真实元数据。
+        target-service: datasource-management
+        target-endpoint: /datasources/{datasourceId}/metadata/discover
+        read-only: true
+        risk-level: LOW
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: SEMANTIC
+        cache-policy: PROJECT_SAFE
+        timeout-ms: 15000
+        max-retries: 1
+        allowed-actions:
+          - USE
+        input-schema:
+          - name: datasourceId
+            type: number
+            required: true
+            description: 源端数据源 ID。
+            sensitive: false
+            resolution: USER_REQUIRED
+      "[datasource.target.metadata.read]":
+        enabled: true
+        tool-code: datasource.target.metadata.read
+        tool-type: DATASOURCE_METADATA
+        display-name: 目标端表结构读取
+        description: 读取选定目标端的表、字段、主键和索引，为映射和预检查提供真实元数据。
+        target-service: datasource-management
+        target-endpoint: /datasources/{datasourceId}/metadata/discover
+        read-only: true
+        risk-level: LOW
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: SEMANTIC
+        cache-policy: PROJECT_SAFE
+        timeout-ms: 15000
+        max-retries: 1
+        allowed-actions:
+          - VIEW
+        input-schema:
+          - name: datasourceId
+            type: number
+            required: true
+            description: 目标端数据源 ID。
+            sensitive: false
+            resolution: USER_REQUIRED
+      "[sync.task.draft.save]":
+        enabled: true
+        tool-code: sync.task.draft.save
+        tool-type: DATA_SYNC
+        display-name: 同步任务草稿创建
+        description: 根据用户选择的数据源、对象映射和真实元数据生成字段映射，并复用 data-sync 创建向导保存 DRAFT。
+        target-service: data-sync
+        target-endpoint: /sync-tasks/create-wizard/drafts
+        read-only: false
+        risk-level: HIGH
+        execution-mode: APPROVAL_REQUIRED
+        requires-approval: true
+        idempotent: false
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: SESSION_ONLY
+        timeout-ms: 15000
+        max-retries: 0
+        allowed-actions:
+          - CREATE_DRAFT
+        input-schema:
+          - name: sourceDatasourceId
+            type: number
+            required: true
+            description: 已安全登记的源端数据源 ID。
+            sensitive: false
+            resolution: USER_REQUIRED
+          - name: targetDatasourceId
+            type: number
+            required: true
+            description: 已安全登记的目标端数据源 ID。
+            sensitive: false
+            resolution: USER_REQUIRED
+          - name: objectMappings
+            type: array
+            required: true
+            description: 用户确认的源表到目标表映射，不包含数据库凭据。
+            sensitive: true
+            resolution: USER_REQUIRED
+      "[sync.task.precheck]":
+        enabled: true
+        tool-code: sync.task.precheck
+        tool-type: DATA_SYNC
+        display-name: 同步任务预检查
+        description: 调用 data-sync 真实预检查，验证连接器、对象、字段、目标约束和执行器准入。
+        target-service: data-sync
+        target-endpoint: /sync-templates/{templateId}/precheck
+        read-only: true
+        risk-level: LOW
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: NO_CACHE
+        timeout-ms: 20000
+        max-retries: 0
+        allowed-actions:
+          - PRECHECK
+      "[sync.task.publish]":
+        enabled: true
+        tool-code: sync.task.publish
+        tool-type: DATA_SYNC
+        display-name: 同步任务发布
+        description: 在预检查通过后把 DRAFT 发布为可运行任务；不直接搬运数据。
+        target-service: data-sync
+        target-endpoint: /sync-tasks/{taskId}/publish
+        read-only: false
+        risk-level: HIGH
+        execution-mode: APPROVAL_REQUIRED
+        requires-approval: true
+        idempotent: false
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: NO_CACHE
+        timeout-ms: 15000
+        max-retries: 0
+        allowed-actions:
+          - PUBLISH
+      "[sync.task.run]":
+        enabled: true
+        tool-code: sync.task.run
+        tool-type: DATA_SYNC
+        display-name: 同步任务立即运行
+        description: 对已发布的非定期同步任务创建 execution 并提交 worker 队列。
+        target-service: data-sync
+        target-endpoint: /sync-tasks/{taskId}/run
+        read-only: false
+        risk-level: HIGH
+        execution-mode: APPROVAL_REQUIRED
+        requires-approval: true
+        idempotent: false
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: NO_CACHE
+        timeout-ms: 15000
+        max-retries: 0
+        allowed-actions:
+          - RUN
+      "[sync.execution.status]":
+        enabled: true
+        tool-code: sync.execution.status
+        tool-type: DATA_SYNC
+        display-name: 同步执行状态查询
+        description: 查询本次 Agent 创建任务的最新 execution 状态和低敏进度计数。
+        target-service: data-sync
+        target-endpoint: /sync-tasks/{taskId}/executions
+        read-only: true
+        risk-level: LOW
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: NO_CACHE
+        timeout-ms: 10000
+        max-retries: 1
+        allowed-actions:
+          - VIEW
+      "[quality.rule.suggest]":
         enabled: true
         tool-code: quality.rule.suggest
         tool-type: DATA_QUALITY
@@ -733,7 +971,7 @@ datasmart:
             example: 检查订单主键唯一性和金额异常值
             sensitive: false
             resolution: USER_REQUIRED
-      quality.remediation.task.draft:
+      "[quality.remediation.task.draft]":
         enabled: true
         tool-code: quality.remediation.task.draft
         tool-type: DATA_QUALITY
@@ -784,7 +1022,7 @@ datasmart:
             example: "true"
             sensitive: false
             resolution: SYSTEM_INJECTED
-      task.create.draft:
+      "[task.create.draft]":
         enabled: true
         tool-code: task.create.draft
         tool-type: TASK_MANAGEMENT
@@ -827,7 +1065,7 @@ datasmart:
             example: 对订单表执行质量检测并生成异常报告
             sensitive: true
             resolution: USER_REQUIRED
-      task.draft.persist:
+      "[task.draft.persist]":
         enabled: true
         tool-code: task.draft.persist
         tool-type: TASK_MANAGEMENT

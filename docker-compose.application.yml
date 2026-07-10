@@ -338,9 +338,10 @@ services:
       DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_ENDPOINT: http://minio:9000
       DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_ACCESS_KEY: ${DATASMART_MINIO_ACCESS_KEY:-datasmart}
       DATASMART_AGENT_RUNTIME_ARTIFACT_MINIO_SECRET_KEY: ${DATASMART_MINIO_SECRET_KEY:-datasmart123}
-      DATASMART_AGENT_TOOL_SERVICE_BASE_URLS_DATASOURCE_MANAGEMENT: http://datasource-management:8082
-      DATASMART_AGENT_TOOL_SERVICE_BASE_URLS_DATA_QUALITY: http://data-quality:8083
-      DATASMART_AGENT_TOOL_SERVICE_BASE_URLS_TASK_MANAGEMENT: http://task-management:8081
+      DATASMART_AGENT_RUNTIME_TOOL_SERVICE_BASE_URLS_DATASOURCE_MANAGEMENT: http://datasource-management:8082
+      DATASMART_AGENT_RUNTIME_TOOL_SERVICE_BASE_URLS_DATA_QUALITY: http://data-quality:8083
+      DATASMART_AGENT_RUNTIME_TOOL_SERVICE_BASE_URLS_TASK_MANAGEMENT: http://task-management:8081
+      DATASMART_AGENT_RUNTIME_TOOL_SERVICE_BASE_URLS_DATA_SYNC: http://data-sync:8086
       # dispatcher 默认关闭，避免容器启动后自动派发历史 outbox 或执行真实工具。
       DATASMART_AGENT_RUNTIME_OUTBOX_DISPATCHER_ENABLED: "false"
       DATASMART_AGENT_RUNTIME_ASYNC_COMMAND_DISPATCHER_ENABLED: "false"
@@ -360,6 +361,7 @@ services:
       - nacos
       - minio
       - permission-admin
+      - data-sync
 
   observability:
     <<: *java-common
@@ -418,6 +420,10 @@ services:
     environment:
       TZ: ${DATASMART_TIME_ZONE:-Asia/Shanghai}
       DATASMART_AGENT_RUNTIME_BASE_URL: http://agent-runtime:8091
+      # Agent business plans must enter the Java control plane before any
+      # confirmed side effect can run. This produces durable session/run/audit
+      # references used by HITL confirmation, execution, replay and diagnostics.
+      DATASMART_AGENT_RUNTIME_PLAN_INGESTION_ENABLED: "true"
       DATASMART_PERMISSION_ADMIN_BASE_URL: http://permission-admin:8085
       DATASMART_AI_RUNTIME_REDIS_URL: redis://redis:6379/0
       DATASMART_AI_RUNTIME_EVENT_STORE: redis-stream

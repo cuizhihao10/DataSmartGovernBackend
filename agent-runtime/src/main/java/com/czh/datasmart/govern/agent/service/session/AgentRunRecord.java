@@ -205,4 +205,32 @@ public class AgentRunRecord {
         this.updateTime = this.finishTime;
         this.nextActions = List.of("如需继续，请在同一会话中创建新的 Agent Run。");
     }
+
+    /**
+     * 所有工具节点成功后的 Run 终态。
+     */
+    public void completeAfterToolExecution(String message) {
+        this.state = AgentRunState.SUCCEEDED;
+        this.message = message;
+        this.finishTime = LocalDateTime.now();
+        this.updateTime = this.finishTime;
+        this.nextActions = List.of(
+                "Agent 控制面计划已完成，可前往数据同步任务详情查看真实 worker 执行进度、运行日志和结果。",
+                "同步任务的最终成功或失败以 data-sync execution 状态为准。"
+        );
+    }
+
+    /**
+     * 任一必需工具节点失败后的 Run 终态。
+     */
+    public void failAfterToolExecution(String message) {
+        this.state = AgentRunState.FAILED;
+        this.message = message;
+        this.finishTime = LocalDateTime.now();
+        this.updateTime = this.finishTime;
+        this.nextActions = List.of(
+                "查看失败工具节点的具体错误和建议，修复数据源、映射或预检查问题。",
+                "修复后重新生成 Agent 计划；失败 Run 不会自动重复写入业务系统。"
+        );
+    }
 }

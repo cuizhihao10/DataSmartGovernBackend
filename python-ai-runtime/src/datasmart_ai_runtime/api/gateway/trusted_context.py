@@ -72,9 +72,11 @@ def enrich_agent_plan_payload_from_gateway_headers(
     tenant_id = _header(headers, "X-DataSmart-Tenant-Id")
     actor_id = _header(headers, "X-DataSmart-Actor-Id")
     actor_role = _header(headers, "X-DataSmart-Actor-Role")
+    actor_type = _header(headers, "X-DataSmart-Actor-Type")
     workspace_id = _header(headers, "X-DataSmart-Workspace-Id")
     trace_id = _header(headers, "X-DataSmart-Trace-Id")
     authorized_project_ids = _csv(_header(headers, "X-DataSmart-Authorized-Project-Ids"))
+    authorized_project_roles = _header(headers, "X-DataSmart-Authorized-Project-Roles")
     tenant_plan_code = _header(headers, "X-DataSmart-Tenant-Plan-Code") or "STANDARD"
     workspace_risk_level = _header(headers, "X-DataSmart-Workspace-Risk-Level") or "NORMAL"
     tool_budget_policy_version = _header(headers, "X-DataSmart-Tool-Budget-Policy-Version")
@@ -109,8 +111,10 @@ def enrich_agent_plan_payload_from_gateway_headers(
             "tenantId": tenant_id,
             "actorId": actor_id,
             "actorRole": actor_role,
+            "actorType": actor_type,
             "workspaceId": workspace_id,
             "authorizedProjectIds": authorized_project_ids,
+            "authorizedProjectRoles": authorized_project_roles,
         },
         "skillAdmission": dict(common_policy_facts),
         "toolBudget": {

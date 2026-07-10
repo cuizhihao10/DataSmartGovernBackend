@@ -189,6 +189,12 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/agent/events/ws", "AI_RUNTIME",
                 "Agent Runtime 实时事件 WebSocket 订阅入口，用于订阅 run/session 进度、断线续传、ack 和 heartbeat",
                 Map.of("GET", "SUBSCRIBE")));
+        defaults.add(route("/api/agent/plans", "AI_RUNTIME",
+                "普通用户通过智能网关生成受控 Agent 计划；该动作只规划，不直接执行业务副作用",
+                Map.of("POST", "PLAN")));
+        defaults.add(route("/api/agent/sessions/{sessionId}/runs/{runId}/confirm-and-execute", "AI_RUNTIME",
+                "原发起用户确认并执行当前 Run；Java 控制面会再次校验租户、项目、actor 和项目角色",
+                Map.of("POST", "EXECUTE")));
         defaults.add(route("/api/agent/tool-execution-events/outbox/diagnostics", "AI_RUNTIME",
                 "Agent 工具执行事件 outbox 诊断接口，用于运维查看 pending、publishing、failed、blocked 和 ignored 等状态分布",
                 Map.of("GET", "DIAGNOSE")));

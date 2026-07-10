@@ -416,6 +416,26 @@ class AgentRequest:
     preferred_workload: WorkloadType = WorkloadType.AGENT_REASONING
     locale: str = "zh-CN"
 
+    def __post_init__(self) -> None:
+        """Normalize JSON boundary values before the request enters orchestration.
+
+        HTTP payloads naturally deserialize enum fields as strings. Keeping the
+        conversion here guarantees that model routing and LangGraph nodes always
+        receive a ``WorkloadType`` even when callers use the public JSON contract.
+        """
+
+        if isinstance(self.preferred_workload, WorkloadType):
+            return
+        raw_value = str(self.preferred_workload).strip().lower()
+        try:
+            normalized = WorkloadType(raw_value)
+        except ValueError as exc:
+            allowed = ", ".join(workload.value for workload in WorkloadType)
+            raise ValueError(
+                f"Unsupported preferred_workload '{raw_value}'. Allowed values: {allowed}."
+            ) from exc
+        object.__setattr__(self, "preferred_workload", normalized)
+
 
 @dataclass(frozen=True)
 class ToolPlan:

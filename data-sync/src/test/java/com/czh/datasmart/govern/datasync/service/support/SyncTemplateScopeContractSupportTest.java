@@ -54,9 +54,28 @@ class SyncTemplateScopeContractSupportTest {
 
         assertThat(contract.multiObjectScope()).isTrue();
         assertThat(contract.selectedObjectCount()).isEqualTo(2);
-        assertThat(contract.requiresApproval()).isTrue();
+        assertThat(contract.requiresApproval()).isFalse();
         assertThat(contract.executableByMinimalBridge()).isFalse();
         assertThat(contract.issueCodes()).contains("SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE");
+    }
+
+    @Test
+    void objectListShouldAcceptCurrentWizardAndAgentObjectNameFields() {
+        SyncTemplate template = baseTemplate();
+        template.setSyncScopeType("OBJECT_LIST");
+        template.setObjectMappingConfig("""
+                {
+                  "mappings": [
+                    {"sourceObjectName":"fs_test_customer_source","targetObjectName":"fs_test_customer_source"},
+                    {"sourceObjectName":"fs_test_customer_target","targetObjectName":"fs_test_customer_target"}
+                  ]
+                }
+                """);
+
+        SyncTemplateScopeContract contract = support.evaluate(template);
+
+        assertThat(contract.selectedObjectCount()).isEqualTo(2);
+        assertThat(contract.blockingIssueCodes()).doesNotContain("OBJECT_MAPPING_IDENTIFIER_UNSAFE");
     }
 
     @Test
@@ -90,7 +109,7 @@ class SyncTemplateScopeContractSupportTest {
 
         assertThat(contract.customSqlScope()).isTrue();
         assertThat(contract.customSqlDeclared()).isTrue();
-        assertThat(contract.requiresApproval()).isTrue();
+        assertThat(contract.requiresApproval()).isFalse();
         assertThat(contract.blockingIssueCodes()).isEmpty();
         assertThat(contract.issueCodes()).doesNotContain("SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE");
         assertThat(contract.executableByMinimalBridge()).isTrue();

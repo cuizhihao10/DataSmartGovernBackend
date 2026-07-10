@@ -86,7 +86,11 @@ public class SyncTemplateScopeContractSupport {
                 || scopeType == SyncScopeType.SCHEMA_FULL
                 || scopeType == SyncScopeType.DATABASE_FULL;
         boolean customSqlScope = scopeType == SyncScopeType.CUSTOM_SQL_QUERY;
-        boolean requiresApproval = multiObjectScope || customSqlScope || "OVERWRITE".equals(normalize(template.getWriteStrategy()));
+        // Creating a normal synchronization task is a user operation, not an
+        // approval workflow. Scope breadth and read-only custom SQL still receive
+        // full precheck/audit coverage; only an explicit destructive overwrite
+        // strategy remains approval-worthy for future administrator tooling.
+        boolean requiresApproval = "OVERWRITE".equals(normalize(template.getWriteStrategy()));
         /*
          * 最小 run-once bridge 的“可执行”边界已经从最早的单表 FULL 扩展到两类受控离线能力：
          * 1. SINGLE_OBJECT：按源对象/目标对象做普通 Reader -> Writer；
@@ -235,8 +239,10 @@ public class SyncTemplateScopeContractSupport {
             return;
         }
         for (JsonNode mapping : mappings) {
-            String sourceObject = jsonText(mapping, "sourceObject");
-            String targetObject = jsonText(mapping, "targetObject");
+            String sourceObject = firstJsonText(
+                    mapping, "sourceObjectName", "sourceObject", "sourceTableName", "sourceTable");
+            String targetObject = firstJsonText(
+                    mapping, "targetObjectName", "targetObject", "targetTableName", "targetTable");
             if (!safeIdentifier(sourceObject) || !safeIdentifier(targetObject)) {
                 issueCodes.add("OBJECT_MAPPING_IDENTIFIER_UNSAFE");
                 recommendedActions.add("objectMappingConfig 中的 sourceObject/targetObject 只能使用字母、数字和下划线，并以字母或下划线开头；复杂引用后续应通过 connector dialect 做安全转义");
@@ -314,6 +320,16 @@ public class SyncTemplateScopeContractSupport {
         }
         String text = node.get(fieldName).asText();
         return hasText(text) ? text.trim() : null;
+    }
+
+    private String firstJsonText(JsonNode node, String... fieldNames) {
+        for (String fieldName : fieldNames) {
+            String value = jsonText(node, fieldName);
+            if (hasText(value)) {
+                return value;
+            }
+        }
+        return null;
     }
 
     private String normalize(String value) {

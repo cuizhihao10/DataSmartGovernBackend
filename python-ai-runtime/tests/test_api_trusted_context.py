@@ -41,8 +41,10 @@ class ApiTrustedContextTest(unittest.TestCase):
                 "X-DataSmart-Tenant-Id": "10",
                 "X-DataSmart-Actor-Id": "1001",
                 "X-DataSmart-Actor-Role": "PROJECT_OWNER",
+                "X-DataSmart-Actor-Type": "USER",
                 "X-DataSmart-Workspace-Id": "workspace-a",
                 "X-DataSmart-Authorized-Project-Ids": "20, 30",
+                "X-DataSmart-Authorized-Project-Roles": "20:OWNER,30:READER",
             },
         )
 
@@ -53,6 +55,31 @@ class ApiTrustedContextTest(unittest.TestCase):
         self.assertEqual("PROJECT_OWNER", trusted["skillAdmission"]["actorRole"])
         self.assertEqual("workspace-a", trusted["toolBudget"]["workspaceKey"])
         self.assertEqual(("20", "30"), trusted["requestContext"]["authorizedProjectIds"])
+        self.assertEqual("USER", trusted["requestContext"]["actorType"])
+        self.assertEqual("20:OWNER,30:READER", trusted["requestContext"]["authorizedProjectRoles"])
+
+    def test_authorized_project_roles_are_covered_by_gateway_signature(self) -> None:
+        headers = self._signed_headers()
+        headers["X-DataSmart-Authorized-Project-Roles"] = "20:MANAGER"
+        headers[GATEWAY_SIGNATURE] = sign_gateway_payload(
+            headers,
+            timestamp=headers[GATEWAY_SIGNATURE_TIMESTAMP],
+            nonce=headers[GATEWAY_SIGNATURE_NONCE],
+            key_id=headers[GATEWAY_SIGNATURE_KEY_ID],
+            secret="secret-for-test",
+        )
+
+        payload = enrich_agent_plan_payload_from_gateway_headers(
+            {"tenant_id": "10", "project_id": "20", "actor_id": "1001", "objective": "test"},
+            headers,
+            signature_config=GatewaySignatureVerificationConfig(required=True, secret="secret-for-test"),
+            now_ms=1_800_000_000_100,
+        )
+
+        self.assertEqual(
+            "20:MANAGER",
+            payload["variables"]["trustedControlPlane"]["requestContext"]["authorizedProjectRoles"],
+        )
 
     def test_untrusted_source_strips_forged_reserved_namespace_without_injecting_headers(self) -> None:
         """直连或来源不明请求不能通过请求体或伪造身份字段创建可信上下文。"""

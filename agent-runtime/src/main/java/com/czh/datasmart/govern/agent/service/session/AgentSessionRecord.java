@@ -27,6 +27,12 @@ public class AgentSessionRecord {
     private final Long projectId;
     private final Long workspaceId;
     private final String actorId;
+    /** 当前委托用户的平台角色；工具下游调用不能把普通用户提升为 SERVICE_ACCOUNT。 */
+    private String actorRole;
+    /** 当前委托主体类型，浏览器登录用户通常为 USER。 */
+    private String actorType;
+    /** gateway 物化的项目内角色快照，例如 101:MANAGER；写操作继续由业务服务二次校验。 */
+    private String authorizedProjectRoles;
     private final String channel;
     private final String objective;
     private final WorkspaceIsolationLevel isolationLevel;
@@ -47,11 +53,31 @@ public class AgentSessionRecord {
                               WorkspaceIsolationLevel isolationLevel,
                               String workspaceKey,
                               LocalDateTime createTime) {
+        this(sessionId, tenantId, projectId, workspaceId, actorId, null, null, null,
+                channel, objective, isolationLevel, workspaceKey, createTime);
+    }
+
+    public AgentSessionRecord(String sessionId,
+                              Long tenantId,
+                              Long projectId,
+                              Long workspaceId,
+                              String actorId,
+                              String actorRole,
+                              String actorType,
+                              String authorizedProjectRoles,
+                              String channel,
+                              String objective,
+                              WorkspaceIsolationLevel isolationLevel,
+                              String workspaceKey,
+                              LocalDateTime createTime) {
         this.sessionId = sessionId;
         this.tenantId = tenantId;
         this.projectId = projectId;
         this.workspaceId = workspaceId;
         this.actorId = actorId;
+        this.actorRole = normalize(actorRole);
+        this.actorType = normalize(actorType);
+        this.authorizedProjectRoles = normalize(authorizedProjectRoles);
         this.channel = channel;
         this.objective = objective;
         this.isolationLevel = isolationLevel;
@@ -79,6 +105,18 @@ public class AgentSessionRecord {
 
     public String getActorId() {
         return actorId;
+    }
+
+    public String getActorRole() {
+        return actorRole;
+    }
+
+    public String getActorType() {
+        return actorType;
+    }
+
+    public String getAuthorizedProjectRoles() {
+        return authorizedProjectRoles;
     }
 
     public String getChannel() {
@@ -131,5 +169,22 @@ public class AgentSessionRecord {
     public void addRun(AgentRunRecord run) {
         this.runs.add(run);
         this.updateTime = LocalDateTime.now();
+    }
+
+    /**
+     * 用确认执行请求携带的最新 gateway 权限快照刷新委托身份。
+     *
+     * <p>计划生成到用户确认之间，项目角色可能被撤销或降级。执行前刷新可以避免继续使用过期的 MANAGER/OWNER
+     * 快照；下游服务仍会基于这些 Header 和自身数据库事实再次执行 fail-closed 校验。</p>
+     */
+    public void refreshDelegatedIdentity(String actorRole, String actorType, String authorizedProjectRoles) {
+        this.actorRole = normalize(actorRole);
+        this.actorType = normalize(actorType);
+        this.authorizedProjectRoles = normalize(authorizedProjectRoles);
+        this.updateTime = LocalDateTime.now();
+    }
+
+    private static String normalize(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 }

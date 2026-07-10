@@ -104,6 +104,24 @@ class SyncFieldMappingExecutionContractSupportTest {
     }
 
     @Test
+    void metadataPrimaryKeyFlagShouldInferConflictColumnsWithoutManualPrimaryKeyField() {
+        String config = """
+                {
+                  "mappings": [
+                    {"sourceField":"id","targetField":"id","primaryKey":true,"syncEnabled":true},
+                    {"sourceField":"name","targetField":"name","primaryKey":false,"syncEnabled":true}
+                  ]
+                }
+                """;
+
+        SyncFieldMappingExecutionContract contract = support.parse(config, null);
+
+        assertThat(contract.getPrimaryKeyColumns()).containsExactly("id");
+        assertThat(contract.getIssueCodes()).isEmpty();
+        assertThat(contract.directlyRunnableByMinimalBridge()).isTrue();
+    }
+
+    @Test
     void invalidJsonShouldReturnIssueCodeWithoutLeakingOriginalPayload() {
         String unsafePayload = "{ \"mappings\": [ { \"sourceField\": \"secret_phone\", ";
 

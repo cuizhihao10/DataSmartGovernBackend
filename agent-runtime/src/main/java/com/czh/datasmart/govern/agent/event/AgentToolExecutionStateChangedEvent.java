@@ -13,6 +13,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -89,9 +90,16 @@ public record AgentToolExecutionStateChangedEvent(
 
     public AgentToolExecutionStateChangedEvent {
         allowedActions = allowedActions == null ? List.of() : List.copyOf(allowedActions);
-        governanceHints = governanceHints == null ? Map.of() : Map.copyOf(governanceHints);
-        parameterValidation = parameterValidation == null ? Map.of() : Map.copyOf(parameterValidation);
-        attributes = attributes == null ? Map.of() : Map.copyOf(attributes);
+        governanceHints = immutableJsonMap(governanceHints);
+        parameterValidation = immutableJsonMap(parameterValidation);
+        attributes = immutableJsonMap(attributes);
+    }
+
+    private static Map<String, Object> immutableJsonMap(Map<String, Object> source) {
+        if (source == null || source.isEmpty()) {
+            return Map.of();
+        }
+        return Collections.unmodifiableMap(new LinkedHashMap<>(source));
     }
 
     /**

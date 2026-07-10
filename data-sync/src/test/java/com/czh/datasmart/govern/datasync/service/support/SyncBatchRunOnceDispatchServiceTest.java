@@ -181,6 +181,37 @@ class SyncBatchRunOnceDispatchServiceTest {
         verify(lifecycleSupport, never()).failExecution(any(), any(), any(), any());
     }
 
+    @Test
+    void remoteFailureShouldPersistLowSensitiveErrorSummary() {
+        DatasourceRunOnceResponse response = new DatasourceRunOnceResponse();
+        response.setRunStatus("RUNNER_FAILED");
+        response.setFailed(true);
+        response.setFailCallbackRecommended(true);
+        response.setTotalRecordsRead(0L);
+        response.setTotalRecordsWritten(0L);
+        response.setTotalFailedRecordCount(1L);
+        response.setErrorSummary("执行阶段异常：IllegalArgumentException - 目标对象定位缺少 schema\n请检查映射");
+        SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
+        SyncBatchRunOnceDispatchService service = service(
+                new FakeDatasourceRunOnceClient(response),
+                lifecycleSupport,
+                properties(true),
+                mock(DataSyncTaskManagementReceiptPublisher.class));
+        SyncExecution execution = execution("FULL");
+
+        SyncBatchRunOnceDispatchResult result = service.dispatchRunOnce(
+                execution, task(), template("FULL", directMapping()),
+                workerPlan("FULL", "READY_TO_RUN", List.of()), actor());
+
+        assertThat(result.failed()).isTrue();
+        ArgumentCaptor<SyncExecutionFailRequest> failCaptor = ArgumentCaptor.forClass(SyncExecutionFailRequest.class);
+        verify(lifecycleSupport).failExecution(eq(task()), eq(execution), failCaptor.capture(), any(SyncActorContext.class));
+        assertThat(failCaptor.getValue().getErrorCode()).isEqualTo("RUNNER_FAILED");
+        assertThat(failCaptor.getValue().getErrorMessage())
+                .contains("目标对象定位缺少 schema 请检查映射")
+                .doesNotContain("\n");
+    }
+
     private SyncBatchRunOnceDispatchService service(FakeDatasourceRunOnceClient client,
                                                    SyncExecutionLifecycleSupport lifecycleSupport,
                                                    DataSyncDatasourceRunOnceProperties properties,

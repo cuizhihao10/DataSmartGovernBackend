@@ -190,7 +190,7 @@ class DataSyncServiceImplProjectScopeTest {
         assertThat(task.getCurrentState()).isEqualTo(SyncTaskState.CONFIGURED.name());
         assertThat(task.getApprovalState()).isEqualTo("NOT_REQUIRED");
         verify(taskMapper).insert(any(SyncTask.class));
-        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("highRiskReviewSuggested=true"));
+        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("highRiskReviewSuggested=false"));
         verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), argThat(payload -> !payload.contains("approval")));
     }
 
@@ -224,7 +224,7 @@ class DataSyncServiceImplProjectScopeTest {
         assertThat(task.getCurrentState()).isEqualTo(SyncTaskState.CONFIGURED.name());
         assertThat(task.getApprovalState()).isEqualTo("NOT_REQUIRED");
         verify(taskMapper).insert(any(SyncTask.class));
-        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("highRiskReviewSuggested=true"));
+        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("highRiskReviewSuggested=false"));
     }
 
     /**
@@ -257,7 +257,7 @@ class DataSyncServiceImplProjectScopeTest {
         assertThat(task.getCurrentState()).isEqualTo(SyncTaskState.CONFIGURED.name());
         assertThat(task.getApprovalState()).isEqualTo("NOT_REQUIRED");
         verify(taskMapper).insert(any(SyncTask.class));
-        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("highRiskReviewSuggested=true"));
+        verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), contains("highRiskReviewSuggested=false"));
         verify(auditSupport).saveAudit(any(), any(), any(), any(), any(), argThat(payload -> !payload.contains("approval")));
     }
 

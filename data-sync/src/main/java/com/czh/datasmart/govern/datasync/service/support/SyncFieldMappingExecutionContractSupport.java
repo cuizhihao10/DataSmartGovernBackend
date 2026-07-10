@@ -86,6 +86,7 @@ public class SyncFieldMappingExecutionContractSupport {
 
         Set<String> selectedColumns = new LinkedHashSet<>();
         Set<String> writeColumns = new LinkedHashSet<>();
+        Set<String> inferredPrimaryKeyColumns = new LinkedHashSet<>();
         boolean requiresFieldRenameTransform = false;
         int mappingCount = 0;
 
@@ -111,6 +112,9 @@ public class SyncFieldMappingExecutionContractSupport {
             mappingCount++;
             selectedColumns.add(pair.sourceField());
             writeColumns.add(pair.targetField());
+            if (mappingPrimaryKey(mappingNode)) {
+                inferredPrimaryKeyColumns.add(pair.targetField());
+            }
             if (!normalize(pair.sourceField()).equals(normalize(pair.targetField()))) {
                 requiresFieldRenameTransform = true;
             }
@@ -123,7 +127,8 @@ public class SyncFieldMappingExecutionContractSupport {
             issueCodes.add("WRITE_COLUMNS_NOT_RESOLVED");
         }
 
-        List<String> primaryKeyColumns = resolvePrimaryKeyColumns(primaryKeyField, writeColumns, issueCodes);
+        List<String> primaryKeyColumns = resolvePrimaryKeyColumns(
+                primaryKeyField, writeColumns, inferredPrimaryKeyColumns, issueCodes);
         if (requiresFieldRenameTransform) {
             warnings.add("FIELD_RENAME_TRANSFORM_REQUIRED");
         }
@@ -224,9 +229,14 @@ public class SyncFieldMappingExecutionContractSupport {
      */
     private List<String> resolvePrimaryKeyColumns(String primaryKeyField,
                                                   Set<String> writeColumns,
+                                                  Set<String> inferredPrimaryKeyColumns,
                                                   List<String> issueCodes) {
         if (!hasText(primaryKeyField)) {
-            return List.of();
+            return inferredPrimaryKeyColumns.stream()
+                    .filter(this::safeIdentifier)
+                    .filter(candidate -> writeColumns.stream()
+                            .anyMatch(column -> normalize(column).equals(normalize(candidate))))
+                    .toList();
         }
         String trimmedPrimaryKey = primaryKeyField.trim();
         if (!safeIdentifier(trimmedPrimaryKey)) {
@@ -240,6 +250,26 @@ public class SyncFieldMappingExecutionContractSupport {
             return List.of();
         }
         return List.of(trimmedPrimaryKey);
+    }
+
+    /**
+     * 从元数据驱动的字段映射中识别目标端冲突键。
+     *
+     * <p>创建向导和 Agent 都已经能通过真实表结构得知主键，因此不应再要求用户重复填写
+     * {@code primaryKeyField}。旧模板没有这些标志时仍保持原行为；显式顶层主键存在时也继续拥有最高优先级。</p>
+     */
+    private boolean mappingPrimaryKey(JsonNode mappingNode) {
+        if (mappingNode == null || !mappingNode.isObject()) {
+            return false;
+        }
+        return booleanValue(mappingNode, "primaryKey")
+                || booleanValue(mappingNode, "targetPrimaryKey")
+                || booleanValue(mappingNode, "isPrimaryKey");
+    }
+
+    private boolean booleanValue(JsonNode node, String fieldName) {
+        JsonNode value = node.get(fieldName);
+        return value != null && !value.isNull() && value.asBoolean(false);
     }
 
     /**

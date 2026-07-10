@@ -36,6 +36,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -141,6 +142,9 @@ public class AgentPlanIngestionService {
                 request.projectId(),
                 request.workspaceId(),
                 request.actorId(),
+                request.actorRole(),
+                request.actorType(),
+                request.authorizedProjectRoles(),
                 normalizeChannel(request.channel()),
                 request.objective(),
                 isolationLevel,
@@ -387,7 +391,13 @@ public class AgentPlanIngestionService {
     }
 
     private Map<String, Object> safeMap(Map<String, Object> value) {
-        return value == null ? Map.of() : Map.copyOf(value);
+        if (value == null || value.isEmpty()) {
+            return Map.of();
+        }
+        // JSON governance snapshots legitimately use null for optional values.
+        // Map.copyOf rejects null entries, so retain JSON semantics while making
+        // the top-level control-plane snapshot immutable after ingestion.
+        return Collections.unmodifiableMap(new LinkedHashMap<>(value));
     }
 
     private String preview(String text, int maxLength) {

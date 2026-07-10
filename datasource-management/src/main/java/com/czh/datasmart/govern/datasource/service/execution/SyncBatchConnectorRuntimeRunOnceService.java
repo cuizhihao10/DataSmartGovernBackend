@@ -458,7 +458,10 @@ public class SyncBatchConnectorRuntimeRunOnceService {
     }
 
     private String exceptionError(String stage, RuntimeException exception) {
-        return truncate(stage + ": " + exception.getClass().getSimpleName() + "，具体执行细节已隐藏");
+        String safeMessage = scrubPotentialSensitiveDetail(exception.getMessage() == null
+                ? "未提供异常原因"
+                : exception.getMessage());
+        return truncate(stage + ": " + exception.getClass().getSimpleName() + " - " + safeMessage);
     }
 
     /**

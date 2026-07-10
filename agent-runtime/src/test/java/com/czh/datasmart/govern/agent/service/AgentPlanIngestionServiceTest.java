@@ -203,6 +203,29 @@ class AgentPlanIngestionServiceTest {
         assertTrue(exception.getMessage().contains("幂等键"));
     }
 
+    @Test
+    void ingestPlanShouldPreserveNullOptionalJsonFieldsWithoutCrashing() {
+        Map<String, Object> governanceHints = new LinkedHashMap<>();
+        governanceHints.put("modelToolCallId", "call-null-safe");
+        governanceHints.put("optionalResultAlias", null);
+        IngestAgentPlanToolRequest plan = new IngestAgentPlanToolRequest(
+                "datasource.metadata.read",
+                "Read datasource metadata with an unresolved optional result alias.",
+                1001L,
+                "LOW",
+                "SYNC",
+                false,
+                Map.of("datasourceId", 1001L),
+                governanceHints,
+                Map.of("canExecute", true)
+        );
+
+        IngestedAgentPlanView view = ingestionService.ingest(baseRequest(List.of(plan)), "trace-null-safe");
+
+        assertTrue(view.toolAudits().getFirst().governanceHints().containsKey("optionalResultAlias"));
+        assertEquals(null, view.toolAudits().getFirst().governanceHints().get("optionalResultAlias"));
+    }
+
     private IngestAgentPlanRequest baseRequest(List<IngestAgentPlanToolRequest> toolPlans) {
         return new IngestAgentPlanRequest(
                 null,

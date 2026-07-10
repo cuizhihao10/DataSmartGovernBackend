@@ -60,7 +60,7 @@ class SyncTemplatePlanningPreviewSupportTest {
         assertThat(scheduledBatch.transferChannel()).isEqualTo("OFFLINE");
         assertThat(customSql.transferChannel()).isEqualTo("OFFLINE");
         assertThat(customSql.referenceRuntime()).isEqualTo("DATAX_STYLE_OFFLINE_READER_WRITER_RUNNER");
-        assertThat(customSql.requiresApproval()).isTrue();
+        assertThat(customSql.requiresApproval()).isFalse();
         assertThat(customSql.performanceNotes()).anyMatch(note -> note.contains("SQL 自定义传输"));
     }
 

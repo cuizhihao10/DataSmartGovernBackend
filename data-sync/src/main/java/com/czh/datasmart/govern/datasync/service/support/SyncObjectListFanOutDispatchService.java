@@ -408,7 +408,7 @@ public class SyncObjectListFanOutDispatchService {
         child.setWriteStrategy(template.getWriteStrategy());
         child.setPrimaryKeyField(template.getPrimaryKeyField());
         child.setIncrementalField(template.getIncrementalField());
-        child.setFieldMappingConfig(firstText(item.fieldMappingConfigOverride(), template.getFieldMappingConfig()));
+        child.setFieldMappingConfig(resolveSingleObjectFieldMappingConfig(template, item));
         /*
          * 多对象 fan-out 拆成单对象子任务后，不能只把 source/target 顶层字段写入 child template。
          * 对象级 whereCondition 是用户在“对象映射”列表里针对每张表单独配置的过滤条件；
@@ -429,6 +429,82 @@ public class SyncObjectListFanOutDispatchService {
         child.setCreateTime(template.getCreateTime());
         child.setUpdateTime(template.getUpdateTime());
         return child;
+    }
+
+    /**
+     * 为 fan-out 子任务提取当前对象自己的字段映射。
+     *
+     * <p>新版向导和 Agent 将多表字段映射保存为 {@code objectMappings[].mappings}。如果子任务继续携带
+     * 整份多表配置，Reader/Writer 会把其他表的字段也合并进当前 SQL，并且无法稳定推导当前表的主键。
+     * 本方法优先使用对象映射中的显式覆盖；没有覆盖时，按源/目标 schema 与表名从字段映射配置中定位当前对象。</p>
+     */
+    private String resolveSingleObjectFieldMappingConfig(SyncTemplate template,
+                                                         SyncObjectMappingExecutionItem item) {
+        if (hasText(item.fieldMappingConfigOverride())) {
+            return item.fieldMappingConfigOverride();
+        }
+        if (!hasText(template.getFieldMappingConfig())) {
+            return template.getFieldMappingConfig();
+        }
+        try {
+            JsonNode root = objectMapper.readTree(template.getFieldMappingConfig());
+            JsonNode objectMappings = root.path("objectMappings");
+            if (!objectMappings.isArray()) {
+                return template.getFieldMappingConfig();
+            }
+            for (JsonNode candidate : objectMappings) {
+                if (sameObject(candidate, item)) {
+                    return objectMapper.writeValueAsString(candidate);
+                }
+            }
+            return template.getFieldMappingConfig();
+        } catch (Exception ignored) {
+            return template.getFieldMappingConfig();
+        }
+    }
+
+    private boolean sameObject(JsonNode candidate, SyncObjectMappingExecutionItem item) {
+        String sourceObject = jsonText(candidate, "sourceObjectName", "sourceObject", "sourceTableName", "sourceTable");
+        String targetObject = jsonText(candidate, "targetObjectName", "targetObject", "targetTableName", "targetTable");
+        String sourceSchema = jsonText(candidate, "sourceSchemaName", "sourceSchema");
+        String targetSchema = jsonText(candidate, "targetSchemaName", "targetSchema");
+        return equalsIgnoreCase(sourceObject, item.sourceObjectName())
+                && equalsIgnoreCase(targetObject, item.targetObjectName())
+                && compatibleOptionalScope(sourceSchema, item.sourceSchemaName())
+                && compatibleOptionalScope(targetSchema, item.targetSchemaName());
+    }
+
+    private String jsonText(JsonNode node, String... fieldNames) {
+        for (String fieldName : fieldNames) {
+            JsonNode value = node.get(fieldName);
+            if (value != null && !value.isNull() && hasText(value.asText())) {
+                return value.asText().trim();
+            }
+        }
+        return null;
+    }
+
+    private boolean compatibleOptionalScope(String configured, String resolved) {
+        return !hasText(configured) || !hasText(resolved) || equalsIgnoreCase(configured, resolved);
+    }
+
+    private boolean equalsIgnoreCase(String left, String right) {
+        return hasText(left) && hasText(right) && left.trim().equalsIgnoreCase(right.trim());
+    }
+
+    /**
+     * 生成一次 worker 认领代次内稳定、跨重试代次变化的幂等键片段。
+     *
+     * <p>对象级选择性重试会复用父 executionId。如果终态键只包含 executionId，第二轮失败会被误判为
+     * 第一轮失败回调的重复请求，父 execution 因而残留在 RUNNING。leaseExpireTime 每次认领都会刷新，
+     * 正好可以区分重试代次，同时保证同一租约内的 HTTP/outbox 重复回调仍然幂等。</p>
+     */
+    private String executionAttemptKey(SyncExecution execution) {
+        String leaseGeneration = execution.getLeaseExpireTime() == null
+                ? "no-lease"
+                : Long.toString(execution.getLeaseExpireTime()
+                        .atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli());
+        return execution.getId() + "-" + leaseGeneration;
     }
 
     private String singleObjectMappingConfig(SyncObjectMappingExecutionItem item) {
@@ -559,7 +635,7 @@ public class SyncObjectListFanOutDispatchService {
         request.setRecordsRead(summary.recordsRead());
         request.setRecordsWritten(summary.recordsWritten());
         request.setCheckpointRef(null);
-        request.setIdempotencyKey("object-list-fan-out-complete-" + execution.getId());
+        request.setIdempotencyKey("object-list-fan-out-complete-" + executionAttemptKey(execution));
         lifecycleSupport.completeExecution(task, execution, request, actorContext);
         receiptPublisher.publishComplete(task, execution, actorContext,
                 aggregateResponse(summary, "OBJECT_LIST_ALL_OBJECTS_COMPLETED", true, false));
@@ -576,7 +652,7 @@ public class SyncObjectListFanOutDispatchService {
         request.setFailedRecordCount(summary.failedRecordCount());
         request.setErrorSummary("OBJECT_LIST partially succeeded, succeededObjects=" + summary.succeededCount()
                 + ", failedObjects=" + summary.failedCount());
-        request.setIdempotencyKey("object-list-fan-out-partial-" + execution.getId());
+        request.setIdempotencyKey("object-list-fan-out-partial-" + executionAttemptKey(execution));
         lifecycleSupport.partiallySucceedExecution(task, execution, request, actorContext);
         receiptPublisher.publishPartiallySucceeded(task, execution, actorContext,
                 aggregateResponse(summary, "OBJECT_LIST_PARTIALLY_SUCCEEDED", false, false),
@@ -607,7 +683,7 @@ public class SyncObjectListFanOutDispatchService {
         request.setRecordsWritten(recordsWritten);
         request.setFailedRecordCount(Math.max(1L, failedRecordCount));
         request.setRetryable(false);
-        request.setIdempotencyKey("object-list-fan-out-fail-" + execution.getId() + "-" + errorCode);
+        request.setIdempotencyKey("object-list-fan-out-fail-" + executionAttemptKey(execution) + "-" + errorCode);
         lifecycleSupport.failExecution(task, execution, request, actorContext);
         receiptPublisher.publishFailed(task, execution, actorContext, errorCode, issueCodes);
         return new SyncOfflineRunnerDispatchResult(

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, replace
+from datetime import date, datetime
 from enum import Enum
 from typing import Any
 from urllib.request import Request, urlopen
@@ -47,6 +48,8 @@ class AgentToolAuditReference:
     run_id: str
     audit_id: str
     state: str
+    plan_node_id: str | None = None
+    sequence: int | None = None
 
 
 @dataclass(frozen=True)
@@ -74,10 +77,25 @@ class AgentPlanIngestionResult:
             for reference in self.tool_audit_references
             if reference.model_tool_call_id
         }
+        reference_by_node_id = {
+            reference.plan_node_id: reference
+            for reference in self.tool_audit_references
+            if reference.plan_node_id
+        }
+        reference_by_sequence_and_tool = {
+            (reference.sequence, reference.tool_name): reference
+            for reference in self.tool_audit_references
+            if reference.sequence is not None and reference.tool_name
+        }
         updated_plans: list[ToolPlan] = []
-        for tool_plan in plan.tool_plans:
+        for sequence, tool_plan in enumerate(plan.tool_plans, start=1):
             call_id = str(tool_plan.governance_hints.get("modelToolCallId") or "")
             reference = reference_by_call_id.get(call_id)
+            plan_node_id = str(tool_plan.governance_hints.get("planNodeId") or "")
+            if reference is None and plan_node_id:
+                reference = reference_by_node_id.get(plan_node_id)
+            if reference is None:
+                reference = reference_by_sequence_and_tool.get((sequence, tool_plan.tool_name))
             if reference is None:
                 updated_plans.append(tool_plan)
                 continue
@@ -94,6 +112,8 @@ class AgentPlanIngestionResult:
             "toolAuditReferences": tuple(
                 {
                     "modelToolCallId": reference.model_tool_call_id,
+                    "planNodeId": reference.plan_node_id,
+                    "sequence": reference.sequence,
                     "toolName": reference.tool_name,
                     "auditId": reference.audit_id,
                     "state": reference.state,
@@ -174,6 +194,7 @@ class JavaAgentPlanIngestionClient:
         """
 
         variables = request_context.variables or {}
+        request_context_facts = cls._trusted_request_context(variables)
         return {
             "sessionId": cls._optional_string(variables.get("agentRuntimeSessionId") or variables.get("sessionId")),
             "tenantId": cls._to_long(request_context.tenant_id, "tenantId"),
@@ -194,7 +215,22 @@ class JavaAgentPlanIngestionClient:
             "modelGatewayGovernance": cls._json_safe(plan.model_gateway_decision),
             "memoryPlan": cls._json_safe(plan.memory_plan),
             "memoryRetrievalReport": cls._json_safe(plan.memory_retrieval_report),
+            # 这些字段来自 gateway 验签后的 trustedControlPlane，而不是浏览器请求体。
+            # Java 确认执行时还会用最新 Header 刷新一次，避免使用已撤销的项目角色快照。
+            "actorRole": cls._optional_string(request_context_facts.get("actorRole")),
+            "actorType": cls._optional_string(request_context_facts.get("actorType")),
+            "authorizedProjectRoles": cls._optional_string(
+                request_context_facts.get("authorizedProjectRoles")
+            ),
         }
+
+    @staticmethod
+    def _trusted_request_context(variables: dict[str, Any]) -> dict[str, Any]:
+        trusted = variables.get("trustedControlPlane")
+        if not isinstance(trusted, dict):
+            return {}
+        request_context = trusted.get("requestContext")
+        return dict(request_context) if isinstance(request_context, dict) else {}
 
     @classmethod
     def parse_platform_response(cls, payload: dict[str, Any]) -> AgentPlanIngestionResult:
@@ -263,7 +299,11 @@ class JavaAgentPlanIngestionClient:
         session_id: str,
         run_id: str,
     ) -> tuple[AgentToolAuditReference, ...]:
-        """从 Java toolAudits 中提取 modelToolCallId -> auditId 引用。"""
+        """从 Java toolAudits 中提取 Python 计划节点到 auditId 的稳定引用。
+
+        模型原生 tool call 使用 modelToolCallId；确定性 LangGraph DAG 节点通常没有模型 call id，
+        此时回退到 planNodeId，最后再使用 Java bindingId 中的 sequence + toolCode 对齐。
+        """
 
         references: list[AgentToolAuditReference] = []
         raw_audits = data.get("toolAudits") or ()
@@ -276,8 +316,10 @@ class JavaAgentPlanIngestionClient:
             if not isinstance(hints, dict):
                 hints = {}
             model_tool_call_id = str(hints.get("modelToolCallId") or "")
+            plan_node_id = str(hints.get("planNodeId") or "") or None
             audit_id = str(audit.get("auditId") or "")
-            if not model_tool_call_id or not audit_id:
+            sequence = cls._audit_sequence(audit, hints)
+            if not audit_id:
                 continue
             references.append(
                 AgentToolAuditReference(
@@ -287,9 +329,27 @@ class JavaAgentPlanIngestionClient:
                     run_id=run_id,
                     audit_id=audit_id,
                     state=str(audit.get("state") or ""),
+                    plan_node_id=plan_node_id,
+                    sequence=sequence,
                 )
             )
         return tuple(references)
+
+    @staticmethod
+    def _audit_sequence(audit: dict[str, Any], hints: dict[str, Any]) -> int | None:
+        raw_sequence = hints.get("sequence")
+        if raw_sequence is not None:
+            try:
+                return int(raw_sequence)
+            except (TypeError, ValueError):
+                pass
+        binding_id = str(audit.get("bindingId") or "")
+        if binding_id:
+            try:
+                return int(binding_id.rsplit(":", 1)[-1])
+            except (TypeError, ValueError):
+                return None
+        return None
 
     @classmethod
     def _target_resource_id(cls, tool_plan: ToolPlan) -> int | None:
@@ -309,6 +369,8 @@ class JavaAgentPlanIngestionClient:
             return None
         if isinstance(value, Enum):
             return value.value
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
         if hasattr(value, "__dataclass_fields__"):
             return {
                 field_name: JavaAgentPlanIngestionClient._json_safe(getattr(value, field_name))

@@ -34,6 +34,13 @@ class ToolPlanDagAnnotator:
         "quality.remediation.task.draft": ("quality.rule.suggest",),
         "task.create.draft": ("quality.rule.suggest",),
         "task.draft.persist": ("task.create.draft",),
+        "datasource.source.metadata.read": ("datasource.source.connection.test",),
+        "datasource.target.metadata.read": ("datasource.target.connection.test",),
+        "sync.task.draft.save": ("datasource.source.metadata.read", "datasource.target.metadata.read"),
+        "sync.task.precheck": ("sync.task.draft.save",),
+        "sync.task.publish": ("sync.task.precheck",),
+        "sync.task.run": ("sync.task.publish",),
+        "sync.execution.status": ("sync.task.run",),
     }
 
     _RESULT_ALIAS_BY_TOOL: dict[str, str] = {
@@ -43,6 +50,15 @@ class ToolPlanDagAnnotator:
         "task.create.draft": "taskDraft",
         "task.draft.persist": "persistedTaskDraft",
         "data-sync.execute": "dataSyncExecution",
+        "datasource.source.connection.test": "sourceConnectionTest",
+        "datasource.target.connection.test": "targetConnectionTest",
+        "datasource.source.metadata.read": "sourceMetadata",
+        "datasource.target.metadata.read": "targetMetadata",
+        "sync.task.draft.save": "syncTaskDraft",
+        "sync.task.precheck": "syncTaskPrecheck",
+        "sync.task.publish": "publishedSyncTask",
+        "sync.task.run": "syncTaskExecution",
+        "sync.execution.status": "syncExecutionStatus",
         "knowledge.rag.query": "ragEvidence",
         "web.search.query": "webSearchResults",
     }

@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.datasync.service.support;
 
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
@@ -170,10 +171,20 @@ public class SyncExecutionLifecycleSupport {
         execution.setExecutionState(SyncExecutionState.SUCCEEDED.name());
         execution.setRecordsRead(safeLong(request.getRecordsRead()));
         execution.setRecordsWritten(safeLong(request.getRecordsWritten()));
+        execution.setFailedRecordCount(0L);
+        execution.setErrorSummary(null);
         execution.setCheckpointRef(trimToNull(request.getCheckpointRef()));
         execution.setFinishedAt(LocalDateTime.now());
         execution.setUpdateTime(LocalDateTime.now());
         executionMapper.updateById(execution);
+        /*
+         * MyBatis-Plus 默认不会把 null 字段写入 UPDATE，因此单纯 setErrorSummary(null) 无法清除上一轮失败摘要。
+         * 这里显式更新可恢复字段，保证“失败分片修复后整体成功”的执行记录不会继续展示历史失败状态。
+         */
+        executionMapper.update(null, new UpdateWrapper<SyncExecution>()
+                .eq("id", execution.getId())
+                .set("failed_record_count", 0L)
+                .set("error_summary", null));
 
         task.setCurrentState(terminalTaskState(task, SyncTaskState.SUCCEEDED));
         task.setUpdateTime(LocalDateTime.now());

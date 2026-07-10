@@ -9,6 +9,8 @@ package com.czh.datasmart.govern.agent.service.audit;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
 
 import java.time.LocalDateTime;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -183,14 +185,21 @@ public class AgentToolExecutionAuditRecord {
         this.idempotent = idempotent;
         this.allowedActions = allowedActions;
         this.planReason = planReason;
-        this.planArguments = planArguments == null ? Map.of() : Map.copyOf(planArguments);
-        this.governanceHints = governanceHints == null ? Map.of() : Map.copyOf(governanceHints);
-        this.parameterValidation = parameterValidation == null ? Map.of() : Map.copyOf(parameterValidation);
+        this.planArguments = immutableJsonMap(planArguments);
+        this.governanceHints = immutableJsonMap(governanceHints);
+        this.parameterValidation = immutableJsonMap(parameterValidation);
         this.state = state;
         this.traceId = traceId;
         this.message = message;
         this.createTime = createTime;
         this.updateTime = createTime;
+    }
+
+    private static Map<String, Object> immutableJsonMap(Map<String, Object> source) {
+        if (source == null || source.isEmpty()) {
+            return Map.of();
+        }
+        return Collections.unmodifiableMap(new LinkedHashMap<>(source));
     }
 
     /**

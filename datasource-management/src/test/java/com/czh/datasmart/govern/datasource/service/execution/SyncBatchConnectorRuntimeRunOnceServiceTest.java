@@ -275,6 +275,7 @@ class SyncBatchConnectorRuntimeRunOnceServiceTest {
         assertFalse(reader.invoked);
         assertFalse(writer.invoked);
         assertTrue(response.getErrorSummary().contains("执行阶段异常"));
+        assertTrue(response.getErrorSummary().contains("checkpointValue"));
         assertFalse(response.getErrorSummary().contains("updated_at"));
     }
 

@@ -139,7 +139,7 @@ class SyncOfflineJobPlanSupportTest {
 
         SyncOfflineJobPlanResponse response = support.buildPlan(template);
 
-        assertThat(response.planStatus()).isEqualTo(SyncOfflineJobPlanSupport.PLAN_READY_REQUIRES_APPROVAL);
+        assertThat(response.planStatus()).isEqualTo(SyncOfflineJobPlanSupport.PLAN_READY_DEDICATED_RUNNER_REQUIRED);
         assertThat(response.planReady()).isTrue();
         assertThat(response.selectedObjectCount()).isEqualTo(2);
         assertThat(response.objectMappingDeclared()).isTrue();

@@ -45,7 +45,7 @@ class SyncTemplateExecutionPrecheckSupportTest {
     }
 
     @Test
-    void objectListShouldBeExecutableByFanOutButRequireApproval() {
+    void objectListShouldBeExecutableByFanOutWithoutTaskCreationApproval() {
         SyncTemplate template = executableSingleObjectTemplate("FULL");
         template.setSyncScopeType("OBJECT_LIST");
         template.setObjectMappingConfig("""
@@ -59,11 +59,11 @@ class SyncTemplateExecutionPrecheckSupportTest {
 
         SyncTemplateExecutionPrecheckResponse response = support.precheck(template);
 
-        assertThat(response.precheckStatus()).isEqualTo(SyncTemplateExecutionPrecheckSupport.REQUIRES_APPROVAL);
+        assertThat(response.precheckStatus()).isEqualTo(SyncTemplateExecutionPrecheckSupport.READY_TO_EXECUTE);
         assertThat(response.canCreateTaskDraft()).isTrue();
-        assertThat(response.canStartExecution()).isFalse();
+        assertThat(response.canStartExecution()).isTrue();
         assertThat(response.executableByCurrentRunner()).isTrue();
-        assertThat(response.approvalRequired()).isTrue();
+        assertThat(response.approvalRequired()).isFalse();
         assertThat(response.issueCodes()).doesNotContain("SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE");
     }
 

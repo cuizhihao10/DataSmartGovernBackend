@@ -1,6 +1,8 @@
+import json
 import os
 import sys
 import unittest
+from datetime import datetime, timezone
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
@@ -62,6 +64,9 @@ class JavaAgentPlanIngestionClientTest(unittest.TestCase):
         self.assertEqual("agent_reasoning", payload["workloadType"])
         self.assertEqual("PROJECT", payload["isolationLevel"])
         self.assertEqual("req-001", payload["pythonRequestId"])
+        self.assertEqual("ORDINARY_USER", payload["actorRole"])
+        self.assertEqual("USER", payload["actorType"])
+        self.assertEqual("20:MANAGER", payload["authorizedProjectRoles"])
         self.assertEqual(1, len(payload["toolPlans"]))
         tool_payload = payload["toolPlans"][0]
         self.assertEqual("datasource.metadata.read", tool_payload["toolCode"])
@@ -144,6 +149,53 @@ class JavaAgentPlanIngestionClientTest(unittest.TestCase):
         self.assertEqual("PLANNED", hints["agentRuntimeAuditState"])
         self.assertEqual("call-001", hints["modelToolCallId"])
 
+    def test_deterministic_dag_nodes_attach_audits_without_model_tool_call_id(self) -> None:
+        plan = self._plan(
+            ToolPlan(
+                tool_name="datasource.source.connection.test",
+                reason="确定性同步 DAG 先验证源端连接。",
+                arguments={"datasourceId": 27},
+                governance_hints={"planNodeId": "sourceConnectionTest"},
+            ),
+            ToolPlan(
+                tool_name="datasource.target.connection.test",
+                reason="确定性同步 DAG 再验证目标端连接。",
+                arguments={"datasourceId": 28},
+                governance_hints={"planNodeId": "targetConnectionTest"},
+            ),
+        )
+        result = JavaAgentPlanIngestionClient.parse_platform_response(
+            {
+                "code": 0,
+                "data": {
+                    "session": {"sessionId": "ags-sync"},
+                    "run": {"runId": "agr-sync"},
+                    "toolAudits": [
+                        {
+                            "auditId": "audit-source",
+                            "bindingId": "plan:agr-sync:1",
+                            "toolCode": "datasource.source.connection.test",
+                            "state": "PLANNED",
+                            "governanceHints": {"planNodeId": "sourceConnectionTest"},
+                        },
+                        {
+                            "auditId": "audit-target",
+                            "bindingId": "plan:agr-sync:2",
+                            "toolCode": "datasource.target.connection.test",
+                            "state": "PLANNED",
+                            "governanceHints": {},
+                        },
+                    ],
+                },
+            }
+        )
+
+        attached = result.attach_to_plan(plan)
+
+        self.assertEqual(2, result.to_summary()["toolAuditCount"])
+        self.assertEqual("audit-source", attached.tool_plans[0].governance_hints["agentRuntimeAuditId"])
+        self.assertEqual("audit-target", attached.tool_plans[1].governance_hints["agentRuntimeAuditId"])
+
     def test_parse_platform_error_raises_client_error(self) -> None:
         with self.assertRaises(AgentPlanIngestionClientError):
             JavaAgentPlanIngestionClient.parse_platform_response(
@@ -165,6 +217,15 @@ class JavaAgentPlanIngestionClientTest(unittest.TestCase):
         with self.assertRaises(AgentPlanIngestionClientError):
             JavaAgentPlanIngestionClient.build_payload(request, self._plan())
 
+    def test_json_safe_serializes_datetime_in_nested_governance_snapshot(self) -> None:
+        snapshot_time = datetime(2026, 7, 11, 4, 30, tzinfo=timezone.utc)
+        converted = JavaAgentPlanIngestionClient._json_safe(
+            {"providerHealth": {"checkedAt": snapshot_time}}
+        )
+
+        self.assertEqual("2026-07-11T04:30:00+00:00", converted["providerHealth"]["checkedAt"])
+        self.assertIn("2026-07-11T04:30:00+00:00", json.dumps(converted))
+
     def _request(self) -> AgentRequest:
         return AgentRequest(
             tenant_id="10",
@@ -176,6 +237,13 @@ class JavaAgentPlanIngestionClientTest(unittest.TestCase):
                 "sessionId": "ags-existing",
                 "channel": "WEB_CHAT",
                 "isolationLevel": "project",
+                "trustedControlPlane": {
+                    "requestContext": {
+                        "actorRole": "ORDINARY_USER",
+                        "actorType": "USER",
+                        "authorizedProjectRoles": "20:MANAGER",
+                    }
+                },
             },
         )
 

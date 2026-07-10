@@ -1200,6 +1200,20 @@ datasmart:
           method-actions:
             GET: SUBSCRIBE
 
+        - path-pattern: /api/agent/plans
+          resource-type: AI_RUNTIME
+          default-action: PLAN
+          description: 普通用户通过智能网关生成受控 Agent 计划；该动作只规划，不直接执行业务副作用。
+          method-actions:
+            POST: PLAN
+
+        - path-pattern: /api/agent/sessions/{sessionId}/runs/{runId}/confirm-and-execute
+          resource-type: AI_RUNTIME
+          default-action: EXECUTE
+          description: 原发起用户确认并执行当前 Run；Java 控制面会再次校验租户、项目、actor 和项目角色。
+          method-actions:
+            POST: EXECUTE
+
         # Python Runtime 低敏诊断与闭口检查入口。
         # 这些路径虽然同属于 /api/agent/**，但目标服务是 Python AI Runtime，而不是 Java agent-runtime：
         # - capabilities/closure-readiness 用于上线前确认 Agent Host 能力是否闭口；

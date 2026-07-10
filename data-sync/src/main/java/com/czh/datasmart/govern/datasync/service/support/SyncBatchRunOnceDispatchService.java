@@ -667,6 +667,7 @@ public class SyncBatchRunOnceDispatchService {
         }
         recordDirtySamples(task, execution, actorContext, response);
         if (Boolean.TRUE.equals(response.getFailed()) || Boolean.TRUE.equals(response.getFailCallbackRecommended())) {
+            String remoteErrorSummary = lowSensitiveRemoteErrorSummary(response.getErrorSummary());
             executionLogSupport.recordExecutionEvent(task, execution, actorContext,
                     "REMOTE_BATCH",
                     "ERROR",
@@ -676,10 +677,12 @@ public class SyncBatchRunOnceDispatchService {
                     "runStatus=" + response.getRunStatus()
                             + ", recordsRead=" + zeroIfNull(response.getTotalRecordsRead())
                             + ", recordsWritten=" + zeroIfNull(response.getTotalRecordsWritten())
-                            + ", failedRecordCount=" + zeroIfNull(response.getTotalFailedRecordCount()));
+                            + ", failedRecordCount=" + zeroIfNull(response.getTotalFailedRecordCount())
+                            + ", errorSummary=" + firstText(remoteErrorSummary, "not provided"));
             return failAfterRemoteResult(task, execution, actorContext,
                     firstText(response.getRunStatus(), "REMOTE_RUN_ONCE_FAILED"),
-                    "datasource-management run-once 报告执行失败，本次执行已回写 fail",
+                    "datasource-management run-once 报告执行失败："
+                            + firstText(remoteErrorSummary, "远端未返回可诊断的低敏失败摘要"),
                     response.getRunStatus(),
                     zeroIfNull(response.getTotalRecordsRead()),
                     zeroIfNull(response.getTotalRecordsWritten()),
@@ -799,7 +802,9 @@ public class SyncBatchRunOnceDispatchService {
                         + ", totalRecordsRead=" + zeroIfNull(response.getTotalRecordsRead())
                         + ", totalRecordsWritten=" + zeroIfNull(response.getTotalRecordsWritten())
                         + ", totalFailedRecordCount=" + zeroIfNull(response.getTotalFailedRecordCount())
-                        + ", endOfSource=" + response.getEndOfSource(),
+                        + ", endOfSource=" + response.getEndOfSource()
+                        + ", errorSummary=" + firstText(
+                                lowSensitiveRemoteErrorSummary(response.getErrorSummary()), "none"),
                 SyncExecutionLogSupport.ExecutionMetricSnapshot.of(
                         zeroIfNull(response.getTotalRecordsRead()),
                         zeroIfNull(response.getTotalRecordsWritten()),
@@ -1047,6 +1052,20 @@ public class SyncBatchRunOnceDispatchService {
 
     private String firstText(String value, String fallback) {
         return hasText(value) ? value : fallback;
+    }
+
+    /**
+     * 规范化 datasource-management 已经脱敏过的执行摘要，供日志和失败账本安全复用。
+     *
+     * <p>跨服务合同禁止返回 SQL、连接串、凭据和原始行，因此这里不解析远端异常正文，
+     * 只做二次防御：去除换行和控制字符、限制长度，避免异常堆栈破坏结构化日志或放大持久化字段。</p>
+     */
+    private String lowSensitiveRemoteErrorSummary(String value) {
+        if (!hasText(value)) {
+            return null;
+        }
+        String normalized = value.replaceAll("[\\r\\n\\t]+", " ").trim();
+        return normalized.length() <= 600 ? normalized : normalized.substring(0, 600);
     }
 
     private boolean hasText(String value) {

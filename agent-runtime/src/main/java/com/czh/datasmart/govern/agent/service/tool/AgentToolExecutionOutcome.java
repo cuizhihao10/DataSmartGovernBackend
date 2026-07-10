@@ -32,4 +32,8 @@ public record AgentToolExecutionOutcome(boolean success,
     public static AgentToolExecutionOutcome failed(String errorCode, String message) {
         return new AgentToolExecutionOutcome(false, message, Map.of(), errorCode);
     }
+
+    public static AgentToolExecutionOutcome failed(String errorCode, String message, Map<String, Object> output) {
+        return new AgentToolExecutionOutcome(false, message, output == null ? Map.of() : output, errorCode);
+    }
 }

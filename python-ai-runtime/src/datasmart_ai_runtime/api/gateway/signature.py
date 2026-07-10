@@ -58,6 +58,7 @@ SIGNED_HEADERS = (
     "X-DataSmart-Data-Scope-Level",
     "X-DataSmart-Data-Scope-Expression",
     "X-DataSmart-Authorized-Project-Ids",
+    "X-DataSmart-Authorized-Project-Roles",
     "X-DataSmart-Approval-Required",
 )
 

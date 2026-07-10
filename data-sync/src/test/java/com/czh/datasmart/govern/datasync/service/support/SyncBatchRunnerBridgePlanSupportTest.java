@@ -336,7 +336,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
         assertThat(plan.isDispatchable()).isFalse();
         assertThat(plan.getIssueCodes()).contains("SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE");
         assertThat(plan.getOfflineRunnerContract().contractStatus())
-                .isEqualTo("WAITING_APPROVAL_BEFORE_RUNNER_DISPATCH");
+                .isEqualTo("DEDICATED_OFFLINE_RUNNER_REQUIRED");
         assertThat(plan.getOfflineRunnerContract().shardPlan().shardKind()).isEqualTo("OBJECT_FAN_OUT_EXPLICIT");
         assertThat(plan.getOfflineRunnerContract().dataXJobExecutionContract().jobKind())
                 .isEqualTo("MULTI_OBJECT_FAN_OUT_JOB");

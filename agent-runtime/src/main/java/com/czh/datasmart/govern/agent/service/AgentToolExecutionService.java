@@ -139,6 +139,17 @@ public class AgentToolExecutionService {
                 return new AgentToolExecutionResultView(auditView, outcome.output());
             }
             runtimeLease.recordFailure(outcome.errorCode(), outcome.message());
+            if (outcome.output() != null && !outcome.output().isEmpty()) {
+                outputStore.save(
+                        new AgentToolExecutionOutputStore.AgentToolExecutionAuditSnapshot(
+                                audit.getSessionId(),
+                                audit.getRunId(),
+                                audit.getAuditId(),
+                                audit.getToolCode()
+                        ),
+                        outcome.output()
+                );
+            }
             AgentToolExecutionAuditView auditView = auditService.failExecution(
                     audit,
                     outcome.errorCode(),
