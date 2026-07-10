@@ -380,6 +380,33 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/identity/**", "IDENTITY_USER",
                 "身份账号供应兜底入口，覆盖能力查询、账号生命周期和影子身份治理",
                 defaultMethodActions()));
+        defaults.add(route("/api/permission/project-join-requests/candidates", "PROJECT_JOIN_REQUEST",
+                "项目加入申请的低敏项目名称目录；只用于按名称发现本租户启用项目，不授予任何项目数据范围",
+                Map.of("GET", "DISCOVER_PROJECT")));
+        defaults.add(route("/api/permission/project-join-requests/my", "PROJECT_JOIN_REQUEST",
+                "当前用户查看本人项目加入申请",
+                Map.of("GET", "VIEW_OWN")));
+        defaults.add(route("/api/permission/project-join-requests/approvals", "PROJECT_JOIN_REQUEST",
+                "项目 OWNER、租户管理员或平台管理员查看项目加入待办",
+                Map.of("GET", "REVIEW")));
+        defaults.add(route("/api/permission/project-join-requests/*/cancel", "PROJECT_JOIN_REQUEST",
+                "申请人撤销本人仍处于待审批状态的项目加入申请",
+                Map.of("POST", "CANCEL_OWN")));
+        defaults.add(route("/api/permission/project-join-requests/*/approve", "PROJECT_JOIN_REQUEST",
+                "项目 OWNER 或管理员审批通过项目加入申请",
+                Map.of("POST", "REVIEW")));
+        defaults.add(route("/api/permission/project-join-requests/*/reject", "PROJECT_JOIN_REQUEST",
+                "项目 OWNER 或管理员拒绝项目加入申请",
+                Map.of("POST", "REVIEW")));
+        defaults.add(route("/api/permission/project-join-requests", "PROJECT_JOIN_REQUEST",
+                "用户按项目名称选择后提交项目加入申请；PENDING 不产生数据范围",
+                Map.of("POST", "APPLY")));
+        defaults.add(route("/api/permission/projects", "PROJECT",
+                "项目主数据列表和创建入口；控制台项目切换器必须从这里读取项目名称而不是拼接项目 ID",
+                Map.of("GET", "VIEW", "POST", "CREATE")));
+        defaults.add(route("/api/permission/projects/**", "PROJECT",
+                "项目详情与生命周期管理入口；GET 用于名称和详情读取，写动作继续由权限中心细分策略约束",
+                Map.of("GET", "VIEW", "PUT", "UPDATE", "POST", "EXECUTE", "DELETE", "DELETE")));
         defaults.add(route("/api/permission/**", "SYSTEM_SETTING", "角色、菜单、路由策略、数据范围和平台管理能力"));
         defaults.add(route("/api/observability/**", "AUDIT_LOG", "审计、日志、指标、告警和运维视角"));
         return defaults;

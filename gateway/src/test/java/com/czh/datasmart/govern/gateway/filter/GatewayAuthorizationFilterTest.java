@@ -51,6 +51,47 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 class GatewayAuthorizationFilterTest {
 
     /**
+     * 项目切换器读取项目主数据时必须使用 PROJECT + VIEW，而不是权限模块的 SYSTEM_SETTING 兜底语义。
+     */
+    @Test
+    void projectDirectoryShouldUseProjectViewAuthorization() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = exchangeWithRole("/api/permission/projects", "GET", "ORDINARY_USER");
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
+
+        filter.filter(exchange, chain).block();
+
+        ArgumentCaptor<GatewayPermissionDecisionRequest> captor = forClass(GatewayPermissionDecisionRequest.class);
+        verify(decisionClient).evaluate(captor.capture(), eq("trace-test-001"));
+        assertThat(captor.getValue().getResourceType()).isEqualTo("PROJECT");
+        assertThat(captor.getValue().getAction()).isEqualTo("VIEW");
+    }
+
+    /**
+     * 未加入项目的用户按名称搜索候选项目时，应进入专用的低敏发现动作。
+     */
+    @Test
+    void projectJoinCandidateDirectoryShouldUseDiscoverProjectAuthorization() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = exchangeWithRole(
+                "/api/permission/project-join-requests/candidates", "GET", "ORDINARY_USER");
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
+
+        filter.filter(exchange, chain).block();
+
+        ArgumentCaptor<GatewayPermissionDecisionRequest> captor = forClass(GatewayPermissionDecisionRequest.class);
+        verify(decisionClient).evaluate(captor.capture(), eq("trace-test-001"));
+        assertThat(captor.getValue().getResourceType()).isEqualTo("PROJECT_JOIN_REQUEST");
+        assertThat(captor.getValue().getAction()).isEqualTo("DISCOVER_PROJECT");
+    }
+
+    /**
      * 权限中心允许访问时，网关应放行请求并透传数据范围上下文。
      *
      * <p>这验证了 permission-admin -> gateway -> business-service 的核心授权闭环：

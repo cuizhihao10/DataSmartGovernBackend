@@ -12,6 +12,7 @@ import com.czh.datasmart.govern.common.api.PlatformPageResponse;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionActorContext;
+import com.czh.datasmart.govern.permission.controller.dto.ProjectJoinCandidateView;
 import com.czh.datasmart.govern.permission.controller.dto.ProjectJoinRequestApplyRequest;
 import com.czh.datasmart.govern.permission.controller.dto.ProjectJoinRequestMutationResult;
 import com.czh.datasmart.govern.permission.controller.dto.ProjectJoinRequestQueryCriteria;
@@ -36,7 +37,10 @@ import java.time.LocalDateTime;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * Implementation of the project join approval workflow.
@@ -68,11 +72,51 @@ public class PermissionProjectJoinRequestServiceImpl implements PermissionProjec
             PermissionRoleCode.TENANT_ADMINISTRATOR.name(),
             PermissionRoleCode.PLATFORM_ADMINISTRATOR.name()
     );
+    private static final Set<String> CANDIDATE_VIEW_ROLES = Set.of(
+            PermissionRoleCode.ORDINARY_USER.name(),
+            PermissionRoleCode.PROJECT_OWNER.name(),
+            PermissionRoleCode.OPERATOR.name(),
+            PermissionRoleCode.AUDITOR.name(),
+            PermissionRoleCode.TENANT_ADMINISTRATOR.name(),
+            PermissionRoleCode.PLATFORM_ADMINISTRATOR.name()
+    );
 
     private final PermissionProjectJoinRequestMapper joinRequestMapper;
     private final PermissionProjectMapper projectMapper;
     private final PermissionProjectMembershipMapper membershipMapper;
     private final PermissionProjectMembershipService membershipService;
+
+    @Override
+    public PlatformPageResponse<ProjectJoinCandidateView> pageJoinCandidates(Long tenantId,
+                                                                              String keyword,
+                                                                              Long current,
+                                                                              Long size,
+                                                                              PermissionActorContext actorContext) {
+        String actorRole = requireRole(actorContext);
+        if (!CANDIDATE_VIEW_ROLES.contains(actorRole)) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "Current role cannot discover projects available for join: " + actorRole);
+        }
+        Long targetTenantId = resolveCandidateTenantId(tenantId, actorContext, actorRole);
+        LambdaQueryWrapper<PermissionProject> wrapper = new LambdaQueryWrapper<PermissionProject>()
+                .eq(PermissionProject::getTenantId, targetTenantId)
+                .eq(PermissionProject::getStatus, PROJECT_STATUS_ACTIVE)
+                .orderByAsc(PermissionProject::getProjectName)
+                .orderByDesc(PermissionProject::getProjectId);
+        String normalizedKeyword = trimToNull(keyword);
+        if (normalizedKeyword != null) {
+            wrapper.and(nested -> nested
+                    .like(PermissionProject::getProjectName, normalizedKeyword)
+                    .or()
+                    .like(PermissionProject::getProjectCode, normalizedKeyword.toUpperCase(Locale.ROOT)));
+        }
+
+        Page<PermissionProject> page = projectMapper.selectPage(projectPageRequest(current, size), wrapper);
+        List<ProjectJoinCandidateView> records = page.getRecords().stream()
+                .map(ProjectJoinCandidateView::from)
+                .toList();
+        return PlatformPageResponse.of(page.getCurrent(), page.getSize(), page.getTotal(), records);
+    }
 
     @Override
     @Transactional
@@ -337,10 +381,36 @@ public class PermissionProjectJoinRequestServiceImpl implements PermissionProjec
                                                               Long current,
                                                               Long size) {
         Page<PermissionProjectJoinRequest> page = joinRequestMapper.selectPage(pageRequest(current, size), wrapper);
+        Map<Long, PermissionProject> projects = loadProjects(page.getRecords());
         List<ProjectJoinRequestView> records = page.getRecords().stream()
-                .map(ProjectJoinRequestView::from)
+                .map(request -> ProjectJoinRequestView.from(request, projects.get(request.getProjectId())))
                 .toList();
         return PlatformPageResponse.of(page.getCurrent(), page.getSize(), page.getTotal(), records);
+    }
+
+    /**
+     * Loads project names in one batch for a join-request page.
+     *
+     * <p>Project names are master data and must not be copied into workflow rows, otherwise renaming a project would
+     * leave stale labels in historical requests. Batch loading preserves that single source of truth without an N+1
+     * query.</p>
+     */
+    private Map<Long, PermissionProject> loadProjects(List<PermissionProjectJoinRequest> requests) {
+        Set<Long> projectIds = requests.stream()
+                .map(PermissionProjectJoinRequest::getProjectId)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+        if (projectIds.isEmpty()) {
+            return Map.of();
+        }
+        List<PermissionProject> projects = projectMapper.selectBatchIds(projectIds);
+        if (projects == null || projects.isEmpty()) {
+            return Map.of();
+        }
+        return projects.stream().collect(Collectors.toMap(
+                PermissionProject::getProjectId,
+                Function.identity(),
+                (left, right) -> left));
     }
 
     private ProjectJoinRequestMutationResult result(PermissionProjectJoinRequest request, String message) {
@@ -393,6 +463,22 @@ public class PermissionProjectJoinRequestServiceImpl implements PermissionProjec
         return targetTenantId;
     }
 
+    private Long resolveCandidateTenantId(Long requestedTenantId,
+                                          PermissionActorContext actorContext,
+                                          String actorRole) {
+        Long actorTenantId = normalizeTenantId(actorContext == null ? null : actorContext.tenantId());
+        if (PermissionRoleCode.PLATFORM_ADMINISTRATOR.name().equals(actorRole)) {
+            Long targetTenantId = requestedTenantId == null ? actorTenantId : requestedTenantId;
+            return requirePositive(targetTenantId, "tenantId");
+        }
+        actorTenantId = requirePositive(actorTenantId, "actorTenantId");
+        if (requestedTenantId != null && !actorTenantId.equals(requestedTenantId)) {
+            throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
+                    "Cannot discover projects from another tenant");
+        }
+        return actorTenantId;
+    }
+
     private String requireRole(PermissionActorContext actorContext) {
         if (actorContext == null || actorContext.actorRole() == null || actorContext.actorRole().isBlank()) {
             throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN, "Missing trusted actor role");
@@ -414,6 +500,12 @@ public class PermissionProjectJoinRequestServiceImpl implements PermissionProjec
     }
 
     private Page<PermissionProjectJoinRequest> pageRequest(Long current, Long size) {
+        long safeCurrent = current == null || current <= 0 ? DEFAULT_CURRENT : current;
+        long safeSize = size == null || size <= 0 ? DEFAULT_PAGE_SIZE : Math.min(size, MAX_PAGE_SIZE);
+        return new Page<>(safeCurrent, safeSize);
+    }
+
+    private Page<PermissionProject> projectPageRequest(Long current, Long size) {
         long safeCurrent = current == null || current <= 0 ? DEFAULT_CURRENT : current;
         long safeSize = size == null || size <= 0 ? DEFAULT_PAGE_SIZE : Math.min(size, MAX_PAGE_SIZE);
         return new Page<>(safeCurrent, safeSize);

@@ -10,6 +10,7 @@ import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.api.PlatformPageResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.permission.controller.dto.PermissionActorContext;
+import com.czh.datasmart.govern.permission.controller.dto.ProjectJoinCandidateView;
 import com.czh.datasmart.govern.permission.controller.dto.ProjectJoinRequestApplyRequest;
 import com.czh.datasmart.govern.permission.controller.dto.ProjectJoinRequestMutationResult;
 import com.czh.datasmart.govern.permission.controller.dto.ProjectJoinRequestQueryCriteria;
@@ -40,6 +41,27 @@ import org.springframework.web.bind.annotation.RestController;
 public class PermissionProjectJoinRequestController {
 
     private final PermissionProjectJoinRequestService joinRequestService;
+
+    /**
+     * Returns the active project-name directory used by the join application selector.
+     *
+     * <p>The service constrains non-platform users to their own tenant. Only low-sensitive project master-data
+     * fields are returned, so an applicant can select a readable name without learning project business data.</p>
+     */
+    @GetMapping("/candidates")
+    public PlatformApiResponse<PlatformPageResponse<ProjectJoinCandidateView>> pageJoinCandidates(
+            @RequestParam(required = false) Long tenantId,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) Long current,
+            @RequestParam(required = false) Long size,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long actorTenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(joinRequestService.pageJoinCandidates(
+                tenantId, keyword, current, size,
+                actorContext(actorTenantId, actorId, actorRole, traceId)), traceId);
+    }
 
     @PostMapping
     public PlatformApiResponse<ProjectJoinRequestMutationResult> apply(

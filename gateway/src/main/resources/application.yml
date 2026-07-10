@@ -1454,6 +1454,77 @@ datasmart:
             GET: VIEW
             POST: CREATE
 
+        # 项目主数据与加入申请虽然属于 permission-admin 模块，但它们不是“系统设置”。
+        # 前端项目切换器、项目名称展示和加入申请必须先命中这些具体语义，不能被末尾的
+        # /api/permission/** -> SYSTEM_SETTING 兜底规则抢先解释，否则普通用户会被宽泛拒绝策略拦截。
+        - path-pattern: /api/permission/project-join-requests/candidates
+          resource-type: PROJECT_JOIN_REQUEST
+          default-action: DISCOVER_PROJECT
+          description: 同租户低敏项目名称目录，仅返回启用项目的 ID、编码、名称和类型，不授予项目数据范围。
+          method-actions:
+            GET: DISCOVER_PROJECT
+
+        - path-pattern: /api/permission/project-join-requests/my
+          resource-type: PROJECT_JOIN_REQUEST
+          default-action: VIEW_OWN
+          description: 当前用户查看本人项目加入申请。
+          method-actions:
+            GET: VIEW_OWN
+
+        - path-pattern: /api/permission/project-join-requests/approvals
+          resource-type: PROJECT_JOIN_REQUEST
+          default-action: REVIEW
+          description: 项目 OWNER、租户管理员或平台管理员查看项目加入待办。
+          method-actions:
+            GET: REVIEW
+
+        - path-pattern: /api/permission/project-join-requests/*/cancel
+          resource-type: PROJECT_JOIN_REQUEST
+          default-action: CANCEL_OWN
+          description: 申请人撤销本人仍处于待审批状态的项目加入申请。
+          method-actions:
+            POST: CANCEL_OWN
+
+        - path-pattern: /api/permission/project-join-requests/*/approve
+          resource-type: PROJECT_JOIN_REQUEST
+          default-action: REVIEW
+          description: 项目 OWNER 或管理员审批通过项目加入申请。
+          method-actions:
+            POST: REVIEW
+
+        - path-pattern: /api/permission/project-join-requests/*/reject
+          resource-type: PROJECT_JOIN_REQUEST
+          default-action: REVIEW
+          description: 项目 OWNER 或管理员拒绝项目加入申请。
+          method-actions:
+            POST: REVIEW
+
+        - path-pattern: /api/permission/project-join-requests
+          resource-type: PROJECT_JOIN_REQUEST
+          default-action: APPLY
+          description: 用户按项目名称选择后提交加入申请，PENDING 状态不会产生项目数据范围。
+          method-actions:
+            POST: APPLY
+
+        - path-pattern: /api/permission/projects
+          resource-type: PROJECT
+          default-action: VIEW
+          description: 项目主数据列表和创建入口；项目切换器从这里读取权威项目名称。
+          method-actions:
+            GET: VIEW
+            POST: CREATE
+
+        - path-pattern: /api/permission/projects/**
+          resource-type: PROJECT
+          default-action: EXECUTE
+          description: 项目详情和生命周期管理入口，读取、修改和删除继续由 permission-admin 策略矩阵约束。
+          method-actions:
+            GET: VIEW
+            PUT: UPDATE
+            PATCH: UPDATE
+            POST: EXECUTE
+            DELETE: DELETE
+
         - path-pattern: /api/permission/project-memberships/batch-upsert
           resource-type: PROJECT_MEMBERSHIP
           default-action: IMPORT
