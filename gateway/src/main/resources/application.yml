@@ -470,6 +470,51 @@ datasmart:
       # default-action：当 method-actions 没有命中时的兜底动作。
       # method-actions：HTTP 方法到平台动作的映射，当前先采用通用 REST 语义。
       route-metadata:
+        # 项目创建/加入申请属于租户级审批流程，不是当前选中项目内的普通权限设置。
+        # 这些规则必须放在 /api/permission/** 前面，否则会退化成 SYSTEM_SETTING + CREATE/VIEW，
+        # 导致真实的 PROJECT_CREATION_REQUEST / PROJECT_JOIN_REQUEST 路由策略无法命中。
+        - path-pattern: /api/permission/project-creation-requests/my
+          resource-type: PROJECT_CREATION_REQUEST
+          default-action: VIEW_OWN
+          description: 当前用户查看本人项目创建申请。
+          method-actions:
+            GET: VIEW_OWN
+
+        - path-pattern: /api/permission/project-creation-requests/approvals
+          resource-type: PROJECT_CREATION_REQUEST
+          default-action: REVIEW
+          description: 租户管理员或平台管理员查看项目创建待办。
+          method-actions:
+            GET: REVIEW
+
+        - path-pattern: /api/permission/project-creation-requests/*/cancel
+          resource-type: PROJECT_CREATION_REQUEST
+          default-action: CANCEL_OWN
+          description: 申请人撤销本人仍处于待审批状态的项目创建申请。
+          method-actions:
+            POST: CANCEL_OWN
+
+        - path-pattern: /api/permission/project-creation-requests/*/approve
+          resource-type: PROJECT_CREATION_REQUEST
+          default-action: REVIEW
+          description: 租户管理员或平台管理员审批通过项目创建申请。
+          method-actions:
+            POST: REVIEW
+
+        - path-pattern: /api/permission/project-creation-requests/*/reject
+          resource-type: PROJECT_CREATION_REQUEST
+          default-action: REVIEW
+          description: 租户管理员或平台管理员拒绝项目创建申请。
+          method-actions:
+            POST: REVIEW
+
+        - path-pattern: /api/permission/project-creation-requests
+          resource-type: PROJECT_CREATION_REQUEST
+          default-action: APPLY
+          description: 用户提交项目创建申请；审批前不会创建项目或产生数据范围。
+          method-actions:
+            POST: APPLY
+
         - path-pattern: /api/datasource/datasources/*/authorizations
           resource-type: DATASOURCE
           default-action: ASSIGN

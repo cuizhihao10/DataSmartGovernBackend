@@ -92,6 +92,48 @@ class GatewayAuthorizationFilterTest {
     }
 
     /**
+     * 项目创建申请不是权限设置写操作，必须使用专用申请资源和 APPLY 动作。
+     */
+    @Test
+    void projectCreationApplicationShouldUseApplyAuthorization() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = exchangeWithRole(
+                "/api/permission/project-creation-requests", "POST", "PROJECT_OWNER");
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
+
+        filter.filter(exchange, chain).block();
+
+        ArgumentCaptor<GatewayPermissionDecisionRequest> captor = forClass(GatewayPermissionDecisionRequest.class);
+        verify(decisionClient).evaluate(captor.capture(), eq("trace-test-001"));
+        assertThat(captor.getValue().getResourceType()).isEqualTo("PROJECT_CREATION_REQUEST");
+        assertThat(captor.getValue().getAction()).isEqualTo("APPLY");
+    }
+
+    /**
+     * “我的创建申请”必须与管理员待办区分，避免普通用户读取租户级审批队列。
+     */
+    @Test
+    void ownProjectCreationRequestsShouldUseViewOwnAuthorization() {
+        GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+        PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+        GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+        MockServerWebExchange exchange = exchangeWithRole(
+                "/api/permission/project-creation-requests/my", "GET", "ORDINARY_USER");
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+        when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
+
+        filter.filter(exchange, chain).block();
+
+        ArgumentCaptor<GatewayPermissionDecisionRequest> captor = forClass(GatewayPermissionDecisionRequest.class);
+        verify(decisionClient).evaluate(captor.capture(), eq("trace-test-001"));
+        assertThat(captor.getValue().getResourceType()).isEqualTo("PROJECT_CREATION_REQUEST");
+        assertThat(captor.getValue().getAction()).isEqualTo("VIEW_OWN");
+    }
+
+    /**
      * 权限中心允许访问时，网关应放行请求并透传数据范围上下文。
      *
      * <p>这验证了 permission-admin -> gateway -> business-service 的核心授权闭环：

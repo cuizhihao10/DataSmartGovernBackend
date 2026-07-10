@@ -380,6 +380,24 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/identity/**", "IDENTITY_USER",
                 "身份账号供应兜底入口，覆盖能力查询、账号生命周期和影子身份治理",
                 defaultMethodActions()));
+        defaults.add(route("/api/permission/project-creation-requests/my", "PROJECT_CREATION_REQUEST",
+                "当前用户查看本人项目创建申请",
+                Map.of("GET", "VIEW_OWN")));
+        defaults.add(route("/api/permission/project-creation-requests/approvals", "PROJECT_CREATION_REQUEST",
+                "租户管理员或平台管理员查看项目创建待办",
+                Map.of("GET", "REVIEW")));
+        defaults.add(route("/api/permission/project-creation-requests/*/cancel", "PROJECT_CREATION_REQUEST",
+                "申请人撤销本人仍处于待审批状态的项目创建申请",
+                Map.of("POST", "CANCEL_OWN")));
+        defaults.add(route("/api/permission/project-creation-requests/*/approve", "PROJECT_CREATION_REQUEST",
+                "租户管理员或平台管理员审批通过项目创建申请",
+                Map.of("POST", "REVIEW")));
+        defaults.add(route("/api/permission/project-creation-requests/*/reject", "PROJECT_CREATION_REQUEST",
+                "租户管理员或平台管理员拒绝项目创建申请",
+                Map.of("POST", "REVIEW")));
+        defaults.add(route("/api/permission/project-creation-requests", "PROJECT_CREATION_REQUEST",
+                "普通用户、项目负责人或运营人员提交项目创建申请；审批前不产生项目数据范围",
+                Map.of("POST", "APPLY")));
         defaults.add(route("/api/permission/project-join-requests/candidates", "PROJECT_JOIN_REQUEST",
                 "项目加入申请的低敏项目名称目录；只用于按名称发现本租户启用项目，不授予任何项目数据范围",
                 Map.of("GET", "DISCOVER_PROJECT")));
