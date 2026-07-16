@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from hashlib import sha256
 
 from datasmart_ai_runtime.domain.context import ContextBlock, ContextSourceType
@@ -14,6 +15,8 @@ from datasmart_ai_runtime.domain.contracts import (
     AgentRequest,
     ToolDefinition,
     ToolExecutionMode,
+    ToolParameterIssue,
+    ToolParameterIssueAction,
     ToolPlan,
     ToolRiskLevel,
 )
@@ -92,8 +95,8 @@ class ToolPlanner:
                 tool=tool,
                 reason=reason,
                 arguments=arguments,
-            ),
-        )
+                ),
+            )
         plans.extend(data_sync_plans)
         planned_tool_names.update(plan.tool_name for plan in data_sync_plans)
         wants_data_sync_workflow = bool(data_sync_plans)
@@ -229,29 +232,29 @@ class ToolPlanner:
         if wants_task_draft and "task.create.draft" in self._tools:
             tool = self._tools["task.create.draft"]
             risk_tags = tuple(tag.value for tag in intent_analysis.risk_tags) if intent_analysis else ()
-            plans.append(
-                self._build_plan(
-                    tool=tool,
-                    reason="意图分析显示可能创建或调度任务，该动作会改变平台业务状态，必须先生成草案并进入审批/确认链路。",
-                    arguments={
-                        "taskType": self._resolve_task_type(request, "quality.rule.suggest" in planned_tool_names),
+            task_draft_plan = self._build_plan(
+                tool=tool,
+                reason="意图分析显示可能创建或调度任务，该动作会改变平台业务状态，必须先生成草案并进入审批/确认链路。",
+                arguments={
+                    "taskType": self._resolve_task_type(request, "quality.rule.suggest" in planned_tool_names),
+                    "objective": request.objective,
+                    "priority": request.variables.get("priority", "MEDIUM"),
+                    "payload": {
                         "objective": request.objective,
-                        "priority": request.variables.get("priority", "MEDIUM"),
-                        "payload": {
-                            "objective": request.objective,
-                            "variables": request.variables,
-                            "intentRiskTags": risk_tags,
-                            "missingParameters": intent_analysis.missing_parameters if intent_analysis else (),
-                        },
-                        **self._reference_argument(
-                            argument_name="suggestionRef",
-                            from_tool="quality.rule.suggest",
-                            path="suggestion",
-                            enabled="quality.rule.suggest" in planned_tool_names,
-                        ),
+                        "variables": request.variables,
+                        "intentRiskTags": risk_tags,
+                        "missingParameters": intent_analysis.missing_parameters if intent_analysis else (),
                     },
-                )
+                    **self._reference_argument(
+                        argument_name="suggestionRef",
+                        from_tool="quality.rule.suggest",
+                        path="suggestion",
+                        enabled="quality.rule.suggest" in planned_tool_names,
+                    ),
+                },
             )
+            task_draft_plan = self._apply_intent_clarifications(task_draft_plan, intent_analysis)
+            plans.append(task_draft_plan)
             planned_tool_names.add("task.create.draft")
 
         wants_task_draft_persist = (
@@ -382,6 +385,58 @@ class ToolPlanner:
                 "cachePolicy": tool.cache_policy,
             },
         )
+
+    @staticmethod
+    def _apply_intent_clarifications(
+        plan: ToolPlan,
+        intent_analysis: IntentAnalysis | None,
+    ) -> ToolPlan:
+        """Turn domain-level sync gaps into executable-plan blockers.
+
+        ``task.create.draft`` has a generic payload schema because it also serves non-sync drafts. A shallow
+        schema check cannot see missing datasource or mapping fields nested inside that payload. This bridge
+        keeps the generic tool contract while making a sync request fail closed until the user supplies the
+        authorized datasource IDs and object mappings.
+        """
+
+        if plan.tool_name != "task.create.draft" or intent_analysis is None:
+            return plan
+
+        expected_types = {
+            "sourceDatasourceId": "number",
+            "targetDatasourceId": "number",
+            "objectMappings": "array",
+        }
+        missing = tuple(
+            parameter_name
+            for parameter_name in expected_types
+            if parameter_name in intent_analysis.missing_parameters
+        )
+        if not missing:
+            return plan
+
+        existing_names = {issue.parameter_name for issue in plan.parameter_validation.issues}
+        additional_issues = tuple(
+            ToolParameterIssue(
+                parameter_name=parameter_name,
+                expected_type=expected_types[parameter_name],
+                action=ToolParameterIssueAction.MUST_CLARIFY,
+                message=(
+                    f"Missing {parameter_name}; select or confirm this value before the sync task can be executed."
+                ),
+            )
+            for parameter_name in missing
+            if parameter_name not in existing_names
+        )
+        if not additional_issues:
+            return plan
+
+        validation = replace(
+            plan.parameter_validation,
+            can_execute=False,
+            issues=plan.parameter_validation.issues + additional_issues,
+        )
+        return replace(plan, parameter_validation=validation)
 
     @staticmethod
     def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:

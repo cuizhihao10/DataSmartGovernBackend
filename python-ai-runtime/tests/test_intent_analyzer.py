@@ -13,6 +13,24 @@ from datasmart_ai_runtime.services.intent_analyzer import RuleBasedIntentAnalyze
 
 
 class RuleBasedIntentAnalyzerTest(unittest.TestCase):
+    def test_free_text_sync_reports_authorized_inputs_before_execution(self) -> None:
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="operator-a",
+            objective="Migrate data from MySQL to PostgreSQL",
+        )
+        context_blocks = DefaultContextBuilder().build(request)
+
+        analysis = RuleBasedIntentAnalyzer().analyze(request, context_blocks)
+
+        self.assertIn(GovernanceDomain.DATA_SYNC, analysis.governance_domains)
+        self.assertEqual(
+            ("sourceDatasourceId", "targetDatasourceId", "objectMappings"),
+            analysis.missing_parameters,
+        )
+        self.assertLess(analysis.confidence, 0.8)
+
     def test_quality_task_intent_contains_domains_tools_and_risk_tags(self) -> None:
         request = AgentRequest(
             tenant_id="tenant-a",

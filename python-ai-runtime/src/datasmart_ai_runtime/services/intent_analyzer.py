@@ -79,11 +79,15 @@ class RuleBasedIntentAnalyzer:
             if not self._has_remediation_scope(request):
                 self._append_unique(missing_parameters, "remediationScope")
 
-        if self._contains_any(objective, ("sync", "同步", "补数", "回放", "增量", "cdc")):
+        if self._contains_any(
+            objective,
+            ("sync", "migrate", "data migration", "transfer data", "同步", "补数", "回放", "增量", "cdc"),
+        ):
             self._append_unique(domains, GovernanceDomain.DATA_SYNC)
             self._append_unique(candidate_tools, "task.create.draft")
             self._append_unique(risk_tags, IntentRiskTag.STATE_CHANGE)
             self._append_unique(risk_tags, IntentRiskTag.APPROVAL_REQUIRED)
+            self._append_data_sync_clarifications(request, objective, missing_parameters)
 
         create_task_requested = bool(request.variables.get("createTask") or request.variables.get("create_task"))
         if not remediation_requested and (
@@ -144,6 +148,44 @@ class RuleBasedIntentAnalyzer:
             confidence=confidence,
             reasoning="基于用户目标关键词、结构化变量和上下文块类型进行规则式意图识别。",
         )
+
+    def _append_data_sync_clarifications(
+        self,
+        request: AgentRequest,
+        objective: str,
+        missing_parameters: list[str],
+    ) -> None:
+        """Record execution prerequisites for a free-text sync request.
+
+        The model interface is intentionally reserved for now, so the deterministic fallback must never
+        guess a datasource or object mapping from prose. Datasource IDs must come from the authorized
+        datasource-management selection, and mappings must come from metadata discovery or explicit user
+        confirmation. This method records only low-sensitive missing facts; control-plane clarification and
+        execution remain outside the intent analyzer.
+        """
+
+        payload = request.variables.get("dataSyncRequest") or request.variables.get("data_sync_request")
+        has_sync_payload = isinstance(payload, dict)
+        execution_language = (
+            "同步数据",
+            "数据同步",
+            "数据迁移",
+            "全量传输",
+            "增量传输",
+            "实时传输",
+            "migrate",
+            "sync data",
+        )
+        if not has_sync_payload and not self._contains_any(objective, execution_language):
+            return
+
+        values = payload if isinstance(payload, dict) else request.variables
+        if not values.get("sourceDatasourceId") and not values.get("source_datasource_id"):
+            self._append_unique(missing_parameters, "sourceDatasourceId")
+        if not values.get("targetDatasourceId") and not values.get("target_datasource_id"):
+            self._append_unique(missing_parameters, "targetDatasourceId")
+        if not values.get("objectMappings") and not values.get("object_mappings"):
+            self._append_unique(missing_parameters, "objectMappings")
 
     @staticmethod
     def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:

@@ -11,10 +11,40 @@ from datasmart_ai_runtime.domain.context import ContextBlock, ContextSourceType
 from datasmart_ai_runtime.domain.contracts import AgentRequest, ToolExecutionMode, ToolParameterIssueAction
 from datasmart_ai_runtime.domain.intent import GovernanceDomain, IntentAnalysis, IntentRiskTag
 from datasmart_ai_runtime.domain.skills import AgentSkillPlan, AgentSkillSelection
+from datasmart_ai_runtime.services.context_builder import DefaultContextBuilder
+from datasmart_ai_runtime.services.intent_analyzer import RuleBasedIntentAnalyzer
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 
 
 class ToolPlannerTest(unittest.TestCase):
+    def test_free_text_sync_draft_is_blocked_until_mapping_facts_are_confirmed(self) -> None:
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="operator-a",
+            objective="Migrate data from MySQL to PostgreSQL",
+        )
+        context_blocks = DefaultContextBuilder().build(request)
+        intent_analysis = RuleBasedIntentAnalyzer().analyze(request, context_blocks)
+
+        plans = ToolPlanner(default_tool_registry()).plan(
+            request=request,
+            intent_analysis=intent_analysis,
+            context_blocks=context_blocks,
+        )
+
+        task_plan = next(plan for plan in plans if plan.tool_name == "task.create.draft")
+        self.assertFalse(task_plan.parameter_validation.can_execute)
+        self.assertEqual(
+            {
+                "sourceDatasourceId",
+                "targetDatasourceId",
+                "objectMappings",
+            },
+            {issue.parameter_name for issue in task_plan.parameter_validation.issues},
+        )
+        self.assertTrue(task_plan.parameter_validation.can_create_draft)
+
     def test_full_sync_assistant_builds_nine_node_governed_dag_without_credentials(self) -> None:
         request = AgentRequest(
             tenant_id="10",
