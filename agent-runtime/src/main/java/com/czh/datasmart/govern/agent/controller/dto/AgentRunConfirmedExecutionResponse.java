@@ -19,5 +19,8 @@ public record AgentRunConfirmedExecutionResponse(
         int succeededCount,
         int failedCount,
         List<AgentToolExecutionResultView> toolResults,
-        List<String> nextActions) {
+        List<String> nextActions,
+        String assistantReply,
+        String answerMode,
+        String modelProviderStatus) {
 }

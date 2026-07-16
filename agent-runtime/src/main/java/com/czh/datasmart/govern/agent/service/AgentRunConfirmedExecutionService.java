@@ -11,6 +11,8 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRunConfirmedExecutionR
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionAuditView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionDecisionRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionResultView;
+import com.czh.datasmart.govern.agent.service.answer.AgentExecutionAssistantAnswer;
+import com.czh.datasmart.govern.agent.service.answer.AgentExecutionResultAnswerGenerator;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
@@ -37,6 +39,7 @@ public class AgentRunConfirmedExecutionService {
     private final AgentSessionMemoryStore sessionStore;
     private final AgentSessionService sessionService;
     private final AgentToolExecutionAuditService auditService;
+    private final AgentExecutionResultAnswerGenerator resultAnswerGenerator;
 
     public AgentRunConfirmedExecutionResponse confirmAndExecute(
             String sessionId,
@@ -104,6 +107,14 @@ public class AgentRunConfirmedExecutionService {
             if (failed == 0 && succeeded == audits.size()) {
                 run.completeAfterToolExecution("Agent 计划全部工具节点执行成功；同步任务已提交业务执行链路。");
             }
+            AgentExecutionAssistantAnswer assistantAnswer = resultAnswerGenerator.generate(
+                    run.getState().name(),
+                    audits.size(),
+                    succeeded,
+                    failed,
+                    List.copyOf(results),
+                    run.getNextActions()
+            );
             return new AgentRunConfirmedExecutionResponse(
                     sessionId,
                     runId,
@@ -112,7 +123,10 @@ public class AgentRunConfirmedExecutionService {
                     succeeded,
                     failed,
                     List.copyOf(results),
-                    run.getNextActions()
+                    run.getNextActions(),
+                    assistantAnswer.content(),
+                    assistantAnswer.mode(),
+                    assistantAnswer.modelProviderStatus()
             );
         }
     }

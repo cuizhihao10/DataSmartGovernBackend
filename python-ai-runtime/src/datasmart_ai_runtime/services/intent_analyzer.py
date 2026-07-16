@@ -169,7 +169,11 @@ class RuleBasedIntentAnalyzer:
         execution_language = (
             "同步数据",
             "数据同步",
+            "全量同步",
+            "增量同步",
+            "同步到",
             "数据迁移",
+            "迁移",
             "全量传输",
             "增量传输",
             "实时传输",

@@ -9,6 +9,7 @@ package com.czh.datasmart.govern.agent.service;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunConfirmedExecutionRequest;
 import com.czh.datasmart.govern.agent.model.AgentRunState;
 import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
+import com.czh.datasmart.govern.agent.service.answer.DeterministicAgentExecutionResultAnswerGenerator;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
@@ -59,7 +60,8 @@ class AgentRunConfirmedExecutionServiceTest {
         service = new AgentRunConfirmedExecutionService(
                 sessionStore,
                 mock(AgentSessionService.class),
-                mock(AgentToolExecutionAuditService.class)
+                mock(AgentToolExecutionAuditService.class),
+                new DeterministicAgentExecutionResultAnswerGenerator()
         );
     }
 

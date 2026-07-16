@@ -21,6 +21,7 @@ from datasmart_ai_runtime.api.agent.plan_readiness_views import (
     build_command_proposal_context,
     build_tool_execution_readiness_response,
 )
+from datasmart_ai_runtime.api.agent.conversation_response import build_agent_conversation_response
 from datasmart_ai_runtime.api.agent.plan_response_events import (
     attach_agent_execution_gate_event,
     attach_agent_execution_session_event,
@@ -138,9 +139,16 @@ def build_plan_response(
     agent_turn_runner_checkpoint = None
     memory_write_proposal = None
 
-    if plan_ingestion_client is not None:
+    if (
+        plan_ingestion_client is not None
+        and tool_execution_readiness.clarification_required_count == 0
+        and tool_execution_readiness.blocked_count == 0
+    ):
         # 控制面接入是显式副作用：只有调用方注入 client 或 API 启用环境开关时才执行。
         # 接入成功后会把 Java session/run/auditId 引用写回 ToolPlan，后续工具反馈 Provider 可据此查询真实结果。
+        # 缺参或 CRITICAL 阻断计划必须停留在 Python/LangGraph 澄清阶段，不能提前创建 Java Run 和工具审计。
+        # THROTTLED 表示禁止“自动执行”，但仍允许创建待用户确认的控制面计划；确认后的有界串行执行由
+        # Java Run 负责，不能把完整数据同步 DAG 误解成一次性自动并发调用预算。
         control_plane_ingestion = plan_ingestion_client.ingest(request, plan, trace_id=plan.request_id)
         plan = control_plane_ingestion.attach_to_plan(plan)
         control_plane_feedback = _collect_control_plane_feedback(
@@ -392,6 +400,12 @@ def build_plan_response(
     response["toolExecutionReadinessPolicy"] = readiness_policy_snapshot.to_low_sensitive_summary()
     response["agentExecutionClosure"] = agent_execution_closure_summary
     response["intelligentGatewayGovernance"] = intelligent_gateway_governance
+    response["agentConversation"] = build_agent_conversation_response(
+        request,
+        plan,
+        tool_execution_readiness,
+        control_plane_ingested=control_plane_ingestion is not None,
+    )
     if control_plane_ingestion is not None:
         response["controlPlaneIngestion"] = control_plane_ingestion.to_summary()
     if control_plane_feedback is not None:
