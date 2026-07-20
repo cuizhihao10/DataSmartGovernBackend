@@ -7,7 +7,14 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from datasmart_ai_runtime.api import build_default_orchestrator, build_plan_response
-from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest
+from datasmart_ai_runtime.api.agent.conversation_response import build_intent_resolver_summary
+from datasmart_ai_runtime.domain.contracts import (
+    AgentPlan,
+    AgentRequest,
+    ModelRoute,
+    ProviderType,
+    WorkloadType,
+)
 
 
 class AgentConversationResponseTest(unittest.TestCase):
@@ -91,6 +98,33 @@ class AgentConversationResponseTest(unittest.TestCase):
         self.assertEqual(1, ingestion_client.call_count)
         self.assertEqual("session-conversation", response["controlPlaneIngestion"]["sessionId"])
         self.assertNotIn("fs_test_customer_source", str(conversation))
+
+    def test_real_provider_is_reported_as_model_assisted_with_deterministic_fallback(self) -> None:
+        """真实 Provider 已启用时，会话诊断不能继续误报 RESERVED。"""
+
+        plan = AgentPlan(
+            request_id="request-model-assisted",
+            selected_route=ModelRoute(
+                workload=WorkloadType.AGENT_REASONING,
+                provider_name="managed-agent-router",
+                provider_type=ProviderType.OPENAI_COMPATIBLE,
+                model_name="managed-agent-model",
+                endpoint="https://model-gateway.example.com/v1",
+            ),
+            state_trace=(),
+            tool_plans=(),
+            requires_human_approval=False,
+            response_summary="",
+        )
+
+        summary = build_intent_resolver_summary(plan)
+
+        self.assertEqual("MODEL_ASSISTED_WITH_DETERMINISTIC_FALLBACK", summary["mode"])
+        self.assertEqual("managed-agent-router", summary["modelProvider"])
+        self.assertEqual("managed-agent-model", summary["modelName"])
+        self.assertTrue(summary["providerUsedForCurrentTurn"])
+        self.assertTrue(summary["deterministicFallbackAvailable"])
+        self.assertNotIn("endpoint", summary)
 
 
 class CountingPlanIngestionClient:

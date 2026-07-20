@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ToolParameterIssueAction
+from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ProviderType, ToolParameterIssueAction
 from datasmart_ai_runtime.services.tools.tool_execution_readiness import ToolExecutionReadinessReport
 
 
@@ -119,13 +119,36 @@ def build_agent_conversation_response(
         "canExecute": has_executable_plan and control_plane_ingested,
         "controlPlaneIngested": control_plane_ingested,
         "nextAction": next_action,
-        "intentResolver": {
+        "intentResolver": build_intent_resolver_summary(plan),
+        "payloadPolicy": "LOW_SENSITIVE_CONVERSATION_METADATA_ONLY",
+    }
+
+
+def build_intent_resolver_summary(plan: AgentPlan) -> dict[str, Any]:
+    """返回真实模型参与状态，但不暴露 endpoint、API Key、prompt 或模型原始输出。
+
+    真实 Provider 启用后，模型负责语义理解、候选工具意图和回答生成；DataSmart 的规则分析、
+    ToolActionIntakeService 和 Java 控制面仍然是可执行性的最终依据。因此这里使用
+    `MODEL_ASSISTED_WITH_DETERMINISTIC_FALLBACK`，而不是误导性的“全部由模型决定”。
+    """
+
+    route = plan.selected_route
+    if route is None or route.provider_type == ProviderType.DRY_RUN:
+        return {
             "mode": "DETERMINISTIC_FALLBACK",
             "modelProvider": "RESERVED",
-            "providerRequiredForCurrentTurn": False,
+            "modelName": None,
+            "providerUsedForCurrentTurn": False,
+            "deterministicFallbackAvailable": True,
             "contract": "PROVIDER_NEUTRAL_STRUCTURED_INTENT_V1",
-        },
-        "payloadPolicy": "LOW_SENSITIVE_CONVERSATION_METADATA_ONLY",
+        }
+    return {
+        "mode": "MODEL_ASSISTED_WITH_DETERMINISTIC_FALLBACK",
+        "modelProvider": route.provider_name,
+        "modelName": route.model_name,
+        "providerUsedForCurrentTurn": True,
+        "deterministicFallbackAvailable": True,
+        "contract": "PROVIDER_NEUTRAL_STRUCTURED_INTENT_V1",
     }
 
 
