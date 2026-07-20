@@ -147,6 +147,166 @@ class ModelProviderRegistryTest(unittest.TestCase):
         self.assertEqual(2, calls)
         self.assertEqual("retry ok", result.content)
 
+    def test_responses_provider_sends_reasoning_policy_and_parses_native_tool_call(self) -> None:
+        """Responses 路径应使用原生 function_call，并默认禁止 Provider 存储响应。"""
+
+        captured: dict[str, object] = {}
+
+        def transport(request, timeout: int):
+            captured["url"] = request.full_url
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeHttpResponse(
+                {
+                    "status": "completed",
+                    "output": [
+                        {"type": "reasoning", "id": "reasoning-1", "summary": []},
+                        {
+                            "type": "function_call",
+                            "id": "function-1",
+                            "call_id": "call-1",
+                            "name": "datasource_metadata_read",
+                            "arguments": '{"datasourceId":27}',
+                        },
+                    ],
+                    "usage": {"input_tokens": 23, "output_tokens": 11, "total_tokens": 34},
+                }
+            )
+
+        provider = OpenAICompatibleModelProvider(
+            OpenAICompatibleProviderSettings(
+                api_key="sk-test",
+                wire_api="responses",
+                reasoning_effort="xhigh",
+                store_response=False,
+                max_retries=0,
+            ),
+            transport=transport,
+        )
+        tool = next(item for item in default_tool_registry() if item.name == "datasource.metadata.read")
+        result = provider.invoke(
+            ModelInvocationRequest(
+                route=_openai_route(endpoint="http://model-gateway.local/v1"),
+                messages=(ModelMessage(role="user", content="读取数据源 27 的元数据"),),
+                available_tools=(tool,),
+                tool_choice="required",
+                strict_tool_schema=True,
+            )
+        )
+
+        self.assertEqual("http://model-gateway.local/v1/responses", captured["url"])
+        body = captured["body"]
+        self.assertEqual({"effort": "xhigh"}, body["reasoning"])
+        self.assertFalse(body["store"])
+        self.assertNotIn("temperature", body)
+        self.assertEqual("required", body["tool_choice"])
+        self.assertEqual("datasource_metadata_read", body["tools"][0]["name"])
+        self.assertNotIn("function", body["tools"][0])
+        self.assertTrue(body["tools"][0]["strict"])
+        self.assertEqual(1, len(result.tool_calls))
+        self.assertEqual("datasource.metadata.read", result.tool_calls[0].name)
+        self.assertEqual("call-1", result.tool_calls[0].call_id)
+        self.assertEqual(23, result.prompt_tokens)
+        self.assertEqual(11, result.completion_tokens)
+
+    def test_responses_provider_replays_function_history_without_provider_storage(self) -> None:
+        """二轮回答应回传完整 function_call 历史，而不是依赖 previous_response_id。"""
+
+        captured: dict[str, object] = {}
+
+        def transport(request, timeout: int):
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeHttpResponse(
+                {
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "数据源连接正常。"}],
+                        }
+                    ],
+                    "usage": {"input_tokens": 30, "output_tokens": 8},
+                }
+            )
+
+        call = ModelToolCall(
+            call_id="call-1",
+            name="datasource.metadata.read",
+            arguments='{"datasourceId":27}',
+            raw_call={
+                "type": "function_call",
+                "call_id": "call-1",
+                "name": "datasource_metadata_read",
+                "arguments": '{"datasourceId":27}',
+            },
+        )
+        provider = OpenAICompatibleModelProvider(
+            OpenAICompatibleProviderSettings(wire_api="responses", store_response=False, max_retries=0),
+            transport=transport,
+        )
+        result = provider.invoke(
+            ModelInvocationRequest(
+                route=_openai_route(endpoint="http://model-gateway.local/v1/chat/completions"),
+                messages=(
+                    ModelMessage(role="user", content="检查数据源 27"),
+                    ModelMessage(role="assistant", content="", tool_calls=(call,)),
+                    ModelMessage(
+                        role="tool",
+                        content='{"status":"READY","tableCount":2}',
+                        tool_call_id="call-1",
+                        name="datasource.metadata.read",
+                    ),
+                ),
+            )
+        )
+
+        body = captured["body"]
+        self.assertEqual(False, body["store"])
+        self.assertEqual("function_call", body["input"][1]["type"])
+        self.assertEqual("datasource_metadata_read", body["input"][1]["name"])
+        self.assertEqual("function_call_output", body["input"][2]["type"])
+        self.assertEqual("call-1", body["input"][2]["call_id"])
+        self.assertEqual("数据源连接正常。", result.content)
+
+    def test_responses_stream_returns_one_complete_governed_tool_chunk(self) -> None:
+        """Responses 流式兼容入口不能把未闭合的工具参数提前交给 Agent loop。"""
+
+        def transport(request, timeout: int):
+            return FakeHttpResponse(
+                {
+                    "status": "completed",
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "call_id": "call-stream-1",
+                            "name": "datasource_metadata_read",
+                            "arguments": '{"datasourceId":27}',
+                        }
+                    ],
+                    "usage": {},
+                }
+            )
+
+        provider = OpenAICompatibleModelProvider(
+            OpenAICompatibleProviderSettings(wire_api="responses", max_retries=0),
+            transport=transport,
+        )
+        tool = next(item for item in default_tool_registry() if item.name == "datasource.metadata.read")
+        chunks = tuple(
+            provider.stream(
+                ModelInvocationRequest(
+                    route=_openai_route(endpoint="http://model-gateway.local/v1"),
+                    messages=(ModelMessage(role="user", content="读取数据源 27"),),
+                    available_tools=(tool,),
+                )
+            )
+        )
+
+        self.assertEqual(1, len(chunks))
+        self.assertEqual("tool_calls", chunks[0].finish_reason)
+        self.assertEqual("datasource.metadata.read", chunks[0].tool_call_deltas[0].name_delta)
+        self.assertEqual('{"datasourceId":27}', chunks[0].tool_call_deltas[0].arguments_delta)
+
     def test_json_fallback_converts_governed_json_to_tool_calls(self) -> None:
         """不支持原生 tool_calls 的网关可用 JSON 兼容模式，但仍只产生待治理候选。"""
 

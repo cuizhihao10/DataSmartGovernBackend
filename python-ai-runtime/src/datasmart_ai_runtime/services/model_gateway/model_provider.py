@@ -131,6 +131,9 @@ def model_provider_registry_from_env(environ: dict[str, str] | None = None) -> M
     - `DATASMART_AI_OPENAI_COMPATIBLE_API_KEY`
     - `DATASMART_AI_OPENAI_COMPATIBLE_ORGANIZATION`
     - `DATASMART_AI_OPENAI_COMPATIBLE_USER_AGENT`
+    - `DATASMART_AI_OPENAI_COMPATIBLE_WIRE_API`
+    - `DATASMART_AI_AGENT_REASONING_EFFORT`
+    - `DATASMART_AI_OPENAI_COMPATIBLE_STORE_RESPONSE`
     - `DATASMART_AI_OPENAI_COMPATIBLE_TOOL_CALL_MODE`
     - `DATASMART_AI_OPENAI_COMPATIBLE_MAX_RETRIES`
     - `DATASMART_AI_OPENAI_COMPATIBLE_RETRY_BACKOFF_SECONDS`
@@ -144,6 +147,9 @@ def model_provider_registry_from_env(environ: dict[str, str] | None = None) -> M
         api_key=source.get("DATASMART_AI_OPENAI_COMPATIBLE_API_KEY") or source.get("DATASMART_AI_MODEL_API_KEY"),
         organization=source.get("DATASMART_AI_OPENAI_COMPATIBLE_ORGANIZATION"),
         user_agent=_safe_user_agent(source.get("DATASMART_AI_OPENAI_COMPATIBLE_USER_AGENT")),
+        wire_api=_wire_api(source.get("DATASMART_AI_OPENAI_COMPATIBLE_WIRE_API")),
+        reasoning_effort=_reasoning_effort(source.get("DATASMART_AI_AGENT_REASONING_EFFORT")),
+        store_response=_response_store_enabled(source),
         tool_call_mode=_tool_call_mode(source.get("DATASMART_AI_OPENAI_COMPATIBLE_TOOL_CALL_MODE")),
         max_retries=_non_negative_int(source.get("DATASMART_AI_OPENAI_COMPATIBLE_MAX_RETRIES"), default=1),
         retry_backoff_seconds=_non_negative_float(
@@ -192,3 +198,49 @@ def _tool_call_mode(value: str | None) -> str:
 
     normalized = str(value or "native").strip().lower()
     return normalized if normalized in {"native", "json_fallback"} else "native"
+
+
+def _wire_api(value: str | None) -> str:
+    """归一化 Provider wire API，未知值回退到兼容面更广的 Chat Completions。"""
+
+    normalized = str(value or "chat_completions").strip().lower().replace("-", "_")
+    aliases = {"chat": "chat_completions", "response": "responses"}
+    normalized = aliases.get(normalized, normalized)
+    return normalized if normalized in {"chat_completions", "responses"} else "chat_completions"
+
+
+def _reasoning_effort(value: str | None) -> str | None:
+    """只透传已知推理强度，防止错误值让所有 Agent 请求在 Provider 侧失败。"""
+
+    if value is None or not value.strip():
+        return None
+    normalized = value.strip().lower()
+    supported = {"none", "minimal", "low", "medium", "high", "xhigh"}
+    return normalized if normalized in supported else None
+
+
+def _response_store_enabled(source: dict[str, str]) -> bool:
+    """读取响应存储策略，默认关闭并兼容 Codex 风格的反向开关。
+
+    ``STORE_RESPONSE`` 是 DataSmart 的主配置；``DISABLE_RESPONSE_STORAGE`` 仅用于从现有 Codex
+    配置迁移时减少歧义。两者同时出现时主配置优先，避免正反开关互相覆盖。
+    """
+
+    explicit = source.get("DATASMART_AI_OPENAI_COMPATIBLE_STORE_RESPONSE")
+    if explicit is not None and explicit.strip():
+        return _boolean(explicit, default=False)
+    disable = source.get("DATASMART_AI_DISABLE_RESPONSE_STORAGE")
+    if disable is not None and disable.strip():
+        return not _boolean(disable, default=True)
+    return False
+
+
+def _boolean(value: str | None, default: bool) -> bool:
+    """解析常见布尔文本；非法值不改变安全默认值。"""
+
+    normalized = str(value or "").strip().lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    return default

@@ -69,6 +69,9 @@ TLS 相关证书、私钥和 CA bundle 不应写入本仓库。Kubernetes 场景
 | `DATASMART_AI_OPENAI_COMPATIBLE_BASE_URL` | 普通配置 | Helm values / ConfigMap | OpenAI-compatible 模型服务地址，可指向 vLLM、企业模型网关或托管推理服务。 |
 | `DATASMART_AI_OPENAI_COMPATIBLE_API_KEY` | Secret | Secret Manager / Kubernetes Secret | 模型服务 API Key。不得进入 prompt、日志、runtime event、Prometheus label 或异常消息。 |
 | `DATASMART_AI_OPENAI_COMPATIBLE_USER_AGENT` | 普通配置 | Helm values / ConfigMap | 低敏 HTTP 客户端标识，用于 CDN/WAF 准入与运维识别；不得包含租户、用户、token 或密钥。 |
+| `DATASMART_AI_OPENAI_COMPATIBLE_WIRE_API` | 普通配置 | Helm values / ConfigMap | `chat_completions` 或 `responses`。Responses 使用标准 `function_call/function_call_output` 历史，切换前必须完成 Provider 兼容性验证。 |
+| `DATASMART_AI_AGENT_REASONING_EFFORT` | 普通配置 | Helm values / ConfigMap | Responses 推理强度，可选 `none/minimal/low/medium/high/xhigh`；应按时延、成本和任务复杂度分层配置。 |
+| `DATASMART_AI_OPENAI_COMPATIBLE_STORE_RESPONSE` | 普通配置 | Helm values / ConfigMap | 是否允许 Provider 通过 API 持久化响应，默认 `false`。该开关不替代对供应商安全日志和数据处理协议的审查。 |
 | `DATASMART_AI_OPENAI_COMPATIBLE_TOOL_CALL_MODE` | 普通配置 | Helm values / ConfigMap | `native` 使用标准 function calling；`json_fallback` 仅用于已验证支持 `json_object` 但不透传 `tool_calls` 的中转网关。两种模式的候选都必须经过平台准入与 Java 控制面。 |
 | `DATASMART_AI_AGENT_REASONING_MODEL` | 普通配置 | Helm values / ConfigMap | Provider 实际接受的 model ID。模型展示名称不等于调用 ID，应以 Provider 的 `/v1/models` 或接入文档为准。 |
 | `DATASMART_AI_AGENT_REASONING_PROVIDER_NAME` | 普通配置 | Helm values / ConfigMap | 低敏诊断、路由健康和成本归因使用的 Provider 名称，不是密钥或模型 ID。 |
@@ -79,7 +82,7 @@ TLS 相关证书、私钥和 CA bundle 不应写入本仓库。Kubernetes 场景
 
 模型 Provider 应保持可替换，不应把某个具体模型族写死到业务服务或长期接口中。生产配置应该通过模型路由、能力标签、成本策略、上下文限制、超时、重试和降级策略控制，而不是让业务模块直接绑定某个模型名称。
 
-对于第三方中转站，上线前还必须单独验证 Chat Completions、function/tool calling、assistant/tool 二轮消息、限流语义和账单归因。`gpt5.6` 这类名称仅代表 Provider 宣称或暴露的 model ID，DataSmart 不会把它视为模型身份或品质证明。无论使用本地模型还是在线 API，数据源密码、token、完整数据行和未授权工具结果都不得进入模型上下文。
+对于第三方中转站，上线前必须按选定 wire API 分别验证文本响应、原生 function calling、工具结果二轮回填、`store=false`、推理强度、限流语义和账单归因。Codex 的 OAuth access/id/refresh token 属于 Codex/OpenAI 账户会话，绝不能复制到 DataSmart 的环境变量、数据库、容器、日志或代码仓库；DataSmart 只使用独立的模型 API Key。Provider 暴露的模型名只代表路由 ID，DataSmart 不把它视为模型身份或品质证明。无论使用本地模型还是在线 API，数据源密码、token、完整数据行和未授权工具结果都不得进入模型上下文。
 
 ## 7. 受控开关
 

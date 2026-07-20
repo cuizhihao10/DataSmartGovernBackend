@@ -35,6 +35,9 @@ from datasmart_ai_runtime.services.model_gateway.model_provider_error_sanitizer 
     safe_http_error_message,
     safe_transport_error_message,
 )
+from datasmart_ai_runtime.services.model_gateway.openai_responses_protocol import (
+    OpenAIResponsesProtocolAdapter,
+)
 
 
 class ModelProviderHttpTransport(Protocol):
@@ -71,6 +74,9 @@ class OpenAICompatibleProviderSettings:
     api_key: str | None = None
     organization: str | None = None
     user_agent: str = "DataSmart-AI-Runtime/1.0"
+    wire_api: str = "chat_completions"
+    reasoning_effort: str | None = None
+    store_response: bool = False
     tool_call_mode: str = "native"
     max_retries: int = 1
     retry_backoff_seconds: float = 0.05
@@ -113,6 +119,7 @@ class OpenAICompatibleModelProvider:
         self._settings = settings or OpenAICompatibleProviderSettings()
         self._transport = transport or urlopen
         self._tool_schema_builder = OpenAICompatibleToolSchemaBuilder()
+        self._responses_adapter = OpenAIResponsesProtocolAdapter()
 
     def invoke(self, request: ModelInvocationRequest) -> ModelInvocationResult:
         """执行一次非流式 Chat Completions 调用。
@@ -178,7 +185,9 @@ class OpenAICompatibleModelProvider:
         if not request.route.endpoint:
             raise ValueError("OpenAI-compatible Provider 需要在 ModelRoute.endpoint 中配置接口地址")
 
-        if self._settings.tool_call_mode == "json_fallback" and request.available_tools:
+        if self._settings.wire_api == "responses" or (
+            self._settings.tool_call_mode == "json_fallback" and request.available_tools
+        ):
             # JSON fallback 需要先拿到完整 JSON 再校验/解析，不能对尚未闭合的 token 片段做工具准入。
             # 对上层仍输出统一 chunk，让 LangGraph 与聚合器无需为特定中转站分叉。
             result = self.invoke(request)
@@ -235,6 +244,20 @@ class OpenAICompatibleModelProvider:
             request.available_tools,
             ModelToolSchemaExposurePolicy(strict=request.strict_tool_schema),
         )
+        if self._settings.wire_api == "responses":
+            body = self._responses_adapter.build_body(
+                request,
+                tools,
+                reasoning_effort=self._settings.reasoning_effort,
+                store_response=self._settings.store_response,
+                tool_call_mode=self._settings.tool_call_mode,
+            )
+            return self._request_with_headers(
+                request,
+                body,
+                self._responses_adapter.responses_url(request.route.endpoint or ""),
+            )
+
         messages = [self._message_to_payload(message) for message in request.messages]
         if self._settings.tool_call_mode == "json_fallback":
             messages = self._json_fallback_messages(messages)
@@ -259,6 +282,15 @@ class OpenAICompatibleModelProvider:
                 body["tools"] = tools
                 if request.tool_choice is not None:
                     body["tool_choice"] = request.tool_choice
+        return self._request_with_headers(
+            request,
+            body,
+            self._chat_completions_url(request.route.endpoint or ""),
+        )
+
+    def _request_with_headers(self, request: ModelInvocationRequest, body: dict, url: str) -> Request:
+        """为 Chat Completions 与 Responses 统一注入认证和治理 Header。"""
+
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
@@ -275,7 +307,7 @@ class OpenAICompatibleModelProvider:
         self._apply_datasmart_metadata_headers(headers, request.provider_metadata)
         headers.update(self._settings.extra_headers or {})
         return Request(
-            url=self._chat_completions_url(request.route.endpoint or ""),
+            url=url,
             data=json.dumps(body).encode("utf-8"),
             headers=headers,
             method="POST",
@@ -421,10 +453,25 @@ class OpenAICompatibleModelProvider:
         参数校验、审批、工具沙箱、审计落库和错误恢复。
         """
 
+        name_aliases = self._tool_schema_builder.build_name_aliases(request.available_tools)
+        if self._settings.wire_api == "responses":
+            result = self._responses_adapter.to_result(request, payload, latency_ms, name_aliases)
+            if not result.tool_calls and self._settings.tool_call_mode == "json_fallback":
+                content, tool_calls = self._parse_json_tool_calls(result.content, name_aliases)
+                return ModelInvocationResult(
+                    provider_name=result.provider_name,
+                    model_name=result.model_name,
+                    content=content,
+                    latency_ms=result.latency_ms,
+                    prompt_tokens=result.prompt_tokens,
+                    completion_tokens=result.completion_tokens,
+                    tool_calls=tool_calls,
+                )
+            return result
+
         choice = (payload.get("choices") or [{}])[0]
         message = choice.get("message") or {}
         usage = payload.get("usage") or {}
-        name_aliases = self._tool_schema_builder.build_name_aliases(request.available_tools)
         tool_calls = tuple(
             self._to_tool_call(item, name_aliases) for item in message.get("tool_calls") or () if isinstance(item, dict)
         )
