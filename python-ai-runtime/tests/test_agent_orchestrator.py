@@ -207,6 +207,31 @@ class AgentOrchestratorTest(unittest.TestCase):
         self.assertEqual("session_only", cache_plan["scope"])
         self.assertIn("session:session-metadata", cache_plan["namespace"])
 
+    def test_explicit_false_disables_streaming_model_intent(self) -> None:
+        """显式关闭 streaming 时必须调用 invoke，不能因 False 被 `or` 丢弃而误走 stream。"""
+
+        provider = StreamingToolCallingModelProviderRegistry(chunks=())
+        orchestrator = AgentOrchestrator(
+            model_routes=ModelRouteRegistry(default_model_routes()),
+            tool_planner=ToolPlanner(default_tool_registry()),
+            model_providers=provider,
+            skill_registry=AgentSkillRegistry(default_skill_registry()),
+        )
+
+        plan = orchestrator.plan(
+            AgentRequest(
+                tenant_id="tenant-a",
+                project_id="project-a",
+                actor_id="user-a",
+                objective="请分析这个数据源的表结构",
+                variables={"datasourceId": "ds-001", "streamModelIntent": False},
+            )
+        )
+
+        self.assertEqual(1, len(provider.requests))
+        self.assertIn("模型节点摘要：captured", plan.model_intent_summary)
+        self.assertNotIn("未返回任何 chunk", plan.model_intent_summary)
+
     def test_model_tool_calls_are_governed_recorded_and_merged_into_plan(self) -> None:
         """模型返回 tool_calls 时，应先治理和记录事件，再合并进最终工具计划。
 

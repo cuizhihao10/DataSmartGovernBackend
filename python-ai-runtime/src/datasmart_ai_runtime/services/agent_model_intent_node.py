@@ -380,7 +380,10 @@ class AgentModelIntentNode:
         默认启用 streaming；旧 Provider 没有 `stream(...)` 时自动回到非流式路径。请求变量允许显式关闭。
         """
 
-        explicit = request.variables.get("streamModelIntent") or request.variables.get("stream_model_intent")
+        # 不能用 `a or b` 取配置：显式 False 会被当成空值丢弃，导致调用方无法关闭流式路径。
+        explicit = request.variables.get("streamModelIntent")
+        if explicit is None:
+            explicit = request.variables.get("stream_model_intent")
         if explicit is not None:
             return self._truthy(explicit)
         return callable(getattr(self._model_providers, "stream", None))

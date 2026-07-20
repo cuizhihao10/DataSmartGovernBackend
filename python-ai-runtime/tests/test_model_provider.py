@@ -8,11 +8,12 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from datasmart_ai_runtime.config import default_model_routes, model_routes_from_env
+from datasmart_ai_runtime.config import default_model_routes, default_tool_registry, model_routes_from_env
 from datasmart_ai_runtime.domain.contracts import (
     ModelRoute,
     ModelInvocationRequest,
     ModelMessage,
+    ModelToolCall,
     ProviderType,
     WorkloadType,
 )
@@ -99,6 +100,7 @@ class ModelProviderRegistryTest(unittest.TestCase):
         self.assertEqual(30, captured["timeout"])
         headers = {str(key).lower(): value for key, value in captured["headers"].items()}
         self.assertEqual("Bearer sk-test", headers["authorization"])
+        self.assertEqual("DataSmart-AI-Runtime/1.0", headers["user-agent"])
         self.assertEqual("trace-model-001", headers["x-datasmart-trace-id"])
         self.assertEqual("true", headers["x-datasmart-cache-enabled"])
         self.assertEqual("session_only", headers["x-datasmart-cache-scope"])
@@ -144,6 +146,100 @@ class ModelProviderRegistryTest(unittest.TestCase):
 
         self.assertEqual(2, calls)
         self.assertEqual("retry ok", result.content)
+
+    def test_json_fallback_converts_governed_json_to_tool_calls(self) -> None:
+        """不支持原生 tool_calls 的网关可用 JSON 兼容模式，但仍只产生待治理候选。"""
+
+        captured: dict[str, object] = {}
+
+        def transport(request, timeout: int):
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeHttpResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps(
+                                    {
+                                        "assistantMessage": "已生成连接测试候选，尚未执行。",
+                                        "toolCalls": [
+                                            {
+                                                "name": "datasource_source_connection_test",
+                                                "arguments": {"datasourceId": "ds-23"},
+                                            }
+                                        ],
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            }
+                        }
+                    ],
+                    "usage": {},
+                }
+            )
+
+        provider = OpenAICompatibleModelProvider(
+            OpenAICompatibleProviderSettings(tool_call_mode="json_fallback", max_retries=0),
+            transport=transport,
+        )
+        tool = next(item for item in default_tool_registry() if item.name == "datasource.source.connection.test")
+        result = provider.invoke(
+            ModelInvocationRequest(
+                route=_openai_route(endpoint="http://model-gateway.local/v1"),
+                messages=(ModelMessage(role="user", content="测试 ds-23 连接"),),
+                available_tools=(tool,),
+            )
+        )
+
+        body = captured["body"]
+        self.assertEqual({"type": "json_object"}, body["response_format"])
+        self.assertNotIn("tools", body)
+        self.assertIn("datasource_source_connection_test", body["messages"][0]["content"])
+        self.assertEqual(1, len(result.tool_calls))
+        self.assertEqual("datasource.source.connection.test", result.tool_calls[0].name)
+        self.assertEqual({"datasourceId": "ds-23"}, json.loads(result.tool_calls[0].arguments))
+        self.assertEqual("已生成连接测试候选，尚未执行。", result.content)
+
+    def test_json_fallback_converts_second_turn_tool_messages_to_text_history(self) -> None:
+        """JSON 兼容模式的二轮回答不应继续向不兼容网关发送 role=tool。"""
+
+        captured: dict[str, object] = {}
+
+        def transport(request, timeout: int):
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeHttpResponse({"choices": [{"message": {"content": "已基于受控结果完成总结。"}}], "usage": {}})
+
+        provider = OpenAICompatibleModelProvider(
+            OpenAICompatibleProviderSettings(tool_call_mode="json_fallback", max_retries=0),
+            transport=transport,
+        )
+        call = ModelToolCall(
+            call_id="call-1",
+            name="datasource.source.connection.test",
+            arguments='{"datasourceId":23}',
+            raw_call={
+                "id": "call-1",
+                "type": "function",
+                "function": {"name": "datasource_source_connection_test", "arguments": '{"datasourceId":23}'},
+            },
+        )
+        result = provider.invoke(
+            ModelInvocationRequest(
+                route=_openai_route(endpoint="http://model-gateway.local/v1"),
+                messages=(
+                    ModelMessage(role="user", content="测试数据源连接"),
+                    ModelMessage(role="assistant", content="", tool_calls=(call,)),
+                    ModelMessage(role="tool", content='{"status":"READY"}', tool_call_id="call-1", name="connection-test"),
+                ),
+            )
+        )
+
+        messages = captured["body"]["messages"]
+        self.assertNotIn("tool", {message["role"] for message in messages})
+        self.assertTrue(all("tool_calls" not in message for message in messages))
+        self.assertIn("上一轮受治理工具候选", messages[1]["content"])
+        self.assertIn("DataSmart 受控工具结果", messages[2]["content"])
+        self.assertEqual("已基于受控结果完成总结。", result.content)
         self.assertIsNone(result.error_code)
 
     def test_openai_compatible_provider_streams_sse_chunks(self) -> None:

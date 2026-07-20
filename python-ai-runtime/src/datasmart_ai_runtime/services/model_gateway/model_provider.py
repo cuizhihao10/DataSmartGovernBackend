@@ -130,6 +130,8 @@ def model_provider_registry_from_env(environ: dict[str, str] | None = None) -> M
     只负责 Provider 层的认证、重试和通用 Header。典型配置：
     - `DATASMART_AI_OPENAI_COMPATIBLE_API_KEY`
     - `DATASMART_AI_OPENAI_COMPATIBLE_ORGANIZATION`
+    - `DATASMART_AI_OPENAI_COMPATIBLE_USER_AGENT`
+    - `DATASMART_AI_OPENAI_COMPATIBLE_TOOL_CALL_MODE`
     - `DATASMART_AI_OPENAI_COMPATIBLE_MAX_RETRIES`
     - `DATASMART_AI_OPENAI_COMPATIBLE_RETRY_BACKOFF_SECONDS`
 
@@ -141,6 +143,8 @@ def model_provider_registry_from_env(environ: dict[str, str] | None = None) -> M
     settings = OpenAICompatibleProviderSettings(
         api_key=source.get("DATASMART_AI_OPENAI_COMPATIBLE_API_KEY") or source.get("DATASMART_AI_MODEL_API_KEY"),
         organization=source.get("DATASMART_AI_OPENAI_COMPATIBLE_ORGANIZATION"),
+        user_agent=_safe_user_agent(source.get("DATASMART_AI_OPENAI_COMPATIBLE_USER_AGENT")),
+        tool_call_mode=_tool_call_mode(source.get("DATASMART_AI_OPENAI_COMPATIBLE_TOOL_CALL_MODE")),
         max_retries=_non_negative_int(source.get("DATASMART_AI_OPENAI_COMPATIBLE_MAX_RETRIES"), default=1),
         retry_backoff_seconds=_non_negative_float(
             source.get("DATASMART_AI_OPENAI_COMPATIBLE_RETRY_BACKOFF_SECONDS"),
@@ -171,3 +175,20 @@ def _non_negative_float(value: str | None, default: float) -> float:
         return default
     parsed = float(value)
     return parsed if parsed >= 0 else default
+
+
+def _safe_user_agent(value: str | None) -> str:
+    """读取低敏 User-Agent，并阻断换行符造成的 Header 注入。"""
+
+    default = "DataSmart-AI-Runtime/1.0"
+    normalized = (value or default).strip()
+    if not normalized or "\r" in normalized or "\n" in normalized:
+        return default
+    return normalized[:160]
+
+
+def _tool_call_mode(value: str | None) -> str:
+    """只允许已实现的工具协议模式，未知值安全回退原生协议。"""
+
+    normalized = str(value or "native").strip().lower()
+    return normalized if normalized in {"native", "json_fallback"} else "native"

@@ -68,6 +68,8 @@ TLS 相关证书、私钥和 CA bundle 不应写入本仓库。Kubernetes 场景
 | --- | --- | --- | --- |
 | `DATASMART_AI_OPENAI_COMPATIBLE_BASE_URL` | 普通配置 | Helm values / ConfigMap | OpenAI-compatible 模型服务地址，可指向 vLLM、企业模型网关或托管推理服务。 |
 | `DATASMART_AI_OPENAI_COMPATIBLE_API_KEY` | Secret | Secret Manager / Kubernetes Secret | 模型服务 API Key。不得进入 prompt、日志、runtime event、Prometheus label 或异常消息。 |
+| `DATASMART_AI_OPENAI_COMPATIBLE_USER_AGENT` | 普通配置 | Helm values / ConfigMap | 低敏 HTTP 客户端标识，用于 CDN/WAF 准入与运维识别；不得包含租户、用户、token 或密钥。 |
+| `DATASMART_AI_OPENAI_COMPATIBLE_TOOL_CALL_MODE` | 普通配置 | Helm values / ConfigMap | `native` 使用标准 function calling；`json_fallback` 仅用于已验证支持 `json_object` 但不透传 `tool_calls` 的中转网关。两种模式的候选都必须经过平台准入与 Java 控制面。 |
 | `DATASMART_AI_AGENT_REASONING_MODEL` | 普通配置 | Helm values / ConfigMap | Provider 实际接受的 model ID。模型展示名称不等于调用 ID，应以 Provider 的 `/v1/models` 或接入文档为准。 |
 | `DATASMART_AI_AGENT_REASONING_PROVIDER_NAME` | 普通配置 | Helm values / ConfigMap | 低敏诊断、路由健康和成本归因使用的 Provider 名称，不是密钥或模型 ID。 |
 | `DATASMART_AI_AGENT_REASONING_TIMEOUT_SECONDS` | 普通配置 | Helm values / ConfigMap | Agent 意图解析、工具规划和二轮回答的单次调用超时。 |

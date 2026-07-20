@@ -61,6 +61,8 @@ class OpenAICompatibleProviderSettings:
     字段说明：
     - `api_key`：模型服务访问密钥，只允许来自环境变量、密钥中心或运行时注入，不应写进路由表；
     - `organization`：兼容 OpenAI/Azure/企业网关的组织或租户标识 Header；
+    - `user_agent`：模型网关用于识别合法客户端的低敏产品标识，不包含租户、用户或密钥；
+    - `tool_call_mode`：`native` 使用标准 tools/tool_calls，`json_fallback` 用受控 JSON 兼容不透传 tool_calls 的网关；
     - `max_retries`：对 429、5xx、网络抖动、超时等短暂故障的额外重试次数；
     - `retry_backoff_seconds`：重试前等待时间，当前先用固定退避，后续可替换为指数退避和抖动；
     - `extra_headers`：预留给企业内部模型网关的额外 Header，例如网关租户、灰度路由或调用来源。
@@ -68,6 +70,8 @@ class OpenAICompatibleProviderSettings:
 
     api_key: str | None = None
     organization: str | None = None
+    user_agent: str = "DataSmart-AI-Runtime/1.0"
+    tool_call_mode: str = "native"
     max_retries: int = 1
     retry_backoff_seconds: float = 0.05
     extra_headers: dict[str, str] | None = None
@@ -174,6 +178,31 @@ class OpenAICompatibleModelProvider:
         if not request.route.endpoint:
             raise ValueError("OpenAI-compatible Provider 需要在 ModelRoute.endpoint 中配置接口地址")
 
+        if self._settings.tool_call_mode == "json_fallback" and request.available_tools:
+            # JSON fallback 需要先拿到完整 JSON 再校验/解析，不能对尚未闭合的 token 片段做工具准入。
+            # 对上层仍输出统一 chunk，让 LangGraph 与聚合器无需为特定中转站分叉。
+            result = self.invoke(request)
+            yield ModelInvocationChunk(
+                provider_name=result.provider_name,
+                model_name=result.model_name,
+                content_delta=result.content,
+                finish_reason="tool_calls" if result.tool_calls else "stop",
+                sequence=1,
+                tool_call_deltas=tuple(
+                    ModelToolCallDelta(
+                        index=index,
+                        call_id=tool_call.call_id,
+                        type=tool_call.type,
+                        name_delta=tool_call.name,
+                        arguments_delta=tool_call.arguments,
+                        raw_delta=tool_call.raw_call,
+                    )
+                    for index, tool_call in enumerate(result.tool_calls)
+                ),
+                error_code=result.error_code,
+            )
+            return
+
         http_request = self._build_http_request(request, stream=True)
         sequence = 0
         try:
@@ -202,9 +231,19 @@ class OpenAICompatibleModelProvider:
         中盲目暴露所有工具。
         """
 
+        tools = self._tool_schema_builder.build(
+            request.available_tools,
+            ModelToolSchemaExposurePolicy(strict=request.strict_tool_schema),
+        )
+        messages = [self._message_to_payload(message) for message in request.messages]
+        if self._settings.tool_call_mode == "json_fallback":
+            messages = self._json_fallback_messages(messages)
+        if tools and self._settings.tool_call_mode == "json_fallback":
+            messages.insert(0, {"role": "system", "content": self._json_tool_call_instruction(tools)})
+
         body = {
             "model": request.route.model_name,
-            "messages": [self._message_to_payload(message) for message in request.messages],
+            "messages": messages,
             "temperature": request.temperature,
             "max_tokens": request.max_output_tokens,
             "stream": stream,
@@ -213,17 +252,19 @@ class OpenAICompatibleModelProvider:
             # OpenAI-compatible 生态里的模型网关通常允许透传 metadata，LiteLLM、企业内部网关或审计代理
             # 可以据此做缓存、追踪、限流和成本归因。这里不放 prompt，不放工具结果，只放治理策略摘要。
             body["metadata"] = {"datasmart": request.provider_metadata}
-        tools = self._tool_schema_builder.build(
-            request.available_tools,
-            ModelToolSchemaExposurePolicy(strict=request.strict_tool_schema),
-        )
         if tools:
-            body["tools"] = tools
-            if request.tool_choice is not None:
-                body["tool_choice"] = request.tool_choice
+            if self._settings.tool_call_mode == "json_fallback":
+                body["response_format"] = {"type": "json_object"}
+            else:
+                body["tools"] = tools
+                if request.tool_choice is not None:
+                    body["tool_choice"] = request.tool_choice
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
+            # urllib 的默认 Python-urllib User-Agent 会被部分 CDN/WAF 识别为爬虫并返回 403。
+            # 使用固定低敏产品标识可以让宿主机与容器请求保持一致，也便于企业网关建立准入规则。
+            "User-Agent": self._settings.user_agent,
         }
         if self._settings.api_key:
             headers["Authorization"] = f"Bearer {self._settings.api_key}"
@@ -238,6 +279,58 @@ class OpenAICompatibleModelProvider:
             data=json.dumps(body).encode("utf-8"),
             headers=headers,
             method="POST",
+        )
+
+    @staticmethod
+    def _json_fallback_messages(messages: list[dict]) -> list[dict]:
+        """把原生工具历史转为中转站可接受的低敏文本历史。
+
+        部分中转站不仅丢弃首轮 `tools`，也会拒绝二轮 `assistant.tool_calls` 或 `role=tool`。
+        这里只在显式 json_fallback 模式下转换；转换的内容已经上层 ToolResultFeedbackBuilder
+        脱敏与边界校验，原生 Provider 仍然使用标准消息结构。
+        """
+
+        converted: list[dict] = []
+        for message in messages:
+            role = message.get("role")
+            if role == "assistant" and message.get("tool_calls"):
+                tool_history = json.dumps(message.get("tool_calls"), ensure_ascii=False, separators=(",", ":"))
+                prefix = str(message.get("content") or "").strip()
+                content = f"{prefix}\n上一轮受治理工具候选：{tool_history}".strip()
+                converted.append({"role": "assistant", "content": content})
+                continue
+            if role == "tool":
+                call_id = str(message.get("tool_call_id") or "unknown")
+                name = str(message.get("name") or "tool")
+                converted.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"DataSmart 受控工具结果（callId={call_id}, name={name}）："
+                            f"{message.get('content') or ''}\n请仅基于该低敏结果生成最终回答，不得声称执行了其他操作。"
+                        ),
+                    }
+                )
+                continue
+            converted.append(message)
+        return converted
+
+    @staticmethod
+    def _json_tool_call_instruction(tools: list[dict]) -> str:
+        """为不支持原生 tool_calls 的 Provider 生成受控 JSON 协议。
+
+        这不是让模型直接执行工具，而是把工具“建议”从自然语言变成可校验候选。返回后仍会经过
+        ToolActionIntakeService、权限、参数、预算、审批和 Java 控制面，因此未知工具或越权参数不会被执行。
+        """
+
+        schema = json.dumps(tools, ensure_ascii=False, separators=(",", ":"))
+        return (
+            "当前模型网关不透传原生 tool_calls。你是 DataSmart 受治理工具规划器，"
+            "只能返回 JSON object，格式必须是 "
+            '{"assistantMessage":"低敏解释","toolCalls":[{"name":"精确工具名","arguments":{}}]}。'
+            "如果参数不足或不需要工具，toolCalls 必须为空数组；不得编造数据源 ID、项目 ID、SQL 或密钥；"
+            "不得声称工具已执行。只允许使用以下工具名和参数 schema："
+            f"{schema}"
         )
 
     @staticmethod
@@ -335,15 +428,62 @@ class OpenAICompatibleModelProvider:
         tool_calls = tuple(
             self._to_tool_call(item, name_aliases) for item in message.get("tool_calls") or () if isinstance(item, dict)
         )
+        content = message.get("content") or ""
+        if not tool_calls and self._settings.tool_call_mode == "json_fallback":
+            content, tool_calls = self._parse_json_tool_calls(content, name_aliases)
         return ModelInvocationResult(
             provider_name=request.route.provider_name,
             model_name=request.route.model_name,
-            content=message.get("content") or "",
+            content=content,
             latency_ms=latency_ms,
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
             tool_calls=tool_calls,
         )
+
+    @staticmethod
+    def _parse_json_tool_calls(content: str, name_aliases: dict[str, str]) -> tuple[str, tuple[ModelToolCall, ...]]:
+        """解析 JSON fallback，解析失败时保留原文并返回空工具集。"""
+
+        try:
+            payload = json.loads(content)
+        except (TypeError, json.JSONDecodeError):
+            return content, ()
+        if not isinstance(payload, dict):
+            return content, ()
+
+        assistant_message = str(payload.get("assistantMessage") or payload.get("assistant_message") or "").strip()
+        raw_calls = payload.get("toolCalls") or payload.get("tool_calls") or ()
+        parsed_calls: list[ModelToolCall] = []
+        if isinstance(raw_calls, list):
+            for index, item in enumerate(raw_calls):
+                if not isinstance(item, dict):
+                    continue
+                model_name = str(item.get("name") or "").strip()
+                if not model_name:
+                    continue
+                raw_arguments = item.get("arguments")
+                arguments = (
+                    raw_arguments
+                    if isinstance(raw_arguments, str)
+                    else json.dumps(raw_arguments if isinstance(raw_arguments, dict) else {}, ensure_ascii=False)
+                )
+                call_id = str(item.get("id") or f"json-fallback-{index + 1}")
+                parsed_calls.append(
+                    ModelToolCall(
+                        call_id=call_id,
+                        type="function",
+                        name=name_aliases.get(model_name, model_name),
+                        arguments=arguments,
+                        raw_call={
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": model_name, "arguments": arguments},
+                            "source": "json_fallback",
+                        },
+                    )
+                )
+        return assistant_message or content, tuple(parsed_calls)
 
     def _to_chunk(self, request: ModelInvocationRequest, payload: dict, sequence: int) -> ModelInvocationChunk:
         """把一条 SSE JSON payload 转换为统一流式 chunk。"""
