@@ -50,9 +50,13 @@ public enum ActorRole {
     /**
      * 元数据发现允许角色。
      * 看结构虽然不像看样本数据那样敏感，但仍然会暴露表、字段、索引等内部信息。
+     *
+     * <p>普通用户出现在候选集合中，不代表可以遍历项目内所有连接。公开 Controller 会先按 datasourceId
+     * 校验 owner、项目管理角色或 datasource_authorization.USE，再进入本地能力矩阵。这样被 owner 明确授权的
+     * 协作者可以在创建同步任务时选择表和字段，而未授权普通用户仍会在实例边界被拒绝。</p>
      */
     private static final EnumSet<ActorRole> METADATA_DISCOVERY_ROLES =
-            EnumSet.of(PROJECT_OWNER, OPERATOR, AUDITOR, TENANT_ADMINISTRATOR,
+            EnumSet.of(ORDINARY_USER, PROJECT_OWNER, OPERATOR, AUDITOR, TENANT_ADMINISTRATOR,
                     PLATFORM_ADMINISTRATOR, SERVICE_ACCOUNT);
 
     /**

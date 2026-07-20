@@ -180,6 +180,29 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/datasource/datasources/*/authorizations/*", "DATASOURCE",
                 "数据源实例授权撤销入口；撤销会改变其他主体能否使用该连接，因此按 ASSIGN 高风险动作治理。",
                 Map.of("DELETE", "ASSIGN")));
+        /*
+         * 这些端点操作的是“已经存在且可能由别人授权的数据源”，不能继续使用通用的 POST -> CREATE 映射。
+         * 网关只判断角色是否可以进入实例级授权边界，具体 datasourceId 是否具备 USE/MANAGE，仍由
+         * datasource-management 查询 datasource_authorization 账本后做二次校验。
+         */
+        defaults.add(route("/api/datasource/datasources/*/test", "DATASOURCE",
+                "已保存数据源的真实连接测试；下游继续校验实例 USE 权限。",
+                Map.of("POST", "EXECUTE")));
+        defaults.add(route("/api/datasource/datasources/*/metadata/discover", "DATASOURCE",
+                "使用已授权连接发现低敏 schema、表和字段元数据；下游继续校验实例 USE 权限。",
+                Map.of("POST", "EXECUTE")));
+        defaults.add(route("/api/datasource/datasources/*/sql/read-only/execute", "DATASOURCE",
+                "使用已授权连接执行受控只读 SQL；下游继续校验实例 USE 权限和 SQL 安全策略。",
+                Map.of("POST", "EXECUTE")));
+        defaults.add(route("/api/datasource/datasources/*/connection-test", "DATASOURCE",
+                "编辑数据源时测试尚未保存的连接参数；下游继续校验实例 MANAGE 权限。",
+                Map.of("POST", "UPDATE")));
+        defaults.add(route("/api/datasource/datasources/*/enable", "DATASOURCE",
+                "启用已存在数据源；下游继续校验实例 MANAGE 权限。",
+                Map.of("POST", "ENABLE")));
+        defaults.add(route("/api/datasource/datasources/*/disable", "DATASOURCE",
+                "禁用已存在数据源；下游继续校验实例 MANAGE 权限。",
+                Map.of("POST", "DISABLE")));
         defaults.add(route("/api/datasource/**", "DATASOURCE", "数据源、连接器、元数据与同步控制面"));
         defaults.add(route("/api/agent/plan-ingestions", "AI_RUNTIME",
                 "Python AI Runtime 向 Java agent-runtime 提交 AgentPlan 的内部控制面入口", Map.of("POST", "INGEST_PLAN")));

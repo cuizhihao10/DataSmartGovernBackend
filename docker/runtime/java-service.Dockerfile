@@ -16,7 +16,31 @@ ARG JAVA_RUNTIME_IMAGE=docker.m.daocloud.io/library/eclipse-temurin:21-jre-jammy
 FROM ${MAVEN_IMAGE} AS builder
 
 ARG MODULE
+ARG MAVEN_MIRROR_URL=https://maven.aliyun.com/repository/public
 WORKDIR /workspace
+
+# 国内开发环境直连 Maven Central 容易出现连接重置或响应体截断，尤其 Compose 并行构建多个 Java 服务时，
+# 会把不完整 JAR 留在 BuildKit 的共享缓存中并让所有镜像一起失败。这里为容器构建提供稳定的默认公共镜像，
+# 同时保留 MAVEN_MIRROR_URL build arg，企业部署可替换为 Nexus/Artifactory 等内网制品库。
+# settings 文件放在 /opt 而不是 /root/.m2，因为后续 cache mount 会覆盖整个 /root/.m2 目录。
+RUN case "${MAVEN_MIRROR_URL}" in \
+      http://*|https://*) ;; \
+      *) echo "MAVEN_MIRROR_URL must use http or https" >&2; exit 64 ;; \
+    esac \
+    && mkdir -p /opt/datasmart-maven \
+    && printf '%s\n' \
+      '<?xml version="1.0" encoding="UTF-8"?>' \
+      '<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.2.0 https://maven.apache.org/xsd/settings-1.2.0.xsd">' \
+      '  <mirrors>' \
+      '    <mirror>' \
+      '      <id>datasmart-build-mirror</id>' \
+      '      <name>DataSmart Java image build mirror</name>' \
+      '      <url>'"${MAVEN_MIRROR_URL}"'</url>' \
+      '      <mirrorOf>central</mirrorOf>' \
+      '    </mirror>' \
+      '  </mirrors>' \
+      '</settings>' \
+      > /opt/datasmart-maven/settings.xml
 
 # 先复制 POM，使项目结构和模块白名单在复制源码前完成校验。
 # Maven 依赖由后续 package 步骤的 BuildKit cache mount 复用，不单独执行 dependency:go-offline：
@@ -55,7 +79,9 @@ COPY agent-runtime/src ./agent-runtime/src
 COPY observability/src ./observability/src
 
 RUN --mount=type=cache,target=/root/.m2 \
-    mvn -B -ntp -pl "${MODULE}" -am package -DskipTests \
+    mvn -s /opt/datasmart-maven/settings.xml -B -ntp \
+        -Dmaven.wagon.http.retryHandler.count=5 \
+        -pl "${MODULE}" -am package -DskipTests \
     && JAR_FILE="$(find "${MODULE}/target" -maxdepth 1 -type f -name '*.jar' ! -name '*.original' ! -name '*-sources.jar' | head -n 1)" \
     && test -n "${JAR_FILE}" \
     && cp "${JAR_FILE}" /workspace/app.jar

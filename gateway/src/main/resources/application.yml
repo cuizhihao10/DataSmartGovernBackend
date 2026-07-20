@@ -530,6 +530,51 @@ datasmart:
           method-actions:
             DELETE: ASSIGN
 
+        # 下列路由都是“使用一条已存在的数据源”，不能被通用 POST -> CREATE 规则吞掉。
+        # gateway 只负责让请求进入实例级鉴权边界；datasource-management 仍会根据具体 datasourceId
+        # 校验 owner、项目管理权限或 datasource_authorization 中的 USE/MANAGE 授权，避免仅凭普通用户角色越权使用连接。
+        - path-pattern: /api/datasource/datasources/*/test
+          resource-type: DATASOURCE
+          default-action: EXECUTE
+          description: 对已保存数据源执行真实连接测试；路由层按 EXECUTE 放行候选请求，下游必须继续校验实例 USE 权限。
+          method-actions:
+            POST: EXECUTE
+
+        - path-pattern: /api/datasource/datasources/*/metadata/discover
+          resource-type: DATASOURCE
+          default-action: EXECUTE
+          description: 使用已授权连接发现低敏 schema、表和字段元数据；下游必须继续校验实例 USE 权限和元数据读取边界。
+          method-actions:
+            POST: EXECUTE
+
+        - path-pattern: /api/datasource/datasources/*/sql/read-only/execute
+          resource-type: DATASOURCE
+          default-action: EXECUTE
+          description: 使用已授权数据源执行受控只读 SQL；除实例 USE 权限外，下游还会执行 SQL 安全策略和结果集限额。
+          method-actions:
+            POST: EXECUTE
+
+        - path-pattern: /api/datasource/datasources/*/connection-test
+          resource-type: DATASOURCE
+          default-action: UPDATE
+          description: 编辑数据源时使用尚未保存的连接参数进行测试；只有实例 MANAGE 权限可以进入该更新型入口。
+          method-actions:
+            POST: UPDATE
+
+        - path-pattern: /api/datasource/datasources/*/enable
+          resource-type: DATASOURCE
+          default-action: ENABLE
+          description: 启用已存在的数据源；下游继续校验实例 MANAGE 权限并记录状态变更审计。
+          method-actions:
+            POST: ENABLE
+
+        - path-pattern: /api/datasource/datasources/*/disable
+          resource-type: DATASOURCE
+          default-action: DISABLE
+          description: 禁用已存在的数据源；下游继续校验实例 MANAGE 权限并阻止后续任务选用。
+          method-actions:
+            POST: DISABLE
+
         - path-pattern: /api/datasource/**
           resource-type: DATASOURCE
           default-action: EXECUTE

@@ -113,6 +113,45 @@ class GatewayAuthorizationFilterTest {
     }
 
     /**
+     * 已存在数据源的实例操作不能被通用 POST -> CREATE 规则误判。
+     *
+     * <p>普通成员通过 owner 授权获得 USE/MANAGE 后，需要执行连接测试、元数据发现和只读查询，
+     * MANAGE 被授权者还可以编辑、启用或禁用连接。网关在这里仅把每种端点映射为正确业务动作，
+     * datasource-management 随后仍会按 datasourceId 检查实例 ACL，因此不会把普通角色变成全局数据源管理员。</p>
+     */
+    @Test
+    void datasourceInstanceEndpointsShouldUseDelegatedOperationActions() {
+        List<DatasourceRouteCase> routeCases = List.of(
+                new DatasourceRouteCase("/api/datasource/datasources/27/test", "POST", "EXECUTE"),
+                new DatasourceRouteCase("/api/datasource/datasources/27/metadata/discover", "POST", "EXECUTE"),
+                new DatasourceRouteCase("/api/datasource/datasources/27/sql/read-only/execute", "POST", "EXECUTE"),
+                new DatasourceRouteCase("/api/datasource/datasources/27/connection-test", "POST", "UPDATE"),
+                new DatasourceRouteCase("/api/datasource/datasources/27/enable", "POST", "ENABLE"),
+                new DatasourceRouteCase("/api/datasource/datasources/27/disable", "POST", "DISABLE")
+        );
+
+        for (DatasourceRouteCase routeCase : routeCases) {
+            GatewayAuthorizationProperties properties = forcedAuthorizationProperties();
+            PermissionAdminDecisionClient decisionClient = mock(PermissionAdminDecisionClient.class);
+            GatewayAuthorizationFilter filter = filter(properties, decisionClient);
+            RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+            when(decisionClient.evaluate(any(), eq("trace-test-001"))).thenReturn(Mono.just(allowedDecision()));
+
+            filter.filter(exchangeWithRole(routeCase.path(), routeCase.method(), "ORDINARY_USER"), chain).block();
+
+            ArgumentCaptor<GatewayPermissionDecisionRequest> captor = forClass(GatewayPermissionDecisionRequest.class);
+            verify(decisionClient).evaluate(captor.capture(), eq("trace-test-001"));
+            assertThat(captor.getValue().getResourceType())
+                    .as("resource type for %s", routeCase.path())
+                    .isEqualTo("DATASOURCE");
+            assertThat(captor.getValue().getAction())
+                    .as("action for %s", routeCase.path())
+                    .isEqualTo(routeCase.expectedAction());
+            assertThat(chain.called()).as("request should reach downstream ACL for %s", routeCase.path()).isTrue();
+        }
+    }
+
+    /**
      * “我的创建申请”必须与管理员待办区分，避免普通用户读取租户级审批队列。
      */
     @Test
@@ -724,6 +763,12 @@ class GatewayAuthorizationFilterTest {
         properties.setShadowMode(false);
         properties.setFailOpenOnError(false);
         return properties;
+    }
+
+    /**
+     * 一条数据源实例端点的授权动作期望。
+     */
+    private record DatasourceRouteCase(String path, String method, String expectedAction) {
     }
 
     /**

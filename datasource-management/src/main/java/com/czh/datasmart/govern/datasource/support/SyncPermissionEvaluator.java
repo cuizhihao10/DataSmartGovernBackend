@@ -37,13 +37,18 @@ public class SyncPermissionEvaluator {
             new EnumMap<>(SyncPermissionResource.class);
 
     static {
+        /*
+         * ORDINARY_USER 只获得“进入能力层”的基础资格。公开接口会先对具体 datasourceId 校验实例 USE 授权，
+         * 所以这里不会扩大为项目级或租户级全量访问。元数据发现是任务对象映射的必要前置能力；受控只读 SQL
+         * 则服务 CUSTOM_SQL_QUERY 的语法/结果验证，并继续受到单条 SELECT、行数、超时和审计约束。
+         */
         register(SyncPermissionResource.DATASOURCE_METADATA, SyncPermissionAction.VIEW_STRUCTURE,
-                ActorRole.PROJECT_OWNER, ActorRole.OPERATOR, ActorRole.AUDITOR,
+                ActorRole.ORDINARY_USER, ActorRole.PROJECT_OWNER, ActorRole.OPERATOR, ActorRole.AUDITOR,
                 ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR, ActorRole.SERVICE_ACCOUNT);
         register(SyncPermissionResource.DATASOURCE_METADATA, SyncPermissionAction.VIEW_SAMPLE,
                 ActorRole.OPERATOR, ActorRole.AUDITOR, ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR);
         register(SyncPermissionResource.DATASOURCE_READONLY_QUERY, SyncPermissionAction.EXECUTE_READ_ONLY_QUERY,
-                ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR,
+                ActorRole.ORDINARY_USER, ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR,
                 ActorRole.PLATFORM_ADMINISTRATOR, ActorRole.SERVICE_ACCOUNT);
 
         register(SyncPermissionResource.SYNC_TEMPLATE, SyncPermissionAction.MANAGE,
