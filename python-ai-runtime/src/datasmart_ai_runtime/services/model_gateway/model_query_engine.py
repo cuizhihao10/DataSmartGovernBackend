@@ -116,16 +116,35 @@ class ModelQueryEngineResult:
         计数、状态和稳定错误码，用于 Agent 事件、管理台和测试断言。
         """
 
+        provider_invoked = any(
+            attempt.outcome in {"succeeded", "provider_error"}
+            for attempt in self.attempts
+        )
+        provider_succeeded = provider_invoked and self.result.error_code is None
+        prompt_tokens = self.result.prompt_tokens
+        completion_tokens = self.result.completion_tokens
+        total_tokens = (
+            prompt_tokens + completion_tokens
+            if prompt_tokens is not None and completion_tokens is not None
+            else None
+        )
         return {
             "schemaVersion": "datasmart.model-query-engine.v1",
             "payloadPolicy": "LOW_SENSITIVE_QUERY_GOVERNANCE_ONLY",
             "selectedProviderName": self.selected_provider_name,
             "selectedModelName": self.selected_model_name,
+            "providerInvoked": provider_invoked,
+            "providerSucceeded": provider_succeeded,
             "fallbackUsed": self.fallback_used,
             "cacheHit": self.cache_hit,
             "rateLimited": self.rate_limited,
             "tokenLimited": self.token_limited,
             "resultErrorCode": self.result.error_code,
+            "latencyMs": self.result.latency_ms,
+            "promptTokens": prompt_tokens,
+            "completionTokens": completion_tokens,
+            "totalTokens": total_tokens,
+            "toolCallCount": len(self.result.tool_calls),
             "attemptCount": len(self.attempts),
             "attempts": tuple(attempt.to_summary() for attempt in self.attempts),
         }

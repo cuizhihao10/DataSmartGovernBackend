@@ -81,6 +81,9 @@ class ModelQueryEngineTest(unittest.TestCase):
         self.assertEqual(("primary-agent", "fallback-agent"), tuple(call.route.provider_name for call in providers.calls))
         self.assertEqual(("provider_error", "succeeded"), tuple(attempt.outcome for attempt in result.attempts))
         self.assertEqual("LOW_SENSITIVE_QUERY_GOVERNANCE_ONLY", result.to_summary()["payloadPolicy"])
+        self.assertTrue(result.to_summary()["providerInvoked"])
+        self.assertTrue(result.to_summary()["providerSucceeded"])
+        self.assertEqual(8, result.to_summary()["totalTokens"])
 
     def test_token_limit_blocks_before_provider_call(self) -> None:
         """明显超过上下文窗口的请求必须在 Provider 调用前阻断。"""
@@ -99,6 +102,7 @@ class ModelQueryEngineTest(unittest.TestCase):
         self.assertTrue(result.token_limited)
         self.assertEqual(0, len(providers.calls))
         self.assertTrue(result.attempts[0].token_limited)
+        self.assertFalse(result.to_summary()["providerInvoked"])
 
     def test_rate_limit_blocks_repeated_query_without_leaking_quota_formula(self) -> None:
         """限流响应只返回稳定 code 和低敏窗口摘要，不暴露内部套餐或计算公式。"""

@@ -265,6 +265,7 @@ class AgentOrchestrator:
             response_summary=response_summary,
             next_actions=next_actions,
             model_intent_summary=f"{intent_analysis.summary} 模型节点摘要：{model_intent_result.summary}",
+            model_invocation_summary=dict(model_intent_result.invocation_summary),
             context_blocks=context_blocks,
             intent_analysis=intent_analysis,
             model_gateway_decision=model_gateway_decision,

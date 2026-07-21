@@ -115,6 +115,16 @@ class AgentConversationResponseTest(unittest.TestCase):
             tool_plans=(),
             requires_human_approval=False,
             response_summary="",
+            model_invocation_summary={
+                "selectedProviderName": "managed-agent-router",
+                "selectedModelName": "managed-agent-model",
+                "providerInvoked": True,
+                "providerSucceeded": True,
+                "latencyMs": 842,
+                "promptTokens": 120,
+                "completionTokens": 36,
+                "totalTokens": 156,
+            },
         )
 
         summary = build_intent_resolver_summary(plan)
@@ -123,8 +133,41 @@ class AgentConversationResponseTest(unittest.TestCase):
         self.assertEqual("managed-agent-router", summary["modelProvider"])
         self.assertEqual("managed-agent-model", summary["modelName"])
         self.assertTrue(summary["providerUsedForCurrentTurn"])
+        self.assertTrue(summary["providerInvokedForCurrentTurn"])
+        self.assertEqual(842, summary["latencyMs"])
+        self.assertEqual(156, summary["totalTokens"])
         self.assertTrue(summary["deterministicFallbackAvailable"])
         self.assertNotIn("endpoint", summary)
+
+    def test_configured_route_without_successful_invocation_is_not_reported_as_model_used(self) -> None:
+        """仅配置模型路由不等于本轮真的调用成功，前端必须能识别明确降级。"""
+
+        plan = AgentPlan(
+            request_id="request-model-failed",
+            selected_route=ModelRoute(
+                workload=WorkloadType.AGENT_REASONING,
+                provider_name="managed-agent-router",
+                provider_type=ProviderType.OPENAI_COMPATIBLE,
+                model_name="managed-agent-model",
+                endpoint="https://model-gateway.example.com/v1",
+            ),
+            state_trace=(),
+            tool_plans=(),
+            requires_human_approval=False,
+            response_summary="",
+            model_invocation_summary={
+                "providerInvoked": True,
+                "providerSucceeded": False,
+                "resultErrorCode": "MODEL_PROVIDER_HTTP_503",
+            },
+        )
+
+        summary = build_intent_resolver_summary(plan)
+
+        self.assertEqual("MODEL_FAILED_WITH_DETERMINISTIC_FALLBACK", summary["mode"])
+        self.assertTrue(summary["providerInvokedForCurrentTurn"])
+        self.assertFalse(summary["providerUsedForCurrentTurn"])
+        self.assertEqual("MODEL_PROVIDER_HTTP_503", summary["fallbackReasonCode"])
 
 
 class CountingPlanIngestionClient:

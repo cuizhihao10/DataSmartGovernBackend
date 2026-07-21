@@ -39,7 +39,8 @@ class ModelProviderHealthPolicy:
     - `unavailable_error_rate_threshold`：窗口内错误率达到该比例时标记 unavailable，路由应跳过；
     - `min_error_rate_sample_size`：错误率阈值生效所需最小样本数，避免单次失败就因为 100% 错误率被判死；
     - `degraded_latency_ms`：平均延迟超过该值时标记 degraded，用于识别“能用但太慢”的 Provider；
-    - `unavailable_latency_ms`：平均延迟超过该值时标记 unavailable，避免长时间阻塞 Agent loop；
+    - `unavailable_latency_ms`：严重延迟告警阈值；成功调用即使超过该值也只标记 degraded，不能仅因
+      xhigh/长推理请求较慢就把唯一可用 Provider 永久踢出路由；
     - `circuit_breaker_cooldown_seconds`：熔断打开后的冷却时间。冷却期内不继续打主 Provider，给服务恢复时间。
     """
 
@@ -240,8 +241,12 @@ class InMemoryModelProviderHealthRegistry:
             status = ModelProviderHealthStatus.UNAVAILABLE
         elif enough_error_rate_samples and failure_rate >= self._policy.unavailable_error_rate_threshold:
             status = ModelProviderHealthStatus.UNAVAILABLE
+        # 延迟只能证明 Provider “慢”，不能证明它“不可用”。尤其是 xhigh reasoning 或长上下文模型，
+        # 一次成功调用很可能超过 15 秒；如果据此直接标记 UNAVAILABLE，下一轮路由会跳过该 Provider，
+        # 且因为再也没有真实调用样本而无法自动恢复。硬不可用只由熔断或达到最小样本量的失败率判定，
+        # 严重高延迟保留为 DEGRADED，让路由仍可选择它并继续积累健康事实。
         elif average_latency is not None and average_latency >= self._policy.unavailable_latency_ms:
-            status = ModelProviderHealthStatus.UNAVAILABLE
+            status = ModelProviderHealthStatus.DEGRADED
         elif enough_error_rate_samples and failure_rate >= self._policy.degraded_error_rate_threshold:
             status = ModelProviderHealthStatus.DEGRADED
         elif average_latency is not None and average_latency >= self._policy.degraded_latency_ms:

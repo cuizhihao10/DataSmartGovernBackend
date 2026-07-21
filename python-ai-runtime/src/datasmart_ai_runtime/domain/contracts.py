@@ -476,6 +476,9 @@ class AgentPlan:
     response_summary: str
     next_actions: tuple[str, ...] = ()
     model_intent_summary: str = ""
+    # 本字段只保存模型调用的低敏治理事实，例如是否真的调用 Provider、模型名、耗时、token 和错误码。
+    # 它绝不能保存 prompt、原始模型输出、工具参数或隐藏推理过程；前端据此区分真实模型与规则降级。
+    model_invocation_summary: dict[str, Any] = field(default_factory=dict)
     context_blocks: tuple[ContextBlock, ...] = ()
     intent_analysis: IntentAnalysis | None = None
     model_gateway_decision: Any | None = None

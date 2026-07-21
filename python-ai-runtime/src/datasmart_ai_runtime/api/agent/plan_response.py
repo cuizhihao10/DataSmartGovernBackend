@@ -22,6 +22,7 @@ from datasmart_ai_runtime.api.agent.plan_readiness_views import (
     build_tool_execution_readiness_response,
 )
 from datasmart_ai_runtime.api.agent.conversation_response import build_agent_conversation_response
+from datasmart_ai_runtime.api.agent.observation_timeline import build_agent_observation_timeline
 from datasmart_ai_runtime.api.agent.plan_response_events import (
     attach_agent_execution_gate_event,
     attach_agent_execution_session_event,
@@ -405,6 +406,11 @@ def build_plan_response(
         plan,
         tool_execution_readiness,
         control_plane_ingested=control_plane_ingestion is not None,
+    )
+    response["agentObservationTimeline"] = build_agent_observation_timeline(
+        plan,
+        control_plane_handoff=agent_execution_closure_summary.get("controlPlaneHandoff", {}),
+        control_plane_ingestion=control_plane_ingestion,
     )
     if control_plane_ingestion is not None:
         response["controlPlaneIngestion"] = control_plane_ingestion.to_summary()

@@ -112,6 +112,33 @@ class ModelProviderHealthRegistryTest(unittest.TestCase):
         self.assertEqual(1.0, snapshot.error_rate)
         self.assertIn("连续失败 1 次", snapshot.notes)
 
+    def test_slow_success_remains_routable_for_reasoning_models(self) -> None:
+        """成功但较慢的长推理调用只能降级，不能把唯一 Provider 永久判为不可用。"""
+
+        registry = InMemoryModelProviderHealthRegistry(
+            policy=ModelProviderHealthPolicy(
+                degraded_latency_ms=3_000,
+                unavailable_latency_ms=15_000,
+            )
+        )
+        route = _route("slow-reasoning-provider")
+        registry.record_invocation(
+            route.provider_name,
+            succeeded=True,
+            latency_ms=26_000,
+        )
+        service = ModelGatewayGovernanceService(
+            ModelRouteRegistry((route,)),
+            health_registry=registry,
+        )
+
+        snapshot = registry.snapshot_for(route)
+        decision = service.decide(_context())
+
+        self.assertEqual(ModelProviderHealthStatus.DEGRADED, snapshot.status)
+        self.assertIsNotNone(decision.selected_route)
+        self.assertEqual(route.provider_name, decision.selected_route.provider_name)
+
     def test_diagnostics_exposes_unknown_route_provider_without_sensitive_payload(self) -> None:
         """没有调用结果的路由也应进入诊断摘要，并保持低敏输出。"""
 

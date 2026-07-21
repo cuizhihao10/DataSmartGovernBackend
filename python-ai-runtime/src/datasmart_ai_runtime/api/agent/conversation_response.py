@@ -133,6 +133,7 @@ def build_intent_resolver_summary(plan: AgentPlan) -> dict[str, Any]:
     """
 
     route = plan.selected_route
+    invocation = dict(plan.model_invocation_summary or {})
     if route is None or route.provider_type == ProviderType.DRY_RUN:
         return {
             "mode": "DETERMINISTIC_FALLBACK",
@@ -142,11 +143,34 @@ def build_intent_resolver_summary(plan: AgentPlan) -> dict[str, Any]:
             "deterministicFallbackAvailable": True,
             "contract": "PROVIDER_NEUTRAL_STRUCTURED_INTENT_V1",
         }
+    provider_invoked = bool(invocation.get("providerInvoked"))
+    provider_succeeded = bool(invocation.get("providerSucceeded"))
+    if not provider_succeeded:
+        return {
+            "mode": "MODEL_FAILED_WITH_DETERMINISTIC_FALLBACK" if provider_invoked else "DETERMINISTIC_FALLBACK",
+            "modelProvider": route.provider_name,
+            "modelName": route.model_name,
+            "providerInvokedForCurrentTurn": provider_invoked,
+            "providerUsedForCurrentTurn": False,
+            "providerSucceededForCurrentTurn": False,
+            "fallbackReasonCode": invocation.get("resultErrorCode") or "MODEL_NOT_INVOKED",
+            "deterministicFallbackAvailable": True,
+            "contract": "PROVIDER_NEUTRAL_STRUCTURED_INTENT_V1",
+        }
     return {
         "mode": "MODEL_ASSISTED_WITH_DETERMINISTIC_FALLBACK",
         "modelProvider": route.provider_name,
         "modelName": route.model_name,
+        "providerInvokedForCurrentTurn": True,
         "providerUsedForCurrentTurn": True,
+        "providerSucceededForCurrentTurn": True,
+        "latencyMs": invocation.get("latencyMs"),
+        "promptTokens": invocation.get("promptTokens"),
+        "completionTokens": invocation.get("completionTokens"),
+        "totalTokens": invocation.get("totalTokens"),
+        "toolCallCount": invocation.get("toolCallCount", 0),
+        "cacheHit": bool(invocation.get("cacheHit")),
+        "fallbackUsed": bool(invocation.get("fallbackUsed")),
         "deterministicFallbackAvailable": True,
         "contract": "PROVIDER_NEUTRAL_STRUCTURED_INTENT_V1",
     }
