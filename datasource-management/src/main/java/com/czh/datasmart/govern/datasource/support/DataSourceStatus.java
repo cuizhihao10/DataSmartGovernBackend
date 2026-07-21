@@ -29,6 +29,30 @@ public final class DataSourceStatus {
      */
     public static final String DELETED = "DELETED";
 
+    /**
+     * Normalize a list-query status without leaking the persistence vocabulary into every client.
+     *
+     * <p>The datasource table uses {@code ACTIVE}/{@code INACTIVE}, while the console domain model uses
+     * {@code ENABLED}/{@code DISABLED}. Accepting both pairs at this API boundary keeps filtering consistent with
+     * response normalization and prevents a visible datasource from disappearing only because a selector applies
+     * the console-facing status name.</p>
+     *
+     * @param value status supplied by a list client
+     * @return the canonical persistence status
+     * @throws IllegalArgumentException when the value is not a supported datasource lifecycle status
+     */
+    public static String normalizeQueryValue(String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("Datasource status must not be blank");
+        }
+        return switch (value.trim().toUpperCase()) {
+            case ACTIVE, "ENABLED" -> ACTIVE;
+            case INACTIVE, "DISABLED" -> INACTIVE;
+            case DELETED -> DELETED;
+            default -> throw new IllegalArgumentException("Unsupported datasource status: " + value);
+        };
+    }
+
     private DataSourceStatus() {
     }
 }

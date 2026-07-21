@@ -234,7 +234,7 @@ public class DataSourceManagementController {
         }
         applyUsagePurposeFilter(wrapper, usagePurpose);
         if (hasText(status)) {
-            wrapper.eq(DataSourceConfig::getStatus, status.toUpperCase());
+            wrapper.eq(DataSourceConfig::getStatus, DataSourceStatus.normalizeQueryValue(status));
         }
         if (hasText(keyword)) {
             String likeKeyword = keyword.trim();
