@@ -75,12 +75,18 @@ public class GatewayAgentToolPolicyEnvelopeFilter implements GlobalFilter, Order
                 properties
         );
         String traceId = sanitizedRequest.getHeaders().getFirst(PlatformContextHeaders.TRACE_ID);
+        /*
+         * 只把“策略评估/信封序列化”异常转换为策略中心 503。onErrorMap 放在 flatMap 前面非常重要：
+         * chain.filter(...) 代表请求已经进入 Python Runtime 转发阶段，它的连接拒绝、超时或 5xx 必须保持原始
+         * 下游语义，不能再被误包装成 403 权限问题。
+         */
         return evaluatePolicy(policyRequest, properties, traceId)
+                .onErrorMap(error -> new ToolPolicyEnvelopeException(error))
                 .flatMap(view -> continueWithEnvelope(sanitizedExchange, chain, policyRequest, view, properties, traceId))
-                .onErrorResume(error -> {
+                .onErrorResume(ToolPolicyEnvelopeException.class, error -> {
                     log.error("Agent 工具策略 envelope 生成失败，已按 fail-closed 拒绝请求，traceId={}, path={}",
                             traceId, sanitizedRequest.getPath().value(), error);
-                    return authorizationErrorWriter.writeForbidden(
+                    return authorizationErrorWriter.writeServiceUnavailable(
                             sanitizedExchange.getResponse(),
                             traceId,
                             "Agent 工具策略中心暂时不可用，网关已拒绝本次规划请求"
@@ -133,7 +139,12 @@ public class GatewayAgentToolPolicyEnvelopeFilter implements GlobalFilter, Order
             );
         }
 
-        String envelope = policyEnvelopeFactory.envelopeJson(view, request, Math.max(1, properties.getMaxHeaderBytes()));
+        String envelope;
+        try {
+            envelope = policyEnvelopeFactory.envelopeJson(view, request, Math.max(1, properties.getMaxHeaderBytes()));
+        } catch (RuntimeException error) {
+            return Mono.error(new ToolPolicyEnvelopeException(error));
+        }
         ServerHttpRequest enrichedRequest = exchange.getRequest().mutate()
                 .headers(headers -> headers.set(PlatformContextHeaders.TOOL_POLICY_ENVELOPE, envelope))
                 .build();
@@ -150,5 +161,15 @@ public class GatewayAgentToolPolicyEnvelopeFilter implements GlobalFilter, Order
     @Override
     public int getOrder() {
         return -84;
+    }
+
+    /**
+     * 仅标记工具策略评估或 envelope 构造失败，避免捕获后续 Python Runtime 转发异常。
+     */
+    private static final class ToolPolicyEnvelopeException extends RuntimeException {
+
+        private ToolPolicyEnvelopeException(Throwable cause) {
+            super(cause);
+        }
     }
 }

@@ -76,6 +76,22 @@ public class GatewayAuthorizationErrorWriter {
     }
 
     /**
+     * 写出安全依赖暂时不可用响应。
+     *
+     * <p>权限中心或 Agent 工具策略中心故障时仍然必须 fail-closed，但“暂时无法完成安全判定”并不等同于
+     * “当前用户没有权限”。返回 503 可以让前端给出稍后重试提示，也能让监控把依赖故障与真实 403 越权事件分开统计。
+     * 业务错误码沿用外部依赖失败，响应中不会暴露下游地址、异常堆栈或策略内容。</p>
+     *
+     * @param response 当前网关响应对象。
+     * @param traceId 本次请求追踪 ID。
+     * @param message 面向调用方的低敏依赖故障说明。
+     */
+    public Mono<Void> writeServiceUnavailable(ServerHttpResponse response, String traceId, String message) {
+        response.setStatusCode(HttpStatus.SERVICE_UNAVAILABLE);
+        return writeError(response, traceId, PlatformErrorCode.EXTERNAL_DEPENDENCY_FAILED, message);
+    }
+
+    /**
      * 写出内部服务端点保护拒绝响应。
      *
      * <p>内部服务端点保护发生在 permission-admin 远程判定之前。
@@ -156,6 +172,14 @@ public class GatewayAuthorizationErrorWriter {
                             "请确认当前账号已经登录，并且属于页面当前选中的项目。",
                             "请确认角色具备该接口的路由权限，并且 permission-admin 中存在对应资源类型的数据范围策略。",
                             "如果刚调整过项目成员或权限策略，请刷新页面、重新登录，或等待网关权限缓存失效后重试。"
+                    )
+            );
+            case EXTERNAL_DEPENDENCY_FAILED, DEPENDENCY_TIMEOUT -> PlatformApiErrorDetail.of(
+                    List.of(safeMessage),
+                    List.of(),
+                    List.of(
+                            "这不是账号权限不足，请稍后重试，不需要重新授权角色或数据源。",
+                            "如果持续出现，请记录 traceId，并检查 permission-admin、Python AI Runtime 及其 Kafka 依赖的健康状态。"
                     )
             );
             default -> PlatformApiErrorDetail.of(

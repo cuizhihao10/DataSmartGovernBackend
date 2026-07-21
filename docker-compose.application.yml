@@ -81,13 +81,21 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      - mysql
-      - redis
-      - kafka
-      - nacos
-      - keycloak
-      - permission-admin
-      - python-ai-runtime
+      mysql:
+        condition: service_started
+      redis:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+      nacos:
+        condition: service_started
+      keycloak:
+        condition: service_started
+      permission-admin:
+        condition: service_started
+      # Agent 页面只有在 Python HTTP 端口和内部依赖初始化完成后才应通过 gateway 对外开放。
+      python-ai-runtime:
+        condition: service_healthy
 
   frontend:
     restart: unless-stopped
@@ -471,10 +479,14 @@ services:
     tmpfs:
       - /tmp
     depends_on:
-      - redis
-      - kafka
-      - agent-runtime
-      - permission-admin
+      redis:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+      agent-runtime:
+        condition: service_started
+      permission-admin:
+        condition: service_started
 
   # 覆盖基础 Compose 的宿主机抓取配置，使全容器模式使用服务 DNS。
   prometheus:

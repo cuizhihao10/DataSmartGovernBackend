@@ -149,6 +149,39 @@ class JavaAgentPlanIngestionClientTest(unittest.TestCase):
         self.assertEqual("PLANNED", hints["agentRuntimeAuditState"])
         self.assertEqual("call-001", hints["modelToolCallId"])
 
+    def test_parse_response_accepts_empty_tool_audit_array_during_clarification(self) -> None:
+        """A clarification-only plan creates a governed run without executable tool audits yet."""
+
+        result = JavaAgentPlanIngestionClient.parse_platform_response(
+            {
+                "code": 0,
+                "data": {
+                    "session": {"sessionId": "ags-clarification"},
+                    "run": {"runId": "agr-clarification"},
+                    "toolAudits": [],
+                },
+            }
+        )
+
+        self.assertEqual("ags-clarification", result.session_id)
+        self.assertEqual("agr-clarification", result.run_id)
+        self.assertEqual((), result.tool_audit_references)
+
+    def test_parse_response_still_rejects_non_array_tool_audits(self) -> None:
+        """Malformed Java responses must remain fail-closed instead of being silently normalized."""
+
+        with self.assertRaises(AgentPlanIngestionClientError):
+            JavaAgentPlanIngestionClient.parse_platform_response(
+                {
+                    "code": 0,
+                    "data": {
+                        "session": {"sessionId": "ags-invalid"},
+                        "run": {"runId": "agr-invalid"},
+                        "toolAudits": None,
+                    },
+                }
+            )
+
     def test_deterministic_dag_nodes_attach_audits_without_model_tool_call_id(self) -> None:
         plan = self._plan(
             ToolPlan(

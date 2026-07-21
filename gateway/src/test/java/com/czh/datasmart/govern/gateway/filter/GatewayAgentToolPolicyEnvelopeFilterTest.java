@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Agent 工具治理策略信封过滤器测试。
@@ -157,7 +158,31 @@ class GatewayAgentToolPolicyEnvelopeFilterTest {
         filter.filter(exchange, chain).block();
 
         assertThat(chain.called()).isFalse();
-        assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(exchange.getResponse().getStatusCode()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
+    /**
+     * Python Runtime 等下游异常不能被工具策略过滤器改写成权限或策略中心错误。
+     *
+     * <p>策略 envelope 已经生成后，过滤器的安全职责已经完成。此后连接拒绝应交给 Gateway 的下游故障处理，
+     * 最终返回可重试的 503，而不是让用户误以为需要重新申请 Agent 权限。</p>
+     */
+    @Test
+    void downstreamFailureShouldNotBeRelabeledAsToolPolicyFailure() {
+        GatewayContextProperties properties = properties();
+        GatewayAgentToolPolicyEnvelopeFilter filter = filter(
+                properties,
+                new StubPolicyClient(Mono.just(remoteView()))
+        );
+        MockServerWebExchange exchange = exchange("/api/agent/plans");
+        GatewayFilterChain unavailablePythonRuntime = ignored -> Mono.error(
+                new IllegalStateException("python runtime unavailable")
+        );
+
+        assertThatThrownBy(() -> filter.filter(exchange, unavailablePythonRuntime).block())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("python runtime unavailable");
+        assertThat(exchange.getResponse().getStatusCode()).isNull();
     }
 
     private GatewayAgentToolPolicyEnvelopeFilter filter(

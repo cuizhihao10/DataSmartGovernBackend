@@ -306,7 +306,11 @@ class JavaAgentPlanIngestionClient:
         """
 
         references: list[AgentToolAuditReference] = []
-        raw_audits = data.get("toolAudits") or ()
+        # `toolAudits: []` is a valid control-plane response while the conversation is
+        # still collecting required parameters. Do not use `or ()` here: an empty list
+        # is falsey and would be changed into a tuple, then rejected by the contract
+        # check below even though Java returned the correct JSON array type.
+        raw_audits = data.get("toolAudits", [])
         if not isinstance(raw_audits, list):
             raise AgentPlanIngestionClientError("Java AgentPlan 接入响应 toolAudits 必须是数组")
         for audit in raw_audits:
