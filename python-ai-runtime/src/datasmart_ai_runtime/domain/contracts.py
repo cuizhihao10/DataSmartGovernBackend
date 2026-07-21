@@ -476,6 +476,9 @@ class AgentPlan:
     response_summary: str
     next_actions: tuple[str, ...] = ()
     model_intent_summary: str = ""
+    # 模型面向用户生成的公开决策摘要。它来自专门要求“不要输出隐藏思维链”的 assistant 文本，
+    # 与 Provider 内部 reasoning token/chain-of-thought 不同，可用于 Codex 风格过程流解释本轮判断。
+    model_decision_summary: str = ""
     # 本字段只保存模型调用的低敏治理事实，例如是否真的调用 Provider、模型名、耗时、token 和错误码。
     # 它绝不能保存 prompt、原始模型输出、工具参数或隐藏推理过程；前端据此区分真实模型与规则降级。
     model_invocation_summary: dict[str, Any] = field(default_factory=dict)

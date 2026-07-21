@@ -401,14 +401,16 @@ def build_plan_response(
     response["toolExecutionReadinessPolicy"] = readiness_policy_snapshot.to_low_sensitive_summary()
     response["agentExecutionClosure"] = agent_execution_closure_summary
     response["intelligentGatewayGovernance"] = intelligent_gateway_governance
-    response["agentConversation"] = build_agent_conversation_response(
+    agent_conversation = build_agent_conversation_response(
         request,
         plan,
         tool_execution_readiness,
         control_plane_ingested=control_plane_ingestion is not None,
     )
+    response["agentConversation"] = agent_conversation
     response["agentObservationTimeline"] = build_agent_observation_timeline(
         plan,
+        conversation=agent_conversation,
         control_plane_handoff=agent_execution_closure_summary.get("controlPlaneHandoff", {}),
         control_plane_ingestion=control_plane_ingestion,
     )

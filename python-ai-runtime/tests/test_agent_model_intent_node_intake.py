@@ -9,6 +9,8 @@ if ROOT not in sys.path:
 from datasmart_ai_runtime.config import default_model_routes, default_skill_registry, default_tool_registry
 from datasmart_ai_runtime.domain.contracts import AgentRequest, ModelInvocationResult, ModelToolCall
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventType
+from datasmart_ai_runtime.domain.intent import GovernanceDomain, IntentAnalysis
+from datasmart_ai_runtime.domain.skills import AgentSkillPlan, AgentSkillSelection
 from datasmart_ai_runtime.services.agent_model_intent_node import AgentModelIntentNode
 from datasmart_ai_runtime.services.agent_orchestrator import AgentOrchestrator
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
@@ -24,6 +26,42 @@ class AgentModelIntentNodeIntakeTest(unittest.TestCase):
     `ToolActionIntakeService` 已经有独立测试覆盖 MCP/A2A/模型三类入口；这里额外保护主链路迁移：
     AgentOrchestrator 中的模型 tool_call 不应再绕过 intake 直接调用 `ModelToolCallPlanner`。
     """
+
+    def test_public_decision_prompt_is_bounded_by_platform_intent_and_skill_baseline(self) -> None:
+        """公开过程摘要必须解释平台结论，而不能让模型发明额外产品选项。"""
+
+        messages = AgentModelIntentNode._build_messages(
+            AgentRequest(
+                tenant_id="10",
+                project_id="101",
+                actor_id="1004",
+                objective="创建全量同步任务",
+            ),
+            (),
+            IntentAnalysis(
+                summary="识别为全量同步任务创建。",
+                governance_domains=(GovernanceDomain.DATA_SYNC,),
+                candidate_tools=("task.create.draft",),
+                missing_parameters=("sourceDatasourceId", "targetDatasourceId", "objectMappings"),
+            ),
+            AgentSkillPlan(
+                selected_skills=(
+                    AgentSkillSelection(
+                        skill_code="governed-task-creation",
+                        display_name="受控任务创建 Skill",
+                        domain=GovernanceDomain.TASK_MANAGEMENT,
+                        score=0.9,
+                        reason="命中任务创建目标",
+                    ),
+                ),
+            ),
+        )
+
+        self.assertIn("不得自行增加同步模式", messages[0].content)
+        self.assertIn("平台结构化基线（权威）", messages[1].content)
+        self.assertIn("task.create.draft", messages[1].content)
+        self.assertIn("sourceDatasourceId", messages[1].content)
+        self.assertIn("受控任务创建 Skill", messages[1].content)
 
     def test_model_tool_calls_flow_through_tool_action_intake_service(self) -> None:
         """模型 tool_call 主链路应经过统一 intake，再继续写原有治理事件。"""
