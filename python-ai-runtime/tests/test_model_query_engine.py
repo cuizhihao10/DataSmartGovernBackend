@@ -68,6 +68,7 @@ class ModelQueryEngineTest(unittest.TestCase):
                         content="fallback ok",
                         prompt_tokens=5,
                         completion_tokens=3,
+                        cached_prompt_tokens=4,
                     ),
                 ),
             }
@@ -84,6 +85,7 @@ class ModelQueryEngineTest(unittest.TestCase):
         self.assertTrue(result.to_summary()["providerInvoked"])
         self.assertTrue(result.to_summary()["providerSucceeded"])
         self.assertEqual(8, result.to_summary()["totalTokens"])
+        self.assertEqual(4, result.to_summary()["cachedPromptTokens"])
 
     def test_token_limit_blocks_before_provider_call(self) -> None:
         """明显超过上下文窗口的请求必须在 Provider 调用前阻断。"""
@@ -165,6 +167,12 @@ class ModelQueryEngineTest(unittest.TestCase):
         self.assertEqual("cached answer", second.result.content)
         self.assertEqual(1, len(providers.calls))
         self.assertTrue(second.cache_hit)
+        cache_summary = second.to_summary()
+        self.assertFalse(cache_summary["providerInvoked"])
+        self.assertTrue(cache_summary["responseAvailable"])
+        self.assertEqual("DATASMART_RESULT_CACHE", cache_summary["responseSource"])
+        self.assertEqual(0, cache_summary["latencyMs"])
+        self.assertEqual(17, cache_summary["providerLatencyMs"])
         self.assertNotIn("secret-token", serialized_summary)
         self.assertNotIn("cached answer", serialized_summary)
 
@@ -279,6 +287,7 @@ def _ok_result(route: ModelRoute, content: str = "ok") -> ModelInvocationResult:
         provider_name=route.provider_name,
         model_name=route.model_name,
         content=content,
+        latency_ms=17,
         prompt_tokens=3,
         completion_tokens=2,
     )

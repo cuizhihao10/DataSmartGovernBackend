@@ -196,7 +196,10 @@ class JavaAgentPlanIngestionClient:
         variables = request_context.variables or {}
         request_context_facts = cls._trusted_request_context(variables)
         return {
-            "sessionId": cls._optional_string(variables.get("agentRuntimeSessionId") or variables.get("sessionId")),
+            # `sessionId` 是 Agent 对话、runtime event、记忆与模型缓存的会话边界，并不保证 Java
+            # agent-runtime 中已经存在同名 session。只有控制面回写的 `agentRuntimeSessionId` 才表示
+            # “继续既有 Java 会话”；否则传 null，让 Java 为本轮执行计划创建新的受控 session。
+            "sessionId": cls._optional_string(variables.get("agentRuntimeSessionId")),
             "tenantId": cls._to_long(request_context.tenant_id, "tenantId"),
             "projectId": cls._to_long(request_context.project_id, "projectId"),
             "workspaceId": cls._optional_long(variables.get("workspaceId") or variables.get("workspace_id"), "workspaceId"),

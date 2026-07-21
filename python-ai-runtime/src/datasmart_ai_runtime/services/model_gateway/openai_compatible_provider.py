@@ -465,6 +465,7 @@ class OpenAICompatibleModelProvider:
                     latency_ms=result.latency_ms,
                     prompt_tokens=result.prompt_tokens,
                     completion_tokens=result.completion_tokens,
+                    cached_prompt_tokens=result.cached_prompt_tokens,
                     tool_calls=tool_calls,
                 )
             return result
@@ -472,6 +473,7 @@ class OpenAICompatibleModelProvider:
         choice = (payload.get("choices") or [{}])[0]
         message = choice.get("message") or {}
         usage = payload.get("usage") or {}
+        prompt_token_details = usage.get("prompt_tokens_details") or {}
         tool_calls = tuple(
             self._to_tool_call(item, name_aliases) for item in message.get("tool_calls") or () if isinstance(item, dict)
         )
@@ -485,6 +487,7 @@ class OpenAICompatibleModelProvider:
             latency_ms=latency_ms,
             prompt_tokens=usage.get("prompt_tokens"),
             completion_tokens=usage.get("completion_tokens"),
+            cached_prompt_tokens=prompt_token_details.get("cached_tokens"),
             tool_calls=tool_calls,
         )
 

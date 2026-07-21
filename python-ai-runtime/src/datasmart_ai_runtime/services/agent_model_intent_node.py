@@ -14,6 +14,7 @@ tool_calls、写 runtime events、回写模型网关 usage”全部塞进一个�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 import time
 from typing import Any, Iterable
 
@@ -85,6 +86,9 @@ class AgentModelIntentNodeResult:
     second_turn_summary: str = ""
     # 只记录 Provider 调用治理摘要，不保存 prompt、模型正文、tool arguments 或隐藏思维链。
     invocation_summary: dict[str, Any] = field(default_factory=dict)
+    # 用户可查看的脱敏模型交互。它解释“给模型看了什么公开事实、模型公开回答了什么”，
+    # 但不会复制系统提示词、隐藏推理、上下文正文、凭据或原始 Provider payload。
+    public_interaction: dict[str, Any] = field(default_factory=dict)
 
 
 class AgentModelIntentNode:
@@ -151,6 +155,13 @@ class AgentModelIntentNode:
         """
 
         if selected_route is None:
+            public_request = self._build_public_request_view(
+                request,
+                context_blocks,
+                intent_analysis,
+                skill_plan,
+                (),
+            )
             return AgentModelIntentNodeResult(
                 summary="模型网关未选择可用路由，当前使用规则式意图分析结果继续生成安全基线计划。",
                 invocation_summary={
@@ -161,6 +172,12 @@ class AgentModelIntentNode:
                     "resultErrorCode": "MODEL_QUERY_ROUTE_UNAVAILABLE",
                     "attemptCount": 0,
                 },
+                public_interaction=self._build_public_interaction(
+                    public_request,
+                    provider_invoked=False,
+                    provider_succeeded=False,
+                    response_content="模型未被调用，系统使用确定性规则继续规划。",
+                ),
             )
 
         available_tools = self._tool_planner.model_visible_tools(
@@ -175,6 +192,13 @@ class AgentModelIntentNode:
             trace_id=request.variables.get("traceId") or request.variables.get("trace_id"),
             available_tools=available_tools,
             provider_metadata=build_model_provider_metadata(model_gateway_context),
+        )
+        public_request = self._build_public_request_view(
+            request,
+            context_blocks,
+            intent_analysis,
+            skill_plan,
+            available_tools,
         )
         event_recorder.record(
             AgentRuntimeEventType.MODEL_QUERY_STARTED,
@@ -195,6 +219,7 @@ class AgentModelIntentNode:
                     model_gateway_context=model_gateway_context,
                     available_tools=available_tools,
                     event_recorder=event_recorder,
+                    public_request=public_request,
                 )
             return self._invoke_non_streaming(
                 model_request=model_request,
@@ -202,6 +227,7 @@ class AgentModelIntentNode:
                 model_gateway_context=model_gateway_context,
                 available_tools=available_tools,
                 event_recorder=event_recorder,
+                public_request=public_request,
             )
         except Exception:  # pragma: no cover - 真实 Provider 异常在集成测试中覆盖
             # Provider 原始异常可能包含 endpoint、代理响应和请求片段，因此这里只返回稳定低敏错误码。
@@ -217,6 +243,12 @@ class AgentModelIntentNode:
                     "resultErrorCode": "MODEL_PROVIDER_INVOCATION_FAILED",
                     "attemptCount": 1,
                 },
+                public_interaction=self._build_public_interaction(
+                    public_request,
+                    provider_invoked=True,
+                    provider_succeeded=False,
+                    response_content="模型调用失败，系统已降级为确定性规则规划。",
+                ),
             )
 
     def _invoke_non_streaming(
@@ -226,6 +258,7 @@ class AgentModelIntentNode:
         model_gateway_context: ModelGatewayRequestContext,
         available_tools: tuple[ToolDefinition, ...],
         event_recorder: RuntimeEventRecorder,
+        public_request: dict[str, Any],
     ) -> AgentModelIntentNodeResult:
         """执行非流式模型调用路径。
 
@@ -252,17 +285,29 @@ class AgentModelIntentNode:
             model_tool_plans=model_tool_plans,
             event_recorder=event_recorder,
         )
+        combined_summary = self._combine_summaries(result.content, second_turn_summary)
+        invocation_summary = {
+            **query_result.to_summary(),
+            "proposedToolNames": tuple(plan.tool_name for plan in model_tool_plans),
+        }
         return AgentModelIntentNodeResult(
-            summary=self._combine_summaries(result.content, second_turn_summary),
+            summary=combined_summary,
             model_tool_plans=model_tool_plans,
             visible_tool_names=tuple(tool.name for tool in available_tools),
             tool_call_count=len(result.tool_calls),
             tool_feedback_count=feedback_count,
             second_turn_summary=second_turn_summary,
-            invocation_summary={
-                **query_result.to_summary(),
-                "proposedToolNames": tuple(plan.tool_name for plan in model_tool_plans),
-            },
+            invocation_summary=invocation_summary,
+            public_interaction=self._build_public_interaction(
+                public_request,
+                provider_invoked=bool(invocation_summary.get("providerInvoked")),
+                provider_succeeded=bool(invocation_summary.get("providerSucceeded")),
+                response_available=bool(invocation_summary.get("responseAvailable")),
+                response_source=str(invocation_summary.get("responseSource") or "MODEL_PROVIDER"),
+                response_content=result.content,
+                second_turn_content=second_turn_summary,
+                proposed_tool_names=tuple(plan.tool_name for plan in model_tool_plans),
+            ),
         )
 
     def _invoke_streaming(
@@ -272,6 +317,7 @@ class AgentModelIntentNode:
         model_gateway_context: ModelGatewayRequestContext,
         available_tools: tuple[ToolDefinition, ...],
         event_recorder: RuntimeEventRecorder,
+        public_request: dict[str, Any],
     ) -> AgentModelIntentNodeResult:
         """执行流式模型调用路径，并聚合 tool call delta。
 
@@ -318,6 +364,12 @@ class AgentModelIntentNode:
                 summary="模型流式节点未返回任何 chunk，当前使用规则式安全基线继续规划。",
                 visible_tool_names=tuple(tool.name for tool in available_tools),
                 invocation_summary=invocation_summary,
+                public_interaction=self._build_public_interaction(
+                    public_request,
+                    provider_invoked=True,
+                    provider_succeeded=False,
+                    response_content="模型流式调用没有返回可用内容，系统使用确定性规则继续规划。",
+                ),
             )
 
         summary = "".join(chunk.content_delta for chunk in chunks).strip()
@@ -338,11 +390,12 @@ class AgentModelIntentNode:
         # 当前 ModelInvocationChunk 还没有 usage 字段，因此这里只调用一次空 usage 记录，保持预算台账
         # 的调用后生命周期位置稳定；后续可从 Provider chunk trailer 或最终 usage event 中补齐 token。
         self._model_gateway.record_invocation_usage(model_gateway_context, prompt_tokens=None, completion_tokens=None)
-        return AgentModelIntentNodeResult(
-            summary=self._combine_summaries(
+        combined_summary = self._combine_summaries(
                 summary or "模型流式节点已返回工具调用候选，等待平台治理与后续执行。",
                 second_turn_summary,
-            ),
+            )
+        return AgentModelIntentNodeResult(
+            summary=combined_summary,
             model_tool_plans=model_tool_plans,
             visible_tool_names=tuple(tool.name for tool in available_tools),
             tool_call_count=len(assembly_report.tool_calls),
@@ -356,6 +409,14 @@ class AgentModelIntentNode:
                 "toolCallCount": len(assembly_report.tool_calls),
                 "proposedToolNames": tuple(plan.tool_name for plan in model_tool_plans),
             },
+            public_interaction=self._build_public_interaction(
+                public_request,
+                provider_invoked=True,
+                provider_succeeded=invocation_summary["providerSucceeded"],
+                response_content=summary,
+                second_turn_content=second_turn_summary,
+                proposed_tool_names=tuple(plan.tool_name for plan in model_tool_plans),
+            ),
         )
 
     def _govern_model_tool_calls(
@@ -500,6 +561,96 @@ class AgentModelIntentNode:
         if text in {"true", "1", "yes", "on", "enabled"}:
             return True
         return bool(text)
+
+    @classmethod
+    def _build_public_request_view(
+        cls,
+        request: AgentRequest,
+        context_blocks: tuple[ContextBlock, ...],
+        intent_analysis: IntentAnalysis,
+        skill_plan: AgentSkillPlan,
+        available_tools: tuple[ToolDefinition, ...],
+    ) -> dict[str, Any]:
+        """构造可向当前用户解释的模型输入视图。
+
+        该视图不是 Provider 原始 prompt 的镜像。模型调用包含系统安全边界和上下文正文，直接回显会
+        泄露防护策略或项目数据；这里保留足以回答“系统怎样问模型”的公开事实，并对用户目标做兜底
+        脱敏。上下文只展示标题，不展示正文，工具只展示名称，不展示参数 schema 或连接凭据。
+        """
+
+        return {
+            "objective": cls._public_text(request.objective, max_chars=2_000),
+            "instructionSummary": (
+                "要求模型基于平台权威基线生成可公开展示的目标理解、阻塞点与下一步；"
+                "只能从本轮可见工具中提出结构化工具调用，不得声称工具已经执行，也不得输出隐藏推理或凭据。"
+            ),
+            "messageShape": (
+                "system：角色、安全边界与公开回答格式；"
+                "user：用户目标、平台结构化基线、已准入 Skill 与低敏上下文。"
+            ),
+            "structuredBaseline": cls._public_text(intent_analysis.summary, max_chars=1_500),
+            "domains": tuple(domain.value for domain in intent_analysis.governance_domains),
+            "candidateToolNames": tuple(intent_analysis.candidate_tools),
+            "missingParameters": tuple(intent_analysis.missing_parameters),
+            "admittedSkills": tuple(skill.display_name for skill in skill_plan.selected_skills),
+            "visibleToolNames": tuple(tool.name for tool in available_tools),
+            "contextTitles": tuple(cls._public_text(block.title, max_chars=160) for block in context_blocks[:5]),
+        }
+
+    @classmethod
+    def _build_public_interaction(
+        cls,
+        public_request: dict[str, Any],
+        *,
+        provider_invoked: bool,
+        provider_succeeded: bool,
+        response_available: bool | None = None,
+        response_source: str = "MODEL_PROVIDER",
+        response_content: str,
+        second_turn_content: str = "",
+        proposed_tool_names: tuple[str, ...] = (),
+    ) -> dict[str, Any]:
+        """组装模型公开交互合同。
+
+        `response.content` 是模型面向用户生成的公开 assistant 文本，经密钥型片段兜底遮蔽后完整保留；
+        它不是隐藏 chain-of-thought。第二轮工具反馈回答单独保存，避免页面把两次调用误认为同一段输出。
+        """
+
+        return {
+            "schemaVersion": "datasmart.model-interaction.public.v1",
+            "payloadPolicy": "USER_VISIBLE_REDACTED_MODEL_EXCHANGE",
+            "request": dict(public_request),
+            "response": {
+                "providerInvoked": provider_invoked,
+                "providerSucceeded": provider_succeeded,
+                "responseAvailable": provider_succeeded if response_available is None else response_available,
+                "responseSource": response_source,
+                "content": cls._public_text(response_content, max_chars=4_000, preserve_lines=True),
+                "secondTurnContent": cls._public_text(
+                    second_turn_content,
+                    max_chars=4_000,
+                    preserve_lines=True,
+                ),
+                "toolCallCount": len(proposed_tool_names),
+                "proposedToolNames": proposed_tool_names,
+            },
+        }
+
+    @staticmethod
+    def _public_text(value: object, *, max_chars: int, preserve_lines: bool = False) -> str:
+        """返回适合用户界面的脱敏文本，并限制异常 Provider 输出大小。"""
+
+        text = str(value or "").strip()
+        if not preserve_lines:
+            text = " ".join(text.split())
+        text = re.sub(
+            r"(?i)\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|secret)\b\s*[:=]\s*\S+",
+            r"\1=[已隐藏]",
+            text,
+        )
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars] + "…"
 
     @staticmethod
     def _build_messages(

@@ -462,6 +462,39 @@ class AgentOrchestratorTest(unittest.TestCase):
         self.assertIn("Qwen3.5", plan.selected_route.model_name)
         self.assertNotIn("Qwen2", plan.selected_route.model_name)
 
+    def test_public_model_exchange_distinguishes_model_text_from_rule_tool_fallback(self) -> None:
+        """模型只回答文本时，最终规则工具必须明确标记为系统兜底。"""
+
+        provider = CapturingModelProviderRegistry()
+        orchestrator = AgentOrchestrator(
+            model_routes=ModelRouteRegistry(default_model_routes()),
+            tool_planner=ToolPlanner(default_tool_registry()),
+            model_providers=provider,
+            skill_registry=AgentSkillRegistry(default_skill_registry()),
+        )
+
+        plan = orchestrator.plan(
+            AgentRequest(
+                tenant_id="tenant-a",
+                project_id="project-a",
+                actor_id="owner-a",
+                objective="请创建一个全量数据同步任务",
+                variables={"streamModelIntent": False, "sessionId": "session-public-exchange"},
+            )
+        )
+
+        interaction = plan.model_interaction_summary
+        self.assertEqual("请创建一个全量数据同步任务", interaction["request"]["objective"])
+        self.assertEqual("captured", interaction["response"]["content"])
+        self.assertEqual(0, interaction["response"]["toolCallCount"])
+        self.assertEqual("SYSTEM_RULE_FALLBACK", interaction["planning"]["toolSelectionSource"])
+        self.assertEqual(0, interaction["planning"]["modelGeneratedToolCount"])
+        self.assertIn("task.create.draft", interaction["planning"]["ruleGeneratedToolNames"])
+        planned_event = next(
+            event for event in plan.runtime_events if event.event_type == AgentRuntimeEventType.TOOL_PLANNED
+        )
+        self.assertEqual("SYSTEM_RULE_FALLBACK", planned_event.attributes["toolSelectionSource"])
+
 
 class CapturingModelProviderRegistry:
     """测试用模型 Provider 注册表。

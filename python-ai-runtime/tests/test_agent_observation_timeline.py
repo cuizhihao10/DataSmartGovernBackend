@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from dataclasses import replace
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
@@ -66,8 +67,32 @@ class AgentObservationTimelineTest(unittest.TestCase):
                 "latencyMs": 321,
                 "promptTokens": 12,
                 "completionTokens": 8,
+                "cachedPromptTokens": 6,
                 "totalTokens": 20,
                 "toolCallCount": 1,
+            },
+            model_interaction_summary={
+                "request": {
+                    "objective": "验证当前项目中的数据源连接",
+                    "instructionSummary": "生成公开回复，只能从可见工具中提出调用。",
+                    "messageShape": "system 安全边界 + user 目标与结构化基线",
+                    "structuredBaseline": "识别为数据源连接验证。",
+                    "visibleToolNames": ("datasource.connection.test",),
+                    "contextTitles": ("数据源元数据",),
+                },
+                "response": {
+                    "content": "模型完整公开回复。secret=should-not-leak",
+                    "secondTurnContent": "",
+                },
+                "planning": {
+                    "toolSelectionSource": "SYSTEM_RULE_FALLBACK",
+                    "modelGeneratedToolCount": 0,
+                    "modelGeneratedToolNames": (),
+                    "ruleGeneratedToolCount": 1,
+                    "ruleGeneratedToolNames": ("datasource.connection.test",),
+                    "finalToolCount": 1,
+                    "finalToolNames": ("datasource.connection.test",),
+                },
             },
             intent_analysis=IntentAnalysis(
                 governance_domains=(GovernanceDomain.DATASOURCE,),
@@ -149,13 +174,19 @@ class AgentObservationTimelineTest(unittest.TestCase):
         model_item = next(item for item in timeline["items"] if item["id"] == "model-invocation")
         self.assertEqual("SUCCEEDED", model_item["status"])
         self.assertEqual(20, model_item["details"]["totalTokens"])
-        self.assertIn("我理解你希望验证", model_item["summary"])
-        self.assertIn("api_key=[已隐藏]", model_item["summary"])
+        self.assertEqual(6, model_item["details"]["cachedPromptTokens"])
+        self.assertIn("模型完整公开回复", model_item["summary"])
+        self.assertIn("secret=[已隐藏]", model_item["summary"])
+        self.assertEqual("验证当前项目中的数据源连接", model_item["details"]["modelRequestObjective"])
+        selection_item = next(item for item in timeline["items"] if item["id"] == "tool-selection-provenance")
+        self.assertEqual("SYSTEM_RULE_FALLBACK", selection_item["details"]["toolSelectionSource"])
+        self.assertIn("模型本轮没有提出原生工具调用", selection_item["summary"])
         decision_item = next(item for item in timeline["items"] if item["id"] == "structured-intent")
         self.assertNotIn("ruleConfidence", decision_item["details"])
         tool_item = next(item for item in timeline["items"] if item["category"] == "TOOL")
         self.assertEqual("WAITING_INPUT", tool_item["status"])
         self.assertEqual(("sourceDatasourceId",), tool_item["details"]["missingFields"])
+        self.assertEqual("SYSTEM_RULE_FALLBACK", tool_item["details"]["planningSource"])
         self.assertTrue(all("sequence" not in item["details"] for item in timeline["items"]))
         serialized = str(timeline).lower()
         self.assertNotIn("should-not-leak", serialized)
@@ -165,6 +196,31 @@ class AgentObservationTimelineTest(unittest.TestCase):
             "PUBLIC_DECISION_SUMMARIES_AND_LOW_SENSITIVE_EXECUTION_FACTS",
             timeline["payloadPolicy"],
         )
+
+        cached_plan = replace(
+            plan,
+            model_invocation_summary={
+                **plan.model_invocation_summary,
+                "providerInvoked": False,
+                "providerSucceeded": False,
+                "responseAvailable": True,
+                "responseSource": "DATASMART_RESULT_CACHE",
+                "cacheHit": True,
+                "latencyMs": 0,
+                "providerLatencyMs": 321,
+            },
+        )
+        cached_timeline = build_agent_observation_timeline(
+            cached_plan,
+            conversation={},
+            control_plane_handoff={},
+            control_plane_ingestion={},
+        )
+        cached_model_item = next(item for item in cached_timeline["items"] if item["id"] == "model-invocation")
+        self.assertEqual("CACHED", cached_model_item["status"])
+        self.assertEqual("DATASMART_RESULT_CACHE", cached_model_item["details"]["responseSource"])
+        self.assertEqual(0, cached_model_item["details"]["latencyMs"])
+        self.assertEqual(321, cached_model_item["details"]["providerLatencyMs"])
 
 
 if __name__ == "__main__":

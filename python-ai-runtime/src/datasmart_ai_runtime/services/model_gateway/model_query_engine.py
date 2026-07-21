@@ -121,6 +121,8 @@ class ModelQueryEngineResult:
             for attempt in self.attempts
         )
         provider_succeeded = provider_invoked and self.result.error_code is None
+        response_available = self.result.error_code is None
+        response_latency_ms = 0 if self.cache_hit else self.result.latency_ms
         prompt_tokens = self.result.prompt_tokens
         completion_tokens = self.result.completion_tokens
         total_tokens = (
@@ -135,14 +137,19 @@ class ModelQueryEngineResult:
             "selectedModelName": self.selected_model_name,
             "providerInvoked": provider_invoked,
             "providerSucceeded": provider_succeeded,
+            "responseAvailable": response_available,
+            "responseSource": "DATASMART_RESULT_CACHE" if self.cache_hit else "MODEL_PROVIDER",
             "fallbackUsed": self.fallback_used,
             "cacheHit": self.cache_hit,
             "rateLimited": self.rate_limited,
             "tokenLimited": self.token_limited,
             "resultErrorCode": self.result.error_code,
-            "latencyMs": self.result.latency_ms,
+            # 本字段表示当前请求的返回耗时。缓存命中时保留原始 Provider 耗时会误导调用方。
+            "latencyMs": response_latency_ms,
+            "providerLatencyMs": self.result.latency_ms,
             "promptTokens": prompt_tokens,
             "completionTokens": completion_tokens,
+            "cachedPromptTokens": self.result.cached_prompt_tokens,
             "totalTokens": total_tokens,
             "toolCallCount": len(self.result.tool_calls),
             "attemptCount": len(self.attempts),

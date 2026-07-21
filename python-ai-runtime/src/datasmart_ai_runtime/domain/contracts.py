@@ -292,6 +292,9 @@ class ModelInvocationResult:
     latency_ms: int = 0
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+    # Provider 可能复用相同前缀的 KV/prompt cache。该字段来自 Provider usage，和
+    # DataSmart Query Engine 的完整响应缓存不是同一层能力，必须分别计量和展示。
+    cached_prompt_tokens: int | None = None
     error_code: str | None = None
     tool_calls: tuple[ModelToolCall, ...] = ()
 
@@ -485,6 +488,10 @@ class AgentPlan:
     # 本字段只保存模型调用的低敏治理事实，例如是否真的调用 Provider、模型名、耗时、token 和错误码。
     # 它绝不能保存 prompt、原始模型输出、工具参数或隐藏推理过程；前端据此区分真实模型与规则降级。
     model_invocation_summary: dict[str, Any] = field(default_factory=dict)
+    # 面向用户的模型交互审计视图：只包含脱敏后的用户目标、公开指令摘要、结构化基线、
+    # 可见工具名、上下文标题、模型公开回复和工具来源。系统提示词、隐藏推理、凭据、
+    # 原始 Provider payload 与工具参数永远不进入该字段。
+    model_interaction_summary: dict[str, Any] = field(default_factory=dict)
     context_blocks: tuple[ContextBlock, ...] = ()
     intent_analysis: IntentAnalysis | None = None
     model_gateway_decision: Any | None = None

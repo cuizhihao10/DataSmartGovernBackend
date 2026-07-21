@@ -197,15 +197,34 @@ class AgentOrchestrator:
         tool_plans = self._dag_annotator.annotate(
             self._merge_tool_plans(model_intent_result.model_tool_plans, rule_tool_plans)
         )
+        model_tool_names = tuple(plan.tool_name for plan in model_intent_result.model_tool_plans)
+        rule_tool_names = tuple(plan.tool_name for plan in rule_tool_plans)
+        final_tool_names = tuple(plan.tool_name for plan in tool_plans)
+        tool_selection_source = self._tool_selection_source(model_tool_names, rule_tool_names)
+        model_interaction_summary = {
+            **dict(model_intent_result.public_interaction),
+            "planning": {
+                "toolSelectionSource": tool_selection_source,
+                "modelGeneratedToolCount": len(model_tool_names),
+                "modelGeneratedToolNames": model_tool_names,
+                "ruleGeneratedToolCount": len(rule_tool_names),
+                "ruleGeneratedToolNames": rule_tool_names,
+                "finalToolCount": len(final_tool_names),
+                "finalToolNames": final_tool_names,
+            },
+        }
         event_recorder.record(
             AgentRuntimeEventType.TOOL_PLANNED,
             "plan_tools",
             "已完成工具计划生成。",
             attributes={
                 "toolCount": len(tool_plans),
-                "toolNames": tuple(plan.tool_name for plan in tool_plans),
-                "modelGeneratedToolCount": len(model_intent_result.model_tool_plans),
-                "ruleGeneratedToolCount": len(rule_tool_plans),
+                "toolNames": final_tool_names,
+                "modelGeneratedToolCount": len(model_tool_names),
+                "modelGeneratedToolNames": model_tool_names,
+                "ruleGeneratedToolCount": len(rule_tool_names),
+                "ruleGeneratedToolNames": rule_tool_names,
+                "toolSelectionSource": tool_selection_source,
             },
         )
 
@@ -293,6 +312,7 @@ class AgentOrchestrator:
             model_intent_summary=f"{intent_analysis.summary} 模型节点摘要：{model_intent_result.summary}",
             model_decision_summary=model_intent_result.summary,
             model_invocation_summary=dict(model_intent_result.invocation_summary),
+            model_interaction_summary=model_interaction_summary,
             context_blocks=context_blocks,
             intent_analysis=intent_analysis,
             model_gateway_decision=model_gateway_decision,
@@ -303,6 +323,21 @@ class AgentOrchestrator:
             runtime_events=event_recorder.events(),
             workflow_diagnostics=workflow_diagnostics.to_summary(),
         )
+
+    @staticmethod
+    def _tool_selection_source(
+        model_tool_names: tuple[str, ...],
+        rule_tool_names: tuple[str, ...],
+    ) -> str:
+        """解释最终工具计划由谁提出，避免把规则兜底误标成模型决策。"""
+
+        if model_tool_names and rule_tool_names:
+            return "MODEL_AND_SYSTEM_RULE_MERGED"
+        if model_tool_names:
+            return "MODEL_PROPOSED"
+        if rule_tool_names:
+            return "SYSTEM_RULE_FALLBACK"
+        return "NO_TOOL_SELECTED"
 
     def _select_skills(self, request: AgentRequest, intent_analysis: IntentAnalysis) -> AgentSkillPlan:
         """选择本次请求适用的 Skill。

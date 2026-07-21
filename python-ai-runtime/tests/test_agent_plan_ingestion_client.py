@@ -64,6 +64,7 @@ class JavaAgentPlanIngestionClientTest(unittest.TestCase):
         self.assertEqual("agent_reasoning", payload["workloadType"])
         self.assertEqual("PROJECT", payload["isolationLevel"])
         self.assertEqual("req-001", payload["pythonRequestId"])
+        self.assertEqual("ags-existing", payload["sessionId"])
         self.assertEqual("ORDINARY_USER", payload["actorRole"])
         self.assertEqual("USER", payload["actorType"])
         self.assertEqual("20:MANAGER", payload["authorizedProjectRoles"])
@@ -79,6 +80,17 @@ class JavaAgentPlanIngestionClientTest(unittest.TestCase):
         self.assertEqual("read-only-probe", tool_payload["governanceHints"]["parallelGroup"])
         self.assertEqual("metadata", tool_payload["governanceHints"]["resultAlias"])
         self.assertEqual(("datasourceId",), tool_payload["governanceHints"]["sensitiveFields"])
+
+    def test_conversation_session_id_is_not_misused_as_existing_java_session(self) -> None:
+        """对话/缓存 sessionId 不得让 Java 控制面误走不存在会话的恢复路径。"""
+
+        request = self._request()
+        request.variables.pop("agentRuntimeSessionId")
+
+        payload = JavaAgentPlanIngestionClient.build_payload(request, self._plan())
+
+        self.assertIsNone(payload["sessionId"])
+        self.assertEqual("ags-existing", request.variables["sessionId"])
 
     def test_build_payload_includes_parameter_issues_for_java_execution_guard(self) -> None:
         issue = ToolParameterIssue(
@@ -268,6 +280,7 @@ class JavaAgentPlanIngestionClientTest(unittest.TestCase):
             variables={
                 "workspaceId": "30",
                 "sessionId": "ags-existing",
+                "agentRuntimeSessionId": "ags-existing",
                 "channel": "WEB_CHAT",
                 "isolationLevel": "project",
                 "trustedControlPlane": {

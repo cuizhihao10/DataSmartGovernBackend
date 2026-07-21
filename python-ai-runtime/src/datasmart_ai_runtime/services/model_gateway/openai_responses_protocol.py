@@ -104,6 +104,7 @@ class OpenAIResponsesProtocolAdapter:
                 )
 
         usage = payload.get("usage") or {}
+        input_token_details = usage.get("input_tokens_details") or {}
         return ModelInvocationResult(
             provider_name=request.route.provider_name,
             model_name=request.route.model_name,
@@ -111,6 +112,7 @@ class OpenAIResponsesProtocolAdapter:
             latency_ms=latency_ms,
             prompt_tokens=usage.get("input_tokens"),
             completion_tokens=usage.get("output_tokens"),
+            cached_prompt_tokens=input_token_details.get("cached_tokens"),
             tool_calls=tuple(tool_calls),
         )
 

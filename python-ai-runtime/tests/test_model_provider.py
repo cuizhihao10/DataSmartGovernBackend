@@ -62,7 +62,11 @@ class ModelProviderRegistryTest(unittest.TestCase):
             return FakeHttpResponse(
                 {
                     "choices": [{"message": {"content": "模型已经完成治理任务规划。"}}],
-                    "usage": {"prompt_tokens": 11, "completion_tokens": 7},
+                    "usage": {
+                        "prompt_tokens": 11,
+                        "completion_tokens": 7,
+                        "prompt_tokens_details": {"cached_tokens": 5},
+                    },
                 }
             )
 
@@ -113,6 +117,7 @@ class ModelProviderRegistryTest(unittest.TestCase):
         self.assertEqual("模型已经完成治理任务规划。", result.content)
         self.assertEqual(11, result.prompt_tokens)
         self.assertEqual(7, result.completion_tokens)
+        self.assertEqual(5, result.cached_prompt_tokens)
 
     def test_openai_compatible_provider_retries_transient_http_error(self) -> None:
         """模型服务短暂 503 时应重试，避免一次抖动直接让 Agent 降级。"""
@@ -168,7 +173,12 @@ class ModelProviderRegistryTest(unittest.TestCase):
                             "arguments": '{"datasourceId":27}',
                         },
                     ],
-                    "usage": {"input_tokens": 23, "output_tokens": 11, "total_tokens": 34},
+                    "usage": {
+                        "input_tokens": 23,
+                        "output_tokens": 11,
+                        "total_tokens": 34,
+                        "input_tokens_details": {"cached_tokens": 13},
+                    },
                 }
             )
 
@@ -207,6 +217,7 @@ class ModelProviderRegistryTest(unittest.TestCase):
         self.assertEqual("call-1", result.tool_calls[0].call_id)
         self.assertEqual(23, result.prompt_tokens)
         self.assertEqual(11, result.completion_tokens)
+        self.assertEqual(13, result.cached_prompt_tokens)
 
     def test_responses_provider_replays_function_history_without_provider_storage(self) -> None:
         """二轮回答应回传完整 function_call 历史，而不是依赖 previous_response_id。"""

@@ -26,6 +26,7 @@ def build_agent_observation_timeline(
 
     items: list[dict[str, Any]] = []
     _append_model_item(items, plan)
+    _append_tool_selection_item(items, plan)
     _append_intent_item(items, plan)
     _append_skill_items(items, plan)
     _append_orchestration_item(items, plan, conversation)
@@ -35,7 +36,7 @@ def build_agent_observation_timeline(
     _append_command_items(items, control_plane_handoff)
     _append_control_plane_item(items, control_plane_ingestion)
     return {
-        "schemaVersion": "datasmart.agent-work-process.v2",
+        "schemaVersion": "datasmart.agent-work-process.v3",
         "payloadPolicy": "PUBLIC_DECISION_SUMMARIES_AND_LOW_SENSITIVE_EXECUTION_FACTS",
         "requestId": plan.request_id,
         "itemCount": len(items),
@@ -43,7 +44,8 @@ def build_agent_observation_timeline(
         "hiddenByDesign": (
             "chainOfThought",
             "systemPrompt",
-            "rawModelOutput",
+            "hiddenReasoning",
+            "rawProviderPayload",
             "toolArguments",
             "sql",
             "credentials",
@@ -54,11 +56,20 @@ def build_agent_observation_timeline(
 
 def _append_model_item(items: list[dict[str, Any]], plan: AgentPlan) -> None:
     summary = dict(plan.model_invocation_summary or {})
+    interaction = dict(plan.model_interaction_summary or {})
+    request_view = _mapping(interaction.get("request"))
+    response_view = _mapping(interaction.get("response"))
     invoked = bool(summary.get("providerInvoked"))
     succeeded = bool(summary.get("providerSucceeded"))
-    status = "SUCCEEDED" if succeeded else ("FALLBACK" if invoked else "SKIPPED")
-    public_summary = _public_model_summary(plan.model_decision_summary)
-    if succeeded and public_summary:
+    cache_hit = bool(summary.get("cacheHit"))
+    response_available = bool(summary.get("responseAvailable", succeeded or cache_hit))
+    status = "CACHED" if cache_hit else ("SUCCEEDED" if succeeded else ("FALLBACK" if invoked else "SKIPPED"))
+    public_summary = _public_model_summary(response_view.get("content") or plan.model_decision_summary)
+    if cache_hit and public_summary:
+        message = public_summary
+    elif cache_hit:
+        message = "本轮未再次调用 Provider，已从当前会话的 DataSmart 完整响应缓存返回结果。"
+    elif succeeded and public_summary:
         message = public_summary
     elif succeeded:
         message = "真实模型已完成目标理解和工具候选决策，最终可执行性仍由平台规则和权限门禁决定。"
@@ -72,14 +83,18 @@ def _append_model_item(items: list[dict[str, Any]], plan: AgentPlan) -> None:
             "MODEL",
             "invoke_model_intent",
             status,
-            "理解目标并形成决策摘要",
+            "调用模型并取得公开回复",
             message,
             {
                 "provider": summary.get("selectedProviderName"),
                 "model": summary.get("selectedModelName"),
                 "latencyMs": summary.get("latencyMs"),
+                "providerLatencyMs": summary.get("providerLatencyMs"),
+                "responseSource": summary.get("responseSource"),
+                "responseAvailable": response_available,
                 "promptTokens": summary.get("promptTokens"),
                 "completionTokens": summary.get("completionTokens"),
+                "cachedPromptTokens": summary.get("cachedPromptTokens"),
                 "totalTokens": summary.get("totalTokens"),
                 "toolCallCount": summary.get("toolCallCount", 0),
                 "proposedToolNames": summary.get("proposedToolNames") or (),
@@ -87,6 +102,55 @@ def _append_model_item(items: list[dict[str, Any]], plan: AgentPlan) -> None:
                 "cacheHit": bool(summary.get("cacheHit")),
                 "fallbackUsed": bool(summary.get("fallbackUsed")),
                 "errorCode": summary.get("resultErrorCode"),
+                "modelRequestObjective": request_view.get("objective"),
+                "modelInstructionSummary": request_view.get("instructionSummary"),
+                "modelMessageShape": request_view.get("messageShape"),
+                "modelStructuredBaseline": request_view.get("structuredBaseline"),
+                "modelVisibleToolNames": request_view.get("visibleToolNames") or (),
+                "modelContextTitles": request_view.get("contextTitles") or (),
+                "modelPublicResponse": public_summary,
+                "modelSecondTurnResponse": _public_model_summary(response_view.get("secondTurnContent")),
+            },
+        )
+    )
+
+
+def _append_tool_selection_item(items: list[dict[str, Any]], plan: AgentPlan) -> None:
+    """明确区分模型工具建议、系统规则兜底和最终采用计划。"""
+
+    planning = _mapping((plan.model_interaction_summary or {}).get("planning"))
+    if not planning:
+        return
+    source = str(planning.get("toolSelectionSource") or "NO_TOOL_SELECTED")
+    model_count = int(planning.get("modelGeneratedToolCount") or 0)
+    rule_count = int(planning.get("ruleGeneratedToolCount") or 0)
+    if source == "SYSTEM_RULE_FALLBACK":
+        summary = (
+            "模型本轮没有提出原生工具调用；系统确定性安全规划器依据结构化意图补充了工具计划，"
+            "后续仍需经过参数、权限和确认门禁。"
+        )
+    elif source == "MODEL_AND_SYSTEM_RULE_MERGED":
+        summary = "模型建议与系统安全基线已合并；同名工具优先保留受治理的模型参数，最终计划仍由平台校验。"
+    elif source == "MODEL_PROPOSED":
+        summary = "最终工具计划来自模型结构化调用建议，并已通过平台工具可见性与安全治理。"
+    else:
+        summary = "模型与系统规则本轮都没有选择工具，当前只返回说明或等待补充信息。"
+    items.append(
+        _item(
+            "tool-selection-provenance",
+            "DECISION",
+            "select_final_tools",
+            "SUCCEEDED",
+            "确定最终工具来源",
+            summary,
+            {
+                "toolSelectionSource": source,
+                "modelGeneratedToolCount": model_count,
+                "modelGeneratedToolNames": planning.get("modelGeneratedToolNames") or (),
+                "ruleGeneratedToolCount": rule_count,
+                "ruleGeneratedToolNames": planning.get("ruleGeneratedToolNames") or (),
+                "finalToolCount": int(planning.get("finalToolCount") or 0),
+                "finalToolNames": planning.get("finalToolNames") or (),
             },
         )
     )
@@ -198,6 +262,9 @@ def _append_orchestration_item(
 
 
 def _append_tool_items(items: list[dict[str, Any]], plan: AgentPlan) -> None:
+    planning = _mapping((plan.model_interaction_summary or {}).get("planning"))
+    model_tool_names = set(planning.get("modelGeneratedToolNames") or ())
+    rule_tool_names = set(planning.get("ruleGeneratedToolNames") or ())
     for index, tool in enumerate(plan.tool_plans):
         missing_fields = tuple(
             issue.parameter_name
@@ -210,6 +277,14 @@ def _append_tool_items(items: list[dict[str, Any]], plan: AgentPlan) -> None:
             status = "WAITING_APPROVAL"
         else:
             status = "PLANNED"
+        if tool.tool_name in model_tool_names and tool.tool_name in rule_tool_names:
+            planning_source = "MODEL_OVERRIDE_RULE_BASELINE"
+        elif tool.tool_name in model_tool_names:
+            planning_source = "MODEL_PROPOSED"
+        elif tool.tool_name in rule_tool_names:
+            planning_source = "SYSTEM_RULE_FALLBACK"
+        else:
+            planning_source = "FINAL_PLAN"
         items.append(
             _item(
                 f"tool-{index + 1}",
@@ -224,6 +299,7 @@ def _append_tool_items(items: list[dict[str, Any]], plan: AgentPlan) -> None:
                     "requiresHumanApproval": tool.requires_human_approval,
                     "parameterValidationPassed": tool.parameter_validation.can_execute,
                     "missingFields": missing_fields,
+                    "planningSource": planning_source,
                 },
             )
         )
@@ -385,9 +461,9 @@ def _stage_label(stage: str) -> str:
 
 
 def _public_model_summary(value: str) -> str:
-    """压缩模型专门生成的公开摘要，并兜底遮蔽意外出现的密钥型片段。"""
+    """完整保留模型公开回复的换行，并兜底遮蔽意外出现的密钥型片段。"""
 
-    text = " ".join(str(value or "").split())
+    text = str(value or "").strip()
     if not text:
         return ""
     text = re.sub(
@@ -395,4 +471,10 @@ def _public_model_summary(value: str) -> str:
         r"\1=[已隐藏]",
         text,
     )
-    return text[:900] + ("…" if len(text) > 900 else "")
+    return text[:4_000] + ("…" if len(text) > 4_000 else "")
+
+
+def _mapping(value: Any) -> dict[str, Any]:
+    """把可选 Mapping 收敛成普通字典，避免异常 Provider 字段破坏时间线。"""
+
+    return dict(value) if isinstance(value, Mapping) else {}
