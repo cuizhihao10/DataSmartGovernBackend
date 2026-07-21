@@ -77,6 +77,15 @@ spring:
           filters:
             # Python FastAPI 内部路由是 /agent/events/ws，外部网关路径仍归入 /api/agent/** 产品入口。
             - RewritePath=/api/agent/events/ws, /agent/events/ws
+        - id: python-ai-runtime-agent-plans-stream
+          # 实时规划与普通规划必须进入同一个 Python Runtime，并经过完全一致的身份、权限、
+          # Skill 可见性、工具预算和 HMAC 可信控制面过滤器。单独声明精确路由，避免被后面的
+          # 通用 /api/agent/** 规则提前转发给 Java agent-runtime。
+          uri: ${DATASMART_PYTHON_AI_RUNTIME_URI:http://localhost:8090}
+          predicates:
+            - Path=/api/agent/plans/stream
+          filters:
+            - RewritePath=/api/agent/plans/stream, /agent/plans/stream
         - id: python-ai-runtime-agent-plans
           # Agent 规划入口由 Python AI Runtime 承担，而不是由 Java agent-runtime 直接生成模型计划。
           # 该路由必须放在通用 /api/agent/** 路由之前，否则请求会先被更宽泛的规则转发给 Java 控制面。
@@ -228,9 +237,10 @@ datasmart:
         # TTL 秒数。生产环境建议保持较短，并配合权限/套餐/风险策略变更事件主动失效。
         ttl-seconds: ${DATASMART_GATEWAY_SKILL_VISIBILITY_CACHE_TTL_SECONDS:300}
         # 需要生成缓存上下文的 gateway 原始路径。
-        # 当前只覆盖 /api/agent/plans，因为只有该入口会触发 Skill admission、工具预算和模型规划。
+        # 普通响应和 NDJSON 实时响应共用同一规划链路，必须生成相同的 Skill 准入上下文。
         target-paths:
           - /api/agent/plans
+          - /api/agent/plans/stream
         # 当前租户套餐默认值。后续应由 permission-admin 或租户中心返回真实套餐事实。
         default-tenant-plan-code: ${DATASMART_GATEWAY_DEFAULT_TENANT_PLAN_CODE:STANDARD}
         # 当前 workspace 风险默认值。后续应由 workspace 风险评估、数据分类分级或人工标记返回真实值。
@@ -251,6 +261,7 @@ datasmart:
         enabled: ${DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_ENABLED:true}
         target-paths:
           - /api/agent/plans
+          - /api/agent/plans/stream
         # 本地默认不强依赖 permission-admin，方便只启动 gateway/Python Runtime 学习联调。
         # 生产或集成环境建议打开，让 gateway 使用 Java 控制面真实策略生成 envelope。
         remote-evaluation-enabled: ${DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_REMOTE_ENABLED:false}
@@ -289,11 +300,12 @@ datasmart:
         # 后续可以扩展为 current/previous 双 key，让 gateway 与 Python Runtime 在滚动升级期间同时接受两把密钥。
         key-id: ${DATASMART_GATEWAY_PYTHON_RUNTIME_SIGNATURE_KEY_ID:gateway-local-v1}
         # 需要签名保护的 gateway 原始路径。
-        # 当前先保护 /api/agent/plans，因为它会把租户、操作者、角色、workspace、数据范围等 Header
-        # 变成 Python Runtime 内部的 trustedControlPlane。后续如果 replay/control/WebSocket 也开始消费高敏
-        # 控制面事实，应继续把这些路径加入列表，而不是只依赖 source-service 自报。
+        # 普通规划和实时规划都会把租户、操作者、角色、项目、数据范围等 Header 变成 Python Runtime
+        # 内部的 trustedControlPlane，因此必须同时验签。后续如果 replay/control/WebSocket 也开始消费
+        # 高敏控制面事实，应继续把这些路径加入列表，而不是只依赖 source-service 自报。
         target-paths:
           - /api/agent/plans
+          - /api/agent/plans/stream
     authentication-center:
       # 网关认证中心门面开关。
       #
@@ -1249,6 +1261,13 @@ datasmart:
           resource-type: AI_RUNTIME
           default-action: PLAN
           description: 普通用户通过智能网关生成受控 Agent 计划；该动作只规划，不直接执行业务副作用。
+          method-actions:
+            POST: PLAN
+
+        - path-pattern: /api/agent/plans/stream
+          resource-type: AI_RUNTIME
+          default-action: PLAN
+          description: 普通用户以带认证 NDJSON 流实时接收模型、Skill、LangGraph 与工具规划阶段事实；最终帧返回完整受控计划。
           method-actions:
             POST: PLAN
 

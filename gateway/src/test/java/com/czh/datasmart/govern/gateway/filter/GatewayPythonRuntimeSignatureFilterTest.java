@@ -97,6 +97,21 @@ class GatewayPythonRuntimeSignatureFilterTest {
     }
 
     /**
+     * NDJSON 实时规划只是响应交付方式不同，不能因此脱离 Python Runtime 的 HMAC 信任链。
+     */
+    @Test
+    void streamingPlanShouldUseTheSameSignatureBoundary() {
+        GatewayContextProperties properties = properties(true, "secret-for-test");
+        GatewayPythonRuntimeSignatureFilter filter = filter(properties);
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        filter.filter(exchange("/api/agent/plans/stream"), chain).block();
+
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(
+                PlatformContextHeaders.GATEWAY_SIGNATURE)).isNotBlank();
+    }
+
+    /**
      * 开启签名但密钥为空应失败关闭。
      */
     @Test

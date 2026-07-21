@@ -1,4 +1,5 @@
 import os
+import asyncio
 import sys
 import unittest
 from dataclasses import dataclass
@@ -128,6 +129,49 @@ class ApiAgentRoutesSecurityTest(unittest.TestCase):
         self.assertIn("Gateway 内部签名校验失败", logs.output[0])
         self.assertNotIn("secret-for-test", logs.output[0])
         self.assertEqual({"missing-signature-headers": 1}, stats.snapshot()["failureCountByReason"])
+
+    def test_streaming_plan_uses_the_same_gateway_signature_verification(self) -> None:
+        """实时规划不能因为使用流式响应而绕过网关 HMAC 验签。"""
+
+        app = FakeApp()
+        register_agent_runtime_routes(
+            app,
+            request_type=FakeRequest,
+            orchestrator=object(),
+            event_store=None,
+            session_manager=None,
+            live_push_hub=None,
+            event_publisher=None,
+            runtime_event_replay_sources=(),
+            plan_ingestion_client=None,
+            control_plane_feedback_collector=None,
+            runtime_event_feedback_bridge=None,
+            loop_control_evaluator=None,
+            second_turn_orchestrator=None,
+            memory_write_governance=None,
+            gateway_signature_error_factory=lambda detail: FakeHttpException(status_code=401, detail=detail),
+        )
+
+        with _patched_env(
+            DATASMART_GATEWAY_SIGNATURE_REQUIRED="true",
+            DATASMART_GATEWAY_SIGNATURE_SECRET="secret-for-test",
+        ):
+            with self.assertRaises(FakeHttpException) as raised:
+                asyncio.run(app.post_routes["/agent/plans/stream"](
+                    {},
+                    FakeRequest(
+                        headers={
+                            "X-DataSmart-Source-Service": "datasmart-govern-gateway",
+                            "X-DataSmart-Trace-Id": "trace-stream-security-001",
+                            "X-Gateway-Original-Path": "/api/agent/plans/stream",
+                        },
+                        path="/agent/plans/stream",
+                    ),
+                ))
+
+        self.assertEqual(401, raised.exception.status_code)
+        self.assertEqual("GATEWAY_SIGNATURE_INVALID", raised.exception.detail["code"])
+        self.assertEqual("/agent/plans/stream", raised.exception.detail["path"])
 
 
 class _patched_env:

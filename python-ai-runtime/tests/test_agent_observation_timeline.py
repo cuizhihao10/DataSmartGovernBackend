@@ -151,6 +151,8 @@ class AgentObservationTimelineTest(unittest.TestCase):
         self.assertEqual(20, model_item["details"]["totalTokens"])
         self.assertIn("我理解你希望验证", model_item["summary"])
         self.assertIn("api_key=[已隐藏]", model_item["summary"])
+        decision_item = next(item for item in timeline["items"] if item["id"] == "structured-intent")
+        self.assertNotIn("ruleConfidence", decision_item["details"])
         tool_item = next(item for item in timeline["items"] if item["category"] == "TOOL")
         self.assertEqual("WAITING_INPUT", tool_item["status"])
         self.assertEqual(("sourceDatasourceId",), tool_item["details"]["missingFields"])

@@ -27,6 +27,29 @@ from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 
 
 class AgentOrchestratorTest(unittest.TestCase):
+    def test_client_request_id_and_progress_sink_follow_the_same_event_sequence(self) -> None:
+        """前端预生成的 requestId 必须贯穿所有流式事件与最终计划。"""
+
+        orchestrator = build_default_orchestrator()
+        delivered = []
+        plan = orchestrator.plan(
+            AgentRequest(
+                tenant_id="tenant-a",
+                project_id="project-a",
+                actor_id="user-a",
+                objective="请分析数据源表结构",
+                variables={"datasourceId": "ds-001"},
+                request_id="browser-request-001",
+            ),
+            event_sink=delivered.append,
+        )
+
+        self.assertEqual("browser-request-001", plan.request_id)
+        self.assertEqual(plan.runtime_events, tuple(delivered))
+        self.assertEqual(AgentRuntimeEventType.AGENT_PLAN_STARTED, delivered[0].event_type)
+        self.assertEqual(AgentRuntimeEventType.AGENT_PLAN_COMPLETED, delivered[-1].event_type)
+        self.assertTrue(all(event.request_id == plan.request_id for event in delivered))
+
     def test_datasource_metadata_plan_does_not_require_approval(self) -> None:
         orchestrator = build_default_orchestrator()
 

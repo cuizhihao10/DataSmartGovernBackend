@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
@@ -97,7 +98,11 @@ class AgentOrchestrator:
         self._planning_workflow = planning_workflow or LangGraphAgentPlanningWorkflow.from_env()
         self._user_profile_memory = user_profile_memory
 
-    def plan(self, request: AgentRequest) -> AgentPlan:
+    def plan(
+        self,
+        request: AgentRequest,
+        event_sink: Callable[[Any], None] | None = None,
+    ) -> AgentPlan:
         """为用户治理目标生成 Agent 计划。
 
         返回值中的 `state_trace` 是后续可观测性的雏形。商业化 Agent 平台需要知道一次请求经过
@@ -108,16 +113,27 @@ class AgentOrchestrator:
         # LangGraph 工作流外壳先运行，但它只产生低敏 workflow 诊断，不执行工具、不写 outbox、不调用模型。
         # 这样我们能尽快把主流 LangGraph 接入真实 `/agent/plans` 主路径，同时不破坏现有编排器已经稳定的
         # 模型路由、工具计划、记忆检索和 runtime event 逻辑。
-        workflow_diagnostics = self._planning_workflow.run(request)
-        state_trace: list[str] = [f"workflow:{workflow_diagnostics.status.lower()}"]
-        request_id = str(uuid4())
+        request_id = self._resolve_request_id(request)
         run_id = str(uuid4())
         event_recorder = RuntimeEventRecorder(
             request=request,
             request_id=request_id,
             run_id=run_id,
             session_id=self._resolve_session_id(request),
+            event_sink=event_sink,
         )
+        event_recorder.record(
+            AgentRuntimeEventType.AGENT_PLAN_STARTED,
+            "receive_goal",
+            "已接收用户目标，开始构建本轮受控 Agent 计划。",
+            attributes={
+                "workflow": "langgraph_agent_planning",
+                "progressMode": "REAL_STAGE_EVENTS",
+            },
+        )
+
+        workflow_diagnostics = self._planning_workflow.run(request)
+        state_trace: list[str] = [f"workflow:{workflow_diagnostics.status.lower()}"]
 
         state_trace.append("receive_goal")
         state_trace.append("select_model_route")
@@ -256,6 +272,16 @@ class AgentOrchestrator:
         )
 
         next_actions = build_next_actions(tool_plans, requires_human_approval)
+        event_recorder.record(
+            AgentRuntimeEventType.AGENT_PLAN_COMPLETED,
+            "complete_agent_plan",
+            "已完成模型辅助决策、Skill 选择、工具规划和记忆检索。",
+            attributes={
+                "toolCount": len(tool_plans),
+                "requiresHumanApproval": requires_human_approval,
+                "requiresClarification": requires_parameter_clarification_found,
+            },
+        )
         return AgentPlan(
             request_id=request_id,
             selected_route=selected_route,
@@ -467,3 +493,16 @@ class AgentOrchestrator:
 
         value = request.variables.get("sessionId") or request.variables.get("session_id")
         return str(value) if value else None
+
+    @staticmethod
+    def _resolve_request_id(request: AgentRequest) -> str:
+        """选择客户端关联 ID 或生成新的请求 ID。
+
+        流式页面需要在模型调用前就知道 requestId，因此允许客户端预生成；运行时仅接受长度受限的
+        字母数字、短横线和下划线，防止任意文本进入日志、事件索引或下游控制面。
+        """
+
+        candidate = str(request.request_id or "").strip()
+        if candidate and len(candidate) <= 128 and all(char.isalnum() or char in "-_" for char in candidate):
+            return candidate
+        return str(uuid4())

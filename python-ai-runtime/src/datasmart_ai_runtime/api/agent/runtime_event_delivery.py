@@ -73,6 +73,7 @@ def runtime_event_summary(event: Any) -> dict[str, Any]:
     return {
         "eventType": event.event_type.value,
         "stage": event.stage,
+        "message": event.message,
         "severity": event.severity.value,
         "tenantId": event.tenant_id,
         "projectId": event.project_id,
@@ -82,6 +83,7 @@ def runtime_event_summary(event: Any) -> dict[str, Any]:
         "sessionId": event.session_id,
         "sequence": event.sequence,
         "attributes": dict(event.attributes or {}),
+        "createdAt": event.created_at.isoformat(),
     }
 
 

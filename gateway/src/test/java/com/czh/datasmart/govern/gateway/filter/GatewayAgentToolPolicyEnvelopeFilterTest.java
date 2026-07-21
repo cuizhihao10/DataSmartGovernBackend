@@ -97,6 +97,24 @@ class GatewayAgentToolPolicyEnvelopeFilterTest {
     }
 
     /**
+     * 实时规划必须携带与普通规划一致的工具预算和执行准入策略，避免流式入口绕开治理。
+     */
+    @Test
+    void streamingPlanShouldWriteToolPolicyEnvelope() {
+        GatewayContextProperties properties = properties();
+        GatewayAgentToolPolicyEnvelopeFilter filter = filter(
+                properties,
+                new StubPolicyClient(Mono.just(remoteView()))
+        );
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        filter.filter(exchange("/api/agent/plans/stream"), chain).block();
+
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(
+                PlatformContextHeaders.TOOL_POLICY_ENVELOPE)).contains("gateway-local-fallback");
+    }
+
+    /**
      * 远程评估开启时，应使用 permission-admin 返回的策略结果。
      */
     @Test

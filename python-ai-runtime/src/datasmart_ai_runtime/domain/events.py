@@ -24,6 +24,8 @@ class AgentRuntimeEventType(str, Enum):
     可以继续追加新的类型，而不需要改动已有事件消费者。
     """
 
+    AGENT_PLAN_STARTED = "agent_plan_started"
+    AGENT_PLAN_COMPLETED = "agent_plan_completed"
     CONTEXT_COLLECTED = "context_collected"
     CONTEXT_FILTERED = "context_filtered"
     CONTEXT_DEDUPLICATED = "context_deduplicated"
@@ -31,6 +33,7 @@ class AgentRuntimeEventType(str, Enum):
     CONTEXT_MICRO_COMPACTED = "context_micro_compacted"
     CONTEXT_SELECTED = "context_selected"
     MODEL_GATEWAY_ROUTED = "model_gateway_routed"
+    MODEL_QUERY_STARTED = "model_query_started"
     MODEL_QUERY_EXECUTED = "model_query_executed"
     INTENT_ANALYZED = "intent_analyzed"
     TOOL_PLANNED = "tool_planned"

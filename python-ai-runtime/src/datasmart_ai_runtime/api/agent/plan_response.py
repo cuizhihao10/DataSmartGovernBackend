@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, replace
+from collections.abc import Callable
 from typing import Any
 
 from datasmart_ai_runtime.api.gateway.intelligent_gateway import build_intelligent_gateway_governance_response
@@ -91,6 +92,7 @@ def build_plan_response(
     multi_agent_turn_runner_metrics: Any | None = None,
     multi_agent_turn_runner_workflow: Any | None = None,
     langgraph_checkpointer_service: Any | None = None,
+    progress_event_sink: Callable[[Any], None] | None = None,
 ) -> dict[str, Any]:
     """构建同步 HTTP 风格的 Agent 计划响应。
 
@@ -107,7 +109,13 @@ def build_plan_response(
     只有调用方注入 event store、publisher、plan ingestion client 等对象时，才会发生对应的集成行为。
     """
 
-    plan = orchestrator.plan(request)
+    # 流式入口注入 progress sink 后，RuntimeEventRecorder 会在每个真实节点完成时立即旁路事件；
+    # 普通同步入口不传该参数，保持原有响应与持久化行为完全兼容。
+    plan = (
+        orchestrator.plan(request, event_sink=progress_event_sink)
+        if progress_event_sink is not None
+        else orchestrator.plan(request)
+    )
     # 工作空间上下文是 Agent 安全边界的入口。它不会创建真实资源，但会给本次计划响应附上
     # workspaceKey、缓存 namespace、记忆 namespace 和产物 namespace。后续工具执行、长期记忆写入、
     # prefix/KV cache 和文件输出都应围绕这些 namespace 做隔离，而不是各自临时拼 key。

@@ -89,6 +89,24 @@ class GatewaySkillVisibilityCacheContextFilterTest {
     }
 
     /**
+     * 实时规划与普通规划必须复用同一份 Skill 可见性准入上下文，不能形成权限旁路。
+     */
+    @Test
+    void streamingPlanShouldWriteTrustedSkillContext() {
+        GatewaySkillVisibilityCacheContextFilter filter = new GatewaySkillVisibilityCacheContextFilter(properties(true));
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        filter.filter(exchange(
+                "/api/agent/plans/stream",
+                "20,30",
+                "trace-stream-001",
+                "project_id in (20,30)"), chain).block();
+
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(
+                PlatformContextHeaders.SKILL_VISIBILITY_CACHE_KEY)).isNotBlank();
+    }
+
+    /**
      * 授权项目集合顺序不同，但表达同一权限边界时，应生成相同 key。
      */
     @Test

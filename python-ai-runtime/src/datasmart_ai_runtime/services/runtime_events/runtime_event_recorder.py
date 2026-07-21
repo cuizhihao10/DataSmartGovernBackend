@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from datasmart_ai_runtime.domain.contracts import AgentRequest
 from datasmart_ai_runtime.domain.events import (
     AgentRuntimeEvent,
@@ -33,6 +35,7 @@ class RuntimeEventRecorder:
         request_id: str,
         run_id: str | None = None,
         session_id: str | None = None,
+        event_sink: Callable[[AgentRuntimeEvent], None] | None = None,
     ) -> None:
         """初始化请求级事件收集器。
 
@@ -47,6 +50,7 @@ class RuntimeEventRecorder:
         self._request_id = request_id
         self._run_id = run_id
         self._session_id = session_id
+        self._event_sink = event_sink
         self._events: list[AgentRuntimeEvent] = []
         self._next_sequence = 1
 
@@ -80,6 +84,12 @@ class RuntimeEventRecorder:
         )
         self._events.append(event)
         self._next_sequence += 1
+        if self._event_sink is not None:
+            try:
+                # 实时展示是观测旁路，前端断开或传输异常不能中断模型规划与业务控制面主链路。
+                self._event_sink(event)
+            except Exception:
+                pass
         return event
 
     def events(self) -> tuple[AgentRuntimeEvent, ...]:

@@ -168,7 +168,9 @@ public class GatewayContextProperties {
          * <p>当前先保护 `/api/agent/plans`，因为它会向 Python Runtime 注入 trustedControlPlane。
          * 后续如果 replay/control/WebSocket 也开始消费高敏控制面事实，应继续扩展此列表。
          */
-        private List<String> targetPaths = new ArrayList<>(List.of("/api/agent/plans"));
+        private List<String> targetPaths = new ArrayList<>(List.of(
+                "/api/agent/plans",
+                "/api/agent/plans/stream"));
     }
 
     /**
@@ -215,7 +217,9 @@ public class GatewayContextProperties {
          * <p>先只覆盖 `/api/agent/plans`，因为这个入口会触发 Skill admission、工具预算和模型网关治理。
          * WebSocket replay/control 等入口当前不做 Skill 准入，不应误写该缓存上下文。</p>
          */
-        private List<String> targetPaths = new ArrayList<>(List.of("/api/agent/plans"));
+        private List<String> targetPaths = new ArrayList<>(List.of(
+                "/api/agent/plans",
+                "/api/agent/plans/stream"));
 
         /**
          * 租户套餐默认值。
@@ -263,7 +267,9 @@ public class GatewayContextProperties {
          * <p>当前只覆盖 `/api/agent/plans`。WebSocket replay、运行时事件查询和诊断接口不触发模型工具规划，
          * 不应误写工具预算或 readiness policy。</p>
          */
-        private List<String> targetPaths = new ArrayList<>(List.of("/api/agent/plans"));
+        private List<String> targetPaths = new ArrayList<>(List.of(
+                "/api/agent/plans",
+                "/api/agent/plans/stream"));
 
         /**
          * 是否调用 permission-admin 生成真实策略。

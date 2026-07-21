@@ -176,6 +176,17 @@ class AgentModelIntentNode:
             available_tools=available_tools,
             provider_metadata=build_model_provider_metadata(model_gateway_context),
         )
+        event_recorder.record(
+            AgentRuntimeEventType.MODEL_QUERY_STARTED,
+            "invoke_model_intent",
+            "正在调用真实模型理解目标并生成公开决策摘要。",
+            attributes={
+                "selectedProviderName": selected_route.provider_name,
+                "selectedModelName": selected_route.model_name,
+                "visibleToolCount": len(available_tools),
+                "streaming": self._should_use_streaming(request),
+            },
+        )
         try:
             if self._should_use_streaming(request):
                 return self._invoke_streaming(

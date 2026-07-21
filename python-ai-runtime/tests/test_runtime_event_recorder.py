@@ -50,6 +50,42 @@ class RuntimeEventRecorderTest(unittest.TestCase):
         self.assertEqual({"toolName": "task.create.draft"}, second.attributes)
         self.assertEqual((first, second), recorder.events())
 
+    def test_recorder_pushes_each_event_to_optional_realtime_sink(self) -> None:
+        """实时旁路应逐条收到事件，且旁路异常不能中断主规划。"""
+
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="operator-a",
+            objective="验证实时事件旁路",
+        )
+        delivered = []
+        recorder = RuntimeEventRecorder(
+            request=request,
+            request_id="request-live-001",
+            event_sink=delivered.append,
+        )
+
+        event = recorder.record(
+            AgentRuntimeEventType.AGENT_PLAN_STARTED,
+            "receive_goal",
+            "开始规划。",
+        )
+
+        self.assertEqual([event], delivered)
+
+        failing = RuntimeEventRecorder(
+            request=request,
+            request_id="request-live-002",
+            event_sink=lambda _: (_ for _ in ()).throw(RuntimeError("client disconnected")),
+        )
+        recorded = failing.record(
+            AgentRuntimeEventType.AGENT_PLAN_COMPLETED,
+            "complete_agent_plan",
+            "规划完成。",
+        )
+        self.assertEqual((recorded,), failing.events())
+
 
 if __name__ == "__main__":
     unittest.main()

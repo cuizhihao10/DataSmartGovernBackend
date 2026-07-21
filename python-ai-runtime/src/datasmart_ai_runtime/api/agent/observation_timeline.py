@@ -102,11 +102,10 @@ def _append_intent_item(items: list[dict[str, Any]], plan: AgentPlan) -> None:
             "DECISION",
             "analyze_intent",
             "SUCCEEDED",
-            "形成受控执行策略",
+            "合并模型建议与安全规则",
             analysis.reasoning or analysis.summary,
             {
                 "strategySummary": analysis.summary,
-                "ruleConfidence": analysis.confidence,
                 "domains": tuple(domain.value for domain in analysis.governance_domains),
                 "candidateTools": analysis.candidate_tools,
                 "riskTags": tuple(tag.value for tag in analysis.risk_tags),

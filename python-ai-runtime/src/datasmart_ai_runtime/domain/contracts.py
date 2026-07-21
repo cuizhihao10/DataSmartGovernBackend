@@ -415,6 +415,9 @@ class AgentRequest:
     variables: dict[str, Any] = field(default_factory=dict)
     preferred_workload: WorkloadType = WorkloadType.AGENT_REASONING
     locale: str = "zh-CN"
+    # 客户端可在开始流式读取前生成请求 ID，使“先建立进度流、再执行耗时模型调用”能够关联到同一轮。
+    # 该值只用于幂等、事件关联和审计，不得参与租户、项目或权限判断；未提供时由运行时生成 UUID。
+    request_id: str | None = None
 
     def __post_init__(self) -> None:
         """Normalize JSON boundary values before the request enters orchestration.
