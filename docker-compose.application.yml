@@ -136,7 +136,11 @@ services:
       - /var/run
       - /tmp
     depends_on:
-      - gateway
+      # 静态站点本身可以先启动，但用户进入页面后会立即请求 session、菜单和项目列表。
+      # 等待 gateway 健康可避免全平台冷启动期间先展示一轮无意义的 502；运行期 Gateway
+      # 重建后的地址漂移则由前端 Nginx 的 Docker DNS 动态解析负责自恢复。
+      gateway:
+        condition: service_healthy
 
   permission-admin:
     <<: *java-common
