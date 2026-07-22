@@ -117,6 +117,34 @@ class AgentFollowUpToolPlanner:
         "sync.execution.status": {
             "taskRef": ("sync.task.run", "taskId"),
         },
+        "sync.execution.diagnose": {
+            "statusRef": ("sync.execution.status", ""),
+        },
+        "sync.execution.rag.lookup": {
+            "diagnosisRef": ("sync.execution.diagnose", ""),
+        },
+        "sync.execution.failed-objects.retry": {
+            "diagnosisRef": ("sync.execution.diagnose", ""),
+        },
+        "sync.dirty-record.quarantine.preview": {
+            "diagnosisRef": ("sync.execution.diagnose", ""),
+        },
+        "sync.dirty-record.quarantine.apply": {
+            "previewRef": ("sync.dirty-record.quarantine.preview", ""),
+        },
+        "sync.dirty-record.replay": {
+            "diagnosisRef": ("sync.execution.diagnose", ""),
+        },
+        "datasource.schema.repair.preview": {
+            "diagnosisRef": ("sync.execution.diagnose", ""),
+        },
+        "datasource.schema.repair.apply": {
+            "previewRef": ("datasource.schema.repair.preview", ""),
+        },
+        "sync.recovery.case.publish": {
+            "diagnosisRef": ("sync.execution.diagnose", ""),
+            "validationRef": ("sync.execution.status", ""),
+        },
         "sync.task.import.rag.lookup": {
             "dryRunRef": ("sync.task.import.dry-run", "ragQuery"),
         },
@@ -213,6 +241,7 @@ class AgentFollowUpToolPlanner:
         state_guarded_report, state_guard_rejected_count = self._apply_state_guards(
             report,
             control_plane_feedback,
+            resource_ledger,
         )
         guarded = self._budget_guard.evaluate(
             state_guarded_report,
@@ -266,6 +295,7 @@ class AgentFollowUpToolPlanner:
     def _apply_state_guards(
         report: ModelToolCallPlanningReport,
         feedback: AgentControlPlaneFeedbackSnapshot | None,
+        resource_ledger: dict[str, dict[str, str]],
     ) -> tuple[ModelToolCallPlanningReport, int]:
         """Reject lifecycle-invalid proposals before risk budgets are counted.
 
@@ -296,6 +326,35 @@ class AgentFollowUpToolPlanner:
             and candidate.tool_plan.tool_name == "sync.task.import.repair.apply"
             for candidate in report.candidates
         )
+        succeeded_tools = set(resource_ledger)
+        succeeded_tools.update({
+            item.tool_name
+            for item in feedback.feedback_items
+            if item.status.value == "succeeded"
+        } if feedback is not None else set())
+        latest_status_result: dict[str, object] = {}
+        if feedback is not None:
+            for item in reversed(feedback.feedback_items):
+                if item.tool_name == "sync.execution.status" and item.status.value == "succeeded":
+                    latest_status_result = dict(item.result)
+                    break
+        recovery_mutations = {
+            "sync.execution.failed-objects.retry",
+            "sync.dirty-record.quarantine.apply",
+            "sync.dirty-record.replay",
+            "datasource.schema.repair.apply",
+        }
+        preview_apply_tools = {
+            "sync.dirty-record.quarantine.apply",
+            "datasource.schema.repair.apply",
+        }
+        batch_apply_tools = {
+            candidate.tool_plan.tool_name
+            for candidate in report.candidates
+            if candidate.accepted
+            and candidate.tool_plan is not None
+            and candidate.tool_plan.tool_name in preview_apply_tools
+        }
         candidates = []
         rejected = 0
         for candidate in report.candidates:
@@ -324,6 +383,49 @@ class AgentFollowUpToolPlanner:
             ):
                 reject_code = "MODEL_TOOL_CALL_IMPORT_REPAIR_REQUIRES_EVIDENCE"
                 reject_message = "必须先使用试运行错误码检索产品文档和历史案例，再基于证据提出修复补丁。"
+            elif (
+                candidate.accepted
+                and plan is not None
+                and plan.tool_name in recovery_mutations
+                and "sync.execution.rag.lookup" not in succeeded_tools
+            ):
+                reject_code = "MODEL_TOOL_CALL_RECOVERY_EVIDENCE_REQUIRED"
+                reject_message = "执行恢复动作前必须先用失败诊断检索项目文档、历史案例和 Runbook。"
+            elif (
+                candidate.accepted
+                and plan is not None
+                and plan.tool_name == "sync.dirty-record.quarantine.apply"
+                and "sync.dirty-record.quarantine.preview" not in succeeded_tools
+            ):
+                reject_code = "MODEL_TOOL_CALL_QUARANTINE_PREVIEW_REQUIRED"
+                reject_message = "隔离坏行前必须先生成精确范围预览和确认摘要。"
+            elif (
+                candidate.accepted
+                and plan is not None
+                and plan.tool_name == "datasource.schema.repair.apply"
+                and "datasource.schema.repair.preview" not in succeeded_tools
+            ):
+                reject_code = "MODEL_TOOL_CALL_SCHEMA_REPAIR_PREVIEW_REQUIRED"
+                reject_message = "修改目标表结构前必须先读取实时元数据并生成白名单修复预览。"
+            elif (
+                candidate.accepted
+                and plan is not None
+                and plan.tool_name in {"sync.execution.failed-objects.retry", "sync.dirty-record.replay"}
+                and batch_apply_tools
+            ):
+                reject_code = "MODEL_TOOL_CALL_RECOVERY_REQUIRES_NEXT_TURN"
+                reject_message = "结构或隔离修复应用后必须先取得真实执行结果，再在下一轮发起重试或重放。"
+            elif (
+                candidate.accepted
+                and plan is not None
+                and plan.tool_name == "sync.recovery.case.publish"
+                and (
+                    str(latest_status_result.get("executionState") or "").upper() != "SUCCEEDED"
+                    or int(latest_status_result.get("failedRecordCount") or 0) != 0
+                )
+            ):
+                reject_code = "MODEL_TOOL_CALL_RECOVERY_CASE_NOT_VERIFIED"
+                reject_message = "只有恢复后的验证执行成功且失败行数为 0，才能沉淀恢复案例。"
             if reject_code:
                 rejected += 1
                 candidates.append(
@@ -363,7 +465,7 @@ class AgentFollowUpToolPlanner:
                 "fromTool": source_tool,
                 "fromAuditId": source["auditId"],
                 "fromRunId": source.get("runId"),
-                "path": path,
+                "path": path or None,
             }
         return replace(
             call,

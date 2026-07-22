@@ -57,6 +57,7 @@ class RuleBasedIntentAnalyzer:
             or request.variables.get("artifactRef")
         )
         task_import_troubleshooting = self._wants_task_import_troubleshooting(request, objective)
+        sync_execution_recovery = self._wants_sync_execution_recovery(request, objective)
         # A newly uploaded artifact follows a strict staged workflow: first obtain
         # structured dry-run diagnostics, then derive a bounded RAG query from those
         # facts.  A historical import-result reference is already diagnostic evidence
@@ -92,7 +93,19 @@ class RuleBasedIntentAnalyzer:
             if not self._has_remediation_scope(request):
                 self._append_unique(missing_parameters, "remediationScope")
 
-        if not task_import_troubleshooting and self._contains_any(
+        if sync_execution_recovery:
+            self._append_unique(domains, GovernanceDomain.DATA_SYNC)
+            self._append_unique(candidate_tools, "sync.execution.diagnose")
+            self._append_unique(risk_tags, IntentRiskTag.READ_ONLY)
+            if not (
+                request.variables.get("taskId")
+                or request.variables.get("task_id")
+                or request.variables.get("executionId")
+                or request.variables.get("execution_id")
+            ):
+                self._append_unique(missing_parameters, "taskId")
+
+        if not task_import_troubleshooting and not sync_execution_recovery and self._contains_any(
             objective,
             ("sync", "migrate", "data migration", "transfer data", "同步", "补数", "回放", "增量", "cdc"),
         ):
@@ -103,7 +116,7 @@ class RuleBasedIntentAnalyzer:
             self._append_data_sync_clarifications(request, objective, missing_parameters)
 
         create_task_requested = bool(request.variables.get("createTask") or request.variables.get("create_task"))
-        if not remediation_requested and not task_import_troubleshooting and (
+        if not remediation_requested and not task_import_troubleshooting and not sync_execution_recovery and (
             create_task_requested
             or self._contains_any(objective, ("create task", "schedule", "run", "创建任务", "调度", "执行"))
         ):
@@ -372,6 +385,57 @@ class RuleBasedIntentAnalyzer:
             ),
         )
         return import_subject and failure_signal
+
+    def _wants_sync_execution_recovery(self, request: AgentRequest, objective: str) -> bool:
+        """Recognize diagnosis/recovery of an existing synchronization execution.
+
+        This branch is intentionally separate from task creation.  A request such
+        as "repair failed task 31" must begin by reading the immutable execution
+        ledger, not by drafting another task or letting the model invent a cause.
+        """
+
+        if request.variables.get("recoveryExecutionId") or request.variables.get("recovery_execution_id"):
+            return True
+        if request.variables.get("diagnoseSyncExecution") or request.variables.get("diagnose_sync_execution"):
+            return True
+        sync_subject = self._contains_any(
+            objective,
+            (
+                "同步任务",
+                "同步执行",
+                "传输任务",
+                "迁移任务",
+                "数据同步",
+                "data sync",
+                "sync task",
+                "migration task",
+            ),
+        )
+        failure_or_repair = self._contains_any(
+            objective,
+            (
+                "失败",
+                "报错",
+                "异常",
+                "排查",
+                "诊断",
+                "修复",
+                "重试",
+                "重放",
+                "脏数据",
+                "字段不匹配",
+                "字段太短",
+                "主键重复",
+                "failed",
+                "error",
+                "diagnose",
+                "repair",
+                "retry",
+                "replay",
+                "dirty record",
+            ),
+        )
+        return sync_subject and failure_or_repair
 
     @staticmethod
     def _has_remediation_scope(request: AgentRequest) -> bool:

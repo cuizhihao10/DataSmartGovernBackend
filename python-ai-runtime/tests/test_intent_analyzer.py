@@ -220,6 +220,26 @@ class RuleBasedIntentAnalyzerTest(unittest.TestCase):
         self.assertIn("knowledge.rag.query", analysis.candidate_tools)
         self.assertIn(IntentRiskTag.READ_ONLY, analysis.risk_tags)
 
+    def test_failed_sync_intent_starts_diagnosis_instead_of_new_task(self) -> None:
+        """Existing execution recovery must read the ledger before planning mutations."""
+
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="operator-a",
+            objective="请排查并修复同步任务 31 的字段不匹配错误，然后重试失败分片",
+            variables={"taskId": 31},
+        )
+        analysis = RuleBasedIntentAnalyzer().analyze(
+            request,
+            DefaultContextBuilder().build(request),
+        )
+
+        self.assertIn(GovernanceDomain.DATA_SYNC, analysis.governance_domains)
+        self.assertIn("sync.execution.diagnose", analysis.candidate_tools)
+        self.assertNotIn("task.create.draft", analysis.candidate_tools)
+        self.assertNotIn("taskId", analysis.missing_parameters)
+
 
 if __name__ == "__main__":
     unittest.main()

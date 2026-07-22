@@ -41,6 +41,15 @@ class ToolPlanDagAnnotator:
         "sync.task.publish": ("sync.task.precheck",),
         "sync.task.run": ("sync.task.publish",),
         "sync.execution.status": ("sync.task.run",),
+        "sync.execution.diagnose": ("sync.execution.status",),
+        "sync.execution.rag.lookup": ("sync.execution.diagnose",),
+        "sync.execution.failed-objects.retry": ("sync.execution.diagnose", "sync.execution.rag.lookup"),
+        "sync.dirty-record.quarantine.preview": ("sync.execution.diagnose",),
+        "sync.dirty-record.quarantine.apply": ("sync.dirty-record.quarantine.preview",),
+        "sync.dirty-record.replay": ("sync.execution.diagnose", "sync.execution.rag.lookup"),
+        "datasource.schema.repair.preview": ("sync.execution.diagnose",),
+        "datasource.schema.repair.apply": ("datasource.schema.repair.preview",),
+        "sync.recovery.case.publish": ("sync.execution.diagnose", "sync.execution.status"),
     }
 
     _RESULT_ALIAS_BY_TOOL: dict[str, str] = {
@@ -59,6 +68,15 @@ class ToolPlanDagAnnotator:
         "sync.task.publish": "publishedSyncTask",
         "sync.task.run": "syncTaskExecution",
         "sync.execution.status": "syncExecutionStatus",
+        "sync.execution.diagnose": "syncExecutionDiagnosis",
+        "sync.execution.rag.lookup": "syncRecoveryEvidence",
+        "sync.execution.failed-objects.retry": "syncFailedObjectRetry",
+        "sync.dirty-record.quarantine.preview": "syncDirtyRecordQuarantinePreview",
+        "sync.dirty-record.quarantine.apply": "syncDirtyRecordQuarantineResult",
+        "sync.dirty-record.replay": "syncDirtyRecordReplay",
+        "datasource.schema.repair.preview": "datasourceSchemaRepairPreview",
+        "datasource.schema.repair.apply": "datasourceSchemaRepairResult",
+        "sync.recovery.case.publish": "syncRecoveryCase",
         "knowledge.rag.query": "ragEvidence",
         "web.search.query": "webSearchResults",
     }

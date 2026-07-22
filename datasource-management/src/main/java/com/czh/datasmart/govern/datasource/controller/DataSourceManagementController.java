@@ -6,6 +6,9 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.datasource.common.ApiResponse;
 import com.czh.datasmart.govern.datasource.controller.dto.CreateDataSourceRequest;
+import com.czh.datasmart.govern.datasource.controller.dto.DataSourceSchemaRepairApplyRequest;
+import com.czh.datasmart.govern.datasource.controller.dto.DataSourceSchemaRepairPreviewRequest;
+import com.czh.datasmart.govern.datasource.controller.dto.DataSourceSchemaRepairResult;
 import com.czh.datasmart.govern.datasource.controller.dto.MetadataDiscoveryRequest;
 import com.czh.datasmart.govern.datasource.controller.dto.ReadOnlySqlExecutionRequest;
 import com.czh.datasmart.govern.datasource.controller.dto.ReadOnlySqlExecutionResult;
@@ -19,6 +22,7 @@ import com.czh.datasmart.govern.datasource.entity.DataSourceMetadataDiscoveryRes
 import com.czh.datasmart.govern.datasource.entity.DataSourceReadOnlySqlExecutionAudit;
 import com.czh.datasmart.govern.datasource.service.DataSourceAuthorizationService;
 import com.czh.datasmart.govern.datasource.service.DataSourceManagementService;
+import com.czh.datasmart.govern.datasource.service.DataSourceSchemaRepairService;
 import com.czh.datasmart.govern.datasource.service.support.DataSourceCredentialCipherSupport;
 import com.czh.datasmart.govern.datasource.service.support.DatasourceAuthorizationActorContext;
 import com.czh.datasmart.govern.datasource.service.support.DatasourceProjectScopeSupport;
@@ -28,6 +32,7 @@ import com.czh.datasmart.govern.datasource.support.DataSourceStatus;
 import com.czh.datasmart.govern.datasource.support.DataSourceUsagePurpose;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -127,6 +132,17 @@ public class DataSourceManagementController {
      * 把星号误当成真实密码回写，造成数据源凭据被破坏。</p>
      */
     private final DataSourceCredentialCipherSupport dataSourceCredentialCipherSupport;
+
+    /**
+     * Kept out of the Lombok constructor so direct controller unit tests remain focused on the
+     * legacy datasource endpoints. Spring still treats this dependency as mandatory.
+     */
+    private DataSourceSchemaRepairService dataSourceSchemaRepairService;
+
+    @Autowired
+    public void setDataSourceSchemaRepairService(DataSourceSchemaRepairService dataSourceSchemaRepairService) {
+        this.dataSourceSchemaRepairService = dataSourceSchemaRepairService;
+    }
 
     /**
      * 创建数据源登记记录。
@@ -500,6 +516,55 @@ public class DataSourceManagementController {
                 DataSourceAuthorizationAction.USE);
         return ResponseEntity.ok(ApiResponse.success("数据源元数据发现完成",
                 dataSourceManagementService.discoverMetadata(id, request)));
+    }
+
+    /**
+     * Preview an allow-listed target schema repair without mutating the external database.
+     * MANAGE is required because a successful preview may later be confirmed and applied.
+     */
+    @PostMapping("/{id}/schema-repair-plans/preview")
+    public ResponseEntity<ApiResponse<DataSourceSchemaRepairResult>> previewSchemaRepair(
+            @PathVariable Long id,
+            @Valid @RequestBody DataSourceSchemaRepairPreviewRequest request,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
+            @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
+        DataSourceConfig datasource = getRequiredVisibleDataSource(
+                id,
+                dataScopeLevel,
+                authorizedProjectIds,
+                authorizedProjectRoles,
+                resolveActorContext(actorId, actorRole, actorType),
+                DataSourceAuthorizationAction.MANAGE);
+        return ResponseEntity.ok(ApiResponse.success(
+                "结构修复预览已生成，确认前不会修改目标数据库",
+                requiredSchemaRepairService().preview(datasource, request, parseActorIdOrDefault(actorId))));
+    }
+
+    /** Apply the exact, digest-bound repair that was previously previewed. */
+    @PostMapping("/{id}/schema-repair-plans/apply")
+    public ResponseEntity<ApiResponse<DataSourceSchemaRepairResult>> applySchemaRepair(
+            @PathVariable Long id,
+            @Valid @RequestBody DataSourceSchemaRepairApplyRequest request,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
+            @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
+        DataSourceConfig datasource = getRequiredVisibleDataSource(
+                id,
+                dataScopeLevel,
+                authorizedProjectIds,
+                authorizedProjectRoles,
+                resolveActorContext(actorId, actorRole, actorType),
+                DataSourceAuthorizationAction.MANAGE);
+        return ResponseEntity.ok(ApiResponse.success(
+                "目标数据库结构修复已应用",
+                requiredSchemaRepairService().apply(datasource, request, parseActorIdOrDefault(actorId))));
     }
 
     /**
@@ -935,6 +1000,13 @@ public class DataSourceManagementController {
     private Long parseActorIdOrDefault(String value) {
         Long parsed = parseActorId(value);
         return parsed == null ? LOCAL_DEVELOPMENT_ACTOR_ID : parsed;
+    }
+
+    private DataSourceSchemaRepairService requiredSchemaRepairService() {
+        if (dataSourceSchemaRepairService == null) {
+            throw new IllegalStateException("数据源结构修复服务尚未就绪");
+        }
+        return dataSourceSchemaRepairService;
     }
 
     private Long parseActorId(String value) {

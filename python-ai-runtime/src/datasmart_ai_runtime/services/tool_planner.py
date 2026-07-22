@@ -406,7 +406,32 @@ class ToolPlanner:
             "sync.task.precheck": ("sync.task.publish", "knowledge.rag.query"),
             "sync.task.publish": ("sync.task.run",),
             "sync.task.run": ("sync.execution.status",),
-            "sync.execution.status": ("sync.execution.status", "knowledge.rag.query"),
+            "sync.execution.status": (
+                "sync.execution.status",
+                "sync.execution.diagnose",
+                "sync.recovery.case.publish",
+            ),
+            "sync.execution.diagnose": (
+                "sync.execution.rag.lookup",
+                "sync.execution.failed-objects.retry",
+                "sync.dirty-record.quarantine.preview",
+                "datasource.schema.repair.preview",
+            ),
+            "sync.execution.rag.lookup": (
+                "sync.execution.status",
+                "sync.execution.failed-objects.retry",
+                "sync.dirty-record.quarantine.preview",
+                "datasource.schema.repair.preview",
+            ),
+            "sync.dirty-record.quarantine.preview": ("sync.dirty-record.quarantine.apply",),
+            "sync.dirty-record.quarantine.apply": ("sync.execution.failed-objects.retry",),
+            "datasource.schema.repair.preview": ("datasource.schema.repair.apply",),
+            "datasource.schema.repair.apply": (
+                "sync.execution.failed-objects.retry",
+                "sync.dirty-record.replay",
+            ),
+            "sync.execution.failed-objects.retry": ("sync.execution.status",),
+            "sync.dirty-record.replay": ("sync.execution.status",),
             "sync.task.import.dry-run": (
                 "sync.task.import.rag.lookup",
                 "sync.task.import.repair.apply",

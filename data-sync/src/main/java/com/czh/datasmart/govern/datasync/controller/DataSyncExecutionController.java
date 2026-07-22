@@ -14,9 +14,14 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncAuditQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncCheckpointQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordReplayRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordReplayResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordQuarantineRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordQuarantineResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncRecoveryCasePublishRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncRecoveryCasePublishResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncErrorSampleQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionLogQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionQueryCriteria;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionDiagnosisResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryRequest;
@@ -200,6 +205,65 @@ public class DataSyncExecutionController {
         SyncErrorSampleQueryCriteria criteria = new SyncErrorSampleQueryCriteria(taskId, executionId, errorType, retryable, current, size);
         return PlatformApiResponse.success(dataSyncService.pageErrorSamples(
                 criteria, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * Aggregate the latest real execution ledger into a bounded Agent diagnosis package.
+     * The response intentionally excludes credentials, SQL, source keys and row samples.
+     */
+    @GetMapping("/agent-diagnosis")
+    public PlatformApiResponse<SyncExecutionDiagnosisResponse> diagnoseExecution(
+            @PathVariable Long taskId,
+            @RequestParam(required = false) Long executionId,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success(dataSyncService.diagnoseExecution(
+                taskId, executionId, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /** Preview reversible dirty-record quarantine and return a confirmation digest. */
+    @PostMapping("/errors/quarantine/preview")
+    public PlatformApiResponse<SyncDirtyRecordQuarantineResult> previewDirtyRecordQuarantine(
+            @PathVariable Long taskId,
+            @RequestBody SyncDirtyRecordQuarantineRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success(dataSyncService.previewDirtyRecordQuarantine(
+                taskId, request, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /** Apply the exact preview after explicit confirmation; source rows are never physically deleted. */
+    @PostMapping("/errors/quarantine/apply")
+    public PlatformApiResponse<SyncDirtyRecordQuarantineResult> applyDirtyRecordQuarantine(
+            @PathVariable Long taskId,
+            @RequestBody SyncDirtyRecordQuarantineRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success(dataSyncService.applyDirtyRecordQuarantine(
+                taskId, request, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /** Persist a reusable case only after the repaired execution has succeeded. */
+    @PostMapping("/agent-recovery-cases")
+    public PlatformApiResponse<SyncRecoveryCasePublishResult> publishRecoveryCase(
+            @PathVariable Long taskId,
+            @RequestBody SyncRecoveryCasePublishRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success(dataSyncService.publishRecoveryCase(
+                taskId, request, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
     }
 
     /**

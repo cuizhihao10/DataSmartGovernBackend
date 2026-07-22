@@ -7,8 +7,8 @@ WHERE role_code = 'ORDINARY_USER'
   AND path_pattern = '/api/sync/sync-task-import-artifacts/upload';
 
 INSERT INTO permission_route_policy
-(tenant_id, policy_name, role_code, http_method, path_pattern, resource_type, action_code,
- effect, priority, enabled, description, created_at, updated_at)
+(tenant_id, policy_name, role_code, http_method, path_pattern, resource_type, action,
+ effect, priority, enabled, description, create_time, update_time)
 VALUES
 (0, '普通用户上传自己的同步任务导入制品', 'ORDINARY_USER', 'POST',
  '/api/sync/sync-task-import-artifacts/upload', 'SYNC_TASK', 'CREATE', 'ALLOW', 140, TRUE,

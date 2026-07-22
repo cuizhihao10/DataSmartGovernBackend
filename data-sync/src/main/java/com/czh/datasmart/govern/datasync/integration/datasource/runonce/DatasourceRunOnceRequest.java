@@ -42,6 +42,14 @@ public class DatasourceRunOnceRequest {
     private Long previousFailedRecordCount;
 
     /**
+     * 经用户确认进入隔离账本的源记录精确定位。
+     *
+     * <p>只允许 {@code PRIMARY_KEY_EQ} JSON selector，且只在内部服务间请求中使用。
+     * 该字段不得进入普通响应、日志、Agent checkpoint 或模型上下文。</p>
+     */
+    private List<String> excludedSourceRecordKeys;
+
+    /**
      * 批处理执行计划镜像。
      */
     @Getter

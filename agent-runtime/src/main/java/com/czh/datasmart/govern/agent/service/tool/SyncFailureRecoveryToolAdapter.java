@@ -1,0 +1,420 @@
+package com.czh.datasmart.govern.agent.service.tool;
+
+import com.czh.datasmart.govern.common.error.PlatformBusinessException;
+import com.czh.datasmart.govern.common.error.PlatformErrorCode;
+import lombok.RequiredArgsConstructor;
+import org.springframework.core.ParameterizedTypeReference;
+import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/** Executes the governed diagnosis, repair, retry and case-publication lifecycle. */
+@Component
+@RequiredArgsConstructor
+public class SyncFailureRecoveryToolAdapter implements AgentToolAdapter {
+
+    public static final String DIAGNOSE = "sync.execution.diagnose";
+    public static final String RAG_LOOKUP = "sync.execution.rag.lookup";
+    public static final String FAILED_OBJECTS_RETRY = "sync.execution.failed-objects.retry";
+    public static final String DIRTY_QUARANTINE_PREVIEW = "sync.dirty-record.quarantine.preview";
+    public static final String DIRTY_QUARANTINE_APPLY = "sync.dirty-record.quarantine.apply";
+    public static final String DIRTY_REPLAY = "sync.dirty-record.replay";
+    public static final String SCHEMA_REPAIR_PREVIEW = "datasource.schema.repair.preview";
+    public static final String SCHEMA_REPAIR_APPLY = "datasource.schema.repair.apply";
+    public static final String CASE_PUBLISH = "sync.recovery.case.publish";
+
+    private static final String DATA_SYNC = "data-sync";
+    private static final String DATASOURCE = "datasource-management";
+    private static final String AI_RUNTIME = "python-ai-runtime";
+    private static final Set<String> SUPPORTED = Set.of(
+            DIAGNOSE,
+            RAG_LOOKUP,
+            FAILED_OBJECTS_RETRY,
+            DIRTY_QUARANTINE_PREVIEW,
+            DIRTY_QUARANTINE_APPLY,
+            DIRTY_REPLAY,
+            SCHEMA_REPAIR_PREVIEW,
+            SCHEMA_REPAIR_APPLY,
+            CASE_PUBLISH);
+
+    private final RestClient.Builder restClientBuilder;
+    private final AgentToolDownstreamHttpSupport httpSupport;
+    private final AgentToolOutputReferenceResolver referenceResolver;
+
+    @Override
+    public boolean supports(String toolCode) {
+        return SUPPORTED.contains(toolCode);
+    }
+
+    @Override
+    public AgentToolExecutionOutcome execute(AgentToolExecutionContext context) {
+        try {
+            return switch (context.audit().getToolCode()) {
+                case DIAGNOSE -> diagnose(context);
+                case RAG_LOOKUP -> lookupRecoveryEvidence(context);
+                case FAILED_OBJECTS_RETRY -> retryFailedObjects(context);
+                case DIRTY_QUARANTINE_PREVIEW -> previewQuarantine(context);
+                case DIRTY_QUARANTINE_APPLY -> applyQuarantine(context);
+                case DIRTY_REPLAY -> replayDirtyRecords(context);
+                case SCHEMA_REPAIR_PREVIEW -> previewSchemaRepair(context);
+                case SCHEMA_REPAIR_APPLY -> applySchemaRepair(context);
+                case CASE_PUBLISH -> publishCase(context);
+                default -> AgentToolExecutionOutcome.failed(
+                        "SYNC_RECOVERY_TOOL_UNSUPPORTED", "不支持的同步恢复工具");
+            };
+        } catch (PlatformBusinessException exception) {
+            return AgentToolExecutionOutcome.failed("SYNC_RECOVERY_VALIDATION_FAILED", exception.getMessage());
+        } catch (RestClientException exception) {
+            return AgentToolExecutionOutcome.failed(
+                    "SYNC_RECOVERY_DOWNSTREAM_ERROR", "同步恢复下游调用失败: " + safeMessage(exception));
+        }
+    }
+
+    private AgentToolExecutionOutcome diagnose(AgentToolExecutionContext context) {
+        Map<String, Object> args = context.audit().getPlanArguments();
+        Long taskId = taskId(context, args, "statusRef");
+        Long executionId = optionalLong(args.get("executionId"));
+        if (executionId == null) {
+            executionId = referencedLong(context, args.get("statusRef"), SyncTaskLifecycleToolAdapter.EXECUTION_STATUS,
+                    "executionId", false);
+        }
+        String uri = executionId == null
+                ? "/sync-tasks/{taskId}/agent-diagnosis"
+                : "/sync-tasks/{taskId}/agent-diagnosis?executionId={executionId}";
+        Map<String, Object> data = executionId == null
+                ? getData(context, DATA_SYNC, uri, "执行失败诊断", taskId)
+                : getData(context, DATA_SYNC, uri, "执行失败诊断", taskId, executionId);
+        Map<String, Object> output = new LinkedHashMap<>(data);
+        output.put("taskId", taskId);
+        output.put("executionId", executionId == null ? optionalLong(data.get("executionId")) : executionId);
+        return AgentToolExecutionOutcome.succeeded("已根据真实执行账本完成失败诊断。", output);
+    }
+
+    /**
+     * Search only with the low-sensitive query generated by the diagnosis service.
+     * The model cannot replace this query with raw SQL, row payloads or credentials,
+     * while the RAG service still enforces the current tenant/project scope.
+     */
+    private AgentToolExecutionOutcome lookupRecoveryEvidence(AgentToolExecutionContext context) {
+        Object value = referenceResolver.resolve(
+                        context,
+                        context.audit().getPlanArguments().get("diagnosisRef"),
+                        DIAGNOSE,
+                        "ragQuery")
+                .orElseThrow(() -> new PlatformBusinessException(
+                        PlatformErrorCode.BAD_REQUEST, "缺少失败诊断生成的 RAG 检索问题"));
+        String question = requiredText(value, "失败诊断生成的 RAG 检索问题为空");
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("tenantId", context.session().getTenantId());
+        request.put("projectId", context.session().getProjectId());
+        request.put("actorId", context.session().getActorId());
+        request.put("workspaceKey", context.session().getWorkspaceKey());
+        request.put("sessionId", context.session().getSessionId());
+        request.put("traceId", context.traceId());
+        request.put("question", question);
+        request.put("topK", 5);
+        request.put("generateAnswer", true);
+        Map<String, Object> response = postRaw(context, AI_RUNTIME, "/agent/rag/query", request);
+        if (response == null) {
+            return AgentToolExecutionOutcome.failed("SYNC_RECOVERY_RAG_EMPTY", "同步恢复案例检索返回空响应");
+        }
+        Map<String, Object> output = new LinkedHashMap<>();
+        output.put("answer", response.get("answer"));
+        output.put("citations", response.getOrDefault("citations", List.of()));
+        output.put("retrievalSummary", response.getOrDefault("retrievalSummary", Map.of()));
+        output.put("modelSummary", response.getOrDefault("modelSummary", Map.of()));
+        return AgentToolExecutionOutcome.succeeded("已检索项目文档、历史恢复案例和 Runbook。", output);
+    }
+
+    private AgentToolExecutionOutcome retryFailedObjects(AgentToolExecutionContext context) {
+        Map<String, Object> args = context.audit().getPlanArguments();
+        Long taskId = taskId(context, args, "diagnosisRef");
+        Long executionId = executionId(context, args, "diagnosisRef");
+        Map<String, Object> request = new LinkedHashMap<>();
+        putIfPresent(request, "objectExecutionIds", args.get("objectExecutionIds"));
+        putIfPresent(request, "objectOrdinals", args.get("objectOrdinals"));
+        request.put("retryAttemptBudget", integerValue(args.get("retryAttemptBudget"), 3));
+        request.put("resetAttemptCount", true);
+        request.put("reason", "AGENT_DIAGNOSED_FAILED_OBJECT_RETRY");
+        Map<String, Object> data = postData(context, DATA_SYNC,
+                "/sync-tasks/{taskId}/executions/{executionId}/objects/retry",
+                request, "失败对象重试", taskId, executionId);
+        return AgentToolExecutionOutcome.succeeded("失败对象已重新进入有界执行队列。", data);
+    }
+
+    private AgentToolExecutionOutcome previewQuarantine(AgentToolExecutionContext context) {
+        Map<String, Object> args = context.audit().getPlanArguments();
+        Long taskId = taskId(context, args, "diagnosisRef");
+        Long executionId = executionId(context, args, "diagnosisRef");
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("executionId", executionId);
+        putIfPresent(request, "errorSampleIds", args.get("errorSampleIds"));
+        request.put("quarantineAllRetryableInExecution",
+                booleanValue(args.get("quarantineAllRetryableInExecution"), false));
+        request.put("reason", "AGENT_DIRTY_RECORD_QUARANTINE_PREVIEW");
+        Map<String, Object> data = postData(context, DATA_SYNC,
+                "/sync-tasks/{taskId}/errors/quarantine/preview", request,
+                "脏数据隔离预览", taskId);
+        return AgentToolExecutionOutcome.succeeded("已生成精确坏行隔离预览，尚未改变执行策略。", data);
+    }
+
+    private AgentToolExecutionOutcome applyQuarantine(AgentToolExecutionContext context) {
+        Map<String, Object> preview = referencedMap(context,
+                context.audit().getPlanArguments().get("previewRef"), DIRTY_QUARANTINE_PREVIEW, null,
+                "缺少脏数据隔离预览");
+        Long taskId = requiredLong(preview.get("taskId"), "隔离预览缺少 taskId");
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("executionId", requiredLong(preview.get("executionId"), "隔离预览缺少 executionId"));
+        request.put("errorSampleIds", preview.get("selectedSampleIds"));
+        request.put("quarantineAllRetryableInExecution", false);
+        request.put("reason", "USER_CONFIRMED_AGENT_DIRTY_RECORD_QUARANTINE");
+        request.put("confirmationDigest", requiredText(preview.get("confirmationDigest"), "隔离预览缺少确认摘要"));
+        request.put("confirmed", true);
+        Map<String, Object> data = postData(context, DATA_SYNC,
+                "/sync-tasks/{taskId}/errors/quarantine/apply", request,
+                "脏数据隔离应用", taskId);
+        return AgentToolExecutionOutcome.succeeded("用户确认的坏行已被隔离；源端记录未被删除。", data);
+    }
+
+    private AgentToolExecutionOutcome replayDirtyRecords(AgentToolExecutionContext context) {
+        Map<String, Object> args = context.audit().getPlanArguments();
+        Long taskId = taskId(context, args, "diagnosisRef");
+        Long executionId = executionId(context, args, "diagnosisRef");
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("executionId", executionId);
+        putIfPresent(request, "errorSampleIds", args.get("errorSampleIds"));
+        request.put("replayAllRetryableInExecution",
+                booleanValue(args.get("replayAllRetryableInExecution"), false));
+        request.put("repairConfirmed", true);
+        request.put("repairStrategy", safeText(args.get("repairStrategy"), "AGENT_CONFIRMED_REPAIR_REPLAY"));
+        request.put("maxSampleCount", integerValue(args.get("maxSampleCount"), 500));
+        request.put("reason", "USER_CONFIRMED_AGENT_REPAIR_REPLAY");
+        Map<String, Object> data = postData(context, DATA_SYNC,
+                "/sync-tasks/{taskId}/errors/replay", request, "脏数据修复重放", taskId);
+        return AgentToolExecutionOutcome.succeeded("已为确认修复的错误样本创建受控重放执行。", data);
+    }
+
+    private AgentToolExecutionOutcome previewSchemaRepair(AgentToolExecutionContext context) {
+        Map<String, Object> args = context.audit().getPlanArguments();
+        Long taskId = referencedLong(context, args.get("diagnosisRef"), DIAGNOSE,
+                "taskId", true);
+        Long executionId = referencedLong(context, args.get("diagnosisRef"), DIAGNOSE,
+                "executionId", true);
+        Long datasourceId = optionalLong(args.get("datasourceId"));
+        if (datasourceId == null) {
+            datasourceId = referencedLong(context, args.get("diagnosisRef"), DIAGNOSE,
+                    "targetDatasourceId", true);
+        }
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("operation", requiredText(args.get("operation"), "结构修复必须提供白名单 operation"));
+        putIfPresent(request, "schemaName", args.get("schemaName"));
+        request.put("tableName", requiredText(args.get("tableName"), "结构修复必须提供目标表"));
+        request.put("columnName", requiredText(args.get("columnName"), "结构修复必须提供目标字段"));
+        putIfPresent(request, "requestedType", args.get("requestedType"));
+        putIfPresent(request, "requestedLength", args.get("requestedLength"));
+        Map<String, Object> data = postData(context, DATASOURCE,
+                "/datasources/{datasourceId}/schema-repair-plans/preview", request,
+                "目标结构修复预览", datasourceId);
+        Map<String, Object> output = new LinkedHashMap<>(data);
+        output.put("taskId", taskId);
+        output.put("diagnosisExecutionId", executionId);
+        return AgentToolExecutionOutcome.succeeded("已生成目标结构修复预览，尚未执行 DDL。", output);
+    }
+
+    private AgentToolExecutionOutcome applySchemaRepair(AgentToolExecutionContext context) {
+        Map<String, Object> preview = referencedMap(context,
+                context.audit().getPlanArguments().get("previewRef"), SCHEMA_REPAIR_PREVIEW, null,
+                "缺少目标结构修复预览");
+        Long datasourceId = requiredLong(preview.get("datasourceId"), "结构修复预览缺少 datasourceId");
+        Map<String, Object> request = Map.of(
+                "planId", requiredLong(preview.get("planId"), "结构修复预览缺少 planId"),
+                "confirmationDigest", requiredText(preview.get("confirmationDigest"), "结构修复预览缺少确认摘要"),
+                "confirmed", true);
+        Map<String, Object> data = postData(context, DATASOURCE,
+                "/datasources/{datasourceId}/schema-repair-plans/apply", request,
+                "目标结构修复应用", datasourceId);
+        Map<String, Object> output = new LinkedHashMap<>(data);
+        putIfPresent(output, "taskId", preview.get("taskId"));
+        putIfPresent(output, "diagnosisExecutionId", preview.get("diagnosisExecutionId"));
+        return AgentToolExecutionOutcome.succeeded("用户确认的白名单目标结构修复已应用。", output);
+    }
+
+    private AgentToolExecutionOutcome publishCase(AgentToolExecutionContext context) {
+        Map<String, Object> args = context.audit().getPlanArguments();
+        Map<String, Object> diagnosis = referencedMap(context, args.get("diagnosisRef"), DIAGNOSE, null,
+                "发布案例前缺少失败诊断");
+        Map<String, Object> validation = referencedMap(context, args.get("validationRef"),
+                SyncTaskLifecycleToolAdapter.EXECUTION_STATUS, null, "发布案例前缺少成功验证");
+        Long taskId = requiredLong(diagnosis.get("taskId"), "失败诊断缺少 taskId");
+        Map<String, Object> request = new LinkedHashMap<>();
+        request.put("diagnosisExecutionId", requiredLong(diagnosis.get("executionId"), "失败诊断缺少 executionId"));
+        request.put("validationExecutionId", requiredLong(validation.get("executionId"), "验证结果缺少 executionId"));
+        request.put("rootCauseCodes", diagnosis.get("rootCauseCodes"));
+        request.put("repairActionCodes", valueOr(args.get("repairActionCodes"), diagnosis.get("recommendedRepairActions")));
+        putIfPresent(request, "evidenceReferences", args.get("evidenceReferences"));
+        Map<String, Object> data = postData(context, DATA_SYNC,
+                "/sync-tasks/{taskId}/agent-recovery-cases", request,
+                "恢复案例发布", taskId);
+        return AgentToolExecutionOutcome.succeeded("本次修复已验证并沉淀为项目内可检索案例。", data);
+    }
+
+    private Long taskId(AgentToolExecutionContext context, Map<String, Object> args, String refName) {
+        Long direct = optionalLong(args.get("taskId"));
+        return direct != null ? direct : referencedLong(context, args.get(refName),
+                defaultReferenceTool(refName), "taskId", true);
+    }
+
+    private Long executionId(AgentToolExecutionContext context, Map<String, Object> args, String refName) {
+        Long direct = optionalLong(args.get("executionId"));
+        return direct != null ? direct : referencedLong(context, args.get(refName),
+                defaultReferenceTool(refName), "executionId", true);
+    }
+
+    private String defaultReferenceTool(String refName) {
+        return "statusRef".equals(refName) ? SyncTaskLifecycleToolAdapter.EXECUTION_STATUS : DIAGNOSE;
+    }
+
+    private Long referencedLong(AgentToolExecutionContext context,
+                                Object reference,
+                                String defaultTool,
+                                String path,
+                                boolean required) {
+        Object value = referenceResolver.resolve(context, reference, defaultTool, path).orElse(null);
+        Long result = optionalLong(value);
+        if (required && (result == null || result <= 0)) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
+                    "缺少有效工具输出引用: " + defaultTool + "." + path);
+        }
+        return result;
+    }
+
+    private Map<String, Object> referencedMap(AgentToolExecutionContext context,
+                                              Object reference,
+                                              String defaultTool,
+                                              String path,
+                                              String message) {
+        Object value = referenceResolver.resolve(context, reference, defaultTool, path).orElse(null);
+        if (!(value instanceof Map<?, ?> raw)) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST, message);
+        }
+        return copyMap(raw);
+    }
+
+    private Map<String, Object> getData(AgentToolExecutionContext context,
+                                        String service,
+                                        String uri,
+                                        String action,
+                                        Object... variables) {
+        Map<String, Object> response = restClientBuilder.baseUrl(httpSupport.baseUrl(service)).build()
+                .get().uri(uri, variables)
+                .headers(headers -> httpSupport.applyUserDelegationHeaders(headers, context))
+                .retrieve().body(new ParameterizedTypeReference<>() {
+                });
+        return requireSuccessData(response, action);
+    }
+
+    private Map<String, Object> postData(AgentToolExecutionContext context,
+                                         String service,
+                                         String uri,
+                                         Object body,
+                                         String action,
+                                         Object... variables) {
+        Map<String, Object> response = restClientBuilder.baseUrl(httpSupport.baseUrl(service)).build()
+                .post().uri(uri, variables).body(body)
+                .headers(headers -> httpSupport.applyUserDelegationHeaders(headers, context))
+                .retrieve().body(new ParameterizedTypeReference<>() {
+                });
+        return requireSuccessData(response, action);
+    }
+
+    /** Call a product endpoint whose response is not wrapped by Java ApiResponse. */
+    private Map<String, Object> postRaw(AgentToolExecutionContext context,
+                                        String service,
+                                        String uri,
+                                        Object body) {
+        return restClientBuilder.baseUrl(httpSupport.baseUrl(service)).build()
+                .post().uri(uri)
+                .headers(headers -> httpSupport.applyUserDelegationHeaders(headers, context))
+                .body(body)
+                .retrieve().body(new ParameterizedTypeReference<>() {
+                });
+    }
+
+    private Map<String, Object> requireSuccessData(Map<String, Object> response, String action) {
+        if (response == null || integerValue(response.get("code"), -1) != 0) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    action + "失败: " + safeText(response == null ? null : response.get("message"), "下游未返回具体原因"));
+        }
+        if (!(response.get("data") instanceof Map<?, ?> data)) {
+            throw new PlatformBusinessException(PlatformErrorCode.INTERNAL_ERROR, action + "响应缺少 data");
+        }
+        return copyMap(data);
+    }
+
+    private Map<String, Object> copyMap(Map<?, ?> raw) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        raw.forEach((key, value) -> result.put(String.valueOf(key), value));
+        return result;
+    }
+
+    private void putIfPresent(Map<String, Object> target, String key, Object value) {
+        if (value != null && !(value instanceof String text && text.isBlank())) {
+            target.put(key, value);
+        }
+    }
+
+    private Object valueOr(Object preferred, Object fallback) {
+        return preferred == null ? fallback : preferred;
+    }
+
+    private Long optionalLong(Object value) {
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        try {
+            return value == null ? null : Long.valueOf(String.valueOf(value));
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    private Long requiredLong(Object value, String message) {
+        Long result = optionalLong(value);
+        if (result == null || result <= 0) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST, message);
+        }
+        return result;
+    }
+
+    private Integer integerValue(Object value, int fallback) {
+        Long parsed = optionalLong(value);
+        return parsed == null ? fallback : parsed.intValue();
+    }
+
+    private boolean booleanValue(Object value, boolean fallback) {
+        return value == null ? fallback : value instanceof Boolean bool ? bool : Boolean.parseBoolean(String.valueOf(value));
+    }
+
+    private String requiredText(Object value, String message) {
+        String text = value == null ? null : String.valueOf(value).trim();
+        if (text == null || text.isBlank()) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST, message);
+        }
+        return text;
+    }
+
+    private String safeText(Object value, String fallback) {
+        String text = value == null ? null : String.valueOf(value).trim();
+        return text == null || text.isBlank() ? fallback : text;
+    }
+
+    private String safeMessage(Exception exception) {
+        String message = exception.getMessage();
+        return message == null || message.isBlank() ? "未返回具体原因" : message;
+    }
+}

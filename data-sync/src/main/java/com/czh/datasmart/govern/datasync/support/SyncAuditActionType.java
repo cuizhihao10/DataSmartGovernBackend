@@ -219,6 +219,9 @@ public enum SyncAuditActionType {
      * REPLAY_DIRTY_RECORDS 则明确表示“操作者已经处理某批 dirty record，并只希望按错误样本 selector 重放”。</p>
      */
     REPLAY_DIRTY_RECORDS,
+    /** 经用户确认后隔离精确主键脏记录，重试时跳过但不删除源数据。 */
+    QUARANTINE_DIRTY_RECORDS,
+    PUBLISH_RECOVERY_CASE,
     ACKNOWLEDGE_ATTENTION,
     RESOLVE_ATTENTION,
     RERUN_ATTENTION_TASK,

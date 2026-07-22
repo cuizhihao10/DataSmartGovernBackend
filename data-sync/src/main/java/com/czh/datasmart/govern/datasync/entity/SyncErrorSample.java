@@ -57,6 +57,24 @@ public class SyncErrorSample {
     /** 是否可重试。 */
     private Boolean retryable;
 
+    /**
+     * 修复状态。QUARANTINED 表示经用户确认后在后续任务重试中跳过该精确记录，
+     * 它不会物理删除或修改源端数据。
+     */
+    private String resolutionStatus;
+
+    /** 结构化修复动作，例如 QUARANTINE_FOR_RETRY。 */
+    private String resolutionAction;
+
+    /** 用户确认说明的 SHA-256 摘要；禁止保存模型原文、SQL 或样本正文。 */
+    private String resolutionNoteDigest;
+
+    /** 执行修复确认的真实用户 actorId。 */
+    private Long resolvedBy;
+
+    /** 修复状态最后更新时间。 */
+    private LocalDateTime resolvedAt;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
 }

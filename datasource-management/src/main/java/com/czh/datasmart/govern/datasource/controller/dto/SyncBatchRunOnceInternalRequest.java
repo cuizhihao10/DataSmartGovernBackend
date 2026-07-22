@@ -126,4 +126,10 @@ public class SyncBatchRunOnceInternalRequest {
      * 调用 run-once 前 data-sync execution 已累计失败记录数。
      */
     private Long previousFailedRecordCount;
+
+    /**
+     * 用户确认隔离的精确源记录定位，只允许 PRIMARY_KEY_EQ selector。
+     * Connector runtime 在字段映射前过滤这些行，不修改或删除源端数据。
+     */
+    private List<String> excludedSourceRecordKeys;
 }

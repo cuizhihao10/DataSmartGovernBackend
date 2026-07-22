@@ -30,7 +30,9 @@ import com.czh.datasmart.govern.datasync.mapper.SyncExecutionLogMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
 import com.czh.datasmart.govern.datasync.service.support.SyncAuditSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncAgentExecutionDiagnosisSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncDataScopeSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncDirtyRecordQuarantineSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncDirtyRecordReplaySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionCreationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLifecycleSupport;
@@ -477,6 +479,8 @@ class DataSyncServiceImplProjectScopeTest {
                 offlineJobPlanSupport(),
                 mock(SyncObjectExecutionOperationSupport.class),
                 mock(SyncDirtyRecordReplaySupport.class),
+                mock(SyncDirtyRecordQuarantineSupport.class),
+                mock(SyncAgentExecutionDiagnosisSupport.class),
                 new SyncTaskScheduleConfigSupport(new ObjectMapper()),
                 mock(SyncTaskCreateWizardDraftSupport.class)
         );
@@ -551,6 +555,8 @@ class DataSyncServiceImplProjectScopeTest {
                 offlineJobPlanSupport(),
                 mock(SyncObjectExecutionOperationSupport.class),
                 mock(SyncDirtyRecordReplaySupport.class),
+                mock(SyncDirtyRecordQuarantineSupport.class),
+                mock(SyncAgentExecutionDiagnosisSupport.class),
                 new SyncTaskScheduleConfigSupport(new ObjectMapper()),
                 mock(SyncTaskCreateWizardDraftSupport.class)
         );

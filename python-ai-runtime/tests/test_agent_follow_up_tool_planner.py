@@ -219,6 +219,115 @@ class AgentFollowUpToolPlannerTest(unittest.TestCase):
         ))
         self.assertEqual(1, result.state_guard_rejected_count)
 
+    def test_recovery_mutation_is_blocked_until_rag_evidence_succeeds(self) -> None:
+        parent = self._plan(ToolPlan(
+            tool_name="sync.execution.diagnose",
+            reason="diagnosis",
+            governance_hints={
+                "agentLoopResourceRefs": {
+                    "sync.execution.diagnose": {
+                        "toolCode": "sync.execution.diagnose",
+                        "auditId": "audit-diagnosis",
+                        "runId": "run-recovery",
+                    }
+                }
+            },
+        ))
+        result = self.planner.govern(
+            request=self.request,
+            plan=parent,
+            tool_calls=(self._call(
+                "call-retry",
+                "sync.execution.failed-objects.retry",
+                {"retryAttemptBudget": 2},
+            ),),
+            visible_tools=self._visible("sync.execution.failed-objects.retry"),
+            control_plane_feedback=self._feedback(
+                "sync.execution.diagnose",
+                "audit-diagnosis",
+                "run-recovery",
+                "call-diagnosis",
+                result={"rootCauseCodes": ["TARGET_COLUMN_TOO_NARROW"]},
+            ),
+        )
+
+        self.assertEqual((), result.accepted_tool_plans)
+        self.assertEqual(1, result.state_guard_rejected_count)
+
+    def test_schema_apply_requires_prior_preview_and_keeps_server_reference(self) -> None:
+        inherited = {
+            "sync.execution.diagnose": {
+                "toolCode": "sync.execution.diagnose",
+                "auditId": "audit-diagnosis",
+                "runId": "run-recovery",
+            },
+            "sync.execution.rag.lookup": {
+                "toolCode": "sync.execution.rag.lookup",
+                "auditId": "audit-rag",
+                "runId": "run-recovery",
+            },
+        }
+        parent = self._plan(ToolPlan(
+            tool_name="datasource.schema.repair.preview",
+            reason="preview",
+            governance_hints={"agentLoopResourceRefs": inherited},
+        ))
+        result = self.planner.govern(
+            request=self.request,
+            plan=parent,
+            tool_calls=(self._call(
+                "call-schema-apply",
+                "datasource.schema.repair.apply",
+                {"previewRef": {"fromAuditId": "model-forged"}},
+            ),),
+            visible_tools=self._visible("datasource.schema.repair.apply"),
+            control_plane_feedback=self._feedback(
+                "datasource.schema.repair.preview",
+                "audit-schema-preview",
+                "run-recovery",
+                "call-schema-preview",
+                result={"planStatus": "PREVIEWED", "requiresConfirmation": True},
+            ),
+        )
+
+        self.assertEqual(1, len(result.accepted_tool_plans))
+        preview_ref = result.accepted_tool_plans[0].arguments["previewRef"]
+        self.assertEqual("audit-schema-preview", preview_ref["fromAuditId"])
+        self.assertIsNone(preview_ref["path"])
+
+    def test_recovery_case_is_published_only_after_successful_validation(self) -> None:
+        parent = self._plan(ToolPlan(
+            tool_name="sync.execution.status",
+            reason="validation",
+            governance_hints={
+                "agentLoopResourceRefs": {
+                    "sync.execution.diagnose": {
+                        "toolCode": "sync.execution.diagnose",
+                        "auditId": "audit-diagnosis",
+                        "runId": "run-recovery",
+                    }
+                }
+            },
+        ))
+        result = self.planner.govern(
+            request=self.request,
+            plan=parent,
+            tool_calls=(self._call("call-case", "sync.recovery.case.publish", {}),),
+            visible_tools=self._visible("sync.recovery.case.publish"),
+            control_plane_feedback=self._feedback(
+                "sync.execution.status",
+                "audit-validation",
+                "run-recovery",
+                "call-status",
+                result={"executionState": "SUCCEEDED", "failedRecordCount": 0},
+            ),
+        )
+
+        self.assertEqual(1, len(result.accepted_tool_plans))
+        arguments = result.accepted_tool_plans[0].arguments
+        self.assertEqual("audit-diagnosis", arguments["diagnosisRef"]["fromAuditId"])
+        self.assertEqual("audit-validation", arguments["validationRef"]["fromAuditId"])
+
     def _visible(self, *names: str):
         by_name = {tool.name: tool for tool in default_tool_registry()}
         return tuple(by_name[name] for name in names)

@@ -14,6 +14,10 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncAuditQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncCheckpointQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordReplayRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordReplayResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordQuarantineRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordQuarantineResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncRecoveryCasePublishRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncRecoveryCasePublishResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncErrorSampleQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCheckpointRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCompleteRequest;
@@ -21,6 +25,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionLogQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionStartRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionDiagnosisResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncOfflineJobPlanResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
@@ -391,6 +396,20 @@ public interface DataSyncService {
     PlatformPageResponse<SyncCheckpoint> pageCheckpoints(SyncCheckpointQueryCriteria criteria, SyncActorContext actorContext);
 
     PlatformPageResponse<SyncErrorSample> pageErrorSamples(SyncErrorSampleQueryCriteria criteria, SyncActorContext actorContext);
+
+    /** Aggregate low-sensitive execution facts for the governed Agent recovery loop. */
+    SyncExecutionDiagnosisResponse diagnoseExecution(Long taskId, Long executionId, SyncActorContext actorContext);
+
+    /** Preview exact-primary-key dirty rows that can be quarantined without deleting source data. */
+    SyncDirtyRecordQuarantineResult previewDirtyRecordQuarantine(
+            Long taskId, SyncDirtyRecordQuarantineRequest request, SyncActorContext actorContext);
+
+    /** Apply a digest-bound quarantine decision after explicit user confirmation. */
+    SyncDirtyRecordQuarantineResult applyDirtyRecordQuarantine(
+            Long taskId, SyncDirtyRecordQuarantineRequest request, SyncActorContext actorContext);
+
+    SyncRecoveryCasePublishResult publishRecoveryCase(
+            Long taskId, SyncRecoveryCasePublishRequest request, SyncActorContext actorContext);
 
     /**
      * 基于结构化错误样本创建脏数据修复重放计划。

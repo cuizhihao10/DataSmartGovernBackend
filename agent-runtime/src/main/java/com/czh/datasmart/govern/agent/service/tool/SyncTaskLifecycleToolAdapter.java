@@ -208,8 +208,12 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
     }
 
     private AgentToolExecutionOutcome executionStatus(AgentToolExecutionContext context) {
-        Long taskId = referencedLong(context, context.audit().getPlanArguments().get("taskRef"),
-                RUN, "taskId", "缺少同步任务运行结果");
+        Map<String, Object> arguments = context.audit().getPlanArguments();
+        Long taskId = longValue(arguments.get("taskId"));
+        if (taskId == null || taskId <= 0) {
+            taskId = referencedLong(context, arguments.get("taskRef"),
+                    RUN, "taskId", "缺少同步任务运行结果或待验证任务 ID");
+        }
         long deadline = System.currentTimeMillis() + EXECUTION_STATUS_TIMEOUT_MILLIS;
         int pollCount = 0;
         Map<String, Object> latest = Map.of();

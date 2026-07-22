@@ -929,6 +929,388 @@ datasmart:
         max-retries: 1
         allowed-actions:
           - VIEW
+        input-schema:
+          - name: taskRef
+            type: object
+            required: false
+            description: 同一 Run 内任务运行输出引用。
+            sensitive: false
+            resolution: DERIVED
+          - name: taskId
+            type: number
+            required: false
+            description: 排查或恢复已有任务时由当前项目上下文提供的任务 ID。
+            sensitive: false
+            resolution: CAN_FILL_FROM_CONTEXT
+      "[sync.execution.diagnose]":
+        enabled: true
+        tool-code: sync.execution.diagnose
+        tool-type: DATA_SYNC
+        display-name: 同步执行失败诊断
+        description: 聚合真实执行、对象账本、错误样本与历史事故，形成低敏根因和恢复动作候选。
+        target-service: data-sync
+        target-endpoint: /sync-tasks/{taskId}/agent-diagnosis
+        read-only: true
+        risk-level: LOW
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: NO_CACHE
+        timeout-ms: 15000
+        max-retries: 1
+        allowed-actions:
+          - VIEW
+          - DIAGNOSE
+        input-schema:
+          - name: statusRef
+            type: object
+            required: false
+            description: 同一 Agent Run 内最近一次执行状态输出引用。
+            sensitive: false
+            resolution: DERIVED
+          - name: taskId
+            type: number
+            required: false
+            description: 排查已有任务时由当前项目上下文或用户明确提供的任务 ID。
+            sensitive: false
+            resolution: CAN_FILL_FROM_CONTEXT
+          - name: executionId
+            type: number
+            required: false
+            description: 可选的指定 execution；为空时诊断该任务最近一次执行。
+            sensitive: false
+            resolution: CAN_FILL_FROM_CONTEXT
+      "[sync.execution.rag.lookup]":
+        enabled: true
+        tool-code: sync.execution.rag.lookup
+        tool-type: DATA_SYNC
+        display-name: 同步恢复案例检索
+        description: 使用失败诊断生成的低敏检索问题查询当前项目文档、历史恢复案例与 Runbook。
+        target-service: python-ai-runtime
+        target-endpoint: /agent/rag/query
+        read-only: true
+        risk-level: LOW
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: PROJECT_SAFE
+        timeout-ms: 20000
+        max-retries: 1
+        allowed-actions:
+          - VIEW
+          - RETRIEVE_RECOVERY_EVIDENCE
+        input-schema:
+          - name: diagnosisRef
+            type: object
+            required: true
+            description: 同一 Run 内失败诊断生成的低敏 ragQuery 引用。
+            sensitive: false
+            resolution: DERIVED
+      "[sync.execution.failed-objects.retry]":
+        enabled: true
+        tool-code: sync.execution.failed-objects.retry
+        tool-type: DATA_SYNC
+        display-name: 失败对象选择性重试
+        description: 用户确认后只重置并重试失败对象账本，不重复传输已成功对象。
+        target-service: data-sync
+        target-endpoint: /sync-tasks/{taskId}/executions/{executionId}/objects/retry
+        read-only: false
+        risk-level: HIGH
+        execution-mode: APPROVAL_REQUIRED
+        requires-approval: true
+        idempotent: false
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: NO_CACHE
+        timeout-ms: 15000
+        max-retries: 0
+        allowed-actions:
+          - RETRY_FAILED_OBJECTS
+        input-schema:
+          - name: diagnosisRef
+            type: object
+            required: true
+            description: 同一 Run 内失败诊断输出引用。
+            sensitive: false
+            resolution: DERIVED
+          - name: objectExecutionIds
+            type: array
+            required: false
+            description: 可选的失败对象账本 ID；为空时由服务端选择该 execution 的失败对象。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: objectOrdinals
+            type: array
+            required: false
+            description: 可选的失败对象序号。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: retryAttemptBudget
+            type: number
+            required: false
+            description: 有界重试预算，最终仍受服务端策略上限约束。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+      "[sync.dirty-record.quarantine.preview]":
+        enabled: true
+        tool-code: sync.dirty-record.quarantine.preview
+        tool-type: DATA_SYNC
+        display-name: 坏行隔离预览
+        description: 预览按精确主键选择器隔离的错误样本并生成确认摘要，不删除或修改源端数据。
+        target-service: data-sync
+        target-endpoint: /sync-tasks/{taskId}/errors/quarantine/preview
+        read-only: true
+        risk-level: LOW
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: NO_CACHE
+        timeout-ms: 15000
+        max-retries: 0
+        allowed-actions:
+          - PREVIEW_QUARANTINE
+        input-schema:
+          - name: diagnosisRef
+            type: object
+            required: true
+            description: 同一 Run 内失败诊断输出引用。
+            sensitive: false
+            resolution: DERIVED
+          - name: errorSampleIds
+            type: array
+            required: false
+            description: 可选的精确错误样本 ID 列表。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: quarantineAllRetryableInExecution
+            type: boolean
+            required: false
+            description: 是否预览该 execution 内全部可重试坏行，仍受服务端数量上限约束。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+      "[sync.dirty-record.quarantine.apply]":
+        enabled: true
+        tool-code: sync.dirty-record.quarantine.apply
+        tool-type: DATA_SYNC
+        display-name: 应用坏行隔离
+        description: 用户确认摘要后隔离精确错误样本，后续执行跳过这些记录但不物理删除源数据。
+        target-service: data-sync
+        target-endpoint: /sync-tasks/{taskId}/errors/quarantine/apply
+        read-only: false
+        risk-level: HIGH
+        execution-mode: APPROVAL_REQUIRED
+        requires-approval: true
+        idempotent: false
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: NO_CACHE
+        timeout-ms: 15000
+        max-retries: 0
+        allowed-actions:
+          - APPLY_QUARANTINE
+        input-schema:
+          - name: previewRef
+            type: object
+            required: true
+            description: 同一 Run 内坏行隔离预览及其确认摘要引用。
+            sensitive: false
+            resolution: DERIVED
+      "[sync.dirty-record.replay]":
+        enabled: true
+        tool-code: sync.dirty-record.replay
+        tool-type: DATA_SYNC
+        display-name: 修复坏行重放
+        description: 在根因已修复且用户确认后，为选中的可重试错误样本创建受控 replay execution。
+        target-service: data-sync
+        target-endpoint: /sync-tasks/{taskId}/errors/replay
+        read-only: false
+        risk-level: HIGH
+        execution-mode: APPROVAL_REQUIRED
+        requires-approval: true
+        idempotent: false
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: NO_CACHE
+        timeout-ms: 15000
+        max-retries: 0
+        allowed-actions:
+          - REPLAY_DIRTY_RECORDS
+        input-schema:
+          - name: diagnosisRef
+            type: object
+            required: true
+            description: 同一 Run 内失败诊断输出引用。
+            sensitive: false
+            resolution: DERIVED
+          - name: errorSampleIds
+            type: array
+            required: false
+            description: 可选的精确错误样本 ID 列表。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: replayAllRetryableInExecution
+            type: boolean
+            required: false
+            description: 是否重放该 execution 内全部可重试样本，仍受脏数据阈值和数量上限约束。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: repairStrategy
+            type: string
+            required: false
+            description: 低敏修复策略编码，不接受 SQL 或记录正文。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+      "[datasource.schema.repair.preview]":
+        enabled: true
+        tool-code: datasource.schema.repair.preview
+        tool-type: DATASOURCE_MANAGEMENT
+        display-name: 目标表结构修复预览
+        description: 基于实时 JDBC 元数据预览白名单结构修复并生成确认摘要，不执行原始 DDL。
+        target-service: datasource-management
+        target-endpoint: /datasources/{datasourceId}/schema-repair-plans/preview
+        read-only: true
+        risk-level: MEDIUM
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: false
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: NO_CACHE
+        timeout-ms: 30000
+        max-retries: 0
+        allowed-actions:
+          - PREVIEW_SCHEMA_REPAIR
+        input-schema:
+          - name: diagnosisRef
+            type: object
+            required: true
+            description: 同一 Run 内失败诊断输出引用，用于派生目标数据源。
+            sensitive: false
+            resolution: DERIVED
+          - name: operation
+            type: string
+            required: true
+            description: 仅允许 ADD_NULLABLE_COLUMN、WIDEN_VARCHAR 或 DROP_NOT_NULL。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: schemaName
+            type: string
+            required: false
+            description: 目标 schema；MySQL 可为空。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: tableName
+            type: string
+            required: true
+            description: 诊断错误定位到的目标表名。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: columnName
+            type: string
+            required: true
+            description: 诊断错误定位到的目标字段名。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: requestedType
+            type: string
+            required: false
+            description: 白名单修复请求的数据类型。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: requestedLength
+            type: number
+            required: false
+            description: WIDEN_VARCHAR 请求的新长度，必须大于当前长度。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+      "[datasource.schema.repair.apply]":
+        enabled: true
+        tool-code: datasource.schema.repair.apply
+        tool-type: DATASOURCE_MANAGEMENT
+        display-name: 应用目标表结构修复
+        description: 用户确认后应用同一摘要绑定的白名单结构修复，执行前重新校验目标元数据。
+        target-service: datasource-management
+        target-endpoint: /datasources/{datasourceId}/schema-repair-plans/apply
+        read-only: false
+        # 白名单只允许可扩展/可放宽变更；危险 DDL 不在此工具内，因此允许模型提出计划但仍必须人工确认。
+        risk-level: HIGH
+        execution-mode: APPROVAL_REQUIRED
+        requires-approval: true
+        idempotent: false
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: NO_CACHE
+        timeout-ms: 30000
+        max-retries: 0
+        allowed-actions:
+          - ALTER_TARGET_SCHEMA
+        input-schema:
+          - name: previewRef
+            type: object
+            required: true
+            description: 同一 Run 内结构修复预览及其确认摘要引用。
+            sensitive: false
+            resolution: DERIVED
+      "[sync.recovery.case.publish]":
+        enabled: true
+        tool-code: sync.recovery.case.publish
+        tool-type: DATA_SYNC
+        display-name: 发布已验证恢复案例
+        description: 仅在修复后的验证执行成功后，将低敏根因、动作和证据引用沉淀为项目案例。
+        target-service: data-sync
+        target-endpoint: /sync-tasks/{taskId}/agent-recovery-cases
+        read-only: false
+        risk-level: MEDIUM
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: SEMANTIC
+        cache-policy: NO_CACHE
+        timeout-ms: 15000
+        max-retries: 0
+        allowed-actions:
+          - PUBLISH_VERIFIED_CASE
+        input-schema:
+          - name: diagnosisRef
+            type: object
+            required: true
+            description: 原失败 execution 的诊断输出引用。
+            sensitive: false
+            resolution: DERIVED
+          - name: validationRef
+            type: object
+            required: true
+            description: 修复后成功且失败行数为零的 execution 状态引用。
+            sensitive: false
+            resolution: DERIVED
+          - name: repairActionCodes
+            type: array
+            required: false
+            description: 本次实际采用的低敏恢复动作编码。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: evidenceReferences
+            type: array
+            required: false
+            description: RAG 引用、审计 ID 或 Runbook 引用，不包含文档正文和错误行。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
       "[sync.task.import.dry-run]":
         enabled: true
         tool-code: sync.task.import.dry-run
@@ -1367,6 +1749,48 @@ datasmart:
           - 唯一键冲突
         examples:
           - 任务 Excel 导入提示任务编码冲突，请结合产品文档告诉我怎么修复
+      "[sync.execution.autonomous-recovery]":
+        enabled: true
+        skill-code: sync.execution.autonomous-recovery
+        display-name: 同步执行自主恢复 Skill
+        description: 基于真实执行账本与项目 RAG 证据诊断失败；经用户逐项确认后执行白名单结构修复、坏行隔离、失败对象重试或重放，验证成功后发布低敏案例。
+        domain: DATA_SYNC
+        required-tools:
+          - sync.execution.diagnose
+          - sync.execution.rag.lookup
+          - sync.execution.failed-objects.retry
+          - sync.dirty-record.quarantine.preview
+          - sync.dirty-record.quarantine.apply
+          - sync.dirty-record.replay
+          - datasource.schema.repair.preview
+          - datasource.schema.repair.apply
+          - sync.execution.status
+          - sync.recovery.case.publish
+        required-permissions:
+          - sync:execution:view
+          - agent:rag:query
+        memory-dependencies:
+          - EPISODIC
+          - SEMANTIC
+          - PROCEDURAL
+        risk-level: CRITICAL
+        approval-policy: EXPLICIT_CONFIRMATION_PER_MUTATION
+        tenant-scoped: true
+        project-scoped: true
+        audit-required: true
+        default-memory-scope: PROJECT
+        retention-days: 90
+        trigger-keywords:
+          - 同步失败
+          - 任务失败
+          - 执行报错
+          - 排查同步任务
+          - 修复同步任务
+          - 脏数据
+          - 失败分片重试
+          - 字段不匹配
+        examples:
+          - 排查同步任务 31 的失败原因，检索类似案例，并在我确认后修复和重试
       "[datasource.profiling]":
         enabled: true
         skill-code: datasource.profiling

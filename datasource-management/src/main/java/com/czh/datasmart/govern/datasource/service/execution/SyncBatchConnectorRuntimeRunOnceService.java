@@ -10,10 +10,14 @@ import com.czh.datasmart.govern.datasource.controller.dto.SyncBatchExecutionPlan
 import com.czh.datasmart.govern.datasource.controller.dto.SyncBatchRunOnceInternalRequest;
 import com.czh.datasmart.govern.datasource.controller.dto.SyncBatchRunOnceInternalResponse;
 import com.czh.datasmart.govern.datasource.service.execution.jdbc.SyncPreparedJdbcStatement;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -36,6 +40,8 @@ import java.util.Map;
 @Service
 @RequiredArgsConstructor
 public class SyncBatchConnectorRuntimeRunOnceService {
+
+    private static final ObjectMapper SELECTOR_MAPPER = new ObjectMapper();
 
     private static final String CHECKPOINT_VALUE_PARAMETER = "checkpointValue";
     private static final String LIMIT_PARAMETER = "limit";
@@ -170,12 +176,59 @@ public class SyncBatchConnectorRuntimeRunOnceService {
         if (recordBatch == null || recordBatch.isEmpty()) {
             return new SyncBatchWriteResult(0L, 0L, true, null);
         }
-        SyncBatchRecordBatch writableBatch = alignRecordBatchForWrite(recordBatch, request);
+        SyncBatchRecordBatch filteredBatch = excludeQuarantinedRows(recordBatch, request.getExcludedSourceRecordKeys());
+        if (filteredBatch.isEmpty()) {
+            return new SyncBatchWriteResult(0L, 0L, true, null);
+        }
+        SyncBatchRecordBatch writableBatch = alignRecordBatchForWrite(filteredBatch, request);
         SyncBatchWriteResult writeResult = syncBatchWriter.writeBatch(writeContext, writableBatch);
         if (writeResult == null) {
             throw new IllegalStateException("写入器返回空结果，无法判断本批写入状态");
         }
         return writeResult;
+    }
+
+    /**
+     * Remove only rows matching server-approved PRIMARY_KEY_EQ selectors.
+     * Invalid selectors fail closed rather than broadening the exclusion range.
+     */
+    private SyncBatchRecordBatch excludeQuarantinedRows(SyncBatchRecordBatch batch, List<String> selectors) {
+        if (batch == null || batch.isEmpty() || selectors == null || selectors.isEmpty()) {
+            return batch;
+        }
+        Map<String, java.util.Set<String>> valuesByColumn = new LinkedHashMap<>();
+        for (String selector : selectors) {
+            try {
+                JsonNode root = SELECTOR_MAPPER.readTree(selector);
+                String strategy = root == null ? "" : root.path("strategy").asText();
+                String column = root == null ? "" : root.path("column").asText();
+                JsonNode value = root == null ? null : root.get("value");
+                if (!"PRIMARY_KEY_EQ".equalsIgnoreCase(strategy)
+                        || column.isBlank() || value == null || value.isNull() || value.isContainerNode()) {
+                    throw new IllegalStateException("隔离 selector 不是有效的 PRIMARY_KEY_EQ 精确定位");
+                }
+                valuesByColumn.computeIfAbsent(column, ignored -> new HashSet<>()).add(value.asText());
+            } catch (IllegalStateException exception) {
+                throw exception;
+            } catch (Exception exception) {
+                throw new IllegalStateException("隔离 selector 无法解析，已阻断本批写入", exception);
+            }
+        }
+        List<Map<String, Object>> retained = new java.util.ArrayList<>();
+        for (Map<String, Object> row : batch.getRows()) {
+            boolean excluded = false;
+            for (Map.Entry<String, java.util.Set<String>> entry : valuesByColumn.entrySet()) {
+                Object actual = row == null ? null : row.get(entry.getKey());
+                if (actual != null && entry.getValue().contains(String.valueOf(actual))) {
+                    excluded = true;
+                    break;
+                }
+            }
+            if (!excluded) {
+                retained.add(row);
+            }
+        }
+        return new SyncBatchRecordBatch(batch.getColumns(), retained);
     }
 
     /**

@@ -18,6 +18,10 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncAuditQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncCheckpointQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordReplayRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordReplayResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordQuarantineRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncDirtyRecordQuarantineResult;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncRecoveryCasePublishRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncRecoveryCasePublishResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncErrorSampleQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCheckpointRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCompleteRequest;
@@ -25,6 +29,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionLogQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionStartRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionDiagnosisResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncOfflineJobPlanResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
@@ -72,14 +77,17 @@ import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
 import com.czh.datasmart.govern.datasync.service.DataSyncService;
 import com.czh.datasmart.govern.datasync.service.support.SyncAuditSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncAgentExecutionDiagnosisSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncDataScopeSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncDataVisibility;
 import com.czh.datasmart.govern.datasync.service.support.SyncDirtyRecordReplaySupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncDirtyRecordQuarantineSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionCreationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLifecycleSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncObjectExecutionOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncOfflineJobPlanSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncRecoveryCasePublishSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskBatchOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskCreateWizardDraftSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskDefinitionOperationSupport;
@@ -100,6 +108,7 @@ import com.czh.datasmart.govern.datasync.support.SyncMode;
 import com.czh.datasmart.govern.datasync.support.SyncTaskState;
 import com.czh.datasmart.govern.datasync.support.SyncTriggerType;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -149,8 +158,16 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncOfflineJobPlanSupport offlineJobPlanSupport;
     private final SyncObjectExecutionOperationSupport objectExecutionOperationSupport;
     private final SyncDirtyRecordReplaySupport dirtyRecordReplaySupport;
+    private final SyncDirtyRecordQuarantineSupport dirtyRecordQuarantineSupport;
+    private final SyncAgentExecutionDiagnosisSupport agentExecutionDiagnosisSupport;
     private final SyncTaskScheduleConfigSupport scheduleConfigSupport;
     private final SyncTaskCreateWizardDraftSupport createWizardDraftSupport;
+    private SyncRecoveryCasePublishSupport recoveryCasePublishSupport;
+
+    @Autowired
+    public void setRecoveryCasePublishSupport(SyncRecoveryCasePublishSupport recoveryCasePublishSupport) {
+        this.recoveryCasePublishSupport = recoveryCasePublishSupport;
+    }
 
     @Override
     @Transactional
@@ -1023,6 +1040,50 @@ public class DataSyncServiceImpl implements DataSyncService {
         }
         Page<SyncErrorSample> page = errorSampleMapper.selectPage(querySupport.page(criteria.current(), criteria.size()), wrapper);
         return PlatformPageResponse.of(page.getCurrent(), page.getSize(), page.getTotal(), page.getRecords());
+    }
+
+    @Override
+    public SyncExecutionDiagnosisResponse diagnoseExecution(Long taskId,
+                                                            Long executionId,
+                                                            SyncActorContext actorContext) {
+        SyncTask task = getTask(taskId, actorContext);
+        SyncTemplate template = getTemplateForTask(task);
+        return agentExecutionDiagnosisSupport.diagnose(task, template, executionId);
+    }
+
+    @Override
+    public SyncDirtyRecordQuarantineResult previewDirtyRecordQuarantine(
+            Long taskId,
+            SyncDirtyRecordQuarantineRequest request,
+            SyncActorContext actorContext) {
+        SyncTask task = getTask(taskId, actorContext);
+        assertTaskManageable(task, actorContext, "预览脏数据隔离");
+        return dirtyRecordQuarantineSupport.preview(task, request);
+    }
+
+    @Override
+    @Transactional
+    public SyncDirtyRecordQuarantineResult applyDirtyRecordQuarantine(
+            Long taskId,
+            SyncDirtyRecordQuarantineRequest request,
+            SyncActorContext actorContext) {
+        SyncTask task = getTask(taskId, actorContext);
+        assertTaskManageable(task, actorContext, "应用脏数据隔离");
+        return dirtyRecordQuarantineSupport.apply(task, request, actorContext);
+    }
+
+    @Override
+    @Transactional
+    public SyncRecoveryCasePublishResult publishRecoveryCase(
+            Long taskId,
+            SyncRecoveryCasePublishRequest request,
+            SyncActorContext actorContext) {
+        SyncTask task = getTask(taskId, actorContext);
+        assertTaskManageable(task, actorContext, "发布 Agent 恢复案例");
+        if (recoveryCasePublishSupport == null) {
+            throw new IllegalStateException("Agent 恢复案例服务尚未就绪");
+        }
+        return recoveryCasePublishSupport.publish(task, request, actorContext);
     }
 
     /**

@@ -22,6 +22,13 @@ public enum AgentToolType {
     DATASOURCE_METADATA,
 
     /**
+     * 数据源管理工具。
+     * 典型能力：经用户确认后执行白名单表结构修复、调整受控连接状态或更新数据源配置。
+     * 该类型与只读的 {@link #DATASOURCE_METADATA} 分离，避免结构写操作在审计和策略统计中被误报为元数据查询。
+     */
+    DATASOURCE_MANAGEMENT,
+
+    /**
      * 数据质量工具。
      * 典型能力：生成质量规则、查询质量报告、聚合异常样本、推荐清洗方案。
      */

@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.datasync.service.support;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.datasync.config.DataSyncDatasourceRunOnceProperties;
@@ -14,11 +15,13 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCompleteReq
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanView;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
+import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceClient;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceRequest;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
+import com.czh.datasmart.govern.datasync.mapper.SyncErrorSampleMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
@@ -66,6 +69,7 @@ public class SyncBatchRunOnceDispatchService {
     private final DataSyncTaskManagementReceiptPublisher receiptPublisher;
     private final SyncExecutionLogSupport executionLogSupport;
     private SyncExecutionPolicyService executionPolicyService;
+    private SyncErrorSampleMapper errorSampleMapper;
 
     /**
      * 可选注入执行策略服务。
@@ -77,6 +81,12 @@ public class SyncBatchRunOnceDispatchService {
     @Autowired(required = false)
     public void setExecutionPolicyService(SyncExecutionPolicyService executionPolicyService) {
         this.executionPolicyService = executionPolicyService;
+    }
+
+    /** Optional injection preserves constructor compatibility for older unit fixtures. */
+    @Autowired(required = false)
+    public void setErrorSampleMapper(SyncErrorSampleMapper errorSampleMapper) {
+        this.errorSampleMapper = errorSampleMapper;
     }
 
     /**
@@ -410,7 +420,32 @@ public class SyncBatchRunOnceDispatchService {
         request.setPreviousRecordsRead(zeroIfNull(execution.getRecordsRead()));
         request.setPreviousRecordsWritten(zeroIfNull(execution.getRecordsWritten()));
         request.setPreviousFailedRecordCount(zeroIfNull(execution.getFailedRecordCount()));
+        request.setExcludedSourceRecordKeys(loadQuarantinedSourceRecordKeys(bridgePlan.getSyncTaskId()));
         return request;
+    }
+
+    /**
+     * Load the exact selectors approved by the user for this task.
+     * A hard bound prevents an accidental million-row quarantine from becoming a huge internal request.
+     */
+    private List<String> loadQuarantinedSourceRecordKeys(Long taskId) {
+        if (errorSampleMapper == null || taskId == null) {
+            return List.of();
+        }
+        List<SyncErrorSample> samples = errorSampleMapper.selectList(new LambdaQueryWrapper<SyncErrorSample>()
+                .eq(SyncErrorSample::getSyncTaskId, taskId)
+                .eq(SyncErrorSample::getResolutionStatus, "QUARANTINED")
+                .isNotNull(SyncErrorSample::getSourceRecordKey)
+                .orderByAsc(SyncErrorSample::getId)
+                .last("LIMIT 1001"));
+        if (samples == null || samples.isEmpty()) {
+            return List.of();
+        }
+        if (samples.size() > 1000) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "当前任务隔离记录超过单次执行上限 1000，请先分批修复或由管理员调整治理方案");
+        }
+        return samples.stream().map(SyncErrorSample::getSourceRecordKey).toList();
     }
 
     private DatasourceRunOnceRequest.ExecutionPlan executionPlan(SyncBatchRunnerBridgePlan bridgePlan,
