@@ -55,5 +55,12 @@ public enum AgentToolType {
      * 只读分析工具。
      * 典型能力：受控只读 SQL、只读统计、只读数据画像。该类型默认应谨慎处理敏感数据。
      */
-    READONLY_ANALYTICS
+    READONLY_ANALYTICS,
+
+    /**
+     * Runtime-discovered outbound MCP tool.
+     * The concrete server/tool catalog remains owned by the Python MCP Host;
+     * Java owns admission, approval, durable outbox and receipt governance.
+     */
+    MCP_EXTERNAL_TOOL
 }

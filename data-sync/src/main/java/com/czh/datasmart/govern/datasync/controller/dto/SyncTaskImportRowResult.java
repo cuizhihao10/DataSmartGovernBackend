@@ -58,4 +58,31 @@ public class SyncTaskImportRowResult {
      * 低敏说明。
      */
     private String message;
+
+    /** Stable machine-readable error code used by RAG and repair planning. */
+    private String errorCode;
+
+    /** Import column related to the failure when it can be determined safely. */
+    private String fieldName;
+
+    /** Whether an allow-listed cell patch can address this row-level issue. */
+    private Boolean repairable;
+
+    /** User-facing remediation instruction rather than an internal state dump. */
+    private String suggestedAction;
+
+    /** Backward-compatible constructor used by the existing import flow. */
+    public SyncTaskImportRowResult(Integer rowNumber,
+                                   Long taskId,
+                                   String name,
+                                   String status,
+                                   String currentState,
+                                   String message) {
+        this.rowNumber = rowNumber;
+        this.taskId = taskId;
+        this.name = name;
+        this.status = status;
+        this.currentState = currentState;
+        this.message = message;
+    }
 }

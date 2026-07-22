@@ -15,6 +15,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRunAsyncTaskCommandPla
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxRecord;
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxStatus;
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxStore;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -55,6 +56,7 @@ public class AgentRunAsyncTaskCommandOutboxService {
     private final AgentRunAsyncTaskCommandPlanningService planningService;
     private final AgentAsyncTaskCommandOutboxStore outboxStore;
     private final AgentAsyncTaskCommandOutboxCapacityGuard capacityGuard;
+    private final AgentSessionMemoryStore sessionStore;
     private final ObjectMapper objectMapper;
 
     /**
@@ -301,11 +303,31 @@ public class AgentRunAsyncTaskCommandOutboxService {
             payload.put("approvalConfirmationId", executionEvidence.confirmationId());
             payload.put("serviceAuthorizationDecision", executionEvidence.serviceAuthorizationDecision());
             payload.put("argumentsResolutionMode", "AUDIT_REFERENCE_JUST_IN_TIME");
+            /*
+             * MCP worker 完成后可能触发模型继续选择下一批工具。跨服务只携带截断后的用户目标，
+             * 不携带 prompt、上下文块或工具参数；sessionId 仍是恢复同一 Durable Agent 会话的事实键。
+             * 即使摘要缺失，worker 也只能做结果总结，不能凭空扩大执行范围。
+             */
+            sessionStore.findById(plan.sessionId())
+                    .map(session -> limitedText(session.getObjective(), 1000))
+                    .filter(value -> value != null && !value.isBlank())
+                    .ifPresent(value -> payload.put("objectiveSummary", value));
         }
         payload.put("priority", properties.getDefaultPriority());
         payload.put("maxRetryCount", properties.getDefaultMaxRetryCount());
         payload.put("maxDeferCount", properties.getDefaultMaxDeferCount());
         return payload;
+    }
+
+    private String limitedText(String value, int maxLength) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.trim();
+        if (normalized.length() <= maxLength) {
+            return normalized;
+        }
+        return normalized.substring(0, maxLength);
     }
 
     private AgentAsyncTaskCommandExecutionEvidence evidenceFor(

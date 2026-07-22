@@ -31,6 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 同步任务定义导入/导出文件编解码组件。
@@ -75,6 +76,12 @@ public class SyncTaskDefinitionExchangeCodecSupport {
             "triggerType",
             "createTime",
             "updateTime"
+    );
+
+    /** Columns an Agent may propose changing after a failed dry-run. */
+    private static final Set<String> REPAIRABLE_HEADERS = Set.of(
+            "tenantId", "projectId", "templateId", "name", "description", "priority", "ownerId",
+            "groupCode", "groupName", "scheduleConfig", "runMode"
     );
 
     /**
@@ -128,6 +135,107 @@ public class SyncTaskDefinitionExchangeCodecSupport {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR, "导入文件不能为空");
         }
         return "XLSX".equals(format) ? decodeExcel(content) : decodeCsv(content);
+    }
+
+    /**
+     * Apply an allow-listed patch batch and return a new file body.
+     *
+     * <p>The original artifact is never mutated. Row numbers use the user-visible
+     * spreadsheet convention where row 1 is the header. Version and dry-run digest
+     * checks are performed by the artifact service before this codec is called.</p>
+     */
+    public byte[] applyRepairs(byte[] content, String format, List<CellRepair> repairs) {
+        if (repairs == null || repairs.isEmpty()) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR, "修复补丁不能为空");
+        }
+        return "XLSX".equals(format)
+                ? applyExcelRepairs(content, repairs)
+                : applyCsvRepairs(content, repairs);
+    }
+
+    private byte[] applyCsvRepairs(byte[] content, List<CellRepair> repairs) {
+        String text = new String(content, StandardCharsets.UTF_8);
+        if (!text.isEmpty() && text.charAt(0) == '\uFEFF') {
+            text = text.substring(1);
+        }
+        List<List<String>> rows = parseCsv(text);
+        if (rows.isEmpty()) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR, "CSV 文件缺少表头");
+        }
+        Map<String, Integer> headerIndex = headerIndex(rows.get(0));
+        for (CellRepair repair : repairs) {
+            int columnIndex = repairColumnIndex(headerIndex, repair);
+            int rawRowIndex = repair.rowNumber() - 1;
+            if (rawRowIndex <= 0 || rawRowIndex >= rows.size()) {
+                throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                        "修复行号不存在: " + repair.rowNumber());
+            }
+            List<String> row = rows.get(rawRowIndex);
+            while (row.size() <= columnIndex) {
+                row.add("");
+            }
+            validateExpectedValue(row.get(columnIndex), repair);
+            row.set(columnIndex, repair.replacementValue() == null ? "" : repair.replacementValue());
+        }
+        StringBuilder builder = new StringBuilder("\uFEFF");
+        rows.forEach(row -> appendCsvLine(builder, row));
+        return builder.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    private byte[] applyExcelRepairs(byte[] content, List<CellRepair> repairs) {
+        try (Workbook workbook = WorkbookFactory.create(new ByteArrayInputStream(content));
+             ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+            Sheet sheet = workbook.getNumberOfSheets() == 0 ? null : workbook.getSheetAt(0);
+            if (sheet == null || sheet.getRow(0) == null) {
+                throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR, "Excel 文件缺少表头");
+            }
+            DataFormatter formatter = new DataFormatter(Locale.ROOT);
+            Map<String, Integer> headerIndex = headerIndex(readExcelCells(sheet.getRow(0), formatter));
+            for (CellRepair repair : repairs) {
+                int columnIndex = repairColumnIndex(headerIndex, repair);
+                Row row = sheet.getRow(repair.rowNumber() - 1);
+                if (row == null || repair.rowNumber() <= 1) {
+                    throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                            "修复行号不存在: " + repair.rowNumber());
+                }
+                Cell cell = row.getCell(columnIndex, Row.MissingCellPolicy.CREATE_NULL_AS_BLANK);
+                validateExpectedValue(formatter.formatCellValue(cell), repair);
+                cell.setCellValue(repair.replacementValue() == null ? "" : repair.replacementValue());
+            }
+            workbook.write(output);
+            return output.toByteArray();
+        } catch (IOException exception) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    "修复 Excel 制品失败: " + exception.getMessage());
+        }
+    }
+
+    private int repairColumnIndex(Map<String, Integer> headerIndex, CellRepair repair) {
+        if (repair == null || repair.rowNumber() == null || repair.columnName() == null) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR, "修复补丁缺少行号或列名");
+        }
+        String columnName = repair.columnName().trim();
+        if (!REPAIRABLE_HEADERS.contains(columnName)) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    "不允许由 Agent 修复导入列: " + columnName);
+        }
+        Integer index = headerIndex.get(normalizeHeader(columnName));
+        if (index == null) {
+            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
+                    "导入文件不存在待修复列: " + columnName);
+        }
+        return index;
+    }
+
+    private void validateExpectedValue(String actualValue, CellRepair repair) {
+        if (repair.expectedValue() == null) {
+            return;
+        }
+        String actual = actualValue == null ? "" : actualValue;
+        if (!actual.equals(repair.expectedValue())) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "修复补丁已过期，行 " + repair.rowNumber() + " 列 " + repair.columnName() + " 的值已变化");
+        }
     }
 
     private byte[] encodeCsv(List<SyncTask> tasks) {
@@ -448,5 +556,12 @@ public class SyncTaskDefinitionExchangeCodecSupport {
                                           String groupName,
                                           String scheduleConfig,
                                           String runMode) {
+    }
+
+    /** Safe cell-level repair contract used by immutable artifact versioning. */
+    public record CellRepair(Integer rowNumber,
+                             String columnName,
+                             String expectedValue,
+                             String replacementValue) {
     }
 }

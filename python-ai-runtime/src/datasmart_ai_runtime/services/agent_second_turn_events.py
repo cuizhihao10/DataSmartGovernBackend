@@ -152,6 +152,28 @@ class SecondTurnEventBuilder:
             },
         )
 
+    def record_follow_up_tool_planning(self, summary: dict[str, Any]) -> None:
+        """Record a low-sensitive view of the model's next tool batch decision."""
+
+        accepted_count = int(summary.get("acceptedCount") or 0)
+        repeated_count = int(summary.get("repeatedCount") or 0)
+        rejected_count = int(summary.get("rejectedCount") or 0)
+        self._record(
+            AgentRuntimeEventType.MODEL_FOLLOW_UP_TOOL_BATCH_GOVERNED,
+            "govern_follow_up_model_tool_calls",
+            (
+                "模型提出的下一批工具已通过平台治理并等待提交控制面。"
+                if accepted_count > 0
+                else "模型未产生可继续执行的新工具，当前轮次将结束或等待用户处理。"
+            ),
+            severity=(
+                AgentRuntimeEventSeverity.WARNING
+                if repeated_count > 0 or rejected_count > 0
+                else AgentRuntimeEventSeverity.INFO
+            ),
+            attributes=dict(summary),
+        )
+
     def record_second_turn_skipped(self, *, action: str, reasons: tuple[str, ...]) -> None:
         """记录二轮被跳过的事件。"""
 

@@ -67,7 +67,7 @@ class AgentLoopControlPolicy:
     """
 
     max_tool_steps: int = 4
-    max_second_turns: int = 1
+    max_second_turns: int = 4
     max_tool_calls_per_turn: int = 8
     max_total_tokens: int = 16000
     global_timeout_seconds: int = 180

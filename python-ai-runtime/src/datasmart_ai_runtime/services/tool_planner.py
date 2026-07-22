@@ -29,6 +29,10 @@ from datasmart_ai_runtime.services.quality_remediation_tool_plan_builder import 
 from datasmart_ai_runtime.services.tools.workspace_file_plan_builder import WorkspaceFileToolPlanBuilder
 from datasmart_ai_runtime.services.tools.web_search_tool import WebSearchToolPlanBuilder
 from datasmart_ai_runtime.services.tools.data_sync_plan_builder import DataSyncToolPlanBuilder
+from datasmart_ai_runtime.services.tools.sync_task_import_plan_builder import (
+    SyncTaskImportToolPlanBuilder,
+)
+from datasmart_ai_runtime.services.model_tool_result_policies import model_result_governance
 from datasmart_ai_runtime.services.tool_plan_dag import ToolPlanDagAnnotator
 from datasmart_ai_runtime.services.tool_parameter_validator import ToolParameterValidator
 
@@ -59,6 +63,7 @@ class ToolPlanner:
         self._workspace_file_plans = WorkspaceFileToolPlanBuilder()
         self._web_search_plans = WebSearchToolPlanBuilder()
         self._data_sync_plans = DataSyncToolPlanBuilder()
+        self._task_import_plans = SyncTaskImportToolPlanBuilder()
 
     def plan(
         self,
@@ -100,6 +105,19 @@ class ToolPlanner:
         plans.extend(data_sync_plans)
         planned_tool_names.update(plan.tool_name for plan in data_sync_plans)
         wants_data_sync_workflow = bool(data_sync_plans)
+
+        task_import_plans = self._task_import_plans.build(
+            request=request,
+            candidate_tools=candidate_tools,
+            tools=self._tools,
+            plan_factory=lambda tool, reason, arguments: self._build_plan(
+                tool=tool,
+                reason=reason,
+                arguments=arguments,
+            ),
+        )
+        plans.extend(task_import_plans)
+        planned_tool_names.update(plan.tool_name for plan in task_import_plans)
 
         wants_datasource_metadata = (
             "datasource.metadata.read" in candidate_tools
@@ -336,6 +354,70 @@ class ToolPlanner:
             seen.add(name)
         return tuple(visible_tools)
 
+    def model_visible_follow_up_tools(
+        self,
+        request: AgentRequest,
+        intent_analysis: IntentAnalysis | None = None,
+        context_blocks: tuple[ContextBlock, ...] = (),
+        skill_plan: AgentSkillPlan | None = None,
+        previous_tool_plans: tuple[ToolPlan, ...] = (),
+    ) -> tuple[ToolDefinition, ...]:
+        """Return the least-privilege tool graph frontier for a later model turn.
+
+        Follow-up reasoning must not receive the whole platform catalog.  It starts
+        with the tools already admitted by intent/Skill planning, then expands only
+        through explicit lifecycle transitions.  This lets the model autonomously
+        move from observation to draft, precheck, publish, run and status polling,
+        while an unrelated permission or destructive tool remains invisible.
+        """
+
+        visible = list(
+            self.model_visible_tools(
+                request=request,
+                intent_analysis=intent_analysis,
+                context_blocks=context_blocks,
+                skill_plan=skill_plan,
+            )
+        )
+        transition_names = {
+            next_tool
+            for plan in previous_tool_plans
+            for next_tool in self._follow_up_tool_transitions().get(plan.tool_name, ())
+        }
+        seen = {tool.name for tool in visible}
+        for name in transition_names:
+            tool = self._tools.get(name)
+            if tool is None or name in seen:
+                continue
+            visible.append(tool)
+            seen.add(name)
+        return tuple(visible)
+
+    @staticmethod
+    def _follow_up_tool_transitions() -> dict[str, tuple[str, ...]]:
+        """Describe safe model-visible lifecycle edges, not execution shortcuts."""
+
+        return {
+            "datasource.source.connection.test": ("datasource.source.metadata.read",),
+            "datasource.target.connection.test": ("datasource.target.metadata.read",),
+            "datasource.source.metadata.read": ("sync.task.draft.save",),
+            "datasource.target.metadata.read": ("sync.task.draft.save",),
+            "sync.task.draft.save": ("sync.task.precheck",),
+            "sync.task.precheck": ("sync.task.publish", "knowledge.rag.query"),
+            "sync.task.publish": ("sync.task.run",),
+            "sync.task.run": ("sync.execution.status",),
+            "sync.execution.status": ("sync.execution.status", "knowledge.rag.query"),
+            "sync.task.import.dry-run": (
+                "sync.task.import.rag.lookup",
+                "sync.task.import.repair.apply",
+                "sync.task.import.commit",
+            ),
+            "sync.task.import.rag.lookup": ("sync.task.import.repair.apply",),
+            "sync.task.import.repair.apply": ("sync.task.import.dry-run",),
+            "task.create.draft": ("task.draft.persist",),
+            "knowledge.rag.query": ("knowledge.rag.query",),
+        }
+
     def registered_tools(self) -> tuple[ToolDefinition, ...]:
         """返回当前规划器持有的完整工具注册表快照。
 
@@ -420,11 +502,16 @@ class ToolPlanner:
                 "protocolHint": tool.protocol_hint,
                 "targetService": tool.target_service,
                 "targetEndpoint": tool.target_endpoint,
+                "readOnly": tool.read_only,
+                "idempotent": tool.idempotent,
+                "descriptorType": tool.descriptor_type,
+                "schemaVersion": tool.schema_version,
                 "tenantScoped": tool.tenant_scoped,
                 "projectScoped": tool.project_scoped,
                 "sensitiveFields": tool.sensitive_fields,
                 "memoryWritePolicy": tool.memory_write_policy,
                 "cachePolicy": tool.cache_policy,
+                **model_result_governance(tool.name),
             },
         )
 

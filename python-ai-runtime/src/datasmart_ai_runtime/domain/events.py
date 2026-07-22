@@ -59,6 +59,7 @@ class AgentRuntimeEventType(str, Enum):
     AGENT_LOOP_CONTROL_DECIDED = "agent_loop_control_decided"
     MODEL_SECOND_TURN_COMPLETED = "model_second_turn_completed"
     MODEL_SECOND_TURN_SKIPPED = "model_second_turn_skipped"
+    MODEL_FOLLOW_UP_TOOL_BATCH_GOVERNED = "model_follow_up_tool_batch_governed"
     MEMORY_RETRIEVED = "memory_retrieved"
     MEMORY_WRITE_CANDIDATE_PROPOSED = "memory_write_candidate_proposed"
     MEMORY_WRITE_DECISION_RECORDED = "memory_write_decision_recorded"

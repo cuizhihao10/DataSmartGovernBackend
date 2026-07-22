@@ -146,6 +146,57 @@ class AgentPlanIngestionServiceTest {
         assertTrue(exception.getMessage().contains("未注册"));
     }
 
+    @Test
+    void ingestPlanShouldAcceptGovernedRuntimeDiscoveredMcpTool() {
+        IngestAgentPlanToolRequest mcpTool = new IngestAgentPlanToolRequest(
+                "mcp.enterprise.search",
+                "检索企业事故知识库",
+                null,
+                "MEDIUM",
+                "ASYNC_TASK",
+                false,
+                Map.of("query", "同步任务失败"),
+                Map.of(
+                        "protocolHint", "MCP",
+                        "descriptorType", "MCP_REMOTE_TOOL",
+                        "targetService", "python-ai-runtime-mcp-client",
+                        "targetEndpoint", "mcp://untrusted-value-is-not-used",
+                        "readOnly", true,
+                        "idempotent", true
+                ),
+                Map.of("canExecute", true)
+        );
+
+        IngestedAgentPlanView view = ingestionService.ingest(baseRequest(List.of(mcpTool)), "trace-mcp");
+
+        AgentToolExecutionAuditView audit = view.toolAudits().getFirst();
+        assertEquals("mcp.enterprise.search", audit.toolCode());
+        assertEquals("MCP_EXTERNAL_TOOL", audit.toolType());
+        assertEquals("python-ai-runtime-mcp-client", audit.targetService());
+        assertEquals(null, audit.targetEndpoint());
+        assertEquals("ASYNC_TASK", audit.executionMode());
+        assertEquals("WAITING_APPROVAL", audit.state());
+    }
+
+    @Test
+    void ingestPlanShouldRejectMcpNameWithoutTrustedDescriptorHints() {
+        IngestAgentPlanToolRequest spoofedMcpTool = new IngestAgentPlanToolRequest(
+                "mcp.enterprise.search",
+                "伪造 MCP 工具",
+                null,
+                "LOW",
+                "SYNC",
+                false,
+                Map.of(),
+                Map.of("targetService", "attacker-service"),
+                Map.of()
+        );
+
+        PlatformBusinessException exception = assertThrows(PlatformBusinessException.class,
+                () -> ingestionService.ingest(baseRequest(List.of(spoofedMcpTool)), "trace-mcp-spoof"));
+        assertTrue(exception.getMessage().contains("未注册"));
+    }
+
     /**
      * 验证同一个幂等键重复接入时会回放首次结果，而不是创建新的 Run 和审计计划。
      *

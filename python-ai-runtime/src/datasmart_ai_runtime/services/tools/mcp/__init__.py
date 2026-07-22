@@ -59,6 +59,11 @@ from datasmart_ai_runtime.services.tools.mcp.model_feedback_second_turn import (
     McpModelFeedbackSecondTurnSettings,
     mcp_model_feedback_second_turn_settings_from_env,
 )
+from datasmart_ai_runtime.services.tools.mcp.durable_continuation import (
+    MCP_DURABLE_CONTINUATION_SCHEMA_VERSION,
+    McpDurableContinuationCoordinator,
+    McpDurableContinuationResult,
+)
 
 __all__ = [
     "MCP_CLIENT_SCHEMA_VERSION",
@@ -67,6 +72,7 @@ __all__ = [
     "MCP_DURABLE_WORKER_SCHEMA_VERSION",
     "MCP_TOOL_FEEDBACK_SCHEMA_VERSION",
     "MCP_MODEL_FEEDBACK_SECOND_TURN_SCHEMA_VERSION",
+    "MCP_DURABLE_CONTINUATION_SCHEMA_VERSION",
     "McpAdmissionBuildError",
     "McpAdmissionBuildResult",
     "McpClientError",
@@ -86,6 +92,8 @@ __all__ = [
     "McpModelFeedbackSecondTurnResult",
     "McpModelFeedbackSecondTurnService",
     "McpModelFeedbackSecondTurnSettings",
+    "McpDurableContinuationCoordinator",
+    "McpDurableContinuationResult",
     "McpServerConfiguration",
     "McpSessionOpener",
     "McpSessionPort",

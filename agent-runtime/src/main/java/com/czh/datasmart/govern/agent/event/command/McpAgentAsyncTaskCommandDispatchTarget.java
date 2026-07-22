@@ -245,6 +245,7 @@ public class McpAgentAsyncTaskCommandDispatchTarget implements AgentAsyncTaskCom
         copyText(payload, controlFacts, "approvalConfirmationId");
         copyText(payload, controlFacts, "commandProposalId");
         copyText(payload, controlFacts, "checkpointId");
+        copyText(payload, controlFacts, "objectiveSummary");
         String readiness = firstText(payload, "readinessDecision", "decision");
         if (!hasText(readiness) && outboxProperties.isDispatcherPreCheckEnabled()) {
             readiness = "READY";

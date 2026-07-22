@@ -6,8 +6,16 @@
  */
 package com.czh.datasmart.govern.agent.service.tool;
 
+import com.czh.datasmart.govern.agent.persistence.AgentRuntimeJdbcConnectionManager;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.Timestamp;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -36,6 +44,22 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public class AgentToolExecutionOutputStore {
 
     private final List<AgentToolExecutionOutputRecord> records = new CopyOnWriteArrayList<>();
+    private final AgentRuntimeJdbcConnectionManager connectionManager;
+    private final ObjectMapper objectMapper;
+
+    /** Creates the lightweight memory store used by focused unit tests. */
+    public AgentToolExecutionOutputStore() {
+        this.connectionManager = null;
+        this.objectMapper = new ObjectMapper();
+    }
+
+    /** Uses PostgreSQL as the durable source of truth whenever control-plane JDBC is enabled. */
+    @Autowired
+    public AgentToolExecutionOutputStore(ObjectProvider<AgentRuntimeJdbcConnectionManager> connectionManager,
+                                         ObjectMapper objectMapper) {
+        this.connectionManager = connectionManager.getIfAvailable();
+        this.objectMapper = objectMapper;
+    }
 
     /**
      * 保存工具结构化输出。
@@ -47,14 +71,16 @@ public class AgentToolExecutionOutputStore {
         if (output == null || output.isEmpty()) {
             return;
         }
-        records.add(new AgentToolExecutionOutputRecord(
+        AgentToolExecutionOutputRecord record = new AgentToolExecutionOutputRecord(
                 audit.sessionId(),
                 audit.runId(),
                 audit.auditId(),
                 audit.toolCode(),
                 new LinkedHashMap<>(output),
                 LocalDateTime.now()
-        ));
+        );
+        records.add(record);
+        persist(record);
     }
 
     /**
@@ -66,11 +92,12 @@ public class AgentToolExecutionOutputStore {
      * @return 最近一次成功输出；如果没有执行过该工具，则返回空
      */
     public Optional<AgentToolExecutionOutputRecord> findLatest(String sessionId, String runId, String toolCode) {
-        return records.stream()
+        Optional<AgentToolExecutionOutputRecord> memoryRecord = records.stream()
                 .filter(record -> record.sessionId().equals(sessionId))
                 .filter(record -> record.runId().equals(runId))
                 .filter(record -> record.toolCode().equals(toolCode))
                 .max(Comparator.comparing(AgentToolExecutionOutputRecord::createTime));
+        return memoryRecord.isPresent() ? memoryRecord : findLatestJdbc(sessionId, runId, toolCode);
     }
 
     /**
@@ -81,11 +108,24 @@ public class AgentToolExecutionOutputStore {
      * auditId 是工具执行审计的唯一标识，使用它可以让工具链引用具备可复现性和可审计性。</p>
      */
     public Optional<AgentToolExecutionOutputRecord> findByAuditId(String sessionId, String runId, String auditId) {
-        return records.stream()
+        Optional<AgentToolExecutionOutputRecord> memoryRecord = records.stream()
                 .filter(record -> record.sessionId().equals(sessionId))
                 .filter(record -> record.runId().equals(runId))
                 .filter(record -> record.auditId().equals(auditId))
                 .findFirst();
+        return memoryRecord.isPresent() ? memoryRecord : findByAuditIdJdbc(sessionId, runId, auditId);
+    }
+
+    /**
+     * Resolves an explicit output reference across runs in the same Agent session.
+     * The session boundary is mandatory; knowing an audit id alone never grants access.
+     */
+    public Optional<AgentToolExecutionOutputRecord> findBySessionAuditId(String sessionId, String auditId) {
+        Optional<AgentToolExecutionOutputRecord> memoryRecord = records.stream()
+                .filter(record -> record.sessionId().equals(sessionId))
+                .filter(record -> record.auditId().equals(auditId))
+                .findFirst();
+        return memoryRecord.isPresent() ? memoryRecord : findBySessionAuditIdJdbc(sessionId, auditId);
     }
 
     /**
@@ -100,6 +140,91 @@ public class AgentToolExecutionOutputStore {
             }
         }
         return result;
+    }
+
+    private void persist(AgentToolExecutionOutputRecord record) {
+        if (connectionManager == null) {
+            return;
+        }
+        connectionManager.executeWithConnection(connection -> {
+            String sql = "INSERT INTO agent_tool_execution_output "
+                    + "(audit_id, session_id, run_id, tool_code, output_json, create_time) "
+                    + "VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?) "
+                    + "ON CONFLICT (audit_id) DO UPDATE SET session_id = EXCLUDED.session_id, "
+                    + "run_id = EXCLUDED.run_id, tool_code = EXCLUDED.tool_code, "
+                    + "output_json = EXCLUDED.output_json, create_time = EXCLUDED.create_time";
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                statement.setString(1, record.auditId());
+                statement.setString(2, record.sessionId());
+                statement.setString(3, record.runId());
+                statement.setString(4, record.toolCode());
+                statement.setString(5, objectMapper.writeValueAsString(record.output()));
+                statement.setTimestamp(6, Timestamp.valueOf(record.createTime()));
+                statement.executeUpdate();
+            } catch (Exception exception) {
+                throw new IllegalStateException("Unable to persist Agent tool output", exception);
+            }
+            return null;
+        });
+    }
+
+    private Optional<AgentToolExecutionOutputRecord> findLatestJdbc(String sessionId, String runId, String toolCode) {
+        return queryOne(
+                "SELECT session_id, run_id, audit_id, tool_code, output_json, create_time "
+                        + "FROM agent_tool_execution_output WHERE session_id = ? AND run_id = ? AND tool_code = ? "
+                        + "ORDER BY create_time DESC LIMIT 1",
+                sessionId, runId, toolCode
+        );
+    }
+
+    private Optional<AgentToolExecutionOutputRecord> findByAuditIdJdbc(
+            String sessionId, String runId, String auditId) {
+        return queryOne(
+                "SELECT session_id, run_id, audit_id, tool_code, output_json, create_time "
+                        + "FROM agent_tool_execution_output WHERE session_id = ? AND run_id = ? AND audit_id = ?",
+                sessionId, runId, auditId
+        );
+    }
+
+    private Optional<AgentToolExecutionOutputRecord> findBySessionAuditIdJdbc(String sessionId, String auditId) {
+        return queryOne(
+                "SELECT session_id, run_id, audit_id, tool_code, output_json, create_time "
+                        + "FROM agent_tool_execution_output WHERE session_id = ? AND audit_id = ?",
+                sessionId, auditId
+        );
+    }
+
+    private Optional<AgentToolExecutionOutputRecord> queryOne(String sql, String... parameters) {
+        if (connectionManager == null) {
+            return Optional.empty();
+        }
+        return connectionManager.executeWithConnection(connection -> {
+            try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                for (int index = 0; index < parameters.length; index++) {
+                    statement.setString(index + 1, parameters[index]);
+                }
+                try (ResultSet resultSet = statement.executeQuery()) {
+                    if (!resultSet.next()) {
+                        return Optional.empty();
+                    }
+                    Map<String, Object> output = objectMapper.readValue(
+                            resultSet.getString("output_json"),
+                            new TypeReference<Map<String, Object>>() {
+                            }
+                    );
+                    return Optional.of(new AgentToolExecutionOutputRecord(
+                            resultSet.getString("session_id"),
+                            resultSet.getString("run_id"),
+                            resultSet.getString("audit_id"),
+                            resultSet.getString("tool_code"),
+                            output,
+                            resultSet.getTimestamp("create_time").toLocalDateTime()
+                    ));
+                }
+            } catch (Exception exception) {
+                throw new IllegalStateException("Unable to read Agent tool output", exception);
+            }
+        });
     }
 
     /**

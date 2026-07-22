@@ -2,13 +2,13 @@
 
 4.08 已经引入 `AgentLoopControlPolicyEvaluator`，能判断当前控制面反馈是否允许进入二轮模型推理；
 4.09 又把 API 响应组装从 `api.py` 中拆出，避免把所有 Agent 副作用都塞进 HTTP 路由层。本模块承接
-下一步：在策略明确允许时，基于 Java 控制面工具反馈构造 tool result messages，并调用模型完成二轮总结。
+下一步：在策略明确允许时，基于 Java 控制面工具反馈构造 tool result messages，并允许模型选择下一批工具。
 
 职责边界非常重要：
 - 本模块不执行真实工具，不审批，不重试，不推进 Java 状态机；
 - 它只消费已经形成的 `AgentControlPlaneFeedbackSnapshot` 和 `AgentLoopControlDecision`；
 - 只有 `decision.allowed=True` 且 action 为 `allow_second_turn` 时才会调用模型；
-- 第二轮请求显式设置 `tool_choice="none"` 且不暴露 tools，避免当前阶段产生无限工具递归。
+- 后续轮次只暴露意图、Skill 和显式生命周期边能到达的工具，并始终重新经过 intake、预算和重复调用守卫。
 
 这样做能把 DataSmart 的 Agent 主链从“能展示二轮条件”推进到“具备受控二轮推理”，同时仍然保持
 Java `agent-runtime` 作为执行、审批、审计和幂等事实源。
@@ -27,7 +27,10 @@ from datasmart_ai_runtime.domain.contracts import (
     ModelInvocationResult,
     ModelMessage,
     ModelToolCall,
+    ToolPlan,
 )
+from datasmart_ai_runtime.domain.events import AgentRuntimeEvent
+from datasmart_ai_runtime.services.agent_follow_up_tool_planner import AgentFollowUpToolPlanner
 from datasmart_ai_runtime.services.agent_control_plane_feedback import AgentControlPlaneFeedbackSnapshot
 from datasmart_ai_runtime.services.agent_loop_control_policy import AgentLoopControlAction, AgentLoopControlDecision
 from datasmart_ai_runtime.services.agent_second_turn_events import SecondTurnEventBuilder
@@ -35,6 +38,7 @@ from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceSe
 from datasmart_ai_runtime.services.model_gateway.model_gateway_context import build_model_gateway_context
 from datasmart_ai_runtime.domain.model_gateway import ModelGatewayRequestContext
 from datasmart_ai_runtime.services.model_gateway.model_provider import ModelProviderRegistry
+from datasmart_ai_runtime.services.model_gateway.model_query_engine import ModelQueryEngine
 from datasmart_ai_runtime.services.model_gateway.model_provider_metadata import build_model_provider_metadata
 from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import ModelToolResultFeedbackBuilder
 
@@ -68,7 +72,19 @@ class AgentSecondTurnResult:
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     error_code: str | None = None
+    visible_tool_names: tuple[str, ...] = ()
+    model_tool_call_count: int = 0
+    follow_up_tool_plans: tuple[ToolPlan, ...] = ()
+    repeated_tool_call_count: int = 0
+    budget_issue_codes: tuple[str, ...] = ()
+    cache_hit: bool = False
     runtime_events: tuple[AgentRuntimeEvent, ...] = field(default_factory=tuple)
+
+    @property
+    def continues(self) -> bool:
+        """Whether another governed control-plane tool run must be submitted."""
+
+        return bool(self.follow_up_tool_plans)
 
     def to_summary(self) -> dict[str, Any]:
         """转换为 API 响应友好的摘要。
@@ -93,6 +109,14 @@ class AgentSecondTurnResult:
             "promptTokens": self.prompt_tokens,
             "completionTokens": self.completion_tokens,
             "errorCode": self.error_code,
+            "visibleToolNames": self.visible_tool_names,
+            "modelToolCallCount": self.model_tool_call_count,
+            "followUpToolCount": len(self.follow_up_tool_plans),
+            "followUpToolNames": tuple(plan.tool_name for plan in self.follow_up_tool_plans),
+            "repeatedToolCallCount": self.repeated_tool_call_count,
+            "budgetIssueCodes": self.budget_issue_codes,
+            "cacheHit": self.cache_hit,
+            "continues": self.continues,
         }
 
 
@@ -111,10 +135,18 @@ class AgentSecondTurnOrchestrator:
         model_providers: ModelProviderRegistry,
         feedback_builder: ModelToolResultFeedbackBuilder | None = None,
         model_gateway: ModelGatewayGovernanceService | None = None,
+        follow_up_tool_planner: AgentFollowUpToolPlanner | None = None,
+        model_query_engine: ModelQueryEngine | None = None,
     ) -> None:
         self._model_providers = model_providers
         self._feedback_builder = feedback_builder or ModelToolResultFeedbackBuilder()
         self._model_gateway = model_gateway
+        self._follow_up_tool_planner = follow_up_tool_planner
+        self._model_query_engine = model_query_engine or (
+            ModelQueryEngine(model_gateway=model_gateway, model_providers=model_providers)
+            if model_gateway is not None
+            else None
+        )
 
     def run(
         self,
@@ -197,16 +229,45 @@ class AgentSecondTurnOrchestrator:
                 extra_feedback_call_ids=feedback_bundle.extra_feedback_call_ids,
             )
 
+        visible_tools = (
+            self._follow_up_tool_planner.visible_tools(request, plan)
+            if self._follow_up_tool_planner is not None
+            else ()
+        )
+        gateway_context = self._gateway_context_from_plan(request, plan)
         second_turn_request = ModelInvocationRequest(
             route=plan.selected_route,
             messages=self._build_context_messages(request, plan) + feedback_bundle.messages,
             trace_id=request.variables.get("traceId") or request.variables.get("trace_id") or plan.request_id,
-            available_tools=(),
-            tool_choice="none",
-            provider_metadata=self._provider_metadata_from_plan(request, plan),
+            available_tools=visible_tools,
+            # `auto` is essential: the model may finish with text or choose another
+            # governed tool batch.  `required` would force hallucinated work when the
+            # original goal is already complete.
+            tool_choice="auto" if visible_tools else "none",
+            provider_metadata=build_model_provider_metadata(gateway_context),
         )
-        result = self._model_providers.invoke(second_turn_request)
-        self._record_usage_if_possible(request, plan, result)
+        cache_hit = False
+        if self._model_query_engine is not None:
+            query_result = self._model_query_engine.invoke(second_turn_request, context=gateway_context)
+            result = query_result.result
+            cache_hit = query_result.cache_hit
+        else:
+            result = self._model_providers.invoke(second_turn_request)
+            self._record_usage_if_possible(request, plan, result)
+
+        follow_up = (
+            self._follow_up_tool_planner.govern(
+                request=request,
+                plan=plan,
+                tool_calls=result.tool_calls,
+                visible_tools=visible_tools,
+                control_plane_feedback=control_plane_feedback,
+            )
+            if self._follow_up_tool_planner is not None
+            else None
+        )
+        if follow_up is not None:
+            events.record_follow_up_tool_planning(follow_up.to_summary())
         events.record_second_turn_completed(
             feedback_count=len(feedback_items),
             prompt_tokens=result.prompt_tokens,
@@ -216,7 +277,7 @@ class AgentSecondTurnOrchestrator:
         return AgentSecondTurnResult(
             executed=True,
             allowed=True,
-            action=loop_control_decision.action.value,
+            action="continue_with_tools" if follow_up and follow_up.continues else "complete_with_answer",
             summary=result.content,
             reasons=loop_control_decision.reasons,
             recommended_actions=loop_control_decision.recommended_actions,
@@ -229,11 +290,17 @@ class AgentSecondTurnOrchestrator:
             prompt_tokens=result.prompt_tokens,
             completion_tokens=result.completion_tokens,
             error_code=result.error_code,
+            visible_tool_names=tuple(tool.name for tool in visible_tools),
+            model_tool_call_count=len(result.tool_calls),
+            follow_up_tool_plans=follow_up.accepted_tool_plans if follow_up else (),
+            repeated_tool_call_count=follow_up.repeated_count if follow_up else 0,
+            budget_issue_codes=follow_up.budget_issue_codes if follow_up else (),
+            cache_hit=cache_hit,
             runtime_events=events.events(),
         )
 
     @staticmethod
-    def _provider_metadata_from_plan(request: AgentRequest, plan: AgentPlan) -> dict[str, object]:
+    def _gateway_context_from_plan(request: AgentRequest, plan: AgentPlan) -> ModelGatewayRequestContext:
         """从已有计划恢复二轮模型调用的 Provider metadata。
 
         受控二轮推理通常发生在 Java 工具执行完成之后，时间上晚于首次 AgentPlan 生成。此时不应重新做一次
@@ -255,7 +322,7 @@ class AgentSecondTurnOrchestrator:
             trace_id=request.variables.get("traceId") or request.variables.get("trace_id") or plan.request_id,
             attributes=attributes,
         )
-        return build_model_provider_metadata(context)
+        return context
 
     @staticmethod
     def _tool_calls_from_plan(plan: AgentPlan) -> tuple[ModelToolCall, ...]:
@@ -300,17 +367,18 @@ class AgentSecondTurnOrchestrator:
     def _build_context_messages(request: AgentRequest, plan: AgentPlan) -> tuple[ModelMessage, ...]:
         """构造二轮模型上下文消息。
 
-        这里不重新暴露工具列表，也不要求模型继续规划新工具，而是让模型基于 Java 控制面反馈做解释、
-        总结和下一步建议。未来真正多步 loop 要继续调用工具时，应先回到 loop policy 重新评估。
+        模型只能根据受控反馈与本轮显式 tools 决定“结束回答”或“提出下一批工具”。它不能声称工具已经
+        执行，也不能输出隐藏思维链；后续工具仍会重新进入平台治理与 Java/MCP Durable 控制面。
         """
 
         return (
             ModelMessage(
                 role="system",
                 content=(
-                    "你是 DataSmart Govern 的受控 Agent 二轮推理节点。"
-                    "你只能基于后续 role=tool 消息中的受控工具反馈进行总结、解释失败原因、给出下一步建议；"
-                    "不要声称执行了新的工具，不要继续提出新的工具调用。"
+                    "你是 DataSmart Govern 的受控 Agent 后续推理节点。"
+                    "只能基于 role=tool 的受控反馈和本轮公开工具 schema 决策。"
+                    "如果目标已完成，直接给出公开结论；如果仍需事实或动作，使用原生 tool_calls 选择最少工具。"
+                    "不要伪造参数、不要声称尚未执行的工具已经成功、不要输出隐藏思维链。"
                 ),
             ),
             ModelMessage(

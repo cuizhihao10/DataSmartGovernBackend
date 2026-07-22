@@ -56,7 +56,7 @@ class AgentToolOutputReferenceResolverTest {
     }
 
     @Test
-    void shouldReturnEmptyWhenReferencePointsToAnotherRun() {
+    void shouldResolveExplicitReferenceAcrossRunsInSameSession() {
         AgentToolExecutionOutputStore outputStore = new AgentToolExecutionOutputStore();
         outputStore.save(
                 new AgentToolExecutionOutputStore.AgentToolExecutionAuditSnapshot(
@@ -69,8 +69,44 @@ class AgentToolOutputReferenceResolverTest {
         );
         AgentToolOutputReferenceResolver resolver = new AgentToolOutputReferenceResolver(outputStore);
 
+        Object value = resolver.resolve(context(), Map.of(
+                "toolCode", "datasource.metadata.read",
+                "auditId", "audit-001",
+                "jsonPath", "metadata"
+        ), null, null).orElseThrow();
+
+        assertEquals(Map.of("tableName", "cross_run_table"), value);
+    }
+
+    @Test
+    void shouldRejectExplicitReferenceFromAnotherSession() {
+        AgentToolExecutionOutputStore outputStore = new AgentToolExecutionOutputStore();
+        outputStore.save(
+                new AgentToolExecutionOutputStore.AgentToolExecutionAuditSnapshot(
+                        "other-session", "other-run", "audit-001", "datasource.metadata.read"),
+                Map.of("metadata", Map.of("tableName", "forbidden"))
+        );
+        AgentToolOutputReferenceResolver resolver = new AgentToolOutputReferenceResolver(outputStore);
+
         assertTrue(resolver.resolve(context(), Map.of(
                 "toolCode", "datasource.metadata.read",
+                "auditId", "audit-001",
+                "jsonPath", "metadata"
+        ), null, null).isEmpty());
+    }
+
+    @Test
+    void shouldRejectAuditReferenceWhoseToolCodeDoesNotMatch() {
+        AgentToolExecutionOutputStore outputStore = new AgentToolExecutionOutputStore();
+        outputStore.save(
+                new AgentToolExecutionOutputStore.AgentToolExecutionAuditSnapshot(
+                        "session-001", "other-run", "audit-001", "datasource.metadata.read"),
+                Map.of("metadata", Map.of("tableName", "forbidden"))
+        );
+        AgentToolOutputReferenceResolver resolver = new AgentToolOutputReferenceResolver(outputStore);
+
+        assertTrue(resolver.resolve(context(), Map.of(
+                "toolCode", "sync.task.publish",
                 "auditId", "audit-001",
                 "jsonPath", "metadata"
         ), null, null).isEmpty());

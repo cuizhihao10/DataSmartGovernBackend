@@ -323,6 +323,7 @@ class AgentRunToolDagSelectedNodeOutboxServiceTest {
                 planningService,
                 store,
                 new AgentAsyncTaskCommandOutboxCapacityGuard(outboxProperties, store),
+                sessionStore,
                 new ObjectMapper()
         );
         InMemoryAgentRunToolDagConfirmationStore confirmationStore =

@@ -99,6 +99,17 @@ class AgentOrchestrator:
         self._planning_workflow = planning_workflow or LangGraphAgentPlanningWorkflow.from_env()
         self._user_profile_memory = user_profile_memory
 
+    @property
+    def tool_planner(self) -> ToolPlanner:
+        """Expose the shared immutable tool-catalog planner to later Agent turns.
+
+        The follow-up model loop must use the exact same startup catalog snapshot as
+        first-turn planning.  Returning the planner here avoids reloading Java/MCP
+        descriptors mid-session and prevents catalog drift between turns.
+        """
+
+        return self._tool_planner
+
     def plan(
         self,
         request: AgentRequest,

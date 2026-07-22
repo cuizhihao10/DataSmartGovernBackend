@@ -56,7 +56,11 @@ public class AgentToolOutputReferenceResolver {
 
         Optional<AgentToolExecutionOutputRecord> record = reference.auditId() == null || reference.auditId().isBlank()
                 ? outputStore.findLatest(context.session().getSessionId(), context.run().getRunId(), reference.toolCode())
-                : outputStore.findByAuditId(context.session().getSessionId(), context.run().getRunId(), reference.auditId());
+                : outputStore.findBySessionAuditId(context.session().getSessionId(), reference.auditId());
+
+        if (record.isPresent() && !record.get().toolCode().equals(reference.toolCode())) {
+            return Optional.empty();
+        }
 
         return record.map(AgentToolExecutionOutputRecord::output)
                 .flatMap(output -> readPath(output, reference.jsonPath()));

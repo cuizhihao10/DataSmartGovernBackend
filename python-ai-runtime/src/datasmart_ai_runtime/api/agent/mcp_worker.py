@@ -34,6 +34,9 @@ from datasmart_ai_runtime.services.tools.mcp import (
 from datasmart_ai_runtime.services.tools.mcp.model_feedback_second_turn import (
     McpModelFeedbackSecondTurnService,
 )
+from datasmart_ai_runtime.services.tools.mcp.durable_continuation import (
+    McpDurableContinuationCoordinator,
+)
 
 
 MCP_DURABLE_WORKER_API_SCHEMA_VERSION = "datasmart.mcp-durable-worker-api.v1"
@@ -45,6 +48,7 @@ def register_mcp_durable_worker_routes(
     worker_adapter: McpDurableWorkerAdapter,
     feedback_adapter: McpToolFeedbackAdapter | None = None,
     second_turn_service: McpModelFeedbackSecondTurnService | None = None,
+    continuation_coordinator: McpDurableContinuationCoordinator | None = None,
     langgraph_checkpointer_service: LangGraphDurableCheckpointerService | None = None,
 ) -> None:
     """注册 MCP durable worker 内部执行路由。
@@ -74,6 +78,7 @@ def register_mcp_durable_worker_routes(
         include_model_feedback = _bool(payload.get("includeModelFeedback"), default=True)
         model_feedback = None
         model_second_turn = None
+        durable_continuation = None
         langgraph_checkpoint = None
         initial_checkpoint = None
         if include_model_feedback and feedback_adapter is not None:
@@ -113,7 +118,7 @@ def register_mcp_durable_worker_routes(
             # - 服务只接收 McpToolFeedbackAdapter 产出的安全 feedback，不接触 MCP arguments；
             # - controlFacts 只用于 tenant/project/actor/run/session/trace 路由与审计标签；
             # - 返回值只保留低敏摘要，不把二轮 prompt/messages、工具 result 正文或 Provider 原始响应暴露给 API。
-            if second_turn_service is not None:
+            if second_turn_service is not None or continuation_coordinator is not None:
                 loop_checkpoint = None
                 if langgraph_checkpointer_service is not None and initial_checkpoint is not None:
                     loop_checkpoint = record_mcp_model_second_turn_loop(
@@ -124,16 +129,31 @@ def register_mcp_durable_worker_routes(
                     if langgraph_checkpoint is not None:
                         langgraph_checkpoint["loop"] = loop_checkpoint.to_summary()
                 try:
-                    model_second_turn = second_turn_service.run(
-                        feedback=build_result.feedback,
-                        feedback_summary=build_result.summary,
-                        control_facts=request.control_facts,
-                        trace_id=_optional_text(payload.get("traceId") or payload.get("trace_id")),
-                        workspace_key=_optional_text(payload.get("workspaceKey") or payload.get("workspace_key")),
-                        current_workspace_key=_optional_text(
-                            payload.get("currentWorkspaceKey") or payload.get("current_workspace_key")
-                        ),
-                    ).to_summary()
+                    if continuation_coordinator is not None:
+                        continuation_result = continuation_coordinator.continue_after_mcp(
+                            feedback=build_result.feedback,
+                            control_facts={
+                                **request.control_facts,
+                                "sessionId": request.session_id,
+                            },
+                            trace_id=_optional_text(payload.get("traceId") or payload.get("trace_id")),
+                            workspace_key=_optional_text(
+                                payload.get("workspaceKey") or payload.get("workspace_key")
+                            ),
+                        )
+                        model_second_turn = continuation_result.model_turn.to_summary()
+                        durable_continuation = continuation_result.to_summary()
+                    else:
+                        model_second_turn = second_turn_service.run(
+                            feedback=build_result.feedback,
+                            feedback_summary=build_result.summary,
+                            control_facts=request.control_facts,
+                            trace_id=_optional_text(payload.get("traceId") or payload.get("trace_id")),
+                            workspace_key=_optional_text(payload.get("workspaceKey") or payload.get("workspace_key")),
+                            current_workspace_key=_optional_text(
+                                payload.get("currentWorkspaceKey") or payload.get("current_workspace_key")
+                            ),
+                        ).to_summary()
                 except Exception:
                     if langgraph_checkpointer_service is not None and (loop_checkpoint or initial_checkpoint) is not None:
                         final_checkpoint = record_mcp_model_second_turn_final(
@@ -181,6 +201,7 @@ def register_mcp_durable_worker_routes(
             "javaReceiptPayload": dict(worker_result.receipt.java_payload),
             "modelFeedback": model_feedback,
             "modelSecondTurn": model_second_turn,
+            "durableContinuation": durable_continuation,
             "langGraphCheckpoint": langgraph_checkpoint,
             "payloadPolicy": (
                 "MCP_ARGUMENTS_NEVER_RETURNED;JAVA_RECEIPT_PAYLOAD_INTERNAL_ONLY;"

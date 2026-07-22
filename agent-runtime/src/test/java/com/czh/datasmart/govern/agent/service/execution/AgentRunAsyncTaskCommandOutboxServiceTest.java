@@ -259,6 +259,7 @@ class AgentRunAsyncTaskCommandOutboxServiceTest {
                 planningService,
                 store,
                 new AgentAsyncTaskCommandOutboxCapacityGuard(outboxProperties, store),
+                sessionStore,
                 new ObjectMapper()
         );
         AgentSessionRecord session = new AgentSessionRecord(

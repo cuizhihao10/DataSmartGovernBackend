@@ -51,8 +51,20 @@ class RuleBasedIntentAnalyzer:
             self._append_unique(candidate_tools, "datasource.metadata.read")
             self._append_unique(risk_tags, IntentRiskTag.READ_ONLY)
 
+        task_import_artifact_ref = (
+            request.variables.get("taskImportArtifactRef")
+            or request.variables.get("task_import_artifact_ref")
+            or request.variables.get("artifactRef")
+        )
         task_import_troubleshooting = self._wants_task_import_troubleshooting(request, objective)
-        governance_rag_requested = self._wants_governance_rag(request, objective) or task_import_troubleshooting
+        # A newly uploaded artifact follows a strict staged workflow: first obtain
+        # structured dry-run diagnostics, then derive a bounded RAG query from those
+        # facts.  A historical import-result reference is already diagnostic evidence
+        # and therefore keeps the existing direct RAG troubleshooting capability.
+        governance_rag_requested = (
+            (self._wants_governance_rag(request, objective) or task_import_troubleshooting)
+            and not bool(task_import_artifact_ref)
+        )
         remediation_requested = self._wants_quality_remediation(request, objective)
         quality_rule_action_requested = self._contains_any(
             objective,
@@ -119,6 +131,16 @@ class RuleBasedIntentAnalyzer:
             # 导入失败诊断属于同步产品域，但它本身是只读排障，不应误规划为新建同步任务。
             # 原始 Excel/CSV 和行数据不进入模型上下文；后续工具只消费低敏错误摘要与制品引用。
             self._append_unique(domains, GovernanceDomain.DATA_SYNC)
+            self._append_unique(risk_tags, IntentRiskTag.READ_ONLY)
+            if task_import_artifact_ref:
+                self._append_unique(candidate_tools, "sync.task.import.dry-run")
+            elif not (
+                request.variables.get("taskImportResultRef")
+                or request.variables.get("task_import_result_ref")
+                or request.variables.get("taskImportError")
+                or request.variables.get("task_import_error")
+            ):
+                self._append_unique(missing_parameters, "taskImportArtifactRef")
 
         workspace_file_operation = self._workspace_file_operation(request, objective)
         if workspace_file_operation == "READ":
@@ -305,6 +327,12 @@ class RuleBasedIntentAnalyzer:
         必须通过制品引用在 data-sync 内部解析，不能直接发送给模型或写入普通运行事件。
         """
 
+        if (
+            request.variables.get("taskImportArtifactRef")
+            or request.variables.get("task_import_artifact_ref")
+            or request.variables.get("artifactRef")
+        ):
+            return True
         if request.variables.get("taskImportError") or request.variables.get("task_import_error"):
             return True
         if request.variables.get("taskImportResultRef") or request.variables.get("task_import_result_ref"):

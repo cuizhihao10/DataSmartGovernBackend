@@ -661,6 +661,8 @@ datasmart:
       task-management: http://localhost:8081
       # data-sync 承担同步任务草稿、预检查、发布、运行和执行状态事实；Agent 不直接写 data_sync 数据库。
       data-sync: http://localhost:8086
+      # Python Runtime 仅用于受控 RAG/模型工具；地址来自注册表，工具不能自行指定内部 URL。
+      python-ai-runtime: http://localhost:8090
     tool-registry:
       "[datasource.metadata.read]":
         enabled: true
@@ -927,6 +929,155 @@ datasmart:
         max-retries: 1
         allowed-actions:
           - VIEW
+      "[sync.task.import.dry-run]":
+        enabled: true
+        tool-code: sync.task.import.dry-run
+        tool-type: DATA_SYNC
+        display-name: 任务文件导入试运行
+        description: 使用已上传的不可变 CSV/XLSX 制品引用执行真实解析、唯一键检查、模板预检查，并返回结构化错误与 RAG 检索问题。
+        target-service: data-sync
+        target-endpoint: /sync-task-import-artifacts/{artifactRef}/dry-run
+        read-only: true
+        risk-level: LOW
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: NO_CACHE
+        timeout-ms: 30000
+        max-retries: 0
+        allowed-actions:
+          - PRECHECK
+        input-schema:
+          - name: artifactRef
+            type: string
+            required: true
+            description: 用户先在当前项目上传得到的任务导入制品引用。
+            sensitive: false
+            resolution: USER_REQUIRED
+          - name: runImmediately
+            type: boolean
+            required: false
+            description: 试运行时是否同时验证立即运行条件，默认 false。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+      "[sync.task.import.rag.lookup]":
+        enabled: true
+        tool-code: sync.task.import.rag.lookup
+        tool-type: DATA_SYNC
+        display-name: 检索任务导入修复案例
+        description: 使用试运行生成的低敏错误检索问题查询平台 RAG 文档、历史案例和 Runbook，为模型修复方案提供证据。
+        target-service: python-ai-runtime
+        target-endpoint: /agent/rag/query
+        read-only: true
+        risk-level: LOW
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: PROJECT_SAFE
+        timeout-ms: 30000
+        max-retries: 1
+        allowed-actions:
+          - VIEW
+        input-schema:
+          - name: dryRunRef
+            type: object
+            required: true
+            description: 上一步任务导入试运行结果中的 RAG 查询引用。
+            sensitive: false
+            resolution: DERIVED
+      "[sync.task.import.repair.apply]":
+        enabled: true
+        tool-code: sync.task.import.repair.apply
+        tool-type: DATA_SYNC
+        display-name: 应用任务文件修复方案
+        description: 将模型基于结构化错误与 RAG 案例提出、并由用户确认的单元格补丁应用为新的不可变制品版本。
+        target-service: data-sync
+        target-endpoint: /sync-task-import-artifacts/{artifactRef}/repairs
+        read-only: false
+        risk-level: HIGH
+        execution-mode: APPROVAL_REQUIRED
+        requires-approval: true
+        idempotent: false
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: NO_CACHE
+        timeout-ms: 30000
+        max-retries: 0
+        allowed-actions:
+          - MODIFY_ARTIFACT
+        input-schema:
+          - name: artifactRef
+            type: string
+            required: true
+            description: 待修复的任务导入制品引用。
+            sensitive: false
+            resolution: DERIVED
+          - name: baseVersion
+            type: number
+            required: true
+            description: 产生诊断时的不可变制品版本。
+            sensitive: false
+            resolution: DERIVED
+          - name: confirmationDigest
+            type: string
+            required: true
+            description: 用户确认所绑定的最近一次试运行摘要。
+            sensitive: true
+            resolution: SYSTEM_INJECTED
+          - name: patches
+            type: array
+            required: true
+            description: 用户确认的行号、列名、旧值和替换值补丁；只允许修改白名单任务定义列。
+            sensitive: true
+            resolution: USER_REQUIRED
+      "[sync.task.import.commit]":
+        enabled: true
+        tool-code: sync.task.import.commit
+        tool-type: DATA_SYNC
+        display-name: 确认导入并运行任务文件
+        description: 仅对最近一次试运行通过且用户确认摘要一致的制品正式创建任务，可按确认选项立即运行。
+        target-service: data-sync
+        target-endpoint: /sync-task-import-artifacts/{artifactRef}/commit
+        read-only: false
+        risk-level: HIGH
+        execution-mode: APPROVAL_REQUIRED
+        requires-approval: true
+        idempotent: false
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: NO_CACHE
+        timeout-ms: 60000
+        max-retries: 0
+        allowed-actions:
+          - CREATE_TASK
+          - RUN
+        input-schema:
+          - name: artifactRef
+            type: string
+            required: true
+            description: 最近一次试运行通过的任务导入制品引用。
+            sensitive: false
+            resolution: DERIVED
+          - name: confirmationDigest
+            type: string
+            required: true
+            description: 用户确认所绑定的最近一次试运行摘要。
+            sensitive: true
+            resolution: SYSTEM_INJECTED
+          - name: runImmediately
+            type: boolean
+            required: false
+            description: 导入成功后是否立即创建执行，默认只创建草稿。
+            sensitive: false
+            resolution: USER_REQUIRED
       "[quality.rule.suggest]":
         enabled: true
         tool-code: quality.rule.suggest

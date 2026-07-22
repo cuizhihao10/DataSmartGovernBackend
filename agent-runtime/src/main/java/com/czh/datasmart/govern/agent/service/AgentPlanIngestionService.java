@@ -168,7 +168,7 @@ public class AgentPlanIngestionService {
         List<AgentPlanToolSnapshot> snapshots = new ArrayList<>();
         for (int index = 0; index < toolPlans.size(); index++) {
             IngestAgentPlanToolRequest plan = toolPlans.get(index);
-            AgentToolDefinitionView definition = toolRegistryService.requireEnabledTool(plan.toolCode());
+            AgentToolDefinitionView definition = resolveToolDefinition(plan);
             String mergedRiskLevel = higherRisk(definition.riskLevel(), plan.riskLevel());
             boolean requiresApproval = Boolean.TRUE.equals(definition.requiresApproval())
                     || Boolean.TRUE.equals(plan.requiresHumanApproval())
@@ -193,6 +193,65 @@ public class AgentPlanIngestionService {
             ));
         }
         return snapshots;
+    }
+
+    /**
+     * Resolve a static platform tool or a dynamically discovered outbound MCP tool.
+     *
+     * <p>MCP tools cannot be copied into {@code application.yml}: their catalog is
+     * discovered by the Python MCP host at runtime.  Java still fail-closes the
+     * trust boundary by accepting only the namespaced {@code mcp.*} form and a
+     * fixed Python consumer.  The model supplied endpoint is never used by Java;
+     * the dispatcher sends only the internal name and Python validates it against
+     * its latest discovered catalog before {@code tools/call}.</p>
+     */
+    private AgentToolDefinitionView resolveToolDefinition(IngestAgentPlanToolRequest plan) {
+        var registered = toolRegistryService.findTool(plan.toolCode());
+        if (registered.isPresent()) {
+            AgentToolDefinitionView definition = registered.get();
+            if (!Boolean.TRUE.equals(definition.enabled())) {
+                throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                        "Agent 工具已禁用，toolCode=" + plan.toolCode());
+            }
+            return definition;
+        }
+        if (!isGovernedMcpTool(plan)) {
+            throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND,
+                    "Agent 工具未注册，toolCode=" + plan.toolCode());
+        }
+        boolean readOnly = Boolean.TRUE.equals(plan.governanceHints().get("readOnly"));
+        boolean idempotent = Boolean.TRUE.equals(plan.governanceHints().get("idempotent"));
+        return new AgentToolDefinitionView(
+                plan.toolCode(),
+                true,
+                AgentToolType.MCP_EXTERNAL_TOOL.name(),
+                plan.toolCode(),
+                "Python MCP Host 动态发现的受治理外部工具",
+                "python-ai-runtime-mcp-client",
+                null,
+                readOnly,
+                AgentToolRiskLevel.HIGH.name(),
+                AgentToolExecutionMode.ASYNC_TASK.name(),
+                true,
+                idempotent,
+                60_000L,
+                idempotent ? 1 : 0,
+                List.of("MCP_TOOLS_CALL"),
+                List.of()
+        );
+    }
+
+    private boolean isGovernedMcpTool(IngestAgentPlanToolRequest plan) {
+        if (plan.toolCode() == null || !plan.toolCode().matches("mcp\\.[a-z0-9][a-z0-9_.-]{2,124}")) {
+            return false;
+        }
+        Map<String, Object> hints = plan.governanceHints();
+        if (hints == null) {
+            return false;
+        }
+        return "MCP".equalsIgnoreCase(String.valueOf(hints.get("protocolHint")))
+                && "MCP_REMOTE_TOOL".equalsIgnoreCase(String.valueOf(hints.get("descriptorType")))
+                && "python-ai-runtime-mcp-client".equals(hints.get("targetService"));
     }
 
     private void bindMissingTools(AgentSessionRecord session, List<AgentPlanToolSnapshot> toolSnapshots) {
@@ -355,7 +414,10 @@ public class AgentPlanIngestionService {
     }
 
     private String executionMode(String registryMode, String planMode, boolean requiresApproval) {
-        if (requiresApproval) {
+        // Approval is an execution gate, not a replacement for the durable
+        // transport.  An MCP/long-running ASYNC_TASK must remain asynchronous
+        // after approval so it can enter command outbox, dispatcher and receipt.
+        if (requiresApproval && !AgentToolExecutionMode.ASYNC_TASK.name().equals(registryMode)) {
             return AgentToolExecutionMode.APPROVAL_REQUIRED.name();
         }
         if (registryMode != null && !registryMode.isBlank()) {

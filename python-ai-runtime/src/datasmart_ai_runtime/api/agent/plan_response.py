@@ -81,6 +81,7 @@ def build_plan_response(
     runtime_event_feedback_bridge: Any | None = None,
     loop_control_evaluator: Any | None = None,
     second_turn_orchestrator: Any | None = None,
+    durable_model_tool_loop_runner: Any | None = None,
     durable_agent_loop_service: Any | None = None,
     memory_write_governance: Any | None = None,
     skill_publication_diagnostics_service: Any | None = None,
@@ -145,6 +146,8 @@ def build_plan_response(
     loop_control_decision = None
     second_turn_result = None
     durable_loop_checkpoint = None
+    durable_model_tool_loop = None
+    durable_loop_plan = None
     agent_turn_runner_checkpoint = None
     memory_write_proposal = None
 
@@ -187,6 +190,31 @@ def build_plan_response(
             )
             if second_turn_result.runtime_events:
                 plan = replace(plan, runtime_events=plan.runtime_events + second_turn_result.runtime_events)
+                if progress_event_sink is not None:
+                    for event in second_turn_result.runtime_events:
+                        progress_event_sink(event)
+
+            if second_turn_result.continues and durable_model_tool_loop_runner is not None:
+                # A model-selected follow-up batch is not executed inside Python.  It
+                # is submitted as a new Java run in the same Agent session, then real
+                # feedback is returned to the model.  The bounded runner stops at an
+                # approval/async gate and leaves a durable checkpoint for replay.
+                durable_model_tool_loop = durable_model_tool_loop_runner.run(
+                    request=request,
+                    plan=plan,
+                    first_model_turn=second_turn_result,
+                    progress_event_sink=progress_event_sink,
+                )
+                durable_loop_plan = durable_model_tool_loop.latest_plan
+                # Keep the original response plan/tool batch stable for callers, but
+                # append all continuation events so the UI sees one ordered timeline.
+                plan = replace(plan, runtime_events=durable_loop_plan.runtime_events)
+                if durable_model_tool_loop.latest_feedback is not None:
+                    control_plane_feedback = durable_model_tool_loop.latest_feedback
+                if durable_model_tool_loop.latest_loop_decision is not None:
+                    loop_control_decision = durable_model_tool_loop.latest_loop_decision
+                if durable_model_tool_loop.latest_model_turn is not None:
+                    second_turn_result = durable_model_tool_loop.latest_model_turn
 
     if durable_agent_loop_service is not None:
         # Durable Agent Loop checkpoint 是当前 Codex/Claude Code 类体验继续演进的关键基座。
@@ -195,7 +223,7 @@ def build_plan_response(
         # 多 Agent handoff 有稳定状态锚点，再逐步迁移到 Redis/MySQL/LangGraph durable runner。
         durable_loop_checkpoint = durable_agent_loop_service.record(
             request=request,
-            plan=plan,
+            plan=durable_loop_plan or plan,
             control_plane_feedback=control_plane_feedback,
             loop_control_decision=loop_control_decision,
             second_turn_result=second_turn_result,
@@ -432,6 +460,8 @@ def build_plan_response(
         response["agentLoopControl"] = loop_control_decision.to_summary()
     if second_turn_result is not None:
         response["agentSecondTurn"] = second_turn_result.to_summary()
+    if durable_model_tool_loop is not None:
+        response["agentDurableModelToolLoop"] = durable_model_tool_loop.to_summary()
     if durable_loop_checkpoint is not None:
         response["agentDurableLoop"] = durable_loop_checkpoint.to_summary()
     if memory_write_proposal is not None:

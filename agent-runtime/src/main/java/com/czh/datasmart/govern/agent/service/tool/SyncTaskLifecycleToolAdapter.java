@@ -165,6 +165,19 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
 
     private AgentToolExecutionOutcome publish(AgentToolExecutionContext context) {
         Long taskId = draftReference(context, "taskId");
+        boolean precheckPassed = referencedBoolean(
+                context,
+                context.audit().getPlanArguments().get("precheckRef"),
+                PRECHECK,
+                "canStartExecution",
+                "缺少同步任务预检查通过事实"
+        );
+        if (!precheckPassed) {
+            return AgentToolExecutionOutcome.failed(
+                    "SYNC_PRECHECK_NOT_PASSED",
+                    "同步任务预检查尚未通过，Agent 不会发布任务。"
+            );
+        }
         Map<String, Object> request = Map.of(
                 "enableSchedule", false,
                 "reason", "用户已在智能助手中确认本次 Agent 同步计划"
@@ -410,6 +423,23 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
             throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST, missingMessage);
         }
         return copyMap(raw);
+    }
+
+    private boolean referencedBoolean(
+            AgentToolExecutionContext context,
+            Object reference,
+            String defaultTool,
+            String path,
+            String missingMessage) {
+        Object value = outputReferenceResolver.resolve(context, reference, defaultTool, path)
+                .orElseThrow(() -> new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST, missingMessage));
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        if (value instanceof String text && ("true".equalsIgnoreCase(text) || "false".equalsIgnoreCase(text))) {
+            return Boolean.parseBoolean(text);
+        }
+        throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST, missingMessage);
     }
 
     private Map<String, Object> post(AgentToolExecutionContext context, String uri, Object body, Object... variables) {

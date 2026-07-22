@@ -45,6 +45,7 @@ class DurableAgentLoopPhase(str, Enum):
     WAITING_CONTROL_PLANE = "waiting_control_plane"
     WAITING_APPROVAL = "waiting_approval"
     READY_FOR_SECOND_TURN = "ready_for_second_turn"
+    NEXT_TOOL_BATCH_PLANNED = "next_tool_batch_planned"
     SECOND_TURN_COMPLETED = "second_turn_completed"
     STOPPED_BY_POLICY = "stopped_by_policy"
     MANUAL_TAKEOVER_REQUIRED = "manual_takeover_required"
@@ -64,6 +65,7 @@ class DurableAgentLoopResumeAction(str, Enum):
     WAIT_EVENT_REPLAY = "wait_event_replay"
     WAIT_APPROVAL = "wait_approval"
     RUN_SECOND_TURN = "run_second_turn"
+    SUBMIT_NEXT_TOOL_RUN = "submit_next_tool_run"
     STOP_AND_SUMMARIZE = "stop_and_summarize"
     HAND_OFF_TO_HUMAN = "hand_off_to_human"
 
@@ -243,6 +245,9 @@ class DurableAgentLoopService:
                 "requiresHumanApproval": plan.requires_human_approval,
                 "hasControlPlaneFeedback": control_plane_feedback is not None,
                 "hasLoopDecision": loop_control_decision is not None,
+                "followUpToolCount": len(
+                    getattr(second_turn_result, "follow_up_tool_plans", ()) or ()
+                ),
             },
         )
         return self._store.save(checkpoint)
@@ -277,6 +282,17 @@ class DurableAgentLoopService:
     ) -> tuple[DurableAgentLoopPhase, DurableAgentLoopResumeAction, tuple[str, ...]]:
         """把计划、反馈和策略决策映射为可恢复阶段。"""
 
+        # A waiting/approval decision belongs to the latest submitted continuation
+        # run and therefore takes precedence over the previous model turn that
+        # proposed it.  Otherwise a durable pause could be mislabeled completed.
+        if loop_control_decision is not None and not loop_control_decision.allowed:
+            return self._phase_from_loop_decision(loop_control_decision)
+        if bool(getattr(second_turn_result, "continues", False)):
+            return (
+                DurableAgentLoopPhase.NEXT_TOOL_BATCH_PLANNED,
+                DurableAgentLoopResumeAction.SUBMIT_NEXT_TOOL_RUN,
+                ("MODEL_FOLLOW_UP_TOOLS_GOVERNED",),
+            )
         if bool(getattr(second_turn_result, "executed", False)):
             return (
                 DurableAgentLoopPhase.SECOND_TURN_COMPLETED,

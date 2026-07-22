@@ -32,6 +32,11 @@ from datasmart_ai_runtime.services.agent_execution.durable_agent_loop_components
 from datasmart_ai_runtime.services.agent_execution.durable_agent_loop_redis import (
     RedisDurableAgentLoopStore,
 )
+from datasmart_ai_runtime.services.agent_execution.durable_model_tool_loop_runner import (
+    AgentDurableModelToolLoopResult,
+    AgentDurableModelToolLoopRunner,
+    AgentLoopTurnSummary,
+)
 from datasmart_ai_runtime.services.agent_execution.langgraph_durable_checkpointer import (
     InMemoryLangGraphCheckpointStore,
     LangGraphCheckpointEvent,
@@ -61,6 +66,9 @@ __all__ = (
     "DurableAgentLoopStore",
     "InMemoryDurableAgentLoopStore",
     "RedisDurableAgentLoopStore",
+    "AgentDurableModelToolLoopResult",
+    "AgentDurableModelToolLoopRunner",
+    "AgentLoopTurnSummary",
     "LangGraphCheckpointEvent",
     "LangGraphCheckpointStatus",
     "LangGraphCheckpointStore",

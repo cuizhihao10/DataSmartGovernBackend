@@ -64,6 +64,7 @@ from datasmart_ai_runtime.services.agent_runtime_tool_feedback_client import (
 )
 from datasmart_ai_runtime.services.agent_capability import default_agent_capability_matrix_service
 from datasmart_ai_runtime.services.agent_execution import (
+    AgentDurableModelToolLoopRunner,
     DurableAgentLoopService,
     build_durable_agent_loop_store,
     durable_agent_loop_store_settings_from_env,
@@ -73,6 +74,7 @@ from datasmart_ai_runtime.services.agent_execution import (
     langgraph_durable_checkpointer_settings_from_env,
 )
 from datasmart_ai_runtime.services.agent_second_turn_orchestrator import AgentSecondTurnOrchestrator
+from datasmart_ai_runtime.services.agent_follow_up_tool_planner import AgentFollowUpToolPlanner
 from datasmart_ai_runtime.services.memory import (
     AgentMemoryMaterializationMetrics,
     LangGraphMemoryRetrievalMetrics,
@@ -119,6 +121,7 @@ from datasmart_ai_runtime.services.tools.mcp import (
     McpClientRuntime,
     McpDurableToolExecutionService,
     McpDurableWorkerAdapter,
+    McpDurableContinuationCoordinator,
     McpModelFeedbackSecondTurnService,
     McpToolFeedbackAdapter,
     mcp_client_runtime_settings_from_env,
@@ -307,14 +310,44 @@ def create_app() -> Any:
         else None
     )
     loop_control_evaluator = AgentLoopControlPolicyEvaluator() if control_plane_feedback_collector else None
+    follow_up_tool_planner = AgentFollowUpToolPlanner(tool_planner=orchestrator.tool_planner)
     second_turn_orchestrator = (
         AgentSecondTurnOrchestrator(
             model_providers=model_provider_registry,
             model_gateway=model_gateway,
+            follow_up_tool_planner=follow_up_tool_planner,
         )
         if control_plane_feedback_collector and _truthy_env("DATASMART_AGENT_RUNTIME_SECOND_TURN_ENABLED")
         else None
     )
+    durable_model_tool_loop_runner = (
+        AgentDurableModelToolLoopRunner(
+            plan_ingestion_client=plan_ingestion_client,
+            feedback_collector=control_plane_feedback_collector,
+            loop_control_evaluator=loop_control_evaluator,
+            second_turn_orchestrator=second_turn_orchestrator,
+        )
+        if plan_ingestion_client
+        and control_plane_feedback_collector
+        and loop_control_evaluator
+        and second_turn_orchestrator
+        else None
+    )
+    mcp_durable_continuation_coordinator = (
+        McpDurableContinuationCoordinator(
+            model_routes=model_route_registry,
+            tool_planner=orchestrator.tool_planner,
+            follow_up_tool_planner=follow_up_tool_planner,
+            second_turn_orchestrator=second_turn_orchestrator,
+            loop_control_evaluator=loop_control_evaluator,
+            durable_loop_runner=durable_model_tool_loop_runner,
+        )
+        if durable_model_tool_loop_runner is not None
+        and loop_control_evaluator is not None
+        and second_turn_orchestrator is not None
+        else None
+    )
+    app.state.mcp_durable_continuation_coordinator = mcp_durable_continuation_coordinator
     runtime_event_replay_sources = build_runtime_event_replay_sources(agent_runtime_base_url)
     runtime_event_feedback_bridge = (
         AgentRuntimeEventFeedbackBridge(runtime_event_replay_sources)
@@ -617,6 +650,7 @@ def create_app() -> Any:
         runtime_event_feedback_bridge=runtime_event_feedback_bridge,
         loop_control_evaluator=loop_control_evaluator,
         second_turn_orchestrator=second_turn_orchestrator,
+        durable_model_tool_loop_runner=durable_model_tool_loop_runner,
         durable_agent_loop_service=durable_agent_loop_service,
         memory_write_governance=memory_runtime.memory_write_governance,
         skill_publication_diagnostics_service=skill_publication_manifest_diagnostics,
@@ -676,6 +710,7 @@ def create_app() -> Any:
         worker_adapter=app.state.mcp_durable_worker_adapter,
         feedback_adapter=app.state.mcp_tool_feedback_adapter,
         second_turn_service=app.state.mcp_model_feedback_second_turn_service,
+        continuation_coordinator=app.state.mcp_durable_continuation_coordinator,
         langgraph_checkpointer_service=langgraph_checkpointer_service,
     )
 
