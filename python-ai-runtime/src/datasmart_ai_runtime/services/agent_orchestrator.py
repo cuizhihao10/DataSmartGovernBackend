@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 
@@ -432,17 +433,17 @@ class AgentOrchestrator:
             event_recorder=event_recorder,
         )
 
-    @staticmethod
     def _merge_tool_plans(
+        self,
         model_tool_plans: tuple[ToolPlan, ...],
         rule_tool_plans: tuple[ToolPlan, ...],
     ) -> tuple[ToolPlan, ...]:
         """合并模型生成计划与规则式安全基线计划。
 
-        合并策略采用“规则顺序保依赖、模型参数优先”的保守方式：
+        合并策略采用“规则顺序保依赖、模型选择优先、系统参数不可覆盖”的保守方式：
         - 规则式规划通常更了解平台依赖顺序，例如先读元数据再生成质量规则；
-        - 如果模型也提出了同名工具，说明它基于当前工具 schema 主动选择了该动作，此时用模型计划
-          替换规则计划的同名位置，保留模型 arguments 与治理 hints；
+        - 如果模型也提出了同名工具，保留模型调用来源和用户语义参数，但继承规则计划产生的低敏引用、
+          租户/项目范围、证据门槛和前序输出引用；
         - 如果模型提出的是规则没覆盖到的新工具，则追加到末尾，避免直接丢弃模型发现的合理动作；
         - 同名工具只保留一份，避免一个工具在同一轮计划中重复进入审批或执行控制面。
 
@@ -454,7 +455,21 @@ class AgentOrchestrator:
         merged: list[ToolPlan] = []
         seen: set[str] = set()
         for rule_plan in rule_tool_plans:
-            plan = model_by_name.get(rule_plan.tool_name, rule_plan)
+            model_plan = model_by_name.get(rule_plan.tool_name)
+            plan = rule_plan
+            if model_plan is not None:
+                merged_arguments = self._tool_planner.merge_model_arguments_with_baseline(
+                    rule_plan.tool_name,
+                    rule_plan.arguments,
+                    model_plan.arguments,
+                )
+                plan = self._tool_planner.revalidate_plan(
+                    replace(
+                        model_plan,
+                        governance_hints={**rule_plan.governance_hints, **model_plan.governance_hints},
+                    ),
+                    merged_arguments,
+                )
             if plan.tool_name in seen:
                 continue
             merged.append(plan)

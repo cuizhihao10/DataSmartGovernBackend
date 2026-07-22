@@ -176,6 +176,32 @@ def default_skill_registry() -> tuple[AgentSkillDescriptor, ...]:
             examples=("请解释数据质量规则生成为什么需要先读取元数据，并给出证据来源",),
         ),
         AgentSkillDescriptor(
+            skill_code="sync.task.import.troubleshoot",
+            display_name="同步任务导入故障诊断 Skill",
+            description=(
+                "读取任务 Excel/CSV 导入的低敏校验结果引用，结合产品文档、错误码、历史案例和 Runbook "
+                "定位唯一键冲突、模板字段缺失、枚举非法、权限不足或任务配置不一致，并给出可验证的修复步骤。"
+            ),
+            domain=GovernanceDomain.DATA_SYNC,
+            required_tools=("knowledge.rag.query",),
+            required_permissions=("agent:rag:query",),
+            memory_dependencies=(AgentMemoryType.SEMANTIC, AgentMemoryType.PROCEDURAL),
+            risk_level="low",
+            approval_policy="NONE",
+            trigger_keywords=(
+                "任务导入",
+                "导入任务",
+                "Excel 导入",
+                "XLSX 导入",
+                "CSV 导入",
+                "导入失败",
+                "导入报错",
+                "唯一键冲突",
+            ),
+            examples=("任务 Excel 导入提示任务编码冲突，请结合产品文档告诉我怎么修复。",),
+            attributes={"requiresExplicitTrigger": True, "artifactPayloadPolicy": "REFERENCE_ONLY"},
+        ),
+        AgentSkillDescriptor(
             skill_code="datasource.profiling",
             display_name="数据源画像分析 Skill",
             description="用于分析数据源结构、字段画像、主键索引和基础元数据风险。",

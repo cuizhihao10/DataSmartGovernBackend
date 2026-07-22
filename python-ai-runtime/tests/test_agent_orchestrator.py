@@ -322,6 +322,48 @@ class AgentOrchestratorTest(unittest.TestCase):
         self.assertEqual("tool", provider.requests[-1].messages[-1].role)
         self.assertEqual("call_quality_from_model", provider.requests[-1].messages[-1].tool_call_id)
         self.assertEqual("none", provider.requests[-1].tool_choice)
+        self.assertEqual("required", provider.requests[0].tool_choice)
+
+    def test_model_rag_call_keeps_system_derived_scope_and_evidence_baseline(self) -> None:
+        """模型选择 RAG 后不得覆盖平台生成的低敏引用、检索范围和证据门槛。"""
+
+        provider = ToolCallingModelProviderRegistry(
+            tool_calls=(
+                ModelToolCall(
+                    call_id="call-rag-from-model",
+                    name="knowledge_rag_query",
+                    arguments=(
+                        '{"queryRef":{"queryDigest":"model-forged"},'
+                        '"scopePolicy":{"tenantScoped":false,"projectScoped":false},'
+                        '"evidencePolicy":{"failClosedWhenNoEvidence":false}}'
+                    ),
+                ),
+            )
+        )
+        orchestrator = AgentOrchestrator(
+            model_routes=ModelRouteRegistry(default_model_routes()),
+            tool_planner=ToolPlanner(default_tool_registry()),
+            model_providers=provider,
+            skill_registry=AgentSkillRegistry(default_skill_registry()),
+        )
+
+        plan = orchestrator.plan(
+            AgentRequest(
+                tenant_id="tenant-a",
+                project_id="project-a",
+                actor_id="operator-a",
+                objective="任务 Excel 导入失败，请结合知识库案例说明如何修复",
+                variables={"taskImportResultRef": "artifact:task-import-result/import-002"},
+            )
+        )
+
+        rag_plan = next(item for item in plan.tool_plans if item.tool_name == "knowledge.rag.query")
+        self.assertTrue(rag_plan.arguments["queryRef"]["queryDigest"].startswith("sha256:"))
+        self.assertTrue(rag_plan.arguments["scopePolicy"]["tenantScoped"])
+        self.assertTrue(rag_plan.arguments["scopePolicy"]["projectScoped"])
+        self.assertTrue(rag_plan.arguments["evidencePolicy"]["failClosedWhenNoEvidence"])
+        self.assertEqual("model_tool_call", rag_plan.governance_hints["source"])
+        self.assertEqual("required", provider.requests[0].tool_choice)
 
     def test_streaming_tool_call_deltas_are_aggregated_governed_and_merged_into_plan(self) -> None:
         """流式 tool_call_deltas 应聚合后进入与非流式 tool_calls 相同的治理链路。"""

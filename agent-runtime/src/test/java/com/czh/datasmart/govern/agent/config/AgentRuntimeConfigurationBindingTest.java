@@ -51,7 +51,16 @@ class AgentRuntimeConfigurationBindingTest {
                         "sync.task.precheck",
                         "sync.task.publish",
                         "sync.task.run",
-                        "sync.execution.status"
+                        "sync.execution.status",
+                        "knowledge.rag.query"
                 );
+
+        AgentSkillRegistryProperties skillProperties = Binder.get(environment)
+                .bind("datasmart.agent-runtime", Bindable.of(AgentSkillRegistryProperties.class))
+                .orElseThrow(() -> new IllegalStateException("agent skill properties were not bound"));
+        assertThat(skillProperties.getSkillRegistry())
+                .containsKeys("knowledge.rag.answer", "sync.task.import.troubleshoot");
+        assertThat(skillProperties.getSkillRegistry().get("sync.task.import.troubleshoot").getRequiredTools())
+                .containsExactly("knowledge.rag.query");
     }
 }

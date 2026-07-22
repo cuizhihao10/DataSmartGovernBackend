@@ -183,6 +183,51 @@ class ModelToolSchemaTest(unittest.TestCase):
         self.assertEqual(1, len(tools))
         self.assertEqual("datasource_metadata_read", tools[0]["function"]["name"])
 
+    def test_model_tool_schema_hides_system_and_derived_parameters(self) -> None:
+        """模型只能看到应由它提供的字段，不能伪造系统范围、证据策略或执行引用。"""
+
+        captured: dict[str, object] = {}
+
+        def transport(request, timeout: int):
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeHttpResponse({"choices": [{"message": {"content": "ok"}}], "usage": {}})
+
+        provider = OpenAICompatibleModelProvider(
+            OpenAICompatibleProviderSettings(max_retries=0),
+            transport=transport,
+        )
+        provider.invoke(
+            ModelInvocationRequest(
+                route=_openai_route(endpoint="http://model-gateway.local/v1"),
+                messages=(ModelMessage(role="user", content="诊断任务导入错误"),),
+                available_tools=(
+                    _tool(
+                        name="knowledge.rag.query",
+                        description="查询治理知识库。",
+                        risk_level=ToolRiskLevel.LOW,
+                        execution_mode=ToolExecutionMode.SYNC,
+                        input_schema={
+                            "queryRef": {"type": "object", "required": True, "resolution": "derived"},
+                            "scopePolicy": {"type": "object", "required": True, "resolution": "system_injected"},
+                            "userHint": {"type": "string", "required": True, "resolution": "user_required"},
+                            "artifactRef": {
+                                "type": "string",
+                                "required": True,
+                                "resolution": "can_fill_from_context",
+                            },
+                        },
+                    ),
+                ),
+            )
+        )
+
+        parameters = captured["body"]["tools"][0]["function"]["parameters"]
+        self.assertNotIn("queryRef", parameters["properties"])
+        self.assertNotIn("scopePolicy", parameters["properties"])
+        self.assertIn("userHint", parameters["properties"])
+        self.assertIn("artifactRef", parameters["properties"])
+        self.assertEqual(["userHint"], parameters["required"])
+
     def test_openai_compatible_provider_serializes_tool_result_messages(self) -> None:
         """下一轮模型请求应能携带 assistant tool_calls 与 role=tool 结果消息。
 

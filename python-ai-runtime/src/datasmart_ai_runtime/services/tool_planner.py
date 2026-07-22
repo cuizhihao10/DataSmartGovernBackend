@@ -349,6 +349,48 @@ class ToolPlanner:
 
         return tuple(self._tools.values())
 
+    def merge_model_arguments_with_baseline(
+        self,
+        tool_name: str,
+        baseline_arguments: dict[str, object],
+        model_arguments: dict[str, object],
+    ) -> dict[str, object]:
+        """把模型参数合入确定性基线，同时保护系统派生字段。
+
+        模型负责选择工具和补充用户语义参数，但 `derived`、`system_injected` 代表租户/项目范围、低敏引用、
+        证据策略或前序工具输出引用，只能由平台生成。即使兼容 Provider 在非 strict 模式下返回了这些字段，
+        这里也不会允许它覆盖规则计划中的可信值。
+        """
+
+        merged = dict(baseline_arguments)
+        tool = self._tools.get(tool_name)
+        input_schema = tool.input_schema if tool is not None else {}
+        for name, value in model_arguments.items():
+            if value in (None, "", [], {}):
+                continue
+            definition = input_schema.get(name)
+            if not isinstance(definition, dict):
+                # 非 strict Provider 可能返回 schema 外字段；同名工具合并时必须按平台注册表白名单收敛。
+                continue
+            resolution = str(definition.get("resolution") or "").strip().lower()
+            if resolution in {"derived", "system_injected"}:
+                continue
+            merged[name] = value
+        return merged
+
+    def revalidate_plan(self, plan: ToolPlan, arguments: dict[str, object]) -> ToolPlan:
+        """更新工具参数后按平台注册契约重新校验计划。"""
+
+        tool = self._tools.get(plan.tool_name)
+        if tool is None:
+            return replace(plan, arguments=dict(arguments))
+        normalized_arguments = dict(arguments)
+        return replace(
+            plan,
+            arguments=normalized_arguments,
+            parameter_validation=self._parameter_validator.validate(tool, normalized_arguments),
+        )
+
     def _build_plan(self, tool: ToolDefinition, reason: str, arguments: dict[str, object]) -> ToolPlan:
         """把工具定义转换为工具计划。
 

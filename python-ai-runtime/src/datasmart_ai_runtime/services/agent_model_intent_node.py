@@ -186,11 +186,13 @@ class AgentModelIntentNode:
             context_blocks=context_blocks,
             skill_plan=skill_plan,
         )
+        tool_choice = self._select_tool_choice(available_tools, intent_analysis)
         model_request = ModelInvocationRequest(
             route=selected_route,
             messages=self._build_messages(request, context_blocks, intent_analysis, skill_plan),
             trace_id=request.variables.get("traceId") or request.variables.get("trace_id"),
             available_tools=available_tools,
+            tool_choice=tool_choice,
             provider_metadata=build_model_provider_metadata(model_gateway_context),
         )
         public_request = self._build_public_request_view(
@@ -208,6 +210,7 @@ class AgentModelIntentNode:
                 "selectedProviderName": selected_route.provider_name,
                 "selectedModelName": selected_route.model_name,
                 "visibleToolCount": len(available_tools),
+                "toolChoice": tool_choice,
                 "streaming": self._should_use_streaming(request),
             },
         )
@@ -229,6 +232,7 @@ class AgentModelIntentNode:
                 event_recorder=event_recorder,
                 public_request=public_request,
             )
+
         except Exception:  # pragma: no cover - 真实 Provider 异常在集成测试中覆盖
             # Provider 原始异常可能包含 endpoint、代理响应和请求片段，因此这里只返回稳定低敏错误码。
             return AgentModelIntentNodeResult(
@@ -250,6 +254,22 @@ class AgentModelIntentNode:
                     response_content="模型调用失败，系统已降级为确定性规则规划。",
                 ),
             )
+
+    @staticmethod
+    def _select_tool_choice(
+        available_tools: tuple[ToolDefinition, ...],
+        intent_analysis: IntentAnalysis,
+    ) -> str:
+        """为第一轮模型请求选择工具调用约束。
+
+        结构化意图已命中工具且没有待补参数时，要求模型至少选择一个原生 function tool，避免模型只输出
+        一段摘要、随后又完全由规则层决定工具。缺参时仍使用 `auto`，否则模型可能为了满足 `required`
+        伪造数据源 ID、对象映射或其他用户输入。第二轮工具反馈依旧由独立编排器强制 `none` 防止无限循环。
+        """
+
+        if available_tools and intent_analysis.candidate_tools and not intent_analysis.missing_parameters:
+            return "required"
+        return "auto"
 
     def _invoke_non_streaming(
         self,

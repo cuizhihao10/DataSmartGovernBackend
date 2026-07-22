@@ -1022,6 +1022,48 @@ datasmart:
             example: "true"
             sensitive: false
             resolution: SYSTEM_INJECTED
+      "[knowledge.rag.query]":
+        enabled: true
+        tool-code: knowledge.rag.query
+        tool-type: KNOWLEDGE_RETRIEVAL
+        display-name: 治理知识 RAG 查询
+        description: 受控检索平台产品文档、错误码、历史案例和 Runbook；规划层只传低敏查询引用，正文和证据仅在 RAG 执行器内部处理。
+        target-service: python-ai-runtime
+        target-endpoint: /agent/rag/query
+        read-only: true
+        risk-level: LOW
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: NONE
+        cache-policy: PROJECT_SAFE
+        timeout-ms: 30000
+        max-retries: 1
+        allowed-actions:
+          - QUERY_RAG
+          - RETRIEVE_WITH_EVIDENCE_GATE
+          - ANSWER_WITH_CITATIONS
+        input-schema:
+          - name: queryRef
+            type: object
+            required: true
+            description: 查询正文的低敏引用，只包含摘要、长度、来源和物化策略；原始问题不得进入普通计划或事件。
+            sensitive: true
+            resolution: DERIVED
+          - name: scopePolicy
+            type: object
+            required: true
+            description: 由系统注入的租户、项目、来源类型和标签过滤范围，必须在向量检索前生效。
+            sensitive: false
+            resolution: SYSTEM_INJECTED
+          - name: evidencePolicy
+            type: object
+            required: true
+            description: 由系统生成的证据数量、匹配强度、无证据失败关闭和引用约束。
+            sensitive: false
+            resolution: DERIVED
       "[task.create.draft]":
         enabled: true
         tool-code: task.create.draft
@@ -1113,7 +1155,68 @@ datasmart:
     # 当前先配置在 Java agent-runtime 中，让 Java 控制面成为 Skill 治理事实源；
     # Python Runtime 可以继续保留本地默认 Skill 作为降级，但生产环境应优先消费这里的 descriptor。
     skill-registry:
-      datasource.profiling:
+      "[knowledge.rag.answer]":
+        enabled: true
+        skill-code: knowledge.rag.answer
+        display-name: 治理知识 RAG 问答 Skill
+        description: 从平台产品文档、治理知识、错误码、历史案例和 Runbook 中检索证据，并在证据门控后生成带来源的回答。
+        domain: KNOWLEDGE_QA
+        required-tools:
+          - knowledge.rag.query
+        required-permissions:
+          - agent:rag:query
+        memory-dependencies:
+          - SEMANTIC
+          - PROCEDURAL
+        risk-level: LOW
+        approval-policy: NONE
+        tenant-scoped: true
+        project-scoped: true
+        audit-required: true
+        default-memory-scope: PROJECT
+        retention-days: 30
+        trigger-keywords:
+          - RAG
+          - 知识库
+          - 产品文档
+          - Runbook
+          - 错误码
+          - 为什么
+          - 怎么
+        examples:
+          - 请结合产品文档解释这个同步任务错误并给出修复步骤
+      "[sync.task.import.troubleshoot]":
+        enabled: true
+        skill-code: sync.task.import.troubleshoot
+        display-name: 同步任务导入故障诊断 Skill
+        description: 基于任务 Excel/CSV 导入的低敏结果引用，检索错误码、产品文档、历史案例和 Runbook，定位冲突与配置错误并给出修复步骤。
+        domain: DATA_SYNC
+        required-tools:
+          - knowledge.rag.query
+        required-permissions:
+          - agent:rag:query
+        memory-dependencies:
+          - SEMANTIC
+          - PROCEDURAL
+        risk-level: LOW
+        approval-policy: NONE
+        tenant-scoped: true
+        project-scoped: true
+        audit-required: true
+        default-memory-scope: PROJECT
+        retention-days: 30
+        trigger-keywords:
+          - 任务导入
+          - 导入任务
+          - Excel 导入
+          - XLSX 导入
+          - CSV 导入
+          - 导入失败
+          - 导入报错
+          - 唯一键冲突
+        examples:
+          - 任务 Excel 导入提示任务编码冲突，请结合产品文档告诉我怎么修复
+      "[datasource.profiling]":
         enabled: true
         skill-code: datasource.profiling
         display-name: 数据源画像分析 Skill
@@ -1140,7 +1243,7 @@ datasmart:
           - postgresql
         examples:
           - 请分析这个 MySQL 数据源的表结构
-      quality.rule.design:
+      "[quality.rule.design]":
         enabled: true
         skill-code: quality.rule.design
         display-name: 质量规则设计 Skill
@@ -1169,7 +1272,7 @@ datasmart:
           - 清洗
         examples:
           - 请为客户主数据生成完整性和手机号格式校验规则
-      quality.anomaly.remediation:
+      "[quality.anomaly.remediation]":
         enabled: true
         skill-code: quality.anomaly.remediation
         display-name: 质量异常治理任务 Skill
@@ -1197,7 +1300,7 @@ datasmart:
           - remediation
         examples:
           - 请基于这份质量报告生成异常治理任务草案
-      governed.task.creation:
+      "[governed.task.creation]":
         enabled: true
         skill-code: governed.task.creation
         display-name: 受控任务创建 Skill
@@ -1226,7 +1329,7 @@ datasmart:
           - run
         examples:
           - 请创建一个同步任务并在审批后执行
-      permission.boundary.explain:
+      "[permission.boundary.explain]":
         enabled: true
         skill-code: permission.boundary.explain
         display-name: 权限边界解释 Skill

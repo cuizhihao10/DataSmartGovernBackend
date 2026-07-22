@@ -110,6 +110,27 @@ class RuleBasedIntentAnalyzerTest(unittest.TestCase):
         self.assertIn(IntentRiskTag.APPROVAL_REQUIRED, analysis.risk_tags)
         self.assertIn("exportFormat", analysis.missing_parameters)
 
+    def test_task_excel_import_failure_routes_to_rag_diagnosis_not_data_export(self) -> None:
+        """任务文件导入报错应进入同步诊断和 RAG，而不是误判为普通数据导出。"""
+
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="operator-a",
+            objective="任务 Excel 导入失败，提示任务编码唯一键冲突，请结合案例告诉我怎么修改",
+            variables={"taskImportResultRef": "artifact:task-import-result/import-001"},
+        )
+
+        analysis = RuleBasedIntentAnalyzer().analyze(request, DefaultContextBuilder().build(request))
+
+        self.assertIn(GovernanceDomain.DATA_SYNC, analysis.governance_domains)
+        self.assertIn(GovernanceDomain.KNOWLEDGE_QA, analysis.governance_domains)
+        self.assertIn("knowledge.rag.query", analysis.candidate_tools)
+        self.assertNotIn("task.create.draft", analysis.candidate_tools)
+        self.assertNotIn(IntentRiskTag.DATA_EXPORT, analysis.risk_tags)
+        self.assertNotIn("exportFormat", analysis.missing_parameters)
+        self.assertEqual((), analysis.missing_parameters)
+
     def test_write_sql_intent_has_state_change_and_approval_tags(self) -> None:
         request = AgentRequest(
             tenant_id="tenant-a",

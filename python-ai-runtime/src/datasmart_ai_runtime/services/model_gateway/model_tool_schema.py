@@ -164,7 +164,9 @@ class OpenAICompatibleToolSchemaBuilder:
         Java descriptor 当前会把参数字段折叠成 `{字段名: {type, required, description, ...}}`。模型侧
         需要的是标准 JSON Schema：`type=object`、`properties`、`required`。这里保持宽松映射：
         - 未知类型默认按 string 处理；
-        - required 字段进入 JSON Schema required 数组；
+        - 只有模型应提供的 required 字段进入 JSON Schema required 数组；
+        - `derived/system_injected` 字段完全不暴露给模型，避免模型伪造系统范围和安全策略；
+        - `can_fill_from_context/context_or_clarify` 字段可以暴露，但不强迫模型编造；
         - sensitive/resolution/example 会写进字段描述，帮助模型理解参数来源和安全限制；
         - strict 开启时补 `additionalProperties=false`，避免模型生成未声明字段。
         """
@@ -175,7 +177,13 @@ class OpenAICompatibleToolSchemaBuilder:
             if not isinstance(raw_definition, dict):
                 properties[name] = {"type": "string", "description": str(raw_definition)}
                 continue
-            if raw_definition.get("required"):
+            resolution = str(raw_definition.get("resolution") or "").strip().lower()
+            if resolution in {"derived", "system_injected"}:
+                continue
+            if raw_definition.get("required") and resolution not in {
+                "can_fill_from_context",
+                "context_or_clarify",
+            }:
                 required.append(name)
             properties[name] = {
                 "type": cls._normalize_json_schema_type(raw_definition.get("type")),

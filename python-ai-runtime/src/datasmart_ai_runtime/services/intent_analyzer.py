@@ -51,7 +51,8 @@ class RuleBasedIntentAnalyzer:
             self._append_unique(candidate_tools, "datasource.metadata.read")
             self._append_unique(risk_tags, IntentRiskTag.READ_ONLY)
 
-        governance_rag_requested = self._wants_governance_rag(request, objective)
+        task_import_troubleshooting = self._wants_task_import_troubleshooting(request, objective)
+        governance_rag_requested = self._wants_governance_rag(request, objective) or task_import_troubleshooting
         remediation_requested = self._wants_quality_remediation(request, objective)
         quality_rule_action_requested = self._contains_any(
             objective,
@@ -79,7 +80,7 @@ class RuleBasedIntentAnalyzer:
             if not self._has_remediation_scope(request):
                 self._append_unique(missing_parameters, "remediationScope")
 
-        if self._contains_any(
+        if not task_import_troubleshooting and self._contains_any(
             objective,
             ("sync", "migrate", "data migration", "transfer data", "同步", "补数", "回放", "增量", "cdc"),
         ):
@@ -90,7 +91,7 @@ class RuleBasedIntentAnalyzer:
             self._append_data_sync_clarifications(request, objective, missing_parameters)
 
         create_task_requested = bool(request.variables.get("createTask") or request.variables.get("create_task"))
-        if not remediation_requested and (
+        if not remediation_requested and not task_import_troubleshooting and (
             create_task_requested
             or self._contains_any(objective, ("create task", "schedule", "run", "创建任务", "调度", "执行"))
         ):
@@ -113,6 +114,11 @@ class RuleBasedIntentAnalyzer:
             self._append_unique(domains, GovernanceDomain.KNOWLEDGE_QA)
             self._append_unique(candidate_tools, "knowledge.rag.query")
             self._append_unique(risk_tags, IntentRiskTag.READ_ONLY)
+
+        if task_import_troubleshooting:
+            # 导入失败诊断属于同步产品域，但它本身是只读排障，不应误规划为新建同步任务。
+            # 原始 Excel/CSV 和行数据不进入模型上下文；后续工具只消费低敏错误摘要与制品引用。
+            self._append_unique(domains, GovernanceDomain.DATA_SYNC)
 
         workspace_file_operation = self._workspace_file_operation(request, objective)
         if workspace_file_operation == "READ":
@@ -291,6 +297,54 @@ class RuleBasedIntentAnalyzer:
             ),
         )
 
+    def _wants_task_import_troubleshooting(self, request: AgentRequest, objective: str) -> bool:
+        """识别任务文件导入失败、校验冲突和修复指导场景。
+
+        任务导入既不是“导出数据”，也不是“让 Agent 重新创建一个任务”。正确链路是读取受控导入结果，
+        再结合错误码、产品文档、历史案例和 Runbook 给出修复建议。这里仅识别诊断意图；真实文件内容
+        必须通过制品引用在 data-sync 内部解析，不能直接发送给模型或写入普通运行事件。
+        """
+
+        if request.variables.get("taskImportError") or request.variables.get("task_import_error"):
+            return True
+        if request.variables.get("taskImportResultRef") or request.variables.get("task_import_result_ref"):
+            return True
+        import_subject = self._contains_any(
+            objective,
+            (
+                "任务导入",
+                "导入任务",
+                "excel导入",
+                "excel 导入",
+                "xlsx导入",
+                "xlsx 导入",
+                "csv导入",
+                "csv 导入",
+                "import task",
+                "task import",
+            ),
+        )
+        failure_signal = self._contains_any(
+            objective,
+            (
+                "报错",
+                "失败",
+                "异常",
+                "冲突",
+                "校验不通过",
+                "无法导入",
+                "不能导入",
+                "怎么修改",
+                "如何修复",
+                "error",
+                "failed",
+                "conflict",
+                "invalid",
+                "troubleshoot",
+            ),
+        )
+        return import_subject and failure_signal
+
     @staticmethod
     def _has_remediation_scope(request: AgentRequest) -> bool:
         """判断治理任务是否至少具备一个低敏定位条件。
@@ -379,7 +433,11 @@ class RuleBasedIntentAnalyzer:
         明显高风险意图，并把风险标签传递给工具规划、审批和前端确认链路。
         """
 
-        if self._contains_any(objective, ("export", "download", "导出", "下载", "excel", "csv", "pdf")):
+        task_import_troubleshooting = self._wants_task_import_troubleshooting(request, objective)
+        if not task_import_troubleshooting and self._contains_any(
+            objective,
+            ("export", "download", "导出", "下载", "excel", "csv", "pdf"),
+        ):
             self._append_unique(risk_tags, IntentRiskTag.DATA_EXPORT)
             self._append_unique(risk_tags, IntentRiskTag.APPROVAL_REQUIRED)
 

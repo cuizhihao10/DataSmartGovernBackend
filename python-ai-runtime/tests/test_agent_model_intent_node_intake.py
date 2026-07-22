@@ -63,6 +63,25 @@ class AgentModelIntentNodeIntakeTest(unittest.TestCase):
         self.assertIn("sourceDatasourceId", messages[1].content)
         self.assertIn("受控任务创建 Skill", messages[1].content)
 
+    def test_tool_choice_requires_native_call_only_when_parameters_are_complete(self) -> None:
+        """完整意图要求原生工具选择，缺参意图不得强迫模型编造参数。"""
+
+        visible_tools = (default_tool_registry()[0],)
+        complete = IntentAnalysis(
+            summary="完整意图",
+            governance_domains=(GovernanceDomain.DATA_SYNC,),
+            candidate_tools=(visible_tools[0].name,),
+        )
+        incomplete = IntentAnalysis(
+            summary="缺参意图",
+            governance_domains=(GovernanceDomain.DATA_SYNC,),
+            candidate_tools=(visible_tools[0].name,),
+            missing_parameters=("sourceDatasourceId",),
+        )
+
+        self.assertEqual("required", AgentModelIntentNode._select_tool_choice(visible_tools, complete))
+        self.assertEqual("auto", AgentModelIntentNode._select_tool_choice(visible_tools, incomplete))
+
     def test_model_tool_calls_flow_through_tool_action_intake_service(self) -> None:
         """模型 tool_call 主链路应经过统一 intake，再继续写原有治理事件。"""
 
