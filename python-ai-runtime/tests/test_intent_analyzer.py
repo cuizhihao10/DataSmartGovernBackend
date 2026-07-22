@@ -240,6 +240,23 @@ class RuleBasedIntentAnalyzerTest(unittest.TestCase):
         self.assertNotIn("task.create.draft", analysis.candidate_tools)
         self.assertNotIn("taskId", analysis.missing_parameters)
 
+    def test_failed_sync_with_only_execution_id_still_requires_task_scope(self) -> None:
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="operator-a",
+            objective="请排查这次同步执行失败的原因",
+            variables={"executionId": 28, "diagnoseSyncExecution": True},
+        )
+
+        analysis = RuleBasedIntentAnalyzer().analyze(
+            request,
+            DefaultContextBuilder().build(request),
+        )
+
+        self.assertIn("sync.execution.diagnose", analysis.candidate_tools)
+        self.assertIn("taskId", analysis.missing_parameters)
+
 
 if __name__ == "__main__":
     unittest.main()

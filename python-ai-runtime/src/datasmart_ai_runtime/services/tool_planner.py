@@ -29,6 +29,9 @@ from datasmart_ai_runtime.services.quality_remediation_tool_plan_builder import 
 from datasmart_ai_runtime.services.tools.workspace_file_plan_builder import WorkspaceFileToolPlanBuilder
 from datasmart_ai_runtime.services.tools.web_search_tool import WebSearchToolPlanBuilder
 from datasmart_ai_runtime.services.tools.data_sync_plan_builder import DataSyncToolPlanBuilder
+from datasmart_ai_runtime.services.tools.sync_failure_recovery_plan_builder import (
+    SyncFailureRecoveryPlanBuilder,
+)
 from datasmart_ai_runtime.services.tools.sync_task_import_plan_builder import (
     SyncTaskImportToolPlanBuilder,
 )
@@ -63,6 +66,7 @@ class ToolPlanner:
         self._workspace_file_plans = WorkspaceFileToolPlanBuilder()
         self._web_search_plans = WebSearchToolPlanBuilder()
         self._data_sync_plans = DataSyncToolPlanBuilder()
+        self._sync_failure_recovery_plans = SyncFailureRecoveryPlanBuilder()
         self._task_import_plans = SyncTaskImportToolPlanBuilder()
 
     def plan(
@@ -90,6 +94,20 @@ class ToolPlanner:
         business_goal = self._resolve_business_goal(request, context_blocks)
         planned_tool_names: set[str] = set()
         wants_quality_remediation = self._wants_quality_remediation(request, objective, candidate_tools)
+
+        sync_failure_recovery_plans = self._sync_failure_recovery_plans.build(
+            request=request,
+            candidate_tools=candidate_tools,
+            tools=self._tools,
+            plan_factory=lambda tool, reason, arguments: self._build_plan(
+                tool=tool,
+                reason=reason,
+                arguments=arguments,
+            ),
+        )
+        plans.extend(sync_failure_recovery_plans)
+        planned_tool_names.update(plan.tool_name for plan in sync_failure_recovery_plans)
+        wants_sync_failure_recovery = bool(sync_failure_recovery_plans)
 
         data_sync_plans = self._data_sync_plans.build(
             request=request,
@@ -241,6 +259,7 @@ class ToolPlanner:
         wants_task_draft = (
             not wants_quality_remediation
             and not wants_data_sync_workflow
+            and not wants_sync_failure_recovery
             and (
                 "task.create.draft" in candidate_tools
                 or create_task_requested
@@ -278,6 +297,7 @@ class ToolPlanner:
         wants_task_draft_persist = (
             not wants_quality_remediation
             and not wants_data_sync_workflow
+            and not wants_sync_failure_recovery
             and (
                 "task.draft.persist" in candidate_tools
                 or create_task_requested

@@ -17,6 +17,31 @@ from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 
 
 class ToolPlannerTest(unittest.TestCase):
+    def test_failed_sync_starts_with_durable_diagnosis_instead_of_task_draft(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective="任务 26 的执行 28 失败了，请诊断根因并检索案例，修复前先等我确认",
+            variables={
+                "taskId": 26,
+                "executionId": 28,
+                "diagnoseSyncExecution": True,
+            },
+        )
+        context_blocks = DefaultContextBuilder().build(request)
+        intent_analysis = RuleBasedIntentAnalyzer().analyze(request, context_blocks)
+
+        plans = ToolPlanner(default_tool_registry()).plan(
+            request=request,
+            intent_analysis=intent_analysis,
+            context_blocks=context_blocks,
+        )
+
+        self.assertEqual(("sync.execution.diagnose",), tuple(plan.tool_name for plan in plans))
+        self.assertEqual({"taskId": 26, "executionId": 28}, plans[0].arguments)
+        self.assertFalse(plans[0].requires_human_approval)
+
     def test_free_text_sync_draft_is_blocked_until_mapping_facts_are_confirmed(self) -> None:
         request = AgentRequest(
             tenant_id="tenant-a",

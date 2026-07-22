@@ -97,12 +97,7 @@ class RuleBasedIntentAnalyzer:
             self._append_unique(domains, GovernanceDomain.DATA_SYNC)
             self._append_unique(candidate_tools, "sync.execution.diagnose")
             self._append_unique(risk_tags, IntentRiskTag.READ_ONLY)
-            if not (
-                request.variables.get("taskId")
-                or request.variables.get("task_id")
-                or request.variables.get("executionId")
-                or request.variables.get("execution_id")
-            ):
+            if not (request.variables.get("taskId") or request.variables.get("task_id")):
                 self._append_unique(missing_parameters, "taskId")
 
         if not task_import_troubleshooting and not sync_execution_recovery and self._contains_any(
