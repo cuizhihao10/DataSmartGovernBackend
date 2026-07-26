@@ -13,6 +13,23 @@ from datasmart_ai_runtime.services.intent_analyzer import RuleBasedIntentAnalyze
 
 
 class RuleBasedIntentAnalyzerTest(unittest.TestCase):
+    def test_english_data_synchronization_task_reports_concrete_missing_inputs(self) -> None:
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="operator-a",
+            objective="Create a full data synchronization task for me.",
+        )
+        context_blocks = DefaultContextBuilder().build(request)
+
+        analysis = RuleBasedIntentAnalyzer().analyze(request, context_blocks)
+
+        self.assertIn(GovernanceDomain.DATA_SYNC, analysis.governance_domains)
+        self.assertEqual(
+            ("sourceDatasourceId", "targetDatasourceId", "objectMappings"),
+            analysis.missing_parameters,
+        )
+
     def test_free_text_sync_reports_authorized_inputs_before_execution(self) -> None:
         request = AgentRequest(
             tenant_id="tenant-a",
@@ -29,9 +46,13 @@ class RuleBasedIntentAnalyzerTest(unittest.TestCase):
             ("sourceDatasourceId", "targetDatasourceId", "objectMappings"),
             analysis.missing_parameters,
         )
+        self.assertIn("datasource.source.catalog.search", analysis.candidate_tools)
+        self.assertIn("datasource.target.catalog.search", analysis.candidate_tools)
+        self.assertNotIn("task.create.draft", analysis.candidate_tools)
+        self.assertNotIn(GovernanceDomain.TASK_MANAGEMENT, analysis.governance_domains)
         self.assertLess(analysis.confidence, 0.8)
 
-    def test_quality_task_intent_contains_domains_tools_and_risk_tags(self) -> None:
+    def test_quality_and_sync_task_intent_uses_specialized_sync_resolution(self) -> None:
         request = AgentRequest(
             tenant_id="tenant-a",
             project_id="project-a",
@@ -47,9 +68,15 @@ class RuleBasedIntentAnalyzerTest(unittest.TestCase):
         self.assertIn(GovernanceDomain.DATA_QUALITY, analysis.governance_domains)
         self.assertIn(GovernanceDomain.DATA_SYNC, analysis.governance_domains)
         self.assertIn("quality.rule.suggest", analysis.candidate_tools)
-        self.assertIn("task.create.draft", analysis.candidate_tools)
+        self.assertIn("datasource.source.catalog.search", analysis.candidate_tools)
+        self.assertIn("datasource.target.catalog.search", analysis.candidate_tools)
+        self.assertNotIn("task.create.draft", analysis.candidate_tools)
+        self.assertEqual(
+            ("sourceDatasourceId", "targetDatasourceId", "objectMappings"),
+            analysis.missing_parameters,
+        )
         self.assertIn(IntentRiskTag.APPROVAL_REQUIRED, analysis.risk_tags)
-        self.assertGreaterEqual(analysis.confidence, 0.8)
+        self.assertLess(analysis.confidence, 0.8)
 
     def test_quality_intent_without_datasource_reports_missing_parameter(self) -> None:
         request = AgentRequest(

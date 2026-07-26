@@ -81,6 +81,44 @@ class MemoryAndSkillPlanningTest(unittest.TestCase):
         self.assertIn("governed.task.creation", selected_codes)
         self.assertTrue(any(AgentMemoryType.EPISODIC in item.memory_dependencies for item in skill_plan.selected_skills))
 
+    def test_data_sync_task_selects_dedicated_autonomous_skill_only(self) -> None:
+        intent = IntentAnalysis(
+            summary="创建全量数据同步任务",
+            governance_domains=(GovernanceDomain.DATA_SYNC,),
+            candidate_tools=(
+                "datasource.source.catalog.search",
+                "datasource.target.catalog.search",
+            ),
+            risk_tags=(IntentRiskTag.STATE_CHANGE,),
+        )
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="owner-a",
+            objective="创建任务 customer-full-sync，把 mysql-prod 的 customer 表全量同步到 pg-warehouse",
+            variables={
+                "grantedPermissions": (
+                    "datasource:metadata:read",
+                    "datasource:connection:test",
+                    "sync:task:create",
+                    "sync:task:precheck",
+                    "sync:task:publish",
+                    "sync:task:run",
+                ),
+                "actorRole": "PROJECT_OWNER",
+            },
+        )
+
+        skill_plan = AgentSkillRegistry(default_skill_registry()).select(
+            request.objective,
+            intent,
+            request=request,
+        )
+
+        selected_codes = tuple(item.skill_code for item in skill_plan.selected_skills)
+        self.assertIn("sync.task.autonomous-creation", selected_codes)
+        self.assertNotIn("governed.task.creation", selected_codes)
+
     def test_skill_admission_denies_when_required_permission_is_missing(self) -> None:
         """显式权限事实缺少必需权限时，Skill 应进入 rejected，而不是继续暴露给模型。
 

@@ -44,8 +44,13 @@ class ModelToolCallPlannerTest(unittest.TestCase):
             tool_calls=(
                 ModelToolCall(
                     call_id="call_meta",
-                    name="datasource_metadata_read",
+                    name="datasource.metadata.read",
                     arguments="{\"datasourceId\":\"ds-002\"}",
+                    raw_call={
+                        "type": "function_call",
+                        "call_id": "call_meta",
+                        "name": "datasource_metadata_read",
+                    },
                 ),
             ),
             registered_tools=tools,
@@ -54,6 +59,10 @@ class ModelToolCallPlannerTest(unittest.TestCase):
 
         self.assertEqual("datasource.metadata.read", report.accepted_tool_plans[0].tool_name)
         self.assertEqual("ds-002", report.accepted_tool_plans[0].arguments["datasourceId"])
+        self.assertEqual(
+            "datasource_metadata_read",
+            report.accepted_tool_plans[0].governance_hints["modelToolFunctionName"],
+        )
 
     def test_unknown_tool_is_rejected(self) -> None:
         """未知工具必须拒绝，避免模型幻觉工具进入执行链路。"""

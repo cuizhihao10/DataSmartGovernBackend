@@ -43,6 +43,8 @@ class AgentRuntimeConfigurationBindingTest {
         assertThat(properties.getToolRegistry())
                 .hasSizeGreaterThanOrEqualTo(14)
                 .containsKeys(
+                        "datasource.source.catalog.search",
+                        "datasource.target.catalog.search",
                         "datasource.source.connection.test",
                         "datasource.target.connection.test",
                         "datasource.source.metadata.read",

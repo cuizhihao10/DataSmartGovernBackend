@@ -43,6 +43,17 @@ class AgentLoopControlPolicyEvaluatorTest(unittest.TestCase):
         self.assertEqual(AgentLoopControlAction.REQUIRE_HUMAN_TAKEOVER, decision.action)
         self.assertTrue(any("审批" in action for action in decision.recommended_actions))
 
+    def test_waiting_approval_takes_precedence_over_unused_next_turn_budget(self) -> None:
+        decision = AgentLoopControlPolicyEvaluator(
+            AgentLoopControlPolicy(max_total_tokens=100)
+        ).evaluate(
+            self._snapshot(statuses=(ToolExecutionFeedbackStatus.WAITING_APPROVAL,)),
+            AgentLoopControlState(consumed_tokens=80, estimated_next_turn_tokens=30),
+        )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(AgentLoopControlAction.REQUIRE_HUMAN_TAKEOVER, decision.action)
+
     def test_waits_for_control_plane_when_feedback_is_missing_before_timeout(self) -> None:
         decision = AgentLoopControlPolicyEvaluator().evaluate(
             self._snapshot(statuses=(), missing_ids=("call-001",)),

@@ -13,6 +13,38 @@ from typing import Any
 
 
 _MODEL_RESULT_INCLUDE_PATHS: dict[str, tuple[str, ...]] = {
+    "datasource.source.catalog.search": (
+        "keyword",
+        "usagePurpose",
+        "matchStatus",
+        "candidateCount",
+        "exactMatchCount",
+        "candidates[].datasourceId",
+        "candidates[].name",
+        "candidates[].type",
+        "candidates[].usagePurpose",
+        "candidates[].status",
+        "resolvedDatasourceId",
+        "resolvedDatasourceName",
+        "resolvedDatasourceType",
+        "requiresUserChoice",
+    ),
+    "datasource.target.catalog.search": (
+        "keyword",
+        "usagePurpose",
+        "matchStatus",
+        "candidateCount",
+        "exactMatchCount",
+        "candidates[].datasourceId",
+        "candidates[].name",
+        "candidates[].type",
+        "candidates[].usagePurpose",
+        "candidates[].status",
+        "resolvedDatasourceId",
+        "resolvedDatasourceName",
+        "resolvedDatasourceType",
+        "requiresUserChoice",
+    ),
     "datasource.source.connection.test": (
         "datasourceId",
         "success",

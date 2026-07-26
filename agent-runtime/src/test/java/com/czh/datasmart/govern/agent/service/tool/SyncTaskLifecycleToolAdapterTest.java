@@ -62,6 +62,32 @@ class SyncTaskLifecycleToolAdapterTest {
         assertEquals("CDC_STREAMING", adapter.normalizeSyncMode("CDC_STREAMING"));
     }
 
+    @Test
+    void shouldMergeEveryNarrowMetadataResultWithoutDuplicatingTables() {
+        Map<String, Object> first = new LinkedHashMap<>();
+        first.put("datasourceType", "MYSQL");
+        first.put("tables", List.of(
+                table(null, "source_customer", column("id", "BIGINT"))
+        ));
+        Map<String, Object> second = new LinkedHashMap<>();
+        second.put("datasourceType", "MYSQL");
+        second.put("tables", List.of(
+                table(null, "source_order", column("id", "BIGINT")),
+                table(null, "SOURCE_CUSTOMER", column("id", "BIGINT"))
+        ));
+
+        Map<String, Object> merged = SyncTaskLifecycleToolAdapter.mergeMetadata(List.of(first, second));
+
+        assertEquals("MYSQL", merged.get("datasourceType"));
+        assertEquals(2, merged.get("tableCount"));
+        assertEquals(
+                List.of("source_customer", "source_order"),
+                ((List<?>) merged.get("tables")).stream()
+                        .map(value -> String.valueOf(((Map<?, ?>) value).get("tableName")))
+                        .toList()
+        );
+    }
+
     private List<?> resolveMappings(Object rawMappings, boolean customSqlMode) throws Exception {
         Method method = SyncTaskLifecycleToolAdapter.class
                 .getDeclaredMethod("resolveObjectMappings", Object.class, boolean.class);

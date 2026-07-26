@@ -49,6 +49,8 @@ class AgentFollowUpToolPlanningResult:
     rejected_count: int = 0
     repeated_count: int = 0
     state_guard_rejected_count: int = 0
+    state_guard_issue_codes: tuple[str, ...] = ()
+    state_guard_issue_messages: tuple[str, ...] = ()
     budget_issue_codes: tuple[str, ...] = ()
     repeated_fingerprints: tuple[str, ...] = ()
     resource_reference_count: int = 0
@@ -69,6 +71,8 @@ class AgentFollowUpToolPlanningResult:
             "rejectedCount": self.rejected_count,
             "repeatedCount": self.repeated_count,
             "stateGuardRejectedCount": self.state_guard_rejected_count,
+            "stateGuardIssueCodes": self.state_guard_issue_codes,
+            "stateGuardIssueMessages": self.state_guard_issue_messages,
             "acceptedToolNames": tuple(plan.tool_name for plan in self.accepted_tool_plans),
             "budgetIssueCodes": self.budget_issue_codes,
             "repeatedFingerprints": self.repeated_fingerprints,
@@ -94,11 +98,17 @@ class AgentFollowUpToolPlanner:
     # successful control-plane audit facts and point to an allow-listed output
     # path.  Java performs the final same-session reference resolution.
     DERIVED_REFERENCES: dict[str, dict[str, tuple[str, str]]] = {
+        "datasource.source.connection.test": {
+            "catalogSearchRef": ("datasource.source.catalog.search", "resolvedDatasourceId"),
+        },
+        "datasource.target.connection.test": {
+            "catalogSearchRef": ("datasource.target.catalog.search", "resolvedDatasourceId"),
+        },
         "datasource.source.metadata.read": {
-            "connectionTestRef": ("datasource.source.connection.test", "success"),
+            "connectionTestRef": ("datasource.source.connection.test", "datasourceId"),
         },
         "datasource.target.metadata.read": {
-            "connectionTestRef": ("datasource.target.connection.test", "success"),
+            "connectionTestRef": ("datasource.target.connection.test", "datasourceId"),
         },
         "sync.task.draft.save": {
             "sourceMetadataRef": ("datasource.source.metadata.read", "metadata"),
@@ -161,6 +171,12 @@ class AgentFollowUpToolPlanner:
             "artifactRef": ("sync.task.import.repair.apply", "artifactRef"),
         },
     }
+    DERIVED_REFERENCE_GROUPS: dict[str, dict[str, tuple[str, str]]] = {
+        "sync.task.draft.save": {
+            "sourceMetadataRefs": ("datasource.source.metadata.read", "metadata"),
+            "targetMetadataRefs": ("datasource.target.metadata.read", "metadata"),
+        },
+    }
 
     def __init__(
         self,
@@ -221,8 +237,9 @@ class AgentFollowUpToolPlanner:
             return AgentFollowUpToolPlanningResult(visible_tools=visible_tools)
 
         resource_ledger = self._resource_ledger(plan, control_plane_feedback)
+        resource_reference_groups = self._resource_reference_groups(plan, control_plane_feedback)
         governed_calls = tuple(
-            self._inject_derived_arguments(call, resource_ledger)
+            self._inject_derived_arguments(call, resource_ledger, resource_reference_groups)
             for call in tool_calls
         )
         intake = self._intake_service.from_model_tool_calls(
@@ -242,6 +259,11 @@ class AgentFollowUpToolPlanner:
             report,
             control_plane_feedback,
             resource_ledger,
+        )
+        state_guard_issues = tuple(
+            issue
+            for issue in state_guarded_report.issues
+            if issue.blocking
         )
         guarded = self._budget_guard.evaluate(
             state_guarded_report,
@@ -273,6 +295,7 @@ class AgentFollowUpToolPlanner:
                         "toolCallFingerprint": fingerprint,
                         "agentLoopToolFingerprints": tuple(sorted(prior_fingerprints | current_fingerprints)),
                         "agentLoopResourceRefs": resource_ledger,
+                        "agentLoopResourceRefGroups": resource_reference_groups,
                         **model_result_governance(item.tool_name),
                     },
                 )
@@ -286,6 +309,12 @@ class AgentFollowUpToolPlanner:
             rejected_count=len(guarded.guarded_report.rejected_candidates),
             repeated_count=len(repeated),
             state_guard_rejected_count=state_guard_rejected_count,
+            state_guard_issue_codes=tuple(dict.fromkeys(
+                issue.code for issue in state_guard_issues
+            )),
+            state_guard_issue_messages=tuple(dict.fromkeys(
+                issue.message for issue in state_guard_issues
+            )),
             budget_issue_codes=guarded.budget_issue_codes,
             repeated_fingerprints=tuple(repeated),
             resource_reference_count=len(resource_ledger),
@@ -309,10 +338,39 @@ class AgentFollowUpToolPlanner:
             return report, 0
         dry_run_requires_repair: bool | None = None
         latest_feedback_tool = ""
+        catalog_resolutions: dict[str, dict[str, object]] = {}
+        metadata_summaries: dict[str, dict[str, object]] = {}
         if feedback is not None:
             for item in reversed(feedback.feedback_items):
                 if not latest_feedback_tool:
                     latest_feedback_tool = item.tool_name
+                if (
+                    item.tool_name in {
+                        "datasource.source.catalog.search",
+                        "datasource.target.catalog.search",
+                    }
+                    and item.tool_name not in catalog_resolutions
+                    and item.status.value == "succeeded"
+                ):
+                    catalog_resolutions[item.tool_name] = dict(item.result)
+                if (
+                    item.tool_name in {
+                        "datasource.source.metadata.read",
+                        "datasource.target.metadata.read",
+                    }
+                    and item.status.value == "succeeded"
+                ):
+                    summary = item.result.get("summary")
+                    if isinstance(summary, dict):
+                        existing = metadata_summaries.get(item.tool_name)
+                        metadata_summaries[item.tool_name] = (
+                            dict(summary)
+                            if existing is None
+                            else AgentFollowUpToolPlanner._merge_metadata_summaries(
+                                newest=existing,
+                                older=summary,
+                            )
+                        )
                 if item.tool_name != "sync.task.import.dry-run":
                     continue
                 value = item.result.get("repairRequired")
@@ -426,6 +484,70 @@ class AgentFollowUpToolPlanner:
             ):
                 reject_code = "MODEL_TOOL_CALL_RECOVERY_CASE_NOT_VERIFIED"
                 reject_message = "只有恢复后的验证执行成功且失败行数为 0，才能沉淀恢复案例。"
+            elif candidate.accepted and plan is not None and plan.tool_name in {
+                "datasource.source.connection.test",
+                "datasource.target.connection.test",
+            }:
+                catalog_tool = (
+                    "datasource.source.catalog.search"
+                    if plan.tool_name == "datasource.source.connection.test"
+                    else "datasource.target.catalog.search"
+                )
+                resolution = catalog_resolutions.get(catalog_tool)
+                catalog_ref = plan.arguments.get("catalogSearchRef")
+                has_trusted_catalog_ref = (
+                    isinstance(catalog_ref, dict)
+                    and catalog_ref.get("fromTool") == catalog_tool
+                    and bool(catalog_ref.get("fromAuditId"))
+                )
+                if resolution is None or not has_trusted_catalog_ref:
+                    reject_code = "MODEL_TOOL_CALL_DATASOURCE_CATALOG_EVIDENCE_REQUIRED"
+                    reject_message = (
+                        "连接测试必须继承本会话中已成功完成的精确数据源目录查询结果，"
+                        "不能由模型直接填写或猜测内部数据源 ID。"
+                    )
+                else:
+                    match_status = str(resolution.get("matchStatus") or "").strip().upper()
+                    resolved_id = resolution.get("resolvedDatasourceId")
+                    proposed_id = plan.arguments.get("datasourceId")
+                    if match_status != "EXACT" or resolved_id is None:
+                        reject_code = "MODEL_TOOL_CALL_DATASOURCE_SELECTION_REQUIRES_USER"
+                        reject_message = (
+                            "数据源名称未得到唯一精确匹配，不能由模型替用户选择候选项。"
+                            "请向用户展示当前项目内的候选数据源，待用户明确选择后再继续连接测试。"
+                        )
+                    elif proposed_id is not None and str(proposed_id).strip() != str(resolved_id).strip():
+                        reject_code = "MODEL_TOOL_CALL_DATASOURCE_ID_NOT_CATALOG_RESOLVED"
+                        reject_message = (
+                            "连接测试中的数据源 ID 与目录工具唯一精确匹配的 ID 不一致，"
+                            "已阻止模型改用其他数据源。"
+                        )
+            elif candidate.accepted and plan is not None and plan.tool_name in {
+                "datasource.source.metadata.read",
+                "datasource.target.metadata.read",
+            }:
+                connection_tool = (
+                    "datasource.source.connection.test"
+                    if plan.tool_name == "datasource.source.metadata.read"
+                    else "datasource.target.connection.test"
+                )
+                connection_ref = plan.arguments.get("connectionTestRef")
+                if (
+                    connection_tool not in succeeded_tools
+                    or not isinstance(connection_ref, dict)
+                    or connection_ref.get("fromTool") != connection_tool
+                    or not connection_ref.get("fromAuditId")
+                ):
+                    reject_code = "MODEL_TOOL_CALL_DATASOURCE_CONNECTION_EVIDENCE_REQUIRED"
+                    reject_message = (
+                        "读取元数据前必须先取得同一端数据源的真实连接测试成功记录，"
+                        "不能跳过连接验证或由模型直接指定内部数据源 ID。"
+                    )
+            elif candidate.accepted and plan is not None and plan.tool_name == "sync.task.draft.save":
+                reject_code, reject_message = AgentFollowUpToolPlanner._validate_sync_draft_against_metadata(
+                    plan.arguments,
+                    metadata_summaries,
+                )
             if reject_code:
                 rejected += 1
                 candidates.append(
@@ -443,11 +565,201 @@ class AgentFollowUpToolPlanner:
             candidates.append(candidate)
         return ModelToolCallPlanningReport(candidates=tuple(candidates)), rejected
 
+    @staticmethod
+    def _validate_sync_draft_against_metadata(
+        arguments: dict[str, object],
+        metadata_summaries: dict[str, dict[str, object]],
+    ) -> tuple[str, str]:
+        """Validate model-proposed mappings against the latest bounded metadata.
+
+        The model is allowed to interpret the user's request, but it is not the
+        source of truth for database objects.  This guard runs before the draft
+        reaches Java readiness/approval so a hallucinated table or field cannot
+        be presented to the user as an executable plan.
+        """
+
+        source_summary = metadata_summaries.get("datasource.source.metadata.read")
+        target_summary = metadata_summaries.get("datasource.target.metadata.read")
+        if source_summary is None or target_summary is None:
+            return "", ""
+        mappings = arguments.get("objectMappings")
+        if not isinstance(mappings, list) or not mappings:
+            return (
+                "MODEL_TOOL_CALL_SYNC_MAPPING_MISSING",
+                "模型尚未生成源表到目标表的对象映射，不能保存任务草稿。请补充映射或根据真实元数据重新规划。",
+            )
+
+        sync_mode = str(arguments.get("syncMode") or "FULL").strip().upper()
+        source_objects = AgentFollowUpToolPlanner._metadata_objects(source_summary)
+        target_objects = AgentFollowUpToolPlanner._metadata_objects(target_summary)
+        for index, raw_mapping in enumerate(mappings, start=1):
+            if not isinstance(raw_mapping, dict):
+                return (
+                    "MODEL_TOOL_CALL_SYNC_MAPPING_INVALID",
+                    f"第 {index} 条对象映射不是有效对象，请重新生成结构化映射。",
+                )
+            source_object = None
+            if sync_mode != "CUSTOM_SQL_QUERY":
+                source_object = AgentFollowUpToolPlanner._find_metadata_object(
+                    source_objects,
+                    raw_mapping.get("sourceSchemaName"),
+                    raw_mapping.get("sourceObjectName"),
+                )
+                if source_object is None:
+                    return (
+                        "MODEL_TOOL_CALL_SOURCE_OBJECT_NOT_IN_METADATA",
+                        AgentFollowUpToolPlanner._missing_object_message(
+                            side="源端",
+                            index=index,
+                            schema_name=raw_mapping.get("sourceSchemaName"),
+                            object_name=raw_mapping.get("sourceObjectName"),
+                            truncated=bool(source_summary.get("truncated")),
+                        ),
+                    )
+            target_object = AgentFollowUpToolPlanner._find_metadata_object(
+                target_objects,
+                raw_mapping.get("targetSchemaName"),
+                raw_mapping.get("targetObjectName"),
+            )
+            if target_object is None:
+                return (
+                    "MODEL_TOOL_CALL_TARGET_OBJECT_NOT_IN_METADATA",
+                    AgentFollowUpToolPlanner._missing_object_message(
+                        side="目标端",
+                        index=index,
+                        schema_name=raw_mapping.get("targetSchemaName"),
+                        object_name=raw_mapping.get("targetObjectName"),
+                        truncated=bool(target_summary.get("truncated")),
+                    ),
+                )
+
+            field_mappings = raw_mapping.get("fieldMappings")
+            if not isinstance(field_mappings, list):
+                continue
+            source_fields = AgentFollowUpToolPlanner._metadata_field_names(source_object)
+            target_fields = AgentFollowUpToolPlanner._metadata_field_names(target_object)
+            for field_mapping in field_mappings:
+                if not isinstance(field_mapping, dict) or field_mapping.get("syncEnabled") is False:
+                    continue
+                source_field = str(field_mapping.get("sourceField") or "").strip()
+                target_field = str(field_mapping.get("targetField") or "").strip()
+                if source_object is not None and source_field and source_field.lower() not in source_fields:
+                    return (
+                        "MODEL_TOOL_CALL_SOURCE_FIELD_NOT_IN_METADATA",
+                        f"第 {index} 条映射的源字段“{source_field}”不存在于真实源表中。"
+                        "请修正字段名、关闭该字段同步，或重新读取更精确的元数据。",
+                    )
+                if target_field and target_field.lower() not in target_fields:
+                    return (
+                        "MODEL_TOOL_CALL_TARGET_FIELD_NOT_IN_METADATA",
+                        f"第 {index} 条映射的目标字段“{target_field}”不存在于真实目标表中。"
+                        "请改为目标表已有字段，或经用户授权后进入结构修复流程。",
+                    )
+        return "", ""
+
+    @staticmethod
+    def _metadata_objects(summary: dict[str, object]) -> tuple[dict[str, object], ...]:
+        objects = summary.get("objects")
+        if not isinstance(objects, list):
+            return ()
+        return tuple(item for item in objects if isinstance(item, dict))
+
+    @classmethod
+    def _merge_metadata_summaries(
+        cls,
+        *,
+        newest: dict[str, object],
+        older: dict[str, object],
+    ) -> dict[str, object]:
+        """Merge bounded metadata reads without losing separately queried tables.
+
+        A multi-table request may intentionally issue the same directional metadata
+        tool more than once with different exact table patterns.  Feedback is scanned
+        newest-first, so scalar datasource facts and duplicate objects from the latest
+        read remain authoritative while older, distinct objects are appended.  If any
+        contributing read was truncated, the merged view remains truncated; a missing
+        object must then trigger a precise re-read instead of a false non-existence
+        conclusion.
+        """
+
+        merged = dict(newest)
+        merged_objects: list[dict[str, object]] = []
+        seen_objects: set[tuple[str, str]] = set()
+        for metadata_object in (*cls._metadata_objects(newest), *cls._metadata_objects(older)):
+            schema_name = str(metadata_object.get("schemaName") or "").strip().lower()
+            table_name = str(metadata_object.get("tableName") or "").strip().lower()
+            object_key = (schema_name, table_name)
+            if table_name and object_key in seen_objects:
+                continue
+            if table_name:
+                seen_objects.add(object_key)
+            merged_objects.append(dict(metadata_object))
+        merged["objects"] = merged_objects
+        merged["truncated"] = bool(newest.get("truncated")) or bool(older.get("truncated"))
+        return merged
+
+    @staticmethod
+    def _find_metadata_object(
+        objects: tuple[dict[str, object], ...],
+        schema_name: object,
+        object_name: object,
+    ) -> dict[str, object] | None:
+        normalized_object = str(object_name or "").strip().lower()
+        normalized_schema = str(schema_name or "").strip().lower()
+        if not normalized_object:
+            return None
+        for item in objects:
+            if str(item.get("tableName") or "").strip().lower() != normalized_object:
+                continue
+            item_schema = str(item.get("schemaName") or "").strip().lower()
+            if normalized_schema and item_schema != normalized_schema:
+                continue
+            return item
+        return None
+
+    @staticmethod
+    def _metadata_field_names(metadata_object: dict[str, object]) -> set[str]:
+        columns = metadata_object.get("columns")
+        if not isinstance(columns, list):
+            return set()
+        return {
+            str(item.get("columnName") or "").strip().lower()
+            for item in columns
+            if isinstance(item, dict) and str(item.get("columnName") or "").strip()
+        }
+
+    @staticmethod
+    def _missing_object_message(
+        *,
+        side: str,
+        index: int,
+        schema_name: object,
+        object_name: object,
+        truncated: bool,
+    ) -> str:
+        qualified_name = ".".join(
+            part for part in (
+                str(schema_name or "").strip(),
+                str(object_name or "").strip(),
+            )
+            if part
+        ) or "未填写"
+        if truncated:
+            return (
+                f"第 {index} 条映射的{side}对象“{qualified_name}”未出现在当前有界元数据摘要中。"
+                "目录可能被截断，请使用 schemaPattern/tableNamePattern 精确重读后再判断，不能猜测该对象存在。"
+            )
+        return (
+            f"第 {index} 条映射的{side}对象“{qualified_name}”不存在。"
+            "请核对 schema/表名，或从已读取的真实对象列表中选择正确对象。"
+        )
+
     @classmethod
     def _inject_derived_arguments(
         cls,
         call: ModelToolCall,
         resource_ledger: dict[str, dict[str, str]],
+        resource_reference_groups: dict[str, tuple[dict[str, str], ...]],
     ) -> ModelToolCall:
         """Replace model-supplied derived fields with trusted audit references."""
 
@@ -456,6 +768,16 @@ class AgentFollowUpToolPlanner:
         except (TypeError, ValueError, json.JSONDecodeError):
             parsed = {}
         arguments = dict(parsed) if isinstance(parsed, dict) else {}
+        if call.name in {
+            "datasource.source.connection.test",
+            "datasource.target.connection.test",
+            "datasource.source.metadata.read",
+            "datasource.target.metadata.read",
+        }:
+            # Data source identity is a control-plane fact.  Even if a provider
+            # emits an undeclared datasourceId, only the trusted audit reference
+            # below may select the resource used by Java.
+            arguments.pop("datasourceId", None)
         for argument_name, (source_tool, path) in cls.DERIVED_REFERENCES.get(call.name, {}).items():
             source = resource_ledger.get(source_tool)
             if source is None or not source.get("auditId"):
@@ -467,6 +789,18 @@ class AgentFollowUpToolPlanner:
                 "fromRunId": source.get("runId"),
                 "path": path or None,
             }
+        for argument_name, (source_tool, path) in cls.DERIVED_REFERENCE_GROUPS.get(call.name, {}).items():
+            references = resource_reference_groups.get(source_tool, ())
+            arguments[argument_name] = [
+                {
+                    "fromTool": source_tool,
+                    "fromAuditId": reference["auditId"],
+                    "fromRunId": reference.get("runId"),
+                    "path": path or None,
+                }
+                for reference in references
+                if reference.get("auditId")
+            ]
         return replace(
             call,
             arguments=json.dumps(arguments, ensure_ascii=False, sort_keys=True),
@@ -505,6 +839,57 @@ class AgentFollowUpToolPlanner:
                 reference["outputRef"] = item.output_ref
             ledger[item.tool_name] = reference
         return ledger
+
+    @classmethod
+    def _resource_reference_groups(
+        cls,
+        plan: AgentPlan,
+        feedback: AgentControlPlaneFeedbackSnapshot | None,
+    ) -> dict[str, tuple[dict[str, str], ...]]:
+        """Preserve every successful same-tool output needed by multi-table flows."""
+
+        grouped: dict[str, list[dict[str, str]]] = {}
+        for tool_plan in plan.tool_plans:
+            inherited = tool_plan.governance_hints.get("agentLoopResourceRefGroups")
+            if not isinstance(inherited, dict):
+                continue
+            for tool_name, candidates in inherited.items():
+                if not isinstance(candidates, (list, tuple)):
+                    continue
+                for candidate in candidates:
+                    normalized = cls._normalized_reference(str(tool_name), candidate)
+                    if normalized is not None:
+                        cls._append_unique_reference(grouped, str(tool_name), normalized)
+
+        if feedback is not None:
+            for item in feedback.feedback_items:
+                if item.status.value != "succeeded" or not item.audit_id:
+                    continue
+                reference = {
+                    "toolCode": item.tool_name,
+                    "auditId": item.audit_id,
+                }
+                if item.run_id:
+                    reference["runId"] = item.run_id
+                if item.output_ref:
+                    reference["outputRef"] = item.output_ref
+                cls._append_unique_reference(grouped, item.tool_name, reference)
+
+        return {
+            tool_name: tuple(references)
+            for tool_name, references in grouped.items()
+        }
+
+    @staticmethod
+    def _append_unique_reference(
+        grouped: dict[str, list[dict[str, str]]],
+        tool_name: str,
+        reference: dict[str, str],
+    ) -> None:
+        references = grouped.setdefault(tool_name, [])
+        if any(item.get("auditId") == reference.get("auditId") for item in references):
+            return
+        references.append(reference)
 
     @staticmethod
     def _normalized_reference(tool_name: str, candidate: object) -> dict[str, str] | None:

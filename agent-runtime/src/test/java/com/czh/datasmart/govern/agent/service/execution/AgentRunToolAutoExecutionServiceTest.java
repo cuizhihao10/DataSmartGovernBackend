@@ -138,6 +138,28 @@ class AgentRunToolAutoExecutionServiceTest {
         assertEquals("PLANNED", fixture.auditService.getExecutionAudit("session-auto-001", "run-auto-001", "atea-auto-not-selected").state());
     }
 
+    @Test
+    void shouldCompleteRunWhenEveryReadOnlyToolSucceeded() {
+        TestFixture fixture = newFixture(5);
+        fixture.saveAudits(
+                audit("atea-auto-complete-1", AgentToolExecutionState.PLANNED, AgentToolExecutionMode.SYNC,
+                        AgentToolRiskLevel.LOW, false, true, true),
+                audit("atea-auto-complete-2", AgentToolExecutionState.PLANNED, AgentToolExecutionMode.SYNC,
+                        AgentToolRiskLevel.LOW, false, true, true)
+        );
+
+        AgentRunToolAutoExecutionResponse response = fixture.service.executeEligibleSyncTools(
+                "session-auto-001",
+                "run-auto-001",
+                new AgentRunToolAutoExecutionRequest(null, 5, false),
+                "trace-auto"
+        );
+
+        assertEquals(2, response.executedCount());
+        assertEquals(AgentRunState.SUCCEEDED, fixture.run.getState());
+        assertTrue(fixture.run.getMessage().contains("同一会话继续下一轮"));
+    }
+
     private TestFixture newFixture(int maxAutoExecutions) {
         AgentRuntimeProperties properties = new AgentRuntimeProperties();
         properties.setMaxSyncAutoExecutionsPerRun(maxAutoExecutions);
@@ -166,7 +188,12 @@ class AgentRunToolAutoExecutionServiceTest {
         );
         AgentSessionRecord session = sessionWithRun();
         sessionStore.save(session);
-        return new TestFixture(autoExecutionService, auditStore, auditService);
+        return new TestFixture(
+                autoExecutionService,
+                auditStore,
+                auditService,
+                session.getRuns().getFirst()
+        );
     }
 
     private AgentSessionRecord sessionWithRun() {
@@ -238,7 +265,8 @@ class AgentRunToolAutoExecutionServiceTest {
 
     private record TestFixture(AgentRunToolAutoExecutionService service,
                                AgentToolExecutionAuditMemoryStore auditStore,
-                               AgentToolExecutionAuditService auditService) {
+                               AgentToolExecutionAuditService auditService,
+                               AgentRunRecord run) {
 
         /**
          * 保存审计记录，模拟 AgentPlan ingestion 已经生成可执行计划。

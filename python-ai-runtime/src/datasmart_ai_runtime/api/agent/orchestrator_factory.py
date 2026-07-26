@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from typing import Any
 
 from datasmart_ai_runtime.api.agent.bootstrap_env import (
@@ -80,12 +81,49 @@ def load_tool_registry(
 
     try:
         if hasattr(client, "list_tool_descriptors"):
-            return client.list_tool_descriptors(enabled_only=True, trace_id=trace_id)
-        return client.list_tools(enabled_only=True, trace_id=trace_id)
+            remote_tools = client.list_tool_descriptors(enabled_only=True, trace_id=trace_id)
+        else:
+            remote_tools = client.list_tools(enabled_only=True, trace_id=trace_id)
+        return _overlay_model_facing_schemas(remote_tools, default_tool_registry())
     except ToolRegistryClientError:
         if prefer_remote_tools and not allow_remote_fallback:
             raise
         return default_tool_registry()
+
+
+def _overlay_model_facing_schemas(
+    remote_tools: tuple[ToolDefinition, ...],
+    local_tools: tuple[ToolDefinition, ...],
+) -> tuple[ToolDefinition, ...]:
+    """Enrich Java governance descriptors with provider-facing nested schemas.
+
+    Java remains authoritative for which tools are enabled and for execution,
+    risk, approval, tenant/project and service routing policy.  Its current
+    lightweight parameter descriptor intentionally flattens each field, while a
+    model needs nested JSON Schema for complex values such as objectMappings.
+    Overlay only schema details for tools that Java actually returned; this never
+    enables a local-only tool or weakens remote governance.
+    """
+
+    local_by_name = {tool.name: tool for tool in local_tools}
+    enriched: list[ToolDefinition] = []
+    for remote in remote_tools:
+        local = local_by_name.get(remote.name)
+        if local is None:
+            enriched.append(remote)
+            continue
+        merged_schema: dict[str, Any] = {}
+        for name in dict.fromkeys((*remote.input_schema.keys(), *local.input_schema.keys())):
+            remote_field = remote.input_schema.get(name)
+            local_field = local.input_schema.get(name)
+            if isinstance(local_field, dict) and isinstance(remote_field, dict):
+                merged_schema[name] = {**local_field, **remote_field}
+            elif isinstance(remote_field, dict):
+                merged_schema[name] = dict(remote_field)
+            elif isinstance(local_field, dict):
+                merged_schema[name] = dict(local_field)
+        enriched.append(replace(remote, input_schema=merged_schema))
+    return tuple(enriched)
 
 
 def load_skill_registry(

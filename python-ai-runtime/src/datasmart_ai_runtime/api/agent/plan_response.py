@@ -153,6 +153,7 @@ def build_plan_response(
 
     if (
         plan_ingestion_client is not None
+        and bool(plan.tool_plans)
         and tool_execution_readiness.clarification_required_count == 0
         and tool_execution_readiness.blocked_count == 0
     ):
@@ -203,6 +204,7 @@ def build_plan_response(
                     request=request,
                     plan=plan,
                     first_model_turn=second_turn_result,
+                    initial_feedback=control_plane_feedback,
                     progress_event_sink=progress_event_sink,
                 )
                 durable_loop_plan = durable_model_tool_loop.latest_plan
@@ -437,11 +439,43 @@ def build_plan_response(
     response["toolExecutionReadinessPolicy"] = readiness_policy_snapshot.to_low_sensitive_summary()
     response["agentExecutionClosure"] = agent_execution_closure_summary
     response["intelligentGatewayGovernance"] = intelligent_gateway_governance
+    conversation_plan = (
+        replace(
+            plan,
+            tool_plans=durable_loop_plan.tool_plans,
+            response_summary=(
+                str(getattr(second_turn_result, "summary", "") or "").strip()
+                or durable_loop_plan.response_summary
+            ),
+            next_actions=durable_loop_plan.next_actions,
+        )
+        if durable_loop_plan is not None
+        else plan
+    )
+    conversation_readiness = ToolExecutionReadinessService().evaluate(
+        conversation_plan.tool_plans,
+        policy=readiness_policy_snapshot.policy,
+        policy_metadata=readiness_policy_snapshot.to_low_sensitive_summary(),
+    )
     agent_conversation = build_agent_conversation_response(
         request,
-        plan,
-        tool_execution_readiness,
+        conversation_plan,
+        conversation_readiness,
         control_plane_ingested=control_plane_ingestion is not None,
+        control_plane_feedback=control_plane_feedback,
+        autonomous_resolution_stopped=bool(
+            (
+                durable_model_tool_loop is not None
+                and durable_model_tool_loop.stopped_reason in {
+                    "MODEL_COMPLETED_WITHOUT_MORE_TOOLS",
+                    "MODEL_TURN_LIMIT_REACHED",
+                }
+            )
+            or (
+                second_turn_result is not None
+                and bool(getattr(second_turn_result, "error_code", None))
+            )
+        ),
     )
     response["agentConversation"] = agent_conversation
     response["agentObservationTimeline"] = build_agent_observation_timeline(

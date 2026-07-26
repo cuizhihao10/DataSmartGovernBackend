@@ -81,6 +81,9 @@ class _ProviderRuntimeStats:
     recent_events: deque[ModelProviderInvocationHealthEvent]
     consecutive_failures: int = 0
     circuit_open_until: datetime | None = None
+    # 冷却结束后不能继续返回旧的 UNAVAILABLE 快照，否则路由永远不会再调用该 Provider，
+    # 也就没有新的成功事实可以让它恢复。该标记表示下一次真实调用承担半开探测职责。
+    half_open_probe_pending: bool = False
 
 
 class InMemoryModelProviderHealthRegistry:
@@ -112,9 +115,13 @@ class InMemoryModelProviderHealthRegistry:
 
         self._snapshots[snapshot.provider_name] = snapshot
         stats = self._stats.get(snapshot.provider_name)
-        if stats is not None and snapshot.status == ModelProviderHealthStatus.HEALTHY:
-            stats.consecutive_failures = 0
-            stats.circuit_open_until = None
+        if stats is not None:
+            # 外部探针或运维人工判定会取代尚未完成的半开探测，避免诊断同时出现
+            # “已由探针确认健康/不可用”和“等待半开调用”两个互相冲突的状态。
+            stats.half_open_probe_pending = False
+            if snapshot.status == ModelProviderHealthStatus.HEALTHY:
+                stats.consecutive_failures = 0
+                stats.circuit_open_until = None
 
     def record_invocation(
         self,
@@ -144,13 +151,15 @@ class InMemoryModelProviderHealthRegistry:
         )
         stats = self._stats_for(provider_name)
         stats.recent_events.append(event)
+        half_open_probe = stats.half_open_probe_pending
+        stats.half_open_probe_pending = False
         if succeeded:
             stats.consecutive_failures = 0
-            if stats.circuit_open_until and event.recorded_at >= stats.circuit_open_until:
-                stats.circuit_open_until = None
+            stats.circuit_open_until = None
         else:
             stats.consecutive_failures += 1
-            if stats.consecutive_failures >= max(self._policy.failure_threshold, 1):
+            # 半开探测失败说明上游尚未恢复，应立即重新进入冷却，而不是重新累计完整阈值。
+            if half_open_probe or stats.consecutive_failures >= max(self._policy.failure_threshold, 1):
                 stats.circuit_open_until = event.recorded_at + timedelta(
                     seconds=max(self._policy.circuit_breaker_cooldown_seconds, 1)
                 )
@@ -214,8 +223,17 @@ class InMemoryModelProviderHealthRegistry:
         """按 providerName 读取快照，并优先应用未过期熔断窗口。"""
 
         stats = self._stats.get(provider_name)
-        if stats is not None and stats.circuit_open_until and now < stats.circuit_open_until:
-            return self._snapshot_from_stats(provider_name, now=now)
+        if stats is not None and stats.circuit_open_until:
+            if now < stats.circuit_open_until:
+                return self._snapshot_from_stats(provider_name, now=now)
+
+            # 熔断冷却结束后进入半开状态并允许真实流量探测。若继续返回最后一次持久化的
+            # UNAVAILABLE 快照，ModelGateway 会永久跳过该路由，只能依赖进程重启恢复。
+            stats.circuit_open_until = None
+            stats.half_open_probe_pending = True
+            snapshot = self._snapshot_from_stats(provider_name, now=now)
+            self._snapshots[provider_name] = snapshot
+            return snapshot
         return self._snapshots.get(
             provider_name,
             ModelProviderHealthSnapshot(
@@ -239,7 +257,14 @@ class InMemoryModelProviderHealthRegistry:
         enough_error_rate_samples = len(recent_events) >= max(self._policy.min_error_rate_sample_size, 1)
         if circuit_open:
             status = ModelProviderHealthStatus.UNAVAILABLE
-        elif enough_error_rate_samples and failure_rate >= self._policy.unavailable_error_rate_threshold:
+        elif stats.half_open_probe_pending:
+            # 半开状态必须保持可路由，下一次真实调用会决定恢复或重新熔断。
+            status = ModelProviderHealthStatus.DEGRADED
+        elif (
+            stats.consecutive_failures > 0
+            and enough_error_rate_samples
+            and failure_rate >= self._policy.unavailable_error_rate_threshold
+        ):
             status = ModelProviderHealthStatus.UNAVAILABLE
         # 延迟只能证明 Provider “慢”，不能证明它“不可用”。尤其是 xhigh reasoning 或长上下文模型，
         # 一次成功调用很可能超过 15 秒；如果据此直接标记 UNAVAILABLE，下一轮路由会跳过该 Provider，
@@ -288,6 +313,7 @@ class InMemoryModelProviderHealthRegistry:
             "notes": snapshot.notes,
             "circuitOpen": circuit_open,
             "circuitOpenUntil": circuit_open_until.isoformat() if circuit_open_until else None,
+            "halfOpenProbePending": stats.half_open_probe_pending if stats else False,
             "consecutiveFailures": stats.consecutive_failures if stats else 0,
             "recentSampleCount": len(stats.recent_events) if stats else 0,
             "routeWorkloads": tuple(route.workload.value for route in provider_routes),
@@ -312,6 +338,8 @@ class InMemoryModelProviderHealthRegistry:
         )
         if stats.circuit_open_until and now < stats.circuit_open_until:
             return base + f" 熔断已打开，将持续到 {stats.circuit_open_until.isoformat()}。"
+        if stats.half_open_probe_pending:
+            return base + " 熔断冷却已结束，当前处于半开探测状态，等待一次真实调用确认恢复情况。"
         return base
 
     @staticmethod

@@ -183,6 +183,70 @@ class ModelToolSchemaTest(unittest.TestCase):
         self.assertEqual(1, len(tools))
         self.assertEqual("datasource_metadata_read", tools[0]["function"]["name"])
 
+    def test_nested_mapping_schema_is_exposed_without_losing_required_fields(self) -> None:
+        """复杂对象映射必须以嵌套 JSON Schema 暴露，不能退化成裸数组。"""
+
+        captured: dict[str, object] = {}
+
+        def transport(request, timeout: int):
+            captured["body"] = json.loads(request.data.decode("utf-8"))
+            return FakeHttpResponse({"choices": [{"message": {"content": "ok"}}], "usage": {}})
+
+        provider = OpenAICompatibleModelProvider(
+            OpenAICompatibleProviderSettings(max_retries=0),
+            transport=transport,
+        )
+        provider.invoke(
+            ModelInvocationRequest(
+                route=_openai_route(endpoint="http://model-gateway.local/v1"),
+                messages=(ModelMessage(role="user", content="创建完整同步草稿"),),
+                available_tools=(
+                    _tool(
+                        name="sync.task.draft.save",
+                        description="保存同步任务草稿。",
+                        risk_level=ToolRiskLevel.HIGH,
+                        execution_mode=ToolExecutionMode.APPROVAL_REQUIRED,
+                        input_schema={
+                            "objectMappings": {
+                                "type": "array",
+                                "required": True,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "sourceObjectName": {"type": "string", "required": True},
+                                        "targetObjectName": {"type": "string", "required": True},
+                                        "fieldMappings": {
+                                            "type": "array",
+                                            "required": True,
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "sourceField": {"type": "string", "required": True},
+                                                    "targetField": {"type": "string", "required": True},
+                                                },
+                                            },
+                                        },
+                                    },
+                                },
+                            }
+                        },
+                    ),
+                ),
+                strict_tool_schema=True,
+            )
+        )
+
+        mapping_schema = captured["body"]["tools"][0]["function"]["parameters"]["properties"]["objectMappings"]
+        self.assertEqual("object", mapping_schema["items"]["type"])
+        self.assertEqual(
+            ["sourceObjectName", "targetObjectName", "fieldMappings"],
+            mapping_schema["items"]["required"],
+        )
+        field_item = mapping_schema["items"]["properties"]["fieldMappings"]["items"]
+        self.assertEqual(["sourceField", "targetField"], field_item["required"])
+        self.assertFalse(mapping_schema["items"]["additionalProperties"])
+        self.assertFalse(field_item["additionalProperties"])
+
     def test_model_tool_schema_hides_system_and_derived_parameters(self) -> None:
         """模型只能看到应由它提供的字段，不能伪造系统范围、证据策略或执行引用。"""
 

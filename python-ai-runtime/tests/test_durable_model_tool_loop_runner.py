@@ -26,7 +26,10 @@ from datasmart_ai_runtime.services.agent_control_plane_feedback import (
 from datasmart_ai_runtime.services.agent_execution.durable_model_tool_loop_runner import (
     AgentDurableModelToolLoopRunner,
 )
-from datasmart_ai_runtime.services.agent_loop_control_policy import AgentLoopControlPolicyEvaluator
+from datasmart_ai_runtime.services.agent_loop_control_policy import (
+    AgentLoopControlPolicy,
+    AgentLoopControlPolicyEvaluator,
+)
 from datasmart_ai_runtime.services.agent_second_turn_orchestrator import AgentSecondTurnResult
 from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import (
     ToolExecutionFeedbackStatus,
@@ -67,9 +70,13 @@ class AgentDurableModelToolLoopRunnerTest(unittest.TestCase):
     def test_waiting_approval_pauses_before_another_model_turn(self) -> None:
         model = _SecondTurnOrchestrator()
         streamed: list[AgentRuntimeEvent] = []
-        runner = self._runner(
-            feedback=_feedback(ToolExecutionFeedbackStatus.WAITING_APPROVAL),
-            second_turn=model,
+        runner = AgentDurableModelToolLoopRunner(
+            plan_ingestion_client=_PlanIngestionClient(),
+            feedback_collector=_FeedbackCollector(_feedback(ToolExecutionFeedbackStatus.WAITING_APPROVAL)),
+            loop_control_evaluator=AgentLoopControlPolicyEvaluator(
+                AgentLoopControlPolicy(max_total_tokens=1)
+            ),
+            second_turn_orchestrator=model,
         )
 
         result = runner.run(
@@ -87,6 +94,90 @@ class AgentDurableModelToolLoopRunnerTest(unittest.TestCase):
             AgentRuntimeEventType.TOOL_EXECUTION_STATE_CHANGED,
             streamed[-1].event_type,
         )
+
+    def test_configured_turn_budget_can_reach_fifth_tool_batch(self) -> None:
+        model = _ChainedSecondTurnOrchestrator(
+            tool_batches=tuple(
+                (self._tool_plan(tool_name=f"datasource.read.stage-{index}"),)
+                for index in range(2, 6)
+            )
+        )
+        runner = AgentDurableModelToolLoopRunner(
+            plan_ingestion_client=_PlanIngestionClient(),
+            feedback_collector=_FeedbackCollector(_feedback(ToolExecutionFeedbackStatus.SUCCEEDED)),
+            loop_control_evaluator=AgentLoopControlPolicyEvaluator(
+                AgentLoopControlPolicy(max_tool_steps=6, max_second_turns=6)
+            ),
+            second_turn_orchestrator=model,
+            max_model_turns=6,
+        )
+
+        result = runner.run(
+            request=self._request(),
+            plan=self._plan(),
+            first_model_turn=_model_turn(self._tool_plan(tool_name="datasource.read.stage-1")),
+        )
+
+        self.assertEqual("MODEL_COMPLETED_WITHOUT_MORE_TOOLS", result.stopped_reason)
+        self.assertEqual(5, len(result.turns))
+        self.assertEqual(
+            [f"datasource.read.stage-{index}" for index in range(1, 6)],
+            [turn.submitted_tool_names[0] for turn in result.turns],
+        )
+
+    def test_each_model_turn_receives_accumulated_cross_run_evidence(self) -> None:
+        """逐表元数据分批执行时，后续模型不能遗忘前一批工具结果。"""
+
+        catalog = ToolPlan(
+            tool_name="datasource.source.catalog.search",
+            reason="resolve source",
+            governance_hints={"modelToolCallId": "call-catalog"},
+        )
+        connection = ToolPlan(
+            tool_name="datasource.source.connection.test",
+            reason="test source",
+            governance_hints={"modelToolCallId": "call-connection"},
+        )
+        metadata = ToolPlan(
+            tool_name="datasource.source.metadata.read",
+            reason="read source table",
+            governance_hints={"modelToolCallId": "call-metadata"},
+        )
+        initial_plan = replace(self._plan(), tool_plans=(catalog,))
+        initial_feedback = _feedback_for_plan(initial_plan)
+        model = _EvidenceAccumulatingSecondTurnOrchestrator(metadata)
+        runner = AgentDurableModelToolLoopRunner(
+            plan_ingestion_client=_PlanIngestionClient(),
+            feedback_collector=_DynamicFeedbackCollector(),
+            loop_control_evaluator=AgentLoopControlPolicyEvaluator(),
+            second_turn_orchestrator=model,
+        )
+
+        result = runner.run(
+            request=self._request(),
+            plan=initial_plan,
+            first_model_turn=_model_turn(connection),
+            initial_feedback=initial_feedback,
+        )
+
+        self.assertEqual("MODEL_COMPLETED_WITHOUT_MORE_TOOLS", result.stopped_reason)
+        self.assertEqual(
+            [
+                (
+                    "datasource.source.catalog.search",
+                    "datasource.source.connection.test",
+                ),
+                (
+                    "datasource.source.catalog.search",
+                    "datasource.source.connection.test",
+                    "datasource.source.metadata.read",
+                ),
+            ],
+            model.observed_plan_tools,
+        )
+        self.assertEqual(model.observed_plan_tools, model.observed_feedback_tools)
+        self.assertEqual(3, result.latest_feedback.expected_tool_call_count)
+        self.assertEqual(3, len(result.latest_feedback.feedback_items))
 
     @staticmethod
     def _runner(
@@ -124,9 +215,13 @@ class AgentDurableModelToolLoopRunnerTest(unittest.TestCase):
         )
 
     @staticmethod
-    def _tool_plan(*, requires_approval: bool = False) -> ToolPlan:
+    def _tool_plan(
+        *,
+        requires_approval: bool = False,
+        tool_name: str = "sync.task.import.dry-run",
+    ) -> ToolPlan:
         return ToolPlan(
-            tool_name="sync.task.import.dry-run",
+            tool_name=tool_name,
             reason="先验证导入制品。",
             arguments={"artifactRef": "sync-import-test"},
             requires_human_approval=requires_approval,
@@ -193,6 +288,37 @@ class _SecondTurnOrchestrator:
         )
 
 
+class _ChainedSecondTurnOrchestrator:
+    def __init__(self, *, tool_batches: tuple[tuple[ToolPlan, ...], ...]) -> None:
+        self._tool_batches = list(tool_batches)
+
+    def run(self, **kwargs) -> AgentSecondTurnResult:
+        del kwargs
+        next_tools = self._tool_batches.pop(0) if self._tool_batches else ()
+        return _model_turn(*next_tools)
+
+
+class _EvidenceAccumulatingSecondTurnOrchestrator:
+    def __init__(self, metadata: ToolPlan) -> None:
+        self._metadata = metadata
+        self.observed_plan_tools: list[tuple[str, ...]] = []
+        self.observed_feedback_tools: list[tuple[str, ...]] = []
+
+    def run(self, **kwargs) -> AgentSecondTurnResult:
+        plan = kwargs["plan"]
+        feedback = kwargs["control_plane_feedback"]
+        self.observed_plan_tools.append(tuple(item.tool_name for item in plan.tool_plans))
+        self.observed_feedback_tools.append(tuple(item.tool_name for item in feedback.feedback_items))
+        if len(self.observed_plan_tools) == 1:
+            return _model_turn(self._metadata)
+        return _model_turn()
+
+
+class _DynamicFeedbackCollector:
+    def collect(self, plan: AgentPlan) -> AgentControlPlaneFeedbackSnapshot:
+        return _feedback_for_plan(plan)
+
+
 def _model_turn(*tool_plans: ToolPlan) -> AgentSecondTurnResult:
     return AgentSecondTurnResult(
         executed=True,
@@ -222,6 +348,26 @@ def _feedback(status: ToolExecutionFeedbackStatus) -> AgentControlPlaneFeedbackS
         status_counts={status.value: 1},
         second_turn_eligible=status is ToolExecutionFeedbackStatus.SUCCEEDED,
         recommended_actions=("根据测试反馈继续。",),
+    )
+
+
+def _feedback_for_plan(plan: AgentPlan) -> AgentControlPlaneFeedbackSnapshot:
+    items = tuple(
+        AgentControlPlaneFeedbackItem(
+            model_tool_call_id=str(item.governance_hints["modelToolCallId"]),
+            tool_name=item.tool_name,
+            status=ToolExecutionFeedbackStatus.SUCCEEDED,
+            summary="工具执行成功。",
+        )
+        for item in plan.tool_plans
+    )
+    return AgentControlPlaneFeedbackSnapshot(
+        expected_tool_call_count=len(items),
+        feedback_items=items,
+        missing_tool_call_ids=(),
+        status_counts={ToolExecutionFeedbackStatus.SUCCEEDED.value: len(items)},
+        second_turn_eligible=True,
+        recommended_actions=("继续使用已验证证据。",),
     )
 
 

@@ -693,6 +693,62 @@ datasmart:
             example: "1001"
             sensitive: false
             resolution: CAN_FILL_FROM_CONTEXT
+      "[datasource.source.catalog.search]":
+        enabled: true
+        tool-code: datasource.source.catalog.search
+        tool-type: DATASOURCE_METADATA
+        display-name: 源端数据源目录检索
+        description: 按用户提供的名称检索当前项目中已授权且用途为 SOURCE 的数据源；只有唯一精确名称匹配才可自动继续。
+        target-service: datasource-management
+        target-endpoint: /datasources
+        read-only: true
+        risk-level: LOW
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: NONE
+        cache-policy: PROJECT_SAFE
+        timeout-ms: 10000
+        max-retries: 1
+        allowed-actions:
+          - VIEW
+        input-schema:
+          - name: keyword
+            type: string
+            required: true
+            description: 用户在自然语言中明确提供的源端数据源名称；禁止编造名称或数据源 ID。
+            sensitive: false
+            resolution: USER_REQUIRED
+      "[datasource.target.catalog.search]":
+        enabled: true
+        tool-code: datasource.target.catalog.search
+        tool-type: DATASOURCE_METADATA
+        display-name: 目标端数据源目录检索
+        description: 按用户提供的名称检索当前项目中已授权且用途为 TARGET 的数据源；只有唯一精确名称匹配才可自动继续。
+        target-service: datasource-management
+        target-endpoint: /datasources
+        read-only: true
+        risk-level: LOW
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: NONE
+        cache-policy: PROJECT_SAFE
+        timeout-ms: 10000
+        max-retries: 1
+        allowed-actions:
+          - VIEW
+        input-schema:
+          - name: keyword
+            type: string
+            required: true
+            description: 用户在自然语言中明确提供的目标端数据源名称；禁止编造名称或数据源 ID。
+            sensitive: false
+            resolution: USER_REQUIRED
       "[datasource.source.connection.test]":
         enabled: true
         tool-code: datasource.source.connection.test
@@ -717,10 +773,16 @@ datasmart:
         input-schema:
           - name: datasourceId
             type: number
-            required: true
-            description: 已由用户在数据源管理中安全创建并选中的源端数据源 ID。
+            required: false
+            description: 结构化向导可以传入的源端数据源 ID；自然语言 Agent 优先使用可信目录引用。
             sensitive: false
-            resolution: USER_REQUIRED
+            resolution: DERIVED
+          - name: catalogSearchRef
+            type: object
+            required: false
+            description: 同一 Agent 会话中源端目录精确匹配结果的可信审计引用。
+            sensitive: false
+            resolution: DERIVED
       "[datasource.target.connection.test]":
         enabled: true
         tool-code: datasource.target.connection.test
@@ -745,10 +807,16 @@ datasmart:
         input-schema:
           - name: datasourceId
             type: number
-            required: true
-            description: 已由用户在数据源管理中安全创建并选中的目标端数据源 ID。
+            required: false
+            description: 结构化向导可以传入的目标端数据源 ID；自然语言 Agent 优先使用可信目录引用。
             sensitive: false
-            resolution: USER_REQUIRED
+            resolution: DERIVED
+          - name: catalogSearchRef
+            type: object
+            required: false
+            description: 同一 Agent 会话中目标端目录精确匹配结果的可信审计引用。
+            sensitive: false
+            resolution: DERIVED
       "[datasource.source.metadata.read]":
         enabled: true
         tool-code: datasource.source.metadata.read
@@ -773,10 +841,28 @@ datasmart:
         input-schema:
           - name: datasourceId
             type: number
-            required: true
-            description: 源端数据源 ID。
+            required: false
+            description: 结构化向导可以传入的源端数据源 ID；自然语言 Agent 优先使用连接测试引用。
             sensitive: false
-            resolution: USER_REQUIRED
+            resolution: DERIVED
+          - name: connectionTestRef
+            type: object
+            required: false
+            description: 同一 Agent 会话中源端连接测试成功结果的可信审计引用。
+            sensitive: false
+            resolution: DERIVED
+          - name: schemaPattern
+            type: string
+            required: false
+            description: 用户明确指定的源端 schema 精确名或 JDBC 元数据模式；MySQL 可省略。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: tableNamePattern
+            type: string
+            required: false
+            description: 用户明确指定的源表名或安全模式，用于只读取任务相关对象。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
       "[datasource.target.metadata.read]":
         enabled: true
         tool-code: datasource.target.metadata.read
@@ -801,10 +887,28 @@ datasmart:
         input-schema:
           - name: datasourceId
             type: number
-            required: true
-            description: 目标端数据源 ID。
+            required: false
+            description: 结构化向导可以传入的目标端数据源 ID；自然语言 Agent 优先使用连接测试引用。
             sensitive: false
-            resolution: USER_REQUIRED
+            resolution: DERIVED
+          - name: connectionTestRef
+            type: object
+            required: false
+            description: 同一 Agent 会话中目标端连接测试成功结果的可信审计引用。
+            sensitive: false
+            resolution: DERIVED
+          - name: schemaPattern
+            type: string
+            required: false
+            description: 用户明确指定的目标 schema 精确名或 JDBC 元数据模式；MySQL 可省略。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: tableNamePattern
+            type: string
+            required: false
+            description: 用户明确指定的目标表名或安全模式，用于只读取任务相关对象。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
       "[sync.task.draft.save]":
         enabled: true
         tool-code: sync.task.draft.save
@@ -829,20 +933,84 @@ datasmart:
         input-schema:
           - name: sourceDatasourceId
             type: number
-            required: true
-            description: 已安全登记的源端数据源 ID。
+            required: false
+            description: 已安全登记的源端数据源 ID；自然语言链路默认由可信元数据引用派生。
             sensitive: false
-            resolution: USER_REQUIRED
+            resolution: DERIVED
           - name: targetDatasourceId
             type: number
-            required: true
-            description: 已安全登记的目标端数据源 ID。
+            required: false
+            description: 已安全登记的目标端数据源 ID；自然语言链路默认由可信元数据引用派生。
             sensitive: false
-            resolution: USER_REQUIRED
+            resolution: DERIVED
+          - name: sourceMetadataRef
+            type: object
+            required: true
+            description: 源端元数据工具输出的可信引用。
+            sensitive: false
+            resolution: DERIVED
+          - name: targetMetadataRef
+            type: object
+            required: true
+            description: 目标端元数据工具输出的可信引用。
+            sensitive: false
+            resolution: DERIVED
+          - name: sourceMetadataRefs
+            type: array
+            required: true
+            description: 多表场景下全部源端元数据工具输出的可信引用组。
+            sensitive: false
+            resolution: DERIVED
+          - name: targetMetadataRefs
+            type: array
+            required: true
+            description: 多表场景下全部目标端元数据工具输出的可信引用组。
+            sensitive: false
+            resolution: DERIVED
           - name: objectMappings
             type: array
             required: true
-            description: 用户确认的源表到目标表映射，不包含数据库凭据。
+            description: >-
+              用户确认的源表到目标表映射，不包含数据库凭据。每项格式为
+              {objectKey,sourceSchemaName,sourceObjectName,targetSchemaName,targetObjectName,whereCondition,
+              fieldMappings:[{sourceField,targetField,syncEnabled}]}；普通表任务必须填写 sourceObjectName 和
+              targetObjectName，PostgreSQL 等目标端还应填写 targetSchemaName，禁止生成源到源或目标到目标映射。
+            sensitive: true
+            resolution: USER_REQUIRED
+          - name: taskName
+            type: string
+            required: true
+            description: 用户明确指定的任务名称；完整自然语言请求必须原样保留该名称。
+            sensitive: false
+            resolution: USER_REQUIRED
+          - name: taskDescription
+            type: string
+            required: false
+            description: 面向任务详情页的低敏任务说明，不得包含凭据或样本数据。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: syncMode
+            type: string
+            required: true
+            description: 产品收敛后的同步模式：FULL、SCHEDULED_BATCH、SCHEDULED_FULL、CUSTOM_SQL_QUERY 或 CDC_STREAMING。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: writeStrategy
+            type: string
+            required: false
+            description: 写入策略 INSERT 或 UPDATE；实时模式由平台固定为 UPDATE/MERGE 语义。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: scheduleConfig
+            type: string
+            required: false
+            description: 定期批量或定期全量的调度配置；非定期模式不得生成。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: customSqlText
+            type: string
+            required: false
+            description: SQL 语句模式的单条只读 SELECT/WITH 查询，由 data-sync 继续执行语法和对象校验。
             sensitive: true
             resolution: USER_REQUIRED
       "[sync.task.precheck]":

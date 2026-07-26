@@ -18,6 +18,7 @@ from dataclasses import dataclass, replace
 from datetime import date, datetime
 from enum import Enum
 from typing import Any
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ToolPlan
@@ -179,9 +180,31 @@ class JavaAgentPlanIngestionClient:
         try:
             with urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310 - URL 来自受控配置
                 response_payload = json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            response_payload = self._read_http_error_payload(exc)
+            if response_payload is not None:
+                try:
+                    return self.parse_platform_response(response_payload)
+                except AgentPlanIngestionClientError as platform_error:
+                    raise AgentPlanIngestionClientError(
+                        f"Java AgentPlan 控制面拒绝请求（HTTP {exc.code}）：{platform_error}"
+                    ) from exc
+            raise AgentPlanIngestionClientError(
+                f"Java AgentPlan 控制面拒绝请求（HTTP {exc.code}），且未返回可解析的错误详情。"
+            ) from exc
         except Exception as exc:  # pragma: no cover - 网络错误在集成环境覆盖
             raise AgentPlanIngestionClientError(f"提交 Python AgentPlan 到 Java 控制面失败：{exc}") from exc
         return self.parse_platform_response(response_payload)
+
+    @staticmethod
+    def _read_http_error_payload(exc: HTTPError) -> dict[str, Any] | None:
+        """读取平台标准错误体，不传播 HTML、凭据或未经治理的原始响应。"""
+
+        try:
+            payload = json.loads(exc.read().decode("utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return payload if isinstance(payload, dict) else None
 
     @classmethod
     def build_payload(cls, request_context: AgentRequest, plan: AgentPlan) -> dict[str, Any]:

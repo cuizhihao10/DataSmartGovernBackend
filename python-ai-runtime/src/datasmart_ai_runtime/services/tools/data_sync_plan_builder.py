@@ -46,17 +46,22 @@ class DataSyncToolPlanBuilder:
         plan_factory: Callable[[ToolDefinition, str, dict[str, object]], ToolPlan],
     ) -> tuple[ToolPlan, ...]:
         payload = self._payload(request)
-        requested = bool(payload) or bool(candidate_tools.intersection(self._TOOL_NAMES))
-        requested = requested or (
-            self._contains_any(objective, ("数据同步", "数据迁移", "全量传输", "同步任务", "sync", "migrate"))
-            and bool(request.variables.get("sourceDatasourceId"))
-            and bool(request.variables.get("targetDatasourceId"))
+        source_id = payload.get("sourceDatasourceId") or request.variables.get("sourceDatasourceId")
+        target_id = payload.get("targetDatasourceId") or request.variables.get("targetDatasourceId")
+        has_structured_contract = bool(payload) or bool(source_id) or bool(target_id)
+        # Free text must advance one evidenced frontier at a time. Building the
+        # complete wizard DAG here would classify downstream derived IDs and
+        # mappings as user-missing before catalog/metadata tools can resolve them.
+        if not has_structured_contract:
+            return ()
+        requested = bool(payload) or (
+            bool(candidate_tools.intersection(self._TOOL_NAMES))
+            and bool(source_id)
+            and bool(target_id)
         )
         if not requested:
             return ()
 
-        source_id = payload.get("sourceDatasourceId") or request.variables.get("sourceDatasourceId")
-        target_id = payload.get("targetDatasourceId") or request.variables.get("targetDatasourceId")
         object_mappings = payload.get("objectMappings") or request.variables.get("objectMappings") or []
         sync_mode = self._normalize_sync_mode(payload.get("syncMode"))
         write_strategy = self._normalize_write_strategy(payload.get("writeStrategy"), sync_mode)
@@ -100,7 +105,7 @@ class DataSyncToolPlanBuilder:
             "源端连接通过后读取真实表和字段结构，为对象与字段映射提供依据。",
             {
                 "datasourceId": source_id,
-                "connectionTestRef": self._ref("datasource.source.connection.test", "success"),
+                "connectionTestRef": self._ref("datasource.source.connection.test", "datasourceId"),
             },
         )
         self._append(
@@ -111,7 +116,7 @@ class DataSyncToolPlanBuilder:
             "目标端连接通过后读取真实表、字段和约束，为映射与预检查提供依据。",
             {
                 "datasourceId": target_id,
-                "connectionTestRef": self._ref("datasource.target.connection.test", "success"),
+                "connectionTestRef": self._ref("datasource.target.connection.test", "datasourceId"),
             },
         )
         self._append(
@@ -124,6 +129,16 @@ class DataSyncToolPlanBuilder:
                 **common,
                 "sourceMetadataRef": self._ref("datasource.source.metadata.read", "metadata"),
                 "targetMetadataRef": self._ref("datasource.target.metadata.read", "metadata"),
+                # A structured form submission normally reads all requested
+                # objects in one metadata batch. Keep the grouped contract too,
+                # so the same draft tool also supports natural-language loops
+                # that discover multiple tables through separate narrow calls.
+                "sourceMetadataRefs": [
+                    self._ref("datasource.source.metadata.read", "metadata")
+                ],
+                "targetMetadataRefs": [
+                    self._ref("datasource.target.metadata.read", "metadata")
+                ],
             },
         )
         self._append(

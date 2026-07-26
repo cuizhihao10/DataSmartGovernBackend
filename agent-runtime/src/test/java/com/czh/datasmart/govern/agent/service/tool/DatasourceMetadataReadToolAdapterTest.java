@@ -87,6 +87,14 @@ class DatasourceMetadataReadToolAdapterTest {
         assertEquals(3, summary.get("columnCount"));
         assertEquals(true, summary.get("truncated"));
         assertEquals(false, summary.get("cacheHit"));
+        List<?> objects = assertInstanceOf(List.class, summary.get("objects"));
+        Map<?, ?> firstObject = assertInstanceOf(Map.class, objects.getFirst());
+        assertEquals("ods_order", firstObject.get("tableName"));
+        List<?> columns = assertInstanceOf(List.class, firstObject.get("columns"));
+        Map<?, ?> firstColumn = assertInstanceOf(Map.class, columns.getFirst());
+        assertEquals("id", firstColumn.get("columnName"));
+        assertFalse(firstObject.containsKey("sampleRows"));
+        assertFalse(firstColumn.containsKey("defaultValue"));
         server.verify();
     }
 
@@ -195,7 +203,20 @@ class DatasourceMetadataReadToolAdapterTest {
                     "discoveryDurationMs": 38,
                     "warnings": ["当前结果未返回样本数据"],
                     "tables": [
-                      {"tableName":"ods_order","columnCount":2,"columnsTruncated":false},
+                      {
+                        "schemaName":"app",
+                        "tableName":"ods_order",
+                        "tableType":"TABLE",
+                        "columnCount":2,
+                        "totalColumnCount":2,
+                        "columnsTruncated":false,
+                        "primaryKeys":["id"],
+                        "columns":[
+                          {"columnName":"id","dataTypeName":"BIGINT","nullable":false,"primaryKey":true,"ordinalPosition":1},
+                          {"columnName":"amount","dataTypeName":"DECIMAL","nullable":true,"primaryKey":false,"ordinalPosition":2}
+                        ],
+                        "sampleRows":[{"id":1,"amount":99.9}]
+                      },
                       {"tableName":"ods_user","columnCount":1,"columnsTruncated":true}
                     ]
                   }

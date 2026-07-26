@@ -55,7 +55,10 @@ from datasmart_ai_runtime.api.lifecycle import register_lifecycle_handler
 from datasmart_ai_runtime.api.runtime_event_replay_sources import build_runtime_event_replay_sources
 from datasmart_ai_runtime.config import model_routes_from_env
 from datasmart_ai_runtime.services.agent_control_plane_feedback import AgentControlPlaneFeedbackCollector
-from datasmart_ai_runtime.services.agent_loop_control_policy import AgentLoopControlPolicyEvaluator
+from datasmart_ai_runtime.services.agent_loop_control_policy import (
+    AgentLoopControlPolicy,
+    AgentLoopControlPolicyEvaluator,
+)
 from datasmart_ai_runtime.services.agent_plan_ingestion_client import JavaAgentPlanIngestionClient
 from datasmart_ai_runtime.services.agent_runtime_event_feedback import AgentRuntimeEventFeedbackBridge
 from datasmart_ai_runtime.services.agent_runtime_tool_feedback_client import (
@@ -309,7 +312,20 @@ def create_app() -> Any:
         if agent_runtime_base_url and _truthy_env("DATASMART_AGENT_RUNTIME_TOOL_FEEDBACK_ENABLED")
         else None
     )
-    loop_control_evaluator = AgentLoopControlPolicyEvaluator() if control_plane_feedback_collector else None
+    durable_model_tool_max_turns = min(
+        _optional_positive_int_env("DATASMART_AGENT_DURABLE_MODEL_TOOL_MAX_TURNS") or 6,
+        12,
+    )
+    loop_control_evaluator = (
+        AgentLoopControlPolicyEvaluator(
+            AgentLoopControlPolicy(
+                max_tool_steps=durable_model_tool_max_turns,
+                max_second_turns=durable_model_tool_max_turns,
+            )
+        )
+        if control_plane_feedback_collector
+        else None
+    )
     follow_up_tool_planner = AgentFollowUpToolPlanner(tool_planner=orchestrator.tool_planner)
     second_turn_orchestrator = (
         AgentSecondTurnOrchestrator(
@@ -326,6 +342,7 @@ def create_app() -> Any:
             feedback_collector=control_plane_feedback_collector,
             loop_control_evaluator=loop_control_evaluator,
             second_turn_orchestrator=second_turn_orchestrator,
+            max_model_turns=durable_model_tool_max_turns,
         )
         if plan_ingestion_client
         and control_plane_feedback_collector

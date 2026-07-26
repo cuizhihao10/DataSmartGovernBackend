@@ -185,10 +185,7 @@ class OpenAICompatibleToolSchemaBuilder:
                 "context_or_clarify",
             }:
                 required.append(name)
-            properties[name] = {
-                "type": cls._normalize_json_schema_type(raw_definition.get("type")),
-                "description": cls._build_parameter_description(raw_definition),
-            }
+            properties[name] = cls._build_property_schema(raw_definition, strict)
         schema: dict[str, Any] = {
             "type": "object",
             "properties": properties,
@@ -197,6 +194,60 @@ class OpenAICompatibleToolSchemaBuilder:
             schema["required"] = required
         if strict:
             schema["additionalProperties"] = False
+        return schema
+
+    @classmethod
+    def _build_property_schema(
+        cls,
+        definition: dict[str, Any],
+        strict: bool,
+    ) -> dict[str, Any]:
+        """Project nested platform definitions into provider JSON Schema.
+
+        The early registry contract only described top-level scalar types.  Data
+        sync mappings are arrays of structured objects, so an untyped ``array``
+        left the provider guessing field names.  This recursive projection keeps
+        governance-only keys out of JSON Schema while preserving item/object
+        structure, enum constraints and nested required fields.
+        """
+
+        schema_type = cls._normalize_json_schema_type(definition.get("type"))
+        schema: dict[str, Any] = {
+            "type": schema_type,
+            "description": cls._build_parameter_description(definition),
+        }
+        enum_values = definition.get("enum")
+        if isinstance(enum_values, (list, tuple)) and enum_values:
+            schema["enum"] = list(enum_values)
+
+        if schema_type == "array" and isinstance(definition.get("items"), dict):
+            schema["items"] = cls._build_property_schema(definition["items"], strict)
+
+        raw_properties = definition.get("properties")
+        if schema_type == "object" and isinstance(raw_properties, dict):
+            nested_properties: dict[str, Any] = {}
+            nested_required: list[str] = []
+            explicit_required = definition.get("required")
+            explicit_required_names = set(explicit_required) if isinstance(explicit_required, list) else set()
+            for name, raw_child in raw_properties.items():
+                child = raw_child if isinstance(raw_child, dict) else {
+                    "type": "string",
+                    "description": str(raw_child),
+                }
+                resolution = str(child.get("resolution") or "").strip().lower()
+                if resolution in {"derived", "system_injected"}:
+                    continue
+                nested_properties[name] = cls._build_property_schema(child, strict)
+                if name in explicit_required_names or (
+                    child.get("required") is True
+                    and resolution not in {"can_fill_from_context", "context_or_clarify"}
+                ):
+                    nested_required.append(name)
+            schema["properties"] = nested_properties
+            if nested_required:
+                schema["required"] = nested_required
+            if strict:
+                schema["additionalProperties"] = False
         return schema
 
     @staticmethod

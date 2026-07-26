@@ -8,7 +8,13 @@ if ROOT not in sys.path:
 
 from datasmart_ai_runtime.config import default_tool_registry
 from datasmart_ai_runtime.domain.context import ContextBlock, ContextSourceType
-from datasmart_ai_runtime.domain.contracts import AgentRequest, ToolExecutionMode, ToolParameterIssueAction
+from datasmart_ai_runtime.domain.contracts import (
+    AgentPlan,
+    AgentRequest,
+    ToolExecutionMode,
+    ToolParameterIssueAction,
+    ToolPlan,
+)
 from datasmart_ai_runtime.domain.intent import GovernanceDomain, IntentAnalysis, IntentRiskTag
 from datasmart_ai_runtime.domain.skills import AgentSkillPlan, AgentSkillSelection
 from datasmart_ai_runtime.services.context_builder import DefaultContextBuilder
@@ -42,7 +48,7 @@ class ToolPlannerTest(unittest.TestCase):
         self.assertEqual({"taskId": 26, "executionId": 28}, plans[0].arguments)
         self.assertFalse(plans[0].requires_human_approval)
 
-    def test_free_text_sync_draft_is_blocked_until_mapping_facts_are_confirmed(self) -> None:
+    def test_free_text_sync_uses_read_only_catalog_tools_before_any_draft(self) -> None:
         request = AgentRequest(
             tenant_id="tenant-a",
             project_id="project-a",
@@ -58,17 +64,207 @@ class ToolPlannerTest(unittest.TestCase):
             context_blocks=context_blocks,
         )
 
-        task_plan = next(plan for plan in plans if plan.tool_name == "task.create.draft")
-        self.assertFalse(task_plan.parameter_validation.can_execute)
+        self.assertEqual((), plans)
+        visible_tools = ToolPlanner(default_tool_registry()).model_visible_tools(
+            request=request,
+            intent_analysis=intent_analysis,
+            context_blocks=context_blocks,
+        )
         self.assertEqual(
             {
-                "sourceDatasourceId",
-                "targetDatasourceId",
-                "objectMappings",
+                "datasource.source.catalog.search",
+                "datasource.target.catalog.search",
             },
-            {issue.parameter_name for issue in task_plan.parameter_validation.issues},
+            {tool.name for tool in visible_tools},
         )
-        self.assertTrue(task_plan.parameter_validation.can_create_draft)
+
+    def test_explicit_datasource_names_build_read_only_catalog_search_plans(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1004",
+            objective=(
+                "创建全量任务：使用源端数据源 mysql2pgsql_test_0709_source，"
+                "同步到目标端数据源 mysql2pgsql_test_0709_target 的 public schema。"
+            ),
+        )
+        context_blocks = DefaultContextBuilder().build(request)
+        intent_analysis = RuleBasedIntentAnalyzer().analyze(request, context_blocks)
+
+        plans = ToolPlanner(default_tool_registry()).plan(
+            request=request,
+            intent_analysis=intent_analysis,
+            context_blocks=context_blocks,
+        )
+
+        self.assertEqual(
+            (
+                "datasource.source.catalog.search",
+                "datasource.target.catalog.search",
+            ),
+            tuple(plan.tool_name for plan in plans),
+        )
+        self.assertEqual("mysql2pgsql_test_0709_source", plans[0].arguments["keyword"])
+        self.assertEqual("mysql2pgsql_test_0709_target", plans[1].arguments["keyword"])
+        self.assertTrue(all(plan.governance_hints["readOnly"] for plan in plans))
+        self.assertFalse(any(plan.requires_human_approval for plan in plans))
+
+    def test_model_enhanced_free_text_does_not_expand_to_unresolved_wizard_dag(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1004",
+            objective=(
+                "Create a full task with source datasource mysql-source, "
+                "target datasource pg-target, and map customer to public.customer."
+            ),
+        )
+        intent_analysis = IntentAnalysis(
+            summary="Model recognized a complete synchronization request.",
+            governance_domains=(GovernanceDomain.DATA_SYNC,),
+            candidate_tools=(
+                "datasource.source.catalog.search",
+                "datasource.target.catalog.search",
+                "datasource.source.connection.test",
+                "datasource.target.connection.test",
+                "datasource.source.metadata.read",
+                "datasource.target.metadata.read",
+                "sync.task.draft.save",
+                "sync.task.precheck",
+                "sync.task.publish",
+                "sync.task.run",
+                "sync.execution.status",
+            ),
+        )
+
+        plans = ToolPlanner(default_tool_registry()).plan(
+            request=request,
+            intent_analysis=intent_analysis,
+        )
+
+        self.assertEqual(
+            (
+                "datasource.source.catalog.search",
+                "datasource.target.catalog.search",
+            ),
+            tuple(plan.tool_name for plan in plans),
+        )
+        self.assertTrue(all(plan.parameter_validation.can_execute for plan in plans))
+
+    def test_quoted_datasource_name_with_spaces_can_be_resolved_safely(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1004",
+            objective='将源端数据源 "MySQL 订单源" 全量同步到目标端数据源 “PG 报表库”。',
+        )
+        context_blocks = DefaultContextBuilder().build(request)
+        intent_analysis = RuleBasedIntentAnalyzer().analyze(request, context_blocks)
+
+        plans = ToolPlanner(default_tool_registry()).plan(
+            request=request,
+            intent_analysis=intent_analysis,
+            context_blocks=context_blocks,
+        )
+
+        self.assertEqual(
+            ("MySQL 订单源", "PG 报表库"),
+            tuple(plan.arguments["keyword"] for plan in plans),
+        )
+
+    def test_generic_database_types_do_not_create_guessed_catalog_searches(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1004",
+            objective="请把 MySQL 的数据迁移到 PostgreSQL",
+        )
+        context_blocks = DefaultContextBuilder().build(request)
+        intent_analysis = RuleBasedIntentAnalyzer().analyze(request, context_blocks)
+
+        plans = ToolPlanner(default_tool_registry()).plan(
+            request=request,
+            intent_analysis=intent_analysis,
+            context_blocks=context_blocks,
+        )
+
+        self.assertEqual((), plans)
+
+    def test_follow_up_frontier_keeps_other_branch_from_durable_resource_ledger(self) -> None:
+        """A split Java Run must not hide the target branch after reading source metadata."""
+
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1004",
+            objective="继续完成当前数据同步任务",
+        )
+        source_metadata_plan = ToolPlan(
+            tool_name="datasource.source.metadata.read",
+            reason="read one source table",
+            governance_hints={
+                "agentLoopResourceRefs": {
+                    "datasource.target.connection.test": {
+                        "toolCode": "datasource.target.connection.test",
+                        "auditId": "audit-target-connection",
+                        "runId": "run-connections",
+                    },
+                    # A malformed entry must not expand model visibility.
+                    "permission.policy.write": {
+                        "toolCode": "permission.policy.write",
+                        "auditId": "",
+                        "runId": "run-forged",
+                    },
+                }
+            },
+        )
+        intent = IntentAnalysis(
+            summary="continue sync",
+            governance_domains=(GovernanceDomain.DATA_SYNC,),
+            candidate_tools=(),
+        )
+
+        visible = ToolPlanner(default_tool_registry()).model_visible_follow_up_tools(
+            request=request,
+            intent_analysis=intent,
+            previous_tool_plans=(source_metadata_plan,),
+        )
+
+        self.assertEqual(
+            {
+                "datasource.target.metadata.read",
+                "sync.task.draft.save",
+            },
+            {tool.name for tool in visible},
+        )
+
+    def test_sync_model_visibility_hides_direction_neutral_metadata_alias(self) -> None:
+        """Sync mappings require role-specific evidence even when an old Skill lists the alias."""
+
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1004",
+            objective="创建数据同步任务",
+        )
+        intent = IntentAnalysis(
+            summary="sync",
+            governance_domains=(GovernanceDomain.DATA_SYNC,),
+            candidate_tools=(
+                "datasource.metadata.read",
+                "datasource.source.metadata.read",
+                "datasource.target.metadata.read",
+            ),
+        )
+
+        visible = ToolPlanner(default_tool_registry()).model_visible_tools(
+            request=request,
+            intent_analysis=intent,
+        )
+
+        self.assertNotIn("datasource.metadata.read", {tool.name for tool in visible})
+        self.assertIn("datasource.source.metadata.read", {tool.name for tool in visible})
+        self.assertIn("datasource.target.metadata.read", {tool.name for tool in visible})
 
     def test_full_sync_assistant_builds_nine_node_governed_dag_without_credentials(self) -> None:
         request = AgentRequest(

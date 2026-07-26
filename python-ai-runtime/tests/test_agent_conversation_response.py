@@ -7,18 +7,55 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from datasmart_ai_runtime.api import build_default_orchestrator, build_plan_response
-from datasmart_ai_runtime.api.agent.conversation_response import build_intent_resolver_summary
+from datasmart_ai_runtime.api.agent.conversation_response import (
+    build_agent_conversation_response,
+    build_intent_resolver_summary,
+)
 from datasmart_ai_runtime.domain.contracts import (
     AgentPlan,
     AgentRequest,
     ModelRoute,
     ProviderType,
     WorkloadType,
+    ToolPlan,
 )
+from datasmart_ai_runtime.domain.intent import GovernanceDomain, IntentAnalysis
+from datasmart_ai_runtime.services.agent_control_plane_feedback import (
+    AgentControlPlaneFeedbackItem,
+    AgentControlPlaneFeedbackSnapshot,
+)
+from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import (
+    ToolExecutionFeedbackStatus,
+)
+from datasmart_ai_runtime.services.tools import ToolExecutionReadinessService
 
 
 class AgentConversationResponseTest(unittest.TestCase):
     """保护自然语言追问、补参和控制面接入之间的状态边界。"""
+
+    def test_english_incomplete_sync_request_returns_actionable_questions(self) -> None:
+        ingestion_client = CountingPlanIngestionClient()
+
+        response = build_plan_response(
+            AgentRequest(
+                tenant_id="10",
+                project_id="101",
+                actor_id="1001",
+                objective="Create a full data synchronization task for me.",
+            ),
+            build_default_orchestrator(),
+            plan_ingestion_client=ingestion_client,
+        )
+
+        conversation = response["agentConversation"]
+        self.assertEqual("WAITING_CLARIFICATION", conversation["phase"])
+        self.assertEqual(
+            ["sourceDatasourceId", "targetDatasourceId", "objectMappings"],
+            conversation["missingParameters"],
+        )
+        self.assertEqual(3, len(conversation["clarificationQuestions"]))
+        self.assertFalse(conversation["canExecute"])
+        self.assertEqual(0, ingestion_client.call_count)
 
     def test_free_text_sync_request_returns_questions_without_creating_java_run(self) -> None:
         ingestion_client = CountingPlanIngestionClient()
@@ -98,6 +135,377 @@ class AgentConversationResponseTest(unittest.TestCase):
         self.assertEqual(1, ingestion_client.call_count)
         self.assertEqual("session-conversation", response["controlPlaneIngestion"]["sessionId"])
         self.assertNotIn("fs_test_customer_source", str(conversation))
+
+    def test_model_catalog_lookup_is_reported_as_autonomous_resolution_not_full_form(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective=(
+                "创建任务 customer-full，把 mysql-prod.customer 全量同步到 "
+                "pg-warehouse.public.customer"
+            ),
+        )
+        tool_plans = (
+            ToolPlan(
+                tool_name="datasource.source.catalog.search",
+                reason="resolve explicit source name",
+                arguments={"keyword": "mysql-prod"},
+            ),
+            ToolPlan(
+                tool_name="datasource.target.catalog.search",
+                reason="resolve explicit target name",
+                arguments={"keyword": "pg-warehouse"},
+            ),
+        )
+        plan = AgentPlan(
+            request_id="request-autonomous-resolution",
+            selected_route=None,
+            state_trace=("invoke_model_intent",),
+            tool_plans=tool_plans,
+            requires_human_approval=False,
+            response_summary="正在解析授权数据源。",
+            intent_analysis=IntentAnalysis(
+                summary="识别到数据同步任务。",
+                governance_domains=(GovernanceDomain.DATA_SYNC,),
+                candidate_tools=(
+                    "datasource.source.catalog.search",
+                    "datasource.target.catalog.search",
+                ),
+                missing_parameters=(
+                    "sourceDatasourceId",
+                    "targetDatasourceId",
+                    "objectMappings",
+                ),
+            ),
+        )
+        readiness = ToolExecutionReadinessService().evaluate(tool_plans)
+
+        conversation = build_agent_conversation_response(
+            request,
+            plan,
+            readiness,
+            control_plane_ingested=True,
+        )
+
+        self.assertEqual("RESOLVING_AUTONOMOUSLY", conversation["phase"])
+        self.assertEqual([], conversation["missingParameters"])
+        self.assertEqual([], conversation["clarificationQuestions"])
+        self.assertEqual("CONTINUE_AUTONOMOUSLY", conversation["nextAction"])
+        self.assertFalse(conversation["canExecute"])
+
+    def test_ambiguous_datasource_only_asks_user_to_choose_from_authorized_candidates(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective="把 mysql-orders 的订单表同步到 pg-warehouse",
+        )
+        tool_plans = (
+            ToolPlan(
+                tool_name="datasource.source.catalog.search",
+                reason="resolve source",
+                arguments={"keyword": "mysql-orders"},
+            ),
+            ToolPlan(
+                tool_name="datasource.target.catalog.search",
+                reason="resolve target",
+                arguments={"keyword": "pg-warehouse"},
+            ),
+        )
+        plan = AgentPlan(
+            request_id="request-ambiguous-source",
+            selected_route=None,
+            state_trace=("invoke_model_intent",),
+            tool_plans=tool_plans,
+            requires_human_approval=False,
+            response_summary="正在解析授权数据源。",
+            intent_analysis=IntentAnalysis(
+                summary="识别到数据同步任务。",
+                governance_domains=(GovernanceDomain.DATA_SYNC,),
+                candidate_tools=(
+                    "datasource.source.catalog.search",
+                    "datasource.target.catalog.search",
+                ),
+                missing_parameters=(
+                    "sourceDatasourceId",
+                    "targetDatasourceId",
+                    "objectMappings",
+                ),
+            ),
+        )
+        feedback = AgentControlPlaneFeedbackSnapshot(
+            expected_tool_call_count=2,
+            feedback_items=(
+                AgentControlPlaneFeedbackItem(
+                    model_tool_call_id="call-source",
+                    tool_name="datasource.source.catalog.search",
+                    status=ToolExecutionFeedbackStatus.SUCCEEDED,
+                    summary="源端存在多个候选。",
+                    result={
+                        "matchStatus": "AMBIGUOUS",
+                        "candidates": [
+                            {
+                                "datasourceId": 27,
+                                "name": "mysql-orders-source",
+                                "type": "MYSQL",
+                                "usagePurpose": "SOURCE",
+                            },
+                            {
+                                "datasourceId": 29,
+                                "name": "mysql-orders-backup",
+                                "type": "MYSQL",
+                                "usagePurpose": "SOURCE",
+                            },
+                        ],
+                    },
+                ),
+                AgentControlPlaneFeedbackItem(
+                    model_tool_call_id="call-target",
+                    tool_name="datasource.target.catalog.search",
+                    status=ToolExecutionFeedbackStatus.SUCCEEDED,
+                    summary="目标端唯一匹配。",
+                    result={
+                        "matchStatus": "EXACT",
+                        "resolvedDatasourceId": 28,
+                    },
+                ),
+            ),
+            missing_tool_call_ids=(),
+            status_counts={"succeeded": 2},
+            second_turn_eligible=True,
+            recommended_actions=(),
+        )
+
+        conversation = build_agent_conversation_response(
+            request,
+            plan,
+            ToolExecutionReadinessService().evaluate(tool_plans),
+            control_plane_ingested=True,
+            control_plane_feedback=feedback,
+        )
+
+        self.assertEqual("WAITING_CLARIFICATION", conversation["phase"])
+        self.assertEqual(["sourceDatasourceId"], conversation["missingParameters"])
+        self.assertFalse(conversation["canExecute"])
+        self.assertEqual(
+            [27, 29],
+            [
+                item["datasourceId"]
+                for item in conversation["clarificationQuestions"][0]["candidates"]
+            ],
+        )
+
+    def test_complete_request_with_late_catalog_ambiguity_asks_for_datasource_not_mapping(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective=(
+                "Create a FULL task from E2E MySQL source to pg-warehouse and map "
+                "customer to public.customer."
+            ),
+        )
+        tool_plans = (
+            ToolPlan(tool_name="datasource.source.catalog.search", reason="resolve source"),
+            ToolPlan(tool_name="datasource.target.metadata.read", reason="read exact target"),
+        )
+        plan = AgentPlan(
+            request_id="request-late-ambiguous-source",
+            selected_route=None,
+            state_trace=("invoke_model_intent",),
+            tool_plans=tool_plans,
+            requires_human_approval=False,
+            response_summary="源数据源名称存在多个候选，请用户明确选择。",
+            intent_analysis=IntentAnalysis(
+                summary="识别到完整数据同步描述。",
+                governance_domains=(GovernanceDomain.DATA_SYNC,),
+                candidate_tools=("sync.task.draft.save",),
+                # 规则基线不会把自然语言中的名称和映射伪装成可信 ID/
+                # 结构化配置；真实工具反馈会逐项消解这些占位缺参。
+                missing_parameters=(
+                    "sourceDatasourceId",
+                    "targetDatasourceId",
+                    "objectMappings",
+                ),
+            ),
+        )
+        feedback = AgentControlPlaneFeedbackSnapshot(
+            expected_tool_call_count=3,
+            feedback_items=(
+                AgentControlPlaneFeedbackItem(
+                    model_tool_call_id="call-source",
+                    tool_name="datasource.source.catalog.search",
+                    status=ToolExecutionFeedbackStatus.SUCCEEDED,
+                    summary="源端存在多个候选。",
+                    result={
+                        "matchStatus": "AMBIGUOUS",
+                        "candidates": [
+                            {
+                                "datasourceId": 17,
+                                "name": "E2E MySQL source 1",
+                                "type": "MYSQL",
+                                "usagePurpose": "SOURCE",
+                            },
+                            {
+                                "datasourceId": 19,
+                                "name": "E2E MySQL source 2",
+                                "type": "MYSQL",
+                                "usagePurpose": "SOURCE",
+                            },
+                        ],
+                    },
+                ),
+                AgentControlPlaneFeedbackItem(
+                    model_tool_call_id="call-target-catalog",
+                    tool_name="datasource.target.catalog.search",
+                    status=ToolExecutionFeedbackStatus.SUCCEEDED,
+                    summary="目标端唯一匹配。",
+                    result={"matchStatus": "EXACT", "resolvedDatasourceId": 28},
+                ),
+                AgentControlPlaneFeedbackItem(
+                    model_tool_call_id="call-target-metadata",
+                    tool_name="datasource.target.metadata.read",
+                    status=ToolExecutionFeedbackStatus.SUCCEEDED,
+                    summary="目标元数据读取成功。",
+                    result={"summary": {"objects": []}},
+                ),
+            ),
+            missing_tool_call_ids=(),
+            status_counts={"succeeded": 3},
+            second_turn_eligible=True,
+            recommended_actions=(),
+        )
+
+        conversation = build_agent_conversation_response(
+            request,
+            plan,
+            ToolExecutionReadinessService().evaluate(tool_plans),
+            control_plane_ingested=True,
+            control_plane_feedback=feedback,
+            autonomous_resolution_stopped=True,
+        )
+
+        self.assertEqual("WAITING_CLARIFICATION", conversation["phase"])
+        self.assertEqual(["sourceDatasourceId"], conversation["missingParameters"])
+        self.assertEqual(2, len(conversation["clarificationQuestions"][0]["candidates"]))
+        self.assertFalse(conversation["canExecute"])
+
+    def test_metadata_resolution_stop_only_returns_object_mapping_to_user(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective="同步客户数据，但没有说明表之间如何对应",
+        )
+        tool_plans = (
+            ToolPlan(
+                tool_name="datasource.source.metadata.read",
+                reason="read source metadata",
+                arguments={"datasourceId": 27},
+            ),
+            ToolPlan(
+                tool_name="datasource.target.metadata.read",
+                reason="read target metadata",
+                arguments={"datasourceId": 28},
+            ),
+        )
+        plan = AgentPlan(
+            request_id="request-mapping-clarification",
+            selected_route=None,
+            state_trace=("invoke_model_intent",),
+            tool_plans=tool_plans,
+            requires_human_approval=False,
+            response_summary="元数据已读取，但映射不唯一。",
+            intent_analysis=IntentAnalysis(
+                summary="识别到数据同步任务。",
+                governance_domains=(GovernanceDomain.DATA_SYNC,),
+                candidate_tools=tuple(item.tool_name for item in tool_plans),
+                missing_parameters=(
+                    "sourceDatasourceId",
+                    "targetDatasourceId",
+                    "objectMappings",
+                ),
+            ),
+        )
+
+        conversation = build_agent_conversation_response(
+            request,
+            plan,
+            ToolExecutionReadinessService().evaluate(tool_plans),
+            control_plane_ingested=True,
+            autonomous_resolution_stopped=True,
+        )
+
+        self.assertEqual("WAITING_CLARIFICATION", conversation["phase"])
+        self.assertEqual(["objectMappings"], conversation["missingParameters"])
+        self.assertFalse(conversation["canExecute"])
+        self.assertIn("映射不唯一", conversation["assistantMessage"])
+        self.assertEqual(
+            "OBJECT_MAPPING_EDITOR",
+            conversation["clarificationQuestions"][0]["inputType"],
+        )
+
+    def test_invalid_metadata_with_no_declared_missing_fields_requires_mapping_repair(self) -> None:
+        """完整描述中的错误字段不能被误判成已生成可执行草稿。"""
+
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective=(
+                "创建全量任务，把 mysql-source.customer 同步到 "
+                "pg-target.public.customer，并映射 customer_code 字段"
+            ),
+        )
+        tool_plans = (
+            ToolPlan(
+                tool_name="datasource.source.metadata.read",
+                reason="read source metadata",
+                arguments={"connectionTestRef": {"toolCode": "datasource.source.connection.test"}},
+            ),
+            ToolPlan(
+                tool_name="datasource.target.metadata.read",
+                reason="read target metadata",
+                arguments={"connectionTestRef": {"toolCode": "datasource.target.connection.test"}},
+            ),
+        )
+        repair_summary = (
+            "源表和目标表都不存在 customer_code 字段。请选择：忽略该字段、改为 phone，"
+            "或先在四张表中新增 customer_code 后重新读取元数据。"
+        )
+        plan = AgentPlan(
+            request_id="request-invalid-field-repair",
+            selected_route=None,
+            state_trace=("invoke_model_intent",),
+            tool_plans=tool_plans,
+            requires_human_approval=False,
+            response_summary=repair_summary,
+            intent_analysis=IntentAnalysis(
+                summary="识别到完整但字段配置错误的数据同步任务。",
+                governance_domains=(GovernanceDomain.DATA_SYNC,),
+                candidate_tools=tuple(item.tool_name for item in tool_plans),
+                missing_parameters=(),
+            ),
+        )
+
+        conversation = build_agent_conversation_response(
+            request,
+            plan,
+            ToolExecutionReadinessService().evaluate(tool_plans),
+            control_plane_ingested=True,
+            autonomous_resolution_stopped=True,
+        )
+
+        self.assertEqual("WAITING_CLARIFICATION", conversation["phase"])
+        self.assertEqual("ANSWER_CLARIFICATIONS", conversation["nextAction"])
+        self.assertEqual(["objectMappings"], conversation["missingParameters"])
+        self.assertFalse(conversation["canExecute"])
+        self.assertIn(repair_summary, conversation["assistantMessage"])
+        question = conversation["clarificationQuestions"][0]
+        self.assertEqual("OBJECT_MAPPING_EDITOR", question["inputType"])
+        self.assertEqual("MODEL_CONFIGURATION_REPAIR_REQUIRED", question["reasonCode"])
+        self.assertEqual(repair_summary, question["repairGuidance"])
 
     def test_legacy_real_time_name_is_reported_as_cdc_streaming(self) -> None:
         response = build_plan_response(

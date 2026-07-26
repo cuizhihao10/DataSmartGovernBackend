@@ -10,6 +10,7 @@ path rather than by an in-process recursive shortcut.
 from __future__ import annotations
 
 import hashlib
+import logging
 import time
 from dataclasses import dataclass, replace
 from typing import Any, Callable
@@ -20,7 +21,13 @@ from datasmart_ai_runtime.domain.events import (
     AgentRuntimeEventSeverity,
     AgentRuntimeEventType,
 )
+from datasmart_ai_runtime.services.agent_control_plane_feedback import (
+    AgentControlPlaneFeedbackSnapshot,
+)
 from datasmart_ai_runtime.services.agent_loop_control_policy import AgentLoopControlState
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -104,6 +111,7 @@ class AgentDurableModelToolLoopRunner:
         request: AgentRequest,
         plan: AgentPlan,
         first_model_turn: Any,
+        initial_feedback: AgentControlPlaneFeedbackSnapshot | None = None,
         progress_event_sink: Callable[[Any], None] | None = None,
     ) -> AgentDurableModelToolLoopResult:
         """Continue until the model finishes or a durable gate requires pausing."""
@@ -115,6 +123,8 @@ class AgentDurableModelToolLoopRunner:
         turns: list[AgentLoopTurnSummary] = []
         consumed_tokens = self._tokens(first_model_turn)
         started_at = time.perf_counter()
+        accumulated_plan = plan if initial_feedback is not None else replace(plan, tool_plans=())
+        accumulated_feedback = initial_feedback
 
         # The first model turn has already consumed one model budget slot.  Every
         # iteration below submits its proposed tools, collects real feedback, then
@@ -123,7 +133,7 @@ class AgentDurableModelToolLoopRunner:
             next_tools = tuple(getattr(current_model_turn, "follow_up_tool_plans", ()) or ())
             if not next_tools:
                 return self._result(
-                    turns, current_plan, latest_feedback, latest_decision,
+                    turns, current_plan, accumulated_feedback or latest_feedback, latest_decision,
                     current_model_turn, "MODEL_COMPLETED_WITHOUT_MORE_TOOLS",
                 )
 
@@ -141,6 +151,12 @@ class AgentDurableModelToolLoopRunner:
                 )
                 continuation_plan = ingestion.attach_to_plan(continuation_plan)
             except Exception as exc:
+                LOGGER.warning(
+                    "Agent durable follow-up plan ingestion failed: request_id=%s turn_index=%s error=%s",
+                    continuation_plan.request_id,
+                    turn_index,
+                    str(exc),
+                )
                 turns.append(
                     AgentLoopTurnSummary(
                         turn_index=turn_index,
@@ -180,6 +196,20 @@ class AgentDurableModelToolLoopRunner:
             )
 
             latest_feedback = self._feedback_collector.collect(continuation_plan)
+            # Java keeps each batch as an independent run for retry and audit,
+            # while the model needs all previously verified evidence in context.
+            # This synthetic plan/snapshot is read-only and is never ingested or
+            # executed; it only prevents the model from forgetting catalog,
+            # connection and per-table metadata results between turns.
+            accumulated_plan = self._merge_evidence_plans(
+                accumulated_plan,
+                continuation_plan,
+            )
+            accumulated_feedback = self._merge_feedback_snapshots(
+                accumulated_plan,
+                accumulated_feedback,
+                latest_feedback,
+            )
             continuation_plan = self._record_progress(
                 request=request,
                 plan=continuation_plan,
@@ -220,14 +250,14 @@ class AgentDurableModelToolLoopRunner:
                     )
                 )
                 return self._result(
-                    turns, continuation_plan, latest_feedback, latest_decision,
+                    turns, continuation_plan, accumulated_feedback, latest_decision,
                     None, self._stop_reason(latest_decision.action.value),
                 )
 
             next_model_turn = self._second_turn_orchestrator.run(
                 request=continuation_request,
-                plan=continuation_plan,
-                control_plane_feedback=latest_feedback,
+                plan=accumulated_plan,
+                control_plane_feedback=accumulated_feedback,
                 loop_control_decision=latest_decision,
             )
             if next_model_turn.runtime_events:
@@ -253,9 +283,19 @@ class AgentDurableModelToolLoopRunner:
             current_plan = continuation_plan
             current_model_turn = next_model_turn
 
+        final_tools = tuple(getattr(current_model_turn, "follow_up_tool_plans", ()) or ())
+        final_reason = (
+            "MODEL_TURN_LIMIT_REACHED"
+            if final_tools
+            else "MODEL_COMPLETED_WITHOUT_MORE_TOOLS"
+        )
         return self._result(
-            turns, current_plan, latest_feedback, latest_decision,
-            current_model_turn, "MODEL_TURN_LIMIT_REACHED",
+            turns,
+            current_plan,
+            accumulated_feedback or latest_feedback,
+            latest_decision,
+            current_model_turn,
+            final_reason,
         )
 
     @classmethod
@@ -314,6 +354,104 @@ class AgentDurableModelToolLoopRunner:
         )
         return continuation_request, continuation_plan
 
+    @classmethod
+    def _merge_evidence_plans(
+        cls,
+        previous: AgentPlan,
+        current: AgentPlan,
+    ) -> AgentPlan:
+        """Build model-only history without changing the current durable run.
+
+        Tool call IDs are the authoritative correlation keys.  A fallback digest
+        covers deterministic test plans or legacy plans that predate model call
+        IDs.  When the same call appears twice, the latest ToolPlan wins because
+        it carries the newest Java audit/run references.
+        """
+
+        ordered_keys: list[str] = []
+        by_key: dict[str, ToolPlan] = {}
+        for item in previous.tool_plans + current.tool_plans:
+            call_id = cls._model_tool_call_id(item)
+            key = call_id or (
+                "legacy:"
+                + hashlib.sha256(
+                    f"{item.tool_name}|{repr(sorted(item.arguments.items()))}".encode("utf-8")
+                ).hexdigest()
+            )
+            if key not in by_key:
+                ordered_keys.append(key)
+            by_key[key] = item
+        return replace(
+            current,
+            tool_plans=tuple(by_key[key] for key in ordered_keys),
+            requires_human_approval=any(
+                by_key[key].requires_human_approval for key in ordered_keys
+            ),
+        )
+
+    @classmethod
+    def _merge_feedback_snapshots(
+        cls,
+        plan: AgentPlan,
+        previous: AgentControlPlaneFeedbackSnapshot | None,
+        current: AgentControlPlaneFeedbackSnapshot,
+    ) -> AgentControlPlaneFeedbackSnapshot:
+        """Merge per-run feedback into a complete model evidence snapshot."""
+
+        item_by_call_id = {
+            item.model_tool_call_id: item
+            for snapshot in (previous, current)
+            if snapshot is not None
+            for item in snapshot.feedback_items
+        }
+        expected_ids = tuple(
+            call_id
+            for item in plan.tool_plans
+            if (call_id := cls._model_tool_call_id(item))
+        )
+        missing_ids = tuple(call_id for call_id in expected_ids if call_id not in item_by_call_id)
+        ordered_items = tuple(
+            item_by_call_id[call_id]
+            for call_id in expected_ids
+            if call_id in item_by_call_id
+        )
+        status_counts: dict[str, int] = {}
+        for item in ordered_items:
+            status = item.status.value
+            status_counts[status] = status_counts.get(status, 0) + 1
+
+        recommended_actions = tuple(
+            dict.fromkeys(
+                action
+                for snapshot in (previous, current)
+                if snapshot is not None
+                for action in snapshot.recommended_actions
+            )
+        )
+        second_turn_eligible = (
+            bool(expected_ids)
+            and not missing_ids
+            and status_counts.get("waiting_approval", 0) == 0
+        )
+        return AgentControlPlaneFeedbackSnapshot(
+            expected_tool_call_count=len(expected_ids),
+            feedback_items=ordered_items,
+            missing_tool_call_ids=missing_ids,
+            status_counts=status_counts,
+            second_turn_eligible=second_turn_eligible,
+            recommended_actions=recommended_actions,
+            auto_execution_summary=(
+                current.auto_execution_summary
+                if current.auto_execution_summary is not None
+                else (previous.auto_execution_summary if previous is not None else None)
+            ),
+        )
+
+    @staticmethod
+    def _model_tool_call_id(tool_plan: ToolPlan) -> str | None:
+        value = tool_plan.governance_hints.get("modelToolCallId")
+        return str(value).strip() if value is not None and str(value).strip() else None
+
     @staticmethod
     def _inherited_hints(plan: AgentPlan) -> dict[str, Any]:
         allowed = {
@@ -321,6 +459,7 @@ class AgentDurableModelToolLoopRunner:
             "tenantScoped",
             "projectScoped",
             "agentLoopResourceRefs",
+            "agentLoopResourceRefGroups",
             "agentLoopToolFingerprints",
         }
         for item in plan.tool_plans:

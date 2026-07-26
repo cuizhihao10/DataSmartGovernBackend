@@ -133,7 +133,7 @@ class AgentOrchestratorTest(unittest.TestCase):
                 tenant_id="tenant-a",
                 project_id="project-a",
                 actor_id="owner-a",
-                objective="请为客户主数据生成质量规则，并创建一个同步任务执行",
+                objective="请为客户主数据生成质量规则，并创建一个通用任务执行",
                 variables={
                     "datasourceId": "ds-002",
                     "businessGoal": "客户主数据完整性与手机号格式校验",
@@ -204,7 +204,7 @@ class AgentOrchestratorTest(unittest.TestCase):
                 tenant_id="tenant-a",
                 project_id="project-a",
                 actor_id="owner-a",
-                objective="请为客户主数据生成质量规则，并创建一个同步任务执行",
+                objective="请为客户主数据生成质量规则，并创建一个通用任务执行",
                 variables={
                     "datasourceId": "ds-002",
                     "businessGoal": "客户主数据完整性与手机号格式校验",
@@ -529,13 +529,13 @@ class AgentOrchestratorTest(unittest.TestCase):
         self.assertEqual("请创建一个全量数据同步任务", interaction["request"]["objective"])
         self.assertEqual("captured", interaction["response"]["content"])
         self.assertEqual(0, interaction["response"]["toolCallCount"])
-        self.assertEqual("SYSTEM_RULE_FALLBACK", interaction["planning"]["toolSelectionSource"])
+        self.assertEqual("NO_TOOL_SELECTED", interaction["planning"]["toolSelectionSource"])
         self.assertEqual(0, interaction["planning"]["modelGeneratedToolCount"])
-        self.assertIn("task.create.draft", interaction["planning"]["ruleGeneratedToolNames"])
+        self.assertEqual((), interaction["planning"]["ruleGeneratedToolNames"])
         planned_event = next(
             event for event in plan.runtime_events if event.event_type == AgentRuntimeEventType.TOOL_PLANNED
         )
-        self.assertEqual("SYSTEM_RULE_FALLBACK", planned_event.attributes["toolSelectionSource"])
+        self.assertEqual("NO_TOOL_SELECTED", planned_event.attributes["toolSelectionSource"])
 
 
 class CapturingModelProviderRegistry:

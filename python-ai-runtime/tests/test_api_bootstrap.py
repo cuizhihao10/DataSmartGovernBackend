@@ -139,6 +139,42 @@ class ApiBootstrapTest(unittest.TestCase):
         self.assertEqual("MCP_STYLE", tools[0].protocol_hint)
         self.assertEqual("project_safe", tools[0].cache_policy)
 
+    def test_remote_governance_keeps_rich_local_model_schema_overlay(self) -> None:
+        """Java 决定工具治理，模型复杂参数结构由本地 schema 补全。"""
+
+        client = FakeToolRegistryClient(
+            tools=(
+                ToolDefinition(
+                    name="sync.task.draft.save",
+                    description="Java 受控同步草稿工具",
+                    risk_level=ToolRiskLevel.HIGH,
+                    execution_mode=ToolExecutionMode.APPROVAL_REQUIRED,
+                    input_schema={
+                        "objectMappings": {
+                            "type": "array",
+                            "required": True,
+                            "resolution": "user_required",
+                        }
+                    },
+                    requires_approval=True,
+                    protocol_hint="MCP_STYLE",
+                ),
+            ),
+            supports_descriptors=True,
+        )
+
+        tools = load_tool_registry(prefer_remote_tools=True, tool_registry_client=client)
+
+        self.assertEqual(1, len(tools))
+        draft = tools[0]
+        self.assertTrue(draft.requires_approval)
+        self.assertEqual("MCP_STYLE", draft.protocol_hint)
+        self.assertIn("items", draft.input_schema["objectMappings"])
+        self.assertIn("taskName", draft.input_schema)
+        mapping_properties = draft.input_schema["objectMappings"]["items"]["properties"]
+        self.assertIn("sourceObjectName", mapping_properties)
+        self.assertIn("targetObjectName", mapping_properties)
+
     def test_load_skill_registry_prefers_java_descriptor_contract(self) -> None:
         client = FakeSkillRegistryClient(
             skills=(

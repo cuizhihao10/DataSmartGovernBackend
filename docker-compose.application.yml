@@ -437,6 +437,16 @@ services:
       # confirmed side effect can run. This produces durable session/run/audit
       # references used by HITL confirmation, execution, replay and diagnostics.
       DATASMART_AGENT_RUNTIME_PLAN_INGESTION_ENABLED: "true"
+      # Natural-language requests first use only LOW/read-only/idempotent tools
+      # to resolve authorized resources and validate real metadata. Java remains
+      # the policy and audit authority; state-changing tools still stop at HITL.
+      DATASMART_AGENT_RUNTIME_TOOL_FEEDBACK_ENABLED: "true"
+      DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_ENABLED: "true"
+      DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_DRY_RUN: "false"
+      DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_MAX: "5"
+      DATASMART_AGENT_RUNTIME_SECOND_TURN_ENABLED: "true"
+      DATASMART_AGENT_RUNTIME_EVENT_LOOP_FEEDBACK_ENABLED: "true"
+      DATASMART_AGENT_DURABLE_MODEL_TOOL_MAX_TURNS: "6"
       DATASMART_PERMISSION_ADMIN_BASE_URL: http://permission-admin:8085
       DATASMART_AI_RUNTIME_REDIS_URL: redis://redis:6379/0
       DATASMART_AI_RUNTIME_EVENT_STORE: redis-stream

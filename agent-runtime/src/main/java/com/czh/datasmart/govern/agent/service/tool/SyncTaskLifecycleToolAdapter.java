@@ -82,16 +82,37 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
 
     private AgentToolExecutionOutcome saveDraft(AgentToolExecutionContext context) {
         Map<String, Object> arguments = context.audit().getPlanArguments();
-        Long sourceDatasourceId = requiredPositiveLong(arguments.get("sourceDatasourceId"), "缺少有效的源端数据源 ID");
-        Long targetDatasourceId = requiredPositiveLong(arguments.get("targetDatasourceId"), "缺少有效的目标端数据源 ID");
         String syncMode = normalizeSyncMode(arguments.get("syncMode"));
         boolean customSqlMode = "CUSTOM_SQL_QUERY".equals(syncMode);
         String scheduleConfig = validateAndResolveScheduleConfig(arguments, syncMode);
         String customSqlConfig = validateAndBuildCustomSqlConfig(arguments, customSqlMode);
-        Map<String, Object> sourceMetadata = referencedMap(context, arguments.get("sourceMetadataRef"),
-                SOURCE_METADATA_TOOL, "metadata", "缺少源端元数据结果");
-        Map<String, Object> targetMetadata = referencedMap(context, arguments.get("targetMetadataRef"),
-                TARGET_METADATA_TOOL, "metadata", "缺少目标端元数据结果");
+        List<Object> sourceMetadataReferences = referenceCandidates(
+                arguments.get("sourceMetadataRefs"), arguments.get("sourceMetadataRef"));
+        List<Object> targetMetadataReferences = referenceCandidates(
+                arguments.get("targetMetadataRefs"), arguments.get("targetMetadataRef"));
+        Map<String, Object> sourceMetadata = referencedMetadata(
+                context, sourceMetadataReferences, SOURCE_METADATA_TOOL, "缺少源端元数据结果");
+        Map<String, Object> targetMetadata = referencedMetadata(
+                context, targetMetadataReferences, TARGET_METADATA_TOOL, "缺少目标端元数据结果");
+
+        /*
+         * 数据源 ID 必须来自已经通过权限、连接和元数据检查的工具输出。模型可以理解用户写出的数据源名称，
+         * 但不能自行编造内部主键。若模型同时带回了 ID，则与可信引用中的 ID 交叉校验，避免会话状态错配。
+         */
+        Long sourceDatasourceId = resolveDatasourceId(
+                context,
+                arguments.get("sourceDatasourceId"),
+                sourceMetadataReferences,
+                SOURCE_METADATA_TOOL,
+                "缺少有效的源端数据源 ID"
+        );
+        Long targetDatasourceId = resolveDatasourceId(
+                context,
+                arguments.get("targetDatasourceId"),
+                targetMetadataReferences,
+                TARGET_METADATA_TOOL,
+                "缺少有效的目标端数据源 ID"
+        );
         List<ObjectMapping> mappings = resolveObjectMappings(arguments.get("objectMappings"), customSqlMode);
         if (mappings.isEmpty()) {
             throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST, "同步任务至少需要一条对象映射");
@@ -548,6 +569,154 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
             throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST, missingMessage);
         }
         return copyMap(raw);
+    }
+
+    /**
+     * 读取一个方向上全部元数据引用并合并表清单。
+     *
+     * <p>Agent 会针对用户明确列出的每张表执行一次窄范围元数据读取。这里不能只取“最近一次”结果，否则
+     * 两表任务会只剩最后一张表。合并后仍然保留第一份元数据的连接器信息，并按 schema + table 去重，
+     * 供对象映射和字段映射复用手工创建向导的同一套校验逻辑。</p>
+     */
+    private Map<String, Object> referencedMetadata(
+            AgentToolExecutionContext context,
+            List<Object> references,
+            String defaultTool,
+            String missingMessage) {
+        if (references.isEmpty()) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST, missingMessage);
+        }
+        List<Map<String, Object>> metadataResults = new ArrayList<>();
+        for (Object reference : references) {
+            metadataResults.add(referencedMap(
+                    context,
+                    referenceWithPath(reference, "metadata"),
+                    defaultTool,
+                    "metadata",
+                    missingMessage
+            ));
+        }
+        return mergeMetadata(metadataResults);
+    }
+
+    /**
+     * 从受控元数据引用派生数据源主键，并校验模型显式参数没有与真实工具结果冲突。
+     */
+    private Long resolveDatasourceId(
+            AgentToolExecutionContext context,
+            Object explicitValue,
+            List<Object> metadataReferences,
+            String defaultTool,
+            String missingMessage) {
+        Long explicitId = longValue(explicitValue);
+        if (explicitValue != null && (explicitId == null || explicitId <= 0)) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST, missingMessage);
+        }
+
+        Long derivedId = null;
+        for (Object reference : metadataReferences) {
+            Object value = outputReferenceResolver.resolve(
+                            context,
+                            referenceWithPath(reference, "datasourceId"),
+                            defaultTool,
+                            "datasourceId")
+                    .orElse(null);
+            Long candidate = longValue(value);
+            if (candidate == null || candidate <= 0) {
+                continue;
+            }
+            if (derivedId != null && !derivedId.equals(candidate)) {
+                throw new PlatformBusinessException(
+                        PlatformErrorCode.BAD_REQUEST,
+                        "同一方向的元数据引用来自不同数据源，请重新确认源端和目标端选择"
+                );
+            }
+            derivedId = candidate;
+        }
+
+        if (explicitId != null && derivedId != null && !explicitId.equals(derivedId)) {
+            throw new PlatformBusinessException(
+                    PlatformErrorCode.BAD_REQUEST,
+                    "模型给出的数据源 ID 与已验证的数据源不一致，已阻止创建任务"
+            );
+        }
+        Long resolved = derivedId != null ? derivedId : explicitId;
+        if (resolved == null) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST, missingMessage);
+        }
+        return resolved;
+    }
+
+    /**
+     * 优先使用多值引用；兼容历史计划中的单值引用，便于已持久化会话平滑恢复。
+     */
+    private List<Object> referenceCandidates(Object groupedReferences, Object singleReference) {
+        List<Object> result = new ArrayList<>();
+        if (groupedReferences instanceof List<?> values) {
+            for (Object value : values) {
+                if (value != null && !result.contains(value)) {
+                    result.add(value);
+                }
+            }
+        }
+        if (result.isEmpty() && singleReference != null) {
+            result.add(singleReference);
+        }
+        return List.copyOf(result);
+    }
+
+    /**
+     * 为同一个审计引用切换输出路径。审计 ID、工具编码和 Run 归属保持不变，调用方只能读取该工具已产生
+     * 的其他公开字段，不能跨会话或跨工具访问任意输出。
+     */
+    private Object referenceWithPath(Object reference, String jsonPath) {
+        if (!(reference instanceof Map<?, ?> raw)) {
+            return reference;
+        }
+        Map<String, Object> copy = copyMap(raw);
+        copy.put("jsonPath", jsonPath);
+        copy.remove("path");
+        return copy;
+    }
+
+    /**
+     * 合并多次窄范围元数据读取结果。
+     *
+     * <p>该方法保持包可见，便于单元测试直接保护“多张表不会被最后一次结果覆盖”的业务约束。</p>
+     */
+    static Map<String, Object> mergeMetadata(List<Map<String, Object>> metadataResults) {
+        if (metadataResults == null || metadataResults.isEmpty()) {
+            return Map.of();
+        }
+        Map<String, Object> merged = new LinkedHashMap<>(metadataResults.getFirst());
+        Map<String, Map<String, Object>> tablesByKey = new LinkedHashMap<>();
+        for (Map<String, Object> metadata : metadataResults) {
+            Object tablesValue = metadata.get("tables");
+            if (!(tablesValue instanceof List<?> tables)) {
+                continue;
+            }
+            for (Object tableValue : tables) {
+                if (!(tableValue instanceof Map<?, ?> rawTable)) {
+                    continue;
+                }
+                Map<String, Object> table = new LinkedHashMap<>();
+                rawTable.forEach((key, value) -> table.put(String.valueOf(key), value));
+                String schemaName = String.valueOf(table.getOrDefault("schemaName", ""))
+                        .trim()
+                        .toLowerCase(Locale.ROOT);
+                String tableName = String.valueOf(table.getOrDefault("tableName", ""))
+                        .trim()
+                        .toLowerCase(Locale.ROOT);
+                if (tableName.isBlank()) {
+                    continue;
+                }
+                tablesByKey.putIfAbsent(schemaName + "\u0000" + tableName, table);
+            }
+        }
+        List<Map<String, Object>> tables = List.copyOf(tablesByKey.values());
+        merged.put("tables", tables);
+        merged.put("tableCount", tables.size());
+        return merged;
     }
 
     private boolean referencedBoolean(

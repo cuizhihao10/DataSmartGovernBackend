@@ -100,20 +100,41 @@ class RuleBasedIntentAnalyzer:
             if not (request.variables.get("taskId") or request.variables.get("task_id")):
                 self._append_unique(missing_parameters, "taskId")
 
-        if not task_import_troubleshooting and not sync_execution_recovery and self._contains_any(
-            objective,
-            ("sync", "migrate", "data migration", "transfer data", "同步", "补数", "回放", "增量", "cdc"),
-        ):
+        data_sync_task_requested = (
+            not task_import_troubleshooting
+            and not sync_execution_recovery
+            and self._contains_any(
+                objective,
+                ("sync", "migrate", "data migration", "transfer data", "同步", "补数", "回放", "增量", "cdc"),
+            )
+        )
+        if data_sync_task_requested:
             self._append_unique(domains, GovernanceDomain.DATA_SYNC)
-            self._append_unique(candidate_tools, "task.create.draft")
             self._append_unique(risk_tags, IntentRiskTag.STATE_CHANGE)
             self._append_unique(risk_tags, IntentRiskTag.APPROVAL_REQUIRED)
             self._append_data_sync_clarifications(request, objective, missing_parameters)
+            sync_values = self._data_sync_values(request)
+            if not (sync_values.get("sourceDatasourceId") or sync_values.get("source_datasource_id")):
+                self._append_unique(candidate_tools, "datasource.source.catalog.search")
+            else:
+                self._append_unique(candidate_tools, "datasource.source.connection.test")
+            if not (sync_values.get("targetDatasourceId") or sync_values.get("target_datasource_id")):
+                self._append_unique(candidate_tools, "datasource.target.catalog.search")
+            else:
+                self._append_unique(candidate_tools, "datasource.target.connection.test")
+            if not missing_parameters:
+                self._append_unique(candidate_tools, "sync.task.draft.save")
 
         create_task_requested = bool(request.variables.get("createTask") or request.variables.get("create_task"))
-        if not remediation_requested and not task_import_troubleshooting and not sync_execution_recovery and (
-            create_task_requested
-            or self._contains_any(objective, ("create task", "schedule", "run", "创建任务", "调度", "执行"))
+        if (
+            not remediation_requested
+            and not task_import_troubleshooting
+            and not sync_execution_recovery
+            and not data_sync_task_requested
+            and (
+                create_task_requested
+                or self._contains_any(objective, ("create task", "schedule", "run", "创建任务", "调度", "执行"))
+            )
         ):
             self._append_unique(domains, GovernanceDomain.TASK_MANAGEMENT)
             self._append_unique(candidate_tools, "task.create.draft")
@@ -207,6 +228,7 @@ class RuleBasedIntentAnalyzer:
             "数据同步",
             "全量同步",
             "增量同步",
+            "同步任务",
             "同步到",
             "数据迁移",
             "迁移",
@@ -215,6 +237,10 @@ class RuleBasedIntentAnalyzer:
             "实时传输",
             "migrate",
             "sync data",
+            "data synchronization",
+            "synchronization task",
+            "full synchronization",
+            "full sync",
         )
         if not has_sync_payload and not self._contains_any(objective, execution_language):
             return
@@ -226,6 +252,19 @@ class RuleBasedIntentAnalyzer:
             self._append_unique(missing_parameters, "targetDatasourceId")
         if not values.get("objectMappings") and not values.get("object_mappings"):
             self._append_unique(missing_parameters, "objectMappings")
+
+    @staticmethod
+    def _data_sync_values(request: AgentRequest) -> dict[str, object]:
+        """Return the explicit synchronization payload without parsing prose.
+
+        Datasource names mentioned in natural language are intentionally not
+        converted to IDs here. The model may use the read-only catalog search
+        tools, while the Java adapter verifies project visibility and only emits
+        an automatically usable ID for one exact authorized name.
+        """
+
+        payload = request.variables.get("dataSyncRequest") or request.variables.get("data_sync_request")
+        return payload if isinstance(payload, dict) else request.variables
 
     @staticmethod
     def _contains_any(text: str, keywords: tuple[str, ...]) -> bool:

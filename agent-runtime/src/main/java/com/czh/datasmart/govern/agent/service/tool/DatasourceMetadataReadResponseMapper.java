@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.agent.service.tool;
 
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,6 +24,9 @@ import java.util.Map;
  */
 @Component
 public class DatasourceMetadataReadResponseMapper {
+
+    private static final int MODEL_VISIBLE_TABLE_LIMIT = 20;
+    private static final int MODEL_VISIBLE_COLUMN_LIMIT = 80;
 
     /**
      * 把 datasource-management 的统一响应转换为 Agent 工具执行结果。
@@ -74,7 +78,60 @@ public class DatasourceMetadataReadResponseMapper {
         summary.put("cacheHit", booleanValue(metadata.get("cacheHit"), false));
         summary.put("discoveryDurationMs", metadata.get("discoveryDurationMs"));
         summary.put("warnings", metadata.get("warnings"));
+        summary.put("objects", buildModelVisibleObjects(metadata.get("tables")));
         return summary;
+    }
+
+    /**
+     * 为模型生成有界、低敏的表字段目录。
+     *
+     * <p>模型需要真实表名和字段名才能判断用户描述是否完整、表字段是否存在以及能否生成默认同名字段映射；
+     * 但完整元数据可能很大，也可能包含样本行、默认值表达式或数据库备注。因此这里只公开固定上限内的
+     * schema、表名、主键和基础字段类型，绝不复制 sampleRows、连接串、凭据或原始 JDBC 响应。</p>
+     */
+    private List<Map<String, Object>> buildModelVisibleObjects(Object tablesValue) {
+        if (!(tablesValue instanceof List<?> tables)) {
+            return List.of();
+        }
+        List<Map<String, Object>> objects = new ArrayList<>();
+        for (Object tableValue : tables) {
+            if (!(tableValue instanceof Map<?, ?> table) || objects.size() >= MODEL_VISIBLE_TABLE_LIMIT) {
+                continue;
+            }
+            Map<String, Object> object = new LinkedHashMap<>();
+            object.put("schemaName", table.get("schemaName"));
+            object.put("tableName", table.get("tableName"));
+            object.put("tableType", table.get("tableType"));
+            object.put("primaryKeys", table.get("primaryKeys"));
+            object.put("totalColumnCount", table.get("totalColumnCount"));
+            object.put("columnsTruncated", table.get("columnsTruncated"));
+            object.put("columns", buildModelVisibleColumns(table.get("columns")));
+            objects.add(object);
+        }
+        return objects;
+    }
+
+    /**
+     * 提取映射决策所需的最小字段集合，并限制单表字段数，防止大宽表撑爆模型上下文。
+     */
+    private List<Map<String, Object>> buildModelVisibleColumns(Object columnsValue) {
+        if (!(columnsValue instanceof List<?> columns)) {
+            return List.of();
+        }
+        List<Map<String, Object>> summaries = new ArrayList<>();
+        for (Object columnValue : columns) {
+            if (!(columnValue instanceof Map<?, ?> column) || summaries.size() >= MODEL_VISIBLE_COLUMN_LIMIT) {
+                continue;
+            }
+            Map<String, Object> summary = new LinkedHashMap<>();
+            summary.put("columnName", column.get("columnName"));
+            summary.put("dataTypeName", column.get("dataTypeName"));
+            summary.put("nullable", column.get("nullable"));
+            summary.put("primaryKey", column.get("primaryKey"));
+            summary.put("ordinalPosition", column.get("ordinalPosition"));
+            summaries.add(summary);
+        }
+        return summaries;
     }
 
     /**

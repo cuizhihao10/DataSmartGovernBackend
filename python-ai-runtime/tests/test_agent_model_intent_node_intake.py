@@ -57,16 +57,26 @@ class AgentModelIntentNodeIntakeTest(unittest.TestCase):
             ),
         )
 
-        self.assertIn("不得自行增加同步模式", messages[0].content)
+        self.assertIn("不得自行增加产品范围之外的同步模式", messages[0].content)
         self.assertIn("平台结构化基线（权威）", messages[1].content)
         self.assertIn("task.create.draft", messages[1].content)
         self.assertIn("sourceDatasourceId", messages[1].content)
         self.assertIn("受控任务创建 Skill", messages[1].content)
 
-    def test_tool_choice_requires_native_call_only_when_parameters_are_complete(self) -> None:
-        """完整意图要求原生工具选择，缺参意图不得强迫模型编造参数。"""
+    def test_tool_choice_requires_safe_resolution_but_not_arbitrary_missing_input(self) -> None:
+        """完整意图和只读可解析缺参要求工具调用，其他缺参不得强迫模型编造参数。"""
 
-        visible_tools = (default_tool_registry()[0],)
+        visible_tools = tuple(
+            tool for tool in default_tool_registry() if tool.name == "quality.rule.suggest"
+        )
+        catalog_tools = tuple(
+            tool
+            for tool in default_tool_registry()
+            if tool.name in {
+                "datasource.source.catalog.search",
+                "datasource.target.catalog.search",
+            }
+        )
         complete = IntentAnalysis(
             summary="完整意图",
             governance_domains=(GovernanceDomain.DATA_SYNC,),
@@ -78,9 +88,19 @@ class AgentModelIntentNodeIntakeTest(unittest.TestCase):
             candidate_tools=(visible_tools[0].name,),
             missing_parameters=("sourceDatasourceId",),
         )
+        safe_resolution = IntentAnalysis(
+            summary="可通过授权目录解析",
+            governance_domains=(GovernanceDomain.DATA_SYNC,),
+            candidate_tools=tuple(tool.name for tool in catalog_tools),
+            missing_parameters=("sourceDatasourceId", "targetDatasourceId", "objectMappings"),
+        )
 
         self.assertEqual("required", AgentModelIntentNode._select_tool_choice(visible_tools, complete))
         self.assertEqual("auto", AgentModelIntentNode._select_tool_choice(visible_tools, incomplete))
+        self.assertEqual(
+            "required",
+            AgentModelIntentNode._select_tool_choice(catalog_tools, safe_resolution),
+        )
 
     def test_model_tool_calls_flow_through_tool_action_intake_service(self) -> None:
         """模型 tool_call 主链路应经过统一 intake，再继续写原有治理事件。"""

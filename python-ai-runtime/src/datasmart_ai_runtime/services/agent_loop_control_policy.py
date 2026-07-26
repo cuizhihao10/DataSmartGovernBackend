@@ -56,7 +56,8 @@ class AgentLoopControlPolicy:
 
     字段说明：
     - `max_tool_steps`：一次用户请求最多允许经历多少轮“模型提出工具 -> 控制面反馈 -> 模型继续推理”；
-    - `max_second_turns`：当前阶段最多允许多少次二轮模型推理，默认 1，避免尚未完整状态机化时继续扩散；
+    - `max_second_turns`：一次受控任务最多允许多少次反馈后二轮推理；默认值足以完成数据源、
+      元数据和任务草稿的多阶段闭环，同时仍由硬上限阻止无限循环；
     - `max_tool_calls_per_turn`：单轮最多允许多少个工具调用，防止模型一次性提出过多工具造成审批和执行洪峰；
     - `max_total_tokens`：本次 loop 允许累计消耗的 token 上限，生产环境可映射租户套餐或项目预算；
     - `global_timeout_seconds`：一次 Agent loop 的全局耗时上限，防止连接、模型或控制面异常拖住用户会话；
@@ -123,10 +124,11 @@ class AgentLoopControlPolicyEvaluator:
     """评估 Agent loop 是否可以继续自动推进。
 
     评估顺序采用“先硬阻断，再业务状态，再允许”的方式：
-    1. 用户取消、人工接管、全局超时、步数/预算上限属于硬阻断；
-    2. 控制面反馈缺失、等待审批属于业务等待；
-    3. 失败/跳过是否允许继续由策略开关决定；
-    4. 所有条件都满足时才允许进入二轮模型推理。
+    1. 用户取消、人工接管和全局超时属于立即停止条件；
+    2. 控制面反馈缺失、等待审批属于当前业务状态，必须优先准确展示；
+    3. 只有确实准备进入下一轮模型时，才检查步数和 token 预算；
+    4. 失败/跳过是否允许继续由策略开关决定；
+    5. 所有条件都满足时才允许进入二轮模型推理。
     """
 
     def __init__(self, policy: AgentLoopControlPolicy | None = None) -> None:
@@ -140,9 +142,9 @@ class AgentLoopControlPolicyEvaluator:
         """根据控制面反馈快照和当前 loop 状态生成决策。"""
 
         current_state = state or AgentLoopControlState()
-        hard_stop = self._hard_stop_decision(current_state)
-        if hard_stop is not None:
-            return hard_stop
+        immediate_stop = self._immediate_stop_decision(current_state)
+        if immediate_stop is not None:
+            return immediate_stop
 
         if snapshot.expected_tool_call_count == 0:
             return AgentLoopControlDecision(
@@ -170,6 +172,10 @@ class AgentLoopControlPolicyEvaluator:
         if waiting_approval_count > 0:
             return self._approval_decision(waiting_approval_count)
 
+        capacity_stop = self._capacity_stop_decision(current_state)
+        if capacity_stop is not None:
+            return capacity_stop
+
         unsupported_status_decision = self._unsupported_status_decision(snapshot)
         if unsupported_status_decision is not None:
             return unsupported_status_decision
@@ -192,8 +198,8 @@ class AgentLoopControlPolicyEvaluator:
             recommended_actions=("等待 Java 控制面状态更新，或通过事件 replay 重新评估。",),
         )
 
-    def _hard_stop_decision(self, state: AgentLoopControlState) -> AgentLoopControlDecision | None:
-        """评估取消、人工接管、超时、步数和预算等硬阻断条件。"""
+    def _immediate_stop_decision(self, state: AgentLoopControlState) -> AgentLoopControlDecision | None:
+        """评估不应被任何控制面状态覆盖的立即停止条件。"""
 
         if state.cancelled:
             return AgentLoopControlDecision(
@@ -219,6 +225,11 @@ class AgentLoopControlPolicyEvaluator:
                 ),
                 recommended_actions=("停止自动推进，保留当前进度并建议用户稍后重试或转人工处理。",),
             )
+        return None
+
+    def _capacity_stop_decision(self, state: AgentLoopControlState) -> AgentLoopControlDecision | None:
+        """在准备继续模型推理时评估步数、轮次和 token 容量。"""
+
         if state.tool_step_index >= self._policy.max_tool_steps:
             return AgentLoopControlDecision(
                 allowed=False,

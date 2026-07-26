@@ -76,6 +76,7 @@ public class AgentRunToolAutoExecutionService {
             AgentRunRecord run = requireRun(session, runId);
             AgentRunToolExecutionPolicyView policy = policyService.inspectRunPolicy(sessionId, runId);
             AutoExecutionBatch batch = executeBatch(session, run, policy, normalizeRequest(request), traceId);
+            convergeRunAfterAutoExecution(run, sessionId, runId, batch);
             return new AgentRunToolAutoExecutionResponse(
                     sessionId,
                     runId,
@@ -87,6 +88,32 @@ public class AgentRunToolAutoExecutionService {
                     batch.skippedCount(),
                     policy,
                     batch.items()
+            );
+        }
+    }
+
+    /**
+     * Close a read-only auto-execution run only after every governed tool succeeded.
+     *
+     * <p>The durable model loop creates a new run for each tool batch in the same
+     * session. Leaving a fully successful batch in {@code PLANNING} blocks the next
+     * batch through the active-run guard. Partial, dry-run, failed or approval-gated
+     * batches deliberately remain non-terminal so no safety gate is bypassed.</p>
+     */
+    private void convergeRunAfterAutoExecution(AgentRunRecord run,
+                                               String sessionId,
+                                               String runId,
+                                               AutoExecutionBatch batch) {
+        if (batch.dryRun() || batch.failedCount() > 0) {
+            return;
+        }
+        AgentRunToolExecutionPolicyView refreshedPolicy = policyService.inspectRunPolicy(sessionId, runId);
+        boolean allSucceeded = !refreshedPolicy.items().isEmpty()
+                && refreshedPolicy.items().stream().allMatch(item ->
+                AgentRunToolExecutionDecision.ALREADY_SUCCEEDED.name().equals(item.decision()));
+        if (allSucceeded) {
+            run.completeAfterToolExecution(
+                    "本轮只读 Agent 工具已全部成功，Run 已完成，可在同一会话继续下一轮模型与工具编排。"
             );
         }
     }

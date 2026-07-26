@@ -168,6 +168,7 @@ class ModelToolCallPlanner:
 
         issues.extend(self._risk_issues(tool))
         parameter_validation = self._parameter_validator.validate(tool, arguments)
+        model_function_name = self._model_visible_function_name(tool_call)
         tool_plan = ToolPlan(
             tool_name=resolved_name,
             reason="模型基于当前可见工具 schema 提出了工具调用意图；进入执行前仍需平台治理校验。",
@@ -180,6 +181,11 @@ class ModelToolCallPlanner:
                 "source": "model_tool_call",
                 "modelToolCallId": tool_call.call_id,
                 "modelToolCallType": tool_call.type,
+                **(
+                    {"modelToolFunctionName": model_function_name}
+                    if model_function_name
+                    else {}
+                ),
                 "targetService": tool.target_service,
                 "targetEndpoint": tool.target_endpoint,
                 "tenantScoped": tool.tenant_scoped,
@@ -195,6 +201,21 @@ class ModelToolCallPlanner:
             tool_plan=tool_plan,
             issues=tuple(issues),
         )
+
+    @staticmethod
+    def _model_visible_function_name(tool_call: ModelToolCall) -> str | None:
+        """保留 Provider 实际看到的函数名，供后续 Responses 历史回放使用。"""
+
+        raw_call = tool_call.raw_call if isinstance(tool_call.raw_call, dict) else {}
+        raw_function = raw_call.get("function")
+        if not isinstance(raw_function, dict):
+            raw_function = {}
+        raw_custom = raw_call.get("custom")
+        if not isinstance(raw_custom, dict):
+            raw_custom = {}
+        value = raw_call.get("name") or raw_function.get("name") or raw_custom.get("name")
+        normalized = str(value or "").strip()
+        return normalized or None
 
     def _tool_lookup(self, tools: tuple[ToolDefinition, ...]) -> dict[str, ToolDefinition]:
         """构建工具名查找表，同时支持原始名和 OpenAI-compatible 函数名。"""

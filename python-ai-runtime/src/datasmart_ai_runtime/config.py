@@ -176,6 +176,64 @@ def default_skill_registry() -> tuple[AgentSkillDescriptor, ...]:
             examples=("请解释数据质量规则生成为什么需要先读取元数据，并给出证据来源",),
         ),
         AgentSkillDescriptor(
+            skill_code="sync.task.autonomous-creation",
+            display_name="数据同步任务渐进自治创建 Skill",
+            description=(
+                "把完整自然语言需求解析为受控同步任务：先在当前项目授权目录中唯一定位源端和目标端，"
+                "再测试连接、读取真实表字段元数据，并复用手工创建向导的任务合同生成草稿和预检查。"
+                "信息缺失时只追问缺项，名称歧义时展示候选，配置错误时基于元数据指出冲突；"
+                "任何状态变更都必须经过用户确认和 Java 控制面。"
+            ),
+            domain=GovernanceDomain.DATA_SYNC,
+            required_tools=(
+                "datasource.source.catalog.search",
+                "datasource.target.catalog.search",
+            ),
+            required_permissions=(
+                "datasource:metadata:read",
+                "datasource:connection:test",
+                "sync:task:create",
+                "sync:task:precheck",
+                "sync:task:publish",
+                "sync:task:run",
+            ),
+            memory_dependencies=(AgentMemoryType.EPISODIC, AgentMemoryType.PROCEDURAL),
+            risk_level="high",
+            approval_policy="HUMAN_APPROVAL_REQUIRED",
+            trigger_keywords=(
+                "数据同步",
+                "全量传输",
+                "定期批量",
+                "定期全量",
+                "SQL语句",
+                "实时同步",
+                "迁移到",
+                "同步到",
+                "data sync",
+                "migrate",
+            ),
+            examples=(
+                "创建任务 customer-full-sync，把源端 mysql-prod 的 public.customer 全量同步到目标端 pg-warehouse 的 public.customer。",
+            ),
+            attributes={
+                "datasourceResolutionPolicy": "AUTHORIZED_EXACT_NAME_ONLY",
+                "metadataRequiredBeforeDraft": True,
+                "reuseManualWizardContract": True,
+                "progressiveClarification": True,
+                "durableToolChain": (
+                    "datasource.source.connection.test",
+                    "datasource.target.connection.test",
+                    "datasource.source.metadata.read",
+                    "datasource.target.metadata.read",
+                    "sync.task.draft.save",
+                    "sync.task.precheck",
+                    "sync.task.publish",
+                    "sync.task.run",
+                    "sync.execution.status",
+                ),
+            },
+        ),
+        AgentSkillDescriptor(
             skill_code="sync.task.import.troubleshoot",
             display_name="同步任务导入故障诊断 Skill",
             description=(
@@ -300,8 +358,12 @@ def default_skill_registry() -> tuple[AgentSkillDescriptor, ...]:
             memory_dependencies=(AgentMemoryType.PROCEDURAL, AgentMemoryType.EPISODIC),
             risk_level="high",
             approval_policy="HUMAN_APPROVAL_REQUIRED",
-            trigger_keywords=("创建任务", "调度", "执行", "同步任务", "run"),
-            examples=("请创建一个同步任务并在审批后执行",),
+            trigger_keywords=("通用任务", "治理任务", "generic task"),
+            examples=("请创建一个通用治理任务并在审批后执行",),
+            attributes={
+                "requiresExplicitTrigger": True,
+                "triggerPolicyReason": "数据同步任务必须进入专用同步 Skill，通用任务 Skill 不能仅凭 DATA_SYNC 领域命中。",
+            },
         ),
         AgentSkillDescriptor(
             skill_code="permission.boundary.explain",

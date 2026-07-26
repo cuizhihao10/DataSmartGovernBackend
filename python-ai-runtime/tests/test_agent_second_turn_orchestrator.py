@@ -1,14 +1,16 @@
 ﻿import os
 import sys
 import unittest
+from dataclasses import replace
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from datasmart_ai_runtime.config import default_model_routes
+from datasmart_ai_runtime.config import default_model_routes, default_tool_registry
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ModelInvocationResult, ToolPlan
 from datasmart_ai_runtime.domain.events import AgentRuntimeEvent, AgentRuntimeEventType
+from datasmart_ai_runtime.domain.intent import GovernanceDomain, IntentAnalysis
 from datasmart_ai_runtime.services.agent_control_plane_feedback import (
     AgentControlPlaneFeedbackItem,
     AgentControlPlaneFeedbackSnapshot,
@@ -18,7 +20,9 @@ from datasmart_ai_runtime.services.agent_loop_control_policy import (
     AgentLoopControlDecision,
 )
 from datasmart_ai_runtime.services.agent_second_turn_orchestrator import AgentSecondTurnOrchestrator
+from datasmart_ai_runtime.services.agent_follow_up_tool_planner import AgentFollowUpToolPlanner
 from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import ToolExecutionFeedbackStatus
+from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 
 
 class AgentSecondTurnOrchestratorTest(unittest.TestCase):
@@ -141,6 +145,220 @@ class AgentSecondTurnOrchestratorTest(unittest.TestCase):
         self.assertEqual(0, auto_event.attributes["failedCount"])
         self.assertEqual("EXECUTED", auto_event.attributes["items"][0]["action"])
         self.assertEqual((6, 7, 8, 9), tuple(event.sequence for event in result.runtime_events))
+
+    def test_replays_provider_visible_function_name_for_responses_history(self) -> None:
+        provider = CapturingProviderRegistry()
+        orchestrator = AgentSecondTurnOrchestrator(provider)
+        plan = self._plan()
+        tool_plan = plan.tool_plans[0]
+        plan = replace(
+            plan,
+            tool_plans=(
+                replace(
+                    tool_plan,
+                    governance_hints={
+                        **tool_plan.governance_hints,
+                        "modelToolFunctionName": "datasource_metadata_read",
+                    },
+                ),
+            ),
+        )
+
+        orchestrator.run(
+            request=self._request(),
+            plan=plan,
+            control_plane_feedback=self._snapshot(),
+            loop_control_decision=self._allow_decision(),
+        )
+
+        replayed_call = provider.requests[0].messages[-2].tool_calls[0]
+        self.assertEqual("datasource.metadata.read", replayed_call.name)
+        self.assertEqual("datasource_metadata_read", replayed_call.raw_call["name"])
+
+    def test_provider_failure_stops_autonomous_progress_with_actionable_summary(self) -> None:
+        provider = FailingProviderRegistry()
+        orchestrator = AgentSecondTurnOrchestrator(provider)
+
+        result = orchestrator.run(
+            request=self._request(),
+            plan=self._plan(),
+            control_plane_feedback=self._snapshot(),
+            loop_control_decision=self._allow_decision(),
+        )
+
+        self.assertTrue(result.executed)
+        self.assertFalse(result.allowed)
+        self.assertFalse(result.continues)
+        self.assertEqual("model_provider_failed", result.action)
+        self.assertEqual("MODEL_PROVIDER_HTTP_400", result.error_code)
+        self.assertIn("自动处理已安全停止", result.summary)
+
+    def test_sync_state_machine_requires_missing_target_metadata_evidence(self) -> None:
+        """After source metadata, the model may only continue with missing target evidence."""
+
+        provider = CapturingProviderRegistry()
+        tool_planner = ToolPlanner(default_tool_registry())
+        orchestrator = AgentSecondTurnOrchestrator(
+            provider,
+            follow_up_tool_planner=AgentFollowUpToolPlanner(tool_planner=tool_planner),
+        )
+        plan = AgentPlan(
+            request_id="req-sync-target-evidence",
+            selected_route=default_model_routes()[0],
+            state_trace=("plan_tools",),
+            tool_plans=(
+                ToolPlan(
+                    tool_name="datasource.source.metadata.read",
+                    reason="source metadata",
+                    arguments={"datasourceId": 27, "tableNamePattern": "customer"},
+                    governance_hints={
+                        "modelToolCallId": "call-source-metadata",
+                        "agentLoopResourceRefs": {
+                            "datasource.target.connection.test": {
+                                "toolCode": "datasource.target.connection.test",
+                                "auditId": "audit-target-connection",
+                                "runId": "run-connections",
+                            }
+                        },
+                    },
+                ),
+            ),
+            requires_human_approval=False,
+            response_summary="source metadata collected",
+            intent_analysis=IntentAnalysis(
+                summary="sync",
+                governance_domains=(GovernanceDomain.DATA_SYNC,),
+                candidate_tools=(
+                    "datasource.source.metadata.read",
+                    "datasource.target.metadata.read",
+                    "sync.task.draft.save",
+                ),
+            ),
+        )
+        feedback = AgentControlPlaneFeedbackSnapshot(
+            expected_tool_call_count=1,
+            feedback_items=(
+                AgentControlPlaneFeedbackItem(
+                    model_tool_call_id="call-source-metadata",
+                    tool_name="datasource.source.metadata.read",
+                    status=ToolExecutionFeedbackStatus.SUCCEEDED,
+                    summary="source metadata succeeded",
+                    result={"datasourceId": 27, "summary": {"objects": []}},
+                    audit_id="audit-source-metadata",
+                    run_id="run-source-metadata",
+                ),
+            ),
+            missing_tool_call_ids=(),
+            status_counts={"succeeded": 1},
+            second_turn_eligible=True,
+            recommended_actions=(),
+        )
+
+        result = orchestrator.run(
+            request=replace(self._request(), objective="创建完整的源到目标同步任务"),
+            plan=plan,
+            control_plane_feedback=feedback,
+            loop_control_decision=self._allow_decision(),
+        )
+
+        request = provider.requests[0]
+        self.assertEqual("required", request.tool_choice)
+        self.assertEqual(
+            ("datasource.target.metadata.read",),
+            tuple(tool.name for tool in request.available_tools),
+        )
+        self.assertEqual(
+            ("datasource.target.metadata.read",),
+            result.required_evidence_tool_names,
+        )
+        self.assertIn("datasource.target.metadata.read", request.messages[0].content)
+
+    def test_sync_state_machine_requires_draft_after_complete_evidence(self) -> None:
+        """A complete request must advance from evidence collection to the draft contract."""
+
+        provider = CapturingProviderRegistry()
+        tool_planner = ToolPlanner(default_tool_registry())
+        orchestrator = AgentSecondTurnOrchestrator(
+            provider,
+            follow_up_tool_planner=AgentFollowUpToolPlanner(tool_planner=tool_planner),
+        )
+        plan = AgentPlan(
+            request_id="req-sync-draft-frontier",
+            selected_route=default_model_routes()[0],
+            state_trace=("plan_tools",),
+            tool_plans=(
+                ToolPlan(
+                    tool_name="datasource.target.metadata.read",
+                    reason="target metadata",
+                    arguments={"datasourceId": 28, "tableNamePattern": "customer"},
+                    governance_hints={
+                        "modelToolCallId": "call-target-metadata",
+                        "agentLoopResourceRefs": {
+                            "datasource.source.metadata.read": {
+                                "toolCode": "datasource.source.metadata.read",
+                                "auditId": "audit-source-metadata",
+                                "runId": "run-source-metadata",
+                            }
+                        },
+                    },
+                ),
+            ),
+            requires_human_approval=False,
+            response_summary="target metadata collected",
+            intent_analysis=IntentAnalysis(
+                summary="sync",
+                governance_domains=(GovernanceDomain.DATA_SYNC,),
+                candidate_tools=(
+                    "datasource.source.metadata.read",
+                    "datasource.target.metadata.read",
+                    "sync.task.draft.save",
+                ),
+            ),
+        )
+        feedback = AgentControlPlaneFeedbackSnapshot(
+            expected_tool_call_count=1,
+            feedback_items=(
+                AgentControlPlaneFeedbackItem(
+                    model_tool_call_id="call-target-metadata",
+                    tool_name="datasource.target.metadata.read",
+                    status=ToolExecutionFeedbackStatus.SUCCEEDED,
+                    summary="target metadata succeeded",
+                    result={"datasourceId": 28, "summary": {"objects": []}},
+                    audit_id="audit-target-metadata",
+                    run_id="run-target-metadata",
+                ),
+            ),
+            missing_tool_call_ids=(),
+            status_counts={"succeeded": 1},
+            second_turn_eligible=True,
+            recommended_actions=(),
+        )
+        request = replace(
+            self._request(),
+            objective=(
+                "创建全量任务 customer-full，把源端 mysql-prod.customer 映射到"
+                "目标端 pg-prod.public.customer，字段 id 映射到 id，不设置 WHERE 条件。"
+            ),
+        )
+
+        result = orchestrator.run(
+            request=request,
+            plan=plan,
+            control_plane_feedback=feedback,
+            loop_control_decision=self._allow_decision(),
+        )
+
+        model_request = provider.requests[0]
+        self.assertEqual("required", model_request.tool_choice)
+        self.assertEqual(
+            ("sync.task.draft.save",),
+            tuple(tool.name for tool in model_request.available_tools),
+        )
+        self.assertEqual(
+            ("sync.task.draft.save",),
+            result.required_evidence_tool_names,
+        )
+        self.assertIn("必须调用 sync.task.draft.save", model_request.messages[0].content)
 
     @staticmethod
     def _request() -> AgentRequest:
@@ -265,6 +483,17 @@ class CapturingProviderRegistry:
             content="已根据工具结果生成治理总结。",
             prompt_tokens=101,
             completion_tokens=33,
+        )
+
+
+class FailingProviderRegistry(CapturingProviderRegistry):
+    def invoke(self, request):
+        self.requests.append(request)
+        return ModelInvocationResult(
+            provider_name=request.route.provider_name,
+            model_name=request.route.model_name,
+            content="",
+            error_code="MODEL_PROVIDER_HTTP_400",
         )
 
 

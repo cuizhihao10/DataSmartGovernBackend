@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from hashlib import sha256
 
@@ -20,7 +21,7 @@ from datasmart_ai_runtime.domain.contracts import (
     ToolPlan,
     ToolRiskLevel,
 )
-from datasmart_ai_runtime.domain.intent import IntentAnalysis, IntentRiskTag
+from datasmart_ai_runtime.domain.intent import GovernanceDomain, IntentAnalysis, IntentRiskTag
 from datasmart_ai_runtime.domain.resource_reference import AgentResourceReference
 from datasmart_ai_runtime.domain.skills import AgentSkillPlan
 from datasmart_ai_runtime.services.quality_remediation_tool_plan_builder import (
@@ -46,6 +47,22 @@ class ToolPlanner:
     这个类只负责“计划”，不负责“执行”。执行仍应交给 Java `agent-runtime` 或对应业务微服务，
     因为执行会涉及权限、审计、幂等、审批、事务和状态机，这些属于控制面职责。
     """
+
+    _DATASOURCE_CATALOG_LABELS = {
+        "datasource.source.catalog.search": (
+            "source datasource",
+            "source data source",
+            "源端数据源",
+            "源数据源",
+        ),
+        "datasource.target.catalog.search": (
+            "target datasource",
+            "target data source",
+            "目标端数据源",
+            "目标数据源",
+        ),
+    }
+    _SAFE_DATASOURCE_NAME = re.compile(r"[\w.\- ]{1,128}", re.UNICODE)
 
     def __init__(
         self,
@@ -108,6 +125,17 @@ class ToolPlanner:
         plans.extend(sync_failure_recovery_plans)
         planned_tool_names.update(plan.tool_name for plan in sync_failure_recovery_plans)
         wants_sync_failure_recovery = bool(sync_failure_recovery_plans)
+
+        # 部分 OpenAI-compatible 中转接口会返回有效文本，却在 tool_choice=required 时仍省略
+        # 原生 tool_calls。这个确定性兜底只提取用户明确标注的源端/目标端数据源名称；
+        # 它不猜数据源 ID、不生成映射、更不产生写计划。项目授权、用途和唯一精确匹配仍由
+        # Java 数据源目录工具判断，避免 Provider 兼容性差异突破系统安全边界。
+        catalog_search_plans = self._build_explicit_datasource_catalog_plans(
+            request=request,
+            candidate_tools=candidate_tools,
+        )
+        plans.extend(catalog_search_plans)
+        planned_tool_names.update(plan.tool_name for plan in catalog_search_plans)
 
         data_sync_plans = self._data_sync_plans.build(
             request=request,
@@ -256,10 +284,15 @@ class ToolPlanner:
 
         task_keywords = ("create task", "schedule", "run", "创建任务", "调度", "执行", "同步任务")
         create_task_requested = bool(request.variables.get("createTask") or request.variables.get("create_task"))
+        has_data_sync_intent = bool(
+            intent_analysis
+            and GovernanceDomain.DATA_SYNC in intent_analysis.governance_domains
+        )
         wants_task_draft = (
             not wants_quality_remediation
             and not wants_data_sync_workflow
             and not wants_sync_failure_recovery
+            and not has_data_sync_intent
             and (
                 "task.create.draft" in candidate_tools
                 or create_task_requested
@@ -326,6 +359,69 @@ class ToolPlanner:
 
         return self._dag_annotator.annotate(tuple(plans))
 
+    def _build_explicit_datasource_catalog_plans(
+        self,
+        request: AgentRequest,
+        candidate_tools: set[str],
+    ) -> tuple[ToolPlan, ...]:
+        """从显式标注的数据源名称生成只读目录查询计划。
+
+        该兼容路径刻意保持最小职责：
+        - 只有意图或 Skill 已准入对应目录工具时才会运行；
+        - 只接受紧随源端/目标端数据源标签之后的引号名称或安全单词；
+        - 真实权限与精确匹配交给 Java 工具判断；
+        - 不推断 ID、对象映射、字段映射、SQL 或任何状态变更操作。
+
+        因此，Provider 不返回 tool_calls 时 Agent 仍可继续安全发现资源，同时不会退化成
+        “规则猜参数并直接创建任务”的不可信实现。
+        """
+
+        plans: list[ToolPlan] = []
+        for tool_name, labels in self._DATASOURCE_CATALOG_LABELS.items():
+            if tool_name not in candidate_tools:
+                continue
+            tool = self._tools.get(tool_name)
+            if tool is None:
+                continue
+            keyword = self._extract_explicit_datasource_name(request.objective, labels)
+            if keyword is None:
+                continue
+            direction = "源端" if ".source." in tool_name else "目标端"
+            plans.append(
+                self._build_plan(
+                    tool=tool,
+                    reason=(
+                        f"用户已明确提供{direction}数据源名称；先在当前租户和项目授权范围内"
+                        "执行只读目录查询，只有唯一精确匹配才允许进入连接测试。"
+                    ),
+                    arguments={"keyword": keyword},
+                )
+            )
+        return tuple(plans)
+
+    @classmethod
+    def _extract_explicit_datasource_name(
+        cls,
+        objective: str,
+        labels: tuple[str, ...],
+    ) -> str | None:
+        """提取一个显式数据源名称，不做语义猜测或数据库类型到实例的映射。"""
+
+        label_expression = "|".join(re.escape(label) for label in labels)
+        pattern = re.compile(
+            rf"(?:{label_expression})\s*(?:名称)?\s*(?:为|是|=|:|：)?\s*"
+            r"(?:[\"'“‘`](?P<quoted>[^\"'“”‘’`\r\n]{1,128})[\"'”’`]"
+            r"|(?P<token>[^\s,，;；。:：\"'“”‘’`]{1,128}))",
+            re.IGNORECASE,
+        )
+        match = pattern.search(objective)
+        if match is None:
+            return None
+        keyword = (match.group("quoted") or match.group("token") or "").strip()
+        if not keyword or cls._SAFE_DATASOURCE_NAME.fullmatch(keyword) is None:
+            return None
+        return keyword
+
     def model_visible_tools(
         self,
         request: AgentRequest,
@@ -364,8 +460,22 @@ class ToolPlanner:
 
         visible_tools: list[ToolDefinition] = []
         seen: set[str] = set()
+        directional_sync_metadata_enabled = bool(
+            intent_analysis
+            and GovernanceDomain.DATA_SYNC in intent_analysis.governance_domains
+            and "datasource.source.metadata.read" in self._tools
+            and "datasource.target.metadata.read" in self._tools
+        )
         for name in candidate_names:
             if name in seen:
+                continue
+            # `datasource.metadata.read` is a legacy direction-neutral capability
+            # still used by quality analysis.  Exposing it beside source/target
+            # metadata tools in a sync workflow lets a model produce evidence that
+            # cannot be assigned to either side of an object mapping.  Keep the
+            # legacy tool for non-sync domains, but require directional contracts
+            # whenever a source-to-target task is being planned.
+            if directional_sync_metadata_enabled and name == "datasource.metadata.read":
                 continue
             tool = self._tools.get(name)
             if tool is None:
@@ -399,10 +509,37 @@ class ToolPlanner:
                 skill_plan=skill_plan,
             )
         )
+        completed_tool_names = {
+            plan.tool_name
+            for plan in previous_tool_plans
+        }
+        # A durable Agent request is split into multiple Java Runs.  Looking only
+        # at the immediately preceding batch loses the other branch of a workflow:
+        # for example, after source metadata is read, target connection evidence
+        # may exist only in the server-created resource ledger.  Rehydrate only
+        # ledger entries whose key and toolCode agree and whose audit/run identity
+        # is present; this preserves least privilege without trusting arbitrary
+        # model-supplied governance hints.
+        for plan in previous_tool_plans:
+            raw_ledger = plan.governance_hints.get("agentLoopResourceRefs")
+            if not isinstance(raw_ledger, dict):
+                continue
+            for tool_name, raw_reference in raw_ledger.items():
+                if not isinstance(raw_reference, dict):
+                    continue
+                normalized_name = str(tool_name).strip()
+                if (
+                    normalized_name
+                    and str(raw_reference.get("toolCode") or "").strip() == normalized_name
+                    and str(raw_reference.get("auditId") or "").strip()
+                    and str(raw_reference.get("runId") or "").strip()
+                ):
+                    completed_tool_names.add(normalized_name)
+
         transition_names = {
             next_tool
-            for plan in previous_tool_plans
-            for next_tool in self._follow_up_tool_transitions().get(plan.tool_name, ())
+            for tool_name in completed_tool_names
+            for next_tool in self._follow_up_tool_transitions().get(tool_name, ())
         }
         seen = {tool.name for tool in visible}
         for name in transition_names:
@@ -418,6 +555,8 @@ class ToolPlanner:
         """Describe safe model-visible lifecycle edges, not execution shortcuts."""
 
         return {
+            "datasource.source.catalog.search": ("datasource.source.connection.test",),
+            "datasource.target.catalog.search": ("datasource.target.connection.test",),
             "datasource.source.connection.test": ("datasource.source.metadata.read",),
             "datasource.target.connection.test": ("datasource.target.metadata.read",),
             "datasource.source.metadata.read": ("sync.task.draft.save",),

@@ -180,6 +180,85 @@ class ModelProviderHealthRegistryTest(unittest.TestCase):
         self.assertEqual(ModelProviderHealthStatus.DEGRADED, snapshot.status)
         self.assertFalse(registry.diagnostics((_route("primary-agent"),))["providers"][0]["circuitOpen"])
 
+    def test_cooldown_expiry_enters_routable_half_open_state_without_restart(self) -> None:
+        """冷却结束后应允许半开探测，不能继续返回永久不可用的旧快照。"""
+
+        current_time = [datetime(2026, 6, 3, 12, 0, tzinfo=timezone.utc)]
+        route = _route("primary-agent")
+        registry = InMemoryModelProviderHealthRegistry(
+            policy=ModelProviderHealthPolicy(
+                failure_threshold=1,
+                circuit_breaker_cooldown_seconds=10,
+            ),
+            clock=lambda: current_time[0],
+        )
+        registry.record_invocation(route.provider_name, succeeded=False, error_code="TIMEOUT")
+        current_time[0] += timedelta(seconds=11)
+
+        snapshot = registry.snapshot_for(route)
+        decision = ModelGatewayGovernanceService(
+            ModelRouteRegistry((route,)),
+            health_registry=registry,
+        ).decide(_context())
+        diagnostics = registry.diagnostics((route,))["providers"][0]
+
+        self.assertEqual(ModelProviderHealthStatus.DEGRADED, snapshot.status)
+        self.assertEqual(route, decision.selected_route)
+        self.assertFalse(diagnostics["circuitOpen"])
+        self.assertTrue(diagnostics["halfOpenProbePending"])
+        self.assertIn("半开探测", diagnostics["notes"])
+
+    def test_failed_half_open_probe_immediately_reopens_circuit(self) -> None:
+        """半开探测仍失败时应立即重新熔断，不重新放行完整失败阈值。"""
+
+        current_time = [datetime(2026, 6, 3, 12, 0, tzinfo=timezone.utc)]
+        route = _route("primary-agent")
+        registry = InMemoryModelProviderHealthRegistry(
+            policy=ModelProviderHealthPolicy(
+                failure_threshold=3,
+                circuit_breaker_cooldown_seconds=10,
+            ),
+            clock=lambda: current_time[0],
+        )
+        for _ in range(3):
+            registry.record_invocation(route.provider_name, succeeded=False, error_code="HTTP_503")
+        current_time[0] += timedelta(seconds=11)
+        self.assertEqual(ModelProviderHealthStatus.DEGRADED, registry.snapshot_for(route).status)
+
+        snapshot = registry.record_invocation(route.provider_name, succeeded=False, error_code="HTTP_503")
+        diagnostics = registry.diagnostics((route,))["providers"][0]
+
+        self.assertEqual(ModelProviderHealthStatus.UNAVAILABLE, snapshot.status)
+        self.assertTrue(diagnostics["circuitOpen"])
+        self.assertFalse(diagnostics["halfOpenProbePending"])
+
+    def test_successful_half_open_probe_remains_routable_with_historic_failures(self) -> None:
+        """恢复成功后历史高错误率只能保持降级观察，不能再次形成无流量自锁。"""
+
+        current_time = [datetime(2026, 6, 3, 12, 0, tzinfo=timezone.utc)]
+        route = _route("primary-agent")
+        registry = InMemoryModelProviderHealthRegistry(
+            policy=ModelProviderHealthPolicy(
+                failure_threshold=3,
+                circuit_breaker_cooldown_seconds=10,
+            ),
+            clock=lambda: current_time[0],
+        )
+        for _ in range(3):
+            registry.record_invocation(route.provider_name, succeeded=False, error_code="HTTP_503")
+        current_time[0] += timedelta(seconds=11)
+        registry.snapshot_for(route)
+
+        snapshot = registry.record_invocation(route.provider_name, succeeded=True, latency_ms=80)
+        decision = ModelGatewayGovernanceService(
+            ModelRouteRegistry((route,)),
+            health_registry=registry,
+        ).decide(_context())
+
+        self.assertEqual(ModelProviderHealthStatus.DEGRADED, snapshot.status)
+        self.assertEqual(route, decision.selected_route)
+        self.assertFalse(registry.diagnostics((route,))["providers"][0]["halfOpenProbePending"])
+
 
 def _route(
     provider_name: str,

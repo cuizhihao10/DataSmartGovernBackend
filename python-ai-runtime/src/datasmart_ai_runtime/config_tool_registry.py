@@ -21,7 +21,48 @@ def _data_sync_agent_tools() -> tuple[ToolDefinition, ...]:
     Python 计划只携带 datasourceId、对象映射和工具输出引用。
     """
 
-    datasource_tools = tuple(
+    catalog_tools = tuple(
+        ToolDefinition(
+            name=name,
+            description=description,
+            risk_level=ToolRiskLevel.LOW,
+            execution_mode=ToolExecutionMode.SYNC,
+            required_permissions=("datasource:metadata:read",),
+            target_service="datasource-management",
+            target_endpoint="/datasources",
+            input_schema={
+                "keyword": {
+                    "type": "string",
+                    "required": True,
+                    "sensitive": False,
+                    "resolution": "user_required",
+                    "description": (
+                        "用户明确提供的数据源名称。只允许检索当前项目已授权目录，"
+                        "不得编造名称或直接猜测数据源 ID。"
+                    ),
+                }
+            },
+            read_only=True,
+            idempotent=True,
+            allowed_actions=("VIEW",),
+            tool_type="DATASOURCE_METADATA",
+            tenant_scoped=True,
+            project_scoped=True,
+            memory_write_policy="none",
+            cache_policy="project_safe",
+        )
+        for name, description in (
+            (
+                "datasource.source.catalog.search",
+                "按名称检索当前项目已授权且用途为源端的数据源；仅唯一精确匹配可用于后续自动执行。",
+            ),
+            (
+                "datasource.target.catalog.search",
+                "按名称检索当前项目已授权且用途为目标端的数据源；仅唯一精确匹配可用于后续自动执行。",
+            ),
+        )
+    )
+    datasource_tools = catalog_tools + tuple(
         ToolDefinition(
             name=name,
             description=description,
@@ -33,11 +74,44 @@ def _data_sync_agent_tools() -> tuple[ToolDefinition, ...]:
             input_schema={
                 "datasourceId": {
                     "type": "number",
-                    "required": True,
+                    "required": False,
                     "sensitive": False,
-                    "resolution": "user_required",
-                    "description": "用户已通过可信数据源管理页面安全创建并选择的数据源 ID。",
-                }
+                    "resolution": "derived",
+                    "description": "由可信目录或连接测试审计结果派生的数据源 ID，不向模型暴露。",
+                },
+                **({
+                    "catalogSearchRef": {
+                        "type": "object",
+                        "required": False,
+                        "sensitive": False,
+                        "resolution": "derived",
+                        "description": "连接测试继承的可信数据源目录审计引用。",
+                    },
+                } if "connection.test" in name else {
+                    "connectionTestRef": {
+                        "type": "object",
+                        "required": False,
+                        "sensitive": False,
+                        "resolution": "derived",
+                        "description": "元数据读取继承的可信连接测试审计引用。",
+                    },
+                }),
+                **({
+                    "schemaPattern": {
+                        "type": "string",
+                        "required": False,
+                        "sensitive": False,
+                        "resolution": "model_optional",
+                        "description": "用户明确指定的 schema 精确名或 JDBC 元数据模式；MySQL 可省略。",
+                    },
+                    "tableNamePattern": {
+                        "type": "string",
+                        "required": False,
+                        "sensitive": False,
+                        "resolution": "model_optional",
+                        "description": "用户明确指定的表名或安全模式，用于只读取任务相关对象并避免大目录截断。",
+                    },
+                } if "metadata.read" in name else {}),
             },
             read_only=True,
             idempotent=True,
@@ -92,11 +166,87 @@ def _data_sync_agent_tools() -> tuple[ToolDefinition, ...]:
             target_service="data-sync",
             target_endpoint="/sync-tasks/create-wizard/drafts",
             input_schema={
-                "sourceDatasourceId": {"type": "number", "required": True, "sensitive": False, "resolution": "user_required"},
-                "targetDatasourceId": {"type": "number", "required": True, "sensitive": False, "resolution": "user_required"},
-                "objectMappings": {"type": "array", "required": True, "sensitive": True, "resolution": "user_required"},
-                "syncMode": {"type": "string", "required": True, "sensitive": False, "resolution": "context_or_clarify"},
-                "writeStrategy": {"type": "string", "required": False, "sensitive": False, "resolution": "context_or_clarify"},
+                "sourceDatasourceId": {"type": "number", "required": False, "sensitive": False, "resolution": "derived"},
+                "targetDatasourceId": {"type": "number", "required": False, "sensitive": False, "resolution": "derived"},
+                "sourceMetadataRef": {"type": "object", "required": True, "sensitive": False, "resolution": "derived"},
+                "targetMetadataRef": {"type": "object", "required": True, "sensitive": False, "resolution": "derived"},
+                "sourceMetadataRefs": {"type": "array", "required": True, "sensitive": False, "resolution": "derived"},
+                "targetMetadataRefs": {"type": "array", "required": True, "sensitive": False, "resolution": "derived"},
+                "taskName": {
+                    "type": "string",
+                    "required": True,
+                    "description": "用户明确指定的同步任务名称。",
+                    "sensitive": False,
+                    "resolution": "user_required",
+                },
+                "taskDescription": {
+                    "type": "string",
+                    "required": False,
+                    "description": "面向任务详情页的低敏任务说明。",
+                    "sensitive": False,
+                    "resolution": "context_or_clarify",
+                },
+                "objectMappings": {
+                    "type": "array",
+                    "required": True,
+                    "description": "源表到目标表映射；每个数组元素只能描述一条源到目标关系。",
+                    "sensitive": True,
+                    "resolution": "user_required",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "objectKey": {"type": "string", "required": False},
+                            "sourceSchemaName": {"type": "string", "required": False},
+                            "sourceObjectName": {
+                                "type": "string",
+                                "required": True,
+                                "description": "真实源表名称；CUSTOM_SQL_QUERY 模式可省略。",
+                            },
+                            "targetSchemaName": {
+                                "type": "string",
+                                "required": False,
+                                "description": "真实目标 schema；PostgreSQL 等支持 schema 的目标端应填写。",
+                            },
+                            "targetObjectName": {
+                                "type": "string",
+                                "required": True,
+                                "description": "真实目标表名称。",
+                            },
+                            "whereCondition": {
+                                "type": "string",
+                                "required": False,
+                                "description": "仅填写 WHERE 后面的只读布尔表达式，不包含 WHERE 关键字。",
+                            },
+                            "fieldMappings": {
+                                "type": "array",
+                                "required": True,
+                                "description": "用户要求同步的源字段到目标字段映射。",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "sourceField": {"type": "string", "required": True},
+                                        "targetField": {"type": "string", "required": True},
+                                        "syncEnabled": {"type": "boolean", "required": False},
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+                "syncMode": {
+                    "type": "string",
+                    "required": True,
+                    "sensitive": False,
+                    "resolution": "context_or_clarify",
+                    "enum": ["FULL", "SCHEDULED_BATCH", "SCHEDULED_FULL", "CUSTOM_SQL_QUERY", "CDC_STREAMING"],
+                },
+                "writeStrategy": {
+                    "type": "string",
+                    "required": False,
+                    "sensitive": False,
+                    "resolution": "context_or_clarify",
+                    "enum": ["INSERT", "UPDATE"],
+                },
                 "scheduleConfig": {"type": "string", "required": False, "sensitive": False, "resolution": "context_or_clarify"},
                 "customSqlText": {"type": "string", "required": False, "sensitive": True, "resolution": "user_required"},
             },

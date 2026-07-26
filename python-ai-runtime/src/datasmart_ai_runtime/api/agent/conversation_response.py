@@ -72,6 +72,8 @@ def build_agent_conversation_response(
     readiness: ToolExecutionReadinessReport,
     *,
     control_plane_ingested: bool,
+    control_plane_feedback: Any | None = None,
+    autonomous_resolution_stopped: bool = False,
 ) -> dict[str, Any]:
     """构建“自由文本 -> 追问 -> 确认”的前端会话快照。
 
@@ -79,7 +81,36 @@ def build_agent_conversation_response(
     或完整工具参数。真实参数继续保留在受权限保护的计划和 Java 控制面中。
     """
 
-    missing_parameters = _collect_missing_parameters(plan)
+    declared_missing_parameters = list(_collect_missing_parameters(plan))
+    catalog_clarification_parameters = _catalog_clarification_parameters(control_plane_feedback)
+    for parameter_name in catalog_clarification_parameters:
+        if parameter_name not in declared_missing_parameters:
+            declared_missing_parameters.append(parameter_name)
+    autonomous_sync_requires_repair = _autonomous_sync_requires_repair(
+        plan,
+        control_plane_feedback,
+        autonomous_resolution_stopped=autonomous_resolution_stopped,
+    )
+    if (
+        autonomous_sync_requires_repair
+        and not catalog_clarification_parameters
+        and "objectMappings" not in declared_missing_parameters
+    ):
+        # A complete natural-language request can legitimately contain every
+        # business field and therefore produce no rule-level missing parameter.
+        # If the model later discovers an invalid table/field after reading real
+        # metadata and deliberately declines to save the draft, that is still a
+        # correction turn, not an executable plan.  Surface the canonical mapping
+        # editor without asking the user for internal datasource IDs again.
+        declared_missing_parameters.append("objectMappings")
+    autonomously_resolved = _autonomously_resolved_parameters(
+        plan,
+        control_plane_feedback,
+        autonomous_resolution_stopped=autonomous_resolution_stopped,
+    )
+    missing_parameters = tuple(
+        name for name in declared_missing_parameters if name not in autonomously_resolved
+    )
     has_clarification_gate = bool(missing_parameters) or readiness.clarification_required_count > 0
     # THROTTLED 约束的是无人值守自动调用预算，不阻止用户查看并显式确认完整 DAG。只有缺参或
     # CRITICAL 阻断会让计划失去确认资格；确认后的实际并发仍由 Java 执行策略控制。
@@ -87,12 +118,40 @@ def build_agent_conversation_response(
         bool(plan.tool_plans)
         and readiness.clarification_required_count == 0
         and readiness.blocked_count == 0
+        and not autonomous_sync_requires_repair
+    )
+
+    autonomous_tool_names = {
+        "datasource.source.catalog.search",
+        "datasource.target.catalog.search",
+        "datasource.source.connection.test",
+        "datasource.target.connection.test",
+        "datasource.source.metadata.read",
+        "datasource.target.metadata.read",
+    }
+    autonomous_resolution_in_progress = (
+        not autonomous_resolution_stopped
+        and not has_clarification_gate
+        and bool(plan.tool_plans)
+        and all(item.tool_name in autonomous_tool_names for item in plan.tool_plans)
     )
 
     if has_clarification_gate:
         phase = "WAITING_CLARIFICATION"
         next_action = "ANSWER_CLARIFICATIONS"
         assistant_message = _clarification_message(plan, missing_parameters)
+        if autonomous_resolution_stopped and str(plan.response_summary or "").strip():
+            assistant_message = (
+                f"{str(plan.response_summary).strip()} "
+                f"{assistant_message}"
+            )
+    elif autonomous_resolution_in_progress:
+        phase = "RESOLVING_AUTONOMOUSLY"
+        next_action = "CONTINUE_AUTONOMOUSLY"
+        assistant_message = (
+            "我正在当前项目的授权范围内定位数据源、测试连接并读取真实表字段元数据。"
+            "只有唯一精确匹配才会继续；如名称存在歧义、对象不存在或配置冲突，我会只追问对应问题。"
+        )
     elif has_executable_plan:
         phase = "READY_FOR_CONFIRMATION"
         next_action = "CONFIRM_AND_EXECUTE"
@@ -115,13 +174,196 @@ def build_agent_conversation_response(
         "assistantMessage": assistant_message,
         "structuredIntent": _build_structured_intent(request, plan),
         "missingParameters": list(missing_parameters),
-        "clarificationQuestions": [_build_question(name) for name in missing_parameters],
-        "canExecute": has_executable_plan and control_plane_ingested,
+        "clarificationQuestions": [
+            _build_question(
+                name,
+                control_plane_feedback,
+                repair_guidance=(
+                    str(plan.response_summary or "").strip()
+                    if autonomous_sync_requires_repair and name == "objectMappings"
+                    else None
+                ),
+            )
+            for name in missing_parameters
+        ],
+        # A read-only discovery batch can be executable from the control plane's
+        # perspective while the user's business task is still incomplete.  The
+        # conversation contract therefore exposes confirmation only after the
+        # Agent has produced a complete governed draft, never while resolving
+        # resources or waiting for clarification.
+        "canExecute": (
+            phase == "READY_FOR_CONFIRMATION"
+            and has_executable_plan
+            and control_plane_ingested
+        ),
         "controlPlaneIngested": control_plane_ingested,
         "nextAction": next_action,
         "intentResolver": build_intent_resolver_summary(plan),
         "payloadPolicy": "LOW_SENSITIVE_CONVERSATION_METADATA_ONLY",
     }
+
+
+def _catalog_clarification_parameters(control_plane_feedback: Any | None) -> tuple[str, ...]:
+    """Map the latest non-exact catalog facts back to user-facing fields.
+
+    Complete natural-language requests often have no deterministic missing fields.
+    If autonomous discovery later proves a datasource name ambiguous or absent, the
+    correction belongs to the datasource selector, not the object-mapping editor.
+    Only the latest result for each direction is authoritative so a later explicit
+    user choice can replace an earlier ambiguous search.
+    """
+
+    feedback_items = tuple(getattr(control_plane_feedback, "feedback_items", ()) or ())
+    tool_to_parameter = {
+        "datasource.source.catalog.search": "sourceDatasourceId",
+        "datasource.target.catalog.search": "targetDatasourceId",
+    }
+    seen_tools: set[str] = set()
+    missing: list[str] = []
+    for item in reversed(feedback_items):
+        tool_name = str(getattr(item, "tool_name", "") or "")
+        parameter_name = tool_to_parameter.get(tool_name)
+        if parameter_name is None or tool_name in seen_tools:
+            continue
+        seen_tools.add(tool_name)
+        status = getattr(getattr(item, "status", None), "value", "")
+        if status != "succeeded":
+            continue
+        result = dict(getattr(item, "result", {}) or {})
+        match_status = str(result.get("matchStatus") or "").strip().upper()
+        if match_status and match_status != "EXACT":
+            missing.append(parameter_name)
+    return tuple(missing)
+
+
+def _autonomously_resolved_parameters(
+    plan: AgentPlan,
+    control_plane_feedback: Any | None,
+    *,
+    autonomous_resolution_stopped: bool,
+) -> set[str]:
+    """Return missing fields currently delegated to an evidence-backed tool path.
+
+    A rule analyzer cannot safely convert natural-language datasource names into
+    database IDs.  When the real model has proposed a catalog/metadata workflow,
+    those fields are no longer immediate form questions: the Java control plane
+    first resolves them against the current project's authorized resources.
+    Ambiguous or missing catalog results deliberately remove that delegation and
+    return the field to the user clarification list.
+    """
+
+    tool_names = {item.tool_name for item in plan.tool_plans}
+    feedback_items = tuple(getattr(control_plane_feedback, "feedback_items", ()) or ())
+    catalog_results: dict[str, dict[str, Any]] = {}
+    succeeded_tools: set[str] = set()
+    for item in feedback_items:
+        tool_name = str(getattr(item, "tool_name", "") or "")
+        status = getattr(getattr(item, "status", None), "value", "")
+        if status == "succeeded":
+            succeeded_tools.add(tool_name)
+        if tool_name in {
+            "datasource.source.catalog.search",
+            "datasource.target.catalog.search",
+        }:
+            catalog_results[tool_name] = dict(getattr(item, "result", {}) or {})
+
+    resolved: set[str] = set()
+    source_path = {
+        "datasource.source.catalog.search",
+        "datasource.source.connection.test",
+        "datasource.source.metadata.read",
+    }
+    target_path = {
+        "datasource.target.catalog.search",
+        "datasource.target.connection.test",
+        "datasource.target.metadata.read",
+    }
+    if (tool_names | succeeded_tools) & source_path:
+        resolved.add("sourceDatasourceId")
+    if (tool_names | succeeded_tools) & target_path:
+        resolved.add("targetDatasourceId")
+
+    for catalog_tool, parameter_name in (
+        ("datasource.source.catalog.search", "sourceDatasourceId"),
+        ("datasource.target.catalog.search", "targetDatasourceId"),
+    ):
+        result = catalog_results.get(catalog_tool)
+        if result is not None and str(result.get("matchStatus") or "").upper() != "EXACT":
+            resolved.discard(parameter_name)
+
+    catalog_choice_required = any(
+        str(result.get("matchStatus") or "").strip().upper() in {"AMBIGUOUS", "NOT_FOUND"}
+        for result in catalog_results.values()
+    )
+    if catalog_choice_required:
+        # Object mappings cannot be validated against real metadata until both
+        # datasource identities are stable.  Ask only for the ambiguous/missing
+        # datasource now; the durable resume turn will read its metadata and then
+        # surface a mapping repair only if the user's original mapping is invalid.
+        resolved.add("objectMappings")
+
+    if "sync.task.draft.save" in tool_names | succeeded_tools:
+        resolved.update({"sourceDatasourceId", "targetDatasourceId", "objectMappings"})
+    elif not autonomous_resolution_stopped and (
+        "datasource.source.metadata.read" in tool_names | succeeded_tools
+        or "datasource.target.metadata.read" in tool_names | succeeded_tools
+        or bool((tool_names | succeeded_tools) & (source_path | target_path))
+        or {
+            "sourceDatasourceId",
+            "targetDatasourceId",
+        }.issubset(resolved)
+    ):
+        # Mapping details remain in the user's original objective while the model
+        # waits for real metadata. They become a user question only if the model
+        # cannot produce a validated draft after metadata is returned.
+        resolved.add("objectMappings")
+    return resolved
+
+
+def _autonomous_sync_requires_repair(
+    plan: AgentPlan,
+    control_plane_feedback: Any | None,
+    *,
+    autonomous_resolution_stopped: bool,
+) -> bool:
+    """Detect a metadata-backed sync request that stopped before draft creation.
+
+    Discovery tools are intentionally executable without user confirmation, but
+    their success does not make the requested sync task executable.  The hard
+    boundary is a governed ``sync.task.draft.save`` node.  When the model stops
+    after seeing real metadata because a table, field, mapping, SQL projection or
+    other configuration is invalid, the conversation must return to correction.
+    """
+
+    if not autonomous_resolution_stopped or not _is_data_sync_plan(plan):
+        return False
+
+    tool_names = {item.tool_name for item in plan.tool_plans}
+    feedback_items = tuple(getattr(control_plane_feedback, "feedback_items", ()) or ())
+    succeeded_tools = {
+        str(getattr(item, "tool_name", "") or "")
+        for item in feedback_items
+        if getattr(getattr(item, "status", None), "value", "") == "succeeded"
+    }
+    observed_tools = tool_names | succeeded_tools
+    if "sync.task.draft.save" in observed_tools:
+        return False
+    return bool(
+        observed_tools
+        & {
+            "datasource.source.metadata.read",
+            "datasource.target.metadata.read",
+        }
+    )
+
+
+def _is_data_sync_plan(plan: AgentPlan) -> bool:
+    """Return whether the stable intent contract classifies this as data sync."""
+
+    return bool(
+        plan.intent_analysis
+        and any(item.value == "data_sync" for item in plan.intent_analysis.governance_domains)
+    )
 
 
 def build_intent_resolver_summary(plan: AgentPlan) -> dict[str, Any]:
@@ -193,7 +435,11 @@ def _collect_missing_parameters(plan: AgentPlan) -> tuple[str, ...]:
     return tuple(dict.fromkeys(name for name in names if name))
 
 
-def _build_question(parameter_name: str) -> dict[str, Any]:
+def _build_question(
+    parameter_name: str,
+    control_plane_feedback: Any | None = None,
+    repair_guidance: str | None = None,
+) -> dict[str, Any]:
     """把内部参数名转换成前端可以直接渲染的追问定义。"""
 
     definition = _QUESTION_DEFINITIONS.get(
@@ -205,12 +451,56 @@ def _build_question(parameter_name: str) -> dict[str, Any]:
             "fieldPath": parameter_name,
         },
     )
-    return {
+    question = {
         "parameterName": parameter_name,
         **definition,
         "required": True,
         "sensitive": False,
     }
+    candidates = _catalog_candidates_for(parameter_name, control_plane_feedback)
+    if candidates:
+        question["candidates"] = candidates
+        question["question"] = (
+            f"{definition['question']} 当前名称存在多个候选，请明确选择其中一个。"
+        )
+    if repair_guidance:
+        question["reasonCode"] = "MODEL_CONFIGURATION_REPAIR_REQUIRED"
+        question["repairGuidance"] = repair_guidance
+    return question
+
+
+def _catalog_candidates_for(
+    parameter_name: str,
+    control_plane_feedback: Any | None,
+) -> list[dict[str, Any]]:
+    """Return low-sensitive datasource candidates for an ambiguous clarification."""
+
+    tool_name = {
+        "sourceDatasourceId": "datasource.source.catalog.search",
+        "targetDatasourceId": "datasource.target.catalog.search",
+    }.get(parameter_name)
+    if tool_name is None:
+        return []
+    for item in reversed(tuple(getattr(control_plane_feedback, "feedback_items", ()) or ())):
+        if str(getattr(item, "tool_name", "") or "") != tool_name:
+            continue
+        result = dict(getattr(item, "result", {}) or {})
+        if str(result.get("matchStatus") or "").upper() == "EXACT":
+            return []
+        raw_candidates = result.get("candidates")
+        if not isinstance(raw_candidates, (list, tuple)):
+            return []
+        return [
+            {
+                "datasourceId": candidate.get("datasourceId"),
+                "name": candidate.get("name"),
+                "type": candidate.get("type"),
+                "usagePurpose": candidate.get("usagePurpose"),
+            }
+            for candidate in raw_candidates[:20]
+            if isinstance(candidate, dict)
+        ]
+    return []
 
 
 def _build_structured_intent(request: AgentRequest, plan: AgentPlan) -> dict[str, Any]:
@@ -246,7 +536,16 @@ def _build_structured_intent(request: AgentRequest, plan: AgentPlan) -> dict[str
 
 
 def _resolve_intent_type(domains: list[str], candidate_tools: list[str]) -> str:
-    if "data_sync" in domains and "task.create.draft" in candidate_tools:
+    if "data_sync" in domains and any(
+        tool in candidate_tools
+        for tool in (
+            "datasource.source.catalog.search",
+            "datasource.target.catalog.search",
+            "datasource.source.connection.test",
+            "datasource.target.connection.test",
+            "sync.task.draft.save",
+        )
+    ):
         return "CREATE_DATA_SYNC_TASK"
     if "data_quality" in domains:
         return "DATA_QUALITY_ASSISTANCE"
