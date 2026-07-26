@@ -82,7 +82,10 @@ def _data_sync_agent_tools() -> tuple[ToolDefinition, ...]:
     sync_tools = (
         ToolDefinition(
             name="sync.task.draft.save",
-            description="根据两端真实元数据生成字段映射，并通过 data-sync 创建向导保存同步任务草稿。",
+            description=(
+                "按用户确认的源表到目标表、字段、WHERE、同步模式、调度或 SQL 配置，"
+                "通过与人工创建向导相同的 data-sync 契约保存任务草稿。"
+            ),
             risk_level=ToolRiskLevel.HIGH,
             execution_mode=ToolExecutionMode.APPROVAL_REQUIRED,
             required_permissions=("sync:task:create",),
@@ -92,6 +95,10 @@ def _data_sync_agent_tools() -> tuple[ToolDefinition, ...]:
                 "sourceDatasourceId": {"type": "number", "required": True, "sensitive": False, "resolution": "user_required"},
                 "targetDatasourceId": {"type": "number", "required": True, "sensitive": False, "resolution": "user_required"},
                 "objectMappings": {"type": "array", "required": True, "sensitive": True, "resolution": "user_required"},
+                "syncMode": {"type": "string", "required": True, "sensitive": False, "resolution": "context_or_clarify"},
+                "writeStrategy": {"type": "string", "required": False, "sensitive": False, "resolution": "context_or_clarify"},
+                "scheduleConfig": {"type": "string", "required": False, "sensitive": False, "resolution": "context_or_clarify"},
+                "customSqlText": {"type": "string", "required": False, "sensitive": True, "resolution": "user_required"},
             },
             requires_approval=True,
             idempotent=False,
@@ -99,7 +106,7 @@ def _data_sync_agent_tools() -> tuple[ToolDefinition, ...]:
             tool_type="DATA_SYNC",
             tenant_scoped=True,
             project_scoped=True,
-            sensitive_fields=("objectMappings",),
+            sensitive_fields=("objectMappings", "customSqlText"),
             memory_write_policy="episodic",
             cache_policy="session_only",
         ),
@@ -132,6 +139,8 @@ def _data_sync_agent_tools() -> tuple[ToolDefinition, ...]:
             input_schema={
                 "draftRef": {"type": "object", "required": True, "sensitive": False, "resolution": "derived"},
                 "precheckRef": {"type": "object", "required": True, "sensitive": False, "resolution": "derived"},
+                "syncMode": {"type": "string", "required": True, "sensitive": False, "resolution": "derived"},
+                "enableSchedule": {"type": "boolean", "required": True, "sensitive": False, "resolution": "derived"},
             },
             requires_approval=True,
             idempotent=False,

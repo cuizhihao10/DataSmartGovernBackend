@@ -47,6 +47,9 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
     private static final String SOURCE_METADATA_TOOL = DatasourceAccessToolAdapter.SOURCE_METADATA;
     private static final String TARGET_METADATA_TOOL = DatasourceAccessToolAdapter.TARGET_METADATA;
     private static final Set<String> SUPPORTED = Set.of(DRAFT_SAVE, PRECHECK, PUBLISH, RUN, EXECUTION_STATUS);
+    private static final Set<String> USER_SYNC_MODES = Set.of(
+            "FULL", "SCHEDULED_FULL", "SCHEDULED_BATCH", "CUSTOM_SQL_QUERY", "CDC_STREAMING");
+    private static final Set<String> SCHEDULED_SYNC_MODES = Set.of("SCHEDULED_FULL", "SCHEDULED_BATCH");
 
     private final RestClient.Builder restClientBuilder;
     private final AgentToolDownstreamHttpSupport httpSupport;
@@ -81,17 +84,22 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
         Map<String, Object> arguments = context.audit().getPlanArguments();
         Long sourceDatasourceId = requiredPositiveLong(arguments.get("sourceDatasourceId"), "缺少有效的源端数据源 ID");
         Long targetDatasourceId = requiredPositiveLong(arguments.get("targetDatasourceId"), "缺少有效的目标端数据源 ID");
+        String syncMode = normalizeSyncMode(arguments.get("syncMode"));
+        boolean customSqlMode = "CUSTOM_SQL_QUERY".equals(syncMode);
+        String scheduleConfig = validateAndResolveScheduleConfig(arguments, syncMode);
+        String customSqlConfig = validateAndBuildCustomSqlConfig(arguments, customSqlMode);
         Map<String, Object> sourceMetadata = referencedMap(context, arguments.get("sourceMetadataRef"),
                 SOURCE_METADATA_TOOL, "metadata", "缺少源端元数据结果");
         Map<String, Object> targetMetadata = referencedMap(context, arguments.get("targetMetadataRef"),
                 TARGET_METADATA_TOOL, "metadata", "缺少目标端元数据结果");
-        List<ObjectMapping> mappings = resolveObjectMappings(arguments.get("objectMappings"));
+        List<ObjectMapping> mappings = resolveObjectMappings(arguments.get("objectMappings"), customSqlMode);
         if (mappings.isEmpty()) {
             throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST, "同步任务至少需要一条对象映射");
         }
 
-        String objectMappingConfig = serialize(buildObjectMappingConfig(mappings));
-        String fieldMappingConfig = serialize(buildFieldMappingConfig(mappings, sourceMetadata, targetMetadata));
+        String objectMappingConfig = customSqlMode ? null : serialize(buildObjectMappingConfig(mappings));
+        String fieldMappingConfig = serialize(
+                buildFieldMappingConfig(mappings, sourceMetadata, targetMetadata, customSqlMode));
         ObjectMapping first = mappings.getFirst();
         String sourceConnectorType = safeText(sourceMetadata.get("datasourceType"),
                 safeText(arguments.get("sourceConnectorType"), "MYSQL"));
@@ -109,17 +117,21 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
         request.put("ownerId", httpSupport.numericActorId(context));
         request.put("sourceDatasourceId", sourceDatasourceId);
         request.put("targetDatasourceId", targetDatasourceId);
-        request.put("sourceSchemaName", first.sourceSchemaName());
-        request.put("sourceObjectName", first.sourceObjectName());
+        request.put("sourceSchemaName", customSqlMode ? null : first.sourceSchemaName());
+        request.put("sourceObjectName", customSqlMode ? null : first.sourceObjectName());
         request.put("targetSchemaName", first.targetSchemaName());
         request.put("targetObjectName", first.targetObjectName());
         request.put("sourceConnectorType", sourceConnectorType);
         request.put("targetConnectorType", targetConnectorType);
-        request.put("syncMode", safeText(arguments.get("syncMode"), "FULL"));
-        request.put("syncScopeType", mappings.size() == 1 ? "SINGLE_OBJECT" : "OBJECT_LIST");
-        request.put("writeStrategy", normalizeWriteStrategy(arguments.get("writeStrategy")));
+        request.put("syncMode", syncMode);
+        request.put("syncScopeType", customSqlMode
+                ? "CUSTOM_SQL_QUERY"
+                : mappings.size() == 1 ? "SINGLE_OBJECT" : "OBJECT_LIST");
+        request.put("writeStrategy", normalizeWriteStrategy(arguments.get("writeStrategy"), syncMode));
         request.put("fieldMappingConfig", fieldMappingConfig);
         request.put("objectMappingConfig", objectMappingConfig);
+        request.put("customSqlConfig", customSqlConfig);
+        request.put("scheduleConfig", scheduleConfig);
 
         Map<String, Object> response = post(context, "/sync-tasks/create-wizard/drafts", request);
         Map<String, Object> data = requireSuccessData(response, "同步任务草稿保存");
@@ -134,6 +146,7 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
                 "templateId", templateId,
                 "state", safeText(data.get("currentState"), "DRAFT"),
                 "objectCount", mappings.size(),
+                "syncMode", syncMode,
                 "sourceDatasourceId", sourceDatasourceId,
                 "targetDatasourceId", targetDatasourceId
         ));
@@ -178,8 +191,14 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
                     "同步任务预检查尚未通过，Agent 不会发布任务。"
             );
         }
+        Map<String, Object> arguments = context.audit().getPlanArguments();
+        String syncMode = normalizeSyncMode(arguments.get("syncMode"));
+        boolean enableSchedule = SCHEDULED_SYNC_MODES.contains(syncMode);
+        if (arguments.get("enableSchedule") instanceof Boolean configured) {
+            enableSchedule = configured;
+        }
         Map<String, Object> request = Map.of(
-                "enableSchedule", false,
+                "enableSchedule", enableSchedule,
                 "reason", "用户已在智能助手中确认本次 Agent 同步计划"
         );
         Map<String, Object> data = requireSuccessData(
@@ -188,7 +207,7 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
         );
         return AgentToolExecutionOutcome.succeeded("同步任务已发布。", Map.of(
                 "taskId", taskId,
-                "state", safeText(data.get("state"), "CONFIGURED"),
+                "state", safeText(data.get("state"), enableSchedule ? "SCHEDULED" : "CONFIGURED"),
                 "message", safeText(data.get("message"), "同步任务已发布")
         ));
     }
@@ -291,17 +310,22 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
     private Map<String, Object> buildFieldMappingConfig(
             List<ObjectMapping> mappings,
             Map<String, Object> sourceMetadata,
-            Map<String, Object> targetMetadata) {
+            Map<String, Object> targetMetadata,
+            boolean customSqlMode) {
         List<Map<String, Object>> objectMappings = new ArrayList<>();
         for (int index = 0; index < mappings.size(); index++) {
             ObjectMapping mapping = mappings.get(index);
-            Map<String, Object> sourceTable = findTable(sourceMetadata, mapping.sourceSchemaName(), mapping.sourceObjectName());
+            Map<String, Object> sourceTable = customSqlMode
+                    ? null
+                    : findTable(sourceMetadata, mapping.sourceSchemaName(), mapping.sourceObjectName());
             Map<String, Object> targetTable = findTable(targetMetadata, mapping.targetSchemaName(), mapping.targetObjectName());
-            List<Map<String, Object>> fieldRows = sameNameFieldMappings(sourceTable, targetTable);
+            List<Map<String, Object>> fieldRows = mapping.fieldMappings().isEmpty()
+                    ? customSqlMode ? List.of() : sameNameFieldMappings(sourceTable, targetTable)
+                    : explicitFieldMappings(mapping, sourceTable, targetTable, customSqlMode);
             if (fieldRows.isEmpty()) {
                 throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
-                        "无法为对象 " + mapping.sourceObjectName() + " -> " + mapping.targetObjectName()
-                                + " 生成同名字段映射，请确认两端表和字段均存在");
+                        "对象 " + mappingDisplayName(mapping, customSqlMode)
+                                + " 没有可执行字段映射，请至少确认一个源字段到目标字段");
             }
             Map<String, Object> objectConfig = new LinkedHashMap<>();
             objectConfig.put("ordinal", index + 1);
@@ -317,6 +341,75 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
                 "version", "datasmart.sync.field-mapping.v2",
                 "objectMappings", objectMappings
         );
+    }
+
+    /**
+     * 使用用户在 Agent 页面明确确认的字段映射，而不是在 Java 执行阶段重新猜测。
+     *
+     * <p>普通表同步同时校验源字段和目标字段都存在；SQL 模式的 sourceField 是 SQL 输出列或别名，
+     * 无法从源表元数据直接校验，因此只校验目标字段。类型兼容性仍交给 data-sync 的统一预检查，
+     * 保证 Agent 与手工向导得到完全相同的阻断项和修复建议。</p>
+     */
+    private List<Map<String, Object>> explicitFieldMappings(
+            ObjectMapping objectMapping,
+            Map<String, Object> sourceTable,
+            Map<String, Object> targetTable,
+            boolean customSqlMode) {
+        Map<String, Map<String, Object>> sourceByName = customSqlMode
+                ? Map.of()
+                : columnsByName(sourceTable);
+        Map<String, Map<String, Object>> targetByName = columnsByName(targetTable);
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (FieldMapping fieldMapping : objectMapping.fieldMappings()) {
+            if (!fieldMapping.syncEnabled()) {
+                continue;
+            }
+            String sourceField = requiredText(fieldMapping.sourceField(),
+                    "字段映射的源字段或 SQL 输出别名不能为空");
+            String targetField = requiredText(fieldMapping.targetField(), "字段映射的目标字段不能为空");
+            Map<String, Object> sourceColumn = customSqlMode
+                    ? null
+                    : sourceByName.get(sourceField.toLowerCase(Locale.ROOT));
+            Map<String, Object> targetColumn = targetByName.get(targetField.toLowerCase(Locale.ROOT));
+            if (!customSqlMode && sourceColumn == null) {
+                throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND,
+                        "源表 " + objectMapping.sourceObjectName() + " 中不存在字段 " + sourceField);
+            }
+            if (targetColumn == null) {
+                throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND,
+                        "目标表 " + objectMapping.targetObjectName() + " 中不存在字段 " + targetField);
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("sourceField", sourceField);
+            row.put("targetField", targetField);
+            row.put("sourceType", customSqlMode
+                    ? fieldMapping.sourceType()
+                    : sourceColumn.get("dataTypeName"));
+            row.put("targetType", targetColumn.get("dataTypeName"));
+            row.put("nullable", customSqlMode ? fieldMapping.nullable() : sourceColumn.get("nullable"));
+            row.put("primaryKey", customSqlMode ? fieldMapping.primaryKey() : sourceColumn.get("primaryKey"));
+            row.put("syncEnabled", true);
+            row.put("typeCompatible", fieldMapping.typeCompatible());
+            if (fieldMapping.transform() != null) {
+                row.put("transform", fieldMapping.transform());
+            }
+            rows.add(row);
+        }
+        return rows;
+    }
+
+    private Map<String, Map<String, Object>> columnsByName(Map<String, Object> table) {
+        Map<String, Map<String, Object>> result = new LinkedHashMap<>();
+        if (table == null) {
+            return result;
+        }
+        for (Map<String, Object> column : mapList(table.get("columns"))) {
+            String name = nullableText(column.get("columnName"));
+            if (name != null) {
+                result.put(name.toLowerCase(Locale.ROOT), column);
+            }
+        }
+        return result;
     }
 
     private List<Map<String, Object>> sameNameFieldMappings(
@@ -369,7 +462,7 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
                 "元数据中未找到表 " + (schemaName == null ? "" : schemaName + ".") + tableName);
     }
 
-    private List<ObjectMapping> resolveObjectMappings(Object rawMappings) {
+    private List<ObjectMapping> resolveObjectMappings(Object rawMappings, boolean customSqlMode) {
         if (!(rawMappings instanceof List<?> values)) {
             return List.of();
         }
@@ -379,7 +472,9 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
                 continue;
             }
             Map<String, Object> value = copyMap(raw);
-            String sourceObjectName = requiredText(value.get("sourceObjectName"), "源端表名不能为空");
+            String sourceObjectName = customSqlMode
+                    ? nullableText(value.get("sourceObjectName"))
+                    : requiredText(value.get("sourceObjectName"), "源端表名不能为空");
             String targetObjectName = requiredText(value.get("targetObjectName"), "目标端表名不能为空");
             String sourceSchemaName = nullableText(value.get("sourceSchemaName"));
             String targetSchemaName = nullableText(value.get("targetSchemaName"));
@@ -389,7 +484,33 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
                     sourceObjectName,
                     targetSchemaName,
                     targetObjectName,
-                    nullableText(value.get("whereCondition"))
+                    customSqlMode ? null : nullableText(value.get("whereCondition")),
+                    resolveFieldMappings(value.get("fieldMappings"))
+            ));
+        }
+        return mappings;
+    }
+
+    private List<FieldMapping> resolveFieldMappings(Object rawMappings) {
+        if (!(rawMappings instanceof List<?> values)) {
+            return List.of();
+        }
+        List<FieldMapping> mappings = new ArrayList<>();
+        for (Object item : values) {
+            if (!(item instanceof Map<?, ?> raw)) {
+                continue;
+            }
+            Map<String, Object> value = copyMap(raw);
+            mappings.add(new FieldMapping(
+                    nullableText(value.get("sourceField")),
+                    nullableText(value.get("sourceType")),
+                    nullableText(value.get("targetField")),
+                    nullableText(value.get("targetType")),
+                    booleanValue(value.get("nullable"), true),
+                    booleanValue(value.get("primaryKey"), false),
+                    booleanValue(value.get("syncEnabled"), true),
+                    booleanValue(value.get("typeCompatible"), true),
+                    nullableText(value.get("transform"))
             ));
         }
         return mappings;
@@ -493,6 +614,56 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
         }
     }
 
+    /**
+     * 将历史 Agent 的 REAL_TIME 名称收敛到 data-sync 与手工向导使用的 CDC_STREAMING。
+     * 其余未知模式直接阻断，避免静默降级成 FULL 后执行错误的数据范围。
+     */
+    String normalizeSyncMode(Object value) {
+        String mode = safeText(value, "FULL").toUpperCase(Locale.ROOT);
+        if ("REAL_TIME".equals(mode)) {
+            return "CDC_STREAMING";
+        }
+        if (!USER_SYNC_MODES.contains(mode)) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
+                    "不支持的同步模式 " + mode + "，仅允许全量、定期全量、定期批量、SQL 语句和实时同步");
+        }
+        return mode;
+    }
+
+    private String validateAndResolveScheduleConfig(Map<String, Object> arguments, String syncMode) {
+        String scheduleConfig = nullableText(arguments.get("scheduleConfig"));
+        if (SCHEDULED_SYNC_MODES.contains(syncMode) && scheduleConfig == null) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
+                    "定期全量或定期批量任务必须提供调度配置");
+        }
+        if (!SCHEDULED_SYNC_MODES.contains(syncMode) && scheduleConfig != null) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
+                    "当前同步模式不能携带调度配置，请改用定期全量或定期批量");
+        }
+        return scheduleConfig;
+    }
+
+    private String validateAndBuildCustomSqlConfig(Map<String, Object> arguments, boolean customSqlMode) {
+        String customSqlText = nullableText(arguments.get("customSqlText"));
+        if (customSqlMode && customSqlText == null) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
+                    "SQL 语句同步必须提供只读 SQL");
+        }
+        if (!customSqlMode && customSqlText != null) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
+                    "只有 SQL 语句同步模式可以携带自定义 SQL");
+        }
+        return customSqlMode
+                ? serialize(Map.of("version", "datasmart.sync.custom-sql.v1", "sql", customSqlText))
+                : null;
+    }
+
+    private String mappingDisplayName(ObjectMapping mapping, boolean customSqlMode) {
+        return customSqlMode
+                ? "SQL 结果集 -> " + mapping.targetObjectName()
+                : mapping.sourceObjectName() + " -> " + mapping.targetObjectName();
+    }
+
     private List<Map<String, Object>> mapList(Object value) {
         if (!(value instanceof List<?> values)) {
             return List.of();
@@ -516,9 +687,19 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
         return copy;
     }
 
-    private String normalizeWriteStrategy(Object value) {
+    private String normalizeWriteStrategy(Object value, String syncMode) {
+        if ("CDC_STREAMING".equals(syncMode)) {
+            return "UPDATE";
+        }
         String strategy = safeText(value, "INSERT").toUpperCase(Locale.ROOT);
-        return "MERGE".equals(strategy) || "UPSERT".equals(strategy) ? "UPDATE" : strategy;
+        if ("MERGE".equals(strategy) || "UPSERT".equals(strategy)) {
+            return "UPDATE";
+        }
+        if (!Set.of("INSERT", "UPDATE").contains(strategy)) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
+                    "不支持的写入策略 " + strategy + "，仅允许 INSERT 或 UPDATE");
+        }
+        return strategy;
     }
 
     private String requiredText(Object value, String message) {
@@ -580,6 +761,19 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
             String sourceObjectName,
             String targetSchemaName,
             String targetObjectName,
-            String whereCondition) {
+            String whereCondition,
+            List<FieldMapping> fieldMappings) {
+    }
+
+    private record FieldMapping(
+            String sourceField,
+            String sourceType,
+            String targetField,
+            String targetType,
+            boolean nullable,
+            boolean primaryKey,
+            boolean syncEnabled,
+            boolean typeCompatible,
+            String transform) {
     }
 }

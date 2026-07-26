@@ -13,7 +13,16 @@ from datasmart_ai_runtime.domain.contracts import AgentRequest, ToolDefinition, 
 
 
 class DataSyncToolPlanBuilder:
-    """构建连接验证 -> 元数据 -> 草稿 -> 预检查 -> 发布 -> 运行 -> 状态查询 DAG。"""
+    """按人工创建向导的五种产品模式构建数据同步工具 DAG。
+
+    FULL 和 CUSTOM_SQL_QUERY 发布后立即创建 execution；SCHEDULED_FULL 与
+    SCHEDULED_BATCH 发布后进入等待调度；CDC_STREAMING 发布后由实时通道接管，
+    不得误用离线 ``sync.task.run``。对象、字段、WHERE、SQL 与调度配置只在用户
+    确认后进入草稿工具，规划器不猜测或交换源端/目标端。
+    """
+
+    _SCHEDULED_MODES = frozenset({"SCHEDULED_FULL", "SCHEDULED_BATCH"})
+    _IMMEDIATE_OFFLINE_MODES = frozenset({"FULL", "CUSTOM_SQL_QUERY"})
 
     _TOOL_NAMES = (
         "datasource.source.connection.test",
@@ -49,6 +58,8 @@ class DataSyncToolPlanBuilder:
         source_id = payload.get("sourceDatasourceId") or request.variables.get("sourceDatasourceId")
         target_id = payload.get("targetDatasourceId") or request.variables.get("targetDatasourceId")
         object_mappings = payload.get("objectMappings") or request.variables.get("objectMappings") or []
+        sync_mode = self._normalize_sync_mode(payload.get("syncMode"))
+        write_strategy = self._normalize_write_strategy(payload.get("writeStrategy"), sync_mode)
         common = {
             "sourceDatasourceId": source_id,
             "targetDatasourceId": target_id,
@@ -58,8 +69,10 @@ class DataSyncToolPlanBuilder:
             "groupCode": payload.get("groupCode") or "DEFAULT",
             "groupName": payload.get("groupName") or "默认分组",
             "priority": payload.get("priority") or "MEDIUM",
-            "syncMode": payload.get("syncMode") or "FULL",
-            "writeStrategy": payload.get("writeStrategy") or "INSERT",
+            "syncMode": sync_mode,
+            "writeStrategy": write_strategy,
+            "scheduleConfig": payload.get("scheduleConfig") if sync_mode in self._SCHEDULED_MODES else None,
+            "customSqlText": payload.get("customSqlText") if sync_mode == "CUSTOM_SQL_QUERY" else None,
         }
         plans: list[ToolPlan] = []
 
@@ -106,7 +119,7 @@ class DataSyncToolPlanBuilder:
             tools,
             plan_factory,
             "sync.task.draft.save",
-            "基于两端真实元数据生成同名字段默认映射，并保存为可继续编辑的同步任务草稿。",
+            "按用户确认的源表到目标表、字段与 WHERE 映射保存草稿；真实元数据只用于存在性和兼容性校验。",
             {
                 **common,
                 "sourceMetadataRef": self._ref("datasource.source.metadata.read", "metadata"),
@@ -130,24 +143,27 @@ class DataSyncToolPlanBuilder:
             {
                 "draftRef": self._ref("sync.task.draft.save", "taskId"),
                 "precheckRef": self._ref("sync.task.precheck", "canStartExecution"),
+                "syncMode": sync_mode,
+                "enableSchedule": sync_mode in self._SCHEDULED_MODES,
             },
         )
-        self._append(
-            plans,
-            tools,
-            plan_factory,
-            "sync.task.run",
-            "发布成功后创建真实 execution 并提交 worker 队列；该动作必须由发起用户确认。",
-            {"taskRef": self._ref("sync.task.publish", "taskId")},
-        )
-        self._append(
-            plans,
-            tools,
-            plan_factory,
-            "sync.execution.status",
-            "提交运行后读取最新 execution 状态和低敏进度，让用户能继续进入任务详情追踪。",
-            {"taskRef": self._ref("sync.task.run", "taskId")},
-        )
+        if sync_mode in self._IMMEDIATE_OFFLINE_MODES:
+            self._append(
+                plans,
+                tools,
+                plan_factory,
+                "sync.task.run",
+                "即时离线模式发布成功后创建真实 execution 并提交 worker 队列；该动作必须由发起用户确认。",
+                {"taskRef": self._ref("sync.task.publish", "taskId"), "syncMode": sync_mode},
+            )
+            self._append(
+                plans,
+                tools,
+                plan_factory,
+                "sync.execution.status",
+                "提交运行后读取最新 execution 状态和低敏进度，让用户能继续进入任务详情追踪。",
+                {"taskRef": self._ref("sync.task.run", "taskId")},
+            )
         return tuple(plans)
 
     @staticmethod
@@ -175,6 +191,23 @@ class DataSyncToolPlanBuilder:
     @staticmethod
     def _contains_any(value: str, keywords: tuple[str, ...]) -> bool:
         return any(keyword in value for keyword in keywords)
+
+    @staticmethod
+    def _normalize_sync_mode(value: object) -> str:
+        normalized = str(value or "FULL").strip().upper()
+        if normalized == "REAL_TIME":
+            return "CDC_STREAMING"
+        allowed = {"FULL", "SCHEDULED_FULL", "SCHEDULED_BATCH", "CUSTOM_SQL_QUERY", "CDC_STREAMING"}
+        return normalized if normalized in allowed else "FULL"
+
+    @staticmethod
+    def _normalize_write_strategy(value: object, sync_mode: str) -> str:
+        if sync_mode == "CDC_STREAMING":
+            return "UPDATE"
+        normalized = str(value or "INSERT").strip().upper()
+        if normalized in {"MERGE", "UPSERT"}:
+            return "UPDATE"
+        return normalized if normalized in {"INSERT", "UPDATE"} else "INSERT"
 
 
 __all__ = ["DataSyncToolPlanBuilder"]

@@ -99,6 +99,35 @@ class AgentConversationResponseTest(unittest.TestCase):
         self.assertEqual("session-conversation", response["controlPlaneIngestion"]["sessionId"])
         self.assertNotIn("fs_test_customer_source", str(conversation))
 
+    def test_legacy_real_time_name_is_reported_as_cdc_streaming(self) -> None:
+        response = build_plan_response(
+            AgentRequest(
+                tenant_id="10",
+                project_id="101",
+                actor_id="1001",
+                objective="实时同步客户表",
+                variables={
+                    "dataSyncRequest": {
+                        "sourceDatasourceId": 23,
+                        "targetDatasourceId": 24,
+                        "syncMode": "REAL_TIME",
+                        "writeStrategy": "INSERT",
+                        "objectMappings": [{
+                            "sourceObjectName": "customer",
+                            "targetObjectName": "customer",
+                        }],
+                    }
+                },
+            ),
+            build_default_orchestrator(),
+            plan_ingestion_client=CountingPlanIngestionClient(),
+        )
+
+        intent = response["agentConversation"]["structuredIntent"]
+
+        self.assertEqual("CDC_STREAMING", intent["syncMode"])
+        self.assertEqual("UPDATE", intent["writeStrategy"])
+
     def test_real_provider_is_reported_as_model_assisted_with_deterministic_fallback(self) -> None:
         """真实 Provider 已启用时，会话诊断不能继续误报 RESERVED。"""
 

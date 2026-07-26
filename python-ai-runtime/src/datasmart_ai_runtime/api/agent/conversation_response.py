@@ -225,7 +225,9 @@ def _build_structured_intent(request: AgentRequest, plan: AgentPlan) -> dict[str
     sync_mode = _resolve_sync_mode(request.objective, sync_payload)
     write_strategy = str(sync_payload.get("writeStrategy") or "").strip().upper()
     if write_strategy not in {"INSERT", "UPDATE"}:
-        write_strategy = "UPDATE" if sync_mode == "REAL_TIME" else "INSERT"
+        write_strategy = "UPDATE" if sync_mode == "CDC_STREAMING" else "INSERT"
+    if sync_mode == "CDC_STREAMING":
+        write_strategy = "UPDATE"
     mappings = sync_payload.get("objectMappings") or sync_payload.get("object_mappings")
 
     return {
@@ -261,7 +263,11 @@ def _resolve_sync_mode(objective: str, sync_payload: dict[str, Any]) -> str:
     """按产品已收敛的五种同步模式解析自由文本，结构化值优先。"""
 
     configured = str(sync_payload.get("syncMode") or sync_payload.get("sync_mode") or "").strip().upper()
-    allowed = {"FULL", "SCHEDULED_BATCH", "SCHEDULED_FULL", "CUSTOM_SQL_QUERY", "REAL_TIME"}
+    if configured == "REAL_TIME":
+        # REAL_TIME was the early Agent-only name. The data-sync service and the
+        # manual wizard persist the product contract as CDC_STREAMING.
+        return "CDC_STREAMING"
+    allowed = {"FULL", "SCHEDULED_BATCH", "SCHEDULED_FULL", "CUSTOM_SQL_QUERY", "CDC_STREAMING"}
     if configured in allowed:
         return configured
 
@@ -273,7 +279,7 @@ def _resolve_sync_mode(objective: str, sync_payload: dict[str, Any]) -> str:
     if any(keyword in normalized for keyword in ("sql 语句", "sql语句", "自定义 sql", "custom sql")):
         return "CUSTOM_SQL_QUERY"
     if any(keyword in normalized for keyword in ("实时", "cdc", "real-time", "real time")):
-        return "REAL_TIME"
+        return "CDC_STREAMING"
     return "FULL"
 
 

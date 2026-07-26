@@ -131,6 +131,111 @@ class ToolPlannerTest(unittest.TestCase):
         self.assertNotIn("jdbcurl", serialized)
         self.assertNotIn("credential", serialized)
 
+    def test_scheduled_sync_publishes_with_schedule_without_immediate_run(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective="每天凌晨定期全量同步客户表",
+            variables={
+                "dataSyncRequest": {
+                    "taskName": "客户表定期全量",
+                    "sourceDatasourceId": 23,
+                    "targetDatasourceId": 24,
+                    "syncMode": "SCHEDULED_FULL",
+                    "scheduleConfig": '{"cron":"0 0 2 * * ?","timezone":"Asia/Shanghai"}',
+                    "objectMappings": [{
+                        "sourceObjectName": "customer",
+                        "targetSchemaName": "public",
+                        "targetObjectName": "customer",
+                        "fieldMappings": [{"sourceField": "id", "targetField": "id"}],
+                    }],
+                }
+            },
+        )
+
+        plans = ToolPlanner(default_tool_registry()).plan(request=request)
+
+        self.assertEqual(
+            (
+                "datasource.source.connection.test",
+                "datasource.target.connection.test",
+                "datasource.source.metadata.read",
+                "datasource.target.metadata.read",
+                "sync.task.draft.save",
+                "sync.task.precheck",
+                "sync.task.publish",
+            ),
+            tuple(plan.tool_name for plan in plans),
+        )
+        by_name = {plan.tool_name: plan for plan in plans}
+        self.assertEqual("SCHEDULED_FULL", by_name["sync.task.draft.save"].arguments["syncMode"])
+        self.assertTrue(by_name["sync.task.publish"].arguments["enableSchedule"])
+        self.assertNotIn("sync.task.run", by_name)
+
+    def test_legacy_real_time_mode_is_normalized_and_never_uses_offline_run(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective="实时同步客户表",
+            variables={
+                "dataSyncRequest": {
+                    "sourceDatasourceId": 23,
+                    "targetDatasourceId": 24,
+                    "syncMode": "REAL_TIME",
+                    "writeStrategy": "INSERT",
+                    "objectMappings": [{
+                        "sourceObjectName": "customer",
+                        "targetSchemaName": "public",
+                        "targetObjectName": "customer",
+                        "fieldMappings": [{"sourceField": "id", "targetField": "id"}],
+                    }],
+                }
+            },
+        )
+
+        plans = ToolPlanner(default_tool_registry()).plan(request=request)
+        by_name = {plan.tool_name: plan for plan in plans}
+
+        self.assertEqual("CDC_STREAMING", by_name["sync.task.draft.save"].arguments["syncMode"])
+        self.assertEqual("UPDATE", by_name["sync.task.draft.save"].arguments["writeStrategy"])
+        self.assertNotIn("sync.task.run", by_name)
+
+    def test_custom_sql_preserves_target_only_mapping_and_sql_text(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective="使用 SQL 查询结果同步到报表表",
+            variables={
+                "dataSyncRequest": {
+                    "sourceDatasourceId": 23,
+                    "targetDatasourceId": 24,
+                    "syncMode": "CUSTOM_SQL_QUERY",
+                    "customSqlText": "select id, name as customer_name from customer",
+                    "objectMappings": [{
+                        "targetSchemaName": "public",
+                        "targetObjectName": "customer_report",
+                        "fieldMappings": [
+                            {"sourceField": "id", "targetField": "id"},
+                            {"sourceField": "customer_name", "targetField": "name"},
+                        ],
+                    }],
+                }
+            },
+        )
+
+        plans = ToolPlanner(default_tool_registry()).plan(request=request)
+        draft = next(plan for plan in plans if plan.tool_name == "sync.task.draft.save")
+
+        self.assertEqual("CUSTOM_SQL_QUERY", draft.arguments["syncMode"])
+        self.assertEqual(
+            "select id, name as customer_name from customer",
+            draft.arguments["customSqlText"],
+        )
+        self.assertIsNone(draft.arguments["objectMappings"][0].get("sourceObjectName"))
+
     def test_uses_intent_candidate_tools_even_when_objective_has_no_quality_keyword(self) -> None:
         request = AgentRequest(
             tenant_id="tenant-a",
