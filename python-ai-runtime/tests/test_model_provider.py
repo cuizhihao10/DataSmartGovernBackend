@@ -61,6 +61,7 @@ class ModelProviderRegistryTest(unittest.TestCase):
             captured["body"] = request.data.decode("utf-8")
             return FakeHttpResponse(
                 {
+                    "model": "gpt-5.6-sol-202607",
                     "choices": [{"message": {"content": "模型已经完成治理任务规划。"}}],
                     "usage": {
                         "prompt_tokens": 11,
@@ -115,6 +116,7 @@ class ModelProviderRegistryTest(unittest.TestCase):
         self.assertEqual("tenant-a", body["metadata"]["datasmart"]["tenantId"])
         self.assertTrue(body["metadata"]["datasmart"]["cachePlan"]["enabled"])
         self.assertEqual("模型已经完成治理任务规划。", result.content)
+        self.assertEqual("gpt-5.6-sol-202607", result.model_name)
         self.assertEqual(11, result.prompt_tokens)
         self.assertEqual(7, result.completion_tokens)
         self.assertEqual(5, result.cached_prompt_tokens)
@@ -152,6 +154,31 @@ class ModelProviderRegistryTest(unittest.TestCase):
         self.assertEqual(2, calls)
         self.assertEqual("retry ok", result.content)
 
+    def test_provider_rejects_unsafe_response_model_name(self) -> None:
+        """Untrusted response metadata must not inject text into logs or the UI."""
+
+        def transport(request, timeout: int):
+            return FakeHttpResponse(
+                {
+                    "model": "gpt-safe\nforged-log-entry",
+                    "choices": [{"message": {"content": "ok"}}],
+                    "usage": {},
+                }
+            )
+
+        provider = OpenAICompatibleModelProvider(
+            OpenAICompatibleProviderSettings(max_retries=0),
+            transport=transport,
+        )
+        result = provider.invoke(
+            ModelInvocationRequest(
+                route=_openai_route(endpoint="http://model-gateway.local/v1"),
+                messages=(ModelMessage(role="user", content="hello"),),
+            )
+        )
+
+        self.assertEqual("agent-test-model", result.model_name)
+
     def test_responses_provider_sends_reasoning_policy_and_parses_native_tool_call(self) -> None:
         """Responses 路径应使用原生 function_call，并默认禁止 Provider 存储响应。"""
 
@@ -162,6 +189,7 @@ class ModelProviderRegistryTest(unittest.TestCase):
             captured["body"] = json.loads(request.data.decode("utf-8"))
             return FakeHttpResponse(
                 {
+                    "model": "gpt-5.6-sol-202607",
                     "status": "completed",
                     "output": [
                         {"type": "reasoning", "id": "reasoning-1", "summary": []},
@@ -215,6 +243,7 @@ class ModelProviderRegistryTest(unittest.TestCase):
         self.assertEqual(1, len(result.tool_calls))
         self.assertEqual("datasource.metadata.read", result.tool_calls[0].name)
         self.assertEqual("call-1", result.tool_calls[0].call_id)
+        self.assertEqual("gpt-5.6-sol-202607", result.model_name)
         self.assertEqual(23, result.prompt_tokens)
         self.assertEqual(11, result.completion_tokens)
         self.assertEqual(13, result.cached_prompt_tokens)
@@ -426,7 +455,7 @@ class ModelProviderRegistryTest(unittest.TestCase):
             captured["body"] = request.data.decode("utf-8")
             return FakeHttpResponse(
                 lines=(
-                    b"data: {\"choices\":[{\"delta\":{\"content\":\"A\"},\"finish_reason\":null}]}\n",
+                    b"data: {\"model\":\"gpt-5.6-sol-stream\",\"choices\":[{\"delta\":{\"content\":\"A\"},\"finish_reason\":null}]}\n",
                     b"data: {\"choices\":[{\"delta\":{\"content\":\"B\"},\"finish_reason\":null}]}\n",
                     b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n",
                     b"data: [DONE]\n",
@@ -449,6 +478,7 @@ class ModelProviderRegistryTest(unittest.TestCase):
 
         self.assertIn("\"stream\": true", captured["body"])
         self.assertEqual(("A", "B", ""), tuple(chunk.content_delta for chunk in chunks))
+        self.assertEqual("gpt-5.6-sol-stream", chunks[0].model_name)
         self.assertEqual((1, 2, 3), tuple(chunk.sequence for chunk in chunks))
         self.assertEqual("stop", chunks[-1].finish_reason)
         self.assertIsNone(chunks[-1].error_code)

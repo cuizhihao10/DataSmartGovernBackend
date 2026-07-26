@@ -26,6 +26,7 @@ from datasmart_ai_runtime.domain.contracts import (
     ModelMessage,
     ModelRoute,
     ModelToolCall,
+    ProviderType,
     ToolDefinition,
     ToolPlan,
 )
@@ -208,7 +209,8 @@ class AgentModelIntentNode:
             "正在调用真实模型理解目标并生成公开决策摘要。",
             attributes={
                 "selectedProviderName": selected_route.provider_name,
-                "selectedModelName": selected_route.model_name,
+                "selectedModelName": None,
+                "requestedModelName": selected_route.model_name,
                 "visibleToolCount": len(available_tools),
                 "toolChoice": tool_choice,
                 "streaming": self._should_use_streaming(request),
@@ -241,7 +243,9 @@ class AgentModelIntentNode:
                     "schemaVersion": "datasmart.model-query-engine.v1",
                     "payloadPolicy": "LOW_SENSITIVE_QUERY_GOVERNANCE_ONLY",
                     "selectedProviderName": selected_route.provider_name,
-                    "selectedModelName": selected_route.model_name,
+                    "selectedModelName": None,
+                    "requestedModelName": selected_route.model_name,
+                    "actualModelName": None,
                     "providerInvoked": True,
                     "providerSucceeded": False,
                     "resultErrorCode": "MODEL_PROVIDER_INVOCATION_FAILED",
@@ -349,13 +353,22 @@ class AgentModelIntentNode:
         chunks = tuple(self._stream_chunks(model_request))
         latency_ms = int((time.perf_counter() - started_at) * 1000)
         result_error_code = next((chunk.error_code for chunk in chunks if chunk.error_code), None)
+        dry_run = model_request.route.provider_type == ProviderType.DRY_RUN
+        actual_model_name = next(
+            (chunk.model_name for chunk in chunks if chunk.model_name),
+            model_request.route.model_name,
+        )
         invocation_summary = {
             "schemaVersion": "datasmart.model-query-engine.v1",
             "payloadPolicy": "LOW_SENSITIVE_QUERY_GOVERNANCE_ONLY",
             "selectedProviderName": model_request.route.provider_name,
-            "selectedModelName": model_request.route.model_name,
-            "providerInvoked": True,
-            "providerSucceeded": bool(chunks) and result_error_code is None,
+            "selectedModelName": None if dry_run else actual_model_name,
+            "requestedModelName": model_request.route.model_name,
+            "actualModelName": None if dry_run else actual_model_name,
+            "providerInvoked": not dry_run,
+            "providerSucceeded": not dry_run and bool(chunks) and result_error_code is None,
+            "responseAvailable": not dry_run and bool(chunks) and result_error_code is None,
+            "responseSource": "DRY_RUN" if dry_run else "MODEL_PROVIDER",
             "fallbackUsed": False,
             "cacheHit": False,
             "rateLimited": False,

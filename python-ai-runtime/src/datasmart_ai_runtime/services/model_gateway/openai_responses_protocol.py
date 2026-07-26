@@ -16,6 +16,9 @@ from datasmart_ai_runtime.domain.contracts import (
     ModelMessage,
     ModelToolCall,
 )
+from datasmart_ai_runtime.services.model_gateway.model_identity import (
+    provider_reported_model_name,
+)
 
 
 class OpenAIResponsesProtocolAdapter:
@@ -107,7 +110,7 @@ class OpenAIResponsesProtocolAdapter:
         input_token_details = usage.get("input_tokens_details") or {}
         return ModelInvocationResult(
             provider_name=request.route.provider_name,
-            model_name=request.route.model_name,
+            model_name=provider_reported_model_name(payload, request.route.model_name),
             content="".join(text_parts),
             latency_ms=latency_ms,
             prompt_tokens=usage.get("input_tokens"),

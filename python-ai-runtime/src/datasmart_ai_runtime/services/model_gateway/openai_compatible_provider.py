@@ -35,6 +35,9 @@ from datasmart_ai_runtime.services.model_gateway.model_provider_error_sanitizer 
     safe_http_error_message,
     safe_transport_error_message,
 )
+from datasmart_ai_runtime.services.model_gateway.model_identity import (
+    provider_reported_model_name,
+)
 from datasmart_ai_runtime.services.model_gateway.openai_responses_protocol import (
     OpenAIResponsesProtocolAdapter,
 )
@@ -482,7 +485,7 @@ class OpenAICompatibleModelProvider:
             content, tool_calls = self._parse_json_tool_calls(content, name_aliases)
         return ModelInvocationResult(
             provider_name=request.route.provider_name,
-            model_name=request.route.model_name,
+            model_name=provider_reported_model_name(payload, request.route.model_name),
             content=content,
             latency_ms=latency_ms,
             prompt_tokens=usage.get("prompt_tokens"),
@@ -546,7 +549,7 @@ class OpenAICompatibleModelProvider:
         )
         return ModelInvocationChunk(
             provider_name=request.route.provider_name,
-            model_name=request.route.model_name,
+            model_name=provider_reported_model_name(payload, request.route.model_name),
             content_delta=delta.get("content") or "",
             finish_reason=choice.get("finish_reason"),
             sequence=sequence,

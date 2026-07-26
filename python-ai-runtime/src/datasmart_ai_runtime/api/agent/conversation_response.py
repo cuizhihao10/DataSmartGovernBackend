@@ -134,6 +134,8 @@ def build_intent_resolver_summary(plan: AgentPlan) -> dict[str, Any]:
 
     route = plan.selected_route
     invocation = dict(plan.model_invocation_summary or {})
+    actual_model_name = invocation.get("actualModelName") or invocation.get("selectedModelName")
+    requested_model_name = invocation.get("requestedModelName") or (route.model_name if route else None)
     if route is None or route.provider_type == ProviderType.DRY_RUN:
         return {
             "mode": "DETERMINISTIC_FALLBACK",
@@ -149,7 +151,8 @@ def build_intent_resolver_summary(plan: AgentPlan) -> dict[str, Any]:
         return {
             "mode": "MODEL_FAILED_WITH_DETERMINISTIC_FALLBACK" if provider_invoked else "DETERMINISTIC_FALLBACK",
             "modelProvider": route.provider_name,
-            "modelName": route.model_name,
+            "modelName": actual_model_name or requested_model_name,
+            "requestedModelName": requested_model_name,
             "providerInvokedForCurrentTurn": provider_invoked,
             "providerUsedForCurrentTurn": False,
             "providerSucceededForCurrentTurn": False,
@@ -160,7 +163,8 @@ def build_intent_resolver_summary(plan: AgentPlan) -> dict[str, Any]:
     return {
         "mode": "MODEL_ASSISTED_WITH_DETERMINISTIC_FALLBACK",
         "modelProvider": route.provider_name,
-        "modelName": route.model_name,
+        "modelName": actual_model_name or requested_model_name,
+        "requestedModelName": requested_model_name,
         "providerInvokedForCurrentTurn": True,
         "providerUsedForCurrentTurn": True,
         "providerSucceededForCurrentTurn": True,

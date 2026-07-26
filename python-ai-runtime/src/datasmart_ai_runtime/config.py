@@ -35,9 +35,9 @@ def default_model_routes() -> tuple[ModelRoute, ...]:
     return (
         ModelRoute(
             workload=WorkloadType.AGENT_REASONING,
-            provider_name="open-weight-agent-router",
+            provider_name="dry-run-agent-router",
             provider_type=ProviderType.DRY_RUN,
-            model_name="Qwen3.5-or-DeepSeek-V3.2-agent-placeholder",
+            model_name="dry-run-agent-reasoning",
             max_context_tokens=131072,
             timeout_seconds=90,
             fallback_group="agent-reasoning",

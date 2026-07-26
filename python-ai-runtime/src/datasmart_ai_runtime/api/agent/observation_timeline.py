@@ -88,6 +88,8 @@ def _append_model_item(items: list[dict[str, Any]], plan: AgentPlan) -> None:
             {
                 "provider": summary.get("selectedProviderName"),
                 "model": summary.get("selectedModelName"),
+                "requestedModelName": summary.get("requestedModelName"),
+                "actualModelName": summary.get("actualModelName"),
                 "latencyMs": summary.get("latencyMs"),
                 "providerLatencyMs": summary.get("providerLatencyMs"),
                 "responseSource": summary.get("responseSource"),

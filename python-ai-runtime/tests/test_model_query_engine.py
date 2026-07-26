@@ -64,7 +64,7 @@ class ModelQueryEngineTest(unittest.TestCase):
                 "fallback-agent": (
                     ModelInvocationResult(
                         provider_name="fallback-agent",
-                        model_name="fallback-agent-model",
+                        model_name="fallback-agent-resolved-202607",
                         content="fallback ok",
                         prompt_tokens=5,
                         completion_tokens=3,
@@ -86,6 +86,8 @@ class ModelQueryEngineTest(unittest.TestCase):
         self.assertTrue(result.to_summary()["providerSucceeded"])
         self.assertEqual(8, result.to_summary()["totalTokens"])
         self.assertEqual(4, result.to_summary()["cachedPromptTokens"])
+        self.assertEqual("fallback-agent-resolved-202607", result.to_summary()["actualModelName"])
+        self.assertEqual("fallback-agent-model", result.to_summary()["requestedModelName"])
 
     def test_token_limit_blocks_before_provider_call(self) -> None:
         """明显超过上下文窗口的请求必须在 Provider 调用前阻断。"""
@@ -181,10 +183,10 @@ class ModelQueryEngineTest(unittest.TestCase):
 
         provider = ScriptedModelProviders(
             {
-                "open-weight-agent-router": (
+                "dry-run-agent-router": (
                     ModelInvocationResult(
-                        provider_name="open-weight-agent-router",
-                        model_name="Qwen3.5-or-DeepSeek-V3.2-agent-placeholder",
+                        provider_name="dry-run-agent-router",
+                        model_name="dry-run-agent-reasoning",
                         content="captured",
                     ),
                 )
@@ -216,6 +218,8 @@ class ModelQueryEngineTest(unittest.TestCase):
         self.assertNotIn("secret-customer-table", serialized_event)
         self.assertNotIn("ds-sensitive", serialized_event)
         self.assertNotIn("captured", serialized_event)
+        self.assertFalse(query_event.attributes["providerInvoked"])
+        self.assertEqual("DRY_RUN", query_event.attributes["responseSource"])
 
 
 class ScriptedModelProviders:
@@ -247,7 +251,7 @@ def _route(
     return ModelRoute(
         workload=WorkloadType.AGENT_REASONING,
         provider_name=provider_name,
-        provider_type=ProviderType.DRY_RUN,
+        provider_type=ProviderType.OPENAI_COMPATIBLE,
         model_name=f"{provider_name}-model",
         max_context_tokens=max_context_tokens,
         priority=priority,

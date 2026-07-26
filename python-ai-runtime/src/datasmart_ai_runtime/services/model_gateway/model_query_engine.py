@@ -25,6 +25,7 @@ from datasmart_ai_runtime.domain.contracts import (
     ModelInvocationRequest,
     ModelInvocationResult,
     ModelRoute,
+    ProviderType,
 )
 from datasmart_ai_runtime.domain.model_gateway import (
     ModelGatewayRequestContext,
@@ -108,6 +109,8 @@ class ModelQueryEngineResult:
     token_limited: bool = False
     selected_provider_name: str | None = None
     selected_model_name: str | None = None
+    requested_model_name: str | None = None
+    dry_run: bool = False
 
     def to_summary(self) -> dict[str, object]:
         """返回低敏查询摘要。
@@ -116,12 +119,12 @@ class ModelQueryEngineResult:
         计数、状态和稳定错误码，用于 Agent 事件、管理台和测试断言。
         """
 
-        provider_invoked = any(
+        provider_invoked = not self.dry_run and any(
             attempt.outcome in {"succeeded", "provider_error"}
             for attempt in self.attempts
         )
         provider_succeeded = provider_invoked and self.result.error_code is None
-        response_available = self.result.error_code is None
+        response_available = not self.dry_run and self.result.error_code is None
         response_latency_ms = 0 if self.cache_hit else self.result.latency_ms
         prompt_tokens = self.result.prompt_tokens
         completion_tokens = self.result.completion_tokens
@@ -134,11 +137,21 @@ class ModelQueryEngineResult:
             "schemaVersion": "datasmart.model-query-engine.v1",
             "payloadPolicy": "LOW_SENSITIVE_QUERY_GOVERNANCE_ONLY",
             "selectedProviderName": self.selected_provider_name,
-            "selectedModelName": self.selected_model_name,
+            # selectedModelName remains backward compatible, but now represents
+            # the actual provider response model whenever the protocol supplies it.
+            "selectedModelName": None if self.dry_run else self.selected_model_name,
+            "requestedModelName": self.requested_model_name,
+            "actualModelName": None if self.dry_run else self.selected_model_name,
             "providerInvoked": provider_invoked,
             "providerSucceeded": provider_succeeded,
             "responseAvailable": response_available,
-            "responseSource": "DATASMART_RESULT_CACHE" if self.cache_hit else "MODEL_PROVIDER",
+            "responseSource": (
+                "DRY_RUN"
+                if self.dry_run
+                else "DATASMART_RESULT_CACHE"
+                if self.cache_hit
+                else "MODEL_PROVIDER"
+            ),
             "fallbackUsed": self.fallback_used,
             "cacheHit": self.cache_hit,
             "rateLimited": self.rate_limited,
@@ -216,6 +229,7 @@ class ModelQueryEngine:
                         error_code=result.error_code,
                     ),
                 ),
+                requested_model_name=request.route.model_name,
             )
         routes = self._candidate_routes(request.route, effective_decision, allow_fallback=context.allow_fallback)
         if not routes:
@@ -231,12 +245,15 @@ class ModelQueryEngine:
                         error_code=result.error_code,
                     ),
                 ),
+                requested_model_name=request.route.model_name,
             )
 
         attempts: list[ModelQueryAttemptSummary] = []
         last_result: ModelInvocationResult | None = None
         selected_provider_name: str | None = None
         selected_model_name: str | None = None
+        selected_provider_type: ProviderType | None = None
+        selected_requested_model_name: str | None = None
         for route_index, route in enumerate(routes):
             routed_request = self._request_for_route(request, route)
             token_issue = self._token_limit_issue(routed_request, context)
@@ -280,7 +297,7 @@ class ModelQueryEngine:
                     attempts.append(
                         ModelQueryAttemptSummary(
                             provider_name=route.provider_name,
-                            model_name=route.model_name,
+                            model_name=cached_result.model_name,
                             attempt_number=1,
                             outcome="cache_hit",
                             cache_hit=True,
@@ -292,7 +309,9 @@ class ModelQueryEngine:
                         fallback_used=route_index > 0,
                         cache_hit=True,
                         selected_provider_name=route.provider_name,
-                        selected_model_name=route.model_name,
+                        selected_model_name=cached_result.model_name,
+                        requested_model_name=route.model_name,
+                        dry_run=route.provider_type == ProviderType.DRY_RUN,
                     )
 
             max_attempts = max(self._settings.max_attempts_per_route, 1)
@@ -303,11 +322,13 @@ class ModelQueryEngine:
                 self._model_gateway.record_invocation_result(context, result)
                 last_result = result
                 selected_provider_name = route.provider_name
-                selected_model_name = route.model_name
+                selected_model_name = result.model_name
+                selected_provider_type = route.provider_type
+                selected_requested_model_name = route.model_name
                 attempts.append(
                     ModelQueryAttemptSummary(
                         provider_name=route.provider_name,
-                        model_name=route.model_name,
+                        model_name=result.model_name,
                         attempt_number=attempt_number,
                         outcome="provider_error" if result.error_code else "succeeded",
                         error_code=result.error_code,
@@ -322,7 +343,9 @@ class ModelQueryEngine:
                         attempts=tuple(attempts),
                         fallback_used=route_index > 0,
                         selected_provider_name=route.provider_name,
-                        selected_model_name=route.model_name,
+                        selected_model_name=result.model_name,
+                        requested_model_name=route.model_name,
+                        dry_run=route.provider_type == ProviderType.DRY_RUN,
                     )
                 if attempt_number < max_attempts and self._is_retryable_error(result.error_code):
                     continue
@@ -338,6 +361,8 @@ class ModelQueryEngine:
             token_limited=any(attempt.token_limited for attempt in attempts),
             selected_provider_name=selected_provider_name,
             selected_model_name=selected_model_name,
+            requested_model_name=selected_requested_model_name or request.route.model_name,
+            dry_run=selected_provider_type == ProviderType.DRY_RUN,
         )
 
     @staticmethod
