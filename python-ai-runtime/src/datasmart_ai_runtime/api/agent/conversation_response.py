@@ -515,7 +515,8 @@ def _autonomously_resolved_parameters(
             resolved.discard(parameter_name)
 
     catalog_choice_required = any(
-        str(result.get("matchStatus") or "").strip().upper() in {"AMBIGUOUS", "NOT_FOUND"}
+        str(result.get("matchStatus") or "").strip().upper()
+        in {"AMBIGUOUS", "NOT_FOUND", "TYPE_CANDIDATES"}
         for result in catalog_results.values()
     )
     if catalog_choice_required:
@@ -681,12 +682,48 @@ def _build_question(
         "required": True,
         "sensitive": bool(definition.get("sensitive", False)),
     }
+    catalog_result = _catalog_resolution_for(parameter_name, control_plane_feedback)
     candidates = _catalog_candidates_for(parameter_name, control_plane_feedback)
+    if catalog_result:
+        match_basis = str(catalog_result.get("matchBasis") or "").strip().upper()
+        match_status = str(catalog_result.get("matchStatus") or "").strip().upper()
+        usage_label = "源端" if parameter_name == "sourceDatasourceId" else "目标端"
+        if match_basis == "CONNECTOR_TYPE_ONLY":
+            datasource_type = str(catalog_result.get("requestedDatasourceType") or "").strip().upper()
+            question.update({
+                "reasonCode": "DATASOURCE_CONNECTOR_TYPE_REQUIRES_INSTANCE_SELECTION",
+                "ambiguityType": "CONNECTOR_TYPE_ONLY",
+                "requestedDatasourceType": datasource_type or None,
+                "allowsNaturalLanguageCorrection": True,
+                "question": (
+                    f"你说明的是{usage_label}数据库类型 {datasource_type or '未识别类型'}，"
+                    "还没有指定实际的数据源实例。"
+                    + (
+                        "请选择下列当前项目已授权的候选，或直接用自然语言补充/纠正数据源名称。"
+                        if candidates
+                        else "当前项目没有符合类型和用途的已授权数据源；请先创建/授权，或用自然语言更正类型或名称。"
+                    )
+                ),
+            })
+        elif match_status == "NOT_FOUND":
+            keyword = str(catalog_result.get("keyword") or "").strip()
+            question.update({
+                "reasonCode": "DATASOURCE_INSTANCE_NOT_FOUND",
+                "ambiguityType": "INSTANCE_NOT_FOUND",
+                "allowsNaturalLanguageCorrection": True,
+                "question": (
+                    f"当前项目中没有找到名称为“{keyword or '未识别名称'}”且用途为{usage_label}的数据源。"
+                    "请先创建/授权，或直接用自然语言更正名称。"
+                ),
+            })
     if candidates:
         question["candidates"] = candidates
-        question["question"] = (
-            f"{definition['question']} 当前名称存在多个候选，请明确选择其中一个。"
-        )
+        if not catalog_result or str(catalog_result.get("matchBasis") or "").upper() != "CONNECTOR_TYPE_ONLY":
+            question["question"] = (
+                f"{definition['question']} 当前名称存在多个候选，请明确选择其中一个，"
+                "或直接用自然语言补充/纠正。"
+            )
+            question["allowsNaturalLanguageCorrection"] = True
     if repair_guidance:
         question["reasonCode"] = "MODEL_CONFIGURATION_REPAIR_REQUIRED"
         question["repairGuidance"] = repair_guidance
@@ -701,32 +738,44 @@ def _catalog_candidates_for(
 ) -> list[dict[str, Any]]:
     """Return low-sensitive datasource candidates for an ambiguous clarification."""
 
+    result = _catalog_resolution_for(parameter_name, control_plane_feedback)
+    if not result:
+        return []
+    if str(result.get("matchStatus") or "").upper() == "EXACT":
+        return []
+    raw_candidates = result.get("candidates")
+    if not isinstance(raw_candidates, (list, tuple)):
+        return []
+    return [
+        {
+            "datasourceId": candidate.get("datasourceId"),
+            "name": candidate.get("name"),
+            "type": candidate.get("type"),
+            "usagePurpose": candidate.get("usagePurpose"),
+        }
+        for candidate in raw_candidates[:20]
+        if isinstance(candidate, dict)
+    ]
+
+
+def _catalog_resolution_for(
+    parameter_name: str,
+    control_plane_feedback: Any | None,
+) -> dict[str, Any]:
+    """Return the latest low-sensitive catalog result for one datasource side."""
+
     tool_name = {
         "sourceDatasourceId": "datasource.source.catalog.search",
         "targetDatasourceId": "datasource.target.catalog.search",
     }.get(parameter_name)
     if tool_name is None:
-        return []
+        return {}
     for item in reversed(tuple(getattr(control_plane_feedback, "feedback_items", ()) or ())):
         if str(getattr(item, "tool_name", "") or "") != tool_name:
             continue
         result = dict(getattr(item, "result", {}) or {})
-        if str(result.get("matchStatus") or "").upper() == "EXACT":
-            return []
-        raw_candidates = result.get("candidates")
-        if not isinstance(raw_candidates, (list, tuple)):
-            return []
-        return [
-            {
-                "datasourceId": candidate.get("datasourceId"),
-                "name": candidate.get("name"),
-                "type": candidate.get("type"),
-                "usagePurpose": candidate.get("usagePurpose"),
-            }
-            for candidate in raw_candidates[:20]
-            if isinstance(candidate, dict)
-        ]
-    return []
+        return result
+    return {}
 
 
 def _build_structured_intent(request: AgentRequest, plan: AgentPlan) -> dict[str, Any]:

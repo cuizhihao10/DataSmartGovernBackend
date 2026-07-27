@@ -38,6 +38,7 @@ class DatasourceAccessToolAdapterTest {
     void catalogSearchOnlyResolvesOneExactAuthorizedName() {
         Map<String, Object> result = DatasourceAccessToolAdapter.buildCatalogSearchOutput(
                 "mysql-orders-source",
+                "MYSQL",
                 "SOURCE",
                 List.of(
                         Map.of(
@@ -66,6 +67,7 @@ class DatasourceAccessToolAdapterTest {
     void catalogSearchDoesNotAutoSelectOneFuzzyCandidate() {
         Map<String, Object> result = DatasourceAccessToolAdapter.buildCatalogSearchOutput(
                 "orders",
+                "POSTGRESQL",
                 "TARGET",
                 List.of(Map.of(
                         "id", 28,
@@ -77,6 +79,28 @@ class DatasourceAccessToolAdapterTest {
         );
 
         assertEquals("AMBIGUOUS", result.get("matchStatus"));
+        assertEquals(true, result.get("requiresUserChoice"));
+        assertFalse(result.containsKey("resolvedDatasourceId"));
+    }
+
+    @Test
+    void connectorTypeOnlyReturnsCandidatesWithoutAutoSelectingOneInstance() {
+        Map<String, Object> result = DatasourceAccessToolAdapter.buildCatalogSearchOutput(
+                null,
+                "MYSQL",
+                "SOURCE",
+                List.of(Map.of(
+                        "id", 27,
+                        "name", "production-orders-source",
+                        "type", "MYSQL",
+                        "usagePurpose", "SOURCE",
+                        "status", "ENABLED"
+                ))
+        );
+
+        assertEquals("TYPE_CANDIDATES", result.get("matchStatus"));
+        assertEquals("CONNECTOR_TYPE_ONLY", result.get("matchBasis"));
+        assertEquals("MYSQL", result.get("requestedDatasourceType"));
         assertEquals(true, result.get("requiresUserChoice"));
         assertFalse(result.containsKey("resolvedDatasourceId"));
     }

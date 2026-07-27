@@ -707,7 +707,7 @@ datasmart:
         tool-code: datasource.source.catalog.search
         tool-type: DATASOURCE_METADATA
         display-name: 源端数据源目录检索
-        description: 按用户提供的名称检索当前项目中已授权且用途为 SOURCE 的数据源；只有唯一精确名称匹配才可自动继续。
+        description: 按用户提供的实例名称或连接器类型检索当前项目中已授权且用途为 SOURCE 的数据源；只有唯一精确名称匹配才可自动继续。
         target-service: datasource-management
         target-endpoint: /datasources
         read-only: true
@@ -726,16 +726,22 @@ datasmart:
         input-schema:
           - name: keyword
             type: string
-            required: true
-            description: 用户在自然语言中明确提供的源端数据源名称；禁止编造名称或数据源 ID。
+            required: false
+            description: 用户在自然语言中明确提供的源端数据源实例名称；MySQL/PostgreSQL 等裸类型不得作为名称。
             sensitive: false
-            resolution: USER_REQUIRED
+            resolution: MODEL_OPTIONAL
+          - name: datasourceType
+            type: string
+            required: false
+            description: 用户只说明数据库类型时的连接器约束；只生成候选，不允许自动选择实例。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
       "[datasource.target.catalog.search]":
         enabled: true
         tool-code: datasource.target.catalog.search
         tool-type: DATASOURCE_METADATA
         display-name: 目标端数据源目录检索
-        description: 按用户提供的名称检索当前项目中已授权且用途为 TARGET 的数据源；只有唯一精确名称匹配才可自动继续。
+        description: 按用户提供的实例名称或连接器类型检索当前项目中已授权且用途为 TARGET 的数据源；只有唯一精确名称匹配才可自动继续。
         target-service: datasource-management
         target-endpoint: /datasources
         read-only: true
@@ -754,10 +760,16 @@ datasmart:
         input-schema:
           - name: keyword
             type: string
-            required: true
-            description: 用户在自然语言中明确提供的目标端数据源名称；禁止编造名称或数据源 ID。
+            required: false
+            description: 用户在自然语言中明确提供的目标端数据源实例名称；MySQL/PostgreSQL 等裸类型不得作为名称。
             sensitive: false
-            resolution: USER_REQUIRED
+            resolution: MODEL_OPTIONAL
+          - name: datasourceType
+            type: string
+            required: false
+            description: 用户只说明数据库类型时的连接器约束；只生成候选，不允许自动选择实例。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
       "[datasource.source.connection.test]":
         enabled: true
         tool-code: datasource.source.connection.test

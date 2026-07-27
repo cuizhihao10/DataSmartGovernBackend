@@ -57,7 +57,7 @@ class AgentConversationResponseTest(unittest.TestCase):
         self.assertFalse(conversation["canExecute"])
         self.assertEqual(0, ingestion_client.call_count)
 
-    def test_free_text_sync_request_returns_questions_without_creating_java_run(self) -> None:
+    def test_free_text_connector_types_start_read_only_candidate_resolution(self) -> None:
         ingestion_client = CountingPlanIngestionClient()
 
         response = build_plan_response(
@@ -72,22 +72,16 @@ class AgentConversationResponseTest(unittest.TestCase):
         )
 
         conversation = response["agentConversation"]
-        self.assertEqual("WAITING_CLARIFICATION", conversation["phase"])
+        self.assertEqual("RESOLVING_AUTONOMOUSLY", conversation["phase"])
         self.assertEqual("CREATE_DATA_SYNC_TASK", conversation["structuredIntent"]["intentType"])
         self.assertEqual("FULL", conversation["structuredIntent"]["syncMode"])
-        self.assertEqual(
-            ["sourceDatasourceId", "targetDatasourceId", "objectMappings"],
-            conversation["missingParameters"],
-        )
-        self.assertEqual(
-            ["SOURCE_DATASOURCE_SELECT", "TARGET_DATASOURCE_SELECT", "OBJECT_MAPPING_EDITOR"],
-            [item["inputType"] for item in conversation["clarificationQuestions"]],
-        )
+        self.assertEqual([], conversation["missingParameters"])
+        self.assertEqual([], conversation["clarificationQuestions"])
         self.assertFalse(conversation["canExecute"])
-        self.assertFalse(conversation["controlPlaneIngested"])
+        self.assertTrue(conversation["controlPlaneIngested"])
         self.assertEqual("DETERMINISTIC_FALLBACK", conversation["intentResolver"]["mode"])
-        self.assertNotIn("controlPlaneIngestion", response)
-        self.assertEqual(0, ingestion_client.call_count)
+        self.assertIn("controlPlaneIngestion", response)
+        self.assertEqual(1, ingestion_client.call_count)
 
     def test_clarification_answers_create_confirmable_control_plane_plan(self) -> None:
         ingestion_client = CountingPlanIngestionClient()
@@ -389,6 +383,77 @@ class AgentConversationResponseTest(unittest.TestCase):
         self.assertEqual("WAITING_CLARIFICATION", conversation["phase"])
         self.assertEqual(["sourceDatasourceId"], conversation["missingParameters"])
         self.assertEqual(2, len(conversation["clarificationQuestions"][0]["candidates"]))
+
+    def test_connector_type_only_clarification_explains_that_instance_is_still_required(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective="将 MySQL 的客户表全量同步到 PostgreSQL public schema 的同名表",
+        )
+        tool_plans = (
+            ToolPlan(
+                tool_name="datasource.source.catalog.search",
+                reason="filter source by connector type",
+                arguments={"datasourceType": "MYSQL"},
+            ),
+        )
+        plan = AgentPlan(
+            request_id="request-type-candidates",
+            selected_route=None,
+            state_trace=("invoke_model_intent",),
+            tool_plans=tool_plans,
+            requires_human_approval=False,
+            response_summary="已按数据库类型筛选授权数据源。",
+            intent_analysis=IntentAnalysis(
+                summary="识别到数据同步任务。",
+                governance_domains=(GovernanceDomain.DATA_SYNC,),
+                candidate_tools=("datasource.source.catalog.search",),
+                missing_parameters=("sourceDatasourceId",),
+            ),
+        )
+        feedback = AgentControlPlaneFeedbackSnapshot(
+            expected_tool_call_count=1,
+            feedback_items=(AgentControlPlaneFeedbackItem(
+                model_tool_call_id="call-source-type",
+                tool_name="datasource.source.catalog.search",
+                status=ToolExecutionFeedbackStatus.SUCCEEDED,
+                summary="按 MYSQL 类型返回源端候选。",
+                result={
+                    "matchStatus": "TYPE_CANDIDATES",
+                    "matchBasis": "CONNECTOR_TYPE_ONLY",
+                    "requestedDatasourceType": "MYSQL",
+                    "candidates": [{
+                        "datasourceId": 23,
+                        "name": "customer-production-source",
+                        "type": "MYSQL",
+                        "usagePurpose": "SOURCE",
+                    }],
+                },
+            ),),
+            missing_tool_call_ids=(),
+            status_counts={"succeeded": 1},
+            second_turn_eligible=True,
+            recommended_actions=(),
+        )
+
+        conversation = build_agent_conversation_response(
+            request,
+            plan,
+            ToolExecutionReadinessService().evaluate(tool_plans),
+            control_plane_ingested=True,
+            control_plane_feedback=feedback,
+        )
+
+        question = conversation["clarificationQuestions"][0]
+        self.assertEqual(
+            "DATASOURCE_CONNECTOR_TYPE_REQUIRES_INSTANCE_SELECTION",
+            question["reasonCode"],
+        )
+        self.assertEqual("MYSQL", question["requestedDatasourceType"])
+        self.assertIn("数据库类型 MYSQL", question["question"])
+        self.assertIn("自然语言补充/纠正", question["question"])
+        self.assertEqual(23, question["candidates"][0]["datasourceId"])
         self.assertFalse(conversation["canExecute"])
 
     def test_metadata_resolution_stop_only_returns_object_mapping_to_user(self) -> None:
@@ -551,13 +616,7 @@ class AgentConversationResponseTest(unittest.TestCase):
 
         self.assertEqual("WAITING_CLARIFICATION", conversation["phase"])
         self.assertEqual(
-            [
-                "sourceDatasourceId",
-                "targetDatasourceId",
-                "objectMappings",
-                "scheduleFrequency",
-                "scheduleStartTime",
-            ],
+            ["sourceDatasourceId", "scheduleFrequency", "scheduleStartTime"],
             conversation["missingParameters"],
         )
         questions = {item["parameterName"]: item for item in conversation["clarificationQuestions"]}

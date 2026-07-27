@@ -514,6 +514,9 @@ class AgentModelIntentNode:
 
         if not tool_calls:
             return ()
+        tool_calls = self._tool_planner.normalize_datasource_catalog_tool_calls(request, tool_calls)
+        if not tool_calls:
+            return ()
         intake_report = self._tool_action_intake_service.from_model_tool_calls(
             tool_calls,
             registered_tools=self._tool_planner.registered_tools(),
@@ -665,8 +668,13 @@ class AgentModelIntentNode:
 
         return {
             "objective": cls._public_text(request.objective, max_chars=2_000),
+            "latestUserMessage": cls._public_text(
+                request.variables.get("latestUserMessage"),
+                max_chars=2_000,
+            ) or None,
             "instructionSummary": (
                 "要求模型基于平台权威基线生成可公开展示的目标理解、阻塞点与下一步；"
+                "同一会话的最新补充或纠正优先于先前描述；数据库类型与数据源实例名称必须分开解析；"
                 "只能从本轮可见工具中提出结构化工具调用，不得声称工具已经执行，也不得输出隐藏推理或凭据。"
             ),
             "messageShape": (
@@ -768,8 +776,11 @@ class AgentModelIntentNode:
                     "请生成一段可直接展示给用户的公开决策摘要，限 4 至 8 句、500 个中文字符以内，"
                     "只说明目标理解、已准入能力、当前阻塞点和下一步；"
                     "平台结构化基线是安全与产品范围约束，但其中的缺失参数既可能需要追问，也可能由只读工具安全解析。"
-                    "对于数据同步任务，如果用户明确写出了源端或目标端数据源名称，"
-                    "必须优先调用对应的 datasource.*.catalog.search，且 keyword 必须逐字来自用户目标；"
+                    "对于数据同步任务，必须区分数据库类型和已登记的数据源实例名称："
+                    "MySQL、PostgreSQL/PGSQL、SQL Server 等裸数据库名默认是 datasourceType 约束，"
+                    "不是 keyword；只有用户用名称为/名为/叫、引号，或明确给出非数据库类型的实例名时，"
+                    "才可把原文逐字放入 keyword。类型约束只用于列出当前项目候选，不得自动选择实例。"
+                    "如果用户明确写出了源端或目标端数据源实例名称，必须优先调用对应的 datasource.*.catalog.search；"
                     "目录只有唯一精确匹配时才能继续连接测试，歧义或未找到时必须停止并请用户选择或更正，"
                     "绝不能猜测数据源 ID。连接通过后读取两端真实元数据；用户明确提供 schema 或表名时，"
                     "用 schemaPattern/tableNamePattern 缩小元数据范围，避免大目录截断。再严格保留用户声明的任务名称、"
@@ -786,6 +797,13 @@ class AgentModelIntentNode:
                 role="user",
                 content=(
                     f"用户目标：{request.objective}\n\n"
+                    + (
+                        "当前会话最新补充或纠正（优先于先前描述）："
+                        f"{request.variables.get('latestUserMessage')}\n\n"
+                        if str(request.variables.get("latestUserMessage") or "").strip()
+                        else ""
+                    )
+                    +
                     f"平台结构化基线（权威）：\n{platform_baseline}\n\n"
                     f"可用低敏上下文：\n{context_digest}"
                 ),

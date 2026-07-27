@@ -257,6 +257,10 @@ class AgentFollowUpToolPlanner:
             tool_calls,
             control_plane_feedback,
         )
+        prerequisite_calls = self._tool_planner.normalize_datasource_catalog_tool_calls(
+            request,
+            prerequisite_calls,
+        )
         governed_calls = tuple(
             self._inject_derived_arguments(call, resource_ledger, resource_reference_groups)
             for call in prerequisite_calls

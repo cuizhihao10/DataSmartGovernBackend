@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import replace
 from hashlib import sha256
@@ -63,6 +64,29 @@ class ToolPlanner:
         ),
     }
     _SAFE_DATASOURCE_NAME = re.compile(r"[\w.\- ]{1,128}", re.UNICODE)
+    _CONNECTOR_TYPE_ALIASES = (
+        ("postgresql", "POSTGRESQL"),
+        ("postgres", "POSTGRESQL"),
+        ("pgsql", "POSTGRESQL"),
+        ("sql server", "SQLSERVER"),
+        ("sqlserver", "SQLSERVER"),
+        ("mssql", "SQLSERVER"),
+        ("mariadb", "MYSQL"),
+        ("mysql", "MYSQL"),
+    )
+    _TRANSFER_MARKERS = (
+        "同步到",
+        "迁移到",
+        "传输到",
+        "写入到",
+        "写入",
+        "同步至",
+        "迁移至",
+        "->",
+        "→",
+        " into ",
+        " to ",
+    )
 
     def __init__(
         self,
@@ -398,21 +422,125 @@ class ToolPlanner:
             tool = self._tools.get(tool_name)
             if tool is None:
                 continue
-            keyword = self._extract_explicit_datasource_name(request.objective, labels)
-            if keyword is None:
+            arguments = self._datasource_catalog_arguments(request, tool_name, labels)
+            if not arguments:
                 continue
             direction = "源端" if ".source." in tool_name else "目标端"
+            reference_kind = "实例名称" if "keyword" in arguments else "数据库类型"
             plans.append(
                 self._build_plan(
                     tool=tool,
                     reason=(
-                        f"用户已明确提供{direction}数据源名称；先在当前租户和项目授权范围内"
-                        "执行只读目录查询，只有唯一精确匹配才允许进入连接测试。"
+                        f"用户已提供{direction}{reference_kind}约束；先在当前租户和项目授权范围内"
+                        "执行只读目录查询。实例名只有唯一精确匹配才可自动继续；"
+                        "类型条件只返回候选，必须由用户明确选择真实数据源。"
                     ),
-                    arguments={"keyword": keyword},
+                    arguments=arguments,
                 )
             )
         return tuple(plans)
+
+    @classmethod
+    def normalize_datasource_catalog_tool_calls(
+        cls,
+        request: AgentRequest,
+        tool_calls: tuple,
+    ) -> tuple:
+        """Constrain model catalog calls to datasource facts present in the user turn.
+
+        Model output is not an authoritative entity linker.  In particular, a model
+        may turn the phrase ``MySQL 中`` into ``keyword=MySQL`` even though the user
+        only supplied a connector type.  This boundary canonicalizes that proposal
+        before schema validation: explicit instance names remain ``keyword`` while
+        generic database names become ``datasourceType``.  A model-invented name
+        that cannot be grounded in the latest user utterance is discarded.
+        """
+
+        normalized_calls = []
+        for call in tool_calls:
+            tool_name = str(getattr(call, "name", "") or "")
+            direction = cls._catalog_call_direction(tool_name)
+            if direction is None:
+                normalized_calls.append(call)
+                continue
+            labels = cls._DATASOURCE_CATALOG_LABELS[
+                f"datasource.{direction}.catalog.search"
+            ]
+            canonical = cls._datasource_catalog_arguments(request, f"datasource.{direction}.catalog.search", labels)
+            if not canonical:
+                # No datasource name or connector type exists in user-controlled
+                # text.  Dropping the proposal is safer than executing a hallucinated
+                # directory filter; the regular clarification contract remains active.
+                continue
+            try:
+                raw_arguments = json.loads(str(getattr(call, "arguments", "") or "{}"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                raw_arguments = {}
+            proposed = dict(raw_arguments) if isinstance(raw_arguments, dict) else {}
+            proposed_keyword = str(proposed.get("keyword") or "").strip()
+            explicit_keyword = str(canonical.get("keyword") or "").strip()
+            if proposed_keyword and explicit_keyword:
+                # Preserve only the exact user-grounded spelling, never the model's
+                # normalized or expanded variant.
+                canonical["keyword"] = explicit_keyword
+            normalized_calls.append(replace(
+                call,
+                arguments=json.dumps(canonical, ensure_ascii=False, separators=(",", ":")),
+            ))
+        return tuple(normalized_calls)
+
+    @classmethod
+    def _datasource_catalog_arguments(
+        cls,
+        request: AgentRequest,
+        tool_name: str,
+        labels: tuple[str, ...],
+    ) -> dict[str, str]:
+        """Build independent instance-name and connector-type catalog constraints."""
+
+        latest_utterance = cls._latest_user_utterance(request)
+        search_texts = tuple(
+            text for text in (latest_utterance, request.objective) if str(text or "").strip()
+        )
+        keyword = next(
+            (
+                value
+                for text in search_texts
+                if (value := cls._extract_explicit_datasource_name(text, labels)) is not None
+            ),
+            None,
+        )
+        direction = "source" if ".source." in tool_name else "target"
+        connector_type = next(
+            (
+                value
+                for text in search_texts
+                if (value := cls._extract_directional_connector_type(text, direction)) is not None
+            ),
+            None,
+        )
+        arguments: dict[str, str] = {}
+        if keyword:
+            arguments["keyword"] = keyword
+        if connector_type:
+            arguments["datasourceType"] = connector_type
+        return arguments
+
+    @staticmethod
+    def _latest_user_utterance(request: AgentRequest) -> str:
+        """Return the newest clarification/correction without persisting chat text."""
+
+        value = request.variables.get("latestUserMessage") or request.variables.get("latest_user_message")
+        return str(value or "").strip()
+
+    @classmethod
+    def _catalog_call_direction(cls, tool_name: str) -> str | None:
+        normalized = tool_name.strip().lower().replace("_", ".")
+        if "datasource.source.catalog.search" in normalized:
+            return "source"
+        if "datasource.target.catalog.search" in normalized:
+            return "target"
+        return None
 
     @classmethod
     def _extract_explicit_datasource_name(
@@ -424,18 +552,109 @@ class ToolPlanner:
 
         label_expression = "|".join(re.escape(label) for label in labels)
         pattern = re.compile(
-            rf"(?:{label_expression})\s*(?:名称)?\s*(?:为|是|=|:|：)?\s*"
+            rf"(?:{label_expression})\s*(?:名称)?\s*"
+            r"(?:修改为|改为|换成|更正为|使用|采用|为|是|=|:|：)?\s*"
             r"(?:[\"'“‘`](?P<quoted>[^\"'“”‘’`\r\n]{1,128})[\"'”’`]"
             r"|(?P<token>[^\s,，;；。:：\"'“”‘’`]{1,128}))",
             re.IGNORECASE,
         )
-        match = pattern.search(objective)
-        if match is None:
+        matches = tuple(pattern.finditer(objective))
+        for match in reversed(matches):
+            quoted = match.group("quoted")
+            keyword = (quoted or match.group("token") or "").strip()
+            if not keyword or cls._SAFE_DATASOURCE_NAME.fullmatch(keyword) is None:
+                continue
+            connector_type = cls._normalize_connector_type(keyword)
+            explicit_name_wording = bool(re.search(r"名称|名为|叫", match.group(0), re.IGNORECASE))
+            # Bare MySQL/PostgreSQL/SQL Server is a connector constraint, not an
+            # instance name.  Quoting it or saying "名为" makes the user's intent
+            # explicit and therefore preserves it as a real datasource name.
+            if connector_type and quoted is None and not explicit_name_wording:
+                continue
+            return keyword
+        return None
+
+    @classmethod
+    def _extract_directional_connector_type(cls, text: str, direction: str) -> str | None:
+        """Resolve a connector type from source/target wording without guessing an instance."""
+
+        normalized = f" {str(text or '').strip().lower()} "
+        if not normalized.strip():
             return None
-        keyword = (match.group("quoted") or match.group("token") or "").strip()
-        if not keyword or cls._SAFE_DATASOURCE_NAME.fullmatch(keyword) is None:
+        direction_labels = (
+            ("源端", "源库", "source")
+            if direction == "source"
+            else ("目标端", "目标库", "target")
+        )
+        for alias, connector_type in cls._CONNECTOR_TYPE_ALIASES:
+            alias_pattern = cls._connector_alias_pattern(alias)
+            for label in direction_labels:
+                if re.search(rf"{re.escape(label)}[^，,；;。\n]{{0,32}}{alias_pattern}", normalized, re.IGNORECASE):
+                    return connector_type
+                if re.search(rf"{alias_pattern}[^，,；;。\n]{{0,32}}{re.escape(label)}", normalized, re.IGNORECASE):
+                    return connector_type
+
+        for marker in cls._TRANSFER_MARKERS:
+            marker_index = normalized.find(marker)
+            if marker_index < 0:
+                continue
+            side = normalized[:marker_index] if direction == "source" else normalized[marker_index + len(marker):]
+            connector_type = cls._first_connector_type(side, reverse=direction == "source")
+            if connector_type:
+                return connector_type
+
+        mentioned = cls._connector_types_in_text_order(normalized)
+        if len(mentioned) >= 2:
+            return mentioned[0] if direction == "source" else mentioned[1]
+        return None
+
+    @classmethod
+    def _connector_types_in_text_order(cls, text: str) -> list[str]:
+        """Return distinct connector types in the order the user wrote them.
+
+        Alias registration order is an implementation detail and must never decide
+        source/target semantics.  For example, the alias table registers PostgreSQL
+        before MySQL, while a user may write ``MySQL 和 PostgreSQL``.  Sorting all
+        grounded matches by character offset preserves the user's ordering and keeps
+        the generic ``first type -> source, second type -> target`` fallback stable.
+        """
+
+        matches: list[tuple[int, int, str]] = []
+        for alias, connector_type in cls._CONNECTOR_TYPE_ALIASES:
+            for match in re.finditer(cls._connector_alias_pattern(alias), text, re.IGNORECASE):
+                matches.append((match.start(), -len(match.group(0)), connector_type))
+        matches.sort(key=lambda item: (item[0], item[1]))
+
+        ordered: list[str] = []
+        for _, _, connector_type in matches:
+            if connector_type not in ordered:
+                ordered.append(connector_type)
+        return ordered
+
+    @classmethod
+    def _first_connector_type(cls, text: str, *, reverse: bool) -> str | None:
+        matches: list[tuple[int, str]] = []
+        for alias, connector_type in cls._CONNECTOR_TYPE_ALIASES:
+            for match in re.finditer(cls._connector_alias_pattern(alias), text, re.IGNORECASE):
+                matches.append((match.start(), connector_type))
+        if not matches:
             return None
-        return keyword
+        matches.sort(key=lambda item: item[0], reverse=reverse)
+        return matches[0][1]
+
+    @classmethod
+    def _normalize_connector_type(cls, value: str) -> str | None:
+        normalized = str(value or "").strip().lower()
+        for alias, connector_type in cls._CONNECTOR_TYPE_ALIASES:
+            if normalized == alias:
+                return connector_type
+        return None
+
+    @staticmethod
+    def _connector_alias_pattern(alias: str) -> str:
+        """Match a connector token without matching it inside an instance name."""
+
+        return rf"(?<![A-Za-z0-9_.-]){re.escape(alias)}(?![A-Za-z0-9_.-])"
 
     def model_visible_tools(
         self,

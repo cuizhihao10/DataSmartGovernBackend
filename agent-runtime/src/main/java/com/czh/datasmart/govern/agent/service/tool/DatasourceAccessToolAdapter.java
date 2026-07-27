@@ -40,6 +40,7 @@ public class DatasourceAccessToolAdapter implements AgentToolAdapter {
     public static final String TARGET_METADATA = "datasource.target.metadata.read";
 
     private static final String TARGET_SERVICE = "datasource-management";
+    private static final Set<String> SUPPORTED_DATASOURCE_TYPES = Set.of("MYSQL", "POSTGRESQL", "SQLSERVER");
     private static final Set<String> SUPPORTED = Set.of(
             SOURCE_CATALOG_SEARCH,
             TARGET_CATALOG_SEARCH,
@@ -77,7 +78,7 @@ public class DatasourceAccessToolAdapter implements AgentToolAdapter {
     }
 
     /**
-     * 按用户在自然语言中提供的数据源名称检索当前项目的授权目录。
+     * 按用户在自然语言中提供的数据源实例名称或连接器类型检索当前项目的授权目录。
      *
      * <p>该工具只返回低敏候选，不返回 JDBC URL、用户名、密码或凭据密文。自动继续的条件刻意设置为
      * “唯一精确名称匹配”：模糊匹配只有一个结果也不会直接选中，避免模型把相似名称的数据源用于真实同步。
@@ -86,9 +87,10 @@ public class DatasourceAccessToolAdapter implements AgentToolAdapter {
     private AgentToolExecutionOutcome searchDatasourceCatalog(AgentToolExecutionContext context) {
         Map<String, Object> arguments = context.audit().getPlanArguments();
         String keyword = nullableText(arguments.get("keyword"));
-        if (keyword == null) {
+        String datasourceType = normalizeDatasourceType(arguments.get("datasourceType"));
+        if (keyword == null && datasourceType == null) {
             throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
-                    "数据源目录检索必须提供用户提到的数据源名称");
+                    "数据源目录检索必须提供用户提到的实例名称或数据库类型");
         }
         String usagePurpose = SOURCE_CATALOG_SEARCH.equals(context.audit().getToolCode())
                 ? "SOURCE"
@@ -97,14 +99,21 @@ public class DatasourceAccessToolAdapter implements AgentToolAdapter {
                 .baseUrl(httpSupport.baseUrl(TARGET_SERVICE))
                 .build()
                 .get()
-                .uri(uriBuilder -> uriBuilder
-                        .path("/datasources")
-                        .queryParam("current", 1)
-                        .queryParam("size", 20)
-                        .queryParam("usagePurpose", usagePurpose)
-                        .queryParam("status", "ENABLED")
-                        .queryParam("keyword", keyword)
-                        .build())
+                .uri(uriBuilder -> {
+                    var builder = uriBuilder
+                            .path("/datasources")
+                            .queryParam("current", 1)
+                            .queryParam("size", 20)
+                            .queryParam("usagePurpose", usagePurpose)
+                            .queryParam("status", "ENABLED");
+                    if (keyword != null) {
+                        builder.queryParam("keyword", keyword);
+                    }
+                    if (datasourceType != null) {
+                        builder.queryParam("type", datasourceType);
+                    }
+                    return builder.build();
+                })
                 .headers(headers -> httpSupport.applyUserDelegationHeaders(headers, context))
                 .retrieve()
                 .body(new ParameterizedTypeReference<>() {
@@ -113,7 +122,7 @@ public class DatasourceAccessToolAdapter implements AgentToolAdapter {
         List<Map<String, Object>> records = mapList(page.get("records"));
         return AgentToolExecutionOutcome.succeeded(
                 "数据源目录检索完成。",
-                buildCatalogSearchOutput(keyword, usagePurpose, records)
+                buildCatalogSearchOutput(keyword, datasourceType, usagePurpose, records)
         );
     }
 
@@ -124,11 +133,12 @@ public class DatasourceAccessToolAdapter implements AgentToolAdapter {
      */
     static Map<String, Object> buildCatalogSearchOutput(
             String keyword,
+            String datasourceType,
             String usagePurpose,
             List<Map<String, Object>> records) {
         List<Map<String, Object>> candidates = new ArrayList<>();
         List<Map<String, Object>> exactMatches = new ArrayList<>();
-        String normalizedKeyword = keyword.trim().toLowerCase(Locale.ROOT);
+        String normalizedKeyword = keyword == null ? null : keyword.trim().toLowerCase(Locale.ROOT);
         for (Map<String, Object> record : records.stream().limit(10).toList()) {
             Map<String, Object> candidate = new LinkedHashMap<>();
             candidate.put("datasourceId", record.get("id"));
@@ -138,7 +148,9 @@ public class DatasourceAccessToolAdapter implements AgentToolAdapter {
             candidate.put("status", record.get("status"));
             candidates.add(candidate);
             Object name = record.get("name");
-            if (name != null && String.valueOf(name).trim().toLowerCase(Locale.ROOT).equals(normalizedKeyword)) {
+            if (normalizedKeyword != null
+                    && name != null
+                    && String.valueOf(name).trim().toLowerCase(Locale.ROOT).equals(normalizedKeyword)) {
                 exactMatches.add(candidate);
             }
         }
@@ -146,14 +158,22 @@ public class DatasourceAccessToolAdapter implements AgentToolAdapter {
         String matchStatus;
         if (exactMatches.size() == 1) {
             matchStatus = "EXACT";
+        } else if (keyword == null && datasourceType != null && !candidates.isEmpty()) {
+            matchStatus = "TYPE_CANDIDATES";
         } else if (!candidates.isEmpty()) {
             matchStatus = "AMBIGUOUS";
         } else {
             matchStatus = "NOT_FOUND";
         }
         Map<String, Object> output = new LinkedHashMap<>();
-        output.put("keyword", keyword);
+        if (keyword != null) {
+            output.put("keyword", keyword);
+        }
+        if (datasourceType != null) {
+            output.put("requestedDatasourceType", datasourceType);
+        }
         output.put("usagePurpose", usagePurpose);
+        output.put("matchBasis", keyword != null ? "EXPLICIT_INSTANCE_NAME" : "CONNECTOR_TYPE_ONLY");
         output.put("matchStatus", matchStatus);
         output.put("candidateCount", candidates.size());
         output.put("exactMatchCount", exactMatches.size());
@@ -165,6 +185,24 @@ public class DatasourceAccessToolAdapter implements AgentToolAdapter {
         }
         output.put("requiresUserChoice", !"EXACT".equals(matchStatus));
         return output;
+    }
+
+    private String normalizeDatasourceType(Object value) {
+        String normalized = nullableText(value);
+        if (normalized == null) {
+            return null;
+        }
+        normalized = normalized.trim().toUpperCase(Locale.ROOT);
+        normalized = switch (normalized) {
+            case "POSTGRES", "PGSQL" -> "POSTGRESQL";
+            case "SQL_SERVER", "SQL SERVER", "MSSQL" -> "SQLSERVER";
+            default -> normalized;
+        };
+        if (!SUPPORTED_DATASOURCE_TYPES.contains(normalized)) {
+            throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
+                    "不支持的数据源类型约束: " + normalized);
+        }
+        return normalized;
     }
 
     private AgentToolExecutionOutcome testDatasource(AgentToolExecutionContext context) {

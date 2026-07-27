@@ -15,7 +15,9 @@ from typing import Any
 _MODEL_RESULT_INCLUDE_PATHS: dict[str, tuple[str, ...]] = {
     "datasource.source.catalog.search": (
         "keyword",
+        "requestedDatasourceType",
         "usagePurpose",
+        "matchBasis",
         "matchStatus",
         "candidateCount",
         "exactMatchCount",
@@ -31,7 +33,9 @@ _MODEL_RESULT_INCLUDE_PATHS: dict[str, tuple[str, ...]] = {
     ),
     "datasource.target.catalog.search": (
         "keyword",
+        "requestedDatasourceType",
         "usagePurpose",
+        "matchBasis",
         "matchStatus",
         "candidateCount",
         "exactMatchCount",

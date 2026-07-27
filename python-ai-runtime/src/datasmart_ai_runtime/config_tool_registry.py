@@ -33,14 +33,24 @@ def _data_sync_agent_tools() -> tuple[ToolDefinition, ...]:
             input_schema={
                 "keyword": {
                     "type": "string",
-                    "required": True,
+                    "required": False,
                     "sensitive": False,
-                    "resolution": "user_required",
+                    "resolution": "model_optional",
                     "description": (
-                        "用户明确提供的数据源名称。只允许检索当前项目已授权目录，"
-                        "不得编造名称或直接猜测数据源 ID。"
+                        "用户明确提供的数据源实例名称。MySQL/PostgreSQL 等裸数据库类型不得放入该字段；"
+                        "只允许检索当前项目已授权目录，不得编造名称或直接猜测数据源 ID。"
                     ),
-                }
+                },
+                "datasourceType": {
+                    "type": "string",
+                    "required": False,
+                    "sensitive": False,
+                    "resolution": "model_optional",
+                    "description": (
+                        "用户只说明数据库类型时使用的连接器约束，例如 MYSQL、POSTGRESQL、SQLSERVER。"
+                        "类型约束只能生成候选，不能代替用户选择真实数据源实例。"
+                    ),
+                },
             },
             read_only=True,
             idempotent=True,
@@ -54,11 +64,11 @@ def _data_sync_agent_tools() -> tuple[ToolDefinition, ...]:
         for name, description in (
             (
                 "datasource.source.catalog.search",
-                "按名称检索当前项目已授权且用途为源端的数据源；仅唯一精确匹配可用于后续自动执行。",
+                "按实例名或连接器类型检索当前项目已授权且用途为源端的数据源；仅唯一精确名称匹配可自动继续。",
             ),
             (
                 "datasource.target.catalog.search",
-                "按名称检索当前项目已授权且用途为目标端的数据源；仅唯一精确匹配可用于后续自动执行。",
+                "按实例名或连接器类型检索当前项目已授权且用途为目标端的数据源；仅唯一精确名称匹配可自动继续。",
             ),
         )
     )

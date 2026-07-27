@@ -11,6 +11,7 @@ from datasmart_ai_runtime.domain.context import ContextBlock, ContextSourceType
 from datasmart_ai_runtime.domain.contracts import (
     AgentPlan,
     AgentRequest,
+    ModelToolCall,
     ToolExecutionMode,
     ToolParameterIssueAction,
     ToolPlan,
@@ -64,7 +65,15 @@ class ToolPlannerTest(unittest.TestCase):
             context_blocks=context_blocks,
         )
 
-        self.assertEqual((), plans)
+        self.assertEqual(
+            (
+                "datasource.source.catalog.search",
+                "datasource.target.catalog.search",
+            ),
+            tuple(plan.tool_name for plan in plans),
+        )
+        self.assertEqual({"datasourceType": "MYSQL"}, plans[0].arguments)
+        self.assertEqual({"datasourceType": "POSTGRESQL"}, plans[1].arguments)
         visible_tools = ToolPlanner(default_tool_registry()).model_visible_tools(
             request=request,
             intent_analysis=intent_analysis,
@@ -172,7 +181,7 @@ class ToolPlannerTest(unittest.TestCase):
             tuple(plan.arguments["keyword"] for plan in plans),
         )
 
-    def test_generic_database_types_do_not_create_guessed_catalog_searches(self) -> None:
+    def test_generic_database_types_create_type_filtered_catalog_searches(self) -> None:
         request = AgentRequest(
             tenant_id="10",
             project_id="101",
@@ -188,7 +197,114 @@ class ToolPlannerTest(unittest.TestCase):
             context_blocks=context_blocks,
         )
 
-        self.assertEqual((), plans)
+        self.assertEqual(
+            (
+                "datasource.source.catalog.search",
+                "datasource.target.catalog.search",
+            ),
+            tuple(plan.tool_name for plan in plans),
+        )
+        self.assertEqual({"datasourceType": "MYSQL"}, plans[0].arguments)
+        self.assertEqual({"datasourceType": "POSTGRESQL"}, plans[1].arguments)
+        self.assertNotIn("keyword", plans[0].arguments)
+        self.assertNotIn("keyword", plans[1].arguments)
+
+    def test_model_catalog_calls_cannot_turn_connector_types_into_instance_names(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1004",
+            objective=(
+                "将 MySQL 中的 fs_test_customer_source 和 fs_test_customer_target "
+                "全量同步到 PostgreSQL public schema 的同名表"
+            ),
+        )
+        calls = (
+            ModelToolCall(
+                call_id="source-call",
+                name="datasource_source_catalog_search",
+                arguments='{"keyword":"MySQL"}',
+            ),
+            ModelToolCall(
+                call_id="target-call",
+                name="datasource_target_catalog_search",
+                arguments='{"keyword":"PostgreSQL"}',
+            ),
+        )
+
+        normalized = ToolPlanner.normalize_datasource_catalog_tool_calls(request, calls)
+
+        self.assertEqual('{"datasourceType":"MYSQL"}', normalized[0].arguments)
+        self.assertEqual('{"datasourceType":"POSTGRESQL"}', normalized[1].arguments)
+
+    def test_latest_correction_overrides_prior_explicit_datasource_name(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1004",
+            objective=(
+                "源端数据源 mysql-old-source，全量同步到目标端数据源 pg-target"
+            ),
+            variables={"latestUserMessage": "源端数据源改为 mysql-customer-source"},
+        )
+        intent_analysis = RuleBasedIntentAnalyzer().analyze(
+            request,
+            DefaultContextBuilder().build(request),
+        )
+
+        plans = ToolPlanner(default_tool_registry()).plan(
+            request=request,
+            intent_analysis=intent_analysis,
+        )
+
+        source = next(plan for plan in plans if plan.tool_name == "datasource.source.catalog.search")
+        target = next(plan for plan in plans if plan.tool_name == "datasource.target.catalog.search")
+        self.assertEqual("mysql-customer-source", source.arguments["keyword"])
+        self.assertEqual("pg-target", target.arguments["keyword"])
+
+    def test_latest_correction_keeps_connector_types_in_user_text_order(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1004",
+            objective=(
+                "将 MySQL 中的 fs_test_customer_source 和 fs_test_customer_target "
+                "全量同步到 PostgreSQL public schema 的同名表"
+            ),
+            variables={
+                "latestUserMessage": (
+                    "MySQL 和 PostgreSQL 只是数据库类型，"
+                    "源端数据源改为 mysql2pgsql_test_0709_source，"
+                    "目标端数据源改为 mysql2pgsql_test_0709_target"
+                )
+            },
+        )
+        intent_analysis = RuleBasedIntentAnalyzer().analyze(
+            request,
+            DefaultContextBuilder().build(request),
+        )
+
+        plans = ToolPlanner(default_tool_registry()).plan(
+            request=request,
+            intent_analysis=intent_analysis,
+        )
+
+        source = next(plan for plan in plans if plan.tool_name == "datasource.source.catalog.search")
+        target = next(plan for plan in plans if plan.tool_name == "datasource.target.catalog.search")
+        self.assertEqual(
+            {
+                "keyword": "mysql2pgsql_test_0709_source",
+                "datasourceType": "MYSQL",
+            },
+            source.arguments,
+        )
+        self.assertEqual(
+            {
+                "keyword": "mysql2pgsql_test_0709_target",
+                "datasourceType": "POSTGRESQL",
+            },
+            target.arguments,
+        )
 
     def test_follow_up_frontier_keeps_other_branch_from_durable_resource_ledger(self) -> None:
         """A split Java Run must not hide the target branch after reading source metadata."""
