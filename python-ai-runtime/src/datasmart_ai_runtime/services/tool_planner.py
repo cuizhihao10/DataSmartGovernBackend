@@ -107,10 +107,24 @@ class ToolPlanner:
         plans: list[ToolPlan] = []
 
         candidate_tools = set(intent_analysis.candidate_tools if intent_analysis else ())
+        structured_domains = set(intent_analysis.governance_domains if intent_analysis else ())
+        quality_domain_allowed = (
+            not structured_domains
+            or GovernanceDomain.DATA_QUALITY in structured_domains
+            or bool(
+                candidate_tools.intersection(
+                    {"quality.rule.suggest", "quality.remediation.task.draft"}
+                )
+            )
+        )
         datasource_id = self._resolve_datasource_id(request, context_blocks)
         business_goal = self._resolve_business_goal(request, context_blocks)
         planned_tool_names: set[str] = set()
-        wants_quality_remediation = self._wants_quality_remediation(request, objective, candidate_tools)
+        wants_quality_remediation = quality_domain_allowed and self._wants_quality_remediation(
+            request,
+            objective,
+            candidate_tools,
+        )
 
         sync_failure_recovery_plans = self._sync_failure_recovery_plans.build(
             request=request,
@@ -235,7 +249,8 @@ class ToolPlanner:
         wants_quality_rule = (
             "quality.rule.suggest" in candidate_tools
             or (
-                self._contains_any(objective, quality_keywords)
+                quality_domain_allowed
+                and self._contains_any(objective, quality_keywords)
                 and not wants_quality_remediation
                 and (quality_rule_action_requested or not wants_knowledge_rag)
             )
@@ -541,6 +556,8 @@ class ToolPlanner:
             for tool_name in completed_tool_names
             for next_tool in self._follow_up_tool_transitions().get(tool_name, ())
         }
+        if not self._is_cdc_streaming_workflow(request, previous_tool_plans):
+            transition_names.discard("sync.cdc.readiness.check")
         seen = {tool.name for tool in visible}
         for name in transition_names:
             tool = self._tools.get(name)
@@ -551,6 +568,45 @@ class ToolPlanner:
         return tuple(visible)
 
     @staticmethod
+    def _is_cdc_streaming_workflow(
+        request: AgentRequest,
+        previous_tool_plans: tuple[ToolPlan, ...],
+    ) -> bool:
+        """Expose the CDC-only probe only after realtime mode is explicit.
+
+        A metadata read is shared by all five product modes. Treating it as a CDC
+        signal would expose an irrelevant infrastructure probe during ordinary
+        full or scheduled transfers. The mode may come from a structured request
+        or from an earlier, server-admitted plan in a durable follow-up turn.
+        """
+
+        payload = request.variables.get("dataSyncRequest") or request.variables.get("data_sync_request")
+        candidates: list[object] = []
+        if isinstance(payload, dict):
+            candidates.append(payload.get("syncMode"))
+        candidates.extend((request.variables.get("syncMode"), request.variables.get("sync_mode")))
+        candidates.extend(plan.arguments.get("syncMode") for plan in previous_tool_plans)
+        if any(
+            str(value or "").strip().upper() in {"CDC_STREAMING", "REAL_TIME"}
+            for value in candidates
+        ):
+            return True
+
+        # Free-text requests reach the first read-only discovery turn before a
+        # draft plan exists, so there may be no structured syncMode to inherit yet.
+        # Exposing this LOW/read-only probe is safe only for explicit realtime
+        # wording; ordinary full and scheduled tasks keep the smaller frontier.
+        objective = str(request.objective or "").strip().lower()
+        return any(signal in objective for signal in (
+            "cdc",
+            "real-time",
+            "realtime",
+            "实时同步",
+            "实时传输",
+            "实时变更",
+        ))
+
+    @staticmethod
     def _follow_up_tool_transitions() -> dict[str, tuple[str, ...]]:
         """Describe safe model-visible lifecycle edges, not execution shortcuts."""
 
@@ -559,8 +615,19 @@ class ToolPlanner:
             "datasource.target.catalog.search": ("datasource.target.connection.test",),
             "datasource.source.connection.test": ("datasource.source.metadata.read",),
             "datasource.target.connection.test": ("datasource.target.metadata.read",),
-            "datasource.source.metadata.read": ("sync.task.draft.save",),
-            "datasource.target.metadata.read": ("sync.task.draft.save",),
+            "datasource.source.metadata.read": (
+                "sync.task.draft.save",
+                "sync.cdc.readiness.check",
+                "datasource.target-table.create.preview",
+            ),
+            "datasource.target.metadata.read": (
+                "sync.task.draft.save",
+                "sync.cdc.readiness.check",
+                "datasource.target-table.create.preview",
+            ),
+            "sync.cdc.readiness.check": ("sync.task.draft.save",),
+            "datasource.target-table.create.preview": ("datasource.target-table.create.apply",),
+            "datasource.target-table.create.apply": ("sync.task.draft.save",),
             "sync.task.draft.save": ("sync.task.precheck",),
             "sync.task.precheck": ("sync.task.publish", "knowledge.rag.query"),
             "sync.task.publish": ("sync.task.run",),
@@ -656,6 +723,21 @@ class ToolPlanner:
             arguments=normalized_arguments,
             parameter_validation=self._parameter_validator.validate(tool, normalized_arguments),
         )
+
+    def expand_confirmed_data_sync_lifecycle(self, draft_plan: ToolPlan) -> tuple[ToolPlan, ...]:
+        """Build and annotate the deterministic lifecycle after a validated sync draft.
+
+        This public boundary intentionally reuses the startup tool registry and the same
+        plan factory as ordinary planning.  Follow-up orchestration therefore cannot
+        fabricate an unregistered lifecycle node or skip parameter/risk normalization.
+        """
+
+        plans = self._data_sync_plans.build_confirmed_lifecycle_from_draft(
+            draft_plan=draft_plan,
+            tools=self._tools,
+            plan_factory=self._build_plan,
+        )
+        return self._dag_annotator.annotate(plans)
 
     def _build_plan(self, tool: ToolDefinition, reason: str, arguments: dict[str, object]) -> ToolPlan:
         """把工具定义转换为工具计划。

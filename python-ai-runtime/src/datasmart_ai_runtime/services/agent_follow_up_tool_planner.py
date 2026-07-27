@@ -54,6 +54,7 @@ class AgentFollowUpToolPlanningResult:
     budget_issue_codes: tuple[str, ...] = ()
     repeated_fingerprints: tuple[str, ...] = ()
     resource_reference_count: int = 0
+    platform_expanded_tool_names: tuple[str, ...] = ()
 
     @property
     def continues(self) -> bool:
@@ -77,6 +78,8 @@ class AgentFollowUpToolPlanningResult:
             "budgetIssueCodes": self.budget_issue_codes,
             "repeatedFingerprints": self.repeated_fingerprints,
             "resourceReferenceCount": self.resource_reference_count,
+            "platformExpandedToolCount": len(self.platform_expanded_tool_names),
+            "platformExpandedToolNames": self.platform_expanded_tool_names,
             "payloadPolicy": "LOW_SENSITIVE_TOOL_GOVERNANCE_ONLY",
         }
 
@@ -113,6 +116,11 @@ class AgentFollowUpToolPlanner:
         "sync.task.draft.save": {
             "sourceMetadataRef": ("datasource.source.metadata.read", "metadata"),
             "targetMetadataRef": ("datasource.target.metadata.read", "metadata"),
+            "cdcReadinessRef": ("sync.cdc.readiness.check", "ready"),
+        },
+        "sync.cdc.readiness.check": {
+            "sourceMetadataRef": ("datasource.source.metadata.read", "metadata"),
+            "targetMetadataRef": ("datasource.target.metadata.read", "metadata"),
         },
         "sync.task.precheck": {
             "draftRef": ("sync.task.draft.save", "templateId"),
@@ -144,6 +152,13 @@ class AgentFollowUpToolPlanner:
         },
         "sync.dirty-record.replay": {
             "diagnosisRef": ("sync.execution.diagnose", ""),
+        },
+        "datasource.target-table.create.preview": {
+            "sourceMetadataRef": ("datasource.source.metadata.read", "metadata"),
+            "targetMetadataRef": ("datasource.target.metadata.read", "metadata"),
+        },
+        "datasource.target-table.create.apply": {
+            "previewRef": ("datasource.target-table.create.preview", ""),
         },
         "datasource.schema.repair.preview": {
             "diagnosisRef": ("sync.execution.diagnose", ""),
@@ -238,19 +253,27 @@ class AgentFollowUpToolPlanner:
 
         resource_ledger = self._resource_ledger(plan, control_plane_feedback)
         resource_reference_groups = self._resource_reference_groups(plan, control_plane_feedback)
+        prerequisite_calls, prerequisite_call_ids = self._replace_cdc_draft_with_readiness_prerequisite(
+            tool_calls,
+            control_plane_feedback,
+        )
         governed_calls = tuple(
             self._inject_derived_arguments(call, resource_ledger, resource_reference_groups)
-            for call in tool_calls
+            for call in prerequisite_calls
+        )
+        effective_visible_tools = self._with_cdc_readiness_visible(
+            visible_tools,
+            required=bool(prerequisite_call_ids),
         )
         intake = self._intake_service.from_model_tool_calls(
             governed_calls,
             registered_tools=self._tool_planner.registered_tools(),
-            visible_tools=visible_tools,
+            visible_tools=effective_visible_tools,
         )
         report = intake.planning_report
         if report is None:
             return AgentFollowUpToolPlanningResult(
-                visible_tools=visible_tools,
+                visible_tools=effective_visible_tools,
                 proposed_count=len(tool_calls),
                 rejected_count=len(tool_calls),
             )
@@ -286,24 +309,36 @@ class AgentFollowUpToolPlanner:
                 repeated.append(fingerprint)
                 continue
             current_fingerprints.add(fingerprint)
+            governance_hints = {
+                **item.governance_hints,
+                "agentLoopFollowUp": True,
+                "toolCallFingerprint": fingerprint,
+                "agentLoopToolFingerprints": tuple(sorted(prior_fingerprints | current_fingerprints)),
+                "agentLoopResourceRefs": resource_ledger,
+                "agentLoopResourceRefGroups": resource_reference_groups,
+                **model_result_governance(item.tool_name),
+            }
+            if item.governance_hints.get("modelToolCallId") in prerequisite_call_ids:
+                governance_hints.update({
+                    "source": "platform_cdc_readiness_prerequisite",
+                    "toolCallOrigin": "MODEL_NATIVE_WITH_PLATFORM_PREREQUISITE",
+                    "platformPrerequisiteFor": "sync.task.draft.save",
+                })
             accepted.append(
                 replace(
                     item,
-                    governance_hints={
-                        **item.governance_hints,
-                        "agentLoopFollowUp": True,
-                        "toolCallFingerprint": fingerprint,
-                        "agentLoopToolFingerprints": tuple(sorted(prior_fingerprints | current_fingerprints)),
-                        "agentLoopResourceRefs": resource_ledger,
-                        "agentLoopResourceRefGroups": resource_reference_groups,
-                        **model_result_governance(item.tool_name),
-                    },
+                    governance_hints=governance_hints,
                 )
             )
 
+        accepted_plans, platform_expanded_tool_names = self._expand_confirmed_sync_lifecycle(
+            tuple(accepted),
+            prior_fingerprints=prior_fingerprints,
+        )
+
         return AgentFollowUpToolPlanningResult(
-            visible_tools=visible_tools,
-            accepted_tool_plans=tuple(accepted),
+            visible_tools=effective_visible_tools,
+            accepted_tool_plans=accepted_plans,
             proposed_count=len(report.candidates),
             accepted_before_repeat_guard=len(guarded.guarded_report.accepted_tool_plans),
             rejected_count=len(guarded.guarded_report.rejected_candidates),
@@ -318,7 +353,163 @@ class AgentFollowUpToolPlanner:
             budget_issue_codes=guarded.budget_issue_codes,
             repeated_fingerprints=tuple(repeated),
             resource_reference_count=len(resource_ledger),
+            platform_expanded_tool_names=platform_expanded_tool_names,
         )
+
+    def _with_cdc_readiness_visible(
+        self,
+        visible_tools: tuple[ToolDefinition, ...],
+        *,
+        required: bool,
+    ) -> tuple[ToolDefinition, ...]:
+        """Admit the safe CDC prerequisite when platform governance inserted it."""
+
+        if not required or any(tool.name == "sync.cdc.readiness.check" for tool in visible_tools):
+            return visible_tools
+        readiness = next(
+            (
+                tool
+                for tool in self._tool_planner.registered_tools()
+                if tool.name == "sync.cdc.readiness.check"
+            ),
+            None,
+        )
+        return (*visible_tools, readiness) if readiness is not None else visible_tools
+
+    @staticmethod
+    def _replace_cdc_draft_with_readiness_prerequisite(
+        tool_calls: tuple[ModelToolCall, ...],
+        feedback: AgentControlPlaneFeedbackSnapshot | None,
+    ) -> tuple[tuple[ModelToolCall, ...], frozenset[str]]:
+        """Run the real CDC gate before accepting a model-proposed realtime draft.
+
+        The provider may jump directly from metadata to ``sync.task.draft.save``.
+        A rejected call would leave the user at a misleading clarification screen,
+        while accepting it would bypass the CDC runtime boundary. Reusing the
+        provider's call id for the prerequisite preserves the native tool-result
+        protocol: the next model turn receives a result for the call it made, but
+        the platform has safely narrowed the action to a read-only readiness check.
+        """
+
+        readiness_completed = any(
+            item.tool_name == "sync.cdc.readiness.check"
+            and item.status.value == "succeeded"
+            for item in (feedback.feedback_items if feedback is not None else ())
+        )
+        if readiness_completed:
+            return tool_calls, frozenset()
+
+        model_already_requested_readiness = any(
+            call.name == "sync.cdc.readiness.check" for call in tool_calls
+        )
+        rewritten: list[ModelToolCall] = []
+        prerequisite_call_ids: set[str] = set()
+        for call in tool_calls:
+            if call.name != "sync.task.draft.save":
+                rewritten.append(call)
+                continue
+            try:
+                parsed = json.loads(call.arguments or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = {}
+            arguments = dict(parsed) if isinstance(parsed, dict) else {}
+            sync_mode = str(arguments.get("syncMode") or "FULL").strip().upper()
+            if sync_mode not in {"CDC_STREAMING", "REAL_TIME"}:
+                rewritten.append(call)
+                continue
+
+            # If the model proposed both tools, execute only the readiness check in
+            # this turn. The draft must be proposed again after a positive result.
+            if model_already_requested_readiness:
+                continue
+            call_id = str(call.call_id or "").strip()
+            rewritten.append(ModelToolCall(
+                call_id=call.call_id,
+                type=call.type,
+                name="sync.cdc.readiness.check",
+                arguments=json.dumps(
+                    {"objectMappings": arguments.get("objectMappings", [])},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                raw_call={
+                    "source": "platform_cdc_readiness_prerequisite",
+                    "parentToolName": "sync.task.draft.save",
+                },
+            ))
+            if call_id:
+                prerequisite_call_ids.add(call_id)
+        return tuple(rewritten), frozenset(prerequisite_call_ids)
+
+    def _expand_confirmed_sync_lifecycle(
+        self,
+        accepted_plans: tuple[ToolPlan, ...],
+        *,
+        prior_fingerprints: set[str],
+    ) -> tuple[tuple[ToolPlan, ...], tuple[str, ...]]:
+        """Attach deterministic lifecycle nodes to an accepted sync draft.
+
+        Only ``sync.task.draft.save`` comes from the model's native tool call.  The
+        remaining nodes are generated from the platform registry and linked through
+        output references.  They deliberately omit ``modelToolCallId`` so audit views
+        can distinguish model choice from platform lifecycle expansion.
+        """
+
+        if not any(plan.tool_name == "sync.task.draft.save" for plan in accepted_plans):
+            return accepted_plans, ()
+
+        expanded: list[ToolPlan] = []
+        platform_names: list[str] = []
+        fingerprints = set(prior_fingerprints)
+        for accepted in accepted_plans:
+            if accepted.tool_name != "sync.task.draft.save":
+                expanded.append(accepted)
+                fingerprints.add(self.fingerprint(accepted.tool_name, accepted.arguments))
+                continue
+
+            lifecycle = self._tool_planner.expand_confirmed_data_sync_lifecycle(accepted)
+            inherited_hints = {
+                key: value
+                for key, value in accepted.governance_hints.items()
+                if key in {
+                    "workspaceKey",
+                    "memoryNamespace",
+                    "cacheNamespace",
+                    "artifactNamespace",
+                    "agentLoopResourceRefs",
+                    "agentLoopResourceRefGroups",
+                }
+            }
+            parent_call_id = accepted.governance_hints.get("modelToolCallId")
+            for index, lifecycle_plan in enumerate(lifecycle):
+                fingerprint = self.fingerprint(lifecycle_plan.tool_name, lifecycle_plan.arguments)
+                fingerprints.add(fingerprint)
+                if index == 0:
+                    expanded.append(replace(
+                        lifecycle_plan,
+                        governance_hints={
+                            **lifecycle_plan.governance_hints,
+                            "agentLoopToolFingerprints": tuple(sorted(fingerprints)),
+                        },
+                    ))
+                    continue
+
+                platform_names.append(lifecycle_plan.tool_name)
+                tail_hints = {
+                    **lifecycle_plan.governance_hints,
+                    **inherited_hints,
+                    "source": "platform_sync_lifecycle_expansion",
+                    "agentLoopFollowUp": True,
+                    "platformLifecycleExpansion": True,
+                    "confirmationScope": "CREATE_CONFIGURE_AND_START_SYNC_TASK",
+                    "parentModelToolCallId": parent_call_id,
+                    "toolCallFingerprint": fingerprint,
+                    "agentLoopToolFingerprints": tuple(sorted(fingerprints)),
+                }
+                tail_hints.pop("modelToolCallId", None)
+                expanded.append(replace(lifecycle_plan, governance_hints=tail_hints))
+
+        return tuple(expanded), tuple(platform_names)
 
     @staticmethod
     def _apply_state_guards(
@@ -340,6 +531,7 @@ class AgentFollowUpToolPlanner:
         latest_feedback_tool = ""
         catalog_resolutions: dict[str, dict[str, object]] = {}
         metadata_summaries: dict[str, dict[str, object]] = {}
+        cdc_readiness_result: dict[str, object] = {}
         if feedback is not None:
             for item in reversed(feedback.feedback_items):
                 if not latest_feedback_tool:
@@ -357,13 +549,19 @@ class AgentFollowUpToolPlanner:
                     item.tool_name in {
                         "datasource.source.metadata.read",
                         "datasource.target.metadata.read",
+                        "datasource.target-table.create.apply",
                     }
                     and item.status.value == "succeeded"
                 ):
                     summary = item.result.get("summary")
                     if isinstance(summary, dict):
-                        existing = metadata_summaries.get(item.tool_name)
-                        metadata_summaries[item.tool_name] = (
+                        summary_key = (
+                            "datasource.target.metadata.read"
+                            if item.tool_name == "datasource.target-table.create.apply"
+                            else item.tool_name
+                        )
+                        existing = metadata_summaries.get(summary_key)
+                        metadata_summaries[summary_key] = (
                             dict(summary)
                             if existing is None
                             else AgentFollowUpToolPlanner._merge_metadata_summaries(
@@ -371,6 +569,12 @@ class AgentFollowUpToolPlanner:
                                 older=summary,
                             )
                         )
+                if (
+                    item.tool_name == "sync.cdc.readiness.check"
+                    and item.status.value == "succeeded"
+                    and not cdc_readiness_result
+                ):
+                    cdc_readiness_result = dict(item.result)
                 if item.tool_name != "sync.task.import.dry-run":
                     continue
                 value = item.result.get("repairRequired")
@@ -405,6 +609,7 @@ class AgentFollowUpToolPlanner:
         preview_apply_tools = {
             "sync.dirty-record.quarantine.apply",
             "datasource.schema.repair.apply",
+            "datasource.target-table.create.apply",
         }
         batch_apply_tools = {
             candidate.tool_plan.tool_name
@@ -460,6 +665,14 @@ class AgentFollowUpToolPlanner:
             elif (
                 candidate.accepted
                 and plan is not None
+                and plan.tool_name == "datasource.target-table.create.apply"
+                and "datasource.target-table.create.preview" not in succeeded_tools
+            ):
+                reject_code = "MODEL_TOOL_CALL_TARGET_TABLE_CREATE_PREVIEW_REQUIRED"
+                reject_message = "创建目标表前必须先根据可信源表元数据生成预览，并由用户确认完整字段定义。"
+            elif (
+                candidate.accepted
+                and plan is not None
                 and plan.tool_name == "datasource.schema.repair.apply"
                 and "datasource.schema.repair.preview" not in succeeded_tools
             ):
@@ -473,6 +686,41 @@ class AgentFollowUpToolPlanner:
             ):
                 reject_code = "MODEL_TOOL_CALL_RECOVERY_REQUIRES_NEXT_TURN"
                 reject_message = "结构或隔离修复应用后必须先取得真实执行结果，再在下一轮发起重试或重放。"
+            elif (
+                candidate.accepted
+                and plan is not None
+                and plan.tool_name == "sync.task.draft.save"
+                and "datasource.target-table.create.apply" in batch_apply_tools
+            ):
+                reject_code = "MODEL_TOOL_CALL_TARGET_TABLE_REFRESH_REQUIRES_NEXT_TURN"
+                reject_message = "目标表创建完成后必须先重新读取真实目标元数据，再在下一轮保存任务草稿。"
+            elif (
+                candidate.accepted
+                and plan is not None
+                and plan.tool_name == "sync.task.draft.save"
+                and str(plan.arguments.get("syncMode") or "FULL").strip().upper()
+                in {"CDC_STREAMING", "REAL_TIME"}
+                and "sync.cdc.readiness.check" not in succeeded_tools
+            ):
+                reject_code = "MODEL_TOOL_CALL_CDC_READINESS_REQUIRED"
+                reject_message = (
+                    "实时同步任务保存前必须先完成真实 CDC 准入检查，不能仅凭元数据或模型判断创建草稿。"
+                )
+            elif (
+                candidate.accepted
+                and plan is not None
+                and plan.tool_name == "sync.task.draft.save"
+                and str(plan.arguments.get("syncMode") or "FULL").strip().upper()
+                in {"CDC_STREAMING", "REAL_TIME"}
+                and cdc_readiness_result.get("ready") is not True
+            ):
+                reject_code = "MODEL_TOOL_CALL_CDC_READINESS_BLOCKED"
+                issue_codes = cdc_readiness_result.get("issueCodes")
+                rendered_codes = ", ".join(str(code) for code in issue_codes) if isinstance(issue_codes, list) else ""
+                reject_message = (
+                    "CDC 准入检查存在阻断项，当前不能保存实时同步任务草稿。"
+                    + (f"阻断编码：{rendered_codes}。" if rendered_codes else "请查看检查详情并按建议修复。")
+                )
             elif (
                 candidate.accepted
                 and plan is not None
@@ -543,7 +791,10 @@ class AgentFollowUpToolPlanner:
                         "读取元数据前必须先取得同一端数据源的真实连接测试成功记录，"
                         "不能跳过连接验证或由模型直接指定内部数据源 ID。"
                     )
-            elif candidate.accepted and plan is not None and plan.tool_name == "sync.task.draft.save":
+            elif candidate.accepted and plan is not None and plan.tool_name in {
+                "sync.cdc.readiness.check",
+                "sync.task.draft.save",
+            }:
                 reject_code, reject_message = AgentFollowUpToolPlanner._validate_sync_draft_against_metadata(
                     plan.arguments,
                     metadata_summaries,
@@ -636,8 +887,10 @@ class AgentFollowUpToolPlanner:
             field_mappings = raw_mapping.get("fieldMappings")
             if not isinstance(field_mappings, list):
                 continue
-            source_fields = AgentFollowUpToolPlanner._metadata_field_names(source_object)
-            target_fields = AgentFollowUpToolPlanner._metadata_field_names(target_object)
+            source_field_metadata = AgentFollowUpToolPlanner._metadata_fields(source_object)
+            target_field_metadata = AgentFollowUpToolPlanner._metadata_fields(target_object)
+            source_fields = set(source_field_metadata)
+            target_fields = set(target_field_metadata)
             for field_mapping in field_mappings:
                 if not isinstance(field_mapping, dict) or field_mapping.get("syncEnabled") is False:
                     continue
@@ -654,6 +907,38 @@ class AgentFollowUpToolPlanner:
                         "MODEL_TOOL_CALL_TARGET_FIELD_NOT_IN_METADATA",
                         f"第 {index} 条映射的目标字段“{target_field}”不存在于真实目标表中。"
                         "请改为目标表已有字段，或经用户授权后进入结构修复流程。",
+                    )
+                if not source_field or not target_field:
+                    continue
+                source_column = source_field_metadata.get(source_field.lower())
+                target_column = target_field_metadata.get(target_field.lower())
+                source_type = str(
+                    field_mapping.get("sourceType")
+                    or (source_column or {}).get("dataTypeName")
+                    or ""
+                ).strip()
+                target_type = str(
+                    field_mapping.get("targetType")
+                    or (target_column or {}).get("dataTypeName")
+                    or ""
+                ).strip()
+                transform = str(field_mapping.get("transform") or "").strip()
+                declared_compatible = field_mapping.get("typeCompatible") is not False
+                if (
+                    not transform
+                    and (
+                        not declared_compatible
+                        or not AgentFollowUpToolPlanner._types_implicitly_compatible(
+                            source_type,
+                            target_type,
+                        )
+                    )
+                ):
+                    return (
+                        "MODEL_TOOL_CALL_FIELD_TYPE_INCOMPATIBLE",
+                        f"第 {index} 条映射的字段“{source_field} -> {target_field}”类型不兼容："
+                        f"源端为 {source_type or '未知类型'}，目标端为 {target_type or '未知类型'}。"
+                        "请明确配置转换表达式、关闭该字段同步，或修改目标字段类型后重新预检。",
                     )
         return "", ""
 
@@ -719,14 +1004,87 @@ class AgentFollowUpToolPlanner:
 
     @staticmethod
     def _metadata_field_names(metadata_object: dict[str, object]) -> set[str]:
+        return set(AgentFollowUpToolPlanner._metadata_fields(metadata_object))
+
+    @staticmethod
+    def _metadata_fields(metadata_object: dict[str, object] | None) -> dict[str, dict[str, object]]:
+        if metadata_object is None:
+            return {}
         columns = metadata_object.get("columns")
         if not isinstance(columns, list):
-            return set()
+            return {}
         return {
-            str(item.get("columnName") or "").strip().lower()
+            str(item.get("columnName") or "").strip().lower(): item
             for item in columns
             if isinstance(item, dict) and str(item.get("columnName") or "").strip()
         }
+
+    @staticmethod
+    def _types_implicitly_compatible(source_type: str, target_type: str) -> bool:
+        """Allow only conversions that do not require a business decision.
+
+        JDBC type names vary by connector, so the guard compares normalized type
+        families.  Unknown metadata is left to the existing Java precheck instead
+        of being guessed as incompatible.  Character-to-number, timestamp-to-date,
+        decimal-to-integer and other narrowing/semantic conversions require an
+        explicit transform selected by the user.
+        """
+
+        source = AgentFollowUpToolPlanner._normalized_type(source_type)
+        target = AgentFollowUpToolPlanner._normalized_type(target_type)
+        if not source or not target:
+            return True
+        if source == target:
+            return True
+        source_family, source_rank = AgentFollowUpToolPlanner._type_family(source)
+        target_family, target_rank = AgentFollowUpToolPlanner._type_family(target)
+        if source_family == "UNKNOWN" or target_family == "UNKNOWN":
+            return True
+        if source_family == target_family == "STRING":
+            return True
+        if source_family == target_family == "INTEGER":
+            return source_rank <= target_rank
+        if source_family == "INTEGER" and target_family == "DECIMAL":
+            return True
+        if source_family == "DATE" and target_family == "TIMESTAMP":
+            return True
+        return False
+
+    @staticmethod
+    def _normalized_type(value: str) -> str:
+        normalized = str(value or "").strip().upper()
+        for token in (" UNSIGNED", " WITHOUT TIME ZONE", " WITH TIME ZONE"):
+            normalized = normalized.replace(token, "")
+        return normalized.split("(", 1)[0].strip()
+
+    @staticmethod
+    def _type_family(value: str) -> tuple[str, int]:
+        if value in {"TINYINT", "INT1"}:
+            return "INTEGER", 1
+        if value in {"SMALLINT", "INT2"}:
+            return "INTEGER", 2
+        if value in {"MEDIUMINT", "INTEGER", "INT", "INT4", "SERIAL"}:
+            return "INTEGER", 3
+        if value in {"BIGINT", "INT8", "BIGSERIAL"}:
+            return "INTEGER", 4
+        if value in {"DECIMAL", "NUMERIC", "REAL", "FLOAT", "DOUBLE", "DOUBLE PRECISION"}:
+            return "DECIMAL", 1
+        if value in {
+            "CHAR", "NCHAR", "VARCHAR", "NVARCHAR", "CHARACTER VARYING",
+            "TEXT", "TINYTEXT", "MEDIUMTEXT", "LONGTEXT", "CLOB",
+        }:
+            return "STRING", 1
+        if value == "DATE":
+            return "DATE", 1
+        if value in {"TIMESTAMP", "DATETIME"}:
+            return "TIMESTAMP", 1
+        if value in {"BOOL", "BOOLEAN", "BIT"}:
+            return "BOOLEAN", 1
+        if value in {"BINARY", "VARBINARY", "BYTEA", "BLOB", "LONGBLOB"}:
+            return "BINARY", 1
+        if value in {"JSON", "JSONB"}:
+            return "JSON", 1
+        return "UNKNOWN", 0
 
     @staticmethod
     def _missing_object_message(
@@ -778,6 +1136,11 @@ class AgentFollowUpToolPlanner:
             # emits an undeclared datasourceId, only the trusted audit reference
             # below may select the resource used by Java.
             arguments.pop("datasourceId", None)
+        if call.name == "sync.cdc.readiness.check":
+            # Both endpoint resources are control-plane facts derived from metadata
+            # outputs; model-proposed IDs must never survive into the ToolPlan.
+            arguments.pop("sourceDatasourceId", None)
+            arguments.pop("targetDatasourceId", None)
         for argument_name, (source_tool, path) in cls.DERIVED_REFERENCES.get(call.name, {}).items():
             source = resource_ledger.get(source_tool)
             if source is None or not source.get("auditId"):
@@ -801,6 +1164,20 @@ class AgentFollowUpToolPlanner:
                 for reference in references
                 if reference.get("auditId")
             ]
+        if call.name == "sync.task.draft.save":
+            created_target = resource_ledger.get("datasource.target-table.create.apply")
+            if created_target is not None and created_target.get("auditId"):
+                created_reference = {
+                    "fromTool": "datasource.target-table.create.apply",
+                    "fromAuditId": created_target["auditId"],
+                    "fromRunId": created_target.get("runId"),
+                    "path": "metadata",
+                }
+                # Once a target table was created, the refreshed metadata returned by
+                # the apply tool is authoritative; stale pre-create metadata must not
+                # be reused by the draft validator or Java adapter.
+                arguments["targetMetadataRef"] = created_reference
+                arguments["targetMetadataRefs"] = [created_reference]
         return replace(
             call,
             arguments=json.dumps(arguments, ensure_ascii=False, sort_keys=True),

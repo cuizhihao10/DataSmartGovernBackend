@@ -291,12 +291,15 @@ class AgentControlPlaneFeedbackCollector:
         """判断是否具备进入二轮模型推理的基础条件。
 
         失败、拒绝和跳过都可以作为“工具结果语义”回填给模型，让模型解释原因或建议下一步；但等待审批
-        表示真实工具尚未完成，此时不应让模型假装拿到了结果。因此这里把 `waiting_approval` 视为阻断项。
+        和 PENDING 都表示真实工具尚未完成，此时不应让模型假装拿到了结果。
         """
 
         if expected_tool_call_count == 0 or missing_tool_call_ids:
             return False
-        return status_counts.get(ToolExecutionFeedbackStatus.WAITING_APPROVAL.value, 0) == 0
+        return (
+            status_counts.get(ToolExecutionFeedbackStatus.WAITING_APPROVAL.value, 0) == 0
+            and status_counts.get(ToolExecutionFeedbackStatus.PENDING.value, 0) == 0
+        )
 
     @staticmethod
     def _recommended_actions(
@@ -319,6 +322,11 @@ class AgentControlPlaneFeedbackCollector:
             return (
                 "存在等待审批的工具，当前不应触发自动二轮推理或继续执行后续高风险动作。",
                 "建议前端展示审批入口，并由项目负责人、审批人或审计员处理。",
+            )
+        if status_counts.get(ToolExecutionFeedbackStatus.PENDING.value, 0) > 0:
+            return (
+                "存在仍在规划、排队或执行中的工具，当前不能进入二轮模型推理。",
+                "建议等待 Java 控制面状态事件，或稍后按 runId 查询最新执行结果。",
             )
         if status_counts.get(ToolExecutionFeedbackStatus.FAILED.value, 0) > 0:
             return (

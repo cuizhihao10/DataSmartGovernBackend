@@ -14,6 +14,7 @@ tool_calls、写 runtime events、回写模型网关 usage”全部塞进一个�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 import re
 import time
 from typing import Any, Iterable
@@ -57,6 +58,19 @@ from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback impo
 from datasmart_ai_runtime.services.runtime_events.runtime_event_recorder import RuntimeEventRecorder
 from datasmart_ai_runtime.services.tools import ToolActionIntakeService
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    """读取正整数环境配置，空值、非法值和非正数均回退到安全默认值。"""
+
+    raw_value = os.getenv(name)
+    if raw_value is None or not raw_value.strip():
+        return default
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
 
 
 @dataclass(frozen=True)
@@ -112,6 +126,7 @@ class AgentModelIntentNode:
         tool_execution_feedback_provider: ModelToolExecutionFeedbackProvider | None = None,
         tool_result_feedback_builder: ModelToolResultFeedbackBuilder | None = None,
         model_query_engine: ModelQueryEngine | None = None,
+        max_output_tokens: int | None = None,
     ) -> None:
         self._model_providers = model_providers
         self._model_gateway = model_gateway
@@ -125,6 +140,10 @@ class AgentModelIntentNode:
         self._model_query_engine = model_query_engine or ModelQueryEngine(
             model_gateway=self._model_gateway,
             model_providers=self._model_providers,
+        )
+        self._max_output_tokens = max_output_tokens or _positive_int_env(
+            "DATASMART_AI_MODEL_INTENT_MAX_OUTPUT_TOKENS",
+            512,
         )
         self._tool_feedback_turn_service = AgentModelToolFeedbackTurnService(
             model_providers=self._model_providers,
@@ -194,8 +213,10 @@ class AgentModelIntentNode:
             trace_id=request.variables.get("traceId") or request.variables.get("trace_id"),
             available_tools=available_tools,
             tool_choice=tool_choice,
+            max_output_tokens=self._max_output_tokens,
             provider_metadata=build_model_provider_metadata(model_gateway_context),
         )
+        use_streaming = self._should_use_streaming(request, selected_route)
         public_request = self._build_public_request_view(
             request,
             context_blocks,
@@ -213,11 +234,12 @@ class AgentModelIntentNode:
                 "requestedModelName": selected_route.model_name,
                 "visibleToolCount": len(available_tools),
                 "toolChoice": tool_choice,
-                "streaming": self._should_use_streaming(request),
+                "streaming": use_streaming,
+                "maxOutputTokens": self._max_output_tokens,
             },
         )
         try:
-            if self._should_use_streaming(request):
+            if use_streaming:
                 return self._invoke_streaming(
                     model_request=model_request,
                     request=request,
@@ -570,18 +592,24 @@ class AgentModelIntentNode:
         stream_method = getattr(self._model_providers, "stream")
         return stream_method(model_request)
 
-    def _should_use_streaming(self, request: AgentRequest) -> bool:
+    def _should_use_streaming(self, request: AgentRequest, selected_route: ModelRoute) -> bool:
         """判断本次模型意图节点是否优先走 streaming。
 
-        默认启用 streaming；旧 Provider 没有 `stream(...)` 时自动回到非流式路径。请求变量允许显式关闭。
+        请求变量可以关闭 streaming，但不能强制不具备原生流式能力的 Provider 走兼容伪流式路径。
+        Responses API 当前需要完整响应后才能解析 function calls，因此应走非流式 Query Engine；
+        外层 NDJSON 进度流仍会持续发送真实阶段事件和心跳。
         """
 
         # 不能用 `a or b` 取配置：显式 False 会被当成空值丢弃，导致调用方无法关闭流式路径。
         explicit = request.variables.get("streamModelIntent")
         if explicit is None:
             explicit = request.variables.get("stream_model_intent")
-        if explicit is not None:
-            return self._truthy(explicit)
+        requested = True if explicit is None else self._truthy(explicit)
+        if not requested:
+            return False
+        supports_streaming = getattr(self._model_providers, "supports_streaming", None)
+        if callable(supports_streaming):
+            return bool(supports_streaming(selected_route))
         return callable(getattr(self._model_providers, "stream", None))
 
     def _record_model_usage(

@@ -33,6 +33,8 @@ public class DataSourceSchemaRepairPlan {
     private Boolean currentNullable;
     private String requestedType;
     private Integer requestedLength;
+    /** CREATE_TABLE 的规范化字段清单 JSON；不包含原始 DDL 或默认值表达式。 */
+    private String columnsJson;
     private String metadataDigest;
     private String impactSummary;
     private String confirmationDigest;

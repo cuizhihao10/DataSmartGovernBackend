@@ -99,6 +99,47 @@ class ModelToolCallBudgetGuardTest(unittest.TestCase):
         self.assertEqual(1, guarded.accepted_count_after_guard)
         self.assertIn("MODEL_TOOL_CALL_BUDGET_HIGH_RISK_COUNT_EXCEEDED", guarded.budget_issue_codes)
 
+    def test_high_risk_budget_blocks_automatic_execution_but_allows_approval_plan(self) -> None:
+        """零额度应禁止自动高风险动作，但不能阻止待审批动作进入人工确认计划。"""
+
+        tools = (
+            self._tool(
+                "task.draft.approval",
+                risk_level=ToolRiskLevel.HIGH,
+                execution_mode=ToolExecutionMode.APPROVAL_REQUIRED,
+            ),
+            self._tool(
+                "task.persist.sync",
+                risk_level=ToolRiskLevel.HIGH,
+                execution_mode=ToolExecutionMode.SYNC,
+            ),
+        )
+        report = ModelToolCallPlanner().plan(
+            tool_calls=(
+                ModelToolCall(
+                    call_id="call-approval",
+                    name="task.draft.approval",
+                    arguments='{"datasourceId":"ds-a"}',
+                ),
+                ModelToolCall(
+                    call_id="call-sync",
+                    name="task.persist.sync",
+                    arguments='{"datasourceId":"ds-b"}',
+                ),
+            ),
+            registered_tools=tools,
+            visible_tools=tools,
+        )
+
+        guarded = ModelToolCallBudgetGuard(
+            ModelToolCallBudgetPolicy(max_high_risk_tool_calls=0, max_auto_executable_tool_calls=10)
+        ).evaluate(report)
+
+        self.assertEqual(1, guarded.accepted_count_after_guard)
+        self.assertEqual("task.draft.approval", guarded.guarded_report.accepted_tool_plans[0].tool_name)
+        self.assertEqual("task.persist.sync", guarded.guarded_report.rejected_candidates[0].resolved_tool_name)
+        self.assertIn("MODEL_TOOL_CALL_BUDGET_HIGH_RISK_COUNT_EXCEEDED", guarded.budget_issue_codes)
+
     @staticmethod
     def _planning_report(*tool_calls: ModelToolCall):
         """生成只读低风险工具的规划报告，供预算守卫测试复用。"""

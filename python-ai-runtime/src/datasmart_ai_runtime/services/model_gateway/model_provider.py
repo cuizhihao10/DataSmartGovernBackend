@@ -16,6 +16,7 @@ from datasmart_ai_runtime.domain.contracts import (
     ModelInvocationChunk,
     ModelInvocationRequest,
     ModelInvocationResult,
+    ModelRoute,
     ProviderType,
 )
 from datasmart_ai_runtime.services.model_gateway.openai_compatible_provider import (
@@ -56,6 +57,12 @@ class DryRunModelProvider:
             latency_ms=latency_ms,
         )
 
+    @staticmethod
+    def supports_streaming() -> bool:
+        """Dry-run 的单片段流用于协议开发，可被上层安全地当作流式能力。"""
+
+        return True
+
     def stream(self, request: ModelInvocationRequest) -> Iterator[ModelInvocationChunk]:
         """以单片段形式返回 dry-run 结果。
 
@@ -72,7 +79,6 @@ class DryRunModelProvider:
             sequence=1,
             error_code=result.error_code,
         )
-
 
 class ModelProviderRegistry:
     """按 Provider 类型管理模型调用实现。
@@ -97,6 +103,21 @@ class ModelProviderRegistry:
         if provider is None:
             raise ValueError(f"尚未注册模型 Provider：{request.route.provider_type}")
         return provider.invoke(request)
+
+    def supports_streaming(self, route: ModelRoute) -> bool:
+        """返回路由对应 Provider 是否具备原生、可观测的流式能力。
+
+        不能只检查 ``stream`` 方法是否存在：部分 Provider 为兼容统一接口，会先执行完整 ``invoke``
+        再包装成单个 chunk。把这种兼容路径宣称为 streaming 会丢失 usage/健康回灌，并误导前端。
+        """
+
+        provider = self._providers.get(route.provider_type)
+        if provider is None:
+            return False
+        capability = getattr(provider, "supports_streaming", None)
+        if callable(capability):
+            return bool(capability())
+        return callable(getattr(provider, "stream", None))
 
     def stream(self, request: ModelInvocationRequest) -> Iterator[ModelInvocationChunk]:
         """按路由执行流式模型调用。

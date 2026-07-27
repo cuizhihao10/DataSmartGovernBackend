@@ -84,6 +84,9 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
         Map<String, Object> arguments = context.audit().getPlanArguments();
         String syncMode = normalizeSyncMode(arguments.get("syncMode"));
         boolean customSqlMode = "CUSTOM_SQL_QUERY".equals(syncMode);
+        if ("CDC_STREAMING".equals(syncMode)) {
+            assertCdcReadiness(context, arguments);
+        }
         String scheduleConfig = validateAndResolveScheduleConfig(arguments, syncMode);
         String customSqlConfig = validateAndBuildCustomSqlConfig(arguments, customSqlMode);
         List<Object> sourceMetadataReferences = referenceCandidates(
@@ -734,6 +737,27 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
             return Boolean.parseBoolean(text);
         }
         throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST, missingMessage);
+    }
+
+    /**
+     * A realtime draft may only be saved after the dedicated read-only probe has passed.
+     * Metadata presence or a model statement is never treated as CDC readiness evidence.
+     */
+    private void assertCdcReadiness(AgentToolExecutionContext context, Map<String, Object> arguments) {
+        Object readinessReference = arguments.get("cdcReadinessRef");
+        boolean ready = referencedBoolean(
+                context,
+                readinessReference,
+                CdcReadinessToolAdapter.TOOL_CODE,
+                "ready",
+                "实时同步任务缺少已通过的 CDC 准入检查结果"
+        );
+        if (!ready) {
+            throw new PlatformBusinessException(
+                    PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "CDC 准入检查存在阻断项，当前不能保存实时同步任务草稿；请先修复检查详情中的数据库、Kafka 或运行时问题"
+            );
+        }
     }
 
     private Map<String, Object> post(AgentToolExecutionContext context, String uri, Object body, Object... variables) {

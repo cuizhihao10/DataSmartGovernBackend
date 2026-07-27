@@ -78,6 +78,7 @@ public class GatewayPythonRuntimeSignatureFilter implements GlobalFilter, Ordere
             "X-Gateway-Route-Prefix",
             PlatformContextHeaders.TRACE_ID,
             PlatformContextHeaders.TENANT_ID,
+            PlatformContextHeaders.PROJECT_ID,
             PlatformContextHeaders.ACTOR_ID,
             PlatformContextHeaders.ACTOR_ROLE,
             PlatformContextHeaders.ACTOR_TYPE,

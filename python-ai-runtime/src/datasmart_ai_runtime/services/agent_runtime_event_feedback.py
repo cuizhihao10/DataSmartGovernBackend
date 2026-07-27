@@ -380,7 +380,13 @@ class AgentRuntimeEventFeedbackBridge:
             ToolExecutionFeedbackStatus.REJECTED,
         }:
             return True
-        return existing.status == ToolExecutionFeedbackStatus.SKIPPED and from_event.status == ToolExecutionFeedbackStatus.WAITING_APPROVAL
+        return (
+            existing.status in {
+                ToolExecutionFeedbackStatus.PENDING,
+                ToolExecutionFeedbackStatus.SKIPPED,
+            }
+            and from_event.status == ToolExecutionFeedbackStatus.WAITING_APPROVAL
+        )
 
     @staticmethod
     def _status_counts(items: tuple[AgentControlPlaneFeedbackItem, ...]) -> dict[str, int]:
@@ -402,7 +408,10 @@ class AgentRuntimeEventFeedbackBridge:
 
         if expected_tool_call_count == 0 or missing_tool_call_ids:
             return False
-        return status_counts.get(ToolExecutionFeedbackStatus.WAITING_APPROVAL.value, 0) == 0
+        return (
+            status_counts.get(ToolExecutionFeedbackStatus.WAITING_APPROVAL.value, 0) == 0
+            and status_counts.get(ToolExecutionFeedbackStatus.PENDING.value, 0) == 0
+        )
 
     @staticmethod
     def _recommended_actions(
@@ -422,6 +431,8 @@ class AgentRuntimeEventFeedbackBridge:
             return prefix + ("仍有工具反馈缺失，继续等待 Java 执行事件或稍后按 runId replay。",)
         if status_counts.get(ToolExecutionFeedbackStatus.WAITING_APPROVAL.value, 0) > 0:
             return prefix + ("存在等待审批的工具，应停止自动 loop 并展示审批入口。",)
+        if status_counts.get(ToolExecutionFeedbackStatus.PENDING.value, 0) > 0:
+            return prefix + ("存在仍在执行中的工具，应等待 Java 控制面终态事件后再继续。",)
         if second_turn_eligible:
             return prefix + ("事件反馈已满足二轮推理基础条件，可交给 loop policy 做预算、步数和超时判断。",)
         return prefix + ("事件反馈已合并，但暂不满足自动二轮推理条件。",)

@@ -466,10 +466,13 @@ def build_plan_response(
         autonomous_resolution_stopped=bool(
             (
                 durable_model_tool_loop is not None
-                and durable_model_tool_loop.stopped_reason in {
-                    "MODEL_COMPLETED_WITHOUT_MORE_TOOLS",
-                    "MODEL_TURN_LIMIT_REACHED",
-                }
+                and (
+                    durable_model_tool_loop.stopped_reason in {
+                        "MODEL_COMPLETED_WITHOUT_MORE_TOOLS",
+                        "MODEL_TURN_LIMIT_REACHED",
+                    }
+                    or durable_model_tool_loop.stopped_reason.startswith("STOP_")
+                )
             )
             or (
                 second_turn_result is not None

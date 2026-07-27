@@ -536,6 +536,125 @@ class AgentConversationResponseTest(unittest.TestCase):
         self.assertEqual("CDC_STREAMING", intent["syncMode"])
         self.assertEqual("UPDATE", intent["writeStrategy"])
 
+    def test_scheduled_mode_adds_frequency_and_start_time_questions(self) -> None:
+        response = build_plan_response(
+            AgentRequest(
+                tenant_id="10",
+                project_id="101",
+                actor_id="1001",
+                objective="创建一个定期全量任务，把客户表每天同步到 PostgreSQL",
+            ),
+            build_default_orchestrator(),
+        )
+
+        conversation = response["agentConversation"]
+
+        self.assertEqual("WAITING_CLARIFICATION", conversation["phase"])
+        self.assertEqual(
+            [
+                "sourceDatasourceId",
+                "targetDatasourceId",
+                "objectMappings",
+                "scheduleFrequency",
+                "scheduleStartTime",
+            ],
+            conversation["missingParameters"],
+        )
+        questions = {item["parameterName"]: item for item in conversation["clarificationQuestions"]}
+        self.assertEqual("SCHEDULE_FREQUENCY_SELECT", questions["scheduleFrequency"]["inputType"])
+        self.assertEqual("DATETIME", questions["scheduleStartTime"]["inputType"])
+
+    def test_agent_generated_sql_is_returned_as_authorized_confirmation_preview(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective="创建 SQL 语句同步任务",
+            variables={"dataSyncRequest": {"syncMode": "CUSTOM_SQL_QUERY"}},
+        )
+        draft = ToolPlan(
+            tool_name="sync.task.draft.save",
+            reason="save generated SQL draft",
+            arguments={
+                "syncMode": "CUSTOM_SQL_QUERY",
+                "customSqlText": "SELECT id, name AS customer_name FROM customer",
+                "objectMappings": [{"targetSchemaName": "public", "targetObjectName": "customer"}],
+            },
+        )
+        plan = AgentPlan(
+            request_id="request-generated-sql",
+            selected_route=None,
+            state_trace=("invoke_model_intent",),
+            tool_plans=(draft,),
+            requires_human_approval=True,
+            response_summary="已基于真实元数据生成只读 SQL。",
+            intent_analysis=IntentAnalysis(
+                summary="识别到 SQL 同步任务。",
+                governance_domains=(GovernanceDomain.DATA_SYNC,),
+                candidate_tools=("sync.task.draft.save",),
+                missing_parameters=("sourceDatasourceId", "targetDatasourceId", "objectMappings"),
+            ),
+        )
+
+        conversation = build_agent_conversation_response(
+            request,
+            plan,
+            ToolExecutionReadinessService().evaluate((draft,)),
+            control_plane_ingested=False,
+        )
+
+        self.assertEqual(["customSqlConfirmation"], conversation["missingParameters"])
+        question = conversation["clarificationQuestions"][0]
+        self.assertEqual("SQL_CONFIRMATION", question["inputType"])
+        self.assertTrue(question["sensitive"])
+        self.assertEqual(
+            "SELECT id, name AS customer_name FROM customer",
+            question["configurationPreview"]["customSqlText"],
+        )
+        self.assertTrue(question["configurationPreview"]["generatedByAgent"])
+
+    def test_missing_target_table_returns_create_or_select_decision(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective="把客户源表全量同步到目标端 public.customer_archive",
+        )
+        metadata_plans = (
+            ToolPlan(tool_name="datasource.source.metadata.read", reason="read source metadata"),
+            ToolPlan(tool_name="datasource.target.metadata.read", reason="read target metadata"),
+        )
+        plan = AgentPlan(
+            request_id="request-target-table-missing",
+            selected_route=None,
+            state_trace=("invoke_model_intent",),
+            tool_plans=metadata_plans,
+            requires_human_approval=False,
+            response_summary="目标表不存在：public.customer_archive。",
+            intent_analysis=IntentAnalysis(
+                summary="识别到数据同步任务。",
+                governance_domains=(GovernanceDomain.DATA_SYNC,),
+                candidate_tools=("sync.task.draft.save",),
+                missing_parameters=("sourceDatasourceId", "targetDatasourceId", "objectMappings"),
+            ),
+        )
+
+        conversation = build_agent_conversation_response(
+            request,
+            plan,
+            ToolExecutionReadinessService().evaluate(metadata_plans),
+            control_plane_ingested=True,
+            autonomous_resolution_stopped=True,
+        )
+
+        self.assertEqual(["targetTableResolution"], conversation["missingParameters"])
+        question = conversation["clarificationQuestions"][0]
+        self.assertEqual("TARGET_TABLE_RESOLUTION", question["inputType"])
+        self.assertEqual(
+            ["CREATE_FROM_SOURCE", "SELECT_EXISTING"],
+            [item["value"] for item in question["options"]],
+        )
+
     def test_real_provider_is_reported_as_model_assisted_with_deterministic_fallback(self) -> None:
         """真实 Provider 已启用时，会话诊断不能继续误报 RESERVED。"""
 
@@ -605,6 +724,47 @@ class AgentConversationResponseTest(unittest.TestCase):
         self.assertTrue(summary["providerInvokedForCurrentTurn"])
         self.assertFalse(summary["providerUsedForCurrentTurn"])
         self.assertEqual("MODEL_PROVIDER_HTTP_503", summary["fallbackReasonCode"])
+
+    def test_no_executable_plan_reports_real_model_timeout_instead_of_model_disabled(self) -> None:
+        """已调用真实 Provider 时，空计划提示必须说明真实失败原因。"""
+
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1004",
+            objective="分析当前项目中的同步任务",
+        )
+        plan = AgentPlan(
+            request_id="request-model-timeout",
+            selected_route=ModelRoute(
+                workload=WorkloadType.AGENT_REASONING,
+                provider_name="managed-agent-router",
+                provider_type=ProviderType.OPENAI_COMPATIBLE,
+                model_name="gpt-5.6-sol",
+                endpoint="https://model-gateway.example.com/v1",
+            ),
+            state_trace=(),
+            tool_plans=(),
+            requires_human_approval=False,
+            response_summary="",
+            model_invocation_summary={
+                "providerInvoked": True,
+                "providerSucceeded": False,
+                "resultErrorCode": "MODEL_PROVIDER_TIMEOUT",
+            },
+        )
+
+        conversation = build_agent_conversation_response(
+            request,
+            plan,
+            ToolExecutionReadinessService().evaluate(()),
+            control_plane_ingested=False,
+        )
+
+        self.assertEqual("NO_EXECUTABLE_PLAN", conversation["phase"])
+        self.assertIn("真实模型本轮调用超时", conversation["assistantMessage"])
+        self.assertNotIn("模型接口已预留", conversation["assistantMessage"])
+        self.assertNotIn("默认未启用", conversation["assistantMessage"])
 
 
 class CountingPlanIngestionClient:

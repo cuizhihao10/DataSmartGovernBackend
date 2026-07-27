@@ -98,12 +98,20 @@ class AgentDurableModelToolLoopRunner:
         loop_control_evaluator: Any,
         second_turn_orchestrator: Any,
         max_model_turns: int = 4,
+        estimated_next_turn_tokens: int = 8192,
     ) -> None:
         self._plan_ingestion_client = plan_ingestion_client
         self._feedback_collector = feedback_collector
         self._loop_control_evaluator = loop_control_evaluator
         self._second_turn_orchestrator = second_turn_orchestrator
         self._max_model_turns = max(1, max_model_turns)
+        # The second-turn prompt contains visible tool schemas plus accumulated
+        # control-plane evidence.  A 1K estimate materially understated the
+        # observed 7K-10K prompts and made the 16K policy stop immediately after
+        # metadata discovery.  Keep the estimate configurable and conservative
+        # so the policy reserves enough budget before starting another provider
+        # request instead of discovering the overrun afterwards.
+        self._estimated_next_turn_tokens = max(1, estimated_next_turn_tokens)
 
     def run(
         self,
@@ -233,7 +241,7 @@ class AgentDurableModelToolLoopRunner:
                     tool_step_index=turn_index,
                     completed_second_turns=turn_index,
                     consumed_tokens=consumed_tokens,
-                    estimated_next_turn_tokens=1024,
+                    estimated_next_turn_tokens=self._estimated_next_turn_tokens,
                     elapsed_seconds=int(time.perf_counter() - started_at),
                 ),
             )
@@ -432,6 +440,7 @@ class AgentDurableModelToolLoopRunner:
             bool(expected_ids)
             and not missing_ids
             and status_counts.get("waiting_approval", 0) == 0
+            and status_counts.get("pending", 0) == 0
         )
         return AgentControlPlaneFeedbackSnapshot(
             expected_tool_call_count=len(expected_ids),

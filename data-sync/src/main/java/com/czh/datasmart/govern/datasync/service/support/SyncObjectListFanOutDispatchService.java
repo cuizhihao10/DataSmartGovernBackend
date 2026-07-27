@@ -56,7 +56,8 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class SyncObjectListFanOutDispatchService {
 
-    private static final Set<String> SUPPORTED_SYNC_MODES = Set.of("FULL", "ONE_TIME_MIGRATION", "SCHEDULED_BATCH");
+    private static final Set<String> SUPPORTED_SYNC_MODES = Set.of(
+            "FULL", "SCHEDULED_FULL", "ONE_TIME_MIGRATION", "SCHEDULED_BATCH");
     private static final String OBJECT_LIST = "OBJECT_LIST";
     private static final String SINGLE_OBJECT = "SINGLE_OBJECT";
     private static final int DEFAULT_OBJECT_MAX_ATTEMPT_COUNT = 3;
@@ -82,8 +83,9 @@ public class SyncObjectListFanOutDispatchService {
         if (contract == null) {
             return false;
         }
+        String scopeType = normalize(contract.syncScopeType());
         return contract.offlineChannel()
-                && OBJECT_LIST.equals(normalize(contract.syncScopeType()))
+                && (OBJECT_LIST.equals(scopeType) || SINGLE_OBJECT.equals(scopeType))
                 && SUPPORTED_SYNC_MODES.contains(normalize(contract.syncMode()))
                 && !contract.checkpointRequired()
                 && !firstText(contract.customSqlStatementPolicy(), "NOT_APPLICABLE").startsWith("CUSTOM_SQL")

@@ -52,6 +52,17 @@ class AgentControlPlaneFeedbackCollectorTest(unittest.TestCase):
         self.assertEqual({"waiting_approval": 1}, snapshot.status_counts)
         self.assertTrue(any("审批" in action for action in snapshot.recommended_actions))
 
+    def test_collect_blocks_second_turn_when_tool_is_still_pending(self) -> None:
+        collector = AgentControlPlaneFeedbackCollector(
+            FakeFeedbackProvider({"call-pending": ToolExecutionFeedbackStatus.PENDING})
+        )
+
+        snapshot = collector.collect(self._plan(self._tool_plan("call-pending")))
+
+        self.assertFalse(snapshot.second_turn_eligible)
+        self.assertEqual({"pending": 1}, snapshot.status_counts)
+        self.assertTrue(any("执行中" in action for action in snapshot.recommended_actions))
+
     def test_collect_reports_missing_feedback_for_diagnostics(self) -> None:
         collector = AgentControlPlaneFeedbackCollector(FakeFeedbackProvider({}))
 

@@ -34,7 +34,9 @@ class ModelToolCallBudgetPolicy:
     字段说明：
     - `max_proposed_tool_calls`：模型一次响应最多允许提出多少个工具调用候选；
     - `max_auto_executable_tool_calls`：不需要人工审批、可自动继续推进的工具数量上限；
-    - `max_high_risk_tool_calls`：HIGH/CRITICAL 工具数量上限，防止一次响应聚集过多高风险动作；
+    - `max_high_risk_tool_calls`：可自动推进的 HIGH/CRITICAL 工具数量上限；已经明确进入
+      `DRAFT_ONLY`、`APPROVAL_REQUIRED` 或声明需要人工审批的动作不占用该额度，因为它们只会生成
+      受控计划，仍需由 Java 控制面完成授权和人工确认后才能执行；
     - `max_single_arguments_bytes`：单个工具 arguments 原文的最大字节数；
     - `max_total_arguments_bytes`：本轮全部 arguments 原文的累计最大字节数。
 
@@ -141,7 +143,7 @@ class ModelToolCallBudgetGuard:
             ))
             if candidate.accepted and _is_auto_executable(candidate):
                 auto_seen += 1
-            if candidate.accepted and _is_high_risk(candidate):
+            if candidate.accepted and _counts_against_high_risk_budget(candidate):
                 high_risk_seen += 1
             guarded_candidates.append(replace(candidate, issues=tuple(issues)))
 
@@ -154,7 +156,11 @@ class ModelToolCallBudgetGuard:
             accepted_count_before_guard=accepted_before,
             accepted_count_after_guard=len(guarded_report.accepted_tool_plans),
             auto_executable_count_before_guard=sum(1 for item in report.candidates if item.accepted and _is_auto_executable(item)),
-            high_risk_count_before_guard=sum(1 for item in report.candidates if item.accepted and _is_high_risk(item)),
+            high_risk_count_before_guard=sum(
+                1
+                for item in report.candidates
+                if item.accepted and _counts_against_high_risk_budget(item)
+            ),
             total_arguments_bytes=total_argument_bytes,
         )
 
@@ -201,7 +207,11 @@ class ModelToolCallBudgetGuard:
                 "MODEL_TOOL_CALL_BUDGET_AUTO_EXECUTABLE_COUNT_EXCEEDED",
                 f"可自动推进的工具数量超过上限 {policy.max_auto_executable_tool_calls}，后续动作应拆批或进入审批。",
             ))
-        if candidate.accepted and _is_high_risk(candidate) and high_risk_seen >= policy.max_high_risk_tool_calls:
+        if (
+            candidate.accepted
+            and _counts_against_high_risk_budget(candidate)
+            and high_risk_seen >= policy.max_high_risk_tool_calls
+        ):
             issues.append(_issue(
                 tool_name,
                 "MODEL_TOOL_CALL_BUDGET_HIGH_RISK_COUNT_EXCEEDED",
@@ -243,3 +253,21 @@ def _is_high_risk(candidate: ModelToolCallCandidate) -> bool:
 
     plan = candidate.tool_plan
     return bool(plan and plan.risk_level in {ToolRiskLevel.HIGH, ToolRiskLevel.CRITICAL})
+
+
+def _counts_against_high_risk_budget(candidate: ModelToolCallCandidate) -> bool:
+    """判断候选是否占用“可自动推进高风险工具”额度。
+
+    高风险额度限制的是模型未经确认即可继续推进的副作用动作，而不是限制模型提出一个受控计划。
+    对于已经被工具合同标记为草稿、待审批或需要人工确认的动作，Python 只允许它进入治理计划；
+    Java 控制面仍会执行权限校验、审批状态校验和确认后执行，因此这里放行不会绕过 HITL 边界。
+    """
+
+    plan = candidate.tool_plan
+    if not plan or not _is_high_risk(candidate):
+        return False
+    if plan.execution_mode in {ToolExecutionMode.DRAFT_ONLY, ToolExecutionMode.APPROVAL_REQUIRED}:
+        return False
+    if plan.governance_hints.get("toolRequiresApproval") is True:
+        return False
+    return True

@@ -70,7 +70,8 @@ class JavaAgentRuntimeToolFeedbackClient:
     - `SUCCEEDED`：允许把 Java 返回的结构化 output 作为 safe result 回填模型；
     - `FAILED`：只回填错误码和错误摘要，避免模型假设工具成功；
     - `WAITING_APPROVAL`：告诉模型该工具仍需人工确认；
-    - `SKIPPED/PLANNED/EXECUTING`：不伪造成成功，而是用 SKIPPED 表达“当前没有可用结果”。
+    - `PLANNED/EXECUTING`：映射为 PENDING，明确表示控制面仍在等待或执行；
+    - `SKIPPED/CANCELLED`：只有平台已经终止或主动跳过时才映射为 SKIPPED。
 
     这个设计与 OpenAI-compatible tool result message 和 MCP tool result 的共同方向一致：
     工具结果可以是结构化 JSON，但业务错误应作为工具结果语义返回，而不是让模型把协议异常当作成功输出。
@@ -390,9 +391,11 @@ class JavaAgentRuntimeToolFeedbackClient:
             return ToolExecutionFeedbackStatus.FAILED
         if state == "WAITING_APPROVAL":
             return ToolExecutionFeedbackStatus.WAITING_APPROVAL
-        if state in {"SKIPPED", "REJECTED"}:
+        if state == "REJECTED":
+            return ToolExecutionFeedbackStatus.REJECTED
+        if state in {"SKIPPED", "CANCELLED", "CANCELED"}:
             return ToolExecutionFeedbackStatus.SKIPPED
-        return ToolExecutionFeedbackStatus.SKIPPED
+        return ToolExecutionFeedbackStatus.PENDING
 
     @staticmethod
     def _build_summary(*, audit: dict[str, Any], state: str) -> str:

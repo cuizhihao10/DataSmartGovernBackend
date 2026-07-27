@@ -54,6 +54,15 @@ class AgentLoopControlPolicyEvaluatorTest(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertEqual(AgentLoopControlAction.REQUIRE_HUMAN_TAKEOVER, decision.action)
 
+    def test_pending_feedback_waits_for_control_plane_without_entering_model(self) -> None:
+        decision = AgentLoopControlPolicyEvaluator().evaluate(
+            self._snapshot(statuses=(ToolExecutionFeedbackStatus.PENDING,))
+        )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(AgentLoopControlAction.WAIT_FOR_CONTROL_PLANE, decision.action)
+        self.assertTrue(any("终态" in action for action in decision.recommended_actions))
+
     def test_waits_for_control_plane_when_feedback_is_missing_before_timeout(self) -> None:
         decision = AgentLoopControlPolicyEvaluator().evaluate(
             self._snapshot(statuses=(), missing_ids=("call-001",)),
@@ -132,7 +141,8 @@ class AgentLoopControlPolicyEvaluatorTest(unittest.TestCase):
             status_counts=status_counts,
             second_turn_eligible=expected_count > 0
             and not missing_ids
-            and status_counts.get(ToolExecutionFeedbackStatus.WAITING_APPROVAL.value, 0) == 0,
+            and status_counts.get(ToolExecutionFeedbackStatus.WAITING_APPROVAL.value, 0) == 0
+            and status_counts.get(ToolExecutionFeedbackStatus.PENDING.value, 0) == 0,
             recommended_actions=("测试快照。",),
         )
 

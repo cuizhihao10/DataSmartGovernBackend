@@ -70,6 +70,7 @@ def enrich_agent_plan_payload_from_gateway_headers(
     ensure_gateway_signature(headers, effective_signature_config, now_ms=now_ms, nonce_store=nonce_store)
 
     tenant_id = _header(headers, "X-DataSmart-Tenant-Id")
+    project_id = _header(headers, "X-DataSmart-Project-Id")
     actor_id = _header(headers, "X-DataSmart-Actor-Id")
     actor_role = _header(headers, "X-DataSmart-Actor-Role")
     actor_type = _header(headers, "X-DataSmart-Actor-Type")
@@ -89,10 +90,19 @@ def enrich_agent_plan_payload_from_gateway_headers(
     )
     tool_policy_envelope = _tool_policy_envelope_from_header(headers)
 
+    if project_id and authorized_project_ids and project_id not in authorized_project_ids:
+        # Gateway 已经在路由授权阶段校验当前项目。Python 再做一次 fail-closed 防御，是为了避免
+        # 过滤器顺序、灰度版本或内部调用方错误地组合“当前项目”和“授权项目集合”。
+        raise PermissionError("trusted project context is outside authorized project scope")
+
     # tenantId 与 actorId 属于认证主体事实。只要 gateway 已提供，就覆盖请求体同名字段；
     # 如果 Header 缺失则保留请求体值，兼容本地开发，但生产 gateway 应配置为身份缺失时拒绝请求。
     if tenant_id:
         sanitized["tenant_id"] = tenant_id
+    # 对已识别为 gateway 的请求，项目只能来自纳入 HMAC 的 Header，绝不回退到请求体自报值。
+    sanitized.pop("project_id", None)
+    if project_id:
+        sanitized["project_id"] = project_id
     if actor_id:
         sanitized["actor_id"] = actor_id
     if trace_id:
@@ -109,6 +119,7 @@ def enrich_agent_plan_payload_from_gateway_headers(
             "sourceService": source_service,
             "traceId": trace_id,
             "tenantId": tenant_id,
+            "projectId": project_id,
             "actorId": actor_id,
             "actorRole": actor_role,
             "actorType": actor_type,

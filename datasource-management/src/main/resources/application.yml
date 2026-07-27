@@ -142,6 +142,13 @@ datasmart:
       # 短期内存缓存有效期，降低短时间重复探查同一数据源的压力。
       cache-ttl-seconds: 60
 
+    cdc-readiness:
+      # CDC 准入只读取集群元数据，不创建 topic、connector 或 offset。
+      kafka-bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+      # 当前 Compose 尚未部署 Kafka Connect；空值会被明确报告为阻断，不能降级为“已就绪”。
+      kafka-connect-base-url: ${DATASMART_CDC_KAFKA_CONNECT_BASE_URL:}
+      probe-timeout-seconds: ${DATASMART_CDC_READINESS_PROBE_TIMEOUT_SECONDS:3}
+
     sync-executor:
       # 执行器每次认领前最多扫描多少条排队候选任务。
       claim-scan-limit: 50

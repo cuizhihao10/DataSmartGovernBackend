@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
@@ -206,8 +208,9 @@ class AgentOrchestrator:
             intent_analysis=intent_analysis,
             context_blocks=context_blocks,
         )
+        merged_tool_plans = self._merge_tool_plans(model_intent_result.model_tool_plans, rule_tool_plans)
         tool_plans = self._dag_annotator.annotate(
-            self._merge_tool_plans(model_intent_result.model_tool_plans, rule_tool_plans)
+            self._attach_control_plane_call_ids(request_id, merged_tool_plans)
         )
         model_tool_names = tuple(plan.tool_name for plan in model_intent_result.model_tool_plans)
         rule_tool_names = tuple(plan.tool_name for plan in rule_tool_plans)
@@ -491,6 +494,54 @@ class AgentOrchestrator:
             merged.append(plan)
             seen.add(plan.tool_name)
         return tuple(merged)
+
+    @staticmethod
+    def _attach_control_plane_call_ids(
+        request_id: str,
+        tool_plans: tuple[ToolPlan, ...],
+    ) -> tuple[ToolPlan, ...]:
+        """为规则式节点补齐可审计的控制面调用关联 ID。
+
+        Java audit、Python 反馈快照和 OpenAI-compatible ``role=tool`` 消息当前都通过
+        ``modelToolCallId`` 关联。模型没有返回原生 tool call 时，规则规划节点过去没有这个字段，导致
+        Java 虽然完成了工具执行，Python 却认为本轮没有工作并停止 Durable loop。
+
+        这里为规则节点生成基于 requestId、节点顺序、工具名和治理后参数的稳定 ID，同时显式记录
+        ``toolCallOrigin=SYSTEM_RULE`` 与 ``modelToolCallIdSynthetic=true``。该 ID 只承担协议关联职责，
+        不代表模型自主选择了工具；模型原生 ID 则保持不变并标记为 ``MODEL_NATIVE``。
+        """
+
+        correlated: list[ToolPlan] = []
+        for sequence, plan in enumerate(tool_plans, start=1):
+            hints = dict(plan.governance_hints)
+            existing_call_id = str(hints.get("modelToolCallId") or "").strip()
+            if existing_call_id:
+                hints.setdefault("toolCallOrigin", "MODEL_NATIVE")
+                hints.setdefault("modelToolCallIdSynthetic", False)
+                correlated.append(replace(plan, governance_hints=hints))
+                continue
+
+            canonical_arguments = json.dumps(
+                plan.arguments,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            digest = hashlib.sha256(
+                f"{request_id}|{sequence}|{plan.tool_name}|{canonical_arguments}".encode("utf-8")
+            ).hexdigest()[:24]
+            hints.update(
+                {
+                    "source": hints.get("source") or "system_rule",
+                    "modelToolCallId": f"system-rule-{digest}",
+                    "toolCallOrigin": "SYSTEM_RULE",
+                    "modelToolCallIdSynthetic": True,
+                    "toolCallCorrelationPurpose": "CONTROL_PLANE_FEEDBACK",
+                }
+            )
+            correlated.append(replace(plan, governance_hints=hints))
+        return tuple(correlated)
 
     def _build_context(
         self,

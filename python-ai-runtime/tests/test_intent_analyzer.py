@@ -13,6 +13,49 @@ from datasmart_ai_runtime.services.intent_analyzer import RuleBasedIntentAnalyze
 
 
 class RuleBasedIntentAnalyzerTest(unittest.TestCase):
+    def test_full_transfer_with_metadata_validation_is_sync_not_quality(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective=(
+                "请创建一个全量传输任务，源数据源是 mysql-source，目标数据源是 pg-target，"
+                "请使用真实数据源元数据校验，并在执行前让我确认。"
+            ),
+        )
+
+        analysis = RuleBasedIntentAnalyzer().analyze(
+            request,
+            DefaultContextBuilder().build(request),
+        )
+
+        self.assertIn(GovernanceDomain.DATA_SYNC, analysis.governance_domains)
+        self.assertNotIn(GovernanceDomain.DATA_QUALITY, analysis.governance_domains)
+        self.assertIn("datasource.source.catalog.search", analysis.candidate_tools)
+        self.assertIn("datasource.target.catalog.search", analysis.candidate_tools)
+        self.assertNotIn("quality.rule.suggest", analysis.candidate_tools)
+        self.assertEqual(
+            ("sourceDatasourceId", "targetDatasourceId", "objectMappings"),
+            analysis.missing_parameters,
+        )
+
+    def test_explicit_quality_rule_remains_quality_when_sync_word_is_incidental(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective="请设计数据同步结果的数据质量规则和完整性校验规则。",
+        )
+
+        analysis = RuleBasedIntentAnalyzer().analyze(
+            request,
+            DefaultContextBuilder().build(request),
+        )
+
+        self.assertIn(GovernanceDomain.DATA_SYNC, analysis.governance_domains)
+        self.assertIn(GovernanceDomain.DATA_QUALITY, analysis.governance_domains)
+        self.assertIn("quality.rule.suggest", analysis.candidate_tools)
+
     def test_english_data_synchronization_task_reports_concrete_missing_inputs(self) -> None:
         request = AgentRequest(
             tenant_id="tenant-a",

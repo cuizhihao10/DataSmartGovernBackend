@@ -119,6 +119,40 @@ class MemoryAndSkillPlanningTest(unittest.TestCase):
         self.assertIn("sync.task.autonomous-creation", selected_codes)
         self.assertNotIn("governed.task.creation", selected_codes)
 
+    def test_sync_precheck_word_does_not_expose_quality_skill_cross_domain(self) -> None:
+        intent = IntentAnalysis(
+            summary="创建全量传输任务并校验真实元数据",
+            governance_domains=(GovernanceDomain.DATA_SYNC,),
+            candidate_tools=(
+                "datasource.source.catalog.search",
+                "datasource.target.catalog.search",
+            ),
+            risk_tags=(IntentRiskTag.STATE_CHANGE,),
+        )
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective="创建全量传输任务，请使用真实数据源元数据校验并在执行前确认。",
+        )
+
+        skill_plan = AgentSkillRegistry(default_skill_registry()).select(
+            request.objective,
+            intent,
+            request=request,
+        )
+
+        selected_codes = {item.skill_code for item in skill_plan.selected_skills}
+        self.assertIn("sync.task.autonomous-creation", selected_codes)
+        self.assertNotIn("quality.rule.design", selected_codes)
+
+        visible_tools = ToolPlanner(default_tool_registry()).model_visible_tools(
+            request=request,
+            intent_analysis=intent,
+            skill_plan=skill_plan,
+        )
+        self.assertNotIn("quality.rule.suggest", {tool.name for tool in visible_tools})
+
     def test_skill_admission_denies_when_required_permission_is_missing(self) -> None:
         """显式权限事实缺少必需权限时，Skill 应进入 rejected，而不是继续暴露给模型。
 

@@ -19,11 +19,11 @@ import asyncio
 import json
 import logging
 from contextlib import suppress
-from dataclasses import asdict, is_dataclass, replace
+from dataclasses import asdict, fields as dataclass_fields, is_dataclass, replace
 from datetime import datetime
 from enum import Enum
 from time import monotonic
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from datasmart_ai_runtime.api.agent.a2a_task_planning import build_a2a_task_planning_preview_response
@@ -51,6 +51,15 @@ from datasmart_ai_runtime.services.runtime_events.runtime_event_websocket import
 
 LOGGER = logging.getLogger(__name__)
 GATEWAY_SIGNATURE_ERROR_CODE = "GATEWAY_SIGNATURE_INVALID"
+AGENT_REQUEST_ERROR_CODE = "AGENT_REQUEST_INVALID"
+
+
+class AgentRequestPayloadError(ValueError):
+    """API 请求无法构造成 AgentRequest 时携带稳定、低敏的字段错误。"""
+
+    def __init__(self, detail: dict[str, Any]) -> None:
+        self.detail = detail
+        super().__init__(detail["code"])
 
 
 def register_agent_runtime_routes(
@@ -84,6 +93,7 @@ def register_agent_runtime_routes(
     tool_action_checkpoint_gateway_signature_required: bool = False,
     tool_registry: tuple[Any, ...] | None = None,
     gateway_signature_error_factory: Callable[[dict[str, Any]], Exception] | None = None,
+    request_validation_error_factory: Callable[[int, dict[str, Any]], Exception] | None = None,
     gateway_signature_nonce_store: Any | None = None,
     gateway_signature_security_stats: Any | None = None,
 ) -> None:
@@ -182,11 +192,9 @@ def register_agent_runtime_routes(
         """
 
         try:
-            request = AgentRequest(
-                **enrich_agent_plan_payload_from_gateway_headers(
-                    payload,
-                    http_request.headers,
-                    nonce_store=gateway_signature_nonce_store,
+            request = _agent_request_from_payload(
+                enrich_agent_plan_payload_from_gateway_headers(
+                    payload, http_request.headers, nonce_store=gateway_signature_nonce_store
                 )
             )
         except GatewaySignatureVerificationError as exc:
@@ -209,6 +217,15 @@ def register_agent_runtime_routes(
                 gateway_signature_security_stats.record_failure(error_detail)
             if gateway_signature_error_factory is not None:
                 raise gateway_signature_error_factory(error_detail) from exc
+            raise
+        except PermissionError as exc:
+            detail = _trusted_context_error_detail(http_request)
+            if request_validation_error_factory is not None:
+                raise request_validation_error_factory(403, detail) from exc
+            raise
+        except AgentRequestPayloadError as exc:
+            if request_validation_error_factory is not None:
+                raise request_validation_error_factory(400, exc.detail) from exc
             raise
         return build_plan_response(
             request,
@@ -251,11 +268,9 @@ def register_agent_runtime_routes(
         """
 
         try:
-            request = AgentRequest(
-                **enrich_agent_plan_payload_from_gateway_headers(
-                    payload,
-                    http_request.headers,
-                    nonce_store=gateway_signature_nonce_store,
+            request = _agent_request_from_payload(
+                enrich_agent_plan_payload_from_gateway_headers(
+                    payload, http_request.headers, nonce_store=gateway_signature_nonce_store
                 )
             )
         except GatewaySignatureVerificationError as exc:
@@ -272,6 +287,15 @@ def register_agent_runtime_routes(
                 gateway_signature_security_stats.record_failure(error_detail)
             if gateway_signature_error_factory is not None:
                 raise gateway_signature_error_factory(error_detail) from exc
+            raise
+        except PermissionError as exc:
+            detail = _trusted_context_error_detail(http_request)
+            if request_validation_error_factory is not None:
+                raise request_validation_error_factory(403, detail) from exc
+            raise
+        except AgentRequestPayloadError as exc:
+            if request_validation_error_factory is not None:
+                raise request_validation_error_factory(400, exc.detail) from exc
             raise
 
         # 即使旧客户端没有预生成 requestId，流式响应也必须在第一帧给出稳定关联 ID。
@@ -606,6 +630,76 @@ def _encode_ndjson_frame(frame: dict[str, Any]) -> str:
         raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
 
     return json.dumps(frame, ensure_ascii=False, separators=(",", ":"), default=default) + "\n"
+
+
+def _agent_request_from_payload(payload: Mapping[str, Any]) -> AgentRequest:
+    """校验公开请求契约，再构造领域请求，避免 dataclass TypeError 冒泡成 HTTP 500。"""
+
+    required_fields = {
+        "tenant_id": "租户上下文",
+        "project_id": "当前项目",
+        "actor_id": "当前用户",
+        "objective": "用户需求",
+    }
+    field_errors = [
+        {
+            "field": field_name,
+            "message": f"{display_name}不能为空。",
+        }
+        for field_name, display_name in required_fields.items()
+        if not isinstance(payload.get(field_name), str) or not str(payload.get(field_name)).strip()
+    ]
+    if "variables" in payload and not isinstance(payload.get("variables"), Mapping):
+        field_errors.append({"field": "variables", "message": "扩展参数必须是 JSON 对象。"})
+
+    allowed_fields = {item.name for item in dataclass_fields(AgentRequest)}
+    unknown_fields = sorted(str(name) for name in payload.keys() if name not in allowed_fields)
+    if unknown_fields:
+        field_errors.append(
+            {
+                "field": "request",
+                "message": "请求包含不支持的字段。",
+                "rejectedFields": unknown_fields,
+            }
+        )
+    if field_errors:
+        raise AgentRequestPayloadError(_agent_request_error_detail(field_errors))
+
+    try:
+        return AgentRequest(**dict(payload))
+    except (TypeError, ValueError) as exc:
+        # 不回显 dataclass/enum 原始异常，避免把内部类名或允许值拼装细节扩散到前端。
+        raise AgentRequestPayloadError(
+            _agent_request_error_detail(
+                [{"field": "request", "message": "请求字段类型或取值不符合 Agent 接口要求。"}]
+            )
+        ) from exc
+
+
+def _agent_request_error_detail(field_errors: list[dict[str, Any]]) -> dict[str, Any]:
+    """构造前端可直接展示的结构化 400 错误。"""
+
+    return {
+        "code": AGENT_REQUEST_ERROR_CODE,
+        "message": "Agent 请求信息不完整或格式不正确，暂时无法开始规划。",
+        "fieldErrors": field_errors,
+        "suggestions": [
+            "请确认已登录并选择当前项目后重试。",
+            "请填写明确的需求内容；页面无需手工填写租户、项目或用户 ID。",
+        ],
+    }
+
+
+def _trusted_context_error_detail(http_request: Any) -> dict[str, Any]:
+    """返回可信上下文冲突的低敏 403，不暴露授权项目集合或签名材料。"""
+
+    return {
+        "code": "AGENT_TRUSTED_CONTEXT_FORBIDDEN",
+        "message": "当前项目上下文未通过权限校验，Agent 无法访问该项目。",
+        "fieldErrors": [{"field": "project_id", "message": "当前项目不在本次授权范围内。"}],
+        "suggestions": ["请切换到已授权项目，或联系项目管理员为当前账号授权。"],
+        "path": _request_path(http_request, getattr(http_request, "headers", {})),
+    }
 
 
 def _gateway_signature_error_detail(http_request: Any, exc: GatewaySignatureVerificationError) -> dict[str, Any]:

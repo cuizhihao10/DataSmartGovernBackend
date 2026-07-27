@@ -233,10 +233,69 @@ class ToolPlannerTest(unittest.TestCase):
         self.assertEqual(
             {
                 "datasource.target.metadata.read",
+                "datasource.target-table.create.preview",
                 "sync.task.draft.save",
             },
             {tool.name for tool in visible},
         )
+
+    def test_follow_up_frontier_exposes_cdc_probe_only_for_realtime_mode(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1004",
+            objective="create realtime sync",
+            variables={"dataSyncRequest": {"syncMode": "CDC_STREAMING"}},
+        )
+        metadata_plan = ToolPlan(
+            tool_name="datasource.source.metadata.read",
+            reason="source metadata",
+        )
+
+        visible = ToolPlanner(default_tool_registry()).model_visible_follow_up_tools(
+            request=request,
+            intent_analysis=IntentAnalysis(
+                summary="realtime sync",
+                governance_domains=(GovernanceDomain.DATA_SYNC,),
+            ),
+            previous_tool_plans=(metadata_plan,),
+        )
+
+        self.assertIn("sync.cdc.readiness.check", {tool.name for tool in visible})
+
+    def test_follow_up_frontier_recognizes_explicit_realtime_natural_language(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1004",
+            objective="请把 customer 表实时同步到 PostgreSQL。",
+        )
+        metadata_plan = ToolPlan(
+            tool_name="datasource.target.metadata.read",
+            reason="target metadata",
+        )
+
+        visible = ToolPlanner(default_tool_registry()).model_visible_follow_up_tools(
+            request=request,
+            intent_analysis=IntentAnalysis(
+                summary="realtime sync",
+                governance_domains=(GovernanceDomain.DATA_SYNC,),
+            ),
+            previous_tool_plans=(metadata_plan,),
+        )
+
+        self.assertIn("sync.cdc.readiness.check", {tool.name for tool in visible})
+
+    def test_cdc_probe_mapping_contract_does_not_require_secret_approval(self) -> None:
+        tool = next(
+            item for item in default_tool_registry()
+            if item.name == "sync.cdc.readiness.check"
+        )
+
+        self.assertFalse(tool.input_schema["objectMappings"]["sensitive"])
+        self.assertEqual((), tool.sensitive_fields)
+        self.assertTrue(tool.read_only)
+        self.assertTrue(tool.idempotent)
 
     def test_sync_model_visibility_hides_direction_neutral_metadata_alias(self) -> None:
         """Sync mappings require role-specific evidence even when an old Skill lists the alias."""
@@ -396,6 +455,11 @@ class ToolPlannerTest(unittest.TestCase):
 
         self.assertEqual("CDC_STREAMING", by_name["sync.task.draft.save"].arguments["syncMode"])
         self.assertEqual("UPDATE", by_name["sync.task.draft.save"].arguments["writeStrategy"])
+        self.assertIn("sync.cdc.readiness.check", by_name)
+        self.assertEqual(
+            "sync.cdc.readiness.check",
+            by_name["sync.task.draft.save"].arguments["cdcReadinessRef"]["fromTool"],
+        )
         self.assertNotIn("sync.task.run", by_name)
 
     def test_custom_sql_preserves_target_only_mapping_and_sql_text(self) -> None:

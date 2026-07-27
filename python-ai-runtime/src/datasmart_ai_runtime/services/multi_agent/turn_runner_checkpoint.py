@@ -284,6 +284,11 @@ def _handoff_required(
 ) -> bool:
     """判断是否存在需要 Java 控制面/人审/worker receipt 的 handoff。"""
 
+    run_status = _text(agent_turn_runner.get("runStatus")).upper()
+    if "CONTROL_PLANE" in run_status:
+        # 等待控制面本身就是尚未完成的 handoff。不能只看已生成的 handoff 计数，否则刚进入等待阶段的
+        # checkpoint 会同时出现 node=wait_control_plane、handoffRequired=false 的矛盾恢复状态。
+        return True
     if _non_negative_int(agent_turn_runner.get("controlPlaneHandoffCount")) > 0:
         return True
     for attempt in attempts:

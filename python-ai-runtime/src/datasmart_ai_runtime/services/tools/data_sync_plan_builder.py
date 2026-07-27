@@ -29,6 +29,7 @@ class DataSyncToolPlanBuilder:
         "datasource.target.connection.test",
         "datasource.source.metadata.read",
         "datasource.target.metadata.read",
+        "sync.cdc.readiness.check",
         "sync.task.draft.save",
         "sync.task.precheck",
         "sync.task.publish",
@@ -119,6 +120,19 @@ class DataSyncToolPlanBuilder:
                 "connectionTestRef": self._ref("datasource.target.connection.test", "datasourceId"),
             },
         )
+        if sync_mode == "CDC_STREAMING":
+            self._append(
+                plans,
+                tools,
+                plan_factory,
+                "sync.cdc.readiness.check",
+                "保存实时任务前检查主键、binlog/WAL、Kafka、Debezium 和 CDC 运行时是否全部具备。",
+                {
+                    "sourceMetadataRef": self._ref("datasource.source.metadata.read", "metadata"),
+                    "targetMetadataRef": self._ref("datasource.target.metadata.read", "metadata"),
+                    "objectMappings": object_mappings,
+                },
+            )
         self._append(
             plans,
             tools,
@@ -127,6 +141,9 @@ class DataSyncToolPlanBuilder:
             "按用户确认的源表到目标表、字段与 WHERE 映射保存草稿；真实元数据只用于存在性和兼容性校验。",
             {
                 **common,
+                **({
+                    "cdcReadinessRef": self._ref("sync.cdc.readiness.check", "ready")
+                } if sync_mode == "CDC_STREAMING" else {}),
                 "sourceMetadataRef": self._ref("datasource.source.metadata.read", "metadata"),
                 "targetMetadataRef": self._ref("datasource.target.metadata.read", "metadata"),
                 # A structured form submission normally reads all requested
@@ -177,6 +194,71 @@ class DataSyncToolPlanBuilder:
                 plan_factory,
                 "sync.execution.status",
                 "提交运行后读取最新 execution 状态和低敏进度，让用户能继续进入任务详情追踪。",
+                {"taskRef": self._ref("sync.task.run", "taskId")},
+            )
+        return tuple(plans)
+
+    def build_confirmed_lifecycle_from_draft(
+        self,
+        *,
+        draft_plan: ToolPlan,
+        tools: dict[str, ToolDefinition],
+        plan_factory: Callable[[ToolDefinition, str, dict[str, object]], ToolPlan],
+    ) -> tuple[ToolPlan, ...]:
+        """Expand one validated model draft into the lifecycle covered by one confirmation.
+
+        The model remains responsible for interpreting user choices and producing the
+        complete draft arguments.  Once that draft has passed metadata/state guards,
+        precheck, publish, run and status are deterministic platform lifecycle steps;
+        asking the model to rediscover them one at a time would require several user
+        approvals for one business intent and could leave orphaned drafts.
+
+        All downstream identifiers are output references, not model-supplied IDs.  Java
+        resolves them inside the same Run and still applies permissions, approval,
+        idempotency and downstream state validation before every side effect.
+        """
+
+        if draft_plan.tool_name != "sync.task.draft.save":
+            return (draft_plan,)
+
+        sync_mode = self._normalize_sync_mode(draft_plan.arguments.get("syncMode"))
+        plans = [draft_plan]
+        self._append(
+            plans,
+            tools,
+            plan_factory,
+            "sync.task.precheck",
+            "Validate the saved draft against real objects, fields, target constraints and runner admission.",
+            {"draftRef": self._ref("sync.task.draft.save", "templateId")},
+        )
+        self._append(
+            plans,
+            tools,
+            plan_factory,
+            "sync.task.publish",
+            "Publish only after the real precheck succeeds; this mutation remains inside the user's confirmation scope.",
+            {
+                "draftRef": self._ref("sync.task.draft.save", "taskId"),
+                "precheckRef": self._ref("sync.task.precheck", "canStartExecution"),
+                "syncMode": sync_mode,
+                "enableSchedule": sync_mode in self._SCHEDULED_MODES,
+            },
+        )
+        if sync_mode in self._IMMEDIATE_OFFLINE_MODES:
+            self._append(
+                plans,
+                tools,
+                plan_factory,
+                "sync.task.run",
+                "Submit the published immediate offline task to the real worker queue under the same confirmation.",
+                {"taskRef": self._ref("sync.task.publish", "taskId"), "syncMode": sync_mode},
+            )
+            self._append(
+                plans,
+                tools,
+                plan_factory,
+                "sync.execution.status",
+                "Wait for the real execution to reach a terminal state and return low-sensitive progress and counts.",
                 {"taskRef": self._ref("sync.task.run", "taskId")},
             )
         return tuple(plans)

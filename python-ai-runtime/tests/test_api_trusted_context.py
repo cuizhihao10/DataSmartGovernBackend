@@ -29,6 +29,7 @@ class ApiTrustedContextTest(unittest.TestCase):
         payload = enrich_agent_plan_payload_from_gateway_headers(
             {
                 "tenant_id": "forged-tenant",
+                "project_id": "forged-project",
                 "actor_id": "forged-actor",
                 "variables": {
                     "datasourceId": "ds-001",
@@ -39,6 +40,7 @@ class ApiTrustedContextTest(unittest.TestCase):
                 "X-DataSmart-Source-Service": "datasmart-govern-gateway",
                 "X-DataSmart-Trace-Id": "trace-001",
                 "X-DataSmart-Tenant-Id": "10",
+                "X-DataSmart-Project-Id": "20",
                 "X-DataSmart-Actor-Id": "1001",
                 "X-DataSmart-Actor-Role": "PROJECT_OWNER",
                 "X-DataSmart-Actor-Type": "USER",
@@ -49,6 +51,7 @@ class ApiTrustedContextTest(unittest.TestCase):
         )
 
         self.assertEqual("10", payload["tenant_id"])
+        self.assertEqual("20", payload["project_id"])
         self.assertEqual("1001", payload["actor_id"])
         self.assertEqual("ds-001", payload["variables"]["datasourceId"])
         trusted = payload["variables"]["trustedControlPlane"]
@@ -56,7 +59,23 @@ class ApiTrustedContextTest(unittest.TestCase):
         self.assertEqual("workspace-a", trusted["toolBudget"]["workspaceKey"])
         self.assertEqual(("20", "30"), trusted["requestContext"]["authorizedProjectIds"])
         self.assertEqual("USER", trusted["requestContext"]["actorType"])
+        self.assertEqual("20", trusted["requestContext"]["projectId"])
         self.assertEqual("20:OWNER,30:READER", trusted["requestContext"]["authorizedProjectRoles"])
+
+    def test_gateway_project_outside_authorized_projects_is_rejected(self) -> None:
+        """当前项目与授权集合冲突时必须 fail-closed，不能继续信任请求体或工具参数。"""
+
+        with self.assertRaisesRegex(PermissionError, "outside authorized project scope"):
+            enrich_agent_plan_payload_from_gateway_headers(
+                {"tenant_id": "10", "project_id": "20", "actor_id": "1001", "objective": "test"},
+                {
+                    "X-DataSmart-Source-Service": "datasmart-govern-gateway",
+                    "X-DataSmart-Tenant-Id": "10",
+                    "X-DataSmart-Project-Id": "999",
+                    "X-DataSmart-Actor-Id": "1001",
+                    "X-DataSmart-Authorized-Project-Ids": "20,30",
+                },
+            )
 
     def test_authorized_project_roles_are_covered_by_gateway_signature(self) -> None:
         headers = self._signed_headers()
@@ -323,6 +342,7 @@ class ApiTrustedContextTest(unittest.TestCase):
             "X-Gateway-Route-Prefix": "/api/agent",
             "X-DataSmart-Trace-Id": "trace-001",
             "X-DataSmart-Tenant-Id": "10",
+            "X-DataSmart-Project-Id": "20",
             "X-DataSmart-Actor-Id": "1001",
             "X-DataSmart-Actor-Role": "PROJECT_OWNER",
             "X-DataSmart-Actor-Type": "USER",

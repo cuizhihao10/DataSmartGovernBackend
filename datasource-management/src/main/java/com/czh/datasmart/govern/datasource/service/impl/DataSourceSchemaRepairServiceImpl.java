@@ -8,6 +8,8 @@ import com.czh.datasmart.govern.datasource.entity.DataSourceSchemaRepairPlan;
 import com.czh.datasmart.govern.datasource.mapper.DataSourceSchemaRepairPlanMapper;
 import com.czh.datasmart.govern.datasource.service.DataSourceSchemaRepairService;
 import com.czh.datasmart.govern.datasource.service.execution.jdbc.SyncJdbcConnectionProvider;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,10 +24,14 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Types;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
+import java.util.Set;
+import java.util.StringJoiner;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -43,6 +49,7 @@ public class DataSourceSchemaRepairServiceImpl implements DataSourceSchemaRepair
 
     private final SyncJdbcConnectionProvider connectionProvider;
     private final DataSourceSchemaRepairPlanMapper planMapper;
+    private final ObjectMapper objectMapper;
 
     @Override
     @Transactional
@@ -52,20 +59,38 @@ public class DataSourceSchemaRepairServiceImpl implements DataSourceSchemaRepair
         requireDatasource(datasource);
         RepairOperation operation = RepairOperation.from(request.getOperation());
         String tableName = requireIdentifier(request.getTableName(), "tableName");
-        String columnName = requireIdentifier(request.getColumnName(), "columnName");
+        String columnName = operation == RepairOperation.CREATE_TABLE
+                ? null
+                : requireIdentifier(request.getColumnName(), "columnName");
         String requestedType = normalizeRequestedType(operation, request.getRequestedType());
         Integer requestedLength = normalizeRequestedLength(operation, request.getRequestedLength());
+        List<CreateColumn> createColumns = operation == RepairOperation.CREATE_TABLE
+                ? normalizeCreateColumns(request.getColumns())
+                : List.of();
 
         try (Connection connection = connectionProvider.openConnection(datasource.getId(), false)) {
             DatabaseFamily family = DatabaseFamily.from(connection.getMetaData().getDatabaseProductName());
-            TableLocation location = resolveTable(connection, family, request.getSchemaName(), tableName);
-            ColumnSnapshot current = findColumn(connection.getMetaData(), location, columnName);
-            validateRepair(operation, family, current, requestedType, requestedLength);
+            TableLocation location = operation == RepairOperation.CREATE_TABLE
+                    ? resolveNewTable(connection, family, request.getSchemaName(), tableName)
+                    : resolveTable(connection, family, request.getSchemaName(), tableName);
+            ColumnSnapshot current = operation == RepairOperation.CREATE_TABLE
+                    ? null
+                    : findColumn(connection.getMetaData(), location, columnName);
+            if (operation == RepairOperation.CREATE_TABLE) {
+                validateCreateColumns(family, createColumns);
+            } else {
+                validateRepair(operation, family, current, requestedType, requestedLength);
+            }
 
-            String metadataDigest = metadataDigest(location, columnName, current);
+            String columnsJson = operation == RepairOperation.CREATE_TABLE ? serializeColumns(createColumns) : null;
+            String metadataDigest = operation == RepairOperation.CREATE_TABLE
+                    ? digest(location.displayName() + "|TABLE_ABSENT|" + columnsJson)
+                    : metadataDigest(location, columnName, current);
             String planRef = UUID.randomUUID().toString();
-            String impactSummary = impactSummary(operation, location, columnName, current,
-                    requestedType, requestedLength);
+            String impactSummary = operation == RepairOperation.CREATE_TABLE
+                    ? "将在 " + location.displayName() + " 创建包含 " + createColumns.size()
+                    + " 个字段的新空表；不会读取、覆盖或删除目标端已有数据。"
+                    : impactSummary(operation, location, columnName, current, requestedType, requestedLength);
             String confirmationDigest = digest(String.join("|",
                     planRef,
                     String.valueOf(datasource.getTenantId()),
@@ -73,9 +98,11 @@ public class DataSourceSchemaRepairServiceImpl implements DataSourceSchemaRepair
                     String.valueOf(datasource.getId()),
                     operation.name(),
                     location.displayName(),
-                    columnName,
+                    String.valueOf(columnName),
                     metadataDigest,
-                    requestedDefinition(operation, requestedType, requestedLength)));
+                    operation == RepairOperation.CREATE_TABLE
+                            ? columnsJson
+                            : requestedDefinition(operation, requestedType, requestedLength)));
 
             DataSourceSchemaRepairPlan plan = new DataSourceSchemaRepairPlan();
             plan.setPlanRef(planRef);
@@ -92,6 +119,7 @@ public class DataSourceSchemaRepairServiceImpl implements DataSourceSchemaRepair
             plan.setCurrentNullable(current == null ? null : current.nullable());
             plan.setRequestedType(requestedType);
             plan.setRequestedLength(requestedLength);
+            plan.setColumnsJson(columnsJson);
             plan.setMetadataDigest(metadataDigest);
             plan.setImpactSummary(impactSummary);
             plan.setConfirmationDigest(confirmationDigest);
@@ -135,16 +163,40 @@ public class DataSourceSchemaRepairServiceImpl implements DataSourceSchemaRepair
         RepairOperation operation = RepairOperation.from(plan.getOperation());
         try (Connection connection = connectionProvider.openConnection(datasource.getId(), false)) {
             DatabaseFamily family = DatabaseFamily.from(connection.getMetaData().getDatabaseProductName());
-            TableLocation location = resolveTable(connection, family, plan.getSchemaName(), plan.getTableName());
-            ColumnSnapshot current = findColumn(connection.getMetaData(), location, plan.getColumnName());
-            validateRepair(operation, family, current, plan.getRequestedType(), plan.getRequestedLength());
-            String currentDigest = metadataDigest(location, plan.getColumnName(), current);
+            List<CreateColumn> createColumns = operation == RepairOperation.CREATE_TABLE
+                    ? deserializeColumns(plan.getColumnsJson())
+                    : List.of();
+            TableLocation location;
+            try {
+                location = operation == RepairOperation.CREATE_TABLE
+                        ? resolveNewTable(connection, family, plan.getSchemaName(), plan.getTableName())
+                        : resolveTable(connection, family, plan.getSchemaName(), plan.getTableName());
+            } catch (IllegalArgumentException | NoSuchElementException exception) {
+                if (operation == RepairOperation.CREATE_TABLE) {
+                    markTerminal(plan, PlanStatus.STALE, "TARGET_LOCATION_CHANGED", null);
+                    throw new IllegalStateException(
+                            "目标表或目标命名空间自预览后已发生变化，请重新生成创建目标表预览: "
+                                    + exception.getMessage(), exception);
+                }
+                throw exception;
+            }
+            ColumnSnapshot current = operation == RepairOperation.CREATE_TABLE
+                    ? null
+                    : findColumn(connection.getMetaData(), location, plan.getColumnName());
+            if (operation == RepairOperation.CREATE_TABLE) {
+                validateCreateColumns(family, createColumns);
+            } else {
+                validateRepair(operation, family, current, plan.getRequestedType(), plan.getRequestedLength());
+            }
+            String currentDigest = operation == RepairOperation.CREATE_TABLE
+                    ? digest(location.displayName() + "|TABLE_ABSENT|" + serializeColumns(createColumns))
+                    : metadataDigest(location, plan.getColumnName(), current);
             if (!constantTimeEquals(plan.getMetadataDigest(), currentDigest)) {
                 markTerminal(plan, PlanStatus.STALE, "METADATA_CHANGED", null);
                 throw new IllegalStateException("目标表结构自预览后已发生变化，请重新生成修复预览");
             }
 
-            String ddl = buildDdl(connection.getMetaData(), family, location, plan, current);
+            String ddl = buildDdl(connection.getMetaData(), family, location, plan, current, createColumns);
             boolean previousAutoCommit = connection.getAutoCommit();
             try {
                 connection.setAutoCommit(false);
@@ -161,8 +213,16 @@ public class DataSourceSchemaRepairServiceImpl implements DataSourceSchemaRepair
                 restoreAutoCommitQuietly(connection, previousAutoCommit);
             }
 
+            ColumnSnapshot after;
+            if (operation == RepairOperation.CREATE_TABLE) {
+                TableLocation createdTable = resolveTable(
+                        connection, family, plan.getSchemaName(), plan.getTableName());
+                validateCreatedColumns(connection.getMetaData(), createdTable, createColumns);
+                after = null;
+            } else {
+                after = findColumn(connection.getMetaData(), location, plan.getColumnName());
+            }
             markTerminal(plan, PlanStatus.APPLIED, null, requireActor(actorId));
-            ColumnSnapshot after = findColumn(connection.getMetaData(), location, plan.getColumnName());
             return toResult(plan, after, false);
         } catch (SQLException | ClassNotFoundException exception) {
             throw new IllegalStateException("目标数据源结构修复未完成: " + safeDatabaseFailure(exception), exception);
@@ -201,6 +261,128 @@ public class DataSourceSchemaRepairServiceImpl implements DataSourceSchemaRepair
         rejectUnsafeMySqlModify(family, current);
     }
 
+    private List<CreateColumn> normalizeCreateColumns(
+            List<DataSourceSchemaRepairPreviewRequest.CreateTableColumn> requestedColumns) {
+        if (requestedColumns == null || requestedColumns.isEmpty()) {
+            throw new IllegalArgumentException("创建目标表至少需要一个来自源表元数据的字段");
+        }
+        if (requestedColumns.size() > 160) {
+            throw new IllegalArgumentException("单次自动创建目标表最多支持 160 个字段");
+        }
+        List<CreateColumn> normalized = new ArrayList<>(requestedColumns.size());
+        Set<String> names = new HashSet<>();
+        for (DataSourceSchemaRepairPreviewRequest.CreateTableColumn requested : requestedColumns) {
+            if (requested == null) {
+                throw new IllegalArgumentException("创建目标表的字段定义不能为空");
+            }
+            String columnName = requireIdentifier(requested.getColumnName(), "columns.columnName");
+            if (!names.add(columnName.toLowerCase(Locale.ROOT))) {
+                throw new IllegalArgumentException("创建目标表的字段名重复: " + columnName);
+            }
+            String dataType = normalizeCreateType(requested.getDataType());
+            Integer length = "VARCHAR".equals(dataType) ? requested.getLength() : null;
+            Integer precision = "DECIMAL".equals(dataType) ? requested.getPrecision() : null;
+            Integer scale = "DECIMAL".equals(dataType) ? requested.getScale() : null;
+            normalized.add(new CreateColumn(
+                    columnName,
+                    dataType,
+                    length,
+                    precision,
+                    scale,
+                    requested.isPrimaryKey() ? false : requested.isNullable(),
+                    requested.isPrimaryKey()));
+        }
+        return List.copyOf(normalized);
+    }
+
+    private String normalizeCreateType(String value) {
+        if (!hasText(value)) {
+            throw new IllegalArgumentException("创建目标表的字段必须包含 dataType");
+        }
+        String normalized = value.trim().toUpperCase(Locale.ROOT)
+                .replaceAll("\\s+", " ");
+        return switch (normalized) {
+            case "CHAR", "CHARACTER", "CHARACTER VARYING", "VARCHAR", "VARCHAR2", "NVARCHAR", "NVARCHAR2" ->
+                    "VARCHAR";
+            case "TINYINT", "SMALLINT", "INT2" -> "SMALLINT";
+            case "INT", "INTEGER", "INT4", "SERIAL" -> "INTEGER";
+            case "BIGINT", "INT8", "BIGSERIAL" -> "BIGINT";
+            case "DECIMAL", "NUMERIC", "NUMBER" -> "DECIMAL";
+            case "FLOAT", "REAL", "DOUBLE", "DOUBLE PRECISION" -> "DOUBLE";
+            case "BOOL", "BOOLEAN" -> "BOOLEAN";
+            case "DATE" -> "DATE";
+            case "TIME", "TIME WITHOUT TIME ZONE", "TIME WITH TIME ZONE" -> "TIME";
+            case "DATETIME", "TIMESTAMP", "TIMESTAMP WITHOUT TIME ZONE", "TIMESTAMP WITH TIME ZONE" ->
+                    "TIMESTAMP";
+            case "TEXT", "TINYTEXT", "MEDIUMTEXT", "LONGTEXT", "CLOB" -> "TEXT";
+            case "BINARY", "VARBINARY", "BLOB", "BYTEA", "LONGBLOB" -> "BINARY";
+            case "JSON", "JSONB" -> "JSON";
+            case "UUID" -> "UUID";
+            default -> throw new IllegalArgumentException("不支持自动创建目标表的字段类型: " + value);
+        };
+    }
+
+    private void validateCreateColumns(DatabaseFamily family, List<CreateColumn> columns) {
+        if (columns == null || columns.isEmpty()) {
+            throw new IllegalArgumentException("创建目标表缺少字段定义");
+        }
+        Set<String> names = new HashSet<>();
+        for (CreateColumn column : columns) {
+            String columnName = requireIdentifier(column.columnName(), "columns.columnName");
+            if (!names.add(columnName.toLowerCase(Locale.ROOT))) {
+                throw new IllegalArgumentException("创建目标表的字段名重复: " + columnName);
+            }
+            validateCreateType(family, column);
+            if (column.primaryKey() && column.nullable()) {
+                throw new IllegalArgumentException("主键字段不能允许 NULL: " + columnName);
+            }
+        }
+    }
+
+    private void validateCreateType(DatabaseFamily family, CreateColumn column) {
+        switch (column.dataType()) {
+            case "VARCHAR" -> {
+                if (column.length() == null || column.length() < 1 || column.length() > MAX_VARCHAR_LENGTH) {
+                    throw new IllegalArgumentException(
+                            "字段 " + column.columnName() + " 的 VARCHAR 长度必须在 1 到 "
+                                    + MAX_VARCHAR_LENGTH + " 之间");
+                }
+            }
+            case "DECIMAL" -> {
+                int maximumPrecision = family == DatabaseFamily.MYSQL ? 65 : 1_000;
+                if (column.precision() == null || column.precision() < 1
+                        || column.precision() > maximumPrecision) {
+                    throw new IllegalArgumentException(
+                            "字段 " + column.columnName() + " 的 DECIMAL precision 必须在 1 到 "
+                                    + maximumPrecision + " 之间");
+                }
+                int scale = column.scale() == null ? 0 : column.scale();
+                if (scale < 0 || scale > column.precision()) {
+                    throw new IllegalArgumentException(
+                            "字段 " + column.columnName() + " 的 DECIMAL scale 必须在 0 到 precision 之间");
+                }
+            }
+            case "SMALLINT", "INTEGER", "BIGINT", "DOUBLE", "BOOLEAN", "DATE", "TIME",
+                    "TIMESTAMP", "TEXT", "BINARY", "JSON", "UUID" -> {
+                // The exact vendor spelling is selected later by createTypeSql.
+            }
+            default -> throw new IllegalArgumentException(
+                    "字段 " + column.columnName() + " 使用了未准入的类型 " + column.dataType());
+        }
+    }
+
+    private void validateCreatedColumns(DatabaseMetaData metadata,
+                                        TableLocation location,
+                                        List<CreateColumn> expectedColumns) throws SQLException {
+        for (CreateColumn expected : expectedColumns) {
+            if (findColumn(metadata, location, expected.columnName()) == null) {
+                throw new IllegalStateException(
+                        "目标表已创建，但执行后未读取到预期字段 " + location.displayName()
+                                + "." + expected.columnName());
+            }
+        }
+    }
+
     private void rejectUnsafeMySqlModify(DatabaseFamily family, ColumnSnapshot current) {
         if (family == DatabaseFamily.MYSQL
                 && (hasText(current.defaultValue()) || current.autoIncrement())) {
@@ -213,10 +395,14 @@ public class DataSourceSchemaRepairServiceImpl implements DataSourceSchemaRepair
                             DatabaseFamily family,
                             TableLocation location,
                             DataSourceSchemaRepairPlan plan,
-                            ColumnSnapshot current) throws SQLException {
+                            ColumnSnapshot current,
+                            List<CreateColumn> createColumns) throws SQLException {
         String table = quoteQualified(metadata, location);
-        String column = quote(metadata, plan.getColumnName());
         RepairOperation operation = RepairOperation.from(plan.getOperation());
+        if (operation == RepairOperation.CREATE_TABLE) {
+            return buildCreateTableDdl(metadata, family, table, createColumns);
+        }
+        String column = quote(metadata, plan.getColumnName());
         if (operation == RepairOperation.ADD_NULLABLE_COLUMN) {
             return "ALTER TABLE " + table + " ADD COLUMN " + column + " "
                     + typeSql(family, plan.getRequestedType(), plan.getRequestedLength()) + " NULL";
@@ -236,20 +422,36 @@ public class DataSourceSchemaRepairServiceImpl implements DataSourceSchemaRepair
                 + existingTypeSql(current) + " NULL";
     }
 
+    private String buildCreateTableDdl(DatabaseMetaData metadata,
+                                       DatabaseFamily family,
+                                       String quotedTable,
+                                       List<CreateColumn> columns) throws SQLException {
+        StringJoiner definitions = new StringJoiner(", ");
+        List<String> primaryKeys = new ArrayList<>();
+        for (CreateColumn column : columns) {
+            StringBuilder definition = new StringBuilder()
+                    .append(quote(metadata, column.columnName()))
+                    .append(' ')
+                    .append(createTypeSql(family, column));
+            if (!column.nullable() || column.primaryKey()) {
+                definition.append(" NOT NULL");
+            }
+            definitions.add(definition.toString());
+            if (column.primaryKey()) {
+                primaryKeys.add(quote(metadata, column.columnName()));
+            }
+        }
+        if (!primaryKeys.isEmpty()) {
+            definitions.add("PRIMARY KEY (" + String.join(", ", primaryKeys) + ")");
+        }
+        return "CREATE TABLE " + quotedTable + " (" + definitions + ")";
+    }
+
     private TableLocation resolveTable(Connection connection,
                                        DatabaseFamily family,
                                        String requestedNamespace,
                                        String requestedTable) throws SQLException {
-        String namespace = hasText(requestedNamespace)
-                ? requireIdentifier(requestedNamespace, "schemaName")
-                : family == DatabaseFamily.MYSQL ? connection.getCatalog() : connection.getSchema();
-        if (!hasText(namespace) && family == DatabaseFamily.POSTGRESQL) {
-            namespace = "public";
-        }
-        if (!hasText(namespace)) {
-            throw new IllegalArgumentException("无法确定目标 database/schema，请在修复计划中明确提供");
-        }
-        namespace = requireIdentifier(namespace, "schemaName");
+        String namespace = resolveNamespace(connection, family, requestedNamespace);
         DatabaseMetaData metadata = connection.getMetaData();
         String catalog = family == DatabaseFamily.MYSQL ? namespace : null;
         String schema = family == DatabaseFamily.POSTGRESQL ? namespace : null;
@@ -262,6 +464,70 @@ public class DataSourceSchemaRepairServiceImpl implements DataSourceSchemaRepair
             }
         }
         throw new NoSuchElementException("目标表不存在: " + namespace + "." + requestedTable);
+    }
+
+    /**
+     * Resolves an existing namespace while requiring the requested target table to remain absent.
+     * This is used both at preview time and immediately before apply, so a table created by another
+     * actor after preview invalidates the plan rather than being overwritten.
+     */
+    private TableLocation resolveNewTable(Connection connection,
+                                          DatabaseFamily family,
+                                          String requestedNamespace,
+                                          String requestedTable) throws SQLException {
+        String namespace = resolveNamespace(connection, family, requestedNamespace);
+        DatabaseMetaData metadata = connection.getMetaData();
+        ensureNamespaceExists(connection, metadata, family, namespace);
+        String catalog = family == DatabaseFamily.MYSQL ? namespace : null;
+        String schema = family == DatabaseFamily.POSTGRESQL ? namespace : null;
+        try (ResultSet resultSet = metadata.getTables(catalog, schema, requestedTable, null)) {
+            while (resultSet.next()) {
+                String found = resultSet.getString("TABLE_NAME");
+                if (requestedTable.equalsIgnoreCase(found)) {
+                    throw new IllegalArgumentException(
+                            "目标表已存在，不能执行创建目标表修复: " + namespace + "." + found);
+                }
+            }
+        }
+        return new TableLocation(family, namespace, requireIdentifier(requestedTable, "tableName"));
+    }
+
+    private String resolveNamespace(Connection connection,
+                                    DatabaseFamily family,
+                                    String requestedNamespace) throws SQLException {
+        String namespace = hasText(requestedNamespace)
+                ? requireIdentifier(requestedNamespace, "schemaName")
+                : family == DatabaseFamily.MYSQL ? connection.getCatalog() : connection.getSchema();
+        if (!hasText(namespace) && family == DatabaseFamily.POSTGRESQL) {
+            namespace = "public";
+        }
+        if (!hasText(namespace)) {
+            throw new IllegalArgumentException("无法确定目标 database/schema，请明确提供目标命名空间");
+        }
+        return requireIdentifier(namespace, "schemaName");
+    }
+
+    private void ensureNamespaceExists(Connection connection,
+                                       DatabaseMetaData metadata,
+                                       DatabaseFamily family,
+                                       String namespace) throws SQLException {
+        String current = family == DatabaseFamily.MYSQL ? connection.getCatalog() : connection.getSchema();
+        if (hasText(current) && current.equalsIgnoreCase(namespace)) {
+            return;
+        }
+        try (ResultSet namespaces = family == DatabaseFamily.MYSQL
+                ? metadata.getCatalogs()
+                : metadata.getSchemas(null, namespace)) {
+            while (namespaces.next()) {
+                String found = namespaces.getString(family == DatabaseFamily.MYSQL
+                        ? "TABLE_CAT"
+                        : "TABLE_SCHEM");
+                if (namespace.equalsIgnoreCase(found)) {
+                    return;
+                }
+            }
+        }
+        throw new NoSuchElementException("目标 database/schema 不存在: " + namespace);
     }
 
     private ColumnSnapshot findColumn(DatabaseMetaData metadata,
@@ -302,6 +568,7 @@ public class DataSourceSchemaRepairServiceImpl implements DataSourceSchemaRepair
                                  String requestedType,
                                  Integer requestedLength) {
         return switch (operation) {
+            case CREATE_TABLE -> "将在 " + location.displayName() + " 创建新的空目标表";
             case ADD_NULLABLE_COLUMN -> "将在 " + location.displayName() + " 新增可空字段 " + columnName
                     + "，类型为 " + requestedDefinition(operation, requestedType, requestedLength)
                     + "；不会回填或删除已有数据。";
@@ -315,6 +582,8 @@ public class DataSourceSchemaRepairServiceImpl implements DataSourceSchemaRepair
     private DataSourceSchemaRepairResult toResult(DataSourceSchemaRepairPlan plan,
                                                   ColumnSnapshot snapshot,
                                                   boolean requiresConfirmation) {
+        RepairOperation operation = RepairOperation.from(plan.getOperation());
+        boolean createTable = operation == RepairOperation.CREATE_TABLE;
         return DataSourceSchemaRepairResult.builder()
                 .planId(plan.getId())
                 .planRef(plan.getPlanRef())
@@ -322,19 +591,28 @@ public class DataSourceSchemaRepairServiceImpl implements DataSourceSchemaRepair
                 .operation(plan.getOperation())
                 .objectLocator(joinObject(plan.getSchemaName(), plan.getTableName()))
                 .columnName(plan.getColumnName())
-                .currentDefinition(snapshot == null ? "ABSENT" : snapshot.definition())
-                .requestedDefinition(requestedDefinition(
-                        RepairOperation.from(plan.getOperation()), plan.getRequestedType(), plan.getRequestedLength()))
+                .currentDefinition(createTable
+                        ? (requiresConfirmation ? "TABLE_ABSENT" : "TABLE_CREATED")
+                        : snapshot == null ? "ABSENT" : snapshot.definition())
+                .requestedDefinition(createTable
+                        ? createColumnsDefinition(plan.getColumnsJson())
+                        : requestedDefinition(operation, plan.getRequestedType(), plan.getRequestedLength()))
                 .impactSummary(plan.getImpactSummary())
                 .planStatus(plan.getPlanStatus())
                 .requiresConfirmation(requiresConfirmation)
                 .confirmationDigest(requiresConfirmation ? plan.getConfirmationDigest() : null)
                 .appliedAt(plan.getAppliedAt())
-                .safetyConstraints(List.of(
-                        "仅执行白名单结构变更",
-                        "应用前重新校验元数据摘要",
-                        "不保存或返回原始 DDL",
-                        "不删除表、字段或源端数据"))
+                .safetyConstraints(createTable
+                        ? List.of(
+                                "只允许在目标表不存在时创建新空表",
+                                "字段定义来自可信元数据并经过类型白名单转换",
+                                "应用前重新校验命名空间、表缺失状态和字段摘要",
+                                "不保存或返回原始 DDL，不复制默认表达式、触发器或源端数据")
+                        : List.of(
+                                "仅执行白名单结构变更",
+                                "应用前重新校验元数据摘要",
+                                "不保存或返回原始 DDL",
+                                "不删除表、字段或源端数据"))
                 .build();
     }
 
@@ -377,6 +655,19 @@ public class DataSourceSchemaRepairServiceImpl implements DataSourceSchemaRepair
         return type;
     }
 
+    private String createTypeSql(DatabaseFamily family, CreateColumn column) {
+        return switch (column.dataType()) {
+            case "VARCHAR" -> "VARCHAR(" + column.length() + ")";
+            case "DECIMAL" -> "DECIMAL(" + column.precision() + ","
+                    + (column.scale() == null ? 0 : column.scale()) + ")";
+            case "DOUBLE" -> family == DatabaseFamily.POSTGRESQL ? "DOUBLE PRECISION" : "DOUBLE";
+            case "BINARY" -> family == DatabaseFamily.POSTGRESQL ? "BYTEA" : "LONGBLOB";
+            case "JSON" -> family == DatabaseFamily.POSTGRESQL ? "JSONB" : "JSON";
+            case "UUID" -> family == DatabaseFamily.POSTGRESQL ? "UUID" : "CHAR(36)";
+            default -> column.dataType();
+        };
+    }
+
     private String existingTypeSql(ColumnSnapshot current) {
         if (current.isCharacterType() && current.columnSize() != null) {
             return current.typeName() + "(" + current.columnSize() + ")";
@@ -406,10 +697,55 @@ public class DataSourceSchemaRepairServiceImpl implements DataSourceSchemaRepair
     }
 
     private String requestedDefinition(RepairOperation operation, String type, Integer length) {
+        if (operation == RepairOperation.CREATE_TABLE) {
+            return "NEW EMPTY TABLE";
+        }
         if (operation == RepairOperation.DROP_NOT_NULL) {
             return "NULLABLE";
         }
         return "VARCHAR".equals(type) ? "VARCHAR(" + length + ")" : type;
+    }
+
+    private String serializeColumns(List<CreateColumn> columns) {
+        try {
+            return objectMapper.writeValueAsString(columns);
+        } catch (Exception exception) {
+            throw new IllegalStateException("无法序列化受控目标表字段定义", exception);
+        }
+    }
+
+    private List<CreateColumn> deserializeColumns(String columnsJson) {
+        if (!hasText(columnsJson)) {
+            throw new IllegalStateException("创建目标表计划缺少受控字段定义");
+        }
+        try {
+            List<CreateColumn> columns = objectMapper.readValue(
+                    columnsJson, new TypeReference<List<CreateColumn>>() { });
+            return columns == null ? List.of() : List.copyOf(columns);
+        } catch (Exception exception) {
+            throw new IllegalStateException("创建目标表计划的字段定义无法读取", exception);
+        }
+    }
+
+    private String createColumnsDefinition(String columnsJson) {
+        List<CreateColumn> columns = deserializeColumns(columnsJson);
+        StringJoiner summary = new StringJoiner(", ");
+        for (CreateColumn column : columns) {
+            String definition = column.columnName() + " " + canonicalTypeDefinition(column)
+                    + ((!column.nullable() || column.primaryKey()) ? " NOT NULL" : " NULL")
+                    + (column.primaryKey() ? " PRIMARY KEY" : "");
+            summary.add(definition);
+        }
+        return summary.toString();
+    }
+
+    private String canonicalTypeDefinition(CreateColumn column) {
+        return switch (column.dataType()) {
+            case "VARCHAR" -> "VARCHAR(" + column.length() + ")";
+            case "DECIMAL" -> "DECIMAL(" + column.precision() + ","
+                    + (column.scale() == null ? 0 : column.scale()) + ")";
+            default -> column.dataType();
+        };
     }
 
     private String quoteQualified(DatabaseMetaData metadata, TableLocation location) throws SQLException {
@@ -520,6 +856,7 @@ public class DataSourceSchemaRepairServiceImpl implements DataSourceSchemaRepair
     }
 
     private enum RepairOperation {
+        CREATE_TABLE,
         ADD_NULLABLE_COLUMN,
         WIDEN_VARCHAR,
         DROP_NOT_NULL;
@@ -529,7 +866,7 @@ public class DataSourceSchemaRepairServiceImpl implements DataSourceSchemaRepair
                 return RepairOperation.valueOf(value == null ? "" : value.trim().toUpperCase(Locale.ROOT));
             } catch (IllegalArgumentException exception) {
                 throw new IllegalArgumentException(
-                        "operation 仅支持 ADD_NULLABLE_COLUMN、WIDEN_VARCHAR、DROP_NOT_NULL");
+                        "operation 仅支持 CREATE_TABLE、ADD_NULLABLE_COLUMN、WIDEN_VARCHAR、DROP_NOT_NULL");
             }
         }
     }
@@ -561,6 +898,15 @@ public class DataSourceSchemaRepairServiceImpl implements DataSourceSchemaRepair
         private String displayName() {
             return namespace + "." + tableName;
         }
+    }
+
+    private record CreateColumn(String columnName,
+                                String dataType,
+                                Integer length,
+                                Integer precision,
+                                Integer scale,
+                                boolean nullable,
+                                boolean primaryKey) {
     }
 
     private record ColumnSnapshot(String columnName,

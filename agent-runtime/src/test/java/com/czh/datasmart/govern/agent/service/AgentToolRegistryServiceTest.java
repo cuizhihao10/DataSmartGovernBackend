@@ -15,6 +15,12 @@ import com.czh.datasmart.govern.agent.model.AgentToolType;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.context.properties.bind.Bindable;
+import org.springframework.boot.context.properties.bind.Binder;
+import org.springframework.boot.env.YamlPropertySourceLoader;
+import org.springframework.core.env.ConfigurableEnvironment;
+import org.springframework.core.env.StandardEnvironment;
+import org.springframework.core.io.ClassPathResource;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -110,6 +116,37 @@ class AgentToolRegistryServiceTest {
         assertEquals("PROJECT_SAFE", descriptor.memory().cachePolicy());
         assertEquals("CAN_FILL_FROM_CONTEXT", descriptor.parameters().getFirst().resolution());
         assertTrue(descriptor.parameters().getFirst().sensitive());
+    }
+
+    /**
+     * Keeps the Java catalog aligned with the Python CDC prerequisite contract.
+     * Object mappings reaching this tool contain only schema/table identifiers;
+     * the adapter strips fields, predicates, SQL, row values and credentials.
+     */
+    @Test
+    void applicationCatalogShouldTreatCdcObjectMappingsAsLowSensitiveMetadata() throws Exception {
+        ConfigurableEnvironment environment = new StandardEnvironment();
+        new YamlPropertySourceLoader()
+                .load("agent-runtime-application", new ClassPathResource("application.yml"))
+                .forEach(environment.getPropertySources()::addLast);
+        AgentRuntimeProperties properties = Binder.get(environment)
+                .bind("datasmart.agent-runtime", Bindable.of(AgentRuntimeProperties.class))
+                .orElseThrow(() -> new IllegalStateException("agent-runtime application.yml was not bound"));
+
+        AgentToolDescriptorView descriptor = new AgentToolRegistryService(properties)
+                .getToolDescriptor("sync.cdc.readiness.check");
+        AgentRuntimeProperties.ToolInputFieldProperties objectMappings = properties.getToolRegistry()
+                .get("sync.cdc.readiness.check")
+                .getInputSchema()
+                .stream()
+                .filter(field -> "objectMappings".equals(field.getName()))
+                .findFirst()
+                .orElseThrow();
+
+        assertFalse(objectMappings.getSensitive());
+        assertEquals(List.of(), descriptor.governance().sensitiveFields());
+        assertFalse(descriptor.governance().requiresApproval());
+        assertTrue(descriptor.governance().readOnly());
     }
 
     /**

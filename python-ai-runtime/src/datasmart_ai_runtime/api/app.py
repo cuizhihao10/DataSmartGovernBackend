@@ -48,6 +48,9 @@ from datasmart_ai_runtime.api.agent.orchestrator_factory import (
 from datasmart_ai_runtime.api.agent.capabilities import register_agent_capability_routes
 from datasmart_ai_runtime.api.agent.langgraph_checkpoints import register_langgraph_checkpoint_routes
 from datasmart_ai_runtime.api.agent.mcp_worker import register_mcp_durable_worker_routes
+from datasmart_ai_runtime.api.agent.post_confirm_continuation import (
+    register_post_confirm_continuation_routes,
+)
 from datasmart_ai_runtime.api.agent.rag_command_worker import register_rag_command_worker_routes
 from datasmart_ai_runtime.api.agent.routes import register_agent_runtime_routes
 from datasmart_ai_runtime.api.agent.plan_response import build_plan_response
@@ -68,6 +71,7 @@ from datasmart_ai_runtime.services.agent_runtime_tool_feedback_client import (
 from datasmart_ai_runtime.services.agent_capability import default_agent_capability_matrix_service
 from datasmart_ai_runtime.services.agent_execution import (
     AgentDurableModelToolLoopRunner,
+    AgentPostConfirmContinuationCoordinator,
     DurableAgentLoopService,
     build_durable_agent_loop_store,
     durable_agent_loop_store_settings_from_env,
@@ -316,11 +320,30 @@ def create_app() -> Any:
         _optional_positive_int_env("DATASMART_AGENT_DURABLE_MODEL_TOOL_MAX_TURNS") or 6,
         12,
     )
+    # A complete data-sync assistant turn normally needs catalog, connection,
+    # metadata and write-plan stages.  Each model turn carries bounded tool
+    # schemas and accumulated evidence, so the historical 16K default could
+    # stop a valid flow immediately after metadata.  These remain hard-bounded
+    # operator settings rather than an unlimited model loop.
+    agent_loop_max_total_tokens = min(
+        _optional_positive_int_env("DATASMART_AGENT_LOOP_MAX_TOTAL_TOKENS") or 65536,
+        1_000_000,
+    )
+    agent_loop_global_timeout_seconds = min(
+        _optional_positive_int_env("DATASMART_AGENT_LOOP_GLOBAL_TIMEOUT_SECONDS") or 600,
+        3600,
+    )
+    agent_loop_estimated_next_turn_tokens = min(
+        _optional_positive_int_env("DATASMART_AGENT_LOOP_ESTIMATED_NEXT_TURN_TOKENS") or 8192,
+        131072,
+    )
     loop_control_evaluator = (
         AgentLoopControlPolicyEvaluator(
             AgentLoopControlPolicy(
                 max_tool_steps=durable_model_tool_max_turns,
                 max_second_turns=durable_model_tool_max_turns,
+                max_total_tokens=agent_loop_max_total_tokens,
+                global_timeout_seconds=agent_loop_global_timeout_seconds,
             )
         )
         if control_plane_feedback_collector
@@ -343,6 +366,7 @@ def create_app() -> Any:
             loop_control_evaluator=loop_control_evaluator,
             second_turn_orchestrator=second_turn_orchestrator,
             max_model_turns=durable_model_tool_max_turns,
+            estimated_next_turn_tokens=agent_loop_estimated_next_turn_tokens,
         )
         if plan_ingestion_client
         and control_plane_feedback_collector
@@ -365,6 +389,18 @@ def create_app() -> Any:
         else None
     )
     app.state.mcp_durable_continuation_coordinator = mcp_durable_continuation_coordinator
+    post_confirm_continuation_coordinator = (
+        AgentPostConfirmContinuationCoordinator(
+            model_routes=model_route_registry,
+            second_turn_orchestrator=second_turn_orchestrator,
+            loop_control_evaluator=loop_control_evaluator,
+            durable_loop_runner=durable_model_tool_loop_runner,
+        )
+        if durable_model_tool_loop_runner is not None
+        and loop_control_evaluator is not None
+        and second_turn_orchestrator is not None
+        else None
+    )
     runtime_event_replay_sources = build_runtime_event_replay_sources(agent_runtime_base_url)
     runtime_event_feedback_bridge = (
         AgentRuntimeEventFeedbackBridge(runtime_event_replay_sources)
@@ -683,8 +719,19 @@ def create_app() -> Any:
         tool_action_checkpoint_gateway_signature_required=tool_action_checkpoint_gateway_signature_required,
         tool_registry=tool_registry,
         gateway_signature_error_factory=lambda detail: HTTPException(status_code=401, detail=detail),
+        request_validation_error_factory=lambda status_code, detail: HTTPException(
+            status_code=status_code,
+            detail=detail,
+        ),
         gateway_signature_nonce_store=gateway_signature_nonce_store,
         gateway_signature_security_stats=gateway_signature_security_stats,
+    )
+    register_post_confirm_continuation_routes(
+        app,
+        request_type=Request,
+        coordinator=post_confirm_continuation_coordinator,
+        service_account_token=os.getenv("DATASMART_AGENT_POST_CONFIRM_CONTINUATION_TOKEN"),
+        error_factory=lambda status_code, detail: HTTPException(status_code=status_code, detail=detail),
     )
 
     register_memory_write_routes(app, memory_runtime.memory_write_governance)

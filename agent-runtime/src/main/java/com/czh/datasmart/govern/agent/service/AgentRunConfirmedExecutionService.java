@@ -8,11 +8,14 @@ package com.czh.datasmart.govern.agent.service;
 
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunConfirmedExecutionRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunConfirmedExecutionResponse;
+import com.czh.datasmart.govern.agent.controller.dto.AgentPostConfirmContinuationRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentPostConfirmContinuationView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionAuditView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionDecisionRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionResultView;
 import com.czh.datasmart.govern.agent.service.answer.AgentExecutionAssistantAnswer;
 import com.czh.datasmart.govern.agent.service.answer.AgentExecutionResultAnswerGenerator;
+import com.czh.datasmart.govern.agent.service.continuation.AgentPostConfirmContinuationClient;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
@@ -39,7 +42,9 @@ public class AgentRunConfirmedExecutionService {
     private final AgentSessionMemoryStore sessionStore;
     private final AgentSessionService sessionService;
     private final AgentToolExecutionAuditService auditService;
+    private final AgentToolExecutionResultQueryService resultQueryService;
     private final AgentExecutionResultAnswerGenerator resultAnswerGenerator;
+    private final AgentPostConfirmContinuationClient continuationClient;
 
     public AgentRunConfirmedExecutionResponse confirmAndExecute(
             String sessionId,
@@ -57,6 +62,7 @@ public class AgentRunConfirmedExecutionService {
                     "必须显式确认后才能执行 Agent 计划");
         }
         AgentSessionRecord session = requireInitiatorSession(sessionId, tenantId, projectId, actorId);
+        ConfirmedBatch batch;
         synchronized (session) {
             requireDelegatedIdentity(actorRole, authorizedProjectRoles, projectId);
             session.refreshDelegatedIdentity(actorRole, actorType, authorizedProjectRoles);
@@ -105,30 +111,87 @@ public class AgentRunConfirmedExecutionService {
                 break;
             }
             if (failed == 0 && succeeded == audits.size()) {
-                run.completeAfterToolExecution("Agent 计划全部工具节点执行成功；同步任务已提交业务执行链路。");
+                run.completeAfterToolExecution("本轮 Agent 工具批次已全部执行成功，后续业务阶段以实际工具结果为准。");
             }
+            List<AgentToolExecutionAuditView> finalAudits = auditService.listByRun(sessionId, runId);
             AgentExecutionAssistantAnswer assistantAnswer = resultAnswerGenerator.generate(
                     run.getState().name(),
                     audits.size(),
                     succeeded,
                     failed,
+                    finalAudits,
                     List.copyOf(results),
                     run.getNextActions()
             );
-            return new AgentRunConfirmedExecutionResponse(
-                    sessionId,
-                    runId,
+            batch = new ConfirmedBatch(
                     run.getState().name(),
                     audits.size(),
                     succeeded,
                     failed,
                     List.copyOf(results),
                     run.getNextActions(),
-                    assistantAnswer.content(),
-                    assistantAnswer.mode(),
-                    assistantAnswer.modelProviderStatus()
+                    assistantAnswer
             );
         }
+
+        // Never call Python while holding the session monitor. Python immediately
+        // submits the next ToolPlan to Java and must acquire the same session to
+        // create a new Run; calling it inside synchronized(session) would deadlock.
+        AgentPostConfirmContinuationView continuation = continueAfterSuccessfulBatch(
+                session, runId, tenantId, projectId, actorId, traceId, batch
+        );
+        String assistantReply = continuation.assistantReply() == null || continuation.assistantReply().isBlank()
+                ? batch.assistantAnswer().content()
+                : continuation.assistantReply();
+        return new AgentRunConfirmedExecutionResponse(
+                sessionId,
+                runId,
+                batch.runState(),
+                batch.plannedCount(),
+                batch.succeededCount(),
+                batch.failedCount(),
+                batch.executedResults(),
+                batch.nextActions(),
+                assistantReply,
+                batch.assistantAnswer().mode(),
+                batch.assistantAnswer().modelProviderStatus(),
+                continuation
+        );
+    }
+
+    /**
+     * 把完整成功结果交给 Python 续跑；失败批次不会继续推理或创建新的 Run。
+     *
+     * <p>这里重新从结果事实源读取整批结果，而不是只使用本次循环新执行的 {@code results}。重试或重复确认时，
+     * 部分工具可能在进入该方法前已经是 SUCCEEDED；如果漏掉这些结果，模型的资源账本会丢失源端或目标端证据。</p>
+     */
+    private AgentPostConfirmContinuationView continueAfterSuccessfulBatch(
+            AgentSessionRecord session,
+            String runId,
+            Long tenantId,
+            Long projectId,
+            String actorId,
+            String traceId,
+            ConfirmedBatch batch) {
+        if (batch.failedCount() > 0 || batch.succeededCount() != batch.plannedCount()) {
+            return AgentPostConfirmContinuationView.failed(
+                    "当前工具批次未全部成功，已停止自动续跑；请先查看失败节点并修复。"
+            );
+        }
+        List<AgentToolExecutionResultView> allResults = resultQueryService.listRunToolExecutionResults(
+                session.getSessionId(), runId
+        );
+        return continuationClient.continueAfterConfirmedTools(new AgentPostConfirmContinuationRequest(
+                String.valueOf(tenantId),
+                String.valueOf(projectId),
+                actorId,
+                session.getSessionId(),
+                runId,
+                session.getObjective(),
+                session.getWorkspaceKey(),
+                traceId,
+                allResults
+        ));
     }
 
     private AgentSessionRecord requireInitiatorSession(
@@ -181,5 +244,15 @@ public class AgentRunConfirmedExecutionService {
         return comment == null || comment.isBlank()
                 ? "用户在智能助手中确认执行本次计划"
                 : comment.trim();
+    }
+
+    private record ConfirmedBatch(
+            String runState,
+            int plannedCount,
+            int succeededCount,
+            int failedCount,
+            List<AgentToolExecutionResultView> executedResults,
+            List<String> nextActions,
+            AgentExecutionAssistantAnswer assistantAnswer) {
     }
 }

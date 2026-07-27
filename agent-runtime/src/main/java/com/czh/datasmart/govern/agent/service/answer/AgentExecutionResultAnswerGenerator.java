@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.agent.service.answer;
 
+import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionAuditView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionResultView;
 
 import java.util.List;
@@ -26,6 +27,7 @@ public interface AgentExecutionResultAnswerGenerator {
      * @param plannedCount 计划节点数
      * @param succeededCount 成功节点数
      * @param failedCount 失败节点数
+     * @param toolAudits 本次 Run 的最终工具审计快照
      * @param toolResults 本次实际触发的低敏工具结果
      * @param nextActions 控制面给出的后续动作
      * @return 可直接进入 API 响应的低敏答复
@@ -35,6 +37,7 @@ public interface AgentExecutionResultAnswerGenerator {
             int plannedCount,
             int succeededCount,
             int failedCount,
+            List<AgentToolExecutionAuditView> toolAudits,
             List<AgentToolExecutionResultView> toolResults,
             List<String> nextActions);
 }

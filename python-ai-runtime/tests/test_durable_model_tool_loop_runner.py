@@ -95,6 +95,23 @@ class AgentDurableModelToolLoopRunnerTest(unittest.TestCase):
             streamed[-1].event_type,
         )
 
+    def test_pending_feedback_pauses_before_another_model_turn(self) -> None:
+        model = _SecondTurnOrchestrator()
+        runner = self._runner(
+            feedback=_feedback(ToolExecutionFeedbackStatus.PENDING),
+            second_turn=model,
+        )
+
+        result = runner.run(
+            request=self._request(),
+            plan=self._plan(),
+            first_model_turn=_model_turn(self._tool_plan()),
+        )
+
+        self.assertEqual("WAITING_CONTROL_PLANE", result.stopped_reason)
+        self.assertEqual(0, model.call_count)
+        self.assertEqual("wait_for_control_plane", result.turns[0].loop_action)
+
     def test_configured_turn_budget_can_reach_fifth_tool_batch(self) -> None:
         model = _ChainedSecondTurnOrchestrator(
             tool_batches=tuple(
@@ -124,6 +141,36 @@ class AgentDurableModelToolLoopRunnerTest(unittest.TestCase):
             [f"datasource.read.stage-{index}" for index in range(1, 6)],
             [turn.submitted_tool_names[0] for turn in result.turns],
         )
+
+    def test_configured_next_turn_estimate_is_enforced_by_total_token_budget(self) -> None:
+        """The runner must reserve a realistic next prompt before another call."""
+
+        runner = AgentDurableModelToolLoopRunner(
+            plan_ingestion_client=_PlanIngestionClient(),
+            feedback_collector=_FeedbackCollector(_feedback(ToolExecutionFeedbackStatus.SUCCEEDED)),
+            loop_control_evaluator=AgentLoopControlPolicyEvaluator(
+                AgentLoopControlPolicy(max_total_tokens=9000)
+            ),
+            second_turn_orchestrator=_SecondTurnOrchestrator(),
+            estimated_next_turn_tokens=8192,
+        )
+
+        result = runner.run(
+            request=self._request(),
+            plan=self._plan(),
+            first_model_turn=AgentSecondTurnResult(
+                executed=True,
+                allowed=True,
+                action="continue_with_tools",
+                summary="continue",
+                prompt_tokens=900,
+                completion_tokens=100,
+                follow_up_tool_plans=(self._tool_plan(),),
+            ),
+        )
+
+        self.assertEqual("STOP_BUDGET_EXCEEDED", result.stopped_reason)
+        self.assertEqual("stop_budget_exceeded", result.turns[0].loop_action)
 
     def test_each_model_turn_receives_accumulated_cross_run_evidence(self) -> None:
         """逐表元数据分批执行时，后续模型不能遗忘前一批工具结果。"""

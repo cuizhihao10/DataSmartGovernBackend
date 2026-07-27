@@ -206,17 +206,6 @@ public class SyncOfflineRunnerDispatchService {
             return discoveredObjectFanOutDispatchService.dispatchDiscoveredObjects(execution, task, template, workerPlan,
                     safeActorContext, contract);
         }
-        if (objectListFanOutDispatchService.supports(contract, safeActorContext)) {
-            recordRunnerEvent(task, execution, safeActorContext,
-                    "PLAN",
-                    "INFO",
-                    "OFFLINE_RUNNER_ROUTE_OBJECT_LIST_FAN_OUT",
-                    "STARTED",
-                    "多对象同步将按对象账本逐个执行，失败对象可选择性重试",
-                    "contractStatus=" + contract.contractStatus());
-            return objectListFanOutDispatchService.dispatchObjectList(execution, task, template, workerPlan,
-                    safeActorContext, contract);
-        }
         if (partitionShardFanOutDispatchService.supports(contract, template, safeActorContext)) {
             /*
              * partitionConfig 一旦声明，就不能继续落到普通 minimal run-once。
@@ -231,6 +220,18 @@ public class SyncOfflineRunnerDispatchService {
                     "单表大数据量同步将进入 splitPk 分片 fan-out 执行",
                     "contractStatus=" + contract.contractStatus());
             return partitionShardFanOutDispatchService.dispatchPartitionShards(execution, task, template, workerPlan,
+                    safeActorContext, contract);
+        }
+        if (objectListFanOutDispatchService.supports(contract, safeActorContext)) {
+            recordRunnerEvent(task, execution, safeActorContext,
+                    "PLAN",
+                    "INFO",
+                    "OFFLINE_RUNNER_ROUTE_OBJECT_LEDGER_FAN_OUT",
+                    "STARTED",
+                    "同步对象将按对象账本执行，失败对象可选择性重试",
+                    "contractStatus=" + contract.contractStatus()
+                            + ", syncScopeType=" + contract.syncScopeType());
+            return objectListFanOutDispatchService.dispatchObjectList(execution, task, template, workerPlan,
                     safeActorContext, contract);
         }
         if (Boolean.TRUE.equals(safeActorContext.approvalRequired())) {

@@ -19,6 +19,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.BindException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -114,6 +115,16 @@ public class AgentRuntimeExceptionHandler {
             MissingServletRequestParameterException exception,
             HttpServletRequest request) {
         return toResponse(PlatformApiErrorDetailFactory.fromMissingRequestParameter(exception.getParameterName()), request);
+    }
+
+    /**
+     * 处理缺少租户、项目或操作者等必填请求头，避免 Spring MVC 异常落入兜底 500。
+     */
+    @ExceptionHandler(MissingRequestHeaderException.class)
+    public ResponseEntity<PlatformApiResponse<PlatformApiErrorDetail>> handleMissingRequestHeader(
+            MissingRequestHeaderException exception,
+            HttpServletRequest request) {
+        return toResponse(PlatformApiErrorDetailFactory.fromMissingRequestHeader(exception.getHeaderName()), request);
     }
 
     /**

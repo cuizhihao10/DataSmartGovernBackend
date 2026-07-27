@@ -155,6 +155,43 @@ def _data_sync_agent_tools() -> tuple[ToolDefinition, ...]:
     )
     sync_tools = (
         ToolDefinition(
+            name="sync.cdc.readiness.check",
+            description=(
+                "基于可信源端/目标端元数据引用检查主键、binlog/WAL、目标冲突键、"
+                "Kafka、Kafka Connect、Debezium 与实时运行时状态。"
+            ),
+            risk_level=ToolRiskLevel.LOW,
+            execution_mode=ToolExecutionMode.SYNC,
+            required_permissions=("datasource:use", "sync:task:precheck"),
+            target_service="datasource-management",
+            target_endpoint="/datasources/{sourceDatasourceId}/cdc-readiness/check",
+            input_schema={
+                "sourceMetadataRef": {
+                    "type": "object", "required": True, "sensitive": False, "resolution": "derived"
+                },
+                "targetMetadataRef": {
+                    "type": "object", "required": True, "sensitive": False, "resolution": "derived"
+                },
+                "objectMappings": {
+                    # The Java adapter reduces each mapping to source/target
+                    # schema and table names before the internal probe. It never
+                    # forwards fields, WHERE predicates, SQL, values or credentials,
+                    # so this is project-scoped low-sensitive metadata rather than
+                    # an approval-requiring secret payload.
+                    "type": "array", "required": True, "sensitive": False, "resolution": "user_required"
+                },
+            },
+            read_only=True,
+            idempotent=True,
+            allowed_actions=("PRECHECK",),
+            tool_type="DATA_SYNC",
+            tenant_scoped=True,
+            project_scoped=True,
+            sensitive_fields=(),
+            memory_write_policy="episodic",
+            cache_policy="no_cache",
+        ),
+        ToolDefinition(
             name="sync.task.draft.save",
             description=(
                 "按用户确认的源表到目标表、字段、WHERE、同步模式、调度或 SQL 配置，"
@@ -172,6 +209,9 @@ def _data_sync_agent_tools() -> tuple[ToolDefinition, ...]:
                 "targetMetadataRef": {"type": "object", "required": True, "sensitive": False, "resolution": "derived"},
                 "sourceMetadataRefs": {"type": "array", "required": True, "sensitive": False, "resolution": "derived"},
                 "targetMetadataRefs": {"type": "array", "required": True, "sensitive": False, "resolution": "derived"},
+                "cdcReadinessRef": {
+                    "type": "object", "required": False, "sensitive": False, "resolution": "derived"
+                },
                 "taskName": {
                     "type": "string",
                     "required": True,
@@ -466,6 +506,65 @@ def _data_sync_agent_tools() -> tuple[ToolDefinition, ...]:
             idempotent=False,
             allowed_actions=("REPLAY_DIRTY_RECORDS",),
             tool_type="DATA_SYNC",
+            tenant_scoped=True,
+            project_scoped=True,
+            memory_write_policy="episodic",
+            cache_policy="no_cache",
+        ),
+        ToolDefinition(
+            name="datasource.target-table.create.preview",
+            description="从可信源表元数据生成目标空表创建预览，不接受模型提交的原始 DDL 或字段清单。",
+            risk_level=ToolRiskLevel.MEDIUM,
+            execution_mode=ToolExecutionMode.SYNC,
+            required_permissions=("datasource:manage",),
+            target_service="datasource-management",
+            target_endpoint="/datasources/{datasourceId}/schema-repair-plans/preview",
+            input_schema={
+                "sourceMetadataRef": {
+                    "type": "object", "required": True, "sensitive": False, "resolution": "derived"
+                },
+                "targetMetadataRef": {
+                    "type": "object", "required": True, "sensitive": False, "resolution": "derived"
+                },
+                "sourceSchemaName": {
+                    "type": "string", "required": False, "sensitive": False, "resolution": "model_optional"
+                },
+                "sourceTableName": {
+                    "type": "string", "required": True, "sensitive": False, "resolution": "model_optional"
+                },
+                "targetSchemaName": {
+                    "type": "string", "required": False, "sensitive": False, "resolution": "model_optional"
+                },
+                "targetTableName": {
+                    "type": "string", "required": True, "sensitive": False, "resolution": "model_optional"
+                },
+            },
+            read_only=True,
+            idempotent=False,
+            allowed_actions=("PREVIEW_CREATE_TARGET_TABLE",),
+            tool_type="DATASOURCE_MANAGEMENT",
+            tenant_scoped=True,
+            project_scoped=True,
+            memory_write_policy="episodic",
+            cache_policy="no_cache",
+        ),
+        ToolDefinition(
+            name="datasource.target-table.create.apply",
+            description="用户确认后应用摘要绑定的目标空表创建计划，并刷新目标表元数据。",
+            risk_level=ToolRiskLevel.HIGH,
+            execution_mode=ToolExecutionMode.APPROVAL_REQUIRED,
+            required_permissions=("datasource:manage",),
+            target_service="datasource-management",
+            target_endpoint="/datasources/{datasourceId}/schema-repair-plans/apply",
+            input_schema={
+                "previewRef": {
+                    "type": "object", "required": True, "sensitive": False, "resolution": "derived"
+                },
+            },
+            requires_approval=True,
+            idempotent=False,
+            allowed_actions=("CREATE_TARGET_TABLE",),
+            tool_type="DATASOURCE_MANAGEMENT",
             tenant_scoped=True,
             project_scoped=True,
             memory_write_policy="episodic",

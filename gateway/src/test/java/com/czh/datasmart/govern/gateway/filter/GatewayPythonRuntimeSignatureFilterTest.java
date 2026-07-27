@@ -134,6 +134,7 @@ class GatewayPythonRuntimeSignatureFilterTest {
         headers.set(PlatformContextHeaders.SOURCE_SERVICE, "datasmart-govern-gateway");
         headers.set(PlatformContextHeaders.TRACE_ID, "trace-001");
         headers.set(PlatformContextHeaders.TENANT_ID, "10");
+        headers.set(PlatformContextHeaders.PROJECT_ID, "20");
         headers.set(PlatformContextHeaders.ACTOR_ID, "1001");
 
         String payload = GatewayPythonRuntimeSignatureFilter.canonicalPayload(
@@ -150,6 +151,7 @@ class GatewayPythonRuntimeSignatureFilterTest {
                 X-Gateway-Route-Prefix:
                 X-DataSmart-Trace-Id:trace-001
                 X-DataSmart-Tenant-Id:10
+                X-DataSmart-Project-Id:20
                 X-DataSmart-Actor-Id:1001""");
         assertThat(payload).contains(PlatformContextHeaders.TOOL_POLICY_ENVELOPE + ":");
         assertThat(GatewayPythonRuntimeSignatureFilter.sign(
@@ -158,7 +160,7 @@ class GatewayPythonRuntimeSignatureFilterTest {
                 "nonce-001",
                 "gateway-local-v1",
                 "secret-for-test"
-        )).isEqualTo("3Be8m7CAFfTZVzgaGk3Js6sVfgZeC1PcAzeOsua2-58");
+        )).isEqualTo("IHpOc-OUEnN4aFG74znEDj0CoXBINhDJbXbKDHvSRVg");
     }
 
     /**
@@ -189,6 +191,7 @@ class GatewayPythonRuntimeSignatureFilterTest {
                 .header("X-Gateway-Route-Prefix", "/api/agent")
                 .header(PlatformContextHeaders.TRACE_ID, "trace-001")
                 .header(PlatformContextHeaders.TENANT_ID, "10")
+                .header(PlatformContextHeaders.PROJECT_ID, "20")
                 .header(PlatformContextHeaders.ACTOR_ID, "1001")
                 .header(PlatformContextHeaders.ACTOR_ROLE, "PROJECT_OWNER")
                 .header(PlatformContextHeaders.ACTOR_TYPE, "USER")

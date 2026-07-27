@@ -73,6 +73,13 @@ class AgentSkillRegistry:
                 score += 0.25
                 reasons.append("候选工具命中 " + "、".join(matched_tools))
             matched_keywords = tuple(keyword for keyword in skill.trigger_keywords if keyword.lower() in objective_text)
+
+            # 结构化意图已经完成业务域判定后，普通关键词只能给同域 Skill 加分，不能跨域扩权。
+            # 例如同步任务里的“元数据校验”会命中质量 Skill 的“校验”关键词；若允许仅凭这一词跨域，
+            # 模型就会看到 quality.rule.suggest，继而把同步预检查误解成质量规则设计。真正的复合请求
+            # 应由 IntentAnalysis 显式返回多个 governance_domains 或对应 candidate_tools。
+            if domains and skill.domain not in domains and not matched_tools:
+                continue
             if matched_keywords:
                 score += 0.15
                 reasons.append("关键词命中 " + "、".join(matched_keywords[:3]))

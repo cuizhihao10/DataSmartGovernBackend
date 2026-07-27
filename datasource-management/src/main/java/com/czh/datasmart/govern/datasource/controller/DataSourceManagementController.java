@@ -6,6 +6,8 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.datasource.common.ApiResponse;
 import com.czh.datasmart.govern.datasource.controller.dto.CreateDataSourceRequest;
+import com.czh.datasmart.govern.datasource.controller.dto.DataSourceCdcReadinessRequest;
+import com.czh.datasmart.govern.datasource.controller.dto.DataSourceCdcReadinessResult;
 import com.czh.datasmart.govern.datasource.controller.dto.DataSourceSchemaRepairApplyRequest;
 import com.czh.datasmart.govern.datasource.controller.dto.DataSourceSchemaRepairPreviewRequest;
 import com.czh.datasmart.govern.datasource.controller.dto.DataSourceSchemaRepairResult;
@@ -21,6 +23,7 @@ import com.czh.datasmart.govern.datasource.entity.DataSourceConnectionTestResult
 import com.czh.datasmart.govern.datasource.entity.DataSourceMetadataDiscoveryResult;
 import com.czh.datasmart.govern.datasource.entity.DataSourceReadOnlySqlExecutionAudit;
 import com.czh.datasmart.govern.datasource.service.DataSourceAuthorizationService;
+import com.czh.datasmart.govern.datasource.service.DataSourceCdcReadinessService;
 import com.czh.datasmart.govern.datasource.service.DataSourceManagementService;
 import com.czh.datasmart.govern.datasource.service.DataSourceSchemaRepairService;
 import com.czh.datasmart.govern.datasource.service.support.DataSourceCredentialCipherSupport;
@@ -139,9 +142,20 @@ public class DataSourceManagementController {
      */
     private DataSourceSchemaRepairService dataSourceSchemaRepairService;
 
+    /**
+     * Kept outside the generated constructor for compatibility with the controller's focused unit tests.
+     * The setter is mandatory in the Spring application context.
+     */
+    private DataSourceCdcReadinessService dataSourceCdcReadinessService;
+
     @Autowired
     public void setDataSourceSchemaRepairService(DataSourceSchemaRepairService dataSourceSchemaRepairService) {
         this.dataSourceSchemaRepairService = dataSourceSchemaRepairService;
+    }
+
+    @Autowired
+    public void setDataSourceCdcReadinessService(DataSourceCdcReadinessService dataSourceCdcReadinessService) {
+        this.dataSourceCdcReadinessService = dataSourceCdcReadinessService;
     }
 
     /**
@@ -516,6 +530,35 @@ public class DataSourceManagementController {
                 DataSourceAuthorizationAction.USE);
         return ResponseEntity.ok(ApiResponse.success("数据源元数据发现完成",
                 dataSourceManagementService.discoverMetadata(id, request)));
+    }
+
+    /**
+     * Evaluate all currently observable CDC prerequisites for one source/target pair.
+     *
+     * <p>Both datasource IDs cross the same project and instance authorization boundary as metadata
+     * discovery. The operation is read-only, but USE permission is required because it opens both
+     * registered connections and reads server settings and table keys.</p>
+     */
+    @PostMapping("/{id}/cdc-readiness/check")
+    public ResponseEntity<ApiResponse<DataSourceCdcReadinessResult>> checkCdcReadiness(
+            @PathVariable Long id,
+            @Valid @RequestBody DataSourceCdcReadinessRequest request,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_TYPE, required = false) String actorType,
+            @RequestHeader(value = PlatformContextHeaders.DATA_SCOPE_LEVEL, required = false) String dataScopeLevel,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_IDS, required = false) String authorizedProjectIds,
+            @RequestHeader(value = PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES, required = false) String authorizedProjectRoles) {
+        DatasourceAuthorizationActorContext actorContext = resolveActorContext(actorId, actorRole, actorType);
+        DataSourceConfig sourceDatasource = getRequiredVisibleDataSource(
+                id, dataScopeLevel, authorizedProjectIds, authorizedProjectRoles,
+                actorContext, DataSourceAuthorizationAction.USE);
+        DataSourceConfig targetDatasource = getRequiredVisibleDataSource(
+                request.getTargetDatasourceId(), dataScopeLevel, authorizedProjectIds, authorizedProjectRoles,
+                actorContext, DataSourceAuthorizationAction.USE);
+        return ResponseEntity.ok(ApiResponse.success(
+                "CDC 准入检查完成",
+                requiredCdcReadinessService().check(sourceDatasource, targetDatasource, request)));
     }
 
     /**
@@ -1007,6 +1050,13 @@ public class DataSourceManagementController {
             throw new IllegalStateException("数据源结构修复服务尚未就绪");
         }
         return dataSourceSchemaRepairService;
+    }
+
+    private DataSourceCdcReadinessService requiredCdcReadinessService() {
+        if (dataSourceCdcReadinessService == null) {
+            throw new IllegalStateException("CDC 准入检查服务尚未就绪");
+        }
+        return dataSourceCdcReadinessService;
     }
 
     private Long parseActorId(String value) {

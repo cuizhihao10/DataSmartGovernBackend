@@ -55,6 +55,10 @@ from datasmart_ai_runtime.services.agent_execution.langgraph_durable_checkpointe
 from datasmart_ai_runtime.services.agent_execution.langgraph_durable_checkpointer_postgresql import (
     PostgresLangGraphCheckpointStore,
 )
+from datasmart_ai_runtime.services.agent_execution.post_confirm_continuation import (
+    AgentPostConfirmContinuationCoordinator,
+    AgentPostConfirmContinuationResult,
+)
 
 __all__ = (
     "AgentExecutionClosureReport",
@@ -78,6 +82,8 @@ __all__ = (
     "InMemoryLangGraphCheckpointStore",
     "MultiAgentRecoveredState",
     "PostgresLangGraphCheckpointStore",
+    "AgentPostConfirmContinuationCoordinator",
+    "AgentPostConfirmContinuationResult",
     "build_langgraph_checkpoint_store",
     "langgraph_checkpoint_store_diagnostics",
     "langgraph_durable_checkpointer_settings_from_env",

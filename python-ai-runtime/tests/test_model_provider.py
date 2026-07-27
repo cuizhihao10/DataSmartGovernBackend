@@ -154,6 +154,60 @@ class ModelProviderRegistryTest(unittest.TestCase):
         self.assertEqual(2, calls)
         self.assertEqual("retry ok", result.content)
 
+    def test_openai_compatible_provider_does_not_retry_full_generation_timeout(self) -> None:
+        """完整生成超时不得自动重放，避免重复计费和成倍放大等待时间。"""
+
+        calls = 0
+
+        def transport(request, timeout: int):
+            nonlocal calls
+            calls += 1
+            raise TimeoutError("upstream generation timed out")
+
+        provider = OpenAICompatibleModelProvider(
+            OpenAICompatibleProviderSettings(max_retries=2, retry_backoff_seconds=0),
+            transport=transport,
+        )
+        result = provider.invoke(
+            ModelInvocationRequest(
+                route=_openai_route(endpoint="http://model-gateway.local"),
+                messages=(ModelMessage(role="user", content="hello"),),
+            )
+        )
+
+        self.assertEqual(1, calls)
+        self.assertEqual("MODEL_PROVIDER_TIMEOUT", result.error_code)
+
+    def test_registry_reports_responses_and_json_fallback_as_non_streaming(self) -> None:
+        """兼容单 chunk 方法不等于原生 streaming 能力。"""
+
+        route = _openai_route(endpoint="http://model-gateway.local/v1")
+        responses_registry = ModelProviderRegistry(
+            {
+                ProviderType.OPENAI_COMPATIBLE: OpenAICompatibleModelProvider(
+                    OpenAICompatibleProviderSettings(wire_api="responses")
+                )
+            }
+        )
+        json_fallback_registry = ModelProviderRegistry(
+            {
+                ProviderType.OPENAI_COMPATIBLE: OpenAICompatibleModelProvider(
+                    OpenAICompatibleProviderSettings(tool_call_mode="json_fallback")
+                )
+            }
+        )
+        chat_registry = ModelProviderRegistry(
+            {
+                ProviderType.OPENAI_COMPATIBLE: OpenAICompatibleModelProvider(
+                    OpenAICompatibleProviderSettings(wire_api="chat_completions", tool_call_mode="native")
+                )
+            }
+        )
+
+        self.assertFalse(responses_registry.supports_streaming(route))
+        self.assertFalse(json_fallback_registry.supports_streaming(route))
+        self.assertTrue(chat_registry.supports_streaming(route))
+
     def test_provider_rejects_unsafe_response_model_name(self) -> None:
         """Untrusted response metadata must not inject text into logs or the UI."""
 

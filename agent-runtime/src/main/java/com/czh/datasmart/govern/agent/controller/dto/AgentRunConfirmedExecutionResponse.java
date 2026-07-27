@@ -22,5 +22,6 @@ public record AgentRunConfirmedExecutionResponse(
         List<String> nextActions,
         String assistantReply,
         String answerMode,
-        String modelProviderStatus) {
+        String modelProviderStatus,
+        AgentPostConfirmContinuationView continuation) {
 }

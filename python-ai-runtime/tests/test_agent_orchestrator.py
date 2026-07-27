@@ -53,18 +53,28 @@ class AgentOrchestratorTest(unittest.TestCase):
     def test_datasource_metadata_plan_does_not_require_approval(self) -> None:
         orchestrator = build_default_orchestrator()
 
-        plan = orchestrator.plan(
-            AgentRequest(
-                tenant_id="tenant-a",
-                project_id="project-a",
-                actor_id="user-a",
-                objective="请先分析这个 MySQL 数据源的表结构",
-                variables={"datasourceId": "ds-001"},
-            )
+        request = AgentRequest(
+            tenant_id="tenant-a",
+            project_id="project-a",
+            actor_id="user-a",
+            objective="请先分析这个 MySQL 数据源的表结构",
+            variables={"datasourceId": "ds-001"},
+            request_id="request-system-rule-correlation",
         )
+        plan = orchestrator.plan(request)
+        repeated_plan = orchestrator.plan(request)
 
         self.assertFalse(plan.requires_human_approval)
         self.assertEqual("datasource.metadata.read", plan.tool_plans[0].tool_name)
+        rule_hints = plan.tool_plans[0].governance_hints
+        self.assertTrue(rule_hints["modelToolCallId"].startswith("system-rule-"))
+        self.assertEqual("SYSTEM_RULE", rule_hints["toolCallOrigin"])
+        self.assertTrue(rule_hints["modelToolCallIdSynthetic"])
+        self.assertEqual("system_rule", rule_hints["source"])
+        self.assertEqual(
+            rule_hints["modelToolCallId"],
+            repeated_plan.tool_plans[0].governance_hints["modelToolCallId"],
+        )
         self.assertIn("build_context", plan.state_trace)
         self.assertIn("analyze_intent", plan.state_trace)
         self.assertIn("select_skills", plan.state_trace)
@@ -225,6 +235,7 @@ class AgentOrchestratorTest(unittest.TestCase):
             ),
             tuple(tool.name for tool in provider.last_request.available_tools),
         )
+        self.assertEqual(512, provider.last_request.max_output_tokens)
         cache_plan = provider.last_request.provider_metadata["cachePlan"]
         self.assertTrue(cache_plan["enabled"])
         self.assertEqual("session_only", cache_plan["scope"])
@@ -296,6 +307,8 @@ class AgentOrchestratorTest(unittest.TestCase):
         quality_plan = next(item for item in plan.tool_plans if item.tool_name == "quality.rule.suggest")
         self.assertEqual("model_tool_call", quality_plan.governance_hints["source"])
         self.assertEqual("call_quality_from_model", quality_plan.governance_hints["modelToolCallId"])
+        self.assertEqual("MODEL_NATIVE", quality_plan.governance_hints["toolCallOrigin"])
+        self.assertFalse(quality_plan.governance_hints["modelToolCallIdSynthetic"])
         self.assertEqual("quality-rule-suggest", quality_plan.governance_hints["planNodeId"])
         self.assertEqual(("datasource-metadata-read",), quality_plan.governance_hints["dependsOn"])
         self.assertEqual(("datasource.metadata.read",), quality_plan.governance_hints["dependsOnTools"])

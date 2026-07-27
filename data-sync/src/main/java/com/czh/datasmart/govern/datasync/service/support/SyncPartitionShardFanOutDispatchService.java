@@ -69,7 +69,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class SyncPartitionShardFanOutDispatchService {
 
-    private static final Set<String> SUPPORTED_SYNC_MODES = Set.of("FULL", "ONE_TIME_MIGRATION");
+    private static final Set<String> SUPPORTED_SYNC_MODES = Set.of("FULL", "SCHEDULED_FULL", "ONE_TIME_MIGRATION");
     private static final String SINGLE_OBJECT = "SINGLE_OBJECT";
     private static final String PARTITION_SHARD_FAN_OUT = "PARTITION_SHARD_FAN_OUT";
     private static final int MAX_EFFECTIVE_PARALLELISM = 16;

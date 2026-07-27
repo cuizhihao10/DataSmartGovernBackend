@@ -42,6 +42,7 @@ SIGNED_HEADERS = (
     "X-Gateway-Route-Prefix",
     "X-DataSmart-Trace-Id",
     "X-DataSmart-Tenant-Id",
+    "X-DataSmart-Project-Id",
     "X-DataSmart-Actor-Id",
     "X-DataSmart-Actor-Role",
     "X-DataSmart-Actor-Type",

@@ -173,6 +173,75 @@ class ApiAgentRoutesSecurityTest(unittest.TestCase):
         self.assertEqual("GATEWAY_SIGNATURE_INVALID", raised.exception.detail["code"])
         self.assertEqual("/agent/plans/stream", raised.exception.detail["path"])
 
+    def test_missing_agent_context_returns_structured_bad_request(self) -> None:
+        """缺少领域必填字段时应返回前端可展示的 400，而不是 dataclass TypeError 500。"""
+
+        app = FakeApp()
+        register_agent_runtime_routes(
+            app,
+            request_type=FakeRequest,
+            orchestrator=object(),
+            event_store=None,
+            session_manager=None,
+            live_push_hub=None,
+            event_publisher=None,
+            runtime_event_replay_sources=(),
+            plan_ingestion_client=None,
+            control_plane_feedback_collector=None,
+            runtime_event_feedback_bridge=None,
+            loop_control_evaluator=None,
+            second_turn_orchestrator=None,
+            memory_write_governance=None,
+            request_validation_error_factory=lambda status_code, detail: FakeHttpException(status_code, detail),
+        )
+
+        with self.assertRaises(FakeHttpException) as raised:
+            app.post_routes["/agent/plans"](
+                {"tenant_id": "10", "actor_id": "1004"},
+                FakeRequest(headers={}),
+            )
+
+        self.assertEqual(400, raised.exception.status_code)
+        self.assertEqual("AGENT_REQUEST_INVALID", raised.exception.detail["code"])
+        self.assertEqual(
+            {"project_id", "objective"},
+            {item["field"] for item in raised.exception.detail["fieldErrors"]},
+        )
+        self.assertTrue(raised.exception.detail["suggestions"])
+
+    def test_streaming_missing_agent_context_returns_the_same_structured_bad_request(self) -> None:
+        """NDJSON 入口也必须在建立响应前完成相同的请求校验。"""
+
+        app = FakeApp()
+        register_agent_runtime_routes(
+            app,
+            request_type=FakeRequest,
+            orchestrator=object(),
+            event_store=None,
+            session_manager=None,
+            live_push_hub=None,
+            event_publisher=None,
+            runtime_event_replay_sources=(),
+            plan_ingestion_client=None,
+            control_plane_feedback_collector=None,
+            runtime_event_feedback_bridge=None,
+            loop_control_evaluator=None,
+            second_turn_orchestrator=None,
+            memory_write_governance=None,
+            request_validation_error_factory=lambda status_code, detail: FakeHttpException(status_code, detail),
+        )
+
+        with self.assertRaises(FakeHttpException) as raised:
+            asyncio.run(
+                app.post_routes["/agent/plans/stream"](
+                    {"tenant_id": "10", "actor_id": "1004"},
+                    FakeRequest(headers={}, path="/agent/plans/stream"),
+                )
+            )
+
+        self.assertEqual(400, raised.exception.status_code)
+        self.assertEqual("AGENT_REQUEST_INVALID", raised.exception.detail["code"])
+
 
 class _patched_env:
     """临时设置环境变量，避免安全测试污染其他用例。"""

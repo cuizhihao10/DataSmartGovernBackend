@@ -172,6 +172,15 @@ class AgentLoopControlPolicyEvaluator:
         if waiting_approval_count > 0:
             return self._approval_decision(waiting_approval_count)
 
+        pending_count = snapshot.status_counts.get(ToolExecutionFeedbackStatus.PENDING.value, 0)
+        if pending_count > 0:
+            return AgentLoopControlDecision(
+                allowed=False,
+                action=AgentLoopControlAction.WAIT_FOR_CONTROL_PLANE,
+                reasons=(f"存在 {pending_count} 个工具仍在规划、排队或执行中。",),
+                recommended_actions=("等待 Java 控制面终态事件后重新评估，不向模型回填未完成结果。",),
+            )
+
         capacity_stop = self._capacity_stop_decision(current_state)
         if capacity_stop is not None:
             return capacity_stop

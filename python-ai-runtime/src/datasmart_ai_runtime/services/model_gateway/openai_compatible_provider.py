@@ -2,7 +2,7 @@
 
 本文件专门承载 OpenAI-compatible Chat Completions 协议细节，包括：
 - HTTP 请求构造、认证 Header 注入和 endpoint 规范化；
-- transient HTTP/网络/超时错误的有限重试；
+- transient HTTP/网络错误的有限重试；单次生成超时不自动整轮重试；
 - 非流式 `message.tool_calls` 解析；
 - 流式 `delta.content` 与 `delta.tool_calls` 解析。
 
@@ -69,7 +69,8 @@ class OpenAICompatibleProviderSettings:
     - `organization`：兼容 OpenAI/Azure/企业网关的组织或租户标识 Header；
     - `user_agent`：模型网关用于识别合法客户端的低敏产品标识，不包含租户、用户或密钥；
     - `tool_call_mode`：`native` 使用标准 tools/tool_calls，`json_fallback` 用受控 JSON 兼容不透传 tool_calls 的网关；
-    - `max_retries`：对 429、5xx、网络抖动、超时等短暂故障的额外重试次数；
+    - `max_retries`：对 429、5xx 和普通网络抖动的额外重试次数；完整生成超时不会自动重试，
+      避免长推理重复计费并把用户等待时间成倍放大；
     - `retry_backoff_seconds`：重试前等待时间，当前先用固定退避，后续可替换为指数退避和抖动；
     - `extra_headers`：预留给企业内部模型网关的额外 Header，例如网关租户、灰度路由或调用来源。
     """
@@ -124,6 +125,15 @@ class OpenAICompatibleModelProvider:
         self._tool_schema_builder = OpenAICompatibleToolSchemaBuilder()
         self._responses_adapter = OpenAIResponsesProtocolAdapter()
 
+    def supports_streaming(self) -> bool:
+        """声明当前协议组合是否具备原生流式响应能力。
+
+        Responses 和 JSON fallback 当前都必须先取得完整响应，才能安全解析 function calls 或闭合 JSON。
+        ``stream()`` 为它们保留单 chunk 兼容实现，但该兼容实现不能被上层误判为原生 streaming。
+        """
+
+        return self._settings.wire_api != "responses" and self._settings.tool_call_mode != "json_fallback"
+
     def invoke(self, request: ModelInvocationRequest) -> ModelInvocationResult:
         """执行一次非流式 Chat Completions 调用。
 
@@ -151,16 +161,20 @@ class OpenAICompatibleModelProvider:
                 last_error_message = safe_http_error_message(exc)
                 if not self._should_retry(exc.code, attempt, attempts):
                     break
-            except URLError:
-                last_error_code = "MODEL_PROVIDER_NETWORK_ERROR"
+            except URLError as exc:
+                is_timeout = isinstance(getattr(exc, "reason", None), TimeoutError)
+                last_error_code = "MODEL_PROVIDER_TIMEOUT" if is_timeout else "MODEL_PROVIDER_NETWORK_ERROR"
                 last_error_message = safe_transport_error_message(last_error_code)
+                if is_timeout:
+                    break
                 if not self._should_retry(None, attempt, attempts):
                     break
             except TimeoutError:
                 last_error_code = "MODEL_PROVIDER_TIMEOUT"
                 last_error_message = safe_transport_error_message(last_error_code)
-                if not self._should_retry(None, attempt, attempts):
-                    break
+                # 一次模型生成超时通常意味着本轮推理已经在上游消耗了主要成本。自动重放整轮请求
+                # 会重复计费，并把 180 秒等待放大成 360 秒甚至更长，因此超时始终立即返回降级结果。
+                break
             if attempt < attempts:
                 time.sleep(self._settings.retry_backoff_seconds)
 

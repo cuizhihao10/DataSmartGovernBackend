@@ -14,7 +14,7 @@ from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, Provi
 from datasmart_ai_runtime.services.tools.tool_execution_readiness import ToolExecutionReadinessReport
 
 
-_QUESTION_DEFINITIONS: dict[str, dict[str, str]] = {
+_QUESTION_DEFINITIONS: dict[str, dict[str, Any]] = {
     "sourceDatasourceId": {
         "label": "源端数据源",
         "question": "请选择本项目中已授权、用途为源端的数据源。",
@@ -32,6 +32,58 @@ _QUESTION_DEFINITIONS: dict[str, dict[str, str]] = {
         "question": "请确认要同步的源表、目标 schema、目标表以及可选的 WHERE 条件。",
         "inputType": "OBJECT_MAPPING_EDITOR",
         "fieldPath": "dataSyncRequest.objectMappings",
+    },
+    "scheduleFrequency": {
+        "label": "执行频率",
+        "question": "请选择定期任务的执行频率。",
+        "inputType": "SCHEDULE_FREQUENCY_SELECT",
+        "fieldPath": "dataSyncRequest.scheduleFrequency",
+        "options": [
+            {"value": "HOURLY", "label": "每小时"},
+            {"value": "DAILY", "label": "每天"},
+            {"value": "WEEKLY", "label": "每周"},
+            {"value": "CUSTOM_CRON", "label": "自定义 Cron"},
+        ],
+    },
+    "scheduleStartTime": {
+        "label": "首次执行时间",
+        "question": "请选择首次执行时间；系统将按项目时区生成调度配置。",
+        "inputType": "DATETIME",
+        "fieldPath": "dataSyncRequest.scheduleStartTime",
+    },
+    "customSqlText": {
+        "label": "只读 SQL",
+        "question": "请提供查询 SQL，或进入高级编辑器让 Agent 基于真实元数据生成。",
+        "inputType": "SQL_EDITOR",
+        "fieldPath": "dataSyncRequest.customSqlText",
+        "sensitive": True,
+    },
+    "customSqlConfirmation": {
+        "label": "确认 SQL",
+        "question": "Agent 已生成只读 SQL。请核对完整 SQL，确认后才能保存任务草稿。",
+        "inputType": "SQL_CONFIRMATION",
+        "fieldPath": "dataSyncRequest.customSqlConfirmed",
+        "sensitive": True,
+        "options": [
+            {"value": True, "label": "确认使用此 SQL"},
+            {"value": False, "label": "返回修改 SQL"},
+        ],
+    },
+    "targetTableResolution": {
+        "label": "目标表处理方式",
+        "question": "目标表不存在。请选择创建目标表，或改为项目中已有的目标表。",
+        "inputType": "TARGET_TABLE_RESOLUTION",
+        "fieldPath": "dataSyncRequest.targetTableResolution",
+        "options": [
+            {"value": "CREATE_FROM_SOURCE", "label": "按源表结构创建目标表"},
+            {"value": "SELECT_EXISTING", "label": "选择其他已有目标表"},
+        ],
+    },
+    "fieldMappingConversions": {
+        "label": "字段类型转换",
+        "question": "字段类型不兼容。请确认建议转换，关闭该字段同步，或返回修改映射。",
+        "inputType": "FIELD_CONVERSION_EDITOR",
+        "fieldPath": "dataSyncRequest.fieldMappingConversions",
     },
     "datasourceId": {
         "label": "数据源",
@@ -77,8 +129,8 @@ def build_agent_conversation_response(
 ) -> dict[str, Any]:
     """构建“自由文本 -> 追问 -> 确认”的前端会话快照。
 
-    响应只暴露意图类别、配置是否已选择、缺失字段名等低敏事实，不回显 SQL、WHERE、数据源凭据
-    或完整工具参数。真实参数继续保留在受权限保护的计划和 Java 控制面中。
+    响应默认只暴露意图类别、配置是否已选择、缺失字段名等低敏事实。唯一例外是 SQL 模式中
+    等待用户确认的查询文本：它只返回给当前已认证、已授权会话，不写入日志、指标或公开观察事件。
     """
 
     declared_missing_parameters = list(_collect_missing_parameters(plan))
@@ -91,10 +143,13 @@ def build_agent_conversation_response(
         control_plane_feedback,
         autonomous_resolution_stopped=autonomous_resolution_stopped,
     )
+    repair_parameter = _repair_clarification_parameter(plan) if autonomous_sync_requires_repair else None
+    if repair_parameter and "objectMappings" in declared_missing_parameters:
+        declared_missing_parameters.remove("objectMappings")
     if (
         autonomous_sync_requires_repair
         and not catalog_clarification_parameters
-        and "objectMappings" not in declared_missing_parameters
+        and (repair_parameter or "objectMappings") not in declared_missing_parameters
     ):
         # A complete natural-language request can legitimately contain every
         # business field and therefore produce no rule-level missing parameter.
@@ -102,7 +157,14 @@ def build_agent_conversation_response(
         # metadata and deliberately declines to save the draft, that is still a
         # correction turn, not an executable plan.  Surface the canonical mapping
         # editor without asking the user for internal datasource IDs again.
-        declared_missing_parameters.append("objectMappings")
+        declared_missing_parameters.append(repair_parameter or "objectMappings")
+    for parameter_name in _mode_aware_missing_parameters(
+        request,
+        plan,
+        autonomous_resolution_stopped=autonomous_resolution_stopped,
+    ):
+        if parameter_name not in declared_missing_parameters:
+            declared_missing_parameters.append(parameter_name)
     autonomously_resolved = _autonomously_resolved_parameters(
         plan,
         control_plane_feedback,
@@ -162,10 +224,7 @@ def build_agent_conversation_response(
     else:
         phase = "NO_EXECUTABLE_PLAN"
         next_action = "REFINE_REQUEST"
-        assistant_message = (
-            "我已经完成结构化意图识别，但当前没有生成可安全执行的工具计划。"
-            "请补充更明确的业务目标；开放式推理模型接口已预留但默认未启用。"
-        )
+        assistant_message = _no_executable_plan_message(plan)
 
     return {
         "schemaVersion": "1.0",
@@ -180,9 +239,11 @@ def build_agent_conversation_response(
                 control_plane_feedback,
                 repair_guidance=(
                     str(plan.response_summary or "").strip()
-                    if autonomous_sync_requires_repair and name == "objectMappings"
+                    if autonomous_sync_requires_repair
+                    and name in {"objectMappings", "targetTableResolution", "fieldMappingConversions"}
                     else None
                 ),
+                configuration_preview=_configuration_preview(name, request, plan),
             )
             for name in missing_parameters
         ],
@@ -201,6 +262,39 @@ def build_agent_conversation_response(
         "intentResolver": build_intent_resolver_summary(plan),
         "payloadPolicy": "LOW_SENSITIVE_CONVERSATION_METADATA_ONLY",
     }
+
+
+def _no_executable_plan_message(plan: AgentPlan) -> str:
+    """按真实 Provider 调用结果解释为何没有可执行计划，避免误报“模型未启用”。"""
+
+    invocation = dict(plan.model_invocation_summary or {})
+    provider_invoked = bool(invocation.get("providerInvoked"))
+    provider_succeeded = bool(invocation.get("providerSucceeded"))
+    error_code = str(invocation.get("resultErrorCode") or "").strip().upper()
+    if provider_invoked and not provider_succeeded:
+        if error_code == "MODEL_PROVIDER_TIMEOUT":
+            return (
+                "真实模型本轮调用超时，系统已保留结构化规则分析，但没有生成可安全执行的工具计划。"
+                "请稍后重试；若持续发生，请让管理员检查模型超时与输出预算配置。"
+            )
+        return (
+            "真实模型本轮调用失败，系统已保留结构化规则分析，但没有生成可安全执行的工具计划。"
+            "请稍后重试；若持续发生，请让管理员检查模型 Provider 健康状态。"
+        )
+    if provider_succeeded:
+        return (
+            "真实模型已完成本轮理解，但没有提出能够通过权限、参数和安全校验的工具调用。"
+            "请补充更明确的对象、范围或期望结果后重试。"
+        )
+    if plan.selected_route is None or plan.selected_route.provider_type == ProviderType.DRY_RUN:
+        return (
+            "系统已完成结构化规则识别，但当前没有可用的真实模型路由，也没有生成可安全执行的工具计划。"
+            "请补充更明确的业务目标，或由管理员检查模型路由配置。"
+        )
+    return (
+        "系统已完成结构化意图识别，但本轮模型没有被实际调用，也没有生成可安全执行的工具计划。"
+        "请重试；若持续发生，请让管理员检查模型路由与调用策略。"
+    )
 
 
 def _catalog_clarification_parameters(control_plane_feedback: Any | None) -> tuple[str, ...]:
@@ -234,6 +328,135 @@ def _catalog_clarification_parameters(control_plane_feedback: Any | None) -> tup
         if match_status and match_status != "EXACT":
             missing.append(parameter_name)
     return tuple(missing)
+
+
+def _mode_aware_missing_parameters(
+    request: AgentRequest,
+    plan: AgentPlan,
+    *,
+    autonomous_resolution_stopped: bool,
+) -> tuple[str, ...]:
+    """Return only the configuration gaps implied by the selected sync mode.
+
+    The generic intent analyzer intentionally knows only datasource and mapping
+    prerequisites.  Mode-specific fields are evaluated here because the model may
+    have already produced a governed ``sync.task.draft.save`` call after reading
+    metadata.  User-provided values remain authoritative; model-produced SQL is
+    accepted only as a preview and receives its own confirmation gate.
+    """
+
+    if not _is_data_sync_plan(plan):
+        return ()
+    payload = _sync_payload(request)
+    draft_arguments = _sync_draft_arguments(plan)
+    effective = {**draft_arguments, **payload}
+    sync_mode = _resolve_sync_mode(request.objective, effective)
+    missing: list[str] = []
+    only_discovery_tools = bool(plan.tool_plans) and all(
+        item.tool_name in {
+            "datasource.source.catalog.search",
+            "datasource.target.catalog.search",
+            "datasource.source.connection.test",
+            "datasource.target.connection.test",
+            "datasource.source.metadata.read",
+            "datasource.target.metadata.read",
+        }
+        for item in plan.tool_plans
+    )
+
+    if sync_mode in {"SCHEDULED_BATCH", "SCHEDULED_FULL"}:
+        schedule_config = str(effective.get("scheduleConfig") or "").strip()
+        if not schedule_config:
+            # Product UI asks for business time concepts rather than exposing the
+            # internal JSON schedule contract.  The frontend converts these two
+            # values into a timezone-bound scheduleConfig before resubmission.
+            missing.extend(("scheduleFrequency", "scheduleStartTime"))
+
+    if sync_mode == "CUSTOM_SQL_QUERY":
+        user_sql = str(payload.get("customSqlText") or "").strip()
+        effective_sql = str(effective.get("customSqlText") or "").strip()
+        if not effective_sql:
+            # Give the model one metadata-backed generation turn before asking the
+            # user to write SQL manually.  If that turn stops without SQL, the
+            # dedicated editor becomes the only safe continuation.
+            if autonomous_resolution_stopped or not only_discovery_tools:
+                missing.append("customSqlText")
+        elif not user_sql and not _truthy(payload.get("customSqlConfirmed")):
+            missing.append("customSqlConfirmation")
+    return tuple(missing)
+
+
+def _repair_clarification_parameter(plan: AgentPlan) -> str | None:
+    """Classify a metadata-backed repair into the smallest user decision.
+
+    The model summary is presentation text, not execution evidence.  It is safe to
+    use here only to choose a form control; the subsequent tool call is still
+    validated against fresh metadata by Python and Java guards.
+    """
+
+    summary = str(plan.response_summary or "").strip().lower()
+    if not summary:
+        return None
+    target_missing_markers = (
+        "目标表不存在",
+        "目标对象不存在",
+        "target table does not exist",
+        "target object does not exist",
+        "target table is missing",
+    )
+    type_conflict_markers = (
+        "类型不兼容",
+        "字段类型冲突",
+        "无法安全转换",
+        "incompatible type",
+        "type mismatch",
+    )
+    if any(marker in summary for marker in target_missing_markers):
+        return "targetTableResolution"
+    if any(marker in summary for marker in type_conflict_markers):
+        return "fieldMappingConversions"
+    return None
+
+
+def _configuration_preview(
+    parameter_name: str,
+    request: AgentRequest,
+    plan: AgentPlan,
+) -> dict[str, Any] | None:
+    """Build an authorized preview for configuration that requires confirmation."""
+
+    if parameter_name != "customSqlConfirmation":
+        return None
+    payload = _sync_payload(request)
+    arguments = _sync_draft_arguments(plan)
+    sql = str(arguments.get("customSqlText") or payload.get("customSqlText") or "").strip()
+    if not sql:
+        return None
+    return {
+        "kind": "CUSTOM_SQL_QUERY",
+        "customSqlText": sql,
+        "generatedByAgent": not bool(str(payload.get("customSqlText") or "").strip()),
+        "requiresExplicitConfirmation": True,
+        "payloadPolicy": "AUTHORIZED_SESSION_ONLY_NO_LOGGING",
+    }
+
+
+def _sync_payload(request: AgentRequest) -> dict[str, Any]:
+    raw = request.variables.get("dataSyncRequest") or request.variables.get("data_sync_request")
+    return dict(raw) if isinstance(raw, dict) else {}
+
+
+def _sync_draft_arguments(plan: AgentPlan) -> dict[str, Any]:
+    for tool_plan in reversed(plan.tool_plans):
+        if tool_plan.tool_name == "sync.task.draft.save":
+            return dict(tool_plan.arguments or {})
+    return {}
+
+
+def _truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "confirmed"}
 
 
 def _autonomously_resolved_parameters(
@@ -439,6 +662,7 @@ def _build_question(
     parameter_name: str,
     control_plane_feedback: Any | None = None,
     repair_guidance: str | None = None,
+    configuration_preview: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """把内部参数名转换成前端可以直接渲染的追问定义。"""
 
@@ -455,7 +679,7 @@ def _build_question(
         "parameterName": parameter_name,
         **definition,
         "required": True,
-        "sensitive": False,
+        "sensitive": bool(definition.get("sensitive", False)),
     }
     candidates = _catalog_candidates_for(parameter_name, control_plane_feedback)
     if candidates:
@@ -466,6 +690,8 @@ def _build_question(
     if repair_guidance:
         question["reasonCode"] = "MODEL_CONFIGURATION_REPAIR_REQUIRED"
         question["repairGuidance"] = repair_guidance
+    if configuration_preview:
+        question["configurationPreview"] = configuration_preview
     return question
 
 

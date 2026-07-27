@@ -6,12 +6,18 @@
  */
 package com.czh.datasmart.govern.agent.service.answer;
 
+import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionAuditView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionResultView;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class DeterministicAgentExecutionResultAnswerGeneratorTest {
 
@@ -20,20 +26,54 @@ class DeterministicAgentExecutionResultAnswerGeneratorTest {
 
     @Test
     void shouldExplainSuccessfulExecutionWithoutInvokingModelProvider() {
+        AgentToolExecutionAuditView runAudit = audit("sync.task.run", "SUCCEEDED");
         AgentExecutionAssistantAnswer answer = generator.generate(
-                "COMPLETED", 9, 9, 0, List.of(), List.of());
+                "COMPLETED", 9, 9, 0, List.of(runAudit), List.of(), List.of());
 
-        assertTrue(answer.content().contains("9 个工具节点已全部执行成功"));
+        assertTrue(answer.content().contains("已提交真实 worker 执行链路"));
         assertEquals("DETERMINISTIC_FALLBACK", answer.mode());
         assertEquals("RESERVED_NOT_INVOKED", answer.modelProviderStatus());
     }
 
     @Test
+    void shouldNotClaimSyncExecutionWhenOnlyMetadataCollectionSucceeded() {
+        AgentToolExecutionAuditView metadataAudit = audit("datasource.source.catalog.search", "SUCCEEDED");
+
+        AgentExecutionAssistantAnswer answer = generator.generate(
+                "COMPLETED", 1, 1, 0, List.of(metadataAudit), List.of(), List.of());
+
+        assertTrue(answer.content().contains("只完成了数据源目录、连接或元数据等信息收集"));
+        assertTrue(answer.content().contains("尚未创建或运行同步任务"));
+        assertFalse(answer.content().contains("已经进入真实业务执行链路"));
+    }
+
+    @Test
+    void shouldRecognizeOnlyExplicitSuccessfulExecutionTerminalAsCompleted() {
+        AgentToolExecutionAuditView statusAudit = audit("sync.execution.status", "SUCCEEDED");
+        AgentToolExecutionResultView statusResult = new AgentToolExecutionResultView(
+                statusAudit,
+                Map.of("terminal", true, "executionState", "SUCCEEDED")
+        );
+
+        AgentExecutionAssistantAnswer answer = generator.generate(
+                "COMPLETED", 1, 1, 0, List.of(statusAudit), List.of(statusResult), List.of());
+
+        assertTrue(answer.content().contains("同步执行已到达成功终态"));
+    }
+
+    @Test
     void shouldExplainPartialFailureFromControlPlaneFacts() {
         AgentExecutionAssistantAnswer answer = generator.generate(
-                "FAILED", 9, 5, 1, List.of(), List.of("RETRY_FAILED_TOOL"));
+                "FAILED", 9, 5, 1, List.of(), List.of(), List.of("RETRY_FAILED_TOOL"));
 
         assertTrue(answer.content().contains("成功 5 个，失败 1 个"));
         assertTrue(answer.content().contains("修复配置或权限问题"));
+    }
+
+    private AgentToolExecutionAuditView audit(String toolCode, String state) {
+        AgentToolExecutionAuditView audit = mock(AgentToolExecutionAuditView.class);
+        when(audit.toolCode()).thenReturn(toolCode);
+        when(audit.state()).thenReturn(state);
+        return audit;
     }
 }

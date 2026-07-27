@@ -67,13 +67,42 @@ class RuleBasedIntentAnalyzer:
             and not bool(task_import_artifact_ref)
         )
         remediation_requested = self._wants_quality_remediation(request, objective)
+        data_sync_task_requested = (
+            not task_import_troubleshooting
+            and not sync_execution_recovery
+            and self._wants_data_sync_task(request, objective)
+        )
         quality_rule_action_requested = self._contains_any(
             objective,
             ("生成", "设计", "创建", "草案", "suggest", "generate", "design"),
         )
-        quality_rule_requested = self._contains_any(
+        explicit_quality_rule_requested = self._contains_any(
             objective,
-            ("quality", "rule", "校验", "质量", "规则", "异常", "清洗", "完整性"),
+            (
+                "data quality",
+                "quality rule",
+                "数据质量",
+                "质量规则",
+                "校验规则",
+                "异常检测",
+                "数据清洗",
+                "完整性规则",
+                "quality",
+            ),
+        )
+        generic_validation_requested = self._contains_any(
+            objective,
+            ("rule", "校验", "检查", "规则", "异常", "清洗", "完整性"),
+        )
+        # “元数据校验”“预检查”“检查目标表”是同步任务的执行前置条件，不是质量规则设计。
+        # 只有出现明确质量域词汇，或不存在同步语义时，通用校验词才允许进入 DATA_QUALITY。
+        quality_rule_requested = (
+            not task_import_troubleshooting
+            and not sync_execution_recovery
+            and (
+                explicit_quality_rule_requested
+                or (generic_validation_requested and not data_sync_task_requested)
+            )
         ) and (quality_rule_action_requested or not governance_rag_requested)
 
         if quality_rule_requested and not remediation_requested:
@@ -100,14 +129,6 @@ class RuleBasedIntentAnalyzer:
             if not (request.variables.get("taskId") or request.variables.get("task_id")):
                 self._append_unique(missing_parameters, "taskId")
 
-        data_sync_task_requested = (
-            not task_import_troubleshooting
-            and not sync_execution_recovery
-            and self._contains_any(
-                objective,
-                ("sync", "migrate", "data migration", "transfer data", "同步", "补数", "回放", "增量", "cdc"),
-            )
-        )
         if data_sync_task_requested:
             self._append_unique(domains, GovernanceDomain.DATA_SYNC)
             self._append_unique(risk_tags, IntentRiskTag.STATE_CHANGE)
@@ -271,6 +292,45 @@ class RuleBasedIntentAnalyzer:
         """判断文本是否命中任一关键词。"""
 
         return any(keyword in text for keyword in keywords)
+
+    def _wants_data_sync_task(self, request: AgentRequest, objective: str) -> bool:
+        """识别五种产品同步模式以及常见的数据搬运表达。
+
+        结构化 ``dataSyncRequest`` 是最强事实；自由文本则覆盖页面上的正式模式名称和用户常说的
+        迁移、复制、搬运等表达。这里只判断业务域，不从文本猜数据源 ID、对象或字段映射。
+        """
+
+        payload = request.variables.get("dataSyncRequest") or request.variables.get("data_sync_request")
+        if isinstance(payload, dict):
+            return True
+        return self._contains_any(
+            objective,
+            (
+                "sync",
+                "migrate",
+                "migration",
+                "replicate",
+                "replication",
+                "transfer data",
+                "copy data",
+                "同步",
+                "迁移",
+                "搬迁",
+                "搬运",
+                "传输任务",
+                "数据传输",
+                "全量传输",
+                "定期批量",
+                "定期全量",
+                "sql语句传输",
+                "sql 语句传输",
+                "实时传输",
+                "补数",
+                "回放",
+                "增量",
+                "cdc",
+            ),
+        )
 
     def _wants_quality_remediation(self, request: AgentRequest, objective: str) -> bool:
         """判断用户是否在请求“质量异常治理任务”而不是普通质量规则草案。

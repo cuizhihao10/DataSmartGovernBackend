@@ -188,6 +188,11 @@ class ModelToolCallPlanner:
                 ),
                 "targetService": tool.target_service,
                 "targetEndpoint": tool.target_endpoint,
+                # Preserve the tool contract's explicit approval flag separately from
+                # ToolPlan.requires_human_approval. The latter is also derived from HIGH/CRITICAL
+                # risk, while budget governance must distinguish an approval-only plan from a
+                # high-risk SYNC tool that the model attempted to execute directly.
+                "toolRequiresApproval": tool.requires_approval,
                 "tenantScoped": tool.tenant_scoped,
                 "projectScoped": tool.project_scoped,
                 "sensitiveFields": tool.sensitive_fields,

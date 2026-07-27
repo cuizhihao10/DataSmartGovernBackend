@@ -64,6 +64,9 @@ public class SyncObjectMappingExecutionContractSupport {
             return contract(false, List.of(), issueCodes, warnings);
         }
         if (!hasText(template.getObjectMappingConfig())) {
+            if ("SINGLE_OBJECT".equalsIgnoreCase(template.getSyncScopeType())) {
+                return singleObjectTemplateContract(template);
+            }
             issueCodes.add("OBJECT_MAPPING_CONFIG_REQUIRED");
             return contract(false, List.of(), issueCodes, warnings);
         }
@@ -101,6 +104,50 @@ public class SyncObjectMappingExecutionContractSupport {
             warnings.add("OBJECT_MAPPING_TARGET_NAMING_STRATEGY_DECLARED_BUT_SERIAL_FAN_OUT_USES_EXPLICIT_TARGET_OBJECT");
         }
         return contract(true, mappings, issueCodes, warnings);
+    }
+
+    /**
+     * Builds the object-ledger contract for legacy single-table templates.
+     *
+     * <p>Older templates stored the only source/target pair in top-level columns and did not persist
+     * {@code objectMappingConfig}.  A single object still needs an {@code OBJECT} ledger row so that
+     * retries, counts and failures have the same durable semantics as multi-table jobs.  This fallback
+     * accepts only ordinary identifiers and never invents a table name, SQL fragment or schema.</p>
+     */
+    private SyncObjectMappingExecutionContract singleObjectTemplateContract(SyncTemplate template) {
+        List<String> issueCodes = new ArrayList<>();
+        List<String> warnings = new ArrayList<>();
+        String sourceObjectName = trimToNull(template.getSourceObjectName());
+        String targetObjectName = trimToNull(template.getTargetObjectName());
+        String sourceSchemaName = trimToNull(template.getSourceSchemaName());
+        String targetSchemaName = trimToNull(template.getTargetSchemaName());
+
+        if (!safeIdentifier(sourceObjectName) || !safeIdentifier(targetObjectName)) {
+            issueCodes.add("OBJECT_MAPPING_IDENTIFIER_UNSAFE");
+        }
+        if (sourceSchemaName != null && !safeIdentifier(sourceSchemaName)) {
+            issueCodes.add("OBJECT_MAPPING_SOURCE_SCHEMA_UNSAFE");
+        }
+        if (targetSchemaName != null && !safeIdentifier(targetSchemaName)) {
+            issueCodes.add("OBJECT_MAPPING_TARGET_SCHEMA_UNSAFE");
+        }
+        if (!issueCodes.isEmpty()) {
+            return contract(true, List.of(), issueCodes, warnings);
+        }
+
+        warnings.add("SINGLE_OBJECT_MAPPING_DERIVED_FROM_TEMPLATE_COLUMNS");
+        SyncObjectMappingExecutionItem item = new SyncObjectMappingExecutionItem(
+                0,
+                sourceSchemaName,
+                sourceObjectName,
+                targetSchemaName,
+                targetObjectName,
+                null,
+                false,
+                null,
+                warnings
+        );
+        return contract(true, List.of(item), issueCodes, warnings);
     }
 
     /**

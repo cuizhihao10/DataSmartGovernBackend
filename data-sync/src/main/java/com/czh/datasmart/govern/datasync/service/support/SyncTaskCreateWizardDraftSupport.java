@@ -62,6 +62,7 @@ public class SyncTaskCreateWizardDraftSupport {
     private final SyncTemplateConnectorFactResolver connectorFactResolver;
     private final SyncTaskGroupOperationSupport taskGroupOperationSupport;
     private final SyncAuditSupport auditSupport;
+    private final SyncAutomaticPartitionConfigSupport automaticPartitionConfigSupport;
 
     /**
      * 保存创建向导草稿。
@@ -238,15 +239,24 @@ public class SyncTaskCreateWizardDraftSupport {
         template.setSourceConnectorType(querySupport.normalizeCode(request.getSourceConnectorType()));
         template.setTargetConnectorType(querySupport.normalizeCode(request.getTargetConnectorType()));
         template.setSyncMode(basics.syncMode().name());
-        template.setSyncScopeType(resolveSyncScopeType(request, basics.syncMode()));
+        String syncScopeType = resolveSyncScopeType(request, basics.syncMode());
+        template.setSyncScopeType(syncScopeType);
         template.setWriteStrategy(basics.writeStrategy().name());
-        template.setPrimaryKeyField(null);
         template.setIncrementalField(null);
         template.setFieldMappingConfig(querySupport.trimToNull(request.getFieldMappingConfig()));
         template.setObjectMappingConfig(querySupport.trimToNull(request.getObjectMappingConfig()));
         template.setFilterConfig(querySupport.trimToNull(request.getFilterConfig()));
         template.setCustomSqlConfig(querySupport.trimToNull(request.getCustomSqlConfig()));
-        template.setPartitionConfig(querySupport.trimToNull(request.getPartitionConfig()));
+        SyncAutomaticPartitionConfigSupport.AutomaticPartitionConfig partitionConfig =
+                automaticPartitionConfigSupport.resolve(
+                        basics.syncMode(),
+                        syncScopeType,
+                        template.getFieldMappingConfig(),
+                        request.getPartitionConfig());
+        // Source splitPk and target merge/conflict key are different concepts when fields are renamed.
+        // The target key remains inferred from fieldMappingConfig by the execution contract.
+        template.setPrimaryKeyField(null);
+        template.setPartitionConfig(partitionConfig.partitionConfig());
         template.setRetryPolicy(querySupport.trimToNull(request.getRetryPolicy()));
         template.setTimeoutPolicy(querySupport.trimToNull(request.getTimeoutPolicy()));
         template.setEnabled(true);

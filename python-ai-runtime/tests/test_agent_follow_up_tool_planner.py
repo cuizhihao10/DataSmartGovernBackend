@@ -20,6 +20,14 @@ from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 
 class AgentFollowUpToolPlannerTest(unittest.TestCase):
 
+    IMMEDIATE_SYNC_LIFECYCLE = (
+        "sync.task.draft.save",
+        "sync.task.precheck",
+        "sync.task.publish",
+        "sync.task.run",
+        "sync.execution.status",
+    )
+
     def setUp(self) -> None:
         self.tool_planner = ToolPlanner(default_tool_registry())
         self.planner = AgentFollowUpToolPlanner(tool_planner=self.tool_planner)
@@ -84,7 +92,9 @@ class AgentFollowUpToolPlannerTest(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(1, len(result.accepted_tool_plans))
+        self.assertEqual(("sync.task.publish",), tuple(
+            plan.tool_name for plan in result.accepted_tool_plans
+        ))
         arguments = result.accepted_tool_plans[0].arguments
         self.assertEqual("audit-draft", arguments["draftRef"]["fromAuditId"])
         self.assertEqual("taskId", arguments["draftRef"]["path"])
@@ -290,10 +300,182 @@ class AgentFollowUpToolPlannerTest(unittest.TestCase):
             ),
         )
 
-        self.assertEqual(1, len(result.accepted_tool_plans))
+        self.assertEqual(("datasource.schema.repair.apply",), tuple(
+            plan.tool_name for plan in result.accepted_tool_plans
+        ))
         preview_ref = result.accepted_tool_plans[0].arguments["previewRef"]
         self.assertEqual("audit-schema-preview", preview_ref["fromAuditId"])
         self.assertIsNone(preview_ref["path"])
+
+    def test_target_table_preview_uses_trusted_source_and_target_metadata_references(self) -> None:
+        parent = self._plan(ToolPlan(
+            tool_name="datasource.target.metadata.read",
+            reason="target metadata",
+            governance_hints={
+                "agentLoopResourceRefs": {
+                    "datasource.source.metadata.read": {
+                        "toolCode": "datasource.source.metadata.read",
+                        "auditId": "audit-source",
+                        "runId": "run-metadata",
+                    }
+                }
+            },
+        ))
+
+        result = self.planner.govern(
+            request=self.request,
+            plan=parent,
+            tool_calls=(self._call(
+                "call-create-preview",
+                "datasource.target-table.create.preview",
+                {
+                    "sourceMetadataRef": {"fromAuditId": "model-forged-source"},
+                    "targetMetadataRef": {"fromAuditId": "model-forged-target"},
+                    "sourceTableName": "customer",
+                    "targetSchemaName": "public",
+                    "targetTableName": "customer",
+                },
+            ),),
+            visible_tools=self._visible("datasource.target-table.create.preview"),
+            control_plane_feedback=self._feedback(
+                "datasource.target.metadata.read",
+                "audit-target",
+                "run-metadata",
+                "call-target",
+                result={"summary": {"objects": []}},
+            ),
+        )
+
+        self.assertEqual(1, len(result.accepted_tool_plans))
+        arguments = result.accepted_tool_plans[0].arguments
+        self.assertEqual("audit-source", arguments["sourceMetadataRef"]["fromAuditId"])
+        self.assertEqual("audit-target", arguments["targetMetadataRef"]["fromAuditId"])
+
+    def test_target_table_apply_keeps_digest_preview_reference(self) -> None:
+        parent = self._plan(ToolPlan(
+            tool_name="datasource.target-table.create.preview",
+            reason="preview target table",
+        ))
+        result = self.planner.govern(
+            request=self.request,
+            plan=parent,
+            tool_calls=(self._call(
+                "call-create-apply",
+                "datasource.target-table.create.apply",
+                {"previewRef": {"fromAuditId": "model-forged"}},
+            ),),
+            visible_tools=self._visible("datasource.target-table.create.apply"),
+            control_plane_feedback=self._feedback(
+                "datasource.target-table.create.preview",
+                "audit-create-preview",
+                "run-create",
+                "call-create-preview",
+                result={"planStatus": "PREVIEWED", "requiresConfirmation": True},
+            ),
+        )
+
+        self.assertEqual(1, len(result.accepted_tool_plans))
+        preview_ref = result.accepted_tool_plans[0].arguments["previewRef"]
+        self.assertEqual("datasource.target-table.create.preview", preview_ref["fromTool"])
+        self.assertEqual("audit-create-preview", preview_ref["fromAuditId"])
+
+    def test_sync_draft_uses_refreshed_metadata_after_target_table_creation(self) -> None:
+        parent = self._plan(ToolPlan(
+            tool_name="datasource.target-table.create.apply",
+            reason="created target table",
+        ))
+        source_summary = {
+            "truncated": False,
+            "objects": [{
+                "schemaName": None,
+                "tableName": "customer",
+                "columns": [{"columnName": "id", "dataTypeName": "BIGINT"}],
+            }],
+        }
+        created_target_summary = {
+            "truncated": False,
+            "objects": [{
+                "schemaName": "public",
+                "tableName": "customer_target",
+                "columns": [{"columnName": "id", "dataTypeName": "BIGINT"}],
+            }],
+        }
+        feedback = AgentControlPlaneFeedbackSnapshot(
+            expected_tool_call_count=3,
+            feedback_items=(
+                AgentControlPlaneFeedbackItem(
+                    model_tool_call_id="call-source",
+                    tool_name="datasource.source.metadata.read",
+                    status=ToolExecutionFeedbackStatus.SUCCEEDED,
+                    summary="source metadata",
+                    result={"summary": source_summary},
+                    audit_id="audit-source",
+                    run_id="run-create",
+                ),
+                AgentControlPlaneFeedbackItem(
+                    model_tool_call_id="call-target-old",
+                    tool_name="datasource.target.metadata.read",
+                    status=ToolExecutionFeedbackStatus.SUCCEEDED,
+                    summary="target table absent",
+                    result={"summary": {"truncated": False, "objects": []}},
+                    audit_id="audit-target-old",
+                    run_id="run-create",
+                ),
+                AgentControlPlaneFeedbackItem(
+                    model_tool_call_id="call-create-apply",
+                    tool_name="datasource.target-table.create.apply",
+                    status=ToolExecutionFeedbackStatus.SUCCEEDED,
+                    summary="target table created",
+                    result={"summary": created_target_summary},
+                    audit_id="audit-create-apply",
+                    run_id="run-create",
+                ),
+            ),
+            missing_tool_call_ids=(),
+            status_counts={"succeeded": 3},
+            second_turn_eligible=True,
+            recommended_actions=(),
+        )
+
+        result = self.planner.govern(
+            request=self.request,
+            plan=parent,
+            tool_calls=(self._call(
+                "call-draft-after-create",
+                "sync.task.draft.save",
+                {
+                    "taskName": "customer-full",
+                    "syncMode": "FULL",
+                    "writeStrategy": "INSERT",
+                    "objectMappings": [{
+                        "sourceObjectName": "customer",
+                        "targetSchemaName": "public",
+                        "targetObjectName": "customer_target",
+                        "fieldMappings": [{
+                            "sourceField": "id",
+                            "targetField": "id",
+                            "syncEnabled": True,
+                        }],
+                    }],
+                },
+            ),),
+            visible_tools=self._visible("sync.task.draft.save"),
+            control_plane_feedback=feedback,
+        )
+
+        self.assertEqual(self.IMMEDIATE_SYNC_LIFECYCLE, tuple(
+            plan.tool_name for plan in result.accepted_tool_plans
+        ))
+        arguments = result.accepted_tool_plans[0].arguments
+        self.assertEqual(
+            "datasource.target-table.create.apply",
+            arguments["targetMetadataRef"]["fromTool"],
+        )
+        self.assertEqual("audit-create-apply", arguments["targetMetadataRef"]["fromAuditId"])
+        self.assertEqual(
+            ["audit-create-apply"],
+            [item["fromAuditId"] for item in arguments["targetMetadataRefs"]],
+        )
 
     def test_recovery_case_is_published_only_after_successful_validation(self) -> None:
         parent = self._plan(ToolPlan(
@@ -525,6 +707,79 @@ class AgentFollowUpToolPlannerTest(unittest.TestCase):
         )
         self.assertIn("customer_missing", result.state_guard_issue_messages[0])
 
+    def test_sync_draft_rejects_implicit_incompatible_field_type_conversion(self) -> None:
+        parent = self._plan(ToolPlan(
+            tool_name="datasource.target.metadata.read",
+            reason="target metadata",
+        ))
+        feedback = self._metadata_feedback_with_types("VARCHAR", "BIGINT")
+
+        result = self.planner.govern(
+            request=self.request,
+            plan=parent,
+            tool_calls=(self._call(
+                "call-draft",
+                "sync.task.draft.save",
+                {
+                    "taskName": "customer-full",
+                    "syncMode": "FULL",
+                    "objectMappings": [{
+                        "sourceObjectName": "customer",
+                        "targetSchemaName": "public",
+                        "targetObjectName": "customer",
+                        "fieldMappings": [{
+                            "sourceField": "id",
+                            "targetField": "id",
+                            "syncEnabled": True,
+                        }],
+                    }],
+                },
+            ),),
+            visible_tools=self._visible("sync.task.draft.save"),
+            control_plane_feedback=feedback,
+        )
+
+        self.assertEqual((), result.accepted_tool_plans)
+        self.assertIn("MODEL_TOOL_CALL_FIELD_TYPE_INCOMPATIBLE", result.state_guard_issue_codes)
+        self.assertIn("VARCHAR", result.state_guard_issue_messages[0])
+        self.assertIn("BIGINT", result.state_guard_issue_messages[0])
+
+    def test_sync_draft_accepts_explicit_transform_for_incompatible_types(self) -> None:
+        parent = self._plan(ToolPlan(
+            tool_name="datasource.target.metadata.read",
+            reason="target metadata",
+        ))
+
+        result = self.planner.govern(
+            request=self.request,
+            plan=parent,
+            tool_calls=(self._call(
+                "call-draft",
+                "sync.task.draft.save",
+                {
+                    "taskName": "customer-full",
+                    "syncMode": "FULL",
+                    "objectMappings": [{
+                        "sourceObjectName": "customer",
+                        "targetSchemaName": "public",
+                        "targetObjectName": "customer",
+                        "fieldMappings": [{
+                            "sourceField": "id",
+                            "targetField": "id",
+                            "syncEnabled": True,
+                            "transform": "CAST_TO_BIGINT",
+                        }],
+                    }],
+                },
+            ),),
+            visible_tools=self._visible("sync.task.draft.save"),
+            control_plane_feedback=self._metadata_feedback_with_types("VARCHAR", "BIGINT"),
+        )
+
+        self.assertEqual(self.IMMEDIATE_SYNC_LIFECYCLE, tuple(
+            plan.tool_name for plan in result.accepted_tool_plans
+        ))
+
     def test_sync_draft_accepts_objects_and_fields_verified_by_real_metadata(self) -> None:
         parent = self._plan(ToolPlan(
             tool_name="datasource.target.metadata.read",
@@ -558,10 +813,16 @@ class AgentFollowUpToolPlannerTest(unittest.TestCase):
             control_plane_feedback=self._metadata_feedback(),
         )
 
-        self.assertEqual(("sync.task.draft.save",), tuple(
+        self.assertEqual(self.IMMEDIATE_SYNC_LIFECYCLE, tuple(
             plan.tool_name for plan in result.accepted_tool_plans
         ))
         self.assertEqual(0, result.state_guard_rejected_count)
+        self.assertEqual(self.IMMEDIATE_SYNC_LIFECYCLE[1:], result.platform_expanded_tool_names)
+        self.assertEqual(
+            "platform_sync_lifecycle_expansion",
+            result.accepted_tool_plans[1].governance_hints["source"],
+        )
+        self.assertNotIn("modelToolCallId", result.accepted_tool_plans[1].governance_hints)
 
     def test_sync_draft_accepts_two_source_tables_collected_by_separate_metadata_reads(self) -> None:
         parent = self._plan(ToolPlan(
@@ -651,7 +912,7 @@ class AgentFollowUpToolPlannerTest(unittest.TestCase):
             control_plane_feedback=feedback,
         )
 
-        self.assertEqual(("sync.task.draft.save",), tuple(
+        self.assertEqual(self.IMMEDIATE_SYNC_LIFECYCLE, tuple(
             plan.tool_name for plan in result.accepted_tool_plans
         ))
         self.assertEqual(0, result.state_guard_rejected_count)
@@ -715,7 +976,9 @@ class AgentFollowUpToolPlannerTest(unittest.TestCase):
             control_plane_feedback=feedback,
         )
 
-        self.assertEqual(1, len(result.accepted_tool_plans))
+        self.assertEqual(self.IMMEDIATE_SYNC_LIFECYCLE, tuple(
+            plan.tool_name for plan in result.accepted_tool_plans
+        ))
         arguments = result.accepted_tool_plans[0].arguments
         self.assertEqual(
             ["audit-source-a", "audit-source-b"],
@@ -728,6 +991,183 @@ class AgentFollowUpToolPlannerTest(unittest.TestCase):
         self.assertEqual("audit-source-b", arguments["sourceMetadataRef"]["fromAuditId"])
         self.assertEqual("audit-target", arguments["targetMetadataRef"]["fromAuditId"])
         self.assertTrue(result.accepted_tool_plans[0].parameter_validation.can_execute)
+
+    def test_scheduled_sync_draft_expands_to_publish_without_immediate_run(self) -> None:
+        """Scheduled modes must publish a schedule but must not enqueue an immediate execution."""
+
+        parent = self._plan(ToolPlan(
+            tool_name="datasource.target.metadata.read",
+            reason="target metadata",
+        ))
+        result = self.planner.govern(
+            request=self.request,
+            plan=parent,
+            tool_calls=(self._call(
+                "call-scheduled-draft",
+                "sync.task.draft.save",
+                {
+                    "taskName": "customer-scheduled-full",
+                    "syncMode": "SCHEDULED_FULL",
+                    "writeStrategy": "UPDATE",
+                    "scheduleConfig": '{"cron":"0 0 * * * ?","timezone":"Asia/Shanghai"}',
+                    "objectMappings": [{
+                        "sourceObjectName": "customer",
+                        "targetSchemaName": "public",
+                        "targetObjectName": "customer",
+                        "fieldMappings": [{
+                            "sourceField": "id",
+                            "targetField": "id",
+                            "syncEnabled": True,
+                        }],
+                    }],
+                },
+            ),),
+            visible_tools=self._visible("sync.task.draft.save"),
+            control_plane_feedback=self._metadata_feedback(),
+        )
+
+        self.assertEqual(
+            ("sync.task.draft.save", "sync.task.precheck", "sync.task.publish"),
+            tuple(plan.tool_name for plan in result.accepted_tool_plans),
+        )
+        publish = result.accepted_tool_plans[-1]
+        self.assertTrue(publish.arguments["enableSchedule"])
+        self.assertEqual("SCHEDULED_FULL", publish.arguments["syncMode"])
+
+    def test_cdc_readiness_check_inherits_trusted_metadata_references(self) -> None:
+        parent = self._plan(ToolPlan(
+            tool_name="datasource.target.metadata.read",
+            reason="target metadata",
+        ))
+        result = self.planner.govern(
+            request=self.request,
+            plan=parent,
+            tool_calls=(self._call(
+                "call-cdc-readiness",
+                "sync.cdc.readiness.check",
+                {
+                    "sourceDatasourceId": 999,
+                    "targetDatasourceId": 999,
+                    "objectMappings": [{
+                        "sourceObjectName": "customer",
+                        "targetSchemaName": "public",
+                        "targetObjectName": "customer",
+                        "fieldMappings": [{
+                            "sourceField": "id",
+                            "targetField": "id",
+                            "syncEnabled": True,
+                        }],
+                    }],
+                },
+            ),),
+            visible_tools=self._visible("sync.cdc.readiness.check"),
+            control_plane_feedback=self._metadata_feedback(),
+        )
+
+        self.assertEqual(("sync.cdc.readiness.check",), tuple(
+            plan.tool_name for plan in result.accepted_tool_plans
+        ))
+        arguments = result.accepted_tool_plans[0].arguments
+        self.assertNotIn("sourceDatasourceId", arguments)
+        self.assertNotIn("targetDatasourceId", arguments)
+        self.assertEqual("audit-source-metadata", arguments["sourceMetadataRef"]["fromAuditId"])
+        self.assertEqual("audit-target-metadata", arguments["targetMetadataRef"]["fromAuditId"])
+
+    def test_cdc_draft_is_narrowed_to_readiness_before_any_write(self) -> None:
+        parent = self._plan(ToolPlan(
+            tool_name="datasource.target.metadata.read",
+            reason="target metadata",
+        ))
+        result = self.planner.govern(
+            request=self.request,
+            plan=parent,
+            tool_calls=(self._call(
+                "call-cdc-draft",
+                "sync.task.draft.save",
+                {
+                    "taskName": "customer-cdc",
+                    "syncMode": "CDC_STREAMING",
+                    "objectMappings": [{
+                        "sourceObjectName": "customer",
+                        "targetSchemaName": "public",
+                        "targetObjectName": "customer",
+                        "fieldMappings": [{
+                            "sourceField": "id",
+                            "targetField": "id",
+                            "syncEnabled": True,
+                        }],
+                    }],
+                },
+            ),),
+            visible_tools=self._visible("sync.task.draft.save"),
+            control_plane_feedback=self._metadata_feedback(),
+        )
+
+        self.assertEqual(("sync.cdc.readiness.check",), tuple(
+            plan.tool_name for plan in result.accepted_tool_plans
+        ))
+        readiness = result.accepted_tool_plans[0]
+        self.assertFalse(readiness.requires_human_approval)
+        self.assertEqual(
+            "platform_cdc_readiness_prerequisite",
+            readiness.governance_hints["source"],
+        )
+        self.assertEqual("call-cdc-draft", readiness.governance_hints["modelToolCallId"])
+
+    def test_cdc_draft_is_blocked_when_readiness_report_contains_failures(self) -> None:
+        metadata = self._metadata_feedback()
+        feedback = AgentControlPlaneFeedbackSnapshot(
+            expected_tool_call_count=3,
+            feedback_items=(*metadata.feedback_items, AgentControlPlaneFeedbackItem(
+                model_tool_call_id="call-cdc-readiness",
+                tool_name="sync.cdc.readiness.check",
+                status=ToolExecutionFeedbackStatus.SUCCEEDED,
+                summary="CDC readiness blocked",
+                result={
+                    "ready": False,
+                    "decision": "BLOCKED",
+                    "issueCodes": ["CDC_PIPELINE_RUNTIME_NOT_IMPLEMENTED"],
+                },
+                audit_id="audit-cdc-readiness",
+                run_id="run-metadata",
+            )),
+            missing_tool_call_ids=(),
+            status_counts={"succeeded": 3},
+            second_turn_eligible=True,
+            recommended_actions=(),
+        )
+        parent = self._plan(ToolPlan(
+            tool_name="sync.cdc.readiness.check",
+            reason="readiness checked",
+        ))
+        result = self.planner.govern(
+            request=self.request,
+            plan=parent,
+            tool_calls=(self._call(
+                "call-cdc-draft",
+                "sync.task.draft.save",
+                {
+                    "taskName": "customer-cdc",
+                    "syncMode": "CDC_STREAMING",
+                    "objectMappings": [{
+                        "sourceObjectName": "customer",
+                        "targetSchemaName": "public",
+                        "targetObjectName": "customer",
+                        "fieldMappings": [{
+                            "sourceField": "id",
+                            "targetField": "id",
+                            "syncEnabled": True,
+                        }],
+                    }],
+                },
+            ),),
+            visible_tools=self._visible("sync.task.draft.save"),
+            control_plane_feedback=feedback,
+        )
+
+        self.assertEqual((), result.accepted_tool_plans)
+        self.assertIn("MODEL_TOOL_CALL_CDC_READINESS_BLOCKED", result.state_guard_issue_codes)
+        self.assertIn("CDC_PIPELINE_RUNTIME_NOT_IMPLEMENTED", result.state_guard_issue_messages[0])
 
     def _visible(self, *names: str):
         by_name = {tool.name: tool for tool in default_tool_registry()}
@@ -798,6 +1238,55 @@ class AgentFollowUpToolPlannerTest(unittest.TestCase):
                 "schemaName": "public",
                 "tableName": "customer",
                 "columns": [{"columnName": "id", "dataTypeName": "BIGINT"}],
+            }],
+        }
+        return AgentControlPlaneFeedbackSnapshot(
+            expected_tool_call_count=2,
+            feedback_items=(
+                AgentControlPlaneFeedbackItem(
+                    model_tool_call_id="call-source-metadata",
+                    tool_name="datasource.source.metadata.read",
+                    status=ToolExecutionFeedbackStatus.SUCCEEDED,
+                    summary="source metadata succeeded",
+                    result={"summary": source_summary},
+                    audit_id="audit-source-metadata",
+                    run_id="run-metadata",
+                ),
+                AgentControlPlaneFeedbackItem(
+                    model_tool_call_id="call-target-metadata",
+                    tool_name="datasource.target.metadata.read",
+                    status=ToolExecutionFeedbackStatus.SUCCEEDED,
+                    summary="target metadata succeeded",
+                    result={"summary": target_summary},
+                    audit_id="audit-target-metadata",
+                    run_id="run-metadata",
+                ),
+            ),
+            missing_tool_call_ids=(),
+            status_counts={"succeeded": 2},
+            second_turn_eligible=True,
+            recommended_actions=(),
+        )
+
+    @staticmethod
+    def _metadata_feedback_with_types(
+        source_type: str,
+        target_type: str,
+    ) -> AgentControlPlaneFeedbackSnapshot:
+        source_summary = {
+            "truncated": False,
+            "objects": [{
+                "schemaName": None,
+                "tableName": "customer",
+                "columns": [{"columnName": "id", "dataTypeName": source_type}],
+            }],
+        }
+        target_summary = {
+            "truncated": False,
+            "objects": [{
+                "schemaName": "public",
+                "tableName": "customer",
+                "columns": [{"columnName": "id", "dataTypeName": target_type}],
             }],
         }
         return AgentControlPlaneFeedbackSnapshot(

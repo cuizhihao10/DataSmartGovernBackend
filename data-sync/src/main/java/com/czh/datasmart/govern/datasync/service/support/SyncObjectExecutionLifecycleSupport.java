@@ -152,6 +152,8 @@ public class SyncObjectExecutionLifecycleSupport {
                         (left, right) -> left
                 ));
         List<SyncObjectExecution> rows = new ArrayList<>(existingRows == null ? List.of() : existingRows);
+        boolean singleAdaptiveShardAsObject = contract.shards().size() == 1
+                && contract.warnings().contains("PARTITION_AUTO_SPLIT_PK_ADAPTIVE_SHARD_COUNT_APPLIED");
         for (SyncPartitionShardExecutionItem shard : contract.shards()) {
             if (existingByOrdinal.containsKey(shard.ordinal())) {
                 continue;
@@ -164,10 +166,12 @@ public class SyncObjectExecutionLifecycleSupport {
             row.setExecutionId(execution.getId());
             row.setTemplateId(template.getId());
             row.setObjectOrdinal(shard.ordinal());
-            row.setWorkUnitType(WORK_UNIT_TYPE_PARTITION_SHARD);
-            row.setShardOrPartition(shard.shardOrPartition());
-            row.setPartitionStrategy(shard.partitionStrategy());
-            row.setPartitionField(shard.partitionField());
+            row.setWorkUnitType(singleAdaptiveShardAsObject
+                    ? WORK_UNIT_TYPE_OBJECT
+                    : WORK_UNIT_TYPE_PARTITION_SHARD);
+            row.setShardOrPartition(singleAdaptiveShardAsObject ? null : shard.shardOrPartition());
+            row.setPartitionStrategy(singleAdaptiveShardAsObject ? null : shard.partitionStrategy());
+            row.setPartitionField(singleAdaptiveShardAsObject ? null : shard.partitionField());
             row.setSourceSchemaName(template.getSourceSchemaName());
             row.setSourceObjectName(template.getSourceObjectName());
             row.setTargetSchemaName(template.getTargetSchemaName());

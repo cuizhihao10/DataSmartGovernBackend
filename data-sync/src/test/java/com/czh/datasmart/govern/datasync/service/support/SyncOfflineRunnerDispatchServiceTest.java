@@ -54,7 +54,7 @@ class SyncOfflineRunnerDispatchServiceTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Test
-    void fullSingleObjectContractShouldDelegateToRunOnce() {
+    void fullSingleObjectContractShouldExecuteThroughObjectLedger() {
         SyncBatchRunOnceDispatchService runOnceDispatchService = mock(SyncBatchRunOnceDispatchService.class);
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
         DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
@@ -63,11 +63,9 @@ class SyncOfflineRunnerDispatchServiceTest {
         SyncTask task = task();
         SyncTemplate template = template("FULL");
         SyncWorkerExecutionPlanView workerPlan = workerPlan("FULL", false, false, false);
-        when(runOnceDispatchService.dispatchPreparedRunOnce(any(SyncBatchRunnerBridgePlan.class),
-                eq(execution), eq(task), any(SyncActorContext.class)))
-                .thenReturn(new SyncBatchRunOnceDispatchResult(true, true, false,
-                        "DISPATCHED_AND_COMPLETED", 88L, "SOURCE_EXHAUSTED_COMPLETE_REQUIRED",
-                        List.of(), SyncBatchRunOnceDispatchResult.PAYLOAD_POLICY));
+        when(runOnceDispatchService.executePreparedRunOnceRemoteOnly(any(SyncBatchRunnerBridgePlan.class),
+                any(SyncExecution.class), eq(task), any(SyncActorContext.class)))
+                .thenReturn(remoteComplete(6L, 6L));
 
         SyncOfflineRunnerDispatchResult result =
                 service.dispatchOffline(execution, task, template, workerPlan, actor());
@@ -76,13 +74,17 @@ class SyncOfflineRunnerDispatchServiceTest {
         assertThat(result.completed()).isTrue();
         assertThat(result.failed()).isFalse();
         assertThat(result.runnerContractStatus()).isEqualTo("MINIMAL_BRIDGE_END_TO_END_SUPPORTED");
-        verify(runOnceDispatchService).dispatchPreparedRunOnce(any(SyncBatchRunnerBridgePlan.class),
-                eq(execution), eq(task), any(SyncActorContext.class));
+        assertThat(result.dispatchStatus()).isEqualTo("OBJECT_LIST_OBJECT_LEVEL_FAN_OUT_COMPLETED");
+        verify(runOnceDispatchService).executePreparedRunOnceRemoteOnly(any(SyncBatchRunnerBridgePlan.class),
+                any(SyncExecution.class), eq(task), any(SyncActorContext.class));
+        verify(runOnceDispatchService, never()).dispatchPreparedRunOnce(any(), any(), any(), any());
+        verify(lifecycleSupport).completeExecution(eq(task), eq(execution),
+                any(SyncExecutionCompleteRequest.class), any(SyncActorContext.class));
         verify(lifecycleSupport, never()).failExecution(any(), any(), any(), any());
     }
 
     @Test
-    void scheduledBatchShouldDelegateToRunOnceAsBoundedBatchWindow() {
+    void scheduledBatchShouldExecuteBoundedWindowThroughObjectLedger() {
         SyncBatchRunOnceDispatchService runOnceDispatchService = mock(SyncBatchRunOnceDispatchService.class);
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
         DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
@@ -92,11 +94,9 @@ class SyncOfflineRunnerDispatchServiceTest {
         task.setScheduleConfig("{\"cron\":\"0 0 * * * ?\"}");
         SyncTemplate template = template("SCHEDULED_BATCH");
         SyncWorkerExecutionPlanView workerPlan = workerPlan("SCHEDULED_BATCH", false, false, false);
-        when(runOnceDispatchService.dispatchPreparedRunOnce(any(SyncBatchRunnerBridgePlan.class),
-                eq(execution), eq(task), any(SyncActorContext.class)))
-                .thenReturn(new SyncBatchRunOnceDispatchResult(true, true, false,
-                        "DISPATCHED_AND_COMPLETED", 88L, "SOURCE_EXHAUSTED_COMPLETE_REQUIRED",
-                        List.of("SCHEDULED_BATCH_WINDOW_COMPLETED"), SyncBatchRunOnceDispatchResult.PAYLOAD_POLICY));
+        when(runOnceDispatchService.executePreparedRunOnceRemoteOnly(any(SyncBatchRunnerBridgePlan.class),
+                any(SyncExecution.class), eq(task), any(SyncActorContext.class)))
+                .thenReturn(remoteComplete(6L, 6L));
 
         SyncOfflineRunnerDispatchResult result =
                 service.dispatchOffline(execution, task, template, workerPlan, actor());
@@ -105,9 +105,12 @@ class SyncOfflineRunnerDispatchServiceTest {
         assertThat(result.completed()).isTrue();
         assertThat(result.failed()).isFalse();
         assertThat(result.runnerContractStatus()).isEqualTo("MINIMAL_BRIDGE_END_TO_END_SUPPORTED");
-        assertThat(result.issueCodes()).contains("SCHEDULED_BATCH_WINDOW_COMPLETED");
-        verify(runOnceDispatchService).dispatchPreparedRunOnce(any(SyncBatchRunnerBridgePlan.class),
-                eq(execution), eq(task), any(SyncActorContext.class));
+        assertThat(result.issueCodes()).contains("OBJECT_LIST_CHILD_COMPLETED");
+        verify(runOnceDispatchService).executePreparedRunOnceRemoteOnly(any(SyncBatchRunnerBridgePlan.class),
+                any(SyncExecution.class), eq(task), any(SyncActorContext.class));
+        verify(runOnceDispatchService, never()).dispatchPreparedRunOnce(any(), any(), any(), any());
+        verify(lifecycleSupport).completeExecution(eq(task), eq(execution),
+                any(SyncExecutionCompleteRequest.class), any(SyncActorContext.class));
         verify(lifecycleSupport, never()).failExecution(any(), any(), any(), any());
         verify(receiptPublisher, never()).publishFailed(any(), any(), any(), any(), any());
     }

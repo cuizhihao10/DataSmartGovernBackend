@@ -221,6 +221,30 @@ public final class PlatformApiErrorDetailFactory {
     }
 
     /**
+     * 构建缺少平台上下文请求头的响应描述。
+     *
+     * <p>租户、项目、操作者和 trace 等上下文通过请求头传递。缺少这些 header 属于可修复的客户端
+     * 请求问题，不应落入 500；同时只回显请求头名称，不暴露任何认证令牌或内部上下文值。</p>
+     *
+     * @param headerName 缺失的请求头名称
+     * @return HTTP 400 对应的结构化错误描述
+     */
+    public static PlatformApiErrorDescriptor fromMissingRequestHeader(String headerName) {
+        String safeHeaderName = safeMessage(headerName, "unknown");
+        String message = "缺少必填请求头: " + safeHeaderName;
+        return new PlatformApiErrorDescriptor(
+                PlatformErrorCode.VALIDATION_ERROR,
+                HttpStatus.BAD_REQUEST.value(),
+                message,
+                PlatformApiErrorDetail.of(
+                        List.of(message),
+                        List.of(new PlatformApiErrorDetail.FieldErrorDetail(safeHeaderName, "不能为空")),
+                        List.of("请通过网关调用，或在手写请求中补齐当前租户、项目和用户上下文请求头。")
+                )
+        );
+    }
+
+    /**
      * 构建参数类型转换失败的响应描述。
      *
      * <p>例如把字符串传给数字 ID、把非法文本传给枚举、把错误日期传给时间字段。

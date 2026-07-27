@@ -33,6 +33,7 @@ class ToolExecutionFeedbackStatus(str, Enum):
     """工具执行结果回填状态。
 
     状态设计不只覆盖成功/失败，还显式保留审批等待和跳过场景：
+    - `PENDING`：工具已规划、排队或执行中，尚未产生可供模型消费的终态结果；
     - `SUCCEEDED`：工具已经由 Java 控制面执行成功，结果可用于模型继续推理；
     - `FAILED`：工具执行失败，模型可以基于错误码解释原因或提出重试/降级方案；
     - `REJECTED`：工具在权限、参数、风险或策略层被拒绝，模型应停止假设该工具可用；
@@ -40,6 +41,7 @@ class ToolExecutionFeedbackStatus(str, Enum):
     - `SKIPPED`：平台主动跳过某个候选，例如被同名计划替代或本轮不需要执行。
     """
 
+    PENDING = "pending"
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     REJECTED = "rejected"

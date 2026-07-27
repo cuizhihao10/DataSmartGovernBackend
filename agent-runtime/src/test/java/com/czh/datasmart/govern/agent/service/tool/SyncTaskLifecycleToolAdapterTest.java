@@ -6,15 +6,24 @@
  */
 package com.czh.datasmart.govern.agent.service.tool;
 
+import com.czh.datasmart.govern.agent.model.AgentRunState;
+import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
+import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
+import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecord;
+import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
+import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 保护 Agent 创建任务与人工创建向导共用的对象、字段和模式语义。
@@ -60,6 +69,50 @@ class SyncTaskLifecycleToolAdapterTest {
     void shouldNormalizeLegacyRealtimeModeToProductContract() {
         assertEquals("CDC_STREAMING", adapter.normalizeSyncMode("REAL_TIME"));
         assertEquals("CDC_STREAMING", adapter.normalizeSyncMode("CDC_STREAMING"));
+    }
+
+    @Test
+    void shouldRejectRealtimeDraftWithoutCdcReadinessEvidence() {
+        SyncTaskLifecycleToolAdapter guardedAdapter = new SyncTaskLifecycleToolAdapter(
+                null,
+                null,
+                new AgentToolOutputReferenceResolver(new AgentToolExecutionOutputStore()),
+                new ObjectMapper());
+
+        AgentToolExecutionOutcome outcome = guardedAdapter.execute(context(Map.of(
+                "syncMode", "CDC_STREAMING"
+        )));
+
+        assertFalse(outcome.success());
+        assertEquals("SYNC_TOOL_VALIDATION_FAILED", outcome.errorCode());
+        assertTrue(outcome.message().contains("CDC"));
+    }
+
+    @Test
+    void shouldRejectRealtimeDraftWhenCdcReadinessHasBlockers() {
+        AgentToolExecutionOutputStore store = new AgentToolExecutionOutputStore();
+        store.save(
+                new AgentToolExecutionOutputStore.AgentToolExecutionAuditSnapshot(
+                        "session-sync", "run-sync", "audit-cdc", CdcReadinessToolAdapter.TOOL_CODE),
+                Map.of("ready", false, "decision", "BLOCKED")
+        );
+        SyncTaskLifecycleToolAdapter guardedAdapter = new SyncTaskLifecycleToolAdapter(
+                null,
+                null,
+                new AgentToolOutputReferenceResolver(store),
+                new ObjectMapper());
+
+        AgentToolExecutionOutcome outcome = guardedAdapter.execute(context(Map.of(
+                "syncMode", "CDC_STREAMING",
+                "cdcReadinessRef", Map.of(
+                        "fromTool", CdcReadinessToolAdapter.TOOL_CODE,
+                        "fromAuditId", "audit-cdc"
+                )
+        )));
+
+        assertFalse(outcome.success());
+        assertEquals("SYNC_TOOL_VALIDATION_FAILED", outcome.errorCode());
+        assertTrue(outcome.message().contains("阻断"));
     }
 
     @Test
@@ -129,6 +182,25 @@ class SyncTaskLifecycleToolAdapterTest {
                 "nullable", false,
                 "primaryKey", true
         );
+    }
+
+    private AgentToolExecutionContext context(Map<String, Object> arguments) {
+        AgentSessionRecord session = new AgentSessionRecord(
+                "session-sync", 10L, 101L, null, "1001", "PROJECT_OWNER", "USER", "101:OWNER",
+                "WEB", "create realtime sync", WorkspaceIsolationLevel.PROJECT,
+                "tenant:10:project:101", LocalDateTime.now());
+        AgentRunRecord run = new AgentRunRecord(
+                "run-sync", "session-sync", AgentRunState.PLANNING, "AGENT_REASONING",
+                "validate CDC readiness", true, false, List.of(), Map.of(), LocalDateTime.now(),
+                "CDC draft gate test");
+        AgentToolExecutionAuditRecord audit = new AgentToolExecutionAuditRecord(
+                "audit-draft", "session-sync", "run-sync", "binding-draft",
+                SyncTaskLifecycleToolAdapter.DRAFT_SAVE, "DATA_SYNC", "data-sync", "/sync-tasks", null,
+                10L, 101L, null, "1001", "MEDIUM", "SYNC", false,
+                true, true, List.of("CREATE"), "save sync draft", arguments,
+                Map.of("projectScoped", true), Map.of("missingFields", List.of()),
+                AgentToolExecutionState.PLANNED, "trace-sync", "save sync draft", LocalDateTime.now());
+        return new AgentToolExecutionContext(session, run, audit, Map.of(), "trace-sync");
     }
 
     @SuppressWarnings("unchecked")

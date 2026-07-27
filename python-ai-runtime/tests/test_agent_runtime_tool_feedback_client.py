@@ -138,7 +138,7 @@ class JavaAgentRuntimeToolFeedbackClientTest(unittest.TestCase):
 
         self.assertEqual(("call-001", "call-002"), tuple(item.tool_call_id for item in feedback))
         self.assertEqual(ToolExecutionFeedbackStatus.SUCCEEDED, feedback[0].status)
-        self.assertEqual(ToolExecutionFeedbackStatus.SKIPPED, feedback[1].status)
+        self.assertEqual(ToolExecutionFeedbackStatus.PENDING, feedback[1].status)
 
     def test_parse_execution_policy_response(self) -> None:
         payload = {

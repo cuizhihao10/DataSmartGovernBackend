@@ -449,6 +449,15 @@ datasmart:
       # 服务间认证头与令牌。令牌必须从环境变量/Secret 注入，不应写入仓库、日志、runtime event 或 API 响应。
       auth-header-name: ${DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_AUTH_HEADER_NAME:Authorization}
       service-account-token: ${DATASMART_AGENT_RUNTIME_MCP_DURABLE_WORKER_SERVICE_ACCOUNT_TOKEN:}
+    post-confirm-continuation:
+      # 用户确认的 Java 工具批次完成后，自动把真实结果送回 Python 继续模型/工具循环。
+      # Python 仍然只规划；后续每个工具批次都重新进入 Java 控制面，写操作继续等待用户确认。
+      enabled: ${DATASMART_AGENT_RUNTIME_POST_CONFIRM_CONTINUATION_ENABLED:false}
+      base-url: ${DATASMART_AGENT_RUNTIME_POST_CONFIRM_CONTINUATION_BASE_URL:http://localhost:8090}
+      path: ${DATASMART_AGENT_RUNTIME_POST_CONFIRM_CONTINUATION_PATH:/internal/agent/continuations/post-confirm}
+      connect-timeout-ms: ${DATASMART_AGENT_RUNTIME_POST_CONFIRM_CONTINUATION_CONNECT_TIMEOUT_MS:1500}
+      read-timeout-ms: ${DATASMART_AGENT_RUNTIME_POST_CONFIRM_CONTINUATION_READ_TIMEOUT_MS:600000}
+      service-account-token: ${DATASMART_AGENT_RUNTIME_POST_CONFIRM_CONTINUATION_TOKEN:}
     rag-command-worker:
       # Java agent-runtime -> Python Runtime RAG Command Worker 的内部调用开关。
       # 默认关闭，避免本地只启动 Java 控制面时后台 dispatcher 误调用 Python；完整 E2E/Compose/生产环境再显式打开。
@@ -909,6 +918,46 @@ datasmart:
             description: 用户明确指定的目标表名或安全模式，用于只读取任务相关对象。
             sensitive: false
             resolution: MODEL_OPTIONAL
+      "[sync.cdc.readiness.check]":
+        enabled: true
+        tool-code: sync.cdc.readiness.check
+        tool-type: DATA_SYNC
+        display-name: 实时同步 CDC 准入检查
+        description: 基于可信数据源与真实数据库元数据检查主键、binlog/WAL、目标冲突键、Kafka、Kafka Connect、Debezium 和实时运行时状态。
+        target-service: datasource-management
+        target-endpoint: /datasources/{sourceDatasourceId}/cdc-readiness/check
+        read-only: true
+        risk-level: LOW
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: true
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: NO_CACHE
+        timeout-ms: 30000
+        max-retries: 0
+        allowed-actions:
+          - PRECHECK
+        input-schema:
+          - name: sourceMetadataRef
+            type: object
+            required: true
+            description: 同一 Run 内源端元数据读取结果的可信引用。
+            sensitive: false
+            resolution: DERIVED
+          - name: targetMetadataRef
+            type: object
+            required: true
+            description: 同一 Run 内目标端元数据读取结果的可信引用。
+            sensitive: false
+            resolution: DERIVED
+          - name: objectMappings
+            type: array
+            required: true
+            description: 仅包含源/目标 schema 与表名的低敏映射；适配器会丢弃字段、WHERE、SQL、数据值和凭据，模型也不能借此修改可信数据源 ID。
+            sensitive: false
+            resolution: USER_REQUIRED
       "[sync.task.draft.save]":
         enabled: true
         tool-code: sync.task.draft.save
@@ -965,6 +1014,12 @@ datasmart:
             type: array
             required: true
             description: 多表场景下全部目标端元数据工具输出的可信引用组。
+            sensitive: false
+            resolution: DERIVED
+          - name: cdcReadinessRef
+            type: object
+            required: false
+            description: CDC_STREAMING 模式必须提供同一 Run 内已通过的 CDC 准入检查引用，其他模式忽略。
             sensitive: false
             resolution: DERIVED
           - name: objectMappings
@@ -1340,6 +1395,92 @@ datasmart:
             description: 低敏修复策略编码，不接受 SQL 或记录正文。
             sensitive: false
             resolution: MODEL_OPTIONAL
+      "[datasource.target-table.create.preview]":
+        enabled: true
+        tool-code: datasource.target-table.create.preview
+        tool-type: DATASOURCE_MANAGEMENT
+        display-name: 目标空表创建预览
+        description: 从同一运行内的可信源表元数据生成目标空表创建预览；不接受原始 DDL、默认表达式或模型自报字段。
+        target-service: datasource-management
+        target-endpoint: /datasources/{datasourceId}/schema-repair-plans/preview
+        read-only: true
+        risk-level: MEDIUM
+        execution-mode: SYNC
+        requires-approval: false
+        idempotent: false
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: NO_CACHE
+        timeout-ms: 30000
+        max-retries: 0
+        allowed-actions:
+          - PREVIEW_CREATE_TARGET_TABLE
+        input-schema:
+          - name: sourceMetadataRef
+            type: object
+            required: true
+            description: 同一 Run 内源端元数据读取结果的可信审计引用。
+            sensitive: false
+            resolution: DERIVED
+          - name: targetMetadataRef
+            type: object
+            required: true
+            description: 同一 Run 内目标端元数据读取结果的可信审计引用。
+            sensitive: false
+            resolution: DERIVED
+          - name: sourceSchemaName
+            type: string
+            required: false
+            description: 源端 schema；MySQL 可为空。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: sourceTableName
+            type: string
+            required: true
+            description: 必须存在于可信源端元数据中的源表名称。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: targetSchemaName
+            type: string
+            required: false
+            description: 待创建目标表所属 schema；MySQL 可为空。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+          - name: targetTableName
+            type: string
+            required: true
+            description: 用户确认需要创建的目标表名称。
+            sensitive: false
+            resolution: MODEL_OPTIONAL
+      "[datasource.target-table.create.apply]":
+        enabled: true
+        tool-code: datasource.target-table.create.apply
+        tool-type: DATASOURCE_MANAGEMENT
+        display-name: 创建目标空表
+        description: 用户确认后应用摘要绑定的目标空表创建计划，并重新读取目标元数据供任务草稿使用。
+        target-service: datasource-management
+        target-endpoint: /datasources/{datasourceId}/schema-repair-plans/apply
+        read-only: false
+        risk-level: HIGH
+        execution-mode: APPROVAL_REQUIRED
+        requires-approval: true
+        idempotent: false
+        tenant-scoped: true
+        project-scoped: true
+        memory-write-policy: EPISODIC
+        cache-policy: NO_CACHE
+        timeout-ms: 30000
+        max-retries: 0
+        allowed-actions:
+          - CREATE_TARGET_TABLE
+        input-schema:
+          - name: previewRef
+            type: object
+            required: true
+            description: 同一 Run 内目标空表创建预览及确认摘要的可信审计引用。
+            sensitive: false
+            resolution: DERIVED
       "[datasource.schema.repair.preview]":
         enabled: true
         tool-code: datasource.schema.repair.preview
