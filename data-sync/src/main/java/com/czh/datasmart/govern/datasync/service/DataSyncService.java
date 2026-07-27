@@ -53,6 +53,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskPublishRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskUpdateRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplatePlanningPreviewResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateQueryCriteria;
@@ -124,6 +125,14 @@ public interface DataSyncService {
     PlatformPageResponse<SyncTask> pageTasks(SyncTaskQueryCriteria criteria, SyncActorContext actorContext);
 
     SyncTask getTask(Long id, SyncActorContext actorContext);
+
+    /**
+     * 按任务执行创建向导预检查。
+     *
+     * <p>同步模板是任务内部定义，不应要求前端或 Agent 持有 templateId。该入口先按 taskId
+     * 完成任务可见性校验，再在服务内部解析关联模板并复用同一套真实预检查规则。</p>
+     */
+    SyncTaskExecutionPrecheckResponse precheckTask(Long id, SyncActorContext actorContext);
 
     /**
      * 查询回收站内的同步任务。

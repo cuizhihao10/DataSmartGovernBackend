@@ -164,7 +164,7 @@ class DataSyncToolPlanBuilder:
             plan_factory,
             "sync.task.precheck",
             "草稿保存后调用真实预检查，验证对象、字段、目标约束和 runner 准入。",
-            {"draftRef": self._ref("sync.task.draft.save", "templateId")},
+            {"draftRef": self._ref("sync.task.draft.save", "taskId")},
         )
         self._append(
             plans,
@@ -229,7 +229,7 @@ class DataSyncToolPlanBuilder:
             plan_factory,
             "sync.task.precheck",
             "Validate the saved draft against real objects, fields, target constraints and runner admission.",
-            {"draftRef": self._ref("sync.task.draft.save", "templateId")},
+            {"draftRef": self._ref("sync.task.draft.save", "taskId")},
         )
         self._append(
             plans,

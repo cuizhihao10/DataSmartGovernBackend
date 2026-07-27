@@ -12,7 +12,9 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolAutoExecutionRe
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolAutoExecutionResponse;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolExecutionPolicyItemView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolExecutionPolicyView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolPlanDagView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionResultView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentToolPlanDagNodeView;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
 import com.czh.datasmart.govern.agent.model.AgentToolRiskLevel;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionService;
@@ -24,10 +26,13 @@ import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.stream.IntStream;
 
 /**
  * Run 级受控同步工具自动执行服务。
@@ -52,6 +57,7 @@ public class AgentRunToolAutoExecutionService {
     private final AgentRuntimeProperties properties;
     private final AgentSessionMemoryStore sessionMemoryStore;
     private final AgentRunToolExecutionPolicyService policyService;
+    private final AgentRunToolPlanDagService toolPlanDagService;
     private final AgentToolExecutionService toolExecutionService;
 
     /**
@@ -132,7 +138,7 @@ public class AgentRunToolAutoExecutionService {
                                             NormalizedAutoExecutionRequest request,
                                             String traceId) {
         AutoExecutionBatchBuilder builder = new AutoExecutionBatchBuilder(request.dryRun(), request.requestedLimit(), request.effectiveLimit());
-        for (AgentRunToolExecutionPolicyItemView item : policy.items()) {
+        for (AgentRunToolExecutionPolicyItemView item : orderByDag(run, policy.items())) {
             if (!request.selectedAuditIds().isEmpty() && !request.selectedAuditIds().contains(item.auditId())) {
                 builder.skipped(skip(item, "NOT_SELECTED", "调用方 auditIds 白名单未包含该工具，本批次不处理。"));
                 continue;
@@ -140,6 +146,11 @@ public class AgentRunToolAutoExecutionService {
             Eligibility eligibility = inspectEligibility(item);
             if (!eligibility.allowed()) {
                 builder.skipped(skip(item, "SKIPPED", eligibility.reason()));
+                continue;
+            }
+            Eligibility dependencyEligibility = inspectDependencyEligibility(run, item);
+            if (!dependencyEligibility.allowed()) {
+                builder.skipped(skip(item, "DEPENDENCY_BLOCKED", dependencyEligibility.reason()));
                 continue;
             }
             if (!builder.canExecuteMore()) {
@@ -162,6 +173,35 @@ public class AgentRunToolAutoExecutionService {
             executeOne(session, run, item, traceId, builder);
         }
         return builder.build();
+    }
+
+    /**
+     * 按最新 DAG 拓扑顺序处理策略候选。
+     *
+     * <p>审计仓储或策略服务的返回顺序不是调度合同。若后置节点先出现，即使它当时被正确识别为依赖阻塞，
+     * 本批次在随后执行前置节点后也不会自然回访它。先按拓扑顺序排列，再在执行前动态复核依赖，能同时保证
+     * 安全性和同批次连续推进能力。</p>
+     */
+    private List<AgentRunToolExecutionPolicyItemView> orderByDag(
+            AgentRunRecord run,
+            List<AgentRunToolExecutionPolicyItemView> items) {
+        AgentRunToolPlanDagView dag = toolPlanDagService.inspectRunToolPlanDag(
+                run.getSessionId(), run.getRunId());
+        Map<String, String> nodeIdByAuditId = dag.nodes().stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        AgentToolPlanDagNodeView::auditId,
+                        AgentToolPlanDagNodeView::nodeId,
+                        (left, right) -> left));
+        Map<String, Integer> topologicalOrder = IntStream.range(0, dag.topologicalNodeIds().size())
+                .boxed()
+                .collect(java.util.stream.Collectors.toMap(
+                        index -> dag.topologicalNodeIds().get(index),
+                        index -> index,
+                        (left, right) -> left));
+        return items.stream()
+                .sorted(Comparator.comparingInt(item -> topologicalOrder.getOrDefault(
+                        nodeIdByAuditId.get(item.auditId()), Integer.MAX_VALUE)))
+                .toList();
     }
 
     /**
@@ -235,6 +275,33 @@ public class AgentRunToolAutoExecutionService {
             return Eligibility.rejected("工具未声明幂等，自动执行失败后难以安全重试或恢复。");
         }
         return Eligibility.allow();
+    }
+
+    /**
+     * 在每个节点真正执行前重新计算 DAG，而不是复用批次开始时的静态结果。
+     *
+     * <p>同一批次内前置只读节点可能刚刚成功，后置节点应随即变为 ready；反过来，草稿保存仍在等待审批、
+     * 被拒绝或失败时，预检查绝不能因为自身是 LOW/readOnly 就越过前置节点执行。动态复核同时覆盖显式
+     * dependsOn 和旧计划的保守线性依赖。</p>
+     */
+    private Eligibility inspectDependencyEligibility(AgentRunRecord run,
+                                                      AgentRunToolExecutionPolicyItemView item) {
+        AgentRunToolPlanDagView dag = toolPlanDagService.inspectRunToolPlanDag(
+                run.getSessionId(), run.getRunId());
+        AgentToolPlanDagNodeView node = dag.nodes().stream()
+                .filter(candidate -> item.auditId().equals(candidate.auditId()))
+                .findFirst()
+                .orElse(null);
+        if (node == null) {
+            return Eligibility.rejected("当前工具不在最新 Tool DAG 中，已停止自动执行以避免使用过期计划。");
+        }
+        if (Boolean.TRUE.equals(node.readyForExecution())) {
+            return Eligibility.allow();
+        }
+        String blockedBy = node.blockedByNodeIds().isEmpty()
+                ? "审批、参数或执行策略尚未满足"
+                : "前置节点 " + String.join("、", node.blockedByNodeIds()) + " 尚未完成";
+        return Eligibility.rejected(blockedBy + "，当前节点保持 PLANNED，待依赖完成后再执行。");
     }
 
     private AgentRunToolAutoExecutionItemView skip(AgentRunToolExecutionPolicyItemView item, String action, String reason) {

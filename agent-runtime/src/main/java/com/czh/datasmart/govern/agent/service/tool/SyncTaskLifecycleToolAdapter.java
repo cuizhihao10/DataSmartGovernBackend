@@ -160,14 +160,12 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
         Map<String, Object> response = post(context, "/sync-tasks/create-wizard/drafts", request);
         Map<String, Object> data = requireSuccessData(response, "同步任务草稿保存");
         Long taskId = longValue(data.get("taskId"));
-        Long templateId = longValue(data.get("templateId"));
-        if (taskId == null || templateId == null) {
-            return AgentToolExecutionOutcome.failed("SYNC_DRAFT_MISSING_IDS",
-                    "同步任务草稿已返回成功响应，但缺少 taskId/templateId");
+        if (taskId == null) {
+            return AgentToolExecutionOutcome.failed("SYNC_DRAFT_MISSING_TASK_ID",
+                    "同步任务草稿已保存，但服务端没有返回任务 ID，请稍后重试或联系管理员检查 data-sync 响应");
         }
         return AgentToolExecutionOutcome.succeeded("同步任务草稿与字段映射已保存。", Map.of(
                 "taskId", taskId,
-                "templateId", templateId,
                 "state", safeText(data.get("currentState"), "DRAFT"),
                 "objectCount", mappings.size(),
                 "syncMode", syncMode,
@@ -177,12 +175,12 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
     }
 
     private AgentToolExecutionOutcome precheck(AgentToolExecutionContext context) {
-        Long templateId = draftReference(context, "templateId");
-        Map<String, Object> response = post(context, "/sync-templates/{id}/precheck", null, templateId);
+        Long taskId = draftReference(context, "taskId");
+        Map<String, Object> response = post(context, "/sync-tasks/{id}/precheck", null, taskId);
         Map<String, Object> data = requireSuccessData(response, "同步任务预检查");
         boolean canStartExecution = booleanValue(data.get("canStartExecution"), false);
         Map<String, Object> output = new LinkedHashMap<>();
-        output.put("templateId", templateId);
+        output.put("taskId", taskId);
         output.put("precheckStatus", safeText(data.get("precheckStatus"), "UNKNOWN"));
         output.put("canStartExecution", canStartExecution);
         output.put("issueCodes", listValue(data.get("issueCodes")));

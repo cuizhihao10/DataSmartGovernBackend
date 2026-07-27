@@ -30,6 +30,7 @@ import com.czh.datasmart.govern.agent.service.tool.AgentToolExecutionOutputStore
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -49,12 +50,18 @@ class AgentRunToolAutoExecutionServiceTest {
     void shouldExecuteOnlyLowRiskReadOnlyIdempotentSyncCandidate() {
         TestFixture fixture = newFixture(5);
         fixture.saveAudits(
-                audit("atea-auto-low", AgentToolExecutionState.PLANNED, AgentToolExecutionMode.SYNC,
-                        AgentToolRiskLevel.LOW, false, true, true),
-                audit("atea-auto-medium", AgentToolExecutionState.PLANNED, AgentToolExecutionMode.SYNC,
-                        AgentToolRiskLevel.MEDIUM, false, true, true),
-                audit("atea-auto-approval", AgentToolExecutionState.WAITING_APPROVAL, AgentToolExecutionMode.APPROVAL_REQUIRED,
-                        AgentToolRiskLevel.HIGH, true, false, false)
+                audit("atea-auto-low", "datasource.metadata.read",
+                        AgentToolExecutionState.PLANNED, AgentToolExecutionMode.SYNC,
+                        AgentToolRiskLevel.LOW, false, true, true,
+                        Map.of("planNodeId", "low-root")),
+                audit("atea-auto-medium", "datasource.metadata.read",
+                        AgentToolExecutionState.PLANNED, AgentToolExecutionMode.SYNC,
+                        AgentToolRiskLevel.MEDIUM, false, true, true,
+                        Map.of("planNodeId", "medium-child", "dependsOn", List.of("low-root"))),
+                audit("atea-auto-approval", "datasource.metadata.read",
+                        AgentToolExecutionState.WAITING_APPROVAL, AgentToolExecutionMode.APPROVAL_REQUIRED,
+                        AgentToolRiskLevel.HIGH, true, false, false,
+                        Map.of("planNodeId", "approval-child", "dependsOn", List.of("medium-child")))
         );
 
         AgentRunToolAutoExecutionResponse response = fixture.service.executeEligibleSyncTools(
@@ -96,10 +103,14 @@ class AgentRunToolAutoExecutionServiceTest {
     void shouldRespectServerSideBatchLimit() {
         TestFixture fixture = newFixture(1);
         fixture.saveAudits(
-                audit("atea-auto-limit-1", AgentToolExecutionState.PLANNED, AgentToolExecutionMode.SYNC,
-                        AgentToolRiskLevel.LOW, false, true, true),
-                audit("atea-auto-limit-2", AgentToolExecutionState.PLANNED, AgentToolExecutionMode.SYNC,
-                        AgentToolRiskLevel.LOW, false, true, true)
+                audit("atea-auto-limit-1", "datasource.metadata.read",
+                        AgentToolExecutionState.PLANNED, AgentToolExecutionMode.SYNC,
+                        AgentToolRiskLevel.LOW, false, true, true,
+                        Map.of("planNodeId", "limit-root")),
+                audit("atea-auto-limit-2", "datasource.metadata.read",
+                        AgentToolExecutionState.PLANNED, AgentToolExecutionMode.SYNC,
+                        AgentToolRiskLevel.LOW, false, true, true,
+                        Map.of("planNodeId", "limit-child", "dependsOn", List.of("limit-root")))
         );
 
         AgentRunToolAutoExecutionResponse response = fixture.service.executeEligibleSyncTools(
@@ -119,10 +130,14 @@ class AgentRunToolAutoExecutionServiceTest {
     void auditIdWhitelistShouldOnlyExecuteSelectedCandidate() {
         TestFixture fixture = newFixture(5);
         fixture.saveAudits(
-                audit("atea-auto-selected", AgentToolExecutionState.PLANNED, AgentToolExecutionMode.SYNC,
-                        AgentToolRiskLevel.LOW, false, true, true),
-                audit("atea-auto-not-selected", AgentToolExecutionState.PLANNED, AgentToolExecutionMode.SYNC,
-                        AgentToolRiskLevel.LOW, false, true, true)
+                audit("atea-auto-selected", "datasource.metadata.read",
+                        AgentToolExecutionState.PLANNED, AgentToolExecutionMode.SYNC,
+                        AgentToolRiskLevel.LOW, false, true, true,
+                        Map.of("planNodeId", "selected-root")),
+                audit("atea-auto-not-selected", "datasource.metadata.read",
+                        AgentToolExecutionState.PLANNED, AgentToolExecutionMode.SYNC,
+                        AgentToolRiskLevel.LOW, false, true, true,
+                        Map.of("planNodeId", "not-selected-child", "dependsOn", List.of("selected-root")))
         );
 
         AgentRunToolAutoExecutionResponse response = fixture.service.executeEligibleSyncTools(
@@ -139,13 +154,65 @@ class AgentRunToolAutoExecutionServiceTest {
     }
 
     @Test
+    void shouldKeepReadOnlyPrecheckPlannedWhileDraftDependencyAwaitsApproval() {
+        TestFixture fixture = newFixture(5);
+        fixture.saveAudits(
+                audit(
+                        "atea-draft-awaiting-approval",
+                        "sync.task.draft.save",
+                        AgentToolExecutionState.WAITING_APPROVAL,
+                        AgentToolExecutionMode.APPROVAL_REQUIRED,
+                        AgentToolRiskLevel.HIGH,
+                        true,
+                        false,
+                        false,
+                        Map.of("planNodeId", "sync-task-draft-save")
+                ),
+                audit(
+                        "atea-precheck-dependent",
+                        "datasource.metadata.read",
+                        AgentToolExecutionState.PLANNED,
+                        AgentToolExecutionMode.SYNC,
+                        AgentToolRiskLevel.LOW,
+                        false,
+                        true,
+                        true,
+                        Map.of(
+                                "planNodeId", "sync-task-precheck",
+                                "dependsOn", List.of("sync-task-draft-save")
+                        )
+                )
+        );
+
+        AgentRunToolAutoExecutionResponse response = fixture.service.executeEligibleSyncTools(
+                "session-auto-001",
+                "run-auto-001",
+                new AgentRunToolAutoExecutionRequest(null, 5, false),
+                "trace-auto"
+        );
+
+        assertEquals(0, response.executedCount());
+        assertEquals(0, response.failedCount());
+        assertTrue(response.items().stream().anyMatch(item ->
+                "atea-precheck-dependent".equals(item.auditId())
+                        && "DEPENDENCY_BLOCKED".equals(item.action())
+                        && item.reason().contains("sync-task-draft-save")));
+        assertEquals("PLANNED", fixture.auditService.getExecutionAudit(
+                "session-auto-001", "run-auto-001", "atea-precheck-dependent").state());
+    }
+
+    @Test
     void shouldCompleteRunWhenEveryReadOnlyToolSucceeded() {
         TestFixture fixture = newFixture(5);
         fixture.saveAudits(
-                audit("atea-auto-complete-1", AgentToolExecutionState.PLANNED, AgentToolExecutionMode.SYNC,
-                        AgentToolRiskLevel.LOW, false, true, true),
-                audit("atea-auto-complete-2", AgentToolExecutionState.PLANNED, AgentToolExecutionMode.SYNC,
-                        AgentToolRiskLevel.LOW, false, true, true)
+                audit("atea-auto-complete-1", "datasource.metadata.read",
+                        AgentToolExecutionState.PLANNED, AgentToolExecutionMode.SYNC,
+                        AgentToolRiskLevel.LOW, false, true, true,
+                        Map.of("planNodeId", "complete-root")),
+                audit("atea-auto-complete-2", "datasource.metadata.read",
+                        AgentToolExecutionState.PLANNED, AgentToolExecutionMode.SYNC,
+                        AgentToolRiskLevel.LOW, false, true, true,
+                        Map.of("planNodeId", "complete-child", "dependsOn", List.of("complete-root")))
         );
 
         AgentRunToolAutoExecutionResponse response = fixture.service.executeEligibleSyncTools(
@@ -174,6 +241,10 @@ class AgentRunToolAutoExecutionServiceTest {
                 sessionStore,
                 auditService
         );
+        AgentRunToolPlanDagService toolPlanDagService = new AgentRunToolPlanDagService(
+                policyService,
+                auditService
+        );
         AgentToolExecutionService executionService = new AgentToolExecutionService(
                 auditService,
                 List.of(new TestMetadataToolAdapter()),
@@ -184,6 +255,7 @@ class AgentRunToolAutoExecutionServiceTest {
                 properties,
                 sessionStore,
                 policyService,
+                toolPlanDagService,
                 executionService
         );
         AgentSessionRecord session = sessionWithRun();
@@ -232,12 +304,34 @@ class AgentRunToolAutoExecutionServiceTest {
                                                 boolean requiresApproval,
                                                 boolean readOnly,
                                                 boolean idempotent) {
+        return audit(
+                auditId,
+                "datasource.metadata.read",
+                state,
+                mode,
+                riskLevel,
+                requiresApproval,
+                readOnly,
+                idempotent,
+                Map.of()
+        );
+    }
+
+    private AgentToolExecutionAuditRecord audit(String auditId,
+                                                String toolCode,
+                                                AgentToolExecutionState state,
+                                                AgentToolExecutionMode mode,
+                                                AgentToolRiskLevel riskLevel,
+                                                boolean requiresApproval,
+                                                boolean readOnly,
+                                                boolean idempotent,
+                                                Map<String, Object> governanceHints) {
         return new AgentToolExecutionAuditRecord(
                 auditId,
                 "session-auto-001",
                 "run-auto-001",
                 "binding-" + auditId,
-                "datasource.metadata.read",
+                toolCode,
                 "INTERNAL_API",
                 "datasource-management",
                 "/metadata",
@@ -254,13 +348,21 @@ class AgentRunToolAutoExecutionServiceTest {
                 List.of("READ"),
                 "自动执行测试计划",
                 Map.of("datasourceId", 1001L),
-                Map.of("tenantScoped", true, "projectScoped", true),
+                governanceHints(governanceHints),
                 Map.of(),
                 state,
                 "trace-auto",
                 "工具计划已生成。",
                 LocalDateTime.now()
         );
+    }
+
+    private Map<String, Object> governanceHints(Map<String, Object> additionalHints) {
+        Map<String, Object> hints = new LinkedHashMap<>();
+        hints.put("tenantScoped", true);
+        hints.put("projectScoped", true);
+        hints.putAll(additionalHints);
+        return Map.copyOf(hints);
     }
 
     private record TestFixture(AgentRunToolAutoExecutionService service,

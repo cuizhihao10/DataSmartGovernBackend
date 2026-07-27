@@ -61,7 +61,7 @@ class AgentFollowUpToolPlannerTest(unittest.TestCase):
                 "fromTool": "sync.task.draft.save",
                 "fromAuditId": "audit-draft",
                 "fromRunId": "run-draft",
-                "path": "templateId",
+                "path": "taskId",
             },
             plan.arguments["draftRef"],
         )

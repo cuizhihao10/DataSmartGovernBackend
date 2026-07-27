@@ -166,6 +166,7 @@ def build_agent_conversation_response(
         if parameter_name not in declared_missing_parameters:
             declared_missing_parameters.append(parameter_name)
     autonomously_resolved = _autonomously_resolved_parameters(
+        request,
         plan,
         control_plane_feedback,
         autonomous_resolution_stopped=autonomous_resolution_stopped,
@@ -460,6 +461,7 @@ def _truthy(value: object) -> bool:
 
 
 def _autonomously_resolved_parameters(
+    request: AgentRequest,
     plan: AgentPlan,
     control_plane_feedback: Any | None,
     *,
@@ -526,20 +528,60 @@ def _autonomously_resolved_parameters(
         # surface a mapping repair only if the user's original mapping is invalid.
         resolved.add("objectMappings")
 
-    if "sync.task.draft.save" in tool_names | succeeded_tools:
+    sync_payload = _sync_payload(request)
+    datasource_ids_already_selected = bool(
+        str(sync_payload.get("sourceDatasourceId") or "").strip()
+        and str(sync_payload.get("targetDatasourceId") or "").strip()
+    )
+    metadata_path = {
+        "datasource.source.metadata.read",
+        "datasource.target.metadata.read",
+    }
+    draft_plan = next(
+        (item for item in plan.tool_plans if item.tool_name == "sync.task.draft.save"),
+        None,
+    )
+    if "sync.task.draft.save" in succeeded_tools:
         resolved.update({"sourceDatasourceId", "targetDatasourceId", "objectMappings"})
+    elif draft_plan is not None:
+        # A planned draft is not a saved draft. Fields that passed validation may
+        # be supplied through durable tool references, but a MUST_CLARIFY issue
+        # must remain visible. Object mappings additionally require real content.
+        draft_arguments = dict(draft_plan.arguments or {})
+        must_clarify = {
+            issue.parameter_name
+            for issue in draft_plan.parameter_validation.issues
+            if issue.action == ToolParameterIssueAction.MUST_CLARIFY
+        }
+        if "sourceDatasourceId" not in must_clarify:
+            resolved.add("sourceDatasourceId")
+        if "targetDatasourceId" not in must_clarify:
+            resolved.add("targetDatasourceId")
+        mappings = draft_arguments.get("objectMappings")
+        if (
+            "objectMappings" not in must_clarify
+            and isinstance(mappings, (list, tuple))
+            and bool(mappings)
+        ):
+            resolved.add("objectMappings")
     elif not autonomous_resolution_stopped and (
-        "datasource.source.metadata.read" in tool_names | succeeded_tools
-        or "datasource.target.metadata.read" in tool_names | succeeded_tools
-        or bool((tool_names | succeeded_tools) & (source_path | target_path))
-        or {
-            "sourceDatasourceId",
-            "targetDatasourceId",
-        }.issubset(resolved)
+        bool((tool_names | succeeded_tools) & metadata_path)
+        or (
+            not datasource_ids_already_selected
+            and (
+                bool((tool_names | succeeded_tools) & (source_path | target_path))
+                or {
+                    "sourceDatasourceId",
+                    "targetDatasourceId",
+                }.issubset(resolved)
+            )
+        )
     ):
         # Mapping details remain in the user's original objective while the model
-        # waits for real metadata. They become a user question only if the model
-        # cannot produce a validated draft after metadata is returned.
+        # waits for real metadata or is still resolving datasource identities.
+        # Once both datasource IDs were explicitly selected, connection tests by
+        # themselves cannot resolve mappings; the UI must show the real mapping
+        # editor unless a metadata-read path or saved draft actually exists.
         resolved.add("objectMappings")
     return resolved
 

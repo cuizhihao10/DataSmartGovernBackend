@@ -57,6 +57,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskPublishRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskUpdateRequest;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplatePlanningPreviewResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateQueryCriteria;
@@ -392,6 +393,22 @@ public class DataSyncServiceImpl implements DataSyncService {
         dataScopeSupport.validateOwnedReadable(task.getTenantId(), task.getProjectId(),
                 task.getOwnerId(), actorContext, "同步任务");
         return task;
+    }
+
+    /**
+     * 使用用户可见的 taskId 执行真实预检查。
+     *
+     * <p>taskId 是产品资源标识，templateId 只是 data-sync 内部保存任务定义的实现细节。
+     * 先调用 {@link #getTask(Long, SyncActorContext)} 收口租户、项目和任务数据范围，再通过
+     * {@link #getTemplateForTask(SyncTask)} 校验内部定义与任务归属一致，避免 Agent 暴露或猜测模板 ID。</p>
+     */
+    @Override
+    public SyncTaskExecutionPrecheckResponse precheckTask(Long id, SyncActorContext actorContext) {
+        SyncTask task = getTask(id, actorContext);
+        SyncTemplate template = getTemplateForTask(task);
+        SyncTemplateExecutionPrecheckResponse precheck =
+                templateExecutionPrecheckSupport.precheck(template, actorContext);
+        return SyncTaskExecutionPrecheckResponse.from(task.getId(), precheck);
     }
 
     /**

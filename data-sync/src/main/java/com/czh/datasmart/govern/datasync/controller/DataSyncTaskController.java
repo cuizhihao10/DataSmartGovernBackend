@@ -41,6 +41,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperatio
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskUpdateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskWizardStepValidationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskWizardStepValidationResponse;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.controller.support.SyncActorContextHeaderSupport;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTaskGroup;
@@ -614,6 +615,26 @@ public class DataSyncTaskController {
             @RequestHeader HttpHeaders headers) {
         return PlatformApiResponse.success(dataSyncService.getTask(
                 id, actorContext(tenantId, actorId, actorRole, traceId, headers)), traceId);
+    }
+
+    /**
+     * 按任务执行真实预检查。
+     *
+     * <p>调用方只需持有任务 ID。关联同步模板由服务内部解析，不再把 templateId 暴露为
+     * Agent 或普通创建向导必须理解的业务参数。</p>
+     */
+    @PostMapping("/{id}/precheck")
+    public PlatformApiResponse<SyncTaskExecutionPrecheckResponse> precheckTask(
+            @PathVariable Long id,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
+            @RequestHeader HttpHeaders headers) {
+        return PlatformApiResponse.success("同步任务预检查完成",
+                dataSyncService.precheckTask(
+                        id, actorContext(tenantId, actorId, actorRole, traceId, headers)),
+                traceId);
     }
 
     /**

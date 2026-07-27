@@ -742,6 +742,13 @@ datasmart:
           method-actions:
             POST: SAVE_DRAFT
 
+        - path-pattern: /api/sync/sync-tasks/*/precheck
+          resource-type: SYNC_TASK
+          default-action: PRECHECK
+          description: data-sync 任务级真实预检查入口；调用方只持有 taskId，关联模板作为内部执行定义由服务端解析。
+          method-actions:
+            POST: PRECHECK
+
         - path-pattern: /api/sync/sync-tasks/*/publish
           resource-type: SYNC_TASK
           default-action: PUBLISH

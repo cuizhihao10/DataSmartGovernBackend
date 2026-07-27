@@ -69,14 +69,13 @@ _MODEL_RESULT_INCLUDE_PATHS: dict[str, tuple[str, ...]] = {
     "datasource.target.metadata.read": ("datasourceId", "summary"),
     "sync.task.draft.save": (
         "taskId",
-        "templateId",
         "state",
         "objectCount",
         "sourceDatasourceId",
         "targetDatasourceId",
     ),
     "sync.task.precheck": (
-        "templateId",
+        "taskId",
         "precheckStatus",
         "canStartExecution",
         "issueCodes",

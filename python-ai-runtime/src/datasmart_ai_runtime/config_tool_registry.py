@@ -317,7 +317,7 @@ def _data_sync_agent_tools() -> tuple[ToolDefinition, ...]:
             execution_mode=ToolExecutionMode.SYNC,
             required_permissions=("sync:task:precheck",),
             target_service="data-sync",
-            target_endpoint="/sync-templates/{templateId}/precheck",
+            target_endpoint="/sync-tasks/{taskId}/precheck",
             input_schema={"draftRef": {"type": "object", "required": True, "sensitive": False, "resolution": "derived"}},
             read_only=True,
             idempotent=True,

@@ -123,7 +123,7 @@ class AgentFollowUpToolPlanner:
             "targetMetadataRef": ("datasource.target.metadata.read", "metadata"),
         },
         "sync.task.precheck": {
-            "draftRef": ("sync.task.draft.save", "templateId"),
+            "draftRef": ("sync.task.draft.save", "taskId"),
         },
         "sync.task.publish": {
             "draftRef": ("sync.task.draft.save", "taskId"),

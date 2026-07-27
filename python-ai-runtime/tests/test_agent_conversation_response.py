@@ -17,6 +17,9 @@ from datasmart_ai_runtime.domain.contracts import (
     ModelRoute,
     ProviderType,
     WorkloadType,
+    ToolParameterIssue,
+    ToolParameterIssueAction,
+    ToolParameterValidationResult,
     ToolPlan,
 )
 from datasmart_ai_runtime.domain.intent import GovernanceDomain, IntentAnalysis
@@ -186,6 +189,98 @@ class AgentConversationResponseTest(unittest.TestCase):
         self.assertEqual([], conversation["missingParameters"])
         self.assertEqual([], conversation["clarificationQuestions"])
         self.assertEqual("CONTINUE_AUTONOMOUSLY", conversation["nextAction"])
+        self.assertFalse(conversation["canExecute"])
+
+    def test_selected_datasources_with_incomplete_draft_still_ask_for_object_mappings(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective=(
+                "Synchronize fs_test_customer_source and fs_test_customer_target "
+                "from MySQL to PostgreSQL public schema."
+            ),
+            variables={
+                "dataSyncRequest": {
+                    "sourceDatasourceId": 27,
+                    "targetDatasourceId": 28,
+                    "syncMode": "FULL",
+                    "writeStrategy": "INSERT",
+                }
+            },
+        )
+        tool_plans = (
+            ToolPlan(
+                tool_name="datasource.source.connection.test",
+                reason="verify selected source",
+                arguments={"datasourceId": 27},
+            ),
+            ToolPlan(
+                tool_name="datasource.target.connection.test",
+                reason="verify selected target",
+                arguments={"datasourceId": 28},
+            ),
+            ToolPlan(
+                tool_name="datasource.source.metadata.read",
+                reason="read selected source metadata",
+                arguments={"datasourceId": 27},
+            ),
+            ToolPlan(
+                tool_name="datasource.target.metadata.read",
+                reason="read selected target metadata",
+                arguments={"datasourceId": 28},
+            ),
+            ToolPlan(
+                tool_name="sync.task.draft.save",
+                reason="save task after required mapping is supplied",
+                arguments={
+                    "sourceDatasourceId": 27,
+                    "targetDatasourceId": 28,
+                    "objectMappings": [],
+                },
+                parameter_validation=ToolParameterValidationResult(
+                    can_execute=False,
+                    can_create_draft=False,
+                    issues=(
+                        ToolParameterIssue(
+                            parameter_name="objectMappings",
+                            expected_type="array",
+                            action=ToolParameterIssueAction.MUST_CLARIFY,
+                            message="Object mappings are required before saving the draft.",
+                        ),
+                    ),
+                ),
+            ),
+        )
+        plan = AgentPlan(
+            request_id="request-selected-datasources-missing-mapping",
+            selected_route=None,
+            state_trace=("invoke_model_intent",),
+            tool_plans=tool_plans,
+            requires_human_approval=False,
+            response_summary="Selected datasource connections can be tested, but mappings are missing.",
+            intent_analysis=IntentAnalysis(
+                summary="Data sync with selected datasource instances.",
+                governance_domains=(GovernanceDomain.DATA_SYNC,),
+                candidate_tools=tuple(item.tool_name for item in tool_plans),
+                missing_parameters=("objectMappings",),
+            ),
+        )
+
+        conversation = build_agent_conversation_response(
+            request,
+            plan,
+            ToolExecutionReadinessService().evaluate(tool_plans),
+            control_plane_ingested=True,
+        )
+
+        self.assertEqual("WAITING_CLARIFICATION", conversation["phase"])
+        self.assertEqual(["objectMappings"], conversation["missingParameters"])
+        self.assertEqual(1, len(conversation["clarificationQuestions"]))
+        self.assertEqual(
+            "OBJECT_MAPPING_EDITOR",
+            conversation["clarificationQuestions"][0]["inputType"],
+        )
         self.assertFalse(conversation["canExecute"])
 
     def test_ambiguous_datasource_only_asks_user_to_choose_from_authorized_candidates(self) -> None:

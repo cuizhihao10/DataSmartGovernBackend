@@ -97,7 +97,7 @@ class AgentToolExecutionFailureOutputTest {
     private AgentToolExecutionAuditRecord audit(AgentSessionRecord session, AgentRunRecord run) {
         return new AgentToolExecutionAuditRecord(
                 "audit-precheck-failure", session.getSessionId(), run.getRunId(), "binding-precheck-failure",
-                "sync.task.precheck", "DATA_SYNC", "data-sync", "/sync-templates/{id}/precheck", 88L,
+                "sync.task.precheck", "DATA_SYNC", "data-sync", "/sync-tasks/{id}/precheck", 88L,
                 10L, 101L, null, "1001", "LOW", "SYNC", false, true, true,
                 List.of("PRECHECK"), AgentToolExecutionState.PLANNED, "trace-precheck-failure",
                 "等待执行预检查", LocalDateTime.now());

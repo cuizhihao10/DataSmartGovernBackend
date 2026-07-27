@@ -1087,7 +1087,7 @@ datasmart:
         display-name: 同步任务预检查
         description: 调用 data-sync 真实预检查，验证连接器、对象、字段、目标约束和执行器准入。
         target-service: data-sync
-        target-endpoint: /sync-templates/{templateId}/precheck
+        target-endpoint: /sync-tasks/{taskId}/precheck
         read-only: true
         risk-level: LOW
         execution-mode: SYNC
