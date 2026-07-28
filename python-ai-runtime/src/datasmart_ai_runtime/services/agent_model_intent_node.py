@@ -668,6 +668,11 @@ class AgentModelIntentNode:
 
         return {
             "objective": cls._public_text(request.objective, max_chars=2_000),
+            "priorUserMessages": tuple(
+                cls._public_text(content, max_chars=1_000, preserve_lines=True)
+                for role, content in cls._conversation_history(request)
+                if role == "user"
+            ),
             "latestUserMessage": cls._public_text(
                 request.variables.get("latestUserMessage"),
                 max_chars=2_000,
@@ -746,6 +751,22 @@ class AgentModelIntentNode:
         return text[:max_chars] + "…"
 
     @staticmethod
+    def _conversation_history(request: AgentRequest) -> tuple[tuple[str, str], ...]:
+        raw_messages = request.variables.get("conversationMessages")
+        if not isinstance(raw_messages, (list, tuple)):
+            return ()
+        messages: list[tuple[str, str]] = []
+        for raw_message in raw_messages[-12:]:
+            if not isinstance(raw_message, dict):
+                continue
+            role = str(raw_message.get("role") or "").strip().lower()
+            content = str(raw_message.get("content") or "").strip()
+            if role not in {"user", "assistant"} or not content:
+                continue
+            messages.append((role, content[:2_000]))
+        return tuple(messages)
+
+    @staticmethod
     def _build_messages(
         request: AgentRequest,
         context_blocks: tuple[ContextBlock, ...],
@@ -767,6 +788,11 @@ class AgentModelIntentNode:
                 "- 平台认定缺参：" + ", ".join(intent_analysis.missing_parameters),
                 "- 已准入 Skill：" + ", ".join(skill.display_name for skill in skill_plan.selected_skills),
             )
+        )
+        conversation_history = AgentModelIntentNode._conversation_history(request)
+        conversation_digest = "\n".join(
+            f"- {'用户' if role == 'user' else 'Agent'}：{content}"
+            for role, content in conversation_history[-8:]
         )
         return (
             ModelMessage(
@@ -796,7 +822,12 @@ class AgentModelIntentNode:
             ModelMessage(
                 role="user",
                 content=(
-                    f"用户目标：{request.objective}\n\n"
+                     f"用户目标：{request.objective}\n\n"
+                    + (
+                        f"当前会话已发生的公开对话（越靠后优先级越高）：\n{conversation_digest}\n\n"
+                        if conversation_digest
+                        else ""
+                    )
                     + (
                         "当前会话最新补充或纠正（优先于先前描述）："
                         f"{request.variables.get('latestUserMessage')}\n\n"

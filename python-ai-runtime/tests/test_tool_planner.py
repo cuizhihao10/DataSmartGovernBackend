@@ -262,6 +262,65 @@ class ToolPlannerTest(unittest.TestCase):
         self.assertEqual("mysql-customer-source", source.arguments["keyword"])
         self.assertEqual("pg-target", target.arguments["keyword"])
 
+    def test_negative_correction_uses_replacement_datasource_name(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1004",
+            objective=(
+                "将 MySQL 中的两张客户表全量同步到 PostgreSQL public schema"
+            ),
+            variables={
+                "latestUserMessage": (
+                    "纠正一下：目标数据源不是 pgsql2mysql_test_0709_target，"
+                    "而是 mysql2pgsql_test_0709_target。"
+                    "源数据源 mysql2pgsql_test_0709_source 保持不变。"
+                )
+            },
+        )
+        intent_analysis = RuleBasedIntentAnalyzer().analyze(
+            request,
+            DefaultContextBuilder().build(request),
+        )
+
+        plans = ToolPlanner(default_tool_registry()).plan(
+            request=request,
+            intent_analysis=intent_analysis,
+        )
+
+        source = next(plan for plan in plans if plan.tool_name == "datasource.source.catalog.search")
+        target = next(plan for plan in plans if plan.tool_name == "datasource.target.catalog.search")
+        self.assertEqual("mysql2pgsql_test_0709_source", source.arguments["keyword"])
+        self.assertEqual("mysql2pgsql_test_0709_target", target.arguments["keyword"])
+
+    def test_from_to_correction_uses_new_datasource_name(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1004",
+            objective="将 PostgreSQL 数据全量同步到 MySQL",
+            variables={
+                "latestUserMessage": (
+                    "源端数据源从 pg-old-source 改成 pg-customer-source，"
+                    "目标端数据源改成 mysql-customer-target"
+                )
+            },
+        )
+        intent_analysis = RuleBasedIntentAnalyzer().analyze(
+            request,
+            DefaultContextBuilder().build(request),
+        )
+
+        plans = ToolPlanner(default_tool_registry()).plan(
+            request=request,
+            intent_analysis=intent_analysis,
+        )
+
+        source = next(plan for plan in plans if plan.tool_name == "datasource.source.catalog.search")
+        target = next(plan for plan in plans if plan.tool_name == "datasource.target.catalog.search")
+        self.assertEqual("pg-customer-source", source.arguments["keyword"])
+        self.assertEqual("mysql-customer-target", target.arguments["keyword"])
+
     def test_latest_correction_keeps_connector_types_in_user_text_order(self) -> None:
         request = AgentRequest(
             tenant_id="10",
@@ -276,6 +335,52 @@ class ToolPlannerTest(unittest.TestCase):
                     "MySQL 和 PostgreSQL 只是数据库类型，"
                     "源端数据源改为 mysql2pgsql_test_0709_source，"
                     "目标端数据源改为 mysql2pgsql_test_0709_target"
+                )
+            },
+        )
+        intent_analysis = RuleBasedIntentAnalyzer().analyze(
+            request,
+            DefaultContextBuilder().build(request),
+        )
+
+        plans = ToolPlanner(default_tool_registry()).plan(
+            request=request,
+            intent_analysis=intent_analysis,
+        )
+
+        source = next(plan for plan in plans if plan.tool_name == "datasource.source.catalog.search")
+        target = next(plan for plan in plans if plan.tool_name == "datasource.target.catalog.search")
+        self.assertEqual(
+            {
+                "keyword": "mysql2pgsql_test_0709_source",
+                "datasourceType": "MYSQL",
+            },
+            source.arguments,
+        )
+        self.assertEqual(
+            {
+                "keyword": "mysql2pgsql_test_0709_target",
+                "datasourceType": "POSTGRESQL",
+            },
+            target.arguments,
+        )
+
+    def test_instance_name_connector_substrings_do_not_override_declared_source_type(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1004",
+            objective=(
+                "将 MySQL 中的 fs_test_customer_source 和 fs_test_customer_target "
+                "全量同步到 PostgreSQL public schema 的同名表。"
+            ),
+            variables={
+                "latestUserMessage": (
+                    "请继续自动核对并完成配置：仍使用源数据源 "
+                    "mysql2pgsql_test_0709_source 和目标数据源 "
+                    "mysql2pgsql_test_0709_target，将 fs_test_customer_source、"
+                    "fs_test_customer_target 分别映射到 PostgreSQL public schema "
+                    "下的同名表，其他配置保持不变。"
                 )
             },
         )

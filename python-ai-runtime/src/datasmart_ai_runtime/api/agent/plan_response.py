@@ -151,21 +151,28 @@ def build_plan_response(
     agent_turn_runner_checkpoint = None
     memory_write_proposal = None
 
+    ingestion_plan = _control_plane_ready_subplan(plan, tool_execution_readiness)
     if (
         plan_ingestion_client is not None
-        and bool(plan.tool_plans)
-        and tool_execution_readiness.clarification_required_count == 0
+        and bool(ingestion_plan.tool_plans)
         and tool_execution_readiness.blocked_count == 0
     ):
-        # 控制面接入是显式副作用：只有调用方注入 client 或 API 启用环境开关时才执行。
-        # 接入成功后会把 Java session/run/auditId 引用写回 ToolPlan，后续工具反馈 Provider 可据此查询真实结果。
-        # 缺参或 CRITICAL 阻断计划必须停留在 Python/LangGraph 澄清阶段，不能提前创建 Java Run 和工具审计。
-        # THROTTLED 表示禁止“自动执行”，但仍允许创建待用户确认的控制面计划；确认后的有界串行执行由
-        # Java Run 负责，不能把完整数据同步 DAG 误解成一次性自动并发调用预算。
-        control_plane_ingestion = plan_ingestion_client.ingest(request, plan, trace_id=plan.request_id)
+        # 一个自然语言同步请求可以同时包含两类节点：
+        # 1. 已具备参数、无需审批的目录/连接/元数据只读探测；
+        # 2. 仍缺对象映射或等待确认的草稿保存、发布和运行节点。
+        #
+        # 不能因为第二类节点缺参就把第一类也一起拦住，否则 Agent 永远拿不到真实元数据来自动补齐
+        # 对象映射，用户只能回到手工表单。这里仅把 readiness 明确标记为 executable 的子计划送入
+        # Java 控制面；等待澄清、审批、限流和阻断节点仍保留在完整计划中供 UI 解释，但绝不提前执行。
+        control_plane_ingestion = plan_ingestion_client.ingest(
+            request,
+            ingestion_plan,
+            trace_id=plan.request_id,
+        )
+        ingested_control_plane_plan = control_plane_ingestion.attach_to_plan(ingestion_plan)
         plan = control_plane_ingestion.attach_to_plan(plan)
         control_plane_feedback = _collect_control_plane_feedback(
-            plan,
+            ingested_control_plane_plan,
             control_plane_feedback_collector=control_plane_feedback_collector,
         )
         if control_plane_feedback is not None and runtime_event_feedback_bridge is not None:
@@ -504,6 +511,37 @@ def build_plan_response(
     if memory_write_proposal is not None:
         response["memoryWriteProposal"] = memory_write_proposal.to_summary()
     return response
+
+
+def _control_plane_ready_subplan(
+    plan: AgentPlan,
+    readiness: Any,
+) -> AgentPlan:
+    """Select only tools that the readiness graph allows to execute now.
+
+    The returned plan preserves the original request/model/event metadata so Java
+    audit records remain correlated with the user turn. Only ``tool_plans`` and
+    the aggregate approval flag are narrowed. This is intentionally a subplan,
+    not a mutation of the user-visible plan.
+    """
+
+    ready_indices = {
+        int(item.plan_index)
+        for item in tuple(getattr(readiness, "items", ()) or ())
+        if bool(getattr(item, "executable", False))
+    }
+    ready_tools = tuple(
+        tool_plan
+        for index, tool_plan in enumerate(plan.tool_plans, start=1)
+        if index in ready_indices
+    )
+    return replace(
+        plan,
+        tool_plans=ready_tools,
+        requires_human_approval=any(
+            tool_plan.requires_human_approval for tool_plan in ready_tools
+        ),
+    )
 
 
 def _collect_control_plane_feedback(

@@ -10,6 +10,9 @@ from collections.abc import Callable
 from typing import Any
 
 from datasmart_ai_runtime.domain.contracts import AgentRequest, ToolDefinition, ToolPlan
+from datasmart_ai_runtime.services.sync_configuration_corrections import (
+    apply_explicit_sync_corrections,
+)
 
 
 class DataSyncToolPlanBuilder:
@@ -266,7 +269,11 @@ class DataSyncToolPlanBuilder:
     @staticmethod
     def _payload(request: AgentRequest) -> dict[str, Any]:
         raw = request.variables.get("dataSyncRequest") or request.variables.get("data_sync_request")
-        return dict(raw) if isinstance(raw, dict) else {}
+        payload = dict(raw) if isinstance(raw, dict) else {}
+        return apply_explicit_sync_corrections(
+            payload,
+            str(request.variables.get("latestUserMessage") or ""),
+        )
 
     @staticmethod
     def _append(

@@ -156,6 +156,81 @@ class AgentModelIntentNodeIntakeTest(unittest.TestCase):
             {event.event_type for event in plan.runtime_events},
         )
 
+    def test_model_catalog_calls_use_latest_user_correction_as_authoritative_keyword(self) -> None:
+        """模型只给出连接器类型时，最新用户纠偏仍必须约束到真实数据源实例。"""
+
+        routes = ModelRouteRegistry(default_model_routes())
+        tools = default_tool_registry()
+        tool_planner = ToolPlanner(tools)
+        provider = ToolCallingModelProviderRegistry(
+            tool_calls=(
+                ModelToolCall(
+                    call_id="call-source-catalog",
+                    name="datasource_source_catalog_search",
+                    arguments='{"datasourceType":"MYSQL"}',
+                ),
+                ModelToolCall(
+                    call_id="call-target-catalog",
+                    name="datasource_target_catalog_search",
+                    arguments='{"datasourceType":"POSTGRESQL"}',
+                ),
+            )
+        )
+        model_intent_node = AgentModelIntentNode(
+            model_providers=provider,
+            model_gateway=ModelGatewayGovernanceService(routes),
+            tool_planner=tool_planner,
+        )
+        orchestrator = AgentOrchestrator(
+            model_routes=routes,
+            tool_planner=tool_planner,
+            model_providers=provider,
+            skill_registry=AgentSkillRegistry(default_skill_registry()),
+            model_intent_node=model_intent_node,
+        )
+
+        plan = orchestrator.plan(
+            AgentRequest(
+                tenant_id="10",
+                project_id="101",
+                actor_id="1004",
+                objective=(
+                    "将 MySQL 中的 fs_test_customer_source 全量同步到 "
+                    "PostgreSQL public schema 的同名表"
+                ),
+                variables={
+                    "latestUserMessage": (
+                        "纠正一下：目标数据源不是 pgsql2mysql_test_0709_target，"
+                        "而是 mysql2pgsql_test_0709_target。"
+                        "源数据源 mysql2pgsql_test_0709_source 保持不变。"
+                    ),
+                    "conversationMessages": [
+                        {
+                            "role": "user",
+                            "content": "请创建一个 MySQL 到 PostgreSQL 的全量任务。",
+                        },
+                        {
+                            "role": "assistant",
+                            "content": "请补充真实源端和目标端数据源。",
+                        },
+                    ],
+                },
+            )
+        )
+
+        source = next(
+            item for item in plan.tool_plans
+            if item.tool_name == "datasource.source.catalog.search"
+        )
+        target = next(
+            item for item in plan.tool_plans
+            if item.tool_name == "datasource.target.catalog.search"
+        )
+        self.assertEqual("mysql2pgsql_test_0709_source", source.arguments["keyword"])
+        self.assertEqual("mysql2pgsql_test_0709_target", target.arguments["keyword"])
+        self.assertEqual("MYSQL", source.arguments["datasourceType"])
+        self.assertEqual("POSTGRESQL", target.arguments["datasourceType"])
+
 
 class RecordingToolActionIntakeService(ToolActionIntakeService):
     """记录主链路是否真实调用了 intake 服务的测试替身。"""

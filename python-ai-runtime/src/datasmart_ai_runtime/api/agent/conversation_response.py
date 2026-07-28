@@ -8,9 +8,13 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ProviderType, ToolParameterIssueAction
+from datasmart_ai_runtime.services.sync_configuration_corrections import (
+    apply_explicit_sync_corrections,
+)
 from datasmart_ai_runtime.services.tools.tool_execution_readiness import ToolExecutionReadinessReport
 
 
@@ -171,10 +175,21 @@ def build_agent_conversation_response(
         control_plane_feedback,
         autonomous_resolution_stopped=autonomous_resolution_stopped,
     )
+    resolved_configuration = _build_resolved_configuration(
+        request,
+        plan,
+        control_plane_feedback,
+    )
     missing_parameters = tuple(
         name for name in declared_missing_parameters if name not in autonomously_resolved
     )
-    has_clarification_gate = bool(missing_parameters) or readiness.clarification_required_count > 0
+    # A full plan may already contain a draft node whose first-pass validation
+    # reports objectMappings as missing while the catalog/metadata branch is
+    # actively resolving that same field. Treating the raw readiness count as a
+    # user question creates an empty "必要业务参数" prompt even though no user
+    # input is needed. Only unresolved, user-facing parameters open a
+    # clarification gate; the readiness count still prevents premature execution.
+    has_clarification_gate = bool(missing_parameters)
     # THROTTLED 约束的是无人值守自动调用预算，不阻止用户查看并显式确认完整 DAG。只有缺参或
     # CRITICAL 阻断会让计划失去确认资格；确认后的实际并发仍由 Java 执行策略控制。
     has_executable_plan = (
@@ -195,8 +210,11 @@ def build_agent_conversation_response(
     autonomous_resolution_in_progress = (
         not autonomous_resolution_stopped
         and not has_clarification_gate
-        and bool(plan.tool_plans)
-        and all(item.tool_name in autonomous_tool_names for item in plan.tool_plans)
+        and any(item.tool_name in autonomous_tool_names for item in plan.tool_plans)
+        and (
+            readiness.clarification_required_count > 0
+            or all(item.tool_name in autonomous_tool_names for item in plan.tool_plans)
+        )
     )
 
     if has_clarification_gate:
@@ -233,6 +251,7 @@ def build_agent_conversation_response(
         "phase": phase,
         "assistantMessage": assistant_message,
         "structuredIntent": _build_structured_intent(request, plan),
+        "resolvedConfiguration": resolved_configuration,
         "missingParameters": list(missing_parameters),
         "clarificationQuestions": [
             _build_question(
@@ -261,7 +280,7 @@ def build_agent_conversation_response(
         "controlPlaneIngested": control_plane_ingested,
         "nextAction": next_action,
         "intentResolver": build_intent_resolver_summary(plan),
-        "payloadPolicy": "LOW_SENSITIVE_CONVERSATION_METADATA_ONLY",
+        "payloadPolicy": "LOW_SENSITIVE_CONVERSATION_AND_RESOLVED_CONFIGURATION",
     }
 
 
@@ -349,8 +368,7 @@ def _mode_aware_missing_parameters(
     if not _is_data_sync_plan(plan):
         return ()
     payload = _sync_payload(request)
-    draft_arguments = _sync_draft_arguments(plan)
-    effective = {**draft_arguments, **payload}
+    effective = _effective_sync_configuration(request, plan)
     sync_mode = _resolve_sync_mode(request.objective, effective)
     missing: list[str] = []
     only_discovery_tools = bool(plan.tool_plans) and all(
@@ -444,7 +462,11 @@ def _configuration_preview(
 
 def _sync_payload(request: AgentRequest) -> dict[str, Any]:
     raw = request.variables.get("dataSyncRequest") or request.variables.get("data_sync_request")
-    return dict(raw) if isinstance(raw, dict) else {}
+    payload = dict(raw) if isinstance(raw, dict) else {}
+    return apply_explicit_sync_corrections(
+        payload,
+        str(request.variables.get("latestUserMessage") or ""),
+    )
 
 
 def _sync_draft_arguments(plan: AgentPlan) -> dict[str, Any]:
@@ -452,6 +474,358 @@ def _sync_draft_arguments(plan: AgentPlan) -> dict[str, Any]:
         if tool_plan.tool_name == "sync.task.draft.save":
             return dict(tool_plan.arguments or {})
     return {}
+
+
+def _build_resolved_configuration(
+    request: AgentRequest,
+    plan: AgentPlan,
+    control_plane_feedback: Any | None,
+) -> dict[str, Any]:
+    """Return the authoritative task fields already resolved in this turn.
+
+    ``missingParameters`` only tells the UI what is still blocked. It cannot be
+    used to reconstruct fields that were resolved by catalog and metadata tools,
+    which caused a follow-up turn to blank the selected datasources. This compact
+    snapshot lets every client merge confirmed values into its current draft.
+    """
+
+    effective = _effective_sync_configuration(request, plan)
+    source_catalog = _catalog_resolution_for("sourceDatasourceId", control_plane_feedback)
+    target_catalog = _catalog_resolution_for("targetDatasourceId", control_plane_feedback)
+
+    source_id = _positive_int(effective.get("sourceDatasourceId"))
+    target_id = _positive_int(effective.get("targetDatasourceId"))
+    if str(source_catalog.get("matchStatus") or "").strip().upper() == "EXACT":
+        source_id = _positive_int(source_catalog.get("resolvedDatasourceId")) or source_id
+    if str(target_catalog.get("matchStatus") or "").strip().upper() == "EXACT":
+        target_id = _positive_int(target_catalog.get("resolvedDatasourceId")) or target_id
+
+    mappings = effective.get("objectMappings") or effective.get("object_mappings")
+    mapping_source = "USER_OR_MODEL_DRAFT"
+    if not isinstance(mappings, (list, tuple)) or not mappings:
+        mappings = _infer_same_name_object_mappings(request, control_plane_feedback)
+        mapping_source = "VERIFIED_METADATA_SAME_NAME_MATCH"
+    if not isinstance(mappings, (list, tuple)) or not mappings:
+        mappings = _infer_user_stated_same_name_object_mappings(request)
+        mapping_source = "USER_STATED_SAME_NAME_MAPPING"
+
+    resolved: dict[str, Any] = {
+        "taskName": str(effective.get("taskName") or "Agent 创建的数据同步任务").strip(),
+        "syncMode": _resolve_sync_mode(request.objective, effective),
+        "writeStrategy": str(effective.get("writeStrategy") or "").strip().upper() or "INSERT",
+        "autoFilledFields": [],
+        "payloadPolicy": "AUTHORIZED_PROJECT_METADATA_NO_CREDENTIALS",
+    }
+    if resolved["syncMode"] == "CDC_STREAMING":
+        resolved["writeStrategy"] = "UPDATE"
+    if source_id is not None:
+        resolved["sourceDatasourceId"] = source_id
+        resolved["autoFilledFields"].append("sourceDatasourceId")
+    if target_id is not None:
+        resolved["targetDatasourceId"] = target_id
+        resolved["autoFilledFields"].append("targetDatasourceId")
+    source_name = str(source_catalog.get("resolvedDatasourceName") or "").strip()
+    target_name = str(target_catalog.get("resolvedDatasourceName") or "").strip()
+    if source_name:
+        resolved["sourceDatasourceName"] = source_name
+    if target_name:
+        resolved["targetDatasourceName"] = target_name
+    if isinstance(mappings, (list, tuple)) and mappings:
+        resolved["objectMappings"] = [dict(item) for item in mappings if isinstance(item, dict)]
+        resolved["objectMappingSource"] = mapping_source
+        resolved["autoFilledFields"].append("objectMappings")
+    for key in ("scheduleConfig", "customSqlText", "customSqlConfirmed", "targetTableResolution"):
+        if effective.get(key) not in (None, ""):
+            resolved[key] = effective[key]
+    return resolved
+
+
+def _effective_sync_configuration(
+    request: AgentRequest,
+    plan: AgentPlan,
+) -> dict[str, Any]:
+    """Merge a model draft with the exact user-controlled task snapshot.
+
+    Explicit conversational edits have already been applied by ``_sync_payload``.
+    Keeping that snapshot authoritative prevents a later generic model draft from
+    undoing an exact task name, mapping or WHERE expression supplied by the user.
+    """
+
+    payload = _sync_payload(request)
+    draft_arguments = _sync_draft_arguments(plan)
+    return {**draft_arguments, **payload}
+
+
+def _infer_user_stated_same_name_object_mappings(
+    request: AgentRequest,
+) -> list[dict[str, Any]]:
+    """Preserve an explicit same-name table request before metadata is available.
+
+    This is a proposed configuration, not evidence that either table exists.
+    The Java/Python metadata path and the normal sync precheck remain authoritative.
+    Keeping the proposal in ``resolvedConfiguration`` lets the UI fetch the two
+    selected datasource schemas, verify each pair and continue automatically
+    instead of asking the user to re-enter table names they already supplied.
+    """
+
+    user_text = _user_controlled_conversation_text(request)
+    if not re.search(r"(?:同名(?:表|目标表)?|same[\s_-]*name)", user_text, re.IGNORECASE):
+        return []
+
+    explicit_datasource_names = {
+        match.group("name").strip().lower()
+        for match in re.finditer(
+            r"(?:源端数据源|源数据源|源库|source\s+datasource|"
+            r"目标端数据源|目标数据源|目标库|target\s+datasource)"
+            r"\s*(?:名称)?\s*(?:为|是|使用|采用|=|:|：)?\s*"
+            r"(?P<name>[A-Za-z_][A-Za-z0-9_$.-]{1,127})",
+            user_text,
+            re.IGNORECASE,
+        )
+    }
+    target_schema = _target_schema_from_user_text(user_text)
+    segments: list[str] = []
+    segment_patterns = (
+        r"(?:MySQL|PostgreSQL|Postgres|PGSQL|Oracle|SQL\s*Server|源端|源库)"
+        r"\s*(?:中|中的|内|里的)\s*(?P<objects>.+?)"
+        r"(?=\s*(?:全量|定期|实时|增量|同步|迁移|传输))",
+        r"(?:将|把)\s*(?P<objects>.+?)\s*(?:分别)?"
+        r"(?:映射|同步|迁移|传输)\s*(?:到|至|给)",
+        r"(?:from)\s+(?P<objects>.+?)\s+(?:to)\s+",
+    )
+    for pattern in segment_patterns:
+        segments.extend(
+            match.group("objects")
+            for match in re.finditer(pattern, user_text, re.IGNORECASE | re.DOTALL)
+        )
+
+    excluded_identifiers = {
+        "mysql",
+        "postgresql",
+        "postgres",
+        "pgsql",
+        "oracle",
+        "sql",
+        "server",
+        "source",
+        "target",
+        "schema",
+        "table",
+        "tables",
+        "full",
+        "sync",
+        "same",
+        "name",
+        "public",
+    } | explicit_datasource_names
+    if target_schema:
+        excluded_identifiers.add(target_schema.lower())
+
+    source_names: list[str] = []
+    for segment in segments:
+        for identifier in re.findall(r"(?<![A-Za-z0-9_$])([A-Za-z_][A-Za-z0-9_$]{1,127})(?![A-Za-z0-9_$])", segment):
+            normalized = identifier.lower()
+            if normalized in excluded_identifiers or normalized in {
+                name.lower() for name in source_names
+            }:
+                continue
+            source_names.append(identifier)
+            if len(source_names) >= 50:
+                break
+        if len(source_names) >= 50:
+            break
+
+    return [
+        {
+            "objectKey": f"agent-user-same-name-{index}",
+            "sourceSchemaName": None,
+            "sourceObjectName": source_name,
+            "targetSchemaName": target_schema,
+            "targetObjectName": source_name,
+            "fieldMappings": [],
+        }
+        for index, source_name in enumerate(source_names, start=1)
+    ]
+
+
+def _target_schema_from_user_text(user_text: str) -> str | None:
+    patterns = (
+        r"(?<![A-Za-z0-9_$])(?P<schema>[A-Za-z_][A-Za-z0-9_$]{0,127})"
+        r"\s+schema(?![A-Za-z0-9_$])",
+        r"\bschema\s*(?:为|是|使用|采用|=|:|：)?\s*"
+        r"(?P<schema>[A-Za-z_][A-Za-z0-9_$]{0,127})",
+    )
+    for pattern in patterns:
+        matches = tuple(re.finditer(pattern, user_text, re.IGNORECASE))
+        if not matches:
+            continue
+        schema = matches[-1].group("schema").strip()
+        if schema.lower() not in {"source", "target", "same", "name"}:
+            return schema
+    return None
+
+
+def _user_controlled_conversation_text(request: AgentRequest) -> str:
+    history = request.variables.get("conversationMessages")
+    prior_user_messages = [
+        str(item.get("content") or "").strip()
+        for item in history[-12:]
+        if isinstance(item, dict)
+        and str(item.get("role") or "").strip().lower() == "user"
+        and str(item.get("content") or "").strip()
+    ] if isinstance(history, (list, tuple)) else []
+    return "\n".join(
+        value
+        for value in (
+            str(request.objective or "").strip(),
+            *prior_user_messages,
+            str(request.variables.get("latestUserMessage") or "").strip(),
+        )
+        if value
+    )
+
+
+def _infer_same_name_object_mappings(
+    request: AgentRequest,
+    control_plane_feedback: Any | None,
+) -> list[dict[str, Any]]:
+    """Infer only mappings that are uniquely grounded in both metadata snapshots.
+
+    The deterministic fallback may be active when a model route is unavailable.
+    It is still safe to help with the common "these tables -> same-name tables"
+    request when every table name occurs in user-controlled text and both sides'
+    real metadata contain a unique match. Ambiguity deliberately returns no
+    mapping and leaves the normal clarification editor in control.
+    """
+
+    source_objects = _metadata_objects(control_plane_feedback, "datasource.source.metadata.read")
+    target_objects = _metadata_objects(control_plane_feedback, "datasource.target.metadata.read")
+    if not source_objects or not target_objects:
+        return []
+
+    user_text = _user_controlled_conversation_text(request)
+    mappings: list[dict[str, Any]] = []
+    for source in source_objects:
+        source_name = str(source.get("tableName") or source.get("objectName") or "").strip()
+        if not source_name or not _identifier_mentioned(user_text, source_name):
+            continue
+        candidates = [
+            target
+            for target in target_objects
+            if str(target.get("tableName") or target.get("objectName") or "").strip().lower()
+            == source_name.lower()
+        ]
+        target = _unique_target_for_user_text(candidates, user_text)
+        if target is None:
+            continue
+        target_name = str(target.get("tableName") or target.get("objectName") or "").strip()
+        field_mappings = _same_name_field_mappings(source, target)
+        mappings.append({
+            "objectKey": f"agent-verified-{len(mappings) + 1}",
+            "sourceSchemaName": _optional_text(source.get("schemaName")),
+            "sourceObjectName": source_name,
+            "targetSchemaName": _optional_text(target.get("schemaName")),
+            "targetObjectName": target_name,
+            "fieldMappings": field_mappings,
+        })
+    return mappings
+
+
+def _metadata_objects(control_plane_feedback: Any | None, tool_name: str) -> list[dict[str, Any]]:
+    objects: list[dict[str, Any]] = []
+    for item in tuple(getattr(control_plane_feedback, "feedback_items", ()) or ()):
+        if str(getattr(item, "tool_name", "") or "") != tool_name:
+            continue
+        if getattr(getattr(item, "status", None), "value", "") != "succeeded":
+            continue
+        result = dict(getattr(item, "result", {}) or {})
+        summary = result.get("summary")
+        summary = dict(summary) if isinstance(summary, dict) else {}
+        raw_objects = summary.get("objects")
+        if not isinstance(raw_objects, (list, tuple)):
+            continue
+        objects.extend(dict(value) for value in raw_objects if isinstance(value, dict))
+    return objects
+
+
+def _identifier_mentioned(user_text: str, identifier: str) -> bool:
+    return re.search(
+        rf"(?<![A-Za-z0-9_]){re.escape(identifier)}(?![A-Za-z0-9_])",
+        user_text,
+        re.IGNORECASE,
+    ) is not None
+
+
+def _unique_target_for_user_text(
+    candidates: list[dict[str, Any]],
+    user_text: str,
+) -> dict[str, Any] | None:
+    if len(candidates) == 1:
+        return candidates[0]
+    schema_matches = [
+        candidate
+        for candidate in candidates
+        if (
+            (schema := str(candidate.get("schemaName") or "").strip())
+            and re.search(
+                rf"(?:(?<![A-Za-z0-9_]){re.escape(schema)}(?![A-Za-z0-9_])\s*schema"
+                rf"|schema\s*(?<![A-Za-z0-9_]){re.escape(schema)}(?![A-Za-z0-9_]))",
+                user_text,
+                re.IGNORECASE,
+            )
+        )
+    ]
+    return schema_matches[0] if len(schema_matches) == 1 else None
+
+
+def _same_name_field_mappings(
+    source: dict[str, Any],
+    target: dict[str, Any],
+) -> list[dict[str, Any]]:
+    source_columns = source.get("columns")
+    target_columns = target.get("columns")
+    if not isinstance(source_columns, (list, tuple)) or not isinstance(target_columns, (list, tuple)):
+        return []
+    target_by_name = {
+        str(column.get("columnName") or column.get("fieldName") or "").strip().lower(): column
+        for column in target_columns
+        if isinstance(column, dict)
+    }
+    mappings: list[dict[str, Any]] = []
+    for raw_source in source_columns:
+        if not isinstance(raw_source, dict):
+            continue
+        source_name = str(raw_source.get("columnName") or raw_source.get("fieldName") or "").strip()
+        target_column = target_by_name.get(source_name.lower())
+        if not source_name or not isinstance(target_column, dict):
+            continue
+        target_name = str(
+            target_column.get("columnName") or target_column.get("fieldName") or ""
+        ).strip()
+        mappings.append({
+            "sourceField": source_name,
+            "sourceType": _optional_text(raw_source.get("dataTypeName")),
+            "targetField": target_name,
+            "targetType": _optional_text(target_column.get("dataTypeName")),
+            "nullable": bool(raw_source.get("nullable", True)),
+            "primaryKey": bool(raw_source.get("primaryKey", False)),
+            "syncEnabled": True,
+            "typeCompatible": True,
+        })
+    return mappings
+
+
+def _positive_int(value: object) -> int | None:
+    try:
+        parsed = int(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _optional_text(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text or None
 
 
 def _truthy(value: object) -> bool:

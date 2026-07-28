@@ -500,7 +500,13 @@ class ToolPlanner:
 
         latest_utterance = cls._latest_user_utterance(request)
         search_texts = tuple(
-            text for text in (latest_utterance, request.objective) if str(text or "").strip()
+            text
+            for text in (
+                latest_utterance,
+                *reversed(cls._prior_user_utterances(request)),
+                request.objective,
+            )
+            if str(text or "").strip()
         )
         keyword = next(
             (
@@ -511,10 +517,14 @@ class ToolPlanner:
             None,
         )
         direction = "source" if ".source." in tool_name else "target"
+        connector_search_texts = tuple(
+            cls._mask_explicit_datasource_names(text)
+            for text in search_texts
+        )
         connector_type = next(
             (
                 value
-                for text in search_texts
+                for text in connector_search_texts
                 if (value := cls._extract_directional_connector_type(text, direction)) is not None
             ),
             None,
@@ -526,12 +536,53 @@ class ToolPlanner:
             arguments["datasourceType"] = connector_type
         return arguments
 
+    @classmethod
+    def _mask_explicit_datasource_names(cls, text: str) -> str:
+        """Keep connector words inside instance names out of type inference.
+
+        A legitimate instance such as ``mysql2pgsql_test_0709_source`` contains
+        both connector aliases. Treating its ``pgsql`` substring as a directional
+        database declaration makes an exact source lookup incorrectly require a
+        PostgreSQL datasource. Replacing every explicitly labelled instance with
+        equal-length whitespace preserves sentence distances while leaving real
+        phrases such as ``MySQL -> PostgreSQL`` available to the type parser.
+        """
+
+        masked = str(text or "")
+        for datasource_labels in cls._DATASOURCE_CATALOG_LABELS.values():
+            explicit_name = cls._extract_explicit_datasource_name(masked, datasource_labels)
+            if not explicit_name:
+                continue
+            masked = re.sub(
+                re.escape(explicit_name),
+                lambda match: " " * len(match.group(0)),
+                masked,
+                flags=re.IGNORECASE,
+            )
+        return masked
+
     @staticmethod
     def _latest_user_utterance(request: AgentRequest) -> str:
         """Return the newest clarification/correction without persisting chat text."""
 
         value = request.variables.get("latestUserMessage") or request.variables.get("latest_user_message")
         return str(value or "").strip()
+
+    @staticmethod
+    def _prior_user_utterances(request: AgentRequest) -> tuple[str, ...]:
+        raw_messages = request.variables.get("conversationMessages")
+        if not isinstance(raw_messages, (list, tuple)):
+            return ()
+        messages: list[str] = []
+        for raw_message in raw_messages[-12:]:
+            if not isinstance(raw_message, dict):
+                continue
+            if str(raw_message.get("role") or "").strip().lower() != "user":
+                continue
+            content = str(raw_message.get("content") or "").strip()
+            if content:
+                messages.append(content[:2_000])
+        return tuple(messages)
 
     @classmethod
     def _catalog_call_direction(cls, tool_name: str) -> str | None:
@@ -551,9 +602,36 @@ class ToolPlanner:
         """提取一个显式数据源名称，不做语义猜测或数据库类型到实例的映射。"""
 
         label_expression = "|".join(re.escape(label) for label in labels)
+        value_expression = (
+            r"(?:[\"'“‘`](?P<{prefix}_quoted>[^\"'“”‘’`\r\n]{{1,128}})[\"'”’`]"
+            r"|(?P<{prefix}_token>[^\s,，;；。:：\"'“”‘’`]{{1,128}}))"
+        )
+        # A correction such as "目标数据源不是 old，而是 new" contains two
+        # datasource-like identifiers. The negative value must never become the
+        # catalog keyword. Resolve the replacement first, then fall back to the
+        # ordinary single-value expression below.
+        correction_pattern = re.compile(
+            rf"(?:{label_expression})\s*(?:名称)?\s*"
+            r"(?:不是|不要用|别用|原来是|原为|从)\s*"
+            + value_expression.format(prefix="old")
+            + r"\s*(?:,|，)?\s*(?:而)?\s*"
+            r"(?:改为|修改为|更正为|换成|改成|应为|应该是|使用|采用|是)\s*"
+            + value_expression.format(prefix="new"),
+            re.IGNORECASE,
+        )
+        correction_matches = tuple(correction_pattern.finditer(objective))
+        for match in reversed(correction_matches):
+            keyword = (
+                match.group("new_quoted")
+                or match.group("new_token")
+                or ""
+            ).strip()
+            if keyword and cls._SAFE_DATASOURCE_NAME.fullmatch(keyword) is not None:
+                return keyword
+
         pattern = re.compile(
             rf"(?:{label_expression})\s*(?:名称)?\s*"
-            r"(?:修改为|改为|换成|更正为|使用|采用|为|是|=|:|：)?\s*"
+            r"(?:修改为|改为|换成|改成|更正为|应为|应该是|使用|采用|为|是|=|:|：)?\s*"
             r"(?:[\"'“‘`](?P<quoted>[^\"'“”‘’`\r\n]{1,128})[\"'”’`]"
             r"|(?P<token>[^\s,，;；。:：\"'“”‘’`]{1,128}))",
             re.IGNORECASE,
@@ -589,9 +667,10 @@ class ToolPlanner:
         for alias, connector_type in cls._CONNECTOR_TYPE_ALIASES:
             alias_pattern = cls._connector_alias_pattern(alias)
             for label in direction_labels:
-                if re.search(rf"{re.escape(label)}[^，,；;。\n]{{0,32}}{alias_pattern}", normalized, re.IGNORECASE):
+                label_pattern = cls._direction_label_pattern(label)
+                if re.search(rf"{label_pattern}[^，,；;。\n]{{0,32}}{alias_pattern}", normalized, re.IGNORECASE):
                     return connector_type
-                if re.search(rf"{alias_pattern}[^，,；;。\n]{{0,32}}{re.escape(label)}", normalized, re.IGNORECASE):
+                if re.search(rf"{alias_pattern}[^，,；;。\n]{{0,32}}{label_pattern}", normalized, re.IGNORECASE):
                     return connector_type
 
         for marker in cls._TRANSFER_MARKERS:
@@ -607,6 +686,13 @@ class ToolPlanner:
         if len(mentioned) >= 2:
             return mentioned[0] if direction == "source" else mentioned[1]
         return None
+
+    @staticmethod
+    def _direction_label_pattern(label: str) -> str:
+        escaped = re.escape(label)
+        if re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", label):
+            return rf"(?<![A-Za-z0-9_$]){escaped}(?![A-Za-z0-9_$])"
+        return escaped
 
     @classmethod
     def _connector_types_in_text_order(cls, text: str) -> list[str]:

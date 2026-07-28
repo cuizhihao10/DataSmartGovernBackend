@@ -7,7 +7,15 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from datasmart_ai_runtime.api import build_plan_response
-from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ModelToolCall, ToolPlan
+from datasmart_ai_runtime.domain.contracts import (
+    AgentPlan,
+    AgentRequest,
+    ModelToolCall,
+    ToolParameterIssue,
+    ToolParameterIssueAction,
+    ToolParameterValidationResult,
+    ToolPlan,
+)
 from datasmart_ai_runtime.services.agent_control_plane_feedback import AgentControlPlaneFeedbackCollector
 from datasmart_ai_runtime.services.agent_plan_ingestion_client import (
     AgentPlanIngestionResult,
@@ -105,6 +113,60 @@ class AgentControlPlaneFeedbackCollectorTest(unittest.TestCase):
         self.assertEqual("fake second turn", response["agentSecondTurn"]["summary"])
         self.assertEqual("ags-001", response["plan"]["tool_plans"][0]["governance_hints"]["agentRuntimeSessionId"])
 
+    def test_ready_read_only_probe_is_ingested_while_downstream_draft_waits_for_clarification(self) -> None:
+        """下游草稿缺参不能阻止目录探测，否则 Agent 无法用真实事实补齐缺项。"""
+
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1004",
+            objective="按已说明的数据源和同名表创建全量同步任务。",
+        )
+        catalog = ToolPlan(
+            tool_name="datasource.source.catalog.search",
+            reason="先解析当前项目中的真实源端数据源。",
+            arguments={"keyword": "mysql2pgsql_test_0709_source", "datasourceType": "MYSQL"},
+            governance_hints={"modelToolCallId": "call-source-catalog"},
+        )
+        incomplete_draft = ToolPlan(
+            tool_name="sync.task.draft.save",
+            reason="元数据齐备后保存任务草稿。",
+            arguments={"sourceDatasourceId": 27, "targetDatasourceId": 28},
+            parameter_validation=ToolParameterValidationResult(
+                can_execute=False,
+                can_create_draft=True,
+                issues=(
+                    ToolParameterIssue(
+                        parameter_name="objectMappings",
+                        expected_type="array",
+                        action=ToolParameterIssueAction.MUST_CLARIFY,
+                        message="对象映射需由真实元数据补齐。",
+                    ),
+                ),
+            ),
+            governance_hints={"modelToolCallId": "call-draft"},
+        )
+        ingestion_client = RecordingPlanIngestionClient()
+        feedback_collector = RecordingControlPlaneFeedbackCollector()
+
+        response = build_plan_response(
+            request,
+            FakeOrchestrator(self._plan(catalog, incomplete_draft)),
+            plan_ingestion_client=ingestion_client,
+            control_plane_feedback_collector=feedback_collector,
+        )
+
+        self.assertEqual(
+            ("datasource.source.catalog.search",),
+            tuple(item.tool_name for item in ingestion_client.ingested_plan.tool_plans),
+        )
+        self.assertEqual(
+            ("datasource.source.catalog.search",),
+            tuple(item.tool_name for item in feedback_collector.collected_plan.tool_plans),
+        )
+        self.assertEqual(2, len(response["plan"]["tool_plans"]))
+        self.assertEqual("ags-partial", response["controlPlaneIngestion"]["sessionId"])
+
     def _tool_plan(self, call_id: str) -> ToolPlan:
         return ToolPlan(
             tool_name="datasource.metadata.read",
@@ -174,6 +236,44 @@ class FakePlanIngestionClient:
             ),
             raw_response={},
         )
+
+
+class RecordingPlanIngestionClient:
+    """记录实际送往 Java 的可执行子计划，验证缺参节点不会混入。"""
+
+    def __init__(self) -> None:
+        self.ingested_plan: AgentPlan | None = None
+
+    def ingest(self, request_context: AgentRequest, plan: AgentPlan, trace_id: str | None = None):
+        self.ingested_plan = plan
+        references = tuple(
+            AgentToolAuditReference(
+                model_tool_call_id=str(item.governance_hints.get("modelToolCallId") or ""),
+                tool_name=item.tool_name,
+                session_id="ags-partial",
+                run_id="agr-partial",
+                audit_id=f"atea-partial-{index}",
+                state="SUCCEEDED",
+            )
+            for index, item in enumerate(plan.tool_plans, start=1)
+        )
+        return AgentPlanIngestionResult(
+            session_id="ags-partial",
+            run_id="agr-partial",
+            tool_audit_references=references,
+            raw_response={},
+        )
+
+
+class RecordingControlPlaneFeedbackCollector:
+    """记录反馈查询范围；未接入的缺参节点不应参与 auditId 匹配。"""
+
+    def __init__(self) -> None:
+        self.collected_plan: AgentPlan | None = None
+
+    def collect(self, plan: AgentPlan):
+        self.collected_plan = plan
+        return None
 
 
 class FakeOrchestrator:
