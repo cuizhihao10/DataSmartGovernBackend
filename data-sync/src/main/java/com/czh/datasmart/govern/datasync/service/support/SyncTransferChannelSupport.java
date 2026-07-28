@@ -35,7 +35,7 @@ public final class SyncTransferChannelSupport {
     /**
      * 根据枚举模式解析传输大类。
      *
-     * @param syncMode 同步模式；可以为空，空值表示模板尚未完成配置。
+     * @param syncMode 同步模式；可以为空，空值表示任务定义尚未完成配置。
      * @return OFFLINE、REALTIME 或 null。
      */
     public static SyncTransferChannel resolve(SyncMode syncMode) {

@@ -14,7 +14,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanV
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncObjectExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
 import com.czh.datasmart.govern.datasync.support.SyncObjectExecutionState;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -97,7 +97,7 @@ public class SyncObjectListFanOutDispatchService {
      *
      * @param execution 当前已被 worker claim 的父 execution，通常处于 RUNNING。
      * @param task 当前同步任务。
-     * @param template 原始多对象模板。
+     * @param definition 原始多对象任务定义。
      * @param workerPlan 父级 worker 计划。
      * @param actorContext 当前服务账号或操作者上下文。
      * @param parentContract 原始离线 Runner 合同，用于 dispatch result 继续保留合同状态。
@@ -105,11 +105,11 @@ public class SyncObjectListFanOutDispatchService {
      */
     public SyncOfflineRunnerDispatchResult dispatchObjectList(SyncExecution execution,
                                                               SyncTask task,
-                                                              SyncTemplate template,
+                                                              SyncTaskDefinition definition,
                                                               SyncWorkerExecutionPlanView workerPlan,
                                                               SyncActorContext actorContext,
                                                               SyncOfflineRunnerJobContract parentContract) {
-        SyncObjectMappingExecutionContract objectContract = objectMappingExecutionContractSupport.parse(template);
+        SyncObjectMappingExecutionContract objectContract = objectMappingExecutionContractSupport.parse(definition);
         if (!objectContract.executableBySerialFanOut()) {
             return failFanOut(task, execution, actorContext, parentContract,
                     false,
@@ -122,9 +122,9 @@ public class SyncObjectListFanOutDispatchService {
                     objectContract.issueCodes());
         }
 
-        int maxAttemptCount = resolveObjectMaxAttemptCount(template);
+        int maxAttemptCount = resolveObjectMaxAttemptCount(definition);
         List<SyncObjectExecution> objectExecutions = objectExecutionLifecycleSupport.initializeObjectExecutions(
-                task, execution, template, objectContract, maxAttemptCount);
+                task, execution, definition, objectContract, maxAttemptCount);
         recordFanOutStarted(task, execution, actorContext, objectExecutions.size(), maxAttemptCount);
         Map<Integer, SyncObjectExecution> objectExecutionByOrdinal = objectExecutions.stream()
                 .collect(Collectors.toMap(SyncObjectExecution::getObjectOrdinal, Function.identity(), (left, right) -> left));
@@ -145,7 +145,7 @@ public class SyncObjectListFanOutDispatchService {
                         mergeIssueCodes(accumulatedIssues, item.warnings(), "OBJECT_LIST_OBJECT_EXECUTION_MISSING"));
             }
             ObjectDispatchOutcome objectOutcome = dispatchOneObjectWithRetry(
-                    task, execution, template, workerPlan, actorContext, item, objectExecution);
+                    task, execution, definition, workerPlan, actorContext, item, objectExecution);
             remoteCalled = remoteCalled || objectOutcome.remoteCalled();
             accumulatedIssues.addAll(objectOutcome.issueCodes());
         }
@@ -214,7 +214,7 @@ public class SyncObjectListFanOutDispatchService {
      */
     private ObjectDispatchOutcome dispatchOneObjectWithRetry(SyncTask task,
                                                              SyncExecution execution,
-                                                             SyncTemplate template,
+                                                             SyncTaskDefinition definition,
                                                              SyncWorkerExecutionPlanView workerPlan,
                                                              SyncActorContext actorContext,
                                                              SyncObjectMappingExecutionItem item,
@@ -231,11 +231,11 @@ public class SyncObjectListFanOutDispatchService {
                     "INFO", "OBJECT_LIST_CHILD_STARTED", "STARTED",
                     "对象工作单元开始同步",
                     "系统已为当前对象创建单对象执行计划，并准备调用受控 run-once 执行器。", null);
-            SyncTemplate childTemplate = singleObjectTemplate(template, item);
+            SyncTaskDefinition childDefinition = singleObjectDefinition(definition, item);
             SyncExecution childExecution = childExecutionView(execution);
             SyncWorkerExecutionPlanView childWorkerPlan = singleObjectWorkerPlan(workerPlan, item);
             SyncBatchRunnerBridgePlan childBridgePlan =
-                    bridgePlanSupport.buildPlan(childExecution, task, childTemplate, childWorkerPlan);
+                    bridgePlanSupport.buildPlan(childExecution, task, childDefinition, childWorkerPlan);
             if (!childBridgePlan.isDispatchable()) {
                 objectExecutionLifecycleSupport.markObjectFailed(objectExecution, null, false,
                         "OBJECT_LIST_CHILD_BRIDGE_PLAN_BLOCKED",
@@ -384,52 +384,52 @@ public class SyncObjectListFanOutDispatchService {
     }
 
     /**
-     * 根据一个对象映射构造临时 SINGLE_OBJECT 模板。
+     * 根据一个对象映射构造临时 SINGLE_OBJECT 任务定义。
      *
      * <p>该对象不入库，只用于生成子 bridge plan。这样可以最大化复用已有字段映射、过滤条件、写入策略、connector 能力和
      * checkpoint 类型校验逻辑，避免 fan-out 自己再实现一套“看起来像 bridge plan”的重复规则。</p>
      */
-    private SyncTemplate singleObjectTemplate(SyncTemplate template, SyncObjectMappingExecutionItem item) {
-        SyncTemplate child = new SyncTemplate();
-        child.setId(template.getId());
-        child.setTenantId(template.getTenantId());
-        child.setProjectId(template.getProjectId());
-        child.setWorkspaceId(template.getWorkspaceId());
-        child.setName(template.getName());
-        child.setDescription(template.getDescription());
-        child.setSourceDatasourceId(template.getSourceDatasourceId());
-        child.setTargetDatasourceId(template.getTargetDatasourceId());
+    private SyncTaskDefinition singleObjectDefinition(SyncTaskDefinition definition, SyncObjectMappingExecutionItem item) {
+        SyncTaskDefinition child = new SyncTaskDefinition();
+        child.setId(definition.getId());
+        child.setTenantId(definition.getTenantId());
+        child.setProjectId(definition.getProjectId());
+        child.setWorkspaceId(definition.getWorkspaceId());
+        child.setName(definition.getName());
+        child.setDescription(definition.getDescription());
+        child.setSourceDatasourceId(definition.getSourceDatasourceId());
+        child.setTargetDatasourceId(definition.getTargetDatasourceId());
         child.setSourceSchemaName(item.sourceSchemaName());
         child.setSourceObjectName(item.sourceObjectName());
         child.setTargetSchemaName(item.targetSchemaName());
         child.setTargetObjectName(item.targetObjectName());
-        child.setSourceConnectorType(template.getSourceConnectorType());
-        child.setTargetConnectorType(template.getTargetConnectorType());
-        child.setSyncMode(template.getSyncMode());
+        child.setSourceConnectorType(definition.getSourceConnectorType());
+        child.setTargetConnectorType(definition.getTargetConnectorType());
+        child.setSyncMode(definition.getSyncMode());
         child.setSyncScopeType(SINGLE_OBJECT);
-        child.setWriteStrategy(template.getWriteStrategy());
-        child.setPrimaryKeyField(template.getPrimaryKeyField());
-        child.setIncrementalField(template.getIncrementalField());
-        child.setFieldMappingConfig(resolveSingleObjectFieldMappingConfig(template, item));
+        child.setWriteStrategy(definition.getWriteStrategy());
+        child.setPrimaryKeyField(definition.getPrimaryKeyField());
+        child.setIncrementalField(definition.getIncrementalField());
+        child.setFieldMappingConfig(resolveSingleObjectFieldMappingConfig(definition, item));
         /*
-         * 多对象 fan-out 拆成单对象子任务后，不能只把 source/target 顶层字段写入 child template。
+         * 多对象 fan-out 拆成单对象子任务后，不能只把 source/target 顶层字段写入 child definition。
          * 对象级 whereCondition 是用户在“对象映射”列表里针对每张表单独配置的过滤条件；
          * 如果这里不继续携带 objectMappingConfig，子 bridge plan 只能看到顶层 filterConfig，
          * 最终会出现“父任务详情中每张表都有 where，但真实执行每张表都全量读取”的产品缺陷。
          *
-         * 因此每个子模板都保留一个只含当前对象的 objectMappingConfig。它不入库，只在本次内存调度中流转，
+         * 因此每个子任务定义都保留一个只含当前对象的 objectMappingConfig。它不入库，只在本次内存调度中流转，
          * 既能让 bridge plan 继续复用统一的对象定位/where 解析逻辑，也不会把对象名、where 原文写入日志。
          */
         child.setObjectMappingConfig(singleObjectMappingConfig(item));
-        child.setFilterConfig(template.getFilterConfig());
+        child.setFilterConfig(definition.getFilterConfig());
         child.setPartitionConfig(null);
-        child.setRetryPolicy(template.getRetryPolicy());
-        child.setTimeoutPolicy(template.getTimeoutPolicy());
-        child.setEnabled(template.getEnabled());
-        child.setCreatedBy(template.getCreatedBy());
-        child.setUpdatedBy(template.getUpdatedBy());
-        child.setCreateTime(template.getCreateTime());
-        child.setUpdateTime(template.getUpdateTime());
+        child.setRetryPolicy(definition.getRetryPolicy());
+        child.setTimeoutPolicy(definition.getTimeoutPolicy());
+        child.setEnabled(definition.getEnabled());
+        child.setCreatedBy(definition.getCreatedBy());
+        child.setUpdatedBy(definition.getUpdatedBy());
+        child.setCreateTime(definition.getCreateTime());
+        child.setUpdateTime(definition.getUpdateTime());
         return child;
     }
 
@@ -440,28 +440,28 @@ public class SyncObjectListFanOutDispatchService {
      * 整份多表配置，Reader/Writer 会把其他表的字段也合并进当前 SQL，并且无法稳定推导当前表的主键。
      * 本方法优先使用对象映射中的显式覆盖；没有覆盖时，按源/目标 schema 与表名从字段映射配置中定位当前对象。</p>
      */
-    private String resolveSingleObjectFieldMappingConfig(SyncTemplate template,
+    private String resolveSingleObjectFieldMappingConfig(SyncTaskDefinition definition,
                                                          SyncObjectMappingExecutionItem item) {
         if (hasText(item.fieldMappingConfigOverride())) {
             return item.fieldMappingConfigOverride();
         }
-        if (!hasText(template.getFieldMappingConfig())) {
-            return template.getFieldMappingConfig();
+        if (!hasText(definition.getFieldMappingConfig())) {
+            return definition.getFieldMappingConfig();
         }
         try {
-            JsonNode root = objectMapper.readTree(template.getFieldMappingConfig());
+            JsonNode root = objectMapper.readTree(definition.getFieldMappingConfig());
             JsonNode objectMappings = root.path("objectMappings");
             if (!objectMappings.isArray()) {
-                return template.getFieldMappingConfig();
+                return definition.getFieldMappingConfig();
             }
             for (JsonNode candidate : objectMappings) {
                 if (sameObject(candidate, item)) {
                     return objectMapper.writeValueAsString(candidate);
                 }
             }
-            return template.getFieldMappingConfig();
+            return definition.getFieldMappingConfig();
         } catch (Exception ignored) {
-            return template.getFieldMappingConfig();
+            return definition.getFieldMappingConfig();
         }
     }
 
@@ -521,7 +521,7 @@ public class SyncObjectListFanOutDispatchService {
             }
             Map<String, Object> root = new java.util.LinkedHashMap<>();
             root.put("mappings", List.of(mapping));
-            root.put("generatedBy", "OBJECT_LIST_FAN_OUT_CHILD_TEMPLATE");
+            root.put("generatedBy", "OBJECT_LIST_FAN_OUT_CHILD_TASK_DEFINITION");
             root.put("payloadPolicy", "INTERNAL_SINGLE_OBJECT_MAPPING_NO_ROWS_NO_CREDENTIALS");
             return objectMapper.writeValueAsString(root);
         } catch (Exception exception) {
@@ -575,7 +575,6 @@ public class SyncObjectListFanOutDispatchService {
                 workerPlan.triggerType(),
                 workerPlan.executorId(),
                 workerPlan.leaseExpireTime(),
-                workerPlan.templateId(),
                 workerPlan.sourceDatasourceId(),
                 workerPlan.targetDatasourceId(),
                 workerPlan.sourceConnectorType(),
@@ -724,7 +723,7 @@ public class SyncObjectListFanOutDispatchService {
     }
 
     /**
-     * 从模板 retryPolicy 中解析对象级最大尝试次数。
+     * 从任务定义 retryPolicy 中解析对象级最大尝试次数。
      *
      * <p>支持两类常见写法：</p>
      * <p>1. maxObjectAttempts/objectMaxAttempts/maxAttempts：表示总尝试次数；</p>
@@ -732,12 +731,12 @@ public class SyncObjectListFanOutDispatchService {
      *
      * <p>解析失败时使用默认值 3。这里不把 retryPolicy 原文写入日志或事件，避免配置中误放敏感信息时泄露。</p>
      */
-    private int resolveObjectMaxAttemptCount(SyncTemplate template) {
-        if (template == null || !hasText(template.getRetryPolicy())) {
+    private int resolveObjectMaxAttemptCount(SyncTaskDefinition definition) {
+        if (definition == null || !hasText(definition.getRetryPolicy())) {
             return DEFAULT_OBJECT_MAX_ATTEMPT_COUNT;
         }
         try {
-            JsonNode root = objectMapper.readTree(template.getRetryPolicy());
+            JsonNode root = objectMapper.readTree(definition.getRetryPolicy());
             Integer directAttempts = firstPositive(root,
                     "maxObjectAttempts", "objectMaxAttempts", "maxAttempts");
             if (directAttempts != null) {

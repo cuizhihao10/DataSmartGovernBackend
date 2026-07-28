@@ -13,9 +13,9 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskPublishRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskUpdateRequest;
-import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateExecutionPrecheckResponse;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskDefinitionExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
@@ -67,8 +67,8 @@ public class SyncTaskDefinitionOperationSupport {
     private final SyncTaskStateMachineSupport stateMachineSupport;
     private final SyncTaskGroupOperationSupport taskGroupOperationSupport;
     private final SyncTaskScheduleConfigSupport scheduleConfigSupport;
-    private final SyncTemplateValidationSupport templateValidationSupport;
-    private final SyncTemplateExecutionPrecheckSupport templateExecutionPrecheckSupport;
+    private final SyncTaskDefinitionValidationSupport taskDefinitionValidationSupport;
+    private final SyncTaskDefinitionExecutionPrecheckSupport taskDefinitionExecutionPrecheckSupport;
     private final SyncQuerySupport querySupport;
     private final SyncAuditSupport auditSupport;
 
@@ -86,7 +86,7 @@ public class SyncTaskDefinitionOperationSupport {
      * 因此编辑阶段只保存草稿，发布阶段再重新预检、审批和计算 nextFireTime。</p>
      */
     public SyncTask updateTaskDefinition(SyncTask task,
-                                         SyncTemplate template,
+                                         SyncTaskDefinition definition,
                                          SyncTaskUpdateRequest request,
                                          SyncActorContext actorContext) {
         SyncTaskUpdateRequest safeRequest = request == null ? new SyncTaskUpdateRequest() : request;
@@ -101,7 +101,7 @@ public class SyncTaskDefinitionOperationSupport {
         Long ownerId = resolveOwnerId(task.getOwnerId(), safeRequest.getOwnerId());
         SyncTaskGroupOperationSupport.TaskGroupAssignment groupAssignment =
                 resolveGroupAssignment(task, safeRequest, actorContext);
-        ScheduleEditResult scheduleEditResult = resolveScheduleEdit(task, template, safeRequest);
+        ScheduleEditResult scheduleEditResult = resolveScheduleEdit(task, definition, safeRequest);
         String runMode = resolveRunMode(task.getRunMode(), safeRequest.getRunMode());
 
         /*
@@ -147,18 +147,18 @@ public class SyncTaskDefinitionOperationSupport {
     /**
      * 发布同步任务定义。
      *
-     * <p>发布会重新执行模板校验和执行前预检查，而不是相信任务创建时的旧结果。
-     * 原因是模板、连接器能力矩阵、runner 支持边界或执行策略都可能在任务草稿保存后发生变化。
+     * <p>发布会重新执行任务定义校验和执行前预检查，而不是相信任务创建时的旧结果。
+     * 原因是任务定义、连接器能力矩阵、runner 支持边界或执行策略都可能在任务草稿保存后发生变化。
      * 只有发布时重新检查，才能避免旧草稿在系统升级后绕过新的安全规则。</p>
      */
     public SyncTaskOperationResult publishTaskDefinition(SyncTask task,
-                                                         SyncTemplate template,
+                                                         SyncTaskDefinition definition,
                                                          SyncTaskPublishRequest request,
                                                          SyncActorContext actorContext) {
         SyncTaskPublishRequest safeRequest = request == null ? new SyncTaskPublishRequest() : request;
         stateMachineSupport.assertCanPublishDefinition(task.getCurrentState());
-        templateValidationSupport.validateTemplate(template);
-        SyncTemplateExecutionPrecheckResponse precheck = templateExecutionPrecheckSupport.precheck(template);
+        taskDefinitionValidationSupport.validateDefinition(definition);
+        SyncTaskDefinitionExecutionPrecheckResponse precheck = taskDefinitionExecutionPrecheckSupport.precheck(definition);
         if (!precheck.canCreateTaskDraft()) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
                     "同步任务发布前预检查未通过，precheckStatus=" + precheck.precheckStatus()
@@ -166,7 +166,7 @@ public class SyncTaskDefinitionOperationSupport {
                             + "，recommendedActions=" + precheck.recommendedActions());
         }
 
-        boolean scheduled = resolveScheduledOnPublish(template, task, safeRequest);
+        boolean scheduled = resolveScheduledOnPublish(definition, task, safeRequest);
         String targetState = resolvePublishedTaskState(scheduled);
         Boolean scheduleEnabled = scheduled;
         LocalDateTime nextFireTime = scheduleEnabled
@@ -175,7 +175,7 @@ public class SyncTaskDefinitionOperationSupport {
         String triggerType = scheduled ? SyncTriggerType.SCHEDULED.name() : SyncTriggerType.MANUAL.name();
         String runMode = scheduled
                 ? "SCHEDULED"
-                : querySupport.defaultText(task.getRunMode(), "TEMPLATE").toUpperCase(Locale.ROOT);
+                : querySupport.defaultText(task.getRunMode(), "MANUAL").toUpperCase(Locale.ROOT);
 
         int updated = taskMapper.updateTaskDefinition(
                 task.getId(),
@@ -291,7 +291,7 @@ public class SyncTaskDefinitionOperationSupport {
     }
 
     private ScheduleEditResult resolveScheduleEdit(SyncTask task,
-                                                   SyncTemplate template,
+                                                   SyncTaskDefinition definition,
                                                    SyncTaskUpdateRequest request) {
         String currentScheduleConfig = querySupport.trimToNull(task.getScheduleConfig());
         if (Boolean.TRUE.equals(request.getClearScheduleConfig())) {
@@ -308,7 +308,7 @@ public class SyncTaskDefinitionOperationSupport {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
                     "调度配置不能传空白字符串；如需清空请设置 clearScheduleConfig=true");
         }
-        validateScheduleConfigAllowed(template, requestedScheduleConfig);
+        validateScheduleConfigAllowed(definition, requestedScheduleConfig);
         boolean changed = !Objects.equals(currentScheduleConfig, requestedScheduleConfig)
                 || Boolean.TRUE.equals(task.getScheduleEnabled())
                 || task.getNextFireTime() != null;
@@ -326,11 +326,11 @@ public class SyncTaskDefinitionOperationSupport {
         return querySupport.truncate(runMode.toUpperCase(Locale.ROOT), 64);
     }
 
-    private void validateScheduleConfigAllowed(SyncTemplate template, String scheduleConfig) {
+    private void validateScheduleConfigAllowed(SyncTaskDefinition definition, String scheduleConfig) {
         if (!scheduleConfigSupport.hasScheduleConfig(scheduleConfig)) {
             return;
         }
-        String syncMode = normalizeCode(template.getSyncMode());
+        String syncMode = normalizeCode(definition.getSyncMode());
         if (!SyncMode.SCHEDULED_FULL.name().equals(syncMode) && !SyncMode.SCHEDULED_BATCH.name().equals(syncMode)) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
                     "当前自动调度仅支持 SCHEDULED_FULL 定期全量和 SCHEDULED_BATCH 定期批量，syncMode=" + syncMode);
@@ -338,11 +338,11 @@ public class SyncTaskDefinitionOperationSupport {
         scheduleConfigSupport.parseRequired(scheduleConfig);
     }
 
-    private boolean resolveScheduledOnPublish(SyncTemplate template,
+    private boolean resolveScheduledOnPublish(SyncTaskDefinition definition,
                                               SyncTask task,
                                               SyncTaskPublishRequest request) {
         String scheduleConfig = querySupport.trimToNull(task.getScheduleConfig());
-        String syncMode = normalizeCode(template.getSyncMode());
+        String syncMode = normalizeCode(definition.getSyncMode());
         boolean hasScheduleConfig = scheduleConfigSupport.hasScheduleConfig(scheduleConfig);
         boolean scheduledMode = SyncMode.SCHEDULED_FULL.name().equals(syncMode)
                 || SyncMode.SCHEDULED_BATCH.name().equals(syncMode);
@@ -355,7 +355,7 @@ public class SyncTaskDefinitionOperationSupport {
                     "启用自动调度前必须先配置 scheduleConfig");
         }
         if (hasScheduleConfig) {
-            validateScheduleConfigAllowed(template, scheduleConfig);
+            validateScheduleConfigAllowed(definition, scheduleConfig);
         }
         /*
          * enableSchedule 为空时采用“有 scheduleConfig 就启用”的产品默认；显式 false 表示保留配置但暂不进入 SCHEDULED。
@@ -391,13 +391,12 @@ public class SyncTaskDefinitionOperationSupport {
     }
 
     private String buildPublishAuditPayload(SyncTask task,
-                                            SyncTemplateExecutionPrecheckResponse precheck,
+                                            SyncTaskDefinitionExecutionPrecheckResponse precheck,
                                             String targetState,
                                             Boolean scheduleEnabled,
                                             LocalDateTime nextFireTime,
                                             SyncTaskPublishRequest request) {
         String payload = "taskId=" + task.getId()
-                + ",templateId=" + task.getTemplateId()
                 + ",precheckStatus=" + precheck.precheckStatus()
                 + ",highRiskReviewSuggested=" + precheck.approvalRequired()
                 + ",newState=" + targetState

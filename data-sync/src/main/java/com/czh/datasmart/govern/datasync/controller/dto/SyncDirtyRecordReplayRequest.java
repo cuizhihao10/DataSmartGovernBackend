@@ -20,7 +20,7 @@ import java.util.List;
  *
  * <p>为什么这里不直接接收修复后的行数据：
  * 1. API 层保存原始业务行会扩大敏感数据暴露面，也会绕过源端权限与目标端写入策略；
- * 2. 当前平台的同步执行应继续由 worker/connector 按模板、checkpoint、字段映射和幂等策略完成；
+ * 2. 当前平台的同步执行应继续由 worker/connector 按任务定义、checkpoint、字段映射和幂等策略完成；
  * 3. 控制面只保存“哪些错误样本需要被重放”的低敏 selector，由 worker 后续受控读取。</p>
  */
 @Data

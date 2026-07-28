@@ -20,7 +20,7 @@ import java.time.LocalDateTime;
  * data-sync 的 MyBatis-Plus 基础配置。
  *
  * <p>本类只描述 data-sync “平台控制面数据库”的 ORM 行为：
- * 模板、任务、执行记录、checkpoint、幂等记录、事故、错误样本、审计和 outbox 等表已经迁移到 PostgreSQL。
+ * 任务定义、任务、执行记录、checkpoint、幂等记录、事故、错误样本、审计和 outbox 等表已经迁移到 PostgreSQL。
  * 它不代表 data-sync 只能同步 PostgreSQL 数据，也不影响客户侧 MySQL/PostgreSQL/Kafka/文件等连接器能力；
  * 外部源端和目标端连接仍通过 datasource-management 与受控 connector runtime 访问。</p>
  */
@@ -49,7 +49,7 @@ public class MyBatisPlusConfig {
      *
      * <p>data-sync 的控制面表大量依赖 createTime/updateTime 做运营筛选、保留期清理、事故追踪和审计排序。
      * 将这些字段交给 MetaObjectHandler 统一维护，可以避免每个 service 分支重复写时间字段，
-     * 也能保证模板、任务、执行、checkpoint、outbox 等表的时间语义保持一致。</p>
+     * 也能保证任务定义、任务、执行、checkpoint、outbox 等表的时间语义保持一致。</p>
      *
      * <p>Java 实体使用 {@link LocalDateTime}，PostgreSQL DDL 对应 {@code TIMESTAMP WITHOUT TIME ZONE}。
      * 后续如果需要按租户时区展示，应在 API/展示边界做转换，不要让数据库隐式时区转换改写审计事实。</p>

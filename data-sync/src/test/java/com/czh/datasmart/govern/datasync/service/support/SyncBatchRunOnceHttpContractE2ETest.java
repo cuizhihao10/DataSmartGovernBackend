@@ -14,7 +14,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanView;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.HttpDatasourceRunOnceClient;
 import com.czh.datasmart.govern.datasync.support.SyncExecutionState;
@@ -95,7 +95,7 @@ class SyncBatchRunOnceHttpContractE2ETest {
             SyncBatchRunOnceDispatchResult result = service.dispatchRunOnce(
                     execution,
                     task,
-                    fullCustomerTemplate(),
+                    fullCustomerDefinition(),
                     workerPlan(),
                     actor());
 
@@ -215,7 +215,7 @@ class SyncBatchRunOnceHttpContractE2ETest {
             SyncBatchRunOnceDispatchResult result = service.dispatchRunOnce(
                     execution,
                     task,
-                    fullCustomerTemplate(),
+                    fullCustomerDefinition(),
                     workerPlan(),
                     actor());
 
@@ -271,7 +271,7 @@ class SyncBatchRunOnceHttpContractE2ETest {
         return new SyncBatchRunnerBridgePlanSupport(
                 new SyncFieldMappingExecutionContractSupport(objectMapper),
                 new SyncFilterExecutionContractSupport(objectMapper),
-                new SyncTemplateScopeContractSupport(objectMapper),
+                new SyncTaskDefinitionScopeContractSupport(objectMapper),
                 new SyncOfflineRunnerContractSupport());
     }
 
@@ -314,35 +314,34 @@ class SyncBatchRunOnceHttpContractE2ETest {
         task.setTenantId(7L);
         task.setProjectId(101L);
         task.setWorkspaceId(301L);
-        task.setTemplateId(22L);
         task.setCurrentState("RUNNING");
         return task;
     }
 
-    private SyncTemplate fullCustomerTemplate() {
-        SyncTemplate template = new SyncTemplate();
-        template.setId(22L);
-        template.setTenantId(7L);
-        template.setProjectId(101L);
-        template.setWorkspaceId(301L);
-        template.setSourceDatasourceId(10001L);
-        template.setTargetDatasourceId(10002L);
-        template.setSourceConnectorType("MYSQL");
-        template.setTargetConnectorType("POSTGRESQL");
-        template.setSourceSchemaName("ods");
-        template.setSourceObjectName("customer");
-        template.setTargetSchemaName("dwd");
-        template.setTargetObjectName("customer_clean");
-        template.setSyncMode("FULL");
-        template.setSyncScopeType("SINGLE_OBJECT");
+    private SyncTaskDefinition fullCustomerDefinition() {
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setId(22L);
+        definition.setTenantId(7L);
+        definition.setProjectId(101L);
+        definition.setWorkspaceId(301L);
+        definition.setSourceDatasourceId(10001L);
+        definition.setTargetDatasourceId(10002L);
+        definition.setSourceConnectorType("MYSQL");
+        definition.setTargetConnectorType("POSTGRESQL");
+        definition.setSourceSchemaName("ods");
+        definition.setSourceObjectName("customer");
+        definition.setTargetSchemaName("dwd");
+        definition.setTargetObjectName("customer_clean");
+        definition.setSyncMode("FULL");
+        definition.setSyncScopeType("SINGLE_OBJECT");
         /*
          * 使用 UPSERT 是为了让跨批次、重试和故障恢复更接近生产推荐路径。
          * APPEND 在远端部分提交后重试可能造成重复数据，通常需要额外 checkpoint、去重键或补偿策略兜底。
          */
-        template.setWriteStrategy("UPSERT");
-        template.setPrimaryKeyField("id");
-        template.setIncrementalField("updated_at");
-        template.setFieldMappingConfig("""
+        definition.setWriteStrategy("UPSERT");
+        definition.setPrimaryKeyField("id");
+        definition.setIncrementalField("updated_at");
+        definition.setFieldMappingConfig("""
                 [
                   {"sourceField":"id","targetField":"id"},
                   {"sourceField":"customer_name","targetField":"name"},
@@ -355,15 +354,15 @@ class SyncBatchRunOnceHttpContractE2ETest {
          * data-sync 只负责把条件翻译成跨服务 JSON 合同，真实 SQL 拼接和 PreparedStatement 参数绑定
          * 仍由 datasource-management 的方言执行层完成，避免控制面持有 raw SQL。
          */
-        template.setFilterConfig("""
+        definition.setFilterConfig("""
                 {
                   "conditions": [
                     {"field":"region","operator":"=","value":"EAST"}
                   ]
                 }
                 """);
-        template.setEnabled(true);
-        return template;
+        definition.setEnabled(true);
+        return definition;
     }
 
     private SyncWorkerExecutionPlanView workerPlan() {
@@ -380,7 +379,6 @@ class SyncBatchRunOnceHttpContractE2ETest {
                 SyncTriggerType.MANUAL.name(),
                 "worker-1",
                 LocalDateTime.now().plusMinutes(2),
-                22L,
                 10001L,
                 10002L,
                 "MYSQL",

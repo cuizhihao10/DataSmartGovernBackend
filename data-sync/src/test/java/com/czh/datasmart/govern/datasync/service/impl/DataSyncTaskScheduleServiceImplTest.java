@@ -167,7 +167,6 @@ class DataSyncTaskScheduleServiceImplTest {
         task.setTenantId(7L);
         task.setProjectId(101L);
         task.setWorkspaceId(301L);
-        task.setTemplateId(6001L);
         task.setName("scheduled full sync");
         task.setCurrentState(SyncTaskState.SCHEDULED.name());
         task.setScheduleEnabled(true);

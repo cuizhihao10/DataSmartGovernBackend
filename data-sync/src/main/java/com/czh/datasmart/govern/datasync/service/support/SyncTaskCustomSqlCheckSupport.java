@@ -31,7 +31,7 @@ import java.util.regex.Pattern;
  * SQL 语句模式创建向导检查支持组件。
  *
  * <p>该组件是 {@code CUSTOM_SQL_QUERY / SQL语句} 模式在“创建任务页面”里的控制面门禁。
- * 它不保存 SQL、不创建模板、不触发 worker、不写目标端，而是完成三件事：</p>
+ * 它不保存 SQL、不创建任务定义、不触发 worker、不写目标端，而是完成三件事：</p>
  * <p>1. 本地静态检查：快速拦截空 SQL、多语句、注释、DDL/DML/存储过程等明显危险输入；</p>
  * <p>2. 远程只读探测：在静态检查通过后，委托 datasource-management 使用受控只读连接执行极小行数查询，
  * 验证语法、源端表/字段存在性，并拿到 ResultSet 输出列名；</p>

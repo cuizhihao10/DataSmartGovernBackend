@@ -76,10 +76,9 @@ public class DataSyncWorkerCommandStageRequest {
     private String traceId;
 
     /**
-     * 历史模板 ID 与 data-sync 模板 ID。
+     * 下游 data-sync 同步任务 ID。
      */
-    private Long templateId;
-    private Long syncTemplateId;
+    private Long syncTaskId;
 
     /**
      * 低敏执行选项。

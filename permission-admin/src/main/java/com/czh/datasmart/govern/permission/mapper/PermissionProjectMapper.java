@@ -91,22 +91,6 @@ public interface PermissionProjectMapper extends BaseMapper<PermissionProject> {
                                 @Param("projectId") Long projectId);
 
     /**
-     * 统计项目下仍启用的数据同步模板数量。
-     *
-     * <p>模板是可复用的同步配置。即使当前没有任务正在运行，只要模板仍启用，用户或 Agent 就可能继续基于模板创建任务，
-     * 因此归档项目之前必须先禁用或迁移模板。</p>
-     */
-    @Select("""
-            SELECT COUNT(1)
-            FROM data_sync.data_sync_template
-            WHERE tenant_id = #{tenantId}
-              AND project_id = #{projectId}
-              AND enabled = TRUE
-            """)
-    long countEnabledSyncTemplates(@Param("tenantId") Long tenantId,
-                                   @Param("projectId") Long projectId);
-
-    /**
      * 统计项目下未归档的数据同步任务数量。
      *
      * <p>任务是用户可见的执行与调度主对象。只要任务还不是 ARCHIVED，就可能处于编辑、等待调度、运行、失败待处理、

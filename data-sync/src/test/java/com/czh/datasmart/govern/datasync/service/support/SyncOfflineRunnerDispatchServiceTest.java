@@ -14,7 +14,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanV
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncObjectExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryClient;
 import com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryRequest;
 import com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryResponse;
@@ -61,14 +61,14 @@ class SyncOfflineRunnerDispatchServiceTest {
         SyncOfflineRunnerDispatchService service = service(runOnceDispatchService, lifecycleSupport, receiptPublisher);
         SyncExecution execution = execution("FULL");
         SyncTask task = task();
-        SyncTemplate template = template("FULL");
+        SyncTaskDefinition definition = definition("FULL");
         SyncWorkerExecutionPlanView workerPlan = workerPlan("FULL", false, false, false);
         when(runOnceDispatchService.executePreparedRunOnceRemoteOnly(any(SyncBatchRunnerBridgePlan.class),
                 any(SyncExecution.class), eq(task), any(SyncActorContext.class)))
                 .thenReturn(remoteComplete(6L, 6L));
 
         SyncOfflineRunnerDispatchResult result =
-                service.dispatchOffline(execution, task, template, workerPlan, actor());
+                service.dispatchOffline(execution, task, definition, workerPlan, actor());
 
         assertThat(result.dispatched()).isTrue();
         assertThat(result.completed()).isTrue();
@@ -92,14 +92,14 @@ class SyncOfflineRunnerDispatchServiceTest {
         SyncExecution execution = execution("SCHEDULED_BATCH");
         SyncTask task = task();
         task.setScheduleConfig("{\"cron\":\"0 0 * * * ?\"}");
-        SyncTemplate template = template("SCHEDULED_BATCH");
+        SyncTaskDefinition definition = definition("SCHEDULED_BATCH");
         SyncWorkerExecutionPlanView workerPlan = workerPlan("SCHEDULED_BATCH", false, false, false);
         when(runOnceDispatchService.executePreparedRunOnceRemoteOnly(any(SyncBatchRunnerBridgePlan.class),
                 any(SyncExecution.class), eq(task), any(SyncActorContext.class)))
                 .thenReturn(remoteComplete(6L, 6L));
 
         SyncOfflineRunnerDispatchResult result =
-                service.dispatchOffline(execution, task, template, workerPlan, actor());
+                service.dispatchOffline(execution, task, definition, workerPlan, actor());
 
         assertThat(result.dispatched()).isTrue();
         assertThat(result.completed()).isTrue();
@@ -155,11 +155,11 @@ class SyncOfflineRunnerDispatchServiceTest {
                 receiptPublisher, List.of(adapter));
         SyncExecution execution = execution("INCREMENTAL_TIME");
         SyncTask task = task();
-        SyncTemplate template = template("INCREMENTAL_TIME");
+        SyncTaskDefinition definition = definition("INCREMENTAL_TIME");
         SyncWorkerExecutionPlanView workerPlan = workerPlan("INCREMENTAL_TIME", true, false, false);
 
         SyncOfflineRunnerDispatchResult result =
-                service.dispatchOffline(execution, task, template, workerPlan, actor());
+                service.dispatchOffline(execution, task, definition, workerPlan, actor());
 
         assertThat(result.dispatched()).isTrue();
         assertThat(result.completed()).isFalse();
@@ -183,14 +183,14 @@ class SyncOfflineRunnerDispatchServiceTest {
         SyncOfflineRunnerDispatchService service = service(runOnceDispatchService, lifecycleSupport, receiptPublisher);
         SyncExecution execution = execution("FULL");
         SyncTask task = task();
-        SyncTemplate template = objectListTemplate("FULL");
+        SyncTaskDefinition definition = objectListDefinition("FULL");
         SyncWorkerExecutionPlanView workerPlan = workerPlan("FULL", false, false, false);
         when(runOnceDispatchService.executePreparedRunOnceRemoteOnly(any(SyncBatchRunnerBridgePlan.class),
                 any(SyncExecution.class), eq(task), any(SyncActorContext.class)))
                 .thenReturn(remoteComplete(3L, 3L), remoteComplete(4L, 4L));
 
         SyncOfflineRunnerDispatchResult result =
-                service.dispatchOffline(execution, task, template, workerPlan, actor());
+                service.dispatchOffline(execution, task, definition, workerPlan, actor());
 
         assertThat(result.dispatched()).isTrue();
         assertThat(result.completed()).isTrue();
@@ -229,8 +229,8 @@ class SyncOfflineRunnerDispatchServiceTest {
         SyncOfflineRunnerDispatchService service = service(runOnceDispatchService, lifecycleSupport, receiptPublisher);
         SyncExecution execution = execution("FULL");
         SyncTask task = task();
-        SyncTemplate template = objectListTemplate("FULL");
-        template.setRetryPolicy("{\"maxObjectRetries\":1}");
+        SyncTaskDefinition definition = objectListDefinition("FULL");
+        definition.setRetryPolicy("{\"maxObjectRetries\":1}");
         SyncWorkerExecutionPlanView workerPlan = workerPlan("FULL", false, false, false);
         when(runOnceDispatchService.executePreparedRunOnceRemoteOnly(any(SyncBatchRunnerBridgePlan.class),
                 any(SyncExecution.class), eq(task), any(SyncActorContext.class)))
@@ -241,7 +241,7 @@ class SyncOfflineRunnerDispatchServiceTest {
                 );
 
         SyncOfflineRunnerDispatchResult result =
-                service.dispatchOffline(execution, task, template, workerPlan, actor());
+                service.dispatchOffline(execution, task, definition, workerPlan, actor());
 
         assertThat(result.dispatched()).isTrue();
         assertThat(result.completed()).isTrue();
@@ -266,7 +266,7 @@ class SyncOfflineRunnerDispatchServiceTest {
         SyncOfflineRunnerDispatchService service = service(runOnceDispatchService, lifecycleSupport, receiptPublisher);
         SyncExecution execution = execution("FULL");
         SyncTask task = task();
-        SyncTemplate template = objectListTemplate("FULL");
+        SyncTaskDefinition definition = objectListDefinition("FULL");
         SyncWorkerExecutionPlanView workerPlan = workerPlan("FULL", false, false, false);
         when(runOnceDispatchService.executePreparedRunOnceRemoteOnly(any(SyncBatchRunnerBridgePlan.class),
                 any(SyncExecution.class), eq(task), any(SyncActorContext.class)))
@@ -276,7 +276,7 @@ class SyncOfflineRunnerDispatchServiceTest {
                 );
 
         SyncOfflineRunnerDispatchResult result =
-                service.dispatchOffline(execution, task, template, workerPlan, actor());
+                service.dispatchOffline(execution, task, definition, workerPlan, actor());
 
         assertThat(result.dispatched()).isTrue();
         assertThat(result.completed()).isFalse();
@@ -309,11 +309,11 @@ class SyncOfflineRunnerDispatchServiceTest {
                 receiptPublisher, List.of(), metadataDiscoveryClient);
         SyncExecution execution = execution("FULL");
         SyncTask task = task();
-        SyncTemplate template = template("FULL");
-        template.setSyncScopeType("SCHEMA_FULL");
-        template.setSourceObjectName(null);
-        template.setTargetObjectName(null);
-        template.setObjectMappingConfig("""
+        SyncTaskDefinition definition = definition("FULL");
+        definition.setSyncScopeType("SCHEMA_FULL");
+        definition.setSourceObjectName(null);
+        definition.setTargetObjectName(null);
+        definition.setObjectMappingConfig("""
                 {
                   "discoveryPolicy": {
                     "includePatterns": ["orders", "customers"],
@@ -331,7 +331,7 @@ class SyncOfflineRunnerDispatchServiceTest {
                 .thenReturn(remoteComplete(5L, 5L), remoteComplete(4L, 4L));
 
         SyncOfflineRunnerDispatchResult result =
-                service.dispatchOffline(execution, task, template, workerPlan, actor(false));
+                service.dispatchOffline(execution, task, definition, workerPlan, actor(false));
 
         assertThat(result.dispatched()).isTrue();
         assertThat(result.completed()).isTrue();
@@ -378,9 +378,9 @@ class SyncOfflineRunnerDispatchServiceTest {
         SyncOfflineRunnerDispatchService service = service(runOnceDispatchService, lifecycleSupport, receiptPublisher);
         SyncExecution execution = execution("CUSTOM_SQL_QUERY");
         SyncTask task = task();
-        SyncTemplate template = template("CUSTOM_SQL_QUERY");
-        template.setSyncScopeType("CUSTOM_SQL_QUERY");
-        template.setCustomSqlConfig("""
+        SyncTaskDefinition definition = definition("CUSTOM_SQL_QUERY");
+        definition.setSyncScopeType("CUSTOM_SQL_QUERY");
+        definition.setCustomSqlConfig("""
                 {
                   "statementRef": "managed-sql.customer-active",
                   "sql": "select id, name from customer where status = :status"
@@ -389,7 +389,7 @@ class SyncOfflineRunnerDispatchServiceTest {
         SyncWorkerExecutionPlanView workerPlan = workerPlan("CUSTOM_SQL_QUERY", false, true, true);
 
         SyncOfflineRunnerDispatchResult result =
-                service.dispatchOffline(execution, task, template, workerPlan, actor(true));
+                service.dispatchOffline(execution, task, definition, workerPlan, actor(true));
 
         assertThat(result.dispatched()).isFalse();
         assertThat(result.failed()).isTrue();
@@ -411,9 +411,9 @@ class SyncOfflineRunnerDispatchServiceTest {
         SyncOfflineRunnerDispatchService service = service(runOnceDispatchService, lifecycleSupport, receiptPublisher);
         SyncExecution execution = execution("CUSTOM_SQL_QUERY");
         SyncTask task = task();
-        SyncTemplate template = template("CUSTOM_SQL_QUERY");
-        template.setSyncScopeType("CUSTOM_SQL_QUERY");
-        template.setCustomSqlConfig("""
+        SyncTaskDefinition definition = definition("CUSTOM_SQL_QUERY");
+        definition.setSyncScopeType("CUSTOM_SQL_QUERY");
+        definition.setCustomSqlConfig("""
                 {
                   "sql": "select id, name from customer where status = 'ACTIVE'"
                 }
@@ -427,7 +427,7 @@ class SyncOfflineRunnerDispatchServiceTest {
                         SyncBatchRunOnceDispatchResult.PAYLOAD_POLICY));
 
         SyncOfflineRunnerDispatchResult result =
-                service.dispatchOffline(execution, task, template, workerPlan, actor(false));
+                service.dispatchOffline(execution, task, definition, workerPlan, actor(false));
 
         assertThat(result.dispatched()).isTrue();
         assertThat(result.completed()).isTrue();
@@ -466,7 +466,7 @@ class SyncOfflineRunnerDispatchServiceTest {
         SyncBatchRunnerBridgePlanSupport bridgePlanSupport = new SyncBatchRunnerBridgePlanSupport(
                 new SyncFieldMappingExecutionContractSupport(objectMapper),
                 new SyncFilterExecutionContractSupport(objectMapper),
-                new SyncTemplateScopeContractSupport(objectMapper),
+                new SyncTaskDefinitionScopeContractSupport(objectMapper),
                 new SyncOfflineRunnerContractSupport());
         SyncOfflineRunnerAdapterRegistry runnerAdapterRegistry = new SyncOfflineRunnerAdapterRegistry(adapters);
         SyncObjectListFanOutDispatchService objectListFanOutDispatchService = new SyncObjectListFanOutDispatchService(
@@ -545,46 +545,45 @@ class SyncOfflineRunnerDispatchServiceTest {
         task.setTenantId(7L);
         task.setProjectId(101L);
         task.setWorkspaceId(301L);
-        task.setTemplateId(22L);
         task.setCurrentState("RUNNING");
         return task;
     }
 
-    private SyncTemplate template(String syncMode) {
-        SyncTemplate template = new SyncTemplate();
-        template.setId(22L);
-        template.setTenantId(7L);
-        template.setProjectId(101L);
-        template.setWorkspaceId(301L);
-        template.setSourceDatasourceId(10001L);
-        template.setTargetDatasourceId(10002L);
-        template.setSourceSchemaName("ods");
-        template.setSourceObjectName("customer");
-        template.setTargetSchemaName("dwd");
-        template.setTargetObjectName("customer");
-        template.setSourceConnectorType("MYSQL");
-        template.setTargetConnectorType("POSTGRESQL");
-        template.setSyncMode(syncMode);
-        template.setSyncScopeType("SINGLE_OBJECT");
-        template.setWriteStrategy("APPEND");
-        template.setPrimaryKeyField("id");
-        template.setIncrementalField("updated_at");
-        template.setFieldMappingConfig("""
+    private SyncTaskDefinition definition(String syncMode) {
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setId(22L);
+        definition.setTenantId(7L);
+        definition.setProjectId(101L);
+        definition.setWorkspaceId(301L);
+        definition.setSourceDatasourceId(10001L);
+        definition.setTargetDatasourceId(10002L);
+        definition.setSourceSchemaName("ods");
+        definition.setSourceObjectName("customer");
+        definition.setTargetSchemaName("dwd");
+        definition.setTargetObjectName("customer");
+        definition.setSourceConnectorType("MYSQL");
+        definition.setTargetConnectorType("POSTGRESQL");
+        definition.setSyncMode(syncMode);
+        definition.setSyncScopeType("SINGLE_OBJECT");
+        definition.setWriteStrategy("APPEND");
+        definition.setPrimaryKeyField("id");
+        definition.setIncrementalField("updated_at");
+        definition.setFieldMappingConfig("""
                 [
                   {"sourceField":"id","targetField":"id"},
                   {"sourceField":"name","targetField":"name"}
                 ]
                 """);
-        template.setEnabled(true);
-        return template;
+        definition.setEnabled(true);
+        return definition;
     }
 
-    private SyncTemplate objectListTemplate(String syncMode) {
-        SyncTemplate template = template(syncMode);
-        template.setSyncScopeType("OBJECT_LIST");
-        template.setSourceObjectName(null);
-        template.setTargetObjectName(null);
-        template.setObjectMappingConfig("""
+    private SyncTaskDefinition objectListDefinition(String syncMode) {
+        SyncTaskDefinition definition = definition(syncMode);
+        definition.setSyncScopeType("OBJECT_LIST");
+        definition.setSourceObjectName(null);
+        definition.setTargetObjectName(null);
+        definition.setObjectMappingConfig("""
                 {
                   "mappings": [
                     {"sourceObject": "orders", "targetObject": "dwd_orders"},
@@ -592,7 +591,7 @@ class SyncOfflineRunnerDispatchServiceTest {
                   ]
                 }
                 """);
-        return template;
+        return definition;
     }
 
     private SyncBatchRunOnceRemoteExecutionResult remoteComplete(Long recordsRead, Long recordsWritten) {
@@ -688,7 +687,6 @@ class SyncOfflineRunnerDispatchServiceTest {
                 SyncTriggerType.MANUAL.name(),
                 "worker-1",
                 LocalDateTime.now().plusMinutes(2),
-                22L,
                 10001L,
                 10002L,
                 "MYSQL",

@@ -16,8 +16,8 @@ import java.util.Locale;
  * <p>1. 产品层：前端创建向导只应展示 INSERT 和 UPDATE 两种用户可理解的意图；</p>
  * <p>2. 执行层：历史 runner 和桥接计划仍可能使用 APPEND、UPSERT、INSERT_IGNORE、REPLACE、OVERWRITE 等更细的内部策略。</p>
  *
- * <p>为什么不直接删除历史策略：已有模板、测试、导入导出文件、审计记录和最小 JDBC runner 仍可能引用这些编码。
- * 因此当前采用“新建入口收口、内部兼容保留”的方式：新创建的模板保存 INSERT/UPDATE，派发执行时再通过
+ * <p>为什么不直接删除历史策略：已有任务定义、测试、导入导出文件、审计记录和最小 JDBC runner 仍可能引用这些编码。
+ * 因此当前采用“新建入口收口、内部兼容保留”的方式：新创建的任务定义保存 INSERT/UPDATE，派发执行时再通过
  * {@link #toRunnerStrategy()} 翻译成 runner 可理解的编码。</p>
  */
 public enum SyncWriteStrategy {
@@ -46,7 +46,7 @@ public enum SyncWriteStrategy {
      * 追加写入。
      *
      * <p>APPEND 是历史执行器策略，适合日志、流水、离线导入等天然可追加场景。它现在不再作为普通创建向导的展示项；
-     * 如果旧脚本仍提交 APPEND，模板创建会兼容折叠为 INSERT。</p>
+     * 如果旧脚本仍提交 APPEND，任务定义创建会兼容折叠为 INSERT。</p>
      */
     APPEND(false, false, false, "APPEND"),
 
@@ -83,7 +83,7 @@ public enum SyncWriteStrategy {
     /**
      * 当前策略是否要求目标端具备冲突判断键。
      *
-     * <p>历史 UPSERT/INSERT_IGNORE/REPLACE 仍然保留该语义，便于旧模板和内部执行计划继续 fail-fast。新的 UPDATE 用户策略
+     * <p>历史 UPSERT/INSERT_IGNORE/REPLACE 仍然保留该语义，便于旧任务定义和内部执行计划继续 fail-fast。新的 UPDATE 用户策略
      * 不要求用户手填主键字段，而是把判断职责移到预检查阶段。</p>
      */
     private final boolean requiresConflictKey;
@@ -137,7 +137,7 @@ public enum SyncWriteStrategy {
      * <p>空值现在默认回落到 INSERT，而不是历史 APPEND。这样新建任务在没有显式策略时会得到更符合用户心智的“插入写入”；
      * 执行层仍会把 INSERT 翻译为 APPEND，从而兼容现有最小 runner。</p>
      *
-     * @param value 请求体、数据库或旧模板中的策略字符串
+     * @param value 请求体、数据库或旧任务定义中的策略字符串
      * @return 归一化后的写入策略
      */
     public static SyncWriteStrategy fromValue(String value) {
@@ -162,7 +162,7 @@ public enum SyncWriteStrategy {
      * 例如调用方显式传入 INSERT + CDC_STREAMING 时，本方法会尊重输入返回 INSERT，随后由创建向导或执行预检查给出
      * {@code REALTIME_WRITE_STRATEGY_MUST_BE_MERGE} 这类更清晰的业务错误。这样既方便兼容旧数据，也便于前端展示精确原因。</p>
      *
-     * @param value 请求体、数据库或旧模板中的策略字符串。
+     * @param value 请求体、数据库或旧任务定义中的策略字符串。
      * @param syncMode 当前同步模式字符串，可为空；为空时按普通离线模式默认 INSERT。
      * @return 结合模式默认值后的写入策略。
      */

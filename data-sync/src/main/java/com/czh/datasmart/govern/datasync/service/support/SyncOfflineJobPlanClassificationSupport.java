@@ -6,7 +6,7 @@
  */
 package com.czh.datasmart.govern.datasync.service.support;
 
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
 
 import java.util.List;
@@ -15,7 +15,7 @@ import java.util.Locale;
 /**
  * 离线作业计划分类辅助类。
  *
- * <p>这个类只负责把模板中的低敏枚举事实翻译成 runner 更容易消费的分类编码，例如 Reader 家族、Writer 家族、
+ * <p>这个类只负责把任务定义中的低敏枚举事实翻译成 runner 更容易消费的分类编码，例如 Reader 家族、Writer 家族、
  * 模式族、分片策略和调度语义。它不访问数据库、不解析 SQL、不做权限校验，也不判断当前能不能执行。</p>
  *
  * <p>为什么从 {@link SyncOfflineJobPlanSupport} 中拆出来：</p>
@@ -106,13 +106,13 @@ final class SyncOfflineJobPlanClassificationSupport {
      * <p>这里只返回策略分类，不返回 partitionConfig 原文。原因是分区配置可能包含字段名、时间窗口、对象清单、
      * 文件前缀或业务条件，普通规划响应不应该直接暴露。</p>
      */
-    static String shardStrategy(SyncMode syncMode, SyncTemplateScopeContract scopeContract, SyncTemplate template) {
+    static String shardStrategy(SyncMode syncMode, SyncTaskDefinitionScopeContract scopeContract, SyncTaskDefinition definition) {
         if (scopeContract.multiObjectScope()) {
             return scopeContract.selectedObjectCount() > 0
                     ? "OBJECT_LEVEL_FAN_OUT_EXPLICIT_MAPPINGS"
                     : "OBJECT_LEVEL_FAN_OUT_BY_DISCOVERY_POLICY";
         }
-        if (hasText(template.getPartitionConfig())) {
+        if (hasText(definition.getPartitionConfig())) {
             return "EXPLICIT_PARTITION_CONFIG";
         }
         if (syncMode == SyncMode.CUSTOM_SQL_QUERY) {
@@ -151,7 +151,7 @@ final class SyncOfflineJobPlanClassificationSupport {
      */
     static String scheduleSemantics(SyncMode syncMode, List<String> recommendedActions) {
         if (syncMode == SyncMode.FULL) {
-            recommendedActions.add("FULL 仅表示手工或一次性全量；如果需要定期全量，请把模板 syncMode 改为 SCHEDULED_FULL，并在任务层配置 scheduleConfig");
+            recommendedActions.add("FULL 仅表示一次性全量；如果需要定期全量，请把任务同步模式改为 SCHEDULED_FULL，并配置调度周期");
             return "MANUAL_FULL";
         }
         if (syncMode == SyncMode.SCHEDULED_FULL) {

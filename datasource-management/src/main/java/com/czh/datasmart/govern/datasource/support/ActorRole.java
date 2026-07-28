@@ -67,13 +67,6 @@ public enum ActorRole {
             EnumSet.of(OPERATOR, AUDITOR, TENANT_ADMINISTRATOR, PLATFORM_ADMINISTRATOR);
 
     /**
-     * 模板管理允许角色。
-     * 模板定义直接影响后续任务行为，因此只开放给具备配置职责的角色。
-     */
-    private static final EnumSet<ActorRole> TEMPLATE_MANAGEMENT_ROLES =
-            EnumSet.of(PROJECT_OWNER, OPERATOR, TENANT_ADMINISTRATOR, PLATFORM_ADMINISTRATOR);
-
-    /**
      * 同步任务创建允许角色。
      *
      * <p>普通用户和审计员不直接创建任务；项目负责人、运营和管理员可以。
@@ -144,10 +137,6 @@ public enum ActorRole {
 
     public boolean canPreviewSampleRows() {
         return SAMPLE_PREVIEW_ROLES.contains(this);
-    }
-
-    public boolean canManageTemplates() {
-        return TEMPLATE_MANAGEMENT_ROLES.contains(this);
     }
 
     /**

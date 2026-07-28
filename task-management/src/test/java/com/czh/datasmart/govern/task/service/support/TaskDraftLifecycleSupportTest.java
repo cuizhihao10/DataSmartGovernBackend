@@ -167,7 +167,7 @@ class TaskDraftLifecycleSupportTest {
         request.setName("订单同步草稿");
         request.setType("DATA_SYNC");
         request.setProjectId(20L);
-        request.setParams("{\"syncTemplateId\":88}");
+        request.setParams("{\"syncTaskId\":88}");
 
         TaskDraft draft = support.createDraft(request, projectOwner());
 

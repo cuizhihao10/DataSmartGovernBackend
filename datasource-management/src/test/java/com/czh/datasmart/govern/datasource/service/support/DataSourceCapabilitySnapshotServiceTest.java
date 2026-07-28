@@ -43,7 +43,7 @@ class DataSourceCapabilitySnapshotServiceTest {
         assertEquals("MYSQL", snapshot.getConnectorType());
         assertEquals("RELATIONAL_JDBC", snapshot.getConnectorFamily());
         assertEquals("CONNECTION_VERIFIED", snapshot.getHealthStatus());
-        assertTrue(snapshot.isEligibleForTemplatePlanning());
+        assertTrue(snapshot.isEligibleForTaskPlanning());
         assertTrue(snapshot.isEligibleForExecutionPrecheck());
         assertTrue(snapshot.isCanRead());
         assertTrue(snapshot.isCanWrite());
@@ -62,7 +62,7 @@ class DataSourceCapabilitySnapshotServiceTest {
         DataSourceCapabilitySnapshotView snapshot = snapshotService.buildSnapshot(datasource);
 
         assertEquals("CONNECTION_NOT_TESTED", snapshot.getHealthStatus());
-        assertTrue(snapshot.isEligibleForTemplatePlanning());
+        assertTrue(snapshot.isEligibleForTaskPlanning());
         assertFalse(snapshot.isEligibleForExecutionPrecheck());
         assertTrue(snapshot.getIssueCodes().contains("CONNECTION_NOT_VERIFIED"));
         assertTrue(snapshot.getRecommendedActions().stream().anyMatch(item -> item.contains("连接测试")));
@@ -78,7 +78,7 @@ class DataSourceCapabilitySnapshotServiceTest {
         DataSourceCapabilitySnapshotView snapshot = snapshotService.buildSnapshot(datasource);
 
         assertEquals("DATASOURCE_DISABLED", snapshot.getHealthStatus());
-        assertFalse(snapshot.isEligibleForTemplatePlanning());
+        assertFalse(snapshot.isEligibleForTaskPlanning());
         assertFalse(snapshot.isEligibleForExecutionPrecheck());
         assertTrue(snapshot.getIssueCodes().contains("DATASOURCE_DISABLED"));
         assertTrue(snapshot.getIssueCodes().contains("CONNECTION_LAST_FAILED"));
@@ -87,13 +87,13 @@ class DataSourceCapabilitySnapshotServiceTest {
     }
 
     @Test
-    void buildSnapshotShouldMarkRoadmapConnectorAsNotReadyForTemplatePlanning() {
+    void buildSnapshotShouldMarkRoadmapConnectorAsNotReadyForTaskPlanning() {
         DataSourceConfig datasource = activeDatasource("KAFKA");
 
         DataSourceCapabilitySnapshotView snapshot = snapshotService.buildSnapshot(datasource);
 
         assertEquals("KAFKA", snapshot.getConnectorType());
-        assertFalse(snapshot.isEligibleForTemplatePlanning());
+        assertFalse(snapshot.isEligibleForTaskPlanning());
         assertFalse(snapshot.isEligibleForExecutionPrecheck());
         assertTrue(snapshot.getIssueCodes().contains("CONNECTOR_ROADMAP_RESERVED"));
         assertTrue(snapshot.getRecommendedActions().stream().anyMatch(item -> item.contains("路线图")));

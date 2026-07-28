@@ -146,7 +146,7 @@ public class PlatformClosureReadinessService {
                         "data-sync",
                         8086,
                         "/api/sync/**",
-                        "负责同步模板、同步任务生命周期、worker route policy、replay/backfill/recovery plan 和任务中心回执。",
+                        "负责同步任务定义与生命周期、worker route policy、replay/backfill/recovery plan 和任务中心回执。",
                         "LOCAL_E2E_WIRED",
                         List.of("connector capabilities 已进入 smoke", "恢复计划和模板执行契约已落表", "Actuator/Prometheus 已暴露"),
                         List.of("生产还需要真实 worker dry-run/执行压测、CDC 连接器验收和大规模 backfill 容量模型。")),

@@ -256,19 +256,16 @@ datasmart:
       # 注意：数据库绑定的优先级高于这里的配置绑定，这里更适合作为默认值和开发演示样例。
       role-menu-bindings:
         PLATFORM_ADMINISTRATOR:
-          - sync:template-center
           - sync:task-center
           - sync:queue-governance
           - sync:alert-center
           - sync:permission-center
         TENANT_ADMINISTRATOR:
-          - sync:template-center
           - sync:task-center
           - sync:queue-governance
           - sync:alert-center
           - sync:permission-center
         PROJECT_OWNER:
-          - sync:template-center
           - sync:task-center
           - sync:alert-center
         OPERATOR:
@@ -282,12 +279,6 @@ datasmart:
           - DATASOURCE_METADATA_DISCOVERY
           - DATASOURCE_READ_ONLY_SQL_EXECUTION
           - DATASOURCE_READ_ONLY_SQL_AUDIT_QUERY
-          - SYNC_TEMPLATE_MANAGEMENT
-          - SYNC_TEMPLATE_VALIDATION
-          - SYNC_TASK_OPERATION
-          - SYNC_APPROVAL_OPERATION
-          - SYNC_QUEUE_HEALTH
-          - SYNC_QUEUE_AGING_SCAN
           - SYNC_ALERT_QUERY
           - SYNC_ALERT_DELIVERY_QUERY
           - SYNC_ALERT_DISPATCH
@@ -310,12 +301,6 @@ datasmart:
           - DATASOURCE_METADATA_DISCOVERY
           - DATASOURCE_READ_ONLY_SQL_EXECUTION
           - DATASOURCE_READ_ONLY_SQL_AUDIT_QUERY
-          - SYNC_TEMPLATE_MANAGEMENT
-          - SYNC_TEMPLATE_VALIDATION
-          - SYNC_TASK_OPERATION
-          - SYNC_APPROVAL_OPERATION
-          - SYNC_QUEUE_HEALTH
-          - SYNC_QUEUE_AGING_SCAN
           - SYNC_ALERT_QUERY
           - SYNC_ALERT_DELIVERY_QUERY
           - SYNC_ALERT_OUTBOX_HEALTH
@@ -334,17 +319,10 @@ datasmart:
           - SYNC_PERMISSION_NOTIFICATION_REMINDER_SCAN
         PROJECT_OWNER:
           - DATASOURCE_METADATA_DISCOVERY
-          - SYNC_TEMPLATE_MANAGEMENT
-          - SYNC_TEMPLATE_VALIDATION
-          - SYNC_TASK_OPERATION
         OPERATOR:
           - DATASOURCE_METADATA_DISCOVERY
           - DATASOURCE_READ_ONLY_SQL_EXECUTION
           - DATASOURCE_READ_ONLY_SQL_AUDIT_QUERY
-          - SYNC_TASK_OPERATION
-          - SYNC_APPROVAL_OPERATION
-          - SYNC_QUEUE_HEALTH
-          - SYNC_QUEUE_AGING_SCAN
           - SYNC_ALERT_QUERY
           - SYNC_ALERT_DELIVERY_QUERY
           - SYNC_ALERT_OUTBOX_HEALTH

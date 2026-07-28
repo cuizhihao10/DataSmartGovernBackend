@@ -130,7 +130,7 @@ class SyncDataScopeSupportTest {
         SyncActorContext actor = projectOwnerWithProjects(List.of(101L, 102L));
 
         assertThrows(PlatformBusinessException.class,
-                () -> support.validateOwnedReadable(7L, 999L, 1001L, actor, "同步模板"));
+                () -> support.validateOwnedReadable(7L, 999L, 1001L, actor, "同步任务"));
     }
 
     /**
@@ -140,7 +140,7 @@ class SyncDataScopeSupportTest {
     void shouldAllowDetailResourceWhoseProjectIsAuthorized() {
         SyncActorContext actor = projectOwnerWithProjects(List.of(101L, 102L));
 
-        assertDoesNotThrow(() -> support.validateOwnedReadable(7L, 101L, 2002L, actor, "同步模板"));
+        assertDoesNotThrow(() -> support.validateOwnedReadable(7L, 101L, 2002L, actor, "同步任务"));
     }
 
     /**
@@ -155,7 +155,7 @@ class SyncDataScopeSupportTest {
         SyncActorContext actor = projectOwnerWithProjects(List.of(101L, 102L));
 
         assertThrows(PlatformBusinessException.class,
-                () -> support.validateProjectWritable(7L, null, null, actor, "同步模板"));
+                () -> support.validateProjectWritable(7L, null, null, actor, "同步任务"));
     }
 
     /**
@@ -170,7 +170,7 @@ class SyncDataScopeSupportTest {
         SyncActorContext actor = projectOwnerWithProjects(List.of(101L, 102L));
 
         assertThrows(PlatformBusinessException.class,
-                () -> support.validateProjectWritable(7L, 999L, null, actor, "同步模板"));
+                () -> support.validateProjectWritable(7L, 999L, null, actor, "同步任务"));
     }
 
     /**
@@ -180,11 +180,11 @@ class SyncDataScopeSupportTest {
     void shouldAllowProjectScopedWriteInsideAuthorizedProjects() {
         SyncActorContext actor = projectOwnerWithProjects(List.of(101L, 102L));
 
-        assertDoesNotThrow(() -> support.validateProjectWritable(7L, 101L, null, actor, "同步模板"));
+        assertDoesNotThrow(() -> support.validateProjectWritable(7L, 101L, null, actor, "同步任务"));
     }
 
     /**
-     * 创建同步模板/任务时应优先使用 gateway 重建的当前项目，并且不再写入 workspace。
+     * 创建同步任务时应优先使用 gateway 重建的当前项目，并且不再写入 workspace。
      *
      * <p>这条用例和 gateway 项目 Header 校验配套：gateway 已经确认 {@code X-DataSmart-Project-Id=205}
      * 属于当前用户可访问范围，data-sync 领域层就应该把新资源写入该项目。

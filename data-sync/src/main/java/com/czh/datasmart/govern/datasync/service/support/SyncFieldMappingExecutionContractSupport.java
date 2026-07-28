@@ -23,7 +23,7 @@ import java.util.regex.Pattern;
  * 字段映射执行契约解析器。
  *
  * <p>本组件只做 data-sync 执行闭环所需的最小字段映射解析，不做真实元数据校验、不读取源库/目标库、
- * 不访问 datasource-management 的连接配置，也不执行 SQL。它的职责边界非常明确：把模板中的
+ * 不访问 datasource-management 的连接配置，也不执行 SQL。它的职责边界非常明确：把任务定义中的
  * {@code fieldMappingConfig} 原始 JSON 转换为受控 batch runner bridge 能消费的字段列表和低敏问题码。</p>
  *
  * <p>为什么 data-sync 需要自己的轻量解析器，而不是直接复用 datasource-management 的字段映射校验：</p>
@@ -59,8 +59,8 @@ public class SyncFieldMappingExecutionContractSupport {
     /**
      * 解析字段映射 JSON，生成内部执行契约。
      *
-     * @param fieldMappingConfig 模板中保存的字段映射 JSON。允许为空，但为空会返回 FIELD_MAPPING_NOT_DECLARED。
-     * @param primaryKeyField 模板声明的主键/冲突字段。允许为空；冲突写入是否必须声明主键由 workerPlan/bridge 再判断。
+     * @param fieldMappingConfig 任务定义中保存的字段映射 JSON。允许为空，但为空会返回 FIELD_MAPPING_NOT_DECLARED。
+     * @param primaryKeyField 任务定义声明的主键/冲突字段。允许为空；冲突写入是否必须声明主键由 workerPlan/bridge 再判断。
      * @return 内部字段映射执行契约。该对象可能包含字段名，调用方不能直接返回给外部 API。
      */
     public SyncFieldMappingExecutionContract parse(String fieldMappingConfig, String primaryKeyField) {
@@ -165,7 +165,7 @@ public class SyncFieldMappingExecutionContractSupport {
              * 创建向导 v2 的字段映射是“对象级”的：每一张源表到目标表的映射都有自己的 mappings。
              * 旧的最小执行合同只需要知道“是否存在可执行字段映射”，因此这里构造一个扁平化视图。
              * 真正的逐对象校验，例如目标表是否存在、源字段/目标字段是否存在、类型是否兼容，
-             * 由 SyncTemplateMetadataAwarePrecheckSupport 读取两端真实元数据后完成。
+             * 由 SyncTaskDefinitionMetadataAwarePrecheckSupport 读取两端真实元数据后完成。
              */
             JsonNode objectMappings = rootNode.path("objectMappings");
             if (objectMappings.isArray()) {
@@ -205,7 +205,7 @@ public class SyncFieldMappingExecutionContractSupport {
     /**
      * 判断字段映射行是否真的参与同步。
      *
-     * <p>历史字段映射没有 {@code syncEnabled} 字段，默认视为参与同步，保证旧模板不需要迁移；
+     * <p>历史字段映射没有 {@code syncEnabled} 字段，默认视为参与同步，保证旧任务定义不需要迁移；
      * 新版创建向导会把源端独有、目标端独有字段以 {@code syncEnabled=false} 保存，用于字段映射页展示两端差异，
      * 这些行不应进入最小执行合同。</p>
      */
@@ -221,7 +221,7 @@ public class SyncFieldMappingExecutionContractSupport {
     }
 
     /**
-     * 根据模板主键字段生成目标端冲突键列表。
+     * 根据任务定义主键字段生成目标端冲突键列表。
      *
      * <p>如果主键字段不在 writeColumns 中，最小写入器无法在目标端生成稳定冲突条件，因此返回问题码。
      * 注意这里不主动要求必须有主键，因为 APPEND/OVERWRITE 等策略不一定需要冲突键；
@@ -256,7 +256,7 @@ public class SyncFieldMappingExecutionContractSupport {
      * 从元数据驱动的字段映射中识别目标端冲突键。
      *
      * <p>创建向导和 Agent 都已经能通过真实表结构得知主键，因此不应再要求用户重复填写
-     * {@code primaryKeyField}。旧模板没有这些标志时仍保持原行为；显式顶层主键存在时也继续拥有最高优先级。</p>
+     * {@code primaryKeyField}。旧任务定义没有这些标志时仍保持原行为；显式顶层主键存在时也继续拥有最高优先级。</p>
      */
     private boolean mappingPrimaryKey(JsonNode mappingNode) {
         if (mappingNode == null || !mappingNode.isObject()) {
@@ -288,7 +288,7 @@ public class SyncFieldMappingExecutionContractSupport {
     /**
      * 从若干候选字段名中读取第一个数组节点。
      *
-     * <p>创建向导、导入文件和历史模板可能分别使用 {@code mappings} 或 {@code fieldMappings}。
+     * <p>创建向导、导入文件和历史任务定义可能分别使用 {@code mappings} 或 {@code fieldMappings}。
      * 在这里集中做兼容，可以避免同一种字段映射语义散落到多个分支里。</p>
      */
     private JsonNode firstArray(JsonNode node, String... fieldNames) {

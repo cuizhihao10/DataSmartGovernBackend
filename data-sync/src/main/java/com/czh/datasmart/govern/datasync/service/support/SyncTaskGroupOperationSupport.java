@@ -156,7 +156,7 @@ public class SyncTaskGroupOperationSupport {
      */
     public List<SyncTaskGroupSummary> listTaskGroups(SyncTaskQueryCriteria criteria, SyncActorContext actorContext) {
         SyncTaskQueryCriteria safeCriteria = criteria == null
-                ? new SyncTaskQueryCriteria(null, null, null, null, null, null, null, null, null, null, null)
+                ? new SyncTaskQueryCriteria(null, null, null, null, null, null, null, null, null, null)
                 : criteria;
         SyncDataVisibility visibility = dataScopeSupport.resolveVisibility(
                 safeCriteria.tenantId(), safeCriteria.projectId(), safeCriteria.workspaceId(), actorContext);
@@ -195,7 +195,7 @@ public class SyncTaskGroupOperationSupport {
      */
     public List<SyncTaskGroupTreeNode> listTaskGroupTree(SyncTaskQueryCriteria criteria, SyncActorContext actorContext) {
         SyncTaskQueryCriteria safeCriteria = criteria == null
-                ? new SyncTaskQueryCriteria(null, null, null, null, null, null, null, null, null, null, null)
+                ? new SyncTaskQueryCriteria(null, null, null, null, null, null, null, null, null, null)
                 : criteria;
         SyncDataVisibility visibility = dataScopeSupport.resolveVisibility(
                 safeCriteria.tenantId(), safeCriteria.projectId(), safeCriteria.workspaceId(), actorContext);
@@ -297,7 +297,7 @@ public class SyncTaskGroupOperationSupport {
     /**
      * 调整单个任务的分组。
      *
-     * <p>该方法只修改任务定义字段，不触发执行、不改模板、不影响历史 execution。
+     * <p>该方法只修改任务分组字段，不触发执行、不改同步配置、不影响历史 execution。
      * 如果请求为空或 groupCode 为空，任务会进入默认分组，而不是变成未分组。</p>
      */
     public SyncTaskOperationResult updateTaskGroup(SyncTask task,

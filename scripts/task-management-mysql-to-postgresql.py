@@ -341,8 +341,6 @@ TABLES: tuple[TableSpec, ...] = (
             int_col("workspace_id"),
             text_col("actor_id"),
             text_col("trace_id"),
-            int_col("template_id"),
-            int_col("sync_template_id"),
             text_col("status"),
             int_col("attempt_count"),
             json_text_col("payload_json"),

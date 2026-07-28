@@ -6,7 +6,7 @@
  */
 package com.czh.datasmart.govern.datasync.service.support;
 
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.entity.SyncExecutionPolicy;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -27,8 +27,8 @@ class SyncPartitionShardExecutionContractSupportTest {
 
     @Test
     void idRangeConfigShouldProduceExecutableShardItems() {
-        SyncTemplate template = new SyncTemplate();
-        template.setPartitionConfig("""
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setPartitionConfig("""
                 {
                   "strategy": "ID_RANGE",
                   "partitionField": "id",
@@ -41,7 +41,7 @@ class SyncPartitionShardExecutionContractSupportTest {
                 }
                 """);
 
-        SyncPartitionShardExecutionContract contract = support.parse(template);
+        SyncPartitionShardExecutionContract contract = support.parse(definition);
 
         assertThat(contract.declared()).isTrue();
         assertThat(contract.parseable()).isTrue();
@@ -67,8 +67,8 @@ class SyncPartitionShardExecutionContractSupportTest {
 
     @Test
     void unsafeFieldShouldBlockExecutableShardContract() {
-        SyncTemplate template = new SyncTemplate();
-        template.setPartitionConfig("""
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setPartitionConfig("""
                 {
                   "strategy": "ID_RANGE",
                   "partitionField": "id or 1=1",
@@ -78,7 +78,7 @@ class SyncPartitionShardExecutionContractSupportTest {
                 }
                 """);
 
-        SyncPartitionShardExecutionContract contract = support.parse(template);
+        SyncPartitionShardExecutionContract contract = support.parse(definition);
 
         assertThat(contract.declared()).isTrue();
         assertThat(contract.executableByPartitionFanOut()).isFalse();
@@ -87,8 +87,8 @@ class SyncPartitionShardExecutionContractSupportTest {
 
     @Test
     void unsupportedStrategyShouldStayParseableButNotExecutable() {
-        SyncTemplate template = new SyncTemplate();
-        template.setPartitionConfig("""
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setPartitionConfig("""
                 {
                   "strategy": "HASH_BUCKET",
                   "partitionField": "id",
@@ -96,7 +96,7 @@ class SyncPartitionShardExecutionContractSupportTest {
                 }
                 """);
 
-        SyncPartitionShardExecutionContract contract = support.parse(template);
+        SyncPartitionShardExecutionContract contract = support.parse(definition);
 
         assertThat(contract.declared()).isTrue();
         assertThat(contract.parseable()).isTrue();
@@ -107,8 +107,8 @@ class SyncPartitionShardExecutionContractSupportTest {
 
     @Test
     void autoSplitPkShouldRequireProbeAndBuildIdRangeShardsAfterProbe() {
-        SyncTemplate template = new SyncTemplate();
-        template.setPartitionConfig("""
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setPartitionConfig("""
                 {
                   "strategy": "AUTO_SPLIT_PK",
                   "splitPk": "id",
@@ -120,7 +120,7 @@ class SyncPartitionShardExecutionContractSupportTest {
                 }
                 """);
 
-        SyncPartitionShardExecutionContract probeRequired = support.parse(template);
+        SyncPartitionShardExecutionContract probeRequired = support.parse(definition);
 
         assertThat(probeRequired.autoRangeProbeRequired()).isTrue();
         assertThat(probeRequired.executableByPartitionFanOut()).isFalse();
@@ -155,15 +155,15 @@ class SyncPartitionShardExecutionContractSupportTest {
 
     @Test
     void autoSplitPkShouldUseRangeProbeRowCountAndAdministratorPolicyInsteadOfUserShardCount() {
-        SyncTemplate template = new SyncTemplate();
-        template.setPartitionConfig("""
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setPartitionConfig("""
                 {
                   "strategy": "AUTO_SPLIT_PK",
                   "splitPk": "id",
                   "shardCount": 32
                 }
                 """);
-        SyncPartitionShardExecutionContract probeRequired = support.parse(template);
+        SyncPartitionShardExecutionContract probeRequired = support.parse(definition);
 
         com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeResponse probe =
                 new com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeResponse();

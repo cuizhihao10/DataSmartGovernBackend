@@ -21,7 +21,7 @@ import java.util.List;
  * 用户名、密码、host、port、database、topic、bucket、文件路径、SQL、样本数据或连接错误原文。</p>
  *
  * <p>为什么要单独建这个 DTO：</p>
- * <p>1. data-sync 模板校验需要知道 datasourceId 对应的连接器类型和能力，但不应该读取连接密钥；</p>
+ * <p>1. data-sync 任务定义校验需要知道 datasourceId 对应的连接器类型和能力，但不应该读取连接密钥；</p>
  * <p>2. Agent 做工具规划时只需要“能不能读、能不能写、能不能增量、是否需要审批/人工修复”等低敏事实；</p>
  * <p>3. 前端配置向导需要根据能力开关展示可选同步模式，但不能因为展示一个能力标签就把敏感连接配置带出去；</p>
  * <p>4. 后续如果连接器能力从代码注册表迁移到插件市场或配置中心，外部 API 契约可以保持稳定。</p>
@@ -139,12 +139,12 @@ public class DataSourceCapabilitySnapshotView {
     private String implementationStage;
 
     /**
-     * 是否适合进入同步模板规划。
+     * 是否适合进入同步任务规划。
      *
      * <p>它表示当前数据源实例处于可用生命周期，并且连接器不是纯路线图预留。
      * 该字段不等价于“可以立即生产执行”，因为真实执行还需要权限、审批、队列、worker、checkpoint 和最近连接测试共同满足。</p>
      */
-    private boolean eligibleForTemplatePlanning;
+    private boolean eligibleForTaskPlanning;
 
     /**
      * 是否通过执行前置健康预检。

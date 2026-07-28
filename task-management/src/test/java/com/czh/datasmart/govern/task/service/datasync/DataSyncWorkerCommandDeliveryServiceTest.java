@@ -203,7 +203,7 @@ class DataSyncWorkerCommandDeliveryServiceTest {
         outbox.setWorkspaceId(30L);
         outbox.setActorId("1000");
         outbox.setTraceId("trace-001");
-        outbox.setSyncTemplateId(6001L);
+        outbox.setSyncTaskId(6001L);
         outbox.setStatus(status.name());
         outbox.setAttemptCount(0);
         outbox.setPayloadJson("""

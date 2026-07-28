@@ -24,7 +24,7 @@ import java.util.Set;
  * 数据同步数据范围支撑组件。
  *
  * <p>data-sync 是高风险模块：它不仅能读数据，还可能把数据写入目标端或导出到文件。
- * 如果没有租户范围控制，普通用户可能通过构造 tenantId 查询或创建其他租户的同步模板/任务。
+ * 如果没有租户范围控制，普通用户可能通过构造 tenantId 查询或创建其他租户的同步任务。
  *
  * <p>当前项目还没有把 permission-admin 的数据范围策略远程下沉到 data-sync，
  * 所以这里先实现两层规则：
@@ -93,7 +93,7 @@ public class SyncDataScopeSupport {
     }
 
     /**
-     * 解析创建模板/任务时应写入的项目 ID。
+     * 解析创建任务时应写入的项目 ID。
      *
      * <p>产品交互上，项目应来自“当前项目切换器”和登录上下文，而不是让用户在表单里填写一个数字 ID。这里的优先级是：</p>
      * <p>1. 网关或受信服务间调用注入的 {@code X-DataSmart-Project-Id}；</p>
@@ -131,7 +131,7 @@ public class SyncDataScopeSupport {
     }
 
     /**
-     * 解析创建模板/任务时的历史工作空间字段。
+     * 解析创建任务时的历史工作空间兼容字段。
      *
      * <p>当前产品层级已经收敛为“租户 -> 项目 -> 数据源/同步任务”，工作空间不再作为用户创建资源时需要感知、
      * 选择或填写的业务层级。因此新建资源不再写入默认 {@code workspaceId=10001}，而是统一返回 {@code null}。
@@ -139,7 +139,7 @@ public class SyncDataScopeSupport {
      * workspace key 语义；但它已经不是新建数据同步资源的产品归属维度。</p>
      *
      * <p>这里采用“读兼容、写收敛”的迁移策略：旧请求体或旧 Header 即使仍携带 workspaceId，也不会继续影响
-     * 新创建的模板和任务。这样可以避免页面已经隐藏工作空间后，后端仍然把资源写入某个不可见空间，最终造成
+     * 新创建的任务定义和任务。这样可以避免页面已经隐藏工作空间后，后端仍然把资源写入某个不可见空间，最终造成
      * “我切到项目里却看不到自己刚创建的数据源/任务”的体验问题。</p>
      */
     public Long resolveWorkspaceForCreate(Long requestedWorkspaceId, SyncActorContext actorContext) {
@@ -255,12 +255,12 @@ public class SyncDataScopeSupport {
     /**
      * 校验写入类动作是否可以落到指定项目。
      *
-     * <p>列表查询和详情查询只解决“能不能看”的问题，创建模板、创建任务、生成事故这类动作还要解决“能不能写”的问题。
-     * 对 data-sync 来说，写入风险更高：一个错误创建的同步模板可能后续被调度、审批或执行器消费，
+     * <p>列表查询和详情查询只解决“能不能看”的问题，创建任务定义、创建任务、生成事故这类动作还要解决“能不能写”的问题。
+     * 对 data-sync 来说，写入风险更高：一个错误创建的同步任务可能后续被调度或执行器消费，
      * 最终触发跨项目的数据读取、数据写入、离线导出或历史回放。
      *
      * <p>因此当 gateway 明确透传 `dataScopeLevel=PROJECT` 时，写操作必须满足两个条件：
-     * 1. 请求必须明确落到一个 projectId，不能用 null 表示“租户级模板”来绕过项目授权；
+     * 1. 请求必须明确落到一个 projectId，不能用 null 表示“租户级任务定义”来绕过项目授权；
      * 2. projectId 必须位于 permission-admin 物化出的 authorizedProjectIds 中。
      *
      * <p>如果当前不是显式 PROJECT 范围，例如平台管理员、租户管理员或内部迁移任务，则不在这里强行要求 projectId。
@@ -504,7 +504,7 @@ public class SyncDataScopeSupport {
      * - 如果请求本身已经显式指定了 projectId，就不再重复拼 `IN (...)`；
      * - 如果授权项目集合为空，就直接返回 `1 = 0`，避免“没有授权”误退化成“全量可见”。
      *
-     * <p>把它放在 data-scope 支持组件里，后续模板、任务、执行、事故、审计等列表查询都能复用同一语义。
+     * <p>把它放在 data-scope 支持组件里，后续任务定义、任务、执行、事故、审计等列表查询都能复用同一语义。
      *
      * @param wrapper MyBatis 查询包装器
      * @param projectColumn 目标项目列

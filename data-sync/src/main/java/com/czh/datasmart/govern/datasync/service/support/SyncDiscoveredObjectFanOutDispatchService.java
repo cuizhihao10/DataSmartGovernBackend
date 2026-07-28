@@ -11,7 +11,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanView;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryClient;
 import com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryRequest;
 import com.czh.datasmart.govern.datasync.integration.datasource.metadata.DatasourceMetadataDiscoveryResponse;
@@ -36,7 +36,7 @@ import java.util.regex.Pattern;
  * 也不自己连接源库；它只做三件事：</p>
  * <p>1. 调用 datasource-management 的元数据发现能力，拿到源端表和字段摘要；</p>
  * <p>2. 将发现结果转换成临时 OBJECT_LIST 配置，每张表变成一个可恢复对象级执行单元；</p>
- * <p>3. 把临时模板交给已有 {@link SyncObjectListFanOutDispatchService}，复用对象级账本、失败重试和父 execution 汇总。</p>
+ * <p>3. 把临时任务定义交给已有 {@link SyncObjectListFanOutDispatchService}，复用对象级账本、失败重试和父 execution 汇总。</p>
  *
  * <p>为什么不为 SCHEMA_FULL/DATABASE_FULL 另做一套执行器：全库迁移本质上是“很多表的同步任务集合”。
  * 如果另起状态机，就会重复实现对象级成功/失败、选择性重试、父任务部分成功、receipt 回写和审计。复用 OBJECT_LIST
@@ -80,11 +80,11 @@ public class SyncDiscoveredObjectFanOutDispatchService {
      */
     public SyncOfflineRunnerDispatchResult dispatchDiscoveredObjects(SyncExecution execution,
                                                                      SyncTask task,
-                                                                     SyncTemplate template,
+                                                                     SyncTaskDefinition definition,
                                                                      SyncWorkerExecutionPlanView workerPlan,
                                                                      SyncActorContext actorContext,
                                                                      SyncOfflineRunnerJobContract parentContract) {
-        DiscoveryPolicy policy = parseDiscoveryPolicy(template);
+        DiscoveryPolicy policy = parseDiscoveryPolicy(definition);
         recordDiscoveryEvent(task, execution, actorContext,
                 "INFO",
                 "SCHEMA_DATABASE_DISCOVERY_STARTED",
@@ -92,8 +92,8 @@ public class SyncDiscoveredObjectFanOutDispatchService {
                 "元数据发现已开始",
                 "系统正在从源端读取低敏表结构摘要，用于生成全库/全 schema 搬迁的对象清单。");
         DatasourceMetadataDiscoveryResponse discoveryResponse = metadataDiscoveryClient.discover(
-                template.getSourceDatasourceId(),
-                discoveryRequest(template, actorContext, policy),
+                definition.getSourceDatasourceId(),
+                discoveryRequest(definition, actorContext, policy),
                 actorContext);
         List<DatasourceMetadataDiscoveryResponse.TableSummary> tables = filterTables(discoveryResponse, policy);
         recordDiscoveryEvent(task, execution, actorContext,
@@ -115,9 +115,9 @@ public class SyncDiscoveredObjectFanOutDispatchService {
                     List.of("DISCOVERY_OBJECT_LIST_EMPTY"));
         }
         try {
-            SyncTemplate objectListTemplate = objectListTemplate(template, tables, policy);
+            SyncTaskDefinition objectListDefinition = objectListDefinition(definition, tables, policy);
             SyncWorkerExecutionPlanView objectListWorkerPlan = objectListWorkerPlan(workerPlan, tables.size());
-            return objectListFanOutDispatchService.dispatchObjectList(execution, task, objectListTemplate,
+            return objectListFanOutDispatchService.dispatchObjectList(execution, task, objectListDefinition,
                     objectListWorkerPlan, actorContext, parentContract);
         } catch (Exception exception) {
             recordDiscoveryEvent(task, execution, actorContext,
@@ -157,17 +157,17 @@ public class SyncDiscoveredObjectFanOutDispatchService {
                 detailSummary);
     }
 
-    private DatasourceMetadataDiscoveryRequest discoveryRequest(SyncTemplate template,
+    private DatasourceMetadataDiscoveryRequest discoveryRequest(SyncTaskDefinition definition,
                                                                SyncActorContext actorContext,
                                                                DiscoveryPolicy policy) {
         DatasourceMetadataDiscoveryRequest request = new DatasourceMetadataDiscoveryRequest();
         request.setActorId(actorContext == null || actorContext.actorId() == null ? 0L : actorContext.actorId());
         request.setActorRole(actorContext == null || actorContext.actorRole() == null ? "SERVICE_ACCOUNT" : actorContext.actorRole());
         request.setActorTenantId(actorContext == null || actorContext.tenantId() == null
-                ? template.getTenantId()
+                ? definition.getTenantId()
                 : actorContext.tenantId());
         request.setCatalog(policy.catalog());
-        request.setSchemaPattern(firstText(policy.schemaPattern(), template.getSourceSchemaName()));
+        request.setSchemaPattern(firstText(policy.schemaPattern(), definition.getSourceSchemaName()));
         request.setTableNamePattern(policy.tableNamePattern());
         request.setMaxTables(policy.maxObjects());
         request.setMaxColumnsPerTable(DEFAULT_MAX_COLUMNS_PER_TABLE);
@@ -211,25 +211,25 @@ public class SyncDiscoveredObjectFanOutDispatchService {
         return List.copyOf(tables);
     }
 
-    private SyncTemplate objectListTemplate(SyncTemplate template,
+    private SyncTaskDefinition objectListDefinition(SyncTaskDefinition definition,
                                             List<DatasourceMetadataDiscoveryResponse.TableSummary> tables,
                                             DiscoveryPolicy policy) throws Exception {
-        SyncTemplate child = copyTemplate(template);
+        SyncTaskDefinition child = copyDefinition(definition);
         child.setSyncScopeType(OBJECT_LIST);
-        child.setObjectMappingConfig(objectMappingConfig(template, tables, policy));
-        child.setFieldMappingConfig(firstText(template.getFieldMappingConfig(), "[]"));
+        child.setObjectMappingConfig(objectMappingConfig(definition, tables, policy));
+        child.setFieldMappingConfig(firstText(definition.getFieldMappingConfig(), "[]"));
         return child;
     }
 
-    private String objectMappingConfig(SyncTemplate template,
+    private String objectMappingConfig(SyncTaskDefinition definition,
                                        List<DatasourceMetadataDiscoveryResponse.TableSummary> tables,
                                        DiscoveryPolicy policy) throws Exception {
         List<Map<String, Object>> mappings = new ArrayList<>();
         for (DatasourceMetadataDiscoveryResponse.TableSummary table : tables) {
             Map<String, Object> mapping = new LinkedHashMap<>();
-            mapping.put("sourceSchema", firstText(table.getSchemaName(), template.getSourceSchemaName()));
+            mapping.put("sourceSchema", firstText(table.getSchemaName(), definition.getSourceSchemaName()));
             mapping.put("sourceObject", table.getTableName());
-            mapping.put("targetSchema", firstText(template.getTargetSchemaName(), table.getSchemaName()));
+            mapping.put("targetSchema", firstText(definition.getTargetSchemaName(), table.getSchemaName()));
             mapping.put("targetObject", targetObjectName(table.getTableName(), policy));
             mapping.put("fieldMappings", fieldMappings(table));
             mappings.add(mapping);
@@ -276,7 +276,6 @@ public class SyncDiscoveredObjectFanOutDispatchService {
                 workerPlan.triggerType(),
                 workerPlan.executorId(),
                 workerPlan.leaseExpireTime(),
-                workerPlan.templateId(),
                 workerPlan.sourceDatasourceId(),
                 workerPlan.targetDatasourceId(),
                 workerPlan.sourceConnectorType(),
@@ -358,17 +357,17 @@ public class SyncDiscoveredObjectFanOutDispatchService {
         );
     }
 
-    private DiscoveryPolicy parseDiscoveryPolicy(SyncTemplate template) {
-        if (!hasText(template.getObjectMappingConfig())) {
+    private DiscoveryPolicy parseDiscoveryPolicy(SyncTaskDefinition definition) {
+        if (!hasText(definition.getObjectMappingConfig())) {
             return DiscoveryPolicy.defaultPolicy();
         }
         try {
-            JsonNode root = objectMapper.readTree(template.getObjectMappingConfig());
+            JsonNode root = objectMapper.readTree(definition.getObjectMappingConfig());
             JsonNode policyNode = root.path("discoveryPolicy");
             JsonNode source = policyNode.isMissingNode() ? root : policyNode;
             return new DiscoveryPolicy(
                     text(source, "catalog"),
-                    firstText(text(source, "schemaPattern"), template.getSourceSchemaName()),
+                    firstText(text(source, "schemaPattern"), definition.getSourceSchemaName()),
                     text(source, "tableNamePattern"),
                     bounded(firstInt(source, "maxObjects", "maxTables"), DEFAULT_MAX_DISCOVERED_OBJECTS, ABSOLUTE_MAX_DISCOVERED_OBJECTS),
                     stringList(firstNode(source, "includePatterns", "includeObjects")),
@@ -382,39 +381,39 @@ public class SyncDiscoveredObjectFanOutDispatchService {
         }
     }
 
-    private SyncTemplate copyTemplate(SyncTemplate template) {
-        SyncTemplate copy = new SyncTemplate();
-        copy.setId(template.getId());
-        copy.setTenantId(template.getTenantId());
-        copy.setProjectId(template.getProjectId());
-        copy.setWorkspaceId(template.getWorkspaceId());
-        copy.setName(template.getName());
-        copy.setDescription(template.getDescription());
-        copy.setSourceDatasourceId(template.getSourceDatasourceId());
-        copy.setTargetDatasourceId(template.getTargetDatasourceId());
-        copy.setSourceSchemaName(template.getSourceSchemaName());
-        copy.setSourceObjectName(template.getSourceObjectName());
-        copy.setTargetSchemaName(template.getTargetSchemaName());
-        copy.setTargetObjectName(template.getTargetObjectName());
-        copy.setSourceConnectorType(template.getSourceConnectorType());
-        copy.setTargetConnectorType(template.getTargetConnectorType());
-        copy.setSyncMode(template.getSyncMode());
-        copy.setSyncScopeType(template.getSyncScopeType());
-        copy.setWriteStrategy(template.getWriteStrategy());
-        copy.setPrimaryKeyField(template.getPrimaryKeyField());
-        copy.setIncrementalField(template.getIncrementalField());
-        copy.setFieldMappingConfig(template.getFieldMappingConfig());
-        copy.setObjectMappingConfig(template.getObjectMappingConfig());
-        copy.setFilterConfig(template.getFilterConfig());
-        copy.setCustomSqlConfig(template.getCustomSqlConfig());
-        copy.setPartitionConfig(template.getPartitionConfig());
-        copy.setRetryPolicy(template.getRetryPolicy());
-        copy.setTimeoutPolicy(template.getTimeoutPolicy());
-        copy.setEnabled(template.getEnabled());
-        copy.setCreatedBy(template.getCreatedBy());
-        copy.setUpdatedBy(template.getUpdatedBy());
-        copy.setCreateTime(template.getCreateTime());
-        copy.setUpdateTime(template.getUpdateTime());
+    private SyncTaskDefinition copyDefinition(SyncTaskDefinition definition) {
+        SyncTaskDefinition copy = new SyncTaskDefinition();
+        copy.setId(definition.getId());
+        copy.setTenantId(definition.getTenantId());
+        copy.setProjectId(definition.getProjectId());
+        copy.setWorkspaceId(definition.getWorkspaceId());
+        copy.setName(definition.getName());
+        copy.setDescription(definition.getDescription());
+        copy.setSourceDatasourceId(definition.getSourceDatasourceId());
+        copy.setTargetDatasourceId(definition.getTargetDatasourceId());
+        copy.setSourceSchemaName(definition.getSourceSchemaName());
+        copy.setSourceObjectName(definition.getSourceObjectName());
+        copy.setTargetSchemaName(definition.getTargetSchemaName());
+        copy.setTargetObjectName(definition.getTargetObjectName());
+        copy.setSourceConnectorType(definition.getSourceConnectorType());
+        copy.setTargetConnectorType(definition.getTargetConnectorType());
+        copy.setSyncMode(definition.getSyncMode());
+        copy.setSyncScopeType(definition.getSyncScopeType());
+        copy.setWriteStrategy(definition.getWriteStrategy());
+        copy.setPrimaryKeyField(definition.getPrimaryKeyField());
+        copy.setIncrementalField(definition.getIncrementalField());
+        copy.setFieldMappingConfig(definition.getFieldMappingConfig());
+        copy.setObjectMappingConfig(definition.getObjectMappingConfig());
+        copy.setFilterConfig(definition.getFilterConfig());
+        copy.setCustomSqlConfig(definition.getCustomSqlConfig());
+        copy.setPartitionConfig(definition.getPartitionConfig());
+        copy.setRetryPolicy(definition.getRetryPolicy());
+        copy.setTimeoutPolicy(definition.getTimeoutPolicy());
+        copy.setEnabled(definition.getEnabled());
+        copy.setCreatedBy(definition.getCreatedBy());
+        copy.setUpdatedBy(definition.getUpdatedBy());
+        copy.setCreateTime(definition.getCreateTime());
+        copy.setUpdateTime(definition.getUpdateTime());
         return copy;
     }
 

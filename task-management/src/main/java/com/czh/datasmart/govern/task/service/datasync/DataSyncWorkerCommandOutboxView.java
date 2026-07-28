@@ -36,8 +36,6 @@ import java.time.LocalDateTime;
  * @param tenantId 租户隔离 ID。
  * @param projectId 项目隔离 ID。
  * @param workspaceId 工作空间隔离 ID。
- * @param templateId 兼容旧任务模板 ID。
- * @param syncTemplateId data-sync 同步模板 ID。
  * @param status outbox 状态，描述跨服务命令投递生命周期。
  * @param attemptCount 投递尝试次数。
  * @param payloadSizeBytes payload 字节数，仅用于容量诊断，不返回 payload 正文。
@@ -69,8 +67,6 @@ public record DataSyncWorkerCommandOutboxView(
         Long tenantId,
         Long projectId,
         Long workspaceId,
-        Long templateId,
-        Long syncTemplateId,
         String status,
         Integer attemptCount,
         Integer payloadSizeBytes,

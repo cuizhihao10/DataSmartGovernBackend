@@ -109,16 +109,6 @@ public class DataSyncWorkerCommandOutbox {
     private String traceId;
 
     /**
-     * 兼容历史 task template ID。
-     */
-    private Long templateId;
-
-    /**
-     * data-sync 模板 ID。
-     */
-    private Long syncTemplateId;
-
-    /**
      * outbox 状态。
      */
     private String status;

@@ -11,7 +11,7 @@ import java.util.List;
 /**
  * 单表分片执行合同。
  *
- * <p>该合同由 data-sync 控制面从模板的 {@code partitionConfig} 解析得到，职责是回答三个问题：</p>
+ * <p>该合同由 data-sync 控制面从任务定义的 {@code partitionConfig} 解析得到，职责是回答三个问题：</p>
  * <p>1. 当前配置是否能被安全解析；</p>
  * <p>2. 当前配置是否足以生成真实可执行的分片 read/write 请求；</p>
  * <p>3. 每个分片的低敏标识、结构化过滤条件、并发度和重试次数分别是什么。</p>

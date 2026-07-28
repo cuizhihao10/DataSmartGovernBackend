@@ -9,7 +9,7 @@ package com.czh.datasmart.govern.datasync.service.support;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncObjectExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeResponse;
 import com.czh.datasmart.govern.datasync.mapper.SyncObjectExecutionMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -32,7 +32,7 @@ class SyncObjectExecutionLifecycleSupportTest {
         SyncPartitionShardExecutionContract contract = autoContract(6L, 1L, 6L);
 
         List<SyncObjectExecution> rows = lifecycle.initializePartitionShardExecutions(
-                task(), execution(), template(), contract);
+                task(), execution(), definition(), contract);
 
         assertThat(rows).hasSize(1);
         assertThat(rows.getFirst().getWorkUnitType())
@@ -48,7 +48,7 @@ class SyncObjectExecutionLifecycleSupportTest {
         SyncPartitionShardExecutionContract contract = autoContract(500_000L, 1L, 500_000L);
 
         List<SyncObjectExecution> rows = lifecycle.initializePartitionShardExecutions(
-                task(), execution(), template(), contract);
+                task(), execution(), definition(), contract);
 
         assertThat(rows).hasSize(3);
         assertThat(rows).allSatisfy(row -> {
@@ -60,8 +60,8 @@ class SyncObjectExecutionLifecycleSupportTest {
     }
 
     private SyncPartitionShardExecutionContract autoContract(long rowCount, long min, long max) {
-        SyncTemplate template = template();
-        template.setPartitionConfig("{\"strategy\":\"AUTO_SPLIT_PK\",\"splitPk\":\"id\"}");
+        SyncTaskDefinition definition = definition();
+        definition.setPartitionConfig("{\"strategy\":\"AUTO_SPLIT_PK\",\"splitPk\":\"id\"}");
         SyncPartitionShardExecutionContractSupport support =
                 new SyncPartitionShardExecutionContractSupport(new ObjectMapper());
         DatasourcePartitionRangeProbeResponse probe = new DatasourcePartitionRangeProbeResponse();
@@ -72,7 +72,7 @@ class SyncObjectExecutionLifecycleSupportTest {
         probe.setRowCount(rowCount);
         probe.setWarnings(List.of());
         return support.buildAutoRangeContract(
-                support.parse(template),
+                support.parse(definition),
                 probe,
                 SyncEffectiveExecutionPolicy.defaults(10L, 101L, 34L));
     }
@@ -104,13 +104,13 @@ class SyncObjectExecutionLifecycleSupportTest {
         return execution;
     }
 
-    private SyncTemplate template() {
-        SyncTemplate template = new SyncTemplate();
-        template.setId(35L);
-        template.setSourceSchemaName(null);
-        template.setSourceObjectName("fs_test_customer_source");
-        template.setTargetSchemaName("public");
-        template.setTargetObjectName("fs_test_customer_target");
-        return template;
+    private SyncTaskDefinition definition() {
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setId(35L);
+        definition.setSourceSchemaName(null);
+        definition.setSourceObjectName("fs_test_customer_source");
+        definition.setTargetSchemaName("public");
+        definition.setTargetObjectName("fs_test_customer_target");
+        return definition;
     }
 }

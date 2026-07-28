@@ -6,7 +6,7 @@
  */
 package com.czh.datasmart.govern.datasync.service.support;
 
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeResponse;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -25,7 +25,7 @@ import java.util.regex.Pattern;
 /**
  * partitionConfig 分片执行合同解析器。
  *
- * <p>本组件把模板里的 {@code partitionConfig} 从“性能建议 JSON”推进为“可执行分片合同”。它对齐 DataX 的
+ * <p>本组件把任务定义里的 {@code partitionConfig} 从“性能建议 JSON”推进为“可执行分片合同”。它对齐 DataX 的
  * splitPk 思路，但把 DataX 没有产品化完整覆盖的部分继续补齐：分片会进入账本、失败分片可以选择性重试，
  * channel 和 TaskGroup 会成为调度合同，脏数据阈值会进入执行策略。</p>
  *
@@ -92,13 +92,13 @@ public class SyncPartitionShardExecutionContractSupport {
     }
 
     /**
-     * 解析模板分片配置。
+     * 解析任务定义分片配置。
      *
-     * @param template 同步模板；本方法只读取 partitionConfig，不读取数据源凭据或真实业务数据。
+     * @param definition 任务定义；本方法只读取 partitionConfig，不读取数据源凭据或真实业务数据。
      * @return 分片执行合同。配置错误时返回 issueCodes，避免上层无法回写失败状态。
      */
-    public SyncPartitionShardExecutionContract parse(SyncTemplate template) {
-        if (template == null || !hasText(template.getPartitionConfig())) {
+    public SyncPartitionShardExecutionContract parse(SyncTaskDefinition definition) {
+        if (definition == null || !hasText(definition.getPartitionConfig())) {
             return contract(false, true, false, null, null, 0,
                     DEFAULT_MAX_PARALLELISM, DEFAULT_TASK_GROUP_SIZE, DEFAULT_MAX_ATTEMPTS,
                     false, DEFAULT_MAX_DIRTY_RECORD_COUNT, DEFAULT_MAX_DIRTY_RECORD_RATIO,
@@ -106,7 +106,7 @@ public class SyncPartitionShardExecutionContractSupport {
         }
         List<String> issueCodes = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
-        JsonNode root = readRoot(template.getPartitionConfig(), issueCodes);
+        JsonNode root = readRoot(definition.getPartitionConfig(), issueCodes);
         if (root == null) {
             return contract(true, false, false, null, null, 0,
                     DEFAULT_MAX_PARALLELISM, DEFAULT_TASK_GROUP_SIZE, DEFAULT_MAX_ATTEMPTS,
@@ -186,7 +186,7 @@ public class SyncPartitionShardExecutionContractSupport {
      * 根据 datasource-management range-probe 结果生成可执行 ID_RANGE 合同。
      *
      * <p>range-probe 只提供 min/max/count，真正的 shard 数量、channel、TaskGroup、重试次数和脏数据阈值
-     * 仍来自用户模板合同。这样后续审计时可以区分“用户声明的策略”和“源库探测到的事实”。</p>
+     * 仍来自用户任务定义合同。这样后续审计时可以区分“用户声明的策略”和“源库探测到的事实”。</p>
      */
     public SyncPartitionShardExecutionContract buildAutoRangeContract(SyncPartitionShardExecutionContract base,
                                                                        DatasourcePartitionRangeProbeResponse probe) {
@@ -268,7 +268,7 @@ public class SyncPartitionShardExecutionContractSupport {
     /**
      * 将管理员执行策略覆盖到已经解析出的显式分片合同上。
      *
-     * <p>显式 ID_RANGE 场景下，分片边界来自模板或后续失败分片重试入口，不能由策略服务重新生成；但 channel、
+     * <p>显式 ID_RANGE 场景下，分片边界来自任务定义或后续失败分片重试入口，不能由策略服务重新生成；但 channel、
      * TaskGroup、最大尝试次数和脏数据阈值属于运行治理参数，应该由统一执行策略接管。这样普通用户不需要理解
      * DataX channel、TaskGroup 或 dirty threshold 的底层概念，管理员仍能在统一页面控制生产资源消耗。</p>
      */

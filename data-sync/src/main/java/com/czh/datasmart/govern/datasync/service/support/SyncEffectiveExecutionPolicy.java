@@ -110,7 +110,7 @@ public record SyncEffectiveExecutionPolicy(
      * 根据探测到的行数自动计算 splitPk 分片数。
      *
      * @param rowCount range-probe 返回的源表行数；为空或小于等于 0 时无法按数据量推导，会回退到 fallbackShardCount。
-     * @param fallbackShardCount 兼容旧模板或旧测试的兜底分片数。
+     * @param fallbackShardCount 兼容旧任务定义或旧测试的兜底分片数。
      * @return 已按 min/max 裁剪后的安全分片数。
      */
     public int adaptiveShardCount(Long rowCount, int fallbackShardCount) {

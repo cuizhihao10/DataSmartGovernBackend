@@ -16,7 +16,6 @@ import java.util.List;
  */
 public record SyncExecutionDiagnosisResponse(
         Long taskId,
-        Long templateId,
         Long executionId,
         String taskState,
         String executionState,

@@ -14,7 +14,7 @@ package com.czh.datasmart.govern.permission.controller.dto;
  */
 public record PermissionProjectDeletionBlocker(
         /**
-         * 阻断资源类型，例如 DATASOURCE、DATA_SYNC_TEMPLATE、DATA_SYNC_TASK。
+         * 阻断资源类型，例如 DATASOURCE、DATA_SYNC_TASK。
          */
         String resourceType,
 

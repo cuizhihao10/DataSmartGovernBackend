@@ -6,7 +6,7 @@
  */
 package com.czh.datasmart.govern.datasync.service.support;
 
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Component;
@@ -51,27 +51,27 @@ public class SyncObjectMappingExecutionContractSupport {
     }
 
     /**
-     * 解析模板中的 objectMappingConfig。
+     * 解析任务定义中的 objectMappingConfig。
      *
-     * @param template 同步模板。调用方应先完成租户、项目、审批和数据源权限校验。
+     * @param definition 任务定义。调用方应先完成租户、项目和数据源权限校验。
      * @return 内部执行契约；当 executableBySerialFanOut=false 时，调用方不能触发真实读写。
      */
-    public SyncObjectMappingExecutionContract parse(SyncTemplate template) {
+    public SyncObjectMappingExecutionContract parse(SyncTaskDefinition definition) {
         List<String> issueCodes = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
-        if (template == null) {
-            issueCodes.add("OBJECT_MAPPING_TEMPLATE_MISSING");
+        if (definition == null) {
+            issueCodes.add("OBJECT_MAPPING_TASK_DEFINITION_MISSING");
             return contract(false, List.of(), issueCodes, warnings);
         }
-        if (!hasText(template.getObjectMappingConfig())) {
-            if ("SINGLE_OBJECT".equalsIgnoreCase(template.getSyncScopeType())) {
-                return singleObjectTemplateContract(template);
+        if (!hasText(definition.getObjectMappingConfig())) {
+            if ("SINGLE_OBJECT".equalsIgnoreCase(definition.getSyncScopeType())) {
+                return singleObjectDefinitionContract(definition);
             }
             issueCodes.add("OBJECT_MAPPING_CONFIG_REQUIRED");
             return contract(false, List.of(), issueCodes, warnings);
         }
 
-        JsonNode root = readJson(template.getObjectMappingConfig(), issueCodes);
+        JsonNode root = readJson(definition.getObjectMappingConfig(), issueCodes);
         if (root == null) {
             return contract(false, List.of(), issueCodes, warnings);
         }
@@ -92,7 +92,7 @@ public class SyncObjectMappingExecutionContractSupport {
         List<SyncObjectMappingExecutionItem> mappings = new ArrayList<>();
         for (int index = 0; index < mappingsNode.size(); index++) {
             JsonNode mappingNode = mappingsNode.get(index);
-            SyncObjectMappingExecutionItem item = parseItem(template, mappingNode, index, issueCodes, warnings);
+            SyncObjectMappingExecutionItem item = parseItem(definition, mappingNode, index, issueCodes, warnings);
             if (item != null) {
                 mappings.add(item);
             }
@@ -107,20 +107,20 @@ public class SyncObjectMappingExecutionContractSupport {
     }
 
     /**
-     * Builds the object-ledger contract for legacy single-table templates.
+     * Builds the object-ledger contract for legacy single-table definitions.
      *
-     * <p>Older templates stored the only source/target pair in top-level columns and did not persist
+     * <p>Older definitions stored the only source/target pair in top-level columns and did not persist
      * {@code objectMappingConfig}.  A single object still needs an {@code OBJECT} ledger row so that
      * retries, counts and failures have the same durable semantics as multi-table jobs.  This fallback
      * accepts only ordinary identifiers and never invents a table name, SQL fragment or schema.</p>
      */
-    private SyncObjectMappingExecutionContract singleObjectTemplateContract(SyncTemplate template) {
+    private SyncObjectMappingExecutionContract singleObjectDefinitionContract(SyncTaskDefinition definition) {
         List<String> issueCodes = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
-        String sourceObjectName = trimToNull(template.getSourceObjectName());
-        String targetObjectName = trimToNull(template.getTargetObjectName());
-        String sourceSchemaName = trimToNull(template.getSourceSchemaName());
-        String targetSchemaName = trimToNull(template.getTargetSchemaName());
+        String sourceObjectName = trimToNull(definition.getSourceObjectName());
+        String targetObjectName = trimToNull(definition.getTargetObjectName());
+        String sourceSchemaName = trimToNull(definition.getSourceSchemaName());
+        String targetSchemaName = trimToNull(definition.getTargetSchemaName());
 
         if (!safeIdentifier(sourceObjectName) || !safeIdentifier(targetObjectName)) {
             issueCodes.add("OBJECT_MAPPING_IDENTIFIER_UNSAFE");
@@ -135,7 +135,7 @@ public class SyncObjectMappingExecutionContractSupport {
             return contract(true, List.of(), issueCodes, warnings);
         }
 
-        warnings.add("SINGLE_OBJECT_MAPPING_DERIVED_FROM_TEMPLATE_COLUMNS");
+        warnings.add("SINGLE_OBJECT_MAPPING_DERIVED_FROM_TASK_DEFINITION_COLUMNS");
         SyncObjectMappingExecutionItem item = new SyncObjectMappingExecutionItem(
                 0,
                 sourceSchemaName,
@@ -156,7 +156,7 @@ public class SyncObjectMappingExecutionContractSupport {
      * <p>这里支持多组字段别名，是为了兼容不同来源的配置：前端可能叫 sourceObject，Agent 可能输出 sourceTable，
      * 旧版本导入可能叫 from/to。解析器可以包容命名差异，但不会包容不安全标识符。</p>
      */
-    private SyncObjectMappingExecutionItem parseItem(SyncTemplate template,
+    private SyncObjectMappingExecutionItem parseItem(SyncTaskDefinition definition,
                                                      JsonNode mappingNode,
                                                      int ordinal,
                                                      List<String> issueCodes,
@@ -169,7 +169,7 @@ public class SyncObjectMappingExecutionContractSupport {
          * 创建向导和导入导出合同已经逐步从早期的 sourceObject/targetObject 演进为
          * sourceObjectName/targetObjectName。执行解析器必须兼容这些字段名，否则会出现一个很隐蔽的生产问题：
          * 页面、预检查和任务详情都显示用户选的是 A -> B，但 worker 进入最小 run-once bridge 时仍然回退到
-         * 模板顶层旧字段，最终把数据写到旧目标表。这里把两套命名都纳入解析，保证“用户保存的对象映射”优先成为执行事实。
+         * 任务定义顶层旧字段，最终把数据写到旧目标表。这里把两套命名都纳入解析，保证“用户保存的对象映射”优先成为执行事实。
          */
         String sourceObjectName = firstText(mappingNode,
                 "sourceObjectName", "sourceObject", "sourceTableName", "sourceTable", "source", "from");
@@ -181,7 +181,7 @@ public class SyncObjectMappingExecutionContractSupport {
                 "targetSchemaName", "targetSchema", "targetNamespace", "targetCatalog");
         /*
          * whereCondition 是当前创建向导里“每个对象一条过滤条件”的用户入口。
-         * 它和历史模板级 filterConfig 不同：filterConfig 更像任务级兜底配置，而对象级 where 可以做到
+         * 它和历史任务定义级 filterConfig 不同：filterConfig 更像任务级兜底配置，而对象级 where 可以做到
          * “表 A 用 id > 100，表 B 用 biz_date >= '2026-07-01'”。这里只读取原文并保持低敏内部流转，
          * 真正的 SQL 安全校验和结构化转换放到 SyncFilterExecutionContractSupport 中完成，避免在对象映射解析层
          * 同时承担 JSON 解析、SQL 语法和执行安全三种职责。
@@ -207,8 +207,8 @@ public class SyncObjectMappingExecutionContractSupport {
         if (hasText(fieldMappingOverride)) {
             itemWarnings.add("OBJECT_LEVEL_FIELD_MAPPING_OVERRIDE_DECLARED");
         }
-        String resolvedSourceSchema = firstText(sourceSchemaName, template.getSourceSchemaName());
-        String resolvedTargetSchema = firstText(targetSchemaName, template.getTargetSchemaName());
+        String resolvedSourceSchema = firstText(sourceSchemaName, definition.getSourceSchemaName());
+        String resolvedTargetSchema = firstText(targetSchemaName, definition.getTargetSchemaName());
         if (!hasText(resolvedSourceSchema)) {
             warnings.add("OBJECT_MAPPING_SOURCE_SCHEMA_FALLBACK_EMPTY");
         }

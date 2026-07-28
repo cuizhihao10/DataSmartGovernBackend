@@ -192,7 +192,7 @@ public class DataSyncWorkerCommandDeliveryService {
      * 从 outbox 实体还原 datasource-management 内部执行请求。
      *
      * <p>注意这里不直接反序列化成完整业务对象，而是明确从 entity 字段和低敏 payload 白名单中取值。
-     * outbox.entity 中的 tenant/project/template 等字段是查询和状态机需要的强字段；payloadJson 只补充 priority、
+     * outbox.entity 中的 tenant/project/syncTaskId 等字段是查询和状态机需要的强字段；payloadJson 只补充 priority、
      * runMode、ownerId 这类低敏执行选项，避免未来 payload 扩字段时被无意透传到下游。</p>
      */
     private DataSyncAgentExecuteRequest buildExecuteRequest(DataSyncWorkerCommandOutbox outbox) {
@@ -212,8 +212,7 @@ public class DataSyncWorkerCommandDeliveryService {
         request.setWorkspaceId(outbox.getWorkspaceId());
         request.setActorId(outbox.getActorId());
         request.setTraceId(outbox.getTraceId());
-        request.setTemplateId(outbox.getTemplateId());
-        request.setSyncTemplateId(outbox.getSyncTemplateId());
+        request.setSyncTaskId(outbox.getSyncTaskId());
         request.setPriority(text(payload, "priority"));
         request.setRunMode(text(payload, "runMode"));
         request.setOwnerId(longValue(payload, "ownerId"));

@@ -77,7 +77,7 @@ public class SyncFieldMappingExecutionContract {
     /**
      * 目标端主键或冲突键字段列表。
      *
-     * <p>UPSERT、INSERT_IGNORE、REPLACE 等策略需要该列表生成冲突处理语义。当前模板只有单字段主键，
+     * <p>UPSERT、INSERT_IGNORE、REPLACE 等策略需要该列表生成冲突处理语义。当前任务定义只有单字段主键，
      * 这里仍使用列表，是为了后续支持复合唯一键时不再改桥接契约。</p>
      */
     private final List<String> primaryKeyColumns;

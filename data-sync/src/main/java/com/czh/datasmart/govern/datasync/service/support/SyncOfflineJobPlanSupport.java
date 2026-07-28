@@ -9,7 +9,7 @@ package com.czh.datasmart.govern.datasync.service.support;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncConnectorCompatibilityView;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncOfflineJobPlanResponse;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
 import com.czh.datasmart.govern.datasync.support.SyncTransferChannel;
 import com.czh.datasmart.govern.datasync.support.SyncWriteStrategy;
@@ -26,7 +26,7 @@ import java.util.Locale;
 /**
  * DataX 风格离线作业计划生成组件。
  *
- * <p>这个组件把同步模板转换为“低敏作业计划”，用于回答未来离线 runner 的核心编排问题：</p>
+ * <p>这个组件把任务定义转换为“低敏作业计划”，用于回答离线 runner 的核心编排问题：</p>
  * <p>1. 使用哪类 Reader 读取源端，例如 JDBC_READER、FILE_READER、OBJECT_STORAGE_READER；</p>
  * <p>2. 使用哪类 Writer 写入目标端，例如 JDBC_WRITER、FILE_WRITER、OBJECT_STORAGE_WRITER；</p>
  * <p>3. 任务是全量扫描、定时批量、自定义 SQL 结果集、回放、补数还是离线导入导出；</p>
@@ -53,48 +53,48 @@ public class SyncOfflineJobPlanSupport {
     private static final String PAYLOAD_POLICY = "LOW_SENSITIVE_OFFLINE_JOB_PLAN";
 
     private final SyncConnectorCapabilityRegistry connectorCapabilityRegistry;
-    private final SyncTemplateScopeContractSupport scopeContractSupport;
+    private final SyncTaskDefinitionScopeContractSupport scopeContractSupport;
     private final SyncFieldMappingExecutionContractSupport fieldMappingExecutionContractSupport;
     private final ObjectMapper objectMapper;
 
     /**
      * 生成离线作业计划。
      *
-     * @param template 已经由服务层完成租户、项目、SELF 数据范围校验的同步模板。
+     * @param definition 已经由服务层完成租户、项目、SELF 数据范围校验的任务定义。
      * @return 低敏离线作业计划。返回结果可以被 UI、Agent、审批流或运营台读取，但不能被当作可执行 SQL/job JSON。
      */
-    public SyncOfflineJobPlanResponse buildPlan(SyncTemplate template) {
+    public SyncOfflineJobPlanResponse buildPlan(SyncTaskDefinition definition) {
         List<String> issueCodes = new ArrayList<>();
         List<String> failClosedReasons = new ArrayList<>();
         List<String> recommendedActions = new ArrayList<>();
         List<String> performanceNotes = new ArrayList<>();
         List<String> safetyNotes = new ArrayList<>();
 
-        SyncMode syncMode = resolveMode(template, issueCodes, recommendedActions);
-        SyncWriteStrategy writeStrategy = resolveWriteStrategy(template, issueCodes, recommendedActions);
+        SyncMode syncMode = resolveMode(definition, issueCodes, recommendedActions);
+        SyncWriteStrategy writeStrategy = resolveWriteStrategy(definition, issueCodes, recommendedActions);
         SyncTransferChannel transferChannel = SyncTransferChannelSupport.resolve(syncMode);
         boolean offlineChannel = transferChannel == SyncTransferChannel.OFFLINE;
         performanceNotes.add(SyncTransferChannelSupport.explanation(transferChannel));
 
-        SyncTemplateScopeContract scopeContract = scopeContractSupport.evaluate(template);
+        SyncTaskDefinitionScopeContract scopeContract = scopeContractSupport.evaluate(definition);
         issueCodes.addAll(scopeContract.issueCodes());
         recommendedActions.addAll(scopeContract.recommendedActions());
         safetyNotes.addAll(scopeContract.warnings());
 
         SyncFieldMappingExecutionContract fieldMappingContract = fieldMappingExecutionContractSupport.parse(
-                template.getFieldMappingConfig(), template.getPrimaryKeyField());
+                definition.getFieldMappingConfig(), definition.getPrimaryKeyField());
         issueCodes.addAll(fieldMappingContract.getIssueCodes());
         safetyNotes.addAll(fieldMappingContract.getWarnings());
 
-        SyncConnectorCompatibilityView compatibility = resolveCompatibility(template, syncMode, issueCodes,
+        SyncConnectorCompatibilityView compatibility = resolveCompatibility(definition, syncMode, issueCodes,
                 recommendedActions, performanceNotes, safetyNotes);
         boolean connectorCompatibilitySupported = compatibility != null && compatibility.supported();
         boolean checkpointRequired = compatibility != null && compatibility.checkpointRequired();
         boolean checkpointHandoffRequired = checkpointRequired;
-        CustomSqlStatementPolicy sqlStatementPolicy = resolveSqlStatementPolicy(template, scopeContract,
+        CustomSqlStatementPolicy sqlStatementPolicy = resolveSqlStatementPolicy(definition, scopeContract,
                 issueCodes, recommendedActions, safetyNotes);
 
-        evaluateWriteStrategy(template, writeStrategy, issueCodes, recommendedActions, safetyNotes);
+        evaluateWriteStrategy(definition, writeStrategy, issueCodes, recommendedActions, safetyNotes);
         evaluateOfflineBoundary(offlineChannel, syncMode, scopeContract, fieldMappingContract,
                 checkpointRequired, connectorCompatibilitySupported, failClosedReasons, recommendedActions,
                 performanceNotes, safetyNotes);
@@ -129,18 +129,17 @@ public class SyncOfflineJobPlanSupport {
                 : "CHECKPOINT_OPTIONAL_OR_NOT_REQUIRED_FOR_BOUNDED_FULL_JOB";
         String approvalPolicy = approvalRequired
                 ? "APPROVAL_REQUIRED_BEFORE_EXECUTION"
-                : "APPROVAL_NOT_REQUIRED_BY_TEMPLATE_PLAN";
+                : "APPROVAL_NOT_REQUIRED_BY_TASK_DEFINITION_PLAN";
 
         return new SyncOfflineJobPlanResponse(
-                template.getId(),
-                template.getTenantId(),
-                template.getProjectId(),
-                template.getWorkspaceId(),
-                template.getSourceDatasourceId(),
-                template.getTargetDatasourceId(),
-                normalize(template.getSourceConnectorType()),
-                normalize(template.getTargetConnectorType()),
-                syncMode == null ? normalize(template.getSyncMode()) : syncMode.name(),
+                definition.getTenantId(),
+                definition.getProjectId(),
+                definition.getWorkspaceId(),
+                definition.getSourceDatasourceId(),
+                definition.getTargetDatasourceId(),
+                normalize(definition.getSourceConnectorType()),
+                normalize(definition.getTargetConnectorType()),
+                syncMode == null ? normalize(definition.getSyncMode()) : syncMode.name(),
                 transferChannel == null ? null : transferChannel.name(),
                 SyncTransferChannelSupport.referenceRuntime(transferChannel),
                 scopeContract.scopeType(),
@@ -150,10 +149,10 @@ public class SyncOfflineJobPlanSupport {
                 canCreateTaskDraft,
                 executableByMinimalBridge,
                 dedicatedOfflineRunnerRequired,
-                SyncOfflineJobPlanClassificationSupport.readerFamily(template.getSourceConnectorType()),
-                SyncOfflineJobPlanClassificationSupport.writerFamily(template.getTargetConnectorType()),
+                SyncOfflineJobPlanClassificationSupport.readerFamily(definition.getSourceConnectorType()),
+                SyncOfflineJobPlanClassificationSupport.writerFamily(definition.getTargetConnectorType()),
                 SyncOfflineJobPlanClassificationSupport.modeFamily(syncMode),
-                SyncOfflineJobPlanClassificationSupport.shardStrategy(syncMode, scopeContract, template),
+                SyncOfflineJobPlanClassificationSupport.shardStrategy(syncMode, scopeContract, definition),
                 scheduleSemantics,
                 sqlStatementPolicy.policy(),
                 checkpointPolicy,
@@ -165,12 +164,12 @@ public class SyncOfflineJobPlanSupport {
                 checkpointRequired,
                 checkpointHandoffRequired,
                 approvalRequired,
-                hasText(template.getFieldMappingConfig()),
+                hasText(definition.getFieldMappingConfig()),
                 fieldMappingContract.directlyRunnableByMinimalBridge(),
                 scopeContract.objectMappingDeclared(),
                 scopeContract.selectedObjectCount(),
-                hasText(template.getFilterConfig()),
-                hasText(template.getPartitionConfig()),
+                hasText(definition.getFilterConfig()),
+                hasText(definition.getPartitionConfig()),
                 distinctIssues,
                 distinct(failClosedReasons),
                 distinct(recommendedActions),
@@ -186,8 +185,8 @@ public class SyncOfflineJobPlanSupport {
      * <p>未知模式不抛异常，而是转成 issueCode。规划接口的价值在于一次性返回可解释问题清单，
      * 如果第一个错误就抛出，前端和 Agent 就无法继续给用户整理完整修复建议。</p>
      */
-    private SyncMode resolveMode(SyncTemplate template, List<String> issueCodes, List<String> recommendedActions) {
-        String syncMode = normalize(template.getSyncMode());
+    private SyncMode resolveMode(SyncTaskDefinition definition, List<String> issueCodes, List<String> recommendedActions) {
+        String syncMode = normalize(definition.getSyncMode());
         if (syncMode == null) {
             issueCodes.add("SYNC_MODE_MISSING");
             recommendedActions.add("离线作业计划必须先声明用户可选传输模式，例如 FULL、SCHEDULED_FULL、SCHEDULED_BATCH 或 CUSTOM_SQL_QUERY");
@@ -209,11 +208,11 @@ public class SyncOfflineJobPlanSupport {
      * 但这里仍使用模式感知解析，保证如果未来有实时/离线混合预览入口复用本组件，
      * “实时空写入策略默认 UPDATE/merge”的产品语义不会被旧的 INSERT/APPEND 默认值覆盖。</p>
      */
-    private SyncWriteStrategy resolveWriteStrategy(SyncTemplate template,
+    private SyncWriteStrategy resolveWriteStrategy(SyncTaskDefinition definition,
                                                    List<String> issueCodes,
                                                    List<String> recommendedActions) {
         try {
-            return SyncWriteStrategy.fromValueForMode(template.getWriteStrategy(), template.getSyncMode());
+            return SyncWriteStrategy.fromValueForMode(definition.getWriteStrategy(), definition.getSyncMode());
         } catch (IllegalArgumentException exception) {
             issueCodes.add("WRITE_STRATEGY_UNSUPPORTED");
             recommendedActions.add("将 writeStrategy 调整为 INSERT 或 UPDATE；实时 CDC 模式可省略 writeStrategy，由后端默认 UPDATE/merge");
@@ -227,14 +226,14 @@ public class SyncOfflineJobPlanSupport {
      * <p>离线计划允许“当前最小 bridge 不支持但未来专用 runner 可支持”的状态，但不允许连接器组合本身不兼容。
      * 例如 Kafka -> PostgreSQL 的 FULL 全表同步不是合理离线计划，应被标记为阻断。</p>
      */
-    private SyncConnectorCompatibilityView resolveCompatibility(SyncTemplate template,
+    private SyncConnectorCompatibilityView resolveCompatibility(SyncTaskDefinition definition,
                                                                 SyncMode syncMode,
                                                                 List<String> issueCodes,
                                                                 List<String> recommendedActions,
                                                                 List<String> performanceNotes,
                                                                 List<String> safetyNotes) {
-        if (!hasText(template.getSourceConnectorType())
-                || !hasText(template.getTargetConnectorType())
+        if (!hasText(definition.getSourceConnectorType())
+                || !hasText(definition.getTargetConnectorType())
                 || syncMode == null) {
             issueCodes.add("CONNECTOR_FACTS_INCOMPLETE");
             recommendedActions.add("生成离线作业计划前必须补全源端/目标端 connector type；推荐通过 datasource-management 能力快照补齐");
@@ -242,7 +241,7 @@ public class SyncOfflineJobPlanSupport {
         }
         try {
             SyncConnectorCompatibilityView compatibility = connectorCapabilityRegistry.checkCompatibility(
-                    template.getSourceConnectorType(), template.getTargetConnectorType(), syncMode.name());
+                    definition.getSourceConnectorType(), definition.getTargetConnectorType(), syncMode.name());
             if (!compatibility.supported()) {
                 issueCodes.add("CONNECTOR_COMPATIBILITY_UNSUPPORTED");
             }
@@ -253,7 +252,7 @@ public class SyncOfflineJobPlanSupport {
             return compatibility;
         } catch (PlatformBusinessException exception) {
             issueCodes.add("CONNECTOR_COMPATIBILITY_UNSUPPORTED");
-            recommendedActions.add("连接器类型不在当前能力矩阵内，请先登记连接器能力或调整模板源端/目标端类型");
+            recommendedActions.add("连接器类型不在当前能力矩阵内，请先登记连接器能力或调整任务定义中的源端/目标端类型");
             return null;
         }
     }
@@ -264,19 +263,19 @@ public class SyncOfflineJobPlanSupport {
      * <p>这里故意只读取是否存在 sql/statementRef，不返回 SQL 正文，也不返回 statementRef 的具体值。
      * statementRef 本身可能暴露客户内部 SQL 仓库命名、业务主题或表名，因此外部响应只给布尔事实和策略码。</p>
      */
-    private CustomSqlStatementPolicy resolveSqlStatementPolicy(SyncTemplate template,
-                                                               SyncTemplateScopeContract scopeContract,
+    private CustomSqlStatementPolicy resolveSqlStatementPolicy(SyncTaskDefinition definition,
+                                                               SyncTaskDefinitionScopeContract scopeContract,
                                                                List<String> issueCodes,
                                                                List<String> recommendedActions,
                                                                List<String> safetyNotes) {
         if (!scopeContract.customSqlScope()) {
             return new CustomSqlStatementPolicy("NOT_APPLICABLE", false, false);
         }
-        if (!hasText(template.getCustomSqlConfig())) {
+        if (!hasText(definition.getCustomSqlConfig())) {
             return new CustomSqlStatementPolicy("STATEMENT_REF_OR_READ_ONLY_SQL_REQUIRED", false, false);
         }
         try {
-            JsonNode root = objectMapper.readTree(template.getCustomSqlConfig());
+            JsonNode root = objectMapper.readTree(definition.getCustomSqlConfig());
             boolean statementRefDeclared = hasText(jsonText(root, "statementRef"));
             boolean inlineSqlDeclared = hasText(jsonText(root, "sql"));
             if (statementRefDeclared) {
@@ -298,7 +297,7 @@ public class SyncOfflineJobPlanSupport {
     /**
      * 写入策略补充检查。
      */
-    private void evaluateWriteStrategy(SyncTemplate template,
+    private void evaluateWriteStrategy(SyncTaskDefinition definition,
                                        SyncWriteStrategy writeStrategy,
                                        List<String> issueCodes,
                                        List<String> recommendedActions,
@@ -306,7 +305,7 @@ public class SyncOfflineJobPlanSupport {
         if (writeStrategy == null) {
             return;
         }
-        if (writeStrategy.requiresConflictKey() && !hasText(template.getPrimaryKeyField())) {
+        if (writeStrategy.requiresConflictKey() && !hasText(definition.getPrimaryKeyField())) {
             issueCodes.add("PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE");
             recommendedActions.add(writeStrategy.name() + " 离线写入必须声明 primaryKeyField，确保重试、回放和补数具备幂等基础");
         }
@@ -320,12 +319,12 @@ public class SyncOfflineJobPlanSupport {
     /**
      * 评估离线执行边界。
      *
-     * <p>failClosedReasons 不是“模板一定错误”，而是“为什么当前入口不能继续执行”的原因。
+     * <p>failClosedReasons 不是“任务定义一定错误”，而是“为什么当前入口不能继续执行”的原因。
      * 例如 OBJECT_LIST 是合法产品场景，但当前最小 run-once bridge 不支持，所以要标记专用 runner 必需。</p>
      */
     private void evaluateOfflineBoundary(boolean offlineChannel,
                                          SyncMode syncMode,
-                                         SyncTemplateScopeContract scopeContract,
+                                         SyncTaskDefinitionScopeContract scopeContract,
                                          SyncFieldMappingExecutionContract fieldMappingContract,
                                          boolean checkpointRequired,
                                          boolean connectorCompatibilitySupported,

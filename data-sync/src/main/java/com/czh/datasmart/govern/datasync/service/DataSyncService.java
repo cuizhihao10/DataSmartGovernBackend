@@ -7,8 +7,6 @@
 package com.czh.datasmart.govern.datasync.service;
 
 import com.czh.datasmart.govern.common.api.PlatformPageResponse;
-import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTaskRequest;
-import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTemplateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncAuditQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncCheckpointQueryCriteria;
@@ -26,7 +24,6 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionLogQueryCri
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionStartRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionDiagnosisResponse;
-import com.czh.datasmart.govern.datasync.controller.dto.SyncOfflineJobPlanResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryRequest;
@@ -54,9 +51,6 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskUpdateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExecutionPrecheckResponse;
-import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateExecutionPrecheckResponse;
-import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplatePlanningPreviewResponse;
-import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateQueryCriteria;
 import com.czh.datasmart.govern.datasync.entity.SyncAuditRecord;
 import com.czh.datasmart.govern.datasync.entity.SyncCheckpoint;
 import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
@@ -64,59 +58,21 @@ import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncExecutionLog;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTaskGroup;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
 
 import java.util.List;
 
 /**
  * 数据同步服务契约。
  *
- * <p>第一版服务只覆盖“模板定义”和“任务定义/入队”。
- * 真实执行引擎、checkpoint、失败样本和数据搬运 worker 会在后续独立扩展，避免第一步就把执行细节塞进服务实现。
+ * <p>同步任务是唯一用户资源；配置、预检查、执行、恢复和审计入口都使用 taskId。</p>
  */
 public interface DataSyncService {
-
-    SyncTemplate createTemplate(CreateSyncTemplateRequest request, SyncActorContext actorContext);
-
-    PlatformPageResponse<SyncTemplate> pageTemplates(SyncTemplateQueryCriteria criteria, SyncActorContext actorContext);
-
-    SyncTemplate getTemplate(Long id, SyncActorContext actorContext);
-
-    SyncTaskOperationResult validateTemplate(Long id, SyncActorContext actorContext);
-
-    /**
-     * 生成同步模板规划预览。
-     *
-     * <p>预览只返回低敏配置健康结果，不执行同步、不读取源端数据、不返回字段映射原文、过滤条件、SQL 或样本。
-     * 它用于帮助用户、Agent 或运营人员理解“这个模板是否适合进入任务草稿/执行前预检”。</p>
-     */
-    SyncTemplatePlanningPreviewResponse previewTemplate(Long id, SyncActorContext actorContext);
-
-    /**
-     * 生成同步模板执行前预检查。
-     *
-     * <p>预检查比 preview 更接近真实运行入口：它会判断当前模板是否能被现有 runner 入队执行，
-     * 并把“配置非法”“需要审批”“当前 runner 暂不支持”区分开。该方法仍然不读取源端数据、不写目标端、
-     * 不执行 SQL，只返回低敏状态、问题码和建议。</p>
-     */
-    SyncTemplateExecutionPrecheckResponse precheckTemplate(Long id, SyncActorContext actorContext);
-
-    /**
-     * 生成 DataX 风格离线作业计划。
-     *
-     * <p>离线作业计划用于帮助 UI、Agent、审批流和运维人员理解“这份模板如果交给专用离线 runner，
-     * 应该使用哪类 Reader/Writer、需要什么分片/调度/checkpoint/审批能力”。它不是执行入口：
-     * 不创建任务、不入队、不连接源端、不执行 SQL、不返回 objectMapping/fieldMapping/filter/SQL 原文。</p>
-     */
-    SyncOfflineJobPlanResponse buildOfflineJobPlan(Long id, SyncActorContext actorContext);
-
-    SyncTask createTask(CreateSyncTaskRequest request, SyncActorContext actorContext);
 
     /**
      * 保存同步任务创建向导草稿。
      *
      * <p>该方法是新建任务四步向导的“渐进式持久化”入口：第一步校验通过并进入第二步时创建 DRAFT 任务，
-     * 第二步和第三步继续更新同一条任务与模板配置。它不会执行预检查、不会发布任务、不会创建 execution，
+     * 第二步和第三步继续更新同一条任务定义。它不会执行预检查、不会发布任务、不会创建 execution，
      * 只保证用户关闭页面后还能在任务列表中看到“编辑中”并继续编辑。</p>
      */
     SyncTaskCreateWizardDraftSaveResponse saveCreateWizardDraft(SyncTaskCreateWizardDraftSaveRequest request,
@@ -129,8 +85,7 @@ public interface DataSyncService {
     /**
      * 按任务执行创建向导预检查。
      *
-     * <p>同步模板是任务内部定义，不应要求前端或 Agent 持有 templateId。该入口先按 taskId
-     * 完成任务可见性校验，再在服务内部解析关联模板并复用同一套真实预检查规则。</p>
+     * <p>该入口按 taskId 完成可见性校验，并读取同 ID 的任务定义执行真实预检查。</p>
      */
     SyncTaskExecutionPrecheckResponse precheckTask(Long id, SyncActorContext actorContext);
 
@@ -160,7 +115,7 @@ public interface DataSyncService {
     /**
      * 导出同步任务定义文件。
      *
-     * <p>导出只返回低敏任务定义字段和模板引用，不返回连接串、密码、完整 SQL、样本数据或执行器内部计划。</p>
+     * <p>导出返回可重新导入的低敏任务定义字段，不返回连接串、密码、样本数据或执行器内部计划。</p>
      */
     SyncTaskExportFile exportTasks(SyncTaskQueryCriteria criteria, String format, SyncActorContext actorContext);
 
@@ -227,7 +182,7 @@ public interface DataSyncService {
     /**
      * 调整单个同步任务所属分组。
      *
-     * <p>该动作属于任务定义管理，不会触发执行、不修改模板、不影响已有 execution 历史。
+     * <p>该动作属于任务定义管理，不会触发执行、不修改任务定义、不影响已有 execution 历史。
      * 它会写审计记录，用于后续排查“为什么这个任务出现在某个业务分组下”。</p>
      */
     SyncTaskOperationResult updateTaskGroup(Long id, SyncTaskGroupUpdateRequest request, SyncActorContext actorContext);
@@ -243,7 +198,7 @@ public interface DataSyncService {
     /**
      * 根据已选源表和目标表生成字段映射建议。
      *
-     * <p>该接口不会创建模板或任务，只返回字段级低敏结构信息和默认 syncEnabled 建议，供用户最终确认。</p>
+     * <p>该接口不会创建任务定义或任务，只返回字段级低敏结构信息和默认 syncEnabled 建议，供用户最终确认。</p>
      */
     SyncTaskFieldMappingSuggestionResponse suggestFieldMappings(SyncTaskFieldMappingSuggestionRequest request,
                                                                 SyncActorContext actorContext);
@@ -424,7 +379,7 @@ public interface DataSyncService {
      * 基于结构化错误样本创建脏数据修复重放计划。
      *
      * <p>该方法不是直接在 HTTP 线程里改写目标表，而是创建新的 REPLAY execution 和恢复计划。
-     * 真正的数据重放仍由 worker 按租约、checkpoint、模板配置、连接器能力和幂等策略执行。</p>
+     * 真正的数据重放仍由 worker 按租约、checkpoint、任务定义配置、连接器能力和幂等策略执行。</p>
      */
     SyncDirtyRecordReplayResult replayDirtyRecords(Long taskId,
                                                    SyncDirtyRecordReplayRequest request,

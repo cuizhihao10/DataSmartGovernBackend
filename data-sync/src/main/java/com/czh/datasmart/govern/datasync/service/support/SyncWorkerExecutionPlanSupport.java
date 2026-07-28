@@ -11,8 +11,8 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncConnectorCompatibili
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanView;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
-import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
+import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import com.czh.datasmart.govern.datasync.support.SyncExecutionState;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
 import com.czh.datasmart.govern.datasync.support.SyncTransferChannel;
@@ -28,10 +28,10 @@ import java.util.Locale;
 /**
  * 同步 worker 执行计划生成器。
  *
- * <p>本组件把已经认领的 execution、任务和模板转换成 worker 可消费的低敏执行计划。
+ * <p>本组件把已经认领的 execution、任务和任务定义转换成 worker 可消费的低敏执行计划。
  * 它不生成 SQL、不返回字段映射原文、不连接数据源，只表达“当前执行是否允许继续”以及“缺哪些执行前事实”。</p>
  *
- * <p>为什么 worker plan 要知道 syncScopeType：过去 data-sync 主要按单表同步理解模板，如果不把范围语义下发到
+ * <p>为什么 worker plan 要知道 syncScopeType：过去 data-sync 主要按单表同步理解任务定义，如果不把范围语义下发到
  * worker 层，多表、整库、自定义 SQL 模板就可能在 claim 后继续被当作单表 runner 处理。现在 worker plan
  * 会显式携带范围类型，并在当前最小 bridge 不支持时 fail-closed。</p>
  */
@@ -40,26 +40,26 @@ public class SyncWorkerExecutionPlanSupport {
 
     private static final String PAYLOAD_POLICY = "LOW_SENSITIVE_WORKER_PLAN_METADATA_ONLY";
 
-    private final SyncTemplateMapper templateMapper;
+    private final SyncTaskDefinitionMapper taskDefinitionMapper;
     private final SyncConnectorCapabilityRegistry connectorCapabilityRegistry;
-    private final SyncTemplateScopeContractSupport scopeContractSupport;
+    private final SyncTaskDefinitionScopeContractSupport scopeContractSupport;
 
     /**
      * 兼容旧测试的构造器。
      */
-    public SyncWorkerExecutionPlanSupport(SyncTemplateMapper templateMapper,
+    public SyncWorkerExecutionPlanSupport(SyncTaskDefinitionMapper taskDefinitionMapper,
                                           SyncConnectorCapabilityRegistry connectorCapabilityRegistry) {
-        this(templateMapper, connectorCapabilityRegistry, new SyncTemplateScopeContractSupport());
+        this(taskDefinitionMapper, connectorCapabilityRegistry, new SyncTaskDefinitionScopeContractSupport());
     }
 
     /**
      * Spring 注入构造器。
      */
     @Autowired
-    public SyncWorkerExecutionPlanSupport(SyncTemplateMapper templateMapper,
+    public SyncWorkerExecutionPlanSupport(SyncTaskDefinitionMapper taskDefinitionMapper,
                                           SyncConnectorCapabilityRegistry connectorCapabilityRegistry,
-                                          SyncTemplateScopeContractSupport scopeContractSupport) {
-        this.templateMapper = templateMapper;
+                                          SyncTaskDefinitionScopeContractSupport scopeContractSupport) {
+        this.taskDefinitionMapper = taskDefinitionMapper;
         this.connectorCapabilityRegistry = connectorCapabilityRegistry;
         this.scopeContractSupport = scopeContractSupport;
     }
@@ -76,21 +76,21 @@ public class SyncWorkerExecutionPlanSupport {
             return unavailablePlan(execution, task, "TASK_OR_EXECUTION_MISSING", "缺少任务或执行记录，worker 不应继续执行。");
         }
 
-        SyncTemplate template = templateMapper.selectById(task.getTemplateId());
-        if (template == null) {
-            return unavailablePlan(execution, task, "TEMPLATE_NOT_FOUND", "模板不存在，worker 应调用 fail 回调并等待运营处理。");
+        SyncTaskDefinition definition = taskDefinitionMapper.selectById(task.getId());
+        if (definition == null) {
+            return unavailablePlan(execution, task, "TASK_DEFINITION_NOT_FOUND", "任务定义不存在，worker 应调用 fail 回调并等待运营处理。");
         }
 
-        SyncTemplateScopeContract scopeContract = scopeContractSupport.evaluate(template);
-        PlanFacts facts = collectFacts(execution, template, scopeContract);
-        SyncWriteStrategy writeStrategy = resolveWriteStrategy(template, facts.issueCodes());
-        SyncConnectorCompatibilityView compatibility = resolveCompatibility(template, facts.issueCodes());
-        SyncTransferChannel transferChannel = SyncTransferChannelSupport.resolve(template.getSyncMode());
+        SyncTaskDefinitionScopeContract scopeContract = scopeContractSupport.evaluate(definition);
+        PlanFacts facts = collectFacts(execution, definition, scopeContract);
+        SyncWriteStrategy writeStrategy = resolveWriteStrategy(definition, facts.issueCodes());
+        SyncConnectorCompatibilityView compatibility = resolveCompatibility(definition, facts.issueCodes());
+        SyncTransferChannel transferChannel = SyncTransferChannelSupport.resolve(definition.getSyncMode());
         boolean connectorSupported = compatibility != null && compatibility.supported();
         if (compatibility != null) {
             facts.issueCodes().addAll(compatibility.issueCodes());
         }
-        appendTemplateIssues(template, writeStrategy, compatibility, scopeContract, facts.issueCodes());
+        appendDefinitionIssues(definition, writeStrategy, compatibility, scopeContract, facts.issueCodes());
 
         List<String> distinctIssues = distinct(facts.issueCodes());
         String planStatus = resolvePlanStatus(distinctIssues, connectorSupported);
@@ -109,12 +109,11 @@ public class SyncWorkerExecutionPlanSupport {
                 execution.getTriggerType(),
                 execution.getExecutorId(),
                 execution.getLeaseExpireTime(),
-                template.getId(),
-                template.getSourceDatasourceId(),
-                template.getTargetDatasourceId(),
-                normalize(template.getSourceConnectorType()),
-                normalize(template.getTargetConnectorType()),
-                normalize(template.getSyncMode()),
+                definition.getSourceDatasourceId(),
+                definition.getTargetDatasourceId(),
+                normalize(definition.getSourceConnectorType()),
+                normalize(definition.getTargetConnectorType()),
+                normalize(definition.getSyncMode()),
                 transferChannel == null ? null : transferChannel.name(),
                 SyncTransferChannelSupport.referenceRuntime(transferChannel),
                 scopeContract.scopeType(),
@@ -124,23 +123,23 @@ public class SyncWorkerExecutionPlanSupport {
                 scopeContract.selectedObjectCount(),
                 scopeContract.requiresApproval(),
                 scopeContract.executableByMinimalBridge(),
-                hasText(template.getSourceObjectName()),
-                hasText(template.getTargetObjectName()),
+                hasText(definition.getSourceObjectName()),
+                hasText(definition.getTargetObjectName()),
                 writeStrategy == null ? null : writeStrategy.name(),
                 writeStrategy != null && writeStrategy.requiresConflictKey(),
-                hasText(template.getPrimaryKeyField()),
-                hasText(template.getIncrementalField()),
+                hasText(definition.getPrimaryKeyField()),
+                hasText(definition.getIncrementalField()),
                 connectorSupported,
                 compatibility == null ? null : compatibility.consistencyGoal(),
                 compatibility != null && compatibility.checkpointRequired(),
                 compatibility == null ? null : compatibility.retryPattern(),
-                hasText(template.getFieldMappingConfig()),
-                hasText(template.getObjectMappingConfig()),
-                hasText(template.getCustomSqlConfig()),
-                hasText(template.getFilterConfig()),
-                hasText(template.getPartitionConfig()),
-                hasText(template.getRetryPolicy()),
-                hasText(template.getTimeoutPolicy()),
+                hasText(definition.getFieldMappingConfig()),
+                hasText(definition.getObjectMappingConfig()),
+                hasText(definition.getCustomSqlConfig()),
+                hasText(definition.getFilterConfig()),
+                hasText(definition.getPartitionConfig()),
+                hasText(definition.getRetryPolicy()),
+                hasText(definition.getTimeoutPolicy()),
                 distinctIssues,
                 List.copyOf(facts.workerActions()),
                 compatibility == null ? List.of() : compatibility.performanceNotes(),
@@ -153,35 +152,35 @@ public class SyncWorkerExecutionPlanSupport {
      * 收集不需要访问真实数据源即可判断的基础事实。
      */
     private PlanFacts collectFacts(SyncExecution execution,
-                                   SyncTemplate template,
-                                   SyncTemplateScopeContract scopeContract) {
+                                   SyncTaskDefinition definition,
+                                   SyncTaskDefinitionScopeContract scopeContract) {
         List<String> issueCodes = new ArrayList<>();
         List<String> workerActions = new ArrayList<>();
         if (!SyncExecutionState.RUNNING.name().equals(execution.getExecutionState())) {
             issueCodes.add("EXECUTION_NOT_RUNNING");
         }
-        if (Boolean.FALSE.equals(template.getEnabled())) {
-            issueCodes.add("TEMPLATE_DISABLED");
+        if (Boolean.FALSE.equals(definition.getEnabled())) {
+            issueCodes.add("TASK_DEFINITION_DISABLED");
         }
-        if (!hasText(template.getSourceConnectorType()) || !hasText(template.getTargetConnectorType())) {
+        if (!hasText(definition.getSourceConnectorType()) || !hasText(definition.getTargetConnectorType())) {
             issueCodes.add("CONNECTOR_FACTS_MISSING");
         }
-        if (!hasText(template.getSyncMode())) {
+        if (!hasText(definition.getSyncMode())) {
             issueCodes.add("SYNC_MODE_MISSING");
         }
         issueCodes.addAll(scopeContract.issueCodes());
-        if (scopeContract.singleObjectScope() && !hasText(template.getSourceObjectName())) {
+        if (scopeContract.singleObjectScope() && !hasText(definition.getSourceObjectName())) {
             issueCodes.add("SOURCE_OBJECT_NOT_DECLARED");
         }
-        if (scopeContract.singleObjectScope() && !hasText(template.getTargetObjectName())) {
+        if (scopeContract.singleObjectScope() && !hasText(definition.getTargetObjectName())) {
             issueCodes.add("TARGET_OBJECT_NOT_DECLARED");
         }
-        if (!hasText(template.getFieldMappingConfig())) {
+        if (!hasText(definition.getFieldMappingConfig())) {
             issueCodes.add("FIELD_MAPPING_NOT_DECLARED");
         }
         /*
          * retryPolicy/timeoutPolicy 已从普通任务配置中收敛到“管理员执行策略”。
-         * 因此这里不能再因为模板没有显式填写 retry/timeout 就阻断 worker plan，否则用户会在预检查阶段看到
+         * 因此这里不能再因为任务定义没有显式填写 retry/timeout 就阻断 worker plan，否则用户会在预检查阶段看到
          * “自己无法配置、但系统又要求配置”的矛盾提示。真正生效的重试、超时、批大小、channel 会在执行前由
          * SyncExecutionPolicyService 解析，并保存到 execution policy snapshot 供运行详情排查。
          */
@@ -191,11 +190,11 @@ public class SyncWorkerExecutionPlanSupport {
     /**
      * 解析 worker 执行时必须理解的写入策略。
      */
-    private SyncWriteStrategy resolveWriteStrategy(SyncTemplate template, List<String> issueCodes) {
+    private SyncWriteStrategy resolveWriteStrategy(SyncTaskDefinition definition, List<String> issueCodes) {
         try {
             SyncWriteStrategy writeStrategy = SyncWriteStrategy.fromValueForMode(
-                    template.getWriteStrategy(), template.getSyncMode());
-            if (!hasText(template.getWriteStrategy())) {
+                    definition.getWriteStrategy(), definition.getSyncMode());
+            if (!hasText(definition.getWriteStrategy())) {
                 issueCodes.add(writeStrategy == SyncWriteStrategy.UPDATE
                         ? "WRITE_STRATEGY_DEFAULTED_TO_UPDATE_FOR_REALTIME"
                         : "WRITE_STRATEGY_DEFAULTED_TO_INSERT");
@@ -210,17 +209,17 @@ public class SyncWorkerExecutionPlanSupport {
     /**
      * 解析连接器兼容性。
      */
-    private SyncConnectorCompatibilityView resolveCompatibility(SyncTemplate template, List<String> issueCodes) {
-        if (!hasText(template.getSourceConnectorType())
-                || !hasText(template.getTargetConnectorType())
-                || !hasText(template.getSyncMode())) {
+    private SyncConnectorCompatibilityView resolveCompatibility(SyncTaskDefinition definition, List<String> issueCodes) {
+        if (!hasText(definition.getSourceConnectorType())
+                || !hasText(definition.getTargetConnectorType())
+                || !hasText(definition.getSyncMode())) {
             return null;
         }
         try {
             return connectorCapabilityRegistry.checkCompatibility(
-                    template.getSourceConnectorType(),
-                    template.getTargetConnectorType(),
-                    template.getSyncMode());
+                    definition.getSourceConnectorType(),
+                    definition.getTargetConnectorType(),
+                    definition.getSyncMode());
         } catch (PlatformBusinessException exception) {
             issueCodes.add("CONNECTOR_COMPATIBILITY_UNKNOWN");
             return null;
@@ -228,22 +227,22 @@ public class SyncWorkerExecutionPlanSupport {
     }
 
     /**
-     * 根据连接器能力、范围契约和模板配置补充执行前问题码。
+     * 根据连接器能力、范围契约和任务定义配置补充执行前问题码。
      */
-    private void appendTemplateIssues(SyncTemplate template,
+    private void appendDefinitionIssues(SyncTaskDefinition definition,
                                       SyncWriteStrategy writeStrategy,
                                       SyncConnectorCompatibilityView compatibility,
-                                      SyncTemplateScopeContract scopeContract,
+                                      SyncTaskDefinitionScopeContract scopeContract,
                                       List<String> issueCodes) {
         if (compatibility != null && !compatibility.supported()) {
             issueCodes.add("CONNECTOR_COMPATIBILITY_UNSUPPORTED");
         }
-        if (writeStrategy != null && writeStrategy.requiresConflictKey() && !hasText(template.getPrimaryKeyField())) {
+        if (writeStrategy != null && writeStrategy.requiresConflictKey() && !hasText(definition.getPrimaryKeyField())) {
             issueCodes.add("PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE");
         }
-        SyncMode syncMode = resolveModeOrNull(template.getSyncMode());
+        SyncMode syncMode = resolveModeOrNull(definition.getSyncMode());
         if ((syncMode == SyncMode.INCREMENTAL_TIME || syncMode == SyncMode.INCREMENTAL_ID)
-                && !hasText(template.getIncrementalField())) {
+                && !hasText(definition.getIncrementalField())) {
             issueCodes.add("INCREMENTAL_FIELD_NOT_DECLARED");
         }
         if (writeStrategy != null && writeStrategy.isDestructiveRewrite()) {
@@ -252,10 +251,10 @@ public class SyncWorkerExecutionPlanSupport {
         if (!scopeContract.executableByMinimalBridge()) {
             issueCodes.add("SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE");
         }
-        if (compatibility != null && compatibility.checkpointRequired() && !hasText(template.getFilterConfig())) {
+        if (compatibility != null && compatibility.checkpointRequired() && !hasText(definition.getFilterConfig())) {
             issueCodes.add("CHECKPOINT_BOUNDARY_NOT_DECLARED");
         }
-        if (isFullLikeMode(template.getSyncMode()) && !hasText(template.getPartitionConfig())) {
+        if (isFullLikeMode(definition.getSyncMode()) && !hasText(definition.getPartitionConfig())) {
             issueCodes.add("PARTITION_PLAN_NOT_DECLARED");
         }
     }
@@ -272,8 +271,8 @@ public class SyncWorkerExecutionPlanSupport {
 
     private boolean isPlanBlockingIssue(String issueCode) {
         return "TASK_OR_EXECUTION_MISSING".equals(issueCode)
-                || "TEMPLATE_NOT_FOUND".equals(issueCode)
-                || "TEMPLATE_DISABLED".equals(issueCode)
+                || "TASK_DEFINITION_NOT_FOUND".equals(issueCode)
+                || "TASK_DEFINITION_DISABLED".equals(issueCode)
                 || "EXECUTION_NOT_RUNNING".equals(issueCode)
                 || "CONNECTOR_FACTS_MISSING".equals(issueCode)
                 || "SYNC_MODE_MISSING".equals(issueCode)
@@ -313,7 +312,7 @@ public class SyncWorkerExecutionPlanSupport {
             return List.of(
                     "DO_NOT_READ_OR_WRITE_DATA",
                     "CALL_FAIL_EXECUTION_WITH_LOW_SENSITIVE_REASON",
-                    "WAIT_FOR_OPERATOR_OR_TEMPLATE_FIX"
+                    "WAIT_FOR_OPERATOR_OR_TASK_DEFINITION_FIX"
             );
         }
         List<String> actions = new ArrayList<>();
@@ -343,7 +342,6 @@ public class SyncWorkerExecutionPlanSupport {
                 execution == null ? null : execution.getTriggerType(),
                 execution == null ? null : execution.getExecutorId(),
                 execution == null ? null : execution.getLeaseExpireTime(),
-                task == null ? null : task.getTemplateId(),
                 null,
                 null,
                 null,
@@ -384,7 +382,7 @@ public class SyncWorkerExecutionPlanSupport {
     }
 
     private List<String> mergeSafetyNotes(SyncConnectorCompatibilityView compatibility,
-                                          SyncTemplateScopeContract scopeContract) {
+                                          SyncTaskDefinitionScopeContract scopeContract) {
         List<String> notes = new ArrayList<>();
         if (compatibility != null) {
             notes.addAll(compatibility.safetyNotes());

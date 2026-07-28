@@ -24,7 +24,7 @@ import java.util.List;
  *
  * <p>该 Controller 是 data-sync 走向“泛用数据移动产品”的基础控制面。
  * 它不负责真实连接、不读取连接串、不执行 SQL、不读取样本数据，只返回低敏能力矩阵：
- * 哪些 connector type 存在、支持哪些同步模式、某个源/目标/模式组合是否建议进入模板创建或 Agent 规划。</p>
+ * 哪些 connector type 存在、支持哪些同步模式、某个源/目标/模式组合是否建议进入任务定义创建或 Agent 规划。</p>
  *
  * <p>路由同时提供直连路径和网关路径：
  * 1. `/sync-connectors/...` 便于模块本地调试；
@@ -41,7 +41,7 @@ public class DataSyncConnectorCapabilityController {
      *
      * <p>典型使用场景：</p>
      * <ul>
-     *     <li>前端创建同步模板时，根据源端/目标端 connector type 动态展示可选同步模式；</li>
+     *     <li>前端创建同步任务时，根据源端/目标端 connector type 动态展示可选同步模式；</li>
      *     <li>Agent 规划同步任务时，先知道 Kafka 不应被当作传统全量表同步源；</li>
      *     <li>运营人员评估某个连接器是否已具备 checkpoint、preview、field mapping 等生产能力。</li>
      * </ul>
@@ -56,7 +56,7 @@ public class DataSyncConnectorCapabilityController {
      * 查询连接器与同步模式兼容性。
      *
      * <p>该接口只做产品级能力预检，不做真实连通性校验。真实执行前仍必须走：
-     * datasource-management 连接测试、permission-admin 权限判断、sync template 字段映射校验、task 状态机和 worker lease。</p>
+     * datasource-management 连接测试、permission-admin 权限判断、sync definition 字段映射校验、task 状态机和 worker lease。</p>
      *
      * @param sourceConnectorType 源端连接器类型，例如 MYSQL。
      * @param targetConnectorType 目标端连接器类型，例如 POSTGRESQL。

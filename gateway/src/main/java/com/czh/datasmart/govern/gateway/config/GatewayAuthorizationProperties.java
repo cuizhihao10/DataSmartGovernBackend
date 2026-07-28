@@ -272,8 +272,6 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/sync/internal/sync-task-schedulers/dispatch-due", "SYNC_TASK",
                 "data-sync 任务级调度器到期派发入口；只能由服务账号或未来受控调度器调用，把 SCHEDULED 任务转换为 execution",
                 Map.of("POST", "SCHEDULE_DISPATCH")));
-        defaults.add(route("/api/sync/sync-templates/*/validate", "SYNC_TEMPLATE",
-                "data-sync 同步模板校验接口，校验源端、目标端、字段映射和写入策略是否可运行", Map.of("POST", "VALIDATE")));
         defaults.add(route("/api/sync/sync-tasks/export", "SYNC_TASK",
                 "data-sync 同步任务定义导出接口，下载低敏 CSV/XLSX 任务定义包，不包含连接串、密码、SQL 正文或样本数据",
                 Map.of("GET", "EXPORT")));
@@ -384,8 +382,6 @@ public class GatewayAuthorizationProperties {
                 "data-sync 过期租约恢复入口，属于运维恢复动作", Map.of("POST", "RECOVER")));
         defaults.add(route("/api/sync/sync-executions/**", "SYNC_EXECUTION",
                 "data-sync 执行租约接口，用于执行器认领、心跳、延期和过期租约恢复"));
-        defaults.add(route("/api/sync/sync-templates/**", "SYNC_TEMPLATE",
-                "data-sync 同步模板接口，用于配置源端、目标端、同步模式、字段映射和写入策略"));
         defaults.add(route("/api/sync/**", "SYNC_TASK",
                 "data-sync 同步任务接口，用于同步任务创建、查询、运行、执行历史和审计查询"));
         defaults.add(route("/api/task/operations/**", "TASK_OPERATION",

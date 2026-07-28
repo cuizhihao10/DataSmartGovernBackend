@@ -33,13 +33,8 @@ public class SyncAuditRecord {
     private Long workspaceId;
 
     /**
-     * 同步模板 ID。
-     *
-     * <p>模板创建、模板校验、模板禁用等动作不一定关联具体任务。
-     * 如果没有 templateId，模板级审计只能把模板 ID 塞进 actionPayload，后续很难按模板、项目或空间稳定检索。
+     * 同步任务 ID。任务定义变更、预检查和执行审计都通过该字段关联同一个任务聚合。
      */
-    private Long templateId;
-
     private Long syncTaskId;
     private Long executionId;
     private String actionType;

@@ -72,8 +72,6 @@ final class DataSyncWorkerCommandOutboxViewAssembler {
                 outbox.getTenantId(),
                 outbox.getProjectId(),
                 outbox.getWorkspaceId(),
-                outbox.getTemplateId(),
-                outbox.getSyncTemplateId(),
                 outbox.getStatus(),
                 outbox.getAttemptCount(),
                 outbox.getPayloadSizeBytes(),

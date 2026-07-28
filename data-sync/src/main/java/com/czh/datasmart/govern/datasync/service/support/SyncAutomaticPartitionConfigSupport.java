@@ -48,7 +48,7 @@ public class SyncAutomaticPartitionConfigSupport {
     }
 
     /**
-     * Resolves the primary-key hint and minimal partition declaration persisted with a draft template.
+     * Resolves the primary-key hint and minimal partition declaration persisted with a draft definition.
      */
     public AutomaticPartitionConfig resolve(SyncMode syncMode,
                                             String syncScopeType,

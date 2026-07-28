@@ -12,10 +12,10 @@ import java.util.List;
  * DataX 风格离线作业计划响应。
  *
  * <p>这个 DTO 面向前端、Agent 和运营台回答一个比 preview/precheck 更工程化的问题：
- * “如果这份同步模板未来交给专用离线 runner 执行，它应该被拆成怎样的 Reader/Writer 作业”。</p>
+ * “如果这项同步任务交给专用离线 runner 执行，它应该被拆成怎样的 Reader/Writer 作业”。</p>
  *
  * <p>它与现有几个接口的边界如下：</p>
- * <p>1. validate：硬性校验模板字段是否合法，失败时直接抛业务异常；</p>
+ * <p>1. validate：硬性校验任务定义字段是否合法，失败时直接抛业务异常；</p>
  * <p>2. preview：面向配置页面和 Agent 规划，告诉用户配置是否完整；</p>
  * <p>3. precheck：面向当前真实执行入口，回答现有最小 runner 能不能入队；</p>
  * <p>4. offline-job-plan：面向未来 DataX-style 离线执行器，描述低敏作业计划、审批要求、调度语义和 fail-closed 边界。</p>
@@ -24,7 +24,6 @@ import java.util.List;
  * filterConfig 原文、partitionConfig 原文、样本数据或 checkpoint 原始值。它只返回“声明了什么、需要什么、应该由谁执行”
  * 这类控制面事实，避免规划接口变成数据泄露通道。</p>
  *
- * @param templateId 模板 ID。
  * @param tenantId 租户 ID。
  * @param projectId 项目 ID。
  * @param workspaceId 工作空间 ID。
@@ -36,7 +35,7 @@ import java.util.List;
  * @param transferChannel 顶层传输通道。离线计划只接受 OFFLINE；CDC_STREAMING 会被标记为非离线通道。
  * @param referenceRuntime 参考执行架构，例如 DATAX_STYLE_OFFLINE_READER_WRITER_RUNNER。
  * @param syncScopeType 同步范围，例如 SINGLE_OBJECT、OBJECT_LIST、SCHEMA_FULL、DATABASE_FULL、CUSTOM_SQL_QUERY。
- * @param offlineChannel 当前模板是否属于离线传输通道。
+ * @param offlineChannel 当前任务是否属于离线传输通道。
  * @param planStatus 计划状态：PLAN_READY、PLAN_READY_REQUIRES_APPROVAL、PLAN_READY_DEDICATED_RUNNER_REQUIRED、NOT_OFFLINE_CHANNEL、BLOCKED。
  * @param planReady 是否已经能形成低敏离线作业计划。它不等于当前最小 runner 已可执行。
  * @param canCreateTaskDraft 是否建议允许创建任务草稿。
@@ -44,7 +43,7 @@ import java.util.List;
  * @param dedicatedOfflineRunnerRequired 是否需要专用 DataX-style 离线 runner，而不是当前最小 bridge。
  * @param readerFamily 低敏 Reader 家族，例如 JDBC_READER、FILE_READER、OBJECT_STORAGE_READER。
  * @param writerFamily 低敏 Writer 家族，例如 JDBC_WRITER、FILE_WRITER、OBJECT_STORAGE_WRITER。
- * @param modeFamily 模式族，用于 runner 选择执行模板，例如 FULL_OBJECT_SCAN、SCHEDULED_BATCH_WINDOW。
+ * @param modeFamily 模式族，用于 runner 选择执行路径，例如 FULL_OBJECT_SCAN、SCHEDULED_BATCH_WINDOW。
  * @param shardStrategy 分片策略摘要，例如 OBJECT_LEVEL_FAN_OUT、TIME_WINDOW_SHARD、ARTIFACT_CHUNK_SHARD。
  * @param scheduleSemantics 调度语义摘要，说明定时全量、定时批量和手动触发的区别。
  * @param sqlStatementPolicy 自定义 SQL 的 statementRef 策略，不返回 SQL 正文。
@@ -71,7 +70,6 @@ import java.util.List;
  * @param payloadPolicy 低敏载荷策略。
  */
 public record SyncOfflineJobPlanResponse(
-        Long templateId,
         Long tenantId,
         Long projectId,
         Long workspaceId,

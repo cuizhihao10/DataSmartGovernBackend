@@ -17,7 +17,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanV
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceClient;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceRequest;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
@@ -94,18 +94,18 @@ public class SyncBatchRunOnceDispatchService {
      *
      * @param execution 当前已被 worker claim 的执行记录。正常情况下状态应为 RUNNING。
      * @param task execution 所属同步任务。
-     * @param template 同步模板，提供对象定位、写入策略、字段映射等执行契约。
+     * @param definition 任务定义，提供对象定位、写入策略、字段映射等执行契约。
      * @param workerPlan claim 阶段返回给 worker 的低敏计划。
      * @param actorContext 当前服务调用上下文。若为空，本服务会用 execution/task 构造服务账号上下文兜底。
      * @return 低敏派发结果摘要。
      */
     public SyncBatchRunOnceDispatchResult dispatchRunOnce(SyncExecution execution,
                                                           SyncTask task,
-                                                          SyncTemplate template,
+                                                          SyncTaskDefinition definition,
                                                           SyncWorkerExecutionPlanView workerPlan,
                                                           SyncActorContext actorContext) {
-        requireDispatchInputs(execution, task, template, workerPlan);
-        SyncBatchRunnerBridgePlan bridgePlan = bridgePlanSupport.buildPlan(execution, task, template, workerPlan);
+        requireDispatchInputs(execution, task, definition, workerPlan);
+        SyncBatchRunnerBridgePlan bridgePlan = bridgePlanSupport.buildPlan(execution, task, definition, workerPlan);
         executionLogSupport.recordExecutionEvent(task, execution, actorContext,
                 "PLAN",
                 bridgePlan.isDispatchable() ? "INFO" : "WARN",
@@ -152,7 +152,7 @@ public class SyncBatchRunOnceDispatchService {
     /**
      * 只执行 datasource-management run-once 远端批次循环，不直接回写 data-sync execution 终态。
      *
-     * <p>这个入口是 OBJECT_LIST 串行 fan-out 的关键复用点。多对象同步需要把一个模板拆成多个单对象子计划，
+     * <p>这个入口是 OBJECT_LIST 串行 fan-out 的关键复用点。多对象同步需要把一个任务定义拆成多个单对象子计划，
      * 每个子计划都应复用同一套 datasource-management Java Reader/Writer 批处理逻辑；但每个子对象完成时不能立刻
      * complete 整个 execution，否则后续对象尚未处理，用户却会看到任务成功。</p>
      *
@@ -207,7 +207,7 @@ public class SyncBatchRunOnceDispatchService {
      * 执行面却仍按全局默认值裁决，会造成产品语义不一致。</p>
      *
      * <p>这里没有把覆盖值塞进 {@link SyncBatchRunnerBridgePlan}，是因为 bridge plan 描述的是
-     * 模板、字段映射、过滤条件和最小 runner 可执行性；分片阈值来自 fan-out 解析后的执行合同，
+     * 任务定义、字段映射、过滤条件和最小 runner 可执行性；分片阈值来自 fan-out 解析后的执行合同，
      * 更适合作为本次派发的运行期控制参数传入。这样普通任务、dirty replay 和未来非分片 runner
      * 不会被迫理解 partitionConfig 的细节。</p>
      */
@@ -337,24 +337,24 @@ public class SyncBatchRunOnceDispatchService {
     /**
      * 校验调度所需上下文。
      *
-     * <p>这里选择抛出参数错误，而不是写 failExecution，是因为 execution/task/template/workerPlan 缺失通常代表调用方代码错误，
+     * <p>这里选择抛出参数错误，而不是写 failExecution，是因为 execution/task/definition/workerPlan 缺失通常代表调用方代码错误，
      * 还没有足够业务上下文安全地回写状态机。真实 worker 在调用本服务前应确保 claim 返回了完整对象。</p>
      */
     private void requireDispatchInputs(SyncExecution execution,
                                        SyncTask task,
-                                       SyncTemplate template,
+                                       SyncTaskDefinition definition,
                                        SyncWorkerExecutionPlanView workerPlan) {
-        if (execution == null || task == null || template == null || workerPlan == null) {
+        if (execution == null || task == null || definition == null || workerPlan == null) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "run-once 派发缺少 execution/task/template/workerPlan 上下文，无法安全推进状态机");
+                    "run-once 派发缺少 execution/task/definition/workerPlan 上下文，无法安全推进状态机");
         }
     }
 
     /**
      * 校验“已准备计划”派发所需的最小上下文。
      *
-     * <p>和 {@link #requireDispatchInputs(SyncExecution, SyncTask, SyncTemplate, SyncWorkerExecutionPlanView)} 不同，
-     * 该入口不再要求 template/workerPlan，因为上游离线 Runner 门面已经用它们生成了 bridge plan 和合同。
+     * <p>和 {@link #requireDispatchInputs(SyncExecution, SyncTask, SyncTaskDefinition, SyncWorkerExecutionPlanView)} 不同，
+     * 该入口不再要求 definition/workerPlan，因为上游离线 Runner 门面已经用它们生成了 bridge plan 和合同。
      * 这里仅确认真正回写状态机所需的 bridgePlan、execution、task 存在。</p>
      */
     private void requirePreparedDispatchInputs(SyncBatchRunnerBridgePlan bridgePlan,

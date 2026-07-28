@@ -10,7 +10,7 @@ import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncObjectExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.mapper.SyncObjectExecutionMapper;
 import com.czh.datasmart.govern.datasync.support.SyncObjectExecutionState;
 import lombok.RequiredArgsConstructor;
@@ -63,14 +63,14 @@ public class SyncObjectExecutionLifecycleSupport {
      *
      * @param task 当前同步任务，用于冗余 syncTaskId。
      * @param execution 父级 execution，用于继承租户、项目、工作空间和 executionId。
-     * @param template 原始 OBJECT_LIST 模板，用于绑定 templateId。
+     * @param definition 原始 OBJECT_LIST 任务定义。
      * @param contract 解析后的对象映射合同，提供稳定 ordinal 和源/目标对象名。
      * @param maxAttemptCount 每个对象允许的最大尝试次数。
      * @return 已存在和新建的对象级执行记录，按 objectOrdinal 排序。
      */
     public List<SyncObjectExecution> initializeObjectExecutions(SyncTask task,
                                                                 SyncExecution execution,
-                                                                SyncTemplate template,
+                                                                SyncTaskDefinition definition,
                                                                 SyncObjectMappingExecutionContract contract,
                                                                 int maxAttemptCount) {
         List<SyncObjectExecution> existingRows =
@@ -93,7 +93,6 @@ public class SyncObjectExecutionLifecycleSupport {
             row.setWorkspaceId(execution.getWorkspaceId());
             row.setSyncTaskId(task.getId());
             row.setExecutionId(execution.getId());
-            row.setTemplateId(template.getId());
             row.setObjectOrdinal(item.ordinal());
             row.setWorkUnitType(WORK_UNIT_TYPE_OBJECT);
             row.setShardOrPartition(null);
@@ -134,13 +133,13 @@ public class SyncObjectExecutionLifecycleSupport {
      *
      * @param task 当前同步任务。
      * @param execution 父级执行记录。
-     * @param template 同步模板。
+     * @param definition 任务定义。
      * @param contract 已解析的分片合同。
      * @return 当前 execution 下完整的分片账本，按 objectOrdinal 排序。
      */
     public List<SyncObjectExecution> initializePartitionShardExecutions(SyncTask task,
                                                                         SyncExecution execution,
-                                                                        SyncTemplate template,
+                                                                        SyncTaskDefinition definition,
                                                                         SyncPartitionShardExecutionContract contract) {
         List<SyncObjectExecution> existingRows =
                 objectExecutionMapper.selectByExecutionId(execution.getId());
@@ -164,7 +163,6 @@ public class SyncObjectExecutionLifecycleSupport {
             row.setWorkspaceId(execution.getWorkspaceId());
             row.setSyncTaskId(task.getId());
             row.setExecutionId(execution.getId());
-            row.setTemplateId(template.getId());
             row.setObjectOrdinal(shard.ordinal());
             row.setWorkUnitType(singleAdaptiveShardAsObject
                     ? WORK_UNIT_TYPE_OBJECT
@@ -172,10 +170,10 @@ public class SyncObjectExecutionLifecycleSupport {
             row.setShardOrPartition(singleAdaptiveShardAsObject ? null : shard.shardOrPartition());
             row.setPartitionStrategy(singleAdaptiveShardAsObject ? null : shard.partitionStrategy());
             row.setPartitionField(singleAdaptiveShardAsObject ? null : shard.partitionField());
-            row.setSourceSchemaName(template.getSourceSchemaName());
-            row.setSourceObjectName(template.getSourceObjectName());
-            row.setTargetSchemaName(template.getTargetSchemaName());
-            row.setTargetObjectName(template.getTargetObjectName());
+            row.setSourceSchemaName(definition.getSourceSchemaName());
+            row.setSourceObjectName(definition.getSourceObjectName());
+            row.setTargetSchemaName(definition.getTargetSchemaName());
+            row.setTargetObjectName(definition.getTargetObjectName());
             row.setObjectState(SyncObjectExecutionState.PENDING.name());
             row.setAttemptCount(0);
             row.setMaxAttemptCount(contract.maxAttemptCount());

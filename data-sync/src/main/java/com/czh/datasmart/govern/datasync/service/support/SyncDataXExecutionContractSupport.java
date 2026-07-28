@@ -8,7 +8,7 @@ package com.czh.datasmart.govern.datasync.service.support;
 
 import com.czh.datasmart.govern.datasync.controller.dto.SyncOfflineJobPlanResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanView;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
 
 import java.util.ArrayList;
@@ -42,7 +42,7 @@ final class SyncDataXExecutionContractSupport {
     /**
      * 从面向 UI/Agent 的离线作业计划生成 DataX-style 执行拓扑。
      *
-     * <p>该方法用于模板规划阶段，此时还没有 task/execution，因此只能形成“将来应该如何执行”的低敏拓扑。
+     * <p>该方法用于任务定义规划阶段，此时还没有 task/execution，因此只能形成“将来应该如何执行”的低敏拓扑。
      * 例如 FULL 单对象会形成一个代表性 TaskGroup 和一个 Channel；OBJECT_LIST 或 SCHEMA_FULL 会说明需要 fan-out，
      * 但不会把对象映射清单展开到响应里。</p>
      */
@@ -81,13 +81,13 @@ final class SyncDataXExecutionContractSupport {
     /**
      * 从 worker/bridge 执行事实生成 DataX-style 执行拓扑。
      *
-     * <p>该方法用于真实执行阶段。此时 template、workerPlan、字段映射合同和范围合同都已经存在，因此可以更准确地判断：
+     * <p>该方法用于真实执行阶段。此时 definition、workerPlan、字段映射合同和范围合同都已经存在，因此可以更准确地判断：
      * 当前是最小单通道 run-once、需要专用 Runner、需要 checkpoint handoff，还是因为审批/范围/字段问题必须阻断。</p>
      */
-    SyncDataXJobExecutionContract buildFromBridgeFacts(SyncTemplate template,
+    SyncDataXJobExecutionContract buildFromBridgeFacts(SyncTaskDefinition definition,
                                                        SyncWorkerExecutionPlanView workerPlan,
                                                        SyncFieldMappingExecutionContract fieldMappingContract,
-                                                       SyncTemplateScopeContract scopeContract,
+                                                       SyncTaskDefinitionScopeContract scopeContract,
                                                        SyncOfflineRunnerShardPlan shardPlan,
                                                        SyncOfflineRunnerExecutionReport reportContract,
                                                        boolean minimalEndToEndSupported,
@@ -97,28 +97,28 @@ final class SyncDataXExecutionContractSupport {
                                                        boolean taskLevelScheduleRequired,
                                                        String customSqlStatementPolicy,
                                                        List<String> issueCodes) {
-        if (template == null) {
-            return blockedTopology(withIssue(issueCodes, "TEMPLATE_CONTEXT_MISSING_FOR_DATAX_TOPOLOGY"));
+        if (definition == null) {
+            return blockedTopology(withIssue(issueCodes, "TASK_DEFINITION_CONTEXT_MISSING_FOR_DATAX_TOPOLOGY"));
         }
         String transferChannel = workerPlan == null ? null : workerPlan.transferChannel();
         String referenceRuntime = workerPlan == null ? null : workerPlan.referenceRuntime();
-        String scopeType = scopeContract == null ? normalize(template.getSyncScopeType()) : scopeContract.scopeType();
-        boolean fieldMappingDeclared = hasText(template.getFieldMappingConfig());
+        String scopeType = scopeContract == null ? normalize(definition.getSyncScopeType()) : scopeContract.scopeType();
+        boolean fieldMappingDeclared = hasText(definition.getFieldMappingConfig());
         boolean fieldRenameRequired = fieldMappingContract != null
                 && fieldMappingContract.isRequiresFieldRenameTransform();
         return buildContract(
-                normalize(template.getSourceConnectorType()),
-                normalize(template.getTargetConnectorType()),
-                normalize(template.getSyncMode()),
+                normalize(definition.getSourceConnectorType()),
+                normalize(definition.getTargetConnectorType()),
+                normalize(definition.getSyncMode()),
                 transferChannel,
                 referenceRuntime,
                 scopeType,
-                SyncOfflineJobPlanClassificationSupport.readerFamily(template.getSourceConnectorType()),
-                SyncOfflineJobPlanClassificationSupport.writerFamily(template.getTargetConnectorType()),
-                SyncOfflineJobPlanClassificationSupport.modeFamily(resolveMode(template.getSyncMode())),
-                normalize(template.getWriteStrategy()),
+                SyncOfflineJobPlanClassificationSupport.readerFamily(definition.getSourceConnectorType()),
+                SyncOfflineJobPlanClassificationSupport.writerFamily(definition.getTargetConnectorType()),
+                SyncOfflineJobPlanClassificationSupport.modeFamily(resolveMode(definition.getSyncMode())),
+                normalize(definition.getWriteStrategy()),
                 customSqlStatementPolicy,
-                hasText(template.getFilterConfig()),
+                hasText(definition.getFilterConfig()),
                 fieldMappingDeclared,
                 fieldRenameRequired,
                 minimalEndToEndSupported,
@@ -237,7 +237,7 @@ final class SyncDataXExecutionContractSupport {
         return new SyncDataXRuntimeSafetyPolicy(
                 "DATASOURCE_ID_REFERENCE_ONLY_CREDENTIALS_RESOLVED_INSIDE_EXECUTION_PLANE",
                 firstText(customSqlStatementPolicy, "NOT_APPLICABLE"),
-                "OBJECT_MAPPING_BODY_STAYS_IN_CONTROLLED_TEMPLATE_STORE_OR_RUNNER_DISCOVERY",
+                "OBJECT_MAPPING_BODY_STAYS_IN_CONTROLLED_TASK_DEFINITION_STORE_OR_RUNNER_DISCOVERY",
                 "FIELD_MAPPING_BODY_STAYS_INTERNAL_ONLY_PUBLIC_CONTRACT_EXPOSES_COUNT_AND_POLICY",
                 filterDeclared
                         ? "STRUCTURED_FILTER_ONLY_PREPARED_STATEMENT_BINDING_REQUIRED"

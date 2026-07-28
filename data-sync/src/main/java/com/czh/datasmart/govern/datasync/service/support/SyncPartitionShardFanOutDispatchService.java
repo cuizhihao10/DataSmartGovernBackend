@@ -14,7 +14,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanV
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncObjectExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeClient;
 import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeRequest;
 import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeResponse;
@@ -99,25 +99,25 @@ public class SyncPartitionShardFanOutDispatchService {
     /**
      * 判断当前父 execution 是否必须进入单表分片 fan-out。
      *
-     * <p>注意这里的判断和 {@code executableByPartitionFanOut} 不完全等价：只要模板声明了 partitionConfig，
+     * <p>注意这里的判断和 {@code executableByPartitionFanOut} 不完全等价：只要任务定义声明了 partitionConfig，
      * 且外层合同属于本类负责的 SINGLE_OBJECT/FULL 离线范围，就应该由本类接管。这样做是为了避免 partitionConfig
      * 写错时被普通 minimal run-once 忽略，导致用户以为已经分片，实际却全表单通道扫描。</p>
      *
      * @param contract 离线 Runner 合同，来自 bridge plan。
-     * @param template 同步模板，用于判断是否声明 partitionConfig。
+     * @param definition 任务定义，用于判断是否声明 partitionConfig。
      * @param actorContext 当前操作者或服务账号上下文。
      * @return true 表示应该由分片 fan-out 调度器处理，false 表示交给后续普通 runner 策略判断。
      */
     public boolean supports(SyncOfflineRunnerJobContract contract,
-                            SyncTemplate template,
+                            SyncTaskDefinition definition,
                             SyncActorContext actorContext) {
-        if (contract == null || template == null) {
+        if (contract == null || definition == null) {
             return false;
         }
         return contract.offlineChannel()
                 && SINGLE_OBJECT.equals(normalize(contract.syncScopeType()))
                 && SUPPORTED_SYNC_MODES.contains(normalize(contract.syncMode()))
-                && hasText(template.getPartitionConfig())
+                && hasText(definition.getPartitionConfig())
                 && !contract.checkpointRequired()
                 && !Boolean.TRUE.equals(actorContext == null ? null : actorContext.approvalRequired());
     }
@@ -127,7 +127,7 @@ public class SyncPartitionShardFanOutDispatchService {
      *
      * @param execution 当前已被 worker claim 的父 execution。
      * @param task 当前同步任务。
-     * @param template 当前 SINGLE_OBJECT 同步模板。
+     * @param definition 当前 SINGLE_OBJECT 任务定义。
      * @param workerPlan worker claim 阶段产生的低敏计划。
      * @param actorContext 当前操作者或服务账号上下文。
      * @param parentContract 父级离线 Runner 合同。
@@ -135,11 +135,11 @@ public class SyncPartitionShardFanOutDispatchService {
      */
     public SyncOfflineRunnerDispatchResult dispatchPartitionShards(SyncExecution execution,
                                                                    SyncTask task,
-                                                                   SyncTemplate template,
+                                                                   SyncTaskDefinition definition,
                                                                    SyncWorkerExecutionPlanView workerPlan,
                                                                    SyncActorContext actorContext,
                                                                    SyncOfflineRunnerJobContract parentContract) {
-        SyncPartitionShardExecutionContract partitionContract = resolvePartitionContract(task, execution, template,
+        SyncPartitionShardExecutionContract partitionContract = resolvePartitionContract(task, execution, definition,
                 actorContext, parentContract);
         if (!partitionContract.executableByPartitionFanOut()) {
             return failFanOut(task, execution, actorContext, parentContract,
@@ -156,7 +156,7 @@ public class SyncPartitionShardFanOutDispatchService {
 
         List<SyncObjectExecution> shardExecutions =
                 objectExecutionLifecycleSupport.initializePartitionShardExecutions(
-                        task, execution, template, partitionContract);
+                        task, execution, definition, partitionContract);
         executionLogSupport.recordExecutionEvent(task, execution, actorContext,
                 "SHARD",
                 "INFO",
@@ -189,7 +189,7 @@ public class SyncPartitionShardFanOutDispatchService {
         }
 
         List<ShardDispatchOutcome> outcomes = dispatchShardTaskGroups(
-                task, execution, template, workerPlan, actorContext, partitionContract, bundles);
+                task, execution, definition, workerPlan, actorContext, partitionContract, bundles);
         boolean remoteCalled = outcomes.stream().anyMatch(ShardDispatchOutcome::remoteCalled);
         List<String> accumulatedIssues = outcomes.stream()
                 .flatMap(outcome -> outcome.issueCodes().stream())
@@ -279,11 +279,11 @@ public class SyncPartitionShardFanOutDispatchService {
      */
     private SyncPartitionShardExecutionContract resolvePartitionContract(SyncTask task,
                                                                          SyncExecution execution,
-                                                                         SyncTemplate template,
+                                                                         SyncTaskDefinition definition,
                                                                          SyncActorContext actorContext,
                                                                          SyncOfflineRunnerJobContract parentContract) {
-        SyncPartitionShardExecutionContract parsed = partitionContractSupport.parse(template);
-        SyncEffectiveExecutionPolicy effectivePolicy = resolveExecutionPolicy(task, template, actorContext);
+        SyncPartitionShardExecutionContract parsed = partitionContractSupport.parse(definition);
+        SyncEffectiveExecutionPolicy effectivePolicy = resolveExecutionPolicy(task, definition, actorContext);
         parsed = partitionContractSupport.applyExecutionPolicy(parsed, effectivePolicy);
         if (!parsed.autoRangeProbeRequired()) {
             savePolicySnapshot(task, execution, effectivePolicy, parsed, "PARTITION_SHARD_DECLARED");
@@ -291,9 +291,9 @@ public class SyncPartitionShardFanOutDispatchService {
         }
         try {
             DatasourcePartitionRangeProbeRequest request = new DatasourcePartitionRangeProbeRequest();
-            request.setDatasourceId(template.getSourceDatasourceId());
-            request.setConnectorType(template.getSourceConnectorType());
-            request.setObjectLocator(objectLocator(template.getSourceSchemaName(), template.getSourceObjectName()));
+            request.setDatasourceId(definition.getSourceDatasourceId());
+            request.setConnectorType(definition.getSourceConnectorType());
+            request.setObjectLocator(objectLocator(definition.getSourceSchemaName(), definition.getSourceObjectName()));
             request.setSplitPk(parsed.partitionField());
             DatasourcePartitionRangeProbeResponse response = rangeProbeClient.probeRange(request, actorContext);
             SyncPartitionShardExecutionContract resolved = partitionContractSupport.buildAutoRangeContract(
@@ -326,7 +326,7 @@ public class SyncPartitionShardFanOutDispatchService {
     }
 
     private SyncEffectiveExecutionPolicy resolveExecutionPolicy(SyncTask task,
-                                                                SyncTemplate template,
+                                                                SyncTaskDefinition definition,
                                                                 SyncActorContext actorContext) {
         if (executionPolicyService == null) {
             return SyncEffectiveExecutionPolicy.defaults(
@@ -334,7 +334,7 @@ public class SyncPartitionShardFanOutDispatchService {
                     task == null ? null : task.getProjectId(),
                     task == null ? null : task.getId());
         }
-        return executionPolicyService.resolveEffectivePolicy(task, template, actorContext);
+        return executionPolicyService.resolveEffectivePolicy(task, definition, actorContext);
     }
 
     private void savePolicySnapshot(SyncTask task,
@@ -370,7 +370,7 @@ public class SyncPartitionShardFanOutDispatchService {
      */
     private List<ShardDispatchOutcome> dispatchShardTaskGroups(SyncTask task,
                                                                SyncExecution execution,
-                                                               SyncTemplate template,
+                                                               SyncTaskDefinition definition,
                                                                SyncWorkerExecutionPlanView workerPlan,
                                                                SyncActorContext actorContext,
                                                                SyncPartitionShardExecutionContract partitionContract,
@@ -388,7 +388,7 @@ public class SyncPartitionShardFanOutDispatchService {
                     "taskGroupOrdinal=" + (groupStart / taskGroupSize)
                             + ", shardRange=[" + groupStart + "," + groupEnd + ")"
                             + ", taskGroupSize=" + taskGroupSize);
-            outcomes.addAll(dispatchShardBatches(task, execution, template, workerPlan, actorContext,
+            outcomes.addAll(dispatchShardBatches(task, execution, definition, workerPlan, actorContext,
                     partitionContract, bundles.subList(groupStart, groupEnd), groupStart / taskGroupSize));
         }
         return outcomes;
@@ -399,7 +399,7 @@ public class SyncPartitionShardFanOutDispatchService {
      */
     private List<ShardDispatchOutcome> dispatchShardBatches(SyncTask task,
                                                             SyncExecution execution,
-                                                            SyncTemplate template,
+                                                            SyncTaskDefinition definition,
                                                             SyncWorkerExecutionPlanView workerPlan,
                                                             SyncActorContext actorContext,
                                                             SyncPartitionShardExecutionContract partitionContract,
@@ -423,7 +423,7 @@ public class SyncPartitionShardFanOutDispatchService {
                 List<Future<ShardDispatchOutcome>> futures = new ArrayList<>();
                 for (ShardExecutionBundle bundle : bundles.subList(start, end)) {
                     futures.add(executorService.submit(() -> dispatchOneShardWithRetry(
-                            task, execution, template, workerPlan, actorContext,
+                            task, execution, definition, workerPlan, actorContext,
                             partitionContract, bundle.shard(), bundle.row())));
                 }
                 for (Future<ShardDispatchOutcome> future : futures) {
@@ -442,7 +442,7 @@ public class SyncPartitionShardFanOutDispatchService {
      */
     private ShardDispatchOutcome dispatchOneShardWithRetry(SyncTask task,
                                                            SyncExecution execution,
-                                                           SyncTemplate template,
+                                                           SyncTaskDefinition definition,
                                                            SyncWorkerExecutionPlanView workerPlan,
                                                            SyncActorContext actorContext,
                                                            SyncPartitionShardExecutionContract partitionContract,
@@ -474,11 +474,11 @@ public class SyncPartitionShardFanOutDispatchService {
                             + ", attempt=" + shardExecution.getAttemptCount()
                             + ", maxAttemptCount=" + effectiveMaxAttemptCount(shardExecution),
                     SyncExecutionLogSupport.ExecutionMetricSnapshot.fromObject(shardExecution));
-            SyncTemplate childTemplate = singleObjectTemplate(template);
+            SyncTaskDefinition childDefinition = singleObjectDefinition(definition);
             SyncExecution childExecution = childExecutionView(execution);
             SyncWorkerExecutionPlanView childWorkerPlan = singleObjectWorkerPlan(workerPlan, shard);
             SyncBatchRunnerBridgePlan childBridgePlan =
-                    bridgePlanSupport.buildPlan(childExecution, task, childTemplate, childWorkerPlan);
+                    bridgePlanSupport.buildPlan(childExecution, task, childDefinition, childWorkerPlan);
             if (!childBridgePlan.isDispatchable()) {
                 objectExecutionLifecycleSupport.markObjectFailed(shardExecution, null, false,
                         "PARTITION_SHARD_BRIDGE_PLAN_BLOCKED",
@@ -598,41 +598,41 @@ public class SyncPartitionShardFanOutDispatchService {
         }
     }
 
-    private SyncTemplate singleObjectTemplate(SyncTemplate template) {
-        SyncTemplate child = new SyncTemplate();
-        child.setId(template.getId());
-        child.setTenantId(template.getTenantId());
-        child.setProjectId(template.getProjectId());
-        child.setWorkspaceId(template.getWorkspaceId());
-        child.setName(template.getName());
-        child.setDescription(template.getDescription());
-        child.setSourceDatasourceId(template.getSourceDatasourceId());
-        child.setTargetDatasourceId(template.getTargetDatasourceId());
-        child.setSourceSchemaName(template.getSourceSchemaName());
-        child.setSourceObjectName(template.getSourceObjectName());
-        child.setTargetSchemaName(template.getTargetSchemaName());
-        child.setTargetObjectName(template.getTargetObjectName());
-        child.setSourceConnectorType(template.getSourceConnectorType());
-        child.setTargetConnectorType(template.getTargetConnectorType());
-        child.setSyncMode(template.getSyncMode());
+    private SyncTaskDefinition singleObjectDefinition(SyncTaskDefinition definition) {
+        SyncTaskDefinition child = new SyncTaskDefinition();
+        child.setId(definition.getId());
+        child.setTenantId(definition.getTenantId());
+        child.setProjectId(definition.getProjectId());
+        child.setWorkspaceId(definition.getWorkspaceId());
+        child.setName(definition.getName());
+        child.setDescription(definition.getDescription());
+        child.setSourceDatasourceId(definition.getSourceDatasourceId());
+        child.setTargetDatasourceId(definition.getTargetDatasourceId());
+        child.setSourceSchemaName(definition.getSourceSchemaName());
+        child.setSourceObjectName(definition.getSourceObjectName());
+        child.setTargetSchemaName(definition.getTargetSchemaName());
+        child.setTargetObjectName(definition.getTargetObjectName());
+        child.setSourceConnectorType(definition.getSourceConnectorType());
+        child.setTargetConnectorType(definition.getTargetConnectorType());
+        child.setSyncMode(definition.getSyncMode());
         child.setSyncScopeType(SINGLE_OBJECT);
-        child.setWriteStrategy(template.getWriteStrategy());
-        child.setPrimaryKeyField(template.getPrimaryKeyField());
-        child.setIncrementalField(template.getIncrementalField());
-        child.setFieldMappingConfig(template.getFieldMappingConfig());
-        child.setFilterConfig(template.getFilterConfig());
+        child.setWriteStrategy(definition.getWriteStrategy());
+        child.setPrimaryKeyField(definition.getPrimaryKeyField());
+        child.setIncrementalField(definition.getIncrementalField());
+        child.setFieldMappingConfig(definition.getFieldMappingConfig());
+        child.setFilterConfig(definition.getFilterConfig());
         /*
          * 子计划必须清空 partitionConfig：分片已经由本类解析成结构化 additionalFilterConditions，
          * 如果继续把原始 partitionConfig 传入 child bridge，后续策略可能误以为还需要再次拆分，形成递归 fan-out。
          */
         child.setPartitionConfig(null);
-        child.setRetryPolicy(template.getRetryPolicy());
-        child.setTimeoutPolicy(template.getTimeoutPolicy());
-        child.setEnabled(template.getEnabled());
-        child.setCreatedBy(template.getCreatedBy());
-        child.setUpdatedBy(template.getUpdatedBy());
-        child.setCreateTime(template.getCreateTime());
-        child.setUpdateTime(template.getUpdateTime());
+        child.setRetryPolicy(definition.getRetryPolicy());
+        child.setTimeoutPolicy(definition.getTimeoutPolicy());
+        child.setEnabled(definition.getEnabled());
+        child.setCreatedBy(definition.getCreatedBy());
+        child.setUpdatedBy(definition.getUpdatedBy());
+        child.setCreateTime(definition.getCreateTime());
+        child.setUpdateTime(definition.getUpdateTime());
         return child;
     }
 
@@ -670,7 +670,6 @@ public class SyncPartitionShardFanOutDispatchService {
                 workerPlan.triggerType(),
                 workerPlan.executorId(),
                 workerPlan.leaseExpireTime(),
-                workerPlan.templateId(),
                 workerPlan.sourceDatasourceId(),
                 workerPlan.targetDatasourceId(),
                 workerPlan.sourceConnectorType(),

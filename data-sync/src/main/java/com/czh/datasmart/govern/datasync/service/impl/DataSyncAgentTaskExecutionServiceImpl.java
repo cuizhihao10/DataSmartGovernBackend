@@ -10,7 +10,6 @@ import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.datasync.controller.dto.AgentSyncTaskExecuteRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.AgentSyncTaskExecuteResponse;
-import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTaskRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.entity.SyncCallbackIdempotency;
@@ -24,13 +23,12 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.Locale;
 
 /**
  * Agent 数据同步执行服务实现。
  *
  * <p>本类的边界非常刻意：它只认识 `data-sync.execute` 这一种工具，不解析任意 URL，也不绕过 data-sync
- * 已有的模板校验、租户校验、项目范围校验和任务状态机。这样做的目标是让 Agent 能力进入真实业务系统时仍然走
+ * 已有的任务校验、租户校验、项目范围校验和任务状态机。这样做的目标是让 Agent 能力进入真实业务系统时仍然走
  * “明确工具语义 + 明确权限边界 + 明确幂等键”的商业化产品路线，而不是 demo 式地把模型输出当成可执行 HTTP 请求。</p>
  */
 @Service
@@ -45,7 +43,7 @@ public class DataSyncAgentTaskExecutionServiceImpl implements DataSyncAgentTaskE
     private final ObjectMapper objectMapper;
 
     /**
-     * 幂等地创建并入队同步任务。
+     * 幂等地把已有同步任务提交入队。
      *
      * <p>事务边界覆盖幂等登记、同步任务创建、执行记录创建、任务状态更新和幂等成功标记。
      * 如果中间任何一步失败，事务会整体回滚，幂等键不会被错误占用；worker 后续可以用同一个幂等键安全重试。</p>
@@ -73,7 +71,7 @@ public class DataSyncAgentTaskExecutionServiceImpl implements DataSyncAgentTaskE
         }
 
         SyncActorContext actorContext = actorContext(request);
-        SyncTask task = dataSyncService.createTask(createTaskRequest(request), actorContext);
+        SyncTask task = dataSyncService.getTask(request.getSyncTaskId(), actorContext);
         SyncTaskOperationResult operationResult = dataSyncService.runTask(task.getId(), actorContext);
         SyncTask queuedTask = dataSyncService.getTask(task.getId(), actorContext);
         AgentSyncTaskExecuteResponse response = new AgentSyncTaskExecuteResponse(
@@ -81,10 +79,10 @@ public class DataSyncAgentTaskExecutionServiceImpl implements DataSyncAgentTaskE
                 queuedTask.getId(),
                 queuedTask.getLastExecutionId(),
                 operationResult.state(),
-                true,
+                false,
                 true,
                 false,
-                "Agent 工具 data-sync.execute 已幂等创建同步任务并提交入队"
+                "Agent 工具 data-sync.execute 已幂等提交同步任务入队"
         );
         idempotencySupport.markSucceeded(tenantId, IDEMPOTENCY_ACTION, scopeKey, idempotencyKey, toJson(response));
         return response;
@@ -106,9 +104,9 @@ public class DataSyncAgentTaskExecutionServiceImpl implements DataSyncAgentTaskE
         if (request.getTenantId() == null) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR, "Agent 同步执行必须携带 tenantId");
         }
-        if (templateId(request) == null) {
+        if (request.getSyncTaskId() == null) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "Agent 同步执行必须携带 templateId 或 syncTemplateId");
+                    "Agent 同步执行必须携带 syncTaskId");
         }
     }
 
@@ -132,20 +130,6 @@ public class DataSyncAgentTaskExecutionServiceImpl implements DataSyncAgentTaskE
                 false, false, true, "命中 Agent 同步执行幂等记录，但首次响应摘要暂不可用");
     }
 
-    private CreateSyncTaskRequest createTaskRequest(AgentSyncTaskExecuteRequest request) {
-        CreateSyncTaskRequest createRequest = new CreateSyncTaskRequest();
-        createRequest.setTenantId(request.getTenantId());
-        createRequest.setProjectId(request.getProjectId());
-        createRequest.setWorkspaceId(request.getWorkspaceId());
-        createRequest.setTemplateId(templateId(request));
-        createRequest.setName(defaultName(request));
-        createRequest.setDescription(defaultDescription(request));
-        createRequest.setPriority(defaultText(request.getPriority(), "MEDIUM").toUpperCase(Locale.ROOT));
-        createRequest.setRunMode(defaultText(request.getRunMode(), "TEMPLATE").toUpperCase(Locale.ROOT));
-        createRequest.setOwnerId(request.getOwnerId());
-        return createRequest;
-    }
-
     private SyncActorContext actorContext(AgentSyncTaskExecuteRequest request) {
         return new SyncActorContext(
                 request.getTenantId(),
@@ -159,26 +143,6 @@ public class DataSyncAgentTaskExecutionServiceImpl implements DataSyncAgentTaskE
         );
     }
 
-    private Long templateId(AgentSyncTaskExecuteRequest request) {
-        return request.getSyncTemplateId() == null ? request.getTemplateId() : request.getSyncTemplateId();
-    }
-
-    private String defaultName(AgentSyncTaskExecuteRequest request) {
-        if (!isBlank(request.getName())) {
-            return request.getName().trim();
-        }
-        return "Agent同步任务-" + request.getCommandId().trim();
-    }
-
-    private String defaultDescription(AgentSyncTaskExecuteRequest request) {
-        if (!isBlank(request.getDescription())) {
-            return request.getDescription().trim();
-        }
-        return "由 Agent 工具 data-sync.execute 触发，sessionId=" + request.getSessionId()
-                + ", runId=" + request.getRunId()
-                + ", auditId=" + request.getAuditId();
-    }
-
     private String scopeKey(AgentSyncTaskExecuteRequest request) {
         return "agent:" + request.getSessionId().trim() + ":" + request.getRunId().trim() + ":" + request.getAuditId().trim();
     }
@@ -186,7 +150,7 @@ public class DataSyncAgentTaskExecutionServiceImpl implements DataSyncAgentTaskE
     private String requestDigest(AgentSyncTaskExecuteRequest request) {
         return "commandId=" + request.getCommandId()
                 + ",toolCode=" + request.getToolCode()
-                + ",templateId=" + templateId(request)
+                + ",syncTaskId=" + request.getSyncTaskId()
                 + ",tenantId=" + request.getTenantId()
                 + ",projectId=" + request.getProjectId()
                 + ",workspaceId=" + request.getWorkspaceId();

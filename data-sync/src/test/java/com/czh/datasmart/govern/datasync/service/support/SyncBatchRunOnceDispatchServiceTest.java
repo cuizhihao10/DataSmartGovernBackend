@@ -13,7 +13,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanView;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceClient;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceRequest;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
@@ -55,7 +55,7 @@ class SyncBatchRunOnceDispatchServiceTest {
         SyncBatchRunOnceDispatchService service = service(client, lifecycleSupport, properties(true), receiptPublisher);
 
         SyncExecution execution = execution("FULL");
-        SyncBatchRunOnceDispatchResult result = service.dispatchRunOnce(execution, task(), template("FULL", directMapping()),
+        SyncBatchRunOnceDispatchResult result = service.dispatchRunOnce(execution, task(), definition("FULL", directMapping()),
                 workerPlan("FULL", "READY_TO_RUN", List.of()), actor());
 
         assertThat(result.dispatched()).isTrue();
@@ -92,7 +92,7 @@ class SyncBatchRunOnceDispatchServiceTest {
         SyncExecution execution = execution("INCREMENTAL_TIME");
 
         SyncBatchRunOnceDispatchResult result = service.dispatchRunOnce(execution, task(),
-                template("INCREMENTAL_TIME", directMapping()), workerPlan("INCREMENTAL_TIME", "READY_TO_RUN", List.of()), actor());
+                definition("INCREMENTAL_TIME", directMapping()), workerPlan("INCREMENTAL_TIME", "READY_TO_RUN", List.of()), actor());
 
         assertThat(result.dispatched()).isFalse();
         assertThat(result.failed()).isTrue();
@@ -115,7 +115,7 @@ class SyncBatchRunOnceDispatchServiceTest {
         SyncExecution execution = execution("FULL");
 
         SyncBatchRunOnceDispatchResult result = service.dispatchRunOnce(execution, task(),
-                template("FULL", renameMapping()), workerPlan("FULL", "READY_TO_RUN", List.of()), actor());
+                definition("FULL", renameMapping()), workerPlan("FULL", "READY_TO_RUN", List.of()), actor());
 
         assertThat(result.dispatched()).isTrue();
         assertThat(result.completed()).isTrue();
@@ -132,8 +132,8 @@ class SyncBatchRunOnceDispatchServiceTest {
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
         DataSyncTaskManagementReceiptPublisher receiptPublisher = mock(DataSyncTaskManagementReceiptPublisher.class);
         SyncBatchRunOnceDispatchService service = service(client, lifecycleSupport, properties(true), receiptPublisher);
-        SyncTemplate template = template("FULL", directMapping());
-        template.setFilterConfig("""
+        SyncTaskDefinition definition = definition("FULL", directMapping());
+        definition.setFilterConfig("""
                 {
                   "conditions": [
                     {"field":"status","operator":"=","value":"ACTIVE"}
@@ -142,7 +142,7 @@ class SyncBatchRunOnceDispatchServiceTest {
                 """);
 
         SyncBatchRunOnceDispatchResult result = service.dispatchRunOnce(execution("FULL"), task(),
-                template, workerPlan("FULL", "READY_TO_RUN", List.of()), actor());
+                definition, workerPlan("FULL", "READY_TO_RUN", List.of()), actor());
 
         assertThat(result.dispatched()).isTrue();
         assertThat(client.capturedRequest().getExecutionPlan().getReadPlan().getFilterConditions()).hasSize(1);
@@ -168,7 +168,7 @@ class SyncBatchRunOnceDispatchServiceTest {
         SyncBatchRunOnceDispatchService service = service(client, lifecycleSupport, properties(true), receiptPublisher);
         SyncExecution execution = execution("FULL");
 
-        SyncBatchRunOnceDispatchResult result = service.dispatchRunOnce(execution, task(), template("FULL", directMapping()),
+        SyncBatchRunOnceDispatchResult result = service.dispatchRunOnce(execution, task(), definition("FULL", directMapping()),
                 workerPlan("FULL", "READY_TO_RUN", List.of()), actor());
 
         assertThat(result.dispatched()).isTrue();
@@ -200,7 +200,7 @@ class SyncBatchRunOnceDispatchServiceTest {
         SyncExecution execution = execution("FULL");
 
         SyncBatchRunOnceDispatchResult result = service.dispatchRunOnce(
-                execution, task(), template("FULL", directMapping()),
+                execution, task(), definition("FULL", directMapping()),
                 workerPlan("FULL", "READY_TO_RUN", List.of()), actor());
 
         assertThat(result.failed()).isTrue();
@@ -298,32 +298,31 @@ class SyncBatchRunOnceDispatchServiceTest {
         task.setTenantId(7L);
         task.setProjectId(101L);
         task.setWorkspaceId(301L);
-        task.setTemplateId(22L);
         task.setCurrentState("RUNNING");
         return task;
     }
 
-    private SyncTemplate template(String syncMode, String fieldMapping) {
-        SyncTemplate template = new SyncTemplate();
-        template.setId(22L);
-        template.setTenantId(7L);
-        template.setProjectId(101L);
-        template.setWorkspaceId(301L);
-        template.setSourceDatasourceId(10001L);
-        template.setTargetDatasourceId(10002L);
-        template.setSourceSchemaName("ods");
-        template.setSourceObjectName("customer");
-        template.setTargetSchemaName("dwd");
-        template.setTargetObjectName("customer");
-        template.setSourceConnectorType("MYSQL");
-        template.setTargetConnectorType("POSTGRESQL");
-        template.setSyncMode(syncMode);
-        template.setWriteStrategy("APPEND");
-        template.setPrimaryKeyField("id");
-        template.setIncrementalField("updated_at");
-        template.setFieldMappingConfig(fieldMapping);
-        template.setEnabled(true);
-        return template;
+    private SyncTaskDefinition definition(String syncMode, String fieldMapping) {
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setId(22L);
+        definition.setTenantId(7L);
+        definition.setProjectId(101L);
+        definition.setWorkspaceId(301L);
+        definition.setSourceDatasourceId(10001L);
+        definition.setTargetDatasourceId(10002L);
+        definition.setSourceSchemaName("ods");
+        definition.setSourceObjectName("customer");
+        definition.setTargetSchemaName("dwd");
+        definition.setTargetObjectName("customer");
+        definition.setSourceConnectorType("MYSQL");
+        definition.setTargetConnectorType("POSTGRESQL");
+        definition.setSyncMode(syncMode);
+        definition.setWriteStrategy("APPEND");
+        definition.setPrimaryKeyField("id");
+        definition.setIncrementalField("updated_at");
+        definition.setFieldMappingConfig(fieldMapping);
+        definition.setEnabled(true);
+        return definition;
     }
 
     private SyncWorkerExecutionPlanView workerPlan(String syncMode, String planStatus, List<String> issueCodes) {
@@ -340,7 +339,6 @@ class SyncBatchRunOnceDispatchServiceTest {
                 SyncTriggerType.MANUAL.name(),
                 "worker-1",
                 LocalDateTime.now().plusMinutes(2),
-                22L,
                 10001L,
                 10002L,
                 "MYSQL",

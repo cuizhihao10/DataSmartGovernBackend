@@ -26,12 +26,12 @@ import java.util.Set;
  * 数据同步连接器能力注册表。
  *
  * <p>当前实现是代码内置基线，而不是数据库表，是为了先把产品能力边界稳定下来：
- * 1. 模板创建、Agent 规划、前端表单和运营台都可以查询同一份 connector capability；
+ * 1. 任务定义创建、Agent 规划、前端表单和运营台都可以查询同一份 connector capability；
  * 2. 后续接真实 worker 时，只需要把 worker 支持情况同步到这里或替换为配置中心实现；
  * 3. 能力矩阵不包含连接实例和密钥，因此可以安全暴露给普通诊断接口。</p>
  *
- * <p>为什么不直接在 `SyncTemplateValidationSupport` 里写 if/else：
- * 连接器能力会影响模板校验、执行器调度、并发上限、checkpoint 策略、回放/补数策略和前端表单。
+ * <p>为什么不直接在 `SyncTaskDefinitionValidationSupport` 里写 if/else：
+ * 连接器能力会影响任务定义校验、执行器调度、并发上限、checkpoint 策略、回放/补数策略和前端表单。
  * 如果每个入口都自己写判断，后续 MySQL、PostgreSQL、Kafka、对象存储会产生大量重复逻辑。
  * 独立注册表能让这些入口共享同一套低敏、可测试、可演进的能力事实。</p>
  */
@@ -81,7 +81,7 @@ public class SyncConnectorCapabilityRegistry {
      * <ul>
      *     <li>源端必须可读，目标端必须可写；</li>
      *     <li>源端和目标端都必须支持该同步模式涉及的基础能力；</li>
-     *     <li>按同步模式返回一致性、checkpoint、重试模式和治理提示，帮助模板校验或 Agent 规划给用户解释原因。</li>
+     *     <li>按同步模式返回一致性、checkpoint、重试模式和治理提示，帮助任务定义校验或 Agent 规划给用户解释原因。</li>
      * </ul>
      */
     public SyncConnectorCompatibilityView checkCompatibility(String sourceConnectorType,
@@ -117,7 +117,7 @@ public class SyncConnectorCapabilityRegistry {
             issueCodes.add("EXPORT_TARGET_SHOULD_BE_FILE_OR_OBJECT_STORAGE");
         }
         if (issueCodes.isEmpty()) {
-            recommendedActions.add("当前组合通过能力矩阵预检，后续仍需执行连接测试、权限校验、模板字段映射校验和任务状态机校验。");
+            recommendedActions.add("当前组合通过能力矩阵预检，后续仍需执行连接测试、权限校验、任务字段映射校验和任务状态机校验。");
         } else {
             recommendedActions.add("请调整连接器类型、同步模式或补充 worker 支持后再创建生产任务。");
         }
@@ -282,7 +282,7 @@ public class SyncConnectorCapabilityRegistry {
                         SyncMode.ONE_TIME_MIGRATION, SyncMode.REPLAY, SyncMode.BACKFILL),
                 List.of("PAGE_TOKEN", "CURSOR_TOKEN", "TIME_WINDOW"),
                 List.of("REST API 需要严格 rate limit、分页游标、重试退避和上游错误映射。"),
-                List.of("API token、完整 URL、请求体和响应样本不能进入模板诊断。")));
+                List.of("API token、完整 URL、请求体和响应样本不能进入任务定义诊断。")));
         return Map.copyOf(map);
     }
 

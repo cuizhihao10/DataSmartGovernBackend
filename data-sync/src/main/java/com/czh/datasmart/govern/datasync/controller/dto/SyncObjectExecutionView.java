@@ -28,7 +28,6 @@ public record SyncObjectExecutionView(
         Long workspaceId,
         Long syncTaskId,
         Long executionId,
-        Long templateId,
         Integer objectOrdinal,
         String workUnitType,
         String shardOrPartition,

@@ -19,8 +19,8 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerLoopRunRequest
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerLoopRunResult;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
-import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
+import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import com.czh.datasmart.govern.datasync.service.DataSyncExecutorLeaseService;
 import com.czh.datasmart.govern.datasync.service.DataSyncRecoveryPlanWorkerService;
 import com.czh.datasmart.govern.datasync.service.DataSyncWorkerLoopService;
@@ -45,27 +45,26 @@ import java.util.Set;
  *
  * <p>本类刻意只做编排，不把同步执行细节重新写一遍：</p>
  * <p>1. 认领和租约并发裁决交给 {@link DataSyncExecutorLeaseService}；</p>
- * <p>2. 模板读取只通过 {@link SyncTemplateMapper} 拿到当前 execution 所属配置；</p>
+ * <p>2. 任务定义读取只通过 {@link SyncTaskDefinitionMapper} 拿到当前 execution 所属配置；</p>
  * <p>3. 离线 Runner 合同裁决、最小 run-once 委托和 complete/fail 回写交给 {@link SyncOfflineRunnerDispatchService}；</p>
- * <p>4. 只有在模板缺失或编排异常时，本类才通过 {@link SyncExecutionLifecycleSupport} 主动 fail-closed，
+ * <p>4. 只有在任务定义缺失或编排异常时，本类才通过 {@link SyncExecutionLifecycleSupport} 主动 fail-closed，
  *    避免 execution 被 claim 后长期停在 RUNNING。</p>
  *
  * <p>这样拆分的好处是：worker loop 成为“调度胶水”，不会演化成又一个大而全的同步执行器。
  * 后续要支持多批循环、checkpoint handoff、分片并发或独立 worker 进程时，可以逐步替换 dispatch 层或外部调用方，
- * 而不用推翻 lease、生命周期和模板服务。</p>
+ * 而不用推翻 lease、生命周期和任务定义服务。</p>
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class DataSyncWorkerLoopServiceImpl implements DataSyncWorkerLoopService {
 
-    private static final String TEMPLATE_MISSING_ERROR = "SYNC_TEMPLATE_NOT_FOUND";
-    private static final String TEMPLATE_ID_MISSING_ERROR = "SYNC_TEMPLATE_ID_MISSING";
+    private static final String DEFINITION_MISSING_ERROR = "SYNC_TASK_DEFINITION_NOT_FOUND";
     private static final String DISPATCH_EXCEPTION_ERROR = "WORKER_LOOP_DISPATCH_EXCEPTION";
     private static final String FAIL_CALLBACK_REJECTED_ERROR = "WORKER_LOOP_FAIL_CALLBACK_REJECTED";
 
     private final DataSyncExecutorLeaseService leaseService;
-    private final SyncTemplateMapper templateMapper;
+    private final SyncTaskDefinitionMapper taskDefinitionMapper;
     private final SyncOfflineRunnerDispatchService dispatchService;
     private final DataSyncRecoveryPlanWorkerService recoveryPlanWorkerService;
     private final SyncDirtyRecordReplayExecutionSupport dirtyRecordReplayExecutionSupport;
@@ -144,20 +143,15 @@ public class DataSyncWorkerLoopServiceImpl implements DataSyncWorkerLoopService 
             return new SyncWorkerLoopExecutionResult(null, null, true, false, false, false,
                     null, null, "CLAIM_RESULT_INCOMPLETE", List.of("CLAIM_RESULT_INCOMPLETE"));
         }
-        if (task.getTemplateId() == null) {
-            return failClaimedExecution(task, execution, actorContext, TEMPLATE_ID_MISSING_ERROR,
-                    "同步任务缺少 templateId，worker loop 无法生成受控执行计划");
-        }
-
-        SyncTemplate template = templateMapper.selectById(task.getTemplateId());
-        if (template == null) {
-            return failClaimedExecution(task, execution, actorContext, TEMPLATE_MISSING_ERROR,
-                    "同步任务关联的模板不存在，worker loop 无法继续派发");
+        SyncTaskDefinition definition = taskDefinitionMapper.selectById(task.getId());
+        if (definition == null) {
+            return failClaimedExecution(task, execution, actorContext, DEFINITION_MISSING_ERROR,
+                    "同步任务定义不存在，worker loop 无法继续派发");
         }
 
         try {
             SyncOfflineRunnerDispatchResult dispatchResult = dispatchClaimedExecution(
-                    execution, task, template, claimResult.workerPlan(), actorContext);
+                    execution, task, definition, claimResult.workerPlan(), actorContext);
             return fromDispatchResult(task, execution, claimResult, dispatchResult);
         } catch (Exception exception) {
             log.warn("data-sync worker loop 派发 execution 发生异常，已尝试按低敏错误 fail-closed: taskId={}, executionId={}, exceptionType={}",
@@ -179,16 +173,16 @@ public class DataSyncWorkerLoopServiceImpl implements DataSyncWorkerLoopService 
      */
     private SyncOfflineRunnerDispatchResult dispatchClaimedExecution(SyncExecution execution,
                                                                      SyncTask task,
-                                                                     SyncTemplate template,
+                                                                     SyncTaskDefinition definition,
                                                                      SyncWorkerExecutionPlanView workerPlan,
                                                                      SyncActorContext actorContext) {
         SyncRecoveryPlanWorkerResult recoveryPlan = claimRecoveryPlanIfNecessary(execution, actorContext);
         if (dirtyRecordReplayExecutionSupport.supports(recoveryPlan)) {
             consumeRecoveryPlan(execution, actorContext);
             return dirtyRecordReplayExecutionSupport.dispatchDirtyRecordReplay(
-                    execution, task, template, workerPlan, recoveryPlan, actorContext);
+                    execution, task, definition, workerPlan, recoveryPlan, actorContext);
         }
-        return dispatchService.dispatchOffline(execution, task, template, workerPlan, actorContext);
+        return dispatchService.dispatchOffline(execution, task, definition, workerPlan, actorContext);
     }
 
     /**
@@ -263,7 +257,7 @@ public class DataSyncWorkerLoopServiceImpl implements DataSyncWorkerLoopService 
     /**
      * 对已经 claim 的 execution 做 fail-closed 回写。
      *
-     * <p>这里生成的错误样本只包含低敏错误码和短说明，不保存模板正文、字段映射、SQL、连接地址、远端响应或异常消息。
+     * <p>这里生成的错误样本只包含低敏错误码和短说明，不保存任务定义正文、字段映射、SQL、连接地址、远端响应或异常消息。
      * 这样既能让任务状态进入 FAILED，避免 RUNNING 悬挂，又不会把内部执行细节泄露到运营台。</p>
      */
     private SyncWorkerLoopExecutionResult failClaimedExecution(SyncTask task,

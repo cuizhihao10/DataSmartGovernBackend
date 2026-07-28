@@ -11,7 +11,7 @@ import java.util.List;
 /**
  * User-facing execution precheck result addressed by the synchronization task ID.
  *
- * <p>The one-to-one sync template remains an internal persisted task definition.
+ * <p>The one-to-one sync definition remains an internal persisted task definition.
  * Product clients and Agent tools should not need its identifier, nor the retired
  * workspace compatibility column, to inspect whether a task can run.</p>
  */
@@ -46,11 +46,11 @@ public record SyncTaskExecutionPrecheckResponse(
 ) {
 
     /**
-     * Projects the internal template-oriented precheck into the stable task contract.
+     * Projects the internal definition-oriented precheck into the stable task contract.
      */
     public static SyncTaskExecutionPrecheckResponse from(
             Long taskId,
-            SyncTemplateExecutionPrecheckResponse source) {
+            SyncTaskDefinitionExecutionPrecheckResponse source) {
         return new SyncTaskExecutionPrecheckResponse(
                 taskId,
                 source.tenantId(),

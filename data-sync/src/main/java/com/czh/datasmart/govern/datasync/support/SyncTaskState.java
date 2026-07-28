@@ -26,7 +26,7 @@ public enum SyncTaskState {
     /**
      * 已配置，等待人工触发。
      *
-     * <p>CONFIGURED 通常用于一次性全量、SQL 自定义传输、补数前模板化任务等非定时场景。
+     * <p>CONFIGURED 通常用于一次性全量、SQL 自定义传输、补数前配置化任务等非定时场景。
      * 它代表配置已通过基本校验，但不会被 task scheduler 自动触发；用户点击手工调度或 Agent 在权限允许后调用手工调度入口，
      * 才会生成一条新的 execution。</p>
      */

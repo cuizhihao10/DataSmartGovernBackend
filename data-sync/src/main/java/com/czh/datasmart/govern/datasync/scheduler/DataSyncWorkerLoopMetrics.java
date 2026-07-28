@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>worker loop 是真实数据搬运闭环的入口，生产环境必须知道它是否健康：
  * 1. claimed 长期为 0，可能代表队列为空，也可能代表调度器没开启或任务状态没有进入 QUEUED；</p>
- * <p>2. failed 持续增长，可能代表模板缺失、bridge plan 阻断、datasource-management 不可用或目标端写入失败；</p>
+ * <p>2. failed 持续增长，可能代表任务定义缺失、bridge plan 阻断、datasource-management 不可用或目标端写入失败；</p>
  * <p>3. dispatched 为 0 但 claimed 大于 0，通常说明任务在进入真实读写前被 fail-closed；</p>
  * <p>4. 最近成功时间不更新，说明调度器可能停止、实例异常或配置被关闭。</p>
  *

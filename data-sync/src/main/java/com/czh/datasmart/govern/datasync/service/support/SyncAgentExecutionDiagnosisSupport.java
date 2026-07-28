@@ -15,7 +15,7 @@ import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncIncidentRecord;
 import com.czh.datasmart.govern.datasync.entity.SyncObjectExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.mapper.SyncErrorSampleMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncExecutionMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncIncidentRecordMapper;
@@ -58,7 +58,7 @@ public class SyncAgentExecutionDiagnosisSupport {
     private final SyncErrorSampleMapper errorSampleMapper;
     private final SyncIncidentRecordMapper incidentRecordMapper;
 
-    public SyncExecutionDiagnosisResponse diagnose(SyncTask task, SyncTemplate template, Long requestedExecutionId) {
+    public SyncExecutionDiagnosisResponse diagnose(SyncTask task, SyncTaskDefinition definition, Long requestedExecutionId) {
         SyncExecution execution = loadExecution(task, requestedExecutionId);
         List<SyncObjectExecution> allObjects = objectExecutionMapper.selectByExecutionId(execution.getId());
         List<SyncObjectExecution> failedObjects = allObjects == null ? List.of() : allObjects.stream()
@@ -76,14 +76,14 @@ public class SyncAgentExecutionDiagnosisSupport {
         List<String> rootCauses = classify(errors, execution);
         List<String> repairActions = repairActions(rootCauses, failedObjects, samples);
         List<SyncExecutionDiagnosisResponse.KnowledgeCaseSummary> cases = similarCases(task, rootCauses);
-        String ragQuery = ragQuery(template, rootCauses, errors);
+        String ragQuery = ragQuery(definition, rootCauses, errors);
         String digest = sha256(task.getId() + "|" + execution.getId() + "|"
                 + String.join(",", rootCauses) + "|" + String.join(",", repairActions));
 
         return new SyncExecutionDiagnosisResponse(
-                task.getId(), template.getId(), execution.getId(), task.getCurrentState(),
-                execution.getExecutionState(), template.getSyncMode(), template.getWriteStrategy(),
-                template.getSourceConnectorType(), template.getTargetConnectorType(), template.getTargetDatasourceId(),
+                task.getId(), execution.getId(), task.getCurrentState(),
+                execution.getExecutionState(), definition.getSyncMode(), definition.getWriteStrategy(),
+                definition.getSourceConnectorType(), definition.getTargetConnectorType(), definition.getTargetDatasourceId(),
                 zero(execution.getRecordsRead()), zero(execution.getRecordsWritten()),
                 zero(execution.getFailedRecordCount()), failedObjects.size(),
                 (int) samples.stream().filter(item -> Boolean.TRUE.equals(item.getRetryable()))
@@ -230,16 +230,16 @@ public class SyncAgentExecutionDiagnosisSupport {
                 .toList();
     }
 
-    private String ragQuery(SyncTemplate template,
+    private String ragQuery(SyncTaskDefinition definition,
                             List<String> causes,
                             List<SyncExecutionDiagnosisResponse.ErrorSummary> errors) {
         String codes = errors.stream().map(SyncExecutionDiagnosisResponse.ErrorSummary::errorCode)
                 .filter(value -> value != null && !value.isBlank()).distinct().limit(8)
                 .reduce((left, right) -> left + "," + right).orElse("UNCLASSIFIED");
-        return "DataSmart 数据同步失败排查：源连接器=" + code(template.getSourceConnectorType(), "UNKNOWN")
-                + "，目标连接器=" + code(template.getTargetConnectorType(), "UNKNOWN")
-                + "，同步模式=" + code(template.getSyncMode(), "UNKNOWN")
-                + "，写入策略=" + code(template.getWriteStrategy(), "UNKNOWN")
+        return "DataSmart 数据同步失败排查：源连接器=" + code(definition.getSourceConnectorType(), "UNKNOWN")
+                + "，目标连接器=" + code(definition.getTargetConnectorType(), "UNKNOWN")
+                + "，同步模式=" + code(definition.getSyncMode(), "UNKNOWN")
+                + "，写入策略=" + code(definition.getWriteStrategy(), "UNKNOWN")
                 + "，根因分类=" + String.join(",", causes)
                 + "，错误码=" + codes
                 + "。检索安全修复步骤、类似事故案例、验证与回滚方法。";

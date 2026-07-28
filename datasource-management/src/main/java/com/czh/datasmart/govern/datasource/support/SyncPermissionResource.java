@@ -16,13 +16,8 @@ package com.czh.datasmart.govern.datasource.support;
 public enum SyncPermissionResource {
     DATASOURCE_METADATA,
     DATASOURCE_READONLY_QUERY,
-    SYNC_TEMPLATE,
-    SYNC_TASK,
-    SYNC_APPROVAL,
     SYNC_ADMIN,
     SYNC_PERMISSION_POLICY,
-    SYNC_QUEUE,
     SYNC_ALERT,
-    SYNC_ALERT_DELIVERY,
-    SYNC_EXECUTOR
+    SYNC_ALERT_DELIVERY
 }

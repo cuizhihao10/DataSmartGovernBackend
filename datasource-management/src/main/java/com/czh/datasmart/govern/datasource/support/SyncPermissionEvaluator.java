@@ -51,23 +51,6 @@ public class SyncPermissionEvaluator {
                 ActorRole.ORDINARY_USER, ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR,
                 ActorRole.PLATFORM_ADMINISTRATOR, ActorRole.SERVICE_ACCOUNT);
 
-        register(SyncPermissionResource.SYNC_TEMPLATE, SyncPermissionAction.MANAGE,
-                ActorRole.PROJECT_OWNER, ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR);
-
-        register(SyncPermissionResource.SYNC_TASK, SyncPermissionAction.CREATE,
-                ActorRole.PROJECT_OWNER, ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR,
-                ActorRole.PLATFORM_ADMINISTRATOR, ActorRole.SERVICE_ACCOUNT);
-        register(SyncPermissionResource.SYNC_TASK, SyncPermissionAction.UPDATE_OWNED, ActorRole.PROJECT_OWNER);
-        register(SyncPermissionResource.SYNC_TASK, SyncPermissionAction.UPDATE_ANY,
-                ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR);
-        register(SyncPermissionResource.SYNC_TASK, SyncPermissionAction.OPERATE_OWNED, ActorRole.PROJECT_OWNER);
-        register(SyncPermissionResource.SYNC_TASK, SyncPermissionAction.OPERATE_ANY,
-                ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR,
-                ActorRole.PLATFORM_ADMINISTRATOR, ActorRole.SERVICE_ACCOUNT);
-
-        register(SyncPermissionResource.SYNC_APPROVAL, SyncPermissionAction.APPROVE,
-                ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR);
-
         register(SyncPermissionResource.SYNC_ADMIN, SyncPermissionAction.ADMIN_OVERRIDE,
                 ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR);
 
@@ -76,11 +59,6 @@ public class SyncPermissionEvaluator {
         register(SyncPermissionResource.SYNC_PERMISSION_POLICY, SyncPermissionAction.MANAGE_POLICY,
                 ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR);
         register(SyncPermissionResource.SYNC_PERMISSION_POLICY, SyncPermissionAction.APPROVE,
-                ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR);
-
-        register(SyncPermissionResource.SYNC_QUEUE, SyncPermissionAction.VIEW_QUEUE_HEALTH,
-                ActorRole.OPERATOR, ActorRole.AUDITOR, ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR);
-        register(SyncPermissionResource.SYNC_QUEUE, SyncPermissionAction.SCAN_QUEUE_AGING,
                 ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR);
 
         register(SyncPermissionResource.SYNC_ALERT, SyncPermissionAction.VIEW_ALERT,
@@ -97,14 +75,6 @@ public class SyncPermissionEvaluator {
         register(SyncPermissionResource.SYNC_ALERT_DELIVERY, SyncPermissionAction.DISPATCH_ALERT,
                 ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR);
 
-        register(SyncPermissionResource.SYNC_EXECUTOR, SyncPermissionAction.CLAIM,
-                ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR, ActorRole.SERVICE_ACCOUNT);
-        register(SyncPermissionResource.SYNC_EXECUTOR, SyncPermissionAction.HEARTBEAT,
-                ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR, ActorRole.SERVICE_ACCOUNT);
-        register(SyncPermissionResource.SYNC_EXECUTOR, SyncPermissionAction.REPORT_PROGRESS,
-                ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR, ActorRole.SERVICE_ACCOUNT);
-        register(SyncPermissionResource.SYNC_EXECUTOR, SyncPermissionAction.REPORT_RESULT,
-                ActorRole.OPERATOR, ActorRole.TENANT_ADMINISTRATOR, ActorRole.PLATFORM_ADMINISTRATOR, ActorRole.SERVICE_ACCOUNT);
     }
 
     /**

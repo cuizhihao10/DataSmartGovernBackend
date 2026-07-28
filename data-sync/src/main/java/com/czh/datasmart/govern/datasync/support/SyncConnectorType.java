@@ -10,7 +10,7 @@ package com.czh.datasmart.govern.datasync.support;
  * 数据同步连接器类型。
  *
  * <p>这个枚举不是为了把所有连接器实现一次性写完，而是先固定“产品层应该认识哪些连接器家族”。
- * 如果没有统一的 connector type，后续模板校验、执行器调度、并发配额、checkpoint 策略和运营看板都会各自写一套字符串，
+ * 如果没有统一的 connector type，后续任务定义校验、执行器调度、并发配额、checkpoint 策略和运营看板都会各自写一套字符串，
  * 项目很快会变成“每接一个数据库就复制一遍逻辑”。</p>
  *
  * <p>设计原则：</p>

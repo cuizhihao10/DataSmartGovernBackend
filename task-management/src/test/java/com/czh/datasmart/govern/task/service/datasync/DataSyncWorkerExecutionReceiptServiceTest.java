@@ -248,7 +248,7 @@ class DataSyncWorkerExecutionReceiptServiceTest {
         outbox.setTenantId(10L);
         outbox.setProjectId(20L);
         outbox.setWorkspaceId(30L);
-        outbox.setSyncTemplateId(6001L);
+        outbox.setSyncTaskId(6001L);
         outbox.setStatus(DataSyncWorkerCommandOutboxStatus.SUCCEEDED.name());
         outbox.setAttemptCount(1);
         outbox.setReceiptId("data-sync-receipt:" + commandId + ":7001:8001");

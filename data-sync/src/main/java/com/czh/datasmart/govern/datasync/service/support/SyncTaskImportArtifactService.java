@@ -260,12 +260,13 @@ public class SyncTaskImportArtifactService {
         if ("CONFLICT".equals(row.getStatus()) || lower.contains("名称重复") || lower.contains("名称与现有任务冲突")) {
             diagnostic(row, "IMPORT_TASK_NAME_CONFLICT", "name", true,
                     "修改任务名称后重新试运行；名称必须在当前租户和项目内唯一。");
-        } else if (lower.contains("templateid") || message.contains("同步模板不存在")) {
-            diagnostic(row, "IMPORT_TEMPLATE_NOT_FOUND", "templateId", true,
-                    "选择当前项目中存在且可访问的模板 ID，再重新试运行。");
+        } else if (lower.contains("synctaskid") || lower.contains("taskid")
+                || message.contains("同步任务不存在") || message.contains("任务定义不存在")) {
+            diagnostic(row, "IMPORT_TASK_NOT_FOUND", "taskId", true,
+                    "选择当前项目中存在且可访问的任务，或先通过创建向导保存任务草稿。");
         } else if (lower.contains("schedule") || message.contains("调度配置")) {
             diagnostic(row, "IMPORT_SCHEDULE_CONFIG_INVALID", "scheduleConfig", true,
-                    "按模板同步模式修正调度配置；非定期任务可清空该列。");
+                    "按任务同步模式修正调度配置；非定期任务可清空该列。");
         } else if (lower.contains("priority") || message.contains("优先级")) {
             diagnostic(row, "IMPORT_PRIORITY_INVALID", "priority", true,
                     "将 priority 修改为平台支持的优先级值后重试。");
@@ -273,8 +274,8 @@ public class SyncTaskImportArtifactService {
             diagnostic(row, "IMPORT_SCOPE_MISMATCH", lower.contains("tenantid") ? "tenantId" : "projectId", true,
                     "使用当前项目所属的租户和项目标识，不能跨范围导入。");
         } else if (message.contains("不能创建任务草稿") || message.contains("不能直接执行")) {
-            diagnostic(row, "IMPORT_TEMPLATE_PRECHECK_BLOCKED", "templateId", false,
-                    "先修复模板预检查问题；也可取消立即运行并仅导入为草稿。");
+            diagnostic(row, "IMPORT_TASK_PRECHECK_BLOCKED", "taskId", false,
+                    "先修复任务预检查问题；也可取消立即运行并仅导入为草稿。");
         } else {
             diagnostic(row, "IMPORT_ROW_VALIDATION_FAILED", null, false,
                     "查看该行错误说明和 RAG 案例，修正后重新试运行。");

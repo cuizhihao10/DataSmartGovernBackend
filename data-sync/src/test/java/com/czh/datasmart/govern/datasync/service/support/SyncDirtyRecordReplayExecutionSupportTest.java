@@ -14,7 +14,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanV
 import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.mapper.SyncErrorSampleMapper;
 import com.czh.datasmart.govern.datasync.support.SyncExecutionState;
 import com.czh.datasmart.govern.datasync.support.SyncTriggerType;
@@ -58,10 +58,10 @@ class SyncDirtyRecordReplayExecutionSupportTest {
                 new ObjectMapper());
         SyncTask task = task();
         SyncExecution execution = execution();
-        SyncTemplate template = template();
+        SyncTaskDefinition definition = definition();
         SyncWorkerExecutionPlanView workerPlan = workerPlan();
         SyncBatchRunnerBridgePlan bridgePlan = bridgePlan();
-        when(bridgePlanSupport.buildPlan(eq(execution), eq(task), eq(template), eq(workerPlan))).thenReturn(bridgePlan);
+        when(bridgePlanSupport.buildPlan(eq(execution), eq(task), eq(definition), eq(workerPlan))).thenReturn(bridgePlan);
         when(errorSampleMapper.selectList(any(LambdaQueryWrapper.class))).thenReturn(List.of(errorSample()));
         when(runOnceDispatchService.executePreparedRunOnceRemoteOnly(eq(bridgePlan), any(SyncExecution.class),
                 eq(task), any(SyncActorContext.class), eq("dirty-sample-501"), anyList()))
@@ -83,7 +83,7 @@ class SyncDirtyRecordReplayExecutionSupportTest {
                         SyncBatchRunOnceRemoteExecutionResult.PAYLOAD_POLICY));
 
         SyncOfflineRunnerDispatchResult result = support.dispatchDirtyRecordReplay(
-                execution, task, template, workerPlan, recoveryPlan(), actor());
+                execution, task, definition, workerPlan, recoveryPlan(), actor());
 
         assertThat(result.completed()).isTrue();
         assertThat(result.dispatchStatus()).isEqualTo("DIRTY_RECORD_REPLAY_COMPLETED");
@@ -147,7 +147,6 @@ class SyncDirtyRecordReplayExecutionSupportTest {
                 301L,
                 11L,
                 88L,
-                22L,
                 10001L,
                 10002L,
                 "MYSQL",
@@ -187,7 +186,6 @@ class SyncDirtyRecordReplayExecutionSupportTest {
         task.setTenantId(7L);
         task.setProjectId(101L);
         task.setWorkspaceId(301L);
-        task.setTemplateId(22L);
         task.setCurrentState("RUNNING");
         return task;
     }
@@ -207,17 +205,17 @@ class SyncDirtyRecordReplayExecutionSupportTest {
         return execution;
     }
 
-    private SyncTemplate template() {
-        SyncTemplate template = new SyncTemplate();
-        template.setId(22L);
-        template.setTenantId(7L);
-        template.setProjectId(101L);
-        template.setWorkspaceId(301L);
-        template.setSourceDatasourceId(10001L);
-        template.setTargetDatasourceId(10002L);
-        template.setSyncMode("FULL");
-        template.setEnabled(true);
-        return template;
+    private SyncTaskDefinition definition() {
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setId(22L);
+        definition.setTenantId(7L);
+        definition.setProjectId(101L);
+        definition.setWorkspaceId(301L);
+        definition.setSourceDatasourceId(10001L);
+        definition.setTargetDatasourceId(10002L);
+        definition.setSyncMode("FULL");
+        definition.setEnabled(true);
+        return definition;
     }
 
     private SyncWorkerExecutionPlanView workerPlan() {
@@ -234,7 +232,6 @@ class SyncDirtyRecordReplayExecutionSupportTest {
                 SyncTriggerType.REPLAY.name(),
                 "worker-loop-test",
                 LocalDateTime.now().plusMinutes(2),
-                22L,
                 10001L,
                 10002L,
                 "MYSQL",

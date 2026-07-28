@@ -33,7 +33,7 @@ public class SyncTaskBatchItemResult {
      * 动作产物任务 ID。
      *
      * <p>当前批量下线/删除类动作通常与 taskId 相同；保留该字段是为了后续批量克隆、批量导入派生任务、
-     * 批量按模板生成任务时，不需要再修改响应结构。</p>
+     * 批量按任务定义生成任务时，不需要再修改响应结构。</p>
      */
     private Long resultTaskId;
 

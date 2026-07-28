@@ -38,7 +38,7 @@ public class PermissionProject {
      * 项目数字 ID。
      *
      * <p>该 ID 会被 gateway 注入为 X-DataSmart-Project-Id，也会写入 datasource_config.project_id、
-     * data_sync_template.project_id、data_sync_task.project_id 等业务表，用于项目级数据隔离。</p>
+     * data_sync_task.project_id、data_sync_task_definition.project_id 等业务表，用于项目级数据隔离。</p>
      */
     @TableId(value = "project_id", type = IdType.INPUT)
     private Long projectId;

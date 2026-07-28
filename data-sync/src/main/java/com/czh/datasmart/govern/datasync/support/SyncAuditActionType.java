@@ -12,8 +12,14 @@ package com.czh.datasmart.govern.datasync.support;
  * <p>审计动作使用枚举集中维护，可以避免每个 Service 方法手写字符串导致统计口径不一致。
  */
 public enum SyncAuditActionType {
-    CREATE_TEMPLATE,
-    VALIDATE_TEMPLATE,
+    /**
+     * 保存任务自身的一对一配置定义。
+     */
+    SAVE_TASK_DEFINITION,
+    /**
+     * 对任务定义执行可运行性预检查。
+     */
+    PRECHECK_TASK,
     CREATE_TASK,
     /**
      * 编辑同步任务定义。
@@ -33,7 +39,7 @@ public enum SyncAuditActionType {
     /**
      * 导出同步任务定义。
      *
-     * <p>导出动作只包含低敏任务定义字段和模板引用，不包含连接串、密码、完整 SQL、样本数据或 worker 内部计划。
+     * <p>导出动作只包含低敏任务定义字段，不包含连接串、密码、完整 SQL、样本数据或 worker 内部计划。
      * 该动作独立审计，是为了后续回答“谁在什么时候批量导出了哪些任务定义”。</p>
      */
     EXPORT_TASKS,

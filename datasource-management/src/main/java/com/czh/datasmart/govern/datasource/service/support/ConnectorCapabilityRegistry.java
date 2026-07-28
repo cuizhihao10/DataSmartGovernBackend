@@ -3,7 +3,6 @@ package com.czh.datasmart.govern.datasource.service.support;
 import com.czh.datasmart.govern.datasource.entity.ConnectorCapabilityProfile;
 import com.czh.datasmart.govern.datasource.entity.DataSourceConfig;
 import com.czh.datasmart.govern.datasource.entity.SyncConnectorCapabilityAssessment;
-import com.czh.datasmart.govern.datasource.entity.SyncTemplate;
 import com.czh.datasmart.govern.datasource.support.ConnectorType;
 import com.czh.datasmart.govern.datasource.support.SyncMode;
 import com.czh.datasmart.govern.datasource.support.SyncWriteStrategy;
@@ -88,25 +87,13 @@ public class ConnectorCapabilityRegistry {
     /**
      * 针对已持久化模板执行连接器兼容性评估。
      */
-    public SyncConnectorCapabilityAssessment assessTemplateCompatibility(SyncTemplate template,
-                                                                         DataSourceConfig source,
-                                                                         DataSourceConfig target) {
-        return assessTemplateCompatibility(
-                source,
-                target,
-                SyncMode.fromValue(template.getSyncMode()),
-                SyncWriteStrategy.fromValue(template.getWriteStrategy()),
-                template.getPartitionConfig()
-        );
-    }
-
     /**
      * 针对创建/更新请求执行连接器兼容性评估。
      *
      * <p>该方法不读取数据库，调用方负责提前加载 source/target 数据源并校验其生命周期。
      * 这样注册表保持纯规则组件，便于单元测试，也避免和 Mapper、事务边界产生耦合。</p>
      */
-    public SyncConnectorCapabilityAssessment assessTemplateCompatibility(DataSourceConfig source,
+    public SyncConnectorCapabilityAssessment assessTaskCompatibility(DataSourceConfig source,
                                                                          DataSourceConfig target,
                                                                          SyncMode syncMode,
                                                                          SyncWriteStrategy writeStrategy,
@@ -150,15 +137,15 @@ public class ConnectorCapabilityRegistry {
      * <p>模板创建和更新属于强一致入口，不能只把错误写入 warnings 后继续落库。
      * 如果允许明显不兼容的模板入库，问题会被推迟到执行器认领后才暴露，最终造成队列污染和运维误判。</p>
      */
-    public void assertTemplateCompatible(DataSourceConfig source,
+    public void assertTaskCompatible(DataSourceConfig source,
                                          DataSourceConfig target,
                                          SyncMode syncMode,
                                          SyncWriteStrategy writeStrategy,
                                          String partitionConfig) {
-        SyncConnectorCapabilityAssessment assessment = assessTemplateCompatibility(
+        SyncConnectorCapabilityAssessment assessment = assessTaskCompatibility(
                 source, target, syncMode, writeStrategy, partitionConfig);
         if (!assessment.isPassed()) {
-            throw new IllegalArgumentException("同步模板连接器能力不兼容: " + String.join("；", assessment.getErrors()));
+            throw new IllegalArgumentException("同步任务连接器能力不兼容: " + String.join("；", assessment.getErrors()));
         }
     }
 

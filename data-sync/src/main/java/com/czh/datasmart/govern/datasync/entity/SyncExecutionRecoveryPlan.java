@@ -79,7 +79,7 @@ public class SyncExecutionRecoveryPlan {
      * 3. sampleCount/sourceExecutionId/repairStrategy 等低敏控制信息。
      *
      * <p>它不能保存原始坏行、SQL、连接串、凭据、完整 where 条件或目标端响应。
-     * worker 后续会用 selector 重新查询受权限约束的 {@code data_sync_error_sample}，再按模板和连接器能力执行修复重放。</p>
+     * worker 后续会用 selector 重新查询受权限约束的 {@code data_sync_error_sample}，再按任务定义和连接器能力执行修复重放。</p>
      */
     private String errorSampleSelector;
 

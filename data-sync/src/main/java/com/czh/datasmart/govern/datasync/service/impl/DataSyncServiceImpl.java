@@ -11,8 +11,6 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.czh.datasmart.govern.common.api.PlatformPageResponse;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
-import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTaskRequest;
-import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTemplateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncAuditQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncCheckpointQueryCriteria;
@@ -30,7 +28,6 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionLogQueryCri
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionStartRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionDiagnosisResponse;
-import com.czh.datasmart.govern.datasync.controller.dto.SyncOfflineJobPlanResponse;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectExecutionView;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncObjectRetryRequest;
@@ -58,9 +55,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskRecoveryOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskUpdateRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskExecutionPrecheckResponse;
-import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateExecutionPrecheckResponse;
-import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplatePlanningPreviewResponse;
-import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateQueryCriteria;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskDefinitionExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.entity.SyncAuditRecord;
 import com.czh.datasmart.govern.datasync.entity.SyncCheckpoint;
 import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
@@ -68,14 +63,14 @@ import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncExecutionLog;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTaskGroup;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.mapper.SyncAuditRecordMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncCheckpointMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncErrorSampleMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncExecutionMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncExecutionLogMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
-import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
+import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import com.czh.datasmart.govern.datasync.service.DataSyncService;
 import com.czh.datasmart.govern.datasync.service.support.SyncAuditSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncAgentExecutionDiagnosisSupport;
@@ -86,7 +81,6 @@ import com.czh.datasmart.govern.datasync.service.support.SyncDirtyRecordQuaranti
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionCreationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncExecutionLifecycleSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncObjectExecutionOperationSupport;
-import com.czh.datasmart.govern.datasync.service.support.SyncOfflineJobPlanSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncQuerySupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncRecoveryCasePublishSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskBatchOperationSupport;
@@ -98,14 +92,9 @@ import com.czh.datasmart.govern.datasync.service.support.SyncTaskGroupOperationS
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskManagementOperationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskMetadataConfigurationSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskRecoveryOperationSupport;
-import com.czh.datasmart.govern.datasync.service.support.SyncTaskScheduleConfigSupport;
 import com.czh.datasmart.govern.datasync.service.support.SyncTaskStateMachineSupport;
-import com.czh.datasmart.govern.datasync.service.support.SyncTemplateCreationSupport;
-import com.czh.datasmart.govern.datasync.service.support.SyncTemplateExecutionPrecheckSupport;
-import com.czh.datasmart.govern.datasync.service.support.SyncTemplatePlanningPreviewSupport;
-import com.czh.datasmart.govern.datasync.service.support.SyncTemplateValidationSupport;
+import com.czh.datasmart.govern.datasync.service.support.SyncTaskDefinitionExecutionPrecheckSupport;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
-import com.czh.datasmart.govern.datasync.support.SyncMode;
 import com.czh.datasmart.govern.datasync.support.SyncTaskState;
 import com.czh.datasmart.govern.datasync.support.SyncTriggerType;
 import lombok.RequiredArgsConstructor;
@@ -120,10 +109,10 @@ import java.util.Locale;
 /**
  * 数据同步服务实现。
  *
- * <p>当前实现刻意保持“定义面优先”：
- * 1. 模板负责保存可复用配置；
- * 2. 任务负责保存可运营状态；
- * 3. runTask 只把任务推进到 QUEUED，真正执行器、checkpoint 和吞吐控制后续独立实现。
+ * <p>当前实现以任务聚合为边界：
+ * 1. 一对一任务定义保存执行配置；
+ * 2. 任务主表保存可运营状态；
+ * 3. runTask 只把任务推进到 QUEUED，执行器、checkpoint 和吞吐控制由独立组件负责。
  *
  * <p>这样做能避免一开始就把连接器读写、任务状态、审计、checkpoint 全部耦合在一个大 Impl 里。
  */
@@ -131,7 +120,7 @@ import java.util.Locale;
 @RequiredArgsConstructor
 public class DataSyncServiceImpl implements DataSyncService {
 
-    private final SyncTemplateMapper templateMapper;
+    private final SyncTaskDefinitionMapper taskDefinitionMapper;
     private final SyncTaskMapper taskMapper;
     private final SyncExecutionMapper executionMapper;
     private final SyncExecutionLogMapper executionLogMapper;
@@ -140,7 +129,6 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncAuditRecordMapper auditRecordMapper;
     private final SyncDataScopeSupport dataScopeSupport;
     private final SyncQuerySupport querySupport;
-    private final SyncTemplateValidationSupport templateValidationSupport;
     private final SyncTaskStateMachineSupport stateMachineSupport;
     private final SyncAuditSupport auditSupport;
     private final SyncExecutionLifecycleSupport executionLifecycleSupport;
@@ -153,15 +141,11 @@ public class DataSyncServiceImpl implements DataSyncService {
     private final SyncTaskManagementOperationSupport taskManagementOperationSupport;
     private final SyncTaskMetadataConfigurationSupport taskMetadataConfigurationSupport;
     private final SyncTaskRecoveryOperationSupport taskRecoveryOperationSupport;
-    private final SyncTemplateCreationSupport templateCreationSupport;
-    private final SyncTemplatePlanningPreviewSupport templatePlanningPreviewSupport;
-    private final SyncTemplateExecutionPrecheckSupport templateExecutionPrecheckSupport;
-    private final SyncOfflineJobPlanSupport offlineJobPlanSupport;
+    private final SyncTaskDefinitionExecutionPrecheckSupport taskDefinitionExecutionPrecheckSupport;
     private final SyncObjectExecutionOperationSupport objectExecutionOperationSupport;
     private final SyncDirtyRecordReplaySupport dirtyRecordReplaySupport;
     private final SyncDirtyRecordQuarantineSupport dirtyRecordQuarantineSupport;
     private final SyncAgentExecutionDiagnosisSupport agentExecutionDiagnosisSupport;
-    private final SyncTaskScheduleConfigSupport scheduleConfigSupport;
     private final SyncTaskCreateWizardDraftSupport createWizardDraftSupport;
     private SyncRecoveryCasePublishSupport recoveryCasePublishSupport;
 
@@ -170,172 +154,12 @@ public class DataSyncServiceImpl implements DataSyncService {
         this.recoveryCasePublishSupport = recoveryCasePublishSupport;
     }
 
-    @Override
-    @Transactional
-    public SyncTemplate createTemplate(CreateSyncTemplateRequest request, SyncActorContext actorContext) {
-        return templateCreationSupport.createTemplate(request, actorContext);
-    }
-
-    @Override
-    public PlatformPageResponse<SyncTemplate> pageTemplates(SyncTemplateQueryCriteria criteria,
-                                                            SyncActorContext actorContext) {
-        SyncDataVisibility visibility = dataScopeSupport.resolveVisibility(
-                criteria.tenantId(), criteria.projectId(), criteria.workspaceId(), actorContext);
-        LambdaQueryWrapper<SyncTemplate> wrapper = new LambdaQueryWrapper<SyncTemplate>()
-                .orderByDesc(SyncTemplate::getId);
-        if (visibility.tenantId() != null) {
-            wrapper.eq(SyncTemplate::getTenantId, visibility.tenantId());
-        }
-        querySupport.eqIfPresent(wrapper, SyncTemplate::getProjectId, visibility.projectId());
-        dataScopeSupport.applyAuthorizedProjectScope(wrapper, SyncTemplate::getProjectId, visibility);
-        querySupport.eqIfPresent(wrapper, SyncTemplate::getWorkspaceId, visibility.workspaceId());
-        if (visibility.selfOnly()) {
-            wrapper.eq(SyncTemplate::getCreatedBy, querySupport.actorId(actorContext));
-        }
-        querySupport.eqIfPresent(wrapper, SyncTemplate::getSourceDatasourceId, criteria.sourceDatasourceId());
-        querySupport.eqIfPresent(wrapper, SyncTemplate::getTargetDatasourceId, criteria.targetDatasourceId());
-        querySupport.eqIfPresent(wrapper, SyncTemplate::getSyncMode, querySupport.normalizeCode(criteria.syncMode()));
-        if (criteria.enabled() != null) {
-            wrapper.eq(SyncTemplate::getEnabled, criteria.enabled());
-        }
-        Page<SyncTemplate> page = templateMapper.selectPage(querySupport.page(criteria.current(), criteria.size()), wrapper);
-        return PlatformPageResponse.of(page.getCurrent(), page.getSize(), page.getTotal(), page.getRecords());
-    }
-
-    @Override
-    public SyncTemplate getTemplate(Long id, SyncActorContext actorContext) {
-        SyncTemplate template = templateMapper.selectById(id);
-        if (template == null) {
-            throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND, "同步模板不存在: " + id);
-        }
-        dataScopeSupport.validateOwnedReadable(template.getTenantId(), template.getProjectId(),
-                template.getCreatedBy(), actorContext, "同步模板");
-        return template;
-    }
-
-    @Override
-    public SyncTaskOperationResult validateTemplate(Long id, SyncActorContext actorContext) {
-        SyncTemplate template = getTemplate(id, actorContext);
-        templateValidationSupport.validateTemplate(template);
-        auditSupport.saveTemplateAudit(template, SyncAuditActionType.VALIDATE_TEMPLATE,
-                actorContext, "templateId=" + template.getId());
-        return new SyncTaskOperationResult(null, "VALIDATED", "同步模板校验通过，后续可创建同步任务或执行预览");
-    }
-
-    @Override
-    public SyncTemplatePlanningPreviewResponse previewTemplate(Long id, SyncActorContext actorContext) {
-        SyncTemplate template = getTemplate(id, actorContext);
-        return templatePlanningPreviewSupport.preview(template);
-    }
-
-    @Override
-    public SyncTemplateExecutionPrecheckResponse precheckTemplate(Long id, SyncActorContext actorContext) {
-        SyncTemplate template = getTemplate(id, actorContext);
-        return templateExecutionPrecheckSupport.precheck(template, actorContext);
-    }
-
-    /**
-     * 生成同步模板的离线作业计划。
-     *
-     * <p>主 Service 只负责复用 {@link #getTemplate(Long, SyncActorContext)} 做租户、项目、SELF 数据范围校验，
-     * 然后把 Reader/Writer、调度语义、checkpoint、审批和 fail-closed 细节委托给
-     * {@link SyncOfflineJobPlanSupport}。这样可以避免 DataSyncServiceImpl 再次堆积大段规则判断。</p>
-     */
-    @Override
-    public SyncOfflineJobPlanResponse buildOfflineJobPlan(Long id, SyncActorContext actorContext) {
-        SyncTemplate template = getTemplate(id, actorContext);
-        return offlineJobPlanSupport.buildPlan(template);
-    }
-
-    @Override
-    @Transactional
-    public SyncTask createTask(CreateSyncTaskRequest request, SyncActorContext actorContext) {
-        SyncTemplate template = getTemplate(request.getTemplateId(), actorContext);
-        templateValidationSupport.validateTemplate(template);
-        SyncTemplateExecutionPrecheckResponse precheck = templateExecutionPrecheckSupport.precheck(template, actorContext);
-        if (!precheck.canCreateTaskDraft()) {
-            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "同步任务创建前预检查未通过，precheckStatus=" + precheck.precheckStatus()
-                            + "，issueCodes=" + precheck.issueCodes()
-                            + "，recommendedActions=" + precheck.recommendedActions());
-        }
-        Long tenantId = dataScopeSupport.resolveTenantForCreate(request.getTenantId(), actorContext);
-        if (!tenantId.equals(template.getTenantId())) {
-            throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
-                    "同步任务租户必须与模板租户一致，templateTenantId=" + template.getTenantId() + ", taskTenantId=" + tenantId);
-        }
-        boolean scheduledTask = isScheduledTask(template, request);
-        LocalDateTime firstFireTime = scheduledTask
-                ? scheduleConfigSupport.initialNextFireTime(request.getScheduleConfig(), LocalDateTime.now())
-                : null;
-        /*
-         * 运行模式不再由用户手填。
-         *
-         * - SCHEDULED_FULL / SCHEDULED_BATCH 且 scheduleConfig 合法时，任务主状态进入 SCHEDULED，等待调度器到点创建 execution；
-         * - FULL / CUSTOM_SQL_QUERY / CDC_STREAMING 等非定时模式在创建后保持 CONFIGURED，由“立即执行/手工调度/发布”动作触发。
-         */
-        String runMode = scheduledTask ? "SCHEDULED" : "MANUAL";
-
-        SyncTask task = new SyncTask();
-        task.setTenantId(tenantId);
-        task.setProjectId(resolveScopeValue("projectId", request.getProjectId(), template.getProjectId()));
-        dataScopeSupport.validateProjectManageable(
-                tenantId, task.getProjectId(), template.getWorkspaceId(), actorContext, "同步任务");
-        /*
-         * 工作空间已经从用户侧产品层级中退场，新建任务页面不会再展示或提交 workspaceId。
-         *
-         * 这里保留“继承历史模板 workspaceId”的兼容行为，是为了避免老模板、老执行记录、审计记录在迁移期突然出现
-         * 任务和模板归属不一致；但我们不再读取 request.getWorkspaceId()，这样旧前端、脚本或网关 Header 即使仍携带
-         * workspaceId，也不会把新任务写入用户不可见的工作空间。新建模板的 workspaceId 已经由 SyncDataScopeSupport
-         * 收敛为 null，因此新链路天然就是项目级归属。
-         */
-        task.setWorkspaceId(template.getWorkspaceId());
-        task.setTemplateId(template.getId());
-        SyncTaskGroupOperationSupport.TaskGroupAssignment groupAssignment =
-                taskGroupOperationSupport.resolveAssignmentForTask(
-                        tenantId,
-                        task.getProjectId(),
-                        task.getWorkspaceId(),
-                        request.getGroupCode(),
-                        request.getGroupName(),
-                        actorContext);
-        task.setGroupCode(groupAssignment.groupCode());
-        task.setGroupName(groupAssignment.groupName());
-        String taskName = querySupport.defaultText(request.getName(), template.getName());
-        assertTaskNameAvailable(tenantId, task.getProjectId(), taskName, null);
-        task.setName(taskName);
-        task.setDescription(querySupport.defaultText(request.getDescription(), template.getDescription()));
-        /*
-         * 普通同步任务已经收敛为“项目内用户自有资源”，创建和发布不再进入审批态。
-         * 高风险写入、SQL 自定义、整库迁移等场景由预检查、权限、执行策略、审计和失败恢复入口约束，
-         * 不再把 approvalConfirmed / approvalFactId 暴露给用户创建页面。
-         */
-        task.setCurrentState(scheduledTask ? SyncTaskState.SCHEDULED.name() : SyncTaskState.CONFIGURED.name());
-        task.setApprovalState("NOT_REQUIRED");
-        task.setPriority(querySupport.defaultText(request.getPriority(), "MEDIUM").toUpperCase(java.util.Locale.ROOT));
-        task.setScheduleConfig(querySupport.trimToNull(request.getScheduleConfig()));
-        task.setScheduleEnabled(scheduledTask);
-        task.setNextFireTime(scheduledTask ? firstFireTime : null);
-        task.setLastFireTime(null);
-        task.setScheduleMisfireCount(0);
-        task.setScheduleDispatchCount(0L);
-        task.setScheduleVersion(0L);
-        task.setRunMode(runMode);
-        task.setTriggerType(scheduledTask ? SyncTriggerType.SCHEDULED.name() : SyncTriggerType.MANUAL.name());
-        task.setOwnerId(request.getOwnerId() == null ? querySupport.actorId(actorContext) : request.getOwnerId());
-        task.setCreateTime(LocalDateTime.now());
-        task.setUpdateTime(LocalDateTime.now());
-        taskMapper.insert(task);
-        auditSupport.saveAudit(task.getTenantId(), task.getId(), null, SyncAuditActionType.CREATE_TASK,
-                actorContext, buildCreateTaskAuditPayload(task, precheck, request));
-        return task;
-    }
 
     /**
      * 保存创建向导草稿。
      *
      * <p>主 Service 只负责声明事务边界并委托给 {@link SyncTaskCreateWizardDraftSupport}。
-     * 这样“创建/更新 DRAFT 模板与任务”的规则不会继续塞进已经很重的 ServiceImpl，也方便后续单独补草稿恢复、草稿发布、
+     * 这样“创建/更新 DRAFT 任务及定义”的规则不会继续塞进已经很重的 ServiceImpl，也方便后续单独补草稿恢复、草稿发布、
      * 草稿超期清理等能力。</p>
      */
     @Override
@@ -360,7 +184,6 @@ public class DataSyncServiceImpl implements DataSyncService {
         if (visibility.selfOnly()) {
             wrapper.eq(SyncTask::getOwnerId, querySupport.actorId(actorContext));
         }
-        querySupport.eqIfPresent(wrapper, SyncTask::getTemplateId, criteria.templateId());
         querySupport.eqIfPresent(wrapper, SyncTask::getOwnerId, criteria.ownerId());
         applyTaskGroupFilter(wrapper, criteria.groupCode());
         String requestedState = querySupport.normalizeCode(criteria.currentState());
@@ -392,22 +215,22 @@ public class DataSyncServiceImpl implements DataSyncService {
         }
         dataScopeSupport.validateOwnedReadable(task.getTenantId(), task.getProjectId(),
                 task.getOwnerId(), actorContext, "同步任务");
+        task.setDefinition(getDefinitionForTask(task));
         return task;
     }
 
     /**
      * 使用用户可见的 taskId 执行真实预检查。
      *
-     * <p>taskId 是产品资源标识，templateId 只是 data-sync 内部保存任务定义的实现细节。
-     * 先调用 {@link #getTask(Long, SyncActorContext)} 收口租户、项目和任务数据范围，再通过
-     * {@link #getTemplateForTask(SyncTask)} 校验内部定义与任务归属一致，避免 Agent 暴露或猜测模板 ID。</p>
+     * <p>先调用 {@link #getTask(Long, SyncActorContext)} 收口租户、项目和任务数据范围，
+     * 再使用相同 taskId 的定义快照执行预检查。</p>
      */
     @Override
     public SyncTaskExecutionPrecheckResponse precheckTask(Long id, SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
-        SyncTemplate template = getTemplateForTask(task);
-        SyncTemplateExecutionPrecheckResponse precheck =
-                templateExecutionPrecheckSupport.precheck(template, actorContext);
+        SyncTaskDefinition definition = task.getDefinition();
+        SyncTaskDefinitionExecutionPrecheckResponse precheck =
+                taskDefinitionExecutionPrecheckSupport.precheck(definition, actorContext);
         return SyncTaskExecutionPrecheckResponse.from(task.getId(), precheck);
     }
 
@@ -422,13 +245,12 @@ public class DataSyncServiceImpl implements DataSyncService {
     public PlatformPageResponse<SyncTask> pageRecycledTasks(SyncTaskQueryCriteria criteria,
                                                             SyncActorContext actorContext) {
         SyncTaskQueryCriteria safeCriteria = criteria == null
-                ? new SyncTaskQueryCriteria(null, null, null, null, null, null,
+                ? new SyncTaskQueryCriteria(null, null, null, null, null,
                 SyncTaskState.RECYCLED.name(), null, null, null)
                 : new SyncTaskQueryCriteria(
                 criteria.tenantId(),
                 criteria.projectId(),
                 criteria.workspaceId(),
-                criteria.templateId(),
                 criteria.ownerId(),
                 criteria.groupCode(),
                 SyncTaskState.RECYCLED.name(),
@@ -442,7 +264,7 @@ public class DataSyncServiceImpl implements DataSyncService {
     /**
      * 编辑任务定义。
      *
-     * <p>主 Service 只负责复用 getTask(...) 与 getTemplateForTask(...) 完成入口校验。
+     * <p>主 Service 只负责复用 getTask(...) 完成入口校验并加载任务定义。
      * 具体“哪些状态可编辑、调度字段如何退回草稿、审计如何低敏记录”交给
      * {@link SyncTaskDefinitionOperationSupport}，避免 Impl 继续堆积任务定义细节。</p>
      */
@@ -451,8 +273,8 @@ public class DataSyncServiceImpl implements DataSyncService {
     public SyncTask updateTask(Long id, SyncTaskUpdateRequest request, SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
         assertTaskManageable(task, actorContext, "编辑同步任务");
-        SyncTemplate template = getTemplateForTask(task);
-        return taskDefinitionOperationSupport.updateTaskDefinition(task, template, request, actorContext);
+        SyncTaskDefinition definition = task.getDefinition();
+        return taskDefinitionOperationSupport.updateTaskDefinition(task, definition, request, actorContext);
     }
 
     /**
@@ -468,8 +290,8 @@ public class DataSyncServiceImpl implements DataSyncService {
                                                SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
         assertTaskManageable(task, actorContext, "发布同步任务");
-        SyncTemplate template = getTemplateForTask(task);
-        return taskDefinitionOperationSupport.publishTaskDefinition(task, template, request, actorContext);
+        SyncTaskDefinition definition = task.getDefinition();
+        return taskDefinitionOperationSupport.publishTaskDefinition(task, definition, request, actorContext);
     }
 
     /**
@@ -624,8 +446,8 @@ public class DataSyncServiceImpl implements DataSyncService {
     public SyncTaskOperationResult runTask(Long id, SyncActorContext actorContext) {
         SyncTask task = getTask(id, actorContext);
         assertTaskManageable(task, actorContext, "运行同步任务");
-        SyncTemplate template = getTemplateForTask(task);
-        SyncTemplateExecutionPrecheckResponse precheck = templateExecutionPrecheckSupport.precheck(template);
+        SyncTaskDefinition definition = getDefinitionForTask(task);
+        SyncTaskDefinitionExecutionPrecheckResponse precheck = taskDefinitionExecutionPrecheckSupport.precheck(definition);
         if (!canRunAfterPrecheck(precheck, task)) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
                     "同步任务执行前预检查未通过，precheckStatus=" + precheck.precheckStatus()
@@ -672,49 +494,6 @@ public class DataSyncServiceImpl implements DataSyncService {
         return taskBatchOperationSupport.offlineTasks(request, actorContext);
     }
 
-    /**
-     * 判断新任务是否应进入“自动调度”生命周期。
-     *
-     * <p>当前收敛阶段只把两类离线场景纳入自动调度：</p>
-     * <p>1. {@code SCHEDULED_FULL + scheduleConfig}：定期全量，例如每天凌晨全表重刷；</p>
-     * <p>2. {@code SCHEDULED_BATCH + scheduleConfig}：定期批量，例如每 15 分钟同步一个有界业务窗口。</p>
-     *
-     * <p>为什么不把所有 syncMode 都直接允许调度：</p>
-     * <p>自定义 SQL、全库迁移、回放、补数、离线导入导出等模式虽然未来也可能需要调度，
-     * 但它们的审批、容量评估、对象发现和目标覆盖风险更高。当前用户要求优先补齐定期全量和定期批量，
-     * 因此先把自动调度范围收敛在这两类，避免为了“看起来泛化”把高风险动作变成后台自动执行。</p>
-     */
-    private boolean isScheduledTask(SyncTemplate template, CreateSyncTaskRequest request) {
-        String syncMode = normalizeCode(template.getSyncMode());
-        boolean hasScheduleConfig = scheduleConfigSupport.hasScheduleConfig(request.getScheduleConfig());
-        boolean scheduledFull = SyncMode.SCHEDULED_FULL.name().equals(syncMode);
-        boolean scheduledBatch = SyncMode.SCHEDULED_BATCH.name().equals(syncMode);
-
-        /*
-         * 是否定时调度已经由第一步选择的传输模式决定，不再允许前端通过 runMode 手工覆盖。
-         * 这样可以避免“普通全量 + runMode=SCHEDULED”和“定期全量”形成两套表达，也能让表单必填校验更清晰：
-         * 只有 SCHEDULED_FULL / SCHEDULED_BATCH 才必须填写 scheduleConfig。
-         */
-        if (scheduledFull || scheduledBatch) {
-            if (!hasScheduleConfig) {
-                throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                        "定时全量或定时批量任务必须提供 scheduleConfig");
-            }
-        }
-        if (hasScheduleConfig && !SyncMode.SCHEDULED_FULL.name().equals(syncMode)
-                && !SyncMode.SCHEDULED_BATCH.name().equals(syncMode)) {
-            throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "当前自动调度仅支持 SCHEDULED_FULL 定期全量和 SCHEDULED_BATCH 定期批量，syncMode=" + syncMode);
-        }
-        if (hasScheduleConfig) {
-            /*
-             * 主动解析一次，让非法 cron、非法时区、intervalSeconds<=0 等问题在创建任务阶段暴露，
-             * 而不是等到后台调度器反复跳过历史任务。
-             */
-            scheduleConfigSupport.parseRequired(request.getScheduleConfig());
-        }
-        return scheduledBatch || scheduledFull;
-    }
 
     /**
      * 判断任务是否允许越过高风险提示状态进入队列。
@@ -723,30 +502,13 @@ public class DataSyncServiceImpl implements DataSyncService {
      * 在用户界面应解释为“高风险但配置具备运行前提，需要重点展示风险、执行策略和审计提示”，而不是阻塞创建流程。
      * 真正阻断仍由 canStartExecution=false、权限拒绝、执行策略准入失败或 worker 执行异常负责。</p>
      */
-    private boolean canRunAfterPrecheck(SyncTemplateExecutionPrecheckResponse precheck, SyncTask task) {
+    private boolean canRunAfterPrecheck(SyncTaskDefinitionExecutionPrecheckResponse precheck, SyncTask task) {
         if (precheck.canStartExecution()) {
             return true;
         }
-        return SyncTemplateExecutionPrecheckSupport.REQUIRES_APPROVAL.equals(precheck.precheckStatus());
+        return SyncTaskDefinitionExecutionPrecheckSupport.REQUIRES_APPROVAL.equals(precheck.precheckStatus());
     }
 
-    private String buildCreateTaskAuditPayload(SyncTask task,
-                                               SyncTemplateExecutionPrecheckResponse precheck,
-                                               CreateSyncTaskRequest request) {
-        /*
-         * 创建任务审计只记录低敏配置事实，不记录 SQL、连接串、字段映射全文或样本数据。
-         * 如果预检查认为任务属于高风险配置，这里只记录 highRiskReviewSuggested=true，供运营排障和审计复盘使用，
-         * 不再把它表达成“新建任务需要审批”。
-         */
-        return "taskId=" + task.getId()
-                + ",templateId=" + task.getTemplateId()
-                + ",precheckStatus=" + precheck.precheckStatus()
-                + ",highRiskReviewSuggested=" + precheck.approvalRequired()
-                + ",scheduleEnabled=" + task.getScheduleEnabled()
-                + ",nextFireTime=" + task.getNextFireTime()
-                + ",groupCode=" + task.getGroupCode()
-                + ",runMode=" + task.getRunMode();
-    }
 
     @Override
     @Transactional
@@ -1064,8 +826,8 @@ public class DataSyncServiceImpl implements DataSyncService {
                                                             Long executionId,
                                                             SyncActorContext actorContext) {
         SyncTask task = getTask(taskId, actorContext);
-        SyncTemplate template = getTemplateForTask(task);
-        return agentExecutionDiagnosisSupport.diagnose(task, template, executionId);
+        SyncTaskDefinition definition = getDefinitionForTask(task);
+        return agentExecutionDiagnosisSupport.diagnose(task, definition, executionId);
     }
 
     @Override
@@ -1188,27 +950,20 @@ public class DataSyncServiceImpl implements DataSyncService {
         return execution;
     }
 
-    /**
-     * 按任务读取关联模板。
-     *
-     * <p>运行任务时，入口已经通过 {@link #getTask(Long, SyncActorContext)} 完成了任务维度的数据范围校验。
-     * 模板的 createdBy 不一定等于任务 owner，如果这里复用 {@link #getTemplate(Long, SyncActorContext)}，
-     * SELF 数据范围下可能会误拒绝“我有权运行这个任务，但模板最初由项目负责人创建”的合法场景。
-     * 因此这里改为校验任务和模板的租户/项目/工作空间归属一致，避免越权引用其它模板。</p>
-     */
-    private SyncTemplate getTemplateForTask(SyncTask task) {
-        SyncTemplate template = templateMapper.selectById(task.getTemplateId());
-        if (template == null) {
+    /** 按 taskId 读取一对一任务定义，并验证数据范围没有漂移。 */
+    private SyncTaskDefinition getDefinitionForTask(SyncTask task) {
+        SyncTaskDefinition definition = taskDefinitionMapper.selectById(task.getId());
+        if (definition == null) {
             throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND,
-                    "同步任务关联的模板不存在，templateId=" + task.getTemplateId());
+                    "同步任务定义不存在，taskId=" + task.getId());
         }
-        if (!task.getTenantId().equals(template.getTenantId())
-                || !sameNullable(task.getProjectId(), template.getProjectId())
-                || !sameNullable(task.getWorkspaceId(), template.getWorkspaceId())) {
+        if (!task.getTenantId().equals(definition.getTenantId())
+                || !sameNullable(task.getProjectId(), definition.getProjectId())
+                || !sameNullable(task.getWorkspaceId(), definition.getWorkspaceId())) {
             throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
-                    "同步任务与模板归属不一致，拒绝执行，taskId=" + task.getId() + ", templateId=" + template.getId());
+                    "同步任务与定义归属不一致，拒绝执行，taskId=" + task.getId());
         }
-        return template;
+        return definition;
     }
 
     private <T, V> void eqIfPresent(LambdaQueryWrapper<T> wrapper,
@@ -1322,24 +1077,4 @@ public class DataSyncServiceImpl implements DataSyncService {
         return value != null && !value.isBlank();
     }
 
-    /**
-     * 解析任务应继承的项目值。
-     *
-     * <p>任务来自模板，因此项目默认继承模板。允许请求显式传入 projectId，是为了兼容旧脚本或导入链路中
-     * “确认所属项目”的显式表达；但如果传入值与模板不一致，说明调用方试图把同一个模板挂到另一个项目下，
-     * 这会破坏 PROJECT 数据范围和后续项目级统计。
-     *
-     * <p>注意：workspaceId 已不再通过该方法解析。工作空间属于历史兼容字段，新建链路只允许从历史模板继承，
-     * 不允许请求体重新指定。</p>
-     */
-    private Long resolveScopeValue(String fieldName, Long requestedValue, Long templateValue) {
-        if (requestedValue == null) {
-            return templateValue;
-        }
-        if (templateValue != null && !templateValue.equals(requestedValue)) {
-            throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
-                    "同步任务" + fieldName + "必须与模板一致，templateValue=" + templateValue + ", requestedValue=" + requestedValue);
-        }
-        return requestedValue;
-    }
 }

@@ -17,7 +17,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanV
 import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
 import com.czh.datasmart.govern.datasync.mapper.SyncErrorSampleMapper;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -82,7 +82,7 @@ public class SyncDirtyRecordReplayExecutionSupport {
      *
      * @param execution 当前已被 worker claim 的 replay execution。
      * @param task 当前同步任务。
-     * @param template 同步模板，提供源/目标对象、字段映射和写入策略。
+     * @param definition 任务定义，提供源/目标对象、字段映射和写入策略。
      * @param workerPlan claim 阶段生成的低敏 worker 执行计划。
      * @param recoveryPlan worker 已 claim/consume 的恢复计划低敏结果。
      * @param actorContext 当前服务账号上下文。
@@ -90,11 +90,11 @@ public class SyncDirtyRecordReplayExecutionSupport {
      */
     public SyncOfflineRunnerDispatchResult dispatchDirtyRecordReplay(SyncExecution execution,
                                                                      SyncTask task,
-                                                                     SyncTemplate template,
+                                                                     SyncTaskDefinition definition,
                                                                      SyncWorkerExecutionPlanView workerPlan,
                                                                      SyncRecoveryPlanWorkerResult recoveryPlan,
                                                                      SyncActorContext actorContext) {
-        SyncBatchRunnerBridgePlan bridgePlan = bridgePlanSupport.buildPlan(execution, task, template, workerPlan);
+        SyncBatchRunnerBridgePlan bridgePlan = bridgePlanSupport.buildPlan(execution, task, definition, workerPlan);
         if (!bridgePlan.isDispatchable()) {
             return failReplay(task, execution, actorContext,
                     false,
@@ -187,7 +187,7 @@ public class SyncDirtyRecordReplayExecutionSupport {
      * 执行单条错误样本重放。
      *
      * <p>每个样本转换为一个低敏 shardOrPartition，例如 {@code dirty-sample-501}。
-     * 真实过滤条件只有一个：主键字段 EQ 主键值。该条件会叠加模板中已有的 filterConfig，
+     * 真实过滤条件只有一个：主键字段 EQ 主键值。该条件会叠加任务定义中已有的 filterConfig，
      * 因此用户配置的租户/日期/状态范围仍然生效，修复重放不会绕过原始数据范围。</p>
      */
     private DirtySampleReplayOutcome dispatchOneSample(SyncTask task,

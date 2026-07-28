@@ -87,7 +87,7 @@ datasmart:
   data-sync:
     datasource-capability:
       # 是否启用 datasource-management 的低敏能力快照读取。
-      # 开启后，创建同步模板时如果调用方没有传 sourceConnectorType/targetConnectorType，
+      # 开启后，保存任务定义时如果调用方没有传 sourceConnectorType/targetConnectorType，
       # data-sync 会按 sourceDatasourceId/targetDatasourceId 调用
       # /internal/datasources/{datasourceId}/capability-snapshot 自动补全连接器类型。
       #

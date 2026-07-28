@@ -17,8 +17,8 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerLoopRunRequest
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerLoopRunResult;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
-import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
+import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import com.czh.datasmart.govern.datasync.service.DataSyncExecutorLeaseService;
 import com.czh.datasmart.govern.datasync.service.DataSyncRecoveryPlanWorkerService;
 import com.czh.datasmart.govern.datasync.service.support.SyncDirtyRecordReplayExecutionSupport;
@@ -60,7 +60,7 @@ class DataSyncWorkerLoopServiceImplTest {
         DataSyncExecutorLeaseService leaseService = mock(DataSyncExecutorLeaseService.class);
         when(leaseService.claimNext(any(SyncExecutionClaimRequest.class), any(SyncActorContext.class)))
                 .thenReturn(new SyncExecutionClaimResult(false, "empty", null, null, null));
-        DataSyncWorkerLoopServiceImpl service = service(leaseService, mock(SyncTemplateMapper.class),
+        DataSyncWorkerLoopServiceImpl service = service(leaseService, mock(SyncTaskDefinitionMapper.class),
                 mock(SyncOfflineRunnerDispatchService.class), mock(SyncExecutionLifecycleSupport.class));
 
         SyncWorkerLoopRunResult result = service.runOnce(request(), actor());
@@ -77,22 +77,22 @@ class DataSyncWorkerLoopServiceImplTest {
     @Test
     void runOnceShouldDispatchClaimedExecutionAndReportCompletedSummary() {
         DataSyncExecutorLeaseService leaseService = mock(DataSyncExecutorLeaseService.class);
-        SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
+        SyncTaskDefinitionMapper taskDefinitionMapper = mock(SyncTaskDefinitionMapper.class);
         SyncOfflineRunnerDispatchService dispatchService = mock(SyncOfflineRunnerDispatchService.class);
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
         SyncExecution execution = execution();
         SyncTask task = task();
-        SyncTemplate template = template();
+        SyncTaskDefinition definition = definition();
         SyncWorkerExecutionPlanView plan = workerPlan();
         when(leaseService.claimNext(any(SyncExecutionClaimRequest.class), any(SyncActorContext.class)))
                 .thenReturn(new SyncExecutionClaimResult(true, "claimed", execution, task, plan));
-        when(templateMapper.selectById(22L)).thenReturn(template);
-        when(dispatchService.dispatchOffline(eq(execution), eq(task), eq(template), eq(plan), any(SyncActorContext.class)))
+        when(taskDefinitionMapper.selectById(11L)).thenReturn(definition);
+        when(dispatchService.dispatchOffline(eq(execution), eq(task), eq(definition), eq(plan), any(SyncActorContext.class)))
                 .thenReturn(new SyncOfflineRunnerDispatchResult(true, true, false,
                         "DISPATCHED_AND_COMPLETED", 88L, "SOURCE_EXHAUSTED_COMPLETE_REQUIRED",
                         "MINIMAL_BRIDGE_END_TO_END_SUPPORTED", List.of(),
                         SyncOfflineRunnerDispatchResult.PAYLOAD_POLICY));
-        DataSyncWorkerLoopServiceImpl service = service(leaseService, templateMapper, dispatchService, lifecycleSupport);
+        DataSyncWorkerLoopServiceImpl service = service(leaseService, taskDefinitionMapper, dispatchService, lifecycleSupport);
 
         SyncWorkerLoopRunResult result = service.runOnce(request(), actor());
 
@@ -123,7 +123,7 @@ class DataSyncWorkerLoopServiceImplTest {
     @Test
     void runOnceShouldDispatchDirtyRecordReplayThroughRecoveryPlan() {
         DataSyncExecutorLeaseService leaseService = mock(DataSyncExecutorLeaseService.class);
-        SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
+        SyncTaskDefinitionMapper taskDefinitionMapper = mock(SyncTaskDefinitionMapper.class);
         SyncOfflineRunnerDispatchService dispatchService = mock(SyncOfflineRunnerDispatchService.class);
         DataSyncRecoveryPlanWorkerService recoveryPlanWorkerService = mock(DataSyncRecoveryPlanWorkerService.class);
         SyncDirtyRecordReplayExecutionSupport dirtyReplaySupport = mock(SyncDirtyRecordReplayExecutionSupport.class);
@@ -131,7 +131,7 @@ class DataSyncWorkerLoopServiceImplTest {
         SyncExecution execution = execution();
         execution.setTriggerType(SyncTriggerType.REPLAY.name());
         SyncTask task = task();
-        SyncTemplate template = template();
+        SyncTaskDefinition definition = definition();
         SyncWorkerExecutionPlanView plan = workerPlan();
         SyncRecoveryPlanWorkerResult recoveryPlan = new SyncRecoveryPlanWorkerResult(
                 true,
@@ -153,16 +153,16 @@ class DataSyncWorkerLoopServiceImplTest {
                 "ok");
         when(leaseService.claimNext(any(SyncExecutionClaimRequest.class), any(SyncActorContext.class)))
                 .thenReturn(new SyncExecutionClaimResult(true, "claimed", execution, task, plan));
-        when(templateMapper.selectById(22L)).thenReturn(template);
+        when(taskDefinitionMapper.selectById(11L)).thenReturn(definition);
         when(recoveryPlanWorkerService.claimPlan(eq(88L), any(), any())).thenReturn(recoveryPlan);
         when(dirtyReplaySupport.supports(recoveryPlan)).thenReturn(true);
-        when(dirtyReplaySupport.dispatchDirtyRecordReplay(eq(execution), eq(task), eq(template), eq(plan),
+        when(dirtyReplaySupport.dispatchDirtyRecordReplay(eq(execution), eq(task), eq(definition), eq(plan),
                 eq(recoveryPlan), any(SyncActorContext.class)))
                 .thenReturn(new SyncOfflineRunnerDispatchResult(true, true, false,
                         "DIRTY_RECORD_REPLAY_COMPLETED", 88L, "DIRTY_RECORD_REPLAY_ALL_SAMPLES_COMPLETED",
                         "DIRTY_RECORD_REPLAY", List.of("DIRTY_RECORD_REPLAY_COMPLETED"),
                         SyncOfflineRunnerDispatchResult.PAYLOAD_POLICY));
-        DataSyncWorkerLoopServiceImpl service = service(leaseService, templateMapper, dispatchService,
+        DataSyncWorkerLoopServiceImpl service = service(leaseService, taskDefinitionMapper, dispatchService,
                 recoveryPlanWorkerService, dirtyReplaySupport, lifecycleSupport);
 
         SyncWorkerLoopRunResult result = service.runOnce(request(), actor());
@@ -172,7 +172,7 @@ class DataSyncWorkerLoopServiceImplTest {
                 .satisfies(item -> assertThat(item.dispatchStatus()).isEqualTo("DIRTY_RECORD_REPLAY_COMPLETED"));
         verify(recoveryPlanWorkerService).claimPlan(eq(88L), any(), any());
         verify(recoveryPlanWorkerService).consumePlan(eq(88L), any(), any());
-        verify(dirtyReplaySupport).dispatchDirtyRecordReplay(eq(execution), eq(task), eq(template), eq(plan),
+        verify(dirtyReplaySupport).dispatchDirtyRecordReplay(eq(execution), eq(task), eq(definition), eq(plan),
                 eq(recoveryPlan), any(SyncActorContext.class));
         verify(dispatchService, never()).dispatchOffline(any(), any(), any(), any(), any());
     }
@@ -181,24 +181,24 @@ class DataSyncWorkerLoopServiceImplTest {
      * 模板缺失属于结构性配置问题；worker loop 应立即 fail-closed，不能等待租约过期才恢复。
      */
     @Test
-    void runOnceShouldFailClosedWhenClaimedTaskTemplateIsMissing() {
+    void runOnceShouldFailClosedWhenClaimedTaskDefinitionIsMissing() {
         DataSyncExecutorLeaseService leaseService = mock(DataSyncExecutorLeaseService.class);
-        SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
+        SyncTaskDefinitionMapper taskDefinitionMapper = mock(SyncTaskDefinitionMapper.class);
         SyncOfflineRunnerDispatchService dispatchService = mock(SyncOfflineRunnerDispatchService.class);
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
         SyncExecution execution = execution();
         SyncTask task = task();
         when(leaseService.claimNext(any(SyncExecutionClaimRequest.class), any(SyncActorContext.class)))
                 .thenReturn(new SyncExecutionClaimResult(true, "claimed", execution, task, workerPlan()));
-        when(templateMapper.selectById(22L)).thenReturn(null);
-        DataSyncWorkerLoopServiceImpl service = service(leaseService, templateMapper, dispatchService, lifecycleSupport);
+        when(taskDefinitionMapper.selectById(11L)).thenReturn(null);
+        DataSyncWorkerLoopServiceImpl service = service(leaseService, taskDefinitionMapper, dispatchService, lifecycleSupport);
 
         SyncWorkerLoopRunResult result = service.runOnce(request(), actor());
 
         assertThat(result.failedCount()).isEqualTo(1);
-        assertThat(result.issueCodes()).contains("SYNC_TEMPLATE_NOT_FOUND");
+        assertThat(result.issueCodes()).contains("SYNC_TASK_DEFINITION_NOT_FOUND");
         verify(dispatchService, never()).dispatchOffline(any(), any(), any(), any(), any());
-        assertFailRequest(lifecycleSupport, "SYNC_TEMPLATE_NOT_FOUND");
+        assertFailRequest(lifecycleSupport, "SYNC_TASK_DEFINITION_NOT_FOUND");
     }
 
     /**
@@ -207,19 +207,19 @@ class DataSyncWorkerLoopServiceImplTest {
     @Test
     void runOnceShouldFailClosedWhenDispatchThrowsException() {
         DataSyncExecutorLeaseService leaseService = mock(DataSyncExecutorLeaseService.class);
-        SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
+        SyncTaskDefinitionMapper taskDefinitionMapper = mock(SyncTaskDefinitionMapper.class);
         SyncOfflineRunnerDispatchService dispatchService = mock(SyncOfflineRunnerDispatchService.class);
         SyncExecutionLifecycleSupport lifecycleSupport = mock(SyncExecutionLifecycleSupport.class);
         SyncExecution execution = execution();
         SyncTask task = task();
-        SyncTemplate template = template();
+        SyncTaskDefinition definition = definition();
         SyncWorkerExecutionPlanView plan = workerPlan();
         when(leaseService.claimNext(any(SyncExecutionClaimRequest.class), any(SyncActorContext.class)))
                 .thenReturn(new SyncExecutionClaimResult(true, "claimed", execution, task, plan));
-        when(templateMapper.selectById(22L)).thenReturn(template);
-        when(dispatchService.dispatchOffline(eq(execution), eq(task), eq(template), eq(plan), any(SyncActorContext.class)))
+        when(taskDefinitionMapper.selectById(11L)).thenReturn(definition);
+        when(dispatchService.dispatchOffline(eq(execution), eq(task), eq(definition), eq(plan), any(SyncActorContext.class)))
                 .thenThrow(new IllegalStateException("jdbc://should-not-leak"));
-        DataSyncWorkerLoopServiceImpl service = service(leaseService, templateMapper, dispatchService, lifecycleSupport);
+        DataSyncWorkerLoopServiceImpl service = service(leaseService, taskDefinitionMapper, dispatchService, lifecycleSupport);
 
         SyncWorkerLoopRunResult result = service.runOnce(request(), actor());
 
@@ -230,17 +230,17 @@ class DataSyncWorkerLoopServiceImplTest {
     }
 
     private DataSyncWorkerLoopServiceImpl service(DataSyncExecutorLeaseService leaseService,
-                                                  SyncTemplateMapper templateMapper,
+                                                  SyncTaskDefinitionMapper taskDefinitionMapper,
                                                   SyncOfflineRunnerDispatchService dispatchService,
                                                   SyncExecutionLifecycleSupport lifecycleSupport) {
-        return service(leaseService, templateMapper, dispatchService,
+        return service(leaseService, taskDefinitionMapper, dispatchService,
                 mock(DataSyncRecoveryPlanWorkerService.class),
                 mock(SyncDirtyRecordReplayExecutionSupport.class),
                 lifecycleSupport);
     }
 
     private DataSyncWorkerLoopServiceImpl service(DataSyncExecutorLeaseService leaseService,
-                                                  SyncTemplateMapper templateMapper,
+                                                  SyncTaskDefinitionMapper taskDefinitionMapper,
                                                   SyncOfflineRunnerDispatchService dispatchService,
                                                   DataSyncRecoveryPlanWorkerService recoveryPlanWorkerService,
                                                   SyncDirtyRecordReplayExecutionSupport dirtyReplaySupport,
@@ -248,7 +248,7 @@ class DataSyncWorkerLoopServiceImplTest {
         DataSyncWorkerLoopProperties properties = new DataSyncWorkerLoopProperties();
         properties.setExecutorId("worker-loop-test");
         properties.setTenantId(7L);
-        return new DataSyncWorkerLoopServiceImpl(leaseService, templateMapper, dispatchService,
+        return new DataSyncWorkerLoopServiceImpl(leaseService, taskDefinitionMapper, dispatchService,
                 recoveryPlanWorkerService, dirtyReplaySupport, lifecycleSupport, properties);
     }
 
@@ -296,22 +296,21 @@ class DataSyncWorkerLoopServiceImplTest {
         task.setTenantId(7L);
         task.setProjectId(101L);
         task.setWorkspaceId(301L);
-        task.setTemplateId(22L);
         task.setCurrentState("RUNNING");
         return task;
     }
 
-    private SyncTemplate template() {
-        SyncTemplate template = new SyncTemplate();
-        template.setId(22L);
-        template.setTenantId(7L);
-        template.setProjectId(101L);
-        template.setWorkspaceId(301L);
-        template.setSourceDatasourceId(10001L);
-        template.setTargetDatasourceId(10002L);
-        template.setSyncMode("FULL");
-        template.setEnabled(true);
-        return template;
+    private SyncTaskDefinition definition() {
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setId(11L);
+        definition.setTenantId(7L);
+        definition.setProjectId(101L);
+        definition.setWorkspaceId(301L);
+        definition.setSourceDatasourceId(10001L);
+        definition.setTargetDatasourceId(10002L);
+        definition.setSyncMode("FULL");
+        definition.setEnabled(true);
+        return definition;
     }
 
     private SyncWorkerExecutionPlanView workerPlan() {
@@ -328,7 +327,6 @@ class DataSyncWorkerLoopServiceImplTest {
                 SyncTriggerType.MANUAL.name(),
                 "worker-loop-test",
                 LocalDateTime.now().plusMinutes(2),
-                22L,
                 10001L,
                 10002L,
                 "MYSQL",

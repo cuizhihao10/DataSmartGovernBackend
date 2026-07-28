@@ -23,7 +23,7 @@ import com.czh.datasmart.govern.permission.controller.dto.PermissionProjectView;
  * 去掉用户可见 workspace 后，项目必须承接所有业务资源的归属、切换和授权入口：</p>
  *
  * <p>1. 数据源创建时使用当前项目；</p>
- * <p>2. 同步模板/任务创建时使用当前项目；</p>
+ * <p>2. 同步任务和数据源创建时使用当前项目；</p>
  * <p>3. Agent 会话、记忆和工具预算后续也应绑定项目上下文；</p>
  * <p>4. permission_project_membership 负责把 actor 能访问哪些项目物化给 gateway 和业务服务。</p>
  */

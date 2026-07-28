@@ -41,7 +41,7 @@ import java.util.Set;
  * 对象级执行账本查询与恢复操作组件。
  *
  * <p>为什么要单独拆出这个组件，而不是继续堆到 {@code DataSyncServiceImpl}：</p>
- * <p>1. 对象级账本属于“运行事实”，不属于模板或任务定义；</p>
+ * <p>1. 对象级账本属于“运行事实”，不属于任务定义或任务定义；</p>
  * <p>2. 选择性重试会同时改写对象状态、父 execution 状态、任务主状态和审计记录，规则比普通查询更复杂；</p>
  * <p>3. 后续如果继续扩展 splitPk 分片、对象级 checkpoint、脏数据落盘或 TaskGroup 并发，都会复用这里的
  * “明细查询 + 失败单元重置 + 父执行重新排队”能力。</p>
@@ -336,7 +336,6 @@ public class SyncObjectExecutionOperationSupport {
                 row.getWorkspaceId(),
                 row.getSyncTaskId(),
                 row.getExecutionId(),
-                row.getTemplateId(),
                 row.getObjectOrdinal(),
                 row.getWorkUnitType(),
                 row.getShardOrPartition(),

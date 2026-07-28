@@ -13,7 +13,7 @@ import org.springframework.stereotype.Component;
 /**
  * data-sync 调用 datasource-management 能力快照接口的配置。
  *
- * <p>这个配置类服务于“同步模板创建阶段”的跨微服务能力事实补全。data-sync 自己不保存
+ * <p>这个配置类服务于“同步任务定义保存阶段”的跨微服务能力事实补全。data-sync 自己不保存
  * JDBC URL、账号、密码、topic、bucket、文件路径等敏感连接信息，也不应该为了判断 connector type
  * 去读取 datasource-management 的完整详情对象；正确做法是调用 datasource-management 暴露的低敏
  * capability snapshot 接口，只消费 connectorType、健康状态、能力标志、原因码和建议动作。</p>
@@ -34,7 +34,7 @@ public class DataSyncDatasourceCapabilityProperties {
      *
      * <p>默认开启，是因为当前项目正在从“前端/Agent 手动传 connector type”收敛到
      * “data-sync 按 datasourceId 自动读取可信能力事实”。如果某个本地开发环境暂时没有启动
-     * datasource-management，可以在配置中显式设置为 false；关闭后，缺少两端 connector type 的旧模板
+     * datasource-management，可以在配置中显式设置为 false；关闭后，缺少两端 connector type 的旧任务定义
      * 会继续按历史兼容逻辑只做基础校验，但这不应该作为生产默认。</p>
      */
     private boolean enabled = true;
@@ -42,7 +42,7 @@ public class DataSyncDatasourceCapabilityProperties {
     /**
      * 是否在调用方已经显式传入 sourceConnectorType/targetConnectorType 时仍然回查 datasource-management。
      *
-     * <p>默认关闭，避免每次模板创建都强依赖远程服务，降低当前收敛阶段的联调成本。后续进入更严格的
+     * <p>默认关闭，避免每次任务定义创建都强依赖远程服务，降低当前收敛阶段的联调成本。后续进入更严格的
      * 商业部署时建议开启：开启后可以发现调用方把 datasourceId=MySQL 却伪造成 KAFKA 的不一致事实，
      * 从而防止 Agent 或前端绕过数据源真实类型。</p>
      */
@@ -84,8 +84,8 @@ public class DataSyncDatasourceCapabilityProperties {
     /**
      * HTTP 连接建立超时时间，单位毫秒。
      *
-     * <p>模板创建属于用户交互链路，不能因为 datasource-management 不可达而长时间挂起。默认 1000ms 是
-     * 保守值：足够覆盖本地与同机房调用，又能在依赖异常时快速失败并返回明确的模板预检错误。</p>
+     * <p>任务定义创建属于用户交互链路，不能因为 datasource-management 不可达而长时间挂起。默认 1000ms 是
+     * 保守值：足够覆盖本地与同机房调用，又能在依赖异常时快速失败并返回明确的任务定义预检错误。</p>
      */
     private long connectTimeoutMs = 1000L;
 
@@ -93,7 +93,7 @@ public class DataSyncDatasourceCapabilityProperties {
      * HTTP 响应读取超时时间，单位毫秒。
      *
      * <p>能力快照应该是轻量读取，不执行连接测试或元数据发现，因此正常情况下应很快返回。默认 1500ms
-     * 可以避免把模板创建请求拖成慢请求；如果生产环境跨机房访问，可按实际链路延迟调整。</p>
+     * 可以避免把任务定义创建请求拖成慢请求；如果生产环境跨机房访问，可按实际链路延迟调整。</p>
      */
     private long readTimeoutMs = 1500L;
 }

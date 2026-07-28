@@ -9,7 +9,7 @@ package com.czh.datasmart.govern.datasync.service.support;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanView;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.support.SyncExecutionState;
 import com.czh.datasmart.govern.datasync.support.SyncTriggerType;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -32,8 +32,8 @@ class SyncBatchRunnerBridgePlanSupportTest {
             new SyncFieldMappingExecutionContractSupport(new ObjectMapper()));
 
     @Test
-    void directRelationalTemplateShouldBeReadyToDispatch() {
-        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+    void directRelationalDefinitionShouldBeReadyToDispatch() {
+        SyncTaskDefinition definition = definition("FULL", "MYSQL", "POSTGRESQL")
                 .fieldMapping("""
                         [
                           {"sourceField":"id","targetField":"id"},
@@ -41,7 +41,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
                         ]
                         """);
 
-        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), definition,
                 workerPlan("READY_WITH_WARNINGS", List.of("RETRY_POLICY_NOT_DECLARED")));
 
         assertThat(plan.isDispatchable()).isTrue();
@@ -65,7 +65,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
 
     @Test
     void singleObjectBridgeShouldPreferObjectMappingConfigWhenTopLevelLocatorIsStale() {
-        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+        SyncTaskDefinition definition = definition("FULL", "MYSQL", "POSTGRESQL")
                 .objectMapping("""
                         {
                           "version": "datasmart.sync.object-mapping.v1",
@@ -87,16 +87,16 @@ class SyncBatchRunnerBridgePlanSupportTest {
                         ]
                         """);
         /*
-         * 这里故意把模板顶层对象字段设置成旧值，模拟用户编辑对象映射后只更新了 objectMappingConfig，
+         * 这里故意把任务定义顶层对象字段设置成旧值，模拟用户编辑对象映射后只更新了 objectMappingConfig，
          * 但历史兼容字段尚未同步刷新的真实问题。执行计划必须相信用户最后保存的对象映射，
          * 否则 worker 会把正确字段写入错误目标表，最终表现为“目标表不存在某字段”。
          */
-        template.setSourceSchemaName("legacy_source");
-        template.setSourceObjectName("legacy_customer");
-        template.setTargetSchemaName("agent_runtime");
-        template.setTargetObjectName("agent_tool_action_worker_receipt_index");
+        definition.setSourceSchemaName("legacy_source");
+        definition.setSourceObjectName("legacy_customer");
+        definition.setTargetSchemaName("agent_runtime");
+        definition.setTargetObjectName("agent_tool_action_worker_receipt_index");
 
-        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), definition,
                 workerPlan("READY_TO_RUN", List.of()));
 
         assertThat(plan.isDispatchable()).isTrue();
@@ -108,7 +108,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
 
     @Test
     void fieldRenameShouldBeDispatchableBecauseRunOnceCanAlignRowKeys() {
-        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+        SyncTaskDefinition definition = definition("FULL", "MYSQL", "POSTGRESQL")
                 .fieldMapping("""
                         [
                           {"sourceField":"customer_id","targetField":"id"},
@@ -116,7 +116,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
                         ]
                         """);
 
-        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), definition,
                 workerPlan("READY_TO_RUN", List.of()));
 
         assertThat(plan.isDispatchable()).isTrue();
@@ -129,7 +129,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
 
     @Test
     void safeFilterConfigShouldBeCarriedByBridgePlan() {
-        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+        SyncTaskDefinition definition = definition("FULL", "MYSQL", "POSTGRESQL")
                 .filter("""
                         {
                           "logic": "AND",
@@ -143,7 +143,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
                         [{"sourceField":"id","targetField":"id"}]
                         """);
 
-        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), definition,
                 workerPlan("READY_TO_RUN", List.of()));
 
         assertThat(plan.isDispatchable()).isTrue();
@@ -156,7 +156,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
 
     @Test
     void simpleObjectWhereConditionShouldBeCarriedAsStructuredFilter() {
-        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+        SyncTaskDefinition definition = definition("FULL", "MYSQL", "POSTGRESQL")
                 .objectMapping("""
                         {
                           "mappings": [
@@ -174,7 +174,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
                         [{"sourceField":"id","targetField":"id"}]
                         """);
 
-        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), definition,
                 workerPlan("READY_TO_RUN", List.of()));
 
         assertThat(plan.isDispatchable()).isTrue();
@@ -188,7 +188,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
 
     @Test
     void complexObjectWhereConditionShouldBeCarriedAsSqlPredicate() {
-        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+        SyncTaskDefinition definition = definition("FULL", "MYSQL", "POSTGRESQL")
                 .objectMapping("""
                         {
                           "mappings": [
@@ -206,7 +206,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
                         [{"sourceField":"id","targetField":"id"}]
                         """);
 
-        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), definition,
                 workerPlan("READY_TO_RUN", List.of()));
 
         assertThat(plan.isDispatchable()).isTrue();
@@ -219,7 +219,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
 
     @Test
     void unsafeObjectWhereConditionShouldBlockBridgeBeforeRealRead() {
-        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+        SyncTaskDefinition definition = definition("FULL", "MYSQL", "POSTGRESQL")
                 .objectMapping("""
                         {
                           "mappings": [
@@ -235,7 +235,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
                         [{"sourceField":"id","targetField":"id"}]
                         """);
 
-        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), definition,
                 workerPlan("READY_TO_RUN", List.of()));
 
         assertThat(plan.isDispatchable()).isFalse();
@@ -248,7 +248,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
 
     @Test
     void topLevelQueryObjectWhereShouldBlockButNestedSubqueryShouldRemainSupported() {
-        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+        SyncTaskDefinition definition = definition("FULL", "MYSQL", "POSTGRESQL")
                 .objectMapping("""
                         {
                           "mappings": [
@@ -264,7 +264,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
                         [{"sourceField":"id","targetField":"id"}]
                         """);
 
-        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), definition,
                 workerPlan("READY_TO_RUN", List.of()));
 
         /*
@@ -280,7 +280,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
 
     @Test
     void unsafeFilterConfigShouldBlockBridgeBeforeRealRead() {
-        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+        SyncTaskDefinition definition = definition("FULL", "MYSQL", "POSTGRESQL")
                 .filter("""
                         [{"field":"status or 1=1","operator":"=","value":"ACTIVE"}]
                         """)
@@ -288,7 +288,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
                         [{"sourceField":"id","targetField":"id"}]
                         """);
 
-        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), definition,
                 workerPlan("READY_TO_RUN", List.of()));
 
         assertThat(plan.isDispatchable()).isFalse();
@@ -299,12 +299,12 @@ class SyncBatchRunnerBridgePlanSupportTest {
 
     @Test
     void nonJdbcConnectorShouldNotBeDispatchedToJdbcBatchBridge() {
-        SyncTemplate template = template("CDC_STREAMING", "KAFKA", "POSTGRESQL")
+        SyncTaskDefinition definition = definition("CDC_STREAMING", "KAFKA", "POSTGRESQL")
                 .fieldMapping("""
                         [{"sourceField":"id","targetField":"id"}]
                         """);
 
-        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), definition,
                 workerPlan("BLOCKED", List.of("CONNECTOR_COMPATIBILITY_UNSUPPORTED")));
 
         assertThat(plan.isDispatchable()).isFalse();
@@ -316,7 +316,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
 
     @Test
     void multiObjectScopeShouldBeBlockedEvenWhenWorkerPlanLooksReady() {
-        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+        SyncTaskDefinition definition = definition("FULL", "MYSQL", "POSTGRESQL")
                 .scope("OBJECT_LIST")
                 .objectMapping("""
                         {
@@ -330,7 +330,7 @@ class SyncBatchRunnerBridgePlanSupportTest {
                         [{"sourceField":"id","targetField":"id"}]
                         """);
 
-        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), definition,
                 workerPlan("READY_TO_RUN", List.of()));
 
         assertThat(plan.isDispatchable()).isFalse();
@@ -347,18 +347,18 @@ class SyncBatchRunnerBridgePlanSupportTest {
 
     @Test
     void destructiveOverwriteShouldWaitForApprovedBridgePolicy() {
-        SyncTemplate template = template("FULL", "MYSQL", "POSTGRESQL")
+        SyncTaskDefinition definition = definition("FULL", "MYSQL", "POSTGRESQL")
                 .writeStrategy("OVERWRITE")
                 .fieldMapping("""
                         [{"sourceField":"id","targetField":"id"}]
                         """);
 
-        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), template,
+        SyncBatchRunnerBridgePlan plan = support.buildPlan(execution(), task(), definition,
                 workerPlan("READY_WITH_WARNINGS", List.of("DESTRUCTIVE_WRITE_STRATEGY_REQUIRES_REVIEW")));
 
         assertThat(plan.isDispatchable()).isFalse();
         assertThat(plan.getIssueCodes()).contains("DESTRUCTIVE_WRITE_STRATEGY_REQUIRES_APPROVED_BRIDGE_POLICY");
-        assertThat(plan.getNextActions()).contains("CALL_FAIL_EXECUTION_WITH_LOW_SENSITIVE_REASON_OR_DEFER_FOR_TEMPLATE_FIX");
+        assertThat(plan.getNextActions()).contains("CALL_FAIL_EXECUTION_WITH_LOW_SENSITIVE_REASON_OR_DEFER_FOR_TASK_DEFINITION_FIX");
     }
 
     private SyncExecution execution() {
@@ -385,30 +385,29 @@ class SyncBatchRunnerBridgePlanSupportTest {
         task.setTenantId(7L);
         task.setProjectId(101L);
         task.setWorkspaceId(301L);
-        task.setTemplateId(22L);
         return task;
     }
 
-    private TestTemplate template(String syncMode, String sourceConnectorType, String targetConnectorType) {
-        TestTemplate template = new TestTemplate();
-        template.setId(22L);
-        template.setTenantId(7L);
-        template.setProjectId(101L);
-        template.setWorkspaceId(301L);
-        template.setSourceDatasourceId(10001L);
-        template.setTargetDatasourceId(10002L);
-        template.setSourceSchemaName("ods");
-        template.setSourceObjectName("customer");
-        template.setTargetSchemaName("dwd");
-        template.setTargetObjectName("customer");
-        template.setSourceConnectorType(sourceConnectorType);
-        template.setTargetConnectorType(targetConnectorType);
-        template.setSyncMode(syncMode);
-        template.setWriteStrategy("APPEND");
-        template.setPrimaryKeyField("id");
-        template.setIncrementalField("updated_at");
-        template.setEnabled(true);
-        return template;
+    private TestDefinition definition(String syncMode, String sourceConnectorType, String targetConnectorType) {
+        TestDefinition definition = new TestDefinition();
+        definition.setId(22L);
+        definition.setTenantId(7L);
+        definition.setProjectId(101L);
+        definition.setWorkspaceId(301L);
+        definition.setSourceDatasourceId(10001L);
+        definition.setTargetDatasourceId(10002L);
+        definition.setSourceSchemaName("ods");
+        definition.setSourceObjectName("customer");
+        definition.setTargetSchemaName("dwd");
+        definition.setTargetObjectName("customer");
+        definition.setSourceConnectorType(sourceConnectorType);
+        definition.setTargetConnectorType(targetConnectorType);
+        definition.setSyncMode(syncMode);
+        definition.setWriteStrategy("APPEND");
+        definition.setPrimaryKeyField("id");
+        definition.setIncrementalField("updated_at");
+        definition.setEnabled(true);
+        return definition;
     }
 
     private SyncWorkerExecutionPlanView workerPlan(String planStatus, List<String> issueCodes) {
@@ -425,7 +424,6 @@ class SyncBatchRunnerBridgePlanSupportTest {
                 SyncTriggerType.MANUAL.name(),
                 "worker-1",
                 LocalDateTime.now().plusMinutes(2),
-                22L,
                 10001L,
                 10002L,
                 "MYSQL",
@@ -465,33 +463,33 @@ class SyncBatchRunnerBridgePlanSupportTest {
     }
 
     /**
-     * 测试专用模板子类。
+     * 测试专用任务定义子类。
      *
      * <p>链式方法只用于减少测试样板代码，生产实体仍保持普通 setter 风格。</p>
      */
-    private static class TestTemplate extends SyncTemplate {
+    private static class TestDefinition extends SyncTaskDefinition {
 
-        private TestTemplate fieldMapping(String value) {
+        private TestDefinition fieldMapping(String value) {
             setFieldMappingConfig(value);
             return this;
         }
 
-        private TestTemplate objectMapping(String value) {
+        private TestDefinition objectMapping(String value) {
             setObjectMappingConfig(value);
             return this;
         }
 
-        private TestTemplate scope(String value) {
+        private TestDefinition scope(String value) {
             setSyncScopeType(value);
             return this;
         }
 
-        private TestTemplate writeStrategy(String value) {
+        private TestDefinition writeStrategy(String value) {
             setWriteStrategy(value);
             return this;
         }
 
-        private TestTemplate filter(String value) {
+        private TestDefinition filter(String value) {
             setFilterConfig(value);
             return this;
         }

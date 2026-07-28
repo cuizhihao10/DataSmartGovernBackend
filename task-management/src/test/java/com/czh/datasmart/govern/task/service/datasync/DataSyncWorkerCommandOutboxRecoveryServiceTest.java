@@ -165,7 +165,7 @@ class DataSyncWorkerCommandOutboxRecoveryServiceTest {
         outbox.setTenantId(10L);
         outbox.setProjectId(20L);
         outbox.setWorkspaceId(30L);
-        outbox.setSyncTemplateId(6001L);
+        outbox.setSyncTaskId(6001L);
         outbox.setStatus(DataSyncWorkerCommandOutboxStatus.DISPATCHING.name());
         outbox.setAttemptCount(attemptCount);
         outbox.setPayloadJson("{\"commandId\":\"" + commandId + "\"}");

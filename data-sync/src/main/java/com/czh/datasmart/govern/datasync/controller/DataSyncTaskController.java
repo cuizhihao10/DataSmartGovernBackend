@@ -11,7 +11,6 @@ import com.czh.datasmart.govern.common.api.PlatformPageResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
-import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTaskRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchExportRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskBatchOperationRequest;
@@ -92,7 +91,7 @@ public class DataSyncTaskController {
      * <p>该接口专门服务前端“新建同步任务”页面和 Agent 创建任务工具。它告诉调用方：哪些字段由上下文自动填充、哪些模式可选、
      * 哪些执行器、恢复、回放、补数和管理员策略字段不应出现在创建页面，以及源端/目标端数据源应如何按用途筛选。</p>
      *
-     * <p>注意：该接口不读取源端或目标端真实数据，也不会创建模板/任务；它只是低敏控制面合同。</p>
+     * <p>注意：该接口不读取源端或目标端真实数据，也不会创建任务；它只是低敏控制面合同。</p>
      */
     @GetMapping("/create-wizard/contract")
     public PlatformApiResponse<SyncTaskCreateWizardContractResponse> createWizardContract(
@@ -123,10 +122,8 @@ public class DataSyncTaskController {
     /**
      * 保存同步任务创建向导草稿。
      *
-     * <p>该路由是“第二步以后任务视为已保存”的后端闭环入口。它和 {@code POST /sync-tasks} 的职责不同：</p>
-     * <p>1. 本接口只创建或更新 DRAFT，不触发预检查、不发布、不入队、不启用定时调度；</p>
-     * <p>2. 第一次保存会返回 taskId/templateId，后续对象映射、字段映射和 SQL 配置继续覆盖同一条草稿；</p>
-     * <p>3. 第四步进入预检查时，前端再基于返回的 templateId 调用模板预检查接口，预检查结果负责判断目标表、字段、约束是否正确。</p>
+     * <p>本接口只创建或更新 DRAFT，不触发预检查、不发布、不入队、不启用定时调度。
+     * 第一次保存返回 taskId，后续步骤继续覆盖同一任务；第四步直接按 taskId 运行预检查。</p>
      */
     @PostMapping("/create-wizard/drafts")
     public PlatformApiResponse<SyncTaskCreateWizardDraftSaveResponse> saveCreateWizardDraft(
@@ -149,7 +146,7 @@ public class DataSyncTaskController {
      * 验证 SQL 是否能在源端数据源上执行，并提取 SELECT 输出列或 alias 供字段映射步骤使用。</p>
      *
      * <p>重要边界：</p>
-     * <p>1. 该接口不是任务创建入口，不会保存 SQL、不会创建模板、不会创建任务；</p>
+     * <p>1. 该接口不是任务创建入口，不会保存 SQL、不会创建任务；</p>
      * <p>2. 该接口不是数据预览入口，即使 datasource-management 返回 rows，data-sync 也只返回列名和低敏诊断；</p>
      * <p>3. 目标表主键、外键、字段类型、字段数量是否匹配，仍由后续预检查结合目标端元数据统一判断。</p>
      */
@@ -167,28 +164,12 @@ public class DataSyncTaskController {
     }
 
     /**
-     * 创建同步任务。
-     */
-    @PostMapping
-    public PlatformApiResponse<SyncTask> createTask(
-            @Valid @RequestBody CreateSyncTaskRequest request,
-            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
-            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) Long actorId,
-            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
-            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
-            @RequestHeader HttpHeaders headers) {
-        SyncTask task = dataSyncService.createTask(request, actorContext(tenantId, actorId, actorRole, traceId, headers));
-        return PlatformApiResponse.success("同步任务创建成功", task, traceId);
-    }
-
-    /**
      * 分页查询同步任务。
      */
     @GetMapping
     public PlatformApiResponse<PlatformPageResponse<SyncTask>> pageTasks(
             @RequestParam(required = false) Long tenantId,
             @RequestParam(required = false) Long projectId,
-            @RequestParam(required = false) Long templateId,
             @RequestParam(required = false) Long ownerId,
             @RequestParam(required = false) String groupCode,
             @RequestParam(required = false) String currentState,
@@ -202,7 +183,7 @@ public class DataSyncTaskController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
-                tenantId, projectId, null, templateId, ownerId, groupCode,
+                tenantId, projectId, null, ownerId, groupCode,
                 currentState, triggerType, current, size, keyword);
         return PlatformApiResponse.success(dataSyncService.pageTasks(
                 criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
@@ -211,7 +192,7 @@ public class DataSyncTaskController {
     /**
      * 导出同步任务定义。
      *
-     * <p>导出是低敏任务定义包，不是数据导出：它只包含任务 ID、模板 ID、名称、负责人、分组、调度配置等控制面字段，
+     * <p>导出是低敏任务定义包，不是数据导出：它只包含任务 ID、名称、负责人、分组、调度配置等控制面字段，
      * 不包含连接串、密码、完整 SQL、字段映射正文、样本数据或 worker 内部计划。</p>
      *
      * <p>为什么该接口返回 {@code ResponseEntity<byte[]>} 而不是 {@code PlatformApiResponse}：
@@ -221,7 +202,6 @@ public class DataSyncTaskController {
     public ResponseEntity<byte[]> exportTasks(
             @RequestParam(required = false) Long tenantId,
             @RequestParam(required = false) Long projectId,
-            @RequestParam(required = false) Long templateId,
             @RequestParam(required = false) Long ownerId,
             @RequestParam(required = false) String groupCode,
             @RequestParam(required = false) String currentState,
@@ -236,7 +216,7 @@ public class DataSyncTaskController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
-                tenantId, projectId, null, templateId, ownerId, groupCode,
+                tenantId, projectId, null, ownerId, groupCode,
                 currentState, triggerType, current, size, keyword);
         SyncTaskExportFile file = dataSyncService.exportTasks(
                 criteria, format, actorContext(actorTenantId, actorId, actorRole, traceId, headers));
@@ -421,7 +401,7 @@ public class DataSyncTaskController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
-                tenantId, projectId, null, null, ownerId, groupCode,
+                tenantId, projectId, null, ownerId, groupCode,
                 null, null, 1L, size);
         return PlatformApiResponse.success(dataSyncService.listTaskGroups(
                 criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
@@ -454,7 +434,7 @@ public class DataSyncTaskController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
-                tenantId, projectId, null, null, ownerId, groupCode,
+                tenantId, projectId, null, ownerId, groupCode,
                 null, null, 1L, size);
         return PlatformApiResponse.success(dataSyncService.listTaskGroupTree(
                 criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
@@ -544,7 +524,7 @@ public class DataSyncTaskController {
     /**
      * 自动生成字段映射建议。
      *
-     * <p>该接口不创建模板、不创建任务、不写入字段映射正文。它只按同名字段和类型家族兼容性生成
+     * <p>该接口不创建任务定义、不创建任务、不写入字段映射正文。它只按同名字段和类型家族兼容性生成
      * 默认 syncEnabled 建议，前端仍应允许用户逐列勾选是否同步。</p>
      */
     /**
@@ -583,7 +563,6 @@ public class DataSyncTaskController {
     public PlatformApiResponse<PlatformPageResponse<SyncTask>> pageRecycledTasks(
             @RequestParam(required = false) Long tenantId,
             @RequestParam(required = false) Long projectId,
-            @RequestParam(required = false) Long templateId,
             @RequestParam(required = false) Long ownerId,
             @RequestParam(required = false) String groupCode,
             @RequestParam(required = false) String triggerType,
@@ -596,7 +575,7 @@ public class DataSyncTaskController {
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId,
             @RequestHeader HttpHeaders headers) {
         SyncTaskQueryCriteria criteria = new SyncTaskQueryCriteria(
-                tenantId, projectId, null, templateId, ownerId, groupCode,
+                tenantId, projectId, null, ownerId, groupCode,
                 null, triggerType, current, size, keyword);
         return PlatformApiResponse.success(dataSyncService.pageRecycledTasks(
                 criteria, actorContext(actorTenantId, actorId, actorRole, traceId, headers)), traceId);
@@ -620,7 +599,7 @@ public class DataSyncTaskController {
     /**
      * 按任务执行真实预检查。
      *
-     * <p>调用方只需持有任务 ID。关联同步模板由服务内部解析，不再把 templateId 暴露为
+     * <p>调用方只需持有任务 ID。一对一任务定义由服务内部解析，不再把额外的定义 ID 暴露为
      * Agent 或普通创建向导必须理解的业务参数。</p>
      */
     @PostMapping("/{id}/precheck")
@@ -662,7 +641,7 @@ public class DataSyncTaskController {
     /**
      * 发布同步任务定义。
      *
-     * <p>发布会重新执行模板预检和调度配置解析。它不创建 execution，不搬运数据；
+     * <p>发布会重新执行任务预检和调度配置解析。它不创建 execution，不搬运数据；
      * 只是把任务从 DRAFT/非活跃状态推进到可手工调度的 CONFIGURED、等待计划触发的 SCHEDULED，
      * 或在配置不完整时直接返回可读的预检查错误。普通同步任务不再通过任务表审批字段进入 PENDING_APPROVAL。</p>
      */
@@ -683,7 +662,7 @@ public class DataSyncTaskController {
     /**
      * 调整同步任务分组。
      *
-     * <p>该接口只改变任务定义的 groupCode/groupName，不会触发执行、不会修改模板、不会改写历史 execution。
+     * <p>该接口只改变任务的 groupCode/groupName，不会触发执行、不会修改同步配置、不会改写历史 execution。
      * 如果 request.groupCode 为空，表示把任务移出分组；如果非空，服务端会规范化编码并写入审计。</p>
      *
      * <p>为什么这是 POST 而不是 PATCH：

@@ -15,7 +15,7 @@ import lombok.Data;
  * <p>这个 DTO 专门服务新建同步任务中的 {@code CUSTOM_SQL_QUERY / SQL语句} 模式。
  * 用户在页面上填写 SQL 后，前端调用 {@code POST /sync-tasks/create-wizard/sql/check}，
  * 后端会先做本地静态安全检查，再按需调用 datasource-management 的受控只读 SQL 探测能力。
- * 它不是任务执行入口，不会创建模板、不会创建任务、不会写目标端，也不会把查询样本数据返回给前端。</p>
+ * 它不是任务执行入口，不会创建任务定义、不会创建任务、不会写目标端，也不会把查询样本数据返回给前端。</p>
  *
  * <p>字段设计原则：</p>
  * <p>1. 源端数据源是必需的，因为 SQL 语法、表是否存在、列别名推导都必须在源端连接器上验证；</p>
@@ -49,7 +49,7 @@ public class SyncTaskCustomSqlCheckRequest {
      * 目标端数据源 ID。
      *
      * <p>当前 SQL 检查不会直接访问目标端；它主要用于响应提示和后续字段映射增强。
-     * SQL 语句模式真正写入目标端前，仍需要执行模板预检查来判断目标表是否存在、是否有主键/唯一约束、
+     * SQL 语句模式真正写入目标端前，仍需要执行任务预检查来判断目标表是否存在、是否有主键/唯一约束、
      * 字段数量和类型是否能匹配。</p>
      */
     private Long targetDatasourceId;
@@ -76,7 +76,7 @@ public class SyncTaskCustomSqlCheckRequest {
      * 用户填写的 SQL 正文。
      *
      * <p>该字段会进入 datasource-management 做受控只读探测，但 data-sync 不会把 SQL 写入日志，
-     * 响应里也只返回 SHA-256 指纹、输出列和低敏提示。真正保存到模板时，仍应走模板创建/编辑接口的
+     * 响应里也只返回 SHA-256 指纹、输出列和低敏提示。真正保存到任务定义时，仍应走任务定义创建/编辑接口的
      * {@code customSqlConfig} 合同，而不是把本检查接口当作保存入口。</p>
      */
     @Size(max = 20000, message = "SQL 长度不能超过 20000 个字符")

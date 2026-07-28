@@ -9,6 +9,7 @@ package com.czh.datasmart.govern.datasync.service.support;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import org.apache.poi.ss.usermodel.Cell;
 import org.apache.poi.ss.usermodel.CellStyle;
 import org.apache.poi.ss.usermodel.DataFormatter;
@@ -36,13 +37,13 @@ import java.util.Set;
 /**
  * 同步任务定义导入/导出文件编解码组件。
  *
- * <p>该组件只处理“文件格式”和“列映射”，不做权限、不做模板预检、不插入任务。
+ * <p>该组件只处理“文件格式”和“列映射”，不做权限、不做任务预检、不插入任务。
  * 这样拆分的好处是：</p>
  * <p>1. CSV/XLSX 格式细节不会污染任务导入业务逻辑；</p>
  * <p>2. 后续如果要支持 JSON、Parquet 或 MinIO 批量导入，只需要新增 codec，不必改任务状态机；</p>
- * <p>3. Agent 工具可以复用相同列契约生成文件或解释导入模板。</p>
+ * <p>3. Agent 工具可以复用相同列契约生成文件或解释导入制品。</p>
  *
- * <p>导入导出的字段只包含低敏任务定义字段和模板引用，不包含连接串、密码、完整 SQL、样本数据或执行器内部计划。</p>
+ * <p>导入导出的字段包含可重建任务的低敏定义，不包含连接串、密码、样本数据或执行器内部计划。</p>
  */
 @Component
 public class SyncTaskDefinitionExchangeCodecSupport {
@@ -62,8 +63,6 @@ public class SyncTaskDefinitionExchangeCodecSupport {
             "taskId",
             "tenantId",
             "projectId",
-            "workspaceId",
-            "templateId",
             "name",
             "description",
             "priority",
@@ -71,7 +70,24 @@ public class SyncTaskDefinitionExchangeCodecSupport {
             "groupCode",
             "groupName",
             "scheduleConfig",
-            "runMode",
+            "sourceDatasourceId",
+            "targetDatasourceId",
+            "sourceSchemaName",
+            "sourceObjectName",
+            "targetSchemaName",
+            "targetObjectName",
+            "sourceConnectorType",
+            "targetConnectorType",
+            "syncMode",
+            "syncScopeType",
+            "writeStrategy",
+            "fieldMappingConfig",
+            "objectMappingConfig",
+            "filterConfig",
+            "customSqlConfig",
+            "partitionConfig",
+            "retryPolicy",
+            "timeoutPolicy",
             "currentState",
             "triggerType",
             "createTime",
@@ -80,8 +96,11 @@ public class SyncTaskDefinitionExchangeCodecSupport {
 
     /** Columns an Agent may propose changing after a failed dry-run. */
     private static final Set<String> REPAIRABLE_HEADERS = Set.of(
-            "tenantId", "projectId", "templateId", "name", "description", "priority", "ownerId",
-            "groupCode", "groupName", "scheduleConfig", "runMode"
+            "tenantId", "projectId", "name", "description", "priority", "ownerId",
+            "groupCode", "groupName", "scheduleConfig", "sourceDatasourceId", "targetDatasourceId",
+            "sourceSchemaName", "sourceObjectName", "targetSchemaName", "targetObjectName",
+            "syncMode", "syncScopeType", "writeStrategy", "fieldMappingConfig", "objectMappingConfig",
+            "filterConfig", "customSqlConfig"
     );
 
     /**
@@ -347,9 +366,10 @@ public class SyncTaskDefinitionExchangeCodecSupport {
                 index.put(header, i);
             }
         }
-        if (!index.containsKey("templateid") || !index.containsKey("name")) {
+        if (!index.containsKey("name") || !index.containsKey("sourcedatasourceid")
+                || !index.containsKey("targetdatasourceid") || !index.containsKey("syncmode")) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "同步任务导入文件必须包含 templateId 和 name 两列");
+                    "同步任务导入文件必须包含 name、sourceDatasourceId、targetDatasourceId 和 syncMode 列");
         }
         return index;
     }
@@ -363,8 +383,6 @@ public class SyncTaskDefinitionExchangeCodecSupport {
                 rowNumber,
                 parseLong(values.get("tenantId"), "tenantId", rowNumber, false),
                 parseLong(values.get("projectId"), "projectId", rowNumber, false),
-                parseLong(values.get("workspaceId"), "workspaceId", rowNumber, false),
-                parseLong(values.get("templateId"), "templateId", rowNumber, true),
                 values.get("name"),
                 values.get("description"),
                 values.get("priority"),
@@ -372,7 +390,24 @@ public class SyncTaskDefinitionExchangeCodecSupport {
                 values.get("groupCode"),
                 values.get("groupName"),
                 values.get("scheduleConfig"),
-                values.get("runMode")
+                parseLong(values.get("sourceDatasourceId"), "sourceDatasourceId", rowNumber, true),
+                parseLong(values.get("targetDatasourceId"), "targetDatasourceId", rowNumber, true),
+                values.get("sourceSchemaName"),
+                values.get("sourceObjectName"),
+                values.get("targetSchemaName"),
+                values.get("targetObjectName"),
+                values.get("sourceConnectorType"),
+                values.get("targetConnectorType"),
+                values.get("syncMode"),
+                values.get("syncScopeType"),
+                values.get("writeStrategy"),
+                values.get("fieldMappingConfig"),
+                values.get("objectMappingConfig"),
+                values.get("filterConfig"),
+                values.get("customSqlConfig"),
+                values.get("partitionConfig"),
+                values.get("retryPolicy"),
+                values.get("timeoutPolicy")
         );
     }
 
@@ -394,12 +429,15 @@ public class SyncTaskDefinitionExchangeCodecSupport {
     }
 
     private List<String> taskToCells(SyncTask task) {
+        SyncTaskDefinition definition = task.getDefinition();
+        if (definition == null) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "同步任务缺少定义，无法导出，taskId=" + task.getId());
+        }
         return List.of(
                 text(task.getId()),
                 text(task.getTenantId()),
                 text(task.getProjectId()),
-                text(task.getWorkspaceId()),
-                text(task.getTemplateId()),
                 text(task.getName()),
                 text(task.getDescription()),
                 text(task.getPriority()),
@@ -407,7 +445,24 @@ public class SyncTaskDefinitionExchangeCodecSupport {
                 text(task.getGroupCode()),
                 text(task.getGroupName()),
                 text(task.getScheduleConfig()),
-                text(task.getRunMode()),
+                text(definition.getSourceDatasourceId()),
+                text(definition.getTargetDatasourceId()),
+                text(definition.getSourceSchemaName()),
+                text(definition.getSourceObjectName()),
+                text(definition.getTargetSchemaName()),
+                text(definition.getTargetObjectName()),
+                text(definition.getSourceConnectorType()),
+                text(definition.getTargetConnectorType()),
+                text(definition.getSyncMode()),
+                text(definition.getSyncScopeType()),
+                text(definition.getWriteStrategy()),
+                text(definition.getFieldMappingConfig()),
+                text(definition.getObjectMappingConfig()),
+                text(definition.getFilterConfig()),
+                text(definition.getCustomSqlConfig()),
+                text(definition.getPartitionConfig()),
+                text(definition.getRetryPolicy()),
+                text(definition.getTimeoutPolicy()),
                 text(task.getCurrentState()),
                 text(task.getTriggerType()),
                 task.getCreateTime() == null ? "" : TIME_FORMATTER.format(task.getCreateTime()),
@@ -530,10 +585,8 @@ public class SyncTaskDefinitionExchangeCodecSupport {
      * 从导入文件解析出的单行任务定义。
      *
      * @param rowNumber 文件行号
-     * @param tenantId 文件声明的租户 ID，可为空；服务层会与模板租户和操作者范围再次校验
-     * @param projectId 文件声明的项目 ID，可为空；为空时继承模板项目
-     * @param workspaceId 文件声明的工作空间 ID，可为空；为空时继承模板工作空间
-     * @param templateId 必填，同步任务必须基于已有模板创建
+     * @param tenantId 文件声明的租户 ID，可为空；服务层会与操作者范围再次校验
+     * @param projectId 文件声明的项目 ID，可为空；为空时使用当前项目
      * @param name 必填，导入唯一键的一部分
      * @param description 任务说明
      * @param priority 任务优先级
@@ -546,8 +599,6 @@ public class SyncTaskDefinitionExchangeCodecSupport {
     public record TaskDefinitionImportRow(Integer rowNumber,
                                           Long tenantId,
                                           Long projectId,
-                                          Long workspaceId,
-                                          Long templateId,
                                           String name,
                                           String description,
                                           String priority,
@@ -555,7 +606,24 @@ public class SyncTaskDefinitionExchangeCodecSupport {
                                           String groupCode,
                                           String groupName,
                                           String scheduleConfig,
-                                          String runMode) {
+                                          Long sourceDatasourceId,
+                                          Long targetDatasourceId,
+                                          String sourceSchemaName,
+                                          String sourceObjectName,
+                                          String targetSchemaName,
+                                          String targetObjectName,
+                                          String sourceConnectorType,
+                                          String targetConnectorType,
+                                          String syncMode,
+                                          String syncScopeType,
+                                          String writeStrategy,
+                                          String fieldMappingConfig,
+                                          String objectMappingConfig,
+                                          String filterConfig,
+                                          String customSqlConfig,
+                                          String partitionConfig,
+                                          String retryPolicy,
+                                          String timeoutPolicy) {
     }
 
     /** Safe cell-level repair contract used by immutable artifact versioning. */

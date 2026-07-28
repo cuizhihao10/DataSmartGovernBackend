@@ -191,7 +191,7 @@ class DataSyncWorkerCommandOutboxDeadLetterManagementServiceTest {
         outbox.setTenantId(10L);
         outbox.setProjectId(20L);
         outbox.setWorkspaceId(30L);
-        outbox.setSyncTemplateId(6001L);
+        outbox.setSyncTaskId(6001L);
         outbox.setStatus(DataSyncWorkerCommandOutboxStatus.DEAD_LETTER.name());
         outbox.setAttemptCount(3);
         outbox.setPayloadJson("{\"commandId\":\"" + commandId + "\"}");

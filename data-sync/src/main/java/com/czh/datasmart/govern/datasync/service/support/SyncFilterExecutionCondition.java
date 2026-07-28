@@ -11,7 +11,7 @@ import lombok.Getter;
 /**
  * 最小 JDBC run-once 可执行的过滤条件。
  *
- * <p>该对象来自同步模板的 {@code filterConfig}，用于表达用户在创建任务时配置的 where 条件。
+ * <p>该对象来自任务定义的 {@code filterConfig}，用于表达用户在创建任务时配置的 where 条件。
  * 它不是公开响应 DTO，因为 {@code value} 可能包含业务状态、日期范围、租户编号、部门编号等客户数据范围信息。
  * data-sync 只在内部把它传给 datasource-management 的 internal run-once 接口，最终由 JDBC 方言层生成
  * {@code WHERE column operator ?} 并通过 {@code PreparedStatement} 绑定值。</p>

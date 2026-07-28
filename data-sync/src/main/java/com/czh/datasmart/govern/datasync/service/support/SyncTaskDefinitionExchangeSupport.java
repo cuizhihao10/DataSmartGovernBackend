@@ -17,11 +17,11 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskImportResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskImportRowResult;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskPublishRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskQueryCriteria;
-import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateExecutionPrecheckResponse;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskDefinitionExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
-import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
+import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
 import com.czh.datasmart.govern.datasync.support.SyncTaskState;
@@ -42,7 +42,7 @@ import java.util.Set;
  * 同步任务定义导入/导出业务组件。
  *
  * <p>导入/导出是任务运营能力，不是数据搬运能力。它解决的是“如何批量迁移、备份、复用和审查任务定义”，
- * 不应该绕过模板预检、权限范围、审批边界和任务状态机。因此本组件坚持几个原则：</p>
+ * 不应该绕过任务预检、权限范围和任务状态机。因此本组件坚持几个原则：</p>
  * <p>1. 导出只导出低敏任务定义摘要，不导出连接串、密码、完整 SQL、样本数据或 worker 内部计划；</p>
  * <p>2. 导入先全量校验，发现任何冲突或失败时不写入，避免半批成功造成运营混乱；</p>
  * <p>3. 导入后不立即执行时一律进入 DRAFT，由用户继续编辑/发布；</p>
@@ -60,12 +60,13 @@ public class SyncTaskDefinitionExchangeSupport {
     private static final Set<String> ALLOWED_PRIORITIES = Set.of("LOW", "MEDIUM", "HIGH", "URGENT");
 
     private final SyncTaskMapper taskMapper;
-    private final SyncTemplateMapper templateMapper;
+    private final SyncTaskDefinitionMapper taskDefinitionMapper;
     private final SyncDataScopeSupport dataScopeSupport;
     private final SyncQuerySupport querySupport;
     private final SyncTaskGroupOperationSupport taskGroupOperationSupport;
-    private final SyncTemplateValidationSupport templateValidationSupport;
-    private final SyncTemplateExecutionPrecheckSupport templateExecutionPrecheckSupport;
+    private final SyncTaskDefinitionValidationSupport taskDefinitionValidationSupport;
+    private final SyncTaskDefinitionConnectorFactResolver taskDefinitionConnectorFactResolver;
+    private final SyncTaskDefinitionExecutionPrecheckSupport taskDefinitionExecutionPrecheckSupport;
     private final SyncTaskDefinitionOperationSupport taskDefinitionOperationSupport;
     private final SyncTaskManagementOperationSupport taskManagementOperationSupport;
     private final SyncTaskScheduleConfigSupport scheduleConfigSupport;
@@ -121,6 +122,7 @@ public class SyncTaskDefinitionExchangeSupport {
             }
             dataScopeSupport.validateOwnedReadable(task.getTenantId(), task.getProjectId(),
                     task.getOwnerId(), actorContext, "同步任务");
+            attachDefinition(task);
             tasks.add(task);
         }
 
@@ -177,7 +179,7 @@ public class SyncTaskDefinitionExchangeSupport {
             SyncTask task = createDraftTask(validatedTask, actorContext);
             if (runImmediately) {
                 taskDefinitionOperationSupport.publishTaskDefinition(
-                        task, validatedTask.template(), new SyncTaskPublishRequest(), actorContext);
+                        task, validatedTask.definition(), new SyncTaskPublishRequest(), actorContext);
                 SyncTask publishedTask = taskMapper.selectById(task.getId());
                 taskManagementOperationSupport.manualDispatchTask(publishedTask, actorContext);
                 result.getRows().add(new SyncTaskImportRowResult(
@@ -215,7 +217,7 @@ public class SyncTaskDefinitionExchangeSupport {
 
     private List<SyncTask> queryExportTasks(SyncTaskQueryCriteria criteria, SyncActorContext actorContext) {
         SyncTaskQueryCriteria safeCriteria = criteria == null
-                ? new SyncTaskQueryCriteria(null, null, null, null, null, null, null, null, 1L, (long) DEFAULT_EXPORT_SIZE)
+                ? new SyncTaskQueryCriteria(null, null, null, null, null, null, null, 1L, (long) DEFAULT_EXPORT_SIZE)
                 : criteria;
         SyncDataVisibility visibility = dataScopeSupport.resolveVisibility(
                 safeCriteria.tenantId(), safeCriteria.projectId(), safeCriteria.workspaceId(), actorContext);
@@ -230,7 +232,6 @@ public class SyncTaskDefinitionExchangeSupport {
         if (visibility.selfOnly()) {
             wrapper.eq(SyncTask::getOwnerId, querySupport.actorId(actorContext));
         }
-        querySupport.eqIfPresent(wrapper, SyncTask::getTemplateId, safeCriteria.templateId());
         querySupport.eqIfPresent(wrapper, SyncTask::getOwnerId, safeCriteria.ownerId());
         applyTaskGroupFilter(wrapper, safeCriteria.groupCode());
         String requestedState = querySupport.normalizeCode(safeCriteria.currentState());
@@ -246,6 +247,7 @@ public class SyncTaskDefinitionExchangeSupport {
         long safeSize = Math.min(requestedSize, MAX_EXPORT_SIZE);
         Page<SyncTask> page = taskMapper.selectPage(new Page<>(safeCurrent, safeSize), wrapper);
         page.getRecords().forEach(this::normalizeDefaultGroupForExport);
+        page.getRecords().forEach(this::attachDefinition);
         return page.getRecords();
     }
 
@@ -335,49 +337,43 @@ public class SyncTaskDefinitionExchangeSupport {
                                                   SyncActorContext actorContext,
                                                   Set<String> namesInFile) {
         String name = normalizeName(row.name(), row.rowNumber());
-        SyncTemplate template = templateMapper.selectById(row.templateId());
-        if (template == null) {
-            throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND,
-                    "第 " + row.rowNumber() + " 行引用的同步模板不存在，templateId=" + row.templateId());
-        }
-        dataScopeSupport.validateOwnedReadable(template.getTenantId(), template.getProjectId(),
-                template.getCreatedBy(), actorContext, "同步模板");
-        dataScopeSupport.validateProjectWritable(template.getTenantId(), template.getProjectId(),
-                template.getWorkspaceId(), actorContext, "同步任务导入");
-        validateDeclaredScope(row, template);
-        templateValidationSupport.validateTemplate(template);
-        SyncTemplateExecutionPrecheckResponse precheck = templateExecutionPrecheckSupport.precheck(template);
+        SyncTaskDefinition definition = buildImportedDefinition(row, name, actorContext);
+        dataScopeSupport.validateProjectWritable(definition.getTenantId(), definition.getProjectId(),
+                definition.getWorkspaceId(), actorContext, "同步任务导入");
+        taskDefinitionConnectorFactResolver.resolveConnectorFacts(definition, actorContext);
+        taskDefinitionValidationSupport.validateDefinition(definition);
+        SyncTaskDefinitionExecutionPrecheckResponse precheck = taskDefinitionExecutionPrecheckSupport.precheck(definition);
         if (!precheck.canCreateTaskDraft()) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "第 " + row.rowNumber() + " 行模板当前不能创建任务草稿，precheckStatus=" + precheck.precheckStatus()
+                    "第 " + row.rowNumber() + " 行任务定义当前不能创建草稿，precheckStatus=" + precheck.precheckStatus()
                             + "，issueCodes=" + precheck.issueCodes());
         }
         if (runImmediately && !precheck.canStartExecution()) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "第 " + row.rowNumber() + " 行要求导入后立即执行，但模板当前不能直接执行，precheckStatus="
-                            + precheck.precheckStatus() + "；请先导入为 DRAFT 或完成审批后再运行");
+                    "第 " + row.rowNumber() + " 行要求导入后立即执行，但任务定义当前不能直接执行，precheckStatus="
+                            + precheck.precheckStatus() + "；请先导入为 DRAFT 并修正预检查问题");
         }
-        validateScheduleConfig(template, row.scheduleConfig(), row.rowNumber());
+        validateScheduleConfig(definition, row.scheduleConfig(), row.rowNumber());
         SyncTaskGroupOperationSupport.TaskGroupAssignment groupAssignment =
                 taskGroupOperationSupport.resolveAssignmentForTask(
-                        template.getTenantId(),
-                        template.getProjectId(),
-                        template.getWorkspaceId(),
+                        definition.getTenantId(),
+                        definition.getProjectId(),
+                        definition.getWorkspaceId(),
                         row.groupCode(),
                         row.groupName(),
                         actorContext);
-        String uniqueKey = uniqueKey(template.getTenantId(), template.getProjectId(), name);
+        String uniqueKey = uniqueKey(definition.getTenantId(), definition.getProjectId(), name);
         if (!namesInFile.add(uniqueKey)) {
             throw new ImportRowConflictException("第 " + row.rowNumber()
                     + " 行与导入文件内其它行任务名称重复，请修改 name，uniqueKey=" + uniqueKey);
         }
-        if (taskNameExists(template.getTenantId(), template.getProjectId(), name)) {
+        if (taskNameExists(definition.getTenantId(), definition.getProjectId(), name)) {
             throw new ImportRowConflictException("第 " + row.rowNumber()
                     + " 行任务名称与现有任务冲突，请修改 name 后重试，uniqueKey=" + uniqueKey);
         }
         return new ValidatedImportTask(
                 row,
-                template,
+                definition,
                 precheck,
                 name,
                 normalizeDescription(row.description()),
@@ -385,16 +381,15 @@ public class SyncTaskDefinitionExchangeSupport {
                 row.ownerId(),
                 groupAssignment,
                 querySupport.trimToNull(row.scheduleConfig()),
-                normalizeRunMode(row.runMode()));
+                runModeFor(definition));
     }
 
     private SyncTask createDraftTask(ValidatedImportTask validatedTask, SyncActorContext actorContext) {
-        SyncTemplate template = validatedTask.template();
+        SyncTaskDefinition definition = validatedTask.definition();
         SyncTask task = new SyncTask();
-        task.setTenantId(template.getTenantId());
-        task.setProjectId(template.getProjectId());
-        task.setWorkspaceId(template.getWorkspaceId());
-        task.setTemplateId(template.getId());
+        task.setTenantId(definition.getTenantId());
+        task.setProjectId(definition.getProjectId());
+        task.setWorkspaceId(definition.getWorkspaceId());
         task.setGroupCode(validatedTask.groupAssignment().groupCode());
         task.setGroupName(validatedTask.groupAssignment().groupName());
         task.setName(validatedTask.name());
@@ -423,36 +418,25 @@ public class SyncTaskDefinitionExchangeSupport {
         task.setCreateTime(LocalDateTime.now());
         task.setUpdateTime(LocalDateTime.now());
         taskMapper.insert(task);
+        definition.setId(task.getId());
+        definition.setName(task.getName());
+        definition.setDescription(task.getDescription());
+        definition.setCreatedBy(task.getOwnerId());
+        definition.setUpdatedBy(task.getOwnerId());
+        definition.setCreateTime(task.getCreateTime());
+        definition.setUpdateTime(task.getUpdateTime());
+        taskDefinitionMapper.insert(definition);
         return task;
     }
 
-    private void validateDeclaredScope(SyncTaskDefinitionExchangeCodecSupport.TaskDefinitionImportRow row,
-                                       SyncTemplate template) {
-        if (row.tenantId() != null && !row.tenantId().equals(template.getTenantId())) {
-            throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
-                    "第 " + row.rowNumber() + " 行 tenantId 与模板租户不一致，rowTenantId="
-                            + row.tenantId() + ", templateTenantId=" + template.getTenantId());
-        }
-        if (row.projectId() != null && !sameNullable(row.projectId(), template.getProjectId())) {
-            throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
-                    "第 " + row.rowNumber() + " 行 projectId 与模板项目不一致，rowProjectId="
-                            + row.projectId() + ", templateProjectId=" + template.getProjectId());
-        }
-        if (row.workspaceId() != null && !sameNullable(row.workspaceId(), template.getWorkspaceId())) {
-            throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
-                    "第 " + row.rowNumber() + " 行 workspaceId 与模板工作空间不一致，rowWorkspaceId="
-                            + row.workspaceId() + ", templateWorkspaceId=" + template.getWorkspaceId());
-        }
-    }
-
-    private void validateScheduleConfig(SyncTemplate template, String scheduleConfig, int rowNumber) {
+    private void validateScheduleConfig(SyncTaskDefinition definition, String scheduleConfig, int rowNumber) {
         String config = querySupport.trimToNull(scheduleConfig);
-        String syncMode = querySupport.normalizeCode(template.getSyncMode());
+        String syncMode = querySupport.normalizeCode(definition.getSyncMode());
         boolean scheduledMode = SyncMode.SCHEDULED_FULL.name().equals(syncMode)
                 || SyncMode.SCHEDULED_BATCH.name().equals(syncMode);
         if (scheduledMode && config == null) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "第 " + rowNumber + " 行对应的是定期全量或定期批量模板，导入任务时必须提供 scheduleConfig");
+                    "第 " + rowNumber + " 行是定期全量或定期批量任务，必须提供 scheduleConfig");
         }
         if (config == null) {
             return;
@@ -528,6 +512,55 @@ public class SyncTaskDefinitionExchangeSupport {
         return 0L;
     }
 
+    private void attachDefinition(SyncTask task) {
+        SyncTaskDefinition definition = taskDefinitionMapper.selectById(task.getId());
+        if (definition == null) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "同步任务缺少定义，无法导出，taskId=" + task.getId());
+        }
+        task.setDefinition(definition);
+    }
+
+    /** 根据文件中的完整低敏配置构建新任务定义，不依赖任何现存任务。 */
+    private SyncTaskDefinition buildImportedDefinition(
+            SyncTaskDefinitionExchangeCodecSupport.TaskDefinitionImportRow row,
+            String name,
+            SyncActorContext actorContext) {
+        Long tenantId = dataScopeSupport.resolveTenantForCreate(row.tenantId(), actorContext);
+        Long projectId = dataScopeSupport.resolveProjectForCreate(row.projectId(), actorContext);
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setTenantId(tenantId);
+        definition.setProjectId(projectId);
+        definition.setWorkspaceId(null);
+        definition.setName(name);
+        definition.setDescription(normalizeDescription(row.description()));
+        definition.setSourceDatasourceId(row.sourceDatasourceId());
+        definition.setTargetDatasourceId(row.targetDatasourceId());
+        definition.setSourceSchemaName(querySupport.trimToNull(row.sourceSchemaName()));
+        definition.setSourceObjectName(querySupport.trimToNull(row.sourceObjectName()));
+        definition.setTargetSchemaName(querySupport.trimToNull(row.targetSchemaName()));
+        definition.setTargetObjectName(querySupport.trimToNull(row.targetObjectName()));
+        definition.setSourceConnectorType(querySupport.normalizeCode(row.sourceConnectorType()));
+        definition.setTargetConnectorType(querySupport.normalizeCode(row.targetConnectorType()));
+        definition.setSyncMode(querySupport.normalizeCode(row.syncMode()));
+        definition.setSyncScopeType(querySupport.defaultText(row.syncScopeType(), "SINGLE_OBJECT").toUpperCase(Locale.ROOT));
+        String defaultWriteStrategy = SyncMode.CDC_STREAMING.name().equals(definition.getSyncMode()) ? "UPDATE" : "INSERT";
+        definition.setWriteStrategy(querySupport.defaultText(row.writeStrategy(), defaultWriteStrategy).toUpperCase(Locale.ROOT));
+        definition.setFieldMappingConfig(querySupport.trimToNull(row.fieldMappingConfig()));
+        definition.setObjectMappingConfig(querySupport.trimToNull(row.objectMappingConfig()));
+        definition.setFilterConfig(querySupport.trimToNull(row.filterConfig()));
+        definition.setCustomSqlConfig(querySupport.trimToNull(row.customSqlConfig()));
+        definition.setPartitionConfig(querySupport.trimToNull(row.partitionConfig()));
+        definition.setRetryPolicy(querySupport.trimToNull(row.retryPolicy()));
+        definition.setTimeoutPolicy(querySupport.trimToNull(row.timeoutPolicy()));
+        definition.setEnabled(true);
+        definition.setCreatedBy(querySupport.actorId(actorContext));
+        definition.setUpdatedBy(querySupport.actorId(actorContext));
+        definition.setCreateTime(LocalDateTime.now());
+        definition.setUpdateTime(LocalDateTime.now());
+        return definition;
+    }
+
     private String normalizeName(String name, int rowNumber) {
         String trimmed = querySupport.trimToNull(name);
         if (trimmed == null) {
@@ -550,24 +583,23 @@ public class SyncTaskDefinitionExchangeSupport {
         return normalized;
     }
 
-    private String normalizeRunMode(String runMode) {
-        return querySupport.truncate(querySupport.defaultText(runMode, "IMPORTED_DRAFT").toUpperCase(Locale.ROOT), 64);
+    private String runModeFor(SyncTaskDefinition definition) {
+        String syncMode = querySupport.normalizeCode(definition.getSyncMode());
+        return SyncMode.SCHEDULED_FULL.name().equals(syncMode) || SyncMode.SCHEDULED_BATCH.name().equals(syncMode)
+                ? "SCHEDULED"
+                : "MANUAL";
     }
 
     private String uniqueKey(Long tenantId, Long projectId, String name) {
         return tenantId + ":" + (projectId == null ? "NULL" : projectId) + ":" + name;
     }
 
-    private boolean sameNullable(Long left, Long right) {
-        return left == null ? right == null : left.equals(right);
-    }
-
     /**
      * 单行导入校验通过后的内部对象。
      */
     private record ValidatedImportTask(SyncTaskDefinitionExchangeCodecSupport.TaskDefinitionImportRow row,
-                                       SyncTemplate template,
-                                       SyncTemplateExecutionPrecheckResponse precheck,
+                                       SyncTaskDefinition definition,
+                                       SyncTaskDefinitionExecutionPrecheckResponse precheck,
                                        String name,
                                        String description,
                                        String priority,

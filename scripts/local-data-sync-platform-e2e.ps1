@@ -18,7 +18,7 @@
     本脚本覆盖的闭环：
     1. 创建源端/目标端数据源；
     2. 测试数据源连接；
-    3. 创建 FULL + SINGLE_OBJECT + AUTO_SPLIT_PK 同步模板；
+    3. 创建 FULL + SINGLE_OBJECT + AUTO_SPLIT_PK 同步任务草稿及定义；
     4. 执行 precheck，确认当前 runner 可以启动；
     5. 创建任务并 run，触发 data-sync worker loop；
     6. worker 调用 datasource-management run-once，完成 MySQL -> PostgreSQL 真实写入；
@@ -1026,7 +1026,7 @@ function Assert-PermissionAuthorizationAudit {
 SELECT COUNT(*)
 FROM permission_admin.permission_audit_record
 WHERE trace_id LIKE '$escapedTracePrefix%'
-  AND resource_type IN ('DATASOURCE', 'SYNC_TEMPLATE', 'SYNC_TASK', 'SYNC_EXECUTION')
+  AND resource_type IN ('DATASOURCE', 'SYNC_TASK', 'SYNC_EXECUTION')
   AND result = 'SUCCESS';
 "@
     $actual = [long](Invoke-PostgresScalar -Sql $auditSql)
@@ -1129,7 +1129,7 @@ function Write-ExecutionPlan {
     Write-PlatformPlanStage "Start or reuse MySQL/PostgreSQL dependency containers unless skipped."
     Write-PlatformPlanStage "Prepare dedicated E2E source/target tables with one dirty row and one failed shard scenario."
     Write-PlatformPlanStage "Create datasource records through API and test both connections."
-    Write-PlatformPlanStage "Create FULL/SINGLE_OBJECT/AUTO_SPLIT_PK sync template and run precheck."
+    Write-PlatformPlanStage "Create FULL/SINGLE_OBJECT/AUTO_SPLIT_PK sync task definition and run precheck."
     Write-PlatformPlanStage "Create task, run worker loop, retry only failed shard, then replay repaired dirty row."
     Write-PlatformPlanStage "Assert PostgreSQL target table reaches 20 complete rows."
     if (-not $UseDirectServiceUrls) {
@@ -1340,51 +1340,88 @@ function Assert-OfflinePrecheckRunnable {
     Add-Check -Name "离线模式预检查: $Stage" -Status "PASS" -Detail "precheck 已允许当前 runner 启动"
 }
 
-function Invoke-OfflineModeTemplateTaskRun {
+function Save-SyncTaskDraftForE2E {
+    param(
+        [string]$Stage,
+        [string]$SyncApiRoot,
+        [hashtable]$Headers,
+        [hashtable]$DefinitionBody,
+        [hashtable]$TaskBody
+    )
+
+    $draftBody = @{}
+    foreach ($entry in $DefinitionBody.GetEnumerator()) {
+        $draftBody[$entry.Key] = $entry.Value
+    }
+    foreach ($entry in $TaskBody.GetEnumerator()) {
+        $draftBody[$entry.Key] = $entry.Value
+    }
+    $draftBody.taskName = [string]$TaskBody.name
+    $draftBody.taskDescription = [string]$TaskBody.description
+    $draftBody.stepCode = "PRECHECK"
+    foreach ($obsoleteField in @("approvalConfirmed", "approvalFactId", "runMode")) {
+        $draftBody.Remove($obsoleteField)
+    }
+
+    $draftResponse = Invoke-Api `
+        -Name "保存同步任务草稿: $Stage" `
+        -Method "POST" `
+        -Url "$SyncApiRoot/sync-tasks/create-wizard/drafts" `
+        -Headers $Headers `
+        -Body $draftBody
+    $draft = Get-EnvelopeData -Response $draftResponse -Name "同步任务草稿 envelope: $Stage"
+    if ([long]$draft.taskId -le 0) {
+        Fail-Step -Name "同步任务草稿 ID: $Stage" -Detail "保存草稿后未拿到有效 taskId"
+    }
+    return $draft
+}
+
+function Publish-SyncTaskForE2E {
+    param(
+        [string]$Stage,
+        [string]$SyncApiRoot,
+        [hashtable]$Headers,
+        [long]$TaskId
+    )
+
+    Invoke-Api `
+        -Name "发布同步任务: $Stage" `
+        -Method "POST" `
+        -Url "$SyncApiRoot/sync-tasks/$TaskId/publish" `
+        -Headers $Headers `
+        -Body @{ reason = "local platform E2E" } | Out-Null
+}
+
+function Invoke-OfflineModeTaskRun {
     param(
         [string]$Stage,
         [object]$ApiRoots,
-        [hashtable]$TemplateHeaders,
+        [hashtable]$DefinitionHeaders,
         [hashtable]$TaskHeaders,
         [hashtable]$RunHeaders,
         [hashtable]$WorkerHeaders,
-        [hashtable]$TemplateBody,
+        [hashtable]$DefinitionBody,
         [hashtable]$TaskBody,
         [switch]$ApprovalExpected
     )
 
-    $templateResponse = Invoke-Api `
-        -Name "创建离线模式模板: $Stage" `
-        -Method "POST" `
-        -Url "$($ApiRoots.Sync)/sync-templates" `
-        -Headers $TemplateHeaders `
-        -Body $TemplateBody
-    $template = Get-EnvelopeData -Response $templateResponse -Name "离线模式模板 envelope: $Stage"
-    $templateId = [long]$template.id
-    if ($templateId -le 0) {
-        Fail-Step -Name "离线模式模板 ID: $Stage" -Detail "创建模板后未拿到有效 ID"
-    }
+    $draft = Save-SyncTaskDraftForE2E `
+        -Stage $Stage `
+        -SyncApiRoot $ApiRoots.Sync `
+        -Headers $DefinitionHeaders `
+        -DefinitionBody $DefinitionBody `
+        -TaskBody $TaskBody
+    $taskId = [long]$draft.taskId
 
     $precheckResponse = Invoke-Api `
-        -Name "离线模式模板预检查: $Stage" `
+        -Name "离线模式任务预检查: $Stage" `
         -Method "POST" `
-        -Url "$($ApiRoots.Sync)/sync-templates/$templateId/precheck" `
-        -Headers $TemplateHeaders
+        -Url "$($ApiRoots.Sync)/sync-tasks/$taskId/precheck" `
+        -Headers $DefinitionHeaders
     $precheck = Get-EnvelopeData -Response $precheckResponse -Name "离线模式预检查 envelope: $Stage"
     Assert-OfflinePrecheckRunnable -Precheck $precheck -Stage $Stage -ApprovalExpected:$ApprovalExpected
 
-    $TaskBody.templateId = $templateId
-    $taskResponse = Invoke-Api `
-        -Name "创建离线模式任务: $Stage" `
-        -Method "POST" `
-        -Url "$($ApiRoots.Sync)/sync-tasks" `
-        -Headers $TaskHeaders `
-        -Body $TaskBody
-    $task = Get-EnvelopeData -Response $taskResponse -Name "离线模式任务 envelope: $Stage"
-    $taskId = [long]$task.id
-    if ($taskId -le 0) {
-        Fail-Step -Name "离线模式任务 ID: $Stage" -Detail "创建任务后未拿到有效 ID"
-    }
+    Publish-SyncTaskForE2E -Stage $Stage -SyncApiRoot $ApiRoots.Sync -Headers $TaskHeaders -TaskId $taskId
 
     Invoke-Api `
         -Name "提交离线模式任务运行: $Stage" `
@@ -1394,7 +1431,6 @@ function Invoke-OfflineModeTemplateTaskRun {
 
     Invoke-WorkerLoop -Stage "offline-mode-$Stage" -Headers $WorkerHeaders -SyncApiRoot $ApiRoots.Sync | Out-Null
     return [pscustomobject]@{
-        TemplateId = $templateId
         TaskId = $taskId
     }
 }
@@ -1443,14 +1479,14 @@ function Invoke-OfflineModeClosureE2E {
         timezone = "Asia/Shanghai"
         windowPolicy = "BOUNDED_WINDOW_PER_TRIGGER"
     } | ConvertTo-Json -Depth 10 -Compress
-    Invoke-OfflineModeTemplateTaskRun `
+    Invoke-OfflineModeTaskRun `
         -Stage "scheduled-batch" `
         -ApiRoots $ApiRoots `
-        -TemplateHeaders $UserHeaders `
+        -DefinitionHeaders $UserHeaders `
         -TaskHeaders $UserHeaders `
         -RunHeaders $UserHeaders `
         -WorkerHeaders $WorkerHeaders `
-        -TemplateBody @{
+        -DefinitionBody @{
             tenantId = $TenantId
             projectId = $ProjectId
             workspaceId = $WorkspaceId
@@ -1494,15 +1530,15 @@ function Invoke-OfflineModeClosureE2E {
         @{ sourceField = "amount"; targetField = "amount" },
         @{ sourceField = "region"; targetField = "region" }
     ) | ConvertTo-Json -Depth 10 -Compress
-    Invoke-OfflineModeTemplateTaskRun `
+    Invoke-OfflineModeTaskRun `
         -Stage "custom-sql-query" `
         -ApiRoots $ApiRoots `
-        -TemplateHeaders $UserHeaders `
+        -DefinitionHeaders $UserHeaders `
         -TaskHeaders $ApprovalHeaders `
         -RunHeaders $ApprovalHeaders `
         -WorkerHeaders $WorkerHeaders `
         -ApprovalExpected `
-        -TemplateBody @{
+        -DefinitionBody @{
             tenantId = $TenantId
             projectId = $ProjectId
             workspaceId = $WorkspaceId
@@ -1547,15 +1583,15 @@ function Invoke-OfflineModeClosureE2E {
             includeViews = $false
         }
     } | ConvertTo-Json -Depth 10 -Compress
-    Invoke-OfflineModeTemplateTaskRun `
+    Invoke-OfflineModeTaskRun `
         -Stage "schema-full" `
         -ApiRoots $ApiRoots `
-        -TemplateHeaders $UserHeaders `
+        -DefinitionHeaders $UserHeaders `
         -TaskHeaders $ApprovalHeaders `
         -RunHeaders $ApprovalHeaders `
         -WorkerHeaders $WorkerHeaders `
         -ApprovalExpected `
-        -TemplateBody @{
+        -DefinitionBody @{
             tenantId = $TenantId
             projectId = $ProjectId
             workspaceId = $WorkspaceId
@@ -1589,50 +1625,44 @@ function Invoke-OfflineModeClosureE2E {
     Assert-TargetTableCount -TableName $script:SchemaFullTargetCustomersTable -Expected 2 -Stage "SCHEMA_FULL customers"
 }
 
-function Invoke-ScheduledTemplateTaskRun {
+function Invoke-ScheduledTaskRun {
     param(
         [string]$Stage,
         [object]$ApiRoots,
-        [hashtable]$TemplateHeaders,
+        [hashtable]$DefinitionHeaders,
         [hashtable]$TaskHeaders,
         [hashtable]$SchedulerHeaders,
         [hashtable]$WorkerHeaders,
-        [hashtable]$TemplateBody,
+        [hashtable]$DefinitionBody,
         [hashtable]$TaskBody,
         [string]$TargetTableName,
         [int]$ExpectedTargetCount
     )
 
-    $templateResponse = Invoke-Api `
-        -Name "创建调度闭环模板: $Stage" `
-        -Method "POST" `
-        -Url "$($ApiRoots.Sync)/sync-templates" `
-        -Headers $TemplateHeaders `
-        -Body $TemplateBody
-    $template = Get-EnvelopeData -Response $templateResponse -Name "调度闭环模板 envelope: $Stage"
-    $templateId = [long]$template.id
-    if ($templateId -le 0) {
-        Fail-Step -Name "调度闭环模板 ID: $Stage" -Detail "创建模板后未拿到有效 ID"
-    }
+    $draft = Save-SyncTaskDraftForE2E `
+        -Stage $Stage `
+        -SyncApiRoot $ApiRoots.Sync `
+        -Headers $DefinitionHeaders `
+        -DefinitionBody $DefinitionBody `
+        -TaskBody $TaskBody
+    $taskId = [long]$draft.taskId
 
     $precheckResponse = Invoke-Api `
-        -Name "调度闭环模板预检查: $Stage" `
+        -Name "调度闭环任务预检查: $Stage" `
         -Method "POST" `
-        -Url "$($ApiRoots.Sync)/sync-templates/$templateId/precheck" `
-        -Headers $TemplateHeaders
+        -Url "$($ApiRoots.Sync)/sync-tasks/$taskId/precheck" `
+        -Headers $DefinitionHeaders
     $precheck = Get-EnvelopeData -Response $precheckResponse -Name "调度闭环预检查 envelope: $Stage"
     Assert-OfflinePrecheckRunnable -Precheck $precheck -Stage $Stage
 
-    $TaskBody.templateId = $templateId
+    Publish-SyncTaskForE2E -Stage $Stage -SyncApiRoot $ApiRoots.Sync -Headers $TaskHeaders -TaskId $taskId
     $taskResponse = Invoke-Api `
-        -Name "创建调度闭环任务: $Stage" `
-        -Method "POST" `
-        -Url "$($ApiRoots.Sync)/sync-tasks" `
-        -Headers $TaskHeaders `
-        -Body $TaskBody
+        -Name "查询已发布调度任务: $Stage" `
+        -Method "GET" `
+        -Url "$($ApiRoots.Sync)/sync-tasks/$taskId" `
+        -Headers $TaskHeaders
     $task = Get-EnvelopeData -Response $taskResponse -Name "调度闭环任务 envelope: $Stage"
     Assert-ScheduledTaskCreated -Task $task -Stage $Stage
-    $taskId = [long]$task.id
 
     Set-ScheduledTaskDueForE2E -TaskId $taskId -Stage $Stage
 
@@ -1651,7 +1681,7 @@ function Invoke-ScheduledTemplateTaskRun {
 
     $queuedExecutions = Get-ScheduledExecutionsForTask `
         -ApiRoots $ApiRoots `
-        -Headers $TemplateHeaders `
+        -Headers $DefinitionHeaders `
         -TaskId $taskId `
         -Stage "$Stage-after-dispatch"
     Assert-ScheduledExecutionHistory -Executions $queuedExecutions -Stage "$Stage-after-dispatch" -ExpectedState "QUEUED"
@@ -1665,7 +1695,7 @@ function Invoke-ScheduledTemplateTaskRun {
 
     $finishedExecutions = Get-ScheduledExecutionsForTask `
         -ApiRoots $ApiRoots `
-        -Headers $TemplateHeaders `
+        -Headers $DefinitionHeaders `
         -TaskId $taskId `
         -Stage "$Stage-after-worker"
     Assert-ScheduledExecutionHistory -Executions $finishedExecutions -Stage "$Stage-after-worker" -ExpectedState "SUCCEEDED"
@@ -1674,7 +1704,7 @@ function Invoke-ScheduledTemplateTaskRun {
         -Name "查询调度任务终态: $Stage" `
         -Method "GET" `
         -Url "$($ApiRoots.Sync)/sync-tasks/$taskId" `
-        -Headers $TemplateHeaders
+        -Headers $DefinitionHeaders
     $taskDetail = Get-EnvelopeData -Response $taskDetailResponse -Name "调度任务终态 envelope: $Stage"
     if ([string]$taskDetail.currentState -ne "SCHEDULED") {
         Fail-Step -Name "调度任务终态: $Stage" -Detail "SCHEDULED execution 完成后任务未回到 SCHEDULED，后续计划无法继续触发"
@@ -1685,7 +1715,6 @@ function Invoke-ScheduledTemplateTaskRun {
     Add-Check -Name "调度任务终态: $Stage" -Status "PASS" -Detail "execution 成功后任务回到 SCHEDULED，后续计划可继续触发"
 
     return [pscustomobject]@{
-        TemplateId = $templateId
         TaskId = $taskId
     }
 }
@@ -1735,16 +1764,16 @@ function Invoke-TaskSchedulerWorkerLoopE2E {
         @{ sourceField = "region"; targetField = "region" }
     ) | ConvertTo-Json -Depth 10 -Compress
 
-    Invoke-ScheduledTemplateTaskRun `
+    Invoke-ScheduledTaskRun `
         -Stage "scheduled-full" `
         -ApiRoots $ApiRoots `
-        -TemplateHeaders $UserHeaders `
+        -DefinitionHeaders $UserHeaders `
         -TaskHeaders $UserHeaders `
         -SchedulerHeaders $SchedulerHeaders `
         -WorkerHeaders $WorkerHeaders `
         -TargetTableName $script:SchedulerFullTargetTable `
         -ExpectedTargetCount 2 `
-        -TemplateBody @{
+        -DefinitionBody @{
             tenantId = $TenantId
             projectId = $ProjectId
             workspaceId = $WorkspaceId
@@ -1782,16 +1811,16 @@ function Invoke-TaskSchedulerWorkerLoopE2E {
             @{ field = "region"; operator = "="; value = "WEST" }
         )
     } | ConvertTo-Json -Depth 10 -Compress
-    Invoke-ScheduledTemplateTaskRun `
+    Invoke-ScheduledTaskRun `
         -Stage "scheduled-batch" `
         -ApiRoots $ApiRoots `
-        -TemplateHeaders $UserHeaders `
+        -DefinitionHeaders $UserHeaders `
         -TaskHeaders $UserHeaders `
         -SchedulerHeaders $SchedulerHeaders `
         -WorkerHeaders $WorkerHeaders `
         -TargetTableName $script:SchedulerBatchTargetTable `
         -ExpectedTargetCount 2 `
-        -TemplateBody @{
+        -DefinitionBody @{
             tenantId = $TenantId
             projectId = $ProjectId
             workspaceId = $WorkspaceId
@@ -1976,17 +2005,14 @@ function Main {
         maxDirtyRecordRatio = 0.20
     } | ConvertTo-Json -Depth 10 -Compress
 
-    $templateResponse = Invoke-Api `
-        -Name "创建 data-sync 同步模板" `
-        -Method "POST" `
-        -Url "$($apiRoots.Sync)/sync-templates" `
+    $draft = Save-SyncTaskDraftForE2E `
+        -Stage "AUTO_SPLIT_PK" `
+        -SyncApiRoot $apiRoots.Sync `
         -Headers $userHeaders `
-        -Body @{
+        -DefinitionBody @{
             tenantId = $TenantId
             projectId = $ProjectId
             workspaceId = $WorkspaceId
-            name = "E2E MySQL to PostgreSQL AUTO_SPLIT_PK $script:RunId"
-            description = "local platform API E2E"
             sourceDatasourceId = $sourceDatasourceId
             targetDatasourceId = $targetDatasourceId
             sourceSchemaName = $MySqlDatabase
@@ -2002,45 +2028,29 @@ function Main {
             fieldMappingConfig = $fieldMappingConfig
             filterConfig = $filterConfig
             partitionConfig = $partitionConfig
-        }
-    $template = Get-EnvelopeData -Response $templateResponse -Name "同步模板 envelope"
-    $templateId = [long]$template.id
-    if ($templateId -le 0) {
-        Fail-Step -Name "同步模板 ID" -Detail "创建模板后未拿到有效 ID"
-    }
-
-    $precheckResponse = Invoke-Api `
-        -Name "模板执行前预检查" `
-        -Method "POST" `
-        -Url "$($apiRoots.Sync)/sync-templates/$templateId/precheck" `
-        -Headers $userHeaders
-    $precheck = Get-EnvelopeData -Response $precheckResponse -Name "预检查 envelope"
-    if (-not [bool]$precheck.canStartExecution) {
-        Fail-Step -Name "模板执行前预检查" -Detail "precheck 表示当前模板不可启动，请查看 data-sync 服务日志中的 traceId"
-    }
-    Add-Check -Name "模板执行前预检查结果" -Status "PASS" -Detail "当前模板可进入 worker 执行链路"
-
-    $taskResponse = Invoke-Api `
-        -Name "创建 data-sync 同步任务" `
-        -Method "POST" `
-        -Url "$($apiRoots.Sync)/sync-tasks" `
-        -Headers $userHeaders `
-        -Body @{
+        } `
+        -TaskBody @{
             tenantId = $TenantId
             projectId = $ProjectId
             workspaceId = $WorkspaceId
-            templateId = $templateId
             name = "E2E platform API task $script:RunId"
             description = "local platform API E2E task"
             priority = "HIGH"
-            runMode = "MANUAL"
             ownerId = $ActorId
         }
-    $task = Get-EnvelopeData -Response $taskResponse -Name "同步任务 envelope"
-    $taskId = [long]$task.id
-    if ($taskId -le 0) {
-        Fail-Step -Name "同步任务 ID" -Detail "创建任务后未拿到有效 ID"
+    $taskId = [long]$draft.taskId
+
+    $precheckResponse = Invoke-Api `
+        -Name "任务执行前预检查" `
+        -Method "POST" `
+        -Url "$($apiRoots.Sync)/sync-tasks/$taskId/precheck" `
+        -Headers $userHeaders
+    $precheck = Get-EnvelopeData -Response $precheckResponse -Name "预检查 envelope"
+    if (-not [bool]$precheck.canStartExecution) {
+        Fail-Step -Name "任务执行前预检查" -Detail "precheck 表示当前任务不可启动，请查看 data-sync 服务日志中的 traceId"
     }
+    Add-Check -Name "任务执行前预检查结果" -Status "PASS" -Detail "当前任务可进入 worker 执行链路"
+    Publish-SyncTaskForE2E -Stage "AUTO_SPLIT_PK" -SyncApiRoot $apiRoots.Sync -Headers $userHeaders -TaskId $taskId
 
     Invoke-Api `
         -Name "提交同步任务运行" `

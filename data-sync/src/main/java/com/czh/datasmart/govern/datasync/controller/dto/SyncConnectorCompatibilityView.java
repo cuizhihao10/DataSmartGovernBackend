@@ -13,7 +13,7 @@ import java.util.List;
  *
  * <p>该视图回答“某个源连接器、目标连接器、同步模式组合，在当前产品能力矩阵下是否建议放行”。
  * 它不是执行结果，也不代表真实数据源已经连通。真实执行前仍需要 datasource-management 连接测试、权限校验、
- * 模板配置校验、任务状态机、执行器 lease 和 checkpoint 回调共同确认。</p>
+ * 任务定义配置校验、任务状态机、执行器 lease 和 checkpoint 回调共同确认。</p>
  *
  * @param sourceConnectorType 源端连接器类型。
  * @param targetConnectorType 目标端连接器类型。

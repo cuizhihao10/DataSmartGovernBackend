@@ -36,7 +36,8 @@ class SyncTaskImportArtifactServiceTest {
     @Test
     void uploadShouldCreatePathSafeProjectScopedArtifactWithoutImportingTasks() {
         Fixture fixture = fixture();
-        byte[] content = "name,templateId\norders,7\n".getBytes(StandardCharsets.UTF_8);
+        byte[] content = "name,sourceDatasourceId,targetDatasourceId\norders,7,8\n"
+                .getBytes(StandardCharsets.UTF_8);
         when(fixture.codec().resolveFormat("CSV", "tasks.csv")).thenReturn("CSV");
         when(fixture.mapper().insert(any(SyncTaskImportArtifact.class))).thenReturn(1);
 
@@ -109,7 +110,8 @@ class SyncTaskImportArtifactServiceTest {
         artifact.setFileName("tasks.csv");
         artifact.setFileFormat("CSV");
         artifact.setContentHash("content-hash");
-        artifact.setContentBody("name,templateId\norders,7\n".getBytes(StandardCharsets.UTF_8));
+        artifact.setContentBody("name,sourceDatasourceId,targetDatasourceId\norders,7,8\n"
+                .getBytes(StandardCharsets.UTF_8));
         artifact.setContentSizeBytes((long) artifact.getContentBody().length);
         artifact.setArtifactState("UPLOADED");
         artifact.setCreateTime(LocalDateTime.now());

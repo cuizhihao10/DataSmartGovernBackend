@@ -16,7 +16,7 @@ import java.util.Locale;
 /**
  * 离线 Runner 合同策略辅助类。
  *
- * <p>{@link SyncOfflineRunnerContractSupport} 负责从 template、task、execution、workerPlan 中收集低敏事实；
+ * <p>{@link SyncOfflineRunnerContractSupport} 负责从 definition、task、execution、workerPlan 中收集低敏事实；
  * 本类负责把这些事实翻译成合同状态、分片策略、执行报告策略和推荐动作。拆分的原因不是追求机械的文件数量，
  * 而是避免“入口编排 + 所有策略规则 + 所有字符串常量”继续堆在一个 Support 中，后续接入真实 Runner 时难以维护。</p>
  *
@@ -72,7 +72,7 @@ final class SyncOfflineRunnerContractPolicySupport {
     /**
      * 构建缺省阻断分片计划。
      *
-     * <p>当模板或 workerPlan 缺失时，系统仍然返回一个结构化合同，而不是返回 null。
+     * <p>当任务定义或 workerPlan 缺失时，系统仍然返回一个结构化合同，而不是返回 null。
      * 这样运维台和测试可以稳定读取“不要派发”的原因。</p>
      */
     static SyncOfflineRunnerShardPlan emptyShardPlan() {
@@ -246,8 +246,8 @@ final class SyncOfflineRunnerContractPolicySupport {
                         || "CONNECTOR_FACTS_INCOMPLETE".equals(issueCode)
                         || "CONNECTOR_COMPATIBILITY_UNSUPPORTED".equals(issueCode)
                         || "CONNECTOR_FACTS_MISSING".equals(issueCode)
-                        || "TEMPLATE_NOT_FOUND".equals(issueCode)
-                        || "TEMPLATE_DISABLED".equals(issueCode)
+                        || "TASK_DEFINITION_NOT_FOUND".equals(issueCode)
+                        || "TASK_DEFINITION_DISABLED".equals(issueCode)
                         || "WORKER_PLAN_BLOCKED".equals(issueCode)
                         || "BRIDGE_INPUT_CONTEXT_MISSING".equals(issueCode));
     }

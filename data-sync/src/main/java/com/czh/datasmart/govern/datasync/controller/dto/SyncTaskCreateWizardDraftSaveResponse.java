@@ -7,7 +7,7 @@
 package com.czh.datasmart.govern.datasync.controller.dto;
 
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import lombok.Data;
 
 import java.time.LocalDateTime;
@@ -16,8 +16,7 @@ import java.util.List;
 /**
  * 同步任务创建向导草稿保存响应。
  *
- * <p>响应同时返回 taskId 与 templateId，是为了让前端后续步骤继续保存到同一条草稿，而不是每点击一次下一步就创建一套新模板和新任务。
- * 这也是“第二步以后任务视为保存”的关键：前端拿到 taskId 后即可在任务列表展示、关闭后重新进入编辑。</p>
+ * <p>taskId 是创建向导唯一需要保存的资源标识。后续步骤、恢复编辑、预检查和发布都围绕同一个任务进行。</p>
  */
 @Data
 public class SyncTaskCreateWizardDraftSaveResponse {
@@ -26,11 +25,6 @@ public class SyncTaskCreateWizardDraftSaveResponse {
      * 草稿任务 ID。
      */
     private Long taskId;
-
-    /**
-     * 草稿任务绑定的模板 ID。
-     */
-    private Long templateId;
 
     /**
      * 本次请求是否创建了新草稿。
@@ -74,7 +68,7 @@ public class SyncTaskCreateWizardDraftSaveResponse {
     private SyncTask task;
 
     /**
-     * 最新草稿模板快照。
+     * 最新任务定义快照。
      */
-    private SyncTemplate template;
+    private SyncTaskDefinition definition;
 }

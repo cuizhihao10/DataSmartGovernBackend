@@ -10,7 +10,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanView;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 
 /**
  * 专用离线 Runner adapter 的执行请求。
@@ -20,8 +20,8 @@ import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
  * 低敏原则：不得把 bridge plan 中的对象定位、字段映射、SQL 管理策略、checkpoint 摘要或异常详情直接写入普通日志、
  * Prometheus 高基数标签、前端响应或 task-management receipt。</p>
  *
- * <p>为什么要把上下文集中成一个 request，而不是让 adapter 自己按 templateId 回查：</p>
- * <p>1. worker loop 已经完成 claim、模板读取和合同生成，如果 adapter 重新回查，容易形成不一致快照；</p>
+ * <p>为什么要把上下文集中成一个 request，而不是让 adapter 自己跨服务回查：</p>
+ * <p>1. worker loop 已经完成 claim、任务定义读取和合同生成，如果 adapter 重新回查，容易形成不一致快照；</p>
  * <p>2. data-sync 是 task/execution/checkpoint 的控制面所有者，adapter 只应该消费受控合同，不应该猜测状态机；</p>
  * <p>3. 后续接入外部 runner 时，可以把本对象转换为 HTTP、Kafka 或 gRPC 消息，而不影响 worker loop。</p>
  *
@@ -29,7 +29,7 @@ import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
  * @param runnerContract 低敏离线 Runner 作业合同，是 adapter 做能力判断和调度的主输入。
  * @param execution 当前 execution 事实，用于关联回调、进度和最终报告。
  * @param task 当前任务事实，用于读取调度、租户、项目和状态归属。
- * @param template 当前模板事实，用于 adapter 在受控环境中展开 reader/writer 配置。
+ * @param definition 当前任务定义事实，用于 adapter 在受控环境中展开 reader/writer 配置。
  * @param workerPlan claim 阶段产生的低敏 worker 计划，可用于诊断和幂等校验。
  * @param actorContext 当前操作者或服务账号上下文，用于审计、权限和 trace 串联。
  */
@@ -37,7 +37,7 @@ public record SyncOfflineRunnerExecutionRequest(SyncBatchRunnerBridgePlan bridge
                                                 SyncOfflineRunnerJobContract runnerContract,
                                                 SyncExecution execution,
                                                 SyncTask task,
-                                                SyncTemplate template,
+                                                SyncTaskDefinition definition,
                                                 SyncWorkerExecutionPlanView workerPlan,
                                                 SyncActorContext actorContext) {
 }

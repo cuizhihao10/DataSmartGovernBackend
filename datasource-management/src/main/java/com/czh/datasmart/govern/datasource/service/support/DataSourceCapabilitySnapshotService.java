@@ -81,8 +81,8 @@ public class DataSourceCapabilitySnapshotService {
         List<String> issueCodes = collectIssueCodes(datasource, profile);
         List<String> recommendedActions = collectRecommendedActions(issueCodes);
         boolean roadmapOnly = isRoadmapOnly(profile);
-        boolean eligibleForTemplatePlanning = DataSourceStatus.ACTIVE.equals(datasource.getStatus()) && !roadmapOnly;
-        boolean eligibleForExecutionPrecheck = eligibleForTemplatePlanning
+        boolean eligibleForTaskPlanning = DataSourceStatus.ACTIVE.equals(datasource.getStatus()) && !roadmapOnly;
+        boolean eligibleForExecutionPrecheck = eligibleForTaskPlanning
                 && ConnectionTestStatus.SUCCESS.equals(datasource.getLastTestStatus());
 
         return new DataSourceCapabilitySnapshotView(
@@ -99,7 +99,7 @@ public class DataSourceCapabilitySnapshotService {
                 profile.getConnectorType(),
                 profile.getConnectorFamily(),
                 profile.getImplementationStage(),
-                eligibleForTemplatePlanning,
+                eligibleForTaskPlanning,
                 eligibleForExecutionPrecheck,
                 profile.isCanRead(),
                 profile.isCanWrite(),

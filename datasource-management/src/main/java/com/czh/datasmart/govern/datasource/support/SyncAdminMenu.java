@@ -16,13 +16,8 @@ package com.czh.datasmart.govern.datasource.support;
  */
 public enum SyncAdminMenu {
     DATASOURCE_EXPLORER("datasource:explorer", "数据源与元数据", "/datasources", "查看数据源、能力画像和元数据发现结果"),
-    SYNC_TEMPLATE_CENTER("sync:template-center", "同步模板中心", "/sync/templates", "管理同步模板、字段映射和执行前校验"),
-    SYNC_TASK_CENTER("sync:task-center", "同步任务中心", "/sync/tasks", "查看和操作租户内的同步任务"),
-    SYNC_APPROVAL_CENTER("sync:approval-center", "审批中心", "/sync/tasks", "处理需要人工审批的同步任务"),
-    SYNC_QUEUE_CENTER("sync:queue-center", "队列治理中心", "/sync/admin/tasks", "查看队列健康、老化和容量治理结果"),
     SYNC_ALERT_CENTER("sync:alert-center", "治理告警中心", "/sync/admin/alerts", "查看、确认、解决、补投治理告警"),
-    SYNC_PERMISSION_CENTER("sync:permission-center", "权限策略中心", "/sync/admin/permissions", "查看本地资源、菜单、路由和数据范围策略"),
-    SYNC_AUDIT_CENTER("sync:audit-center", "审计中心", "/sync/tasks", "查看治理动作和同步执行的审计轨迹");
+    SYNC_PERMISSION_CENTER("sync:permission-center", "权限策略中心", "/sync/admin/permissions", "查看本地资源、菜单、路由和数据范围策略");
 
     private final String code;
     private final String title;

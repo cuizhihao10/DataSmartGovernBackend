@@ -28,7 +28,7 @@ import com.czh.datasmart.govern.datasync.entity.SyncErrorSample;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncObjectExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeClient;
 import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeRequest;
 import com.czh.datasmart.govern.datasync.integration.datasource.partition.DatasourcePartitionRangeProbeResponse;
@@ -97,7 +97,6 @@ class SyncAutoSplitPkRealWorkerE2ETest {
     private static final Long SOURCE_DATASOURCE_ID = 10L;
     private static final Long TARGET_DATASOURCE_ID = 20L;
     private static final Long TASK_ID = 11L;
-    private static final Long TEMPLATE_ID = 22L;
     private static final Long FIRST_EXECUTION_ID = 88L;
     private static final Long REPLAY_EXECUTION_ID = 89L;
     private static final String SOURCE_TABLE = "datasmart_e2e_splitpk_orders";
@@ -157,11 +156,11 @@ class SyncAutoSplitPkRealWorkerE2ETest {
 
         SyncTask task = task(SyncTaskState.RUNNING.name());
         SyncExecution firstExecution = execution(FIRST_EXECUTION_ID, SyncExecutionState.RUNNING, SyncTriggerType.MANUAL);
-        SyncTemplate template = partitionedTemplate();
+        SyncTaskDefinition definition = partitionedDefinition();
         SyncActorContext actor = actor();
 
         SyncOfflineRunnerDispatchResult firstDispatch = dispatchService.dispatchOffline(
-                firstExecution, task, template, workerPlan(FIRST_EXECUTION_ID, SyncTriggerType.MANUAL), actor);
+                firstExecution, task, definition, workerPlan(FIRST_EXECUTION_ID, SyncTriggerType.MANUAL), actor);
 
         assertThat(firstDispatch.dispatchStatus()).isEqualTo("PARTITION_SHARD_FAN_OUT_PARTIALLY_SUCCEEDED");
         assertThat(firstDispatch.completed()).isFalse();
@@ -204,7 +203,7 @@ class SyncAutoSplitPkRealWorkerE2ETest {
         firstExecution.setExecutionState(SyncExecutionState.RUNNING.name());
         task.setCurrentState(SyncTaskState.RETRYING.name());
         SyncOfflineRunnerDispatchResult retryDispatch = dispatchService.dispatchOffline(
-                firstExecution, task, template, workerPlan(FIRST_EXECUTION_ID, SyncTriggerType.MANUAL), actor);
+                firstExecution, task, definition, workerPlan(FIRST_EXECUTION_ID, SyncTriggerType.MANUAL), actor);
 
         assertThat(retryDispatch.dispatchStatus()).isEqualTo("PARTITION_SHARD_FAN_OUT_COMPLETED");
         assertThat(retryDispatch.completed()).isTrue();
@@ -220,7 +219,7 @@ class SyncAutoSplitPkRealWorkerE2ETest {
         SyncOfflineRunnerDispatchResult replayResult = replaySupport.dispatchDirtyRecordReplay(
                 replayExecution,
                 task,
-                template,
+                definition,
                 workerPlan(REPLAY_EXECUTION_ID, SyncTriggerType.REPLAY),
                 recoveryPlan(dirtySample.getId()),
                 actor);
@@ -264,7 +263,7 @@ class SyncAutoSplitPkRealWorkerE2ETest {
         return new SyncBatchRunnerBridgePlanSupport(
                 new SyncFieldMappingExecutionContractSupport(objectMapper),
                 new SyncFilterExecutionContractSupport(objectMapper),
-                new SyncTemplateScopeContractSupport(objectMapper),
+                new SyncTaskDefinitionScopeContractSupport(objectMapper),
                 new SyncOfflineRunnerContractSupport());
     }
 
@@ -365,24 +364,24 @@ class SyncAutoSplitPkRealWorkerE2ETest {
                 });
     }
 
-    private SyncTemplate partitionedTemplate() {
-        SyncTemplate template = new SyncTemplate();
-        template.setId(TEMPLATE_ID);
-        template.setTenantId(7L);
-        template.setProjectId(101L);
-        template.setWorkspaceId(301L);
-        template.setSourceDatasourceId(SOURCE_DATASOURCE_ID);
-        template.setTargetDatasourceId(TARGET_DATASOURCE_ID);
-        template.setSourceConnectorType("MYSQL");
-        template.setTargetConnectorType("POSTGRESQL");
-        template.setSourceObjectName(SOURCE_TABLE);
-        template.setTargetSchemaName(TARGET_SCHEMA);
-        template.setTargetObjectName(TARGET_TABLE);
-        template.setSyncMode("FULL");
-        template.setSyncScopeType("SINGLE_OBJECT");
-        template.setWriteStrategy("UPSERT");
-        template.setPrimaryKeyField("id");
-        template.setFieldMappingConfig("""
+    private SyncTaskDefinition partitionedDefinition() {
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setId(TASK_ID);
+        definition.setTenantId(7L);
+        definition.setProjectId(101L);
+        definition.setWorkspaceId(301L);
+        definition.setSourceDatasourceId(SOURCE_DATASOURCE_ID);
+        definition.setTargetDatasourceId(TARGET_DATASOURCE_ID);
+        definition.setSourceConnectorType("MYSQL");
+        definition.setTargetConnectorType("POSTGRESQL");
+        definition.setSourceObjectName(SOURCE_TABLE);
+        definition.setTargetSchemaName(TARGET_SCHEMA);
+        definition.setTargetObjectName(TARGET_TABLE);
+        definition.setSyncMode("FULL");
+        definition.setSyncScopeType("SINGLE_OBJECT");
+        definition.setWriteStrategy("UPSERT");
+        definition.setPrimaryKeyField("id");
+        definition.setFieldMappingConfig("""
                 [
                   {"sourceField":"id","targetField":"id"},
                   {"sourceField":"customer_name","targetField":"name"},
@@ -390,12 +389,12 @@ class SyncAutoSplitPkRealWorkerE2ETest {
                   {"sourceField":"region","targetField":"region"}
                 ]
                 """);
-        template.setFilterConfig("""
+        definition.setFilterConfig("""
                 [
                   {"field":"region","operator":"=","value":"EAST"}
                 ]
                 """);
-        template.setPartitionConfig("""
+        definition.setPartitionConfig("""
                 {
                   "strategy": "AUTO_SPLIT_PK",
                   "splitPk": "id",
@@ -407,8 +406,8 @@ class SyncAutoSplitPkRealWorkerE2ETest {
                   "maxDirtyRecordRatio": 0.20
                 }
                 """);
-        template.setEnabled(true);
-        return template;
+        definition.setEnabled(true);
+        return definition;
     }
 
     private SyncWorkerExecutionPlanView workerPlan(Long executionId, SyncTriggerType triggerType) {
@@ -425,7 +424,6 @@ class SyncAutoSplitPkRealWorkerE2ETest {
                 triggerType.name(),
                 "worker-real-e2e",
                 LocalDateTime.now().plusMinutes(5),
-                TEMPLATE_ID,
                 SOURCE_DATASOURCE_ID,
                 TARGET_DATASOURCE_ID,
                 "MYSQL",
@@ -511,7 +509,6 @@ class SyncAutoSplitPkRealWorkerE2ETest {
         task.setTenantId(7L);
         task.setProjectId(101L);
         task.setWorkspaceId(301L);
-        task.setTemplateId(TEMPLATE_ID);
         task.setCurrentState(currentState);
         return task;
     }

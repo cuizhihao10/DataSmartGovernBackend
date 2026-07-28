@@ -294,7 +294,7 @@ class TaskManagementPostgreSqlMigrationIntegrationTest {
         inbox.setActorId(String.valueOf(task.getOwnerId()));
         inbox.setTraceId("pg-agent-trace-" + suffix);
         inbox.setPayloadReference("agent-tool-audit://pg/session/run/audit/plan-arguments");
-        inbox.setArgumentNames("[\"syncTemplateId\"]");
+        inbox.setArgumentNames("[\"syncTaskId\"]");
         inbox.setSensitiveArgumentNames("[]");
         inbox.setConsumeState(AgentAsyncTaskCommandState.TASK_CREATED);
         inbox.setTaskId(task.getId());
@@ -321,10 +321,10 @@ class TaskManagementPostgreSqlMigrationIntegrationTest {
         outbox.setWorkspaceId(931201L);
         outbox.setActorId(String.valueOf(task.getOwnerId()));
         outbox.setTraceId("pg-datasync-trace-" + suffix);
-        outbox.setSyncTemplateId(931501L);
+        outbox.setSyncTaskId(931501L);
         outbox.setStatus(DataSyncWorkerCommandOutboxStatus.PENDING.name());
         outbox.setAttemptCount(0);
-        outbox.setPayloadJson("{\"syncTemplateId\":931501}");
+        outbox.setPayloadJson("{\"syncTaskId\":931501}");
         outbox.setPayloadSizeBytes(24);
         outbox.setPayloadTruncated(false);
         outbox.setSideEffectStarted(false);

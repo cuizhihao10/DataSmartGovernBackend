@@ -43,8 +43,8 @@ class ConnectorCapabilityRegistryTest {
     }
 
     @Test
-    void assessTemplateCompatibilityShouldAllowJdbcIncrementalUpsert() {
-        SyncConnectorCapabilityAssessment assessment = registry.assessTemplateCompatibility(
+    void assessTaskCompatibilityShouldAllowJdbcIncrementalUpsert() {
+        SyncConnectorCapabilityAssessment assessment = registry.assessTaskCompatibility(
                 datasource("MYSQL"),
                 datasource("POSTGRESQL"),
                 SyncMode.INCREMENTAL_TIME,
@@ -59,8 +59,8 @@ class ConnectorCapabilityRegistryTest {
     }
 
     @Test
-    void assessTemplateCompatibilityShouldRejectStreamingModeForJdbcSource() {
-        SyncConnectorCapabilityAssessment assessment = registry.assessTemplateCompatibility(
+    void assessTaskCompatibilityShouldRejectStreamingModeForJdbcSource() {
+        SyncConnectorCapabilityAssessment assessment = registry.assessTaskCompatibility(
                 datasource("MYSQL"),
                 datasource("POSTGRESQL"),
                 SyncMode.CDC,
@@ -73,8 +73,8 @@ class ConnectorCapabilityRegistryTest {
     }
 
     @Test
-    void assessTemplateCompatibilityShouldRejectUnsupportedTargetWriteStrategy() {
-        SyncConnectorCapabilityAssessment assessment = registry.assessTemplateCompatibility(
+    void assessTaskCompatibilityShouldRejectUnsupportedTargetWriteStrategy() {
+        SyncConnectorCapabilityAssessment assessment = registry.assessTaskCompatibility(
                 datasource("MYSQL"),
                 datasource("POSTGRESQL"),
                 SyncMode.FULL,
@@ -101,8 +101,8 @@ class ConnectorCapabilityRegistryTest {
     }
 
     @Test
-    void assertTemplateCompatibleShouldFailFastWhenAssessmentHasErrors() {
-        assertThrows(IllegalArgumentException.class, () -> registry.assertTemplateCompatible(
+    void assertTaskCompatibleShouldFailFastWhenAssessmentHasErrors() {
+        assertThrows(IllegalArgumentException.class, () -> registry.assertTaskCompatible(
                 datasource("MYSQL"),
                 datasource("POSTGRESQL"),
                 SyncMode.CDC,

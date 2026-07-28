@@ -13,19 +13,20 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCloneRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskLifecycleOperationRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
-import com.czh.datasmart.govern.datasync.controller.dto.SyncTemplateExecutionPrecheckResponse;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskDefinitionExecutionPrecheckResponse;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.mapper.SyncExecutionMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
-import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
+import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import com.czh.datasmart.govern.datasync.support.SyncApprovalState;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
 import com.czh.datasmart.govern.datasync.support.SyncExecutionState;
 import com.czh.datasmart.govern.datasync.support.SyncTaskState;
 import com.czh.datasmart.govern.datasync.support.SyncTriggerType;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.BeanUtils;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
@@ -73,10 +74,10 @@ public class SyncTaskManagementOperationSupport {
     private static final DateTimeFormatter CLONE_SUFFIX_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
 
     private final SyncTaskMapper taskMapper;
-    private final SyncTemplateMapper templateMapper;
+    private final SyncTaskDefinitionMapper taskDefinitionMapper;
     private final SyncExecutionMapper executionMapper;
     private final SyncTaskStateMachineSupport stateMachineSupport;
-    private final SyncTemplateExecutionPrecheckSupport templateExecutionPrecheckSupport;
+    private final SyncTaskDefinitionExecutionPrecheckSupport taskDefinitionExecutionPrecheckSupport;
     private final SyncExecutionCreationSupport executionCreationSupport;
     private final SyncTaskGroupOperationSupport taskGroupOperationSupport;
     private final SyncAuditSupport auditSupport;
@@ -89,8 +90,8 @@ public class SyncTaskManagementOperationSupport {
      * 方便后续运营台区分“用户点击立即调度一次”和执行器内部 RUN_TASK 生命周期事件。</p>
      */
     public SyncTaskOperationResult manualDispatchTask(SyncTask task, SyncActorContext actorContext) {
-        SyncTemplate template = getTemplateForTask(task);
-        SyncTemplateExecutionPrecheckResponse precheck = templateExecutionPrecheckSupport.precheck(template);
+        SyncTaskDefinition definition = getDefinitionForTask(task);
+        SyncTaskDefinitionExecutionPrecheckResponse precheck = taskDefinitionExecutionPrecheckSupport.precheck(definition);
         if (!canRunAfterPrecheck(precheck, task)) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
                     "同步任务手工调度前预检查未通过，precheckStatus=" + precheck.precheckStatus()
@@ -195,11 +196,11 @@ public class SyncTaskManagementOperationSupport {
         if (SyncTaskState.DELETED.name().equals(sourceTask.getCurrentState())) {
             throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND, "已彻底删除的同步任务不能克隆");
         }
-        SyncTemplate template = getTemplateForTask(sourceTask);
-        SyncTemplateExecutionPrecheckResponse precheck = templateExecutionPrecheckSupport.precheck(template);
+        SyncTaskDefinition definition = getDefinitionForTask(sourceTask);
+        SyncTaskDefinitionExecutionPrecheckResponse precheck = taskDefinitionExecutionPrecheckSupport.precheck(definition);
         if (!precheck.canCreateTaskDraft()) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "来源任务关联模板当前不能创建克隆草稿，precheckStatus=" + precheck.precheckStatus()
+                    "来源任务定义当前不能创建克隆草稿，precheckStatus=" + precheck.precheckStatus()
                             + "，issueCodes=" + precheck.issueCodes());
         }
 
@@ -211,7 +212,6 @@ public class SyncTaskManagementOperationSupport {
         cloned.setTenantId(sourceTask.getTenantId());
         cloned.setProjectId(sourceTask.getProjectId());
         cloned.setWorkspaceId(sourceTask.getWorkspaceId());
-        cloned.setTemplateId(sourceTask.getTemplateId());
         SyncTaskGroupOperationSupport.TaskGroupAssignment groupAssignment =
                 resolveCloneGroup(sourceTask, request, actorContext);
         cloned.setGroupCode(groupAssignment.groupCode());
@@ -242,11 +242,12 @@ public class SyncTaskManagementOperationSupport {
         cloned.setCreateTime(LocalDateTime.now());
         cloned.setUpdateTime(LocalDateTime.now());
         taskMapper.insert(cloned);
+        taskDefinitionMapper.insert(copyDefinition(definition, cloned));
 
         if (runImmediately) {
             if (!canRunAfterPrecheck(precheck, cloned)) {
                 throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                        "克隆任务要求立即执行，但当前模板需要审批或不可执行，precheckStatus=" + precheck.precheckStatus());
+                        "克隆任务要求立即执行，但当前定义不可执行，precheckStatus=" + precheck.precheckStatus());
             }
             /*
              * 克隆默认先落 DRAFT，是为了让“不立即执行”的路径安全可编辑。
@@ -337,22 +338,36 @@ public class SyncTaskManagementOperationSupport {
         }
     }
 
-    private SyncTemplate getTemplateForTask(SyncTask task) {
-        SyncTemplate template = templateMapper.selectById(task.getTemplateId());
-        if (template == null) {
+    private SyncTaskDefinition getDefinitionForTask(SyncTask task) {
+        SyncTaskDefinition definition = taskDefinitionMapper.selectById(task.getId());
+        if (definition == null) {
             throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND,
-                    "同步任务关联模板不存在，templateId=" + task.getTemplateId());
+                    "同步任务定义不存在，taskId=" + task.getId());
         }
-        if (!task.getTenantId().equals(template.getTenantId())
-                || !sameNullable(task.getProjectId(), template.getProjectId())
-                || !sameNullable(task.getWorkspaceId(), template.getWorkspaceId())) {
+        if (!task.getTenantId().equals(definition.getTenantId())
+                || !sameNullable(task.getProjectId(), definition.getProjectId())
+                || !sameNullable(task.getWorkspaceId(), definition.getWorkspaceId())) {
             throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
-                    "同步任务与模板归属不一致，拒绝管理动作，taskId=" + task.getId() + ", templateId=" + template.getId());
+                    "同步任务与定义归属不一致，拒绝管理动作，taskId=" + task.getId());
         }
-        return template;
+        return definition;
     }
 
-    private boolean canRunAfterPrecheck(SyncTemplateExecutionPrecheckResponse precheck, SyncTask task) {
+    /** 为克隆任务复制独立定义，防止两个任务后续编辑时互相覆盖配置。 */
+    private SyncTaskDefinition copyDefinition(SyncTaskDefinition source, SyncTask targetTask) {
+        SyncTaskDefinition copy = new SyncTaskDefinition();
+        BeanUtils.copyProperties(source, copy);
+        copy.setId(targetTask.getId());
+        copy.setName(targetTask.getName());
+        copy.setDescription(targetTask.getDescription());
+        copy.setCreatedBy(targetTask.getOwnerId());
+        copy.setUpdatedBy(targetTask.getOwnerId());
+        copy.setCreateTime(targetTask.getCreateTime());
+        copy.setUpdateTime(targetTask.getUpdateTime());
+        return copy;
+    }
+
+    private boolean canRunAfterPrecheck(SyncTaskDefinitionExecutionPrecheckResponse precheck, SyncTask task) {
         if (precheck.canStartExecution()) {
             return true;
         }
@@ -361,7 +376,7 @@ public class SyncTaskManagementOperationSupport {
          * 不再要求任务表里的 approvalState=APPROVED。这样可以和创建向导保持一致：页面不展示审批字段，
          * 后端也不能因为兼容列没有人工改写而把用户任务卡死。
          */
-        return SyncTemplateExecutionPrecheckSupport.REQUIRES_APPROVAL.equals(precheck.precheckStatus());
+        return SyncTaskDefinitionExecutionPrecheckSupport.REQUIRES_APPROVAL.equals(precheck.precheckStatus());
     }
 
     private String resolveCloneName(SyncTask sourceTask, SyncTaskCloneRequest request) {

@@ -94,12 +94,12 @@ public class TaskDraft {
     private Integer maxDeferCount;
 
     /**
-     * 草稿来源类型，例如 AGENT、TEMPLATE、MANUAL、API。
+     * 草稿来源类型，例如 AGENT、MANUAL、API、IMPORT。
      */
     private String sourceType;
 
     /**
-     * 来源引用，例如 Agent auditId、templateId、外部工单 ID。
+     * 来源引用，例如 Agent auditId、同步 taskId、外部工单 ID。
      */
     private String sourceRef;
 

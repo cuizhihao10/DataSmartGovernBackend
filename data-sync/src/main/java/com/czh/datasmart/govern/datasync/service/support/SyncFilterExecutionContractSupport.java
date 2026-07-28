@@ -68,9 +68,9 @@ public class SyncFilterExecutionContractSupport {
     }
 
     /**
-     * 解析模板过滤配置。
+     * 解析任务定义过滤配置。
      *
-     * @param filterConfig 模板中的 filterConfig JSON；为空表示不追加 where 条件。
+     * @param filterConfig 任务定义中的 filterConfig JSON；为空表示不追加 where 条件。
      * @return 内部执行契约。
      */
     public SyncFilterExecutionContract parse(String filterConfig) {
@@ -110,7 +110,7 @@ public class SyncFilterExecutionContractSupport {
      * 解析对象映射行上的 whereCondition。
      *
      * <p>当前前端创建向导把过滤条件放在“对象映射”列表的每一行，例如某张表配置
-     * {@code id > 1;}，另一张表配置 {@code status = 'ACTIVE'}。这类配置比模板级 filterConfig
+     * {@code id > 1;}，另一张表配置 {@code status = 'ACTIVE'}。这类配置比任务定义级 filterConfig
      * 更贴近用户实际操作，如果执行计划不消费它，就会出现“页面显示已过滤、真实同步却全表读取”的严重偏差。</p>
      *
      * <p>产品语义：对象级 where 是真正面向数据库表筛选的谓词能力，必须支持真实业务里常见的

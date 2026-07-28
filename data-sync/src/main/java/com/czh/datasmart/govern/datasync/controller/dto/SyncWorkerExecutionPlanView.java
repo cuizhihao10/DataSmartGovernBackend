@@ -31,7 +31,6 @@ public record SyncWorkerExecutionPlanView(
         String triggerType,
         String executorId,
         LocalDateTime leaseExpireTime,
-        Long templateId,
         Long sourceDatasourceId,
         Long targetDatasourceId,
         String sourceConnectorType,

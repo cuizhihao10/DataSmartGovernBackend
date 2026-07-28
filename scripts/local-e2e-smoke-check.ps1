@@ -405,7 +405,7 @@ Test-RequiredFile -RelativePath "scripts/local-mysql-migration-governance.ps1" -
 Test-JsonFile -RelativePath "docker/keycloak/import/datasmart-realm.json" -Purpose "本地 OIDC realm、client、claim mapper 和样例用户"
 Test-RequiredFile -RelativePath "docker/mysql/migrations/20260620_task_data_sync_worker_command_outbox.sql" -Purpose "task-management DataSync command outbox 表迁移"
 Test-RequiredFile -RelativePath "docker/mysql/migrations/20260622_task_data_sync_worker_execution_receipt.sql" -Purpose "task-management DataSync execution receipt 表迁移"
-Test-RequiredFile -RelativePath "docker/mysql/migrations/20260629_data_sync_template_execution_contract.sql" -Purpose "data-sync 模板执行契约字段迁移"
+Test-RequiredFile -RelativePath "docker/mysql/migrations/20260727_remove_sync_template_product_model.sql" -Purpose "清理旧同步模板产品模型"
 Test-RequiredFile -RelativePath "docker/mysql/migrations/20260629_data_sync_task_management_receipt_outbox.sql" -Purpose "data-sync task-management receipt outbox/retry/dead-letter 表迁移"
 Test-FileContains -RelativePath "gateway/pom.xml" -ExpectedText "spring-cloud-starter-loadbalancer" -Purpose "gateway 的 lb:// 服务发现路由必须具备 Reactive LoadBalancer 客户端，不能只注册 Nacos Discovery"
 Test-FileContains -RelativePath "gateway/pom.xml" -ExpectedText "<artifactId>caffeine</artifactId>" -Purpose "gateway LoadBalancer 应使用适合生产高频实例选择的 Caffeine 缓存，而不是仅适合开发测试的默认缓存"

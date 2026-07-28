@@ -16,9 +16,8 @@ import lombok.Data;
  * 修改任务名称、负责人、分组、调度窗口或说明，再由“发布”动作把任务推进到 CONFIGURED / SCHEDULED / PENDING_APPROVAL。
  * 这样做能避免“用户只是改了一半配置，后台调度器却已经开始执行”的生产事故。</p>
  *
- * <p>当前编辑范围刻意收敛在任务定义字段，不允许修改 templateId、source/target datasource、字段映射和 where 条件。
- * 这些执行级配置仍然属于同步模板。如果未来要支持“任务级覆盖模板配置”，应新增专门的版本化配置表，并引入草稿版本、
- * 发布版本、审批版本和执行版本，不能简单在任务表上直接改写高风险字段。</p>
+ * <p>当前接口只编辑名称、负责人、分组和调度等任务元数据。源/目标数据源、对象映射、字段映射和 where 条件
+ * 由统一创建/编辑向导保存到任务的一对一定义；未来若引入配置版本，应明确区分草稿版本、发布版本和执行快照。</p>
  */
 @Data
 public class SyncTaskUpdateRequest {
@@ -102,8 +101,8 @@ public class SyncTaskUpdateRequest {
     /**
      * 运行模式。
      *
-     * <p>常见值包括 TEMPLATE、MANUAL、SCHEDULED、BACKFILL、REPLAY。当前只做低敏保存和展示，
-     * 真正执行模式仍由模板 syncMode、triggerType 和 execution 创建入口共同决定。</p>
+     * <p>该字段是内部兼容信息，不属于用户选择的传输模式。即时、定时和恢复语义由 syncMode、
+     * triggerType 与对应的 execution 创建入口共同决定。</p>
      */
     @Size(max = 64, message = "同步任务运行模式不能超过 64 个字符")
     private String runMode;

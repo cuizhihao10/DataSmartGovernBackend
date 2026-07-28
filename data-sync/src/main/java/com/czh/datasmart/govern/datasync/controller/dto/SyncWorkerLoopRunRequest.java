@@ -12,7 +12,7 @@ import lombok.Data;
  * data-sync worker loop 单轮触发请求。
  *
  * <p>该请求用于手动运维触发、internal 机器调用以及后续外部 worker 服务复用。
- * 它不携带模板配置正文、字段映射、过滤条件、SQL、checkpoint 原始值、连接地址、账号、密码或样本数据；
+ * 它不携带任务定义配置正文、字段映射、过滤条件、SQL、checkpoint 原始值、连接地址、账号、密码或样本数据；
  * 真正执行所需的敏感上下文仍由 data-sync 和 datasource-management 在受控服务端链路内解析。</p>
  */
 @Data

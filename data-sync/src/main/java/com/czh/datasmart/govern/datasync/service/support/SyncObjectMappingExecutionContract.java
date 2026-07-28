@@ -11,7 +11,7 @@ import java.util.List;
 /**
  * 多对象映射内部执行契约。
  *
- * <p>该契约用于把模板中的 {@code objectMappingConfig} 从“不透明 JSON 字符串”转换成 data-sync 可以安全消费的结构。
+ * <p>该契约用于把任务定义中的 {@code objectMappingConfig} 从“不透明 JSON 字符串”转换成 data-sync 可以安全消费的结构。
  * 它仍然属于内部执行契约：普通 API、审计摘要和指标只应该使用 mappingCount、issueCodes 等低敏摘要，
  * 不应该回显对象名、字段映射覆盖或配置正文。</p>
  *

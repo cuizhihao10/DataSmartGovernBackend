@@ -16,7 +16,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanV
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncObjectExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceClient;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceRequest;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
@@ -82,10 +82,10 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
         SyncObjectExecutionOperationSupport retrySupport = retrySupport(objectMapperFixture.mapper());
         SyncExecution execution = execution(SyncExecutionState.RUNNING);
         SyncTask task = task("RUNNING");
-        SyncTemplate template = objectListTemplate();
+        SyncTaskDefinition definition = objectListDefinition();
 
         SyncOfflineRunnerDispatchResult firstResult =
-                dispatchService.dispatchOffline(execution, task, template, workerPlan(), actor());
+                dispatchService.dispatchOffline(execution, task, definition, workerPlan(), actor());
 
         assertThat(firstResult.dispatched()).isTrue();
         assertThat(firstResult.completed()).isFalse();
@@ -130,7 +130,7 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
         execution.setExecutionState(SyncExecutionState.RUNNING.name());
         task.setCurrentState(SyncTaskState.RETRYING.name());
         SyncOfflineRunnerDispatchResult retryDispatchResult =
-                dispatchService.dispatchOffline(execution, task, template, workerPlan(), actor());
+                dispatchService.dispatchOffline(execution, task, definition, workerPlan(), actor());
 
         assertThat(retryDispatchResult.dispatched()).isTrue();
         assertThat(retryDispatchResult.completed()).isTrue();
@@ -212,7 +212,7 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
         return new SyncBatchRunnerBridgePlanSupport(
                 new SyncFieldMappingExecutionContractSupport(objectMapper),
                 new SyncFilterExecutionContractSupport(objectMapper),
-                new SyncTemplateScopeContractSupport(objectMapper),
+                new SyncTaskDefinitionScopeContractSupport(objectMapper),
                 new SyncOfflineRunnerContractSupport());
     }
 
@@ -279,34 +279,33 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
         task.setTenantId(7L);
         task.setProjectId(101L);
         task.setWorkspaceId(301L);
-        task.setTemplateId(22L);
         task.setCurrentState(currentState);
         return task;
     }
 
-    private SyncTemplate objectListTemplate() {
-        SyncTemplate template = new SyncTemplate();
-        template.setId(22L);
-        template.setTenantId(7L);
-        template.setProjectId(101L);
-        template.setWorkspaceId(301L);
-        template.setSourceDatasourceId(10001L);
-        template.setTargetDatasourceId(10002L);
-        template.setSourceConnectorType("MYSQL");
-        template.setTargetConnectorType("POSTGRESQL");
-        template.setSourceSchemaName("ods");
-        template.setTargetSchemaName("dwd");
-        template.setSyncMode("FULL");
-        template.setSyncScopeType("OBJECT_LIST");
-        template.setWriteStrategy("UPSERT");
-        template.setPrimaryKeyField("id");
-        template.setFieldMappingConfig("""
+    private SyncTaskDefinition objectListDefinition() {
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setId(22L);
+        definition.setTenantId(7L);
+        definition.setProjectId(101L);
+        definition.setWorkspaceId(301L);
+        definition.setSourceDatasourceId(10001L);
+        definition.setTargetDatasourceId(10002L);
+        definition.setSourceConnectorType("MYSQL");
+        definition.setTargetConnectorType("POSTGRESQL");
+        definition.setSourceSchemaName("ods");
+        definition.setTargetSchemaName("dwd");
+        definition.setSyncMode("FULL");
+        definition.setSyncScopeType("OBJECT_LIST");
+        definition.setWriteStrategy("UPSERT");
+        definition.setPrimaryKeyField("id");
+        definition.setFieldMappingConfig("""
                 [
                   {"sourceField":"id","targetField":"id"},
                   {"sourceField":"name","targetField":"name"}
                 ]
                 """);
-        template.setObjectMappingConfig("""
+        definition.setObjectMappingConfig("""
                 {
                   "mappings": [
                     {"sourceObject": "orders", "targetObject": "dwd_orders"},
@@ -314,8 +313,8 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
                   ]
                 }
                 """);
-        template.setEnabled(true);
-        return template;
+        definition.setEnabled(true);
+        return definition;
     }
 
     private SyncWorkerExecutionPlanView workerPlan() {
@@ -332,7 +331,6 @@ class SyncObjectListSelectiveRetryControlPlaneE2ETest {
                 SyncTriggerType.MANUAL.name(),
                 "worker-1",
                 LocalDateTime.now().plusMinutes(2),
-                22L,
                 10001L,
                 10002L,
                 "MYSQL",

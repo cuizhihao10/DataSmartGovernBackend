@@ -21,12 +21,12 @@ import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncExecutionPolicy;
 import com.czh.datasmart.govern.datasync.entity.SyncExecutionPolicySnapshot;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.mapper.SyncExecutionMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncExecutionPolicyMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncExecutionPolicySnapshotMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
-import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
+import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -74,7 +74,7 @@ public class SyncExecutionPolicyService {
     private final SyncExecutionPolicyMapper policyMapper;
     private final SyncExecutionPolicySnapshotMapper snapshotMapper;
     private final SyncTaskMapper taskMapper;
-    private final SyncTemplateMapper templateMapper;
+    private final SyncTaskDefinitionMapper taskDefinitionMapper;
     private final SyncExecutionMapper executionMapper;
     private final SyncDataScopeSupport dataScopeSupport;
     private final ObjectMapper objectMapper;
@@ -243,22 +243,22 @@ public class SyncExecutionPolicyService {
     }
 
     /**
-     * 按任务和模板解析有效策略。
+     * 按任务和任务定义解析有效策略。
      *
      * <p>分片 fan-out 在读取 partitionConfig 与 range-probe 前会调用该方法，用于确定 targetRowsPerShard、maxChannel、
      * taskGroupSize、dirty threshold 等参数。</p>
      */
     public SyncEffectiveExecutionPolicy resolveEffectivePolicy(SyncTask task,
-                                                               SyncTemplate template,
+                                                               SyncTaskDefinition definition,
                                                                SyncActorContext actorContext) {
-        ExecutionPolicyFacts facts = ExecutionPolicyFacts.from(task, template);
+        ExecutionPolicyFacts facts = ExecutionPolicyFacts.from(task, definition);
         return resolveEffectivePolicy(facts);
     }
 
     /**
      * 按桥接计划解析有效策略。
      *
-     * <p>普通 run-once 执行路径已经拥有 {@link SyncBatchRunnerBridgePlan}，不需要回查模板也能确定源端/目标端连接器、
+     * <p>普通 run-once 执行路径已经拥有 {@link SyncBatchRunnerBridgePlan}，不需要回查任务定义也能确定源端/目标端连接器、
      * 数据源和任务归属。</p>
      */
     public SyncEffectiveExecutionPolicy resolveEffectivePolicy(SyncBatchRunnerBridgePlan bridgePlan,
@@ -740,7 +740,7 @@ public class SyncExecutionPolicyService {
     /**
      * 策略解析所需的低敏执行事实。
      *
-     * <p>把任务、模板、bridge plan 统一压缩成该 record，可以避免策略服务直接依赖模板 JSON 或具体 runner 类型。</p>
+     * <p>把任务、任务定义、bridge plan 统一压缩成该 record，可以避免策略服务直接依赖任务定义 JSON 或具体 runner 类型。</p>
      */
     private record ExecutionPolicyFacts(
             Long tenantId,
@@ -751,15 +751,15 @@ public class SyncExecutionPolicyService {
             String sourceConnectorType,
             String targetConnectorType
     ) {
-        private static ExecutionPolicyFacts from(SyncTask task, SyncTemplate template) {
+        private static ExecutionPolicyFacts from(SyncTask task, SyncTaskDefinition definition) {
             return new ExecutionPolicyFacts(
                     task == null ? null : task.getTenantId(),
                     task == null ? null : task.getProjectId(),
                     task == null ? null : task.getId(),
-                    template == null ? null : template.getSourceDatasourceId(),
-                    template == null ? null : template.getTargetDatasourceId(),
-                    normalize(template == null ? null : template.getSourceConnectorType()),
-                    normalize(template == null ? null : template.getTargetConnectorType())
+                    definition == null ? null : definition.getSourceDatasourceId(),
+                    definition == null ? null : definition.getTargetDatasourceId(),
+                    normalize(definition == null ? null : definition.getSourceConnectorType()),
+                    normalize(definition == null ? null : definition.getTargetConnectorType())
             );
         }
 

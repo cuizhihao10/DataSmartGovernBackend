@@ -13,13 +13,11 @@ import lombok.Data;
  *
  * <p>这个 DTO 专门服务“新建同步任务四步向导”的渐进式保存，而不是替代最终发布/执行接口。
  * 用户在第一步选择源端、目标端、传输模式、任务名称和分组后，点击“保存并进入对象映射”，
- * 后端就应该创建一条 {@code DRAFT} 任务和一条配套模板。这样即使用户关闭弹窗、刷新页面或稍后继续编辑，
+ * 后端就应该创建一条带完整定义快照的 {@code DRAFT} 任务。这样即使用户关闭页面、刷新或稍后继续编辑，
  * 任务列表里也能看到“编辑中”的草稿，而不是把所有配置都悬挂在浏览器内存里。</p>
  *
- * <p>为什么这个请求同时包含模板字段和任务字段：</p>
- * <p>1. 模板字段描述“同步什么、怎么同步”，例如数据源、对象映射、字段映射、过滤条件、SQL；</p>
- * <p>2. 任务字段描述“这个配置如何被运营”，例如任务名称、分组、优先级、调度配置；</p>
- * <p>3. 创建向导对用户来说是一个连续流程，因此前端更适合一次提交当前步骤完整表单，后端再拆分写入模板表与任务表。</p>
+ * <p>请求同时包含任务运营字段和任务定义字段，后端在同一个任务聚合中持久化；
+ * 前端只需保存 taskId，不再维护第二个任务定义标识。</p>
  *
  * <p>安全边界：</p>
  * <p>草稿保存不会连接源端、不会写目标端、不会创建 execution、不会入队、不会启用调度。
@@ -36,14 +34,6 @@ public class SyncTaskCreateWizardDraftSaveRequest {
      * 防止用户把已经发布、调度、运行或下线的正式任务通过创建向导悄悄改回半成品配置。</p>
      */
     private Long taskId;
-
-    /**
-     * 已存在模板 ID。
-     *
-     * <p>通常前端只需要回传 {@code taskId}；该字段主要用于兼容“先创建模板、后创建任务”的旧脚本或 Agent 工具。
-     * 如果 taskId 与 templateId 同时存在，后端会以任务绑定的 templateId 为准。</p>
-     */
-    private Long templateId;
 
     /**
      * 当前保存来自哪个创建向导步骤。
@@ -85,10 +75,10 @@ public class SyncTaskCreateWizardDraftSaveRequest {
     private String taskName;
 
     /**
-     * 兼容旧模板名称字段。
+     * 兼容旧任务名称字段。
      *
      * <p>如果 taskName 为空但 name 有值，后端会用 name 作为草稿任务名称。
-     * 新前端推荐只传 taskName，避免用户误解“模板名称”和“任务名称”是两个必填项。</p>
+     * 新前端推荐只传 taskName，避免用户误解“任务定义名称”和“任务名称”是两个必填项。</p>
      */
     private String name;
 
@@ -98,7 +88,7 @@ public class SyncTaskCreateWizardDraftSaveRequest {
     private String taskDescription;
 
     /**
-     * 兼容旧模板说明字段。
+     * 兼容旧任务说明字段。
      */
     private String description;
 

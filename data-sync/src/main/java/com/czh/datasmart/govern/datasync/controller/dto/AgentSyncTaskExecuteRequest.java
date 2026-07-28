@@ -12,12 +12,11 @@ import lombok.Data;
  * Agent 触发数据同步任务的内部请求契约。
  *
  * <p>这个 DTO 只服务于 `/internal/data-sync/agent/tasks/execute` 内部入口，不直接暴露给普通前端用户。
- * 它把 Agent Runtime 侧的一次工具调用、task-management 侧的一条异步任务、data-sync 侧的一次同步任务创建与入队
+ * 它把 Agent Runtime 侧的一次工具调用、task-management 侧的一条异步命令和 data-sync 侧已有任务的一次入队
  * 串在同一个业务动作里。</p>
  *
- * <p>为什么不让 task-management 直接调用公开的 `POST /sync-tasks` 再调用 `POST /sync-tasks/{id}/run`？
- * 因为 worker 是会重试的：如果“创建成功但响应超时”，下一次重试会再次创建同步任务，造成重复任务和重复数据搬运。
- * 所以这里要求调用方携带 commandId/idempotencyKey，由 data-sync 在服务端把“创建 + 入队”做成幂等原子业务语义。</p>
+ * <p>任务创建由 Agent 的草稿保存、预检查和发布工具完成；本入口只幂等执行已有 taskId，
+ * 避免异步重试重复创建业务任务。</p>
  */
 @Data
 public class AgentSyncTaskExecuteRequest {
@@ -40,13 +39,13 @@ public class AgentSyncTaskExecuteRequest {
     /** 工具编码。当前内部入口只接受 data-sync.execute，避免被复用成任意执行入口。 */
     private String toolCode;
 
-    /** 租户 ID，是 data-sync 幂等隔离、模板读取和任务写入的基础边界。 */
+    /** 租户 ID，是 data-sync 幂等隔离、任务定义读取和任务写入的基础边界。 */
     private Long tenantId;
 
-    /** 项目 ID，默认继承模板；显式传入时 data-sync 会校验与模板归属一致。 */
+    /** 项目 ID，默认继承任务定义；显式传入时 data-sync 会校验与任务定义归属一致。 */
     private Long projectId;
 
-    /** 工作空间 ID，默认继承模板；用于未来工作空间级任务看板和配额。 */
+    /** 工作空间 ID，默认继承任务定义；用于未来工作空间级任务看板和配额。 */
     private Long workspaceId;
 
     /** Agent 代表的真实业务操作者。当前 data-sync actorId 是 Long，非数字值会由服务层降级为空。 */
@@ -55,11 +54,8 @@ public class AgentSyncTaskExecuteRequest {
     /** 链路追踪 ID，贯穿 Agent、task-management、data-sync 和后续执行器日志。 */
     private String traceId;
 
-    /** 同步模板 ID。字段名兼容 Agent 规划里常见的 templateId。 */
-    private Long templateId;
-
-    /** 同步模板 ID 的业务化别名，便于模型或工具 schema 使用 syncTemplateId 表达语义。 */
-    private Long syncTemplateId;
+    /** 要执行的同步任务 ID。任务配置由 data-sync 按相同 ID 读取，不接受第二个定义标识。 */
+    private Long syncTaskId;
 
     /** 同步任务名称；为空时服务端会按 commandId 生成稳定名称，降低重试重复创建风险。 */
     private String name;
@@ -70,7 +66,7 @@ public class AgentSyncTaskExecuteRequest {
     /** 同步任务优先级，默认 MEDIUM；未来可接入租户配额、SLA 和队列调度策略。 */
     private String priority;
 
-    /** 运行模式，默认 TEMPLATE；后续可扩展为 BACKFILL、REPLAY、CDC_BOOTSTRAP 等模式。 */
+    /** 内部触发分类，普通即时任务默认 MANUAL；恢复和定时语义由专用入口决定。 */
     private String runMode;
 
     /** 负责人 ID；为空时 data-sync 会回退到 actorId 或服务账号默认语义。 */

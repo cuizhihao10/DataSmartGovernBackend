@@ -8,7 +8,6 @@ package com.czh.datasmart.govern.datasync.service.impl;
 
 import com.czh.datasmart.govern.datasync.controller.dto.AgentSyncTaskExecuteRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.AgentSyncTaskExecuteResponse;
-import com.czh.datasmart.govern.datasync.controller.dto.CreateSyncTaskRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskOperationResult;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
@@ -28,13 +27,12 @@ import static org.mockito.Mockito.when;
 /**
  * Agent 数据同步内部执行服务测试。
  *
- * <p>测试重点不是验证公开 createTask/runTask 的细节，而是验证 Agent 专用入口是否把“创建任务 + 入队执行”
- * 包装成单个幂等业务动作，并且没有绕过 data-sync 既有服务层。</p>
+ * <p>测试重点是验证 Agent 专用入口只执行已经保存并预检查过的任务，不会在异步重试时重复创建任务。</p>
  */
 class DataSyncAgentTaskExecutionServiceImplTest {
 
     @Test
-    void shouldCreateAndQueueSyncTaskOnceForAgentCommand() {
+    void shouldQueueExistingSyncTaskOnceForAgentCommand() {
         DataSyncService dataSyncService = mock(DataSyncService.class);
         SyncCallbackIdempotencySupport idempotencySupport = mock(SyncCallbackIdempotencySupport.class);
         DataSyncAgentTaskExecutionServiceImpl service = new DataSyncAgentTaskExecutionServiceImpl(
@@ -43,15 +41,14 @@ class DataSyncAgentTaskExecutionServiceImplTest {
                 new ObjectMapper()
         );
         AgentSyncTaskExecuteRequest request = request();
-        SyncTask createdTask = task(7001L, null);
         SyncTask queuedTask = task(7001L, 8001L);
         when(idempotencySupport.isDuplicate(eq(10L), eq(null), eq(null), eq("AGENT_EXECUTE_SYNC_TASK"),
                 eq("agent:session-001:run-001:audit-001"), eq("idem-001"),
                 eq("task-management-agent-async-worker"), any())).thenReturn(false);
-        when(dataSyncService.createTask(any(CreateSyncTaskRequest.class), any(SyncActorContext.class))).thenReturn(createdTask);
+        when(dataSyncService.getTask(eq(7001L), any(SyncActorContext.class)))
+                .thenReturn(task(7001L, null), queuedTask);
         when(dataSyncService.runTask(eq(7001L), any(SyncActorContext.class)))
                 .thenReturn(new SyncTaskOperationResult(7001L, "QUEUED", "queued"));
-        when(dataSyncService.getTask(eq(7001L), any(SyncActorContext.class))).thenReturn(queuedTask);
 
         AgentSyncTaskExecuteResponse response = service.executeAgentSyncTask(request);
 
@@ -60,7 +57,8 @@ class DataSyncAgentTaskExecutionServiceImplTest {
         assertEquals(8001L, response.syncExecutionId());
         assertEquals("QUEUED", response.state());
         assertFalse(response.duplicate());
-        verify(dataSyncService).createTask(any(CreateSyncTaskRequest.class), any(SyncActorContext.class));
+        verify(dataSyncService, org.mockito.Mockito.times(2))
+                .getTask(eq(7001L), any(SyncActorContext.class));
         verify(dataSyncService).runTask(eq(7001L), any(SyncActorContext.class));
         verify(idempotencySupport).markSucceeded(eq(10L), eq("AGENT_EXECUTE_SYNC_TASK"),
                 eq("agent:session-001:run-001:audit-001"), eq("idem-001"), any());
@@ -79,7 +77,7 @@ class DataSyncAgentTaskExecutionServiceImplTest {
         request.setWorkspaceId(30L);
         request.setActorId("1001");
         request.setTraceId("trace-001");
-        request.setSyncTemplateId(6001L);
+        request.setSyncTaskId(7001L);
         return request;
     }
 

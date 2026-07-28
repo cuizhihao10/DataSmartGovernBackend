@@ -84,24 +84,14 @@ public class TaskDraftParamValidationSupport {
     /**
      * 校验数据同步任务参数。
      *
-     * <p>数据同步任务有两种常见创建方式：</p>
-     * <p>1. 基于模板：提供 `syncTemplateId`，后续由 data-sync 读取模板里的源、目标、字段映射和同步模式；</p>
-     * <p>2. 直接配置：提供 sourceDatasourceId、targetDatasourceId 和 syncMode。</p>
-     *
-     * <p>第一版先要求最小字段，后续再扩展字段映射、增量字段、分片策略、冲突策略、CDC offset 等更细 schema。</p>
+     * <p>任务定义由 data-sync 按 taskId 持有，任务中心不再复制或拼装同步配置。</p>
      */
     private void validateDataSync(Map<String, Object> params, String actionName) {
-        if (hasValue(params.get("syncTemplateId"))) {
-            return;
-        }
-        boolean hasSource = hasValue(firstNonNull(params.get("sourceDatasourceId"), params.get("sourceId")));
-        boolean hasTarget = hasValue(firstNonNull(params.get("targetDatasourceId"), params.get("targetId")));
-        String syncMode = text(params.get("syncMode"));
-        if (hasSource && hasTarget && supportedSyncMode(syncMode)) {
+        if (hasValue(params.get("syncTaskId"))) {
             return;
         }
         throw new IllegalArgumentException(actionName
-                + " DATA_SYNC 草稿参数不完整：必须提供 syncTemplateId，或同时提供 sourceDatasourceId、targetDatasourceId、syncMode");
+                + " DATA_SYNC 草稿参数不完整：必须提供已保存的 syncTaskId");
     }
 
     /**

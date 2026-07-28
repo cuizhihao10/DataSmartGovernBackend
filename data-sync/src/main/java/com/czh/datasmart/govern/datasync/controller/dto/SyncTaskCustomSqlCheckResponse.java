@@ -18,7 +18,7 @@ import java.util.List;
  * <p>4. 安全摘要：{@code sqlFingerprint} 用于日志、审计和排查关联，但不泄露 SQL 正文。</p>
  *
  * <p>安全边界：响应不包含样本行、不包含连接串、不包含密码、不包含完整 SQL。
- * 如果需要保存 SQL，应通过同步模板创建/编辑接口保存受控配置，而不是通过检查接口保存。</p>
+ * 如果需要保存 SQL，应通过同步任务创建/编辑向导保存受控配置，而不是通过检查接口保存。</p>
  */
 public record SyncTaskCustomSqlCheckResponse(
         boolean passed,

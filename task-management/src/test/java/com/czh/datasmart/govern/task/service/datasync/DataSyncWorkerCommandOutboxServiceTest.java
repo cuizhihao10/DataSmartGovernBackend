@@ -71,7 +71,7 @@ class DataSyncWorkerCommandOutboxServiceTest {
         assertEquals(0, inserted.getAttemptCount());
         assertEquals(false, inserted.getPayloadTruncated());
         assertEquals(false, inserted.getSideEffectStarted());
-        assertTrue(inserted.getPayloadJson().contains("\"syncTemplateId\":6001"));
+        assertTrue(inserted.getPayloadJson().contains("\"syncTaskId\":6001"));
         assertTrue(inserted.getPayloadJson().contains("\"operation\":\"DATA_SYNC_EXECUTE\""));
         assertFalse(inserted.getPayloadJson().contains("password"));
         assertFalse(inserted.getPayloadJson().contains("select *"));
@@ -146,10 +146,9 @@ class DataSyncWorkerCommandOutboxServiceTest {
     }
 
     @Test
-    void missingTemplateShouldBeRejectedBeforeInsert() {
+    void missingSyncTaskShouldBeRejectedBeforeInsert() {
         DataSyncWorkerCommandStageRequest request = stageRequest();
-        request.setTemplateId(null);
-        request.setSyncTemplateId(null);
+        request.setSyncTaskId(null);
 
         assertThrows(IllegalArgumentException.class, () -> service.stageCommand(request));
 
@@ -172,7 +171,6 @@ class DataSyncWorkerCommandOutboxServiceTest {
                 30L,
                 "1001",
                 "trace-001",
-                null,
                 6001L,
                 "HIGH",
                 "INCREMENTAL",

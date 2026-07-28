@@ -17,7 +17,7 @@ import com.czh.datasmart.govern.datasync.entity.SyncExecutionRecoveryPlan;
 import com.czh.datasmart.govern.datasync.entity.SyncIncidentRecord;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
 import com.czh.datasmart.govern.datasync.entity.SyncTaskManagementReceiptOutbox;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.mapper.SyncAuditRecordMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncCallbackIdempotencyMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncCheckpointMapper;
@@ -27,7 +27,7 @@ import com.czh.datasmart.govern.datasync.mapper.SyncExecutionRecoveryPlanMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncIncidentRecordMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskManagementReceiptOutboxMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
-import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
+import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -70,7 +70,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DataSyncPostgreSqlMigrationIntegrationTest {
 
     private final JdbcTemplate jdbcTemplate;
-    private final SyncTemplateMapper templateMapper;
+    private final SyncTaskDefinitionMapper taskDefinitionMapper;
     private final SyncTaskMapper taskMapper;
     private final SyncExecutionMapper executionMapper;
     private final SyncCheckpointMapper checkpointMapper;
@@ -84,7 +84,7 @@ class DataSyncPostgreSqlMigrationIntegrationTest {
     @Autowired
     DataSyncPostgreSqlMigrationIntegrationTest(
             JdbcTemplate jdbcTemplate,
-            SyncTemplateMapper templateMapper,
+            SyncTaskDefinitionMapper taskDefinitionMapper,
             SyncTaskMapper taskMapper,
             SyncExecutionMapper executionMapper,
             SyncCheckpointMapper checkpointMapper,
@@ -95,7 +95,7 @@ class DataSyncPostgreSqlMigrationIntegrationTest {
             SyncCallbackIdempotencyMapper idempotencyMapper,
             SyncTaskManagementReceiptOutboxMapper receiptOutboxMapper) {
         this.jdbcTemplate = jdbcTemplate;
-        this.templateMapper = templateMapper;
+        this.taskDefinitionMapper = taskDefinitionMapper;
         this.taskMapper = taskMapper;
         this.executionMapper = executionMapper;
         this.checkpointMapper = checkpointMapper;
@@ -119,7 +119,7 @@ class DataSyncPostgreSqlMigrationIntegrationTest {
         assertPostgreSqlSchemaBaseline();
 
         String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
-        SyncTemplate template = null;
+        SyncTaskDefinition definition = null;
         SyncTask task = null;
         SyncExecution execution = null;
         SyncCheckpoint checkpoint = null;
@@ -130,20 +130,20 @@ class DataSyncPostgreSqlMigrationIntegrationTest {
         SyncCallbackIdempotency idempotency = null;
         SyncTaskManagementReceiptOutbox receipt = null;
         try {
-            template = insertTemplate(suffix);
-            task = insertTask(template, suffix);
+            task = insertTask(suffix);
+            definition = insertTaskDefinition(task, suffix);
             execution = insertExecution(task);
             checkpoint = insertCheckpoint(task, execution);
             recoveryPlan = insertRecoveryPlan(task, execution);
             errorSample = insertErrorSample(task, execution);
             incident = insertIncident(task, execution, suffix);
-            audit = insertAudit(template, task, execution, suffix);
+            audit = insertAudit(definition, task, execution, suffix);
             idempotency = insertIdempotency(task, execution, suffix);
             receipt = insertReceiptOutbox(task, execution, suffix);
 
-            assertThat(template.getId()).isPositive();
-            assertThat(template.getEnabled()).isTrue();
-            assertTemplateScopeColumnsAreMapped(template);
+            assertThat(definition.getId()).isPositive();
+            assertThat(definition.getEnabled()).isTrue();
+            assertTaskDefinitionColumnsAreMapped(definition);
             assertThat(task.getId()).isPositive();
             assertThat(task.getAttentionRequired()).isFalse();
             assertThat(execution.getId()).isPositive();
@@ -151,13 +151,13 @@ class DataSyncPostgreSqlMigrationIntegrationTest {
             assertThat(recoveryPlan.getId()).isPositive();
             assertThat(errorSample.getRetryable()).isTrue();
 
-            assertPaginationUsesPostgreSqlDialect(template);
+            assertPaginationUsesPostgreSqlDialect(definition);
             assertExecutionLeaseSqlIsPostgreSqlCompatible(execution);
             assertRecoveryPlanStateTransitionIsAtomic(recoveryPlan);
             assertReceiptOutboxSqlIsPostgreSqlCompatible(receipt);
             assertIdempotencyCleanupUsesPostgreSqlCte(idempotency);
         } finally {
-            deleteIntegrationFacts(receipt, idempotency, audit, incident, errorSample, recoveryPlan, checkpoint, execution, task, template);
+            deleteIntegrationFacts(receipt, idempotency, audit, incident, errorSample, recoveryPlan, checkpoint, execution, task, definition);
         }
     }
 
@@ -174,12 +174,16 @@ class DataSyncPostgreSqlMigrationIntegrationTest {
                 "SELECT count(*) FROM flyway_schema_history WHERE version = '2' AND success = true",
                 Integer.class
         );
+        Integer flywayV19SuccessCount = jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM flyway_schema_history WHERE version = '19' AND success = true",
+                Integer.class
+        );
         Integer tableCount = jdbcTemplate.queryForObject("""
                 SELECT count(*)
                 FROM information_schema.tables
                 WHERE table_schema = 'data_sync'
                   AND table_name IN (
-                      'data_sync_template',
+                      'data_sync_task_definition',
                       'data_sync_task',
                       'data_sync_execution',
                       'data_sync_callback_idempotency',
@@ -195,60 +199,106 @@ class DataSyncPostgreSqlMigrationIntegrationTest {
         assertThat(currentSchema).isEqualTo("data_sync");
         assertThat(flywaySuccessCount).isEqualTo(1);
         assertThat(flywayV2SuccessCount).isEqualTo(1);
+        assertThat(flywayV19SuccessCount).isEqualTo(1);
         assertThat(tableCount).isEqualTo(10);
-        assertTemplateScopeColumnsExist();
+        assertTaskDefinitionColumnsExist();
+        assertLegacyTemplateStorageIsRemoved();
+        assertLegacyTemplateTerminologyIsRemoved();
     }
 
-    private void assertTemplateScopeColumnsExist() {
+    private void assertTaskDefinitionColumnsExist() {
         Integer columnCount = jdbcTemplate.queryForObject("""
                 SELECT count(*)
                 FROM information_schema.columns
                 WHERE table_schema = 'data_sync'
-                  AND table_name = 'data_sync_template'
-                  AND column_name IN ('sync_scope_type', 'object_mapping_config', 'custom_sql_config')
+                  AND table_name = 'data_sync_task_definition'
+                  AND column_name IN ('task_id', 'sync_scope_type', 'object_mapping_config', 'custom_sql_config')
                 """, Integer.class);
-        assertThat(columnCount).isEqualTo(3);
+        assertThat(columnCount).isEqualTo(4);
     }
 
     /**
-     * 创建同步模板，验证 TEXT JSON、BOOLEAN enabled 和低敏 connector fact 可写入 PostgreSQL。
+     * 验证旧模板表及其关联字段已被前向迁移彻底删除。
      */
-    private SyncTemplate insertTemplate(String suffix) {
-        SyncTemplate template = new SyncTemplate();
-        template.setTenantId(930001L);
-        template.setProjectId(930101L);
-        template.setWorkspaceId(930201L);
-        template.setName("pg-data-sync-template-" + suffix);
-        template.setDescription("PostgreSQL migration integration template");
-        template.setSourceDatasourceId(930301L);
-        template.setTargetDatasourceId(930302L);
-        template.setSourceSchemaName("public");
-        template.setSourceObjectName("customer_source");
-        template.setTargetSchemaName("warehouse");
-        template.setTargetObjectName("customer_target");
-        template.setSourceConnectorType("MYSQL");
-        template.setTargetConnectorType("POSTGRESQL");
-        template.setSyncMode("CUSTOM_SQL_QUERY");
-        template.setSyncScopeType("CUSTOM_SQL_QUERY");
-        template.setWriteStrategy("UPSERT");
-        template.setPrimaryKeyField("id");
-        template.setIncrementalField("updated_at");
-        template.setFieldMappingConfig("{\"id\":\"id\",\"name\":\"name\"}");
-        template.setObjectMappingConfig("{\"mappings\":[]}");
-        template.setCustomSqlConfig("{\"statementRef\":\"integration.customer_safe_select\",\"digest\":\"low-sensitive\"}");
-        template.setFilterConfig("{\"safePreview\":true}");
-        template.setPartitionConfig("{\"partition\":\"single\"}");
-        template.setRetryPolicy("{\"maxAttempts\":3}");
-        template.setTimeoutPolicy("{\"timeoutSeconds\":60}");
-        template.setEnabled(true);
-        template.setCreatedBy(930401L);
-        template.setUpdatedBy(930401L);
-        templateMapper.insert(template);
-        return template;
+    private void assertLegacyTemplateStorageIsRemoved() {
+        Integer legacyTableCount = jdbcTemplate.queryForObject("""
+                SELECT count(*)
+                FROM information_schema.tables
+                WHERE table_schema = 'data_sync'
+                  AND table_name = 'data_sync_template'
+                """, Integer.class);
+        Integer legacyColumnCount = jdbcTemplate.queryForObject("""
+                SELECT count(*)
+                FROM information_schema.columns
+                WHERE table_schema = 'data_sync'
+                  AND column_name = 'template_id'
+                """, Integer.class);
+        assertThat(legacyTableCount).isZero();
+        assertThat(legacyColumnCount).isZero();
     }
 
-    private void assertTemplateScopeColumnsAreMapped(SyncTemplate template) {
-        SyncTemplate persisted = templateMapper.selectById(template.getId());
+    private void assertLegacyTemplateTerminologyIsRemoved() {
+        String runModeDefault = jdbcTemplate.queryForObject("""
+                SELECT column_default
+                FROM information_schema.columns
+                WHERE table_schema = 'data_sync'
+                  AND table_name = 'data_sync_task'
+                  AND column_name = 'run_mode'
+                """, String.class);
+        Integer legacyRunModeCount = jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM data_sync_task WHERE upper(run_mode) = 'TEMPLATE'",
+                Integer.class
+        );
+        Integer legacyAuditActionCount = jdbcTemplate.queryForObject(
+                "SELECT count(*) FROM data_sync_audit_record WHERE upper(action_type) LIKE '%TEMPLATE%'",
+                Integer.class
+        );
+
+        assertThat(runModeDefault).contains("MANUAL");
+        assertThat(legacyRunModeCount).isZero();
+        assertThat(legacyAuditActionCount).isZero();
+    }
+
+    /**
+     * 创建任务的一对一定义，验证 TEXT JSON、BOOLEAN enabled 和低敏 connector fact 可写入 PostgreSQL。
+     */
+    private SyncTaskDefinition insertTaskDefinition(SyncTask task, String suffix) {
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setId(task.getId());
+        definition.setTenantId(task.getTenantId());
+        definition.setProjectId(task.getProjectId());
+        definition.setWorkspaceId(task.getWorkspaceId());
+        definition.setName("pg-data-sync-definition-" + suffix);
+        definition.setDescription("PostgreSQL migration integration definition");
+        definition.setSourceDatasourceId(930301L);
+        definition.setTargetDatasourceId(930302L);
+        definition.setSourceSchemaName("public");
+        definition.setSourceObjectName("customer_source");
+        definition.setTargetSchemaName("warehouse");
+        definition.setTargetObjectName("customer_target");
+        definition.setSourceConnectorType("MYSQL");
+        definition.setTargetConnectorType("POSTGRESQL");
+        definition.setSyncMode("CUSTOM_SQL_QUERY");
+        definition.setSyncScopeType("CUSTOM_SQL_QUERY");
+        definition.setWriteStrategy("UPSERT");
+        definition.setPrimaryKeyField("id");
+        definition.setIncrementalField("updated_at");
+        definition.setFieldMappingConfig("{\"id\":\"id\",\"name\":\"name\"}");
+        definition.setObjectMappingConfig("{\"mappings\":[]}");
+        definition.setCustomSqlConfig("{\"statementRef\":\"integration.customer_safe_select\",\"digest\":\"low-sensitive\"}");
+        definition.setFilterConfig("{\"safePreview\":true}");
+        definition.setPartitionConfig("{\"partition\":\"single\"}");
+        definition.setRetryPolicy("{\"maxAttempts\":3}");
+        definition.setTimeoutPolicy("{\"timeoutSeconds\":60}");
+        definition.setEnabled(true);
+        definition.setCreatedBy(930401L);
+        definition.setUpdatedBy(930401L);
+        taskDefinitionMapper.insert(definition);
+        return definition;
+    }
+
+    private void assertTaskDefinitionColumnsAreMapped(SyncTaskDefinition definition) {
+        SyncTaskDefinition persisted = taskDefinitionMapper.selectById(definition.getId());
         assertThat(persisted.getSyncScopeType()).isEqualTo("CUSTOM_SQL_QUERY");
         assertThat(persisted.getObjectMappingConfig()).contains("\"mappings\"");
         assertThat(persisted.getCustomSqlConfig()).contains("integration.customer_safe_select");
@@ -257,12 +307,11 @@ class DataSyncPostgreSqlMigrationIntegrationTest {
     /**
      * 创建同步任务，验证任务状态、审批状态、布尔人工介入标记和时间自动填充。
      */
-    private SyncTask insertTask(SyncTemplate template, String suffix) {
+    private SyncTask insertTask(String suffix) {
         SyncTask task = new SyncTask();
-        task.setTenantId(template.getTenantId());
-        task.setProjectId(template.getProjectId());
-        task.setWorkspaceId(template.getWorkspaceId());
-        task.setTemplateId(template.getId());
+        task.setTenantId(930001L);
+        task.setProjectId(930101L);
+        task.setWorkspaceId(930201L);
         task.setName("pg-data-sync-task-" + suffix);
         task.setCurrentState("QUEUED");
         task.setApprovalState("APPROVED");
@@ -368,12 +417,11 @@ class DataSyncPostgreSqlMigrationIntegrationTest {
         return incident;
     }
 
-    private SyncAuditRecord insertAudit(SyncTemplate template, SyncTask task, SyncExecution execution, String suffix) {
+    private SyncAuditRecord insertAudit(SyncTaskDefinition definition, SyncTask task, SyncExecution execution, String suffix) {
         SyncAuditRecord audit = new SyncAuditRecord();
-        audit.setTenantId(template.getTenantId());
-        audit.setProjectId(template.getProjectId());
-        audit.setWorkspaceId(template.getWorkspaceId());
-        audit.setTemplateId(template.getId());
+        audit.setTenantId(definition.getTenantId());
+        audit.setProjectId(definition.getProjectId());
+        audit.setWorkspaceId(definition.getWorkspaceId());
         audit.setSyncTaskId(task.getId());
         audit.setExecutionId(execution.getId());
         audit.setActionType("RUN_TASK");
@@ -426,16 +474,16 @@ class DataSyncPostgreSqlMigrationIntegrationTest {
         return receipt;
     }
 
-    private void assertPaginationUsesPostgreSqlDialect(SyncTemplate template) {
-        Page<SyncTemplate> page = templateMapper.selectPage(
+    private void assertPaginationUsesPostgreSqlDialect(SyncTaskDefinition definition) {
+        Page<SyncTaskDefinition> page = taskDefinitionMapper.selectPage(
                 new Page<>(1, 10),
-                new LambdaQueryWrapper<SyncTemplate>()
-                        .eq(SyncTemplate::getTenantId, template.getTenantId())
-                        .eq(SyncTemplate::getName, template.getName())
-                        .orderByAsc(SyncTemplate::getId)
+                new LambdaQueryWrapper<SyncTaskDefinition>()
+                        .eq(SyncTaskDefinition::getTenantId, definition.getTenantId())
+                        .eq(SyncTaskDefinition::getName, definition.getName())
+                        .orderByAsc(SyncTaskDefinition::getId)
         );
         assertThat(page.getTotal()).isEqualTo(1);
-        assertThat(page.getRecords()).extracting(SyncTemplate::getId).containsExactly(template.getId());
+        assertThat(page.getRecords()).extracting(SyncTaskDefinition::getId).containsExactly(definition.getId());
     }
 
     private void assertExecutionLeaseSqlIsPostgreSqlCompatible(SyncExecution execution) {
@@ -491,7 +539,7 @@ class DataSyncPostgreSqlMigrationIntegrationTest {
             SyncCheckpoint checkpoint,
             SyncExecution execution,
             SyncTask task,
-            SyncTemplate template) {
+            SyncTaskDefinition definition) {
         if (receipt != null && receipt.getId() != null) {
             jdbcTemplate.update("DELETE FROM data_sync_task_management_receipt_outbox WHERE id = ?", receipt.getId());
         }
@@ -516,11 +564,11 @@ class DataSyncPostgreSqlMigrationIntegrationTest {
         if (execution != null && execution.getId() != null) {
             jdbcTemplate.update("DELETE FROM data_sync_execution WHERE id = ?", execution.getId());
         }
+        if (definition != null && definition.getId() != null) {
+            jdbcTemplate.update("DELETE FROM data_sync_task_definition WHERE task_id = ?", definition.getId());
+        }
         if (task != null && task.getId() != null) {
             jdbcTemplate.update("DELETE FROM data_sync_task WHERE id = ?", task.getId());
-        }
-        if (template != null && template.getId() != null) {
-            jdbcTemplate.update("DELETE FROM data_sync_template WHERE id = ?", template.getId());
         }
     }
 }

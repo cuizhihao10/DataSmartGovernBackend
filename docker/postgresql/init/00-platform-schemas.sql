@@ -24,7 +24,7 @@ CREATE SCHEMA IF NOT EXISTS ai_memory AUTHORIZATION datasmart;
 COMMENT ON SCHEMA permission_admin IS '权限、角色、菜单、审批与数据范围事实';
 COMMENT ON SCHEMA task_management IS '任务生命周期、调度、重试、回放与 worker 事实';
 COMMENT ON SCHEMA datasource_management IS '数据源、连接、元数据与连接审计事实';
-COMMENT ON SCHEMA data_sync IS '数据同步模板、执行、恢复与回执事实';
+COMMENT ON SCHEMA data_sync IS '数据同步任务定义、执行、恢复与回执事实';
 COMMENT ON SCHEMA data_quality IS '质量规则、执行、问题、整改与报告事实';
 COMMENT ON SCHEMA agent_runtime IS 'Agent 控制面、outbox、receipt、checkpoint 与审计事实';
 COMMENT ON SCHEMA observability IS '告警、SLO、事件归档与运维配置事实';

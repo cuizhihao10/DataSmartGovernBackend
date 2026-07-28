@@ -13,14 +13,13 @@ package com.czh.datasmart.govern.datasync.controller.dto;
  * 字段设计遵循两个原则：</p>
  * <p>1. tenant/project 只表达请求期望的数据范围，真正是否可见仍由服务层结合 actorContext
  * 和 permission-admin 下沉的数据范围做二次收口，不能只相信前端传参；</p>
- * <p>2. template/owner/group/state/trigger/keyword 是业务筛选维度，适合前端列表、导入导出校验和
+ * <p>2. owner/group/state/trigger/keyword 是业务筛选维度，适合前端列表、导入导出校验和
  * Agent “帮我找出订单域失败任务”这类自然语言查询落到结构化参数。</p>
  *
  * @param tenantId 请求希望查询的租户；普通用户不能用它扩大到其他租户
  * @param projectId 项目过滤条件；PROJECT 数据范围下还会叠加 authorizedProjectIds
  * @param workspaceId 历史兼容字段。用户侧任务列表、分组、回收站和导出接口已经不再接收 workspace 过滤，
  *                    该字段仅保留给旧导入导出文件、内部 worker 或历史调用点，新 Controller 会统一传 null
- * @param templateId 来源模板过滤条件
  * @param ownerId 负责人过滤条件
  * @param groupCode 任务分组编码过滤条件，服务层会规范化为大写稳定编码
  * @param currentState 任务主状态过滤条件，例如 SCHEDULED、RUNNING、RECYCLED
@@ -33,7 +32,6 @@ public record SyncTaskQueryCriteria(
         Long tenantId,
         Long projectId,
         Long workspaceId,
-        Long templateId,
         Long ownerId,
         String groupCode,
         String currentState,
@@ -45,14 +43,13 @@ public record SyncTaskQueryCriteria(
     public SyncTaskQueryCriteria(Long tenantId,
                                  Long projectId,
                                  Long workspaceId,
-                                 Long templateId,
                                  Long ownerId,
                                  String groupCode,
                                  String currentState,
                                  String triggerType,
                                  Long current,
                                  Long size) {
-        this(tenantId, projectId, workspaceId, templateId, ownerId, groupCode,
+        this(tenantId, projectId, workspaceId, ownerId, groupCode,
                 currentState, triggerType, current, size, null);
     }
 }

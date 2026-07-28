@@ -47,14 +47,14 @@ spring:
           predicates:
             - Path=/api/datasource/**
           filters:
-            # datasource-management 内部保留 /datasources、/sync/templates 等领域路径。
+            # datasource-management 内部保留 /datasources 等领域路径。
             - RewritePath=/api/datasource/(?<segment>.*), /$\{segment}
         - id: data-sync
           uri: lb://data-sync
           predicates:
             - Path=/api/sync/**
           filters:
-            # data-sync 是独立微服务，内部 Controller 使用 /sync-tasks、/sync-templates、/sync-incidents 等路径。
+            # data-sync 是独立微服务，内部 Controller 使用 /sync-tasks、/sync-incidents 等路径。
             # 外部 /api/sync/** 只属于网关公开契约，转发前必须去掉该前缀，否则请求会到达服务但无法命中 Controller。
             - RewritePath=/api/sync/(?<segment>.*), /$\{segment}
         - id: data-quality
@@ -615,20 +615,6 @@ datasmart:
           method-actions:
             POST: SCHEDULE_DISPATCH
 
-        - path-pattern: /api/sync/sync-templates/*/validate
-          resource-type: SYNC_TEMPLATE
-          default-action: VALIDATE
-          description: data-sync 同步模板校验接口，用于检查源端、目标端、字段映射和写入策略是否可运行。
-          method-actions:
-            POST: VALIDATE
-
-        - path-pattern: /api/sync/sync-templates/*/offline-job-plan
-          resource-type: SYNC_TEMPLATE
-          default-action: VIEW
-          description: data-sync 同步模板离线作业计划接口，只返回低敏 Reader/Writer、调度、checkpoint 和审批规划，不触发真实执行。
-          method-actions:
-            POST: VIEW
-
         - path-pattern: /api/sync/sync-tasks/export
           resource-type: SYNC_TASK
           default-action: EXPORT
@@ -992,21 +978,10 @@ datasmart:
           method-actions:
             POST: EXECUTE
 
-        - path-pattern: /api/sync/sync-templates/**
-          resource-type: SYNC_TEMPLATE
-          default-action: EXECUTE
-          description: data-sync 同步模板配置面，控制源端、目标端、同步模式和写入策略。
-          method-actions:
-            GET: VIEW
-            POST: CREATE
-            PUT: UPDATE
-            PATCH: UPDATE
-            DELETE: DELETE
-
         - path-pattern: /api/sync/**
           resource-type: SYNC_TASK
           default-action: EXECUTE
-          description: 数据同步模板、同步任务、运行触发、回放补数与执行治理。
+          description: 数据同步任务定义、运行触发、回放补数与执行治理。
           method-actions:
             GET: VIEW
             POST: CREATE

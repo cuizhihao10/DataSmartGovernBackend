@@ -202,7 +202,6 @@ class SyncObjectExecutionOperationSupportTest {
         row.setWorkspaceId(301L);
         row.setSyncTaskId(1L);
         row.setExecutionId(88L);
-        row.setTemplateId(9L);
         row.setObjectOrdinal(ordinal);
         row.setSourceSchemaName("ods");
         row.setSourceObjectName("source_" + ordinal);

@@ -12,8 +12,8 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
  * datasource-management 低敏能力快照客户端接口。
  *
  * <p>接口只暴露 data-sync 需要的读取动作，而不暴露 HTTP、RestClient、URL、Header 或响应 envelope 细节。
- * 这样 service/support 层可以专注业务判断：是否需要补全 connector type、是否允许模板规划、租户/项目是否一致；
- * 真正的跨服务通信细节集中在 implementation 中，后续从 HTTP 切到服务发现、gRPC、Feign 或缓存代理时不会影响模板逻辑。</p>
+ * 这样 service/support 层可以专注业务判断：是否需要补全 connector type、是否允许任务定义规划、租户/项目是否一致；
+ * 真正的跨服务通信细节集中在 implementation 中，后续从 HTTP 切到服务发现、gRPC、Feign 或缓存代理时不会影响任务定义逻辑。</p>
  */
 @FunctionalInterface
 public interface DatasourceCapabilitySnapshotClient {

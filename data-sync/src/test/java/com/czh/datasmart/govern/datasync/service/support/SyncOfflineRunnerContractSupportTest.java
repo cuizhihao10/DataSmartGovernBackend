@@ -7,7 +7,7 @@
 package com.czh.datasmart.govern.datasync.service.support;
 
 import com.czh.datasmart.govern.datasync.controller.dto.SyncOfflineJobPlanResponse;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -27,7 +27,7 @@ class SyncOfflineRunnerContractSupportTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final SyncOfflineJobPlanSupport offlineJobPlanSupport = new SyncOfflineJobPlanSupport(
             new SyncConnectorCapabilityRegistry(),
-            new SyncTemplateScopeContractSupport(objectMapper),
+            new SyncTaskDefinitionScopeContractSupport(objectMapper),
             new SyncFieldMappingExecutionContractSupport(objectMapper),
             objectMapper
     );
@@ -35,7 +35,7 @@ class SyncOfflineRunnerContractSupportTest {
 
     @Test
     void fullSingleObjectPlanShouldBecomeMinimalBridgeContract() {
-        SyncOfflineJobPlanResponse plan = offlineJobPlanSupport.buildPlan(template("FULL"));
+        SyncOfflineJobPlanResponse plan = offlineJobPlanSupport.buildPlan(definition("FULL"));
 
         SyncOfflineRunnerJobContract contract = contractSupport.buildFromOfflinePlan(plan);
 
@@ -65,7 +65,7 @@ class SyncOfflineRunnerContractSupportTest {
 
     @Test
     void scheduledBatchContractShouldUseTaskScheduleAndMinimalBoundedRunner() {
-        SyncOfflineJobPlanResponse plan = offlineJobPlanSupport.buildPlan(template("SCHEDULED_BATCH"));
+        SyncOfflineJobPlanResponse plan = offlineJobPlanSupport.buildPlan(definition("SCHEDULED_BATCH"));
 
         SyncOfflineRunnerJobContract contract = contractSupport.buildFromOfflinePlan(plan);
 
@@ -91,15 +91,15 @@ class SyncOfflineRunnerContractSupportTest {
 
     @Test
     void customSqlContractShouldNotExposeSqlOrStatementReferenceValue() {
-        SyncTemplate template = template("CUSTOM_SQL_QUERY");
-        template.setSyncScopeType("CUSTOM_SQL_QUERY");
-        template.setCustomSqlConfig("""
+        SyncTaskDefinition definition = definition("CUSTOM_SQL_QUERY");
+        definition.setSyncScopeType("CUSTOM_SQL_QUERY");
+        definition.setCustomSqlConfig("""
                 {
                   "statementRef": "managed-sql.customer-active",
                   "sql": "select id, name from customer where status = :status"
                 }
                 """);
-        SyncOfflineJobPlanResponse plan = offlineJobPlanSupport.buildPlan(template);
+        SyncOfflineJobPlanResponse plan = offlineJobPlanSupport.buildPlan(definition);
 
         SyncOfflineRunnerJobContract contract = contractSupport.buildFromOfflinePlan(plan);
 
@@ -119,29 +119,29 @@ class SyncOfflineRunnerContractSupportTest {
                 .doesNotContain("status = :status");
     }
 
-    private SyncTemplate template(String syncMode) {
-        SyncTemplate template = new SyncTemplate();
-        template.setId(22L);
-        template.setTenantId(7L);
-        template.setProjectId(101L);
-        template.setWorkspaceId(301L);
-        template.setSourceDatasourceId(10001L);
-        template.setTargetDatasourceId(10002L);
-        template.setSourceSchemaName("ods");
-        template.setSourceObjectName("customer");
-        template.setTargetSchemaName("dwd");
-        template.setTargetObjectName("customer");
-        template.setSourceConnectorType("MYSQL");
-        template.setTargetConnectorType("POSTGRESQL");
-        template.setSyncMode(syncMode);
-        template.setSyncScopeType("SINGLE_OBJECT");
-        template.setWriteStrategy("APPEND");
-        template.setFieldMappingConfig("""
+    private SyncTaskDefinition definition(String syncMode) {
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setId(22L);
+        definition.setTenantId(7L);
+        definition.setProjectId(101L);
+        definition.setWorkspaceId(301L);
+        definition.setSourceDatasourceId(10001L);
+        definition.setTargetDatasourceId(10002L);
+        definition.setSourceSchemaName("ods");
+        definition.setSourceObjectName("customer");
+        definition.setTargetSchemaName("dwd");
+        definition.setTargetObjectName("customer");
+        definition.setSourceConnectorType("MYSQL");
+        definition.setTargetConnectorType("POSTGRESQL");
+        definition.setSyncMode(syncMode);
+        definition.setSyncScopeType("SINGLE_OBJECT");
+        definition.setWriteStrategy("APPEND");
+        definition.setFieldMappingConfig("""
                 [
                   {"sourceField": "id", "targetField": "id"},
                   {"sourceField": "name", "targetField": "name"}
                 ]
                 """);
-        return template;
+        return definition;
     }
 }

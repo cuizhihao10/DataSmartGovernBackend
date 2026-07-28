@@ -15,8 +15,8 @@ import java.util.List;
  * 但仍然坚持低敏边界，不包含 SQL 正文、statementRef 值、连接串、账号、密码、对象映射原文、字段映射原文、
  * 过滤条件、分区条件、样本数据或 checkpoint 原始值。</p>
  *
- * <p>它要解决的核心问题是：当 data-sync 以后真正接入 DataX-style Runner 时，Runner 入口不应该只收到
- * 一个 templateId 然后自己回查、猜测和拼装配置，而应该收到一份稳定合同，明确：</p>
+ * <p>它要解决的核心问题是：当 data-sync 接入 DataX-style Runner 时，Runner 入口不应该自己跨服务
+ * 回查、猜测和拼装配置，而应该收到一份由任务定义生成的稳定合同，明确：</p>
  * <p>1. 当前任务属于哪条传输通道和哪类 Reader/Writer；</p>
  * <p>2. 是否需要审批、调度、checkpoint handoff、对象 fan-out 或专用 Runner；</p>
  * <p>3. 当前最小 run-once bridge 是否能端到端执行，还是只能停在预派发/阻断状态；</p>
@@ -24,11 +24,10 @@ import java.util.List;
  *
  * @param contractVersion 合同版本。Runner、Agent 和测试可以据此做兼容性判断。
  * @param contractStatus 合同状态，例如 MINIMAL_BRIDGE_END_TO_END_SUPPORTED、DEDICATED_OFFLINE_RUNNER_REQUIRED。
- * @param templateId 模板 ID。
  * @param tenantId 租户 ID。
  * @param projectId 项目 ID。
  * @param workspaceId 工作空间 ID。
- * @param syncTaskId 任务 ID。纯模板规划阶段可以为空。
+ * @param syncTaskId 任务 ID。
  * @param executionId 执行记录 ID。任务尚未运行时可以为空。
  * @param sourceDatasourceId 源数据源 ID，只是内部引用，不含连接信息。
  * @param targetDatasourceId 目标数据源 ID。
@@ -69,7 +68,6 @@ import java.util.List;
 public record SyncOfflineRunnerJobContract(
         String contractVersion,
         String contractStatus,
-        Long templateId,
         Long tenantId,
         Long projectId,
         Long workspaceId,

@@ -550,16 +550,11 @@ public class PermissionProjectServiceImpl implements PermissionProjectService {
      */
     private PermissionProjectDeletionCheckResponse evaluateDeletionReadiness(PermissionProject project) {
         long activeDatasourceCount = projectMapper.countActiveDatasources(project.getTenantId(), project.getProjectId());
-        long enabledSyncTemplateCount = projectMapper.countEnabledSyncTemplates(project.getTenantId(), project.getProjectId());
         long activeSyncTaskCount = projectMapper.countActiveSyncTasks(project.getTenantId(), project.getProjectId());
         List<PermissionProjectDeletionBlocker> blockers = new ArrayList<>();
         if (activeDatasourceCount > 0) {
             blockers.add(new PermissionProjectDeletionBlocker("DATASOURCE", activeDatasourceCount,
                     "项目下仍存在未删除数据源，请先删除或迁移数据源"));
-        }
-        if (enabledSyncTemplateCount > 0) {
-            blockers.add(new PermissionProjectDeletionBlocker("DATA_SYNC_TEMPLATE", enabledSyncTemplateCount,
-                    "项目下仍存在启用中的同步模板，请先禁用或迁移模板"));
         }
         if (activeSyncTaskCount > 0) {
             blockers.add(new PermissionProjectDeletionBlocker("DATA_SYNC_TASK", activeSyncTaskCount,
@@ -571,7 +566,6 @@ public class PermissionProjectServiceImpl implements PermissionProjectService {
                 project.getTenantId(),
                 deletable,
                 activeDatasourceCount,
-                enabledSyncTemplateCount,
                 activeSyncTaskCount,
                 List.copyOf(blockers),
                 deletable ? "项目可以归档式删除" : "项目仍有关联资源，不能删除"

@@ -43,7 +43,7 @@ public interface SyncOfflineRunnerAdapter {
     /**
      * 派发或执行离线 Runner 合同。
      *
-     * @param request 专用 Runner 执行请求，包含 bridge plan、合同、任务、模板、execution 和操作者上下文。
+     * @param request 专用 Runner 执行请求，包含 bridge plan、合同、任务、任务定义、execution 和操作者上下文。
      * @return 低敏 adapter 派发结果。
      */
     SyncOfflineRunnerAdapterResult dispatch(SyncOfflineRunnerExecutionRequest request);

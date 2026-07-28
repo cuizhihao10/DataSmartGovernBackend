@@ -9,12 +9,12 @@ package com.czh.datasmart.govern.datasync.service.support;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.entity.SyncExecutionPolicy;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.mapper.SyncExecutionMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncExecutionPolicyMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncExecutionPolicySnapshotMapper;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
-import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
+import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -41,7 +41,7 @@ class SyncExecutionPolicyServiceTest {
                 policyMapper,
                 mock(SyncExecutionPolicySnapshotMapper.class),
                 mock(SyncTaskMapper.class),
-                mock(SyncTemplateMapper.class),
+                mock(SyncTaskDefinitionMapper.class),
                 mock(SyncExecutionMapper.class),
                 mock(SyncDataScopeSupport.class),
                 new ObjectMapper()
@@ -67,15 +67,15 @@ class SyncExecutionPolicyServiceTest {
         task.setTenantId(10L);
         task.setProjectId(101L);
 
-        SyncTemplate template = new SyncTemplate();
-        template.setSourceDatasourceId(11L);
-        template.setTargetDatasourceId(22L);
-        template.setSourceConnectorType("MYSQL");
-        template.setTargetConnectorType("POSTGRESQL");
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setSourceDatasourceId(11L);
+        definition.setTargetDatasourceId(22L);
+        definition.setSourceConnectorType("MYSQL");
+        definition.setTargetConnectorType("POSTGRESQL");
 
         SyncEffectiveExecutionPolicy effective = service.resolveEffectivePolicy(
                 task,
-                template,
+                definition,
                 new SyncActorContext(10L, 9001L, "PLATFORM_ADMINISTRATOR", "trace-policy-test")
         );
 
@@ -102,7 +102,7 @@ class SyncExecutionPolicyServiceTest {
                 policyMapper,
                 mock(SyncExecutionPolicySnapshotMapper.class),
                 mock(SyncTaskMapper.class),
-                mock(SyncTemplateMapper.class),
+                mock(SyncTaskDefinitionMapper.class),
                 mock(SyncExecutionMapper.class),
                 mock(SyncDataScopeSupport.class),
                 new ObjectMapper()
@@ -122,15 +122,15 @@ class SyncExecutionPolicyServiceTest {
         task.setTenantId(10L);
         task.setProjectId(101L);
 
-        SyncTemplate template = new SyncTemplate();
-        template.setSourceDatasourceId(31L);
-        template.setTargetDatasourceId(32L);
-        template.setSourceConnectorType("ORACLE");
-        template.setTargetConnectorType("SQLSERVER");
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setSourceDatasourceId(31L);
+        definition.setTargetDatasourceId(32L);
+        definition.setSourceConnectorType("ORACLE");
+        definition.setTargetConnectorType("SQLSERVER");
 
         SyncEffectiveExecutionPolicy effective = service.resolveEffectivePolicy(
                 task,
-                template,
+                definition,
                 new SyncActorContext(10L, 9001L, "PLATFORM_ADMINISTRATOR", "trace-generic-policy-test")
         );
 

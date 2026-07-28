@@ -23,7 +23,7 @@ import java.util.Locale;
 /**
  * 同步任务创建向导合同支撑组件。
  *
- * <p>这个组件专门负责“创建同步任务页面应该遵守什么后端规则”。它不创建模板、不创建任务、不触碰真实源端或目标端数据，
+ * <p>这个组件专门负责“创建同步任务页面应该遵守什么后端规则”。它不创建任务定义、不创建任务、不触碰真实源端或目标端数据，
  * 只返回低敏合同和单步校验结果。这样前端可以同步修复 UI，同时后端也不会把旧的执行器字段、风险确认字段、恢复动作继续暴露成表单项。</p>
  *
  * <p>当前合同重点解决用户指出的几个产品问题：</p>
@@ -139,7 +139,7 @@ public class SyncTaskCreateWizardContractSupport {
                         "PRECHECK",
                         "预检查",
                         4,
-                        List.of("taskId", "templateId"),
+                        List.of("taskId"),
                         "进入本步骤后自动运行预检查；预检查通过后再发布/执行，草稿保存不等于立即执行",
                         List.of("连接器兼容性", "对象存在性", "目标主键/外键/约束", "字段数量和类型兼容", "SQL 安全", "调度配置合法性"),
                         List.of("manualRunModeSelector")));
@@ -322,11 +322,11 @@ public class SyncTaskCreateWizardContractSupport {
                 && hasText(request == null ? null : request.getScheduleConfig())) {
             blocking.add("非定时传输模式不能携带 scheduleConfig；请改用 SCHEDULED_FULL 或 SCHEDULED_BATCH");
         }
-        if (request == null || request.getTaskId() == null || request.getTemplateId() == null) {
-            blocking.add("进入预检查步骤前必须先保存草稿并获得 taskId/templateId");
+        if (request == null || request.getTaskId() == null) {
+            blocking.add("进入预检查步骤前必须先保存草稿并获得 taskId");
         }
         warnings.add("预检查不再要求用户填写额外确认字段；高风险配置只在预检查结果中给出风险提示，实际阻断由权限、执行策略和运行期错误处理负责");
-        nextActions.add("进入预检查步骤后自动调用模板预检查，确认连接器兼容性、对象存在性、字段映射、SQL 安全和目标表约束");
+        nextActions.add("进入预检查步骤后自动检查任务定义，确认连接器兼容性、对象存在性、字段映射、SQL 安全和目标表约束");
     }
 
     private SyncMode resolveMode(String syncMode, List<String> blocking) {

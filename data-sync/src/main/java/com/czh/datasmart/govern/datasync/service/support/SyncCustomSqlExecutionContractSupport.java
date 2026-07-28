@@ -63,8 +63,8 @@ public class SyncCustomSqlExecutionContractSupport {
     /**
      * 解析自定义 SQL 执行合同。
      *
-     * @param syncMode 当前模板同步模式。只有 CUSTOM_SQL_QUERY 会进入 SQL 合同解析。
-     * @param customSqlConfig 模板中的 customSqlConfig JSON。
+     * @param syncMode 当前任务定义同步模式。只有 CUSTOM_SQL_QUERY 会进入 SQL 合同解析。
+     * @param customSqlConfig 任务定义中的 customSqlConfig JSON。
      * @return 自定义 SQL 执行合同；不可执行时只返回 issueCode，不回显 SQL 正文。
      */
     public SyncCustomSqlExecutionContract parse(String syncMode, String customSqlConfig) {

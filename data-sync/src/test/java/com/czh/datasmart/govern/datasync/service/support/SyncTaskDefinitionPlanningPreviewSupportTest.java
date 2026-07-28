@@ -1,0 +1,249 @@
+/**
+ * @Author : Cui
+ * @Date: 2026/06/29 02:40
+ * @Description DataSmart Govern Backend - SyncTaskDefinitionPlanningPreviewSupportTest.java
+ * @Version:1.0.0
+ */
+package com.czh.datasmart.govern.datasync.service.support;
+
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskDefinitionPlanningPreviewResponse;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * 同步任务定义规划预览测试。
+ *
+ * <p>预览接口不是执行器，也不是 SQL/样本预览。它只检查低敏配置事实是否足够清晰，
+ * 并输出状态、问题码和建议动作。本测试覆盖 READY、NEEDS_REVIEW、BLOCKED 三类结果，
+ * 防止后续把“缺少建议性配置”误判为硬阻断，或把“连接器能力不兼容”误判为可继续。</p>
+ */
+class SyncTaskDefinitionPlanningPreviewSupportTest {
+
+    private final SyncTaskDefinitionPlanningPreviewSupport support =
+            new SyncTaskDefinitionPlanningPreviewSupport(new SyncConnectorCapabilityRegistry());
+
+    @Test
+    void previewShouldReturnReadyWhenRelationalFullDefinitionHasCorePolicies() {
+        SyncTaskDefinitionPlanningPreviewResponse response = support.preview(definition("MYSQL", "POSTGRESQL", "FULL")
+                .fieldMappingConfig("{}")
+                .retryPolicy("{}")
+                .timeoutPolicy("{}")
+                .build());
+
+        assertThat(response.previewStatus()).isEqualTo("READY");
+        assertThat(response.transferChannel()).isEqualTo("OFFLINE");
+        assertThat(response.referenceRuntime()).isEqualTo("DATAX_STYLE_OFFLINE_READER_WRITER_RUNNER");
+        assertThat(response.canProceedToTaskDraft()).isTrue();
+        assertThat(response.executionPrecheckReady()).isTrue();
+        assertThat(response.connectorCompatibilitySupported()).isTrue();
+        assertThat(response.issueCodes()).isEmpty();
+        assertThat(response.payloadPolicy()).isEqualTo("LOW_SENSITIVE_TASK_DEFINITION_PLANNING_PREVIEW");
+    }
+
+    @Test
+    void previewShouldExposeOfflineChannelForScheduledBatchAndCustomSql() {
+        SyncTaskDefinitionPlanningPreviewResponse scheduledBatch = support.preview(definition("MYSQL", "POSTGRESQL", "SCHEDULED_BATCH")
+                .fieldMappingConfig("{}")
+                .retryPolicy("{}")
+                .timeoutPolicy("{}")
+                .build());
+        SyncTaskDefinitionPlanningPreviewResponse customSql = support.preview(definition("MYSQL", "POSTGRESQL", "CUSTOM_SQL_QUERY")
+                .syncScopeType("CUSTOM_SQL_QUERY")
+                .fieldMappingConfig("{}")
+                .customSqlConfig("{\"sql\":\"select id, name from customer where status = :status\"}")
+                .retryPolicy("{}")
+                .timeoutPolicy("{}")
+                .build());
+
+        assertThat(scheduledBatch.transferChannel()).isEqualTo("OFFLINE");
+        assertThat(customSql.transferChannel()).isEqualTo("OFFLINE");
+        assertThat(customSql.referenceRuntime()).isEqualTo("DATAX_STYLE_OFFLINE_READER_WRITER_RUNNER");
+        assertThat(customSql.requiresApproval()).isFalse();
+        assertThat(customSql.performanceNotes()).anyMatch(note -> note.contains("SQL 自定义传输"));
+    }
+
+    @Test
+    void previewShouldExposeRealtimeChannelOnlyForCdcStreaming() {
+        SyncTaskDefinitionPlanningPreviewResponse response = support.preview(definition("MYSQL", "POSTGRESQL", "CDC_STREAMING")
+                .writeStrategy(null)
+                .fieldMappingConfig("{}")
+                .retryPolicy("{}")
+                .timeoutPolicy("{}")
+                .build());
+
+        assertThat(response.transferChannel()).isEqualTo("REALTIME");
+        assertThat(response.referenceRuntime()).isEqualTo("DEBEZIUM_KAFKA_CONNECT_CDC_PIPELINE");
+        assertThat(response.writeStrategy()).isEqualTo("UPDATE");
+        assertThat(response.issueCodes()).doesNotContain("REALTIME_WRITE_STRATEGY_MUST_BE_MERGE");
+    }
+
+    @Test
+    void previewShouldBlockHistoricalIncrementalModeBecauseItIsNoLongerUserSelectable() {
+        SyncTaskDefinitionPlanningPreviewResponse response = support.preview(definition("MYSQL", "POSTGRESQL", "INCREMENTAL_TIME")
+                .incrementalField("updated_at")
+                .fieldMappingConfig("{}")
+                .build());
+
+        assertThat(response.previewStatus()).isEqualTo("BLOCKED");
+        assertThat(response.canProceedToTaskDraft()).isFalse();
+        assertThat(response.executionPrecheckReady()).isFalse();
+        assertThat(response.issueCodes()).contains(
+                "SYNC_MODE_NOT_USER_SELECTABLE_TRANSFER_MODE",
+                "RETRY_POLICY_NOT_DECLARED",
+                "TIMEOUT_POLICY_NOT_DECLARED"
+        );
+        assertThat(response.recommendedActions()).anyMatch(action -> action.contains("内部/历史能力"));
+    }
+
+    @Test
+    void previewShouldBlockWhenExecutableObjectBindingIsMissing() {
+        SyncTaskDefinitionPlanningPreviewResponse response = support.preview(definition("MYSQL", "POSTGRESQL", "FULL")
+                .withoutObjects()
+                .fieldMappingConfig("{}")
+                .retryPolicy("{}")
+                .timeoutPolicy("{}")
+                .build());
+
+        assertThat(response.previewStatus()).isEqualTo("BLOCKED");
+        assertThat(response.sourceObjectDeclared()).isFalse();
+        assertThat(response.targetObjectDeclared()).isFalse();
+        assertThat(response.issueCodes()).contains("SOURCE_OBJECT_NOT_DECLARED", "TARGET_OBJECT_NOT_DECLARED");
+    }
+
+    @Test
+    void previewShouldBlockConflictWriteWithoutPrimaryKey() {
+        SyncTaskDefinitionPlanningPreviewResponse response = support.preview(definition("MYSQL", "POSTGRESQL", "FULL")
+                .writeStrategy("UPSERT")
+                .fieldMappingConfig("{}")
+                .retryPolicy("{}")
+                .timeoutPolicy("{}")
+                .build());
+
+        assertThat(response.previewStatus()).isEqualTo("BLOCKED");
+        assertThat(response.writeStrategy()).isEqualTo("UPSERT");
+        assertThat(response.writeStrategyRequiresConflictKey()).isTrue();
+        assertThat(response.primaryKeyDeclared()).isFalse();
+        assertThat(response.issueCodes()).contains("PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE");
+    }
+
+    @Test
+    void previewShouldReturnBlockedWhenConnectorCombinationIsUnsupported() {
+        SyncTaskDefinitionPlanningPreviewResponse response = support.preview(definition("KAFKA", "POSTGRESQL", "FULL")
+                .fieldMappingConfig("{}")
+                .retryPolicy("{}")
+                .timeoutPolicy("{}")
+                .build());
+
+        assertThat(response.previewStatus()).isEqualTo("BLOCKED");
+        assertThat(response.canProceedToTaskDraft()).isFalse();
+        assertThat(response.connectorCompatibilitySupported()).isFalse();
+        assertThat(response.issueCodes()).contains("SOURCE_MODE_UNSUPPORTED");
+        assertThat(response.recommendedActions()).isNotEmpty();
+    }
+
+    @Test
+    void previewShouldNotExposeConfigBodyWhenDefinitionHasSensitiveLookingConfigText() {
+        SyncTaskDefinitionPlanningPreviewResponse response = support.preview(definition("MYSQL", "POSTGRESQL", "FULL")
+                .fieldMappingConfig("{\"password\":\"should-not-return\"}")
+                .retryPolicy("{\"token\":\"should-not-return\"}")
+                .timeoutPolicy("{\"jdbcUrl\":\"should-not-return\"}")
+                .build());
+
+        String serializedSummary = response.toString();
+        assertThat(serializedSummary)
+                .doesNotContain("should-not-return")
+                .doesNotContain("password")
+                .doesNotContain("token")
+                .doesNotContain("jdbcUrl");
+    }
+
+    @Test
+    void previewShouldReturnNeedsReviewWhenConnectorFactsAreIncompleteForLegacyDefinition() {
+        SyncTaskDefinitionPlanningPreviewResponse response = support.preview(definition(null, null, "FULL")
+                .timeoutPolicy("{}")
+                .build());
+
+        assertThat(response.previewStatus()).isEqualTo("NEEDS_REVIEW");
+        assertThat(response.canProceedToTaskDraft()).isTrue();
+        assertThat(response.connectorCompatibilitySupported()).isFalse();
+        assertThat(response.issueCodes()).contains("CONNECTOR_FACTS_INCOMPLETE");
+    }
+
+    private DefinitionBuilder definition(String sourceConnectorType, String targetConnectorType, String syncMode) {
+        return new DefinitionBuilder(sourceConnectorType, targetConnectorType, syncMode);
+    }
+
+    /**
+     * 测试用任务定义构造器。
+     *
+     * <p>预览测试关心的是“配置块是否存在”，不关心配置块正文。因此构造器只暴露少量声明方法，
+     * 让每个测试用例能快速表达自己想模拟的配置完整度。</p>
+     */
+    private static class DefinitionBuilder {
+        private final SyncTaskDefinition definition = new SyncTaskDefinition();
+
+        private DefinitionBuilder(String sourceConnectorType, String targetConnectorType, String syncMode) {
+            definition.setId(1001L);
+            definition.setTenantId(7L);
+            definition.setProjectId(101L);
+            definition.setWorkspaceId(301L);
+            definition.setSourceDatasourceId(10001L);
+            definition.setTargetDatasourceId(20001L);
+            definition.setSourceSchemaName("ods");
+            definition.setSourceObjectName("customer");
+            definition.setTargetSchemaName("dwd");
+            definition.setTargetObjectName("customer");
+            definition.setSourceConnectorType(sourceConnectorType);
+            definition.setTargetConnectorType(targetConnectorType);
+            definition.setSyncMode(syncMode);
+            definition.setWriteStrategy("APPEND");
+        }
+
+        private DefinitionBuilder withoutObjects() {
+            definition.setSourceObjectName(null);
+            definition.setTargetObjectName(null);
+            return this;
+        }
+
+        private DefinitionBuilder writeStrategy(String value) {
+            definition.setWriteStrategy(value);
+            return this;
+        }
+
+        private DefinitionBuilder incrementalField(String value) {
+            definition.setIncrementalField(value);
+            return this;
+        }
+
+        private DefinitionBuilder fieldMappingConfig(String value) {
+            definition.setFieldMappingConfig(value);
+            return this;
+        }
+
+        private DefinitionBuilder syncScopeType(String value) {
+            definition.setSyncScopeType(value);
+            return this;
+        }
+
+        private DefinitionBuilder customSqlConfig(String value) {
+            definition.setCustomSqlConfig(value);
+            return this;
+        }
+
+        private DefinitionBuilder retryPolicy(String value) {
+            definition.setRetryPolicy(value);
+            return this;
+        }
+
+        private DefinitionBuilder timeoutPolicy(String value) {
+            definition.setTimeoutPolicy(value);
+            return this;
+        }
+
+        private SyncTaskDefinition build() {
+            return definition;
+        }
+    }
+}

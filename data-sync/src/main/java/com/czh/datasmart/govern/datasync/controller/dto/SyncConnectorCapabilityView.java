@@ -11,7 +11,7 @@ import java.util.List;
 /**
  * 同步连接器能力视图。
  *
- * <p>该 DTO 是给前端、Agent、同步模板校验器和运营台使用的低敏能力目录。
+ * <p>该 DTO 是给前端、Agent、任务定义校验器和运营台使用的低敏能力目录。
  * 它只描述“某类 connector 理论上支持什么”，不会包含真实 host、port、database、topic、bucket、账号、密钥或内部 endpoint。
  * 真实连接实例仍应由 datasource-management 管理，data-sync 只根据 connectorType 和能力矩阵做产品级判断。</p>
  *

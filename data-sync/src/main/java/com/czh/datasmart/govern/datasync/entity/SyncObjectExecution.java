@@ -64,11 +64,6 @@ public class SyncObjectExecution {
     private Long executionId;
 
     /**
-     * 同步模板 ID，便于从对象级明细反查当时使用的模板配置。
-     */
-    private Long templateId;
-
-    /**
      * 对象在 objectMappingConfig.mappings 中的顺序号，从 0 开始。
      *
      * <p>该字段和 executionId 组成唯一约束，保证同一个父 execution 下同一个对象只会有一条执行账本。
@@ -149,8 +144,8 @@ public class SyncObjectExecution {
     /**
      * 当前对象允许的最大尝试次数。
      *
-     * <p>默认由 data-sync 控制面解析模板 retryPolicy 得到；如果模板未声明，则采用保守默认值。
-     * 将该值落表是为了让恢复时使用“创建当时的策略”，避免模板后来变更导致历史 execution 行为漂移。</p>
+     * <p>默认由 data-sync 控制面解析任务定义 retryPolicy 得到；如果任务定义未声明，则采用保守默认值。
+     * 将该值落表是为了让恢复时使用“创建当时的策略”，避免任务定义后来变更导致历史 execution 行为漂移。</p>
      */
     private Integer maxAttemptCount;
 

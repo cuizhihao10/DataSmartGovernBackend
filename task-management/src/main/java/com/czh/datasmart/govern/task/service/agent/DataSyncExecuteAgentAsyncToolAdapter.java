@@ -21,7 +21,7 @@ import org.springframework.stereotype.Component;
  * 本地 outbox 命令。</p>
  *
  * <p>当前职责边界：</p>
- * <p>1. 校验并解析 Agent payload 中的 templateId/syncTemplateId 等低敏控制字段；</p>
+ * <p>1. 校验并解析 Agent payload 中的 syncTaskId 等低敏控制字段；</p>
  * <p>2. 写入 task-management 本地 DataSync worker command outbox，形成可追踪、可重放、可补偿的本地事实；</p>
  * <p>3. 调用 {@link DataSyncWorkerCommandDeliveryService} 完成真实下游投递；</p>
  * <p>4. 把 delivery 结果转换成 Agent worker 统一的成功、可重试失败或永久失败结果。</p>
@@ -84,15 +84,14 @@ public class DataSyncExecuteAgentAsyncToolAdapter implements AgentAsyncToolExecu
     /**
      * 从 Agent worker 已解析 payload 中构造 datasource-management 内部执行请求。
      *
-     * <p>该请求本身不会直接持久化到 outbox。outbox 只保存 commandId、idempotencyKey、tenant/project、templateId、
-     * syncTemplateId、priority、runMode、ownerId 等低敏字段；name/description 这类用户文本不会写入 outbox，
+     * <p>该请求本身不会直接持久化到 outbox。outbox 只保存 commandId、idempotencyKey、tenant/project、
+     * syncTaskId、priority、runMode、ownerId 等低敏字段；name/description 这类用户文本不会写入 outbox，
      * 避免自然语言上下文、筛选条件或业务路径进入跨服务命令账本。</p>
      */
     private DataSyncAgentExecuteRequest buildRequest(AgentAsyncToolResolvedPayload payload) {
-        Long templateId = longArgument(payload, "templateId");
-        Long syncTemplateId = longArgument(payload, "syncTemplateId");
-        if (templateId == null && syncTemplateId == null) {
-            throw new IllegalStateException("data-sync.execute 必须在 planArguments 中提供 templateId 或 syncTemplateId");
+        Long syncTaskId = longArgument(payload, "syncTaskId");
+        if (syncTaskId == null) {
+            throw new IllegalStateException("data-sync.execute 必须在 planArguments 中提供 syncTaskId");
         }
         DataSyncAgentExecuteRequest request = new DataSyncAgentExecuteRequest();
         request.setCommandId(payload.commandId());
@@ -106,8 +105,7 @@ public class DataSyncExecuteAgentAsyncToolAdapter implements AgentAsyncToolExecu
         request.setWorkspaceId(payload.workspaceId());
         request.setActorId(payload.actorId());
         request.setTraceId(payload.traceId());
-        request.setTemplateId(templateId);
-        request.setSyncTemplateId(syncTemplateId);
+        request.setSyncTaskId(syncTaskId);
         request.setName(stringArgument(payload, "name"));
         request.setDescription(stringArgument(payload, "description"));
         request.setPriority(stringArgument(payload, "priority"));
@@ -120,7 +118,7 @@ public class DataSyncExecuteAgentAsyncToolAdapter implements AgentAsyncToolExecu
      * 构造 DataSync worker command outbox 入箱请求。
      *
      * <p>这里传入的是低敏控制字段，而不是完整工具实参。即使 Agent payload 中包含 name/description，
-     * outbox 也不会保存这些文本。后续 dispatcher 重试时，应依赖 commandId、idempotencyKey、templateId、
+     * outbox 也不会保存这些文本。后续 dispatcher 重试时，应依赖 commandId、idempotencyKey、syncTaskId、
      * priority、runMode、ownerId 等稳定低敏字段完成下游调用。</p>
      */
     private DataSyncWorkerCommandStageRequest stageRequest(AgentAsyncToolResolvedPayload payload,
@@ -140,8 +138,7 @@ public class DataSyncExecuteAgentAsyncToolAdapter implements AgentAsyncToolExecu
                 payload.workspaceId(),
                 payload.actorId(),
                 payload.traceId(),
-                request.getTemplateId(),
-                request.getSyncTemplateId(),
+                request.getSyncTaskId(),
                 request.getPriority(),
                 request.getRunMode(),
                 request.getOwnerId()

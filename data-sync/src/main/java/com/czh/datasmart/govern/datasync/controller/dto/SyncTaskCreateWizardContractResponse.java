@@ -69,7 +69,7 @@ public record SyncTaskCreateWizardContractResponse(
     /**
      * 创建向导步骤。
      *
-     * <p>{@code savePolicy} 用于表达用户体验：第一步校验通过后进入第二步时才视为“已保存草稿/模板事实”，
+     * <p>{@code savePolicy} 用于表达用户体验：第一步校验通过后进入第二步时才视为“已保存草稿/任务定义事实”，
      * 第二步及以后“下一步”按钮应理解为“保存并进入下一步”。后端不会要求前端用 JSON 大文本一次性提交所有细节。</p>
      */
     public record WizardStep(

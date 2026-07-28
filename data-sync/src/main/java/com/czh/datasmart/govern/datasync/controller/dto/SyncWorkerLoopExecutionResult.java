@@ -23,7 +23,7 @@ import java.util.List;
  * @param failed 是否已经根据本地校验、远端结果或异常回写 fail
  * @param planStatus claim 返回的低敏执行计划状态，例如 READY_TO_RUN、BLOCKED
  * @param dispatchStatus run-once 派发摘要状态，例如 DISPATCHED_AND_COMPLETED、FAILED_BEFORE_REMOTE_CALL
- * @param outcome 面向运维人员的低敏结果分类，例如 COMPLETED、FAILED、NO_TEMPLATE、DISPATCH_EXCEPTION
+ * @param outcome 面向运维人员的低敏结果分类，例如 COMPLETED、FAILED、NO_TASK_DEFINITION、DISPATCH_EXCEPTION
  * @param issueCodes 低敏问题码集合，不包含异常堆栈、SQL、URL、字段值或样本数据
  */
 public record SyncWorkerLoopExecutionResult(Long taskId,

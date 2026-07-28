@@ -205,20 +205,19 @@ class PermissionProjectServiceImplTest {
     }
 
     /**
-     * 项目删除前如果仍有活动数据源、启用模板或未归档任务，必须阻断，避免项目归属上下文丢失。
+     * 项目删除前如果仍有活动数据源或未归档任务，必须阻断，避免项目归属上下文丢失。
      */
     @Test
     void deleteProjectIsBlockedWhenBusinessResourcesStillExist() {
         PermissionProject project = project(10L, 101L, "FLASHSYNC_DEFAULT");
         when(projectMapper.selectById(101L)).thenReturn(project);
         when(projectMapper.countActiveDatasources(10L, 101L)).thenReturn(1L);
-        when(projectMapper.countEnabledSyncTemplates(10L, 101L)).thenReturn(2L);
         when(projectMapper.countActiveSyncTasks(10L, 101L)).thenReturn(3L);
 
         var check = service.checkProjectDeletion(101L,
                 actor(10L, 1001L, PermissionRoleCode.TENANT_ADMINISTRATOR));
         assertThat(check.deletable()).isFalse();
-        assertThat(check.blockers()).hasSize(3);
+        assertThat(check.blockers()).hasSize(2);
 
         assertThatThrownBy(() -> service.deleteProject(101L,
                 new PermissionProjectStatusChangeRequest("删除测试项目"),

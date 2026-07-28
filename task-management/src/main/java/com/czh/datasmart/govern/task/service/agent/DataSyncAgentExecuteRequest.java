@@ -27,8 +27,7 @@ public class DataSyncAgentExecuteRequest {
     private Long workspaceId;
     private String actorId;
     private String traceId;
-    private Long templateId;
-    private Long syncTemplateId;
+    private Long syncTaskId;
     private String name;
     private String description;
     private String priority;

@@ -13,7 +13,7 @@ import java.util.List;
  * @Description DataSmart Govern Backend - SyncConnectorCapabilityAssessment.java
  * @Version:1.0.0
  *
- * 同步模板连接器能力评估结果。
+ * 同步任务连接器能力评估结果。
  *
  * <p>能力画像描述“某类连接器能做什么”，而能力评估描述“当前这份模板的源端、目标端、同步模式和写入策略是否匹配”。
  * 两者分离后，前端可以直接查询画像，后端也可以在模板创建、更新、智能校验时复用同一套判断逻辑。</p>

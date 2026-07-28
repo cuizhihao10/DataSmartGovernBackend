@@ -13,7 +13,7 @@ import java.util.List;
 /**
  * 过滤条件执行契约。
  *
- * <p>同步模板中的 {@code filterConfig} 是用户配置面对象，可能来自前端表单、Agent 生成或历史配置导入。
+ * <p>任务定义中的 {@code filterConfig} 是用户配置面对象，可能来自前端表单、Agent 生成或历史配置导入。
  * 真实执行器不能直接读取原始 JSON 并拼 SQL，因此 data-sync 先把它解析成这个“可执行契约”：
  * 只保留安全字段名、标准化操作符和值，后续由 datasource-management JDBC 方言层生成 PreparedStatement。</p>
  *

@@ -153,7 +153,7 @@ function Invoke-RealJdbcStep {
 function Invoke-PlatformApiE2EStep {
     <#
         平台/API 级 E2E 是当前 data-sync 闭环套件里“最接近真实用户路径”的一层：
-        - 它不再只跑 JUnit 或单模块 JDBC runner，而是通过 HTTP API 创建数据源、同步模板和同步任务；
+        - 它不再只跑 JUnit 或单模块 JDBC runner，而是通过 HTTP API 创建数据源和带一对一定义的同步任务；
         - 它会真实触发 data-sync worker loop，并让 worker 调用 datasource-management run-once；
         - 它会在同一条链路中验证 AUTO_SPLIT_PK、TaskGroup/channel、分片账本、失败分片选择性 retry、
           结构化脏数据样本、源端修复、PRIMARY_KEY_EQ dirty replay 和 PostgreSQL 目标表最终断言。

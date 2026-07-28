@@ -156,8 +156,8 @@ class SyncTaskGroupOperationSupportTest {
     }
 
     private SyncTaskQueryCriteria criteria() {
-        return new SyncTaskQueryCriteria(10L, null, null, null, null, null,
-                null, null, 1L, 100L, null);
+        return new SyncTaskQueryCriteria(
+                10L, null, null, null, null, null, null, 1L, 100L, null);
     }
 
     private SyncDataVisibility projectVisibility() {

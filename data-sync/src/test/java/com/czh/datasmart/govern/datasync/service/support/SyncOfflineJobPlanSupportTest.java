@@ -7,7 +7,7 @@
 package com.czh.datasmart.govern.datasync.service.support;
 
 import com.czh.datasmart.govern.datasync.controller.dto.SyncOfflineJobPlanResponse;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
@@ -29,14 +29,14 @@ class SyncOfflineJobPlanSupportTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final SyncOfflineJobPlanSupport support = new SyncOfflineJobPlanSupport(
             new SyncConnectorCapabilityRegistry(),
-            new SyncTemplateScopeContractSupport(objectMapper),
+            new SyncTaskDefinitionScopeContractSupport(objectMapper),
             new SyncFieldMappingExecutionContractSupport(objectMapper),
             objectMapper
     );
 
     @Test
     void fullSingleObjectShouldBuildReadyOfflinePlanForMinimalBridge() {
-        SyncOfflineJobPlanResponse response = support.buildPlan(executableSingleObjectTemplate("FULL"));
+        SyncOfflineJobPlanResponse response = support.buildPlan(executableSingleObjectDefinition("FULL"));
 
         assertThat(response.planStatus()).isEqualTo(SyncOfflineJobPlanSupport.PLAN_READY);
         assertThat(response.transferChannel()).isEqualTo("OFFLINE");
@@ -52,7 +52,7 @@ class SyncOfflineJobPlanSupportTest {
 
     @Test
     void scheduledFullShouldRequireTaskLevelScheduleAndReuseFullScanRunner() {
-        SyncOfflineJobPlanResponse response = support.buildPlan(executableSingleObjectTemplate("SCHEDULED_FULL"));
+        SyncOfflineJobPlanResponse response = support.buildPlan(executableSingleObjectDefinition("SCHEDULED_FULL"));
 
         assertThat(response.planStatus()).isEqualTo(SyncOfflineJobPlanSupport.PLAN_READY);
         assertThat(response.transferChannel()).isEqualTo("OFFLINE");
@@ -68,7 +68,7 @@ class SyncOfflineJobPlanSupportTest {
 
     @Test
     void scheduledBatchShouldRequireTaskLevelScheduleAndUseMinimalBridge() {
-        SyncOfflineJobPlanResponse response = support.buildPlan(executableSingleObjectTemplate("SCHEDULED_BATCH"));
+        SyncOfflineJobPlanResponse response = support.buildPlan(executableSingleObjectDefinition("SCHEDULED_BATCH"));
 
         assertThat(response.planStatus()).isEqualTo(SyncOfflineJobPlanSupport.PLAN_READY);
         assertThat(response.transferChannel()).isEqualTo("OFFLINE");
@@ -86,16 +86,16 @@ class SyncOfflineJobPlanSupportTest {
 
     @Test
     void customSqlShouldRequireApprovalAndHideSqlBody() {
-        SyncTemplate template = executableSingleObjectTemplate("CUSTOM_SQL_QUERY");
-        template.setSyncScopeType("CUSTOM_SQL_QUERY");
-        template.setCustomSqlConfig("""
+        SyncTaskDefinition definition = executableSingleObjectDefinition("CUSTOM_SQL_QUERY");
+        definition.setSyncScopeType("CUSTOM_SQL_QUERY");
+        definition.setCustomSqlConfig("""
                 {
                   "statementRef": "managed-sql.customer-active",
                   "sql": "select id, name from customer where status = :status"
                 }
                 """);
 
-        SyncOfflineJobPlanResponse response = support.buildPlan(template);
+        SyncOfflineJobPlanResponse response = support.buildPlan(definition);
 
         assertThat(response.planStatus()).isEqualTo(SyncOfflineJobPlanSupport.PLAN_READY_REQUIRES_APPROVAL);
         assertThat(response.modeFamily()).isEqualTo("CUSTOM_SQL_RESULT_SET");
@@ -114,7 +114,7 @@ class SyncOfflineJobPlanSupportTest {
 
     @Test
     void cdcStreamingShouldBeRejectedByOfflinePlan() {
-        SyncOfflineJobPlanResponse response = support.buildPlan(executableSingleObjectTemplate("CDC_STREAMING"));
+        SyncOfflineJobPlanResponse response = support.buildPlan(executableSingleObjectDefinition("CDC_STREAMING"));
 
         assertThat(response.planStatus()).isEqualTo(SyncOfflineJobPlanSupport.NOT_OFFLINE_CHANNEL);
         assertThat(response.transferChannel()).isEqualTo("REALTIME");
@@ -126,9 +126,9 @@ class SyncOfflineJobPlanSupportTest {
 
     @Test
     void objectListShouldBePlanReadyButFailClosedForMinimalBridge() {
-        SyncTemplate template = executableSingleObjectTemplate("FULL");
-        template.setSyncScopeType("OBJECT_LIST");
-        template.setObjectMappingConfig("""
+        SyncTaskDefinition definition = executableSingleObjectDefinition("FULL");
+        definition.setSyncScopeType("OBJECT_LIST");
+        definition.setObjectMappingConfig("""
                 {
                   "mappings": [
                     {"sourceObject": "customer", "targetObject": "customer"},
@@ -137,7 +137,7 @@ class SyncOfflineJobPlanSupportTest {
                 }
                 """);
 
-        SyncOfflineJobPlanResponse response = support.buildPlan(template);
+        SyncOfflineJobPlanResponse response = support.buildPlan(definition);
 
         assertThat(response.planStatus()).isEqualTo(SyncOfflineJobPlanSupport.PLAN_READY_DEDICATED_RUNNER_REQUIRED);
         assertThat(response.planReady()).isTrue();
@@ -149,29 +149,29 @@ class SyncOfflineJobPlanSupportTest {
         assertThat(response.failClosedReasons()).contains("DEDICATED_OFFLINE_RUNNER_REQUIRED_FOR_SCOPE");
     }
 
-    private SyncTemplate executableSingleObjectTemplate(String syncMode) {
-        SyncTemplate template = new SyncTemplate();
-        template.setId(22L);
-        template.setTenantId(7L);
-        template.setProjectId(101L);
-        template.setWorkspaceId(301L);
-        template.setSourceDatasourceId(10001L);
-        template.setTargetDatasourceId(10002L);
-        template.setSourceSchemaName("ods");
-        template.setSourceObjectName("customer");
-        template.setTargetSchemaName("dwd");
-        template.setTargetObjectName("customer");
-        template.setSourceConnectorType("MYSQL");
-        template.setTargetConnectorType("POSTGRESQL");
-        template.setSyncMode(syncMode);
-        template.setSyncScopeType("SINGLE_OBJECT");
-        template.setWriteStrategy("APPEND");
-        template.setFieldMappingConfig("""
+    private SyncTaskDefinition executableSingleObjectDefinition(String syncMode) {
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setId(22L);
+        definition.setTenantId(7L);
+        definition.setProjectId(101L);
+        definition.setWorkspaceId(301L);
+        definition.setSourceDatasourceId(10001L);
+        definition.setTargetDatasourceId(10002L);
+        definition.setSourceSchemaName("ods");
+        definition.setSourceObjectName("customer");
+        definition.setTargetSchemaName("dwd");
+        definition.setTargetObjectName("customer");
+        definition.setSourceConnectorType("MYSQL");
+        definition.setTargetConnectorType("POSTGRESQL");
+        definition.setSyncMode(syncMode);
+        definition.setSyncScopeType("SINGLE_OBJECT");
+        definition.setWriteStrategy("APPEND");
+        definition.setFieldMappingConfig("""
                 [
                   {"sourceField": "id", "targetField": "id"},
                   {"sourceField": "name", "targetField": "name"}
                 ]
                 """);
-        return template;
+        return definition;
     }
 }

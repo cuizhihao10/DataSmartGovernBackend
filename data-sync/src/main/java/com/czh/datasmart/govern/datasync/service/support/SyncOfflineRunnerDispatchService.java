@@ -13,7 +13,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionFailRequest
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanView;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
@@ -149,19 +149,19 @@ public class SyncOfflineRunnerDispatchService {
      *
      * @param execution 当前已被 worker claim 的执行记录，通常处于 RUNNING。
      * @param task execution 所属任务。
-     * @param template 任务关联模板。
+     * @param definition 任务关联任务定义。
      * @param workerPlan claim 阶段返回的低敏 worker 计划。
      * @param actorContext 当前操作者或服务账号上下文。
      * @return 低敏调度结果。
      */
     public SyncOfflineRunnerDispatchResult dispatchOffline(SyncExecution execution,
                                                            SyncTask task,
-                                                           SyncTemplate template,
+                                                           SyncTaskDefinition definition,
                                                            SyncWorkerExecutionPlanView workerPlan,
                                                            SyncActorContext actorContext) {
-        requireDispatchInputs(execution, task, template, workerPlan);
+        requireDispatchInputs(execution, task, definition, workerPlan);
         SyncActorContext safeActorContext = ensureActorContext(execution, task, actorContext);
-        SyncBatchRunnerBridgePlan bridgePlan = bridgePlanSupport.buildPlan(execution, task, template, workerPlan);
+        SyncBatchRunnerBridgePlan bridgePlan = bridgePlanSupport.buildPlan(execution, task, definition, workerPlan);
         SyncOfflineRunnerJobContract contract = bridgePlan.getOfflineRunnerContract();
         recordRunnerEvent(task, execution, safeActorContext,
                 "PLAN",
@@ -203,10 +203,10 @@ public class SyncOfflineRunnerDispatchService {
                     "STARTED",
                     "全 schema/全库任务将先发现对象清单，再进入对象级 fan-out 执行",
                     "contractStatus=" + contract.contractStatus());
-            return discoveredObjectFanOutDispatchService.dispatchDiscoveredObjects(execution, task, template, workerPlan,
+            return discoveredObjectFanOutDispatchService.dispatchDiscoveredObjects(execution, task, definition, workerPlan,
                     safeActorContext, contract);
         }
-        if (partitionShardFanOutDispatchService.supports(contract, template, safeActorContext)) {
+        if (partitionShardFanOutDispatchService.supports(contract, definition, safeActorContext)) {
             /*
              * partitionConfig 一旦声明，就不能继续落到普通 minimal run-once。
              * 否则用户配置了“大表分片”，系统却仍按单通道全表扫描执行，会造成性能误判和恢复语义缺失。
@@ -219,7 +219,7 @@ public class SyncOfflineRunnerDispatchService {
                     "STARTED",
                     "单表大数据量同步将进入 splitPk 分片 fan-out 执行",
                     "contractStatus=" + contract.contractStatus());
-            return partitionShardFanOutDispatchService.dispatchPartitionShards(execution, task, template, workerPlan,
+            return partitionShardFanOutDispatchService.dispatchPartitionShards(execution, task, definition, workerPlan,
                     safeActorContext, contract);
         }
         if (objectListFanOutDispatchService.supports(contract, safeActorContext)) {
@@ -231,7 +231,7 @@ public class SyncOfflineRunnerDispatchService {
                     "同步对象将按对象账本执行，失败对象可选择性重试",
                     "contractStatus=" + contract.contractStatus()
                             + ", syncScopeType=" + contract.syncScopeType());
-            return objectListFanOutDispatchService.dispatchObjectList(execution, task, template, workerPlan,
+            return objectListFanOutDispatchService.dispatchObjectList(execution, task, definition, workerPlan,
                     safeActorContext, contract);
         }
         if (Boolean.TRUE.equals(safeActorContext.approvalRequired())) {
@@ -255,7 +255,7 @@ public class SyncOfflineRunnerDispatchService {
         if (!contract.minimalBridgeEndToEndSupported()) {
             SyncOfflineRunnerAdapter dedicatedRunnerAdapter = runnerAdapterRegistry.select(contract).orElse(null);
             if (dedicatedRunnerAdapter != null) {
-                return dispatchDedicatedRunner(dedicatedRunnerAdapter, task, execution, template, workerPlan,
+                return dispatchDedicatedRunner(dedicatedRunnerAdapter, task, execution, definition, workerPlan,
                         safeActorContext, bridgePlan, contract);
             }
             return failUnsupportedContractBeforeDelegate(task, execution, safeActorContext, bridgePlan, contract);
@@ -269,16 +269,16 @@ public class SyncOfflineRunnerDispatchService {
     /**
      * 校验调度所需上下文。
      *
-     * <p>这里抛出参数错误而不是写 fail，是因为缺 execution/task/template/workerPlan 通常表示调用方编排错误，
+     * <p>这里抛出参数错误而不是写 fail，是因为缺 execution/task/definition/workerPlan 通常表示调用方编排错误，
      * 此时不一定有足够安全的业务上下文可以回写状态机。</p>
      */
     private void requireDispatchInputs(SyncExecution execution,
                                        SyncTask task,
-                                       SyncTemplate template,
+                                       SyncTaskDefinition definition,
                                        SyncWorkerExecutionPlanView workerPlan) {
-        if (execution == null || task == null || template == null || workerPlan == null) {
+        if (execution == null || task == null || definition == null || workerPlan == null) {
             throw new PlatformBusinessException(PlatformErrorCode.VALIDATION_ERROR,
-                    "离线 Runner 调度缺少 execution/task/template/workerPlan 上下文，无法安全推进状态机");
+                    "离线 Runner 调度缺少 execution/task/definition/workerPlan 上下文，无法安全推进状态机");
         }
     }
 
@@ -287,7 +287,7 @@ public class SyncOfflineRunnerDispatchService {
      *
      * <p>这是 data-sync 从“只能识别需要专用 Runner”走向“可以真正接入专用 Runner”的最小执行循环。
      * 当前仓库还没有注册真实 DataX adapter 时，本方法不会被调用；一旦后续新增 adapter Bean，
-     * 调度门面就会把 bridge plan、低敏 Runner 合同、execution、task、template 和 actor 上下文统一交给 adapter。</p>
+     * 调度门面就会把 bridge plan、低敏 Runner 合同、execution、task、definition 和 actor 上下文统一交给 adapter。</p>
      *
      * <p>这里不直接做 DataX job 拼装，原因有两个：</p>
      * <p>1. 拼装 reader/writer、并发、限流、checkpoint 和回调协议属于具体 runner 实现，不能写死在调度门面；</p>
@@ -296,13 +296,13 @@ public class SyncOfflineRunnerDispatchService {
     private SyncOfflineRunnerDispatchResult dispatchDedicatedRunner(SyncOfflineRunnerAdapter adapter,
                                                                     SyncTask task,
                                                                     SyncExecution execution,
-                                                                    SyncTemplate template,
+                                                                    SyncTaskDefinition definition,
                                                                     SyncWorkerExecutionPlanView workerPlan,
                                                                     SyncActorContext actorContext,
                                                                     SyncBatchRunnerBridgePlan bridgePlan,
                                                                     SyncOfflineRunnerJobContract contract) {
         SyncOfflineRunnerExecutionRequest request = new SyncOfflineRunnerExecutionRequest(
-                bridgePlan, contract, execution, task, template, workerPlan, actorContext);
+                bridgePlan, contract, execution, task, definition, workerPlan, actorContext);
         try {
             SyncOfflineRunnerAdapterResult adapterResult = adapter.dispatch(request);
             if (adapterResult == null) {

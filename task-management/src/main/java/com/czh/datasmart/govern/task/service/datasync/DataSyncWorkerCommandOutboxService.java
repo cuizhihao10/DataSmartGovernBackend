@@ -192,8 +192,7 @@ public class DataSyncWorkerCommandOutboxService {
         outbox.setWorkspaceId(request.getWorkspaceId());
         outbox.setActorId(trimToNull(request.getActorId()));
         outbox.setTraceId(trimToNull(request.getTraceId()));
-        outbox.setTemplateId(request.getTemplateId());
-        outbox.setSyncTemplateId(request.getSyncTemplateId());
+        outbox.setSyncTaskId(request.getSyncTaskId());
         outbox.setStatus(DataSyncWorkerCommandOutboxStatus.PENDING.name());
         outbox.setAttemptCount(0);
         outbox.setPayloadJson(payloadJson);
@@ -225,8 +224,7 @@ public class DataSyncWorkerCommandOutboxService {
         payload.put("tenantId", request.getTenantId());
         payload.put("projectId", request.getProjectId());
         payload.put("workspaceId", request.getWorkspaceId());
-        payload.put("templateId", request.getTemplateId());
-        payload.put("syncTemplateId", request.getSyncTemplateId());
+        payload.put("syncTaskId", request.getSyncTaskId());
         payload.put("priority", trimToNull(request.getPriority()));
         payload.put("runMode", trimToNull(request.getRunMode()));
         payload.put("ownerId", request.getOwnerId());
@@ -283,9 +281,7 @@ public class DataSyncWorkerCommandOutboxService {
         requirePositive(request.getTaskId(), "taskId");
         requirePositive(request.getTenantId(), "tenantId");
         requirePositive(request.getProjectId(), "projectId");
-        if (request.getTemplateId() == null && request.getSyncTemplateId() == null) {
-            throw new IllegalArgumentException("DataSync worker command 必须包含 templateId 或 syncTemplateId");
-        }
+        requirePositive(request.getSyncTaskId(), "syncTaskId");
     }
 
     private void validateReceiptRequest(DataSyncWorkerReceiptRecordRequest request) {

@@ -9,8 +9,8 @@ package com.czh.datasmart.govern.datasync.service.support;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanView;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
-import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
+import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import com.czh.datasmart.govern.datasync.support.SyncExecutionState;
 import com.czh.datasmart.govern.datasync.support.SyncTriggerType;
 import org.junit.jupiter.api.Test;
@@ -31,8 +31,8 @@ import static org.mockito.Mockito.when;
 class SyncWorkerExecutionPlanSupportTest {
 
     @Test
-    void readyTemplateShouldProduceLowSensitiveWorkerPlan() {
-        Fixture fixture = fixture(template("FULL", "MYSQL", "POSTGRESQL")
+    void readyDefinitionShouldProduceLowSensitiveWorkerPlan() {
+        Fixture fixture = fixture(definition("FULL", "MYSQL", "POSTGRESQL")
                 .setFieldMappingConfigForTest("{\"secret\":\"不要返回字段映射正文\"}")
                 .setFilterConfigForTest("where token = 'secret'")
                 .setPartitionConfigForTest("{\"partitionKey\":\"customer_id\"}")
@@ -59,8 +59,8 @@ class SyncWorkerExecutionPlanSupportTest {
     }
 
     @Test
-    void incrementalTemplateWithoutBoundaryShouldWarnWorker() {
-        Fixture fixture = fixture(template("INCREMENTAL_TIME", "MYSQL", "POSTGRESQL")
+    void incrementalDefinitionWithoutBoundaryShouldWarnWorker() {
+        Fixture fixture = fixture(definition("INCREMENTAL_TIME", "MYSQL", "POSTGRESQL")
                 .setIncrementalFieldForTest("updated_at")
                 .setFieldMappingConfigForTest("{}")
                 .setRetryPolicyForTest("{}")
@@ -77,7 +77,7 @@ class SyncWorkerExecutionPlanSupportTest {
 
     @Test
     void missingObjectBindingShouldBlockWorkerBeforeReadOrWrite() {
-        Fixture fixture = fixture(template("FULL", "MYSQL", "POSTGRESQL")
+        Fixture fixture = fixture(definition("FULL", "MYSQL", "POSTGRESQL")
                 .setSourceObjectNameForTest(null)
                 .setTargetObjectNameForTest(null)
                 .setFieldMappingConfigForTest("{}")
@@ -95,7 +95,7 @@ class SyncWorkerExecutionPlanSupportTest {
 
     @Test
     void conflictWriteWithoutPrimaryKeyShouldBlockWorker() {
-        Fixture fixture = fixture(template("FULL", "MYSQL", "POSTGRESQL")
+        Fixture fixture = fixture(definition("FULL", "MYSQL", "POSTGRESQL")
                 .setWriteStrategyForTest("UPSERT")
                 .setFieldMappingConfigForTest("{}")
                 .setRetryPolicyForTest("{}")
@@ -111,7 +111,7 @@ class SyncWorkerExecutionPlanSupportTest {
 
     @Test
     void unsupportedConnectorModeShouldBlockWorker() {
-        Fixture fixture = fixture(template("FULL", "KAFKA", "POSTGRESQL")
+        Fixture fixture = fixture(definition("FULL", "KAFKA", "POSTGRESQL")
                 .setFieldMappingConfigForTest("{}")
                 .setRetryPolicyForTest("{}")
                 .setTimeoutPolicyForTest("{}"));
@@ -125,24 +125,24 @@ class SyncWorkerExecutionPlanSupportTest {
     }
 
     @Test
-    void missingTemplateShouldReturnUnavailableBlockedPlan() {
-        SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
-        when(templateMapper.selectById(22L)).thenReturn(null);
+    void missingDefinitionShouldReturnUnavailableBlockedPlan() {
+        SyncTaskDefinitionMapper taskDefinitionMapper = mock(SyncTaskDefinitionMapper.class);
+        when(taskDefinitionMapper.selectById(11L)).thenReturn(null);
         SyncWorkerExecutionPlanSupport support = new SyncWorkerExecutionPlanSupport(
-                templateMapper, new SyncConnectorCapabilityRegistry());
+                taskDefinitionMapper, new SyncConnectorCapabilityRegistry());
 
         SyncWorkerExecutionPlanView plan = support.buildPlan(execution(), task());
 
         assertThat(plan.available()).isFalse();
         assertThat(plan.planStatus()).isEqualTo("BLOCKED");
-        assertThat(plan.issueCodes()).contains("TEMPLATE_NOT_FOUND");
+        assertThat(plan.issueCodes()).contains("TASK_DEFINITION_NOT_FOUND");
         assertThat(plan.workerActions()).contains("DO_NOT_READ_OR_WRITE_DATA");
     }
 
-    private Fixture fixture(SyncTemplate template) {
-        SyncTemplateMapper templateMapper = mock(SyncTemplateMapper.class);
-        when(templateMapper.selectById(22L)).thenReturn(template);
-        return new Fixture(new SyncWorkerExecutionPlanSupport(templateMapper, new SyncConnectorCapabilityRegistry()));
+    private Fixture fixture(SyncTaskDefinition definition) {
+        SyncTaskDefinitionMapper taskDefinitionMapper = mock(SyncTaskDefinitionMapper.class);
+        when(taskDefinitionMapper.selectById(11L)).thenReturn(definition);
+        return new Fixture(new SyncWorkerExecutionPlanSupport(taskDefinitionMapper, new SyncConnectorCapabilityRegistry()));
     }
 
     private SyncExecution execution() {
@@ -166,28 +166,27 @@ class SyncWorkerExecutionPlanSupportTest {
         task.setTenantId(7L);
         task.setProjectId(101L);
         task.setWorkspaceId(301L);
-        task.setTemplateId(22L);
         return task;
     }
 
-    private TestTemplate template(String syncMode, String sourceConnectorType, String targetConnectorType) {
-        TestTemplate template = new TestTemplate();
-        template.setId(22L);
-        template.setTenantId(7L);
-        template.setProjectId(101L);
-        template.setWorkspaceId(301L);
-        template.setSourceDatasourceId(10001L);
-        template.setTargetDatasourceId(10002L);
-        template.setSourceSchemaName("ods");
-        template.setSourceObjectName("customer");
-        template.setTargetSchemaName("dwd");
-        template.setTargetObjectName("customer");
-        template.setSourceConnectorType(sourceConnectorType);
-        template.setTargetConnectorType(targetConnectorType);
-        template.setSyncMode(syncMode);
-        template.setWriteStrategy("APPEND");
-        template.setEnabled(true);
-        return template;
+    private TestDefinition definition(String syncMode, String sourceConnectorType, String targetConnectorType) {
+        TestDefinition definition = new TestDefinition();
+        definition.setId(11L);
+        definition.setTenantId(7L);
+        definition.setProjectId(101L);
+        definition.setWorkspaceId(301L);
+        definition.setSourceDatasourceId(10001L);
+        definition.setTargetDatasourceId(10002L);
+        definition.setSourceSchemaName("ods");
+        definition.setSourceObjectName("customer");
+        definition.setTargetSchemaName("dwd");
+        definition.setTargetObjectName("customer");
+        definition.setSourceConnectorType(sourceConnectorType);
+        definition.setTargetConnectorType(targetConnectorType);
+        definition.setSyncMode(syncMode);
+        definition.setWriteStrategy("APPEND");
+        definition.setEnabled(true);
+        return definition;
     }
 
     private record Fixture(SyncWorkerExecutionPlanSupport support) {
@@ -197,51 +196,51 @@ class SyncWorkerExecutionPlanSupportTest {
      * 测试专用模板子类。
      *
      * <p>这里使用链式方法只是为了让测试用例更聚焦业务差异，例如“缺少增量边界”或“配置正文不能外泄”。
-     * 生产代码仍使用普通 {@link SyncTemplate} 实体。</p>
+     * 生产代码仍使用普通 {@link SyncTaskDefinition} 实体。</p>
      */
-    private static class TestTemplate extends SyncTemplate {
+    private static class TestDefinition extends SyncTaskDefinition {
 
-        private TestTemplate setFieldMappingConfigForTest(String value) {
+        private TestDefinition setFieldMappingConfigForTest(String value) {
             setFieldMappingConfig(value);
             return this;
         }
 
-        private TestTemplate setFilterConfigForTest(String value) {
+        private TestDefinition setFilterConfigForTest(String value) {
             setFilterConfig(value);
             return this;
         }
 
-        private TestTemplate setPartitionConfigForTest(String value) {
+        private TestDefinition setPartitionConfigForTest(String value) {
             setPartitionConfig(value);
             return this;
         }
 
-        private TestTemplate setRetryPolicyForTest(String value) {
+        private TestDefinition setRetryPolicyForTest(String value) {
             setRetryPolicy(value);
             return this;
         }
 
-        private TestTemplate setTimeoutPolicyForTest(String value) {
+        private TestDefinition setTimeoutPolicyForTest(String value) {
             setTimeoutPolicy(value);
             return this;
         }
 
-        private TestTemplate setSourceObjectNameForTest(String value) {
+        private TestDefinition setSourceObjectNameForTest(String value) {
             setSourceObjectName(value);
             return this;
         }
 
-        private TestTemplate setTargetObjectNameForTest(String value) {
+        private TestDefinition setTargetObjectNameForTest(String value) {
             setTargetObjectName(value);
             return this;
         }
 
-        private TestTemplate setWriteStrategyForTest(String value) {
+        private TestDefinition setWriteStrategyForTest(String value) {
             setWriteStrategy(value);
             return this;
         }
 
-        private TestTemplate setIncrementalFieldForTest(String value) {
+        private TestDefinition setIncrementalFieldForTest(String value) {
             setIncrementalField(value);
             return this;
         }

@@ -1,0 +1,393 @@
+/**
+ * @Author : Cui
+ * @Date: 2026/06/29 02:40
+ * @Description DataSmart Govern Backend - SyncTaskDefinitionPlanningPreviewSupport.java
+ * @Version:1.0.0
+ */
+package com.czh.datasmart.govern.datasync.service.support;
+
+import com.czh.datasmart.govern.datasync.controller.dto.SyncConnectorCompatibilityView;
+import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskDefinitionPlanningPreviewResponse;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
+import com.czh.datasmart.govern.datasync.support.SyncMode;
+import com.czh.datasmart.govern.datasync.support.SyncTransferChannel;
+import com.czh.datasmart.govern.datasync.support.SyncWriteStrategy;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+
+/**
+ * 同步任务定义规划预览支撑组件。
+ *
+ * <p>预览接口处在“任务定义保存”和“执行预检查”之间：它不访问真实数据源，也不执行 SQL，只根据任务中已经保存的
+ * 低敏配置事实生成一份可解释报告。这样用户和 Agent 可以在创建任务前看到：配置缺了什么、是否需要审批、
+ * 当前最小 runner 能否执行、哪些性能或安全风险需要补充。</p>
+ *
+ * <p>为什么不把 preview 做成 validate 的别名：</p>
+ * <p>1. validate 是 fail-fast，适合阻断继续操作；preview 是问题清单，适合一次性展示多个缺口；</p>
+ * <p>2. preview 需要区分“可进入任务草稿但暂不能执行”的高级范围，例如整库迁移、自定义 SQL；</p>
+ * <p>3. preview 的返回值必须遵循低敏原则，不返回字段映射、对象映射、SQL、过滤条件、分区窗口或连接配置原文。</p>
+ */
+@Component
+public class SyncTaskDefinitionPlanningPreviewSupport {
+
+    private static final String PAYLOAD_POLICY = "LOW_SENSITIVE_TASK_DEFINITION_PLANNING_PREVIEW";
+    private static final String READY = "READY";
+    private static final String NEEDS_REVIEW = "NEEDS_REVIEW";
+    private static final String BLOCKED = "BLOCKED";
+
+    private final SyncConnectorCapabilityRegistry connectorCapabilityRegistry;
+    private final SyncTaskDefinitionScopeContractSupport scopeContractSupport;
+
+    /**
+     * 兼容旧测试的构造器。
+     */
+    public SyncTaskDefinitionPlanningPreviewSupport(SyncConnectorCapabilityRegistry connectorCapabilityRegistry) {
+        this(connectorCapabilityRegistry, new SyncTaskDefinitionScopeContractSupport());
+    }
+
+    /**
+     * Spring 注入构造器。
+     */
+    @Autowired
+    public SyncTaskDefinitionPlanningPreviewSupport(SyncConnectorCapabilityRegistry connectorCapabilityRegistry,
+                                              SyncTaskDefinitionScopeContractSupport scopeContractSupport) {
+        this.connectorCapabilityRegistry = connectorCapabilityRegistry;
+        this.scopeContractSupport = scopeContractSupport;
+    }
+
+    /**
+     * 生成同步任务定义规划预览。
+     *
+     * @param definition 已通过数据范围校验读取出的任务定义。
+     * @return 低敏规划预览，不包含配置原文或样本数据。
+     */
+    public SyncTaskDefinitionPlanningPreviewResponse preview(SyncTaskDefinition definition) {
+        List<String> issueCodes = new ArrayList<>();
+        List<String> recommendedActions = new ArrayList<>();
+        List<String> performanceNotes = new ArrayList<>();
+        List<String> safetyNotes = new ArrayList<>();
+
+        SyncTaskDefinitionScopeContract scopeContract = scopeContractSupport.evaluate(definition);
+        issueCodes.addAll(scopeContract.issueCodes());
+        recommendedActions.addAll(scopeContract.recommendedActions());
+        safetyNotes.addAll(scopeContract.warnings());
+
+        SyncMode syncMode = resolveMode(definition, issueCodes, recommendedActions);
+        SyncWriteStrategy writeStrategy = resolveWriteStrategy(definition, syncMode, issueCodes, recommendedActions);
+        SyncConnectorCompatibilityView compatibility = resolveCompatibility(definition, syncMode, issueCodes, recommendedActions);
+        SyncTransferChannel transferChannel = SyncTransferChannelSupport.resolve(syncMode);
+        performanceNotes.add(SyncTransferChannelSupport.explanation(transferChannel));
+
+        boolean sourceObjectDeclared = hasText(definition.getSourceObjectName());
+        boolean targetObjectDeclared = hasText(definition.getTargetObjectName());
+        boolean primaryKeyDeclared = hasText(definition.getPrimaryKeyField());
+        boolean incrementalFieldDeclared = hasText(definition.getIncrementalField());
+        boolean fieldMappingDeclared = hasText(definition.getFieldMappingConfig());
+        boolean filterDeclared = hasText(definition.getFilterConfig());
+        boolean partitionDeclared = hasText(definition.getPartitionConfig());
+        boolean retryPolicyDeclared = hasText(definition.getRetryPolicy());
+        boolean timeoutPolicyDeclared = hasText(definition.getTimeoutPolicy());
+
+        evaluateConfigurationHints(syncMode, writeStrategy, compatibility, scopeContract,
+                sourceObjectDeclared, targetObjectDeclared, primaryKeyDeclared, incrementalFieldDeclared,
+                fieldMappingDeclared, filterDeclared, partitionDeclared, retryPolicyDeclared, timeoutPolicyDeclared,
+                issueCodes, recommendedActions, performanceNotes, safetyNotes);
+
+        List<String> distinctIssues = distinct(issueCodes);
+        String previewStatus = resolvePreviewStatus(distinctIssues);
+        boolean connectorSupported = compatibility != null && compatibility.supported();
+        boolean executionPrecheckReady = READY.equals(previewStatus)
+                && connectorSupported
+                && scopeContract.executableByMinimalBridge()
+                && fieldMappingDeclared
+                && !scopeContract.requiresApproval();
+
+        return new SyncTaskDefinitionPlanningPreviewResponse(
+                definition.getTenantId(),
+                definition.getProjectId(),
+                definition.getWorkspaceId(),
+                definition.getSourceDatasourceId(),
+                definition.getTargetDatasourceId(),
+                normalize(definition.getSourceConnectorType()),
+                normalize(definition.getTargetConnectorType()),
+                normalize(definition.getSyncMode()),
+                transferChannel == null ? null : transferChannel.name(),
+                SyncTransferChannelSupport.referenceRuntime(transferChannel),
+                scopeContract.scopeType(),
+                scopeContract.singleObjectScope(),
+                scopeContract.multiObjectScope(),
+                scopeContract.customSqlScope(),
+                scopeContract.selectedObjectCount(),
+                scopeContract.objectMappingDeclared(),
+                scopeContract.customSqlDeclared(),
+                scopeContract.requiresApproval(),
+                scopeContract.executableByMinimalBridge(),
+                sourceObjectDeclared,
+                targetObjectDeclared,
+                writeStrategy == null ? null : writeStrategy.name(),
+                writeStrategy != null && writeStrategy.requiresConflictKey(),
+                primaryKeyDeclared,
+                incrementalFieldDeclared,
+                previewStatus,
+                !BLOCKED.equals(previewStatus),
+                executionPrecheckReady,
+                connectorSupported,
+                compatibility != null && compatibility.checkpointRequired(),
+                fieldMappingDeclared,
+                filterDeclared,
+                partitionDeclared,
+                retryPolicyDeclared,
+                timeoutPolicyDeclared,
+                distinctIssues,
+                distinct(recommendedActions),
+                distinct(performanceNotes),
+                distinct(safetyNotes),
+                PAYLOAD_POLICY
+        );
+    }
+
+    /**
+     * 解析同步模式。
+     *
+     * <p>预览接口不直接抛出异常，而是把问题压缩成 issueCode，便于前端一次性展示多类缺口。</p>
+     */
+    private SyncMode resolveMode(SyncTaskDefinition definition, List<String> issueCodes, List<String> recommendedActions) {
+        String syncMode = normalize(definition.getSyncMode());
+        if (syncMode == null) {
+            issueCodes.add("SYNC_MODE_MISSING");
+            recommendedActions.add("先为同步任务选择 FULL、SCHEDULED_FULL、SCHEDULED_BATCH、CUSTOM_SQL_QUERY、CDC_STREAMING 五个用户可选传输模式之一");
+            return null;
+        }
+        try {
+            SyncMode mode = SyncMode.valueOf(syncMode);
+            if (!mode.isUserSelectableTransferMode()) {
+                issueCodes.add("SYNC_MODE_NOT_USER_SELECTABLE_TRANSFER_MODE");
+                recommendedActions.add("该 syncMode 属于内部/历史能力，不能出现在新建任务传输模式中；失败回放、历史补数、离线导入导出应改走专用流程入口");
+            }
+            return mode;
+        } catch (IllegalArgumentException exception) {
+            issueCodes.add("SYNC_MODE_UNSUPPORTED");
+            recommendedActions.add("将 syncMode 调整为平台 SyncMode 枚举支持的值");
+            return null;
+        }
+    }
+
+    /**
+     * 解析写入策略，并将未知策略压缩为低敏 issueCode。
+     */
+    private SyncWriteStrategy resolveWriteStrategy(SyncTaskDefinition definition,
+                                                   SyncMode syncMode,
+                                                   List<String> issueCodes,
+                                                   List<String> recommendedActions) {
+        try {
+            SyncWriteStrategy writeStrategy = SyncWriteStrategy.fromValueForMode(
+                    definition.getWriteStrategy(), syncMode == null ? null : syncMode.name());
+            if (!hasText(definition.getWriteStrategy())) {
+                if (syncMode == SyncMode.CDC_STREAMING) {
+                    recommendedActions.add("实时 CDC 可不展示写入策略，后端会默认按 UPDATE/merge 解释，保证同一业务主键的变更事件幂等落地");
+                } else {
+                    issueCodes.add("WRITE_STRATEGY_DEFAULTED_TO_INSERT");
+                    recommendedActions.add("未显式声明 writeStrategy 时，离线模式默认 INSERT；如果目标表已有数据，请在预检查中重点确认目标表空表或改为 UPDATE/merge");
+                }
+            }
+            return writeStrategy;
+        } catch (IllegalArgumentException exception) {
+            issueCodes.add("WRITE_STRATEGY_UNSUPPORTED");
+            recommendedActions.add("将 writeStrategy 调整为 INSERT 或 UPDATE；实时 CDC 模式可省略 writeStrategy，由后端默认 UPDATE/merge");
+            return null;
+        }
+    }
+
+    /**
+     * 调用连接器能力矩阵生成兼容性结果。
+     */
+    private SyncConnectorCompatibilityView resolveCompatibility(SyncTaskDefinition definition,
+                                                               SyncMode syncMode,
+                                                               List<String> issueCodes,
+                                                               List<String> recommendedActions) {
+        String sourceConnectorType = normalize(definition.getSourceConnectorType());
+        String targetConnectorType = normalize(definition.getTargetConnectorType());
+        if (sourceConnectorType == null || targetConnectorType == null || syncMode == null) {
+            issueCodes.add("CONNECTOR_FACTS_INCOMPLETE");
+            recommendedActions.add("先通过 datasource-management 能力快照补全源端和目标端 connector type");
+            return null;
+        }
+        SyncConnectorCompatibilityView compatibility = connectorCapabilityRegistry.checkCompatibility(
+                sourceConnectorType, targetConnectorType, syncMode.name());
+        if (!compatibility.supported()) {
+            issueCodes.add("CONNECTOR_COMPATIBILITY_UNSUPPORTED");
+        }
+        issueCodes.addAll(compatibility.issueCodes());
+        recommendedActions.addAll(compatibility.recommendedActions());
+        return compatibility;
+    }
+
+    /**
+     * 根据同步模式、范围契约和已声明配置生成规划建议。
+     */
+    private void evaluateConfigurationHints(SyncMode syncMode,
+                                            SyncWriteStrategy writeStrategy,
+                                            SyncConnectorCompatibilityView compatibility,
+                                            SyncTaskDefinitionScopeContract scopeContract,
+                                            boolean sourceObjectDeclared,
+                                            boolean targetObjectDeclared,
+                                            boolean primaryKeyDeclared,
+                                            boolean incrementalFieldDeclared,
+                                            boolean fieldMappingDeclared,
+                                            boolean filterDeclared,
+                                            boolean partitionDeclared,
+                                            boolean retryPolicyDeclared,
+                                            boolean timeoutPolicyDeclared,
+                                            List<String> issueCodes,
+                                            List<String> recommendedActions,
+                                            List<String> performanceNotes,
+                                            List<String> safetyNotes) {
+        if (scopeContract.singleObjectScope() && !sourceObjectDeclared) {
+            issueCodes.add("SOURCE_OBJECT_NOT_DECLARED");
+            recommendedActions.add("声明 sourceObjectName，单对象 runner 必须知道从哪个表、视图、topic 或逻辑资源读取");
+        }
+        if (scopeContract.singleObjectScope() && !targetObjectDeclared) {
+            issueCodes.add("TARGET_OBJECT_NOT_DECLARED");
+            recommendedActions.add("声明 targetObjectName，单对象 runner 必须知道写入哪个目标对象");
+        }
+        if (writeStrategy != null && writeStrategy.requiresConflictKey() && !primaryKeyDeclared) {
+            issueCodes.add("PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE");
+            recommendedActions.add(writeStrategy.name() + " 写入策略需要 primaryKeyField，用于目标端冲突判断和幂等写入");
+        }
+        if (syncMode == SyncMode.CDC_STREAMING && writeStrategy != null && writeStrategy.insertLike()) {
+            issueCodes.add("REALTIME_WRITE_STRATEGY_MUST_BE_MERGE");
+            recommendedActions.add("实时模式不应选择 INSERT/APPEND；前端应隐藏写入策略字段，后端默认 UPDATE/merge。");
+        }
+        if (syncMode == SyncMode.SCHEDULED_BATCH && !filterDeclared && !partitionDeclared) {
+            issueCodes.add("SCHEDULED_BATCH_WINDOW_NOT_DECLARED");
+            recommendedActions.add("定期批量必须声明批处理窗口，例如时间范围、分区范围、ID 范围或结构化 where 条件，否则应改为定期全量。");
+        }
+        if (syncMode == SyncMode.SCHEDULED_FULL && writeStrategy != null && writeStrategy.insertLike() && !partitionDeclared) {
+            issueCodes.add("SCHEDULED_FULL_INSERT_TARGET_REUSE_UNSAFE");
+            recommendedActions.add("定期全量 + INSERT 会在第二次调度时复用非空目标表，容易主键冲突或重复写入；建议改为 UPDATE/merge。");
+        }
+        if (writeStrategy != null && writeStrategy.isDestructiveRewrite()) {
+            issueCodes.add("DESTRUCTIVE_WRITE_STRATEGY_REQUIRES_REVIEW");
+            recommendedActions.add("OVERWRITE 属于覆盖式高风险写入，建议接入 permission-admin 审批、影响范围评估和回滚预案后再运行");
+            safetyNotes.add("覆盖式写入不应由普通 worker 静默执行，应在执行前完成人审、审计和备份策略确认");
+        }
+        if ((syncMode == SyncMode.INCREMENTAL_TIME || syncMode == SyncMode.INCREMENTAL_ID) && !incrementalFieldDeclared) {
+            issueCodes.add("INCREMENTAL_FIELD_NOT_DECLARED");
+            recommendedActions.add("增量同步必须声明 incrementalField，用于 checkpoint 推进、断点续行和失败恢复");
+        }
+        if (!fieldMappingDeclared) {
+            issueCodes.add("FIELD_MAPPING_NOT_DECLARED");
+            recommendedActions.add("建议补充 fieldMappingConfig；真实执行需要明确源字段、目标字段、类型兼容和主键/冲突字段位置");
+        }
+        if (syncMode == SyncMode.INCREMENTAL_TIME || syncMode == SyncMode.INCREMENTAL_ID) {
+            addIncrementalHints(filterDeclared, partitionDeclared, issueCodes, recommendedActions);
+        }
+        if (syncMode == SyncMode.CDC_STREAMING && !partitionDeclared) {
+            issueCodes.add("STREAM_PARTITION_POLICY_NOT_DECLARED");
+            recommendedActions.add("CDC/流式同步建议声明 partitionConfig，用于表达 topic/binlog 分区、offset 或 worker 并发策略");
+        }
+        if (compatibility != null && compatibility.checkpointRequired() && !retryPolicyDeclared) {
+            issueCodes.add("RETRY_POLICY_NOT_DECLARED");
+            recommendedActions.add("需要 checkpoint 的同步模式建议声明 retryPolicy，避免失败后无法解释重试边界");
+        }
+        if (!timeoutPolicyDeclared) {
+            issueCodes.add("TIMEOUT_POLICY_NOT_DECLARED");
+            recommendedActions.add("建议声明 timeoutPolicy，避免大表扫描、目标端写入阻塞或外部 API 慢响应长期占用 worker");
+        }
+        if (!partitionDeclared) {
+            performanceNotes.add("未声明 partitionConfig：小表或低频任务可以接受，大表/高并发场景建议补充分片或批量策略");
+        }
+        if (!scopeContract.executableByMinimalBridge()) {
+            safetyNotes.add("当前同步范围已完成控制面建模，但现有最小 run-once bridge 不会执行该范围，避免在 runner 未成熟时误读写真实数据");
+        }
+        if (scopeContract.requiresApproval()) {
+            safetyNotes.add("当前任务涉及高影响范围或高风险写入，建议在执行前进行人工确认");
+        }
+        safetyNotes.add("预览结果不代表真实执行已经通过；执行前仍需要权限、审批、连接测试、元数据兼容、worker 租约和 checkpoint 回调共同满足");
+    }
+
+    private void addIncrementalHints(boolean filterDeclared,
+                                     boolean partitionDeclared,
+                                     List<String> issueCodes,
+                                     List<String> recommendedActions) {
+        if (!filterDeclared && !partitionDeclared) {
+            issueCodes.add("INCREMENTAL_BOUNDARY_NOT_DECLARED");
+            recommendedActions.add("增量同步建议声明 filterConfig 或 partitionConfig，用于表达时间字段、ID 边界或分片窗口");
+        }
+    }
+
+    private String resolvePreviewStatus(List<String> issueCodes) {
+        if (issueCodes.stream().anyMatch(this::isBlockingIssue)) {
+            return BLOCKED;
+        }
+        if (issueCodes.isEmpty()) {
+            return READY;
+        }
+        return NEEDS_REVIEW;
+    }
+
+    /**
+     * 预览层的阻断问题。
+     *
+     * <p>注意：SCOPE_NOT_EXECUTABLE_BY_MINIMAL_RUN_ONCE_BRIDGE 不在这里阻断任务草稿，因为高级范围可以先保存和审批；
+     * 它会在执行预检查和 worker bridge 阶段阻断真实读写。</p>
+     */
+    private boolean isBlockingIssue(String issueCode) {
+        return "SYNC_MODE_MISSING".equals(issueCode)
+                || "SYNC_MODE_UNSUPPORTED".equals(issueCode)
+                || "SYNC_MODE_NOT_USER_SELECTABLE_TRANSFER_MODE".equals(issueCode)
+                || "UNKNOWN_CONNECTOR_TYPE".equals(issueCode)
+                || "UNKNOWN_SYNC_MODE".equals(issueCode)
+                || "SOURCE_CONNECTOR_NOT_FOUND".equals(issueCode)
+                || "TARGET_CONNECTOR_NOT_FOUND".equals(issueCode)
+                || "CONNECTOR_COMPATIBILITY_UNSUPPORTED".equals(issueCode)
+                || "SOURCE_MODE_UNSUPPORTED".equals(issueCode)
+                || "TARGET_MODE_UNSUPPORTED".equals(issueCode)
+                || "SOURCE_MODE_NOT_SUPPORTED".equals(issueCode)
+                || "TARGET_MODE_NOT_SUPPORTED".equals(issueCode)
+                || "SOURCE_STREAMING_REQUIRED".equals(issueCode)
+                || "TARGET_STREAMING_REQUIRED".equals(issueCode)
+                || "SOURCE_OBJECT_NOT_DECLARED".equals(issueCode)
+                || "TARGET_OBJECT_NOT_DECLARED".equals(issueCode)
+                || "WRITE_STRATEGY_UNSUPPORTED".equals(issueCode)
+                || "PRIMARY_KEY_NOT_DECLARED_FOR_CONFLICT_WRITE".equals(issueCode)
+                || "REALTIME_WRITE_STRATEGY_MUST_BE_MERGE".equals(issueCode)
+                || "SCHEDULED_BATCH_WINDOW_NOT_DECLARED".equals(issueCode)
+                || "SCHEDULED_FULL_INSERT_TARGET_REUSE_UNSAFE".equals(issueCode)
+                || "INCREMENTAL_FIELD_NOT_DECLARED".equals(issueCode)
+                || "SYNC_SCOPE_TYPE_UNSUPPORTED".equals(issueCode)
+                || "SYNC_SCOPE_MODE_MISMATCH".equals(issueCode)
+                || "SINGLE_OBJECT_SOURCE_NOT_DECLARED".equals(issueCode)
+                || "SINGLE_OBJECT_TARGET_NOT_DECLARED".equals(issueCode)
+                || "OBJECT_MAPPING_CONFIG_REQUIRED".equals(issueCode)
+                || "OBJECT_MAPPING_JSON_INVALID".equals(issueCode)
+                || "OBJECT_MAPPING_EMPTY".equals(issueCode)
+                || "OBJECT_MAPPING_TOO_LARGE".equals(issueCode)
+                || "OBJECT_MAPPING_IDENTIFIER_UNSAFE".equals(issueCode)
+                || "SCHEMA_FULL_REQUIRES_SCHEMA_PAIR".equals(issueCode)
+                || "DATABASE_FULL_REQUIRES_DISCOVERY_POLICY".equals(issueCode)
+                || "CUSTOM_SQL_CONFIG_REQUIRED".equals(issueCode)
+                || "CUSTOM_SQL_JSON_INVALID".equals(issueCode)
+                || "CUSTOM_SQL_QUERY_MISSING".equals(issueCode)
+                || "CUSTOM_SQL_RAW_SQL_UNSAFE".equals(issueCode)
+                || "CUSTOM_SQL_TARGET_OBJECT_REQUIRED".equals(issueCode)
+                || "CUSTOM_SQL_FIELD_MAPPING_REQUIRED".equals(issueCode);
+    }
+
+    private List<String> distinct(List<String> values) {
+        return new ArrayList<>(new LinkedHashSet<>(values));
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private String normalize(String value) {
+        return value == null || value.isBlank() ? null : value.trim().toUpperCase(Locale.ROOT);
+    }
+}

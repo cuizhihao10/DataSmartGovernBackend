@@ -15,9 +15,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SyncTaskExecutionPrecheckResponseTest {
 
     @Test
-    void shouldProjectInternalTemplatePrecheckToTaskContract() {
-        SyncTemplateExecutionPrecheckResponse internal = new SyncTemplateExecutionPrecheckResponse(
-                7001L,
+    void shouldProjectInternalDefinitionPrecheckToTaskContract() {
+        SyncTaskDefinitionExecutionPrecheckResponse internal = new SyncTaskDefinitionExecutionPrecheckResponse(
                 10L,
                 101L,
                 301L,

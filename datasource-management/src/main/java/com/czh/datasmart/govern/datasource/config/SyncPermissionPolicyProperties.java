@@ -36,7 +36,7 @@ public class SyncPermissionPolicyProperties {
     /**
      * 角色到菜单编码列表的覆盖绑定。
      * key 使用角色枚举名，value 使用菜单编码，例如：
-     * PROJECT_OWNER -> ["sync:template-center", "sync:task-center"]
+     * PROJECT_OWNER -> ["sync:task-center"]
      */
     private Map<String, List<String>> roleMenuBindings = new LinkedHashMap<>();
 

@@ -75,11 +75,6 @@ public class SyncBatchRunnerBridgePlan {
     private final Long executionId;
 
     /**
-     * 模板 ID，用于追溯当前派发计划来自哪份配置。
-     */
-    private final Long templateId;
-
-    /**
      * 源数据源 ID。它只是 datasource-management 中的引用，不是连接地址。
      */
     private final Long sourceDatasourceId;
@@ -143,7 +138,7 @@ public class SyncBatchRunnerBridgePlan {
     /**
      * 过滤条件内部执行契约。
      *
-     * <p>这些条件来自模板 filterConfig，并且已经被解析成安全字段名、标准化操作符和值。
+     * <p>这些条件来自任务定义 filterConfig，并且已经被解析成安全字段名、标准化操作符和值。
      * 由于 value 可能包含业务范围信息，它只能进入 internal run-once 请求，最终由 datasource-management
      * 通过 PreparedStatement 绑定，不能进入普通响应、日志、审计摘要或 runtime event。</p>
      */
@@ -236,7 +231,6 @@ public class SyncBatchRunnerBridgePlan {
                                      Long workspaceId,
                                      Long syncTaskId,
                                      Long executionId,
-                                     Long templateId,
                                      Long sourceDatasourceId,
                                      Long targetDatasourceId,
                                      String sourceConnectorType,
@@ -259,7 +253,7 @@ public class SyncBatchRunnerBridgePlan {
                                      List<String> issueCodes,
                                      List<String> warnings,
                                      List<String> nextActions) {
-        this(dispatchable, dispatchStatus, tenantId, projectId, workspaceId, syncTaskId, executionId, templateId,
+        this(dispatchable, dispatchStatus, tenantId, projectId, workspaceId, syncTaskId, executionId,
                 sourceDatasourceId, targetDatasourceId, sourceConnectorType, targetConnectorType, syncMode,
                 readStrategy, writeStrategy, checkpointType, sourceObjectLocator, targetObjectLocator,
                 fieldMappingContract, filterConditions, null, customSql, customSqlFingerprint, offlineRunnerContract,
@@ -274,7 +268,6 @@ public class SyncBatchRunnerBridgePlan {
                                      Long workspaceId,
                                      Long syncTaskId,
                                      Long executionId,
-                                     Long templateId,
                                      Long sourceDatasourceId,
                                      Long targetDatasourceId,
                                      String sourceConnectorType,
@@ -305,7 +298,6 @@ public class SyncBatchRunnerBridgePlan {
         this.workspaceId = workspaceId;
         this.syncTaskId = syncTaskId;
         this.executionId = executionId;
-        this.templateId = templateId;
         this.sourceDatasourceId = sourceDatasourceId;
         this.targetDatasourceId = targetDatasourceId;
         this.sourceConnectorType = sourceConnectorType;

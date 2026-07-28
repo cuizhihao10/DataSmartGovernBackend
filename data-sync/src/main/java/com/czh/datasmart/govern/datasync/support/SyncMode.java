@@ -128,7 +128,7 @@ public enum SyncMode {
     }
 
     /**
-     * 判断该模式是否可以出现在“新建同步任务/同步模板”的一级传输模式选择中。
+     * 判断该模式是否可以出现在“新建同步任务”的一级传输模式选择中。
      */
     public boolean isUserSelectableTransferMode() {
         return userSelectableTransferMode;

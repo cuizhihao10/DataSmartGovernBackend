@@ -19,7 +19,7 @@ import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 /**
  * data-sync 执行器租约服务。
  *
- * <p>该服务专门面向 worker 协议，不承载用户侧模板/任务 CRUD。
+ * <p>该服务专门面向 worker 协议，不承载用户侧任务 CRUD。
  */
 public interface DataSyncExecutorLeaseService {
 

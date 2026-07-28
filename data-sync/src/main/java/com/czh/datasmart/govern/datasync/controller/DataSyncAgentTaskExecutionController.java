@@ -21,7 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 /**
  * data-sync 面向 Agent worker 的内部执行入口。
  *
- * <p>该 Controller 只负责 HTTP 契约和 traceId 透传，真正的幂等、模板校验、任务创建、入队和状态语义都在 Service 层完成。
+ * <p>该 Controller 只负责 HTTP 契约和 traceId 透传，真正的幂等、任务定义校验、任务创建、入队和状态语义都在 Service 层完成。
  * 生产环境中 `/internal/**` 应由网关内网路由、mTLS、服务账号令牌或服务网格策略保护，不能直接暴露给外部客户端。</p>
  */
 @RestController

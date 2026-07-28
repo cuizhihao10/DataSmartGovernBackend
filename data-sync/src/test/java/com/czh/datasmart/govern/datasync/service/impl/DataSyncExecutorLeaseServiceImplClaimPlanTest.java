@@ -107,7 +107,6 @@ class DataSyncExecutorLeaseServiceImplClaimPlanTest {
         task.setTenantId(7L);
         task.setProjectId(101L);
         task.setWorkspaceId(301L);
-        task.setTemplateId(22L);
         task.setCurrentState(SyncTaskState.QUEUED.name());
         return task;
     }
@@ -126,7 +125,6 @@ class DataSyncExecutorLeaseServiceImplClaimPlanTest {
                 SyncTriggerType.MANUAL.name(),
                 "worker-1",
                 LocalDateTime.now().plusMinutes(5),
-                22L,
                 10001L,
                 10002L,
                 "MYSQL",

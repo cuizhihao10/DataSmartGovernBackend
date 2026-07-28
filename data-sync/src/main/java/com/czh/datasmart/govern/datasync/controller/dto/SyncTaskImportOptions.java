@@ -34,7 +34,7 @@ public class SyncTaskImportOptions {
     /**
      * 是否只校验不写入。
      *
-     * <p>dry-run 是批量导入的安全预演入口：它会解析文件、检查模板、检测唯一键冲突和调度配置，
+     * <p>dry-run 是批量导入的安全预演入口：它会解析文件、检查任务定义、检测唯一键冲突和调度配置，
      * 但不会插入任务、不会发布任务、不会创建 execution。</p>
      */
     private Boolean dryRun;
@@ -43,7 +43,7 @@ public class SyncTaskImportOptions {
      * 导入成功后是否立即执行一次。
      *
      * <p>false 或 null：任务进入 DRAFT 编辑中，由用户后续发布；true：服务端会先发布任务，再创建一次 MANUAL execution。
-     * 如果某行任务需要审批、模板不可执行或调度配置非法，整批导入会在写入前失败。</p>
+     * 如果某行任务需要审批、任务定义不可执行或调度配置非法，整批导入会在写入前失败。</p>
      */
     private Boolean runImmediately;
 }

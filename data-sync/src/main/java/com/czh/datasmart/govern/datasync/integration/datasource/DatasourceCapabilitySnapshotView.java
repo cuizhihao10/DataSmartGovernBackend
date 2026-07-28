@@ -15,13 +15,13 @@ import java.util.List;
  * data-sync 本地使用的数据源能力快照视图。
  *
  * <p>这个类是 datasource-management `DataSourceCapabilitySnapshotView` 的“契约镜像”，只复制 data-sync
- * 在模板规划阶段真正需要消费的低敏字段。它不是完整数据源详情，也不是连接配置，更不是执行凭据。</p>
+ * 在任务规划阶段真正需要消费的低敏字段。它不是完整数据源详情，也不是连接配置，更不是执行凭据。</p>
  *
  * <p>为什么在 data-sync 中重新定义，而不是直接引用 datasource-management 的 DTO：</p>
  * <p>1. 微服务之间应该依赖 JSON 契约，而不是互相引用对方 Controller 层 Java 类；</p>
  * <p>2. data-sync 只消费一部分字段，局部模型能减少误用其他字段的机会；</p>
  * <p>3. 后续如果 datasource-management 增加展示字段，data-sync 不会被迫重新编译；</p>
- * <p>4. 本类可以用 data-sync 的业务注释解释字段如何参与模板校验，而不是只复述数据源模块语义。</p>
+ * <p>4. 本类可以用 data-sync 的业务注释解释字段如何参与任务定义校验，而不是只复述数据源模块语义。</p>
  */
 @Data
 public class DatasourceCapabilitySnapshotView {
@@ -44,14 +44,14 @@ public class DatasourceCapabilitySnapshotView {
     /**
      * 数据源所属租户。
      *
-     * <p>模板创建时会与 template.tenantId 对比，避免一个租户的同步模板引用另一个租户的数据源。</p>
+     * <p>保存任务定义时会与 definition.tenantId 对比，避免一个租户的任务引用另一个租户的数据源。</p>
      */
     private Long tenantId;
 
     /**
      * 数据源所属项目。
      *
-     * <p>当前 data-sync 默认要求模板 projectId 与源/目标数据源 projectId 一致。未来如果要支持跨项目同步，
+     * <p>当前 data-sync 默认要求任务定义 projectId 与源/目标数据源 projectId 一致。未来如果要支持跨项目同步，
      * 应由 permission-admin 提供明确授权或审批策略，而不是让 data-sync 隐式放行。</p>
      */
     private Long projectId;
@@ -84,7 +84,7 @@ public class DatasourceCapabilitySnapshotView {
     /**
      * 标准连接器类型，例如 MYSQL、POSTGRESQL、KAFKA、OBJECT_STORAGE。
      *
-     * <p>这是模板补全最核心的字段。data-sync 会把它写入 SyncTemplate 的 sourceConnectorType/targetConnectorType，
+     * <p>这是任务定义补全最核心的字段。data-sync 会把它写入 SyncTaskDefinition 的 sourceConnectorType/targetConnectorType，
      * 后续再交给 SyncConnectorCapabilityRegistry 做源端、目标端和 syncMode 的兼容性判断。</p>
      */
     private String connectorType;
@@ -100,12 +100,12 @@ public class DatasourceCapabilitySnapshotView {
     private String implementationStage;
 
     /**
-     * 是否允许进入模板规划。
+     * 是否允许进入任务定义规划。
      *
-     * <p>true 只表示“可以创建或校验模板”，不等于“可以立即生产执行”。执行前仍需权限、审批、worker、
+     * <p>true 只表示“可以创建或校验任务定义”，不等于“可以立即生产执行”。执行前仍需权限、审批、worker、
      * checkpoint、最近连接测试、字段映射等更多条件共同满足。</p>
      */
-    private Boolean eligibleForTemplatePlanning;
+    private Boolean eligibleForTaskPlanning;
 
     /**
      * 是否通过执行前健康预检。

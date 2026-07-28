@@ -14,9 +14,9 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncActorContext;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCreateWizardDraftSaveRequest;
 import com.czh.datasmart.govern.datasync.controller.dto.SyncTaskCreateWizardDraftSaveResponse;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.mapper.SyncTaskMapper;
-import com.czh.datasmart.govern.datasync.mapper.SyncTemplateMapper;
+import com.czh.datasmart.govern.datasync.mapper.SyncTaskDefinitionMapper;
 import com.czh.datasmart.govern.datasync.support.SyncApprovalState;
 import com.czh.datasmart.govern.datasync.support.SyncAuditActionType;
 import com.czh.datasmart.govern.datasync.support.SyncMode;
@@ -34,14 +34,12 @@ import java.util.Locale;
  * 同步任务创建向导草稿保存支撑组件。
  *
  * <p>该组件承接用户提出的一个核心产品体验：从第二步开始任务就应该被保存，状态为“编辑中”，
- * 即使关闭弹窗也能在任务列表里继续编辑。为了实现这个体验，后端不能再等到第四步才一次性创建模板和任务，
- * 而是要在第一步进入第二步时就创建 {@link SyncTemplate} + {@link SyncTask}，并把任务主状态固定为
+ * 即使关闭页面也能在任务列表里继续编辑。后端在第一步进入第二步时创建 {@link SyncTask}，
+ * 并以相同 taskId 保存 {@link SyncTaskDefinition}，把任务主状态固定为
  * {@link SyncTaskState#DRAFT}。</p>
  *
- * <p>为什么不复用 {@code createTemplate + createTask}：</p>
- * <p>1. {@code createTemplate} 面向完整模板，会执行较严格的模板校验；草稿阶段对象映射、字段映射、SQL 可能尚未完整；</p>
- * <p>2. {@code createTask} 会执行预检查并把任务推进到 CONFIGURED/SCHEDULED，它不适合半成品配置；</p>
- * <p>3. 创建向导需要多次保存同一条任务，如果沿用原创建接口，容易每点一次下一步就创建重复任务。</p>
+ * <p>创建向导需要多次保存同一条任务，草稿阶段对象映射、字段映射和 SQL 也可能尚未完整，
+ * 因此该入口只做渐进保存，不会执行最终预检查或创建 execution。</p>
  *
  * <p>本组件的安全边界非常明确：</p>
  * <p>- 可以保存低敏配置；</p>
@@ -55,11 +53,11 @@ public class SyncTaskCreateWizardDraftSupport {
 
     private static final String DEFAULT_PRIORITY = "MEDIUM";
 
-    private final SyncTemplateMapper templateMapper;
+    private final SyncTaskDefinitionMapper taskDefinitionMapper;
     private final SyncTaskMapper taskMapper;
     private final SyncDataScopeSupport dataScopeSupport;
     private final SyncQuerySupport querySupport;
-    private final SyncTemplateConnectorFactResolver connectorFactResolver;
+    private final SyncTaskDefinitionConnectorFactResolver taskDefinitionConnectorFactResolver;
     private final SyncTaskGroupOperationSupport taskGroupOperationSupport;
     private final SyncAuditSupport auditSupport;
     private final SyncAutomaticPartitionConfigSupport automaticPartitionConfigSupport;
@@ -68,12 +66,12 @@ public class SyncTaskCreateWizardDraftSupport {
      * 保存创建向导草稿。
      *
      * <p>方法根据 {@code request.taskId} 自动判断创建或更新：</p>
-     * <p>1. taskId 为空：创建模板草稿和任务草稿；</p>
-     * <p>2. taskId 不为空：校验任务存在、当前状态仍是 DRAFT、当前用户可读写，然后更新模板与任务定义。</p>
+     * <p>1. taskId 为空：创建任务草稿及其一对一定义；</p>
+     * <p>2. taskId 不为空：校验任务存在、当前状态仍是 DRAFT、当前用户可读写，然后更新任务定义。</p>
      *
      * @param request 创建向导当前步骤表单快照
      * @param actorContext 当前操作者上下文
-     * @return 保存后的任务/模板 ID 和下一步建议
+     * @return 保存后的 taskId、任务快照和下一步建议
      */
     public SyncTaskCreateWizardDraftSaveResponse saveDraft(SyncTaskCreateWizardDraftSaveRequest request,
                                                            SyncActorContext actorContext) {
@@ -87,7 +85,7 @@ public class SyncTaskCreateWizardDraftSupport {
     }
 
     /**
-     * 创建新的草稿模板与草稿任务。
+     * 创建新的草稿任务及其一对一定义。
      *
      * <p>这里会做最小必要校验：任务名、源端、目标端、传输模式、写入策略、数据范围和连接器能力方向。
      * 不要求对象映射或字段映射完整，是因为用户刚进入第二步时本来就还没完成这些配置。</p>
@@ -96,20 +94,17 @@ public class SyncTaskCreateWizardDraftSupport {
                                                               SyncActorContext actorContext) {
         DraftBasics basics = resolveBasics(request, actorContext);
         assertTaskNameAvailable(basics.tenantId(), basics.projectId(), basics.taskName(), null);
-        SyncTemplate template = buildTemplate(null, request, basics, actorContext);
-        connectorFactResolver.resolveConnectorFacts(template, actorContext);
-        templateMapper.insert(template);
-
-        SyncTask task = buildTask(null, template, request, basics, actorContext);
+        SyncTaskDefinition definition = buildDefinition(null, request, basics, actorContext);
+        taskDefinitionConnectorFactResolver.resolveConnectorFacts(definition, actorContext);
+        SyncTask task = buildTask(null, definition, request, basics, actorContext);
         taskMapper.insert(task);
+        definition.setId(task.getId());
+        taskDefinitionMapper.insert(definition);
 
-        auditSupport.saveTemplateAudit(template, SyncAuditActionType.CREATE_TEMPLATE, actorContext,
-                "createWizardDraft=true,stepCode=" + normalizeStepCode(request.getStepCode()));
         auditSupport.saveAudit(task.getTenantId(), task.getId(), null, SyncAuditActionType.CREATE_TASK,
-                actorContext, "createWizardDraft=true,templateId=" + template.getId()
-                        + ",stepCode=" + normalizeStepCode(request.getStepCode())
+                actorContext, "createWizardDraft=true,stepCode=" + normalizeStepCode(request.getStepCode())
                         + ",state=" + task.getCurrentState());
-        return response(task, template, true, request.getStepCode());
+        return response(task, definition, true, request.getStepCode());
     }
 
     /**
@@ -133,22 +128,21 @@ public class SyncTaskCreateWizardDraftSupport {
         dataScopeSupport.validateOwnedReadable(existingTask.getTenantId(), existingTask.getProjectId(),
                 existingTask.getOwnerId(), actorContext, "同步任务草稿");
 
-        SyncTemplate existingTemplate = templateMapper.selectById(existingTask.getTemplateId());
-        if (existingTemplate == null) {
+        SyncTaskDefinition existingDefinition = taskDefinitionMapper.selectById(existingTask.getId());
+        if (existingDefinition == null) {
             throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND,
-                    "同步任务草稿绑定的模板不存在，taskId=" + existingTask.getId()
-                            + ", templateId=" + existingTask.getTemplateId());
+                    "同步任务草稿缺少任务定义，taskId=" + existingTask.getId());
         }
 
         DraftBasics basics = resolveBasics(request, actorContext);
-        assertScopeConsistent(existingTask, existingTemplate, basics);
+        assertScopeConsistent(existingTask, existingDefinition, basics);
         assertTaskNameAvailable(basics.tenantId(), basics.projectId(), basics.taskName(), existingTask.getId());
 
-        SyncTemplate template = buildTemplate(existingTemplate, request, basics, actorContext);
-        connectorFactResolver.resolveConnectorFacts(template, actorContext);
-        updateTemplate(template);
+        SyncTaskDefinition definition = buildDefinition(existingDefinition, request, basics, actorContext);
+        taskDefinitionConnectorFactResolver.resolveConnectorFacts(definition, actorContext);
+        updateDefinition(definition);
 
-        SyncTask task = buildTask(existingTask, template, request, basics, actorContext);
+        SyncTask task = buildTask(existingTask, definition, request, basics, actorContext);
         taskMapper.updateTaskDefinition(
                 task.getId(),
                 task.getName(),
@@ -167,13 +161,10 @@ public class SyncTaskCreateWizardDraftSupport {
                 task.getAttentionRequired(),
                 task.getAttentionReason());
 
-        auditSupport.saveTemplateAudit(template, SyncAuditActionType.CREATE_TEMPLATE, actorContext,
-                "updateWizardDraft=true,stepCode=" + normalizeStepCode(request.getStepCode()));
         auditSupport.saveAudit(task.getTenantId(), task.getId(), null, SyncAuditActionType.UPDATE_TASK,
-                actorContext, "updateWizardDraft=true,templateId=" + template.getId()
-                        + ",stepCode=" + normalizeStepCode(request.getStepCode())
+                actorContext, "updateWizardDraft=true,stepCode=" + normalizeStepCode(request.getStepCode())
                         + ",state=" + task.getCurrentState());
-        return response(task, template, false, request.getStepCode());
+        return response(task, definition, false, request.getStepCode());
     }
 
     /**
@@ -214,59 +205,59 @@ public class SyncTaskCreateWizardDraftSupport {
     }
 
     /**
-     * 构造模板草稿。
+     * 构造任务定义草稿。
      *
-     * <p>模板承载“数据移动配置”。在草稿阶段，我们允许对象映射、字段映射、SQL 配置为空或不完整；
+     * <p>任务定义承载“数据移动配置”。在草稿阶段，我们允许对象映射、字段映射、SQL 配置为空或不完整；
      * 因为第二步和第三步正是让用户逐步补齐这些信息。最终能不能执行，仍由预检查判断。</p>
      */
-    private SyncTemplate buildTemplate(SyncTemplate existing,
+    private SyncTaskDefinition buildDefinition(SyncTaskDefinition existing,
                                        SyncTaskCreateWizardDraftSaveRequest request,
                                        DraftBasics basics,
                                        SyncActorContext actorContext) {
         LocalDateTime now = LocalDateTime.now();
-        SyncTemplate template = existing == null ? new SyncTemplate() : existing;
-        template.setTenantId(basics.tenantId());
-        template.setProjectId(basics.projectId());
-        template.setWorkspaceId(basics.workspaceId());
-        template.setName(querySupport.truncate(basics.taskName() + " 模板", 160));
-        template.setDescription(trim(request.getTaskDescription(), request.getDescription()));
-        template.setSourceDatasourceId(request.getSourceDatasourceId());
-        template.setTargetDatasourceId(request.getTargetDatasourceId());
-        template.setSourceSchemaName(querySupport.trimToNull(request.getSourceSchemaName()));
-        template.setSourceObjectName(querySupport.trimToNull(request.getSourceObjectName()));
-        template.setTargetSchemaName(querySupport.trimToNull(request.getTargetSchemaName()));
-        template.setTargetObjectName(querySupport.trimToNull(request.getTargetObjectName()));
-        template.setSourceConnectorType(querySupport.normalizeCode(request.getSourceConnectorType()));
-        template.setTargetConnectorType(querySupport.normalizeCode(request.getTargetConnectorType()));
-        template.setSyncMode(basics.syncMode().name());
+        SyncTaskDefinition definition = existing == null ? new SyncTaskDefinition() : existing;
+        definition.setTenantId(basics.tenantId());
+        definition.setProjectId(basics.projectId());
+        definition.setWorkspaceId(basics.workspaceId());
+        definition.setName(querySupport.truncate(basics.taskName(), 160));
+        definition.setDescription(trim(request.getTaskDescription(), request.getDescription()));
+        definition.setSourceDatasourceId(request.getSourceDatasourceId());
+        definition.setTargetDatasourceId(request.getTargetDatasourceId());
+        definition.setSourceSchemaName(querySupport.trimToNull(request.getSourceSchemaName()));
+        definition.setSourceObjectName(querySupport.trimToNull(request.getSourceObjectName()));
+        definition.setTargetSchemaName(querySupport.trimToNull(request.getTargetSchemaName()));
+        definition.setTargetObjectName(querySupport.trimToNull(request.getTargetObjectName()));
+        definition.setSourceConnectorType(querySupport.normalizeCode(request.getSourceConnectorType()));
+        definition.setTargetConnectorType(querySupport.normalizeCode(request.getTargetConnectorType()));
+        definition.setSyncMode(basics.syncMode().name());
         String syncScopeType = resolveSyncScopeType(request, basics.syncMode());
-        template.setSyncScopeType(syncScopeType);
-        template.setWriteStrategy(basics.writeStrategy().name());
-        template.setIncrementalField(null);
-        template.setFieldMappingConfig(querySupport.trimToNull(request.getFieldMappingConfig()));
-        template.setObjectMappingConfig(querySupport.trimToNull(request.getObjectMappingConfig()));
-        template.setFilterConfig(querySupport.trimToNull(request.getFilterConfig()));
-        template.setCustomSqlConfig(querySupport.trimToNull(request.getCustomSqlConfig()));
+        definition.setSyncScopeType(syncScopeType);
+        definition.setWriteStrategy(basics.writeStrategy().name());
+        definition.setIncrementalField(null);
+        definition.setFieldMappingConfig(querySupport.trimToNull(request.getFieldMappingConfig()));
+        definition.setObjectMappingConfig(querySupport.trimToNull(request.getObjectMappingConfig()));
+        definition.setFilterConfig(querySupport.trimToNull(request.getFilterConfig()));
+        definition.setCustomSqlConfig(querySupport.trimToNull(request.getCustomSqlConfig()));
         SyncAutomaticPartitionConfigSupport.AutomaticPartitionConfig partitionConfig =
                 automaticPartitionConfigSupport.resolve(
                         basics.syncMode(),
                         syncScopeType,
-                        template.getFieldMappingConfig(),
+                        definition.getFieldMappingConfig(),
                         request.getPartitionConfig());
         // Source splitPk and target merge/conflict key are different concepts when fields are renamed.
         // The target key remains inferred from fieldMappingConfig by the execution contract.
-        template.setPrimaryKeyField(null);
-        template.setPartitionConfig(partitionConfig.partitionConfig());
-        template.setRetryPolicy(querySupport.trimToNull(request.getRetryPolicy()));
-        template.setTimeoutPolicy(querySupport.trimToNull(request.getTimeoutPolicy()));
-        template.setEnabled(true);
+        definition.setPrimaryKeyField(null);
+        definition.setPartitionConfig(partitionConfig.partitionConfig());
+        definition.setRetryPolicy(querySupport.trimToNull(request.getRetryPolicy()));
+        definition.setTimeoutPolicy(querySupport.trimToNull(request.getTimeoutPolicy()));
+        definition.setEnabled(true);
         if (existing == null) {
-            template.setCreatedBy(querySupport.actorId(actorContext));
-            template.setCreateTime(now);
+            definition.setCreatedBy(querySupport.actorId(actorContext));
+            definition.setCreateTime(now);
         }
-        template.setUpdatedBy(querySupport.actorId(actorContext));
-        template.setUpdateTime(now);
-        return template;
+        definition.setUpdatedBy(querySupport.actorId(actorContext));
+        definition.setUpdateTime(now);
+        return definition;
     }
 
     /**
@@ -279,7 +270,7 @@ public class SyncTaskCreateWizardDraftSupport {
      * <p>4. nextFireTime 固定为空，发布时间再根据 scheduleConfig 计算。</p>
      */
     private SyncTask buildTask(SyncTask existing,
-                               SyncTemplate template,
+                               SyncTaskDefinition definition,
                                SyncTaskCreateWizardDraftSaveRequest request,
                                DraftBasics basics,
                                SyncActorContext actorContext) {
@@ -288,8 +279,6 @@ public class SyncTaskCreateWizardDraftSupport {
         task.setTenantId(basics.tenantId());
         task.setProjectId(basics.projectId());
         task.setWorkspaceId(basics.workspaceId());
-        task.setTemplateId(template.getId());
-
         SyncTaskGroupOperationSupport.TaskGroupAssignment groupAssignment =
                 taskGroupOperationSupport.resolveAssignmentForTask(
                         basics.tenantId(),
@@ -328,49 +317,49 @@ public class SyncTaskCreateWizardDraftSupport {
     }
 
     /**
-     * 显式更新模板字段。
+     * 显式更新任务定义字段。
      *
      * <p>不能直接依赖 MyBatis-Plus 默认 {@code updateById}，因为创建向导允许用户把某些映射字段重新清空；
      * 默认更新策略通常会跳过 null，导致前端以为已经清掉目标表或过滤条件，数据库却仍保留旧值。</p>
      */
-    private void updateTemplate(SyncTemplate template) {
-        templateMapper.update(null, new LambdaUpdateWrapper<SyncTemplate>()
-                .eq(SyncTemplate::getId, template.getId())
-                .set(SyncTemplate::getTenantId, template.getTenantId())
-                .set(SyncTemplate::getProjectId, template.getProjectId())
-                .set(SyncTemplate::getWorkspaceId, template.getWorkspaceId())
-                .set(SyncTemplate::getName, template.getName())
-                .set(SyncTemplate::getDescription, template.getDescription())
-                .set(SyncTemplate::getSourceDatasourceId, template.getSourceDatasourceId())
-                .set(SyncTemplate::getTargetDatasourceId, template.getTargetDatasourceId())
-                .set(SyncTemplate::getSourceSchemaName, template.getSourceSchemaName())
-                .set(SyncTemplate::getSourceObjectName, template.getSourceObjectName())
-                .set(SyncTemplate::getTargetSchemaName, template.getTargetSchemaName())
-                .set(SyncTemplate::getTargetObjectName, template.getTargetObjectName())
-                .set(SyncTemplate::getSourceConnectorType, template.getSourceConnectorType())
-                .set(SyncTemplate::getTargetConnectorType, template.getTargetConnectorType())
-                .set(SyncTemplate::getSyncMode, template.getSyncMode())
-                .set(SyncTemplate::getSyncScopeType, template.getSyncScopeType())
-                .set(SyncTemplate::getWriteStrategy, template.getWriteStrategy())
-                .set(SyncTemplate::getPrimaryKeyField, template.getPrimaryKeyField())
-                .set(SyncTemplate::getIncrementalField, template.getIncrementalField())
-                .set(SyncTemplate::getFieldMappingConfig, template.getFieldMappingConfig())
-                .set(SyncTemplate::getObjectMappingConfig, template.getObjectMappingConfig())
-                .set(SyncTemplate::getFilterConfig, template.getFilterConfig())
-                .set(SyncTemplate::getCustomSqlConfig, template.getCustomSqlConfig())
-                .set(SyncTemplate::getPartitionConfig, template.getPartitionConfig())
-                .set(SyncTemplate::getRetryPolicy, template.getRetryPolicy())
-                .set(SyncTemplate::getTimeoutPolicy, template.getTimeoutPolicy())
-                .set(SyncTemplate::getEnabled, template.getEnabled())
-                .set(SyncTemplate::getUpdatedBy, template.getUpdatedBy())
-                .set(SyncTemplate::getUpdateTime, template.getUpdateTime()));
+    private void updateDefinition(SyncTaskDefinition definition) {
+        taskDefinitionMapper.update(null, new LambdaUpdateWrapper<SyncTaskDefinition>()
+                .eq(SyncTaskDefinition::getId, definition.getId())
+                .set(SyncTaskDefinition::getTenantId, definition.getTenantId())
+                .set(SyncTaskDefinition::getProjectId, definition.getProjectId())
+                .set(SyncTaskDefinition::getWorkspaceId, definition.getWorkspaceId())
+                .set(SyncTaskDefinition::getName, definition.getName())
+                .set(SyncTaskDefinition::getDescription, definition.getDescription())
+                .set(SyncTaskDefinition::getSourceDatasourceId, definition.getSourceDatasourceId())
+                .set(SyncTaskDefinition::getTargetDatasourceId, definition.getTargetDatasourceId())
+                .set(SyncTaskDefinition::getSourceSchemaName, definition.getSourceSchemaName())
+                .set(SyncTaskDefinition::getSourceObjectName, definition.getSourceObjectName())
+                .set(SyncTaskDefinition::getTargetSchemaName, definition.getTargetSchemaName())
+                .set(SyncTaskDefinition::getTargetObjectName, definition.getTargetObjectName())
+                .set(SyncTaskDefinition::getSourceConnectorType, definition.getSourceConnectorType())
+                .set(SyncTaskDefinition::getTargetConnectorType, definition.getTargetConnectorType())
+                .set(SyncTaskDefinition::getSyncMode, definition.getSyncMode())
+                .set(SyncTaskDefinition::getSyncScopeType, definition.getSyncScopeType())
+                .set(SyncTaskDefinition::getWriteStrategy, definition.getWriteStrategy())
+                .set(SyncTaskDefinition::getPrimaryKeyField, definition.getPrimaryKeyField())
+                .set(SyncTaskDefinition::getIncrementalField, definition.getIncrementalField())
+                .set(SyncTaskDefinition::getFieldMappingConfig, definition.getFieldMappingConfig())
+                .set(SyncTaskDefinition::getObjectMappingConfig, definition.getObjectMappingConfig())
+                .set(SyncTaskDefinition::getFilterConfig, definition.getFilterConfig())
+                .set(SyncTaskDefinition::getCustomSqlConfig, definition.getCustomSqlConfig())
+                .set(SyncTaskDefinition::getPartitionConfig, definition.getPartitionConfig())
+                .set(SyncTaskDefinition::getRetryPolicy, definition.getRetryPolicy())
+                .set(SyncTaskDefinition::getTimeoutPolicy, definition.getTimeoutPolicy())
+                .set(SyncTaskDefinition::getEnabled, definition.getEnabled())
+                .set(SyncTaskDefinition::getUpdatedBy, definition.getUpdatedBy())
+                .set(SyncTaskDefinition::getUpdateTime, definition.getUpdateTime()));
     }
 
-    private void assertScopeConsistent(SyncTask task, SyncTemplate template, DraftBasics basics) {
-        if (!basics.tenantId().equals(task.getTenantId()) || !basics.tenantId().equals(template.getTenantId())) {
+    private void assertScopeConsistent(SyncTask task, SyncTaskDefinition definition, DraftBasics basics) {
+        if (!basics.tenantId().equals(task.getTenantId()) || !basics.tenantId().equals(definition.getTenantId())) {
             throw new PlatformBusinessException(PlatformErrorCode.TENANT_SCOPE_DENIED,
                     "草稿租户不能在编辑过程中变更，taskTenantId=" + task.getTenantId()
-                            + ", templateTenantId=" + template.getTenantId()
+                            + ", definitionTenantId=" + definition.getTenantId()
                             + ", requestedTenantId=" + basics.tenantId());
         }
         if (task.getProjectId() != null && !task.getProjectId().equals(basics.projectId())) {
@@ -458,14 +447,13 @@ public class SyncTaskCreateWizardDraftSupport {
     }
 
     private SyncTaskCreateWizardDraftSaveResponse response(SyncTask task,
-                                                           SyncTemplate template,
+                                                           SyncTaskDefinition definition,
                                                            boolean created,
                                                            String stepCode) {
         SyncTask refreshedTask = taskMapper.selectById(task.getId());
-        SyncTemplate refreshedTemplate = templateMapper.selectById(template.getId());
+        SyncTaskDefinition refreshedDefinition = taskDefinitionMapper.selectById(task.getId());
         SyncTaskCreateWizardDraftSaveResponse response = new SyncTaskCreateWizardDraftSaveResponse();
         response.setTaskId(refreshedTask.getId());
-        response.setTemplateId(refreshedTemplate.getId());
         response.setCreated(created);
         response.setCurrentState(refreshedTask.getCurrentState());
         response.setScheduleEnabled(refreshedTask.getScheduleEnabled());
@@ -473,8 +461,9 @@ public class SyncTaskCreateWizardDraftSupport {
         response.setGroupCode(refreshedTask.getGroupCode());
         response.setGroupName(refreshedTask.getGroupName());
         response.setNextActions(nextActions(stepCode));
+        refreshedTask.setDefinition(refreshedDefinition);
         response.setTask(refreshedTask);
-        response.setTemplate(refreshedTemplate);
+        response.setDefinition(refreshedDefinition);
         return response;
     }
 
@@ -489,7 +478,7 @@ public class SyncTaskCreateWizardDraftSupport {
                     "字段映射以源端和目标端真实元数据为准，同名字段只做默认预填",
                     "where 条件可以按对象单独编辑，也可以批量套用");
             case "FIELD_SQL" -> List.of(
-                    "进入预检查步骤后自动运行模板预检查",
+                    "进入预检查步骤后自动检查任务定义",
                     "预检查会判断对象存在性、字段兼容性、目标约束、SQL 安全和调度配置");
             case "PRECHECK" -> List.of("预检查通过后可发布任务；草稿阶段不会自动执行或启用调度");
             default -> List.of("草稿保存成功，请继续完善创建向导配置");

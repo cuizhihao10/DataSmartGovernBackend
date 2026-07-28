@@ -12,7 +12,7 @@ import com.czh.datasmart.govern.datasync.controller.dto.SyncExecutionCompleteReq
 import com.czh.datasmart.govern.datasync.controller.dto.SyncWorkerExecutionPlanView;
 import com.czh.datasmart.govern.datasync.entity.SyncExecution;
 import com.czh.datasmart.govern.datasync.entity.SyncTask;
-import com.czh.datasmart.govern.datasync.entity.SyncTemplate;
+import com.czh.datasmart.govern.datasync.entity.SyncTaskDefinition;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceClient;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceRequest;
 import com.czh.datasmart.govern.datasync.integration.datasource.runonce.DatasourceRunOnceResponse;
@@ -78,10 +78,10 @@ class SyncOfflineRunnerRunOnceControlPlaneE2ETest {
         SyncOfflineRunnerDispatchService service = service(datasourceClient, lifecycleSupport, receiptPublisher);
         SyncExecution execution = execution();
         SyncTask task = task();
-        SyncTemplate template = fullCustomerTemplate();
+        SyncTaskDefinition definition = fullCustomerDefinition();
 
         SyncOfflineRunnerDispatchResult result =
-                service.dispatchOffline(execution, task, template, workerPlan(), actor());
+                service.dispatchOffline(execution, task, definition, workerPlan(), actor());
 
         assertThat(result.dispatched()).isTrue();
         assertThat(result.completed()).isTrue();
@@ -184,7 +184,7 @@ class SyncOfflineRunnerRunOnceControlPlaneE2ETest {
         return new SyncBatchRunnerBridgePlanSupport(
                 new SyncFieldMappingExecutionContractSupport(objectMapper),
                 new SyncFilterExecutionContractSupport(objectMapper),
-                new SyncTemplateScopeContractSupport(objectMapper),
+                new SyncTaskDefinitionScopeContractSupport(objectMapper),
                 new SyncOfflineRunnerContractSupport());
     }
 
@@ -223,35 +223,34 @@ class SyncOfflineRunnerRunOnceControlPlaneE2ETest {
         task.setTenantId(7L);
         task.setProjectId(101L);
         task.setWorkspaceId(301L);
-        task.setTemplateId(22L);
         task.setCurrentState("RUNNING");
         return task;
     }
 
-    private SyncTemplate fullCustomerTemplate() {
-        SyncTemplate template = new SyncTemplate();
-        template.setId(22L);
-        template.setTenantId(7L);
-        template.setProjectId(101L);
-        template.setWorkspaceId(301L);
-        template.setSourceDatasourceId(10001L);
-        template.setTargetDatasourceId(10002L);
-        template.setSourceConnectorType("MYSQL");
-        template.setTargetConnectorType("POSTGRESQL");
-        template.setSourceSchemaName("ods");
-        template.setSourceObjectName("customer");
-        template.setTargetSchemaName("dwd");
-        template.setTargetObjectName("customer_clean");
-        template.setSyncMode("FULL");
-        template.setSyncScopeType("SINGLE_OBJECT");
+    private SyncTaskDefinition fullCustomerDefinition() {
+        SyncTaskDefinition definition = new SyncTaskDefinition();
+        definition.setId(22L);
+        definition.setTenantId(7L);
+        definition.setProjectId(101L);
+        definition.setWorkspaceId(301L);
+        definition.setSourceDatasourceId(10001L);
+        definition.setTargetDatasourceId(10002L);
+        definition.setSourceConnectorType("MYSQL");
+        definition.setTargetConnectorType("POSTGRESQL");
+        definition.setSourceSchemaName("ods");
+        definition.setSourceObjectName("customer");
+        definition.setTargetSchemaName("dwd");
+        definition.setTargetObjectName("customer_clean");
+        definition.setSyncMode("FULL");
+        definition.setSyncScopeType("SINGLE_OBJECT");
         /*
          * 使用 UPSERT 而不是 APPEND，是为了体现生产同步任务更推荐幂等写入。
          * APPEND 在远端部分提交后重试可能产生重复数据，而 UPSERT 可以依赖主键做冲突更新。
          */
-        template.setWriteStrategy("UPSERT");
-        template.setPrimaryKeyField("id");
-        template.setIncrementalField("updated_at");
-        template.setFieldMappingConfig("""
+        definition.setWriteStrategy("UPSERT");
+        definition.setPrimaryKeyField("id");
+        definition.setIncrementalField("updated_at");
+        definition.setFieldMappingConfig("""
                 [
                   {"sourceField":"id","targetField":"id"},
                   {"sourceField":"customer_name","targetField":"name"},
@@ -264,15 +263,15 @@ class SyncOfflineRunnerRunOnceControlPlaneE2ETest {
          * data-sync 只把它解析为结构化条件交给 datasource-management，真实 SQL 拼接和 PreparedStatement
          * 参数绑定由执行面根据具体数据库方言处理，避免控制面持有 raw SQL。
          */
-        template.setFilterConfig("""
+        definition.setFilterConfig("""
                 {
                   "conditions": [
                     {"field":"region","operator":"=","value":"EAST"}
                   ]
                 }
                 """);
-        template.setEnabled(true);
-        return template;
+        definition.setEnabled(true);
+        return definition;
     }
 
     private SyncWorkerExecutionPlanView workerPlan() {
@@ -289,7 +288,6 @@ class SyncOfflineRunnerRunOnceControlPlaneE2ETest {
                 SyncTriggerType.MANUAL.name(),
                 "worker-1",
                 LocalDateTime.now().plusMinutes(2),
-                22L,
                 10001L,
                 10002L,
                 "MYSQL",

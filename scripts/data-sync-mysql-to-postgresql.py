@@ -3,20 +3,20 @@
 """data-sync MySQL -> PostgreSQL 存量数据迁移与对账工具。
 
 本脚本用于 data-sync 微服务完成 PostgreSQL 代码路径切换之后的“历史业务数据搬迁”阶段。
-它只迁移 data-sync 自己拥有的 10 张 `data_sync_*` 控制面事实表，不迁移 task-management
+它只迁移 data-sync 自己拥有的任务定义与运行事实表，不迁移 task-management
 持有的 `task_data_sync_*` 表，也不迁移 Agent Runtime / AI Memory 持有的 `agent_memory_*` 表。
 
 为什么 `task_data_sync_*` 不跟着本脚本一起迁移：
 1. 表名前缀里虽然出现 data_sync，但这两张表的 Java Entity、Mapper、Service、Controller 都在 task-management。
 2. 它们表达的是 task-management 向 data-sync worker 下发命令、接收执行回执投影的任务平台事实。
-3. data-sync 自己保存的是模板、任务、执行、checkpoint、错误样本、事故、审计、幂等和向 task-management
+3. data-sync 自己保存的是任务定义、任务、执行、checkpoint、错误样本、事故、审计、幂等和向 task-management
    投递 receipt 的 outbox；这与 task-management 本地 outbox/receipt 是两个方向相反的协作契约。
 4. 如果把 `task_data_sync_*` 临时塞进 `data_sync` schema，会让 task-management 后续迁移时出现跨 schema
    JOIN、重复导入、权限边界不清和回滚责任不清的问题。
 
 运行模式：
 - plan：只读检查 MySQL 源表、PostgreSQL 目标表和延期迁移表，不写文件、不写数据库。
-- export：导出 10 张 data-sync 表为 JSONL，并生成低敏 manifest。
+- export：导出当前 data-sync 任务定义与运行事实表为 JSONL，并生成低敏 manifest。
 - import：把 JSONL 通过 PostgreSQL COPY 导入目标 schema，必须显式传入 --apply。
 - verify：按行数与稳定 SHA-256 摘要对账。
 - all：export -> import -> verify，仍然必须显式传入 --apply 才能写 PostgreSQL。
@@ -47,7 +47,7 @@ NULL_SENTINEL = "__DATASMART_DATA_SYNC_POSTGRES_COPY_NULL_9E4D2A18__"
 # 这些字段会参与迁移和 checksum，但不会以样本值形式写入 manifest 或终端日志。
 # 迁移脚本记录“字段名”是为了提醒操作者导出目录需要按敏感介质保管；字段名本身不是敏感值。
 SENSITIVE_COLUMNS_BY_TABLE: dict[str, tuple[str, ...]] = {
-    "data_sync_template": (
+    "data_sync_task_definition": (
         "field_mapping_config",
         "filter_config",
         "partition_config",
@@ -106,6 +106,10 @@ class TableSpec:
 
     name: str
     columns: tuple[ColumnSpec, ...]
+    mysql_from: str | None = None
+    source_order_by: str = "id"
+    target_order_by: str = "id"
+    identity_column: str | None = "id"
 
     @property
     def column_names(self) -> list[str]:
@@ -182,37 +186,56 @@ def json_text_col(name: str) -> ColumnSpec:
 
 TABLES: tuple[TableSpec, ...] = (
     TableSpec(
-        "data_sync_template",
+        "data_sync_task_definition",
         (
-            int_col("id"),
-            int_col("tenant_id"),
-            int_col("project_id"),
-            int_col("workspace_id"),
-            text_col("name"),
-            text_col("description"),
-            int_col("source_datasource_id"),
-            int_col("target_datasource_id"),
-            text_col("source_schema_name"),
-            text_col("source_object_name"),
-            text_col("target_schema_name"),
-            text_col("target_object_name"),
-            text_col("source_connector_type"),
-            text_col("target_connector_type"),
-            text_col("sync_mode"),
-            text_col("write_strategy"),
-            text_col("primary_key_field"),
-            text_col("incremental_field"),
-            text_col("field_mapping_config"),
-            text_col("filter_config"),
-            text_col("partition_config"),
-            text_col("retry_policy"),
-            text_col("timeout_policy"),
-            bool_col("enabled"),
-            int_col("created_by"),
-            int_col("updated_by"),
-            time_col("create_time"),
-            time_col("update_time"),
+            ColumnSpec("task_id", "CAST(task.id AS CHAR)", "task_id::text"),
+            ColumnSpec("tenant_id", "CAST(task.tenant_id AS CHAR)", "tenant_id::text"),
+            ColumnSpec("project_id", "CAST(task.project_id AS CHAR)", "project_id::text"),
+            ColumnSpec("workspace_id", "CAST(task.workspace_id AS CHAR)", "workspace_id::text"),
+            ColumnSpec("name", "task.name", "name"),
+            ColumnSpec("description", "COALESCE(task.description, definition.description)", "description"),
+            ColumnSpec("source_datasource_id", "CAST(definition.source_datasource_id AS CHAR)", "source_datasource_id::text"),
+            ColumnSpec("target_datasource_id", "CAST(definition.target_datasource_id AS CHAR)", "target_datasource_id::text"),
+            ColumnSpec("source_schema_name", "definition.source_schema_name", "source_schema_name"),
+            ColumnSpec("source_object_name", "definition.source_object_name", "source_object_name"),
+            ColumnSpec("target_schema_name", "definition.target_schema_name", "target_schema_name"),
+            ColumnSpec("target_object_name", "definition.target_object_name", "target_object_name"),
+            ColumnSpec("source_connector_type", "definition.source_connector_type", "source_connector_type"),
+            ColumnSpec("target_connector_type", "definition.target_connector_type", "target_connector_type"),
+            ColumnSpec("sync_mode", "definition.sync_mode", "sync_mode"),
+            ColumnSpec("sync_scope_type", "'SINGLE_OBJECT'", "sync_scope_type"),
+            ColumnSpec("write_strategy", "definition.write_strategy", "write_strategy"),
+            ColumnSpec("primary_key_field", "definition.primary_key_field", "primary_key_field"),
+            ColumnSpec("incremental_field", "definition.incremental_field", "incremental_field"),
+            ColumnSpec("field_mapping_config", "definition.field_mapping_config", "field_mapping_config"),
+            ColumnSpec("object_mapping_config", "NULL", "object_mapping_config"),
+            ColumnSpec("filter_config", "definition.filter_config", "filter_config"),
+            ColumnSpec("custom_sql_config", "NULL", "custom_sql_config"),
+            ColumnSpec("partition_config", "definition.partition_config", "partition_config"),
+            ColumnSpec("retry_policy", "definition.retry_policy", "retry_policy"),
+            ColumnSpec("timeout_policy", "definition.timeout_policy", "timeout_policy"),
+            ColumnSpec(
+                "enabled",
+                "CASE WHEN definition.enabled IS NULL THEN NULL WHEN definition.enabled <> 0 THEN 'true' ELSE 'false' END",
+                "CASE WHEN enabled IS NULL THEN NULL WHEN enabled THEN 'true' ELSE 'false' END",
+            ),
+            ColumnSpec("created_by", "CAST(COALESCE(task.owner_id, definition.created_by) AS CHAR)", "created_by::text"),
+            ColumnSpec("updated_by", "CAST(definition.updated_by AS CHAR)", "updated_by::text"),
+            ColumnSpec(
+                "create_time",
+                "DATE_FORMAT(LEAST(task.create_time, definition.create_time), '%Y-%m-%d %H:%i:%s.%f')",
+                "to_char(create_time, 'YYYY-MM-DD HH24:MI:SS.US')",
+            ),
+            ColumnSpec(
+                "update_time",
+                "DATE_FORMAT(GREATEST(task.update_time, definition.update_time), '%Y-%m-%d %H:%i:%s.%f')",
+                "to_char(update_time, 'YYYY-MM-DD HH24:MI:SS.US')",
+            ),
         ),
+        mysql_from="`data_sync_task` task JOIN `data_sync_template` definition ON definition.id = task.template_id",
+        source_order_by="task.id",
+        target_order_by="task_id",
+        identity_column=None,
     ),
     TableSpec(
         "data_sync_task",
@@ -221,7 +244,6 @@ TABLES: tuple[TableSpec, ...] = (
             int_col("tenant_id"),
             int_col("project_id"),
             int_col("workspace_id"),
-            int_col("template_id"),
             text_col("name"),
             text_col("current_state"),
             text_col("approval_state"),
@@ -408,7 +430,6 @@ TABLES: tuple[TableSpec, ...] = (
             int_col("tenant_id"),
             int_col("project_id"),
             int_col("workspace_id"),
-            int_col("template_id"),
             int_col("sync_task_id"),
             int_col("execution_id"),
             text_col("action_type"),
@@ -423,6 +444,7 @@ TABLES: tuple[TableSpec, ...] = (
 )
 
 TABLE_NAMES = {table.name for table in TABLES}
+LEGACY_SOURCE_TABLE_NAMES = {"data_sync_template"}
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -568,7 +590,8 @@ def mysql_json_select(table: TableSpec) -> str:
     for column in table.columns:
         pairs.append(f"'{column.name}'")
         pairs.append(column.mysql_expr)
-    return f"SELECT JSON_OBJECT({', '.join(pairs)}) FROM {safe_mysql_identifier(table.name)} ORDER BY id"
+    source = table.mysql_from or safe_mysql_identifier(table.name)
+    return f"SELECT JSON_OBJECT({', '.join(pairs)}) FROM {source} ORDER BY {table.source_order_by}"
 
 
 def postgres_json_select(table: TableSpec, schema: str) -> str:
@@ -583,7 +606,10 @@ def postgres_json_select(table: TableSpec, schema: str) -> str:
 
     schema = safe_identifier(schema)
     projection = ", ".join(f"{column.postgres_expr} AS {column.name}" for column in table.columns)
-    return f"SELECT row_to_json(t) FROM (SELECT {projection} FROM {schema}.{table.name} ORDER BY id) t"
+    return (
+        f"SELECT row_to_json(t) FROM "
+        f"(SELECT {projection} FROM {schema}.{table.name} ORDER BY {table.target_order_by}) t"
+    )
 
 
 def canonical_row(table: TableSpec, row: dict[str, Any]) -> str:
@@ -629,7 +655,8 @@ def read_jsonl(path: pathlib.Path) -> Iterator[dict[str, Any]]:
 def count_source(args: argparse.Namespace, table: TableSpec) -> int:
     """统计 MySQL 源表行数。"""
 
-    output = docker_mysql(args, f"SELECT COUNT(1) FROM {safe_mysql_identifier(table.name)}")
+    source = table.mysql_from or safe_mysql_identifier(table.name)
+    output = docker_mysql(args, f"SELECT COUNT(1) FROM {source}")
     return int(output.strip() or "0")
 
 
@@ -685,7 +712,7 @@ def detect_deferred_tables(args: argparse.Namespace) -> list[dict[str, Any]]:
 def detect_unmapped_data_sync_tables(args: argparse.Namespace) -> list[dict[str, Any]]:
     """扫描 MySQL 中额外出现但不在本批 TableSpec 内的 data_sync_* 表。
 
-    本脚本的迁移对象被固定为当前 Java 服务和 PostgreSQL V1 真实使用的 10 张表。若历史环境存在额外
+    本脚本的迁移对象被固定为当前 Java 服务和 PostgreSQL 前向迁移真实使用的 10 张表。若历史环境存在额外
     data_sync_* 表，脚本不擅自迁移，而是登记为 REVIEW_REQUIRED，让操作者决定是旧表归档、补 DDL，
     还是作为后续 data-sync 扩展表单独迁移。
     """
@@ -699,7 +726,7 @@ def detect_unmapped_data_sync_tables(args: argparse.Namespace) -> list[dict[str,
     review: list[dict[str, Any]] = []
     for line in docker_mysql_lines(args, sql):
         table_name = line.strip()
-        if not table_name or table_name in TABLE_NAMES:
+        if not table_name or table_name in TABLE_NAMES or table_name in LEGACY_SOURCE_TABLE_NAMES:
             continue
         row_count = int(docker_mysql(args, f"SELECT COUNT(1) FROM {safe_mysql_identifier(table_name)}").strip() or "0")
         review.append(
@@ -709,7 +736,7 @@ def detect_unmapped_data_sync_tables(args: argparse.Namespace) -> list[dict[str,
                 "status": "REVIEW_REQUIRED",
                 "targetSchema": "data_sync",
                 "reason": (
-                    "该表以 data_sync_ 开头，但不在当前 PostgreSQL V1 和 Java 实体使用的 10 张表内；"
+                    "该表以 data_sync_ 开头，但不在当前 PostgreSQL 和 Java 实体使用的 10 张表内；"
                     "为了避免误迁旧实验表或废弃表，脚本只登记不导入。"
                 ),
             }
@@ -774,7 +801,8 @@ def write_manifest(
             "manifest 不保存样本值，迁移目录仍必须按敏感数据介质保管。"
         ),
         "ownershipNotice": (
-            "本脚本只迁移 10 张 data_sync_* 表。task_data_sync_* 归 task_management，agent_memory_* 归 ai_memory。"
+            "本脚本迁移 10 张 data_sync_* 目标表；旧 data_sync_template 只作为历史源展开为任务定义。"
+            "task_data_sync_* 归 task_management，agent_memory_* 归 ai_memory。"
         ),
         "tables": table_results,
         "deferredTables": deferred_tables,
@@ -863,8 +891,8 @@ def docker_psql_copy_from_jsonl(
 def import_table(args: argparse.Namespace, table: TableSpec, export_dir: pathlib.Path) -> None:
     """导入单表。
 
-    COPY 列顺序与 TableSpec 完全一致，并显式包含 id。因为 identity sequence 不会因显式 id 自动推进，
-    所有表导入完成后必须统一 reset sequence。
+    COPY 列顺序与 TableSpec 完全一致。带 identity 主键的表保留历史 id，导入完成后统一校正 sequence；
+    data_sync_task_definition 使用 task_id 作为输入主键，不创建独立序列。
     """
 
     jsonl_path = export_dir / f"{table.name}.jsonl"
@@ -889,10 +917,13 @@ def reset_identity_sequences(args: argparse.Namespace) -> None:
     schema = safe_identifier(args.postgres_schema)
     statements = []
     for table in TABLES:
+        if table.identity_column is None:
+            continue
+        identity_column = safe_identifier(table.identity_column)
         statements.append(
-            f"SELECT setval(pg_get_serial_sequence('{schema}.{table.name}', 'id'), "
-            f"COALESCE((SELECT MAX(id) FROM {schema}.{table.name}), 1), "
-            f"COALESCE((SELECT MAX(id) FROM {schema}.{table.name}), 0) > 0);"
+            f"SELECT setval(pg_get_serial_sequence('{schema}.{table.name}', '{identity_column}'), "
+            f"COALESCE((SELECT MAX({identity_column}) FROM {schema}.{table.name}), 1), "
+            f"COALESCE((SELECT MAX({identity_column}) FROM {schema}.{table.name}), 0) > 0);"
         )
     docker_psql(args, " ".join(statements))
     print("[SEQUENCE] PostgreSQL identity sequence 已按最大 id 校正")

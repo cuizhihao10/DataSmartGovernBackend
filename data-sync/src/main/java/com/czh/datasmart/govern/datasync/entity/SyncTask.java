@@ -19,8 +19,8 @@ import java.time.LocalDateTime;
 /**
  * 同步任务实体。
  *
- * <p>同步任务是一个“可运营对象”：它有负责人、状态、审批、优先级、调度配置、最近执行记录和触发方式。
- * 和模板相比，任务更接近前端任务列表、运维看板和执行控制台看到的对象。
+ * <p>同步任务是用户可见的唯一配置与运营对象：它有负责人、状态、优先级、调度配置、
+ * 最近执行记录、触发方式以及一对一的任务定义。任务定义是任务聚合的内部组成部分，不作为独立产品资源暴露。</p>
  */
 @Data
 @TableName("data_sync_task")
@@ -41,7 +41,7 @@ public class SyncTask {
      * 项目 ID。
      *
      * <p>任务是运营对象，项目维度会参与“项目负责人能看哪些任务”、项目级配额、项目级同步成功率和成本统计。
-     * 该字段通常继承自模板，允许任务创建时显式传入但必须与模板保持一致。
+     * 该字段通常继承自任务定义，允许任务创建时显式传入但必须与任务定义保持一致。
      */
     private Long projectId;
 
@@ -53,9 +53,13 @@ public class SyncTask {
     private Long workspaceId;
 
     /**
-     * 关联模板 ID。
+     * 任务详情使用的一对一定义快照。
+     *
+     * <p>该字段不属于 data_sync_task 表，列表查询不会额外加载；详情、编辑和 Agent 查询入口
+     * 会按相同 taskId 从 data_sync_task_definition 加载并附加，避免前端再次请求任务定义资源。</p>
      */
-    private Long templateId;
+    @TableField(exist = false)
+    private SyncTaskDefinition definition;
 
     /**
      * 任务分组编码。
@@ -157,7 +161,7 @@ public class SyncTask {
     private Long scheduleVersion;
 
     /**
-     * 运行模式，例如 TEMPLATE、MANUAL、BACKFILL、REPLAY。
+     * 运行模式，例如 MANUAL、SCHEDULED、BACKFILL、REPLAY。
      */
     private String runMode;
 
