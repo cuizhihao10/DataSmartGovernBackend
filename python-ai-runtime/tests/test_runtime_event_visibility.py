@@ -115,6 +115,32 @@ class RuntimeEventVisibilityPolicyTest(unittest.TestCase):
         self.assertEqual(RuntimeEventVisibilityPolicy.MASKED_VALUE, visible[0].attributes["visibleSkillCodes"])
         self.assertEqual(RuntimeEventVisibilityLevel.BASIC.value, visible[0].attributes["_datasmartVisibilityLevel"])
 
+    def test_basic_user_can_see_sanitized_public_model_output(self) -> None:
+        """模型公开回复可以展示，但密钥片段必须在进入普通用户事件流前再次遮蔽。"""
+
+        policy = RuntimeEventVisibilityPolicy()
+        request = RuntimeEventSubscriptionRequest(client_id="browser-a", roles=("ORDINARY_USER",))
+        event = AgentRuntimeEvent(
+            event_type=AgentRuntimeEventType.MODEL_PUBLIC_OUTPUT_READY,
+            stage="invoke_model_intent",
+            message="模型已生成公开回复。",
+            sequence=1,
+            attributes={
+                "turn": "INITIAL",
+                "publicContent": "我会先读取元数据。password=do-not-leak",
+                "internalPrompt": "never-visible",
+            },
+        )
+
+        visible = policy.filter_and_mask((event,), request)
+
+        self.assertEqual(1, len(visible))
+        self.assertEqual("INITIAL", visible[0].attributes["turn"])
+        self.assertIn("password=[已隐藏]", visible[0].attributes["publicContent"])
+        self.assertNotIn("do-not-leak", visible[0].attributes["publicContent"])
+        self.assertNotIn("internalPrompt", visible[0].attributes)
+        self.assertEqual(RuntimeEventVisibilityLevel.BASIC.value, visible[0].attributes["_datasmartVisibilityLevel"])
+
     def test_visibility_stats_records_filtered_and_masked_events(self) -> None:
         """策略统计应能反映过滤、脱敏和角色级别命中情况。"""
 

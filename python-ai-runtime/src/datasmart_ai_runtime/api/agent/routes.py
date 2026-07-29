@@ -262,8 +262,8 @@ def register_agent_runtime_routes(
         帧类型：
         - `accepted`：服务端已接受请求并确认 requestId；
         - `progress`：一个真实 RuntimeEvent 已产生；
-        - `heartbeat`：长模型调用期间保活并报告已等待时长，不虚构模型内部完成百分比；
-        - `result`：完整 `/agent/plans` 响应；
+        - `heartbeat`：长模型调用期间保活并报告整轮耗时与当前步骤空闲时长，不虚构完成百分比；
+        - `result`：完整 `/agent/plans` 响应，并携带整轮耗时；
         - `error`：低敏失败摘要，不包含 Provider endpoint、prompt、凭据或异常堆栈。
         """
 
@@ -307,6 +307,7 @@ def register_agent_runtime_routes(
         async def generate_frames():
             loop = asyncio.get_running_loop()
             frames: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+            stream_started_at = monotonic()
             last_progress_at = monotonic()
 
             def emit_progress(event: Any) -> None:
@@ -353,6 +354,7 @@ def register_agent_runtime_routes(
                         {
                             "type": "error",
                             "requestId": request.request_id,
+                            "elapsedMs": int((monotonic() - stream_started_at) * 1000),
                             "error": {
                                 "code": "AGENT_PLAN_STREAM_FAILED",
                                 "message": "Agent 规划未能完成，请查看已返回的最后一步并稍后重试。",
@@ -361,7 +363,14 @@ def register_agent_runtime_routes(
                         }
                     )
                 else:
-                    await frames.put({"type": "result", "requestId": request.request_id, "data": response})
+                    await frames.put(
+                        {
+                            "type": "result",
+                            "requestId": request.request_id,
+                            "elapsedMs": int((monotonic() - stream_started_at) * 1000),
+                            "data": response,
+                        }
+                    )
                 finally:
                     await frames.put({"type": "done", "requestId": request.request_id})
 
@@ -377,7 +386,8 @@ def register_agent_runtime_routes(
                             {
                                 "type": "heartbeat",
                                 "requestId": request.request_id,
-                                "elapsedMs": int((monotonic() - last_progress_at) * 1000),
+                                "elapsedMs": int((monotonic() - stream_started_at) * 1000),
+                                "idleElapsedMs": int((monotonic() - last_progress_at) * 1000),
                             }
                         )
                         continue

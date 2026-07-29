@@ -35,6 +35,7 @@ class AgentRuntimeEventType(str, Enum):
     MODEL_GATEWAY_ROUTED = "model_gateway_routed"
     MODEL_QUERY_STARTED = "model_query_started"
     MODEL_QUERY_EXECUTED = "model_query_executed"
+    MODEL_PUBLIC_OUTPUT_READY = "model_public_output_ready"
     INTENT_ANALYZED = "intent_analyzed"
     TOOL_PLANNED = "tool_planned"
     TOOL_PARAMETER_VALIDATED = "tool_parameter_validated"

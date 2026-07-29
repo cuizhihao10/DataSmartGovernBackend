@@ -27,6 +27,7 @@ from datasmart_ai_runtime.services.model_gateway.model_tool_feedback_provider im
     SimulatedModelToolExecutionFeedbackProvider,
 )
 from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import ModelToolResultFeedbackBuilder
+from datasmart_ai_runtime.services.model_gateway.model_public_output import sanitize_public_model_output
 from datasmart_ai_runtime.services.runtime_events.runtime_event_recorder import RuntimeEventRecorder
 
 
@@ -129,6 +130,16 @@ class AgentModelToolFeedbackTurnService:
             strict_tool_schema=model_request.strict_tool_schema,
             provider_metadata=model_request.provider_metadata,
         )
+        event_recorder.record(
+            AgentRuntimeEventType.MODEL_QUERY_STARTED,
+            "invoke_model_second_turn",
+            "正在调用真实模型理解工具执行结果并形成下一步公开回复。",
+            attributes={
+                "turn": "TOOL_FEEDBACK",
+                "feedbackCount": len(feedback_items),
+                "toolChoice": "none",
+            },
+        )
         query_result = self._model_query_engine.invoke(
             second_turn_request,
             context=model_gateway_context,
@@ -141,6 +152,19 @@ class AgentModelToolFeedbackTurnService:
             severity=AgentRuntimeEventSeverity.WARNING if result.error_code else AgentRuntimeEventSeverity.INFO,
             attributes=query_result.to_summary(),
         )
+        public_output = sanitize_public_model_output(result.content)
+        if public_output.content:
+            event_recorder.record(
+                AgentRuntimeEventType.MODEL_PUBLIC_OUTPUT_READY,
+                "invoke_model_second_turn",
+                "模型已根据工具结果生成可向用户展示的公开回复。",
+                attributes={
+                    "turn": "TOOL_FEEDBACK",
+                    "publicContent": public_output.content,
+                    "contentLength": public_output.original_length,
+                    "truncated": public_output.truncated,
+                },
+            )
         event_recorder.record(
             AgentRuntimeEventType.MODEL_SECOND_TURN_COMPLETED,
             "invoke_model_second_turn",

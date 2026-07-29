@@ -20,6 +20,7 @@ from typing import Any
 
 from datasmart_ai_runtime.domain.event_transport import RuntimeEventSubscriptionRequest
 from datasmart_ai_runtime.domain.events import AgentRuntimeEvent
+from datasmart_ai_runtime.services.model_gateway.model_public_output import sanitize_public_model_output
 
 
 class RuntimeEventVisibilityLevel(str, Enum):
@@ -119,6 +120,7 @@ class RuntimeEventVisibilityPolicy:
             "agent_loop_control_decided",
             "model_second_turn_completed",
             "model_second_turn_skipped",
+            "model_public_output_ready",
             "run_started",
             "run_completed",
             "run_failed",
@@ -223,6 +225,19 @@ class RuntimeEventVisibilityPolicy:
 
         if level == RuntimeEventVisibilityLevel.FULL:
             return event
+
+        if self._normalize_event_type(event) == "model_public_output_ready":
+            public_output = sanitize_public_model_output(event.attributes.get("publicContent"))
+            return replace(
+                event,
+                attributes={
+                    "turn": str(event.attributes.get("turn") or "UNKNOWN"),
+                    "publicContent": public_output.content,
+                    "contentLength": public_output.original_length,
+                    "truncated": public_output.truncated,
+                    self.VISIBILITY_LEVEL_ATTRIBUTE: level.value,
+                },
+            )
 
         masked_attributes, _ = self._mask_attributes(event.attributes, level)
         message = self._mask_text_if_needed(event.message, event, level)

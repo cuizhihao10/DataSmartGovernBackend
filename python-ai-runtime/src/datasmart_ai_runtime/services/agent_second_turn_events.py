@@ -22,6 +22,7 @@ from datasmart_ai_runtime.domain.events import (
 )
 from datasmart_ai_runtime.services.agent_control_plane_feedback import AgentControlPlaneFeedbackSnapshot
 from datasmart_ai_runtime.services.agent_loop_control_policy import AgentLoopControlDecision
+from datasmart_ai_runtime.services.model_gateway.model_public_output import sanitize_public_model_output
 
 
 class SecondTurnEventBuilder:
@@ -136,8 +137,24 @@ class SecondTurnEventBuilder:
         prompt_tokens: int | None,
         completion_tokens: int | None,
         error_code: str | None,
+        public_content: str = "",
     ) -> None:
         """记录二轮模型调用完成事件。"""
+
+        public_output = sanitize_public_model_output(public_content)
+        if public_output.content:
+            self._record(
+                AgentRuntimeEventType.MODEL_PUBLIC_OUTPUT_READY,
+                "invoke_controlled_model_second_turn",
+                "模型已根据真实工具结果生成可向用户展示的公开回复。",
+                severity=AgentRuntimeEventSeverity.INFO,
+                attributes={
+                    "turn": "CONTROL_PLANE_FEEDBACK",
+                    "publicContent": public_output.content,
+                    "contentLength": public_output.original_length,
+                    "truncated": public_output.truncated,
+                },
+            )
 
         self._record(
             AgentRuntimeEventType.MODEL_SECOND_TURN_COMPLETED,

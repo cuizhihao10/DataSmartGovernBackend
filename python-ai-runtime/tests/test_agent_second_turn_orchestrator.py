@@ -61,6 +61,13 @@ class AgentSecondTurnOrchestratorTest(unittest.TestCase):
             AgentRuntimeEventType.MODEL_SECOND_TURN_COMPLETED,
             {event.event_type for event in result.runtime_events},
         )
+        public_output_event = next(
+            event
+            for event in result.runtime_events
+            if event.event_type == AgentRuntimeEventType.MODEL_PUBLIC_OUTPUT_READY
+        )
+        self.assertEqual("已根据工具结果生成治理总结。", public_output_event.attributes["publicContent"])
+        self.assertEqual("CONTROL_PLANE_FEEDBACK", public_output_event.attributes["turn"])
         feedback_event = next(
             event
             for event in result.runtime_events
@@ -73,7 +80,7 @@ class AgentSecondTurnOrchestratorTest(unittest.TestCase):
         self.assertEqual("audit_only", feedback_event.attributes["resourceResolutions"][0]["contextPolicy"])
         self.assertEqual(1, feedback_event.attributes["resultFilterCount"])
         self.assertEqual("resource_not_allowed_for_model", feedback_event.attributes["resultFilters"][0]["mode"])
-        self.assertEqual((6, 7, 8), tuple(event.sequence for event in result.runtime_events))
+        self.assertEqual((6, 7, 8, 9), tuple(event.sequence for event in result.runtime_events))
 
     def test_skips_without_calling_model_when_policy_blocks(self) -> None:
         provider = CapturingProviderRegistry()
@@ -144,7 +151,7 @@ class AgentSecondTurnOrchestratorTest(unittest.TestCase):
         self.assertEqual(1, auto_event.attributes["executedCount"])
         self.assertEqual(0, auto_event.attributes["failedCount"])
         self.assertEqual("EXECUTED", auto_event.attributes["items"][0]["action"])
-        self.assertEqual((6, 7, 8, 9), tuple(event.sequence for event in result.runtime_events))
+        self.assertEqual((6, 7, 8, 9, 10), tuple(event.sequence for event in result.runtime_events))
 
     def test_replays_provider_visible_function_name_for_responses_history(self) -> None:
         provider = CapturingProviderRegistry()

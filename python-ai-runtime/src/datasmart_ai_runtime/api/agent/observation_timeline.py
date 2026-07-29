@@ -9,10 +9,10 @@ Provider 内部 reasoning token、系统提示词、原始参数、SQL、凭据�
 from __future__ import annotations
 
 from enum import Enum
-import re
 from typing import Any, Mapping
 
 from datasmart_ai_runtime.domain.contracts import AgentPlan
+from datasmart_ai_runtime.services.model_gateway.model_public_output import sanitize_public_model_output
 
 
 def build_agent_observation_timeline(
@@ -465,15 +465,7 @@ def _stage_label(stage: str) -> str:
 def _public_model_summary(value: str) -> str:
     """完整保留模型公开回复的换行，并兜底遮蔽意外出现的密钥型片段。"""
 
-    text = str(value or "").strip()
-    if not text:
-        return ""
-    text = re.sub(
-        r"(?i)\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|password|secret)\b\s*[:=]\s*\S+",
-        r"\1=[已隐藏]",
-        text,
-    )
-    return text[:4_000] + ("…" if len(text) > 4_000 else "")
+    return sanitize_public_model_output(value).content
 
 
 def _mapping(value: Any) -> dict[str, Any]:

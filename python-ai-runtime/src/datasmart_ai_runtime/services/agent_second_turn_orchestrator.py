@@ -347,6 +347,7 @@ class AgentSecondTurnOrchestrator:
             prompt_tokens=result.prompt_tokens,
             completion_tokens=result.completion_tokens,
             error_code=result.error_code,
+            public_content=public_summary,
         )
         return AgentSecondTurnResult(
             executed=True,

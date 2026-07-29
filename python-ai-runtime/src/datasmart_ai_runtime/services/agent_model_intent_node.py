@@ -39,6 +39,7 @@ from datasmart_ai_runtime.domain.skills import AgentSkillPlan
 from datasmart_ai_runtime.services.agent_model_tool_feedback_turn import AgentModelToolFeedbackTurnService
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
 from datasmart_ai_runtime.services.model_gateway.model_provider_metadata import build_model_provider_metadata
+from datasmart_ai_runtime.services.model_gateway.model_public_output import sanitize_public_model_output
 from datasmart_ai_runtime.services.model_gateway.model_query_engine import ModelQueryEngine, ModelQueryEngineResult
 from datasmart_ai_runtime.services.model_gateway.model_tool_feedback_provider import (
     ModelToolExecutionFeedbackProvider,
@@ -342,6 +343,12 @@ class AgentModelIntentNode:
         )
         self._record_model_query_event(event_recorder, "invoke_model_intent", query_result)
         result = query_result.result
+        self._record_public_model_output(
+            event_recorder,
+            stage="invoke_model_intent",
+            turn="INITIAL",
+            content=result.content,
+        )
         model_tool_plans = self._govern_model_tool_calls(
             tool_calls=result.tool_calls,
             request=request,
@@ -452,6 +459,12 @@ class AgentModelIntentNode:
             )
 
         summary = "".join(chunk.content_delta for chunk in chunks).strip()
+        self._record_public_model_output(
+            event_recorder,
+            stage="invoke_model_intent",
+            turn="INITIAL",
+            content=summary,
+        )
         assembly_report = self._aggregate_streaming_tool_calls(chunks)
         model_tool_plans = self._govern_model_tool_calls(
             tool_calls=assembly_report.tool_calls,
@@ -571,6 +584,31 @@ class AgentModelIntentNode:
             "模型查询引擎已完成一次受治理模型调用。",
             severity=severity,
             attributes=query_result.to_summary(),
+        )
+
+    @staticmethod
+    def _record_public_model_output(
+        event_recorder: RuntimeEventRecorder,
+        *,
+        stage: str,
+        turn: str,
+        content: object,
+    ) -> None:
+        """实时发布模型面向用户的公开回复，不发布隐藏推理或原始 Provider 数据。"""
+
+        public_output = sanitize_public_model_output(content)
+        if not public_output.content:
+            return
+        event_recorder.record(
+            AgentRuntimeEventType.MODEL_PUBLIC_OUTPUT_READY,
+            stage,
+            "模型已生成一段可向用户展示的公开回复。",
+            attributes={
+                "turn": turn,
+                "publicContent": public_output.content,
+                "contentLength": public_output.original_length,
+                "truncated": public_output.truncated,
+            },
         )
 
     @staticmethod
