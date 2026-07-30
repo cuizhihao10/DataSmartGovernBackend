@@ -289,7 +289,15 @@ class FakeOrchestrator:
 class FakeSecondTurnOrchestrator:
     """测试用二轮编排器，验证 API 响应组装层会在 loop 决策后调用它。"""
 
-    def run(self, *, request, plan, control_plane_feedback, loop_control_decision):
+    def run(
+        self,
+        *,
+        request,
+        plan,
+        control_plane_feedback,
+        loop_control_decision,
+        progress_event_sink=None,
+    ):
         return AgentSecondTurnResult(
             executed=True,
             allowed=True,

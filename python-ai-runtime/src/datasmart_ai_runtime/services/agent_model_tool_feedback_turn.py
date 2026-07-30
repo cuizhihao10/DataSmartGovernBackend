@@ -15,6 +15,7 @@ from __future__ import annotations
 from datasmart_ai_runtime.domain.contracts import (
     ModelInvocationRequest,
     ModelToolCall,
+    ProviderType,
     ToolPlan,
 )
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventSeverity, AgentRuntimeEventType
@@ -50,6 +51,10 @@ class AgentModelToolFeedbackTurnService:
     ) -> None:
         self._model_providers = model_providers
         self._model_gateway = model_gateway
+        self._uses_simulated_feedback = tool_execution_feedback_provider is None or isinstance(
+            tool_execution_feedback_provider,
+            SimulatedModelToolExecutionFeedbackProvider,
+        )
         self._tool_execution_feedback_provider = tool_execution_feedback_provider or SimulatedModelToolExecutionFeedbackProvider()
         self._tool_result_feedback_builder = tool_result_feedback_builder or ModelToolResultFeedbackBuilder()
         self._model_query_engine = model_query_engine or ModelQueryEngine(
@@ -77,6 +82,14 @@ class AgentModelToolFeedbackTurnService:
         """
 
         if not tool_calls or not model_tool_plans:
+            return "", 0
+        if self._uses_simulated_feedback and model_request.route.provider_type != ProviderType.DRY_RUN:
+            # A real provider must only receive real tool receipts. The initial
+            # planning node has model candidates but Java has not executed them yet;
+            # feeding fabricated success summaries back to the model would create a
+            # misleading answer, duplicate token cost, and delay the actual control
+            # plane. The durable second-turn orchestrator resumes after Java returns
+            # governed, low-sensitive execution evidence.
             return "", 0
         feedback_items = self._tool_execution_feedback_provider.feedback_for(tool_calls, model_tool_plans)
         feedback_bundle = self._tool_result_feedback_builder.build(

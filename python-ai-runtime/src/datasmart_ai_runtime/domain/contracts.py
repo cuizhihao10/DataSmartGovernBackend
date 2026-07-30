@@ -322,6 +322,9 @@ class ModelInvocationChunk:
     finish_reason: str | None = None
     sequence: int = 0
     error_code: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    cached_prompt_tokens: int | None = None
     tool_call_deltas: tuple[ModelToolCallDelta, ...] = ()
     raw_event: dict[str, Any] = field(default_factory=dict)
 

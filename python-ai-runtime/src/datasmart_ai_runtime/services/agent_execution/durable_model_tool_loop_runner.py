@@ -267,6 +267,7 @@ class AgentDurableModelToolLoopRunner:
                 plan=accumulated_plan,
                 control_plane_feedback=accumulated_feedback,
                 loop_control_decision=latest_decision,
+                progress_event_sink=progress_event_sink,
             )
             if next_model_turn.runtime_events:
                 continuation_plan = replace(

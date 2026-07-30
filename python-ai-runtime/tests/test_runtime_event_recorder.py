@@ -74,6 +74,17 @@ class RuntimeEventRecorderTest(unittest.TestCase):
 
         self.assertEqual([event], delivered)
 
+        transient = recorder.publish_transient(
+            AgentRuntimeEventType.MODEL_PUBLIC_OUTPUT_STREAM_UPDATED,
+            "invoke_model_intent",
+            "模型正在生成公开回复。",
+            attributes={"publicContent": "正在核对数据源"},
+        )
+        self.assertEqual([event, transient], delivered)
+        self.assertIsNone(transient.sequence)
+        self.assertEqual(1, transient.attributes["streamSequence"])
+        self.assertEqual((event,), recorder.events())
+
         failing = RuntimeEventRecorder(
             request=request,
             request_id="request-live-002",

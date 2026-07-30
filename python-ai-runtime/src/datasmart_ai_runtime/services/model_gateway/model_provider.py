@@ -141,6 +141,9 @@ class ModelProviderRegistry:
             finish_reason="invoke_fallback",
             sequence=1,
             error_code=result.error_code,
+            prompt_tokens=result.prompt_tokens,
+            completion_tokens=result.completion_tokens,
+            cached_prompt_tokens=result.cached_prompt_tokens,
         )
 
 

@@ -12,7 +12,7 @@ SSE token 流、模型耗时指标、失败诊断和告警等级时会很快再�
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest
 from datasmart_ai_runtime.domain.events import (
@@ -32,11 +32,19 @@ class SecondTurnEventBuilder:
     之后继续编号，保证 HTTP snapshot、WebSocket replay 和审计回放看到的是一条连续事件流。
     """
 
-    def __init__(self, *, request: AgentRequest, plan: AgentPlan) -> None:
+    def __init__(
+        self,
+        *,
+        request: AgentRequest,
+        plan: AgentPlan,
+        transient_event_sink: Callable[[AgentRuntimeEvent], None] | None = None,
+    ) -> None:
         self._request = request
         self._plan = plan
         self._events: list[AgentRuntimeEvent] = []
         self._next_sequence = self._resolve_next_sequence(plan)
+        self._next_stream_sequence = 1
+        self._transient_event_sink = transient_event_sink
 
     def record_loop_decision(
         self,
@@ -168,6 +176,38 @@ class SecondTurnEventBuilder:
                 "errorCode": error_code,
             },
         )
+
+    def publish_public_output_delta(self, public_content: str) -> None:
+        """Publish a cumulative public model reply without persisting every delta."""
+
+        public_output = sanitize_public_model_output(public_content)
+        if not public_output.content or self._transient_event_sink is None:
+            return
+        event = AgentRuntimeEvent(
+            event_type=AgentRuntimeEventType.MODEL_PUBLIC_OUTPUT_STREAM_UPDATED,
+            stage="invoke_controlled_model_second_turn",
+            message="模型正在根据真实工具结果生成公开回复。",
+            severity=AgentRuntimeEventSeverity.INFO,
+            tenant_id=self._request.tenant_id,
+            project_id=self._request.project_id,
+            actor_id=self._request.actor_id,
+            request_id=self._plan.request_id,
+            run_id=self._resolve_run_id(),
+            session_id=self._resolve_session_id(),
+            sequence=None,
+            attributes={
+                "turn": "CONTROL_PLANE_FEEDBACK",
+                "publicContent": public_output.content,
+                "contentLength": public_output.original_length,
+                "truncated": public_output.truncated,
+                "streamSequence": self._next_stream_sequence,
+            },
+        )
+        self._next_stream_sequence += 1
+        try:
+            self._transient_event_sink(event)
+        except Exception:
+            pass
 
     def record_follow_up_tool_planning(self, summary: dict[str, Any]) -> None:
         """Record a low-sensitive view of the model's next tool batch decision."""

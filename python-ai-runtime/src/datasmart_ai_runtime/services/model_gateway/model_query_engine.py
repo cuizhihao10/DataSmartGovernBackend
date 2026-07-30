@@ -22,6 +22,7 @@ from typing import Callable
 
 from datasmart_ai_runtime.domain.contracts import (
     ModelCacheKeyScope,
+    ModelInvocationChunk,
     ModelInvocationRequest,
     ModelInvocationResult,
     ModelRoute,
@@ -33,6 +34,7 @@ from datasmart_ai_runtime.domain.model_gateway import (
 )
 from datasmart_ai_runtime.services.model_gateway.model_gateway import ModelGatewayGovernanceService
 from datasmart_ai_runtime.services.model_gateway.model_provider import ModelProviderRegistry
+from datasmart_ai_runtime.services.model_gateway.model_tool_call_aggregator import ModelToolCallDeltaAggregator
 from datasmart_ai_runtime.services.model_gateway.model_query_engine_components import (
     InMemoryModelQueryRateLimiter,
     InMemoryModelQueryResultCache,
@@ -204,6 +206,7 @@ class ModelQueryEngine:
         *,
         context: ModelGatewayRequestContext,
         routing_decision: ModelGatewayRoutingDecision | None = None,
+        chunk_sink: Callable[[ModelInvocationChunk], None] | None = None,
     ) -> ModelQueryEngineResult:
         """执行一次受治理模型调用。
 
@@ -317,7 +320,11 @@ class ModelQueryEngine:
             max_attempts = max(self._settings.max_attempts_per_route, 1)
             for attempt_number in range(1, max_attempts + 1):
                 started_at = self._clock()
-                result = self._invoke_provider_safely(routed_request)
+                result = (
+                    self._invoke_provider_streaming_safely(routed_request, chunk_sink)
+                    if chunk_sink is not None and self._supports_streaming(route)
+                    else self._invoke_provider_safely(routed_request)
+                )
                 latency_ms = int((self._clock() - started_at) * 1000)
                 self._model_gateway.record_invocation_result(context, result)
                 last_result = result
@@ -419,6 +426,86 @@ class ModelQueryEngine:
                 content="[MODEL_QUERY_ERROR] 模型 Provider 调用异常，原始异常已按低敏策略隐藏。",
                 error_code="MODEL_QUERY_PROVIDER_EXCEPTION",
             )
+
+    def _invoke_provider_streaming_safely(
+        self,
+        request: ModelInvocationRequest,
+        chunk_sink: Callable[[ModelInvocationChunk], None],
+    ) -> ModelInvocationResult:
+        """Aggregate one governed provider stream while forwarding public chunks.
+
+        The sink is observational only. A UI disconnect or sink failure must not
+        cancel the provider request, alter tool-call assembly, or skip cache and
+        health accounting. Final content and tool calls are still returned as the
+        same ``ModelInvocationResult`` contract used by non-streaming callers.
+        """
+
+        started_at = time.perf_counter()
+        chunks: list[ModelInvocationChunk] = []
+        try:
+            for chunk in self._model_providers.stream(request):
+                chunks.append(chunk)
+                try:
+                    chunk_sink(chunk)
+                except Exception:
+                    pass
+        except Exception:  # pragma: no cover - transport-specific exceptions are normalized here
+            return ModelInvocationResult(
+                provider_name=request.route.provider_name,
+                model_name=request.route.model_name,
+                content="[MODEL_QUERY_ERROR] 模型 Provider 流式调用异常，原始异常已按低敏策略隐藏。",
+                latency_ms=int((time.perf_counter() - started_at) * 1000),
+                error_code="MODEL_QUERY_PROVIDER_STREAM_EXCEPTION",
+            )
+
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+        if not chunks:
+            return ModelInvocationResult(
+                provider_name=request.route.provider_name,
+                model_name=request.route.model_name,
+                content="[MODEL_QUERY_ERROR] 模型 Provider 流式调用未返回事件。",
+                latency_ms=latency_ms,
+                error_code="MODEL_PROVIDER_EMPTY_STREAM",
+            )
+
+        assembly = ModelToolCallDeltaAggregator.from_chunks(chunks)
+        error_code = next((chunk.error_code for chunk in chunks if chunk.error_code), None)
+        model_name = next(
+            (chunk.model_name for chunk in reversed(chunks) if chunk.model_name),
+            request.route.model_name,
+        )
+        provider_name = next(
+            (chunk.provider_name for chunk in reversed(chunks) if chunk.provider_name),
+            request.route.provider_name,
+        )
+        return ModelInvocationResult(
+            provider_name=provider_name,
+            model_name=model_name,
+            content="".join(chunk.content_delta for chunk in chunks),
+            latency_ms=latency_ms,
+            prompt_tokens=next(
+                (chunk.prompt_tokens for chunk in reversed(chunks) if chunk.prompt_tokens is not None),
+                None,
+            ),
+            completion_tokens=next(
+                (chunk.completion_tokens for chunk in reversed(chunks) if chunk.completion_tokens is not None),
+                None,
+            ),
+            cached_prompt_tokens=next(
+                (chunk.cached_prompt_tokens for chunk in reversed(chunks) if chunk.cached_prompt_tokens is not None),
+                None,
+            ),
+            tool_calls=assembly.tool_calls,
+            error_code=error_code,
+        )
+
+    def _supports_streaming(self, route: ModelRoute) -> bool:
+        """Ask the registry whether the selected route has native streaming."""
+
+        supports_streaming = getattr(self._model_providers, "supports_streaming", None)
+        if callable(supports_streaming):
+            return bool(supports_streaming(route))
+        return callable(getattr(self._model_providers, "stream", None))
 
     @staticmethod
     def _token_limit_issue(request: ModelInvocationRequest, context: ModelGatewayRequestContext) -> str | None:

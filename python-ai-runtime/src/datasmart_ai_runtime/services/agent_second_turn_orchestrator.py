@@ -18,11 +18,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from datasmart_ai_runtime.domain.contracts import (
     AgentPlan,
     AgentRequest,
+    ModelInvocationChunk,
     ModelInvocationRequest,
     ModelInvocationResult,
     ModelMessage,
@@ -162,6 +163,7 @@ class AgentSecondTurnOrchestrator:
         plan: AgentPlan,
         control_plane_feedback: AgentControlPlaneFeedbackSnapshot | None,
         loop_control_decision: AgentLoopControlDecision | None,
+        progress_event_sink: Callable[[AgentRuntimeEvent], None] | None = None,
     ) -> AgentSecondTurnResult:
         """根据控制面反馈和 loop 决策尝试执行二轮模型推理。
 
@@ -169,7 +171,11 @@ class AgentSecondTurnOrchestrator:
         tool result messages 不完整，方法会返回 skipped 结果并写事件，不会抛出异常中断主响应。
         """
 
-        events = SecondTurnEventBuilder(request=request, plan=plan)
+        events = SecondTurnEventBuilder(
+            request=request,
+            plan=plan,
+            transient_event_sink=progress_event_sink,
+        )
         if control_plane_feedback is None or loop_control_decision is None:
             return self._skipped(
                 events,
@@ -278,7 +284,19 @@ class AgentSecondTurnOrchestrator:
         )
         cache_hit = False
         if self._model_query_engine is not None:
-            query_result = self._model_query_engine.invoke(second_turn_request, context=gateway_context)
+            public_content_parts: list[str] = []
+
+            def publish_public_chunk(chunk: ModelInvocationChunk) -> None:
+                if not chunk.content_delta:
+                    return
+                public_content_parts.append(chunk.content_delta)
+                events.publish_public_output_delta("".join(public_content_parts))
+
+            query_result = self._model_query_engine.invoke(
+                second_turn_request,
+                context=gateway_context,
+                chunk_sink=publish_public_chunk,
+            )
             result = query_result.result
             cache_hit = query_result.cache_hit
         else:

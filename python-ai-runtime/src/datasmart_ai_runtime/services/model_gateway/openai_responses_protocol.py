@@ -11,10 +11,12 @@ import json
 from typing import Any
 
 from datasmart_ai_runtime.domain.contracts import (
+    ModelInvocationChunk,
     ModelInvocationRequest,
     ModelInvocationResult,
     ModelMessage,
     ModelToolCall,
+    ModelToolCallDelta,
 )
 from datasmart_ai_runtime.services.model_gateway.model_identity import (
     provider_reported_model_name,
@@ -32,12 +34,13 @@ class OpenAIResponsesProtocolAdapter:
         reasoning_effort: str | None,
         store_response: bool,
         tool_call_mode: str,
+        stream: bool = False,
     ) -> dict[str, Any]:
-        """Build a non-streaming Responses request body.
+        """Build a Responses request body for complete or SSE delivery.
 
-        DataSmart admits a tool only after the complete candidate has arrived. The
-        provider therefore returns one complete compatibility chunk when callers use
-        the unified streaming API, rather than exposing partial JSON to execution.
+        Streaming only changes transport. DataSmart still aggregates every function
+        call argument delta and performs schema, permission, approval, and budget
+        checks before a tool candidate can enter the Java execution plane.
         """
 
         input_items = self._messages_to_input(request.messages)
@@ -55,6 +58,7 @@ class OpenAIResponsesProtocolAdapter:
             "model": request.route.model_name,
             "input": input_items,
             "max_output_tokens": request.max_output_tokens,
+            "stream": stream,
             # Commercial governance deployments default to no provider-side response
             # storage. Provider security logs remain governed by its own DPA.
             "store": store_response,
@@ -118,6 +122,102 @@ class OpenAIResponsesProtocolAdapter:
             cached_prompt_tokens=input_token_details.get("cached_tokens"),
             tool_calls=tuple(tool_calls),
         )
+
+    def to_stream_chunk(
+        self,
+        request: ModelInvocationRequest,
+        payload: dict[str, Any],
+        sequence: int,
+        name_aliases: dict[str, str],
+    ) -> ModelInvocationChunk:
+        """Translate one Responses SSE event into a governed provider chunk.
+
+        Only ``response.output_text.delta`` is treated as public assistant text.
+        Reasoning summary events, encrypted reasoning content, provider diagnostics,
+        and raw error bodies are never copied into ``content_delta``. Function call
+        fragments remain inert protocol data until the upper-layer aggregator has
+        assembled and admitted the complete call.
+        """
+
+        event_type = str(payload.get("type") or "")
+        response = payload.get("response") if isinstance(payload.get("response"), dict) else {}
+        model_name = provider_reported_model_name(response or payload, request.route.model_name)
+        usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+        input_token_details = (
+            usage.get("input_tokens_details")
+            if isinstance(usage.get("input_tokens_details"), dict)
+            else {}
+        )
+        content_delta = ""
+        finish_reason: str | None = None
+        error_code: str | None = None
+        tool_call_deltas: tuple[ModelToolCallDelta, ...] = ()
+
+        if event_type == "response.output_text.delta":
+            content_delta = str(payload.get("delta") or "")
+        elif event_type == "response.output_item.added":
+            item = payload.get("item") if isinstance(payload.get("item"), dict) else {}
+            if item.get("type") == "function_call":
+                model_visible_name = str(item.get("name") or "")
+                tool_call_deltas = (
+                    ModelToolCallDelta(
+                        index=self._safe_int(payload.get("output_index")),
+                        call_id=item.get("call_id") or item.get("id"),
+                        type="function",
+                        name_delta=name_aliases.get(model_visible_name, model_visible_name),
+                        arguments_delta=str(item.get("arguments") or ""),
+                        raw_delta={"eventType": event_type},
+                    ),
+                )
+        elif event_type == "response.function_call_arguments.delta":
+            tool_call_deltas = (
+                ModelToolCallDelta(
+                    index=self._safe_int(payload.get("output_index")),
+                    call_id=payload.get("call_id"),
+                    type="function",
+                    arguments_delta=str(payload.get("delta") or ""),
+                    raw_delta={"eventType": event_type},
+                ),
+            )
+        elif event_type == "response.completed":
+            finish_reason = "stop"
+        elif event_type in {"response.incomplete", "response.cancelled"}:
+            finish_reason = "length" if event_type == "response.incomplete" else "cancelled"
+        elif event_type in {"response.failed", "error"}:
+            error_code = "MODEL_PROVIDER_RESPONSE_FAILED"
+            content_delta = "[MODEL_PROVIDER_STREAM_ERROR] 模型 Provider 返回失败状态。"
+
+        return ModelInvocationChunk(
+            provider_name=request.route.provider_name,
+            model_name=model_name,
+            content_delta=content_delta,
+            finish_reason=finish_reason,
+            sequence=sequence,
+            error_code=error_code,
+            prompt_tokens=self._optional_int(usage.get("input_tokens")),
+            completion_tokens=self._optional_int(usage.get("output_tokens")),
+            cached_prompt_tokens=self._optional_int(input_token_details.get("cached_tokens")),
+            tool_call_deltas=tool_call_deltas,
+            # Do not retain the provider payload. Public text and low-sensitive tool
+            # fragments above are the only data this boundary permits downstream.
+            raw_event={"type": event_type},
+        )
+
+    @staticmethod
+    def _safe_int(value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _optional_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     @classmethod
     def _messages_to_input(cls, messages: tuple[ModelMessage, ...]) -> list[dict[str, Any]]:

@@ -195,6 +195,7 @@ def build_plan_response(
                 plan=plan,
                 control_plane_feedback=control_plane_feedback,
                 loop_control_decision=loop_control_decision,
+                progress_event_sink=progress_event_sink,
             )
             if second_turn_result.runtime_events:
                 plan = replace(plan, runtime_events=plan.runtime_events + second_turn_result.runtime_events)

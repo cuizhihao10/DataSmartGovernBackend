@@ -262,7 +262,15 @@ class FakeOrchestrator:
 
 
 class FakeSecondTurnOrchestrator:
-    def run(self, *, request, plan, control_plane_feedback, loop_control_decision):
+    def run(
+        self,
+        *,
+        request,
+        plan,
+        control_plane_feedback,
+        loop_control_decision,
+        progress_event_sink=None,
+    ):
         return AgentSecondTurnResult(
             executed=loop_control_decision.allowed,
             allowed=loop_control_decision.allowed,

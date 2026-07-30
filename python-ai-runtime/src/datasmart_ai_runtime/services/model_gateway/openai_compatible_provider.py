@@ -128,11 +128,11 @@ class OpenAICompatibleModelProvider:
     def supports_streaming(self) -> bool:
         """声明当前协议组合是否具备原生流式响应能力。
 
-        Responses 和 JSON fallback 当前都必须先取得完整响应，才能安全解析 function calls 或闭合 JSON。
-        ``stream()`` 为它们保留单 chunk 兼容实现，但该兼容实现不能被上层误判为原生 streaming。
+        Chat Completions 与 Responses 都支持 SSE。JSON fallback 仍必须先取得完整 JSON，才能校验闭合
+        结构；原生 function calling 则会先聚合完整参数，再进入统一工具治理，不会边生成边执行。
         """
 
-        return self._settings.wire_api != "responses" and self._settings.tool_call_mode != "json_fallback"
+        return self._settings.tool_call_mode != "json_fallback"
 
     def invoke(self, request: ModelInvocationRequest) -> ModelInvocationResult:
         """执行一次非流式 Chat Completions 调用。
@@ -202,9 +202,7 @@ class OpenAICompatibleModelProvider:
         if not request.route.endpoint:
             raise ValueError("OpenAI-compatible Provider 需要在 ModelRoute.endpoint 中配置接口地址")
 
-        if self._settings.wire_api == "responses" or (
-            self._settings.tool_call_mode == "json_fallback" and request.available_tools
-        ):
+        if self._settings.tool_call_mode == "json_fallback" and request.available_tools:
             # JSON fallback 需要先拿到完整 JSON 再校验/解析，不能对尚未闭合的 token 片段做工具准入。
             # 对上层仍输出统一 chunk，让 LangGraph 与聚合器无需为特定中转站分叉。
             result = self.invoke(request)
@@ -214,6 +212,9 @@ class OpenAICompatibleModelProvider:
                 content_delta=result.content,
                 finish_reason="tool_calls" if result.tool_calls else "stop",
                 sequence=1,
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=result.completion_tokens,
+                cached_prompt_tokens=result.cached_prompt_tokens,
                 tool_call_deltas=tuple(
                     ModelToolCallDelta(
                         index=index,
@@ -238,7 +239,11 @@ class OpenAICompatibleModelProvider:
                         break
                     sequence += 1
                     event = json.loads(payload)
-                    yield self._to_chunk(request, event, sequence)
+                    if self._settings.wire_api == "responses":
+                        name_aliases = self._tool_schema_builder.build_name_aliases(request.available_tools)
+                        yield self._responses_adapter.to_stream_chunk(request, event, sequence, name_aliases)
+                    else:
+                        yield self._to_chunk(request, event, sequence)
         except HTTPError as exc:
             yield self._error_chunk(request, f"MODEL_PROVIDER_HTTP_{exc.code}", safe_http_error_message(exc), sequence + 1)
         except URLError:
@@ -268,6 +273,7 @@ class OpenAICompatibleModelProvider:
                 reasoning_effort=self._settings.reasoning_effort,
                 store_response=self._settings.store_response,
                 tool_call_mode=self._settings.tool_call_mode,
+                stream=stream,
             )
             return self._request_with_headers(
                 request,
@@ -310,7 +316,7 @@ class OpenAICompatibleModelProvider:
 
         headers = {
             "Content-Type": "application/json",
-            "Accept": "application/json",
+            "Accept": "text/event-stream" if body.get("stream") else "application/json",
             # urllib 的默认 Python-urllib User-Agent 会被部分 CDN/WAF 识别为爬虫并返回 403。
             # 使用固定低敏产品标识可以让宿主机与容器请求保持一致，也便于企业网关建立准入规则。
             "User-Agent": self._settings.user_agent,
@@ -561,15 +567,33 @@ class OpenAICompatibleModelProvider:
         tool_call_deltas = tuple(
             self._to_tool_call_delta(item, name_aliases) for item in delta.get("tool_calls") or () if isinstance(item, dict)
         )
+        usage = payload.get("usage") if isinstance(payload.get("usage"), dict) else {}
+        prompt_token_details = (
+            usage.get("prompt_tokens_details")
+            if isinstance(usage.get("prompt_tokens_details"), dict)
+            else {}
+        )
         return ModelInvocationChunk(
             provider_name=request.route.provider_name,
             model_name=provider_reported_model_name(payload, request.route.model_name),
             content_delta=delta.get("content") or "",
             finish_reason=choice.get("finish_reason"),
             sequence=sequence,
+            prompt_tokens=self._optional_int(usage.get("prompt_tokens")),
+            completion_tokens=self._optional_int(usage.get("completion_tokens")),
+            cached_prompt_tokens=self._optional_int(prompt_token_details.get("cached_tokens")),
             tool_call_deltas=tool_call_deltas,
             raw_event=payload,
         )
+
+    @staticmethod
+    def _optional_int(value: object) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _to_tool_call(item: dict, name_aliases: dict[str, str]) -> ModelToolCall:

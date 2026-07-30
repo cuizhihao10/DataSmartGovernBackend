@@ -403,13 +403,47 @@ class AgentModelIntentNode:
         """
 
         started_at = time.perf_counter()
-        chunks = tuple(self._stream_chunks(model_request))
+        chunks_buffer: list[ModelInvocationChunk] = []
+        public_content_parts: list[str] = []
+        for chunk in self._stream_chunks(model_request):
+            chunks_buffer.append(chunk)
+            if not chunk.content_delta:
+                continue
+            public_content_parts.append(chunk.content_delta)
+            public_output = sanitize_public_model_output("".join(public_content_parts))
+            if not public_output.content:
+                continue
+            event_recorder.publish_transient(
+                AgentRuntimeEventType.MODEL_PUBLIC_OUTPUT_STREAM_UPDATED,
+                "invoke_model_intent",
+                "模型正在生成可向用户展示的公开回复。",
+                attributes={
+                    "turn": "INITIAL",
+                    "publicContent": public_output.content,
+                    "contentLength": public_output.original_length,
+                    "truncated": public_output.truncated,
+                    "providerChunkSequence": chunk.sequence,
+                },
+            )
+        chunks = tuple(chunks_buffer)
         latency_ms = int((time.perf_counter() - started_at) * 1000)
         result_error_code = next((chunk.error_code for chunk in chunks if chunk.error_code), None)
         dry_run = model_request.route.provider_type == ProviderType.DRY_RUN
         actual_model_name = next(
             (chunk.model_name for chunk in chunks if chunk.model_name),
             model_request.route.model_name,
+        )
+        prompt_tokens = next(
+            (chunk.prompt_tokens for chunk in reversed(chunks) if chunk.prompt_tokens is not None),
+            None,
+        )
+        completion_tokens = next(
+            (chunk.completion_tokens for chunk in reversed(chunks) if chunk.completion_tokens is not None),
+            None,
+        )
+        cached_prompt_tokens = next(
+            (chunk.cached_prompt_tokens for chunk in reversed(chunks) if chunk.cached_prompt_tokens is not None),
+            None,
         )
         invocation_summary = {
             "schemaVersion": "datasmart.model-query-engine.v1",
@@ -428,9 +462,14 @@ class AgentModelIntentNode:
             "tokenLimited": False,
             "resultErrorCode": result_error_code or (None if chunks else "MODEL_PROVIDER_EMPTY_STREAM"),
             "latencyMs": latency_ms,
-            "promptTokens": None,
-            "completionTokens": None,
-            "totalTokens": None,
+            "promptTokens": prompt_tokens,
+            "completionTokens": completion_tokens,
+            "cachedPromptTokens": cached_prompt_tokens,
+            "totalTokens": (
+                prompt_tokens + completion_tokens
+                if prompt_tokens is not None and completion_tokens is not None
+                else None
+            ),
             "attemptCount": 1,
             "streaming": True,
         }
@@ -479,9 +518,11 @@ class AgentModelIntentNode:
             model_tool_plans=model_tool_plans,
             event_recorder=event_recorder,
         )
-        # 当前 ModelInvocationChunk 还没有 usage 字段，因此这里只调用一次空 usage 记录，保持预算台账
-        # 的调用后生命周期位置稳定；后续可从 Provider chunk trailer 或最终 usage event 中补齐 token。
-        self._model_gateway.record_invocation_usage(model_gateway_context, prompt_tokens=None, completion_tokens=None)
+        self._model_gateway.record_invocation_usage(
+            model_gateway_context,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
         combined_summary = self._combine_summaries(
                 summary or "模型流式节点已返回工具调用候选，等待平台治理与后续执行。",
                 second_turn_summary,

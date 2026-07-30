@@ -178,8 +178,8 @@ class ModelProviderRegistryTest(unittest.TestCase):
         self.assertEqual(1, calls)
         self.assertEqual("MODEL_PROVIDER_TIMEOUT", result.error_code)
 
-    def test_registry_reports_responses_and_json_fallback_as_non_streaming(self) -> None:
-        """兼容单 chunk 方法不等于原生 streaming 能力。"""
+    def test_registry_reports_responses_and_chat_as_streaming_but_not_json_fallback(self) -> None:
+        """Responses 与 Chat 原生 function calling 都应声明 SSE 能力。"""
 
         route = _openai_route(endpoint="http://model-gateway.local/v1")
         responses_registry = ModelProviderRegistry(
@@ -204,7 +204,7 @@ class ModelProviderRegistryTest(unittest.TestCase):
             }
         )
 
-        self.assertFalse(responses_registry.supports_streaming(route))
+        self.assertTrue(responses_registry.supports_streaming(route))
         self.assertFalse(json_fallback_registry.supports_streaming(route))
         self.assertTrue(chat_registry.supports_streaming(route))
 
@@ -362,23 +362,22 @@ class ModelProviderRegistryTest(unittest.TestCase):
         self.assertEqual("call-1", body["input"][2]["call_id"])
         self.assertEqual("数据源连接正常。", result.content)
 
-    def test_responses_stream_returns_one_complete_governed_tool_chunk(self) -> None:
-        """Responses 流式兼容入口不能把未闭合的工具参数提前交给 Agent loop。"""
+    def test_responses_streams_public_text_and_function_call_deltas(self) -> None:
+        """Responses SSE 应流式返回公开文本，并把函数参数留给上层完整聚合。"""
+
+        captured: dict[str, object] = {}
 
         def transport(request, timeout: int):
+            captured["headers"] = dict(request.header_items())
             return FakeHttpResponse(
-                {
-                    "status": "completed",
-                    "output": [
-                        {
-                            "type": "function_call",
-                            "call_id": "call-stream-1",
-                            "name": "datasource_metadata_read",
-                            "arguments": '{"datasourceId":27}',
-                        }
-                    ],
-                    "usage": {},
-                }
+                lines=(
+                    b'data: {"type":"response.output_text.delta","delta":"checking "}\n',
+                    b'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc-1","call_id":"call-stream-1","type":"function_call","name":"datasource_metadata_read","arguments":""}}\n',
+                    b'data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\\"datasourceId\\":"}\n',
+                    b'data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"27}"}\n',
+                    b'data: {"type":"response.completed","response":{"model":"gpt-5.6-sol-202607","status":"completed","usage":{"input_tokens":31,"output_tokens":12,"input_tokens_details":{"cached_tokens":19}}}}\n',
+                    b'data: [DONE]\n',
+                )
             )
 
         provider = OpenAICompatibleModelProvider(
@@ -396,10 +395,17 @@ class ModelProviderRegistryTest(unittest.TestCase):
             )
         )
 
-        self.assertEqual(1, len(chunks))
-        self.assertEqual("tool_calls", chunks[0].finish_reason)
-        self.assertEqual("datasource.metadata.read", chunks[0].tool_call_deltas[0].name_delta)
-        self.assertEqual('{"datasourceId":27}', chunks[0].tool_call_deltas[0].arguments_delta)
+        self.assertEqual(5, len(chunks))
+        self.assertEqual("text/event-stream", captured["headers"]["Accept"])
+        self.assertEqual("checking ", chunks[0].content_delta)
+        self.assertEqual("datasource.metadata.read", chunks[1].tool_call_deltas[0].name_delta)
+        self.assertEqual('{"datasourceId":', chunks[2].tool_call_deltas[0].arguments_delta)
+        self.assertEqual("27}", chunks[3].tool_call_deltas[0].arguments_delta)
+        self.assertEqual("stop", chunks[4].finish_reason)
+        self.assertEqual("gpt-5.6-sol-202607", chunks[4].model_name)
+        self.assertEqual(31, chunks[4].prompt_tokens)
+        self.assertEqual(12, chunks[4].completion_tokens)
+        self.assertEqual(19, chunks[4].cached_prompt_tokens)
 
     def test_json_fallback_converts_governed_json_to_tool_calls(self) -> None:
         """不支持原生 tool_calls 的网关可用 JSON 兼容模式，但仍只产生待治理候选。"""

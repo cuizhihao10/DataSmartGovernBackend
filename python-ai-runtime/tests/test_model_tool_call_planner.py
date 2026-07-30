@@ -121,6 +121,32 @@ class ModelToolCallPlannerTest(unittest.TestCase):
         self.assertFalse(plan.parameter_validation.can_execute)
         self.assertEqual({"datasourceId", "businessGoal"}, {issue.parameter_name for issue in plan.parameter_validation.issues})
 
+    def test_strict_schema_null_placeholders_are_removed_before_validation(self) -> None:
+        """Provider 为可选字段返回 null 时，不应污染 DataSmart 工具参数。"""
+
+        tools = default_tool_registry()
+        report = ModelToolCallPlanner().plan(
+            tool_calls=(
+                ModelToolCall(
+                    call_id="call_catalog",
+                    name="datasource.source.catalog.search",
+                    arguments=(
+                        '{"datasourceType":null,"nameKeyword":null,'
+                        '"nested":{"optionalValue":null,"kept":"value"}}'
+                    ),
+                ),
+            ),
+            registered_tools=tools,
+            visible_tools=tuple(
+                tool for tool in tools if tool.name == "datasource.source.catalog.search"
+            ),
+        )
+
+        plan = report.accepted_tool_plans[0]
+        self.assertNotIn("datasourceType", plan.arguments)
+        self.assertNotIn("nameKeyword", plan.arguments)
+        self.assertEqual({"kept": "value"}, plan.arguments["nested"])
+
     def test_approval_required_tool_generates_non_blocking_issue_and_tool_plan(self) -> None:
         """需审批工具应生成 ToolPlan 和非阻断审批 issue，而不是静默自动执行。"""
 

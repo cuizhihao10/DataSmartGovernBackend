@@ -8,7 +8,13 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from datasmart_ai_runtime.config import default_model_routes, default_tool_registry
-from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ModelInvocationResult, ToolPlan
+from datasmart_ai_runtime.domain.contracts import (
+    AgentPlan,
+    AgentRequest,
+    ModelInvocationChunk,
+    ModelInvocationResult,
+    ToolPlan,
+)
 from datasmart_ai_runtime.domain.events import AgentRuntimeEvent, AgentRuntimeEventType
 from datasmart_ai_runtime.domain.intent import GovernanceDomain, IntentAnalysis
 from datasmart_ai_runtime.services.agent_control_plane_feedback import (
@@ -21,6 +27,8 @@ from datasmart_ai_runtime.services.agent_loop_control_policy import (
 )
 from datasmart_ai_runtime.services.agent_second_turn_orchestrator import AgentSecondTurnOrchestrator
 from datasmart_ai_runtime.services.agent_follow_up_tool_planner import AgentFollowUpToolPlanner
+from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
+from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteRegistry
 from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import ToolExecutionFeedbackStatus
 from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 
@@ -81,6 +89,51 @@ class AgentSecondTurnOrchestratorTest(unittest.TestCase):
         self.assertEqual(1, feedback_event.attributes["resultFilterCount"])
         self.assertEqual("resource_not_allowed_for_model", feedback_event.attributes["resultFilters"][0]["mode"])
         self.assertEqual((6, 7, 8, 9), tuple(event.sequence for event in result.runtime_events))
+
+    def test_streams_public_second_turn_output_without_persisting_transient_events(self) -> None:
+        """二轮公开回复应实时旁路推送，但只有最终文本进入可回放事件。"""
+
+        route = self._plan().selected_route
+        provider = StreamingProviderRegistry()
+        model_gateway = ModelGatewayGovernanceService(ModelRouteRegistry((route,)))
+        orchestrator = AgentSecondTurnOrchestrator(
+            provider,
+            model_gateway=model_gateway,
+        )
+        streamed_events: list[AgentRuntimeEvent] = []
+
+        result = orchestrator.run(
+            request=self._request(),
+            plan=self._plan(),
+            control_plane_feedback=self._snapshot(),
+            loop_control_decision=self._allow_decision(),
+            progress_event_sink=streamed_events.append,
+        )
+
+        self.assertEqual("已读取工具结果。同步建议已生成。", result.summary)
+        self.assertEqual(2, len(streamed_events))
+        self.assertTrue(
+            all(
+                event.event_type == AgentRuntimeEventType.MODEL_PUBLIC_OUTPUT_STREAM_UPDATED
+                for event in streamed_events
+            )
+        )
+        self.assertEqual(
+            ("已读取工具结果。", "已读取工具结果。同步建议已生成。"),
+            tuple(event.attributes["publicContent"] for event in streamed_events),
+        )
+        self.assertEqual((1, 2), tuple(event.attributes["streamSequence"] for event in streamed_events))
+        self.assertTrue(all(event.sequence is None for event in streamed_events))
+        self.assertNotIn(
+            AgentRuntimeEventType.MODEL_PUBLIC_OUTPUT_STREAM_UPDATED,
+            {event.event_type for event in result.runtime_events},
+        )
+        persisted_output = next(
+            event
+            for event in result.runtime_events
+            if event.event_type == AgentRuntimeEventType.MODEL_PUBLIC_OUTPUT_READY
+        )
+        self.assertEqual("已读取工具结果。同步建议已生成。", persisted_output.attributes["publicContent"])
 
     def test_skips_without_calling_model_when_policy_blocks(self) -> None:
         provider = CapturingProviderRegistry()
@@ -501,6 +554,33 @@ class FailingProviderRegistry(CapturingProviderRegistry):
             model_name=request.route.model_name,
             content="",
             error_code="MODEL_PROVIDER_HTTP_400",
+        )
+
+
+class StreamingProviderRegistry:
+    """模拟 Provider 原生 SSE，验证 Query Engine 到 Agent 事件旁路的完整链路。"""
+
+    def __init__(self) -> None:
+        self.requests = []
+
+    @staticmethod
+    def supports_streaming(route) -> bool:
+        return True
+
+    def stream(self, request):
+        self.requests.append(request)
+        yield ModelInvocationChunk(
+            provider_name=request.route.provider_name,
+            model_name=request.route.model_name,
+            content_delta="已读取工具结果。",
+            sequence=1,
+        )
+        yield ModelInvocationChunk(
+            provider_name=request.route.provider_name,
+            model_name=request.route.model_name,
+            content_delta="同步建议已生成。",
+            finish_reason="stop",
+            sequence=2,
         )
 
 

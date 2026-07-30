@@ -139,9 +139,13 @@ class ModelToolSchemaTest(unittest.TestCase):
         self.assertEqual("quality_rule_suggest", function["name"])
         self.assertTrue(function["strict"])
         self.assertIn("draft_only", function["description"])
-        self.assertEqual(["datasourceId"], function["parameters"]["required"])
+        self.assertEqual(["datasourceId", "businessGoal"], function["parameters"]["required"])
         self.assertFalse(function["parameters"]["additionalProperties"])
         self.assertIn("敏感", function["parameters"]["properties"]["datasourceId"]["description"])
+        self.assertEqual(
+            ["string", "null"],
+            function["parameters"]["properties"]["businessGoal"]["type"],
+        )
 
     def test_openai_compatible_provider_hides_critical_tools_by_default(self) -> None:
         """CRITICAL 工具默认不应暴露给模型，避免模型直接规划破坏性动作。"""

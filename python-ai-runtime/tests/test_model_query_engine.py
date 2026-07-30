@@ -11,6 +11,7 @@ from datasmart_ai_runtime.domain.contracts import (
     AgentRequest,
     ModelCacheKeyScope,
     ModelCostTier,
+    ModelInvocationChunk,
     ModelInvocationRequest,
     ModelInvocationResult,
     ModelLatencyTier,
@@ -178,6 +179,60 @@ class ModelQueryEngineTest(unittest.TestCase):
         self.assertNotIn("secret-token", serialized_summary)
         self.assertNotIn("cached answer", serialized_summary)
 
+    def test_streaming_provider_forwards_chunks_and_keeps_query_cache_governance(self) -> None:
+        """流式二轮仍应经过 Query Engine，并可在完成后写入会话缓存。"""
+
+        route = _route("stream-agent", cache_scope=ModelCacheKeyScope.SESSION_ONLY)
+        model_gateway = ModelGatewayGovernanceService(ModelRouteRegistry((route,)))
+        context = _context()
+        decision = model_gateway.decide(context)
+        providers = StreamingModelProviders(
+            (
+                ModelInvocationChunk(
+                    provider_name="stream-agent",
+                    model_name="stream-agent-resolved",
+                    content_delta="第一段",
+                    sequence=1,
+                ),
+                ModelInvocationChunk(
+                    provider_name="stream-agent",
+                    model_name="stream-agent-resolved",
+                    content_delta="第二段",
+                    finish_reason="stop",
+                    sequence=2,
+                    prompt_tokens=40,
+                    completion_tokens=9,
+                    cached_prompt_tokens=24,
+                ),
+            )
+        )
+        engine = ModelQueryEngine(model_gateway=model_gateway, model_providers=providers)
+        delivered = []
+        request = _request(route)
+
+        first = engine.invoke(
+            request,
+            context=context,
+            routing_decision=decision,
+            chunk_sink=delivered.append,
+        )
+        second = engine.invoke(
+            request,
+            context=context,
+            routing_decision=decision,
+            chunk_sink=delivered.append,
+        )
+
+        self.assertEqual("第一段第二段", first.result.content)
+        self.assertEqual("stream-agent-resolved", first.result.model_name)
+        self.assertEqual(40, first.result.prompt_tokens)
+        self.assertEqual(9, first.result.completion_tokens)
+        self.assertEqual(24, first.result.cached_prompt_tokens)
+        self.assertEqual(2, len(delivered))
+        self.assertEqual(1, len(providers.calls))
+        self.assertTrue(second.cache_hit)
+        self.assertEqual("DATASMART_RESULT_CACHE", second.to_summary()["responseSource"])
+
     def test_agent_orchestrator_records_model_query_event_without_sensitive_payload(self) -> None:
         """Agent 主链应产生模型查询事件，但事件摘要不能包含用户敏感目标。"""
 
@@ -239,6 +294,22 @@ class ScriptedModelProviders:
         if len(script) == 1:
             return script[0]
         return script.pop(0)
+
+
+class StreamingModelProviders:
+    """提供原生 chunk 的 Query Engine 测试注册表。"""
+
+    def __init__(self, chunks: tuple[ModelInvocationChunk, ...]) -> None:
+        self._chunks = chunks
+        self.calls: list[ModelInvocationRequest] = []
+
+    @staticmethod
+    def supports_streaming(route: ModelRoute) -> bool:
+        return True
+
+    def stream(self, request: ModelInvocationRequest):
+        self.calls.append(request)
+        yield from self._chunks
 
 
 def _route(

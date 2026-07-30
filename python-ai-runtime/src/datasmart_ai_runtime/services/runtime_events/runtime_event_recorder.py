@@ -53,6 +53,7 @@ class RuntimeEventRecorder:
         self._event_sink = event_sink
         self._events: list[AgentRuntimeEvent] = []
         self._next_sequence = 1
+        self._next_stream_sequence = 1
 
     def record(
         self,
@@ -87,6 +88,49 @@ class RuntimeEventRecorder:
         if self._event_sink is not None:
             try:
                 # 实时展示是观测旁路，前端断开或传输异常不能中断模型规划与业务控制面主链路。
+                self._event_sink(event)
+            except Exception:
+                pass
+        return event
+
+    def publish_transient(
+        self,
+        event_type: AgentRuntimeEventType,
+        stage: str,
+        message: str,
+        severity: AgentRuntimeEventSeverity = AgentRuntimeEventSeverity.INFO,
+        attributes: dict[str, object] | None = None,
+    ) -> AgentRuntimeEvent:
+        """只向当前实时连接发布事件，不写入持久化回放事件集合。
+
+        模型公开文本的 token/delta 更新频率远高于业务状态事件。若把每个累计文本快照都写入
+        ``runtime_events``，一次较长回复会产生大量重复正文，放大数据库、Kafka 和回放响应。
+        因此增量快照只走请求级实时旁路，最终完整公开文本仍由
+        ``MODEL_PUBLIC_OUTPUT_READY`` 记录并持久化。
+
+        临时事件使用独立 ``streamSequence``，不占用持久事件的连续 sequence。这样既能让前端
+        按顺序更新同一条模型输出，也不会破坏断线回放对持久 sequence 连续性的约定。
+        """
+
+        merged_attributes = dict(attributes or {})
+        merged_attributes["streamSequence"] = self._next_stream_sequence
+        event = AgentRuntimeEvent(
+            event_type=event_type,
+            stage=stage,
+            message=message,
+            severity=severity,
+            tenant_id=self._request.tenant_id,
+            project_id=self._request.project_id,
+            actor_id=self._request.actor_id,
+            request_id=self._request_id,
+            run_id=self._run_id,
+            session_id=self._session_id,
+            sequence=None,
+            attributes=merged_attributes,
+        )
+        self._next_stream_sequence += 1
+        if self._event_sink is not None:
+            try:
                 self._event_sink(event)
             except Exception:
                 pass

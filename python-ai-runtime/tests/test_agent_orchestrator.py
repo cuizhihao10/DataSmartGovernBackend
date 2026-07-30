@@ -1,6 +1,7 @@
 ﻿import os
 import sys
 import unittest
+from dataclasses import replace
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
@@ -15,6 +16,7 @@ from datasmart_ai_runtime.domain.contracts import (
     ModelInvocationResult,
     ModelToolCall,
     ModelToolCallDelta,
+    ProviderType,
     WorkloadType,
 )
 from datasmart_ai_runtime.domain.events import AgentRuntimeEventSeverity, AgentRuntimeEventType
@@ -45,7 +47,12 @@ class AgentOrchestratorTest(unittest.TestCase):
         )
 
         self.assertEqual("browser-request-001", plan.request_id)
-        self.assertEqual(plan.runtime_events, tuple(delivered))
+        durable_delivered = tuple(
+            event
+            for event in delivered
+            if event.event_type != AgentRuntimeEventType.MODEL_PUBLIC_OUTPUT_STREAM_UPDATED
+        )
+        self.assertEqual(plan.runtime_events, durable_delivered)
         self.assertEqual(AgentRuntimeEventType.AGENT_PLAN_STARTED, delivered[0].event_type)
         self.assertEqual(AgentRuntimeEventType.AGENT_PLAN_COMPLETED, delivered[-1].event_type)
         self.assertTrue(all(event.request_id == plan.request_id for event in delivered))
@@ -138,6 +145,7 @@ class AgentOrchestratorTest(unittest.TestCase):
     def test_quality_rule_and_task_creation_requires_approval(self) -> None:
         orchestrator = build_default_orchestrator()
 
+        delivered = []
         plan = orchestrator.plan(
             AgentRequest(
                 tenant_id="tenant-a",
@@ -150,7 +158,8 @@ class AgentOrchestratorTest(unittest.TestCase):
                     "createTask": True,
                     "sessionId": "session-metadata",
                 },
-            )
+            ),
+            event_sink=delivered.append,
         )
 
         tool_names = {item.tool_name for item in plan.tool_plans}
@@ -378,6 +387,48 @@ class AgentOrchestratorTest(unittest.TestCase):
         self.assertEqual("model_tool_call", rag_plan.governance_hints["source"])
         self.assertEqual("required", provider.requests[0].tool_choice)
 
+    def test_real_provider_waits_for_real_tool_receipts_before_second_turn(self) -> None:
+        """真实 Provider 不得基于规划阶段的模拟工具结果生成二轮回答。"""
+
+        provider = ToolCallingModelProviderRegistry(
+            tool_calls=(
+                ModelToolCall(
+                    call_id="call-real-metadata",
+                    name="datasource_metadata_read",
+                    arguments='{"datasourceId":"ds-real"}',
+                ),
+            )
+        )
+        real_route = replace(
+            default_model_routes()[0],
+            provider_name="real-provider",
+            provider_type=ProviderType.OPENAI_COMPATIBLE,
+            model_name="real-model",
+            endpoint="https://model.example.local/v1",
+        )
+        orchestrator = AgentOrchestrator(
+            model_routes=ModelRouteRegistry((real_route,)),
+            tool_planner=ToolPlanner(default_tool_registry()),
+            model_providers=provider,
+            skill_registry=AgentSkillRegistry(default_skill_registry()),
+        )
+
+        plan = orchestrator.plan(
+            AgentRequest(
+                tenant_id="tenant-a",
+                project_id="project-a",
+                actor_id="owner-a",
+                objective="读取数据源元数据",
+                variables={"datasourceId": "ds-real"},
+            )
+        )
+
+        self.assertEqual(1, len(provider.requests))
+        self.assertNotIn(
+            AgentRuntimeEventType.MODEL_SECOND_TURN_COMPLETED,
+            {event.event_type for event in plan.runtime_events},
+        )
+
     def test_streaming_tool_call_deltas_are_aggregated_governed_and_merged_into_plan(self) -> None:
         """流式 tool_call_deltas 应聚合后进入与非流式 tool_calls 相同的治理链路。"""
 
@@ -403,6 +454,9 @@ class AgentOrchestratorTest(unittest.TestCase):
                     model_name="stream-model",
                     sequence=2,
                     finish_reason="tool_calls",
+                    prompt_tokens=72,
+                    completion_tokens=18,
+                    cached_prompt_tokens=51,
                     tool_call_deltas=(
                         ModelToolCallDelta(
                             index=0,
@@ -420,6 +474,7 @@ class AgentOrchestratorTest(unittest.TestCase):
             skill_registry=AgentSkillRegistry(default_skill_registry()),
         )
 
+        delivered = []
         plan = orchestrator.plan(
             AgentRequest(
                 tenant_id="tenant-a",
@@ -430,7 +485,8 @@ class AgentOrchestratorTest(unittest.TestCase):
                     "datasourceId": "ds-stream",
                     "businessGoal": "规则式业务目标",
                 },
-            )
+            ),
+            event_sink=delivered.append,
         )
 
         self.assertIn("govern_model_tool_calls", plan.state_trace)
@@ -444,6 +500,24 @@ class AgentOrchestratorTest(unittest.TestCase):
         self.assertIn(AgentRuntimeEventType.MODEL_TOOL_CALL_ACCEPTED, event_types)
         self.assertIn(AgentRuntimeEventType.TOOL_RESULT_FEEDBACK_BUILT, event_types)
         self.assertIn(AgentRuntimeEventType.MODEL_SECOND_TURN_COMPLETED, event_types)
+        model_query_event = next(
+            event
+            for event in plan.runtime_events
+            if event.event_type == AgentRuntimeEventType.MODEL_QUERY_EXECUTED
+            and event.stage == "invoke_model_intent"
+        )
+        self.assertEqual(72, model_query_event.attributes["promptTokens"])
+        self.assertEqual(18, model_query_event.attributes["completionTokens"])
+        self.assertEqual(51, model_query_event.attributes["cachedPromptTokens"])
+        self.assertEqual(90, model_query_event.attributes["totalTokens"])
+        public_stream_events = [
+            event
+            for event in delivered
+            if event.event_type == AgentRuntimeEventType.MODEL_PUBLIC_OUTPUT_STREAM_UPDATED
+        ]
+        self.assertEqual(1, len(public_stream_events))
+        self.assertEqual("正在生成质量规则工具调用。", public_stream_events[0].attributes["publicContent"])
+        self.assertNotIn(public_stream_events[0], plan.runtime_events)
         self.assertEqual("tool", provider.requests[-1].messages[-1].role)
         self.assertEqual("call_stream_quality", provider.requests[-1].messages[-1].tool_call_id)
 

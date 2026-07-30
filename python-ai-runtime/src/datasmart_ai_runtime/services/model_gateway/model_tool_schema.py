@@ -176,21 +176,27 @@ class OpenAICompatibleToolSchemaBuilder:
         for name, raw_definition in input_schema.items():
             if not isinstance(raw_definition, dict):
                 properties[name] = {"type": "string", "description": str(raw_definition)}
+                required.append(name)
                 continue
             resolution = str(raw_definition.get("resolution") or "").strip().lower()
             if resolution in {"derived", "system_injected"}:
                 continue
-            if raw_definition.get("required") and resolution not in {
+            business_required = bool(raw_definition.get("required")) and resolution not in {
                 "can_fill_from_context",
                 "context_or_clarify",
-            }:
+            }
+            if business_required or strict:
                 required.append(name)
-            properties[name] = cls._build_property_schema(raw_definition, strict)
+            properties[name] = cls._build_property_schema(
+                raw_definition,
+                strict,
+                nullable=strict and not business_required,
+            )
         schema: dict[str, Any] = {
             "type": "object",
             "properties": properties,
         }
-        if required:
+        if required or strict:
             schema["required"] = required
         if strict:
             schema["additionalProperties"] = False
@@ -201,6 +207,8 @@ class OpenAICompatibleToolSchemaBuilder:
         cls,
         definition: dict[str, Any],
         strict: bool,
+        *,
+        nullable: bool = False,
     ) -> dict[str, Any]:
         """Project nested platform definitions into provider JSON Schema.
 
@@ -213,12 +221,12 @@ class OpenAICompatibleToolSchemaBuilder:
 
         schema_type = cls._normalize_json_schema_type(definition.get("type"))
         schema: dict[str, Any] = {
-            "type": schema_type,
+            "type": [schema_type, "null"] if nullable else schema_type,
             "description": cls._build_parameter_description(definition),
         }
         enum_values = definition.get("enum")
         if isinstance(enum_values, (list, tuple)) and enum_values:
-            schema["enum"] = list(enum_values)
+            schema["enum"] = [*enum_values, None] if nullable else list(enum_values)
 
         if schema_type == "array" and isinstance(definition.get("items"), dict):
             schema["items"] = cls._build_property_schema(definition["items"], strict)
@@ -237,14 +245,19 @@ class OpenAICompatibleToolSchemaBuilder:
                 resolution = str(child.get("resolution") or "").strip().lower()
                 if resolution in {"derived", "system_injected"}:
                     continue
-                nested_properties[name] = cls._build_property_schema(child, strict)
-                if name in explicit_required_names or (
+                business_required = name in explicit_required_names or (
                     child.get("required") is True
                     and resolution not in {"can_fill_from_context", "context_or_clarify"}
-                ):
+                )
+                nested_properties[name] = cls._build_property_schema(
+                    child,
+                    strict,
+                    nullable=strict and not business_required,
+                )
+                if business_required or strict:
                     nested_required.append(name)
             schema["properties"] = nested_properties
-            if nested_required:
+            if nested_required or strict:
                 schema["required"] = nested_required
             if strict:
                 schema["additionalProperties"] = False

@@ -158,7 +158,7 @@ class ModelToolCallPlanner:
                 ),
             )
 
-        arguments, parse_issue = self._parse_arguments(tool_call)
+        arguments, parse_issue = self._parse_arguments(tool_call, tool)
         if parse_issue is not None:
             return ModelToolCallCandidate(
                 source_call=tool_call,
@@ -242,7 +242,10 @@ class ModelToolCallPlanner:
         return tool.name if tool is not None else ""
 
     @staticmethod
-    def _parse_arguments(tool_call: ModelToolCall) -> tuple[dict[str, Any], ModelToolCallGovernanceIssue | None]:
+    def _parse_arguments(
+        tool_call: ModelToolCall,
+        tool: ToolDefinition,
+    ) -> tuple[dict[str, Any], ModelToolCallGovernanceIssue | None]:
         """解析模型生成的 arguments 字符串。
 
         空字符串按空对象处理，因为某些工具理论上可以无参调用；是否允许无参，交给后续
@@ -265,7 +268,49 @@ class ModelToolCallPlanner:
                 code="MODEL_TOOL_CALL_ARGUMENTS_NOT_OBJECT",
                 message="模型工具调用参数必须是 JSON object，不能是数组、字符串或其他类型。",
             )
-        return parsed, None
+        protected_root_names = {
+            name
+            for name, definition in tool.input_schema.items()
+            if isinstance(definition, dict)
+            and str(definition.get("resolution") or "").strip().lower()
+            in {"derived", "system_injected"}
+        }
+        return ModelToolCallPlanner._drop_null_placeholders(
+            parsed,
+            protected_root_names=protected_root_names,
+        ), None
+
+    @staticmethod
+    def _drop_null_placeholders(
+        value: Any,
+        *,
+        protected_root_names: set[str] | None = None,
+    ) -> Any:
+        """Remove provider-required null placeholders before business validation.
+
+        Responses strict function schemas require every declared property to appear
+        in ``required``. Business-optional properties are therefore exposed as
+        nullable and the model may return them as ``null``. DataSmart's internal
+        tool contract still treats those properties as absent, so this boundary
+        removes null-valued object members recursively before permission, parameter,
+        approval, and execution governance evaluates the call. Platform-derived or
+        system-injected root arguments are preserved verbatim because they contain
+        trusted audit references rather than model-authored strict-schema placeholders.
+        """
+
+        if isinstance(value, dict):
+            return {
+                key: (
+                    item
+                    if protected_root_names and key in protected_root_names
+                    else ModelToolCallPlanner._drop_null_placeholders(item)
+                )
+                for key, item in value.items()
+                if item is not None
+            }
+        if isinstance(value, list):
+            return [ModelToolCallPlanner._drop_null_placeholders(item) for item in value]
+        return value
 
     @staticmethod
     def _risk_issues(tool: ToolDefinition) -> tuple[ModelToolCallGovernanceIssue, ...]:
