@@ -40,8 +40,6 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
     public static final String EXECUTION_STATUS = "sync.execution.status";
 
     private static final String TARGET_SERVICE = "data-sync";
-    private static final long EXECUTION_STATUS_TIMEOUT_MILLIS = 60_000L;
-    private static final long EXECUTION_STATUS_POLL_INTERVAL_MILLIS = 500L;
     private static final Set<String> TERMINAL_EXECUTION_STATES = Set.of(
             "SUCCEEDED", "PARTIALLY_SUCCEEDED", "FAILED", "CANCELLED", "MANUALLY_TERMINATED", "SKIPPED");
     private static final String SOURCE_METADATA_TOOL = DatasourceAccessToolAdapter.SOURCE_METADATA;
@@ -255,29 +253,16 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
             taskId = referencedLong(context, arguments.get("taskRef"),
                     RUN, "taskId", "缺少同步任务运行结果或待验证任务 ID");
         }
-        long deadline = System.currentTimeMillis() + EXECUTION_STATUS_TIMEOUT_MILLIS;
-        int pollCount = 0;
-        Map<String, Object> latest = Map.of();
-        String executionState = "QUEUED";
-        do {
-            pollCount++;
-            Map<String, Object> response = get(context, "/sync-tasks/{id}/executions?current=1&size=1", taskId);
-            Map<String, Object> page = requireSuccessData(response, "同步执行状态查询");
-            List<?> records = page.get("records") instanceof List<?> values ? values : List.of();
-            latest = records.isEmpty() || !(records.getFirst() instanceof Map<?, ?> raw)
-                    ? Map.of()
-                    : copyMap(raw);
-            executionState = safeText(latest.get("executionState"), "QUEUED").toUpperCase(Locale.ROOT);
-            if (TERMINAL_EXECUTION_STATES.contains(executionState)) {
-                break;
-            }
-            try {
-                Thread.sleep(EXECUTION_STATUS_POLL_INTERVAL_MILLIS);
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-        } while (System.currentTimeMillis() < deadline);
+        // Task creation is complete once the worker queue accepts the execution.
+        // Read exactly one snapshot here: large offline jobs can run for hours,
+        // while scheduled and CDC jobs may not have a one-off terminal state.
+        Map<String, Object> response = get(context, "/sync-tasks/{id}/executions?current=1&size=1", taskId);
+        Map<String, Object> page = requireSuccessData(response, "同步执行状态查询");
+        List<?> records = page.get("records") instanceof List<?> values ? values : List.of();
+        Map<String, Object> latest = records.isEmpty() || !(records.getFirst() instanceof Map<?, ?> raw)
+                ? Map.of()
+                : copyMap(raw);
+        String executionState = safeText(latest.get("executionState"), "QUEUED").toUpperCase(Locale.ROOT);
 
         boolean terminal = TERMINAL_EXECUTION_STATES.contains(executionState);
         Map<String, Object> output = new LinkedHashMap<>();
@@ -289,8 +274,9 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
         output.put("recordsWritten", defaultLong(latest.get("recordsWritten")));
         output.put("failedRecordCount", defaultLong(latest.get("failedRecordCount")));
         output.put("terminal", terminal);
-        output.put("pollCount", pollCount);
-        output.put("trackingTimedOut", !terminal);
+        output.put("pollCount", 1);
+        output.put("trackingTimedOut", false);
+        output.put("trackingContinues", !terminal);
         if ("FAILED".equals(executionState) || "CANCELLED".equals(executionState)
                 || "MANUALLY_TERMINATED".equals(executionState) || "SKIPPED".equals(executionState)) {
             return AgentToolExecutionOutcome.failed(
@@ -300,7 +286,8 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
         }
         if (!terminal) {
             return AgentToolExecutionOutcome.succeeded(
-                    "同步执行在等待窗口内尚未结束，已返回可继续追踪的异步状态。", output);
+                    "同步任务已提交，当前执行状态为 " + executionState
+                            + "；Agent 不等待长任务终态，请前往同步任务列表持续查看进度和日志。", output);
         }
         return AgentToolExecutionOutcome.succeeded("同步执行已到达终态 " + executionState + "。", output);
     }

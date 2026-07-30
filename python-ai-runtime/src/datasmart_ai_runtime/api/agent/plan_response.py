@@ -151,7 +151,11 @@ def build_plan_response(
     agent_turn_runner_checkpoint = None
     memory_write_proposal = None
 
-    ingestion_plan = _control_plane_ready_subplan(plan, tool_execution_readiness)
+    # A complete synchronization request already contains the deterministic
+    # lifecycle DAG: draft -> precheck -> publish -> run/status. Submit that
+    # full plan as one approval scope. Otherwise only send the currently safe
+    # read-only frontier so incomplete requests can still discover metadata.
+    ingestion_plan = _control_plane_ingestion_subplan(plan, tool_execution_readiness)
     if (
         plan_ingestion_client is not None
         and bool(ingestion_plan.tool_plans)
@@ -543,6 +547,40 @@ def _control_plane_ready_subplan(
             tool_plan.requires_human_approval for tool_plan in ready_tools
         ),
     )
+
+
+def _control_plane_ingestion_subplan(
+    plan: AgentPlan,
+    readiness: Any,
+) -> AgentPlan:
+    """Choose the correct Java ingestion boundary for this user turn.
+
+    A complete sync task must not depend on a second model turn to rediscover
+    deterministic lifecycle nodes. Once the draft arguments, metadata and
+    mappings are complete, Java receives the full DAG and keeps mutation nodes
+    in ``WAITING_APPROVAL`` until the user confirms it. Incomplete requests
+    still use the narrower read-only frontier to collect facts safely.
+    """
+
+    lifecycle_names = {
+        "sync.task.draft.save",
+        "sync.task.precheck",
+        "sync.task.publish",
+    }
+    plan_names = {item.tool_name for item in plan.tool_plans}
+    has_complete_lifecycle = lifecycle_names.issubset(plan_names) and all(
+        bool(item.parameter_validation.can_execute)
+        for item in plan.tool_plans
+    )
+    # THROTTLED only limits automatic pre-confirm execution. It must not split
+    # an explicitly reviewed lifecycle DAG into several model-dependent runs.
+    if (
+        has_complete_lifecycle
+        and readiness.blocked_count == 0
+        and readiness.clarification_required_count == 0
+    ):
+        return plan
+    return _control_plane_ready_subplan(plan, readiness)
 
 
 def _collect_control_plane_feedback(

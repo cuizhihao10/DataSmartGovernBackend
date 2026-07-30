@@ -55,8 +55,17 @@ public class DeterministicAgentExecutionResultAnswerGenerator implements AgentEx
                         + "你可以前往同步任务详情继续查看排队、传输进度、运行日志和最终数据量。");
             }
             if (hasSucceededTool(SYNC_TASK_PUBLISH, toolAudits, toolResults)) {
-                return answer("同步任务已经通过预检查并发布成功，但本轮没有提交即时运行。"
-                        + "定期任务将等待调度时间，其他模式需要继续确认实际运行状态。");
+                String syncMode = publishedSyncMode(toolAudits, toolResults);
+                if (Set.of("SCHEDULED_FULL", "SCHEDULED_BATCH").contains(syncMode)) {
+                    return answer("定期同步任务已经完成草稿、预检查和发布，调度规则已经生效。"
+                            + "任务会在设定时间自动运行，你可以前往同步任务列表查看配置、运行历史和后续进度。");
+                }
+                if (Set.of("CDC_STREAMING", "REAL_TIME").contains(syncMode)) {
+                    return answer("实时同步任务已经完成草稿、预检查和发布，并已交由实时通道持续运行。"
+                            + "实时任务没有一次性完成终态，你可以前往同步任务列表持续查看状态、日志和吞吐。");
+                }
+                return answer("同步任务已经通过预检查并发布成功，但即时运行尚未提交。"
+                        + "请查看任务详情并重新提交运行节点。");
             }
             if (hasSucceededTool(SYNC_TASK_DRAFT_SAVE, toolAudits, toolResults)) {
                 return answer("同步任务草稿已经保存，但尚未完成发布或真实运行。请继续完成预检查和后续任务生命周期节点。");
@@ -97,6 +106,19 @@ public class DeterministicAgentExecutionResultAnswerGenerator implements AgentEx
             List<AgentToolExecutionResultView> toolResults) {
         return auditStream(toolAudits, toolResults)
                 .anyMatch(audit -> toolCode.equals(audit.toolCode()) && "SUCCEEDED".equals(audit.state()));
+    }
+
+    private String publishedSyncMode(
+            List<AgentToolExecutionAuditView> toolAudits,
+            List<AgentToolExecutionResultView> toolResults) {
+        return auditStream(toolAudits, toolResults)
+                .filter(audit -> SYNC_TASK_PUBLISH.equals(audit.toolCode()) && "SUCCEEDED".equals(audit.state()))
+                .map(AgentToolExecutionAuditView::planArguments)
+                .filter(Objects::nonNull)
+                .map(arguments -> Objects.toString(arguments.get("syncMode"), "").trim().toUpperCase(Locale.ROOT))
+                .filter(value -> !value.isBlank())
+                .findFirst()
+                .orElse("");
     }
 
     /**

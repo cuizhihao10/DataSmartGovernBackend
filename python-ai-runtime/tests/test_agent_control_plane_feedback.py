@@ -167,6 +167,68 @@ class AgentControlPlaneFeedbackCollectorTest(unittest.TestCase):
         self.assertEqual(2, len(response["plan"]["tool_plans"]))
         self.assertEqual("ags-partial", response["controlPlaneIngestion"]["sessionId"])
 
+    def test_complete_sync_lifecycle_is_ingested_as_one_confirmable_run(self) -> None:
+        """完整任务只需一次确认，不能因自动执行预算拆成依赖模型续跑的多批 Run。"""
+
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective="把两张客户表从 MySQL 全量同步到 PostgreSQL。",
+        )
+        tool_names = (
+            "datasource.source.connection.test",
+            "datasource.target.connection.test",
+            "datasource.source.metadata.read",
+            "datasource.target.metadata.read",
+            "sync.task.draft.save",
+            "sync.task.precheck",
+            "sync.task.publish",
+            "sync.task.run",
+            "sync.execution.status",
+        )
+        tool_plans = tuple(
+            ToolPlan(
+                tool_name=tool_name,
+                reason=f"execute {tool_name}",
+                arguments={
+                    "sourceDatasourceId": 27,
+                    "targetDatasourceId": 28,
+                    "objectMappings": [{
+                        "sourceObjectName": "fs_test_customer_source",
+                        "targetSchemaName": "public",
+                        "targetObjectName": "fs_test_customer_source",
+                        "fieldMappings": [{
+                            "sourceField": "id",
+                            "targetField": "id",
+                            "syncEnabled": True,
+                        }],
+                    }],
+                    "syncMode": "FULL",
+                } if tool_name == "sync.task.draft.save" else {},
+                requires_human_approval=tool_name in {
+                    "sync.task.draft.save",
+                    "sync.task.publish",
+                    "sync.task.run",
+                },
+                governance_hints={"modelToolCallId": f"call-{index}"},
+            )
+            for index, tool_name in enumerate(tool_names, start=1)
+        )
+        ingestion_client = RecordingPlanIngestionClient()
+
+        response = build_plan_response(
+            request,
+            FakeOrchestrator(self._plan(*tool_plans)),
+            plan_ingestion_client=ingestion_client,
+        )
+
+        self.assertEqual(
+            tool_names,
+            tuple(item.tool_name for item in ingestion_client.ingested_plan.tool_plans),
+        )
+        self.assertEqual(9, response["controlPlaneIngestion"]["toolAuditCount"])
+
     def _tool_plan(self, call_id: str) -> ToolPlan:
         return ToolPlan(
             tool_name="datasource.metadata.read",

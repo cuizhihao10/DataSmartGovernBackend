@@ -26,7 +26,9 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * 用户确认后的 Agent DAG 串行执行服务。
@@ -38,6 +40,11 @@ import java.util.Objects;
 @Service
 @RequiredArgsConstructor
 public class AgentRunConfirmedExecutionService {
+
+    private static final String SYNC_TASK_PUBLISH = "sync.task.publish";
+    private static final String SYNC_TASK_RUN = "sync.task.run";
+    private static final Set<String> PUBLISH_COMPLETES_GOAL_MODES = Set.of(
+            "SCHEDULED_FULL", "SCHEDULED_BATCH", "CDC_STREAMING", "REAL_TIME");
 
     private final AgentSessionMemoryStore sessionStore;
     private final AgentSessionService sessionService;
@@ -129,6 +136,7 @@ public class AgentRunConfirmedExecutionService {
                     succeeded,
                     failed,
                     List.copyOf(results),
+                    List.copyOf(finalAudits),
                     run.getNextActions(),
                     assistantAnswer
             );
@@ -178,6 +186,9 @@ public class AgentRunConfirmedExecutionService {
                     "当前工具批次未全部成功，已停止自动续跑；请先查看失败节点并修复。"
             );
         }
+        if (taskSubmissionBoundaryReached(batch.finalAudits())) {
+            return AgentPostConfirmContinuationView.businessGoalReached();
+        }
         List<AgentToolExecutionResultView> allResults = resultQueryService.listRunToolExecutionResults(
                 session.getSessionId(), runId
         );
@@ -192,6 +203,30 @@ public class AgentRunConfirmedExecutionService {
                 traceId,
                 allResults
         ));
+    }
+
+    /**
+     * A sync creation request is complete when an immediate task reaches the
+     * worker queue, or when a scheduled/CDC task is published to its runtime.
+     * Waiting for a terminal data-transfer state would block indefinitely for
+     * streaming jobs and unnecessarily hold the Agent HTTP request for large
+     * offline jobs.
+     */
+    private boolean taskSubmissionBoundaryReached(List<AgentToolExecutionAuditView> audits) {
+        if (audits == null || audits.isEmpty()) {
+            return false;
+        }
+        boolean runSubmitted = audits.stream()
+                .anyMatch(audit -> SYNC_TASK_RUN.equals(audit.toolCode()) && "SUCCEEDED".equals(audit.state()));
+        if (runSubmitted) {
+            return true;
+        }
+        return audits.stream()
+                .filter(audit -> SYNC_TASK_PUBLISH.equals(audit.toolCode()) && "SUCCEEDED".equals(audit.state()))
+                .map(AgentToolExecutionAuditView::planArguments)
+                .filter(Objects::nonNull)
+                .map(arguments -> Objects.toString(arguments.get("syncMode"), "").trim().toUpperCase(Locale.ROOT))
+                .anyMatch(PUBLISH_COMPLETES_GOAL_MODES::contains);
     }
 
     private AgentSessionRecord requireInitiatorSession(
@@ -252,6 +287,7 @@ public class AgentRunConfirmedExecutionService {
             int succeededCount,
             int failedCount,
             List<AgentToolExecutionResultView> executedResults,
+            List<AgentToolExecutionAuditView> finalAudits,
             List<String> nextActions,
             AgentExecutionAssistantAnswer assistantAnswer) {
     }

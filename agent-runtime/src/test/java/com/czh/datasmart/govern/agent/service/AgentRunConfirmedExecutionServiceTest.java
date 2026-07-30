@@ -30,6 +30,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -175,5 +176,46 @@ class AgentRunConfirmedExecutionServiceTest {
         assertEquals("WAITING_CONFIRMATION", response.continuation().status());
         assertEquals("只读检查已完成，写计划等待确认。", response.assistantReply());
         verify(continuationClient).continueAfterConfirmedTools(any(AgentPostConfirmContinuationRequest.class));
+    }
+
+    @Test
+    void shouldCompleteAgentGoalWhenImmediateSyncTaskIsSubmitted() {
+        AgentToolExecutionAuditView waiting = mock(AgentToolExecutionAuditView.class);
+        AgentToolExecutionAuditView planned = mock(AgentToolExecutionAuditView.class);
+        AgentToolExecutionAuditView succeededAudit = mock(AgentToolExecutionAuditView.class);
+        when(waiting.auditId()).thenReturn("audit-run");
+        when(waiting.toolCode()).thenReturn("sync.task.run");
+        when(waiting.state()).thenReturn("WAITING_APPROVAL");
+        when(planned.auditId()).thenReturn("audit-run");
+        when(planned.toolCode()).thenReturn("sync.task.run");
+        when(planned.state()).thenReturn("PLANNED");
+        when(succeededAudit.auditId()).thenReturn("audit-run");
+        when(succeededAudit.toolCode()).thenReturn("sync.task.run");
+        when(succeededAudit.state()).thenReturn("SUCCEEDED");
+        AgentToolExecutionResultView executed = new AgentToolExecutionResultView(
+                succeededAudit, Map.of("taskId", 901L, "state", "QUEUED")
+        );
+        when(auditService.listByRun("session-confirm", "run-confirm"))
+                .thenReturn(List.of(waiting), List.of(planned), List.of(succeededAudit));
+        when(sessionService.executeToolExecution("session-confirm", "run-confirm", "audit-run", "trace-confirm"))
+                .thenReturn(executed);
+
+        var response = service.confirmAndExecute(
+                "session-confirm",
+                "run-confirm",
+                new AgentRunConfirmedExecutionRequest(true, "确认"),
+                10L,
+                101L,
+                "1001",
+                "ORDINARY_USER",
+                "USER",
+                "101:MANAGER",
+                "trace-confirm"
+        );
+
+        assertEquals("BUSINESS_GOAL_REACHED", response.continuation().status());
+        assertEquals("RESERVED_NOT_INVOKED", response.modelProviderStatus());
+        org.junit.jupiter.api.Assertions.assertTrue(response.assistantReply().contains("已提交真实 worker 执行链路"));
+        verifyNoInteractions(resultQueryService, continuationClient);
     }
 }

@@ -196,7 +196,7 @@ class DataSyncToolPlanBuilder:
                 tools,
                 plan_factory,
                 "sync.execution.status",
-                "提交运行后读取最新 execution 状态和低敏进度，让用户能继续进入任务详情追踪。",
+                "提交运行后只读取一次最新 execution 状态和低敏进度，不等待长任务终态；用户可进入任务详情持续追踪。",
                 {"taskRef": self._ref("sync.task.run", "taskId")},
             )
         return tuple(plans)
@@ -261,7 +261,7 @@ class DataSyncToolPlanBuilder:
                 tools,
                 plan_factory,
                 "sync.execution.status",
-                "Wait for the real execution to reach a terminal state and return low-sensitive progress and counts.",
+                "Read one low-sensitive execution snapshot after submission; the task remains observable in the sync task list and is not blocked on terminal completion.",
                 {"taskRef": self._ref("sync.task.run", "taskId")},
             )
         return tuple(plans)

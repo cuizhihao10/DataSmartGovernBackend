@@ -48,6 +48,30 @@ class DeterministicAgentExecutionResultAnswerGeneratorTest {
     }
 
     @Test
+    void shouldTreatScheduledPublishAsCompletedAgentRequest() {
+        AgentToolExecutionAuditView publishAudit = audit("sync.task.publish", "SUCCEEDED");
+        when(publishAudit.planArguments()).thenReturn(Map.of("syncMode", "SCHEDULED_FULL"));
+
+        AgentExecutionAssistantAnswer answer = generator.generate(
+                "COMPLETED", 1, 1, 0, List.of(publishAudit), List.of(), List.of());
+
+        assertTrue(answer.content().contains("调度规则已经生效"));
+        assertTrue(answer.content().contains("设定时间自动运行"));
+    }
+
+    @Test
+    void shouldTreatRealtimePublishAsLongRunningAgentRequest() {
+        AgentToolExecutionAuditView publishAudit = audit("sync.task.publish", "SUCCEEDED");
+        when(publishAudit.planArguments()).thenReturn(Map.of("syncMode", "CDC_STREAMING"));
+
+        AgentExecutionAssistantAnswer answer = generator.generate(
+                "COMPLETED", 1, 1, 0, List.of(publishAudit), List.of(), List.of());
+
+        assertTrue(answer.content().contains("实时通道持续运行"));
+        assertTrue(answer.content().contains("没有一次性完成终态"));
+    }
+
+    @Test
     void shouldRecognizeOnlyExplicitSuccessfulExecutionTerminalAsCompleted() {
         AgentToolExecutionAuditView statusAudit = audit("sync.execution.status", "SUCCEEDED");
         AgentToolExecutionResultView statusResult = new AgentToolExecutionResultView(

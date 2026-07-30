@@ -67,4 +67,28 @@ public record AgentPostConfirmContinuationView(
                 message
         );
     }
+
+    /**
+     * The reviewed business goal has reached its asynchronous hand-off point.
+     * No extra model turn is needed after a task is scheduled, handed to CDC,
+     * or submitted to the worker queue.
+     */
+    public static AgentPostConfirmContinuationView businessGoalReached() {
+        return new AgentPostConfirmContinuationView(
+                "datasmart.post-confirm-continuation.v1",
+                "BUSINESS_GOAL_REACHED",
+                false,
+                null,
+                null,
+                null,
+                null,
+                false,
+                "TASK_SUBMITTED_OR_SCHEDULED",
+                null,
+                Map.of(),
+                Map.of(),
+                "LOW_SENSITIVE_CONTINUATION_SUMMARY_ONLY",
+                "同步任务已进入真实业务执行边界，无需等待任务终态或再次调用模型。"
+        );
+    }
 }
