@@ -43,18 +43,31 @@ class PostConfirmContinuationTest(unittest.TestCase):
         self.assertEqual("WAITING_CONFIRMATION", result.to_summary()["status"])
         self.assertEqual("run-write", result.to_summary()["nextRunId"])
 
-    def test_rejects_non_successful_java_result(self) -> None:
+    def test_accepts_failed_java_result_as_model_diagnosis_feedback(self) -> None:
         payload = _payload()
         payload["toolResults"][0]["audit"]["state"] = "FAILED"
+        payload["toolResults"][0]["audit"]["errorCode"] = "SYNC_PRECHECK_BLOCKED"
+        payload["toolResults"][0]["audit"]["message"] = "目标表不存在。"
+        payload["toolResults"][0]["output"] = {
+            "issueCodes": ["TARGET_TABLE_NOT_FOUND"],
+            "recommendedActions": ["重新选择目标表"],
+        }
+        second_turn = _SecondTurn()
         coordinator = AgentPostConfirmContinuationCoordinator(
             model_routes=_routes(),
-            second_turn_orchestrator=_SecondTurn(),
+            second_turn_orchestrator=second_turn,
             loop_control_evaluator=_AllowLoop(),
             durable_loop_runner=_DurableRunner(waiting_confirmation=False),
         )
 
-        with self.assertRaises(ValueError):
-            coordinator.continue_after_confirmed_tools(payload)
+        result = coordinator.continue_after_confirmed_tools(payload)
+
+        failed_feedback = second_turn.feedback.feedback_items[0]
+        self.assertEqual("failed", failed_feedback.status.value)
+        self.assertEqual("SYNC_PRECHECK_BLOCKED", failed_feedback.error_code)
+        self.assertEqual("目标表不存在。", failed_feedback.error_message)
+        self.assertTrue(second_turn.plan.response_summary.startswith("已收到真实工具失败事实"))
+        self.assertTrue(result.model_turn.executed)
 
     def test_http_route_accepts_json_body_and_request_context(self) -> None:
         """FastAPI must inject Request instead of treating it as a payload field."""

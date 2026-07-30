@@ -29,6 +29,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentCaptor.forClass;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verify;
@@ -176,6 +177,77 @@ class AgentRunConfirmedExecutionServiceTest {
         assertEquals("WAITING_CONFIRMATION", response.continuation().status());
         assertEquals("只读检查已完成，写计划等待确认。", response.assistantReply());
         verify(continuationClient).continueAfterConfirmedTools(any(AgentPostConfirmContinuationRequest.class));
+    }
+
+    @Test
+    void shouldSendFailedToolFactsToPythonForGovernedDiagnosis() {
+        AgentToolExecutionAuditView waiting = mock(AgentToolExecutionAuditView.class);
+        AgentToolExecutionAuditView planned = mock(AgentToolExecutionAuditView.class);
+        AgentToolExecutionAuditView failedAudit = mock(AgentToolExecutionAuditView.class);
+        when(waiting.auditId()).thenReturn("audit-failed");
+        when(waiting.toolCode()).thenReturn("sync.task.draft.save");
+        when(waiting.state()).thenReturn("WAITING_APPROVAL");
+        when(planned.auditId()).thenReturn("audit-failed");
+        when(planned.toolCode()).thenReturn("sync.task.draft.save");
+        when(planned.state()).thenReturn("PLANNED");
+        when(failedAudit.auditId()).thenReturn("audit-failed");
+        when(failedAudit.toolCode()).thenReturn("sync.task.draft.save");
+        when(failedAudit.state()).thenReturn("FAILED");
+        when(failedAudit.errorCode()).thenReturn("SYNC_TOOL_VALIDATION_FAILED");
+        when(failedAudit.message()).thenReturn("目标表 public.customer 不存在");
+        AgentToolExecutionResultView failed = new AgentToolExecutionResultView(
+                failedAudit,
+                Map.of(
+                        "issues", List.of("目标表 public.customer 不存在"),
+                        "recommendedActions", List.of("重新读取目标端元数据并选择实际存在的表")
+                )
+        );
+        when(auditService.listByRun("session-confirm", "run-confirm"))
+                .thenReturn(List.of(waiting), List.of(planned), List.of(failedAudit));
+        when(sessionService.executeToolExecution(
+                "session-confirm", "run-confirm", "audit-failed", "trace-confirm"))
+                .thenReturn(failed);
+        when(resultQueryService.listRunToolExecutionResults("session-confirm", "run-confirm"))
+                .thenReturn(List.of(failed));
+        when(continuationClient.continueAfterConfirmedTools(any(AgentPostConfirmContinuationRequest.class)))
+                .thenReturn(new AgentPostConfirmContinuationView(
+                        "datasmart.post-confirm-continuation.v1",
+                        "WAITING_CONFIRMATION",
+                        true,
+                        "request-diagnosis",
+                        "session-confirm",
+                        "run-confirm",
+                        "run-repair",
+                        true,
+                        "WAITING_APPROVAL",
+                        "已确认目标表不存在，建议重新选择目标表。",
+                        Map.of(),
+                        Map.of(),
+                        "LOW_SENSITIVE_CONTINUATION_SUMMARY_ONLY",
+                        null
+                ));
+
+        var response = service.confirmAndExecute(
+                "session-confirm",
+                "run-confirm",
+                new AgentRunConfirmedExecutionRequest(true, "确认"),
+                10L,
+                101L,
+                "1001",
+                "ORDINARY_USER",
+                "USER",
+                "101:MANAGER",
+                "trace-confirm"
+        );
+
+        assertEquals("FAILED", response.runState());
+        assertEquals("WAITING_CONFIRMATION", response.continuation().status());
+        assertEquals("目标表 public.customer 不存在", response.failures().getFirst().message());
+        org.junit.jupiter.api.Assertions.assertTrue(response.assistantReply().contains("具体失败原因"));
+        org.junit.jupiter.api.Assertions.assertTrue(response.assistantReply().contains("Agent 后续诊断"));
+        var requestCaptor = forClass(AgentPostConfirmContinuationRequest.class);
+        verify(continuationClient).continueAfterConfirmedTools(requestCaptor.capture());
+        assertEquals("FAILED", requestCaptor.getValue().toolResults().getFirst().audit().state());
     }
 
     @Test

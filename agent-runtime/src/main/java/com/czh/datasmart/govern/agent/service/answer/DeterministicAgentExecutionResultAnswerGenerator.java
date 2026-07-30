@@ -15,7 +15,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
@@ -75,15 +74,15 @@ public class DeterministicAgentExecutionResultAnswerGenerator implements AgentEx
         }
 
         if (failedCount > 0) {
-            String failedTools = failedToolCodes(toolAudits, toolResults);
-            String toolDetail = failedTools.isBlank() ? "" : "失败节点：" + failedTools + "。";
             boolean taskDraftSaved = hasSucceededTool(SYNC_TASK_DRAFT_SAVE, toolAudits, toolResults);
             String taskState = taskDraftSaved
                     ? "同步任务可能只保存了草稿，但没有完成预检查、发布和运行。"
                     : "同步任务未成功创建、发布或运行。";
             return answer("工具节点执行：成功 " + succeededCount + " 个，失败 " + failedCount
-                    + " 个。" + taskState + toolDetail
-                    + "请查看节点错误详情，修复配置或权限问题后重新发起执行。");
+                    + " 个。" + taskState
+                    + AgentToolExecutionFailureSupport.assistantSummary(
+                    AgentToolExecutionFailureSupport.failures(toolAudits, toolResults))
+                    + " Agent 会基于这些真实失败事实继续只读诊断；如果需要写入修复，会生成新的待确认方案。");
         }
 
         String actionHint = nextActions == null || nextActions.isEmpty()
@@ -144,18 +143,6 @@ public class DeterministicAgentExecutionResultAnswerGenerator implements AgentEx
                 || "true".equalsIgnoreCase(Objects.toString(output.get("terminal"), ""));
         String state = Objects.toString(output.get("executionState"), "").toUpperCase(Locale.ROOT);
         return terminal && SUCCESSFUL_EXECUTION_TERMINALS.contains(state);
-    }
-
-    private String failedToolCodes(
-            List<AgentToolExecutionAuditView> toolAudits,
-            List<AgentToolExecutionResultView> toolResults) {
-        return auditStream(toolAudits, toolResults)
-                .filter(audit -> "FAILED".equals(audit.state()))
-                .map(audit -> audit.toolCode())
-                .filter(Objects::nonNull)
-                .distinct()
-                .limit(3)
-                .collect(Collectors.joining("、"));
     }
 
     private Stream<AgentToolExecutionAuditView> auditStream(

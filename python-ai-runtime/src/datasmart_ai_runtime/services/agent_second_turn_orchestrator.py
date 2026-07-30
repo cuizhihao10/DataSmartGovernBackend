@@ -498,6 +498,15 @@ class AgentSecondTurnOrchestrator:
                 "本轮只允许调用这些工具，至少调用一个；不要提前生成任务草稿或结束回答。"
             )
 
+        failure_recovery_instruction = ""
+        if request.variables.get("failureRecoveryContinuation"):
+            failure_recovery_instruction = (
+                "本轮 role=tool 中包含 Java 控制面返回的真实失败事实。先用公开回答明确说明失败工具、"
+                "错误原因和解决方向；不要只复述错误码，也不要原样重试失败写操作。"
+                "如需更多证据，只调用最少的只读诊断、日志、元数据或 RAG 工具。"
+                "如果能够形成修复，使用受治理工具提出完整修复参数；平台会把任何写操作转为新的待确认 Run。"
+            )
+
         return (
             ModelMessage(
                 role="system",
@@ -514,6 +523,7 @@ class AgentSecondTurnOrchestrator:
                     "真实元数据与用户描述冲突时不要猜测修正，应指出不存在或不兼容的表、字段、schema，"
                     "给出可选修复并等待用户确认。"
                     f"{required_evidence_instruction}"
+                    f"{failure_recovery_instruction}"
                     "不要伪造参数、不要声称尚未执行的工具已经成功、不要输出隐藏思维链。"
                 ),
             ),

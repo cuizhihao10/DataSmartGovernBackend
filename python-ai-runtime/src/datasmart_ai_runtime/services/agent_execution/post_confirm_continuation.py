@@ -14,6 +14,7 @@ confirmation.
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -141,6 +142,14 @@ class AgentPostConfirmContinuationCoordinator:
             source_run_id=source_run_id,
             workspace_key=workspace_key,
         )
+        failed_tool_names = tuple(
+            item.tool_name
+            for item in feedback_items
+            if item.status is ToolExecutionFeedbackStatus.FAILED
+        )
+        if failed_tool_names:
+            request.variables["failureRecoveryContinuation"] = True
+            request.variables["failedToolNames"] = failed_tool_names
         snapshot = _feedback_snapshot(feedback_items)
         intent = self._intent_analyzer.analyze(request, ())
         plan = AgentPlan(
@@ -149,8 +158,16 @@ class AgentPostConfirmContinuationCoordinator:
             state_trace=("java_tools_confirmed", "resume_model_tool_loop"),
             tool_plans=tool_plans,
             requires_human_approval=False,
-            response_summary="用户确认的工具批次已成功，正在基于真实结果继续完成原始目标。",
-            next_actions=("继续自动收集安全只读证据，最终写操作统一等待用户确认。",),
+            response_summary=(
+                "已收到真实工具失败事实，正在分析根因并选择最少的安全诊断动作。"
+                if failed_tool_names
+                else "用户确认的工具批次已成功，正在基于真实结果继续完成原始目标。"
+            ),
+            next_actions=((
+                "先解释具体失败原因并执行安全只读诊断；任何修复写操作重新展示并等待用户确认。"
+            ) if failed_tool_names else (
+                "继续自动收集安全只读证据，最终写操作统一等待用户确认。"
+            ),),
             intent_analysis=intent,
         )
         decision = self._loop_control_evaluator.evaluate(
@@ -206,9 +223,12 @@ class AgentPostConfirmContinuationCoordinator:
             audit = raw_result.get("audit")
             if not isinstance(audit, Mapping):
                 raise ValueError(f"toolResults[{index}].audit must be an object.")
-            state = _text(audit.get("state"))
-            if state is None or state.upper() != "SUCCEEDED":
-                raise ValueError(f"toolResults[{index}] is not a successful Java tool result.")
+            state = (_text(audit.get("state")) or "").upper()
+            feedback_status = _terminal_feedback_status(state)
+            if feedback_status is None:
+                raise ValueError(
+                    f"toolResults[{index}] must be a terminal Java tool result, got {state or 'EMPTY'}."
+                )
             tool_name = _required_text(audit, "toolCode")
             audit_id = _required_text(audit, "auditId")
             run_id = _text(audit.get("runId")) or source_run_id
@@ -229,10 +249,15 @@ class AgentPostConfirmContinuationCoordinator:
                 "workspaceKey": workspace_key,
                 "postConfirmContinuation": True,
             }
+            execution_succeeded = feedback_status is ToolExecutionFeedbackStatus.SUCCEEDED
             plans.append(
                 ToolPlan(
                     tool_name=tool_name,
-                    reason=_text(audit.get("planReason")) or "Java 控制面已确认并成功执行该工具。",
+                    reason=(
+                        _text(audit.get("planReason"))
+                        or ("Java 控制面已确认并成功执行该工具。" if execution_succeeded
+                            else "Java 控制面已确认执行该工具，但工具返回了终态失败事实。")
+                    ),
                     arguments=dict(audit.get("planArguments") or {}),
                     risk_level=_risk_level(audit.get("riskLevel")),
                     execution_mode=_execution_mode(audit.get("executionMode")),
@@ -245,9 +270,16 @@ class AgentPostConfirmContinuationCoordinator:
                 AgentControlPlaneFeedbackItem(
                     model_tool_call_id=call_id,
                     tool_name=tool_name,
-                    status=ToolExecutionFeedbackStatus.SUCCEEDED,
-                    summary=_text(audit.get("outputSummary")) or f"`{tool_name}` 已成功执行。",
+                    status=feedback_status,
+                    summary=(
+                        _text(audit.get("message"))
+                        or _text(audit.get("outputSummary"))
+                        or (f"`{tool_name}` 已成功执行。" if execution_succeeded
+                            else f"`{tool_name}` 执行失败。")
+                    ),
                     result=safe_result,
+                    error_code=None if execution_succeeded else _text(audit.get("errorCode")),
+                    error_message=None if execution_succeeded else _text(audit.get("message")),
                     audit_id=audit_id,
                     run_id=run_id,
                     output_ref=output_ref,
@@ -265,14 +297,31 @@ class AgentPostConfirmContinuationCoordinator:
 def _feedback_snapshot(
     items: tuple[AgentControlPlaneFeedbackItem, ...],
 ) -> AgentControlPlaneFeedbackSnapshot:
+    status_counts = Counter(item.status.value for item in items)
+    failed_count = status_counts.get(ToolExecutionFeedbackStatus.FAILED.value, 0)
     return AgentControlPlaneFeedbackSnapshot(
         expected_tool_call_count=len(items),
         feedback_items=items,
         missing_tool_call_ids=(),
-        status_counts={ToolExecutionFeedbackStatus.SUCCEEDED.value: len(items)},
+        status_counts=dict(status_counts),
         second_turn_eligible=bool(items),
-        recommended_actions=("已收到完整的 Java 成功结果，可继续受控模型与工具循环。",),
+        recommended_actions=((
+            f"已收到 {failed_count} 个真实失败结果；先分析根因和只读证据，禁止原样重试失败写操作。"
+        ) if failed_count else (
+            "已收到完整的 Java 成功结果，可继续受控模型与工具循环。"
+        ),),
     )
+
+
+def _terminal_feedback_status(state: str) -> ToolExecutionFeedbackStatus | None:
+    """Map only terminal Java audit states into model tool-result feedback."""
+
+    return {
+        "SUCCEEDED": ToolExecutionFeedbackStatus.SUCCEEDED,
+        "FAILED": ToolExecutionFeedbackStatus.FAILED,
+        "REJECTED": ToolExecutionFeedbackStatus.REJECTED,
+        "SKIPPED": ToolExecutionFeedbackStatus.SKIPPED,
+    }.get(state)
 
 
 def _continuation_request_id(session_id: str, run_id: str) -> str:

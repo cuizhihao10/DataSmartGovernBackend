@@ -336,9 +336,11 @@ services:
         SERVER_PORT: 8091
     environment:
       <<: *java-common-environment
-      # agent-runtime 控制面事实库已迁入 PostgreSQL `agent_runtime` schema。
-      # 这里不使用公共 java-common-environment 中的迁移期 MySQL datasource，而是显式配置专用 JDBC 连接；
-      # 当前默认 store 仍是 memory，不会自动执行真实工具副作用，但 Flyway 会在容器启动时校验控制面表基线。
+      # 工具审计、结构化结果和 outbox 使用 PostgreSQL，失败证据不会因 agent-runtime 容器重启而消失。
+      # 会话/Run 编排对象当前仍由 AgentSessionMemoryStore 承载；重启后可审计历史事实，但不能恢复未完成 Run。
+      DATASMART_AGENT_RUNTIME_DATABASE_ENABLED: "true"
+      DATASMART_AGENT_RUNTIME_AUDIT_STORE: postgresql
+      DATASMART_AGENT_RUNTIME_OUTBOX_STORE: postgresql
       DATASMART_AGENT_RUNTIME_JDBC_URL: jdbc:postgresql://postgresql:5432/datasmart_govern?currentSchema=agent_runtime&ApplicationName=datasmart-agent-runtime
       DATASMART_AGENT_RUNTIME_JDBC_USERNAME: datasmart
       DATASMART_AGENT_RUNTIME_JDBC_PASSWORD: ${DATASMART_POSTGRES_PASSWORD:-password}

@@ -87,12 +87,25 @@ class DeterministicAgentExecutionResultAnswerGeneratorTest {
 
     @Test
     void shouldExplainPartialFailureFromControlPlaneFacts() {
+        AgentToolExecutionAuditView failedAudit = audit("sync.task.draft.save", "FAILED");
+        when(failedAudit.auditId()).thenReturn("audit-draft");
+        when(failedAudit.errorCode()).thenReturn("SYNC_TOOL_VALIDATION_FAILED");
+        when(failedAudit.message()).thenReturn("目标表 public.customer 不存在");
+        AgentToolExecutionResultView failedResult = new AgentToolExecutionResultView(
+                failedAudit,
+                Map.of(
+                        "issues", List.of("目标表 public.customer 不存在"),
+                        "recommendedActions", List.of("重新选择目标表")
+                )
+        );
         AgentExecutionAssistantAnswer answer = generator.generate(
-                "FAILED", 9, 5, 1, List.of(), List.of(), List.of("RETRY_FAILED_TOOL"));
+                "FAILED", 9, 5, 1, List.of(failedAudit), List.of(failedResult), List.of("RETRY_FAILED_TOOL"));
 
         assertTrue(answer.content().contains("工具节点执行：成功 5 个，失败 1 个"));
         assertTrue(answer.content().contains("同步任务未成功创建、发布或运行"));
-        assertTrue(answer.content().contains("修复配置或权限问题"));
+        assertTrue(answer.content().contains("目标表 public.customer 不存在"));
+        assertTrue(answer.content().contains("重新选择目标表"));
+        assertTrue(answer.content().contains("继续只读诊断"));
     }
 
     private AgentToolExecutionAuditView audit(String toolCode, String state) {

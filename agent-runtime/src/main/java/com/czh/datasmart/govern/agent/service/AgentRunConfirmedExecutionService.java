@@ -12,9 +12,11 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentPostConfirmContinuatio
 import com.czh.datasmart.govern.agent.controller.dto.AgentPostConfirmContinuationView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionAuditView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionDecisionRequest;
+import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionFailureView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionResultView;
 import com.czh.datasmart.govern.agent.service.answer.AgentExecutionAssistantAnswer;
 import com.czh.datasmart.govern.agent.service.answer.AgentExecutionResultAnswerGenerator;
+import com.czh.datasmart.govern.agent.service.answer.AgentToolExecutionFailureSupport;
 import com.czh.datasmart.govern.agent.service.continuation.AgentPostConfirmContinuationClient;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
@@ -113,8 +115,14 @@ public class AgentRunConfirmedExecutionService {
                     continue;
                 }
                 failed++;
+                String errorCode = result.audit().errorCode() == null
+                        ? "UNCLASSIFIED_TOOL_FAILURE"
+                        : result.audit().errorCode();
+                String errorMessage = result.audit().message() == null
+                        ? "工具未返回具体错误说明"
+                        : result.audit().message();
                 run.failAfterToolExecution("Agent 工具节点执行失败，toolCode=" + audit.toolCode()
-                        + "，请根据节点错误修复后重新发起计划。");
+                        + "，errorCode=" + errorCode + "，原因=" + errorMessage);
                 break;
             }
             if (failed == 0 && succeeded == audits.size()) {
@@ -145,12 +153,12 @@ public class AgentRunConfirmedExecutionService {
         // Never call Python while holding the session monitor. Python immediately
         // submits the next ToolPlan to Java and must acquire the same session to
         // create a new Run; calling it inside synchronized(session) would deadlock.
-        AgentPostConfirmContinuationView continuation = continueAfterSuccessfulBatch(
+        AgentPostConfirmContinuationView continuation = continueAfterTerminalBatch(
                 session, runId, tenantId, projectId, actorId, traceId, batch
         );
-        String assistantReply = continuation.assistantReply() == null || continuation.assistantReply().isBlank()
-                ? batch.assistantAnswer().content()
-                : continuation.assistantReply();
+        List<AgentToolExecutionFailureView> failures = AgentToolExecutionFailureSupport.failures(
+                batch.finalAudits(), batch.executedResults());
+        String assistantReply = resolvedAssistantReply(batch, continuation);
         return new AgentRunConfirmedExecutionResponse(
                 sessionId,
                 runId,
@@ -159,6 +167,7 @@ public class AgentRunConfirmedExecutionService {
                 batch.succeededCount(),
                 batch.failedCount(),
                 batch.executedResults(),
+                failures,
                 batch.nextActions(),
                 assistantReply,
                 batch.assistantAnswer().mode(),
@@ -168,12 +177,13 @@ public class AgentRunConfirmedExecutionService {
     }
 
     /**
-     * 把完整成功结果交给 Python 续跑；失败批次不会继续推理或创建新的 Run。
+     * 把本批次已经产生的成功或失败终态事实交给 Python 续跑。
      *
-     * <p>这里重新从结果事实源读取整批结果，而不是只使用本次循环新执行的 {@code results}。重试或重复确认时，
-     * 部分工具可能在进入该方法前已经是 SUCCEEDED；如果漏掉这些结果，模型的资源账本会丢失源端或目标端证据。</p>
+     * <p>失败不是“停止解释”的理由，而是下一轮诊断的输入。Python 可以基于错误码、业务说明和低敏输出选择
+     * 只读日志、元数据、任务状态或 RAG 工具；任何修改草稿、表结构或数据的动作仍会形成新的审批 Run。
+     * 未执行的 PLANNED 节点不会作为伪结果发送给模型，避免模型误以为后续生命周期已经发生。</p>
      */
-    private AgentPostConfirmContinuationView continueAfterSuccessfulBatch(
+    private AgentPostConfirmContinuationView continueAfterTerminalBatch(
             AgentSessionRecord session,
             String runId,
             Long tenantId,
@@ -181,17 +191,22 @@ public class AgentRunConfirmedExecutionService {
             String actorId,
             String traceId,
             ConfirmedBatch batch) {
-        if (batch.failedCount() > 0 || batch.succeededCount() != batch.plannedCount()) {
-            return AgentPostConfirmContinuationView.failed(
-                    "当前工具批次未全部成功，已停止自动续跑；请先查看失败节点并修复。"
-            );
-        }
-        if (taskSubmissionBoundaryReached(batch.finalAudits())) {
+        if (batch.failedCount() == 0 && taskSubmissionBoundaryReached(batch.finalAudits())) {
             return AgentPostConfirmContinuationView.businessGoalReached();
         }
         List<AgentToolExecutionResultView> allResults = resultQueryService.listRunToolExecutionResults(
                 session.getSessionId(), runId
-        );
+        ).stream()
+                .filter(Objects::nonNull)
+                .filter(result -> result.audit() != null)
+                .filter(result -> Set.of("SUCCEEDED", "FAILED", "REJECTED", "SKIPPED")
+                        .contains(result.audit().state()))
+                .toList();
+        if (allResults.isEmpty()) {
+            return AgentPostConfirmContinuationView.failed(
+                    "本批次没有可交给 Agent 诊断的终态工具事实；请按 Run ID 检查审计状态。"
+            );
+        }
         return continuationClient.continueAfterConfirmedTools(new AgentPostConfirmContinuationRequest(
                 String.valueOf(tenantId),
                 String.valueOf(projectId),
@@ -203,6 +218,22 @@ public class AgentRunConfirmedExecutionService {
                 traceId,
                 allResults
         ));
+    }
+
+    /**
+     * 失败时同时保留确定性事实摘要和模型诊断，防止模型回答过短后再次只剩一个错误码。
+     */
+    private String resolvedAssistantReply(
+            ConfirmedBatch batch,
+            AgentPostConfirmContinuationView continuation) {
+        String modelReply = continuation.assistantReply();
+        if (modelReply == null || modelReply.isBlank()) {
+            return batch.assistantAnswer().content();
+        }
+        if (batch.failedCount() == 0) {
+            return modelReply;
+        }
+        return batch.assistantAnswer().content() + "\n\nAgent 后续诊断：" + modelReply.trim();
     }
 
     /**
