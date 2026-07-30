@@ -89,6 +89,30 @@ class SyncConfigurationCorrectionsTest(unittest.TestCase):
 
         self.assertTrue(corrected["mappingDefaultsConfirmed"])
 
+    def test_task_name_correction_supports_action_first_wording_and_stops_before_execute(self) -> None:
+        payload = {
+            "taskName": "Agent 创建的数据同步任务",
+            "sourceDatasourceId": 27,
+            "targetDatasourceId": 28,
+            "objectMappings": [{"sourceObjectName": "customer", "targetObjectName": "customer"}],
+        }
+
+        variants = (
+            "修改任务的名称为agent全量测试_0731_test_mysql2pgsql，然后执行任务",
+            "把任务名称修改为agent全量测试_0731_test_mysql2pgsql后再自动执行任务",
+            "任务改名为agent全量测试_0731_test_mysql2pgsql，再运行任务",
+            "rename task to agent全量测试_0731_test_mysql2pgsql, then run it",
+        )
+        for message in variants:
+            with self.subTest(message=message):
+                corrected = apply_explicit_sync_corrections(payload, message)
+                self.assertEqual(
+                    "agent全量测试_0731_test_mysql2pgsql",
+                    corrected["taskName"],
+                )
+                self.assertEqual(27, corrected["sourceDatasourceId"])
+                self.assertEqual(payload["objectMappings"], corrected["objectMappings"])
+
 
 if __name__ == "__main__":
     unittest.main()

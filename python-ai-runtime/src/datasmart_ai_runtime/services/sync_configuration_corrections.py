@@ -72,17 +72,29 @@ def _accepts_mapping_defaults(message: str) -> bool:
 
 
 def _extract_task_name(message: str) -> str | None:
+    action_boundary = (
+        r"(?=(?:，|,)?\s*(?:然后|并且|并|再|后再)\s*"
+        r"(?:自动)?(?:执行|运行|保存|发布|提交|给|对|将|把|设置|修改)|[；;\n。]|$)"
+    )
     patterns = (
         r"(?:任务名称|任务名字|任务名)\s*(?:改为|修改为|设为|叫做?|使用)\s*"
-        r"(?P<value>.+?)(?=(?:，|,)?\s*并(?:给|对|将|把|设置|修改)|[；;\n。]|$)",
+        rf"(?P<value>.+?){action_boundary}",
+        r"(?:修改|更改|调整|设置|重命名)\s*(?:这个|当前|该)?\s*任务(?:的)?\s*"
+        r"(?:名称|名字|名)\s*(?:为|成|到|[:：=])\s*"
+        rf"(?P<value>.+?){action_boundary}",
+        r"(?:把|将)\s*(?:这个|当前|该)?\s*任务(?:的)?\s*(?:名称|名字|名)\s*"
+        r"(?:修改|更改|调整|设置|改|重命名)?\s*(?:为|成|到)\s*"
+        rf"(?P<value>.+?){action_boundary}",
+        r"(?:这个|当前|该)?\s*任务\s*(?:改名|重命名)\s*(?:为|成|到)\s*"
+        rf"(?P<value>.+?){action_boundary}",
         r"(?:rename\s+(?:the\s+)?task\s+(?:to|as))\s+"
-        r"(?P<value>.+?)(?=(?:,\s*and)|[;\n.]|$)",
+        r"(?P<value>.+?)(?=(?:,\s*(?:and|then))|[;\n.]|$)",
     )
     for pattern in patterns:
         match = re.search(pattern, message, re.IGNORECASE)
         if match is None:
             continue
-        value = match.group("value").strip(" \t\"'“”")
+        value = match.group("value").strip(" \t\"'“”，,")
         if value:
             return value[:200]
     return None

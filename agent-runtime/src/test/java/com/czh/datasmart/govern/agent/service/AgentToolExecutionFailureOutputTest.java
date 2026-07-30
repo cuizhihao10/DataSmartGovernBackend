@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.agent.service;
 
+import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionAuditView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionResultView;
 import com.czh.datasmart.govern.agent.event.NoopAgentToolExecutionEventPublisher;
 import com.czh.datasmart.govern.agent.model.AgentRunState;
@@ -13,6 +14,7 @@ import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
 import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditMemoryStore;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecord;
+import com.czh.datasmart.govern.agent.service.answer.AgentToolExecutionFailureSupport;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
 import com.czh.datasmart.govern.agent.service.tool.AgentToolAdapter;
@@ -27,9 +29,30 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class AgentToolExecutionFailureOutputTest {
+
+    @Test
+    void shouldExplainDuplicateTaskNameAndRequireConfirmationBeforeRepair() {
+        AgentToolExecutionAuditView audit = mock(AgentToolExecutionAuditView.class);
+        when(audit.auditId()).thenReturn("audit-duplicate-task-name");
+        when(audit.toolCode()).thenReturn("sync.task.draft.save");
+        when(audit.state()).thenReturn("FAILED");
+        when(audit.errorCode()).thenReturn("SYNC_DOWNSTREAM_ERROR");
+        when(audit.message()).thenReturn(
+                "409 Conflict: {\"reason\":\"DUPLICATE_OPERATION\","
+                        + "\"message\":\"当前项目下已存在同名同步任务\"}"
+        );
+
+        var failure = AgentToolExecutionFailureSupport.failures(List.of(audit), List.of()).getFirst();
+
+        assertTrue(failure.details().getFirst().contains("草稿没有保存"));
+        assertTrue(failure.suggestions().getFirst().contains("展示原名称与新名称"));
+        assertTrue(failure.suggestions().getFirst().contains("再次等待确认"));
+    }
 
     @Test
     void shouldPersistStructuredPrecheckFailureOutputForUserDiagnostics() {

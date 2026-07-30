@@ -817,6 +817,10 @@ class AgentConversationResponseTest(unittest.TestCase):
         )
         self.assertEqual(27, resolved["sourceDatasourceId"])
         self.assertEqual(28, resolved["targetDatasourceId"])
+        self.assertIn(
+            "已按你的要求将任务名称从“Agent 创建的数据同步任务”修改为“客户双表全量同步”",
+            conversation["assistantMessage"],
+        )
 
     def test_complete_request_with_late_catalog_ambiguity_asks_for_datasource_not_mapping(self) -> None:
         request = AgentRequest(

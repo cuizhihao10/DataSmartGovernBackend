@@ -108,8 +108,11 @@ public final class AgentToolExecutionFailureSupport {
             Map<String, Object> output) {
         List<String> details = extract(output, DETAIL_KEYS);
         List<String> suggestions = extract(output, SUGGESTION_KEYS);
+        if (isDuplicateTaskNameFailure(audit) && details.isEmpty()) {
+            details = List.of("当前项目已存在同名同步任务，本次草稿没有保存，后续发布和运行也没有发生");
+        }
         if (suggestions.isEmpty()) {
-            suggestions = List.of(defaultSuggestion(audit.errorCode(), audit.toolCode()));
+            suggestions = List.of(defaultSuggestion(audit.errorCode(), audit.toolCode(), audit.message()));
         }
         return new AgentToolExecutionFailureView(
                 audit.auditId(),
@@ -195,8 +198,12 @@ public final class AgentToolExecutionFailureSupport {
         return Objects.toString(value, "");
     }
 
-    private static String defaultSuggestion(String errorCode, String toolCode) {
-        String normalized = text(errorCode, "").toUpperCase(Locale.ROOT);
+    private static String defaultSuggestion(String errorCode, String toolCode, String message) {
+        String normalized = (text(errorCode, "") + " " + text(message, "")).toUpperCase(Locale.ROOT);
+        if (normalized.contains("DUPLICATE_OPERATION")
+                && (normalized.contains("TASK") || normalized.contains("任务"))) {
+            return "Agent 可以建议一个带唯一后缀的新任务名称；保存、预检查、发布和执行前会展示原名称与新名称并再次等待确认";
+        }
         if (normalized.contains("PERMISSION") || normalized.contains("FORBIDDEN")
                 || normalized.contains("UNAUTHORIZED")) {
             return "检查当前项目角色和数据源授权；Agent 只能在获得授权后重新执行该动作";
@@ -216,6 +223,13 @@ public final class AgentToolExecutionFailureSupport {
             return "Agent 将结合任务配置、预检查或运行日志继续诊断；任何数据或任务修改都会再次请求确认";
         }
         return "Agent 将先执行只读诊断；如果需要修改业务状态，会展示修复方案并重新请求确认";
+    }
+
+    private static boolean isDuplicateTaskNameFailure(AgentToolExecutionAuditView audit) {
+        String evidence = (text(audit.errorCode(), "") + " " + text(audit.message(), ""))
+                .toUpperCase(Locale.ROOT);
+        return "sync.task.draft.save".equals(audit.toolCode())
+                && evidence.contains("DUPLICATE_OPERATION");
     }
 
     private static String text(String value, String fallback) {

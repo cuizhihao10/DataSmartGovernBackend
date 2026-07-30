@@ -395,6 +395,7 @@ def create_app() -> Any:
             second_turn_orchestrator=second_turn_orchestrator,
             loop_control_evaluator=loop_control_evaluator,
             durable_loop_runner=durable_model_tool_loop_runner,
+            tool_planner=orchestrator.tool_planner,
         )
         if durable_model_tool_loop_runner is not None
         and loop_control_evaluator is not None

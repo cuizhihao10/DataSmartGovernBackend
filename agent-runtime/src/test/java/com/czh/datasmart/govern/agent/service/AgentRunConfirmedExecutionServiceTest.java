@@ -156,6 +156,7 @@ class AgentRunConfirmedExecutionServiceTest {
                         "只读检查已完成，写计划等待确认。",
                         Map.of(),
                         Map.of(),
+                        Map.of(),
                         "LOW_SENSITIVE_CONTINUATION_SUMMARY_ONLY",
                         null
                 ));
@@ -221,6 +222,7 @@ class AgentRunConfirmedExecutionServiceTest {
                         true,
                         "WAITING_APPROVAL",
                         "已确认目标表不存在，建议重新选择目标表。",
+                        Map.of(),
                         Map.of(),
                         Map.of(),
                         "LOW_SENSITIVE_CONTINUATION_SUMMARY_ONLY",

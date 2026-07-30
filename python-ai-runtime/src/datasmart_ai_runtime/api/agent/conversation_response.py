@@ -260,8 +260,10 @@ def build_agent_conversation_response(
     elif has_executable_plan:
         phase = "READY_FOR_CONFIRMATION"
         next_action = "CONFIRM_AND_EXECUTE"
+        task_name_change_notice = _task_name_change_notice(request, resolved_configuration)
         assistant_message = (
-            f"参数已经齐全，我已生成 {len(plan.tool_plans)} 个受控工具节点。"
+            task_name_change_notice
+            + f"参数已经齐全，我已生成 {len(plan.tool_plans)} 个受控工具节点。"
             "请核对执行计划，确认后才会调用真实业务工具。"
         )
     else:
@@ -306,6 +308,32 @@ def build_agent_conversation_response(
         "intentResolver": build_intent_resolver_summary(plan),
         "payloadPolicy": "LOW_SENSITIVE_CONVERSATION_AND_RESOLVED_CONFIGURATION",
     }
+
+
+def _task_name_change_notice(
+    request: AgentRequest,
+    resolved_configuration: dict[str, Any],
+) -> str:
+    """Tell the user exactly when a follow-up message renamed the task.
+
+    The structured configuration is authoritative, but a generic "parameters are
+    complete" reply made successful natural-language corrections look ignored.
+    Only emit this notice when the current message actually changed an existing
+    task name; initial naming remains part of ordinary configuration review.
+    """
+
+    raw = request.variables.get("dataSyncRequest") or request.variables.get("data_sync_request")
+    if not isinstance(raw, dict):
+        return ""
+    original_name = str(raw.get("taskName") or "").strip()
+    resolved_name = str(resolved_configuration.get("taskName") or "").strip()
+    latest_message = str(request.variables.get("latestUserMessage") or "").strip()
+    if not original_name or not resolved_name or original_name == resolved_name or not latest_message:
+        return ""
+    corrected = apply_explicit_sync_corrections(dict(raw), latest_message)
+    if str(corrected.get("taskName") or "").strip() != resolved_name:
+        return ""
+    return f"已按你的要求将任务名称从“{original_name}”修改为“{resolved_name}”。"
 
 
 def _no_executable_plan_message(plan: AgentPlan) -> str:

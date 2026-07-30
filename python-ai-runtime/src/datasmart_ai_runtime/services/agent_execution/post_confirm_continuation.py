@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping
 
 from datasmart_ai_runtime.domain.contracts import (
@@ -34,6 +34,10 @@ from datasmart_ai_runtime.services.agent_control_plane_feedback import (
 from datasmart_ai_runtime.services.agent_execution.durable_model_tool_loop_runner import (
     AgentDurableModelToolLoopRunner,
 )
+from datasmart_ai_runtime.services.agent_execution.duplicate_task_name_recovery import (
+    DuplicateTaskNameRecoveryPlan,
+    DuplicateTaskNameRecoveryPlanner,
+)
 from datasmart_ai_runtime.services.agent_loop_control_policy import (
     AgentLoopControlPolicyEvaluator,
     AgentLoopControlState,
@@ -44,6 +48,7 @@ from datasmart_ai_runtime.services.model_gateway.model_router import ModelRouteR
 from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback import (
     ToolExecutionFeedbackStatus,
 )
+from datasmart_ai_runtime.services.tool_planner import ToolPlanner
 
 
 POST_CONFIRM_CONTINUATION_SCHEMA_VERSION = "datasmart.post-confirm-continuation.v1"
@@ -58,6 +63,7 @@ class AgentPostConfirmContinuationResult:
     source_run_id: str
     model_turn: Any
     durable_loop: Any | None
+    repair_plan: DuplicateTaskNameRecoveryPlan | None = None
 
     def to_summary(self) -> dict[str, Any]:
         latest_plan = self.durable_loop.latest_plan if self.durable_loop is not None else None
@@ -84,6 +90,11 @@ class AgentPostConfirmContinuationResult:
             "assistantReply": self.model_turn.summary,
             "modelSecondTurn": self.model_turn.to_summary(),
             "durableLoop": self.durable_loop.to_summary() if self.durable_loop is not None else None,
+            "repairProposal": (
+                self.repair_plan.proposal.to_summary()
+                if self.repair_plan is not None
+                else None
+            ),
             "payloadPolicy": "LOW_SENSITIVE_CONTINUATION_SUMMARY_ONLY",
         }
 
@@ -98,12 +109,18 @@ class AgentPostConfirmContinuationCoordinator:
         second_turn_orchestrator: AgentSecondTurnOrchestrator,
         loop_control_evaluator: AgentLoopControlPolicyEvaluator,
         durable_loop_runner: AgentDurableModelToolLoopRunner,
+        tool_planner: ToolPlanner | None = None,
         intent_analyzer: RuleBasedIntentAnalyzer | None = None,
     ) -> None:
         self._model_routes = model_routes
         self._second_turn_orchestrator = second_turn_orchestrator
         self._loop_control_evaluator = loop_control_evaluator
         self._durable_loop_runner = durable_loop_runner
+        self._duplicate_name_recovery = (
+            DuplicateTaskNameRecoveryPlanner(tool_planner)
+            if tool_planner is not None
+            else None
+        )
         self._intent_analyzer = intent_analyzer or RuleBasedIntentAnalyzer()
 
     def continue_after_confirmed_tools(
@@ -150,6 +167,18 @@ class AgentPostConfirmContinuationCoordinator:
         if failed_tool_names:
             request.variables["failureRecoveryContinuation"] = True
             request.variables["failedToolNames"] = failed_tool_names
+        repair_plan = (
+            self._duplicate_name_recovery.build(
+                source_run_id=source_run_id,
+                tool_plans=tool_plans,
+                feedback_items=feedback_items,
+            )
+            if self._duplicate_name_recovery is not None
+            else None
+        )
+        if repair_plan is not None:
+            request.variables["failureRecoveryKind"] = "DUPLICATE_TASK_NAME"
+            request.variables["repairProposal"] = repair_plan.proposal.to_summary()
         snapshot = _feedback_snapshot(feedback_items)
         intent = self._intent_analyzer.analyze(request, ())
         plan = AgentPlan(
@@ -186,6 +215,17 @@ class AgentPostConfirmContinuationCoordinator:
             control_plane_feedback=snapshot,
             loop_control_decision=decision,
         )
+        if repair_plan is not None:
+            public_summary = repair_plan.proposal.to_summary()["summary"]
+            model_turn = replace(
+                model_turn,
+                action="await_repair_confirmation",
+                summary=str(public_summary),
+                recommended_actions=(
+                    "核对原任务名称和建议名称；确认后才会重新保存并提交任务。",
+                ),
+                follow_up_tool_plans=repair_plan.tool_plans,
+            )
         durable_loop = None
         if model_turn.follow_up_tool_plans:
             # Supplying the initial feedback is essential: source and target
@@ -203,6 +243,7 @@ class AgentPostConfirmContinuationCoordinator:
             source_run_id=source_run_id,
             model_turn=model_turn,
             durable_loop=durable_loop,
+            repair_plan=repair_plan,
         )
 
     @staticmethod

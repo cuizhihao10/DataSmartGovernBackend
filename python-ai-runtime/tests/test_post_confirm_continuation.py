@@ -1,7 +1,7 @@
 import os
 import sys
 import unittest
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
@@ -11,6 +11,7 @@ from datasmart_ai_runtime.domain.contracts import (
     AgentPlan,
     ModelRoute,
     ProviderType,
+    ToolParameterValidationResult,
     ToolPlan,
     WorkloadType,
 )
@@ -68,6 +69,57 @@ class PostConfirmContinuationTest(unittest.TestCase):
         self.assertEqual("目标表不存在。", failed_feedback.error_message)
         self.assertTrue(second_turn.plan.response_summary.startswith("已收到真实工具失败事实"))
         self.assertTrue(result.model_turn.executed)
+
+    def test_duplicate_task_name_failure_returns_exact_confirmation_gated_repair(self) -> None:
+        payload = _payload()
+        payload["toolResults"] = [{
+            "audit": {
+                "auditId": "draft-save-failed",
+                "sessionId": "session-1",
+                "runId": "run-read",
+                "toolCode": "sync.task.draft.save",
+                "state": "FAILED",
+                "riskLevel": "HIGH",
+                "executionMode": "APPROVAL_REQUIRED",
+                "errorCode": "SYNC_DOWNSTREAM_ERROR",
+                "message": (
+                    '409 Conflict: {"reason":"DUPLICATE_OPERATION",'
+                    '"message":"当前项目下已存在同名同步任务"}'
+                ),
+                "planArguments": {
+                    "taskName": "Agent 创建的数据同步任务",
+                    "syncMode": "FULL",
+                    "objectMappings": [{
+                        "sourceObjectName": "customer",
+                        "targetObjectName": "customer",
+                    }],
+                },
+                "governanceHints": {"modelToolCallId": "call-draft-failed"},
+            },
+            "output": {},
+        }]
+        durable_runner = _DurableRunner(waiting_confirmation=True)
+        coordinator = AgentPostConfirmContinuationCoordinator(
+            model_routes=_routes(),
+            second_turn_orchestrator=_SecondTurn(),
+            loop_control_evaluator=_AllowLoop(),
+            durable_loop_runner=durable_runner,
+            tool_planner=_RepairToolPlanner(),
+        )
+
+        summary = coordinator.continue_after_confirmed_tools(payload).to_summary()
+
+        proposal = summary["repairProposal"]
+        self.assertEqual("DUPLICATE_TASK_NAME", proposal["kind"])
+        self.assertEqual("Agent 创建的数据同步任务", proposal["originalTaskName"])
+        self.assertTrue(proposal["proposedTaskName"].startswith("Agent 创建的数据同步任务_agent_"))
+        self.assertTrue(proposal["requiresConfirmation"])
+        self.assertEqual("WAITING_CONFIRMATION", summary["status"])
+        self.assertEqual("run-write", summary["nextRunId"])
+        repair_tools = durable_runner.first_model_turn.follow_up_tool_plans
+        self.assertEqual("sync.task.draft.save", repair_tools[0].tool_name)
+        self.assertEqual(proposal["proposedTaskName"], repair_tools[0].arguments["taskName"])
+        self.assertTrue(repair_tools[0].requires_human_approval)
 
     def test_http_route_accepts_json_body_and_request_context(self) -> None:
         """FastAPI must inject Request instead of treating it as a payload field."""
@@ -148,7 +200,8 @@ class _DurableRunner:
         self._waiting_confirmation = waiting_confirmation
 
     def run(self, *, request, plan, first_model_turn, initial_feedback):
-        del request, first_model_turn
+        del request
+        self.first_model_turn = first_model_turn
         self.initial_feedback = initial_feedback
         latest_plan = AgentPlan(
             request_id="write-plan",
@@ -180,6 +233,35 @@ class _DurableRunner:
             latest_plan=latest_plan,
             stopped_reason=(
                 "WAITING_APPROVAL" if self._waiting_confirmation else "MODEL_COMPLETED_WITHOUT_MORE_TOOLS"
+            ),
+        )
+
+
+class _RepairToolPlanner:
+    def revalidate_plan(self, plan, arguments):
+        return replace(
+            plan,
+            arguments=dict(arguments),
+            parameter_validation=ToolParameterValidationResult(can_execute=True),
+        )
+
+    def expand_confirmed_data_sync_lifecycle(self, draft_plan):
+        return (
+            draft_plan,
+            ToolPlan(
+                tool_name="sync.task.precheck",
+                reason="precheck repaired draft",
+                requires_human_approval=True,
+            ),
+            ToolPlan(
+                tool_name="sync.task.publish",
+                reason="publish repaired draft",
+                requires_human_approval=True,
+            ),
+            ToolPlan(
+                tool_name="sync.task.run",
+                reason="run repaired task",
+                requires_human_approval=True,
             ),
         )
 

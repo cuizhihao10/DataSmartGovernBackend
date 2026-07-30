@@ -27,6 +27,7 @@ public record AgentPostConfirmContinuationView(
         String assistantReply,
         Map<String, Object> modelSecondTurn,
         Map<String, Object> durableLoop,
+        Map<String, Object> repairProposal,
         String payloadPolicy,
         String message) {
 
@@ -42,6 +43,7 @@ public record AgentPostConfirmContinuationView(
                 false,
                 "CLIENT_DISABLED",
                 null,
+                Map.of(),
                 Map.of(),
                 Map.of(),
                 "LOW_SENSITIVE_CONTINUATION_SUMMARY_ONLY",
@@ -61,6 +63,7 @@ public record AgentPostConfirmContinuationView(
                 false,
                 "PYTHON_CONTINUATION_UNAVAILABLE",
                 null,
+                Map.of(),
                 Map.of(),
                 Map.of(),
                 "LOW_SENSITIVE_CONTINUATION_SUMMARY_ONLY",
@@ -85,6 +88,7 @@ public record AgentPostConfirmContinuationView(
                 false,
                 "TASK_SUBMITTED_OR_SCHEDULED",
                 null,
+                Map.of(),
                 Map.of(),
                 Map.of(),
                 "LOW_SENSITIVE_CONTINUATION_SUMMARY_ONLY",
