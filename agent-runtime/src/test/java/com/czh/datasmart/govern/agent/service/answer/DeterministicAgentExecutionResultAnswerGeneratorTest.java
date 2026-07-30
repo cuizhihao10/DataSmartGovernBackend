@@ -66,7 +66,8 @@ class DeterministicAgentExecutionResultAnswerGeneratorTest {
         AgentExecutionAssistantAnswer answer = generator.generate(
                 "FAILED", 9, 5, 1, List.of(), List.of(), List.of("RETRY_FAILED_TOOL"));
 
-        assertTrue(answer.content().contains("成功 5 个，失败 1 个"));
+        assertTrue(answer.content().contains("工具节点执行：成功 5 个，失败 1 个"));
+        assertTrue(answer.content().contains("同步任务未成功创建、发布或运行"));
         assertTrue(answer.content().contains("修复配置或权限问题"));
     }
 

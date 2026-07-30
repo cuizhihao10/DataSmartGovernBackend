@@ -47,11 +47,28 @@ def apply_explicit_sync_corrections(
     if sync_mode:
         corrected["syncMode"] = sync_mode
 
+    if _accepts_mapping_defaults(message):
+        corrected["mappingDefaultsConfirmed"] = True
+
     mappings = _apply_mapping_targets(mappings, message)
     mappings = _apply_where_corrections(mappings, message)
     if mappings:
         corrected["objectMappings"] = mappings
     return corrected
+
+
+def _accepts_mapping_defaults(message: str) -> bool:
+    accepts_default = re.search(
+        r"(?:接受|确认|同意|采用|使用|按照?|按)\s*(?:当前|这个|以上|Agent\s*)?\s*默认",
+        message,
+        re.IGNORECASE,
+    )
+    mentions_mapping_scope = re.search(
+        r"(?:同名字段|字段映射|无\s*WHERE|不需要\s*WHERE|没有\s*WHERE|全部数据|默认配置)",
+        message,
+        re.IGNORECASE,
+    )
+    return bool(accepts_default and mentions_mapping_scope)
 
 
 def _extract_task_name(message: str) -> str | None:

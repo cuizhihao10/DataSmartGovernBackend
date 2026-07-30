@@ -68,8 +68,13 @@ public class DeterministicAgentExecutionResultAnswerGenerator implements AgentEx
         if (failedCount > 0) {
             String failedTools = failedToolCodes(toolAudits, toolResults);
             String toolDetail = failedTools.isBlank() ? "" : "失败节点：" + failedTools + "。";
-            return answer("本次计划执行未全部完成：成功 " + succeededCount + " 个，失败 " + failedCount
-                    + " 个。" + toolDetail + "请查看节点错误详情，修复配置或权限问题后重新发起执行。");
+            boolean taskDraftSaved = hasSucceededTool(SYNC_TASK_DRAFT_SAVE, toolAudits, toolResults);
+            String taskState = taskDraftSaved
+                    ? "同步任务可能只保存了草稿，但没有完成预检查、发布和运行。"
+                    : "同步任务未成功创建、发布或运行。";
+            return answer("工具节点执行：成功 " + succeededCount + " 个，失败 " + failedCount
+                    + " 个。" + taskState + toolDetail
+                    + "请查看节点错误详情，修复配置或权限问题后重新发起执行。");
         }
 
         String actionHint = nextActions == null || nextActions.isEmpty()

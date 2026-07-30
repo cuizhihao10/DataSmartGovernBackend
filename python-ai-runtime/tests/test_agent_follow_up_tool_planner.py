@@ -707,6 +707,39 @@ class AgentFollowUpToolPlannerTest(unittest.TestCase):
         )
         self.assertIn("customer_missing", result.state_guard_issue_messages[0])
 
+    def test_sync_draft_rejects_zero_enabled_field_mappings(self) -> None:
+        parent = self._plan(ToolPlan(
+            tool_name="datasource.target.metadata.read",
+            reason="target metadata",
+        ))
+        result = self.planner.govern(
+            request=self.request,
+            plan=parent,
+            tool_calls=(self._call(
+                "call-draft-without-fields",
+                "sync.task.draft.save",
+                {
+                    "taskName": "customer-full",
+                    "syncMode": "FULL",
+                    "objectMappings": [{
+                        "sourceObjectName": "customer",
+                        "targetSchemaName": "public",
+                        "targetObjectName": "customer",
+                        "fieldMappings": [],
+                    }],
+                },
+            ),),
+            visible_tools=self._visible("sync.task.draft.save"),
+            control_plane_feedback=self._metadata_feedback(),
+        )
+
+        self.assertEqual((), result.accepted_tool_plans)
+        self.assertIn(
+            "MODEL_TOOL_CALL_SYNC_FIELD_MAPPING_MISSING",
+            result.state_guard_issue_codes,
+        )
+        self.assertIn("至少一个", result.state_guard_issue_messages[0])
+
     def test_sync_draft_rejects_implicit_incompatible_field_type_conversion(self) -> None:
         parent = self._plan(ToolPlan(
             tool_name="datasource.target.metadata.read",

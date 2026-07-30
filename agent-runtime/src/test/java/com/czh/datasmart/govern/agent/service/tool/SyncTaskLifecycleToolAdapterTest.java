@@ -16,6 +16,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
+import java.lang.reflect.InvocationTargetException;
 import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -24,6 +25,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * 保护 Agent 创建任务与人工创建向导共用的对象、字段和模式语义。
@@ -63,6 +65,30 @@ class SyncTaskLifecycleToolAdapterTest {
         assertEquals("target_customer", objectMapping.get("targetObjectName"));
         assertEquals("id", fieldMapping.get("sourceField"));
         assertEquals("customer_id", fieldMapping.get("targetField"));
+    }
+
+    @Test
+    void shouldRejectDraftWhenNoFieldMappingWasExplicitlyConfirmed() throws Exception {
+        Map<String, Object> rawMapping = new LinkedHashMap<>();
+        rawMapping.put("objectKey", "customer-transfer");
+        rawMapping.put("sourceObjectName", "source_customer");
+        rawMapping.put("targetSchemaName", "public");
+        rawMapping.put("targetObjectName", "target_customer");
+        rawMapping.put("fieldMappings", List.of());
+
+        List<?> resolvedMappings = resolveMappings(List.of(rawMapping), false);
+        InvocationTargetException exception = assertThrows(
+                InvocationTargetException.class,
+                () -> buildFieldMappingConfig(
+                        resolvedMappings,
+                        metadata(table(null, "source_customer", column("id", "BIGINT"))),
+                        metadata(table("public", "target_customer", column("id", "BIGINT"))),
+                        false
+                )
+        );
+
+        assertTrue(exception.getCause().getMessage().contains("字段映射"));
+        assertTrue(exception.getCause().getMessage().contains("确认"));
     }
 
     @Test

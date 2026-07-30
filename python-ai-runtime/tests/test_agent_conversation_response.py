@@ -105,11 +105,21 @@ class AgentConversationResponseTest(unittest.TestCase):
                             "sourceObjectName": "fs_test_customer_source",
                             "targetSchemaName": "public",
                             "targetObjectName": "fs_test_customer_source",
+                            "fieldMappings": [{
+                                "sourceField": "id",
+                                "targetField": "id",
+                                "syncEnabled": True,
+                            }],
                         },
                         {
                             "sourceObjectName": "fs_test_customer_target",
                             "targetSchemaName": "public",
                             "targetObjectName": "fs_test_customer_target",
+                            "fieldMappings": [{
+                                "sourceField": "id",
+                                "targetField": "id",
+                                "syncEnabled": True,
+                            }],
                         },
                     ],
                 }
@@ -512,6 +522,16 @@ class AgentConversationResponseTest(unittest.TestCase):
         )
 
         resolved = conversation["resolvedConfiguration"]
+        self.assertEqual("WAITING_CLARIFICATION", conversation["phase"])
+        self.assertEqual(
+            ["mappingDefaultsConfirmation"],
+            conversation["missingParameters"],
+        )
+        self.assertFalse(conversation["canExecute"])
+        self.assertEqual(
+            "MAPPING_DEFAULTS_CONFIRMATION",
+            conversation["clarificationQuestions"][0]["inputType"],
+        )
         self.assertEqual(27, resolved["sourceDatasourceId"])
         self.assertEqual(28, resolved["targetDatasourceId"])
         self.assertEqual("mysql2pgsql_test_0709_source", resolved["sourceDatasourceName"])
@@ -525,8 +545,14 @@ class AgentConversationResponseTest(unittest.TestCase):
         self.assertTrue(all(
             item["targetSchemaName"] == "public"
             and len(item["fieldMappings"]) == 2
+            and item["whereCondition"] == ""
             for item in resolved["objectMappings"]
         ))
+        self.assertFalse(resolved["mappingDefaultsConfirmed"])
+        self.assertEqual(
+            "VERIFIED_METADATA_SAME_NAME_FIELDS",
+            resolved["fieldMappingSource"],
+        )
 
     def test_user_stated_same_name_tables_are_preserved_before_metadata_feedback(self) -> None:
         request = AgentRequest(
@@ -628,17 +654,94 @@ class AgentConversationResponseTest(unittest.TestCase):
             ],
         )
 
+    def test_model_proposed_fields_still_require_user_default_confirmation(self) -> None:
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective="把 customer 全量同步到 public.customer，同名字段默认映射。",
+            variables={
+                "dataSyncRequest": {
+                    "sourceDatasourceId": 27,
+                    "targetDatasourceId": 28,
+                    "syncMode": "FULL",
+                },
+            },
+        )
+        draft = ToolPlan(
+            tool_name="sync.task.draft.save",
+            reason="model proposed metadata-backed defaults",
+            arguments={
+                "sourceDatasourceId": 27,
+                "targetDatasourceId": 28,
+                "syncMode": "FULL",
+                "objectMappings": [{
+                    "sourceObjectName": "customer",
+                    "targetSchemaName": "public",
+                    "targetObjectName": "customer",
+                    "fieldMappings": [{
+                        "sourceField": "id",
+                        "targetField": "id",
+                        "syncEnabled": True,
+                    }],
+                }],
+            },
+            requires_human_approval=True,
+        )
+        plan = AgentPlan(
+            request_id="request-model-field-defaults",
+            selected_route=None,
+            state_trace=("invoke_model_intent",),
+            tool_plans=(draft,),
+            requires_human_approval=True,
+            response_summary="已依据真实元数据补齐同名字段。",
+            intent_analysis=IntentAnalysis(
+                summary="识别到全量同步任务。",
+                governance_domains=(GovernanceDomain.DATA_SYNC,),
+                candidate_tools=("sync.task.draft.save",),
+                missing_parameters=(),
+            ),
+        )
+
+        conversation = build_agent_conversation_response(
+            request,
+            plan,
+            ToolExecutionReadinessService().evaluate((draft,)),
+            control_plane_ingested=True,
+        )
+
+        self.assertEqual("WAITING_CLARIFICATION", conversation["phase"])
+        self.assertEqual(
+            ["mappingDefaultsConfirmation"],
+            conversation["missingParameters"],
+        )
+        self.assertEqual(
+            "MODEL_PROPOSED_METADATA_FIELDS",
+            conversation["resolvedConfiguration"]["fieldMappingSource"],
+        )
+        self.assertFalse(conversation["canExecute"])
+
     def test_follow_up_correction_overrides_only_explicitly_changed_fields(self) -> None:
         previous_mappings = [
             {
                 "sourceObjectName": "fs_test_customer_source",
                 "targetSchemaName": "public",
                 "targetObjectName": "fs_test_customer_source",
+                "fieldMappings": [{
+                    "sourceField": "id",
+                    "targetField": "id",
+                    "syncEnabled": True,
+                }],
             },
             {
                 "sourceObjectName": "fs_test_customer_target",
                 "targetSchemaName": "public",
                 "targetObjectName": "fs_test_customer_target",
+                "fieldMappings": [{
+                    "sourceField": "id",
+                    "targetField": "id",
+                    "syncEnabled": True,
+                }],
             },
         ]
         corrected_mappings = [

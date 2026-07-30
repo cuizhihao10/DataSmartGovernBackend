@@ -341,9 +341,16 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
                     ? null
                     : findTable(sourceMetadata, mapping.sourceSchemaName(), mapping.sourceObjectName());
             Map<String, Object> targetTable = findTable(targetMetadata, mapping.targetSchemaName(), mapping.targetObjectName());
-            List<Map<String, Object>> fieldRows = mapping.fieldMappings().isEmpty()
-                    ? customSqlMode ? List.of() : sameNameFieldMappings(sourceTable, targetTable)
-                    : explicitFieldMappings(mapping, sourceTable, targetTable, customSqlMode);
+            if (mapping.fieldMappings().isEmpty()) {
+                throw new PlatformBusinessException(
+                        PlatformErrorCode.BAD_REQUEST,
+                        "对象 " + mappingDisplayName(mapping, customSqlMode)
+                                + " 尚未确认字段映射。请先基于两端真实元数据确认同名字段默认映射，"
+                                + "或在高级配置中手动选择至少一个源字段到目标字段"
+                );
+            }
+            List<Map<String, Object>> fieldRows = explicitFieldMappings(
+                    mapping, sourceTable, targetTable, customSqlMode);
             if (fieldRows.isEmpty()) {
                 throw new PlatformBusinessException(PlatformErrorCode.BAD_REQUEST,
                         "对象 " + mappingDisplayName(mapping, customSqlMode)
@@ -432,41 +439,6 @@ public class SyncTaskLifecycleToolAdapter implements AgentToolAdapter {
             }
         }
         return result;
-    }
-
-    private List<Map<String, Object>> sameNameFieldMappings(
-            Map<String, Object> sourceTable,
-            Map<String, Object> targetTable) {
-        List<Map<String, Object>> sourceColumns = mapList(sourceTable.get("columns"));
-        Map<String, Map<String, Object>> targetByName = new LinkedHashMap<>();
-        for (Map<String, Object> targetColumn : mapList(targetTable.get("columns"))) {
-            String name = nullableText(targetColumn.get("columnName"));
-            if (name != null) {
-                targetByName.put(name.toLowerCase(Locale.ROOT), targetColumn);
-            }
-        }
-        List<Map<String, Object>> mappings = new ArrayList<>();
-        for (Map<String, Object> sourceColumn : sourceColumns) {
-            String sourceField = nullableText(sourceColumn.get("columnName"));
-            if (sourceField == null) {
-                continue;
-            }
-            Map<String, Object> targetColumn = targetByName.get(sourceField.toLowerCase(Locale.ROOT));
-            if (targetColumn == null) {
-                continue;
-            }
-            Map<String, Object> row = new LinkedHashMap<>();
-            row.put("sourceField", sourceField);
-            row.put("targetField", targetColumn.get("columnName"));
-            row.put("sourceType", sourceColumn.get("dataTypeName"));
-            row.put("targetType", targetColumn.get("dataTypeName"));
-            row.put("nullable", sourceColumn.get("nullable"));
-            row.put("primaryKey", sourceColumn.get("primaryKey"));
-            row.put("syncEnabled", true);
-            row.put("typeCompatible", true);
-            mappings.add(row);
-        }
-        return mappings;
     }
 
     private Map<String, Object> findTable(Map<String, Object> metadata, String schemaName, String tableName) {

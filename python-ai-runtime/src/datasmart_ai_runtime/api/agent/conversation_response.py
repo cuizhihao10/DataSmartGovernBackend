@@ -33,9 +33,28 @@ _QUESTION_DEFINITIONS: dict[str, dict[str, Any]] = {
     },
     "objectMappings": {
         "label": "对象映射",
-        "question": "请确认要同步的源表、目标 schema、目标表以及可选的 WHERE 条件。",
+        "question": "请确认要同步的源表、目标 schema 和目标表。",
         "inputType": "OBJECT_MAPPING_EDITOR",
         "fieldPath": "dataSyncRequest.objectMappings",
+    },
+    "fieldMappings": {
+        "label": "字段映射",
+        "question": "请为每条对象映射确认至少一个真实源字段到真实目标字段。",
+        "inputType": "FIELD_MAPPING_EDITOR",
+        "fieldPath": "dataSyncRequest.objectMappings[].fieldMappings",
+    },
+    "mappingDefaultsConfirmation": {
+        "label": "默认字段映射与 WHERE 范围确认",
+        "question": (
+            "我已根据两端真实元数据默认映射全部同名字段；当前 WHERE 为空，"
+            "将同步对象映射范围内的全部数据。请确认接受，或直接修改字段映射和 WHERE 条件。"
+        ),
+        "inputType": "MAPPING_DEFAULTS_CONFIRMATION",
+        "fieldPath": "dataSyncRequest.mappingDefaultsConfirmed",
+        "options": [
+            {"value": True, "label": "接受同名字段映射和无 WHERE"},
+            {"value": False, "label": "修改字段映射或 WHERE"},
+        ],
     },
     "scheduleFrequency": {
         "label": "执行频率",
@@ -162,19 +181,24 @@ def build_agent_conversation_response(
         # correction turn, not an executable plan.  Surface the canonical mapping
         # editor without asking the user for internal datasource IDs again.
         declared_missing_parameters.append(repair_parameter or "objectMappings")
-    for parameter_name in _mode_aware_missing_parameters(
-        request,
-        plan,
-        autonomous_resolution_stopped=autonomous_resolution_stopped,
-    ):
-        if parameter_name not in declared_missing_parameters:
-            declared_missing_parameters.append(parameter_name)
     autonomously_resolved = _autonomously_resolved_parameters(
         request,
         plan,
         control_plane_feedback,
         autonomous_resolution_stopped=autonomous_resolution_stopped,
     )
+    currently_unresolved = tuple(
+        name for name in declared_missing_parameters if name not in autonomously_resolved
+    )
+    for parameter_name in _mode_aware_missing_parameters(
+        request,
+        plan,
+        control_plane_feedback=control_plane_feedback,
+        currently_unresolved=currently_unresolved,
+        autonomous_resolution_stopped=autonomous_resolution_stopped,
+    ):
+        if parameter_name not in declared_missing_parameters:
+            declared_missing_parameters.append(parameter_name)
     resolved_configuration = _build_resolved_configuration(
         request,
         plan,
@@ -354,6 +378,8 @@ def _mode_aware_missing_parameters(
     request: AgentRequest,
     plan: AgentPlan,
     *,
+    control_plane_feedback: Any | None,
+    currently_unresolved: tuple[str, ...],
     autonomous_resolution_stopped: bool,
 ) -> tuple[str, ...]:
     """Return only the configuration gaps implied by the selected sync mode.
@@ -402,7 +428,61 @@ def _mode_aware_missing_parameters(
                 missing.append("customSqlText")
         elif not user_sql and not _truthy(payload.get("customSqlConfirmed")):
             missing.append("customSqlConfirmation")
+
+    progressive_blockers = {
+        "sourceDatasourceId",
+        "targetDatasourceId",
+        "objectMappings",
+        "customSqlText",
+        "customSqlConfirmation",
+        "targetTableResolution",
+        "fieldMappingConversions",
+    }
+    if progressive_blockers.intersection(currently_unresolved) or progressive_blockers.intersection(missing):
+        return tuple(missing)
+
+    mappings = effective.get("objectMappings") or effective.get("object_mappings")
+    configured_mappings = [item for item in mappings if isinstance(item, dict)] \
+        if isinstance(mappings, (list, tuple)) else []
+    has_confirmed_fields = bool(configured_mappings) and all(
+        _has_enabled_field_mapping(item)
+        for item in configured_mappings
+    )
+    payload_mappings = payload.get("objectMappings") or payload.get("object_mappings")
+    user_confirmed_mappings = [item for item in payload_mappings if isinstance(item, dict)] \
+        if isinstance(payload_mappings, (list, tuple)) else []
+    user_supplied_confirmed_fields = bool(user_confirmed_mappings) and all(
+        _has_enabled_field_mapping(item)
+        for item in user_confirmed_mappings
+    )
+    inferred_mappings = _infer_same_name_object_mappings(request, control_plane_feedback)
+    has_verified_defaults = bool(inferred_mappings) and all(
+        _has_enabled_field_mapping(item)
+        for item in inferred_mappings
+    )
+    if has_confirmed_fields and not user_supplied_confirmed_fields:
+        if not _truthy(effective.get("mappingDefaultsConfirmed")):
+            missing.append("mappingDefaultsConfirmation")
+    elif not has_confirmed_fields:
+        if has_verified_defaults:
+            if not _truthy(effective.get("mappingDefaultsConfirmed")):
+                missing.append("mappingDefaultsConfirmation")
+        elif configured_mappings or autonomous_resolution_stopped:
+            missing.append("fieldMappings")
     return tuple(missing)
+
+
+def _has_enabled_field_mapping(mapping: dict[str, Any]) -> bool:
+    fields = mapping.get("fieldMappings")
+    if not isinstance(fields, (list, tuple)):
+        return False
+    return any(
+        isinstance(field, dict)
+        and field.get("syncEnabled") is not False
+        and bool(str(field.get("sourceField") or "").strip())
+        and bool(str(field.get("targetField") or "").strip())
+        for field in fields
+    )
 
 
 def _repair_clarification_parameter(plan: AgentPlan) -> str | None:
@@ -489,6 +569,7 @@ def _build_resolved_configuration(
     snapshot lets every client merge confirmed values into its current draft.
     """
 
+    payload = _sync_payload(request)
     effective = _effective_sync_configuration(request, plan)
     source_catalog = _catalog_resolution_for("sourceDatasourceId", control_plane_feedback)
     target_catalog = _catalog_resolution_for("targetDatasourceId", control_plane_feedback)
@@ -531,9 +612,30 @@ def _build_resolved_configuration(
     if target_name:
         resolved["targetDatasourceName"] = target_name
     if isinstance(mappings, (list, tuple)) and mappings:
-        resolved["objectMappings"] = [dict(item) for item in mappings if isinstance(item, dict)]
+        normalized_mappings: list[dict[str, Any]] = []
+        for item in mappings:
+            if not isinstance(item, dict):
+                continue
+            normalized = dict(item)
+            if resolved["syncMode"] != "CUSTOM_SQL_QUERY":
+                normalized["whereCondition"] = str(normalized.get("whereCondition") or "")
+            normalized_mappings.append(normalized)
+        resolved["objectMappings"] = normalized_mappings
         resolved["objectMappingSource"] = mapping_source
         resolved["autoFilledFields"].append("objectMappings")
+        if mapping_source == "VERIFIED_METADATA_SAME_NAME_MATCH":
+            resolved["fieldMappingSource"] = "VERIFIED_METADATA_SAME_NAME_FIELDS"
+        elif all(_has_enabled_field_mapping(item) for item in normalized_mappings):
+            payload_mappings = payload.get("objectMappings") or payload.get("object_mappings")
+            user_supplied_fields = bool(payload_mappings) and all(
+                isinstance(item, dict) and _has_enabled_field_mapping(item)
+                for item in payload_mappings
+            ) if isinstance(payload_mappings, (list, tuple)) else False
+            resolved["fieldMappingSource"] = (
+                "USER_CONFIRMED_FIELDS" if user_supplied_fields
+                else "MODEL_PROPOSED_METADATA_FIELDS"
+            )
+    resolved["mappingDefaultsConfirmed"] = _truthy(effective.get("mappingDefaultsConfirmed"))
     for key in ("scheduleConfig", "customSqlText", "customSqlConfirmed", "targetTableResolution"):
         if effective.get(key) not in (None, ""):
             resolved[key] = effective[key]
@@ -726,6 +828,7 @@ def _infer_same_name_object_mappings(
             "sourceObjectName": source_name,
             "targetSchemaName": _optional_text(target.get("schemaName")),
             "targetObjectName": target_name,
+            "whereCondition": "",
             "fieldMappings": field_mappings,
         })
     return mappings
@@ -956,6 +1059,8 @@ def _autonomously_resolved_parameters(
         # Once both datasource IDs were explicitly selected, connection tests by
         # themselves cannot resolve mappings; the UI must show the real mapping
         # editor unless a metadata-read path or saved draft actually exists.
+        resolved.add("objectMappings")
+    if _infer_same_name_object_mappings(request, control_plane_feedback):
         resolved.add("objectMappings")
     return resolved
 
@@ -1274,6 +1379,11 @@ def _resolve_sync_mode(objective: str, sync_payload: dict[str, Any]) -> str:
 
 
 def _clarification_message(plan: AgentPlan, missing_parameters: tuple[str, ...]) -> str:
+    if missing_parameters == ("mappingDefaultsConfirmation",):
+        return (
+            "我已依据两端真实元数据映射全部同名字段，当前没有设置 WHERE，默认同步全部数据。"
+            "请确认接受该默认配置；也可以直接说明要排除或修改的字段，或为某张表添加 WHERE 条件。"
+        )
     labels = [_QUESTION_DEFINITIONS.get(name, {}).get("label", name) for name in missing_parameters]
     detail = "、".join(labels) if labels else "必要业务参数"
     domain = "数据同步任务" if plan.intent_analysis and any(

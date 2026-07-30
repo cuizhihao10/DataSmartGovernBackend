@@ -67,6 +67,28 @@ class SyncConfigurationCorrectionsTest(unittest.TestCase):
         self.assertEqual("customer_history", mapping["targetObjectName"])
         self.assertNotIn("whereCondition", mapping)
 
+    def test_natural_language_can_confirm_same_name_fields_and_empty_where_defaults(self) -> None:
+        payload = {
+            "objectMappings": [{
+                "sourceObjectName": "customer",
+                "targetSchemaName": "public",
+                "targetObjectName": "customer",
+                "whereCondition": "",
+                "fieldMappings": [{
+                    "sourceField": "id",
+                    "targetField": "id",
+                    "syncEnabled": True,
+                }],
+            }],
+        }
+
+        corrected = apply_explicit_sync_corrections(
+            payload,
+            "接受默认同名字段映射，不需要 WHERE 条件，按默认配置继续。",
+        )
+
+        self.assertTrue(corrected["mappingDefaultsConfirmed"])
+
 
 if __name__ == "__main__":
     unittest.main()

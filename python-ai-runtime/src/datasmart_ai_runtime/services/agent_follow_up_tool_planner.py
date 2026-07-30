@@ -889,13 +889,23 @@ class AgentFollowUpToolPlanner:
                 )
 
             field_mappings = raw_mapping.get("fieldMappings")
-            if not isinstance(field_mappings, list):
-                continue
+            enabled_field_mappings = [
+                item
+                for item in field_mappings
+                if isinstance(item, dict) and item.get("syncEnabled") is not False
+            ] if isinstance(field_mappings, list) else []
+            if not enabled_field_mappings:
+                return (
+                    "MODEL_TOOL_CALL_SYNC_FIELD_MAPPING_MISSING",
+                    f"第 {index} 条对象映射没有已确认的有效字段映射。"
+                    "请根据两端真实元数据至少确认一个源字段到目标字段，至少一个字段有效后才能继续，"
+                    "不能在执行阶段静默补齐。",
+                )
             source_field_metadata = AgentFollowUpToolPlanner._metadata_fields(source_object)
             target_field_metadata = AgentFollowUpToolPlanner._metadata_fields(target_object)
             source_fields = set(source_field_metadata)
             target_fields = set(target_field_metadata)
-            for field_mapping in field_mappings:
+            for field_mapping in enabled_field_mappings:
                 if not isinstance(field_mapping, dict) or field_mapping.get("syncEnabled") is False:
                     continue
                 source_field = str(field_mapping.get("sourceField") or "").strip()
