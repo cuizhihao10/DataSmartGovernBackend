@@ -32,6 +32,10 @@ from datasmart_ai_runtime.domain.model_gateway import (
     ModelGatewayRequestContext,
     ModelGatewayRoutingDecision,
 )
+from datasmart_ai_runtime.services.model_gateway.agent_plan_cancellation import (
+    AgentPlanCancelled,
+    raise_if_agent_plan_cancelled,
+)
 from datasmart_ai_runtime.services.model_gateway.model_gateway import ModelGatewayGovernanceService
 from datasmart_ai_runtime.services.model_gateway.model_provider import ModelProviderRegistry
 from datasmart_ai_runtime.services.model_gateway.model_tool_call_aggregator import ModelToolCallDeltaAggregator
@@ -214,6 +218,7 @@ class ModelQueryEngine:
         Engine 仍可直接执行 `request.route`，但不会额外扩展 fallback 候选。
         """
 
+        raise_if_agent_plan_cancelled()
         effective_decision = routing_decision or self._model_gateway.decide(context)
         if not effective_decision.budget_decision.allowed:
             result = _blocked_result(
@@ -258,6 +263,7 @@ class ModelQueryEngine:
         selected_provider_type: ProviderType | None = None
         selected_requested_model_name: str | None = None
         for route_index, route in enumerate(routes):
+            raise_if_agent_plan_cancelled()
             routed_request = self._request_for_route(request, route)
             token_issue = self._token_limit_issue(routed_request, context)
             if token_issue:
@@ -319,12 +325,14 @@ class ModelQueryEngine:
 
             max_attempts = max(self._settings.max_attempts_per_route, 1)
             for attempt_number in range(1, max_attempts + 1):
+                raise_if_agent_plan_cancelled()
                 started_at = self._clock()
                 result = (
                     self._invoke_provider_streaming_safely(routed_request, chunk_sink)
                     if chunk_sink is not None and self._supports_streaming(route)
                     else self._invoke_provider_safely(routed_request)
                 )
+                raise_if_agent_plan_cancelled()
                 latency_ms = int((self._clock() - started_at) * 1000)
                 self._model_gateway.record_invocation_result(context, result)
                 last_result = result
@@ -419,6 +427,8 @@ class ModelQueryEngine:
 
         try:
             return self._model_providers.invoke(request)
+        except AgentPlanCancelled:
+            raise
         except Exception:  # pragma: no cover - 单测覆盖结果语义，真实异常类型由 Provider/transport 决定
             return ModelInvocationResult(
                 provider_name=request.route.provider_name,
@@ -434,21 +444,22 @@ class ModelQueryEngine:
     ) -> ModelInvocationResult:
         """Aggregate one governed provider stream while forwarding public chunks.
 
-        The sink is observational only. A UI disconnect or sink failure must not
-        cancel the provider request, alter tool-call assembly, or skip cache and
-        health accounting. Final content and tool calls are still returned as the
-        same ``ModelInvocationResult`` contract used by non-streaming callers.
+        The sink is observational only, so a rendering failure is ignored. Request cancellation is a governed
+        control signal and must stop chunk assembly, cache writes and fallback retries immediately.
         """
 
         started_at = time.perf_counter()
         chunks: list[ModelInvocationChunk] = []
         try:
             for chunk in self._model_providers.stream(request):
+                raise_if_agent_plan_cancelled()
                 chunks.append(chunk)
                 try:
                     chunk_sink(chunk)
                 except Exception:
                     pass
+        except AgentPlanCancelled:
+            raise
         except Exception:  # pragma: no cover - transport-specific exceptions are normalized here
             return ModelInvocationResult(
                 provider_name=request.route.provider_name,

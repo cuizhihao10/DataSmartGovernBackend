@@ -40,6 +40,7 @@ from datasmart_ai_runtime.services.agent_model_tool_feedback_turn import AgentMo
 from datasmart_ai_runtime.services.model_gateway import ModelGatewayGovernanceService
 from datasmart_ai_runtime.services.model_gateway.model_provider_metadata import build_model_provider_metadata
 from datasmart_ai_runtime.services.model_gateway.model_public_output import sanitize_public_model_output
+from datasmart_ai_runtime.services.model_gateway.agent_plan_cancellation import AgentPlanCancelled
 from datasmart_ai_runtime.services.model_gateway.model_query_engine import ModelQueryEngine, ModelQueryEngineResult
 from datasmart_ai_runtime.services.model_gateway.model_tool_feedback_provider import (
     ModelToolExecutionFeedbackProvider,
@@ -258,6 +259,9 @@ class AgentModelIntentNode:
                 public_request=public_request,
             )
 
+        except AgentPlanCancelled:
+            # 用户主动停止不是 Provider 故障，不能降级为规则解析后继续生成或提交工具计划。
+            raise
         except Exception:  # pragma: no cover - 真实 Provider 异常在集成测试中覆盖
             # Provider 原始异常可能包含 endpoint、代理响应和请求片段，因此这里只返回稳定低敏错误码。
             return AgentModelIntentNodeResult(

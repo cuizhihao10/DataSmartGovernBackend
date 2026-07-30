@@ -9,7 +9,9 @@ package com.czh.datasmart.govern.gateway.filter;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import com.czh.datasmart.govern.gateway.config.GatewayContextProperties;
 import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.config.YamlPropertiesFactoryBean;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
 import org.springframework.mock.web.server.MockServerWebExchange;
@@ -19,6 +21,8 @@ import reactor.core.publisher.Mono;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.List;
+import java.util.Properties;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -109,6 +113,37 @@ class GatewayPythonRuntimeSignatureFilterTest {
 
         assertThat(chain.exchange().getRequest().getHeaders().getFirst(
                 PlatformContextHeaders.GATEWAY_SIGNATURE)).isNotBlank();
+    }
+
+    /**
+     * 取消请求携带租户、项目和操作者身份，也必须进入同一条 HMAC 信任链。
+     */
+    @Test
+    void cancelPlanShouldUseTheSameSignatureBoundary() {
+        GatewayContextProperties properties = properties(true, "secret-for-test");
+        GatewayPythonRuntimeSignatureFilter filter = filter(properties);
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        filter.filter(exchange("/api/agent/plans/cancel"), chain).block();
+
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(
+                PlatformContextHeaders.GATEWAY_SIGNATURE)).isNotBlank();
+    }
+
+    /**
+     * Deployment configuration must not override the Java defaults with a narrower path list.
+     */
+    @Test
+    void applicationConfigurationShouldSignCancellationRequests() {
+        YamlPropertiesFactoryBean factory = new YamlPropertiesFactoryBean();
+        factory.setResources(new ClassPathResource("application.yml"));
+        Properties properties = factory.getObject();
+        List<String> signaturePaths = properties.stringPropertyNames().stream()
+                .filter(name -> name.startsWith("datasmart.gateway.context.python-runtime-signature.target-paths["))
+                .map(properties::getProperty)
+                .toList();
+
+        assertThat(signaturePaths).contains("/api/agent/plans/cancel");
     }
 
     /**

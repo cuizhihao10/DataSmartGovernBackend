@@ -45,6 +45,12 @@ from datasmart_ai_runtime.api.gateway.signature import GatewaySignatureVerificat
 from datasmart_ai_runtime.api.agent.plan_response import build_plan_response
 from datasmart_ai_runtime.api.gateway.trusted_context import enrich_agent_plan_payload_from_gateway_headers
 from datasmart_ai_runtime.domain.contracts import AgentRequest
+from datasmart_ai_runtime.services.model_gateway.agent_plan_cancellation import (
+    AgentPlanCancellationIdentity,
+    AgentPlanCancellationRegistry,
+    AgentPlanCancelled,
+    bind_agent_plan_cancellation,
+)
 from datasmart_ai_runtime.services.tools import build_tool_action_intake_runtime_event
 from datasmart_ai_runtime.services.runtime_events.runtime_event_websocket import RuntimeEventWebSocketConnectionAdapter
 
@@ -96,6 +102,7 @@ def register_agent_runtime_routes(
     request_validation_error_factory: Callable[[int, dict[str, Any]], Exception] | None = None,
     gateway_signature_nonce_store: Any | None = None,
     gateway_signature_security_stats: Any | None = None,
+    plan_cancellation_registry: AgentPlanCancellationRegistry | None = None,
 ) -> None:
     """注册 Agent 规划、事件回放和 WebSocket 路由。
 
@@ -175,6 +182,8 @@ def register_agent_runtime_routes(
     `/agent/plans` 的状态具备“后续可以按 runId 恢复/诊断”的锚点。
     """
 
+    cancellation_registry = plan_cancellation_registry or AgentPlanCancellationRegistry()
+
     @app.post("/agent/plans")
     def create_agent_plan(payload: dict[str, Any], http_request: request_type) -> dict[str, Any]:
         """生成 Agent 工具计划，并在 API 边界重建可信控制面上下文。
@@ -250,6 +259,58 @@ def register_agent_runtime_routes(
             langgraph_checkpointer_service=langgraph_checkpointer_service,
         )
 
+    @app.post("/agent/plans/cancel")
+    def cancel_agent_plan(payload: dict[str, Any], http_request: request_type) -> dict[str, Any]:
+        """停止当前用户发起且仍在进行的 Agent 规划。
+
+        取消入口与规划入口使用完全相同的 gateway HMAC 和可信身份重建。requestId 只负责关联，不是授权
+        凭据；注册表还会同时匹配租户、项目和操作者，避免跨用户或跨项目停止请求。
+        """
+
+        try:
+            request = _agent_request_from_payload(
+                enrich_agent_plan_payload_from_gateway_headers(
+                    payload, http_request.headers, nonce_store=gateway_signature_nonce_store
+                )
+            )
+        except GatewaySignatureVerificationError as exc:
+            error_detail = _gateway_signature_error_detail(http_request, exc)
+            LOGGER.warning(
+                "Agent 取消请求的 Gateway 内部签名校验失败，reason=%s, traceId=%s, path=%s",
+                error_detail["reason"],
+                error_detail["traceId"],
+                error_detail["path"],
+            )
+            if gateway_signature_security_stats is not None:
+                gateway_signature_security_stats.record_failure(error_detail)
+            if gateway_signature_error_factory is not None:
+                raise gateway_signature_error_factory(error_detail) from exc
+            raise
+        except PermissionError as exc:
+            detail = _trusted_context_error_detail(http_request)
+            if request_validation_error_factory is not None:
+                raise request_validation_error_factory(403, detail) from exc
+            raise
+        except AgentRequestPayloadError as exc:
+            if request_validation_error_factory is not None:
+                raise request_validation_error_factory(400, exc.detail) from exc
+            raise
+
+        if not request.request_id:
+            detail = _agent_request_error_detail([
+                {"field": "request_id", "message": "待停止的 Agent 请求 ID 不能为空。"}
+            ])
+            if request_validation_error_factory is not None:
+                raise request_validation_error_factory(400, detail)
+            raise AgentRequestPayloadError(detail)
+        identity = AgentPlanCancellationIdentity(
+            tenant_id=str(request.tenant_id),
+            project_id=str(request.project_id),
+            actor_id=str(request.actor_id),
+            request_id=str(request.request_id),
+        )
+        return cancellation_registry.cancel(identity, reason="USER_REQUESTED")
+
     @app.post("/agent/plans/stream")
     async def stream_agent_plan(payload: dict[str, Any], http_request: request_type) -> Any:
         """以 NDJSON 实时返回 Agent 规划阶段事实，最后返回完整计划快照。
@@ -264,6 +325,7 @@ def register_agent_runtime_routes(
         - `progress`：一个真实 RuntimeEvent 已产生；
         - `heartbeat`：长模型调用期间保活并报告整轮耗时与当前步骤空闲时长，不虚构完成百分比；
         - `result`：完整 `/agent/plans` 响应，并携带整轮耗时；
+        - `cancelled`：本轮已被用户或连接生命周期停止，不再生成最终计划；
         - `error`：低敏失败摘要，不包含 Provider endpoint、prompt、凭据或异常堆栈。
         """
 
@@ -301,6 +363,12 @@ def register_agent_runtime_routes(
         # 即使旧客户端没有预生成 requestId，流式响应也必须在第一帧给出稳定关联 ID。
         if not request.request_id:
             request = replace(request, request_id=str(uuid4()))
+        cancellation_identity = AgentPlanCancellationIdentity(
+            tenant_id=str(request.tenant_id),
+            project_id=str(request.project_id),
+            actor_id=str(request.actor_id),
+            request_id=str(request.request_id),
+        )
 
         from fastapi.responses import StreamingResponse
 
@@ -309,6 +377,7 @@ def register_agent_runtime_routes(
             frames: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
             stream_started_at = monotonic()
             last_progress_at = monotonic()
+            cancellation_token = cancellation_registry.register(cancellation_identity)
 
             def emit_progress(event: Any) -> None:
                 nonlocal last_progress_at
@@ -324,29 +393,44 @@ def register_agent_runtime_routes(
 
             async def execute_plan() -> None:
                 try:
-                    response = await asyncio.to_thread(
-                        build_plan_response,
-                        request,
-                        orchestrator,
-                        event_store=event_store,
-                        live_push_hub=live_push_hub,
-                        event_publisher=event_publisher,
-                        plan_ingestion_client=plan_ingestion_client,
-                        control_plane_feedback_collector=control_plane_feedback_collector,
-                        runtime_event_feedback_bridge=runtime_event_feedback_bridge,
-                        loop_control_evaluator=loop_control_evaluator,
-                        second_turn_orchestrator=second_turn_orchestrator,
-                        durable_model_tool_loop_runner=durable_model_tool_loop_runner,
-                        durable_agent_loop_service=durable_agent_loop_service,
-                        memory_write_governance=memory_write_governance,
-                        skill_publication_diagnostics_service=skill_publication_diagnostics_service,
-                        tool_execution_readiness_policy_provider=tool_execution_readiness_policy_provider,
-                        langgraph_execution_gate_metrics=langgraph_execution_gate_metrics,
-                        langgraph_memory_retrieval_metrics=langgraph_memory_retrieval_metrics,
-                        multi_agent_execution_session_metrics=multi_agent_execution_session_metrics,
-                        multi_agent_turn_runner_metrics=multi_agent_turn_runner_metrics,
-                        langgraph_checkpointer_service=langgraph_checkpointer_service,
-                        progress_event_sink=emit_progress,
+                    def build_response_in_cancellation_scope() -> dict[str, Any]:
+                        with bind_agent_plan_cancellation(cancellation_token):
+                            return build_plan_response(
+                                request,
+                                orchestrator,
+                                event_store=event_store,
+                                live_push_hub=live_push_hub,
+                                event_publisher=event_publisher,
+                                plan_ingestion_client=plan_ingestion_client,
+                                control_plane_feedback_collector=control_plane_feedback_collector,
+                                runtime_event_feedback_bridge=runtime_event_feedback_bridge,
+                                loop_control_evaluator=loop_control_evaluator,
+                                second_turn_orchestrator=second_turn_orchestrator,
+                                durable_model_tool_loop_runner=durable_model_tool_loop_runner,
+                                durable_agent_loop_service=durable_agent_loop_service,
+                                memory_write_governance=memory_write_governance,
+                                skill_publication_diagnostics_service=skill_publication_diagnostics_service,
+                                tool_execution_readiness_policy_provider=tool_execution_readiness_policy_provider,
+                                langgraph_execution_gate_metrics=langgraph_execution_gate_metrics,
+                                langgraph_memory_retrieval_metrics=langgraph_memory_retrieval_metrics,
+                                multi_agent_execution_session_metrics=multi_agent_execution_session_metrics,
+                                multi_agent_turn_runner_metrics=multi_agent_turn_runner_metrics,
+                                langgraph_checkpointer_service=langgraph_checkpointer_service,
+                                progress_event_sink=emit_progress,
+                                cancellation_check=cancellation_token.raise_if_cancelled,
+                            )
+
+                    response = await asyncio.to_thread(build_response_in_cancellation_scope)
+                    cancellation_token.raise_if_cancelled()
+                except AgentPlanCancelled as exc:
+                    await frames.put(
+                        {
+                            "type": "cancelled",
+                            "requestId": request.request_id,
+                            "elapsedMs": int((monotonic() - stream_started_at) * 1000),
+                            "reason": exc.reason,
+                            "message": "用户已停止本轮 Agent 处理。",
+                        }
                     )
                 except Exception as exc:  # pragma: no cover - 真实 Provider/控制面故障由集成测试覆盖
                     LOGGER.exception("流式 Agent 规划失败，requestId=%s", request.request_id)
@@ -372,6 +456,7 @@ def register_agent_runtime_routes(
                         }
                     )
                 finally:
+                    cancellation_registry.complete(cancellation_identity)
                     await frames.put({"type": "done", "requestId": request.request_id})
 
             yield _encode_ndjson_frame({"type": "accepted", "requestId": request.request_id})
@@ -395,11 +480,12 @@ def register_agent_runtime_routes(
                         break
                     yield _encode_ndjson_frame(frame)
             finally:
-                # 客户端断开不应取消已经进入模型/控制面阶段的规划，否则会留下无法审计的半轮状态。
-                # asyncio.to_thread 也无法安全强杀工作线程，因此让任务在后台完成并照常持久化 runtime events。
-                if worker.done():
-                    with suppress(Exception):
-                        await worker
+                # 浏览器关闭页面或主动 abort 时，Starlette 会结束生成器。此时必须同时取消 Provider 请求，
+                # 否则后台线程仍会继续消耗 token。令牌采用协作式检查，不会强杀线程或回滚已提交业务动作。
+                if not worker.done():
+                    cancellation_token.cancel("CLIENT_DISCONNECTED")
+                with suppress(asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                    await asyncio.wait_for(asyncio.shield(worker), timeout=2.0)
 
         return StreamingResponse(
             generate_frames(),

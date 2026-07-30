@@ -11,6 +11,10 @@ if ROOT not in sys.path:
 
 from datasmart_ai_runtime.api.agent.routes import register_agent_runtime_routes
 from datasmart_ai_runtime.api.gateway.security import GatewaySignatureSecurityStats
+from datasmart_ai_runtime.services.model_gateway.agent_plan_cancellation import (
+    AgentPlanCancellationIdentity,
+    AgentPlanCancellationRegistry,
+)
 
 
 class FakeHttpException(Exception):
@@ -172,6 +176,46 @@ class ApiAgentRoutesSecurityTest(unittest.TestCase):
         self.assertEqual(401, raised.exception.status_code)
         self.assertEqual("GATEWAY_SIGNATURE_INVALID", raised.exception.detail["code"])
         self.assertEqual("/agent/plans/stream", raised.exception.detail["path"])
+
+    def test_cancel_plan_only_stops_matching_active_request(self) -> None:
+        """取消 API 应复用当前身份，并只命中完全相同的活动 requestId。"""
+
+        app = FakeApp()
+        registry = AgentPlanCancellationRegistry()
+        identity = AgentPlanCancellationIdentity("10", "101", "1001", "request-cancel-api-001")
+        token = registry.register(identity)
+        register_agent_runtime_routes(
+            app,
+            request_type=FakeRequest,
+            orchestrator=object(),
+            event_store=None,
+            session_manager=None,
+            live_push_hub=None,
+            event_publisher=None,
+            runtime_event_replay_sources=(),
+            plan_ingestion_client=None,
+            control_plane_feedback_collector=None,
+            runtime_event_feedback_bridge=None,
+            loop_control_evaluator=None,
+            second_turn_orchestrator=None,
+            memory_write_governance=None,
+            plan_cancellation_registry=registry,
+        )
+
+        result = app.post_routes["/agent/plans/cancel"](
+            {
+                "tenant_id": "10",
+                "project_id": "101",
+                "actor_id": "1001",
+                "request_id": "request-cancel-api-001",
+                "objective": "停止当前 Agent 规划",
+            },
+            FakeRequest(headers={}, path="/agent/plans/cancel"),
+        )
+
+        self.assertTrue(result["cancelled"])
+        self.assertEqual("CANCELLED", result["state"])
+        self.assertTrue(token.cancelled)
 
     def test_missing_agent_context_returns_structured_bad_request(self) -> None:
         """缺少领域必填字段时应返回前端可展示的 400，而不是 dataclass TypeError 500。"""

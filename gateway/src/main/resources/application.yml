@@ -77,6 +77,14 @@ spring:
           filters:
             # Python FastAPI 内部路由是 /agent/events/ws，外部网关路径仍归入 /api/agent/** 产品入口。
             - RewritePath=/api/agent/events/ws, /agent/events/ws
+        - id: python-ai-runtime-agent-plans-cancel
+          # 停止模型推理必须进入持有进程内取消令牌的 Python Runtime，不能落到 Java agent-runtime。
+          # 该入口只停止当前规划和后续推理，不撤销已经提交的数据同步任务。
+          uri: ${DATASMART_PYTHON_AI_RUNTIME_URI:http://localhost:8090}
+          predicates:
+            - Path=/api/agent/plans/cancel
+          filters:
+            - RewritePath=/api/agent/plans/cancel, /agent/plans/cancel
         - id: python-ai-runtime-agent-plans-stream
           # 实时规划与普通规划必须进入同一个 Python Runtime，并经过完全一致的身份、权限、
           # Skill 可见性、工具预算和 HMAC 可信控制面过滤器。单独声明精确路由，避免被后面的
@@ -241,6 +249,7 @@ datasmart:
         target-paths:
           - /api/agent/plans
           - /api/agent/plans/stream
+          - /api/agent/plans/cancel
         # 当前租户套餐默认值。后续应由 permission-admin 或租户中心返回真实套餐事实。
         default-tenant-plan-code: ${DATASMART_GATEWAY_DEFAULT_TENANT_PLAN_CODE:STANDARD}
         # 当前 workspace 风险默认值。后续应由 workspace 风险评估、数据分类分级或人工标记返回真实值。
@@ -306,6 +315,7 @@ datasmart:
         target-paths:
           - /api/agent/plans
           - /api/agent/plans/stream
+          - /api/agent/plans/cancel
     authentication-center:
       # 网关认证中心门面开关。
       #
@@ -1252,6 +1262,13 @@ datasmart:
           description: 普通用户以带认证 NDJSON 流实时接收模型、Skill、LangGraph 与工具规划阶段事实；最终帧返回完整受控计划。
           method-actions:
             POST: PLAN
+
+        - path-pattern: /api/agent/plans/cancel
+          resource-type: AI_RUNTIME
+          default-action: CANCEL_INFERENCE
+          description: 用户停止本人当前项目内正在进行的 Agent 模型规划；不撤销已提交的业务任务。
+          method-actions:
+            POST: CANCEL_INFERENCE
 
         - path-pattern: /api/agent/sessions/{sessionId}/runs/{runId}/confirm-and-execute
           resource-type: AI_RUNTIME

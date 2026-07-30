@@ -94,6 +94,7 @@ def build_plan_response(
     multi_agent_turn_runner_workflow: Any | None = None,
     langgraph_checkpointer_service: Any | None = None,
     progress_event_sink: Callable[[Any], None] | None = None,
+    cancellation_check: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """构建同步 HTTP 风格的 Agent 计划响应。
 
@@ -110,6 +111,8 @@ def build_plan_response(
     只有调用方注入 event store、publisher、plan ingestion client 等对象时，才会发生对应的集成行为。
     """
 
+    check_cancelled = cancellation_check or (lambda: None)
+    check_cancelled()
     # 流式入口注入 progress sink 后，RuntimeEventRecorder 会在每个真实节点完成时立即旁路事件；
     # 普通同步入口不传该参数，保持原有响应与持久化行为完全兼容。
     plan = (
@@ -117,6 +120,9 @@ def build_plan_response(
         if progress_event_sink is not None
         else orchestrator.plan(request)
     )
+    # 模型调用结束与 Java 控制面提交之间必须再次检查。这样用户在最后一个 token 到达时点击停止，
+    # 不会因为时间窗口很短而继续提交尚未执行的工具计划。
+    check_cancelled()
     # 工作空间上下文是 Agent 安全边界的入口。它不会创建真实资源，但会给本次计划响应附上
     # workspaceKey、缓存 namespace、记忆 namespace 和产物 namespace。后续工具执行、长期记忆写入、
     # prefix/KV cache 和文件输出都应围绕这些 namespace 做隔离，而不是各自临时拼 key。
@@ -161,6 +167,7 @@ def build_plan_response(
         and bool(ingestion_plan.tool_plans)
         and tool_execution_readiness.blocked_count == 0
     ):
+        check_cancelled()
         # 一个自然语言同步请求可以同时包含两类节点：
         # 1. 已具备参数、无需审批的目录/连接/元数据只读探测；
         # 2. 仍缺对象映射或等待确认的草稿保存、发布和运行节点。
@@ -173,6 +180,8 @@ def build_plan_response(
             ingestion_plan,
             trace_id=plan.request_id,
         )
+        # ingest 已经提交的控制面事实不能在 Python 中回滚；停止只会阻断后续反馈推理和新工具批次。
+        check_cancelled()
         ingested_control_plane_plan = control_plane_ingestion.attach_to_plan(ingestion_plan)
         plan = control_plane_ingestion.attach_to_plan(plan)
         control_plane_feedback = _collect_control_plane_feedback(
@@ -192,6 +201,7 @@ def build_plan_response(
         if control_plane_feedback is not None and loop_control_evaluator is not None:
             loop_control_decision = loop_control_evaluator.evaluate(control_plane_feedback)
         if second_turn_orchestrator is not None:
+            check_cancelled()
             # 受控二轮推理必须发生在 Java 控制面反馈与 loop policy 决策之后。
             # 这里仍通过显式注入开启，避免 API 默认路径因为一次计划响应而隐藏触发额外模型调用。
             second_turn_result = second_turn_orchestrator.run(
@@ -208,6 +218,7 @@ def build_plan_response(
                         progress_event_sink(event)
 
             if second_turn_result.continues and durable_model_tool_loop_runner is not None:
+                check_cancelled()
                 # A model-selected follow-up batch is not executed inside Python.  It
                 # is submitted as a new Java run in the same Agent session, then real
                 # feedback is returned to the model.  The bounded runner stops at an
@@ -231,6 +242,7 @@ def build_plan_response(
                     second_turn_result = durable_model_tool_loop.latest_model_turn
 
     if durable_agent_loop_service is not None:
+        check_cancelled()
         # Durable Agent Loop checkpoint 是当前 Codex/Claude Code 类体验继续演进的关键基座。
         # 它只记录“本轮 Agent run 停在哪个可恢复阶段、下一步应该等待事件/审批/二轮/人工接管”，
         # 不执行工具、不创建审批、不写 outbox，也不额外调用模型。这样可以先让会话恢复、审计和
@@ -244,6 +256,7 @@ def build_plan_response(
         )
 
     if memory_write_governance is not None:
+        check_cancelled()
         # 记忆写入候选同样必须是显式副作用：只有调用方注入治理服务时才生成候选。
         # 这里不直接写入 Chroma/Neo4j，而是根据 AgentMemoryPlan、ToolPlan 和可选的 Java 控制面反馈
         # 生成“可审批的候选清单”。这种拆分能避免工具结果未经审批就沉淀为长期记忆。
@@ -379,6 +392,7 @@ def build_plan_response(
     if multi_agent_turn_runner_metrics is not None:
         multi_agent_turn_runner_metrics.record_summary(agent_turn_runner_summary)
     if langgraph_checkpointer_service is not None:
+        check_cancelled()
         # turn runner checkpoint 是多 Agent 状态机从“响应里的诊断字段”走向“可暂停/恢复现场”的关键一步。
         # 这里消费的是已经低敏化的 `agent_turn_runner_summary`，不会重新读取 ToolPlan.arguments，也不会把
         # 用户目标、prompt、模型输出或工具参数写入 durable state。真实工具执行仍必须等 Java 控制面 outbox
@@ -424,6 +438,7 @@ def build_plan_response(
         request=request,
         intelligent_gateway_governance=intelligent_gateway_governance,
     )
+    check_cancelled()
     publish_plan_events(
         plan,
         event_store=event_store,
@@ -515,6 +530,7 @@ def build_plan_response(
         response["agentDurableLoop"] = durable_loop_checkpoint.to_summary()
     if memory_write_proposal is not None:
         response["memoryWriteProposal"] = memory_write_proposal.to_summary()
+    check_cancelled()
     return response
 
 

@@ -215,6 +215,9 @@ public class GatewayAuthorizationProperties {
         defaults.add(route("/api/agent/plans", "AI_RUNTIME",
                 "普通用户通过智能网关生成受控 Agent 计划；该动作只规划，不直接执行业务副作用",
                 Map.of("POST", "PLAN")));
+        defaults.add(route("/api/agent/plans/cancel", "AI_RUNTIME",
+                "用户停止本人当前项目内正在进行的 Agent 模型规划；不撤销已提交的业务任务",
+                Map.of("POST", "CANCEL_INFERENCE")));
         defaults.add(route("/api/agent/sessions/{sessionId}/runs/{runId}/confirm-and-execute", "AI_RUNTIME",
                 "原发起用户确认并执行当前 Run；Java 控制面会再次校验租户、项目、actor 和项目角色",
                 Map.of("POST", "EXECUTE")));

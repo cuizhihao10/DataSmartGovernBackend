@@ -29,6 +29,18 @@ class PermissionRoutePolicyMigrationContractTest {
                 .isEmpty();
     }
 
+    @Test
+    void agentCancellationMigrationGrantsEveryInteractiveAgentRole() throws IOException {
+        String sql = Files.readString(MIGRATION_DIRECTORY.resolve(
+                "V45__agent_plan_cancellation_route_policy.sql"));
+
+        assertThat(sql)
+                .contains("'/api/agent/plans/cancel'")
+                .contains("'CANCEL_INFERENCE'")
+                .contains("'ORDINARY_USER'")
+                .contains("'PROJECT_OWNER'");
+    }
+
     private boolean containsLegacyRoutePolicyColumn(Path path) {
         try {
             String sql = Files.readString(path);

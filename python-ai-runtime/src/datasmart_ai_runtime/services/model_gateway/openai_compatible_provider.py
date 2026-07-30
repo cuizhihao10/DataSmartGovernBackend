@@ -27,6 +27,11 @@ from datasmart_ai_runtime.domain.contracts import (
     ModelToolCall,
     ModelToolCallDelta,
 )
+from datasmart_ai_runtime.services.model_gateway.agent_plan_cancellation import (
+    AgentPlanCancelled,
+    bind_current_model_transport,
+    raise_if_agent_plan_cancelled,
+)
 from datasmart_ai_runtime.services.model_gateway.model_tool_schema import (
     ModelToolSchemaExposurePolicy,
     OpenAICompatibleToolSchemaBuilder,
@@ -152,10 +157,14 @@ class OpenAICompatibleModelProvider:
         last_error_code = "MODEL_PROVIDER_FAILED"
         last_error_message = "模型 Provider 调用失败。"
         for attempt in range(1, attempts + 1):
+            raise_if_agent_plan_cancelled()
             try:
                 payload = self._send(http_request, request.route.timeout_seconds)
+                raise_if_agent_plan_cancelled()
                 latency_ms = int((time.perf_counter() - started_at) * 1000)
                 return self._to_result(request, payload, latency_ms)
+            except AgentPlanCancelled:
+                raise
             except HTTPError as exc:
                 last_error_code = f"MODEL_PROVIDER_HTTP_{exc.code}"
                 last_error_message = safe_http_error_message(exc)
@@ -177,6 +186,7 @@ class OpenAICompatibleModelProvider:
                 break
             if attempt < attempts:
                 time.sleep(self._settings.retry_backoff_seconds)
+                raise_if_agent_plan_cancelled()
 
         latency_ms = int((time.perf_counter() - started_at) * 1000)
         return ModelInvocationResult(
@@ -234,16 +244,20 @@ class OpenAICompatibleModelProvider:
         sequence = 0
         try:
             with self._transport(http_request, timeout=request.route.timeout_seconds) as response:  # noqa: S310
-                for payload in self._iter_sse_payloads(response):
-                    if payload == "[DONE]":
-                        break
-                    sequence += 1
-                    event = json.loads(payload)
-                    if self._settings.wire_api == "responses":
-                        name_aliases = self._tool_schema_builder.build_name_aliases(request.available_tools)
-                        yield self._responses_adapter.to_stream_chunk(request, event, sequence, name_aliases)
-                    else:
-                        yield self._to_chunk(request, event, sequence)
+                with bind_current_model_transport(getattr(response, "close", lambda: None)):
+                    for payload in self._iter_sse_payloads(response):
+                        raise_if_agent_plan_cancelled()
+                        if payload == "[DONE]":
+                            break
+                        sequence += 1
+                        event = json.loads(payload)
+                        if self._settings.wire_api == "responses":
+                            name_aliases = self._tool_schema_builder.build_name_aliases(request.available_tools)
+                            yield self._responses_adapter.to_stream_chunk(request, event, sequence, name_aliases)
+                        else:
+                            yield self._to_chunk(request, event, sequence)
+        except AgentPlanCancelled:
+            raise
         except HTTPError as exc:
             yield self._error_chunk(request, f"MODEL_PROVIDER_HTTP_{exc.code}", safe_http_error_message(exc), sequence + 1)
         except URLError:
@@ -466,7 +480,11 @@ class OpenAICompatibleModelProvider:
         """发送 HTTP 请求并解析 JSON 响应。"""
 
         with self._transport(http_request, timeout=timeout_seconds) as response:  # noqa: S310 - endpoint 来自受控模型路由配置
-            return json.loads(response.read().decode("utf-8"))
+            with bind_current_model_transport(getattr(response, "close", lambda: None)):
+                raise_if_agent_plan_cancelled()
+                body = response.read()
+                raise_if_agent_plan_cancelled()
+                return json.loads(body.decode("utf-8"))
 
     def _to_result(self, request: ModelInvocationRequest, payload: dict, latency_ms: int) -> ModelInvocationResult:
         """把 OpenAI-compatible 非流式响应转换为统一调用结果。
@@ -665,6 +683,7 @@ class OpenAICompatibleModelProvider:
         """
 
         for raw_line in response:
+            raise_if_agent_plan_cancelled()
             line = raw_line.decode("utf-8").strip() if isinstance(raw_line, bytes) else str(raw_line).strip()
             if not line or line.startswith(":"):
                 continue
