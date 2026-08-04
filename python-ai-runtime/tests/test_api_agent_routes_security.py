@@ -9,12 +9,16 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from datasmart_ai_runtime.api.agent.routes import register_agent_runtime_routes
+from datasmart_ai_runtime.api.agent.routes import (
+    _agent_plan_ingestion_error_frame,
+    register_agent_runtime_routes,
+)
 from datasmart_ai_runtime.api.gateway.security import GatewaySignatureSecurityStats
 from datasmart_ai_runtime.services.model_gateway.agent_plan_cancellation import (
     AgentPlanCancellationIdentity,
     AgentPlanCancellationRegistry,
 )
+from datasmart_ai_runtime.services.agent_plan_ingestion_client import AgentPlanIngestionClientError
 
 
 class FakeHttpException(Exception):
@@ -285,6 +289,27 @@ class ApiAgentRoutesSecurityTest(unittest.TestCase):
 
         self.assertEqual(400, raised.exception.status_code)
         self.assertEqual("AGENT_REQUEST_INVALID", raised.exception.detail["code"])
+
+    def test_control_plane_ingestion_failure_keeps_business_detail_and_redacts_secrets(self) -> None:
+        """控制面业务错误应给出恢复入口，同时不能把内部 URL 或 API key 暴露给浏览器。"""
+
+        frame = _agent_plan_ingestion_error_frame(
+            AgentPlanIngestionClientError(
+                "BUSINESS_STATE_CONFLICT: 当前会话已有未完成 Agent Run；"
+                "endpoint=https://agent-runtime:8087/internal，token=sk-sensitive123456"
+            ),
+            request_id="request-ingestion-failed-001",
+            elapsed_ms=7321,
+        )
+
+        self.assertEqual("error", frame["type"])
+        self.assertEqual("AGENT_CONTROL_PLANE_INGESTION_FAILED", frame["error"]["code"])
+        self.assertTrue(frame["error"]["recoverable"])
+        self.assertIn("当前会话已有未完成 Agent Run", frame["error"]["message"])
+        self.assertIn("当前已填写的数据源、对象映射、字段映射和 WHERE 不会被清空", frame["error"]["message"])
+        self.assertNotIn("https://agent-runtime", frame["error"]["message"])
+        self.assertNotIn("sk-sensitive123456", frame["error"]["message"])
+        self.assertEqual(4, len(frame["error"]["suggestions"]))
 
 
 class _patched_env:

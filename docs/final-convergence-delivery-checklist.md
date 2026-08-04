@@ -172,6 +172,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 - BuildKit 历史缓存从 `63.46GB` 清理到 `0B`，并新增默认只读、显式 `-Prune` 才执行的限额维护脚本，不操作镜像、容器和业务数据卷。
 
 本轮验证证据：Java 21 受影响模块完整 Reactor 共 536 个测试通过，变更定向回归 39 个测试通过，Python Runtime 相关回归共 35 个测试通过，前端 ESLint 与生产构建通过；Vite 仍提示主 bundle 大于 500 kB，属于后续路由级拆包优化项，不阻断本轮交付。
+
+## 7.2 2026-08-05 Agent 补参恢复验收
+
+- 同一会话内允许用户用新一轮补参计划替代仍处于 `PLANNING/WAITING_HUMAN` 的旧计划，但只有全部工具均未执行或仅形成只读结果时才允许替代。
+- 替代旧计划时保留已完成的只读核验事实，取消尚未执行的旧工具节点；任何 `EXECUTING` 工具或非只读终态结果都会阻断替代，防止掩盖外部副作用。
+- 控制面接入失败会返回具体、低敏且可恢复的错误信息；前端除 toast 外还提供常驻恢复区，并从当前表单重新提交已选择的数据源、对象映射、字段映射和 WHERE 配置。
+- 普通用户和项目 OWNER 的历史会话路由已开放，但会话列表、详情、置顶和归档仍按 tenant/project/actor 做最终归属校验。
+- 已执行 Flyway 迁移保持不可变，历史迁移校验和恢复正常；新权限策略通过 `V47` 交付。
+- 回归结果：Agent Runtime `541/541`、permission-admin `75` 个通过并有 `1` 个 Testcontainers 环境用例跳过、Python Runtime `854/854`、前端 lint/build 全部通过；真实容器启动确认 permission-admin `47` 个 Flyway 迁移与 Agent Runtime `3` 个 Flyway 迁移校验成功，Vite 大包 warning 不阻断本轮功能验收。
+
 ## 8. 最新总闸门入口（2026-07-05）
 
 当前项目已经从“持续补功能”进入“闭环交付候选”阶段。后续不建议再分散记忆多条验收命令，而应优先使用最终交付总闸门：

@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.service;
 
 import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
+import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionDecisionRequest;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionAuditView;
 import com.czh.datasmart.govern.agent.controller.dto.IngestAgentPlanRequest;
 import com.czh.datasmart.govern.agent.controller.dto.IngestAgentPlanToolRequest;
@@ -48,6 +49,7 @@ class AgentPlanIngestionServiceTest {
 
     private AgentPlanIngestionService ingestionService;
     private AgentToolExecutionAuditService auditService;
+    private AgentSessionMemoryStore sessionStore;
 
     @BeforeEach
     void setUp() {
@@ -63,9 +65,10 @@ class AgentPlanIngestionServiceTest {
                 new AgentToolExecutionAuditMemoryStore(),
                 new NoopAgentToolExecutionEventPublisher()
         );
+        sessionStore = new AgentSessionMemoryStore();
         ingestionService = new AgentPlanIngestionService(
                 properties,
-                new AgentSessionMemoryStore(),
+                sessionStore,
                 toolRegistryService,
                 auditService,
                 new AgentPlanIngestionIdempotencySupport(new AgentPlanIngestionIdempotencyStore())
@@ -277,6 +280,151 @@ class AgentPlanIngestionServiceTest {
         assertEquals(null, view.toolAudits().getFirst().governanceHints().get("optionalResultAlias"));
     }
 
+    /**
+     * 用户补齐数据源、对象映射和字段映射后，应能在同一会话用新计划替代上一轮尚未执行的 PLANNING Run。
+     *
+     * <p>该回归场景对应真实页面故障：旧 Run 占用唯一 active slot 后，第二轮配置会被 409 拒绝。测试同时确认
+     * 旧 Run 与旧工具审计都进入 CANCELLED，并且新 Run 的工具参数保留补参后的映射，防止只放开并发限制却
+     * 丢失用户刚填写的配置。</p>
+     */
+    @Test
+    void ingestFollowUpShouldSupersedeUnexecutedPlanningRunAndPreserveMappings() {
+        IngestedAgentPlanView first = ingestionService.ingest(baseRequest(List.of(metadataPlan())), "trace-initial");
+        IngestAgentPlanToolRequest mappedPlan = metadataPlanWithMappings();
+
+        IngestedAgentPlanView followUp = ingestionService.ingest(
+                followUpRequest(first.session().sessionId(), "idem-plan-follow-up", List.of(mappedPlan)),
+                "trace-follow-up"
+        );
+
+        assertEquals("CANCELLED", sessionStore.findById(first.session().sessionId()).orElseThrow()
+                .getRuns().getFirst().getState().name());
+        assertEquals("CANCELLED", auditService.listByRun(first.session().sessionId(), first.run().runId())
+                .getFirst().state());
+        assertEquals("PLANNING", followUp.run().state());
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> compactPlans = (List<Map<String, Object>>) followUp.run().variables().get("toolPlans");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> arguments = (Map<String, Object>) compactPlans.getFirst().get("arguments");
+        assertEquals(2, ((List<?>) arguments.get("objectMappings")).size());
+    }
+
+    /**
+     * WAITING_HUMAN 但尚未审批/执行的旧计划同样可以被用户纠偏后的新计划替代。
+     *
+     * <p>旧 WAITING_APPROVAL 审计必须同步取消，否则审批中心仍会展示一张基于旧参数的可操作审批单。</p>
+     */
+    @Test
+    void ingestFollowUpShouldCancelWaitingApprovalAuditBeforeCreatingNewRun() {
+        IngestedAgentPlanView first = ingestionService.ingest(baseRequest(List.of(taskCreatePlan())), "trace-waiting");
+
+        IngestedAgentPlanView followUp = ingestionService.ingest(
+                followUpRequest(first.session().sessionId(), "idem-plan-after-confirmation", List.of(metadataPlan())),
+                "trace-after-confirmation"
+        );
+
+        assertEquals("CANCELLED", auditService.listByRun(first.session().sessionId(), first.run().runId())
+                .getFirst().state());
+        assertEquals("PLANNING", followUp.run().state());
+    }
+
+    /**
+     * 连接测试和元数据读取已经成功时，用户仍应能补齐映射并继续同一会话。
+     *
+     * <p>真实创建向导会先执行只读数据源核对，再等待用户填写对象映射和字段映射。成功的只读审计必须保留为
+     * SUCCEEDED，尚未执行的写工具必须取消；如果把所有结果态一律视为冲突，页面仍会复现“已经补充映射却只能
+     * 看到弹窗”的问题。</p>
+     */
+    @Test
+    void ingestFollowUpShouldPreserveSucceededReadOnlyAuditAndCancelPendingWritePlan() {
+        IngestedAgentPlanView first = ingestionService.ingest(
+                baseRequest(List.of(metadataPlan(), taskCreatePlan())),
+                "trace-read-completed"
+        );
+        AgentToolExecutionAuditView metadataAudit = first.toolAudits().stream()
+                .filter(item -> item.toolCode().equals("datasource.metadata.read"))
+                .findFirst()
+                .orElseThrow();
+        var executingMetadata = auditService.startExecution(
+                first.session().sessionId(), first.run().runId(), metadataAudit.auditId());
+        auditService.succeedExecution(executingMetadata, "元数据读取完成", "已读取低敏表结构摘要");
+
+        IngestedAgentPlanView followUp = ingestionService.ingest(
+                followUpRequest(first.session().sessionId(), "idem-after-read-only-result", List.of(metadataPlanWithMappings())),
+                "trace-after-read-only-result"
+        );
+
+        List<AgentToolExecutionAuditView> oldAudits = auditService.listByRun(
+                first.session().sessionId(), first.run().runId());
+        assertEquals("SUCCEEDED", oldAudits.stream()
+                .filter(item -> item.toolCode().equals("datasource.metadata.read"))
+                .findFirst().orElseThrow().state());
+        assertEquals("CANCELLED", oldAudits.stream()
+                .filter(item -> item.toolCode().equals("task.create"))
+                .findFirst().orElseThrow().state());
+        assertEquals("CANCELLED", sessionStore.findById(first.session().sessionId()).orElseThrow()
+                .getRuns().getFirst().getState().name());
+        assertEquals("PLANNING", followUp.run().state());
+    }
+
+    /**
+     * 一旦旧工具进入 EXECUTING，新自然语言回合不得覆盖真实执行证据。
+     *
+     * <p>这条负向断言保护安全边界：自动替代只用于未执行补参，不是“取消任意正在运行任务”的后门。</p>
+     */
+    @Test
+    void ingestFollowUpShouldRejectWhenPreviousToolAlreadyStarted() {
+        IngestedAgentPlanView first = ingestionService.ingest(baseRequest(List.of(metadataPlan())), "trace-running");
+        auditService.startExecution(
+                first.session().sessionId(),
+                first.run().runId(),
+                first.toolAudits().getFirst().auditId()
+        );
+
+        PlatformBusinessException exception = assertThrows(
+                PlatformBusinessException.class,
+                () -> ingestionService.ingest(
+                        followUpRequest(first.session().sessionId(), "idem-plan-running-conflict", List.of(metadataPlan())),
+                        "trace-running-conflict"
+                )
+        );
+
+        assertTrue(exception.getMessage().contains("不能用补参计划覆盖"));
+        assertEquals("EXECUTING", auditService.listByRun(first.session().sessionId(), first.run().runId())
+                .getFirst().state());
+    }
+
+    /**
+     * 已成功的非只读工具必须阻止自动替代，避免掩盖已经发生的创建或写入副作用。
+     */
+    @Test
+    void ingestFollowUpShouldRejectWhenPreviousWriteToolSucceeded() {
+        IngestedAgentPlanView first = ingestionService.ingest(baseRequest(List.of(taskCreatePlan())), "trace-write-completed");
+        AgentToolExecutionAuditView taskAudit = first.toolAudits().getFirst();
+        auditService.approve(
+                first.session().sessionId(),
+                first.run().runId(),
+                taskAudit.auditId(),
+                new AgentToolExecutionDecisionRequest("1001", "测试已批准写工具")
+        );
+        var executingTask = auditService.startExecution(
+                first.session().sessionId(), first.run().runId(), taskAudit.auditId());
+        auditService.succeedExecution(executingTask, "任务已创建", "taskId=2001");
+
+        PlatformBusinessException exception = assertThrows(
+                PlatformBusinessException.class,
+                () -> ingestionService.ingest(
+                        followUpRequest(first.session().sessionId(), "idem-after-write-result", List.of(metadataPlan())),
+                        "trace-after-write-result"
+                )
+        );
+
+        assertTrue(exception.getMessage().contains("不能用补参计划覆盖"));
+        assertTrue(exception.getMessage().contains("readOnly=false"));
+        assertEquals("SUCCEEDED", auditService.listByRun(first.session().sessionId(), first.run().runId())
+                .getFirst().state());
+    }
+
     private IngestAgentPlanRequest baseRequest(List<IngestAgentPlanToolRequest> toolPlans) {
         return new IngestAgentPlanRequest(
                 null,
@@ -298,6 +446,59 @@ class AgentPlanIngestionServiceTest {
                 Map.of("selectedProvider", "local-vllm", "cacheKeyScope", "PROJECT_SAFE"),
                 Map.of("writePolicy", "EPISODIC"),
                 Map.of("retrievedCount", 3)
+        );
+    }
+
+    /** 构造同一会话的新自然语言回合，并使用独立幂等键模拟真实前端补参请求。 */
+    private IngestAgentPlanRequest followUpRequest(String sessionId,
+                                                   String idempotencyKey,
+                                                   List<IngestAgentPlanToolRequest> toolPlans) {
+        IngestAgentPlanRequest base = baseRequest(toolPlans);
+        return new IngestAgentPlanRequest(
+                sessionId,
+                base.tenantId(),
+                base.projectId(),
+                base.workspaceId(),
+                base.actorId(),
+                base.channel(),
+                base.objective(),
+                "已补齐目标数据源、两条对象映射和十个同名字段映射，请继续核对。",
+                base.workloadType(),
+                idempotencyKey,
+                "py-req-" + idempotencyKey,
+                base.stateTrace(),
+                base.responseSummary(),
+                base.requiresHumanApproval(),
+                base.isolationLevel(),
+                toolPlans,
+                base.modelGatewayGovernance(),
+                base.memoryPlan(),
+                base.memoryRetrievalReport()
+        );
+    }
+
+    /** 构造携带两条真实对象映射的计划，用于验证补参配置不会在 Java 接入边界丢失。 */
+    private IngestAgentPlanToolRequest metadataPlanWithMappings() {
+        return new IngestAgentPlanToolRequest(
+                "datasource.metadata.read",
+                "读取用户补参后的数据源与映射元数据",
+                1001L,
+                "LOW",
+                "SYNC",
+                false,
+                Map.of(
+                        "datasourceId", 1001L,
+                        "objectMappings", List.of(
+                                Map.of("sourceObjectName", "fs_test_customer_source",
+                                        "targetSchemaName", "public",
+                                        "targetObjectName", "fs_test_customer_source"),
+                                Map.of("sourceObjectName", "fs_test_customer_target",
+                                        "targetSchemaName", "public",
+                                        "targetObjectName", "fs_test_customer_target")
+                        )
+                ),
+                Map.of("projectScoped", true),
+                Map.of("missingFields", List.of())
         );
     }
 

@@ -18,6 +18,7 @@ HTTP/WebSocket handler 都留在 bootstrap 文件里，后续继续增加内部�
 import asyncio
 import json
 import logging
+import re
 from contextlib import suppress
 from dataclasses import asdict, fields as dataclass_fields, is_dataclass, replace
 from datetime import datetime
@@ -51,6 +52,7 @@ from datasmart_ai_runtime.services.model_gateway.agent_plan_cancellation import 
     AgentPlanCancelled,
     bind_agent_plan_cancellation,
 )
+from datasmart_ai_runtime.services.agent_plan_ingestion_client import AgentPlanIngestionClientError
 from datasmart_ai_runtime.services.tools import build_tool_action_intake_runtime_event
 from datasmart_ai_runtime.services.runtime_events.runtime_event_websocket import RuntimeEventWebSocketConnectionAdapter
 
@@ -58,6 +60,57 @@ from datasmart_ai_runtime.services.runtime_events.runtime_event_websocket import
 LOGGER = logging.getLogger(__name__)
 GATEWAY_SIGNATURE_ERROR_CODE = "GATEWAY_SIGNATURE_INVALID"
 AGENT_REQUEST_ERROR_CODE = "AGENT_REQUEST_INVALID"
+
+
+def _safe_control_plane_error_detail(error: AgentPlanIngestionClientError) -> str:
+    """把 Java 控制面业务错误转换为可展示、低敏的单行详情。
+
+    Java 标准错误体中的 ``reason + message`` 对用户排障很有价值，不能再被统一替换成“规划未完成”；但网络异常
+    文本可能携带内部 URL，错误代理也可能把 Bearer/API key 拼入消息。因此这里只保留业务语义，并对 URL、Bearer、
+    ``sk-*`` 凭据样式做二次脱敏，最后限制长度，避免异常响应把大段 HTML 或堆栈写入流式帧。
+    """
+
+    detail = str(error).strip().replace("\r", " ").replace("\n", " ")
+    detail = re.sub(r"https?://[^\s，。；;]+", "[控制面地址]", detail, flags=re.IGNORECASE)
+    detail = re.sub(r"(?i)bearer\s+[a-z0-9._~+/=-]+", "Bearer [已脱敏]", detail)
+    detail = re.sub(r"(?i)sk-[a-z0-9_-]{8,}", "sk-[已脱敏]", detail)
+    return detail[:800] or "Java Agent 控制面未返回可展示的业务错误详情。"
+
+
+def _agent_plan_ingestion_error_frame(
+    error: AgentPlanIngestionClientError,
+    *,
+    request_id: str,
+    elapsed_ms: int,
+) -> dict[str, Any]:
+    """构造前端可恢复的控制面接入失败帧。
+
+    模型规划与 Java 控制面接入是两个不同阶段：出现该错误时，模型可能已经完成元数据核对，用户填写的表单也仍在
+    浏览器中，只是新的受控 Run 没有创建成功。帧中因此明确标记 ``recoverable`` 并给出四种恢复动作，前端可以
+    渲染常驻操作区，而不是只弹出一条不可追溯的 toast。
+    """
+
+    detail = _safe_control_plane_error_detail(error)
+    return {
+        "type": "error",
+        "requestId": request_id,
+        "elapsedMs": elapsed_ms,
+        "error": {
+            "code": "AGENT_CONTROL_PLANE_INGESTION_FAILED",
+            "message": (
+                "Agent 已完成本轮理解与配置核对，但 Java 控制面没有接收新的执行计划。"
+                f"具体原因：{detail} 当前已填写的数据源、对象映射、字段映射和 WHERE 不会被清空。"
+            ),
+            "errorType": error.__class__.__name__,
+            "recoverable": True,
+            "suggestions": [
+                "使用当前配置重试本轮核对",
+                "继续用自然语言补充或纠偏",
+                "打开高级配置检查当前表单",
+                "若已有 Run 正在执行，等待结束或新建会话重试",
+            ],
+        },
+    }
 
 
 class AgentRequestPayloadError(ValueError):
@@ -431,6 +484,21 @@ def register_agent_runtime_routes(
                             "reason": exc.reason,
                             "message": "用户已停止本轮 Agent 处理。",
                         }
+                    )
+                except AgentPlanIngestionClientError as exc:
+                    # 控制面接入失败是用户可恢复的业务边界错误。日志保留 requestId 与异常类别，不重复打印堆栈，
+                    # 浏览器则收到脱敏后的具体业务原因和恢复建议。
+                    LOGGER.warning(
+                        "Agent 计划接入 Java 控制面失败，requestId=%s, errorType=%s",
+                        request.request_id,
+                        exc.__class__.__name__,
+                    )
+                    await frames.put(
+                        _agent_plan_ingestion_error_frame(
+                            exc,
+                            request_id=str(request.request_id),
+                            elapsed_ms=int((monotonic() - stream_started_at) * 1000),
+                        )
                     )
                 except Exception as exc:  # pragma: no cover - 真实 Provider/控制面故障由集成测试覆盖
                     LOGGER.exception("流式 Agent 规划失败，requestId=%s", request.request_id)

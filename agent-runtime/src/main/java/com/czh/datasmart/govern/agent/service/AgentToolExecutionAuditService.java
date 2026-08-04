@@ -128,6 +128,68 @@ public class AgentToolExecutionAuditService {
     }
 
     /**
+     * 校验某个旧 Run 的全部工具计划是否仍可被用户补参后的新计划安全替代。
+     *
+     * <p>Run 状态只能说明编排器处于哪个阶段，真正判断“是否已经产生外部副作用”还必须查看每一条工具审计。
+     * PLANNED/WAITING_APPROVAL 尚未进入适配器；已经完成的只读目录检索、连接测试和元数据读取虽然形成了结果，
+     * 但不会修改业务资源，所以可以保留结果并让新计划继续。EXECUTING 与任何已成功或失败的非只读工具都必须
+     * 阻断替换，防止把可能已经创建任务、修改表结构或写入数据的事实伪装成一轮全新规划。该方法只校验、不修改
+     * 状态，供接入服务先把所有候选 Run 校验完，再统一执行取消。</p>
+     *
+     * @param sessionId 旧计划所属 Agent 会话 ID。
+     * @param runId 等待被新计划替代的旧 Run ID。
+     * @throws PlatformBusinessException 任一工具已经开始执行或形成结果时抛出业务状态冲突。
+     */
+    public void ensureRunPlanCanBeSuperseded(String sessionId, String runId) {
+        List<AgentToolExecutionAuditRecord> audits = auditStore.list(sessionId, runId);
+        List<AgentToolExecutionAuditRecord> executionEvidence = audits.stream()
+                .filter(item -> !item.canBeSupersededByFollowUpPlan())
+                .toList();
+        if (!executionEvidence.isEmpty()) {
+            String evidence = executionEvidence.stream()
+                    .map(item -> item.getToolCode() + "=" + item.getState().name()
+                            + "(readOnly=" + Boolean.TRUE.equals(item.getReadOnly()) + ")")
+                    .limit(5)
+                    .reduce((left, right) -> left + ", " + right)
+                    .orElse("UNKNOWN");
+            throw new PlatformBusinessException(
+                    PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "当前会话已有工具开始执行或形成结果，不能用补参计划覆盖。请等待本轮结束或新建会话，runId="
+                            + runId + "，执行证据=" + evidence
+            );
+        }
+    }
+
+    /**
+     * 取消某个被新一轮补参/纠偏替代的未执行工具计划。
+     *
+     * <p>方法会在修改前再次调用 {@link #ensureRunPlanCanBeSuperseded(String, String)}，防止调用方在“预校验”和
+     * “实际取消”之间遗漏状态变化。只有 PLANNED/WAITING_APPROVAL 会转成 CANCELLED；已经完成或失败的只读工具
+     * 保持原结果，继续作为“系统确实检查过哪些元数据”的审计证据。这样审批中心和自动执行器不会再消费旧写入
+     * 参数，同时排障人员仍能还原此前已完成的安全读取过程。</p>
+     *
+     * @param sessionId 旧计划所属 Agent 会话 ID。
+     * @param runId 被新计划替代的旧 Run ID。
+     * @param message 低敏取消说明。
+     * @return 取消后的工具审计视图；无工具计划时返回空列表。
+     */
+    public List<AgentToolExecutionAuditView> cancelRunPlanBeforeExecution(String sessionId,
+                                                                          String runId,
+                                                                          String message) {
+        ensureRunPlanCanBeSuperseded(sessionId, runId);
+        List<AgentToolExecutionAuditRecord> audits = auditStore.list(sessionId, runId);
+        for (AgentToolExecutionAuditRecord audit : audits) {
+            if (!audit.isPendingBeforeExecution()) {
+                continue;
+            }
+            AgentToolExecutionState previousState = audit.getState();
+            audit.cancelBeforeExecution(message);
+            persistThenPublishStateChanged(previousState, audit);
+        }
+        return audits.stream().map(AgentToolExecutionAuditViewMapper::toView).toList();
+    }
+
+    /**
      * 查询单个工具执行审计记录。
      *
      * <p>该方法主要服务 Python AI Runtime 的工具结果回填链路：

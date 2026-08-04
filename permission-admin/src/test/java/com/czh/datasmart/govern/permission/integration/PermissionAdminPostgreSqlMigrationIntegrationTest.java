@@ -81,6 +81,7 @@ class PermissionAdminPostgreSqlMigrationIntegrationTest {
         assertPostgreSqlSchemaBaseline();
         assertSeedRolesAndPagination();
         assertFlashSyncTenantBootstrap();
+        assertAgentSessionHistoryRoutePolicies();
 
         String suffix = UUID.randomUUID().toString().replace("-", "").substring(0, 12);
         PermissionAuditRecord auditRecord = null;
@@ -213,6 +214,39 @@ class PermissionAdminPostgreSqlMigrationIntegrationTest {
         assertThat(shadowIdentityCount).isEqualTo(5);
         assertThat(ordinaryUserRole).isEqualTo("ORDINARY_USER");
         assertThat(ordinaryUserProjectIds).contains(101L);
+    }
+
+    /**
+     * 验证交互式用户能够从页面恢复、置顶和归档自己的持久化 Agent 会话。
+     *
+     * <p>该断言保护的是一个容易被忽略的跨服务契约：agent-runtime 即使已经正确保存了会话，
+     * 如果 permission-admin 没有相应路由策略，gateway 的 fail-closed 授权仍会拒绝请求，
+     * 前端最终只能显示“暂无历史会话”。这里同时检查普通用户和项目负责人四种页面动作，
+     * 并要求资源类型保持为 AI_RUNTIME。真正的数据隔离仍由 V35 的 SELF 数据范围和
+     * agent-runtime 的 tenant/project/actor 对象归属校验共同完成。</p>
+     */
+    private void assertAgentSessionHistoryRoutePolicies() {
+        Integer enabledPolicyCount = jdbcTemplate.queryForObject("""
+                SELECT count(*)
+                FROM permission_route_policy
+                WHERE tenant_id = 0
+                  AND role_code IN ('ORDINARY_USER', 'PROJECT_OWNER')
+                  AND resource_type = 'AI_RUNTIME'
+                  AND enabled = true
+                  AND (
+                      (http_method = 'GET' AND path_pattern IN (
+                          '/api/agent/sessions',
+                          '/api/agent/sessions/*'
+                      ))
+                      OR
+                      (http_method = 'PATCH' AND path_pattern IN (
+                          '/api/agent/sessions/*/pin',
+                          '/api/agent/sessions/*/archive'
+                      ))
+                  )
+                """, Integer.class);
+
+        assertThat(enabledPolicyCount).isEqualTo(8);
     }
 
     /**

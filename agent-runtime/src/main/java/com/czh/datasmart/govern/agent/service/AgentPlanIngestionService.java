@@ -40,6 +40,7 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -102,7 +103,7 @@ public class AgentPlanIngestionService {
         AgentSessionRecord session = resolveSession(request);
         List<AgentPlanToolSnapshot> toolSnapshots = normalizeToolPlans(request);
         synchronized (session) {
-            ensureRunLimit(session);
+            ensureRunCapacityOrSupersedePendingPlan(session);
             bindMissingTools(session, toolSnapshots);
             AgentRunRecord run = createRun(session, request, toolSnapshots);
             session.addRun(run);
@@ -397,18 +398,66 @@ public class AgentPlanIngestionService {
         }
     }
 
-    private void ensureRunLimit(AgentSessionRecord session) {
+    /**
+     * 为本轮 Python AgentPlan 取得一个可用 Run 槽位，必要时安全替代上一轮尚未执行的计划。
+     *
+     * <p>自然语言 Agent 的补参和纠偏本质上是同一会话的新一轮规划。上一轮如果正在等待用户选择数据源、确认
+     * 字段映射或批准工具，它仍会停留在 PLANNING/WAITING_HUMAN；若这里只按“非终态 Run 数量”硬拒绝，用户
+     * 填完表单后永远无法把新配置送回控制面。正确规则是：</p>
+     *
+     * <ol>
+     *   <li>PLANNING 或 WAITING_HUMAN 的旧 Run 才可能被替代；</li>
+     *   <li>未执行工具可以是 PLANNED/WAITING_APPROVAL；已经完成的目录检索、连接测试、元数据读取等只读工具
+     *       也允许保留结果后继续补参，因为它们不会创建任务或修改业务资源；</li>
+     *   <li>替代时取消旧 Run 与其中尚未执行的工具审计，阻止旧写入参数被审批页或自动执行器再次消费；</li>
+     *   <li>WAITING_MODEL、TOOL_CALLING、EXECUTING，以及任何已产生写副作用的结果绝不自动覆盖，调用方应等待
+     *       本轮结束或新建会话。</li>
+     * </ol>
+     *
+     * @param session 当前用户、租户和项目边界内的 Agent 会话聚合。
+     */
+    private void ensureRunCapacityOrSupersedePendingPlan(AgentSessionRecord session) {
         int maxRuns = properties.getMaxRunsPerSession() == null ? 200 : properties.getMaxRunsPerSession();
         if (session.getRuns().size() >= maxRuns) {
             throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
                     "单个 Agent 会话最多保留 " + maxRuns + " 次运行记录");
         }
-        long activeRuns = session.getRuns().stream().filter(item -> !item.getState().isTerminal()).count();
+        List<AgentRunRecord> activeRuns = session.getRuns().stream()
+                .filter(item -> !item.getState().isTerminal())
+                .toList();
         int maxActive = properties.getMaxActiveRunsPerSession() == null ? 1 : properties.getMaxActiveRunsPerSession();
-        if (activeRuns >= maxActive) {
-            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
-                    "当前会话已有未完成 Agent Run，暂不能继续接入新的 Python AgentPlan。");
+        if (activeRuns.size() < maxActive) {
+            return;
         }
+
+        int slotsToRelease = activeRuns.size() - maxActive + 1;
+        List<AgentRunRecord> supersededRuns = activeRuns.stream()
+                .filter(this::isPendingHumanConfigurationRun)
+                .sorted(Comparator.comparing(AgentRunRecord::getCreateTime).reversed())
+                .limit(slotsToRelease)
+                .toList();
+        if (supersededRuns.size() < slotsToRelease) {
+            throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
+                    "当前会话已有正在调用模型或工具的 Agent Run，不能用新的补参计划覆盖。请等待本轮结束，或新建会话后重试。");
+        }
+
+        // 先完成所有候选 Run 的无副作用校验，再修改任何状态，避免多活配置下出现只取消一半的计划。
+        supersededRuns.forEach(run -> auditService.ensureRunPlanCanBeSuperseded(session.getSessionId(), run.getRunId()));
+        supersededRuns.forEach(run -> {
+            String reason = "旧工具计划已被用户补参或纠偏后的新计划替代；已完成的只读核对结果保留，未执行的旧计划已取消。";
+            auditService.cancelRunPlanBeforeExecution(session.getSessionId(), run.getRunId(), reason);
+            run.cancel("当前 Agent Run 已被用户补参或纠偏后的新计划替代，旧配置不会继续执行。");
+        });
+    }
+
+    /**
+     * 判断旧 Run 是否仍处在“等待用户完善配置”的可替代编排阶段。
+     *
+     * <p>PLANNING 覆盖普通缺参规划，WAITING_HUMAN 覆盖待确认字段映射、WHERE、SQL 或高风险工具的计划。
+     * 这里只判断 Run 粗粒度阶段；工具是否真的执行过仍由审计服务做第二层证据校验。</p>
+     */
+    private boolean isPendingHumanConfigurationRun(AgentRunRecord run) {
+        return run.getState() == AgentRunState.PLANNING || run.getState() == AgentRunState.WAITING_HUMAN;
     }
 
     private void ensureToolLimit(int currentSize, int appendSize) {

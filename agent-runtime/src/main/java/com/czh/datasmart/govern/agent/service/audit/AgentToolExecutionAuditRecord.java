@@ -408,6 +408,61 @@ public class AgentToolExecutionAuditRecord {
     }
 
     /**
+     * 判断本条工具审计是否允许所属的等待补参 Run 被新计划替代。
+     *
+     * <p>该判断关注的是“替代旧编排是否会掩盖外部副作用”，而不是简单地判断工具有没有结果：</p>
+     * <ul>
+     *   <li>PLANNED/WAITING_APPROVAL 尚未执行，可以直接取消旧计划；</li>
+     *   <li>SUCCEEDED/FAILED 只有在工具目录明确标记 readOnly 时才安全，结果会被保留而不是改写；</li>
+     *   <li>SKIPPED/CANCELLED 没有产生工具写入，可随旧 Run 一起结束；</li>
+     *   <li>EXECUTING 以及任何非只读结果都可能已经影响外部系统，必须阻止自动替代。</li>
+     * </ul>
+     *
+     * @return true 表示可以保留现有审计证据并用用户补参后的新 Run 继续；false 表示必须等待或新建会话。
+     */
+    public boolean canBeSupersededByFollowUpPlan() {
+        return switch (state) {
+            case PLANNED, WAITING_APPROVAL, SKIPPED, CANCELLED -> true;
+            case SUCCEEDED, FAILED -> Boolean.TRUE.equals(readOnly);
+            case EXECUTING -> false;
+        };
+    }
+
+    /**
+     * 判断工具是否仍是需要随旧计划取消的待执行节点。
+     *
+     * <p>已完成的只读结果不能被改写为 CANCELLED，否则会破坏真实审计时间线；因此取消服务只对这两个
+     * 尚未进入适配器的状态执行状态迁移。</p>
+     */
+    public boolean isPendingBeforeExecution() {
+        return state == AgentToolExecutionState.PLANNED
+                || state == AgentToolExecutionState.WAITING_APPROVAL;
+    }
+
+    /**
+     * 在工具真正开始执行前取消本条计划。
+     *
+     * <p>该状态迁移专门服务“用户补参或纠偏后，新计划替代旧计划”的场景。旧计划不能只取消 Run 而继续把
+     * 工具审计留在 {@link AgentToolExecutionState#PLANNED} 或
+     * {@link AgentToolExecutionState#WAITING_APPROVAL}，否则自动执行器、审批页或恢复任务仍可能把旧参数当成
+     * 可执行事实。只有从未执行过的两种状态允许进入 CANCELLED；已完成的只读结果由调用方保留原状态，任何
+     * 已经 EXECUTING 或形成非只读结果的工具则会在替代校验阶段阻断新计划。</p>
+     *
+     * @param message 面向用户和审计人员的取消原因，不应包含凭据、SQL 明文或连接信息。
+     * @throws IllegalStateException 当前工具已经开始执行或已经形成终态事实时抛出。
+     */
+    public void cancelBeforeExecution(String message) {
+        if (!isPendingBeforeExecution()) {
+            throw new IllegalStateException("只有尚未执行的工具计划才能被新计划替代，state=" + state.name());
+        }
+        this.state = AgentToolExecutionState.CANCELLED;
+        this.executionFinishTime = LocalDateTime.now();
+        this.updateTime = this.executionFinishTime;
+        this.message = message;
+        this.errorCode = null;
+    }
+
+    /**
      * 标记工具开始执行。
      *
      * <p>只有进入 EXECUTING 后，后续才允许写入 SUCCEEDED 或 FAILED。

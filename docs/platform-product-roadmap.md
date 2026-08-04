@@ -16159,3 +16159,13 @@ push 边界如何消费 5.29 的 task runtime event 契约。当前仍不接受�
 - 前端在原 Agent 助手页面增加当前项目内的个人历史会话列表，支持置顶、归档、恢复和继续追问；切换项目时清空当前会话状态，避免跨项目残留。
 - 本轮 Java 21 受影响模块完整 Reactor 共 536 个测试通过，定向回归 39 个测试通过；Python Runtime 相关回归 35 个测试通过；前端 ESLint 和生产构建通过。
 - 当前边界：会话与审批事实已经 durable，但 runtime event 热投影仍不是长期事件仓库；生产环境共享凭证必须由 Secret Manager/Vault/服务网格注入，不能继续使用 Compose 本地默认值。
+
+## 2026-08-05 追加落地进展：Agent 补参计划可恢复与配置保留
+
+- 修复同一会话完成数据源选择、对象映射和字段映射后，旧 `WAITING_HUMAN` Run 阻断新计划接入的问题。`PLANNING/WAITING_HUMAN` 阶段允许由用户补参后的新计划安全替代；已经进入模型调用、工具执行或形成非只读副作用的 Run 仍然 fail-closed。
+- 计划替代前逐条检查工具执行审计：已完成的数据源搜索、连接测试和元数据读取等只读结果继续保留，尚未执行的 `PLANNED/WAITING_APPROVAL` 节点转为 `CANCELLED`，避免审批中心或自动执行器继续消费旧参数。
+- Python Runtime 不再把 Java 控制面的业务状态冲突压缩成通用 `AGENT_PLAN_STREAM_FAILED`，而是返回脱敏后的具体原因、`recoverable` 标记和恢复建议；URL、Bearer token 与 `sk-*` 凭据样式会在进入前端前再次脱敏。
+- 前端新增常驻恢复面板，明确展示当前仍保留的源端、目标端、对象映射和同步字段数量，并提供“使用当前配置重试、继续补充或纠偏、打开高级配置、新会话重试”四个入口。重试从当前表单读取最新值，不再回放上一轮缺参快照。
+- 新增 permission-admin `V47` 路由策略，让普通用户和项目 OWNER 可以访问自己的会话列表、详情、置顶和归档接口；最终对象归属仍由 Agent Runtime 按 `tenantId + projectId + actorId` 校验，不授予项目级查看他人会话的权限。
+- 恢复 Agent Runtime `V3` 与 permission-admin `V46` 已执行迁移的原始内容，消除因后补注释造成的 Flyway checksum 漂移；新增权限规则只通过新的 `V47` 增量迁移交付。
+- 验证证据：Agent Runtime Java 21 Reactor 共 `541` 个测试通过，permission-admin 共 `75` 个测试通过、`1` 个依赖 Testcontainers 环境的集成测试跳过，Python Runtime 共 `854` 个测试通过，前端 `npm run lint` 与 `npm run build` 通过；真实本地链路验证新 Run 完整保留 `2` 条对象映射和 `10` 条字段映射，且未审批的任务写操作没有执行。真实 PostgreSQL 启动日志确认 permission-admin `47` 个迁移和 Agent Runtime `3` 个迁移校验通过。
