@@ -15,7 +15,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRunAsyncTaskCommandPla
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxRecord;
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxStatus;
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxStore;
-import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionStore;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -56,7 +56,7 @@ public class AgentRunAsyncTaskCommandOutboxService {
     private final AgentRunAsyncTaskCommandPlanningService planningService;
     private final AgentAsyncTaskCommandOutboxStore outboxStore;
     private final AgentAsyncTaskCommandOutboxCapacityGuard capacityGuard;
-    private final AgentSessionMemoryStore sessionStore;
+    private final AgentSessionStore sessionStore;
     private final ObjectMapper objectMapper;
 
     /**

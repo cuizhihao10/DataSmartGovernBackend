@@ -56,6 +56,11 @@ public class AgentToolDownstreamHttpSupport {
                     context.session().getAuthorizedProjectRoles());
         }
         headers.set(PlatformContextHeaders.SOURCE_SERVICE, "agent-runtime");
+        headers.set(PlatformContextHeaders.AGENT_ID, context.session().getAgentId());
+        headers.set(PlatformContextHeaders.AGENT_SESSION_ID, context.session().getSessionId());
+        headers.set(PlatformContextHeaders.AGENT_RUN_ID, context.run().getRunId());
+        headers.set(PlatformContextHeaders.AGENT_DELEGATION_ID,
+                context.session().getDelegation().getDelegationId());
         headers.set(PlatformContextHeaders.DATA_SCOPE_LEVEL, "PROJECT");
         headers.set(PlatformContextHeaders.TRACE_ID,
                 context.traceId() == null ? context.audit().getTraceId() : context.traceId());

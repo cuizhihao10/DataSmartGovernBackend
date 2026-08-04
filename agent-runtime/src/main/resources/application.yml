@@ -67,6 +67,15 @@ datasmart:
     max-active-runs-per-session: 1
     # 会话默认生存时间，当前主要作为后续清理策略依据。
     session-ttl-hours: 24
+    session-trusted-access:
+      # Python Runtime 会直连 Java 控制面读取工具策略与结果。仅服务名不构成可信身份，必须同时校验共享凭证。
+      # 生产环境应通过 Secret、Vault 或服务网格注入强随机值；为空时内部直连访问全部 fail-closed。
+      shared-token: ${DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN:}
+      allowed-read-source-services:
+        - python-ai-runtime
+      # 这里只允许触发 LOW + 只读 + 幂等工具的受控自动执行，不授予审批、任意写入或跨会话权限。
+      allowed-automated-execution-source-services:
+        - python-ai-runtime
     service-authorization:
       # Agent 工具服务间授权预检开关。
       # 默认关闭是为了保证本地学习环境不强依赖 permission-admin；关闭时 DAG preview 会返回 NOT_EVALUATED，
@@ -215,6 +224,10 @@ datasmart:
       # PostgreSQL 分区、归档或 TTL 清理任务负责。
       worker-receipt-index-max-records: ${DATASMART_AGENT_RUNTIME_WORKER_RECEIPT_INDEX_MAX_RECORDS:10000}
     persistence:
+      # 会话、Run、用户可见消息、工具绑定和双主体委托必须作为同一聚合持久化。
+      session-store: ${DATASMART_AGENT_RUNTIME_SESSION_STORE:memory}
+      # 高风险工具动作的服务端确认事实必须跨重启可回查。
+      approval-confirmation-store: ${DATASMART_AGENT_RUNTIME_APPROVAL_CONFIRMATION_STORE:memory}
       # 工具执行审计仓储类型。
       # memory 是当前默认值，适合本地学习、单元测试和早期联调；它不会要求 PostgreSQL 已启动。
       # 后续切换为 postgresql/jdbc 时，应配合 agent_tool_execution_audit 表、事务 outbox 和后台 dispatcher 一起灰度，

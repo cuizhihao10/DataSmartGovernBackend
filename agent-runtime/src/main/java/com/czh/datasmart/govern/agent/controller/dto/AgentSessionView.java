@@ -16,6 +16,7 @@ import java.util.List;
  * 它同时暴露业务边界、工作空间、工具绑定和运行记录，让用户能理解“这个 Agent 正在什么范围内工作”。
  */
 public record AgentSessionView(String sessionId,
+                               String agentId,
                                Long tenantId,
                                Long projectId,
                                Long workspaceId,
@@ -26,6 +27,12 @@ public record AgentSessionView(String sessionId,
                                AgentWorkspaceView workspace,
                                List<AgentToolBindingView> toolBindings,
                                List<AgentRunView> runs,
+                               AgentDelegationView delegation,
+                               List<AgentConversationMessageView> messages,
+                               Boolean pinned,
+                               Boolean archived,
+                               LocalDateTime archivedAt,
+                               LocalDateTime lastMessageAt,
                                LocalDateTime createTime,
                                LocalDateTime updateTime) {
 }

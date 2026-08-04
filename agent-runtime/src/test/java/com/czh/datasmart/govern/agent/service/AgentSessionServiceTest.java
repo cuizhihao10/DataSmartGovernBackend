@@ -21,6 +21,7 @@ import com.czh.datasmart.govern.agent.model.AgentToolExecutionMode;
 import com.czh.datasmart.govern.agent.model.AgentToolRiskLevel;
 import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionAccessContext;
 import com.czh.datasmart.govern.agent.service.session.AgentRunStateCoordinator;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditMemoryStore;
 import com.czh.datasmart.govern.agent.service.tool.AgentToolAdapter;
@@ -53,6 +54,7 @@ class AgentSessionServiceTest {
     private AgentRuntimeProperties properties;
     private AgentSessionService service;
     private AgentToolExecutionAuditService auditService;
+    private AgentSessionMemoryStore sessionStore;
 
     @BeforeEach
     void setUp() {
@@ -76,14 +78,55 @@ class AgentSessionServiceTest {
                 new AgentToolExecutionOutputStore()
         );
         AgentRunStateCoordinator runStateCoordinator = new AgentRunStateCoordinator(auditService);
+        sessionStore = new AgentSessionMemoryStore();
         service = new AgentSessionService(
                 properties,
-                new AgentSessionMemoryStore(),
+                sessionStore,
                 toolRegistryService,
                 auditService,
                 toolExecutionService,
                 runStateCoordinator
         );
+    }
+
+    @Test
+    void sessionObjectAccessShouldRejectAnotherUserAndKeepAdministratorReadOnly() {
+        AgentSessionView session = service.createSession(baseSessionRequest());
+
+        assertThrows(PlatformBusinessException.class, () -> service.getSession(
+                session.sessionId(), new AgentSessionAccessContext(10L, 20L, "u-002", "ORDINARY_USER")));
+
+        AgentSessionView adminRead = service.getSession(
+                session.sessionId(), new AgentSessionAccessContext(10L, 20L, "tenant-admin", "TENANT_ADMIN"));
+        assertEquals(session.sessionId(), adminRead.sessionId());
+        assertThrows(PlatformBusinessException.class, () -> service.setPinned(
+                session.sessionId(), true,
+                new AgentSessionAccessContext(10L, 20L, "tenant-admin", "TENANT_ADMIN")));
+    }
+
+    @Test
+    void pinnedAndArchivedSessionsShouldUseIndependentHistoryViews() {
+        AgentSessionView first = service.createSession(baseSessionRequest());
+        AgentSessionView second = service.createSession(new CreateAgentSessionRequest(
+                10L, 20L, null, "u-001", "web", "第二个历史会话",
+                WorkspaceIsolationLevel.PROJECT, List.of(metadataTool())
+        ));
+        AgentSessionAccessContext owner = new AgentSessionAccessContext(10L, 20L, "u-001", "ORDINARY_USER");
+
+        service.setPinned(first.sessionId(), true, owner);
+        List<AgentSessionView> active = service.listSessions(owner, null, false, 100);
+        assertEquals(first.sessionId(), active.getFirst().sessionId());
+        assertTrue(active.getFirst().pinned());
+
+        service.setArchived(first.sessionId(), true, owner);
+        assertTrue(service.listSessions(owner, null, false, 100).stream()
+                .noneMatch(item -> item.sessionId().equals(first.sessionId())));
+        assertEquals(first.sessionId(), service.listSessions(owner, null, true, 100).getFirst().sessionId());
+
+        service.setArchived(first.sessionId(), false, owner);
+        assertTrue(service.listSessions(owner, null, false, 100).stream()
+                .anyMatch(item -> item.sessionId().equals(first.sessionId())));
+        assertTrue(service.getSession(second.sessionId(), owner).archivedAt() == null);
     }
 
     /**

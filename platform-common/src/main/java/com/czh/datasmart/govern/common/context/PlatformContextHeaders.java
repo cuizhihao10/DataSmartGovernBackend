@@ -34,6 +34,17 @@ public final class PlatformContextHeaders {
     public static final String WORKSPACE_ID = "X-DataSmart-Workspace-Id";
     public static final String REQUEST_SOURCE = "X-DataSmart-Request-Source";
 
+    /** 执行本次动作的 Agent 主体编码。 */
+    public static final String AGENT_ID = "X-DataSmart-Agent-Id";
+    /** Agent 会话 ID，用于关联用户上下文与审计。 */
+    public static final String AGENT_SESSION_ID = "X-DataSmart-Agent-Session-Id";
+    /** Agent Run ID，用于关联一次模型与工具循环。 */
+    public static final String AGENT_RUN_ID = "X-DataSmart-Agent-Run-Id";
+    /** 用户授予 Agent 的最小权限委托事实 ID。 */
+    public static final String AGENT_DELEGATION_ID = "X-DataSmart-Agent-Delegation-Id";
+    /** 仅供服务间可信入口校验的共享凭证 Header，浏览器请求会由 Gateway 清理。 */
+    public static final String INTERNAL_SERVICE_TOKEN = "X-DataSmart-Internal-Service-Token";
+
     /**
      * 服务账号主体 ID。
      *

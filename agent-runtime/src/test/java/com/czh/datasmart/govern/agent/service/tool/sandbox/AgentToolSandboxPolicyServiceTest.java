@@ -8,6 +8,7 @@ package com.czh.datasmart.govern.agent.service.tool.sandbox;
 
 import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
 import com.czh.datasmart.govern.agent.model.AgentRunState;
+import com.czh.datasmart.govern.agent.model.AgentToolBindingStatus;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionMode;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
 import com.czh.datasmart.govern.agent.model.AgentToolRiskLevel;
@@ -16,6 +17,7 @@ import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
+import com.czh.datasmart.govern.agent.service.session.AgentToolBindingRecord;
 import com.czh.datasmart.govern.agent.service.tool.AgentToolExecutionGuard;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import org.junit.jupiter.api.Test;
@@ -182,7 +184,7 @@ class AgentToolSandboxPolicyServiceTest {
     }
 
     private AgentSessionRecord session() {
-        return new AgentSessionRecord(
+        AgentSessionRecord session = new AgentSessionRecord(
                 "session-001",
                 10L,
                 20L,
@@ -192,6 +194,30 @@ class AgentToolSandboxPolicyServiceTest {
                 "测试工具沙箱",
                 WorkspaceIsolationLevel.PROJECT,
                 "tenant:10:project:20",
+                LocalDateTime.now()
+        );
+        session.addToolBinding(binding(datasourceMetadataTool(), "binding-metadata"));
+        session.addToolBinding(binding(taskDraftToolWithRetry(), "binding-task-draft"));
+        return session;
+    }
+
+    private AgentToolBindingRecord binding(AgentRuntimeProperties.ToolDefinitionProperties tool,
+                                           String bindingId) {
+        return new AgentToolBindingRecord(
+                bindingId,
+                tool.getToolCode(),
+                tool.getToolType(),
+                tool.getToolCode(),
+                tool.getTargetService(),
+                tool.getTargetEndpoint(),
+                1001L,
+                Boolean.TRUE.equals(tool.getReadOnly()),
+                tool.getRiskLevel().name(),
+                tool.getExecutionMode().name(),
+                Boolean.TRUE.equals(tool.getRequiresApproval()),
+                Boolean.TRUE.equals(tool.getIdempotent()),
+                AgentToolBindingStatus.ENABLED,
+                tool.getAllowedActions(),
                 LocalDateTime.now()
         );
     }

@@ -8,6 +8,8 @@ package com.czh.datasmart.govern.agent.service;
 
 import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentConversationMessageView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentDelegationView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentSessionView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolBindingView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolDefinitionView;
@@ -25,7 +27,8 @@ import com.czh.datasmart.govern.agent.model.ModelWorkloadType;
 import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentRunStateCoordinator;
-import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionAccessContext;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentToolBindingRecord;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
@@ -36,6 +39,7 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 /**
@@ -58,7 +62,7 @@ public class AgentSessionService {
     private static final String DEFAULT_CHANNEL = "WEB";
 
     private final AgentRuntimeProperties properties;
-    private final AgentSessionMemoryStore memoryStore;
+    private final AgentSessionStore memoryStore;
     private final AgentToolRegistryService toolRegistryService;
     private final AgentToolExecutionAuditService toolExecutionAuditService;
     private final AgentToolExecutionService toolExecutionService;
@@ -70,7 +74,12 @@ public class AgentSessionService {
      * <p>当前会话创建只写入内存仓储，但仍完整校验租户、项目、工具数量和 Runtime 开关。
      * 这些规则未来迁移到数据库仓储后应保持不变，避免 API 契约变化。
      */
-    public AgentSessionView createSession(CreateAgentSessionRequest request) {
+    public AgentSessionView createSession(CreateAgentSessionRequest request, AgentSessionAccessContext accessContext) {
+        ensureCreateAccess(request, accessContext);
+        return createSession(request);
+    }
+
+    AgentSessionView createSession(CreateAgentSessionRequest request) {
         ensureRuntimeEnabled();
         WorkspaceIsolationLevel isolationLevel = request.isolationLevel() == null
                 ? WorkspaceIsolationLevel.PROJECT
@@ -104,7 +113,21 @@ public class AgentSessionService {
      * <p>列表接口支持按租户、项目和操作者过滤。
      * 当前过滤发生在内存中，后续切换到数据库时应下沉到 SQL，并补充分页、时间范围、状态过滤和审计导出。
      */
-    public List<AgentSessionView> listSessions(Long tenantId, Long projectId, String actorId) {
+    public List<AgentSessionView> listSessions(AgentSessionAccessContext accessContext,
+                                               String requestedActorId,
+                                               boolean archived,
+                                               int limit) {
+        ensureTrustedContext(accessContext);
+        String actorFilter = accessContext.privilegedRead() && hasText(requestedActorId)
+                ? requestedActorId.trim()
+                : accessContext.actorId();
+        return memoryStore.list(accessContext.tenantId(), accessContext.projectId(), actorFilter, archived, limit).stream()
+                .filter(session -> canRead(session, accessContext))
+                .map(this::toSessionView)
+                .toList();
+    }
+
+    List<AgentSessionView> listSessions(Long tenantId, Long projectId, String actorId) {
         ensureRuntimeEnabled();
         return memoryStore.list(tenantId, projectId, actorId).stream()
                 .map(this::toSessionView)
@@ -114,7 +137,21 @@ public class AgentSessionService {
     /**
      * 查询会话详情。
      */
-    public AgentSessionView getSession(String sessionId) {
+    public AgentSessionView getSession(String sessionId, AgentSessionAccessContext accessContext) {
+        AgentSessionRecord session = findSession(sessionId);
+        ensureReadAccess(session, accessContext);
+        return toSessionView(session);
+    }
+
+    /**
+     * 校验调用方是否可以修改指定会话，但不改变任何会话状态。
+     * 供工具自动执行等拆分服务在进入副作用逻辑前复用同一对象归属规则。
+     */
+    public void requireMutationAccess(String sessionId, AgentSessionAccessContext accessContext) {
+        ensureMutationAccess(findSession(sessionId), accessContext);
+    }
+
+    AgentSessionView getSession(String sessionId) {
         ensureRuntimeEnabled();
         return toSessionView(findSession(sessionId));
     }
@@ -125,13 +162,21 @@ public class AgentSessionService {
      * <p>工具追加会被同一个会话对象锁保护，避免两个并发请求同时绕过最大工具数量限制。
      * 后续数据库实现应使用乐观锁或唯一键保证同样的并发安全语义。
      */
-    public AgentSessionView bindTool(String sessionId, BindAgentToolRequest request) {
+    public AgentSessionView bindTool(String sessionId,
+                                     BindAgentToolRequest request,
+                                     AgentSessionAccessContext accessContext) {
+        ensureMutationAccess(findSession(sessionId), accessContext);
+        return bindTool(sessionId, request);
+    }
+
+    AgentSessionView bindTool(String sessionId, BindAgentToolRequest request) {
         ensureRuntimeEnabled();
         AgentSessionRecord session = findSession(sessionId);
         synchronized (session) {
             ensureSessionCanMutate(session);
             ensureToolLimit(session.getToolBindings().size(), 1);
             session.addToolBinding(toBindingRecord(request));
+            memoryStore.save(session);
             return toSessionView(session);
         }
     }
@@ -142,7 +187,15 @@ public class AgentSessionService {
      * <p>当前版本不会真正调用模型和工具，而是创建一个 PLANNING 状态的 dry-run 运行。
      * 这样前端、网关、权限、审计规划可以先围绕 runId 工作，后续再把 PLANNING 后面的状态交给真实编排器推进。
      */
-    public AgentRunView startRun(String sessionId, StartAgentRunRequest request, String traceId) {
+    public AgentRunView startRun(String sessionId,
+                                 StartAgentRunRequest request,
+                                 String traceId,
+                                 AgentSessionAccessContext accessContext) {
+        ensureMutationAccess(findSession(sessionId), accessContext);
+        return startRun(sessionId, request, traceId);
+    }
+
+    AgentRunView startRun(String sessionId, StartAgentRunRequest request, String traceId) {
         ensureRuntimeEnabled();
         AgentSessionRecord session = findSession(sessionId);
         synchronized (session) {
@@ -167,6 +220,7 @@ public class AgentSessionService {
             );
             session.addRun(run);
             toolExecutionAuditService.createPlanAudits(session, run, traceId);
+            memoryStore.save(session);
             return toRunView(run);
         }
     }
@@ -177,7 +231,12 @@ public class AgentSessionService {
      * <p>取消只允许作用于非终态运行。
      * 如果未来真实编排器已经把任务发送到 Python Runtime 或下游工具，此处还需要发布取消事件并等待异步确认。
      */
-    public AgentRunView cancelRun(String sessionId, String runId) {
+    public AgentRunView cancelRun(String sessionId, String runId, AgentSessionAccessContext accessContext) {
+        ensureMutationAccess(findSession(sessionId), accessContext);
+        return cancelRun(sessionId, runId);
+    }
+
+    AgentRunView cancelRun(String sessionId, String runId) {
         ensureRuntimeEnabled();
         AgentSessionRecord session = findSession(sessionId);
         synchronized (session) {
@@ -187,7 +246,28 @@ public class AgentSessionService {
                         "Agent Run 已进入终态，不能重复取消，runId=" + runId);
             }
             run.cancel("Agent Run 已由控制面取消；当前版本尚未下发真实编排任务，因此无需等待下游确认。");
+            memoryStore.save(session);
             return toRunView(run);
+        }
+    }
+
+    public AgentSessionView setPinned(String sessionId, boolean pinned, AgentSessionAccessContext accessContext) {
+        AgentSessionRecord session = findSession(sessionId);
+        ensureMutationAccess(session, accessContext);
+        synchronized (session) {
+            session.setPinned(pinned);
+            memoryStore.save(session);
+            return toSessionView(session);
+        }
+    }
+
+    public AgentSessionView setArchived(String sessionId, boolean archived, AgentSessionAccessContext accessContext) {
+        AgentSessionRecord session = findSession(sessionId);
+        ensureMutationAccess(session, accessContext);
+        synchronized (session) {
+            session.setArchived(archived);
+            memoryStore.save(session);
+            return toSessionView(session);
         }
     }
 
@@ -201,6 +281,15 @@ public class AgentSessionService {
     public AgentToolExecutionAuditView approveToolExecution(String sessionId,
                                                             String runId,
                                                             String auditId,
+                                                            AgentToolExecutionDecisionRequest request,
+                                                            AgentSessionAccessContext accessContext) {
+        ensureMutationAccess(findSession(sessionId), accessContext);
+        return approveToolExecution(sessionId, runId, auditId, request);
+    }
+
+    AgentToolExecutionAuditView approveToolExecution(String sessionId,
+                                                            String runId,
+                                                            String auditId,
                                                             AgentToolExecutionDecisionRequest request) {
         ensureRuntimeEnabled();
         AgentSessionRecord session = findSession(sessionId);
@@ -209,6 +298,7 @@ public class AgentSessionService {
             ensureRunCanAcceptToolDecision(run);
             AgentToolExecutionAuditView decision = toolExecutionAuditService.approve(sessionId, runId, auditId, request);
             runStateCoordinator.reconcileAfterToolDecision(session, run);
+            memoryStore.save(session);
             return decision;
         }
     }
@@ -224,6 +314,15 @@ public class AgentSessionService {
     public AgentToolExecutionAuditView rejectToolExecution(String sessionId,
                                                            String runId,
                                                            String auditId,
+                                                           AgentToolExecutionDecisionRequest request,
+                                                           AgentSessionAccessContext accessContext) {
+        ensureMutationAccess(findSession(sessionId), accessContext);
+        return rejectToolExecution(sessionId, runId, auditId, request);
+    }
+
+    AgentToolExecutionAuditView rejectToolExecution(String sessionId,
+                                                           String runId,
+                                                           String auditId,
                                                            AgentToolExecutionDecisionRequest request) {
         ensureRuntimeEnabled();
         AgentSessionRecord session = findSession(sessionId);
@@ -232,6 +331,7 @@ public class AgentSessionService {
             ensureRunCanAcceptToolDecision(run);
             AgentToolExecutionAuditView decision = toolExecutionAuditService.reject(sessionId, runId, auditId, request);
             runStateCoordinator.reconcileAfterToolDecision(session, run);
+            memoryStore.save(session);
             return decision;
         }
     }
@@ -244,6 +344,15 @@ public class AgentSessionService {
      * 先用会话锁保证同一会话内串行执行；后续迁移数据库后，应使用审计记录状态条件更新或幂等键防止重复执行。
      */
     public AgentToolExecutionResultView executeToolExecution(String sessionId,
+                                                             String runId,
+                                                             String auditId,
+                                                             String traceId,
+                                                             AgentSessionAccessContext accessContext) {
+        ensureMutationAccess(findSession(sessionId), accessContext);
+        return executeToolExecution(sessionId, runId, auditId, traceId);
+    }
+
+    AgentToolExecutionResultView executeToolExecution(String sessionId,
                                                              String runId,
                                                              String auditId,
                                                              String traceId) {
@@ -259,7 +368,9 @@ public class AgentSessionService {
                 throw new PlatformBusinessException(PlatformErrorCode.BUSINESS_STATE_CONFLICT,
                         "Agent Run 正在等待人工确认，不能执行工具，runId=" + runId);
             }
-            return toolExecutionService.execute(session, run, auditId, traceId);
+            AgentToolExecutionResultView result = toolExecutionService.execute(session, run, auditId, traceId);
+            memoryStore.save(session);
+            return result;
         }
     }
 
@@ -274,7 +385,15 @@ public class AgentSessionService {
      * <p>即使工具尚未执行完成，也允许查询当前快照。这样调用方可以得到 WAITING_APPROVAL、
      * PLANNED、EXECUTING、FAILED 或 SKIPPED 等状态，而不是只能在成功时拿到结果。</p>
      */
-    public AgentToolExecutionResultView getToolExecutionResult(String sessionId, String runId, String auditId) {
+    public AgentToolExecutionResultView getToolExecutionResult(String sessionId,
+                                                               String runId,
+                                                               String auditId,
+                                                               AgentSessionAccessContext accessContext) {
+        ensureReadAccess(findSession(sessionId), accessContext);
+        return getToolExecutionResult(sessionId, runId, auditId);
+    }
+
+    AgentToolExecutionResultView getToolExecutionResult(String sessionId, String runId, String auditId) {
         ensureRuntimeEnabled();
         AgentSessionRecord session = findSession(sessionId);
         synchronized (session) {
@@ -301,6 +420,54 @@ public class AgentSessionService {
                 .findFirst()
                 .orElseThrow(() -> new PlatformBusinessException(PlatformErrorCode.NOT_FOUND,
                         "Agent Run 不存在，runId=" + runId));
+    }
+
+    private void ensureCreateAccess(CreateAgentSessionRequest request, AgentSessionAccessContext context) {
+        ensureTrustedContext(context);
+        if (!Objects.equals(request.tenantId(), context.tenantId())
+                || !Objects.equals(request.projectId(), context.projectId())
+                || !Objects.equals(request.actorId(), context.actorId())) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "Agent 会话只能以当前登录用户身份在当前租户和项目中创建");
+        }
+    }
+
+    private void ensureReadAccess(AgentSessionRecord session, AgentSessionAccessContext context) {
+        ensureTrustedContext(context);
+        if (!canRead(session, context)) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "当前用户无权查看该 Agent 会话");
+        }
+    }
+
+    private boolean canRead(AgentSessionRecord session, AgentSessionAccessContext context) {
+        boolean tenantMatches = context.platformAdministrator()
+                || Objects.equals(session.getTenantId(), context.tenantId());
+        boolean projectMatches = context.platformAdministrator()
+                || Objects.equals(session.getProjectId(), context.projectId());
+        boolean actorMatches = Objects.equals(session.getActorId(), context.actorId());
+        return tenantMatches && projectMatches && (actorMatches || context.privilegedRead());
+    }
+
+    private void ensureMutationAccess(AgentSessionRecord session, AgentSessionAccessContext context) {
+        ensureTrustedContext(context);
+        if (!Objects.equals(session.getTenantId(), context.tenantId())
+                || !Objects.equals(session.getProjectId(), context.projectId())
+                || !Objects.equals(session.getActorId(), context.actorId())) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "只有会话发起人可以在原租户和项目范围内继续对话或修改会话");
+        }
+    }
+
+    private void ensureTrustedContext(AgentSessionAccessContext context) {
+        if (context == null || context.tenantId() == null || context.projectId() == null || !hasText(context.actorId())) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "缺少可信的租户、项目或用户身份上下文");
+        }
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private void ensureSessionCanMutate(AgentSessionRecord session) {
@@ -436,6 +603,7 @@ public class AgentSessionService {
         );
         return new AgentSessionView(
                 session.getSessionId(),
+                session.getAgentId(),
                 session.getTenantId(),
                 session.getProjectId(),
                 session.getWorkspaceId(),
@@ -446,9 +614,25 @@ public class AgentSessionService {
                 workspace,
                 session.getToolBindings().stream().map(this::toToolView).toList(),
                 session.getRuns().stream().map(this::toRunView).toList(),
+                toDelegationView(session),
+                session.getMessages().stream().map(message -> new AgentConversationMessageView(
+                        message.messageId(), message.runId(), message.role(), message.content(), message.createTime())).toList(),
+                session.isPinned(),
+                session.isArchived(),
+                session.getArchivedAt(),
+                session.getLastMessageAt(),
                 session.getCreateTime(),
                 session.getUpdateTime()
         );
+    }
+
+    private AgentDelegationView toDelegationView(AgentSessionRecord session) {
+        var delegation = session.getDelegation();
+        return new AgentDelegationView(
+                delegation.getDelegationId(), delegation.getAgentId(), delegation.getUserActorId(),
+                delegation.getTenantId(), delegation.getProjectId(), delegation.getToolCodes(),
+                delegation.getActions(), delegation.getResourceScopes(), delegation.getStatus(),
+                delegation.getIssuedAt(), delegation.getExpiresAt(), delegation.getRevokedAt());
     }
 
     private AgentToolBindingView toToolView(AgentToolBindingRecord binding) {

@@ -11,9 +11,11 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolAutoExecutionRe
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolAutoExecutionResponse;
 import com.czh.datasmart.govern.agent.event.NoopAgentToolExecutionEventPublisher;
 import com.czh.datasmart.govern.agent.model.AgentRunState;
+import com.czh.datasmart.govern.agent.model.AgentToolBindingStatus;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionMode;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
 import com.czh.datasmart.govern.agent.model.AgentToolRiskLevel;
+import com.czh.datasmart.govern.agent.model.AgentToolType;
 import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionService;
@@ -22,6 +24,7 @@ import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecor
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
+import com.czh.datasmart.govern.agent.service.session.AgentToolBindingRecord;
 import com.czh.datasmart.govern.agent.service.tool.AgentToolAdapter;
 import com.czh.datasmart.govern.agent.service.tool.AgentToolExecutionContext;
 import com.czh.datasmart.govern.agent.service.tool.AgentToolExecutionGuard;
@@ -281,6 +284,23 @@ class AgentRunToolAutoExecutionServiceTest {
                 "tenant:10:project:20",
                 LocalDateTime.now()
         );
+        session.addToolBinding(new AgentToolBindingRecord(
+                "binding-datasource-metadata-read",
+                "datasource.metadata.read",
+                AgentToolType.DATASOURCE_METADATA,
+                "datasource.metadata.read",
+                "datasource-management",
+                "/metadata",
+                1001L,
+                true,
+                AgentToolRiskLevel.LOW.name(),
+                AgentToolExecutionMode.SYNC.name(),
+                false,
+                true,
+                AgentToolBindingStatus.ENABLED,
+                List.of("READ"),
+                LocalDateTime.now()
+        ));
         session.addRun(new AgentRunRecord(
                 "run-auto-001",
                 "session-auto-001",

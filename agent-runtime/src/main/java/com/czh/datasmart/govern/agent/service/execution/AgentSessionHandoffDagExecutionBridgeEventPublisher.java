@@ -11,7 +11,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentSessionHandoffDagExecu
 import com.czh.datasmart.govern.agent.controller.dto.AgentSessionHandoffDagExecutionBridgePreviewResponse;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventProjectionRecord;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventProjectionStore;
-import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -65,7 +65,7 @@ public class AgentSessionHandoffDagExecutionBridgeEventPublisher {
     private static final String STAGE = "handoff_dag_execution_bridge_previewed";
 
     private final AgentRuntimeEventProjectionStore projectionStore;
-    private final AgentSessionMemoryStore sessionStore;
+    private final AgentSessionStore sessionStore;
 
     /**
      * 发布桥接预览事件。

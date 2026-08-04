@@ -16,7 +16,7 @@ import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
-import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
 import com.czh.datasmart.govern.agent.service.tool.sandbox.AgentToolSandboxPolicyService;
 import com.czh.datasmart.govern.agent.service.tool.sandbox.AgentToolSandboxVerdict;
@@ -49,7 +49,7 @@ import java.util.Map;
 public class AgentRunToolExecutionPolicyService {
 
     private final AgentRuntimeProperties properties;
-    private final AgentSessionMemoryStore sessionMemoryStore;
+    private final AgentSessionStore sessionMemoryStore;
     private final AgentToolExecutionAuditService auditService;
     private final AgentToolSandboxPolicyService sandboxPolicyService;
     private final AgentToolRuntimeProtectionService runtimeProtectionService;
@@ -61,7 +61,7 @@ public class AgentRunToolExecutionPolicyService {
      * 这能避免前端看到“可执行”，但真实 execute 被 Guard 拒绝的口径漂移。</p>
      */
     public AgentRunToolExecutionPolicyService(AgentRuntimeProperties properties,
-                                              AgentSessionMemoryStore sessionMemoryStore,
+                                              AgentSessionStore sessionMemoryStore,
                                               AgentToolExecutionAuditService auditService,
                                               AgentToolSandboxPolicyService sandboxPolicyService) {
         this(properties,
@@ -81,7 +81,7 @@ public class AgentRunToolExecutionPolicyService {
      */
     @Autowired
     public AgentRunToolExecutionPolicyService(AgentRuntimeProperties properties,
-                                              AgentSessionMemoryStore sessionMemoryStore,
+                                              AgentSessionStore sessionMemoryStore,
                                               AgentToolExecutionAuditService auditService,
                                               AgentToolSandboxPolicyService sandboxPolicyService,
                                               AgentToolRuntimeProtectionService runtimeProtectionService) {
@@ -102,7 +102,7 @@ public class AgentRunToolExecutionPolicyService {
      * 新增沙箱集成测试应显式使用四参数构造函数。</p>
      */
     public AgentRunToolExecutionPolicyService(AgentRuntimeProperties properties,
-                                              AgentSessionMemoryStore sessionMemoryStore,
+                                              AgentSessionStore sessionMemoryStore,
                                               AgentToolExecutionAuditService auditService) {
         this(disableSandbox(properties), sessionMemoryStore, auditService,
                 new AgentToolSandboxPolicyService(disableSandbox(properties)),

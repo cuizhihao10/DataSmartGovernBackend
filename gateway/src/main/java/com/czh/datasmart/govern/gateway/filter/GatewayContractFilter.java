@@ -74,7 +74,12 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
             PlatformContextHeaders.DATA_SCOPE_EXPRESSION,
             PlatformContextHeaders.AUTHORIZED_PROJECT_IDS,
             PlatformContextHeaders.AUTHORIZED_PROJECT_ROLES,
-            PlatformContextHeaders.APPROVAL_REQUIRED
+            PlatformContextHeaders.APPROVAL_REQUIRED,
+            PlatformContextHeaders.AGENT_ID,
+            PlatformContextHeaders.AGENT_SESSION_ID,
+            PlatformContextHeaders.AGENT_RUN_ID,
+            PlatformContextHeaders.AGENT_DELEGATION_ID,
+            PlatformContextHeaders.INTERNAL_SERVICE_TOKEN
     );
 
     /**

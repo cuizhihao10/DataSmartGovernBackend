@@ -229,7 +229,10 @@ class JavaAgentPlanIngestionClient:
             "actorId": request_context.actor_id,
             "channel": cls._optional_string(variables.get("channel") or "PYTHON_AI_RUNTIME"),
             "objective": request_context.objective,
-            "userInput": request_context.objective,
+            "userInput": str(
+                variables.get("latestUserMessage")
+                or request_context.objective
+            ),
             "workloadType": cls._enum_value(request_context.preferred_workload),
             "idempotencyKey": cls._optional_string(variables.get("idempotencyKey") or plan.request_id),
             "pythonRequestId": plan.request_id,

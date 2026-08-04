@@ -71,6 +71,7 @@ services:
       DATASMART_GATEWAY_AUTHORIZATION_FAIL_OPEN_ON_ERROR: "false"
       DATASMART_GATEWAY_AUTHORIZATION_DECISION_ENDPOINT: http://permission-admin:8085/permissions/evaluate
       DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_REMOTE_ENABLED: "true"
+      DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_FAIL_OPEN_ON_ERROR: "false"
       DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_EVALUATE_URL: http://permission-admin:8085/permissions/agent/tool-budget-policies/evaluate
       # issuer 保持宿主机可见的 localhost 地址；JWK 则通过容器内 DNS 拉取，避免 gateway 在容器内访问自己的 localhost。
       DATASMART_GATEWAY_OIDC_ISSUER_URI: ${DATASMART_GATEWAY_OIDC_ISSUER_URI:-http://localhost:18080/realms/datasmart}
@@ -160,6 +161,8 @@ services:
       SPRING_DATASOURCE_USERNAME: datasmart
       SPRING_DATASOURCE_PASSWORD: ${DATASMART_POSTGRES_PASSWORD:-password}
       SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
+      DATASMART_PERMISSION_AGENT_APPROVAL_FACT_SHARED_TOKEN: ${DATASMART_AGENT_APPROVAL_FACT_SHARED_TOKEN:-local-agent-approval-fact-token-change-before-production}
+      DATASMART_PERMISSION_AGENT_APPROVAL_FACT_ALLOWED_SERVICES: agent-runtime,approval-service,permission-admin
       # permission-admin 通过 Keycloak Admin API 做账号供应；容器内必须访问 keycloak 服务名，不能使用宿主机 localhost。
       DATASMART_KEYCLOAK_BASE_URL: http://keycloak:18080
       DATASMART_KEYCLOAK_ADMIN_REALM: ${DATASMART_KEYCLOAK_ADMIN_REALM:-master}
@@ -336,9 +339,10 @@ services:
         SERVER_PORT: 8091
     environment:
       <<: *java-common-environment
-      # 工具审计、结构化结果和 outbox 使用 PostgreSQL，失败证据不会因 agent-runtime 容器重启而消失。
-      # 会话/Run 编排对象当前仍由 AgentSessionMemoryStore 承载；重启后可审计历史事实，但不能恢复未完成 Run。
+      # 会话、委托、审批、工具审计、结构化结果和 outbox 全部使用 PostgreSQL，可跨重启恢复和审计。
       DATASMART_AGENT_RUNTIME_DATABASE_ENABLED: "true"
+      DATASMART_AGENT_RUNTIME_SESSION_STORE: postgresql
+      DATASMART_AGENT_RUNTIME_APPROVAL_CONFIRMATION_STORE: postgresql
       DATASMART_AGENT_RUNTIME_AUDIT_STORE: postgresql
       DATASMART_AGENT_RUNTIME_OUTBOX_STORE: postgresql
       DATASMART_AGENT_RUNTIME_JDBC_URL: jdbc:postgresql://postgresql:5432/datasmart_govern?currentSchema=agent_runtime&ApplicationName=datasmart-agent-runtime
@@ -346,6 +350,8 @@ services:
       DATASMART_AGENT_RUNTIME_JDBC_PASSWORD: ${DATASMART_POSTGRES_PASSWORD:-password}
       DATASMART_AGENT_RUNTIME_JDBC_DRIVER_CLASS_NAME: org.postgresql.Driver
       DATASMART_AGENT_RUNTIME_FLYWAY_ENABLED: "true"
+      DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN: ${DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN:-local-compose-agent-runtime-internal-token-change-before-production}
+      DATASMART_AGENT_APPROVAL_FACT_SHARED_TOKEN: ${DATASMART_AGENT_APPROVAL_FACT_SHARED_TOKEN:-local-agent-approval-fact-token-change-before-production}
       DATASMART_PERMISSION_ADMIN_EVALUATE_URL: http://permission-admin:8085/permissions/evaluate
       DATASMART_AGENT_RUNTIME_RESUME_APPROVAL_FACT_EVALUATE_URL: http://permission-admin:8085/permissions/agent/tool-action-approvals/evaluate
       DATASMART_TASK_MANAGEMENT_AGENT_COMMAND_CONSUME_URL: http://task-management:8081/internal/agent-async-task-commands/consume
@@ -442,6 +448,7 @@ services:
     environment:
       TZ: ${DATASMART_TIME_ZONE:-Asia/Shanghai}
       DATASMART_AGENT_RUNTIME_BASE_URL: http://agent-runtime:8091
+      DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN: ${DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN:-local-compose-agent-runtime-internal-token-change-before-production}
       # Agent business plans must enter the Java control plane before any
       # confirmed side effect can run. This produces durable session/run/audit
       # references used by HITL confirmation, execution, replay and diagnostics.

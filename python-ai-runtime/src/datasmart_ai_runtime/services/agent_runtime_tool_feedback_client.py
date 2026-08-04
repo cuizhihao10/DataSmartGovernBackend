@@ -85,6 +85,7 @@ class JavaAgentRuntimeToolFeedbackClient:
         run_results_path_template: str = "/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/results",
         execution_policy_path_template: str = "/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/execution-policy",
         auto_execute_sync_path_template: str = "/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/auto-execute-sync",
+        service_token: str | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
@@ -92,6 +93,7 @@ class JavaAgentRuntimeToolFeedbackClient:
         self._run_results_path_template = run_results_path_template
         self._execution_policy_path_template = execution_policy_path_template
         self._auto_execute_sync_path_template = auto_execute_sync_path_template
+        self._service_token = service_token.strip() if service_token and service_token.strip() else None
 
     def get_tool_execution_feedback(
         self,
@@ -105,12 +107,7 @@ class JavaAgentRuntimeToolFeedbackClient:
         """查询 Java 控制面的工具结果并转换为模型可消费反馈。"""
 
         url = self._build_result_url(session_id=session_id, run_id=run_id, audit_id=audit_id)
-        headers = {
-            "Accept": "application/json",
-            # 与 Java `PlatformContextHeaders.TRACE_ID` 对齐，便于排查 Python -> Java -> 下游工具链路。
-            "X-DataSmart-Trace-Id": trace_id or "",
-            "X-DataSmart-Source-Service": "python-ai-runtime",
-        }
+        headers = self._request_headers(trace_id)
         request = Request(url=url, headers={k: v for k, v in headers.items() if v}, method="GET")
         try:
             with urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310 - URL 来自受控配置
@@ -135,11 +132,7 @@ class JavaAgentRuntimeToolFeedbackClient:
         """
 
         url = self._build_run_results_url(session_id=session_id, run_id=run_id)
-        headers = {
-            "Accept": "application/json",
-            "X-DataSmart-Trace-Id": trace_id or "",
-            "X-DataSmart-Source-Service": "python-ai-runtime",
-        }
+        headers = self._request_headers(trace_id)
         request = Request(url=url, headers={k: v for k, v in headers.items() if v}, method="GET")
         try:
             with urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310 - URL 来自受控配置
@@ -162,11 +155,7 @@ class JavaAgentRuntimeToolFeedbackClient:
         """
 
         url = self._build_execution_policy_url(session_id=session_id, run_id=run_id)
-        headers = {
-            "Accept": "application/json",
-            "X-DataSmart-Trace-Id": trace_id or "",
-            "X-DataSmart-Source-Service": "python-ai-runtime",
-        }
+        headers = self._request_headers(trace_id)
         request = Request(url=url, headers={k: v for k, v in headers.items() if v}, method="GET")
         try:
             with urlopen(request, timeout=self._timeout_seconds) as response:  # noqa: S310 - URL 来自受控配置
@@ -201,12 +190,7 @@ class JavaAgentRuntimeToolFeedbackClient:
             body["auditIds"] = list(audit_ids)
         if max_executions is not None:
             body["maxExecutions"] = max_executions
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json",
-            "X-DataSmart-Trace-Id": trace_id or "",
-            "X-DataSmart-Source-Service": "python-ai-runtime",
-        }
+        headers = self._request_headers(trace_id, content_type="application/json")
         request = Request(
             url=url,
             data=json.dumps(body).encode("utf-8"),
@@ -232,6 +216,20 @@ class JavaAgentRuntimeToolFeedbackClient:
             auditId=quote(audit_id, safe=""),
         )
         return f"{self._base_url}{path}"
+
+    def _request_headers(self, trace_id: str | None, *, content_type: str | None = None) -> dict[str, str]:
+        """构造内部服务请求头，不把共享凭证写入正文、日志或错误消息。"""
+
+        headers = {
+            "Accept": "application/json",
+            "X-DataSmart-Trace-Id": trace_id or "",
+            "X-DataSmart-Source-Service": "python-ai-runtime",
+        }
+        if content_type:
+            headers["Content-Type"] = content_type
+        if self._service_token:
+            headers["X-DataSmart-Internal-Service-Token"] = self._service_token
+        return headers
 
     def _build_run_results_url(self, *, session_id: str, run_id: str) -> str:
         """构建按 Run 批量查询工具结果的 URL。"""

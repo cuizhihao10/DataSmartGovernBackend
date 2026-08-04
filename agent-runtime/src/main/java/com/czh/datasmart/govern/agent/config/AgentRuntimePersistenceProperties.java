@@ -28,6 +28,12 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "datasmart.agent-runtime.persistence")
 public class AgentRuntimePersistenceProperties {
 
+    /** Agent 会话、Run、消息与委托聚合仓储类型。 */
+    private String sessionStore = "memory";
+
+    /** 高风险工具动作确认事实仓储类型。 */
+    private String approvalConfirmationStore = "memory";
+
     /**
      * 工具执行审计仓储类型。
      *

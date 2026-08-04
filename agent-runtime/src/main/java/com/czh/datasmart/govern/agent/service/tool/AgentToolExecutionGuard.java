@@ -77,9 +77,25 @@ public class AgentToolExecutionGuard {
                                         AgentToolExecutionAuditRecord audit) {
         ensureSameControlPlane(session, run, audit);
         ensureSameBusinessBoundary(session, audit);
+        ensureDelegationAllows(session, audit);
         ensureParameterValidationPassed(audit);
         ensureWriteToolApproved(audit);
         sandboxPolicyService.requireAllowed(session, run, audit);
+    }
+
+    private void ensureDelegationAllows(AgentSessionRecord session,
+                                        AgentToolExecutionAuditRecord audit) {
+        var delegation = session.getDelegation();
+        if (delegation == null
+                || !delegation.active(java.time.LocalDateTime.now())
+                || !Objects.equals(delegation.getUserActorId(), session.getActorId())
+                || !Objects.equals(delegation.getTenantId(), session.getTenantId())
+                || !Objects.equals(delegation.getProjectId(), session.getProjectId())
+                || !delegation.allows(audit.getToolCode(), audit.getTargetService(), audit.getTargetResourceId())) {
+            throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
+                    "Agent 委托已过期、被撤销或不包含当前工具和目标资源，拒绝执行，toolCode="
+                            + audit.getToolCode());
+        }
     }
 
     private void ensureSameControlPlane(AgentSessionRecord session,

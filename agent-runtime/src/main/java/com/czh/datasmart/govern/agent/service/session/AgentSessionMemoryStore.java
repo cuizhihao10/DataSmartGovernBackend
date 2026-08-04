@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.agent.service.session;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.util.Comparator;
@@ -29,24 +30,36 @@ import java.util.concurrent.ConcurrentMap;
  * 当前先用仓储接口形态隔离起来，后续替换成 MySQL/Redis/EventStore 时，Controller 不需要跟着大改。
  */
 @Component
-public class AgentSessionMemoryStore {
+@ConditionalOnProperty(prefix = "datasmart.agent-runtime.persistence", name = "session-store",
+        havingValue = "memory", matchIfMissing = true)
+public class AgentSessionMemoryStore implements AgentSessionStore {
 
     private final ConcurrentMap<String, AgentSessionRecord> sessions = new ConcurrentHashMap<>();
 
+    @Override
     public void save(AgentSessionRecord session) {
         sessions.put(session.getSessionId(), session);
     }
 
+    @Override
     public Optional<AgentSessionRecord> findById(String sessionId) {
         return Optional.ofNullable(sessions.get(sessionId));
     }
 
-    public List<AgentSessionRecord> list(Long tenantId, Long projectId, String actorId) {
+    @Override
+    public List<AgentSessionRecord> list(Long tenantId,
+                                         Long projectId,
+                                         String actorId,
+                                         boolean archived,
+                                         int limit) {
         return sessions.values().stream()
                 .filter(item -> tenantId == null || tenantId.equals(item.getTenantId()))
                 .filter(item -> projectId == null || projectId.equals(item.getProjectId()))
                 .filter(item -> actorId == null || actorId.isBlank() || actorId.equals(item.getActorId()))
-                .sorted(Comparator.comparing(AgentSessionRecord::getCreateTime).reversed())
+                .filter(item -> item.isArchived() == archived)
+                .sorted(Comparator.comparing(AgentSessionRecord::isPinned).reversed()
+                        .thenComparing(AgentSessionRecord::getUpdateTime, Comparator.reverseOrder()))
+                .limit(Math.max(1, Math.min(limit, 100)))
                 .toList();
     }
 }

@@ -7,6 +7,7 @@
 package com.czh.datasmart.govern.agent.service.runtime;
 
 import org.springframework.stereotype.Component;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 
 import java.time.Instant;
 import java.util.Iterator;
@@ -23,6 +24,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * 信任调用方随手传入的 confirmationId 字符串。</p>
  */
 @Component
+@ConditionalOnProperty(prefix = "datasmart.agent-runtime.persistence", name = "approval-confirmation-store",
+        havingValue = "memory", matchIfMissing = true)
 public class InMemoryAgentToolActionApprovalConfirmationStore
         implements AgentToolActionApprovalConfirmationStore {
 

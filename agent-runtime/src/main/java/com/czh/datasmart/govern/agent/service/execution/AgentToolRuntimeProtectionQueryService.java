@@ -11,7 +11,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentToolRuntimeProtectionP
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
-import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
 import com.czh.datasmart.govern.agent.service.tool.protection.AgentToolRuntimeProtectionService;
 import com.czh.datasmart.govern.agent.service.tool.protection.AgentToolRuntimeProtectionVerdict;
@@ -36,7 +36,7 @@ import org.springframework.stereotype.Service;
 public class AgentToolRuntimeProtectionQueryService {
 
     private final AgentRuntimeProperties properties;
-    private final AgentSessionMemoryStore sessionMemoryStore;
+    private final AgentSessionStore sessionMemoryStore;
     private final AgentToolExecutionAuditService auditService;
     private final AgentToolRuntimeProtectionService runtimeProtectionService;
 

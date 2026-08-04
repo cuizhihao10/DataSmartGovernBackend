@@ -6,8 +6,6 @@
  */
 package com.czh.datasmart.govern.permission.service.support;
 
-import org.springframework.stereotype.Component;
-
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -19,7 +17,6 @@ import java.util.concurrent.ConcurrentMap;
  * 服务端登记并被回查”，但不具备生产所需的多实例共享、JVM 重启恢复、TTL 后台清理、审计留存和加密能力。
  * 这些能力应在后续 PostgreSQL 实现中补齐。</p>
  */
-@Component
 public class InMemoryAgentToolActionApprovalFactStore implements AgentToolActionApprovalFactStore {
 
     private final ConcurrentMap<String, AgentToolActionApprovalFactRecord> records = new ConcurrentHashMap<>();

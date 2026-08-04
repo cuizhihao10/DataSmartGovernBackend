@@ -28,6 +28,8 @@ import org.springframework.context.annotation.Configuration;
 @ConditionalOnExpression(
         "'${datasmart.agent-runtime.persistence.database-enabled:false}'.equalsIgnoreCase('true') "
                 + "&& (T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.persistence.audit-store:memory}') "
+                + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.persistence.session-store:memory}') "
+                + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.persistence.approval-confirmation-store:memory}') "
                 + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.persistence.outbox-store:memory}') "
                 + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.tool-dag.confirmations.store:memory}') "
                 + "|| T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode).isJdbcDurable('${datasmart.agent-runtime.async-task-commands.outbox.store:memory}') "

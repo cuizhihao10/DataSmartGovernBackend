@@ -13,6 +13,7 @@ import com.czh.datasmart.govern.permission.controller.dto.AgentToolActionApprova
 import com.czh.datasmart.govern.permission.controller.dto.AgentToolActionApprovalFactRegisterRequest;
 import com.czh.datasmart.govern.permission.controller.dto.AgentToolActionApprovalFactRegisterResponse;
 import com.czh.datasmart.govern.permission.service.AgentToolActionApprovalFactService;
+import com.czh.datasmart.govern.permission.service.support.AgentApprovalFactTrustedRegistrationGuard;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -38,6 +39,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class AgentToolActionApprovalFactController {
 
     private final AgentToolActionApprovalFactService approvalFactService;
+    private final AgentApprovalFactTrustedRegistrationGuard trustedRegistrationGuard;
 
     /**
      * 登记一条审批事实。
@@ -48,7 +50,10 @@ public class AgentToolActionApprovalFactController {
     @PostMapping("/facts")
     public PlatformApiResponse<AgentToolActionApprovalFactRegisterResponse> register(
             @Valid @RequestBody AgentToolActionApprovalFactRegisterRequest request,
+            @RequestHeader(value = PlatformContextHeaders.SOURCE_SERVICE, required = false) String sourceService,
+            @RequestHeader(value = PlatformContextHeaders.INTERNAL_SERVICE_TOKEN, required = false) String internalToken,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        trustedRegistrationGuard.requireTrusted(sourceService, internalToken);
         return PlatformApiResponse.success("Agent 工具动作审批事实已登记",
                 approvalFactService.register(request), traceId);
     }

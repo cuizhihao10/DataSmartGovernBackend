@@ -307,7 +307,10 @@ def create_app() -> Any:
     control_plane_feedback_collector = (
         AgentControlPlaneFeedbackCollector(
             JavaAgentRuntimeToolFeedbackProvider(
-                JavaAgentRuntimeToolFeedbackClient(base_url=agent_runtime_base_url),
+                JavaAgentRuntimeToolFeedbackClient(
+                    base_url=agent_runtime_base_url,
+                    service_token=os.getenv("DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN"),
+                ),
                 auto_execute_sync_enabled=_truthy_env("DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_ENABLED"),
                 auto_execute_dry_run=_truthy_env("DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_DRY_RUN"),
                 max_auto_executions=_optional_positive_int_env("DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_MAX"),

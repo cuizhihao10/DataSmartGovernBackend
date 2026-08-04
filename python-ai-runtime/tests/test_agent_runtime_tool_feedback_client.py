@@ -22,6 +22,18 @@ from datasmart_ai_runtime.services.model_gateway.model_tool_result_feedback impo
 
 
 class JavaAgentRuntimeToolFeedbackClientTest(unittest.TestCase):
+    def test_internal_service_token_is_only_added_to_request_headers(self) -> None:
+        client = JavaAgentRuntimeToolFeedbackClient(
+            base_url="http://agent-runtime:8091",
+            service_token="trusted-secret",
+        )
+
+        headers = client._request_headers("trace-001", content_type="application/json")
+
+        self.assertEqual("python-ai-runtime", headers["X-DataSmart-Source-Service"])
+        self.assertEqual("trusted-secret", headers["X-DataSmart-Internal-Service-Token"])
+        self.assertEqual("application/json", headers["Content-Type"])
+
     def test_parse_succeeded_result_to_tool_feedback(self) -> None:
         payload = {
             "code": 0,

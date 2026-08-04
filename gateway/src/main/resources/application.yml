@@ -278,7 +278,7 @@ datasmart:
         timeout: ${DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_TIMEOUT:500ms}
         # true：远程异常时回退 gateway 本地保守策略；false：远程异常时拒绝本次 Agent 规划请求。
         # 生产强治理环境可以设置为 false，避免策略中心不可用时继续放行。
-        fail-open-on-remote-error: ${DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_FAIL_OPEN_ON_ERROR:true}
+        fail-open-on-remote-error: ${DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_FAIL_OPEN_ON_ERROR:false}
         max-header-bytes: ${DATASMART_GATEWAY_TOOL_POLICY_ENVELOPE_MAX_HEADER_BYTES:4096}
         default-worker-backlog-level: ${DATASMART_GATEWAY_DEFAULT_WORKER_BACKLOG_LEVEL:NORMAL}
         default-requested-tool-risk-level: ${DATASMART_GATEWAY_DEFAULT_REQUESTED_TOOL_RISK_LEVEL:LOW}

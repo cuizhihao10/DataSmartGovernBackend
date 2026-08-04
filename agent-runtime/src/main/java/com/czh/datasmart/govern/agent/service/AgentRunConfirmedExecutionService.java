@@ -19,7 +19,8 @@ import com.czh.datasmart.govern.agent.service.answer.AgentExecutionResultAnswerG
 import com.czh.datasmart.govern.agent.service.answer.AgentToolExecutionFailureSupport;
 import com.czh.datasmart.govern.agent.service.continuation.AgentPostConfirmContinuationClient;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
-import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
+import com.czh.datasmart.govern.agent.service.session.AgentConversationMessageRecord;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
@@ -31,6 +32,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
+import java.time.LocalDateTime;
+import java.util.UUID;
 
 /**
  * 用户确认后的 Agent DAG 串行执行服务。
@@ -48,7 +51,7 @@ public class AgentRunConfirmedExecutionService {
     private static final Set<String> PUBLISH_COMPLETES_GOAL_MODES = Set.of(
             "SCHEDULED_FULL", "SCHEDULED_BATCH", "CDC_STREAMING", "REAL_TIME");
 
-    private final AgentSessionMemoryStore sessionStore;
+    private final AgentSessionStore sessionStore;
     private final AgentSessionService sessionService;
     private final AgentToolExecutionAuditService auditService;
     private final AgentToolExecutionResultQueryService resultQueryService;
@@ -148,6 +151,7 @@ public class AgentRunConfirmedExecutionService {
                     run.getNextActions(),
                     assistantAnswer
             );
+            sessionStore.save(session);
         }
 
         // Never call Python while holding the session monitor. Python immediately
@@ -159,6 +163,12 @@ public class AgentRunConfirmedExecutionService {
         List<AgentToolExecutionFailureView> failures = AgentToolExecutionFailureSupport.failures(
                 batch.finalAudits(), batch.executedResults());
         String assistantReply = resolvedAssistantReply(batch, continuation);
+        synchronized (session) {
+            session.addMessage(new AgentConversationMessageRecord(
+                    "agm_" + UUID.randomUUID().toString().replace("-", ""),
+                    runId, "AGENT", assistantReply, LocalDateTime.now()));
+            sessionStore.save(session);
+        }
         return new AgentRunConfirmedExecutionResponse(
                 sessionId,
                 runId,

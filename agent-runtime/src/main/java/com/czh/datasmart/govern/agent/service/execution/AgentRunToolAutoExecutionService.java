@@ -19,7 +19,7 @@ import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
 import com.czh.datasmart.govern.agent.model.AgentToolRiskLevel;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionService;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
-import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
@@ -55,7 +55,7 @@ public class AgentRunToolAutoExecutionService {
     private static final int DEFAULT_MAX_SYNC_AUTO_EXECUTIONS = 5;
 
     private final AgentRuntimeProperties properties;
-    private final AgentSessionMemoryStore sessionMemoryStore;
+    private final AgentSessionStore sessionMemoryStore;
     private final AgentRunToolExecutionPolicyService policyService;
     private final AgentRunToolPlanDagService toolPlanDagService;
     private final AgentToolExecutionService toolExecutionService;
@@ -83,6 +83,7 @@ public class AgentRunToolAutoExecutionService {
             AgentRunToolExecutionPolicyView policy = policyService.inspectRunPolicy(sessionId, runId);
             AutoExecutionBatch batch = executeBatch(session, run, policy, normalizeRequest(request), traceId);
             convergeRunAfterAutoExecution(run, sessionId, runId, batch);
+            sessionMemoryStore.save(session);
             return new AgentRunToolAutoExecutionResponse(
                     sessionId,
                     runId,

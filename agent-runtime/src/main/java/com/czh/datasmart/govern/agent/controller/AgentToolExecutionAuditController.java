@@ -24,6 +24,8 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentToolSandboxPolicyView;
 import com.czh.datasmart.govern.agent.service.AgentSessionService;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionAuditService;
 import com.czh.datasmart.govern.agent.service.AgentToolExecutionResultQueryService;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionAccessContext;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionEndpointAccessResolver;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolAutoExecutionService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunAsyncTaskCommandPlanningService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolDagExecutionDryRunService;
@@ -36,6 +38,7 @@ import com.czh.datasmart.govern.agent.service.execution.AgentToolSandboxPolicyQu
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -60,6 +63,7 @@ public class AgentToolExecutionAuditController {
 
     private final AgentToolExecutionAuditService auditService;
     private final AgentSessionService sessionService;
+    private final AgentSessionEndpointAccessResolver endpointAccessResolver;
     private final AgentToolExecutionResultQueryService resultQueryService;
     private final AgentRunToolExecutionPolicyService executionPolicyService;
     private final AgentRunToolAutoExecutionService autoExecutionService;
@@ -83,7 +87,9 @@ public class AgentToolExecutionAuditController {
     public PlatformApiResponse<List<AgentToolExecutionAuditView>> listRunToolExecutions(
             @PathVariable("sessionId") String sessionId,
             @PathVariable("runId") String runId,
+            @RequestHeader HttpHeaders headers,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        requireReadAccess(sessionId, headers);
         return PlatformApiResponse.success(auditService.listByRun(sessionId, runId), traceId);
     }
 
@@ -108,7 +114,9 @@ public class AgentToolExecutionAuditController {
     public PlatformApiResponse<AgentRunToolExecutionPolicyView> getRunToolExecutionPolicy(
             @PathVariable("sessionId") String sessionId,
             @PathVariable("runId") String runId,
+            @RequestHeader HttpHeaders headers,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        requireReadAccess(sessionId, headers);
         return PlatformApiResponse.success(executionPolicyService.inspectRunPolicy(sessionId, runId), traceId);
     }
 
@@ -133,7 +141,9 @@ public class AgentToolExecutionAuditController {
             @PathVariable("sessionId") String sessionId,
             @PathVariable("runId") String runId,
             @PathVariable("auditId") String auditId,
+            @RequestHeader HttpHeaders headers,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        requireReadAccess(sessionId, headers);
         return PlatformApiResponse.success(
                 sandboxPolicyQueryService.inspectToolSandboxPolicy(sessionId, runId, auditId),
                 traceId
@@ -160,7 +170,9 @@ public class AgentToolExecutionAuditController {
             @PathVariable("sessionId") String sessionId,
             @PathVariable("runId") String runId,
             @PathVariable("auditId") String auditId,
+            @RequestHeader HttpHeaders headers,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        requireReadAccess(sessionId, headers);
         return PlatformApiResponse.success(
                 runtimeProtectionQueryService.inspectToolRuntimeProtection(sessionId, runId, auditId),
                 traceId
@@ -183,7 +195,9 @@ public class AgentToolExecutionAuditController {
     public PlatformApiResponse<AgentRunToolPlanDagView> getRunToolPlanDag(
             @PathVariable("sessionId") String sessionId,
             @PathVariable("runId") String runId,
+            @RequestHeader HttpHeaders headers,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        requireReadAccess(sessionId, headers);
         return PlatformApiResponse.success(toolPlanDagService.inspectRunToolPlanDag(sessionId, runId), traceId);
     }
 
@@ -203,7 +217,9 @@ public class AgentToolExecutionAuditController {
     public PlatformApiResponse<AgentRunToolDagExecutionPreviewView> getRunToolDagExecutionPreview(
             @PathVariable("sessionId") String sessionId,
             @PathVariable("runId") String runId,
+            @RequestHeader HttpHeaders headers,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        requireReadAccess(sessionId, headers);
         return PlatformApiResponse.success(toolDagExecutionPreviewService.previewRunDagExecution(sessionId, runId), traceId);
     }
 
@@ -230,7 +246,9 @@ public class AgentToolExecutionAuditController {
             @PathVariable("sessionId") String sessionId,
             @PathVariable("runId") String runId,
             @RequestBody(required = false) AgentRunToolDagExecutionDryRunRequest request,
+            @RequestHeader HttpHeaders headers,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        requireReadAccess(sessionId, headers);
         return PlatformApiResponse.success(toolDagExecutionDryRunService.dryRunDagExecution(sessionId, runId, request, traceId), traceId);
     }
 
@@ -257,7 +275,9 @@ public class AgentToolExecutionAuditController {
             @PathVariable("sessionId") String sessionId,
             @PathVariable("runId") String runId,
             @RequestBody(required = false) AgentSessionHandoffDagExecutionBridgePreviewRequest request,
+            @RequestHeader HttpHeaders headers,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        requireReadAccess(sessionId, headers);
         return PlatformApiResponse.success(
                 handoffDagExecutionBridgeService.previewBridge(sessionId, runId, request, traceId),
                 traceId
@@ -285,7 +305,9 @@ public class AgentToolExecutionAuditController {
             @PathVariable("sessionId") String sessionId,
             @PathVariable("runId") String runId,
             @RequestBody(required = false) AgentRunToolAutoExecutionRequest request,
+            @RequestHeader HttpHeaders headers,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        sessionService.requireMutationAccess(sessionId, automatedExecutionAccess(sessionId, headers));
         return PlatformApiResponse.success(autoExecutionService.executeEligibleSyncTools(sessionId, runId, request, traceId), traceId);
     }
 
@@ -305,7 +327,9 @@ public class AgentToolExecutionAuditController {
     public PlatformApiResponse<AgentRunAsyncTaskCommandPlanView> getRunAsyncTaskCommandPlans(
             @PathVariable("sessionId") String sessionId,
             @PathVariable("runId") String runId,
+            @RequestHeader HttpHeaders headers,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        requireReadAccess(sessionId, headers);
         return PlatformApiResponse.success(asyncTaskCommandPlanningService.planRunAsyncTaskCommands(sessionId, runId), traceId);
     }
 
@@ -326,8 +350,13 @@ public class AgentToolExecutionAuditController {
             @PathVariable("runId") String runId,
             @PathVariable("auditId") String auditId,
             @RequestBody AgentToolExecutionDecisionRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
-        return PlatformApiResponse.success(sessionService.approveToolExecution(sessionId, runId, auditId, request), traceId);
+        return PlatformApiResponse.success(sessionService.approveToolExecution(
+                sessionId, runId, auditId, request, access(tenantId, projectId, actorId, actorRole)), traceId);
     }
 
     /**
@@ -342,8 +371,13 @@ public class AgentToolExecutionAuditController {
             @PathVariable("runId") String runId,
             @PathVariable("auditId") String auditId,
             @RequestBody AgentToolExecutionDecisionRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
-        return PlatformApiResponse.success(sessionService.rejectToolExecution(sessionId, runId, auditId, request), traceId);
+        return PlatformApiResponse.success(sessionService.rejectToolExecution(
+                sessionId, runId, auditId, request, access(tenantId, projectId, actorId, actorRole)), traceId);
     }
 
     /**
@@ -360,8 +394,13 @@ public class AgentToolExecutionAuditController {
             @PathVariable("sessionId") String sessionId,
             @PathVariable("runId") String runId,
             @PathVariable("auditId") String auditId,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
-        return PlatformApiResponse.success(sessionService.executeToolExecution(sessionId, runId, auditId, traceId), traceId);
+        return PlatformApiResponse.success(sessionService.executeToolExecution(
+                sessionId, runId, auditId, traceId, access(tenantId, projectId, actorId, actorRole)), traceId);
     }
 
     /**
@@ -379,8 +418,24 @@ public class AgentToolExecutionAuditController {
             @PathVariable("sessionId") String sessionId,
             @PathVariable("runId") String runId,
             @PathVariable("auditId") String auditId,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.SOURCE_SERVICE, required = false) String sourceService,
+            @RequestHeader(value = PlatformContextHeaders.INTERNAL_SERVICE_TOKEN, required = false) String internalToken,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
-        return PlatformApiResponse.success(sessionService.getToolExecutionResult(sessionId, runId, auditId), traceId);
+        return PlatformApiResponse.success(sessionService.getToolExecutionResult(
+                sessionId, runId, auditId, endpointAccessResolver.resolveReadAccess(
+                        sessionId,
+                        access(tenantId, projectId, actorId, actorRole),
+                        sourceService,
+                        internalToken
+                )), traceId);
+    }
+
+    private AgentSessionAccessContext access(Long tenantId, Long projectId, String actorId, String actorRole) {
+        return new AgentSessionAccessContext(tenantId, projectId, actorId, actorRole);
     }
 
     /**
@@ -396,7 +451,48 @@ public class AgentToolExecutionAuditController {
     public PlatformApiResponse<List<AgentToolExecutionResultView>> listRunToolExecutionResults(
             @PathVariable("sessionId") String sessionId,
             @PathVariable("runId") String runId,
+            @RequestHeader HttpHeaders headers,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        requireReadAccess(sessionId, headers);
         return PlatformApiResponse.success(resultQueryService.listRunToolExecutionResults(sessionId, runId), traceId);
+    }
+
+    private void requireReadAccess(String sessionId, HttpHeaders headers) {
+        sessionService.getSession(sessionId, endpointAccessResolver.resolveReadAccess(
+                sessionId,
+                access(headers),
+                headers.getFirst(PlatformContextHeaders.SOURCE_SERVICE),
+                headers.getFirst(PlatformContextHeaders.INTERNAL_SERVICE_TOKEN)
+        ));
+    }
+
+    private AgentSessionAccessContext automatedExecutionAccess(String sessionId, HttpHeaders headers) {
+        return endpointAccessResolver.resolveAutomatedExecutionAccess(
+                sessionId,
+                access(headers),
+                headers.getFirst(PlatformContextHeaders.SOURCE_SERVICE),
+                headers.getFirst(PlatformContextHeaders.INTERNAL_SERVICE_TOKEN)
+        );
+    }
+
+    private AgentSessionAccessContext access(HttpHeaders headers) {
+        return access(
+                longHeader(headers, PlatformContextHeaders.TENANT_ID),
+                longHeader(headers, PlatformContextHeaders.PROJECT_ID),
+                headers.getFirst(PlatformContextHeaders.ACTOR_ID),
+                headers.getFirst(PlatformContextHeaders.ACTOR_ROLE)
+        );
+    }
+
+    private Long longHeader(HttpHeaders headers, String name) {
+        String value = headers.getFirst(name);
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.valueOf(value.trim());
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 }

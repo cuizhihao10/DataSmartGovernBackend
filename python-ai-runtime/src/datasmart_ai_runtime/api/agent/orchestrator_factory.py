@@ -253,7 +253,10 @@ def build_default_orchestrator(
     tool_feedback_provider = None
     if remote_feedback_enabled and resolved_base_url:
         tool_feedback_provider = JavaAgentRuntimeToolFeedbackProvider(
-            JavaAgentRuntimeToolFeedbackClient(base_url=resolved_base_url),
+            JavaAgentRuntimeToolFeedbackClient(
+                base_url=resolved_base_url,
+                service_token=os.getenv("DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN"),
+            ),
             trace_id=trace_id,
             auto_execute_sync_enabled=truthy_env("DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_ENABLED"),
             auto_execute_dry_run=truthy_env("DATASMART_AGENT_RUNTIME_SYNC_AUTO_EXECUTION_DRY_RUN"),

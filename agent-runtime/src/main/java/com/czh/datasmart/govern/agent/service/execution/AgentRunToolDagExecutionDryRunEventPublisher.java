@@ -11,7 +11,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagExecutionDry
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolDagExecutionDryRunItemView;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventProjectionRecord;
 import com.czh.datasmart.govern.agent.service.runtime.AgentRuntimeEventProjectionStore;
-import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -69,7 +69,7 @@ public class AgentRunToolDagExecutionDryRunEventPublisher {
     private static final String STAGE = "dag_execution_dry_run_completed";
 
     private final AgentRuntimeEventProjectionStore projectionStore;
-    private final AgentSessionMemoryStore sessionStore;
+    private final AgentSessionStore sessionStore;
 
     /**
      * 将 dry-run 响应写入 runtime event 投影。

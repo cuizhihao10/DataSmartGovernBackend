@@ -16,12 +16,16 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentRunToolDagSelectedNode
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxDiagnostics;
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxDispatcher;
 import com.czh.datasmart.govern.agent.event.command.AgentAsyncTaskCommandOutboxStore;
+import com.czh.datasmart.govern.agent.service.AgentSessionService;
 import com.czh.datasmart.govern.agent.service.execution.AgentAsyncTaskCommandOutboxOperationService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunAsyncTaskCommandOutboxService;
 import com.czh.datasmart.govern.agent.service.execution.AgentRunToolDagSelectedNodeOutboxService;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionAccessContext;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionEndpointAccessResolver;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -47,6 +51,8 @@ public class AgentAsyncTaskCommandOutboxController {
 
     private final AgentRunAsyncTaskCommandOutboxService outboxService;
     private final AgentRunToolDagSelectedNodeOutboxService selectedNodeOutboxService;
+    private final AgentSessionService sessionService;
+    private final AgentSessionEndpointAccessResolver endpointAccessResolver;
     private final AgentAsyncTaskCommandOutboxStore outboxStore;
     private final AgentAsyncTaskCommandOutboxOperationService operationService;
     private final AgentAsyncTaskCommandOutboxDispatcher dispatcher;
@@ -58,7 +64,9 @@ public class AgentAsyncTaskCommandOutboxController {
     public PlatformApiResponse<AgentRunAsyncTaskCommandOutboxEnqueueResponse> enqueueRunCommands(
             @PathVariable("sessionId") String sessionId,
             @PathVariable("runId") String runId,
+            @RequestHeader HttpHeaders headers,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        requireAutomatedMutationAccess(sessionId, headers);
         return PlatformApiResponse.success(outboxService.enqueueRunAsyncTaskCommands(sessionId, runId), traceId);
     }
 
@@ -77,7 +85,9 @@ public class AgentAsyncTaskCommandOutboxController {
             @PathVariable("sessionId") String sessionId,
             @PathVariable("runId") String runId,
             @RequestBody AgentRunToolDagSelectedNodeOutboxEnqueueRequest request,
+            @RequestHeader HttpHeaders headers,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        requireAutomatedMutationAccess(sessionId, headers);
         return PlatformApiResponse.success(
                 selectedNodeOutboxService.enqueueSelectedAsyncNodes(sessionId, runId, request, traceId),
                 traceId
@@ -188,5 +198,37 @@ public class AgentAsyncTaskCommandOutboxController {
                 operationService.appendNote(outboxId, request, actorId),
                 traceId
         );
+    }
+
+    /**
+     * 入箱会推进异步工具的真实副作用，因此不能只相信 URL 中的 sessionId。
+     * 浏览器调用必须是原会话发起人；Python Runtime 只有同时命中服务白名单和共享凭证时，
+     * 才能从持久化会话恢复原用户边界继续执行，避免服务账号绕过用户权限。
+     */
+    private void requireAutomatedMutationAccess(String sessionId, HttpHeaders headers) {
+        AgentSessionAccessContext requestAccess = new AgentSessionAccessContext(
+                longHeader(headers, PlatformContextHeaders.TENANT_ID),
+                longHeader(headers, PlatformContextHeaders.PROJECT_ID),
+                headers.getFirst(PlatformContextHeaders.ACTOR_ID),
+                headers.getFirst(PlatformContextHeaders.ACTOR_ROLE)
+        );
+        sessionService.requireMutationAccess(sessionId, endpointAccessResolver.resolveAutomatedExecutionAccess(
+                sessionId,
+                requestAccess,
+                headers.getFirst(PlatformContextHeaders.SOURCE_SERVICE),
+                headers.getFirst(PlatformContextHeaders.INTERNAL_SERVICE_TOKEN)
+        ));
+    }
+
+    private Long longHeader(HttpHeaders headers, String name) {
+        String value = headers.getFirst(name);
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.valueOf(value.trim());
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 }

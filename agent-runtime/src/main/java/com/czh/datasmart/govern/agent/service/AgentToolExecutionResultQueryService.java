@@ -8,7 +8,7 @@ package com.czh.datasmart.govern.agent.service;
 
 import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolExecutionResultView;
-import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionStore;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
 import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import lombok.RequiredArgsConstructor;
@@ -37,7 +37,7 @@ import java.util.List;
 public class AgentToolExecutionResultQueryService {
 
     private final AgentRuntimeProperties properties;
-    private final AgentSessionMemoryStore sessionMemoryStore;
+    private final AgentSessionStore sessionMemoryStore;
     private final AgentToolExecutionService toolExecutionService;
 
     /**

@@ -8,6 +8,8 @@ package com.czh.datasmart.govern.agent.service;
 
 import com.czh.datasmart.govern.agent.config.AgentRuntimeProperties;
 import com.czh.datasmart.govern.agent.controller.dto.AgentRunView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentConversationMessageView;
+import com.czh.datasmart.govern.agent.controller.dto.AgentDelegationView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentSessionView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolBindingView;
 import com.czh.datasmart.govern.agent.controller.dto.AgentToolDefinitionView;
@@ -26,7 +28,8 @@ import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
 import com.czh.datasmart.govern.agent.service.plan.AgentPlanIngestionIdempotencySupport;
 import com.czh.datasmart.govern.agent.service.plan.AgentPlanToolSnapshot;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
-import com.czh.datasmart.govern.agent.service.session.AgentSessionMemoryStore;
+import com.czh.datasmart.govern.agent.service.session.AgentConversationMessageRecord;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionStore;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentToolBindingRecord;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
@@ -65,7 +68,7 @@ public class AgentPlanIngestionService {
     private static final String DEFAULT_CHANNEL = "PYTHON_AI_RUNTIME";
 
     private final AgentRuntimeProperties properties;
-    private final AgentSessionMemoryStore sessionMemoryStore;
+    private final AgentSessionStore sessionMemoryStore;
     private final AgentToolRegistryService toolRegistryService;
     private final AgentToolExecutionAuditService auditService;
     private final AgentPlanIngestionIdempotencySupport idempotencySupport;
@@ -103,6 +106,8 @@ public class AgentPlanIngestionService {
             bindMissingTools(session, toolSnapshots);
             AgentRunRecord run = createRun(session, request, toolSnapshots);
             session.addRun(run);
+            appendConversationMessages(session, run, request);
+            sessionMemoryStore.save(session);
             AgentSessionView sessionView = toSessionView(session);
             AgentRunView runView = toRunView(run);
             List<AgentToolExecutionAuditView> audits = auditService.createPlanAuditsFromSnapshots(
@@ -114,6 +119,22 @@ public class AgentPlanIngestionService {
             IngestedAgentPlanView view = new IngestedAgentPlanView(sessionView, runView, audits, controlPlaneNotes(run, audits));
             idempotencySupport.remember(request, view);
             return view;
+        }
+    }
+
+    private void appendConversationMessages(AgentSessionRecord session,
+                                            AgentRunRecord run,
+                                            IngestAgentPlanRequest request) {
+        LocalDateTime now = LocalDateTime.now();
+        if (request.userInput() != null && !request.userInput().isBlank()) {
+            session.addMessage(new AgentConversationMessageRecord(
+                    "agm_" + UUID.randomUUID().toString().replace("-", ""),
+                    run.getRunId(), "USER", preview(request.userInput(), 20000), now));
+        }
+        if (request.responseSummary() != null && !request.responseSummary().isBlank()) {
+            session.addMessage(new AgentConversationMessageRecord(
+                    "agm_" + UUID.randomUUID().toString().replace("-", ""),
+                    run.getRunId(), "AGENT", preview(request.responseSummary(), 20000), now.plusNanos(1)));
         }
     }
 
@@ -490,6 +511,7 @@ public class AgentPlanIngestionService {
         );
         return new AgentSessionView(
                 session.getSessionId(),
+                session.getAgentId(),
                 session.getTenantId(),
                 session.getProjectId(),
                 session.getWorkspaceId(),
@@ -500,6 +522,19 @@ public class AgentPlanIngestionService {
                 workspace,
                 session.getToolBindings().stream().map(this::toToolView).toList(),
                 session.getRuns().stream().map(this::toRunView).toList(),
+                new AgentDelegationView(
+                        session.getDelegation().getDelegationId(), session.getDelegation().getAgentId(),
+                        session.getDelegation().getUserActorId(), session.getDelegation().getTenantId(),
+                        session.getDelegation().getProjectId(), session.getDelegation().getToolCodes(),
+                        session.getDelegation().getActions(), session.getDelegation().getResourceScopes(),
+                        session.getDelegation().getStatus(), session.getDelegation().getIssuedAt(),
+                        session.getDelegation().getExpiresAt(), session.getDelegation().getRevokedAt()),
+                session.getMessages().stream().map(message -> new AgentConversationMessageView(
+                        message.messageId(), message.runId(), message.role(), message.content(), message.createTime())).toList(),
+                session.isPinned(),
+                session.isArchived(),
+                session.getArchivedAt(),
+                session.getLastMessageAt(),
                 session.getCreateTime(),
                 session.getUpdateTime()
         );

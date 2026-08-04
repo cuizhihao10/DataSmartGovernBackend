@@ -7,18 +7,25 @@
 package com.czh.datasmart.govern.agent.service.tool;
 
 import com.czh.datasmart.govern.agent.model.AgentRunState;
+import com.czh.datasmart.govern.agent.model.AgentSessionState;
+import com.czh.datasmart.govern.agent.model.AgentToolBindingStatus;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionState;
+import com.czh.datasmart.govern.agent.model.AgentToolType;
 import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
 import com.czh.datasmart.govern.agent.service.audit.AgentToolExecutionAuditRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentRunRecord;
+import com.czh.datasmart.govern.agent.service.session.AgentDelegationRecord;
 import com.czh.datasmart.govern.agent.service.session.AgentSessionRecord;
+import com.czh.datasmart.govern.agent.service.session.AgentToolBindingRecord;
 import com.czh.datasmart.govern.common.error.PlatformBusinessException;
+import com.czh.datasmart.govern.common.error.PlatformErrorCode;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -57,8 +64,56 @@ class AgentToolExecutionGuardTest {
         guard.validateBeforeExecution(session(), run(), audit);
     }
 
-    private AgentSessionRecord session() {
+    @Test
+    void shouldRejectExpiredOrRevokedDelegation() {
+        LocalDateTime now = LocalDateTime.now();
+        AgentDelegationRecord expired = new AgentDelegationRecord(
+                "delegation-expired", "datasmart-govern-agent", "u-001", 10L, 20L,
+                List.of("datasource.metadata.read"), List.of("VIEW"),
+                List.of("datasource-management:1001"), AgentDelegationRecord.ACTIVE,
+                now.minusHours(2), now.minusHours(1), null, now.minusHours(1)
+        );
+        PlatformBusinessException expiredException = assertThrows(PlatformBusinessException.class,
+                () -> guard.validateBeforeExecution(sessionWithDelegation(expired), run(),
+                        audit(true, null, Map.of())));
+        assertEquals(PlatformErrorCode.FORBIDDEN, expiredException.getErrorCode());
+
+        AgentSessionRecord revokedSession = session();
+        revokedSession.getDelegation().revoke();
+        PlatformBusinessException revokedException = assertThrows(PlatformBusinessException.class,
+                () -> guard.validateBeforeExecution(revokedSession, run(), audit(true, null, Map.of())));
+        assertEquals(PlatformErrorCode.FORBIDDEN, revokedException.getErrorCode());
+    }
+
+    @Test
+    void shouldRejectResourceOutsideDelegationScope() {
+        LocalDateTime now = LocalDateTime.now();
+        AgentDelegationRecord resourceLimited = new AgentDelegationRecord(
+                "delegation-resource-limited", "datasmart-govern-agent", "u-001", 10L, 20L,
+                List.of("datasource.metadata.read"), List.of("VIEW"),
+                List.of("datasource-management:2002"), AgentDelegationRecord.ACTIVE,
+                now, null, null, now
+        );
+
+        PlatformBusinessException exception = assertThrows(PlatformBusinessException.class,
+                () -> guard.validateBeforeExecution(sessionWithDelegation(resourceLimited), run(),
+                        audit(true, null, Map.of())));
+
+        assertEquals(PlatformErrorCode.FORBIDDEN, exception.getErrorCode());
+    }
+
+    private AgentSessionRecord sessionWithDelegation(AgentDelegationRecord delegation) {
+        LocalDateTime now = LocalDateTime.now();
         return new AgentSessionRecord(
+                "session-001", "datasmart-govern-agent", 10L, 20L, null, "u-001",
+                null, null, null, "WEB", "委托边界测试", WorkspaceIsolationLevel.PROJECT,
+                "tenant:10:project:20", AgentSessionState.ACTIVE, delegation, false,
+                null, now, now, now, List.of(), List.of(), List.of()
+        );
+    }
+
+    private AgentSessionRecord session() {
+        AgentSessionRecord session = new AgentSessionRecord(
                 "session-001",
                 10L,
                 20L,
@@ -68,6 +123,41 @@ class AgentToolExecutionGuardTest {
                 "测试工具执行守卫",
                 WorkspaceIsolationLevel.PROJECT,
                 "tenant:10:project:20",
+                LocalDateTime.now()
+        );
+        session.addToolBinding(binding(
+                "binding-metadata", "datasource.metadata.read", AgentToolType.DATASOURCE_METADATA,
+                "datasource-management", "/metadata", true, List.of("VIEW")
+        ));
+        session.addToolBinding(binding(
+                "binding-task", "task.create", AgentToolType.TASK_MANAGEMENT,
+                "task-management", "/tasks", false, List.of("CREATE")
+        ));
+        return session;
+    }
+
+    private AgentToolBindingRecord binding(String bindingId,
+                                           String toolCode,
+                                           AgentToolType toolType,
+                                           String targetService,
+                                           String targetEndpoint,
+                                           boolean readOnly,
+                                           List<String> allowedActions) {
+        return new AgentToolBindingRecord(
+                bindingId,
+                toolCode,
+                toolType,
+                toolCode,
+                targetService,
+                targetEndpoint,
+                1001L,
+                readOnly,
+                readOnly ? "LOW" : "HIGH",
+                readOnly ? "SYNC" : "APPROVAL_REQUIRED",
+                !readOnly,
+                readOnly,
+                AgentToolBindingStatus.ENABLED,
+                allowedActions,
                 LocalDateTime.now()
         );
     }

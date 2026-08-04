@@ -90,6 +90,23 @@ public class AgentRunRecord {
                           Map<String, Object> variables,
                           LocalDateTime createTime,
                           String message) {
+        this(runId, sessionId, state, workloadType, userInputPreview, dryRun, requireHumanApproval,
+                nextActions, variables, createTime, createTime, null, message);
+    }
+
+    public AgentRunRecord(String runId,
+                          String sessionId,
+                          AgentRunState state,
+                          String workloadType,
+                          String userInputPreview,
+                          Boolean dryRun,
+                          Boolean requireHumanApproval,
+                          List<String> nextActions,
+                          Map<String, Object> variables,
+                          LocalDateTime createTime,
+                          LocalDateTime updateTime,
+                          LocalDateTime finishTime,
+                          String message) {
         this.runId = runId;
         this.sessionId = sessionId;
         this.state = state;
@@ -100,7 +117,8 @@ public class AgentRunRecord {
         this.nextActions = nextActions;
         this.variables = variables;
         this.createTime = createTime;
-        this.updateTime = createTime;
+        this.updateTime = updateTime == null ? createTime : updateTime;
+        this.finishTime = finishTime;
         this.message = message;
     }
 

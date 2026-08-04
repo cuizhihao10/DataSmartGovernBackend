@@ -11,13 +11,16 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentSessionView;
 import com.czh.datasmart.govern.agent.controller.dto.BindAgentToolRequest;
 import com.czh.datasmart.govern.agent.controller.dto.CreateAgentSessionRequest;
 import com.czh.datasmart.govern.agent.controller.dto.StartAgentRunRequest;
+import com.czh.datasmart.govern.agent.controller.dto.UpdateAgentSessionFlagRequest;
 import com.czh.datasmart.govern.agent.service.AgentSessionService;
+import com.czh.datasmart.govern.agent.service.session.AgentSessionAccessContext;
 import com.czh.datasmart.govern.common.api.PlatformApiResponse;
 import com.czh.datasmart.govern.common.context.PlatformContextHeaders;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
@@ -57,8 +60,13 @@ public class AgentSessionController {
     @PostMapping
     public PlatformApiResponse<AgentSessionView> createSession(
             @Valid @RequestBody CreateAgentSessionRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
-        return PlatformApiResponse.success("Agent 会话创建成功", agentSessionService.createSession(request), traceId);
+        return PlatformApiResponse.success("Agent 会话创建成功",
+                agentSessionService.createSession(request, access(tenantId, projectId, actorId, actorRole)), traceId);
     }
 
     /**
@@ -71,9 +79,16 @@ public class AgentSessionController {
     public PlatformApiResponse<List<AgentSessionView>> listSessions(
             @RequestParam(value = "tenantId", required = false) Long tenantId,
             @RequestParam(value = "projectId", required = false) Long projectId,
-            @RequestParam(value = "actorId", required = false) String actorId,
+            @RequestParam(value = "actorId", required = false) String actorFilter,
+            @RequestParam(value = "archived", defaultValue = "false") boolean archived,
+            @RequestParam(value = "limit", defaultValue = "100") int limit,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long contextTenantId,
+            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long contextProjectId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
-        return PlatformApiResponse.success(agentSessionService.listSessions(tenantId, projectId, actorId), traceId);
+        return PlatformApiResponse.success(agentSessionService.listSessions(
+                access(contextTenantId, contextProjectId, actorId, actorRole), actorFilter, archived, limit), traceId);
     }
 
     /**
@@ -84,8 +99,13 @@ public class AgentSessionController {
     @GetMapping("/{sessionId}")
     public PlatformApiResponse<AgentSessionView> getSession(
             @PathVariable("sessionId") String sessionId,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
-        return PlatformApiResponse.success(agentSessionService.getSession(sessionId), traceId);
+        return PlatformApiResponse.success(agentSessionService.getSession(
+                sessionId, access(tenantId, projectId, actorId, actorRole)), traceId);
     }
 
     /**
@@ -98,8 +118,13 @@ public class AgentSessionController {
     public PlatformApiResponse<AgentSessionView> bindTool(
             @PathVariable("sessionId") String sessionId,
             @Valid @RequestBody BindAgentToolRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
-        return PlatformApiResponse.success("Agent 工具绑定成功", agentSessionService.bindTool(sessionId, request), traceId);
+        return PlatformApiResponse.success("Agent 工具绑定成功", agentSessionService.bindTool(
+                sessionId, request, access(tenantId, projectId, actorId, actorRole)), traceId);
     }
 
     /**
@@ -112,8 +137,13 @@ public class AgentSessionController {
     public PlatformApiResponse<AgentRunView> startRun(
             @PathVariable("sessionId") String sessionId,
             @Valid @RequestBody StartAgentRunRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
-        return PlatformApiResponse.success("Agent Run 已创建", agentSessionService.startRun(sessionId, request, traceId), traceId);
+        return PlatformApiResponse.success("Agent Run 已创建", agentSessionService.startRun(
+                sessionId, request, traceId, access(tenantId, projectId, actorId, actorRole)), traceId);
     }
 
     /**
@@ -126,7 +156,42 @@ public class AgentSessionController {
     public PlatformApiResponse<AgentRunView> cancelRun(
             @PathVariable("sessionId") String sessionId,
             @PathVariable("runId") String runId,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
             @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
-        return PlatformApiResponse.success("Agent Run 已取消", agentSessionService.cancelRun(sessionId, runId), traceId);
+        return PlatformApiResponse.success("Agent Run 已取消", agentSessionService.cancelRun(
+                sessionId, runId, access(tenantId, projectId, actorId, actorRole)), traceId);
+    }
+
+    @PatchMapping("/{sessionId}/pin")
+    public PlatformApiResponse<AgentSessionView> setPinned(
+            @PathVariable("sessionId") String sessionId,
+            @Valid @RequestBody UpdateAgentSessionFlagRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(agentSessionService.setPinned(
+                sessionId, request.enabled(), access(tenantId, projectId, actorId, actorRole)), traceId);
+    }
+
+    @PatchMapping("/{sessionId}/archive")
+    public PlatformApiResponse<AgentSessionView> setArchived(
+            @PathVariable("sessionId") String sessionId,
+            @Valid @RequestBody UpdateAgentSessionFlagRequest request,
+            @RequestHeader(value = PlatformContextHeaders.TENANT_ID, required = false) Long tenantId,
+            @RequestHeader(value = PlatformContextHeaders.PROJECT_ID, required = false) Long projectId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ID, required = false) String actorId,
+            @RequestHeader(value = PlatformContextHeaders.ACTOR_ROLE, required = false) String actorRole,
+            @RequestHeader(value = PlatformContextHeaders.TRACE_ID, required = false) String traceId) {
+        return PlatformApiResponse.success(agentSessionService.setArchived(
+                sessionId, request.enabled(), access(tenantId, projectId, actorId, actorRole)), traceId);
+    }
+
+    private AgentSessionAccessContext access(Long tenantId, Long projectId, String actorId, String actorRole) {
+        return new AgentSessionAccessContext(tenantId, projectId, actorId, actorRole);
     }
 }

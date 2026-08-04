@@ -12,6 +12,7 @@ import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * 内部 Agent 会话记录。
@@ -23,6 +24,7 @@ import java.util.List;
 public class AgentSessionRecord {
 
     private final String sessionId;
+    private final String agentId;
     private final Long tenantId;
     private final Long projectId;
     private final Long workspaceId;
@@ -40,6 +42,11 @@ public class AgentSessionRecord {
     private AgentSessionState state;
     private final List<AgentToolBindingRecord> toolBindings = new ArrayList<>();
     private final List<AgentRunRecord> runs = new ArrayList<>();
+    private final List<AgentConversationMessageRecord> messages = new ArrayList<>();
+    private AgentDelegationRecord delegation;
+    private boolean pinned;
+    private LocalDateTime archivedAt;
+    private LocalDateTime lastMessageAt;
     private final LocalDateTime createTime;
     private LocalDateTime updateTime;
 
@@ -70,7 +77,37 @@ public class AgentSessionRecord {
                               WorkspaceIsolationLevel isolationLevel,
                               String workspaceKey,
                               LocalDateTime createTime) {
+        this(sessionId, "datasmart-govern-agent", tenantId, projectId, workspaceId, actorId,
+                actorRole, actorType, authorizedProjectRoles, channel, objective, isolationLevel, workspaceKey,
+                AgentSessionState.ACTIVE, null, false, null, createTime, createTime, createTime,
+                List.of(), List.of(), List.of());
+    }
+
+    public AgentSessionRecord(String sessionId,
+                              String agentId,
+                              Long tenantId,
+                              Long projectId,
+                              Long workspaceId,
+                              String actorId,
+                              String actorRole,
+                              String actorType,
+                              String authorizedProjectRoles,
+                              String channel,
+                              String objective,
+                              WorkspaceIsolationLevel isolationLevel,
+                              String workspaceKey,
+                              AgentSessionState state,
+                              AgentDelegationRecord delegation,
+                              boolean pinned,
+                              LocalDateTime archivedAt,
+                              LocalDateTime lastMessageAt,
+                              LocalDateTime createTime,
+                              LocalDateTime updateTime,
+                              List<AgentToolBindingRecord> toolBindings,
+                              List<AgentRunRecord> runs,
+                              List<AgentConversationMessageRecord> messages) {
         this.sessionId = sessionId;
+        this.agentId = normalize(agentId) == null ? "datasmart-govern-agent" : agentId.trim();
         this.tenantId = tenantId;
         this.projectId = projectId;
         this.workspaceId = workspaceId;
@@ -82,13 +119,44 @@ public class AgentSessionRecord {
         this.objective = objective;
         this.isolationLevel = isolationLevel;
         this.workspaceKey = workspaceKey;
-        this.state = AgentSessionState.ACTIVE;
+        this.state = state == null ? AgentSessionState.ACTIVE : state;
         this.createTime = createTime;
-        this.updateTime = createTime;
+        this.updateTime = updateTime == null ? createTime : updateTime;
+        this.pinned = pinned;
+        this.archivedAt = archivedAt;
+        this.lastMessageAt = lastMessageAt == null ? createTime : lastMessageAt;
+        if (toolBindings != null) {
+            this.toolBindings.addAll(toolBindings);
+        }
+        if (runs != null) {
+            this.runs.addAll(runs);
+        }
+        if (messages != null) {
+            this.messages.addAll(messages);
+        }
+        this.delegation = delegation == null ? new AgentDelegationRecord(
+                "agd_" + UUID.randomUUID().toString().replace("-", ""),
+                this.agentId,
+                actorId,
+                tenantId,
+                projectId,
+                List.of(),
+                List.of(),
+                List.of(),
+                AgentDelegationRecord.ACTIVE,
+                this.createTime,
+                null,
+                null,
+                this.createTime
+        ) : delegation;
     }
 
     public String getSessionId() {
         return sessionId;
+    }
+
+    public String getAgentId() {
+        return agentId;
     }
 
     public Long getTenantId() {
@@ -147,6 +215,30 @@ public class AgentSessionRecord {
         return List.copyOf(runs);
     }
 
+    public List<AgentConversationMessageRecord> getMessages() {
+        return List.copyOf(messages);
+    }
+
+    public AgentDelegationRecord getDelegation() {
+        return delegation;
+    }
+
+    public boolean isPinned() {
+        return pinned;
+    }
+
+    public boolean isArchived() {
+        return archivedAt != null;
+    }
+
+    public LocalDateTime getArchivedAt() {
+        return archivedAt;
+    }
+
+    public LocalDateTime getLastMessageAt() {
+        return lastMessageAt;
+    }
+
     public LocalDateTime getCreateTime() {
         return createTime;
     }
@@ -160,6 +252,7 @@ public class AgentSessionRecord {
      */
     public void addToolBinding(AgentToolBindingRecord binding) {
         this.toolBindings.add(binding);
+        this.delegation.grant(binding);
         this.updateTime = LocalDateTime.now();
     }
 
@@ -168,6 +261,25 @@ public class AgentSessionRecord {
      */
     public void addRun(AgentRunRecord run) {
         this.runs.add(run);
+        this.updateTime = LocalDateTime.now();
+    }
+
+    public void addMessage(AgentConversationMessageRecord message) {
+        if (message == null || message.content() == null || message.content().isBlank()) {
+            return;
+        }
+        this.messages.add(message);
+        this.lastMessageAt = message.createTime() == null ? LocalDateTime.now() : message.createTime();
+        this.updateTime = this.lastMessageAt;
+    }
+
+    public void setPinned(boolean pinned) {
+        this.pinned = pinned;
+        this.updateTime = LocalDateTime.now();
+    }
+
+    public void setArchived(boolean archived) {
+        this.archivedAt = archived ? LocalDateTime.now() : null;
         this.updateTime = LocalDateTime.now();
     }
 

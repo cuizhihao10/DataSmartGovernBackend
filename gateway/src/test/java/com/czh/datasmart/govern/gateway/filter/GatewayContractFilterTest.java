@@ -54,6 +54,35 @@ class GatewayContractFilterTest {
     }
 
     /**
+     * 浏览器不能伪造 Agent 双主体审计字段或内部服务凭证。
+     * 这些字段只能由 Agent Runtime 的受控下游调用链重建，否则普通用户可以冒充另一个 Agent Run
+     * 或直接伪造内部审批事实登记身份。
+     */
+    @Test
+    void shouldClearAgentAuditAndInternalServiceHeadersFromExternalRequest() {
+        GatewayContractFilter filter = new GatewayContractFilter(new GatewayContextProperties());
+        MockServerWebExchange exchange = MockServerWebExchange.from(
+                MockServerHttpRequest.get("/api/agent/sessions/session-001")
+                        .header(PlatformContextHeaders.AGENT_ID, "forged-agent")
+                        .header(PlatformContextHeaders.AGENT_SESSION_ID, "forged-session")
+                        .header(PlatformContextHeaders.AGENT_RUN_ID, "forged-run")
+                        .header(PlatformContextHeaders.AGENT_DELEGATION_ID, "forged-delegation")
+                        .header(PlatformContextHeaders.INTERNAL_SERVICE_TOKEN, "forged-token")
+                        .build()
+        );
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain();
+
+        filter.filter(exchange, chain).block();
+
+        assertThat(chain.called()).isTrue();
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AGENT_ID)).isNull();
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AGENT_SESSION_ID)).isNull();
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AGENT_RUN_ID)).isNull();
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.AGENT_DELEGATION_ID)).isNull();
+        assertThat(chain.exchange().getRequest().getHeaders().getFirst(PlatformContextHeaders.INTERNAL_SERVICE_TOKEN)).isNull();
+    }
+
+    /**
      * 非法项目 Header 也不能透传，但原始值需要保留给授权过滤器返回清晰 400。
      */
     @Test

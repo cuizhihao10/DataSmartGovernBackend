@@ -91,6 +91,11 @@ management:
 
 datasmart:
   permission:
+    agent-approval-facts:
+      trusted-registration:
+        # 必须由 Secret Manager 注入；为空时登记接口严格拒绝所有请求。
+        shared-token: ${DATASMART_PERMISSION_AGENT_APPROVAL_FACT_SHARED_TOKEN:}
+        allowed-source-services: ${DATASMART_PERMISSION_AGENT_APPROVAL_FACT_ALLOWED_SERVICES:agent-runtime,approval-service,permission-admin}
     identity-provisioning:
       # 身份供应不是“DataSmart 自己保存密码并签发登录态”，而是由 permission-admin 通过 Keycloak/企业 IdP Admin API
       # 创建、禁用、重置外部账号，再把低敏影子身份写入 PostgreSQL，供权限、审计、租户隔离和用户画像使用。
