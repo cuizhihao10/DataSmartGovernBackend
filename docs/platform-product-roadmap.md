@@ -16169,3 +16169,14 @@ push 边界如何消费 5.29 的 task runtime event 契约。当前仍不接受�
 - 新增 permission-admin `V47` 路由策略，让普通用户和项目 OWNER 可以访问自己的会话列表、详情、置顶和归档接口；最终对象归属仍由 Agent Runtime 按 `tenantId + projectId + actorId` 校验，不授予项目级查看他人会话的权限。
 - 恢复 Agent Runtime `V3` 与 permission-admin `V46` 已执行迁移的原始内容，消除因后补注释造成的 Flyway checksum 漂移；新增权限规则只通过新的 `V47` 增量迁移交付。
 - 验证证据：Agent Runtime Java 21 Reactor 共 `541` 个测试通过，permission-admin 共 `75` 个测试通过、`1` 个依赖 Testcontainers 环境的集成测试跳过，Python Runtime 共 `854` 个测试通过，前端 `npm run lint` 与 `npm run build` 通过；真实本地链路验证新 Run 完整保留 `2` 条对象映射和 `10` 条字段映射，且未审批的任务写操作没有执行。真实 PostgreSQL 启动日志确认 permission-admin `47` 个迁移和 Agent Runtime `3` 个迁移校验通过。
+
+## 2026-08-05 追加落地进展：同名任务修复 continuation 丢失更新治理
+
+- 修复“Agent 已给出唯一任务名并生成修复 Run，但用户确认时提示 Run 不存在”的并发持久化缺陷。问题来自跨服务回调期间的新 Run 被旧会话整聚合快照覆盖，不是模型命名、任务配置或用户确认内容错误。
+- 会话 Store 增加增量消息写入能力，助手二轮回复不再通过整聚合 `save` 落库；PostgreSQL 写集合严格限定为消息表和会话活跃时间，避免 continuation 回调刚创建的 Run 被 `replaceRuns()` 删除。
+- Java 控制面增加返回前 durable Run 校验，不再把数据库中不存在的 `nextRunId` 交给前端。异常场景保留修复建议但清除执行引用，维持 fail-closed。
+- Python 同名修复规划器把原失败 Run 的成功元数据反馈重新绑定成 `fromAuditId + fromRunId`，修复写生命周期可以安全复用可信跨 Run 输出；Java 仍按 session、auditId 和 toolCode 校验引用，不接受模型伪造元数据或数据源 ID。
+- 前端为历史悬空 Run 增加恢复卡片和“重新生成更名修复计划”动作。该动作复用当前数据源、对象/字段映射、WHERE、同步模式和写入策略，只替换经用户采纳的任务名，并重新走计划预览与确认。
+- 新增 JDBC SQL 边界测试，明确断言消息追加路径不会执行 `DELETE FROM agent_run`、工具绑定或消息整组删除；服务测试同时断言当前 Run 终态只做一次聚合保存、下一 Run 在追加助手消息后仍存在。
+- 真实链路确认建议名称已成功保存为任务 `38`，说明 Run 持久化和跨 Run 元数据引用均已闭环。该任务随后因目标表非空且选择 `FULL + INSERT` 被真实预检查正确阻断，Agent 给出三种需要用户选择的业务修复方案，不把合理预检阻断误判成系统成功。
+- 验证证据：Java 相关定向测试 `8/8`、Python 更名/continuation 定向测试 `7/7`、Agent Runtime 全量 `544/544`、Python Runtime 全量 `855/855`、前端 lint/build 全部通过。

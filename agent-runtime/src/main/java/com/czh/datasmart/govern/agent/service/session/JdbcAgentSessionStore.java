@@ -89,6 +89,72 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
     }
 
     /**
+     * 只追加一条对话消息并刷新会话活跃时间，不读取、更不会替换 Run、工具绑定或委托子集合。
+     *
+     * <p>该方法专门解决跨服务 continuation 的丢失更新问题。确认执行线程调用 Python 时，Python 可能已经通过
+     * plan ingestion 向同一 PostgreSQL 会话写入了新的 Run；此时整聚合 {@link #save(AgentSessionRecord)} 会把旧快照
+     * 之外的 Run 删除。增量 SQL 把写集合严格限制为 {@code agent_conversation_message} 和
+     * {@code agent_session.last_message_at/update_time}，从持久化层保证新 Run 不受影响。</p>
+     *
+     * <p>消息 ID 使用唯一约束实现幂等。先更新会话主表用于确认父会话存在，再插入消息；两步位于同一事务中，
+     * 任一步失败都会整体回滚。时间字段使用条件表达式只向前推进，避免并发消息提交顺序与创建顺序不同导致
+     * 历史会话列表的活跃时间倒退。</p>
+     *
+     * @param sessionId 目标会话 ID
+     * @param message 已治理的用户可见消息
+     * @return 会话存在且增量写完成时返回 true；会话不存在或参数无效时返回 false
+     */
+    @Override
+    public boolean appendConversationMessage(String sessionId, AgentConversationMessageRecord message) {
+        if (!hasText(sessionId) || message == null || !hasText(message.messageId()) || !hasText(message.content())) {
+            return false;
+        }
+        String normalizedSessionId = sessionId.trim();
+        LocalDateTime messageTime = message.createTime() == null ? LocalDateTime.now() : message.createTime();
+        return connectionManager.executeInTransaction(connection -> {
+            String updateSql = """
+                    UPDATE agent_session
+                    SET last_message_at = CASE
+                            WHEN last_message_at IS NULL OR last_message_at < ? THEN ?
+                            ELSE last_message_at
+                        END,
+                        update_time = CASE
+                            WHEN update_time < ? THEN ?
+                            ELSE update_time
+                        END
+                    WHERE session_id = ?
+                    """;
+            try (PreparedStatement update = connection.prepareStatement(updateSql)) {
+                setTimestamp(update, 1, messageTime);
+                setTimestamp(update, 2, messageTime);
+                setTimestamp(update, 3, messageTime);
+                setTimestamp(update, 4, messageTime);
+                update.setString(5, normalizedSessionId);
+                if (update.executeUpdate() == 0) {
+                    return false;
+                }
+            }
+
+            String insertSql = """
+                    INSERT INTO agent_conversation_message
+                        (message_id, session_id, run_id, role, content, create_time)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (message_id) DO NOTHING
+                    """;
+            try (PreparedStatement insert = connection.prepareStatement(insertSql)) {
+                insert.setString(1, message.messageId().trim());
+                insert.setString(2, normalizedSessionId);
+                insert.setString(3, message.runId());
+                insert.setString(4, message.role());
+                insert.setString(5, message.content());
+                setTimestamp(insert, 6, messageTime);
+                insert.executeUpdate();
+            }
+            return true;
+        });
+    }
+
+    /**
      * 按业务会话编号恢复完整聚合。
      *
      * @param sessionId Agent 会话业务编号；空白值直接视为不存在，避免无意义数据库访问

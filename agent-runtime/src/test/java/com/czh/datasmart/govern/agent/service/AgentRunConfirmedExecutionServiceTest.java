@@ -31,6 +31,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentCaptor.forClass;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -42,11 +45,13 @@ class AgentRunConfirmedExecutionServiceTest {
     private AgentToolExecutionAuditService auditService;
     private AgentToolExecutionResultQueryService resultQueryService;
     private AgentPostConfirmContinuationClient continuationClient;
+    private AgentSessionMemoryStore sessionStore;
+    private AgentSessionRecord session;
 
     @BeforeEach
     void setUp() {
-        AgentSessionMemoryStore sessionStore = new AgentSessionMemoryStore();
-        AgentSessionRecord session = new AgentSessionRecord(
+        sessionStore = spy(new AgentSessionMemoryStore());
+        session = new AgentSessionRecord(
                 "session-confirm",
                 10L,
                 101L,
@@ -72,6 +77,7 @@ class AgentRunConfirmedExecutionServiceTest {
                 "等待用户确认"
         ));
         sessionStore.save(session);
+        clearInvocations(sessionStore);
         sessionService = mock(AgentSessionService.class);
         auditService = mock(AgentToolExecutionAuditService.class);
         resultQueryService = mock(AgentToolExecutionResultQueryService.class);
@@ -143,7 +149,9 @@ class AgentRunConfirmedExecutionServiceTest {
         when(resultQueryService.listRunToolExecutionResults("session-confirm", "run-confirm"))
                 .thenReturn(List.of(completeSnapshot));
         when(continuationClient.continueAfterConfirmedTools(any(AgentPostConfirmContinuationRequest.class)))
-                .thenReturn(new AgentPostConfirmContinuationView(
+                .thenAnswer(ignored -> {
+                    addDurableContinuationRun("run-write");
+                    return new AgentPostConfirmContinuationView(
                         "datasmart.post-confirm-continuation.v1",
                         "WAITING_CONFIRMATION",
                         true,
@@ -159,7 +167,8 @@ class AgentRunConfirmedExecutionServiceTest {
                         Map.of(),
                         "LOW_SENSITIVE_CONTINUATION_SUMMARY_ONLY",
                         null
-                ));
+                    );
+                });
 
         var response = service.confirmAndExecute(
                 "session-confirm",
@@ -177,6 +186,14 @@ class AgentRunConfirmedExecutionServiceTest {
         assertEquals("SUCCEEDED", response.runState());
         assertEquals("WAITING_CONFIRMATION", response.continuation().status());
         assertEquals("只读检查已完成，写计划等待确认。", response.assistantReply());
+        org.junit.jupiter.api.Assertions.assertTrue(sessionStore.findById("session-confirm")
+                .orElseThrow().getRuns().stream().anyMatch(run -> "run-write".equals(run.getRunId())));
+        // 当前 Run 终态只允许执行一次整聚合保存；Python 回调创建下一 Run 后，助手回复必须走增量消息写入。
+        // 如果这里再次出现第二次 save，JDBC replaceRuns() 就可能重新引入本次缺陷。
+        verify(sessionStore, times(1)).save(any(AgentSessionRecord.class));
+        verify(sessionStore).appendConversationMessage(
+                org.mockito.ArgumentMatchers.eq("session-confirm"),
+                any(com.czh.datasmart.govern.agent.service.session.AgentConversationMessageRecord.class));
         verify(continuationClient).continueAfterConfirmedTools(any(AgentPostConfirmContinuationRequest.class));
     }
 
@@ -211,7 +228,9 @@ class AgentRunConfirmedExecutionServiceTest {
         when(resultQueryService.listRunToolExecutionResults("session-confirm", "run-confirm"))
                 .thenReturn(List.of(failed));
         when(continuationClient.continueAfterConfirmedTools(any(AgentPostConfirmContinuationRequest.class)))
-                .thenReturn(new AgentPostConfirmContinuationView(
+                .thenAnswer(ignored -> {
+                    addDurableContinuationRun("run-repair");
+                    return new AgentPostConfirmContinuationView(
                         "datasmart.post-confirm-continuation.v1",
                         "WAITING_CONFIRMATION",
                         true,
@@ -227,7 +246,8 @@ class AgentRunConfirmedExecutionServiceTest {
                         Map.of(),
                         "LOW_SENSITIVE_CONTINUATION_SUMMARY_ONLY",
                         null
-                ));
+                    );
+                });
 
         var response = service.confirmAndExecute(
                 "session-confirm",
@@ -291,5 +311,94 @@ class AgentRunConfirmedExecutionServiceTest {
         assertEquals("RESERVED_NOT_INVOKED", response.modelProviderStatus());
         org.junit.jupiter.api.Assertions.assertTrue(response.assistantReply().contains("已提交真实 worker 执行链路"));
         verifyNoInteractions(resultQueryService, continuationClient);
+    }
+
+    @Test
+    void shouldNotExposeContinuationRunWhenPythonReferenceWasNotPersisted() {
+        AgentToolExecutionAuditView waiting = mock(AgentToolExecutionAuditView.class);
+        AgentToolExecutionAuditView planned = mock(AgentToolExecutionAuditView.class);
+        AgentToolExecutionAuditView failedAudit = mock(AgentToolExecutionAuditView.class);
+        when(waiting.auditId()).thenReturn("audit-missing-run");
+        when(waiting.toolCode()).thenReturn("sync.task.draft.save");
+        when(waiting.state()).thenReturn("WAITING_APPROVAL");
+        when(planned.auditId()).thenReturn("audit-missing-run");
+        when(planned.toolCode()).thenReturn("sync.task.draft.save");
+        when(planned.state()).thenReturn("PLANNED");
+        when(failedAudit.auditId()).thenReturn("audit-missing-run");
+        when(failedAudit.toolCode()).thenReturn("sync.task.draft.save");
+        when(failedAudit.state()).thenReturn("FAILED");
+        when(failedAudit.errorCode()).thenReturn("DUPLICATE_TASK_NAME");
+        when(failedAudit.message()).thenReturn("当前项目下已经存在同名同步任务");
+        AgentToolExecutionResultView failed = new AgentToolExecutionResultView(
+                failedAudit, Map.of("taskName", "Agent 创建的数据同步任务")
+        );
+        when(auditService.listByRun("session-confirm", "run-confirm"))
+                .thenReturn(List.of(waiting), List.of(planned), List.of(failedAudit));
+        when(sessionService.executeToolExecution(
+                "session-confirm", "run-confirm", "audit-missing-run", "trace-confirm"))
+                .thenReturn(failed);
+        when(resultQueryService.listRunToolExecutionResults("session-confirm", "run-confirm"))
+                .thenReturn(List.of(failed));
+        when(continuationClient.continueAfterConfirmedTools(any(AgentPostConfirmContinuationRequest.class)))
+                .thenReturn(new AgentPostConfirmContinuationView(
+                        "datasmart.post-confirm-continuation.v1",
+                        "WAITING_CONFIRMATION",
+                        true,
+                        "request-missing-run",
+                        "session-confirm",
+                        "run-confirm",
+                        "run-never-persisted",
+                        true,
+                        "WAITING_APPROVAL",
+                        "建议修改任务名称后重试。",
+                        Map.of(),
+                        Map.of(),
+                        Map.of(
+                                "kind", "DUPLICATE_TASK_NAME",
+                                "proposedTaskName", "Agent 创建的数据同步任务_agent_1234"
+                        ),
+                        "LOW_SENSITIVE_CONTINUATION_SUMMARY_ONLY",
+                        null
+                ));
+
+        var response = service.confirmAndExecute(
+                "session-confirm",
+                "run-confirm",
+                new AgentRunConfirmedExecutionRequest(true, "确认"),
+                10L,
+                101L,
+                "1001",
+                "ORDINARY_USER",
+                "USER",
+                "101:MANAGER",
+                "trace-confirm"
+        );
+
+        assertEquals("FAILED_RETRYABLE", response.continuation().status());
+        assertEquals(null, response.continuation().nextRunId());
+        assertEquals("NEXT_RUN_NOT_DURABLE", response.continuation().stoppedReason());
+        assertEquals("DUPLICATE_TASK_NAME", response.continuation().repairProposal().get("kind"));
+    }
+
+    /**
+     * 模拟 Python continuation 通过 plan ingestion 回调 Java、并在原确认请求返回前创建下一 Durable Run。
+     *
+     * <p>测试使用 memory store 是为了把关注点放在服务调用顺序上：下一 Run 在远程回调期间出现，随后助手消息
+     * 只能增量追加。JDBC 增量 SQL 是否隔离 {@code agent_run} 由专门的 Store 测试保护。</p>
+     */
+    private void addDurableContinuationRun(String runId) {
+        sessionStore.findById("session-confirm").orElseThrow().addRun(new AgentRunRecord(
+                runId,
+                "session-confirm",
+                AgentRunState.WAITING_HUMAN,
+                "AGENT_REASONING",
+                "继续执行同步任务",
+                false,
+                true,
+                List.of(),
+                Map.of(),
+                LocalDateTime.now(),
+                "等待用户确认"
+        ));
     }
 }

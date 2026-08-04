@@ -182,6 +182,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 - 已执行 Flyway 迁移保持不可变，历史迁移校验和恢复正常；新权限策略通过 `V47` 交付。
 - 回归结果：Agent Runtime `541/541`、permission-admin `75` 个通过并有 `1` 个 Testcontainers 环境用例跳过、Python Runtime `854/854`、前端 lint/build 全部通过；真实容器启动确认 permission-admin `47` 个 Flyway 迁移与 Agent Runtime `3` 个 Flyway 迁移校验成功，Vite 大包 warning 不阻断本轮功能验收。
 
+## 7.3 2026-08-05 Agent 同名任务修复 Run 持久化验收
+
+- 故障根因不是 Agent 建议的新任务名错误，而是确认执行线程在 Python continuation 回调创建下一 Run 后，继续使用调用前读取的旧会话快照执行整聚合保存；JDBC `replaceRuns()` 因而删除了新 Run，前端拿到的 `nextRunId` 成为悬空引用。
+- `AgentSessionStore` 新增原子对话消息追加契约。PostgreSQL 实现只在同一事务中插入 `agent_conversation_message` 并向前推进 `agent_session.last_message_at/update_time`，不读取、不删除也不替换 Run、委托或工具绑定。
+- 确认执行服务在返回 continuation 前重新读取 durable session 并校验 `nextRunId`。若远程响应声明的 Run 未持久化，系统会清除悬空 ID、保留低敏诊断及同名任务建议名称，并返回 `NEXT_RUN_NOT_DURABLE` 可重试状态。
+- 同名修复生命周期会把原失败 Run 中已成功的源端/目标端元数据事实重新绑定为可信 `fromAuditId + fromRunId` 引用。新 Run 不复制元数据正文、不信任模型提供的数据源 ID，也不会因仅保留 `fromTool` 而错误提示“缺少源端元数据结果”。
+- 前端兼容修复前已经留在历史会话中的坏 Run：识别“Agent Run 不存在”后撤销失效确认入口，常驻展示原因，并允许用户使用保留的完整任务配置和建议名称重新生成审核计划；重新生成不会跳过预览与用户确认，也不会直接保存或执行。
+- 真实链路复验：原始重名失败 Run 重新生成的修复 Run 在助手消息追加后仍保持 `WAITING_HUMAN`；确认更名后成功保存任务 `38` 及 2 条对象映射。后续预检查因两张目标表各已有 6 行且配置为 `FULL + INSERT` 正确阻断，Agent 明确给出清空目标表、改为 UPDATE/merge 或新建空表三种需用户确认的方案，没有擅自删除数据或修改写入策略。
+- 回归结果：新增服务层/JDBC 增量写定向测试共 `8/8` 通过，Python 更名/continuation 定向测试 `7/7` 通过；Agent Runtime 全量 `544/544` 通过；Python Runtime 全量 `855/855` 通过；前端 `npm run lint` 与 `npm run build` 通过。Vite 主 bundle 大于 500 kB 的既有 warning 仍不阻断本轮缺陷验收。
+
 ## 8. 最新总闸门入口（2026-07-05）
 
 当前项目已经从“持续补功能”进入“闭环交付候选”阶段。后续不建议再分散记忆多条验收命令，而应优先使用最终交付总闸门：

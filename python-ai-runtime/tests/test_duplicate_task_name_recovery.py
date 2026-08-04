@@ -70,11 +70,27 @@ class DuplicateTaskNameRecoveryPlannerTest(unittest.TestCase):
                 '"message":"当前项目下已存在同名同步任务"}'
             ),
         )
+        source_metadata_feedback = AgentControlPlaneFeedbackItem(
+            model_tool_call_id="source-metadata-call",
+            tool_name="datasource.source.metadata.read",
+            status=ToolExecutionFeedbackStatus.SUCCEEDED,
+            summary="源端元数据读取成功",
+            audit_id="source-meta-current",
+            run_id="run-failed",
+        )
+        target_metadata_feedback = AgentControlPlaneFeedbackItem(
+            model_tool_call_id="target-metadata-call",
+            tool_name="datasource.target.metadata.read",
+            status=ToolExecutionFeedbackStatus.SUCCEEDED,
+            summary="目标端元数据读取成功",
+            audit_id="target-meta-current",
+            run_id="run-failed",
+        )
 
         result = DuplicateTaskNameRecoveryPlanner(_ToolPlanner()).build(
             source_run_id="run-failed",
             tool_plans=(failed_plan,),
-            feedback_items=(feedback,),
+            feedback_items=(source_metadata_feedback, target_metadata_feedback, feedback),
         )
 
         self.assertIsNotNone(result)
@@ -94,7 +110,16 @@ class DuplicateTaskNameRecoveryPlannerTest(unittest.TestCase):
         repair_arguments = result.tool_plans[0].arguments
         self.assertNotEqual(original_arguments["taskName"], repair_arguments["taskName"])
         self.assertEqual(original_arguments["objectMappings"], repair_arguments["objectMappings"])
-        self.assertEqual(original_arguments["sourceMetadataRef"], repair_arguments["sourceMetadataRef"])
+        self.assertEqual(
+            {
+                "fromTool": "datasource.source.metadata.read",
+                "fromAuditId": "source-meta-current",
+                "fromRunId": "run-failed",
+                "path": "metadata",
+            },
+            repair_arguments["sourceMetadataRef"],
+        )
+        self.assertEqual("target-meta-current", repair_arguments["targetMetadataRef"]["fromAuditId"])
         self.assertTrue(result.tool_plans[0].requires_human_approval)
         self.assertNotEqual(
             "original-call",
@@ -123,6 +148,41 @@ class DuplicateTaskNameRecoveryPlannerTest(unittest.TestCase):
         )
 
         self.assertIsNone(result)
+
+    def test_repair_keeps_existing_reference_when_successful_metadata_fact_is_missing(self) -> None:
+        """Missing trusted evidence must stay fail-closed instead of inventing an audit ID."""
+
+        original_reference = {
+            "fromTool": "datasource.source.metadata.read",
+            "fromAuditId": "already-trusted-source-audit",
+            "path": "metadata",
+        }
+        failed_plan = ToolPlan(
+            tool_name="sync.task.draft.save",
+            reason="save reviewed task",
+            arguments={
+                "taskName": "customer-sync",
+                "sourceMetadataRef": original_reference,
+            },
+        )
+        failed_feedback = AgentControlPlaneFeedbackItem(
+            model_tool_call_id="failed-draft",
+            tool_name="sync.task.draft.save",
+            status=ToolExecutionFeedbackStatus.FAILED,
+            summary="duplicate task",
+            error_code="SYNC_DOWNSTREAM_ERROR",
+            error_message="DUPLICATE_OPERATION：当前项目下已存在同名同步任务",
+        )
+
+        result = DuplicateTaskNameRecoveryPlanner(_ToolPlanner()).build(
+            source_run_id="run-failed",
+            tool_plans=(failed_plan,),
+            feedback_items=(failed_feedback,),
+        )
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(original_reference, result.tool_plans[0].arguments["sourceMetadataRef"])
 
 
 class _ToolPlanner:

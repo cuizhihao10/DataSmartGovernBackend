@@ -70,6 +70,15 @@ class DuplicateTaskNameRecoveryPlan:
 class DuplicateTaskNameRecoveryPlanner:
     """Classify and prepare only recoverable task-name uniqueness conflicts."""
 
+    _METADATA_REFERENCE_ARGUMENTS = {
+        "sourceMetadataRef": "datasource.source.metadata.read",
+        "targetMetadataRef": "datasource.target.metadata.read",
+    }
+    _METADATA_REFERENCE_GROUP_ARGUMENTS = {
+        "sourceMetadataRefs": "datasource.source.metadata.read",
+        "targetMetadataRefs": "datasource.target.metadata.read",
+    }
+
     def __init__(self, tool_planner: ToolPlanner) -> None:
         self._tool_planner = tool_planner
 
@@ -106,6 +115,7 @@ class DuplicateTaskNameRecoveryPlanner:
         proposed_name = self._proposed_name(original_name, source_run_id)
         arguments = dict(failed_plan.arguments)
         arguments["taskName"] = proposed_name
+        self._bind_trusted_metadata_references(arguments, feedback_items)
         call_digest = hashlib.sha256(
             f"{source_run_id}|{original_name}|{proposed_name}".encode("utf-8")
         ).hexdigest()[:20]
@@ -161,6 +171,67 @@ class DuplicateTaskNameRecoveryPlanner:
             proposed_task_name=proposed_name,
         )
         return DuplicateTaskNameRecoveryPlan(proposal=proposal, tool_plans=governed_lifecycle)
+
+    @classmethod
+    def _bind_trusted_metadata_references(
+        cls,
+        arguments: dict[str, Any],
+        feedback_items: tuple[AgentControlPlaneFeedbackItem, ...],
+    ) -> None:
+        """Rebind draft metadata inputs to successful Java facts from the source Run.
+
+        Duplicate-name recovery intentionally creates a small write lifecycle instead of
+        re-running every connection and metadata discovery node.  The failed draft still
+        contains references such as ``{"fromTool": "datasource.source.metadata.read"}``,
+        but a tool-only reference means "latest output in the current Run" to Java.  Once
+        the repair is ingested as a new Run, that lookup is empty and draft validation
+        correctly fails with ``缺少源端元数据结果``.
+
+        The continuation payload already carries terminal Java facts with trusted audit
+        and Run identifiers.  Binding those identifiers here preserves the reviewed
+        metadata across Runs without copying metadata bodies into the plan and without
+        trusting model-supplied resource IDs.  Java resolves the reference by
+        ``sessionId + auditId`` and still verifies that the referenced tool code matches.
+        If no successful fact exists, the original argument is retained so downstream
+        fail-closed validation remains authoritative rather than manufacturing evidence.
+        """
+
+        successful_by_tool: dict[str, list[AgentControlPlaneFeedbackItem]] = {}
+        for item in feedback_items:
+            if (
+                item.status is ToolExecutionFeedbackStatus.SUCCEEDED
+                and item.audit_id
+            ):
+                successful_by_tool.setdefault(item.tool_name, []).append(item)
+
+        for argument_name, tool_name in cls._METADATA_REFERENCE_ARGUMENTS.items():
+            facts = successful_by_tool.get(tool_name, [])
+            if facts:
+                arguments[argument_name] = cls._metadata_reference(tool_name, facts[-1])
+
+        for argument_name, tool_name in cls._METADATA_REFERENCE_GROUP_ARGUMENTS.items():
+            facts = successful_by_tool.get(tool_name, [])
+            if facts:
+                arguments[argument_name] = [
+                    cls._metadata_reference(tool_name, fact)
+                    for fact in facts
+                ]
+
+    @staticmethod
+    def _metadata_reference(
+        tool_name: str,
+        fact: AgentControlPlaneFeedbackItem,
+    ) -> dict[str, str]:
+        """Render the low-sensitive reference shape accepted by Java's output resolver."""
+
+        reference = {
+            "fromTool": tool_name,
+            "fromAuditId": str(fact.audit_id),
+            "path": "metadata",
+        }
+        if fact.run_id:
+            reference["fromRunId"] = fact.run_id
+        return reference
 
     @staticmethod
     def _is_duplicate_name_failure(item: AgentControlPlaneFeedbackItem) -> bool:

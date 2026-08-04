@@ -162,16 +162,22 @@ public class AgentRunConfirmedExecutionService {
         AgentPostConfirmContinuationView continuation = continueAfterTerminalBatch(
                 session, runId, tenantId, projectId, actorId, traceId, batch
         );
+        continuation = verifyContinuationRunDurability(sessionId, continuation);
         List<AgentToolExecutionFailureView> failures = AgentToolExecutionFailureSupport.failures(
                 batch.finalAudits(), batch.executedResults());
         String assistantReply = resolvedAssistantReply(batch, continuation);
-        synchronized (session) {
-            // 二轮总结也是可继续追问的正式会话消息。它单独保存，是因为远程模型调用不能放在 session 锁内，
-            // 否则 Python 回调 Java 创建下一 Run 时会等待同一把锁并形成跨服务死锁。
-            session.addMessage(new AgentConversationMessageRecord(
-                    "agm_" + UUID.randomUUID().toString().replace("-", ""),
-                    runId, "AGENT", assistantReply, LocalDateTime.now()));
-            sessionStore.save(session);
+        // 二轮总结也是可继续追问的正式会话消息，但此时绝不能再保存调用 Python 之前读取的 session 快照。
+        // Python continuation 可能已经回调 Java 并在同一会话中创建下一 Run；原子追加消息只写消息表和活跃时间，
+        // 从而避免旧快照通过 replaceRuns() 删除刚创建的修复 Run。
+        boolean messageAppended = sessionStore.appendConversationMessage(
+                sessionId,
+                new AgentConversationMessageRecord(
+                        "agm_" + UUID.randomUUID().toString().replace("-", ""),
+                        runId, "AGENT", assistantReply, LocalDateTime.now())
+        );
+        if (!messageAppended) {
+            throw new PlatformBusinessException(PlatformErrorCode.NOT_FOUND,
+                    "Agent 会话在记录确认结果前已不存在，系统未返回可能失效的后续执行入口，sessionId=" + sessionId);
         }
         return new AgentRunConfirmedExecutionResponse(
                 sessionId,
@@ -232,6 +238,32 @@ public class AgentRunConfirmedExecutionService {
                 traceId,
                 allResults
         ));
+    }
+
+    /**
+     * 在响应离开 Java 控制面之前确认 Python 声明的下一 Run 已经真实进入 durable store。
+     *
+     * <p>远程 continuation 的 HTTP 成功只代表 Python 完成了处理，不等价于下一 Run 一定持久化成功。重新读取会话
+     * 可以同时覆盖 JDBC 提交失败、回调响应与事务提交竞态以及未来存储实现的异常。如果 Run 不存在，返回一个保留
+     * 修复建议但不含 {@code nextRunId} 的可重试结果，让前端提供“重新生成审核计划”，而不是展示必然失败的确认按钮。</p>
+     *
+     * @param sessionId 当前受治理会话 ID
+     * @param continuation Python 返回的续跑视图
+     * @return 已验证的原视图，或去除悬空 Run 引用的可重试视图
+     */
+    private AgentPostConfirmContinuationView verifyContinuationRunDurability(
+            String sessionId,
+            AgentPostConfirmContinuationView continuation) {
+        if (continuation == null || continuation.nextRunId() == null || continuation.nextRunId().isBlank()) {
+            return continuation;
+        }
+        boolean durableRunExists = sessionStore.findById(sessionId)
+                .stream()
+                .flatMap(storedSession -> storedSession.getRuns().stream())
+                .anyMatch(run -> continuation.nextRunId().equals(run.getRunId()));
+        return durableRunExists
+                ? continuation
+                : AgentPostConfirmContinuationView.nextRunNotDurable(continuation);
     }
 
     /**

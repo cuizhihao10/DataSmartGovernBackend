@@ -72,7 +72,36 @@ class PostConfirmContinuationTest(unittest.TestCase):
 
     def test_duplicate_task_name_failure_returns_exact_confirmation_gated_repair(self) -> None:
         payload = _payload()
-        payload["toolResults"] = [{
+        payload["toolResults"] = [
+            {
+                "audit": {
+                    "auditId": "source-metadata-success",
+                    "sessionId": "session-1",
+                    "runId": "run-read",
+                    "toolCode": "datasource.source.metadata.read",
+                    "state": "SUCCEEDED",
+                    "riskLevel": "LOW",
+                    "executionMode": "AUTO",
+                    "planArguments": {},
+                    "governanceHints": {"modelToolCallId": "call-source-metadata"},
+                },
+                "output": {"metadata": {"datasourceId": 27, "objects": []}},
+            },
+            {
+                "audit": {
+                    "auditId": "target-metadata-success",
+                    "sessionId": "session-1",
+                    "runId": "run-read",
+                    "toolCode": "datasource.target.metadata.read",
+                    "state": "SUCCEEDED",
+                    "riskLevel": "LOW",
+                    "executionMode": "AUTO",
+                    "planArguments": {},
+                    "governanceHints": {"modelToolCallId": "call-target-metadata"},
+                },
+                "output": {"metadata": {"datasourceId": 28, "objects": []}},
+            },
+            {
             "audit": {
                 "auditId": "draft-save-failed",
                 "sessionId": "session-1",
@@ -89,6 +118,14 @@ class PostConfirmContinuationTest(unittest.TestCase):
                 "planArguments": {
                     "taskName": "Agent 创建的数据同步任务",
                     "syncMode": "FULL",
+                    "sourceMetadataRef": {
+                        "fromTool": "datasource.source.metadata.read",
+                        "path": "metadata",
+                    },
+                    "targetMetadataRef": {
+                        "fromTool": "datasource.target.metadata.read",
+                        "path": "metadata",
+                    },
                     "objectMappings": [{
                         "sourceObjectName": "customer",
                         "targetObjectName": "customer",
@@ -97,7 +134,8 @@ class PostConfirmContinuationTest(unittest.TestCase):
                 "governanceHints": {"modelToolCallId": "call-draft-failed"},
             },
             "output": {},
-        }]
+            },
+        ]
         durable_runner = _DurableRunner(waiting_confirmation=True)
         coordinator = AgentPostConfirmContinuationCoordinator(
             model_routes=_routes(),
@@ -119,6 +157,14 @@ class PostConfirmContinuationTest(unittest.TestCase):
         repair_tools = durable_runner.first_model_turn.follow_up_tool_plans
         self.assertEqual("sync.task.draft.save", repair_tools[0].tool_name)
         self.assertEqual(proposal["proposedTaskName"], repair_tools[0].arguments["taskName"])
+        self.assertEqual(
+            "source-metadata-success",
+            repair_tools[0].arguments["sourceMetadataRef"]["fromAuditId"],
+        )
+        self.assertEqual(
+            "target-metadata-success",
+            repair_tools[0].arguments["targetMetadataRef"]["fromAuditId"],
+        )
         self.assertTrue(repair_tools[0].requires_human_approval)
 
     def test_http_route_accepts_json_body_and_request_context(self) -> None:

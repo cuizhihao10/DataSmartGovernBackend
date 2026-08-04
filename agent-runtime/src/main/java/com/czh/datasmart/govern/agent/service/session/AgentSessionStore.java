@@ -28,6 +28,23 @@ public interface AgentSessionStore {
     void save(AgentSessionRecord session);
 
     /**
+     * 原子追加一条用户可见会话消息，而不覆盖同一会话中已经由其他调用链写入的 Run 或工具事实。
+     *
+     * <p>Agent 的确认后续跑存在一个重要并发边界：Java 先把当前 Run 终态交给 Python，Python 随后会回调
+     * Java 创建下一 Run，最后原 Java 请求再记录二轮助手回复。如果最后一步继续调用 {@link #save(AgentSessionRecord)}
+     * 保存调用 Python 之前读取的旧聚合，就会把 Python 刚创建的新 Run 当成“快照中不存在的子记录”删除。
+     * 因此，追加对话消息必须是独立的增量写操作，不能通过整聚合替换来模拟。</p>
+     *
+     * <p>实现必须同时更新会话的 {@code lastMessageAt/updateTime}，并保证消息插入与时间更新处于同一原子边界。
+     * 返回 {@code false} 表示会话已经不存在，调用方应停止返回任何后续 Run 引用，避免浏览器拿到悬空操作入口。</p>
+     *
+     * @param sessionId 消息所属的稳定会话 ID
+     * @param message 已完成低敏治理、可以向用户展示的对话消息
+     * @return 成功写入或幂等确认消息已存在时返回 true；会话不存在或参数无效时返回 false
+     */
+    boolean appendConversationMessage(String sessionId, AgentConversationMessageRecord message);
+
+    /**
      * 按稳定 ID 重建完整会话聚合。
      *
      * @param sessionId 会话 ID

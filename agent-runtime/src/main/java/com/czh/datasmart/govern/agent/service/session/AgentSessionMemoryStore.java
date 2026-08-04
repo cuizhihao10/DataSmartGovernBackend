@@ -46,6 +46,38 @@ public class AgentSessionMemoryStore implements AgentSessionStore {
         sessions.put(session.getSessionId(), session);
     }
 
+    /**
+     * 在当前 Map 槽位上原子追加消息，保持与 JDBC 增量写契约一致。
+     *
+     * <p>{@link ConcurrentMap#computeIfPresent(Object, java.util.function.BiFunction)} 会锁定当前 sessionId 对应的
+     * 更新槽位；再同步会话对象，是为了防止测试或 memory profile 下另一个线程同时修改其普通 List 子集合。
+     * 这里绝不把调用方持有的旧会话对象重新放回 Map，因此不会把已经追加到当前对象上的 Run 替换掉。</p>
+     *
+     * @param sessionId 目标会话 ID
+     * @param message 需要追加的用户可见消息
+     * @return 会话存在且消息参数有效时返回 true，否则返回 false
+     */
+    @Override
+    public boolean appendConversationMessage(String sessionId, AgentConversationMessageRecord message) {
+        if (sessionId == null || sessionId.isBlank() || message == null
+                || message.content() == null || message.content().isBlank()) {
+            return false;
+        }
+        boolean[] appended = {false};
+        sessions.computeIfPresent(sessionId.trim(), (ignored, currentSession) -> {
+            synchronized (currentSession) {
+                boolean alreadyExists = currentSession.getMessages().stream()
+                        .anyMatch(existing -> existing.messageId().equals(message.messageId()));
+                if (!alreadyExists) {
+                    currentSession.addMessage(message);
+                }
+                appended[0] = true;
+                return currentSession;
+            }
+        });
+        return appended[0];
+    }
+
     /** 按业务会话编号读取当前进程中的聚合；服务重启或请求落到其他实例时可能不存在。 */
     @Override
     public Optional<AgentSessionRecord> findById(String sessionId) {
