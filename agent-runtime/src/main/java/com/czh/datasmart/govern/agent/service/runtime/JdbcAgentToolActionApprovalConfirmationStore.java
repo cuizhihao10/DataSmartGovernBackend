@@ -20,7 +20,13 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 
-/** Durable store for user approval confirmations used by controlled Agent tools. */
+/**
+ * 受控 Agent 工具“用户确认记录”的 PostgreSQL 存储。
+ *
+ * <p>确认记录回答的是“用户是否确认了这一次具体提案和载荷”，它不能单独代表业务权限，也不能替代
+ * permission-admin 中的审批事实。工具执行时仍需同时校验用户身份、委托范围、策略版本、资源范围和
+ * 下游接口权限。</p>
+ */
 @Component
 @ConditionalOnExpression(
         "T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode)"
@@ -34,12 +40,27 @@ public class JdbcAgentToolActionApprovalConfirmationStore
     private final AgentRuntimeJdbcConnectionManager connectionManager;
     private final ObjectMapper objectMapper;
 
+    /**
+     * 创建确认记录存储。
+     *
+     * @param connectionManager Agent Runtime 统一 JDBC 连接管理器
+     * @param objectMapper 用于持久化用户所接受的载荷证据列表
+     */
     public JdbcAgentToolActionApprovalConfirmationStore(AgentRuntimeJdbcConnectionManager connectionManager,
                                                          ObjectMapper objectMapper) {
         this.connectionManager = connectionManager;
         this.objectMapper = objectMapper;
     }
 
+    /**
+     * 仅在 confirmationId 尚不存在时保存确认记录。
+     *
+     * <p>数据库唯一约束和 {@code ON CONFLICT DO NOTHING} 共同提供幂等性：网络重试不会制造第二份确认，
+     * 返回 false 表示该编号已经登记，而不是数据库失败。调用方应继续使用原记录，不应覆盖审批证据。</p>
+     *
+     * @param record 已绑定用户、租户、项目、工具、载荷摘要和有效期的确认记录
+     * @return true 表示本次新插入，false 表示同编号记录此前已存在
+     */
     @Override
     public boolean saveIfAbsent(AgentToolActionApprovalConfirmationRecord record) {
         String sql = """
@@ -84,6 +105,12 @@ public class JdbcAgentToolActionApprovalConfirmationStore
         });
     }
 
+    /**
+     * 按确认编号读取持久化证据。
+     *
+     * @param confirmationId 确认记录唯一编号；空白值直接返回空
+     * @return 完整确认记录，供执行前核对身份、策略、载荷摘要和有效期
+     */
     @Override
     public Optional<AgentToolActionApprovalConfirmationRecord> findByConfirmationId(String confirmationId) {
         if (confirmationId == null || confirmationId.isBlank()) {
@@ -103,6 +130,12 @@ public class JdbcAgentToolActionApprovalConfirmationStore
         });
     }
 
+    /**
+     * 清理已过期确认，避免短期授权凭据无限增长。
+     *
+     * @param now 判定过期的基准时刻；传 null 时使用当前时刻
+     * @return 实际删除记录数，便于调度任务记录清理效果
+     */
     @Override
     public int removeExpired(Instant now) {
         Instant reference = now == null ? Instant.now() : now;
@@ -115,6 +148,7 @@ public class JdbcAgentToolActionApprovalConfirmationStore
         });
     }
 
+    /** 把 JDBC 行完整还原为领域记录；时间统一转回 Instant 以保留绝对时间语义。 */
     private AgentToolActionApprovalConfirmationRecord toRecord(ResultSet resultSet) throws java.sql.SQLException {
         return new AgentToolActionApprovalConfirmationRecord(
                 resultSet.getString("confirmation_id"), resultSet.getString("proposal_id"),
@@ -132,6 +166,7 @@ public class JdbcAgentToolActionApprovalConfirmationStore
                 instant(resultSet.getTimestamp("expires_at")));
     }
 
+    /** 将确认时接受的证据编码序列化为 JSONB 输入；失败时拒绝保存不完整证据。 */
     private String json(List<String> values) {
         try {
             return objectMapper.writeValueAsString(values == null ? List.of() : values);
@@ -140,6 +175,7 @@ public class JdbcAgentToolActionApprovalConfirmationStore
         }
     }
 
+    /** 将 JSONB 证据恢复为只读语义的空列表或字符串列表。 */
     private List<String> strings(String value) {
         try {
             return value == null ? List.of() : objectMapper.readValue(value, STRING_LIST);
@@ -148,10 +184,12 @@ public class JdbcAgentToolActionApprovalConfirmationStore
         }
     }
 
+    /** 把可空 Instant 转为 JDBC Timestamp，兼容无过期时间的策略。 */
     private Timestamp timestamp(Instant value) {
         return value == null ? null : Timestamp.from(value);
     }
 
+    /** 把可空 JDBC Timestamp 恢复为绝对时间。 */
     private Instant instant(Timestamp value) {
         return value == null ? null : value.toInstant();
     }

@@ -31,7 +31,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-/** PostgreSQL-backed Agent session aggregate store. */
+/**
+ * Agent 会话聚合的 PostgreSQL 持久化实现。
+ *
+ * <p>一个会话不仅包含主表信息，还包含委托授权、可用工具、运行记录和对话消息。该类把这些数据视为
+ * 同一个聚合快照：写入时使用单个数据库事务，读取时按固定顺序还原完整对象，避免服务重启后只恢复到
+ * 一部分状态。它仅负责持久化，不在这里重新判断当前用户是否有权访问会话；对象级授权由
+ * {@link AgentSessionEndpointAccessResolver} 和服务层共同完成。</p>
+ */
 @Component
 @ConditionalOnExpression(
         "T(com.czh.datasmart.govern.agent.config.AgentRuntimeStoreMode)"
@@ -46,6 +53,13 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
     private final ObjectMapper objectMapper;
     private final int maxQueryLimit;
 
+    /**
+     * 创建 JDBC 会话存储，并把配置的查询上限收敛到 1 至 100。
+     *
+     * @param connectionManager 统一提供连接和事务边界的运行时连接管理器
+     * @param objectMapper 将工具权限、运行变量等结构写入或读出 JSONB 的序列化器
+     * @param properties Agent Runtime 持久化配置，其中的查询上限用于保护历史会话接口
+     */
     public JdbcAgentSessionStore(AgentRuntimeJdbcConnectionManager connectionManager,
                                  ObjectMapper objectMapper,
                                  AgentRuntimePersistenceProperties properties) {
@@ -54,6 +68,14 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         this.maxQueryLimit = Math.max(1, Math.min(properties.getJdbc().getMaxQueryLimit(), 100));
     }
 
+    /**
+     * 原子保存一个完整会话快照。
+     *
+     * <p>主表先执行 upsert，随后整组替换一对一委托和各个一对多子集合。所有步骤共享同一事务；任一
+     * 子表写入失败都会回滚主表更新，调用方不会看到“会话已更新但消息或运行记录缺失”的半成品。</p>
+     *
+     * @param session 已在业务层完成权限校验和状态变更的会话聚合
+     */
     @Override
     public void save(AgentSessionRecord session) {
         connectionManager.executeInTransaction(connection -> {
@@ -66,6 +88,12 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         });
     }
 
+    /**
+     * 按业务会话编号恢复完整聚合。
+     *
+     * @param sessionId Agent 会话业务编号；空白值直接视为不存在，避免无意义数据库访问
+     * @return 找到时返回包含委托、工具、运行和消息的聚合，否则返回空
+     */
     @Override
     public Optional<AgentSessionRecord> findById(String sessionId) {
         if (!hasText(sessionId)) {
@@ -74,6 +102,20 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         return connectionManager.executeWithConnection(connection -> querySession(connection, sessionId.trim()));
     }
 
+    /**
+     * 查询指定租户、项目和用户范围内的会话历史。
+     *
+     * <p>三个范围条件均为可选，是为了同时支持用户历史和受控管理员审计；调用本方法前必须由服务层
+     * 决定允许使用哪些范围，不能直接把客户端参数当作授权结论。结果先显示置顶会话，再按更新时间倒序，
+     * 并同时受请求上限、100 条硬上限和服务配置上限约束。</p>
+     *
+     * @param tenantId 可选租户范围
+     * @param projectId 可选项目范围
+     * @param actorId 可选会话所有者范围
+     * @param archived true 查询归档历史，false 查询活跃历史
+     * @param limit 调用方期望返回条数
+     * @return 已按展示顺序恢复完成的会话聚合列表
+     */
     @Override
     public List<AgentSessionRecord> list(Long tenantId,
                                          Long projectId,
@@ -112,6 +154,12 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         });
     }
 
+    /**
+     * 新增或更新会话主表。
+     *
+     * <p>冲突更新只改变运行期间允许变化的身份描述、角色快照和展示状态；租户、项目、用户、目标及
+     * 工作区键等创建边界不会被后续保存偷偷改写，从而避免同一 sessionId 被迁移到另一个安全域。</p>
+     */
     private void upsertSession(Connection connection, AgentSessionRecord session) throws SQLException {
         String sql = """
                 INSERT INTO agent_session (
@@ -150,6 +198,12 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         }
     }
 
+    /**
+     * 用当前聚合中的委托快照替换旧委托。
+     *
+     * <p>会话只允许存在一个当前委托，因此先删除再插入比逐字段合并更容易保持撤销时间、有效期和
+     * 资源范围的一致性。该步骤处于外层事务中，删除后插入失败不会永久丢失旧记录。</p>
+     */
     private void replaceDelegation(Connection connection, AgentSessionRecord session) throws SQLException {
         try (PreparedStatement delete = connection.prepareStatement("DELETE FROM agent_delegation WHERE session_id = ?")) {
             delete.setString(1, session.getSessionId());
@@ -182,6 +236,12 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         }
     }
 
+    /**
+     * 整组替换会话绑定的工具清单。
+     *
+     * <p>工具绑定数量较小且属于运行规划快照，采用 delete-and-batch-insert 可避免处理复杂的新增、
+     * 禁用和删除差异；工具允许动作以 JSONB 保存，但真正执行时仍必须经过委托、工具策略和下游权限校验。</p>
+     */
     private void replaceToolBindings(Connection connection, AgentSessionRecord session) throws SQLException {
         deleteChildren(connection, "agent_session_tool_binding", session.getSessionId());
         String sql = """
@@ -216,6 +276,12 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         }
     }
 
+    /**
+     * 整组替换会话内的运行记录。
+     *
+     * <p>运行变量和后续动作是可扩展结构，因此使用 JSONB；状态、时间和是否需要人工审批仍保留为
+     * 独立列，便于运维查询与索引，而不必扫描 JSON 文档。</p>
+     */
     private void replaceRuns(Connection connection, AgentSessionRecord session) throws SQLException {
         deleteChildren(connection, "agent_run", session.getSessionId());
         String sql = """
@@ -246,6 +312,12 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         }
     }
 
+    /**
+     * 整组替换会话对话消息，并使用 JDBC batch 减少往返次数。
+     *
+     * <p>消息保留所属 runId，使一次会话中的多轮追问可以追溯到具体执行；runId 允许为空，以兼容
+     * 尚未形成运行计划的用户输入和系统提示。</p>
+     */
     private void replaceMessages(Connection connection, AgentSessionRecord session) throws SQLException {
         deleteChildren(connection, "agent_conversation_message", session.getSessionId());
         String sql = "INSERT INTO agent_conversation_message "
@@ -264,6 +336,12 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         }
     }
 
+    /**
+     * 查询主表并按“委托、工具、运行、消息”的顺序还原聚合。
+     *
+     * <p>所有子查询复用同一个连接，因此在事务隔离可见性上保持一致。历史数据若缺少委托仍可读出，
+     * 但后续写操作会由服务层按 fail-closed 原则拒绝。</p>
+     */
     private Optional<AgentSessionRecord> querySession(Connection connection, String sessionId) throws SQLException {
         String sql = "SELECT * FROM agent_session WHERE session_id = ?";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -302,6 +380,7 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         }
     }
 
+    /** 查询并反序列化会话唯一的委托凭据；不存在时返回空而不是制造默认授权。 */
     private Optional<AgentDelegationRecord> queryDelegation(Connection connection, String sessionId) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(
                 "SELECT * FROM agent_delegation WHERE session_id = ?")) {
@@ -322,6 +401,7 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         }
     }
 
+    /** 按创建时间恢复工具绑定，保证重启前后的工具展示和执行规划顺序稳定。 */
     private List<AgentToolBindingRecord> queryToolBindings(Connection connection, String sessionId) throws SQLException {
         String sql = "SELECT * FROM agent_session_tool_binding WHERE session_id = ? ORDER BY create_time";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -344,6 +424,7 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         }
     }
 
+    /** 按创建时间恢复运行记录，使前端能够按发生顺序继续展示同一会话的多轮执行。 */
     private List<AgentRunRecord> queryRuns(Connection connection, String sessionId) throws SQLException {
         String sql = "SELECT * FROM agent_run WHERE session_id = ? ORDER BY create_time";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -365,6 +446,7 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         }
     }
 
+    /** 按创建时间恢复用户、助手及系统消息，作为继续追问时的持久上下文。 */
     private List<AgentConversationMessageRecord> queryMessages(Connection connection, String sessionId) throws SQLException {
         String sql = "SELECT * FROM agent_conversation_message WHERE session_id = ? ORDER BY create_time, message_id";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
@@ -382,6 +464,12 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         }
     }
 
+    /**
+     * 删除某个会话的一类子记录，为整组替换做准备。
+     *
+     * <p>table 只由本类的固定常量调用路径传入，不接收外部输入；表名无法使用 JDBC 占位符，因此
+     * 如果未来扩展调用点，必须继续保持内部白名单，不能把请求参数传到这里。</p>
+     */
     private void deleteChildren(Connection connection, String table, String sessionId) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement("DELETE FROM " + table + " WHERE session_id = ?")) {
             statement.setString(1, sessionId);
@@ -389,12 +477,19 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         }
     }
 
+    /**
+     * 按动态筛选条件的构造顺序绑定参数。
+     *
+     * <p>这里只处理当前列表查询使用的 Long 和 String，新增参数类型时应显式扩展，避免依赖驱动的
+     * 隐式转换导致索引失效或跨数据库行为不一致。</p>
+     */
     private void bindParameters(PreparedStatement statement, List<Object> parameters) throws SQLException {
         for (int index = 0; index < parameters.size(); index++) {
             statement.setObject(index + 1, parameters.get(index));
         }
     }
 
+    /** 将可扩展业务结构序列化为 JSONB 输入文本；失败时中止整次聚合事务。 */
     private String json(Object value) {
         try {
             return objectMapper.writeValueAsString(value == null ? List.of() : value);
@@ -403,6 +498,7 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         }
     }
 
+    /** 从 JSONB 文本恢复字符串列表，并把数据库空值统一解释为空列表。 */
     private List<String> strings(String value) {
         if (!hasText(value)) {
             return List.of();
@@ -414,6 +510,7 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         }
     }
 
+    /** 从 JSONB 文本恢复运行变量，避免调用方处理可变或空 Map。 */
     private Map<String, Object> objectMap(String value) {
         if (!hasText(value)) {
             return Map.of();
@@ -425,6 +522,12 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         }
     }
 
+    /**
+     * 以明确的 BIGINT SQL 类型绑定可空编号。
+     *
+     * <p>不能直接对 null 调用 setObject 而依赖驱动猜测类型，否则 PostgreSQL 在某些预编译语句下
+     * 无法推断参数类型。</p>
+     */
     private void setNullableLong(PreparedStatement statement, int index, Long value) throws SQLException {
         if (value == null) {
             statement.setNull(index, Types.BIGINT);
@@ -433,6 +536,7 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         }
     }
 
+    /** 统一把 Java 本地时间写为 JDBC Timestamp，并保留合法的空结束时间或撤销时间。 */
     private void setTimestamp(PreparedStatement statement, int index, LocalDateTime value) throws SQLException {
         if (value == null) {
             statement.setNull(index, Types.TIMESTAMP);
@@ -441,16 +545,19 @@ public class JdbcAgentSessionStore implements AgentSessionStore {
         }
     }
 
+    /** 读取可空 BIGINT；通过 {@link ResultSet#wasNull()} 区分数据库 NULL 与数值 0。 */
     private Long nullableLong(ResultSet resultSet, String column) throws SQLException {
         long value = resultSet.getLong(column);
         return resultSet.wasNull() ? null : value;
     }
 
+    /** 读取可空时间列，供未归档、未结束或永不过期等状态使用。 */
     private LocalDateTime localDateTime(ResultSet resultSet, String column) throws SQLException {
         Timestamp timestamp = resultSet.getTimestamp(column);
         return timestamp == null ? null : timestamp.toLocalDateTime();
     }
 
+    /** 判断外部文本是否包含有效内容，用于在进入数据库层前规范化筛选条件。 */
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
     }

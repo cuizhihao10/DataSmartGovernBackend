@@ -83,6 +83,12 @@ public class AgentToolExecutionGuard {
         sandboxPolicyService.requireAllowed(session, run, audit);
     }
 
+    /**
+     * 校验 Agent 当前委托是否仍允许本次具体工具和目标资源。
+     *
+     * <p>委托必须有效、未撤销，且用户、租户、项目均与会话一致；随后再匹配 toolCode、目标服务和
+     * 资源编号。委托是用户权限的收窄快照，即使通过本方法，下游业务服务仍会按实时权限二次校验。</p>
+     */
     private void ensureDelegationAllows(AgentSessionRecord session,
                                         AgentToolExecutionAuditRecord audit) {
         var delegation = session.getDelegation();

@@ -122,6 +122,13 @@ public class AgentPlanIngestionService {
         }
     }
 
+    /**
+     * 把本次计划接入对应的用户输入和 Agent 摘要写入持久会话。
+     *
+     * <p>两条消息共享 runId，便于历史页面把自然语言上下文与一次具体执行关联。内容上限为 20000 字符，
+     * 防止异常模型输出无限放大数据库记录；Agent 消息时间增加 1 纳秒以保证相同数据库精度下仍按用户消息
+     * 之后排序。空白输入不会生成噪声消息。</p>
+     */
     private void appendConversationMessages(AgentSessionRecord session,
                                             AgentRunRecord run,
                                             IngestAgentPlanRequest request) {

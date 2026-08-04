@@ -31,6 +31,11 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+/**
+ * 验证异步命令入箱控制器必须先完成会话所有权校验。
+ *
+ * <p>这些测试关注调用顺序和副作用边界：只要对象级授权失败，outbox 和 DAG 节点服务就绝不能收到写入调用。</p>
+ */
 class AgentAsyncTaskCommandOutboxControllerTest {
 
     private AgentRunAsyncTaskCommandOutboxService outboxService;
@@ -39,6 +44,7 @@ class AgentAsyncTaskCommandOutboxControllerTest {
     private AgentSessionEndpointAccessResolver endpointAccessResolver;
     private AgentAsyncTaskCommandOutboxController controller;
 
+    /** 为每个用例创建隔离的 mock，避免前一用例的调用记录影响副作用断言。 */
     @BeforeEach
     void setUp() {
         outboxService = mock(AgentRunAsyncTaskCommandOutboxService.class);
@@ -56,6 +62,7 @@ class AgentAsyncTaskCommandOutboxControllerTest {
         );
     }
 
+    /** 验证合法请求先解析会话访问上下文，再把异步命令写入 outbox。 */
     @Test
     void enqueueShouldCheckSessionMutationAccessBeforeWritingOutbox() {
         HttpHeaders headers = userHeaders();
@@ -69,6 +76,7 @@ class AgentAsyncTaskCommandOutboxControllerTest {
         verify(outboxService).enqueueRunAsyncTaskCommands("session-1", "run-1");
     }
 
+    /** 验证普通 Run 入箱在会话归属校验失败后立即停止，不产生任何异步副作用。 */
     @Test
     void deniedSessionMutationShouldNotWriteOutbox() {
         HttpHeaders headers = userHeaders();
@@ -84,6 +92,7 @@ class AgentAsyncTaskCommandOutboxControllerTest {
         verify(outboxService, never()).enqueueRunAsyncTaskCommands(any(), any());
     }
 
+    /** 验证选择性 DAG 节点入箱同样不能绕过会话所有权校验。 */
     @Test
     void deniedSessionMutationShouldNotEnqueueSelectedDagNodes() {
         HttpHeaders headers = userHeaders();
@@ -99,6 +108,7 @@ class AgentAsyncTaskCommandOutboxControllerTest {
         verify(selectedNodeOutboxService, never()).enqueueSelectedAsyncNodes(any(), any(), any(), any());
     }
 
+    /** 构造模拟 Gateway 已认证并注入的普通用户范围 Header。 */
     private HttpHeaders userHeaders() {
         HttpHeaders headers = new HttpHeaders();
         headers.set(PlatformContextHeaders.TENANT_ID, "10");

@@ -36,16 +36,28 @@ public class AgentSessionMemoryStore implements AgentSessionStore {
 
     private final ConcurrentMap<String, AgentSessionRecord> sessions = new ConcurrentHashMap<>();
 
+    /**
+     * 保存会话对象引用。
+     *
+     * <p>ConcurrentMap 保证单次替换线程安全，但不提供跨进程持久性；生产配置应切换到 JDBC 实现。</p>
+     */
     @Override
     public void save(AgentSessionRecord session) {
         sessions.put(session.getSessionId(), session);
     }
 
+    /** 按业务会话编号读取当前进程中的聚合；服务重启或请求落到其他实例时可能不存在。 */
     @Override
     public Optional<AgentSessionRecord> findById(String sessionId) {
         return Optional.ofNullable(sessions.get(sessionId));
     }
 
+    /**
+     * 在内存快照上筛选会话历史。
+     *
+     * <p>排序和数量限制与 JDBC 实现保持一致，保证开发模式与生产模式的前端行为相同；这里的筛选参数
+     * 仍必须由上层授权逻辑生成，仓储本身不负责判断调用者身份。</p>
+     */
     @Override
     public List<AgentSessionRecord> list(Long tenantId,
                                          Long projectId,

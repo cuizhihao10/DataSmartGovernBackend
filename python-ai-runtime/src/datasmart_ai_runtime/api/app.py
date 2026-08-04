@@ -307,6 +307,8 @@ def create_app() -> Any:
     control_plane_feedback_collector = (
         AgentControlPlaneFeedbackCollector(
             JavaAgentRuntimeToolFeedbackProvider(
+                # 与默认编排器使用同一服务身份注入方式，避免启动路径不同导致反馈轮次出现随机 403。
+                # Java 仍会从 sessionId 恢复原用户并执行对象级授权，因此该 token 不是业务万能凭据。
                 JavaAgentRuntimeToolFeedbackClient(
                     base_url=agent_runtime_base_url,
                     service_token=os.getenv("DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN"),

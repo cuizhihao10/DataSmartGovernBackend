@@ -79,6 +79,11 @@ public class AgentSessionService {
         return createSession(request);
     }
 
+    /**
+     * 执行已通过身份校验的会话创建核心流程。
+     *
+     * <p>包级可见是为了让同模块测试和受控内部流程复用，而外部请求必须调用带 accessContext 的入口。</p>
+     */
     AgentSessionView createSession(CreateAgentSessionRequest request) {
         ensureRuntimeEnabled();
         WorkspaceIsolationLevel isolationLevel = request.isolationLevel() == null
@@ -127,6 +132,11 @@ public class AgentSessionService {
                 .toList();
     }
 
+    /**
+     * 兼容模块内旧调用方的列表入口。
+     *
+     * <p>HTTP 接口不得使用该重载，因为它不携带可信访问上下文；新外部链路必须使用上方的访问感知方法。</p>
+     */
     List<AgentSessionView> listSessions(Long tenantId, Long projectId, String actorId) {
         ensureRuntimeEnabled();
         return memoryStore.list(tenantId, projectId, actorId).stream()
@@ -151,6 +161,7 @@ public class AgentSessionService {
         ensureMutationAccess(findSession(sessionId), accessContext);
     }
 
+    /** 供已在同一服务边界内完成授权的内部组件读取会话，不应直接暴露给 Controller。 */
     AgentSessionView getSession(String sessionId) {
         ensureRuntimeEnabled();
         return toSessionView(findSession(sessionId));
@@ -251,6 +262,14 @@ public class AgentSessionService {
         }
     }
 
+    /**
+     * 为会话所有者设置置顶状态，并立即持久化排序时间。
+     *
+     * @param sessionId 要修改的会话编号
+     * @param pinned true 置顶，false 取消置顶
+     * @param accessContext Gateway 注入的当前用户范围
+     * @return 修改后的完整会话视图
+     */
     public AgentSessionView setPinned(String sessionId, boolean pinned, AgentSessionAccessContext accessContext) {
         AgentSessionRecord session = findSession(sessionId);
         ensureMutationAccess(session, accessContext);
@@ -261,6 +280,14 @@ public class AgentSessionService {
         }
     }
 
+    /**
+     * 归档或恢复会话，同时保留消息、运行、委托和工具审计。
+     *
+     * @param sessionId 要整理的会话编号
+     * @param archived true 移入归档历史，false 恢复到活跃历史
+     * @param accessContext 当前会话所有者的可信身份范围
+     * @return 修改后的完整会话视图
+     */
     public AgentSessionView setArchived(String sessionId, boolean archived, AgentSessionAccessContext accessContext) {
         AgentSessionRecord session = findSession(sessionId);
         ensureMutationAccess(session, accessContext);
@@ -422,6 +449,12 @@ public class AgentSessionService {
                         "Agent Run 不存在，runId=" + runId));
     }
 
+    /**
+     * 防止请求体伪造租户、项目或 actor。
+     *
+     * <p>创建会话时三个标识必须与 Gateway 认证后注入的 Header 完全一致；即使平台管理员也不能在请求体中
+     * 冒充另一个用户创建可写会话，因为双主体审计必须保留真实发起人。</p>
+     */
     private void ensureCreateAccess(CreateAgentSessionRequest request, AgentSessionAccessContext context) {
         ensureTrustedContext(context);
         if (!Objects.equals(request.tenantId(), context.tenantId())
@@ -432,6 +465,7 @@ public class AgentSessionService {
         }
     }
 
+    /** 校验当前主体能否读取会话；普通用户仅能读本人会话，特权角色只能获得受范围限制的只读能力。 */
     private void ensureReadAccess(AgentSessionRecord session, AgentSessionAccessContext context) {
         ensureTrustedContext(context);
         if (!canRead(session, context)) {
@@ -440,6 +474,12 @@ public class AgentSessionService {
         }
     }
 
+    /**
+     * 计算对象级读取权限。
+     *
+     * <p>平台管理员可跨租户/项目审计，租户或项目特权角色仍受自身范围约束；所有特权读取都不会自动转化为
+     * 会话修改权限。</p>
+     */
     private boolean canRead(AgentSessionRecord session, AgentSessionAccessContext context) {
         boolean tenantMatches = context.platformAdministrator()
                 || Objects.equals(session.getTenantId(), context.tenantId());
@@ -449,6 +489,11 @@ public class AgentSessionService {
         return tenantMatches && projectMatches && (actorMatches || context.privilegedRead());
     }
 
+    /**
+     * 要求写操作由原会话用户在原租户和项目中发起。
+     *
+     * <p>管理员审计角色不享有代写能力，这避免管理员查看历史时意外继续对话或触发 Agent 工具副作用。</p>
+     */
     private void ensureMutationAccess(AgentSessionRecord session, AgentSessionAccessContext context) {
         ensureTrustedContext(context);
         if (!Objects.equals(session.getTenantId(), context.tenantId())
@@ -459,6 +504,7 @@ public class AgentSessionService {
         }
     }
 
+    /** 缺少任何核心身份 Header 时按 fail-closed 拒绝，而不是退化成不带范围的全量查询。 */
     private void ensureTrustedContext(AgentSessionAccessContext context) {
         if (context == null || context.tenantId() == null || context.projectId() == null || !hasText(context.actorId())) {
             throw new PlatformBusinessException(PlatformErrorCode.FORBIDDEN,
@@ -466,6 +512,7 @@ public class AgentSessionService {
         }
     }
 
+    /** 判断 actor 等安全字段是否为非空白文本。 */
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
     }
@@ -626,6 +673,11 @@ public class AgentSessionService {
         );
     }
 
+    /**
+     * 将内部委托快照转换为可审计视图。
+     *
+     * <p>只暴露工具、动作、资源范围和生命周期，不暴露任何内部共享凭据或下游认证信息。</p>
+     */
     private AgentDelegationView toDelegationView(AgentSessionRecord session) {
         var delegation = session.getDelegation();
         return new AgentDelegationView(

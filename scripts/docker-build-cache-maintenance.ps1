@@ -18,27 +18,48 @@ Examples:
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
+    # Disabled by default. Only an explicit -Prune enables buildx cache deletion.
     [switch]$Prune,
 
+    # Target BuildKit cache ceiling; ValidatePattern rejects ambiguous size values before execution.
     [ValidatePattern("^[1-9][0-9]*(B|KB|MB|GB|TB)$")]
     [string]$MaxUsedSpace = "10GB",
 
+    # Optional builder name. An empty value means the currently active Docker builder.
     [ValidateNotNullOrEmpty()]
     [string]$Builder = ""
 )
 
 $ErrorActionPreference = "Stop"
 
+<#
+.SYNOPSIS
+Writes a recognizable in-progress step.
+.DESCRIPTION
+The stable prefix lets operators and CI distinguish work in progress from a completed check. It does not alter command success state.
+#>
 function Write-Step {
     param([string]$Message)
     Write-Host "[STEP] $Message"
 }
 
+<#
+.SYNOPSIS
+Writes a successfully completed check or operation.
+.DESCRIPTION
+This helper only formats output. Exit codes and exceptions remain the source of truth so a success label cannot hide a failed command.
+#>
 function Write-Pass {
     param([string]$Message)
     Write-Host "[PASS] $Message"
 }
 
+<#
+.SYNOPSIS
+Verifies that both Docker CLI and Docker daemon are available.
+.DESCRIPTION
+The command lookup runs first, followed by docker info. Either failure stops the script so an unreachable daemon is never reported as an empty cache.
+#>
 function Test-DockerAvailable {
     $dockerCommand = Get-Command docker -ErrorAction SilentlyContinue
     if ($null -eq $dockerCommand) {
@@ -51,6 +72,14 @@ function Test-DockerAvailable {
     }
 }
 
+<#
+.SYNOPSIS
+Reads the current Docker disk-usage records.
+.OUTPUTS
+An object array converted from the JSON lines emitted by docker system df.
+.NOTES
+This is read-only. Each line is parsed independently because Docker CLI emits one JSON object per resource category.
+#>
 function Get-DockerDiskUsage {
     $rawLines = @(& docker system df --format json 2>&1)
     if ($LASTEXITCODE -ne 0) {
@@ -70,6 +99,14 @@ function Get-DockerDiskUsage {
     return $records
 }
 
+<#
+.SYNOPSIS
+Displays before/after disk usage in a stable troubleshooting format.
+.PARAMETER Label
+The phase name, such as Before or After.
+.PARAMETER Records
+The record array returned by Get-DockerDiskUsage.
+#>
 function Write-DockerDiskUsage {
     param(
         [string]$Label,
@@ -87,6 +124,13 @@ function Write-DockerDiskUsage {
     }
 }
 
+<#
+.SYNOPSIS
+Reduces one BuildKit builder cache to the configured ceiling.
+.DESCRIPTION
+Only docker buildx prune is called. The script never invokes system or volume prune, so containers, images, networks, and volumes are outside its deletion boundary.
+SupportsShouldProcess allows -WhatIf to show the exact target and action without deleting anything.
+#>
 function Invoke-BuildCachePrune {
     $arguments = @(
         "buildx",
@@ -134,6 +178,7 @@ function Invoke-BuildCachePrune {
     Write-Pass "BuildKit cache maintenance completed."
 }
 
+# The main flow reports current usage first. Without -Prune it exits here, keeping the default mode read-only.
 Test-DockerAvailable
 
 $before = @(Get-DockerDiskUsage)
@@ -145,9 +190,9 @@ if (-not $Prune) {
 }
 
 Invoke-BuildCachePrune
+# Give Docker Desktop a short interval to refresh accounting before the after snapshot.
 Start-Sleep -Milliseconds 500
 
 $after = @(Get-DockerDiskUsage)
 Write-DockerDiskUsage -Label "After" -Records $after
 Write-Pass "Images, containers, networks, and volumes were not pruned."
-

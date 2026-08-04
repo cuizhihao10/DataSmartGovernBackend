@@ -252,6 +252,8 @@ def build_default_orchestrator(
     )
     tool_feedback_provider = None
     if remote_feedback_enabled and resolved_base_url:
+        # 内部 token 只注入 Java 反馈客户端，用来证明调用来自 Python Runtime。
+        # 它不会传给模型或工具参数，也不会扩大当前会话用户的租户、项目和业务权限。
         tool_feedback_provider = JavaAgentRuntimeToolFeedbackProvider(
             JavaAgentRuntimeToolFeedbackClient(
                 base_url=resolved_base_url,

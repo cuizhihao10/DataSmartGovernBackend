@@ -25,12 +25,28 @@ import java.util.Set;
 @ConfigurationProperties(prefix = "datasmart.agent-runtime.session-trusted-access")
 public class AgentSessionTrustedAccessProperties {
 
-    /** 通过 Secret 或环境变量注入；为空时所有内部服务访问均 fail-closed。 */
+    /**
+     * 内部服务共享凭证。
+     *
+     * <p>该值只用于证明请求来自平台控制的服务进程，不代表用户权限，也不能替代 tenant/project/actor
+     * 对象归属检查。生产环境必须由 Secret Manager、Vault 或服务网格注入；保持空字符串时，
+     * {@code AgentSessionEndpointAccessResolver} 会拒绝把任何调用方识别为可信内部服务，从而 fail-closed。</p>
+     */
     private String sharedToken = "";
 
-    /** 允许读取会话工具审计、策略和结果的内部服务。 */
+    /**
+     * 可以代替会话所有者读取控制面事实的内部服务白名单。
+     *
+     * <p>进入白名单仍必须同时提供正确共享凭证。解析器随后从持久化 session 恢复原始用户边界，
+     * 而不是采用服务请求自报的 tenantId、projectId 或 actorId。</p>
+     */
     private Set<String> allowedReadSourceServices = new LinkedHashSet<>(Set.of("python-ai-runtime"));
 
-    /** 允许触发低风险、只读、幂等同步工具自动执行的内部服务。 */
+    /**
+     * 可以进入“自动执行访问解析”分支的内部服务白名单。
+     *
+     * <p>该名单不是通用写权限。后续仍会经过会话所有者校验、delegation 范围、工具风险等级、
+     * 只读/幂等属性、沙箱策略与运行时保护策略；任何一层不满足都必须拒绝执行。</p>
+     */
     private Set<String> allowedAutomatedExecutionSourceServices = new LinkedHashSet<>(Set.of("python-ai-runtime"));
 }

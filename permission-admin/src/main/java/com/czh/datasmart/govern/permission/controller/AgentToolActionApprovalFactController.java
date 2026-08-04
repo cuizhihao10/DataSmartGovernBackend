@@ -44,8 +44,9 @@ public class AgentToolActionApprovalFactController {
     /**
      * 登记一条审批事实。
      *
-     * <p>当前阶段主要给内部联调、测试和未来审批台使用。生产环境应把该路由限制给 agent-runtime、
-     * 审批工作流服务或管理后台服务账号，不能让普通客户端直接伪造 APPROVED 事实。</p>
+     * <p>该路由只供 agent-runtime、审批工作流或管理控制面登记。Gateway 的 SERVICE_ACCOUNT 路由策略是
+     * 第一层校验，本控制器还会要求来源服务命中白名单且内部 token 匹配；普通客户端即使直接访问服务，
+     * 也不能伪造 APPROVED 事实。通过服务身份校验后，审批事实本身仍保存原用户和资源范围。</p>
      */
     @PostMapping("/facts")
     public PlatformApiResponse<AgentToolActionApprovalFactRegisterResponse> register(

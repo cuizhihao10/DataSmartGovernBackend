@@ -220,6 +220,12 @@ public class AgentAsyncTaskCommandOutboxController {
         ));
     }
 
+    /**
+     * 安全解析由 Gateway 注入的数字范围 Header。
+     *
+     * <p>缺失或格式非法时返回 null，后续可信上下文校验会 fail-closed 拒绝；这里不能把非法值默认为 0，
+     * 否则可能意外落入平台级或默认租户范围。</p>
+     */
     private Long longHeader(HttpHeaders headers, String name) {
         String value = headers.getFirst(name);
         if (value == null || value.isBlank()) {

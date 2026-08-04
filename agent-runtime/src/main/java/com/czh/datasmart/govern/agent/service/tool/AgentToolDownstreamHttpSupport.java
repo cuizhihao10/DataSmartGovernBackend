@@ -40,6 +40,9 @@ public class AgentToolDownstreamHttpSupport {
      *
      * <p>SOURCE_SERVICE 表达调用链由 Agent Host 代理发起；ACTOR_ID、ACTOR_ROLE、ACTOR_TYPE 和项目角色快照
      * 必须继续代表真实用户。不能把普通用户改写成 SERVICE_ACCOUNT，因为 data-sync 会把机器身份视为内部高权限主体。</p>
+     *
+     * <p>AGENT_ID、SESSION_ID、RUN_ID 和 DELEGATION_ID 补齐执行主体与授权证据链，供下游审计回答“哪个
+     * Agent 代表哪个用户执行了哪次动作”。这些 Header 只增加可追溯性，不会让下游跳过自己的 RBAC 和资源归属校验。</p>
      */
     public void applyUserDelegationHeaders(HttpHeaders headers, AgentToolExecutionContext context) {
         headers.set(PlatformContextHeaders.TENANT_ID, String.valueOf(context.session().getTenantId()));

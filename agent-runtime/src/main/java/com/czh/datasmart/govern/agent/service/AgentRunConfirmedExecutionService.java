@@ -151,6 +151,8 @@ public class AgentRunConfirmedExecutionService {
                     run.getNextActions(),
                     assistantAnswer
             );
+            // 工具状态推进和 Run 终态属于同一会话聚合。先持久化这一阶段，即使后续 Python 二轮回答失败，
+            // 用户仍能在历史会话中看到真实工具结果，而不会退回到“尚未执行”的旧快照。
             sessionStore.save(session);
         }
 
@@ -164,6 +166,8 @@ public class AgentRunConfirmedExecutionService {
                 batch.finalAudits(), batch.executedResults());
         String assistantReply = resolvedAssistantReply(batch, continuation);
         synchronized (session) {
+            // 二轮总结也是可继续追问的正式会话消息。它单独保存，是因为远程模型调用不能放在 session 锁内，
+            // 否则 Python 回调 Java 创建下一 Run 时会等待同一把锁并形成跨服务死锁。
             session.addMessage(new AgentConversationMessageRecord(
                     "agm_" + UUID.randomUUID().toString().replace("-", ""),
                     runId, "AGENT", assistantReply, LocalDateTime.now()));

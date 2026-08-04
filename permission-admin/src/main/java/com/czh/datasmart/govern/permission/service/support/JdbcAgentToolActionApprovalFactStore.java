@@ -18,7 +18,12 @@ import java.sql.SQLException;
 import java.util.List;
 import java.util.Optional;
 
-/** PostgreSQL approval fact store used by the permission control plane. */
+/**
+ * 权限控制面的 Agent 工具审批事实 PostgreSQL 存储。
+ *
+ * <p>审批事实是执行阶段可审计的授权证据，记录谁在何租户、项目、会话和运行中批准了哪个工具命令。
+ * 它与 Agent Runtime 的交互确认记录分库保存，使权限中心能够独立拒绝伪造或过期授权。</p>
+ */
 @Component
 @RequiredArgsConstructor
 public class JdbcAgentToolActionApprovalFactStore implements AgentToolActionApprovalFactStore {
@@ -27,6 +32,15 @@ public class JdbcAgentToolActionApprovalFactStore implements AgentToolActionAppr
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
 
+    /**
+     * 幂等新增或更新审批事实。
+     *
+     * <p>相同 approvalFactId 重试时只更新状态、有效期、审批人、理由、证据和策略版本，不改写租户、
+     * 项目、用户、会话、运行、命令和工具等身份边界，防止一个事实编号被挪用到其他资源。</p>
+     *
+     * @param record 已经过可信服务登记守卫校验的审批事实
+     * @return 数据库中的最终记录；极端并发下读不到时回退返回调用方记录
+     */
     @Override
     public AgentToolActionApprovalFactRecord save(AgentToolActionApprovalFactRecord record) {
         jdbcTemplate.update("""
@@ -48,6 +62,12 @@ public class JdbcAgentToolActionApprovalFactStore implements AgentToolActionAppr
         return findById(record.approvalFactId()).orElse(record);
     }
 
+    /**
+     * 按事实编号查询审批证据。
+     *
+     * @param approvalFactId 事实唯一编号；空白值直接返回空
+     * @return 已持久化的审批事实
+     */
     @Override
     public Optional<AgentToolActionApprovalFactRecord> findById(String approvalFactId) {
         if (approvalFactId == null || approvalFactId.isBlank()) {
@@ -60,6 +80,7 @@ public class JdbcAgentToolActionApprovalFactStore implements AgentToolActionAppr
         return records.stream().findFirst();
     }
 
+    /** 将数据库行映射为审批领域记录，并恢复 JSONB 理由与证据列表。 */
     private AgentToolActionApprovalFactRecord mapRecord(ResultSet resultSet, int rowNum) throws SQLException {
         return new AgentToolActionApprovalFactRecord(
                 resultSet.getString("approval_fact_id"), resultSet.getObject("tenant_id", Long.class),
@@ -72,6 +93,7 @@ public class JdbcAgentToolActionApprovalFactStore implements AgentToolActionAppr
                 strings(resultSet.getString("evidence_codes")), resultSet.getTimestamp("create_time").toLocalDateTime());
     }
 
+    /** 将理由或证据编码写成 JSONB 文本；序列化失败时拒绝生成不可审计的事实。 */
     private String json(List<String> values) {
         try {
             return objectMapper.writeValueAsString(values == null ? List.of() : values);
@@ -80,6 +102,7 @@ public class JdbcAgentToolActionApprovalFactStore implements AgentToolActionAppr
         }
     }
 
+    /** 把 JSONB 理由或证据恢复为字符串列表，数据库空值按空列表处理。 */
     private List<String> strings(String value) {
         try {
             return value == null ? List.of() : objectMapper.readValue(value, STRING_LIST);

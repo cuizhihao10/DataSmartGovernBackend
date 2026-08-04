@@ -165,6 +165,12 @@ public class AgentSessionController {
                 sessionId, runId, access(tenantId, projectId, actorId, actorRole)), traceId);
     }
 
+    /**
+     * 设置或取消会话置顶。
+     *
+     * <p>置顶只改变当前用户历史列表的排序，不改变运行状态、委托权限或归档状态。服务层会要求当前
+     * Header 中的租户、项目和 actor 与会话所有者完全一致，管理员只读能力不能用于替用户修改。</p>
+     */
     @PatchMapping("/{sessionId}/pin")
     public PlatformApiResponse<AgentSessionView> setPinned(
             @PathVariable("sessionId") String sessionId,
@@ -178,6 +184,12 @@ public class AgentSessionController {
                 sessionId, request.enabled(), access(tenantId, projectId, actorId, actorRole)), traceId);
     }
 
+    /**
+     * 归档或恢复会话。
+     *
+     * <p>归档用于历史整理而非删除，消息、运行和审计记录仍会保留；恢复后会话重新出现在活跃历史中。
+     * 只有原会话发起人可以执行该操作。</p>
+     */
     @PatchMapping("/{sessionId}/archive")
     public PlatformApiResponse<AgentSessionView> setArchived(
             @PathVariable("sessionId") String sessionId,
@@ -191,6 +203,12 @@ public class AgentSessionController {
                 sessionId, request.enabled(), access(tenantId, projectId, actorId, actorRole)), traceId);
     }
 
+    /**
+     * 把 Gateway 注入的可信身份 Header 组合为对象级访问上下文。
+     *
+     * <p>该方法不自行授予权限；服务层会拒绝缺少租户、项目或 actor 的上下文，并将其与持久化会话
+     * 再次比较，从而避免客户端只修改 path 或 query 参数读取其他用户会话。</p>
+     */
     private AgentSessionAccessContext access(Long tenantId, Long projectId, String actorId, String actorRole) {
         return new AgentSessionAccessContext(tenantId, projectId, actorId, actorRole);
     }

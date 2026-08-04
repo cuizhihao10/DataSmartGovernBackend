@@ -17,16 +17,48 @@ import java.util.Optional;
  */
 public interface AgentSessionStore {
 
+    /**
+     * 原子保存一个完整会话聚合。
+     *
+     * <p>实现必须保证 session 主记录、delegation、tool bindings、runs 和 messages 要么整体成功、要么整体回滚，
+     * 否则恢复后可能出现“页面能看到 Run，但执行时找不到委托”这类安全与一致性问题。</p>
+     *
+     * @param session 已完成领域校验的会话聚合
+     */
     void save(AgentSessionRecord session);
 
+    /**
+     * 按稳定 ID 重建完整会话聚合。
+     *
+     * @param sessionId 会话 ID
+     * @return 找到时返回包含子事实的完整聚合，否则返回空 Optional
+     */
     Optional<AgentSessionRecord> findById(String sessionId);
 
+    /**
+     * 按所有者边界查询历史会话。
+     *
+     * <p>仓储负责把 tenant/project/actor 条件下沉到数据库并限制返回数量；服务层仍需再次执行对象可见性过滤，
+     * 形成纵深防御。结果按置顶优先、最近更新时间倒序返回。</p>
+     *
+     * @param tenantId 租户过滤条件
+     * @param projectId 项目过滤条件
+     * @param actorId 用户过滤条件
+     * @param archived true 查询已归档，false 查询未归档
+     * @param limit 最大返回数，实现还应应用平台硬上限
+     * @return 满足边界的会话聚合列表
+     */
     List<AgentSessionRecord> list(Long tenantId,
                                   Long projectId,
                                   String actorId,
                                   boolean archived,
                                   int limit);
 
+    /**
+     * 为旧调用方保留的未归档会话查询快捷方法。
+     *
+     * <p>默认最多返回 100 条，防止旧接口在迁移 JDBC 后意外执行无上限全表加载。</p>
+     */
     default List<AgentSessionRecord> list(Long tenantId, Long projectId, String actorId) {
         return list(tenantId, projectId, actorId, false, 100);
     }

@@ -229,6 +229,9 @@ class JavaAgentPlanIngestionClient:
             "actorId": request_context.actor_id,
             "channel": cls._optional_string(variables.get("channel") or "PYTHON_AI_RUNTIME"),
             "objective": request_context.objective,
+            # objective 是整段会话的初始目标；latestUserMessage 才是用户本轮追问或纠偏原文。
+            # 优先保存后者，历史会话恢复时才能看到真实多轮对话，而不是每轮重复第一句目标。
+            # 旧调用方尚未提供 latestUserMessage 时再回退 objective，以保持协议向后兼容。
             "userInput": str(
                 variables.get("latestUserMessage")
                 or request_context.objective

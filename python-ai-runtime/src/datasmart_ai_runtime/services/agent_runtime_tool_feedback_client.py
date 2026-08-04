@@ -87,6 +87,12 @@ class JavaAgentRuntimeToolFeedbackClient:
         auto_execute_sync_path_template: str = "/agent-runtime/sessions/{sessionId}/runs/{runId}/tool-executions/auto-execute-sync",
         service_token: str | None = None,
     ) -> None:
+        """初始化 Java Agent Runtime 反馈客户端。
+
+        ``service_token`` 只用于 Python Runtime 到 Java 控制面的服务身份校验。它不会进入 Agent 变量、
+        模型消息或工具载荷，也不代表任何租户用户权限；Java 会在验证服务身份后恢复并继续校验原会话用户。
+        空白 token 被规范化为 ``None``，使生产配置遗漏时按 fail-closed 方式被服务端拒绝。
+        """
         self._base_url = base_url.rstrip("/")
         self._timeout_seconds = timeout_seconds
         self._result_path_template = result_path_template
@@ -218,7 +224,12 @@ class JavaAgentRuntimeToolFeedbackClient:
         return f"{self._base_url}{path}"
 
     def _request_headers(self, trace_id: str | None, *, content_type: str | None = None) -> dict[str, str]:
-        """构造内部服务请求头，不把共享凭证写入正文、日志或错误消息。"""
+        """构造统一的内部服务请求头。
+
+        共享凭证只放在 HTTP Header，不进入正文、URL、模型上下文、结构化日志或异常消息，降低被审计记录、
+        代理访问日志和模型 Provider 捕获的风险。来源服务名与 token 必须由 Java 同时校验；仅有其中之一
+        不能获得会话访问权。``content_type`` 只在带 JSON body 的 POST 请求中添加。
+        """
 
         headers = {
             "Accept": "application/json",

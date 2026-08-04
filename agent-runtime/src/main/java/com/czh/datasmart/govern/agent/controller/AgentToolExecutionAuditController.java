@@ -457,6 +457,11 @@ public class AgentToolExecutionAuditController {
         return PlatformApiResponse.success(resultQueryService.listRunToolExecutionResults(sessionId, runId), traceId);
     }
 
+    /**
+     * 在读取工具计划、策略、沙箱和结果前执行会话对象级授权。
+     *
+     * <p>受信内部服务可以恢复原用户范围，但不能以服务账号身份跳过对象归属校验。</p>
+     */
     private void requireReadAccess(String sessionId, HttpHeaders headers) {
         sessionService.getSession(sessionId, endpointAccessResolver.resolveReadAccess(
                 sessionId,
@@ -466,6 +471,12 @@ public class AgentToolExecutionAuditController {
         ));
     }
 
+    /**
+     * 为自动推进工具解析实际生效的用户访问上下文。
+     *
+     * <p>浏览器沿用当前用户 Header；Python Runtime 等内部服务必须同时通过来源白名单和共享凭据校验，
+     * 然后从持久会话恢复原用户，而不是获得 SERVICE_ACCOUNT 的全局写权限。</p>
+     */
     private AgentSessionAccessContext automatedExecutionAccess(String sessionId, HttpHeaders headers) {
         return endpointAccessResolver.resolveAutomatedExecutionAccess(
                 sessionId,
@@ -475,6 +486,7 @@ public class AgentToolExecutionAuditController {
         );
     }
 
+    /** 将原始平台 Header 规范化为服务层可复用的访问上下文。 */
     private AgentSessionAccessContext access(HttpHeaders headers) {
         return access(
                 longHeader(headers, PlatformContextHeaders.TENANT_ID),
@@ -484,6 +496,7 @@ public class AgentToolExecutionAuditController {
         );
     }
 
+    /** 解析租户或项目编号；非法值返回 null 并交由后续授权逻辑拒绝，绝不降级为无限制范围。 */
     private Long longHeader(HttpHeaders headers, String name) {
         String value = headers.getFirst(name);
         if (value == null || value.isBlank()) {

@@ -46,6 +46,8 @@ public class GatewayContractFilter implements GlobalFilter, Ordered {
      * <p>这里列出的 Header 会在网关转发前统一清理，然后由网关根据当前安全策略重新写入。
      * 这么做的核心目的，是避免调用方伪造 X-DataSmart-Tenant-Id、X-DataSmart-Actor-Role 等字段。
      * 等后续接入真实 JWT / OAuth2 / 服务账号认证后，也应该由认证结果生成这些 Header，而不是直接相信客户端输入。
+     * Agent 双主体标识和内部服务 token 同样属于不可由浏览器自报的安全字段；纳入本名单后，外部请求不能
+     * 通过伪造 agentId、delegationId 或内部凭据绕过对象级授权。
      */
     private static final List<String> PLATFORM_CONTEXT_HEADERS = List.of(
             PlatformContextHeaders.TRACE_ID,
