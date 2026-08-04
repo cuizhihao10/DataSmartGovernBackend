@@ -235,3 +235,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-dependency-r
 ```
 
 这两个脚本的设计原则都是“默认低风险、显式开启真实运行、证据写入 target、禁止泄露密钥和业务数据”。更详细的闭环收口说明见 [final-delivery-closure-runbook.md](final-delivery-closure-runbook.md)。
+
+## 12. Agent 双主体、会话和审批持久化检查（2026-08-05）
+
+生产部署不能把 Agent 简化为“当前用户的另一个请求客户端”。每一次可产生副作用的执行都应同时保存用户主体和 Agent 执行主体，并至少能够关联 `userId`、`agentId`、`sessionId`、`runId` 与 `delegationId`。其中 delegation 不是新的用户权限，它只能在当前用户、租户和项目权限的交集内进一步缩小工具、动作与资源范围。
+
+上线前必须检查：
+
+1. `agent-runtime` 的 session store 和 approval confirmation store 使用 PostgreSQL，而不是进程内 memory。
+2. `permission-admin` 的 approval fact store 使用 JDBC 持久化，审批登记入口只接受受信服务身份。
+3. `DATASMART_AGENT_RUNTIME_INTERNAL_SERVICE_TOKEN` 与 `DATASMART_AGENT_APPROVAL_FACT_SHARED_TOKEN` 由 Secret Manager、Vault 或服务网格注入强随机值，不使用 Compose 示例默认值。
+4. Gateway 会移除客户端传入的 Agent、delegation 和 internal-service Header，只有完成认证授权的可信链路才能重新注入这些值。
+5. 会话查询、工具结果查询、审批和执行入口均再次检查 tenant/project/actor 对象归属，不能只依赖“路由已经经过 Gateway”。
+6. Agent delegation 在工具执行前校验有效期、撤销状态、工具代码、目标服务和目标资源，过期或范围不匹配时 fail-closed。
+7. 会话归档只改变用户信息架构，不删除审计事实；继续历史会话会创建新的 Run，并保留原 session 关联。
+
+本地 Compose 的 `*-change-before-production` 值只用于开发联调。任何客户环境如果仍使用该默认值，应视为生产阻断项，而不是普通 warning。

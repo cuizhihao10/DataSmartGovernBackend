@@ -16147,3 +16147,15 @@ push 边界如何消费 5.29 的 task runtime event 契约。当前仍不接受�
 - 验证：
   - `python -m pytest python-ai-runtime\tests\test_langgraph_multi_agent_execution_plan.py python-ai-runtime\tests\test_langgraph_execution_gate_metrics.py python-ai-runtime\tests\test_api_bootstrap.py -q` 通过；
   - `python -m pytest python-ai-runtime\tests -q` 通过，共 591 个用例。
+
+## 2026-08-05 追加落地进展：Agent 双主体审计、持久会话与可信审批
+
+- 本阶段针对“Agent 不能只继承用户身份、进程内会话和审批事实不可用于生产审计”的问题，完成用户主体与 Agent 执行主体分离。
+- 双主体审计信息覆盖 `userId`、`agentId`、`sessionId`、`runId` 和 `delegationId`；工具执行前同时校验用户归属、租户/项目边界、委托状态、工具范围和目标资源范围。
+- Agent 会话聚合迁移到 PostgreSQL，持久化 session、delegation、tool binding、run 和用户可见 conversation message；服务重启后可以恢复历史会话、继续追问、置顶和归档。
+- Agent Runtime 的高风险工具确认和 permission-admin 的审批事实增加 JDBC store，避免重启后丢失执行依据。
+- 审批事实登记增加可信服务名和共享凭证双重校验；Gateway 会先清除客户端提交的 Agent/内部服务 Header，再由可信链路重建上下文，避免普通用户伪造 Agent 或审批服务身份。
+- 会话列表和详情不再信任请求参数声明的 actorId，而是以 Gateway 注入的 tenant/project/actor 上下文做对象归属过滤；只有会话发起人可以继续对话或改变会话状态。
+- 前端在原 Agent 助手页面增加当前项目内的个人历史会话列表，支持置顶、归档、恢复和继续追问；切换项目时清空当前会话状态，避免跨项目残留。
+- 本轮 Java 21 受影响模块完整 Reactor 共 536 个测试通过，定向回归 39 个测试通过；Python Runtime 相关回归 35 个测试通过；前端 ESLint 和生产构建通过。
+- 当前边界：会话与审批事实已经 durable，但 runtime event 热投影仍不是长期事件仓库；生产环境共享凭证必须由 Secret Manager/Vault/服务网格注入，不能继续使用 Compose 本地默认值。

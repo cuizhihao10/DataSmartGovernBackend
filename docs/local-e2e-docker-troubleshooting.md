@@ -191,3 +191,36 @@ $env:DATASMART_MYSQL_PASSWORD = "password"
 其中 `quay.io/keycloak/keycloak:26.6.4` 是通过 `quay.m.daocloud.io/keycloak/keycloak:26.6.4` 拉取后 retag 得到的，符合“本地拉取用 DaoCloud、Compose 仍用标准镜像名”的策略。
 
 下一步应启动 Nacos、Kafka、Keycloak、Prometheus 与 Grafana，并用 readiness 脚本确认端口、凭据和低敏诊断是否恢复。若后续镜像再次缺失，优先使用 DaoCloud 前缀，不再默认直连官方源。
+
+## 8. BuildKit 构建缓存维护
+
+DataSmart Govern 会构建多个 Java 服务和前端镜像。BuildKit 会保留 Maven 依赖层、前端包管理器缓存和中间镜像层，频繁重建后可能累计数十 GB。2026-08-05 本机曾累计 `63.46GB`、2117 条构建缓存记录，已在不删除镜像、容器、网络和业务数据卷的前提下清理到 `0B`。
+
+仓库提供安全维护脚本：
+
+```powershell
+.\scripts\docker-build-cache-maintenance.ps1
+```
+
+不传参数时只读取并展示 Docker 磁盘占用，不修改任何状态。需要把 BuildKit 缓存限制在默认 `10GB` 时显式执行：
+
+```powershell
+.\scripts\docker-build-cache-maintenance.ps1 -Prune
+```
+
+也可以指定其他上限，或先使用 `-WhatIf` 检查动作：
+
+```powershell
+.\scripts\docker-build-cache-maintenance.ps1 -Prune -MaxUsedSpace 20GB
+.\scripts\docker-build-cache-maintenance.ps1 -Prune -WhatIf
+```
+
+该脚本只调用 `docker buildx prune --all --max-used-space <limit>`，不会调用 `docker system prune`、`docker image prune` 或 `docker volume prune`。清理旧缓存后，下一次完整镜像构建可能需要重新下载部分 Maven/npm 依赖，这是释放磁盘空间的正常代价。
+
+如果缓存损坏且需要完全重置，可人工执行：
+
+```powershell
+docker buildx prune --all --force
+```
+
+不要使用 `docker system prune --volumes` 处理这个问题，因为该命令的范围远超 BuildKit 缓存，可能删除无关镜像和持久业务数据卷。完整清理后 `docker buildx du` 仍可能显示少量 `0B` 的 active 记录，它们只是当前 builder 的活动引用，不占用实际磁盘空间。
