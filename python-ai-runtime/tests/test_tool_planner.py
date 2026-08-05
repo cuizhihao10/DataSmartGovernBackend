@@ -160,6 +160,45 @@ class ToolPlannerTest(unittest.TestCase):
         )
         self.assertTrue(all(plan.parameter_validation.can_execute for plan in plans))
 
+    def test_partial_frontend_sync_shell_never_builds_tools_with_null_datasource_ids(self) -> None:
+        """Descriptive form defaults are not evidence that both resources exist."""
+
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1004",
+            objective="创建一个全量同步任务",
+            variables={
+                "dataSyncRequest": {
+                    "taskDescription": "创建一个全量同步任务",
+                    "groupCode": "DEFAULT",
+                    "groupName": "默认分组",
+                    "sourceDatasourceId": None,
+                }
+            },
+        )
+        intent_analysis = IntentAnalysis(
+            summary="The model recognized a data synchronization request.",
+            governance_domains=(GovernanceDomain.DATA_SYNC,),
+            candidate_tools=(
+                "datasource.source.connection.test",
+                "datasource.target.connection.test",
+                "datasource.source.metadata.read",
+                "datasource.target.metadata.read",
+                "sync.task.draft.save",
+            ),
+        )
+
+        plans = ToolPlanner(default_tool_registry()).plan(
+            request=request,
+            intent_analysis=intent_analysis,
+        )
+
+        self.assertFalse(any(plan.tool_name.endswith("connection.test") for plan in plans))
+        self.assertFalse(any(plan.tool_name.endswith("metadata.read") for plan in plans))
+        self.assertFalse(any(plan.tool_name == "sync.task.draft.save" for plan in plans))
+        self.assertFalse(any(plan.arguments.get("datasourceId") is None for plan in plans))
+
     def test_quoted_datasource_name_with_spaces_can_be_resolved_safely(self) -> None:
         request = AgentRequest(
             tenant_id="10",

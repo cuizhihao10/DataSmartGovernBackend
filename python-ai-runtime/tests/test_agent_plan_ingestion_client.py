@@ -128,6 +128,16 @@ class JavaAgentPlanIngestionClientTest(unittest.TestCase):
         with self.assertRaises(AgentPlanIngestionClientError):
             JavaAgentPlanIngestionClient.build_payload(request, self._plan())
 
+    def test_existing_session_user_message_requires_exact_latest_turn_text(self) -> None:
+        """The initial objective must never be persisted as a fake historical follow-up."""
+
+        request = self._request()
+        request.variables["interactionOrigin"] = "USER_MESSAGE"
+        request.variables.pop("latestUserMessage", None)
+
+        with self.assertRaisesRegex(AgentPlanIngestionClientError, "latestUserMessage"):
+            JavaAgentPlanIngestionClient.build_payload(request, self._plan())
+
     def test_build_payload_includes_parameter_issues_for_java_execution_guard(self) -> None:
         issue = ToolParameterIssue(
             parameter_name="datasourceId",

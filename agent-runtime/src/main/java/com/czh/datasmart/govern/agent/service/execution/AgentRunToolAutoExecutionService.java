@@ -104,14 +104,27 @@ public class AgentRunToolAutoExecutionService {
      *
      * <p>The durable model loop creates a new run for each tool batch in the same
      * session. Leaving a fully successful batch in {@code PLANNING} blocks the next
-     * batch through the active-run guard. Partial, dry-run, failed or approval-gated
-     * batches deliberately remain non-terminal so no safety gate is bypassed.</p>
+     * batch through the active-run guard. Dry-run and approval-gated batches remain
+     * non-terminal because they have not produced a real failure. A real attempted
+     * tool failure is different: it must close the Run as FAILED, otherwise history
+     * and the composer keep reporting an operation that is no longer running.</p>
      */
     private void convergeRunAfterAutoExecution(AgentRunRecord run,
                                                String sessionId,
                                                String runId,
                                                AutoExecutionBatch batch) {
-        if (batch.dryRun() || batch.failedCount() > 0) {
+        if (batch.dryRun()) {
+            return;
+        }
+        if (batch.failedCount() > 0) {
+            String failureSummary = batch.items().stream()
+                    .filter(item -> "FAILED".equals(item.action()) || "EXECUTION_REJECTED".equals(item.action()))
+                    .map(item -> item.toolCode() + "：" + item.reason())
+                    .collect(java.util.stream.Collectors.joining("；"));
+            run.failAfterToolExecution(
+                    "本轮 Agent 只读工具执行失败，已停止继续推进。"
+                            + (failureSummary.isBlank() ? "请查看失败工具审计详情。" : failureSummary)
+            );
             return;
         }
         AgentRunToolExecutionPolicyView refreshedPolicy = policyService.inspectRunPolicy(sessionId, runId);

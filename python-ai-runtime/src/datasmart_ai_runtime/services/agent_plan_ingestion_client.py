@@ -291,6 +291,20 @@ class JavaAgentPlanIngestionClient:
                 raise AgentPlanIngestionClientError(
                     f"interactionOrigin 不受支持：{explicit}"
                 )
+            if (
+                normalized == "USER_MESSAGE"
+                and cls._optional_string(variables.get("agentRuntimeSessionId"))
+                and not cls._optional_string(variables.get("latestUserMessage"))
+            ):
+                # Existing-session USER_MESSAGE is a strict protocol assertion: it
+                # means the user typed a new natural-language turn.  Falling back to
+                # the session objective here would persist a fake repeated question.
+                # Fail before Java ingestion so the caller can correct its payload;
+                # form/approval/recovery producers must use their dedicated origins.
+                raise AgentPlanIngestionClientError(
+                    "历史会话中的 USER_MESSAGE 必须提供 latestUserMessage；"
+                    "表单、审批或系统续跑不能伪装成用户追问"
+                )
             return normalized
         if cls._optional_string(variables.get("latestUserMessage")):
             return "USER_MESSAGE"

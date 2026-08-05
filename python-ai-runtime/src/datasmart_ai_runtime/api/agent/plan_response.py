@@ -505,6 +505,19 @@ def build_plan_response(
                 second_turn_result is not None
                 and bool(getattr(second_turn_result, "error_code", None))
             )
+            or (
+                control_plane_feedback is not None
+                and any(
+                    getattr(getattr(item, "status", None), "value", "") == "failed"
+                    for item in getattr(control_plane_feedback, "feedback_items", ())
+                )
+            )
+            or (
+                loop_control_decision is not None
+                and not bool(getattr(loop_control_decision, "allowed", False))
+                and str(getattr(getattr(loop_control_decision, "action", None), "value", ""))
+                not in {"wait_for_control_plane", "wait_for_approval"}
+            )
         ),
     )
     response["agentConversation"] = agent_conversation

@@ -230,6 +230,42 @@ class AgentRunToolAutoExecutionServiceTest {
         assertTrue(fixture.run.getMessage().contains("同一会话继续下一轮"));
     }
 
+    /**
+     * Verifies that an attempted read-only tool failure closes the durable Run.
+     *
+     * <p>Without this transition the audit is FAILED while the parent Run remains
+     * PLANNING, so the same-session active-run guard rejects every later user repair.
+     * The assertion therefore covers both the terminal state and the human-readable
+     * failure summary that the history page uses to offer Agent diagnosis.</p>
+     */
+    @Test
+    void shouldFailRunWhenARealAutoExecutedToolFails() {
+        TestFixture fixture = newFixture(5);
+        fixture.saveAudits(audit(
+                "atea-auto-failed",
+                "datasource.unsupported.read",
+                AgentToolExecutionState.PLANNED,
+                AgentToolExecutionMode.SYNC,
+                AgentToolRiskLevel.LOW,
+                false,
+                true,
+                true,
+                Map.of("planNodeId", "failed-root")
+        ));
+
+        AgentRunToolAutoExecutionResponse response = fixture.service.executeEligibleSyncTools(
+                "session-auto-001",
+                "run-auto-001",
+                new AgentRunToolAutoExecutionRequest(null, 5, false),
+                "trace-auto"
+        );
+
+        assertEquals(1, response.failedCount());
+        assertEquals(AgentRunState.FAILED, fixture.run.getState());
+        assertTrue(fixture.run.getMessage().contains("datasource.unsupported.read"));
+        assertTrue(fixture.run.getFinishTime() != null);
+    }
+
     private TestFixture newFixture(int maxAutoExecutions) {
         AgentRuntimeProperties properties = new AgentRuntimeProperties();
         properties.setMaxSyncAutoExecutionsPerRun(maxAutoExecutions);

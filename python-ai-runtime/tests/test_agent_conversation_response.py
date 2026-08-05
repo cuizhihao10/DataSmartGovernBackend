@@ -916,6 +916,69 @@ class AgentConversationResponseTest(unittest.TestCase):
         self.assertEqual(["sourceDatasourceId"], conversation["missingParameters"])
         self.assertEqual(2, len(conversation["clarificationQuestions"][0]["candidates"]))
 
+    def test_failed_source_connection_returns_exact_datasource_recovery_question(self) -> None:
+        """A terminal probe failure must become a usable human continuation point."""
+
+        request = AgentRequest(
+            tenant_id="10",
+            project_id="101",
+            actor_id="1001",
+            objective="把客户表从 MySQL 全量同步到 PostgreSQL",
+            variables={
+                "dataSyncRequest": {
+                    "sourceDatasourceId": 23,
+                    "targetDatasourceId": 24,
+                    "syncMode": "FULL",
+                }
+            },
+        )
+        tool_plan = ToolPlan(
+            tool_name="datasource.source.connection.test",
+            reason="verify source",
+            arguments={"datasourceId": 23},
+        )
+        plan = AgentPlan(
+            request_id="request-source-connection-failed",
+            selected_route=None,
+            state_trace=("execute_tools",),
+            tool_plans=(tool_plan,),
+            requires_human_approval=False,
+            response_summary="源端连接测试失败：当前数据源不可访问，请重新选择或修复连接。",
+            intent_analysis=IntentAnalysis(
+                summary="识别到数据同步任务。",
+                governance_domains=(GovernanceDomain.DATA_SYNC,),
+                candidate_tools=("datasource.source.connection.test",),
+            ),
+        )
+        feedback = AgentControlPlaneFeedbackSnapshot(
+            expected_tool_call_count=1,
+            feedback_items=(AgentControlPlaneFeedbackItem(
+                model_tool_call_id="call-source-connection",
+                tool_name="datasource.source.connection.test",
+                status=ToolExecutionFeedbackStatus.FAILED,
+                summary="源端连接测试失败。",
+                error_code="DATASOURCE_CONNECTION_TEST_FAILED",
+                error_message="连接超时",
+            ),),
+            missing_tool_call_ids=(),
+            status_counts={"failed": 1},
+            second_turn_eligible=True,
+            recommended_actions=(),
+        )
+
+        conversation = build_agent_conversation_response(
+            request,
+            plan,
+            ToolExecutionReadinessService().evaluate((tool_plan,)),
+            control_plane_ingested=True,
+            control_plane_feedback=feedback,
+            autonomous_resolution_stopped=True,
+        )
+
+        self.assertEqual("WAITING_CLARIFICATION", conversation["phase"])
+        self.assertEqual(["sourceDatasourceId"], conversation["missingParameters"])
+        self.assertIn("连接测试失败", conversation["assistantMessage"])
+
     def test_connector_type_only_clarification_explains_that_instance_is_still_required(self) -> None:
         request = AgentRequest(
             tenant_id="10",

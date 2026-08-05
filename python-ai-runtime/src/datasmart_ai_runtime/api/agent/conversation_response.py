@@ -187,8 +187,15 @@ def build_agent_conversation_response(
         control_plane_feedback,
         autonomous_resolution_stopped=autonomous_resolution_stopped,
     )
+    # A datasource ID present in the original payload is not "resolved" after its
+    # catalog/connection/metadata probe has failed or become ambiguous.  Keep these
+    # feedback-derived fields authoritative so an obsolete ID cannot hide the exact
+    # recovery selector and push the user prematurely into mapping configuration.
+    feedback_forced_parameters = set(catalog_clarification_parameters)
     currently_unresolved = tuple(
-        name for name in declared_missing_parameters if name not in autonomously_resolved
+        name
+        for name in declared_missing_parameters
+        if name not in autonomously_resolved or name in feedback_forced_parameters
     )
     for parameter_name in _mode_aware_missing_parameters(
         request,
@@ -205,7 +212,9 @@ def build_agent_conversation_response(
         control_plane_feedback,
     )
     missing_parameters = tuple(
-        name for name in declared_missing_parameters if name not in autonomously_resolved
+        name
+        for name in declared_missing_parameters
+        if name not in autonomously_resolved or name in feedback_forced_parameters
     )
     # A full plan may already contain a draft node whose first-pass validation
     # reports objectMappings as missing while the catalog/metadata branch is
@@ -370,19 +379,27 @@ def _no_executable_plan_message(plan: AgentPlan) -> str:
 
 
 def _catalog_clarification_parameters(control_plane_feedback: Any | None) -> tuple[str, ...]:
-    """Map the latest non-exact catalog facts back to user-facing fields.
+    """Map the latest datasource discovery/probe failure to user-facing fields.
 
     Complete natural-language requests often have no deterministic missing fields.
     If autonomous discovery later proves a datasource name ambiguous or absent, the
     correction belongs to the datasource selector, not the object-mapping editor.
-    Only the latest result for each direction is authoritative so a later explicit
-    user choice can replace an earlier ambiguous search.
+
+    Connection and metadata failures use the same side-specific recovery field:
+    asking the user to reselect or repair the affected datasource is more actionable
+    than exposing an internal tool error or incorrectly requesting table mappings.
+    Only the latest result for each tool is authoritative so a later explicit user
+    choice can replace an earlier ambiguous search or failed probe.
     """
 
     feedback_items = tuple(getattr(control_plane_feedback, "feedback_items", ()) or ())
     tool_to_parameter = {
         "datasource.source.catalog.search": "sourceDatasourceId",
         "datasource.target.catalog.search": "targetDatasourceId",
+        "datasource.source.connection.test": "sourceDatasourceId",
+        "datasource.target.connection.test": "targetDatasourceId",
+        "datasource.source.metadata.read": "sourceDatasourceId",
+        "datasource.target.metadata.read": "targetDatasourceId",
     }
     seen_tools: set[str] = set()
     missing: list[str] = []
@@ -393,11 +410,18 @@ def _catalog_clarification_parameters(control_plane_feedback: Any | None) -> tup
             continue
         seen_tools.add(tool_name)
         status = getattr(getattr(item, "status", None), "value", "")
+        if status == "failed":
+            # A failed datasource probe is not an abstract orchestration error.  The
+            # smallest safe user action is to reselect the affected datasource (or
+            # correct its connection in datasource management), so expose the exact
+            # side-specific field instead of leaving the UI in autonomous-progress.
+            missing.append(parameter_name)
+            continue
         if status != "succeeded":
             continue
         result = dict(getattr(item, "result", {}) or {})
         match_status = str(result.get("matchStatus") or "").strip().upper()
-        if match_status and match_status != "EXACT":
+        if tool_name.endswith("catalog.search") and match_status and match_status != "EXACT":
             missing.append(parameter_name)
     return tuple(missing)
 

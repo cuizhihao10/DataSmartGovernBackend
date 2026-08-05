@@ -49,20 +49,38 @@ class DataSyncToolPlanBuilder:
         tools: dict[str, ToolDefinition],
         plan_factory: Callable[[ToolDefinition, str, dict[str, object]], ToolPlan],
     ) -> tuple[ToolPlan, ...]:
+        """Build the governed synchronization lifecycle after identities are known.
+
+        ``dataSyncRequest`` is also used as a progressive form payload, so its mere
+        presence does not prove that a source and target resource have been selected.
+        This method first normalizes both datasource IDs and returns no executable
+        tools when either side is absent. The conversation layer can then ask for the
+        exact missing selector instead of allowing a connection/metadata tool with a
+        null ID to fail inside Java control-plane execution.
+
+        Once both identities are valid, the method emits the same ordered lifecycle
+        used by manual task creation: connection checks, metadata reads, draft save,
+        precheck, publish/run and execution observation. Every node still passes
+        through the registry, parameter validation, permission and approval policies;
+        this builder only constructs candidates and never executes a side effect.
+        """
+
         payload = self._payload(request)
-        source_id = payload.get("sourceDatasourceId") or request.variables.get("sourceDatasourceId")
-        target_id = payload.get("targetDatasourceId") or request.variables.get("targetDatasourceId")
-        has_structured_contract = bool(payload) or bool(source_id) or bool(target_id)
-        # Free text must advance one evidenced frontier at a time. Building the
-        # complete wizard DAG here would classify downstream derived IDs and
-        # mappings as user-missing before catalog/metadata tools can resolve them.
-        if not has_structured_contract:
-            return ()
-        requested = bool(payload) or (
-            bool(candidate_tools.intersection(self._TOOL_NAMES))
-            and bool(source_id)
-            and bool(target_id)
+        source_id = self._positive_datasource_id(
+            payload.get("sourceDatasourceId") or request.variables.get("sourceDatasourceId")
         )
+        target_id = self._positive_datasource_id(
+            payload.get("targetDatasourceId") or request.variables.get("targetDatasourceId")
+        )
+        # The frontend deliberately sends a partial dataSyncRequest while the user is
+        # still clarifying the task.  Descriptive fields such as taskDescription or
+        # groupName do not make that shell an executable contract.  Connection and
+        # metadata nodes may only be built after both resource identities are known;
+        # otherwise ``None`` would cross the Java control-plane boundary and turn a
+        # normal datasource question into a misleading tool failure.
+        if source_id is None or target_id is None:
+            return ()
+        requested = bool(payload) or bool(candidate_tools.intersection(self._TOOL_NAMES))
         if not requested:
             return ()
 
@@ -312,6 +330,23 @@ class DataSyncToolPlanBuilder:
         if normalized in {"MERGE", "UPSERT"}:
             return "UPDATE"
         return normalized if normalized in {"INSERT", "UPDATE"} else "INSERT"
+
+    @staticmethod
+    def _positive_datasource_id(value: object) -> int | None:
+        """Normalize a trusted datasource identity before building executable tools.
+
+        Browser forms, model JSON and restored history can represent the same ID as
+        an integer or a numeric string.  Zero, negative values, booleans and arbitrary
+        text are never valid datasource identities and must stop at clarification.
+        """
+
+        if isinstance(value, bool):
+            return None
+        try:
+            normalized = int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        return normalized if normalized > 0 else None
 
 
 __all__ = ["DataSyncToolPlanBuilder"]
