@@ -192,6 +192,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 - 真实链路复验：原始重名失败 Run 重新生成的修复 Run 在助手消息追加后仍保持 `WAITING_HUMAN`；确认更名后成功保存任务 `38` 及 2 条对象映射。后续预检查因两张目标表各已有 6 行且配置为 `FULL + INSERT` 正确阻断，Agent 明确给出清空目标表、改为 UPDATE/merge 或新建空表三种需用户确认的方案，没有擅自删除数据或修改写入策略。
 - 回归结果：新增服务层/JDBC 增量写定向测试共 `8/8` 通过，Python 更名/continuation 定向测试 `7/7` 通过；Agent Runtime 全量 `544/544` 通过；Python Runtime 全量 `855/855` 通过；前端 `npm run lint` 与 `npm run build` 通过。Vite 主 bundle 大于 500 kB 的既有 warning 仍不阻断本轮缺陷验收。
 
+## 7.4 2026-08-05 Agent 单回合连续处理语义验收
+
+- 新增 `AgentInteractionOrigin` 跨运行时契约，明确区分 `USER_MESSAGE`、`FORM_SUBMISSION`、
+  `APPROVAL_DECISION`、`AGENT_CONTINUATION`、`SYSTEM_RECOVERY` 与 `AUTOMATIC_CONTINUATION`。
+- 只有用户首次输入或真正从会话输入框发送自然语言追问/纠偏时才持久化 `USER` 消息；任务缺项表单、预览审批、
+  采用修复建议、模型工具二轮、MCP 结果回填和故障恢复仍创建 Durable Run 与完整审计，但不再复制 session 初始目标。
+- 每个 Run 在 `variables.interactionOrigin` 保存来源快照。前端历史折叠条据此显示“已提交任务配置”“已完成确认操作”
+  “Agent 自动继续”等动作标签，展开后仍可查看公开模型输出、工具/API 调用、低敏参数、结果和错误证据。
+- 新增 Agent Runtime `V4` Flyway 迁移：仅把同一 session 中与 objective 完全相同的旧 USER 消息保留最早一条；
+  不同文本的历史追问一律保留，Run、Agent 回复、工具审计、审批事实和执行结果均不删除。
+- 前端在迁移尚未执行的滚动升级窗口提供同样的保守兼容回放。新数据完全依赖显式来源，用户有意重复发送同一句
+  自然语言时仍会被正确保存，不再使用通用字符串去重。
+- 验证证据：Agent Runtime Java 21 Reactor `548/548`、Python Runtime `857/857`、前端 `npm run lint` 与
+  `npm run build` 全部通过；V4 在 PostgreSQL 回滚事务中验证为回填 `5 + 11` 个 Run 来源并清理 `11` 条重复
+  USER 消息，事务已回滚后再由容器 Flyway 正式执行。
+
 ## 8. 最新总闸门入口（2026-07-05）
 
 当前项目已经从“持续补功能”进入“闭环交付候选”阶段。后续不建议再分散记忆多条验收命令，而应优先使用最终交付总闸门：

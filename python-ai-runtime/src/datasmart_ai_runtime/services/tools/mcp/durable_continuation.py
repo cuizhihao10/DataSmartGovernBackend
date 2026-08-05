@@ -119,6 +119,8 @@ class McpDurableContinuationCoordinator:
                 "traceId": request_id,
                 "workspaceKey": workspace_key,
                 "mcpDurableContinuation": True,
+                # MCP 结果回填是 Agent 内部循环，不是用户在聊天框里发出的新消息。
+                "interactionOrigin": "AUTOMATIC_CONTINUATION",
             },
             preferred_workload=WorkloadType.AGENT_REASONING,
             request_id=request_id,

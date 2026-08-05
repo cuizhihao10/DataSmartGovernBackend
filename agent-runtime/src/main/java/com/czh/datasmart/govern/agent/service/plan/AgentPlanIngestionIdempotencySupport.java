@@ -120,7 +120,8 @@ public class AgentPlanIngestionIdempotencySupport {
                 + "|" + request.toolPlans()
                 + "|" + request.modelGatewayGovernance()
                 + "|" + request.memoryPlan()
-                + "|" + request.memoryRetrievalReport();
+                + "|" + request.memoryRetrievalReport()
+                + "|" + request.interactionOrigin();
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             return HexFormat.of().formatHex(digest.digest(raw.getBytes(StandardCharsets.UTF_8)));

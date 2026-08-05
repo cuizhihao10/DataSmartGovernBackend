@@ -65,6 +65,7 @@ class JavaAgentPlanIngestionClientTest(unittest.TestCase):
         self.assertEqual("PROJECT", payload["isolationLevel"])
         self.assertEqual("req-001", payload["pythonRequestId"])
         self.assertEqual("ags-existing", payload["sessionId"])
+        self.assertEqual("AGENT_CONTINUATION", payload["interactionOrigin"])
         self.assertEqual("ORDINARY_USER", payload["actorRole"])
         self.assertEqual("USER", payload["actorType"])
         self.assertEqual("20:MANAGER", payload["authorizedProjectRoles"])
@@ -91,6 +92,41 @@ class JavaAgentPlanIngestionClientTest(unittest.TestCase):
 
         self.assertIsNone(payload["sessionId"])
         self.assertEqual("ags-existing", request.variables["sessionId"])
+        self.assertEqual("USER_MESSAGE", payload["interactionOrigin"])
+
+    def test_interaction_origin_distinguishes_user_message_from_structured_actions(self) -> None:
+        """同一 session 的自然语言、表单与审批必须在 Java 接入前拥有不同来源。"""
+
+        user_follow_up = self._request()
+        user_follow_up.variables["latestUserMessage"] = "目标表改为 customer_archive"
+        form_submission = self._request()
+        form_submission.variables["interactionOrigin"] = "FORM_SUBMISSION"
+        approval_decision = self._request()
+        approval_decision.variables.update(
+            {
+                "interactionOrigin": "APPROVAL_DECISION",
+                "userActionSummary": "确认采用同名字段映射",
+            }
+        )
+
+        user_payload = JavaAgentPlanIngestionClient.build_payload(user_follow_up, self._plan())
+        form_payload = JavaAgentPlanIngestionClient.build_payload(form_submission, self._plan())
+        approval_payload = JavaAgentPlanIngestionClient.build_payload(approval_decision, self._plan())
+
+        self.assertEqual("USER_MESSAGE", user_payload["interactionOrigin"])
+        self.assertEqual("目标表改为 customer_archive", user_payload["userInput"])
+        self.assertEqual("FORM_SUBMISSION", form_payload["interactionOrigin"])
+        self.assertEqual("APPROVAL_DECISION", approval_payload["interactionOrigin"])
+        self.assertEqual("确认采用同名字段映射", approval_payload["userInput"])
+
+    def test_invalid_interaction_origin_is_rejected_before_calling_java(self) -> None:
+        """未知来源不能降级成 USER_MESSAGE，否则拼写错误会重新污染会话历史。"""
+
+        request = self._request()
+        request.variables["interactionOrigin"] = "INTERNAL_MAGIC"
+
+        with self.assertRaises(AgentPlanIngestionClientError):
+            JavaAgentPlanIngestionClient.build_payload(request, self._plan())
 
     def test_build_payload_includes_parameter_issues_for_java_execution_guard(self) -> None:
         issue = ToolParameterIssue(

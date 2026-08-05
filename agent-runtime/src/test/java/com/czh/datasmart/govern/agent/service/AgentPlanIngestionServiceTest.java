@@ -14,6 +14,7 @@ import com.czh.datasmart.govern.agent.controller.dto.IngestAgentPlanToolRequest;
 import com.czh.datasmart.govern.agent.controller.dto.IngestedAgentPlanView;
 import com.czh.datasmart.govern.agent.event.NoopAgentToolExecutionEventPublisher;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionMode;
+import com.czh.datasmart.govern.agent.model.AgentInteractionOrigin;
 import com.czh.datasmart.govern.agent.model.AgentToolRiskLevel;
 import com.czh.datasmart.govern.agent.model.AgentToolType;
 import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
@@ -99,6 +100,94 @@ class AgentPlanIngestionServiceTest {
         assertEquals("读取数据源元数据，用于生成质量规则候选项", audit.planReason());
         assertEquals(1001L, audit.planArguments().get("datasourceId"));
         assertTrue(view.controlPlaneNotes().getFirst().contains("没有触发真实工具执行"));
+    }
+
+    /**
+     * 初始自然语言目标必须恰好形成一条 USER 消息，并把来源固化到 Run 快照。
+     *
+     * <p>该断言保护历史会话的第一层语义：用户看到自己发送的一句话，随后才是 Agent 过程与公开回复。</p>
+     */
+    @Test
+    void ingestInitialUserMessageShouldPersistExactlyOneUserBubble() {
+        IngestedAgentPlanView view = ingestionService.ingest(baseRequest(List.of(metadataPlan())), "trace-user-message");
+
+        assertEquals("USER_MESSAGE", view.run().variables().get("interactionOrigin"));
+        assertEquals(1, view.session().messages().stream()
+                .filter(message -> message.role().equals("USER"))
+                .count());
+        assertEquals(1, view.session().messages().stream()
+                .filter(message -> message.role().equals("AGENT"))
+                .count());
+    }
+
+    /**
+     * Durable 自动续跑可以创建新的 Run 和 Agent 公开回复，但不能复制最初的 USER 目标。
+     */
+    @Test
+    void ingestAutomaticContinuationShouldCreateRunWithoutUserBubble() {
+        IngestedAgentPlanView initial = ingestionService.ingest(baseRequest(List.of(metadataPlan())), "trace-initial");
+        IngestAgentPlanRequest continuation = withInteractionOrigin(
+                followUpRequest(initial.session().sessionId(), "idem-auto-continuation", List.of(metadataPlan())),
+                AgentInteractionOrigin.AUTOMATIC_CONTINUATION
+        );
+
+        IngestedAgentPlanView continued = ingestionService.ingest(continuation, "trace-auto-continuation");
+
+        assertEquals("AUTOMATIC_CONTINUATION", continued.run().variables().get("interactionOrigin"));
+        assertEquals(1, continued.session().messages().stream()
+                .filter(message -> message.role().equals("USER"))
+                .count());
+        assertTrue(continued.session().messages().stream()
+                .noneMatch(message -> message.role().equals("USER")
+                        && continued.run().runId().equals(message.runId())));
+    }
+
+    /**
+     * 表单补参与审批决定属于用户动作事实，而不是自然语言追问；两类动作均不得生成 USER 气泡。
+     */
+    @Test
+    void ingestFormAndApprovalActionsShouldRemainProcessFacts() {
+        IngestedAgentPlanView initial = ingestionService.ingest(baseRequest(List.of(metadataPlan())), "trace-initial");
+        IngestedAgentPlanView formRun = ingestionService.ingest(
+                withInteractionOrigin(
+                        followUpRequest(initial.session().sessionId(), "idem-form", List.of(metadataPlanWithMappings())),
+                        AgentInteractionOrigin.FORM_SUBMISSION
+                ),
+                "trace-form"
+        );
+        IngestedAgentPlanView approvalRun = ingestionService.ingest(
+                withInteractionOrigin(
+                        followUpRequest(initial.session().sessionId(), "idem-approval", List.of(metadataPlanWithMappings())),
+                        AgentInteractionOrigin.APPROVAL_DECISION
+                ),
+                "trace-approval"
+        );
+
+        assertEquals("FORM_SUBMISSION", formRun.run().variables().get("interactionOrigin"));
+        assertEquals("APPROVAL_DECISION", approvalRun.run().variables().get("interactionOrigin"));
+        assertEquals(1, approvalRun.session().messages().stream()
+                .filter(message -> message.role().equals("USER"))
+                .count());
+    }
+
+    /** 用户在输入框发送真实纠偏时，即使仍处于同一 session，也必须新增且仅新增一条 USER 消息。 */
+    @Test
+    void ingestRealFollowUpShouldPersistNewUserBubble() {
+        IngestedAgentPlanView initial = ingestionService.ingest(baseRequest(List.of(metadataPlan())), "trace-initial");
+        IngestedAgentPlanView followUp = ingestionService.ingest(
+                withInteractionOrigin(
+                        followUpRequest(initial.session().sessionId(), "idem-real-follow-up", List.of(metadataPlan())),
+                        AgentInteractionOrigin.USER_MESSAGE
+                ),
+                "trace-real-follow-up"
+        );
+
+        assertEquals(2, followUp.session().messages().stream()
+                .filter(message -> message.role().equals("USER"))
+                .count());
+        assertTrue(followUp.session().messages().stream()
+                .anyMatch(message -> message.role().equals("USER")
+                        && followUp.run().runId().equals(message.runId())));
     }
 
     /**
@@ -474,6 +563,41 @@ class AgentPlanIngestionServiceTest {
                 base.modelGatewayGovernance(),
                 base.memoryPlan(),
                 base.memoryRetrievalReport()
+        );
+    }
+
+    /**
+     * 在不改写测试业务参数的前提下，为同一计划显式指定交互来源。
+     *
+     * <p>使用完整构造字段可以同时验证 Java record 的跨运行时契约，避免测试通过某个只在测试中存在的 setter
+     * 绕开真实 JSON 接入结构。</p>
+     */
+    private IngestAgentPlanRequest withInteractionOrigin(IngestAgentPlanRequest request,
+                                                          AgentInteractionOrigin interactionOrigin) {
+        return new IngestAgentPlanRequest(
+                request.sessionId(),
+                request.tenantId(),
+                request.projectId(),
+                request.workspaceId(),
+                request.actorId(),
+                request.channel(),
+                request.objective(),
+                request.userInput(),
+                request.workloadType(),
+                request.idempotencyKey(),
+                request.pythonRequestId(),
+                request.stateTrace(),
+                request.responseSummary(),
+                request.requiresHumanApproval(),
+                request.isolationLevel(),
+                request.toolPlans(),
+                request.modelGatewayGovernance(),
+                request.memoryPlan(),
+                request.memoryRetrievalReport(),
+                request.actorRole(),
+                request.actorType(),
+                request.authorizedProjectRoles(),
+                interactionOrigin
         );
     }
 

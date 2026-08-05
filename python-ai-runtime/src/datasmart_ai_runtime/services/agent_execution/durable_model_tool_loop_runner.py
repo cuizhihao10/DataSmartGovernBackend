@@ -324,6 +324,8 @@ class AgentDurableModelToolLoopRunner:
         variables = dict(request.variables)
         if parent_session_id:
             variables["agentRuntimeSessionId"] = parent_session_id
+        # 模型读取真实工具结果后的下一轮属于同一次用户任务，不能制造新的 USER 聊天气泡。
+        variables["interactionOrigin"] = "AUTOMATIC_CONTINUATION"
         variables["idempotencyKey"] = f"agent-loop:{digest}"
         variables["agentLoopTurnIndex"] = turn_index
         continuation_request = replace(request, variables=variables, request_id=request_id)

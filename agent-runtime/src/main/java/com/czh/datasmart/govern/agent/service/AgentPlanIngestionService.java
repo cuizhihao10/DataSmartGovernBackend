@@ -18,6 +18,7 @@ import com.czh.datasmart.govern.agent.controller.dto.AgentWorkspaceView;
 import com.czh.datasmart.govern.agent.controller.dto.IngestAgentPlanRequest;
 import com.czh.datasmart.govern.agent.controller.dto.IngestAgentPlanToolRequest;
 import com.czh.datasmart.govern.agent.controller.dto.IngestedAgentPlanView;
+import com.czh.datasmart.govern.agent.model.AgentInteractionOrigin;
 import com.czh.datasmart.govern.agent.model.AgentRunState;
 import com.czh.datasmart.govern.agent.model.AgentToolBindingStatus;
 import com.czh.datasmart.govern.agent.model.AgentToolExecutionMode;
@@ -124,17 +125,23 @@ public class AgentPlanIngestionService {
     }
 
     /**
-     * 把本次计划接入对应的用户输入和 Agent 摘要写入持久会话。
+     * 把本次计划接入对应的公开对话事实写入持久会话。
      *
-     * <p>两条消息共享 runId，便于历史页面把自然语言上下文与一次具体执行关联。内容上限为 20000 字符，
-     * 防止异常模型输出无限放大数据库记录；Agent 消息时间增加 1 纳秒以保证相同数据库精度下仍按用户消息
-     * 之后排序。空白输入不会生成噪声消息。</p>
+     * <p>只有 {@link AgentInteractionOrigin#USER_MESSAGE} 会写入 USER 消息。表单提交、预览审批、自动续跑和
+     * 系统恢复仍然创建完整 Run、工具审计和审批事实，但不能重复展示最初的用户目标。该规则必须依赖显式来源，
+     * 不能依赖文本去重，因为用户完全可能有意重复发送同一句纠偏。</p>
+     *
+     * <p>公开 Agent 摘要仍与本 Run 关联并持久化。内容上限为 20000 字符，防止异常模型输出无限放大数据库；
+     * Agent 消息时间增加 1 纳秒，以保证真实 USER 消息与回复处于相同数据库时间精度时顺序稳定。</p>
      */
     private void appendConversationMessages(AgentSessionRecord session,
                                             AgentRunRecord run,
                                             IngestAgentPlanRequest request) {
         LocalDateTime now = LocalDateTime.now();
-        if (request.userInput() != null && !request.userInput().isBlank()) {
+        AgentInteractionOrigin interactionOrigin = interactionOrigin(request);
+        if (interactionOrigin.createsUserMessage()
+                && request.userInput() != null
+                && !request.userInput().isBlank()) {
             session.addMessage(new AgentConversationMessageRecord(
                     "agm_" + UUID.randomUUID().toString().replace("-", ""),
                     run.getRunId(), "USER", preview(request.userInput(), 20000), now));
@@ -317,6 +324,8 @@ public class AgentPlanIngestionService {
     private Map<String, Object> runVariables(IngestAgentPlanRequest request, List<AgentPlanToolSnapshot> toolSnapshots) {
         Map<String, Object> variables = new LinkedHashMap<>();
         variables.put("source", "PYTHON_AI_RUNTIME_AGENT_PLAN");
+        // 来源快照让历史回放可以把用户消息、表单动作、审批和自动续跑放在正确的视觉层级中。
+        variables.put("interactionOrigin", interactionOrigin(request).name());
         variables.put("idempotencyKey", request.idempotencyKey());
         variables.put("pythonRequestId", request.pythonRequestId());
         variables.put("stateTrace", request.stateTrace() == null ? List.of() : request.stateTrace());
@@ -326,6 +335,18 @@ public class AgentPlanIngestionService {
         variables.put("memoryRetrievalReport", safeMap(request.memoryRetrievalReport()));
         variables.put("toolPlans", toolSnapshots.stream().map(this::compactToolPlan).toList());
         return variables;
+    }
+
+    /**
+     * 解析跨运行时交互来源，并为滚动升级中的旧调用方保留兼容语义。
+     *
+     * <p>新 Python Runtime 必须显式传值。旧客户端没有该字段时仍按 USER_MESSAGE 处理，原因是静默吞掉用户输入
+     * 比偶发重复更危险；项目内所有自动续跑生产者会在本次改动中同步升级，因此兼容分支不会继续污染新会话。</p>
+     */
+    private AgentInteractionOrigin interactionOrigin(IngestAgentPlanRequest request) {
+        return request.interactionOrigin() == null
+                ? AgentInteractionOrigin.USER_MESSAGE
+                : request.interactionOrigin();
     }
 
     private Map<String, Object> compactToolPlan(AgentPlanToolSnapshot plan) {

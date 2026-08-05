@@ -16180,3 +16180,19 @@ push 边界如何消费 5.29 的 task runtime event 契约。当前仍不接受�
 - 新增 JDBC SQL 边界测试，明确断言消息追加路径不会执行 `DELETE FROM agent_run`、工具绑定或消息整组删除；服务测试同时断言当前 Run 终态只做一次聚合保存、下一 Run 在追加助手消息后仍存在。
 - 真实链路确认建议名称已成功保存为任务 `38`，说明 Run 持久化和跨 Run 元数据引用均已闭环。该任务随后因目标表非空且选择 `FULL + INSERT` 被真实预检查正确阻断，Agent 给出三种需要用户选择的业务修复方案，不把合理预检阻断误判成系统成功。
 - 验证证据：Java 相关定向测试 `8/8`、Python 更名/continuation 定向测试 `7/7`、Agent Runtime 全量 `544/544`、Python Runtime 全量 `855/855`、前端 lint/build 全部通过。
+
+## 2026-08-05 追加落地进展：Agent 用户消息与内部 Run 来源分离
+
+- 修复历史会话把原始 objective 在补参、审批、自动续跑和故障恢复 Run 前反复显示成“用户追问”的问题。根因是
+  Python 接入请求为内部 Run 回退填充 objective，Java 又无条件创建 USER conversation message。
+- Java 新增 `AgentInteractionOrigin`，Python 计划接入统一输出 `interactionOrigin`，并将来源持久化到 Run variables。
+  只有 `USER_MESSAGE` 创建 USER 消息；其余来源通过过程、工具审计、审批事实和运行结果表达。
+- 前端所有计划生产入口显式分类：初始目标/文本纠偏为 USER_MESSAGE，高级配置与缺项表单为 FORM_SUBMISSION，
+  采用建议和确认操作为 APPROVAL_DECISION，元数据自动补全为 AUTOMATIC_CONTINUATION，失败排查为 SYSTEM_RECOVERY。
+- Durable model-tool loop、审批后 continuation 和 MCP durable continuation 均在 Python 内部再次显式标注来源，
+  防止绕过前端的后台链路重新污染会话。
+- 历史过程折叠条增加面向用户的来源标签；非用户来源的 `userInputPreview` 不再按“用户输入”展示，但真实工具参数、
+  低敏结果与执行证据仍完整可查。
+- PostgreSQL V4 迁移只修复可稳定识别的旧重复 objective USER 消息，保留第一条目标和所有不同内容的真实追问。
+- 验证：Java Agent Runtime `548/548`、Python Runtime `857/857`、前端 lint/build 通过；迁移 SQL 已在事务回滚模式
+  验证更新与删除行数，未在语法验证阶段修改业务数据。

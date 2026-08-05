@@ -149,6 +149,8 @@ class AgentPostConfirmContinuationCoordinator:
                 "traceId": request_id,
                 "workspaceKey": workspace_key,
                 "postConfirmContinuation": True,
+                # 用户已经通过审批事实表达决定；后续模型续跑只记录审批来源，不重复写原始 objective。
+                "interactionOrigin": "APPROVAL_DECISION",
             },
             preferred_workload=WorkloadType.AGENT_REASONING,
             request_id=request_id,

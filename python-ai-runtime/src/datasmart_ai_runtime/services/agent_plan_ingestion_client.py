@@ -24,6 +24,20 @@ from urllib.request import Request, urlopen
 from datasmart_ai_runtime.domain.contracts import AgentPlan, AgentRequest, ToolPlan
 
 
+# 该集合与 Java AgentInteractionOrigin 保持同名。使用字符串而不是让 Python 依赖 Java 生成代码，
+# 可以维持 Kafka/HTTP 松耦合；所有值仍在唯一的 build_payload 边界进行严格校验。
+_AGENT_INTERACTION_ORIGINS = frozenset(
+    {
+        "USER_MESSAGE",
+        "FORM_SUBMISSION",
+        "APPROVAL_DECISION",
+        "AGENT_CONTINUATION",
+        "SYSTEM_RECOVERY",
+        "AUTOMATIC_CONTINUATION",
+    }
+)
+
+
 class AgentPlanIngestionClientError(RuntimeError):
     """AgentPlan 接入客户端错误。
 
@@ -218,6 +232,7 @@ class JavaAgentPlanIngestionClient:
 
         variables = request_context.variables or {}
         request_context_facts = cls._trusted_request_context(variables)
+        interaction_origin = cls._interaction_origin(variables)
         return {
             # `sessionId` 是 Agent 对话、runtime event、记忆与模型缓存的会话边界，并不保证 Java
             # agent-runtime 中已经存在同名 session。只有控制面回写的 `agentRuntimeSessionId` 才表示
@@ -234,8 +249,12 @@ class JavaAgentPlanIngestionClient:
             # 旧调用方尚未提供 latestUserMessage 时再回退 objective，以保持协议向后兼容。
             "userInput": str(
                 variables.get("latestUserMessage")
+                or variables.get("userActionSummary")
                 or request_context.objective
             ),
+            # Java 只会为 USER_MESSAGE 落一条 USER 会话消息。表单、审批和内部续跑仍会保留 Run 与审计，
+            # 但不会把 objective 伪装成用户反复追问。
+            "interactionOrigin": interaction_origin,
             "workloadType": cls._enum_value(request_context.preferred_workload),
             "idempotencyKey": cls._optional_string(variables.get("idempotencyKey") or plan.request_id),
             "pythonRequestId": plan.request_id,
@@ -255,6 +274,35 @@ class JavaAgentPlanIngestionClient:
                 request_context_facts.get("authorizedProjectRoles")
             ),
         }
+
+    @classmethod
+    def _interaction_origin(cls, variables: dict[str, Any]) -> str:
+        """解析本次计划接入相对于用户会话的来源。
+
+        第一优先级是调用方显式来源。兼容旧调用方时采用可验证上下文：没有 Java session 表示首次用户目标；
+        latestUserMessage 表示输入框中的真实新消息；已有 session 且没有新消息则只能是内部续跑。这个兼容判断
+        只服务滚动升级，项目内表单、审批、恢复与 Durable 生产者都会显式传值，不能再根据文本是否相同去重。
+        """
+
+        explicit = cls._optional_string(variables.get("interactionOrigin"))
+        if explicit:
+            normalized = explicit.upper()
+            if normalized not in _AGENT_INTERACTION_ORIGINS:
+                raise AgentPlanIngestionClientError(
+                    f"interactionOrigin 不受支持：{explicit}"
+                )
+            return normalized
+        if cls._optional_string(variables.get("latestUserMessage")):
+            return "USER_MESSAGE"
+        if not cls._optional_string(variables.get("agentRuntimeSessionId")):
+            return "USER_MESSAGE"
+        if variables.get("postConfirmContinuation"):
+            return "APPROVAL_DECISION"
+        if variables.get("diagnoseSyncExecution") or variables.get("recoveryExecutionId"):
+            return "SYSTEM_RECOVERY"
+        if variables.get("agentLoopTurnIndex") or variables.get("mcpDurableContinuation"):
+            return "AUTOMATIC_CONTINUATION"
+        return "AGENT_CONTINUATION"
 
     @staticmethod
     def _trusted_request_context(variables: dict[str, Any]) -> dict[str, Any]:

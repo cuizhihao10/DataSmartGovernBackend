@@ -6,6 +6,7 @@
  */
 package com.czh.datasmart.govern.agent.controller.dto;
 
+import com.czh.datasmart.govern.agent.model.AgentInteractionOrigin;
 import com.czh.datasmart.govern.agent.model.WorkspaceIsolationLevel;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -47,6 +48,10 @@ import java.util.Map;
  * @param modelGatewayGovernance 模型网关治理摘要，包括 provider、fallback、budget、cacheScope 等。
  * @param memoryPlan 记忆写入/读取计划摘要。
  * @param memoryRetrievalReport 记忆检索报告摘要。
+ * @param actorRole Gateway 验签后注入的用户平台/应用角色快照。
+ * @param actorType 用户、服务账号、Agent 或系统调度器等可信主体类型。
+ * @param authorizedProjectRoles 当前用户获授权的项目角色集合快照。
+ * @param interactionOrigin 本 Run 是用户消息、表单、审批、自动续跑还是系统恢复；决定是否创建 USER 消息。
  */
 public record IngestAgentPlanRequest(
         @Size(max = 128, message = "sessionId 最多 128 个字符")
@@ -114,7 +119,9 @@ public record IngestAgentPlanRequest(
         String actorType,
 
         @Size(max = 4000, message = "authorizedProjectRoles 最多 4000 个字符")
-        String authorizedProjectRoles) {
+        String authorizedProjectRoles,
+
+        AgentInteractionOrigin interactionOrigin) {
 
     /** 保留旧构造签名，避免本次可信身份增强扩散到既有测试和内部调用方。 */
     public IngestAgentPlanRequest(
@@ -140,6 +147,41 @@ public record IngestAgentPlanRequest(
         this(sessionId, tenantId, projectId, workspaceId, actorId, channel, objective, userInput,
                 workloadType, idempotencyKey, pythonRequestId, stateTrace, responseSummary,
                 requiresHumanApproval, isolationLevel, toolPlans, modelGatewayGovernance, memoryPlan,
-                memoryRetrievalReport, null, null, null);
+                memoryRetrievalReport, null, null, null, null);
+    }
+
+    /**
+     * 保留加入交互来源字段之前的完整构造签名。
+     *
+     * <p>该构造器只用于 Java 内部调用与滚动升级兼容；HTTP JSON 请求应显式传入 {@code interactionOrigin}。
+     * 来源为空时服务层按旧客户端语义视为真实用户消息，避免升级期间静默丢失用户输入。</p>
+     */
+    public IngestAgentPlanRequest(
+            String sessionId,
+            Long tenantId,
+            Long projectId,
+            Long workspaceId,
+            String actorId,
+            String channel,
+            String objective,
+            String userInput,
+            String workloadType,
+            String idempotencyKey,
+            String pythonRequestId,
+            List<String> stateTrace,
+            String responseSummary,
+            Boolean requiresHumanApproval,
+            WorkspaceIsolationLevel isolationLevel,
+            List<IngestAgentPlanToolRequest> toolPlans,
+            Map<String, Object> modelGatewayGovernance,
+            Map<String, Object> memoryPlan,
+            Map<String, Object> memoryRetrievalReport,
+            String actorRole,
+            String actorType,
+            String authorizedProjectRoles) {
+        this(sessionId, tenantId, projectId, workspaceId, actorId, channel, objective, userInput,
+                workloadType, idempotencyKey, pythonRequestId, stateTrace, responseSummary,
+                requiresHumanApproval, isolationLevel, toolPlans, modelGatewayGovernance, memoryPlan,
+                memoryRetrievalReport, actorRole, actorType, authorizedProjectRoles, null);
     }
 }
