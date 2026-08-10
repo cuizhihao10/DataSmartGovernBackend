@@ -1,7 +1,9 @@
+import hashlib
 import json
 import os
 import sys
 import unittest
+from dataclasses import replace
 from unittest.mock import patch
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -334,6 +336,28 @@ class SpecialistTurnFactClientTest(unittest.TestCase):
             self.assertNotIn(fragment, body)
         self.assertNotIn("structuredOutput", body)
         self.assertIn("lowSensitiveSummary", body)
+
+    def test_rag_chunk_fragment_reference_is_hashed_instead_of_dropped(self) -> None:
+        """PostgreSQL RAG 的 ``#chunk`` 引用应以稳定摘要进入 Java 专业事实。"""
+
+        raw_reference = (
+            "rag:recovery-governance-runbook-v1:"
+            "recovery-governance-runbook-v1#chunk-1"
+        )
+        result = replace(
+            _result(),
+            evidence_references=(raw_reference, "external#unsafe-reference"),
+        )
+
+        payload = JavaSpecialistTurnFactClient().build_payload(_request(), result)
+
+        expected_reference = (
+            "rag:sha256:"
+            + hashlib.sha256(raw_reference.encode("utf-8")).hexdigest()
+        )
+        self.assertIn(expected_reference, payload["evidenceRefs"])
+        self.assertNotIn(raw_reference, payload["evidenceRefs"])
+        self.assertNotIn("external#unsafe-reference", payload["evidenceRefs"])
 
     def test_client_instance_can_be_used_directly_as_result_sink(self) -> None:
         """客户端实例应能直接作为 coordinator 的二参数 result sink，并保留结构化 receipt。"""

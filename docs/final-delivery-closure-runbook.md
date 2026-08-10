@@ -126,11 +126,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-delivery-clo
 
 本轮以两个 dirty worktree 的实际代码、当前构建镜像和真实本地服务为证据，不读取旧任务历史，也不把历史数字当作本轮结果：
 
-- Backend：Python `1087 passed`；Java Reactor `BUILD SUCCESS`，Surefire `1321 tests / 0 failures / 0 errors / 9 skipped`；Compose config 和核心服务健康。
-- Frontend：`npm run lint`、`npm run build`（含 `tsc -b`）以及 5 个 Agent/data-sync 合同脚本全部通过；主 bundle `2120.77 kB`、gzip `641.08 kB` 的分包 warning 保留为性能事项。
+- Backend：Python `1099 passed`；JDK `21.0.10` Java Reactor `BUILD SUCCESS`，Surefire `1323 tests / 0 failures / 0 errors / 9 skipped`；Compose config 和核心服务健康。
+- Frontend：`npm run lint`、`npm run build`（含 `tsc -b`）以及 6 个 Agent/data-sync/API adapter 合同脚本全部通过；主 bundle `2120.80 kB`、gzip `641.09 kB` 的分包 warning 保留为性能事项。
 - RAG/LangGraph：Compose 使用 PostgreSQL fail-closed checkpointer；Gateway RAG 返回 2 条 citation，写入 3 个 checkpoint 和 3 个 event；Runtime 重启后 latest/events 可恢复读取，同项目其他 actor 被 403 拒绝。
-- 六 Agent：Success 与 Recovery 均完成可在本机执行的真实控制面、RAG、Specialist fact 和 fail-closed 门禁；`DATA_SYNC_AGENT`/`RECOVERY_AGENT` 最终分别停在模型调用失败，未创建同步任务、未自动审批、未执行恢复副作用，审批事实总数仍为 0。
-- 外部阻塞：DataSmart Runtime 保持 `gpt-5.6-sol`/`xhigh`，等价 Provider 探测为 HTTP 401，健康摘要为 degraded、最近 4 次错误率 100%。恢复有效 Provider 凭据并重跑两个场景前，发布说明只能写“工程闭环通过、业务黑盒 E2E 受外部授权阻塞”，不能写六 Agent success/recovery 全部通过。
+- 六 Agent：此前的 Provider 401 记录已由后续复验取代。Success `six-agent-success-type-normalized-20260810112629` 创建任务 `91`、执行 `2245`，worker `SUCCEEDED` 且读写 `20/20`，18 项检查无失败，仅有按需 RAG 未触发的 1 项预期 warning；Recovery `six-agent-recovery-rag-durable-20260810214832` 获得 2 条 grounded citation、2 条 durable evidence reference、1 个 Java 只读 preview，后置 PRECHECK/MONITOR 均为 `EXECUTED`，11 项检查无失败和 warning，退出码为 `0`。
+- 副作用审计：permission approval、approval confirmation、submission fact 和 async command outbox 本轮均为 `0`；任务 `76` 仍只有 `1805 FAILED`、`1806 SUCCEEDED`，恢复计划 `9` 早于本轮；8 个 Java 工具审计全部为 `LOW/readOnly/SUCCEEDED`。因此本地六 Agent 黑盒门禁已关闭，但 Secret 轮换、备份恢复、容量压测、故障演练、SBOM/镜像签名和客户环境迁移仍是独立生产发布门禁。
 
 ## 8. GitHub Actions 发布候选门禁
 

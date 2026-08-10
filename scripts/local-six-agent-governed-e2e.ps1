@@ -28,6 +28,8 @@
       .\scripts\local-six-agent-governed-e2e.ps1 -Execute -ConfirmAndExecute `
         -SourceDatasourceName 'FlashSync MySQL 源' `
         -TargetDatasourceName 'FlashSync PostgreSQL 目标' `
+        -SourceObjectName 'datasmart_e2e_platform_orders' `
+        -TargetSchemaName 'datasmart_e2e' -TargetObjectName 'orders_platform_clean' `
         -Objective '将 MySQL 中的两张测试表全量同步到 PostgreSQL public schema 的同名表，并完成预检查后执行'
     - 恢复场景，只验证 RAG -> Recovery -> 审批等待：
       .\scripts\local-six-agent-governed-e2e.ps1 -Execute -Scenario Recovery `
@@ -75,6 +77,9 @@ param(
     # 它存在的目的是让“首轮失败、后置同角色成功”的显示语义可以脱离真实服务稳定复现和验证。
     [switch]$RunSpecialistStatusAggregationRegressionTest,
 
+    # 只构造公开 AgentRequest 并断言异名对象映射进入结构化基线；不会读取凭据、访问网络或创建任务。
+    [switch]$RunRequestContractRegressionTest,
+
     # 统一产品入口。脚本不绕过 Gateway 访问 Python Runtime。
     [string]$GatewayBaseUrl = 'http://localhost:8080',
     [string]$KeycloakBaseUrl = 'http://localhost:18080',
@@ -97,6 +102,12 @@ param(
     [string]$TargetDatasourceId = '',
     [string]$SourceConnectorType = 'MYSQL',
     [string]$TargetConnectorType = 'POSTGRESQL',
+
+    # 异名表不能依赖模型从自然语言猜测映射。非空时，脚本把这组用户审核值写入结构化 objectMappings。
+    [string]$SourceSchemaName = '',
+    [string]$SourceObjectName = '',
+    [string]$TargetSchemaName = '',
+    [string]$TargetObjectName = '',
 
     # INSERT 用于验证空目标表准入；UPDATE 对应产品中的 merge/upsert，适合目标表已有主键数据的验收。
     [ValidateSet('INSERT', 'UPDATE')]
@@ -513,6 +524,19 @@ function Assert-BasicInputs {
             Stop-E2E -Name '连接器参数' -Detail 'SourceConnectorType/TargetConnectorType 必须是安全的连接器类型标识。'
         }
     }
+    $objectSelectors = @($SourceSchemaName, $SourceObjectName, $TargetSchemaName, $TargetObjectName)
+    $hasObjectSelector = @($objectSelectors | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count -gt 0
+    if ($hasObjectSelector -and (
+            [string]::IsNullOrWhiteSpace($SourceObjectName) -or
+            [string]::IsNullOrWhiteSpace($TargetObjectName)
+        )) {
+        Stop-E2E -Name '对象映射参数' -Detail '提供结构化对象映射时必须同时填写 SourceObjectName 和 TargetObjectName；异名表不能只填写一端。'
+    }
+    foreach ($selector in $objectSelectors) {
+        if (-not [string]::IsNullOrWhiteSpace($selector) -and $selector -notmatch '^[A-Za-z_][A-Za-z0-9_$]{0,127}$') {
+            Stop-E2E -Name '对象映射参数' -Detail 'Schema/Object 名称必须是安全数据库标识符；脚本不接受 SQL 片段、引号或限定表达式。'
+        }
+    }
     if ($Scenario -eq 'Recovery' -and [string]::IsNullOrWhiteSpace($TaskId) -and [string]::IsNullOrWhiteSpace($ExecutionId)) {
         Stop-E2E -Name '恢复定位参数' -Detail 'Recovery 场景至少需要 -TaskId 或 -ExecutionId，Agent 才能基于真实失败执行进行诊断。'
     }
@@ -589,6 +613,22 @@ function New-AgentRequestBody {
     if (-not [string]::IsNullOrWhiteSpace($TargetDatasourceId)) {
         $syncRequest.targetDatasourceId = $TargetDatasourceId.Trim()
     }
+    $objectMappings = @()
+    if (-not [string]::IsNullOrWhiteSpace($SourceObjectName) -and
+        -not [string]::IsNullOrWhiteSpace($TargetObjectName)) {
+        $objectMappings = @(
+            [ordered]@{
+                objectKey = 'local-six-agent-object-1'
+                sourceSchemaName = $SourceSchemaName.Trim()
+                sourceObjectName = $SourceObjectName.Trim()
+                targetSchemaName = $TargetSchemaName.Trim()
+                targetObjectName = $TargetObjectName.Trim()
+                whereCondition = ''
+            }
+        )
+        # dataSyncRequest 是 DATA_SYNC_AGENT 的用户审核基线；模型只能补充字段映射，不能删除或改写对象定位。
+        $syncRequest.objectMappings = $objectMappings
+    }
 
     $variables = [ordered]@{
         sourceDatasourceName = $SourceDatasourceName
@@ -602,6 +642,10 @@ function New-AgentRequestBody {
         source = $source
         target = $target
         dataSyncRequest = $syncRequest
+    }
+    if ($objectMappings.Count -gt 0) {
+        # 顶层副本供主 Agent 的 ToolPlan 参数提取使用；两处内容相同且都只是低敏对象定位，不包含 SQL 或凭据。
+        $variables.objectMappings = $objectMappings
     }
     if (-not [string]::IsNullOrWhiteSpace($SourceDatasourceId)) {
         $variables.sourceDatasourceId = $SourceDatasourceId.Trim()
@@ -2627,6 +2671,44 @@ if ($RunSpecialistStatusAggregationRegressionTest) {
         Complete-E2EProcess -ExitCode 0
     } catch {
         $message = Get-LowSensitiveMessage -Text $_.Exception.Message -Fallback 'Specialist 状态聚合回归失败；请检查脚本中的低敏状态夹具和最终状态规则。'
+        Write-Host "[FAIL] $message" -ForegroundColor Red
+        Complete-E2EProcess -ExitCode 1
+    }
+}
+
+if ($RunRequestContractRegressionTest) {
+    try {
+        Assert-BasicInputs
+        $contract = New-AgentRequestBody
+        $nestedMappings = @($contract.variables.dataSyncRequest.objectMappings)
+        $topLevelMappings = @($contract.variables.objectMappings)
+        if ($nestedMappings.Count -ne 1 -or $topLevelMappings.Count -ne 1) {
+            throw '请求合同回归失败：结构化对象映射没有同时进入 dataSyncRequest 和顶层 variables。'
+        }
+        $mapping = $nestedMappings[0]
+        $topLevelMapping = $topLevelMappings[0]
+        if ($mapping.sourceSchemaName -cne $SourceSchemaName.Trim() -or
+            $mapping.sourceObjectName -cne $SourceObjectName.Trim() -or
+            $mapping.targetSchemaName -cne $TargetSchemaName.Trim() -or
+            $mapping.targetObjectName -cne $TargetObjectName.Trim()) {
+            throw '请求合同回归失败：结构化对象映射与用户审核参数不一致。'
+        }
+        foreach ($fieldName in @(
+                'objectKey',
+                'sourceSchemaName',
+                'sourceObjectName',
+                'targetSchemaName',
+                'targetObjectName',
+                'whereCondition'
+            )) {
+            if ($topLevelMapping.$fieldName -cne $mapping.$fieldName) {
+                throw "请求合同回归失败：顶层 objectMappings.$fieldName 与 dataSyncRequest 不一致。"
+            }
+        }
+        Write-Host '[PASS] AgentRequest 异名对象映射合同回归完成。' -ForegroundColor Green
+        Complete-E2EProcess -ExitCode 0
+    } catch {
+        $message = Get-LowSensitiveMessage -Text $_.Exception.Message -Fallback 'AgentRequest 对象映射合同回归失败。'
         Write-Host "[FAIL] $message" -ForegroundColor Red
         Complete-E2EProcess -ExitCode 1
     }

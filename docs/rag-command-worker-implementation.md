@@ -138,5 +138,6 @@ pip install -e "python-ai-runtime[object-store]"
 尚未完成：
 
 - RAG answer artifact 的 Java grant/read 真实正文读取链路；
-- PostgreSQL LangGraph store 真实 smoke；
-- gateway + Keycloak + agent-runtime + Python Runtime + task/data-sync/data-quality/observability 全平台 E2E。
+- 面向客户环境的 artifact 授权正文读取、备份恢复与全平台发布证据。
+
+2026-08-10 后续复验已经关闭 PostgreSQL LangGraph store 的本地真实 smoke：Gateway RAG 写入 3 个 checkpoint 和 3 个 event，Runtime 重启后可恢复读取，越权 actor 返回 `403`；真实 Recovery 还持久化了 2 条 `rag:sha256:` evidence reference。六 Agent Success/Recovery 本地黑盒 E2E 也已通过。该结论不替代生产 Secret、容量、故障演练和客户环境迁移门禁。

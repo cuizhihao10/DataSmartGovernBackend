@@ -674,12 +674,31 @@ def _merge_references(*groups: Any) -> list[str]:
         if not isinstance(group, (list, tuple)):
             continue
         for value in group:
-            reference = _safe_reference(value)
+            reference = _safe_evidence_reference(value)
             if reference and reference not in references:
                 references.append(reference)
             if len(references) >= 100:
                 return references
     return references
+
+
+def _safe_evidence_reference(value: Any) -> str | None:
+    """保留合法引用，并为内部 RAG chunk 引用生成稳定低敏摘要。
+
+    RAG 的持久化 chunk ID 使用 ``document#chunk`` 形式，而 Java SpecialistTurnFact 的引用合同
+    刻意不允许 ``#``。直接套用通用校验会把已经通过证据门禁的 RAG 引用静默丢弃。这里仅对明确的
+    ``rag:`` 内部引用做 SHA-256 归一化；其它不安全值仍被拒绝，正文、凭据和控制字符也不会因为
+    摘要化而绕过 DLP 边界。
+    """
+
+    direct = _safe_reference(value)
+    if direct:
+        return direct
+    text = _bounded_text(value, maximum=2048)
+    if not text or _FORBIDDEN_TEXT.search(text) or not text.lower().startswith("rag:"):
+        return None
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return f"rag:sha256:{digest}"
 
 
 def _safe_public_summary(value: Any, status: str) -> str:

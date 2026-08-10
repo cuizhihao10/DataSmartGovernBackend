@@ -1,5 +1,11 @@
 # MySQL 到 PostgreSQL 渐进迁移路线
 
+## 2026-08-10 更新：RAG 与 LangGraph PostgreSQL durable 实证
+
+此前文档中“LangGraph durable checkpoint 尚未切换”与“PostgreSQL LangGraph store 真实 smoke 未完成”是 2026-07 阶段记录，已被后续实测取代。当前 Compose 显式使用 PostgreSQL checkpointer 且 `fail-open=false`；Gateway RAG 查询返回 2 条 citation，并在 `ai_memory.langgraph_thread_checkpoint` 与 `ai_memory.langgraph_checkpoint_event` 各写入 3 条 `retrieve -> evidence_gate -> grounded_answer_completed` 事实。Python Runtime 重启后仍可经 Gateway 读取最终 version 3 和 3 个事件，同项目其他 actor 被 `403` 拒绝。真实 Recovery `six-agent-recovery-rag-durable-20260810214832` 进一步验证 2 条 grounded citation 与 2 条 `rag:sha256:` durable evidence reference 进入六 Agent 闭环。
+
+该证据关闭的是本地 RAG/checkpointer 运行门禁，不代表客户历史数据迁移或 MySQL 最终下线已经完成。`agent_memory_*` 存量迁移、客户数据对账、备份恢复和旧 MySQL 初始化清理仍按本文路线单独验收。
+
 ## 2026-07-03 更新：AI Memory pgvector 运行时与真实召回闭环
 
 本阶段把 `agent_memory_embedding_index` 从 PostgreSQL DDL 规划表推进为 Python Runtime 可真实同步、检索和诊断的

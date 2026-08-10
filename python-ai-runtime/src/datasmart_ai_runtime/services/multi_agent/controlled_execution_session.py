@@ -231,6 +231,7 @@ class MultiAgentExecutionSessionService:
             participation_mode=mode,
             source_status=source_status,
             durable_phase=durable_phase,
+            loop_action=string_value(durable_loop.get("loopAction")),
             handoff_required=handoff_required,
         )
         return ControlledMultiAgentExecutionWorkItem(
@@ -283,6 +284,7 @@ def _work_item_session_status(
     participation_mode: str,
     source_status: str,
     durable_phase: str,
+    loop_action: str | None,
     handoff_required: bool,
 ) -> str:
     """融合执行前计划状态与 Durable Loop phase，得到会话层状态。
@@ -296,9 +298,21 @@ def _work_item_session_status(
 
     normalized = source_status.upper()
     phase = durable_phase.lower()
+    normalized_loop_action = str(loop_action or "").strip().lower()
     if normalized.startswith("BLOCKED"):
         return "BLOCKED_WAITING_RECOVERY"
-    specialist_turn_ready = participation_mode.upper() in {"SPECIALIST", "OBSERVER"} and phase in {
+    specialist_analysis_role = participation_mode.upper() in {"SPECIALIST", "OBSERVER"}
+    # ``stop_step_limit`` belongs to the bounded master model/tool loop. It prevents another master
+    # follow-up step; it does not mean that a finite, roster-scoped Specialist analysis wave has already
+    # run. Releasing that one wave is safe because SpecialistAgentCoordinator dispatches each registered
+    # role at most once, while every proposed business action still goes through the Java bridge. Token
+    # budget and timeout stops remain global and therefore do not enter this exception.
+    master_loop_step_limited_specialist_turn = (
+        specialist_analysis_role
+        and phase == "stopped_by_policy"
+        and normalized_loop_action == "stop_step_limit"
+    )
+    specialist_turn_ready = specialist_analysis_role and phase in {
         # ``plan_created`` means no legacy model ToolPlan is waiting for Java feedback. A registered
         # Specialist may therefore perform its own read-only analysis after checkpointing. This is
         # essential when ownership of ``knowledge.rag.query`` is delegated from the master planner to
@@ -306,6 +320,10 @@ def _work_item_session_status(
         "plan_created",
         "ready_for_second_turn",
         "second_turn_completed",
+        # A complete master ToolPlan can enter approval before the Specialist has produced the
+        # datasource evidence and sync draft that the user must actually review. Release only the
+        # analysis turn here; Java approval, outbox dispatch and business side effects remain blocked.
+        "waiting_approval",
         # A master-planner ToolPlan may be waiting for Java feedback while an independent Specialist
         # already has enough trusted request context to perform read-only discovery, diagnosis or
         # monitoring. Blocking every Specialist behind that global phase creates a circular wait in
@@ -318,7 +336,7 @@ def _work_item_session_status(
         # outbox dispatch and worker receipts after the turn completes.
         "waiting_control_plane",
     }
-    if specialist_turn_ready:
+    if specialist_turn_ready or master_loop_step_limited_specialist_turn:
         return "READY_FOR_AGENT_TURN"
     if handoff_required or "APPROVAL" in normalized or phase == "waiting_approval":
         return "WAITING_APPROVAL_OR_HANDOFF"

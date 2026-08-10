@@ -823,6 +823,187 @@ class AgentFollowUpToolPlannerTest(unittest.TestCase):
         self.assertIn("VARCHAR", result.state_guard_issue_messages[0])
         self.assertIn("BIGINT", result.state_guard_issue_messages[0])
 
+    def test_sync_draft_accepts_decimal_numeric_jdbc_aliases(self) -> None:
+        """MySQL DECIMAL 与 PostgreSQL numeric 属于同一无损数值类型族。
+
+        Specialist 或模型可能基于字符串不相等把 `typeCompatible` 标成 false，
+        bridge 必须以真实元数据的确定性类型族判定覆盖该保守提示；未知类型仍保持
+        原有 fail-closed 行为。
+        """
+
+        parent = self._plan(ToolPlan(
+            tool_name="datasource.target.metadata.read",
+            reason="target metadata",
+        ))
+        result = self.planner.govern(
+            request=self.request,
+            plan=parent,
+            tool_calls=(self._call(
+                "call-decimal-draft",
+                "sync.task.draft.save",
+                {
+                    "taskName": "customer-full",
+                    "syncMode": "FULL",
+                    "objectMappings": [{
+                        "sourceObjectName": "customer",
+                        "targetSchemaName": "public",
+                        "targetObjectName": "customer",
+                        "fieldMappings": [{
+                            "sourceField": "id",
+                            "targetField": "id",
+                            "sourceType": "DECIMAL",
+                            "targetType": "numeric",
+                            "typeCompatible": False,
+                            "syncEnabled": True,
+                        }],
+                    }],
+                },
+            ),),
+            visible_tools=self._visible("sync.task.draft.save"),
+            control_plane_feedback=self._metadata_feedback_with_types("DECIMAL", "numeric"),
+        )
+
+        self.assertEqual(self.IMMEDIATE_SYNC_LIFECYCLE, tuple(
+            plan.tool_name for plan in result.accepted_tool_plans
+        ))
+        self.assertNotIn("MODEL_TOOL_CALL_FIELD_TYPE_INCOMPATIBLE", result.state_guard_issue_codes)
+
+    def test_sync_draft_uses_control_plane_types_over_model_type_claims(self) -> None:
+        """模型不能用自报 DECIMAL/NUMERIC 覆盖真实 VARCHAR/BIGINT 元数据。"""
+
+        parent = self._plan(ToolPlan(
+            tool_name="datasource.target.metadata.read",
+            reason="target metadata",
+        ))
+        result = self.planner.govern(
+            request=self.request,
+            plan=parent,
+            tool_calls=(self._call(
+                "call-model-type-conflict",
+                "sync.task.draft.save",
+                {
+                    "taskName": "customer-full",
+                    "syncMode": "FULL",
+                    "objectMappings": [{
+                        "sourceObjectName": "customer",
+                        "targetSchemaName": "public",
+                        "targetObjectName": "customer",
+                        "fieldMappings": [{
+                            "sourceField": "id",
+                            "targetField": "id",
+                            "sourceType": "DECIMAL",
+                            "targetType": "NUMERIC",
+                            "typeCompatible": False,
+                            "syncEnabled": True,
+                        }],
+                    }],
+                },
+            ),),
+            visible_tools=self._visible("sync.task.draft.save"),
+            control_plane_feedback=self._metadata_feedback_with_types("VARCHAR", "BIGINT"),
+        )
+
+        self.assertEqual((), result.accepted_tool_plans)
+        self.assertIn("MODEL_TOOL_CALL_FIELD_TYPE_INCOMPATIBLE", result.state_guard_issue_codes)
+        self.assertIn("VARCHAR", result.state_guard_issue_messages[0])
+        self.assertIn("BIGINT", result.state_guard_issue_messages[0])
+
+    def test_sync_draft_rejects_decimal_to_floating_type_without_transform(self) -> None:
+        """精确十进制到浮点可能丢失精度，不能借类型族别名自动放行。"""
+
+        parent = self._plan(ToolPlan(
+            tool_name="datasource.target.metadata.read",
+            reason="target metadata",
+        ))
+        result = self.planner.govern(
+            request=self.request,
+            plan=parent,
+            tool_calls=(self._call(
+                "call-decimal-double-draft",
+                "sync.task.draft.save",
+                {
+                    "taskName": "customer-full",
+                    "syncMode": "FULL",
+                    "objectMappings": [{
+                        "sourceObjectName": "customer",
+                        "targetSchemaName": "public",
+                        "targetObjectName": "customer",
+                        "fieldMappings": [{
+                            "sourceField": "id",
+                            "targetField": "id",
+                            "sourceType": "DECIMAL",
+                            "targetType": "DOUBLE",
+                            "typeCompatible": False,
+                            "syncEnabled": True,
+                        }],
+                    }],
+                },
+            ),),
+            visible_tools=self._visible("sync.task.draft.save"),
+            control_plane_feedback=self._metadata_feedback_with_types("DECIMAL", "DOUBLE"),
+        )
+
+        self.assertEqual((), result.accepted_tool_plans)
+        self.assertIn("MODEL_TOOL_CALL_FIELD_TYPE_INCOMPATIBLE", result.state_guard_issue_codes)
+
+    def test_sync_draft_rejects_decimal_precision_or_scale_narrowing(self) -> None:
+        """DECIMAL aliases are compatible only when target integer and fractional capacity do not shrink."""
+
+        parent = self._plan(ToolPlan(
+            tool_name="datasource.target.metadata.read",
+            reason="target metadata",
+        ))
+        result = self.planner.govern(
+            request=self.request,
+            plan=parent,
+            tool_calls=(self._call(
+                "call-decimal-narrowing-draft",
+                "sync.task.draft.save",
+                {
+                    "taskName": "customer-full",
+                    "syncMode": "FULL",
+                    "objectMappings": [{
+                        "sourceObjectName": "customer",
+                        "targetSchemaName": "public",
+                        "targetObjectName": "customer",
+                        "fieldMappings": [{
+                            "sourceField": "id",
+                            "targetField": "id",
+                            "sourceType": "DECIMAL",
+                            "targetType": "NUMERIC",
+                            "typeCompatible": True,
+                            "syncEnabled": True,
+                        }],
+                    }],
+                },
+            ),),
+            visible_tools=self._visible("sync.task.draft.save"),
+            control_plane_feedback=self._metadata_feedback_with_types(
+                "DECIMAL",
+                "NUMERIC",
+                source_precision=18,
+                source_scale=4,
+                target_precision=12,
+                target_scale=2,
+            ),
+        )
+
+        self.assertEqual((), result.accepted_tool_plans)
+        self.assertIn("MODEL_TOOL_CALL_FIELD_TYPE_INCOMPATIBLE", result.state_guard_issue_codes)
+
+    def test_metadata_object_without_schema_fails_closed_when_name_is_ambiguous(self) -> None:
+        """省略 schema 只允许唯一对象，不能按反馈顺序选择同名表。"""
+
+        objects = (
+            {"schemaName": "public", "tableName": "customer", "columns": []},
+            {"schemaName": "archive", "tableName": "customer", "columns": []},
+        )
+
+        self.assertIsNone(self.planner._find_metadata_object(objects, "", "customer"))
+        selected = self.planner._find_metadata_object(objects, "archive", "customer")
+        self.assertIsNotNone(selected)
+        self.assertEqual("archive", selected["schemaName"])
+
     def test_sync_draft_accepts_explicit_transform_for_incompatible_types(self) -> None:
         parent = self._plan(ToolPlan(
             tool_name="datasource.target.metadata.read",
@@ -1351,13 +1532,23 @@ class AgentFollowUpToolPlannerTest(unittest.TestCase):
     def _metadata_feedback_with_types(
         source_type: str,
         target_type: str,
+        *,
+        source_precision: int = 18,
+        source_scale: int = 4,
+        target_precision: int = 20,
+        target_scale: int = 4,
     ) -> AgentControlPlaneFeedbackSnapshot:
         source_summary = {
             "truncated": False,
             "objects": [{
                 "schemaName": None,
                 "tableName": "customer",
-                "columns": [{"columnName": "id", "dataTypeName": source_type}],
+                "columns": [{
+                    "columnName": "id",
+                    "dataTypeName": source_type,
+                    "columnSize": source_precision,
+                    "decimalDigits": source_scale,
+                }],
             }],
         }
         target_summary = {
@@ -1365,7 +1556,12 @@ class AgentFollowUpToolPlannerTest(unittest.TestCase):
             "objects": [{
                 "schemaName": "public",
                 "tableName": "customer",
-                "columns": [{"columnName": "id", "dataTypeName": target_type}],
+                "columns": [{
+                    "columnName": "id",
+                    "dataTypeName": target_type,
+                    "columnSize": target_precision,
+                    "decimalDigits": target_scale,
+                }],
             }],
         }
         return AgentControlPlaneFeedbackSnapshot(

@@ -360,7 +360,9 @@ Agent 长期记忆、pgvector 语义检索和未来 LangGraph durable state 的�
 
 Recovery 的每项建议独立经过工具白名单和可验证配置校验。某一只读预览动作缺参时记录 `RECOVERY_ACTION_INPUT_INCOMPLETE` 并跳过该动作，不阻断同批其他完整只读预览；若没有任何完整动作，闭环明确停在补参等待态，绝不创建不可执行的 Java ToolPlan。高风险 Recovery 始终在用户审批前停止。
 
-角色按依赖条件 fail-closed 装配：`DATASOURCE_AGENT` 和 `MONITOR_AGENT` 需要对应 Java 控制面地址，`DATA_SYNC_AGENT`、`PRECHECK_AGENT` 和 `RECOVERY_AGENT` 还需要真实的 `agent_reasoning` 模型路由；dry-run provider 不能伪装成六 Agent 已上线。本轮已记录的回归口径是 `python -m pytest python-ai-runtime\tests -q` 的 `1059 passed`、Java Reactor 的 `594` 个 Agent Runtime 测试及全 Reactor 通过，以及 `local-six-agent-governed-e2e.ps1` 的聚合/退出码回归通过。当前源码镜像的 Success 与 Recovery Docker 黑盒链路均已实际执行：前者在 `DATA_SYNC_AGENT`、后者在 `RECOVERY_AGENT` 的真实模型调用处收到 Provider HTTP 401 并 fail-closed，未越过 Java 审批边界；这证明链路已运行到外部 Provider 授权边界，但不能声称六 Agent success/recovery 已端到端通过。执行入口、证据口径和剩余事项见 [本地端到端闭环 Runbook](docs/local-e2e-closure-runbook.md) 与 [最终收敛交付清单](docs/final-convergence-delivery-checklist.md)。
+角色按依赖条件 fail-closed 装配：`DATASOURCE_AGENT` 和 `MONITOR_AGENT` 需要对应 Java 控制面地址，`DATA_SYNC_AGENT`、`PRECHECK_AGENT` 和 `RECOVERY_AGENT` 还需要真实的 `agent_reasoning` 模型路由；dry-run provider 不能伪装成六 Agent 已上线。
+
+2026-08-10 的最终复验已取代此前 Provider 401 阻塞记录。Python Runtime 全量为 `1099 passed`（仅一条 Starlette/TestClient 弃用警告）；JDK 21 Maven Reactor 为 `1323 tests / 0 failures / 0 errors / 9 skipped`，其中 Agent Runtime 为 `596` 个测试；六 Agent PowerShell 聚合、异名对象映射和进程退出码回归均通过。真实 Success 请求 `six-agent-success-type-normalized-20260810112629` 创建任务 `91`、执行 `2245`，worker `SUCCEEDED` 且读写 `20/20`；18 项检查无失败，仅保留按需 RAG 未触发的 1 项预期 warning。真实 Recovery 请求 `six-agent-recovery-rag-durable-20260810214832` 获得 2 条 grounded citation、2 条 durable evidence reference、1 个 Java 只读 preview，后置 PRECHECK/MONITOR 均为 `EXECUTED`，11 项检查无失败和 warning，进程退出码为 `0`。独立数据库审计确认本轮审批、审批确认、提交事实和异步命令 outbox 均为 `0`；Recovery 只执行了 8 个 `LOW/readOnly/SUCCEEDED` Java 工具审计，没有自动创建恢复计划、批准或执行恢复副作用。执行入口、证据口径和仍然开放的生产加固项见 [本地端到端闭环 Runbook](docs/local-e2e-closure-runbook.md) 与 [最终收敛交付清单](docs/final-convergence-delivery-checklist.md)。
 ### 3.4 Python AI算法层（核心支撑模块）
 
 #### 模块定位

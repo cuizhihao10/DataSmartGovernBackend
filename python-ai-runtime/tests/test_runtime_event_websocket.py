@@ -113,6 +113,22 @@ class RuntimeEventWebSocketAdapterTest(unittest.TestCase):
         self.assertEqual("error", payloads[0]["frameType"])
         self.assertEqual("EVENT_CONTROL_NOT_AUTHORIZED", payloads[0]["payload"]["error"]["code"])
 
+    def test_malformed_control_message_becomes_low_sensitive_error_frame(self) -> None:
+        manager = RuntimeEventSessionManager()
+        secret_like_value = "datasmart-bearer-v1.should-not-echo"
+
+        payloads = build_event_websocket_payloads(
+            {"type": secret_like_value},
+            manager,
+        )
+
+        self.assertEqual(1, len(payloads))
+        self.assertEqual("error", payloads[0]["frameType"])
+        self.assertFalse(payloads[0]["payload"]["accepted"])
+        self.assertEqual("invalid", payloads[0]["payload"]["messageType"])
+        self.assertEqual("EVENT_CONTROL_INVALID", payloads[0]["payload"]["error"]["code"])
+        self.assertNotIn(secret_like_value, str(payloads[0]))
+
     def test_connection_adapter_subscribe_then_drains_live_events(self) -> None:
         store = InMemoryRuntimeEventStore()
         manager = RuntimeEventSessionManager(event_store=store)

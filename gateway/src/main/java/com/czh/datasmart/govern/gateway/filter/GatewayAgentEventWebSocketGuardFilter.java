@@ -29,8 +29,6 @@ import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
@@ -117,7 +115,17 @@ public class GatewayAgentEventWebSocketGuardFilter implements GlobalFilter, Orde
                     traceId, "Agent 实时事件入口只接受 WebSocket Upgrade 请求。");
         }
 
-        ServerHttpRequest sanitizedRequest = stripBearerSubprotocol(request);
+        EventProtocolValidation protocolValidation = validateEventProtocol(request);
+        if (!protocolValidation.supported()) {
+            metrics.recordRejected(protocolValidation.reason());
+            // Do not log Sec-WebSocket-Protocol itself: it may also contain the bearer token subprotocol.
+            log.warn("Agent 实时事件 WebSocket 协议版本不受支持，traceId={}, path={}, reason={}",
+                    traceId, request.getPath().value(), protocolValidation.reason());
+            return writeError(exchange.getResponse(), HttpStatus.BAD_REQUEST, PlatformErrorCode.BAD_REQUEST,
+                    traceId, protocolValidation.message());
+        }
+
+        ServerHttpRequest sanitizedRequest = retainNegotiatedEventProtocol(request);
         ServerWebExchange sanitizedExchange = exchange.mutate().request(sanitizedRequest).build();
         ConnectionIdentity identity = resolveIdentity(sanitizedRequest);
         ConnectionAcquireResult acquireResult = tryAcquire(identity);
@@ -186,28 +194,46 @@ public class GatewayAgentEventWebSocketGuardFilter implements GlobalFilter, Orde
         return new ConnectionIdentity(tenantId, actorId);
     }
 
-    /** Remove the credential-bearing subprotocol before proxying to Python. */
-    private ServerHttpRequest stripBearerSubprotocol(ServerHttpRequest request) {
-        List<String> safeProtocols = new ArrayList<>();
-        List<?> protocolHeaders = request.getHeaders().get(GatewayWebSocketBearerTokenConverter.SEC_WEBSOCKET_PROTOCOL);
-        for (Object rawHeader : protocolHeaders == null ? List.of() : protocolHeaders) {
-            String header = String.valueOf(rawHeader);
+    /**
+     * Validate the client-offered event protocol without inspecting or logging bearer credentials.
+     *
+     * <p>The browser offers both a version subprotocol and a credential-bearing subprotocol. The version is a
+     * compatibility boundary: without a supported value, neither gateway nor Python Runtime can safely interpret
+     * subscribe/ack/reconnect frames. Credential entries are deliberately skipped here because Spring Security owns
+     * their decoding and this guard must never place a token in logs or response text.
+     */
+    private EventProtocolValidation validateEventProtocol(ServerHttpRequest request) {
+        boolean versionWasOffered = false;
+        for (String header : request.getHeaders().getOrEmpty(
+                GatewayWebSocketBearerTokenConverter.SEC_WEBSOCKET_PROTOCOL)) {
             for (String protocol : header.split(",")) {
                 String normalized = protocol.trim();
-                if (!normalized.startsWith(GatewayWebSocketBearerTokenConverter.BEARER_PROTOCOL_PREFIX)) {
-                    safeProtocols.add(normalized);
+                if (normalized.isEmpty()
+                        || normalized.startsWith(GatewayWebSocketBearerTokenConverter.BEARER_PROTOCOL_PREFIX)) {
+                    continue;
+                }
+                versionWasOffered = true;
+                if (GatewayWebSocketBearerTokenConverter.EVENT_PROTOCOL.equals(normalized)) {
+                    return EventProtocolValidation.accepted();
                 }
             }
         }
-        if (safeProtocols.isEmpty()
-                && !request.getHeaders().containsKey(GatewayWebSocketBearerTokenConverter.SEC_WEBSOCKET_PROTOCOL)) {
-            return request;
-        }
+        return versionWasOffered
+                ? EventProtocolValidation.unsupported()
+                : EventProtocolValidation.missing();
+    }
+
+    /**
+     * Forward exactly the selected event protocol to Python Runtime.
+     *
+     * <p>This removes the browser-only bearer subprotocol and any unrelated offers, so the downstream WebSocket
+     * handler sees one deterministic, already-validated version and can return it in its handshake response.
+     */
+    private ServerHttpRequest retainNegotiatedEventProtocol(ServerHttpRequest request) {
         return request.mutate().headers(headers -> {
             headers.remove(GatewayWebSocketBearerTokenConverter.SEC_WEBSOCKET_PROTOCOL);
-            if (!safeProtocols.isEmpty()) {
-                headers.set(GatewayWebSocketBearerTokenConverter.SEC_WEBSOCKET_PROTOCOL, String.join(", ", safeProtocols));
-            }
+            headers.set(GatewayWebSocketBearerTokenConverter.SEC_WEBSOCKET_PROTOCOL,
+                    GatewayWebSocketBearerTokenConverter.EVENT_PROTOCOL);
         }).build();
     }
 
@@ -329,6 +355,26 @@ public class GatewayAgentEventWebSocketGuardFilter implements GlobalFilter, Orde
 
         private String actorKey() {
             return tenantId + ":" + actorId;
+        }
+    }
+
+    /**
+     * Low-cardinality, token-free version-validation result used by logs and metrics.
+     */
+    private record EventProtocolValidation(boolean supported, String reason, String message) {
+
+        private static EventProtocolValidation accepted() {
+            return new EventProtocolValidation(true, "OK", null);
+        }
+
+        private static EventProtocolValidation missing() {
+            return new EventProtocolValidation(false, "MISSING_EVENT_PROTOCOL",
+                    "Agent 实时事件 WebSocket 缺少协议版本。");
+        }
+
+        private static EventProtocolValidation unsupported() {
+            return new EventProtocolValidation(false, "UNSUPPORTED_EVENT_PROTOCOL",
+                    "Agent 实时事件 WebSocket 协议版本不受支持。");
         }
     }
 

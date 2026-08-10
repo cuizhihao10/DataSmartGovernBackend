@@ -16,9 +16,51 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from enum import Enum
 from typing import Any
+
+
+RUNTIME_EVENT_WEBSOCKET_SUBPROTOCOL = "datasmart-agent-events-v1"
+
+
+def negotiate_runtime_event_websocket_subprotocol(headers: Any) -> str | None:
+    """Return the one supported runtime-event WebSocket subprotocol, if offered.
+
+    The Java gateway authenticates the browser-only bearer subprotocol and forwards only this version token. Python
+    still validates it at its own boundary so a direct runtime connection cannot silently bypass the protocol contract.
+    Header values are intentionally never logged or echoed because a malformed direct request may still carry a token.
+    """
+
+    for header in _websocket_subprotocol_headers(headers):
+        for protocol in header.split(","):
+            if protocol.strip() == RUNTIME_EVENT_WEBSOCKET_SUBPROTOCOL:
+                return RUNTIME_EVENT_WEBSOCKET_SUBPROTOCOL
+    return None
+
+
+def _websocket_subprotocol_headers(headers: Any) -> tuple[str, ...]:
+    """Read repeated protocol headers from Starlette headers or lightweight test mappings."""
+
+    getlist = getattr(headers, "getlist", None)
+    if callable(getlist):
+        return tuple(
+            str(value)
+            for value in getlist("sec-websocket-protocol")
+            if value is not None
+        )
+    if isinstance(headers, Mapping):
+        return tuple(
+            str(value)
+            for name, value in headers.items()
+            if str(name).lower() == "sec-websocket-protocol" and value is not None
+        )
+    getter = getattr(headers, "get", None)
+    if not callable(getter):
+        return ()
+    value = getter("sec-websocket-protocol")
+    return () if value is None else (str(value),)
 
 
 class RuntimeEventWebSocketFrameType(str, Enum):
@@ -167,7 +209,7 @@ class RuntimeEventWebSocketConnectionAdapter:
 
         return self._closed
 
-    def handle_message(self, message: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    def handle_message(self, message: Any) -> tuple[dict[str, Any], ...]:
         """处理客户端发来的单条控制消息，并返回应下发的 WebSocket payload。
 
         输入通常来自 WebSocket `receive_json()`：

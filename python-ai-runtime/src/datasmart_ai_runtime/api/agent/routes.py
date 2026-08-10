@@ -56,12 +56,30 @@ from datasmart_ai_runtime.services.model_gateway.agent_plan_cancellation import 
 )
 from datasmart_ai_runtime.services.agent_plan_ingestion_client import AgentPlanIngestionClientError
 from datasmart_ai_runtime.services.tools import build_tool_action_intake_runtime_event
-from datasmart_ai_runtime.services.runtime_events.runtime_event_websocket import RuntimeEventWebSocketConnectionAdapter
+from datasmart_ai_runtime.services.runtime_events.runtime_event_websocket import (
+    RuntimeEventWebSocketConnectionAdapter,
+    negotiate_runtime_event_websocket_subprotocol,
+)
 
 
 LOGGER = logging.getLogger(__name__)
 GATEWAY_SIGNATURE_ERROR_CODE = "GATEWAY_SIGNATURE_INVALID"
 AGENT_REQUEST_ERROR_CODE = "AGENT_REQUEST_INVALID"
+EVENT_WEBSOCKET_PROTOCOL_ERROR_CLOSE_CODE = 1002
+EVENT_WEBSOCKET_INVALID_PAYLOAD_CLOSE_CODE = 1007
+
+
+def _is_invalid_event_control_response(response: Mapping[str, Any]) -> bool:
+    """Identify only malformed control payloads, which are the HTTP 400 / socket-close boundary."""
+
+    error = response.get("error")
+    return isinstance(error, Mapping) and error.get("code") == "EVENT_CONTROL_INVALID"
+
+
+def _is_websocket_disconnect(error: Exception) -> bool:
+    """Avoid importing Starlette at module load while still treating a normal disconnect as non-error."""
+
+    return error.__class__.__name__ == "WebSocketDisconnect"
 
 
 def _safe_control_plane_error_detail(error: AgentPlanIngestionClientError) -> str:
@@ -766,7 +784,12 @@ def register_agent_runtime_routes(
         access_context = _event_access_context(
             getattr(http_request, "headers", {}) if http_request is not None else {},
         )
-        return build_event_control_response(payload, session_manager, access_context=access_context)
+        response = build_event_control_response(payload, session_manager, access_context=access_context)
+        if _is_invalid_event_control_response(response) and request_validation_error_factory is not None:
+            # HTTP control uses the same structured, low-sensitive error payload as WebSocket but assigns the
+            # malformed-request status at the transport boundary. Existing domain rejections remain 200 + accepted=false.
+            raise request_validation_error_factory(400, response)
+        return response
 
     control_agent_event_subscription.__annotations__["http_request"] = request_type
     app.post("/agent/events/control")(control_agent_event_subscription)
@@ -797,7 +820,18 @@ def register_agent_runtime_routes(
             await websocket.close(code=4401, reason=exc.reason)
             return
 
-        await websocket.accept()
+        negotiated_subprotocol = negotiate_runtime_event_websocket_subprotocol(
+            getattr(websocket, "headers", {}),
+        )
+        if negotiated_subprotocol is None:
+            # A direct Runtime connection must satisfy the same version contract as a Gateway-proxied browser socket.
+            await websocket.close(
+                code=EVENT_WEBSOCKET_PROTOCOL_ERROR_CLOSE_CODE,
+                reason="unsupported_event_subprotocol",
+            )
+            return
+
+        await websocket.accept(subprotocol=negotiated_subprotocol)
         connection = RuntimeEventWebSocketConnectionAdapter(
             session_manager=session_manager,
             live_push_hub=live_push_hub,
@@ -810,7 +844,10 @@ def register_agent_runtime_routes(
 
             while True:
                 frame_payload = await outgoing_frames.get()
-                await websocket.send_json(frame_payload)
+                try:
+                    await websocket.send_json(frame_payload)
+                finally:
+                    outgoing_frames.task_done()
 
         async def live_push_loop() -> None:
             """周期性把 live push hub 中积压的事件帧推送给当前连接。"""
@@ -822,14 +859,51 @@ def register_agent_runtime_routes(
 
         sender_task = asyncio.create_task(sender_loop())
         live_task = asyncio.create_task(live_push_loop())
+
+        async def send_error_then_close(
+            frame_payloads: tuple[dict[str, Any], ...],
+            *,
+            close_code: int,
+            close_reason: str,
+        ) -> None:
+            """Flush the established error frame before closing a malformed client protocol exchange."""
+
+            for frame_payload in frame_payloads:
+                await outgoing_frames.put(frame_payload)
+            await outgoing_frames.join()
+            await websocket.close(code=close_code, reason=close_reason)
+
         try:
             while True:
-                payload = await websocket.receive_json()
-                for frame_payload in connection.handle_message(payload):
+                try:
+                    payload = await websocket.receive_json()
+                except Exception as exc:
+                    if _is_websocket_disconnect(exc):
+                        break
+                    await send_error_then_close(
+                        connection.handle_message({}),
+                        close_code=EVENT_WEBSOCKET_INVALID_PAYLOAD_CLOSE_CODE,
+                        close_reason="invalid_event_control_payload",
+                    )
+                    return
+
+                frame_payloads = connection.handle_message(payload)
+                if any(
+                    frame_payload.get("frameType") == "error"
+                    and _is_invalid_event_control_response(frame_payload.get("payload", {}))
+                    for frame_payload in frame_payloads
+                ):
+                    await send_error_then_close(
+                        frame_payloads,
+                        close_code=EVENT_WEBSOCKET_PROTOCOL_ERROR_CLOSE_CODE,
+                        close_reason="invalid_event_control_message",
+                    )
+                    return
+                for frame_payload in frame_payloads:
                     await outgoing_frames.put(frame_payload)
         except Exception:
-            # 当前阶段宽容退出即可。后续生产实现应区分 WebSocketDisconnect、认证失败、协议错误和序列化失败。
-            await websocket.close()
+            # Unexpected server faults are not client payload errors. Keep their close reason low-sensitive as well.
+            await websocket.close(code=1011, reason="runtime_event_websocket_error")
         finally:
             connection.close(reason="websocket_handler_finished")
             sender_task.cancel()

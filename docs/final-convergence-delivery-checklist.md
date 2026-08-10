@@ -230,7 +230,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 
 尚未解除的阻塞项：
 
-- 当前回归证据不等同于 Docker 黑盒 E2E：本次未运行 `local-six-agent-governed-e2e.ps1 -Execute`，也未在已启动 Compose 服务、已应用迁移和非 dry-run provider 环境中完成 Success/Recovery 两场景。因此不能声称六 Agent Docker 黑盒 E2E 已通过。
+六 Agent Docker 黑盒 E2E 已由 2026-08-10 后续复验关闭，不再属于本节阻塞项。仍开放的是以下生产化交付事项：
+
 - 当前多个本次变更的 Java/Python/测试/脚本文件超过仓库既有的单文件 500 行控制线，其中多个 specialist、bridge 和验收脚本达到千行级；需要拆分并重新做结构审查后再冻结交付。
 - Compose 的开发默认共享凭据仍不适合生产；正式环境必须注入并轮换内部服务 token、Gateway 签名密钥和模型 API key。
 
@@ -248,17 +249,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 
 本轮验证证据（2026-08-10 最终复跑）：
 
-- Java 全 Reactor `mvn test` 为 `BUILD SUCCESS`；Surefire 汇总 `1321 tests`、`0 failures`、`0 errors`、`9 skipped`。
-- Python Runtime 全量 `1087 passed`，只有一条 Starlette/TestClient 弃用警告。
-- Frontend `npm run lint`、`npm run build`（含 `tsc -b`）和 `package.json` 中 5 个 Agent/data-sync 合同脚本全部通过；Vite 仅提示主包 `2120.77 kB`、gzip `641.08 kB`，属于后续性能治理项。
+- Java 全 Reactor `mvn test` 在 JDK `21.0.10` 下为 `BUILD SUCCESS`；Surefire 汇总 `1323 tests`、`0 failures`、`0 errors`、`9 skipped`。
+- Python Runtime 全量 `1099 passed`，只有一条 Starlette/TestClient 弃用警告。
+- Frontend `npm run lint`、`npm run build`（含 `tsc -b`）和 `package.json` 中 6 个 Agent/data-sync/API adapter 合同脚本全部通过；Vite 仅提示主包 `2120.80 kB`、gzip `641.09 kB`，属于后续性能治理项。
 - 当前源码构建的 Gateway、permission-admin、task-management、datasource-management、data-sync、agent-runtime、python-ai-runtime 镜像均健康；Agent Runtime V5-V7 与 permission-admin V48-V52 已由 Flyway 应用。
 - `local-data-sync-platform-e2e.ps1 -UseContainerJdbcUrls -SkipDependencyStart -Strict` 通过：目标表 20 行、失败分片选择性重试、dirty-row `PRIMARY_KEY_EQ` replay、权限审计均通过；human 对 worker/scheduler 内部入口返回预期 403。
 - 六 Agent 聚合回归和退出码回归通过，`PlanOnly=0`、聚合成功 `=0`、本地受控失败 `=1`，避免 CI 把终端 `[FAIL]` 误判为成功。
 - Compose 已显式设置 `DATASMART_LANGGRAPH_CHECKPOINT_STORE=postgresql` 和 `FAIL_OPEN=false`。Gateway RAG 查询返回 `HTTP 200`、2 条 citation，并在 `ai_memory.langgraph_thread_checkpoint`/`langgraph_checkpoint_event` 各写入 3 条 `retrieve -> evidence_gate -> grounded_answer_completed` 记录；重启 Python Runtime 后，经 Gateway latest/events 仍返回 version 3 和 3 个事件。同项目另一 actor 读取同一 thread 返回 `403`，证明 V52、Gateway HMAC 和 Python tenant/project/actor 二次校验同时生效。
 
-当前唯一阻止六 Agent 黑盒门禁关闭的外部条件是模型 Provider 授权。Success 请求 `six-agent-success-20260810-checkpoint-final` 已运行到 `DATASOURCE_AGENT=COMPLETED`，并在 `DATA_SYNC_AGENT=FAILED/DATA_SYNC_SPECIALIST_MODEL_FAILED` 停止；Recovery 请求 `six-agent-recovery-20260810-checkpoint-final` 针对 `76/1805` 已运行 `KNOWLEDGE_AGENT`、`DATASOURCE_AGENT`、`PRECHECK_AGENT`、`MONITOR_AGENT`，并在 `RECOVERY_AGENT=FAILED/RECOVERY_PLANNING_MODEL_FAILED` 停止。对应 turn durable facts 已落库，最近窗口和全库审批事实均为 `0`。Runtime 等价 Provider 探测返回 HTTP 401，健康诊断显示 `xckjj-gpt56-sol-responses` 最近 4 次调用错误率 100%、连续失败 4 次。Runtime 继续使用 `gpt-5.6-sol`/`xhigh`，未降级 dry-run，未创建/启动同步任务，未自动批准 Recovery，也未产生恢复副作用。取得有效 Provider 凭据后必须重跑 Success/Recovery 并让脚本所有断言通过；在此之前不得声称真实六 Agent success/recovery E2E 已全部通过。
+此前的 Provider 401 外部阻塞已被 2026-08-10 后续复验取代，六 Agent 黑盒门禁现已关闭：Success 请求 `six-agent-success-type-normalized-20260810112629` 创建任务 `91`、执行 `2245`，worker `SUCCEEDED` 且读写 `20/20`，18 项检查无失败，仅有按需 RAG 未触发的 1 项预期 warning；Recovery 请求 `six-agent-recovery-rag-durable-20260810214832` 获得 2 条 grounded citation、2 条 durable evidence reference、1 个 Java 只读 preview，后置 PRECHECK/MONITOR 均为 `EXECUTED`，11 项检查无失败和 warning，并以退出码 `0` 结束。
 
-补充退出码证据：同日使用新的 Recovery 幂等请求号在独立 `powershell.exe -File` 子进程中重走真实链路后，目标模型路由的失败样本增至 5、错误率仍为 100%，E2E 子进程明确返回 `1`；审批事实与审批确认事实全库计数仍均为 `0`。因此失败退出码契约已经由真实 Provider 故障验证，不再存在 CI 把该外部失败误判为通过的问题。
+独立数据库审计确认审批、审批确认、提交事实和异步命令 outbox 本轮均为 `0`。任务 `76` 仍只有 `1805 FAILED` 与 `1806 SUCCEEDED`；恢复计划 `9` 早于本轮请求；8 个 Java 工具审计全部为 `LOW/readOnly/SUCCEEDED`；两条 KNOWLEDGE durable 引用均为 `rag:sha256:`，LangGraph 三个 RAG 节点完整。失败退出码的非零传播合同仍由独立 PowerShell 回归覆盖。生产发布仍需独立完成 Secret 轮换、备份恢复、容量、故障演练、SBOM/签名和客户环境迁移证据，不能用本地黑盒通过替代这些门禁。
 
 ## 8. 总闸门入口（2026-08-06）
 

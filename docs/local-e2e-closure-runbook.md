@@ -421,25 +421,35 @@ Success 和 Recovery 应针对隔离的本地验收数据、且可关联到同�
 
 ```powershell
 python -m pytest python-ai-runtime\tests -q
-# 1087 passed；1 Starlette/TestClient deprecation warning
+# 1099 passed；1 Starlette/TestClient deprecation warning
 
 .\mvnw test
-# Java Reactor: BUILD SUCCESS；Surefire 1321 tests，0 failures，0 errors，9 skipped
+# JDK 21 Java Reactor: BUILD SUCCESS；Surefire 1323 tests，0 failures，0 errors，9 skipped
 
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-six-agent-governed-e2e.ps1 -RunSpecialistStatusAggregationRegressionTest
 # PASS: 脚本内低敏夹具的 specialist 状态聚合回归
 
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\local-six-agent-governed-e2e-exit-code-regression.ps1
-# PASS: PlanOnly/状态聚合成功为 0；本地参数 FAIL 为非 0；子进程输出不含凭据测试哨兵
+# PASS: PlanOnly/状态聚合/异名对象映射成功为 0；本地参数 FAIL 为非 0；子进程输出不含凭据测试哨兵
 ```
 
 上述第三、四条不访问 Keycloak、Agent API 或 Docker，前两条是测试回归口径。第四条只使用一个不是真实密码的进程内测试哨兵，子进程输出只用于断言且不会被回显；它保护 CI 的退出码契约，而不构成 Docker 黑盒 E2E 通过证据。只有在满足本节前置条件后显式运行 `-Execute`，并完成 Success 与 Recovery 两场景，才可以记录真实黑盒验收结果。
 
-2026-08-10 当前源码镜像已在健康的 Compose 环境中再次执行 Success 与 Recovery：Success 请求 `six-agent-success-20260810-checkpoint-final` 的 `DATASOURCE_AGENT` 完成后，`DATA_SYNC_AGENT` 在模型调用处以 `DATA_SYNC_SPECIALIST_MODEL_FAILED` 停止；Recovery 请求 `six-agent-recovery-20260810-checkpoint-final` 对已有任务/执行 `76/1805` 完成 KNOWLEDGE、DATASOURCE、PRECHECK、MONITOR 后，`RECOVERY_AGENT` 以 `RECOVERY_PLANNING_MODEL_FAILED` 停止。两轮 turn durable facts 已落库，审批事实最近窗口和全库计数均为 0。Runtime 等价请求携带同一 User-Agent 对 `/responses` 探测返回 Provider HTTP 401，Provider 健康摘要为 degraded、最近 4 次错误率 100%、连续失败 4 次。当前代码保持 `gpt-5.6-sol`/`xhigh` 和 fail-closed，不会把 Provider 凭据失败降级为 dry-run 成功，也没有创建/启动 Success 同步任务或执行 Recovery 审批/副作用。有效 Provider 凭据恢复后，必须重新执行两个场景并让所有脚本断言通过，才能关闭该黑盒门禁。
+**历史验证（已被下文的后续复验取代）：** 2026-08-10 较早的源码镜像曾在真实模型调用处收到 Provider HTTP 401，Success 请求 `six-agent-success-20260810-checkpoint-final` 与 Recovery 请求 `six-agent-recovery-20260810-checkpoint-final` 因而 fail-closed。该记录仍用于证明外部失败不会越过 Java 审批边界，但不再代表当前 Provider 或 E2E 状态。
 
-同日又以新的 Recovery 幂等请求号、同一失败任务/执行 `76/1805`，通过独立 `powershell.exe -File` 子进程执行真实 Gateway/Keycloak/Runtime 链路，并将子进程业务输出完全收敛后只读取进程退出码。目标 `gpt-5.6-sol` 路由的失败样本由 4 增至 5、错误率仍为 100%，子进程返回退出码 `1`；permission-admin 审批事实和 agent-runtime 审批确认事实全库计数仍均为 `0`。这证明 Provider 失败不会被外层 PowerShell 包装误报为成功，`Complete-E2EProcess` 无需再改；它仍不是六 Agent 业务成功证据。
+同一历史验证还通过独立 `powershell.exe -File` 子进程确认 Provider 故障返回退出码 `1`，证明外部失败不会被 PowerShell 包装误报为成功。当前退出码回归继续保留该非零传播合同。
 
 同一轮还完成了 RAG/LangGraph 持久化恢复实测：Gateway `POST /api/agent/rag/query` 在项目 101 返回 2 条 citation，PostgreSQL 为 thread `rag-e2e-postgresql-20260810` 写入 3 个 checkpoint 和 3 个 event；重启 Python Runtime 后，project-owner 经 Gateway `latest/events` 仍读到最终 version 3 和 3 个事件，而同项目其他 actor 返回 403。该结果验证持久化、路由策略、HMAC 和对象级范围，不能替代模型 Provider 恢复后的六 Agent success/recovery 复跑。
+
+### 4.4 2026-08-10 六 Agent 黑盒门禁关闭证据
+
+后续使用恢复后的真实 Provider、当前 `gpt-5.6-sol`/`xhigh`/Responses 路由和 PostgreSQL fail-closed LangGraph checkpointer，重新执行了两个隔离场景：
+
+- Success 请求 `six-agent-success-type-normalized-20260810112629` 创建任务 `91`、执行 `2245`，worker 为 `SUCCEEDED`，读写 `20/20`、失败 `0`。18 项脚本检查为 `0 fail`，唯一 warning 是该 Success 目标未要求 RAG，因此按需 `KNOWLEDGE_AGENT` 未触发；`DATASOURCE_AGENT`、`DATA_SYNC_AGENT`、`PRECHECK_AGENT`、`MONITOR_AGENT` 与本轮实际产生的知识事实均有 durable COMPLETED 证据。
+- Recovery 请求 `six-agent-recovery-rag-durable-20260810214832` 针对既有失败任务/执行 `76/1805`，获得 2 条 grounded citation、2 条 durable evidence reference、1 个 Java 只读 preview，后置 PRECHECK/MONITOR 均为 `EXECUTED`，durable-fact 脚本计数为 8。11 项检查为 `0 fail / 0 warning`，独立子进程退出码为 `0`。
+- 独立数据库审计确认 permission approval、approval confirmation、submission fact 和 async command outbox 本轮均为 `0`。任务 `76` 仍只有 `1805 FAILED` 与 `1806 SUCCEEDED`；恢复计划 `9` 早于本轮请求，不是 Agent 自动创建。8 个 Java 工具审计全部为 `LOW/readOnly/SUCCEEDED`，两条 KNOWLEDGE durable 引用均为 `rag:sha256:`；LangGraph 的 `rag_retrieve_knowledge -> rag_evidence_gate -> rag_grounded_answer_completed` 三节点完整。
+
+因此本地真实六 Agent Success/Recovery 黑盒门禁已经关闭。该结论不等于生产发布门禁全部关闭：Secret Manager 注入与轮换、备份恢复、容量压测、故障演练、镜像签名/SBOM 和客户环境迁移仍需按各生产 runbook 单独补证。
 
 ## 5. Smoke Check
 

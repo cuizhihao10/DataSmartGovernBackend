@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, replace
 from typing import Any
 
@@ -239,7 +240,7 @@ class RuntimeEventControlHandler:
         }
 
 
-def control_message_from_payload(payload: dict[str, Any]) -> RuntimeEventControlMessage:
+def control_message_from_payload(payload: Any) -> RuntimeEventControlMessage:
     """把 API/WebSocket JSON payload 转换为控制消息领域对象。
 
     兼容字段命名：
@@ -252,23 +253,38 @@ def control_message_from_payload(payload: dict[str, Any]) -> RuntimeEventControl
     这类兼容逻辑放在边界层，领域对象内部保持统一字段，避免核心服务被前端命名细节污染。
     """
 
+    if not isinstance(payload, Mapping):
+        raise RuntimeEventControlMessageError("事件控制消息必须是 JSON 对象。")
+
     raw_type = payload.get("type") or payload.get("messageType") or payload.get("message_type")
-    if raw_type is None:
+    if not isinstance(raw_type, str) or not raw_type.strip():
         raise RuntimeEventControlMessageError("事件控制消息缺少 type/messageType。")
     request_payload = payload.get("subscription") or payload.get("request")
-    return RuntimeEventControlMessage(
-        message_type=RuntimeEventControlMessageType(raw_type),
-        subscription_id=payload.get("subscriptionId") or payload.get("subscription_id"),
-        request=_subscription_request_from_payload(request_payload) if request_payload else None,
-        last_sequence=_optional_int(payload.get("lastSequence", payload.get("last_sequence"))),
-        source_cursors=_source_cursors_from_payload(payload.get("sourceCursors", payload.get("source_cursors", {}))),
-        after_sequence=_optional_int(payload.get("afterSequence", payload.get("after_sequence"))),
-        reason=payload.get("reason"),
-        attributes=dict(payload.get("attributes", {})),
-    )
+    if request_payload is not None and not isinstance(request_payload, Mapping):
+        raise RuntimeEventControlMessageError("事件控制消息中的订阅请求格式不正确。")
+    attributes = payload.get("attributes", {})
+    if not isinstance(attributes, Mapping):
+        raise RuntimeEventControlMessageError("事件控制消息字段格式不正确。")
+    try:
+        message_type = RuntimeEventControlMessageType(raw_type)
+        return RuntimeEventControlMessage(
+            message_type=message_type,
+            subscription_id=payload.get("subscriptionId") or payload.get("subscription_id"),
+            request=_subscription_request_from_payload(request_payload) if request_payload else None,
+            last_sequence=_optional_int(payload.get("lastSequence", payload.get("last_sequence"))),
+            source_cursors=_source_cursors_from_payload(payload.get("sourceCursors", payload.get("source_cursors", {}))),
+            after_sequence=_optional_int(payload.get("afterSequence", payload.get("after_sequence"))),
+            reason=payload.get("reason"),
+            attributes=dict(attributes),
+        )
+    except RuntimeEventControlMessageError:
+        raise
+    except (TypeError, ValueError) as exc:
+        # Enum/int conversion errors can include attacker-controlled raw values, so replace them with a stable message.
+        raise RuntimeEventControlMessageError("事件控制消息字段格式不正确。") from exc
 
 
-def _subscription_request_from_payload(payload: dict[str, Any]) -> RuntimeEventSubscriptionRequest:
+def _subscription_request_from_payload(payload: Mapping[str, Any]) -> RuntimeEventSubscriptionRequest:
     """解析控制消息里的订阅请求。"""
 
     event_types = tuple(

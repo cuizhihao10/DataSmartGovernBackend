@@ -953,25 +953,28 @@ class AgentFollowUpToolPlanner:
                 source_column = source_field_metadata.get(source_field.lower())
                 target_column = target_field_metadata.get(target_field.lower())
                 source_type = str(
-                    field_mapping.get("sourceType")
-                    or (source_column or {}).get("dataTypeName")
+                    (source_column or {}).get("dataTypeName")
+                    or field_mapping.get("sourceType")
                     or ""
                 ).strip()
                 target_type = str(
-                    field_mapping.get("targetType")
-                    or (target_column or {}).get("dataTypeName")
+                    (target_column or {}).get("dataTypeName")
+                    or field_mapping.get("targetType")
                     or ""
                 ).strip()
                 transform = str(field_mapping.get("transform") or "").strip()
                 declared_compatible = field_mapping.get("typeCompatible") is not False
+                deterministic_compatibility = AgentFollowUpToolPlanner._deterministic_type_compatibility(
+                    source_type,
+                    target_type,
+                    source_column=source_column,
+                    target_column=target_column,
+                )
                 if (
                     not transform
                     and (
-                        not declared_compatible
-                        or not AgentFollowUpToolPlanner._types_implicitly_compatible(
-                            source_type,
-                            target_type,
-                        )
+                        deterministic_compatibility is False
+                        or (deterministic_compatibility is None and not declared_compatible)
                     )
                 ):
                     return (
@@ -1033,14 +1036,18 @@ class AgentFollowUpToolPlanner:
         normalized_schema = str(schema_name or "").strip().lower()
         if not normalized_object:
             return None
+        matches: list[dict[str, object]] = []
         for item in objects:
             if str(item.get("tableName") or "").strip().lower() != normalized_object:
                 continue
             item_schema = str(item.get("schemaName") or "").strip().lower()
             if normalized_schema and item_schema != normalized_schema:
                 continue
-            return item
-        return None
+            matches.append(item)
+        # MySQL metadata commonly has one catalog-scoped object and no useful schema selector, so a
+        # missing schema remains valid when the object is unique. Multiple matches must fail closed:
+        # choosing the first row would make feedback ordering decide which physical table is synced.
+        return matches[0] if len(matches) == 1 else None
 
     @staticmethod
     def _metadata_field_names(metadata_object: dict[str, object]) -> set[str]:
@@ -1060,25 +1067,43 @@ class AgentFollowUpToolPlanner:
         }
 
     @staticmethod
-    def _types_implicitly_compatible(source_type: str, target_type: str) -> bool:
+    def _deterministic_type_compatibility(
+        source_type: str,
+        target_type: str,
+        *,
+        source_column: dict[str, object] | None = None,
+        target_column: dict[str, object] | None = None,
+    ) -> bool | None:
         """Allow only conversions that do not require a business decision.
 
         JDBC type names vary by connector, so the guard compares normalized type
-        families.  Unknown metadata is left to the existing Java precheck instead
-        of being guessed as incompatible.  Character-to-number, timestamp-to-date,
-        decimal-to-integer and other narrowing/semantic conversions require an
-        explicit transform selected by the user.
+        families.  ``None`` means metadata is missing or uses an unknown family; in
+        that case an explicit ``typeCompatible=false`` remains fail-closed while an
+        unqualified mapping is left to Java precheck. Character-to-number,
+        timestamp-to-date, decimal-to-integer and other narrowing/semantic
+        conversions require an explicit transform selected by the user.
         """
 
         source = AgentFollowUpToolPlanner._normalized_type(source_type)
         target = AgentFollowUpToolPlanner._normalized_type(target_type)
         if not source or not target:
-            return True
-        if source == target:
-            return True
+            return None
         source_family, source_rank = AgentFollowUpToolPlanner._type_family(source)
         target_family, target_rank = AgentFollowUpToolPlanner._type_family(target)
         if source_family == "UNKNOWN" or target_family == "UNKNOWN":
+            return None
+        if source_family == target_family == "DECIMAL":
+            source_shape = AgentFollowUpToolPlanner._decimal_shape(source_column)
+            target_shape = AgentFollowUpToolPlanner._decimal_shape(target_column)
+            if source_shape is None or target_shape is None:
+                return None
+            source_precision, source_scale = source_shape
+            target_precision, target_scale = target_shape
+            return (
+                target_scale >= source_scale
+                and target_precision - target_scale >= source_precision - source_scale
+            )
+        if source == target:
             return True
         if source_family == target_family == "STRING":
             return True
@@ -1089,6 +1114,21 @@ class AgentFollowUpToolPlanner:
         if source_family == "DATE" and target_family == "TIMESTAMP":
             return True
         return False
+
+    @staticmethod
+    def _decimal_shape(column: dict[str, object] | None) -> tuple[int, int] | None:
+        """Read a trustworthy JDBC DECIMAL precision/scale pair from control-plane metadata."""
+
+        if not isinstance(column, dict):
+            return None
+        try:
+            precision = int(column.get("columnSize"))
+            scale = int(column.get("decimalDigits"))
+        except (TypeError, ValueError):
+            return None
+        if precision <= 0 or scale < 0 or scale > precision:
+            return None
+        return precision, scale
 
     @staticmethod
     def _normalized_type(value: str) -> str:
@@ -1107,8 +1147,10 @@ class AgentFollowUpToolPlanner:
             return "INTEGER", 3
         if value in {"BIGINT", "INT8", "BIGSERIAL"}:
             return "INTEGER", 4
-        if value in {"DECIMAL", "NUMERIC", "REAL", "FLOAT", "DOUBLE", "DOUBLE PRECISION"}:
+        if value in {"DECIMAL", "NUMERIC"}:
             return "DECIMAL", 1
+        if value in {"REAL", "FLOAT", "DOUBLE", "DOUBLE PRECISION"}:
+            return "FLOAT", 1
         if value in {
             "CHAR", "NCHAR", "VARCHAR", "NVARCHAR", "CHARACTER VARYING",
             "TEXT", "TINYTEXT", "MEDIUMTEXT", "LONGTEXT", "CLOB",

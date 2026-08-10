@@ -7,6 +7,7 @@ payload 解析这些逻辑如果继续放在同一个文件里，会让 API 入�
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, replace
 from typing import Any
 
@@ -73,7 +74,7 @@ def build_event_replay_response(
 
 
 def build_event_control_response(
-    payload: dict[str, Any],
+    payload: Any,
     session_manager: RuntimeEventSessionManager,
     *,
     access_context: RuntimeEventAccessContext | None = None,
@@ -84,13 +85,17 @@ def build_event_control_response(
     让 HTTP 管理入口、WebSocket handler、命令行调试工具和单元测试共用同一套控制协议。
     """
 
+    try:
+        message = control_message_from_payload(payload)
+        # Direct helper callers may still provide a test-only accessContext for
+        # offline compatibility. Production HTTP/WebSocket routes pass the
+        # verified Gateway context explicitly and never use the body fallback.
+        explicit_access_context = access_context is not None
+        effective_access_context = access_context or _access_context_from_payload(payload)
+    except (RuntimeEventControlMessageError, TypeError, ValueError, AttributeError):
+        return _invalid_control_response()
+
     handler = RuntimeEventControlHandler(session_manager)
-    message = control_message_from_payload(payload)
-    # Direct helper callers may still provide a test-only accessContext for
-    # offline compatibility. Production HTTP/WebSocket routes pass the
-    # verified Gateway context explicitly and never use the body fallback.
-    explicit_access_context = access_context is not None
-    effective_access_context = access_context or _access_context_from_payload(payload)
     try:
         return handler.handle(
             message,
@@ -108,8 +113,21 @@ def build_event_control_response(
         }
 
 
+def _invalid_control_response() -> dict[str, Any]:
+    """Return the stable, low-sensitive error shape shared by HTTP and WebSocket control paths."""
+
+    return {
+        "accepted": False,
+        "messageType": "invalid",
+        "error": {
+            "code": "EVENT_CONTROL_INVALID",
+            "message": "实时事件控制消息格式不正确。",
+        },
+    }
+
+
 def build_event_websocket_payloads(
-    payload: dict[str, Any],
+    payload: Any,
     session_manager: RuntimeEventSessionManager,
     *,
     access_context: RuntimeEventAccessContext | None = None,
@@ -176,7 +194,7 @@ def runtime_event_from_payload(payload: dict[str, Any]) -> AgentRuntimeEvent:
     )
 
 
-def _access_context_from_payload(payload: dict[str, Any]) -> RuntimeEventAccessContext:
+def _access_context_from_payload(payload: Mapping[str, Any]) -> RuntimeEventAccessContext:
     """从 API payload 解析实时事件访问上下文。
 
     控制入口允许调用方以 `accessContext` 或 `authorization` 的形式传入已认证后的上下文信息。这里不
@@ -184,6 +202,11 @@ def _access_context_from_payload(payload: dict[str, Any]) -> RuntimeEventAccessC
     """
 
     raw_context = payload.get("accessContext") or payload.get("access_context") or payload.get("authorization") or {}
+    if not isinstance(raw_context, Mapping):
+        raise RuntimeEventControlMessageError("事件控制访问上下文格式不正确。")
+    attributes = raw_context.get("attributes", {})
+    if not isinstance(attributes, Mapping):
+        raise RuntimeEventControlMessageError("事件控制访问上下文格式不正确。")
     roles = _as_tuple(raw_context.get("roles", raw_context.get("role", ())))
     return RuntimeEventAccessContext(
         tenant_id=raw_context.get("tenantId") or raw_context.get("tenant_id"),
@@ -196,7 +219,7 @@ def _access_context_from_payload(payload: dict[str, Any]) -> RuntimeEventAccessC
         is_platform_admin=bool(raw_context.get("isPlatformAdmin", raw_context.get("is_platform_admin", False))),
         is_tenant_admin=bool(raw_context.get("isTenantAdmin", raw_context.get("is_tenant_admin", False))),
         is_auditor=bool(raw_context.get("isAuditor", raw_context.get("is_auditor", False))),
-        attributes=dict(raw_context.get("attributes", {})),
+        attributes=dict(attributes),
     )
 
 
@@ -211,7 +234,7 @@ def _control_error_code(message: str) -> str:
         return "EVENT_CONTROL_CLOSED"
     if "超时" in message:
         return "EVENT_CONTROL_STALE"
-    if "缺少" in message:
+    if "缺少" in message or "格式" in message or "不支持" in message:
         return "EVENT_CONTROL_INVALID"
     return "EVENT_CONTROL_FAILED"
 

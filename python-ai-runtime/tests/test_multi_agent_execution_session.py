@@ -175,6 +175,115 @@ class MultiAgentExecutionSessionTest(unittest.TestCase):
         self.assertEqual("READY_FOR_AGENT_TURN", by_role["DATA_SYNC_AGENT"]["sessionStatus"])
         self.assertTrue(by_role["DATA_SYNC_AGENT"]["handoffRequired"])
 
+    def test_waiting_approval_phase_still_runs_specialist_draft_turns(self) -> None:
+        """全局等待审批不能阻断尚未生成审核草案的 Specialist。
+
+        真实 Success 计划在主 Agent 已形成高风险 Java 工具候选后进入
+        ``waiting_approval``。DATASOURCE/DATA_SYNC 仍需先完成只读发现和配置草案，
+        否则 Java 侧没有可供用户审核的专业结果。放行只作用于 Specialist/Observer
+        turn；主控和最终副作用仍保持等待审批。
+        """
+
+        session = MultiAgentExecutionSessionService().build(
+            request=_request(),
+            plan=_plan(),
+            scheduling={},
+            collaboration_execution_plan={
+                "planStatus": "WAITING_HUMAN_OR_PERMISSION_HANDOFF",
+                "workItems": (
+                    {
+                        "agentRole": "MASTER_ORCHESTRATOR",
+                        "participationMode": "PRIMARY",
+                        "status": "WAITING_HUMAN_OR_PERMISSION_HANDOFF",
+                        "handoffRequired": True,
+                    },
+                    {
+                        "agentRole": "DATASOURCE_AGENT",
+                        "participationMode": "SPECIALIST",
+                        "status": "PLANNED_READY",
+                    },
+                    {
+                        "agentRole": "DATA_SYNC_AGENT",
+                        "participationMode": "SPECIALIST",
+                        "status": "WAITING_HUMAN_OR_PERMISSION_HANDOFF",
+                        "handoffRequired": True,
+                    },
+                ),
+            },
+            durable_loop={"phase": "waiting_approval", "runId": "run-waiting-approval"},
+        )
+
+        summary = session.to_summary()
+        by_role = {item["agentRole"]: item for item in summary["workItems"]}
+        self.assertEqual("WAITING_APPROVAL_OR_HANDOFF", by_role["MASTER_ORCHESTRATOR"]["sessionStatus"])
+        self.assertEqual("READY_FOR_AGENT_TURN", by_role["DATASOURCE_AGENT"]["sessionStatus"])
+        self.assertEqual("READY_FOR_AGENT_TURN", by_role["DATA_SYNC_AGENT"]["sessionStatus"])
+        self.assertTrue(by_role["DATA_SYNC_AGENT"]["handoffRequired"])
+
+    def test_step_limit_policy_stop_does_not_fake_specialist_completion(self) -> None:
+        """主控工具批次触顶只停止主控扩张，不能伪造 Specialist 已完成。
+
+        `stop_step_limit` 约束的是当前主控模型提出的工具数量；专业 Agent 仍需完成
+        只读发现和草案，后续 Java side effect 继续受审批约束。预算耗尽则不同，
+        它禁止继续消耗模型资源，必须保持停止。
+        """
+
+        execution_plan = {
+            "workItems": (
+                {"agentRole": "MASTER_ORCHESTRATOR", "participationMode": "PRIMARY"},
+                {"agentRole": "DATASOURCE_AGENT", "participationMode": "SPECIALIST"},
+                {"agentRole": "DATA_SYNC_AGENT", "participationMode": "SPECIALIST"},
+            ),
+        }
+        service = MultiAgentExecutionSessionService()
+        step_limited = service.build(
+            request=_request(),
+            plan=_plan(),
+            scheduling={},
+            collaboration_execution_plan=execution_plan,
+            durable_loop={
+                "phase": "stopped_by_policy",
+                "loopAction": "stop_step_limit",
+                "waitingReasonCodes": ("STOP_STEP_LIMIT",),
+                "runId": "run-step-limit",
+            },
+        ).to_summary()
+        step_limited_by_role = {item["agentRole"]: item for item in step_limited["workItems"]}
+        self.assertEqual(
+            "COMPLETED_OR_SUMMARIZED",
+            step_limited_by_role["MASTER_ORCHESTRATOR"]["sessionStatus"],
+        )
+        self.assertEqual("READY_FOR_AGENT_TURN", step_limited_by_role["DATASOURCE_AGENT"]["sessionStatus"])
+        self.assertEqual("READY_FOR_AGENT_TURN", step_limited_by_role["DATA_SYNC_AGENT"]["sessionStatus"])
+        self.assertIn("STOP_STEP_LIMIT", step_limited_by_role["DATASOURCE_AGENT"]["waitingReasonCodes"])
+        self.assertFalse(step_limited_by_role["DATA_SYNC_AGENT"]["sideEffectBoundary"]["toolExecutedByPython"])
+        self.assertFalse(step_limited_by_role["DATA_SYNC_AGENT"]["sideEffectBoundary"]["approvalCreatedByPython"])
+        self.assertFalse(step_limited_by_role["DATA_SYNC_AGENT"]["sideEffectBoundary"]["outboxWrittenByPython"])
+        self.assertTrue(
+            step_limited_by_role["DATA_SYNC_AGENT"]["sideEffectBoundary"][
+                "javaControlPlaneRequiredForSideEffects"
+            ]
+        )
+
+        budget_limited = service.build(
+            request=_request(),
+            plan=_plan(),
+            scheduling={},
+            collaboration_execution_plan=execution_plan,
+            durable_loop={
+                "phase": "stopped_by_policy",
+                "loopAction": "stop_budget_exceeded",
+                "waitingReasonCodes": ("STOP_BUDGET_EXCEEDED",),
+                "runId": "run-budget-limit",
+            },
+        ).to_summary()
+        budget_limited_by_role = {item["agentRole"]: item for item in budget_limited["workItems"]}
+        self.assertEqual(
+            "COMPLETED_OR_SUMMARIZED",
+            budget_limited_by_role["DATA_SYNC_AGENT"]["sessionStatus"],
+        )
+        self.assertIn("STOP_BUDGET_EXCEEDED", budget_limited_by_role["DATA_SYNC_AGENT"]["waitingReasonCodes"])
+
     def test_falls_back_to_session_scheduling_when_execution_plan_disabled(self) -> None:
         """LangGraph 执行前计划禁用时，会话层应回退到调度视图而不是丢失多 Agent 骨架。"""
 

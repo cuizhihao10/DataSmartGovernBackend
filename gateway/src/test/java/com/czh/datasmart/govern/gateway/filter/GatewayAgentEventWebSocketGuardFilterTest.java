@@ -13,6 +13,9 @@ import com.czh.datasmart.govern.gateway.monitoring.GatewayAgentEventWebSocketMet
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
 import org.springframework.http.HttpHeaders;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
@@ -72,6 +75,49 @@ class GatewayAgentEventWebSocketGuardFilterTest {
 
         assertThat(chain.called()).isFalse();
         assertThat(exchange.getResponse().getStatusCode().value()).isEqualTo(400);
+    }
+
+    @Test
+    void missingEventProtocolShouldReturnBadRequestBeforeProxying() {
+        GatewayAgentEventWebSocketGuardFilter filter = filter(defaultProperties());
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain(Mono.empty());
+        MockServerHttpRequest request = MockServerHttpRequest.get("/api/agent/events/ws")
+                .header(PlatformContextHeaders.TRACE_ID, "trace-test-001")
+                .header(PlatformContextHeaders.TENANT_ID, "10")
+                .header(PlatformContextHeaders.ACTOR_ID, "1001")
+                .header(HttpHeaders.CONNECTION, "Upgrade")
+                .header(HttpHeaders.UPGRADE, "websocket")
+                .build();
+
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+        filter.filter(exchange, chain).block();
+
+        assertThat(chain.called()).isFalse();
+        assertThat(exchange.getResponse().getStatusCode().value()).isEqualTo(400);
+    }
+
+    @Test
+    @ExtendWith(OutputCaptureExtension.class)
+    void unsupportedEventProtocolShouldReturnBadRequestWithoutProxyingCredential(CapturedOutput output) {
+        GatewayAgentEventWebSocketGuardFilter filter = filter(defaultProperties());
+        RecordingGatewayFilterChain chain = new RecordingGatewayFilterChain(Mono.empty());
+        String credentialProtocol = GatewayWebSocketBearerTokenConverter.BEARER_PROTOCOL_PREFIX + "encoded-token";
+        MockServerHttpRequest request = MockServerHttpRequest.get("/api/agent/events/ws")
+                .header(PlatformContextHeaders.TRACE_ID, "trace-test-001")
+                .header(PlatformContextHeaders.TENANT_ID, "10")
+                .header(PlatformContextHeaders.ACTOR_ID, "1001")
+                .header(HttpHeaders.CONNECTION, "Upgrade")
+                .header(HttpHeaders.UPGRADE, "websocket")
+                .header(GatewayWebSocketBearerTokenConverter.SEC_WEBSOCKET_PROTOCOL,
+                        "datasmart-agent-events-v2, " + credentialProtocol)
+                .build();
+
+        MockServerWebExchange exchange = MockServerWebExchange.from(request);
+        filter.filter(exchange, chain).block();
+
+        assertThat(chain.called()).isFalse();
+        assertThat(exchange.getResponse().getStatusCode().value()).isEqualTo(400);
+        assertThat(output).doesNotContain(credentialProtocol);
     }
 
     /**
@@ -227,6 +273,8 @@ class GatewayAgentEventWebSocketGuardFilterTest {
         if (websocket) {
             builder.header(HttpHeaders.CONNECTION, "Upgrade");
             builder.header(HttpHeaders.UPGRADE, "websocket");
+            builder.header(GatewayWebSocketBearerTokenConverter.SEC_WEBSOCKET_PROTOCOL,
+                    GatewayWebSocketBearerTokenConverter.EVENT_PROTOCOL);
         }
         return MockServerWebExchange.from(builder.build());
     }

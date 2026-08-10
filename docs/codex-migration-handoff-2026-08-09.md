@@ -24,8 +24,7 @@ The original rollout remains preserved locally and must not be deleted or rewrit
 - This is a whole-project migration, not a backend-only migration. Inspect and continue both repositories and their API/WebSocket contract:
   - Backend: `D:/Desktop/DataSmart-Govern/DataSmartGovernBackend`.
   - Frontend: `D:/Desktop/DataSmart-Govern/DataSmartGovernFrontend`.
-- The backend repository is on `master`, at `c75d37dd (fix(agent): restore actionable failed sessions)`.
-- The frontend repository is on `master`, at `fad37d6 (fix(agent): close completed task workflows)`.
+- The pre-closure baseline used by the 2026-08-10 continuation was Backend `master` at `64b21eddc368` and Frontend `master` at `0c237587c440`. The earlier `c75d37dd` / `fad37d6` values were the original migration inputs and are historical only. Always run a fresh `git status --short --branch` instead of treating either pair as the current checkout after delivery.
 - Both worktrees are intentionally dirty and contain user/previous-agent work. Never reset, checkout, clean, or discard either worktree.
 - Backend changes span agent-runtime, data-sync, gateway, permission-admin, platform-common, python-ai-runtime, scripts, deployment configuration, README, and operational documentation.
 - Frontend changes span AgentAssistant, AgentConsole, DataSync, API endpoints, domain types, labels, global styles, agent components/features, scripts, package metadata, and README.
@@ -78,11 +77,27 @@ The same turn found and fixed a Recovery-path defect:
 
 ## Known unfinished work
 
+> Historical status: the bullets in this section describe the interruption point on 2026-08-09. They are retained as migration evidence and are superseded by the verified 2026-08-10 closure section below.
+
 - The Recovery black-box rerun for execution `76/1805` still stops at `RECOVERY_PLANNING_MODEL_FAILED`: the current `xckjj.com` provider returned application-level HTTP 401 during the 2026-08-09 validation, replacing the earlier transient `503 Service Unavailable` observation. A request without the Runtime User-Agent can be rejected earlier by the WAF with HTTP 403, but that is not the current application failure. This remains a provider credential/authorization failure, not a repository code failure; no business side effect was reported.
 - Three Specialist implementation tasks were being run with `gpt-5.6-terra`; the DataSmart Runtime itself remained configured as `gpt-5.6-sol` with `xhigh`. Do not silently change the Runtime model to Terra and do not fall back to Luna without an explicit reason.
 - RAG persistence, native controlled tool selection, and dual-subject approval audit work had produced files in the shared worktree, but the final agent review and integrated test verification were not completed.
 - One RAG task was re-dispatched after an upstream Terra connection failure. The dispatch layer later became unreliable, so its result must be verified from files and tests rather than assumed complete.
 - The final convergence work was interrupted before a complete review, full backend regression, six-agent success/recovery E2E validation, documentation pass, commit, or push.
+
+## Verified closure update - 2026-08-10
+
+The continuation revalidated repository claims from source, tests, Compose health, E2E output, and durable database facts without resuming or forking the malformed transcript:
+
+- All 38 Backend `docs/*.md` files were read and classified as migration/architecture (12), Agent/RAG (5), production operations (11), final convergence (5), and product/learning (5). Both repository READMEs, the Python Runtime README, and the Frontend Docker Compose document were also read.
+- Python Runtime completed `1099 passed` with one Starlette/TestClient deprecation warning. JDK `21.0.10` Maven Reactor completed `1323 tests / 0 failures / 0 errors / 9 skipped`. The Frontend completed all 6 `test:*` scripts, ESLint, TypeScript build, and Vite production build; only the known large-chunk warning remains.
+- Gateway and Python Runtime now enforce the same `datasmart-agent-events-v1` WebSocket version. Gateway strips the bearer subprotocol before proxying; malformed HTTP controls return a stable 400 and malformed socket controls send a low-sensitive error frame before closing.
+- Real Success request `six-agent-success-type-normalized-20260810112629` created task `91` and execution `2245`; the worker was `SUCCEEDED` with `20/20` records and no failed records. Its 18 checks had no failures and one expected warning because RAG was not required by that objective.
+- Real Recovery request `six-agent-recovery-rag-durable-20260810214832` produced 2 grounded citations, 2 durable evidence references, one Java read-only preview, post PRECHECK/MONITOR `EXECUTED`, 8 durable fact rows in the verification script, and `0 fail / 0 warning`; the independent process exited `0`.
+- Database audit found zero permission approvals, approval confirmations, submission facts, and async command outbox rows for the Recovery run. Task `76` still has only execution `1805 FAILED` and `1806 SUCCEEDED`; recovery plan `9` predates the run. All 8 Java tool audits were `LOW/readOnly/SUCCEEDED`. Both durable KNOWLEDGE references use `rag:sha256:`, and the LangGraph retrieve/evidence-gate/grounded-answer nodes completed.
+- The Runtime remains `gpt-5.6-sol` with `xhigh` reasoning and the Responses protocol. PostgreSQL/pgvector remains the target store, the LangGraph checkpoint store remains fail-closed, and Java remains the sole owner of permissions, approvals, outbox, worker receipts, and business side effects.
+
+The earlier Provider 401 bullets are therefore historical, not current blockers. The local six-Agent Success/Recovery black-box gate is closed. Production Secret rotation, backup/restore, capacity testing, failure drills, SBOM/image signing, and customer-environment migration remain separate release gates.
 
 ## Required first actions in the new task
 

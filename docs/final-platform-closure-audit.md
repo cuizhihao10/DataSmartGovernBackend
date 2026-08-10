@@ -150,3 +150,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\final-platform-clo
 2. 新 Agent、新连接器、新模型 SKU 和新业务域进入下一版本 backlog，不进入本轮闭环。
 3. 所有真实副作用能力继续默认关闭，直到环境级验收通过。
 4. 生产上线结论必须附带客户环境证据，不能只引用本仓库静态门禁。
+
+## 8. 2026-08-10 后续复核说明
+
+本文件前文的角色名册、源码行数和测试计数是 2026-07 冻结批次的历史证据，不应再被当作当前工作区统计。后续双仓迁移复核以当前六 Specialist roster（`KNOWLEDGE_AGENT`、`DATASOURCE_AGENT`、`DATA_SYNC_AGENT`、`PRECHECK_AGENT`、`RECOVERY_AGENT`、`MONITOR_AGENT`）及其 Java bridge 边界为准；长期八 Agent 描述仍是产品路线，不是当前验收名册。
+
+2026-08-10 当前复验结果为 Python Runtime `1099 passed`（一条弃用警告）、JDK 21 Maven Reactor `1323 tests / 0 failures / 0 errors / 9 skipped`，Frontend 6 个合同脚本、lint 和 build 全部通过。真实 Success `six-agent-success-type-normalized-20260810112629` 与 Recovery `six-agent-recovery-rag-durable-20260810214832` 均通过脚本门禁；Recovery 的独立数据库审计确认没有审批、提交、异步命令或恢复副作用。该本地黑盒结论不改变第 7 节第 4 条：生产上线仍必须补客户环境、Secret 轮换、备份恢复、容量、故障演练和供应链证据。

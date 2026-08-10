@@ -22,6 +22,9 @@ from datasmart_ai_runtime.services.model_gateway.agent_plan_cancellation import 
 )
 from datasmart_ai_runtime.services.agent_plan_ingestion_client import AgentPlanIngestionClientError
 from datasmart_ai_runtime.services.runtime_events.runtime_event_session import RuntimeEventSessionManager
+from datasmart_ai_runtime.services.runtime_events.runtime_event_websocket import (
+    RUNTIME_EVENT_WEBSOCKET_SUBPROTOCOL,
+)
 
 
 class FakeHttpException(Exception):
@@ -86,7 +89,92 @@ class FakeRequest:
         return SimpleNamespace(path=self.path)
 
 
+class WebSocketDisconnect(Exception):
+    """名称与 Starlette 断连异常一致的轻量测试替身。"""
+
+
+class FakeWebSocket:
+    """记录 WebSocket 握手、下行帧和关闭顺序的最小替身。"""
+
+    def __init__(self, headers: dict[str, str], incoming_payloads: list[object]) -> None:
+        self.headers = headers
+        self._incoming_payloads = list(incoming_payloads)
+        self.accepted_subprotocol: str | None = None
+        self.sent_payloads: list[dict[str, object]] = []
+        self.close_calls: list[tuple[int | None, str | None]] = []
+        self.actions: list[str] = []
+
+    async def accept(self, subprotocol: str | None = None) -> None:
+        self.accepted_subprotocol = subprotocol
+        self.actions.append("accept")
+
+    async def receive_json(self) -> object:
+        if self._incoming_payloads:
+            return self._incoming_payloads.pop(0)
+        raise WebSocketDisconnect()
+
+    async def send_json(self, payload: dict[str, object]) -> None:
+        self.sent_payloads.append(payload)
+        self.actions.append("send")
+
+    async def close(self, code: int | None = None, reason: str | None = None) -> None:
+        self.close_calls.append((code, reason))
+        self.actions.append("close")
+
+
 class ApiAgentRoutesSecurityTest(unittest.TestCase):
+    def test_event_websocket_negotiates_supported_subprotocol(self) -> None:
+        """Python Runtime must return the exact Gateway-validated event version during the handshake."""
+
+        app = self._event_route_app()
+        websocket = FakeWebSocket(
+            {"sec-websocket-protocol": RUNTIME_EVENT_WEBSOCKET_SUBPROTOCOL},
+            [],
+        )
+
+        asyncio.run(app.websocket_routes["/agent/events/ws"](websocket))
+
+        self.assertEqual(RUNTIME_EVENT_WEBSOCKET_SUBPROTOCOL, websocket.accepted_subprotocol)
+        self.assertEqual([], websocket.close_calls)
+
+    def test_event_websocket_sends_invalid_control_error_before_protocol_close(self) -> None:
+        """Malformed client controls must not become a bare close or echo client-supplied sensitive-looking text."""
+
+        app = self._event_route_app()
+        secret_like_value = "datasmart-bearer-v1.should-not-echo"
+        websocket = FakeWebSocket(
+            {"sec-websocket-protocol": RUNTIME_EVENT_WEBSOCKET_SUBPROTOCOL},
+            [{"type": secret_like_value}],
+        )
+
+        asyncio.run(app.websocket_routes["/agent/events/ws"](websocket))
+
+        self.assertEqual(1, len(websocket.sent_payloads))
+        error_frame = websocket.sent_payloads[0]
+        self.assertEqual("error", error_frame["frameType"])
+        self.assertEqual("EVENT_CONTROL_INVALID", error_frame["payload"]["error"]["code"])
+        self.assertNotIn(secret_like_value, str(error_frame))
+        self.assertEqual([(1002, "invalid_event_control_message")], websocket.close_calls)
+        self.assertLess(websocket.actions.index("send"), websocket.actions.index("close"))
+
+    def test_event_control_route_maps_malformed_message_to_structured_bad_request(self) -> None:
+        """The HTTP control projection uses the same low-sensitive error contract with a transport-level 400."""
+
+        app = self._event_route_app(
+            request_validation_error_factory=lambda status_code, detail: FakeHttpException(status_code, detail),
+        )
+        secret_like_value = "datasmart-bearer-v1.should-not-echo"
+
+        with self.assertRaises(FakeHttpException) as raised:
+            app.post_routes["/agent/events/control"](
+                {"type": secret_like_value},
+                FakeRequest(headers={}, path="/agent/events/control"),
+            )
+
+        self.assertEqual(400, raised.exception.status_code)
+        self.assertEqual("EVENT_CONTROL_INVALID", raised.exception.detail["error"]["code"])
+        self.assertNotIn(secret_like_value, str(raised.exception.detail))
+
     def test_event_control_route_uses_signed_header_identity(self) -> None:
         """HTTP event control must ignore identity values in the JSON body."""
 
@@ -139,6 +227,31 @@ class ApiAgentRoutesSecurityTest(unittest.TestCase):
         self.assertEqual("20", subscription["projectId"])
         self.assertEqual("1001", subscription["actorId"])
         self.assertEqual(("PROJECT_OWNER",), subscription["roles"])
+
+    @staticmethod
+    def _event_route_app(
+        *,
+        request_validation_error_factory=None,
+    ) -> FakeApp:
+        app = FakeApp()
+        register_agent_runtime_routes(
+            app,
+            request_type=FakeRequest,
+            orchestrator=object(),
+            event_store=None,
+            session_manager=RuntimeEventSessionManager(),
+            live_push_hub=None,
+            event_publisher=None,
+            runtime_event_replay_sources=(),
+            plan_ingestion_client=None,
+            control_plane_feedback_collector=None,
+            runtime_event_feedback_bridge=None,
+            loop_control_evaluator=None,
+            second_turn_orchestrator=None,
+            memory_write_governance=None,
+            request_validation_error_factory=request_validation_error_factory,
+        )
+        return app
 
     @staticmethod
     def _event_signed_headers() -> dict[str, str]:

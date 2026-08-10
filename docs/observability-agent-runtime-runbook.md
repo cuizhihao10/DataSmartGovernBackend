@@ -227,14 +227,14 @@ Prometheus 标签禁止包含：
 
 - `GET /agent-runtime/runtime-events/skill-visibility-snapshots/diagnostics`；
 - `lastFailureStage` 和 `lastFailureReason` 是否指向 materialization；
-- `activeStore` 是否符合预期，例如生产是否应为 `mysql`；
+- `activeStore` 是否符合预期；当前目标是 PostgreSQL/JDBC durable store，`mysql` 只作为迁移期兼容别名；
 - `DATASMART_AGENT_RUNTIME_SKILL_VISIBILITY_INDEX_ENABLED` 是否为 `true`；
-- `DATASMART_AGENT_RUNTIME_SKILL_VISIBILITY_INDEX_STORE` 是否为 `mysql` 或预期 store；
+- `DATASMART_AGENT_RUNTIME_SKILL_VISIBILITY_INDEX_STORE` 是否为 `postgresql`、`jdbc` 或环境约定的兼容 store；
 - `DATASMART_AGENT_RUNTIME_PERSISTENCE_DATABASE_ENABLED` 是否已打开；
 - `agent_skill_visibility_snapshot_index` 迁移脚本是否已经执行；
 - Kafka 是否还有重放机会，避免 projection 成功但索引失败后永久漏写。
 
-如果失败集中在 MySQL，可临时切回 `memory` 保住本地治理页可用性，但生产环境需要尽快恢复持久化索引，否则跨实例、跨重启审计会退化。
+本地学习环境可以临时切回 `memory` 保住治理页可用性；生产环境不得把该回退当作成功，应尽快恢复 PostgreSQL/JDBC 持久化索引，否则跨实例、跨重启审计会退化。
 
 ### 6.6 fallback 查询比例偏高
 
